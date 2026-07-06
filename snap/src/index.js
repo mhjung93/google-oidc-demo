@@ -1,4 +1,5 @@
 import { panel, text, heading } from '@metamask/snaps-sdk';
+import * as mcl from 'mcl-wasm';
 import {
   buildTxWithZkp,
   stableStringify,
@@ -10,6 +11,71 @@ import {
 function previewHex(hex0x, maxChars = 70) {
   if (typeof hex0x !== 'string') return '';
   return hex0x.length > maxChars ? `${hex0x.slice(0, maxChars)}...` : hex0x;
+}
+
+function tokenMessages(token) {
+  return [
+    String(token.uid),
+    String(token.arid_i),
+    String(token.auid_i),
+    String(token.r_token),
+    String(token.max_height),
+  ];
+}
+
+function assertTokenMatchesWalletSubmission(token, walletSubmission, business) {
+  const checks = {
+    ridOk: String(token.rid) === String(business?.rid),
+    aridOk: String(token.arid_i) === String(walletSubmission?.arid_i ?? business?.arid_i),
+    auidOk: String(token.auid_i) === String(walletSubmission?.auid_i ?? business?.auid_i),
+    tokenNonceOk: String(token.r_token) === String(walletSubmission?.r_token ?? business?.r_token ?? business?.tokenNonce),
+    maxHeightOk: String(token.max_height) === String(business?.maxHeight ?? business?.max_height),
+  };
+
+  const success = checks.ridOk && checks.aridOk && checks.auidOk && checks.tokenNonceOk && checks.maxHeightOk;
+  return { success, checks };
+}
+
+// custom_idp.js의 initPS()/psSign()이 사용하는 것과 동일한 curve.
+let mclReady = null;
+function ensureMcl() {
+  if (!mclReady) mclReady = mcl.init(mcl.BN_SNARK1);
+  return mclReady;
+}
+
+function hashToFr(str) {
+  const fr = new mcl.Fr();
+  fr.setHashOf(str);
+  return fr;
+}
+
+// custom_idp.js의 psVerify() / server.js의 verifyPS_Hybrid()와 동일한 PS 서명 검증식.
+// e(sigma1, X * prod(Yi^mi)) == e(sigma2, g2)
+function verifyPS(messages, sigma, psPublicKeys) {
+  const s1 = new mcl.G1();
+  s1.setStr(sigma.sigma1, 16);
+  const s2 = new mcl.G1();
+  s2.setStr(sigma.sigma2, 16);
+
+  if (s1.isZero()) return false;
+
+  const g2 = new mcl.G2();
+  g2.setStr(psPublicKeys.g2, 16);
+  const X = new mcl.G2();
+  X.setStr(psPublicKeys.X, 16);
+
+  let PK_total = new mcl.G2();
+  PK_total = mcl.add(X, PK_total);
+  for (let i = 0; i < messages.length; i++) {
+    const Yi = new mcl.G2();
+    Yi.setStr(psPublicKeys.Y[i], 16);
+    const mi = hashToFr(messages[i]);
+    PK_total = mcl.add(PK_total, mcl.mul(Yi, mi));
+  }
+
+  const lhs = mcl.pairing(s1, PK_total);
+  const rhs = mcl.pairing(s2, g2);
+  return lhs.isEqual(rhs);
 }
 
 export const onRpcRequest = async ({ origin, request }) => {
@@ -49,33 +115,64 @@ export const onRpcRequest = async ({ origin, request }) => {
     case 'verifyIdPAuthToken': {
       const params = request.params ?? {};
       const token = params.idpToken ?? {};
-      const verification = params.verification ?? {};
-      const accepted = Boolean(verification.success);
+      const psPublicKeys = params.psPublicKeys ?? {};
+      const walletSubmission = params.walletSubmission ?? {};
+      const business = params.business ?? {};
 
-      return await snap.request({
+      let accepted = false;
+      let binding = { success: true, checks: { ridOk: true, aridOk: true, auidOk: true, tokenNonceOk: true, maxHeightOk: true } };
+      let message;
+      const verifyStart = Date.now();
+      let durationMs = null;
+      try {
+        await ensureMcl();
+        accepted = verifyPS(tokenMessages(token), token.signature ?? {}, psPublicKeys);
+        if (params.walletSubmission || params.business) {
+          binding = assertTokenMatchesWalletSubmission(token, walletSubmission, business);
+        }
+        accepted = accepted && binding.success;
+        message = accepted ? 'PS signature and Wallet bindings verified' : 'PS signature or Wallet binding verification failed';
+      } catch (err) {
+        message = `Verification error: ${err.message}`;
+      } finally {
+        durationMs = Date.now() - verifyStart;
+      }
+
+      await snap.request({
         method: 'snap_dialog',
         params: {
           type: 'alert',
           content: panel([
             heading('Wallet Step 12'),
             text(`Origin: **${origin}**`),
-            text(`Demo mode: Wallet accepted IdP auth token without cryptographic verification: **${accepted ? 'PASS' : 'FAIL'}**`),
-            text(`sub: **${token.sub ?? 'n/a'}**`),
+            text(`PS signature verification: **${accepted ? 'PASS' : 'FAIL'}**`),
+            text(`uid: **${token.uid ?? 'n/a'}**`),
+            text(`rid: ${previewHex(String(token.rid ?? 'n/a'), 70)}`),
             text(`auid_i: ${previewHex(String(token.auid_i ?? 'n/a'), 70)}`),
             text(`arid_i: ${previewHex(String(token.arid_i ?? 'n/a'), 70)}`),
-            text(`exp: **${token.exp ?? 'n/a'}**`),
-            text(`Wallet result: **${verification.message ?? verification.error ?? 'n/a'}**`),
+            text(`r_token: ${previewHex(String(token.r_token ?? 'n/a'), 70)}`),
+            text(`max_height: **${token.max_height ?? 'n/a'}**`),
+            text(`r_token binding: **${binding.checks.tokenNonceOk ? 'PASS' : 'FAIL'}**`),
+            text(`max_height binding: **${binding.checks.maxHeightOk ? 'PASS' : 'FAIL'}**`),
+            text(`rid binding: **${binding.checks.ridOk ? 'PASS' : 'FAIL'}**`),
+            text(`arid_i binding: **${binding.checks.aridOk ? 'PASS' : 'FAIL'}**`),
+            text(`auid_i binding: **${binding.checks.auidOk ? 'PASS' : 'FAIL'}**`),
+            text(`Wallet result: **${message}**`),
           ]),
         },
       });
+
+      return { success: accepted, message, checks: binding.checks, durationMs };
     }
 
     case 'rpAuthResult': {
+      const processingStart = Date.now();
       const params = request.params ?? {};
       const result = params.result ?? {};
       const success = Boolean(result.success);
+      const durationMs = Date.now() - processingStart;
 
-      return await snap.request({
+      await snap.request({
         method: 'snap_dialog',
         params: {
           type: 'alert',
@@ -85,13 +182,17 @@ export const onRpcRequest = async ({ origin, request }) => {
             text(`PPID authentication result: **${success ? 'SUCCESS' : 'FAIL'}**`),
             text(`PPID: ${previewHex(String(result.ppid ?? 'n/a'), 70)}`),
             text(`r_i check: **${result.r_i_check ? 'PASS' : 'FAIL'}**`),
-            text(`expire time: **${result.checks?.expireOk ? 'PASS' : 'FAIL'}**`),
+            text(`max_height: **${(result.checks?.heightOk ?? result.checks?.expireOk) ? 'PASS' : 'FAIL'}**`),
             text(`auid_i binding: **${result.checks?.auidBindingOk ? 'PASS' : 'FAIL'}**`),
             text(`PPID binding: **${result.checks?.ppidOk ? 'PASS' : 'FAIL'}**`),
             text(`pi_PPID: **${result.checks?.piPpidOk ? 'PASS' : 'FAIL'}**`),
+            text(`Step 8 duration: **${result.step8DurationMs != null ? Math.round(result.step8DurationMs) + ' ms' : 'n/a'}**`),
+            text(`Step 12 duration: **${result.step12DurationMs != null ? Math.round(result.step12DurationMs) + ' ms' : 'n/a'}**`),
           ]),
         },
       });
+
+      return { success, durationMs };
     }
 
     case 'zkp':
