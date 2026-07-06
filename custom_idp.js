@@ -18,6 +18,15 @@ const __dirname = path.dirname(__filename);
 const vkeyAridI = JSON.parse(fs.readFileSync('build/mode2/pi_arid_i_vkey.json', 'utf8'));
 const vkeyAuid = JSON.parse(fs.readFileSync('build/mode2/pi_auid_vkey.json', 'utf8'));
 
+function now() { return Date.now(); }
+function cursor() { return { last: now() }; }
+function ms(c) {
+  const t = now();
+  const delta = t - c.last;
+  c.last = t;
+  return `${delta.toFixed(0)} ms`;
+}
+
 app.use(cors());
 app.use(bodyParser.json());
 app.use('/idp', express.static(path.join(__dirname, 'idp')));
@@ -43,7 +52,7 @@ let psParams = {
 
 let idpKeys = {
   x: null,
-  y: [], // For multiple attributes: [sub, arid_i, auid_i, exp]
+  y: [], // For multiple attributes: [uid, rid, arid_i, auid_i, r_token, max_height]
   pk: {
     X: null,
     Y: []
@@ -57,11 +66,11 @@ async function initPS() {
   psParams.g1 = mcl.hashAndMapToG1('gen1');
   psParams.g2 = mcl.hashAndMapToG2('gen2');
 
-  // 2. Generate IdP Secret Keys (x, y1, y2, y3, y4)
+  // 2. Generate IdP Secret Keys (x, y1, y2, y3, y4, y5)
   idpKeys.x = new mcl.Fr();
   idpKeys.x.setByCSPRNG();
-  
-  for (let i = 0; i < 4; i++) {
+
+  for (let i = 0; i < 5; i++) {
     const yi = new mcl.Fr();
     yi.setByCSPRNG();
     idpKeys.y.push(yi);
@@ -69,7 +78,7 @@ async function initPS() {
 
   // 3. Generate Public Keys (X = g2^x, Yi = g2^yi)
   idpKeys.pk.X = mcl.mul(psParams.g2, idpKeys.x);
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 5; i++) {
     idpKeys.pk.Y.push(mcl.mul(psParams.g2, idpKeys.y[i]));
   }
 
@@ -84,7 +93,7 @@ function hashToFr(str) {
 
 /**
  * PS Multi-Message Sign
- * @param {Array<string>} messages - [sub, arid_i, auid_i, exp]
+ * @param {Array<string>} messages - [uid, arid_i, auid_i, r_token, max_height]
  */
 function psSign(messages) {
   const randomStr = randomBytes(32).toString('hex');
@@ -136,8 +145,8 @@ function psVerify(messages, sigma) {
 
 // Mock Database (UID를 순수 숫자로 변경하여 ZKP와 일치시킴)
 const users = {
-  'testuser': { password: 'password123', sub: '12345' },
-  'alice': { password: 'secret456', sub: '67890' }
+  'testuser': { password: 'password123', uid: '12345', sub: '12345' },
+  'alice': { password: 'secret456', uid: '67890', sub: '67890' }
 };
 const registeredRPs = {};
 const usedNonces = new Set();
@@ -151,17 +160,18 @@ function summarizeValue(value) {
 // 1. RP Registration
 app.post('/register_rp', (req, res) => {
   const { rpName, callbackUrl } = req.body;
-  const clientId = `client-${randomBytes(4).toString('hex')}`;
-  
+  // rid를 큰 숫자 스칼라(248비트 랜덤)로 발급 — pi_i 회로의 private input rid로 쓰인다.
+  const rid = BigInt('0x' + randomBytes(31).toString('hex')).toString();
+
   // Still mock for RP registration for now
   const rpToken = {
     rpName,
-    clientId,
+    rid,
     signature: `mock-ps-sig-rp-${randomBytes(16).toString('hex')}`,
     issuedAt: new Date().toISOString()
   };
 
-  registeredRPs[clientId] = { ...rpToken, callbackUrl };
+  registeredRPs[rid] = { ...rpToken, callbackUrl };
   res.json(rpToken);
 });
 
@@ -171,11 +181,12 @@ app.post('/login', async (req, res) => {
   const user = users[username];
 
   if (user && user.password === password) {
-    // Sign [sub, "init", "init", "0"]
-    const sig = psSign([user.sub, "init", "init", "0"]);
+    // Sign [uid, arid_i, auid_i, r_token, max_height]
+    const sig = psSign([user.uid, "init", "init", "0", "0"]);
     res.json({
       success: true,
       authToken: {
+        uid: user.uid,
         sub: user.sub,
         signature: sig,
         issuer: 'custom-idp'
@@ -188,16 +199,18 @@ app.post('/login', async (req, res) => {
 
 // 2. Popup Login Page
 app.get('/login_popup', (req, res) => {
-  console.log('[CustomIdP][Step 9] Login popup requested.');
+  const start = cursor();
+  console.log(`[CustomIdP][Step 9] Login popup requested. ${ms(start)}`);
   res.sendFile(path.join(__dirname, 'idp', 'login_popup.html'));
 });
 
 // 3. ZKP + Credentials SSO Endpoint
 app.post('/sso_with_credentials', async (req, res) => {
+  const start = cursor();
   const { username, password, zkpProof, zkpPublicSignals, business, isLight, walletSubmission, pi_i } = req.body;
-  
+
   console.log(`--- [CustomIdP][Step 9] SSO Attempt: ${username} (${isLight ? 'LIGHT' : 'HEAVY'}) ---`);
-  console.log('[CustomIdP][Step 9] Published endpoint hit: POST /sso_with_credentials');
+  console.log(`[CustomIdP][Step 9] Published endpoint hit: POST /sso_with_credentials ${ms(start)}`);
   console.log('[CustomIdP][Step 9] Wallet submission fields:', {
     auid_i: summarizeValue(walletSubmission?.auid_i ?? business?.auid_i),
     arid_i: summarizeValue(walletSubmission?.arid_i ?? business?.arid_i),
@@ -206,29 +219,29 @@ app.post('/sso_with_credentials', async (req, res) => {
     r_i: summarizeValue(walletSubmission?.r_i ?? business?.r_i),
     r_i_check: Boolean(walletSubmission?.r_i ?? business?.r_i)
   });
-  
+
   const user = users[username];
   if (!user || user.password !== password) {
-    console.error(`❌ [CustomIdP][Step 9] Login Failed: Invalid credentials for ${username}`);
+    console.error(`❌ [CustomIdP][Step 9] Login Failed: Invalid credentials for ${username} ${ms(start)}`);
     return res.status(401).json({ success: false, error: 'Invalid credentials' });
   }
 
-  console.log(`[CustomIdP][Step 9] Login verified for ${username}. Waiting for consent before pi_i verification.`);
+  console.log(`[CustomIdP][Step 9] Login verified for ${username}. Waiting for consent before pi_i verification. ${ms(start)}`);
   res.json({ success: true, pendingConsent: true });
 });
 
-async function verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, business, isLight }) {
+async function verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, business, isLight, start = cursor() }) {
   const user = users[username];
   if (!user) throw new Error('Unknown user for consent verification');
 
   try {
     if (!zkpProof || !zkpPublicSignals) throw new Error('ZKP data missing');
-    
+
     // [보안 강화 1] 세션의 진짜 UID를 ZKP 공개 입력값에 강제로 주입
     if (isLight && zkpPublicSignals.length >= 3) {
-      console.log(`[CustomIdP][Step 10] BINDING: Overwriting ZKP UID(${zkpPublicSignals[0]}) with Session UID(${user.sub})`);
-      zkpPublicSignals[0] = user.sub.toString(); // 강제 교체
-      
+      console.log(`[CustomIdP][Step 10] BINDING: Overwriting ZKP UID(${zkpPublicSignals[0]}) with Session UID(${user.uid}) ${ms(start)}`);
+      zkpPublicSignals[0] = user.uid.toString(); // 강제 교체
+
       // [보안 강화 2] ZKP에 들어있는 rid가 등록된 RP의 것인지 확인
       const claimedRid = zkpPublicSignals[1];
       const isRegisteredRP = Object.values(registeredRPs).some(rp => rp.signature === claimedRid);
@@ -240,39 +253,63 @@ async function verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, bu
     // 모드에 따라 VKey 선택
     const vkey = isLight ? vkeyAuid : vkeyAridI;
     const isValid = await snarkjs.groth16.verify(vkey, zkpPublicSignals, zkpProof);
-    
+
     if (!isValid) {
       throw new Error('Identity Mismatch: This proof was not made for you!');
     }
-    console.log(`✅ [CustomIdP][Step 10] pi_i Verified for user: ${username}`);
+    if (!isLight) {
+      const maxHeight = business?.maxHeight ?? business?.max_height;
+      const rToken = business?.r_token ?? business?.tokenNonce;
+      if (String(zkpPublicSignals[1]) !== String(business?.arid_i)) throw new Error('arid_i does not match pi_i public signal');
+      if (String(zkpPublicSignals[2]) !== String(business?.auid_i)) throw new Error('auid_i does not match pi_i public signal');
+      if (String(zkpPublicSignals[3]) !== String(maxHeight)) throw new Error('max_height does not match pi_i public signal');
+      if (String(zkpPublicSignals[4]) !== String(rToken)) throw new Error('r_token does not match pi_i public signal');
+    }
+    console.log(`✅ [CustomIdP][Step 10] pi_i Verified for user: ${username} ${ms(start)}`);
   } catch (err) {
-    console.error('❌ [CustomIdP][Step 10] pi_i Error:', err.message);
+    console.error(`❌ [CustomIdP][Step 10] pi_i Error: ${err.message} ${ms(start)}`);
     throw err;
   }
 
 
-  const nonce = business?.r_RP || 'mock-nonce';
+  // rp_nonce is never sent to the IdP (it would let the IdP recover rid via
+  // arid_i / rp_nonce). Replay protection is keyed off the session nonce
+  // (r_i / mode2SessionNonce) instead — created fresh per login attempt in
+  // client.js and already sent to the IdP today (custom_idp.js:219-220).
+  const nonce = business?.r_i || 'mock-nonce';
 
+  if (usedNonces.has(nonce)) {
+    throw new Error('Replay detected: RP nonce was already used');
+  }
   usedNonces.add(nonce);
-  
+
+  const maxHeight = business?.maxHeight ?? business?.max_height;
+  const rToken = business?.r_token ?? business?.tokenNonce;
+  if (!rToken) throw new Error('r_token missing from Wallet submission');
+  if (!maxHeight) throw new Error('max_height missing from Wallet submission');
+
   const exp = Math.floor(Date.now() / 1000) + 3600;
-  const messages = [user.sub, business.arid_i, business.auid_i, exp.toString()];
+
+  const messages = [user.uid, business.arid_i, business.auid_i, rToken.toString(), maxHeight.toString()];
   const sig = psSign(messages);
-  console.log('[CustomIdP][Step 10] Issuing IdP auth token after consent and pi_i verification.');
+  console.log(`[CustomIdP][Step 10] Issuing IdP auth token after consent and pi_i verification. ${ms(start)}`);
 
   const idpToken = {
-    sub: user.sub,
+    uid: user.uid,
     arid_i: business.arid_i,
     auid_i: business.auid_i,
+    r_token: rToken.toString(),
+    max_height: maxHeight.toString(),
     exp: exp,
     signature: sig
   };
-  console.log('[CustomIdP][Step 11] IdP auth token issued and returned for Wallet delivery.');
+  console.log(`[CustomIdP][Step 11] IdP auth token issued and returned for Wallet delivery. ${ms(start)}`);
 
   return idpToken;
 }
 
 app.post('/consent_result', async (req, res) => {
+  const start = cursor();
   const { username, allowed, walletSubmission, business, zkpProof, zkpPublicSignals, isLight } = req.body || {};
 
   console.log('[CustomIdP][Step 10] Consent result received:', {
@@ -288,8 +325,9 @@ app.post('/consent_result', async (req, res) => {
   }
 
   try {
-    console.log('[CustomIdP][Step 10] Consent approved. Verifying pi_i now.');
-    const idpToken = await verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, business, isLight });
+    console.log(`[CustomIdP][Step 10] Consent approved. Verifying pi_i now. ${ms(start)}`);
+    const idpToken = await verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, business, isLight, start });
+    console.log(`[CustomIdP][Step 11] Consent flow complete, responding to RP FE. ${ms(start)}`);
     res.json({ success: true, idpToken });
   } catch (err) {
     res.status(400).json({ success: false, error: err.message || 'pi_i verification failed' });
@@ -307,5 +345,6 @@ app.get('/ps_public_keys', (req, res) => {
 
 const server = app.listen(PORT, async () => {
   await initPS();
+  await snarkjs.curves.getCurveFromName('bn128'); // bn128 WASM 모듈 미리 빌드 (첫 pi_i 검증 지연 방지)
   console.log(`Custom IdP running at http://localhost:${PORT}`);
 });
