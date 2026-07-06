@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Custom IdP</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 0;
+      padding: 32px;
+      background: #f7f8fa;
+      color: #1f2933;
+    }
+
+    main {
+      max-width: 720px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 28px;
+    }
+
+    p {
+      margin: 0 0 24px;
+      color: #52606d;
+    }
+
+    .actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+    }
+
+    button {
+      padding: 10px 16px;
+      border: 1px solid #9aa5b1;
+      background: white;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    button.primary {
+      border-color: #2563eb;
+      background: #2563eb;
+      color: white;
+    }
+
+    pre {
+      min-height: 80px;
+      padding: 12px;
+      overflow-x: auto;
+      background: white;
+      border: 1px solid #d9e2ec;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Custom IdP</h1>
+    <p>Mode 2 IdP frontend for RP registration and user login.</p>
+
+    <div class="actions">
+      <button id="registerRpButton" class="primary">RP Register</button>
+      <button id="userLoginButton">User Login</button>
+    </div>
+
+    <pre id="status">Ready.</pre>
+  </main>
+
+  <script type="module" src="/idp/index.js"></script>
+</body>
+</html>

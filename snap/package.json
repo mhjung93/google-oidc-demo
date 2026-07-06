@@ -1,0 +1,21 @@
+{
+  "name": "google-oidc-demo-snap",
+  "version": "0.1.0",
+  "description": "A MetaMask Snap that interacts with the Google OIDC Demo.",
+  "main": "src/index.js",
+  "scripts": {
+    "build": "mm-snap build",
+    "serve": "mm-snap serve"
+  },
+  "dependencies": {
+    "@noble/hashes": "^1.4.0"
+  },
+  "devDependencies": {
+    "@metamask/snaps-cli": "^4.0.1"
+  },
+  "files": [
+    "dist/",
+    "images/",
+    "snap.manifest.json"
+  ]
+}

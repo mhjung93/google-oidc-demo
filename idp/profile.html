@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Custom IdP Profile</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 0;
+      padding: 32px;
+      background: #f7f8fa;
+      color: #1f2933;
+    }
+
+    main {
+      max-width: 760px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 28px;
+    }
+
+    p {
+      margin: 0 0 20px;
+      color: #52606d;
+    }
+
+    dl {
+      display: grid;
+      grid-template-columns: 140px 1fr;
+      gap: 10px 16px;
+      padding: 16px;
+      background: white;
+      border: 1px solid #d9e2ec;
+    }
+
+    dt {
+      font-weight: 700;
+    }
+
+    dd {
+      margin: 0;
+      word-break: break-all;
+      font-family: monospace;
+    }
+
+    .actions {
+      margin-top: 16px;
+      display: flex;
+      gap: 10px;
+    }
+
+    button,
+    a {
+      display: inline-block;
+      padding: 9px 14px;
+      border: 1px solid #9aa5b1;
+      background: white;
+      color: #1f2933;
+      text-decoration: none;
+      cursor: pointer;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>User Profile</h1>
+    <p>Custom IdP login result.</p>
+
+    <dl>
+      <dt>Subject</dt>
+      <dd id="sub">-</dd>
+      <dt>Issuer</dt>
+      <dd id="issuer">-</dd>
+      <dt>Signature sigma1</dt>
+      <dd id="sigma1">-</dd>
+      <dt>Signature sigma2</dt>
+      <dd id="sigma2">-</dd>
+    </dl>
+
+    <div class="actions">
+      <a href="/idp">Home</a>
+      <button id="logoutButton">Clear Login</button>
+    </div>
+  </main>
+
+  <script type="module" src="/idp/profile.js"></script>
+</body>
+</html>

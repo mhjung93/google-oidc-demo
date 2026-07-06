@@ -1,0 +1,35 @@
+node_modules/
+
+# generated zk build artifacts (large binaries)
+build/
+artifacts/
+cache/
+*.ptau
+*.zkey
+*.r1cs
+*.sym
+*.wtns
+
+# sensitive files
+.env
+.env.local
+*.id_token.txt
+auditor_keys.json
+bip32_out.json
+
+# past snapshots
+backup_current_project/
+circuits/lib/backup/
+
+# nested repos (have their own .git)
+sui-repo/
+circuits/lib/circom-rsa-verify/
+
+# local tool settings / session data
+.claude/
+.omc/
+
+# unrelated local document
+260605_pdf용.pdf
+
+*.log

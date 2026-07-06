@@ -1,0 +1,56 @@
+{
+  "name": "google-oidc-demo",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "",
+  "main": "index.js",
+  "workspaces": [
+    "snap"
+  ],
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "http-server . -p 8080",
+    "snap:build": "npm run build --workspace=google-oidc-demo-snap",
+    "snap:serve": "npm run serve --workspace=google-oidc-demo-snap",
+    "dev": "node server.js",
+    "derive": "node derive_bip32.js",
+    "hardhat:node": "hardhat node",
+    "zk:compile": "circom ./circuits/bind_key_to_idtoken.circom --r1cs --wasm --sym -l . -l circuits/lib/circom-rsa-verify -o ./build 2>/dev/null",
+    "zk:ptau": "snarkjs powersoftau new bn128 14 pot14_0000.ptau -v && snarkjs powersoftau contribute pot14_0000.ptau pot14_0001.ptau --name='First contribution' -v && snarkjs powersoftau prepare phase2 pot14_0001.ptau pot14_final.ptau -v",
+    "zk:key": "snarkjs zkey new build/bind_key_to_idtoken.r1cs pot21_final.ptau build/bind_key_to_idtoken_0000.zkey -v && snarkjs zkey contribute build/bind_key_to_idtoken_0000.zkey build/bind_key_to_idtoken_final.zkey --name='Key Contribution' -v && snarkjs zkey export verificationkey build/bind_key_to_idtoken_final.zkey build/verification_key.json",
+    "zk:input": "node make_proof.js",
+    "zk:witness": "node ./build/bind_key_to_idtoken_js/generate_witness.js ./build/bind_key_to_idtoken_js/bind_key_to_idtoken.wasm ./build/input.json ./build/witness.wtns",
+    "zk:prove": "npx snarkjs groth16 prove ./build/bind_key_to_idtoken_final.zkey ./build/witness.wtns ./build/proof.json ./build/public.json",
+    "zk:verify": "npx snarkjs groth16 verify ./build/verification_key.json ./build/public.json ./build/proof.json"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@bitcoinerlab/secp256k1": "^1.2.0",
+    "@noble/curves": "^1.2.0",
+    "@noble/hashes": "^1.3.2",
+    "bip32": "^5.0.0",
+    "body-parser": "^2.2.2",
+    "cors": "^2.8.6",
+    "ethers": "^6.16.0",
+    "express": "^5.2.1",
+    "express-session": "^1.19.0",
+    "jose": "^5.6.3",
+    "mcl-wasm": "^2.0.4",
+    "node-fetch": "^3.3.2",
+    "openid-client": "^5.7.1",
+    "tiny-secp256k1": "^2.2.4"
+  },
+  "devDependencies": {
+    "@metamask/snaps-cli": "^4.0.1",
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "circomlib": "^2.0.5",
+    "circomlibjs": "^0.1.7",
+    "dotenv": "^17.2.3",
+    "hardhat": "^2.22.5",
+    "hardhat-ethernal": "^3.4.0",
+    "http-server": "^14.1.1",
+    "snarkjs": "^0.7.5"
+  }
+}

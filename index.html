@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Conditional Privacy-Preserving Web3 Authentication</title>
+</head>
+<body>
+  <h1>Conditional Privacy-Preserving Web3 Authentication - Mode <span id="modeDisplay">?</span></h1>
+
+  <!-- Mode 2: Custom IdP Section -->
+  <div id="mode2Section" style="display: none; border: 2px solid #4CAF50; padding: 15px; margin-bottom: 20px;">
+    <h3>Mode 2: Custom IdP (PS Signature)</h3>
+
+    <button id="mode2SSOLoginButton">Delegated Login</button>
+
+    <div id="mode2SSOSection" style="display: none;">
+      <div id="rpFeVisibleFlow" style="margin-top: 12px; padding: 10px; border: 1px solid #c8e6c9; background: #f1f8e9; font-size: 0.9em;">
+        <strong>RP FE Flow</strong>
+        <pre id="rpFeVisibleFlowLog" style="margin: 6px 0 0; white-space: pre-wrap;"></pre>
+      </div>
+      <div id="ssoStepButtons" style="display: none; border-top: 1px solid #ccc; padding-top: 10px;">
+        <strong>SSO Step-by-Step (with Error Testing):</strong><br>
+        <div style="margin-bottom: 5px; display: none;">
+          <button id="step0PrepMetadata" style="background: #e8f5e9;" disabled>Step 7. RP FE: Calculate arid_i</button>
+        </div>
+        <div style="margin-bottom: 5px; display: none;">
+          <button id="mode2WalletProofs" style="background: #ffebee;" disabled>Step 8-9. Wallet: Calculate auid</button>
+        </div>
+        <div style="margin-bottom: 5px; display: none;">
+          <button id="step07RPFECalcAuidi" style="background: #e1f5fe;" disabled>Step 10. RP FE: Calculate auid_i</button>
+        </div>
+        <div style="margin-bottom: 5px; display: none;">
+          <button id="step1GenerateZKP" disabled>Step 11. Generate REAL ZKP</button>
+          <button id="step1GenerateZKPFail" style="background: #ffcdd2; border: 1px solid #e57373;" disabled>Fail Test (Wrong Input)</button>
+        </div>
+        <div style="margin-bottom: 5px;">
+          <button id="step2SubmitToIdP" disabled>Step 9. Submit to IdP</button>
+        </div>
+        <div style="margin-bottom: 5px;">
+          <button id="step25RPFEVerify" style="background: #f3e5f5;" disabled>Step 10. Verify pi_i & IdP Token</button>
+          <button id="step25RPFEVerifyFail" style="background: #ffcdd2; border: 1px solid #e57373;" disabled>Fail Test (Tamper Sig)</button>
+        </div>
+        <div style="margin-bottom: 5px;">
+          <button id="step15NotifyWallet" style="background: #fffde7;" disabled>Step 11. Send IdP Token to Wallet</button>
+        </div>
+        <div style="margin-bottom: 5px;">
+          <button id="step3CompleteRP" disabled>Step 12. Wallet: Verify IdP Auth Token</button>
+        </div>
+      </div>
+      
+      <!--
+      <div style="margin-bottom: 5px; border: 1px solid #ddd; padding: 5px; background: #fafafa;">
+        <strong>Light ZKP (Poseidon Only):</strong><br>
+        <button id="step0PrepMetadataLight" style="background: #e1f5fe;">Step 7 (Light)</button>
+        <button id="mode2WalletProofsLight" style="background: #e1f5fe;" disabled>Step 8-9 (Light)</button>
+        <button id="step07RPFECalcAuidiLight" style="background: #e1f5fe;" disabled>Step 10 (Light)</button>
+        <button id="step1GenerateZKPLight" style="background: #e1f5fe;" disabled>Step 11 (Light) - Fast!</button>
+      </div>
+      -->
+      <div id="ssoDataDisplay" style="display: none; margin-top: 10px; background: #fffde7; padding: 10px; border: 1px dashed #fbc02d; font-size: 0.8em;">
+
+        <strong>Intermediate SSO Data:</strong>
+        <pre id="ssoIntermediateDisplay" style="margin: 5px 0; overflow-x: auto;"></pre>
+      </div>
+    </div>
+    <p id="mode2Status" style="display: none; font-size: 0.9em; color: #666; margin-top: 10px;"></p>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/snarkjs@0.7.5/build/snarkjs.min.js"></script>
+
+  <div id="snapSection">
+    <button id="connectButton">Connect</button>
+    <button id="helloButton" disabled>Say Hello</button>
+    <button id="spendButton" disabled>Spend</button>
+    <button id="sendProofButton" disabled>Send ZK Proof</button>
+    <button id="sendT1withALButton" disabled>Send T1 w/AL + ZKP</button>
+    <button id="deployAndCallButton" disabled>Deploy, Call & Send ZKP</button>
+
+    <div style="margin-top: 12px;">
+      <label for="toAddress">To (destination address): </label>
+      <input
+        id="toAddress"
+        type="text"
+        size="46"
+        placeholder="0x..."
+        style="font-family: monospace;"
+      />
+    </div>
+
+    <div style="margin-top: 12px;">
+      <label for="proofUrl">Proof URL (optional): </label>
+      <input
+        id="proofUrl"
+        type="text"
+        size="46"
+        placeholder="/build/proof.json"
+        style="font-family: monospace;"
+      />
+    </div>
+
+    <p id="statusP" style="margin-top: 12px; font-family: monospace; white-space: pre-wrap; user-select: text; border: 1px solid #ccc; padding: 10px; background: #f9f9f9; min-height: 50px;"></p>
+  </div>
+
+  <script type="module" src="client.js"></script>
+
+</body>
+</html>

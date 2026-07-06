@@ -1,0 +1,23 @@
+{
+  "version": "0.1.0",
+  "description": "A MetaMask Snap that interacts with the Google OIDC Demo.",
+  "proposedName": "Google OIDC Demo Snap",
+  "source": {
+    "shasum": "WZ/QjqhGdfDTKByAPkzafgzXSC4tWOP0DpwSMT0iE0M=",
+    "location": {
+      "npm": {
+        "filePath": "dist/bundle.js",
+        "packageName": "google-oidc-demo-snap",
+        "registry": "https://registry.npmjs.org/"
+      }
+    }
+  },
+  "initialPermissions": {
+    "endowment:rpc": {
+      "dapps": true
+    },
+    "snap_dialog": {},
+    "endowment:ethereum-provider": {}
+  },
+  "manifestVersion": "0.1"
+}
