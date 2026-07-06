@@ -25,14 +25,13 @@ function tokenMessages(token) {
 
 function assertTokenMatchesWalletSubmission(token, walletSubmission, business) {
   const checks = {
-    ridOk: String(token.rid) === String(business?.rid),
     aridOk: String(token.arid_i) === String(walletSubmission?.arid_i ?? business?.arid_i),
     auidOk: String(token.auid_i) === String(walletSubmission?.auid_i ?? business?.auid_i),
     tokenNonceOk: String(token.r_token) === String(walletSubmission?.r_token ?? business?.r_token ?? business?.tokenNonce),
     maxHeightOk: String(token.max_height) === String(business?.maxHeight ?? business?.max_height),
   };
 
-  const success = checks.ridOk && checks.aridOk && checks.auidOk && checks.tokenNonceOk && checks.maxHeightOk;
+  const success = checks.aridOk && checks.auidOk && checks.tokenNonceOk && checks.maxHeightOk;
   return { success, checks };
 }
 
@@ -147,14 +146,12 @@ export const onRpcRequest = async ({ origin, request }) => {
             text(`Origin: **${origin}**`),
             text(`PS signature verification: **${accepted ? 'PASS' : 'FAIL'}**`),
             text(`uid: **${token.uid ?? 'n/a'}**`),
-            text(`rid: ${previewHex(String(token.rid ?? 'n/a'), 70)}`),
             text(`auid_i: ${previewHex(String(token.auid_i ?? 'n/a'), 70)}`),
             text(`arid_i: ${previewHex(String(token.arid_i ?? 'n/a'), 70)}`),
             text(`r_token: ${previewHex(String(token.r_token ?? 'n/a'), 70)}`),
             text(`max_height: **${token.max_height ?? 'n/a'}**`),
             text(`r_token binding: **${binding.checks.tokenNonceOk ? 'PASS' : 'FAIL'}**`),
             text(`max_height binding: **${binding.checks.maxHeightOk ? 'PASS' : 'FAIL'}**`),
-            text(`rid binding: **${binding.checks.ridOk ? 'PASS' : 'FAIL'}**`),
             text(`arid_i binding: **${binding.checks.aridOk ? 'PASS' : 'FAIL'}**`),
             text(`auid_i binding: **${binding.checks.auidOk ? 'PASS' : 'FAIL'}**`),
             text(`Wallet result: **${message}**`),
