@@ -19,6 +19,8 @@ try {
 // Update UI with current mode
 const modeDisplay = document.getElementById('modeDisplay');
 if (modeDisplay) modeDisplay.innerText = APP_MODE;
+const appTitle = document.getElementById('appTitle');
+if (appTitle) appTitle.style.visibility = 'visible';
 
 // --- Mode 2: Custom IdP Logic ---
 if (APP_MODE === 2) {
@@ -32,7 +34,6 @@ if (APP_MODE === 2) {
   const mode2SSOSection = document.getElementById('mode2SSOSection');
 
   mode2SSOLoginButton?.addEventListener('click', async () => {
-    const start = now();
     if (mode2SSOSection) mode2SSOSection.style.display = 'block';
     mode2SSOLoginButton.disabled = true;
     mode2Status.innerText = 'Preparing Snap connection...';
@@ -43,14 +44,17 @@ if (APP_MODE === 2) {
       prepareIdPLoginPopup();
       mode2Status.innerText = 'Step 2: Connecting wallet...';
       const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      // 사용자가 Snap 연결/계정 승인 팝업에서 실제로 클릭할 때까지 걸리는 시간은
+      // 측정에서 제외하고, 승인 이후부터만 잰다.
+      const start = now();
       ssoMetadata.userAddress = accounts[0];
       mode2SessionNonce = createSessionNonce();
 
       const display = document.getElementById('ssoIntermediateDisplay');
-      display.innerText = `Step 1. Delegated Login started.`;
-      display.innerText += `\n\nStep 2. Connect Wallet:\nAddress: ${ssoMetadata.userAddress}`;
-      display.innerText += `\n\nStep 3. RP FE session nonce created:\nsessionNonce: ${mode2SessionNonce}`;
-      display.innerText += `\n\nStep 4. RP credential and RP nonce request sent.`;
+      display.innerText = `Step 1. Delegated Login started ${formatMs(start)}.`;
+      display.innerText += `\n\nStep 2. Connect Wallet ${formatMs(start)}:\nAddress: ${ssoMetadata.userAddress}`;
+      display.innerText += `\n\nStep 3. RP FE session nonce created ${formatMs(start)}:\nsessionNonce: ${mode2SessionNonce}`;
+      display.innerText += `\n\nStep 4. RP credential and RP nonce request sent ${formatMs(start)}.`;
 
       const requestBody = {
         walletAddress: ssoMetadata.userAddress,
@@ -76,9 +80,9 @@ if (APP_MODE === 2) {
       ssoMetadata.rpNonce = data.rpNonce;
       const sessionNonceCheck = data.sessionNonce === mode2SessionNonce;
       display.innerText += `\n\nStep 6. RP credential and nonce received ${formatMs(start)}:\nrpNonce: ${data.rpNonce}`;
-      display.innerText += `\n\nStep 7. RP FE sends values to Wallet:\nclientId: ${data.rpCredential?.clientId}\nsignature: ${data.rpCredential?.signature}\nsessionNonce: ${data.sessionNonce}\nsessionNonce check: ${sessionNonceCheck}\nrpNonce: ${data.rpNonce}`;
-      appendRpFeVisibleFlow('Step 7. RP FE -> Wallet');
-      appendRpFeVisibleFlow(`  clientId: ${previewValue(data.rpCredential?.clientId)}`);
+      display.innerText += `\n\nStep 7. RP FE sends values to Wallet ${formatMs(start)}:\nrid: ${data.rpCredential?.rid}\nsignature: ${data.rpCredential?.signature}\nsessionNonce: ${data.sessionNonce}\nsessionNonce check: ${sessionNonceCheck}\nrpNonce: ${data.rpNonce}`;
+      appendRpFeVisibleFlow(`Step 7. RP FE -> Wallet ${formatMs(start)}`);
+      appendRpFeVisibleFlow(`  rid: ${previewValue(data.rpCredential?.rid)}`);
       appendRpFeVisibleFlow(`  r_i check: ${sessionNonceCheck ? 'PASS' : 'FAIL'}`);
       appendRpFeVisibleFlow(`  rpNonce: ${previewValue(data.rpNonce)}`);
       mode2Status.innerText = `Step 7 Complete ${formatMs(start)}. Values passed to wallet context.`;
@@ -95,26 +99,37 @@ if (APP_MODE === 2) {
   let step11Completed = false;
   let step13Completed = false;
   let step14Result = null;
+  const measuredDurations = {};
   let idpPopupWindow = null;
   let idpPopupReady = false;
   let mode2SessionNonce = null;
   let ssoMetadata = {
     userAddress: null,
-    uid: 'user-unique-id-999', 
-    rid: null,               
-    r_RP: null,
+    uid: '12345',
+    rid: null,
+    rpNonceField: null,
     arid_i: null,
     auid: null,
     auid_i: null,
     pi_i: null,
     pi_PPID: null,
     pi_uid: null,
-    salt_fixed: 'wallet-fixed-salt-888' 
+    salt_fixed: 'wallet-fixed-salt-888',
+    step12Verified: false
   };
 
   // --- Timing Helpers ---
   function now() { return performance.now(); }
   function formatMs(start) { return `(${(now() - start).toFixed(0)} ms)`; }
+  function formatDurationMs(durationMs) {
+    if (durationMs == null || !Number.isFinite(Number(durationMs))) return 'n/a';
+    return durationMs > 0 && durationMs < 1 ? '<1 ms' : `${Math.round(durationMs)} ms`;
+  }
+  function sumMeasuredDurations(durations) {
+    return Object.values(durations)
+      .filter((value) => value != null && Number.isFinite(Number(value)))
+      .reduce((sum, value) => sum + Number(value), 0);
+  }
   const FIELD_PRIME = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 
   function createSessionNonce() {
@@ -172,6 +187,19 @@ if (APP_MODE === 2) {
       return false;
     }
     return true;
+  }
+
+  async function getCurrentHeightForValidation() {
+    try {
+      const blockHex = await window.ethereum.request({ method: 'eth_blockNumber' });
+      return { value: BigInt(blockHex), source: 'eth_blockNumber' };
+    } catch (err) {
+      return {
+        value: BigInt(Math.floor(Date.now() / 1000)),
+        source: 'time-fallback',
+        error: err.message
+      };
+    }
   }
 
   async function showWalletProcessSummary() {
@@ -249,46 +277,56 @@ if (APP_MODE === 2) {
 
   async function runWalletStep7() {
     const start = now();
-    appendWalletLog('Step 8. Wallet started.');
+    let segmentStart = start;
+    const step8Breakdown = [];
+    const markStep8 = (label) => {
+      const t = now();
+      const durationMs = t - segmentStart;
+      step8Breakdown.push({ label, durationMs });
+      segmentStart = t;
+      return durationMs;
+    };
+    appendWalletLog(`Step 8. Wallet started ${formatMs(start)}.`);
     mode2Status.innerText = 'Step 8: Wallet is generating PPID, keys, token nonce, and ZKP...';
 
     try {
-      await initBabyJub();
       if (!buildPoseidon) throw new Error('circomlibjs (buildPoseidon) not found.');
       const poseidon = await buildPoseidon();
       const poseidonF = poseidon.F;
+      markStep8('Poseidon init');
 
-      const uid = '12345';
+      const uidField = valueToField(ssoMetadata.uid);
       const walletSalt = ssoMetadata.salt_fixed;
-      const ridPoint = babyJub.Base8;
-      ssoMetadata.rid = { x: F.toObject(ridPoint[0]), y: F.toObject(ridPoint[1]) };
+      const saltField = valueToField(walletSalt);
+      // rid: IdP가 RP 등록 시 발급한 숫자 스칼라, 회로에서는 private input.
+      const rid = BigInt(ssoMetadata.rpCredential.rid);
+      ssoMetadata.rid = rid;
 
-      const ppid = (
-        valueToField(uid) *
-        valueToField(ssoMetadata.rid.x) *
-        valueToField(walletSalt)
-      ) % FIELD_PRIME;
+      const ppid = (uidField * rid * saltField) % FIELD_PRIME;
       ssoMetadata.ppid = ppid;
       appendWalletLog(`✓ PPID generated: ${ppid.toString().slice(0, 32)}...`);
       appendWalletLog('  formula: uid * rid * salt');
       appendWalletLog('  salt source: wallet internal value');
 
-      const r_RP_bytes = ethers.randomBytes(31);
-      ssoMetadata.r_RP = BigInt(ethers.hexlify(r_RP_bytes));
-      const arid_i_point = babyJub.mulPointEscalar(ridPoint, ssoMetadata.r_RP);
-      ssoMetadata.arid_i = { x: F.toObject(arid_i_point[0]), y: F.toObject(arid_i_point[1]) };
-      appendWalletLog(`✓ arid_i generated: ${ssoMetadata.arid_i.x.toString().slice(0, 32)}...`);
+      // rp_nonce (RP 서버가 발급한 값)가 블라인딩 스칼라 역할을 겸한다 — 별도의
+      // 지갑 생성 r_RP는 더 이상 쓰지 않는다. 회로에서는 private input으로 숨겨진다.
+      const rpNonceField = valueToField(ssoMetadata.rpNonce);
+      ssoMetadata.rpNonceField = rpNonceField;
 
-      const auidPoint = babyJub.mulPointEscalar(babyJub.Base8, ppid);
-      ssoMetadata.auid = { x: F.toObject(auidPoint[0]), y: F.toObject(auidPoint[1]) };
-      const auid_i_point = babyJub.mulPointEscalar(auidPoint, ssoMetadata.r_RP);
-      ssoMetadata.auid_i = { x: F.toObject(auid_i_point[0]), y: F.toObject(auid_i_point[1]) };
-      appendWalletLog(`✓ auid_i generated: ${ssoMetadata.auid_i.x.toString().slice(0, 32)}...`);
+      const arid_i = (rid * rpNonceField) % FIELD_PRIME;
+      ssoMetadata.arid_i = arid_i;
+      appendWalletLog(`✓ arid_i generated: ${arid_i.toString().slice(0, 32)}...`);
+
+      const auid_i = (ppid * rpNonceField) % FIELD_PRIME;
+      ssoMetadata.auid_i = auid_i;
+      appendWalletLog(`✓ auid_i generated: ${auid_i.toString().slice(0, 32)}...`);
+      markStep8('PPID/arid_i/auid_i calculation');
 
       const signing = await createSigningKeyPair();
       ssoMetadata.signingKeyPair = signing.keyPair;
       ssoMetadata.signingPublicKey = signing.publicKeyHex;
       appendWalletLog(`✓ signing key pair generated. publicKey: ${signing.publicKeyHex.slice(0, 34)}...`);
+      markStep8('Signing key pair generation');
 
       const heightInfo = await getMaxHeight();
       const maxHeight = heightInfo.maxHeight;
@@ -297,25 +335,28 @@ if (APP_MODE === 2) {
       appendWalletLog(`✓ current block number: ${ssoMetadata.currentBlock}`);
       appendWalletLog(`✓ max_height set for 1 hour validity: ${ssoMetadata.maxHeight}`);
       appendWalletLog(`  height source: ${heightInfo.source}`);
+      markStep8('Block height/max_height lookup');
 
+      const maxHeightField = valueToField(maxHeight);
       const tokenNonce = poseidonF.toObject(poseidon([
         signing.publicKeyField,
-        valueToField(maxHeight),
-        valueToField(ssoMetadata.rpNonce),
+        maxHeightField,
+        rpNonceField,
       ]));
       ssoMetadata.tokenNonce = tokenNonce;
       appendWalletLog(`✓ token nonce generated with Poseidon2(pk, max_height, RP nonce): ${tokenNonce.toString().slice(0, 32)}...`);
+      markStep8('Token nonce generation');
 
       const inputs = {
-        r_RP: ssoMetadata.r_RP.toString(),
-        rid_x: ssoMetadata.rid.x.toString(),
-        rid_y: ssoMetadata.rid.y.toString(),
-        auid_x: ssoMetadata.auid.x.toString(),
-        auid_y: ssoMetadata.auid.y.toString(),
-        arid_i_x: ssoMetadata.arid_i.x.toString(),
-        arid_i_y: ssoMetadata.arid_i.y.toString(),
-        auid_i_x: ssoMetadata.auid_i.x.toString(),
-        auid_i_y: ssoMetadata.auid_i.y.toString()
+        rp_nonce: rpNonceField.toString(),
+        salt: saltField.toString(),
+        rid: rid.toString(),
+        pk_i: signing.publicKeyField.toString(),
+        uid: uidField.toString(),
+        arid_i: arid_i.toString(),
+        auid_i: auid_i.toString(),
+        max_height: maxHeightField.toString(),
+        token_nonce: tokenNonce.toString()
       };
 
       appendWalletLog('• generating ZKP pi_i...');
@@ -325,14 +366,29 @@ if (APP_MODE === 2) {
         "/build/mode2/pi_arid_i_final.zkey"
       );
       ssoMetadata.pi_i = proof;
+      markStep8('pi_i proof generation');
+
+      appendWalletLog('• generating ZKP pi_PPID (proves rid was used in PPID; uid and salt stay hidden in pi_PPID)...');
+      const ppidInputs = {
+        uid: uidField.toString(),
+        salt: saltField.toString(),
+        rid: rid.toString(),
+        ppid: ppid.toString()
+      };
+      const { proof: ppidProof, publicSignals: ppidPublicSignals } = await snarkjs.groth16.fullProve(
+        ppidInputs,
+        "/build/mode2/pi_ppid_js/pi_ppid.wasm",
+        "/build/mode2/pi_ppid_final.zkey"
+      );
+      markStep8('pi_PPID proof generation');
       ssoMetadata.pi_PPID = {
         type: 'pi_PPID',
-        ppid: ppid.toString(),
-        auid: ssoMetadata.auid.x.toString(),
+        proof: ppidProof,
+        publicSignals: ppidPublicSignals, // [rid, ppid], per circuit's public [rid, ppid]
         r_token: tokenNonce.toString(),
         generatedAt: new Date().toISOString()
       };
-      appendWalletLog(`✓ pi_PPID generated for PPID: ${ppid.toString().slice(0, 32)}...`);
+      appendWalletLog(`✓ pi_PPID ZKP generated for PPID: ${ppid.toString().slice(0, 32)}...`);
 
       currentSSOProof = {
         zkpProof: proof,
@@ -342,27 +398,35 @@ if (APP_MODE === 2) {
         r_i: ssoMetadata.r_i,
         walletSubmission: {
           endpoint: IDP_SSO_ENDPOINT,
-          auid_i: ssoMetadata.auid_i.x.toString(),
-          arid_i: ssoMetadata.arid_i.x.toString(),
+          auid_i: auid_i.toString(),
+          arid_i: arid_i.toString(),
           r_token: tokenNonce.toString(),
           pi_i: proof,
           r_i: ssoMetadata.r_i
         },
         business: {
-          sub: 'pending',
-          ppid: ppid.toString(),
-          arid_i: ssoMetadata.arid_i.x.toString(),
-          auid_i: ssoMetadata.auid_i.x.toString(),
+          uid: ssoMetadata.uid,
+          arid_i: arid_i.toString(),
+          auid_i: auid_i.toString(),
           r_i: ssoMetadata.r_i,
           r_token: tokenNonce.toString(),
           tokenNonce: tokenNonce.toString(),
-          maxHeight: maxHeight.toString(),
-          r_RP: ssoMetadata.r_RP.toString()
+          maxHeight: maxHeight.toString()
         }
       };
 
+      ssoMetadata.step8DurationMs = now() - start;
+      measuredDurations.step8 = ssoMetadata.step8DurationMs;
+      ssoMetadata.step8Breakdown = step8Breakdown;
+      appendWalletLog('Step 8 timing breakdown:');
+      for (const item of step8Breakdown) {
+        appendWalletLog(`  ${item.label}: ${Math.round(item.durationMs)} ms`);
+      }
       appendWalletLog(`✓ pi_i generated ${formatMs(start)}. publicSignals[0]: ${publicSignals[0]}`);
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 8. Wallet generated PPID, arid_i, auid_i, signing key pair, r_token, pi_i, and pi_PPID ${formatMs(start)}.`;
+      const breakdownText = step8Breakdown
+        .map((item) => `  - ${item.label}: ${Math.round(item.durationMs)} ms`)
+        .join('\n');
+      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 8. Wallet generated PPID, arid_i, auid_i, signing key pair, r_token, pi_i, and pi_PPID ${formatMs(start)}.\nStep 8 timing breakdown:\n${breakdownText}`;
       document.getElementById('step2SubmitToIdP').disabled = false;
       document.getElementById('step1GenerateZKPFail').disabled = false;
       // Disabled for demo flow; keep showWalletProcessSummary() available for later.
@@ -514,7 +578,7 @@ if (APP_MODE === 2) {
     const start = now();
     try {
       if (!currentSSOProof) throw new Error('Generate ZKP first');
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 9. Wallet sends auid_i, arid_i, r_token, and pi_i to IdP published endpoint:\n${IDP_SSO_ENDPOINT}`;
+      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 9. Wallet sends auid_i, arid_i, r_token, and pi_i to IdP published endpoint ${formatMs(start)}:\n${IDP_SSO_ENDPOINT}`;
       if (!idpPopupWindow || idpPopupWindow.closed) {
         if (!prepareIdPLoginPopup()) throw new Error('Popup blocked. Use the Step 9 button to retry.');
       }
@@ -573,6 +637,7 @@ document.getElementById('step25RPFEVerify')?.addEventListener('click', async () 
 });
 
 async function runStep10VerifyAndContinue() {
+  const start = now();
   mode2Status.innerText = 'Step 10: Verifying pi_i and IdP Token on Backend...';
   document.getElementById('step15NotifyWallet').disabled = true;
   document.getElementById('step3CompleteRP').disabled = true;
@@ -586,16 +651,16 @@ async function runStep10VerifyAndContinue() {
       idpToken: {
         ...currentIdPToken,
         signature_prime: currentIdPToken.signature, // 이름 통일
-        rid: ssoMetadata.rid.x.toString(),
-        exp: currentIdPToken.exp
+        rid: ssoMetadata.rid.toString(),
+        exp: currentIdPToken.exp,
+        r_token: currentIdPToken.r_token,
+        max_height: currentIdPToken.max_height
       },
       zkpProof: currentSSOProof.zkpProof,
-      zkpPublicSignals: {
-        // pi_i 회로의 결과값 중 arid_i의 X, Y 좌표를 모두 추출합니다.
-        P_commitment_x: currentSSOProof.zkpPublicSignals[4], // arid_i_x
-        P_commitment_y: currentSSOProof.zkpPublicSignals[5]  // arid_i_y
-      }
-
+      // pi_arid_i 회로의 public signal 6개를 원래 순서
+      // [uid, rid, arid_i, auid_i, max_height, token_nonce] 그대로 전달.
+      // 일부만 보내면 RP의 snarkjs.groth16.verify()가 항상 실패한다.
+      zkpPublicSignals: currentSSOProof.zkpPublicSignals
     };
 
     console.log('[Mode 2] Sending Hybrid Verify Request:', requestBody);
@@ -624,7 +689,7 @@ async function runStep10VerifyAndContinue() {
         const display = document.getElementById('ssoIntermediateDisplay');
         if (display) {
           display.style.color = '#2e7d32'; // 초록색
-          display.innerText += `\n\n✅ Step 10. SUCCESS: pi_i verified and IdP token accepted by RP Backend.`;
+          display.innerText += `\n\n✅ Step 10. SUCCESS ${formatMs(start)}: pi_i verified and IdP token accepted by RP Backend.`;
         }
         
         document.getElementById('step15NotifyWallet').disabled = false;
@@ -668,8 +733,17 @@ async function runStep10VerifyAndContinue() {
       step11Completed = true;
       document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 11. IdP token sent to Wallet ${formatMs(start)}.`;
       document.getElementById('step3CompleteRP').disabled = false;
+      // Step 12와 Step 13(→14→15)이 각각 snap_dialog를 띄우는데, MetaMask는 스냅 origin당
+      // 다이얼로그를 하나만 허용하므로 동시에 실행하면 충돌한다. Step 12를 먼저 끝내고 진행한다.
+      const step12Ok = await runWalletStep12().catch((err) => {
+        console.warn('[Mode 2] Step 12 skipped or failed:', err.message);
+        return false;
+      });
+      if (!step12Ok) {
+        mode2Status.innerText = 'Step 12 failed. Wallet verification did not accept the IdP auth token.';
+        return;
+      }
       runWalletStep13();
-      runWalletStep12().catch((err) => console.warn('[Mode 2] Step 12 skipped or failed:', err.message));
     } catch (err) {
       console.warn('[Mode 2] Step 11 Error:', err.message);
       runWalletStep13();
@@ -682,16 +756,51 @@ async function runStep10VerifyAndContinue() {
     try {
       if (!step11Completed) throw new Error('Step 11 must complete before Step 12');
       if (!walletReceivedIdPToken) throw new Error('Wallet has no IdP auth token');
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 12. Wallet accepted IdP auth token without verification ${formatMs(start)}.`;
+
+      const psPublicKeys = await fetch(`${IDP_ORIGIN}/ps_public_keys`).then((r) => r.json());
+      const verification = await window.ethereum.request({
+        method: 'wallet_invokeSnap',
+        params: {
+          snapId,
+          request: {
+            method: 'verifyIdPAuthToken',
+            params: {
+              idpToken: walletReceivedIdPToken,
+              psPublicKeys,
+              walletSubmission: currentSSOProof?.walletSubmission,
+              business: currentSSOProof?.business
+            },
+          },
+        },
+      });
+
+      ssoMetadata.step12DurationMs = verification?.durationMs ?? null;
+      measuredDurations.step12 = verification?.durationMs ?? null;
+      const elapsedText = verification?.durationMs != null
+        ? `(${Math.round(verification.durationMs)} ms, excluding Snap confirmation)`
+        : formatMs(start);
+      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 12. Wallet verified IdP auth token (PS signature): ${verification?.success ? 'PASS' : 'FAIL'} ${elapsedText}.`;
+      ssoMetadata.step12Verified = Boolean(verification?.success);
+      if (!ssoMetadata.step12Verified) {
+        throw new Error(verification?.message || 'Wallet rejected IdP auth token');
+      }
+      return true;
     } catch (err) {
       console.warn('[Mode 2] Step 12 Error:', err.message);
+      ssoMetadata.step12Verified = false;
+      return false;
     }
   }
 
   function runWalletStep13() {
+    const start = now();
     if (step13Completed) return;
     if (!walletReceivedIdPToken) {
       console.warn('[Mode 2] Step 13 Error: Wallet has no IdP auth token');
+      return;
+    }
+    if (!ssoMetadata.step12Verified) {
+      console.warn('[Mode 2] Step 13 blocked: Wallet did not verify IdP auth token');
       return;
     }
     if (!ssoMetadata.ppid || !ssoMetadata.pi_PPID) {
@@ -700,53 +809,90 @@ async function runStep10VerifyAndContinue() {
     }
 
     appendRpFeVisibleFlow('');
-    appendRpFeVisibleFlow('Step 13. Wallet -> RP FE');
+    appendRpFeVisibleFlow(`Step 13. Wallet -> RP FE ${formatMs(start)}`);
     appendRpFeVisibleFlow(`  r_i check: ${ssoMetadata.r_i === mode2SessionNonce ? 'PASS' : 'FAIL'}`);
-    appendRpFeVisibleFlow(`  auth token.sub: ${previewValue(walletReceivedIdPToken.sub)}`);
-    appendRpFeVisibleFlow(`  auth token.exp: ${previewValue(walletReceivedIdPToken.exp)}`);
+    appendRpFeVisibleFlow(`  auth token.uid: ${previewValue(walletReceivedIdPToken.uid)}`);
+    appendRpFeVisibleFlow(`  auth token.rid: ${previewValue(walletReceivedIdPToken.rid)}`);
+    appendRpFeVisibleFlow(`  auth token.max_height: ${previewValue(walletReceivedIdPToken.max_height)}`);
+    appendRpFeVisibleFlow(`  auth token.r_token: ${previewValue(walletReceivedIdPToken.r_token)}`);
     appendRpFeVisibleFlow(`  auth token.signature: ${previewValue(walletReceivedIdPToken.signature?.sigma1, 36)}`);
     appendRpFeVisibleFlow(`  PPID: ${previewValue(ssoMetadata.ppid.toString())}`);
     appendRpFeVisibleFlow(`  pi_PPID: ${previewValue(ssoMetadata.pi_PPID)}`);
     step13Completed = true;
-    runRPFeStep14();
+    runRPFeStep14().catch((err) => console.warn('[Mode 2] Step 14 failed:', err.message));
   }
 
-  function runRPFeStep14() {
+  let piPpidVkeyPromise = null;
+  function getPiPpidVkey() {
+    if (!piPpidVkeyPromise) {
+      piPpidVkeyPromise = fetch('/build/mode2/pi_ppid_vkey.json').then((r) => r.json());
+    }
+    return piPpidVkeyPromise;
+  }
+
+  async function runRPFeStep14() {
+    const start = now();
     const token = walletReceivedIdPToken;
-    const nowSec = Math.floor(Date.now() / 1000);
-    const exp = Number(token?.exp ?? 0);
-    const expireOk = Number.isFinite(exp) && exp > nowSec;
-    const auidBindingOk = String(token?.auid_i) === String(ssoMetadata.auid_i?.x);
-    const ppidOk = String(ssoMetadata.pi_PPID?.ppid) === String(ssoMetadata.ppid);
-    const piPpidOk =
-      ssoMetadata.pi_PPID?.type === 'pi_PPID' &&
-      String(ssoMetadata.pi_PPID?.auid) === String(ssoMetadata.auid?.x) &&
-      String(ssoMetadata.pi_PPID?.r_token) === String(ssoMetadata.tokenNonce);
+    const heightInfo = await getCurrentHeightForValidation();
+    const maxHeight = token?.max_height != null ? BigInt(token.max_height) : null;
+    const heightOk = maxHeight != null && heightInfo.value <= maxHeight;
+
+    // pi_PPID is now a real Groth16 proof (circuits/pi_ppid.circom): it attests that
+    // ppid = uid * rid * salt for some hidden uid/salt, with rid and ppid public.
+    // Verify the proof itself, then read rid/ppid from its public signals (never
+    // trust a plaintext claim) to check they bind to this RP and this IdP session.
+    const ppidPublicSignals = ssoMetadata.pi_PPID?.publicSignals;
+    const ridFromProof = ppidPublicSignals?.[0] != null ? BigInt(ppidPublicSignals[0]) : null;
+    const ppidFromProof = ppidPublicSignals?.[1] != null ? BigInt(ppidPublicSignals[1]) : null;
+
+    let piPpidOk = false;
+    if (ssoMetadata.pi_PPID?.proof && ppidPublicSignals) {
+      try {
+        const vkey = await getPiPpidVkey();
+        piPpidOk = await snarkjs.groth16.verify(vkey, ppidPublicSignals, ssoMetadata.pi_PPID.proof);
+      } catch (err) {
+        console.warn('[Mode 2] pi_PPID ZKP verify error:', err.message);
+      }
+    }
+
+    let ppidOk = false;
+    let auidBindingOk = false;
+    if (ridFromProof !== null && ppidFromProof !== null && ssoMetadata.rpNonceField != null) {
+      ppidOk = String(ridFromProof) === String(ssoMetadata.rid);
+
+      const recomputedAuidI = (ppidFromProof * ssoMetadata.rpNonceField) % FIELD_PRIME;
+      auidBindingOk = String(token?.auid_i) === String(recomputedAuidI);
+    }
 
     appendRpFeVisibleFlow('');
-    appendRpFeVisibleFlow('Step 14. RP FE verifies Wallet submission');
-    appendRpFeVisibleFlow('  IdP signature with public key: deferred in demo');
-    appendRpFeVisibleFlow(`  expire time: ${expireOk ? 'PASS' : 'FAIL'} (exp: ${previewValue(token?.exp)})`);
-    appendRpFeVisibleFlow(`  auid_i / r_RP binding: ${auidBindingOk ? 'PASS' : 'FAIL'}`);
-    appendRpFeVisibleFlow(`  PPID binding: ${ppidOk ? 'PASS' : 'FAIL'}`);
-    appendRpFeVisibleFlow(`  pi_PPID verification: ${piPpidOk ? 'PASS' : 'FAIL'}`);
+    appendRpFeVisibleFlow(`Step 14. RP FE verifies Wallet submission ${formatMs(start)}`);
+    appendRpFeVisibleFlow('  IdP PS signature: already verified by RP backend at Step 10 (verifyPS_Hybrid)');
+    appendRpFeVisibleFlow(`  max_height: ${heightOk ? 'PASS' : 'FAIL'} (current: ${heightInfo.value.toString()}, max: ${previewValue(token?.max_height)}, source: ${heightInfo.source})`);
+    appendRpFeVisibleFlow(`  auid_i / rp_nonce binding: ${auidBindingOk ? 'PASS' : 'FAIL'}`);
+    appendRpFeVisibleFlow(`  rid binding: ${ppidOk ? 'PASS' : 'FAIL'}`);
+    appendRpFeVisibleFlow(`  pi_PPID ZKP verification: ${piPpidOk ? 'PASS' : 'FAIL'}`);
 
     step14Result = {
-      success: expireOk && auidBindingOk && ppidOk && piPpidOk,
-      ppid: ssoMetadata.ppid?.toString(),
+      success: heightOk && auidBindingOk && ppidOk && piPpidOk,
+      ppid: ppidFromProof != null ? ppidFromProof.toString() : null,
       r_i: ssoMetadata.r_i,
       r_i_check: ssoMetadata.r_i === mode2SessionNonce,
+      step8DurationMs: ssoMetadata.step8DurationMs ?? null,
+      step12DurationMs: ssoMetadata.step12DurationMs ?? null,
       checks: {
-        expireOk,
+        expireOk: heightOk,
+        heightOk,
         auidBindingOk,
         ppidOk,
         piPpidOk
       }
     };
+    measuredDurations.step14 = now() - start;
+    step14Result.step14DurationMs = measuredDurations.step14;
 
-    if (!expireOk || !auidBindingOk || !ppidOk || !piPpidOk) {
+    if (!heightOk || !auidBindingOk || !ppidOk || !piPpidOk) {
       console.warn('[Mode 2] Step 14 demo verification failed:', {
-        expireOk,
+        heightOk,
         auidBindingOk,
         ppidOk,
         piPpidOk
@@ -757,9 +903,10 @@ async function runStep10VerifyAndContinue() {
   }
 
   async function runRPFeStep15() {
+    const start = now();
     if (!step14Result) throw new Error('Step 14 result is missing');
 
-    await window.ethereum.request({
+    const result = await window.ethereum.request({
       method: 'wallet_invokeSnap',
       params: {
         snapId,
@@ -771,6 +918,18 @@ async function runStep10VerifyAndContinue() {
         },
       },
     });
+
+    const measuredMs = result?.durationMs;
+    measuredDurations.step15 = measuredMs ?? null;
+    const measuredText = measuredMs != null
+      ? `${formatDurationMs(measuredMs)} excluding Snap confirmation`
+      : formatMs(start);
+    appendRpFeVisibleFlow(`Step 15. Wallet notified ${measuredText}`);
+    appendRpFeVisibleFlow(`Measured total excluding confirmation waits: ${formatDurationMs(sumMeasuredDurations(measuredDurations))}`);
+    appendRpFeVisibleFlow(`  Step 8: ${formatDurationMs(measuredDurations.step8)}`);
+    appendRpFeVisibleFlow(`  Step 12: ${formatDurationMs(measuredDurations.step12)}`);
+    appendRpFeVisibleFlow(`  Step 14: ${formatDurationMs(measuredDurations.step14)}`);
+    appendRpFeVisibleFlow(`  Step 15: ${formatDurationMs(measuredDurations.step15)}`);
   }
 
   // --- Light ZKP (Poseidon Only) Flow ---
@@ -782,7 +941,7 @@ async function runStep10VerifyAndContinue() {
       ssoMetadata.r_RP = ethers.hexlify(ethers.randomBytes(16)); // 단순 랜덤 문자열
       ssoMetadata.arid_i = { light: `arid_light_${Math.random().toString(36).substring(7)}` };
 
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 7 (Light). Raw value used (No EC).`;
+      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 7 (Light). Raw value used (No EC) ${formatMs(start)}.`;
       document.getElementById('mode2WalletProofsLight').disabled = false;
       mode2Status.innerText = `Step 7 (Light) Complete ${formatMs(start)}. No 타원곡선.`;
     } catch (err) {
@@ -795,7 +954,7 @@ async function runStep10VerifyAndContinue() {
     mode2Status.innerText = 'Step 8-9 (Light): Wallet Preparing ID (No EC)...';
     try {
       ssoMetadata.auid = { light: `auid_light_999` };
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 8-9 (Light). Raw value used.`;
+      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 8-9 (Light). Raw value used ${formatMs(start)}.`;
       document.getElementById('step07RPFECalcAuidiLight').disabled = false;
       mode2Status.innerText = `Step 8-9 (Light) Complete ${formatMs(start)}.`;
     } catch (err) {
@@ -808,7 +967,7 @@ async function runStep10VerifyAndContinue() {
     mode2Status.innerText = 'Step 10 (Light): RP FE Linking ID (No EC)...';
     try {
       ssoMetadata.auid_i = { light: `auid_i_light_comb` };
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 10 (Light). Linking done without EC.`;
+      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 10 (Light). Linking done without EC ${formatMs(start)}.`;
       document.getElementById('step1GenerateZKPLight').disabled = false;
       mode2Status.innerText = `Step 10 (Light) Complete ${formatMs(start)}.`;
     } catch (err) {
