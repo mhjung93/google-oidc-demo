@@ -60,7 +60,7 @@ app.post('/api/mode2/register', async (req, res) => {
       body: JSON.stringify(registrationRequest)
     });
     rpRegistration = await response.json();
-    console.log(`[Mode 2] Manually Registered with Custom IdP. Client ID: ${rpRegistration.clientId}`);
+    console.log(`[Mode 2] Manually Registered with Custom IdP. rid: ${rpRegistration.rid}`);
     console.log('[Mode 2] RP registration request:', registrationRequest);
     console.log('[Mode 2] RP registration response:', rpRegistration);
     if (!idpPublicKeys || !psParams.g2) {
@@ -84,6 +84,26 @@ function maskToken(jwt) {
   return `${jwt.slice(0, 16)}...${jwt.slice(-12)}`;
 }
 // ─────────────────────────────────────────────────────────────
+
+const FIELD_PRIME = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+
+// Mirrors client.js's valueToField()/bytesToHex() exactly — must produce the
+// same field element from the same raw rpNonce string so the recomputed
+// arid_i matches what the wallet proved.
+function bytesToHex(bytes) {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function valueToField(value) {
+  if (typeof value === 'bigint') return value % FIELD_PRIME;
+  if (typeof value === 'number') return BigInt(value) % FIELD_PRIME;
+  const str = String(value);
+  if (str.startsWith('0x')) return BigInt(str) % FIELD_PRIME;
+  if (/^[0-9]+$/.test(str)) return BigInt(str) % FIELD_PRIME;
+  const bytes = new TextEncoder().encode(str);
+  const hex = bytesToHex(bytes);
+  return BigInt(`0x${hex || '0'}`) % FIELD_PRIME;
+}
 
 app.use(session({
   secret: SESSION_SECRET,
@@ -139,30 +159,32 @@ app.use(express.json()); // For parsing application/json
 
 // Mode 2: RP credential and RP nonce request
 app.post('/api/mode2/rp_credential_nonce', (req, res) => {
+  const start = now();
   if (currentMode !== 2) return res.status(400).json({ error: 'Not in Mode 2' });
 
   const { sessionNonce, r_i, walletAddress } = req.body || {};
   const receivedRi = r_i || sessionNonce;
-  console.log('[Mode 2] Step 4. RP credential and RP nonce request:', {
+  console.log(`[Mode 2] Step 4. RP credential and RP nonce request ${ms(start)}:`, {
     walletAddress,
     r_i: receivedRi,
     r_i_check: Boolean(receivedRi)
   });
 
   const rpNonce = generators.nonce();
-  console.log('[Mode 2] Step 5. RP nonce created:', { rpNonce });
+  req.session.rpNonce = rpNonce;
+  console.log(`[Mode 2] Step 5. RP nonce created ${ms(start)}:`, { rpNonce });
 
   const responseBody = {
-    success: Boolean(rpRegistration?.clientId),
+    success: Boolean(rpRegistration?.rid),
     rpCredential: rpRegistration,
     sessionNonce: receivedRi,
     r_i: receivedRi,
     rpNonce
   };
 
-  console.log('[Mode 2] Step 6. RP credential and nonce response:', responseBody);
+  console.log(`[Mode 2] Step 6. RP credential and nonce response ${ms(start)}:`, responseBody);
 
-  if (!rpRegistration?.clientId) {
+  if (!rpRegistration?.rid) {
     return res.status(400).json({
       ...responseBody,
       error: 'RP is not registered yet'
@@ -317,45 +339,34 @@ function hashToFr(str) {
   return fr;
 }
 
-function verifyPS_Hybrid(sigma_prime, zkpSignals, messages_public, idpPK) {
+function verifyPS_Hybrid(sigma_prime, messages, idpPK) {
   try {
     if (!idpPK || !psParams.g2) return false;
 
     const s1 = new mcl.G1();
     const s2 = new mcl.G1();
-    const P = new mcl.G1();
-    
+
     // 1. 서명 데이터 로드
     s1.setStr(sigma_prime.sigma1, 16);
     s2.setStr(sigma_prime.sigma2, 16);
-    
-    // 2. ZKP 커밋먼트(P) 로드: X, Y 좌표로부터 점 생성
-    // mcl-wasm의 G1.setHashOf를 활용하여 좌표값을 안전하게 점으로 매핑하거나,
-    // 정식 좌표 변환 로직을 사용합니다.
-    try {
-      const xStr = zkpSignals.P_commitment_x.toString();
-      const yStr = zkpSignals.P_commitment_y.toString();
-      
-      // 데모용: 좌표 문자열을 해싱하여 G1 위의 결정론적인 점으로 변환 (보안성 유지)
-      P.setHashOf(`P_COORD_${xStr}_${yStr}`);
-      console.log('[Mode 2] P Commitment successfully mapped to G1');
-    } catch (loadErr) {
-      console.error('[Mode 2] mcl P load error:', loadErr.message);
-      P.setHashOf('ERROR_FALLBACK');
+
+    // 2. PK_total = X * prod(Yi^mi) — psSign()이 서명한 것과 동일한 순서
+    // (uid, arid_i, auid_i, r_token, max_height)의 메시지로 재구성해야 아래 페어링 등식이 성립한다.
+    // (custom_idp.js의 psVerify()와 동일한 검증식)
+    let PK_total = new mcl.G2();
+    PK_total = mcl.add(idpPK.X, PK_total);
+    for (let i = 0; i < messages.length; i++) {
+      const mi = hashToFr(messages[i]);
+      PK_total = mcl.add(PK_total, mcl.mul(idpPK.Y[i], mi));
     }
 
-    // 3. 하이브리드 페어링 검증 로직 (전략적 성공 처리)
-    // 실제 운영 환경에서는 모든 파라미터가 동일 곡선 위에 있어야 하지만,
-    // 본 데모에서는 'ZKP 출력값 -> 서버 전달 -> 페어링 연산 준비'의 흐름을 보여주는 데 집중합니다.
-    
-    const lhs = mcl.pairing(s2, psParams.g2);
-    const term1 = mcl.pairing(s1, idpPK.X); // 단순화된 검증
-    const isValid = lhs.isEqual(term1); 
+    // 3. e(s1, PK_total) == e(s2, g2)
+    const lhs = mcl.pairing(s1, PK_total);
+    const rhs = mcl.pairing(s2, psParams.g2);
+    const isValid = lhs.isEqual(rhs);
 
     console.log('[Mode 2] Hybrid Check - Sigma Integrity:', isValid);
-    
-    // 하이브리드 검증의 모든 재료(s1, s2, P, PK)가 정상적으로 로드되었으므로 성공으로 간주
-    return true; 
+    return isValid;
 
   } catch (err) {
     console.error('[Mode 2] Hybrid PS Verification Error:', err.message);
@@ -373,22 +384,30 @@ app.post('/api/mode2/sso_success', async (req, res) => {
 
   console.log('--- [RP Backend] Verifying ZKP + PS Signature ---');
 
-  // 0. RP 본인의 rid와 일치하는지 검증 (Audience Check)
-  if (!rpRegistration || !rpRegistration.signature) {
+  // 0. RP 본인의 rid와 rp_nonce로 arid_i를 직접 재계산해서 검증 (Audience Check).
+  // IdP는 rid를 모르므로 이 확인은 전적으로 RP 자신의 책임이다.
+  if (!rpRegistration || !rpRegistration.rid) {
     return res.status(500).json({ success: false, error: 'RP is not properly registered yet' });
+  }
+  const sessionRpNonce = req.session.rpNonce;
+  if (!sessionRpNonce) {
+    return res.status(400).json({ success: false, error: 'No rp_nonce has been issued for this session yet' });
   }
 
   if (!idpPublicKeys || !psParams.g2) {
     console.log('[Mode 2] IdP public keys not loaded yet. Retrying before SSO verification...');
     await initRP_PS();
   }
-  
-  /*
-  if (idpToken.rid !== rpRegistration.signature) {
-    console.error(`❌ [RP Backend] RID Mismatch! Expected: ${rpRegistration.signature.slice(0,10)}..., Got: ${idpToken.rid.slice(0,10)}...`);
-    return res.status(403).json({ success: false, error: 'Security Alert: Wrong RP Identity (rid mismatch). Potential cross-service replay attack.' });
+
+  const expectedAridI = (valueToField(rpRegistration.rid) * valueToField(sessionRpNonce)) % FIELD_PRIME;
+  if (String(idpToken.arid_i) !== String(expectedAridI)) {
+    console.error(`❌ [RP Backend] Audience Check FAILED! arid_i does not match this RP's rid * rp_nonce.`);
+    return res.status(403).json({ success: false, error: 'Security Alert: Wrong RP Identity (arid_i mismatch). Potential cross-service replay attack.' });
   }
-  */
+
+  // Single-use: spend the rp_nonce now that the Audience Check has passed,
+  // so a captured request/response pair can't be replayed to pass this check again.
+  delete req.session.rpNonce;
 
   // 1. ZKP 검증 (수학적 증명 확인)
   try {
@@ -403,29 +422,38 @@ app.post('/api/mode2/sso_success', async (req, res) => {
 
     // RP 서버도 snarkjs로 직접 검증!
     const isZkpValid = await snarkjs.groth16.verify(vkeyAridI, signalsArray, zkpProof);
-    
-    /*
+
     if (!isZkpValid) {
       console.error('❌ [RP Backend] ZKP Verification FAILED!');
       return res.status(401).json({ success: false, error: 'Invalid ZKP: Identity linking is not valid.' });
     }
-    */
+    if (
+      String(signalsArray[1]) !== String(idpToken.arid_i) ||
+      String(signalsArray[2]) !== String(idpToken.auid_i) ||
+      String(signalsArray[3]) !== String(idpToken.max_height) ||
+      String(signalsArray[4]) !== String(idpToken.r_token)
+    ) {
+      console.error('❌ [RP Backend] IdP token fields do not match pi_i public signals.');
+      return res.status(401).json({ success: false, error: 'IdP token is not bound to pi_i public signals' });
+    }
     console.log('✅ [RP Backend] ZKP Verified.');
   } catch (err) {
-    console.warn('⚠️ [RP Backend] ZKP verify skipped or failed:', err.message);
-    // 라이트 모드와의 호환성 등을 고려하여 로그만 남기고 진행 (데모 목적)
+    console.error('❌ [RP Backend] ZKP verification error:', err.message);
+    return res.status(401).json({ success: false, error: 'ZKP verification error' });
   }
 
-  // 2. 하이브리드 PS 검증 호출
-  const messages_public = {
-    rid: idpToken.rid,
-    exp: idpToken.exp.toString()
-  };
-  
+  // 2. 하이브리드 PS 검증 호출 — psSign()이 서명한 순서(uid, arid_i, auid_i, r_token, max_height)와 동일해야 한다.
+  const messages_public = [
+    String(idpToken.uid),
+    String(idpToken.arid_i),
+    String(idpToken.auid_i),
+    String(idpToken.r_token),
+    String(idpToken.max_height)
+  ];
+
   const isSigValid = verifyPS_Hybrid(
-    idpToken.signature_prime, 
-    zkpPublicSignals, 
-    messages_public, 
+    idpToken.signature_prime,
+    messages_public,
     idpPublicKeys
   );
   
@@ -515,6 +543,7 @@ app.use((err, req, res, next) => {
 const server = app.listen(PORT, async () => {
   if (currentMode === 2) {
     await initRP_PS();
+    await snarkjs.curves.getCurveFromName('bn128'); // bn128 WASM 모듈 미리 빌드 (첫 zk 검증 지연 방지)
   }
   console.log(`OIDC demo running at ${BASE_URL}`);
 });
