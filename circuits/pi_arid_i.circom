@@ -1,48 +1,45 @@
 pragma circom 2.0.0;
 
-include "lib/circom-rsa-verify/circomlib/circuits/escalarmulany.circom";
-include "lib/circom-rsa-verify/circomlib/circuits/bitify.circom";
+include "lib/circom-rsa-verify/circomlib/circuits/poseidon.circom";
 
 template PiAridI() {
-    // Private Input
-    signal input r_RP;
+    // Private Inputs (hidden from verifier)
+    signal input rp_nonce;
+    signal input salt;
+    signal input rid;
+    signal input pk_i;
 
-    // Public Inputs (Points on BabyJubjub: Ax, Ay)
-    signal input rid_x;
-    signal input rid_y;
-    signal input auid_x;
-    signal input auid_y;
-    
-    signal input arid_i_x;
-    signal input arid_i_y;
-    signal input auid_i_x;
-    signal input auid_i_y;
+    // Public Inputs
+    signal input uid;
+    signal input arid_i;
+    signal input auid_i;
+    signal input max_height;
+    signal input token_nonce;
 
-    // Convert r_RP to bits
-    component r_bits = Num2Bits(253);
-    r_bits.in <== r_RP;
+    // PPID = uid * rid * salt (degree-3, split into two quadratic constraints)
+    signal uid_rid;
+    uid_rid <== uid * rid;
+    signal ppid;
+    ppid <== uid_rid * salt;
 
-    // 1. arid_i = rid * r_RP
-    component mul1 = EscalarMulAny(253);
-    mul1.p[0] <== rid_x;
-    mul1.p[1] <== rid_y;
-    for (var i=0; i<253; i++) {
-        mul1.e[i] <== r_bits.out[i];
-    }
+    // rid stays a pure private witness. The IdP no longer checks anything
+    // about it — the RP backend independently verifies arid_i === rid *
+    // rp_nonce using its own known rid and rp_nonce (see server.js), which is
+    // sufficient to reject a bogus/unregistered rid without the IdP ever
+    // needing to see or verify rid.
 
-    arid_i_x === mul1.out[0];
-    arid_i_y === mul1.out[1];
+    // arid_i = rid * rp_nonce
+    arid_i === rid * rp_nonce;
 
-    // 2. auid_i = auid * r_RP
-    component mul2 = EscalarMulAny(253);
-    mul2.p[0] <== auid_x;
-    mul2.p[1] <== auid_y;
-    for (var i=0; i<253; i++) {
-        mul2.e[i] <== r_bits.out[i];
-    }
+    // auid_i = PPID * rp_nonce
+    auid_i === ppid * rp_nonce;
 
-    auid_i_x === mul2.out[0];
-    auid_i_y === mul2.out[1];
+    // token_nonce = Poseidon(pk_i, max_height, rp_nonce)
+    component hasher = Poseidon(3);
+    hasher.inputs[0] <== pk_i;
+    hasher.inputs[1] <== max_height;
+    hasher.inputs[2] <== rp_nonce;
+    token_nonce === hasher.out;
 }
 
-component main {public [rid_x, rid_y, auid_x, auid_y, arid_i_x, arid_i_y, auid_i_x, auid_i_y]} = PiAridI();
+component main {public [uid, arid_i, auid_i, max_height, token_nonce]} = PiAridI();
