@@ -7,7 +7,7 @@ Mode 2 focuses on the Custom IdP based SSO flow using PS signatures, ZK proofs, 
 Out of scope unless explicitly needed:
 
 - Google OIDC ID token proof flow
-- `make_proof.js`
+- `scripts/make_proof.js`
 - Snap accessList transaction attachment
 - Hardhat `Greeter` contract flow
 
@@ -86,7 +86,7 @@ Files:
 
 - `circuits/pi_arid_i.circom`
 - `circuits/pi_ppid.circom`
-- `build_mode2_circuits.sh`
+- `scripts/build_mode2_circuits.sh`
 
 Generated artifacts:
 
@@ -452,10 +452,10 @@ These are implementation details that are useful for understanding the current p
 
 Unless the task explicitly requires them, these are not central to Mode 2:
 
-- `make_proof.js`
-- `derive_bip32.js`
+- `scripts/make_proof.js`
+- `scripts/derive_bip32.js`
 - `circuits/bind_key_to_idtoken.circom`
-- `run_all.sh`
+- `scripts/run_all.sh`
 - `snap/src/tx_type2_accesslist.js`
 - `contracts/Greeter.sol`
 

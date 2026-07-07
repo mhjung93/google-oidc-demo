@@ -61,7 +61,7 @@ export AUD_EXPECTED="588661703676-so4rftcahdeo203pdge9csmse64dlfd8.apps.googleus
 export ISS_EXPECTED="https://accounts.google.com"
 
 # ==== Generate/Load Auditor Keys ====
-step "Generate/Load Auditor Keys" node generate_auditor_keys.js
+step "Generate/Load Auditor Keys" node scripts/generate_auditor_keys.js
 
 # ==== Install Snap dependencies ====
 step "Install Snap dependencies" npm install --workspace=google-oidc-demo-snap
@@ -216,7 +216,7 @@ CIR
 fi
 
 # ==== 1) 파생 ====
-step "BIP32 derive (node derive_bip32.js)" npm run --silent derive
+step "BIP32 derive (node scripts/derive_bip32.js)" npm run --silent derive
 
 
 # ==== ZKP Workflow for the new circuit ====
@@ -254,7 +254,7 @@ else
 fi
 
 # ==== 5) 입력 생성 ====
-step "build input.json (make_proof.js)" npm run --silent zk:input
+step "build input.json (scripts/make_proof.js)" npm run --silent zk:input
 
 # ==== 6) witness ====
 step "generate witness" node ${CIRCUIT_BUILD_PATH}_js/generate_witness.cjs ${CIRCUIT_BUILD_PATH}_js/${CIRCUIT_NAME}.wasm ${BUILD_DIR}/input.json ${BUILD_DIR}/witness.wtns
