@@ -39,6 +39,7 @@ Mode 2는 Custom IdP, RP 서버, Snap 서버를 각각 실행합니다.
 APP_MODE=2
 BASE_URL=http://localhost:3000
 CUSTOM_IDP_BASE_URL=http://127.0.0.1:4000
+MODE2_ETH_RPC_URL=http://127.0.0.1:8545
 SESSION_SECRET=change-me
 ```
 

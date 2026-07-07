@@ -498,39 +498,33 @@ document.getElementById('step25RPFEVerify')?.addEventListener('click', async () 
 
 async function runStep10VerifyAndContinue() {
   const start = now();
-  mode2Status.innerText = 'Step 10: Verifying pi_i and IdP Token on Backend...';
+  mode2Status.innerText = 'Step 10: Verifying IdP Token and RP audience on Backend...';
   document.getElementById('step15NotifyWallet').disabled = true;
   document.getElementById('step3CompleteRP').disabled = true;
 
   try {
     if (!currentIdPToken) throw new Error('No IdP Token to verify');
-    if (!currentSSOProof) throw new Error('No ZKP Proof found');
+    if (!currentSSOProof) throw new Error('No Wallet proof context found');
 
-    // 서버가 기대하는 하이브리드 검증용 데이터 구조
+    // RP backend verifies only the IdP token signature and RP audience binding.
+    // pi_i stays with the IdP; its public UID signal is not sent to the RP.
     const requestBody = {
       idpToken: {
-        ...currentIdPToken,
-        signature_prime: currentIdPToken.signature, // 이름 통일
-        rid: ssoMetadata.rid.toString(),
-        exp: currentIdPToken.exp,
+        arid_i: currentIdPToken.arid_i,
+        auid_i: currentIdPToken.auid_i,
         r_token: currentIdPToken.r_token,
-        max_height: currentIdPToken.max_height
-      },
-      zkpProof: currentSSOProof.zkpProof,
-      // pi_arid_i 회로의 public signal 5개를 원래 순서
-      // [uid, arid_i, auid_i, max_height, token_nonce] 그대로 전달.
-      // 일부만 보내면 RP의 snarkjs.groth16.verify()가 항상 실패한다.
-      zkpPublicSignals: currentSSOProof.zkpPublicSignals
+        max_height: currentIdPToken.max_height,
+        signature_prime: currentIdPToken.signature,
+      }
     };
 
-    console.log('[Mode 2] Sending Hybrid Verify Request:', {
+    console.log('[Mode 2] Sending RP Backend Verify Request:', {
       idpToken: {
         arid_i: previewValue(requestBody.idpToken.arid_i),
         auid_i: previewValue(requestBody.idpToken.auid_i),
         r_token: previewValue(requestBody.idpToken.r_token),
         max_height: requestBody.idpToken.max_height
-      },
-      publicSignalsLength: Array.isArray(requestBody.zkpPublicSignals) ? requestBody.zkpPublicSignals.length : 'invalid'
+      }
     });
 
     const res = await fetch('/api/mode2/sso_success', {
@@ -552,12 +546,12 @@ async function runStep10VerifyAndContinue() {
       console.log('[Mode 2] Server response received:', data);
 
       if (data.success) {
-        console.log('[Mode 2] Step 10 SUCCESS. pi_i and IdP token verified. Activating Step 11 button...');
+        console.log('[Mode 2] Step 10 SUCCESS. IdP token and RP audience verified. Activating Step 11 button...');
         
         const display = document.getElementById('ssoIntermediateDisplay');
         if (display) {
           display.style.color = '#2e7d32'; // 초록색
-          display.innerText += `\n\n✅ Step 10. SUCCESS ${formatMs(start)}: pi_i verified and IdP token accepted by RP Backend.`;
+          display.innerText += `\n\n✅ Step 10. SUCCESS ${formatMs(start)}: IdP token signature and RP audience accepted by RP Backend.`;
         }
         
         document.getElementById('step15NotifyWallet').disabled = false;

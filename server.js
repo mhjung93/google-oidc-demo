@@ -22,6 +22,7 @@ const {
   PORT = 3000,
   BASE_URL,
   CUSTOM_IDP_BASE_URL = 'http://127.0.0.1:4000',
+  MODE2_ETH_RPC_URL = process.env.ETH_RPC_URL || 'http://127.0.0.1:8545',
   GOOGLE_CLIENT_ID,
   GOOGLE_CLIENT_SECRET,
   SESSION_SECRET,
@@ -64,6 +65,17 @@ app.post('/api/mode2/register', async (req, res) => {
       console.log('[Mode 2] Retrying IdP public key load after RP registration...');
       await initRP_PS();
     }
+
+    // RP 등록 자체가 이 IdP에서 정말 발급된 것인지 확인 — mock 문자열이 아니라
+    // psSign([rid])로 서명된 값이어야 통과한다.
+    const isRpSigValid = verifyPS_Hybrid(rpRegistration.signature, [String(rpRegistration.rid)], idpPublicKeys);
+    if (!isRpSigValid) {
+      console.error('[Mode 2] RP registration signature verification FAILED. Rejecting registration.');
+      rpRegistration = null;
+      return res.status(502).json({ error: 'RP registration signature verification failed' });
+    }
+    console.log('[Mode 2] RP registration signature verified.');
+
     res.json(rpRegistration);
   } catch (err) {
     console.error('[Mode 2] Manual registration failed:', err.message);
@@ -113,6 +125,43 @@ function assertDecimalString(value, name) {
     throw new Error(`${name} must be a decimal string`);
   }
   return value;
+}
+
+async function getCurrentHeightForToken(maxHeight) {
+  // Browser wallets usually produce block-height max_height. If the wallet fell
+  // back to unix time, the signed max_height is much larger than realistic block
+  // heights and can be checked against server time.
+  if (maxHeight >= 1000000000n) {
+    return {
+      value: BigInt(Math.floor(Date.now() / 1000)),
+      source: 'unix-time',
+    };
+  }
+
+  const response = await fetch(MODE2_ETH_RPC_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'eth_blockNumber',
+      params: [],
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`eth_blockNumber RPC failed with status ${response.status}`);
+  }
+
+  const data = await response.json();
+  if (data.error || typeof data.result !== 'string') {
+    throw new Error(data.error?.message || 'eth_blockNumber RPC returned no result');
+  }
+
+  return {
+    value: BigInt(data.result),
+    source: MODE2_ETH_RPC_URL,
+  };
 }
 
 app.use(session({
@@ -444,6 +493,27 @@ app.post('/api/mode2/sso_success', async (req, res) => {
   }
 
   console.log('✅ [RP Backend] Audience Check PASSED (arid_i matches this RP\'s rid * rp_nonce).');
+
+  try {
+    const maxHeight = BigInt(idpToken.max_height);
+    const currentHeight = await getCurrentHeightForToken(maxHeight);
+    if (currentHeight.value > maxHeight) {
+      console.error('[RP Backend] max_height check FAILED:', {
+        current: currentHeight.value.toString(),
+        max_height: maxHeight.toString(),
+        source: currentHeight.source,
+      });
+      return res.status(401).json({ success: false, error: 'IdP token expired by max_height' });
+    }
+    console.log('[RP Backend] max_height check PASSED:', {
+      current: currentHeight.value.toString(),
+      max_height: maxHeight.toString(),
+      source: currentHeight.source,
+    });
+  } catch (err) {
+    console.error('[RP Backend] max_height verification error:', err.message);
+    return res.status(503).json({ success: false, error: `Unable to verify max_height: ${err.message}` });
+  }
 
   // 1. 하이브리드 PS 검증 호출 — psSign()이 서명한 순서(arid_i, auid_i, r_token, max_height)와 동일해야 한다.
   const messages_public = [

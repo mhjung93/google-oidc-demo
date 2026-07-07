@@ -326,6 +326,7 @@ RP action:
 - Checks required token fields and PS signature format.
 - Recomputes `expectedAridI = rpRegistration.rid * req.session.rpNonce`.
 - Checks `idpToken.arid_i` against the recomputed value.
+- Checks signed `max_height` against the current block height or unix-time fallback.
 - Calls `verifyPS_Hybrid` over `[arid_i, auid_i, r_token, max_height]`.
 - Deletes `req.session.rpNonce` after the full RP-side verification succeeds.
 - Returns `{ success: true }` on demo success.

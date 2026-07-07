@@ -149,11 +149,10 @@ app.post('/register_rp', (req, res) => {
   // rid를 큰 숫자 스칼라(248비트 랜덤)로 발급 — pi_i 회로의 private input rid로 쓰인다.
   const rid = BigInt('0x' + randomBytes(31).toString('hex')).toString();
 
-  // Still mock for RP registration for now
   const rpToken = {
     rpName,
     rid,
-    signature: `mock-ps-sig-rp-${randomBytes(16).toString('hex')}`,
+    signature: psSign([rid]),
     issuedAt: new Date().toISOString()
   };
 
