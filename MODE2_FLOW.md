@@ -65,7 +65,7 @@ Relevant responsibilities:
 - Registers the RP with the IdP.
 - Logs into the Custom IdP with demo credentials.
 - Connects MetaMask.
-- Computes BabyJubJub values for `arid_i`, `auid`, and `auid_i`.
+- Computes scalar Mode 2 values for `PPID`, `arid_i`, `auid_i`, and `token_nonce`.
 - Generates Groth16 proofs in the browser with `snarkjs.groth16.fullProve`.
 - Sends ZKP data to the Custom IdP popup via `postMessage`.
 - Sends the returned IdP token and proof to the RP backend.
@@ -113,121 +113,130 @@ Expected RP setup behavior:
 - RP loads IdP PS public keys from the Custom IdP.
 - Browser opens the RP at `http://127.0.0.1:3000`.
 
-### Step 1: RP Registration
+### Step 1: Delegated Login Starts
 
 UI button:
 
-- `Register RP with IdP`
+- `Delegated Login`
+
+Client action:
+
+- Opens the Mode 2 SSO section.
+- Requests MetaMask Snap permission through `wallet_requestSnaps`.
+- Does not call `eth_requestAccounts`.
+- Does not select or disclose an EOA account/address.
+
+Output:
+
+- Snap connection is available for later `wallet_invokeSnap` calls.
+
+### Step 2: Initialize Wallet-Side Module
+
+Client action:
+
+- Initializes the wallet-side module implemented by the MetaMask Snap.
+- Prepares the Custom IdP popup.
+- Starts elapsed-time measurement after Snap initialization.
+
+Output:
+
+- Wallet-side module ready.
+- No blockchain account address is selected.
+
+### Step 3: RP FE Session Nonce Created
+
+Client action:
+
+- Creates `mode2SessionNonce`.
+- Reuses it as `r_i` for the browser/popup/session binding.
+
+Output:
+
+- `sessionNonce`
+- `r_i`
+
+### Step 4: RP Credential and RP Nonce Request
 
 RP endpoint:
 
-- `POST /api/mode2/register`
+- `POST /api/mode2/rp_credential_nonce`
 
-IdP endpoint:
+Request body:
 
-- `POST /register_rp`
+- `sessionNonce`
+- `r_i`
+- `requestedAt`
+
+Notes:
+
+- The request no longer includes `walletAddress`.
+- RP account continuity is handled later through `PPID` (`auid` in the paper), not an EOA address.
+
+### Step 5: RP Nonce Created
+
+RP backend action:
+
+- Generates fresh `rpNonce`.
+- Stores it in `req.session.rpNonce` for the later RP-side audience check.
 
 Output:
 
-- `rpRegistration`
-- `clientId`
-- mock RP signature token
+- `rpNonce`
 
-Used later by:
+### Step 6: RP Credential and Nonce Response
 
-- `GET /api/mode2/rp_info`
-- RP identity/audience checks
+RP backend response:
 
-### Step 2: Initial Custom IdP Login
+- `rpCredential`
+- `sessionNonce`
+- `r_i`
+- `rpNonce`
 
-UI fields:
+Current implementation naming:
 
-- `mode2Username`
-- `mode2Password`
+- IdP registration output in `custom_idp.js`: `rpToken`
+- RP backend stored object: `rpRegistration`
+- Client response field: `rpCredential`
+
+Protocol interpretation:
+
+- `rpCredential` is the demo artifact corresponding to authenticated RP metadata.
+- Its key protocol value is `rid`.
+
+### Step 7: RP FE Sends Values to Wallet Context
 
 Client action:
 
-- `POST http://localhost:4000/login`
+- Checks that returned `sessionNonce` matches `mode2SessionNonce`.
+- Passes `rid`, mock RP signature, `r_i`, and `rpNonce` to the wallet-side flow.
 
 Output:
 
-- `authToken`
-- `sub`
-- PS signature over initial placeholder attributes
+- Wallet context has RP metadata and session values.
 
-Local storage:
+### Step 8: Wallet Generates PPID, Token Nonce, and ZKPs
 
-- `mode2_ps_token`
+Client action in `runWalletStep7()`:
 
-### Step 3: Wallet Connection
-
-UI button:
-
-- `Step 1. Connect Wallet`
-
-Client action:
-
-- Calls `eth_requestAccounts`.
-- Stores the selected wallet address in `ssoMetadata.userAddress`.
-
-Output:
-
-- Wallet address
-- Enables RP FE metadata preparation
-
-### Step 7: RP FE Calculates `arid_i`
-
-UI button:
-
-- `Step 7. RP FE: Calculate arid_i`
-
-Client actions:
-
-- Initializes BabyJubJub.
-- Fetches RP info from `/api/mode2/rp_info`.
-- Uses `babyJub.Base8` as the current demo `rid` point.
-- Generates random scalar `r_RP`.
-- Computes `arid_i = rid * r_RP`.
+- Treats IdP-issued `rid` as the RP audience scalar for the demo.
+- Computes `PPID = uid * rid * salt`.
+- Computes `arid_i = rid * rpNonce`.
+- Computes `auid_i = PPID * rpNonce`.
+- Generates a session signing key pair.
+- Computes `r_token = Poseidon(pk_i, max_height, rpNonce)`.
+- Generates `pi_i` with `pi_arid_i`.
+- Generates `pi_PPID` with `pi_ppid`.
 
 Output in `ssoMetadata`:
 
 - `rid`
-- `r_RP`
+- `rpNonceField`
+- `ppid`
 - `arid_i`
-
-### Step 8-9: Wallet Calculates `auid`
-
-UI button:
-
-- `Step 8-9. Wallet: Calculate auid`
-
-Client actions:
-
-- Computes demo `auid = Base8 * 12345`.
-
-Output:
-
-- `ssoMetadata.auid`
-
-### Step 10: RP FE Calculates `auid_i`
-
-UI button:
-
-- `Step 10. RP FE: Calculate auid_i`
-
-Client action:
-
-- Computes `auid_i = auid * r_RP`.
-
-Output:
-
-- `ssoMetadata.auid_i`
-
-### Step 11: Generate ZKP
-
-UI button:
-
-- `Step 11. Generate REAL ZKP`
+- `auid_i`
+- `tokenNonce`
+- `pi_i`
+- `pi_PPID`
 
 Circuit:
 
@@ -235,11 +244,19 @@ Circuit:
 
 Witness inputs:
 
-- private `r_RP`
-- public `rid_x`, `rid_y`
-- public `auid_x`, `auid_y`
-- public `arid_i_x`, `arid_i_y`
-- public `auid_i_x`, `auid_i_y`
+- private `rp_nonce`
+- private `salt`
+- private `rid`
+- private `pk_i`
+- public `uid`
+- public `arid_i`
+- public `auid_i`
+- public `max_height`
+- public `token_nonce`
+
+Public signal order:
+
+- `[uid, arid_i, auid_i, max_height, token_nonce]`
 
 Proof call:
 
@@ -255,40 +272,43 @@ Output:
 
 - `currentSSOProof.zkpProof`
 - `currentSSOProof.zkpPublicSignals`
+- `currentSSOProof.walletSubmission`
 - `currentSSOProof.business`
 
-### Step 11-12: Submit to IdP
+### Step 9: Submit to IdP
 
 UI button:
 
-- `Step 11-12. Submit to IdP`
+- `Step 9. Submit to IdP`
 
 Client action:
 
-- Opens `http://localhost:4000/login_popup`.
+- Opens `http://127.0.0.1:4000/login_popup` if needed.
 - Sends `currentSSOProof` to the popup with `postMessage`.
 
 Popup action:
 
 - User enters credentials.
 - Popup sends credentials plus ZKP to `/sso_with_credentials`.
+- Consent flow continues through `/consent_result`.
 
 IdP action:
 
 - Verifies credentials.
-- Verifies the ZKP.
-- Signs `[sub, arid_i, auid_i, exp]`.
+- Verifies `pi_i`.
+- Tracks replay by `r_i`.
+- Signs `[uid, arid_i, auid_i, r_token, max_height]`.
 - Returns `idpToken`.
 
 Output:
 
 - `currentIdPToken`
 
-### Step 13: RP FE Verifies IdP Token on Backend
+### Step 10: RP Backend Verifies pi_i and IdP Token
 
 UI button:
 
-- `Step 13. RP FE: Verify IdP Token`
+- `Step 10. Verify pi_i & IdP Token`
 
 RP endpoint:
 
@@ -302,35 +322,117 @@ Request body:
 
 RP action:
 
-- Attempts Groth16 verification with `pi_arid_i_vkey.json`.
-- Calls `verifyPS_Hybrid`.
+- Recomputes `expectedAridI = rpRegistration.rid * req.session.rpNonce`.
+- Checks `idpToken.arid_i` against the recomputed value.
+- Deletes `req.session.rpNonce` after a passing audience check.
+- Verifies Groth16 proof with `pi_arid_i_vkey.json`.
+- Checks token fields against `pi_i` public signals.
+- Calls `verifyPS_Hybrid` over `[uid, arid_i, auid_i, r_token, max_height]`.
 - Returns `{ success: true }` on demo success.
 
 Output:
 
-- Step 15 is enabled when verification succeeds.
+- Step 11 runs when verification succeeds.
 
-### Step 15: Notify Wallet
+### Step 11: Send IdP Token to Wallet
 
-UI button:
+Client action:
 
-- `Step 15. Notify Wallet`
+- Copies `currentIdPToken` into `walletReceivedIdPToken`.
+- Marks Step 11 as completed.
+- Calls Step 12.
 
-Current behavior:
+Output:
 
-- Updates UI state only.
-- Enables final completion step.
+- Wallet has the IdP auth token.
 
-### Step 16-17: Complete RP Login
+### Step 12: Wallet Verifies IdP Auth Token
 
-UI button:
+Snap method:
 
-- `Step 16-17. Complete RP Login`
+- `verifyIdPAuthToken`
 
-Current behavior:
+Client action:
 
-- Button exists in UI.
-- The main completion behavior should be reviewed before relying on this as a real session establishment step.
+- Fetches IdP PS public keys from `http://127.0.0.1:4000/ps_public_keys`.
+- Calls `wallet_invokeSnap`.
+
+Snap action:
+
+- Verifies the PS signature over `[uid, arid_i, auid_i, r_token, max_height]`.
+- Checks token fields against `walletSubmission` and `business`.
+- Displays a Snap dialog with the verification result.
+
+Output:
+
+- `ssoMetadata.step12Verified`
+- `measuredDurations.step12`
+
+### Step 13: Wallet Sends PPID and pi_PPID to RP FE
+
+Client action:
+
+- Requires Step 12 to have passed.
+- Sends or exposes the wallet submission to RP FE in the demo flow.
+- Uses `PPID` as the RP-side account identifier (`auid` in the paper).
+- Includes `pi_PPID` so the RP FE can verify the PPID binding.
+
+Output:
+
+- RP FE has `PPID`, `pi_PPID`, and IdP token context.
+
+### Step 14: RP FE Verifies Wallet Submission
+
+Client action:
+
+- Verifies `pi_PPID` with `pi_ppid_vkey.json`.
+- Checks `max_height`.
+- Checks `rid` from `pi_PPID` public signals against the RP's `rid`.
+- Recomputes `auid_i = PPID * rpNonce`.
+- Checks recomputed `auid_i` against the IdP token.
+
+Output:
+
+- `step14Result`
+- `success`
+- `ppid`
+- binding check results
+
+### Step 15: Notify Wallet of RP Auth Result
+
+Snap method:
+
+- `rpAuthResult`
+
+Client action:
+
+- Calls `wallet_invokeSnap` with `step14Result`.
+- Displays final PPID authentication result in the Snap.
+- Shows measured Step 8, Step 12, Step 14, and Step 15 timings.
+
+Output:
+
+- Final wallet-visible authentication result.
+
+## RP Registration Support Flow
+
+RP registration still exists as a setup/support action.
+
+UI/API:
+
+- `POST /api/mode2/register`
+- `POST /register_rp`
+
+Output:
+
+- `rpRegistration`
+- `rid`
+- mock RP signature token
+
+Used later by:
+
+- `GET /api/mode2/rp_info`
+- RP identity/audience checks
 
 ## Current Demo-Specific Behavior
 
@@ -339,11 +441,13 @@ These are implementation details that are useful for understanding the current p
 - `custom_idp.js` uses an in-memory mock user database.
 - Demo credentials include `testuser` / `password123`.
 - RP registration uses a mock signature string.
-- `client.js` currently uses `babyJub.Base8` as demo `rid`.
-- `auid` is currently generated as `Base8 * 12345`.
+- `uid` is public in `pi_i`; `uid` and `salt` are hidden in `pi_PPID`.
+- `rid` is private in `pi_i`; the RP backend performs the audience check by recomputing `arid_i = rid * rpNonce`.
+- Delegated Login initializes the Snap/wallet-side module without selecting or disclosing an EOA account address.
+- `PPID` is the implementation alias for the paper's `auid` and is used as the RP-side account identifier.
 - Light ZKP code exists in `client.js`, but the UI block is commented out in `index.html`.
-- RP-side ZKP failure handling in `server.js` is currently permissive for demo compatibility.
-- `verifyPS_Hybrid()` currently emphasizes flow demonstration rather than a complete production-grade PS verification path.
+- RP-side ZKP failure handling returns an error.
+- `verifyPS_Hybrid()` verifies the PS pairing equation over the signed Mode 2 token fields.
 
 ## Files Usually Not Needed for Mode 2
 
@@ -363,8 +467,5 @@ Potential Mode 2 focused improvements:
 - Align endpoint URLs to use one configurable IdP origin consistently.
 - Split Mode 2 client logic from Snap and Google OIDC client logic.
 - Add a dedicated Mode 2 smoke test.
-- Clarify Step 16-17 behavior.
 - Decide whether Light ZKP is part of the demo or should be removed from the active path.
-- Make `rid` and `auid` derivation semantics explicit.
 - Normalize the naming of `signature`, `signature_prime`, `zkpProof`, and `zkpPublicSignals`.
-- Document exact public signal ordering for `pi_arid_i`.

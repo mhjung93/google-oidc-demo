@@ -6,7 +6,7 @@
   <title>Conditional Privacy-Preserving Web3 Authentication</title>
 </head>
 <body>
-  <h1>Conditional Privacy-Preserving Web3 Authentication - Mode <span id="modeDisplay">?</span></h1>
+  <h1 id="appTitle" style="visibility: hidden;">Conditional Privacy-Preserving Web3 Authentication - Mode <span id="modeDisplay">?</span></h1>
 
   <!-- Mode 2: Custom IdP Section -->
   <div id="mode2Section" style="display: none; border: 2px solid #4CAF50; padding: 15px; margin-bottom: 20px;">
@@ -22,16 +22,16 @@
       <div id="ssoStepButtons" style="display: none; border-top: 1px solid #ccc; padding-top: 10px;">
         <strong>SSO Step-by-Step (with Error Testing):</strong><br>
         <div style="margin-bottom: 5px; display: none;">
-          <button id="step0PrepMetadata" style="background: #e8f5e9;" disabled>Step 7. RP FE: Calculate arid_i</button>
+          <button id="step0PrepMetadata" style="background: #e8f5e9;" disabled>Legacy. RP FE: Calculate arid_i</button>
         </div>
         <div style="margin-bottom: 5px; display: none;">
-          <button id="mode2WalletProofs" style="background: #ffebee;" disabled>Step 8-9. Wallet: Calculate auid</button>
+          <button id="mode2WalletProofs" style="background: #ffebee;" disabled>Legacy. Wallet: Calculate auid</button>
         </div>
         <div style="margin-bottom: 5px; display: none;">
-          <button id="step07RPFECalcAuidi" style="background: #e1f5fe;" disabled>Step 10. RP FE: Calculate auid_i</button>
+          <button id="step07RPFECalcAuidi" style="background: #e1f5fe;" disabled>Legacy. RP FE: Calculate auid_i</button>
         </div>
         <div style="margin-bottom: 5px; display: none;">
-          <button id="step1GenerateZKP" disabled>Step 11. Generate REAL ZKP</button>
+          <button id="step1GenerateZKP" disabled>Legacy. Generate REAL ZKP</button>
           <button id="step1GenerateZKPFail" style="background: #ffcdd2; border: 1px solid #e57373;" disabled>Fail Test (Wrong Input)</button>
         </div>
         <div style="margin-bottom: 5px;">
@@ -52,10 +52,10 @@
       <!--
       <div style="margin-bottom: 5px; border: 1px solid #ddd; padding: 5px; background: #fafafa;">
         <strong>Light ZKP (Poseidon Only):</strong><br>
-        <button id="step0PrepMetadataLight" style="background: #e1f5fe;">Step 7 (Light)</button>
-        <button id="mode2WalletProofsLight" style="background: #e1f5fe;" disabled>Step 8-9 (Light)</button>
-        <button id="step07RPFECalcAuidiLight" style="background: #e1f5fe;" disabled>Step 10 (Light)</button>
-        <button id="step1GenerateZKPLight" style="background: #e1f5fe;" disabled>Step 11 (Light) - Fast!</button>
+        <button id="step0PrepMetadataLight" style="background: #e1f5fe;">Legacy Light 1</button>
+        <button id="mode2WalletProofsLight" style="background: #e1f5fe;" disabled>Legacy Light 2</button>
+        <button id="step07RPFECalcAuidiLight" style="background: #e1f5fe;" disabled>Legacy Light 3</button>
+        <button id="step1GenerateZKPLight" style="background: #e1f5fe;" disabled>Legacy Light ZKP</button>
       </div>
       -->
       <div id="ssoDataDisplay" style="display: none; margin-top: 10px; background: #fffde7; padding: 10px; border: 1px dashed #fbc02d; font-size: 0.8em;">

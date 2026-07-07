@@ -42,22 +42,20 @@ if (APP_MODE === 2) {
       if (!window.ethereum) throw new Error('MetaMask not found');
       await connectSnap();
       prepareIdPLoginPopup();
-      mode2Status.innerText = 'Step 2: Connecting wallet...';
-      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
-      // 사용자가 Snap 연결/계정 승인 팝업에서 실제로 클릭할 때까지 걸리는 시간은
-      // 측정에서 제외하고, 승인 이후부터만 잰다.
+      mode2Status.innerText = 'Step 2: Initializing wallet-side module...';
+      // 사용자가 Snap 연결 팝업에서 실제로 클릭할 때까지 걸리는 시간은
+      // 측정에서 제외하고, 승인 이후부터만 잰다. EOA account/address는
+      // 선택하거나 공개하지 않는다; RP account continuity는 PPID로 처리한다.
       const start = now();
-      ssoMetadata.userAddress = accounts[0];
       mode2SessionNonce = createSessionNonce();
 
       const display = document.getElementById('ssoIntermediateDisplay');
       display.innerText = `Step 1. Delegated Login started ${formatMs(start)}.`;
-      display.innerText += `\n\nStep 2. Connect Wallet ${formatMs(start)}:\nAddress: ${ssoMetadata.userAddress}`;
+      display.innerText += `\n\nStep 2. Initialize wallet-side module ${formatMs(start)}:\nSnap connected; no EOA account/address selected.`;
       display.innerText += `\n\nStep 3. RP FE session nonce created ${formatMs(start)}:\nsessionNonce: ${mode2SessionNonce}`;
       display.innerText += `\n\nStep 4. RP credential and RP nonce request sent ${formatMs(start)}.`;
 
       const requestBody = {
-        walletAddress: ssoMetadata.userAddress,
         sessionNonce: mode2SessionNonce,
         r_i: mode2SessionNonce,
         requestedAt: new Date().toISOString()
@@ -442,7 +440,7 @@ if (APP_MODE === 2) {
 
   document.getElementById('step0PrepMetadata')?.addEventListener('click', async () => {
     const start = now();
-    mode2Status.innerText = 'Step 7: RP FE Calculating REAL arid_i (EC Mul)...';
+    mode2Status.innerText = 'Legacy EC flow: RP FE Calculating REAL arid_i (EC Mul)...';
     try {
       await initBabyJub();
       const res = await fetch('/api/mode2/rp_info');
@@ -461,36 +459,36 @@ if (APP_MODE === 2) {
       const arid_i_point = babyJub.mulPointEscalar(rid_point, ssoMetadata.r_RP);
       ssoMetadata.arid_i = { x: F.toObject(arid_i_point[0]), y: F.toObject(arid_i_point[1]) };
 
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 7. REAL EC Calculation Done:\narid_i.x: ${ssoMetadata.arid_i.x.toString().slice(0,20)}...`;
+      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nLegacy EC flow. REAL arid_i calculation done:\narid_i.x: ${ssoMetadata.arid_i.x.toString().slice(0,20)}...`;
       
       document.getElementById('mode2WalletProofs').disabled = false;
-      mode2Status.innerText = `Step 7 Complete ${formatMs(start)}. arid_i (EC Point) calculated.`;
+      mode2Status.innerText = `Legacy EC flow complete ${formatMs(start)}. arid_i (EC Point) calculated.`;
     } catch (err) {
-      mode2Status.innerText = `Step 7 Error: ${err.message}`;
+      mode2Status.innerText = `Legacy EC flow error: ${err.message}`;
     }
   });
 
   document.getElementById('mode2WalletProofs')?.addEventListener('click', async () => {
     const start = now();
-    mode2Status.innerText = 'Step 8-9: Wallet Calculating REAL auid...';
+    mode2Status.innerText = 'Legacy EC flow: Wallet Calculating REAL auid...';
     try {
       await initBabyJub();
       // auid도 진짜 타원곡선 점으로 생성 (데모용으로 Base8 * 12345n)
       const auid_point = babyJub.mulPointEscalar(babyJub.Base8, 12345n);
       ssoMetadata.auid = { x: F.toObject(auid_point[0]), y: F.toObject(auid_point[1]) };
 
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 8-9. REAL EC Calculation Done:\nauid.x: ${ssoMetadata.auid.x.toString().slice(0,20)}...`;
+      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nLegacy EC flow. REAL auid calculation done:\nauid.x: ${ssoMetadata.auid.x.toString().slice(0,20)}...`;
       
       document.getElementById('step07RPFECalcAuidi').disabled = false;
-      mode2Status.innerText = `Step 8-9 Complete ${formatMs(start)}. auid (EC Point) ready.`;
+      mode2Status.innerText = `Legacy EC flow complete ${formatMs(start)}. auid (EC Point) ready.`;
     } catch (err) {
-      mode2Status.innerText = `Step 8-9 Error: ${err.message}`;
+      mode2Status.innerText = `Legacy EC flow error: ${err.message}`;
     }
   });
 
   document.getElementById('step07RPFECalcAuidi')?.addEventListener('click', async () => {
     const start = now();
-    mode2Status.innerText = 'Step 10: RP FE Calculating REAL auid_i (EC Mul)...';
+    mode2Status.innerText = 'Legacy EC flow: RP FE Calculating REAL auid_i (EC Mul)...';
     try {
       await initBabyJub();
       const auid_point = [F.e(ssoMetadata.auid.x), F.e(ssoMetadata.auid.y)];
@@ -499,18 +497,18 @@ if (APP_MODE === 2) {
       const auid_i_point = babyJub.mulPointEscalar(auid_point, ssoMetadata.r_RP);
       ssoMetadata.auid_i = { x: F.toObject(auid_i_point[0]), y: F.toObject(auid_i_point[1]) };
 
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 10. REAL EC Calculation Done:\nauid_i.x: ${ssoMetadata.auid_i.x.toString().slice(0,20)}...`;
+      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nLegacy EC flow. REAL auid_i calculation done:\nauid_i.x: ${ssoMetadata.auid_i.x.toString().slice(0,20)}...`;
       
       document.getElementById('step1GenerateZKP').disabled = false;
-      mode2Status.innerText = `Step 10 Complete ${formatMs(start)}. auid_i (EC Point) ready.`;
+      mode2Status.innerText = `Legacy EC flow complete ${formatMs(start)}. auid_i (EC Point) ready.`;
     } catch (err) {
-      mode2Status.innerText = `Step 10 Error: ${err.message}`;
+      mode2Status.innerText = `Legacy EC flow error: ${err.message}`;
     }
   });
 
   document.getElementById('step1GenerateZKP')?.addEventListener('click', async () => {
     const start = now();
-    mode2Status.innerText = 'Step 11: Generating HEAVY ZK Proof (pi_i)...';
+    mode2Status.innerText = 'Legacy EC flow: Generating HEAVY ZK Proof (pi_i)...';
     try {
       // pi_i 회로를 위한 진짜 입력값들
       const inputs = {
@@ -544,13 +542,13 @@ if (APP_MODE === 2) {
       };
       
       ssoMetadata.pi_i = proof;
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 11. HEAVY ZKP (pi_i) Generated ${formatMs(start)}! (25k+ constraints)`;
+      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nLegacy EC flow. HEAVY ZKP (pi_i) generated ${formatMs(start)}! (25k+ constraints)`;
       
       document.getElementById('step2SubmitToIdP').disabled = false;
       document.getElementById('step1GenerateZKPFail').disabled = false;
-      mode2Status.innerText = `Step 11 Complete ${formatMs(start)}. Heavy ZKP ready.`;
+      mode2Status.innerText = `Legacy EC flow complete ${formatMs(start)}. Heavy ZKP ready.`;
     } catch (err) {
-      mode2Status.innerText = `Step 11 Error: ${err.message}`;
+      mode2Status.innerText = `Legacy EC flow error: ${err.message}`;
     }
   });
 
@@ -657,8 +655,8 @@ async function runStep10VerifyAndContinue() {
         max_height: currentIdPToken.max_height
       },
       zkpProof: currentSSOProof.zkpProof,
-      // pi_arid_i 회로의 public signal 6개를 원래 순서
-      // [uid, rid, arid_i, auid_i, max_height, token_nonce] 그대로 전달.
+      // pi_arid_i 회로의 public signal 5개를 원래 순서
+      // [uid, arid_i, auid_i, max_height, token_nonce] 그대로 전달.
       // 일부만 보내면 RP의 snarkjs.groth16.verify()가 항상 실패한다.
       zkpPublicSignals: currentSSOProof.zkpPublicSignals
     };
@@ -936,48 +934,48 @@ async function runStep10VerifyAndContinue() {
 
   document.getElementById('step0PrepMetadataLight')?.addEventListener('click', async () => {
     const start = now();
-    mode2Status.innerText = 'Step 7 (Light): RP FE Preparing Nonce (No EC)...';
+    mode2Status.innerText = 'Legacy Light flow: RP FE Preparing Nonce (No EC)...';
     try {
       ssoMetadata.r_RP = ethers.hexlify(ethers.randomBytes(16)); // 단순 랜덤 문자열
       ssoMetadata.arid_i = { light: `arid_light_${Math.random().toString(36).substring(7)}` };
 
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 7 (Light). Raw value used (No EC) ${formatMs(start)}.`;
+      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nLegacy Light flow. Raw value used (No EC) ${formatMs(start)}.`;
       document.getElementById('mode2WalletProofsLight').disabled = false;
-      mode2Status.innerText = `Step 7 (Light) Complete ${formatMs(start)}. No 타원곡선.`;
+      mode2Status.innerText = `Legacy Light flow complete ${formatMs(start)}. No 타원곡선.`;
     } catch (err) {
-      mode2Status.innerText = `Step 7 (Light) Error: ${err.message}`;
+      mode2Status.innerText = `Legacy Light flow error: ${err.message}`;
     }
   });
 
   document.getElementById('mode2WalletProofsLight')?.addEventListener('click', async () => {
     const start = now();
-    mode2Status.innerText = 'Step 8-9 (Light): Wallet Preparing ID (No EC)...';
+    mode2Status.innerText = 'Legacy Light flow: Wallet Preparing ID (No EC)...';
     try {
       ssoMetadata.auid = { light: `auid_light_999` };
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 8-9 (Light). Raw value used ${formatMs(start)}.`;
+      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nLegacy Light flow. Raw value used ${formatMs(start)}.`;
       document.getElementById('step07RPFECalcAuidiLight').disabled = false;
-      mode2Status.innerText = `Step 8-9 (Light) Complete ${formatMs(start)}.`;
+      mode2Status.innerText = `Legacy Light flow complete ${formatMs(start)}.`;
     } catch (err) {
-      mode2Status.innerText = `Step 8-9 (Light) Error: ${err.message}`;
+      mode2Status.innerText = `Legacy Light flow error: ${err.message}`;
     }
   });
 
   document.getElementById('step07RPFECalcAuidiLight')?.addEventListener('click', async () => {
     const start = now();
-    mode2Status.innerText = 'Step 10 (Light): RP FE Linking ID (No EC)...';
+    mode2Status.innerText = 'Legacy Light flow: RP FE Linking ID (No EC)...';
     try {
       ssoMetadata.auid_i = { light: `auid_i_light_comb` };
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 10 (Light). Linking done without EC ${formatMs(start)}.`;
+      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nLegacy Light flow. Linking done without EC ${formatMs(start)}.`;
       document.getElementById('step1GenerateZKPLight').disabled = false;
-      mode2Status.innerText = `Step 10 (Light) Complete ${formatMs(start)}.`;
+      mode2Status.innerText = `Legacy Light flow complete ${formatMs(start)}.`;
     } catch (err) {
-      mode2Status.innerText = `Step 10 (Light) Error: ${err.message}`;
+      mode2Status.innerText = `Legacy Light flow error: ${err.message}`;
     }
   });
 
   document.getElementById('step1GenerateZKPLight')?.addEventListener('click', async () => {
     const start = now();
-    mode2Status.innerText = 'Step 11 (Light): Generating FAST ZK Proof (pi_PPID)...';
+    mode2Status.innerText = 'Legacy Light flow: Generating FAST ZK Proof (pi_PPID)...';
     try {
       const psTokenStr = localStorage.getItem('mode2_ps_token');
       if (!psTokenStr) throw new Error('No PS Token found.');
@@ -1012,11 +1010,11 @@ async function runStep10VerifyAndContinue() {
       };
       ssoMetadata.pi_PPID = proof;
       
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 11 (Light). FAST ZKP Generated ${formatMs(start)}! (~200 constraints)`;
+      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nLegacy Light flow. FAST ZKP generated ${formatMs(start)}! (~200 constraints)`;
       document.getElementById('step2SubmitToIdP').disabled = false;
-      mode2Status.innerText = `Step 11 (Light) Complete ${formatMs(start)}. 압도적인 속도!`;
+      mode2Status.innerText = `Legacy Light flow complete ${formatMs(start)}. 압도적인 속도!`;
     } catch (err) {
-      mode2Status.innerText = `Step 16-17 Error: ${err.message}`;
+      mode2Status.innerText = `Light ZKP Error: ${err.message}`;
     }
     });
     } // <--- 이 부분이 APP_MODE === 2 블록을 닫는 지점입니다.
