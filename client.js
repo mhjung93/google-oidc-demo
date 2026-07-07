@@ -125,6 +125,12 @@ if (APP_MODE === 2) {
       .reduce((sum, value) => sum + Number(value), 0);
   }
   const FIELD_PRIME = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+  const TOKEN_VALIDITY_SECONDS = 3600n;
+  const ETHEREUM_SLOT_SECONDS = 12n;
+
+  function validityWindowBlocks() {
+    return (TOKEN_VALIDITY_SECONDS + ETHEREUM_SLOT_SECONDS - 1n) / ETHEREUM_SLOT_SECONDS;
+  }
 
   function createSessionNonce() {
     const bytes = new Uint8Array(16);
@@ -253,14 +259,14 @@ if (APP_MODE === 2) {
       const currentBlock = BigInt(blockHex);
       return {
         currentBlock,
-        maxHeight: currentBlock + 300n, // 1 hour at 12 seconds per block.
+        maxHeight: currentBlock + validityWindowBlocks(),
         source: 'eth_blockNumber',
       };
     } catch (err) {
       console.warn('[Mode 2] eth_blockNumber failed. Using time-based max_height fallback:', err.message);
       return {
         currentBlock: null,
-        maxHeight: BigInt(Math.floor(Date.now() / 1000) + 3600),
+        maxHeight: BigInt(Math.floor(Date.now() / 1000)) + TOKEN_VALIDITY_SECONDS,
         source: 'time-fallback',
         error: err.message,
       };
