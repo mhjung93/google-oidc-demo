@@ -3,7 +3,7 @@
   "description": "A MetaMask Snap that interacts with the Google OIDC Demo.",
   "proposedName": "Google OIDC Demo Snap",
   "source": {
-    "shasum": "PcLQQQneSwtwG8rIDUz/HUgZor5zFkNIuQV4xldAg8I=",
+    "shasum": "HTUp6INzZU++axo7m4bTyfV7s+eldN04tgRKgytlGWI=",
     "location": {
       "npm": {
         "filePath": "dist/bundle.js",

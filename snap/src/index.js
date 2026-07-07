@@ -15,10 +15,12 @@ function previewHex(hex0x, maxChars = 70) {
 
 function tokenMessages(token) {
   return [
+    'IDP_TOKEN',
     String(token.arid_i),
     String(token.auid_i),
     String(token.r_token),
     String(token.max_height),
+    String(token.chain_id),
   ];
 }
 
@@ -28,9 +30,10 @@ function assertTokenMatchesWalletSubmission(token, walletSubmission, business) {
     auidOk: String(token.auid_i) === String(walletSubmission?.auid_i ?? business?.auid_i),
     tokenNonceOk: String(token.r_token) === String(walletSubmission?.r_token ?? business?.r_token ?? business?.tokenNonce),
     maxHeightOk: String(token.max_height) === String(business?.maxHeight ?? business?.max_height),
+    chainIdOk: String(token.chain_id) === String(business?.chain_id ?? business?.chainId),
   };
 
-  const success = checks.aridOk && checks.auidOk && checks.tokenNonceOk && checks.maxHeightOk;
+  const success = checks.aridOk && checks.auidOk && checks.tokenNonceOk && checks.maxHeightOk && checks.chainIdOk;
   return { success, checks };
 }
 
@@ -141,7 +144,7 @@ export const onRpcRequest = async ({ origin, request }) => {
       const business = params.business ?? {};
 
       let accepted = false;
-      let binding = { success: true, checks: { ridOk: true, aridOk: true, auidOk: true, tokenNonceOk: true, maxHeightOk: true } };
+      let binding = { success: true, checks: { ridOk: true, aridOk: true, auidOk: true, tokenNonceOk: true, maxHeightOk: true, chainIdOk: true } };
       let message;
       const verifyStart = Date.now();
       let durationMs = null;
@@ -171,8 +174,10 @@ export const onRpcRequest = async ({ origin, request }) => {
             text(`arid_i: ${previewHex(String(token.arid_i ?? 'n/a'), 70)}`),
             text(`r_token: ${previewHex(String(token.r_token ?? 'n/a'), 70)}`),
             text(`max_height: **${token.max_height ?? 'n/a'}**`),
+            text(`chain_id: **${token.chain_id ?? 'n/a'}**`),
             text(`r_token binding: **${binding.checks.tokenNonceOk ? 'PASS' : 'FAIL'}**`),
             text(`max_height binding: **${binding.checks.maxHeightOk ? 'PASS' : 'FAIL'}**`),
+            text(`chain_id binding: **${binding.checks.chainIdOk ? 'PASS' : 'FAIL'}**`),
             text(`arid_i binding: **${binding.checks.aridOk ? 'PASS' : 'FAIL'}**`),
             text(`auid_i binding: **${binding.checks.auidOk ? 'PASS' : 'FAIL'}**`),
             text(`Wallet result: **${message}**`),

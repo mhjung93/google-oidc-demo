@@ -53,7 +53,7 @@ let psParams = {
 
 let idpKeys = {
   x: null,
-  y: [], // For multiple attributes: [arid_i, auid_i, r_token, max_height]
+  y: [], // For multiple attributes: [domain, arid_i, auid_i, r_token, max_height, chain_id]
   pk: {
     X: null,
     Y: []
@@ -67,11 +67,11 @@ async function initPS() {
   psParams.g1 = mcl.hashAndMapToG1('gen1');
   psParams.g2 = mcl.hashAndMapToG2('gen2');
 
-  // 2. Generate IdP Secret Keys (x, y1, y2, y3, y4)
+  // 2. Generate IdP Secret Keys (x, y1, y2, y3, y4, y5, y6)
   idpKeys.x = new mcl.Fr();
   idpKeys.x.setByCSPRNG();
 
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 6; i++) {
     const yi = new mcl.Fr();
     yi.setByCSPRNG();
     idpKeys.y.push(yi);
@@ -79,7 +79,7 @@ async function initPS() {
 
   // 3. Generate Public Keys (X = g2^x, Yi = g2^yi)
   idpKeys.pk.X = mcl.mul(psParams.g2, idpKeys.x);
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 6; i++) {
     idpKeys.pk.Y.push(mcl.mul(psParams.g2, idpKeys.y[i]));
   }
 
@@ -92,10 +92,10 @@ function hashToFr(str) {
   return fr;
 }
 
-/**
- * PS Multi-Message Sign
- * @param {Array<string>} messages - [arid_i, auid_i, r_token, max_height]
- */
+ /**
+  * PS Multi-Message Sign
+ * @param {Array<string>} messages - domain-separated message vector
+  */
 function psSign(messages) {
   const randomStr = randomBytes(32).toString('hex');
   const h = mcl.hashAndMapToG1(randomStr);
@@ -152,7 +152,7 @@ app.post('/register_rp', (req, res) => {
   const rpToken = {
     rpName,
     rid,
-    signature: psSign([rid]),
+    signature: psSign(['RP_REG', rid]),
     issuedAt: new Date().toISOString()
   };
 
@@ -165,8 +165,8 @@ app.post('/login', async (req, res) => {
   const user = users[username];
 
   if (user && user.password === password) {
-    // Sign [arid_i, auid_i, r_token, max_height]
-    const sig = psSign(["init", "init", "0", "0"]);
+    // Sign [domain, arid_i, auid_i, r_token, max_height, chain_id]
+    const sig = psSign(["IDP_TOKEN", "init", "init", "0", "0", "0"]);
     res.json({
       success: true,
       authToken: {
@@ -259,13 +259,15 @@ async function verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, bu
   usedNonces.add(nonce);
 
   const maxHeight = business?.maxHeight ?? business?.max_height;
+  const chainId = business?.chain_id ?? business?.chainId;
   const rToken = business?.r_token ?? business?.tokenNonce;
   if (!rToken) throw new Error('r_token missing from Wallet submission');
   if (!maxHeight) throw new Error('max_height missing from Wallet submission');
+  if (!chainId) throw new Error('chain_id missing from Wallet submission');
 
   const exp = Math.floor(Date.now() / 1000) + 3600;
 
-  const messages = [business.arid_i, business.auid_i, rToken.toString(), maxHeight.toString()];
+  const messages = ['IDP_TOKEN', business.arid_i, business.auid_i, rToken.toString(), maxHeight.toString(), chainId.toString()];
   const sig = psSign(messages);
   console.log(`[CustomIdP][Step 10] Issuing IdP auth token after consent and pi_i verification. ${ms(start)}`);
 
@@ -274,6 +276,7 @@ async function verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, bu
     auid_i: business.auid_i,
     r_token: rToken.toString(),
     max_height: maxHeight.toString(),
+    chain_id: chainId.toString(),
     exp: exp,
     signature: sig
   };

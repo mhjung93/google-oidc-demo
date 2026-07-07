@@ -16,6 +16,7 @@ cache/
 *.id_token.txt
 auditor_keys.json
 bip32_out.json
+wallet_state.json
 
 # past snapshots
 backup_current_project/

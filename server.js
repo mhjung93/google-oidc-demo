@@ -66,9 +66,9 @@ app.post('/api/mode2/register', async (req, res) => {
       await initRP_PS();
     }
 
-    // RP 등록 자체가 이 IdP에서 정말 발급된 것인지 확인 — mock 문자열이 아니라
-    // psSign([rid])로 서명된 값이어야 통과한다.
-    const isRpSigValid = verifyPS_Hybrid(rpRegistration.signature, [String(rpRegistration.rid)], idpPublicKeys);
+    // RP 등록 자체가 이 IdP에서 정말 발급된 것인지 확인 — RP_REG 도메인으로
+    // psSign(['RP_REG', rid])된 값이어야 통과한다.
+    const isRpSigValid = verifyPS_Hybrid(rpRegistration.signature, ['RP_REG', String(rpRegistration.rid)], idpPublicKeys);
     if (!isRpSigValid) {
       console.error('[Mode 2] RP registration signature verification FAILED. Rejecting registration.');
       rpRegistration = null;
@@ -80,6 +80,21 @@ app.post('/api/mode2/register', async (req, res) => {
   } catch (err) {
     console.error('[Mode 2] Manual registration failed:', err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// wallet_agent.js(로컬 전용 프로세스, 127.0.0.1:5001)는 curl 등 브라우저가 아닌
+// 호출자에게 직접 토큰을 내주지 않는다. RP 서버가 같은 파일시스템에서 토큰을 읽어
+// 자기 origin(브라우저가 이미 신뢰하는)으로만 전달해서, 다른 origin/프로세스가
+// wallet_agent.js를 호출해 salt를 추출하지 못하게 한다.
+app.get('/api/mode2/wallet_agent_token', (req, res) => {
+  if (currentMode !== 2) return res.status(400).json({ error: 'Not in Mode 2' });
+  try {
+    const state = JSON.parse(fs_sync.readFileSync(path.join(__dirname, 'wallet_state.json'), 'utf8'));
+    if (!state.agentToken) throw new Error('agentToken missing');
+    res.json({ token: state.agentToken });
+  } catch (err) {
+    res.status(503).json({ error: 'wallet_agent.js has not initialized its token yet. Start wallet_agent.js first.' });
   }
 });
 
@@ -162,6 +177,30 @@ async function getCurrentHeightForToken(maxHeight) {
     value: BigInt(data.result),
     source: MODE2_ETH_RPC_URL,
   };
+}
+
+async function getRpcChainId() {
+  const response = await fetch(MODE2_ETH_RPC_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'eth_chainId',
+      params: [],
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`eth_chainId RPC failed with status ${response.status}`);
+  }
+
+  const data = await response.json();
+  if (data.error || typeof data.result !== 'string') {
+    throw new Error(data.error?.message || 'eth_chainId RPC returned no result');
+  }
+
+  return BigInt(data.result).toString();
 }
 
 app.use(session({
@@ -427,7 +466,7 @@ function verifyPS_Hybrid(sigma_prime, messages, idpPK) {
     s2.setStr(sigma_prime.sigma2, 16);
 
     // 2. PK_total = X * prod(Yi^mi) — custom_idp.js psSign()이
-    // 서명한 순서(arid_i, auid_i, r_token, max_height)와 동일해야 한다.
+    // 서명한 순서와 동일해야 한다.
     let PK_total = new mcl.G2();
     PK_total = mcl.add(idpPK.X, PK_total);
     for (let i = 0; i < messages.length; i++) {
@@ -464,6 +503,7 @@ app.post('/api/mode2/sso_success', async (req, res) => {
     assertDecimalString(idpToken.auid_i, 'idpToken.auid_i');
     assertDecimalString(idpToken.r_token, 'idpToken.r_token');
     assertDecimalString(idpToken.max_height, 'idpToken.max_height');
+    assertDecimalString(idpToken.chain_id, 'idpToken.chain_id');
     if (!idpToken.signature_prime?.sigma1 || !idpToken.signature_prime?.sigma2) {
       throw new Error('idpToken.signature_prime is missing');
     }
@@ -497,6 +537,21 @@ app.post('/api/mode2/sso_success', async (req, res) => {
   try {
     const maxHeight = BigInt(idpToken.max_height);
     const currentHeight = await getCurrentHeightForToken(maxHeight);
+    if (currentHeight.source !== 'unix-time') {
+      const rpcChainId = await getRpcChainId();
+      if (String(idpToken.chain_id) !== rpcChainId) {
+        console.error('[RP Backend] chain_id check FAILED:', {
+          token_chain_id: idpToken.chain_id,
+          rpc_chain_id: rpcChainId,
+          source: currentHeight.source,
+        });
+        return res.status(401).json({ success: false, error: 'IdP token chain_id does not match RP verification chain' });
+      }
+      console.log('[RP Backend] chain_id check PASSED:', {
+        chain_id: rpcChainId,
+        source: currentHeight.source,
+      });
+    }
     if (currentHeight.value > maxHeight) {
       console.error('[RP Backend] max_height check FAILED:', {
         current: currentHeight.value.toString(),
@@ -515,12 +570,14 @@ app.post('/api/mode2/sso_success', async (req, res) => {
     return res.status(503).json({ success: false, error: `Unable to verify max_height: ${err.message}` });
   }
 
-  // 1. 하이브리드 PS 검증 호출 — psSign()이 서명한 순서(arid_i, auid_i, r_token, max_height)와 동일해야 한다.
+  // 1. 하이브리드 PS 검증 호출 — psSign()이 서명한 순서(domain, arid_i, auid_i, r_token, max_height, chain_id)와 동일해야 한다.
   const messages_public = [
+    'IDP_TOKEN',
     String(idpToken.arid_i),
     String(idpToken.auid_i),
     String(idpToken.r_token),
-    String(idpToken.max_height)
+    String(idpToken.max_height),
+    String(idpToken.chain_id)
   ];
 
   const isSigValid = verifyPS_Hybrid(
