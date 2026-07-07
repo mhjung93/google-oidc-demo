@@ -31,6 +31,8 @@ app.use(cors());
 app.use(bodyParser.json());
 app.use('/idp', express.static(path.join(__dirname, 'idp')));
 app.use(session({
+  name: 'idp_sid', // server.js도 127.0.0.1에서 돌아서, 기본 이름(connect.sid)을 쓰면
+                   // 브라우저 쿠키 잡(포트 구분 안 함)이 서로 덮어써버린다.
   secret: 'custom-idp-secret',
   resave: false,
   saveUninitialized: true

@@ -45,6 +45,7 @@ fi
 
 compile_circuit "pi_auid"
 compile_circuit "pi_arid_i"
+compile_circuit "pi_ppid"
 compile_circuit "pi_uid"
 
 echo "🎉 All Mode 2 circuits compiled successfully in $BUILD_DIR"

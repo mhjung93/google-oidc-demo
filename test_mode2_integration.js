@@ -8,7 +8,7 @@ async function testIntegration() {
     console.log('Step 1: Registering RP...');
     const regRes = await fetch('http://localhost:3000/api/mode2/register', { method: 'POST' });
     const rpInfo = await regRes.json();
-    console.log('RP Registered:', rpInfo.clientId);
+    console.log('RP Registered:', rpInfo.rid);
 
     // 2. IdP 로그인 (mock)
     console.log('Step 2: Logging into IdP...');

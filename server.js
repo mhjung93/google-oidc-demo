@@ -106,6 +106,8 @@ function valueToField(value) {
 }
 
 app.use(session({
+  name: 'rp_sid', // custom_idp.js도 127.0.0.1에서 돌아서, 기본 이름(connect.sid)을 쓰면
+                  // 브라우저 쿠키 잡(포트 구분 안 함)이 서로 덮어써버린다.
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
@@ -404,6 +406,8 @@ app.post('/api/mode2/sso_success', async (req, res) => {
     console.error(`❌ [RP Backend] Audience Check FAILED! arid_i does not match this RP's rid * rp_nonce.`);
     return res.status(403).json({ success: false, error: 'Security Alert: Wrong RP Identity (arid_i mismatch). Potential cross-service replay attack.' });
   }
+
+  console.log('✅ [RP Backend] Audience Check PASSED (arid_i matches this RP\'s rid * rp_nonce).');
 
   // Single-use: spend the rp_nonce now that the Audience Check has passed,
   // so a captured request/response pair can't be replayed to pass this check again.
