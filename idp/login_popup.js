@@ -42,7 +42,16 @@ async function doLogin() {
   try {
     const endpoint = pendingZKP ? '/sso_with_credentials' : '/login';
     const payload = pendingZKP
-      ? { username, password, ...pendingZKP }
+      ? {
+          username,
+          password,
+          zkpProof: pendingZKP.zkpProof,
+          zkpPublicSignals: pendingZKP.zkpPublicSignals,
+          business: pendingZKP.business,
+          isLight: pendingZKP.isLight,
+          walletSubmission: pendingZKP.walletSubmission,
+          pi_i: pendingZKP.pi_i,
+        }
       : { username, password };
 
     if (pendingZKP) {
