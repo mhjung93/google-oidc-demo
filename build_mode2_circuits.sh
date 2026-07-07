@@ -30,7 +30,7 @@ compile_circuit() {
     # 3. SnarkJS ZKey Setup
     echo "▶ ZKey setup for $name..."
     npx snarkjs groth16 setup "$BUILD_DIR/$name.r1cs" "$PTAU_FILE" "$BUILD_DIR/${name}_0000.zkey"
-    npx snarkjs zkey contribute "$BUILD_DIR/${name}_0000.zkey" "$BUILD_DIR/${name}_final.zkey" --name="First Contribution" -v -e="some random text"
+    npx snarkjs zkey contribute "$BUILD_DIR/${name}_0000.zkey" "$BUILD_DIR/${name}_final.zkey" --name="First Contribution" -v -e="$(openssl rand -hex 32)"
     npx snarkjs zkey export verificationkey "$BUILD_DIR/${name}_final.zkey" "$BUILD_DIR/${name}_vkey.json"
     
     echo "✅ $name build complete."

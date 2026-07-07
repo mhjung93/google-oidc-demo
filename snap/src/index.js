@@ -15,7 +15,6 @@ function previewHex(hex0x, maxChars = 70) {
 
 function tokenMessages(token) {
   return [
-    String(token.uid),
     String(token.arid_i),
     String(token.auid_i),
     String(token.r_token),
@@ -33,6 +32,12 @@ function assertTokenMatchesWalletSubmission(token, walletSubmission, business) {
 
   const success = checks.aridOk && checks.auidOk && checks.tokenNonceOk && checks.maxHeightOk;
   return { success, checks };
+}
+
+function randomHex32() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return `0x${Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')}`;
 }
 
 // custom_idp.js의 initPS()/psSign()이 사용하는 것과 동일한 curve.
@@ -111,6 +116,23 @@ export const onRpcRequest = async ({ origin, request }) => {
       });
     }
 
+    case 'getOrCreateWalletSalt': {
+      const state = (await snap.request({
+        method: 'snap_manageState',
+        params: { operation: 'get' },
+      })) ?? {};
+
+      if (!state.mode2WalletSalt) {
+        state.mode2WalletSalt = randomHex32();
+        await snap.request({
+          method: 'snap_manageState',
+          params: { operation: 'update', newState: state },
+        });
+      }
+
+      return { salt: state.mode2WalletSalt };
+    }
+
     case 'verifyIdPAuthToken': {
       const params = request.params ?? {};
       const token = params.idpToken ?? {};
@@ -145,7 +167,6 @@ export const onRpcRequest = async ({ origin, request }) => {
             heading('Wallet Step 12'),
             text(`Origin: **${origin}**`),
             text(`PS signature verification: **${accepted ? 'PASS' : 'FAIL'}**`),
-            text(`uid: **${token.uid ?? 'n/a'}**`),
             text(`auid_i: ${previewHex(String(token.auid_i ?? 'n/a'), 70)}`),
             text(`arid_i: ${previewHex(String(token.arid_i ?? 'n/a'), 70)}`),
             text(`r_token: ${previewHex(String(token.r_token ?? 'n/a'), 70)}`),

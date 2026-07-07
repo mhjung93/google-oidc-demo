@@ -68,11 +68,11 @@ async function initPS() {
   psParams.g1 = mcl.hashAndMapToG1('gen1');
   psParams.g2 = mcl.hashAndMapToG2('gen2');
 
-  // 2. Generate IdP Secret Keys (x, y1, y2, y3, y4, y5)
+  // 2. Generate IdP Secret Keys (x, y1, y2, y3, y4)
   idpKeys.x = new mcl.Fr();
   idpKeys.x.setByCSPRNG();
 
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 4; i++) {
     const yi = new mcl.Fr();
     yi.setByCSPRNG();
     idpKeys.y.push(yi);
@@ -80,7 +80,7 @@ async function initPS() {
 
   // 3. Generate Public Keys (X = g2^x, Yi = g2^yi)
   idpKeys.pk.X = mcl.mul(psParams.g2, idpKeys.x);
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 4; i++) {
     idpKeys.pk.Y.push(mcl.mul(psParams.g2, idpKeys.y[i]));
   }
 
@@ -159,6 +159,18 @@ function summarizeValue(value) {
   return str.length > 80 ? `${str.slice(0, 80)}...` : str;
 }
 
+function assertDecimalSignals(signals, expectedLength, name) {
+  if (!Array.isArray(signals) || signals.length !== expectedLength) {
+    throw new Error(`${name} public signals must be an array of length ${expectedLength}`);
+  }
+  for (const signal of signals) {
+    if (typeof signal !== 'string' || !/^[0-9]+$/.test(signal)) {
+      throw new Error(`${name} public signals must be decimal strings`);
+    }
+  }
+  return signals;
+}
+
 // 1. RP Registration
 app.post('/register_rp', (req, res) => {
   const { rpName, callbackUrl } = req.body;
@@ -183,8 +195,8 @@ app.post('/login', async (req, res) => {
   const user = users[username];
 
   if (user && user.password === password) {
-    // Sign [uid, arid_i, auid_i, r_token, max_height]
-    const sig = psSign([user.uid, "init", "init", "0", "0"]);
+    // Sign [arid_i, auid_i, r_token, max_height]
+    const sig = psSign(["init", "init", "0", "0"]);
     res.json({
       success: true,
       authToken: {
@@ -238,13 +250,20 @@ async function verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, bu
 
   try {
     if (!zkpProof || !zkpPublicSignals) throw new Error('ZKP data missing');
+    assertDecimalSignals(zkpPublicSignals, isLight ? 3 : 5, isLight ? 'pi_auid' : 'pi_i');
 
-    // [보안 강화 1] 세션의 진짜 UID를 ZKP 공개 입력값에 강제로 주입
-    if (isLight && zkpPublicSignals.length >= 3) {
-      console.log(`[CustomIdP][Step 10] BINDING: Overwriting ZKP UID(${zkpPublicSignals[0]}) with Session UID(${user.uid}) ${ms(start)}`);
+    // [보안 강화 1] 세션의 진짜 UID를 ZKP 공개 입력값에 강제로 주입 (heavy/light 공통.
+    // pi_arid_i, pi_auid 회로 모두 public signal 배열의 0번 인덱스가 uid이므로 동일하게 적용된다.)
+    if (zkpPublicSignals.length >= 1) {
+      console.log(`[CustomIdP][Step 10] BINDING: Overwriting ZKP UID(${summarizeValue(zkpPublicSignals[0])}) with Session UID(${summarizeValue(user.uid)}) ${ms(start)}`);
       zkpPublicSignals[0] = user.uid.toString(); // 강제 교체
+    }
 
-      // [보안 강화 2] ZKP에 들어있는 rid가 등록된 RP의 것인지 확인
+    // [보안 강화 2] ZKP에 들어있는 rid가 등록된 RP의 것인지 확인 (light 전용:
+    // zkpPublicSignals[1]이 rid인 것은 pi_auid 회로에서만 성립한다. heavy의
+    // pi_arid_i는 zkpPublicSignals[1]이 arid_i이며, RP 감사 확인은 server.js에서
+    // arid_i = rid * rpNonce 재계산으로 별도 수행된다.)
+    if (isLight && zkpPublicSignals.length >= 3) {
       const claimedRid = zkpPublicSignals[1];
       const isRegisteredRP = Object.values(registeredRPs).some(rp => rp.signature === claimedRid);
       if (!isRegisteredRP && claimedRid !== '67890') { // 67890은 데모용 고정 mock값 허용
@@ -292,12 +311,11 @@ async function verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, bu
 
   const exp = Math.floor(Date.now() / 1000) + 3600;
 
-  const messages = [user.uid, business.arid_i, business.auid_i, rToken.toString(), maxHeight.toString()];
+  const messages = [business.arid_i, business.auid_i, rToken.toString(), maxHeight.toString()];
   const sig = psSign(messages);
   console.log(`[CustomIdP][Step 10] Issuing IdP auth token after consent and pi_i verification. ${ms(start)}`);
 
   const idpToken = {
-    uid: user.uid,
     arid_i: business.arid_i,
     auid_i: business.auid_i,
     r_token: rToken.toString(),

@@ -3,7 +3,7 @@
   "description": "A MetaMask Snap that interacts with the Google OIDC Demo.",
   "proposedName": "Google OIDC Demo Snap",
   "source": {
-    "shasum": "RMOilsYWFgSaVt56GIgAhbWVDzegoN6Q6VJvHvrL8SA=",
+    "shasum": "PcLQQQneSwtwG8rIDUz/HUgZor5zFkNIuQV4xldAg8I=",
     "location": {
       "npm": {
         "filePath": "dist/bundle.js",
@@ -17,6 +17,7 @@
       "dapps": true
     },
     "snap_dialog": {},
+    "snap_manageState": {},
     "endowment:ethereum-provider": {},
     "endowment:webassembly": {},
     "endowment:network-access": {}

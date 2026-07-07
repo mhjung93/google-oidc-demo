@@ -105,6 +105,24 @@ function valueToField(value) {
   return BigInt(`0x${hex || '0'}`) % FIELD_PRIME;
 }
 
+function previewValue(value, maxChars = 48) {
+  if (value === undefined || value === null) return 'n/a';
+  const str = typeof value === 'string' ? value : JSON.stringify(value);
+  return str.length > maxChars ? `${str.slice(0, maxChars)}...` : str;
+}
+
+function assertDecimalSignals(signals, expectedLength, name) {
+  if (!Array.isArray(signals) || signals.length !== expectedLength) {
+    throw new Error(`${name} public signals must be an array of length ${expectedLength}`);
+  }
+  for (const signal of signals) {
+    if (typeof signal !== 'string' || !/^[0-9]+$/.test(signal)) {
+      throw new Error(`${name} public signals must be decimal strings`);
+    }
+  }
+  return signals;
+}
+
 app.use(session({
   name: 'rp_sid', // custom_idp.js도 127.0.0.1에서 돌아서, 기본 이름(connect.sid)을 쓰면
                   // 브라우저 쿠키 잡(포트 구분 안 함)이 서로 덮어써버린다.
@@ -146,9 +164,16 @@ app.get('/', (req, res) => {
     <hr>
   `;
 
+  // 클라이언트 JS가 로드되기 전에 서버가 이미 아는 currentMode대로 바로 렌더링해서,
+  // "Mode 1 버튼들이 잠깐 보였다가 Mode 2로 바뀌는" 깜빡임을 없앤다.
+  const modeVisibilityStyle = currentMode === 2
+    ? `<style>#mode2Section { display: block !important; } #snapSection { display: none !important; }</style>`
+    : `<style>#mode2Section { display: none !important; }</style>`;
+
   res.send(`
     <h2>Conditional Privacy-Preserving Web3 Authentication - Mode ${currentMode}</h2>
     <script>window.APP_MODE = ${currentMode};</script>
+    ${modeVisibilityStyle}
     ${oidcLinks}
     <!-- index.html content here -->
     ${fs_sync.readFileSync(path.join(__dirname, 'index.html'), 'utf-8')}
@@ -174,7 +199,7 @@ app.post('/api/mode2/rp_credential_nonce', (req, res) => {
 
   const rpNonce = generators.nonce();
   req.session.rpNonce = rpNonce;
-  console.log(`[Mode 2] Step 5. RP nonce created ${ms(start)}:`, { rpNonce });
+  console.log(`[Mode 2] Step 5. RP nonce created ${ms(start)}:`, { rpNonce: previewValue(rpNonce) });
 
   const responseBody = {
     success: Boolean(rpRegistration?.rid),
@@ -184,7 +209,15 @@ app.post('/api/mode2/rp_credential_nonce', (req, res) => {
     rpNonce
   };
 
-  console.log(`[Mode 2] Step 6. RP credential and nonce response ${ms(start)}:`, responseBody);
+  console.log(`[Mode 2] Step 6. RP credential and nonce response ${ms(start)}:`, {
+    ...responseBody,
+    rpCredential: rpRegistration ? {
+      ...rpRegistration,
+      rid: previewValue(rpRegistration.rid),
+      signature: previewValue(rpRegistration.signature),
+    } : rpRegistration,
+    rpNonce: previewValue(rpNonce),
+  });
 
   if (!rpRegistration?.rid) {
     return res.status(400).json({
@@ -409,20 +442,9 @@ app.post('/api/mode2/sso_success', async (req, res) => {
 
   console.log('✅ [RP Backend] Audience Check PASSED (arid_i matches this RP\'s rid * rp_nonce).');
 
-  // Single-use: spend the rp_nonce now that the Audience Check has passed,
-  // so a captured request/response pair can't be replayed to pass this check again.
-  delete req.session.rpNonce;
-
   // 1. ZKP 검증 (수학적 증명 확인)
   try {
-    // 공개 신호가 객체로 올 경우 배열로 변환
-    let signalsArray = zkpPublicSignals;
-    if (typeof zkpPublicSignals === 'object' && !Array.isArray(zkpPublicSignals)) {
-      // 클라이언트가 보낸 P_commitment_x, y 등을 배열로 변환하거나, 
-      // pi_arid_i의 원래 공개 출력 순서에 맞춰야 합니다.
-      // 여기서는 데모를 위해 전체 zkpPublicSignals 데이터를 활용합니다.
-      signalsArray = Object.values(zkpPublicSignals); 
-    }
+    const signalsArray = assertDecimalSignals(zkpPublicSignals, 5, 'pi_i');
 
     // RP 서버도 snarkjs로 직접 검증!
     const isZkpValid = await snarkjs.groth16.verify(vkeyAridI, signalsArray, zkpProof);
@@ -446,9 +468,8 @@ app.post('/api/mode2/sso_success', async (req, res) => {
     return res.status(401).json({ success: false, error: 'ZKP verification error' });
   }
 
-  // 2. 하이브리드 PS 검증 호출 — psSign()이 서명한 순서(uid, arid_i, auid_i, r_token, max_height)와 동일해야 한다.
+  // 2. 하이브리드 PS 검증 호출 — psSign()이 서명한 순서(arid_i, auid_i, r_token, max_height)와 동일해야 한다.
   const messages_public = [
-    String(idpToken.uid),
     String(idpToken.arid_i),
     String(idpToken.auid_i),
     String(idpToken.r_token),
@@ -464,6 +485,10 @@ app.post('/api/mode2/sso_success', async (req, res) => {
   if (!isSigValid) {
     return res.status(401).json({ success: false, error: 'Invalid Hybrid PS Signature' });
   }
+
+  // Single-use: spend the rp_nonce only after the full RP-side verification
+  // succeeds, so malformed proof/signature attempts do not burn the session.
+  delete req.session.rpNonce;
 
   console.log('[Mode 2] Hybrid Verification SUCCESS. Session established.');
   res.json({ success: true });

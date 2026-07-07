@@ -52,7 +52,7 @@ if (APP_MODE === 2) {
       const display = document.getElementById('ssoIntermediateDisplay');
       display.innerText = `Step 1. Delegated Login started ${formatMs(start)}.`;
       display.innerText += `\n\nStep 2. Initialize wallet-side module ${formatMs(start)}:\nSnap connected; no EOA account/address selected.`;
-      display.innerText += `\n\nStep 3. RP FE session nonce created ${formatMs(start)}:\nsessionNonce: ${mode2SessionNonce}`;
+      display.innerText += `\n\nStep 3. RP FE session nonce created ${formatMs(start)}:\nsessionNonce: ${previewValue(mode2SessionNonce)}`;
       display.innerText += `\n\nStep 4. RP credential and RP nonce request sent ${formatMs(start)}.`;
 
       const requestBody = {
@@ -77,8 +77,8 @@ if (APP_MODE === 2) {
       ssoMetadata.r_i = data.r_i || data.sessionNonce;
       ssoMetadata.rpNonce = data.rpNonce;
       const sessionNonceCheck = data.sessionNonce === mode2SessionNonce;
-      display.innerText += `\n\nStep 6. RP credential and nonce received ${formatMs(start)}:\nrpNonce: ${data.rpNonce}`;
-      display.innerText += `\n\nStep 7. RP FE sends values to Wallet ${formatMs(start)}:\nrid: ${data.rpCredential?.rid}\nsignature: ${data.rpCredential?.signature}\nsessionNonce: ${data.sessionNonce}\nsessionNonce check: ${sessionNonceCheck}\nrpNonce: ${data.rpNonce}`;
+      display.innerText += `\n\nStep 6. RP credential and nonce received ${formatMs(start)}:\nrpNonce: ${previewValue(data.rpNonce)}`;
+      display.innerText += `\n\nStep 7. RP FE sends values to Wallet ${formatMs(start)}:\nrid: ${previewValue(data.rpCredential?.rid)}\nsignature: ${previewValue(data.rpCredential?.signature)}\nsessionNonce: ${previewValue(data.sessionNonce)}\nsessionNonce check: ${sessionNonceCheck}\nrpNonce: ${previewValue(data.rpNonce)}`;
       appendRpFeVisibleFlow(`Step 7. RP FE -> Wallet ${formatMs(start)}`);
       appendRpFeVisibleFlow(`  rid: ${previewValue(data.rpCredential?.rid)}`);
       appendRpFeVisibleFlow(`  r_i check: ${sessionNonceCheck ? 'PASS' : 'FAIL'}`);
@@ -112,7 +112,6 @@ if (APP_MODE === 2) {
     pi_i: null,
     pi_PPID: null,
     pi_uid: null,
-    salt_fixed: 'wallet-fixed-salt-888',
     step12Verified: false
   };
 
@@ -167,6 +166,23 @@ if (APP_MODE === 2) {
     const log = document.getElementById('rpFeVisibleFlowLog');
     if (!log) return;
     log.innerText += `${line}\n`;
+  }
+
+  async function getOrCreateWalletSalt() {
+    const result = await window.ethereum.request({
+      method: 'wallet_invokeSnap',
+      params: {
+        snapId,
+        request: {
+          method: 'getOrCreateWalletSalt',
+        },
+      },
+    });
+
+    if (!result?.salt || typeof result.salt !== 'string') {
+      throw new Error('Wallet salt is missing');
+    }
+    return result.salt;
   }
 
   const IDP_ORIGIN = 'http://127.0.0.1:4000';
@@ -294,7 +310,7 @@ if (APP_MODE === 2) {
       markStep8('Poseidon init');
 
       const uidField = valueToField(ssoMetadata.uid);
-      const walletSalt = ssoMetadata.salt_fixed;
+      const walletSalt = await getOrCreateWalletSalt();
       const saltField = valueToField(walletSalt);
       // rid: IdP가 RP 등록 시 발급한 숫자 스칼라, 회로에서는 private input.
       const rid = BigInt(ssoMetadata.rpCredential.rid);
@@ -304,7 +320,7 @@ if (APP_MODE === 2) {
       ssoMetadata.ppid = ppid;
       appendWalletLog(`✓ PPID generated: ${ppid.toString().slice(0, 32)}...`);
       appendWalletLog('  formula: uid * rid * salt');
-      appendWalletLog('  salt source: wallet internal value');
+      appendWalletLog('  salt source: Snap-managed wallet secret');
 
       // rp_nonce (RP 서버가 발급한 값)가 블라인딩 스칼라 역할을 겸한다 — 별도의
       // 지갑 생성 r_RP는 더 이상 쓰지 않는다. 회로에서는 private input으로 숨겨진다.
@@ -661,7 +677,15 @@ async function runStep10VerifyAndContinue() {
       zkpPublicSignals: currentSSOProof.zkpPublicSignals
     };
 
-    console.log('[Mode 2] Sending Hybrid Verify Request:', requestBody);
+    console.log('[Mode 2] Sending Hybrid Verify Request:', {
+      idpToken: {
+        arid_i: previewValue(requestBody.idpToken.arid_i),
+        auid_i: previewValue(requestBody.idpToken.auid_i),
+        r_token: previewValue(requestBody.idpToken.r_token),
+        max_height: requestBody.idpToken.max_height
+      },
+      publicSignalsLength: Array.isArray(requestBody.zkpPublicSignals) ? requestBody.zkpPublicSignals.length : 'invalid'
+    });
 
     const res = await fetch('/api/mode2/sso_success', {
       method: 'POST',
@@ -844,7 +868,7 @@ async function runStep10VerifyAndContinue() {
     const ppidFromProof = ppidPublicSignals?.[1] != null ? BigInt(ppidPublicSignals[1]) : null;
 
     let piPpidOk = false;
-    if (ssoMetadata.pi_PPID?.proof && ppidPublicSignals) {
+    if (ssoMetadata.pi_PPID?.proof && Array.isArray(ppidPublicSignals) && ppidPublicSignals.length === 2) {
       try {
         const vkey = await getPiPpidVkey();
         piPpidOk = await snarkjs.groth16.verify(vkey, ppidPublicSignals, ssoMetadata.pi_PPID.proof);
