@@ -23,7 +23,7 @@ Relevant responsibilities:
 - Registers the RP with the Custom IdP through `/api/mode2/register`.
 - Exposes current RP registration through `/api/mode2/rp_info`.
 - Loads the IdP PS public keys with `initRP_PS()`.
-- Receives the final IdP token and proof at `/api/mode2/sso_success`.
+- Receives the final IdP token at `/api/mode2/sso_success`.
 - Attempts RP-side ZKP and hybrid PS verification.
 
 Relevant endpoints:
@@ -66,7 +66,7 @@ Relevant responsibilities:
 - Logs into the Custom IdP with demo credentials.
 - Connects MetaMask.
 - Computes scalar Mode 2 values for `PPID`, `arid_i`, `auid_i`, and `token_nonce`.
-- Generates Groth16 proofs in the browser with `snarkjs.groth16.fullProve`.
+- Asks the Snap to generate Mode 2 identifiers and Groth16 proofs.
 - Sends ZKP data to the Custom IdP popup via `postMessage`.
 - Sends the returned IdP token and proof to the RP backend.
 
@@ -217,6 +217,10 @@ Output:
 
 Client action in `runWalletStep7()`:
 
+- Calls the Snap method `generateStep8Proofs`.
+
+Snap action:
+
 - Treats IdP-issued `rid` as the RP audience scalar for the demo.
 - Computes `PPID = uid * rid * salt`.
 - Computes `arid_i = rid * rpNonce`.
@@ -257,7 +261,7 @@ Public signal order:
 
 - `[uid, arid_i, auid_i, max_height, token_nonce]`
 
-Proof call:
+Proof call inside the Snap:
 
 ```js
 snarkjs.groth16.fullProve(
@@ -294,7 +298,7 @@ Popup action:
 IdP action:
 
 - Verifies credentials.
-- Verifies `pi_i`.
+- After popup consent, verifies `pi_i`.
 - Tracks replay by `r_i`.
 - Signs `[arid_i, auid_i, r_token, max_height]`.
 - Returns `idpToken`.
@@ -303,11 +307,11 @@ Output:
 
 - `currentIdPToken`
 
-### Step 10: RP Backend Verifies pi_i and IdP Token
+### Step 10: RP Backend Verifies IdP Token and Audience
 
 UI button:
 
-- `Step 10. Verify pi_i & IdP Token`
+- `Step 10. Verify IdP Token & Audience`
 
 RP endpoint:
 
@@ -316,15 +320,12 @@ RP endpoint:
 Request body:
 
 - `idpToken`
-- `zkpProof`
-- `zkpPublicSignals`
 
 RP action:
 
+- Checks required token fields and PS signature format.
 - Recomputes `expectedAridI = rpRegistration.rid * req.session.rpNonce`.
 - Checks `idpToken.arid_i` against the recomputed value.
-- Verifies Groth16 proof with `pi_arid_i_vkey.json`.
-- Checks token fields against `pi_i` public signals.
 - Calls `verifyPS_Hybrid` over `[arid_i, auid_i, r_token, max_height]`.
 - Deletes `req.session.rpNonce` after the full RP-side verification succeeds.
 - Returns `{ success: true }` on demo success.

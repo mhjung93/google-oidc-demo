@@ -14,13 +14,9 @@ import { sha256 } from '@noble/hashes/sha256';
 import { TextEncoder } from 'util';
 import { Buffer } from 'buffer';
 import mcl from 'mcl-wasm';
-import * as snarkjs from 'snarkjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-// RP 전용 VKey 로드 (pi_arid_i 검증용)
-const vkeyAridI = JSON.parse(fs_sync.readFileSync('build/mode2/pi_arid_i_vkey.json', 'utf8'));
 
 const {
   PORT = 3000,
@@ -112,16 +108,11 @@ function previewValue(value, maxChars = 48) {
   return str.length > maxChars ? `${str.slice(0, maxChars)}...` : str;
 }
 
-function assertDecimalSignals(signals, expectedLength, name) {
-  if (!Array.isArray(signals) || signals.length !== expectedLength) {
-    throw new Error(`${name} public signals must be an array of length ${expectedLength}`);
+function assertDecimalString(value, name) {
+  if (typeof value !== 'string' || !/^[0-9]+$/.test(value)) {
+    throw new Error(`${name} must be a decimal string`);
   }
-  for (const signal of signals) {
-    if (typeof signal !== 'string' || !/^[0-9]+$/.test(signal)) {
-      throw new Error(`${name} public signals must be decimal strings`);
-    }
-  }
-  return signals;
+  return value;
 }
 
 app.use(session({
@@ -411,13 +402,25 @@ function verifyPS_Hybrid(sigma_prime, messages, idpPK) {
 
 // Mode 2: SSO Success Callback (Hybrid Version)
 app.post('/api/mode2/sso_success', async (req, res) => {
-  const { idpToken, zkpProof, zkpPublicSignals } = req.body;
+  const { idpToken } = req.body;
   
-  if (!idpToken || !zkpPublicSignals || !zkpProof) {
-    return res.status(400).json({ success: false, error: 'Incomplete data for RP verification' });
+  if (!idpToken) {
+    return res.status(400).json({ success: false, error: 'Missing IdP token for RP verification' });
   }
 
-  console.log('--- [RP Backend] Verifying ZKP + PS Signature ---');
+  console.log('--- [RP Backend] Verifying IdP Token + RP Audience ---');
+
+  try {
+    assertDecimalString(idpToken.arid_i, 'idpToken.arid_i');
+    assertDecimalString(idpToken.auid_i, 'idpToken.auid_i');
+    assertDecimalString(idpToken.r_token, 'idpToken.r_token');
+    assertDecimalString(idpToken.max_height, 'idpToken.max_height');
+    if (!idpToken.signature_prime?.sigma1 || !idpToken.signature_prime?.sigma2) {
+      throw new Error('idpToken.signature_prime is missing');
+    }
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
 
   // 0. RP 본인의 rid와 rp_nonce로 arid_i를 직접 재계산해서 검증 (Audience Check).
   // IdP는 rid를 모르므로 이 확인은 전적으로 RP 자신의 책임이다.
@@ -442,33 +445,7 @@ app.post('/api/mode2/sso_success', async (req, res) => {
 
   console.log('✅ [RP Backend] Audience Check PASSED (arid_i matches this RP\'s rid * rp_nonce).');
 
-  // 1. ZKP 검증 (수학적 증명 확인)
-  try {
-    const signalsArray = assertDecimalSignals(zkpPublicSignals, 5, 'pi_i');
-
-    // RP 서버도 snarkjs로 직접 검증!
-    const isZkpValid = await snarkjs.groth16.verify(vkeyAridI, signalsArray, zkpProof);
-
-    if (!isZkpValid) {
-      console.error('❌ [RP Backend] ZKP Verification FAILED!');
-      return res.status(401).json({ success: false, error: 'Invalid ZKP: Identity linking is not valid.' });
-    }
-    if (
-      String(signalsArray[1]) !== String(idpToken.arid_i) ||
-      String(signalsArray[2]) !== String(idpToken.auid_i) ||
-      String(signalsArray[3]) !== String(idpToken.max_height) ||
-      String(signalsArray[4]) !== String(idpToken.r_token)
-    ) {
-      console.error('❌ [RP Backend] IdP token fields do not match pi_i public signals.');
-      return res.status(401).json({ success: false, error: 'IdP token is not bound to pi_i public signals' });
-    }
-    console.log('✅ [RP Backend] ZKP Verified.');
-  } catch (err) {
-    console.error('❌ [RP Backend] ZKP verification error:', err.message);
-    return res.status(401).json({ success: false, error: 'ZKP verification error' });
-  }
-
-  // 2. 하이브리드 PS 검증 호출 — psSign()이 서명한 순서(arid_i, auid_i, r_token, max_height)와 동일해야 한다.
+  // 1. 하이브리드 PS 검증 호출 — psSign()이 서명한 순서(arid_i, auid_i, r_token, max_height)와 동일해야 한다.
   const messages_public = [
     String(idpToken.arid_i),
     String(idpToken.auid_i),
@@ -572,7 +549,6 @@ app.use((err, req, res, next) => {
 const server = app.listen(PORT, async () => {
   if (currentMode === 2) {
     await initRP_PS();
-    await snarkjs.curves.getCurveFromName('bn128'); // bn128 WASM 모듈 미리 빌드 (첫 zk 검증 지연 방지)
   }
   console.log(`OIDC demo running at ${BASE_URL}`);
 });
