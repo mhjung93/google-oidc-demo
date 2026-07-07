@@ -31,9 +31,6 @@ const {
   SESSION_SECRET,
 } = process.env;
 
-// Debug: Check raw currentMode from process.env
-console.log('[DEBUG] process.env.APP_MODE:', process.env.APP_MODE);
-
 const currentMode = parseInt(process.env.APP_MODE) || 1;
 console.log(`[SERVER] Starting in Mode: ${currentMode}`);
 
@@ -60,9 +57,13 @@ app.post('/api/mode2/register', async (req, res) => {
       body: JSON.stringify(registrationRequest)
     });
     rpRegistration = await response.json();
-    console.log(`[Mode 2] Manually Registered with Custom IdP. rid: ${rpRegistration.rid}`);
+    console.log(`[Mode 2] Manually Registered with Custom IdP. rid: ${previewValue(rpRegistration.rid)}`);
     console.log('[Mode 2] RP registration request:', registrationRequest);
-    console.log('[Mode 2] RP registration response:', rpRegistration);
+    console.log('[Mode 2] RP registration response:', {
+      ...rpRegistration,
+      rid: previewValue(rpRegistration.rid),
+      signature: previewValue(rpRegistration.signature)
+    });
     if (!idpPublicKeys || !psParams.g2) {
       console.log('[Mode 2] Retrying IdP public key load after RP registration...');
       await initRP_PS();
@@ -385,9 +386,8 @@ function verifyPS_Hybrid(sigma_prime, messages, idpPK) {
     s1.setStr(sigma_prime.sigma1, 16);
     s2.setStr(sigma_prime.sigma2, 16);
 
-    // 2. PK_total = X * prod(Yi^mi) — psSign()이 서명한 것과 동일한 순서
-    // (uid, arid_i, auid_i, r_token, max_height)의 메시지로 재구성해야 아래 페어링 등식이 성립한다.
-    // (custom_idp.js의 psVerify()와 동일한 검증식)
+    // 2. PK_total = X * prod(Yi^mi) — custom_idp.js psSign()이
+    // 서명한 순서(arid_i, auid_i, r_token, max_height)와 동일해야 한다.
     let PK_total = new mcl.G2();
     PK_total = mcl.add(idpPK.X, PK_total);
     for (let i = 0; i < messages.length; i++) {

@@ -4,14 +4,12 @@ const snapId = 'local:http://localhost:8081';
 const APP_MODE = window.APP_MODE || 1;
 console.log(`[CLIENT] Running in Mode ${APP_MODE}`);
 
-// Import circomlibjs (BabyJubJub) via esm.sh CDN (Handles dependencies automatically)
-let buildBabyjub;
+// Import circomlibjs Poseidon via esm.sh CDN (Handles dependencies automatically)
 let buildPoseidon;
 try {
   const module = await import('https://esm.sh/circomlibjs@0.1.7');
-  buildBabyjub = module.buildBabyjub;
   buildPoseidon = module.buildPoseidon;
-  console.log('circomlibjs (BabyJubJub) loaded successfully via esm.sh');
+  console.log('circomlibjs Poseidon loaded successfully via esm.sh');
 } catch (err) {
   console.error('Failed to load circomlibjs via esm.sh:', err);
 }
@@ -111,7 +109,6 @@ if (APP_MODE === 2) {
     auid_i: null,
     pi_i: null,
     pi_PPID: null,
-    pi_uid: null,
     step12Verified: false
   };
 
@@ -270,25 +267,6 @@ if (APP_MODE === 2) {
     }
   }
 
-  let babyJub = null;
-  let F = null;
-
-  // Initialize BabyJubJub (must be called before EC operations)
-  async function initBabyJub() {
-    if (babyJub) return;
-    
-    if (buildBabyjub) {
-      babyJub = await buildBabyjub();
-    } else if (window.circomlibjs && window.circomlibjs.buildBabyjub) {
-      babyJub = await window.circomlibjs.buildBabyjub();
-    } else {
-      throw new Error('circomlibjs (buildBabyjub) not found. Please ensure internet access.');
-    }
-    
-    F = babyJub.F;
-    console.log('[Mode 2] BabyJubJub initialized successfully');
-  }
-
   async function runWalletStep7() {
     const start = now();
     let segmentStart = start;
@@ -442,7 +420,6 @@ if (APP_MODE === 2) {
         .join('\n');
       document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 8. Wallet generated PPID, arid_i, auid_i, signing key pair, r_token, pi_i, and pi_PPID ${formatMs(start)}.\nStep 8 timing breakdown:\n${breakdownText}`;
       document.getElementById('step2SubmitToIdP').disabled = false;
-      document.getElementById('step1GenerateZKPFail').disabled = false;
       // Disabled for demo flow; keep showWalletProcessSummary() available for later.
       // await showWalletProcessSummary();
       openIdPLoginPopup();
@@ -453,137 +430,6 @@ if (APP_MODE === 2) {
       // await showWalletProcessSummary();
     }
   }
-
-  document.getElementById('step0PrepMetadata')?.addEventListener('click', async () => {
-    const start = now();
-    mode2Status.innerText = 'Legacy EC flow: RP FE Calculating REAL arid_i (EC Mul)...';
-    try {
-      await initBabyJub();
-      const res = await fetch('/api/mode2/rp_info');
-      const rpInfo = await res.json();
-      
-      // 진짜 BabyJubJub 연산을 시작합니다.
-      // 1. rid (Base Point로 가정)
-      const rid_point = babyJub.Base8; 
-      ssoMetadata.rid = { x: F.toObject(rid_point[0]), y: F.toObject(rid_point[1]) };
-
-      // 2. r_RP (랜덤 스칼라)
-      const r_RP_bytes = ethers.randomBytes(31); // 253비트 미만으로 안전하게 생성
-      ssoMetadata.r_RP = BigInt(ethers.hexlify(r_RP_bytes));
-
-      // 3. arid_i = rid * r_RP (진짜 타원곡선 곱셈!)
-      const arid_i_point = babyJub.mulPointEscalar(rid_point, ssoMetadata.r_RP);
-      ssoMetadata.arid_i = { x: F.toObject(arid_i_point[0]), y: F.toObject(arid_i_point[1]) };
-
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nLegacy EC flow. REAL arid_i calculation done:\narid_i.x: ${ssoMetadata.arid_i.x.toString().slice(0,20)}...`;
-      
-      document.getElementById('mode2WalletProofs').disabled = false;
-      mode2Status.innerText = `Legacy EC flow complete ${formatMs(start)}. arid_i (EC Point) calculated.`;
-    } catch (err) {
-      mode2Status.innerText = `Legacy EC flow error: ${err.message}`;
-    }
-  });
-
-  document.getElementById('mode2WalletProofs')?.addEventListener('click', async () => {
-    const start = now();
-    mode2Status.innerText = 'Legacy EC flow: Wallet Calculating REAL auid...';
-    try {
-      await initBabyJub();
-      // auid도 진짜 타원곡선 점으로 생성 (데모용으로 Base8 * 12345n)
-      const auid_point = babyJub.mulPointEscalar(babyJub.Base8, 12345n);
-      ssoMetadata.auid = { x: F.toObject(auid_point[0]), y: F.toObject(auid_point[1]) };
-
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nLegacy EC flow. REAL auid calculation done:\nauid.x: ${ssoMetadata.auid.x.toString().slice(0,20)}...`;
-      
-      document.getElementById('step07RPFECalcAuidi').disabled = false;
-      mode2Status.innerText = `Legacy EC flow complete ${formatMs(start)}. auid (EC Point) ready.`;
-    } catch (err) {
-      mode2Status.innerText = `Legacy EC flow error: ${err.message}`;
-    }
-  });
-
-  document.getElementById('step07RPFECalcAuidi')?.addEventListener('click', async () => {
-    const start = now();
-    mode2Status.innerText = 'Legacy EC flow: RP FE Calculating REAL auid_i (EC Mul)...';
-    try {
-      await initBabyJub();
-      const auid_point = [F.e(ssoMetadata.auid.x), F.e(ssoMetadata.auid.y)];
-      
-      // auid_i = auid * r_RP
-      const auid_i_point = babyJub.mulPointEscalar(auid_point, ssoMetadata.r_RP);
-      ssoMetadata.auid_i = { x: F.toObject(auid_i_point[0]), y: F.toObject(auid_i_point[1]) };
-
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nLegacy EC flow. REAL auid_i calculation done:\nauid_i.x: ${ssoMetadata.auid_i.x.toString().slice(0,20)}...`;
-      
-      document.getElementById('step1GenerateZKP').disabled = false;
-      mode2Status.innerText = `Legacy EC flow complete ${formatMs(start)}. auid_i (EC Point) ready.`;
-    } catch (err) {
-      mode2Status.innerText = `Legacy EC flow error: ${err.message}`;
-    }
-  });
-
-  document.getElementById('step1GenerateZKP')?.addEventListener('click', async () => {
-    const start = now();
-    mode2Status.innerText = 'Legacy EC flow: Generating HEAVY ZK Proof (pi_i)...';
-    try {
-      // pi_i 회로를 위한 진짜 입력값들
-      const inputs = {
-        r_RP: ssoMetadata.r_RP.toString(),
-        rid_x: ssoMetadata.rid.x.toString(),
-        rid_y: ssoMetadata.rid.y.toString(),
-        auid_x: ssoMetadata.auid.x.toString(),
-        auid_y: ssoMetadata.auid.y.toString(),
-        arid_i_x: ssoMetadata.arid_i.x.toString(),
-        arid_i_y: ssoMetadata.arid_i.y.toString(),
-        auid_i_x: ssoMetadata.auid_i.x.toString(),
-        auid_i_y: ssoMetadata.auid_i.y.toString()
-      };
-
-      console.log('[Mode 2] Proving HEAVY circuit pi_i (2x EC Mul)...');
-      const { proof, publicSignals } = await snarkjs.groth16.fullProve(
-        inputs,
-        "/build/mode2/pi_arid_i_js/pi_arid_i.wasm",
-        "/build/mode2/pi_arid_i_final.zkey"
-      );
-
-      currentSSOProof = {
-        zkpProof: proof,
-        zkpPublicSignals: publicSignals,
-        business: {
-          sub: 'pending',
-          arid_i: ssoMetadata.arid_i.x.toString(), // 데모용 식별자로 사용
-          auid_i: ssoMetadata.auid_i.x.toString(),
-          r_RP: ssoMetadata.r_RP.toString()
-        }
-      };
-      
-      ssoMetadata.pi_i = proof;
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nLegacy EC flow. HEAVY ZKP (pi_i) generated ${formatMs(start)}! (25k+ constraints)`;
-      
-      document.getElementById('step2SubmitToIdP').disabled = false;
-      document.getElementById('step1GenerateZKPFail').disabled = false;
-      mode2Status.innerText = `Legacy EC flow complete ${formatMs(start)}. Heavy ZKP ready.`;
-    } catch (err) {
-      mode2Status.innerText = `Legacy EC flow error: ${err.message}`;
-    }
-  });
-
-  document.getElementById('step1GenerateZKPFail')?.addEventListener('click', async () => {
-    mode2Status.innerText = 'SIMULATING ERROR: Tampering with Public Signals...';
-    if (!currentSSOProof) return;
-    
-    // 증명은 그대로지만, 공개 신호 중 하나를 조작하여 검증 실패 유도
-    if (currentSSOProof.zkpPublicSignals && currentSSOProof.zkpPublicSignals.length > 0) {
-      currentSSOProof.zkpPublicSignals[0] = "9999999999"; 
-    }
-    
-    document.getElementById('step15NotifyWallet').disabled = true;
-    document.getElementById('step3CompleteRP').disabled = true;
-
-    console.warn('[Mode 2] ZKP Public Signals Tampered. IdP will reject this.');
-    document.getElementById('ssoIntermediateDisplay').innerText += `\n\n[FAIL TEST] Public Signals tampered! Submit now to see IdP rejection.`;
-    mode2Status.innerText = 'Tampering complete. Now click Step 9 to see it FAIL.';
-  });
 
   // Global helper for the popup to get current ZKP
   window.getPendingZKP = () => currentSSOProof;
@@ -954,97 +800,10 @@ async function runStep10VerifyAndContinue() {
     appendRpFeVisibleFlow(`  Step 15: ${formatDurationMs(measuredDurations.step15)}`);
   }
 
-  // --- Light ZKP (Poseidon Only) Flow ---
+  } // End APP_MODE === 2 block.
 
-  document.getElementById('step0PrepMetadataLight')?.addEventListener('click', async () => {
-    const start = now();
-    mode2Status.innerText = 'Legacy Light flow: RP FE Preparing Nonce (No EC)...';
-    try {
-      ssoMetadata.r_RP = ethers.hexlify(ethers.randomBytes(16)); // 단순 랜덤 문자열
-      ssoMetadata.arid_i = { light: `arid_light_${Math.random().toString(36).substring(7)}` };
-
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nLegacy Light flow. Raw value used (No EC) ${formatMs(start)}.`;
-      document.getElementById('mode2WalletProofsLight').disabled = false;
-      mode2Status.innerText = `Legacy Light flow complete ${formatMs(start)}. No 타원곡선.`;
-    } catch (err) {
-      mode2Status.innerText = `Legacy Light flow error: ${err.message}`;
-    }
-  });
-
-  document.getElementById('mode2WalletProofsLight')?.addEventListener('click', async () => {
-    const start = now();
-    mode2Status.innerText = 'Legacy Light flow: Wallet Preparing ID (No EC)...';
-    try {
-      ssoMetadata.auid = { light: `auid_light_999` };
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nLegacy Light flow. Raw value used ${formatMs(start)}.`;
-      document.getElementById('step07RPFECalcAuidiLight').disabled = false;
-      mode2Status.innerText = `Legacy Light flow complete ${formatMs(start)}.`;
-    } catch (err) {
-      mode2Status.innerText = `Legacy Light flow error: ${err.message}`;
-    }
-  });
-
-  document.getElementById('step07RPFECalcAuidiLight')?.addEventListener('click', async () => {
-    const start = now();
-    mode2Status.innerText = 'Legacy Light flow: RP FE Linking ID (No EC)...';
-    try {
-      ssoMetadata.auid_i = { light: `auid_i_light_comb` };
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nLegacy Light flow. Linking done without EC ${formatMs(start)}.`;
-      document.getElementById('step1GenerateZKPLight').disabled = false;
-      mode2Status.innerText = `Legacy Light flow complete ${formatMs(start)}.`;
-    } catch (err) {
-      mode2Status.innerText = `Legacy Light flow error: ${err.message}`;
-    }
-  });
-
-  document.getElementById('step1GenerateZKPLight')?.addEventListener('click', async () => {
-    const start = now();
-    mode2Status.innerText = 'Legacy Light flow: Generating FAST ZK Proof (pi_PPID)...';
-    try {
-      const psTokenStr = localStorage.getItem('mode2_ps_token');
-      if (!psTokenStr) throw new Error('No PS Token found.');
-      const psToken = JSON.parse(psTokenStr);
-      
-      // 타원곡선이 없는 매우 가벼운 Poseidon 회로 입력
-      const inputs = {
-        uid: "12345", // 실제로는 psToken.sub 등을 사용해야 함
-        rid: "67890",
-        salt: "111222",
-        auid: "12329717125881324656859002801361718611351997041186147611354292512100725906895"
-      };
-
-      console.log('[Mode 2] Proving LIGHT circuit pi_PPID (Poseidon Only, with Public UID)...');
-      const { proof, publicSignals } = await snarkjs.groth16.fullProve(
-        inputs,
-        "/build/mode2/pi_auid_js/pi_auid.wasm",
-        "/build/mode2/pi_auid_final.zkey"
-      );
-
-      currentSSOProof = {
-        zkpProof: proof,
-        zkpPublicSignals: publicSignals,
-        pi_PPID: proof,
-        business: {
-          sub: psToken.sub,
-          arid_i: "light_mode",
-          auid_i: "light_mode",
-          r_RP: "light_mode"
-        },
-        isLight: true // 서버에게 라이트 모드임을 알림
-      };
-      ssoMetadata.pi_PPID = proof;
-      
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nLegacy Light flow. FAST ZKP generated ${formatMs(start)}! (~200 constraints)`;
-      document.getElementById('step2SubmitToIdP').disabled = false;
-      mode2Status.innerText = `Legacy Light flow complete ${formatMs(start)}. 압도적인 속도!`;
-    } catch (err) {
-      mode2Status.innerText = `Light ZKP Error: ${err.message}`;
-    }
-    });
-    } // <--- 이 부분이 APP_MODE === 2 블록을 닫는 지점입니다.
-
-    // Dynamic import for ethers.js
-    let ethers;
+  // Dynamic import for ethers.js
+  let ethers;
 
 try {
   const ethersModule = await import(

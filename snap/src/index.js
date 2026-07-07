@@ -53,7 +53,7 @@ function hashToFr(str) {
   return fr;
 }
 
-// custom_idp.js의 psVerify() / server.js의 verifyPS_Hybrid()와 동일한 PS 서명 검증식.
+// custom_idp.js의 psSign() / server.js의 verifyPS_Hybrid()와 동일한 PS 서명 검증식.
 // e(sigma1, X * prod(Yi^mi)) == e(sigma2, g2)
 function verifyPS(messages, sigma, psPublicKeys) {
   const s1 = new mcl.G1();

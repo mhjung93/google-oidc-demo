@@ -78,15 +78,14 @@ Relevant responsibilities:
 
 - Shows the Mode 2 section.
 - Provides step-by-step buttons for the SSO demo.
-- Shows intermediate SSO data and error-test controls.
+- Shows intermediate SSO data and RP FE / wallet progress logs.
 
 ### Mode 2 Circuits
 
 Files:
 
 - `circuits/pi_arid_i.circom`
-- `circuits/pi_auid.circom`
-- `circuits/pi_uid.circom`
+- `circuits/pi_ppid.circom`
 - `build_mode2_circuits.sh`
 
 Generated artifacts:
@@ -94,7 +93,7 @@ Generated artifacts:
 - `build/mode2/pi_arid_i_js/pi_arid_i.wasm`
 - `build/mode2/pi_arid_i_final.zkey`
 - `build/mode2/pi_arid_i_vkey.json`
-- matching files for `pi_auid` and `pi_uid`
+- matching files for `pi_ppid`
 
 ## Step Flow
 
@@ -297,7 +296,7 @@ IdP action:
 - Verifies credentials.
 - Verifies `pi_i`.
 - Tracks replay by `r_i`.
-- Signs `[uid, arid_i, auid_i, r_token, max_height]`.
+- Signs `[arid_i, auid_i, r_token, max_height]`.
 - Returns `idpToken`.
 
 Output:
@@ -324,10 +323,10 @@ RP action:
 
 - Recomputes `expectedAridI = rpRegistration.rid * req.session.rpNonce`.
 - Checks `idpToken.arid_i` against the recomputed value.
-- Deletes `req.session.rpNonce` after a passing audience check.
 - Verifies Groth16 proof with `pi_arid_i_vkey.json`.
 - Checks token fields against `pi_i` public signals.
-- Calls `verifyPS_Hybrid` over `[uid, arid_i, auid_i, r_token, max_height]`.
+- Calls `verifyPS_Hybrid` over `[arid_i, auid_i, r_token, max_height]`.
+- Deletes `req.session.rpNonce` after the full RP-side verification succeeds.
 - Returns `{ success: true }` on demo success.
 
 Output:
@@ -359,7 +358,7 @@ Client action:
 
 Snap action:
 
-- Verifies the PS signature over `[uid, arid_i, auid_i, r_token, max_height]`.
+- Verifies the PS signature over `[arid_i, auid_i, r_token, max_height]`.
 - Checks token fields against `walletSubmission` and `business`.
 - Displays a Snap dialog with the verification result.
 
@@ -445,7 +444,7 @@ These are implementation details that are useful for understanding the current p
 - `rid` is private in `pi_i`; the RP backend performs the audience check by recomputing `arid_i = rid * rpNonce`.
 - Delegated Login initializes the Snap/wallet-side module without selecting or disclosing an EOA account address.
 - `PPID` is the implementation alias for the paper's `auid` and is used as the RP-side account identifier.
-- Light ZKP code exists in `client.js`, but the UI block is commented out in `index.html`.
+- Legacy EC and Light ZKP prototype paths were removed from the active client flow; old versions remain available through git history.
 - RP-side ZKP failure handling returns an error.
 - `verifyPS_Hybrid()` verifies the PS pairing equation over the signed Mode 2 token fields.
 
@@ -467,5 +466,4 @@ Potential Mode 2 focused improvements:
 - Align endpoint URLs to use one configurable IdP origin consistently.
 - Split Mode 2 client logic from Snap and Google OIDC client logic.
 - Add a dedicated Mode 2 smoke test.
-- Decide whether Light ZKP is part of the demo or should be removed from the active path.
 - Normalize the naming of `signature`, `signature_prime`, `zkpProof`, and `zkpPublicSignals`.
