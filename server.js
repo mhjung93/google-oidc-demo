@@ -479,11 +479,11 @@ function verifyPS_Hybrid(sigma_prime, messages, idpPK) {
     const rhs = mcl.pairing(s2, psParams.g2);
     const isValid = lhs.isEqual(rhs);
 
-    console.log('[Mode 2] Hybrid Check - Sigma Integrity:', isValid);
+    console.log('[Mode 2] PS Signature Verification:', isValid);
     return isValid;
 
   } catch (err) {
-    console.error('[Mode 2] Hybrid PS Verification Error:', err.message);
+    console.error('[Mode 2] PS Signature Verification Error:', err.message);
     return false;
   }
 }
@@ -570,7 +570,7 @@ app.post('/api/mode2/sso_success', async (req, res) => {
     return res.status(503).json({ success: false, error: `Unable to verify max_height: ${err.message}` });
   }
 
-  // 1. 하이브리드 PS 검증 호출 — psSign()이 서명한 순서(domain, arid_i, auid_i, r_token, max_height, chain_id)와 동일해야 한다.
+  // 1. PS 검증 호출 — psSign()이 서명한 순서(domain, arid_i, auid_i, r_token, max_height, chain_id)와 동일해야 한다.
   const messages_public = [
     'IDP_TOKEN',
     String(idpToken.arid_i),
@@ -587,14 +587,14 @@ app.post('/api/mode2/sso_success', async (req, res) => {
   );
   
   if (!isSigValid) {
-    return res.status(401).json({ success: false, error: 'Invalid Hybrid PS Signature' });
+    return res.status(401).json({ success: false, error: 'Invalid PS Signature' });
   }
 
   // Single-use: spend the rp_nonce only after the full RP-side verification
   // succeeds, so malformed proof/signature attempts do not burn the session.
   delete req.session.rpNonce;
 
-  console.log('[Mode 2] Hybrid Verification SUCCESS. Session established.');
+  console.log('[Mode 2] Verification SUCCESS. Session established.');
   res.json({ success: true });
 });
 

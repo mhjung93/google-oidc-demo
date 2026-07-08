@@ -220,25 +220,25 @@ async function verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, bu
 
   try {
     if (!zkpProof || !zkpPublicSignals) throw new Error('ZKP data missing');
-    assertDecimalSignals(zkpPublicSignals, 5, 'pi_i');
+    assertDecimalSignals(zkpPublicSignals, 4, 'pi_i without uid');
 
-    // Step 10 popup credentials bind the IdP account UID to pi_i's public UID.
-    if (zkpPublicSignals.length >= 1) {
-      console.log(`[CustomIdP][Step 10] BINDING: Overwriting ZKP UID(${summarizeValue(zkpPublicSignals[0])}) with Session UID(${summarizeValue(user.uid)}) ${ms(start)}`);
-      zkpPublicSignals[0] = user.uid.toString();
-    }
+    // The wallet/RP popup payload omits pi_i's public UID signal. The IdP
+    // reconstructs it from the authenticated popup account before verification.
+    const verifySignals = [user.uid.toString(), ...zkpPublicSignals];
+    assertDecimalSignals(verifySignals, 5, 'pi_i');
+    console.log(`[CustomIdP][Step 10] BINDING: using Session UID(${summarizeValue(user.uid)}) as pi_i UID input ${ms(start)}`);
 
-    const isValid = await snarkjs.groth16.verify(vkeyAridI, zkpPublicSignals, zkpProof);
+    const isValid = await snarkjs.groth16.verify(vkeyAridI, verifySignals, zkpProof);
 
     if (!isValid) {
       throw new Error('Identity Mismatch: This proof was not made for you!');
     }
     const maxHeight = business?.maxHeight ?? business?.max_height;
     const rToken = business?.r_token ?? business?.tokenNonce;
-    if (String(zkpPublicSignals[1]) !== String(business?.arid_i)) throw new Error('arid_i does not match pi_i public signal');
-    if (String(zkpPublicSignals[2]) !== String(business?.auid_i)) throw new Error('auid_i does not match pi_i public signal');
-    if (String(zkpPublicSignals[3]) !== String(maxHeight)) throw new Error('max_height does not match pi_i public signal');
-    if (String(zkpPublicSignals[4]) !== String(rToken)) throw new Error('r_token does not match pi_i public signal');
+    if (String(verifySignals[1]) !== String(business?.arid_i)) throw new Error('arid_i does not match pi_i public signal');
+    if (String(verifySignals[2]) !== String(business?.auid_i)) throw new Error('auid_i does not match pi_i public signal');
+    if (String(verifySignals[3]) !== String(maxHeight)) throw new Error('max_height does not match pi_i public signal');
+    if (String(verifySignals[4]) !== String(rToken)) throw new Error('r_token does not match pi_i public signal');
     console.log(`✅ [CustomIdP][Step 10] pi_i Verified for user: ${username} ${ms(start)}`);
   } catch (err) {
     console.error(`❌ [CustomIdP][Step 10] pi_i Error: ${err.message} ${ms(start)}`);

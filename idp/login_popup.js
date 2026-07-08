@@ -14,6 +14,12 @@ function setStatus(message) {
   if (statusEl) statusEl.innerText = message;
 }
 
+function zkpSignalsWithoutUid() {
+  return Array.isArray(pendingZKP?.zkpPublicSignals)
+    ? pendingZKP.zkpPublicSignals.slice(1)
+    : pendingZKP?.zkpPublicSignals;
+}
+
 if (window.opener && loginButton) {
   loginButton.disabled = true;
   setStatus('Waiting for Wallet submission...');
@@ -46,7 +52,7 @@ async function doLogin() {
           username,
           password,
           zkpProof: pendingZKP.zkpProof,
-          zkpPublicSignals: pendingZKP.zkpPublicSignals,
+          zkpPublicSignals: zkpSignalsWithoutUid(),
           business: pendingZKP.business,
           isLight: pendingZKP.isLight,
           walletSubmission: pendingZKP.walletSubmission,
@@ -99,7 +105,7 @@ async function submitConsent(allowed) {
         walletSubmission: pendingZKP.walletSubmission,
         business: pendingZKP.business,
         zkpProof: pendingZKP.zkpProof,
-        zkpPublicSignals: pendingZKP.zkpPublicSignals,
+        zkpPublicSignals: zkpSignalsWithoutUid(),
         isLight: pendingZKP.isLight,
         pi_i: pendingZKP.pi_i,
       }),

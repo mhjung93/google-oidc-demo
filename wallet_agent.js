@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import * as snarkjs from 'snarkjs';
 import { buildPoseidon } from 'circomlibjs';
+import mcl from 'mcl-wasm';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -13,6 +14,7 @@ const __dirname = path.dirname(__filename);
 
 const PORT = process.env.WALLET_AGENT_PORT || 5001;
 const RP_ORIGIN = process.env.RP_ORIGIN || 'http://127.0.0.1:3000';
+const IDP_ORIGIN = process.env.CUSTOM_IDP_BASE_URL || 'http://127.0.0.1:4000';
 const STATE_FILE = path.join(__dirname, 'wallet_state.json');
 
 const FIELD_PRIME = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
@@ -31,6 +33,71 @@ function valueToField(value) {
   const bytes = new TextEncoder().encode(str);
   const hex = bytesToHex(bytes);
   return BigInt(`0x${hex || '0'}`) % FIELD_PRIME;
+}
+
+// custom_idp.js의 psSign() / server.js의 verifyPS_Hybrid()와 동일한 PS 서명 검증식.
+// wallet_agent.js가 RP로부터 받은 rid가 정말 이 IdP가 psSign(['RP_REG', rid])로
+// 서명해서 발급한 값인지 확인한다 — 서명 자체는 IdP가 발급했다는 것만 증명하지,
+// 이 rid가 지금 이 RP_ORIGIN의 것이라는 것까지 증명하지는 않는다. 다만 지금
+// 데모는 RP가 하나뿐이고 wallet_agent.js가 그 하나의 RP_ORIGIN에만 응답하도록
+// 토큰/CORS로 묶여 있어서, 이 서명 검증이 "등록된 적 없는 rid" 사용을 막아준다.
+let mclReady = null;
+function ensureMcl() {
+  if (!mclReady) mclReady = mcl.init(mcl.BN_SNARK1);
+  return mclReady;
+}
+
+function hashToFr(str) {
+  const fr = new mcl.Fr();
+  fr.setHashOf(str);
+  return fr;
+}
+
+function verifyPS_Hybrid(sigma, messages, idpPK) {
+  try {
+    const s1 = new mcl.G1();
+    s1.setStr(sigma.sigma1, 16);
+    const s2 = new mcl.G1();
+    s2.setStr(sigma.sigma2, 16);
+
+    let PK_total = new mcl.G2();
+    const X = new mcl.G2();
+    X.setStr(idpPK.X, 16);
+    PK_total = mcl.add(X, PK_total);
+    for (let i = 0; i < messages.length; i++) {
+      const Yi = new mcl.G2();
+      Yi.setStr(idpPK.Y[i], 16);
+      const mi = hashToFr(messages[i]);
+      PK_total = mcl.add(PK_total, mcl.mul(Yi, mi));
+    }
+
+    const g2 = new mcl.G2();
+    g2.setStr(idpPK.g2, 16);
+    const lhs = mcl.pairing(s1, PK_total);
+    const rhs = mcl.pairing(s2, g2);
+    return lhs.isEqual(rhs);
+  } catch (err) {
+    console.error(`[WalletAgent] RP credential signature check error: ${err.message}`);
+    return false;
+  }
+}
+
+let idpPublicKeysCache = null;
+async function getIdpPublicKeys() {
+  if (idpPublicKeysCache) return idpPublicKeysCache;
+  const response = await fetch(`${IDP_ORIGIN}/ps_public_keys`);
+  if (!response.ok) throw new Error(`Failed to fetch IdP public keys (${response.status})`);
+  idpPublicKeysCache = await response.json();
+  return idpPublicKeysCache;
+}
+
+async function verifyRpCredential(rpCredential) {
+  await ensureMcl();
+  const idpPublicKeys = await getIdpPublicKeys();
+  const isValid = verifyPS_Hybrid(rpCredential.signature, ['RP_REG', String(rpCredential.rid)], idpPublicKeys);
+  if (!isValid) {
+    throw new Error('RP credential signature verification failed: this rid was not issued by the trusted IdP');
+  }
 }
 
 function now() { return Date.now(); }
@@ -117,10 +184,14 @@ app.post('/generateStep8Proofs', async (req, res) => {
 
     if (uid == null) throw new Error('uid is required');
     if (!rpCredential?.rid) throw new Error('rpCredential.rid is required');
+    if (!rpCredential?.signature) throw new Error('rpCredential.signature is required');
     if (!r_i) throw new Error('r_i is required');
     if (!rpNonce) throw new Error('rpNonce is required');
     if (!maxHeight) throw new Error('maxHeight is required');
     if (!chainId) throw new Error('chainId is required');
+
+    await verifyRpCredential(rpCredential);
+    console.log(`[WalletAgent][Step 8] RP credential signature verified ${ms(start)}`);
 
     const walletSalt = getOrCreateWalletSalt();
     const uidField = valueToField(uid);
@@ -167,7 +238,7 @@ app.post('/generateStep8Proofs', async (req, res) => {
       'build/mode2/pi_arid_i_js/pi_arid_i.wasm',
       'build/mode2/pi_arid_i_final.zkey',
     );
-    console.log(`[WalletAgent][Step 8] pi_i (pi_arid_i) proof generated. publicSignals[0]: ${preview(publicSignals[0])} ${ms(start)}`);
+    console.log(`[WalletAgent][Step 8] pi_i (pi_arid_i) proof generated ${ms(start)}`);
 
     const ppidInputs = {
       uid: uidField.toString(),
