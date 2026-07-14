@@ -371,15 +371,17 @@ if (APP_MODE === 2) {
   });
 
   document.getElementById('step25RPFEVerifyFail')?.addEventListener('click', () => {
-    if (!currentIdPToken || !currentIdPToken.signature) return;
-    mode2Status.innerText = 'SIMULATING ERROR: Tampering with IdP PS Signature...';
-    
-    currentIdPToken.signature.sigma1 = 'f' + currentIdPToken.signature.sigma1.slice(1);
+    if (!currentIdPToken || !currentIdPToken.signature?.S) return;
+    mode2Status.innerText = 'SIMULATING ERROR: Tampering with IdP EdDSA-Poseidon Signature...';
+
+    // S is a decimal-string scalar; append a digit to change its value while keeping it a
+    // valid decimal string, so it still parses but no longer matches the real signature.
+    currentIdPToken.signature.S = currentIdPToken.signature.S + '1';
     document.getElementById('step15NotifyWallet').disabled = true;
     document.getElementById('step3CompleteRP').disabled = true;
 
-    console.warn('[Mode 2] IdP PS Signature tampered. RP Backend will reject this.');
-    document.getElementById('ssoIntermediateDisplay').innerText += `\n\n[FAIL TEST] PS Signature tampered! Submit now to see RP BE rejection.`;
+    console.warn('[Mode 2] IdP EdDSA-Poseidon Signature tampered. RP Backend will reject this.');
+    document.getElementById('ssoIntermediateDisplay').innerText += `\n\n[FAIL TEST] EdDSA-Poseidon Signature tampered! Submit now to see RP BE rejection.`;
     mode2Status.innerText = 'Tampering complete. Step 12 or Step 14 should reject it.';
   });
 
@@ -478,29 +480,30 @@ async function verifyIdPTokenAtRpBackend() {
       if (!step11Completed) throw new Error('Step 11 must complete before Step 12');
       if (!walletReceivedIdPToken) throw new Error('Wallet has no IdP auth token');
 
-      const psPublicKeys = await fetch('/api/mode2/idp_public_keys').then((r) => r.json());
-      const verification = await window.ethereum.request({
-        method: 'wallet_invokeSnap',
-        params: {
-          snapId,
-          request: {
-            method: 'verifyIdPAuthToken',
-            params: {
-              idpToken: walletReceivedIdPToken,
-              psPublicKeys,
-              walletSubmission: currentSSOProof?.walletSubmission,
-              business: currentSSOProof?.business
-            },
-          },
-        },
+      // Snap의 SES 샌드박스가 circomlibjs를 거부해서, Step 8과 동일하게 wallet_agent.js
+      // 로컬 프로세스에서 검증한다 (더 이상 Snap 다이얼로그로 결과를 안 보여주므로,
+      // 아래에서 페이지 화면에 직접 표시한다).
+      const tokenRes = await fetch('/api/mode2/wallet_agent_token');
+      if (!tokenRes.ok) throw new Error('Failed to obtain wallet agent token');
+      const { token } = await tokenRes.json();
+
+      const verifyRes = await fetch('http://127.0.0.1:5001/verifyIdPAuthToken', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Wallet-Agent-Token': token },
+        body: JSON.stringify({
+          idpToken: walletReceivedIdPToken,
+          walletSubmission: currentSSOProof?.walletSubmission,
+          business: currentSSOProof?.business,
+        }),
       });
+      const verification = await verifyRes.json();
 
       ssoMetadata.step12DurationMs = verification?.durationMs ?? null;
       measuredDurations.step12 = verification?.durationMs ?? null;
       const elapsedText = verification?.durationMs != null
-        ? `(${Math.round(verification.durationMs)} ms, excluding Snap confirmation)`
+        ? `(${Math.round(verification.durationMs)} ms)`
         : formatMs(start);
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 12. Wallet verified IdP auth token (PS signature): ${verification?.success ? 'PASS' : 'FAIL'} ${elapsedText}.`;
+      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 12. Wallet verified IdP auth token (EdDSA-Poseidon signature): ${verification?.success ? 'PASS' : 'FAIL'} ${elapsedText}.`;
       ssoMetadata.step12Verified = Boolean(verification?.success);
       if (!ssoMetadata.step12Verified) {
         throw new Error(verification?.message || 'Wallet rejected IdP auth token');
