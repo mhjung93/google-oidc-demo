@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import * as snarkjs from 'snarkjs';
-import { buildPoseidon } from 'circomlibjs';
+import { buildPoseidon, buildEddsa } from 'circomlibjs';
 import mcl from 'mcl-wasm';
 import fs from 'fs';
 import path from 'path';
@@ -18,6 +18,11 @@ const IDP_ORIGIN = process.env.CUSTOM_IDP_BASE_URL || 'http://127.0.0.1:4000';
 const MODE2_ETH_RPC_URL = process.env.MODE2_ETH_RPC_URL || process.env.ETH_RPC_URL || 'http://127.0.0.1:8545';
 const STATE_FILE = path.join(__dirname, 'wallet_state.json');
 let poseidon = null;
+let eddsa = null;
+async function ensureEdDSA() {
+  if (!eddsa) eddsa = await buildEddsa();
+  return eddsa;
+}
 
 const FIELD_PRIME = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 const TOKEN_VALIDITY_SECONDS = 3600n;
@@ -151,6 +156,21 @@ async function verifyRpCredential(rpCredential) {
       `RP credential origin mismatch: credential is bound to ${rpCredential.origin}, but this wallet only trusts ${RP_ORIGIN}`,
     );
   }
+}
+
+// snap/src/index.js의 assertTokenMatchesWalletSubmission()을 그대로 이식 — Step 12가
+// Snap에서 여기로 옮겨오면서, 토큰 필드가 Step 8에서 지갑이 실제로 제출한 값과
+// 일치하는지 대조하는 로직도 같이 옮겨온다.
+function assertTokenMatchesWalletSubmission(token, walletSubmission, business) {
+  const checks = {
+    aridOk: String(token.arid_i) === String(walletSubmission?.arid_i ?? business?.arid_i),
+    auidOk: String(token.auid_i) === String(walletSubmission?.auid_i ?? business?.auid_i),
+    tokenNonceOk: String(token.r_token) === String(walletSubmission?.r_token ?? business?.r_token ?? business?.tokenNonce),
+    maxHeightOk: String(token.max_height) === String(business?.maxHeight ?? business?.max_height),
+    chainIdOk: String(token.chain_id) === String(business?.chain_id ?? business?.chainId),
+  };
+  const success = checks.aridOk && checks.auidOk && checks.tokenNonceOk && checks.maxHeightOk && checks.chainIdOk;
+  return { success, checks };
 }
 
 function now() { return Date.now(); }
@@ -352,6 +372,55 @@ app.post('/generateStep8Proofs', async (req, res) => {
   } catch (err) {
     console.error(`❌ [WalletAgent][Step 8] generateStep8Proofs error: ${err.message} ${ms(start)}`);
     res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/verifyIdPAuthToken', async (req, res) => {
+  const start = cursor();
+  const verifyStart = now();
+  try {
+    const { idpToken, walletSubmission, business } = req.body ?? {};
+    if (!idpToken) throw new Error('idpToken is required');
+
+    await ensureEdDSA();
+    if (!poseidon) throw new Error('Poseidon not initialized yet');
+
+    const idpPublicKeys = await getIdpPublicKeys();
+    const pkIdPRaw = idpPublicKeys?.pk_IdP;
+    if (!pkIdPRaw || pkIdPRaw.length !== 2) throw new Error('IdP EdDSA public key not available');
+
+    const DOMAIN_IDP_TOKEN = valueToField('IDP_TOKEN');
+    const msgFields = [
+      DOMAIN_IDP_TOKEN,
+      valueToField(idpToken.arid_i),
+      valueToField(idpToken.auid_i),
+      valueToField(idpToken.r_token),
+      valueToField(idpToken.max_height),
+      valueToField(idpToken.chain_id),
+    ];
+    const msg = poseidon(msgFields);
+    const pkIdP = [eddsa.F.e(BigInt(pkIdPRaw[0])), eddsa.F.e(BigInt(pkIdPRaw[1]))];
+    const sig = idpToken.signature ?? {};
+    if (!Array.isArray(sig.R8) || sig.R8.length !== 2 || !sig.S) {
+      throw new Error('idpToken.signature is missing or malformed');
+    }
+    const sigForVerify = {
+      R8: [eddsa.F.e(BigInt(sig.R8[0])), eddsa.F.e(BigInt(sig.R8[1]))],
+      S: BigInt(sig.S),
+    };
+
+    let accepted = eddsa.verifyPoseidon(msg, sigForVerify, pkIdP);
+    const binding = assertTokenMatchesWalletSubmission(idpToken, walletSubmission, business);
+    accepted = accepted && binding.success;
+    const message = accepted
+      ? 'EdDSA-Poseidon signature and Wallet bindings verified'
+      : 'EdDSA-Poseidon signature or Wallet binding verification failed';
+
+    console.log(`[WalletAgent][Step 12] verifyIdPAuthToken: ${accepted ? 'PASS' : 'FAIL'} ${ms(start)}`);
+    res.json({ success: accepted, message, checks: binding.checks, durationMs: now() - verifyStart });
+  } catch (err) {
+    console.error(`[WalletAgent][Step 12] verifyIdPAuthToken error: ${err.message} ${ms(start)}`);
+    res.status(400).json({ success: false, message: err.message, checks: {}, durationMs: now() - verifyStart });
   }
 });
 
