@@ -540,7 +540,7 @@ async function verifyIdPTokenAtRpBackend() {
     appendRpFeVisibleFlow(`  auth token.max_height: ${previewValue(walletReceivedIdPToken.max_height)}`);
     appendRpFeVisibleFlow(`  auth token.chain_id: ${previewValue(walletReceivedIdPToken.chain_id)}`);
     appendRpFeVisibleFlow(`  auth token.r_token: ${previewValue(walletReceivedIdPToken.r_token)}`);
-    appendRpFeVisibleFlow(`  auth token.signature: ${previewValue(walletReceivedIdPToken.signature?.sigma1, 36)}`);
+    appendRpFeVisibleFlow(`  auth token.signature: ${previewValue(walletReceivedIdPToken.signature?.S, 36)}`);
     appendRpFeVisibleFlow(`  PPID: ${previewValue(ssoMetadata.ppid.toString())}`);
     appendRpFeVisibleFlow(`  pi_PPID: ${previewValue(ssoMetadata.pi_PPID)}`);
     step13Completed = true;

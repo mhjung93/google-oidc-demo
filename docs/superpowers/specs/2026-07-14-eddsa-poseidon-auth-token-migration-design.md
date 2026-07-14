@@ -87,7 +87,12 @@ must move to `wallet_agent.js`, following the same pattern already established f
   // non-numeric strings, into Poseidon-compatible field elements) — port a copy of it into
   // custom_idp.js since it doesn't have one yet.
   const DOMAIN_IDP_TOKEN = valueToField('IDP_TOKEN'); // computed once, reused every signing call
-  const msg = poseidon.F.toObject(poseidon([DOMAIN_IDP_TOKEN, arid_i, auid_i, r_token, max_height, chain_id]));
+  // poseidon(...)'s raw return goes straight into signPoseidon — no .toObject() here.
+  // .toObject() produces a plain BigInt for display/JSON; signPoseidon needs the
+  // F-internal representation instead (confirmed by tests/test_eddsa.js's spike, and by
+  // the implementation — this line originally had a stray .toObject() call which was a
+  // bug in this spec, not in the code that was actually built from it).
+  const msg = poseidon([DOMAIN_IDP_TOKEN, arid_i, auid_i, r_token, max_height, chain_id]);
   const sigma_i = eddsa.signPoseidon(sk_IdP, msg);
   ```
   `idpToken.signature_prime` changes shape from `{ sigma1, sigma2 }` (PS/G1 points, hex) to
