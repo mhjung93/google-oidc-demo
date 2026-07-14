@@ -8,6 +8,7 @@ import * as snarkjs from 'snarkjs';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { buildEddsa, buildPoseidon } from 'circomlibjs';
 
 const app = express();
 const PORT = 4000;
@@ -60,6 +61,23 @@ let idpKeys = {
   }
 };
 
+// EdDSA-Poseidon 키쌍 — RP_REG에 쓰는 PS 키(idpKeys)와는 완전히 별개. auth token(IDP_TOKEN)
+// 서명 전용.
+let eddsa = null;
+let poseidon = null;
+let idpEdDSAKeys = {
+  prv: null, // raw bytes (Buffer) — circomlibjs signPoseidon()이 요구하는 형식, mcl.Fr 아님
+  pub: null, // [x, y], F-internal representation
+};
+
+async function initEdDSA() {
+  eddsa = await buildEddsa();
+  poseidon = await buildPoseidon();
+  idpEdDSAKeys.prv = randomBytes(32);
+  idpEdDSAKeys.pub = eddsa.prv2pub(idpEdDSAKeys.prv);
+  console.log('[CustomIdP] EdDSA-Poseidon Signatures Initialized');
+}
+
 async function initPS() {
   await mcl.init(mcl.BN_SNARK1);
   
@@ -90,6 +108,25 @@ function hashToFr(str) {
   const fr = new mcl.Fr();
   fr.setHashOf(str);
   return fr;
+}
+
+const FIELD_PRIME = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+
+// wallet_agent.js/client.js/server.js에 이미 있는 것과 동일한 구현 — 문자열/숫자를
+// Poseidon이 받을 수 있는 필드 원소로 바꾼다. hashToFr()(mcl 전용)와는 호환 안 됨.
+function bytesToHex(bytes) {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function valueToField(value) {
+  if (typeof value === 'bigint') return value % FIELD_PRIME;
+  if (typeof value === 'number') return BigInt(value) % FIELD_PRIME;
+  const str = String(value);
+  if (str.startsWith('0x')) return BigInt(str) % FIELD_PRIME;
+  if (/^[0-9]+$/.test(str)) return BigInt(str) % FIELD_PRIME;
+  const bytes = new TextEncoder().encode(str);
+  const hex = bytesToHex(bytes);
+  return BigInt(`0x${hex || '0'}`) % FIELD_PRIME;
 }
 
  /**
@@ -316,12 +353,17 @@ app.get('/ps_public_keys', (req, res) => {
   res.json({
     g2: psParams.g2.getStr(16),
     X: idpKeys.pk.X.getStr(16),
-    Y: idpKeys.pk.Y.map(y => y.getStr(16))
+    Y: idpKeys.pk.Y.map(y => y.getStr(16)),
+    pk_IdP: [
+      eddsa.F.toObject(idpEdDSAKeys.pub[0]).toString(),
+      eddsa.F.toObject(idpEdDSAKeys.pub[1]).toString(),
+    ],
   });
 });
 
 const server = app.listen(PORT, async () => {
   await initPS();
+  await initEdDSA();
   await snarkjs.curves.getCurveFromName('bn128'); // bn128 WASM 모듈 미리 빌드 (첫 pi_i 검증 지연 방지)
   console.log(`Custom IdP running at http://localhost:${PORT}`);
 });
