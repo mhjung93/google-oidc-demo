@@ -434,12 +434,19 @@ try {
   poseidon = await buildPoseidon();
   console.log('[WalletAgent] Poseidon initialized.');
 
+  // custom_idp.js/server.js처럼 기동 시점에 미리 만들어둔다 — 안 그러면 첫
+  // Step 12 요청이 buildEddsa()의 무거운 WASM 초기화(Poseidon 외에도
+  // pedersenHash/mimc7/mimcSponge까지 같이 빌드됨) 비용을 그대로 떠안는다.
+  console.log('[WalletAgent] Initializing EdDSA-Poseidon...');
+  await ensureEdDSA();
+  console.log('[WalletAgent] EdDSA-Poseidon initialized.');
+
   app.listen(PORT, '127.0.0.1', () => {
     console.log(`[WalletAgent] Local wallet-side Step 8 agent listening on http://127.0.0.1:${PORT}`);
     console.log(`[WalletAgent] Accepting requests only from RP origin: ${RP_ORIGIN}`);
     console.log(`[WalletAgent] Requires X-Wallet-Agent-Token header (see wallet_state.json).`);
   });
 } catch (err) {
-  console.error(`[WalletAgent] Failed to initialize Poseidon: ${err.message}`);
+  console.error(`[WalletAgent] Failed to initialize Poseidon/EdDSA: ${err.message}`);
   process.exit(1);
 }
