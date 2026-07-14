@@ -14,6 +14,7 @@ import { sha256 } from '@noble/hashes/sha256';
 import { TextEncoder } from 'util';
 import { Buffer } from 'buffer';
 import mcl from 'mcl-wasm';
+import { buildEddsa, buildPoseidon } from 'circomlibjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -421,10 +422,18 @@ let psParams = { g2: null };
 // same-origin 프록시한다.
 let rawIdpPublicKeys = null;
 
+let eddsa = null;
+let poseidon = null;
+async function ensureEdDSA() {
+  if (!eddsa) eddsa = await buildEddsa();
+  if (!poseidon) poseidon = await buildPoseidon();
+}
+
 async function initRP_PS() {
   try {
     await mcl.init(mcl.BN_SNARK1);
     console.log('[Mode 2] MCL Initialized');
+    await ensureEdDSA();
 
     const response = await fetch(`${CUSTOM_IDP_BASE_URL}/ps_public_keys`);
     if (!response.ok) {
@@ -510,8 +519,8 @@ app.post('/api/mode2/sso_success', async (req, res) => {
     assertDecimalString(idpToken.r_token, 'idpToken.r_token');
     assertDecimalString(idpToken.max_height, 'idpToken.max_height');
     assertDecimalString(idpToken.chain_id, 'idpToken.chain_id');
-    if (!idpToken.signature_prime?.sigma1 || !idpToken.signature_prime?.sigma2) {
-      throw new Error('idpToken.signature_prime is missing');
+    if (!Array.isArray(idpToken.signature_prime?.R8) || idpToken.signature_prime.R8.length !== 2 || !idpToken.signature_prime?.S) {
+      throw new Error('idpToken.signature_prime is missing or malformed');
     }
   } catch (err) {
     return res.status(400).json({ success: false, error: err.message });
@@ -576,24 +585,33 @@ app.post('/api/mode2/sso_success', async (req, res) => {
     return res.status(503).json({ success: false, error: `Unable to verify max_height: ${err.message}` });
   }
 
-  // 1. PS 검증 호출 — psSign()이 서명한 순서(domain, arid_i, auid_i, r_token, max_height, chain_id)와 동일해야 한다.
-  const messages_public = [
-    'IDP_TOKEN',
-    String(idpToken.arid_i),
-    String(idpToken.auid_i),
-    String(idpToken.r_token),
-    String(idpToken.max_height),
-    String(idpToken.chain_id)
+  // EdDSA-Poseidon 검증 — custom_idp.js가 서명한 것과 동일하게 6개 필드를 Poseidon으로
+  // 묶어서 msg를 재계산한 뒤, IdP의 pk_IdP로 검증한다.
+  const DOMAIN_IDP_TOKEN = valueToField('IDP_TOKEN');
+  const msgFields = [
+    DOMAIN_IDP_TOKEN,
+    valueToField(idpToken.arid_i),
+    valueToField(idpToken.auid_i),
+    valueToField(idpToken.r_token),
+    valueToField(idpToken.max_height),
+    valueToField(idpToken.chain_id),
   ];
+  const msg = poseidon(msgFields);
 
-  const isSigValid = verifyPS_Hybrid(
-    idpToken.signature_prime,
-    messages_public,
-    idpPublicKeys
-  );
-  
+  const pkIdPRaw = rawIdpPublicKeys?.pk_IdP;
+  if (!pkIdPRaw || pkIdPRaw.length !== 2) {
+    return res.status(503).json({ success: false, error: 'IdP EdDSA public key not loaded yet' });
+  }
+  const pkIdP = [eddsa.F.e(BigInt(pkIdPRaw[0])), eddsa.F.e(BigInt(pkIdPRaw[1]))];
+  const sigForVerify = {
+    R8: [eddsa.F.e(BigInt(idpToken.signature_prime.R8[0])), eddsa.F.e(BigInt(idpToken.signature_prime.R8[1]))],
+    S: BigInt(idpToken.signature_prime.S),
+  };
+
+  const isSigValid = eddsa.verifyPoseidon(msg, sigForVerify, pkIdP);
+
   if (!isSigValid) {
-    return res.status(401).json({ success: false, error: 'Invalid PS Signature' });
+    return res.status(401).json({ success: false, error: 'Invalid EdDSA-Poseidon Signature' });
   }
 
   // Single-use: spend the rp_nonce only after the full RP-side verification
