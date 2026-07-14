@@ -79,11 +79,14 @@ must move to `wallet_agent.js`, following the same pattern already established f
 - Auth token issuance: replace `psSign(['IDP_TOKEN', arid_i, auid_i, r_token, max_height, chain_id])`
   with:
   ```js
-  // 'IDP_TOKEN' domain string must become a field element before Poseidon can hash it —
-  // Poseidon takes field elements, not raw strings, unlike psSign's hashToFr-per-message
-  // scheme. Precompute this once as a constant (same technique already used for other
-  // fixed strings in this codebase via hashToFr/valueToField).
-  const DOMAIN_IDP_TOKEN = hashToFr('IDP_TOKEN'); // computed once, reused every signing call
+  // 'IDP_TOKEN' domain string must become a field element before Poseidon can hash it.
+  // custom_idp.js's existing hashToFr() is mcl-wasm-specific (returns an mcl.Fr object) and
+  // is NOT compatible with circomlibjs's Poseidon input, which expects a plain BigInt/decimal
+  // string. Reuse this codebase's other existing helper instead: valueToField() (already used
+  // identically in wallet_agent.js/client.js/server.js to turn arbitrary values, including
+  // non-numeric strings, into Poseidon-compatible field elements) — port a copy of it into
+  // custom_idp.js since it doesn't have one yet.
+  const DOMAIN_IDP_TOKEN = valueToField('IDP_TOKEN'); // computed once, reused every signing call
   const msg = poseidon.F.toObject(poseidon([DOMAIN_IDP_TOKEN, arid_i, auid_i, r_token, max_height, chain_id]));
   const sigma_i = eddsa.signPoseidon(sk_IdP, msg);
   ```
