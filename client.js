@@ -91,6 +91,7 @@ if (APP_MODE === 2) {
   let mode2SessionNonce = null;
   let ssoMetadata = {
     userAddress: null,
+    // Demo fixture: represents a prior verified wallet-IdP account binding.
     uid: '12345',
     rid: null,
     rpNonceField: null,
@@ -115,13 +116,6 @@ if (APP_MODE === 2) {
       .reduce((sum, value) => sum + Number(value), 0);
   }
   const FIELD_PRIME = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
-  const TOKEN_VALIDITY_SECONDS = 3600n;
-  const ETHEREUM_SLOT_SECONDS = 12n;
-
-  function validityWindowBlocks() {
-    return (TOKEN_VALIDITY_SECONDS + ETHEREUM_SLOT_SECONDS - 1n) / ETHEREUM_SLOT_SECONDS;
-  }
-
   function createSessionNonce() {
     const bytes = new Uint8Array(16);
     crypto.getRandomValues(bytes);
@@ -225,30 +219,6 @@ if (APP_MODE === 2) {
     }
   }
 
-  async function getMaxHeight() {
-    const chainIdHex = await window.ethereum.request({ method: 'eth_chainId' });
-    const chainId = BigInt(chainIdHex).toString();
-    try {
-      const blockHex = await window.ethereum.request({ method: 'eth_blockNumber' });
-      const currentBlock = BigInt(blockHex);
-      return {
-        chainId,
-        currentBlock,
-        maxHeight: currentBlock + validityWindowBlocks(),
-        source: 'eth_blockNumber',
-      };
-    } catch (err) {
-      console.warn('[Mode 2] eth_blockNumber failed. Using time-based max_height fallback:', err.message);
-      return {
-        chainId,
-        currentBlock: null,
-        maxHeight: BigInt(Math.floor(Date.now() / 1000)) + TOKEN_VALIDITY_SECONDS,
-        source: 'time-fallback',
-        error: err.message,
-      };
-    }
-  }
-
   async function runWalletStep7() {
     const start = now();
     let segmentStart = start;
@@ -264,17 +234,6 @@ if (APP_MODE === 2) {
     mode2Status.innerText = 'Step 8: Wallet is generating PPID, keys, token nonce, and ZKP...';
 
     try {
-      const heightInfo = await getMaxHeight();
-      const maxHeight = heightInfo.maxHeight;
-      ssoMetadata.chainId = heightInfo.chainId;
-      ssoMetadata.currentBlock = heightInfo.currentBlock?.toString() ?? 'unavailable';
-      ssoMetadata.maxHeight = maxHeight.toString();
-      appendWalletLog(`✓ chain_id: ${ssoMetadata.chainId ?? 'unavailable'}`);
-      appendWalletLog(`✓ current block number: ${ssoMetadata.currentBlock}`);
-      appendWalletLog(`✓ max_height set for 1 hour validity: ${ssoMetadata.maxHeight}`);
-      appendWalletLog(`  height source: ${heightInfo.source}`);
-      markStep8('Block height/max_height lookup');
-
       // wallet_agent.js는 자기 origin(브라우저가 이미 신뢰하는)을 통해서만 얻을 수
       // 있는 토큰을 요구한다 — 다른 origin/프로세스가 직접 호출해 salt를 추출하지
       // 못하게 막기 위함.
@@ -296,8 +255,6 @@ if (APP_MODE === 2) {
           rpCredential: ssoMetadata.rpCredential,
           r_i: ssoMetadata.r_i,
           rpNonce: ssoMetadata.rpNonce,
-          maxHeight: maxHeight.toString(),
-          chainId: ssoMetadata.chainId,
         }),
       });
       if (!walletRes.ok) {
@@ -313,10 +270,17 @@ if (APP_MODE === 2) {
       ssoMetadata.arid_i = BigInt(result.arid_i);
       ssoMetadata.auid_i = BigInt(result.auid_i);
       ssoMetadata.tokenNonce = BigInt(result.tokenNonce);
+      ssoMetadata.chainId = result.chain_id;
+      ssoMetadata.currentBlock = result.currentBlock ?? 'unavailable';
+      ssoMetadata.maxHeight = result.maxHeight;
       ssoMetadata.signingPublicKey = result.publicKeyHex;
       ssoMetadata.pi_i = result.zkpProof;
       ssoMetadata.pi_PPID = result.pi_PPID;
 
+      appendWalletLog(`✓ chain_id: ${ssoMetadata.chainId ?? 'unavailable'}`);
+      appendWalletLog(`✓ current block number: ${ssoMetadata.currentBlock}`);
+      appendWalletLog(`✓ max_height set for 1 hour validity: ${ssoMetadata.maxHeight}`);
+      appendWalletLog(`  height source: ${result.heightSource}`);
       appendWalletLog(`✓ PPID generated: ${ssoMetadata.ppid.toString().slice(0, 32)}...`);
       appendWalletLog('  formula: uid * rid * salt (computed by local wallet agent)');
       appendWalletLog('  salt source: wallet-agent-managed local secret');
@@ -381,7 +345,7 @@ if (APP_MODE === 2) {
 
   // Listen for message from IdP Popup
   window.addEventListener('message', (event) => {
-    if (event.origin !== 'http://127.0.0.1:4000') return;
+    if (event.origin !== IDP_ORIGIN) return;
 
     if (event.data.type === 'IDP_READY_FOR_ZKP') {
       console.log('[RP FE] IdP Popup ready signal received.');

@@ -15,9 +15,13 @@ const __dirname = path.dirname(__filename);
 const PORT = process.env.WALLET_AGENT_PORT || 5001;
 const RP_ORIGIN = process.env.RP_ORIGIN || 'http://127.0.0.1:3000';
 const IDP_ORIGIN = process.env.CUSTOM_IDP_BASE_URL || 'http://127.0.0.1:4000';
+const MODE2_ETH_RPC_URL = process.env.MODE2_ETH_RPC_URL || process.env.ETH_RPC_URL || 'http://127.0.0.1:8545';
 const STATE_FILE = path.join(__dirname, 'wallet_state.json');
+let poseidon = null;
 
 const FIELD_PRIME = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+const TOKEN_VALIDITY_SECONDS = 3600n;
+const ETHEREUM_SLOT_SECONDS = 12n;
 
 // client.js의 valueToField()/bytesToHex()와 동일한 필드 축소 규칙.
 function bytesToHex(bytes) {
@@ -33,6 +37,45 @@ function valueToField(value) {
   const bytes = new TextEncoder().encode(str);
   const hex = bytesToHex(bytes);
   return BigInt(`0x${hex || '0'}`) % FIELD_PRIME;
+}
+
+function validityWindowBlocks() {
+  return (TOKEN_VALIDITY_SECONDS + ETHEREUM_SLOT_SECONDS - 1n) / ETHEREUM_SLOT_SECONDS;
+}
+
+async function rpcCall(method, params = []) {
+  const response = await fetch(MODE2_ETH_RPC_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method,
+      params,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`${method} RPC failed with status ${response.status}`);
+  }
+
+  const data = await response.json();
+  if (data.error || typeof data.result !== 'string') {
+    throw new Error(data.error?.message || `${method} RPC returned no result`);
+  }
+  return data.result;
+}
+
+async function getMaxHeight() {
+  const chainIdHex = await rpcCall('eth_chainId');
+  const blockHex = await rpcCall('eth_blockNumber');
+  const currentBlock = BigInt(blockHex);
+  return {
+    chainId: BigInt(chainIdHex).toString(),
+    currentBlock,
+    maxHeight: currentBlock + validityWindowBlocks(),
+    source: MODE2_ETH_RPC_URL,
+  };
 }
 
 // custom_idp.js의 psSign() / server.js의 verifyPS_Hybrid()와 동일한 PS 서명 검증식.
@@ -53,7 +96,7 @@ function hashToFr(str) {
   return fr;
 }
 
-function verifyPS_Hybrid(sigma, messages, idpPK) {
+function verifyPSSignature(sigma, messages, idpPK) {
   try {
     const s1 = new mcl.G1();
     s1.setStr(sigma.sigma1, 16);
@@ -94,7 +137,7 @@ async function getIdpPublicKeys() {
 async function verifyRpCredential(rpCredential) {
   await ensureMcl();
   const idpPublicKeys = await getIdpPublicKeys();
-  const isValid = verifyPS_Hybrid(rpCredential.signature, ['RP_REG', String(rpCredential.rid)], idpPublicKeys);
+  const isValid = verifyPSSignature(rpCredential.signature, ['RP_REG', String(rpCredential.rid)], idpPublicKeys);
   if (!isValid) {
     throw new Error('RP credential signature verification failed: this rid was not issued by the trusted IdP');
   }
@@ -178,20 +221,22 @@ app.post('/generateStep8Proofs', async (req, res) => {
   const requestStart = now();
   const start = cursor();
   try {
-    const { uid, rpCredential, r_i, rpNonce, maxHeight, chainId } = req.body ?? {};
+    const { uid, rpCredential, r_i, rpNonce } = req.body ?? {};
     console.log(`--- [WalletAgent][Step 8] generateStep8Proofs request received ---`);
-    console.log(`[WalletAgent][Step 8] rid: ${preview(rpCredential?.rid)}, r_i: ${preview(r_i)}, maxHeight: ${preview(maxHeight)}, chainId: ${preview(chainId)}`);
+    console.log(`[WalletAgent][Step 8] rid: ${preview(rpCredential?.rid)}, r_i: ${preview(r_i)}`);
 
     if (uid == null) throw new Error('uid is required');
     if (!rpCredential?.rid) throw new Error('rpCredential.rid is required');
     if (!rpCredential?.signature) throw new Error('rpCredential.signature is required');
     if (!r_i) throw new Error('r_i is required');
     if (!rpNonce) throw new Error('rpNonce is required');
-    if (!maxHeight) throw new Error('maxHeight is required');
-    if (!chainId) throw new Error('chainId is required');
 
     await verifyRpCredential(rpCredential);
     console.log(`[WalletAgent][Step 8] RP credential signature verified ${ms(start)}`);
+
+    const heightInfo = await getMaxHeight();
+    const maxHeight = heightInfo.maxHeight;
+    console.log(`[WalletAgent][Step 8] chain_id/max_height computed: chainId=${heightInfo.chainId}, currentBlock=${heightInfo.currentBlock.toString()}, maxHeight=${maxHeight.toString()} ${ms(start)}`);
 
     const walletSalt = getOrCreateWalletSalt();
     const uidField = valueToField(uid);
@@ -218,7 +263,6 @@ app.post('/generateStep8Proofs', async (req, res) => {
 
     const maxHeightField = valueToField(maxHeight);
 
-    const poseidon = await buildPoseidon();
     const tokenNonce = poseidon.F.toObject(poseidon([pkField, maxHeightField, rpNonceField]));
     console.log(`[WalletAgent][Step 8] token nonce (Poseidon) generated ${ms(start)}`);
 
@@ -262,6 +306,9 @@ app.post('/generateStep8Proofs', async (req, res) => {
       rpNonceField: rpNonceField.toString(),
       arid_i: arid_i.toString(),
       auid_i: auid_i.toString(),
+      currentBlock: heightInfo.currentBlock.toString(),
+      chain_id: heightInfo.chainId,
+      heightSource: heightInfo.source,
       maxHeight: maxHeightField.toString(),
       tokenNonce: tokenNonce.toString(),
       publicKeyHex,
@@ -288,7 +335,7 @@ app.post('/generateStep8Proofs', async (req, res) => {
         r_token: tokenNonce.toString(),
         tokenNonce: tokenNonce.toString(),
         maxHeight: maxHeightField.toString(),
-        chain_id: chainId,
+        chain_id: heightInfo.chainId,
       },
       durationMs,
     });
@@ -303,8 +350,17 @@ app.post('/generateStep8Proofs', async (req, res) => {
 // 읽을 수 있어야 하기 때문이다 (닭이 먼저냐 달걀이 먼저냐 문제 방지).
 getOrCreateAgentToken();
 
-app.listen(PORT, '127.0.0.1', () => {
-  console.log(`[WalletAgent] Local wallet-side Step 8 agent listening on http://127.0.0.1:${PORT}`);
-  console.log(`[WalletAgent] Accepting requests only from RP origin: ${RP_ORIGIN}`);
-  console.log(`[WalletAgent] Requires X-Wallet-Agent-Token header (see wallet_state.json).`);
-});
+try {
+  console.log('[WalletAgent] Initializing Poseidon...');
+  poseidon = await buildPoseidon();
+  console.log('[WalletAgent] Poseidon initialized.');
+
+  app.listen(PORT, '127.0.0.1', () => {
+    console.log(`[WalletAgent] Local wallet-side Step 8 agent listening on http://127.0.0.1:${PORT}`);
+    console.log(`[WalletAgent] Accepting requests only from RP origin: ${RP_ORIGIN}`);
+    console.log(`[WalletAgent] Requires X-Wallet-Agent-Token header (see wallet_state.json).`);
+  });
+} catch (err) {
+  console.error(`[WalletAgent] Failed to initialize Poseidon: ${err.message}`);
+  process.exit(1);
+}
