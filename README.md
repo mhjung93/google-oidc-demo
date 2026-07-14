@@ -31,7 +31,7 @@ npm install --workspace=google-oidc-demo-snap
 
 ## Mode 2 실행
 
-Mode 2는 Custom IdP, RP 서버, Snap 서버를 각각 실행합니다.
+Mode 2는 Custom IdP, RP 서버, Snap 서버를 각각 실행합니다. 현재 데모는 최초 1회 wallet-IdP account binding이 이미 완료된 상태를 가정하며, Mode 2 문서의 `uid = 12345`는 그 사전 binding 결과를 하드코딩한 데모 값입니다.
 
 `.env` 예시:
 
@@ -56,7 +56,13 @@ npm run snap:serve
 node custom_idp.js
 ```
 
-터미널 3: RP 서버
+터미널 3: Wallet Agent
+
+```bash
+node wallet_agent.js
+```
+
+터미널 4: RP 서버
 
 ```bash
 npm run dev

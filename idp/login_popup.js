@@ -7,11 +7,30 @@ const loginSection = document.getElementById('loginSection');
 const consentSection = document.getElementById('consentSection');
 const allowConsentButton = document.getElementById('allowConsentBtn');
 const denyConsentButton = document.getElementById('denyConsentBtn');
+const usernameInput = document.getElementById('username');
+const passwordInput = document.getElementById('password');
+const retryButton = document.getElementById('retryLoginBtn');
 let pendingIdPToken = null;
 let pendingUsername = null;
 
 function setStatus(message) {
   if (statusEl) statusEl.innerText = message;
+}
+
+// 다른 계정으로 로그인했을 때(예: Step 8 증명의 uid와 실제 로그인한 계정이
+// 달라서 동의 단계에서 Identity Mismatch로 거부되는 경우) 팝업이 로그인 폼도
+// 없이 막혀버리지 않도록, 로그인 폼으로 되돌아갈 수 있는 재시도 버튼을 보여준다.
+function showRetry() {
+  if (retryButton) retryButton.style.display = 'inline-block';
+}
+
+function resetToLogin() {
+  if (consentSection) consentSection.style.display = 'none';
+  if (loginSection) loginSection.style.display = 'block';
+  if (loginButton) loginButton.disabled = false;
+  if (passwordInput) passwordInput.value = '';
+  if (retryButton) retryButton.style.display = 'none';
+  setStatus('Enter credentials and try again.');
 }
 
 function zkpSignalsWithoutUid() {
@@ -22,6 +41,7 @@ function zkpSignalsWithoutUid() {
 
 if (window.opener && loginButton) {
   loginButton.disabled = true;
+  if (loginSection) loginSection.style.display = 'none';
   setStatus('Waiting for Wallet submission...');
 }
 
@@ -33,14 +53,17 @@ window.addEventListener('message', (event) => {
   if (event.origin !== RP_ORIGIN) return;
   if (event.data.type === 'RP_SEND_ZKP') {
     pendingZKP = event.data.zkp;
+    pendingUsername = pendingZKP.username;
+    if (usernameInput) usernameInput.value = pendingUsername || '';
     if (loginButton) loginButton.disabled = false;
-    setStatus('Wallet submission received. Please log in.');
+    if (loginSection) loginSection.style.display = 'block';
+    setStatus('Wallet submission received. Enter password to continue.');
   }
 });
 
 async function doLogin() {
-  const username = document.getElementById('username').value;
-  const password = document.getElementById('password').value;
+  const username = usernameInput.value;
+  const password = passwordInput.value;
   pendingUsername = username;
 
   setStatus('Verifying...');
@@ -85,8 +108,10 @@ async function doLogin() {
     }
 
     setStatus(`Error: ${data.error}`);
+    showRetry();
   } catch (err) {
     setStatus(`Login Failed: ${err.message}`);
+    showRetry();
   }
 }
 
@@ -124,11 +149,14 @@ async function submitConsent(allowed) {
     }
 
     setStatus(`Consent failed: ${data.error || 'SSO was not completed.'}`);
+    showRetry();
   } catch (err) {
     setStatus(`Consent report failed: ${err.message}`);
+    showRetry();
   }
 }
 
 loginButton?.addEventListener('click', doLogin);
 allowConsentButton?.addEventListener('click', () => submitConsent(true));
 denyConsentButton?.addEventListener('click', () => submitConsent(false));
+retryButton?.addEventListener('click', resetToLogin);
