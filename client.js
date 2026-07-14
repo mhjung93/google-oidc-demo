@@ -478,7 +478,7 @@ async function verifyIdPTokenAtRpBackend() {
       if (!step11Completed) throw new Error('Step 11 must complete before Step 12');
       if (!walletReceivedIdPToken) throw new Error('Wallet has no IdP auth token');
 
-      const psPublicKeys = await fetch(`${IDP_ORIGIN}/ps_public_keys`).then((r) => r.json());
+      const psPublicKeys = await fetch('/api/mode2/idp_public_keys').then((r) => r.json());
       const verification = await window.ethereum.request({
         method: 'wallet_invokeSnap',
         params: {

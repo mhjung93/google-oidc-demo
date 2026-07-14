@@ -46,7 +46,8 @@ app.post('/api/mode2/register', async (req, res) => {
   try {
     const registrationRequest = {
       rpName: 'Manual-ZK-RP-Server',
-      callbackUrl: `${BASE_URL}/api/mode2/sso_success`
+      callbackUrl: `${BASE_URL}/api/mode2/sso_success`,
+      origin: BASE_URL
     };
     const response = await fetch(`${CUSTOM_IDP_BASE_URL}/register_rp`, {
       method: 'POST',
@@ -67,8 +68,8 @@ app.post('/api/mode2/register', async (req, res) => {
     }
 
     // RP 등록 자체가 이 IdP에서 정말 발급된 것인지 확인 — RP_REG 도메인으로
-    // psSign(['RP_REG', rid])된 값이어야 통과한다.
-    const isRpSigValid = verifyPS_Hybrid(rpRegistration.signature, ['RP_REG', String(rpRegistration.rid)], idpPublicKeys);
+    // psSign(['RP_REG', rid, origin])된 값이어야 통과한다.
+    const isRpSigValid = verifyPS_Hybrid(rpRegistration.signature, ['RP_REG', String(rpRegistration.rid), String(rpRegistration.origin)], idpPublicKeys);
     if (!isRpSigValid) {
       console.error('[Mode 2] RP registration signature verification FAILED. Rejecting registration.');
       rpRegistration = null;
@@ -415,6 +416,10 @@ app.get('/me', (req, res) => {
 // --- PS Signature Verification Logic (RP side) ---
 let idpPublicKeys = null;
 let psParams = { g2: null };
+// 브라우저가 IdP(4000)로 직접 크로스오리진 fetch를 안 하고도 PS 공개키를 얻을 수
+// 있도록, 파싱 전 raw hex 응답을 그대로 보관해서 /api/mode2/idp_public_keys로
+// same-origin 프록시한다.
+let rawIdpPublicKeys = null;
 
 async function initRP_PS() {
   try {
@@ -426,7 +431,8 @@ async function initRP_PS() {
       throw new Error(`IdP Server not reachable (Status: ${response.status})`);
     }
     const data = await response.json();
-    
+    rawIdpPublicKeys = data;
+
     psParams.g2 = new mcl.G2();
     psParams.g2.setStr(data.g2, 16);
     
@@ -686,4 +692,14 @@ app.get('/api/mode2/rp_info', (req, res) => {
     return res.status(404).json({ error: 'RP registration not found or not in Mode 2' });
   }
   res.json(rpRegistration);
+});
+
+// Mode 2: Proxy the IdP's PS public keys so the browser never has to make a
+// direct cross-origin request to the IdP (avoids leaking the RP's origin via
+// the Origin header on that request).
+app.get('/api/mode2/idp_public_keys', (req, res) => {
+  if (currentMode !== 2 || !rawIdpPublicKeys) {
+    return res.status(404).json({ error: 'IdP public keys not loaded or not in Mode 2' });
+  }
+  res.json(rawIdpPublicKeys);
 });

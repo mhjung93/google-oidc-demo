@@ -182,14 +182,23 @@ function assertDecimalSignals(signals, expectedLength, name) {
 
 // 1. RP Registration
 app.post('/register_rp', (req, res) => {
-  const { rpName, callbackUrl } = req.body;
+  const { rpName, callbackUrl, origin } = req.body;
+  if (!origin) {
+    return res.status(400).json({ error: 'origin is required for RP registration' });
+  }
   // rid를 큰 숫자 스칼라(248비트 랜덤)로 발급 — pi_i 회로의 private input rid로 쓰인다.
   const rid = BigInt('0x' + randomBytes(31).toString('hex')).toString();
 
+  // origin을 서명 대상에 포함시켜서, rid와 origin의 묶음 자체를 IdP가 보증한다.
+  // 이게 없으면 RP FE(client.js)가 이 rid를 다른 origin의 것인 척 wallet에
+  // 제출해도(다른 RP의 정상 발급 rid를 몰래 끼워 넣어도) wallet이 구분할 방법이
+  // 없다 — origin이 서명 안에 있어야 wallet이 "이 rid, 진짜 내가 보고 있는
+  // origin 거 맞아?"를 credential 하나만으로 검증할 수 있다.
   const rpToken = {
     rpName,
     rid,
-    signature: psSign(['RP_REG', rid]),
+    origin,
+    signature: psSign(['RP_REG', rid, origin]),
     issuedAt: new Date().toISOString()
   };
 

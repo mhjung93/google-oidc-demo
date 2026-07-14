@@ -78,12 +78,13 @@ async function getMaxHeight() {
   };
 }
 
-// custom_idp.js의 psSign() / server.js의 verifyPS_Hybrid()와 동일한 PS 서명 검증식.
-// wallet_agent.js가 RP로부터 받은 rid가 정말 이 IdP가 psSign(['RP_REG', rid])로
-// 서명해서 발급한 값인지 확인한다 — 서명 자체는 IdP가 발급했다는 것만 증명하지,
-// 이 rid가 지금 이 RP_ORIGIN의 것이라는 것까지 증명하지는 않는다. 다만 지금
-// 데모는 RP가 하나뿐이고 wallet_agent.js가 그 하나의 RP_ORIGIN에만 응답하도록
-// 토큰/CORS로 묶여 있어서, 이 서명 검증이 "등록된 적 없는 rid" 사용을 막아준다.
+// custom_idp.js의 psSign() / server.js의 PS 서명 검증식과 동일하다.
+// wallet_agent.js가 RP로부터 받은 rid가 정말 이 IdP가 psSign(['RP_REG', rid, origin])로
+// 서명해서 발급한 값인지 확인한다. origin이 서명 대상에 포함돼 있으므로, 서명
+// 검증을 통과했다면 "이 rid는 이 origin 것"이라는 것까지 IdP가 보증한 것이다.
+// verifyRpCredential이 이어서 그 서명된 origin을 wallet_agent.js 자신의
+// 신뢰 앵커인 RP_ORIGIN과 대조해서, RP FE(client.js)가 다른(피해자) RP의
+// 정상 발급 rid를 몰래 끼워 넣는 것(A7, blind-message attack)을 막는다.
 let mclReady = null;
 function ensureMcl() {
   if (!mclReady) mclReady = mcl.init(mcl.BN_SNARK1);
@@ -137,9 +138,18 @@ async function getIdpPublicKeys() {
 async function verifyRpCredential(rpCredential) {
   await ensureMcl();
   const idpPublicKeys = await getIdpPublicKeys();
-  const isValid = verifyPSSignature(rpCredential.signature, ['RP_REG', String(rpCredential.rid)], idpPublicKeys);
+  const isValid = verifyPSSignature(
+    rpCredential.signature,
+    ['RP_REG', String(rpCredential.rid), String(rpCredential.origin)],
+    idpPublicKeys,
+  );
   if (!isValid) {
-    throw new Error('RP credential signature verification failed: this rid was not issued by the trusted IdP');
+    throw new Error('RP credential signature verification failed: this rid/origin pair was not issued by the trusted IdP');
+  }
+  if (rpCredential.origin !== RP_ORIGIN) {
+    throw new Error(
+      `RP credential origin mismatch: credential is bound to ${rpCredential.origin}, but this wallet only trusts ${RP_ORIGIN}`,
+    );
   }
 }
 
