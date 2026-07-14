@@ -136,11 +136,20 @@ Client action:
 - Initializes the wallet-side module implemented by the MetaMask Snap.
 - Prepares the Custom IdP popup.
 - Starts elapsed-time measurement after Snap initialization.
+- Checks whether the wallet already has a local binding for the target IdP account.
 
 Output:
 
 - Wallet-side module ready.
 - No blockchain account address is selected.
+- If no wallet-IdP binding exists, the protocol must run the one-time account binding flow before continuing.
+
+Protocol note:
+
+- A deployable flow does not assume that the wallet learns `uid` during the delegated login popup.
+- Instead, each wallet-IdP account pair performs a one-time account binding first.
+- During account binding, the user connects the wallet and authenticates to the IdP; the wallet stores only the minimal verified binding, such as `(issuer, uid)`.
+- The demo assumes this binding has already happened.
 
 ### Step 3: RP FE Session Nonce Created
 
@@ -217,10 +226,11 @@ Output:
 
 Client action in `runWalletStep7()`:
 
-- Calls the Snap method `generateStep8Proofs`.
+- Calls `POST http://127.0.0.1:5001/generateStep8Proofs` on the local `wallet_agent.js` process (not the Snap — moved out of the Snap because MetaMask's SES sandbox rejects `circomlibjs`/`snarkjs` with `SES_EVAL_REJECTED`; see `wallet_agent.js` for the token/CORS gating that restricts this to the RP's own origin).
 
-Snap action:
+`wallet_agent.js` action:
 
+- Uses the previously established wallet-IdP binding as the source of `uid`.
 - Treats IdP-issued `rid` as the RP audience scalar for the demo.
 - Computes `PPID = uid * rid * salt`.
 - Computes `arid_i = rid * rpNonce`.
@@ -261,7 +271,7 @@ Public signal order:
 
 - `[uid, arid_i, auid_i, max_height, token_nonce]`
 
-Proof call inside the Snap:
+Proof call inside `wallet_agent.js`:
 
 ```js
 snarkjs.groth16.fullProve(
@@ -300,7 +310,7 @@ IdP action:
 - Verifies credentials.
 - After popup consent, verifies `pi_i`.
 - Tracks replay by `r_i`.
-- Signs `[arid_i, auid_i, r_token, max_height]`.
+- Signs `['IDP_TOKEN', arid_i, auid_i, r_token, max_height, chain_id]` (6-element PS message array, domain-separated by `'IDP_TOKEN'`) — the result is stored on `idpToken.signature_prime` (not `idpToken.signature`).
 - Returns `idpToken`.
 
 Output:
@@ -323,11 +333,11 @@ Request body:
 
 RP action:
 
-- Checks required token fields and PS signature format.
+- Checks required token fields and PS signature format (`idpToken.signature_prime`).
 - Recomputes `expectedAridI = rpRegistration.rid * req.session.rpNonce`.
 - Checks `idpToken.arid_i` against the recomputed value.
-- Checks signed `max_height` against the current block height or unix-time fallback.
-- Calls `verifyPS_Hybrid` over `[arid_i, auid_i, r_token, max_height]`.
+- Checks signed `max_height` against the current block height or unix-time fallback, and cross-checks `idpToken.chain_id` against the RPC's chain id when using a live block height.
+- Calls `verifyPS_Hybrid` over `['IDP_TOKEN', arid_i, auid_i, r_token, max_height, chain_id]`.
 - Deletes `req.session.rpNonce` after the full RP-side verification succeeds.
 - Returns `{ success: true }` on demo success.
 
@@ -441,6 +451,9 @@ These are implementation details that are useful for understanding the current p
 
 - `custom_idp.js` uses an in-memory mock user database.
 - Demo credentials include `testuser` / `password123`.
+- The demo treats `uid = 12345` as the result of a prior one-time wallet-IdP account binding.
+- The current implementation hardcodes that demo binding in `client.js`; it should not be interpreted as a `uid` newly learned from the RP during delegated login.
+- The demo assumes an already-active wallet salt binding; it does not implement the paper's IdP-side active salt commitment registry.
 - RP registration uses a mock signature string.
 - `uid` is public in `pi_i`; `uid` and `salt` are hidden in `pi_PPID`.
 - `rid` is private in `pi_i`; the RP backend performs the audience check by recomputing `arid_i = rid * rpNonce`.
