@@ -602,13 +602,18 @@ app.post('/api/mode2/sso_success', async (req, res) => {
   if (!pkIdPRaw || pkIdPRaw.length !== 2) {
     return res.status(503).json({ success: false, error: 'IdP EdDSA public key not loaded yet' });
   }
-  const pkIdP = [eddsa.F.e(BigInt(pkIdPRaw[0])), eddsa.F.e(BigInt(pkIdPRaw[1]))];
-  const sigForVerify = {
-    R8: [eddsa.F.e(BigInt(idpToken.signature_prime.R8[0])), eddsa.F.e(BigInt(idpToken.signature_prime.R8[1]))],
-    S: BigInt(idpToken.signature_prime.S),
-  };
+  let isSigValid;
+  try {
+    const pkIdP = [eddsa.F.e(BigInt(pkIdPRaw[0])), eddsa.F.e(BigInt(pkIdPRaw[1]))];
+    const sigForVerify = {
+      R8: [eddsa.F.e(BigInt(idpToken.signature_prime.R8[0])), eddsa.F.e(BigInt(idpToken.signature_prime.R8[1]))],
+      S: BigInt(idpToken.signature_prime.S),
+    };
 
-  const isSigValid = eddsa.verifyPoseidon(msg, sigForVerify, pkIdP);
+    isSigValid = eddsa.verifyPoseidon(msg, sigForVerify, pkIdP);
+  } catch (err) {
+    return res.status(400).json({ success: false, error: 'Malformed EdDSA-Poseidon signature data' });
+  }
 
   if (!isSigValid) {
     return res.status(401).json({ success: false, error: 'Invalid EdDSA-Poseidon Signature' });
