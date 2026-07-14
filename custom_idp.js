@@ -313,8 +313,29 @@ async function verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, bu
 
   const exp = Math.floor(Date.now() / 1000) + 3600;
 
-  const messages = ['IDP_TOKEN', business.arid_i, business.auid_i, rToken.toString(), maxHeight.toString(), chainId.toString()];
-  const sig = psSign(messages);
+  // PS('IDP_TOKEN', ...) 대신 EdDSA-Poseidon: 6개 필드를 Poseidon으로 하나의 값으로 묶은
+  // 뒤 그 값을 서명한다. domain 문자열도 다른 필드처럼 valueToField()로 필드 원소화한다
+  // (Poseidon은 문자열을 직접 못 받음 — hashToFr()는 mcl 전용이라 여기 못 씀).
+  const DOMAIN_IDP_TOKEN = valueToField('IDP_TOKEN');
+  const msgFields = [
+    DOMAIN_IDP_TOKEN,
+    valueToField(business.arid_i),
+    valueToField(business.auid_i),
+    valueToField(rToken.toString()),
+    valueToField(maxHeight.toString()),
+    valueToField(chainId.toString()),
+  ];
+  // poseidon(...)의 원본 반환값을 그대로 signPoseidon에 넘긴다 — .toObject()로 변환한
+  // BigInt를 넘기면 안 된다 (F-internal 표현이 필요함, tests/test_eddsa.js 참고).
+  const msg = poseidon(msgFields);
+  const sig = eddsa.signPoseidon(idpEdDSAKeys.prv, msg);
+  const sigJson = {
+    R8: [
+      eddsa.F.toObject(sig.R8[0]).toString(),
+      eddsa.F.toObject(sig.R8[1]).toString(),
+    ],
+    S: sig.S.toString(),
+  };
   console.log(`[CustomIdP][Step 10] Issuing IdP auth token after consent and pi_i verification. ${ms(start)}`);
 
   const idpToken = {
@@ -324,7 +345,7 @@ async function verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, bu
     max_height: maxHeight.toString(),
     chain_id: chainId.toString(),
     exp: exp,
-    signature: sig
+    signature: sigJson
   };
   console.log(`[CustomIdP][Step 11] IdP auth token issued and returned for Wallet delivery. ${ms(start)}`);
 
