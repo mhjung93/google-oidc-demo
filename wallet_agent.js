@@ -8,7 +8,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { webcrypto } from 'crypto';
 import { secp256k1 } from '@noble/curves/secp256k1';
-import { keccak256 } from 'ethers';
+import { keccak256, AbiCoder } from 'ethers';
 
 const { subtle } = webcrypto;
 const __filename = fileURLToPath(import.meta.url);
@@ -445,6 +445,105 @@ app.post('/verifyIdPAuthToken', async (req, res) => {
   } catch (err) {
     console.error(`[WalletAgent][Step 12] verifyIdPAuthToken error: ${err.message} ${ms(start)}`);
     res.status(400).json({ success: false, message: err.message, checks: {}, durationMs: now() - verifyStart });
+  }
+});
+
+// B1(PPID 트랜잭션 제출): payload에 세션키(pk_i/sk_i)로 서명하고, Step 12에서 검증했던
+// EdDSA-Poseidon 인증 토큰 서명을 회로 안에서 다시 검증하는 pi_pk_i 증명을 생성한다.
+// payloadHash는 PPIDWallet.sol의 execute()가 계산하는
+// keccak256(abi.encode(to, value, data, nonce))와 정확히 같은 방식으로 계산해야
+// 컨트랙트의 ecrecover가 세션키 주소(pk_i)를 그대로 복구할 수 있다.
+app.post('/submitTransaction', async (req, res) => {
+  const start = cursor();
+  try {
+    const { to, value, data, currentNonce, business, rpNonce } = req.body ?? {};
+    if (!to) throw new Error('to is required');
+    if (value === undefined) throw new Error('value is required');
+    if (currentNonce === undefined) throw new Error('currentNonce is required');
+    if (!business?.arid_i || !business?.auid_i) throw new Error('business.arid_i/auid_i are required');
+    if (!rpNonce) throw new Error('rpNonce is required');
+
+    await ensureEdDSA();
+    if (!poseidon) throw new Error('Poseidon not initialized yet');
+
+    const idpPublicKeys = await getIdpPublicKeys();
+    const pkIdPRaw = idpPublicKeys?.pk_IdP;
+    if (!pkIdPRaw || pkIdPRaw.length !== 2) throw new Error('IdP EdDSA public key not available');
+
+    // sigma_i (인증 토큰 자체의 EdDSA-Poseidon 서명)도 요청 본문에서 받는다 —
+    // 클라이언트는 walletReceivedIdPToken.signature.{R8,S}로 이미 갖고 있다.
+    // circuitInput 조립보다 먼저 검사해서, S/R8x/R8y가 빈 값인 채로
+    // snarkjs.groth16.fullProve가 호출되지 않도록 한다.
+    const idpTokenSig = req.body?.idpToken?.signature;
+    if (!idpTokenSig?.R8 || !idpTokenSig?.S) throw new Error('idpToken.signature is required');
+
+    const { sk_i, pk_i } = getOrCreateSessionKey();
+
+    const payloadData = data ?? '0x';
+    const payload = { to, value: value.toString(), data: payloadData, nonce: currentNonce.toString() };
+
+    const payloadHash = keccak256(
+      AbiCoder.defaultAbiCoder().encode(
+        ['address', 'uint256', 'bytes', 'uint256'],
+        [payload.to, payload.value, payload.data, payload.nonce],
+      ),
+    );
+    const sigRaw = secp256k1.sign(payloadHash.slice(2), sk_i);
+    const sig =
+      '0x' +
+      sigRaw.r.toString(16).padStart(64, '0') +
+      sigRaw.s.toString(16).padStart(64, '0') +
+      (27 + sigRaw.recovery).toString(16).padStart(2, '0');
+
+    const rp_nonce = valueToField(rpNonce);
+    const arid_i = valueToField(business.arid_i);
+    const auid_i = valueToField(business.auid_i);
+    const r_token = valueToField(business.r_token ?? business.tokenNonce);
+    const chain_id = valueToField(business.chain_id ?? business.chainId);
+    const maxHeightField = valueToField(business.maxHeight ?? business.max_height);
+
+    const pkIdP_x = BigInt(pkIdPRaw[0]);
+    const pkIdP_y = BigInt(pkIdPRaw[1]);
+
+    const circuitInput = {
+      rp_nonce: rp_nonce.toString(),
+      arid_i: arid_i.toString(),
+      auid_i: auid_i.toString(),
+      r_token: r_token.toString(),
+      chain_id: chain_id.toString(),
+      S: idpTokenSig.S,
+      R8x: idpTokenSig.R8[0],
+      R8y: idpTokenSig.R8[1],
+      pk_i: pk_i.toString(),
+      pk_IdP_x: pkIdP_x.toString(),
+      pk_IdP_y: pkIdP_y.toString(),
+      PPID: valueToField(business.PPID ?? business.ppid).toString(),
+      max_height: maxHeightField.toString(),
+    };
+
+    const { proof, publicSignals } = await snarkjs.groth16.fullProve(
+      circuitInput,
+      'build/mode2/pi_pk_i_js/pi_pk_i.wasm',
+      'build/mode2/pi_pk_i_final.zkey',
+    );
+    const calldata = JSON.parse(`[${await snarkjs.groth16.exportSolidityCallData(proof, publicSignals)}]`);
+    const [proofA, proofB, proofC] = calldata;
+
+    console.log(`[WalletAgent][submitTransaction] proof generated ${ms(start)}`);
+    res.json({
+      payload,
+      sig,
+      proofA,
+      proofB,
+      proofC,
+      pk_i: pk_i.toString(),
+      pk_IdP_x: pkIdP_x.toString(),
+      pk_IdP_y: pkIdP_y.toString(),
+      max_height: maxHeightField.toString(),
+    });
+  } catch (err) {
+    console.error(`[WalletAgent][submitTransaction] error: ${err.message} ${ms(start)}`);
+    res.status(400).json({ error: err.message });
   }
 });
 
