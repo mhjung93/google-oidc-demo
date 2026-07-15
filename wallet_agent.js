@@ -7,6 +7,8 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { webcrypto } from 'crypto';
+import { secp256k1 } from '@noble/curves/secp256k1';
+import { keccak256 } from 'ethers';
 
 const { subtle } = webcrypto;
 const __filename = fileURLToPath(import.meta.url);
@@ -216,6 +218,34 @@ function getOrCreateWalletSalt() {
   return state.mode2WalletSalt;
 }
 
+// pk_i의 이더리움 주소 계산 — 65바이트(0x04 prefix) 비압축 공개키에서 프리픽스를 떼고
+// keccak256(X||Y)의 마지막 20바이트를 취한다. 표준 이더리움 주소 유도 공식.
+function ethAddressFromSecp256k1Pubkey(pubKeyUncompressed65) {
+  const xy = pubKeyUncompressed65.slice(1);
+  const hash = keccak256(xy);
+  return '0x' + hash.slice(-40);
+}
+
+// 세션 서명키(pk_i/sk_i): P-256 대신 secp256k1을 쓴다 — 이유는 PPIDWallet 컨트랙트가
+// payload 서명을 회로 밖에서 ecrecover로 직접 검증하기 때문(온체인 ecrecover는
+// secp256k1 전용). WebCrypto의 SubtleCrypto는 secp256k1을 지원하지 않으므로
+// @noble/curves를 쓴다. 로그인 시점(Step 8)에 한 번 생성해서 state 파일에 저장해두고,
+// 이후 트랜잭션 제출 단계(다른 HTTP 요청)에서 같은 키를 재사용한다 — 그전엔 이 키가
+// 요청 하나 처리 후 버려졌었는데, payload 서명을 나중에 또 해야 하므로 영속화가
+// 필요해졌다.
+function getOrCreateSessionKey() {
+  const state = readState();
+  if (!state.mode2SessionKey) {
+    const sk_i = secp256k1.utils.randomPrivateKey();
+    state.mode2SessionKey = bytesToHex(sk_i);
+    writeState(state);
+  }
+  const sk_i = Uint8Array.from(Buffer.from(state.mode2SessionKey, 'hex'));
+  const pubUncompressed = secp256k1.getPublicKey(sk_i, false);
+  const address = ethAddressFromSecp256k1Pubkey(pubUncompressed);
+  return { sk_i, pk_i: BigInt(address), address, publicKeyHex: `0x${bytesToHex(pubUncompressed)}` };
+}
+
 // 인증 토큰: RP_ORIGIN 자신(server.js)만 이 파일을 직접 읽어서 브라우저 페이지에
 // 전달할 수 있다 — CORS는 브라우저가 아닌 호출자(curl, 다른 로컬 프로세스, LAN의
 // 다른 머신)를 막지 못하므로, 토큰 없이는 /generateStep8Proofs를 아무도 호출하지
@@ -280,16 +310,10 @@ app.post('/generateStep8Proofs', async (req, res) => {
     const auid_i = (ppid * rpNonceField) % FIELD_PRIME;
     console.log(`[WalletAgent][Step 8] PPID/arid_i/auid_i computed ${ms(start)}`);
 
-    // 세션 서명키는 이 프로세스 안에서만 생성하고, pk_i(공개 필드값)만 내보낸다.
-    const signingKeyPair = await subtle.generateKey(
-      { name: 'ECDSA', namedCurve: 'P-256' },
-      true,
-      ['sign', 'verify'],
-    );
-    const publicKeyRaw = new Uint8Array(await subtle.exportKey('raw', signingKeyPair.publicKey));
-    const publicKeyHex = `0x${bytesToHex(publicKeyRaw)}`;
-    const pkField = valueToField(publicKeyHex);
-    console.log(`[WalletAgent][Step 8] signing key pair generated. publicKey: ${preview(publicKeyHex, 34)} ${ms(start)}`);
+    // 세션 서명키: secp256k1, wallet_state.json에 영속화됨 (getOrCreateSessionKey 참고).
+    // pk_i는 이제 공개키 블롭의 해시가 아니라 그 공개키의 이더리움 주소 자체다.
+    const { pk_i: pkField, publicKeyHex } = getOrCreateSessionKey();
+    console.log(`[WalletAgent][Step 8] session key ready. address(pk_i): ${preview(publicKeyHex, 34)} ${ms(start)}`);
 
     const maxHeightField = valueToField(maxHeight);
 
