@@ -35,6 +35,9 @@ console.log(`[SERVER] Starting in Mode: ${currentMode}`);
 const app = express();
 
 let rpRegistration = null;
+// B2 추적용 세션 로그: 로그인 세션마다 { auid_i, r_token, rp_nonce, timestamp }.
+// 메모리 전용, 서버 재시작 시 소실됨(의도된 데모 한계).
+const sessionLog = [];
 
 app.use(cors({
   origin: 'http://127.0.0.1:4000'
@@ -619,6 +622,14 @@ app.post('/api/mode2/sso_success', async (req, res) => {
     return res.status(401).json({ success: false, error: 'Invalid EdDSA-Poseidon Signature' });
   }
 
+  // B2 추적용: rp_nonce를 지우기 전에 나중에 재계산 가능하도록 세션 기록을 남긴다.
+  sessionLog.push({
+    auid_i: idpToken.auid_i,
+    r_token: idpToken.r_token,
+    rp_nonce: sessionRpNonce,
+    timestamp: Date.now(),
+  });
+
   // Single-use: spend the rp_nonce only after the full RP-side verification
   // succeeds, so malformed proof/signature attempts do not burn the session.
   delete req.session.rpNonce;
@@ -700,6 +711,46 @@ app.post('/api/encrypt', async (req, res, next) => {
 app.use((err, req, res, next) => {
   console.error('[ERROR]', err);
   res.status(500).send(`<pre>${err.message}</pre>`);
+});
+
+// Mode 2: B2 추적 엔드포인트 — 분쟁 중인 온체인 트랜잭션의 공개 pk_i/max_height로
+// sessionLog에서 일치하는 r_token을 찾고, Task 1의 custom_idp.js 엔드포인트에
+// 위임해서 uid를 밝힌다.
+app.post('/api/mode2/trace_transaction', async (req, res) => {
+  const { pk_i, max_height } = req.body ?? {};
+  if (!pk_i) return res.status(400).json({ error: 'pk_i is required' });
+  if (!max_height) return res.status(400).json({ error: 'max_height is required' });
+
+  await ensureEdDSA();
+  if (!poseidon) return res.status(503).json({ error: 'Poseidon not initialized yet' });
+
+  const pkField = valueToField(pk_i);
+  const maxHeightField = valueToField(max_height);
+
+  const match = sessionLog.find((record) => {
+    const rpNonceField = valueToField(record.rp_nonce);
+    const recomputed = poseidon.F.toObject(poseidon([pkField, maxHeightField, rpNonceField]));
+    return String(recomputed) === String(record.r_token);
+  });
+
+  if (!match) {
+    return res.status(404).json({ error: 'No matching session found for this pk_i/max_height' });
+  }
+
+  try {
+    const idpResponse = await fetch(`${CUSTOM_IDP_BASE_URL}/idp/lookup_uid_by_r_token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ r_token: match.r_token }),
+    });
+    const idpResult = await idpResponse.json();
+    if (!idpResponse.ok) {
+      return res.status(idpResponse.status).json(idpResult);
+    }
+    res.json({ uid: idpResult.uid });
+  } catch (err) {
+    res.status(502).json({ error: `Failed to reach IdP for uid lookup: ${err.message}` });
+  }
 });
 
 const server = app.listen(PORT, async () => {
