@@ -115,19 +115,20 @@ Wallet (wallet_agent.js, 로그인 이후)
   2. payloadHash = keccak256(payload)
   3. sig = sign(sk_i, payloadHash)              [secp256k1]
   4. proof = pi_pk_i 증명 생성                   [Groth16, 내부는 BabyJubJub]
-       public: pk_i, pk_IdP, PPID, max_height (원래 pi_pk_i 설계에서 안 바뀜)
-       hidden: auth_token (auid_i, sigma_i), rp_nonce
+       public: pk_i, pk_IdP_x, pk_IdP_y, PPID, max_height
+       hidden: arid_i, auid_i, r_token, chain_id, rp_nonce, S, R8x, R8y (서명 sigma_i의
+               구성요소 — 아래 컴포넌트 섹션에서 왜 이 목록이 최초 설계보다 늘었는지 설명)
 
 자금 있는 아무 EOA (가스비 담당, PPID/pk_i와 무관 — 데모는 Hardhat 테스트 계정)
-  5. PPIDWalletFactory/PPIDWallet.execute(payload, sig, proof, pk_i, pk_IdP, max_height) 호출
+  5. PPIDWalletFactory/PPIDWallet.execute(payload, sig, proof, pk_i, pk_IdP_x, pk_IdP_y, max_height) 호출
 
 PPIDWallet 컨트랙트 (PPID의 CREATE2 주소에 위치; factory가 최초 사용 시 지연 배포)
   6. 순서대로 확인:
      a. payload.nonce == 컨트랙트가 저장 중인 nonce  (아니면 revert: 재사용)
      b. ecrecover(payloadHash, sig) == pk_i에서 뽑은 주소  (아니면 revert: 서명 무효)
-     c. pk_IdP == 컨트랙트가 저장 중인 신뢰된 pk_IdP  (아니면 revert: 신뢰 안 된 IdP —
-        회로 자체는 어떤 IdP가 "신뢰됨"인지 모름; 컨트랙트가 압니다)
-     d. pi_pk_i Groth16 증명이 (pk_i, pk_IdP, PPID, max_height)에 대해 검증됨
+     c. (pk_IdP_x, pk_IdP_y) == 컨트랙트가 저장 중인 신뢰된 pk_IdP  (아니면 revert: 신뢰
+        안 된 IdP — 회로 자체는 어떤 IdP가 "신뢰됨"인지 모름; 컨트랙트가 압니다)
+     d. pi_pk_i Groth16 증명이 (pk_i, pk_IdP_x, pk_IdP_y, PPID, max_height)에 대해 검증됨
         (아니면 revert: 증명 무효)
      e. (b)와 (d)에서 쓰인 pk_i가 같음  (아니면 revert: pk_i 불일치)
      f. block.number <= max_height  (아니면 revert: 만료)
@@ -138,16 +139,34 @@ PPIDWallet 컨트랙트 (PPID의 CREATE2 주소에 위치; factory가 최초 사
 ## 컴포넌트
 
 ### `circuits/pi_pk_i.circom` (신규)
-- Public input: `pk_i`, `pk_IdP`, `PPID`, `max_height` — 지난번 EdDSA-Poseidon 브레인스토밍
-  세션에서 정한 회로 설계에서 안 바뀜. `pk_IdP`는 (회로에 하드코딩하지 않고) 계속 public
-  input으로 남겨서, 신뢰된 IdP 키를 회로 재컴파일(새 `.wasm`/`.zkey`) 없이 컨트랙트에 저장된
-  값만 바꿔서 교체(rotate)할 수 있게 합니다 — *회로*는 주어진 `pk_IdP`가 뭐든 그것에 대한
-  대수적 일관성만 증명하고, 신뢰 안 된 `pk_IdP`를 쓴 증명을 거부하는 건 *컨트랙트*의 몫입니다
-  (`PPIDWallet.execute`의 (c) 확인 참고).
-- Hidden input: `auth_token` 필드들(`auid_i`, `sigma_i` — Mode 2 Step 11의
-  EdDSA-Poseidon으로 서명된 auth token), `rp_nonce`.
-- 조건: `SigVerify(pk_IdP, sigma_i) = True`; `auid_i = PPID * rp_nonce`;
-  `tokenNonce = H(pk_i, max_height, rp_nonce)`.
+**계획 작성 중 실제로 회로를 짜서 컴파일하고, 유효한 witness와 조작된 witness 둘 다로
+검증까지 마쳤습니다** (`circom` 2.1.6, `pot14_final.ptau`, non-linear constraints: 4820,
+public inputs: 5, private inputs: 8 — 정상적으로 4820개 제약 전부 통과/거부 확인됨). 이
+과정에서 최초 설계(브레인스토밍 단계에서 정한 것)의 hidden input 목록이 불완전했다는 걸
+발견해서 여기서 정정합니다 — 아래가 실제로 컴파일·검증된 최종 버전입니다.
+
+- Public input: `pk_i`, `pk_IdP_x`, `pk_IdP_y`, `PPID`, `max_height`. `pk_IdP`는 `EdDSAPoseidonVerifier`
+  템플릿(`circuits/lib/eddsaposeidon.circom`, `Ax`/`Ay` 입력)이 실제 곡선 연산에 쓰는 값이라
+  **필드 원소 하나가 아니라 좌표 두 개**입니다(`pk_i`와 달리 — `pk_i`는 회로 안에서 그냥
+  Poseidon 해시 입력값으로만 쓰여서 지금처럼 하나의 값으로 뭉뚱그려도 됨). `pk_IdP`는
+  회로에 하드코딩하지 않고 계속 public input으로 둬서, 신뢰된 IdP 키를 회로 재컴파일(새
+  `.wasm`/`.zkey`) 없이 컨트랙트에 저장된 값만 바꿔서 교체(rotate)할 수 있게 합니다 —
+  *회로*는 주어진 `pk_IdP`가 뭐든 그것에 대한 대수적 일관성만 증명하고, 신뢰 안 된 `pk_IdP`를
+  쓴 증명을 거부하는 건 *컨트랙트*의 몫입니다(`PPIDWallet.execute`의 (c) 확인 참고).
+- Hidden input(최초 설계보다 늘어난 부분 — `custom_idp.js`가 실제로 서명하는 6개 필드
+  `[DOMAIN_IDP_TOKEN, arid_i, auid_i, r_token, max_height, chain_id]`를 회로 안에서
+  그대로 재구성해야 서명 검증이 되기 때문에, `auid_i`/`sigma_i`뿐 아니라 `arid_i`,
+  `r_token`, `chain_id`도 다 필요합니다): `arid_i`, `auid_i`, `r_token`, `chain_id`,
+  `rp_nonce`, 그리고 `sigma_i`의 세 구성요소 `S`, `R8x`, `R8y`.
+- `DOMAIN_IDP_TOKEN`(=`valueToField('IDP_TOKEN')`, JS 쪽과 정확히 같은 값)은 회로 안에
+  컴파일타임 상수로 하드코딩(`1351534856589225444686`) — 이 값은 `custom_idp.js`/`server.js`가
+  이미 JS에서 계산하는 것과 동일한 함수로 미리 계산해서 박아넣은 것입니다.
+- 조건 (전부 실제 컴파일된 회로에서 검증됨):
+  1. `auid_i === PPID * rp_nonce`
+  2. `r_token === Poseidon(pk_i, max_height, rp_nonce)` (기존 `tokenNonce` 공식과 동일)
+  3. `msg = Poseidon([DOMAIN_IDP_TOKEN, arid_i, auid_i, r_token, max_height, chain_id])`
+  4. `EdDSAPoseidonVerifier(enabled=1, Ax=pk_IdP_x, Ay=pk_IdP_y, S, R8x, R8y, M=msg)` — 즉
+     `SigVerify(pk_IdP, sigma_i) = True`
 - (`docs/superpowers/specs/2026-07-14-eddsa-poseidon-auth-token-migration-design.md`의
   "Open questions for the follow-up trace sub-project" 참고 — 이 스펙이 그 질문들을
   해결합니다.)
@@ -155,8 +174,8 @@ PPIDWallet 컨트랙트 (PPID의 CREATE2 주소에 위치; factory가 최초 사
 ### `contracts/PPIDWalletFactory.sol` (신규)
 - `deploy(uint256 ppid) returns (address)` — `ppid`에 대한 `CREATE2` 주소를 계산하고,
   아직 안 배포됐으면 그 자리에 `PPIDWallet`을 배포, 어느 쪽이든 주소를 반환(멱등).
-- 신뢰된 `pk_IdP` 값(컨트랙트 자신이 갖고 있는 사본, 각 증명의 public `pk_IdP` input과
-  대조됨 — Architecture (c) 확인 참고)과, 별도 배포된 `pi_pk_i` Groth16 verifier
+- 신뢰된 `pk_IdP` 값(`(x, y)` 좌표 두 개, 컨트랙트 자신이 갖고 있는 사본, 각 증명의 public
+  `pk_IdP_x`/`pk_IdP_y` input과 대조됨 — Architecture (c) 확인 참고)과, 별도 배포된 `pi_pk_i` Groth16 verifier
   컨트랙트(snarkjs가 생성하는 표준 Solidity verifier 패턴) 참조를 갖고 있고, 이걸 각
   `PPIDWallet` 생성 시 넘겨줘서 모든 PPID 지갑이 중복 저장 없이 같은 신뢰 루트를
   공유하게 합니다.
@@ -164,7 +183,7 @@ PPIDWallet 컨트랙트 (PPID의 CREATE2 주소에 위치; factory가 최초 사
 ### `contracts/PPIDWallet.sol` (신규)
 - PPID당 하나씩 배포됨(factory를 통해, 최초 사용 시 지연 배포).
 - 저장: `uint256 ppid`(생성 시 설정, 불변), `uint256 nonce`.
-- `execute(Payload calldata payload, Signature calldata sig, Groth16Proof calldata proof, uint256 pk_i, uint256 pk_IdP, uint256 max_height) external`
+- `execute(Payload calldata payload, Signature calldata sig, Groth16Proof calldata proof, uint256 pk_i, uint256 pk_IdP_x, uint256 pk_IdP_y, uint256 max_height) external`
   — 위 Architecture의 확인 순서를 구현.
 - `Payload { address to; uint256 value; bytes data; uint256 nonce; }`
 
@@ -179,7 +198,8 @@ PPIDWallet 컨트랙트 (PPID의 CREATE2 주소에 위치; factory가 최초 사
   요청 본문에 `{to, value, data, business, walletSubmission, idpToken}`을 실어 보냅니다.
   이 엔드포인트가 현재 nonce를 조회하고(배포된 `PPIDWallet`에 RPC 호출, 아직 미배포면 `0`),
   `payload`를 구성하고, `payloadHash`를 `sk_i`로 서명하고, 요청 본문의
-  `auid_i`/`sigma_i`/`rp_nonce`로부터 `pi_pk_i` 증명을 생성합니다.
+  `arid_i`/`auid_i`/`r_token`/`chain_id`/`rp_nonce`/`sigma_i`(`business`/`walletSubmission`/
+  `idpToken` 안에 이미 다 들어있는 필드들)로부터 `pi_pk_i` 증명을 생성합니다.
 
 ## 데이터 흐름
 
