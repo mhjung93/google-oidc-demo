@@ -161,6 +161,8 @@ const users = {
   'alice': { password: 'secret456', uid: '67890', sub: '67890' }
 };
 const usedNonces = new Set();
+// B2 추적용 발급 로그: r_token -> uid. 메모리 전용, 서버 재시작 시 소실됨(의도된 데모 한계).
+const issuanceLog = new Map();
 
 function summarizeValue(value) {
   if (value === undefined || value === null) return 'missing';
@@ -347,6 +349,7 @@ async function verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, bu
     exp: exp,
     signature: sigJson
   };
+  issuanceLog.set(rToken.toString(), user.uid);
   console.log(`[CustomIdP][Step 11] IdP auth token issued and returned for Wallet delivery. ${ms(start)}`);
 
   return idpToken;
@@ -376,6 +379,19 @@ app.post('/consent_result', async (req, res) => {
   } catch (err) {
     res.status(400).json({ success: false, error: err.message || 'pi_i verification failed' });
   }
+});
+
+// 3.5. B2 Trace Endpoint: Lookup UID by r_token
+app.post('/idp/lookup_uid_by_r_token', (req, res) => {
+  const { r_token } = req.body ?? {};
+  if (!r_token) {
+    return res.status(400).json({ error: 'r_token is required' });
+  }
+  const uid = issuanceLog.get(String(r_token));
+  if (uid === undefined) {
+    return res.status(404).json({ error: 'No issuance record found for this r_token' });
+  }
+  res.json({ uid });
 });
 
 // 4. Public Keys Endpoint (for RP verification)
