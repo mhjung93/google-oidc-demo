@@ -461,6 +461,7 @@ app.post('/submitTransaction', async (req, res) => {
     if (value === undefined) throw new Error('value is required');
     if (currentNonce === undefined) throw new Error('currentNonce is required');
     if (!business?.arid_i || !business?.auid_i) throw new Error('business.arid_i/auid_i are required');
+    if (business?.PPID === undefined && business?.ppid === undefined) throw new Error('business.PPID/ppid is required');
     if (!rpNonce) throw new Error('rpNonce is required');
 
     await ensureEdDSA();
