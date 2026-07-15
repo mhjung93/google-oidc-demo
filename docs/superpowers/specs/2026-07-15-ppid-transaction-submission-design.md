@@ -190,16 +190,26 @@ public inputs: 5, private inputs: 8 — 정상적으로 4820개 제약 전부 �
 ### `wallet_agent.js` (수정)
 - Step 8의 세션 키 생성을, `subtle.generateKey({name:'ECDSA', namedCurve:'P-256'}, ...)`에서
   secp256k1 키쌍(`@noble/curves/secp256k1` 사용, 이미 이 프로젝트 의존성)으로 변경.
-- 로그인-이후 흐름을 위한 새 엔드포인트(예: `POST /submitTransaction`). `wallet_agent.js`
-  자신은 로그인/로그인-이후 경계를 넘어서까지 상태를 유지하지 않습니다 — 기존 패턴과 동일
-  (`/verifyIdPAuthToken`도 이미 `walletSubmission`/`business`를 서버 쪽에서 조회하지 않고
-  요청 본문 필드로 받습니다) — 호출자(`client.js`, Step 11/12 이후 이미 자기 JS 상태에
-  `currentSSOProof.business`/`walletSubmission`과 `walletReceivedIdPToken`을 갖고 있음)가
-  요청 본문에 `{to, value, data, business, walletSubmission, idpToken}`을 실어 보냅니다.
+- **`sk_i`(세션 서명 개인키)는 이제 `wallet_state.json`에 영속화됩니다** (기존
+  `mode2WalletSalt`와 동일한 0600 파일, 동일한 `readState()`/`writeState()` 패턴, 새 필드
+  `mode2SessionKey`). 계획 작성 중 다음 이유로 필요하다고 확인됐습니다: Step 8에서 IdP가
+  서명하는 auth token의 `r_token = Poseidon(pk_i, max_height, rp_nonce)`가 그 시점의
+  `pk_i`를 이미 못박기 때문에, 나중에 `/submitTransaction`이 같은 `r_token`을 재구성하려면
+  Step 8과 **정확히 같은** `sk_i`로 payload에 서명해야 합니다 — 요청마다 새 키를 만드는
+  건 프로토콜상 불가능합니다. (`mode2WalletSalt`+`rp_nonce`로부터 매번 결정론적으로
+  재계산해서 새 저장 필드를 안 만드는 대안도 검토했으나, 기존 패턴과 더 단순하게 일치하는
+  raw 저장 방식으로 확정했습니다.) 따라서 아래 문장은 **로그인-이후 요청 데이터**(매
+  로그인 세션마다 달라지는 `business`/`walletSubmission`/`idpToken` 값들)에 대해서만
+  성립하고, `sk_i` 자체는 `mode2WalletSalt`처럼 프로세스 재시작에도 살아남는 영속 상태입니다.
+- 로그인-이후 흐름을 위한 새 엔드포인트(예: `POST /submitTransaction`). `arid_i`/`auid_i`/
+  `r_token`/`chain_id`/`rp_nonce`/`sigma_i` 등 세션마다 달라지는 값들은 서버 쪽에서 조회하지
+  않고 요청 본문 필드로 받습니다(`/verifyIdPAuthToken`도 이미 같은 패턴) — 호출자
+  (`client.js`, Step 11/12 이후 이미 자기 JS 상태에 `currentSSOProof.business`/
+  `walletSubmission`과 `walletReceivedIdPToken`을 갖고 있음)가 요청 본문에
+  `{to, value, data, business, walletSubmission, idpToken}`을 실어 보냅니다.
   이 엔드포인트가 현재 nonce를 조회하고(배포된 `PPIDWallet`에 RPC 호출, 아직 미배포면 `0`),
-  `payload`를 구성하고, `payloadHash`를 `sk_i`로 서명하고, 요청 본문의
-  `arid_i`/`auid_i`/`r_token`/`chain_id`/`rp_nonce`/`sigma_i`(`business`/`walletSubmission`/
-  `idpToken` 안에 이미 다 들어있는 필드들)로부터 `pi_pk_i` 증명을 생성합니다.
+  `payload`를 구성하고, `payloadHash`를 (`wallet_state.json`에서 복원한) `sk_i`로 서명하고,
+  요청 본문의 세션별 값들로부터 `pi_pk_i` 증명을 생성합니다.
 
 ## 데이터 흐름
 
