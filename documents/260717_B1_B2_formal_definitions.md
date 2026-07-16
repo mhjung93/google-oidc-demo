@@ -89,6 +89,116 @@ max_height, rp_nonce)`이면서 그 `r_token`이 IdP의 EdDSA-Poseidon 서명 �
 `docs/superpowers/specs/2026-07-16-b2-transaction-tracing-design.md`의 "후속 작업"
 섹션에도 기록해두었다.
 
+## LaTeX 형식 정의
+
+논문 v30(`PairCT_research_article_20260706_092133_with_figures_final30_lo.docx`, 이 절
+기준으로 v29와 차이 없음 — 관련 연구 문단에 zkAA 인용만 추가됨) 기준. 논문 본문이
+게임(indistinguishability game) 형식을 명시적 `Pr[...]` 박스로 쓰지 않고 서술형으로
+쓰는 스타일이라, 여기서도 서술형 정의와 형식화된 실험(experiment) 둘 다 제공한다. 그대로
+LaTeX 소스에 붙여 쓸 수 있게 작성했다(`\usepackage{amsthm}` 등으로 `definition`/`property`
+환경이 정의돼 있다고 가정).
+
+```latex
+% --- 표기 ---
+% \lambda: 보안 파라미터, \mathcal{A}: PPT adversary, \mathsf{negl}(\cdot): negligible function
+% H_{Poseidon}: circomlibjs Poseidon 해시, \pi_{pk_i}: pi_pk_i 회로의 Groth16 관계
+
+\begin{definition}[Unforgeable On-Chain Transaction-Token Binding]
+\label{def:b1-unforgeable-binding}
+Let $\lambda$ be the security parameter and $\mathcal{A}$ a PPT adversary.
+Define the experiment $\mathsf{Exp}^{\mathsf{unf\text{-}bind}}_{\mathcal{A}}(\lambda)$:
+\begin{enumerate}
+  \item Sample an IdP keypair $(sk_{IdP}, pk_{IdP})$ and run Groth16 setup for the
+    $\pi_{pk_i}$ relation, obtaining $(\mathsf{pk}, \mathsf{vk})$.
+  \item $\mathcal{A}$ is given $pk_{IdP}$, $\mathsf{vk}$, and oracle access to an IdP
+    token-issuance oracle $\mathcal{O}_{\mathsf{Sign}}(\cdot)$ and a
+    $\mathsf{PPIDWalletFactory.deploy}(\cdot)$ oracle.
+  \item $\mathcal{A}$ outputs $(\mathit{payload}^*, \mathit{sig}^*, \pi^*, pk_i^*, ppid^*)$.
+  \item $\mathcal{A}$ \emph{wins} if
+    $\mathsf{PPIDWallet}_{ppid^*}.\mathsf{execute}(\mathit{payload}^*, \mathit{sig}^*,
+    \pi^*, pk_i^*, pk_{IdP}, \mathit{max\_height}^*)$ accepts (i.e., all six checks in
+    Def.~\ref{def:b1-checks} pass), \textbf{and} no query $\mathcal{A}$ made to
+    $\mathcal{O}_{\mathsf{Sign}}$ returned a token $\tau$ such that
+    $\mathsf{r\_token}(\tau) = H_{Poseidon}(pk_i^*,\, \mathit{max\_height}^*,\,
+    \mathit{rp\_nonce})$ for the $\mathit{rp\_nonce}$ consistent with $\pi^*$'s
+    public inputs.
+\end{enumerate}
+PairCT-B1 satisfies \emph{unforgeable on-chain transaction-token binding} if, for every
+PPT $\mathcal{A}$,
+\[
+  \Pr\bigl[\mathcal{A} \text{ wins } \mathsf{Exp}^{\mathsf{unf\text{-}bind}}_{\mathcal{A}}(\lambda)\bigr]
+  \le \mathsf{negl}(\lambda),
+\]
+under Groth16 argument-of-knowledge soundness for the $\pi_{pk_i}$ relation and
+secp256k1/ECDSA unforgeability for $\mathit{sig}^*$ against $pk_i^*$.
+\end{definition}
+
+\begin{definition}[\texttt{PPIDWallet.execute} acceptance predicate]
+\label{def:b1-checks}
+$\mathsf{PPIDWallet}_{ppid}.\mathsf{execute}(\mathit{payload}, \mathit{sig}, \pi, pk_i,
+pk_{IdP}, \mathit{max\_height})$ accepts iff, in order:
+\[
+\begin{aligned}
+&\text{(i)}\ \ \mathit{payload}.\mathit{nonce} = \mathsf{nonce}_{ppid} \\
+&\text{(ii)}\ \ \mathsf{ecrecover}(H(\mathit{payload}),\, \mathit{sig}) = \mathsf{addr}(pk_i) \\
+&\text{(iii)}\ \ (pk_{IdP,x}, pk_{IdP,y}) = (\mathsf{trustedPkIdPX}_{ppid}, \mathsf{trustedPkIdPY}_{ppid}) \\
+&\text{(iv)}\ \ \mathsf{Verify}_{\mathsf{vk}}\bigl(\pi,\, (pk_i, pk_{IdP,x}, pk_{IdP,y}, ppid, \mathit{max\_height})\bigr) = 1 \\
+&\text{(v)}\ \ \mathit{block.number} \le \mathit{max\_height}
+\end{aligned}
+\]
+\end{definition}
+
+\begin{corollary}[Unforgeable Trace Tag]
+\label{cor:b1-trace-tag}
+If Def.~\ref{def:b1-unforgeable-binding} holds, then for any accepted transaction, the
+publicly observable $pk_i$ is an unforgeable trace tag: no PPT adversary can cause an
+accepted \texttt{execute()} call whose $pk_i$ was never bound to a genuine
+$\mathcal{O}_{\mathsf{Sign}}$ output, except with negligible probability. This is the
+property that lets B2's opening procedure (Def.~\ref{def:b2-opening}) treat on-chain
+$pk_i$ as a sound join key.
+\end{corollary}
+
+\begin{definition}[Session-Linked Conditional Opening]
+\label{def:b2-opening}
+Let $L_{RP} = \{(\mathit{auid}_i, \mathit{r\_token}, \mathit{rp\_nonce})\}$ be the RP's
+retained session log and $L_{IdP} : \mathit{r\_token} \mapsto \mathit{uid}$ the IdP's
+retained issuance log. For a disputed on-chain transaction publicly exposing
+$(pk_i, \mathit{max\_height})$, define
+\[
+\mathsf{Open}(pk_i, \mathit{max\_height}, L_{RP}, L_{IdP}) =
+\begin{cases}
+  \mathit{uid} & \exists\, (\mathit{auid}_i, \mathit{r\_token}, \mathit{rp\_nonce}) \in L_{RP} :\ \\
+                 & \quad \mathit{r\_token} = H_{Poseidon}(pk_i,\, \mathit{max\_height},\, \mathit{rp\_nonce})\ \wedge\ L_{IdP}(\mathit{r\_token}) = \mathit{uid} \\
+  \bot & \text{otherwise.}
+\end{cases}
+\]
+\textbf{Correctness.} If the disputed transaction genuinely originated from a session
+recorded in $L_{RP}$, $\mathsf{Open}$ recovers the correct $\mathit{uid}$ except with
+probability bounded by the collision resistance of $H_{Poseidon}$.
+\end{definition}
+
+\begin{property}[Session-Exact, Transaction-Broad Opening --- departure from Definition~4]
+\label{prop:b2-blast-radius}
+Unlike the paper's Definition~4, where $\mathit{auth\_digest_i}$ is freshly sampled
+(via $\rho_i, \eta_i$) every session and exclusivity is stated relative to a single
+transcript $\tau^*$, this construction reuses a \emph{process-persistent} $pk_i$ across
+sessions:
+\[
+  \forall\, \tau_1, \tau_2 \in L_{RP} \text{ from the same wallet process} : pk_i(\tau_1) = pk_i(\tau_2).
+\]
+$\mathsf{Open}$ itself remains \emph{session-exact}: one invocation resolves exactly one
+$\mathit{r\_token}$'s $\mathit{uid}$. However, because $pk_i$ is already publicly
+observable on-chain \emph{prior to any opening}, an observer combining a single
+$\mathsf{Open}$ result with public $pk_i$-equality across transactions achieves the same
+practical linkage as if every same-$pk_i$ transaction had been individually opened. The
+paper's stated exclusivity guarantee (opening reveals only the disputed transcript, not
+others) therefore does \emph{not} extend to this construction's effective disclosure
+surface, even though the cryptographic opening step (Def.~\ref{def:b2-opening}) is
+unchanged in scope. This is a property of composing B1's $pk_i$ persistence with B2's
+opening mechanism, not a defect in either construction taken alone.
+\end{property}
+```
+
 ## 이번 반복에서 명시적으로 안 만족하는 것 (한계)
 
 - **인가(authority) 게이트 없음**: 지금 `trace_transaction`/`lookup_uid_by_r_token`은
