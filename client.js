@@ -440,6 +440,59 @@ async function verifyIdPTokenAtRpBackend() {
   return data;
 }
 
+  document.getElementById('submitPPIDTransaction')?.addEventListener('click', async () => {
+    const resultEl = document.getElementById('ppidTxResult');
+    resultEl.innerText = 'Preparing transaction...';
+    try {
+      const tokenRes = await fetch('/api/mode2/wallet_agent_token');
+      if (!tokenRes.ok) throw new Error('Failed to obtain wallet agent token');
+      const { token } = await tokenRes.json();
+
+      const submitRes = await fetch('http://127.0.0.1:5001/submitTransaction', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Wallet-Agent-Token': token },
+        body: JSON.stringify({
+          // 데모 고정값: 받는 사람/금액을 입력받는 폼은 이 기능 범위 밖.
+          to: '0x000000000000000000000000000000000000dEaD',
+          value: '0',
+          data: '0x',
+          business: currentSSOProof?.business,
+          rpNonce: ssoMetadata.rpNonce,
+          idpToken: walletReceivedIdPToken,
+        }),
+      });
+      const submission = await submitRes.json();
+      if (!submitRes.ok) throw new Error(submission.error || 'submitTransaction failed');
+
+      const [from] = await window.ethereum.request({ method: 'eth_requestAccounts' });
+
+      if (submission.deploy) {
+        resultEl.innerText = 'Deploying PPIDWallet (first use)...';
+        const deployTxHash = await window.ethereum.request({
+          method: 'eth_sendTransaction',
+          params: [{ from, to: submission.deploy.to, data: submission.deploy.data }],
+        });
+        let receipt = null;
+        while (!receipt) {
+          receipt = await window.ethereum.request({
+            method: 'eth_getTransactionReceipt',
+            params: [deployTxHash],
+          });
+          if (!receipt) await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+      }
+
+      resultEl.innerText = 'Sending transaction...';
+      const executeTxHash = await window.ethereum.request({
+        method: 'eth_sendTransaction',
+        params: [{ from, to: submission.to, data: submission.data }],
+      });
+      resultEl.innerText = `Transaction sent: ${executeTxHash}`;
+    } catch (err) {
+      resultEl.innerText = `Error: ${err.message}`;
+    }
+  });
+
   document.getElementById('step15NotifyWallet')?.addEventListener('click', async () => {
     await runWalletStep11And12();
   });
@@ -672,6 +725,8 @@ async function verifyIdPTokenAtRpBackend() {
     appendRpFeVisibleFlow(`  Step 12: ${formatDurationMs(measuredDurations.step12)}`);
     appendRpFeVisibleFlow(`  Step 14: ${formatDurationMs(measuredDurations.step14)}`);
     appendRpFeVisibleFlow(`  Step 15: ${formatDurationMs(measuredDurations.step15)}`);
+    const submitButton = document.getElementById('submitPPIDTransaction');
+    if (submitButton) submitButton.disabled = false;
   }
 
   } // End APP_MODE === 2 block.
