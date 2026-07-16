@@ -65,6 +65,56 @@ function validityWindowBlocks() {
   return (TOKEN_VALIDITY_SECONDS + ETHEREUM_SLOT_SECONDS - 1n) / ETHEREUM_SLOT_SECONDS;
 }
 
+// pi_pk_i 증명의 첫 생성은 BN128 커브 WASM 초기화 비용 때문에 느리다(실측 ~700ms,
+// warm 상태 대비 3배 이상 — 이후 호출은 ~230ms대로 안정화됨). 기동 시점에 실제로
+// 제약조건을 만족하는 더미 입력으로 한 번 미리 증명을 만들어서 이 비용을 서버
+// 기동 중에 떠안고, 첫 실사용자 /submitTransaction 요청부터 바로 빠르게 만든다.
+// Poseidon/EdDSA를 기동 시점에 미리 빌드해두는 것과 같은 이유/같은 패턴이다.
+async function warmUpPiPkI() {
+  const F = eddsa.F;
+  const sk_dummy = webcrypto.getRandomValues(new Uint8Array(32));
+  const pk_dummy = eddsa.prv2pub(sk_dummy);
+
+  const rp_nonce = valueToField('warmup-rp-nonce');
+  const rid = valueToField('warmup-rid');
+  const uid = valueToField('warmup-uid');
+  const salt = valueToField('warmup-salt');
+  const pk_i = valueToField('0x04deadbeef0');
+  const max_height = valueToField('1000');
+  const chain_id = valueToField('1337');
+
+  const PPID = (uid * rid * salt) % FIELD_PRIME;
+  const arid_i = (rid * rp_nonce) % FIELD_PRIME;
+  const auid_i = (PPID * rp_nonce) % FIELD_PRIME;
+  const r_token = poseidon.F.toObject(poseidon([pk_i, max_height, rp_nonce]));
+
+  const DOMAIN_IDP_TOKEN = valueToField('IDP_TOKEN');
+  const msg = poseidon([DOMAIN_IDP_TOKEN, arid_i, auid_i, r_token, max_height, chain_id]);
+  const sig = eddsa.signPoseidon(sk_dummy, msg);
+
+  const warmupInput = {
+    rp_nonce: rp_nonce.toString(),
+    arid_i: arid_i.toString(),
+    auid_i: auid_i.toString(),
+    r_token: r_token.toString(),
+    chain_id: chain_id.toString(),
+    S: sig.S.toString(),
+    R8x: F.toObject(sig.R8[0]).toString(),
+    R8y: F.toObject(sig.R8[1]).toString(),
+    pk_i: pk_i.toString(),
+    pk_IdP_x: F.toObject(pk_dummy[0]).toString(),
+    pk_IdP_y: F.toObject(pk_dummy[1]).toString(),
+    PPID: PPID.toString(),
+    max_height: max_height.toString(),
+  };
+
+  await snarkjs.groth16.fullProve(
+    warmupInput,
+    'build/mode2/pi_pk_i_js/pi_pk_i.wasm',
+    'build/mode2/pi_pk_i_final.zkey',
+  );
+}
+
 async function rpcCall(method, params = []) {
   const response = await fetch(MODE2_ETH_RPC_URL, {
     method: 'POST',
@@ -613,6 +663,11 @@ try {
   console.log('[WalletAgent] Initializing EdDSA-Poseidon...');
   await ensureEdDSA();
   console.log('[WalletAgent] EdDSA-Poseidon initialized.');
+
+  console.log('[WalletAgent] Warming up pi_pk_i proof generation...');
+  const warmupStart = now();
+  await warmUpPiPkI();
+  console.log(`[WalletAgent] pi_pk_i warm-up complete (${(now() - warmupStart).toFixed(0)}ms).`);
 
   app.listen(PORT, '127.0.0.1', () => {
     console.log(`[WalletAgent] Local wallet-side Step 8 agent listening on http://127.0.0.1:${PORT}`);
