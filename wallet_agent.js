@@ -65,21 +65,25 @@ function validityWindowBlocks() {
   return (TOKEN_VALIDITY_SECONDS + ETHEREUM_SLOT_SECONDS - 1n) / ETHEREUM_SLOT_SECONDS;
 }
 
-// pi_pk_i 증명의 첫 생성은 BN128 커브 WASM 초기화 비용 때문에 느리다(실측 ~700ms,
-// warm 상태 대비 3배 이상 — 이후 호출은 ~230ms대로 안정화됨). 기동 시점에 실제로
-// 제약조건을 만족하는 더미 입력으로 한 번 미리 증명을 만들어서 이 비용을 서버
-// 기동 중에 떠안고, 첫 실사용자 /submitTransaction 요청부터 바로 빠르게 만든다.
-// Poseidon/EdDSA를 기동 시점에 미리 빌드해두는 것과 같은 이유/같은 패턴이다.
-async function warmUpPiPkI() {
+// pi_pk_i 증명의 첫 생성은 BN128 커브 WASM 초기화 + V8 JIT 웜업 비용 때문에 느리다
+// (실측 ~700ms, warm 상태 대비 3배 이상). 파일 I/O는 원인이 아님을 별도로 확인했다
+// (OS 페이지 캐시를 미리 채워도 1회차는 여전히 느림). 한 번만 워밍업하면 V8 JIT이
+// 완전히 최적화되기 전이라 그다음 2~3회까지도 다소 느린 게 실측으로 확인돼서,
+// WARMUP_RUNS번 반복 실행해서 완전히 안정화(~230ms대)된 뒤에 서버가 리슨을
+// 시작하게 한다. Poseidon/EdDSA를 기동 시점에 미리 빌드해두는 것과 같은 이유/같은
+// 패턴이다.
+const PI_PK_I_WARMUP_RUNS = 4;
+
+function buildWarmupPiPkIInput(index) {
   const F = eddsa.F;
   const sk_dummy = webcrypto.getRandomValues(new Uint8Array(32));
   const pk_dummy = eddsa.prv2pub(sk_dummy);
 
-  const rp_nonce = valueToField('warmup-rp-nonce');
+  const rp_nonce = valueToField(`warmup-rp-nonce-${index}`);
   const rid = valueToField('warmup-rid');
   const uid = valueToField('warmup-uid');
   const salt = valueToField('warmup-salt');
-  const pk_i = valueToField('0x04deadbeef0');
+  const pk_i = valueToField(`0x04deadbeef${index}`);
   const max_height = valueToField('1000');
   const chain_id = valueToField('1337');
 
@@ -92,7 +96,7 @@ async function warmUpPiPkI() {
   const msg = poseidon([DOMAIN_IDP_TOKEN, arid_i, auid_i, r_token, max_height, chain_id]);
   const sig = eddsa.signPoseidon(sk_dummy, msg);
 
-  const warmupInput = {
+  return {
     rp_nonce: rp_nonce.toString(),
     arid_i: arid_i.toString(),
     auid_i: auid_i.toString(),
@@ -107,12 +111,18 @@ async function warmUpPiPkI() {
     PPID: PPID.toString(),
     max_height: max_height.toString(),
   };
+}
 
-  await snarkjs.groth16.fullProve(
-    warmupInput,
-    'build/mode2/pi_pk_i_js/pi_pk_i.wasm',
-    'build/mode2/pi_pk_i_final.zkey',
-  );
+async function warmUpPiPkI() {
+  for (let i = 0; i < PI_PK_I_WARMUP_RUNS; i++) {
+    const runStart = now();
+    await snarkjs.groth16.fullProve(
+      buildWarmupPiPkIInput(i),
+      'build/mode2/pi_pk_i_js/pi_pk_i.wasm',
+      'build/mode2/pi_pk_i_final.zkey',
+    );
+    console.log(`[WalletAgent] pi_pk_i warm-up run ${i + 1}/${PI_PK_I_WARMUP_RUNS}: ${now() - runStart}ms`);
+  }
 }
 
 async function rpcCall(method, params = []) {
