@@ -8,7 +8,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { webcrypto } from 'crypto';
 import { secp256k1 } from '@noble/curves/secp256k1';
-import { keccak256, AbiCoder } from 'ethers';
+import { keccak256, AbiCoder, Interface } from 'ethers';
 
 const { subtle } = webcrypto;
 const __filename = fileURLToPath(import.meta.url);
@@ -18,6 +18,21 @@ const PORT = process.env.WALLET_AGENT_PORT || 5001;
 const RP_ORIGIN = process.env.RP_ORIGIN || 'http://127.0.0.1:3000';
 const IDP_ORIGIN = process.env.CUSTOM_IDP_BASE_URL || 'http://127.0.0.1:4000';
 const MODE2_ETH_RPC_URL = process.env.MODE2_ETH_RPC_URL || process.env.ETH_RPC_URL || 'http://127.0.0.1:8545';
+// B1 트랜잭션 제출(post-login) 대상 PPIDWalletFactory 주소. 지금까지는 이 정보를 아는
+// 컴포넌트가 없었다(검증 스크립트가 임시로 수동 배포/전달했음) — 실제 온체인 제출을
+// 하려면 이 값이 반드시 필요하다.
+const PPID_WALLET_FACTORY_ADDRESS = process.env.PPID_WALLET_FACTORY_ADDRESS;
+
+const PPID_WALLET_FACTORY_ABI = [
+  'function computeAddress(uint256 ppid) view returns (address)',
+  'function deploy(uint256 ppid) returns (address)',
+];
+const PPID_WALLET_ABI = [
+  'function execute((address to, uint256 value, bytes data, uint256 nonce) payload, bytes sig, uint[2] proofA, uint[2][2] proofB, uint[2] proofC, uint256 pk_i, uint256 pk_IdP_x, uint256 pk_IdP_y, uint256 max_height) returns (bool ok)',
+  'function nonce() view returns (uint256)',
+];
+const factoryInterface = new Interface(PPID_WALLET_FACTORY_ABI);
+const walletInterface = new Interface(PPID_WALLET_ABI);
 const STATE_FILE = path.join(__dirname, 'wallet_state.json');
 let poseidon = null;
 let eddsa = null;
@@ -456,13 +471,13 @@ app.post('/verifyIdPAuthToken', async (req, res) => {
 app.post('/submitTransaction', async (req, res) => {
   const start = cursor();
   try {
-    const { to, value, data, currentNonce, business, rpNonce } = req.body ?? {};
+    const { to, value, data, business, rpNonce } = req.body ?? {};
     if (!to) throw new Error('to is required');
     if (value === undefined) throw new Error('value is required');
-    if (currentNonce === undefined) throw new Error('currentNonce is required');
     if (!business?.arid_i || !business?.auid_i) throw new Error('business.arid_i/auid_i are required');
     if (business?.PPID === undefined && business?.ppid === undefined) throw new Error('business.PPID/ppid is required');
     if (!rpNonce) throw new Error('rpNonce is required');
+    if (!PPID_WALLET_FACTORY_ADDRESS) throw new Error('PPID_WALLET_FACTORY_ADDRESS not configured');
 
     await ensureEdDSA();
     if (!poseidon) throw new Error('Poseidon not initialized yet');
@@ -479,6 +494,31 @@ app.post('/submitTransaction', async (req, res) => {
     if (!idpTokenSig?.R8 || !idpTokenSig?.S) throw new Error('idpToken.signature is required');
 
     const { sk_i, pk_i } = getOrCreateSessionKey();
+
+    const ppidField = valueToField(business.PPID ?? business.ppid);
+
+    // 대상 PPIDWallet의 CREATE2 주소를 factory에 직접 조회한다 — client.js는
+    // 이 주소를 몰라도 된다.
+    const computeAddressCalldata = factoryInterface.encodeFunctionData('computeAddress', [ppidField]);
+    const computeAddressResult = await rpcCall('eth_call', [
+      { to: PPID_WALLET_FACTORY_ADDRESS, data: computeAddressCalldata },
+      'latest',
+    ]);
+    const [walletAddress] = factoryInterface.decodeFunctionResult('computeAddress', computeAddressResult);
+
+    // PPIDWallet은 CREATE2로 지연 배포되므로, 아직 배포 안 됐을 수 있다(코드 없음).
+    // 배포 안 됐으면 nonce는 0으로 간주하고, 응답에 배포 트랜잭션도 같이 실어보낸다 —
+    // wallet_agent.js는 가스비를 낼 서명 키가 없어서(sk_i는 payload 서명 전용) 배포도
+    // execute()와 마찬가지로 브라우저의 MetaMask가 보내야 한다.
+    const walletCode = await rpcCall('eth_getCode', [walletAddress, 'latest']);
+    const isDeployed = Boolean(walletCode) && walletCode !== '0x';
+
+    let currentNonce = 0n;
+    if (isDeployed) {
+      const nonceCalldata = walletInterface.encodeFunctionData('nonce', []);
+      const nonceResult = await rpcCall('eth_call', [{ to: walletAddress, data: nonceCalldata }, 'latest']);
+      [currentNonce] = walletInterface.decodeFunctionResult('nonce', nonceResult);
+    }
 
     const payloadData = data ?? '0x';
     const payload = { to, value: value.toString(), data: payloadData, nonce: currentNonce.toString() };
@@ -518,7 +558,7 @@ app.post('/submitTransaction', async (req, res) => {
       pk_i: pk_i.toString(),
       pk_IdP_x: pkIdP_x.toString(),
       pk_IdP_y: pkIdP_y.toString(),
-      PPID: valueToField(business.PPID ?? business.ppid).toString(),
+      PPID: ppidField.toString(),
       max_height: maxHeightField.toString(),
     };
 
@@ -530,18 +570,27 @@ app.post('/submitTransaction', async (req, res) => {
     const calldata = JSON.parse(`[${await snarkjs.groth16.exportSolidityCallData(proof, publicSignals)}]`);
     const [proofA, proofB, proofC] = calldata;
 
-    console.log(`[WalletAgent][submitTransaction] proof generated ${ms(start)}`);
-    res.json({
-      payload,
+    const executeCalldata = walletInterface.encodeFunctionData('execute', [
+      { to: payload.to, value: payload.value, data: payload.data, nonce: payload.nonce },
       sig,
       proofA,
       proofB,
       proofC,
-      pk_i: pk_i.toString(),
-      pk_IdP_x: pkIdP_x.toString(),
-      pk_IdP_y: pkIdP_y.toString(),
-      max_height: maxHeightField.toString(),
-    });
+      pk_i.toString(),
+      pkIdP_x.toString(),
+      pkIdP_y.toString(),
+      maxHeightField.toString(),
+    ]);
+
+    const deploy = isDeployed
+      ? null
+      : {
+          to: PPID_WALLET_FACTORY_ADDRESS,
+          data: factoryInterface.encodeFunctionData('deploy', [ppidField]),
+        };
+
+    console.log(`[WalletAgent][submitTransaction] proof + calldata generated ${ms(start)}`);
+    res.json({ deploy, to: walletAddress, data: executeCalldata });
   } catch (err) {
     console.error(`[WalletAgent][submitTransaction] error: ${err.message} ${ms(start)}`);
     res.status(400).json({ error: err.message });
