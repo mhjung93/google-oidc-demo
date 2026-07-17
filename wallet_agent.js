@@ -44,6 +44,9 @@ async function ensureEdDSA() {
 const FIELD_PRIME = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 const TOKEN_VALIDITY_SECONDS = 3600n;
 const ETHEREUM_SLOT_SECONDS = 12n;
+// Demo-only fixture for the prior verified Wallet-IdP account binding.
+// Production deployments must populate this value through an authenticated enrollment flow.
+const DEMO_BOUND_UID = '12345';
 
 // client.js의 valueToField()/bytesToHex()와 동일한 필드 축소 규칙.
 function bytesToHex(bytes) {
@@ -351,16 +354,18 @@ app.use((req, res, next) => {
 // Step 8을 대신 수행한다: PPID/arid_i/auid_i 계산, 세션 서명키 생성, Poseidon
 // 토큰 논스, pi_i/pi_PPID Groth16 증명 생성. 이 프로세스는 사용자 로컬 머신에서만
 // 돌고 RP_ORIGIN에서만 접근 가능하다 — RP 페이지(client.js)의 JS 컨텍스트와는
-// 별도의 OS 프로세스라서, uid/salt/rid 같은 값이 RP 페이지에 직접 노출되지 않는다.
+// 별도의 OS 프로세스라서, uid와 salt가 RP 페이지에 직접 노출되지 않는다.
 app.post('/generateStep8Proofs', async (req, res) => {
   const requestStart = now();
   const start = cursor();
   try {
-    const { uid, rpCredential, r_i, rpNonce } = req.body ?? {};
+    const { rpCredential, r_i, rpNonce } = req.body ?? {};
     console.log(`--- [WalletAgent][Step 8] generateStep8Proofs request received ---`);
     console.log(`[WalletAgent][Step 8] rid: ${preview(rpCredential?.rid)}, r_i: ${preview(r_i)}`);
 
-    if (uid == null) throw new Error('uid is required');
+    if (Object.prototype.hasOwnProperty.call(req.body ?? {}, 'uid')) {
+      throw new Error('uid must not be supplied by the RP frontend');
+    }
     if (!rpCredential?.rid) throw new Error('rpCredential.rid is required');
     if (!rpCredential?.signature) throw new Error('rpCredential.signature is required');
     if (!r_i) throw new Error('r_i is required');
@@ -374,7 +379,7 @@ app.post('/generateStep8Proofs', async (req, res) => {
     console.log(`[WalletAgent][Step 8] chain_id/max_height computed: chainId=${heightInfo.chainId}, currentBlock=${heightInfo.currentBlock.toString()}, maxHeight=${maxHeight.toString()} ${ms(start)}`);
 
     const walletSalt = getOrCreateWalletSalt();
-    const uidField = valueToField(uid);
+    const uidField = valueToField(DEMO_BOUND_UID);
     const saltField = valueToField(walletSalt);
     const rid = BigInt(rpCredential.rid);
     const rpNonceField = valueToField(rpNonce);
@@ -442,7 +447,9 @@ app.post('/generateStep8Proofs', async (req, res) => {
       tokenNonce: tokenNonce.toString(),
       publicKeyHex,
       zkpProof: proof,
-      zkpPublicSignals: publicSignals,
+      // pi_arid_i public signals are [uid, arid_i, auid_i, max_height, token_nonce].
+      // The IdP reconstructs uid from the authenticated account, so never expose it to RP FE.
+      zkpPublicSignals: publicSignals.slice(1),
       pi_PPID: {
         type: 'pi_PPID',
         proof: ppidProof,
