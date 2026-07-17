@@ -384,8 +384,8 @@ app.post('/generateStep8Proofs', async (req, res) => {
     const rid = BigInt(rpCredential.rid);
     const rpNonceField = valueToField(rpNonce);
 
-    // PPID = uid * rid * salt, arid_i = rid * rp_nonce, auid_i = PPID * rp_nonce
-    const ppid = (uidField * rid * saltField) % FIELD_PRIME;
+    // ppid = Poseidon(uid, rid, salt), arid_i = rid * rp_nonce, auid_i = ppid * rp_nonce
+    const ppid = poseidon.F.toObject(poseidon([uidField, rid, saltField]));
     const arid_i = (rid * rpNonceField) % FIELD_PRIME;
     const auid_i = (ppid * rpNonceField) % FIELD_PRIME;
     console.log(`[WalletAgent][Step 8] PPID/arid_i/auid_i computed ${ms(start)}`);

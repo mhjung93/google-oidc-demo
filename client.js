@@ -628,8 +628,8 @@ async function verifyIdPTokenAtRpBackend() {
     const maxHeight = token?.max_height != null ? BigInt(token.max_height) : null;
     const heightOk = maxHeight != null && heightInfo.value <= maxHeight;
 
-    // pi_PPID is now a real Groth16 proof (circuits/pi_ppid.circom): it attests that
-    // ppid = uid * rid * salt for some hidden uid/salt, with rid and ppid public.
+    // pi_PPID is a real Groth16 proof (circuits/pi_ppid.circom): it attests that
+    // ppid = Poseidon(uid, rid, salt) for some hidden uid/salt, with rid and ppid public.
     // Verify the proof itself, then read rid/ppid from its public signals (never
     // trust a plaintext claim) to check they bind to this RP and this IdP session.
     const ppidPublicSignals = ssoMetadata.pi_PPID?.publicSignals;
