@@ -91,8 +91,6 @@ if (APP_MODE === 2) {
   let mode2SessionNonce = null;
   let ssoMetadata = {
     userAddress: null,
-    // Demo fixture: represents a prior verified wallet-IdP account binding.
-    uid: '12345',
     rid: null,
     rpNonceField: null,
     arid_i: null,
@@ -180,7 +178,23 @@ if (APP_MODE === 2) {
 
   function prepareIdPLoginPopup() {
     idpPopupReady = false;
-    idpPopupWindow = window.open(`${IDP_ORIGIN}/login_popup`, 'IdPLogin', 'width=500,height=600');
+    // RP origin을 URL 프래그먼트(#rp=...)로 실어 보낸다 — 프래그먼트는 브라우저가
+    // 실제 HTTP 요청에는 절대 포함시키지 않으므로(항상 클라이언트에만 남음)
+    // custom_idp.js 서버는 이 값을 볼 수 없다. 다만 이 값 자체는 그냥 문자열이라
+    // login_popup.js는 이걸 "잠정값"으로만 쓰고, 실제 메시지가 오면 그 메시지의
+    // event.origin(브라우저 보장, 위조 불가능)과 일치하는지 반드시 재확인한 뒤에만
+    // 신뢰한다 — 그래서 반복 전송(RP_HELLO) 없이도 하드코딩 문제와 타이밍 레이스를
+    // 동시에 피할 수 있다.
+    // 창 이름을 고정값(예: 'IdPLogin')으로 두면, 같은 브라우징 컨텍스트 그룹 안에서
+    // 미리 실행되는 악성 스크립트가 그 이름을 선점해 핸들을 쥐고 있다가 로그인 도중
+    // 창을 다른 곳으로 재이동시키거나 강제로 닫아버릴 수 있다. 매번 예측 불가능한
+    // 이름을 쓰면 이 선점 자체가 불가능해진다.
+    const popupName = `IdPLogin-${crypto.randomUUID()}`;
+    idpPopupWindow = window.open(
+      `${IDP_ORIGIN}/login_popup#rp=${encodeURIComponent(window.location.origin)}`,
+      popupName,
+      'width=500,height=600',
+    );
     if (!idpPopupWindow) {
       return false;
     }
@@ -251,7 +265,6 @@ if (APP_MODE === 2) {
           'X-Wallet-Agent-Token': walletAgentToken,
         },
         body: JSON.stringify({
-          uid: ssoMetadata.uid,
           rpCredential: ssoMetadata.rpCredential,
           r_i: ssoMetadata.r_i,
           rpNonce: ssoMetadata.rpNonce,
@@ -588,7 +601,6 @@ async function verifyIdPTokenAtRpBackend() {
     appendRpFeVisibleFlow('');
     appendRpFeVisibleFlow(`Step 13. Wallet -> RP FE ${formatMs(start)}`);
     appendRpFeVisibleFlow(`  r_i check: ${ssoMetadata.r_i === mode2SessionNonce ? 'PASS' : 'FAIL'}`);
-    appendRpFeVisibleFlow(`  auth token.uid: ${previewValue(walletReceivedIdPToken.uid)}`);
     appendRpFeVisibleFlow(`  auth token.rid: ${previewValue(walletReceivedIdPToken.rid)}`);
     appendRpFeVisibleFlow(`  auth token.max_height: ${previewValue(walletReceivedIdPToken.max_height)}`);
     appendRpFeVisibleFlow(`  auth token.chain_id: ${previewValue(walletReceivedIdPToken.chain_id)}`);

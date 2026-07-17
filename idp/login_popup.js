@@ -1,6 +1,14 @@
 let pendingZKP = null;
 
-const RP_ORIGIN = 'http://127.0.0.1:3000';
+// RP origin은 하드코딩하지 않는다. 팝업을 연 쪽(client.js)이 URL 프래그먼트
+// (#rp=...)로 자기 origin을 알려주지만, 프래그먼트는 서버에 절대 전송되지 않는
+// 대신(브라우저가 HTTP 요청에서 항상 잘라냄) 그 값 자체는 그냥 문자열이라
+// 위조될 수 있다 — 그래서 이걸 "잠정값"으로만 쓴다. 실제로 메시지가 도착하면
+// 그 메시지의 event.origin(브라우저가 보장하는, 위조 불가능한 진짜 발신
+// origin)이 이 잠정값과 일치하는지 반드시 확인한 뒤에만 rpOrigin으로
+// "확정"한다 — 확정 전까지는 아무 민감한 데이터도 안 보내고 안 받는다.
+const tentativeRpOrigin = new URLSearchParams(location.hash.slice(1)).get('rp');
+let rpOrigin = null; // event.origin으로 확인되기 전까지는 null
 const statusEl = document.getElementById('status');
 const loginButton = document.getElementById('loginBtn');
 const loginSection = document.getElementById('loginSection');
@@ -35,7 +43,7 @@ function resetToLogin() {
 
 function zkpSignalsWithoutUid() {
   return Array.isArray(pendingZKP?.zkpPublicSignals)
-    ? pendingZKP.zkpPublicSignals.slice(1)
+    ? pendingZKP.zkpPublicSignals
     : pendingZKP?.zkpPublicSignals;
 }
 
@@ -45,12 +53,23 @@ if (window.opener && loginButton) {
   setStatus('Waiting for Wallet submission...');
 }
 
-if (window.opener) {
-  window.opener.postMessage({ type: 'IDP_READY_FOR_ZKP' }, RP_ORIGIN);
+// URL 프래그먼트의 잠정값으로 곧바로 "준비됨" 신호를 보낸다 — 반복 전송(RP_HELLO)
+// 없이, 로드되자마자 한 번만. 이 메시지엔 민감한 데이터가 없어서, 잠정값이
+// 틀려도(또는 악의적으로 조작돼도) 기껏해야 이 빈 신호 하나가 엉뚱한 곳에
+// 갈 뿐이다 — 실제 데이터는 아래 리스너에서 event.origin으로 재확인한 뒤에만 오간다.
+if (window.opener && tentativeRpOrigin) {
+  window.opener.postMessage({ type: 'IDP_READY_FOR_ZKP' }, tentativeRpOrigin);
 }
 
 window.addEventListener('message', (event) => {
-  if (event.origin !== RP_ORIGIN) return;
+  if (rpOrigin === null) {
+    // 최초 메시지의 event.origin(브라우저 보장, 위조 불가능)이 프래그먼트가
+    // 주장한 값과 실제로 일치할 때만 그 origin을 확정해서 신뢰하기 시작한다.
+    // 일치하지 않으면 무시한다 — 프래그먼트가 틀렸거나 다른 origin이 끼어든 것.
+    if (event.origin !== tentativeRpOrigin) return;
+    rpOrigin = event.origin;
+  }
+  if (event.origin !== rpOrigin) return;
   if (event.data.type === 'RP_SEND_ZKP') {
     pendingZKP = event.data.zkp;
     pendingUsername = pendingZKP.username;
@@ -143,7 +162,7 @@ async function submitConsent(allowed) {
         type: 'IDP_SSO_SUCCESS',
         idpToken: pendingIdPToken,
         r_i: pendingZKP.r_i || pendingZKP.walletSubmission?.r_i || pendingZKP.business?.r_i,
-      }, RP_ORIGIN);
+      }, rpOrigin);
       window.close();
       return;
     }
