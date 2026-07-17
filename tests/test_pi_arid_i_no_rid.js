@@ -15,11 +15,10 @@ async function main() {
   const pk_i = 555n;
   const max_height = 310n;
 
-  const ppid = (uid * rid * salt) % FIELD_PRIME;
+  const poseidon = await buildPoseidon();
+  const ppid = poseidon.F.toObject(poseidon([uid, rid, salt]));
   const arid_i = (rid * rp_nonce) % FIELD_PRIME;
   const auid_i = (ppid * rp_nonce) % FIELD_PRIME;
-
-  const poseidon = await buildPoseidon();
   const token_nonce = poseidon.F.toObject(poseidon([pk_i, max_height, rp_nonce])).toString();
 
   const baseInputs = {
