@@ -458,6 +458,7 @@ app.post('/generateStep8Proofs', async (req, res) => {
         r_i,
       },
       business: {
+        ppid: ppid.toString(),
         arid_i: arid_i.toString(),
         auid_i: auid_i.toString(),
         r_i,
