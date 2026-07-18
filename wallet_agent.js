@@ -388,7 +388,10 @@ app.post('/generateStep8Proofs', async (req, res) => {
     const ppid = poseidon.F.toObject(poseidon([uidField, rid, saltField]));
     const arid_i = (rid * rpNonceField) % FIELD_PRIME;
     const auid_i = (ppid * rpNonceField) % FIELD_PRIME;
-    console.log(`[WalletAgent][Step 8] PPID/arid_i/auid_i computed ${ms(start)}`);
+    // auid = Poseidon(uid, salt) — fixed per account, lets the IdP detect a
+    // wallet reusing a different salt across logins for the same uid.
+    const auid = poseidon.F.toObject(poseidon([uidField, saltField]));
+    console.log(`[WalletAgent][Step 8] PPID/arid_i/auid_i/auid computed ${ms(start)}`);
 
     // 세션 서명키: secp256k1, wallet_state.json에 영속화됨 (getOrCreateSessionKey 참고).
     // pk_i는 이제 공개키 블롭의 해시가 아니라 그 공개키의 이더리움 주소 자체다.
@@ -410,6 +413,7 @@ app.post('/generateStep8Proofs', async (req, res) => {
       auid_i: auid_i.toString(),
       max_height: maxHeightField.toString(),
       token_nonce: tokenNonce.toString(),
+      auid: auid.toString(),
     };
     const { proof, publicSignals } = await snarkjs.groth16.fullProve(
       aridInputs,

@@ -157,8 +157,8 @@ function psSign(messages) {
 
 // Mock Database (UID를 순수 숫자로 변경하여 ZKP와 일치시킴)
 const users = {
-  'testuser': { password: 'password123', uid: '12345', sub: '12345' },
-  'alice': { password: 'secret456', uid: '67890', sub: '67890' }
+  'testuser': { password: 'password123', uid: '12345', sub: '12345', lastAuid: null },
+  'alice': { password: 'secret456', uid: '67890', sub: '67890', lastAuid: null }
 };
 const usedNonces = new Set();
 // B2 추적용 발급 로그: r_token -> uid. 메모리 전용, 서버 재시작 시 소실됨(의도된 데모 한계).
@@ -268,12 +268,12 @@ async function verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, bu
 
   try {
     if (!zkpProof || !zkpPublicSignals) throw new Error('ZKP data missing');
-    assertDecimalSignals(zkpPublicSignals, 4, 'pi_i without uid');
+    assertDecimalSignals(zkpPublicSignals, 5, 'pi_i without uid');
 
     // The wallet/RP popup payload omits pi_i's public UID signal. The IdP
     // reconstructs it from the authenticated popup account before verification.
     const verifySignals = [user.uid.toString(), ...zkpPublicSignals];
-    assertDecimalSignals(verifySignals, 5, 'pi_i');
+    assertDecimalSignals(verifySignals, 6, 'pi_i');
     console.log(`[CustomIdP][Step 10] BINDING: using Session UID(${summarizeValue(user.uid)}) as pi_i UID input ${ms(start)}`);
 
     const isValid = await snarkjs.groth16.verify(vkeyAridI, verifySignals, zkpProof);
@@ -281,6 +281,18 @@ async function verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, bu
     if (!isValid) {
       throw new Error('Identity Mismatch: This proof was not made for you!');
     }
+
+    // auid = Poseidon(uid, salt) is the 6th (last) public signal — fixed per
+    // account. Only trust it once the proof above has already verified, so a
+    // bogus proof can't be used to pollute the stored value. If it differs
+    // from the value seen at this account's last successful login, the
+    // wallet is using a different salt than before.
+    const auidFromProof = verifySignals[5];
+    if (user.lastAuid !== null && String(user.lastAuid) !== String(auidFromProof)) {
+      throw new Error('Wallet binding mismatch: this account is using a different salt than its last successful login');
+    }
+    user.lastAuid = auidFromProof;
+
     const maxHeight = business?.maxHeight ?? business?.max_height;
     const rToken = business?.r_token ?? business?.tokenNonce;
     if (String(verifySignals[1]) !== String(business?.arid_i)) throw new Error('arid_i does not match pi_i public signal');
