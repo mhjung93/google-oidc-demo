@@ -295,7 +295,7 @@ if (APP_MODE === 2) {
       appendWalletLog(`✓ max_height set for 1 hour validity: ${ssoMetadata.maxHeight}`);
       appendWalletLog(`  height source: ${result.heightSource}`);
       appendWalletLog(`✓ PPID generated: ${ssoMetadata.ppid.toString().slice(0, 32)}...`);
-      appendWalletLog('  formula: uid * rid * salt (computed by local wallet agent)');
+      appendWalletLog('  formula: Poseidon(uid, rid, salt) (computed by local wallet agent)');
       appendWalletLog('  salt source: wallet-agent-managed local secret');
       appendWalletLog(`✓ arid_i generated: ${ssoMetadata.arid_i.toString().slice(0, 32)}...`);
       appendWalletLog(`✓ auid_i generated: ${ssoMetadata.auid_i.toString().slice(0, 32)}...`);

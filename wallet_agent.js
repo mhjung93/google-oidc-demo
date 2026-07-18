@@ -90,7 +90,7 @@ function buildWarmupPiPkIInput(index) {
   const max_height = valueToField('1000');
   const chain_id = valueToField('1337');
 
-  const PPID = (uid * rid * salt) % FIELD_PRIME;
+  const PPID = poseidon.F.toObject(poseidon([uid, rid, salt]));
   const arid_i = (rid * rp_nonce) % FIELD_PRIME;
   const auid_i = (PPID * rp_nonce) % FIELD_PRIME;
   const r_token = poseidon.F.toObject(poseidon([pk_i, max_height, rp_nonce]));
