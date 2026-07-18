@@ -15,6 +15,7 @@ template PiAridI() {
     signal input auid_i;
     signal input max_height;
     signal input token_nonce;
+    signal input auid;
 
     // ppid = Poseidon(uid, rid, salt)
     component ppidHasher = Poseidon(3);
@@ -42,6 +43,16 @@ template PiAridI() {
     tokenNonceHasher.inputs[1] <== max_height;
     tokenNonceHasher.inputs[2] <== rp_nonce;
     token_nonce === tokenNonceHasher.out;
+
+    // auid = Poseidon(uid, salt) — a per-account fixed value (no rid, no
+    // session nonce) that lets the IdP detect whether this wallet is reusing
+    // the same salt across logins. Enforced with === (not <==) so a prover
+    // cannot submit an auid that doesn't match the uid/salt actually used
+    // elsewhere in this same proof.
+    component bindHasher = Poseidon(2);
+    bindHasher.inputs[0] <== uid;
+    bindHasher.inputs[1] <== salt;
+    auid === bindHasher.out;
 }
 
-component main {public [uid, arid_i, auid_i, max_height, token_nonce]} = PiAridI();
+component main {public [uid, arid_i, auid_i, max_height, token_nonce, auid]} = PiAridI();
