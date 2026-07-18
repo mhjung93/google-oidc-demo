@@ -506,6 +506,29 @@ async function verifyIdPTokenAtRpBackend() {
     }
   });
 
+  document.getElementById('traceTransaction')?.addEventListener('click', async () => {
+    const resultEl = document.getElementById('traceResult');
+    resultEl.innerText = 'Tracing...';
+    try {
+      const pkI = document.getElementById('traceInputPkI').value;
+      const maxHeight = document.getElementById('traceInputMaxHeight').value;
+      if (!pkI) throw new Error('pk_i is required');
+      if (!maxHeight) throw new Error('max_height is required');
+
+      const traceRes = await fetch('/api/mode2/trace_transaction', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pk_i: pkI, max_height: maxHeight }),
+      });
+      const traceResult = await traceRes.json();
+      if (!traceRes.ok) throw new Error(traceResult.error || 'trace_transaction failed');
+
+      resultEl.innerText = `Traced uid: ${traceResult.uid}`;
+    } catch (err) {
+      resultEl.innerText = `Error: ${err.message}`;
+    }
+  });
+
   document.getElementById('step15NotifyWallet')?.addEventListener('click', async () => {
     await runWalletStep11And12();
   });
@@ -739,6 +762,10 @@ async function verifyIdPTokenAtRpBackend() {
     appendRpFeVisibleFlow(`  Step 15: ${formatDurationMs(measuredDurations.step15)}`);
     const submitButton = document.getElementById('submitPPIDTransaction');
     if (submitButton) submitButton.disabled = false;
+    const tracePkIInput = document.getElementById('traceInputPkI');
+    const traceMaxHeightInput = document.getElementById('traceInputMaxHeight');
+    if (tracePkIInput) tracePkIInput.value = ssoMetadata.signingPublicKey ?? '';
+    if (traceMaxHeightInput) traceMaxHeightInput.value = ssoMetadata.maxHeight ?? '';
   }
 
   } // End APP_MODE === 2 block.

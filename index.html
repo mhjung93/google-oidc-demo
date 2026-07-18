@@ -24,6 +24,16 @@
         <button id="submitPPIDTransaction" style="background: #e1f5fe;" disabled>Send PPID Transaction</button>
         <p id="ppidTxResult" style="font-size: 0.85em; color: #333; white-space: pre-wrap;"></p>
       </div>
+      <div style="margin-top: 12px;">
+        <label for="traceInputPkI">pk_i: </label>
+        <input id="traceInputPkI" type="text" size="46" style="font-family: monospace;" />
+        <br />
+        <label for="traceInputMaxHeight">max_height: </label>
+        <input id="traceInputMaxHeight" type="text" size="20" style="font-family: monospace;" />
+        <br />
+        <button id="traceTransaction" style="background: #fff3e0; margin-top: 6px;">Trace Transaction</button>
+        <p id="traceResult" style="font-size: 0.85em; color: #333; white-space: pre-wrap;"></p>
+      </div>
       <div id="ssoStepButtons" style="display: none; border-top: 1px solid #ccc; padding-top: 10px;">
         <strong>SSO Step-by-Step (with Error Testing):</strong><br>
         <div style="margin-bottom: 5px;">
