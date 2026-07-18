@@ -451,7 +451,7 @@ app.post('/generateStep8Proofs', async (req, res) => {
       tokenNonce: tokenNonce.toString(),
       publicKeyHex,
       zkpProof: proof,
-      // pi_arid_i public signals are [uid, arid_i, auid_i, max_height, token_nonce].
+      // pi_arid_i public signals are [uid, arid_i, auid_i, max_height, token_nonce, auid].
       // The IdP reconstructs uid from the authenticated account, so never expose it to RP FE.
       zkpPublicSignals: publicSignals.slice(1),
       pi_PPID: {
