@@ -307,21 +307,29 @@ function ethAddressFromSecp256k1Pubkey(pubKeyUncompressed65) {
 // 세션 서명키(pk_i/sk_i): P-256 대신 secp256k1을 쓴다 — 이유는 PPIDWallet 컨트랙트가
 // payload 서명을 회로 밖에서 ecrecover로 직접 검증하기 때문(온체인 ecrecover는
 // secp256k1 전용). WebCrypto의 SubtleCrypto는 secp256k1을 지원하지 않으므로
-// @noble/curves를 쓴다. 로그인 시점(Step 8)에 한 번 생성해서 state 파일에 저장해두고,
-// 이후 트랜잭션 제출 단계(다른 HTTP 요청)에서 같은 키를 재사용한다 — 그전엔 이 키가
-// 요청 하나 처리 후 버려졌었는데, payload 서명을 나중에 또 해야 하므로 영속화가
-// 필요해졌다.
-function getOrCreateSessionKey() {
-  const state = readState();
-  if (!state.mode2SessionKey) {
-    const sk_i = secp256k1.utils.randomPrivateKey();
-    state.mode2SessionKey = bytesToHex(sk_i);
-    writeState(state);
-  }
-  const sk_i = Uint8Array.from(Buffer.from(state.mode2SessionKey, 'hex'));
+// @noble/curves를 쓴다.
+//
+// 이 키는 로그인(Step 8)마다 새로 생성해서 메모리에만 둔다 — pk_i는 IdP/RP 양쪽
+// 증명의 평문 public input이자 온체인 pi_pk_i에도 노출되므로, 고정된 값을 계속
+// 재사용하면 IdP가 세션 간 상관관계를 추적하거나 서로 다른 RP/온체인 관찰자가
+// pk_i만으로 같은 지갑임을 알아낼 수 있다(논문 Property 5, cross-service
+// unlinkability가 막으려는 바로 그 속성). 같은 방문(로그인→트랜잭션 제출) 안에서는
+// 이 프로세스가 계속 떠 있는 동안 메모리 값이 유지되므로 일관성 문제는 없다.
+let currentSessionKey = null;
+
+function generateNewSessionKey() {
+  const sk_i = secp256k1.utils.randomPrivateKey();
   const pubUncompressed = secp256k1.getPublicKey(sk_i, false);
   const address = ethAddressFromSecp256k1Pubkey(pubUncompressed);
-  return { sk_i, pk_i: BigInt(address), address, publicKeyHex: `0x${bytesToHex(pubUncompressed)}` };
+  currentSessionKey = { sk_i, pk_i: BigInt(address), address, publicKeyHex: `0x${bytesToHex(pubUncompressed)}` };
+  return currentSessionKey;
+}
+
+function getCurrentSessionKey() {
+  if (!currentSessionKey) {
+    throw new Error('No active session key — call /generateStep8Proofs (login) first');
+  }
+  return currentSessionKey;
 }
 
 // 인증 토큰: RP_ORIGIN 자신(server.js)만 이 파일을 직접 읽어서 브라우저 페이지에
@@ -393,9 +401,9 @@ app.post('/generateStep8Proofs', async (req, res) => {
     const auid = poseidon.F.toObject(poseidon([uidField, saltField]));
     console.log(`[WalletAgent][Step 8] PPID/arid_i/auid_i/auid computed ${ms(start)}`);
 
-    // 세션 서명키: secp256k1, wallet_state.json에 영속화됨 (getOrCreateSessionKey 참고).
+    // 세션 서명키: secp256k1, 로그인마다 새로 생성됨 (generateNewSessionKey 참고).
     // pk_i는 이제 공개키 블롭의 해시가 아니라 그 공개키의 이더리움 주소 자체다.
-    const { pk_i: pkField, publicKeyHex } = getOrCreateSessionKey();
+    const { pk_i: pkField, publicKeyHex } = generateNewSessionKey();
     console.log(`[WalletAgent][Step 8] session key ready. address(pk_i): ${preview(publicKeyHex, 34)} ${ms(start)}`);
 
     const maxHeightField = valueToField(maxHeight);
@@ -565,7 +573,7 @@ app.post('/submitTransaction', async (req, res) => {
     const idpTokenSig = req.body?.idpToken?.signature;
     if (!idpTokenSig?.R8 || !idpTokenSig?.S) throw new Error('idpToken.signature is required');
 
-    const { sk_i, pk_i } = getOrCreateSessionKey();
+    const { sk_i, pk_i } = getCurrentSessionKey();
 
     const ppidField = valueToField(business.PPID ?? business.ppid);
 
