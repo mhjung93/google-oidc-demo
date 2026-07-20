@@ -81,6 +81,13 @@ window.addEventListener('message', (event) => {
       if (rpOrigin) {
         window.parent.postMessage(event.data, rpOrigin);
       }
+      // idp/login_popup.js도 성공 후 스스로 window.close()를 호출하지만, nested
+      // cross-origin iframe에서 연 창이라 브라우저가 그 self-close를 막는 경우가
+      // 있다. relay는 이 창을 실제로 window.open()한 opener라서 cross-origin이어도
+      // .close() 호출이 항상 허용되므로, 여기서도 한 번 더 닫아준다.
+      if (idpPopupWindow && !idpPopupWindow.closed) {
+        idpPopupWindow.close();
+      }
     }
   }
 });
