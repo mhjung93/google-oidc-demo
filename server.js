@@ -229,10 +229,14 @@ async function rpcCall(method, params = []) {
 }
 
 async function waitForReceipt(txHash) {
+  const maxAttempts = 30; // 1초 간격 폴링 * 30 = 최대 30초 대기 후 포기
   let receipt = null;
-  while (!receipt) {
+  for (let attempt = 0; attempt < maxAttempts && !receipt; attempt++) {
     receipt = await rpcCall('eth_getTransactionReceipt', [txHash]);
     if (!receipt) await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  if (!receipt) {
+    throw new Error(`Timed out waiting for receipt of ${txHash} after ${maxAttempts}s`);
   }
   return receipt;
 }
