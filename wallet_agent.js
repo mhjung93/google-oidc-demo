@@ -457,6 +457,7 @@ app.post('/generateStep8Proofs', async (req, res) => {
       heightSource: heightInfo.source,
       maxHeight: maxHeightField.toString(),
       tokenNonce: tokenNonce.toString(),
+      pk_i: pkField.toString(),
       publicKeyHex,
       zkpProof: proof,
       // pi_arid_i public signals are [uid, arid_i, auid_i, max_height, token_nonce, auid].

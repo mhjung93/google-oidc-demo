@@ -287,6 +287,7 @@ if (APP_MODE === 2) {
       ssoMetadata.currentBlock = result.currentBlock ?? 'unavailable';
       ssoMetadata.maxHeight = result.maxHeight;
       ssoMetadata.signingPublicKey = result.publicKeyHex;
+      ssoMetadata.pkI = result.pk_i;
       ssoMetadata.pi_i = result.zkpProof;
       ssoMetadata.pi_PPID = result.pi_PPID;
 
@@ -764,7 +765,7 @@ async function verifyIdPTokenAtRpBackend() {
     if (submitButton) submitButton.disabled = false;
     const tracePkIInput = document.getElementById('traceInputPkI');
     const traceMaxHeightInput = document.getElementById('traceInputMaxHeight');
-    if (tracePkIInput) tracePkIInput.value = ssoMetadata.signingPublicKey ?? '';
+    if (tracePkIInput) tracePkIInput.value = ssoMetadata.pkI ?? '';
     if (traceMaxHeightInput) traceMaxHeightInput.value = ssoMetadata.maxHeight ?? '';
   }
 
