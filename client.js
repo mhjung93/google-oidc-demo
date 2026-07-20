@@ -450,6 +450,8 @@ async function verifyIdPTokenAtRpBackend() {
   document.getElementById('submitPPIDTransaction')?.addEventListener('click', async () => {
     const resultEl = document.getElementById('ppidTxResult');
     resultEl.innerText = 'Preparing transaction...';
+    const traceSection = document.getElementById('traceSection');
+    if (traceSection) traceSection.style.display = 'block';
     try {
       const tokenRes = await fetch('/api/mode2/wallet_agent_token');
       if (!tokenRes.ok) throw new Error('Failed to obtain wallet agent token');
