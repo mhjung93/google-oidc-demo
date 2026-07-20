@@ -29,7 +29,7 @@ if (APP_MODE === 2) {
     try {
       if (!window.ethereum) throw new Error('MetaMask not found');
       await connectSnap();
-      prepareIdPLoginPopup();
+      prepareWalletRelay();
       mode2Status.innerText = 'Step 2: Initializing wallet-side module...';
       // 사용자가 Snap 연결 팝업에서 실제로 클릭할 때까지 걸리는 시간은
       // 측정에서 제외하고, 승인 이후부터만 잰다. EOA account/address는
@@ -86,8 +86,8 @@ if (APP_MODE === 2) {
   let step13Completed = false;
   let step14Result = null;
   const measuredDurations = {};
-  let idpPopupWindow = null;
-  let idpPopupReady = false;
+  let relayIframe = null;
+  let relayReady = false;
   let mode2SessionNonce = null;
   let ssoMetadata = {
     userAddress: null,
@@ -160,9 +160,9 @@ if (APP_MODE === 2) {
   // wallet_agent.js for why (MetaMask Snap's SES sandbox can't run snarkjs/circomlibjs).
   const WALLET_AGENT_ORIGIN = 'http://127.0.0.1:5001';
 
-  function postProofToIdPPopup() {
-    if (!currentSSOProof || !idpPopupWindow || idpPopupWindow.closed || !idpPopupReady) return false;
-    idpPopupWindow.postMessage({ type: 'RP_SEND_ZKP', zkp: currentSSOProof }, IDP_ORIGIN);
+  function postProofToRelay() {
+    if (!currentSSOProof || !relayIframe || !relayReady) return false;
+    relayIframe.contentWindow.postMessage({ type: 'RP_SEND_ZKP', zkp: currentSSOProof }, WALLET_AGENT_ORIGIN);
     return true;
   }
 
@@ -176,28 +176,19 @@ if (APP_MODE === 2) {
     }
   }
 
-  function prepareIdPLoginPopup() {
-    idpPopupReady = false;
-    // RP origin을 URL 프래그먼트(#rp=...)로 실어 보낸다 — 프래그먼트는 브라우저가
-    // 실제 HTTP 요청에는 절대 포함시키지 않으므로(항상 클라이언트에만 남음)
-    // custom_idp.js 서버는 이 값을 볼 수 없다. 다만 이 값 자체는 그냥 문자열이라
-    // login_popup.js는 이걸 "잠정값"으로만 쓰고, 실제 메시지가 오면 그 메시지의
-    // event.origin(브라우저 보장, 위조 불가능)과 일치하는지 반드시 재확인한 뒤에만
-    // 신뢰한다 — 그래서 반복 전송(RP_HELLO) 없이도 하드코딩 문제와 타이밍 레이스를
-    // 동시에 피할 수 있다.
-    // 창 이름을 고정값(예: 'IdPLogin')으로 두면, 같은 브라우징 컨텍스트 그룹 안에서
-    // 미리 실행되는 악성 스크립트가 그 이름을 선점해 핸들을 쥐고 있다가 로그인 도중
-    // 창을 다른 곳으로 재이동시키거나 강제로 닫아버릴 수 있다. 매번 예측 불가능한
-    // 이름을 쓰면 이 선점 자체가 불가능해진다.
-    const popupName = `IdPLogin-${crypto.randomUUID()}`;
-    idpPopupWindow = window.open(
-      `${IDP_ORIGIN}/login_popup#rp=${encodeURIComponent(window.location.origin)}`,
-      popupName,
-      'width=500,height=600',
-    );
-    if (!idpPopupWindow) {
-      return false;
-    }
+  function prepareWalletRelay() {
+    if (relayIframe) return true;
+    relayReady = false;
+    // RP는 이제 IdP 팝업을 직접 열지 않는다 — 지갑(wallet_agent.js)이 서빙하는
+    // 숨겨진 relay iframe을 열고, 그 iframe 안의 스크립트(지갑 origin에서 실행)가
+    // 실제 IdP 팝업을 대신 연다. 그래서 idp/login_popup.js가 보는 opener origin은
+    // RP가 아니라 지갑이 되고, IdP는 RP origin을 알 방법이 없어진다. 이 iframe은
+    // 한 번만 만들고 재사용한다 — 재시도 시에는 relay가 자기 안의 IdP 팝업만 새로
+    // 연다(wallet/relay.js의 openOrReuseIdPPopup 참고).
+    relayIframe = document.createElement('iframe');
+    relayIframe.style.display = 'none';
+    relayIframe.src = `${WALLET_AGENT_ORIGIN}/relay#rp=${encodeURIComponent(window.location.origin)}`;
+    document.body.appendChild(relayIframe);
     return true;
   }
 
@@ -346,10 +337,8 @@ if (APP_MODE === 2) {
     try {
       if (!currentSSOProof) throw new Error('Generate ZKP first');
       document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 9. Wallet sends auid_i, arid_i, r_token, and pi_i to IdP published endpoint ${formatMs(start)}:\n${IDP_SSO_ENDPOINT}`;
-      if (!idpPopupWindow || idpPopupWindow.closed) {
-        if (!prepareIdPLoginPopup()) throw new Error('Popup blocked. Use the Step 9 button to retry.');
-      }
-      if (!postProofToIdPPopup()) {
+      if (!prepareWalletRelay()) throw new Error('Failed to set up wallet relay. Use the Step 9 button to retry.');
+      if (!postProofToRelay()) {
         return;
       }
     } catch (err) {
@@ -357,17 +346,21 @@ if (APP_MODE === 2) {
     }
   }
 
-  // Listen for message from IdP Popup
+  // Listen for messages from the wallet relay iframe (never directly from the IdP popup anymore)
   window.addEventListener('message', (event) => {
-    if (event.origin !== IDP_ORIGIN) return;
+    if (event.origin !== WALLET_AGENT_ORIGIN) return;
 
     if (event.data.type === 'IDP_READY_FOR_ZKP') {
-      console.log('[RP FE] IdP Popup ready signal received.');
-      idpPopupWindow = event.source;
-      idpPopupReady = true;
-      postProofToIdPPopup();
+      console.log('[RP FE] Wallet relay ready signal received.');
+      relayReady = true;
+      postProofToRelay();
     }
-    
+
+    if (event.data.type === 'IDP_POPUP_CLOSED') {
+      console.warn('[Mode 2] IdP login popup was closed before completing SSO.');
+      mode2Status.innerText = 'IdP login popup closed. Use the Step 9 button to retry.';
+    }
+
     if (event.data.type === 'IDP_SSO_SUCCESS') {
       if (event.data.r_i !== mode2SessionNonce) {
         console.warn('[Mode 2] r_i mismatch on IdP success message:', {
