@@ -208,6 +208,44 @@ async function getRpcChainId() {
   return BigInt(data.result).toString();
 }
 
+// wallet_agent.js의 rpcCall과 같은 패턴이지만, eth_accounts(배열)/eth_getTransactionReceipt(객체 또는
+// null)처럼 문자열이 아닌 결과도 다뤄야 해서 결과 타입을 강제하지 않는다.
+async function rpcCall(method, params = []) {
+  const response = await fetch(MODE2_ETH_RPC_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`${method} RPC failed with status ${response.status}`);
+  }
+
+  const data = await response.json();
+  if (data.error) {
+    throw new Error(data.error.message || `${method} RPC returned an error`);
+  }
+  return data.result;
+}
+
+async function waitForReceipt(txHash) {
+  let receipt = null;
+  while (!receipt) {
+    receipt = await rpcCall('eth_getTransactionReceipt', [txHash]);
+    if (!receipt) await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  return receipt;
+}
+
+// deploy/execute 공통: 실제 전송 전에 eth_call로 dry-run해서 revert할 payload에 실제 gas를
+// 쓰지 않도록 막은 뒤, 통과하면 로컬 Hardhat의 기본 unlock 계정으로 전송하고 영수증을 기다린다.
+async function relaySingleCall(from, { to, data }) {
+  await rpcCall('eth_call', [{ from, to, data }, 'latest']);
+  const txHash = await rpcCall('eth_sendTransaction', [{ from, to, data }]);
+  await waitForReceipt(txHash);
+  return txHash;
+}
+
 app.use(session({
   name: 'rp_sid', // custom_idp.js도 127.0.0.1에서 돌아서, 기본 이름(connect.sid)을 쓰면
                   // 브라우저 쿠키 잡(포트 구분 안 함)이 서로 덮어써버린다.
@@ -750,6 +788,30 @@ app.post('/api/mode2/trace_transaction', async (req, res) => {
     res.json({ uid: idpResult.uid });
   } catch (err) {
     res.status(502).json({ error: `Failed to reach IdP for uid lookup: ${err.message}` });
+  }
+});
+
+app.post('/api/mode2/relay_transaction', async (req, res) => {
+  const { deploy, to, data } = req.body ?? {};
+  if (!to) return res.status(400).json({ error: 'to is required' });
+  if (!data) return res.status(400).json({ error: 'data is required' });
+  if (deploy && (!deploy.to || !deploy.data)) {
+    return res.status(400).json({ error: 'deploy.to and deploy.data are required when deploy is present' });
+  }
+
+  try {
+    const accounts = await rpcCall('eth_accounts', []);
+    const from = accounts?.[0];
+    if (!from) throw new Error('No unlocked account available from RPC node');
+
+    if (deploy) {
+      await relaySingleCall(from, deploy);
+    }
+    const txHash = await relaySingleCall(from, { to, data });
+
+    res.json({ txHash });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 
