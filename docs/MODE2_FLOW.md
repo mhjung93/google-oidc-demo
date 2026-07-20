@@ -462,6 +462,9 @@ These are implementation details that are useful for understanding the current p
 - Legacy EC and Light ZKP prototype paths were removed from the active client flow; old versions remain available through git history.
 - RP-side ZKP failure handling returns an error.
 - `verifyPS_Hybrid()` verifies the PS pairing equation over the signed Mode 2 token fields.
+- `wallet_agent.js`'s `X-Wallet-Agent-Token` is long-lived (persisted in `wallet_state.json`, survives restarts) and is handed to RP FE (`client.js`) via `GET /api/mode2/wallet_agent_token`; any JS running in the RP origin (an XSS payload, a malicious RP, or a compromised RP-side dependency) can obtain and reuse it to drive `wallet_agent.js`'s sensitive endpoints (`/generateStep8Proofs`, `/submitTransaction`).
+- Shortening the token's lifetime or binding it to a session/request nonce would not close this: RP FE is also what obtains those fresher values in the first place, so a malicious RP FE can mint its own valid-looking session state the same way the legitimate flow does. Closing it for real would require a wallet-side user-approval gate independent of what RP FE claims, which the prototype does not implement.
+- This is a prototype implementation gap, not a property of the formal model: the paper does not assume RP FE is trustworthy, but the prototype currently leaves RP FE holding this long-lived credential unconditionally rather than gating it behind wallet-side user approval as the formal model would require.
 
 ## Files Usually Not Needed for Mode 2
 
