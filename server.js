@@ -35,6 +35,14 @@ console.log(`[SERVER] Starting in Mode: ${currentMode}`);
 const app = express();
 
 let rpRegistration = null;
+// server.js 재시작 사이에도 rid를 유지하기 위한 영속 파일. 기동 시 읽어서 현재 IdP
+// 공개키로 서명을 재검증한 뒤에만 신뢰한다 — custom_idp.js가 그사이 재시작돼서 키가
+// 바뀌었으면 이 파일은 더 이상 유효하지 않으므로 자동으로 버리고 새로 등록한다.
+const RP_REGISTRATION_FILE = path.join(__dirname, 'rp_registration.json');
+// 동시에 들어온 여러 등록 요청이 각자 IdP에서 다른 rid를 발급받아 서로 덮어쓰는 걸
+// 막기 위한 in-flight 가드 — 실제 등록 호출은 한 번만 나가고, 동시 요청은 전부 같은
+// 결과를 기다린다.
+let registrationInFlight = null;
 // B2 추적용 세션 로그: 로그인 세션마다 { auid_i, r_token, rp_nonce, timestamp }.
 // 메모리 전용, 서버 재시작 시 소실됨(의도된 데모 한계).
 const sessionLog = [];
@@ -42,6 +50,66 @@ const sessionLog = [];
 app.use(cors({
   origin: 'http://127.0.0.1:4000'
 }));
+
+async function loadAndVerifyPersistedRpRegistration() {
+  let persisted;
+  try {
+    persisted = JSON.parse(await fs.readFile(RP_REGISTRATION_FILE, 'utf-8'));
+  } catch (err) {
+    return null; // no persisted registration file yet, or unreadable
+  }
+  if (!persisted?.rid) return null;
+
+  if (!idpPublicKeys || !psParams.g2) {
+    await initRP_PS();
+  }
+  const isValid = verifyPS_Hybrid(persisted.signature, ['RP_REG', String(persisted.rid), String(persisted.origin)], idpPublicKeys);
+  if (!isValid) {
+    console.warn('[Mode 2] Persisted RP registration no longer verifies against the current IdP key (likely a custom_idp.js restart) - ignoring it.');
+    return null;
+  }
+  return persisted;
+}
+
+async function performRpRegistration() {
+  const registrationRequest = {
+    rpName: 'Manual-ZK-RP-Server',
+    callbackUrl: `${BASE_URL}/api/mode2/sso_success`,
+    origin: BASE_URL
+  };
+  const response = await fetch(`${CUSTOM_IDP_BASE_URL}/register_rp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(registrationRequest)
+  });
+  const registration = await response.json();
+  console.log(`[Mode 2] Manually Registered with Custom IdP. rid: ${previewValue(registration.rid)}`);
+  console.log('[Mode 2] RP registration request:', registrationRequest);
+  console.log('[Mode 2] RP registration response:', {
+    ...registration,
+    rid: previewValue(registration.rid),
+    signature: previewValue(registration.signature)
+  });
+  if (!idpPublicKeys || !psParams.g2) {
+    console.log('[Mode 2] Retrying IdP public key load after RP registration...');
+    await initRP_PS();
+  }
+
+  // RP 등록 자체가 이 IdP에서 정말 발급된 것인지 확인 — RP_REG 도메인으로
+  // psSign(['RP_REG', rid, origin])된 값이어야 통과한다.
+  const isRpSigValid = verifyPS_Hybrid(registration.signature, ['RP_REG', String(registration.rid), String(registration.origin)], idpPublicKeys);
+  if (!isRpSigValid) {
+    console.error('[Mode 2] RP registration signature verification FAILED. Rejecting registration.');
+    const err = new Error('RP registration signature verification failed');
+    err.status = 502;
+    throw err;
+  }
+  console.log('[Mode 2] RP registration signature verified.');
+
+  await fs.writeFile(RP_REGISTRATION_FILE, JSON.stringify(registration, null, 2));
+  rpRegistration = registration;
+  return registration;
+}
 
 // Mode 2: Manual RP Registration Endpoint
 app.post('/api/mode2/register', async (req, res) => {
@@ -51,50 +119,23 @@ app.post('/api/mode2/register', async (req, res) => {
   // 수동 설정용). 멱등하게 만들지 않으면, 아무나 반복 호출해서 IdP로부터 매번 새
   // rid를 발급받아 rpRegistration을 계속 교체할 수 있다 — PPID = H(uid, rid, salt)라서
   // rid가 바뀌면 기존 사용자 전원의 계정 연속성이 깨지고, 반복 호출 자체가 DoS가
-  // 된다. rpRegistration은 프로세스 메모리 변수라 server.js 재시작마다 null로
-  // 돌아오므로, "재시작 후 한 번 등록"이라는 기존 운영 패턴은 그대로 유지된다.
+  // 된다. rpRegistration은 rp_registration.json에 영속화되므로 server.js 재시작
+  // 후에도(그리고 재검증만 통과하면) 그대로 유지된다.
   if (rpRegistration?.rid) {
     return res.json(rpRegistration);
   }
 
+  if (!registrationInFlight) {
+    registrationInFlight = performRpRegistration().finally(() => {
+      registrationInFlight = null;
+    });
+  }
+
   try {
-    const registrationRequest = {
-      rpName: 'Manual-ZK-RP-Server',
-      callbackUrl: `${BASE_URL}/api/mode2/sso_success`,
-      origin: BASE_URL
-    };
-    const response = await fetch(`${CUSTOM_IDP_BASE_URL}/register_rp`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(registrationRequest)
-    });
-    rpRegistration = await response.json();
-    console.log(`[Mode 2] Manually Registered with Custom IdP. rid: ${previewValue(rpRegistration.rid)}`);
-    console.log('[Mode 2] RP registration request:', registrationRequest);
-    console.log('[Mode 2] RP registration response:', {
-      ...rpRegistration,
-      rid: previewValue(rpRegistration.rid),
-      signature: previewValue(rpRegistration.signature)
-    });
-    if (!idpPublicKeys || !psParams.g2) {
-      console.log('[Mode 2] Retrying IdP public key load after RP registration...');
-      await initRP_PS();
-    }
-
-    // RP 등록 자체가 이 IdP에서 정말 발급된 것인지 확인 — RP_REG 도메인으로
-    // psSign(['RP_REG', rid, origin])된 값이어야 통과한다.
-    const isRpSigValid = verifyPS_Hybrid(rpRegistration.signature, ['RP_REG', String(rpRegistration.rid), String(rpRegistration.origin)], idpPublicKeys);
-    if (!isRpSigValid) {
-      console.error('[Mode 2] RP registration signature verification FAILED. Rejecting registration.');
-      rpRegistration = null;
-      return res.status(502).json({ error: 'RP registration signature verification failed' });
-    }
-    console.log('[Mode 2] RP registration signature verified.');
-
-    res.json(rpRegistration);
+    res.json(await registrationInFlight);
   } catch (err) {
     console.error('[Mode 2] Manual registration failed:', err.message);
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message });
   }
 });
 
@@ -832,6 +873,10 @@ app.post('/api/mode2/relay_transaction', async (req, res) => {
 const server = app.listen(PORT, async () => {
   if (currentMode === 2) {
     await initRP_PS();
+    rpRegistration = await loadAndVerifyPersistedRpRegistration();
+    if (rpRegistration) {
+      console.log(`[Mode 2] Loaded persisted RP registration. rid: ${previewValue(rpRegistration.rid)}`);
+    }
   }
   console.log(`OIDC demo running at ${BASE_URL}`);
 });
