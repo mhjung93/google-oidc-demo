@@ -355,11 +355,18 @@ app.use(express.json());
 // src 요청은 브라우저가 커스텀 헤더를 못 실어 보내므로, 아래 두 라우트는 반드시
 // X-Wallet-Agent-Token 검사 미들웨어보다 앞에 둔다. frame-ancestors CSP로 이
 // relay를 설정된 RP_ORIGIN 외의 페이지가 iframe으로 못 담게 막는다.
-app.get('/relay', (req, res) => {
+function setRelayCsp(res) {
   res.setHeader('Content-Security-Policy', `frame-ancestors ${RP_ORIGIN}`);
+}
+app.get('/relay', (req, res) => {
+  setRelayCsp(res);
   res.sendFile(path.join(__dirname, 'wallet', 'relay.html'));
 });
-app.use('/wallet', express.static(path.join(__dirname, 'wallet')));
+// express.static의 setHeaders로도 같은 CSP를 붙인다 — 안 그러면 relay.html이
+// /wallet/relay.html 경로로도 그대로 노출돼서 위 /relay 라우트의 CSP를 우회할 수 있다.
+app.use('/wallet', express.static(path.join(__dirname, 'wallet'), {
+  setHeaders: setRelayCsp,
+}));
 
 app.use((req, res, next) => {
   const provided = req.get('X-Wallet-Agent-Token');
