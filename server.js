@@ -46,7 +46,17 @@ app.use(cors({
 // Mode 2: Manual RP Registration Endpoint
 app.post('/api/mode2/register', async (req, res) => {
   if (currentMode !== 2) return res.status(400).json({ error: 'Not in Mode 2' });
-  
+
+  // 이 엔드포인트엔 인증이 없다(client.js/index.html 어디서도 호출 안 하는 운영자
+  // 수동 설정용). 멱등하게 만들지 않으면, 아무나 반복 호출해서 IdP로부터 매번 새
+  // rid를 발급받아 rpRegistration을 계속 교체할 수 있다 — PPID = H(uid, rid, salt)라서
+  // rid가 바뀌면 기존 사용자 전원의 계정 연속성이 깨지고, 반복 호출 자체가 DoS가
+  // 된다. rpRegistration은 프로세스 메모리 변수라 server.js 재시작마다 null로
+  // 돌아오므로, "재시작 후 한 번 등록"이라는 기존 운영 패턴은 그대로 유지된다.
+  if (rpRegistration?.rid) {
+    return res.json(rpRegistration);
+  }
+
   try {
     const registrationRequest = {
       rpName: 'Manual-ZK-RP-Server',
