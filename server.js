@@ -198,17 +198,22 @@ function assertDecimalString(value, name) {
   return value;
 }
 
-async function getCurrentHeightForToken(maxHeight) {
-  // Browser wallets usually produce block-height max_height. If the wallet fell
-  // back to unix time, the signed max_height is much larger than realistic block
-  // heights and can be checked against server time.
-  if (maxHeight >= 1000000000n) {
-    return {
-      value: BigInt(Math.floor(Date.now() / 1000)),
-      source: 'unix-time',
-    };
+// valueToField()/Poseidon reduce everything mod FIELD_PRIME, so a signed field like
+// max_height = h + FIELD_PRIME still reconstructs to h and passes signature
+// verification, while any raw (non-reduced) BigInt comparison done on the submitted
+// value directly - like the max_height expiry check below - sees the huge
+// unreduced number instead. Every signed decimal field must be rejected outright if
+// it isn't already in canonical range, so no comparison downstream ever operates on
+// a non-canonical representation of a signed value.
+function assertCanonicalField(value, name) {
+  assertDecimalString(value, name);
+  if (BigInt(value) >= FIELD_PRIME) {
+    throw new Error(`${name} must be less than the field prime (non-canonical encoding)`);
   }
+  return value;
+}
 
+async function getCurrentHeightForToken() {
   const response = await fetch(MODE2_ETH_RPC_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -610,11 +615,11 @@ app.post('/api/mode2/sso_success', async (req, res) => {
   console.log('--- [RP Backend] Verifying IdP Token + RP Audience ---');
 
   try {
-    assertDecimalString(idpToken.arid_i, 'idpToken.arid_i');
-    assertDecimalString(idpToken.auid_i, 'idpToken.auid_i');
-    assertDecimalString(idpToken.r_token, 'idpToken.r_token');
-    assertDecimalString(idpToken.max_height, 'idpToken.max_height');
-    assertDecimalString(idpToken.chain_id, 'idpToken.chain_id');
+    assertCanonicalField(idpToken.arid_i, 'idpToken.arid_i');
+    assertCanonicalField(idpToken.auid_i, 'idpToken.auid_i');
+    assertCanonicalField(idpToken.r_token, 'idpToken.r_token');
+    assertCanonicalField(idpToken.max_height, 'idpToken.max_height');
+    assertCanonicalField(idpToken.chain_id, 'idpToken.chain_id');
     if (!Array.isArray(idpToken.signature_prime?.R8) || idpToken.signature_prime.R8.length !== 2 || !idpToken.signature_prime?.S) {
       throw new Error('idpToken.signature_prime is missing or malformed');
     }
@@ -647,22 +652,20 @@ app.post('/api/mode2/sso_success', async (req, res) => {
 
   try {
     const maxHeight = BigInt(idpToken.max_height);
-    const currentHeight = await getCurrentHeightForToken(maxHeight);
-    if (currentHeight.source !== 'unix-time') {
-      const rpcChainId = await getRpcChainId();
-      if (String(idpToken.chain_id) !== rpcChainId) {
-        console.error('[RP Backend] chain_id check FAILED:', {
-          token_chain_id: idpToken.chain_id,
-          rpc_chain_id: rpcChainId,
-          source: currentHeight.source,
-        });
-        return res.status(401).json({ success: false, error: 'IdP token chain_id does not match RP verification chain' });
-      }
-      console.log('[RP Backend] chain_id check PASSED:', {
-        chain_id: rpcChainId,
+    const currentHeight = await getCurrentHeightForToken();
+    const rpcChainId = await getRpcChainId();
+    if (String(idpToken.chain_id) !== rpcChainId) {
+      console.error('[RP Backend] chain_id check FAILED:', {
+        token_chain_id: idpToken.chain_id,
+        rpc_chain_id: rpcChainId,
         source: currentHeight.source,
       });
+      return res.status(401).json({ success: false, error: 'IdP token chain_id does not match RP verification chain' });
     }
+    console.log('[RP Backend] chain_id check PASSED:', {
+      chain_id: rpcChainId,
+      source: currentHeight.source,
+    });
     if (currentHeight.value > maxHeight) {
       console.error('[RP Backend] max_height check FAILED:', {
         current: currentHeight.value.toString(),
