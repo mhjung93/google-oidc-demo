@@ -321,23 +321,26 @@ async function verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, bu
 
 
   // rp_nonce is never sent to the IdP (it would let the IdP recover rid via
-  // arid_i / rp_nonce). Replay protection is keyed off the session nonce
-  // (r_i / mode2SessionNonce) instead — created fresh per login attempt in
-  // client.js and already sent to the IdP today (custom_idp.js:219-220).
-  const nonce = business?.r_i;
-  if (!nonce) throw new Error('r_i missing from Wallet submission');
-
-  if (usedNonces.has(nonce)) {
-    throw new Error('Replay detected: RP nonce was already used');
-  }
-  usedNonces.add(nonce);
-
+  // arid_i / rp_nonce). r_i (mode2SessionNonce) is NOT usable for replay
+  // protection here: it is never checked against the pi_i proof's public
+  // signals above, so resubmitting an already-used proof with only r_i
+  // changed would sail through undetected. r_i keeps its existing role as
+  // the RP FE's own transient flow-correlation nonce (client.js matches it
+  // against mode2SessionNonce when IDP_SSO_SUCCESS arrives); nothing about
+  // that role changes here. Replay protection is instead keyed off
+  // r_token, which is checked against verifySignals[4] above and so
+  // cannot be forged or reused for a different proof.
   const maxHeight = business?.maxHeight ?? business?.max_height;
   const chainId = business?.chain_id ?? business?.chainId;
   const rToken = business?.r_token ?? business?.tokenNonce;
   if (!rToken) throw new Error('r_token missing from Wallet submission');
   if (!maxHeight) throw new Error('max_height missing from Wallet submission');
   if (!chainId) throw new Error('chain_id missing from Wallet submission');
+
+  if (usedNonces.has(String(rToken))) {
+    throw new Error('Replay detected: r_token was already used');
+  }
+  usedNonces.add(String(rToken));
 
   const exp = Math.floor(Date.now() / 1000) + 3600;
 
