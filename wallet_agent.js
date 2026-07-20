@@ -350,6 +350,17 @@ const app = express();
 app.use(cors({ origin: RP_ORIGIN }));
 app.use(express.json());
 
+// RP 페이지가 숨겨진 iframe으로 이 정적 relay 페이지를 임베드한다(설계 문서:
+// docs/superpowers/specs/2026-07-21-wallet-relay-idp-popup-design.md). iframe의
+// src 요청은 브라우저가 커스텀 헤더를 못 실어 보내므로, 아래 두 라우트는 반드시
+// X-Wallet-Agent-Token 검사 미들웨어보다 앞에 둔다. frame-ancestors CSP로 이
+// relay를 설정된 RP_ORIGIN 외의 페이지가 iframe으로 못 담게 막는다.
+app.get('/relay', (req, res) => {
+  res.setHeader('Content-Security-Policy', `frame-ancestors ${RP_ORIGIN}`);
+  res.sendFile(path.join(__dirname, 'wallet', 'relay.html'));
+});
+app.use('/wallet', express.static(path.join(__dirname, 'wallet')));
+
 app.use((req, res, next) => {
   const provided = req.get('X-Wallet-Agent-Token');
   if (!provided || provided !== getOrCreateAgentToken()) {
