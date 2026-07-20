@@ -163,6 +163,8 @@ const users = {
 const usedNonces = new Set();
 // B2 추적용 발급 로그: r_token -> uid. 메모리 전용, 서버 재시작 시 소실됨(의도된 데모 한계).
 const issuanceLog = new Map();
+// 비밀번호 인증(/sso_with_credentials) 후 동의 클릭(/consent_result)까지 허용하는 최대 시간.
+const PENDING_CONSENT_TTL_MS = 5 * 60 * 1000;
 
 function summarizeValue(value) {
   if (value === undefined || value === null) return 'missing';
@@ -257,6 +259,18 @@ app.post('/sso_with_credentials', async (req, res) => {
     console.error(`❌ [CustomIdP][Step 9] Login Failed: Invalid credentials for ${username} ${ms(start)}`);
     return res.status(401).json({ success: false, error: 'Invalid credentials' });
   }
+
+  // 비밀번호 인증을 통과한 이 시도(username + 그때 제출된 proof/business)를 세션에
+  // 고정해둔다. /consent_result는 이후 요청 본문을 신뢰하지 않고 이 값만 사용한다 —
+  // 그래야 /sso_with_credentials를 건너뛰고 /consent_result만 직접 호출하거나, 여기서
+  // 검증된 것과 다른 proof/business로 바꿔치기하는 걸 막을 수 있다.
+  req.session.pendingPairCT = {
+    username,
+    zkpProof,
+    zkpPublicSignals,
+    business,
+    createdAt: Date.now(),
+  };
 
   console.log(`[CustomIdP][Step 9] Login verified for ${username}. Waiting for consent before pi_i verification. ${ms(start)}`);
   res.json({ success: true, pendingConsent: true });
@@ -369,14 +383,29 @@ async function verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, bu
 
 app.post('/consent_result', async (req, res) => {
   const start = cursor();
-  const { username, allowed, walletSubmission, business, zkpProof, zkpPublicSignals } = req.body || {};
+  const { allowed } = req.body || {};
+
+  // username/zkpProof/zkpPublicSignals/business는 요청 본문을 신뢰하지 않는다 — 반드시
+  // /sso_with_credentials에서 비밀번호 인증과 함께 이 세션에 저장해둔 값만 쓴다. 성공/실패/
+  // 거부 어느 경우든 한 번 쓰면 즉시 지워서 같은 pending 로그인을 재사용하지 못하게 막는다.
+  const pending = req.session.pendingPairCT;
+  delete req.session.pendingPairCT;
+
+  if (!pending) {
+    return res.status(400).json({ success: false, error: 'No pending login for this session' });
+  }
+  if (Date.now() - pending.createdAt > PENDING_CONSENT_TTL_MS) {
+    return res.status(400).json({ success: false, error: 'Pending login expired, please sign in again' });
+  }
+
+  const { username, zkpProof, zkpPublicSignals, business } = pending;
 
   console.log('[CustomIdP][Step 10] Consent result received:', {
     username: summarizeValue(username),
     allowed: Boolean(allowed),
-    auid_i: summarizeValue(walletSubmission?.auid_i ?? business?.auid_i),
-    arid_i: summarizeValue(walletSubmission?.arid_i ?? business?.arid_i),
-    r_token: summarizeValue(walletSubmission?.r_token ?? business?.r_token ?? business?.tokenNonce)
+    auid_i: summarizeValue(business?.auid_i),
+    arid_i: summarizeValue(business?.arid_i),
+    r_token: summarizeValue(business?.r_token ?? business?.tokenNonce)
   });
 
   if (!allowed) {
