@@ -447,11 +447,72 @@ async function verifyIdPTokenAtRpBackend() {
   return data;
 }
 
+  // pk_i/max_height는 이미 execute() calldata에 평문으로 들어가는 공개 온체인 값이라
+  // (누구나 체인을 보면 알 수 있음), wallet_agent.js가 이 PPID의 PPIDWallet 앞으로
+  // 온 execute() 호출들을 체인에서 직접 긁어와 돌려준다 — 서버의 private
+  // sessionLog는 안 건드린다. 사용자가 드롭다운에서 고른 항목의 값만 추적 입력창에
+  // 채워진다.
+  // innerHTML 대신 textContent로만 옵션을 채운다 — err.message 등 신뢰할 수 없는
+  // 문자열이 그대로 마크업으로 해석되는 걸 막기 위함.
+  function setSelectMessage(select, text) {
+    select.replaceChildren();
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = text;
+    select.appendChild(option);
+  }
+
+  async function loadTransactionHistory() {
+    const select = document.getElementById('traceHistorySelect');
+    if (!select || !ssoMetadata.ppid) return;
+    setSelectMessage(select, 'Loading...');
+    try {
+      const tokenRes = await fetch('/api/mode2/wallet_agent_token');
+      if (!tokenRes.ok) throw new Error('Failed to obtain wallet agent token');
+      const { token } = await tokenRes.json();
+
+      const historyRes = await fetch('http://127.0.0.1:5001/transactionHistory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Wallet-Agent-Token': token },
+        body: JSON.stringify({ ppid: ssoMetadata.ppid.toString() }),
+      });
+      const result = await historyRes.json();
+      if (!historyRes.ok) throw new Error(result.error || 'transactionHistory failed');
+
+      if (!result.history || result.history.length === 0) {
+        setSelectMessage(select, 'No transactions found yet');
+        return;
+      }
+      select.replaceChildren();
+      for (const entry of result.history) {
+        const option = document.createElement('option');
+        option.value = entry.txHash;
+        option.textContent = `Block ${entry.blockNumber} - ${entry.txHash.slice(0, 10)}...`;
+        option.dataset.pkI = entry.pk_i;
+        option.dataset.maxHeight = entry.max_height;
+        select.appendChild(option);
+      }
+      select.dispatchEvent(new Event('change'));
+    } catch (err) {
+      setSelectMessage(select, `Error: ${err.message}`);
+    }
+  }
+
+  document.getElementById('traceHistorySelect')?.addEventListener('change', () => {
+    const select = document.getElementById('traceHistorySelect');
+    const selected = select.options[select.selectedIndex];
+    const tracePkIInput = document.getElementById('traceInputPkI');
+    const traceMaxHeightInput = document.getElementById('traceInputMaxHeight');
+    if (selected?.dataset.pkI && tracePkIInput) tracePkIInput.value = selected.dataset.pkI;
+    if (selected?.dataset.maxHeight && traceMaxHeightInput) traceMaxHeightInput.value = selected.dataset.maxHeight;
+  });
+
   document.getElementById('submitPPIDTransaction')?.addEventListener('click', async () => {
     const resultEl = document.getElementById('ppidTxResult');
     resultEl.innerText = 'Preparing transaction...';
     const traceSection = document.getElementById('traceSection');
     if (traceSection) traceSection.style.display = 'block';
+    loadTransactionHistory();
     try {
       const tokenRes = await fetch('/api/mode2/wallet_agent_token');
       if (!tokenRes.ok) throw new Error('Failed to obtain wallet agent token');
@@ -497,6 +558,7 @@ async function verifyIdPTokenAtRpBackend() {
         params: [{ from, to: submission.to, data: submission.data }],
       });
       resultEl.innerText = `Transaction sent: ${executeTxHash}`;
+      loadTransactionHistory();
     } catch (err) {
       resultEl.innerText = `Error: ${err.message}`;
     }

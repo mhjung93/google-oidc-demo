@@ -151,6 +151,24 @@ async function rpcCall(method, params = []) {
   return data.result;
 }
 
+// rpcCall()과 같은 패턴이지만, eth_getBlockByNumber(전체 트랜잭션 포함)처럼 결과가
+// 문자열이 아닌 객체인 RPC 메서드도 다뤄야 해서 결과 타입을 강제하지 않는다.
+async function rpcCallGeneric(method, params = []) {
+  const response = await fetch(MODE2_ETH_RPC_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+  });
+  if (!response.ok) {
+    throw new Error(`${method} RPC failed with status ${response.status}`);
+  }
+  const data = await response.json();
+  if (data.error) {
+    throw new Error(data.error.message || `${method} RPC returned an error`);
+  }
+  return data.result;
+}
+
 async function getMaxHeight() {
   const chainIdHex = await rpcCall('eth_chainId');
   const blockHex = await rpcCall('eth_blockNumber');
@@ -692,6 +710,58 @@ app.post('/submitTransaction', async (req, res) => {
     res.json({ deploy, to: walletAddress, data: executeCalldata });
   } catch (err) {
     console.error(`[WalletAgent][submitTransaction] error: ${err.message} ${ms(start)}`);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Trace UI가 "어느 트랜잭션을 추적할지" 고를 수 있게, 이 PPID의 PPIDWallet 앞으로
+// 온 execute() 호출들을 체인에서 직접 긁어와 pk_i/max_height 목록으로 돌려준다.
+// pk_i/max_height는 execute() calldata에 이미 평문으로 들어가는 공개 온체인
+// 데이터라서(누구나 체인을 보면 알 수 있음), 서버의 private sessionLog를 전혀
+// 건드리지 않고도 만들 수 있다. 데모용 로컬 체인이라 블록 0부터 전부 스캔한다 —
+// 블록 수가 많은 실제 체인에서는 느려지므로 그대로 쓰면 안 된다.
+app.post('/transactionHistory', async (req, res) => {
+  const start = cursor();
+  try {
+    const { ppid } = req.body ?? {};
+    if (ppid === undefined) throw new Error('ppid is required');
+    if (!PPID_WALLET_FACTORY_ADDRESS) throw new Error('PPID_WALLET_FACTORY_ADDRESS not configured');
+
+    const ppidField = valueToField(ppid);
+    const computeAddressCalldata = factoryInterface.encodeFunctionData('computeAddress', [ppidField]);
+    const computeAddressResult = await rpcCall('eth_call', [
+      { to: PPID_WALLET_FACTORY_ADDRESS, data: computeAddressCalldata },
+      'latest',
+    ]);
+    const [walletAddress] = factoryInterface.decodeFunctionResult('computeAddress', computeAddressResult);
+
+    const latestHex = await rpcCall('eth_blockNumber', []);
+    const latestBlock = Number(BigInt(latestHex));
+
+    const history = [];
+    for (let i = 0; i <= latestBlock; i++) {
+      const block = await rpcCallGeneric('eth_getBlockByNumber', [`0x${i.toString(16)}`, true]);
+      if (!block?.transactions?.length) continue;
+      for (const tx of block.transactions) {
+        if (String(tx.to).toLowerCase() !== String(walletAddress).toLowerCase()) continue;
+        try {
+          const decoded = walletInterface.decodeFunctionData('execute', tx.data);
+          history.push({
+            txHash: tx.hash,
+            blockNumber: i,
+            pk_i: decoded.pk_i.toString(),
+            max_height: decoded.max_height.toString(),
+          });
+        } catch (err) {
+          // 이 지갑으로 온 다른 함수 호출(현재는 execute()뿐이라 실질적으로 안 남)이면 건너뜀.
+        }
+      }
+    }
+
+    console.log(`[WalletAgent][transactionHistory] found ${history.length} execute() call(s) for this PPID ${ms(start)}`);
+    res.json({ walletAddress, history });
+  } catch (err) {
+    console.error(`[WalletAgent][transactionHistory] error: ${err.message} ${ms(start)}`);
     res.status(400).json({ error: err.message });
   }
 });
