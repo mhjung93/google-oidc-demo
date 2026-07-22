@@ -813,6 +813,7 @@ app.use((err, req, res, next) => {
 // sessionLog에서 일치하는 r_token을 찾고, Task 1의 custom_idp.js 엔드포인트에
 // 위임해서 uid를 밝힌다.
 app.post('/api/mode2/trace_transaction', async (req, res) => {
+  const traceStart = now();
   const { pk_i, max_height } = req.body ?? {};
   if (!pk_i) return res.status(400).json({ error: 'pk_i is required' });
   if (!max_height) return res.status(400).json({ error: 'max_height is required' });
@@ -823,27 +824,34 @@ app.post('/api/mode2/trace_transaction', async (req, res) => {
   const pkField = valueToField(pk_i);
   const maxHeightField = valueToField(max_height);
 
+  const sessionLookupStart = now();
   const match = sessionLog.find((record) => {
     const rpNonceField = valueToField(record.rp_nonce);
     const recomputed = poseidon.F.toObject(poseidon([pkField, maxHeightField, rpNonceField]));
     return String(recomputed) === String(record.r_token);
   });
+  const sessionLookupMs = now() - sessionLookupStart;
 
   if (!match) {
     return res.status(404).json({ error: 'No matching session found for this pk_i/max_height' });
   }
 
   try {
+    const idpLookupStart = now();
     const idpResponse = await fetch(`${CUSTOM_IDP_BASE_URL}/idp/lookup_uid_by_r_token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ r_token: match.r_token }),
     });
     const idpResult = await idpResponse.json();
+    const idpLookupMs = now() - idpLookupStart;
     if (!idpResponse.ok) {
       return res.status(idpResponse.status).json(idpResult);
     }
-    res.json({ uid: idpResult.uid });
+    const totalMs = now() - traceStart;
+    const timings = { sessionLookupMs, idpLookupMs, totalMs };
+    console.log('[Mode 2][trace_transaction] timings:', timings);
+    res.json({ uid: idpResult.uid, timings });
   } catch (err) {
     res.status(502).json({ error: `Failed to reach IdP for uid lookup: ${err.message}` });
   }

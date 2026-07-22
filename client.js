@@ -581,7 +581,11 @@ async function verifyIdPTokenAtRpBackend() {
       const traceResult = await traceRes.json();
       if (!traceRes.ok) throw new Error(traceResult.error || 'trace_transaction failed');
 
-      resultEl.innerText = `Traced uid: ${traceResult.uid}`;
+      const t = traceResult.timings ?? {};
+      resultEl.innerText = `Traced uid: ${traceResult.uid}\n` +
+        `  Session lookup: ${t.sessionLookupMs ?? 'n/a'} ms\n` +
+        `  IdP lookup: ${t.idpLookupMs ?? 'n/a'} ms\n` +
+        `  Total: ${t.totalMs ?? 'n/a'} ms`;
     } catch (err) {
       resultEl.innerText = `Error: ${err.message}`;
     }
