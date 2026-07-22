@@ -484,7 +484,7 @@ Unless the task explicitly requires them, these are not central to Mode 2:
 
 Potential Mode 2 focused improvements:
 
-- Align endpoint URLs to use one configurable IdP origin consistently.
+- Wallet/IdP/RP currently only work on the same machine (or with the wallet always on the user's own machine, which is by design - `wallet_agent.js` deliberately binds to `127.0.0.1` only). Moving the IdP and RP to genuinely different hosts would additionally require fixing hardcoded `http://127.0.0.1:4000` IdP-origin literals in `client.js:156` and `wallet/relay.js:7` (browser-served JS, no env var mechanism today), plus `server.js:51`'s `cors({ origin: 'http://127.0.0.1:4000' })`, which is hardcoded instead of reading the already-configurable `CUSTOM_IDP_BASE_URL`. `server.js`/`wallet_agent.js`'s own IdP/RP origin constants are already env-var configurable and would not need changes.
 - Split Mode 2 client logic from Snap and Google OIDC client logic.
 - Add a dedicated Mode 2 smoke test.
 - Normalize the naming of `signature`, `signature_prime`, `zkpProof`, and `zkpPublicSignals`.
