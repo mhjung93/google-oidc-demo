@@ -851,7 +851,7 @@ app.post('/api/mode2/trace_transaction', async (req, res) => {
     const totalMs = now() - traceStart;
     const timings = { sessionLookupMs, idpLookupMs, totalMs };
     console.log('[Mode 2][trace_transaction] timings:', timings);
-    res.json({ uid: idpResult.uid, timings });
+    res.json({ uid: idpResult.uid, username: idpResult.username, timings });
   } catch (err) {
     res.status(502).json({ error: `Failed to reach IdP for uid lookup: ${err.message}` });
   }

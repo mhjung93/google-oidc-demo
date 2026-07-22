@@ -435,7 +435,10 @@ app.post('/idp/lookup_uid_by_r_token', (req, res) => {
   if (uid === undefined) {
     return res.status(404).json({ error: 'No issuance record found for this r_token' });
   }
-  res.json({ uid });
+  // uid는 users의 값일 뿐 키가 아니라서, 사람이 읽을 수 있는 username을 보여주려면
+  // 역방향으로 찾아야 한다.
+  const usernameEntry = Object.entries(users).find(([, user]) => String(user.uid) === String(uid));
+  res.json({ uid, username: usernameEntry ? usernameEntry[0] : null });
 });
 
 // 4. Public Keys Endpoint (for RP verification)
