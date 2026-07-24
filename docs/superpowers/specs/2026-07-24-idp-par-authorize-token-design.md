@@ -56,15 +56,19 @@
   "code_challenge_method": "S256",
   "zkpProof": { ... },
   "zkpPublicSignals": [ ... ],
+  "chain_id": "31337",
   "requestBinding": { "pk_i": "...", "signature": "0x..." }
 }
 ```
 
-`requestBinding`은 `pi_arid_i` 재사용 결정에 따라, ZKP 자체와는 별개로 Wallet의 세션키(`sk_i`, secp256k1)로 `(state, nonce, code_challenge)`를 서명한 것 — 회로 변경 없이 "이 ZKP와 이 인가 요청이 같은 세션에서 나왔다"는 걸 묶는다.
+`requestBinding`은 `pi_arid_i` 재사용 결정에 따라, ZKP 자체와는 별개로 Wallet의 세션키(`sk_i`, secp256k1)로 `(state, nonce, code_challenge)`를 서명한 것 — 회로 변경 없이 "이 ZKP와 이 인가 요청이 같은 세션에서 나왔다"는 걸 묶는다. `chain_id`는 `pi_arid_i`의 public signal이 아니라(오늘의 `business.chain_id`와 같은 자리) 평문 필드로 그대로 받는다 — RP 감사가 아니라 온체인 유효성 창(`max_height`)이 어느 체인 기준인지 구분하는 값이라 감출 이유가 없다.
 
-IdP는 다음을 검증한다:
-- `zkpProof`/`zkpPublicSignals`가 `vkeyAridI`로 검증됨(오늘 `pi_arid_i`에 추가한 pk_IdP_x/y 대조 포함, 기존 `verifyPiIAndIssueToken`의 검증 로직과 동일한 패턴 재사용).
-- `requestBinding.signature`가 `requestBinding.pk_i`로 `(state, nonce, code_challenge)`에 대해 유효함(secp256k1 ECDSA, `/submitTransaction`이 이미 쓰는 서명 방식과 동일 패턴).
+**중요: `/par`는 ZKP를 완전히 검증하지 않는다.** `pi_arid_i`의 첫 번째 public signal은 `uid`인데, `verifyPiIAndIssueToken`이 하듯 `[user.uid, ...zkpPublicSignals]`로 재구성하려면 *인증된* `uid`가 필요하다. `/par`는 로그인 이전에 호출되므로 이 시점엔 어느 `uid`인지 알 수 없다 — 그래서 오늘 이미 있는 2단계 패턴(`/sso_with_credentials`가 먼저 세션에 보류시키고, `/consent_result`가 로그인 확인 후에야 `verifyPiIAndIssueToken`으로 실제 검증하는 것)을 그대로 따른다.
+
+`/par`가 실제로 하는 것:
+- `zkpProof`/`zkpPublicSignals`가 `assertDecimalSignals(zkpPublicSignals, 7, ...)` 형태(길이 7, 십진 문자열)인지 구조적으로만 확인한다. Groth16 `snarkjs.groth16.verify` 호출은 아직 하지 않는다.
+- `requestBinding.signature`가 `requestBinding.pk_i`로 `(state, nonce, code_challenge)`에 대해 유효한지 검증한다(secp256k1 ECDSA). 정확히는: `bindingHash = keccak256(AbiCoder.defaultAbiCoder().encode(['string','string','string'], [state, nonce, code_challenge]))`를 만들고, `ethers.recoverAddress(bindingHash, requestBinding.signature)`로 복원한 주소가 `requestBinding.pk_i`(대소문자 무시 비교)와 일치하는지 확인한다 — `/submitTransaction`이 이미 쓰는 서명 방식(keccak256+AbiCoder+secp256k1)과 동일 패턴, `wallet_agent.js`의 `pk_i`가 "공개키의 이더리움 주소"인 것과도 일치.
+- 이 두 가지만 통과하면(진짜 ZKP 검증은 아직 안 됐어도) `request_uri`를 발급한다 — "이 요청이 최소한 구조적으로 올바르고 어떤 세션키가 보낸 것인지"만 이 시점에 보장된다.
 
 응답(성공):
 ```json
@@ -73,7 +77,7 @@ IdP는 다음을 검증한다:
 (`request_uri`의 정확한 문자열 포맷은 예시이며, 구현 계획 단계에서 확정한다.)
 실패 시 표준 OAuth 에러 응답 형태(`error`, `error_description`)를 따른다.
 
-`request_uri`로 저장되는 서버 메모리 레코드는 `{ redirect_uri, state, nonce, code_challenge, code_challenge_method, arid_i, auid_i, r_token, max_height, chain_id, expiresAt }` — 즉 ZKP 검증을 통과해서 나온 공개 신호값들과 PKCE/세션 바인딩 값들이다. 1회용, TTL 짧게(60초), `custom_idp.js`의 다른 메모리 전용 저장소(`issuanceLog`, `auidILog`, `usedNonces`)와 같은 패턴 — 서버 재시작 시 소실되는 것도 동일한 "의도된 데모 한계"로 취급한다.
+`request_uri`로 저장되는 서버 메모리 레코드는 `{ redirect_uri, state, nonce, code_challenge, code_challenge_method, zkpProof, zkpPublicSignals, chain_id, requestBinding, expiresAt }` — ZKP는 아직 미검증 원본 그대로 저장해 둔다(진짜 검증은 `/authorize`의 로그인 성공 시점에 한다). `chain_id`는 평문 그대로 보관. 1회용, TTL 짧게(60초), `custom_idp.js`의 다른 메모리 전용 저장소(`issuanceLog`, `auidILog`, `usedNonces`)와 같은 패턴 — 서버 재시작 시 소실되는 것도 동일한 "의도된 데모 한계"로 취급한다.
 
 ### `GET /authorize`
 
@@ -81,7 +85,9 @@ IdP는 다음을 검증한다:
 
 로그인 폼/동의 화면 자체의 정확한 페이지 전환 방식(오늘의 `idp/login_popup.html` 마크업 재사용 여부 등)은 이 스펙에서 고정하지 않고 구현 계획(writing-plans) 단계에서 정한다 — 이 스펙은 프로토콜 계약만 고정한다.
 
-승인 시: 1회용 `code`(랜덤 opaque 값, TTL 60초 — `/par`의 `request_uri`와 동일한 기준)를 발급해 `redirect_uri?code=...&state=...`로 302. `code`는 `request_uri` 레코드의 내용 전체(redirect_uri, code_challenge 등) + 로그인한 `uid`를 참조하는 서버 메모리 레코드에 연결된다.
+**로그인 폼 제출(비밀번호 확인) 성공 시, 그제서야 `uid`가 확정되므로 이 시점에 `verifyPiIAndIssueToken`과 동일한 방식으로 저장해둔 ZKP를 완전히 검증한다** — `[user.uid, ...record.zkpPublicSignals]`를 `vkeyAridI`로 `snarkjs.groth16.verify`하고, 오늘 추가한 `pk_IdP_x`/`pk_IdP_y` 대조도 동일하게 수행한다. 이 전체 검증이 실패하면 로그인 자체를 거부한다(`code` 발급 안 함). 검증에 성공하면 `zkpPublicSignals`에서 `arid_i`/`auid_i`/`max_height`/`token_nonce`(=r_token)/`auid` 값을 뽑아 이후 동의/코드 발급 단계에서 쓴다.
+
+승인 시: 1회용 `code`(랜덤 opaque 값, TTL 60초 — `/par`의 `request_uri`와 동일한 기준)를 발급해 `redirect_uri?code=...&state=...`로 302. `code`는 `request_uri` 레코드의 `redirect_uri`/`code_challenge` + ZKP 검증을 통과해서 나온 `arid_i`/`auid_i`/`max_height`/`token_nonce`/`auid` + 평문으로 들고 있던 `chain_id` + 로그인한 `uid`를 참조하는 서버 메모리 레코드에 연결된다.
 
 거부 시: `redirect_uri?error=access_denied&state=...`로 302(표준 OAuth 에러 리다이렉트 관례).
 
