@@ -319,6 +319,88 @@ app.post('/par', async (req, res) => {
   res.json({ request_uri, expires_in: PAR_REQUEST_TTL_MS / 1000 });
 });
 
+app.get('/authorize', (req, res) => {
+  pruneExpired(pushedRequests);
+  const { client_id, request_uri } = req.query;
+  if (client_id !== PAIRCT_CLIENT_ID || !pushedRequests.has(request_uri)) {
+    return res.status(400).send('Invalid or expired authorization request.');
+  }
+  res.sendFile(path.join(__dirname, 'idp', 'authorize.html'));
+});
+
+app.post('/authorize/login', async (req, res) => {
+  pruneExpired(pushedRequests);
+  const { request_uri, username, password } = req.body ?? {};
+  const record = pushedRequests.get(request_uri);
+  if (!record) {
+    return res.status(400).json({ success: false, error: 'Invalid or expired authorization request' });
+  }
+  const user = users[username];
+  if (!user || user.password !== password) {
+    return res.status(401).json({ success: false, error: 'Invalid credentials' });
+  }
+
+  try {
+    const verifySignals = [user.uid.toString(), ...record.zkpPublicSignals];
+    assertDecimalSignals(verifySignals, 8, 'pi_i');
+    const isValid = await snarkjs.groth16.verify(vkeyAridI, verifySignals, record.zkpProof);
+    if (!isValid) throw new Error('Identity Mismatch: This proof was not made for you!');
+
+    const idpPubX = eddsa.F.toObject(idpEdDSAKeys.pub[0]).toString();
+    const idpPubY = eddsa.F.toObject(idpEdDSAKeys.pub[1]).toString();
+    if (String(verifySignals[6]) !== idpPubX || String(verifySignals[7]) !== idpPubY) {
+      throw new Error('pi_i was proven against a different IdP key');
+    }
+
+    record.authenticatedUid = user.uid;
+    record.arid_i = verifySignals[1];
+    record.auid_i = verifySignals[2];
+    record.max_height = verifySignals[3];
+    record.token_nonce = verifySignals[4];
+    record.auid = verifySignals[5];
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+
+  res.json({ success: true });
+});
+
+app.post('/authorize/consent', (req, res) => {
+  pruneExpired(pushedRequests);
+  const { request_uri, allowed } = req.body ?? {};
+  const record = pushedRequests.get(request_uri);
+  if (!record) {
+    return res.status(400).json({ error: 'invalid_request', error_description: 'Invalid or expired authorization request' });
+  }
+  if (!record.authenticatedUid) {
+    return res.status(400).json({ error: 'invalid_request', error_description: 'Login has not completed for this request' });
+  }
+
+  pushedRequests.delete(request_uri); // single-use regardless of outcome
+
+  if (!allowed) {
+    return res.json({ redirectTo: `${record.redirect_uri}?error=access_denied&state=${encodeURIComponent(record.state)}` });
+  }
+
+  const code = randomBytes(24).toString('hex');
+  authorizationCodes.set(code, {
+    redirect_uri: record.redirect_uri,
+    code_challenge: record.code_challenge,
+    code_challenge_method: record.code_challenge_method,
+    nonce: record.nonce,
+    arid_i: record.arid_i,
+    auid_i: record.auid_i,
+    max_height: record.max_height,
+    token_nonce: record.token_nonce,
+    auid: record.auid,
+    chain_id: record.chain_id,
+    uid: record.authenticatedUid,
+    expiresAt: Date.now() + AUTHORIZATION_CODE_TTL_MS,
+  });
+
+  res.json({ redirectTo: `${record.redirect_uri}?code=${code}&state=${encodeURIComponent(record.state)}` });
+});
+
 // 1.5. Initial Login
 app.post('/login', async (req, res) => {
   const { username, password } = req.body;
