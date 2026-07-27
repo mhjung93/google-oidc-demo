@@ -3,12 +3,13 @@ import bodyParser from 'body-parser';
 import session from 'express-session';
 import cors from 'cors';
 import mcl from 'mcl-wasm';
-import { randomBytes } from 'crypto';
+import { randomBytes, createHash } from 'crypto';
 import * as snarkjs from 'snarkjs';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
+import { recoverAddress, keccak256, AbiCoder } from 'ethers';
 
 const app = express();
 const PORT = 4000;
@@ -163,6 +164,11 @@ const users = {
 const usedNonces = new Set();
 // B2 추적용 발급 로그: r_token -> uid. 메모리 전용, 서버 재시작 시 소실됨(의도된 데모 한계).
 const issuanceLog = new Map();
+// B2 추적용 발급 로그: auid_i -> uid. auid_i = ppid * rp_nonce는 세션마다 값이 바뀌지만,
+// 어느 세션의 auid_i든 같은 ppid(=같은 계정)면 항상 같은 uid로 귀결되므로, RP가 그
+// 지갑으로 가장 최근에 로그인했을 때의 auid_i만 들고 있어도 이 로그로 uid를 찾을 수
+// 있다. 메모리 전용, 서버 재시작 시 소실됨(의도된 데모 한계).
+const auidILog = new Map();
 // 비밀번호 인증(/sso_with_credentials) 후 동의 클릭(/consent_result)까지 허용하는 최대 시간.
 const PENDING_CONSENT_TTL_MS = 5 * 60 * 1000;
 
@@ -198,15 +204,119 @@ app.post('/register_rp', (req, res) => {
   // 제출해도(다른 RP의 정상 발급 rid를 몰래 끼워 넣어도) wallet이 구분할 방법이
   // 없다 — origin이 서명 안에 있어야 wallet이 "이 rid, 진짜 내가 보고 있는
   // origin 거 맞아?"를 credential 하나만으로 검증할 수 있다.
+  // EdDSA-Poseidon으로 서명(예전엔 PS 서명이었음) — wallet_agent.js가 로컬에서
+  // 검증하는 용도 외에, pi_arid_i 회로 안에서 "이 rid/origin이 IdP가 발급한 진짜
+  // credential에 묶여있다"를 rid/origin을 공개하지 않고 증명하는 데도 쓴다(같은
+  // idpEdDSAKeys를 재사용 — IDP_TOKEN 서명과 별개 키를 새로 만들 필요 없음).
+  const DOMAIN_RP_REG = valueToField('RP_REG');
+  const rpRegMsg = poseidon([DOMAIN_RP_REG, valueToField(rid), valueToField(origin)]);
+  const rpRegSig = eddsa.signPoseidon(idpEdDSAKeys.prv, rpRegMsg);
+
   const rpToken = {
     rpName,
     rid,
     origin,
-    signature: psSign(['RP_REG', rid, origin]),
+    signature: {
+      R8: [
+        eddsa.F.toObject(rpRegSig.R8[0]).toString(),
+        eddsa.F.toObject(rpRegSig.R8[1]).toString(),
+      ],
+      S: rpRegSig.S.toString(),
+    },
     issuedAt: new Date().toISOString()
   };
 
   res.json(rpToken);
+});
+
+// ── PAR (RFC 9126) + Authorization Code + PKCE ── additive alongside the
+// existing /register_rp, /sso_with_credentials, /consent_result flow. See
+// docs/superpowers/specs/2026-07-24-idp-par-authorize-token-design.md.
+const PAIRCT_CLIENT_ID = 'pairct-wallet';
+const LOOPBACK_REDIRECT_URI_PATTERN = /^http:\/\/127\.0\.0\.1:\d+\/oidc\/callback$/;
+const PAR_REQUEST_TTL_MS = 60 * 1000;
+const AUTHORIZATION_CODE_TTL_MS = 60 * 1000;
+
+// request_uri -> { redirect_uri, state, nonce, code_challenge,
+// code_challenge_method, zkpProof, zkpPublicSignals, chain_id,
+// requestBinding, expiresAt, [authenticatedUid, arid_i, auid_i, max_height,
+// token_nonce, auid] }. Memory-only, same "intentional demo limitation" as
+// issuanceLog/auidILog/usedNonces below.
+const pushedRequests = new Map();
+// code -> { redirect_uri, code_challenge, code_challenge_method, nonce,
+// arid_i, auid_i, max_height, token_nonce, auid, chain_id, uid, expiresAt }.
+const authorizationCodes = new Map();
+
+function pruneExpired(map) {
+  const now = Date.now();
+  for (const [key, record] of map) {
+    if (record.expiresAt <= now) map.delete(key);
+  }
+}
+
+app.post('/par', async (req, res) => {
+  pruneExpired(pushedRequests);
+  const {
+    client_id, redirect_uri, response_type,
+    state, nonce, code_challenge, code_challenge_method,
+    zkpProof, zkpPublicSignals, chain_id, requestBinding,
+  } = req.body ?? {};
+
+  if (client_id !== PAIRCT_CLIENT_ID) {
+    return res.status(400).json({ error: 'invalid_client', error_description: 'unknown client_id' });
+  }
+  if (typeof redirect_uri !== 'string' || !LOOPBACK_REDIRECT_URI_PATTERN.test(redirect_uri)) {
+    return res.status(400).json({ error: 'invalid_request', error_description: 'redirect_uri must be a loopback http://127.0.0.1:{port}/oidc/callback URL' });
+  }
+  if (response_type !== 'code') {
+    return res.status(400).json({ error: 'unsupported_response_type' });
+  }
+  if (!state || !nonce) {
+    return res.status(400).json({ error: 'invalid_request', error_description: 'state and nonce are required' });
+  }
+  if (!code_challenge || code_challenge_method !== 'S256') {
+    return res.status(400).json({ error: 'invalid_request', error_description: 'code_challenge (S256) is required' });
+  }
+  if (!chain_id) {
+    return res.status(400).json({ error: 'invalid_request', error_description: 'chain_id is required' });
+  }
+  if (!requestBinding?.pk_i || !requestBinding?.signature) {
+    return res.status(400).json({ error: 'invalid_request', error_description: 'requestBinding.pk_i/signature are required' });
+  }
+  if (!zkpProof) {
+    return res.status(400).json({ error: 'invalid_request', error_description: 'zkpProof is required' });
+  }
+
+  // Structural check only — NOT a full Groth16 verify. pi_arid_i's first
+  // public signal is uid, which the IdP doesn't know yet (login happens
+  // later, at POST /authorize/login). Full verification happens there.
+  try {
+    assertDecimalSignals(zkpPublicSignals, 7, 'pi_i without uid');
+  } catch (err) {
+    return res.status(400).json({ error: 'invalid_request', error_description: err.message });
+  }
+
+  const bindingHash = keccak256(
+    AbiCoder.defaultAbiCoder().encode(['string', 'string', 'string'], [state, nonce, code_challenge]),
+  );
+  let recovered;
+  try {
+    recovered = recoverAddress(bindingHash, requestBinding.signature);
+  } catch (err) {
+    return res.status(400).json({ error: 'invalid_request', error_description: 'requestBinding.signature is malformed' });
+  }
+  if (recovered.toLowerCase() !== String(requestBinding.pk_i).toLowerCase()) {
+    return res.status(400).json({ error: 'invalid_request', error_description: 'requestBinding.signature does not match requestBinding.pk_i' });
+  }
+
+  const request_uri = `urn:pairct:par:${randomBytes(24).toString('hex')}`;
+  pushedRequests.set(request_uri, {
+    redirect_uri, state, nonce, code_challenge, code_challenge_method,
+    zkpProof, zkpPublicSignals, chain_id, requestBinding,
+    expiresAt: Date.now() + PAR_REQUEST_TTL_MS,
+  });
+
+  res.json({ request_uri, expires_in: PAR_REQUEST_TTL_MS / 1000 });
 });
 
 // 1.5. Initial Login
@@ -282,18 +392,32 @@ async function verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, bu
 
   try {
     if (!zkpProof || !zkpPublicSignals) throw new Error('ZKP data missing');
-    assertDecimalSignals(zkpPublicSignals, 5, 'pi_i without uid');
+    assertDecimalSignals(zkpPublicSignals, 7, 'pi_i without uid');
 
     // The wallet/RP popup payload omits pi_i's public UID signal. The IdP
     // reconstructs it from the authenticated popup account before verification.
     const verifySignals = [user.uid.toString(), ...zkpPublicSignals];
-    assertDecimalSignals(verifySignals, 6, 'pi_i');
+    assertDecimalSignals(verifySignals, 8, 'pi_i');
     console.log(`[CustomIdP][Step 10] BINDING: using Session UID(${summarizeValue(user.uid)}) as pi_i UID input ${ms(start)}`);
 
     const isValid = await snarkjs.groth16.verify(vkeyAridI, verifySignals, zkpProof);
 
     if (!isValid) {
       throw new Error('Identity Mismatch: This proof was not made for you!');
+    }
+
+    // pk_IdP_x/y (7th, 8th public signals) prove the circuit's internal
+    // RP-registration-credential signature check ran against a real key — but
+    // the circuit itself doesn't know which key is "the real IdP's," so it
+    // only constrains internal consistency (signature verifies under
+    // *whatever* pk_IdP_x/y was supplied). The IdP must additionally check
+    // here that the supplied key is actually its own, otherwise a prover could
+    // pass a self-chosen key + self-forged signature and this whole check
+    // would be a no-op.
+    const idpPubX = eddsa.F.toObject(idpEdDSAKeys.pub[0]).toString();
+    const idpPubY = eddsa.F.toObject(idpEdDSAKeys.pub[1]).toString();
+    if (String(verifySignals[6]) !== idpPubX || String(verifySignals[7]) !== idpPubY) {
+      throw new Error('pi_i was proven against a different IdP key (RP registration credential check bypassed)');
     }
 
     // auid = Poseidon(uid, salt) is the 6th (last) public signal — fixed per
@@ -379,6 +503,7 @@ async function verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, bu
     signature: sigJson
   };
   issuanceLog.set(rToken.toString(), user.uid);
+  auidILog.set(String(business.auid_i), user.uid);
   console.log(`[CustomIdP][Step 11] IdP auth token issued and returned for Wallet delivery. ${ms(start)}`);
 
   return idpToken;
@@ -437,6 +562,20 @@ app.post('/idp/lookup_uid_by_r_token', (req, res) => {
   }
   // uid는 users의 값일 뿐 키가 아니라서, 사람이 읽을 수 있는 username을 보여주려면
   // 역방향으로 찾아야 한다.
+  const usernameEntry = Object.entries(users).find(([, user]) => String(user.uid) === String(uid));
+  res.json({ uid, username: usernameEntry ? usernameEntry[0] : null });
+});
+
+// 3.6. B2 Trace Endpoint: Lookup UID by auid_i
+app.post('/idp/lookup_uid_by_auid_i', (req, res) => {
+  const { auid_i } = req.body ?? {};
+  if (!auid_i) {
+    return res.status(400).json({ error: 'auid_i is required' });
+  }
+  const uid = auidILog.get(String(auid_i));
+  if (uid === undefined) {
+    return res.status(404).json({ error: 'No issuance record found for this auid_i' });
+  }
   const usernameEntry = Object.entries(users).find(([, user]) => String(user.uid) === String(uid));
   res.json({ uid, username: usernameEntry ? usernameEntry[0] : null });
 });
