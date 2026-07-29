@@ -401,6 +401,68 @@ app.post('/authorize/consent', (req, res) => {
   res.json({ redirectTo: `${record.redirect_uri}?code=${code}&state=${encodeURIComponent(record.state)}` });
 });
 
+app.post('/token', async (req, res) => {
+  const { grant_type, code, redirect_uri, client_id, code_verifier } = req.body ?? {};
+
+  if (grant_type !== 'authorization_code') {
+    return res.status(400).json({ error: 'unsupported_grant_type' });
+  }
+  if (client_id !== PAIRCT_CLIENT_ID) {
+    return res.status(400).json({ error: 'invalid_client' });
+  }
+  if (!code || !code_verifier || !redirect_uri) {
+    return res.status(400).json({ error: 'invalid_request', error_description: 'code, code_verifier, and redirect_uri are required' });
+  }
+
+  const record = authorizationCodes.get(code);
+  if (!record || record.expiresAt <= Date.now()) {
+    authorizationCodes.delete(code);
+    return res.status(400).json({ error: 'invalid_grant', error_description: 'code is invalid, expired, or already used' });
+  }
+  if (record.redirect_uri !== redirect_uri) {
+    return res.status(400).json({ error: 'invalid_grant', error_description: 'redirect_uri does not match' });
+  }
+
+  const computedChallenge = createHash('sha256').update(code_verifier).digest('base64url');
+  if (computedChallenge !== record.code_challenge) {
+    return res.status(400).json({ error: 'invalid_grant', error_description: 'code_verifier does not match code_challenge' });
+  }
+
+  authorizationCodes.delete(code); // single-use: burn immediately after successful validation
+
+  const exp = Math.floor(Date.now() / 1000) + 3600;
+  const DOMAIN_PAIRCT_STATEMENT = valueToField('PAIRCT_STATEMENT');
+  const msgFields = [
+    DOMAIN_PAIRCT_STATEMENT,
+    valueToField('custom-idp'),
+    valueToField(PAIRCT_CLIENT_ID),
+    valueToField(record.nonce),
+    valueToField(record.arid_i),
+    valueToField(record.auid_i),
+    valueToField(record.token_nonce),
+    valueToField(record.max_height),
+    valueToField(record.chain_id),
+  ];
+  const msg = poseidon(msgFields);
+  const sig = eddsa.signPoseidon(idpEdDSAKeys.prv, msg);
+
+  res.json({
+    iss: 'custom-idp',
+    aud: PAIRCT_CLIENT_ID,
+    nonce: record.nonce,
+    arid_i: record.arid_i,
+    auid_i: record.auid_i,
+    r_token: record.token_nonce,
+    max_height: record.max_height,
+    chain_id: record.chain_id,
+    exp,
+    signature: {
+      R8: [eddsa.F.toObject(sig.R8[0]).toString(), eddsa.F.toObject(sig.R8[1]).toString()],
+      S: sig.S.toString(),
+    },
+  });
+});
+
 // 1.5. Initial Login
 app.post('/login', async (req, res) => {
   const { username, password } = req.body;
