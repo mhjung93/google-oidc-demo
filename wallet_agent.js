@@ -2,7 +2,6 @@ import express from 'express';
 import cors from 'cors';
 import * as snarkjs from 'snarkjs';
 import { buildPoseidon, buildEddsa } from 'circomlibjs';
-import mcl from 'mcl-wasm';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -182,53 +181,15 @@ async function getMaxHeight() {
 }
 
 // custom_idp.js의 psSign() / server.js의 PS 서명 검증식과 동일하다.
-// wallet_agent.js가 RP로부터 받은 rid가 정말 이 IdP가 psSign(['RP_REG', rid, origin])로
-// 서명해서 발급한 값인지 확인한다. origin이 서명 대상에 포함돼 있으므로, 서명
-// 검증을 통과했다면 "이 rid는 이 origin 것"이라는 것까지 IdP가 보증한 것이다.
-// verifyRpCredential이 이어서 그 서명된 origin을 wallet_agent.js 자신의
-// 신뢰 앵커인 RP_ORIGIN과 대조해서, RP FE(client.js)가 다른(피해자) RP의
-// 정상 발급 rid를 몰래 끼워 넣는 것(A7, blind-message attack)을 막는다.
-let mclReady = null;
-function ensureMcl() {
-  if (!mclReady) mclReady = mcl.init(mcl.BN_SNARK1);
-  return mclReady;
-}
-
-function hashToFr(str) {
-  const fr = new mcl.Fr();
-  fr.setHashOf(str);
-  return fr;
-}
-
-function verifyPSSignature(sigma, messages, idpPK) {
-  try {
-    const s1 = new mcl.G1();
-    s1.setStr(sigma.sigma1, 16);
-    const s2 = new mcl.G1();
-    s2.setStr(sigma.sigma2, 16);
-
-    let PK_total = new mcl.G2();
-    const X = new mcl.G2();
-    X.setStr(idpPK.X, 16);
-    PK_total = mcl.add(X, PK_total);
-    for (let i = 0; i < messages.length; i++) {
-      const Yi = new mcl.G2();
-      Yi.setStr(idpPK.Y[i], 16);
-      const mi = hashToFr(messages[i]);
-      PK_total = mcl.add(PK_total, mcl.mul(Yi, mi));
-    }
-
-    const g2 = new mcl.G2();
-    g2.setStr(idpPK.g2, 16);
-    const lhs = mcl.pairing(s1, PK_total);
-    const rhs = mcl.pairing(s2, g2);
-    return lhs.isEqual(rhs);
-  } catch (err) {
-    console.error(`[WalletAgent] RP credential signature check error: ${err.message}`);
-    return false;
-  }
-}
-
+// wallet_agent.js가 RP로부터 받은 rid가 정말 이 IdP가 EdDSA-Poseidon으로
+// Poseidon(['RP_REG', rid, origin])에 서명해서 발급한 값인지 확인한다(예전엔 PS
+// 서명이었으나, pi_arid_i 회로 안에서 같은 서명을 검증해야 해서 EdDSA-Poseidon으로
+// 전환 — PS는 페어링 연산이라 circom 회로 안에서 검증하기엔 너무 무거움).
+// origin이 서명 대상에 포함돼 있으므로, 서명 검증을 통과했다면 "이 rid는 이
+// origin 것"이라는 것까지 IdP가 보증한 것이다. verifyRpCredential이 이어서 그
+// 서명된 origin을 wallet_agent.js 자신의 신뢰 앵커인 RP_ORIGIN과 대조해서, RP
+// FE(client.js)가 다른(피해자) RP의 정상 발급 rid를 몰래 끼워 넣는 것(A7,
+// blind-message attack)을 막는다.
 let idpPublicKeysCache = null;
 async function getIdpPublicKeys() {
   if (idpPublicKeysCache) return idpPublicKeysCache;
@@ -239,13 +200,24 @@ async function getIdpPublicKeys() {
 }
 
 async function verifyRpCredential(rpCredential) {
-  await ensureMcl();
+  await ensureEdDSA();
+  if (!poseidon) throw new Error('Poseidon not initialized yet');
   const idpPublicKeys = await getIdpPublicKeys();
-  const isValid = verifyPSSignature(
-    rpCredential.signature,
-    ['RP_REG', String(rpCredential.rid), String(rpCredential.origin)],
-    idpPublicKeys,
-  );
+  const pkIdPRaw = idpPublicKeys?.pk_IdP;
+  if (!pkIdPRaw || pkIdPRaw.length !== 2) throw new Error('IdP EdDSA public key not available');
+
+  const DOMAIN_RP_REG = valueToField('RP_REG');
+  const msg = poseidon([DOMAIN_RP_REG, valueToField(rpCredential.rid), valueToField(rpCredential.origin)]);
+  const pkIdP = [eddsa.F.e(BigInt(pkIdPRaw[0])), eddsa.F.e(BigInt(pkIdPRaw[1]))];
+  const sig = rpCredential.signature ?? {};
+  if (!Array.isArray(sig.R8) || sig.R8.length !== 2 || !sig.S) {
+    throw new Error('RP credential signature is missing or malformed');
+  }
+  const sigForVerify = {
+    R8: [eddsa.F.e(BigInt(sig.R8[0])), eddsa.F.e(BigInt(sig.R8[1]))],
+    S: BigInt(sig.S),
+  };
+  const isValid = eddsa.verifyPoseidon(msg, sigForVerify, pkIdP);
   if (!isValid) {
     throw new Error('RP credential signature verification failed: this rid/origin pair was not issued by the trusted IdP');
   }
@@ -395,140 +367,220 @@ app.use((req, res, next) => {
   next();
 });
 
+async function generateStep8ProofsData(rpCredential, r_i, rpNonce) {
+  const requestStart = now();
+  const start = cursor();
+  console.log(`--- [WalletAgent][Step 8] generateStep8Proofs request received ---`);
+  console.log(`[WalletAgent][Step 8] rid: ${preview(rpCredential?.rid)}, r_i: ${preview(r_i)}`);
+
+  if (!rpCredential?.rid) throw new Error('rpCredential.rid is required');
+  if (!rpCredential?.signature) throw new Error('rpCredential.signature is required');
+  if (!r_i) throw new Error('r_i is required');
+  if (!rpNonce) throw new Error('rpNonce is required');
+
+  await verifyRpCredential(rpCredential);
+  console.log(`[WalletAgent][Step 8] RP credential signature verified ${ms(start)}`);
+
+  const heightInfo = await getMaxHeight();
+  const maxHeight = heightInfo.maxHeight;
+  console.log(`[WalletAgent][Step 8] chain_id/max_height computed: chainId=${heightInfo.chainId}, currentBlock=${heightInfo.currentBlock.toString()}, maxHeight=${maxHeight.toString()} ${ms(start)}`);
+
+  const walletSalt = getOrCreateWalletSalt();
+  const uidField = valueToField(DEMO_BOUND_UID);
+  const saltField = valueToField(walletSalt);
+  const rid = BigInt(rpCredential.rid);
+  const rpNonceField = valueToField(rpNonce);
+
+  // ppid = Poseidon(uid, rid, salt), arid_i = rid * rp_nonce, auid_i = ppid * rp_nonce
+  const ppid = poseidon.F.toObject(poseidon([uidField, rid, saltField]));
+  const arid_i = (rid * rpNonceField) % FIELD_PRIME;
+  const auid_i = (ppid * rpNonceField) % FIELD_PRIME;
+  // auid = Poseidon(uid, salt) — fixed per account, lets the IdP detect a
+  // wallet reusing a different salt across logins for the same uid.
+  const auid = poseidon.F.toObject(poseidon([uidField, saltField]));
+  console.log(`[WalletAgent][Step 8] PPID/arid_i/auid_i/auid computed ${ms(start)}`);
+
+  // 세션 서명키: secp256k1, 로그인마다 새로 생성됨 (generateNewSessionKey 참고).
+  // pk_i는 이제 공개키 블롭의 해시가 아니라 그 공개키의 이더리움 주소 자체다.
+  const { pk_i: pkField, publicKeyHex } = generateNewSessionKey();
+  console.log(`[WalletAgent][Step 8] session key ready. address(pk_i): ${preview(publicKeyHex, 34)} ${ms(start)}`);
+
+  const maxHeightField = valueToField(maxHeight);
+
+  const tokenNonce = poseidon.F.toObject(poseidon([pkField, maxHeightField, rpNonceField]));
+  console.log(`[WalletAgent][Step 8] token nonce (Poseidon) generated ${ms(start)}`);
+
+  // verifyRpCredential() above already checked this signature locally; here we
+  // feed the same signature into pi_arid_i so the IdP can confirm (without
+  // learning rid/origin) that a valid RP_REG credential was actually used.
+  const idpPublicKeysForCircuit = await getIdpPublicKeys();
+  const [pkIdPXForCircuit, pkIdPYForCircuit] = idpPublicKeysForCircuit.pk_IdP;
+
+  const aridInputs = {
+    rp_nonce: rpNonceField.toString(),
+    salt: saltField.toString(),
+    rid: rid.toString(),
+    pk_i: pkField.toString(),
+    origin: valueToField(rpCredential.origin).toString(),
+    rp_reg_S: rpCredential.signature.S,
+    rp_reg_R8x: rpCredential.signature.R8[0],
+    rp_reg_R8y: rpCredential.signature.R8[1],
+    uid: uidField.toString(),
+    arid_i: arid_i.toString(),
+    auid_i: auid_i.toString(),
+    max_height: maxHeightField.toString(),
+    token_nonce: tokenNonce.toString(),
+    auid: auid.toString(),
+    pk_IdP_x: pkIdPXForCircuit,
+    pk_IdP_y: pkIdPYForCircuit,
+  };
+  const { proof, publicSignals } = await snarkjs.groth16.fullProve(
+    aridInputs,
+    'build/mode2/pi_arid_i_js/pi_arid_i.wasm',
+    'build/mode2/pi_arid_i_final.zkey',
+  );
+  console.log(`[WalletAgent][Step 8] pi_i (pi_arid_i) proof generated ${ms(start)}`);
+
+  const ppidInputs = {
+    uid: uidField.toString(),
+    salt: saltField.toString(),
+    rid: rid.toString(),
+    ppid: ppid.toString(),
+  };
+  const { proof: ppidProof, publicSignals: ppidPublicSignals } = await snarkjs.groth16.fullProve(
+    ppidInputs,
+    'build/mode2/pi_ppid_js/pi_ppid.wasm',
+    'build/mode2/pi_ppid_final.zkey',
+  );
+  console.log(`[WalletAgent][Step 8] pi_PPID proof generated ${ms(start)}`);
+
+  const durationMs = now() - requestStart;
+  console.log(`✅ [WalletAgent][Step 8] All proofs ready ${ms(start)}`);
+
+  return {
+    rid: rid.toString(),
+    ppid: ppid.toString(),
+    rpNonceField: rpNonceField.toString(),
+    arid_i: arid_i.toString(),
+    auid_i: auid_i.toString(),
+    currentBlock: heightInfo.currentBlock.toString(),
+    chain_id: heightInfo.chainId,
+    heightSource: heightInfo.source,
+    maxHeight: maxHeightField.toString(),
+    tokenNonce: tokenNonce.toString(),
+    pk_i: pkField.toString(),
+    publicKeyHex,
+    zkpProof: proof,
+    // pi_arid_i public signals are [uid, arid_i, auid_i, max_height, token_nonce, auid, pk_IdP_x, pk_IdP_y].
+    // The IdP reconstructs uid from the authenticated account, so never expose it to RP FE.
+    zkpPublicSignals: publicSignals.slice(1),
+    pi_PPID: {
+      type: 'pi_PPID',
+      proof: ppidProof,
+      publicSignals: ppidPublicSignals, // [rid, ppid], per circuit's public [rid, ppid]
+      r_token: tokenNonce.toString(),
+      generatedAt: new Date().toISOString(),
+    },
+    walletSubmission: {
+      auid_i: auid_i.toString(),
+      arid_i: arid_i.toString(),
+      r_token: tokenNonce.toString(),
+      pi_i: proof,
+      r_i,
+    },
+    business: {
+      ppid: ppid.toString(),
+      arid_i: arid_i.toString(),
+      auid_i: auid_i.toString(),
+      r_i,
+      r_token: tokenNonce.toString(),
+      tokenNonce: tokenNonce.toString(),
+      maxHeight: maxHeightField.toString(),
+      chain_id: heightInfo.chainId,
+    },
+    durationMs,
+  };
+}
+
 // Step 8을 대신 수행한다: PPID/arid_i/auid_i 계산, 세션 서명키 생성, Poseidon
 // 토큰 논스, pi_i/pi_PPID Groth16 증명 생성. 이 프로세스는 사용자 로컬 머신에서만
 // 돌고 RP_ORIGIN에서만 접근 가능하다 — RP 페이지(client.js)의 JS 컨텍스트와는
 // 별도의 OS 프로세스라서, uid와 salt가 RP 페이지에 직접 노출되지 않는다.
 app.post('/generateStep8Proofs', async (req, res) => {
-  const requestStart = now();
-  const start = cursor();
   try {
     const { rpCredential, r_i, rpNonce } = req.body ?? {};
-    console.log(`--- [WalletAgent][Step 8] generateStep8Proofs request received ---`);
-    console.log(`[WalletAgent][Step 8] rid: ${preview(rpCredential?.rid)}, r_i: ${preview(r_i)}`);
-
     if (Object.prototype.hasOwnProperty.call(req.body ?? {}, 'uid')) {
       throw new Error('uid must not be supplied by the RP frontend');
     }
-    if (!rpCredential?.rid) throw new Error('rpCredential.rid is required');
-    if (!rpCredential?.signature) throw new Error('rpCredential.signature is required');
-    if (!r_i) throw new Error('r_i is required');
-    if (!rpNonce) throw new Error('rpNonce is required');
-
-    await verifyRpCredential(rpCredential);
-    console.log(`[WalletAgent][Step 8] RP credential signature verified ${ms(start)}`);
-
-    const heightInfo = await getMaxHeight();
-    const maxHeight = heightInfo.maxHeight;
-    console.log(`[WalletAgent][Step 8] chain_id/max_height computed: chainId=${heightInfo.chainId}, currentBlock=${heightInfo.currentBlock.toString()}, maxHeight=${maxHeight.toString()} ${ms(start)}`);
-
-    const walletSalt = getOrCreateWalletSalt();
-    const uidField = valueToField(DEMO_BOUND_UID);
-    const saltField = valueToField(walletSalt);
-    const rid = BigInt(rpCredential.rid);
-    const rpNonceField = valueToField(rpNonce);
-
-    // ppid = Poseidon(uid, rid, salt), arid_i = rid * rp_nonce, auid_i = ppid * rp_nonce
-    const ppid = poseidon.F.toObject(poseidon([uidField, rid, saltField]));
-    const arid_i = (rid * rpNonceField) % FIELD_PRIME;
-    const auid_i = (ppid * rpNonceField) % FIELD_PRIME;
-    // auid = Poseidon(uid, salt) — fixed per account, lets the IdP detect a
-    // wallet reusing a different salt across logins for the same uid.
-    const auid = poseidon.F.toObject(poseidon([uidField, saltField]));
-    console.log(`[WalletAgent][Step 8] PPID/arid_i/auid_i/auid computed ${ms(start)}`);
-
-    // 세션 서명키: secp256k1, 로그인마다 새로 생성됨 (generateNewSessionKey 참고).
-    // pk_i는 이제 공개키 블롭의 해시가 아니라 그 공개키의 이더리움 주소 자체다.
-    const { pk_i: pkField, publicKeyHex } = generateNewSessionKey();
-    console.log(`[WalletAgent][Step 8] session key ready. address(pk_i): ${preview(publicKeyHex, 34)} ${ms(start)}`);
-
-    const maxHeightField = valueToField(maxHeight);
-
-    const tokenNonce = poseidon.F.toObject(poseidon([pkField, maxHeightField, rpNonceField]));
-    console.log(`[WalletAgent][Step 8] token nonce (Poseidon) generated ${ms(start)}`);
-
-    const aridInputs = {
-      rp_nonce: rpNonceField.toString(),
-      salt: saltField.toString(),
-      rid: rid.toString(),
-      pk_i: pkField.toString(),
-      uid: uidField.toString(),
-      arid_i: arid_i.toString(),
-      auid_i: auid_i.toString(),
-      max_height: maxHeightField.toString(),
-      token_nonce: tokenNonce.toString(),
-      auid: auid.toString(),
-    };
-    const { proof, publicSignals } = await snarkjs.groth16.fullProve(
-      aridInputs,
-      'build/mode2/pi_arid_i_js/pi_arid_i.wasm',
-      'build/mode2/pi_arid_i_final.zkey',
-    );
-    console.log(`[WalletAgent][Step 8] pi_i (pi_arid_i) proof generated ${ms(start)}`);
-
-    const ppidInputs = {
-      uid: uidField.toString(),
-      salt: saltField.toString(),
-      rid: rid.toString(),
-      ppid: ppid.toString(),
-    };
-    const { proof: ppidProof, publicSignals: ppidPublicSignals } = await snarkjs.groth16.fullProve(
-      ppidInputs,
-      'build/mode2/pi_ppid_js/pi_ppid.wasm',
-      'build/mode2/pi_ppid_final.zkey',
-    );
-    console.log(`[WalletAgent][Step 8] pi_PPID proof generated ${ms(start)}`);
-
-    const durationMs = now() - requestStart;
-    console.log(`✅ [WalletAgent][Step 8] All proofs ready, responding to RP FE ${ms(start)}`);
-
-    res.json({
-      rid: rid.toString(),
-      ppid: ppid.toString(),
-      rpNonceField: rpNonceField.toString(),
-      arid_i: arid_i.toString(),
-      auid_i: auid_i.toString(),
-      currentBlock: heightInfo.currentBlock.toString(),
-      chain_id: heightInfo.chainId,
-      heightSource: heightInfo.source,
-      maxHeight: maxHeightField.toString(),
-      tokenNonce: tokenNonce.toString(),
-      pk_i: pkField.toString(),
-      publicKeyHex,
-      zkpProof: proof,
-      // pi_arid_i public signals are [uid, arid_i, auid_i, max_height, token_nonce, auid].
-      // The IdP reconstructs uid from the authenticated account, so never expose it to RP FE.
-      zkpPublicSignals: publicSignals.slice(1),
-      pi_PPID: {
-        type: 'pi_PPID',
-        proof: ppidProof,
-        publicSignals: ppidPublicSignals, // [rid, ppid], per circuit's public [rid, ppid]
-        r_token: tokenNonce.toString(),
-        generatedAt: new Date().toISOString(),
-      },
-      walletSubmission: {
-        auid_i: auid_i.toString(),
-        arid_i: arid_i.toString(),
-        r_token: tokenNonce.toString(),
-        pi_i: proof,
-        r_i,
-      },
-      business: {
-        ppid: ppid.toString(),
-        arid_i: arid_i.toString(),
-        auid_i: auid_i.toString(),
-        r_i,
-        r_token: tokenNonce.toString(),
-        tokenNonce: tokenNonce.toString(),
-        maxHeight: maxHeightField.toString(),
-        chain_id: heightInfo.chainId,
-      },
-      durationMs,
-    });
+    const result = await generateStep8ProofsData(rpCredential, r_i, rpNonce);
+    res.json(result);
   } catch (err) {
-    console.error(`❌ [WalletAgent][Step 8] generateStep8Proofs error: ${err.message} ${ms(start)}`);
+    console.error(`❌ [WalletAgent][Step 8] generateStep8Proofs error: ${err.message}`);
     res.status(400).json({ error: err.message });
   }
+});
+
+// Wallet-driven login job store: jobId -> { status, expiresAt, step8?, error?,
+// result? }. Memory-only, same pattern as this project's other in-memory
+// stores (e.g. custom_idp.js's pushedRequests/authorizationCodes) — lost on
+// restart, intentional demo limitation.
+const loginJobs = new Map();
+const LOGIN_JOB_TTL_MS = 10 * 60 * 1000; // generous — covers proof gen + human login/consent time
+
+function pruneExpiredJobs() {
+  const now = Date.now();
+  for (const [jobId, job] of loginJobs) {
+    if (job.expiresAt <= now) loginJobs.delete(jobId);
+  }
+}
+
+// Step 8을 백그라운드로 돌리고 즉시 jobId만 응답한다 — 이후 단계(Snap 승인,
+// 시스템 브라우저 로그인)가 사람 개입으로 수십 초~수 분 걸릴 수 있어서, RP FE가
+// 하나의 HTTP 요청으로 계속 기다리게 하지 않는다. 대신 /loginStatus를 폴링한다.
+app.post('/startLogin', async (req, res) => {
+  const { rpCredential, r_i, rpNonce } = req.body ?? {};
+  if (Object.prototype.hasOwnProperty.call(req.body ?? {}, 'uid')) {
+    return res.status(400).json({ error: 'uid must not be supplied by the RP frontend' });
+  }
+  if (!rpCredential?.rid) return res.status(400).json({ error: 'rpCredential.rid is required' });
+  if (!rpCredential?.signature) return res.status(400).json({ error: 'rpCredential.signature is required' });
+  if (!r_i) return res.status(400).json({ error: 'r_i is required' });
+  if (!rpNonce) return res.status(400).json({ error: 'rpNonce is required' });
+
+  pruneExpiredJobs();
+  const jobId = webcrypto.randomUUID();
+  loginJobs.set(jobId, { status: 'generating_proof', expiresAt: Date.now() + LOGIN_JOB_TTL_MS });
+  res.status(202).json({ jobId });
+
+  try {
+    const step8 = await generateStep8ProofsData(rpCredential, r_i, rpNonce);
+    const job = loginJobs.get(jobId);
+    if (!job) return; // expired/pruned while proof was generating
+    job.status = 'awaiting_wallet_approval';
+    job.step8 = step8;
+    console.log(`[WalletAgent][startLogin] job ${jobId} awaiting_wallet_approval`);
+  } catch (err) {
+    const job = loginJobs.get(jobId);
+    if (job) {
+      job.status = 'failed';
+      job.error = err.message;
+    }
+    console.error(`[WalletAgent][startLogin] job ${jobId} failed during proof generation: ${err.message}`);
+  }
+});
+
+app.get('/loginStatus', (req, res) => {
+  const { jobId } = req.query ?? {};
+  const job = loginJobs.get(jobId);
+  if (!job) return res.status(404).json({ error: 'Unknown or expired jobId' });
+
+  if (job.status === 'done') {
+    return res.json({ status: 'done', ...job.result });
+  }
+  if (job.status === 'failed') {
+    return res.json({ status: 'failed', error: job.error });
+  }
+  res.json({ status: job.status });
 });
 
 app.post('/verifyIdPAuthToken', async (req, res) => {
@@ -714,13 +766,10 @@ app.post('/submitTransaction', async (req, res) => {
   }
 });
 
-// Trace UI가 "어느 트랜잭션을 추적할지" 고를 수 있게, 이 PPID의 PPIDWallet 앞으로
-// 온 execute() 호출들을 체인에서 직접 긁어와 pk_i/max_height 목록으로 돌려준다.
-// pk_i/max_height는 execute() calldata에 이미 평문으로 들어가는 공개 온체인
-// 데이터라서(누구나 체인을 보면 알 수 있음), 서버의 private sessionLog를 전혀
-// 건드리지 않고도 만들 수 있다. 데모용 로컬 체인이라 블록 0부터 전부 스캔한다 —
-// 블록 수가 많은 실제 체인에서는 느려지므로 그대로 쓰면 안 된다.
-app.post('/transactionHistory', async (req, res) => {
+// server.js가 ppid만 갖고 있을 때(로그인 검증 시점) 그 ppid의 PPIDWallet 주소를
+// 알아내기 위해 쓰는 단독 엔드포인트. /submitTransaction 안에 있던 computeAddress
+// 조회 로직과 동일하다 — server.js는 factory ABI/RPC를 몰라도 되게 한다.
+app.post('/computeWalletAddress', async (req, res) => {
   const start = cursor();
   try {
     const { ppid } = req.body ?? {};
@@ -735,6 +784,27 @@ app.post('/transactionHistory', async (req, res) => {
     ]);
     const [walletAddress] = factoryInterface.decodeFunctionResult('computeAddress', computeAddressResult);
 
+    res.json({ walletAddress });
+  } catch (err) {
+    console.error(`[WalletAgent][computeWalletAddress] error: ${err.message} ${ms(start)}`);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Trace UI(= authorized opening)가 "어느 트랜잭션을 추적할지" 고를 수 있게, 체인
+// 전체에서 execute() 호출로 디코딩되는 트랜잭션을 전부 찾아 pk_i/max_height 목록을
+// 돌려준다. 일부러 "지금 로그인한 PPID의 지갑" 하나로 안 좁힌다 — authorized
+// opening은 원래 "지금 로그인한 내 트랜잭션"이 아니라 "분쟁이 생긴 임의의 과거
+// 세션"을 추적하는 것이므로, 조사자가 아무 PPIDWallet의 트랜잭션이나 골라서
+// 추적할 수 있어야 한다. pk_i/max_height는 execute() calldata에 이미 평문으로
+// 들어가는 공개 온체인 데이터라서(누구나 체인을 보면 알 수 있음), 서버의 private
+// sessionLog는 전혀 안 건드린다. 데모용 로컬 체인이라 블록 0부터 전부 스캔하고,
+// `to`가 특정 주소와 같은지는 안 보고 calldata가 execute()로 디코딩되는지만 본다
+// — 블록/트랜잭션 수가 많은 실제 체인에서는 이 전체 스캔 방식이 느려지므로 그대로
+// 쓰면 안 된다.
+app.post('/transactionHistory', async (req, res) => {
+  const start = cursor();
+  try {
     const latestHex = await rpcCall('eth_blockNumber', []);
     const latestBlock = Number(BigInt(latestHex));
 
@@ -743,23 +813,25 @@ app.post('/transactionHistory', async (req, res) => {
       const block = await rpcCallGeneric('eth_getBlockByNumber', [`0x${i.toString(16)}`, true]);
       if (!block?.transactions?.length) continue;
       for (const tx of block.transactions) {
-        if (String(tx.to).toLowerCase() !== String(walletAddress).toLowerCase()) continue;
+        const calldata = tx.data ?? tx.input;
+        if (!tx.to || !calldata || calldata === '0x') continue;
         try {
-          const decoded = walletInterface.decodeFunctionData('execute', tx.data);
+          const decoded = walletInterface.decodeFunctionData('execute', calldata);
           history.push({
             txHash: tx.hash,
             blockNumber: i,
+            to: tx.to,
             pk_i: decoded.pk_i.toString(),
             max_height: decoded.max_height.toString(),
           });
         } catch (err) {
-          // 이 지갑으로 온 다른 함수 호출(현재는 execute()뿐이라 실질적으로 안 남)이면 건너뜀.
+          // execute()로 디코딩 안 되는 트랜잭션(PPIDWallet 배포, 무관한 트랜잭션 등)은 건너뜀.
         }
       }
     }
 
-    console.log(`[WalletAgent][transactionHistory] found ${history.length} execute() call(s) for this PPID ${ms(start)}`);
-    res.json({ walletAddress, history });
+    console.log(`[WalletAgent][transactionHistory] found ${history.length} execute() call(s) across the chain ${ms(start)}`);
+    res.json({ history });
   } catch (err) {
     console.error(`[WalletAgent][transactionHistory] error: ${err.message} ${ms(start)}`);
     res.status(400).json({ error: err.message });
