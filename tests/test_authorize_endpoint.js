@@ -111,6 +111,29 @@ async function main() {
   if (reuseConsent.status !== 400) throw new Error(`FAIL: expected 400, got ${reuseConsent.status}`);
   console.log('PASS: request_uri is single-use');
 
+  console.log('-- POST /authorize/login with a cryptographically invalid proof (expect 400) --');
+  const badState = 'bad-proof-state';
+  const badNonce = 'bad-proof-nonce';
+  const badChallenge = 'dGVzdC1jaGFsbGVuZ2U';
+  const tamperedSignals = [...step8.zkpPublicSignals];
+  tamperedSignals[0] = (BigInt(tamperedSignals[0]) + 1n).toString(); // flip arid_i so it no longer matches the proof
+  const parBad = await (await fetch(`${IDP}/par`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_id: 'pairct-wallet', redirect_uri: 'http://127.0.0.1:49999/oidc/callback', response_type: 'code',
+      state: badState, nonce: badNonce, code_challenge: badChallenge, code_challenge_method: 'S256',
+      zkpProof: step8.zkpProof, zkpPublicSignals: tamperedSignals, chain_id: step8.chain_id,
+      requestBinding: signBinding(badState, badNonce, badChallenge),
+    }),
+  })).json();
+  if (!parBad.request_uri) throw new Error(`FAIL: /par (bad proof case) did not return request_uri: ${JSON.stringify(parBad)}`);
+  const badProofLogin = await fetch(`${IDP}/authorize/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ request_uri: parBad.request_uri, username: 'testuser', password: 'password123' }),
+  });
+  if (badProofLogin.status !== 400) throw new Error(`FAIL: expected 400, got ${badProofLogin.status}`);
+  console.log('PASS: cryptographically invalid (tampered) proof rejected at full verification');
+
   console.log('ALL AUTHORIZE TESTS PASSED');
 }
 

@@ -428,7 +428,15 @@ app.post('/token', async (req, res) => {
     return res.status(400).json({ error: 'invalid_grant', error_description: 'code_verifier does not match code_challenge' });
   }
 
+  // r_token(token_nonce) replay guard — same protection the old /consent_result
+  // flow already has (verifyPiIAndIssueToken's usedNonces check), applied here
+  // too so the new flow isn't weaker than the one it's meant to replace.
+  if (usedNonces.has(String(record.token_nonce))) {
+    return res.status(400).json({ error: 'invalid_grant', error_description: 'r_token has already been used to issue a statement' });
+  }
+
   authorizationCodes.delete(code); // single-use: burn immediately after successful validation
+  usedNonces.add(String(record.token_nonce));
 
   const exp = Math.floor(Date.now() / 1000) + 3600;
   const DOMAIN_PAIRCT_STATEMENT = valueToField('PAIRCT_STATEMENT');
@@ -445,6 +453,13 @@ app.post('/token', async (req, res) => {
   ];
   const msg = poseidon(msgFields);
   const sig = eddsa.signPoseidon(idpEdDSAKeys.prv, msg);
+
+  // B2 authorized-opening trace logs — same bookkeeping the old
+  // verifyPiIAndIssueToken does, so statements issued via this new flow stay
+  // traceable through the existing /idp/lookup_uid_by_r_token and
+  // /idp/lookup_uid_by_auid_i endpoints.
+  issuanceLog.set(String(record.token_nonce), record.uid);
+  auidILog.set(String(record.auid_i), record.uid);
 
   res.json({
     iss: 'custom-idp',

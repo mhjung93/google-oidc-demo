@@ -63,6 +63,48 @@ async function getCode(codeChallenge, redirectUri) {
   return new URL(consent.redirectTo).searchParams.get('code');
 }
 
+async function testReplayRejected() {
+  console.log('-- reusing the same r_token across two independent codes (expect second /token to fail) --');
+  const step8 = await registerAndGenerateProof();
+  const redirectUri = 'http://127.0.0.1:49996/oidc/callback';
+
+  async function runOnce(suffix) {
+    const state = `replay-state-${suffix}`;
+    const nonce = `replay-nonce-${suffix}`;
+    const codeVerifier = randomBytes(32).toString('base64url');
+    const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url');
+    const requestBinding = signBinding(state, nonce, codeChallenge);
+    const par = await (await fetch(`${IDP}/par`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_id: 'pairct-wallet', redirect_uri: redirectUri, response_type: 'code',
+        state, nonce, code_challenge: codeChallenge, code_challenge_method: 'S256',
+        zkpProof: step8.zkpProof, zkpPublicSignals: step8.zkpPublicSignals, chain_id: step8.chain_id,
+        requestBinding,
+      }),
+    })).json();
+    await fetch(`${IDP}/authorize/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ request_uri: par.request_uri, username: 'testuser', password: 'password123' }),
+    });
+    const consent = await (await fetch(`${IDP}/authorize/consent`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ request_uri: par.request_uri, allowed: true }),
+    })).json();
+    const code = new URL(consent.redirectTo).searchParams.get('code');
+    return fetch(`${IDP}/token`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ grant_type: 'authorization_code', code, redirect_uri: redirectUri, client_id: 'pairct-wallet', code_verifier: codeVerifier }),
+    });
+  }
+
+  const first = await runOnce('a');
+  if (first.status !== 200) throw new Error(`FAIL: first /token call should succeed, got ${first.status}`);
+  const second = await runOnce('b');
+  if (second.status !== 400) throw new Error(`FAIL: expected 400 on r_token replay, got ${second.status}`);
+  console.log('PASS: reusing the same underlying proof (r_token) across two separate codes is rejected at the second /token call');
+}
+
 async function main() {
   const redirectUri = 'http://127.0.0.1:49998/oidc/callback';
   const codeVerifier = randomBytes(32).toString('base64url');
@@ -124,6 +166,8 @@ async function main() {
   });
   if (wrongVerifierRes.status !== 400) throw new Error(`FAIL: expected 400, got ${wrongVerifierRes.status}`);
   console.log('PASS: wrong code_verifier rejected');
+
+  await testReplayRejected();
 
   console.log('ALL TOKEN TESTS PASSED');
 }
