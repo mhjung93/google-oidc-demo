@@ -48,6 +48,17 @@ async function main() {
   if (unknownRes.status !== 404) throw new Error(`FAIL: expected 404, got ${unknownRes.status}`);
   console.log('PASS: unknown jobId rejected');
 
+  console.log('-- GET /loginStatus for a still-valid job is unaffected by the pruneExpiredJobs() call (expect 200, same status) --');
+  const stillValidRes = await fetch(`${WALLET}/loginStatus?jobId=${startBody.jobId}`, {
+    headers: { 'X-Wallet-Agent-Token': token },
+  });
+  if (stillValidRes.status !== 200) throw new Error(`FAIL: expected 200 for a still-valid job, got ${stillValidRes.status}`);
+  const stillValidBody = await stillValidRes.json();
+  if (stillValidBody.status !== 'awaiting_wallet_approval') {
+    throw new Error(`FAIL: expected awaiting_wallet_approval, got ${stillValidBody.status}`);
+  }
+  console.log('PASS: pruneExpiredJobs() in /loginStatus does not affect a still-valid job');
+
   console.log('-- existing /generateStep8Proofs still works after the refactor (non-regression) --');
   const legacyRes = await fetch(`${WALLET}/generateStep8Proofs`, {
     method: 'POST',

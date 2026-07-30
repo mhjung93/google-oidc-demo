@@ -570,6 +570,7 @@ app.post('/startLogin', async (req, res) => {
 });
 
 app.get('/loginStatus', (req, res) => {
+  pruneExpiredJobs();
   const { jobId } = req.query ?? {};
   const job = loginJobs.get(jobId);
   if (!job) return res.status(404).json({ error: 'Unknown or expired jobId' });
