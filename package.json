@@ -39,6 +39,7 @@
     "jose": "^5.6.3",
     "mcl-wasm": "^2.0.4",
     "node-fetch": "^3.3.2",
+    "open": "^11.0.0",
     "openid-client": "^5.7.1",
     "tiny-secp256k1": "^2.2.4"
   },

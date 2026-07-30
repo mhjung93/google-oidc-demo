@@ -5,7 +5,9 @@ import { buildPoseidon, buildEddsa } from 'circomlibjs';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { webcrypto } from 'crypto';
+import { webcrypto, createHash, randomBytes } from 'crypto';
+import http from 'http';
+import open from 'open';
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { keccak256, AbiCoder, Interface } from 'ethers';
 
@@ -583,6 +585,197 @@ app.get('/loginStatus', (req, res) => {
   }
   res.json({ status: job.status });
 });
+
+// client.js가 Snap confirmLogin 다이얼로그 결과를 보고하는 엔드포인트.
+// wallet_agent.js는 Node 프로세스라 window.ethereum에 직접 접근할 수 없어서,
+// Snap 호출 자체는 client.js가 대신 하고 그 결과만 여기로 보고받는다. 승인이면
+// loopback 리스너를 열고 /par를 호출해서 시스템 브라우저 단계로 넘어간다.
+app.post('/confirmLoginResult', async (req, res) => {
+  const { jobId, approved } = req.body ?? {};
+  const job = loginJobs.get(jobId);
+  if (!job) return res.status(404).json({ error: 'Unknown or expired jobId' });
+  if (job.status !== 'awaiting_wallet_approval') {
+    return res.status(400).json({ error: `job is not awaiting approval (current status: ${job.status})` });
+  }
+
+  if (!approved) {
+    job.status = 'denied';
+    console.log(`[WalletAgent][confirmLoginResult] job ${jobId} denied at Snap approval`);
+    return res.json({ success: true });
+  }
+
+  res.json({ success: true });
+  startLoopbackLogin(jobId).catch((err) => {
+    const j = loginJobs.get(jobId);
+    if (j) {
+      j.status = 'failed';
+      j.error = err.message;
+    }
+    console.error(`[WalletAgent][confirmLoginResult] job ${jobId} failed: ${err.message}`);
+  });
+});
+
+const LOOPBACK_TIMEOUT_MS = 90 * 1000; // /par's request_uri TTL (60s) plus margin
+
+async function startLoopbackLogin(jobId) {
+  const job = loginJobs.get(jobId);
+  if (!job) return;
+  const step8 = job.step8;
+
+  const state = webcrypto.randomUUID();
+  const nonce = webcrypto.randomUUID();
+  const codeVerifier = randomBytes(32).toString('base64url');
+  const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url');
+
+  const { sk_i, address } = getCurrentSessionKey();
+  const bindingHash = keccak256(
+    AbiCoder.defaultAbiCoder().encode(['string', 'string', 'string'], [state, nonce, codeChallenge]),
+  );
+  const sigRaw = secp256k1.sign(bindingHash.slice(2), sk_i);
+  const requestBindingSignature =
+    '0x' +
+    sigRaw.r.toString(16).padStart(64, '0') +
+    sigRaw.s.toString(16).padStart(64, '0') +
+    (27 + sigRaw.recovery).toString(16).padStart(2, '0');
+
+  const server = http.createServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  const redirectUri = `http://127.0.0.1:${port}/oidc/callback`;
+
+  const timeoutHandle = setTimeout(() => {
+    server.close();
+    const j = loginJobs.get(jobId);
+    if (j && j.status === 'awaiting_browser_login') {
+      j.status = 'failed';
+      j.error = 'Timed out waiting for the browser login/consent to complete';
+      console.error(`[WalletAgent][loopback] job ${jobId} timed out waiting for callback`);
+    }
+  }, LOOPBACK_TIMEOUT_MS);
+
+  server.on('request', (req, res) => {
+    handleLoopbackCallback(jobId, req, res, { server, timeoutHandle, redirectUri, codeVerifier, state });
+  });
+
+  const parRes = await fetch(`${IDP_ORIGIN}/par`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_id: 'pairct-wallet',
+      redirect_uri: redirectUri,
+      response_type: 'code',
+      state,
+      nonce,
+      code_challenge: codeChallenge,
+      code_challenge_method: 'S256',
+      zkpProof: step8.zkpProof,
+      zkpPublicSignals: step8.zkpPublicSignals,
+      chain_id: step8.chain_id,
+      requestBinding: { pk_i: address, signature: requestBindingSignature },
+    }),
+  });
+  const parBody = await parRes.json();
+  if (!parRes.ok || !parBody.request_uri) {
+    clearTimeout(timeoutHandle);
+    server.close();
+    throw new Error(parBody.error_description || parBody.error || '/par failed');
+  }
+
+  job.status = 'awaiting_browser_login';
+  console.log(`[WalletAgent][loopback] job ${jobId} pushed to IdP, request_uri=${parBody.request_uri}, redirect_uri=${redirectUri}`);
+
+  const authorizeUrl = `${IDP_ORIGIN}/authorize?client_id=pairct-wallet&request_uri=${encodeURIComponent(parBody.request_uri)}`;
+  try {
+    await open(authorizeUrl);
+  } catch (err) {
+    // A headless/test environment may not have a browser to open — the URL is
+    // still valid and the loopback listener is still waiting; log and continue
+    // rather than failing the job outright.
+    console.warn(`[WalletAgent][loopback] job ${jobId}: could not auto-open browser (${err.message}); visit manually: ${authorizeUrl}`);
+  }
+}
+
+function handleLoopbackCallback(jobId, req, res, ctx) {
+  const { server, timeoutHandle, redirectUri, codeVerifier, state } = ctx;
+  const requestUrl = new URL(req.url, 'http://127.0.0.1');
+  if (requestUrl.pathname !== '/oidc/callback') {
+    res.writeHead(404).end();
+    return;
+  }
+
+  clearTimeout(timeoutHandle);
+  const returnedState = requestUrl.searchParams.get('state');
+  const code = requestUrl.searchParams.get('code');
+  const error = requestUrl.searchParams.get('error');
+
+  res.writeHead(200, { 'Content-Type': 'text/html' });
+  res.end('<html><body><p>Login complete. You can close this tab and return to the app.</p></body></html>');
+  server.close();
+
+  const job = loginJobs.get(jobId);
+  if (!job) return;
+
+  if (returnedState !== state) {
+    job.status = 'failed';
+    job.error = 'state mismatch on loopback callback (possible CSRF)';
+    console.error(`[WalletAgent][loopback] job ${jobId}: state mismatch on callback`);
+    return;
+  }
+  if (error) {
+    job.status = 'denied';
+    console.log(`[WalletAgent][loopback] job ${jobId} denied at IdP consent: ${error}`);
+    return;
+  }
+  if (!code) {
+    job.status = 'failed';
+    job.error = 'loopback callback had neither code nor error';
+    return;
+  }
+
+  job.status = 'exchanging_token';
+  exchangeToken(jobId, code, redirectUri, codeVerifier).catch((err) => {
+    const j = loginJobs.get(jobId);
+    if (j) {
+      j.status = 'failed';
+      j.error = err.message;
+    }
+    console.error(`[WalletAgent][loopback] job ${jobId} token exchange failed: ${err.message}`);
+  });
+}
+
+async function exchangeToken(jobId, code, redirectUri, codeVerifier) {
+  const job = loginJobs.get(jobId);
+  if (!job) return;
+
+  const tokenRes = await fetch(`${IDP_ORIGIN}/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: redirectUri,
+      client_id: 'pairct-wallet',
+      code_verifier: codeVerifier,
+    }),
+  });
+  const statement = await tokenRes.json();
+  if (!tokenRes.ok || !statement.signature) {
+    throw new Error(statement.error_description || statement.error || '/token failed');
+  }
+
+  const step8 = job.step8;
+  job.status = 'done';
+  job.result = {
+    ppid: step8.ppid,
+    arid_i: step8.arid_i,
+    auid_i: step8.auid_i,
+    pk_i: step8.pk_i,
+    publicKeyHex: step8.publicKeyHex,
+    pi_PPID: step8.pi_PPID,
+    statement,
+  };
+  console.log(`[WalletAgent][loopback] job ${jobId} done`);
+}
 
 app.post('/verifyIdPAuthToken', async (req, res) => {
   const start = cursor();
