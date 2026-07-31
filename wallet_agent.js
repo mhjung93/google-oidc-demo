@@ -404,7 +404,7 @@ async function generateStep8ProofsData(rpCredential, r_i, rpNonce) {
 
   // 세션 서명키: secp256k1, 로그인마다 새로 생성됨 (generateNewSessionKey 참고).
   // pk_i는 이제 공개키 블롭의 해시가 아니라 그 공개키의 이더리움 주소 자체다.
-  const { pk_i: pkField, publicKeyHex } = generateNewSessionKey();
+  const { sk_i, pk_i: pkField, address, publicKeyHex } = generateNewSessionKey();
   console.log(`[WalletAgent][Step 8] session key ready. address(pk_i): ${preview(publicKeyHex, 34)} ${ms(start)}`);
 
   const maxHeightField = valueToField(maxHeight);
@@ -501,6 +501,12 @@ async function generateStep8ProofsData(rpCredential, r_i, rpNonce) {
       chain_id: heightInfo.chainId,
     },
     durationMs,
+    // Internal only — captured at the exact moment this job's session key was
+    // generated, so later async steps (loopback /par signing) use THIS job's
+    // key even if a concurrent /startLogin call overwrites the shared global
+    // currentSessionKey in the meantime. Never sent over HTTP — the
+    // /generateStep8Proofs route below strips this before responding.
+    sessionKey: { sk_i, address },
   };
 }
 
@@ -515,7 +521,8 @@ app.post('/generateStep8Proofs', async (req, res) => {
       throw new Error('uid must not be supplied by the RP frontend');
     }
     const result = await generateStep8ProofsData(rpCredential, r_i, rpNonce);
-    res.json(result);
+    const { sessionKey, ...publicResult } = result; // never expose the raw session key over HTTP
+    res.json(publicResult);
   } catch (err) {
     console.error(`❌ [WalletAgent][Step 8] generateStep8Proofs error: ${err.message}`);
     res.status(400).json({ error: err.message });
@@ -627,7 +634,7 @@ async function startLoopbackLogin(jobId) {
   const codeVerifier = randomBytes(32).toString('base64url');
   const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url');
 
-  const { sk_i, address } = getCurrentSessionKey();
+  const { sk_i, address } = step8.sessionKey;
   const bindingHash = keccak256(
     AbiCoder.defaultAbiCoder().encode(['string', 'string', 'string'], [state, nonce, codeChallenge]),
   );

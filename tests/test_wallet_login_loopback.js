@@ -44,6 +44,47 @@ async function pollUntil(token, jobId, predicate, timeoutMs) {
   throw new Error(`FAIL: timed out waiting for condition, last status: ${JSON.stringify(last)}`);
 }
 
+async function testConcurrentJobsDoNotCorruptSessionKeys(token) {
+  console.log('-- two /startLogin jobs back-to-back both reach awaiting_browser_login independently (session-key isolation) --');
+  const registrationA = await (await fetch(`${SERVER}/api/mode2/register`, { method: 'POST' })).json();
+  const startARes = await fetch(`${WALLET}/startLogin`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Wallet-Agent-Token': token },
+    body: JSON.stringify({ rpCredential: registrationA, r_i: '333', rpNonce: '444' }),
+  });
+  const { jobId: jobIdA } = await startARes.json();
+
+  const registrationB = await (await fetch(`${SERVER}/api/mode2/register`, { method: 'POST' })).json();
+  const startBRes = await fetch(`${WALLET}/startLogin`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Wallet-Agent-Token': token },
+    body: JSON.stringify({ rpCredential: registrationB, r_i: '555', rpNonce: '666' }),
+  });
+  const { jobId: jobIdB } = await startBRes.json();
+
+  const approvalA = await pollUntil(token, jobIdA, (s) => s.status === 'awaiting_wallet_approval' || s.status === 'failed', 10000);
+  if (approvalA.status !== 'awaiting_wallet_approval') throw new Error(`FAIL: job A never reached awaiting_wallet_approval: ${JSON.stringify(approvalA)}`);
+  const approvalB = await pollUntil(token, jobIdB, (s) => s.status === 'awaiting_wallet_approval' || s.status === 'failed', 10000);
+  if (approvalB.status !== 'awaiting_wallet_approval') throw new Error(`FAIL: job B never reached awaiting_wallet_approval: ${JSON.stringify(approvalB)}`);
+
+  await fetch(`${WALLET}/confirmLoginResult`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Wallet-Agent-Token': token },
+    body: JSON.stringify({ jobId: jobIdA, approved: true }),
+  });
+  await fetch(`${WALLET}/confirmLoginResult`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Wallet-Agent-Token': token },
+    body: JSON.stringify({ jobId: jobIdB, approved: true }),
+  });
+
+  const finalA = await pollUntil(token, jobIdA, (s) => s.status === 'awaiting_browser_login' || s.status === 'failed', 10000);
+  const finalB = await pollUntil(token, jobIdB, (s) => s.status === 'awaiting_browser_login' || s.status === 'failed', 10000);
+  if (finalA.status !== 'awaiting_browser_login') throw new Error(`FAIL: job A did not reach awaiting_browser_login (session-key corruption?): ${JSON.stringify(finalA)}`);
+  if (finalB.status !== 'awaiting_browser_login') throw new Error(`FAIL: job B did not reach awaiting_browser_login (session-key corruption?): ${JSON.stringify(finalB)}`);
+  console.log('PASS: both concurrent jobs independently reached awaiting_browser_login — session keys were not cross-contaminated');
+}
+
 async function main() {
   const token = await getWalletAgentToken();
 
@@ -87,6 +128,8 @@ async function main() {
     throw new Error(`FAIL: expected awaiting_browser_login, got ${afterApproval.status} (${afterApproval.error ?? ''})`);
   }
   console.log('PASS: job reached awaiting_browser_login — /par succeeded, loopback listener is open and waiting');
+
+  await testConcurrentJobsDoNotCorruptSessionKeys(token);
 
   console.log('ALL WALLET LOOPBACK TESTS PASSED (manual browser completion not covered — see design spec)');
 }
