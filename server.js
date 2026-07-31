@@ -23,6 +23,7 @@ const {
   PORT = 3000,
   BASE_URL,
   CUSTOM_IDP_BASE_URL = 'http://127.0.0.1:4000',
+  WALLET_AGENT_BASE_URL = 'http://127.0.0.1:5001',
   MODE2_ETH_RPC_URL = process.env.ETH_RPC_URL || 'http://127.0.0.1:8545',
   GOOGLE_CLIENT_ID,
   GOOGLE_CLIENT_SECRET,
@@ -43,9 +44,12 @@ const RP_REGISTRATION_FILE = path.join(__dirname, 'rp_registration.json');
 // 막기 위한 in-flight 가드 — 실제 등록 호출은 한 번만 나가고, 동시 요청은 전부 같은
 // 결과를 기다린다.
 let registrationInFlight = null;
-// B2 추적용 세션 로그: 로그인 세션마다 { auid_i, r_token, rp_nonce, timestamp }.
-// 메모리 전용, 서버 재시작 시 소실됨(의도된 데모 한계).
-const sessionLog = [];
+// B2 추적용: PPIDWallet 주소(체인에서 바로 보이는 값) -> 그 ppid로 마지막 로그인했을
+// 때의 auid_i. ppid/auid_i 둘 다 계정 고정값(같은 ppid면 세션이 달라도 매번 같은
+// uid로 귀결됨)이라, "이 지갑으로 가장 최근에 로그인했을 때의 auid_i" 하나만 있으면
+// 그 지갑이 만든 임의의 과거 트랜잭션도 추적할 수 있다 — 그 트랜잭션 자체가 만들어진
+// 세션의 기록은 없어도 된다. 메모리 전용, 서버 재시작 시 소실됨(의도된 데모 한계).
+const walletAddressToAuidI = new Map();
 
 app.use(cors({
   origin: 'http://127.0.0.1:4000'
@@ -63,7 +67,7 @@ async function loadAndVerifyPersistedRpRegistration() {
   if (!idpPublicKeys || !psParams.g2) {
     await initRP_PS();
   }
-  const isValid = verifyPS_Hybrid(persisted.signature, ['RP_REG', String(persisted.rid), String(persisted.origin)], idpPublicKeys);
+  const isValid = await verifyRpRegSignature(persisted);
   if (!isValid) {
     console.warn('[Mode 2] Persisted RP registration no longer verifies against the current IdP key (likely a custom_idp.js restart) - ignoring it.');
     return null;
@@ -97,7 +101,7 @@ async function performRpRegistration() {
 
   // RP 등록 자체가 이 IdP에서 정말 발급된 것인지 확인 — RP_REG 도메인으로
   // psSign(['RP_REG', rid, origin])된 값이어야 통과한다.
-  const isRpSigValid = verifyPS_Hybrid(registration.signature, ['RP_REG', String(registration.rid), String(registration.origin)], idpPublicKeys);
+  const isRpSigValid = await verifyRpRegSignature(registration);
   if (!isRpSigValid) {
     console.error('[Mode 2] RP registration signature verification FAILED. Rejecting registration.');
     const err = new Error('RP registration signature verification failed');
@@ -143,16 +147,33 @@ app.post('/api/mode2/register', async (req, res) => {
 // 호출자에게 직접 토큰을 내주지 않는다. RP 서버가 같은 파일시스템에서 토큰을 읽어
 // 자기 origin(브라우저가 이미 신뢰하는)으로만 전달해서, 다른 origin/프로세스가
 // wallet_agent.js를 호출해 salt를 추출하지 못하게 한다.
+function getWalletAgentToken() {
+  const state = JSON.parse(fs_sync.readFileSync(path.join(__dirname, 'wallet_state.json'), 'utf8'));
+  if (!state.agentToken) throw new Error('agentToken missing');
+  return state.agentToken;
+}
+
 app.get('/api/mode2/wallet_agent_token', (req, res) => {
   if (currentMode !== 2) return res.status(400).json({ error: 'Not in Mode 2' });
   try {
-    const state = JSON.parse(fs_sync.readFileSync(path.join(__dirname, 'wallet_state.json'), 'utf8'));
-    if (!state.agentToken) throw new Error('agentToken missing');
-    res.json({ token: state.agentToken });
+    res.json({ token: getWalletAgentToken() });
   } catch (err) {
     res.status(503).json({ error: 'wallet_agent.js has not initialized its token yet. Start wallet_agent.js first.' });
   }
 });
+
+// B2 추적용: 로그인 검증 성공 시 받은 ppid로 wallet_agent.js에 PPIDWallet 주소를
+// 물어본다. server.js는 factory ABI/RPC를 직접 다루지 않고 wallet_agent.js에 위임한다.
+async function computeWalletAddress(ppid) {
+  const res = await fetch(`${WALLET_AGENT_BASE_URL}/computeWalletAddress`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Wallet-Agent-Token': getWalletAgentToken() },
+    body: JSON.stringify({ ppid }),
+  });
+  const result = await res.json();
+  if (!res.ok) throw new Error(result.error || 'computeWalletAddress failed');
+  return result.walletAddress;
+}
 
 // ─────────────────────────────────────────────────────────────
 // 간단한 타이밍 유틸
@@ -564,52 +585,41 @@ async function initRP_PS() {
   }
 }
 
-function hashToFr(str) {
-  const fr = new mcl.Fr();
-  fr.setHashOf(str);
-  return fr;
-}
-
-function verifyPS_Hybrid(sigma_prime, messages, idpPK) {
+// RP_REG credential이 EdDSA-Poseidon으로 전환됨(예전엔 PS) — pi_arid_i 회로가
+// 같은 서명을 내부에서 검증하려면 페어링 대신 회로 친화적인 EdDSA-Poseidon이어야
+// 하기 때문. rawIdpPublicKeys는 이미 initRP_PS()가 로드해 둔 것을 그대로 쓴다.
+async function verifyRpRegSignature(registration) {
+  await ensureEdDSA();
+  const pkIdPRaw = rawIdpPublicKeys?.pk_IdP;
+  if (!pkIdPRaw || pkIdPRaw.length !== 2) return false;
   try {
-    if (!idpPK || !psParams.g2) return false;
-
-    const s1 = new mcl.G1();
-    const s2 = new mcl.G1();
-
-    // 1. 서명 데이터 로드
-    s1.setStr(sigma_prime.sigma1, 16);
-    s2.setStr(sigma_prime.sigma2, 16);
-
-    // 2. PK_total = X * prod(Yi^mi) — custom_idp.js psSign()이
-    // 서명한 순서와 동일해야 한다.
-    let PK_total = new mcl.G2();
-    PK_total = mcl.add(idpPK.X, PK_total);
-    for (let i = 0; i < messages.length; i++) {
-      const mi = hashToFr(messages[i]);
-      PK_total = mcl.add(PK_total, mcl.mul(idpPK.Y[i], mi));
-    }
-
-    // 3. e(s1, PK_total) == e(s2, g2)
-    const lhs = mcl.pairing(s1, PK_total);
-    const rhs = mcl.pairing(s2, psParams.g2);
-    const isValid = lhs.isEqual(rhs);
-
-    console.log('[Mode 2] PS Signature Verification:', isValid);
+    const DOMAIN_RP_REG = valueToField('RP_REG');
+    const msg = poseidon([DOMAIN_RP_REG, valueToField(registration.rid), valueToField(registration.origin)]);
+    const pkIdP = [eddsa.F.e(BigInt(pkIdPRaw[0])), eddsa.F.e(BigInt(pkIdPRaw[1]))];
+    const sig = registration.signature ?? {};
+    if (!Array.isArray(sig.R8) || sig.R8.length !== 2 || !sig.S) return false;
+    const sigForVerify = {
+      R8: [eddsa.F.e(BigInt(sig.R8[0])), eddsa.F.e(BigInt(sig.R8[1]))],
+      S: BigInt(sig.S),
+    };
+    const isValid = eddsa.verifyPoseidon(msg, sigForVerify, pkIdP);
+    console.log('[Mode 2] RP_REG EdDSA-Poseidon Signature Verification:', isValid);
     return isValid;
-
   } catch (err) {
-    console.error('[Mode 2] PS Signature Verification Error:', err.message);
+    console.error('[Mode 2] RP_REG Signature Verification Error:', err.message);
     return false;
   }
 }
 
 // Mode 2: SSO Success Callback (Hybrid Version)
 app.post('/api/mode2/sso_success', async (req, res) => {
-  const { idpToken } = req.body;
-  
+  const { idpToken, ppid } = req.body;
+
   if (!idpToken) {
     return res.status(400).json({ success: false, error: 'Missing IdP token for RP verification' });
+  }
+  if (!ppid) {
+    return res.status(400).json({ success: false, error: 'Missing ppid for RP verification' });
   }
 
   console.log('--- [RP Backend] Verifying IdP Token + RP Audience ---');
@@ -718,19 +728,164 @@ app.post('/api/mode2/sso_success', async (req, res) => {
     return res.status(401).json({ success: false, error: 'Invalid EdDSA-Poseidon Signature' });
   }
 
-  // B2 추적용: rp_nonce를 지우기 전에 나중에 재계산 가능하도록 세션 기록을 남긴다.
-  sessionLog.push({
-    auid_i: idpToken.auid_i,
-    r_token: idpToken.r_token,
-    rp_nonce: sessionRpNonce,
-    timestamp: Date.now(),
-  });
+  // B2 추적용: 이 ppid의 PPIDWallet 주소를 알아내서 방금 검증된 auid_i를 최신값으로
+  // 기록해 둔다. ppid/auid_i 둘 다 계정 고정값이라 최신 한 건만 있으면 되고, 이
+  // 지갑이 과거에 만든 다른 트랜잭션도 이 기록으로 추적 가능하다.
+  try {
+    const walletAddress = await computeWalletAddress(ppid);
+    walletAddressToAuidI.set(walletAddress.toLowerCase(), idpToken.auid_i);
+  } catch (err) {
+    console.error(`[RP Backend] Failed to record ppid->auid_i for B2 trace: ${err.message}`);
+  }
 
   // Single-use: spend the rp_nonce only after the full RP-side verification
   // succeeds, so malformed proof/signature attempts do not burn the session.
   delete req.session.rpNonce;
 
   console.log('[Mode 2] Verification SUCCESS. Session established.');
+  res.json({ success: true });
+});
+
+// Mode 2: 새 PairCT signed login statement(9-field, loopback+OIDC 흐름) 검증.
+// 기존 /api/mode2/sso_success(옛 6-field idpToken)는 그대로 두고 병행 추가한다.
+app.post('/api/mode2/verify_statement', async (req, res) => {
+  const { statement, ppid } = req.body;
+
+  if (!statement) {
+    return res.status(400).json({ success: false, error: 'Missing statement for RP verification' });
+  }
+  if (!ppid) {
+    return res.status(400).json({ success: false, error: 'Missing ppid for RP verification' });
+  }
+
+  console.log('--- [RP Backend] Verifying PairCT login statement + RP Audience ---');
+
+  try {
+    assertCanonicalField(statement.arid_i, 'statement.arid_i');
+    assertCanonicalField(statement.auid_i, 'statement.auid_i');
+    assertCanonicalField(statement.r_token, 'statement.r_token');
+    assertCanonicalField(statement.max_height, 'statement.max_height');
+    assertCanonicalField(statement.chain_id, 'statement.chain_id');
+    if (!Array.isArray(statement.signature?.R8) || statement.signature.R8.length !== 2 || !statement.signature?.S) {
+      throw new Error('statement.signature is missing or malformed');
+    }
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+
+  if (statement.iss !== 'custom-idp') {
+    return res.status(400).json({ success: false, error: 'Unexpected statement.iss' });
+  }
+  if (statement.aud !== 'pairct-wallet') {
+    return res.status(400).json({ success: false, error: 'Unexpected statement.aud' });
+  }
+
+  // 0. RP 본인의 rid와 rp_nonce로 arid_i를 직접 재계산해서 검증 (Audience Check).
+  // IdP는 rid를 모르므로 이 확인은 전적으로 RP 자신의 책임이다.
+  if (!rpRegistration || !rpRegistration.rid) {
+    return res.status(500).json({ success: false, error: 'RP is not properly registered yet' });
+  }
+  const sessionRpNonce = req.session.rpNonce;
+  if (!sessionRpNonce) {
+    return res.status(400).json({ success: false, error: 'No rp_nonce has been issued for this session yet' });
+  }
+
+  await ensureEdDSA();
+  if (!idpPublicKeys || !psParams.g2) {
+    console.log('[Mode 2] IdP public keys not loaded yet. Retrying before statement verification...');
+    await initRP_PS();
+  }
+
+  const expectedAridI = (valueToField(rpRegistration.rid) * valueToField(sessionRpNonce)) % FIELD_PRIME;
+  if (String(statement.arid_i) !== String(expectedAridI)) {
+    console.error(`❌ [RP Backend] Audience Check FAILED! statement.arid_i does not match this RP's rid * rp_nonce.`);
+    return res.status(403).json({ success: false, error: 'Security Alert: Wrong RP Identity (arid_i mismatch). Potential cross-service replay attack.' });
+  }
+
+  console.log('✅ [RP Backend] Audience Check PASSED (statement.arid_i matches this RP\'s rid * rp_nonce).');
+
+  try {
+    const maxHeight = BigInt(statement.max_height);
+    const currentHeight = await getCurrentHeightForToken();
+    const rpcChainId = await getRpcChainId();
+    if (String(statement.chain_id) !== rpcChainId) {
+      console.error('[RP Backend] chain_id check FAILED:', {
+        statement_chain_id: statement.chain_id,
+        rpc_chain_id: rpcChainId,
+        source: currentHeight.source,
+      });
+      return res.status(401).json({ success: false, error: 'Statement chain_id does not match RP verification chain' });
+    }
+    console.log('[RP Backend] chain_id check PASSED:', {
+      chain_id: rpcChainId,
+      source: currentHeight.source,
+    });
+    if (currentHeight.value > maxHeight) {
+      console.error('[RP Backend] max_height check FAILED:', {
+        current: currentHeight.value.toString(),
+        max_height: maxHeight.toString(),
+        source: currentHeight.source,
+      });
+      return res.status(401).json({ success: false, error: 'Statement expired by max_height' });
+    }
+    console.log('[RP Backend] max_height check PASSED:', {
+      current: currentHeight.value.toString(),
+      max_height: maxHeight.toString(),
+      source: currentHeight.source,
+    });
+  } catch (err) {
+    console.error('[RP Backend] max_height verification error:', err.message);
+    return res.status(503).json({ success: false, error: `Unable to verify max_height: ${err.message}` });
+  }
+
+  // EdDSA-Poseidon 검증 — custom_idp.js의 /token이 서명한 것과 동일하게 9개 필드를
+  // Poseidon으로 묶어서 msg를 재계산한 뒤, IdP의 pk_IdP로 검증한다. 옛 idpToken의
+  // DOMAIN_IDP_TOKEN(6-field)과는 다른 도메인 분리자라 절대 서로 바꿔 쓸 수 없다.
+  const DOMAIN_PAIRCT_STATEMENT = valueToField('PAIRCT_STATEMENT');
+  const msgFields = [
+    DOMAIN_PAIRCT_STATEMENT,
+    valueToField('custom-idp'),
+    valueToField('pairct-wallet'),
+    valueToField(statement.nonce),
+    valueToField(statement.arid_i),
+    valueToField(statement.auid_i),
+    valueToField(statement.r_token),
+    valueToField(statement.max_height),
+    valueToField(statement.chain_id),
+  ];
+  const msg = poseidon(msgFields);
+
+  const pkIdPRaw = rawIdpPublicKeys?.pk_IdP;
+  if (!pkIdPRaw || pkIdPRaw.length !== 2) {
+    return res.status(503).json({ success: false, error: 'IdP EdDSA public key not loaded yet' });
+  }
+  let isSigValid;
+  try {
+    const pkIdP = [eddsa.F.e(BigInt(pkIdPRaw[0])), eddsa.F.e(BigInt(pkIdPRaw[1]))];
+    const sigForVerify = {
+      R8: [eddsa.F.e(BigInt(statement.signature.R8[0])), eddsa.F.e(BigInt(statement.signature.R8[1]))],
+      S: BigInt(statement.signature.S),
+    };
+    isSigValid = eddsa.verifyPoseidon(msg, sigForVerify, pkIdP);
+  } catch (err) {
+    return res.status(400).json({ success: false, error: 'Malformed EdDSA-Poseidon signature data' });
+  }
+
+  if (!isSigValid) {
+    return res.status(401).json({ success: false, error: 'Invalid EdDSA-Poseidon Signature' });
+  }
+
+  // B2 추적용: 기존 sso_success와 동일한 방식으로 ppid -> auid_i를 기록한다.
+  try {
+    const walletAddress = await computeWalletAddress(ppid);
+    walletAddressToAuidI.set(walletAddress.toLowerCase(), statement.auid_i);
+  } catch (err) {
+    console.error(`[RP Backend] Failed to record ppid->auid_i for B2 trace: ${err.message}`);
+  }
+
+  delete req.session.rpNonce;
+
+  console.log('[Mode 2] Statement verification SUCCESS. Session established.');
   res.json({ success: true });
 });
 
@@ -809,39 +964,29 @@ app.use((err, req, res, next) => {
   res.status(500).send(`<pre>${err.message}</pre>`);
 });
 
-// Mode 2: B2 추적 엔드포인트 — 분쟁 중인 온체인 트랜잭션의 공개 pk_i/max_height로
-// sessionLog에서 일치하는 r_token을 찾고, Task 1의 custom_idp.js 엔드포인트에
-// 위임해서 uid를 밝힌다.
+// Mode 2: B2 추적 엔드포인트 — 분쟁 중인 온체인 트랜잭션의 지갑 주소(to)로
+// walletAddressToAuidI에서 최신 auid_i를 찾고, custom_idp.js에 위임해서 uid를 밝힌다.
+// ppid/auid_i가 계정 고정값이라, 그 트랜잭션 자체의 세션 기록이 없어도(같은 지갑으로
+// 서버 재시작 이후 한 번이라도 로그인만 했다면) 추적할 수 있다.
 app.post('/api/mode2/trace_transaction', async (req, res) => {
   const traceStart = now();
-  const { pk_i, max_height } = req.body ?? {};
-  if (!pk_i) return res.status(400).json({ error: 'pk_i is required' });
-  if (!max_height) return res.status(400).json({ error: 'max_height is required' });
+  const { to } = req.body ?? {};
+  if (!to) return res.status(400).json({ error: 'to (wallet address) is required' });
 
-  await ensureEdDSA();
-  if (!poseidon) return res.status(503).json({ error: 'Poseidon not initialized yet' });
+  const auidILookupStart = now();
+  const auid_i = walletAddressToAuidI.get(String(to).toLowerCase());
+  const auidILookupMs = now() - auidILookupStart;
 
-  const pkField = valueToField(pk_i);
-  const maxHeightField = valueToField(max_height);
-
-  const sessionLookupStart = now();
-  const match = sessionLog.find((record) => {
-    const rpNonceField = valueToField(record.rp_nonce);
-    const recomputed = poseidon.F.toObject(poseidon([pkField, maxHeightField, rpNonceField]));
-    return String(recomputed) === String(record.r_token);
-  });
-  const sessionLookupMs = now() - sessionLookupStart;
-
-  if (!match) {
-    return res.status(404).json({ error: 'No matching session found for this pk_i/max_height' });
+  if (!auid_i) {
+    return res.status(404).json({ error: 'No recorded auid_i for this wallet address (this ppid has not logged in since the RP server last restarted)' });
   }
 
   try {
     const idpLookupStart = now();
-    const idpResponse = await fetch(`${CUSTOM_IDP_BASE_URL}/idp/lookup_uid_by_r_token`, {
+    const idpResponse = await fetch(`${CUSTOM_IDP_BASE_URL}/idp/lookup_uid_by_auid_i`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ r_token: match.r_token }),
+      body: JSON.stringify({ auid_i }),
     });
     const idpResult = await idpResponse.json();
     const idpLookupMs = now() - idpLookupStart;
@@ -849,7 +994,7 @@ app.post('/api/mode2/trace_transaction', async (req, res) => {
       return res.status(idpResponse.status).json(idpResult);
     }
     const totalMs = now() - traceStart;
-    const timings = { sessionLookupMs, idpLookupMs, totalMs };
+    const timings = { auidILookupMs, idpLookupMs, totalMs };
     console.log('[Mode 2][trace_transaction] timings:', timings);
     res.json({ uid: idpResult.uid, username: idpResult.username, timings });
   } catch (err) {
