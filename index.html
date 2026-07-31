@@ -29,24 +29,10 @@
         <select id="traceHistorySelect" style="max-width: 100%;"></select>
         <input id="traceInputPkI" type="hidden" />
         <input id="traceInputMaxHeight" type="hidden" />
+        <input id="traceInputTo" type="hidden" />
         <button id="traceTransaction" style="background: #fff3e0; margin-top: 6px;">Trace Transaction</button>
+        <button id="refreshTraceHistory" style="margin-top: 6px;">Refresh</button>
         <p id="traceResult" style="font-size: 0.85em; color: #333; white-space: pre-wrap;"></p>
-      </div>
-      <div id="ssoStepButtons" style="display: none; border-top: 1px solid #ccc; padding-top: 10px;">
-        <strong>SSO Step-by-Step (with Error Testing):</strong><br>
-        <div style="margin-bottom: 5px;">
-          <button id="step2SubmitToIdP" disabled>Step 9. Submit to IdP</button>
-        </div>
-        <div style="margin-bottom: 5px;">
-          <button id="step25RPFEVerify" style="background: #f3e5f5;" disabled>Step 14. Verify Token + PPID</button>
-          <button id="step25RPFEVerifyFail" style="background: #ffcdd2; border: 1px solid #e57373;" disabled>Fail Test (Tamper Sig)</button>
-        </div>
-        <div style="margin-bottom: 5px;">
-          <button id="step15NotifyWallet" style="background: #fffde7;" disabled>Step 11. Send IdP Token to Wallet</button>
-        </div>
-        <div style="margin-bottom: 5px;">
-          <button id="step3CompleteRP" disabled>Step 12. Wallet: Verify IdP Auth Token</button>
-        </div>
       </div>
       <div id="ssoDataDisplay" style="display: none; margin-top: 10px; background: #fffde7; padding: 10px; border: 1px dashed #fbc02d; font-size: 0.8em;">
 
