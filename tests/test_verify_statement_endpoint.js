@@ -134,6 +134,18 @@ async function main() {
   if (sigRes.ok) throw new Error('FAIL: tampered signature was accepted');
   console.log('PASS: tampered signature rejected');
 
+  console.log('-- expired max_height is rejected --');
+  const session6 = await startRpSession();
+  const { statement: statement6, ppid: ppid6 } = await getStatement(session6.rpCredential, session6.rpNonce, 'http://127.0.0.1:49991/oidc/callback');
+  const expiredMaxHeight = { ...statement6, max_height: '0' };
+  const maxHeightRes = await fetch(`${SERVER}/api/mode2/verify_statement`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: session6.cookie },
+    body: JSON.stringify({ statement: expiredMaxHeight, ppid: ppid6 }),
+  });
+  if (maxHeightRes.status !== 401) throw new Error(`FAIL: expected 401 on expired max_height, got ${maxHeightRes.status}`);
+  console.log('PASS: expired max_height rejected');
+
   console.log('ALL VERIFY_STATEMENT TESTS PASSED');
 }
 

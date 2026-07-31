@@ -125,6 +125,27 @@ async function main() {
   }
   console.log('PASS: statement.idpToken.signature verifies against the legacy 6-field IDP_TOKEN domain');
 
+  console.log('-- statement.signature (9-field) must NOT verify under the 6-field IDP_TOKEN domain --');
+  if (eddsa.verifyPoseidon(msg, {
+    R8: [eddsa.F.e(BigInt(statement.signature.R8[0])), eddsa.F.e(BigInt(statement.signature.R8[1]))],
+    S: BigInt(statement.signature.S),
+  }, pkIdP)) {
+    throw new Error('FAIL: statement.signature (9-field PAIRCT_STATEMENT) verified against the 6-field IDP_TOKEN message - domain separation broken');
+  }
+  console.log('PASS: statement.signature does not verify against the 6-field IDP_TOKEN domain');
+
+  console.log('-- statement.idpToken.signature (6-field) must NOT verify under the 9-field PAIRCT_STATEMENT domain --');
+  const DOMAIN_PAIRCT_STATEMENT = valueToField('PAIRCT_STATEMENT');
+  const statementMsg = poseidon([
+    DOMAIN_PAIRCT_STATEMENT, valueToField(statement.iss), valueToField(statement.aud), valueToField(statement.nonce),
+    valueToField(statement.arid_i), valueToField(statement.auid_i), valueToField(statement.r_token),
+    valueToField(statement.max_height), valueToField(statement.chain_id),
+  ]);
+  if (eddsa.verifyPoseidon(statementMsg, sigForVerify, pkIdP)) {
+    throw new Error('FAIL: statement.idpToken.signature (6-field IDP_TOKEN) verified against the 9-field PAIRCT_STATEMENT message - domain separation broken');
+  }
+  console.log('PASS: statement.idpToken.signature does not verify against the 9-field PAIRCT_STATEMENT domain');
+
   console.log('ALL LEGACY IDPTOKEN TESTS PASSED');
 }
 
