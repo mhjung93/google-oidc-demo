@@ -771,6 +771,11 @@ async function exchangeToken(jobId, code, redirectUri, codeVerifier) {
   }
 
   const step8 = job.step8;
+  // /token 응답에는 새 9-field statement 필드와 옛 6-field idpToken(온체인 tx
+  // 제출 전용, /submitTransaction이 소비)이 함께 실려 온다. statement 전체를
+  // 그대로 job.result.statement에 복사하면 idpToken이 그 안에 중첩되어 남으므로,
+  // 구조 분해로 분리해서 둘을 독립된 필드로 둔다.
+  const { idpToken, ...statementFields } = statement;
   job.status = 'done';
   job.result = {
     ppid: step8.ppid,
@@ -779,7 +784,8 @@ async function exchangeToken(jobId, code, redirectUri, codeVerifier) {
     pk_i: step8.pk_i,
     publicKeyHex: step8.publicKeyHex,
     pi_PPID: step8.pi_PPID,
-    statement,
+    statement: statementFields,
+    idpToken,
   };
   console.log(`[WalletAgent][loopback] job ${jobId} done`);
 }
