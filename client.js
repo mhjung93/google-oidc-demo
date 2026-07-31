@@ -153,6 +153,8 @@ if (APP_MODE === 2) {
   async function runDelegatedLogin() {
     const start = now();
     mode2Status.innerText = 'Login job starting...';
+    ssoMetadata.rid = BigInt(ssoMetadata.rpCredential.rid);
+    ssoMetadata.rpNonceField = valueToField(ssoMetadata.rpNonce);
 
     const tokenRes = await fetch('/api/mode2/wallet_agent_token');
     if (!tokenRes.ok) throw new Error('Could not fetch wallet agent token. Is wallet_agent.js running?');
