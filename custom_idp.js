@@ -454,6 +454,22 @@ app.post('/token', async (req, res) => {
   const msg = poseidon(msgFields);
   const sig = eddsa.signPoseidon(idpEdDSAKeys.prv, msg);
 
+  // 온체인 tx 제출(wallet_agent.js의 /submitTransaction, pi_pk_i 회로)은 이미 배포된
+  // PiPkIVerifier가 옛 6-field IDP_TOKEN 도메인 서명만 검증하도록 불변으로 고정돼
+  // 있다. 회로/컨트랙트를 바꾸는 대신, 같은 값들로 그 옛 포맷 서명도 하나 더
+  // 만들어서 새 statement와 함께 내려준다 — 둘은 서로 다른 도메인 분리자를 쓰는
+  // 별개 서명이라 절대 섞어 쓸 수 없다.
+  const DOMAIN_IDP_TOKEN = valueToField('IDP_TOKEN');
+  const idpTokenMsg = poseidon([
+    DOMAIN_IDP_TOKEN,
+    valueToField(record.arid_i),
+    valueToField(record.auid_i),
+    valueToField(record.token_nonce),
+    valueToField(record.max_height),
+    valueToField(record.chain_id),
+  ]);
+  const idpTokenSig = eddsa.signPoseidon(idpEdDSAKeys.prv, idpTokenMsg);
+
   // B2 authorized-opening trace logs — same bookkeeping the old
   // verifyPiIAndIssueToken does, so statements issued via this new flow stay
   // traceable through the existing /idp/lookup_uid_by_r_token and
@@ -474,6 +490,17 @@ app.post('/token', async (req, res) => {
     signature: {
       R8: [eddsa.F.toObject(sig.R8[0]).toString(), eddsa.F.toObject(sig.R8[1]).toString()],
       S: sig.S.toString(),
+    },
+    idpToken: {
+      arid_i: record.arid_i,
+      auid_i: record.auid_i,
+      r_token: record.token_nonce,
+      max_height: record.max_height,
+      chain_id: record.chain_id,
+      signature: {
+        R8: [eddsa.F.toObject(idpTokenSig.R8[0]).toString(), eddsa.F.toObject(idpTokenSig.R8[1]).toString()],
+        S: idpTokenSig.S.toString(),
+      },
     },
   });
 });
