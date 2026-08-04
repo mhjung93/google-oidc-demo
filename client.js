@@ -23,6 +23,7 @@ if (APP_MODE === 2) {
 
   mode2SSOLoginButton?.addEventListener('click', async () => {
     let authWindowRef = null;
+    const authWindowState = { navigated: false };
     try {
       authWindowRef = window.open('', '_blank');
       authWindowRef?.document.write('<p style="font-family: system-ui;">IdP 로그인 페이지를 준비하는 중입니다&hellip;</p>');
@@ -79,9 +80,9 @@ if (APP_MODE === 2) {
       appendRpFeVisibleFlow(`  r_i check: ${sessionNonceCheck ? 'PASS' : 'FAIL'}`);
       appendRpFeVisibleFlow(`  rpNonce: ${previewValue(data.rpNonce)}`);
       mode2Status.innerText = `Step 7 Complete ${formatMs(start)}. Values passed to wallet context.`;
-      await runDelegatedLogin(authWindowRef);
+      await runDelegatedLogin(authWindowRef, authWindowState);
     } catch (err) {
-      authWindowRef?.close();
+      if (!authWindowState.navigated) authWindowRef?.close();
       mode2SSOLoginButton.disabled = false;
       mode2Status.innerText = `Delegated Login Error: ${err.message}`;
     }
@@ -160,7 +161,7 @@ if (APP_MODE === 2) {
   // wallet_agent.js for why (MetaMask Snap's SES sandbox can't run snarkjs/circomlibjs).
   const WALLET_AGENT_ORIGIN = 'http://127.0.0.1:5001';
 
-  async function runDelegatedLogin(authWindowRef) {
+  async function runDelegatedLogin(authWindowRef, authWindowState) {
     const start = now();
     mode2Status.innerText = 'Login job starting...';
     document.getElementById('authWindowFallback')?.replaceChildren();
@@ -229,7 +230,7 @@ if (APP_MODE === 2) {
             case 'awaiting_browser_login':
               if (!browserNavigated) {
                 browserNavigated = true;
-                navigateToIdP(authWindowRef, data.requestUri);
+                navigateToIdP(authWindowRef, data.requestUri, authWindowState);
               }
               mode2Status.innerText = '시스템 브라우저에서 IdP 로그인을 진행해주세요.';
               return;
@@ -272,11 +273,12 @@ if (APP_MODE === 2) {
     await runRpVerifyStatement(start);
   }
 
-  function navigateToIdP(authWindowRef, requestUri) {
+  function navigateToIdP(authWindowRef, requestUri, authWindowState) {
     const authorizeUrl = `${IDP_ORIGIN}/authorize?client_id=${PAIRCT_CLIENT_ID}&request_uri=${encodeURIComponent(requestUri)}`;
     if (authWindowRef && !authWindowRef.closed) {
       try {
         authWindowRef.location.href = authorizeUrl;
+        authWindowState.navigated = true;
         return;
       } catch (err) {
         console.warn('[Mode 2] Failed to navigate pre-opened auth window:', err.message);
