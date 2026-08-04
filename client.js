@@ -232,7 +232,7 @@ if (APP_MODE === 2) {
                 browserNavigated = true;
                 navigateToIdP(authWindowRef, data.requestUri, authWindowState);
               }
-              mode2Status.innerText = '시스템 브라우저에서 IdP 로그인을 진행해주세요.';
+              mode2Status.innerText = '새로 열린 창에서 IdP 로그인을 진행해주세요.';
               return;
 
             case 'exchanging_token':
