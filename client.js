@@ -22,6 +22,14 @@ if (APP_MODE === 2) {
   const mode2SSOSection = document.getElementById('mode2SSOSection');
 
   mode2SSOLoginButton?.addEventListener('click', async () => {
+    let authWindowRef = null;
+    try {
+      authWindowRef = window.open('', '_blank');
+      authWindowRef?.document.write('<p style="font-family: system-ui;">IdP 로그인 페이지를 준비하는 중입니다&hellip;</p>');
+    } catch (err) {
+      authWindowRef = null;
+    }
+
     if (mode2SSOSection) mode2SSOSection.style.display = 'block';
     mode2SSOLoginButton.disabled = true;
     mode2Status.innerText = 'Preparing Snap connection...';
@@ -71,7 +79,7 @@ if (APP_MODE === 2) {
       appendRpFeVisibleFlow(`  r_i check: ${sessionNonceCheck ? 'PASS' : 'FAIL'}`);
       appendRpFeVisibleFlow(`  rpNonce: ${previewValue(data.rpNonce)}`);
       mode2Status.innerText = `Step 7 Complete ${formatMs(start)}. Values passed to wallet context.`;
-      await runDelegatedLogin();
+      await runDelegatedLogin(authWindowRef);
     } catch (err) {
       mode2SSOLoginButton.disabled = false;
       mode2Status.innerText = `Delegated Login Error: ${err.message}`;
@@ -144,15 +152,17 @@ if (APP_MODE === 2) {
   }
 
   const IDP_ORIGIN = 'http://127.0.0.1:4000';
+  const PAIRCT_CLIENT_ID = 'pairct-wallet';
   const IDP_SSO_ENDPOINT = `${IDP_ORIGIN}/sso_with_credentials`;
   // Step 8 (PPID/arid_i/auid_i, signing key, pi_i/pi_PPID) runs in a local-only
   // Node process (wallet_agent.js), not in this RP page's JS context — see
   // wallet_agent.js for why (MetaMask Snap's SES sandbox can't run snarkjs/circomlibjs).
   const WALLET_AGENT_ORIGIN = 'http://127.0.0.1:5001';
 
-  async function runDelegatedLogin() {
+  async function runDelegatedLogin(authWindowRef) {
     const start = now();
     mode2Status.innerText = 'Login job starting...';
+    document.getElementById('authWindowFallback')?.replaceChildren();
     ssoMetadata.rid = BigInt(ssoMetadata.rpCredential.rid);
     ssoMetadata.rpNonceField = valueToField(ssoMetadata.rpNonce);
 
@@ -176,6 +186,7 @@ if (APP_MODE === 2) {
     const { jobId } = await startRes.json();
 
     let snapConfirmSent = false;
+    let browserNavigated = false;
     const POLL_INTERVAL_MS = 1000;
 
     await new Promise((resolve, reject) => {
@@ -215,6 +226,10 @@ if (APP_MODE === 2) {
               return;
 
             case 'awaiting_browser_login':
+              if (!browserNavigated) {
+                browserNavigated = true;
+                navigateToIdP(authWindowRef, data.requestUri);
+              }
               mode2Status.innerText = '시스템 브라우저에서 IdP 로그인을 진행해주세요.';
               return;
 
@@ -254,6 +269,31 @@ if (APP_MODE === 2) {
 
     mode2Status.innerText = '로그인 완료. 결과를 검증하는 중입니다...';
     await runRpVerifyStatement(start);
+  }
+
+  function navigateToIdP(authWindowRef, requestUri) {
+    const authorizeUrl = `${IDP_ORIGIN}/authorize?client_id=${PAIRCT_CLIENT_ID}&request_uri=${encodeURIComponent(requestUri)}`;
+    if (authWindowRef && !authWindowRef.closed) {
+      try {
+        authWindowRef.location.href = authorizeUrl;
+        return;
+      } catch (err) {
+        console.warn('[Mode 2] Failed to navigate pre-opened auth window:', err.message);
+      }
+    }
+    showManualAuthorizeLink(authorizeUrl);
+  }
+
+  function showManualAuthorizeLink(authorizeUrl) {
+    const container = document.getElementById('authWindowFallback');
+    if (!container) return;
+    container.replaceChildren();
+    const link = document.createElement('a');
+    link.href = authorizeUrl;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.textContent = '여기를 클릭해서 IdP 로그인 페이지 열기';
+    container.appendChild(link);
   }
 
   async function runRpVerifyStatement(start) {
