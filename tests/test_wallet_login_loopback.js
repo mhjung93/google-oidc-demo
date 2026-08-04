@@ -129,6 +129,11 @@ async function main() {
   }
   console.log('PASS: job reached awaiting_browser_login — /par succeeded, loopback listener is open and waiting');
 
+  if (typeof afterApproval.requestUri !== 'string' || afterApproval.requestUri.length === 0) {
+    throw new Error(`FAIL: expected non-empty string requestUri, got ${JSON.stringify(afterApproval.requestUri)}`);
+  }
+  console.log('PASS: /loginStatus exposes a non-empty requestUri once /par succeeds');
+
   await testConcurrentJobsDoNotCorruptSessionKeys(token);
 
   console.log('ALL WALLET LOOPBACK TESTS PASSED (manual browser completion not covered — see design spec)');

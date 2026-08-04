@@ -7,7 +7,6 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { webcrypto, createHash, randomBytes } from 'crypto';
 import http from 'http';
-import open from 'open';
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { keccak256, AbiCoder, Interface } from 'ethers';
 
@@ -590,6 +589,9 @@ app.get('/loginStatus', (req, res) => {
   if (job.status === 'failed') {
     return res.json({ status: 'failed', error: job.error });
   }
+  if (job.status === 'awaiting_browser_login') {
+    return res.json({ status: 'awaiting_browser_login', requestUri: job.requestUri });
+  }
   res.json({ status: job.status });
 });
 
@@ -689,17 +691,12 @@ async function startLoopbackLogin(jobId) {
   }
 
   job.status = 'awaiting_browser_login';
+  job.requestUri = parBody.request_uri;
   console.log(`[WalletAgent][loopback] job ${jobId} pushed to IdP, request_uri=${parBody.request_uri}, redirect_uri=${redirectUri}`);
-
-  const authorizeUrl = `${IDP_ORIGIN}/authorize?client_id=pairct-wallet&request_uri=${encodeURIComponent(parBody.request_uri)}`;
-  try {
-    await open(authorizeUrl);
-  } catch (err) {
-    // A headless/test environment may not have a browser to open — the URL is
-    // still valid and the loopback listener is still waiting; log and continue
-    // rather than failing the job outright.
-    console.warn(`[WalletAgent][loopback] job ${jobId}: could not auto-open browser (${err.message}); visit manually: ${authorizeUrl}`);
-  }
+  // 브라우저를 여는 건 이제 RP FE의 몫이다 — RP FE가 사용자 클릭 시점에 미리
+  // 열어둔 빈 창을 이 request_uri로 이동시킨다(팝업 차단 회피). Wallet은 IdP에
+  // ZKP 증명을 담아 /par만 보내고, 그 결과인 request_uri(그 자체로는 아무
+  // 의미 없는 참조값)만 RP FE에 넘겨준다.
 }
 
 function handleLoopbackCallback(jobId, req, res, ctx) {
