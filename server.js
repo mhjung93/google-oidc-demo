@@ -23,6 +23,7 @@ const {
   PORT = 3000,
   BASE_URL,
   CUSTOM_IDP_BASE_URL = 'http://127.0.0.1:4000',
+  WALLET_AGENT_BASE_URL = 'http://127.0.0.1:5001',
   MODE2_ETH_RPC_URL = process.env.ETH_RPC_URL || 'http://127.0.0.1:8545',
   GOOGLE_CLIENT_ID,
   GOOGLE_CLIENT_SECRET,
@@ -35,53 +36,110 @@ console.log(`[SERVER] Starting in Mode: ${currentMode}`);
 const app = express();
 
 let rpRegistration = null;
+// server.js 재시작 사이에도 rid를 유지하기 위한 영속 파일. 기동 시 읽어서 현재 IdP
+// 공개키로 서명을 재검증한 뒤에만 신뢰한다 — custom_idp.js가 그사이 재시작돼서 키가
+// 바뀌었으면 이 파일은 더 이상 유효하지 않으므로 자동으로 버리고 새로 등록한다.
+const RP_REGISTRATION_FILE = path.join(__dirname, 'rp_registration.json');
+// 동시에 들어온 여러 등록 요청이 각자 IdP에서 다른 rid를 발급받아 서로 덮어쓰는 걸
+// 막기 위한 in-flight 가드 — 실제 등록 호출은 한 번만 나가고, 동시 요청은 전부 같은
+// 결과를 기다린다.
+let registrationInFlight = null;
+// B2 추적용: PPIDWallet 주소(체인에서 바로 보이는 값) -> 그 ppid로 마지막 로그인했을
+// 때의 auid_i. ppid/auid_i 둘 다 계정 고정값(같은 ppid면 세션이 달라도 매번 같은
+// uid로 귀결됨)이라, "이 지갑으로 가장 최근에 로그인했을 때의 auid_i" 하나만 있으면
+// 그 지갑이 만든 임의의 과거 트랜잭션도 추적할 수 있다 — 그 트랜잭션 자체가 만들어진
+// 세션의 기록은 없어도 된다. 메모리 전용, 서버 재시작 시 소실됨(의도된 데모 한계).
+const walletAddressToAuidI = new Map();
 
 app.use(cors({
   origin: 'http://127.0.0.1:4000'
 }));
 
+async function loadAndVerifyPersistedRpRegistration() {
+  let persisted;
+  try {
+    persisted = JSON.parse(await fs.readFile(RP_REGISTRATION_FILE, 'utf-8'));
+  } catch (err) {
+    return null; // no persisted registration file yet, or unreadable
+  }
+  if (!persisted?.rid) return null;
+
+  if (!idpPublicKeys || !psParams.g2) {
+    await initRP_PS();
+  }
+  const isValid = await verifyRpRegSignature(persisted);
+  if (!isValid) {
+    console.warn('[Mode 2] Persisted RP registration no longer verifies against the current IdP key (likely a custom_idp.js restart) - ignoring it.');
+    return null;
+  }
+  return persisted;
+}
+
+async function performRpRegistration() {
+  const registrationRequest = {
+    rpName: 'Manual-ZK-RP-Server',
+    callbackUrl: `${BASE_URL}/api/mode2/sso_success`,
+    origin: BASE_URL
+  };
+  const response = await fetch(`${CUSTOM_IDP_BASE_URL}/register_rp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(registrationRequest)
+  });
+  const registration = await response.json();
+  console.log(`[Mode 2] Manually Registered with Custom IdP. rid: ${previewValue(registration.rid)}`);
+  console.log('[Mode 2] RP registration request:', registrationRequest);
+  console.log('[Mode 2] RP registration response:', {
+    ...registration,
+    rid: previewValue(registration.rid),
+    signature: previewValue(registration.signature)
+  });
+  if (!idpPublicKeys || !psParams.g2) {
+    console.log('[Mode 2] Retrying IdP public key load after RP registration...');
+    await initRP_PS();
+  }
+
+  // RP 등록 자체가 이 IdP에서 정말 발급된 것인지 확인 — RP_REG 도메인으로
+  // psSign(['RP_REG', rid, origin])된 값이어야 통과한다.
+  const isRpSigValid = await verifyRpRegSignature(registration);
+  if (!isRpSigValid) {
+    console.error('[Mode 2] RP registration signature verification FAILED. Rejecting registration.');
+    const err = new Error('RP registration signature verification failed');
+    err.status = 502;
+    throw err;
+  }
+  console.log('[Mode 2] RP registration signature verified.');
+
+  await fs.writeFile(RP_REGISTRATION_FILE, JSON.stringify(registration, null, 2));
+  rpRegistration = registration;
+  return registration;
+}
+
 // Mode 2: Manual RP Registration Endpoint
 app.post('/api/mode2/register', async (req, res) => {
   if (currentMode !== 2) return res.status(400).json({ error: 'Not in Mode 2' });
-  
+
+  // 이 엔드포인트엔 인증이 없다(client.js/index.html 어디서도 호출 안 하는 운영자
+  // 수동 설정용). 멱등하게 만들지 않으면, 아무나 반복 호출해서 IdP로부터 매번 새
+  // rid를 발급받아 rpRegistration을 계속 교체할 수 있다 — PPID = H(uid, rid, salt)라서
+  // rid가 바뀌면 기존 사용자 전원의 계정 연속성이 깨지고, 반복 호출 자체가 DoS가
+  // 된다. rpRegistration은 rp_registration.json에 영속화되므로 server.js 재시작
+  // 후에도(그리고 재검증만 통과하면) 그대로 유지된다.
+  if (rpRegistration?.rid) {
+    return res.json(rpRegistration);
+  }
+
+  if (!registrationInFlight) {
+    registrationInFlight = performRpRegistration().finally(() => {
+      registrationInFlight = null;
+    });
+  }
+
   try {
-    const registrationRequest = {
-      rpName: 'Manual-ZK-RP-Server',
-      callbackUrl: `${BASE_URL}/api/mode2/sso_success`,
-      origin: BASE_URL
-    };
-    const response = await fetch(`${CUSTOM_IDP_BASE_URL}/register_rp`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(registrationRequest)
-    });
-    rpRegistration = await response.json();
-    console.log(`[Mode 2] Manually Registered with Custom IdP. rid: ${previewValue(rpRegistration.rid)}`);
-    console.log('[Mode 2] RP registration request:', registrationRequest);
-    console.log('[Mode 2] RP registration response:', {
-      ...rpRegistration,
-      rid: previewValue(rpRegistration.rid),
-      signature: previewValue(rpRegistration.signature)
-    });
-    if (!idpPublicKeys || !psParams.g2) {
-      console.log('[Mode 2] Retrying IdP public key load after RP registration...');
-      await initRP_PS();
-    }
-
-    // RP 등록 자체가 이 IdP에서 정말 발급된 것인지 확인 — RP_REG 도메인으로
-    // psSign(['RP_REG', rid, origin])된 값이어야 통과한다.
-    const isRpSigValid = verifyPS_Hybrid(rpRegistration.signature, ['RP_REG', String(rpRegistration.rid), String(rpRegistration.origin)], idpPublicKeys);
-    if (!isRpSigValid) {
-      console.error('[Mode 2] RP registration signature verification FAILED. Rejecting registration.');
-      rpRegistration = null;
-      return res.status(502).json({ error: 'RP registration signature verification failed' });
-    }
-    console.log('[Mode 2] RP registration signature verified.');
-
-    res.json(rpRegistration);
+    res.json(await registrationInFlight);
   } catch (err) {
     console.error('[Mode 2] Manual registration failed:', err.message);
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message });
   }
 });
 
@@ -89,16 +147,33 @@ app.post('/api/mode2/register', async (req, res) => {
 // 호출자에게 직접 토큰을 내주지 않는다. RP 서버가 같은 파일시스템에서 토큰을 읽어
 // 자기 origin(브라우저가 이미 신뢰하는)으로만 전달해서, 다른 origin/프로세스가
 // wallet_agent.js를 호출해 salt를 추출하지 못하게 한다.
+function getWalletAgentToken() {
+  const state = JSON.parse(fs_sync.readFileSync(path.join(__dirname, 'wallet_state.json'), 'utf8'));
+  if (!state.agentToken) throw new Error('agentToken missing');
+  return state.agentToken;
+}
+
 app.get('/api/mode2/wallet_agent_token', (req, res) => {
   if (currentMode !== 2) return res.status(400).json({ error: 'Not in Mode 2' });
   try {
-    const state = JSON.parse(fs_sync.readFileSync(path.join(__dirname, 'wallet_state.json'), 'utf8'));
-    if (!state.agentToken) throw new Error('agentToken missing');
-    res.json({ token: state.agentToken });
+    res.json({ token: getWalletAgentToken() });
   } catch (err) {
     res.status(503).json({ error: 'wallet_agent.js has not initialized its token yet. Start wallet_agent.js first.' });
   }
 });
+
+// B2 추적용: 로그인 검증 성공 시 받은 ppid로 wallet_agent.js에 PPIDWallet 주소를
+// 물어본다. server.js는 factory ABI/RPC를 직접 다루지 않고 wallet_agent.js에 위임한다.
+async function computeWalletAddress(ppid) {
+  const res = await fetch(`${WALLET_AGENT_BASE_URL}/computeWalletAddress`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Wallet-Agent-Token': getWalletAgentToken() },
+    body: JSON.stringify({ ppid }),
+  });
+  const result = await res.json();
+  if (!res.ok) throw new Error(result.error || 'computeWalletAddress failed');
+  return result.walletAddress;
+}
 
 // ─────────────────────────────────────────────────────────────
 // 간단한 타이밍 유틸
@@ -144,17 +219,22 @@ function assertDecimalString(value, name) {
   return value;
 }
 
-async function getCurrentHeightForToken(maxHeight) {
-  // Browser wallets usually produce block-height max_height. If the wallet fell
-  // back to unix time, the signed max_height is much larger than realistic block
-  // heights and can be checked against server time.
-  if (maxHeight >= 1000000000n) {
-    return {
-      value: BigInt(Math.floor(Date.now() / 1000)),
-      source: 'unix-time',
-    };
+// valueToField()/Poseidon reduce everything mod FIELD_PRIME, so a signed field like
+// max_height = h + FIELD_PRIME still reconstructs to h and passes signature
+// verification, while any raw (non-reduced) BigInt comparison done on the submitted
+// value directly - like the max_height expiry check below - sees the huge
+// unreduced number instead. Every signed decimal field must be rejected outright if
+// it isn't already in canonical range, so no comparison downstream ever operates on
+// a non-canonical representation of a signed value.
+function assertCanonicalField(value, name) {
+  assertDecimalString(value, name);
+  if (BigInt(value) >= FIELD_PRIME) {
+    throw new Error(`${name} must be less than the field prime (non-canonical encoding)`);
   }
+  return value;
+}
 
+async function getCurrentHeightForToken() {
   const response = await fetch(MODE2_ETH_RPC_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -203,6 +283,48 @@ async function getRpcChainId() {
   }
 
   return BigInt(data.result).toString();
+}
+
+// wallet_agent.js의 rpcCall과 같은 패턴이지만, eth_accounts(배열)/eth_getTransactionReceipt(객체 또는
+// null)처럼 문자열이 아닌 결과도 다뤄야 해서 결과 타입을 강제하지 않는다.
+async function rpcCall(method, params = []) {
+  const response = await fetch(MODE2_ETH_RPC_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`${method} RPC failed with status ${response.status}`);
+  }
+
+  const data = await response.json();
+  if (data.error) {
+    throw new Error(data.error.message || `${method} RPC returned an error`);
+  }
+  return data.result;
+}
+
+async function waitForReceipt(txHash) {
+  const maxAttempts = 30; // 1초 간격 폴링 * 30 = 최대 30초 대기 후 포기
+  let receipt = null;
+  for (let attempt = 0; attempt < maxAttempts && !receipt; attempt++) {
+    receipt = await rpcCall('eth_getTransactionReceipt', [txHash]);
+    if (!receipt) await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  if (!receipt) {
+    throw new Error(`Timed out waiting for receipt of ${txHash} after ${maxAttempts}s`);
+  }
+  return receipt;
+}
+
+// deploy/execute 공통: 실제 전송 전에 eth_call로 dry-run해서 revert할 payload에 실제 gas를
+// 쓰지 않도록 막은 뒤, 통과하면 로컬 Hardhat의 기본 unlock 계정으로 전송하고 영수증을 기다린다.
+async function relaySingleCall(from, { to, data }) {
+  await rpcCall('eth_call', [{ from, to, data }, 'latest']);
+  const txHash = await rpcCall('eth_sendTransaction', [{ from, to, data }]);
+  await waitForReceipt(txHash);
+  return txHash;
 }
 
 app.use(session({
@@ -463,62 +585,51 @@ async function initRP_PS() {
   }
 }
 
-function hashToFr(str) {
-  const fr = new mcl.Fr();
-  fr.setHashOf(str);
-  return fr;
-}
-
-function verifyPS_Hybrid(sigma_prime, messages, idpPK) {
+// RP_REG credential이 EdDSA-Poseidon으로 전환됨(예전엔 PS) — pi_arid_i 회로가
+// 같은 서명을 내부에서 검증하려면 페어링 대신 회로 친화적인 EdDSA-Poseidon이어야
+// 하기 때문. rawIdpPublicKeys는 이미 initRP_PS()가 로드해 둔 것을 그대로 쓴다.
+async function verifyRpRegSignature(registration) {
+  await ensureEdDSA();
+  const pkIdPRaw = rawIdpPublicKeys?.pk_IdP;
+  if (!pkIdPRaw || pkIdPRaw.length !== 2) return false;
   try {
-    if (!idpPK || !psParams.g2) return false;
-
-    const s1 = new mcl.G1();
-    const s2 = new mcl.G1();
-
-    // 1. 서명 데이터 로드
-    s1.setStr(sigma_prime.sigma1, 16);
-    s2.setStr(sigma_prime.sigma2, 16);
-
-    // 2. PK_total = X * prod(Yi^mi) — custom_idp.js psSign()이
-    // 서명한 순서와 동일해야 한다.
-    let PK_total = new mcl.G2();
-    PK_total = mcl.add(idpPK.X, PK_total);
-    for (let i = 0; i < messages.length; i++) {
-      const mi = hashToFr(messages[i]);
-      PK_total = mcl.add(PK_total, mcl.mul(idpPK.Y[i], mi));
-    }
-
-    // 3. e(s1, PK_total) == e(s2, g2)
-    const lhs = mcl.pairing(s1, PK_total);
-    const rhs = mcl.pairing(s2, psParams.g2);
-    const isValid = lhs.isEqual(rhs);
-
-    console.log('[Mode 2] PS Signature Verification:', isValid);
+    const DOMAIN_RP_REG = valueToField('RP_REG');
+    const msg = poseidon([DOMAIN_RP_REG, valueToField(registration.rid), valueToField(registration.origin)]);
+    const pkIdP = [eddsa.F.e(BigInt(pkIdPRaw[0])), eddsa.F.e(BigInt(pkIdPRaw[1]))];
+    const sig = registration.signature ?? {};
+    if (!Array.isArray(sig.R8) || sig.R8.length !== 2 || !sig.S) return false;
+    const sigForVerify = {
+      R8: [eddsa.F.e(BigInt(sig.R8[0])), eddsa.F.e(BigInt(sig.R8[1]))],
+      S: BigInt(sig.S),
+    };
+    const isValid = eddsa.verifyPoseidon(msg, sigForVerify, pkIdP);
+    console.log('[Mode 2] RP_REG EdDSA-Poseidon Signature Verification:', isValid);
     return isValid;
-
   } catch (err) {
-    console.error('[Mode 2] PS Signature Verification Error:', err.message);
+    console.error('[Mode 2] RP_REG Signature Verification Error:', err.message);
     return false;
   }
 }
 
 // Mode 2: SSO Success Callback (Hybrid Version)
 app.post('/api/mode2/sso_success', async (req, res) => {
-  const { idpToken } = req.body;
-  
+  const { idpToken, ppid } = req.body;
+
   if (!idpToken) {
     return res.status(400).json({ success: false, error: 'Missing IdP token for RP verification' });
+  }
+  if (!ppid) {
+    return res.status(400).json({ success: false, error: 'Missing ppid for RP verification' });
   }
 
   console.log('--- [RP Backend] Verifying IdP Token + RP Audience ---');
 
   try {
-    assertDecimalString(idpToken.arid_i, 'idpToken.arid_i');
-    assertDecimalString(idpToken.auid_i, 'idpToken.auid_i');
-    assertDecimalString(idpToken.r_token, 'idpToken.r_token');
-    assertDecimalString(idpToken.max_height, 'idpToken.max_height');
-    assertDecimalString(idpToken.chain_id, 'idpToken.chain_id');
+    assertCanonicalField(idpToken.arid_i, 'idpToken.arid_i');
+    assertCanonicalField(idpToken.auid_i, 'idpToken.auid_i');
+    assertCanonicalField(idpToken.r_token, 'idpToken.r_token');
+    assertCanonicalField(idpToken.max_height, 'idpToken.max_height');
+    assertCanonicalField(idpToken.chain_id, 'idpToken.chain_id');
     if (!Array.isArray(idpToken.signature_prime?.R8) || idpToken.signature_prime.R8.length !== 2 || !idpToken.signature_prime?.S) {
       throw new Error('idpToken.signature_prime is missing or malformed');
     }
@@ -551,22 +662,20 @@ app.post('/api/mode2/sso_success', async (req, res) => {
 
   try {
     const maxHeight = BigInt(idpToken.max_height);
-    const currentHeight = await getCurrentHeightForToken(maxHeight);
-    if (currentHeight.source !== 'unix-time') {
-      const rpcChainId = await getRpcChainId();
-      if (String(idpToken.chain_id) !== rpcChainId) {
-        console.error('[RP Backend] chain_id check FAILED:', {
-          token_chain_id: idpToken.chain_id,
-          rpc_chain_id: rpcChainId,
-          source: currentHeight.source,
-        });
-        return res.status(401).json({ success: false, error: 'IdP token chain_id does not match RP verification chain' });
-      }
-      console.log('[RP Backend] chain_id check PASSED:', {
-        chain_id: rpcChainId,
+    const currentHeight = await getCurrentHeightForToken();
+    const rpcChainId = await getRpcChainId();
+    if (String(idpToken.chain_id) !== rpcChainId) {
+      console.error('[RP Backend] chain_id check FAILED:', {
+        token_chain_id: idpToken.chain_id,
+        rpc_chain_id: rpcChainId,
         source: currentHeight.source,
       });
+      return res.status(401).json({ success: false, error: 'IdP token chain_id does not match RP verification chain' });
     }
+    console.log('[RP Backend] chain_id check PASSED:', {
+      chain_id: rpcChainId,
+      source: currentHeight.source,
+    });
     if (currentHeight.value > maxHeight) {
       console.error('[RP Backend] max_height check FAILED:', {
         current: currentHeight.value.toString(),
@@ -619,11 +728,164 @@ app.post('/api/mode2/sso_success', async (req, res) => {
     return res.status(401).json({ success: false, error: 'Invalid EdDSA-Poseidon Signature' });
   }
 
+  // B2 추적용: 이 ppid의 PPIDWallet 주소를 알아내서 방금 검증된 auid_i를 최신값으로
+  // 기록해 둔다. ppid/auid_i 둘 다 계정 고정값이라 최신 한 건만 있으면 되고, 이
+  // 지갑이 과거에 만든 다른 트랜잭션도 이 기록으로 추적 가능하다.
+  try {
+    const walletAddress = await computeWalletAddress(ppid);
+    walletAddressToAuidI.set(walletAddress.toLowerCase(), idpToken.auid_i);
+  } catch (err) {
+    console.error(`[RP Backend] Failed to record ppid->auid_i for B2 trace: ${err.message}`);
+  }
+
   // Single-use: spend the rp_nonce only after the full RP-side verification
   // succeeds, so malformed proof/signature attempts do not burn the session.
   delete req.session.rpNonce;
 
   console.log('[Mode 2] Verification SUCCESS. Session established.');
+  res.json({ success: true });
+});
+
+// Mode 2: 새 PairCT signed login statement(9-field, loopback+OIDC 흐름) 검증.
+// 기존 /api/mode2/sso_success(옛 6-field idpToken)는 그대로 두고 병행 추가한다.
+app.post('/api/mode2/verify_statement', async (req, res) => {
+  const { statement, ppid } = req.body;
+
+  if (!statement) {
+    return res.status(400).json({ success: false, error: 'Missing statement for RP verification' });
+  }
+  if (!ppid) {
+    return res.status(400).json({ success: false, error: 'Missing ppid for RP verification' });
+  }
+
+  console.log('--- [RP Backend] Verifying PairCT login statement + RP Audience ---');
+
+  try {
+    assertCanonicalField(statement.arid_i, 'statement.arid_i');
+    assertCanonicalField(statement.auid_i, 'statement.auid_i');
+    assertCanonicalField(statement.r_token, 'statement.r_token');
+    assertCanonicalField(statement.max_height, 'statement.max_height');
+    assertCanonicalField(statement.chain_id, 'statement.chain_id');
+    if (!Array.isArray(statement.signature?.R8) || statement.signature.R8.length !== 2 || !statement.signature?.S) {
+      throw new Error('statement.signature is missing or malformed');
+    }
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+
+  if (statement.iss !== 'custom-idp') {
+    return res.status(400).json({ success: false, error: 'Unexpected statement.iss' });
+  }
+  if (statement.aud !== 'pairct-wallet') {
+    return res.status(400).json({ success: false, error: 'Unexpected statement.aud' });
+  }
+
+  // 0. RP 본인의 rid와 rp_nonce로 arid_i를 직접 재계산해서 검증 (Audience Check).
+  // IdP는 rid를 모르므로 이 확인은 전적으로 RP 자신의 책임이다.
+  if (!rpRegistration || !rpRegistration.rid) {
+    return res.status(500).json({ success: false, error: 'RP is not properly registered yet' });
+  }
+  const sessionRpNonce = req.session.rpNonce;
+  if (!sessionRpNonce) {
+    return res.status(400).json({ success: false, error: 'No rp_nonce has been issued for this session yet' });
+  }
+
+  await ensureEdDSA();
+  if (!idpPublicKeys || !psParams.g2) {
+    console.log('[Mode 2] IdP public keys not loaded yet. Retrying before statement verification...');
+    await initRP_PS();
+  }
+
+  const expectedAridI = (valueToField(rpRegistration.rid) * valueToField(sessionRpNonce)) % FIELD_PRIME;
+  if (String(statement.arid_i) !== String(expectedAridI)) {
+    console.error(`❌ [RP Backend] Audience Check FAILED! statement.arid_i does not match this RP's rid * rp_nonce.`);
+    return res.status(403).json({ success: false, error: 'Security Alert: Wrong RP Identity (arid_i mismatch). Potential cross-service replay attack.' });
+  }
+
+  console.log('✅ [RP Backend] Audience Check PASSED (statement.arid_i matches this RP\'s rid * rp_nonce).');
+
+  try {
+    const maxHeight = BigInt(statement.max_height);
+    const currentHeight = await getCurrentHeightForToken();
+    const rpcChainId = await getRpcChainId();
+    if (String(statement.chain_id) !== rpcChainId) {
+      console.error('[RP Backend] chain_id check FAILED:', {
+        statement_chain_id: statement.chain_id,
+        rpc_chain_id: rpcChainId,
+        source: currentHeight.source,
+      });
+      return res.status(401).json({ success: false, error: 'Statement chain_id does not match RP verification chain' });
+    }
+    console.log('[RP Backend] chain_id check PASSED:', {
+      chain_id: rpcChainId,
+      source: currentHeight.source,
+    });
+    if (currentHeight.value > maxHeight) {
+      console.error('[RP Backend] max_height check FAILED:', {
+        current: currentHeight.value.toString(),
+        max_height: maxHeight.toString(),
+        source: currentHeight.source,
+      });
+      return res.status(401).json({ success: false, error: 'Statement expired by max_height' });
+    }
+    console.log('[RP Backend] max_height check PASSED:', {
+      current: currentHeight.value.toString(),
+      max_height: maxHeight.toString(),
+      source: currentHeight.source,
+    });
+  } catch (err) {
+    console.error('[RP Backend] max_height verification error:', err.message);
+    return res.status(503).json({ success: false, error: `Unable to verify max_height: ${err.message}` });
+  }
+
+  // EdDSA-Poseidon 검증 — custom_idp.js의 /token이 서명한 것과 동일하게 9개 필드를
+  // Poseidon으로 묶어서 msg를 재계산한 뒤, IdP의 pk_IdP로 검증한다. 옛 idpToken의
+  // DOMAIN_IDP_TOKEN(6-field)과는 다른 도메인 분리자라 절대 서로 바꿔 쓸 수 없다.
+  const DOMAIN_PAIRCT_STATEMENT = valueToField('PAIRCT_STATEMENT');
+  const msgFields = [
+    DOMAIN_PAIRCT_STATEMENT,
+    valueToField('custom-idp'),
+    valueToField('pairct-wallet'),
+    valueToField(statement.nonce),
+    valueToField(statement.arid_i),
+    valueToField(statement.auid_i),
+    valueToField(statement.r_token),
+    valueToField(statement.max_height),
+    valueToField(statement.chain_id),
+  ];
+  const msg = poseidon(msgFields);
+
+  const pkIdPRaw = rawIdpPublicKeys?.pk_IdP;
+  if (!pkIdPRaw || pkIdPRaw.length !== 2) {
+    return res.status(503).json({ success: false, error: 'IdP EdDSA public key not loaded yet' });
+  }
+  let isSigValid;
+  try {
+    const pkIdP = [eddsa.F.e(BigInt(pkIdPRaw[0])), eddsa.F.e(BigInt(pkIdPRaw[1]))];
+    const sigForVerify = {
+      R8: [eddsa.F.e(BigInt(statement.signature.R8[0])), eddsa.F.e(BigInt(statement.signature.R8[1]))],
+      S: BigInt(statement.signature.S),
+    };
+    isSigValid = eddsa.verifyPoseidon(msg, sigForVerify, pkIdP);
+  } catch (err) {
+    return res.status(400).json({ success: false, error: 'Malformed EdDSA-Poseidon signature data' });
+  }
+
+  if (!isSigValid) {
+    return res.status(401).json({ success: false, error: 'Invalid EdDSA-Poseidon Signature' });
+  }
+
+  // B2 추적용: 기존 sso_success와 동일한 방식으로 ppid -> auid_i를 기록한다.
+  try {
+    const walletAddress = await computeWalletAddress(ppid);
+    walletAddressToAuidI.set(walletAddress.toLowerCase(), statement.auid_i);
+  } catch (err) {
+    console.error(`[RP Backend] Failed to record ppid->auid_i for B2 trace: ${err.message}`);
+  }
+
+  delete req.session.rpNonce;
+
+  console.log('[Mode 2] Statement verification SUCCESS. Session established.');
   res.json({ success: true });
 });
 
@@ -702,9 +964,75 @@ app.use((err, req, res, next) => {
   res.status(500).send(`<pre>${err.message}</pre>`);
 });
 
+// Mode 2: B2 추적 엔드포인트 — 분쟁 중인 온체인 트랜잭션의 지갑 주소(to)로
+// walletAddressToAuidI에서 최신 auid_i를 찾고, custom_idp.js에 위임해서 uid를 밝힌다.
+// ppid/auid_i가 계정 고정값이라, 그 트랜잭션 자체의 세션 기록이 없어도(같은 지갑으로
+// 서버 재시작 이후 한 번이라도 로그인만 했다면) 추적할 수 있다.
+app.post('/api/mode2/trace_transaction', async (req, res) => {
+  const traceStart = now();
+  const { to } = req.body ?? {};
+  if (!to) return res.status(400).json({ error: 'to (wallet address) is required' });
+
+  const auidILookupStart = now();
+  const auid_i = walletAddressToAuidI.get(String(to).toLowerCase());
+  const auidILookupMs = now() - auidILookupStart;
+
+  if (!auid_i) {
+    return res.status(404).json({ error: 'No recorded auid_i for this wallet address (this ppid has not logged in since the RP server last restarted)' });
+  }
+
+  try {
+    const idpLookupStart = now();
+    const idpResponse = await fetch(`${CUSTOM_IDP_BASE_URL}/idp/lookup_uid_by_auid_i`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ auid_i }),
+    });
+    const idpResult = await idpResponse.json();
+    const idpLookupMs = now() - idpLookupStart;
+    if (!idpResponse.ok) {
+      return res.status(idpResponse.status).json(idpResult);
+    }
+    const totalMs = now() - traceStart;
+    const timings = { auidILookupMs, idpLookupMs, totalMs };
+    console.log('[Mode 2][trace_transaction] timings:', timings);
+    res.json({ uid: idpResult.uid, username: idpResult.username, timings });
+  } catch (err) {
+    res.status(502).json({ error: `Failed to reach IdP for uid lookup: ${err.message}` });
+  }
+});
+
+app.post('/api/mode2/relay_transaction', async (req, res) => {
+  const { deploy, to, data } = req.body ?? {};
+  if (!to) return res.status(400).json({ error: 'to is required' });
+  if (!data) return res.status(400).json({ error: 'data is required' });
+  if (deploy && (!deploy.to || !deploy.data)) {
+    return res.status(400).json({ error: 'deploy.to and deploy.data are required when deploy is present' });
+  }
+
+  try {
+    const accounts = await rpcCall('eth_accounts', []);
+    const from = accounts?.[0];
+    if (!from) throw new Error('No unlocked account available from RPC node');
+
+    if (deploy) {
+      await relaySingleCall(from, deploy);
+    }
+    const txHash = await relaySingleCall(from, { to, data });
+
+    res.json({ txHash });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 const server = app.listen(PORT, async () => {
   if (currentMode === 2) {
     await initRP_PS();
+    rpRegistration = await loadAndVerifyPersistedRpRegistration();
+    if (rpRegistration) {
+      console.log(`[Mode 2] Loaded persisted RP registration. rid: ${previewValue(rpRegistration.rid)}`);
+    }
   }
   console.log(`OIDC demo running at ${BASE_URL}`);
 });

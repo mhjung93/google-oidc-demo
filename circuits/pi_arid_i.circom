@@ -15,12 +15,15 @@ template PiAridI() {
     signal input auid_i;
     signal input max_height;
     signal input token_nonce;
+    signal input auid;
 
-    // PPID = uid * rid * salt (degree-3, split into two quadratic constraints)
-    signal uid_rid;
-    uid_rid <== uid * rid;
+    // ppid = Poseidon(uid, rid, salt)
+    component ppidHasher = Poseidon(3);
+    ppidHasher.inputs[0] <== uid;
+    ppidHasher.inputs[1] <== rid;
+    ppidHasher.inputs[2] <== salt;
     signal ppid;
-    ppid <== uid_rid * salt;
+    ppid <== ppidHasher.out;
 
     // rid stays a pure private witness. The IdP no longer checks anything
     // about it — the RP backend independently verifies arid_i === rid *
@@ -31,15 +34,25 @@ template PiAridI() {
     // arid_i = rid * rp_nonce
     arid_i === rid * rp_nonce;
 
-    // auid_i = PPID * rp_nonce
+    // auid_i = ppid * rp_nonce
     auid_i === ppid * rp_nonce;
 
     // token_nonce = Poseidon(pk_i, max_height, rp_nonce)
-    component hasher = Poseidon(3);
-    hasher.inputs[0] <== pk_i;
-    hasher.inputs[1] <== max_height;
-    hasher.inputs[2] <== rp_nonce;
-    token_nonce === hasher.out;
+    component tokenNonceHasher = Poseidon(3);
+    tokenNonceHasher.inputs[0] <== pk_i;
+    tokenNonceHasher.inputs[1] <== max_height;
+    tokenNonceHasher.inputs[2] <== rp_nonce;
+    token_nonce === tokenNonceHasher.out;
+
+    // auid = Poseidon(uid, salt) — a per-account fixed value (no rid, no
+    // session nonce) that lets the IdP detect whether this wallet is reusing
+    // the same salt across logins. Enforced with === (not <==) so a prover
+    // cannot submit an auid that doesn't match the uid/salt actually used
+    // elsewhere in this same proof.
+    component bindHasher = Poseidon(2);
+    bindHasher.inputs[0] <== uid;
+    bindHasher.inputs[1] <== salt;
+    auid === bindHasher.out;
 }
 
-component main {public [uid, arid_i, auid_i, max_height, token_nonce]} = PiAridI();
+component main {public [uid, arid_i, auid_i, max_height, token_nonce, auid]} = PiAridI();
