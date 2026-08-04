@@ -81,6 +81,7 @@ if (APP_MODE === 2) {
       mode2Status.innerText = `Step 7 Complete ${formatMs(start)}. Values passed to wallet context.`;
       await runDelegatedLogin(authWindowRef);
     } catch (err) {
+      authWindowRef?.close();
       mode2SSOLoginButton.disabled = false;
       mode2Status.innerText = `Delegated Login Error: ${err.message}`;
     }
