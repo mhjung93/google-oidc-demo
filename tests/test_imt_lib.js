@@ -36,7 +36,48 @@ async function main() {
   await calc.calculateWitness({ ...w1, target: s.toString() }, true);
   console.log('OK: library witness verifies against the circuit');
 
+  // 회귀 테스트 1 (Critical 1): 아무것도 넣지 않은 새 트리도 회로를 통과하는
+  // witness를 내야 한다. anchor(0) 리프가 없던 예전 구현은 build()가 리터럴
+  // 0을 리프로 취급했지만, getNonMembershipWitness()는 별도 분기에서
+  // lowValue/lowNextValue를 '0'/'0'으로 반환해 Poseidon(0,0) != 0 이 되어
+  // 회로의 root === cur[depth] 단언에서 실패했다.
+  {
+    const freshTree = await createIMT(20);
+    const freshWitness = await freshTree.getNonMembershipWitness(999n);
+    await calc.calculateWitness({ ...freshWitness, target: '999' }, true);
+    console.log('OK: empty tree witness round-trips through the circuit');
+  }
+
+  // 회귀 테스트 2 (Critical 2): 이미 값이 들어간 트리에서, 저장된 모든 값보다
+  // 작은 target을 요청해도 witness를 낼 수 있어야 한다. anchor(0)가 항상
+  // lowValue 후보로 남아 있으므로 lowIdx === -1 로 빠지지 않는다.
+  {
+    const belowMinTree = await createIMT(20);
+    await belowMinTree.insert(500n);
+    await belowMinTree.insert(1000n);
+    const belowMinWitness = await belowMinTree.getNonMembershipWitness(100n);
+    assert.equal(belowMinWitness.lowValue, '0', 'the anchor leaf must serve as the low bound');
+    await calc.calculateWitness({ ...belowMinWitness, target: '100' }, true);
+    console.log('OK: below-minimum target witness round-trips through the circuit');
+  }
+
+  // 회귀 테스트 3 (Important 3): 마스킹되지 않은 원시 Poseidon 다이제스트
+  // (>= 2^252)는 회로의 Num2Bits(252) range-check를 깨므로 insert() 단계에서
+  // 거부되어야 한다.
+  {
+    const unmaskedTree = await createIMT(20);
+    await assert.rejects(
+      () => unmaskedTree.insert(1n << 252n),
+      />= 2\^252/,
+      'insert() must reject values >= 2^252',
+    );
+    console.log('OK: insert() rejects an unmasked value >= 2^252');
+  }
+
   console.log('PASS: IMT library inserts, changes root, and produces non-membership witnesses.');
 }
 
-main();
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
