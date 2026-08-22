@@ -68,10 +68,41 @@ async function main() {
     const unmaskedTree = await createIMT(20);
     await assert.rejects(
       () => unmaskedTree.insert(1n << 252n),
-      />= 2\^252/,
+      /outside/,
       'insert() must reject values >= 2^252',
     );
     console.log('OK: insert() rejects an unmasked value >= 2^252');
+  }
+
+  // 회귀 테스트 4 (Critical 4): 음수는 insert() 단계에서 거부되어야 한다.
+  // 음수를 허용하면 트리의 anchor(0)을 대체해서 회로 증명이 불가능해진다.
+  {
+    const negativeTree = await createIMT(20);
+    await assert.rejects(
+      () => negativeTree.insert(-5n),
+      /outside/,
+      'insert() must reject negative values',
+    );
+    console.log('OK: insert() rejects negative values');
+  }
+
+  // 회귀 테스트 5 (Critical 5): 원시 Poseidon 다이제스트(비트 252 이상 설정)를
+  // getNonMembershipWitness()에 넘기면 회로와 같은 마스킹을 거쳐서
+  // witness가 회로를 통과해야 한다.
+  {
+    const rawTargetTree = await createIMT(20);
+    const masked1 = 500n;
+    const masked2 = 1000n;
+    await rawTargetTree.insert(masked1);
+    await rawTargetTree.insert(masked2);
+
+    // 두 값 사이에 있고 비트 252 이상이 설정된 target
+    const unmaskedTarget = 600n + (1n << 252n);
+    const witness = await rawTargetTree.getNonMembershipWitness(unmaskedTarget);
+
+    // 회로에 원시(마스킹되지 않은) 값을 넘기면 회로가 내부에서 마스킹해서 처리
+    await calc.calculateWitness({ ...witness, target: unmaskedTarget.toString() }, true);
+    console.log('OK: raw unmasked target round-trips through the circuit');
   }
 
   console.log('PASS: IMT library inserts, changes root, and produces non-membership witnesses.');
