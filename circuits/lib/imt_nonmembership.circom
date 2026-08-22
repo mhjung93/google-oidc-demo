@@ -3,6 +3,7 @@ pragma circom 2.0.0;
 include "poseidon.circom";
 include "comparators.circom";
 include "mux1.circom";
+include "bitify.circom";
 
 // Indexed Merkle Tree 비멤버십 증명.
 //
@@ -48,18 +49,43 @@ template IMTNonMembership(depth) {
     }
     root === cur[depth];
 
-    // 3) lowValue < target
+    // 3) 비교 전에 모든 피연산자를 252비트로 제한한다.
+    //
+    // circomlib의 LessThan(n)은 입력이 [0, 2^n) 범위라고 "가정"할 뿐 강제하지
+    // 않는다. 우리 값은 Poseidon 출력이라 필드 전역에 균등 분포하고 약 67%가
+    // 2^252를 넘으므로, 이 가정을 지키지 않으면 필드 wrap-around로 비교 결과가
+    // 뒤집힌다(예: lowValue = p-1, target = 5 이면 회로가 lowValue < target 을
+    // 참으로 판정한다). 그러면 폐기된 값도 비멤버십 증명을 통과시킬 수 있다.
+    //
+    // target은 호출자가 Poseidon 출력을 그대로 넘기므로 여기서 하위 252비트만
+    // 취해 정규화하고, 트리에서 온 lowValue/lowNextValue는 이미 정규화된
+    // 값이어야 하므로 범위만 검사한다. lib/imt.js도 같은 마스킹을 적용한다.
+    component targetBits = Num2Bits_strict();
+    targetBits.in <== target;
+    signal targetMasked;
+    var acc = 0;
+    for (var i = 0; i < 252; i++) {
+        acc += targetBits.out[i] * (1 << i);
+    }
+    targetMasked <== acc;
+
+    component lowRange = Num2Bits(252);
+    lowRange.in <== lowValue;
+    component nextRange = Num2Bits(252);
+    nextRange.in <== lowNextValue;
+
+    // 4) lowValue < targetMasked
     component ltLow = LessThan(252);
     ltLow.in[0] <== lowValue;
-    ltLow.in[1] <== target;
+    ltLow.in[1] <== targetMasked;
     ltLow.out === 1;
 
-    // 4) target < lowNextValue, 단 lowNextValue == 0 이면 통과
+    // 5) targetMasked < lowNextValue, 단 lowNextValue == 0 이면 통과
     component isLast = IsZero();
     isLast.in <== lowNextValue;
 
     component ltHigh = LessThan(252);
-    ltHigh.in[0] <== target;
+    ltHigh.in[0] <== targetMasked;
     ltHigh.in[1] <== lowNextValue;
 
     // isLast == 1 이면 1, 아니면 ltHigh.out 이어야 한다

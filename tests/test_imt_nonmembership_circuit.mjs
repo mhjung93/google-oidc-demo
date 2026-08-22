@@ -57,6 +57,14 @@ async function main() {
   if (!rejected) { console.error('FAIL: out-of-range target was accepted'); process.exit(1); }
   console.log('OK: out-of-range target rejected');
 
+  // 3b) target == lowNextValue (20) -> 상한 비교는 strict(<) 이므로 거부돼야 함
+  rejected = false;
+  try {
+    await calc.calculateWitness({ ...base, target: '20' }, true);
+  } catch { rejected = true; }
+  if (!rejected) { console.error('FAIL: target == lowNextValue was accepted'); process.exit(1); }
+  console.log('OK: target == lowNextValue rejected');
+
   // 4) lowNextValue == 0 (가장 큰 리프) 이면 상한 검사를 건너뛴다
   const sentinelLeaf = H(100n, 0n);
   let sc = sentinelLeaf;
@@ -70,6 +78,36 @@ async function main() {
     root: sc.toString(),
   }, true);
   console.log('OK: sentinel leaf allows arbitrarily large target');
+
+  // 5) 필드 wrap-around 반례가 이제 거부되는지 확인한다.
+  //
+  // 수정 전에는 lowValue = p-1, target = 5 일 때
+  // (lowValue + 2^252 - target) mod p == 2^252 - 6 의 bit 252가 0이라
+  // LessThan(252)이 "lowValue < target"을 참으로 오판했다(실제로는
+  // p-1 > 5). Num2Bits(252) 범위 검사를 lowValue/lowNextValue에 추가한
+  // 뒤에는 p-1처럼 252비트를 넘는 값이 witness 계산 단계에서부터 거부돼야
+  // 한다.
+  const P = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+  const wrapLowValue = P - 1n; // 2^252보다 훨씬 큼
+  const wrapLeaf = H(wrapLowValue, 0n); // lowNextValue = 0 (sentinel) 로 상한 검사는 우회
+  let wc2 = wrapLeaf;
+  for (let i = 0; i < DEPTH; i++) wc2 = H(wc2, 0n);
+  rejected = false;
+  try {
+    await calc.calculateWitness({
+      target: '5',
+      lowValue: wrapLowValue.toString(),
+      lowNextValue: '0',
+      pathElements: pathElements.map(String),
+      pathIndices: pathIndices.map(String),
+      root: wc2.toString(),
+    }, true);
+  } catch { rejected = true; }
+  if (!rejected) {
+    console.error('FAIL: wrap-around counterexample (lowValue = p-1, target = 5) was accepted');
+    process.exit(1);
+  }
+  console.log('OK: wrap-around counterexample (lowValue = p-1, target = 5) rejected');
 
   console.log('PASS: IMT non-membership circuit enforces low < target < next.');
 }
