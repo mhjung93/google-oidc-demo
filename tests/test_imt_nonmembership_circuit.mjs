@@ -109,6 +109,29 @@ async function main() {
   }
   console.log('OK: wrap-around counterexample (lowValue = p-1, target = 5) rejected');
 
+  // 6-8) Test the 252-bit masking path: targets with bits set above position 251
+  const TWO_252 = 1n << 252n;
+
+  // 6) target = 2^252 + 15 -> masked to 15, which is in (10, 20) -> accepted
+  await calc.calculateWitness({ ...base, target: (TWO_252 + 15n).toString() }, true);
+  console.log('OK: target above 2^252 is masked to its low 252 bits (accepted in range)');
+
+  // 7) target = 2^252 + 10 -> masked to 10, equals lowValue, fails strict lower bound
+  rejected = false;
+  try {
+    await calc.calculateWitness({ ...base, target: (TWO_252 + 10n).toString() }, true);
+  } catch { rejected = true; }
+  if (!rejected) { console.error('FAIL: target = 2^252 + lowValue was accepted'); process.exit(1); }
+  console.log('OK: masked target == lowValue rejected (strict lower bound)');
+
+  // 8) target = 2^252 + 25 -> masked to 25, exceeds lowNextValue, fails upper bound
+  rejected = false;
+  try {
+    await calc.calculateWitness({ ...base, target: (TWO_252 + 25n).toString() }, true);
+  } catch { rejected = true; }
+  if (!rejected) { console.error('FAIL: target = 2^252 + 25 was accepted'); process.exit(1); }
+  console.log('OK: masked target > lowNextValue rejected (strict upper bound)');
+
   console.log('PASS: IMT non-membership circuit enforces low < target < next.');
 }
 
