@@ -1,3 +1,6 @@
+// 이 테스트는 측정 전용 래퍼 회로를 필요로 한다. 없으면 아래로 재생성한다:
+//   printf 'pragma circom 2.0.0;\ninclude "lib/imt_nonmembership.circom";\ncomponent main {public [root]} = IMTNonMembership(20);\n' > /tmp/test_imt_only.circom
+//   circom /tmp/test_imt_only.circom --r1cs --wasm -o /tmp/imt_measure -l circuits -l circuits/lib -l node_modules/circomlib/circuits
 import { buildPoseidon } from 'circomlibjs';
 import fs from 'fs';
 

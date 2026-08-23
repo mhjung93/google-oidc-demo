@@ -4,7 +4,7 @@ set -euo pipefail
 # ==== Directories ====
 BUILD_DIR="build/mode2"
 CIRCUITS_DIR="circuits"
-PTAU_FILE="pot14_final.ptau" # Sufficient for these smaller circuits
+PTAU_FILE="pot21_final.ptau" # pi_pk_i가 2^14를 넘어 상향
 
 mkdir -p "$BUILD_DIR"
 
