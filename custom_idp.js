@@ -10,6 +10,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import { recoverAddress, keccak256, AbiCoder } from 'ethers';
+import { createIMT, leafValue, TAG_SESSION, TAG_ACCOUNT } from './lib/imt.js';
 
 const app = express();
 const PORT = 4000;
@@ -18,6 +19,11 @@ const __dirname = path.dirname(__filename);
 
 // VKey 로드
 const vkeyAridI = JSON.parse(fs.readFileSync('build/mode2/pi_arid_i_vkey.json', 'utf8'));
+
+// 폐기 트리. custom_idp.js의 다른 로그와 마찬가지로 메모리에만 두며,
+// 재시작하면 비워진다(기존 issuanceLog/auidILog와 같은 의도된 데모 한계).
+const revocationTree = await createIMT(20);
+const revokedLeaves = [];
 
 function now() { return Date.now(); }
 function cursor() { return { last: now() }; }
@@ -764,6 +770,33 @@ app.post('/idp/lookup_uid_by_auid_i', (req, res) => {
   }
   const usernameEntry = Object.entries(users).find(([, user]) => String(user.uid) === String(uid));
   res.json({ uid, username: usernameEntry ? usernameEntry[0] : null });
+});
+
+// 폐기 대상 등록. type='session'이면 r_token, 'account'면 auid를 값으로 받는다.
+// 어느 쪽이든 IdP가 이미 알고 있는 값이다(issuanceLog / user.lastAuid).
+app.post('/idp/revoke', async (req, res) => {
+  const { type, value } = req.body ?? {};
+  if (value === undefined || value === null) {
+    return res.status(400).json({ error: 'value is required' });
+  }
+  let tag;
+  if (type === 'session') tag = TAG_SESSION;
+  else if (type === 'account') tag = TAG_ACCOUNT;
+  else return res.status(400).json({ error: "type must be 'session' or 'account'" });
+
+  const leaf = await leafValue(tag, String(value));
+  await revocationTree.insert(leaf);
+  if (!revokedLeaves.includes(leaf.toString())) revokedLeaves.push(leaf.toString());
+
+  const root = revocationTree.getRoot().toString();
+  console.log(`[IdP] revoked ${type} -> leaf ${leaf}, new root ${root}`);
+  res.json({ root });
+});
+
+// 지갑이 자기 witness를 계산하려면 폐기 목록 전체가 필요하다.
+// 리프는 Poseidon 해시라 preimage가 드러나지 않으므로 공개해도 안전하다.
+app.get('/idp/revocation_state', (req, res) => {
+  res.json({ root: revocationTree.getRoot().toString(), revokedLeaves });
 });
 
 // 4. Public Keys Endpoint (for RP verification)
