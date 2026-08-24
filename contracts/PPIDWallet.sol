@@ -2,12 +2,14 @@
 pragma solidity ^0.8.24;
 
 import "./PiPkIVerifier.sol";
+import "./RevocationRegistry.sol";
 
 contract PPIDWallet {
     uint256 public immutable ppid;
     PiPkIVerifier public immutable verifier;
     uint256 public immutable trustedPkIdPX;
     uint256 public immutable trustedPkIdPY;
+    RevocationRegistry public immutable registry;
     uint256 public nonce;
 
     struct Payload {
@@ -22,12 +24,20 @@ contract PPIDWallet {
     error UntrustedIdP();
     error InvalidProof();
     error Expired(uint256 currentBlock, uint256 maxHeight);
+    error StaleRevocationRoot(bytes32 root);
 
-    constructor(uint256 _ppid, address _verifier, uint256 _pkIdPX, uint256 _pkIdPY) {
+    constructor(
+        uint256 _ppid,
+        address _verifier,
+        uint256 _pkIdPX,
+        uint256 _pkIdPY,
+        address _registry
+    ) {
         ppid = _ppid;
         verifier = PiPkIVerifier(_verifier);
         trustedPkIdPX = _pkIdPX;
         trustedPkIdPY = _pkIdPY;
+        registry = RevocationRegistry(_registry);
     }
 
     function execute(
@@ -39,7 +49,8 @@ contract PPIDWallet {
         uint256 pk_i,
         uint256 pk_IdP_x,
         uint256 pk_IdP_y,
-        uint256 max_height
+        uint256 max_height,
+        bytes32 revocationRoot
     ) external returns (bool ok) {
         if (payload.nonce != nonce) revert NonceMismatch(nonce, payload.nonce);
 
@@ -52,8 +63,7 @@ contract PPIDWallet {
 
         if (pk_IdP_x != trustedPkIdPX || pk_IdP_y != trustedPkIdPY) revert UntrustedIdP();
 
-        uint[5] memory pubSignals = [pk_i, pk_IdP_x, pk_IdP_y, ppid, max_height];
-        if (!verifier.verifyProof(proofA, proofB, proofC, pubSignals)) revert InvalidProof();
+        _checkRevocationAndProof(proofA, proofB, proofC, pk_i, pk_IdP_x, pk_IdP_y, max_height, revocationRoot);
 
         if (block.number > max_height) revert Expired(block.number, max_height);
 
@@ -63,6 +73,27 @@ contract PPIDWallet {
         nonce += 1;
 
         (ok, ) = payload.to.call{value: payload.value}(payload.data);
+    }
+
+    // execute()의 로컬 변수/파라미터 수가 EVM 스택 한도(16 slot)를 넘어서서
+    // "stack too deep"이 나므로, 증명 검증 관련 부분을 별도 함수로 분리한다.
+    function _checkRevocationAndProof(
+        uint[2] calldata proofA,
+        uint[2][2] calldata proofB,
+        uint[2] calldata proofC,
+        uint256 pk_i,
+        uint256 pk_IdP_x,
+        uint256 pk_IdP_y,
+        uint256 max_height,
+        bytes32 revocationRoot
+    ) internal view {
+        // 폐기 root가 grace window 안인지 먼저 본다 — 증명 검증보다 싸다.
+        if (!registry.isRecentRoot(revocationRoot)) revert StaleRevocationRoot(revocationRoot);
+
+        uint[6] memory pubSignals = [
+            pk_i, pk_IdP_x, pk_IdP_y, ppid, max_height, uint256(revocationRoot)
+        ];
+        if (!verifier.verifyProof(proofA, proofB, proofC, pubSignals)) revert InvalidProof();
     }
 
     function recoverSigner(bytes32 hash, bytes calldata sig) internal pure returns (address) {
