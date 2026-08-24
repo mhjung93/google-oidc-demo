@@ -75,6 +75,17 @@ async function main() {
   if (!witnessRefused) { console.error('FAIL: revoked account still produced a witness'); process.exit(1); }
   console.log('OK: revoked account cannot obtain a non-membership witness');
 
+  // 이 세션을 실제로 폐기하면 witness 자체를 만들 수 없어야 한다
+  await tree.insert(sessTarget);
+  let sessionWitnessRefused = false;
+  try {
+    await tree.getNonMembershipWitness(sessTarget);
+  } catch (e) {
+    sessionWitnessRefused = /is a member/.test(e.message);
+  }
+  if (!sessionWitnessRefused) { console.error('FAIL: revoked session still produced a witness'); process.exit(1); }
+  console.log('OK: revoked session cannot obtain a non-membership witness');
+
   console.log('PASS: pi_pk_i enforces account binding and revocation non-membership.');
 }
 
