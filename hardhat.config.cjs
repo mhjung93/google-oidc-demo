@@ -2,6 +2,18 @@ require("dotenv").config();
 require("@nomicfoundation/hardhat-toolbox");
 require("hardhat-ethernal");
 
+// PPIDWallet.execute() exceeds the legacy codegen stack limit, so it needs the
+// IR pipeline. PPIDWalletFactory imports PPIDWallet, and Hardhat compiles a
+// dependency closure under one settings block, so the factory needs the very
+// same settings — otherwise PPIDWallet would produce different bytecode
+// depending on which compilation job built it, silently changing the CREATE2
+// address the factory predicts. Both override keys must reference this one
+// object so they cannot drift apart.
+const WALLET_IR_SETTINGS = {
+  viaIR: true,
+  optimizer: { enabled: true, runs: 200 },
+};
+
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
   solidity: {
@@ -14,17 +26,11 @@ module.exports = {
     overrides: {
       "contracts/PPIDWallet.sol": {
         version: "0.8.24",
-        settings: {
-          viaIR: true,
-          optimizer: { enabled: true, runs: 200 },
-        },
+        settings: WALLET_IR_SETTINGS,
       },
       "contracts/PPIDWalletFactory.sol": {
         version: "0.8.24",
-        settings: {
-          viaIR: true,
-          optimizer: { enabled: true, runs: 200 },
-        },
+        settings: WALLET_IR_SETTINGS,
       },
     },
   },
