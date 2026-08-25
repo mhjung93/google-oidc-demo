@@ -469,7 +469,6 @@ async function generateStep8ProofsData(rpCredential, r_i, rpNonce) {
 
   // ppid = Poseidon(uid, rid, salt), arid_i = rid * rp_nonce, auid_i = ppid * rp_nonce
   const ppid = poseidon.F.toObject(poseidon([uidField, rid, saltField]));
-  currentAccountSecrets = { uid: uidField, salt: saltField, rid };
   const arid_i = (rid * rpNonceField) % FIELD_PRIME;
   const auid_i = (ppid * rpNonceField) % FIELD_PRIME;
   // auid = Poseidon(uid, salt) — fixed per account, lets the IdP detect a
@@ -480,6 +479,9 @@ async function generateStep8ProofsData(rpCredential, r_i, rpNonce) {
   // 세션 서명키: secp256k1, 로그인마다 새로 생성됨 (generateNewSessionKey 참고).
   // pk_i는 이제 공개키 블롭의 해시가 아니라 그 공개키의 이더리움 주소 자체다.
   const { sk_i, pk_i: pkField, address, publicKeyHex } = generateNewSessionKey();
+  // generateNewSessionKey()가 currentAccountSecrets를 비우므로 반드시 그 뒤에 채운다.
+  // 앞에 두면 방금 넣은 값이 곧바로 지워져 /submitTransaction이 항상 실패한다.
+  currentAccountSecrets = { uid: uidField, salt: saltField, rid };
   console.log(`[WalletAgent][Step 8] session key ready. address(pk_i): ${preview(publicKeyHex, 34)} ${ms(start)}`);
 
   const maxHeightField = valueToField(maxHeight);
