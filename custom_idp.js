@@ -3,7 +3,7 @@ import bodyParser from 'body-parser';
 import session from 'express-session';
 import cors from 'cors';
 import mcl from 'mcl-wasm';
-import { randomBytes, createHash } from 'crypto';
+import { randomBytes, createHash, timingSafeEqual } from 'crypto';
 import * as snarkjs from 'snarkjs';
 import fs from 'fs';
 import path from 'path';
@@ -772,9 +772,47 @@ app.post('/idp/lookup_uid_by_auid_i', (req, res) => {
   res.json({ uid, username: usernameEntry ? usernameEntry[0] : null });
 });
 
+// /idp/revoke는 운영자 전용 엔드포인트다. 인증 없이 열어두면 임의의 웹페이지가
+// 전역 app.use(cors())를 타고 폐기를 유발해 root를 흔들 수 있고, 게시된 root와
+// IdP root가 어긋나 모든 사용자의 execute()가 revert하는 무인증 DoS가 된다.
+//
+// 시크릿은 환경변수 IDP_ADMIN_SECRET에서만 읽는다(하드코딩 금지). 미설정이면
+// 조용히 인증을 건너뛰지 않고 503으로 명확히 거부한다.
+const IDP_ADMIN_SECRET = process.env.IDP_ADMIN_SECRET;
+
+function secretMatches(provided, expected) {
+  const a = Buffer.from(provided, 'utf8');
+  const b = Buffer.from(expected, 'utf8');
+  // timingSafeEqual은 길이가 다르면 throw하므로 길이를 먼저 비교한다.
+  // 길이 노출은 감수한다(내용 비교만 상수 시간으로 유지).
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+function requireIdPAdmin(req, res, next) {
+  if (!IDP_ADMIN_SECRET) {
+    return res.status(503).json({ error: 'revocation endpoint is disabled: IDP_ADMIN_SECRET is not configured' });
+  }
+  // 전역 cors()는 다른 엔드포인트가 의존하므로 건드리지 않고, 이 엔드포인트에만
+  // 오리진 제한을 건다. 브라우저는 cross-origin 요청에 항상 Origin 헤더를 붙이므로,
+  // Origin이 있다는 것은 곧 브라우저에서 온 요청이라는 뜻이다. 운영자 도구(curl,
+  // node 스크립트)는 Origin을 붙이지 않는다.
+  const origin = req.get('Origin');
+  if (origin !== undefined) {
+    return res.status(403).json({ error: 'browser-originated requests are not allowed on this endpoint' });
+  }
+  const provided = req.get('X-IdP-Admin-Secret');
+  if (typeof provided !== 'string' || !secretMatches(provided, IDP_ADMIN_SECRET)) {
+    // 시크릿 값 자체는 로그에도 응답에도 남기지 않는다.
+    console.warn('[IdP] rejected unauthenticated /idp/revoke attempt');
+    return res.status(401).json({ error: 'invalid or missing admin secret' });
+  }
+  return next();
+}
+
 // 폐기 대상 등록. type='session'이면 r_token, 'account'면 auid를 값으로 받는다.
 // 어느 쪽이든 IdP가 이미 알고 있는 값이다(issuanceLog / user.lastAuid).
-app.post('/idp/revoke', async (req, res) => {
+app.post('/idp/revoke', requireIdPAdmin, async (req, res) => {
   const { type, value } = req.body ?? {};
   if (value === undefined || value === null) {
     return res.status(400).json({ error: 'value is required' });
@@ -786,12 +824,16 @@ app.post('/idp/revoke', async (req, res) => {
     return res.status(400).json({ error: 'value must be a non-empty decimal number' });
   }
 
-  // Reject values >= 2^252 before hashing (prevents oversized field elements)
-  const MAX_FIELD = (1n << 252n) - 1n;
+  // 상한은 BN254 필드 크기 p다. 여기서 걸러야 하는 것은 "필드 원소가 아닌 입력"뿐이다.
+  // 폐기 대상(r_token = Poseidon(...), auid = Poseidon(uid, salt))은 둘 다 Poseidon
+  // 출력이라 [0, p)에 균등 분포한다. 예전에는 상한이 2^252였는데, 그러면 정상 대상의
+  // 약 67%(1 - 2^252/p)가 400으로 거부되면서 폐기가 조용히 실패했다.
+  // lib/imt.js의 leafValue()가 Poseidon '출력'을 & MASK_252로 정규화하므로
+  // 252비트 제약은 리프 값에만 적용되며 입력에 적용해서는 안 된다.
   try {
     const valueBigInt = BigInt(valueStr);
-    if (valueBigInt > MAX_FIELD) {
-      return res.status(400).json({ error: 'value must be less than 2^252' });
+    if (valueBigInt >= FIELD_PRIME) {
+      return res.status(400).json({ error: 'value must be less than the BN254 field prime' });
     }
   } catch (err) {
     return res.status(400).json({ error: 'value must be a valid number' });
@@ -839,4 +881,8 @@ const server = app.listen(PORT, async () => {
   await initEdDSA();
   await snarkjs.curves.getCurveFromName('bn128'); // bn128 WASM 모듈 미리 빌드 (첫 pi_i 검증 지연 방지)
   console.log(`Custom IdP running at http://localhost:${PORT}`);
+  if (!IDP_ADMIN_SECRET) {
+    // 값은 절대 출력하지 않고, 설정 여부만 알린다.
+    console.warn('[IdP] IDP_ADMIN_SECRET is not set — POST /idp/revoke will return 503 until it is configured.');
+  }
 });

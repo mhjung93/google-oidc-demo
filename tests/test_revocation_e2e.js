@@ -3,6 +3,14 @@ import { createIMT, leafValue, TAG_ACCOUNT } from '../lib/imt.js';
 
 const IDP = process.env.CUSTOM_IDP_BASE_URL || 'http://127.0.0.1:4000';
 
+// /idp/revoke는 운영자 전용이라 IdP 프로세스와 같은 IDP_ADMIN_SECRET이 필요하다.
+//   IDP_ADMIN_SECRET=<value> node tests/test_revocation_e2e.js
+const ADMIN_SECRET = process.env.IDP_ADMIN_SECRET;
+if (!ADMIN_SECRET) {
+  console.error('IDP_ADMIN_SECRET is required to run this test (must match the value custom_idp.js was started with)');
+  process.exit(1);
+}
+
 // 폐기 전후로 witness 생성 가능 여부가 뒤집히는지 확인한다. 이 파일은 IdP 레벨
 // (폐기 → non-membership witness 발급 가능 여부)만 검증한다.
 // 회로가 폐기된 세션/계정을 거부하는지는 tests/test_pi_pk_i_revocation.mjs가,
@@ -23,7 +31,7 @@ async function main() {
 
   const res = await fetch(`${IDP}/idp/revoke`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'X-IdP-Admin-Secret': ADMIN_SECRET },
     body: JSON.stringify({ type: 'account', value: victim }),
   });
   assert.equal(res.status, 200);
