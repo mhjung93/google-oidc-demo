@@ -9,6 +9,7 @@ import { webcrypto, createHash, randomBytes } from 'crypto';
 import http from 'http';
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { keccak256, AbiCoder, Interface } from 'ethers';
+import { createIMT, leafValue, TAG_SESSION, TAG_ACCOUNT } from './lib/imt.js';
 
 const { subtle } = webcrypto;
 const __filename = fileURLToPath(import.meta.url);
@@ -28,7 +29,7 @@ const PPID_WALLET_FACTORY_ABI = [
   'function deploy(uint256 ppid) returns (address)',
 ];
 const PPID_WALLET_ABI = [
-  'function execute((address to, uint256 value, bytes data, uint256 nonce) payload, bytes sig, uint[2] proofA, uint[2][2] proofB, uint[2] proofC, uint256 pk_i, uint256 pk_IdP_x, uint256 pk_IdP_y, uint256 max_height) returns (bool ok)',
+  'function execute((address to, uint256 value, bytes data, uint256 nonce) payload, bytes sig, uint[2] proofA, uint[2][2] proofB, uint[2] proofC, uint256 pk_i, uint256 pk_IdP_x, uint256 pk_IdP_y, uint256 max_height, bytes32 revocationRoot) returns (bool ok)',
   'function nonce() view returns (uint256)',
 ];
 const factoryInterface = new Interface(PPID_WALLET_FACTORY_ABI);
@@ -77,7 +78,11 @@ function validityWindowBlocks() {
 // 패턴이다.
 const PI_PK_I_WARMUP_RUNS = 4;
 
-function buildWarmupPiPkIInput(index) {
+// 회로가 Task 7 이전 버전(pi_pk_i 13-field)에서 revocation non-membership
+// 검증(uid/rid/salt + sess_*/acct_* witness)을 추가한 버전으로 바뀌면서, 웜업
+// 입력도 새 회로 시그니처에 맞춰야 한다 — 빈 IMT(20)에 대한 witness는 두 target
+// 모두 자명하게 비멤버이므로 웜업용으로 충분하다(실제 폐기 상태를 반영할 필요 없음).
+async function buildWarmupPiPkIInput(index) {
   const F = eddsa.F;
   const sk_dummy = webcrypto.getRandomValues(new Uint8Array(32));
   const pk_dummy = eddsa.prv2pub(sk_dummy);
@@ -94,10 +99,17 @@ function buildWarmupPiPkIInput(index) {
   const arid_i = (rid * rp_nonce) % FIELD_PRIME;
   const auid_i = (PPID * rp_nonce) % FIELD_PRIME;
   const r_token = poseidon.F.toObject(poseidon([pk_i, max_height, rp_nonce]));
+  const auid = poseidon.F.toObject(poseidon([uid, salt]));
 
   const DOMAIN_IDP_TOKEN = valueToField('IDP_TOKEN');
   const msg = poseidon([DOMAIN_IDP_TOKEN, arid_i, auid_i, r_token, max_height, chain_id]);
   const sig = eddsa.signPoseidon(sk_dummy, msg);
+
+  const tree = await createIMT(20);
+  const sessTarget = await leafValue(TAG_SESSION, r_token.toString());
+  const acctTarget = await leafValue(TAG_ACCOUNT, auid.toString());
+  const sessWitness = await tree.getNonMembershipWitness(sessTarget);
+  const acctWitness = await tree.getNonMembershipWitness(acctTarget);
 
   return {
     rp_nonce: rp_nonce.toString(),
@@ -108,11 +120,23 @@ function buildWarmupPiPkIInput(index) {
     S: sig.S.toString(),
     R8x: F.toObject(sig.R8[0]).toString(),
     R8y: F.toObject(sig.R8[1]).toString(),
+    uid: uid.toString(),
+    rid: rid.toString(),
+    salt: salt.toString(),
+    sess_lowValue: sessWitness.lowValue,
+    sess_lowNextValue: sessWitness.lowNextValue,
+    sess_pathElements: sessWitness.pathElements,
+    sess_pathIndices: sessWitness.pathIndices,
+    acct_lowValue: acctWitness.lowValue,
+    acct_lowNextValue: acctWitness.lowNextValue,
+    acct_pathElements: acctWitness.pathElements,
+    acct_pathIndices: acctWitness.pathIndices,
     pk_i: pk_i.toString(),
     pk_IdP_x: F.toObject(pk_dummy[0]).toString(),
     pk_IdP_y: F.toObject(pk_dummy[1]).toString(),
     PPID: PPID.toString(),
     max_height: max_height.toString(),
+    revocationRoot: sessWitness.root,
   };
 }
 
@@ -120,7 +144,7 @@ async function warmUpPiPkI() {
   for (let i = 0; i < PI_PK_I_WARMUP_RUNS; i++) {
     const runStart = now();
     await snarkjs.groth16.fullProve(
-      buildWarmupPiPkIInput(i),
+      await buildWarmupPiPkIInput(i),
       'build/mode2/pi_pk_i_js/pi_pk_i.wasm',
       'build/mode2/pi_pk_i_final.zkey',
     );
@@ -198,6 +222,30 @@ async function getIdpPublicKeys() {
   if (!response.ok) throw new Error(`Failed to fetch IdP public keys (${response.status})`);
   idpPublicKeysCache = await response.json();
   return idpPublicKeysCache;
+}
+
+// IdP가 공개한 폐기 목록으로 로컬 트리를 재구성해 자기 witness를 계산한다.
+// 리프가 해시라 목록을 받아도 남의 값을 알 수 없다.
+async function fetchRevocationWitnesses(rTokenField, auidField) {
+  const res = await fetch(`${IDP_ORIGIN}/idp/revocation_state`);
+  if (!res.ok) throw new Error(`revocation_state failed: ${res.status}`);
+  const { root, revokedLeaves } = await res.json();
+
+  const tree = await createIMT(20);
+  for (const leaf of revokedLeaves) await tree.insert(BigInt(leaf));
+
+  const localRoot = tree.getRoot().toString();
+  if (localRoot !== root) {
+    throw new Error(`local revocation tree root ${localRoot} != IdP root ${root}`);
+  }
+
+  const sessTarget = await leafValue(TAG_SESSION, rTokenField);
+  const acctTarget = await leafValue(TAG_ACCOUNT, auidField);
+  return {
+    root,
+    sess: await tree.getNonMembershipWitness(sessTarget),
+    acct: await tree.getNonMembershipWitness(acctTarget),
+  };
 }
 
 async function verifyRpCredential(rpCredential) {
@@ -308,11 +356,31 @@ function ethAddressFromSecp256k1Pubkey(pubKeyUncompressed65) {
 // 이 프로세스가 계속 떠 있는 동안 메모리 값이 유지되므로 일관성 문제는 없다.
 let currentSessionKey = null;
 
+// pi_pk_i의 계정 바인딩(PPID === Poseidon(uid, rid, salt))과 auid 계산에 필요하다.
+// 세션 키와 수명을 같이 하며, HTTP로 나가지 않는다.
+let currentAccountSecrets = null; // { uid, salt, rid } — 전부 bigint
+
+// pi_pk_i는 세션 크레덴셜이라 같은 세션·같은 root면 증명을 재사용할 수 있다.
+let cachedPiPkI = null; // { sessionKeyId, root, proofA, proofB, proofC }
+
+// 캐시된 pi_pk_i 증명을 재사용해도 되는지 판정한다.
+// 세션 키가 같고 폐기 root도 같을 때만 재사용할 수 있다 — root가 바뀌었다면
+// 그 사이에 누군가 폐기됐을 수 있으므로 다시 증명해야 한다.
+// 테스트에서 직접 호출하므로 export 한다.
+export function shouldReuseProof(cache, currentRoot, sessionKeyId) {
+  if (!cache) return false;
+  if (cache.sessionKeyId !== sessionKeyId) return false;
+  if (cache.root !== currentRoot) return false;
+  return true;
+}
+
 function generateNewSessionKey() {
   const sk_i = secp256k1.utils.randomPrivateKey();
   const pubUncompressed = secp256k1.getPublicKey(sk_i, false);
   const address = ethAddressFromSecp256k1Pubkey(pubUncompressed);
   currentSessionKey = { sk_i, pk_i: BigInt(address), address, publicKeyHex: `0x${bytesToHex(pubUncompressed)}` };
+  currentAccountSecrets = null;
+  cachedPiPkI = null;
   return currentSessionKey;
 }
 
@@ -321,6 +389,13 @@ function getCurrentSessionKey() {
     throw new Error('No active session key — call /generateStep8Proofs (login) first');
   }
   return currentSessionKey;
+}
+
+function getCurrentAccountSecrets() {
+  if (!currentAccountSecrets) {
+    throw new Error('No account secrets — call /generateStep8Proofs (login) first');
+  }
+  return currentAccountSecrets;
 }
 
 // 인증 토큰: RP_ORIGIN 자신(server.js)만 이 파일을 직접 읽어서 브라우저 페이지에
@@ -394,6 +469,7 @@ async function generateStep8ProofsData(rpCredential, r_i, rpNonce) {
 
   // ppid = Poseidon(uid, rid, salt), arid_i = rid * rp_nonce, auid_i = ppid * rp_nonce
   const ppid = poseidon.F.toObject(poseidon([uidField, rid, saltField]));
+  currentAccountSecrets = { uid: uidField, salt: saltField, rid };
   const arid_i = (rid * rpNonceField) % FIELD_PRIME;
   const auid_i = (ppid * rpNonceField) % FIELD_PRIME;
   // auid = Poseidon(uid, salt) — fixed per account, lets the IdP detect a
@@ -919,29 +995,57 @@ app.post('/submitTransaction', async (req, res) => {
     const pkIdP_x = BigInt(pkIdPRaw[0]);
     const pkIdP_y = BigInt(pkIdPRaw[1]);
 
-    const circuitInput = {
-      rp_nonce: rp_nonce.toString(),
-      arid_i: arid_i.toString(),
-      auid_i: auid_i.toString(),
-      r_token: r_token.toString(),
-      chain_id: chain_id.toString(),
-      S: idpTokenSig.S,
-      R8x: idpTokenSig.R8[0],
-      R8y: idpTokenSig.R8[1],
-      pk_i: pk_i.toString(),
-      pk_IdP_x: pkIdP_x.toString(),
-      pk_IdP_y: pkIdP_y.toString(),
-      PPID: ppidField.toString(),
-      max_height: maxHeightField.toString(),
-    };
+    const { uid: uidField, salt: saltField, rid: ridField } = getCurrentAccountSecrets();
+    const auidField = poseidon.F.toObject(poseidon([uidField, saltField]));
+    const rev = await fetchRevocationWitnesses(r_token.toString(), auidField.toString());
 
-    const { proof, publicSignals } = await snarkjs.groth16.fullProve(
-      circuitInput,
-      'build/mode2/pi_pk_i_js/pi_pk_i.wasm',
-      'build/mode2/pi_pk_i_final.zkey',
-    );
-    const calldata = JSON.parse(`[${await snarkjs.groth16.exportSolidityCallData(proof, publicSignals)}]`);
-    const [proofA, proofB, proofC] = calldata;
+    const sessionKeyId = pk_i.toString();
+    let proofA, proofB, proofC;
+    if (shouldReuseProof(cachedPiPkI, rev.root, sessionKeyId)) {
+      ({ proofA, proofB, proofC } = cachedPiPkI);
+      console.log('[WalletAgent][submitTransaction] reusing cached pi_pk_i proof');
+    } else {
+      const circuitInput = {
+        rp_nonce: rp_nonce.toString(),
+        arid_i: arid_i.toString(),
+        auid_i: auid_i.toString(),
+        r_token: r_token.toString(),
+        chain_id: chain_id.toString(),
+        S: idpTokenSig.S,
+        R8x: idpTokenSig.R8[0],
+        R8y: idpTokenSig.R8[1],
+        uid: uidField.toString(),
+        rid: ridField.toString(),
+        salt: saltField.toString(),
+        sess_lowValue: rev.sess.lowValue,
+        sess_lowNextValue: rev.sess.lowNextValue,
+        sess_pathElements: rev.sess.pathElements,
+        sess_pathIndices: rev.sess.pathIndices,
+        acct_lowValue: rev.acct.lowValue,
+        acct_lowNextValue: rev.acct.lowNextValue,
+        acct_pathElements: rev.acct.pathElements,
+        acct_pathIndices: rev.acct.pathIndices,
+        pk_i: pk_i.toString(),
+        pk_IdP_x: pkIdP_x.toString(),
+        pk_IdP_y: pkIdP_y.toString(),
+        PPID: ppidField.toString(),
+        max_height: maxHeightField.toString(),
+        revocationRoot: rev.root,
+      };
+      const { proof, publicSignals } = await snarkjs.groth16.fullProve(
+        circuitInput,
+        'build/mode2/pi_pk_i_js/pi_pk_i.wasm',
+        'build/mode2/pi_pk_i_final.zkey',
+      );
+      const calldata = JSON.parse(`[${await snarkjs.groth16.exportSolidityCallData(proof, publicSignals)}]`);
+      [proofA, proofB, proofC] = calldata;
+      cachedPiPkI = { sessionKeyId, root: rev.root, proofA, proofB, proofC };
+    }
+
+    // PPIDWallet.execute()의 revocationRoot 파라미터는 bytes32다(field element를
+    // 32바이트 hex로 표현). rev.root/circuitInput.revocationRoot는 스낙js·캐시
+    // 비교용 10진수 문자열이라서 ABI 인코딩 직전에만 hex로 변환한다.
+    const revocationRootBytes32 = '0x' + BigInt(rev.root).toString(16).padStart(64, '0');
 
     const executeCalldata = walletInterface.encodeFunctionData('execute', [
       { to: payload.to, value: payload.value, data: payload.data, nonce: payload.nonce },
@@ -953,6 +1057,7 @@ app.post('/submitTransaction', async (req, res) => {
       pkIdP_x.toString(),
       pkIdP_y.toString(),
       maxHeightField.toString(),
+      revocationRootBytes32,
     ]);
 
     const deploy = isDeployed
