@@ -27,6 +27,37 @@ async function main() {
   });
   assert.equal(bad.status, 400, 'unknown revocation type must be rejected');
 
+  // Test: non-numeric value must be rejected with 400
+  const nonNumeric = await fetch(`${BASE}/idp/revoke`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'account', value: 'abc' }),
+  });
+  assert.equal(nonNumeric.status, 400, 'non-numeric value must be rejected');
+  const nonNumericBody = await nonNumeric.json();
+  assert.ok(nonNumericBody.error, 'error field must be present');
+
+  // Test: empty string must be rejected with 400
+  const emptyString = await fetch(`${BASE}/idp/revoke`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'account', value: '' }),
+  });
+  assert.equal(emptyString.status, 400, 'empty string value must be rejected');
+  const emptyStringBody = await emptyString.json();
+  assert.ok(emptyStringBody.error, 'error field must be present');
+
+  // Test: value at 2^252 must be rejected with 400 (lib/imt.js rejects values >= 2^252)
+  const oversizedValue = (2n ** 252n).toString();
+  const oversized = await fetch(`${BASE}/idp/revoke`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'account', value: oversizedValue }),
+  });
+  assert.equal(oversized.status, 400, 'value >= 2^252 must be rejected');
+  const oversizedBody = await oversized.json();
+  assert.ok(oversizedBody.error, 'error field must be present');
+
   console.log('PASS: IdP revoke endpoint updates the tree and exposes state.');
 }
 

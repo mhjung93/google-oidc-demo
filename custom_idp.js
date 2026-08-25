@@ -779,18 +779,40 @@ app.post('/idp/revoke', async (req, res) => {
   if (value === undefined || value === null) {
     return res.status(400).json({ error: 'value is required' });
   }
+
+  // Reject non-numeric values: only decimal digits (after trimming) are allowed.
+  const valueStr = String(value).trim();
+  if (!/^[0-9]+$/.test(valueStr)) {
+    return res.status(400).json({ error: 'value must be a non-empty decimal number' });
+  }
+
+  // Reject values >= 2^252 before hashing (prevents oversized field elements)
+  const MAX_FIELD = (1n << 252n) - 1n;
+  try {
+    const valueBigInt = BigInt(valueStr);
+    if (valueBigInt > MAX_FIELD) {
+      return res.status(400).json({ error: 'value must be less than 2^252' });
+    }
+  } catch (err) {
+    return res.status(400).json({ error: 'value must be a valid number' });
+  }
+
   let tag;
   if (type === 'session') tag = TAG_SESSION;
   else if (type === 'account') tag = TAG_ACCOUNT;
   else return res.status(400).json({ error: "type must be 'session' or 'account'" });
 
-  const leaf = await leafValue(tag, String(value));
-  await revocationTree.insert(leaf);
-  if (!revokedLeaves.includes(leaf.toString())) revokedLeaves.push(leaf.toString());
+  try {
+    const leaf = await leafValue(tag, valueStr);
+    await revocationTree.insert(leaf);
+    if (!revokedLeaves.includes(leaf.toString())) revokedLeaves.push(leaf.toString());
 
-  const root = revocationTree.getRoot().toString();
-  console.log(`[IdP] revoked ${type} -> leaf ${leaf}, new root ${root}`);
-  res.json({ root });
+    const root = revocationTree.getRoot().toString();
+    console.log(`[IdP] revoked ${type} -> leaf ${leaf}, new root ${root}`);
+    res.json({ root });
+  } catch (err) {
+    return res.status(400).json({ error: err.message || 'Failed to revoke value' });
+  }
 });
 
 // 지갑이 자기 witness를 계산하려면 폐기 목록 전체가 필요하다.
