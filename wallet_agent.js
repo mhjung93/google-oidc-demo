@@ -4,7 +4,7 @@ import * as snarkjs from 'snarkjs';
 import { buildPoseidon, buildEddsa } from 'circomlibjs';
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { webcrypto, createHash, randomBytes } from 'crypto';
 import http from 'http';
 import { secp256k1 } from '@noble/curves/secp256k1';
@@ -1154,6 +1154,12 @@ app.post('/transactionHistory', async (req, res) => {
 // 읽을 수 있어야 하기 때문이다 (닭이 먼저냐 달걀이 먼저냐 문제 방지).
 getOrCreateAgentToken();
 
+// 이 모듈을 직접 실행할 때만(= `node wallet_agent.js`) 참이 된다. 다른 파일이
+// shouldReuseProof 등을 쓰려고 import만 해도 warm-up(수 초)과 app.listen(포트
+// 점유)이라는 부작용이 따라오는 것을 막기 위한 가드.
+const isDirectRun = process.argv[1] !== undefined
+  && import.meta.url === pathToFileURL(process.argv[1]).href;
+
 try {
   console.log('[WalletAgent] Initializing Poseidon...');
   poseidon = await buildPoseidon();
@@ -1166,16 +1172,18 @@ try {
   await ensureEdDSA();
   console.log('[WalletAgent] EdDSA-Poseidon initialized.');
 
-  console.log('[WalletAgent] Warming up pi_pk_i proof generation...');
-  const warmupStart = now();
-  await warmUpPiPkI();
-  console.log(`[WalletAgent] pi_pk_i warm-up complete (${(now() - warmupStart).toFixed(0)}ms).`);
+  if (isDirectRun) {
+    console.log('[WalletAgent] Warming up pi_pk_i proof generation...');
+    const warmupStart = now();
+    await warmUpPiPkI();
+    console.log(`[WalletAgent] pi_pk_i warm-up complete (${(now() - warmupStart).toFixed(0)}ms).`);
 
-  app.listen(PORT, '127.0.0.1', () => {
-    console.log(`[WalletAgent] Local wallet-side Step 8 agent listening on http://127.0.0.1:${PORT}`);
-    console.log(`[WalletAgent] Accepting requests only from RP origin: ${RP_ORIGIN}`);
-    console.log(`[WalletAgent] Requires X-Wallet-Agent-Token header (see wallet_state.json).`);
-  });
+    app.listen(PORT, '127.0.0.1', () => {
+      console.log(`[WalletAgent] Local wallet-side Step 8 agent listening on http://127.0.0.1:${PORT}`);
+      console.log(`[WalletAgent] Accepting requests only from RP origin: ${RP_ORIGIN}`);
+      console.log(`[WalletAgent] Requires X-Wallet-Agent-Token header (see wallet_state.json).`);
+    });
+  }
 } catch (err) {
   console.error(`[WalletAgent] Failed to initialize Poseidon/EdDSA: ${err.message}`);
   process.exit(1);
