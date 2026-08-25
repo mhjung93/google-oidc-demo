@@ -23,6 +23,11 @@ const MODE2_ETH_RPC_URL = process.env.MODE2_ETH_RPC_URL || process.env.ETH_RPC_U
 // 컴포넌트가 없었다(검증 스크립트가 임시로 수동 배포/전달했음) — 실제 온체인 제출을
 // 하려면 이 값이 반드시 필요하다.
 const PPID_WALLET_FACTORY_ADDRESS = process.env.PPID_WALLET_FACTORY_ADDRESS;
+// 지갑이 증명에 쓰려는 폐기 root가 실제로 온체인에 게시돼 있는지 직접 확인하기 위한
+// RevocationRegistry 주소. 이게 없으면 지갑은 게시 여부를 알 수 없어, 아직 게시되지
+// 않은 root로 증명했다가 PPIDWallet.execute()에서 정체불명의 StaleRevocationRoot
+// revert를 맞는다(무고한 사용자 포함).
+const REVOCATION_REGISTRY_ADDRESS = process.env.REVOCATION_REGISTRY_ADDRESS;
 
 const PPID_WALLET_FACTORY_ABI = [
   'function computeAddress(uint256 ppid) view returns (address)',
@@ -32,8 +37,13 @@ const PPID_WALLET_ABI = [
   'function execute((address to, uint256 value, bytes data, uint256 nonce) payload, bytes sig, uint[2] proofA, uint[2][2] proofB, uint[2] proofC, uint256 pk_i, uint256 pk_IdP_x, uint256 pk_IdP_y, uint256 max_height, bytes32 revocationRoot) returns (bool ok)',
   'function nonce() view returns (uint256)',
 ];
+const REVOCATION_REGISTRY_ABI = [
+  'function isRecentRoot(bytes32 root) view returns (bool)',
+  'function filled() view returns (uint256)',
+];
 const factoryInterface = new Interface(PPID_WALLET_FACTORY_ABI);
 const walletInterface = new Interface(PPID_WALLET_ABI);
+const registryInterface = new Interface(REVOCATION_REGISTRY_ABI);
 const STATE_FILE = path.join(__dirname, 'wallet_state.json');
 let poseidon = null;
 let eddsa = null;
@@ -246,6 +256,23 @@ async function fetchRevocationWitnesses(rTokenField, auidField) {
     sess: await tree.getNonMembershipWitness(sessTarget),
     acct: await tree.getNonMembershipWitness(acctTarget),
   };
+}
+
+// PPIDWallet.execute()의 revocationRoot 파라미터와 RevocationRegistry는 bytes32를
+// 쓰고, 회로/IdP 쪽 root는 필드 요소(10진 문자열)다. 경계에서만 변환한다.
+function revocationRootToBytes32(root) {
+  return '0x' + BigInt(root).toString(16).padStart(64, '0');
+}
+
+// 이 root가 레지스트리 윈도우 안에 살아있는지 온체인에 직접 물어본다.
+// IdP가 아니라 체인에 묻는다는 점이 중요하다 — IdP에 요청을 보내면 그 자체가
+// 타이밍 상관 신호가 된다(아래 /submitTransaction 주석 참고).
+async function isRevocationRootPublished(root) {
+  if (!REVOCATION_REGISTRY_ADDRESS) throw new Error('REVOCATION_REGISTRY_ADDRESS not configured');
+  const data = registryInterface.encodeFunctionData('isRecentRoot', [revocationRootToBytes32(root)]);
+  const result = await rpcCall('eth_call', [{ to: REVOCATION_REGISTRY_ADDRESS, data }, 'latest']);
+  const [isRecent] = registryInterface.decodeFunctionResult('isRecentRoot', result);
+  return Boolean(isRecent);
 }
 
 async function verifyRpCredential(rpCredential) {
@@ -929,6 +956,7 @@ app.post('/submitTransaction', async (req, res) => {
     if (business?.PPID === undefined && business?.ppid === undefined) throw new Error('business.PPID/ppid is required');
     if (!rpNonce) throw new Error('rpNonce is required');
     if (!PPID_WALLET_FACTORY_ADDRESS) throw new Error('PPID_WALLET_FACTORY_ADDRESS not configured');
+    if (!REVOCATION_REGISTRY_ADDRESS) throw new Error('REVOCATION_REGISTRY_ADDRESS not configured');
 
     await ensureEdDSA();
     if (!poseidon) throw new Error('Poseidon not initialized yet');
@@ -999,14 +1027,52 @@ app.post('/submitTransaction', async (req, res) => {
 
     const { uid: uidField, salt: saltField, rid: ridField } = getCurrentAccountSecrets();
     const auidField = poseidon.F.toObject(poseidon([uidField, saltField]));
-    const rev = await fetchRevocationWitnesses(r_token.toString(), auidField.toString());
 
     const sessionKeyId = pk_i.toString();
-    let proofA, proofB, proofC;
-    if (shouldReuseProof(cachedPiPkI, rev.root, sessionKeyId)) {
-      ({ proofA, proofB, proofC } = cachedPiPkI);
-      console.log('[WalletAgent][submitTransaction] reusing cached pi_pk_i proof');
+
+    // 이 트랜잭션에 쓸 폐기 root를 먼저 정한다. 캐시된 증명의 root가 아직 레지스트리
+    // 윈도우 안에 살아있으면 그것을 그대로 쓰고, IdP에는 아무 요청도 보내지 않는다.
+    //
+    // 예전에는 fetchRevocationWitnesses()가 캐시 판정보다 앞에 있어서, 증명을
+    // 재사용하는 경우에도 트랜잭션마다 IdP로 요청이 나갔다. IdP는 로그인 시점에 uid와
+    // 그 클라이언트의 네트워크 신원을 알고 있으므로, IdP 로그와 체인을 함께 보면
+    // "t에 세션 X가 폐기 목록을 조회 → t+Δ에 지갑 W에서 tx" 상관으로 지갑↔uid가
+    // 몇 건 만에 확정된다. spec §3.4가 r_token을 public으로 올리는 안을 기각한
+    // 바로 그 이유(IdP 로그와 온체인 지갑을 잇는 다리)를 접근 패턴으로 재도입한
+    // 셈이라, 조회를 캐시 미스 경로로 옮긴다.
+    //
+    // 이렇게 하면 폐기가 방금 일어났더라도 캐시된 root가 만료되기 전까지(최대
+    // GRACE_BLOCKS) 옛 증명이 쓰일 수 있다. 그건 C2에서 레지스트리에 못 박은
+    // 신선도 정책이 의도적으로 허용하는 창이며, 그 창이 지나면 isRecentRoot가
+    // false를 돌려주므로 자동으로 IdP 재조회 경로를 탄다.
+    let rev = null;
+    let txRevocationRoot;
+    if (cachedPiPkI?.sessionKeyId === sessionKeyId && (await isRevocationRootPublished(cachedPiPkI.root))) {
+      txRevocationRoot = cachedPiPkI.root;
     } else {
+      rev = await fetchRevocationWitnesses(r_token.toString(), auidField.toString());
+      txRevocationRoot = rev.root;
+      // 지갑은 IdP의 '현재' 리프 집합으로만 witness를 만들 수 있는데, 온체인 게시는
+      // 운영자가 돌리는 별도 단계다. 그래서 폐기 발생 후 push 전까지는 무고한
+      // 사용자까지 전원이 execute()에서 StaleRevocationRoot로 revert한다. 여기서
+      // 미리 걸러 원인을 알 수 있는 에러로 바꿔준다(옛 root로 증명하는 기능은 IdP가
+      // 과거 리프 집합을 노출해야 하므로 이번 범위 밖).
+      if (!(await isRevocationRootPublished(txRevocationRoot))) {
+        throw new Error(
+          '폐기 목록이 아직 온체인에 반영되지 않았습니다: IdP의 현재 revocation root가 ' +
+          'RevocationRegistry에 게시돼 있지 않습니다. 운영자가 push_revocation_root를 ' +
+          '실행해 root를 게시한 뒤 다시 시도하세요.',
+        );
+      }
+    }
+
+    let proofA, proofB, proofC;
+    if (shouldReuseProof(cachedPiPkI, txRevocationRoot, sessionKeyId)) {
+      ({ proofA, proofB, proofC } = cachedPiPkI);
+      console.log('[WalletAgent][submitTransaction] reusing cached pi_pk_i proof (no IdP round-trip)');
+    } else {
+      // 여기 도달했다는 것은 캐시 재사용이 불가능했다는 뜻이고, 그 경우는 위에서
+      // 반드시 IdP 조회 경로를 타므로 rev(=witness)가 채워져 있다.
       const circuitInput = {
         rp_nonce: rp_nonce.toString(),
         arid_i: arid_i.toString(),
@@ -1041,13 +1107,13 @@ app.post('/submitTransaction', async (req, res) => {
       );
       const calldata = JSON.parse(`[${await snarkjs.groth16.exportSolidityCallData(proof, publicSignals)}]`);
       [proofA, proofB, proofC] = calldata;
-      cachedPiPkI = { sessionKeyId, root: rev.root, proofA, proofB, proofC };
+      cachedPiPkI = { sessionKeyId, root: txRevocationRoot, proofA, proofB, proofC };
     }
 
     // PPIDWallet.execute()의 revocationRoot 파라미터는 bytes32다(field element를
-    // 32바이트 hex로 표현). rev.root/circuitInput.revocationRoot는 스낙js·캐시
-    // 비교용 10진수 문자열이라서 ABI 인코딩 직전에만 hex로 변환한다.
-    const revocationRootBytes32 = '0x' + BigInt(rev.root).toString(16).padStart(64, '0');
+    // 32바이트 hex로 표현). root는 스낙js·캐시 비교용 10진수 문자열이라서
+    // ABI 인코딩 직전에만 hex로 변환한다.
+    const revocationRootBytes32 = revocationRootToBytes32(txRevocationRoot);
 
     const executeCalldata = walletInterface.encodeFunctionData('execute', [
       { to: payload.to, value: payload.value, data: payload.data, nonce: payload.nonce },

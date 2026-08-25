@@ -36,3 +36,33 @@ assert(
 );
 
 console.log('PASS: currentAccountSecrets is assigned after generateNewSessionKey() clears it.');
+
+// --- 폐기 목록 조회가 캐시 판정보다 뒤에 오는지 회귀 테스트 ---
+// fetchRevocationWitnesses()가 캐시 판정보다 앞에 있으면, 증명을 재사용하는
+// 경우에도 트랜잭션마다 IdP로 요청이 나간다. IdP는 로그인 시점에 uid와 클라이언트의
+// 네트워크 신원을 알고 있으므로, IdP 로그와 체인을 함께 보면 "조회 → Δ 후 지갑 W에서
+// tx" 타이밍 상관으로 지갑↔uid가 연결된다. 캐시 적중 경로에서는 IdP가 아니라
+// 레지스트리(온체인)에만 물어봐야 한다.
+const cacheHitCheckIndex = walletAgentSourceForOrderCheck.indexOf(
+  'cachedPiPkI?.sessionKeyId === sessionKeyId',
+);
+const fetchWitnessCallIndex = walletAgentSourceForOrderCheck.indexOf(
+  'rev = await fetchRevocationWitnesses(',
+);
+
+assert.notEqual(cacheHitCheckIndex, -1, 'cache-hit check not found in wallet_agent.js');
+assert.notEqual(fetchWitnessCallIndex, -1, 'fetchRevocationWitnesses() call site not found in wallet_agent.js');
+assert(
+  cacheHitCheckIndex < fetchWitnessCallIndex,
+  'the cached-proof check must come BEFORE fetchRevocationWitnesses() — otherwise every ' +
+    'transaction pings the IdP even when the cached proof is reused, and IdP logs correlate ' +
+    'with on-chain transactions to link the wallet to the uid',
+);
+
+// 캐시 적중 여부는 IdP가 아니라 레지스트리에 물어봐야 한다.
+assert(
+  walletAgentSourceForOrderCheck.includes('isRevocationRootPublished(cachedPiPkI.root)'),
+  'the cached root must be validated against the on-chain registry, not by re-fetching from the IdP',
+);
+
+console.log('PASS: the IdP revocation lookup only happens on a cache miss.');

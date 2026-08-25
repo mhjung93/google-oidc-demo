@@ -1,4 +1,5 @@
 const hre = require("hardhat");
+const { getIdPSigner, fetchIdPRoot, rootToBytes32 } = require("./revocation_idp.cjs");
 
 // hardhat.config.cjs에 networks 블록이 없어 defaultNetwork가 "hardhat"이다.
 // 이 스크립트를 --network 없이 실행하면(예: `node scripts/push_revocation_root.cjs`)
@@ -24,18 +25,18 @@ async function main() {
   const registryAddress = process.env.REVOCATION_REGISTRY_ADDRESS;
   if (!registryAddress) throw new Error("REVOCATION_REGISTRY_ADDRESS is required");
 
-  const res = await fetch(`${idpBaseUrl}/idp/revocation_state`);
-  if (!res.ok) throw new Error(`revocation_state failed: ${res.status}`);
-  const { root } = await res.json();
+  const root = await fetchIdPRoot(idpBaseUrl);
+  const rootHex = rootToBytes32(hre, root);
 
-  // 회로의 root는 필드 요소(10진 문자열)이고 컨트랙트는 bytes32를 받는다.
-  const rootHex = hre.ethers.zeroPadValue(hre.ethers.toBeHex(BigInt(root)), 32);
+  // onlyIdP 주소는 REVOCATION_IDP_ADDRESS로 명시한다 — 배포 스크립트와 같은 값을
+  // 써야 pushRoot가 NotIdP로 revert하지 않는다.
+  const idpSigner = await getIdPSigner(hre);
+  const registry = await hre.ethers.getContractAt("RevocationRegistry", registryAddress, idpSigner);
 
-  const registry = await hre.ethers.getContractAt("RevocationRegistry", registryAddress);
-  if (await registry.isRecentRoot(rootHex)) {
-    console.log("Root already published, nothing to do:", rootHex);
-    return;
-  }
+  // 중복 게시 가드는 두지 않는다. 레지스트리가 블록 기반 만료(GRACE_BLOCKS)를 쓰게
+  // 되면서, 같은 root의 재게시는 "아무것도 안 하는 중복"이 아니라 신선도를 갱신하는
+  // 정당한 주기적 갱신(heartbeat)이 됐다. 가드를 두면 폐기가 드문 환경에서 root가
+  // 갱신되지 못한 채 만료돼 정상 사용자가 전부 막힌다.
   const tx = await registry.pushRoot(rootHex);
   await tx.wait();
   console.log("Pushed revocation root:", rootHex);
