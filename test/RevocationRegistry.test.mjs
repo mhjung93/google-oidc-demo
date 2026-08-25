@@ -111,4 +111,51 @@ describe('RevocationRegistry', function () {
     await mine(grace - (await blockNumber()) + secondPush + 1);
     expect(await reg.isRecentRoot(R(1))).to.equal(false);
   });
+
+  // 위 테스트는 옛 사본이 낮은 인덱스, 새 사본이 높은 인덱스인 경우만 다룬다.
+  // 그 순서라면 "첫 일치에서 멈추는" 오구현(first match wins)만 잡아낸다.
+  // 여기서는 순환 버퍼가 한 바퀴 돈 뒤 새 사본이 오히려 낮은 인덱스에 쓰이는
+  // 경우를 만든다 — 슬롯 인덱스 순서와 게시 시각 순서가 어긋나므로, "마지막으로
+  // 순회에서 만난 슬롯"을 기준으로 삼는 오구현(last match wins)도 이걸로 잡힌다.
+  // 올바른 구현은 인덱스 순서와 무관하게 pushedAt이 가장 큰(가장 최근) 사본을
+  // 기준으로 신선도를 판정해야 한다.
+  it('refreshes freshness when the newer copy of a republished root lands at a lower slot index after wraparound', async function () {
+    const { reg } = await deploy();
+    const K = Number(await reg.K());
+    // 아래 슬롯 인덱스 배치(idx6 옛 사본 / idx2 새 사본)는 K=8을 가정하므로 못 박아둔다.
+    expect(K).to.equal(8, 'this test hardcodes slot indices assuming K == 8');
+    const grace = Number(await reg.GRACE_BLOCKS());
+    const ROOT = R(1);
+
+    // idx0..idx5: 채움용 필러
+    for (let i = 0; i < 6; i++) await reg.pushRoot(R(300 + i));
+    // idx6: 옛 사본 (인덱스가 높다)
+    await reg.pushRoot(ROOT);
+    const oldPushedAt = await blockNumber();
+    // idx7: 필러 (여기서 head가 7 -> 0으로 wrap된다)
+    await reg.pushRoot(R(310));
+    // idx0, idx1: 필러 (wrap 이후 옛 슬롯을 덮어씀)
+    await reg.pushRoot(R(311));
+    await reg.pushRoot(R(312));
+    // idx2: 새 사본 — 옛 사본(idx6)보다 인덱스가 낮다
+    await reg.pushRoot(ROOT);
+    const newPushedAt = await blockNumber();
+
+    expect(await reg.filled()).to.equal(await reg.K());
+    expect(newPushedAt).to.be.greaterThan(oldPushedAt);
+
+    // 옛 사본 기준으로는 이미 만료됐지만 새 사본 기준으로는 아직 유효한 구간으로 이동.
+    await mine(grace - (await blockNumber()) + oldPushedAt);
+    await mine(1);
+    expect(await blockNumber() - oldPushedAt).to.be.greaterThan(grace, 'old copy must already be past its grace window');
+    expect(await blockNumber() - newPushedAt).to.be.at.most(grace, 'new copy must still be within its grace window');
+    expect(await reg.isRecentRoot(ROOT)).to.equal(
+      true,
+      'the newer (lower-index) copy must decide freshness even though the older (higher-index) copy already expired',
+    );
+
+    // 새 사본 기준으로도 GRACE_BLOCKS가 지나면 결국 만료된다.
+    await mine(grace - (await blockNumber()) + newPushedAt + 1);
+    expect(await reg.isRecentRoot(ROOT)).to.equal(false);
+  });
 });

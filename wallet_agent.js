@@ -275,6 +275,22 @@ async function isRevocationRootPublished(root) {
   return Boolean(isRecent);
 }
 
+// isRevocationRootPublished()가 false를 돌려줬을 때, 운영자가 원인을 구분할 수 있도록
+// filled()를 추가로 조회한다. filled()==0이면 레지스트리가 (재)배포된 직후 아직
+// 아무 root도 게시되지 않은 것이고(부트스트랩 미실행), filled()>0인데 이 root가 안
+// 보이면 grace window(GRACE_BLOCKS)가 지나 만료됐거나 애초에 게시된 적 없는
+// root라는 뜻이다. 두 경우는 운영자가 취할 조치가 다르므로(전자는 최초
+// push_revocation_root 실행, 후자는 재게시/재조회) 구분해서 알려준다.
+async function describeUnpublishedRoot() {
+  const data = registryInterface.encodeFunctionData('filled', []);
+  const result = await rpcCall('eth_call', [{ to: REVOCATION_REGISTRY_ADDRESS, data }, 'latest']);
+  const [filled] = registryInterface.decodeFunctionResult('filled', result);
+  if (BigInt(filled) === 0n) {
+    return 'RevocationRegistry에 아직 어떤 root도 게시되지 않았습니다(재배포 직후 부트스트랩 미실행일 수 있습니다).';
+  }
+  return 'RevocationRegistry에 이 root가 없거나 grace window(GRACE_BLOCKS)가 지나 만료되었습니다.';
+}
+
 async function verifyRpCredential(rpCredential) {
   await ensureEdDSA();
   if (!poseidon) throw new Error('Poseidon not initialized yet');
@@ -1058,9 +1074,10 @@ app.post('/submitTransaction', async (req, res) => {
       // 미리 걸러 원인을 알 수 있는 에러로 바꿔준다(옛 root로 증명하는 기능은 IdP가
       // 과거 리프 집합을 노출해야 하므로 이번 범위 밖).
       if (!(await isRevocationRootPublished(txRevocationRoot))) {
+        const detail = await describeUnpublishedRoot();
         throw new Error(
           '폐기 목록이 아직 온체인에 반영되지 않았습니다: IdP의 현재 revocation root가 ' +
-          'RevocationRegistry에 게시돼 있지 않습니다. 운영자가 push_revocation_root를 ' +
+          `RevocationRegistry에 게시돼 있지 않습니다. ${detail} 운영자가 push_revocation_root를 ` +
           '실행해 root를 게시한 뒤 다시 시도하세요.',
         );
       }
@@ -1072,7 +1089,15 @@ app.post('/submitTransaction', async (req, res) => {
       console.log('[WalletAgent][submitTransaction] reusing cached pi_pk_i proof (no IdP round-trip)');
     } else {
       // 여기 도달했다는 것은 캐시 재사용이 불가능했다는 뜻이고, 그 경우는 위에서
-      // 반드시 IdP 조회 경로를 타므로 rev(=witness)가 채워져 있다.
+      // 반드시 IdP 조회 경로를 타므로 rev(=witness)가 채워져 있다. 이 불변식은
+      // shouldReuseProof의 현재 조건 3개(캐시 존재/세션 일치/root 일치)에 기대고
+      // 있을 뿐 강제되지 않으므로, 조건이 늘어나 깨지더라도 rev.sess에서 조용히
+      // TypeError가 나지 않도록 여기서 명시적으로 확인한다.
+      if (!rev) {
+        throw new Error(
+          'internal error: proof cache was not reused but no revocation witness was fetched (rev is null)',
+        );
+      }
       const circuitInput = {
         rp_nonce: rp_nonce.toString(),
         arid_i: arid_i.toString(),
@@ -1225,6 +1250,17 @@ getOrCreateAgentToken();
 // 점유)이라는 부작용이 따라오는 것을 막기 위한 가드.
 const isDirectRun = process.argv[1] !== undefined
   && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+// REVOCATION_REGISTRY_ADDRESS가 없으면 프로세스는 정상 기동하지만 모든
+// /submitTransaction이 나중에 400으로 실패한다(isRevocationRootPublished가 매
+// 요청마다 던짐). 운영자가 기동 로그만 보고 정상이라 여기지 않도록, 서버를 실제로
+// 띄우는 경우(isDirectRun)에는 여기서 즉시 검사해 못 박는다. import만 하는 테스트
+// (예: tests/test_wallet_revocation_cache.js)는 isDirectRun이 false라 이 검사를
+// 타지 않는다.
+if (isDirectRun && !REVOCATION_REGISTRY_ADDRESS) {
+  console.error('[WalletAgent] REVOCATION_REGISTRY_ADDRESS is not configured — every /submitTransaction would fail at request time. Refusing to start.');
+  process.exit(1);
+}
 
 try {
   console.log('[WalletAgent] Initializing Poseidon...');
