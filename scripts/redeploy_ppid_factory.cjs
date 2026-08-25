@@ -1,6 +1,23 @@
 const hre = require("hardhat");
 
+// hardhat.config.cjs에 networks 블록이 없어 defaultNetwork가 "hardhat"이다.
+// 이 스크립트를 --network 없이 실행하면(예: `node scripts/redeploy_ppid_factory.cjs`)
+// 명령이 끝나는 즉시 사라지는 인프로세스 임시 체인에 배포되고, 출력된 주소는
+// 존재하지 않는 컨트랙트를 가리키게 된다. 8545에 떠 있는 영속 체인에 배포하려면
+// 반드시 `npx hardhat run scripts/redeploy_ppid_factory.cjs --network localhost`로 실행한다.
+function assertPersistentNetwork() {
+  if (hre.network.name === "hardhat") {
+    throw new Error(
+      '이 스크립트는 --network localhost 없이 실행되었습니다. ' +
+      'defaultNetwork가 "hardhat"이라 배포 결과가 명령 종료와 함께 사라지는 ' +
+      '임시 인프로세스 체인에 올라갑니다. 다음처럼 실행하세요:\n' +
+      '  npx hardhat run scripts/redeploy_ppid_factory.cjs --network localhost'
+    );
+  }
+}
+
 async function main() {
+  assertPersistentNetwork();
   const idpBaseUrl = process.env.CUSTOM_IDP_BASE_URL || "http://127.0.0.1:4000";
   const res = await fetch(`${idpBaseUrl}/ps_public_keys`);
   if (!res.ok) {

@@ -3,9 +3,13 @@ import { createIMT, leafValue, TAG_ACCOUNT } from '../lib/imt.js';
 
 const IDP = process.env.CUSTOM_IDP_BASE_URL || 'http://127.0.0.1:4000';
 
-// 폐기 전후로 witness 생성 가능 여부가 뒤집히는지 확인한다.
-// 회로·온체인 검증까지 도는 전체 흐름은 test_mode2_integration.js가 담당하며,
-// 여기서는 폐기가 실제로 반영되는지만 본다.
+// 폐기 전후로 witness 생성 가능 여부가 뒤집히는지 확인한다. 이 파일은 IdP 레벨
+// (폐기 → non-membership witness 발급 가능 여부)만 검증한다.
+// 회로가 폐기된 세션/계정을 거부하는지는 tests/test_pi_pk_i_revocation.mjs가,
+// 온체인 지갑/레지스트리가 등록되지 않은 root를 거부하는지는
+// test/PPIDWalletRevocation.test.mjs, test/RevocationRegistry.test.mjs가 각각 담당한다.
+// 이 세 조각을 합성해 살아있는 wallet_agent.js가 만든 실제 증명이 배포된
+// PPIDWallet에서 실제로 거부되는 전 구간을 도는 테스트는 아직 없다.
 async function main() {
   const victim = '987654321';
   const leaf = await leafValue(TAG_ACCOUNT, victim);
