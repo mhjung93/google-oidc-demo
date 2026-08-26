@@ -4,7 +4,7 @@ set -euo pipefail
 # ==== Directories ====
 BUILD_DIR="build/mode2"
 CIRCUITS_DIR="circuits"
-PTAU_FILE="pot14_final.ptau" # Sufficient for these smaller circuits
+PTAU_FILE="pot21_final.ptau" # pi_pk_i가 2^14를 넘어 상향
 
 mkdir -p "$BUILD_DIR"
 
@@ -45,5 +45,12 @@ fi
 
 compile_circuit "pi_arid_i"
 compile_circuit "pi_ppid"
+compile_circuit "pi_pk_i"
+
+# pi_pk_i는 온체인에서도 검증해야 하므로, Solidity verifier도 같이 export한다
+# (pi_arid_i/pi_ppid는 오프체인 검증만 하므로 이 단계가 필요 없음).
+echo "▶ Exporting Solidity verifier for pi_pk_i..."
+npx snarkjs zkey export solidityverifier "$BUILD_DIR/pi_pk_i_final.zkey" "contracts/PiPkIVerifier.sol"
+sed -i 's/contract Groth16Verifier/contract PiPkIVerifier/' "contracts/PiPkIVerifier.sol"
 
 echo "🎉 All Mode 2 circuits compiled successfully in $BUILD_DIR"

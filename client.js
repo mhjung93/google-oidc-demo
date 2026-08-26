@@ -22,6 +22,15 @@ if (APP_MODE === 2) {
   const mode2SSOSection = document.getElementById('mode2SSOSection');
 
   mode2SSOLoginButton?.addEventListener('click', async () => {
+    let authWindowRef = null;
+    const authWindowState = { navigated: false };
+    try {
+      authWindowRef = window.open('', '_blank');
+      authWindowRef?.document.write('<p style="font-family: system-ui;">IdP 로그인 페이지를 준비하는 중입니다&hellip;</p>');
+    } catch (err) {
+      authWindowRef = null;
+    }
+
     if (mode2SSOSection) mode2SSOSection.style.display = 'block';
     mode2SSOLoginButton.disabled = true;
     mode2Status.innerText = 'Preparing Snap connection...';
@@ -29,7 +38,6 @@ if (APP_MODE === 2) {
     try {
       if (!window.ethereum) throw new Error('MetaMask not found');
       await connectSnap();
-      prepareIdPLoginPopup();
       mode2Status.innerText = 'Step 2: Initializing wallet-side module...';
       // 사용자가 Snap 연결 팝업에서 실제로 클릭할 때까지 걸리는 시간은
       // 측정에서 제외하고, 승인 이후부터만 잰다. EOA account/address는
@@ -72,27 +80,17 @@ if (APP_MODE === 2) {
       appendRpFeVisibleFlow(`  r_i check: ${sessionNonceCheck ? 'PASS' : 'FAIL'}`);
       appendRpFeVisibleFlow(`  rpNonce: ${previewValue(data.rpNonce)}`);
       mode2Status.innerText = `Step 7 Complete ${formatMs(start)}. Values passed to wallet context.`;
-      await runWalletStep7();
+      await runDelegatedLogin(authWindowRef, authWindowState);
     } catch (err) {
+      if (!authWindowState.navigated) authWindowRef?.close();
       mode2SSOLoginButton.disabled = false;
       mode2Status.innerText = `Delegated Login Error: ${err.message}`;
     }
   });
 
-  let currentSSOProof = null;
-  let currentIdPToken = null; 
-  let walletReceivedIdPToken = null;
-  let step11Completed = false;
-  let step13Completed = false;
-  let step14Result = null;
-  const measuredDurations = {};
-  let idpPopupWindow = null;
-  let idpPopupReady = false;
   let mode2SessionNonce = null;
   let ssoMetadata = {
     userAddress: null,
-    // Demo fixture: represents a prior verified wallet-IdP account binding.
-    uid: '12345',
     rid: null,
     rpNonceField: null,
     arid_i: null,
@@ -156,417 +154,154 @@ if (APP_MODE === 2) {
   }
 
   const IDP_ORIGIN = 'http://127.0.0.1:4000';
+  const PAIRCT_CLIENT_ID = 'pairct-wallet';
   const IDP_SSO_ENDPOINT = `${IDP_ORIGIN}/sso_with_credentials`;
   // Step 8 (PPID/arid_i/auid_i, signing key, pi_i/pi_PPID) runs in a local-only
   // Node process (wallet_agent.js), not in this RP page's JS context — see
   // wallet_agent.js for why (MetaMask Snap's SES sandbox can't run snarkjs/circomlibjs).
   const WALLET_AGENT_ORIGIN = 'http://127.0.0.1:5001';
 
-  function postProofToIdPPopup() {
-    if (!currentSSOProof || !idpPopupWindow || idpPopupWindow.closed || !idpPopupReady) return false;
-    idpPopupWindow.postMessage({ type: 'RP_SEND_ZKP', zkp: currentSSOProof }, IDP_ORIGIN);
-    return true;
-  }
-
-  function clearIdPOnlyProofMaterial() {
-    if (!currentSSOProof) return;
-    delete currentSSOProof.zkpProof;
-    delete currentSSOProof.zkpPublicSignals;
-    delete currentSSOProof.pi_i;
-    if (currentSSOProof.walletSubmission) {
-      delete currentSSOProof.walletSubmission.pi_i;
-    }
-  }
-
-  function prepareIdPLoginPopup() {
-    idpPopupReady = false;
-    idpPopupWindow = window.open(`${IDP_ORIGIN}/login_popup`, 'IdPLogin', 'width=500,height=600');
-    if (!idpPopupWindow) {
-      return false;
-    }
-    return true;
-  }
-
-  async function getCurrentHeightForValidation() {
-    try {
-      const blockHex = await window.ethereum.request({ method: 'eth_blockNumber' });
-      return { value: BigInt(blockHex), source: 'eth_blockNumber' };
-    } catch (err) {
-      return {
-        value: BigInt(Math.floor(Date.now() / 1000)),
-        source: 'time-fallback',
-        error: err.message
-      };
-    }
-  }
-
-  async function showWalletProcessSummary() {
-    if (!window.ethereum || !Array.isArray(ssoMetadata.walletLog)) return;
-    try {
-      await window.ethereum.request({
-        method: 'wallet_invokeSnap',
-        params: {
-          snapId,
-          request: {
-            method: 'walletProcessSummary',
-            params: { lines: ssoMetadata.walletLog },
-          },
-        },
-      });
-    } catch (err) {
-      console.warn('[Mode 2] Failed to show wallet processing in Snap:', err.message);
-      mode2Status.innerText += ` Snap dialog skipped: ${err.message}`;
-    }
-  }
-
-  async function runWalletStep7() {
+  async function runDelegatedLogin(authWindowRef, authWindowState) {
     const start = now();
-    let segmentStart = start;
-    const step8Breakdown = [];
-    const markStep8 = (label) => {
-      const t = now();
-      const durationMs = t - segmentStart;
-      step8Breakdown.push({ label, durationMs });
-      segmentStart = t;
-      return durationMs;
-    };
-    appendWalletLog(`Step 8. Wallet started ${formatMs(start)}.`);
-    mode2Status.innerText = 'Step 8: Wallet is generating PPID, keys, token nonce, and ZKP...';
+    mode2Status.innerText = 'Login job starting...';
+    document.getElementById('authWindowFallback')?.replaceChildren();
+    ssoMetadata.rid = BigInt(ssoMetadata.rpCredential.rid);
+    ssoMetadata.rpNonceField = valueToField(ssoMetadata.rpNonce);
 
-    try {
-      // wallet_agent.js는 자기 origin(브라우저가 이미 신뢰하는)을 통해서만 얻을 수
-      // 있는 토큰을 요구한다 — 다른 origin/프로세스가 직접 호출해 salt를 추출하지
-      // 못하게 막기 위함.
-      const tokenRes = await fetch('/api/mode2/wallet_agent_token');
-      if (!tokenRes.ok) {
-        throw new Error('Could not fetch wallet agent token. Is wallet_agent.js running?');
-      }
-      const { token: walletAgentToken } = await tokenRes.json();
+    const tokenRes = await fetch('/api/mode2/wallet_agent_token');
+    if (!tokenRes.ok) throw new Error('Could not fetch wallet agent token. Is wallet_agent.js running?');
+    const { token: walletAgentToken } = await tokenRes.json();
 
-      appendWalletLog('• requesting local wallet agent (127.0.0.1:5001) to compute PPID, arid_i, auid_i, signing key, token nonce, pi_i, and pi_PPID...');
-      const walletRes = await fetch(`${WALLET_AGENT_ORIGIN}/generateStep8Proofs`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Wallet-Agent-Token': walletAgentToken,
-        },
-        body: JSON.stringify({
-          uid: ssoMetadata.uid,
-          rpCredential: ssoMetadata.rpCredential,
-          r_i: ssoMetadata.r_i,
-          rpNonce: ssoMetadata.rpNonce,
-        }),
-      });
-      if (!walletRes.ok) {
-        const errData = await walletRes.json().catch(() => ({}));
-        throw new Error(errData.error || `Wallet agent request failed (${walletRes.status})`);
-      }
-      const result = await walletRes.json();
-      markStep8('Wallet agent: PPID/arid_i/auid_i/signing key/token nonce/pi_i/pi_PPID generation');
-
-      ssoMetadata.rid = BigInt(result.rid);
-      ssoMetadata.ppid = BigInt(result.ppid);
-      ssoMetadata.rpNonceField = BigInt(result.rpNonceField);
-      ssoMetadata.arid_i = BigInt(result.arid_i);
-      ssoMetadata.auid_i = BigInt(result.auid_i);
-      ssoMetadata.tokenNonce = BigInt(result.tokenNonce);
-      ssoMetadata.chainId = result.chain_id;
-      ssoMetadata.currentBlock = result.currentBlock ?? 'unavailable';
-      ssoMetadata.maxHeight = result.maxHeight;
-      ssoMetadata.signingPublicKey = result.publicKeyHex;
-      ssoMetadata.pi_i = result.zkpProof;
-      ssoMetadata.pi_PPID = result.pi_PPID;
-
-      appendWalletLog(`✓ chain_id: ${ssoMetadata.chainId ?? 'unavailable'}`);
-      appendWalletLog(`✓ current block number: ${ssoMetadata.currentBlock}`);
-      appendWalletLog(`✓ max_height set for 1 hour validity: ${ssoMetadata.maxHeight}`);
-      appendWalletLog(`  height source: ${result.heightSource}`);
-      appendWalletLog(`✓ PPID generated: ${ssoMetadata.ppid.toString().slice(0, 32)}...`);
-      appendWalletLog('  formula: uid * rid * salt (computed by local wallet agent)');
-      appendWalletLog('  salt source: wallet-agent-managed local secret');
-      appendWalletLog(`✓ arid_i generated: ${ssoMetadata.arid_i.toString().slice(0, 32)}...`);
-      appendWalletLog(`✓ auid_i generated: ${ssoMetadata.auid_i.toString().slice(0, 32)}...`);
-      appendWalletLog(`✓ signing key pair generated by wallet agent. publicKey: ${result.publicKeyHex.slice(0, 34)}...`);
-      appendWalletLog(`✓ token nonce generated with Poseidon(pk, max_height, RP nonce): ${ssoMetadata.tokenNonce.toString().slice(0, 32)}...`);
-      appendWalletLog(`✓ pi_i generated ${formatMs(start)}.`);
-      appendWalletLog(`✓ pi_PPID ZKP generated for PPID: ${ssoMetadata.ppid.toString().slice(0, 32)}...`);
-
-      currentSSOProof = {
-        zkpProof: result.zkpProof,
-        zkpPublicSignals: result.zkpPublicSignals,
-        pi_i: result.zkpProof,
-        pi_PPID: ssoMetadata.pi_PPID,
+    const startRes = await fetch(`${WALLET_AGENT_ORIGIN}/startLogin`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Wallet-Agent-Token': walletAgentToken },
+      body: JSON.stringify({
+        rpCredential: ssoMetadata.rpCredential,
         r_i: ssoMetadata.r_i,
-        walletSubmission: {
-          endpoint: IDP_SSO_ENDPOINT,
-          ...result.walletSubmission,
-        },
-        business: result.business,
-      };
-
-      ssoMetadata.step8DurationMs = now() - start;
-      measuredDurations.step8 = ssoMetadata.step8DurationMs;
-      ssoMetadata.step8Breakdown = step8Breakdown;
-      appendWalletLog('Step 8 timing breakdown:');
-      for (const item of step8Breakdown) {
-        appendWalletLog(`  ${item.label}: ${Math.round(item.durationMs)} ms`);
-      }
-      const breakdownText = step8Breakdown
-        .map((item) => `  - ${item.label}: ${Math.round(item.durationMs)} ms`)
-        .join('\n');
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 8. Wallet generated PPID, arid_i, auid_i, signing key pair, r_token, pi_i, and pi_PPID ${formatMs(start)}.\nStep 8 timing breakdown:\n${breakdownText}`;
-      document.getElementById('step2SubmitToIdP').disabled = false;
-      // Disabled for demo flow; keep showWalletProcessSummary() available for later.
-      // await showWalletProcessSummary();
-      openIdPLoginPopup();
-    } catch (err) {
-      appendWalletLog(`✗ Step 8 error: ${err.message}`);
-      mode2Status.innerText = `Step 8 Error: ${err.message}`;
-      // Disabled for demo flow; keep showWalletProcessSummary() available for later.
-      // await showWalletProcessSummary();
+        rpNonce: ssoMetadata.rpNonce,
+      }),
+    });
+    if (startRes.status !== 202) {
+      const errData = await startRes.json().catch(() => ({}));
+      throw new Error(errData.error || `/startLogin failed (${startRes.status})`);
     }
+    const { jobId } = await startRes.json();
+
+    let snapConfirmSent = false;
+    let browserNavigated = false;
+    const POLL_INTERVAL_MS = 1000;
+
+    await new Promise((resolve, reject) => {
+      const timer = setInterval(async () => {
+        try {
+          const statusRes = await fetch(`${WALLET_AGENT_ORIGIN}/loginStatus?jobId=${encodeURIComponent(jobId)}`);
+          if (!statusRes.ok) {
+            clearInterval(timer);
+            reject(new Error(`/loginStatus failed (${statusRes.status})`));
+            return;
+          }
+          const data = await statusRes.json();
+
+          switch (data.status) {
+            case 'generating_proof':
+              mode2Status.innerText = `Step 8: 지갑이 증명을 생성하는 중입니다... ${formatMs(start)}`;
+              return;
+
+            case 'awaiting_wallet_approval':
+              mode2Status.innerText = 'Snap에서 로그인 승인을 기다리는 중입니다...';
+              if (snapConfirmSent) return;
+              snapConfirmSent = true;
+              try {
+                const snapResult = await window.ethereum.request({
+                  method: 'wallet_invokeSnap',
+                  params: { snapId, request: { method: 'confirmLogin', params: {} } },
+                });
+                await fetch(`${WALLET_AGENT_ORIGIN}/confirmLoginResult`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ jobId, approved: Boolean(snapResult?.approved) }),
+                });
+              } catch (err) {
+                snapConfirmSent = false; // Snap 호출/보고 자체가 실패하면 다음 tick에 재시도
+                console.warn('[Mode 2] Snap confirmLogin failed:', err.message);
+              }
+              return;
+
+            case 'awaiting_browser_login':
+              if (!browserNavigated) {
+                browserNavigated = true;
+                navigateToIdP(authWindowRef, data.requestUri, authWindowState);
+              }
+              mode2Status.innerText = '새로 열린 창에서 IdP 로그인을 진행해주세요.';
+              return;
+
+            case 'exchanging_token':
+              mode2Status.innerText = '인증 코드를 토큰으로 교환하는 중입니다...';
+              return;
+
+            case 'done':
+              clearInterval(timer);
+              ssoMetadata.ppid = BigInt(data.ppid);
+              ssoMetadata.arid_i = BigInt(data.arid_i);
+              ssoMetadata.auid_i = BigInt(data.auid_i);
+              ssoMetadata.pkI = data.pk_i;
+              ssoMetadata.signingPublicKey = data.publicKeyHex;
+              ssoMetadata.pi_PPID = data.pi_PPID;
+              ssoMetadata.statement = data.statement;
+              ssoMetadata.idpToken = data.idpToken;
+              resolve();
+              return;
+
+            case 'denied':
+              clearInterval(timer);
+              reject(new Error('로그인이 거부되었습니다.'));
+              return;
+
+            case 'failed':
+              clearInterval(timer);
+              reject(new Error(data.error || '로그인에 실패했습니다.'));
+              return;
+          }
+        } catch (err) {
+          clearInterval(timer);
+          reject(err);
+        }
+      }, POLL_INTERVAL_MS);
+    });
+
+    mode2Status.innerText = '로그인 완료. 결과를 검증하는 중입니다...';
+    await runRpVerifyStatement(start);
   }
 
-  function openIdPLoginPopup() {
-    const start = now();
-    try {
-      if (!currentSSOProof) throw new Error('Generate ZKP first');
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 9. Wallet sends auid_i, arid_i, r_token, and pi_i to IdP published endpoint ${formatMs(start)}:\n${IDP_SSO_ENDPOINT}`;
-      if (!idpPopupWindow || idpPopupWindow.closed) {
-        if (!prepareIdPLoginPopup()) throw new Error('Popup blocked. Use the Step 9 button to retry.');
-      }
-      if (!postProofToIdPPopup()) {
+  function navigateToIdP(authWindowRef, requestUri, authWindowState) {
+    const authorizeUrl = `${IDP_ORIGIN}/authorize?client_id=${PAIRCT_CLIENT_ID}&request_uri=${encodeURIComponent(requestUri)}`;
+    if (authWindowRef && !authWindowRef.closed) {
+      try {
+        authWindowRef.location.href = authorizeUrl;
+        authWindowState.navigated = true;
         return;
+      } catch (err) {
+        console.warn('[Mode 2] Failed to navigate pre-opened auth window:', err.message);
       }
-    } catch (err) {
-      mode2Status.innerText = `Step 9 Error: ${err.message}`;
     }
+    showManualAuthorizeLink(authorizeUrl);
   }
 
-  // Listen for message from IdP Popup
-  window.addEventListener('message', (event) => {
-    if (event.origin !== IDP_ORIGIN) return;
-
-    if (event.data.type === 'IDP_READY_FOR_ZKP') {
-      console.log('[RP FE] IdP Popup ready signal received.');
-      idpPopupWindow = event.source;
-      idpPopupReady = true;
-      postProofToIdPPopup();
-    }
-    
-    if (event.data.type === 'IDP_SSO_SUCCESS') {
-      if (event.data.r_i !== mode2SessionNonce) {
-        console.warn('[Mode 2] r_i mismatch on IdP success message:', {
-          expected: mode2SessionNonce,
-          received: event.data.r_i
-        });
-        return;
-      }
-      currentIdPToken = event.data.idpToken;
-      clearIdPOnlyProofMaterial();
-      document.getElementById('step15NotifyWallet').disabled = false;
-      document.getElementById('step25RPFEVerifyFail').disabled = false;
-      runWalletStep11And12();
-    }
-  });
-
-  document.getElementById('step25RPFEVerifyFail')?.addEventListener('click', () => {
-    if (!currentIdPToken || !currentIdPToken.signature?.S) return;
-    mode2Status.innerText = 'SIMULATING ERROR: Tampering with IdP EdDSA-Poseidon Signature...';
-
-    // S is a decimal-string scalar; append a digit to change its value while keeping it a
-    // valid decimal string, so it still parses but no longer matches the real signature.
-    currentIdPToken.signature.S = currentIdPToken.signature.S + '1';
-    document.getElementById('step15NotifyWallet').disabled = true;
-    document.getElementById('step3CompleteRP').disabled = true;
-
-    console.warn('[Mode 2] IdP EdDSA-Poseidon Signature tampered. RP Backend will reject this.');
-    document.getElementById('ssoIntermediateDisplay').innerText += `\n\n[FAIL TEST] EdDSA-Poseidon Signature tampered! Submit now to see RP BE rejection.`;
-    mode2Status.innerText = 'Tampering complete. Step 12 or Step 14 should reject it.';
-  });
-
-  document.getElementById('step2SubmitToIdP')?.addEventListener('click', async () => {
-    openIdPLoginPopup();
-  });
-document.getElementById('step25RPFEVerify')?.addEventListener('click', async () => {
-  await runRPFeStep14();
-});
-
-async function verifyIdPTokenAtRpBackend() {
-  if (!currentIdPToken) throw new Error('No IdP Token to verify');
-
-  // RP backend verifies only the IdP token signature and RP audience binding.
-  // pi_i stays with the IdP; its public UID signal is not sent to the RP.
-  const requestBody = {
-    idpToken: {
-      arid_i: currentIdPToken.arid_i,
-      auid_i: currentIdPToken.auid_i,
-      r_token: currentIdPToken.r_token,
-      max_height: currentIdPToken.max_height,
-      chain_id: currentIdPToken.chain_id,
-      signature_prime: currentIdPToken.signature,
-    }
-  };
-
-  console.log('[Mode 2] Sending RP Backend Verify Request:', {
-    idpToken: {
-      arid_i: previewValue(requestBody.idpToken.arid_i),
-      auid_i: previewValue(requestBody.idpToken.auid_i),
-      r_token: previewValue(requestBody.idpToken.r_token),
-      max_height: requestBody.idpToken.max_height,
-      chain_id: requestBody.idpToken.chain_id
-    }
-  });
-
-  const res = await fetch('/api/mode2/sso_success', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(requestBody)
-  });
-
-  let data;
-  const contentType = res.headers.get("content-type");
-  if (contentType && contentType.indexOf("application/json") !== -1) {
-    data = await res.json();
-  } else {
-    const text = await res.text();
-    throw new Error(`Server Error: ${text.slice(0, 100)}...`);
+  function showManualAuthorizeLink(authorizeUrl) {
+    const container = document.getElementById('authWindowFallback');
+    if (!container) return;
+    container.replaceChildren();
+    const link = document.createElement('a');
+    link.href = authorizeUrl;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.textContent = '여기를 클릭해서 IdP 로그인 페이지 열기';
+    container.appendChild(link);
   }
 
-  console.log('[Mode 2] Server response received:', data);
-  if (!res.ok || !data.success) {
-    throw new Error(data.error || 'RP backend token verification failed');
-  }
-  return data;
-}
+  async function runRpVerifyStatement(start) {
+    const statement = ssoMetadata.statement;
 
-  document.getElementById('step15NotifyWallet')?.addEventListener('click', async () => {
-    await runWalletStep11And12();
-  });
-
-  document.getElementById('step3CompleteRP')?.addEventListener('click', async () => {
-    await runWalletStep12();
-  });
-
-  async function runWalletStep11And12() {
-    const start = now();
-    try {
-      if (!currentIdPToken) throw new Error('No IdP Token to send to Wallet');
-      walletReceivedIdPToken = currentIdPToken;
-      step11Completed = true;
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 11. IdP token sent to Wallet ${formatMs(start)}.`;
-      document.getElementById('step3CompleteRP').disabled = false;
-      // Step 12와 Step 13(→14→15)이 각각 snap_dialog를 띄우는데, MetaMask는 스냅 origin당
-      // 다이얼로그를 하나만 허용하므로 동시에 실행하면 충돌한다. Step 12를 먼저 끝내고 진행한다.
-      const step12Ok = await runWalletStep12().catch((err) => {
-        console.warn('[Mode 2] Step 12 skipped or failed:', err.message);
-        return false;
-      });
-      if (!step12Ok) {
-        mode2Status.innerText = 'Step 12 failed. Wallet verification did not accept the IdP auth token.';
-        return;
-      }
-      runWalletStep13();
-    } catch (err) {
-      console.warn('[Mode 2] Step 11 Error:', err.message);
-      runWalletStep13();
-    }
-  }
-
-  async function runWalletStep12() {
-    const start = now();
-
-    try {
-      if (!step11Completed) throw new Error('Step 11 must complete before Step 12');
-      if (!walletReceivedIdPToken) throw new Error('Wallet has no IdP auth token');
-
-      // Snap의 SES 샌드박스가 circomlibjs를 거부해서, Step 8과 동일하게 wallet_agent.js
-      // 로컬 프로세스에서 검증한다 (더 이상 Snap 다이얼로그로 결과를 안 보여주므로,
-      // 아래에서 페이지 화면에 직접 표시한다).
-      const tokenRes = await fetch('/api/mode2/wallet_agent_token');
-      if (!tokenRes.ok) throw new Error('Failed to obtain wallet agent token');
-      const { token } = await tokenRes.json();
-
-      const verifyRes = await fetch('http://127.0.0.1:5001/verifyIdPAuthToken', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Wallet-Agent-Token': token },
-        body: JSON.stringify({
-          idpToken: walletReceivedIdPToken,
-          walletSubmission: currentSSOProof?.walletSubmission,
-          business: currentSSOProof?.business,
-        }),
-      });
-      const verification = await verifyRes.json();
-
-      ssoMetadata.step12DurationMs = verification?.durationMs ?? null;
-      measuredDurations.step12 = verification?.durationMs ?? null;
-      const elapsedText = verification?.durationMs != null
-        ? `(${Math.round(verification.durationMs)} ms)`
-        : formatMs(start);
-      document.getElementById('ssoIntermediateDisplay').innerText += `\n\nStep 12. Wallet verified IdP auth token (EdDSA-Poseidon signature): ${verification?.success ? 'PASS' : 'FAIL'} ${elapsedText}.`;
-      ssoMetadata.step12Verified = Boolean(verification?.success);
-      if (!ssoMetadata.step12Verified) {
-        throw new Error(verification?.message || 'Wallet rejected IdP auth token');
-      }
-      return true;
-    } catch (err) {
-      console.warn('[Mode 2] Step 12 Error:', err.message);
-      ssoMetadata.step12Verified = false;
-      return false;
-    }
-  }
-
-  function runWalletStep13() {
-    const start = now();
-    if (step13Completed) return;
-    if (!walletReceivedIdPToken) {
-      console.warn('[Mode 2] Step 13 Error: Wallet has no IdP auth token');
-      return;
-    }
-    if (!ssoMetadata.step12Verified) {
-      console.warn('[Mode 2] Step 13 blocked: Wallet did not verify IdP auth token');
-      return;
-    }
-    if (!ssoMetadata.ppid || !ssoMetadata.pi_PPID) {
-      console.warn('[Mode 2] Step 13 Error: Wallet has no PPID or pi_PPID');
-      return;
-    }
-
-    appendRpFeVisibleFlow('');
-    appendRpFeVisibleFlow(`Step 13. Wallet -> RP FE ${formatMs(start)}`);
-    appendRpFeVisibleFlow(`  r_i check: ${ssoMetadata.r_i === mode2SessionNonce ? 'PASS' : 'FAIL'}`);
-    appendRpFeVisibleFlow(`  auth token.uid: ${previewValue(walletReceivedIdPToken.uid)}`);
-    appendRpFeVisibleFlow(`  auth token.rid: ${previewValue(walletReceivedIdPToken.rid)}`);
-    appendRpFeVisibleFlow(`  auth token.max_height: ${previewValue(walletReceivedIdPToken.max_height)}`);
-    appendRpFeVisibleFlow(`  auth token.chain_id: ${previewValue(walletReceivedIdPToken.chain_id)}`);
-    appendRpFeVisibleFlow(`  auth token.r_token: ${previewValue(walletReceivedIdPToken.r_token)}`);
-    appendRpFeVisibleFlow(`  auth token.signature: ${previewValue(walletReceivedIdPToken.signature?.S, 36)}`);
-    appendRpFeVisibleFlow(`  PPID: ${previewValue(ssoMetadata.ppid.toString())}`);
-    appendRpFeVisibleFlow(`  pi_PPID: ${previewValue(ssoMetadata.pi_PPID)}`);
-    step13Completed = true;
-    runRPFeStep14().catch((err) => console.warn('[Mode 2] Step 14 failed:', err.message));
-  }
-
-  let piPpidVkeyPromise = null;
-  function getPiPpidVkey() {
-    if (!piPpidVkeyPromise) {
-      piPpidVkeyPromise = fetch('/build/mode2/pi_ppid_vkey.json').then((r) => r.json());
-    }
-    return piPpidVkeyPromise;
-  }
-
-  async function runRPFeStep14() {
-    const start = now();
-    if (step14Result) return;
-    const token = walletReceivedIdPToken;
-    const heightInfo = await getCurrentHeightForValidation();
-    const maxHeight = token?.max_height != null ? BigInt(token.max_height) : null;
-    const heightOk = maxHeight != null && heightInfo.value <= maxHeight;
-
-    // pi_PPID is now a real Groth16 proof (circuits/pi_ppid.circom): it attests that
-    // ppid = uid * rid * salt for some hidden uid/salt, with rid and ppid public.
-    // Verify the proof itself, then read rid/ppid from its public signals (never
-    // trust a plaintext claim) to check they bind to this RP and this IdP session.
     const ppidPublicSignals = ssoMetadata.pi_PPID?.publicSignals;
     const ridFromProof = ppidPublicSignals?.[0] != null ? BigInt(ppidPublicSignals[0]) : null;
     const ppidFromProof = ppidPublicSignals?.[1] != null ? BigInt(ppidPublicSignals[1]) : null;
@@ -585,93 +320,223 @@ async function verifyIdPTokenAtRpBackend() {
     let auidBindingOk = false;
     if (ridFromProof !== null && ppidFromProof !== null && ssoMetadata.rpNonceField != null) {
       ppidOk = String(ridFromProof) === String(ssoMetadata.rid);
-
       const recomputedAuidI = (ppidFromProof * ssoMetadata.rpNonceField) % FIELD_PRIME;
-      auidBindingOk = String(token?.auid_i) === String(recomputedAuidI);
+      auidBindingOk = String(statement?.auid_i) === String(recomputedAuidI);
     }
 
-    const localChecksOk = heightOk && auidBindingOk && ppidOk && piPpidOk;
+    const localChecksOk = auidBindingOk && ppidOk && piPpidOk;
     let rpBackendOk = false;
-    let rpBackendMessage = localChecksOk ? 'not checked' : 'skipped because local Step 14 checks failed';
+    let rpBackendMessage = localChecksOk ? 'not checked' : 'skipped because local checks failed';
     if (localChecksOk) {
-      try {
-        await verifyIdPTokenAtRpBackend();
+      const res = await fetch('/api/mode2/verify_statement', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ statement, ppid: ssoMetadata.ppid.toString() }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
         rpBackendOk = true;
         rpBackendMessage = 'PASS';
-      } catch (err) {
-        rpBackendMessage = err.message;
-        console.warn('[Mode 2] RP backend Step 14 verification failed:', err.message);
+      } else {
+        rpBackendMessage = data.error || 'RP backend verification failed';
       }
     }
 
     appendRpFeVisibleFlow('');
-    appendRpFeVisibleFlow(`Step 14. RP FE verifies Wallet submission ${formatMs(start)}`);
-    appendRpFeVisibleFlow(`  RP backend token/audience verification: ${rpBackendOk ? 'PASS' : 'FAIL'} (${rpBackendMessage})`);
-    appendRpFeVisibleFlow(`  max_height: ${heightOk ? 'PASS' : 'FAIL'} (current: ${heightInfo.value.toString()}, max: ${previewValue(token?.max_height)}, source: ${heightInfo.source})`);
+    appendRpFeVisibleFlow(`Statement 검증 ${formatMs(start)}`);
     appendRpFeVisibleFlow(`  auid_i / rp_nonce binding: ${auidBindingOk ? 'PASS' : 'FAIL'}`);
     appendRpFeVisibleFlow(`  rid binding: ${ppidOk ? 'PASS' : 'FAIL'}`);
     appendRpFeVisibleFlow(`  pi_PPID ZKP verification: ${piPpidOk ? 'PASS' : 'FAIL'}`);
+    appendRpFeVisibleFlow(`  RP backend statement verification: ${rpBackendOk ? 'PASS' : 'FAIL'} (${rpBackendMessage})`);
 
-    step14Result = {
-      success: localChecksOk && rpBackendOk,
-      ppid: ppidFromProof != null ? ppidFromProof.toString() : null,
-      r_i: ssoMetadata.r_i,
-      r_i_check: ssoMetadata.r_i === mode2SessionNonce,
-      step8DurationMs: ssoMetadata.step8DurationMs ?? null,
-      step12DurationMs: ssoMetadata.step12DurationMs ?? null,
-      checks: {
-        expireOk: heightOk,
-        heightOk,
-        auidBindingOk,
-        ppidOk,
-        piPpidOk,
-        rpBackendOk
-      }
-    };
-    measuredDurations.step14 = now() - start;
-    step14Result.step14DurationMs = measuredDurations.step14;
-
-    if (!heightOk || !auidBindingOk || !ppidOk || !piPpidOk || !rpBackendOk) {
-      console.warn('[Mode 2] Step 14 demo verification failed:', {
-        heightOk,
-        auidBindingOk,
-        ppidOk,
-        piPpidOk,
-        rpBackendOk
-      });
+    if (!localChecksOk || !rpBackendOk) {
+      mode2Status.innerText = `로그인 검증 실패: ${rpBackendMessage}`;
+      throw new Error(rpBackendMessage);
     }
 
-    runRPFeStep15().catch((err) => console.warn('[Mode 2] Step 15 failed:', err.message));
+    mode2Status.innerText = `로그인 성공 ${formatMs(start)}.`;
+    const submitButton = document.getElementById('submitPPIDTransaction');
+    if (submitButton) submitButton.disabled = false;
+    const tracePkIInput = document.getElementById('traceInputPkI');
+    const traceMaxHeightInput = document.getElementById('traceInputMaxHeight');
+    if (tracePkIInput) tracePkIInput.value = ssoMetadata.pkI ?? '';
+    if (traceMaxHeightInput) traceMaxHeightInput.value = statement?.max_height ?? '';
   }
 
-  async function runRPFeStep15() {
-    const start = now();
-    if (!step14Result) throw new Error('Step 14 result is missing');
 
-    const result = await window.ethereum.request({
-      method: 'wallet_invokeSnap',
-      params: {
-        snapId,
-        request: {
-          method: 'rpAuthResult',
-          params: {
-            result: step14Result
+  // pk_i/max_height는 이미 execute() calldata에 평문으로 들어가는 공개 온체인 값이라
+  // (누구나 체인을 보면 알 수 있음), wallet_agent.js가 이 PPID의 PPIDWallet 앞으로
+  // 온 execute() 호출들을 체인에서 직접 긁어와 돌려준다 — 서버의 private
+  // sessionLog는 안 건드린다. 사용자가 드롭다운에서 고른 항목의 값만 추적 입력창에
+  // 채워진다.
+  // innerHTML 대신 textContent로만 옵션을 채운다 — err.message 등 신뢰할 수 없는
+  // 문자열이 그대로 마크업으로 해석되는 걸 막기 위함.
+  function setSelectMessage(select, text) {
+    select.replaceChildren();
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = text;
+    select.appendChild(option);
+  }
+
+  async function loadTransactionHistory() {
+    const select = document.getElementById('traceHistorySelect');
+    if (!select || !ssoMetadata.ppid) return;
+    setSelectMessage(select, 'Loading...');
+    try {
+      const tokenRes = await fetch('/api/mode2/wallet_agent_token');
+      if (!tokenRes.ok) throw new Error('Failed to obtain wallet agent token');
+      const { token } = await tokenRes.json();
+
+      const historyRes = await fetch('http://127.0.0.1:5001/transactionHistory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Wallet-Agent-Token': token },
+      });
+      const result = await historyRes.json();
+      if (!historyRes.ok) throw new Error(result.error || 'transactionHistory failed');
+
+      if (!result.history || result.history.length === 0) {
+        setSelectMessage(select, 'No transactions found yet');
+        return;
+      }
+      select.replaceChildren();
+      for (const entry of result.history) {
+        const option = document.createElement('option');
+        option.value = entry.txHash;
+        option.textContent = `Block ${entry.blockNumber} - ${entry.txHash.slice(0, 10)}...`;
+        option.dataset.pkI = entry.pk_i;
+        option.dataset.maxHeight = entry.max_height;
+        option.dataset.to = entry.to;
+        select.appendChild(option);
+      }
+      select.dispatchEvent(new Event('change'));
+    } catch (err) {
+      setSelectMessage(select, `Error: ${err.message}`);
+    }
+  }
+
+  document.getElementById('refreshTraceHistory')?.addEventListener('click', () => {
+    loadTransactionHistory();
+  });
+
+  document.getElementById('traceHistorySelect')?.addEventListener('change', () => {
+    const select = document.getElementById('traceHistorySelect');
+    const selected = select.options[select.selectedIndex];
+    const tracePkIInput = document.getElementById('traceInputPkI');
+    const traceMaxHeightInput = document.getElementById('traceInputMaxHeight');
+    const traceToInput = document.getElementById('traceInputTo');
+    if (selected?.dataset.pkI && tracePkIInput) tracePkIInput.value = selected.dataset.pkI;
+    if (selected?.dataset.maxHeight && traceMaxHeightInput) traceMaxHeightInput.value = selected.dataset.maxHeight;
+    if (selected?.dataset.to && traceToInput) traceToInput.value = selected.dataset.to;
+  });
+
+  document.getElementById('submitPPIDTransaction')?.addEventListener('click', async () => {
+    const resultEl = document.getElementById('ppidTxResult');
+    resultEl.innerText = 'Preparing transaction...';
+    const traceSection = document.getElementById('traceSection');
+    if (traceSection) traceSection.style.display = 'block';
+    loadTransactionHistory();
+    try {
+      const tokenRes = await fetch('/api/mode2/wallet_agent_token');
+      if (!tokenRes.ok) throw new Error('Failed to obtain wallet agent token');
+      const { token } = await tokenRes.json();
+
+      const submitRes = await fetch('http://127.0.0.1:5001/submitTransaction', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Wallet-Agent-Token': token },
+        body: JSON.stringify({
+          // 데모 고정값: 받는 사람/금액을 입력받는 폼은 이 기능 범위 밖.
+          to: '0x000000000000000000000000000000000000dEaD',
+          value: '0',
+          data: '0x',
+          business: {
+            arid_i: ssoMetadata.arid_i.toString(),
+            auid_i: ssoMetadata.auid_i.toString(),
+            ppid: ssoMetadata.ppid.toString(),
+            r_token: ssoMetadata.statement.r_token,
+            chain_id: ssoMetadata.statement.chain_id,
+            maxHeight: ssoMetadata.statement.max_height,
           },
-        },
-      },
-    });
+          rpNonce: ssoMetadata.rpNonce,
+          idpToken: ssoMetadata.idpToken,
+        }),
+      });
+      const submission = await submitRes.json();
+      if (!submitRes.ok) throw new Error(submission.error || 'submitTransaction failed');
 
-    const measuredMs = result?.durationMs;
-    measuredDurations.step15 = measuredMs ?? null;
-    const measuredText = measuredMs != null
-      ? `${formatDurationMs(measuredMs)} excluding Snap confirmation`
-      : formatMs(start);
-    appendRpFeVisibleFlow(`Step 15. Wallet notified ${measuredText}`);
-    appendRpFeVisibleFlow(`Measured total excluding confirmation waits: ${formatDurationMs(sumMeasuredDurations(measuredDurations))}`);
-    appendRpFeVisibleFlow(`  Step 8: ${formatDurationMs(measuredDurations.step8)}`);
-    appendRpFeVisibleFlow(`  Step 12: ${formatDurationMs(measuredDurations.step12)}`);
-    appendRpFeVisibleFlow(`  Step 14: ${formatDurationMs(measuredDurations.step14)}`);
-    appendRpFeVisibleFlow(`  Step 15: ${formatDurationMs(measuredDurations.step15)}`);
+      const [from] = await window.ethereum.request({ method: 'eth_requestAccounts' });
+
+      if (submission.deploy) {
+        resultEl.innerText = 'Deploying PPIDWallet (first use)...';
+        const deployTxHash = await window.ethereum.request({
+          method: 'eth_sendTransaction',
+          params: [{ from, to: submission.deploy.to, data: submission.deploy.data }],
+        });
+        let receipt = null;
+        while (!receipt) {
+          receipt = await window.ethereum.request({
+            method: 'eth_getTransactionReceipt',
+            params: [deployTxHash],
+          });
+          if (!receipt) await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+      }
+
+      resultEl.innerText = 'Sending transaction...';
+      const executeTxHash = await window.ethereum.request({
+        method: 'eth_sendTransaction',
+        params: [{ from, to: submission.to, data: submission.data }],
+      });
+      resultEl.innerText = `Transaction sent: ${executeTxHash}. Waiting for confirmation...`;
+      // eth_sendTransaction만으로는 트랜잭션이 아직 블록에 안 올라갔을 수 있다 —
+      // 여기서 바로 loadTransactionHistory()를 부르면(체인을 스캔해서 찾는 방식이라)
+      // 아직 안 보일 수 있으므로, deploy 트랜잭션과 동일하게 영수증을 기다린 뒤에 갱신한다.
+      let executeReceipt = null;
+      while (!executeReceipt) {
+        executeReceipt = await window.ethereum.request({
+          method: 'eth_getTransactionReceipt',
+          params: [executeTxHash],
+        });
+        if (!executeReceipt) await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+      resultEl.innerText = `Transaction sent: ${executeTxHash}`;
+      loadTransactionHistory();
+    } catch (err) {
+      resultEl.innerText = `Error: ${err.message}`;
+    }
+  });
+
+  document.getElementById('traceTransaction')?.addEventListener('click', async () => {
+    const resultEl = document.getElementById('traceResult');
+    resultEl.innerText = 'Tracing...';
+    try {
+      const to = document.getElementById('traceInputTo').value;
+      if (!to) throw new Error('to (wallet address) is required');
+
+      const traceRes = await fetch('/api/mode2/trace_transaction', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to }),
+      });
+      const traceResult = await traceRes.json();
+      if (!traceRes.ok) throw new Error(traceResult.error || 'trace_transaction failed');
+
+      const t = traceResult.timings ?? {};
+      resultEl.innerText = `Traced uid: ${traceResult.uid} (username: ${traceResult.username ?? 'unknown'})\n` +
+        `  auid_i lookup: ${t.auidILookupMs ?? 'n/a'} ms\n` +
+        `  IdP lookup: ${t.idpLookupMs ?? 'n/a'} ms\n` +
+        `  Total: ${t.totalMs ?? 'n/a'} ms`;
+    } catch (err) {
+      resultEl.innerText = `Error: ${err.message}`;
+    }
+  });
+
+  let piPpidVkeyPromise = null;
+  function getPiPpidVkey() {
+    if (!piPpidVkeyPromise) {
+      piPpidVkeyPromise = fetch('/build/mode2/pi_ppid_vkey.json').then((r) => r.json());
+    }
+    return piPpidVkeyPromise;
   }
 
   } // End APP_MODE === 2 block.

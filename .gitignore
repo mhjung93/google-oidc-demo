@@ -17,6 +17,7 @@ cache/
 auditor_keys.json
 bip32_out.json
 wallet_state.json
+rp_registration.json
 
 # past snapshots
 backup_current_project/
@@ -25,6 +26,7 @@ circuits/lib/backup/
 # nested repos (have their own .git)
 sui-repo/
 circuits/lib/circom-rsa-verify/
+zkaa-circom/
 
 # local tool settings / session data
 .claude/

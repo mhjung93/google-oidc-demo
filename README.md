@@ -80,6 +80,20 @@ Mode 2 회로 산출물을 다시 만들 때는 아래 명령을 사용합니다
 ./scripts/build_mode2_circuits.sh
 ```
 
+### 크레덴셜 폐기(Revocation) 관련 환경변수
+
+크레덴셜 폐기 기능(`docs/superpowers/specs/2026-08-23-baar-revocation-design.md` 참고)을 쓰려면 아래 환경변수가 추가로 필요합니다. 아래 값은 예시일 뿐이며 실제 시크릿·주소로 채워야 합니다.
+
+```bash
+IDP_ADMIN_SECRET=change-me
+REVOCATION_IDP_ADDRESS=0x...
+REVOCATION_REGISTRY_ADDRESS=0x...
+```
+
+- `IDP_ADMIN_SECRET`: `custom_idp.js`의 `POST /idp/revoke` 관리자 인증에 씁니다. 미설정 시 이 엔드포인트는 503을 반환합니다.
+- `REVOCATION_IDP_ADDRESS`: 배포/게시 스크립트(`scripts/redeploy_ppid_factory.cjs`, `scripts/push_revocation_root.cjs`)가 `RevocationRegistry`의 `onlyIdP` 주소로 씁니다. 미설정 시 배포·게시가 에러로 중단됩니다.
+- `REVOCATION_REGISTRY_ADDRESS`: `wallet_agent.js`가 배포된 `RevocationRegistry`를 조회할 때 씁니다. 미설정 시 `wallet_agent.js`는 기동 시점에 에러를 내고 종료합니다.
+
 ## Mode 1 실행
 
 `.env`에 Google OIDC 클라이언트 설정을 포함해야 합니다.
