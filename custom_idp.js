@@ -169,6 +169,21 @@ const users = {
   'alice': { password: 'secret456', uid: '67890', sub: '67890', lastAuid: null }
 };
 const usedNonces = new Set();
+
+// auid = Poseidon(uid, salt)는 pi_i의 6번째(마지막) public signal이고 계정마다 고정이다.
+// 첫 성공 로그인에서 고정해두고 이후 달라지면 거부하는 것이 계정 폐기를 실제로 성립시킨다 —
+// 폐기 리프가 Poseidon(TAG_ACCOUNT, auid)이므로, salt를 갈아끼운 지갑은 다른 auid를 제시해
+// 자기 폐기를 그대로 통과해 버린다.
+//
+// 반드시 pi_i 증명 검증에 성공한 뒤에 호출할 것 — 그래야 위조 증명으로 저장값을 오염시킬 수 없다.
+// 로그인 경로가 둘(/authorize/login, /sso_with_credentials)이므로 양쪽 모두에서 호출해야 한다.
+function pinAuidToAccount(user, auidFromProof) {
+  if (user.lastAuid !== null && String(user.lastAuid) !== String(auidFromProof)) {
+    throw new Error('Wallet binding mismatch: this account is using a different salt than its last successful login');
+  }
+  user.lastAuid = auidFromProof;
+}
+
 // B2 추적용 발급 로그: r_token -> uid. 메모리 전용, 서버 재시작 시 소실됨(의도된 데모 한계).
 const issuanceLog = new Map();
 // B2 추적용 발급 로그: auid_i -> uid. auid_i = ppid * rp_nonce는 세션마다 값이 바뀌지만,
@@ -358,6 +373,8 @@ app.post('/authorize/login', async (req, res) => {
     if (String(verifySignals[6]) !== idpPubX || String(verifySignals[7]) !== idpPubY) {
       throw new Error('pi_i was proven against a different IdP key');
     }
+
+    pinAuidToAccount(user, verifySignals[5]);
 
     record.authenticatedUid = user.uid;
     record.arid_i = verifySignals[1];
@@ -613,16 +630,7 @@ async function verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, bu
       throw new Error('pi_i was proven against a different IdP key (RP registration credential check bypassed)');
     }
 
-    // auid = Poseidon(uid, salt) is the 6th (last) public signal — fixed per
-    // account. Only trust it once the proof above has already verified, so a
-    // bogus proof can't be used to pollute the stored value. If it differs
-    // from the value seen at this account's last successful login, the
-    // wallet is using a different salt than before.
-    const auidFromProof = verifySignals[5];
-    if (user.lastAuid !== null && String(user.lastAuid) !== String(auidFromProof)) {
-      throw new Error('Wallet binding mismatch: this account is using a different salt than its last successful login');
-    }
-    user.lastAuid = auidFromProof;
+    pinAuidToAccount(user, verifySignals[5]);
 
     const maxHeight = business?.maxHeight ?? business?.max_height;
     const rToken = business?.r_token ?? business?.tokenNonce;
