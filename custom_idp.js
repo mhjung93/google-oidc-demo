@@ -25,6 +25,48 @@ const vkeyAridI = JSON.parse(fs.readFileSync('build/mode2/pi_arid_i_vkey.json', 
 // 재시작하면 비워진다(기존 issuanceLog/auidILog와 같은 의도된 데모 한계).
 const revocationTree = await createIMT(20);
 const revokedLeaves = [];
+// 리프별 만료 블록. lib/imt.js는 트리만 알아야 하므로, 만료 메타데이터(leaf 문자열 ->
+// expiryBlock BigInt)는 revokedLeaves와 나란히 IdP가 따로 관리한다. /idp/sweep이
+// 이 맵과 revocationTree, revokedLeaves 셋을 항상 함께 갱신해야 한다 — 어긋나면
+// 지갑이 revokedLeaves로 재구성한 root가 IdP root와 달라져 전원 실패한다.
+const leafExpiry = new Map();
+
+// custom_idp.js는 지금까지 체인 접근이 전혀 없었다. 만료 판정에 현재 블록이
+// 필요해서 server.js:27,238과 동일한 관례로 eth_blockNumber를 조회한다.
+const MODE2_ETH_RPC_URL = process.env.ETH_RPC_URL || 'http://127.0.0.1:8545';
+
+async function getCurrentBlockHeight() {
+  const response = await fetch(MODE2_ETH_RPC_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'eth_blockNumber',
+      params: [],
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`eth_blockNumber RPC failed with status ${response.status}`);
+  }
+
+  const data = await response.json();
+  if (data.error || typeof data.result !== 'string') {
+    // 조용히 0이나 기본값으로 떨어지면 만료 판정이 전부 틀어지므로(모든 크레덴셜이
+    // 즉시 만료로 보이거나, 반대로 아무것도 만료되지 않는 것으로 보임) 명확히 던진다.
+    throw new Error(data.error?.message || 'eth_blockNumber RPC returned no result');
+  }
+
+  return BigInt(data.result);
+}
+
+// wallet_agent.js의 TOKEN_VALIDITY_SECONDS/ETHEREUM_SLOT_SECONDS 관례를 그대로 따라
+// 크레덴셜 수명(블록 수)을 유도한다: ceil(3600 / 12) = 300. 숫자 300을 그대로
+// 박지 않는다 — 두 상수 중 하나만 바뀌어도 계산이 따라오게 하기 위함.
+const TOKEN_VALIDITY_SECONDS = 3600n;
+const ETHEREUM_SLOT_SECONDS = 12n;
+const CREDENTIAL_LIFETIME_BLOCKS = (TOKEN_VALIDITY_SECONDS + ETHEREUM_SLOT_SECONDS - 1n) / ETHEREUM_SLOT_SECONDS;
 
 function now() { return Date.now(); }
 function cursor() { return { last: now() }; }
@@ -498,7 +540,9 @@ app.post('/token', async (req, res) => {
   // verifyPiIAndIssueToken does, so statements issued via this new flow stay
   // traceable through the existing /idp/lookup_uid_by_r_token and
   // /idp/lookup_uid_by_auid_i endpoints.
-  issuanceLog.set(String(record.token_nonce), record.uid);
+  // record는 authorizationCodes에서 꺼낸 이 handler 스코프의 값으로, max_height는
+  // /authorize/login에서 pi_i의 4번째 public signal(verifySignals[3])로부터 채워졌다.
+  issuanceLog.set(String(record.token_nonce), { uid: record.uid, maxHeight: record.max_height });
   auidILog.set(String(record.auid_i), record.uid);
 
   res.json({
@@ -703,7 +747,9 @@ async function verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, bu
     exp: exp,
     signature: sigJson
   };
-  issuanceLog.set(rToken.toString(), user.uid);
+  // maxHeight는 이 함수 위쪽에서 business.maxHeight ?? business.max_height로 이미
+  // 채워진 지역 변수다(줄 658 부근).
+  issuanceLog.set(rToken.toString(), { uid: user.uid, maxHeight: maxHeight.toString() });
   auidILog.set(String(business.auid_i), user.uid);
   console.log(`[CustomIdP][Step 11] IdP auth token issued and returned for Wallet delivery. ${ms(start)}`);
 
@@ -757,10 +803,14 @@ app.post('/idp/lookup_uid_by_r_token', (req, res) => {
   if (!r_token) {
     return res.status(400).json({ error: 'r_token is required' });
   }
-  const uid = issuanceLog.get(String(r_token));
-  if (uid === undefined) {
+  // issuanceLog는 이제 { uid, maxHeight }를 저장한다(만료 판정을 위해 /idp/revoke가
+  // maxHeight도 조회해야 하므로). 이 엔드포인트의 응답 형태({ uid, username })는
+  // 외부 계약이라 바뀌지 않는다 — 내부에서 uid만 꺼내 쓴다.
+  const entry = issuanceLog.get(String(r_token));
+  if (entry === undefined) {
     return res.status(404).json({ error: 'No issuance record found for this r_token' });
   }
+  const uid = entry.uid;
   // uid는 users의 값일 뿐 키가 아니라서, 사람이 읽을 수 있는 username을 보여주려면
   // 역방향으로 찾아야 한다.
   const usernameEntry = Object.entries(users).find(([, user]) => String(user.uid) === String(uid));
@@ -853,17 +903,85 @@ app.post('/idp/revoke', requireIdPAdmin, async (req, res) => {
   else if (type === 'account') tag = TAG_ACCOUNT;
   else return res.status(400).json({ error: "type must be 'session' or 'account'" });
 
+  let currentBlock;
+  try {
+    currentBlock = await getCurrentBlockHeight();
+  } catch (err) {
+    return res.status(502).json({ error: `failed to read current block height: ${err.message}` });
+  }
+
+  // 입구 검사: 리프마다 만료 블록을 부여한다(트리 수명 관리, docs/REVOCATION_FOLLOWUPS.md).
+  // 부수 효과로, 세션 폐기는 "내가 발급한 적 있는 r_token인가"를 issuanceLog에서
+  // 먼저 확인하게 되어 임의의 숫자로 트리를 부풀리는 오염이 원천 차단된다.
+  let expiryBlock;
+  if (type === 'session') {
+    const issued = issuanceLog.get(valueStr);
+    if (issued === undefined) {
+      // 발급한 적 없는 값: "잘못된 값"과 구분해 운영자가 원인을 알 수 있게 404로 응답한다.
+      return res.status(404).json({ error: 'no issuance record found for this r_token; only IdP-issued sessions can be revoked' });
+    }
+    const maxHeight = BigInt(issued.maxHeight);
+    if (maxHeight <= currentBlock) {
+      // 이미 만료된 크레덴셜: 넣어봐야 지갑이 비멤버십 증명을 못 만드는 것도 아니고
+      // (회로가 max_height 자체로 거부) 트리만 불필요하게 커지므로, "잘못된 값"(404)과는
+      // 다른 상태 코드(410 Gone)로 구분한다.
+      return res.status(410).json({ error: 'credential already expired; revocation would be a no-op' });
+    }
+    expiryBlock = maxHeight;
+  } else {
+    // 계정 폐기는 항상 통과한다. 폐기 직전에 발급된 크레덴셜(만료가 최대
+    // 발급시각 + CREDENTIAL_LIFETIME_BLOCKS)까지 덮어야 하므로 만료 블록은
+    // 현재 블록 + 크레덴셜 수명이다.
+    expiryBlock = currentBlock + CREDENTIAL_LIFETIME_BLOCKS;
+  }
+
   try {
     const leaf = await leafValue(tag, valueStr);
     await revocationTree.insert(leaf);
-    if (!revokedLeaves.includes(leaf.toString())) revokedLeaves.push(leaf.toString());
+    const leafKey = leaf.toString();
+    if (!revokedLeaves.includes(leafKey)) revokedLeaves.push(leafKey);
+    leafExpiry.set(leafKey, expiryBlock);
 
     const root = revocationTree.getRoot().toString();
-    console.log(`[IdP] revoked ${type} -> leaf ${leaf}, new root ${root}`);
+    console.log(`[IdP] revoked ${type} -> leaf ${leaf}, expires at block ${expiryBlock}, new root ${root}`);
     res.json({ root });
   } catch (err) {
     return res.status(400).json({ error: err.message || 'Failed to revoke value' });
   }
+});
+
+// 관리자 전용 유지보수 엔드포인트. 만료된 리프를 트리에서 제거해 지갑의 매
+// 트랜잭션 재구성 비용이 무한정 늘지 않게 한다(수천 개를 넘으면 재구성이
+// 증명 생성보다 비싸진다 — docs/REVOCATION_FOLLOWUPS.md 0절).
+// 인증은 /idp/revoke와 동일한 requireIdPAdmin을 재사용한다.
+app.post('/idp/sweep', requireIdPAdmin, async (req, res) => {
+  let currentBlock;
+  try {
+    currentBlock = await getCurrentBlockHeight();
+  } catch (err) {
+    return res.status(502).json({ error: `failed to read current block height: ${err.message}` });
+  }
+
+  const expiredLeafKeys = [];
+  for (const [leafKey, expiryBlock] of leafExpiry) {
+    if (expiryBlock <= currentBlock) expiredLeafKeys.push(leafKey);
+  }
+
+  // revocationTree, revokedLeaves, leafExpiry 셋을 항상 함께 갱신한다. 지갑은
+  // revokedLeaves로 트리를 재구성해 root를 대조하므로, 하나라도 어긋나면
+  // 모든 지갑의 execute()가 실패한다.
+  for (const leafKey of expiredLeafKeys) {
+    await revocationTree.remove(BigInt(leafKey));
+    leafExpiry.delete(leafKey);
+    const idx = revokedLeaves.indexOf(leafKey);
+    if (idx !== -1) revokedLeaves.splice(idx, 1);
+  }
+
+  const root = revocationTree.getRoot().toString();
+  console.log(`[IdP] sweep at block ${currentBlock}: removed ${expiredLeafKeys.length}, remaining ${revokedLeaves.length}, new root ${root}`);
+  // 제거된 게 없어도(heartbeat) 200으로 정상 응답한다 — scripts/revocation_sweep.cjs가
+  // 매번 이 root를 온체인에 재게시해 RevocationRegistry의 GRACE_BLOCKS 만료를 막는다.
+  res.json({ root, removed: expiredLeafKeys.length, remaining: revokedLeaves.length });
 });
 
 // 지갑이 자기 witness를 계산하려면 폐기 목록 전체가 필요하다.

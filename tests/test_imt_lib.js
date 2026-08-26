@@ -108,6 +108,45 @@ async function main() {
     console.log('OK: raw unmasked target round-trips through the circuit');
   }
 
+  // 회귀 테스트 6 (Stage A): remove()는 values 배열에서 값을 빼는 것뿐이라
+  // 삽입 이전 root로 정확히 되돌아가야 하고, 뺀 값은 다시 비멤버십 witness를
+  // 낼 수 있어야 한다. 없는 값은 false를 반환하며 root를 건드리지 않고,
+  // anchor(0) 제거는 트리를 영구히 못 쓰게 만들므로 반드시 예외여야 한다.
+  {
+    const removeTree = await createIMT(20);
+    const rootEmpty = removeTree.getRoot().toString();
+
+    const removeVal = await leafValue(TAG_SESSION, 42n);
+    await removeTree.insert(removeVal);
+    const rootAfterInsert = removeTree.getRoot().toString();
+    assert.notEqual(rootAfterInsert, rootEmpty, 'insert must change the root before we test remove');
+
+    const removed = await removeTree.remove(removeVal);
+    assert.equal(removed, true, 'remove() must return true when the value was present');
+    assert.equal(removeTree.getRoot().toString(), rootEmpty, 'root after remove must match the pre-insert root exactly');
+    console.log('OK: remove() restores the exact pre-insert root');
+
+    // 제거한 값은 다시 비멤버가 되어 witness를 낼 수 있다
+    const witnessAfterRemove = await removeTree.getNonMembershipWitness(removeVal);
+    assert.equal(witnessAfterRemove.root, rootEmpty);
+    console.log('OK: a removed value is non-member again and yields a witness');
+
+    // 없는 값을 제거하면 false, root 불변
+    const rootBeforeNoop = removeTree.getRoot().toString();
+    const noopRemoved = await removeTree.remove(999999n);
+    assert.equal(noopRemoved, false, 'remove() of an absent value must return false');
+    assert.equal(removeTree.getRoot().toString(), rootBeforeNoop, 'remove() no-op must not change the root');
+    console.log('OK: remove() of an absent value is a no-op that returns false');
+
+    // anchor(0) 제거는 예외
+    await assert.rejects(
+      () => removeTree.remove(0n),
+      /anchor leaf and cannot be removed/,
+      'remove() must reject the anchor leaf 0',
+    );
+    console.log('OK: remove() rejects the anchor leaf 0');
+  }
+
   console.log('PASS: IMT library inserts, changes root, and produces non-membership witnesses.');
 }
 

@@ -13,23 +13,56 @@ if (!ADMIN_SECRET) {
 }
 const adminHeaders = { 'X-IdP-Admin-Secret': ADMIN_SECRET };
 
+// Stage A(트리 수명 관리) 범위 노트: "실제 발급된 r_token으로 세션 폐기가 성공한다"는
+// 케이스는 의도적으로 여기서 다루지 않는다. issuanceLog에 r_token을 남기려면
+// /par → /authorize/login → /authorize/consent → /token(또는 구 플로우인
+// /sso_with_credentials → /consent_result) 전체 로그인을 돌아야 하는데, 그러려면
+// server.js(:3000)/wallet_agent.js(:5001)까지 함께 떠 있어야 한다(이 파일은 지금까지
+// custom_idp.js 하나에만 의존하는 자기완결형 테스트였다). 그 전체 흐름은 이미
+// tests/test_par_authorize_token_e2e.js의 testNewFlow()가 덮고 있으므로, 여기서는
+// "발급 기록이 없으면 거부"(입구 검사의 핵심 동작)만 확인하고 실제 발급 성공 케이스는
+// 생략한다.
 async function main() {
   const before = await (await fetch(`${BASE}/idp/revocation_state`)).json();
   assert.ok(typeof before.root === 'string', 'revocation_state must expose a root');
   assert.ok(Array.isArray(before.revokedLeaves), 'revocation_state must expose revokedLeaves');
 
+  // 계정 폐기는 발급 기록이 없어도 항상 통과해야 한다(Stage A 입구 검사는
+  // type === 'session'에만 적용된다) — 계정 층 폐기는 "이미 발급된 크레덴셜의
+  // 무효화"가 아니라 그 auid 자체를 더 이상 신뢰하지 않겠다는 선언이기 때문이다.
   const res = await fetch(`${BASE}/idp/revoke`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...adminHeaders },
     body: JSON.stringify({ type: 'account', value: '424242' }),
   });
-  assert.equal(res.status, 200);
+  assert.equal(res.status, 200, 'account revocation must succeed without any issuance record');
   const body = await res.json();
   assert.ok(typeof body.root === 'string');
   assert.notEqual(body.root, before.root, 'revoking must change the root');
 
   const after = await (await fetch(`${BASE}/idp/revocation_state`)).json();
   assert.equal(after.revokedLeaves.length, before.revokedLeaves.length + 1);
+
+  // --- Stage A: 세션 폐기 입구 검사 ---
+  // 발급 기록이 없는 r_token으로 세션 폐기를 시도하면 거부돼야 한다. 이 검사가
+  // 없으면 임의의 숫자를 세션으로 폐기 신청해 트리를 무한정 부풀릴 수 있다.
+  // 실제로 issuanceLog에 기록되는 r_token은 로그인 전체를 거쳐야 발급되므로,
+  // 이 값은 IdP가 절대 발급하지 않았을 합성값이다.
+  const stateBeforeUnissuedSession = await (await fetch(`${BASE}/idp/revocation_state`)).json();
+  const unissuedSession = await fetch(`${BASE}/idp/revoke`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...adminHeaders },
+    body: JSON.stringify({ type: 'session', value: '999888777666555' }),
+  });
+  assert.equal(unissuedSession.status, 404, 'revoking a session with no issuance record must be rejected');
+  const unissuedSessionBody = await unissuedSession.json();
+  assert.ok(unissuedSessionBody.error, 'error field must be present');
+  const stateAfterUnissuedSession = await (await fetch(`${BASE}/idp/revocation_state`)).json();
+  assert.equal(
+    stateAfterUnissuedSession.root,
+    stateBeforeUnissuedSession.root,
+    'a rejected session revocation must not change the revocation root',
+  );
 
   const bad = await fetch(`${BASE}/idp/revoke`, {
     method: 'POST',
@@ -122,7 +155,7 @@ async function main() {
     'rejected revoke attempts must not change the revocation root',
   );
 
-  console.log('PASS: IdP revoke endpoint updates the tree, enforces admin auth, and exposes state.');
+  console.log('PASS: IdP revoke endpoint updates the tree, enforces admin auth and the session issuance-record entry check, and exposes state.');
 }
 
 main();
