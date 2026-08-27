@@ -23,12 +23,30 @@ const vkeyAridI = JSON.parse(fs.readFileSync('build/mode2/pi_arid_i_vkey.json', 
 
 // 폐기 트리. custom_idp.js의 다른 로그와 마찬가지로 메모리에만 두며,
 // 재시작하면 비워진다(기존 issuanceLog/auidILog와 같은 의도된 데모 한계).
-const revocationTree = await createIMT(20);
-const revokedLeaves = [];
+//
+// == 게시된 상태와 대기 상태의 분리 (배칭) ==
+// revocationTree/revokedLeaves는 '마지막으로 온체인에 게시된' 폐기 상태다.
+// /idp/revocation_state는 이것만 서빙한다. 폐기 요청은 즉시 트리에 들어가지 않고
+// pendingAdds에 쌓였다가 /idp/publish/prepare + /idp/publish/commit 때 한꺼번에
+// 반영된다.
+//
+// 왜 즉시 반영하면 안 되는가: 지갑은 /idp/revocation_state로 트리를 재구성해
+// witness를 만드는데, 그 root가 RevocationRegistry에 게시돼 있지 않으면 온체인
+// execute()가 StaleRevocationRoot로 revert한다. 폐기 즉시 IdP 상태만 전진하면
+// 게시 전까지 '정상 사용자 전원'이 막힌다. 게시될 때까지 옛(=게시된) 상태를 계속
+// 서빙하면 그 장애 창이 사라지고, 폐기 효력 지연은 게시 주기만큼으로 유계가 된다.
+const REVOCATION_TREE_DEPTH = 20;
+let revocationTree = await createIMT(REVOCATION_TREE_DEPTH);
+let revokedLeaves = [];
+// 접수됐지만 아직 게시되지 않은 폐기 리프(leaf 문자열).
+const pendingAdds = new Set();
+// prepare가 계산해 둔 다음 게시 후보. commit이 재계산 없이 그대로 소비한다.
+//   { root: string, leaves: string[], blockHeight: bigint }
+let preparedPublish = null;
 // 리프별 만료 블록. lib/imt.js는 트리만 알아야 하므로, 만료 메타데이터(leaf 문자열 ->
-// expiryBlock BigInt)는 revokedLeaves와 나란히 IdP가 따로 관리한다. /idp/sweep이
-// 이 맵과 revocationTree, revokedLeaves 셋을 항상 함께 갱신해야 한다 — 어긋나면
-// 지갑이 revokedLeaves로 재구성한 root가 IdP root와 달라져 전원 실패한다.
+// expiryBlock BigInt)는 revokedLeaves와 나란히 IdP가 따로 관리한다. 게시분과 대기분을
+// 함께 담는다. commit이 이 맵과 revocationTree, revokedLeaves 셋을 항상 함께 갱신해야
+// 한다 — 어긋나면 지갑이 revokedLeaves로 재구성한 root가 IdP root와 달라져 전원 실패한다.
 const leafExpiry = new Map();
 
 // custom_idp.js는 지금까지 체인 접근이 전혀 없었다. 만료 판정에 현재 블록이
@@ -937,24 +955,55 @@ app.post('/idp/revoke', requireIdPAdmin, async (req, res) => {
 
   try {
     const leaf = await leafValue(tag, valueStr);
-    await revocationTree.insert(leaf);
     const leafKey = leaf.toString();
-    if (!revokedLeaves.includes(leafKey)) revokedLeaves.push(leafKey);
-    leafExpiry.set(leafKey, expiryBlock);
 
-    const root = revocationTree.getRoot().toString();
-    console.log(`[IdP] revoked ${type} -> leaf ${leaf}, expires at block ${expiryBlock}, new root ${root}`);
-    res.json({ root });
+    // 게시 트리는 여기서 건드리지 않는다. 대기열에만 넣고, 실제 반영은
+    // /idp/publish/prepare + /idp/publish/commit이 한다.
+    const alreadyPublished = revokedLeaves.includes(leafKey);
+    const alreadyPending = pendingAdds.has(leafKey);
+    if (!alreadyPublished && !alreadyPending) pendingAdds.add(leafKey);
+
+    // 재폐기는 에러가 아니라 no-op이다. 다만 계정 재폐기는 폐기 창을 연장해야
+    // 하므로(새로 발급된 크레덴셜까지 덮어야 한다) 만료 블록은 더 늦은 쪽으로
+    // 갱신한다. 짧은 쪽으로 덮어쓰면 창이 줄어 폐기가 조기에 풀린다.
+    const previousExpiry = leafExpiry.get(leafKey);
+    const effectiveExpiry =
+      previousExpiry !== undefined && previousExpiry > expiryBlock ? previousExpiry : expiryBlock;
+    leafExpiry.set(leafKey, effectiveExpiry);
+
+    // 응답에 root를 담지 않는다 — 아직 게시되지 않았으므로 '새 root'라는 것이
+    // 존재하지 않고, 담으면 호출자가 그 값을 게시된 것으로 오해한다.
+    console.log(
+      `[IdP] queued revocation of ${type} -> leaf ${leafKey}, expires at block ${effectiveExpiry}` +
+        ` (published=${alreadyPublished}, alreadyPending=${alreadyPending}, pending=${pendingAdds.size})`,
+    );
+    // expiryBlock은 BigInt라 JSON.stringify가 던진다. 문자열로 내보낸다.
+    res.json({
+      pending: true,
+      leaf: leafKey,
+      expiryBlock: effectiveExpiry.toString(),
+      alreadyPublished,
+      alreadyPending,
+      pendingCount: pendingAdds.size,
+    });
   } catch (err) {
     return res.status(400).json({ error: err.message || 'Failed to revoke value' });
   }
 });
 
-// 관리자 전용 유지보수 엔드포인트. 만료된 리프를 트리에서 제거해 지갑의 매
-// 트랜잭션 재구성 비용이 무한정 늘지 않게 한다(수천 개를 넘으면 재구성이
-// 증명 생성보다 비싸진다 — docs/REVOCATION_FOLLOWUPS.md 0절).
+// 관리자 전용 게시 엔드포인트 (prepare/commit 2단계).
+//
+// 왜 한 번에 하지 않는가: "IdP는 전진했는데 온체인 push는 실패" 상태가 생기면 지금
+// 고치려는 문제(게시되지 않은 root로 witness를 만들어 전원이 막힘)가 그대로 재발한다.
+// push가 확정된 뒤에만 IdP가 전진하도록 순서를 강제한다.
+//   prepare 후 push 실패 -> 아무것도 안 바뀜(안전)
+//   push 후 commit 실패  -> 체인이 더 최신. 지갑은 옛 root를 쓰고 그건 아직
+//                           GRACE_BLOCKS 안이라 동작한다(안전한 방향)
+//
+// 만료 리프 제거(sweep)도 이 경로에 흡수됐다. 만료된 리프를 빼야 지갑의 매 트랜잭션
+// 재구성 비용이 무한정 늘지 않는다(docs/REVOCATION_FOLLOWUPS.md 0절).
 // 인증은 /idp/revoke와 동일한 requireIdPAdmin을 재사용한다.
-app.post('/idp/sweep', requireIdPAdmin, async (req, res) => {
+app.post('/idp/publish/prepare', requireIdPAdmin, async (req, res) => {
   let currentBlock;
   try {
     currentBlock = await getCurrentBlockHeight();
@@ -962,30 +1011,134 @@ app.post('/idp/sweep', requireIdPAdmin, async (req, res) => {
     return res.status(502).json({ error: `failed to read current block height: ${err.message}` });
   }
 
-  const expiredLeafKeys = [];
-  for (const [leafKey, expiryBlock] of leafExpiry) {
-    if (expiryBlock <= currentBlock) expiredLeafKeys.push(leafKey);
+  // 다음 게시 집합 = (게시된 리프 ∪ 대기 리프) − (만료된 것)
+  const candidate = [];
+  for (const leafKey of [...revokedLeaves, ...pendingAdds]) {
+    if (candidate.includes(leafKey)) continue;
+    const expiryBlock = leafExpiry.get(leafKey);
+    // 만료 정보가 없는 리프는 조용히 버리지 않고 남긴다. 버리면 폐기가 소리 없이
+    // 풀리는 fail-open이 된다.
+    if (expiryBlock !== undefined && expiryBlock <= currentBlock) continue;
+    candidate.push(leafKey);
   }
 
-  // revocationTree, revokedLeaves, leafExpiry 셋을 항상 함께 갱신한다. 지갑은
-  // revokedLeaves로 트리를 재구성해 root를 대조하므로, 하나라도 어긋나면
-  // 모든 지갑의 execute()가 실패한다.
-  for (const leafKey of expiredLeafKeys) {
-    await revocationTree.remove(BigInt(leafKey));
-    leafExpiry.delete(leafKey);
-    const idx = revokedLeaves.indexOf(leafKey);
-    if (idx !== -1) revokedLeaves.splice(idx, 1);
+  // 임시 트리로만 계산한다. 게시 트리는 commit 전까지 절대 건드리지 않는다.
+  let expectedRoot;
+  try {
+    const preview = await createIMT(REVOCATION_TREE_DEPTH);
+    for (const leafKey of candidate) await preview.insert(BigInt(leafKey));
+    expectedRoot = preview.getRoot().toString();
+  } catch (err) {
+    return res.status(500).json({ error: `failed to compute prepared root: ${err.message}` });
   }
 
-  const root = revocationTree.getRoot().toString();
-  console.log(`[IdP] sweep at block ${currentBlock}: removed ${expiredLeafKeys.length}, remaining ${revokedLeaves.length}, new root ${root}`);
-  // 제거된 게 없어도(heartbeat) 200으로 정상 응답한다 — scripts/revocation_sweep.cjs가
-  // 매번 이 root를 온체인에 재게시해 RevocationRegistry의 GRACE_BLOCKS 만료를 막는다.
-  res.json({ root, removed: expiredLeafKeys.length, remaining: revokedLeaves.length });
+  const candidateSet = new Set(candidate);
+  const publishedSet = new Set(revokedLeaves);
+  const added = candidate.filter((k) => !publishedSet.has(k)).length;
+  const removed = revokedLeaves.filter((k) => !candidateSet.has(k)).length;
+
+  // 여러 번 호출하면 마지막 것이 유효하다. prepare와 commit 사이에 들어온 폐기는
+  // 이번 회차에 포함되지 않고 다음 회차로 넘어간다 — 의도된 동작이다.
+  preparedPublish = { root: expectedRoot, leaves: candidate, blockHeight: currentBlock };
+
+  const currentRoot = revocationTree.getRoot().toString();
+  console.log(
+    `[IdP] publish/prepare at block ${currentBlock}: +${added} -${removed}, ` +
+      `leaves ${revokedLeaves.length} -> ${candidate.length}, expectedRoot ${expectedRoot}`,
+  );
+  // 추가·제거가 0건이어도 200이다 — 그 경우가 heartbeat다(같은 root를 재게시해
+  // RevocationRegistry의 GRACE_BLOCKS 만료로 정상 사용자가 막히는 것을 막는다).
+  res.json({
+    expectedRoot,
+    currentRoot,
+    added,
+    removed,
+    leafCount: candidate.length,
+    pendingCount: pendingAdds.size,
+    blockHeight: currentBlock.toString(),
+  });
+});
+
+// prepare가 계산한 root가 온체인에 실제로 게시된 뒤에만 호출돼야 한다.
+app.post('/idp/publish/commit', requireIdPAdmin, async (req, res) => {
+  const { root } = req.body ?? {};
+  if (root === undefined || root === null) {
+    return res.status(400).json({ error: 'root is required' });
+  }
+  if (preparedPublish === null) {
+    return res.status(409).json({ error: 'no prepared publish; call POST /idp/publish/prepare first' });
+  }
+  if (String(root).trim() !== preparedPublish.root) {
+    // 그 사이 상태가 바뀌었거나 다른 회차의 root다. 조용히 적용하면 게시된 온체인
+    // root와 IdP 상태가 어긋난다.
+    return res.status(409).json({
+      error: 'root does not match the prepared publish; re-run POST /idp/publish/prepare',
+      expectedRoot: preparedPublish.root,
+    });
+  }
+
+  const prepared = preparedPublish;
+
+  // 게시 트리를 준비된 리프 집합으로 통째로 교체한다.
+  let nextTree;
+  let actualRoot;
+  try {
+    nextTree = await createIMT(REVOCATION_TREE_DEPTH);
+    for (const leafKey of prepared.leaves) await nextTree.insert(BigInt(leafKey));
+    actualRoot = nextTree.getRoot().toString();
+  } catch (err) {
+    return res.status(500).json({ error: `failed to rebuild the published tree: ${err.message}` });
+  }
+
+  // 세 상태(revocationTree, revokedLeaves, leafExpiry)가 어긋나면 지갑이
+  // revokedLeaves로 재구성한 root가 IdP root와 달라져 모든 지갑이 실패한다.
+  // 조용히 넘어가지 않고 명확히 거부하고, 게시 상태는 그대로 둔다.
+  if (actualRoot !== prepared.root) {
+    console.error(
+      `[IdP] publish/commit aborted: rebuilt root ${actualRoot} != prepared root ${prepared.root}`,
+    );
+    return res.status(500).json({
+      error: 'rebuilt tree root does not match the prepared root; published state left unchanged',
+      preparedRoot: prepared.root,
+      rebuiltRoot: actualRoot,
+    });
+  }
+
+  revocationTree = nextTree;
+  revokedLeaves = [...prepared.leaves];
+
+  const committed = new Set(prepared.leaves);
+  // 대기열 정리: 이번에 반영된 것과, prepare 시점에 이미 만료라 버려진 것을 뺀다.
+  // prepare 이후에 새로 들어온 폐기는 남겨서 다음 회차로 넘긴다.
+  for (const leafKey of [...pendingAdds]) {
+    if (committed.has(leafKey)) {
+      pendingAdds.delete(leafKey);
+      continue;
+    }
+    const expiryBlock = leafExpiry.get(leafKey);
+    if (expiryBlock !== undefined && expiryBlock <= prepared.blockHeight) pendingAdds.delete(leafKey);
+  }
+  // 만료 메타데이터 정리: 게시 집합에도 대기열에도 없는 리프는 고아다.
+  for (const leafKey of [...leafExpiry.keys()]) {
+    if (!committed.has(leafKey) && !pendingAdds.has(leafKey)) leafExpiry.delete(leafKey);
+  }
+
+  preparedPublish = null;
+
+  console.log(
+    `[IdP] publish/commit: published ${revokedLeaves.length} leaves, root ${actualRoot}, ` +
+      `pending ${pendingAdds.size}`,
+  );
+  res.json({ root: actualRoot, leafCount: revokedLeaves.length, pendingCount: pendingAdds.size });
 });
 
 // 지갑이 자기 witness를 계산하려면 폐기 목록 전체가 필요하다.
 // 리프는 Poseidon 해시라 preimage가 드러나지 않으므로 공개해도 안전하다.
+//
+// **마지막으로 게시된 상태만** 서빙한다. 대기 중인 폐기(pendingAdds)는 여기 넣지
+// 않는다 — 넣으면 지갑이 온체인에 없는 root로 witness를 만들어 전원이 막힌다.
+// 응답 형태 { root, revokedLeaves }는 wallet_agent.js와의 계약이라 바뀌지 않는다.
+// 대기 현황은 관리자 전용 prepare/commit 응답과 로그로만 노출한다.
 app.get('/idp/revocation_state', (req, res) => {
   res.json({ root: revocationTree.getRoot().toString(), revokedLeaves });
 });

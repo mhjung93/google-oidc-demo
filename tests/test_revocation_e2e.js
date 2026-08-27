@@ -40,15 +40,45 @@ async function main() {
   });
   assert.equal(res.status, 200);
 
+  // 배칭: 폐기는 대기열에 들어갈 뿐이고, 게시 전까지 지갑이 보는 상태는 그대로다.
+  const queued = await (await fetch(`${IDP}/idp/revocation_state`)).json();
+  assert.equal(queued.root, before.root, 'queued revocation must not change the published root');
+  console.log('OK: 폐기 접수만으로는 게시 상태가 바뀌지 않는다 (배칭)');
+
+  // 게시(prepare -> commit). 이 테스트는 **온체인 push 없이 IdP 단계만** 돌린다.
+  //
+  // 근거: 이 파일의 검증 대상은 "폐기가 비멤버십 witness 발급 가능 여부를 뒤집는가"
+  // 라는 IdP 레벨 성질 하나뿐이고(파일 상단 주석 참고), 지금까지 custom_idp.js
+  // 하나에만 의존하는 자기완결형 테스트였다. 온체인 push를 넣으려면 hardhat 노드와
+  // 배포된 RevocationRegistry 주소, 운영자 키까지 전제로 끌어와야 해서 이 테스트의
+  // 성격이 바뀐다. push까지 포함한 전체 게시 경로(prepare -> pushRoot -> commit)는
+  // scripts/revocation_sweep.cjs와 tests/test_mode2_e2e_onchain.js가 이미 덮는다.
+  //
+  // 대가: 이 테스트를 돌리면 IdP의 게시 상태가 온체인 root보다 앞서게 된다.
+  // 그 상태로 온체인 테스트를 이어서 돌리려면 root를 먼저 게시해야 하는데,
+  // tests/test_mode2_e2e_onchain.js가 시작 시 자기 전제조건을 스스로 세우므로
+  // (isRecentRoot 확인 후 필요하면 게시) 실무상 문제가 되지 않는다.
+  const adminHeaders = { 'Content-Type': 'application/json', 'X-IdP-Admin-Secret': ADMIN_SECRET };
+  const prepared = await (await fetch(`${IDP}/idp/publish/prepare`, { method: 'POST', headers: adminHeaders, body: '{}' })).json();
+  assert.ok(prepared.expectedRoot, 'prepare must return an expected root');
+  assert.equal(prepared.currentRoot, before.root, 'prepare must not move the published root');
+  const commitRes = await fetch(`${IDP}/idp/publish/commit`, {
+    method: 'POST',
+    headers: adminHeaders,
+    body: JSON.stringify({ root: prepared.expectedRoot }),
+  });
+  assert.equal(commitRes.status, 200, 'commit must succeed with the prepared root');
+
   const after = await (await fetch(`${IDP}/idp/revocation_state`)).json();
-  assert.notEqual(after.root, before.root, 'root must change after revocation');
+  assert.notEqual(after.root, before.root, 'root must change after publishing the revocation');
+  assert.equal(after.root, prepared.expectedRoot, 'published root must equal the prepared root');
 
   const t2 = await createIMT(20);
   for (const l of after.revokedLeaves) await t2.insert(BigInt(l));
   await assert.rejects(() => t2.getNonMembershipWitness(leaf), /is a member/);
   console.log('OK: revoked account can no longer obtain a witness');
 
-  console.log('PASS: revocation flips witness availability end to end.');
+  console.log('PASS: revocation flips witness availability end to end (only after publication).');
 }
 
 main();

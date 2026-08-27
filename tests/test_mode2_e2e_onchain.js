@@ -276,6 +276,26 @@ function pushRevocationRoot(idpOperatorAddress) {
   );
 }
 
+// 대기 중인 폐기를 실제로 게시한다: prepare -> pushRoot -> commit.
+// push_revocation_root.cjs는 '이미 게시된 상태'를 다시 올릴 뿐이라 대기 중인 폐기를
+// 반영하지 못한다. 배칭 이후 폐기를 유효하게 만드는 경로는 revocation_sweep.cjs
+// 하나뿐이므로, 테스트도 운영자와 같은 경로를 쓴다.
+function publishPendingRevocations(idpOperatorAddress) {
+  return execFileSync(
+    'npx',
+    ['hardhat', 'run', 'scripts/revocation_sweep.cjs', '--network', 'localhost'],
+    {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        REVOCATION_REGISTRY_ADDRESS: REGISTRY_ADDRESS,
+        REVOCATION_IDP_ADDRESS: idpOperatorAddress,
+      },
+    },
+  );
+}
+
 // revert 사유를 커스텀 에러 '이름'으로 뽑아낸다. ethers는 실패 지점(estimateGas /
 // call / receipt)에 따라 revert 바이트를 서로 다른 자리에 담으므로 모두 훑는다.
 function decodeRevertName(err) {
@@ -416,6 +436,7 @@ async function runSections({ provider, signer, registry, graceBlocks, idpOperato
   console.log("OK: 구간 A' — calldata#2 확보 (nonce 1, 아직 유효한 root, 전송하지 않음)");
 
   // ===== 구간 B — 지갑이 폐기된 크레덴셜로 증명 생성을 거부한다 =====
+  const rootBeforeRevoke = await fetchIdpRoot();
   const revokeRes = await fetch(`${IDP}/idp/revoke`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-IdP-Admin-Secret': adminSecret },
@@ -423,16 +444,36 @@ async function runSections({ provider, signer, registry, graceBlocks, idpOperato
   });
   const revokeBody = await revokeRes.json();
   assert.equal(revokeRes.status, 200, `/idp/revoke 실패: ${JSON.stringify(revokeBody)}`);
-  assert.ok(revokeBody.root, '/idp/revoke 응답에 새 root가 없다');
-  console.log('OK: IdP가 이 세션의 r_token을 폐기했다 (새 root 발급)');
+  assert.equal(revokeBody.pending, true, '/idp/revoke가 폐기를 대기열에 넣지 않았다');
+  console.log('OK: IdP가 이 세션의 r_token 폐기를 접수했다 (대기열)');
 
-  pushRevocationRoot(idpOperator);
+  // 배칭의 핵심 성질: 게시 전까지 IdP가 서빙하는 상태는 조금도 변하지 않는다.
+  // 예전에는 폐기 즉시 IdP root가 바뀌는데 온체인 root는 그대로라, 그 사이에 지갑이
+  // 만든 witness의 root가 게시돼 있지 않아 '폐기와 무관한 정상 사용자 전원'의
+  // /submitTransaction이 400으로 막혔다. 그 장애 창이 없어졌는지를 여기서 단언한다.
   assert.equal(
-    await registry.isRecentRoot(rootToBytes32(revokeBody.root)),
-    true,
-    '폐기 후 새 root가 레지스트리에 게시되지 않았다',
+    await fetchIdpRoot(),
+    rootBeforeRevoke,
+    '배칭 위반: 폐기 접수만으로 게시된 IdP root가 바뀌었다',
   );
-  console.log('OK: 폐기 후 새 root를 온체인에 게시했다');
+  const beforePublish = await submitTransaction(session);
+  assert.equal(
+    beforePublish.status,
+    200,
+    `배칭 위반: 게시 전인데 /submitTransaction이 200이 아니다: ${JSON.stringify(beforePublish.body)}`,
+  );
+  console.log('OK: 폐기 접수 직후 — 게시 전까지 IdP root 불변, 트랜잭션도 계속 동작한다 (배칭)');
+
+  // 이제 실제로 게시한다: prepare -> pushRoot -> commit.
+  publishPendingRevocations(idpOperator);
+  const publishedRoot = await fetchIdpRoot();
+  assert.notEqual(publishedRoot, rootBeforeRevoke, '게시했는데도 IdP root가 그대로다');
+  assert.equal(
+    await registry.isRecentRoot(rootToBytes32(publishedRoot)),
+    true,
+    '게시 후 새 root가 레지스트리에 등록되지 않았다',
+  );
+  console.log('OK: 대기 중이던 폐기를 게시했다 (IdP root 전진 + 온체인 등록 확인)');
 
   // 폐기 직후에도 지갑은 여전히 트랜잭션을 만들어 준다 — 이것은 버그가 아니라
   // wallet_agent.js가 의도적으로 남겨둔 grace window다. 지갑은 캐시된 pi_pk_i 증명의
