@@ -19,7 +19,11 @@ if (!ADMIN_SECRET) {
 // 이 세 조각을 합성해 살아있는 wallet_agent.js가 만든 실제 증명이 배포된
 // PPIDWallet에서 실제로 거부되는 전 구간을 도는 테스트는 아직 없다.
 async function main() {
-  const victim = '987654321';
+  // 살아있는 IdP의 인메모리 폐기 트리는 IdP 재시작 전까지 유지된다. victim에 고정값을
+  // 쓰면 두 번째 실행에서는 이미 폐기된 계정이라 첫 단언("폐기 전에는 비멤버십 witness가
+  // 나온다")부터 실패한다 — IdP 결함이 아니라 테스트 자체의 비멱등성이다. 실행마다 새
+  // 계정을 써서 재실행 가능하게 만든다.
+  const victim = `987654321${Date.now()}`;
   const leaf = await leafValue(TAG_ACCOUNT, victim);
 
   const before = await (await fetch(`${IDP}/idp/revocation_state`)).json();

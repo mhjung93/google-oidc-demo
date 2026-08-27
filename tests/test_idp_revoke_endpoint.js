@@ -22,6 +22,12 @@ const adminHeaders = { 'X-IdP-Admin-Secret': ADMIN_SECRET };
 // tests/test_par_authorize_token_e2e.js의 testNewFlow()가 덮고 있으므로, 여기서는
 // "발급 기록이 없으면 거부"(입구 검사의 핵심 동작)만 확인하고 실제 발급 성공 케이스는
 // 생략한다.
+// 이 테스트는 살아있는 IdP의 인메모리 폐기 트리를 실제로 바꾸고, 그 트리는 IdP를
+// 재시작해야만 비워진다. 폐기 대상에 고정값을 쓰면 두 번째 실행부터는 이미 트리에 있는
+// 리프를 다시 넣는 셈이라 root가 변하지 않아 아래 단언이 실패한다 — IdP 결함이 아니라
+// 테스트 자체의 비멱등성이다. 실행마다 새 값을 써서 재실행 가능하게 만든다.
+const ACCOUNT_VALUE = `424242${Date.now()}`;
+
 async function main() {
   const before = await (await fetch(`${BASE}/idp/revocation_state`)).json();
   assert.ok(typeof before.root === 'string', 'revocation_state must expose a root');
@@ -33,7 +39,7 @@ async function main() {
   const res = await fetch(`${BASE}/idp/revoke`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...adminHeaders },
-    body: JSON.stringify({ type: 'account', value: '424242' }),
+    body: JSON.stringify({ type: 'account', value: ACCOUNT_VALUE }),
   });
   assert.equal(res.status, 200, 'account revocation must succeed without any issuance record');
   const body = await res.json();
@@ -107,8 +113,11 @@ async function main() {
   // 회귀 방지 핵심: 2^252 < value < p 인 값은 정상 수락돼야 한다.
   // 예전 구현은 상한이 2^252라서 Poseidon 출력의 약 67%가 여기서 400으로 막혔고,
   // 폐기가 조용히 실패했다(fail-open).
-  const aboveOldCap = (2n ** 253n).toString();
-  assert.ok(2n ** 253n > 2n ** 252n && 2n ** 253n < FIELD_PRIME, 'test fixture must sit between 2^252 and p');
+  // ACCOUNT_VALUE와 같은 이유로 실행마다 다른 값을 쓴다(고정값이면 두 번째 실행에서
+  // 이미 트리에 있는 리프라 root가 변하지 않아 아래 단언이 실패한다).
+  const aboveOldCapValue = 2n ** 253n + BigInt(Date.now());
+  const aboveOldCap = aboveOldCapValue.toString();
+  assert.ok(aboveOldCapValue > 2n ** 252n && aboveOldCapValue < FIELD_PRIME, 'test fixture must sit between 2^252 and p');
   const beforeAboveCap = await (await fetch(`${BASE}/idp/revocation_state`)).json();
   const aboveCap = await fetch(`${BASE}/idp/revoke`, {
     method: 'POST',

@@ -310,6 +310,21 @@ async function main() {
   const idpOperator = await registry.idp();
   console.log(`OK: registry ${REGISTRY_ADDRESS} GRACE_BLOCKS=${graceBlocks} idp=${idpOperator}`);
 
+  // 전제조건: 구간 A는 지갑이 'IdP의 현재 root가 이미 온체인에 게시돼 있다'고
+  // 가정한다. 그런데 IdP root를 바꾸면서 게시는 하지 않는 다른 테스트
+  // (tests/test_idp_revoke_endpoint.js, tests/test_revocation_e2e.js)를 먼저 돌리면
+  // 그 가정이 깨져, 구간 A가 검증하려는 것과 무관하게 /submitTransaction이 400으로
+  // 실패한다. 자기 전제조건은 스스로 세운다 — 시작 전에 현재 root를 한 번 게시한다.
+  if (!(await registry.isRecentRoot(rootToBytes32(await fetchIdpRoot())))) {
+    pushRevocationRoot(idpOperator);
+    assert.equal(
+      await registry.isRecentRoot(rootToBytes32(await fetchIdpRoot())),
+      true,
+      '전제조건 실패: 게시했는데도 IdP의 현재 root가 isRecentRoot=false다',
+    );
+    console.log('OK: 전제조건 — IdP의 현재 root가 게시돼 있지 않아 먼저 게시했다');
+  }
+
   // 구간 B 이후로는 블록을 진행시키므로 게시된 root가 만료된다. 도중에 실패해도
   // 환경이 망가진 채 남지 않도록 복구를 finally에 둔다 — 복구를 빼먹으면 이후
   // 모든 정상 트랜잭션이 StaleRevocationRoot로 막힌다(실제로 이 테스트를 만드는
