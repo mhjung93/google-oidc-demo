@@ -18,6 +18,8 @@ auditor_keys.json
 bip32_out.json
 wallet_state.json
 rp_registration.json
+idp_keys.json
+idp_state.json
 
 # past snapshots
 backup_current_project/

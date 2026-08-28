@@ -94,6 +94,25 @@ REVOCATION_REGISTRY_ADDRESS=0x...
 - `REVOCATION_IDP_ADDRESS`: 배포/게시 스크립트(`scripts/redeploy_ppid_factory.cjs`, `scripts/push_revocation_root.cjs`)가 `RevocationRegistry`의 `onlyIdP` 주소로 씁니다. 미설정 시 배포·게시가 에러로 중단됩니다.
 - `REVOCATION_REGISTRY_ADDRESS`: `wallet_agent.js`가 배포된 `RevocationRegistry`를 조회할 때 씁니다. 미설정 시 `wallet_agent.js`는 기동 시점에 에러를 내고 종료합니다.
 
+### IdP 키·상태 영속화
+
+`custom_idp.js`는 장기 키와 폐기·발급 상태를 프로젝트 루트의 두 파일에 보관합니다. 둘 다 권한 `0600`이고 `.gitignore`에 등록돼 있습니다.
+
+- `idp_keys.json`: EdDSA-Poseidon 개인키와 PS 비밀값(`x`, `y[0..5]`). 공개키는 기동할 때마다 이 비밀값에서 다시 유도하므로 저장하지 않습니다. 파일이 없으면 새로 생성하고, 있으면 로드합니다.
+- `idp_state.json`: 게시된 폐기 리프와 그 root, 리프별 만료 블록, 대기 중인 폐기, 발급 로그(`r_token`/`auid_i` → uid), 계정별 `lastAuid`. 상태가 바뀔 때마다 저장합니다.
+
+키가 파일에 남기 때문에 **`custom_idp.js`를 재시작해도 `server.js` 재시작·factory 재배포·`wallet_agent.js` 재시작이 필요하지 않습니다.**
+
+키를 의도적으로 새로 뽑으려면 `IDP_ROTATE_KEYS`를 설정해 실행합니다.
+
+```bash
+IDP_ROTATE_KEYS=1 node custom_idp.js
+```
+
+이 경우 기존 `idp_keys.json`을 무시하고 새 키를 만들어 덮어씁니다. 새 키는 `server.js`가 캐싱한 PS 공개키, `wallet_agent.js`가 캐싱한 `pk_IdP`, 그리고 `PPIDWalletFactory`에 불변으로 새겨진 신뢰 IdP 키를 모두 무효화하므로, 회전 후에는 `server.js` 재시작 → `scripts/redeploy_ppid_factory.cjs`로 factory 재배포 → 새 factory 주소로 `wallet_agent.js` 재시작까지 이어지는 복구 체인을 함께 돌아야 합니다.
+
+`idp_keys.json`이 손상되었거나 형식이 맞지 않으면 `custom_idp.js`는 **조용히 새 키를 만들지 않고** 명확한 에러로 기동을 중단합니다. 운영자가 모르는 채로 스택 전체가 깨지는 것을 막기 위해서입니다. `idp_state.json`도 마찬가지로, 저장된 리프로 재구성한 root가 저장된 root와 다르면 기동을 중단합니다.
+
 ## Mode 1 실행
 
 `.env`에 Google OIDC 클라이언트 설정을 포함해야 합니다.

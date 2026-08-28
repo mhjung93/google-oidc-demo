@@ -21,8 +21,8 @@ const __dirname = path.dirname(__filename);
 // VKey 로드
 const vkeyAridI = JSON.parse(fs.readFileSync('build/mode2/pi_arid_i_vkey.json', 'utf8'));
 
-// 폐기 트리. custom_idp.js의 다른 로그와 마찬가지로 메모리에만 두며,
-// 재시작하면 비워진다(기존 issuanceLog/auidILog와 같은 의도된 데모 한계).
+// 폐기 트리. 아래 상태들은 idp_state.json에 영속화되어 재시작을 넘어 살아남는다
+// (issuanceLog/auidILog/users[*].lastAuid도 함께 — 파일 하단의 영속화 절 참고).
 //
 // == 게시된 상태와 대기 상태의 분리 (배칭) ==
 // revocationTree/revokedLeaves는 '마지막으로 온체인에 게시된' 폐기 상태다.
@@ -42,6 +42,11 @@ let revokedLeaves = [];
 const pendingAdds = new Set();
 // prepare가 계산해 둔 다음 게시 후보. commit이 재계산 없이 그대로 소비한다.
 //   { root: string, leaves: string[], blockHeight: bigint }
+//
+// 이 값은 의도적으로 영속화하지 않는다. prepare와 commit 사이에만 존재하는 일시적
+// 상태이고, 그 사이에 재시작이 일어났다면 온체인 게시가 실제로 성사됐는지 알 수 없다.
+// 되살려서 옛 후보를 commit하는 것보다, 운영자가 prepare를 다시 불러 현재 상태로부터
+// 후보를 새로 계산하게 하는 편이 안전하다(재시작 후 commit은 409를 받는다).
 let preparedPublish = null;
 // 리프별 만료 블록. lib/imt.js는 트리만 알아야 하므로, 만료 메타데이터(leaf 문자열 ->
 // expiryBlock BigInt)는 revokedLeaves와 나란히 IdP가 따로 관리한다. 게시분과 대기분을
@@ -138,38 +143,152 @@ let idpEdDSAKeys = {
   pub: null, // [x, y], F-internal representation
 };
 
-async function initEdDSA() {
-  eddsa = await buildEddsa();
-  poseidon = await buildPoseidon();
-  idpEdDSAKeys.prv = randomBytes(32);
-  idpEdDSAKeys.pub = eddsa.prv2pub(idpEdDSAKeys.prv);
-  console.log('[CustomIdP] EdDSA-Poseidon Signatures Initialized');
+// --- IdP 장기 키 영속화 ---
+//
+// 예전에는 기동할 때마다 EdDSA-Poseidon 키와 PS 키를 새로 뽑았다. 그래서 IdP를 재시작할
+// 때마다 server.js가 캐싱한 PS 공개키, wallet_agent.js가 캐싱한 pk_IdP, 그리고
+// PPIDWalletFactory에 불변으로 새겨진 신뢰 IdP 키가 한꺼번에 어긋나면서 factory
+// 재배포까지 이어지는 전체 복구 체인을 돌아야 했다. 키를 파일에 보관해 그 체인을 없앤다.
+//
+// 저장하는 것은 비밀값뿐이다. 공개키는 매 기동 때 비밀값에서 다시 유도한다:
+//   - EdDSA-Poseidon: 개인키 32바이트만 저장. 공개키는 eddsa.prv2pub(prv).
+//   - PS: x와 y[0..5](mcl.Fr)만 저장. 공개키 X/Y[]는 mcl.mul(psParams.g2, ...).
+// psParams.g1/g2는 hashAndMapToG1('gen1') / hashAndMapToG2('gen2')로 만드는 결정적
+// 값이므로(서로 다른 프로세스에서 같은 값이 나오는 것을 확인함) 저장하지 않는다.
+const IDP_KEY_FILE = path.join(__dirname, 'idp_keys.json');
+const IDP_KEY_FILE_VERSION = 1;
+
+// 개발용 강제 회전 스위치. 설정하면 기존 키 파일을 무시하고 새 키를 생성해 덮어쓴다.
+// 회전 후에는 server.js 재시작 → PPIDWalletFactory 재배포 → wallet_agent.js 재시작이
+// 필요하다(README.md 참고).
+const IDP_ROTATE_KEYS = Boolean(process.env.IDP_ROTATE_KEYS);
+
+// wallet_agent.js:361의 선례를 그대로 따른다 — 시크릿 파일은 소유자만 읽고 쓸 수 있게 한다.
+function writeSecretFile(file, obj) {
+  fs.writeFileSync(file, JSON.stringify(obj, null, 2), { mode: 0o600 });
+  try {
+    fs.chmodSync(file, 0o600);
+  } catch {
+    // best-effort; writeFileSync의 mode가 일반적인 경우를 이미 덮는다.
+  }
 }
 
-async function initPS() {
-  await mcl.init(mcl.BN_SNARK1);
-  
-  // 1. Setup Generators
-  psParams.g1 = mcl.hashAndMapToG1('gen1');
-  psParams.g2 = mcl.hashAndMapToG2('gen2');
+// 손상된 키 파일을 만났을 때 조용히 새 키를 만들면, 운영자는 아무것도 모르는 채로
+// server.js/wallet_agent.js의 캐시와 배포된 factory의 불변 키가 전부 어긋난 스택을
+// 갖게 된다. 그래서 명확한 에러로 기동을 중단한다.
+// detail에는 파일 '내용'을 절대 넣지 않는다 — 이 파일은 IdP 개인키다.
+function keyFileError(detail) {
+  return new Error(
+    `[CustomIdP] IdP key file ${IDP_KEY_FILE} is unusable (${detail}). ` +
+    'Refusing to silently generate new keys: that would leave the cached public keys in ' +
+    'server.js / wallet_agent.js and the immutable IdP key baked into the deployed ' +
+    'PPIDWalletFactory all pointing at a key that no longer exists. ' +
+    'To rotate deliberately, start with IDP_ROTATE_KEYS=1 and then restart server.js, ' +
+    'redeploy PPIDWalletFactory, and restart wallet_agent.js.',
+  );
+}
 
-  // 2. Generate IdP Secret Keys (x, y1, y2, y3, y4, y5, y6)
-  idpKeys.x = new mcl.Fr();
-  idpKeys.x.setByCSPRNG();
+const FR_HEX_RE = /^[0-9a-f]+$/;
 
+// mcl.Fr의 직렬화는 getStr(16) / setStr(hex, 16)이다. 무작위 2000개와 0/1/작은 값에서
+// 왕복이 정확함을 실측으로 확인했다. setStr은 잘못된 16진수와 군 위수 이상의 값에는
+// throw하지만 '-1' 같은 부호 있는 입력은 조용히 받아 전혀 다른 값이 되므로, setStr에
+// 넘기기 전에 문자열 형식을 직접 검사한다.
+function frFromHex(hex, label) {
+  if (typeof hex !== 'string' || !FR_HEX_RE.test(hex)) {
+    throw keyFileError(`${label} is not a lowercase hex string`);
+  }
+  const fr = new mcl.Fr();
+  try {
+    fr.setStr(hex, 16);
+  } catch {
+    throw keyFileError(`${label} is not a valid field element`);
+  }
+  // 이 파일은 항상 getStr(16)이 만든 정규 형식으로 쓰인다. 왕복이 어긋나면 변조·손상이다.
+  if (fr.getStr(16) !== hex) {
+    throw keyFileError(`${label} is not in canonical form`);
+  }
+  return fr;
+}
+
+function generateKeyMaterial() {
+  const x = new mcl.Fr();
+  x.setByCSPRNG();
+  const y = [];
   for (let i = 0; i < 6; i++) {
     const yi = new mcl.Fr();
     yi.setByCSPRNG();
-    idpKeys.y.push(yi);
+    y.push(yi.getStr(16));
+  }
+  return {
+    version: IDP_KEY_FILE_VERSION,
+    eddsa: { prv: randomBytes(32).toString('hex') },
+    ps: { x: x.getStr(16), y },
+  };
+}
+
+// 파일이 없으면 null, 있으면 검증된 키 재료. 형식이 조금이라도 어긋나면 throw한다.
+function readKeyMaterial() {
+  if (!fs.existsSync(IDP_KEY_FILE)) return null;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(IDP_KEY_FILE, 'utf8'));
+  } catch {
+    // JSON 파서의 원본 메시지에는 파일 내용 조각이 섞여 나오므로 그대로 쓰지 않는다.
+    throw keyFileError('not valid JSON');
   }
 
-  // 3. Generate Public Keys (X = g2^x, Yi = g2^yi)
+  if (parsed?.version !== IDP_KEY_FILE_VERSION) throw keyFileError('unsupported version');
+  if (typeof parsed?.eddsa?.prv !== 'string' || !/^[0-9a-f]{64}$/.test(parsed.eddsa.prv)) {
+    throw keyFileError('eddsa.prv must be 32 bytes of lowercase hex');
+  }
+  if (typeof parsed?.ps?.x !== 'string') throw keyFileError('ps.x is missing');
+  if (!Array.isArray(parsed?.ps?.y) || parsed.ps.y.length !== 6) {
+    throw keyFileError('ps.y must be an array of 6 elements');
+  }
+  return parsed;
+}
+
+function applyKeyMaterial(material) {
+  idpEdDSAKeys.prv = Buffer.from(material.eddsa.prv, 'hex');
+  idpEdDSAKeys.pub = eddsa.prv2pub(idpEdDSAKeys.prv);
+
+  idpKeys.x = frFromHex(material.ps.x, 'ps.x');
+  idpKeys.y = material.ps.y.map((hex, i) => frFromHex(hex, `ps.y[${i}]`));
+  // 공개키는 저장하지 않고 항상 비밀값에서 유도한다 (X = g2^x, Yi = g2^yi).
   idpKeys.pk.X = mcl.mul(psParams.g2, idpKeys.x);
-  for (let i = 0; i < 6; i++) {
-    idpKeys.pk.Y.push(mcl.mul(psParams.g2, idpKeys.y[i]));
-  }
+  idpKeys.pk.Y = idpKeys.y.map((yi) => mcl.mul(psParams.g2, yi));
+}
 
-  console.log('[CustomIdP] PS Signatures Initialized');
+// PS와 EdDSA-Poseidon 키를 한 번에 초기화한다. 둘 다 같은 키 파일에서 나오므로
+// 예전처럼 initPS()/initEdDSA()로 나눠 부르지 않는다.
+async function initKeys() {
+  await mcl.init(mcl.BN_SNARK1);
+  eddsa = await buildEddsa();
+  poseidon = await buildPoseidon();
+
+  // 결정적 생성자 — 저장하지 않고 매 기동 때 동일하게 다시 만든다.
+  psParams.g1 = mcl.hashAndMapToG1('gen1');
+  psParams.g2 = mcl.hashAndMapToG2('gen2');
+
+  const existing = IDP_ROTATE_KEYS ? null : readKeyMaterial();
+  const material = existing ?? generateKeyMaterial();
+  applyKeyMaterial(material);
+
+  // 키 '내용'은 어떤 경로로도 출력하지 않는다. 로드했는지 생성했는지만 알린다.
+  if (existing) {
+    console.log(`[CustomIdP] Loaded existing IdP keys from ${IDP_KEY_FILE}`);
+  } else {
+    writeSecretFile(IDP_KEY_FILE, material);
+    const why = IDP_ROTATE_KEYS ? 'IDP_ROTATE_KEYS was set' : 'no key file found';
+    console.log(`[CustomIdP] Generated new IdP keys (${why}) and stored them in ${IDP_KEY_FILE}`);
+    console.warn(
+      '[CustomIdP] New keys invalidate cached public keys downstream. Restart server.js, ' +
+      'redeploy PPIDWalletFactory, then restart wallet_agent.js with the new factory address.',
+    );
+  }
+  console.log('[CustomIdP] PS + EdDSA-Poseidon signatures initialized');
 }
 
 function hashToFr(str) {
@@ -242,15 +361,167 @@ function pinAuidToAccount(user, auidFromProof) {
     throw new Error('Wallet binding mismatch: this account is using a different salt than its last successful login');
   }
   user.lastAuid = auidFromProof;
+  saveIdPState();
 }
 
-// B2 추적용 발급 로그: r_token -> uid. 메모리 전용, 서버 재시작 시 소실됨(의도된 데모 한계).
+// B2 추적용 발급 로그: r_token -> { uid, maxHeight }.
+// 단순 추적 로그가 아니라 보안 기능의 일부다 — /idp/revoke의 입구 검사가 "내가 발급한
+// 세션인가"와 "이미 만료됐나"를 이걸로 판단한다. 그래서 idp_state.json에 영속화한다.
+// 없으면 재시작 이전에 발급된 세션은 폐기 자체가 불가능해진다.
 const issuanceLog = new Map();
 // B2 추적용 발급 로그: auid_i -> uid. auid_i = ppid * rp_nonce는 세션마다 값이 바뀌지만,
 // 어느 세션의 auid_i든 같은 ppid(=같은 계정)면 항상 같은 uid로 귀결되므로, RP가 그
 // 지갑으로 가장 최근에 로그인했을 때의 auid_i만 들고 있어도 이 로그로 uid를 찾을 수
-// 있다. 메모리 전용, 서버 재시작 시 소실됨(의도된 데모 한계).
+// 있다. issuanceLog와 같은 성격이라 함께 영속화한다.
 const auidILog = new Map();
+
+// --- IdP 폐기/발급 상태 영속화 ---
+//
+// 키(idp_keys.json)와 일부러 다른 파일로 나눈다. 키는 사실상 바뀌지 않고 상태는 폐기·
+// 게시·로그인마다 바뀌므로, 자주 쓰는 파일이 개인키를 계속 다시 쓰게 만들 이유가 없다.
+// 권한은 동일하게 0o600이다 — issuanceLog가 r_token -> uid 매핑이라 프라이버시 민감하다.
+const IDP_STATE_FILE = path.join(__dirname, 'idp_state.json');
+const IDP_STATE_FILE_VERSION = 1;
+
+function stateFileError(detail) {
+  return new Error(
+    `[CustomIdP] IdP state file ${IDP_STATE_FILE} is unusable (${detail}). ` +
+    'Refusing to start with a silently wrong revocation state: if the published root does not ' +
+    'match what wallets rebuild from /idp/revocation_state, every wallet transaction fails. ' +
+    `Inspect the file, or remove it to start from empty state (pending/published revocations, ` +
+    'issuance records, and auid pinning would then be lost).',
+  );
+}
+
+const DECIMAL_RE = /^[0-9]+$/;
+
+function assertDecimalString(value, label) {
+  if (typeof value !== 'string' || !DECIMAL_RE.test(value)) {
+    throw stateFileError(`${label} must be a decimal string`);
+  }
+  return value;
+}
+
+function isPlainObject(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// BigInt와 Map/Set은 JSON이 직접 담지 못한다. BigInt는 10진 문자열로, Map/Set은
+// 객체/배열로 바꿔 저장하고 로드할 때 되돌린다.
+function serializeIdPState() {
+  return {
+    version: IDP_STATE_FILE_VERSION,
+    // 로드 시 재구성한 트리의 root가 저장 시점과 같은지 대조하는 기준값.
+    // 이게 없으면 리프 목록이 조용히 어긋나도 알아챌 방법이 없다.
+    publishedRoot: revocationTree.getRoot().toString(),
+    revokedLeaves,
+    pendingAdds: [...pendingAdds],
+    leafExpiry: Object.fromEntries([...leafExpiry].map(([k, v]) => [k, v.toString()])),
+    issuanceLog: Object.fromEntries(
+      [...issuanceLog].map(([k, v]) => [k, { uid: String(v.uid), maxHeight: String(v.maxHeight) }]),
+    ),
+    auidILog: Object.fromEntries([...auidILog].map(([k, v]) => [k, String(v)])),
+    // users에서 영속화하는 것은 lastAuid뿐이다. username/password/uid는 소스에 있는
+    // 데모 상수라 저장할 이유가 없고, 저장하면 비밀번호가 파일로 새어나간다.
+    lastAuid: Object.fromEntries(Object.entries(users).map(([name, u]) => [name, u.lastAuid])),
+  };
+}
+
+// 상태가 바뀔 때마다 호출한다.
+// 저장에 실패해도 요청을 실패시키지는 않는다 — 인메모리 상태는 이미 정확하고 요청 자체는
+// 성공했기 때문이다. 다만 그 변경은 다음 재시작 때 사라지므로 운영자가 반드시 알아야 한다.
+// 조용히 삼키지 않고 명확히 에러 로그를 남긴다.
+function saveIdPState() {
+  try {
+    writeSecretFile(IDP_STATE_FILE, serializeIdPState());
+  } catch (err) {
+    console.error(
+      `[IdP] FAILED to persist state to ${IDP_STATE_FILE}: ${err.message} — ` +
+      'this change will be lost on restart',
+    );
+  }
+}
+
+// 기동 시 1회. 파일이 없으면 빈 상태로 시작하고, 있으면 검증 후 복원한다.
+async function loadIdPState() {
+  if (!fs.existsSync(IDP_STATE_FILE)) {
+    console.log(`[CustomIdP] No state file at ${IDP_STATE_FILE}; starting with empty revocation state`);
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(IDP_STATE_FILE, 'utf8'));
+  } catch {
+    throw stateFileError('not valid JSON');
+  }
+
+  if (parsed?.version !== IDP_STATE_FILE_VERSION) throw stateFileError('unsupported version');
+  if (!Array.isArray(parsed.revokedLeaves)) throw stateFileError('revokedLeaves must be an array');
+  if (!Array.isArray(parsed.pendingAdds)) throw stateFileError('pendingAdds must be an array');
+  for (const key of ['leafExpiry', 'issuanceLog', 'auidILog', 'lastAuid']) {
+    if (!isPlainObject(parsed[key])) throw stateFileError(`${key} must be an object`);
+  }
+  if (typeof parsed.publishedRoot !== 'string') throw stateFileError('publishedRoot must be a string');
+
+  const leaves = parsed.revokedLeaves.map((l, i) => assertDecimalString(l, `revokedLeaves[${i}]`));
+
+  // 게시 트리는 lib/imt.js를 그대로 쓰고, 저장된 리프로 insert()를 반복해 재구성한다.
+  const tree = await createIMT(REVOCATION_TREE_DEPTH);
+  for (const leafKey of leaves) await tree.insert(BigInt(leafKey));
+  const rebuiltRoot = tree.getRoot().toString();
+
+  // 재구성한 root가 저장 시점과 다르면 조용히 넘어가면 안 된다 — 지갑이
+  // /idp/revocation_state의 리프로 만든 root와 IdP가 믿는 root가 어긋나 전원이 실패한다.
+  // root는 이미 공개 엔드포인트로 나가는 값이라 로그에 남겨도 무방하다.
+  if (rebuiltRoot !== parsed.publishedRoot) {
+    throw stateFileError(
+      `rebuilt root ${rebuiltRoot} does not match the saved root ${parsed.publishedRoot}`,
+    );
+  }
+
+  revocationTree = tree;
+  revokedLeaves = leaves;
+
+  pendingAdds.clear();
+  for (const [i, leafKey] of parsed.pendingAdds.entries()) {
+    pendingAdds.add(assertDecimalString(leafKey, `pendingAdds[${i}]`));
+  }
+
+  leafExpiry.clear();
+  for (const [leafKey, expiry] of Object.entries(parsed.leafExpiry)) {
+    // 만료 블록은 저장할 때 BigInt -> 10진 문자열이었다. 되돌린다.
+    leafExpiry.set(leafKey, BigInt(assertDecimalString(expiry, `leafExpiry[${leafKey}]`)));
+  }
+
+  issuanceLog.clear();
+  for (const [rToken, entry] of Object.entries(parsed.issuanceLog)) {
+    if (!isPlainObject(entry)) throw stateFileError(`issuanceLog[${rToken}] must be an object`);
+    issuanceLog.set(rToken, {
+      uid: String(entry.uid),
+      maxHeight: assertDecimalString(String(entry.maxHeight), `issuanceLog[${rToken}].maxHeight`),
+    });
+  }
+
+  auidILog.clear();
+  for (const [auidI, uid] of Object.entries(parsed.auidILog)) {
+    auidILog.set(auidI, String(uid));
+  }
+
+  // 소스에 존재하는 데모 계정에만 복원한다. 파일에 모르는 이름이 들어있어도 계정을
+  // 새로 만들지 않는다 — 상태 파일이 계정 생성 경로가 되어서는 안 된다.
+  for (const [name, lastAuid] of Object.entries(parsed.lastAuid)) {
+    if (!Object.prototype.hasOwnProperty.call(users, name)) continue;
+    users[name].lastAuid = lastAuid === null ? null : String(lastAuid);
+  }
+
+  console.log(
+    `[CustomIdP] Loaded state from ${IDP_STATE_FILE}: ${revokedLeaves.length} published leaves ` +
+    `(root ${rebuiltRoot}), ${pendingAdds.size} pending, ${issuanceLog.size} issuance records`,
+  );
+}
+
+await loadIdPState();
 // 비밀번호 인증(/sso_with_credentials) 후 동의 클릭(/consent_result)까지 허용하는 최대 시간.
 const PENDING_CONSENT_TTL_MS = 5 * 60 * 1000;
 
@@ -562,6 +833,8 @@ app.post('/token', async (req, res) => {
   // /authorize/login에서 pi_i의 4번째 public signal(verifySignals[3])로부터 채워졌다.
   issuanceLog.set(String(record.token_nonce), { uid: record.uid, maxHeight: record.max_height });
   auidILog.set(String(record.auid_i), record.uid);
+  // 발급 기록은 /idp/revoke의 입구 검사가 조회하는 대상이라 반드시 살아남아야 한다.
+  saveIdPState();
 
   res.json({
     iss: 'custom-idp',
@@ -769,6 +1042,8 @@ async function verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, bu
   // 채워진 지역 변수다(줄 658 부근).
   issuanceLog.set(rToken.toString(), { uid: user.uid, maxHeight: maxHeight.toString() });
   auidILog.set(String(business.auid_i), user.uid);
+  // 발급 기록은 /idp/revoke의 입구 검사가 조회하는 대상이라 반드시 살아남아야 한다.
+  saveIdPState();
   console.log(`[CustomIdP][Step 11] IdP auth token issued and returned for Wallet delivery. ${ms(start)}`);
 
   return idpToken;
@@ -971,6 +1246,9 @@ app.post('/idp/revoke', requireIdPAdmin, async (req, res) => {
       previousExpiry !== undefined && previousExpiry > expiryBlock ? previousExpiry : expiryBlock;
     leafExpiry.set(leafKey, effectiveExpiry);
 
+    // 대기열과 만료 메타데이터가 재시작을 넘어 살아남아야 접수된 폐기가 사라지지 않는다.
+    saveIdPState();
+
     // 응답에 root를 담지 않는다 — 아직 게시되지 않았으므로 '새 root'라는 것이
     // 존재하지 않고, 담으면 호출자가 그 값을 게시된 것으로 오해한다.
     console.log(
@@ -1125,6 +1403,10 @@ app.post('/idp/publish/commit', requireIdPAdmin, async (req, res) => {
 
   preparedPublish = null;
 
+  // 게시된 트리·리프·만료·대기열이 한꺼번에 바뀌었다. 여기서 저장하지 않으면 재시작
+  // 후 IdP가 옛 root를 서빙해 온체인에 게시된 root와 어긋난다.
+  saveIdPState();
+
   console.log(
     `[IdP] publish/commit: published ${revokedLeaves.length} leaves, root ${actualRoot}, ` +
       `pending ${pendingAdds.size}`,
@@ -1156,10 +1438,14 @@ app.get('/ps_public_keys', (req, res) => {
   });
 });
 
-const server = app.listen(PORT, async () => {
-  await initPS();
-  await initEdDSA();
-  await snarkjs.curves.getCurveFromName('bn128'); // bn128 WASM 모듈 미리 빌드 (첫 pi_i 검증 지연 방지)
+// 초기화를 listen '전에' 끝낸다. 예전에는 listen 콜백 안에서 돌렸는데, 그러면 (1) 키가
+// 준비되기 전에 이미 포트가 열려 초기 요청이 null 키를 만질 수 있고, (2) 손상된 키 파일을
+// 만났을 때 콜백 안의 throw가 unhandled rejection으로 흘러 서버가 '깨진 채로 살아있게'
+// 된다. 최상위 await로 올리면 초기화 실패가 곧바로 기동 중단이 된다.
+await initKeys();
+await snarkjs.curves.getCurveFromName('bn128'); // bn128 WASM 모듈 미리 빌드 (첫 pi_i 검증 지연 방지)
+
+const server = app.listen(PORT, () => {
   console.log(`Custom IdP running at http://localhost:${PORT}`);
   if (!IDP_ADMIN_SECRET) {
     // 값은 절대 출력하지 않고, 설정 여부만 알린다.
