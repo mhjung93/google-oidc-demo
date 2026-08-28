@@ -194,17 +194,28 @@ assert.match(
 );
 
 // ---------------------------------------------------------------------------
-// 5. 조회 엔드포인트에 requireIdPAdmin이 걸려 있다.
+// 5. 조회(B2 역추적) 엔드포인트에 requireIdPAuditor가 걸려 있다.
+//
+// 관리자(requireIdPAdmin)가 아니라 감사자여야 한다 — 두 권한은 의도적으로 분리돼 있다.
+// 조회는 auid_i/r_token으로 uid를 특정하는 역추적이고, 폐기(/idp/revoke)와 게시
+// (/idp/publish/*)는 관리자 조작이다. RP(server.js)가 데모를 위해 감사자 시크릿을 들지만,
+// 그렇다고 폐기 권한까지 갖게 해서는 안 된다.
 // ---------------------------------------------------------------------------
 assert.match(
   src,
-  /app\.post\('\/idp\/lookup_uid_by_r_token',\s*requireIdPAdmin,/,
-  '/idp/lookup_uid_by_r_token must require admin auth',
+  /app\.post\('\/idp\/lookup_uid_by_r_token',\s*requireIdPAuditor,/,
+  '/idp/lookup_uid_by_r_token must require auditor auth (not admin)',
 );
 assert.match(
   src,
-  /app\.post\('\/idp\/lookup_uid_by_auid_i',\s*requireIdPAdmin,/,
-  '/idp/lookup_uid_by_auid_i must require admin auth',
+  /app\.post\('\/idp\/lookup_uid_by_auid_i',\s*requireIdPAuditor,/,
+  '/idp/lookup_uid_by_auid_i must require auditor auth (not admin)',
+);
+// 폐기·게시는 반대로 관리자여야 한다 — 분리가 한쪽으로만 성립하면 의미가 없다.
+assert.match(
+  src,
+  /app\.post\('\/idp\/revoke',\s*requireIdPAdmin,/,
+  '/idp/revoke must stay on admin auth, not auditor',
 );
 
 // ---------------------------------------------------------------------------
