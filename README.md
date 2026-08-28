@@ -86,11 +86,15 @@ Mode 2 회로 산출물을 다시 만들 때는 아래 명령을 사용합니다
 
 ```bash
 IDP_ADMIN_SECRET=change-me
+IDP_AUDITOR_SECRET=change-me-too
 REVOCATION_IDP_ADDRESS=0x...
 REVOCATION_REGISTRY_ADDRESS=0x...
 ```
 
-- `IDP_ADMIN_SECRET`: `custom_idp.js`의 `POST /idp/revoke` 관리자 인증에 씁니다. 미설정 시 이 엔드포인트는 503을 반환합니다.
+- `IDP_ADMIN_SECRET`: `custom_idp.js`의 `POST /idp/revoke`, `POST /idp/publish/*` 관리자 인증에 씁니다. 미설정 시 이 엔드포인트들은 503을 반환합니다.
+- `IDP_AUDITOR_SECRET`: `custom_idp.js`의 B2 추적 엔드포인트(`POST /idp/lookup_uid_by_r_token`, `POST /idp/lookup_uid_by_auid_i`) 인증에 씁니다. `server.js`도 같은 값을 읽어 `POST /api/mode2/trace_transaction`에서 IdP를 호출할 때 `X-IdP-Auditor-Secret` 헤더로 실어 보냅니다. 미설정 시 IdP 쪽 엔드포인트는 503을, `server.js`의 트레이스 엔드포인트는 500을 반환합니다.
+  - `IDP_ADMIN_SECRET`과 값을 공유하지 않는 별도 변수입니다. 신원 역추적(추적/감사 권한)과 크레덴셜 폐기(관리자 권한)는 서로 다른 권한이어야 하므로, 관리자 시크릿으로는 추적 엔드포인트를 통과할 수 없고 감사자 시크릿으로는 `/idp/revoke`를 통과할 수 없습니다.
+  - 이 데모 구성에서는 `server.js`(RP)가 감사자 시크릿을 직접 들고 있어, RP가 자기 사용자를 역추적할 수 있습니다. 데모 편의를 위한 선택이며, 실제 배포에서는 감사자가 RP와 독립된 별도 주체여야 합니다.
 - `REVOCATION_IDP_ADDRESS`: 배포/게시 스크립트(`scripts/redeploy_ppid_factory.cjs`, `scripts/push_revocation_root.cjs`)가 `RevocationRegistry`의 `onlyIdP` 주소로 씁니다. 미설정 시 배포·게시가 에러로 중단됩니다.
 - `REVOCATION_REGISTRY_ADDRESS`: `wallet_agent.js`가 배포된 `RevocationRegistry`를 조회할 때 씁니다. 미설정 시 `wallet_agent.js`는 기동 시점에 에러를 내고 종료합니다.
 

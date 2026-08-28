@@ -28,6 +28,11 @@ const {
   GOOGLE_CLIENT_ID,
   GOOGLE_CLIENT_SECRET,
   SESSION_SECRET,
+  // B2 추적(/api/mode2/trace_transaction)이 custom_idp.js의
+  // /idp/lookup_uid_by_auid_i를 호출할 때 쓰는 감사자 시크릿. IDP_ADMIN_SECRET과는
+  // 분리된 값이다(관리자=폐기 권한, 감사자=추적 권한). 하드코딩하지 않고 항상
+  // 환경변수에서만 읽는다.
+  IDP_AUDITOR_SECRET,
 } = process.env;
 
 const currentMode = parseInt(process.env.APP_MODE) || 1;
@@ -981,11 +986,19 @@ app.post('/api/mode2/trace_transaction', async (req, res) => {
     return res.status(404).json({ error: 'No recorded auid_i for this wallet address (this ppid has not logged in since the RP server last restarted)' });
   }
 
+  // custom_idp.js의 /idp/lookup_uid_by_auid_i는 이제 requireIdPAuditor로 보호된다.
+  // 시크릿이 없으면 조용히 실패(예: IdP가 준 401을 그대로 흘려보내 원인 불명확)하지
+  // 않고, 여기서 바로 운영자가 원인을 알 수 있는 에러를 반환한다.
+  if (!IDP_AUDITOR_SECRET) {
+    console.error('[ERROR] /api/mode2/trace_transaction: IDP_AUDITOR_SECRET is not configured on server.js.');
+    return res.status(500).json({ error: 'trace endpoint misconfigured: IDP_AUDITOR_SECRET is not set on server.js' });
+  }
+
   try {
     const idpLookupStart = now();
     const idpResponse = await fetch(`${CUSTOM_IDP_BASE_URL}/idp/lookup_uid_by_auid_i`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-IdP-Auditor-Secret': IDP_AUDITOR_SECRET },
       body: JSON.stringify({ auid_i }),
     });
     const idpResult = await idpResponse.json();
@@ -1032,6 +1045,9 @@ const server = app.listen(PORT, async () => {
     rpRegistration = await loadAndVerifyPersistedRpRegistration();
     if (rpRegistration) {
       console.log(`[Mode 2] Loaded persisted RP registration. rid: ${previewValue(rpRegistration.rid)}`);
+    }
+    if (!IDP_AUDITOR_SECRET) {
+      console.warn('[Mode 2] IDP_AUDITOR_SECRET is not set — POST /api/mode2/trace_transaction will return 500 until it is configured.');
     }
   }
   console.log(`OIDC demo running at ${BASE_URL}`);

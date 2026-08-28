@@ -1211,14 +1211,15 @@ app.post('/consent_result', async (req, res) => {
 });
 
 // 3.5. B2 Trace Endpoint: Lookup UID by r_token
-// requireIdPAdmin을 건다 — 이전에는 인증이 전혀 없어서 r_token 하나를 아는 아무나
-// uid/username을 얻을 수 있었다. 상태 영속화 전에는 "마지막 재시작 이후"로 노출
-// 창이 자연히 닫혔지만, 이제 issuanceLog가 영구히 쌓이므로 그 창이 무기한 열려
-// 있었다. 이 엔드포인트를 실제로 호출하는 코드는(grep으로 확인) 이 저장소 안에
-// 없다 — 도입 계획 문서(docs/superpowers/plans/2026-07-16-b2-transaction-tracing-plan.md)
-// 에만 언급되고 실제 소비자는 구현되지 않았다. 그래서 인증을 걸어도 깨지는 기존
-// 호출부가 없다.
-app.post('/idp/lookup_uid_by_r_token', requireIdPAdmin, (req, res) => {
+// requireIdPAuditor를 건다 — 이전에는 인증이 전혀 없어서 r_token 하나를 아는
+// 아무나 uid/username을 얻을 수 있었다. 상태 영속화 전에는 "마지막 재시작 이후"로
+// 노출 창이 자연히 닫혔지만, 이제 issuanceLog가 영구히 쌓이므로 그 창이 무기한
+// 열려 있었다. requireIdPAdmin이 아니라 별도의 requireIdPAuditor를 쓰는 이유는
+// 아래 requireIdPAuditor 정의부 주석 참고(추적 권한과 폐기 권한 분리). 이
+// 엔드포인트를 실제로 호출하는 코드는(grep으로 확인) 이 저장소 안에 없다 — 도입
+// 계획 문서(docs/superpowers/plans/2026-07-16-b2-transaction-tracing-plan.md)에만
+// 언급되고 실제 소비자는 구현되지 않았다.
+app.post('/idp/lookup_uid_by_r_token', requireIdPAuditor, (req, res) => {
   const { r_token } = req.body ?? {};
   if (!r_token) {
     return res.status(400).json({ error: 'r_token is required' });
@@ -1238,16 +1239,11 @@ app.post('/idp/lookup_uid_by_r_token', requireIdPAdmin, (req, res) => {
 });
 
 // 3.6. B2 Trace Endpoint: Lookup UID by auid_i
-// requireIdPAdmin을 건다. 주의: server.js의 POST /api/mode2/trace_transaction이 이
-// 엔드포인트를 호출하지만(server.js:986) X-IdP-Admin-Secret을 붙이지 않으므로, 이
-// 변경 이후 그 경로는 401을 받는다. server.js는 이번 작업의 수정 금지 대상이라 여기서
-// 호출부를 함께 고칠 수 없었다 — 이 파일만으로 낼 수 있는 최선은 구멍을 막는 것이고,
-// server.js가 관리자 시크릿을 실어 보내도록 고치는 일은 별도 승인이 필요한 후속
-// 작업으로 남긴다(docs/MODE2_FLOW.md:468도 이 엔드포인트에 인가 게이트가 없다는 것을
-// 이미 알려진 프로토타입 한계로 기록하고 있다). r_token 하나만 알면 uid/username을
-// 영구히 얻을 수 있던 구멍을 열어두는 것보다, 데모용 추적 UI 하나가 일시적으로
-// 동작하지 않는 쪽을 택했다.
-app.post('/idp/lookup_uid_by_auid_i', requireIdPAdmin, (req, res) => {
+// requireIdPAuditor를 건다(위 requireIdPAuditor 정의부 주석과 동일한 이유 —
+// 추적 권한과 폐기 권한 분리). server.js의 POST /api/mode2/trace_transaction이
+// 이 엔드포인트를 호출하며(server.js:986 부근), X-IdP-Auditor-Secret 헤더를
+// 붙여 보낸다(server.js의 IDP_AUDITOR_SECRET 환경변수에서 읽음).
+app.post('/idp/lookup_uid_by_auid_i', requireIdPAuditor, (req, res) => {
   const { auid_i } = req.body ?? {};
   if (!auid_i) {
     return res.status(400).json({ error: 'auid_i is required' });
@@ -1298,6 +1294,33 @@ function requireIdPAdmin(req, res, next) {
     // 시크릿 값 자체는 로그에도 응답에도 남기지 않는다.
     console.warn('[IdP] rejected unauthenticated /idp/revoke attempt');
     return res.status(401).json({ error: 'invalid or missing admin secret' });
+  }
+  return next();
+}
+
+// B2 추적 엔드포인트(/idp/lookup_uid_by_r_token, /idp/lookup_uid_by_auid_i) 전용
+// 인증. 추적(신원 역추적, conditional privacy의 감사 기능)과 폐기(/idp/revoke,
+// /idp/publish/*)는 서로 다른 권한이어야 한다 — 폐기 권한을 가진 관리자가 자동으로
+// 추적 권한도 갖는다면(또는 그 반대라면) 권한 분리가 이름뿐인 것이 된다. 그래서
+// IDP_ADMIN_SECRET과 값을 공유하지 않는 별도의 IDP_AUDITOR_SECRET을 쓴다.
+// requireIdPAdmin과 구조는 동일하게 맞춘다(timingSafeEqual 비교, 미설정 시 503,
+// Origin 헤더가 있으면 403). 관리자 시크릿을 여기 헤더에 넣어도 값이 다르므로
+// secretMatches가 실패해 401이 된다 — 이 실패가 바로 의도된 권한 분리다.
+const IDP_AUDITOR_SECRET = process.env.IDP_AUDITOR_SECRET;
+
+function requireIdPAuditor(req, res, next) {
+  if (!IDP_AUDITOR_SECRET) {
+    return res.status(503).json({ error: 'trace endpoint is disabled: IDP_AUDITOR_SECRET is not configured' });
+  }
+  const origin = req.get('Origin');
+  if (origin !== undefined) {
+    return res.status(403).json({ error: 'browser-originated requests are not allowed on this endpoint' });
+  }
+  const provided = req.get('X-IdP-Auditor-Secret');
+  if (typeof provided !== 'string' || !secretMatches(provided, IDP_AUDITOR_SECRET)) {
+    // 시크릿 값 자체는 로그에도 응답에도 남기지 않는다.
+    console.warn('[IdP] rejected unauthenticated B2 trace attempt');
+    return res.status(401).json({ error: 'invalid or missing auditor secret' });
   }
   return next();
 }
@@ -1647,5 +1670,8 @@ const server = app.listen(PORT, () => {
   if (!IDP_ADMIN_SECRET) {
     // 값은 절대 출력하지 않고, 설정 여부만 알린다.
     console.warn('[IdP] IDP_ADMIN_SECRET is not set — POST /idp/revoke will return 503 until it is configured.');
+  }
+  if (!IDP_AUDITOR_SECRET) {
+    console.warn('[IdP] IDP_AUDITOR_SECRET is not set — B2 trace endpoints (lookup_uid_by_r_token/auid_i) will return 503 until it is configured.');
   }
 });
