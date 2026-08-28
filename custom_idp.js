@@ -164,12 +164,37 @@ const IDP_KEY_FILE_VERSION = 1;
 const IDP_ROTATE_KEYS = Boolean(process.env.IDP_ROTATE_KEYS);
 
 // wallet_agent.js:361의 선례를 그대로 따른다 — 시크릿 파일은 소유자만 읽고 쓸 수 있게 한다.
+//
+// fs.writeFileSync(file, ...)는 내부적으로 open(O_TRUNC) 후 write()다. 그 사이에
+// 프로세스가 죽으면(로그인 1회당 최소 2회 호출되므로 노출 창이 드물지 않다) 파일이
+// 0바이트나 부분 JSON으로 남는다. 그 대신 같은 디렉터리 안의 임시 파일에 먼저 쓰고
+// rename으로 교체한다 — POSIX에서 rename(2)은 원자적이라, 그 순간 관찰자는 옛 파일
+// 전체 또는 새 파일 전체만 볼 수 있고 부분 상태는 절대 관측되지 않는다. 반드시 같은
+// 디렉터리를 써야 한다: 파일시스템이 다르면 rename이 EXDEV로 실패하고 원자성이 깨진다.
 function writeSecretFile(file, obj) {
-  fs.writeFileSync(file, JSON.stringify(obj, null, 2), { mode: 0o600 });
+  const dir = path.dirname(file);
+  const tmpFile = path.join(dir, `.${path.basename(file)}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`);
+  const data = JSON.stringify(obj, null, 2);
+
+  // openSync에 mode를 줘서 파일이 존재하는 그 순간부터 0600이다 — writeFileSync 뒤에
+  // 이어 chmod하는 방식은 그 사이에 더 열린 권한으로 잠깐 존재할 수 있다. 이 임시
+  // 파일도 최종 파일과 동일한 시크릿을 담으므로 그 순간에도 보호돼야 한다.
+  const fd = fs.openSync(tmpFile, 'w', 0o600);
   try {
-    fs.chmodSync(file, 0o600);
-  } catch {
-    // best-effort; writeFileSync의 mode가 일반적인 경우를 이미 덮는다.
+    fs.writeFileSync(fd, data);
+    fs.fsyncSync(fd);
+  } catch (err) {
+    fs.closeSync(fd);
+    try { fs.unlinkSync(tmpFile); } catch { /* best-effort cleanup */ }
+    throw err;
+  }
+  fs.closeSync(fd);
+
+  try {
+    fs.renameSync(tmpFile, file);
+  } catch (err) {
+    try { fs.unlinkSync(tmpFile); } catch { /* best-effort cleanup */ }
+    throw err;
   }
 }
 
@@ -381,15 +406,30 @@ const auidILog = new Map();
 // 게시·로그인마다 바뀌므로, 자주 쓰는 파일이 개인키를 계속 다시 쓰게 만들 이유가 없다.
 // 권한은 동일하게 0o600이다 — issuanceLog가 r_token -> uid 매핑이라 프라이버시 민감하다.
 const IDP_STATE_FILE = path.join(__dirname, 'idp_state.json');
-const IDP_STATE_FILE_VERSION = 1;
+// v2: auidILog의 값이 uid 문자열 하나에서 issuanceLog와 같은 { uid, maxHeight } 객체로
+// 바뀌었다 — 4-2번 만료 기반 축출이 auidILog에도 적용되려면 만료 정보가 필요해서다.
+// v1 파일을 만나면 loadIdPState()가 자동으로 마이그레이션한다(아래 LEGACY_AUID_ILOG_MAX_HEIGHT
+// 주석 참고) — 이 저장소의 실제 idp_state.json에 이미 게시된 폐기 7건, 발급 기록 5건이
+// 들어있어(직접 확인함), "옛 파일은 거부"를 택하면 그걸 통째로 날리게 된다. auidILog는
+// 보안 통제가 아니라 B2 추적 편의 기능(입장 검사는 issuanceLog가 전담)이라 마이그레이션의
+// 유일한 대가가 "마이그레이션 이전 세션의 auid_i 추적이 다음 게시 주기까지만 가능"뿐이므로,
+// 무손실 마이그레이션이 명확한 거부보다 낫다고 판단했다.
+const IDP_STATE_FILE_VERSION = 2;
+const LEGACY_AUID_ILOG_MAX_HEIGHT = '0';
 
 function stateFileError(detail) {
   return new Error(
     `[CustomIdP] IdP state file ${IDP_STATE_FILE} is unusable (${detail}). ` +
     'Refusing to start with a silently wrong revocation state: if the published root does not ' +
     'match what wallets rebuild from /idp/revocation_state, every wallet transaction fails. ' +
-    `Inspect the file, or remove it to start from empty state (pending/published revocations, ` +
-    'issuance records, and auid pinning would then be lost).',
+    'Inspect the file to recover it. Do NOT delete it to "fix" this: the on-chain ' +
+    'RevocationRegistry still holds the last root this IdP published, so starting from an empty ' +
+    'tree makes the IdP serve a root that does not match it — every wallet\'s execute() then ' +
+    'reverts with StaleRevocationRoot, blocking all users, not just revoked ones. Republishing to ' +
+    'clear that mismatch would republish an empty tree, silently un-revoking every account and ' +
+    'session this IdP had ever revoked (fail-open). If the file truly cannot be recovered, that ' +
+    'republish-from-empty consequence must be a deliberate, informed decision, not the default ' +
+    'unblock step.',
   );
 }
 
@@ -420,7 +460,11 @@ function serializeIdPState() {
     issuanceLog: Object.fromEntries(
       [...issuanceLog].map(([k, v]) => [k, { uid: String(v.uid), maxHeight: String(v.maxHeight) }]),
     ),
-    auidILog: Object.fromEntries([...auidILog].map(([k, v]) => [k, String(v)])),
+    // v2: issuanceLog와 같은 { uid, maxHeight } 모양 — 4-2번 만료 기반 축출이
+    // auidILog에도 적용되려면 만료 정보가 있어야 한다.
+    auidILog: Object.fromEntries(
+      [...auidILog].map(([k, v]) => [k, { uid: String(v.uid), maxHeight: String(v.maxHeight) }]),
+    ),
     // users에서 영속화하는 것은 lastAuid뿐이다. username/password/uid는 소스에 있는
     // 데모 상수라 저장할 이유가 없고, 저장하면 비밀번호가 파일로 새어나간다.
     lastAuid: Object.fromEntries(Object.entries(users).map(([name, u]) => [name, u.lastAuid])),
@@ -428,17 +472,22 @@ function serializeIdPState() {
 }
 
 // 상태가 바뀔 때마다 호출한다.
-// 저장에 실패해도 요청을 실패시키지는 않는다 — 인메모리 상태는 이미 정확하고 요청 자체는
-// 성공했기 때문이다. 다만 그 변경은 다음 재시작 때 사라지므로 운영자가 반드시 알아야 한다.
-// 조용히 삼키지 않고 명확히 에러 로그를 남긴다.
+// 이 함수 자체는 실패해도 던지지 않는다 — 실패 처리 정책(요청을 실패시킬지, 경고만
+// 남기고 넘어갈지)은 호출자마다 다르다(/idp/revoke는 보안 조작이라 실패를 5xx로
+// 돌려야 하고, 발급 경로는 로그인 자체를 막을 정도는 아니라고 판단해 응답에 경고
+// 필드만 싣는다 — 아래 각 호출부 주석 참고). 그래서 성공 여부를 boolean으로 돌려주고,
+// 무엇을 할지는 호출자가 결정한다. 다만 실패는 조용히 삼키지 않고 항상 에러 로그를
+// 남긴다 — 호출자가 반환값을 무시하더라도(예: pinAuidToAccount) 운영자가 알 수 있게.
 function saveIdPState() {
   try {
     writeSecretFile(IDP_STATE_FILE, serializeIdPState());
+    return true;
   } catch (err) {
     console.error(
       `[IdP] FAILED to persist state to ${IDP_STATE_FILE}: ${err.message} — ` +
       'this change will be lost on restart',
     );
+    return false;
   }
 }
 
@@ -456,7 +505,13 @@ async function loadIdPState() {
     throw stateFileError('not valid JSON');
   }
 
-  if (parsed?.version !== IDP_STATE_FILE_VERSION) throw stateFileError('unsupported version');
+  // v1 -> v2: auidILog 값 모양만 바뀌었다(문자열 uid -> { uid, maxHeight }). 그 외
+  // 필드는 전부 동일해서 손실 없이 마이그레이션할 수 있다. 완전히 낯선 버전은
+  // (마이그레이션 경로가 없으므로) 계속 명확히 거부한다.
+  const isLegacyAuidILog = parsed?.version === 1;
+  if (!isLegacyAuidILog && parsed?.version !== IDP_STATE_FILE_VERSION) {
+    throw stateFileError('unsupported version');
+  }
   if (!Array.isArray(parsed.revokedLeaves)) throw stateFileError('revokedLeaves must be an array');
   if (!Array.isArray(parsed.pendingAdds)) throw stateFileError('pendingAdds must be an array');
   for (const key of ['leafExpiry', 'issuanceLog', 'auidILog', 'lastAuid']) {
@@ -467,8 +522,15 @@ async function loadIdPState() {
   const leaves = parsed.revokedLeaves.map((l, i) => assertDecimalString(l, `revokedLeaves[${i}]`));
 
   // 게시 트리는 lib/imt.js를 그대로 쓰고, 저장된 리프로 insert()를 반복해 재구성한다.
+  // 리프가 0이거나 2^252 이상이면 insert()가 원시 에러를 던진다. 기동이 중단되는 건
+  // 안전한 방향이지만(fail-closed), 다른 손상 경로처럼 "이 파일이 문제다" + 무엇을
+  // 할지 안내가 없으면 운영자가 원인을 알기 어렵다 — stateFileError로 감싼다.
   const tree = await createIMT(REVOCATION_TREE_DEPTH);
-  for (const leafKey of leaves) await tree.insert(BigInt(leafKey));
+  try {
+    for (const leafKey of leaves) await tree.insert(BigInt(leafKey));
+  } catch (err) {
+    throw stateFileError(`revokedLeaves contains a value insert() rejects: ${err.message}`);
+  }
   const rebuiltRoot = tree.getRoot().toString();
 
   // 재구성한 root가 저장 시점과 다르면 조용히 넘어가면 안 된다 — 지갑이
@@ -503,9 +565,29 @@ async function loadIdPState() {
     });
   }
 
+  // usedNonces(재전송 방지)는 그동안 재시작을 넘어 살아남지 못했다 — 예전엔 키가
+  // 재시작마다 회전해 옛 r_token이 무의미했지만, 이제 키가 고정되므로 재시작 전
+  // r_token을 재전송하면 같은 키 아래 유효한 두 번째 statement를 받을 수 있었다.
+  // issuanceLog의 키(=발급된 모든 r_token)로 시드한다 — 두 발급 경로 모두 키를
+  // String(...)/.toString()으로 만들어 형식이 동일한 10진 문자열이라 그대로 맞는다.
+  // 이 시드는 issuanceLog가 저장에 실제로 성공했다는 전제에 전적으로 의존한다 —
+  // 그래서 이 파일의 3번(저장 실패를 5xx로 드러내기)을 먼저 고쳤다.
+  usedNonces.clear();
+  for (const rToken of issuanceLog.keys()) usedNonces.add(rToken);
+
   auidILog.clear();
-  for (const [auidI, uid] of Object.entries(parsed.auidILog)) {
-    auidILog.set(auidI, String(uid));
+  for (const [auidI, rawEntry] of Object.entries(parsed.auidILog)) {
+    if (isLegacyAuidILog) {
+      // v1: 값이 uid 문자열뿐이라 만료를 모른다. "이미 만료된 것"으로 표시해 다음
+      // 게시 주기(축출 로직, /idp/publish/commit)에 곧바로 정리 대상이 되게 한다.
+      auidILog.set(auidI, { uid: String(rawEntry), maxHeight: LEGACY_AUID_ILOG_MAX_HEIGHT });
+    } else {
+      if (!isPlainObject(rawEntry)) throw stateFileError(`auidILog[${auidI}] must be an object`);
+      auidILog.set(auidI, {
+        uid: String(rawEntry.uid),
+        maxHeight: assertDecimalString(String(rawEntry.maxHeight), `auidILog[${auidI}].maxHeight`),
+      });
+    }
   }
 
   // 소스에 존재하는 데모 계정에만 복원한다. 파일에 모르는 이름이 들어있어도 계정을
@@ -517,8 +599,29 @@ async function loadIdPState() {
 
   console.log(
     `[CustomIdP] Loaded state from ${IDP_STATE_FILE}: ${revokedLeaves.length} published leaves ` +
-    `(root ${rebuiltRoot}), ${pendingAdds.size} pending, ${issuanceLog.size} issuance records`,
+    `(root ${rebuiltRoot}), ${pendingAdds.size} pending, ${issuanceLog.size} issuance records, ` +
+    `${usedNonces.size} nonces seeded for replay protection`,
   );
+
+  // v1 파일을 읽었다면 지금 인메모리 상태는 이미 v2 모양이다(직렬화가 항상
+  // IDP_STATE_FILE_VERSION을 쓰므로). 다음 상태 변경 때 자연히 v2로 다시 쓰이긴
+  // 하지만, 그 전에 재시작이 한 번 더 일어나면 같은 마이그레이션을 반복하게 된다 —
+  // 해가 되지는 않지만(멱등), 지금 바로 커밋해두면 파일이 곧장 최신 모양이 되고
+  // 마이그레이션이 실제로 성사됐음을 디스크에서 확인할 수 있다.
+  if (isLegacyAuidILog) {
+    console.warn(
+      `[CustomIdP] Migrated state file from version 1 to ${IDP_STATE_FILE_VERSION}: auidILog entries ` +
+      'gained maxHeight tracking. Pre-migration entries are marked already-expired and will be ' +
+      'evicted on the next publish cycle (auid_i trace lookups for those sessions stop working then; ' +
+      'this is a convenience-feature side effect, not a security control — issuanceLog/usedNonces are unaffected).',
+    );
+    if (!saveIdPState()) {
+      throw stateFileError(
+        'migrated the in-memory state from version 1 to version 2 but failed to persist the ' +
+        'migrated file; refusing to run with an in-memory state that does not match what is on disk',
+      );
+    }
+  }
 }
 
 await loadIdPState();
@@ -831,10 +934,19 @@ app.post('/token', async (req, res) => {
   // /idp/lookup_uid_by_auid_i endpoints.
   // record는 authorizationCodes에서 꺼낸 이 handler 스코프의 값으로, max_height는
   // /authorize/login에서 pi_i의 4번째 public signal(verifySignals[3])로부터 채워졌다.
+  // auidILog도 issuanceLog와 같은 { uid, maxHeight } 모양으로 저장한다 — 4-2번 축출이
+  // 만료 기반이라 auidILog 쪽도 만료를 알아야 한다.
   issuanceLog.set(String(record.token_nonce), { uid: record.uid, maxHeight: record.max_height });
-  auidILog.set(String(record.auid_i), record.uid);
+  auidILog.set(String(record.auid_i), { uid: record.uid, maxHeight: record.max_height });
   // 발급 기록은 /idp/revoke의 입구 검사가 조회하는 대상이라 반드시 살아남아야 한다.
-  saveIdPState();
+  // 다만 로그인 자체를 막을 정도의 실패는 아니라고 판단해(가용성 우선), 저장이
+  // 실패해도 statement는 정상 발급한다 — 대신 "이 세션은 재시작 후 폐기 불가"라는
+  // 사실이 로그 한 줄로만 남지 않도록 응답에 persistenceWarning 필드를 구조적으로
+  // 싣는다. 성공 시(대다수)에는 필드 자체를 넣지 않아 응답 모양이 그대로다.
+  const persisted = saveIdPState();
+  const persistenceWarning = persisted
+    ? undefined
+    : 'issuance record could not be persisted; this r_token cannot be revoked after an IdP restart until it is issued again';
 
   res.json({
     iss: 'custom-idp',
@@ -846,6 +958,7 @@ app.post('/token', async (req, res) => {
     max_height: record.max_height,
     chain_id: record.chain_id,
     exp,
+    ...(persistenceWarning ? { persistenceWarning } : {}),
     signature: {
       R8: [eddsa.F.toObject(sig.R8[0]).toString(), eddsa.F.toObject(sig.R8[1]).toString()],
       S: sig.S.toString(),
@@ -856,6 +969,7 @@ app.post('/token', async (req, res) => {
       r_token: record.token_nonce,
       max_height: record.max_height,
       chain_id: record.chain_id,
+      ...(persistenceWarning ? { persistenceWarning } : {}),
       signature: {
         R8: [eddsa.F.toObject(idpTokenSig.R8[0]).toString(), eddsa.F.toObject(idpTokenSig.R8[1]).toString()],
         S: idpTokenSig.S.toString(),
@@ -1029,6 +1143,15 @@ async function verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, bu
   };
   console.log(`[CustomIdP][Step 10] Issuing IdP auth token after consent and pi_i verification. ${ms(start)}`);
 
+  // maxHeight는 이 함수 위쪽에서 business.maxHeight ?? business.max_height로 이미
+  // 채워진 지역 변수다(줄 658 부근). auidILog도 issuanceLog와 같은 { uid, maxHeight }
+  // 모양으로 저장한다 — 4-2번 축출이 만료 기반이라 auidILog 쪽도 만료를 알아야 한다.
+  issuanceLog.set(rToken.toString(), { uid: user.uid, maxHeight: maxHeight.toString() });
+  auidILog.set(String(business.auid_i), { uid: user.uid, maxHeight: maxHeight.toString() });
+  // 발급 기록은 /idp/revoke의 입구 검사가 조회하는 대상이라 반드시 살아남아야 한다.
+  // /token 핸들러와 동일한 정책: 저장 실패가 로그인 자체를 막지는 않되(가용성 우선),
+  // "재시작 후 폐기 불가"라는 사실을 로그 한 줄이 아니라 응답 구조로 드러낸다.
+  const persisted = saveIdPState();
   const idpToken = {
     arid_i: business.arid_i,
     auid_i: business.auid_i,
@@ -1036,14 +1159,11 @@ async function verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, bu
     max_height: maxHeight.toString(),
     chain_id: chainId.toString(),
     exp: exp,
+    ...(persisted ? {} : {
+      persistenceWarning: 'issuance record could not be persisted; this r_token cannot be revoked after an IdP restart until it is issued again',
+    }),
     signature: sigJson
   };
-  // maxHeight는 이 함수 위쪽에서 business.maxHeight ?? business.max_height로 이미
-  // 채워진 지역 변수다(줄 658 부근).
-  issuanceLog.set(rToken.toString(), { uid: user.uid, maxHeight: maxHeight.toString() });
-  auidILog.set(String(business.auid_i), user.uid);
-  // 발급 기록은 /idp/revoke의 입구 검사가 조회하는 대상이라 반드시 살아남아야 한다.
-  saveIdPState();
   console.log(`[CustomIdP][Step 11] IdP auth token issued and returned for Wallet delivery. ${ms(start)}`);
 
   return idpToken;
@@ -1091,7 +1211,14 @@ app.post('/consent_result', async (req, res) => {
 });
 
 // 3.5. B2 Trace Endpoint: Lookup UID by r_token
-app.post('/idp/lookup_uid_by_r_token', (req, res) => {
+// requireIdPAdmin을 건다 — 이전에는 인증이 전혀 없어서 r_token 하나를 아는 아무나
+// uid/username을 얻을 수 있었다. 상태 영속화 전에는 "마지막 재시작 이후"로 노출
+// 창이 자연히 닫혔지만, 이제 issuanceLog가 영구히 쌓이므로 그 창이 무기한 열려
+// 있었다. 이 엔드포인트를 실제로 호출하는 코드는(grep으로 확인) 이 저장소 안에
+// 없다 — 도입 계획 문서(docs/superpowers/plans/2026-07-16-b2-transaction-tracing-plan.md)
+// 에만 언급되고 실제 소비자는 구현되지 않았다. 그래서 인증을 걸어도 깨지는 기존
+// 호출부가 없다.
+app.post('/idp/lookup_uid_by_r_token', requireIdPAdmin, (req, res) => {
   const { r_token } = req.body ?? {};
   if (!r_token) {
     return res.status(400).json({ error: 'r_token is required' });
@@ -1111,15 +1238,28 @@ app.post('/idp/lookup_uid_by_r_token', (req, res) => {
 });
 
 // 3.6. B2 Trace Endpoint: Lookup UID by auid_i
-app.post('/idp/lookup_uid_by_auid_i', (req, res) => {
+// requireIdPAdmin을 건다. 주의: server.js의 POST /api/mode2/trace_transaction이 이
+// 엔드포인트를 호출하지만(server.js:986) X-IdP-Admin-Secret을 붙이지 않으므로, 이
+// 변경 이후 그 경로는 401을 받는다. server.js는 이번 작업의 수정 금지 대상이라 여기서
+// 호출부를 함께 고칠 수 없었다 — 이 파일만으로 낼 수 있는 최선은 구멍을 막는 것이고,
+// server.js가 관리자 시크릿을 실어 보내도록 고치는 일은 별도 승인이 필요한 후속
+// 작업으로 남긴다(docs/MODE2_FLOW.md:468도 이 엔드포인트에 인가 게이트가 없다는 것을
+// 이미 알려진 프로토타입 한계로 기록하고 있다). r_token 하나만 알면 uid/username을
+// 영구히 얻을 수 있던 구멍을 열어두는 것보다, 데모용 추적 UI 하나가 일시적으로
+// 동작하지 않는 쪽을 택했다.
+app.post('/idp/lookup_uid_by_auid_i', requireIdPAdmin, (req, res) => {
   const { auid_i } = req.body ?? {};
   if (!auid_i) {
     return res.status(400).json({ error: 'auid_i is required' });
   }
-  const uid = auidILog.get(String(auid_i));
-  if (uid === undefined) {
+  // v2부터 auidILog도 issuanceLog와 같은 { uid, maxHeight } 모양이다(4-2번 만료 기반
+  // 축출을 적용하려면 만료 정보가 필요해서). 응답 형태({ uid, username })는 외부
+  // 계약이라 바뀌지 않는다.
+  const entry = auidILog.get(String(auid_i));
+  if (entry === undefined) {
     return res.status(404).json({ error: 'No issuance record found for this auid_i' });
   }
+  const uid = entry.uid;
   const usernameEntry = Object.entries(users).find(([, user]) => String(user.uid) === String(uid));
   res.json({ uid, username: usernameEntry ? usernameEntry[0] : null });
 });
@@ -1236,18 +1376,34 @@ app.post('/idp/revoke', requireIdPAdmin, async (req, res) => {
     // /idp/publish/prepare + /idp/publish/commit이 한다.
     const alreadyPublished = revokedLeaves.includes(leafKey);
     const alreadyPending = pendingAdds.has(leafKey);
-    if (!alreadyPublished && !alreadyPending) pendingAdds.add(leafKey);
+    const addedToPending = !alreadyPublished && !alreadyPending;
+    if (addedToPending) pendingAdds.add(leafKey);
 
     // 재폐기는 에러가 아니라 no-op이다. 다만 계정 재폐기는 폐기 창을 연장해야
     // 하므로(새로 발급된 크레덴셜까지 덮어야 한다) 만료 블록은 더 늦은 쪽으로
     // 갱신한다. 짧은 쪽으로 덮어쓰면 창이 줄어 폐기가 조기에 풀린다.
     const previousExpiry = leafExpiry.get(leafKey);
+    const hadPreviousExpiry = previousExpiry !== undefined;
     const effectiveExpiry =
-      previousExpiry !== undefined && previousExpiry > expiryBlock ? previousExpiry : expiryBlock;
+      hadPreviousExpiry && previousExpiry > expiryBlock ? previousExpiry : expiryBlock;
     leafExpiry.set(leafKey, effectiveExpiry);
 
     // 대기열과 만료 메타데이터가 재시작을 넘어 살아남아야 접수된 폐기가 사라지지 않는다.
-    saveIdPState();
+    // 폐기는 보안 조작이라 저장 실패를 200으로 감추면 안 된다 — 저장이 실패하면 이
+    // 요청이 만든 인메모리 변경을 롤백하고(이번 요청이 건드리지 않은 기존 항목은
+    // 그대로 둔다) 5xx로 응답해 운영자가 재시도하게 한다. 롤백하지 않고 인메모리
+    // 상태만 전진시키면, 응답은 실패라고 말하는데 다음 /idp/publish/prepare가 이
+    // 폐기를 그대로 집어 게시해버리는 모순이 생긴다 — 응답과 실제 상태가 어긋나는
+    // 쪽보다는, 재시도하면 항상 같은 결과가 나오는 쪽(진짜 아무 일도 안 일어남)이 낫다.
+    const saved = saveIdPState();
+    if (!saved) {
+      if (addedToPending) pendingAdds.delete(leafKey);
+      if (hadPreviousExpiry) leafExpiry.set(leafKey, previousExpiry);
+      else leafExpiry.delete(leafKey);
+      return res.status(500).json({
+        error: 'failed to persist revocation state; the revocation was not recorded, please retry',
+      });
+    }
 
     // 응답에 root를 담지 않는다 — 아직 게시되지 않았으므로 '새 root'라는 것이
     // 존재하지 않고, 담으면 호출자가 그 값을 게시된 것으로 오해한다.
@@ -1399,6 +1555,47 @@ app.post('/idp/publish/commit', requireIdPAdmin, async (req, res) => {
   // 만료 메타데이터 정리: 게시 집합에도 대기열에도 없는 리프는 고아다.
   for (const leafKey of [...leafExpiry.keys()]) {
     if (!committed.has(leafKey) && !pendingAdds.has(leafKey)) leafExpiry.delete(leafKey);
+  }
+
+  // issuanceLog/auidILog 축출: 로그인마다 쌓이기만 하고 절대 줄지 않으면(무제한 성장)
+  // 매 로그인의 상태 파일 재작성 비용도 시간이 갈수록 커진다. 이미 현재 블록을 아는
+  // 이 게시 경로에서 함께 정리하는 게 자연스럽다(요청마다 별도로 블록 높이를 다시
+  // 조회할 필요가 없다).
+  //
+  // 기준은 반드시 만료(maxHeight) 기반이어야 한다 — 개수 상한이나 나이(LRU/TTL)
+  // 기준을 쓰면 아직 살아있는 r_token이 usedNonces의 seed 대상(issuanceLog)에서
+  // 빠져 재전송이 다시 열린다. 다만 만료(maxHeight <= currentBlock) 즉시 축출하면
+  // /idp/revoke가 최근 만료 세션에 내는 410 Gone이 404("발급된 적 없음")로 바뀌어
+  // 버리는 의미가 사라진다. 그래서 만료 후에도 CREDENTIAL_LIFETIME_BLOCKS만큼 더
+  // 여유를 두고서야 축출한다 — 최근 만료분은 여전히 410을, 그보다 오래된 것만 404를
+  // 받는다.
+  //
+  // usedNonces는 여기서 절대 건드리지 않는다 — 재전송 방지는 크레덴셜의 수명과
+  // 무관하게 영구적이어야 한다(이 r_token으로 두 번째 statement를 받을 수 있다는
+  // 뜻이 되므로). issuanceLog 항목이 축출된 뒤에도 usedNonces는 그 r_token을 계속
+  // 막는다 — 기동 시 seed는 이 커밋들의 issuanceLog 스냅샷에서만 이뤄지는 게 아니라
+  // 매 발급 시점에 usedNonces에 독립적으로(add 호출로) 누적되기 때문이다.
+  const evictionCutoff = prepared.blockHeight;
+  let evictedIssuance = 0;
+  for (const [rToken, entry] of [...issuanceLog]) {
+    if (BigInt(entry.maxHeight) + CREDENTIAL_LIFETIME_BLOCKS < evictionCutoff) {
+      issuanceLog.delete(rToken);
+      evictedIssuance += 1;
+    }
+  }
+  let evictedAuidI = 0;
+  for (const [auidI, entry] of [...auidILog]) {
+    if (BigInt(entry.maxHeight) + CREDENTIAL_LIFETIME_BLOCKS < evictionCutoff) {
+      auidILog.delete(auidI);
+      evictedAuidI += 1;
+    }
+  }
+  if (evictedIssuance > 0 || evictedAuidI > 0) {
+    console.log(
+      `[IdP] publish/commit: evicted ${evictedIssuance} issuanceLog record(s) and ` +
+        `${evictedAuidI} auidILog record(s) whose maxHeight + CREDENTIAL_LIFETIME_BLOCKS ` +
+        `(${CREDENTIAL_LIFETIME_BLOCKS}) is behind block ${evictionCutoff}`,
+    );
   }
 
   preparedPublish = null;
