@@ -98,6 +98,35 @@ REVOCATION_REGISTRY_ADDRESS=0x...
 - `REVOCATION_IDP_ADDRESS`: 배포/게시 스크립트(`scripts/redeploy_ppid_factory.cjs`, `scripts/push_revocation_root.cjs`)가 `RevocationRegistry`의 `onlyIdP` 주소로 씁니다. 미설정 시 배포·게시가 에러로 중단됩니다.
 - `REVOCATION_REGISTRY_ADDRESS`: `wallet_agent.js`가 배포된 `RevocationRegistry`를 조회할 때 씁니다. 미설정 시 `wallet_agent.js`는 기동 시점에 에러를 내고 종료합니다.
 
+### 크레덴셜 폐기 게시 주기 자동화 (`scripts/revocation_sweep.cjs`)
+
+`RevocationRegistry.isRecentRoot(root)`는 root가 **가장 최근 게시로부터 `GRACE_BLOCKS`(200블록) 이내**일 때만 true입니다. 즉 주기적으로 root를 재게시(heartbeat)하지 않으면 게시된 root가 만료되고, **폐기와 무관한 정상 사용자 전원의 `/submitTransaction`이 막힙니다.** 이 스크립트를 데몬으로 계속 띄워 두지 않으면 서비스가 죽습니다.
+
+1회만 실행(기존 동작, 운영자가 수동으로 반복 실행해야 함):
+
+```bash
+IDP_ADMIN_SECRET=... REVOCATION_IDP_ADDRESS=0x... REVOCATION_REGISTRY_ADDRESS=0x... \
+  npx hardhat run scripts/revocation_sweep.cjs --network localhost
+```
+
+`REVOCATION_SWEEP_INTERVAL_SECONDS`를 설정하면 그 간격(초)으로 `prepare → push → commit` 사이클을 무기한 반복하는 데몬 모드로 동작합니다:
+
+```bash
+IDP_ADMIN_SECRET=... REVOCATION_IDP_ADDRESS=0x... REVOCATION_REGISTRY_ADDRESS=0x... \
+  REVOCATION_SWEEP_INTERVAL_SECONDS=60 \
+  npx hardhat run scripts/revocation_sweep.cjs --network localhost
+```
+
+관련 환경변수:
+
+- `REVOCATION_SWEEP_INTERVAL_SECONDS`: 설정하면 데몬 모드로 전환되고, 이 초 간격으로 사이클을 반복합니다. 미설정 시 1회 실행 후 종료(기존 동작).
+- `REVOCATION_SWEEP_SAFETY_FACTOR`: 안전 가드 배수(기본 4). 온체인 `GRACE_BLOCKS`를 12초/블록 가정으로 환산한 상한을 이 값으로 나눈 것이 허용 간격 상한입니다. `interval × factor`가 그 상한을 넘으면 위험하다고 보고 기동을 거부합니다(연속 몇 번의 사이클 실패까지 grace window 안에서 흡수할 여유를 남기기 위함). `GRACE_BLOCKS` 자체는 하드코딩하지 않고 매번 배포된 registry에서 읽습니다.
+- `REVOCATION_SWEEP_FAILURE_ALERT_THRESHOLD`: 연속 실패 횟수가 이 값(기본 3) 이상이면 눈에 띄는 경고 배너를 반복 출력합니다. 사이클 하나가 실패해도 데몬은 죽지 않고 다음 주기에 재시도하지만, 실패가 이어지면 운영자가 놓치지 않게 하기 위함입니다.
+
+데몬은 `SIGINT`/`SIGTERM`을 받으면 진행 중인 사이클을 마치고 정상 종료합니다(강제 중단이 아니라, 다음 사이클을 새로 시작하지 않는 방식). `prepare` 이후 `push` 이전에 멈추면 아무 변화 없이 끝나고, `push` 이후 `commit` 이전에 멈추면 온체인 root는 이미 최신으로 확정된 상태라 지갑은 계속 유효한 root로 동작합니다 — 어느 지점에서 중단돼도 안전합니다.
+
+로컬 데모 체인(hardhat node)은 트랜잭션이 있을 때만 블록을 찍으므로, 벽시계 기준 주기 실행은 안전한 방향의 오차를 냅니다(체인이 벽시계보다 느리게 늙어 실제 grace window가 계산보다 더 넉넉합니다).
+
 ### IdP 키·상태 영속화
 
 `custom_idp.js`는 장기 키와 폐기·발급 상태를 프로젝트 루트의 두 파일에 보관합니다. 둘 다 권한 `0600`이고 `.gitignore`에 등록돼 있습니다.
