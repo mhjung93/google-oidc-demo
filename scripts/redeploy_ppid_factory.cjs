@@ -35,8 +35,8 @@ async function main() {
   console.log("RevocationRegistry onlyIdP address:", idpAddress);
 
   // 부트스트랩 root를 배포 직후 게시해야 하므로, 배포를 시작하기 전에 IdP가 살아있는지
-  // 먼저 확인한다. filled == 0이면 isRecentRoot가 항상 false라 재배포 직후 시스템이
-  // 완전히 동작 불능이 되므로, 여기서 조용히 넘어가면 안 된다.
+  // 먼저 확인한다. latestRoot == 0(게시 전)이면 isCurrentRoot가 항상 false라 재배포
+  // 직후 시스템이 완전히 동작 불능이 되므로, 여기서 조용히 넘어가면 안 된다.
   const initialRoot = await fetchIdPRoot(idpBaseUrl);
 
   const Verifier = await hre.ethers.getContractFactory("PiPkIVerifier");
@@ -51,7 +51,7 @@ async function main() {
   const registryAddress = await registry.getAddress();
   console.log("RevocationRegistry deployed at", registryAddress);
 
-  // 갓 배포된 레지스트리는 비어 있고(filled == 0), 그 상태에서는 isRecentRoot가
+  // 갓 배포된 레지스트리는 latestRoot == 0이고, 그 상태에서는 isCurrentRoot가
   // 무조건 false라 모든 execute()가 StaleRevocationRoot로 revert한다. 재배포 직후
   // 시스템이 100% 동작 불능이 되지 않도록 IdP의 현재 root를 즉시 게시한다.
   const initialRootHex = rootToBytes32(hre, initialRoot);

@@ -57,7 +57,7 @@ async function main() {
   // 대가: 이 테스트를 돌리면 IdP의 게시 상태가 온체인 root보다 앞서게 된다.
   // 그 상태로 온체인 테스트를 이어서 돌리려면 root를 먼저 게시해야 하는데,
   // tests/test_mode2_e2e_onchain.js가 시작 시 자기 전제조건을 스스로 세우므로
-  // (isRecentRoot 확인 후 필요하면 게시) 실무상 문제가 되지 않는다.
+  // (isCurrentRoot 확인 후 필요하면 게시) 실무상 문제가 되지 않는다.
   const adminHeaders = { 'Content-Type': 'application/json', 'X-IdP-Admin-Secret': ADMIN_SECRET };
   const prepared = await (await fetch(`${IDP}/idp/publish/prepare`, { method: 'POST', headers: adminHeaders, body: '{}' })).json();
   assert.ok(prepared.expectedRoot, 'prepare must return an expected root');

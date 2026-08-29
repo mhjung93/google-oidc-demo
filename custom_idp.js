@@ -1454,8 +1454,15 @@ app.post('/idp/revoke', requireIdPAdmin, async (req, res) => {
 // 고치려는 문제(게시되지 않은 root로 witness를 만들어 전원이 막힘)가 그대로 재발한다.
 // push가 확정된 뒤에만 IdP가 전진하도록 순서를 강제한다.
 //   prepare 후 push 실패 -> 아무것도 안 바뀜(안전)
-//   push 후 commit 실패  -> 체인이 더 최신. 지갑은 옛 root를 쓰고 그건 아직
-//                           GRACE_BLOCKS 안이라 동작한다(안전한 방향)
+//   push 후 commit 실패  -> 체인의 latestRoot는 이미 새 root로 전진했는데 IdP는 옛
+//                           리프 집합을 계속 서빙한다. grace window가 없으므로 지갑이
+//                           그 옛 리프 집합으로 만드는 root는 latestRoot와 다르고,
+//                           StaleRevocationRoot로 전원(폐기와 무관한 사용자 포함)이
+//                           막힌다 — 더 이상 "안전한 방향"이 아니라 전면 장애다.
+//                           이 창을 좁히는 수단은 push 성공 뒤 commit 실패 시 즉시
+//                           재시도하는 것뿐이다(scripts/revocation_sweep.cjs의 커밋
+//                           즉시 재시도 로직 참고). 그래도 재시도가 모두 실패하면
+//                           운영자가 수동으로 /idp/publish/commit을 다시 호출해야 한다.
 //
 // 만료 리프 제거(sweep)도 이 경로에 흡수됐다. 만료된 리프를 빼야 지갑의 매 트랜잭션
 // 재구성 비용이 무한정 늘지 않는다(docs/REVOCATION_FOLLOWUPS.md 0절).
@@ -1503,8 +1510,9 @@ app.post('/idp/publish/prepare', requireIdPAdmin, async (req, res) => {
     `[IdP] publish/prepare at block ${currentBlock}: +${added} -${removed}, ` +
       `leaves ${revokedLeaves.length} -> ${candidate.length}, expectedRoot ${expectedRoot}`,
   );
-  // 추가·제거가 0건이어도 200이다 — 그 경우가 heartbeat다(같은 root를 재게시해
-  // RevocationRegistry의 GRACE_BLOCKS 만료로 정상 사용자가 막히는 것을 막는다).
+  // 추가·제거가 0건이어도 200이다 — 그 경우가 heartbeat다. grace window가 없어진
+  // 뒤로 heartbeat는 만료를 막는 역할이 아니라, 대기 중인 폐기가 있으면 그걸 게시하는
+  // 역할만 한다(추가·제거가 0건이면 같은 root를 다시 게시하는 무의미한 no-op이다).
   res.json({
     expectedRoot,
     currentRoot,

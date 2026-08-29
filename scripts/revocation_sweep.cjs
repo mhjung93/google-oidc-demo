@@ -34,15 +34,10 @@ async function callIdPAdmin(idpBaseUrl, adminSecret, pathname, body) {
   return res.json();
 }
 
-// 로컬 데모 체인(hardhat node)은 트랜잭션이 있을 때만 블록을 찍는다. 즉 이
-// 스크립트가 벽시계 기준으로 주기 실행돼도, 체인 블록 번호는 다른 트랜잭션
-// 활동이 없으면 벽시계보다 "느리게" 늙는다. GRACE_BLOCKS는 블록 수 기준이므로
-// 이 경우 실제 grace window는 벽시계 기준 계산보다 항상 더 넉넉하다 — 안전한
-// 방향의 오차다(반대 방향, 즉 체인이 벽시계보다 빨리 늙는 경우라면 위험했을 것).
-const BLOCK_TIME_SECONDS_ASSUMED = 12; // spec/컨트랙트 주석의 가정치. GRACE_BLOCKS 자체는 온체인에서 읽는다.
-const DEFAULT_SAFETY_FACTOR = 4; // interval * factor <= GRACE_BLOCKS * 12s 이어야 기동 허용
 const DEFAULT_FAILURE_ALERT_THRESHOLD = 3; // 연속 이 횟수 이상 실패하면 경고 배너 출력
 const SLEEP_POLL_MS = 500; // 종료 신호를 얼마나 자주 확인하며 대기할지
+const COMMIT_RETRY_ATTEMPTS = 3; // 최초 시도 이후 추가로 시도할 횟수
+const COMMIT_RETRY_DELAY_MS = 2000; // 재시도 사이 대기. grace window가 없어 이 창이 곧 전면 장애 시간이므로 짧게 잡는다.
 
 // 폐기 게시 한 사이클(batch publish). IdP에 대기 중인 폐기를 반영하고 만료된 리프를
 // 정리한 다음 그 root를 온체인에 게시한다.
@@ -52,16 +47,24 @@ const SLEEP_POLL_MS = 500; // 종료 신호를 얼마나 자주 확인하며 대
 // 정상 사용자 전원의 execute()가 StaleRevocationRoot로 막힌다. push가 확정된
 // 뒤에만 commit하므로 그 창이 존재하지 않는다.
 //
-// 이 순서 덕분에 사이클이 어느 지점에서 중단돼도(프로세스 kill, SIGINT 등) 안전하다:
+// 이 순서로 중단 지점 중 하나는 안전하지만, 다른 하나는 grace window가 없어진 뒤로
+// 더 이상 안전하지 않다(프로세스 kill, SIGINT 등으로 중단됐을 때):
 //   - prepare 이후 push 이전에 중단 -> IdP·온체인 둘 다 아무 변화 없음. 다음 사이클이
-//     처음부터 다시 prepare한다.
-//   - push 이후 commit 이전에 중단 -> 온체인 root는 이미 최신으로 확정됐고, IdP는
-//     아직 이전 상태를 서빙 중이므로 지갑은 "이전(그러나 여전히 유효한) root" 기준
-//     witness를 계속 받는다. 다음 사이클이 같은 expectedRoot로 prepare를 재계산해
-//     commit을 마저 진행한다(IdP가 게시된 상태만 서빙하므로 재계산 결과는 같다).
-// 즉 안전한 중단 지점이 이미 두 곳 다 보장돼 있으므로, 정상 종료 처리는 "사이클을
-// 강제로 끝까지 밀어붙이는" 로직이 필요 없고 진행 중인 사이클이 자연스럽게 끝나도록
-// 기다렸다가 다음 사이클을 시작하지 않는 것으로 충분하다.
+//     처음부터 다시 prepare한다. (안전)
+//   - push 이후 commit 이전에 중단 -> 온체인 latestRoot는 이미 새 root로 확정됐는데
+//     IdP는 아직 이전 리프 집합을 서빙 중이다. grace window가 없으므로 지갑이 그
+//     이전 리프 집합으로 만드는 root는 더 이상 latestRoot와 같지 않고, 그 사이
+//     StaleRevocationRoot로 전원(폐기와 무관한 사용자 포함)이 막힌다 — "안전한
+//     중단 지점"이 아니라 전면 장애 구간이다. 그래서 commit은 실패 시 짧은 간격으로
+//     즉시 재시도해 이 창을 최대한 좁힌다(아래 COMMIT_RETRY_* 상수 참고). 재시도까지
+//     모두 실패하거나 프로세스 자체가 죽으면, 다음 사이클(또는 운영자가 재기동한
+//     데몬)이 같은 expectedRoot로 prepare를 재계산해 commit을 마저 진행한다(IdP가
+//     게시된 상태만 서빙하므로 재계산 결과는 같고, push도 같은 root 재게시라
+//     해롭지 않다).
+// 정상 종료(SIGINT/SIGTERM) 처리는 진행 중인 사이클이 위 커밋 재시도까지 포함해
+// 자연스럽게 끝나도록 기다렸다가 다음 사이클을 시작하지 않는 것으로 이뤄진다 —
+// 재시도 도중 종료 신호를 받아도 이번 사이클 자체를 강제로 끊지는 않는다(그러면
+// 전면 장애 구간을 연 채로 프로세스가 끝나 버린다).
 async function runOneCycle(ctx) {
   const { idpBaseUrl, adminSecret, registry, hre: hreRef } = ctx;
 
@@ -81,18 +84,53 @@ async function runOneCycle(ctx) {
   // 2) pushRoot — 온체인에 게시하고 영수증까지 기다린다.
   const rootHex = rootToBytes32(hreRef, String(expectedRoot));
 
-  // push_revocation_root.cjs와 동일하게 중복 게시 가드는 두지 않는다(dd75591에서
-  // 의도적으로 제거됨). 추가·제거가 0건이어도(heartbeat) 이 root를 다시 push해서
-  // pushedAt을 갱신해야 RevocationRegistry의 GRACE_BLOCKS 만료로 정상 사용자가
-  // 막히는 일을 막는다.
+  // push_revocation_root.cjs와 동일하게 중복 게시 가드는 두지 않는다. grace window가
+  // 없어진 뒤로 같은 root 재게시는 heartbeat로서의 의미조차 없지만(latestRoot 값이
+  // 안 바뀌니 무효화도 없음), 데몬이 매 주기 같은 root를 밀어도 해롭지 않으므로 굳이
+  // 막지 않는다.
   const tx = await registry.pushRoot(rootHex);
   const receipt = await tx.wait();
   console.log(`2/3 pushRoot: ${rootHex} (block ${receipt.blockNumber}, tx ${receipt.hash})`);
 
   // 3) commit — push가 확정된 뒤에만 IdP를 전진시킨다.
-  const committed = await callIdPAdmin(idpBaseUrl, adminSecret, "/idp/publish/commit", {
-    root: String(expectedRoot),
-  });
+  //
+  // 여기서부터 commit이 성공할 때까지는 전면 장애 구간이다(파일 상단 주석 참고):
+  // 체인의 latestRoot는 이미 새 root인데 IdP는 옛 리프 집합을 서빙 중이라, 그 사이
+  // 만들어지는 모든 witness의 root가 latestRoot와 어긋나 전원이 StaleRevocationRoot로
+  // 막힌다. 그래서 commit 실패는 다음 사이클까지 기다리지 않고 짧은 간격으로 즉시
+  // 재시도해 이 창을 좁힌다.
+  let committed;
+  let commitErr = null;
+  for (let attempt = 0; attempt <= COMMIT_RETRY_ATTEMPTS; attempt++) {
+    try {
+      committed = await callIdPAdmin(idpBaseUrl, adminSecret, "/idp/publish/commit", {
+        root: String(expectedRoot),
+      });
+      commitErr = null;
+      break;
+    } catch (err) {
+      commitErr = err;
+      if (attempt < COMMIT_RETRY_ATTEMPTS) {
+        console.error(
+          `[sweep] commit 실패 (시도 ${attempt + 1}/${COMMIT_RETRY_ATTEMPTS + 1}): ${err.message}. ` +
+          `${COMMIT_RETRY_DELAY_MS}ms 후 재시도합니다 (체인은 이미 새 root로 전진했고 grace window가 ` +
+          `없어, 이 창이 열려 있는 동안 정상 사용자의 트랜잭션까지 막힙니다).`
+        );
+        await sleepInterruptible(COMMIT_RETRY_DELAY_MS, () => false);
+      }
+    }
+  }
+  if (commitErr) {
+    console.error(
+      "\n" + "!".repeat(70) + "\n" +
+      `[sweep] 경고: pushRoot(${rootHex})는 성공했지만 commit이 ${COMMIT_RETRY_ATTEMPTS + 1}번 시도 ` +
+      "모두 실패했습니다. 체인의 latestRoot는 이미 전진했는데 IdP는 옛 리프 집합을 서빙 중이라, " +
+      "이 상태가 이어지는 동안 폐기와 무관한 사용자를 포함해 전원의 /submitTransaction이 " +
+      "StaleRevocationRoot로 막힙니다. 운영자 확인이 필요합니다.\n" +
+      "!".repeat(70) + "\n"
+    );
+    throw commitErr;
+  }
   console.log(
     `3/3 commit: published root=${committed.root}, leaves=${committed.leafCount}, ` +
     `pending=${committed.pendingCount}`
@@ -107,38 +145,18 @@ async function runOneCycle(ctx) {
   console.log("Published revocation root:", rootHex);
 }
 
-// 배포된 RevocationRegistry에서 GRACE_BLOCKS를 읽어, 설정된 주기가 안전한지 검사한다.
-// GRACE_BLOCKS는 컨트랙트 상수이므로 여기서 다시 숫자로 박지 않고 매번 온체인에서
-// 읽는다 — 재배포로 값이 바뀌어도 이 스크립트를 고칠 필요가 없게 하기 위함이다.
-//
-// 안전계수(safetyFactor)를 두는 이유: 주기가 GRACE_BLOCKS 상한에 바짝 붙어 있으면
-// 사이클이 단 한두 번만 연속 실패해도(네트워크 순단, IdP 재시작 등) grace window가
-// 만료돼 전원이 막힌다. interval * safetyFactor <= capSeconds를 요구하면, 적어도
-// (safetyFactor - 1)번 연속 실패까지는 다음 성공 사이클이 grace window 안에서
-// 갱신할 여지가 남는다.
-async function checkIntervalSafety(registry, intervalSeconds, safetyFactor) {
-  const graceBlocksRaw = await registry.GRACE_BLOCKS();
-  const graceBlocks = Number(graceBlocksRaw);
-  const capSeconds = graceBlocks * BLOCK_TIME_SECONDS_ASSUMED;
-  const maxSafeIntervalSeconds = capSeconds / safetyFactor;
-
-  if (!(intervalSeconds > 0) || intervalSeconds > maxSafeIntervalSeconds) {
-    throw new Error(
-      `REVOCATION_SWEEP_INTERVAL_SECONDS=${intervalSeconds}가 안전 상한을 초과합니다.\n` +
-      `  온체인 GRACE_BLOCKS=${graceBlocks} (블록당 ${BLOCK_TIME_SECONDS_ASSUMED}초 가정 시 ` +
-      `${capSeconds}초 상한), 안전계수=${safetyFactor} 적용 시 허용 간격은 최대 ` +
-      `${maxSafeIntervalSeconds.toFixed(1)}초입니다.\n` +
-      `  간격을 줄이거나(REVOCATION_SWEEP_INTERVAL_SECONDS), 안전계수를 재검토하세요 ` +
-      `(REVOCATION_SWEEP_SAFETY_FACTOR, 기본값 ${DEFAULT_SAFETY_FACTOR}).\n` +
-      `  이 간격으로 기동하면 사이클이 몇 번만 연속 실패해도 GRACE_BLOCKS 만료로 ` +
-      `정상 사용자 전원의 /submitTransaction이 막힙니다.`
-    );
-  }
-
+// grace window와 K개 순환 버퍼가 사라지면서, "간격이 만료 상한에 비해 안전한가"라는
+// 질문 자체가 사라졌다 — 이제 root는 시간이 지나도 만료되지 않으므로, 간격이 아무리
+// 길어도(심지어 데몬이 죽어도) 정상 사용자가 막히는 일은 생기지 않는다. 대신 간격은
+// 온전히 "폐기가 실제로 반영되기까지 걸리는 시간"으로 의미가 바뀌었다. 그래서 기동을
+// 막는 가드는 없애고, 그 지연을 운영자가 알 수 있도록 기동 시 로그로만 알린다.
+function announceRevocationDelay(intervalSeconds) {
   console.log(
-    `[sweep] 안전 가드 통과: interval=${intervalSeconds}s, GRACE_BLOCKS=${graceBlocks} ` +
-    `(가정 ${BLOCK_TIME_SECONDS_ASSUMED}s/block → 상한 ${capSeconds}s), ` +
-    `safetyFactor=${safetyFactor} → 허용 간격 상한=${maxSafeIntervalSeconds.toFixed(1)}s`
+    `[sweep] 데몬 모드: 대기 중인 폐기는 다음 게시 주기(최대 약 ${intervalSeconds}초) 뒤에 ` +
+    "반영됩니다. grace window가 없으므로 간격을 늘려도 정상 사용자의 트랜잭션이 막히는 " +
+    "일은 없습니다 — 다만 데몬이 멈추면 마지막으로 게시된 root가 계속 유효해 모두 동작은 " +
+    "하되, 대기 중인 폐기가 조용히 효력을 잃습니다(fail-open). 데몬 생존 감시는 운영자 " +
+    "책임입니다."
   );
 }
 
@@ -160,10 +178,16 @@ function sleepInterruptible(ms, shuttingDown) {
 }
 
 // 주기 모드: prepare -> push -> commit 사이클을 interval마다 무한 반복한다.
-// 한 사이클의 실패가 데몬 자체를 죽이면 안 된다 — 그러면 fail-closed 설계상
-// 다음 사이클도 영영 오지 않고 전원이 막힌 채로 방치된다. 그래서 사이클 실패는
-// catch해서 로그만 남기고 다음 주기에 재시도한다. 다만 실패가 연속되면(=진짜
-// 문제일 가능성이 높음) 조용히 넘어가지 않고 눈에 띄는 경고를 반복 출력한다.
+//
+// grace window가 사라지면서 실패 양식이 뒤집혔다(fail-closed -> fail-open). 예전에는
+// 데몬이 멈추면 게시된 root가 GRACE_BLOCKS 뒤 만료돼 전원이 막혔다 — 실패가 시끄럽게
+// 드러나는 fail-closed였다. 이제는 마지막으로 게시된 root가 latestRoot로 계속 남아
+// 유효하므로, 데몬이 죽어도 기존 사용자는 계속 동작한다. 다만 대기 중인 폐기가 조용히
+// 게시되지 않은 채 쌓이기만 한다 — 실패가 드러나지 않는 fail-open이다. 그래서 사이클
+// 실패를 catch해서 로그만 남기고 다음 주기에 재시도하는 구조 자체는(사용자를 막지
+// 않는다는 점에서) 여전히 무방하지만, 데몬이 살아있는지 감시할 책임이 전적으로
+// 운영자에게 넘어갔다는 뜻이기도 하다. 그래서 실패가 연속되면(=진짜 문제일 가능성이
+// 높음) 조용히 넘어가지 않고 눈에 띄는 경고를 반복 출력해 그 감시를 돕는다.
 async function runLoop(ctx, intervalSeconds, failureAlertThreshold) {
   let shuttingDown = false;
 
@@ -174,9 +198,10 @@ async function runLoop(ctx, intervalSeconds, failureAlertThreshold) {
     }
     shuttingDown = true;
     console.log(
-      `[sweep] ${sig} 수신 — 진행 중인 사이클을 마치고 종료합니다. ` +
-      `(prepare~push 전이면 아무 변화 없이 끝나고, push~commit 전이면 온체인이 이미 ` +
-      `최신이라 지갑은 계속 유효한 root로 동작합니다 — 어느 지점이든 안전. 재신호 시 즉시 종료.)`
+      `[sweep] ${sig} 수신 — 진행 중인 사이클(커밋 재시도 포함)을 마치고 종료합니다. ` +
+      `(prepare~push 전이면 아무 변화 없이 끝난다. push~commit 사이는 grace window가 ` +
+      `없어 전면 장애 구간이므로 강제로 끊지 않고 재시도까지 마치기를 기다린다 — 강제 ` +
+      `종료하면 그 장애 상태가 다음 데몬 기동까지 그대로 남는다. 재신호 시 즉시 종료.)`
     );
   };
   process.on("SIGINT", () => onSignal("SIGINT"));
@@ -203,8 +228,9 @@ async function runLoop(ctx, intervalSeconds, failureAlertThreshold) {
       if (consecutiveFailures >= failureAlertThreshold) {
         console.error(
           "\n" + "!".repeat(70) + "\n" +
-          `[sweep] 경고: 연속 ${consecutiveFailures}회 실패. GRACE_BLOCKS 만료 시 정상 사용자 ` +
-          "전원의 /submitTransaction이 막힙니다. 운영자 확인이 필요합니다.\n" +
+          `[sweep] 경고: 연속 ${consecutiveFailures}회 실패. grace window가 없어 정상 사용자는 ` +
+          "계속 동작하지만(fail-open), 대기 중인 폐기가 게시되지 않은 채 계속 쌓이고 " +
+          "있습니다. 운영자 확인이 필요합니다.\n" +
           "!".repeat(70) + "\n"
         );
       }
@@ -251,13 +277,7 @@ async function main() {
     throw new Error(`REVOCATION_SWEEP_INTERVAL_SECONDS는 양수(초)여야 합니다: ${intervalRaw}`);
   }
 
-  const safetyFactorRaw = process.env.REVOCATION_SWEEP_SAFETY_FACTOR;
-  const safetyFactor = safetyFactorRaw !== undefined ? Number(safetyFactorRaw) : DEFAULT_SAFETY_FACTOR;
-  if (!Number.isFinite(safetyFactor) || safetyFactor <= 1) {
-    throw new Error(`REVOCATION_SWEEP_SAFETY_FACTOR는 1보다 큰 수여야 합니다: ${safetyFactorRaw}`);
-  }
-
-  await checkIntervalSafety(registry, intervalSeconds, safetyFactor);
+  announceRevocationDelay(intervalSeconds);
 
   const failureAlertThresholdRaw = process.env.REVOCATION_SWEEP_FAILURE_ALERT_THRESHOLD;
   const failureAlertThreshold =

@@ -2,7 +2,7 @@
 //
 // 이 테스트가 처음으로 검증하는 것: 살아있는 wallet_agent가 만든 '진짜' pi_pk_i 증명이
 // 실제로 배포된 PPIDWallet.execute()를 통과하고(구간 A), 폐기 이후에는 지갑이 스스로
-// 증명 생성을 거부하며(구간 B), 만료된 폐기 root로는 체인이 트랜잭션을 거부한다는 것
+// 증명 생성을 거부하며(구간 B), 새 root가 게시되면 직전 root는 그 즉시 무효가 된다는 것
 // (구간 C). 기존 test/PPIDWalletRevocation.test.mjs는 all-zero mock 증명으로 early
 // revert하는 negative path만 봤기 때문에, verifier를 실제로 통과하는 경로는 이 브랜치에서
 // 한 번도 확인된 적이 없었다.
@@ -18,19 +18,18 @@
 //     하드코딩하지 않고 배포된 컨트랙트의 idp() getter에서 읽는다.
 //
 // == 이 테스트는 환경을 변경한다 ==
-//   - 체인 블록을 GRACE_BLOCKS+1 (201) 개 진행시킨다.
 //   - IdP 폐기 트리에 이 실행에서 발급받은 세션의 r_token 리프를 1개 추가한다(되돌릴 수 없음).
-//   - RevocationRegistry에 root를 여러 번 게시한다.
-//   마지막에 root를 재게시해 isRecentRoot가 다시 true가 되도록 환경을 복구하고,
-//   복구 여부를 단언한다. 이 복구를 빠뜨리면 이후 모든 정상 트랜잭션이
-//   StaleRevocationRoot로 막힌다.
+//   - RevocationRegistry에 root를 최소 1번 게시한다(대기 중인 폐기 반영).
+//   grace window와 K개 순환 버퍼가 없어진 뒤로는 root가 시간이 지나도 만료되지 않으므로,
+//   이 테스트는 더 이상 체인 블록을 인위적으로 진행시키지도, 끝에서 별도로 root를
+//   복구하지도 않는다 — 구간 B에서 게시하는 root가 그대로 최종 상태이고, 그 상태는
+//   fetchIdpRoot()가 돌려주는 현재 IdP root와 항상 일치한다.
 //
 // == 멱등성 ==
 //   이 테스트는 멱등이 아니지만 재실행은 안전하다. 매 실행마다 새로 로그인해서
 //   새 r_token을 발급받으므로, 폐기 대상 리프가 항상 새 값이고 IdP root가 반드시
 //   바뀐다(같은 값을 다시 폐기해 root가 안 바뀌는 no-op 상황이 생기지 않는다).
-//   누적되는 부작용은 폐기 트리에 리프가 1개씩 쌓이는 것과 체인이 201블록씩
-//   진행되는 것뿐이고, 둘 다 이후 실행의 결과를 바꾸지 않는다.
+//   누적되는 부작용은 폐기 트리에 리프가 1개씩 쌓이는 것뿐이다.
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -64,10 +63,8 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 
 const REGISTRY_ABI = [
   'function idp() view returns (address)',
-  'function filled() view returns (uint256)',
   'function latestRoot() view returns (bytes32)',
-  'function GRACE_BLOCKS() view returns (uint256)',
-  'function isRecentRoot(bytes32) view returns (bool)',
+  'function isCurrentRoot(bytes32) view returns (bool)',
 ];
 
 // PPIDWallet.execute()가 되돌릴 수 있는 커스텀 에러들. revert 사유를 이름으로
@@ -244,13 +241,6 @@ function rootToBytes32(root) {
   return '0x' + BigInt(root).toString(16).padStart(64, '0');
 }
 
-// provider.getBlockNumber()는 ethers가 polling 간격 동안 값을 캐시하기 때문에
-// hardhat_mine 직후에 부르면 진행 전 높이를 그대로 돌려준다. 채굴 전후를 비교하는
-// 용도로는 캐시를 타지 않는 raw eth_blockNumber를 쓴다.
-async function currentBlockNumber(provider) {
-  return Number(await provider.send('eth_blockNumber', []));
-}
-
 async function fetchIdpRoot() {
   const res = await fetch(`${IDP}/idp/revocation_state`);
   if (!res.ok) throw new Error(`/idp/revocation_state failed: ${res.status}`);
@@ -324,68 +314,38 @@ async function main() {
   const signer = new NonceManager(new Wallet(HARDHAT_ACCOUNT0_PK, provider));
   const registry = new Contract(REGISTRY_ADDRESS, REGISTRY_ABI, provider);
 
-  // GRACE_BLOCKS는 하드코딩하지 않고 배포된 레지스트리에서 읽는다.
-  const graceBlocks = Number(await registry.GRACE_BLOCKS());
   // pushRoot는 onlyIdP다. 운영자 주소도 하드코딩하지 않고 온체인 getter에서 읽는다.
   const idpOperator = await registry.idp();
-  console.log(`OK: registry ${REGISTRY_ADDRESS} GRACE_BLOCKS=${graceBlocks} idp=${idpOperator}`);
+  console.log(`OK: registry ${REGISTRY_ADDRESS} idp=${idpOperator}`);
 
   // 전제조건: 구간 A는 지갑이 'IdP의 현재 root가 이미 온체인에 게시돼 있다'고
   // 가정한다. 그런데 IdP root를 바꾸면서 게시는 하지 않는 다른 테스트
   // (tests/test_idp_revoke_endpoint.js, tests/test_revocation_e2e.js)를 먼저 돌리면
   // 그 가정이 깨져, 구간 A가 검증하려는 것과 무관하게 /submitTransaction이 400으로
   // 실패한다. 자기 전제조건은 스스로 세운다 — 시작 전에 현재 root를 한 번 게시한다.
-  if (!(await registry.isRecentRoot(rootToBytes32(await fetchIdpRoot())))) {
+  if (!(await registry.isCurrentRoot(rootToBytes32(await fetchIdpRoot())))) {
     pushRevocationRoot(idpOperator);
     assert.equal(
-      await registry.isRecentRoot(rootToBytes32(await fetchIdpRoot())),
+      await registry.isCurrentRoot(rootToBytes32(await fetchIdpRoot())),
       true,
-      '전제조건 실패: 게시했는데도 IdP의 현재 root가 isRecentRoot=false다',
+      '전제조건 실패: 게시했는데도 IdP의 현재 root가 isCurrentRoot=false다',
     );
     console.log('OK: 전제조건 — IdP의 현재 root가 게시돼 있지 않아 먼저 게시했다');
   }
 
-  // 구간 B 이후로는 블록을 진행시키므로 게시된 root가 만료된다. 도중에 실패해도
-  // 환경이 망가진 채 남지 않도록 복구를 finally에 둔다 — 복구를 빼먹으면 이후
-  // 모든 정상 트랜잭션이 StaleRevocationRoot로 막힌다(실제로 이 테스트를 만드는
-  // 도중 중단된 실행이 그 상태를 만들었다).
-  try {
-    await runSections({ provider, signer, registry, graceBlocks, idpOperator, adminSecret });
-  } finally {
-    await restoreEnvironment({ registry, idpOperator });
-  }
+  // grace window와 K개 순환 버퍼가 없어진 뒤로는 root가 시간이 지나도 만료되지
+  // 않는다. 구간 B에서 게시하는 root가 곧 최종 상태이고 fetchIdpRoot()와 항상
+  // 일치하므로, 예전과 달리 별도의 환경 복구가 필요 없다.
+  await runSections({ provider, signer, registry, idpOperator, adminSecret });
 
   console.log(
     'PASS: 폐기 전 구간 온체인 E2E — 진짜 증명이 execute()를 통과하고(A), ' +
-      '폐기 후 지갑이 증명 생성을 거부하며(B), 만료된 root를 체인이 거부한다(C)',
+      '폐기 후 지갑이 즉시 증명 생성을 거부하며(B), 새 root 게시로 직전 root가 ' +
+      '그 즉시 무효가 된다(C)',
   );
 }
 
-// 블록을 진행시킨 뒤 현재 IdP root를 재게시해 환경을 되돌린다.
-async function restoreEnvironment({ registry, idpOperator }) {
-  try {
-    const idpRootNow = await fetchIdpRoot();
-    pushRevocationRoot(idpOperator);
-    assert.equal(
-      await registry.isRecentRoot(rootToBytes32(idpRootNow)),
-      true,
-      '환경 복구 실패: 재게시했는데도 IdP의 현재 root가 isRecentRoot=false다',
-    );
-    console.log('OK: 환경 복구 — root를 재게시해 isRecentRoot(현재 IdP root) === true');
-  } catch (err) {
-    // 복구 실패는 반드시 눈에 띄어야 한다. 앞선 오류를 덮어쓰지 않도록 여기서
-    // 던지지 않고 크게 출력만 한다.
-    console.error(
-      '치명적: 환경 복구에 실패했습니다. 게시된 폐기 root가 만료된 채로 남아 ' +
-        '이후 정상 트랜잭션이 StaleRevocationRoot로 막힙니다. 수동으로 실행하세요:\n' +
-        '  REVOCATION_REGISTRY_ADDRESS=... REVOCATION_IDP_ADDRESS=... ' +
-        'npx hardhat run scripts/push_revocation_root.cjs --network localhost\n' +
-        `원인: ${err.message}`,
-    );
-  }
-}
-
-async function runSections({ provider, signer, registry, graceBlocks, idpOperator, adminSecret }) {
+async function runSections({ provider, signer, registry, idpOperator, adminSecret }) {
   // ===== 구간 A — 진짜 증명이 온체인 execute()를 통과한다 =====
   const session = await loginAndIssueStatement();
   console.log(
@@ -421,19 +381,19 @@ async function runSections({ provider, signer, registry, graceBlocks, idpOperato
   // ===== 구간 A' — 구간 C에서 쓸 calldata#2를 폐기 '전에' 미리 확보한다 =====
   //
   // 순서가 중요하다. PPIDWallet.execute()의 검사 순서는
-  //   NonceMismatch -> BadSignature -> UntrustedIdP -> isRecentRoot -> verifyProof -> Expired
+  //   NonceMismatch -> BadSignature -> UntrustedIdP -> isCurrentRoot -> verifyProof -> Expired
   // 이다. 구간 A의 calldata를 그대로 재전송하면 지갑 nonce 0이 이미 소비돼
-  // NonceMismatch가 먼저 걸리고, 폐기 검사(isRecentRoot)에 도달조차 못 한다.
+  // NonceMismatch가 먼저 걸리고, 폐기 검사(isCurrentRoot)에 도달조차 못 한다.
   // 여기서 미리 받아두는 calldata#2는 nonce 1로 만들어지므로 nonce 검사를 통과해
-  // isRecentRoot까지 도달한다. 이 순서 없이는 구간 C가 검증하려는 것을 검증하지 못한다.
+  // isCurrentRoot까지 도달한다. 이 순서 없이는 구간 C가 검증하려는 것을 검증하지 못한다.
   //
-  // calldata#2는 '아직 유효한 현재 root'로 만들어진다. 구간 B에서 블록을 진행시켜
-  // 그 root를 만료시킨 뒤 구간 C에서 전송한다.
+  // calldata#2는 '지금 유효한(= latestRoot인) root'로 만들어진다. 구간 B에서 새
+  // root를 게시하면 이 root는 곧바로 직전 root가 되어 구간 C에서 즉시 거부돼야 한다.
   const second = await submitTransaction(session);
   assert.equal(second.status, 200, `구간 A' /submitTransaction 실패: ${JSON.stringify(second.body)}`);
   assert.equal(second.body.deploy, null, "구간 A': 지갑이 이미 배포됐는데 deploy가 null이 아니다");
   const calldata2 = { to: second.body.to, data: second.body.data };
-  console.log("OK: 구간 A' — calldata#2 확보 (nonce 1, 아직 유효한 root, 전송하지 않음)");
+  console.log("OK: 구간 A' — calldata#2 확보 (nonce 1, 지금 유효한 root, 전송하지 않음)");
 
   // ===== 구간 B — 지갑이 폐기된 크레덴셜로 증명 생성을 거부한다 =====
   const rootBeforeRevoke = await fetchIdpRoot();
@@ -464,47 +424,23 @@ async function runSections({ provider, signer, registry, graceBlocks, idpOperato
   );
   console.log('OK: 폐기 접수 직후 — 게시 전까지 IdP root 불변, 트랜잭션도 계속 동작한다 (배칭)');
 
-  // 이제 실제로 게시한다: prepare -> pushRoot -> commit.
+  // 이제 실제로 게시한다: prepare -> pushRoot -> commit. grace window가 없으므로
+  // latestRoot가 바뀌는 이 순간, 캐시된 pi_pk_i 증명(폐기 전 root 기준)은 그 즉시
+  // 더 이상 '현재 root'가 아니게 된다 — grace 시절처럼 "폐기 직후에도 한동안은
+  // 캐시가 통해 200이 나오는" 시간 창이 이제는 없다.
   publishPendingRevocations(idpOperator);
   const publishedRoot = await fetchIdpRoot();
   assert.notEqual(publishedRoot, rootBeforeRevoke, '게시했는데도 IdP root가 그대로다');
   assert.equal(
-    await registry.isRecentRoot(rootToBytes32(publishedRoot)),
+    await registry.isCurrentRoot(rootToBytes32(publishedRoot)),
     true,
     '게시 후 새 root가 레지스트리에 등록되지 않았다',
   );
-  console.log('OK: 대기 중이던 폐기를 게시했다 (IdP root 전진 + 온체인 등록 확인)');
+  console.log('OK: 대기 중이던 폐기를 게시했다 (IdP root 전진 + 온체인 latestRoot 갱신 확인)');
 
-  // 폐기 직후에도 지갑은 여전히 트랜잭션을 만들어 준다 — 이것은 버그가 아니라
-  // wallet_agent.js가 의도적으로 남겨둔 grace window다. 지갑은 캐시된 pi_pk_i 증명의
-  // root가 아직 레지스트리 윈도우 안에 살아있으면 그대로 재사용하고 IdP에 아무 요청도
-  // 보내지 않는다(매 트랜잭션마다 IdP를 조회하면 "IdP 로그 <-> 온체인 지갑" 타이밍
-  // 상관으로 지갑과 uid가 연결되기 때문). 그 대가로 폐기의 효력은 최대 GRACE_BLOCKS
-  // 만큼 지연된다. 이 창의 존재 자체를 여기서 단언해 회귀를 잡는다.
-  const duringGrace = await submitTransaction(session);
-  assert.equal(
-    duringGrace.status,
-    200,
-    'grace window 안에서는 캐시된 증명 재사용으로 200이 나와야 한다(의도된 동작)',
-  );
-  console.log(
-    'OK: 폐기 직후 grace window 안에서는 캐시된 증명이 그대로 재사용된다 (의도된 지연)',
-  );
-
-  // 캐시된 root를 만료시킨다. 이제서야 지갑이 IdP에서 witness를 다시 가져오는 경로를
-  // 타고, 폐기된 세션에 대해 비멤버십 witness를 만들 수 없어 스스로 멈춘다.
-  // (구간 C에서 쓸 calldata#2의 root도 이 시점에 함께 만료된다.)
-  const blockBeforeMine = await currentBlockNumber(provider);
-  await provider.send('hardhat_mine', ['0x' + (graceBlocks + 1).toString(16)]);
-  const blockAfterMine = await currentBlockNumber(provider);
-  assert.ok(
-    blockAfterMine - blockBeforeMine >= graceBlocks + 1,
-    `블록이 충분히 진행되지 않았다: ${blockBeforeMine} -> ${blockAfterMine}`,
-  );
-  console.log(
-    `OK: ${graceBlocks + 1}개 블록 진행 (${blockBeforeMine} -> ${blockAfterMine}), 캐시된 root 만료`,
-  );
-
+  // 게시 직후 곧바로 다시 시도한다. 캐시된 root(폐기 전)가 더 이상 현재 root가
+  // 아니므로 지갑은 즉시 IdP 재조회 경로를 타고, 이 세션의 r_token이 이미 폐기된
+  // 리프임을 발견해 비멤버십 witness를 만들지 못하고 스스로 멈춘다.
   const afterRevoke = await submitTransaction(session);
   assert.equal(
     afterRevoke.status,
@@ -516,19 +452,23 @@ async function runSections({ provider, signer, registry, graceBlocks, idpOperato
     /is a member/,
     `구간 B: 오류 메시지가 비멤버십 실패가 아니다: ${JSON.stringify(afterRevoke.body)}`,
   );
-  console.log('OK: 구간 B — 지갑이 폐기된 세션의 증명 생성을 거부했다 (400, "is a member")');
+  console.log(
+    'OK: 구간 B — 게시 직후 곧바로 지갑이 폐기된 세션의 증명 생성을 거부했다 (400, "is a member", grace 창 없음)',
+  );
 
-  // ===== 구간 C — 체인이 만료된 root를 거부한다 =====
+  // ===== 구간 C — 새 root가 게시되면 직전 root는 그 즉시 무효가 된다 =====
   //
-  // calldata#2는 구간 A' 시점의 root로 만들어졌고, 위에서 201블록을 진행시켜 그 root는
-  // 이제 GRACE_BLOCKS를 넘겼다. nonce는 1이라 NonceMismatch를 통과하고 isRecentRoot에
-  // 도달한다. 여기서 나와야 하는 사유는 반드시 StaleRevocationRoot다 — 그래야 폐기
-  // 검사가 실제로 발동했다는 뜻이다. NonceMismatch나 Expired가 나오면 검증하려던 것을
+  // calldata#2는 구간 A'에서 만들어졌고, 그 시점의 revocationRoot는 rootBeforeRevoke
+  // (=구간 B가 방금 교체한 직전 root)다. K개 순환 버퍼도 grace window도 없으므로
+  // 이건 "아직 유효한 최근 root"가 아니라 그냥 latestRoot와 다른 틀린 root다.
+  // nonce는 1이라 NonceMismatch를 통과하고 root 검사(isCurrentRoot)에서 막혀야 한다.
+  // 여기서 나와야 하는 사유는 반드시 StaleRevocationRoot다 — 그래야 폐기 검사가
+  // 실제로 발동했다는 뜻이다. NonceMismatch나 Expired가 나오면 검증하려던 것을
   // 검증하지 못한 것이다.
   let revertName = null;
   try {
     await provider.call({ ...calldata2, from: await signer.getAddress() });
-    assert.fail('구간 C: 만료된 root로 보낸 execute()가 revert하지 않았다');
+    assert.fail('구간 C: 직전 root로 보낸 execute()가 revert하지 않았다');
   } catch (err) {
     revertName = decodeRevertName(err);
     if (!revertName) throw err;
@@ -538,7 +478,7 @@ async function runSections({ provider, signer, registry, graceBlocks, idpOperato
     'StaleRevocationRoot',
     `구간 C: revert 사유가 StaleRevocationRoot가 아니다 (실제: ${revertName})`,
   );
-  console.log('OK: 구간 C — eth_call이 StaleRevocationRoot로 revert했다');
+  console.log('OK: 구간 C — eth_call이 직전 root를 즉시 StaleRevocationRoot로 거부했다 (창 없음)');
 
   // eth_call만으로 끝내지 않고 실제 트랜잭션 전송도 거부되는지 확인한다.
   // hardhat 노드는 revert하는 트랜잭션을 status 0으로 채굴하지 않고
@@ -549,7 +489,7 @@ async function runSections({ provider, signer, registry, graceBlocks, idpOperato
   try {
     const staleTx = await signer.sendTransaction({ ...calldata2, gasLimit: 1_000_000 });
     await provider.waitForTransaction(staleTx.hash);
-    assert.fail('구간 C: 만료된 root 트랜잭션이 거부되지 않았다');
+    assert.fail('구간 C: 직전 root 트랜잭션이 거부되지 않았다');
   } catch (err) {
     sendRevertName = decodeRevertName(err);
     if (!sendRevertName) throw err;
@@ -561,15 +501,16 @@ async function runSections({ provider, signer, registry, graceBlocks, idpOperato
   );
   console.log('OK: 구간 C — 실제 트랜잭션 전송도 StaleRevocationRoot로 거부됐다');
 
-  // 복구가 실제로 무언가를 되돌리는지 확인한다. 201블록을 진행시켰으므로 이 시점에는
-  // 게시된 root가 반드시 만료돼 있어야 한다 — 그렇지 않다면 만료 로직이나 블록
-  // 진행이 기대대로 동작하지 않은 것이고, 뒤이은 복구 단언도 의미가 없어진다.
+  // grace 시절에는 여기서 체인을 만료 지점까지 진행시켰으므로 게시된 root도 함께
+  // 만료돼 별도 복구가 필요했다. 이제는 구간 C가 실패하는(revert하는) 트랜잭션만
+  // 보냈을 뿐 latestRoot를 바꾸지 않았으므로, 환경은 구간 B가 게시한 상태 그대로
+  // 여전히 일관적이다 — 복구할 것이 없다는 사실 자체를 여기서 확인한다.
   assert.equal(
-    await registry.isRecentRoot(rootToBytes32(await fetchIdpRoot())),
-    false,
-    '복구 전제가 깨졌다: 블록을 진행시켰는데도 root가 아직 신선하다',
+    await registry.isCurrentRoot(rootToBytes32(await fetchIdpRoot())),
+    true,
+    '환경 불변 위반: 구간 C 이후 latestRoot가 현재 IdP root와 어긋났다',
   );
-  console.log('OK: 블록 진행으로 게시된 root가 만료된 것을 확인 (복구 대상 존재)');
+  console.log('OK: 구간 C 이후에도 latestRoot === 현재 IdP root (복구 불필요)');
 }
 
 main().catch((err) => {

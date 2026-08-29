@@ -33,10 +33,9 @@ async function main() {
   const idpSigner = await getIdPSigner(hre);
   const registry = await hre.ethers.getContractAt("RevocationRegistry", registryAddress, idpSigner);
 
-  // 중복 게시 가드는 두지 않는다. 레지스트리가 블록 기반 만료(GRACE_BLOCKS)를 쓰게
-  // 되면서, 같은 root의 재게시는 "아무것도 안 하는 중복"이 아니라 신선도를 갱신하는
-  // 정당한 주기적 갱신(heartbeat)이 됐다. 가드를 두면 폐기가 드문 환경에서 root가
-  // 갱신되지 못한 채 만료돼 정상 사용자가 전부 막힌다.
+  // 중복 게시 가드는 두지 않는다. grace window가 없어진 뒤로 같은 root의 재게시는
+  // latestRoot 값이 바뀌지 않는 순수한 no-op이라 신선도를 갱신한다는 의미도 없지만,
+  // 해롭지도 않다(값이 그대로면 무효화도 없다). 그래서 굳이 가드를 넣지 않았다.
   const tx = await registry.pushRoot(rootHex);
   await tx.wait();
   console.log("Pushed revocation root:", rootHex);

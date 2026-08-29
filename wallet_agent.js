@@ -38,8 +38,8 @@ const PPID_WALLET_ABI = [
   'function nonce() view returns (uint256)',
 ];
 const REVOCATION_REGISTRY_ABI = [
-  'function isRecentRoot(bytes32 root) view returns (bool)',
-  'function filled() view returns (uint256)',
+  'function isCurrentRoot(bytes32 root) view returns (bool)',
+  'function latestRoot() view returns (bytes32)',
 ];
 const factoryInterface = new Interface(PPID_WALLET_FACTORY_ABI);
 const walletInterface = new Interface(PPID_WALLET_ABI);
@@ -269,26 +269,27 @@ function revocationRootToBytes32(root) {
 // 타이밍 상관 신호가 된다(아래 /submitTransaction 주석 참고).
 async function isRevocationRootPublished(root) {
   if (!REVOCATION_REGISTRY_ADDRESS) throw new Error('REVOCATION_REGISTRY_ADDRESS not configured');
-  const data = registryInterface.encodeFunctionData('isRecentRoot', [revocationRootToBytes32(root)]);
+  const data = registryInterface.encodeFunctionData('isCurrentRoot', [revocationRootToBytes32(root)]);
   const result = await rpcCall('eth_call', [{ to: REVOCATION_REGISTRY_ADDRESS, data }, 'latest']);
-  const [isRecent] = registryInterface.decodeFunctionResult('isRecentRoot', result);
-  return Boolean(isRecent);
+  const [isCurrent] = registryInterface.decodeFunctionResult('isCurrentRoot', result);
+  return Boolean(isCurrent);
 }
 
 // isRevocationRootPublished()가 false를 돌려줬을 때, 운영자가 원인을 구분할 수 있도록
-// filled()를 추가로 조회한다. filled()==0이면 레지스트리가 (재)배포된 직후 아직
-// 아무 root도 게시되지 않은 것이고(부트스트랩 미실행), filled()>0인데 이 root가 안
-// 보이면 grace window(GRACE_BLOCKS)가 지나 만료됐거나 애초에 게시된 적 없는
-// root라는 뜻이다. 두 경우는 운영자가 취할 조치가 다르므로(전자는 최초
-// push_revocation_root 실행, 후자는 재게시/재조회) 구분해서 알려준다.
+// latestRoot()를 추가로 조회한다. grace window와 K개 순환 버퍼가 사라져 "만료"라는
+// 개념이 없으므로, latestRoot()==0이면 레지스트리가 (재)배포된 직후 아직 아무 root도
+// 게시되지 않은 것이고(부트스트랩 미실행), latestRoot()!=0인데 이 root가 그 값과 다르면
+// 이 root는 아직 게시 대기 중이거나(배칭) 이미 더 최신 root로 교체된 것이다. 두 경우는
+// 운영자가 취할 조치가 다르므로(전자는 최초 push_revocation_root 실행, 후자는
+// 재게시/재조회) 구분해서 알려준다.
 async function describeUnpublishedRoot() {
-  const data = registryInterface.encodeFunctionData('filled', []);
+  const data = registryInterface.encodeFunctionData('latestRoot', []);
   const result = await rpcCall('eth_call', [{ to: REVOCATION_REGISTRY_ADDRESS, data }, 'latest']);
-  const [filled] = registryInterface.decodeFunctionResult('filled', result);
-  if (BigInt(filled) === 0n) {
+  const [latest] = registryInterface.decodeFunctionResult('latestRoot', result);
+  if (BigInt(latest) === 0n) {
     return 'RevocationRegistry에 아직 어떤 root도 게시되지 않았습니다(재배포 직후 부트스트랩 미실행일 수 있습니다).';
   }
-  return 'RevocationRegistry에 이 root가 없거나 grace window(GRACE_BLOCKS)가 지나 만료되었습니다.';
+  return 'RevocationRegistry에 이 root가 현재 root가 아닙니다(아직 게시 대기 중이거나 이미 더 최신 root로 교체됐습니다).';
 }
 
 async function verifyRpCredential(rpCredential) {
@@ -1057,10 +1058,11 @@ app.post('/submitTransaction', async (req, res) => {
     // 바로 그 이유(IdP 로그와 온체인 지갑을 잇는 다리)를 접근 패턴으로 재도입한
     // 셈이라, 조회를 캐시 미스 경로로 옮긴다.
     //
-    // 이렇게 하면 폐기가 방금 일어났더라도 캐시된 root가 만료되기 전까지(최대
-    // GRACE_BLOCKS) 옛 증명이 쓰일 수 있다. 그건 C2에서 레지스트리에 못 박은
-    // 신선도 정책이 의도적으로 허용하는 창이며, 그 창이 지나면 isRecentRoot가
-    // false를 돌려주므로 자동으로 IdP 재조회 경로를 탄다.
+    // 이렇게 하면 폐기가 방금 일어났더라도, 캐시된 root가 여전히 레지스트리의
+    // latestRoot인 동안은 옛 증명이 계속 쓰일 수 있다. grace window는 없으므로
+    // 캐시가 유효한 기간은 오직 "root가 바뀌지 않는 동안"뿐이다 — 폐기가 게시돼
+    // latestRoot가 바뀌는 순간 isCurrentRoot가 false를 돌려주므로 그 즉시 IdP
+    // 재조회 경로를 탄다(지연은 게시 주기가 결정한다).
     let rev = null;
     let txRevocationRoot;
     if (cachedPiPkI?.sessionKeyId === sessionKeyId && (await isRevocationRootPublished(cachedPiPkI.root))) {

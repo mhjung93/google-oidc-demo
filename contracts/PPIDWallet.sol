@@ -87,8 +87,8 @@ contract PPIDWallet {
         uint256 max_height,
         bytes32 revocationRoot
     ) internal view {
-        // 폐기 root가 grace window 안인지 먼저 본다 — 증명 검증보다 싸다.
-        if (!registry.isRecentRoot(revocationRoot)) revert StaleRevocationRoot(revocationRoot);
+        // 폐기 root가 현재 최신 root인지 먼저 본다 — 증명 검증보다 싸다.
+        if (!registry.isCurrentRoot(revocationRoot)) revert StaleRevocationRoot(revocationRoot);
 
         uint[6] memory pubSignals = [
             pk_i, pk_IdP_x, pk_IdP_y, ppid, max_height, uint256(revocationRoot)
