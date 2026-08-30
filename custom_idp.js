@@ -368,9 +368,11 @@ function psSign(messages) {
 }
 
 // Mock Database (UID를 순수 숫자로 변경하여 ZKP와 일치시킴)
+// disabled: 계정 층 차단(사람 차단). 크레덴셜 폐기 트리(가역, "이미 발급된 것" 회수)와
+// 역할이 다르다 — disabled는 "앞으로 로그인 자체를 막는다"(docs/REVOCATION_FOLLOWUPS.md 0절).
 const users = {
-  'testuser': { password: 'password123', uid: '12345', sub: '12345', lastAuid: null },
-  'alice': { password: 'secret456', uid: '67890', sub: '67890', lastAuid: null }
+  'testuser': { password: 'password123', uid: '12345', sub: '12345', lastAuid: null, disabled: false },
+  'alice': { password: 'secret456', uid: '67890', sub: '67890', lastAuid: null, disabled: false }
 };
 const usedNonces = new Set();
 
@@ -414,7 +416,12 @@ const IDP_STATE_FILE = path.join(__dirname, 'idp_state.json');
 // 보안 통제가 아니라 B2 추적 편의 기능(입장 검사는 issuanceLog가 전담)이라 마이그레이션의
 // 유일한 대가가 "마이그레이션 이전 세션의 auid_i 추적이 다음 게시 주기까지만 가능"뿐이므로,
 // 무손실 마이그레이션이 명확한 거부보다 낫다고 판단했다.
-const IDP_STATE_FILE_VERSION = 2;
+// v3: users에 disabled 플래그가 추가됐다(계정 층 차단, docs/REVOCATION_FOLLOWUPS.md 0절/1절
+// 5번). v1·v2 파일에는 disabled 필드가 아예 없다 — loadIdPState()는 이를 명시적 거부가
+// 아니라 마이그레이션으로 처리한다. 이 필드는 v1/v2보다도 더 명백히 무손실이다: 이 기능이
+// 생기기 전에는 어떤 계정도 disabled로 표시될 수 없었으므로, 누락 = false는 추측이 아니라
+// 그 시점의 실제 상태 그대로다.
+const IDP_STATE_FILE_VERSION = 3;
 const LEGACY_AUID_ILOG_MAX_HEIGHT = '0';
 
 function stateFileError(detail) {
@@ -465,9 +472,11 @@ function serializeIdPState() {
     auidILog: Object.fromEntries(
       [...auidILog].map(([k, v]) => [k, { uid: String(v.uid), maxHeight: String(v.maxHeight) }]),
     ),
-    // users에서 영속화하는 것은 lastAuid뿐이다. username/password/uid는 소스에 있는
-    // 데모 상수라 저장할 이유가 없고, 저장하면 비밀번호가 파일로 새어나간다.
+    // users에서 영속화하는 것은 lastAuid와 disabled뿐이다. username/password/uid는
+    // 소스에 있는 데모 상수라 저장할 이유가 없고, 저장하면 비밀번호가 파일로 새어나간다.
     lastAuid: Object.fromEntries(Object.entries(users).map(([name, u]) => [name, u.lastAuid])),
+    // disabled는 보안 상태라 반드시 영속화해야 한다 — 안 그러면 재시작마다 차단이 풀린다.
+    disabled: Object.fromEntries(Object.entries(users).map(([name, u]) => [name, Boolean(u.disabled)])),
   };
 }
 
@@ -506,10 +515,15 @@ async function loadIdPState() {
   }
 
   // v1 -> v2: auidILog 값 모양만 바뀌었다(문자열 uid -> { uid, maxHeight }). 그 외
-  // 필드는 전부 동일해서 손실 없이 마이그레이션할 수 있다. 완전히 낯선 버전은
-  // (마이그레이션 경로가 없으므로) 계속 명확히 거부한다.
-  const isLegacyAuidILog = parsed?.version === 1;
-  if (!isLegacyAuidILog && parsed?.version !== IDP_STATE_FILE_VERSION) {
+  // 필드는 전부 동일해서 손실 없이 마이그레이션할 수 있다.
+  // v2 -> v3: users에 disabled 필드가 추가됐다. v1/v2 파일에는 disabled가 아예 없으므로
+  // 전부 false로 채운다(위 IDP_STATE_FILE_VERSION 정의부 주석 참고 — 이 필드가 생기기
+  // 전에는 어떤 계정도 disabled일 수 없었으므로 손실이 없다).
+  // 완전히 낯선 버전은(마이그레이션 경로가 없으므로) 계속 명확히 거부한다.
+  const fileVersion = parsed?.version;
+  const isLegacyAuidILog = fileVersion === 1;
+  const hasDisabledField = fileVersion === IDP_STATE_FILE_VERSION;
+  if (fileVersion !== 1 && fileVersion !== 2 && fileVersion !== IDP_STATE_FILE_VERSION) {
     throw stateFileError('unsupported version');
   }
   if (!Array.isArray(parsed.revokedLeaves)) throw stateFileError('revokedLeaves must be an array');
@@ -517,6 +531,7 @@ async function loadIdPState() {
   for (const key of ['leafExpiry', 'issuanceLog', 'auidILog', 'lastAuid']) {
     if (!isPlainObject(parsed[key])) throw stateFileError(`${key} must be an object`);
   }
+  if (hasDisabledField && !isPlainObject(parsed.disabled)) throw stateFileError('disabled must be an object');
   if (typeof parsed.publishedRoot !== 'string') throw stateFileError('publishedRoot must be a string');
 
   const leaves = parsed.revokedLeaves.map((l, i) => assertDecimalString(l, `revokedLeaves[${i}]`));
@@ -597,28 +612,47 @@ async function loadIdPState() {
     users[name].lastAuid = lastAuid === null ? null : String(lastAuid);
   }
 
+  // v3 파일에만 disabled가 있다. v1/v2 파일은 disabled 필드 자체가 없으므로 소스 기본값
+  // (false)을 그대로 둔다 — 이 필드가 생기기 전에는 어떤 계정도 disabled일 수 없었다.
+  if (hasDisabledField) {
+    for (const [name, disabled] of Object.entries(parsed.disabled)) {
+      if (!Object.prototype.hasOwnProperty.call(users, name)) continue;
+      users[name].disabled = Boolean(disabled);
+    }
+  }
+
   console.log(
     `[CustomIdP] Loaded state from ${IDP_STATE_FILE}: ${revokedLeaves.length} published leaves ` +
     `(root ${rebuiltRoot}), ${pendingAdds.size} pending, ${issuanceLog.size} issuance records, ` +
     `${usedNonces.size} nonces seeded for replay protection`,
   );
 
-  // v1 파일을 읽었다면 지금 인메모리 상태는 이미 v2 모양이다(직렬화가 항상
-  // IDP_STATE_FILE_VERSION을 쓰므로). 다음 상태 변경 때 자연히 v2로 다시 쓰이긴
+  // v1/v2 파일을 읽었다면 지금 인메모리 상태는 이미 최신(v3) 모양이다(직렬화가 항상
+  // IDP_STATE_FILE_VERSION을 쓰므로). 다음 상태 변경 때 자연히 v3로 다시 쓰이긴
   // 하지만, 그 전에 재시작이 한 번 더 일어나면 같은 마이그레이션을 반복하게 된다 —
   // 해가 되지는 않지만(멱등), 지금 바로 커밋해두면 파일이 곧장 최신 모양이 되고
   // 마이그레이션이 실제로 성사됐음을 디스크에서 확인할 수 있다.
-  if (isLegacyAuidILog) {
+  if (isLegacyAuidILog || !hasDisabledField) {
+    const changes = [];
+    if (isLegacyAuidILog) {
+      changes.push(
+        'auidILog entries gained maxHeight tracking (pre-migration entries are marked ' +
+        'already-expired and will be evicted on the next publish cycle — a convenience-feature ' +
+        'side effect, not a security control; issuanceLog/usedNonces are unaffected)',
+      );
+    }
+    if (!hasDisabledField) {
+      changes.push('accounts gained a disabled flag, defaulted to false for every restored account');
+    }
     console.warn(
-      `[CustomIdP] Migrated state file from version 1 to ${IDP_STATE_FILE_VERSION}: auidILog entries ` +
-      'gained maxHeight tracking. Pre-migration entries are marked already-expired and will be ' +
-      'evicted on the next publish cycle (auid_i trace lookups for those sessions stop working then; ' +
-      'this is a convenience-feature side effect, not a security control — issuanceLog/usedNonces are unaffected).',
+      `[CustomIdP] Migrated state file from version ${fileVersion} to ${IDP_STATE_FILE_VERSION}: ` +
+      `${changes.join('; ')}.`,
     );
     if (!saveIdPState()) {
       throw stateFileError(
-        'migrated the in-memory state from version 1 to version 2 but failed to persist the ' +
-        'migrated file; refusing to run with an in-memory state that does not match what is on disk',
+        `migrated the in-memory state from version ${fileVersion} to version ${IDP_STATE_FILE_VERSION} ` +
+        'but failed to persist the migrated file; refusing to run with an in-memory state that does ' +
+        'not match what is on disk',
       );
     }
   }
@@ -794,6 +828,12 @@ app.post('/authorize/login', async (req, res) => {
   const user = users[username];
   if (!user || user.password !== password) {
     return res.status(401).json({ success: false, error: 'Invalid credentials' });
+  }
+  // 계정 층 차단. 비밀번호 확인 직후, 증명 검증(비싼 snarkjs.groth16.verify) 전에 건다 —
+  // 싼 검사가 먼저다. 두 로그인 경로(/authorize/login, verifyPiIAndIssueToken) 모두에서
+  // 확인해야 한다 — pinAuidToAccount가 한쪽에만 있어 폐기가 우회됐던 전례가 있다.
+  if (user.disabled) {
+    return res.status(403).json({ success: false, error: 'Account is disabled' });
   }
 
   try {
@@ -1048,6 +1088,11 @@ app.post('/sso_with_credentials', async (req, res) => {
 async function verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, business, start = cursor() }) {
   const user = users[username];
   if (!user) throw new Error('Unknown user for consent verification');
+  // 계정 층 차단. 비밀번호는 이미 /sso_with_credentials가 확인했으므로(그 결과가
+  // req.session.pendingPairCT로 넘어와 이 함수가 호출됨), 여기서는 증명 검증(비싼
+  // snarkjs.groth16.verify, 아래 try 블록) 전에 두는 것으로 "싼 검사 먼저" 순서를
+  // 지킨다. /authorize/login과 마찬가지로 두 로그인 경로 모두에서 확인해야 한다.
+  if (user.disabled) throw new Error('Account is disabled');
 
   try {
     if (!zkpProof || !zkpPublicSignals) throw new Error('ZKP data missing');
@@ -1640,6 +1685,117 @@ app.post('/idp/publish/commit', requireIdPAdmin, async (req, res) => {
       `pending ${pendingAdds.size}`,
   );
   res.json({ root: actualRoot, leafCount: revokedLeaves.length, pendingCount: pendingAdds.size });
+});
+
+// --- 계정 층(사람 차단) 관리자 엔드포인트 ---
+//
+// 폐기 트리(위 /idp/revoke, /idp/publish/*)는 "이미 발급된 크레덴셜의 회수"만 한다 —
+// 가역이고, 어차피 만료되면(트리 수명 관리) 풀린다. "이 사람의 앞으로의 로그인을
+// 막는다"는 트리가 할 수 없는 일이라 계정 층에서 처리한다(docs/REVOCATION_FOLLOWUPS.md
+// 0절). 인증은 /idp/revoke·/idp/publish/*와 동일한 requireIdPAdmin이다 — 조회
+// (requireIdPAuditor)가 아니라 폐기와 같은 등급의 관리 조작이기 때문이다.
+
+// 계정 비활성화/재활성화를 하나의 엔드포인트로 묶는다(/idp/revoke가 type으로 session/
+// account를 가르는 것과 같은 방식). disabled 값 자체를 요청자가 지정하게 해 멱등하게
+// 만든다 — "다시 켜기"를 별도 엔드포인트로 만들 이유가 없다.
+app.post('/idp/account/set_disabled', requireIdPAdmin, async (req, res) => {
+  const { username, disabled } = req.body ?? {};
+  if (typeof username !== 'string' || username.length === 0) {
+    return res.status(400).json({ error: 'username is required' });
+  }
+  if (typeof disabled !== 'boolean') {
+    return res.status(400).json({ error: 'disabled must be a boolean' });
+  }
+  const user = users[username];
+  if (!user) {
+    return res.status(404).json({ error: `no such account: ${username}` });
+  }
+
+  const previous = user.disabled;
+  user.disabled = disabled;
+
+  // disabled는 보안 상태라 저장 실패를 조용히 넘기면 안 된다(다른 관리 조작과 동일한
+  // 정책 — /idp/revoke 참고). 실패하면 이번 요청의 변경만 롤백하고 5xx로 응답한다.
+  const saved = saveIdPState();
+  if (!saved) {
+    user.disabled = previous;
+    return res.status(500).json({
+      error: 'failed to persist disabled flag; the change was not recorded, please retry',
+    });
+  }
+
+  console.log(`[IdP] account "${username}": disabled ${previous} -> ${disabled}`);
+  res.json({ username, disabled });
+});
+
+// 재바인딩 복구(고정 해제). pinAuidToAccount 자체는 그대로 둔다 — 지갑이 일방적으로
+// 새 salt를 들이미는 것은 계속 거부해야 하고, 여기서 하는 일은 그 저지선을 지운 채로
+// 다음 로그인 한 번을 "첫 로그인"처럼 다시 받아주는 것뿐이다(user.lastAuid = null).
+// 해제 여부의 판단 주체는 IdP(운영자)여야 한다는 것이 이 엔드포인트의 요점이다.
+app.post('/idp/account/unpin_auid', requireIdPAdmin, async (req, res) => {
+  const { username } = req.body ?? {};
+  if (typeof username !== 'string' || username.length === 0) {
+    return res.status(400).json({ error: 'username is required' });
+  }
+  const user = users[username];
+  if (!user) {
+    return res.status(404).json({ error: `no such account: ${username}` });
+  }
+  // disabled 계정에는 재바인딩 복구를 거부한다. 안 그러면 부정 사용으로 차단한 계정이
+  // 이 복구 흐름으로 되살아난다 — 부정 사용은 disabled로, 키 분실은 unpin_auid로,
+  // 두 도구의 역할을 갈라 둔다(docs/REVOCATION_FOLLOWUPS.md 참고). 이미 disabled인
+  // 계정을 되살리려는 시도는 먼저 set_disabled로 재활성화부터 해야 한다.
+  if (user.disabled) {
+    return res.status(409).json({
+      error: 'account is disabled; unpin is refused for disabled accounts (re-enable via ' +
+        'POST /idp/account/set_disabled first if that is actually intended)',
+    });
+  }
+
+  const previousAuid = user.lastAuid;
+  user.lastAuid = null;
+
+  const saved = saveIdPState();
+  if (!saved) {
+    user.lastAuid = previousAuid;
+    return res.status(500).json({
+      error: 'failed to persist unpin; the account was not unpinned, please retry',
+    });
+  }
+
+  // 운영 가시성: 이 계정이 (옛 auid에 대한) 계정 폐기 리프를 트리에 갖고 있다면 알려준다.
+  // 해제 자체는 그래도 허용된다 — 새 salt -> 새 auid -> 새 PPID라 옛 리프가 새 로그인을
+  // 막지 못한다(리프는 Poseidon(TAG_ACCOUNT, 옛 auid)라서 새 auid와 값이 다르다). 다만
+  // 운영자가 "이 계정을 폐기해뒀었는데 방금 그 봉인을 풀었다"는 사실은 알아야 한다.
+  let staleRevocationLeaf = null;
+  if (previousAuid !== null) {
+    try {
+      const leaf = (await leafValue(TAG_ACCOUNT, String(previousAuid))).toString();
+      const published = revokedLeaves.includes(leaf);
+      const pending = pendingAdds.has(leaf);
+      if (published || pending) {
+        staleRevocationLeaf = { leaf, published, pending };
+      }
+    } catch {
+      // leafValue가 옛 auid를 거부해도(형식 이상 등) unpin 자체는 이미 끝났다 — 이
+      // 안내는 부가 정보일 뿐이라 실패해도 응답을 막지 않는다.
+    }
+  }
+
+  console.log(
+    `[IdP] account "${username}": unpinned auid (was ${previousAuid ?? '(none)'})` +
+      (staleRevocationLeaf
+        ? `; NOTE: this account still carries an account-level revocation leaf for its old auid ` +
+          `(published=${staleRevocationLeaf.published}, pending=${staleRevocationLeaf.pending}) — ` +
+          'it no longer blocks this account once it logs in again with a new salt'
+        : ''),
+  );
+
+  res.json({
+    username,
+    previousAuid,
+    ...(staleRevocationLeaf ? { staleRevocationLeaf } : {}),
+  });
 });
 
 // 지갑이 자기 witness를 계산하려면 폐기 목록 전체가 필요하다.

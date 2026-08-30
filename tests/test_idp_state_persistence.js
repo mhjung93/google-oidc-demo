@@ -186,11 +186,65 @@ assert.match(evictionBlock, /auidILog\.delete\(auidI\)/, 'eviction must remove s
 // 스키마 버전: auidILog가 { uid, maxHeight } 모양으로 바뀌었으니 버전이 올라가야 하고,
 // 옛 파일(v1)은 조용히 오독되지 않고 명시적으로 처리(이 저장소는 무손실 마이그레이션을
 // 택함 — 근거는 코드 주석과 보고서 참고)돼야 한다.
-assert.match(src, /const IDP_STATE_FILE_VERSION = 2;/, 'state file schema version must be bumped for the auidILog shape change');
+assert.match(src, /const IDP_STATE_FILE_VERSION = 3;/, 'state file schema version must be bumped for the disabled-flag addition');
 assert.match(
   loadIdPStateSrc,
   /isLegacyAuidILog/,
   'loadIdPState must explicitly branch on the legacy (v1) auidILog shape rather than assuming the new shape',
+);
+
+// ---------------------------------------------------------------------------
+// 7. v2 -> v3: users에 disabled 플래그가 추가됐다. v1/v2 파일에는 disabled가 없으므로
+//    "명시적 거부"가 아니라 "누락 = false로 마이그레이션"이어야 한다(계정 층 차단
+//    기능이 생기기 전에는 어떤 계정도 disabled일 수 없었으므로 손실이 없다는 것이
+//    이 저장소가 택한 근거 — docs/REVOCATION_FOLLOWUPS.md, custom_idp.js 주석 참고).
+// ---------------------------------------------------------------------------
+assert.match(
+  loadIdPStateSrc,
+  /hasDisabledField/,
+  'loadIdPState must explicitly branch on whether the disabled field is present (v3) or absent (v1/v2)',
+);
+// v2 files (no disabled field) must still pass the version gate, not be rejected outright.
+assert.match(
+  loadIdPStateSrc,
+  /fileVersion !== 1 && fileVersion !== 2 && fileVersion !== IDP_STATE_FILE_VERSION/,
+  'loadIdPState must accept v1, v2, and the current version — only truly unknown versions are rejected',
+);
+
+// serializeIdPState must persist disabled per account, mirroring how lastAuid is persisted.
+const serializeSrc = section('function serializeIdPState() {', '\n}\n\n// 상태가 바뀔 때마다', 'serializeIdPState');
+assert.match(
+  serializeSrc,
+  /disabled: Object\.fromEntries\(Object\.entries\(users\)\.map\(\(\[name, u\]\) => \[name, Boolean\(u\.disabled\)\]\)\)/,
+  'serializeIdPState must persist each account\'s disabled flag',
+);
+
+// ---------------------------------------------------------------------------
+// 8. 계정 층 관리자 엔드포인트는 requireIdPAdmin을 쓴다(requireIdPAuditor가 아니다) —
+//    조회가 아니라 폐기와 같은 등급의 관리 조작이기 때문이다.
+// ---------------------------------------------------------------------------
+assert.match(
+  src,
+  /app\.post\('\/idp\/account\/set_disabled',\s*requireIdPAdmin,/,
+  '/idp/account/set_disabled must require admin auth',
+);
+assert.match(
+  src,
+  /app\.post\('\/idp\/account\/unpin_auid',\s*requireIdPAdmin,/,
+  '/idp/account/unpin_auid must require admin auth',
+);
+
+// disabled 계정에는 재바인딩 복구(unpin)를 거부해야 한다 — 안 그러면 부정 사용으로
+// 차단한 계정이 복구 흐름으로 되살아난다.
+const unpinHandlerSrc = section(
+  "app.post('/idp/account/unpin_auid', requireIdPAdmin, async (req, res) => {",
+  "\n\n// 지갑이 자기 witness를",
+  '/idp/account/unpin_auid handler',
+);
+assert.match(
+  unpinHandlerSrc,
+  /if \(user\.disabled\) \{\s*\n\s*return res\.status\(409\)/,
+  '/idp/account/unpin_auid must refuse to unpin a disabled account',
 );
 
 // ---------------------------------------------------------------------------

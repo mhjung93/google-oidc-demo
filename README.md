@@ -98,6 +98,13 @@ REVOCATION_REGISTRY_ADDRESS=0x...
 - `REVOCATION_IDP_ADDRESS`: 배포/게시 스크립트(`scripts/redeploy_ppid_factory.cjs`, `scripts/push_revocation_root.cjs`)가 `RevocationRegistry`의 `onlyIdP` 주소로 씁니다. 미설정 시 배포·게시가 에러로 중단됩니다.
 - `REVOCATION_REGISTRY_ADDRESS`: `wallet_agent.js`가 배포된 `RevocationRegistry`를 조회할 때 씁니다. 미설정 시 `wallet_agent.js`는 기동 시점에 에러를 내고 종료합니다.
 
+### 계정 층(사람 차단) 관리자 엔드포인트
+
+크레덴셜 폐기 트리(`/idp/revoke`, `/idp/publish/*`)는 **이미 발급된 크레덴셜의 회수**만 합니다 — 가역이고, 트리 수명 관리에 따라 결국 만료되어 풀립니다. "이 사람의 앞으로의 로그인 자체를 막는다"는 트리가 할 수 없는 일이라 계정 층에서 처리합니다(`docs/REVOCATION_FOLLOWUPS.md` 0절). 두 엔드포인트 모두 `IDP_ADMIN_SECRET`으로 인증합니다(`IDP_AUDITOR_SECRET`으로는 통과하지 않습니다) — 조회가 아니라 폐기와 같은 등급의 관리 조작이기 때문입니다.
+
+- `POST /idp/account/set_disabled` — body `{ "username": "...", "disabled": true|false }`. 계정을 비활성화/재활성화합니다. 비활성화된 계정은 `/authorize/login`, `verifyPiIAndIssueToken`(`/sso_with_credentials` → `/consent_result` 경로) 양쪽 모두에서 비밀번호 확인 직후, zk 증명 검증 전에 거부됩니다(`/authorize/login`은 403, 레거시 경로는 `/consent_result`에서 400). `disabled` 값은 `idp_state.json`에 영속화됩니다.
+- `POST /idp/account/unpin_auid` — body `{ "username": "..." }`. `pinAuidToAccount`가 첫 로그인에서 고정한 `lastAuid`를 해제해, 다음 로그인이 다시 "첫 로그인"처럼 어떤 salt든 받아들이게 합니다. `pinAuidToAccount` 자체(같은 salt만 계속 허용하는 저지선)는 그대로 둡니다 — 지갑이 일방적으로 새 salt를 들이미는 것은 여전히 거부되고, 이 엔드포인트를 통해 IdP(운영자)가 승인한 경우에만 풀립니다. 부정 사용으로 의심되는 계정에는 먼저 `set_disabled`로 차단하세요 — **비활성화된 계정은 이 엔드포인트가 409로 거부합니다**(그렇지 않으면 부정 사용으로 차단한 계정이 이 복구 흐름으로 되살아납니다). 해제 대상 계정이 옛 `auid`에 대한 계정 폐기 리프를 트리에 갖고 있으면(published 또는 pending), 응답의 `staleRevocationLeaf` 필드로 알려줍니다 — 해제 자체는 허용됩니다(새 salt → 새 auid → 새 PPID라 옛 리프가 새 로그인을 막지 못합니다).
+
 ### 크레덴셜 폐기 게시 주기 자동화 (`scripts/revocation_sweep.cjs`)
 
 `RevocationRegistry.isRecentRoot(root)`는 root가 **가장 최근 게시로부터 `GRACE_BLOCKS`(200블록) 이내**일 때만 true입니다. 즉 주기적으로 root를 재게시(heartbeat)하지 않으면 게시된 root가 만료되고, **폐기와 무관한 정상 사용자 전원의 `/submitTransaction`이 막힙니다.** 이 스크립트를 데몬으로 계속 띄워 두지 않으면 서비스가 죽습니다.
@@ -132,7 +139,7 @@ IDP_ADMIN_SECRET=... REVOCATION_IDP_ADDRESS=0x... REVOCATION_REGISTRY_ADDRESS=0x
 `custom_idp.js`는 장기 키와 폐기·발급 상태를 프로젝트 루트의 두 파일에 보관합니다. 둘 다 권한 `0600`이고 `.gitignore`에 등록돼 있습니다.
 
 - `idp_keys.json`: EdDSA-Poseidon 개인키와 PS 비밀값(`x`, `y[0..5]`). 공개키는 기동할 때마다 이 비밀값에서 다시 유도하므로 저장하지 않습니다. 파일이 없으면 새로 생성하고, 있으면 로드합니다.
-- `idp_state.json`: 게시된 폐기 리프와 그 root, 리프별 만료 블록, 대기 중인 폐기, 발급 로그(`r_token`/`auid_i` → uid), 계정별 `lastAuid`. 상태가 바뀔 때마다 저장합니다.
+- `idp_state.json`: 게시된 폐기 리프와 그 root, 리프별 만료 블록, 대기 중인 폐기, 발급 로그(`r_token`/`auid_i` → uid), 계정별 `lastAuid`와 `disabled`. 상태가 바뀔 때마다 저장합니다. 스키마 버전은 3입니다 — v1/v2 파일도 손실 없이 마이그레이션해서 불러옵니다(v1: `auidILog` 값 모양 변경, v2: `disabled` 필드 추가 — 둘 다 누락분은 마이그레이션 시점에 안전한 기본값으로 채워집니다).
 
 키가 파일에 남기 때문에 **`custom_idp.js`를 재시작해도 `server.js` 재시작·factory 재배포·`wallet_agent.js` 재시작이 필요하지 않습니다.**
 
