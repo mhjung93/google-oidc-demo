@@ -1,0 +1,184 @@
+// 정석 IMT(v2) 배선 단위 테스트 — 살아있는 IdP(:4000)의 v2 대역을 검증한다.
+// Stage A: v2는 회로에 배선되지 않았으므로 이 테스트는 IdP의 v2 엔드포인트와
+// 지갑의 증분 적용 규칙만 본다(회로/온체인은 건드리지 않는다).
+//
+//   IDP_ADMIN_SECRET=<value> node tests/test_imt_v2_wiring.js
+//   (secret은 실행 중인 custom_idp.js와 같은 값이어야 한다)
+//
+// 검증 항목(브리프 작업 6):
+//  1) v1·v2가 같은 폐기 판정을 내리는가(같은 살아있는 집합에 대해)
+//  2) 증분 조회가 서로 다른 since로 물어도 올바르게 따라잡는가(여러 클라이언트)
+//  3) epoch 불일치 / 로그 절단에서 tooOld로 전체 재조회를 안내하는가
+//  4) 재기준화가 epoch를 올리고 로그를 비우며 v1 게시 root는 건드리지 않는가
+import assert from 'node:assert/strict';
+import { createIMT, leafValue, TAG_ACCOUNT } from '../lib/imt.js';
+import { buildIMTv2 } from '../lib/imt_v2.js';
+
+const BASE = process.env.CUSTOM_IDP_BASE_URL || 'http://127.0.0.1:4000';
+const ADMIN_SECRET = process.env.IDP_ADMIN_SECRET;
+if (!ADMIN_SECRET) {
+  console.error('IDP_ADMIN_SECRET is required (must match the running custom_idp.js).');
+  process.exit(1);
+}
+const adminHeaders = { 'Content-Type': 'application/json', 'X-IdP-Admin-Secret': ADMIN_SECRET };
+const DEPTH = 20;
+
+const getJSON = async (url) => {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${url} -> ${r.status}`);
+  return r.json();
+};
+
+// 지갑이 하는 것과 동일한 증분 적용: append 항목(index === 현재 크기)의 값을 insert한다.
+// low 갱신 항목은 insert가 처리하므로 건너뛴다(설계 문서 3.1/3.4절, wallet_agent.js와 동일).
+async function applyMutations(tree, mutations) {
+  for (const m of mutations) {
+    if (m.index === tree.size()) await tree.insert(BigInt(m.leaf.value));
+  }
+}
+const buildFromFull = (body) => buildIMTv2(DEPTH, body.leaves.slice(1).map((l) => BigInt(l.value)));
+
+async function revokeAccount(value) {
+  const r = await fetch(`${BASE}/idp/revoke`, {
+    method: 'POST', headers: adminHeaders, body: JSON.stringify({ type: 'account', value }),
+  });
+  assert.equal(r.status, 200, `revoke ${value} must succeed`);
+}
+async function publish() {
+  const prepared = await (await fetch(`${BASE}/idp/publish/prepare`, { method: 'POST', headers: adminHeaders, body: '{}' })).json();
+  const commit = await fetch(`${BASE}/idp/publish/commit`, {
+    method: 'POST', headers: adminHeaders, body: JSON.stringify({ root: prepared.expectedRoot }),
+  });
+  assert.equal(commit.status, 200, 'commit must succeed');
+  return prepared;
+}
+
+async function main() {
+  // === 1) v1·v2 같은 폐기 판정 ==========================================
+  // 새 계정을 폐기·게시한 뒤, v1 트리와 v2 트리를 각각 재구성해 같은 값들을 멤버로
+  // 보는지 대조한다. v2는 물리 순서 리프 배열로, v1은 값 배열로 재구성한다.
+  const victim = `55501${Date.now()}`;
+  const victimLeaf = (await leafValue(TAG_ACCOUNT, victim)).toString();
+  await revokeAccount(victim);
+  await publish();
+
+  const v1 = await getJSON(`${BASE}/idp/revocation_state`);
+  const v2full = await getJSON(`${BASE}/idp/revocation_state_v2`);
+
+  const v1tree = await createIMT(DEPTH);
+  for (const l of v1.revokedLeaves) await v1tree.insert(BigInt(l));
+  assert.equal(v1tree.getRoot().toString(), v1.root, 'local v1 tree must match IdP v1 root');
+
+  const v2tree = await buildFromFull(v2full);
+  assert.equal(v2tree.getRoot().toString(), v2full.root, 'local v2 tree must match IdP v2 root (full fetch, physical order)');
+
+  // 방금 폐기한 리프는 v1·v2 양쪽에서 멤버여야 한다.
+  assert.ok(v1.revokedLeaves.includes(victimLeaf), 'v1 must contain the freshly revoked leaf');
+  assert.equal(v2tree.has(BigInt(victimLeaf)), true, 'v2 must contain the freshly revoked leaf');
+  // v1의 모든 게시 리프는 v2에서도 멤버여야 한다(v1 ⊆ v2: v2는 append-only라 만료분을
+  // 더 들 수 있어도 v1의 살아있는 집합은 반드시 포함한다).
+  for (const l of v1.revokedLeaves) {
+    assert.equal(v2tree.has(BigInt(l)), true, `every published v1 leaf must be a v2 member (${l})`);
+    await assert.rejects(() => v2tree.getNonMembershipWitness(BigInt(l)), /is a member/);
+  }
+  // 한 번도 폐기된 적 없는 값은 v1·v2 양쪽에서 비멤버(witness 획득 가능)여야 한다.
+  const fresh = await leafValue(TAG_ACCOUNT, `9990001${Date.now()}`);
+  assert.equal(v1tree.getRoot() !== undefined, true);
+  await v1tree.getNonMembershipWitness(fresh);
+  await v2tree.getNonMembershipWitness(fresh);
+  console.log('OK (1): v1 and v2 agree on the live revocation set (same members, same non-members)');
+
+  // === 2) 여러 클라이언트가 서로 다른 since로 증분 동기화 ================
+  // 주의: seq는 "빈 트리부터의 오프셋"이 아니다. seq=0 시점의 트리는 대량 구축된
+  // base(마이그레이션/재기준화 결과)이고, 그 base는 변경 로그에 없다. 그래서 신규
+  // 지갑은 반드시 **전체 조회를 먼저** 해서 base를 잡은 뒤 증분으로 따라잡아야 한다
+  // (wallet_agent.js가 v2RevTree===null이면 전체 조회 경로를 타는 이유). 여기서는
+  // 서로 다른 시점에 base를 잡은 두 클라이언트가 각자 증분으로 현재까지 따라잡는지 본다.
+
+  // 클라이언트 A: 이른 시점(cursor c0)에 전체를 받아 둔다.
+  const snap0 = await getJSON(`${BASE}/idp/revocation_state_v2`);
+  const treeA = await buildFromFull(snap0);
+
+  await revokeAccount(`5550201${Date.now()}`);
+  await publish();
+
+  // 클라이언트 B: 그보다 늦은 시점(cursor c1)에 전체를 받아 둔다.
+  const snap1 = await getJSON(`${BASE}/idp/revocation_state_v2`);
+  const treeB = await buildFromFull(snap1);
+  assert.ok(snap1.seq > snap0.seq, 'a publish must advance seq (distinct cursors)');
+
+  await revokeAccount(`5550202${Date.now()}`);
+  await publish();
+
+  // A(옛 커서)와 B(늦은 커서)가 각자 자기 since로 증분만 받아 따라잡는다.
+  const incA = await getJSON(`${BASE}/idp/revocation_state_v2?since=${snap0.seq}&epoch=${snap0.epoch}`);
+  assert.ok(!incA.tooOld, 'A incremental must not be tooOld (same epoch, within log)');
+  assert.ok(incA.mutations.length >= 4, 'two publishes of one new leaf each -> >=4 mutation entries for A');
+  await applyMutations(treeA, incA.mutations);
+
+  const incB = await getJSON(`${BASE}/idp/revocation_state_v2?since=${snap1.seq}&epoch=${snap1.epoch}`);
+  assert.ok(!incB.tooOld, 'B incremental must not be tooOld');
+  assert.ok(incB.mutations.length >= 2, 'one publish after B -> >=2 mutation entries for B');
+  await applyMutations(treeB, incB.mutations);
+
+  // 클라이언트 C: 지금 막 접속한 지갑 — 전체를 받는다.
+  const snapNow = await getJSON(`${BASE}/idp/revocation_state_v2`);
+  const treeC = await buildFromFull(snapNow);
+
+  // 세 클라이언트가 모두 같은 최종 root로 수렴해야 한다.
+  assert.equal(incA.root, snapNow.root, 'A incremental response root must equal the current IdP root');
+  assert.equal(incB.root, snapNow.root, 'B incremental response root must equal the current IdP root');
+  assert.equal(treeA.getRoot().toString(), snapNow.root, 'A (early cursor + incremental) must converge');
+  assert.equal(treeB.getRoot().toString(), snapNow.root, 'B (later cursor + incremental) must converge');
+  assert.equal(treeC.getRoot().toString(), snapNow.root, 'C (fresh full fetch) must equal the current IdP root');
+  console.log('OK (2): clients at different cursors converge to the same root via incremental catch-up');
+
+  // === 3) tooOld — epoch 불일치 / 로그 절단 ==============================
+  const mismatch = await getJSON(`${BASE}/idp/revocation_state_v2?since=0&epoch=999999`);
+  assert.equal(mismatch.tooOld, true, 'an epoch mismatch must return tooOld (full fetch required)');
+  console.log('OK (3a): epoch mismatch -> tooOld');
+
+  // 로그 절단 tooOld는 서버가 작은 상한으로 떠 있을 때만 강제할 수 있다. 상한 값을
+  // 테스트와 서버가 공유하는 IDP_MUTATION_LOG_MAX로 알려주면 그 경로도 확인한다.
+  const cap = Number(process.env.IDP_MUTATION_LOG_MAX);
+  if (Number.isInteger(cap) && cap > 0 && cap <= 64) {
+    // 상한을 넘길 만큼 게시를 반복한 뒤 since=0을 요청하면 절단으로 tooOld여야 한다.
+    const needed = cap + 4;
+    for (let i = 0; i * 2 <= needed; i++) { await revokeAccount(`55503${i}${Date.now()}`); await publish(); }
+    const truncated = await getJSON(`${BASE}/idp/revocation_state_v2?since=0&epoch=${(await getJSON(`${BASE}/idp/revocation_state_v2`)).epoch}`);
+    assert.equal(truncated.tooOld, true, 'a since older than the truncated log must return tooOld');
+    console.log(`OK (3b): log truncation (cap=${cap}) -> tooOld for an old since`);
+  } else {
+    console.log('SKIP (3b): set IDP_MUTATION_LOG_MAX<=64 on the server to exercise the truncation tooOld path');
+  }
+
+  // === 4) 재기준화 — epoch↑, 로그 비움, v1 게시 root 불변 =================
+  const beforeV1 = await getJSON(`${BASE}/idp/revocation_state`);
+  const beforeV2 = await getJSON(`${BASE}/idp/revocation_state_v2`);
+  const rebase = await fetch(`${BASE}/idp/rebaseline_v2`, { method: 'POST', headers: adminHeaders, body: '{}' });
+  assert.equal(rebase.status, 200, `rebaseline must succeed (got ${rebase.status})`);
+  const rebaseBody = await rebase.json();
+  assert.equal(rebaseBody.epoch, beforeV2.epoch + 1, 'rebaseline must bump epoch by 1');
+
+  const afterV1 = await getJSON(`${BASE}/idp/revocation_state`);
+  const afterV2 = await getJSON(`${BASE}/idp/revocation_state_v2`);
+  assert.equal(afterV1.root, beforeV1.root, 'rebaseline must NOT change the published v1 root (Stage A safety)');
+  assert.equal(afterV2.epoch, beforeV2.epoch + 1, 'v2 epoch must have advanced');
+  assert.equal(afterV2.seq, 0, 'rebaseline must reset seq to 0 (log cleared)');
+
+  // 재기준화 전 epoch를 든 클라이언트는 반드시 전체 재조회로 떨어져야 한다.
+  const stale = await getJSON(`${BASE}/idp/revocation_state_v2?since=${beforeV2.seq}&epoch=${beforeV2.epoch}`);
+  assert.equal(stale.tooOld, true, 'a client on the pre-rebaseline epoch must be told to full-fetch');
+
+  // 재기준화 후 살아있는 집합은 여전히 v1과 일치해야 한다.
+  const v2after = await buildFromFull(afterV2);
+  assert.equal(v2after.getRoot().toString(), afterV2.root, 'rebased v2 tree rebuilds to the reported root');
+  for (const l of afterV1.revokedLeaves) {
+    assert.equal(v2after.has(BigInt(l)), true, 'after rebaseline, every published v1 leaf is still a v2 member');
+  }
+  console.log('OK (4): rebaseline bumps epoch, clears the log, keeps the published v1 root unchanged');
+
+  console.log('PASS: IMT v2 wiring — v1/v2 agreement, incremental multi-client sync, tooOld signalling, and rebaseline.');
+}
+
+main().catch((err) => { console.error(err); process.exit(1); });

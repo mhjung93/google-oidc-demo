@@ -10,6 +10,9 @@ import http from 'http';
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { keccak256, AbiCoder, Interface } from 'ethers';
 import { createIMT, leafValue, TAG_SESSION, TAG_ACCOUNT } from './lib/imt.js';
+// 정석 IMT(v2) — Stage A: 캐싱 로직만 추가하고 /submitTransaction에는 아직 배선하지
+// 않는다. 회로가 v1 리프 해시를 쓰는 한 witness 생성은 계속 v1 경로다(fetchRevocationWitnesses).
+import { createIMTv2, buildIMTv2 } from './lib/imt_v2.js';
 
 const { subtle } = webcrypto;
 const __filename = fileURLToPath(import.meta.url);
@@ -256,6 +259,85 @@ async function fetchRevocationWitnesses(rTokenField, auidField) {
     sess: await tree.getNonMembershipWitness(sessTarget),
     acct: await tree.getNonMembershipWitness(acctTarget),
   };
+}
+
+// ============================================================================
+// 정석 IMT(v2) 폐기 캐시 — Stage A: /submitTransaction에 아직 배선되지 않았다
+// ============================================================================
+// 현재 경로(fetchRevocationWitnesses, 위)는 **캐시 미스마다** 폐기 목록 전체를 받아
+// 트리를 O(n)으로 재구성한다(리프 32,000개에 24.75초). v2 경로는 트리와 (epoch,
+// lastSeq)를 요청 간에 들고 있다가 since=<lastSeq>로 변경분만 받아 O(log n)으로
+// 따라잡는다. Stage B에서 회로/zkey가 준비되면 submitTransaction이 이 경로로 스위치한다.
+// 이번 단계에서는 아래 함수들을 어떤 호출부도 부르지 않는다(벤치/테스트만 부른다).
+const REVOCATION_TREE_DEPTH_V2 = 20; // circuits/lib/imt_nonmembership_v2.circom 깊이와 일치해야 한다
+let v2RevTree = null;
+let v2Epoch = -1;
+let v2LastSeq = -1;
+
+// v2 폐기 트리를 IdP와 증분 동기화한다. 처음이거나 epoch가 바뀌었거나(재기준화) 로그가
+// 절단됐으면(tooOld) 전체를 다시 받아 재구성하고, 그 외에는 변경분만 적용한다.
+// **Stage A: 호출부 없음.**
+export async function syncRevocationTreeV2() {
+  // --- 증분 시도: 트리가 있고 epoch를 알 때만 ---
+  if (v2RevTree !== null && v2Epoch >= 0) {
+    const res = await fetch(`${IDP_ORIGIN}/idp/revocation_state_v2?since=${v2LastSeq}&epoch=${v2Epoch}`);
+    if (!res.ok) throw new Error(`revocation_state_v2 (incremental) failed: ${res.status}`);
+    const body = await res.json();
+    if (!body.tooOld) {
+      // mutations는 seq 오름차순. 삽입 1건은 append 항목(index === 현재 트리 크기)과 low
+      // 갱신 항목(index < 크기)으로 온다. append 항목의 값을 insert()하면 low 갱신은
+      // insert()가 스스로 처리하므로, low 갱신 항목은 건너뛰면 된다(설계 문서 3.1/3.4절).
+      for (const m of body.mutations) {
+        if (m.index === v2RevTree.size()) {
+          await v2RevTree.insert(BigInt(m.leaf.value));
+        }
+      }
+      v2LastSeq = body.seq;
+      const localRoot = v2RevTree.getRoot().toString();
+      if (localRoot !== body.root) {
+        throw new Error(`v2 incremental root ${localRoot} != IdP root ${body.root}`);
+      }
+      return { epoch: v2Epoch, lastSeq: v2LastSeq, root: localRoot, mode: 'incremental' };
+    }
+    // tooOld -> 아래 전체 재조회로 폴백
+  }
+
+  // --- 전체 재조회: 물리 순서 리프 배열로 재구성(설계 문서 3.1절) ---
+  const res = await fetch(`${IDP_ORIGIN}/idp/revocation_state_v2`);
+  if (!res.ok) throw new Error(`revocation_state_v2 (full) failed: ${res.status}`);
+  const body = await res.json();
+  // leaves[0]은 anchor (0,0,0) — buildIMTv2가 자동으로 만들므로 값만, 물리 순서대로 넣는다.
+  const orderedValues = body.leaves.slice(1).map((l) => BigInt(l.value));
+  v2RevTree = await buildIMTv2(REVOCATION_TREE_DEPTH_V2, orderedValues);
+  v2Epoch = body.epoch;
+  v2LastSeq = body.seq;
+  const localRoot = v2RevTree.getRoot().toString();
+  if (localRoot !== body.root) {
+    throw new Error(`v2 full-rebuild root ${localRoot} != IdP root ${body.root}`);
+  }
+  return { epoch: v2Epoch, lastSeq: v2LastSeq, root: localRoot, mode: 'full' };
+}
+
+// v2 비멤버십 witness. v1(fetchRevocationWitnesses) 대비 lowNextIndex가 추가된 필드다.
+// Stage B에서 submitTransaction의 circuitInput에 sess_lowNextIndex/acct_lowNextIndex로
+// 배선된다(circuits/lib/imt_nonmembership_v2.circom의 새 입력 신호). **Stage A: 호출부 없음.**
+export async function fetchRevocationWitnessesV2(rTokenField, auidField) {
+  await syncRevocationTreeV2();
+  const sessTarget = await leafValue(TAG_SESSION, rTokenField);
+  const acctTarget = await leafValue(TAG_ACCOUNT, auidField);
+  return {
+    epoch: v2Epoch,
+    root: v2RevTree.getRoot().toString(),
+    sess: await v2RevTree.getNonMembershipWitness(sessTarget),
+    acct: await v2RevTree.getNonMembershipWitness(acctTarget),
+  };
+}
+
+// 테스트/벤치가 캐시를 초기화할 수 있게 한다(모듈 상태를 리셋). Stage A 운영 경로엔 무관.
+export function _resetRevocationTreeV2ForTest() {
+  v2RevTree = null;
+  v2Epoch = -1;
+  v2LastSeq = -1;
 }
 
 // PPIDWallet.execute()의 revocationRoot 파라미터와 RevocationRegistry는 bytes32를

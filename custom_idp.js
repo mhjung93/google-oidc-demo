@@ -12,6 +12,10 @@ import { fileURLToPath } from 'url';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import { recoverAddress, keccak256, AbiCoder } from 'ethers';
 import { createIMT, leafValue, TAG_SESSION, TAG_ACCOUNT } from './lib/imt.js';
+// 정석 IMT(v2) — 이번 단계(Stage A)에서 v1과 **나란히** 유지한다. 회로는 아직 v1 리프
+// 해시를 쓰므로 v2는 어떤 소비자에게도 서빙되는 witness의 근거가 아니다. Stage B에서
+// 회로/zkey가 준비되면 v1을 걷어내고 v2로 스위치한다(docs/.../proper-imt-design.md 6절).
+import { createIMTv2, buildIMTv2 } from './lib/imt_v2.js';
 
 const app = express();
 const PORT = 4000;
@@ -53,6 +57,99 @@ let preparedPublish = null;
 // 함께 담는다. commit이 이 맵과 revocationTree, revokedLeaves 셋을 항상 함께 갱신해야
 // 한다 — 어긋나면 지갑이 revokedLeaves로 재구성한 root가 IdP root와 달라져 전원 실패한다.
 const leafExpiry = new Map();
+
+// ============================================================================
+// 정석 IMT(v2) 병행 상태 — Stage A (회로 미배선)
+// ============================================================================
+// revocationTree(v1)와 **나란히** 유지하는 정석 IMT다. 같은 폐기 이벤트를 양쪽에
+// 반영하되, /idp/revocation_state(v1)의 응답 형태와 회로 witness 경로는 그대로 둔다.
+// 아래 v2 상태는 아직 어떤 회로도 소비하지 않는다 — Stage B에서 zkey 재생성과 함께
+// 스위치를 넘길 때까지 "켜지지 않은 채로 존재"한다.
+//
+// v2는 append-only라 remove()가 없다(설계 문서 3.2절: 언링크는 건전하지 않다).
+// 그래서 만료로 v1에서 빠지는 리프는 v2에서 즉시 제거되지 못하고, 재기준화
+// (rebaselineV2, 설계 문서 3.3절)가 그 자리를 대신해 살아있는 집합만으로 트리를
+// 새로 쌓아 슬롯을 회수한다.
+let revocationTreeV2 = await createIMTv2(REVOCATION_TREE_DEPTH);
+// epoch: 재기준화가 일어날 때만 증가한다. 지갑은 자기 epoch와 다르면 증분이 아니라
+// 전체를 다시 받아야 한다는 것을 이걸로 안다(설계 문서 3.3절).
+let epochV2 = 0;
+// seq: 리프 쓰기 한 건마다 1씩 오르는 단조 증가 커서. 삽입 1건 = 쓰기 2건(low 갱신 +
+// append)이라 seq는 삽입당 2씩 는다(설계 문서 3.4절 — 커서는 인덱스가 아니라 seq여야
+// 한다: 새 리프의 물리 인덱스는 큰 값이지만 함께 갱신되는 low 리프의 인덱스는 훨씬
+// 작을 수 있어, "인덱스 k 이후" 요청으로는 이미 받은 구간의 갱신을 놓친다).
+let seqV2 = 0;
+// 변경 로그: [{ seq, index, leaf: { value, nextIndex, nextValue } }] (seq 오름차순).
+// 지갑이 since=<seq>로 증분 동기화하는 근거다.
+let mutationLogV2 = [];
+// 로그 절단 상한. epoch 안에서 삽입 2배로 자라므로(최악 약 200만) 무한히 들 수 없다.
+// 이번 단계에서는 관대하게 10만으로 잡는다(설계 문서 3.4절 — 정밀 튜닝은 운영 데이터
+// 이후). 테스트가 절단 경로를 강제할 수 있도록 환경변수로 덮을 수 있게 둔다.
+const MUTATION_LOG_MAX = Number(process.env.IDP_MUTATION_LOG_MAX) || 100_000;
+// 슬롯 사용률 임계치(설계 문서 3.3절). 80%에서 경고, 95%에서 재기준화를 강제한다.
+const V2_REBASELINE_WARN_RATIO = 0.8;
+const V2_REBASELINE_FORCE_RATIO = 0.95;
+// value(BigInt) -> 물리 인덱스. 변경 로그 항목을 만들 때 갱신되는 low 리프의 물리
+// 인덱스가 필요한데, lib/imt_v2.js는 리프 튜플만 노출하고 물리 인덱스는 노출하지
+// 않는다. 이건 트리 밖 파생 인덱스라 해시 계산이 없다(설계 문서 6.2절과 같은 성격).
+let v2ValueToIndex = new Map([[0n, 0]]); // anchor(값 0)는 항상 물리 인덱스 0
+
+function v2LeafToStr(l) {
+  return {
+    value: l.value.toString(),
+    nextIndex: l.nextIndex.toString(),
+    nextValue: l.nextValue.toString(),
+  };
+}
+
+function v2Has(leafKey) {
+  return v2ValueToIndex.has(BigInt(leafKey));
+}
+
+// v2ValueToIndex를 현재 트리의 물리 리프 배열로부터 다시 만든다. 로드/재기준화 후.
+function rebuildV2ValueToIndex() {
+  const m = new Map();
+  revocationTreeV2.getLeaves().forEach((l, i) => m.set(l.value, i));
+  v2ValueToIndex = m;
+}
+
+// v2 트리에 값 하나를 삽입하고 변경 로그 2건(append + low 갱신)을 남긴다. O(log n).
+// low 리프의 물리 인덱스는 트리 밖 파생 맵(v2ValueToIndex)에서, low의 옛 next
+// 필드는 삽입 직전 witness에서 얻는다 — 둘 다 lib/imt_v2.js가 검증한 값이라 여기서
+// 연결 리스트 로직을 다시 구현하지 않는다.
+async function v2InsertWithLog(leafKey) {
+  const v = BigInt(leafKey);
+  if (v2ValueToIndex.has(v)) return false; // 이미 폐기됨
+  // 삽입 직전 low 리프 정보(값/옛 nextIndex/옛 nextValue). v는 멤버가 아니므로 throw 안 함.
+  const w = await revocationTreeV2.getNonMembershipWitness(v);
+  const lowIdx = v2ValueToIndex.get(BigInt(w.lowValue));
+  const newIdx = revocationTreeV2.size(); // append 위치 = 삽입 전 리프 개수
+  await revocationTreeV2.insert(v);
+  v2ValueToIndex.set(v, newIdx);
+  // 새 리프 = (v, low의 옛 nextIndex, low의 옛 nextValue). low 리프 = (lowValue, newIdx, v).
+  const newLeaf = { value: v.toString(), nextIndex: w.lowNextIndex, nextValue: w.lowNextValue };
+  const lowLeaf = { value: w.lowValue, nextIndex: newIdx.toString(), nextValue: v.toString() };
+  // 새 리프를 먼저 기록한다(설계 문서 3.1절: 물리 배치 순서와 공유 조상 재계산 순서 일치).
+  mutationLogV2.push({ seq: ++seqV2, index: newIdx, leaf: newLeaf });
+  mutationLogV2.push({ seq: ++seqV2, index: lowIdx, leaf: lowLeaf });
+  if (mutationLogV2.length > MUTATION_LOG_MAX) {
+    // 오래된 항목부터 버린다. 뒤처진 지갑은 tooOld 응답을 받아 전체 재조회로 떨어진다.
+    mutationLogV2 = mutationLogV2.slice(-MUTATION_LOG_MAX);
+  }
+  return true;
+}
+
+// 재기준화(설계 문서 3.3절): 살아있는 값 집합만으로 v2 트리를 새로 쌓아 만료 슬롯을
+// 회수한다. append-only라 제거가 없으므로 회수는 오직 이 경로로만 일어난다. epoch를
+// 올려 지갑이 전체 재조회를 하도록 신호하고, 변경 로그를 비운다. tree.rebaseline()은
+// 입력을 정렬·중복제거해 쌓으므로 결과 root는 입력 순서와 무관하다.
+async function rebaselineV2(liveValues) {
+  revocationTreeV2 = await revocationTreeV2.rebaseline([...liveValues].map((x) => BigInt(x)));
+  rebuildV2ValueToIndex();
+  epochV2 += 1;
+  seqV2 = 0;
+  mutationLogV2 = [];
+}
 
 // custom_idp.js는 지금까지 체인 접근이 전혀 없었다. 만료 판정에 현재 블록이
 // 필요해서 server.js:27,238과 동일한 관례로 eth_blockNumber를 조회한다.
@@ -477,6 +574,21 @@ function serializeIdPState() {
     lastAuid: Object.fromEntries(Object.entries(users).map(([name, u]) => [name, u.lastAuid])),
     // disabled는 보안 상태라 반드시 영속화해야 한다 — 안 그러면 재시작마다 차단이 풀린다.
     disabled: Object.fromEntries(Object.entries(users).map(([name, u]) => [name, Boolean(u.disabled)])),
+    // === v2(정석 IMT) 병행 상태 — Stage A: 아직 회로에 배선되지 않았다 ===
+    // 스키마 버전(IDP_STATE_FILE_VERSION)은 3에서 올리지 않는다. v2 필드는 순수 '추가'
+    // 필드라, 옛 코드가 읽으면 무시하면 그만이고(전방 호환), 새 코드가 옛(v2 필드 없는)
+    // v3 파일을 읽으면 loadIdPState가 현재 v1 게시 집합으로부터 무손실 초기화한다.
+    // 버전을 4로 올리면 되돌리기(옛 custom_idp.js로 롤백)가 디스크의 v4 파일을
+    // 'unsupported version'으로 거부해 Stage A의 되돌림 안전성이 깨진다 — 그래서
+    // additive로 둔다(판단 근거는 imt-v2-wiring-report.md 참고).
+    epochV2,
+    seqV2,
+    // 로드 시 재구성한 v2 트리의 root가 저장 시점과 같은지 대조하는 무결성 기준값.
+    publishedRootV2: revocationTreeV2.getRoot().toString(),
+    // 물리 순서(삽입 순서) 리프 배열. anchor 포함. 정렬된 값 집합이 아니라 물리 배열로
+    // 저장해야 재구성 root가 같다(설계 문서 3.1절 — root는 삽입 순서에 의존한다).
+    v2Leaves: revocationTreeV2.getLeaves().map(v2LeafToStr),
+    mutationLogV2,
   };
 }
 
@@ -619,6 +731,41 @@ async function loadIdPState() {
       if (!Object.prototype.hasOwnProperty.call(users, name)) continue;
       users[name].disabled = Boolean(disabled);
     }
+  }
+
+  // === v2(정석 IMT) 병행 상태 복원 ===
+  // v2Leaves/mutationLogV2/epochV2/seqV2는 순수 '추가' 필드다(스키마 버전은 3 그대로).
+  // 있으면 저장된 물리 순서 리프로 재구성하고 publishedRootV2로 무결성을 대조한다.
+  // 없으면(옛 v3 파일) 현재 v1 게시 집합으로부터 무손실 초기화한다 — 로그·epoch는 빈
+  // 값(0). 이렇게 하면 v2가 처음부터 v1과 같은 폐기 집합을 담아, 명확한 거부 없이
+  // 무손실로 마이그레이션된다(브리프 판단 지점: 'v3 파일을 읽으면 빈 값으로 초기화').
+  if (Array.isArray(parsed.v2Leaves) && parsed.v2Leaves.length > 0) {
+    const v2Vals = parsed.v2Leaves
+      .slice(1) // [0]은 anchor (0,0,0) — buildIMTv2가 자동으로 만든다
+      .map((l, i) => BigInt(assertDecimalString(String(l.value), `v2Leaves[${i + 1}].value`)));
+    let t2;
+    try {
+      t2 = await buildIMTv2(REVOCATION_TREE_DEPTH, v2Vals);
+    } catch (err) {
+      throw stateFileError(`v2Leaves contains a value insert() rejects: ${err.message}`);
+    }
+    const rebuiltV2Root = t2.getRoot().toString();
+    if (typeof parsed.publishedRootV2 === 'string' && rebuiltV2Root !== parsed.publishedRootV2) {
+      throw stateFileError(
+        `rebuilt v2 root ${rebuiltV2Root} does not match the saved publishedRootV2 ${parsed.publishedRootV2}`,
+      );
+    }
+    revocationTreeV2 = t2;
+    epochV2 = Number.isInteger(parsed.epochV2) ? parsed.epochV2 : 0;
+    seqV2 = Number.isInteger(parsed.seqV2) ? parsed.seqV2 : 0;
+    mutationLogV2 = Array.isArray(parsed.mutationLogV2) ? parsed.mutationLogV2 : [];
+    rebuildV2ValueToIndex();
+  } else {
+    revocationTreeV2 = await buildIMTv2(REVOCATION_TREE_DEPTH, leaves.map((x) => BigInt(x)));
+    epochV2 = 0;
+    seqV2 = 0;
+    mutationLogV2 = [];
+    rebuildV2ValueToIndex();
   }
 
   console.log(
@@ -1546,9 +1693,17 @@ app.post('/idp/publish/prepare', requireIdPAdmin, async (req, res) => {
   const added = candidate.filter((k) => !publishedSet.has(k)).length;
   const removed = revokedLeaves.filter((k) => !candidateSet.has(k)).length;
 
+  // v2 슬롯 사용률을 보고 재기준화가 필요한지 판단한다(설계 문서 3.3절). 후보 리프를
+  // 넣으면 v2가 얼마나 찰지까지 반영해 미리 본다(append-only라 후보의 '추가분'만큼 는다).
+  const v2AddedCandidate = candidate.filter((k) => !v2Has(k)).length;
+  const v2Usage = revocationTreeV2.usage();
+  const v2ProjectedUsed = v2Usage.used + v2AddedCandidate;
+  const v2ProjectedRatio = v2ProjectedUsed / v2Usage.capacity;
+  const forceRebaselineV2 = v2ProjectedRatio >= V2_REBASELINE_FORCE_RATIO;
+
   // 여러 번 호출하면 마지막 것이 유효하다. prepare와 commit 사이에 들어온 폐기는
   // 이번 회차에 포함되지 않고 다음 회차로 넘어간다 — 의도된 동작이다.
-  preparedPublish = { root: expectedRoot, leaves: candidate, blockHeight: currentBlock };
+  preparedPublish = { root: expectedRoot, leaves: candidate, blockHeight: currentBlock, forceRebaselineV2 };
 
   const currentRoot = revocationTree.getRoot().toString();
   console.log(
@@ -1566,6 +1721,16 @@ app.post('/idp/publish/prepare', requireIdPAdmin, async (req, res) => {
     leafCount: candidate.length,
     pendingCount: pendingAdds.size,
     blockHeight: currentBlock.toString(),
+    // v2(정석 IMT) 슬롯 상태 — Stage A: 관측/운영 가시성만. 회로에는 아직 무관하다.
+    v2: {
+      epoch: epochV2,
+      used: v2Usage.used,
+      capacity: v2Usage.capacity,
+      projectedUsed: v2ProjectedUsed,
+      projectedRatio: v2ProjectedRatio,
+      rebaselineWarning: v2ProjectedRatio >= V2_REBASELINE_WARN_RATIO,
+      rebaselineForced: forceRebaselineV2,
+    },
   });
 });
 
@@ -1616,6 +1781,33 @@ app.post('/idp/publish/commit', requireIdPAdmin, async (req, res) => {
 
   revocationTree = nextTree;
   revokedLeaves = [...prepared.leaves];
+
+  // === v2(정석 IMT) 반영 — Stage A: 회로 미배선 ===
+  // v1은 매 commit마다 살아있는 집합으로 통째로 재구성해 만료 리프까지 즉시 뺀다.
+  // v2는 append-only라(설계 문서 3.2절) 새로 추가된 리프만 삽입하고, 만료로 빠진
+  // 리프는 재기준화 전까지 남는다 — 그 회수는 rebaselineV2가 대신한다. epoch는
+  // 재기준화가 일어날 때만 오르고, 일반 게시는 seq만 전진한다(브리프 작업 2/3).
+  // v2는 아직 어떤 회로도 소비하지 않으므로, 여기서 실패해도 v1 게시(=실제 서비스)를
+  // 막지 않는다. 로그만 남기고 넘어간다.
+  try {
+    if (prepared.forceRebaselineV2) {
+      await rebaselineV2(prepared.leaves);
+      console.log(`[IdP] publish/commit: v2 rebaselined, epoch -> ${epochV2}, ${prepared.leaves.length} live leaves`);
+    } else {
+      let addedV2 = 0;
+      for (const leafKey of prepared.leaves) {
+        if (!v2Has(leafKey)) {
+          await v2InsertWithLog(leafKey);
+          addedV2 += 1;
+        }
+      }
+      if (addedV2 > 0) {
+        console.log(`[IdP] publish/commit: v2 +${addedV2} leaf(s), seq -> ${seqV2}, epoch ${epochV2}`);
+      }
+    }
+  } catch (err) {
+    console.error(`[IdP] v2 mirror update failed at commit (v1 unaffected): ${err.message}`);
+  }
 
   const committed = new Set(prepared.leaves);
   // 대기열 정리: 이번에 반영된 것과, prepare 시점에 이미 만료라 버려진 것을 뺀다.
@@ -1807,6 +1999,123 @@ app.post('/idp/account/unpin_auid', requireIdPAdmin, async (req, res) => {
 // 대기 현황은 관리자 전용 prepare/commit 응답과 로그로만 노출한다.
 app.get('/idp/revocation_state', (req, res) => {
   res.json({ root: revocationTree.getRoot().toString(), revokedLeaves });
+});
+
+// === v2(정석 IMT) 증분 조회 — Stage A: 새 대역, 아직 아무 지갑도 부르지 않는다 ===
+// /idp/revocation_state(v1)와 헷갈리지 않게 별도 경로로 둔다. 응답은
+//   { epoch, seq, root, ... }
+// 이고, since 유무에 따라 전체(leaves) 또는 증분(mutations)을 싣는다(설계 문서 3.4절).
+//
+//  - since 없음        -> 전체. leaves를 **물리 순서**로 준다(3.1절: 값 집합이 아니라
+//                         물리 순서 배열이어야 지갑이 같은 root로 재구성한다).
+//  - since 있음         -> mutations(seq 오름차순). 단, 아래는 전체 재조회로 안내한다:
+//      · epoch 불일치    (재기준화가 일어났다) -> { tooOld: true }
+//      · since가 절단 지점보다 오래됨          -> { tooOld: true }
+//    조용히 부분 결과를 주면 지갑 트리가 root와 어긋나 모든 증명이 실패한다(3.4절).
+app.get('/idp/revocation_state_v2', (req, res) => {
+  const root = revocationTreeV2.getRoot().toString();
+  const sinceRaw = req.query.since;
+
+  if (sinceRaw === undefined) {
+    return res.json({
+      epoch: epochV2,
+      seq: seqV2,
+      root,
+      leaves: revocationTreeV2.getLeaves().map(v2LeafToStr),
+    });
+  }
+
+  if (!/^[0-9]+$/.test(String(sinceRaw))) {
+    return res.status(400).json({ error: 'since must be a non-negative integer' });
+  }
+  const since = Number(sinceRaw);
+
+  const epochRaw = req.query.epoch;
+  if (epochRaw !== undefined) {
+    if (!/^[0-9]+$/.test(String(epochRaw))) {
+      return res.status(400).json({ error: 'epoch must be a non-negative integer' });
+    }
+    if (Number(epochRaw) !== epochV2) {
+      return res.json({ epoch: epochV2, seq: seqV2, root, tooOld: true, reason: 'epoch changed; full fetch required' });
+    }
+  }
+
+  if (since >= seqV2) {
+    // 이미 최신(또는 방어적으로 미래 seq) — 적용할 변경이 없다.
+    return res.json({ epoch: epochV2, seq: seqV2, root, mutations: [] });
+  }
+
+  // 남아있는 가장 오래된 로그 항목의 seq. 로그가 비었으면 증분으로 서빙할 구간이 없다.
+  const oldestRetained = mutationLogV2.length ? mutationLogV2[0].seq : seqV2 + 1;
+  // since 다음(=since+1)이 절단돼 사라졌으면 증분으로 따라잡을 수 없다.
+  if (since < oldestRetained - 1) {
+    return res.json({ epoch: epochV2, seq: seqV2, root, tooOld: true, reason: 'log truncated; full fetch required' });
+  }
+
+  const mutations = mutationLogV2.filter((m) => m.seq > since);
+  return res.json({ epoch: epochV2, seq: seqV2, root, mutations });
+});
+
+// === v2 재기준화 수동 트리거 — 관리자 전용(설계 문서 3.3절) ===
+// 게시 경로(prepare/commit)의 자동 재기준화(사용률 임계치)와 별개로, 운영자가 활동이
+// 적은 시간대에 앞당겨 돌릴 수 있게 한다. 살아있는 값 = 현재 게시된 v1 리프 집합.
+// v2를 이 집합만으로 새로 쌓아 만료 슬롯을 회수하고 epoch를 올린다. 브리프 작업 3대로
+// v1도 같은 살아있는 집합으로 재구성한다 — 단, 이 경로가 온체인에 게시된 root를 몰래
+// 바꾸면 안 되므로(Stage A 안전: 3000/5001은 재시작 이유가 없어야 한다), 재구성 root가
+// 현재 게시 root와 다르면(=만료 리프가 남아있다) 거부하고 먼저 publish를 돌리라고 한다.
+app.post('/idp/rebaseline_v2', requireIdPAdmin, async (req, res) => {
+  const previousEpoch = epochV2;
+  const previousRootV2 = revocationTreeV2.getRoot().toString();
+
+  let v1Rebuilt;
+  let v1RebuiltRoot;
+  try {
+    v1Rebuilt = await createIMT(REVOCATION_TREE_DEPTH);
+    for (const leafKey of revokedLeaves) await v1Rebuilt.insert(BigInt(leafKey));
+    v1RebuiltRoot = v1Rebuilt.getRoot().toString();
+  } catch (err) {
+    return res.status(500).json({ error: `failed to rebuild the v1 tree: ${err.message}` });
+  }
+
+  const publishedRoot = revocationTree.getRoot().toString();
+  if (v1RebuiltRoot !== publishedRoot) {
+    return res.status(409).json({
+      error:
+        'the v1 live-set rebuild differs from the currently published root (expired leaves are ' +
+        'still present); run POST /idp/publish/prepare + commit first so the on-chain root is not ' +
+        'changed out of band by a rebaseline',
+      publishedRoot,
+      v1RebuiltRoot,
+    });
+  }
+
+  // 동일 root라 관측 가능한 v1 변화가 없다(Stage A 안전). v2만 재기준화한다.
+  revocationTree = v1Rebuilt;
+  try {
+    await rebaselineV2(revokedLeaves);
+  } catch (err) {
+    return res.status(500).json({ error: `v2 rebaseline failed: ${err.message}` });
+  }
+
+  const saved = saveIdPState();
+  if (!saved) {
+    return res.status(500).json({ error: 'rebaseline computed but failed to persist; please retry' });
+  }
+
+  const usage = revocationTreeV2.usage();
+  console.log(
+    `[IdP] rebaseline_v2: epoch ${previousEpoch} -> ${epochV2}, ${revokedLeaves.length} live leaves, ` +
+      `v2 usage ${usage.used}/${usage.capacity}`,
+  );
+  res.json({
+    epoch: epochV2,
+    previousEpoch,
+    rootV2: revocationTreeV2.getRoot().toString(),
+    previousRootV2,
+    v1Root: publishedRoot,
+    leafCount: revokedLeaves.length,
+    usage,
+  });
 });
 
 // 4. Public Keys Endpoint (for RP verification)
