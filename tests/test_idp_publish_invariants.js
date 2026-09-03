@@ -35,7 +35,7 @@ function section(startMarker, endMarker, label) {
 // 그러므로 재기준화는 미결 prepare를 스스로 무효화해야 한다.
 // ---------------------------------------------------------------------------
 const rebaselineHandlerSrc = section(
-  "app.post('/idp/rebaseline_v2', requireIdPAdmin, async (req, res) => {",
+  "app.post('/idp/rebaseline_v2', requireIdPAdmin, serializeAdminMutation(async (req, res) => {",
   '\n});',
   '/idp/rebaseline_v2 handler',
 );

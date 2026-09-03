@@ -259,14 +259,23 @@ let v2LastSeq = -1;
 // 늦게 온 쪽도 최신 상태를 봐야 한다).
 let v2SyncChain = Promise.resolve();
 
-export function syncRevocationTreeV2() {
-  const run = v2SyncChain.then(doSyncRevocationTreeV2, doSyncRevocationTreeV2);
-  // 앞 동기화가 실패해도 체인은 이어져야 한다(거부를 흡수한 꼬리를 다음 링크로 쓴다).
+// 폐기 트리를 건드리거나 읽는 작업을 한 줄로 세운다. **witness 계산도 여기 들어와야
+// 한다** — 증분 동기화는 트리를 새로 만들지 않고 제자리에서 변형하므로(insert), 트리
+// 참조를 지역 변수로 붙잡아 두는 것만으로는 보호되지 않는다. 다른 요청의 동기화가
+// witness 두 개를 뽑는 사이에 끼면 root는 옛 값인데 경로는 새 트리에서 나와 증명이
+// 제약 위반으로 실패한다.
+function queueRevocationTask(task) {
+  const run = v2SyncChain.then(task, task);
+  // 앞 작업이 실패해도 체인은 이어져야 한다(거부를 흡수한 꼬리를 다음 링크로 쓴다).
   v2SyncChain = run.then(
     () => {},
     () => {},
   );
   return run;
+}
+
+export function syncRevocationTreeV2() {
+  return queueRevocationTask(doSyncRevocationTreeV2);
 }
 
 async function doSyncRevocationTreeV2() {
@@ -279,10 +288,19 @@ async function doSyncRevocationTreeV2() {
       // mutations는 seq 오름차순. 삽입 1건은 append 항목(index === 현재 트리 크기)과 low
       // 갱신 항목(index < 크기)으로 온다. append 항목의 값을 insert()하면 low 갱신은
       // insert()가 스스로 처리하므로, low 갱신 항목은 건너뛰면 된다(설계 문서 3.1/3.4절).
-      for (const m of body.mutations) {
-        if (m.index === v2RevTree.size()) {
-          await v2RevTree.insert(BigInt(m.leaf.value));
+      // 재생 도중 던지면(값이 범위를 벗어남, 용량 초과, 손상된 항목 등) 트리가 부분만
+      // 변형된 채 남는다. 그 상태로 두면 다음 요청이 같은 증분 분기로 들어가 한 번 더
+      // 실패해야만(root 불일치) 회복된다. 여기서 바로 캐시를 버려 다음 호출이 전체
+      // 재조회부터 시작하게 한다.
+      try {
+        for (const m of body.mutations) {
+          if (m.index === v2RevTree.size()) {
+            await v2RevTree.insert(BigInt(m.leaf.value));
+          }
         }
+      } catch (err) {
+        invalidateRevocationTreeV2();
+        throw new Error(`v2 incremental replay failed: ${err.message}`);
       }
       const localRoot = v2RevTree.getRoot().toString();
       if (localRoot !== body.root) {
@@ -329,26 +347,21 @@ function invalidateRevocationTreeV2() {
 // v2 비멤버십 witness. sess/acct 각각 lowNextIndex를 포함하며, submitTransaction의
 // circuitInput에 sess_lowNextIndex/acct_lowNextIndex로 배선된다
 // (circuits/lib/imt_nonmembership_v2.circom의 입력 신호).
-export async function fetchRevocationWitnessesV2(rTokenField, auidField) {
-  const synced = await syncRevocationTreeV2();
-  // 동기화가 끝난 **직후의 트리를 지역 변수로 붙잡는다.** 여기서 v2RevTree를 다시 읽으면
-  // 아래 await들 사이에 다른 요청의 동기화가 끼어들어 트리를 갈아끼우거나(전체 재구성)
-  // 무효화할 수 있고(root 불일치 시 null), 그러면 null 역참조로 죽거나 **root는 옛
-  // 트리에서, witness는 새 트리에서** 나온 묶음을 돌려주게 된다. 그 증명은 온체인
-  // latestRoot와 어긋나 반드시 실패한다. 동기화끼리는 직렬화돼 있지만 이 함수의
-  // witness 계산 구간은 그 체인 밖이라, 스냅샷이 필요하다.
-  const tree = v2RevTree;
-  const epoch = synced.epoch;
-  const root = synced.root;
-
-  const sessTarget = await leafValue(TAG_SESSION, rTokenField);
-  const acctTarget = await leafValue(TAG_ACCOUNT, auidField);
-  return {
-    epoch,
-    root,
-    sess: await tree.getNonMembershipWitness(sessTarget),
-    acct: await tree.getNonMembershipWitness(acctTarget),
-  };
+export function fetchRevocationWitnessesV2(rTokenField, auidField) {
+  // 동기화와 witness 계산을 **하나의 체인 링크 안에서** 수행한다. 둘을 나누면 그 사이에
+  // 다른 요청의 동기화가 끼어들어 같은 트리 객체를 제자리에서 바꿀 수 있고, 그러면
+  // root와 witness가 서로 다른 시점의 트리에서 나와 증명이 반드시 실패한다.
+  return queueRevocationTask(async () => {
+    const synced = await doSyncRevocationTreeV2();
+    const sessTarget = await leafValue(TAG_SESSION, rTokenField);
+    const acctTarget = await leafValue(TAG_ACCOUNT, auidField);
+    return {
+      epoch: synced.epoch,
+      root: synced.root,
+      sess: await v2RevTree.getNonMembershipWitness(sessTarget),
+      acct: await v2RevTree.getNonMembershipWitness(acctTarget),
+    };
+  });
 }
 
 // 테스트/벤치가 캐시를 초기화할 수 있게 한다(모듈 상태를 리셋). Stage A 운영 경로엔 무관.

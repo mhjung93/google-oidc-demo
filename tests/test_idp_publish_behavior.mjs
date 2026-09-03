@@ -326,6 +326,57 @@ const uniqueValue = () => `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 }
 
 // ---------------------------------------------------------------------------
+// 3-d. 이미 게시됐지만 만료된 리프를 **재폐기**하면, 그 재폐기가 재기준화에 먹히면 안 된다.
+//
+// /idp/revoke는 이미 게시된 리프면 대기열에 넣지 않고 만료만 연장한다. 그런데 prepare가
+// 그 리프를 "만료"로 보고 재기준화 집합에서 빼 둔 뒤에 재폐기가 들어오면, commit이 동결된
+// 집합으로 재기준화하면서 리프를 지운다 — 방금 접수한 재폐기가 트리에서 사라지고 만료
+// 메타데이터 고아 정리까지 흔적을 지운다. 재폐기는 200을 받았는데 아무 효과가 없다.
+// ---------------------------------------------------------------------------
+{
+  const idp = await startIsolatedIdP({ env: { IDP_REBASELINE_FORCE_RATIO: forceRatioForLeaves(4) } });
+  try {
+    const victim = uniqueValue();
+    const victimLeaf = (await leafValue(TAG_ACCOUNT, victim)).toString();
+    await revokeAndPublish(idp, victim); // used 2
+    await revokeAndPublish(idp, uniqueValue()); // used 3
+    await rpc('hardhat_mine', [`0x${(CREDENTIAL_LIFETIME_BLOCKS + 1).toString(16)}`]); // 둘 다 만료
+
+    // 재기준화 회차를 만든다(projected 4 >= 임계치 4).
+    await idp.post('/idp/revoke', { type: 'account', value: uniqueValue() });
+    const prepared = await idp.post('/idp/publish/prepare');
+    assert.equal(prepared.status, 200);
+    assert.equal(prepared.body.v2.rebaselineForced, true, '준비: 이번 회차는 재기준화여야 한다');
+
+    // prepare와 commit 사이에 victim을 **재폐기**한다(운영자가 push를 기다리는 동안).
+    const rerevoked = await idp.post('/idp/revoke', { type: 'account', value: victim });
+    assert.equal(rerevoked.status, 200, '재폐기는 접수돼야 한다');
+
+    const committed = await idp.post('/idp/publish/commit', { root: prepared.body.expectedRoot });
+    assert.equal(committed.status, 200);
+
+    // 이 회차에서 빠지는 것 자체는 정상(집합이 동결됐다). 하지만 **다음 회차에 반드시
+    // 다시 들어가야 한다** — 재폐기가 조용히 사라지면 안 된다.
+    const afterRebaseline = (await idp.get('/idp/revocation_state_v2')).body;
+    const next = await idp.post('/idp/publish/prepare');
+    assert.equal(next.status, 200);
+    const nextCommitted = await idp.post('/idp/publish/commit', { root: next.body.expectedRoot });
+    assert.equal(nextCommitted.status, 200);
+
+    const final = (await idp.get('/idp/revocation_state_v2')).body;
+    const members = final.leaves.slice(1).map((l) => l.value);
+    assert.ok(
+      members.includes(victimLeaf),
+      `재폐기된 계정은 다음 게시에서 반드시 트리에 있어야 한다 ` +
+        `(재기준화 직후 ${afterRebaseline.leaves.length}개 -> 최종 ${final.leaves.length}개)`,
+    );
+    console.log('OK (3-d): 게시·만료된 리프의 재폐기가 재기준화에 먹히지 않는다');
+  } finally {
+    await idp.stop();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 4. 변경 로그 절단 -> tooOld (test_imt_v2_wiring.js가 SKIP하던 3b 경로).
 //
 // 로그 상한을 낮춘 인스턴스를 직접 띄워 실제로 절단시킨다. 절단됐는데 조용히 부분

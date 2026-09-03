@@ -1545,7 +1545,28 @@ function requireIdPAuditor(req, res, next) {
 
 // 폐기 대상 등록. type='session'이면 r_token, 'account'면 auid를 값으로 받는다.
 // 어느 쪽이든 IdP가 이미 알고 있는 값이다(issuanceLog / user.lastAuid).
-app.post('/idp/revoke', requireIdPAdmin, async (req, res) => {
+// 폐기 트리를 바꾸는 관리자 경로(/idp/revoke, publish/prepare, publish/commit,
+// rebaseline_v2)를 한 줄로 세운다.
+//
+// 왜 필요한가. commit 핸들러는 "prepare와 commit 사이에 v2를 바꾸는 경로는 없다(admin
+// 직렬)"를 전제로 적혀 있지만, express는 요청을 동시에 처리하고 이 경로들은 전부 RPC·
+// Poseidon await를 품고 있어 실제로는 인터리브된다. 특히 v2InsertWithLog는 새 물리
+// 인덱스를 await **전에** 읽으므로, 겹친 commit 두 건이 같은 인덱스를 보고 가짜 변경
+// 로그를 남길 수 있다 — 그 로그는 그대로 지갑에 서빙된다.
+let adminMutationChain = Promise.resolve();
+function serializeAdminMutation(handler) {
+  return (req, res, next) => {
+    const run = adminMutationChain.then(() => handler(req, res, next));
+    adminMutationChain = run.then(
+      () => {},
+      () => {},
+    );
+    // 핸들러가 던지면 express의 기본 오류 처리로 넘긴다(응답이 없는 채 매달리지 않게).
+    run.catch(next);
+  };
+}
+
+app.post('/idp/revoke', requireIdPAdmin, serializeAdminMutation(async (req, res) => {
   const { type, value } = req.body ?? {};
   if (value === undefined || value === null) {
     return res.status(400).json({ error: 'value is required' });
@@ -1617,7 +1638,17 @@ app.post('/idp/revoke', requireIdPAdmin, async (req, res) => {
     // /idp/publish/prepare + /idp/publish/commit이 한다.
     const alreadyPublished = v2Has(leafKey);
     const alreadyPending = pendingAdds.has(leafKey);
-    const addedToPending = !alreadyPublished && !alreadyPending;
+    // 게시돼 있어도 **이미 만료된** 리프면 대기열에 넣는다. 재기준화는 만료 리프를
+    // 회수하는데, prepare가 그 집합을 동결한 뒤 이 재폐기가 들어오면 commit이 리프를
+    // 지워 버려 방금 접수한 폐기가 흔적 없이 사라진다(만료 메타데이터 고아 정리까지
+    // 함께 지운다). 대기열에 있으면 그 회차에서 빠지더라도 다음 회차에 다시 들어간다.
+    // 트리에 그대로 남는 평범한 경우에는 prepare의 !v2Has 필터가 걸러 무해하고,
+    // commit의 대기열 정리가 '게시됨'으로 보고 지운다.
+    const publishedButExpired = alreadyPublished && (() => {
+      const e = leafExpiry.get(leafKey);
+      return e !== undefined && e <= currentBlock;
+    })();
+    const addedToPending = (!alreadyPublished || publishedButExpired) && !alreadyPending;
     if (addedToPending) pendingAdds.add(leafKey);
 
     // 재폐기는 에러가 아니라 no-op이다. 다만 계정 재폐기는 폐기 창을 연장해야
@@ -1664,7 +1695,7 @@ app.post('/idp/revoke', requireIdPAdmin, async (req, res) => {
   } catch (err) {
     return res.status(400).json({ error: err.message || 'Failed to revoke value' });
   }
-});
+}));
 
 // 관리자 전용 게시 엔드포인트 (prepare/commit 2단계).
 //
@@ -1685,7 +1716,7 @@ app.post('/idp/revoke', requireIdPAdmin, async (req, res) => {
 // 만료 리프 제거(sweep)도 이 경로에 흡수됐다. 만료된 리프를 빼야 지갑의 매 트랜잭션
 // 재구성 비용이 무한정 늘지 않는다(docs/REVOCATION_FOLLOWUPS.md 0절).
 // 인증은 /idp/revoke와 동일한 requireIdPAdmin을 재사용한다.
-app.post('/idp/publish/prepare', requireIdPAdmin, async (req, res) => {
+app.post('/idp/publish/prepare', requireIdPAdmin, serializeAdminMutation(async (req, res) => {
   let currentBlock;
   try {
     currentBlock = await getCurrentBlockHeight();
@@ -1834,10 +1865,10 @@ app.post('/idp/publish/prepare', requireIdPAdmin, async (req, res) => {
       capacityExhausted,
     },
   });
-});
+}));
 
 // prepare가 계산한 root가 온체인에 실제로 게시된 뒤에만 호출돼야 한다.
-app.post('/idp/publish/commit', requireIdPAdmin, async (req, res) => {
+app.post('/idp/publish/commit', requireIdPAdmin, serializeAdminMutation(async (req, res) => {
   const { root } = req.body ?? {};
   if (root === undefined || root === null) {
     return res.status(400).json({ error: 'root is required' });
@@ -1891,10 +1922,19 @@ app.post('/idp/publish/commit', requireIdPAdmin, async (req, res) => {
     console.error(
       `[IdP] publish/commit: applied root ${actualRoot} != prepared root ${prepared.root}`,
     );
+    // 이 회차는 되돌릴 수 없다(v2는 append-only). 그런데 preparedPublish를 그대로 두면
+    // 재시도해도 삽입은 전부 no-op이고 root는 여전히 달라 **영구히 500**이 되고, 대기 중인
+    // 폐기가 영원히 게시되지 않는다. 무효가 된 prepare를 버려서 다음 회차가 실제 상태로부터
+    // 새로 prepare할 수 있게 한다. 메모리가 이미 전진했으므로 저장도 시도한다.
+    preparedPublish = null;
+    const persistedAfterMismatch = saveIdPState();
     return res.status(500).json({
-      error: 'the applied v2 root does not match the prepared root; on-chain root and IdP state may now disagree',
+      error:
+        'the applied v2 root does not match the prepared root; on-chain root and IdP state may now ' +
+        'disagree. The prepared publish was discarded — re-run prepare, push the new root, then commit.',
       preparedRoot: prepared.root,
       appliedRoot: actualRoot,
+      persisted: persistedAfterMismatch,
     });
   }
 
@@ -1997,7 +2037,7 @@ app.post('/idp/publish/commit', requireIdPAdmin, async (req, res) => {
     pendingCount: pendingAdds.size,
     ...(persistenceWarning ? { persistenceWarning } : {}),
   });
-});
+}));
 
 // --- 계정 층(사람 차단) 관리자 엔드포인트 ---
 //
@@ -2178,7 +2218,7 @@ app.get('/idp/revocation_state_v2', (req, res) => {
 // push_revocation_root.cjs(또는 sweep 사이클)로 새 root를 온체인에 게시해야 한다. 그전까지
 // 지갑이 새 트리로 만드는 witness는 StaleRevocationRoot로 막힌다 — 활동이 적은 시간대에
 // 돌리고 곧바로 push하라는 것이 이 수동 트리거의 용도다.
-app.post('/idp/rebaseline_v2', requireIdPAdmin, async (req, res) => {
+app.post('/idp/rebaseline_v2', requireIdPAdmin, serializeAdminMutation(async (req, res) => {
   const previousEpoch = epochV2;
   const previousRootV2 = revocationTreeV2.getRoot().toString();
 
@@ -2207,7 +2247,26 @@ app.post('/idp/rebaseline_v2', requireIdPAdmin, async (req, res) => {
 
   const saved = saveIdPState();
   if (!saved) {
-    return res.status(500).json({ error: 'rebaseline computed but failed to persist; please retry' });
+    // "computed but failed to persist; please retry"는 아무 일도 없었던 것처럼 읽히지만
+    // 사실이 아니다: rebaselineV2()가 이미 트리를 갈아끼우고 epoch를 올리고 로그를 비웠으며
+    // 되돌릴 방법이 없다. IdP는 지금 새 root를 서빙하고 있어 지갑들이 전체 재동기화하는데,
+    // 온체인 latestRoot는 옛 값이라 그대로 두면 전원이 StaleRevocationRoot로 막힌다.
+    // 그러니 지금 서빙 중인 root를 반드시 함께 알려 운영자가 push할 수 있게 한다.
+    const appliedRoot = revocationTreeV2.getRoot().toString();
+    console.error(
+      `[IdP] rebaseline_v2: FAILED TO PERSIST. 메모리는 이미 epoch ${epochV2}, root ${appliedRoot}로 ` +
+        '전진했다(되돌릴 수 없음). 이 root를 온체인에 push하고 상태 파일을 복구해야 한다.',
+    );
+    return res.status(500).json({
+      error:
+        'the rebaseline was already applied in memory (epoch bumped, tree replaced — not reversible) ' +
+        'but could not be persisted. This IdP is now serving the root below while the chain still holds ' +
+        'the previous one: push this root and recover the state file. Do NOT restart before recovering.',
+      epoch: epochV2,
+      rootV2: appliedRoot,
+      previousRootV2,
+      leafCount: liveValues.length,
+    });
   }
 
   const usage = revocationTreeV2.usage();
@@ -2231,7 +2290,7 @@ app.post('/idp/rebaseline_v2', requireIdPAdmin, async (req, res) => {
       'the published v2 root changed; run scripts/push_revocation_root.cjs (or a sweep cycle) to ' +
       'publish it on-chain before wallets prove against the rebaselined tree',
   });
-});
+}));
 
 // 4. Public Keys Endpoint (for RP verification)
 app.get('/ps_public_keys', (req, res) => {

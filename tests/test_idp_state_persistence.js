@@ -81,7 +81,7 @@ assert.match(saveIdPStateSrc, /return true;/, 'saveIdPState must report success'
 assert.match(saveIdPStateSrc, /return false;/, 'saveIdPState must report failure');
 
 const revokeHandlerSrc = section(
-  "app.post('/idp/revoke', requireIdPAdmin, async (req, res) => {",
+  "app.post('/idp/revoke', requireIdPAdmin, serializeAdminMutation(async (req, res) => {",
   "\n// 관리자 전용 게시 엔드포인트",
   '/idp/revoke handler',
 );
@@ -120,7 +120,7 @@ assert.doesNotMatch(
 // 그래서 발급 경로와 같은 선례를 따른다 — 작업은 성공으로 보고하되 저장 실패를 응답에
 // 실어 운영자가 알게 한다.
 const commitPersistSrc = section(
-  "app.post('/idp/publish/commit', requireIdPAdmin, async (req, res) => {",
+  "app.post('/idp/publish/commit', requireIdPAdmin, serializeAdminMutation(async (req, res) => {",
   '\n// --- 계정 층(사람 차단) 관리자 엔드포인트 ---',
   '/idp/publish/commit persistence',
 );
@@ -180,7 +180,7 @@ assert(
 //      축출 로직이 절대 건드리면 안 된다(건드리면 오래된 r_token의 재전송이 다시 열린다).
 // ---------------------------------------------------------------------------
 const commitHandlerSrc = section(
-  "app.post('/idp/publish/commit', requireIdPAdmin, async (req, res) => {",
+  "app.post('/idp/publish/commit', requireIdPAdmin, serializeAdminMutation(async (req, res) => {",
   "\n// --- 계정 층(사람 차단) 관리자 엔드포인트 ---",
   '/idp/publish/commit handler',
 );
@@ -194,9 +194,12 @@ assert.doesNotMatch(
   /\.slice\(0,\s*\d+\)|issuanceLog\.size\s*>\s*\d+|Date\.now\(\)\s*-.*>\s*\d+/,
   'eviction must not use a count-based (LRU) or wall-clock-age (TTL) cutoff',
 );
+// 끝 마커는 **마지막** preparedPublish = null 이어야 한다. root 불일치 분기(영구 500을
+// 막으려고 무효가 된 prepare를 버리는 곳)에도 같은 문장이 있어서, 첫 등장을 쓰면 축출
+// 블록보다 앞이라 구간이 뒤집힌다.
 const evictionBlock = commitHandlerSrc.slice(
   commitHandlerSrc.indexOf('issuanceLog/auidILog 축출'),
-  commitHandlerSrc.indexOf('preparedPublish = null;'),
+  commitHandlerSrc.lastIndexOf('preparedPublish = null;'),
 );
 // (코드 주석에서 usedNonces를 "여기서 건드리지 않는다"고 설명하느라 텍스트에 언급은
 // 되므로, 언급 자체가 아니라 실제 변경 호출(add/delete/clear)이 없는지를 검사한다.)
