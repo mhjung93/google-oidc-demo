@@ -5,7 +5,8 @@ import { randomBytes } from "crypto";
 import { secp256k1 } from "@noble/curves/secp256k1";
 import { keccak256, concat, getBytes } from "ethers";
 import * as snarkjs from "snarkjs";
-import { createIMT, leafValue, TAG_SESSION, TAG_ACCOUNT } from "../lib/imt.js";
+import { leafValue, TAG_SESSION, TAG_ACCOUNT } from "../lib/imt.js";
+import { createIMTv2 } from "../lib/imt_v2.js";
 
 const FIELD_PRIME = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 function valueToField(value) {
@@ -60,9 +61,9 @@ describe("PPIDWallet", function () {
     const sigma_i = eddsa.signPoseidon(sk_IdP, msg);
 
     // 폐기 트리는 비어 있다(anchor만 존재) — 세션/계정 모두 미폐기 상태의
-    // 비멤버십 witness를 만든다. lib/imt.js가 circuits/lib/imt_nonmembership.circom과
-    // 같은 리프/해시 규약을 쓴다(tests/test_pi_pk_i_revocation.mjs와 동일 패턴).
-    const tree = await createIMT(20);
+    // 비멤버십 witness를 만든다. lib/imt_v2.js가 circuits/lib/imt_nonmembership_v2.circom과
+    // 같은 리프/해시 규약(Poseidon(3), lowNextIndex 포함)을 쓴다.
+    const tree = await createIMTv2(20);
     const sessTarget = await leafValue(TAG_SESSION, r_token);
     const acctTarget = await leafValue(TAG_ACCOUNT, auid);
     const sessWitness = await tree.getNonMembershipWitness(sessTarget);
@@ -82,10 +83,12 @@ describe("PPIDWallet", function () {
       rid: rid.toString(),
       salt: salt.toString(),
       sess_lowValue: sessWitness.lowValue,
+      sess_lowNextIndex: sessWitness.lowNextIndex,
       sess_lowNextValue: sessWitness.lowNextValue,
       sess_pathElements: sessWitness.pathElements,
       sess_pathIndices: sessWitness.pathIndices,
       acct_lowValue: acctWitness.lowValue,
+      acct_lowNextIndex: acctWitness.lowNextIndex,
       acct_lowNextValue: acctWitness.lowNextValue,
       acct_pathElements: acctWitness.pathElements,
       acct_pathIndices: acctWitness.pathIndices,

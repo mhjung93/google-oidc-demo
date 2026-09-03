@@ -11,7 +11,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import { recoverAddress, keccak256, AbiCoder } from 'ethers';
-import { createIMT, leafValue, TAG_SESSION, TAG_ACCOUNT } from './lib/imt.js';
+import { leafValue, TAG_SESSION, TAG_ACCOUNT } from './lib/imt.js';
 // 정석 IMT(v2) — 이번 단계(Stage A)에서 v1과 **나란히** 유지한다. 회로는 아직 v1 리프
 // 해시를 쓰므로 v2는 어떤 소비자에게도 서빙되는 witness의 근거가 아니다. Stage B에서
 // 회로/zkey가 준비되면 v1을 걷어내고 v2로 스위치한다(docs/.../proper-imt-design.md 6절).
@@ -29,19 +29,17 @@ const vkeyAridI = JSON.parse(fs.readFileSync('build/mode2/pi_arid_i_vkey.json', 
 // (issuanceLog/auidILog/users[*].lastAuid도 함께 — 파일 하단의 영속화 절 참고).
 //
 // == 게시된 상태와 대기 상태의 분리 (배칭) ==
-// revocationTree/revokedLeaves는 '마지막으로 온체인에 게시된' 폐기 상태다.
-// /idp/revocation_state는 이것만 서빙한다. 폐기 요청은 즉시 트리에 들어가지 않고
-// pendingAdds에 쌓였다가 /idp/publish/prepare + /idp/publish/commit 때 한꺼번에
-// 반영된다.
+// 정석 IMT(v2, revocationTreeV2)가 '마지막으로 온체인에 게시된' 폐기 상태의 유일한
+// 진실이다(Stage B에서 v1을 제거했다). /idp/revocation_state_v2가 이것만 서빙한다.
+// 폐기 요청은 즉시 트리에 들어가지 않고 pendingAdds에 쌓였다가 /idp/publish/prepare +
+// /idp/publish/commit 때 한꺼번에 반영된다.
 //
-// 왜 즉시 반영하면 안 되는가: 지갑은 /idp/revocation_state로 트리를 재구성해
+// 왜 즉시 반영하면 안 되는가: 지갑은 /idp/revocation_state_v2로 트리를 재구성해
 // witness를 만드는데, 그 root가 RevocationRegistry에 게시돼 있지 않으면 온체인
 // execute()가 StaleRevocationRoot로 revert한다. 폐기 즉시 IdP 상태만 전진하면
 // 게시 전까지 '정상 사용자 전원'이 막힌다. 게시될 때까지 옛(=게시된) 상태를 계속
 // 서빙하면 그 장애 창이 사라지고, 폐기 효력 지연은 게시 주기만큼으로 유계가 된다.
 const REVOCATION_TREE_DEPTH = 20;
-let revocationTree = await createIMT(REVOCATION_TREE_DEPTH);
-let revokedLeaves = [];
 // 접수됐지만 아직 게시되지 않은 폐기 리프(leaf 문자열).
 const pendingAdds = new Set();
 // prepare가 계산해 둔 다음 게시 후보. commit이 재계산 없이 그대로 소비한다.
@@ -52,19 +50,18 @@ const pendingAdds = new Set();
 // 되살려서 옛 후보를 commit하는 것보다, 운영자가 prepare를 다시 불러 현재 상태로부터
 // 후보를 새로 계산하게 하는 편이 안전하다(재시작 후 commit은 409를 받는다).
 let preparedPublish = null;
-// 리프별 만료 블록. lib/imt.js는 트리만 알아야 하므로, 만료 메타데이터(leaf 문자열 ->
-// expiryBlock BigInt)는 revokedLeaves와 나란히 IdP가 따로 관리한다. 게시분과 대기분을
-// 함께 담는다. commit이 이 맵과 revocationTree, revokedLeaves 셋을 항상 함께 갱신해야
-// 한다 — 어긋나면 지갑이 revokedLeaves로 재구성한 root가 IdP root와 달라져 전원 실패한다.
+// 리프별 만료 블록. lib/imt_v2.js는 트리만 알아야 하므로, 만료 메타데이터(leaf 문자열 ->
+// expiryBlock BigInt)는 게시 상태와 나란히 IdP가 따로 관리한다. 게시분과 대기분을
+// 함께 담는다. append-only인 v2는 만료 리프를 즉시 뺄 수 없으므로(설계 문서 3.2절),
+// 만료 회수는 재기준화(rebaselineV2)가 살아있는 집합으로 트리를 새로 쌓을 때만 일어난다.
 const leafExpiry = new Map();
 
 // ============================================================================
-// 정석 IMT(v2) 병행 상태 — Stage A (회로 미배선)
+// 정석 IMT(v2) — 게시된 폐기 상태의 유일한 진실 (Stage B: 회로에 배선됨)
 // ============================================================================
-// revocationTree(v1)와 **나란히** 유지하는 정석 IMT다. 같은 폐기 이벤트를 양쪽에
-// 반영하되, /idp/revocation_state(v1)의 응답 형태와 회로 witness 경로는 그대로 둔다.
-// 아래 v2 상태는 아직 어떤 회로도 소비하지 않는다 — Stage B에서 zkey 재생성과 함께
-// 스위치를 넘길 때까지 "켜지지 않은 채로 존재"한다.
+// Stage B에서 회로(circuits/pi_pk_i.circom)가 v2 리프 해시로 전환되고 v1이 제거됐다.
+// 지갑은 /idp/revocation_state_v2로 이 트리를 재구성해 비멤버십 witness를 만들고,
+// 온체인 RevocationRegistry에 게시되는 root도 이 트리의 root다.
 //
 // v2는 append-only라 remove()가 없다(설계 문서 3.2절: 언링크는 건전하지 않다).
 // 그래서 만료로 v1에서 빠지는 리프는 v2에서 즉시 제거되지 못하고, 재기준화
@@ -104,6 +101,22 @@ function v2LeafToStr(l) {
 
 function v2Has(leafKey) {
   return v2ValueToIndex.has(BigInt(leafKey));
+}
+
+// 현재 게시된 폐기 리프(leaf 문자열) 집합. v1의 revokedLeaves 배열을 대체한다 —
+// 게시 상태의 유일한 진실이 v2 트리이므로, 그 물리 리프에서 값만 뽑아(anchor 제외)
+// 파생한다. append-only라 아직 회수되지 않은 만료 리프도 포함할 수 있다.
+function publishedLeaves() {
+  return revocationTreeV2.getLeaves().slice(1).map((l) => l.value.toString());
+}
+
+// 게시된 리프 중 아직 만료되지 않은 것(재기준화의 살아있는 집합). 만료 정보가 없는
+// 리프는 fail-open을 피하려고 살아있는 것으로 남긴다(폐기 경로와 동일한 보수적 처리).
+function liveLeafValues(currentBlock) {
+  return publishedLeaves().filter((k) => {
+    const e = leafExpiry.get(k);
+    return e === undefined || e > currentBlock;
+  });
 }
 
 // v2ValueToIndex를 현재 트리의 물리 리프 배열로부터 다시 만든다. 로드/재기준화 후.
@@ -518,7 +531,14 @@ const IDP_STATE_FILE = path.join(__dirname, 'idp_state.json');
 // 아니라 마이그레이션으로 처리한다. 이 필드는 v1/v2보다도 더 명백히 무손실이다: 이 기능이
 // 생기기 전에는 어떤 계정도 disabled로 표시될 수 없었으므로, 누락 = false는 추측이 아니라
 // 그 시점의 실제 상태 그대로다.
-const IDP_STATE_FILE_VERSION = 3;
+// v4(Stage B): v1 폐기 트리(revocationTree)와 그 직렬화 필드(publishedRoot, revokedLeaves)를
+// 제거하고 정석 IMT(v2)를 게시 상태의 유일한 진실로 승격했다. 이는 v1~v3와 달리 순수
+// additive가 아닌 **진짜 파괴적 변경**이다(v1 필드가 사라진다). 그래서 이 시점에 스키마
+// 버전을 4로 올린다 — Stage B는 회로/zkey/컨트랙트가 함께 바뀌는 되돌릴 수 없는 단계라
+// (기존 zkey·CREATE2 주소 무효화), 되돌림 안전성을 위해 버전 bump를 미룰 이유가 이제 없다.
+// v1/v2/v3 파일은 loadIdPState()가 v2 게시 집합으로 무손실 마이그레이션한다(아래 참고):
+// v2Leaves가 있으면(v3, Stage A) 그대로 쓰고, 없으면 revokedLeaves 값으로 v2를 초기화한다.
+const IDP_STATE_FILE_VERSION = 4;
 const LEGACY_AUID_ILOG_MAX_HEIGHT = '0';
 
 function stateFileError(detail) {
@@ -555,10 +575,6 @@ function isPlainObject(value) {
 function serializeIdPState() {
   return {
     version: IDP_STATE_FILE_VERSION,
-    // 로드 시 재구성한 트리의 root가 저장 시점과 같은지 대조하는 기준값.
-    // 이게 없으면 리프 목록이 조용히 어긋나도 알아챌 방법이 없다.
-    publishedRoot: revocationTree.getRoot().toString(),
-    revokedLeaves,
     pendingAdds: [...pendingAdds],
     leafExpiry: Object.fromEntries([...leafExpiry].map(([k, v]) => [k, v.toString()])),
     issuanceLog: Object.fromEntries(
@@ -574,13 +590,7 @@ function serializeIdPState() {
     lastAuid: Object.fromEntries(Object.entries(users).map(([name, u]) => [name, u.lastAuid])),
     // disabled는 보안 상태라 반드시 영속화해야 한다 — 안 그러면 재시작마다 차단이 풀린다.
     disabled: Object.fromEntries(Object.entries(users).map(([name, u]) => [name, Boolean(u.disabled)])),
-    // === v2(정석 IMT) 병행 상태 — Stage A: 아직 회로에 배선되지 않았다 ===
-    // 스키마 버전(IDP_STATE_FILE_VERSION)은 3에서 올리지 않는다. v2 필드는 순수 '추가'
-    // 필드라, 옛 코드가 읽으면 무시하면 그만이고(전방 호환), 새 코드가 옛(v2 필드 없는)
-    // v3 파일을 읽으면 loadIdPState가 현재 v1 게시 집합으로부터 무손실 초기화한다.
-    // 버전을 4로 올리면 되돌리기(옛 custom_idp.js로 롤백)가 디스크의 v4 파일을
-    // 'unsupported version'으로 거부해 Stage A의 되돌림 안전성이 깨진다 — 그래서
-    // additive로 둔다(판단 근거는 imt-v2-wiring-report.md 참고).
+    // === v2(정석 IMT) — 게시 상태의 유일한 진실 (Stage B) ===
     epochV2,
     seqV2,
     // 로드 시 재구성한 v2 트리의 root가 저장 시점과 같은지 대조하는 무결성 기준값.
@@ -626,51 +636,34 @@ async function loadIdPState() {
     throw stateFileError('not valid JSON');
   }
 
-  // v1 -> v2: auidILog 값 모양만 바뀌었다(문자열 uid -> { uid, maxHeight }). 그 외
-  // 필드는 전부 동일해서 손실 없이 마이그레이션할 수 있다.
-  // v2 -> v3: users에 disabled 필드가 추가됐다. v1/v2 파일에는 disabled가 아예 없으므로
-  // 전부 false로 채운다(위 IDP_STATE_FILE_VERSION 정의부 주석 참고 — 이 필드가 생기기
-  // 전에는 어떤 계정도 disabled일 수 없었으므로 손실이 없다).
+  // 마이그레이션 경로(모두 무손실):
+  //   v1 -> v2: auidILog 값 모양(문자열 uid -> { uid, maxHeight }).
+  //   v2 -> v3: users.disabled 추가(누락 = false).
+  //   v3 -> v4(Stage B): v1 폐기 트리(revocationTree/publishedRoot/revokedLeaves) 제거,
+  //             v2를 게시 상태의 유일한 진실로 승격. 게시된 폐기 집합의 출처는 v4/v3(Stage
+  //             A)에서는 물리 순서 리프 배열 v2Leaves이고, 그보다 옛 파일에서는 v1
+  //             revokedLeaves 값 배열이다(아래 v2 복원 절에서 둘 중 하나로 초기화).
   // 완전히 낯선 버전은(마이그레이션 경로가 없으므로) 계속 명확히 거부한다.
   const fileVersion = parsed?.version;
   const isLegacyAuidILog = fileVersion === 1;
-  const hasDisabledField = fileVersion === IDP_STATE_FILE_VERSION;
-  if (fileVersion !== 1 && fileVersion !== 2 && fileVersion !== IDP_STATE_FILE_VERSION) {
+  const hasDisabledField = fileVersion === 3 || fileVersion === 4;
+  const isV4 = fileVersion === 4;
+  if (![1, 2, 3, 4].includes(fileVersion)) {
     throw stateFileError('unsupported version');
   }
-  if (!Array.isArray(parsed.revokedLeaves)) throw stateFileError('revokedLeaves must be an array');
   if (!Array.isArray(parsed.pendingAdds)) throw stateFileError('pendingAdds must be an array');
   for (const key of ['leafExpiry', 'issuanceLog', 'auidILog', 'lastAuid']) {
     if (!isPlainObject(parsed[key])) throw stateFileError(`${key} must be an object`);
   }
   if (hasDisabledField && !isPlainObject(parsed.disabled)) throw stateFileError('disabled must be an object');
-  if (typeof parsed.publishedRoot !== 'string') throw stateFileError('publishedRoot must be a string');
 
-  const leaves = parsed.revokedLeaves.map((l, i) => assertDecimalString(l, `revokedLeaves[${i}]`));
-
-  // 게시 트리는 lib/imt.js를 그대로 쓰고, 저장된 리프로 insert()를 반복해 재구성한다.
-  // 리프가 0이거나 2^252 이상이면 insert()가 원시 에러를 던진다. 기동이 중단되는 건
-  // 안전한 방향이지만(fail-closed), 다른 손상 경로처럼 "이 파일이 문제다" + 무엇을
-  // 할지 안내가 없으면 운영자가 원인을 알기 어렵다 — stateFileError로 감싼다.
-  const tree = await createIMT(REVOCATION_TREE_DEPTH);
-  try {
-    for (const leafKey of leaves) await tree.insert(BigInt(leafKey));
-  } catch (err) {
-    throw stateFileError(`revokedLeaves contains a value insert() rejects: ${err.message}`);
+  // v1 트리 재구성과 publishedRoot 대조는 제거했다(v2가 유일 진실). v4 이전 파일의
+  // revokedLeaves는 v2Leaves가 없을 때만 v2 초기화 씨앗으로 쓴다(아래 v2 복원 절).
+  let legacyLeaves = null;
+  if (!isV4) {
+    if (!Array.isArray(parsed.revokedLeaves)) throw stateFileError('revokedLeaves must be an array');
+    legacyLeaves = parsed.revokedLeaves.map((l, i) => assertDecimalString(l, `revokedLeaves[${i}]`));
   }
-  const rebuiltRoot = tree.getRoot().toString();
-
-  // 재구성한 root가 저장 시점과 다르면 조용히 넘어가면 안 된다 — 지갑이
-  // /idp/revocation_state의 리프로 만든 root와 IdP가 믿는 root가 어긋나 전원이 실패한다.
-  // root는 이미 공개 엔드포인트로 나가는 값이라 로그에 남겨도 무방하다.
-  if (rebuiltRoot !== parsed.publishedRoot) {
-    throw stateFileError(
-      `rebuilt root ${rebuiltRoot} does not match the saved root ${parsed.publishedRoot}`,
-    );
-  }
-
-  revocationTree = tree;
-  revokedLeaves = leaves;
 
   pendingAdds.clear();
   for (const [i, leafKey] of parsed.pendingAdds.entries()) {
@@ -733,12 +726,11 @@ async function loadIdPState() {
     }
   }
 
-  // === v2(정석 IMT) 병행 상태 복원 ===
-  // v2Leaves/mutationLogV2/epochV2/seqV2는 순수 '추가' 필드다(스키마 버전은 3 그대로).
-  // 있으면 저장된 물리 순서 리프로 재구성하고 publishedRootV2로 무결성을 대조한다.
-  // 없으면(옛 v3 파일) 현재 v1 게시 집합으로부터 무손실 초기화한다 — 로그·epoch는 빈
-  // 값(0). 이렇게 하면 v2가 처음부터 v1과 같은 폐기 집합을 담아, 명확한 거부 없이
-  // 무손실로 마이그레이션된다(브리프 판단 지점: 'v3 파일을 읽으면 빈 값으로 초기화').
+  // === v2(정석 IMT) 게시 상태 복원 — 유일한 진실 ===
+  // v2Leaves가 있으면(v4, 또는 v3 Stage A) 저장된 물리 순서 리프로 재구성하고
+  // publishedRootV2로 무결성을 대조한다. 없으면(v1/v2/pre-Stage-A v3) legacy revokedLeaves
+  // 값으로 v2를 초기화한다 — 로그·epoch는 빈 값(0). 어느 경우든 게시된 폐기 집합은 그대로
+  // 보존된다(무손실 마이그레이션). 물리 순서로 저장/복원해야 재구성 root가 같다(3.1절).
   if (Array.isArray(parsed.v2Leaves) && parsed.v2Leaves.length > 0) {
     const v2Vals = parsed.v2Leaves
       .slice(1) // [0]은 anchor (0,0,0) — buildIMTv2가 자동으로 만든다
@@ -760,26 +752,34 @@ async function loadIdPState() {
     seqV2 = Number.isInteger(parsed.seqV2) ? parsed.seqV2 : 0;
     mutationLogV2 = Array.isArray(parsed.mutationLogV2) ? parsed.mutationLogV2 : [];
     rebuildV2ValueToIndex();
-  } else {
-    revocationTreeV2 = await buildIMTv2(REVOCATION_TREE_DEPTH, leaves.map((x) => BigInt(x)));
+  } else if (legacyLeaves !== null) {
+    // v4 이전 파일에 v2 필드가 없다 — v1 게시 집합으로부터 무손실 초기화한다.
+    try {
+      revocationTreeV2 = await buildIMTv2(REVOCATION_TREE_DEPTH, legacyLeaves.map((x) => BigInt(x)));
+    } catch (err) {
+      throw stateFileError(`revokedLeaves contains a value insert() rejects: ${err.message}`);
+    }
     epochV2 = 0;
     seqV2 = 0;
     mutationLogV2 = [];
     rebuildV2ValueToIndex();
+  } else {
+    // v4 파일인데 v2Leaves가 없다 — 게시 상태의 유일한 출처가 없으므로 명확히 거부한다.
+    throw stateFileError('a version 4 state file must contain a non-empty v2Leaves array');
   }
 
+  const publishedRootV2Now = revocationTreeV2.getRoot().toString();
   console.log(
-    `[CustomIdP] Loaded state from ${IDP_STATE_FILE}: ${revokedLeaves.length} published leaves ` +
-    `(root ${rebuiltRoot}), ${pendingAdds.size} pending, ${issuanceLog.size} issuance records, ` +
-    `${usedNonces.size} nonces seeded for replay protection`,
+    `[CustomIdP] Loaded state from ${IDP_STATE_FILE}: ${publishedLeaves().length} published leaves ` +
+    `(v2 root ${publishedRootV2Now}, epoch ${epochV2}, seq ${seqV2}), ${pendingAdds.size} pending, ` +
+    `${issuanceLog.size} issuance records, ${usedNonces.size} nonces seeded for replay protection`,
   );
 
-  // v1/v2 파일을 읽었다면 지금 인메모리 상태는 이미 최신(v3) 모양이다(직렬화가 항상
-  // IDP_STATE_FILE_VERSION을 쓰므로). 다음 상태 변경 때 자연히 v3로 다시 쓰이긴
-  // 하지만, 그 전에 재시작이 한 번 더 일어나면 같은 마이그레이션을 반복하게 된다 —
-  // 해가 되지는 않지만(멱등), 지금 바로 커밋해두면 파일이 곧장 최신 모양이 되고
-  // 마이그레이션이 실제로 성사됐음을 디스크에서 확인할 수 있다.
-  if (isLegacyAuidILog || !hasDisabledField) {
+  // 옛 버전 파일을 읽었다면 지금 인메모리 상태는 이미 최신(v4) 모양이다(직렬화가 항상
+  // IDP_STATE_FILE_VERSION을 쓰므로). 지금 바로 커밋해두면 파일이 곧장 v4 모양이 되고
+  // 마이그레이션이 실제로 성사됐음을 디스크에서 확인할 수 있다. v4 파일을 그대로 읽었을
+  // 때는 다시 쓸 이유가 없다.
+  if (fileVersion !== IDP_STATE_FILE_VERSION) {
     const changes = [];
     if (isLegacyAuidILog) {
       changes.push(
@@ -791,6 +791,10 @@ async function loadIdPState() {
     if (!hasDisabledField) {
       changes.push('accounts gained a disabled flag, defaulted to false for every restored account');
     }
+    changes.push(
+      'removed the v1 revocation tree (publishedRoot/revokedLeaves); the v2 indexed Merkle tree ' +
+      'is now the sole published-revocation source (the published set was carried over losslessly)',
+    );
     console.warn(
       `[CustomIdP] Migrated state file from version ${fileVersion} to ${IDP_STATE_FILE_VERSION}: ` +
       `${changes.join('; ')}.`,
@@ -1589,7 +1593,7 @@ app.post('/idp/revoke', requireIdPAdmin, async (req, res) => {
 
     // 게시 트리는 여기서 건드리지 않는다. 대기열에만 넣고, 실제 반영은
     // /idp/publish/prepare + /idp/publish/commit이 한다.
-    const alreadyPublished = revokedLeaves.includes(leafKey);
+    const alreadyPublished = v2Has(leafKey);
     const alreadyPending = pendingAdds.has(leafKey);
     const addedToPending = !alreadyPublished && !alreadyPending;
     if (addedToPending) pendingAdds.add(leafKey);
@@ -1667,61 +1671,81 @@ app.post('/idp/publish/prepare', requireIdPAdmin, async (req, res) => {
     return res.status(502).json({ error: `failed to read current block height: ${err.message}` });
   }
 
-  // 다음 게시 집합 = (게시된 리프 ∪ 대기 리프) − (만료된 것)
-  const candidate = [];
-  for (const leafKey of [...revokedLeaves, ...pendingAdds]) {
-    if (candidate.includes(leafKey)) continue;
-    const expiryBlock = leafExpiry.get(leafKey);
-    // 만료 정보가 없는 리프는 조용히 버리지 않고 남긴다. 버리면 폐기가 소리 없이
-    // 풀리는 fail-open이 된다.
-    if (expiryBlock !== undefined && expiryBlock <= currentBlock) continue;
-    candidate.push(leafKey);
-  }
+  // 새로 게시될 리프 = 대기 중이고 아직 v2에 없는 것. 결정적 순서(Set 삽입 순서)로
+  // 고정한다 — commit이 이 순서 그대로 append하고, 지금 예측하는 root와 정확히 일치해야
+  // 한다(설계 문서 3.1절: v2 root는 삽입 순서에 의존한다).
+  const addedValues = [...pendingAdds].filter((k) => !v2Has(k));
+  const publishedNow = publishedLeaves();
+  const currentV2Values = publishedNow.map((v) => BigInt(v));
 
-  // 임시 트리로만 계산한다. 게시 트리는 commit 전까지 절대 건드리지 않는다.
+  // append-only인 v2는 만료 리프를 즉시 뺄 수 없다(설계 문서 3.2절) — 재기준화 때만
+  // 회수된다. 만료된 게시 리프 수는 운영 가시성용으로만 센다.
+  const expiredCount = publishedNow.filter((k) => {
+    const e = leafExpiry.get(k);
+    return e !== undefined && e <= currentBlock;
+  }).length;
+
+  // 슬롯 사용률을 보고 재기준화가 필요한지 판단한다(설계 문서 3.3절). 후보 리프를
+  // 넣으면 v2가 얼마나 찰지까지 반영해 미리 본다(append-only라 '추가분'만큼 는다).
+  const v2Usage = revocationTreeV2.usage();
+  const v2ProjectedUsed = v2Usage.used + addedValues.length;
+  const v2ProjectedRatio = v2ProjectedUsed / v2Usage.capacity;
+  const forceRebaselineV2 = v2ProjectedRatio >= V2_REBASELINE_FORCE_RATIO;
+
+  // 재기준화면 살아있는 집합(만료 제외)만으로 정렬 재구성하고, 아니면 현재 트리에 append.
+  // commit이 이걸 그대로 재현해야 하므로 여기서 계산한 root가 곧 온체인에 게시될 root다.
+  const liveValues = forceRebaselineV2
+    ? [...currentV2Values, ...addedValues.map((v) => BigInt(v))].filter((v) => {
+        const e = leafExpiry.get(v.toString());
+        return e === undefined || e > currentBlock;
+      })
+    : null;
+
   let expectedRoot;
+  let expectedLeafCount;
   try {
-    const preview = await createIMT(REVOCATION_TREE_DEPTH);
-    for (const leafKey of candidate) await preview.insert(BigInt(leafKey));
-    expectedRoot = preview.getRoot().toString();
+    let sim;
+    if (forceRebaselineV2) {
+      // rebaselineV2가 하는 것과 동일: 살아있는 값을 정렬·중복제거해 새로 쌓는다.
+      sim = await (await createIMTv2(REVOCATION_TREE_DEPTH)).rebaseline(liveValues);
+    } else {
+      // 현재 물리 리프를 물리 순서로 재삽입하면 같은 트리가 나오고(지갑 전체 재구성이
+      // 의존하는 성질), 그 위에 addedValues를 순서대로 append한다 = commit의 결과.
+      sim = await buildIMTv2(REVOCATION_TREE_DEPTH, [...currentV2Values, ...addedValues.map((v) => BigInt(v))]);
+    }
+    expectedRoot = sim.getRoot().toString();
+    expectedLeafCount = sim.size() - 1; // anchor 제외
   } catch (err) {
     return res.status(500).json({ error: `failed to compute prepared root: ${err.message}` });
   }
 
-  const candidateSet = new Set(candidate);
-  const publishedSet = new Set(revokedLeaves);
-  const added = candidate.filter((k) => !publishedSet.has(k)).length;
-  const removed = revokedLeaves.filter((k) => !candidateSet.has(k)).length;
-
-  // v2 슬롯 사용률을 보고 재기준화가 필요한지 판단한다(설계 문서 3.3절). 후보 리프를
-  // 넣으면 v2가 얼마나 찰지까지 반영해 미리 본다(append-only라 후보의 '추가분'만큼 는다).
-  const v2AddedCandidate = candidate.filter((k) => !v2Has(k)).length;
-  const v2Usage = revocationTreeV2.usage();
-  const v2ProjectedUsed = v2Usage.used + v2AddedCandidate;
-  const v2ProjectedRatio = v2ProjectedUsed / v2Usage.capacity;
-  const forceRebaselineV2 = v2ProjectedRatio >= V2_REBASELINE_FORCE_RATIO;
-
   // 여러 번 호출하면 마지막 것이 유효하다. prepare와 commit 사이에 들어온 폐기는
   // 이번 회차에 포함되지 않고 다음 회차로 넘어간다 — 의도된 동작이다.
-  preparedPublish = { root: expectedRoot, leaves: candidate, blockHeight: currentBlock, forceRebaselineV2 };
+  preparedPublish = {
+    root: expectedRoot,
+    addedValues,
+    forceRebaselineV2,
+    liveValues: liveValues ? liveValues.map(String) : null,
+    blockHeight: currentBlock,
+  };
 
-  const currentRoot = revocationTree.getRoot().toString();
+  const currentRoot = revocationTreeV2.getRoot().toString();
   console.log(
-    `[IdP] publish/prepare at block ${currentBlock}: +${added} -${removed}, ` +
-      `leaves ${revokedLeaves.length} -> ${candidate.length}, expectedRoot ${expectedRoot}`,
+    `[IdP] publish/prepare at block ${currentBlock}: +${addedValues.length} (expired pending ${expiredCount}), ` +
+      `leaves ${publishedNow.length} -> ${expectedLeafCount}, rebaseline=${forceRebaselineV2}, expectedRoot ${expectedRoot}`,
   );
-  // 추가·제거가 0건이어도 200이다 — 그 경우가 heartbeat다. grace window가 없어진
-  // 뒤로 heartbeat는 만료를 막는 역할이 아니라, 대기 중인 폐기가 있으면 그걸 게시하는
-  // 역할만 한다(추가·제거가 0건이면 같은 root를 다시 게시하는 무의미한 no-op이다).
+  // 추가가 0건이어도 200이다 — 그 경우가 heartbeat다(같은 root를 다시 게시하는 no-op).
   res.json({
     expectedRoot,
     currentRoot,
-    added,
-    removed,
-    leafCount: candidate.length,
+    added: addedValues.length,
+    // 만료 리프는 재기준화 때만 실제로 빠진다. 재기준화 회차면 그만큼 줄고, 아니면 0.
+    removed: forceRebaselineV2 ? expiredCount : 0,
+    expiredPending: expiredCount,
+    leafCount: expectedLeafCount,
     pendingCount: pendingAdds.size,
     blockHeight: currentBlock.toString(),
-    // v2(정석 IMT) 슬롯 상태 — Stage A: 관측/운영 가시성만. 회로에는 아직 무관하다.
+    // v2(정석 IMT) 슬롯 상태.
     v2: {
       epoch: epochV2,
       used: v2Usage.used,
@@ -1754,48 +1778,19 @@ app.post('/idp/publish/commit', requireIdPAdmin, async (req, res) => {
 
   const prepared = preparedPublish;
 
-  // 게시 트리를 준비된 리프 집합으로 통째로 교체한다.
-  let nextTree;
+  // === v2(정석 IMT)를 준비된 대로 전진 = prepare가 예측한 그 root ===
+  // append-only이므로 일반 게시는 addedValues를 순서대로 삽입하고(seq만 전진), 재기준화
+  // 회차면 살아있는 집합으로 새로 쌓아 만료 슬롯을 회수한다(epoch↑, 설계 문서 3.2/3.3절).
+  // prepare와 commit 사이에 v2를 바꾸는 경로는 없으므로(admin 직렬), 적용 결과 root는
+  // prepared.root와 일치한다 — 그 root가 이미 온체인에 push된 값이다.
   let actualRoot;
   try {
-    nextTree = await createIMT(REVOCATION_TREE_DEPTH);
-    for (const leafKey of prepared.leaves) await nextTree.insert(BigInt(leafKey));
-    actualRoot = nextTree.getRoot().toString();
-  } catch (err) {
-    return res.status(500).json({ error: `failed to rebuild the published tree: ${err.message}` });
-  }
-
-  // 세 상태(revocationTree, revokedLeaves, leafExpiry)가 어긋나면 지갑이
-  // revokedLeaves로 재구성한 root가 IdP root와 달라져 모든 지갑이 실패한다.
-  // 조용히 넘어가지 않고 명확히 거부하고, 게시 상태는 그대로 둔다.
-  if (actualRoot !== prepared.root) {
-    console.error(
-      `[IdP] publish/commit aborted: rebuilt root ${actualRoot} != prepared root ${prepared.root}`,
-    );
-    return res.status(500).json({
-      error: 'rebuilt tree root does not match the prepared root; published state left unchanged',
-      preparedRoot: prepared.root,
-      rebuiltRoot: actualRoot,
-    });
-  }
-
-  revocationTree = nextTree;
-  revokedLeaves = [...prepared.leaves];
-
-  // === v2(정석 IMT) 반영 — Stage A: 회로 미배선 ===
-  // v1은 매 commit마다 살아있는 집합으로 통째로 재구성해 만료 리프까지 즉시 뺀다.
-  // v2는 append-only라(설계 문서 3.2절) 새로 추가된 리프만 삽입하고, 만료로 빠진
-  // 리프는 재기준화 전까지 남는다 — 그 회수는 rebaselineV2가 대신한다. epoch는
-  // 재기준화가 일어날 때만 오르고, 일반 게시는 seq만 전진한다(브리프 작업 2/3).
-  // v2는 아직 어떤 회로도 소비하지 않으므로, 여기서 실패해도 v1 게시(=실제 서비스)를
-  // 막지 않는다. 로그만 남기고 넘어간다.
-  try {
     if (prepared.forceRebaselineV2) {
-      await rebaselineV2(prepared.leaves);
-      console.log(`[IdP] publish/commit: v2 rebaselined, epoch -> ${epochV2}, ${prepared.leaves.length} live leaves`);
+      await rebaselineV2(prepared.liveValues.map((v) => BigInt(v)));
+      console.log(`[IdP] publish/commit: v2 rebaselined, epoch -> ${epochV2}, ${prepared.liveValues.length} live leaves`);
     } else {
       let addedV2 = 0;
-      for (const leafKey of prepared.leaves) {
+      for (const leafKey of prepared.addedValues) {
         if (!v2Has(leafKey)) {
           await v2InsertWithLog(leafKey);
           addedV2 += 1;
@@ -1805,11 +1800,27 @@ app.post('/idp/publish/commit', requireIdPAdmin, async (req, res) => {
         console.log(`[IdP] publish/commit: v2 +${addedV2} leaf(s), seq -> ${seqV2}, epoch ${epochV2}`);
       }
     }
+    actualRoot = revocationTreeV2.getRoot().toString();
   } catch (err) {
-    console.error(`[IdP] v2 mirror update failed at commit (v1 unaffected): ${err.message}`);
+    return res.status(500).json({ error: `failed to advance the v2 tree: ${err.message}` });
   }
 
-  const committed = new Set(prepared.leaves);
+  // 적용 결과 root가 prepare가 예측하고 운영자가 온체인에 push한 root와 다르면, 지갑이
+  // 이 트리로 만든 witness의 root가 latestRoot와 어긋나 전원이 막힌다. 여기까지 왔다면
+  // v2는 이미 전진했으므로(append-only, 되돌릴 수 없음) 조용히 넘어가지 않고 명확히 5xx로
+  // 드러낸다 — 정상 구성에서는 prepare 시뮬레이션과 동일한 연산이라 도달하지 않는다.
+  if (actualRoot !== prepared.root) {
+    console.error(
+      `[IdP] publish/commit: applied root ${actualRoot} != prepared root ${prepared.root}`,
+    );
+    return res.status(500).json({
+      error: 'the applied v2 root does not match the prepared root; on-chain root and IdP state may now disagree',
+      preparedRoot: prepared.root,
+      appliedRoot: actualRoot,
+    });
+  }
+
+  const committed = new Set(publishedLeaves());
   // 대기열 정리: 이번에 반영된 것과, prepare 시점에 이미 만료라 버려진 것을 뺀다.
   // prepare 이후에 새로 들어온 폐기는 남겨서 다음 회차로 넘긴다.
   for (const leafKey of [...pendingAdds]) {
@@ -1868,15 +1879,16 @@ app.post('/idp/publish/commit', requireIdPAdmin, async (req, res) => {
 
   preparedPublish = null;
 
-  // 게시된 트리·리프·만료·대기열이 한꺼번에 바뀌었다. 여기서 저장하지 않으면 재시작
+  // 게시된 트리·만료·대기열이 한꺼번에 바뀌었다. 여기서 저장하지 않으면 재시작
   // 후 IdP가 옛 root를 서빙해 온체인에 게시된 root와 어긋난다.
   saveIdPState();
 
+  const publishedCount = publishedLeaves().length;
   console.log(
-    `[IdP] publish/commit: published ${revokedLeaves.length} leaves, root ${actualRoot}, ` +
+    `[IdP] publish/commit: published ${publishedCount} leaves, root ${actualRoot}, ` +
       `pending ${pendingAdds.size}`,
   );
-  res.json({ root: actualRoot, leafCount: revokedLeaves.length, pendingCount: pendingAdds.size });
+  res.json({ root: actualRoot, leafCount: publishedCount, pendingCount: pendingAdds.size });
 });
 
 // --- 계정 층(사람 차단) 관리자 엔드포인트 ---
@@ -1963,7 +1975,7 @@ app.post('/idp/account/unpin_auid', requireIdPAdmin, async (req, res) => {
   if (previousAuid !== null) {
     try {
       const leaf = (await leafValue(TAG_ACCOUNT, String(previousAuid))).toString();
-      const published = revokedLeaves.includes(leaf);
+      const published = v2Has(leaf);
       const pending = pendingAdds.has(leaf);
       if (published || pending) {
         staleRevocationLeaf = { leaf, published, pending };
@@ -1990,19 +2002,11 @@ app.post('/idp/account/unpin_auid', requireIdPAdmin, async (req, res) => {
   });
 });
 
-// 지갑이 자기 witness를 계산하려면 폐기 목록 전체가 필요하다.
-// 리프는 Poseidon 해시라 preimage가 드러나지 않으므로 공개해도 안전하다.
-//
-// **마지막으로 게시된 상태만** 서빙한다. 대기 중인 폐기(pendingAdds)는 여기 넣지
-// 않는다 — 넣으면 지갑이 온체인에 없는 root로 witness를 만들어 전원이 막힌다.
-// 응답 형태 { root, revokedLeaves }는 wallet_agent.js와의 계약이라 바뀌지 않는다.
-// 대기 현황은 관리자 전용 prepare/commit 응답과 로그로만 노출한다.
-app.get('/idp/revocation_state', (req, res) => {
-  res.json({ root: revocationTree.getRoot().toString(), revokedLeaves });
-});
-
-// === v2(정석 IMT) 증분 조회 — Stage A: 새 대역, 아직 아무 지갑도 부르지 않는다 ===
-// /idp/revocation_state(v1)와 헷갈리지 않게 별도 경로로 둔다. 응답은
+// === v2(정석 IMT) 조회 — 지갑이 witness를 만드는 유일한 폐기 조회 경로다 ===
+// 지갑이 자기 witness를 계산하려면 폐기 목록이 필요하다. 리프는 Poseidon 해시라
+// preimage가 드러나지 않으므로 공개해도 안전하다. **마지막으로 게시된 상태만** 서빙한다
+// (대기 중인 pendingAdds는 넣지 않는다 — 넣으면 지갑이 온체인에 없는 root로 witness를
+// 만들어 전원이 막힌다). 응답은
 //   { epoch, seq, root, ... }
 // 이고, since 유무에 따라 전체(leaves) 또는 증분(mutations)을 싣는다(설계 문서 3.4절).
 //
@@ -2058,41 +2062,28 @@ app.get('/idp/revocation_state_v2', (req, res) => {
 
 // === v2 재기준화 수동 트리거 — 관리자 전용(설계 문서 3.3절) ===
 // 게시 경로(prepare/commit)의 자동 재기준화(사용률 임계치)와 별개로, 운영자가 활동이
-// 적은 시간대에 앞당겨 돌릴 수 있게 한다. 살아있는 값 = 현재 게시된 v1 리프 집합.
-// v2를 이 집합만으로 새로 쌓아 만료 슬롯을 회수하고 epoch를 올린다. 브리프 작업 3대로
-// v1도 같은 살아있는 집합으로 재구성한다 — 단, 이 경로가 온체인에 게시된 root를 몰래
-// 바꾸면 안 되므로(Stage A 안전: 3000/5001은 재시작 이유가 없어야 한다), 재구성 root가
-// 현재 게시 root와 다르면(=만료 리프가 남아있다) 거부하고 먼저 publish를 돌리라고 한다.
+// 적은 시간대에 앞당겨 돌릴 수 있게 한다. 살아있는 값 = 현재 게시된 리프 중 만료되지
+// 않은 것. v2를 이 집합만으로(정렬) 새로 쌓아 만료 슬롯을 회수하고 epoch를 올린다.
+//
+// **중요(Stage B):** 재기준화는 물리 배치를 정렬 순서로 바꾸고 만료 리프를 빼므로 게시된
+// v2 root가 바뀐다. 온체인 latestRoot는 자동으로 따라오지 않으므로, 재기준화 직후 운영자가
+// push_revocation_root.cjs(또는 sweep 사이클)로 새 root를 온체인에 게시해야 한다. 그전까지
+// 지갑이 새 트리로 만드는 witness는 StaleRevocationRoot로 막힌다 — 활동이 적은 시간대에
+// 돌리고 곧바로 push하라는 것이 이 수동 트리거의 용도다.
 app.post('/idp/rebaseline_v2', requireIdPAdmin, async (req, res) => {
   const previousEpoch = epochV2;
   const previousRootV2 = revocationTreeV2.getRoot().toString();
 
-  let v1Rebuilt;
-  let v1RebuiltRoot;
+  let currentBlock;
   try {
-    v1Rebuilt = await createIMT(REVOCATION_TREE_DEPTH);
-    for (const leafKey of revokedLeaves) await v1Rebuilt.insert(BigInt(leafKey));
-    v1RebuiltRoot = v1Rebuilt.getRoot().toString();
+    currentBlock = await getCurrentBlockHeight();
   } catch (err) {
-    return res.status(500).json({ error: `failed to rebuild the v1 tree: ${err.message}` });
+    return res.status(502).json({ error: `failed to read current block height: ${err.message}` });
   }
 
-  const publishedRoot = revocationTree.getRoot().toString();
-  if (v1RebuiltRoot !== publishedRoot) {
-    return res.status(409).json({
-      error:
-        'the v1 live-set rebuild differs from the currently published root (expired leaves are ' +
-        'still present); run POST /idp/publish/prepare + commit first so the on-chain root is not ' +
-        'changed out of band by a rebaseline',
-      publishedRoot,
-      v1RebuiltRoot,
-    });
-  }
-
-  // 동일 root라 관측 가능한 v1 변화가 없다(Stage A 안전). v2만 재기준화한다.
-  revocationTree = v1Rebuilt;
+  const liveValues = liveLeafValues(currentBlock);
   try {
-    await rebaselineV2(revokedLeaves);
+    await rebaselineV2(liveValues.map((v) => BigInt(v)));
   } catch (err) {
     return res.status(500).json({ error: `v2 rebaseline failed: ${err.message}` });
   }
@@ -2103,18 +2094,22 @@ app.post('/idp/rebaseline_v2', requireIdPAdmin, async (req, res) => {
   }
 
   const usage = revocationTreeV2.usage();
+  const newRootV2 = revocationTreeV2.getRoot().toString();
   console.log(
-    `[IdP] rebaseline_v2: epoch ${previousEpoch} -> ${epochV2}, ${revokedLeaves.length} live leaves, ` +
-      `v2 usage ${usage.used}/${usage.capacity}`,
+    `[IdP] rebaseline_v2: epoch ${previousEpoch} -> ${epochV2}, ${liveValues.length} live leaves, ` +
+      `v2 usage ${usage.used}/${usage.capacity}; root ${previousRootV2} -> ${newRootV2} ` +
+      '(push the new root on-chain before wallets prove against it)',
   );
   res.json({
     epoch: epochV2,
     previousEpoch,
-    rootV2: revocationTreeV2.getRoot().toString(),
+    rootV2: newRootV2,
     previousRootV2,
-    v1Root: publishedRoot,
-    leafCount: revokedLeaves.length,
+    leafCount: liveValues.length,
     usage,
+    note:
+      'the published v2 root changed; run scripts/push_revocation_root.cjs (or a sweep cycle) to ' +
+      'publish it on-chain before wallets prove against the rebaselined tree',
   });
 });
 

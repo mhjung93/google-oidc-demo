@@ -13,9 +13,9 @@
 //   - 환경변수 IDP_ADMIN_SECRET: /idp/revoke 관리자 인증용. 실행 중인 IdP가 떠 있는
 //     값과 같아야 한다. 예:
 //       IDP_ADMIN_SECRET=... node tests/test_mode2_e2e_onchain.js
-//   - 환경변수 REVOCATION_REGISTRY_ADDRESS / PPID_WALLET_FACTORY_ADDRESS 는 생략 시
-//     아래 기본값(현재 배포 주소)을 쓴다. RevocationRegistry의 운영자 주소는
-//     하드코딩하지 않고 배포된 컨트랙트의 idp() getter에서 읽는다.
+//   - 환경변수 REVOCATION_REGISTRY_ADDRESS: **필수**다(하드코딩 기본값 없음 — 재배포마다
+//     낡아 함정이 되므로). 실행 중인 wallet_agent.js가 쓰는 레지스트리 주소를 넘긴다.
+//     RevocationRegistry의 운영자 주소는 배포된 컨트랙트의 idp() getter에서 읽는다.
 //
 // == 이 테스트는 환경을 변경한다 ==
 //   - IdP 폐기 트리에 이 실행에서 발급받은 세션의 r_token 리프를 1개 추가한다(되돌릴 수 없음).
@@ -52,8 +52,18 @@ const SERVER = 'http://127.0.0.1:3000';
 const WALLET = 'http://127.0.0.1:5001';
 const RPC = 'http://127.0.0.1:8545';
 
-const REGISTRY_ADDRESS =
-  process.env.REVOCATION_REGISTRY_ADDRESS || '0x7a2088a1bFc9d81c55368AE168C2C02570cB814F';
+// REVOCATION_REGISTRY_ADDRESS는 필수다. 예전에는 하드코딩 기본값으로 폴백했는데, 그
+// 기본값은 재배포(Stage B는 레지스트리를 재배포한다)마다 낡아 실행 중인 wallet_agent.js가
+// 실제로 쓰는 배포와 어긋났고, 옛 배포의 isCurrentRoot가 엉뚱하게 revert해 전제조건
+// 단계에서 실패하는 함정이 됐다. 낡은 하드코딩을 반복하지 않도록 미설정 시 명확히 실패한다.
+const REGISTRY_ADDRESS = process.env.REVOCATION_REGISTRY_ADDRESS;
+if (!REGISTRY_ADDRESS) {
+  throw new Error(
+    'REVOCATION_REGISTRY_ADDRESS is required (no hardcoded default). Pass the registry address the ' +
+    'running wallet_agent.js uses:\n' +
+    '  REVOCATION_REGISTRY_ADDRESS=0x... IDP_ADMIN_SECRET=... node tests/test_mode2_e2e_onchain.js',
+  );
+}
 
 // hardhat 기본 니모닉의 0번 계정. 로컬 데모 체인에서 가스비를 낼 자금이 있는 계정으로,
 // 브라우저의 MetaMask가 하던 역할(배포/execute 트랜잭션 전송)을 대신한다.
@@ -242,8 +252,9 @@ function rootToBytes32(root) {
 }
 
 async function fetchIdpRoot() {
-  const res = await fetch(`${IDP}/idp/revocation_state`);
-  if (!res.ok) throw new Error(`/idp/revocation_state failed: ${res.status}`);
+  // 정석 IMT(v2)가 게시 상태의 유일한 진실이다(Stage B). 전체 조회의 최상위 root가 그것.
+  const res = await fetch(`${IDP}/idp/revocation_state_v2`);
+  if (!res.ok) throw new Error(`/idp/revocation_state_v2 failed: ${res.status}`);
   return String((await res.json()).root);
 }
 

@@ -30,9 +30,9 @@ const adminHeaders = { 'X-IdP-Admin-Secret': ADMIN_SECRET };
 const ACCOUNT_VALUE = `424242${Date.now()}`;
 
 async function main() {
-  const before = await (await fetch(`${BASE}/idp/revocation_state`)).json();
-  assert.ok(typeof before.root === 'string', 'revocation_state must expose a root');
-  assert.ok(Array.isArray(before.revokedLeaves), 'revocation_state must expose revokedLeaves');
+  const before = await (await fetch(`${BASE}/idp/revocation_state_v2`)).json();
+  assert.ok(typeof before.root === 'string', 'revocation_state_v2 must expose a root');
+  assert.ok(Array.isArray(before.leaves), 'revocation_state_v2 must expose a physical-order leaves array');
 
   // 계정 폐기는 발급 기록이 없어도 항상 통과해야 한다(Stage A 입구 검사는
   // type === 'session'에만 적용된다) — 계정 층 폐기는 "이미 발급된 크레덴셜의
@@ -53,11 +53,11 @@ async function main() {
   // 배칭의 핵심 성질: 게시 전까지 지갑이 보는 상태는 조금도 변하지 않는다.
   // 여기서 상태가 바뀌면 지갑이 온체인에 없는 root로 witness를 만들어 정상 사용자
   // 전원의 execute()가 StaleRevocationRoot로 막힌다 — 이 배칭이 없애려는 장애다.
-  const after = await (await fetch(`${BASE}/idp/revocation_state`)).json();
+  const after = await (await fetch(`${BASE}/idp/revocation_state_v2`)).json();
   assert.equal(after.root, before.root, 'a queued revocation must not change the published root');
   assert.equal(
-    after.revokedLeaves.length,
-    before.revokedLeaves.length,
+    after.leaves.length,
+    before.leaves.length,
     'a queued revocation must not change the published leaf list',
   );
 
@@ -80,7 +80,7 @@ async function main() {
   // 없으면 임의의 숫자를 세션으로 폐기 신청해 트리를 무한정 부풀릴 수 있다.
   // 실제로 issuanceLog에 기록되는 r_token은 로그인 전체를 거쳐야 발급되므로,
   // 이 값은 IdP가 절대 발급하지 않았을 합성값이다.
-  const stateBeforeUnissuedSession = await (await fetch(`${BASE}/idp/revocation_state`)).json();
+  const stateBeforeUnissuedSession = await (await fetch(`${BASE}/idp/revocation_state_v2`)).json();
   const unissuedSession = await fetch(`${BASE}/idp/revoke`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...adminHeaders },
@@ -89,7 +89,7 @@ async function main() {
   assert.equal(unissuedSession.status, 404, 'revoking a session with no issuance record must be rejected');
   const unissuedSessionBody = await unissuedSession.json();
   assert.ok(unissuedSessionBody.error, 'error field must be present');
-  const stateAfterUnissuedSession = await (await fetch(`${BASE}/idp/revocation_state`)).json();
+  const stateAfterUnissuedSession = await (await fetch(`${BASE}/idp/revocation_state_v2`)).json();
   assert.equal(
     stateAfterUnissuedSession.root,
     stateBeforeUnissuedSession.root,
@@ -156,7 +156,7 @@ async function main() {
   assert.equal(aboveCapBody.alreadyPending, false, 'a fresh value must not be reported as already queued');
 
   // --- 관리자 인증 (I3) ---
-  const stateBeforeAuthChecks = await (await fetch(`${BASE}/idp/revocation_state`)).json();
+  const stateBeforeAuthChecks = await (await fetch(`${BASE}/idp/revocation_state_v2`)).json();
 
   // 시크릿 헤더 없이 호출하면 401이어야 한다.
   const noAuth = await fetch(`${BASE}/idp/revoke`, {
@@ -184,7 +184,7 @@ async function main() {
   assert.equal(browserOrigin.status, 403, 'browser-originated revoke must be rejected with 403');
 
   // 위 세 번의 거부가 트리를 건드리지 않았는지 확인한다.
-  const stateAfterAuthChecks = await (await fetch(`${BASE}/idp/revocation_state`)).json();
+  const stateAfterAuthChecks = await (await fetch(`${BASE}/idp/revocation_state_v2`)).json();
   assert.equal(
     stateAfterAuthChecks.root,
     stateBeforeAuthChecks.root,

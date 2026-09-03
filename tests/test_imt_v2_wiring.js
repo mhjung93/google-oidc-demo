@@ -1,17 +1,18 @@
 // 정석 IMT(v2) 배선 단위 테스트 — 살아있는 IdP(:4000)의 v2 대역을 검증한다.
-// Stage A: v2는 회로에 배선되지 않았으므로 이 테스트는 IdP의 v2 엔드포인트와
-// 지갑의 증분 적용 규칙만 본다(회로/온체인은 건드리지 않는다).
+// Stage B: v2가 회로에 배선되고 v1이 제거됐다. 이 테스트는 IdP의 v2 조회 엔드포인트와
+// 지갑의 증분 적용 규칙만 본다(회로/온체인은 다른 테스트가 덮는다).
 //
 //   IDP_ADMIN_SECRET=<value> node tests/test_imt_v2_wiring.js
 //   (secret은 실행 중인 custom_idp.js와 같은 값이어야 한다)
 //
-// 검증 항목(브리프 작업 6):
-//  1) v1·v2가 같은 폐기 판정을 내리는가(같은 살아있는 집합에 대해)
+// 검증 항목:
+//  1) v2 자체 정합성 — 전체 조회 재구성이 IdP root와 일치하고 멤버십 판정이 올바른가
+//     (v1이 제거돼 "v1과 같은 판정"은 성립하지 않으므로 v2 단독 정합성으로 재정의)
 //  2) 증분 조회가 서로 다른 since로 물어도 올바르게 따라잡는가(여러 클라이언트)
 //  3) epoch 불일치 / 로그 절단에서 tooOld로 전체 재조회를 안내하는가
-//  4) 재기준화가 epoch를 올리고 로그를 비우며 v1 게시 root는 건드리지 않는가
+//  4) 재기준화가 epoch를 올리고 로그를 비우며 살아있는 멤버 집합을 보존하는가
 import assert from 'node:assert/strict';
-import { createIMT, leafValue, TAG_ACCOUNT } from '../lib/imt.js';
+import { leafValue, TAG_ACCOUNT } from '../lib/imt.js';
 import { buildIMTv2 } from '../lib/imt_v2.js';
 
 const BASE = process.env.CUSTOM_IDP_BASE_URL || 'http://127.0.0.1:4000';
@@ -54,39 +55,31 @@ async function publish() {
 }
 
 async function main() {
-  // === 1) v1·v2 같은 폐기 판정 ==========================================
-  // 새 계정을 폐기·게시한 뒤, v1 트리와 v2 트리를 각각 재구성해 같은 값들을 멤버로
-  // 보는지 대조한다. v2는 물리 순서 리프 배열로, v1은 값 배열로 재구성한다.
+  // === 1) v2 자체 정합성 — 게시된 폐기 집합의 멤버십 판정 ==================
+  // 새 계정을 폐기·게시한 뒤, 지갑이 하듯 v2 전체 조회의 물리 순서 리프로 트리를
+  // 재구성해 root가 IdP와 일치하고 멤버십 판정이 올바른지 본다.
   const victim = `55501${Date.now()}`;
   const victimLeaf = (await leafValue(TAG_ACCOUNT, victim)).toString();
   await revokeAccount(victim);
   await publish();
 
-  const v1 = await getJSON(`${BASE}/idp/revocation_state`);
   const v2full = await getJSON(`${BASE}/idp/revocation_state_v2`);
-
-  const v1tree = await createIMT(DEPTH);
-  for (const l of v1.revokedLeaves) await v1tree.insert(BigInt(l));
-  assert.equal(v1tree.getRoot().toString(), v1.root, 'local v1 tree must match IdP v1 root');
-
   const v2tree = await buildFromFull(v2full);
   assert.equal(v2tree.getRoot().toString(), v2full.root, 'local v2 tree must match IdP v2 root (full fetch, physical order)');
 
-  // 방금 폐기한 리프는 v1·v2 양쪽에서 멤버여야 한다.
-  assert.ok(v1.revokedLeaves.includes(victimLeaf), 'v1 must contain the freshly revoked leaf');
+  const publishedValues = v2full.leaves.slice(1).map((l) => l.value);
+  // 방금 폐기한 리프는 멤버여야 한다.
+  assert.ok(publishedValues.includes(victimLeaf), 'the freshly revoked leaf must be published in v2');
   assert.equal(v2tree.has(BigInt(victimLeaf)), true, 'v2 must contain the freshly revoked leaf');
-  // v1의 모든 게시 리프는 v2에서도 멤버여야 한다(v1 ⊆ v2: v2는 append-only라 만료분을
-  // 더 들 수 있어도 v1의 살아있는 집합은 반드시 포함한다).
-  for (const l of v1.revokedLeaves) {
-    assert.equal(v2tree.has(BigInt(l)), true, `every published v1 leaf must be a v2 member (${l})`);
+  // 게시된 모든 리프는 멤버여야 한다(비멤버십 witness 거부).
+  for (const l of publishedValues) {
+    assert.equal(v2tree.has(BigInt(l)), true, `every published leaf must be a v2 member (${l})`);
     await assert.rejects(() => v2tree.getNonMembershipWitness(BigInt(l)), /is a member/);
   }
-  // 한 번도 폐기된 적 없는 값은 v1·v2 양쪽에서 비멤버(witness 획득 가능)여야 한다.
+  // 한 번도 폐기된 적 없는 값은 비멤버(witness 획득 가능)여야 한다.
   const fresh = await leafValue(TAG_ACCOUNT, `9990001${Date.now()}`);
-  assert.equal(v1tree.getRoot() !== undefined, true);
-  await v1tree.getNonMembershipWitness(fresh);
   await v2tree.getNonMembershipWitness(fresh);
-  console.log('OK (1): v1 and v2 agree on the live revocation set (same members, same non-members)');
+  console.log('OK (1): v2 self-consistency — full rebuild matches IdP root; members and non-members judged correctly');
 
   // === 2) 여러 클라이언트가 서로 다른 since로 증분 동기화 ================
   // 주의: seq는 "빈 트리부터의 오프셋"이 아니다. seq=0 시점의 트리는 대량 구축된
@@ -152,17 +145,18 @@ async function main() {
     console.log('SKIP (3b): set IDP_MUTATION_LOG_MAX<=64 on the server to exercise the truncation tooOld path');
   }
 
-  // === 4) 재기준화 — epoch↑, 로그 비움, v1 게시 root 불변 =================
-  const beforeV1 = await getJSON(`${BASE}/idp/revocation_state`);
+  // === 4) 재기준화 — epoch↑, 로그 비움, 살아있는 멤버 보존 =================
+  // v1이 제거돼 rebaseline은 이제 게시된 v2 root를 정당하게 바꾼다(물리 순서 정렬 +
+  // 만료 회수). 따라서 "게시 root 불변"은 성립하지 않는다 — 대신 epoch↑, seq 0,
+  // 살아있는 멤버 전원 보존, 재기준화 전 epoch 클라이언트의 tooOld를 본다.
   const beforeV2 = await getJSON(`${BASE}/idp/revocation_state_v2`);
+  const membersBefore = beforeV2.leaves.slice(1).map((l) => l.value);
   const rebase = await fetch(`${BASE}/idp/rebaseline_v2`, { method: 'POST', headers: adminHeaders, body: '{}' });
   assert.equal(rebase.status, 200, `rebaseline must succeed (got ${rebase.status})`);
   const rebaseBody = await rebase.json();
   assert.equal(rebaseBody.epoch, beforeV2.epoch + 1, 'rebaseline must bump epoch by 1');
 
-  const afterV1 = await getJSON(`${BASE}/idp/revocation_state`);
   const afterV2 = await getJSON(`${BASE}/idp/revocation_state_v2`);
-  assert.equal(afterV1.root, beforeV1.root, 'rebaseline must NOT change the published v1 root (Stage A safety)');
   assert.equal(afterV2.epoch, beforeV2.epoch + 1, 'v2 epoch must have advanced');
   assert.equal(afterV2.seq, 0, 'rebaseline must reset seq to 0 (log cleared)');
 
@@ -170,15 +164,15 @@ async function main() {
   const stale = await getJSON(`${BASE}/idp/revocation_state_v2?since=${beforeV2.seq}&epoch=${beforeV2.epoch}`);
   assert.equal(stale.tooOld, true, 'a client on the pre-rebaseline epoch must be told to full-fetch');
 
-  // 재기준화 후 살아있는 집합은 여전히 v1과 일치해야 한다.
+  // 재기준화 후에도 (만료되지 않은) 살아있는 멤버는 전원 보존돼야 한다.
   const v2after = await buildFromFull(afterV2);
   assert.equal(v2after.getRoot().toString(), afterV2.root, 'rebased v2 tree rebuilds to the reported root');
-  for (const l of afterV1.revokedLeaves) {
-    assert.equal(v2after.has(BigInt(l)), true, 'after rebaseline, every published v1 leaf is still a v2 member');
+  for (const l of membersBefore) {
+    assert.equal(v2after.has(BigInt(l)), true, 'after rebaseline, every live published leaf is still a v2 member');
   }
-  console.log('OK (4): rebaseline bumps epoch, clears the log, keeps the published v1 root unchanged');
+  console.log('OK (4): rebaseline bumps epoch, clears the log, preserves the live member set');
 
-  console.log('PASS: IMT v2 wiring — v1/v2 agreement, incremental multi-client sync, tooOld signalling, and rebaseline.');
+  console.log('PASS: IMT v2 wiring — self-consistency, incremental multi-client sync, tooOld signalling, and rebaseline.');
 }
 
 main().catch((err) => { console.error(err); process.exit(1); });

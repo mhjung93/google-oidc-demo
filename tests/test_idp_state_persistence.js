@@ -156,7 +156,7 @@ assert(
 // ---------------------------------------------------------------------------
 const commitHandlerSrc = section(
   "app.post('/idp/publish/commit', requireIdPAdmin, async (req, res) => {",
-  "\n// 지갑이 자기 witness를",
+  "\n// --- 계정 층(사람 차단) 관리자 엔드포인트 ---",
   '/idp/publish/commit handler',
 );
 assert.match(
@@ -183,10 +183,10 @@ assert.doesNotMatch(
 assert.match(evictionBlock, /issuanceLog\.delete\(rToken\)/, 'eviction must remove stale issuanceLog entries');
 assert.match(evictionBlock, /auidILog\.delete\(auidI\)/, 'eviction must remove stale auidILog entries');
 
-// 스키마 버전: auidILog가 { uid, maxHeight } 모양으로 바뀌었으니 버전이 올라가야 하고,
-// 옛 파일(v1)은 조용히 오독되지 않고 명시적으로 처리(이 저장소는 무손실 마이그레이션을
-// 택함 — 근거는 코드 주석과 보고서 참고)돼야 한다.
-assert.match(src, /const IDP_STATE_FILE_VERSION = 3;/, 'state file schema version must be bumped for the disabled-flag addition');
+// 스키마 버전: Stage B에서 v1 폐기 트리(publishedRoot/revokedLeaves)를 제거하는 파괴적
+// 변경으로 버전이 4로 올라갔고, 옛 파일(v1/v2/v3)은 조용히 오독되지 않고 명시적으로
+// 처리(이 저장소는 무손실 마이그레이션을 택함 — 근거는 코드 주석과 보고서 참고)돼야 한다.
+assert.match(src, /const IDP_STATE_FILE_VERSION = 4;/, 'state file schema version must be bumped for the v1-tree removal (Stage B)');
 assert.match(
   loadIdPStateSrc,
   /isLegacyAuidILog/,
@@ -204,11 +204,11 @@ assert.match(
   /hasDisabledField/,
   'loadIdPState must explicitly branch on whether the disabled field is present (v3) or absent (v1/v2)',
 );
-// v2 files (no disabled field) must still pass the version gate, not be rejected outright.
+// v1/v2/v3 files must still pass the version gate (migrated), not be rejected outright.
 assert.match(
   loadIdPStateSrc,
-  /fileVersion !== 1 && fileVersion !== 2 && fileVersion !== IDP_STATE_FILE_VERSION/,
-  'loadIdPState must accept v1, v2, and the current version — only truly unknown versions are rejected',
+  /\[1,\s*2,\s*3,\s*4\]\.includes\(fileVersion\)/,
+  'loadIdPState must accept v1, v2, v3, and v4 — only truly unknown versions are rejected',
 );
 
 // serializeIdPState must persist disabled per account, mirroring how lastAuid is persisted.
@@ -238,7 +238,7 @@ assert.match(
 // 차단한 계정이 복구 흐름으로 되살아난다.
 const unpinHandlerSrc = section(
   "app.post('/idp/account/unpin_auid', requireIdPAdmin, async (req, res) => {",
-  "\n\n// 지갑이 자기 witness를",
+  "\n// === v2(정석 IMT) 조회",
   '/idp/account/unpin_auid handler',
 );
 assert.match(
@@ -273,12 +273,19 @@ assert.match(
 );
 
 // ---------------------------------------------------------------------------
-// 6. loadIdPState의 트리 재구성 insert() 실패가 원시 에러가 아니라 stateFileError로 감싸진다.
+// 6. loadIdPState의 v2 트리 재구성 insert() 실패가 원시 에러가 아니라 stateFileError로
+//    감싸진다. Stage B: v1 트리 재구성이 제거됐으므로, 이제 게시 상태의 유일한 진실인
+//    v2 트리 재구성(v2Leaves 또는 legacy revokedLeaves 씨앗)이 감싸져야 한다.
 // ---------------------------------------------------------------------------
 assert.match(
   loadIdPStateSrc,
-  /try \{\s*\n\s*for \(const leafKey of leaves\) await tree\.insert\(BigInt\(leafKey\)\);\s*\n\s*\} catch \(err\) \{\s*\n\s*throw stateFileError\(/,
-  'the revokedLeaves rebuild must wrap insert() failures in stateFileError',
+  /\} catch \(err\) \{\s*\n\s*throw stateFileError\(`v2Leaves contains a value insert\(\) rejects/,
+  'the v2 tree rebuild from v2Leaves must wrap insert() failures in stateFileError',
+);
+assert.match(
+  loadIdPStateSrc,
+  /buildIMTv2\(REVOCATION_TREE_DEPTH, legacyLeaves\.map[\s\S]*?\} catch \(err\) \{\s*\n\s*throw stateFileError\(`revokedLeaves contains a value insert\(\) rejects/,
+  'the legacy-seed v2 rebuild must wrap insert() failures in stateFileError',
 );
 
 console.log('PASS: custom_idp.js state-persistence fixes (items 1-6) are present in source.');

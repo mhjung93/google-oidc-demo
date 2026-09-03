@@ -41,16 +41,18 @@ async function getIdPSigner(hre) {
 }
 
 async function fetchIdPRoot(idpBaseUrl) {
+  // 정석 IMT(v2)가 게시 상태의 유일한 진실이다(Stage B). 전체 조회 응답의 최상위 root가
+  // 온체인에 게시해야 할 v2 root다.
   let res;
   try {
-    res = await fetch(`${idpBaseUrl}/idp/revocation_state`);
+    res = await fetch(`${idpBaseUrl}/idp/revocation_state_v2`);
   } catch (err) {
     throw new Error(`IdP(${idpBaseUrl})에 연결할 수 없어 폐기 root를 가져오지 못했습니다: ${err.message}`);
   }
-  if (!res.ok) throw new Error(`revocation_state failed (${idpBaseUrl}): ${res.status}`);
+  if (!res.ok) throw new Error(`revocation_state_v2 failed (${idpBaseUrl}): ${res.status}`);
   const { root } = await res.json();
   if (root === undefined || root === null) {
-    throw new Error(`revocation_state 응답에 root가 없습니다 (${idpBaseUrl})`);
+    throw new Error(`revocation_state_v2 응답에 root가 없습니다 (${idpBaseUrl})`);
   }
   return String(root);
 }

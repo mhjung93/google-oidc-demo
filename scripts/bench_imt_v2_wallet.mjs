@@ -6,9 +6,9 @@
 // 무엇을 재는가. 매 라운드마다 새 계정을 폐기·게시해 폐기 트리를 1건씩 키운 뒤,
 // "지갑이 이 트랜잭션에 쓸 witness/트리를 손에 넣기까지의 비용"을 두 경로로 잰다:
 //
-//   v1 (현재 경로, fetchRevocationWitnesses와 동일): 매번 /idp/revocation_state로
-//       폐기 목록 **전체**를 받아 트리를 처음부터 재구성(O(n)) + witness.
-//   v2 (새 경로, wallet_agent.js의 syncRevocationTreeV2): 트리와 (epoch, lastSeq)를
+//   v1 베이스라인(O(n)): 폐기 목록 **전체**를 받아 트리를 처음부터 재구성 + witness.
+//       Stage B에서 제거된 v1 경로가 매 캐시 미스마다 하던 일이다(값은 v2 조회에서 가져온다).
+//   v2 (현재 경로, wallet_agent.js의 syncRevocationTreeV2): 트리와 (epoch, lastSeq)를
 //       요청 간에 들고 있다가 since=lastSeq로 **변경분만** 받아 적용(O(log n)).
 //
 // 지갑의 실제 함수를 그대로 import해 잰다(라이브러리 재구현이 아니다). 파일은 쓰지
@@ -33,16 +33,20 @@ async function revokeAndPublish(value) {
   if (c.status !== 200) throw new Error(`commit -> ${c.status}`);
 }
 
-// v1 경로: /idp/revocation_state 전체를 받아 트리를 처음부터 재구성 + witness.
+// v1 경로(O(n) 베이스라인): 폐기 목록 전체를 받아 트리를 처음부터 재구성 + witness.
+// Stage B에서 v1 엔드포인트(/idp/revocation_state)가 제거됐으므로, 게시된 리프 값 자체는
+// v2 전체 조회에서 가져오되(같은 마스킹된 리프 값), 재구성은 v1 O(n) 방식(createIMT +
+// 전체 삽입)으로 해서 "매번 전체 재구성"의 비용을 그대로 측정한다. v1 root는 v2 root와
+// 리프 해시 형식이 달라 일치하지 않으므로 root 대조는 하지 않는다(비용 측정이 목적).
 async function v1FetchAndWitness() {
-  const { root, revokedLeaves } = await (await fetch(`${BASE}/idp/revocation_state`)).json();
+  const full = await (await fetch(`${BASE}/idp/revocation_state_v2`)).json();
+  const values = full.leaves.slice(1).map((l) => l.value); // anchor 제외, 게시된 리프 값
   const tree = await createIMT(20);
-  for (const l of revokedLeaves) await tree.insert(BigInt(l));
-  if (tree.getRoot().toString() !== root) throw new Error('v1 root mismatch');
+  for (const l of values) await tree.insert(BigInt(l));
   // 아무 비멤버 target으로 witness (비용에 witness도 포함)
   const target = await leafValue(TAG_SESSION, `${Date.now()}999`);
   await tree.getNonMembershipWitness(target);
-  return revokedLeaves.length;
+  return values.length;
 }
 
 async function main() {

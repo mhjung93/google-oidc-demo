@@ -1,7 +1,8 @@
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import { randomBytes } from 'crypto';
 import fs from 'fs';
-import { createIMT, leafValue, TAG_SESSION, TAG_ACCOUNT } from '../lib/imt.js';
+import { leafValue, TAG_SESSION, TAG_ACCOUNT } from '../lib/imt.js';
+import { createIMTv2 } from '../lib/imt_v2.js';
 
 const P = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 
@@ -26,8 +27,8 @@ async function main() {
   const DOMAIN = 1351534856589225444686n;
   const sig = eddsa.signPoseidon(sk, poseidon([DOMAIN, arid_i, auid_i, r_token, max_height, chain_id]));
 
-  // 폐기 트리: 무관한 항목 하나만 넣어 둔다
-  const tree = await createIMT(20);
+  // 폐기 트리: 무관한 항목 하나만 넣어 둔다 (정석 IMT v2)
+  const tree = await createIMTv2(20);
   await tree.insert(await leafValue(TAG_ACCOUNT, 555n));
 
   const sessTarget = await leafValue(TAG_SESSION, r_token);
@@ -41,9 +42,9 @@ async function main() {
     S: sig.S.toString(),
     R8x: F.toObject(sig.R8[0]).toString(), R8y: F.toObject(sig.R8[1]).toString(),
     uid: uid.toString(), rid: rid.toString(), salt: salt.toString(),
-    sess_lowValue: sw.lowValue, sess_lowNextValue: sw.lowNextValue,
+    sess_lowValue: sw.lowValue, sess_lowNextIndex: sw.lowNextIndex, sess_lowNextValue: sw.lowNextValue,
     sess_pathElements: sw.pathElements, sess_pathIndices: sw.pathIndices,
-    acct_lowValue: aw.lowValue, acct_lowNextValue: aw.lowNextValue,
+    acct_lowValue: aw.lowValue, acct_lowNextIndex: aw.lowNextIndex, acct_lowNextValue: aw.lowNextValue,
     acct_pathElements: aw.pathElements, acct_pathIndices: aw.pathIndices,
     pk_i: pk_i.toString(), pk_IdP_x: F.toObject(pk[0]).toString(), pk_IdP_y: F.toObject(pk[1]).toString(),
     PPID: PPID.toString(), max_height: max_height.toString(), revocationRoot: sw.root,

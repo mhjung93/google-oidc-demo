@@ -9,9 +9,9 @@ import { webcrypto, createHash, randomBytes } from 'crypto';
 import http from 'http';
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { keccak256, AbiCoder, Interface } from 'ethers';
-import { createIMT, leafValue, TAG_SESSION, TAG_ACCOUNT } from './lib/imt.js';
-// 정석 IMT(v2) — Stage A: 캐싱 로직만 추가하고 /submitTransaction에는 아직 배선하지
-// 않는다. 회로가 v1 리프 해시를 쓰는 한 witness 생성은 계속 v1 경로다(fetchRevocationWitnesses).
+import { leafValue, TAG_SESSION, TAG_ACCOUNT } from './lib/imt.js';
+// 정석 IMT(v2) — Stage B: /submitTransaction의 witness 생성과 warm-up이 모두 이 경로를
+// 쓴다(회로가 v2 리프 해시 Poseidon(3)로 전환됨). v1 폐기 트리 경로는 제거됐다.
 import { createIMTv2, buildIMTv2 } from './lib/imt_v2.js';
 
 const { subtle } = webcrypto;
@@ -118,7 +118,7 @@ async function buildWarmupPiPkIInput(index) {
   const msg = poseidon([DOMAIN_IDP_TOKEN, arid_i, auid_i, r_token, max_height, chain_id]);
   const sig = eddsa.signPoseidon(sk_dummy, msg);
 
-  const tree = await createIMT(20);
+  const tree = await createIMTv2(20);
   const sessTarget = await leafValue(TAG_SESSION, r_token.toString());
   const acctTarget = await leafValue(TAG_ACCOUNT, auid.toString());
   const sessWitness = await tree.getNonMembershipWitness(sessTarget);
@@ -137,10 +137,12 @@ async function buildWarmupPiPkIInput(index) {
     rid: rid.toString(),
     salt: salt.toString(),
     sess_lowValue: sessWitness.lowValue,
+    sess_lowNextIndex: sessWitness.lowNextIndex,
     sess_lowNextValue: sessWitness.lowNextValue,
     sess_pathElements: sessWitness.pathElements,
     sess_pathIndices: sessWitness.pathIndices,
     acct_lowValue: acctWitness.lowValue,
+    acct_lowNextIndex: acctWitness.lowNextIndex,
     acct_lowNextValue: acctWitness.lowNextValue,
     acct_pathElements: acctWitness.pathElements,
     acct_pathIndices: acctWitness.pathIndices,
@@ -237,38 +239,12 @@ async function getIdpPublicKeys() {
   return idpPublicKeysCache;
 }
 
-// IdP가 공개한 폐기 목록으로 로컬 트리를 재구성해 자기 witness를 계산한다.
-// 리프가 해시라 목록을 받아도 남의 값을 알 수 없다.
-async function fetchRevocationWitnesses(rTokenField, auidField) {
-  const res = await fetch(`${IDP_ORIGIN}/idp/revocation_state`);
-  if (!res.ok) throw new Error(`revocation_state failed: ${res.status}`);
-  const { root, revokedLeaves } = await res.json();
-
-  const tree = await createIMT(20);
-  for (const leaf of revokedLeaves) await tree.insert(BigInt(leaf));
-
-  const localRoot = tree.getRoot().toString();
-  if (localRoot !== root) {
-    throw new Error(`local revocation tree root ${localRoot} != IdP root ${root}`);
-  }
-
-  const sessTarget = await leafValue(TAG_SESSION, rTokenField);
-  const acctTarget = await leafValue(TAG_ACCOUNT, auidField);
-  return {
-    root,
-    sess: await tree.getNonMembershipWitness(sessTarget),
-    acct: await tree.getNonMembershipWitness(acctTarget),
-  };
-}
-
 // ============================================================================
-// 정석 IMT(v2) 폐기 캐시 — Stage A: /submitTransaction에 아직 배선되지 않았다
+// 정석 IMT(v2) 폐기 캐시 — /submitTransaction이 witness를 만드는 유일한 경로 (Stage B)
 // ============================================================================
-// 현재 경로(fetchRevocationWitnesses, 위)는 **캐시 미스마다** 폐기 목록 전체를 받아
-// 트리를 O(n)으로 재구성한다(리프 32,000개에 24.75초). v2 경로는 트리와 (epoch,
-// lastSeq)를 요청 간에 들고 있다가 since=<lastSeq>로 변경분만 받아 O(log n)으로
-// 따라잡는다. Stage B에서 회로/zkey가 준비되면 submitTransaction이 이 경로로 스위치한다.
-// 이번 단계에서는 아래 함수들을 어떤 호출부도 부르지 않는다(벤치/테스트만 부른다).
+// 트리와 (epoch, lastSeq)를 요청 간에 들고 있다가 since=<lastSeq>로 변경분만 받아
+// O(log n)으로 따라잡는다. 예전 v1 경로는 캐시 미스마다 폐기 목록 전체를 받아 트리를
+// O(n)으로 재구성했다(리프 32,000개에 24.75초) — Stage B에서 제거했다.
 const REVOCATION_TREE_DEPTH_V2 = 20; // circuits/lib/imt_nonmembership_v2.circom 깊이와 일치해야 한다
 let v2RevTree = null;
 let v2Epoch = -1;
@@ -276,7 +252,6 @@ let v2LastSeq = -1;
 
 // v2 폐기 트리를 IdP와 증분 동기화한다. 처음이거나 epoch가 바뀌었거나(재기준화) 로그가
 // 절단됐으면(tooOld) 전체를 다시 받아 재구성하고, 그 외에는 변경분만 적용한다.
-// **Stage A: 호출부 없음.**
 export async function syncRevocationTreeV2() {
   // --- 증분 시도: 트리가 있고 epoch를 알 때만 ---
   if (v2RevTree !== null && v2Epoch >= 0) {
@@ -318,9 +293,9 @@ export async function syncRevocationTreeV2() {
   return { epoch: v2Epoch, lastSeq: v2LastSeq, root: localRoot, mode: 'full' };
 }
 
-// v2 비멤버십 witness. v1(fetchRevocationWitnesses) 대비 lowNextIndex가 추가된 필드다.
-// Stage B에서 submitTransaction의 circuitInput에 sess_lowNextIndex/acct_lowNextIndex로
-// 배선된다(circuits/lib/imt_nonmembership_v2.circom의 새 입력 신호). **Stage A: 호출부 없음.**
+// v2 비멤버십 witness. sess/acct 각각 lowNextIndex를 포함하며, submitTransaction의
+// circuitInput에 sess_lowNextIndex/acct_lowNextIndex로 배선된다
+// (circuits/lib/imt_nonmembership_v2.circom의 입력 신호).
 export async function fetchRevocationWitnessesV2(rTokenField, auidField) {
   await syncRevocationTreeV2();
   const sessTarget = await leafValue(TAG_SESSION, rTokenField);
@@ -1132,7 +1107,7 @@ app.post('/submitTransaction', async (req, res) => {
     // 이 트랜잭션에 쓸 폐기 root를 먼저 정한다. 캐시된 증명의 root가 아직 레지스트리
     // 윈도우 안에 살아있으면 그것을 그대로 쓰고, IdP에는 아무 요청도 보내지 않는다.
     //
-    // 예전에는 fetchRevocationWitnesses()가 캐시 판정보다 앞에 있어서, 증명을
+    // 예전에는 폐기 witness 조회가 캐시 판정보다 앞에 있어서, 증명을
     // 재사용하는 경우에도 트랜잭션마다 IdP로 요청이 나갔다. IdP는 로그인 시점에 uid와
     // 그 클라이언트의 네트워크 신원을 알고 있으므로, IdP 로그와 체인을 함께 보면
     // "t에 세션 X가 폐기 목록을 조회 → t+Δ에 지갑 W에서 tx" 상관으로 지갑↔uid가
@@ -1150,7 +1125,7 @@ app.post('/submitTransaction', async (req, res) => {
     if (cachedPiPkI?.sessionKeyId === sessionKeyId && (await isRevocationRootPublished(cachedPiPkI.root))) {
       txRevocationRoot = cachedPiPkI.root;
     } else {
-      rev = await fetchRevocationWitnesses(r_token.toString(), auidField.toString());
+      rev = await fetchRevocationWitnessesV2(r_token.toString(), auidField.toString());
       txRevocationRoot = rev.root;
       // 지갑은 IdP의 '현재' 리프 집합으로만 witness를 만들 수 있는데, 온체인 게시는
       // 운영자가 돌리는 별도 단계다. 그래서 폐기 발생 후 push 전까지는 무고한
@@ -1195,10 +1170,12 @@ app.post('/submitTransaction', async (req, res) => {
         rid: ridField.toString(),
         salt: saltField.toString(),
         sess_lowValue: rev.sess.lowValue,
+        sess_lowNextIndex: rev.sess.lowNextIndex,
         sess_lowNextValue: rev.sess.lowNextValue,
         sess_pathElements: rev.sess.pathElements,
         sess_pathIndices: rev.sess.pathIndices,
         acct_lowValue: rev.acct.lowValue,
+        acct_lowNextIndex: rev.acct.lowNextIndex,
         acct_lowNextValue: rev.acct.lowNextValue,
         acct_pathElements: rev.acct.pathElements,
         acct_pathIndices: rev.acct.pathIndices,

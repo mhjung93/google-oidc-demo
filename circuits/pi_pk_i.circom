@@ -2,7 +2,7 @@ pragma circom 2.0.0;
 
 include "lib/eddsaposeidon.circom";
 include "lib/poseidon.circom";
-include "lib/imt_nonmembership.circom";
+include "lib/imt_nonmembership_v2.circom";
 
 template PiPkI() {
     // Private inputs
@@ -20,14 +20,16 @@ template PiPkI() {
     signal input rid;
     signal input salt;
 
-    // Private inputs — 세션 비멤버십 witness
+    // Private inputs — 세션 비멤버십 witness (정석 IMT v2: lowNextIndex 추가)
     signal input sess_lowValue;
+    signal input sess_lowNextIndex;
     signal input sess_lowNextValue;
     signal input sess_pathElements[20];
     signal input sess_pathIndices[20];
 
-    // Private inputs — 계정 비멤버십 witness
+    // Private inputs — 계정 비멤버십 witness (정석 IMT v2: lowNextIndex 추가)
     signal input acct_lowValue;
+    signal input acct_lowNextIndex;
     signal input acct_lowNextValue;
     signal input acct_pathElements[20];
     signal input acct_pathIndices[20];
@@ -97,9 +99,10 @@ template PiPkI() {
     sessLeaf.inputs[0] <== TAG_SESSION;
     sessLeaf.inputs[1] <== r_token;
 
-    component sessNM = IMTNonMembership(20);
+    component sessNM = IMTNonMembershipV2(20);
     sessNM.target <== sessLeaf.out;
     sessNM.lowValue <== sess_lowValue;
+    sessNM.lowNextIndex <== sess_lowNextIndex;
     sessNM.lowNextValue <== sess_lowNextValue;
     for (var i = 0; i < 20; i++) {
         sessNM.pathElements[i] <== sess_pathElements[i];
@@ -111,9 +114,10 @@ template PiPkI() {
     acctLeaf.inputs[0] <== TAG_ACCOUNT;
     acctLeaf.inputs[1] <== auid;
 
-    component acctNM = IMTNonMembership(20);
+    component acctNM = IMTNonMembershipV2(20);
     acctNM.target <== acctLeaf.out;
     acctNM.lowValue <== acct_lowValue;
+    acctNM.lowNextIndex <== acct_lowNextIndex;
     acctNM.lowNextValue <== acct_lowNextValue;
     for (var i = 0; i < 20; i++) {
         acctNM.pathElements[i] <== acct_pathElements[i];

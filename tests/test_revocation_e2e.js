@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
-import { createIMT, leafValue, TAG_ACCOUNT } from '../lib/imt.js';
+import { leafValue, TAG_ACCOUNT } from '../lib/imt.js';
+import { buildIMTv2 } from '../lib/imt_v2.js';
+
+// 지갑이 하는 것과 동일하게, v2 전체 조회의 물리 순서 리프 배열로 트리를 재구성한다.
+const buildFromV2Full = (body) => buildIMTv2(20, body.leaves.slice(1).map((l) => BigInt(l.value)));
 
 const IDP = process.env.CUSTOM_IDP_BASE_URL || 'http://127.0.0.1:4000';
 
@@ -26,9 +30,8 @@ async function main() {
   const victim = `987654321${Date.now()}`;
   const leaf = await leafValue(TAG_ACCOUNT, victim);
 
-  const before = await (await fetch(`${IDP}/idp/revocation_state`)).json();
-  const t1 = await createIMT(20);
-  for (const l of before.revokedLeaves) await t1.insert(BigInt(l));
+  const before = await (await fetch(`${IDP}/idp/revocation_state_v2`)).json();
+  const t1 = await buildFromV2Full(before);
   const w = await t1.getNonMembershipWitness(leaf);
   assert.equal(w.root, before.root, 'local tree must match IdP root before revocation');
   console.log('OK: unrevoked account has a non-membership witness');
@@ -41,7 +44,7 @@ async function main() {
   assert.equal(res.status, 200);
 
   // 배칭: 폐기는 대기열에 들어갈 뿐이고, 게시 전까지 지갑이 보는 상태는 그대로다.
-  const queued = await (await fetch(`${IDP}/idp/revocation_state`)).json();
+  const queued = await (await fetch(`${IDP}/idp/revocation_state_v2`)).json();
   assert.equal(queued.root, before.root, 'queued revocation must not change the published root');
   console.log('OK: 폐기 접수만으로는 게시 상태가 바뀌지 않는다 (배칭)');
 
@@ -69,12 +72,11 @@ async function main() {
   });
   assert.equal(commitRes.status, 200, 'commit must succeed with the prepared root');
 
-  const after = await (await fetch(`${IDP}/idp/revocation_state`)).json();
+  const after = await (await fetch(`${IDP}/idp/revocation_state_v2`)).json();
   assert.notEqual(after.root, before.root, 'root must change after publishing the revocation');
   assert.equal(after.root, prepared.expectedRoot, 'published root must equal the prepared root');
 
-  const t2 = await createIMT(20);
-  for (const l of after.revokedLeaves) await t2.insert(BigInt(l));
+  const t2 = await buildFromV2Full(after);
   await assert.rejects(() => t2.getNonMembershipWitness(leaf), /is a member/);
   console.log('OK: revoked account can no longer obtain a witness');
 
