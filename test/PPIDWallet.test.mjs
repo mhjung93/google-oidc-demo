@@ -197,7 +197,13 @@ describe("PPIDWallet", function () {
     const { wallet, pk_i, pk_IdP_x, pk_IdP_y, maxHeight, pA, pB, pC, signPayload, revocationRoot } = await deployFixture();
     const payload = { to: hre.ethers.Wallet.createRandom().address, value: 0, data: "0x", nonce: await wallet.nonce() };
     const sig = signPayload(payload);
-    const tamperedSig = sig.slice(0, -2) + "00"; // flip last byte
+    // 서명 본문(r)의 한 자리를 바꾼다. 예전에는 마지막 바이트(v)를 "00"으로 바꿨는데,
+    // 그러면 실제로 검증되는 것은 "잘못된 서명을 거부한다"가 아니라 "잘못된 v를 거부한다"
+    // 였다(ecrecover는 v가 27/28이 아니면 그냥 0을 돌려준다). 같은 패턴이
+    // tests/test_par_endpoint.js에서는 실행의 절반에서 단언을 무력화하고 있었다.
+    const flipped = sig[10] === "0" ? "1" : "0";
+    const tamperedSig = sig.slice(0, 10) + flipped + sig.slice(11);
+    expect(tamperedSig).to.not.equal(sig);
     await expect(
       wallet.execute(payload, tamperedSig, pA, pB, pC, pk_i, pk_IdP_x, pk_IdP_y, maxHeight, revocationRoot),
     ).to.be.reverted; // ecrecover on a mangled sig either returns address(0) or a wrong address -> BadSignature

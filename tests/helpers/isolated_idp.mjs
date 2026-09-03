@@ -120,7 +120,9 @@ export async function startIsolatedIdP(opts = {}) {
       return { status: r.status, body: await r.json().catch(() => null) };
     },
     async stop() {
-      if (child.exitCode === null) {
+      // exitCode만 보면 시그널로 죽은 자식(exitCode === null, signalCode 채워짐)에 대해
+      // 이미 끝난 'exit'를 다시 기다리게 되어 매번 3초 타임아웃을 소비한다.
+      if (child.exitCode === null && child.signalCode === null) {
         child.kill('SIGTERM');
         await new Promise((resolve) => {
           const t = setTimeout(() => {

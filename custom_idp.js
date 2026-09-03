@@ -99,6 +99,11 @@ const MUTATION_LOG_MAX = Number(process.env.IDP_MUTATION_LOG_MAX) || 100_000;
 // 실제로 돌린다 — 깊이 20의 95%는 99만 리프라 테스트로 도달할 수 없다).
 const V2_REBASELINE_WARN_RATIO = Number(process.env.IDP_REBASELINE_WARN_RATIO) || 0.8;
 const V2_REBASELINE_FORCE_RATIO = Number(process.env.IDP_REBASELINE_FORCE_RATIO) || 0.95;
+// 실제 한계(2^depth)에 이만큼 남으면, 회수량이 적어 평소라면 미뤘을 재기준화도 수행한다.
+// 이 탈출구가 없으면 만료분이 (1-WARN)×capacity에 못 미치는 동안 회수를 영영 못 하고
+// append만 하다가 트리가 꽉 차 insert()가 던진다(= 폐기 게시 정지). 그 지점에서는 전
+// 지갑 재다운로드가 게시 정지보다 낫다.
+const V2_HARD_LIMIT_MARGIN = Number(process.env.IDP_HARD_LIMIT_MARGIN) || 1024;
 // value(BigInt) -> 물리 인덱스. 변경 로그 항목을 만들 때 갱신되는 low 리프의 물리
 // 인덱스가 필요한데, lib/imt_v2.js는 리프 튜플만 노출하고 물리 인덱스는 노출하지
 // 않는다. 이건 트리 밖 파생 인덱스라 해시 계산이 없다(설계 문서 6.2절과 같은 성격).
@@ -1688,9 +1693,6 @@ app.post('/idp/publish/prepare', requireIdPAdmin, async (req, res) => {
     return res.status(502).json({ error: `failed to read current block height: ${err.message}` });
   }
 
-  // 새로 게시될 리프 = 대기 중이고 아직 v2에 없는 것. 결정적 순서(Set 삽입 순서)로
-  // 고정한다 — commit이 이 순서 그대로 append하고, 지금 예측하는 root와 정확히 일치해야
-  // 한다(설계 문서 3.1절: v2 root는 삽입 순서에 의존한다).
   const isExpired = (leafKey) => {
     const e = leafExpiry.get(leafKey);
     return e !== undefined && e <= currentBlock;
@@ -1722,18 +1724,34 @@ app.post('/idp/publish/prepare', requireIdPAdmin, async (req, res) => {
   const v2ProjectedUsed = v2Usage.used + addedValues.length;
   const v2ProjectedRatio = v2ProjectedUsed / v2Usage.capacity;
 
+  // 재기준화 회차가 실제로 쌓을 집합. **접수된 폐기(addedValues)는 조건 없이 포함한다** —
+  // 만료로 걸러내면 게시가 늦어진 접수 폐기가 트리에 한 번도 못 들어가고 commit의 대기열
+  // 정리에서 사라진다(위에서 addedValues에 만료 필터를 두지 않은 것과 같은 이유다).
+  // 회수 대상은 **이미 게시된** 만료 리프뿐이다.
+  const retainedValues = currentV2Values.filter((v) => !isExpired(v.toString()));
+  const rebaselineValues = [...retainedValues, ...addedValues.map((v) => BigInt(v))];
+  // rebaseline()이 중복을 제거하므로(lib/imt_v2.js) 실제 결과 크기는 유니크 개수 + anchor다.
+  // 추정식으로 계산하면 회수량을 과소평가해 아래 판단이 어긋난다.
+  const projectedUsedAfterRebaseline = new Set(rebaselineValues.map((v) => v.toString())).size + 1;
+
   // 임계치를 넘었을 때 재기준화할지 판단한다.
   //
   // 조건이 "만료 리프가 하나라도 있으면"이면 안 된다. 사용률이 임계치 근처인 정상 운영에서
   // 사이클마다 하나씩 만료되면 매 게시가 재기준화가 되고, 그때마다 epoch가 올라 **모든
   // 지갑이 전체 재다운로드**를 한다 — 회수량은 미미한데 증분 설계만 무력화된다.
-  // 재기준화는 전 지갑에 O(n) 비용을 물리는 조작이므로, **헤드룸을 실제로 되찾을 때만**
+  // 재기준화는 전 지갑에 O(n) 비용을 물리는 조작이므로 **헤드룸을 실제로 되찾을 때만**
   // 할 가치가 있다: 회수 후 사용률이 경고선 아래로 내려가야 한다. 그러면 다음 강제까지
   // 최소 (FORCE-WARN)×capacity 만큼의 삽입 여유가 생겨 반복이 구조적으로 막힌다.
+  //
+  // 다만 그 조건만 두면 **회수를 영영 못 하는 경우**가 생긴다: 만료분이 (1-WARN)×capacity에
+  // 못 미치면 사용률이 아무리 높아도 재기준화하지 않고 append만 계속하다가 실제 한계에
+  // 부딪혀 insert()가 던진다. 그래서 한계 근처에서는 회수량이 적어도 재기준화한다 —
+  // 그 지점에서는 전 지갑 재다운로드가 게시 정지보다 낫다.
   const overForceThreshold = v2ProjectedRatio >= V2_REBASELINE_FORCE_RATIO;
-  const projectedRatioAfterRebaseline = (v2ProjectedUsed - expiredCount) / v2Usage.capacity;
-  const forceRebaselineV2 =
-    overForceThreshold && expiredCount > 0 && projectedRatioAfterRebaseline <= V2_REBASELINE_WARN_RATIO;
+  const nearHardLimit = v2ProjectedUsed >= v2Usage.capacity - V2_HARD_LIMIT_MARGIN;
+  const reclaims = projectedUsedAfterRebaseline < v2ProjectedUsed;
+  const restoresHeadroom = projectedUsedAfterRebaseline / v2Usage.capacity <= V2_REBASELINE_WARN_RATIO;
+  const forceRebaselineV2 = overForceThreshold && reclaims && (restoresHeadroom || nearHardLimit);
 
   // 임계치를 넘었는데 재기준화로 회수할 수 없다면 용량이 실질적으로 소진된 것이다.
   // 그렇다고 게시를 거부하지는 않는다 — 임계치는 위생 경고선이지 실제 한계(2^20)가
@@ -1750,11 +1768,10 @@ app.post('/idp/publish/prepare', requireIdPAdmin, async (req, res) => {
     );
   }
 
-  // 재기준화면 살아있는 집합(만료 제외)만으로 정렬 재구성하고, 아니면 현재 트리에 append.
-  // commit이 이걸 그대로 재현해야 하므로 여기서 계산한 root가 곧 온체인에 게시될 root다.
-  const liveValues = forceRebaselineV2
-    ? [...currentV2Values, ...addedValues.map((v) => BigInt(v))].filter((v) => !isExpired(v.toString()))
-    : null;
+  // 재기준화면 위에서 만든 집합(게시된 만료분만 제외, 접수 폐기는 전부 포함)으로 정렬
+  // 재구성하고, 아니면 현재 트리에 append. commit이 이걸 그대로 재현해야 하므로 여기서
+  // 계산한 root가 곧 온체인에 게시될 root다.
+  const liveValues = forceRebaselineV2 ? rebaselineValues : null;
 
   let expectedRoot;
   let expectedLeafCount;
@@ -1795,7 +1812,8 @@ app.post('/idp/publish/prepare', requireIdPAdmin, async (req, res) => {
     currentRoot,
     added: addedValues.length,
     // 만료 리프는 재기준화 때만 실제로 빠진다. 재기준화 회차면 그만큼 줄고, 아니면 0.
-    removed: forceRebaselineV2 ? expiredCount : 0,
+    // 중복 제거까지 반영한 실제 감소량이다(expiredCount는 회수 '가능' 개수라 다를 수 있다).
+    removed: forceRebaselineV2 ? v2ProjectedUsed - projectedUsedAfterRebaseline : 0,
     // 게시된 리프 중 이미 만료된 개수 = 재기준화로 회수 가능한 슬롯 수.
     // (예전 이름 expiredPending은 "대기 중 만료"로 읽혀 내용과 달랐다.)
     expiredPublished: expiredCount,

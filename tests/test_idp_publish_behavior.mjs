@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { leafValue, TAG_ACCOUNT } from '../lib/imt.js';
 import { startIsolatedIdP, revokeAndPublish } from './helpers/isolated_idp.mjs';
 
 const RPC = process.env.ETH_RPC_URL || 'http://127.0.0.1:8545';
@@ -238,6 +239,87 @@ const uniqueValue = () => `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
     );
     assert.equal(committed.body.pendingCount, 0, '게시된 항목은 대기열에서 정리된다');
     console.log('OK (3): 접수된 폐기는 게시가 지연돼도 사라지지 않고 트리에 들어간다');
+  } finally {
+    await idp.stop();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 3-b. **재기준화 회차에서도** 접수된 폐기는 사라지지 않는다.
+//
+// 케이스 3은 일반 append 회차만 본다. 재기준화 회차는 "살아있는 값만으로 다시 쌓는"
+// 경로라, 거기서 만료 필터를 접수 리프에까지 적용하면 같은 폐기 소실이 재현된다 —
+// 트리에 한 번도 안 들어가고 commit의 대기열 정리가 지워 버린다. 회수 대상은 **이미
+// 게시된** 만료 리프뿐이어야 한다.
+// ---------------------------------------------------------------------------
+{
+  const idp = await startIsolatedIdP({ env: { IDP_REBASELINE_FORCE_RATIO: forceRatioForLeaves(4) } });
+  try {
+    await revokeAndPublish(idp, uniqueValue()); // used 2
+    await revokeAndPublish(idp, uniqueValue()); // used 3
+    await rpc('hardhat_mine', [`0x${(CREDENTIAL_LIFETIME_BLOCKS + 1).toString(16)}`]); // 둘 다 만료
+
+    // 접수한 뒤 게시 전에 이 리프까지 만료시킨다(게시 지연 상황).
+    const delayed = uniqueValue();
+    assert.equal((await idp.post('/idp/revoke', { type: 'account', value: delayed })).status, 200);
+    await rpc('hardhat_mine', [`0x${(CREDENTIAL_LIFETIME_BLOCKS + 1).toString(16)}`]);
+    const delayedLeaf = (await leafValue(TAG_ACCOUNT, delayed)).toString();
+
+    const prepared = await idp.post('/idp/publish/prepare');
+    assert.equal(prepared.status, 200);
+    assert.equal(prepared.body.v2.rebaselineForced, true, '준비: 이번 회차는 재기준화여야 한다');
+    const committed = await idp.post('/idp/publish/commit', { root: prepared.body.expectedRoot });
+    assert.equal(committed.status, 200);
+
+    const after = (await idp.get('/idp/revocation_state_v2')).body;
+    const members = after.leaves.slice(1).map((l) => l.value);
+    assert.ok(
+      members.includes(delayedLeaf),
+      '재기준화 회차에서도 접수된 폐기는 트리에 들어가야 한다(게시 지연으로 사라지면 안 된다)',
+    );
+    assert.equal(committed.body.pendingCount, 0, '게시됐으므로 대기열은 비어야 한다');
+    console.log('OK (3-b): 재기준화 회차에서도 접수된 폐기가 보존된다');
+  } finally {
+    await idp.stop();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 3-c. 실제 한계 근처에서는 회수량이 적어도 재기준화한다.
+//
+// "회수 후 경고선 아래로" 조건만 두면, 만료분이 (1-WARN)×capacity에 못 미치는 동안
+// 재기준화를 영영 안 하고 append만 하다가 트리가 꽉 차 insert()가 던진다 — 폐기 게시가
+// 통째로 멈춘다. 한계 근처에서는 전 지갑 재다운로드가 게시 정지보다 낫다.
+// ---------------------------------------------------------------------------
+{
+  const CAP = CAPACITY;
+  const idp = await startIsolatedIdP({
+    env: {
+      IDP_REBASELINE_WARN_RATIO: forceRatioForLeaves(2), // 회수해도 경고선 아래로 못 감
+      IDP_REBASELINE_FORCE_RATIO: forceRatioForLeaves(4),
+      IDP_HARD_LIMIT_MARGIN: String(CAP - 4), // projectedUsed >= 4 면 '한계 근처'로 본다
+    },
+  });
+  try {
+    await revokeAndPublish(idp, uniqueValue()); // used 2 — 이것만 만료시킨다
+    await rpc('hardhat_mine', [`0x${(CREDENTIAL_LIFETIME_BLOCKS + 1).toString(16)}`]);
+    await revokeAndPublish(idp, uniqueValue()); // used 3 (살아있음)
+
+    const before = (await idp.get('/idp/revocation_state_v2')).body;
+    await idp.post('/idp/revoke', { type: 'account', value: uniqueValue() });
+
+    const prepared = await idp.post('/idp/publish/prepare');
+    assert.equal(prepared.status, 200);
+    assert.equal(
+      prepared.body.v2.rebaselineForced,
+      true,
+      '한계 근처에서는 회수량이 적어도 재기준화해야 한다(안 그러면 트리가 꽉 차 게시가 멈춘다)',
+    );
+    const committed = await idp.post('/idp/publish/commit', { root: prepared.body.expectedRoot });
+    assert.equal(committed.status, 200);
+    const after = (await idp.get('/idp/revocation_state_v2')).body;
+    assert.equal(after.epoch, before.epoch + 1, '재기준화했으므로 epoch가 오른다');
+    console.log('OK (3-c): 실제 한계 근처에서는 회수량이 적어도 재기준화한다');
   } finally {
     await idp.stop();
   }

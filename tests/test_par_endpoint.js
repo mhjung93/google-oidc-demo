@@ -88,7 +88,16 @@ async function main() {
   console.log('PASS: non-loopback redirect_uri rejected');
 
   console.log('-- tampered requestBinding signature (expect 400) --');
-  const tamperedBinding = { pk_i: requestBinding.pk_i, signature: requestBinding.signature.slice(0, -2) + '00' };
+  // 변조는 **서명 본문(r)** 을 건드려야 한다. 예전에는 마지막 2자리(v)를 '00'으로 바꿨는데,
+  // v는 27/28(0x1b/0x1c)이고 ethers가 0을 recovery 0(=27)으로 정규화하므로, 원래 v가 27이면
+  // 변조된 서명이 원본과 **의미상 동일**해져 정당하게 200이 나왔다 — 즉 이 단언이 실행의
+  // 절반에서 아무것도 검증하지 못했다(실측 6회 중 2회 실패). r의 한 자리를 확실히 다른
+  // 값으로 바꿔 서명 자체가 달라지게 한다.
+  const sig = requestBinding.signature;
+  const flippedNibble = sig[10] === '0' ? '1' : '0';
+  const tamperedSignature = sig.slice(0, 10) + flippedNibble + sig.slice(11);
+  if (tamperedSignature === sig) throw new Error('FAIL: 변조가 실제로 서명을 바꾸지 못했다');
+  const tamperedBinding = { pk_i: requestBinding.pk_i, signature: tamperedSignature };
   const badSigRes = await fetch(`${IDP}/par`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

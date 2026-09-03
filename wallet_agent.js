@@ -330,14 +330,24 @@ function invalidateRevocationTreeV2() {
 // circuitInput에 sess_lowNextIndex/acct_lowNextIndex로 배선된다
 // (circuits/lib/imt_nonmembership_v2.circom의 입력 신호).
 export async function fetchRevocationWitnessesV2(rTokenField, auidField) {
-  await syncRevocationTreeV2();
+  const synced = await syncRevocationTreeV2();
+  // 동기화가 끝난 **직후의 트리를 지역 변수로 붙잡는다.** 여기서 v2RevTree를 다시 읽으면
+  // 아래 await들 사이에 다른 요청의 동기화가 끼어들어 트리를 갈아끼우거나(전체 재구성)
+  // 무효화할 수 있고(root 불일치 시 null), 그러면 null 역참조로 죽거나 **root는 옛
+  // 트리에서, witness는 새 트리에서** 나온 묶음을 돌려주게 된다. 그 증명은 온체인
+  // latestRoot와 어긋나 반드시 실패한다. 동기화끼리는 직렬화돼 있지만 이 함수의
+  // witness 계산 구간은 그 체인 밖이라, 스냅샷이 필요하다.
+  const tree = v2RevTree;
+  const epoch = synced.epoch;
+  const root = synced.root;
+
   const sessTarget = await leafValue(TAG_SESSION, rTokenField);
   const acctTarget = await leafValue(TAG_ACCOUNT, auidField);
   return {
-    epoch: v2Epoch,
-    root: v2RevTree.getRoot().toString(),
-    sess: await v2RevTree.getNonMembershipWitness(sessTarget),
-    acct: await v2RevTree.getNonMembershipWitness(acctTarget),
+    epoch,
+    root,
+    sess: await tree.getNonMembershipWitness(sessTarget),
+    acct: await tree.getNonMembershipWitness(acctTarget),
   };
 }
 

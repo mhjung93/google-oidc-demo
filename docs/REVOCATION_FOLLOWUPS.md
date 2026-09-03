@@ -37,6 +37,13 @@ BAAR 기반 폐기 구현(`feat/baar-revocation`, PR #2) 이후 남은 과제. 2
   실패·소진 경로를 개발 인스턴스를 망가뜨리지 않고 실제로 돌린다(`test_idp_publish_behavior.mjs`).
   로그 절단(tooOld) 경로의 SKIP도 이걸로 해소했다. `MUTATION_LOG_MAX` 기본값 100,000은
   실측 근거를 얻었다 — 항목당 약 322 B로 선형이라 약 31 MB이고, 상한이 없으면 최악 약 668 MB다.
+  **보안 단언이 절반만 동작하고 있던 것도 드러났다.** `tests/test_par_endpoint.js`의 "변조된
+  requestBinding 서명은 거부돼야 한다"가 서명 마지막 2자리(`v`)를 `00`으로 바꾸는 방식이었는데,
+  `v`는 27/28이고 ethers가 `0`을 recovery 0(=27)으로 정규화하므로 원래 `v`가 27이면 변조가
+  **의미상 무효**가 되어 정당하게 200이 나왔다(실측 6회 중 2회). 서명 본문(r)을 바꾸도록
+  고쳐 8/8 결정적으로 통과한다. `test/PPIDWallet.test.mjs`의 같은 패턴도 고쳤다 — 거기서는
+  온체인 `ecrecover`가 잘못된 `v`에 0을 돌려줘 결과적으로 통과했지만, 검증하던 것은
+  "잘못된 서명 거부"가 아니라 "잘못된 v 거부"였다.
   `scripts/run_tests.sh`로 실행 진입점을 만들었다(unit/circuit/chain/live). 그 과정에서
   **오래 깨져 있던 테스트 2개**가 드러났다 — `test_uid_wallet_boundary.js`는 커밋 `f20aab8`에
   삭제된 `idp/login_popup.js`를 계속 읽고 있었고, `test_pi_arid_i_no_rid.js`는 회로가 RP 등록
