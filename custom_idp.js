@@ -1849,11 +1849,17 @@ app.post('/idp/publish/commit', requireIdPAdmin, async (req, res) => {
   // 여유를 두고서야 축출한다 — 최근 만료분은 여전히 410을, 그보다 오래된 것만 404를
   // 받는다.
   //
-  // usedNonces는 여기서 절대 건드리지 않는다 — 재전송 방지는 크레덴셜의 수명과
-  // 무관하게 영구적이어야 한다(이 r_token으로 두 번째 statement를 받을 수 있다는
-  // 뜻이 되므로). issuanceLog 항목이 축출된 뒤에도 usedNonces는 그 r_token을 계속
-  // 막는다 — 기동 시 seed는 이 커밋들의 issuanceLog 스냅샷에서만 이뤄지는 게 아니라
-  // 매 발급 시점에 usedNonces에 독립적으로(add 호출로) 누적되기 때문이다.
+  // usedNonces는 여기서 절대 건드리지 않는다 — 이 프로세스가 사는 동안 재전송 방지가
+  // 줄어들면 안 되기 때문이다(이 r_token으로 두 번째 statement를 받을 수 있다는 뜻이
+  // 되므로).
+  //
+  // 다만 재시작을 넘어서는 영구적이지 않다는 점을 분명히 해 둔다: usedNonces는
+  // 영속화되지 않는 인메모리 Set이고, 기동 시 issuanceLog의 키로만 seed된다. 발급
+  // 시점의 add는 이 프로세스 안에서만 유효하다. 따라서 여기서 축출된 r_token은 다음
+  // 재시작 후 재전송 방지 대상에서 빠진다 — 축출 기준이 만료 + CREDENTIAL_LIFETIME_BLOCKS
+  // 이라 그때 그 크레덴셜은 이미 온체인에서 만료라(max_height 초과) 재발급받아도
+  // 쓸 수 없다는 것이 이 축출을 허용하는 근거다. 축출 기준을 만료 무관하게 바꾸면
+  // (개수 상한·LRU/TTL) 이 근거가 무너진다.
   const evictionCutoff = prepared.blockHeight;
   let evictedIssuance = 0;
   for (const [rToken, entry] of [...issuanceLog]) {
@@ -1880,15 +1886,39 @@ app.post('/idp/publish/commit', requireIdPAdmin, async (req, res) => {
   preparedPublish = null;
 
   // 게시된 트리·만료·대기열이 한꺼번에 바뀌었다. 여기서 저장하지 않으면 재시작
-  // 후 IdP가 옛 root를 서빙해 온체인에 게시된 root와 어긋난다.
-  saveIdPState();
+  // 후 IdP가 옛 root를 서빙해 온체인에 게시된 root와 어긋난다 — 그러면 폐기된
+  // 사용자가 아니라 **전원**의 execute()가 StaleRevocationRoot로 막히고, 방금 게시한
+  // 폐기는 조용히 풀린다.
+  //
+  // 그런데 여기서 5xx를 낼 수는 없다: v2 전진은 append-only라 되돌릴 수 없고
+  // preparedPublish도 이미 비워져 커밋을 재시도할 방법이 없다(재시도는 409다).
+  // 게시 자체는 성공했으므로 발급 경로와 같은 선례를 따른다 — 200으로 보고하되
+  // 저장 실패를 응답에 구조적으로 실어 운영자가 알아채게 한다. 성공 시(대다수)에는
+  // 필드를 넣지 않아 응답 모양이 그대로다.
+  const persisted = saveIdPState();
+  const persistenceWarning = persisted
+    ? undefined
+    : 'the published state could not be persisted; after an IdP restart this IdP would serve the ' +
+      'pre-commit root while the chain holds the new one, blocking every wallet with ' +
+      'StaleRevocationRoot. Recover the state file and re-publish before restarting.';
+  if (!persisted) {
+    console.error(
+      `[IdP] publish/commit: FAILED TO PERSIST the published state (root ${actualRoot}). ` +
+        'Do not restart this IdP until the state file is recovered.',
+    );
+  }
 
   const publishedCount = publishedLeaves().length;
   console.log(
     `[IdP] publish/commit: published ${publishedCount} leaves, root ${actualRoot}, ` +
       `pending ${pendingAdds.size}`,
   );
-  res.json({ root: actualRoot, leafCount: publishedCount, pendingCount: pendingAdds.size });
+  res.json({
+    root: actualRoot,
+    leafCount: publishedCount,
+    pendingCount: pendingAdds.size,
+    ...(persistenceWarning ? { persistenceWarning } : {}),
+  });
 });
 
 // --- 계정 층(사람 차단) 관리자 엔드포인트 ---
@@ -2088,6 +2118,15 @@ app.post('/idp/rebaseline_v2', requireIdPAdmin, async (req, res) => {
     return res.status(500).json({ error: `v2 rebaseline failed: ${err.message}` });
   }
 
+  // 미결 prepare가 있으면 그 root는 방금 무효가 됐다. 그대로 두면 commit이 초기
+  // 비교(prepared.root)는 통과한 뒤 **새 트리에** 리프를 삽입하고서야 불일치를
+  // 발견해 500을 내는데, 그 시점엔 트리가 되돌릴 수 없게 전진했고 preparedPublish를
+  // 비우기 전에 리턴하므로 재시도가 영원히 500이 된다. commit 핸들러가 "prepare와
+  // commit 사이에 v2를 바꾸는 경로는 없다"를 전제로 적혀 있으므로, 그 전제를 깨는
+  // 유일한 경로인 여기가 직접 정리한다.
+  const discardedPrepare = preparedPublish !== null;
+  preparedPublish = null;
+
   const saved = saveIdPState();
   if (!saved) {
     return res.status(500).json({ error: 'rebaseline computed but failed to persist; please retry' });
@@ -2107,6 +2146,9 @@ app.post('/idp/rebaseline_v2', requireIdPAdmin, async (req, res) => {
     previousRootV2,
     leafCount: liveValues.length,
     usage,
+    // 무효화된 미결 prepare가 있었다면 운영자에게 알린다 — 그 회차는 prepare부터
+    // 다시 해야 하고, 이미 온체인에 push했다면 새 root를 다시 push해야 한다.
+    ...(discardedPrepare ? { discardedPreparedPublish: true } : {}),
     note:
       'the published v2 root changed; run scripts/push_revocation_root.cjs (or a sweep cycle) to ' +
       'publish it on-chain before wallets prove against the rebaselined tree',

@@ -110,6 +110,31 @@ assert.doesNotMatch(
   '/idp/revoke\'s save-failure branch must not also report pending: true',
 );
 
+// /idp/publish/commit도 상태를 크게 바꾼다(트리 전진·대기열 정리·로그 축출). 저장이
+// 실패했는데 200을 돌려주면, 운영자는 게시가 확정된 줄 알지만 재시작 후 IdP는 커밋 이전
+// root를 서빙한다 — 체인에는 새 root가 있으므로 폐기된 사용자가 아니라 **전원**의
+// execute()가 StaleRevocationRoot로 막히고, 방금 게시한 폐기는 조용히 풀린다.
+//
+// 여기서 요구하는 것은 5xx가 아니라 구조적 경고 필드다: v2 전진은 append-only라 되돌릴
+// 수 없고 preparedPublish도 이미 비워져 커밋을 재시도할 수 없다(재시도하면 409다).
+// 그래서 발급 경로와 같은 선례를 따른다 — 작업은 성공으로 보고하되 저장 실패를 응답에
+// 실어 운영자가 알게 한다.
+const commitPersistSrc = section(
+  "app.post('/idp/publish/commit', requireIdPAdmin, async (req, res) => {",
+  '\n// --- 계정 층(사람 차단) 관리자 엔드포인트 ---',
+  '/idp/publish/commit persistence',
+);
+assert.match(
+  commitPersistSrc,
+  /const persist(ed|enceWarning|Warning)\s*=\s*saveIdPState\(\)/,
+  '/idp/publish/commit must capture saveIdPState()\'s return value, not call it bare',
+);
+assert.match(
+  commitPersistSrc,
+  /persistenceWarning/,
+  '/idp/publish/commit must surface a structural persistenceWarning field when the save fails',
+);
+
 for (const marker of [
   // /token (PAR/authorization-code flow)
   "issuanceLog.set(String(record.token_nonce), { uid: record.uid, maxHeight: record.max_height });",

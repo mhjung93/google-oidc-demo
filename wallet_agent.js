@@ -252,7 +252,24 @@ let v2LastSeq = -1;
 
 // v2 폐기 트리를 IdP와 증분 동기화한다. 처음이거나 epoch가 바뀌었거나(재기준화) 로그가
 // 절단됐으면(tooOld) 전체를 다시 받아 재구성하고, 그 외에는 변경분만 적용한다.
-export async function syncRevocationTreeV2() {
+// 동기화는 모듈 전역(v2RevTree/v2Epoch/v2LastSeq)을 갈아끼우므로 겹쳐 돌면 안 된다.
+// 겹치면 한쪽이 전체 재구성으로 트리를 바꾼 뒤 다른 쪽이 자기 옛 응답의 root와 대조해
+// 허위 불일치로 실패한다 — 아무 잘못 없는 사용자의 트랜잭션이 실패하는 경로다.
+// 뒤에 온 호출은 앞선 동기화가 끝난 뒤에 자기 요청을 새로 보낸다(결과 공유가 아니다 —
+// 늦게 온 쪽도 최신 상태를 봐야 한다).
+let v2SyncChain = Promise.resolve();
+
+export function syncRevocationTreeV2() {
+  const run = v2SyncChain.then(doSyncRevocationTreeV2, doSyncRevocationTreeV2);
+  // 앞 동기화가 실패해도 체인은 이어져야 한다(거부를 흡수한 꼬리를 다음 링크로 쓴다).
+  v2SyncChain = run.then(
+    () => {},
+    () => {},
+  );
+  return run;
+}
+
+async function doSyncRevocationTreeV2() {
   // --- 증분 시도: 트리가 있고 epoch를 알 때만 ---
   if (v2RevTree !== null && v2Epoch >= 0) {
     const res = await fetch(`${IDP_ORIGIN}/idp/revocation_state_v2?since=${v2LastSeq}&epoch=${v2Epoch}`);
@@ -267,11 +284,16 @@ export async function syncRevocationTreeV2() {
           await v2RevTree.insert(BigInt(m.leaf.value));
         }
       }
-      v2LastSeq = body.seq;
       const localRoot = v2RevTree.getRoot().toString();
       if (localRoot !== body.root) {
+        // 캐시를 반드시 버린다. 남겨두면 다음 호출도 이 오염된 트리로 증분 분기에
+        // 들어가 똑같이 실패해, 지갑을 손으로 재시작할 때까지 영구히 막힌다.
+        // (예: IdP가 커밋을 저장하지 못한 채 재시작해 더 낮은 seq와 옛 root를 서빙하면
+        //  IdP는 보낼 변경이 없고 우리 트리는 앞서 있어, 증분으로는 영원히 못 맞춘다.)
+        invalidateRevocationTreeV2();
         throw new Error(`v2 incremental root ${localRoot} != IdP root ${body.root}`);
       }
+      v2LastSeq = body.seq;
       return { epoch: v2Epoch, lastSeq: v2LastSeq, root: localRoot, mode: 'incremental' };
     }
     // tooOld -> 아래 전체 재조회로 폴백
@@ -283,14 +305,25 @@ export async function syncRevocationTreeV2() {
   const body = await res.json();
   // leaves[0]은 anchor (0,0,0) — buildIMTv2가 자동으로 만들므로 값만, 물리 순서대로 넣는다.
   const orderedValues = body.leaves.slice(1).map((l) => BigInt(l.value));
-  v2RevTree = await buildIMTv2(REVOCATION_TREE_DEPTH_V2, orderedValues);
-  v2Epoch = body.epoch;
-  v2LastSeq = body.seq;
-  const localRoot = v2RevTree.getRoot().toString();
+  // 검증 전에는 전역에 손대지 않는다 — 어긋난 트리를 캐시에 남기면 이후 요청이
+  // 그것을 이어서 쓰게 된다.
+  const rebuilt = await buildIMTv2(REVOCATION_TREE_DEPTH_V2, orderedValues);
+  const localRoot = rebuilt.getRoot().toString();
   if (localRoot !== body.root) {
+    invalidateRevocationTreeV2();
     throw new Error(`v2 full-rebuild root ${localRoot} != IdP root ${body.root}`);
   }
+  v2RevTree = rebuilt;
+  v2Epoch = body.epoch;
+  v2LastSeq = body.seq;
   return { epoch: v2Epoch, lastSeq: v2LastSeq, root: localRoot, mode: 'full' };
+}
+
+// 캐시를 버려 다음 호출이 전체 재조회부터 다시 하게 한다.
+function invalidateRevocationTreeV2() {
+  v2RevTree = null;
+  v2Epoch = -1;
+  v2LastSeq = -1;
 }
 
 // v2 비멤버십 witness. sess/acct 각각 lowNextIndex를 포함하며, submitTransaction의
@@ -310,9 +343,8 @@ export async function fetchRevocationWitnessesV2(rTokenField, auidField) {
 
 // 테스트/벤치가 캐시를 초기화할 수 있게 한다(모듈 상태를 리셋). Stage A 운영 경로엔 무관.
 export function _resetRevocationTreeV2ForTest() {
-  v2RevTree = null;
-  v2Epoch = -1;
-  v2LastSeq = -1;
+  invalidateRevocationTreeV2();
+  v2SyncChain = Promise.resolve();
 }
 
 // PPIDWallet.execute()의 revocationRoot 파라미터와 RevocationRegistry는 bytes32를
