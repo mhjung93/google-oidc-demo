@@ -1026,6 +1026,17 @@ app.post('/authorize/login', async (req, res) => {
   if (!record) {
     return res.status(400).json({ success: false, error: 'Invalid or expired authorization request' });
   }
+  // 세션 바인딩은 **첫 로그인 성공에 고정**된다. 나중 로그인이 덮어쓸 수 있으면, 데모
+  // 자격증명이 공개돼 있고 request_uri도 RP FE가 아는 값이라, 남이 같은 request_uri로
+  // 로그인해 바인딩을 빼앗고 사용자의 동의를 영구히 403으로 만들 수 있다(반복 가능한 DoS).
+  // 이미 다른 세션에 묶였으면 여기서 끊는다 — 비밀번호 확인보다도 앞이다.
+  if (record.sessionId !== undefined && record.sessionId !== req.sessionID) {
+    return res.status(409).json({
+      success: false,
+      error: 'this authorization request is already bound to another browser session',
+    });
+  }
+
   const user = users[username];
   if (!user || user.password !== password) {
     return res.status(401).json({ success: false, error: 'Invalid credentials' });
@@ -1493,6 +1504,17 @@ app.post('/consent_result', async (req, res) => {
 // 엔드포인트를 실제로 호출하는 코드는(grep으로 확인) 이 저장소 안에 없다 — 도입
 // 계획 문서(docs/superpowers/plans/2026-07-16-b2-transaction-tracing-plan.md)에만
 // 언급되고 실제 소비자는 구현되지 않았다.
+// 감사자 자격만 판정하고 아무것도 돌려주지 않는다(부수효과 없음).
+//
+// 왜 필요한가. RP 백엔드(server.js)는 B2 추적 요청을 IdP로 넘기는 통로인데, 감사자
+// 시크릿을 보유하지 않으므로 **자격의 유효성을 스스로 판단할 수 없다.** 그래서 헤더
+// 존재만 보고 넘어가면, 잘못된 자격을 든 호출자도 RP의 로컬 조회까지 도달해
+// 404(모르는 지갑)와 그 외의 차이로 "이 지갑이 이 RP에 로그인한 적 있는지"를 알아낼 수
+// 있다(2026-09-04 리뷰). RP가 조회 전에 이 엔드포인트로 자격을 먼저 확인하게 한다.
+app.post('/idp/auditor/check', requireIdPAuditor, (req, res) => {
+  res.json({ ok: true });
+});
+
 app.post('/idp/lookup_uid_by_r_token', requireIdPAuditor, (req, res) => {
   const { r_token } = req.body ?? {};
   if (!r_token) {
@@ -1680,10 +1702,15 @@ app.post('/idp/revoke', requireIdPAdmin, serializeAdminMutation(async (req, res)
     }
     expiryBlock = maxHeight;
   } else {
-    // 계정 폐기는 항상 통과한다. 폐기 직전에 발급된 크레덴셜(만료가 최대
-    // 발급시각 + CREDENTIAL_LIFETIME_BLOCKS)까지 덮어야 하므로 만료 블록은
-    // 현재 블록 + 크레덴셜 수명이다.
-    expiryBlock = currentBlock + CREDENTIAL_LIFETIME_BLOCKS;
+    // 계정 폐기는 항상 통과한다. 폐기 직전에 발급된 크레덴셜까지 덮어야 하므로 만료
+    // 블록은 "현재 블록 + 크레덴셜 수명"이다.
+    //
+    // 여기에 MAX_HEIGHT_SLACK_BLOCKS를 더해야 한다. 발급 상한이
+    // currentBlock + CREDENTIAL_LIFETIME_BLOCKS + MAX_HEIGHT_SLACK_BLOCKS까지 허용하므로,
+    // 여유 없이 잡으면 그 폭만큼 구간이 열린다: 폐기 리프는 만료로 회수되는데 크레덴셜은
+    // 아직 살아 있어 계정 비멤버십을 다시 통과한다. 상한을 넓힌 만큼 폐기 창도 넓힌다.
+    // (2026-09-04 리뷰. tests/test_idp_publish_behavior.mjs 케이스 3-e가 고정한다.)
+    expiryBlock = currentBlock + CREDENTIAL_LIFETIME_BLOCKS + MAX_HEIGHT_SLACK_BLOCKS;
   }
 
   try {

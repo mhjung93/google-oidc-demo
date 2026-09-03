@@ -19,6 +19,10 @@ import { startIsolatedIdP, revokeAndPublish } from './helpers/isolated_idp.mjs';
 const RPC = process.env.ETH_RPC_URL || 'http://127.0.0.1:8545';
 const CAPACITY = 2 ** 20; // 깊이 20
 const CREDENTIAL_LIFETIME_BLOCKS = 300;
+// custom_idp.js의 MAX_HEIGHT_SLACK_BLOCKS와 같아야 한다. 계정 폐기 리프의 만료가
+// lifetime + slack이므로, 만료를 유발하려면 그만큼 채굴해야 한다.
+const MAX_HEIGHT_SLACK_BLOCKS = 32;
+const BLOCKS_TO_EXPIRE = CREDENTIAL_LIFETIME_BLOCKS + MAX_HEIGHT_SLACK_BLOCKS + 1;
 
 async function rpc(method, params = []) {
   const r = await fetch(RPC, {
@@ -91,7 +95,7 @@ const uniqueValue = () => `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
   });
   try {
     await revokeAndPublish(idp, uniqueValue()); // used 2 — 이 리프만 만료시킬 것이다
-    await rpc('hardhat_mine', [`0x${(CREDENTIAL_LIFETIME_BLOCKS + 1).toString(16)}`]);
+    await rpc('hardhat_mine', [`0x${BLOCKS_TO_EXPIRE.toString(16)}`]);
     await revokeAndPublish(idp, uniqueValue()); // used 3 (방금 폐기라 살아있다)
 
     const before = (await idp.get('/idp/revocation_state_v2')).body;
@@ -181,7 +185,7 @@ const uniqueValue = () => `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
     assert.equal(before.leaves.length, 3);
 
     // 게시된 두 리프를 만료시킨다.
-    await rpc('hardhat_mine', [`0x${(CREDENTIAL_LIFETIME_BLOCKS + 1).toString(16)}`]);
+    await rpc('hardhat_mine', [`0x${BLOCKS_TO_EXPIRE.toString(16)}`]);
 
     await idp.post('/idp/revoke', { type: 'account', value: uniqueValue() });
     const prepared = await idp.post('/idp/publish/prepare');
@@ -223,7 +227,7 @@ const uniqueValue = () => `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
     assert.equal(queued.status, 200);
 
     // 게시가 지연되는 동안 접수 리프의 명목 만료가 지나간다.
-    await rpc('hardhat_mine', [`0x${(CREDENTIAL_LIFETIME_BLOCKS + 1).toString(16)}`]);
+    await rpc('hardhat_mine', [`0x${BLOCKS_TO_EXPIRE.toString(16)}`]);
 
     const prepared = await idp.post('/idp/publish/prepare');
     assert.equal(prepared.status, 200);
@@ -257,12 +261,12 @@ const uniqueValue = () => `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
   try {
     await revokeAndPublish(idp, uniqueValue()); // used 2
     await revokeAndPublish(idp, uniqueValue()); // used 3
-    await rpc('hardhat_mine', [`0x${(CREDENTIAL_LIFETIME_BLOCKS + 1).toString(16)}`]); // 둘 다 만료
+    await rpc('hardhat_mine', [`0x${BLOCKS_TO_EXPIRE.toString(16)}`]); // 둘 다 만료
 
     // 접수한 뒤 게시 전에 이 리프까지 만료시킨다(게시 지연 상황).
     const delayed = uniqueValue();
     assert.equal((await idp.post('/idp/revoke', { type: 'account', value: delayed })).status, 200);
-    await rpc('hardhat_mine', [`0x${(CREDENTIAL_LIFETIME_BLOCKS + 1).toString(16)}`]);
+    await rpc('hardhat_mine', [`0x${BLOCKS_TO_EXPIRE.toString(16)}`]);
     const delayedLeaf = (await leafValue(TAG_ACCOUNT, delayed)).toString();
 
     const prepared = await idp.post('/idp/publish/prepare');
@@ -302,7 +306,7 @@ const uniqueValue = () => `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
   });
   try {
     await revokeAndPublish(idp, uniqueValue()); // used 2 — 이것만 만료시킨다
-    await rpc('hardhat_mine', [`0x${(CREDENTIAL_LIFETIME_BLOCKS + 1).toString(16)}`]);
+    await rpc('hardhat_mine', [`0x${BLOCKS_TO_EXPIRE.toString(16)}`]);
     await revokeAndPublish(idp, uniqueValue()); // used 3 (살아있음)
 
     const before = (await idp.get('/idp/revocation_state_v2')).body;
@@ -340,7 +344,7 @@ const uniqueValue = () => `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
     const victimLeaf = (await leafValue(TAG_ACCOUNT, victim)).toString();
     await revokeAndPublish(idp, victim); // used 2
     await revokeAndPublish(idp, uniqueValue()); // used 3
-    await rpc('hardhat_mine', [`0x${(CREDENTIAL_LIFETIME_BLOCKS + 1).toString(16)}`]); // 둘 다 만료
+    await rpc('hardhat_mine', [`0x${BLOCKS_TO_EXPIRE.toString(16)}`]); // 둘 다 만료
 
     // 재기준화 회차를 만든다(projected 4 >= 임계치 4).
     await idp.post('/idp/revoke', { type: 'account', value: uniqueValue() });
@@ -371,6 +375,35 @@ const uniqueValue = () => `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
         `(재기준화 직후 ${afterRebaseline.leaves.length}개 -> 최종 ${final.leaves.length}개)`,
     );
     console.log('OK (3-d): 게시·만료된 리프의 재폐기가 재기준화에 먹히지 않는다');
+  } finally {
+    await idp.stop();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 3-e. 계정 폐기 리프의 만료는 max_height 상한의 **여유(slack)까지** 덮어야 한다.
+//
+// IdP는 max_height <= currentBlock + CREDENTIAL_LIFETIME_BLOCKS + MAX_HEIGHT_SLACK_BLOCKS를
+// 허용한다(지갑이 값을 계산한 시점과 IdP가 블록을 읽는 시점의 간격 흡수). 그런데 계정
+// 폐기 리프의 만료가 여유 없이 +CREDENTIAL_LIFETIME_BLOCKS라면, 그 차이만큼 구간이 열린다:
+// 리프는 만료로 회수되는데 크레덴셜은 아직 살아 있어 계정 비멤버십을 다시 통과한다.
+// 상한을 넓힌 것과 같은 폭만큼 폐기 창도 넓혀야 한다.
+// ---------------------------------------------------------------------------
+{
+  const idp = await startIsolatedIdP();
+  try {
+    const before = BigInt(await rpc('eth_blockNumber', []));
+    const revoked = await idp.post('/idp/revoke', { type: 'account', value: uniqueValue() });
+    assert.equal(revoked.status, 200);
+    const expiry = BigInt(revoked.body.expiryBlock);
+    const lifetime = BigInt(CREDENTIAL_LIFETIME_BLOCKS);
+    const slack = BigInt(MAX_HEIGHT_SLACK_BLOCKS);
+    assert.ok(
+      expiry >= before + lifetime + slack,
+      `계정 폐기 리프의 만료가 max_height 상한을 덮지 못한다 ` +
+        `(블록 ${before}, 만료 ${expiry}, 필요 최소 ${before + lifetime + slack})`,
+    );
+    console.log(`OK (3-e): 폐기 리프 만료가 max_height 상한의 여유까지 덮는다 (${expiry} >= ${before + lifetime + slack})`);
   } finally {
     await idp.stop();
   }

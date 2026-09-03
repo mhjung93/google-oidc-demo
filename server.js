@@ -396,7 +396,11 @@ app.get('/', (req, res) => {
 // 차단 목록으로 막으면 새 파일이 생길 때마다 다시 뚫린다 — 이번 사고가 정확히 그
 // 형태였다. 그래서 기본을 "차단"으로 두고 실제로 필요한 것만 연다. 데모가 브라우저에
 // 내려보내는 것은 index.html과 client.js 둘뿐이다(index.html의 나머지 참조는 CDN).
-const PUBLIC_STATIC_FILES = new Set(['/index.html', '/client.js']);
+// pi_ppid_vkey.json은 RP FE가 statement의 pi_PPID 증명을 **자기 브라우저에서** 검증할 때
+// 쓴다(client.js). 검증키는 공개 값이라 노출돼도 무방하지만, 빠뜨리면 로컬 검증이 조용히
+// 실패하고 RP는 "local checks failed"로 검증을 건너뛴다 — 허용 목록을 좁게 잡으면서
+// 실제로 그렇게 깨뜨렸다(2026-09-04). 여기 추가할 때는 "공개돼도 되는가"를 먼저 묻는다.
+const PUBLIC_STATIC_FILES = new Set(['/index.html', '/client.js', '/build/mode2/pi_ppid_vkey.json']);
 app.use((req, res, next) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') return next();
   if (!PUBLIC_STATIC_FILES.has(req.path)) return next();
@@ -1004,6 +1008,25 @@ app.post('/api/mode2/trace_transaction', async (req, res) => {
         'auditor credential required: send X-IdP-Auditor-Secret. The RP server does not hold an ' +
         'auditor secret — tracing is an auditor action, not something the RP can perform on its own.',
     });
+  }
+
+  // 헤더 존재만으로는 부족하다. RP는 시크릿을 갖고 있지 않아 값의 유효성을 스스로 판단할
+  // 수 없는데, 검증 없이 아래 로컬 조회로 넘어가면 잘못된 자격을 든 호출자도 404(모르는
+  // 지갑)와 그 외의 차이로 "이 지갑이 이 RP에 로그인한 적 있는지"를 알아낸다 — 인증을
+  // 조회 앞에 둔 목적 자체가 무너진다. 그래서 IdP에 판정을 맡긴다.
+  try {
+    const check = await fetch(`${CUSTOM_IDP_BASE_URL}/idp/auditor/check`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-IdP-Auditor-Secret': callerAuditorSecret },
+      body: '{}',
+    });
+    if (!check.ok) {
+      return res.status(check.status === 503 ? 503 : 401).json({
+        error: 'auditor credential rejected by the IdP',
+      });
+    }
+  } catch (err) {
+    return res.status(502).json({ error: `failed to reach IdP to validate the auditor credential: ${err.message}` });
   }
 
   if (!to) return res.status(400).json({ error: 'to (wallet address) is required' });

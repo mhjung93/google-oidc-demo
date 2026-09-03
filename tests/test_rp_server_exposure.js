@@ -35,8 +35,16 @@ for (const path of [
 console.log('OK (1): 민감 파일·서버 소스가 서빙되지 않는다');
 
 // --- 2. 데모에 필요한 자산은 그대로 서빙돼야 한다 -------------------------------
-for (const path of ['/', '/index.html', '/client.js']) {
+// client.js가 브라우저에서 pi_PPID 증명을 로컬 검증할 때 쓰는 검증키까지 포함한다.
+// 허용 목록을 좁게 잡으면서 이 파일을 빠뜨려 RP FE의 로컬 검증이 조용히 실패했고,
+// 이 테스트가 세 경로만 보고 있어 놓쳤다(2026-09-04).
+for (const path of ['/', '/index.html', '/client.js', '/build/mode2/pi_ppid_vkey.json']) {
   assert.equal(await status(path), 200, `${path} 는 계속 서빙돼야 한다(데모가 깨진다)`);
+}
+
+// 허용 목록이 실제로 좁은지도 같이 본다 — build/ 아래의 다른 산출물은 열리면 안 된다.
+for (const path of ['/build/mode2/pi_pk_i_final.zkey', '/build/mode2/pi_pk_i.r1cs']) {
+  assert.notEqual(await status(path), 200, `${path} 는 서빙되면 안 된다`);
 }
 console.log('OK (2): index.html·client.js는 정상 서빙된다');
 
@@ -53,6 +61,21 @@ assert.ok(
   `추적은 감사자 자격 없이 거부돼야 한다 (받은 코드 ${traceNoAuth})`,
 );
 console.log('OK (3): B2 추적이 감사자 자격 없이는 거부된다');
+
+// 헤더 '존재'만 보면 아무 값이나 통과해 로컬 조회까지 도달하고, 404(모르는 지갑) vs
+// 그 외로 "이 지갑이 이 RP에 로그인한 적 있는지"가 새어나간다 — 인증을 앞에 둔 이유가
+// 바로 그 오라클을 막는 것이었으므로, 값도 실제로 검증해야 한다.
+const traceJunk = await status('/api/mode2/trace_transaction', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'X-IdP-Auditor-Secret': 'junk-not-a-real-secret' },
+  body: JSON.stringify({ to: '0x000000000000000000000000000000000000dead' }),
+});
+assert.ok(
+  traceJunk === 401 || traceJunk === 403,
+  `잘못된 감사자 자격은 조회에 도달하기 전에 거부돼야 한다 (받은 코드 ${traceJunk} — ` +
+    '404가 나오면 지갑 존재 여부가 새는 오라클이다)',
+);
+console.log('OK (3-b): 잘못된 감사자 자격이 조회 전에 거부된다');
 
 // --- 4. 인증 없는 릴레이 엔드포인트가 없어야 한다 -------------------------------
 // /api/mode2/relay_transaction은 인증 없이 임의의 to/data를 노드의 unlocked 계정으로

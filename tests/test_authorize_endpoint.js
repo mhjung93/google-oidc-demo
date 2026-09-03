@@ -108,6 +108,19 @@ async function main() {
   }
   console.log('PASS: 로그인하지 않은 세션은 동의할 수 없다');
 
+  // 데모 자격증명은 공개돼 있고 request_uri도 RP FE가 안다. 그래서 남이 같은
+  // request_uri로 로그인에 성공해 세션 바인딩을 **덮어쓸** 수 있으면, 사용자의 동의가
+  // 영구히 403이 되어 흐름이 죽는다(반복 가능한 DoS). 바인딩은 첫 로그인에 고정돼야 한다.
+  console.log('-- another session logs in on the same request_uri (must not take over) --');
+  const takeover = await fetch(`${IDP}/authorize/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ request_uri, username: 'testuser', password: 'password123' }),
+  });
+  if (takeover.status === 200 && (await takeover.clone().json()).success) {
+    throw new Error('FAIL: 다른 세션의 로그인이 기존 세션 바인딩을 덮어썼다');
+  }
+  console.log('PASS: 나중 로그인이 앞선 세션 바인딩을 빼앗지 못한다');
+
   const consent = await fetch(`${IDP}/authorize/consent`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: sessionCookie },
     body: JSON.stringify({ request_uri, allowed: true }),
