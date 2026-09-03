@@ -545,7 +545,7 @@ function stateFileError(detail) {
   return new Error(
     `[CustomIdP] IdP state file ${IDP_STATE_FILE} is unusable (${detail}). ` +
     'Refusing to start with a silently wrong revocation state: if the published root does not ' +
-    'match what wallets rebuild from /idp/revocation_state, every wallet transaction fails. ' +
+    'match what wallets rebuild from /idp/revocation_state_v2, every wallet transaction fails. ' +
     'Inspect the file to recover it. Do NOT delete it to "fix" this: the on-chain ' +
     'RevocationRegistry still holds the last root this IdP published, so starting from an empty ' +
     'tree makes the IdP serve a root that does not match it — every wallet\'s execute() then ' +

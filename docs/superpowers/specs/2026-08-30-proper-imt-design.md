@@ -136,7 +136,7 @@ prepare 단계에서 "살아있는 값만으로 쌓은 새 트리"를 후보로 
 
 ```
 로그 항목 = { seq, index, leaf }
-조회      = GET /idp/revocation_state?since=<seq>
+조회      = GET /idp/revocation_state_v2?since=<seq>   // 전체 조회는 since 생략
 응답      = { epoch, seq, root, mutations: [...] }   // seq 오름차순
 ```
 
