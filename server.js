@@ -28,11 +28,6 @@ const {
   GOOGLE_CLIENT_ID,
   GOOGLE_CLIENT_SECRET,
   SESSION_SECRET,
-  // B2 추적(/api/mode2/trace_transaction)이 custom_idp.js의
-  // /idp/lookup_uid_by_auid_i를 호출할 때 쓰는 감사자 시크릿. IDP_ADMIN_SECRET과는
-  // 분리된 값이다(관리자=폐기 권한, 감사자=추적 권한). 하드코딩하지 않고 항상
-  // 환경변수에서만 읽는다.
-  IDP_AUDITOR_SECRET,
 } = process.env;
 
 const currentMode = parseInt(process.env.APP_MODE) || 1;
@@ -389,8 +384,24 @@ app.get('/', (req, res) => {
   `);
 });
 
-// 정적 파일 서비스 (client.js 등)
-app.use(express.static(__dirname));
+// 정적 파일 서비스 — **허용 목록만** 내보낸다.
+//
+// 예전에는 express.static(__dirname)으로 저장소 루트를 통째로 서빙했다. 그 자체로는
+// 오래 문제가 없었지만, 영속화 작업(ac30011)이 IdP 개인키(idp_keys.json)와
+// r_token->uid 매핑(idp_state.json)을 같은 루트에 놓으면서 **개인키와 프라이버시 매핑이
+// HTTP로 다운로드되는** 상태가 됐다(2026-09-04 실측: 200, 665B / 15,671B. 서버가
+// *:3000에 바인딩돼 있어 같은 네트워크에서도 받아진다). 각각의 변경은 문제가 없었고
+// 조합이 구멍이었다.
+//
+// 차단 목록으로 막으면 새 파일이 생길 때마다 다시 뚫린다 — 이번 사고가 정확히 그
+// 형태였다. 그래서 기본을 "차단"으로 두고 실제로 필요한 것만 연다. 데모가 브라우저에
+// 내려보내는 것은 index.html과 client.js 둘뿐이다(index.html의 나머지 참조는 CDN).
+const PUBLIC_STATIC_FILES = new Set(['/index.html', '/client.js']);
+app.use((req, res, next) => {
+  if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+  if (!PUBLIC_STATIC_FILES.has(req.path)) return next();
+  return res.sendFile(path.join(__dirname, req.path));
+});
 app.use(express.json()); // For parsing application/json
 
 // Mode 2: RP credential and RP nonce request
@@ -976,6 +987,25 @@ app.use((err, req, res, next) => {
 app.post('/api/mode2/trace_transaction', async (req, res) => {
   const traceStart = now();
   const { to } = req.body ?? {};
+  // 감사자 자격은 **호출자가 제시한 것을 전달만** 한다. 서버가 자기 시크릿을 대신
+  // 붙여주면 이 프록시 하나로 감사자/관리자 권한 분리(12c161b)가 무력화된다 — RP 백엔드가
+  // 스스로 사용자를 추적할 수 있게 되고, 이 엔드포인트는 인증이 없으므로 결과적으로
+  // 누구나 추적할 수 있다(2026-09-04 리뷰에서 확인).
+  //
+  // 그래서 server.js는 더 이상 IDP_AUDITOR_SECRET을 보유·사용하지 않는다. 추적을 하려면
+  // 감사자가 자기 자격을 헤더로 제시해야 하고, RP는 그것을 IdP로 넘기는 통로일 뿐이다.
+  //
+  // 이 검사는 반드시 **입력 검증·조회보다 먼저** 와야 한다. 뒤에 두면 자격 없는 호출자도
+  // 400/404 응답 차이로 "그 지갑 주소가 이 RP에 로그인한 적이 있는지"를 알아낼 수 있다.
+  const callerAuditorSecret = req.get('X-IdP-Auditor-Secret');
+  if (!callerAuditorSecret) {
+    return res.status(401).json({
+      error:
+        'auditor credential required: send X-IdP-Auditor-Secret. The RP server does not hold an ' +
+        'auditor secret — tracing is an auditor action, not something the RP can perform on its own.',
+    });
+  }
+
   if (!to) return res.status(400).json({ error: 'to (wallet address) is required' });
 
   const auidILookupStart = now();
@@ -986,19 +1016,11 @@ app.post('/api/mode2/trace_transaction', async (req, res) => {
     return res.status(404).json({ error: 'No recorded auid_i for this wallet address (this ppid has not logged in since the RP server last restarted)' });
   }
 
-  // custom_idp.js의 /idp/lookup_uid_by_auid_i는 이제 requireIdPAuditor로 보호된다.
-  // 시크릿이 없으면 조용히 실패(예: IdP가 준 401을 그대로 흘려보내 원인 불명확)하지
-  // 않고, 여기서 바로 운영자가 원인을 알 수 있는 에러를 반환한다.
-  if (!IDP_AUDITOR_SECRET) {
-    console.error('[ERROR] /api/mode2/trace_transaction: IDP_AUDITOR_SECRET is not configured on server.js.');
-    return res.status(500).json({ error: 'trace endpoint misconfigured: IDP_AUDITOR_SECRET is not set on server.js' });
-  }
-
   try {
     const idpLookupStart = now();
     const idpResponse = await fetch(`${CUSTOM_IDP_BASE_URL}/idp/lookup_uid_by_auid_i`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-IdP-Auditor-Secret': IDP_AUDITOR_SECRET },
+      headers: { 'Content-Type': 'application/json', 'X-IdP-Auditor-Secret': callerAuditorSecret },
       body: JSON.stringify({ auid_i }),
     });
     const idpResult = await idpResponse.json();
@@ -1015,29 +1037,12 @@ app.post('/api/mode2/trace_transaction', async (req, res) => {
   }
 });
 
-app.post('/api/mode2/relay_transaction', async (req, res) => {
-  const { deploy, to, data } = req.body ?? {};
-  if (!to) return res.status(400).json({ error: 'to is required' });
-  if (!data) return res.status(400).json({ error: 'data is required' });
-  if (deploy && (!deploy.to || !deploy.data)) {
-    return res.status(400).json({ error: 'deploy.to and deploy.data are required when deploy is present' });
-  }
-
-  try {
-    const accounts = await rpcCall('eth_accounts', []);
-    const from = accounts?.[0];
-    if (!from) throw new Error('No unlocked account available from RPC node');
-
-    if (deploy) {
-      await relaySingleCall(from, deploy);
-    }
-    const txHash = await relaySingleCall(from, { to, data });
-
-    res.json({ txHash });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
+// POST /api/mode2/relay_transaction 은 2026-09-04에 제거했다.
+//
+// 인증 없이 임의의 to/data를 노드의 unlock된 계정으로 전송하는 열린 릴레이였고,
+// 저장소 어디에서도 호출하지 않았다(전수 검색으로 확인). 스폰서 실행이 다시 필요해지면
+// 호출자 인증과 대상 화이트리스트를 먼저 정하고 새로 만든다 —
+// docs/superpowers/specs/2026-07-20-ppidwallet-sponsored-execution-design.md 참고.
 
 const server = app.listen(PORT, async () => {
   if (currentMode === 2) {
@@ -1046,9 +1051,8 @@ const server = app.listen(PORT, async () => {
     if (rpRegistration) {
       console.log(`[Mode 2] Loaded persisted RP registration. rid: ${previewValue(rpRegistration.rid)}`);
     }
-    if (!IDP_AUDITOR_SECRET) {
-      console.warn('[Mode 2] IDP_AUDITOR_SECRET is not set — POST /api/mode2/trace_transaction will return 500 until it is configured.');
-    }
+    // server.js는 감사자 시크릿을 보유하지 않는다(2026-09-04). B2 추적은 감사자가
+    // X-IdP-Auditor-Secret 헤더로 자기 자격을 제시해야 하고, RP는 통로일 뿐이다.
   }
   console.log(`OIDC demo running at ${BASE_URL}`);
 });

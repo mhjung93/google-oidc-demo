@@ -46,6 +46,8 @@ CHAIN=(
 
 # 살아있는 데모 스택과 IDP_ADMIN_SECRET이 필요하다.
 LIVE=(
+  # RP 백엔드(:3000)의 노출면 — 민감 파일 비공개, 추적 권한 분리, 열린 릴레이 부재.
+  tests/test_rp_server_exposure.js
   # localhost:4000/register_rp를 부른다(127.0.0.1이 아니라 localhost라 분류에서 놓쳤었다).
   tests/test_rid_not_leaked.js
   tests/test_idp_revoke_endpoint.js

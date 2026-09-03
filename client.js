@@ -513,9 +513,18 @@ if (APP_MODE === 2) {
       const to = document.getElementById('traceInputTo').value;
       if (!to) throw new Error('to (wallet address) is required');
 
+      // 추적은 감사자 권한이다. 예전에는 RP 서버가 자기 IDP_AUDITOR_SECRET을 대신
+      // 붙여줘서 이 버튼을 누른 사람이 누구든 추적이 됐다 — 관리자/감사자 권한 분리가
+      // 무의미해지는 상태였다(2026-09-04 수정). 이제 감사자가 자기 자격을 제시해야 하고,
+      // RP 서버는 그것을 IdP로 넘기는 통로일 뿐이다.
+      //
+      // 데모라서 prompt로 받는다. 메모리에만 두고 저장하지 않는다.
+      const auditorSecret = window.prompt('B2 추적은 감사자 권한입니다. 감사자 시크릿을 입력하세요:');
+      if (!auditorSecret) throw new Error('감사자 시크릿이 없어 추적을 중단했습니다');
+
       const traceRes = await fetch('/api/mode2/trace_transaction', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-IdP-Auditor-Secret': auditorSecret },
         body: JSON.stringify({ to }),
       });
       const traceResult = await traceRes.json();
