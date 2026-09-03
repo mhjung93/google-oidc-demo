@@ -176,23 +176,25 @@ async function loginAndIssueStatement() {
   ).json();
   if (!par.request_uri) throw new Error(`/par failed: ${JSON.stringify(par)}`);
 
-  const login = await (
-    await fetch(`${IDP}/authorize/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        request_uri: par.request_uri,
-        username: 'testuser',
-        password: 'password123',
-      }),
-    })
-  ).json();
+  // 동의는 로그인한 브라우저 세션에 묶인다(2026-09-04). 로그인 응답의 세션 쿠키를
+  // 들고 다녀야 한다 — request_uri 지식만으로는 동의할 수 없다.
+  const loginRes = await fetch(`${IDP}/authorize/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      request_uri: par.request_uri,
+      username: 'testuser',
+      password: 'password123',
+    }),
+  });
+  const idpSession = (loginRes.headers.get('set-cookie') || '').split(';')[0];
+  const login = await loginRes.json();
   if (!login.success) throw new Error(`/authorize/login failed: ${JSON.stringify(login)}`);
 
   const consent = await (
     await fetch(`${IDP}/authorize/consent`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Cookie: idpSession },
       body: JSON.stringify({ request_uri: par.request_uri, allowed: true }),
     })
   ).json();

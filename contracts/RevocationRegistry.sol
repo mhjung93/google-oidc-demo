@@ -14,6 +14,8 @@ contract RevocationRegistry {
     bytes32 public latestRoot;
 
     error NotIdP();
+    /// @notice root 0은 "미게시" 표식이라 게시 대상이 될 수 없다.
+    error EmptyRoot();
 
     event RootPushed(bytes32 indexed root);
 
@@ -29,6 +31,13 @@ contract RevocationRegistry {
     /// @notice 같은 root를 다시 게시해도 해롭지 않다(무의미한 heartbeat) — latestRoot가
     ///         이미 그 값이면 값 자체는 바뀌지 않는다.
     function pushRoot(bytes32 newRoot) external onlyIdP {
+        // 0은 "아직 아무 root도 게시되지 않음"을 뜻하는 값이라(아래 isCurrentRoot) 게시
+        // 대상이 될 수 없다. 게시 스크립트나 데몬이 빈 값을 한 번 밀면 isCurrentRoot가
+        // 모든 root에 false를 돌려주고, 운영자가 알아채고 재게시할 때까지 **모든**
+        // PPIDWallet.execute가 StaleRevocationRoot로 revert한다(2026-09-04 리뷰).
+        //
+        // 단조성은 요구할 수 없다 — 재기준화가 root를 순증시키지 않는다(설계 3.3절).
+        if (newRoot == bytes32(0)) revert EmptyRoot();
         latestRoot = newRoot;
         emit RootPushed(newRoot);
     }

@@ -1023,6 +1023,16 @@ app.post('/authorize/login', async (req, res) => {
 
     pinAuidToAccount(user, verifySignals[5]);
 
+    // 이 인가 요청을 **로그인한 브라우저 세션**에 묶는다.
+    //
+    // request_uri는 비밀이 아니다: RP FE가 팝업을 그 URL로 보내야 하므로 지갑의
+    // /loginStatus를 통해 RP에 전달된다. 그런데 IdP는 전역 와일드카드 cors()를 쓰므로,
+    // 동의가 "request_uri를 안다"만으로 인가되면 RP 페이지가 사용자 대신 승인하거나
+    // 거부할 수 있다 — 동의 단계가 통째로 우회된다(2026-09-04 리뷰).
+    //
+    // 세션에 묶으면 그 공격이 막힌다: 크로스 오리진 fetch는 credentials 없이는 idp_sid
+    // 쿠키를 싣지 못하고, 와일드카드 CORS는 credentials를 허용하지 않는다.
+    record.sessionId = req.sessionID;
     record.authenticatedUid = user.uid;
     record.arid_i = verifySignals[1];
     record.auid_i = verifySignals[2];
@@ -1045,6 +1055,17 @@ app.post('/authorize/consent', (req, res) => {
   }
   if (!record.authenticatedUid) {
     return res.status(400).json({ error: 'invalid_request', error_description: 'Login has not completed for this request' });
+  }
+  // 로그인한 그 세션만 동의할 수 있다. request_uri는 RP FE도 아는 값이라(팝업을 그
+  // URL로 보내야 한다) 지식만으로 인가하면 동의 단계가 우회된다 — /authorize/login의
+  // record.sessionId 주석 참조.
+  if (record.sessionId !== req.sessionID) {
+    return res.status(403).json({
+      error: 'access_denied',
+      error_description:
+        'consent must come from the browser session that logged in. Knowing the request_uri is not ' +
+        'enough — the RP frontend also learns it.',
+    });
   }
 
   pushedRequests.delete(request_uri); // single-use regardless of outcome

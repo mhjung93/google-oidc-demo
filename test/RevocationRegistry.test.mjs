@@ -54,6 +54,17 @@ describe('RevocationRegistry', function () {
     expect(await reg.isCurrentRoot(R(1))).to.equal(false);
   });
 
+  // 0은 "아직 아무 root도 게시되지 않음" 표식이라 게시 대상이 될 수 없다. 스크립트나
+  // 데몬이 빈 값을 한 번 밀면 isCurrentRoot가 모든 root에 false를 돌려주고, 알아채고
+  // 재게시할 때까지 모든 PPIDWallet.execute가 StaleRevocationRoot로 revert한다.
+  it('rejects pushing the zero root', async function () {
+    const { reg } = await deploy();
+    await reg.pushRoot(R(7));
+    await expect(reg.pushRoot(R(0))).to.be.revertedWithCustomError(reg, 'EmptyRoot');
+    expect(await reg.latestRoot()).to.equal(R(7));
+    expect(await reg.isCurrentRoot(R(7))).to.equal(true);
+  });
+
   it('republishing the same root is a harmless no-op', async function () {
     const { reg } = await deploy();
     await reg.pushRoot(R(1));

@@ -83,16 +83,33 @@ async function main() {
 
   console.log('-- full happy path: login then consent (expect code in redirectTo) --');
   const { request_uri, state } = await pushRequest(step8);
+  // 동의는 로그인한 **그 브라우저 세션**에 묶인다. 그래서 로그인 응답의 세션 쿠키를
+  // 들고 다녀야 한다(실제 브라우저가 하는 일과 같다).
   const goodLogin = await fetch(`${IDP}/authorize/login`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ request_uri, username: 'testuser', password: 'password123' }),
   });
   const goodLoginBody = await goodLogin.json();
   if (!goodLoginBody.success) throw new Error(`FAIL: login failed: ${JSON.stringify(goodLoginBody)}`);
+  const sessionCookie = (goodLogin.headers.get('set-cookie') || '').split(';')[0];
+  if (!sessionCookie) throw new Error('FAIL: /authorize/login did not set a session cookie');
   console.log('PASS: login succeeded (ZKP fully verified)');
 
-  const consent = await fetch(`${IDP}/authorize/consent`, {
+  // request_uri는 비밀이 아니다 — RP FE가 팝업을 그 URL로 보내야 하므로 /loginStatus를
+  // 통해 RP에 전달된다. IdP는 와일드카드 CORS까지 쓰므로, 동의가 request_uri 지식만으로
+  // 인가되면 RP 페이지가 사용자 대신 승인(또는 거부)할 수 있다. 세션에 묶여야 한다.
+  console.log('-- consent from a different session (expect 403) --');
+  const foreignConsent = await fetch(`${IDP}/authorize/consent`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ request_uri, allowed: true }),
+  });
+  if (foreignConsent.status !== 403) {
+    throw new Error(`FAIL: 다른 세션의 동의는 403이어야 한다 (받은 코드 ${foreignConsent.status})`);
+  }
+  console.log('PASS: 로그인하지 않은 세션은 동의할 수 없다');
+
+  const consent = await fetch(`${IDP}/authorize/consent`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: sessionCookie },
     body: JSON.stringify({ request_uri, allowed: true }),
   });
   const consentBody = await consent.json();
@@ -105,7 +122,7 @@ async function main() {
 
   console.log('-- reusing the same request_uri for consent again (expect 400, single-use) --');
   const reuseConsent = await fetch(`${IDP}/authorize/consent`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: sessionCookie },
     body: JSON.stringify({ request_uri, allowed: true }),
   });
   if (reuseConsent.status !== 400) throw new Error(`FAIL: expected 400, got ${reuseConsent.status}`);

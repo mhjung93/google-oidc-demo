@@ -1131,10 +1131,17 @@ app.post('/submitTransaction', async (req, res) => {
     const payloadData = data ?? '0x';
     const payload = { to, value: value.toString(), data: payloadData, nonce: currentNonce.toString() };
 
+    // PPIDWallet.execute()가 계산하는 것과 정확히 같아야 한다. 체인 id와 지갑 주소가
+    // 앞에 붙는다 — 도메인 분리가 없으면 같은 배포가 있는 다른 체인에 서명·증명이
+    // 그대로 이식된다(2026-09-04 리뷰).
+    //
+    // 체인 id는 business(=IdP가 서명한 statement)가 아니라 **지금 연결된 노드**에서
+    // 읽는다. 컨트랙트가 쓰는 값은 block.chainid이므로 그것과 같아야 한다.
+    const signingChainId = BigInt(await rpcCall('eth_chainId')).toString();
     const payloadHash = keccak256(
       AbiCoder.defaultAbiCoder().encode(
-        ['address', 'uint256', 'bytes', 'uint256'],
-        [payload.to, payload.value, payload.data, payload.nonce],
+        ['uint256', 'address', 'address', 'uint256', 'bytes', 'uint256'],
+        [signingChainId, walletAddress, payload.to, payload.value, payload.data, payload.nonce],
       ),
     );
     const sigRaw = secp256k1.sign(payloadHash.slice(2), sk_i);

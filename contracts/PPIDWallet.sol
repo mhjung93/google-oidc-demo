@@ -54,8 +54,19 @@ contract PPIDWallet {
     ) external returns (bool ok) {
         if (payload.nonce != nonce) revert NonceMismatch(nonce, payload.nonce);
 
-        bytes32 payloadHash = keccak256(abi.encode(payload.to, payload.value, payload.data, payload.nonce));
+        // 서명은 이 체인과 이 지갑에 묶인다. 도메인 분리가 없으면 서명이 (그리고 함께
+        // calldata에 실리는 증명이) 그대로 이식된다: 같은 factory/registry가 두 체인에
+        // 배포되면 CREATE2라 지갑 주소가 같으므로, 한쪽의 execute 트랜잭션을 다른 쪽의
+        // 같은 nonce에 재제출해 지갑을 비울 수 있다(2026-09-04 리뷰).
+        bytes32 payloadHash = keccak256(
+            abi.encode(block.chainid, address(this), payload.to, payload.value, payload.data, payload.nonce)
+        );
         address recovered = recoverSigner(payloadHash, sig);
+        // ecrecover는 서명이 잘못됐을 때 revert하지 않고 address(0)을 돌려준다. 그런데
+        // 회로는 pk_i != 0을 제약하지 않고 IdP는 pk_i를 볼 수 없어(pi_arid_i에서 private)
+        // pk_i = 0인 크레덴셜이 실제로 발급될 수 있다. 그 경우 address(uint160(0)) ==
+        // address(0)이라 아래 비교가 공허하게 통과해, 그 지갑은 아무 서명으로나 열린다.
+        if (recovered == address(0)) revert BadSignature();
         // pk_i is the Ethereum address derived from the secp256k1 session public key
         // (not a hash of the raw pubkey bytes), so it compares directly against
         // ecrecover's output with no extra derivation needed.

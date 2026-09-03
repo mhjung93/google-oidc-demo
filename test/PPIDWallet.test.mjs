@@ -27,7 +27,7 @@ function ethAddressFromSecp256k1Pubkey(pubKeyUncompressed65) {
 describe("PPIDWallet", function () {
   this.timeout(120000);
 
-  async function buildValidCallData({ maxHeight = 999_999_999n, chainId } = {}) {
+  async function buildValidCallData({ maxHeight = 999_999_999n, chainId, pkIOverride } = {}) {
     const eddsa = await buildEddsa();
     const poseidon = await buildPoseidon();
     const F = eddsa.F;
@@ -40,7 +40,8 @@ describe("PPIDWallet", function () {
 
     const sk_i = secp256k1.utils.randomPrivateKey();
     const pubUncompressed = secp256k1.getPublicKey(sk_i, false);
-    const pk_i = BigInt(ethAddressFromSecp256k1Pubkey(pubUncompressed));
+    // pkIOverride는 "회로가 pk_i를 제약하지 않는다"는 사실을 재현하기 위한 테스트 전용 경로다.
+    const pk_i = pkIOverride !== undefined ? pkIOverride : BigInt(ethAddressFromSecp256k1Pubkey(pubUncompressed));
 
     const rp_nonce = valueToField("rp-nonce-test");
     const rid = valueToField("rid-test");
@@ -108,12 +109,15 @@ describe("PPIDWallet", function () {
     const calldata = JSON.parse("[" + (await snarkjs.groth16.exportSolidityCallData(proof, publicSignals)) + "]");
     const [pA, pB, pC] = calldata;
 
-    function signPayload(payload) {
+    // 서명은 체인과 지갑에 묶인다. 도메인 분리가 없으면 같은 배포가 두 체인에 있을 때
+    // (CREATE2라 주소가 같다) 한쪽의 execute 트랜잭션을 다른 쪽에 그대로 재제출할 수 있다.
+    function signPayload(payload, walletAddress, chainId) {
+      if (!walletAddress) throw new Error("signPayload: walletAddress required (domain separation)");
       const payloadHash = getBytes(
         hre.ethers.keccak256(
           hre.ethers.AbiCoder.defaultAbiCoder().encode(
-            ["address", "uint256", "bytes", "uint256"],
-            [payload.to, payload.value, payload.data, payload.nonce],
+            ["uint256", "address", "address", "uint256", "bytes", "uint256"],
+            [chainId, walletAddress, payload.to, payload.value, payload.data, payload.nonce],
           ),
         ),
       );
@@ -174,7 +178,7 @@ describe("PPIDWallet", function () {
     const recipient = hre.ethers.Wallet.createRandom().address;
     const value = hre.ethers.parseEther("0.1");
     const payload = { to: recipient, value, data: "0x", nonce: await wallet.nonce() };
-    const sig = signPayload(payload);
+    const sig = signPayload(payload, wallet.target, (await hre.ethers.provider.getNetwork()).chainId);
 
     await expect(wallet.execute(payload, sig, pA, pB, pC, pk_i, pk_IdP_x, pk_IdP_y, maxHeight, revocationRoot))
       .to.not.be.reverted;
@@ -185,7 +189,7 @@ describe("PPIDWallet", function () {
   it("rejects nonce reuse (replay)", async function () {
     const { wallet, pk_i, pk_IdP_x, pk_IdP_y, maxHeight, pA, pB, pC, signPayload, revocationRoot } = await deployFixture();
     const payload = { to: hre.ethers.Wallet.createRandom().address, value: 0, data: "0x", nonce: await wallet.nonce() };
-    const sig = signPayload(payload);
+    const sig = signPayload(payload, wallet.target, (await hre.ethers.provider.getNetwork()).chainId);
     await (await wallet.execute(payload, sig, pA, pB, pC, pk_i, pk_IdP_x, pk_IdP_y, maxHeight, revocationRoot)).wait();
 
     await expect(
@@ -196,7 +200,7 @@ describe("PPIDWallet", function () {
   it("rejects a tampered signature", async function () {
     const { wallet, pk_i, pk_IdP_x, pk_IdP_y, maxHeight, pA, pB, pC, signPayload, revocationRoot } = await deployFixture();
     const payload = { to: hre.ethers.Wallet.createRandom().address, value: 0, data: "0x", nonce: await wallet.nonce() };
-    const sig = signPayload(payload);
+    const sig = signPayload(payload, wallet.target, (await hre.ethers.provider.getNetwork()).chainId);
     // 서명 본문(r)의 한 자리를 바꾼다. 예전에는 마지막 바이트(v)를 "00"으로 바꿨는데,
     // 그러면 실제로 검증되는 것은 "잘못된 서명을 거부한다"가 아니라 "잘못된 v를 거부한다"
     // 였다(ecrecover는 v가 27/28이 아니면 그냥 0을 돌려준다). 같은 패턴이
@@ -209,10 +213,74 @@ describe("PPIDWallet", function () {
     ).to.be.reverted; // ecrecover on a mangled sig either returns address(0) or a wrong address -> BadSignature
   });
 
+  it("rejects a signature that is not bound to this chain and wallet", async function () {
+    const { wallet, pk_i, pk_IdP_x, pk_IdP_y, maxHeight, pA, pB, pC, revocationRoot } = await deployFixture();
+    const payload = { to: hre.ethers.Wallet.createRandom().address, value: 0, data: "0x", nonce: await wallet.nonce() };
+
+    // 도메인 분리 이전 형식(체인·지갑 없이 payload 필드만)으로 서명한다. 이 형식이
+    // 통과하면 같은 배포가 있는 다른 체인/다른 지갑에 그대로 재제출할 수 있다.
+    const legacyHash = getBytes(
+      hre.ethers.keccak256(
+        hre.ethers.AbiCoder.defaultAbiCoder().encode(
+          ["address", "uint256", "bytes", "uint256"],
+          [payload.to, payload.value, payload.data, payload.nonce],
+        ),
+      ),
+    );
+    const { sk_i } = await buildValidCallData(); // 서명 키만 필요하다(이 증명은 안 쓴다)
+    const raw = secp256k1.sign(legacyHash, sk_i);
+    const legacySig = concat([
+      "0x" + raw.r.toString(16).padStart(64, "0"),
+      "0x" + raw.s.toString(16).padStart(64, "0"),
+      "0x" + (27 + raw.recovery).toString(16).padStart(2, "0"),
+    ]);
+
+    await expect(
+      wallet.execute(payload, legacySig, pA, pB, pC, pk_i, pk_IdP_x, pk_IdP_y, maxHeight, revocationRoot),
+    ).to.be.revertedWithCustomError(wallet, "BadSignature");
+  });
+
+  it("rejects pk_i = 0 instead of letting ecrecover's address(0) pass the signature check", async function () {
+    // 회로는 pk_i != 0을 제약하지 않고, IdP는 pk_i를 볼 수 없다(pi_arid_i에서 private).
+    // 그래서 pk_i = 0인 크레덴셜이 실제로 발급될 수 있다. 그 경우 잘못된 v를 넣은
+    // 서명에 대해 ecrecover가 address(0)을 반환하고, address(uint160(0))과 같아져
+    // 서명 검사가 공허하게 통과한다 — 그 지갑은 누구나 임의 payload로 실행할 수 있다.
+    const [deployer] = await hre.ethers.getSigners();
+    const zero = await buildValidCallData({ pkIOverride: 0n });
+
+    const Registry = await hre.ethers.getContractFactory("RevocationRegistry");
+    const registry = await Registry.deploy(deployer.address);
+    await registry.waitForDeployment();
+    await (await registry.pushRoot(zero.revocationRoot)).wait();
+    const Verifier = await hre.ethers.getContractFactory("PiPkIVerifier");
+    const verifier = await Verifier.deploy();
+    await verifier.waitForDeployment();
+    const Factory = await hre.ethers.getContractFactory("PPIDWalletFactory");
+    const factory = await Factory.deploy(
+      await verifier.getAddress(), zero.pk_IdP_x, zero.pk_IdP_y, await registry.getAddress(),
+    );
+    await factory.waitForDeployment();
+    const walletAddr = await factory.computeAddress(zero.PPID);
+    await deployer.sendTransaction({ to: walletAddr, value: hre.ethers.parseEther("1.0") });
+    await (await factory.deploy(zero.PPID)).wait();
+    const zeroWallet = await hre.ethers.getContractAt("PPIDWallet", walletAddr);
+
+    const payload = { to: hre.ethers.Wallet.createRandom().address, value: 0, data: "0x", nonce: await zeroWallet.nonce() };
+    // v = 0 은 유효하지 않아 ecrecover가 address(0)을 돌려준다.
+    const garbageSig = "0x" + "11".repeat(64) + "00";
+
+    await expect(
+      zeroWallet.execute(
+        payload, garbageSig, zero.pA, zero.pB, zero.pC, 0n,
+        zero.pk_IdP_x, zero.pk_IdP_y, zero.maxHeight, zero.revocationRoot,
+      ),
+    ).to.be.revertedWithCustomError(zeroWallet, "BadSignature");
+  });
+
   it("rejects an untrusted pk_IdP", async function () {
     const { wallet, pk_i, maxHeight, pA, pB, pC, signPayload, revocationRoot } = await deployFixture();
     const payload = { to: hre.ethers.Wallet.createRandom().address, value: 0, data: "0x", nonce: await wallet.nonce() };
-    const sig = signPayload(payload);
+    const sig = signPayload(payload, wallet.target, (await hre.ethers.provider.getNetwork()).chainId);
     await expect(
       wallet.execute(payload, sig, pA, pB, pC, pk_i, 1n, 2n, maxHeight, revocationRoot),
     ).to.be.revertedWithCustomError(wallet, "UntrustedIdP");
@@ -237,7 +305,7 @@ describe("PPIDWallet", function () {
     const wallet = await hre.ethers.getContractAt("PPIDWallet", walletAddr);
 
     const payload = { to: deployer.address, value: 0, data: "0x", nonce: await wallet.nonce() };
-    const sig = signPayload(payload);
+    const sig = signPayload(payload, wallet.target, (await hre.ethers.provider.getNetwork()).chainId);
     await expect(
       wallet.execute(payload, sig, pA, pB, pC, pk_i, pk_IdP_x, pk_IdP_y, maxHeight, revocationRoot),
     ).to.be.revertedWithCustomError(wallet, "Expired");
@@ -248,7 +316,7 @@ describe("PPIDWallet", function () {
     // send more value than the wallet holds -> inner call fails, execute() itself should not revert
     const tooMuch = hre.ethers.parseEther("1000");
     const payload = { to: hre.ethers.Wallet.createRandom().address, value: tooMuch, data: "0x", nonce: await wallet.nonce() };
-    const sig = signPayload(payload);
+    const sig = signPayload(payload, wallet.target, (await hre.ethers.provider.getNetwork()).chainId);
     const tx = await wallet.execute(payload, sig, pA, pB, pC, pk_i, pk_IdP_x, pk_IdP_y, maxHeight, revocationRoot);
     const receipt = await tx.wait();
     // execute() returns `ok`; the call itself doesn't revert. Confirm nonce advanced anyway.
