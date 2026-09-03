@@ -10,6 +10,9 @@
 // 진행시킨다. 데모 체인에서는 무해하다(tests/test_mode2_e2e_onchain.js도 매 실행마다
 // 블록을 진행시킨다).
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { startIsolatedIdP, revokeAndPublish } from './helpers/isolated_idp.mjs';
 
 const RPC = process.env.ETH_RPC_URL || 'http://127.0.0.1:8545';
@@ -33,11 +36,14 @@ const forceRatioForLeaves = (n) => String(n / CAPACITY);
 const uniqueValue = () => `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 
 // ---------------------------------------------------------------------------
-// 1. 회수할 것이 없는데 슬롯이 임계치를 넘으면, 재기준화를 반복하지 않고 거부해야 한다.
+// 1. 회수할 것이 없는데 임계치를 넘으면: 재기준화하지 않고, **거부도 하지 않고**, 경고한다.
 //
-// 현재는 사용률만 보고 재기준화를 강제한다. 살아있는 리프로 가득 차 있으면 재기준화해도
-// 크기가 그대로라 다음 게시에서 또 강제되고, 그때마다 epoch가 올라 **모든 지갑이 매번
-// 전체 재다운로드**를 한다. 회수되는 슬롯은 0인데 증분 설계만 무력화된다.
+// 두 가지를 동시에 고정한다.
+//  (a) 회수 0인 재기준화를 반복하면 매 회차 epoch가 올라 모든 지갑이 전체 재다운로드를
+//      한다 — 회수되는 슬롯은 0인데 증분 설계만 무력화된다. 그러니 재기준화하면 안 된다.
+//  (b) 그렇다고 게시를 거부하면 폐기 자체가 멈춘다. 임계치는 위생 경고선이지 실제 한계
+//      (2^20)가 아니라 삽입은 여전히 가능하다. 보안 조작을 용량 위생 때문에 막는 것은
+//      교환이 맞지 않는다. 대신 capacityExhausted로 크게 알린다.
 // ---------------------------------------------------------------------------
 {
   const idp = await startIsolatedIdP({ env: { IDP_REBASELINE_FORCE_RATIO: forceRatioForLeaves(4) } });
@@ -52,23 +58,113 @@ const uniqueValue = () => `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
     assert.equal(queued.status, 200);
 
     const prepared = await idp.post('/idp/publish/prepare');
-    assert.notEqual(
-      prepared.status,
-      200,
-      '회수할 것이 없는데 임계치를 넘으면 prepare가 성공해서는 안 된다(재기준화 반복)',
-    );
-    assert.match(
-      JSON.stringify(prepared.body),
-      /capacity|slot|소진|용량/i,
-      '거부 사유가 슬롯 소진임을 알 수 있어야 한다',
-    );
+    assert.equal(prepared.status, 200, '임계치를 넘어도 게시를 거부하면 안 된다(폐기가 멈춘다)');
+    assert.equal(prepared.body.v2.capacityExhausted, true, '소진 상태를 응답으로 알려야 한다');
+    assert.equal(prepared.body.v2.rebaselineForced, false, '회수할 것이 없으면 재기준화하면 안 된다');
+    assert.equal(prepared.body.added, 1, '접수된 폐기는 그대로 게시된다');
+
+    const committed = await idp.post('/idp/publish/commit', { root: prepared.body.expectedRoot });
+    assert.equal(committed.status, 200);
 
     const afterState = (await idp.get('/idp/revocation_state_v2')).body;
-    assert.equal(afterState.epoch, beforeState.epoch, '거부된 prepare는 epoch를 올리면 안 된다');
-    assert.equal(afterState.root, beforeState.root, '거부된 prepare는 트리를 바꾸면 안 된다');
-    console.log('OK (1): 회수 불가 + 임계치 초과 -> 재기준화 반복 대신 거부, 상태 불변');
+    assert.equal(afterState.epoch, beforeState.epoch, '회수 0인데 epoch가 오르면 전 지갑이 헛되이 재다운로드한다');
+    assert.equal(afterState.leaves.length, beforeState.leaves.length + 1, '폐기 리프는 실제로 들어간다');
+    console.log('OK (1): 회수 불가 + 임계치 초과 -> 재기준화 없이 경고하고 게시는 계속한다');
   } finally {
     await idp.stop();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 1-c. 회수량이 적으면 재기준화하지 않는다 — "만료 리프가 1개라도 있으면 재기준화"는
+//      thrash를 못 막는다. 사용률이 임계치 근처인 정상 운영에서 사이클마다 하나씩
+//      만료되면 매 게시가 재기준화가 되어, 없애려던 현상이 그대로 재현된다.
+//      재기준화는 **회수 후 사용률이 경고선 아래로 내려갈 때만** 할 가치가 있다.
+// ---------------------------------------------------------------------------
+{
+  const idp = await startIsolatedIdP({
+    env: {
+      IDP_REBASELINE_WARN_RATIO: forceRatioForLeaves(2),
+      IDP_REBASELINE_FORCE_RATIO: forceRatioForLeaves(4),
+    },
+  });
+  try {
+    await revokeAndPublish(idp, uniqueValue()); // used 2 — 이 리프만 만료시킬 것이다
+    await rpc('hardhat_mine', [`0x${(CREDENTIAL_LIFETIME_BLOCKS + 1).toString(16)}`]);
+    await revokeAndPublish(idp, uniqueValue()); // used 3 (방금 폐기라 살아있다)
+
+    const before = (await idp.get('/idp/revocation_state_v2')).body;
+    await idp.post('/idp/revoke', { type: 'account', value: uniqueValue() });
+
+    // projected 4 >= FORCE 4. 만료는 1개뿐이라 회수해도 3 > WARN 2 — 헤드룸이 안 생긴다.
+    const prepared = await idp.post('/idp/publish/prepare');
+    assert.equal(prepared.status, 200);
+    assert.equal(prepared.body.expiredPublished, 1, '준비: 회수 가능한 만료 리프가 1개다');
+    assert.equal(
+      prepared.body.v2.rebaselineForced,
+      false,
+      '회수해도 경고선 아래로 못 내려가면 재기준화하지 않는다(그러지 않으면 매 회차 반복된다)',
+    );
+    const committed = await idp.post('/idp/publish/commit', { root: prepared.body.expectedRoot });
+    assert.equal(committed.status, 200);
+    const after = (await idp.get('/idp/revocation_state_v2')).body;
+    assert.equal(after.epoch, before.epoch, '회수량이 적으면 epoch를 올리지 않는다');
+    console.log('OK (1-c): 회수량이 헤드룸을 못 만들면 재기준화하지 않는다 (thrash 방지)');
+  } finally {
+    await idp.stop();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 1-b. 임계치를 넘긴 상태에서의 no-op 재게시(heartbeat)도 정상 동작해야 한다.
+//
+// scripts/revocation_sweep.cjs의 데몬 모드는 대기열이 비어도 주기적으로 prepare -> pushRoot
+// -> commit을 돈다. prepare가 여기서 실패하면 사이클이 pushRoot 전에 중단돼 root 재게시가
+// 통째로 멈춘다. 임계치를 넘긴 상태에서도 이 경로가 살아 있는지 고정한다.
+// ---------------------------------------------------------------------------
+// 이 상태는 신선한 트리에서는 만들어지지 않는다(used가 임계치에 닿기 전에 멈춘다).
+// 도달하는 경로는 **운영자가 임계치를 낮춰 재기동하는 것**이다 — 이미 쌓인 상태가 새
+// 임계치를 넘는 상태로 뜬다. 그래서 같은 상태 디렉터리로 두 번 띄운다.
+{
+  // 두 인스턴스가 같은 상태를 쓰도록 디렉터리를 테스트가 소유한다(하네스가 만든
+  // 디렉터리는 그 인스턴스의 stop()이 지운다).
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'idp-behavior-'));
+  try {
+    const first = await startIsolatedIdP({
+      dir: stateDir,
+      env: { IDP_REBASELINE_FORCE_RATIO: forceRatioForLeaves(4) },
+    });
+    // 여기서 던지면 first가 살아남아 포트를 물고, 바깥 finally가 그 인스턴스의 상태
+    // 디렉터리를 지워 버린다. 반드시 감싼다.
+    try {
+      await revokeAndPublish(first, uniqueValue());
+      await revokeAndPublish(first, uniqueValue()); // used: anchor+2 = 3 (임계치 4 미만)
+    } finally {
+      await first.stop();
+    }
+
+    // 임계치를 3으로 낮춰 재기동 — 기존 used 3이 곧바로 임계치에 걸린다.
+    const idp = await startIsolatedIdP({
+      dir: stateDir,
+      env: { IDP_REBASELINE_FORCE_RATIO: forceRatioForLeaves(3) },
+    });
+    try {
+      const before = (await idp.get('/idp/revocation_state_v2')).body;
+      const prepared = await idp.post('/idp/publish/prepare'); // 대기열이 비어 있다
+      assert.equal(prepared.status, 200, '넣을 리프가 없는 재게시는 임계치와 무관하게 통과해야 한다');
+      assert.equal(prepared.body.added, 0);
+      assert.equal(prepared.body.expectedRoot, before.root, 'no-op 재게시는 root를 바꾸지 않는다');
+
+      const committed = await idp.post('/idp/publish/commit', { root: prepared.body.expectedRoot });
+      assert.equal(committed.status, 200);
+      const after = (await idp.get('/idp/revocation_state_v2')).body;
+      assert.equal(after.epoch, before.epoch, 'no-op 재게시가 epoch를 올리면 안 된다');
+      console.log('OK (1-b): 넣을 것이 없는 재게시(heartbeat)는 소진 임계치에 막히지 않는다');
+    } finally {
+      await idp.stop();
+    }
+  } finally {
+    fs.rmSync(stateDir, { recursive: true, force: true });
   }
 }
 
@@ -106,10 +202,16 @@ const uniqueValue = () => `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 }
 
 // ---------------------------------------------------------------------------
-// 3. 이미 만료된 대기 리프는 게시하지 않는다.
+// 3. 접수된 폐기는 게시가 늦어도 사라지지 않는다.
 //
-// append-only라 한 번 들어간 리프는 재기준화 전까지 슬롯을 물고 있는다. 게시 시점에
-// 이미 만료인 줄 알면서 넣을 이유가 없다. (게시 주기가 300블록을 넘길 때 발생한다.)
+// "이미 만료된 대기 리프는 슬롯만 먹으니 게시하지 말자"는 최적화는 **계정 폐기에서
+// 건전하지 않다.** 계정 폐기의 만료는 접수 시점 + CREDENTIAL_LIFETIME_BLOCKS로 고정되고
+// (세션 폐기와 달리 실제 크레덴셜의 max_height가 아니다), 계정 폐기는 disabled를 세우지
+// 않으므로 그 계정은 재로그인해 **더 늦은 max_height**를 가진 크레덴셜을 받을 수 있다.
+// 게시가 지연돼 접수 리프가 "만료"로 판정돼 버려지면, 그 늦은 크레덴셜을 막을 것이
+// 아무것도 남지 않는다 — 폐기가 조용히 사라지는 방향의 실패다.
+//
+// 슬롯 낭비는 재기준화가 회수한다. 회수 가능한 낭비와 놓친 폐기는 교환 대상이 아니다.
 // ---------------------------------------------------------------------------
 {
   const idp = await startIsolatedIdP();
@@ -119,23 +221,23 @@ const uniqueValue = () => `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
     const queued = await idp.post('/idp/revoke', { type: 'account', value: staleValue });
     assert.equal(queued.status, 200);
 
-    // 게시 전에 만료시킨다.
+    // 게시가 지연되는 동안 접수 리프의 명목 만료가 지나간다.
     await rpc('hardhat_mine', [`0x${(CREDENTIAL_LIFETIME_BLOCKS + 1).toString(16)}`]);
 
     const prepared = await idp.post('/idp/publish/prepare');
     assert.equal(prepared.status, 200);
-    assert.equal(prepared.body.added, 0, '이미 만료된 대기 리프는 게시 대상이 아니어야 한다');
+    assert.equal(prepared.body.added, 1, '접수된 폐기는 게시가 늦어도 게시 대상에서 빠지면 안 된다');
     const committed = await idp.post('/idp/publish/commit', { root: prepared.body.expectedRoot });
     assert.equal(committed.status, 200);
 
     const after = (await idp.get('/idp/revocation_state_v2')).body;
     assert.equal(
       after.leaves.length,
-      before.leaves.length,
-      '만료된 대기 리프가 슬롯을 차지하면 안 된다',
+      before.leaves.length + 1,
+      '접수된 폐기 리프가 트리에 실제로 들어가야 한다',
     );
-    assert.equal(committed.body.pendingCount, 0, '만료된 대기 항목은 대기열에서도 정리돼야 한다');
-    console.log('OK (3): 이미 만료된 대기 리프는 게시되지 않고 대기열에서 정리된다');
+    assert.equal(committed.body.pendingCount, 0, '게시된 항목은 대기열에서 정리된다');
+    console.log('OK (3): 접수된 폐기는 게시가 지연돼도 사라지지 않고 트리에 들어간다');
   } finally {
     await idp.stop();
   }
@@ -197,4 +299,4 @@ const uniqueValue = () => `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
   }
 }
 
-console.log('PASS: 게시·재기준화·만료 동작 — 소진 시 거부, 회수 시에만 재기준화, 만료 대기 리프 미게시, 절단 신호, prepare 무효화.');
+console.log('PASS: 게시·재기준화·만료 동작 — 소진 시 경고하되 게시는 계속, 헤드룸을 되찾을 때만 재기준화, 접수된 폐기 보존, 절단 신호, prepare 무효화.');

@@ -46,7 +46,15 @@ async function revokeAccount(value) {
   assert.equal(r.status, 200, `revoke ${value} must succeed`);
 }
 async function publish() {
-  const prepared = await (await fetch(`${BASE}/idp/publish/prepare`, { method: 'POST', headers: adminHeaders, body: '{}' })).json();
+  const preparedRes = await fetch(`${BASE}/idp/publish/prepare`, { method: 'POST', headers: adminHeaders, body: '{}' });
+  // prepare가 실패하면(예: 슬롯 소진 거부 409) expectedRoot가 undefined가 되고, 이어지는
+  // commit이 400 "root is required"로 떨어져 원인이 전혀 드러나지 않는다. 여기서 끊는다.
+  assert.equal(
+    preparedRes.status,
+    200,
+    `prepare must succeed (got ${preparedRes.status}: ${await preparedRes.clone().text()})`,
+  );
+  const prepared = await preparedRes.json();
   const commit = await fetch(`${BASE}/idp/publish/commit`, {
     method: 'POST', headers: adminHeaders, body: JSON.stringify({ root: prepared.expectedRoot }),
   });

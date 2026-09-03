@@ -17,9 +17,21 @@ import { randomBytes } from 'node:crypto';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-// 포트 충돌을 피하려고 매번 다른 포트를 쓴다(고정 포트를 쓰면 테스트를 겹쳐 돌릴 수 없다).
-function randomPort() {
-  return 4100 + Math.floor(Math.random() * 800);
+// 포트 충돌을 피한다. 고정 포트를 쓰면 테스트를 겹쳐 돌릴 수 없고, 임의 포트를 그냥
+// 쓰면 **남의 인스턴스가 이미 잡고 있는 포트**를 고를 수 있다 — 그 경우 아래 준비 확인이
+// 남의 IdP에서 200을 받아 ready로 판정해 버리고, 테스트가 격리되지 않은 인스턴스의 폐기
+// 트리를 바꾼다(이 하네스가 막으려는 바로 그 사고다). 그래서 OS가 비어 있다고 확인해 준
+// 포트만 쓴다: 0번 포트로 listen해 커널이 배정한 번호를 받고 곧바로 닫는다.
+async function freePort() {
+  const { createServer } = await import('node:net');
+  return new Promise((resolve, reject) => {
+    const srv = createServer();
+    srv.on('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const { port } = srv.address();
+      srv.close((err) => (err ? reject(err) : resolve(port)));
+    });
+  });
 }
 
 /**
@@ -28,13 +40,16 @@ function randomPort() {
  * @param {object} [opts]
  * @param {Record<string,string>} [opts.env] custom_idp.js에 넘길 추가 환경변수
  *   (예: IDP_MUTATION_LOG_MAX, IDP_REBASELINE_FORCE_RATIO)
+ * @param {string} [opts.dir] 기존 인스턴스의 상태·키 디렉터리를 재사용한다.
+ *   설정만 바꿔 **재기동**하는 상황(운영자가 임계치를 조정하는 등)을 재현할 때 쓴다.
+ *   이 경우 stop()이 디렉터리를 지우지 않는다 — 만든 쪽이 지운다.
  * @param {number} [opts.readyTimeoutMs]
  */
 export async function startIsolatedIdP(opts = {}) {
-  const { env: extraEnv = {}, readyTimeoutMs = 30_000 } = opts;
+  const { env: extraEnv = {}, dir: reuseDir, readyTimeoutMs = 30_000 } = opts;
 
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'idp-test-'));
-  const port = randomPort();
+  const dir = reuseDir ?? fs.mkdtempSync(path.join(os.tmpdir(), 'idp-test-'));
+  const port = await freePort();
   const adminSecret = randomBytes(16).toString('hex');
   const auditorSecret = randomBytes(16).toString('hex');
   const logFile = path.join(dir, 'idp.log');
@@ -56,7 +71,9 @@ export async function startIsolatedIdP(opts = {}) {
   const deadline = Date.now() + readyTimeoutMs;
   let ready = false;
   while (Date.now() < deadline) {
-    if (child.exitCode !== null) break;
+    // 시그널로 죽은 경우 exitCode는 null이고 signalCode가 채워진다 — 둘 다 봐야
+    // 타임아웃까지 기다리지 않고 곧바로 실패 보고를 할 수 있다.
+    if (child.exitCode !== null || child.signalCode !== null) break;
     try {
       const r = await fetch(`${base}/idp/revocation_state_v2`);
       if (r.ok) {
@@ -120,7 +137,8 @@ export async function startIsolatedIdP(opts = {}) {
           });
         });
       }
-      fs.rmSync(dir, { recursive: true, force: true });
+      // 재사용 디렉터리는 지우지 않는다(만든 쪽이 책임진다).
+      if (!reuseDir) fs.rmSync(dir, { recursive: true, force: true });
     },
   };
 }

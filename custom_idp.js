@@ -1696,15 +1696,19 @@ app.post('/idp/publish/prepare', requireIdPAdmin, async (req, res) => {
     return e !== undefined && e <= currentBlock;
   };
 
-  // 새로 게시될 리프 = 대기 중이고, 아직 v2에 없고, **아직 만료되지 않은** 것.
-  // 결정적 순서(Set 삽입 순서)로 고정한다 — commit이 이 순서 그대로 append하고, 지금
-  // 예측하는 root와 정확히 일치해야 한다(설계 문서 3.1절: v2 root는 삽입 순서에 의존한다).
+  // 새로 게시될 리프 = 대기 중이고 아직 v2에 없는 것. 결정적 순서(Set 삽입 순서)로
+  // 고정한다 — commit이 이 순서 그대로 append하고, 지금 예측하는 root와 정확히 일치해야
+  // 한다(설계 문서 3.1절: v2 root는 삽입 순서에 의존한다).
   //
-  // 만료 필터가 필요한 이유: v2는 append-only라 한 번 들어간 리프는 재기준화 전까지
-  // 슬롯을 물고 있는다. 게시 시점에 이미 만료인 줄 알면서 넣으면 아무도 쓰지 않는
-  // 리프가 용량만 잡아먹는다(게시 주기가 CREDENTIAL_LIFETIME_BLOCKS를 넘길 때 발생).
-  // 걸러진 항목은 commit이 대기열에서 함께 정리한다.
-  const addedValues = [...pendingAdds].filter((k) => !v2Has(k) && !isExpired(k));
+  // **여기서 만료된 대기 리프를 거르지 않는다.** "이미 만료됐으니 슬롯만 먹는다"는
+  // 최적화는 계정 폐기에서 건전하지 않다: 계정 폐기의 만료는 접수 시점 +
+  // CREDENTIAL_LIFETIME_BLOCKS로 고정되고(세션과 달리 실제 크레덴셜의 max_height가 아니다),
+  // 계정 폐기는 disabled를 세우지 않으므로 그 계정은 재로그인해 더 늦은 max_height를 가진
+  // 크레덴셜을 받을 수 있다. 게시가 지연돼 접수 리프를 "만료"로 버리면 그 크레덴셜을 막을
+  // 것이 사라진다 — 폐기가 조용히 무효가 되는 방향의 실패다. 슬롯 낭비는 재기준화가
+  // 회수하므로, 회수 가능한 낭비와 놓친 폐기는 교환 대상이 아니다.
+  // (tests/test_idp_publish_behavior.mjs 케이스 3이 이 불변식을 고정한다.)
+  const addedValues = [...pendingAdds].filter((k) => !v2Has(k));
   const publishedNow = publishedLeaves();
   const currentV2Values = publishedNow.map((v) => BigInt(v));
 
@@ -1718,33 +1722,32 @@ app.post('/idp/publish/prepare', requireIdPAdmin, async (req, res) => {
   const v2ProjectedUsed = v2Usage.used + addedValues.length;
   const v2ProjectedRatio = v2ProjectedUsed / v2Usage.capacity;
 
-  // 임계치를 넘었어도 **회수할 것이 있을 때만** 재기준화한다. 사용률만 보고 강제하면,
-  // 살아있는 리프로 가득 찬 트리에서는 재기준화해도 크기가 그대로라 다음 게시에서 또
-  // 강제된다 — 매 회차 epoch가 올라 모든 지갑이 전체 재다운로드를 하는데 회수되는
-  // 슬롯은 0이다. 증분 설계가 통째로 무력화되는 상태라 반드시 피해야 한다.
+  // 임계치를 넘었을 때 재기준화할지 판단한다.
+  //
+  // 조건이 "만료 리프가 하나라도 있으면"이면 안 된다. 사용률이 임계치 근처인 정상 운영에서
+  // 사이클마다 하나씩 만료되면 매 게시가 재기준화가 되고, 그때마다 epoch가 올라 **모든
+  // 지갑이 전체 재다운로드**를 한다 — 회수량은 미미한데 증분 설계만 무력화된다.
+  // 재기준화는 전 지갑에 O(n) 비용을 물리는 조작이므로, **헤드룸을 실제로 되찾을 때만**
+  // 할 가치가 있다: 회수 후 사용률이 경고선 아래로 내려가야 한다. 그러면 다음 강제까지
+  // 최소 (FORCE-WARN)×capacity 만큼의 삽입 여유가 생겨 반복이 구조적으로 막힌다.
   const overForceThreshold = v2ProjectedRatio >= V2_REBASELINE_FORCE_RATIO;
-  const forceRebaselineV2 = overForceThreshold && expiredCount > 0;
+  const projectedRatioAfterRebaseline = (v2ProjectedUsed - expiredCount) / v2Usage.capacity;
+  const forceRebaselineV2 =
+    overForceThreshold && expiredCount > 0 && projectedRatioAfterRebaseline <= V2_REBASELINE_WARN_RATIO;
 
-  // 넘겼는데 회수할 것도 없다면 용량이 진짜로 소진된 것이다. 조용히 재기준화를 반복하는
-  // 대신 명확히 거부한다 — 운영자가 손을 써야 하는 상황(깊이 상향 등)이고, 감춰서
-  // 좋을 것이 없다. 상태는 아무것도 바꾸지 않는다.
-  if (overForceThreshold && expiredCount === 0) {
-    return res.status(409).json({
-      error:
-        'revocation tree capacity exhausted: the slot usage threshold is reached and a rebaseline ' +
-        'would reclaim nothing (no published leaf has expired). Publishing is refused rather than ' +
-        'rebaselining every cycle for no gain — every rebaseline forces all wallets to re-download ' +
-        'the whole tree. Raise the tree depth or wait for leaves to expire.',
-      v2: {
-        epoch: epochV2,
-        used: v2Usage.used,
-        capacity: v2Usage.capacity,
-        projectedUsed: v2ProjectedUsed,
-        projectedRatio: v2ProjectedRatio,
-        expiredPublished: expiredCount,
-      },
-      pendingCount: pendingAdds.size,
-    });
+  // 임계치를 넘었는데 재기준화로 회수할 수 없다면 용량이 실질적으로 소진된 것이다.
+  // 그렇다고 게시를 거부하지는 않는다 — 임계치는 위생 경고선이지 실제 한계(2^20)가
+  // 아니라 삽입은 여전히 가능하고, 거부하면 폐기 게시 자체가 멈춘다(sweep 데몬은
+  // prepare 실패에 사이클을 중단하므로 root 재게시까지 함께 멈춘다). 보안 조작을 용량
+  // 위생 때문에 막는 것은 교환이 맞지 않는다. 대신 응답과 로그로 크게 알린다.
+  // 진짜 한계에 닿으면 lib/imt_v2.js의 insert()가 던져 500으로 드러난다.
+  const capacityExhausted = overForceThreshold && !forceRebaselineV2;
+  if (capacityExhausted) {
+    console.warn(
+      `[IdP] publish/prepare: v2 슬롯 사용률 ${(v2ProjectedRatio * 100).toFixed(2)}% ` +
+        `(${v2ProjectedUsed}/${v2Usage.capacity}) — 재기준화로 회수 가능한 만료 리프 ${expiredCount}개로는 ` +
+        '경고선 아래로 내려가지 않는다. 게시는 계속하지만 깊이 상향 등 운영 조치가 필요하다.',
+    );
   }
 
   // 재기준화면 살아있는 집합(만료 제외)만으로 정렬 재구성하고, 아니면 현재 트리에 append.
@@ -1808,6 +1811,9 @@ app.post('/idp/publish/prepare', requireIdPAdmin, async (req, res) => {
       projectedRatio: v2ProjectedRatio,
       rebaselineWarning: v2ProjectedRatio >= V2_REBASELINE_WARN_RATIO,
       rebaselineForced: forceRebaselineV2,
+      // 임계치를 넘었는데 재기준화로 헤드룸을 되찾을 수 없는 상태. 게시는 계속되지만
+      // 운영 조치(깊이 상향 등)가 필요하다는 신호다.
+      capacityExhausted,
     },
   });
 });
