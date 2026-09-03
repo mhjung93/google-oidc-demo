@@ -8,7 +8,8 @@
     "snap"
   ],
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "bash scripts/run_tests.sh",
+    "test:live": "bash scripts/run_tests.sh live",
     "start": "http-server . -p 8080",
     "snap:build": "npm run build --workspace=google-oidc-demo-snap",
     "snap:serve": "npm run serve --workspace=google-oidc-demo-snap",

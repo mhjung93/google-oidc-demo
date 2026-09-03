@@ -18,7 +18,10 @@ import { leafValue, TAG_SESSION, TAG_ACCOUNT } from './lib/imt.js';
 import { createIMTv2, buildIMTv2 } from './lib/imt_v2.js';
 
 const app = express();
-const PORT = 4000;
+// 기본값은 데모 구성 그대로다. 환경변수는 테스트가 **격리된 IdP 인스턴스**를 띄우기
+// 위한 것이다 — 다른 포트, 다른 상태·키 파일을 쓰면 개발자가 띄워 둔 :4000 인스턴스와
+// 그 폐기 트리를 건드리지 않고 실패 경로까지 실제로 돌려볼 수 있다.
+const PORT = Number(process.env.CUSTOM_IDP_PORT) || 4000;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -79,13 +82,23 @@ let seqV2 = 0;
 // 변경 로그: [{ seq, index, leaf: { value, nextIndex, nextValue } }] (seq 오름차순).
 // 지갑이 since=<seq>로 증분 동기화하는 근거다.
 let mutationLogV2 = [];
-// 로그 절단 상한. epoch 안에서 삽입 2배로 자라므로(최악 약 200만) 무한히 들 수 없다.
-// 이번 단계에서는 관대하게 10만으로 잡는다(설계 문서 3.4절 — 정밀 튜닝은 운영 데이터
-// 이후). 테스트가 절단 경로를 강제할 수 있도록 환경변수로 덮을 수 있게 둔다.
+// 로그 절단 상한. epoch 안에서 삽입 2배로 자라므로(깊이 20 = 최악 2,097,152항목)
+// 무한히 들 수 없다.
+//
+// 기본값 100,000의 근거(2026-09-03 실측, node v22): 항목 하나가 약 322바이트로
+// 선형이다(10,000개 3.1MB / 50,000개 15.3MB / 100,000개 30.7MB). 즉 기본값은 약 31MB고,
+// 상한이 없으면 최악 약 668MB다. 삽입 1건이 항목 2건이므로 100,000은 **최근 삽입
+// 50,000건**의 이력을 서빙한다 — 그보다 더 뒤처진 지갑만 tooOld로 전체 재조회를 한다.
+// 절단이 조용히 부분 결과를 주면 지갑 트리가 root와 어긋나므로, 그 경로는
+// tests/test_idp_publish_behavior.mjs가 실제로 절단시켜 검증한다.
+//
+// 테스트가 절단 경로를 강제할 수 있도록 환경변수로 덮을 수 있게 둔다.
 const MUTATION_LOG_MAX = Number(process.env.IDP_MUTATION_LOG_MAX) || 100_000;
 // 슬롯 사용률 임계치(설계 문서 3.3절). 80%에서 경고, 95%에서 재기준화를 강제한다.
-const V2_REBASELINE_WARN_RATIO = 0.8;
-const V2_REBASELINE_FORCE_RATIO = 0.95;
+// 운영 정책이라 환경변수로 조정할 수 있게 둔다(테스트도 이 값을 낮춰 소진 경로를
+// 실제로 돌린다 — 깊이 20의 95%는 99만 리프라 테스트로 도달할 수 없다).
+const V2_REBASELINE_WARN_RATIO = Number(process.env.IDP_REBASELINE_WARN_RATIO) || 0.8;
+const V2_REBASELINE_FORCE_RATIO = Number(process.env.IDP_REBASELINE_FORCE_RATIO) || 0.95;
 // value(BigInt) -> 물리 인덱스. 변경 로그 항목을 만들 때 갱신되는 low 리프의 물리
 // 인덱스가 필요한데, lib/imt_v2.js는 리프 튜플만 노출하고 물리 인덱스는 노출하지
 // 않는다. 이건 트리 밖 파생 인덱스라 해시 계산이 없다(설계 문서 6.2절과 같은 성격).
@@ -265,7 +278,9 @@ let idpEdDSAKeys = {
 //   - PS: x와 y[0..5](mcl.Fr)만 저장. 공개키 X/Y[]는 mcl.mul(psParams.g2, ...).
 // psParams.g1/g2는 hashAndMapToG1('gen1') / hashAndMapToG2('gen2')로 만드는 결정적
 // 값이므로(서로 다른 프로세스에서 같은 값이 나오는 것을 확인함) 저장하지 않는다.
-const IDP_KEY_FILE = path.join(__dirname, 'idp_keys.json');
+const IDP_KEY_FILE = process.env.IDP_KEY_FILE
+  ? path.resolve(process.env.IDP_KEY_FILE)
+  : path.join(__dirname, 'idp_keys.json');
 const IDP_KEY_FILE_VERSION = 1;
 
 // 개발용 강제 회전 스위치. 설정하면 기존 키 파일을 무시하고 새 키를 생성해 덮어쓴다.
@@ -517,7 +532,9 @@ const auidILog = new Map();
 // 키(idp_keys.json)와 일부러 다른 파일로 나눈다. 키는 사실상 바뀌지 않고 상태는 폐기·
 // 게시·로그인마다 바뀌므로, 자주 쓰는 파일이 개인키를 계속 다시 쓰게 만들 이유가 없다.
 // 권한은 동일하게 0o600이다 — issuanceLog가 r_token -> uid 매핑이라 프라이버시 민감하다.
-const IDP_STATE_FILE = path.join(__dirname, 'idp_state.json');
+const IDP_STATE_FILE = process.env.IDP_STATE_FILE
+  ? path.resolve(process.env.IDP_STATE_FILE)
+  : path.join(__dirname, 'idp_state.json');
 // v2: auidILog의 값이 uid 문자열 하나에서 issuanceLog와 같은 { uid, maxHeight } 객체로
 // 바뀌었다 — 4-2번 만료 기반 축출이 auidILog에도 적용되려면 만료 정보가 필요해서다.
 // v1 파일을 만나면 loadIdPState()가 자동으로 마이그레이션한다(아래 LEGACY_AUID_ILOG_MAX_HEIGHT
@@ -1674,31 +1691,66 @@ app.post('/idp/publish/prepare', requireIdPAdmin, async (req, res) => {
   // 새로 게시될 리프 = 대기 중이고 아직 v2에 없는 것. 결정적 순서(Set 삽입 순서)로
   // 고정한다 — commit이 이 순서 그대로 append하고, 지금 예측하는 root와 정확히 일치해야
   // 한다(설계 문서 3.1절: v2 root는 삽입 순서에 의존한다).
-  const addedValues = [...pendingAdds].filter((k) => !v2Has(k));
+  const isExpired = (leafKey) => {
+    const e = leafExpiry.get(leafKey);
+    return e !== undefined && e <= currentBlock;
+  };
+
+  // 새로 게시될 리프 = 대기 중이고, 아직 v2에 없고, **아직 만료되지 않은** 것.
+  // 결정적 순서(Set 삽입 순서)로 고정한다 — commit이 이 순서 그대로 append하고, 지금
+  // 예측하는 root와 정확히 일치해야 한다(설계 문서 3.1절: v2 root는 삽입 순서에 의존한다).
+  //
+  // 만료 필터가 필요한 이유: v2는 append-only라 한 번 들어간 리프는 재기준화 전까지
+  // 슬롯을 물고 있는다. 게시 시점에 이미 만료인 줄 알면서 넣으면 아무도 쓰지 않는
+  // 리프가 용량만 잡아먹는다(게시 주기가 CREDENTIAL_LIFETIME_BLOCKS를 넘길 때 발생).
+  // 걸러진 항목은 commit이 대기열에서 함께 정리한다.
+  const addedValues = [...pendingAdds].filter((k) => !v2Has(k) && !isExpired(k));
   const publishedNow = publishedLeaves();
   const currentV2Values = publishedNow.map((v) => BigInt(v));
 
   // append-only인 v2는 만료 리프를 즉시 뺄 수 없다(설계 문서 3.2절) — 재기준화 때만
-  // 회수된다. 만료된 게시 리프 수는 운영 가시성용으로만 센다.
-  const expiredCount = publishedNow.filter((k) => {
-    const e = leafExpiry.get(k);
-    return e !== undefined && e <= currentBlock;
-  }).length;
+  // 회수된다. 게시된 리프 중 만료된 개수 = 재기준화로 회수 가능한 슬롯 수다.
+  const expiredCount = publishedNow.filter(isExpired).length;
 
   // 슬롯 사용률을 보고 재기준화가 필요한지 판단한다(설계 문서 3.3절). 후보 리프를
   // 넣으면 v2가 얼마나 찰지까지 반영해 미리 본다(append-only라 '추가분'만큼 는다).
   const v2Usage = revocationTreeV2.usage();
   const v2ProjectedUsed = v2Usage.used + addedValues.length;
   const v2ProjectedRatio = v2ProjectedUsed / v2Usage.capacity;
-  const forceRebaselineV2 = v2ProjectedRatio >= V2_REBASELINE_FORCE_RATIO;
+
+  // 임계치를 넘었어도 **회수할 것이 있을 때만** 재기준화한다. 사용률만 보고 강제하면,
+  // 살아있는 리프로 가득 찬 트리에서는 재기준화해도 크기가 그대로라 다음 게시에서 또
+  // 강제된다 — 매 회차 epoch가 올라 모든 지갑이 전체 재다운로드를 하는데 회수되는
+  // 슬롯은 0이다. 증분 설계가 통째로 무력화되는 상태라 반드시 피해야 한다.
+  const overForceThreshold = v2ProjectedRatio >= V2_REBASELINE_FORCE_RATIO;
+  const forceRebaselineV2 = overForceThreshold && expiredCount > 0;
+
+  // 넘겼는데 회수할 것도 없다면 용량이 진짜로 소진된 것이다. 조용히 재기준화를 반복하는
+  // 대신 명확히 거부한다 — 운영자가 손을 써야 하는 상황(깊이 상향 등)이고, 감춰서
+  // 좋을 것이 없다. 상태는 아무것도 바꾸지 않는다.
+  if (overForceThreshold && expiredCount === 0) {
+    return res.status(409).json({
+      error:
+        'revocation tree capacity exhausted: the slot usage threshold is reached and a rebaseline ' +
+        'would reclaim nothing (no published leaf has expired). Publishing is refused rather than ' +
+        'rebaselining every cycle for no gain — every rebaseline forces all wallets to re-download ' +
+        'the whole tree. Raise the tree depth or wait for leaves to expire.',
+      v2: {
+        epoch: epochV2,
+        used: v2Usage.used,
+        capacity: v2Usage.capacity,
+        projectedUsed: v2ProjectedUsed,
+        projectedRatio: v2ProjectedRatio,
+        expiredPublished: expiredCount,
+      },
+      pendingCount: pendingAdds.size,
+    });
+  }
 
   // 재기준화면 살아있는 집합(만료 제외)만으로 정렬 재구성하고, 아니면 현재 트리에 append.
   // commit이 이걸 그대로 재현해야 하므로 여기서 계산한 root가 곧 온체인에 게시될 root다.
   const liveValues = forceRebaselineV2
-    ? [...currentV2Values, ...addedValues.map((v) => BigInt(v))].filter((v) => {
-        const e = leafExpiry.get(v.toString());
-        return e === undefined || e > currentBlock;
-      })
+    ? [...currentV2Values, ...addedValues.map((v) => BigInt(v))].filter((v) => !isExpired(v.toString()))
     : null;
 
   let expectedRoot;
@@ -1731,7 +1783,7 @@ app.post('/idp/publish/prepare', requireIdPAdmin, async (req, res) => {
 
   const currentRoot = revocationTreeV2.getRoot().toString();
   console.log(
-    `[IdP] publish/prepare at block ${currentBlock}: +${addedValues.length} (expired pending ${expiredCount}), ` +
+    `[IdP] publish/prepare at block ${currentBlock}: +${addedValues.length} (expired published ${expiredCount}), ` +
       `leaves ${publishedNow.length} -> ${expectedLeafCount}, rebaseline=${forceRebaselineV2}, expectedRoot ${expectedRoot}`,
   );
   // 추가가 0건이어도 200이다 — 그 경우가 heartbeat다(같은 root를 다시 게시하는 no-op).
@@ -1741,7 +1793,9 @@ app.post('/idp/publish/prepare', requireIdPAdmin, async (req, res) => {
     added: addedValues.length,
     // 만료 리프는 재기준화 때만 실제로 빠진다. 재기준화 회차면 그만큼 줄고, 아니면 0.
     removed: forceRebaselineV2 ? expiredCount : 0,
-    expiredPending: expiredCount,
+    // 게시된 리프 중 이미 만료된 개수 = 재기준화로 회수 가능한 슬롯 수.
+    // (예전 이름 expiredPending은 "대기 중 만료"로 읽혀 내용과 달랐다.)
+    expiredPublished: expiredCount,
     leafCount: expectedLeafCount,
     pendingCount: pendingAdds.size,
     blockHeight: currentBlock.toString(),

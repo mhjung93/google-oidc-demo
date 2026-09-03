@@ -142,15 +142,33 @@ async function main() {
     assert.equal(truncated.tooOld, true, 'a since older than the truncated log must return tooOld');
     console.log(`OK (3b): log truncation (cap=${cap}) -> tooOld for an old since`);
   } else {
-    console.log('SKIP (3b): set IDP_MUTATION_LOG_MAX<=64 on the server to exercise the truncation tooOld path');
+    // 이 파일은 개발자가 띄워 둔 IdP를 상대로 돌기 때문에 로그 상한을 바꿀 수 없다.
+    // 절단 경로는 tests/test_idp_publish_behavior.mjs가 상한을 낮춘 **격리 인스턴스**를
+    // 직접 띄워 검증한다 — 여기서 건너뛴다고 미검증 상태인 것은 아니다.
+    console.log(
+      'SKIP (3b): 절단 경로는 tests/test_idp_publish_behavior.mjs(격리 IdP)가 검증한다. ' +
+        '이 파일에서 함께 보려면 IDP_MUTATION_LOG_MAX<=64로 서버를 띄워야 한다',
+    );
   }
 
   // === 4) 재기준화 — epoch↑, 로그 비움, 살아있는 멤버 보존 =================
   // v1이 제거돼 rebaseline은 이제 게시된 v2 root를 정당하게 바꾼다(물리 순서 정렬 +
   // 만료 회수). 따라서 "게시 root 불변"은 성립하지 않는다 — 대신 epoch↑, seq 0,
   // 살아있는 멤버 전원 보존, 재기준화 전 epoch 클라이언트의 tooOld를 본다.
+  // 갓 폐기·게시한 리프를 하나 심어 둔다. 만료까지 CREDENTIAL_LIFETIME_BLOCKS가 남아
+  // 있으므로 재기준화가 **반드시** 보존해야 한다.
+  //
+  // 예전에는 "게시된 리프 전부가 보존된다"로 단언했는데, 재기준화는 만료 리프를 정당하게
+  // 회수하므로(바로 위 주석이 말하는 그 동작) 체인이 충분히 진행된 환경에서는 틀린 단언이다.
+  // 실제로 블록이 600 넘게 진행된 뒤 이 단언이 깨졌다. 살아있는 리프의 보존과 "없던 리프가
+  // 생기지 않음"으로 나눠서 본다.
+  const survivor = `5550401${Date.now()}`;
+  const survivorLeaf = (await leafValue(TAG_ACCOUNT, survivor)).toString();
+  await revokeAccount(survivor);
+  await publish();
+
   const beforeV2 = await getJSON(`${BASE}/idp/revocation_state_v2`);
-  const membersBefore = beforeV2.leaves.slice(1).map((l) => l.value);
+  const membersBefore = new Set(beforeV2.leaves.slice(1).map((l) => l.value));
   const rebase = await fetch(`${BASE}/idp/rebaseline_v2`, { method: 'POST', headers: adminHeaders, body: '{}' });
   assert.equal(rebase.status, 200, `rebaseline must succeed (got ${rebase.status})`);
   const rebaseBody = await rebase.json();
@@ -167,10 +185,15 @@ async function main() {
   // 재기준화 후에도 (만료되지 않은) 살아있는 멤버는 전원 보존돼야 한다.
   const v2after = await buildFromFull(afterV2);
   assert.equal(v2after.getRoot().toString(), afterV2.root, 'rebased v2 tree rebuilds to the reported root');
-  for (const l of membersBefore) {
-    assert.equal(v2after.has(BigInt(l)), true, 'after rebaseline, every live published leaf is still a v2 member');
+  assert.equal(
+    v2after.has(BigInt(survivorLeaf)),
+    true,
+    'a leaf published moments ago (nowhere near expiry) must survive the rebaseline',
+  );
+  for (const l of afterV2.leaves.slice(1).map((x) => x.value)) {
+    assert.equal(membersBefore.has(l), true, 'rebaseline must not invent leaves that were not published before');
   }
-  console.log('OK (4): rebaseline bumps epoch, clears the log, preserves the live member set');
+  console.log('OK (4): rebaseline bumps epoch, clears the log, preserves live members (and invents none)');
 
   console.log('PASS: IMT v2 wiring — self-consistency, incremental multi-client sync, tooOld signalling, and rebaseline.');
 }

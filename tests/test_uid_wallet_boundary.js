@@ -3,7 +3,7 @@ import fs from 'node:fs';
 
 const clientSource = fs.readFileSync('client.js', 'utf8');
 const walletAgentSource = fs.readFileSync('wallet_agent.js', 'utf8');
-const idpPopupSource = fs.readFileSync('idp/login_popup.js', 'utf8');
+
 
 assert.doesNotMatch(
   clientSource,
@@ -41,16 +41,12 @@ assert.deepEqual(
 );
 assert(!rpVisibleSignals.includes('12345'), 'RP-visible signals must not contain uid');
 
-assert.match(
-  idpPopupSource,
-  /function zkpSignalsWithoutUid\(\)[\s\S]*?\? pendingZKP\.zkpPublicSignals\s*:/,
-  'IdP popup must forward the already uid-free signals without slicing again',
-);
-assert.doesNotMatch(
-  idpPopupSource,
-  /pendingZKP\.zkpPublicSignals\.slice\(1\)/,
-  'IdP popup must not remove a second signal',
-);
+// IdP 팝업(idp/login_popup.js)에 대한 두 단언은 여기 있었으나 제거했다. 그 파일은
+// 커밋 f20aab8에서 팝업/릴레이 경로와 함께 삭제됐고(로그인은 loopback authorize 흐름으로
+// 대체됐다), idp/ 아래에 zkpPublicSignals를 다루는 후속 파일도 없다. 그런데도 이 테스트가
+// 계속 그 파일을 읽고 있어서 f20aab8 이후 **줄곧 ENOENT로 실패**하고 있었다 — 테스트를
+// 한 번에 돌리는 진입점이 없어 아무도 알아채지 못했다(scripts/run_tests.sh가 그 문제를
+// 해소한다). uid 경계 자체는 아래 client.js·wallet_agent.js 단언이 계속 지킨다.
 
 const authenticatedIdpUid = '12345';
 const idpVerificationSignals = [authenticatedIdpUid, ...rpVisibleSignals];
