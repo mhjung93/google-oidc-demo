@@ -48,6 +48,8 @@ CHAIN=(
 LIVE=(
   # RP 백엔드(:3000)의 노출면 — 민감 파일 비공개, 추적 권한 분리, 열린 릴레이 부재.
   tests/test_rp_server_exposure.js
+  # IdP가 크레덴셜 유효기간 상한을 강제하는가(폐기 무력화 방지).
+  tests/test_max_height_bound.js
   # localhost:4000/register_rp를 부른다(127.0.0.1이 아니라 localhost라 분류에서 놓쳤었다).
   tests/test_rid_not_leaked.js
   tests/test_idp_revoke_endpoint.js

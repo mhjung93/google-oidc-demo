@@ -218,6 +218,34 @@ async function getCurrentBlockHeight() {
 const TOKEN_VALIDITY_SECONDS = 3600n;
 const ETHEREUM_SLOT_SECONDS = 12n;
 const CREDENTIAL_LIFETIME_BLOCKS = (TOKEN_VALIDITY_SECONDS + ETHEREUM_SLOT_SECONDS - 1n) / ETHEREUM_SLOT_SECONDS;
+// 지갑이 max_height를 계산한 시점과 IdP가 현재 블록을 읽는 시점 사이의 간격을 흡수한다.
+// 같은 노드를 보면 IdP 쪽이 더 나중이라(≥) 여유가 필요 없지만, 노드가 다르거나 재구성이
+// 있으면 지갑이 몇 블록 앞설 수 있다.
+const MAX_HEIGHT_SLACK_BLOCKS = 32n;
+
+// 크레덴셜 유효기간의 상한을 강제한다.
+//
+// max_height는 지갑이 정하고 IdP는 지금까지 "증명 신호와 일치하는가"만 봤다. 그런데
+// 계정 폐기 리프의 만료는 접수 시점 + CREDENTIAL_LIFETIME_BLOCKS로 고정되므로, 수정된
+// 지갑이 훨씬 먼 max_height를 받아두면 폐기가 무력화된다: 폐기 리프는 300블록 뒤
+// 만료로 회수되는데 크레덴셜은 그보다 오래 살아, 그 사이 계정 비멤버십을 다시 통과한다.
+// PPIDWallet.execute의 block.number > max_height 만료 검사도 사실상 무한이 된다.
+// (2026-09-04 리뷰. tests/test_max_height_bound.js가 이 불변식을 고정한다.)
+async function assertMaxHeightWithinBound(maxHeightSignal) {
+  const maxHeight = BigInt(maxHeightSignal);
+  const currentBlock = await getCurrentBlockHeight();
+  const limit = currentBlock + CREDENTIAL_LIFETIME_BLOCKS + MAX_HEIGHT_SLACK_BLOCKS;
+  if (maxHeight > limit) {
+    throw new Error(
+      `max_height ${maxHeight} exceeds the allowed credential lifetime ` +
+        `(current block ${currentBlock} + ${CREDENTIAL_LIFETIME_BLOCKS} + ${MAX_HEIGHT_SLACK_BLOCKS} slack = ${limit}). ` +
+        'Revocation assumes credentials expire within that window.',
+    );
+  }
+  if (maxHeight <= currentBlock) {
+    throw new Error(`max_height ${maxHeight} is already expired at block ${currentBlock}`);
+  }
+}
 
 function now() { return Date.now(); }
 function cursor() { return { last: now() }; }
@@ -1012,6 +1040,10 @@ app.post('/authorize/login', async (req, res) => {
   try {
     const verifySignals = [user.uid.toString(), ...record.zkpPublicSignals];
     assertDecimalSignals(verifySignals, 8, 'pi_i');
+
+    // 비싼 groth16 검증 **앞에** 둔다(싼 검사가 먼저다).
+    await assertMaxHeightWithinBound(verifySignals[3]);
+
     const isValid = await snarkjs.groth16.verify(vkeyAridI, verifySignals, record.zkpProof);
     if (!isValid) throw new Error('Identity Mismatch: This proof was not made for you!');
 
@@ -1325,6 +1357,9 @@ async function verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, bu
     if (String(verifySignals[1]) !== String(business?.arid_i)) throw new Error('arid_i does not match pi_i public signal');
     if (String(verifySignals[2]) !== String(business?.auid_i)) throw new Error('auid_i does not match pi_i public signal');
     if (String(verifySignals[3]) !== String(maxHeight)) throw new Error('max_height does not match pi_i public signal');
+    // 두 로그인 경로 모두에서 상한을 걸어야 한다 — pinAuidToAccount가 한쪽에만 있어
+    // 폐기가 우회됐던 전례가 있다(2026-08-26).
+    await assertMaxHeightWithinBound(verifySignals[3]);
     if (String(verifySignals[4]) !== String(rToken)) throw new Error('r_token does not match pi_i public signal');
     console.log(`✅ [CustomIdP][Step 10] pi_i Verified for user: ${username} ${ms(start)}`);
   } catch (err) {
