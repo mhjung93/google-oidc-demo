@@ -136,6 +136,25 @@ async function runOneCycle(ctx) {
     `pending=${committed.pendingCount}`
   );
 
+  // commit은 상태 저장에 실패해도 200을 돌려주고 persistenceWarning을 싣는다(트리 전진은
+  // append-only라 되돌릴 수 없고 재시도도 불가능하므로 5xx를 낼 수 없다 — custom_idp.js
+  // 참고). 그걸 읽지 않으면 저장 실패가 "3/3 commit 성공"으로 보고되고 연속 실패
+  // 카운터까지 리셋돼, IdP가 재시작하는 순간 전원이 StaleRevocationRoot로 막힌다.
+  if (committed.persistenceWarning) {
+    console.error(
+      "\n" + "!".repeat(70) + "\n" +
+      `[sweep] 경고: commit은 성공했지만 IdP가 상태를 저장하지 못했습니다.\n` +
+      `        ${committed.persistenceWarning}\n` +
+      "        지금은 정상 동작하지만 IdP를 재시작하면 커밋 이전 root를 서빙하게 되고, " +
+      "체인에는 새 root가 있으므로 전원의 트랜잭션이 막힙니다. 상태 파일을 복구하기 전에는 " +
+      "IdP를 재시작하지 마십시오.\n" +
+      "!".repeat(70) + "\n"
+    );
+    const err = new Error(`commit succeeded but the IdP could not persist its state: ${committed.persistenceWarning}`);
+    err.persistenceWarning = true;
+    throw err;
+  }
+
   if (String(committed.root) !== String(expectedRoot)) {
     throw new Error(
       `commit이 반영한 root(${committed.root})가 게시한 root(${expectedRoot})와 다릅니다. ` +
@@ -268,6 +287,22 @@ async function main() {
   // (회귀 없음). 값이 있으면 그 초 간격으로 무기한 반복하는 데몬 모드로 들어간다.
   const intervalRaw = process.env.REVOCATION_SWEEP_INTERVAL_SECONDS;
   if (!intervalRaw) {
+    // 단발 모드에도 같은 보호가 필요하다. 위 주석이 설명하는 "push~commit 사이는 전면
+    // 장애 구간이라 강제로 끊으면 안 된다"는 성질은 데몬 모드에만 있는 게 아닌데,
+    // 시그널 핸들러가 runLoop 안에만 있어 기본 경로(단발)에는 아무 보호가 없었다.
+    // Ctrl+C 한 번이 정확히 그 창에서 프로세스를 죽일 수 있었다(2026-09-04 리뷰).
+    const onSignalOnce = (sig) => {
+      console.log(
+        `[sweep] ${sig} 수신 — 단발 사이클을 마치고 종료합니다. ` +
+        `(push~commit 사이는 grace window가 없어 전면 장애 구간이므로 강제로 끊지 않는다. ` +
+        `재신호 시 즉시 종료.)`
+      );
+      process.once("SIGINT", () => process.exit(1));
+      process.once("SIGTERM", () => process.exit(1));
+    };
+    process.once("SIGINT", () => onSignalOnce("SIGINT"));
+    process.once("SIGTERM", () => onSignalOnce("SIGTERM"));
+
     await runOneCycle(ctx);
     return;
   }

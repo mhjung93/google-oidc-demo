@@ -194,7 +194,12 @@ if (APP_MODE === 2) {
     await new Promise((resolve, reject) => {
       const timer = setInterval(async () => {
         try {
-          const statusRes = await fetch(`${WALLET_AGENT_ORIGIN}/loginStatus?jobId=${encodeURIComponent(jobId)}`);
+          // wallet_agent.js는 전역 인증 미들웨어로 모든 엔드포인트에 토큰을 요구한다.
+          // 이 헤더가 없으면 첫 폴링부터 401이라 위임 로그인이 시작조차 못 한다
+          // (같은 파일의 다른 호출부는 붙이고 있었다 — 2026-09-04 리뷰).
+          const statusRes = await fetch(`${WALLET_AGENT_ORIGIN}/loginStatus?jobId=${encodeURIComponent(jobId)}`, {
+            headers: { 'X-Wallet-Agent-Token': walletAgentToken },
+          });
           if (!statusRes.ok) {
             clearInterval(timer);
             reject(new Error(`/loginStatus failed (${statusRes.status})`));
@@ -216,11 +221,16 @@ if (APP_MODE === 2) {
                   method: 'wallet_invokeSnap',
                   params: { snapId, request: { method: 'confirmLogin', params: {} } },
                 });
-                await fetch(`${WALLET_AGENT_ORIGIN}/confirmLoginResult`, {
+                const confirmRes = await fetch(`${WALLET_AGENT_ORIGIN}/confirmLoginResult`, {
                   method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
+                  headers: { 'Content-Type': 'application/json', 'X-Wallet-Agent-Token': walletAgentToken },
                   body: JSON.stringify({ jobId, approved: Boolean(snapResult?.approved) }),
                 });
+                // 401은 fetch가 던지지 않는다 — 확인하지 않으면 승인 결과가 조용히
+                // 버려지고 job이 TTL까지 awaiting_wallet_approval에 멈춘다.
+                if (!confirmRes.ok) {
+                  throw new Error(`/confirmLoginResult failed (${confirmRes.status})`);
+                }
               } catch (err) {
                 snapConfirmSent = false; // Snap 호출/보고 자체가 실패하면 다음 tick에 재시도
                 console.warn('[Mode 2] Snap confirmLogin failed:', err.message);

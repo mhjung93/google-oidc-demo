@@ -925,7 +925,12 @@ app.post('/register_rp', (req, res) => {
 // docs/superpowers/specs/2026-07-24-idp-par-authorize-token-design.md.
 const PAIRCT_CLIENT_ID = 'pairct-wallet';
 const LOOPBACK_REDIRECT_URI_PATTERN = /^http:\/\/127\.0\.0\.1:\d+\/oidc\/callback$/;
-const PAR_REQUEST_TTL_MS = 60 * 1000;
+// request_uri의 수명은 **사람이 로그인 폼을 채우고 동의를 누르기까지**를 덮어야 한다.
+// 60초는 그 전체를 덮지 못해, 비밀번호까지 통과한 뒤 동의 시점에 레코드가 만료돼 로그인
+// 전체가 날아갔다(2026-09-04 리뷰). 5분으로 늘린다 — 이 값은 "발급된 인가 코드"가 아니라
+// "아직 인증도 안 된 요청"의 수명이라, 늘려도 공격 표면이 늘지 않는다(단일 사용이고,
+// 동의는 로그인한 세션에만 묶인다). 인가 코드 TTL(60초)은 그대로 둔다.
+const PAR_REQUEST_TTL_MS = 5 * 60 * 1000;
 const AUTHORIZATION_CODE_TTL_MS = 60 * 1000;
 
 // request_uri -> { redirect_uri, state, nonce, code_challenge,
@@ -962,11 +967,14 @@ app.post('/par', async (req, res) => {
   if (response_type !== 'code') {
     return res.status(400).json({ error: 'unsupported_response_type' });
   }
-  if (!state || !nonce) {
-    return res.status(400).json({ error: 'invalid_request', error_description: 'state and nonce are required' });
+  // 타입까지 본다. 문자열이 아닌 값(JSON 숫자 등)이 들어오면 아래에서 문자열 메서드를
+  // 부르다 터지고, express 기본 오류 처리가 500과 함께 **스택 트레이스(절대 경로 포함)**를
+  // 응답에 실어 보낸다(2026-09-04 리뷰).
+  if (typeof state !== 'string' || typeof nonce !== 'string' || !state || !nonce) {
+    return res.status(400).json({ error: 'invalid_request', error_description: 'state and nonce are required (strings)' });
   }
-  if (!code_challenge || code_challenge_method !== 'S256') {
-    return res.status(400).json({ error: 'invalid_request', error_description: 'code_challenge (S256) is required' });
+  if (typeof code_challenge !== 'string' || !code_challenge || code_challenge_method !== 'S256') {
+    return res.status(400).json({ error: 'invalid_request', error_description: 'code_challenge (S256) is required (string)' });
   }
   if (!chain_id) {
     return res.status(400).json({ error: 'invalid_request', error_description: 'chain_id is required' });
@@ -1145,8 +1153,11 @@ app.post('/token', async (req, res) => {
   if (client_id !== PAIRCT_CLIENT_ID) {
     return res.status(400).json({ error: 'invalid_client' });
   }
-  if (!code || !code_verifier || !redirect_uri) {
-    return res.status(400).json({ error: 'invalid_request', error_description: 'code, code_verifier, and redirect_uri are required' });
+  // 타입까지 본다 — 문자열이 아니면 아래 createHash().update()가 던지고, express 기본
+  // 오류 처리가 500과 함께 스택 트레이스를 응답에 실어 보낸다(2026-09-04 리뷰).
+  if (typeof code !== 'string' || typeof code_verifier !== 'string' || typeof redirect_uri !== 'string'
+      || !code || !code_verifier || !redirect_uri) {
+    return res.status(400).json({ error: 'invalid_request', error_description: 'code, code_verifier, and redirect_uri are required (strings)' });
   }
 
   const record = authorizationCodes.get(code);

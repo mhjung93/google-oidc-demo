@@ -66,6 +66,12 @@ export async function startIsolatedIdP(opts = {}) {
 
   const out = fs.openSync(logFile, 'a');
   const child = spawn('node', ['custom_idp.js'], { cwd: REPO_ROOT, env, stdio: ['ignore', out, out] });
+  // 'error'(spawn 자체 실패: node 없음, cwd 없음 등) 리스너가 없으면 처리되지 않은
+  // 예외로 테스트 프로세스가 죽어, 아래의 진단 메시지에 도달하지 못한다.
+  let spawnError = null;
+  child.on('error', (err) => {
+    spawnError = err;
+  });
 
   const base = `http://127.0.0.1:${port}`;
   const deadline = Date.now() + readyTimeoutMs;
@@ -93,7 +99,12 @@ export async function startIsolatedIdP(opts = {}) {
     } catch {
       /* 이미 죽었다 */
     }
-    throw new Error(`격리 IdP가 뜨지 않았다 (port ${port}). 로그:\n${log}`);
+    // 임시 디렉터리에는 이 인스턴스가 만든 idp_keys.json(PS/EdDSA 개인키)이 들어 있다.
+    // 실패 경로에서 지우지 않으면 /tmp에 개인키가 계속 쌓인다. 재사용 디렉터리는
+    // 만든 쪽 책임이므로 건드리지 않는다.
+    if (!reuseDir) fs.rmSync(dir, { recursive: true, force: true });
+    const cause = spawnError ? ` spawn 실패: ${spawnError.message}.` : '';
+    throw new Error(`격리 IdP가 뜨지 않았다 (port ${port}).${cause} 로그:\n${log}`);
   }
 
   const adminHeaders = { 'Content-Type': 'application/json', 'X-IdP-Admin-Secret': adminSecret };

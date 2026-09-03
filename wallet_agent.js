@@ -858,7 +858,9 @@ app.post('/confirmLoginResult', async (req, res) => {
   });
 });
 
-const LOOPBACK_TIMEOUT_MS = 90 * 1000; // /par's request_uri TTL (60s) plus margin
+// IdP의 request_uri TTL(5분)보다 길어야 한다 — 짧으면 사용자가 아직 로그인 중인데
+// 지갑이 먼저 포기한다. 사람이 폼을 채우고 동의를 누르는 시간을 덮는 값이다.
+const LOOPBACK_TIMEOUT_MS = 6 * 60 * 1000;
 
 async function startLoopbackLogin(jobId) {
   const job = loginJobs.get(jobId);
@@ -941,24 +943,30 @@ function handleLoopbackCallback(jobId, req, res, ctx) {
     return;
   }
 
-  clearTimeout(timeoutHandle);
   const returnedState = requestUrl.searchParams.get('state');
   const code = requestUrl.searchParams.get('code');
   const error = requestUrl.searchParams.get('error');
 
+  // state 검증을 **타임아웃 해제·서버 종료보다 먼저** 한다.
+  //
+  // 예전에는 /oidc/callback 경로이기만 하면 곧바로 타임아웃을 끄고 서버를 닫았다.
+  // 루프백 포트는 같은 머신의 아무 프로세스나 두드릴 수 있으므로, 관계없는 요청 하나가
+  // 진짜 콜백이 오기 전에 리스너를 닫아 로그인을 영구 실패시킬 수 있었다(2026-09-04 리뷰).
+  // state가 맞지 않으면 그냥 무시하고 계속 기다린다.
+  if (returnedState !== state) {
+    console.warn(`[WalletAgent][loopback] job ${jobId}: state 불일치 콜백 무시(계속 대기)`);
+    res.writeHead(400, { 'Content-Type': 'text/plain' });
+    res.end('state mismatch');
+    return;
+  }
+
+  clearTimeout(timeoutHandle);
   res.writeHead(200, { 'Content-Type': 'text/html' });
   res.end('<html><body><p>Login complete. You can close this tab and return to the app.</p></body></html>');
   server.close();
 
   const job = loginJobs.get(jobId);
   if (!job) return;
-
-  if (returnedState !== state) {
-    job.status = 'failed';
-    job.error = 'state mismatch on loopback callback (possible CSRF)';
-    console.error(`[WalletAgent][loopback] job ${jobId}: state mismatch on callback`);
-    return;
-  }
   if (error) {
     job.status = 'denied';
     console.log(`[WalletAgent][loopback] job ${jobId} denied at IdP consent: ${error}`);

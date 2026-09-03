@@ -77,8 +77,27 @@ case "$GROUP" in
   unit)    FILES=("${UNIT[@]}") ;;
   circuit) FILES=("${CIRCUIT[@]}") ;;
   chain)   FILES=("${CHAIN[@]}") ;;
-  live)    FILES=("${LIVE[@]}") ;;
-  all)     FILES=("${UNIT[@]}" "${CIRCUIT[@]}" "${CHAIN[@]}" "${LIVE[@]}") ;;
+  live)
+    # live 그룹은 실행 중인 IdP의 폐기 트리를 **되돌릴 수 없게** 바꾸고(append-only)
+    # 체인 블록을 수백 개 진행시킨다. 격리 하네스(tests/helpers/isolated_idp.mjs)가
+    # 있는데도 이 16개는 아직 개발 인스턴스를 직접 쓴다 — 실수로 돌리는 일이 없도록
+    # 명시적 동의를 요구한다(2026-09-04 리뷰).
+    if [ "${RUN_LIVE_TESTS:-}" != "yes" ]; then
+      echo "live 그룹은 실행 중인 IdP의 폐기 트리를 되돌릴 수 없게 바꾸고 체인 블록을 진행시킵니다."
+      echo "  - 폐기 리프가 쌓이고(append-only), 재기준화로 epoch가 오를 수 있습니다."
+      echo "  - E2E는 매 실행마다 새 세션을 폐기합니다."
+      echo "진행하려면 RUN_LIVE_TESTS=yes 를 설정하십시오."
+      exit 2
+    fi
+    FILES=("${LIVE[@]}")
+    ;;
+  all)
+    if [ "${RUN_LIVE_TESTS:-}" != "yes" ]; then
+      echo "all 그룹은 live를 포함합니다. RUN_LIVE_TESTS=yes 를 설정하십시오(위 live 설명 참고)."
+      exit 2
+    fi
+    FILES=("${UNIT[@]}" "${CIRCUIT[@]}" "${CHAIN[@]}" "${LIVE[@]}")
+    ;;
   default) FILES=("${UNIT[@]}" "${CIRCUIT[@]}") ;;
   *) echo "알 수 없는 그룹: $GROUP (unit|circuit|chain|live|all)" >&2; exit 2 ;;
 esac
