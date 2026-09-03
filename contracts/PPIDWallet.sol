@@ -26,6 +26,13 @@ contract PPIDWallet {
     error Expired(uint256 currentBlock, uint256 maxHeight);
     error StaleRevocationRoot(bytes32 root);
 
+    /// @notice execute()가 내부 호출을 수행한 결과.
+    /// @dev 내부 호출의 성공 여부(ok)는 top-level 트랜잭션의 반환값이라 영수증에 남지
+    ///      않는다. 이벤트가 없으면 잔액보다 큰 value를 보낸 트랜잭션이 status=1로
+    ///      채굴되고 nonce만 소모된 채 자금은 그대로인데, 사용자도 RP도 그 사실을 알
+    ///      길이 없다(2026-09-04 리뷰).
+    event Executed(uint256 indexed nonceUsed, address indexed to, uint256 value, bool success);
+
     constructor(
         uint256 _ppid,
         address _verifier,
@@ -84,6 +91,9 @@ contract PPIDWallet {
         nonce += 1;
 
         (ok, ) = payload.to.call{value: payload.value}(payload.data);
+        // 실패해도 revert하지 않는다(nonce 소모는 의도된 재생 방지). 대신 관측 가능하게
+        // 남긴다 — 위 Executed 이벤트 주석 참조.
+        emit Executed(payload.nonce, payload.to, payload.value, ok);
     }
 
     // execute()의 로컬 변수/파라미터 수가 EVM 스택 한도(16 slot)를 넘어서서

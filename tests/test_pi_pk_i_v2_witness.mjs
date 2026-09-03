@@ -69,7 +69,7 @@ async function rejects(input, label) {
 
 // 실제 지갑(wallet_agent.js buildWarmupPiPkIInput / submitTransaction)이 만드는
 // circuitInput 모양 그대로를 v2 트리로 구성한다. sess/acct 모두 lowNextIndex 포함.
-async function buildWalletInput({ poseidon, eddsa, tree }) {
+async function buildWalletInput({ poseidon, eddsa, tree, pkIOverride }) {
   const F = eddsa.F;
   const sk = webcrypto.getRandomValues(new Uint8Array(32));
   const pk = eddsa.prv2pub(sk);
@@ -78,7 +78,8 @@ async function buildWalletInput({ poseidon, eddsa, tree }) {
   const uid = 111111n;
   const rid = 222222n;
   const salt = 333333n;
-  const pk_i = 987654321n;
+  // pkIOverride는 '회로가 pk_i 범위를 제약하는가'를 검사하기 위한 테스트 전용 경로다.
+  const pk_i = pkIOverride !== undefined ? pkIOverride : 987654321n;
   const max_height = 1000n;
   const chain_id = 1337n;
 
@@ -176,6 +177,27 @@ async function main() {
     const { input } = await buildWalletInput({ poseidon, eddsa, tree });
     const tampered = { ...input, sess_lowNextIndex: (BigInt(input.sess_lowNextIndex) + 1n).toString() };
     await rejects(tampered, 'tampered sess_lowNextIndex breaks the Merkle path');
+  }
+
+  // 5) pk_i는 160비트를 넘을 수 없다.
+  //
+  //    컨트랙트는 address(uint160(pk_i))로 **하위 160비트만** 비교하는데 회로는 254비트
+  //    pk_i 전체를 r_token = Poseidon(pk_i, max_height, rp_nonce)에 묶는다. 제약이 없으면
+  //    한 주소 A에 대해 A + k·2^160 형태의 유효한 pk_i가 여러 개 존재하고, 각각 다른
+  //    r_token(=다른 세션 폐기 리프)을 갖는다. /idp/revoke는 r_token으로 키잉되므로 한
+  //    세션을 폐기해도 같은 주소로 실행되는 형제 크레덴셜은 그대로 살아남는다.
+  {
+    const tree = await createIMTv2(20);
+    const { input } = await buildWalletInput({ poseidon, eddsa, tree });
+    // 같은 주소를 가리키지만 상위 비트가 있는 pk_i. r_token/서명까지 일관되게 다시
+    // 만들어야 "범위 제약"만을 검사하게 된다 — 그래서 buildWalletInput에 넘긴다.
+    const sibling = await buildWalletInput({
+      poseidon,
+      eddsa,
+      tree,
+      pkIOverride: BigInt(input.pk_i) + (1n << 160n),
+    });
+    await rejects(sibling.input, 'pk_i >= 2^160 (형제 크레덴셜)은 거부돼야 한다');
   }
 
   console.log('\nPASS: pi_pk_i.circom (v2) accepts real wallet-shaped witnesses; tampered ones fail.');

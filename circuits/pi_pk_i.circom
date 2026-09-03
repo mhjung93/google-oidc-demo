@@ -3,6 +3,7 @@ pragma circom 2.0.0;
 include "lib/eddsaposeidon.circom";
 include "lib/poseidon.circom";
 include "lib/imt_nonmembership_v2.circom";
+include "lib/bitify.circom";
 
 template PiPkI() {
     // Private inputs
@@ -48,6 +49,17 @@ template PiPkI() {
 
     // auid_i = PPID * rp_nonce
     auid_i === PPID * rp_nonce;
+
+    // pk_i는 160비트를 넘을 수 없다.
+    //
+    // PPIDWallet.execute()는 address(uint160(pk_i))로 **하위 160비트만** 비교하는데,
+    // 회로는 254비트 pk_i 전체를 r_token = Poseidon(pk_i, max_height, rp_nonce)에 묶는다.
+    // 제약이 없으면 하나의 서명 주소 A에 대해 A + k*2^160 형태의 유효한 pk_i가 여러 개
+    // 존재하고 각각 다른 r_token(= 다른 세션 폐기 리프)을 갖는다. /idp/revoke는 r_token으로
+    // 키잉되므로, 한 세션을 폐기해도 같은 주소로 실행되는 형제 크레덴셜은 그대로 살아남는다.
+    // (2026-09-04 리뷰. tests/test_pi_pk_i_v2_witness.mjs 케이스 5가 고정한다.)
+    component pkIRange = Num2Bits(160);
+    pkIRange.in <== pk_i;
 
     // r_token = Poseidon(pk_i, max_height, rp_nonce)
     component tokenNonceHasher = Poseidon(3);

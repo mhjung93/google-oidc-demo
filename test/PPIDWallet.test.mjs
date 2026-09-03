@@ -277,6 +277,20 @@ describe("PPIDWallet", function () {
     ).to.be.revertedWithCustomError(zeroWallet, "BadSignature");
   });
 
+  it("emits Executed with success=false when the inner call fails", async function () {
+    // ok는 top-level 트랜잭션 반환값이라 영수증에 없다. 이벤트가 없으면 잔액보다 큰
+    // value를 보낸 트랜잭션이 status=1로 채굴되고 nonce만 소모된 채 자금은 안 움직이는데
+    // 사용자도 RP도 알 수 없다.
+    const { wallet, pk_i, pk_IdP_x, pk_IdP_y, maxHeight, pA, pB, pC, signPayload, revocationRoot } = await deployFixture();
+    const tooMuch = hre.ethers.parseEther("1000"); // 지갑 잔액(1 ETH)보다 크다
+    const payload = { to: hre.ethers.Wallet.createRandom().address, value: tooMuch, data: "0x", nonce: await wallet.nonce() };
+    const sig = signPayload(payload, wallet.target, (await hre.ethers.provider.getNetwork()).chainId);
+
+    await expect(wallet.execute(payload, sig, pA, pB, pC, pk_i, pk_IdP_x, pk_IdP_y, maxHeight, revocationRoot))
+      .to.emit(wallet, "Executed")
+      .withArgs(payload.nonce, payload.to, tooMuch, false);
+  });
+
   it("rejects an untrusted pk_IdP", async function () {
     const { wallet, pk_i, maxHeight, pA, pB, pC, signPayload, revocationRoot } = await deployFixture();
     const payload = { to: hre.ethers.Wallet.createRandom().address, value: 0, data: "0x", nonce: await wallet.nonce() };

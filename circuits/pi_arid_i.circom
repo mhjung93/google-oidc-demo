@@ -2,6 +2,7 @@ pragma circom 2.0.0;
 
 include "lib/poseidon.circom";
 include "lib/eddsaposeidon.circom";
+include "lib/bitify.circom";
 
 template PiAridI() {
     // Private Inputs (hidden from verifier)
@@ -65,6 +66,11 @@ template PiAridI() {
 
     // auid_i = ppid * rp_nonce
     auid_i === ppid * rp_nonce;
+
+    // pk_i는 160비트를 넘을 수 없다 — pi_pk_i.circom의 같은 제약 주석 참조.
+    // 발급 단계에서도 막아야, 온체인에서 쓸 수 없는 형제 크레덴셜이 애초에 발급되지 않는다.
+    component pkIRange = Num2Bits(160);
+    pkIRange.in <== pk_i;
 
     // token_nonce = Poseidon(pk_i, max_height, rp_nonce)
     component tokenNonceHasher = Poseidon(3);
