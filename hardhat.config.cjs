@@ -32,6 +32,16 @@ module.exports = {
         version: "0.8.24",
         settings: WALLET_IR_SETTINGS,
       },
+      // v3 판도 같은 이유로 IR이 필요하고, 팩토리는 지갑을 import하므로 같은 설정을
+      // 공유해야 CREATE2 주소가 컴파일 job에 따라 달라지지 않는다.
+      "contracts/PPIDWalletV3.sol": {
+        version: "0.8.24",
+        settings: WALLET_IR_SETTINGS,
+      },
+      "contracts/PPIDWalletFactoryV3.sol": {
+        version: "0.8.24",
+        settings: WALLET_IR_SETTINGS,
+      },
     },
   },
   ethernal: {

@@ -24,6 +24,7 @@ UNIT=(
   tests/test_idp_publish_invariants.js
   tests/test_wallet_revocation_cache.js
   tests/test_wallet_revocation_sync_recovery.mjs
+  tests/test_imt_v3_lib.js
 )
 
 CIRCUIT=(
@@ -36,6 +37,7 @@ CIRCUIT=(
   tests/test_imt_v2_nonmembership_circuit.mjs
   tests/test_pi_pk_i_v2_witness.mjs
   tests/test_pi_pk_i_revocation.mjs
+  tests/test_pi_pk_i_v3_shard.mjs
 )
 
 # hardhat 노드만 있으면 되는 것들. IdP가 필요하면 테스트가 스스로 격리 인스턴스를 띄운다
