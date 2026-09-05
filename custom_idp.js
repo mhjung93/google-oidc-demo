@@ -16,6 +16,8 @@ import { leafValue, TAG_SESSION, TAG_ACCOUNT } from './lib/imt.js';
 // 해시를 쓰므로 v2는 어떤 소비자에게도 서빙되는 witness의 근거가 아니다. Stage B에서
 // 회로/zkey가 준비되면 v1을 걷어내고 v2로 스위치한다(docs/.../proper-imt-design.md 6절).
 import { createIMTv2, buildIMTv2 } from './lib/imt_v2.js';
+import { createIdPRevocationV3, LAYER_SESSION, LAYER_ACCOUNT } from './lib/idp_revocation_v3.js';
+import { SESSION_SHARD_COUNT, ACCOUNT_SHARD_COUNT } from './lib/imt_v3.js';
 
 const app = express();
 // 기본값은 데모 구성 그대로다. 환경변수는 테스트가 **격리된 IdP 인스턴스**를 띄우기
@@ -71,6 +73,11 @@ const leafExpiry = new Map();
 // (rebaselineV2, 설계 문서 3.3절)가 그 자리를 대신해 살아있는 집합만으로 트리를
 // 새로 쌓아 슬롯을 회수한다.
 let revocationTreeV2 = await createIMTv2(REVOCATION_TREE_DEPTH);
+// v3(이중 트리) 폐기 상태. v2와 **나란히** 유지된다 — 접수/게시 시점에 같은 리프를
+// 받아 샤드 포레스트에도 반영하고, 조회는 별도 엔드포인트로 서빙한다. 온체인에 게시되는
+// root는 아직 v2 것이며, 전환은 zkey 재생성·재배포(E단계)와 함께 한다.
+// 설계: docs/superpowers/specs/2026-09-05-revocation-dual-tree-design.md
+let revocationV3 = await createIdPRevocationV3();
 // epoch: 재기준화가 일어날 때만 증가한다. 지갑은 자기 epoch와 다르면 증분이 아니라
 // 전체를 다시 받아야 한다는 것을 이걸로 안다(설계 문서 3.3절).
 let epochV2 = 0;
@@ -588,7 +595,7 @@ const IDP_STATE_FILE = process.env.IDP_STATE_FILE
 // (기존 zkey·CREATE2 주소 무효화), 되돌림 안전성을 위해 버전 bump를 미룰 이유가 이제 없다.
 // v1/v2/v3 파일은 loadIdPState()가 v2 게시 집합으로 무손실 마이그레이션한다(아래 참고):
 // v2Leaves가 있으면(v3, Stage A) 그대로 쓰고, 없으면 revokedLeaves 값으로 v2를 초기화한다.
-const IDP_STATE_FILE_VERSION = 4;
+const IDP_STATE_FILE_VERSION = 5;
 const LEGACY_AUID_ILOG_MAX_HEIGHT = '0';
 
 function stateFileError(detail) {
@@ -649,6 +656,9 @@ function serializeIdPState() {
     // 저장해야 재구성 root가 같다(설계 문서 3.1절 — root는 삽입 순서에 의존한다).
     v2Leaves: revocationTreeV2.getLeaves().map(v2LeafToStr),
     mutationLogV2,
+    // === v3(이중 트리) — 아직 게시의 진실은 아니지만, 전환 시점에 v2와 같은 폐기 집합을
+    // 담고 있어야 하므로 v2와 동일하게 영속화한다. 샤드별 리프 배열은 물리 순서다. ===
+    v3: revocationV3.serialize(),
   };
 }
 
@@ -697,8 +707,8 @@ async function loadIdPState() {
   const fileVersion = parsed?.version;
   const isLegacyAuidILog = fileVersion === 1;
   const hasDisabledField = fileVersion === 3 || fileVersion === 4;
-  const isV4 = fileVersion === 4;
-  if (![1, 2, 3, 4].includes(fileVersion)) {
+  const isV4OrLater = fileVersion >= 4;
+  if (![1, 2, 3, 4, 5].includes(fileVersion)) {
     throw stateFileError('unsupported version');
   }
   if (!Array.isArray(parsed.pendingAdds)) throw stateFileError('pendingAdds must be an array');
@@ -710,7 +720,7 @@ async function loadIdPState() {
   // v1 트리 재구성과 publishedRoot 대조는 제거했다(v2가 유일 진실). v4 이전 파일의
   // revokedLeaves는 v2Leaves가 없을 때만 v2 초기화 씨앗으로 쓴다(아래 v2 복원 절).
   let legacyLeaves = null;
-  if (!isV4) {
+  if (!isV4OrLater) {
     if (!Array.isArray(parsed.revokedLeaves)) throw stateFileError('revokedLeaves must be an array');
     legacyLeaves = parsed.revokedLeaves.map((l, i) => assertDecimalString(l, `revokedLeaves[${i}]`));
   }
@@ -814,8 +824,30 @@ async function loadIdPState() {
     mutationLogV2 = [];
     rebuildV2ValueToIndex();
   } else {
-    // v4 파일인데 v2Leaves가 없다 — 게시 상태의 유일한 출처가 없으므로 명확히 거부한다.
-    throw stateFileError('a version 4 state file must contain a non-empty v2Leaves array');
+    // v4 이상인데 v2Leaves가 없다 — 게시 상태의 유일한 출처가 없으므로 명확히 거부한다.
+    throw stateFileError('a version 4 or later state file must contain a non-empty v2Leaves array');
+  }
+
+  // === v3(이중 트리) 복원 ===
+  // v5부터 저장된다. v4 이하 파일에는 층 정보(session/account)가 없고 리프는 Poseidon
+  // 해시라 되돌릴 수 없으므로, v3는 **빈 상태로 시작하고 backfill 플래그를 세운다.**
+  // v3는 아직 게시의 진실이 아니라 이 상태로도 운영에 지장이 없지만, 전환(E단계) 전에
+  // 운영자가 살아있는 폐기를 다시 접수해야 한다.
+  if (isPlainObject(parsed.v3)) {
+    try {
+      await revocationV3.restore(parsed.v3);
+    } catch (err) {
+      throw stateFileError(`v3 restore failed: ${err.message}`);
+    }
+  } else {
+    revocationV3.markNeedsBackfill();
+    if (publishedLeaves().length > 0) {
+      console.warn(
+        `[CustomIdP] 상태 파일 v${fileVersion}에는 v3(이중 트리) 스냅샷이 없다. v3는 빈 상태로 ` +
+          `시작한다 — 이미 게시된 폐기 ${publishedLeaves().length}건의 층(session/account)을 ` +
+          '리프 해시에서 되돌릴 수 없기 때문이다. 전환 전에 살아있는 폐기를 다시 접수하라(backfill).',
+      );
+    }
   }
 
   const publishedRootV2Now = revocationTreeV2.getRoot().toString();
@@ -1754,6 +1786,14 @@ app.post('/idp/revoke', requireIdPAdmin, serializeAdminMutation(async (req, res)
       hadPreviousExpiry && previousExpiry > expiryBlock ? previousExpiry : expiryBlock;
     leafExpiry.set(leafKey, effectiveExpiry);
 
+    // v3: 리프가 어느 층인지 여기서만 알 수 있다(리프는 Poseidon 해시라 나중에 되돌릴
+    // 수 없다). 게시 시점에 알맞은 포레스트로 라우팅하려면 지금 기억해 둬야 한다.
+    const v3Undo = revocationV3.record(
+      leafKey,
+      type === 'session' ? LAYER_SESSION : LAYER_ACCOUNT,
+      effectiveExpiry,
+    );
+
     // 대기열과 만료 메타데이터가 재시작을 넘어 살아남아야 접수된 폐기가 사라지지 않는다.
     // 폐기는 보안 조작이라 저장 실패를 200으로 감추면 안 된다 — 저장이 실패하면 이
     // 요청이 만든 인메모리 변경을 롤백하고(이번 요청이 건드리지 않은 기존 항목은
@@ -1766,6 +1806,7 @@ app.post('/idp/revoke', requireIdPAdmin, serializeAdminMutation(async (req, res)
       if (addedToPending) pendingAdds.delete(leafKey);
       if (hadPreviousExpiry) leafExpiry.set(leafKey, previousExpiry);
       else leafExpiry.delete(leafKey);
+      revocationV3.unrecord(leafKey, v3Undo);
       return res.status(500).json({
         error: 'failed to persist revocation state; the revocation was not recorded, please retry',
       });
@@ -2006,6 +2047,31 @@ app.post('/idp/publish/commit', requireIdPAdmin, serializeAdminMutation(async (r
     actualRoot = revocationTreeV2.getRoot().toString();
   } catch (err) {
     return res.status(500).json({ error: `failed to advance the v2 tree: ${err.message}` });
+  }
+
+  // v3(이중 트리)를 같은 리프로 나란히 전진시킨다. 아직 온체인 게시의 진실은 v2이므로,
+  // 여기서 실패해도 요청을 5xx로 만들지 않는다 — v2는 이미 되돌릴 수 없게 전진했고
+  // 게시도 끝났기 때문이다. 대신 backfill 플래그를 세워 전환(E단계) 전에 반드시
+  // 드러나게 한다. 조용히 넘어가면 v3 트리에 구멍이 난 채로 전환하게 된다.
+  let v3Applied = null;
+  try {
+    v3Applied = await revocationV3.applyCommit(prepared.addedValues);
+    const resetShards = revocationV3.resetExpiredSessionShards(
+      prepared.blockHeight,
+      CREDENTIAL_LIFETIME_BLOCKS + MAX_HEIGHT_SLACK_BLOCKS,
+    );
+    if (v3Applied.sessionAdded > 0 || v3Applied.accountAdded > 0 || resetShards > 0) {
+      console.log(
+        `[IdP] publish/commit: v3 +${v3Applied.sessionAdded} session / +${v3Applied.accountAdded} account, ` +
+          `${resetShards} expired session shard(s) reset, combined root ${revocationV3.combinedRoot()}`,
+      );
+    }
+  } catch (err) {
+    revocationV3.markNeedsBackfill();
+    console.error(
+      `[IdP] publish/commit: v3 포레스트 반영 실패 — ${err.message}. v2 게시는 정상이지만 ` +
+        'v3에 구멍이 생겼다. 전환 전에 살아있는 폐기를 다시 접수해야 한다(backfill).',
+    );
   }
 
   // 적용 결과 root가 prepare가 예측하고 운영자가 온체인에 push한 root와 다르면, 지갑이
@@ -2300,6 +2366,40 @@ app.get('/idp/revocation_state_v2', (req, res) => {
 
   const mutations = mutationLogV2.filter((m) => m.seq > since);
   return res.json({ epoch: epochV2, seq: seqV2, root, mutations });
+});
+
+// === v3(이중 트리) 조회 — 지갑이 자기 샤드 두 개만 받아가는 경로 ===
+//
+// v2 조회와 근본적으로 다른 점: **증분 동기화 프로토콜이 없다.** 서브트리 하나가 최대
+// 256~1,024리프라 지갑이 자기 샤드를 통째로 받아도 싸기 때문이다. 그래서 seq·epoch·
+// 변경 로그·tooOld가 전부 사라진다(설계 문서의 실질적 이득 중 하나).
+//
+// 루트 목록도 통째로 보내지 않는다. 샤드가 4,096 + 256개라 전부 보내면 수백 KB가 되므로,
+// 빈 서브트리 상수 하나와 **비어 있지 않은 샤드의 덮어쓰기 목록**만 보낸다. 폐기가
+// 드물다는 전제에서 응답이 사실상 상수 크기다.
+//
+// 쿼리로 sessionShard/accountShard를 주면 그 샤드의 리프 배열과 상위 형제까지 함께 준다.
+// 주지 않으면 루트 정보만 준다.
+//
+// 주의: 여기서 서빙하는 것은 **게시된 상태**다(v2와 같은 규칙). 대기 중인 pendingAdds는
+// 들어 있지 않다 — 넣으면 지갑이 온체인에 없는 root로 witness를 만들게 된다.
+app.get('/idp/revocation_state_v3', (req, res) => {
+  const parseShard = (raw, label, bound) => {
+    if (raw === undefined) return undefined;
+    if (!/^[0-9]+$/.test(String(raw))) throw new Error(`${label} must be a non-negative integer`);
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 0 || n >= bound) throw new Error(`${label} out of range [0, ${bound})`);
+    return n;
+  };
+  let sessionShard;
+  let accountShard;
+  try {
+    sessionShard = parseShard(req.query.sessionShard, 'sessionShard', SESSION_SHARD_COUNT);
+    accountShard = parseShard(req.query.accountShard, 'accountShard', ACCOUNT_SHARD_COUNT);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+  res.json(revocationV3.snapshot({ sessionShard, accountShard }));
 });
 
 // === v2 재기준화 수동 트리거 — 관리자 전용(설계 문서 3.3절) ===

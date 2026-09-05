@@ -214,7 +214,7 @@ assert.match(evictionBlock, /auidILog\.delete\(auidI\)/, 'eviction must remove s
 // 스키마 버전: Stage B에서 v1 폐기 트리(publishedRoot/revokedLeaves)를 제거하는 파괴적
 // 변경으로 버전이 4로 올라갔고, 옛 파일(v1/v2/v3)은 조용히 오독되지 않고 명시적으로
 // 처리(이 저장소는 무손실 마이그레이션을 택함 — 근거는 코드 주석과 보고서 참고)돼야 한다.
-assert.match(src, /const IDP_STATE_FILE_VERSION = 4;/, 'state file schema version must be bumped for the v1-tree removal (Stage B)');
+assert.match(src, /const IDP_STATE_FILE_VERSION = 5;/, 'state file schema version must be bumped for the v3 dual-tree snapshot (D단계)');
 assert.match(
   loadIdPStateSrc,
   /isLegacyAuidILog/,
@@ -235,8 +235,8 @@ assert.match(
 // v1/v2/v3 files must still pass the version gate (migrated), not be rejected outright.
 assert.match(
   loadIdPStateSrc,
-  /\[1,\s*2,\s*3,\s*4\]\.includes\(fileVersion\)/,
-  'loadIdPState must accept v1, v2, v3, and v4 — only truly unknown versions are rejected',
+  /\[1,\s*2,\s*3,\s*4,\s*5\]\.includes\(fileVersion\)/,
+  'loadIdPState must accept v1 through v5 — only truly unknown versions are rejected',
 );
 
 // serializeIdPState must persist disabled per account, mirroring how lastAuid is persisted.
