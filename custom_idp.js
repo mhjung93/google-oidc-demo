@@ -62,7 +62,13 @@ let preparedPublish = null;
 const leafExpiry = new Map();
 
 // ============================================================================
-// 정석 IMT(v2) — 게시된 폐기 상태의 유일한 진실 (Stage B: 회로에 배선됨)
+// 정석 IMT(v2) — 접수·중복제거·게시 합의의 기준 (온체인 root는 이제 v3다)
+//
+// 2026-09-06 전환 이후 **온체인에 게시되는 root는 v3의 combinedRoot**이고, 지갑도 v3만
+// 본다. 그런데 v2를 걷어내지 않은 이유가 있다: 대기열 중복제거(prepare의 !v2Has), 게시된
+// 집합의 출처(publishedLeaves), prepare/commit의 root 합의가 모두 아직 v2 위에 있다.
+// 즉 v2는 죽은 코드가 아니라 **게시 프로토콜의 뼈대**다. v3로 옮기는 것은 별도 단계다
+// (설계 문서 13절).
 // ============================================================================
 // Stage B에서 회로(circuits/pi_pk_i.circom)가 v2 리프 해시로 전환되고 v1이 제거됐다.
 // 지갑은 /idp/revocation_state_v2로 이 트리를 재구성해 비멤버십 witness를 만들고,
@@ -129,7 +135,7 @@ function v2Has(leafKey) {
 }
 
 // 현재 게시된 폐기 리프(leaf 문자열) 집합. v1의 revokedLeaves 배열을 대체한다 —
-// 게시 상태의 유일한 진실이 v2 트리이므로, 그 물리 리프에서 값만 뽑아(anchor 제외)
+// 접수·중복제거의 기준이 v2 트리이므로, 그 물리 리프에서 값만 뽑아(anchor 제외)
 // 파생한다. append-only라 아직 회수되지 않은 만료 리프도 포함할 수 있다.
 function publishedLeaves() {
   return revocationTreeV2.getLeaves().slice(1).map((l) => l.value.toString());
@@ -647,7 +653,7 @@ function serializeIdPState() {
     lastAuid: Object.fromEntries(Object.entries(users).map(([name, u]) => [name, u.lastAuid])),
     // disabled는 보안 상태라 반드시 영속화해야 한다 — 안 그러면 재시작마다 차단이 풀린다.
     disabled: Object.fromEntries(Object.entries(users).map(([name, u]) => [name, Boolean(u.disabled)])),
-    // === v2(정석 IMT) — 게시 상태의 유일한 진실 (Stage B) ===
+    // === v2(정석 IMT) — 접수·중복제거·게시 합의의 기준 (온체인 root는 v3다) ===
     epochV2,
     seqV2,
     // 로드 시 재구성한 v2 트리의 root가 저장 시점과 같은지 대조하는 무결성 기준값.
@@ -798,7 +804,7 @@ async function loadIdPState() {
     }
   }
 
-  // === v2(정석 IMT) 게시 상태 복원 — 유일한 진실 ===
+  // === v2(정석 IMT) 복원 — 접수·중복제거의 기준이므로 여전히 필수다 ===
   // v2Leaves가 있으면(v4, 또는 v3 Stage A) 저장된 물리 순서 리프로 재구성하고
   // publishedRootV2로 무결성을 대조한다. 없으면(v1/v2/pre-Stage-A v3) legacy revokedLeaves
   // 값으로 v2를 초기화한다 — 로그·epoch는 빈 값(0). 어느 경우든 게시된 폐기 집합은 그대로
