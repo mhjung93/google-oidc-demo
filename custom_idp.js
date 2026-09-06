@@ -2072,66 +2072,47 @@ app.post('/idp/publish/commit', requireIdPAdmin, serializeAdminMutation(async (r
   // 여기서 실패해도 요청을 5xx로 만들지 않는다 — v2는 이미 되돌릴 수 없게 전진했고
   // 게시도 끝났기 때문이다. 대신 backfill 플래그를 세워 전환(E단계) 전에 반드시
   // 드러나게 한다. 조용히 넘어가면 v3 트리에 구멍이 난 채로 전환하게 된다.
+  // v3(이중 트리)를 같은 리프로 나란히 전진시킨다. 아직 온체인 게시의 진실은 v2이므로,
+  // 여기서 실패해도 요청을 5xx로 만들지 않는다 — v2는 이미 되돌릴 수 없게 전진했고
+  // 게시도 끝났기 때문이다. 대신 backfill 플래그를 세워 전환 전에 반드시 드러나게 한다.
+  //
+  // 적용과 회수를 **별도 try로 나눈다.** 한 덩어리로 두면 회수 단계가 던졌을 때
+  // "어느 리프가 v3에 반영되지 못했는가"라는 목록이 catch에 가려 출력되지 않는다 —
+  // 그 목록이 backfill의 유일한 단서다(2026-09-06 2차 리뷰).
   let v3Applied = null;
   try {
     v3Applied = await revocationV3.applyCommit(prepared.addedValues);
-    const resetShards = revocationV3.resetExpiredSessionShards(
-      prepared.blockHeight,
-      CREDENTIAL_LIFETIME_BLOCKS + MAX_HEIGHT_SLACK_BLOCKS,
+  } catch (err) {
+    revocationV3.markNeedsBackfill();
+    console.error(`[IdP] publish/commit: v3 적용 자체가 실패했다 — ${err.message}`);
+  }
+  if (v3Applied && v3Applied.failed.length > 0) {
+    // 어느 리프가 빠졌는지 남긴다. 이게 없으면 backfill 때 무엇을 다시 넣어야 하는지
+    // 알 수 없다 — v2에는 들어갔는데 v3에는 없는 상태로 조용히 갈라진다.
+    console.error(
+      `[IdP] publish/commit: v3에 반영하지 못한 리프 ${v3Applied.failed.length}건 — ` +
+        v3Applied.failed.map((f) => `${f.leaf}(${f.reason})`).join(', ') +
+        '. needsBackfill을 세웠다. POST /idp/v3/rebuild_from_v2 로 되찾을 수 있다.',
     );
+  }
+  try {
+    const resetShards = revocationV3.resetExpiredSessionShards(prepared.blockHeight);
     // 계정 층은 샤드 인덱스가 만료를 담지 않으므로(값 기반) 샤드 단위 재기준화로 회수한다.
-    // v2의 전역 재기준화와 달리 그 샤드를 쓰는 지갑만 영향을 받는다.
     const acctReclaim = await revocationV3.rebaselineExpiredAccountShards(prepared.blockHeight);
-    if (v3Applied.failed.length > 0) {
-      // 어느 리프가 빠졌는지 남긴다. 이게 없으면 backfill 때 무엇을 다시 넣어야 하는지
-      // 알 수 없다 — v2에는 들어갔는데 v3에는 없는 상태로 조용히 갈라진다.
-      console.error(
-        `[IdP] publish/commit: v3에 반영하지 못한 리프 ${v3Applied.failed.length}건 — ` +
-          v3Applied.failed.map((f) => `${f.leaf}(${f.reason})`).join(', ') +
-          '. needsBackfill을 세웠다. 전환 전에 이 리프들을 다시 접수해야 한다.',
-      );
-    }
     if (
-      v3Applied.sessionAdded > 0 || v3Applied.accountAdded > 0 ||
+      (v3Applied && (v3Applied.sessionAdded > 0 || v3Applied.accountAdded > 0)) ||
       resetShards > 0 || acctReclaim.leavesReclaimed > 0
     ) {
       console.log(
-        `[IdP] publish/commit: v3 +${v3Applied.sessionAdded} session / +${v3Applied.accountAdded} account, ` +
-          `${resetShards} expired session shard(s) reset, ` +
+        `[IdP] publish/commit: v3 +${v3Applied?.sessionAdded ?? 0} session / ` +
+          `+${v3Applied?.accountAdded ?? 0} account, ${resetShards} expired session shard(s) reset, ` +
           `${acctReclaim.leavesReclaimed} account leaf/leaves reclaimed in ${acctReclaim.shardsRebaselined} shard(s), ` +
           `combined root ${revocationV3.combinedRoot()}`,
       );
     }
   } catch (err) {
     revocationV3.markNeedsBackfill();
-    console.error(
-      `[IdP] publish/commit: v3 포레스트 반영 실패 — ${err.message}. v2 게시는 정상이지만 ` +
-        'v3에 구멍이 생겼다. 전환 전에 살아있는 폐기를 다시 접수해야 한다(backfill).',
-    );
-  }
-
-  // 적용 결과 root가 prepare가 예측하고 운영자가 온체인에 push한 root와 다르면, 지갑이
-  // 이 트리로 만든 witness의 root가 latestRoot와 어긋나 전원이 막힌다. 여기까지 왔다면
-  // v2는 이미 전진했으므로(append-only, 되돌릴 수 없음) 조용히 넘어가지 않고 명확히 5xx로
-  // 드러낸다 — 정상 구성에서는 prepare 시뮬레이션과 동일한 연산이라 도달하지 않는다.
-  if (actualRoot !== prepared.root) {
-    console.error(
-      `[IdP] publish/commit: applied root ${actualRoot} != prepared root ${prepared.root}`,
-    );
-    // 이 회차는 되돌릴 수 없다(v2는 append-only). 그런데 preparedPublish를 그대로 두면
-    // 재시도해도 삽입은 전부 no-op이고 root는 여전히 달라 **영구히 500**이 되고, 대기 중인
-    // 폐기가 영원히 게시되지 않는다. 무효가 된 prepare를 버려서 다음 회차가 실제 상태로부터
-    // 새로 prepare할 수 있게 한다. 메모리가 이미 전진했으므로 저장도 시도한다.
-    preparedPublish = null;
-    const persistedAfterMismatch = saveIdPState();
-    return res.status(500).json({
-      error:
-        'the applied v2 root does not match the prepared root; on-chain root and IdP state may now ' +
-        'disagree. The prepared publish was discarded — re-run prepare, push the new root, then commit.',
-      preparedRoot: prepared.root,
-      appliedRoot: actualRoot,
-      persisted: persistedAfterMismatch,
-    });
+    console.error(`[IdP] publish/commit: v3 만료 회수 실패 — ${err.message}`);
   }
 
   const committed = new Set(publishedLeaves());
@@ -2148,6 +2129,18 @@ app.post('/idp/publish/commit', requireIdPAdmin, serializeAdminMutation(async (r
   // 만료 메타데이터 정리: 게시 집합에도 대기열에도 없는 리프는 고아다.
   for (const leafKey of [...leafExpiry.keys()]) {
     if (!committed.has(leafKey) && !pendingAdds.has(leafKey)) leafExpiry.delete(leafKey);
+  }
+
+  // v3 쪽 메타데이터(layer/sessionMaxHeight/accountExpiry)도 같은 자리에서 정리한다.
+  // 게시되지 않은 접수분은 어떤 회수 경로도 건드리지 않아 영구 누적됐고, 이 맵들은
+  // saveIdPState에 실려 로그인마다 다시 쓰인다(2026-09-06 2차 리뷰).
+  //
+  // **반드시 위 대기열 정리 뒤에** 호출한다. 아직 대기 중인 리프의 층 기록이 먼저
+  // 사라지면 다음 commit이 그 리프를 실패로 처리한다. 위에서 만료된 대기분이 이미
+  // 제거됐으므로, 여기서 만료 기준으로 지우는 것은 안전하다.
+  const prunedV3Meta = revocationV3.pruneExpiredMetadata(prepared.blockHeight);
+  if (prunedV3Meta > 0) {
+    console.log(`[IdP] publish/commit: v3 만료 메타데이터 ${prunedV3Meta}건 정리`);
   }
 
   // issuanceLog/auidILog 축출: 로그인마다 쌓이기만 하고 절대 줄지 않으면(무제한 성장)
@@ -2411,6 +2404,108 @@ app.get('/idp/revocation_state_v2', (req, res) => {
 // 자동으로 내리지 않는 이유: 무엇이 살아있는 폐기인지는 IdP가 판단할 수 없다(층을
 // 모른다는 것이 애초의 문제다). 확인의 주체는 운영자여야 하고, 이 엔드포인트는 그
 // 확인을 기록할 뿐이다. 플래그가 영원히 서 있으면 경고가 소음이 되어 무시하게 된다.
+// v2에 게시돼 있는데 v3에는 없는 리프를 되찾는다.
+//
+// IdP는 리프의 층(session/account)을 리프 해시에서 되돌릴 수 없다. 그런데 **preimage는
+// 일부 갖고 있다** — issuanceLog의 r_token들과 계정의 lastAuid다. 그것들로 후보 리프를
+// 다시 계산해 v2 게시 집합과 대조하면 대부분 자동으로 분류된다. 대조를 거치므로 잘못된
+// 값이 조용히 들어갈 수 없다.
+//
+// 자동으로 못 푸는 리프(예: issuanceLog에서 이미 축출된 옛 세션)는 응답에 남겨 운영자가
+// 알 수 있게 한다. 그 경우 운영자가 body로 preimage를 직접 줄 수 있다.
+//   POST /idp/v3/rebuild_from_v2  { rTokens: ["..."], auids: ["..."] }
+app.post('/idp/v3/rebuild_from_v2', requireIdPAdmin, serializeAdminMutation(async (req, res) => {
+  let currentBlock;
+  try {
+    currentBlock = await getCurrentBlockHeight();
+  } catch (err) {
+    return res.status(502).json({ error: `failed to read current block height: ${err.message}` });
+  }
+
+  const published = new Set(publishedLeaves());
+  const sessionCandidates = [];
+  const accountCandidates = [];
+
+  // (1) IdP가 이미 아는 preimage
+  for (const [rToken, entry] of issuanceLog) {
+    sessionCandidates.push({
+      rTokenLeaf: (await leafValue(TAG_SESSION, rToken)).toString(),
+      maxHeight: BigInt(entry.maxHeight),
+    });
+  }
+  const knownAuids = new Set();
+  for (const u of Object.values(users)) if (u.lastAuid) knownAuids.add(String(u.lastAuid));
+
+  // (2) 운영자가 body로 보탠 preimage
+  const { rTokens = [], auids = [] } = req.body ?? {};
+  if (!Array.isArray(rTokens) || !Array.isArray(auids)) {
+    return res.status(400).json({ error: 'rTokens and auids must be arrays of decimal strings' });
+  }
+  for (const t of rTokens) {
+    const str = String(t).trim();
+    if (!/^[0-9]+$/.test(str)) return res.status(400).json({ error: `rTokens contains a non-decimal value: ${t}` });
+    const issued = issuanceLog.get(str);
+    sessionCandidates.push({
+      rTokenLeaf: (await leafValue(TAG_SESSION, str)).toString(),
+      // 발급 기록이 없으면 만료를 알 수 없다. 그 경우 leafExpiry에 남아 있는 값을 쓴다.
+      maxHeight: issued ? BigInt(issued.maxHeight) : (leafExpiry.get((await leafValue(TAG_SESSION, str)).toString()) ?? 0n),
+    });
+  }
+  for (const a of auids) {
+    const str = String(a).trim();
+    if (!/^[0-9]+$/.test(str)) return res.status(400).json({ error: `auids contains a non-decimal value: ${a}` });
+    knownAuids.add(str);
+  }
+  for (const auid of knownAuids) {
+    const leafKey = (await leafValue(TAG_ACCOUNT, auid)).toString();
+    accountCandidates.push({ leaf: leafKey, expiry: leafExpiry.get(leafKey) ?? 0n });
+  }
+
+  let result;
+  try {
+    result = await revocationV3.rebuildFromCandidates(
+      { session: sessionCandidates, account: accountCandidates },
+      published,
+      currentBlock,
+    );
+  } catch (err) {
+    return res.status(500).json({ error: `rebuild failed: ${err.message}` });
+  }
+
+  // 되찾지 못한 채 남은 것: v2에 게시돼 있고, 만료되지 않았고, v3에도 없는 리프.
+  const unresolved = [];
+  for (const leafKey of published) {
+    const e = leafExpiry.get(leafKey);
+    if (e !== undefined && e <= currentBlock) continue;         // 만료 — 되찾을 필요 없다
+    if (await revocationV3.hasLeaf(leafKey)) continue;
+    unresolved.push({ leaf: leafKey, expiry: e === undefined ? null : e.toString() });
+  }
+  if (unresolved.length === 0) revocationV3.ackBackfill();
+
+  const saved = saveIdPState();
+  if (!saved) {
+    return res.status(500).json({
+      error: 'rebuild was applied in memory but could not be persisted; recover the state file and retry',
+      routed: result.routed,
+      unresolved: unresolved.length,
+    });
+  }
+  console.log(
+    `[IdP] v3 rebuild_from_v2: +${result.routed.session} session / +${result.routed.account} account, ` +
+      `되찾지 못한 리프 ${unresolved.length}건, needsBackfill=${revocationV3.needsBackfill}`,
+  );
+  res.json({
+    routed: result.routed,
+    skipped: result.skipped,
+    unresolved,
+    needsBackfill: revocationV3.needsBackfill,
+    topRoot: revocationV3.combinedRoot(),
+    note: unresolved.length > 0
+      ? 'preimage를 알 수 없어 되찾지 못한 리프가 있다. POST body의 rTokens/auids로 직접 주면 된다.'
+      : '살아있는 v2 폐기가 전부 v3에 반영됐다.',
+  });
+}));
+
 app.post('/idp/v3/ack_backfill', requireIdPAdmin, serializeAdminMutation(async (req, res) => {
   const was = revocationV3.needsBackfill;
   revocationV3.ackBackfill();

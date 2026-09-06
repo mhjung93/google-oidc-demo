@@ -353,6 +353,102 @@ async function main() {
     }
   }
 
+  // ── 11) 2차 리뷰 회귀: 링 재사용·메타데이터 누적·재구축 ────────────────
+  {
+    const { createIdPRevocationV3, LAYER_SESSION, LAYER_ACCOUNT } =
+      await import('../lib/idp_revocation_v3.js');
+    const { sessionShardLowOf } = await import('../lib/imt_v3.js');
+
+    // (a) 정리 창을 놓쳐도 링 재사용 시 낡은 리프가 섞이지 않는다.
+    //     예전에는 "링 슬롯이 지금 살아있는가"로 판정해, 36분 창을 놓치면 만료된 리프가
+    //     다음 주기의 새 크레덴셜과 같은 샤드에 남았다.
+    {
+      const v3 = await createIdPRevocationV3();
+      let a = null, b = null;
+      for (let i = 0n; i < 400n && (a === null || b === null); i++) {
+        const l = (await leafValue(TAG_SESSION, 1000n + i)).toString();
+        if (a === null) a = l;
+        else if (sessionShardLowOf(l) === sessionShardLowOf(a)) b = l;
+      }
+      assert.ok(a && b, '값 버킷이 같은 리프 2개를 찾지 못했다');
+      const M1 = 100n, M2 = 100n + SESSION_RING;   // 링 한 바퀴 뒤 = 같은 샤드
+      v3.record(a, LAYER_SESSION, { expiry: M1, maxHeight: M1 });
+      await v3.applyCommit([a]);
+      const shard = sessionShardOf(a, M1);
+      assert.equal(sessionShardOf(b, M2), shard, '두 리프가 같은 샤드여야 이 테스트가 의미 있다');
+
+      // 정리 창(블록 100~279)을 통째로 놓친다
+      for (const blk of [300n, 400n, 500n, 600n]) v3.resetExpiredSessionShards(blk);
+
+      // 링이 재사용되는 새 크레덴셜이 들어온다
+      v3.record(b, LAYER_SESSION, { expiry: M2, maxHeight: M2 });
+      await v3.applyCommit([b]);
+      const leaves = v3._forests().session.getShardLeafValues(shard);
+      assert.deepEqual(
+        leaves, [b],
+        '링 재사용 시 만료된 옛 리프가 새 크레덴셜과 같은 샤드에 남았다 (샤드 용량 잠식)',
+      );
+      console.log('OK: 11-a) 정리 창을 놓쳐도 링 재사용이 자가 치유된다');
+    }
+
+    // (b) 게시되지 않은 접수분의 메타데이터가 만료 후 정리된다.
+    {
+      const v3 = await createIdPRevocationV3();
+      for (let i = 0; i < 5; i++) {
+        v3.record((await leafValue(TAG_SESSION, 2000n + BigInt(i))).toString(),
+                  LAYER_SESSION, { expiry: 10n, maxHeight: 10n });
+        v3.record((await leafValue(TAG_ACCOUNT, 3000n + BigInt(i))).toString(),
+                  LAYER_ACCOUNT, { expiry: 10n });
+      }
+      const before = v3.serialize();
+      assert.equal(Object.keys(before.layer).length, 10);
+      const pruned = v3.pruneExpiredMetadata(1000n);
+      const after = v3.serialize();
+      assert.equal(pruned, 10);
+      assert.equal(Object.keys(after.layer).length, 0, '만료된 메타데이터가 정리되지 않았다');
+      assert.equal(Object.keys(after.sessionMaxHeight).length, 0);
+      assert.equal(Object.keys(after.accountExpiry).length, 0);
+      console.log('OK: 11-b) 게시되지 않은 접수분의 만료 메타데이터가 정리된다');
+    }
+
+    // (c) v2에만 있는 리프를 preimage로 되찾는다 (backfill).
+    //     /idp/revoke 재접수로는 안 되는 경로다 — 그래서 별도 관리자 경로를 뒀다.
+    {
+      const v3 = await createIdPRevocationV3();
+      const auid = 424242n;
+      const leaf = (await leafValue(TAG_ACCOUNT, auid)).toString();
+      const published = new Set([leaf]);           // v2에는 있고 v3에는 없는 상태
+      assert.equal(await v3.hasLeaf(leaf), false);
+
+      // 잘못된 후보는 v2 게시 집합과 대조돼 들어가지 않는다
+      const wrong = (await leafValue(TAG_ACCOUNT, 999999n)).toString();
+      let r = await v3.rebuildFromCandidates(
+        { account: [{ leaf: wrong, expiry: 9999n }] }, published, 100n);
+      assert.equal(r.routed.account, 0);
+      assert.match(r.skipped[0].reason, /not in the published v2 set/);
+
+      // 만료된 후보도 건너뛴다
+      r = await v3.rebuildFromCandidates(
+        { account: [{ leaf, expiry: 50n }] }, published, 100n);
+      assert.equal(r.routed.account, 0);
+      assert.match(r.skipped[0].reason, /already expired/);
+
+      // 올바른 후보는 되찾아진다
+      r = await v3.rebuildFromCandidates(
+        { account: [{ leaf, expiry: 9999n }] }, published, 100n);
+      assert.equal(r.routed.account, 1);
+      assert.equal(await v3.hasLeaf(leaf), true, 'backfill로 v3에 반영되지 않았다');
+      assert.equal(accountShardOf(leaf), Number(Object.keys(v3.snapshot().accountRootOverrides)[0]));
+
+      // 두 번 돌려도 중복되지 않는다(멱등)
+      r = await v3.rebuildFromCandidates(
+        { account: [{ leaf, expiry: 9999n }] }, published, 100n);
+      assert.equal(r.routed.account, 0);
+      assert.match(r.skipped[0].reason, /already in v3/);
+      console.log('OK: 11-c) v2에만 있는 리프를 preimage 대조로 되찾고, 오입력·만료·중복을 거른다');
+    }
+  }
+
   console.log(`\nPASS: 샤드 포레스트(v3) — 라우팅·상위 트리·격리·만료 리셋·지갑 재구성 (계정 깊이 ${ACCOUNT_SUBTREE_DEPTH})`);
 }
 

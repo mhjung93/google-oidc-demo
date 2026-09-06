@@ -151,7 +151,55 @@ async function main() {
       console.log('OK: 6) 범위를 벗어난 샤드 질의를 400으로 거부한다');
     }
 
-    console.log('\n== IdP v3 배선 6종 통과 ==');
+    // ── 7) rebuild_from_v2 — v2에만 있는 리프를 되찾는 관리자 경로 ────────
+    // /idp/revoke 재접수로는 되지 않는다(이미 게시됐고 만료되지 않은 리프는 대기열에
+    // 들어가지 않는다). 그 사실도 여기서 함께 고정한다.
+    {
+      const v = uniqueValue();
+      r = await idp.post('/idp/revoke', { type: 'account', value: v });
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      await publish(idp);
+      const leaf = r.body.leaf;
+
+      // (i) 재접수는 대기열에 들어가지 않는다 — 이게 backfill이 무력했던 이유다
+      const again = await idp.post('/idp/revoke', { type: 'account', value: v });
+      assert.equal(again.body.alreadyPublished, true);
+      assert.equal(again.body.pendingCount, 0, '재접수가 대기열에 들어갔다(전제가 바뀌었다)');
+      const p2 = await idp.post('/idp/publish/prepare');
+      assert.equal(p2.body.added, 0, '재접수로 게시될 리프가 생겼다(전제가 바뀌었다)');
+      await idp.post('/idp/publish/commit', { root: p2.body.expectedRoot });
+
+      // (ii) 자동 분류만으로도 남는 리프가 없어야 한다. 이 리프는 commit 경로로 이미
+      //      v3에 들어가 있으므로 unresolved가 비어야 하고 플래그도 서지 않아야 한다.
+      const rb = await idp.post('/idp/v3/rebuild_from_v2', {});
+      assert.equal(rb.status, 200, JSON.stringify(rb.body));
+      assert.equal(rb.body.unresolved.length, 0, `되찾지 못한 리프가 있다: ${JSON.stringify(rb.body.unresolved)}`);
+      assert.equal(rb.body.needsBackfill, false);
+
+      // (ii-b) preimage를 명시로 주면 후보가 되고, 이미 반영돼 있으므로 멱등하게
+      //        건너뛴다(중복 삽입하지 않는다).
+      const rb2 = await idp.post('/idp/v3/rebuild_from_v2', { auids: [v] });
+      assert.equal(rb2.status, 200, JSON.stringify(rb2.body));
+      assert.equal(rb2.body.routed.account, 0, '이미 반영된 리프를 다시 넣었다');
+      assert.ok(
+        rb2.body.skipped.some((x) => x.leaf === leaf && /already in v3/.test(x.reason)),
+        `이미 반영된 리프를 already-in-v3로 건너뛰지 않았다: ${JSON.stringify(rb2.body.skipped)}`,
+      );
+      assert.equal(rb2.body.topRoot, rb.body.topRoot, '멱등이어야 하는데 root가 바뀌었다');
+
+      // (iii) 관리자 인증이 필요하다
+      const noAuth = await fetch(`${idp.base}/idp/v3/rebuild_from_v2`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      assert.notEqual(noAuth.status, 200, '인증 없이 재구축이 실행됐다');
+
+      // (iv) 잘못된 입력은 400
+      const bad = await idp.post('/idp/v3/rebuild_from_v2', { rTokens: 'nope' });
+      assert.equal(bad.status, 400);
+      console.log('OK: 7) rebuild_from_v2 — 재접수로는 안 되던 복구가 전용 경로로 된다');
+    }
+
+    console.log('\n== IdP v3 배선 7종 통과 ==');
   } finally {
     await idp.stop();
     fs.rmSync(stateDir, { recursive: true, force: true });
