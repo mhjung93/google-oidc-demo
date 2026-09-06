@@ -56,14 +56,27 @@ async function main() {
   console.log(`Poseidon(2) 배포: ${poseidonAddr} (코드 ${(poseidonCode.length - 2) / 2} bytes)`);
 
   // 2) 프로브 컨트랙트를 즉석에서 컴파일해 배포
+  // 프로브를 contracts/ 아래에 잠시 쓴다. 실패해도 남지 않도록 finally에서 지운다 —
+  // 남으면 이후 모든 hardhat compile이 그 파일을 함께 컴파일하고, 추적되지 않는 .sol이
+  // 작업트리에 떠다니게 된다.
   const srcDir = path.join(__dirname, "..", "contracts", "test");
   const probePath = path.join(srcDir, "HashGasProbe.sol");
-  const existed = fs.existsSync(probePath);
-  if (!existed) fs.writeFileSync(probePath, PROBE_SRC.trimStart());
-  await hre.run("compile", { quiet: true });
-  const Probe = await hre.ethers.getContractFactory("HashGasProbe");
-  const probe = await Probe.deploy();
-  await probe.waitForDeployment();
+  if (fs.existsSync(probePath)) {
+    throw new Error(`${probePath}가 이미 있습니다. 이전 실행이 비정상 종료했을 수 있으니 확인 후 지우고 다시 실행하세요.`);
+  }
+  fs.writeFileSync(probePath, PROBE_SRC.trimStart());
+  let probe;
+  try {
+    await hre.run("compile", { quiet: true });
+    const Probe = await hre.ethers.getContractFactory("HashGasProbe");
+    probe = await Probe.deploy();
+    await probe.waitForDeployment();
+  } finally {
+    fs.rmSync(probePath, { force: true });
+    // 소스가 사라진 아티팩트가 남으면 다음 컴파일에서 혼란스럽다(추적 대상은 아니다).
+    fs.rmSync(path.join(__dirname, "..", "artifacts", "contracts", "test", "HashGasProbe.sol"),
+              { recursive: true, force: true });
+  }
 
   // 3) 측정. 첫 호출은 sink의 cold SSTORE(20k)를 포함하므로 워밍 후 잰다.
   const warm = async (fn) => { await (await fn()).wait(); };
@@ -100,8 +113,6 @@ async function main() {
     `poseidon_over_keccak,${(posNet / kecNet).toFixed(1)},"배수"\n` +
     `imt_insert_estimate,${perInsert},"Poseidon 40회 환산 (깊이 20 삽입 1건)"\n`);
   console.log(`\nwrote ${path.relative(process.cwd(), out)}`);
-
-  if (!existed) fs.unlinkSync(probePath);
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
