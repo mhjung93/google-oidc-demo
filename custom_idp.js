@@ -2490,16 +2490,34 @@ app.post('/idp/v3/rebuild_from_v2', requireIdPAdmin, serializeAdminMutation(asyn
       unresolved: unresolved.length,
     });
   }
+  const routedAny = result.routed.session > 0 || result.routed.account > 0;
   console.log(
     `[IdP] v3 rebuild_from_v2: +${result.routed.session} session / +${result.routed.account} account, ` +
       `되찾지 못한 리프 ${unresolved.length}건, needsBackfill=${revocationV3.needsBackfill}`,
   );
+  if (routedAny) {
+    console.warn(
+      `[IdP] v3 rebuild_from_v2: v3 root가 ${revocationV3.combinedRoot()}로 바뀌었다. ` +
+        '온체인에 게시하기 전까지 지갑이 이 상태로 만드는 증명은 막힌다 — 즉시 push하라.',
+    );
+  }
   res.json({
     routed: result.routed,
     skipped: result.skipped,
     unresolved,
     needsBackfill: revocationV3.needsBackfill,
     topRoot: revocationV3.combinedRoot(),
+    // 되찾은 것이 있으면 v3 root가 바뀌었는데 온체인 latestRoot는 아직 옛 값이다.
+    // 그대로 두면 지갑이 새 상태로 만드는 witness가 전부 막힌다 — /idp/rebaseline_v2가
+    // 같은 이유로 내는 경고와 동일한 성격이다. 조용히 넘기지 않는다.
+    ...(routedAny
+      ? {
+          rootChanged: true,
+          warning:
+            'v3 root가 바뀌었다. scripts/push_revocation_root.cjs(또는 sweep 사이클)로 새 topRoot를 ' +
+            '온체인에 게시하기 전까지 지갑이 이 상태로 만드는 증명은 StaleRevocationRoot로 막힌다.',
+        }
+      : {}),
     note: unresolved.length > 0
       ? 'preimage를 알 수 없어 되찾지 못한 리프가 있다. POST body의 rTokens/auids로 직접 주면 된다.'
       : '살아있는 v2 폐기가 전부 v3에 반영됐다.',

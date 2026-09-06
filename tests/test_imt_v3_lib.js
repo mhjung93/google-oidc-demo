@@ -449,6 +449,46 @@ async function main() {
     }
   }
 
+  // ── 12) 3차 리뷰 회귀: shardMaxHeight 없는 옛 스냅샷 복원 ──────────────
+  {
+    const { createIdPRevocationV3, LAYER_SESSION } = await import('../lib/idp_revocation_v3.js');
+    const v3 = await createIdPRevocationV3();
+    const leaf = (await leafValue(TAG_SESSION, 777n)).toString();
+    const M = 100n;
+    v3.record(leaf, LAYER_SESSION, { expiry: M, maxHeight: M });
+    await v3.applyCommit([leaf]);
+    const shard = sessionShardOf(leaf, M);
+
+    // 이 맵이 생기기 전에 쓰인 v5 파일을 흉내 낸다
+    const oldSnapshot = { ...v3.serialize() };
+    delete oldSnapshot.shardMaxHeight;
+
+    const restored = await createIdPRevocationV3();
+    await restored.restore(oldSnapshot);
+    assert.equal(
+      restored._forests().session.getShardLeafValues(shard).length, 1,
+      '복원 자체가 실패했다',
+    );
+    // 메타데이터로 재구성했으므로 만료 회수가 동작해야 한다
+    assert.equal(
+      restored.resetExpiredSessionShards(100000n), 1,
+      'shardMaxHeight를 재구성하지 못해 세션 샤드가 영영 회수되지 않는다',
+    );
+    assert.equal(restored._forests().session.getShardLeafValues(shard).length, 0);
+
+    // 메타데이터까지 없으면 근거가 없으므로 비운다(영구 누적 방지)
+    const noMeta = { ...v3.serialize() };
+    delete noMeta.shardMaxHeight;
+    delete noMeta.sessionMaxHeight;
+    const restored2 = await createIdPRevocationV3();
+    await restored2.restore(noMeta);
+    assert.equal(
+      restored2._forests().session.getShardLeafValues(shard).length, 0,
+      '회수 근거가 전혀 없는 세션 샤드를 그대로 남겼다',
+    );
+    console.log('OK: 12) shardMaxHeight 없는 옛 스냅샷을 메타데이터로 재구성한다');
+  }
+
   console.log(`\nPASS: 샤드 포레스트(v3) — 라우팅·상위 트리·격리·만료 리셋·지갑 재구성 (계정 깊이 ${ACCOUNT_SUBTREE_DEPTH})`);
 }
 
