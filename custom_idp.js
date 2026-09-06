@@ -76,8 +76,10 @@ const leafExpiry = new Map();
 //   - prepare의 root 예측 — v3 게시 순서는 prepare -> commit -> push라 게시할 root는
 //     commit이 전진한 **뒤에야** 정해진다. 회차 합의는 root 대신 회차 토큰으로 한다.
 //
-// lib/imt_v2.js 자체는 남긴다. 논문이 인용하는 "깊이 20 트리 32,000리프 재구성 24.75초"의
-// 기준선이고 scripts/bench_imt_v2_wallet.mjs가 그것을 잰다 — 운영 경로가 아니라 측정 대상이다.
+// lib/imt_v2.js는 그대로 쓴다. **v3의 서브트리 엔진이 바로 그것이다** — lib/imt_v3.js가
+// 샤드마다 createIMTv2(depth)를 하나씩 만든다. 사라진 것은 "깊이 20 트리 하나를 IdP가
+// 통째로 들고 서빙하던 배선"이지 라이브러리가 아니다. 같은 라이브러리가 논문이 인용하는
+// "깊이 20, 32,000리프 재구성 24,752 ms" 기준선도 낸다(scripts/bench_imt_v2.mjs).
 // ============================================================================
 let revocationV3 = await createIdPRevocationV3();
 

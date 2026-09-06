@@ -9,11 +9,12 @@
 #   bash scripts/run_tests.sh unit       # 외부 의존 없음, 빠름
 #   bash scripts/run_tests.sh circuit    # circom/snarkjs 필요. 느리다(회로 컴파일)
 #   bash scripts/run_tests.sh chain      # hardhat 노드(:8545) 필요. IdP는 스스로 격리 기동
+#   bash scripts/run_tests.sh contract   # 컨트랙트(test/*.test.mjs). hardhat 인프로세스 체인
 #   bash scripts/run_tests.sh live       # 데모 스택(:3000/:4000/:5001) + 관리자 시크릿 필요
 #   bash scripts/run_tests.sh all
 #
 # live 그룹은 실행 중인 IdP의 폐기 트리를 실제로 바꾸고(되돌릴 수 없음) 체인 블록을
-# 진행시킨다. CI에서 돌릴 수 있는 것은 unit·circuit·chain이다.
+# 진행시킨다. CI에서 돌릴 수 있는 것은 unit·circuit·chain·contract이다.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -37,6 +38,7 @@ CIRCUIT=(
   tests/test_pi_pk_i_v2_witness.mjs
   tests/test_pi_pk_i_revocation.mjs
   tests/test_pi_pk_i_v3_shard.mjs
+  tests/test_insert_transition_circuit.mjs
 )
 
 # hardhat 노드만 있으면 되는 것들. IdP가 필요하면 테스트가 스스로 격리 인스턴스를 띄운다
@@ -79,6 +81,16 @@ case "$GROUP" in
   unit)    FILES=("${UNIT[@]}") ;;
   circuit) FILES=("${CIRCUIT[@]}") ;;
   chain)   FILES=("${CHAIN[@]}") ;;
+  contract)
+    # 컨트랙트 테스트는 hardhat이 자기 인프로세스 체인에서 돌린다(:8545가 필요 없다).
+    # 파일 단위로 node를 부르는 아래 루프와 실행 방식이 달라 여기서 끝낸다.
+    #
+    # 그전까지 test/*.test.mjs는 어느 그룹에도 없어서 `npx hardhat test`를 사람이
+    # 기억해야 했다 — 이 파일이 없애려던 바로 그 상황이다(2026-09-07).
+    echo "== 그룹 'contract' — npx hardhat test =="
+    npx hardhat test
+    exit $?
+    ;;
   live)
     # live 그룹은 실행 중인 IdP의 폐기 트리를 **되돌릴 수 없게** 바꾸고(append-only)
     # 체인 블록을 수백 개 진행시킨다. 격리 하네스(tests/helpers/isolated_idp.mjs)가
@@ -98,10 +110,12 @@ case "$GROUP" in
       echo "all 그룹은 live를 포함합니다. RUN_LIVE_TESTS=yes 를 설정하십시오(위 live 설명 참고)."
       exit 2
     fi
+    # contract는 실행 방식이 달라 여기서 먼저 돌리고, 실패하면 거기서 멈춘다.
+    npx hardhat test || exit 1
     FILES=("${UNIT[@]}" "${CIRCUIT[@]}" "${CHAIN[@]}" "${LIVE[@]}")
     ;;
   default) FILES=("${UNIT[@]}" "${CIRCUIT[@]}") ;;
-  *) echo "알 수 없는 그룹: $GROUP (unit|circuit|chain|live|all)" >&2; exit 2 ;;
+  *) echo "알 수 없는 그룹: $GROUP (unit|circuit|chain|contract|live|all)" >&2; exit 2 ;;
 esac
 
 echo "== 그룹 '$GROUP' — ${#FILES[@]}개 실행 =="
