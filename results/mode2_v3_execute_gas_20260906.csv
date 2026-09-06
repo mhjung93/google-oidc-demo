@@ -1,0 +1,13 @@
+# 이중 트리(v3) 판 PPIDWalletV3.execute() 가스 실측. test/PPIDWalletV3Proof.test.mjs 출력.
+# 실제 zkey로 만든 진짜 증명으로 측정했다(mock 아님).
+# 주의: 첫 execute는 nonce 0->1 SSTORE(cold, 20k)를 포함한다 — v2 측정과 같은 조건이다.
+measurement,value,note
+v3_execute_first_call_gas,330079,"PPIDWalletV3, public signal 9개, 상위 형제 20개"
+v2_execute_first_call_gas,276709,"현행 비교 기준 (results/mode2_execute_gas_20260904.csv)"
+delta_gas,53370,"+19.3%. 설계 문서의 추정 +12,000을 크게 넘었다 — 아래 note 참조"
+circuit_constraints,13905,"pi_pk_i_v3 (v2는 19,251)"
+proof_warm_mean_ms,507.2,"n=5, SD 12.6. v2는 755.8 (-33%)"
+proof_cold_ms,1315.8,"1회차, WASM 초기화 포함"
+# 추정이 빗나간 이유: 상위 경로 keccak(20회)과 calldata(640B)만 세고, Groth16 verifier가
+# public signal 하나마다 치르는 비용을 빼먹었다. 6개 -> 9개로 늘면서 ecMul precompile
+# 3회(각 6,000 gas)와 ecAdd가 추가된다 — 그쪽이 약 18k로 더 크다.

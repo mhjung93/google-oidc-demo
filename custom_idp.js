@@ -2060,10 +2060,18 @@ app.post('/idp/publish/commit', requireIdPAdmin, serializeAdminMutation(async (r
       prepared.blockHeight,
       CREDENTIAL_LIFETIME_BLOCKS + MAX_HEIGHT_SLACK_BLOCKS,
     );
-    if (v3Applied.sessionAdded > 0 || v3Applied.accountAdded > 0 || resetShards > 0) {
+    // 계정 층은 샤드 인덱스가 만료를 담지 않으므로(값 기반) 샤드 단위 재기준화로 회수한다.
+    // v2의 전역 재기준화와 달리 그 샤드를 쓰는 지갑만 영향을 받는다.
+    const acctReclaim = await revocationV3.rebaselineExpiredAccountShards(prepared.blockHeight);
+    if (
+      v3Applied.sessionAdded > 0 || v3Applied.accountAdded > 0 ||
+      resetShards > 0 || acctReclaim.leavesReclaimed > 0
+    ) {
       console.log(
         `[IdP] publish/commit: v3 +${v3Applied.sessionAdded} session / +${v3Applied.accountAdded} account, ` +
-          `${resetShards} expired session shard(s) reset, combined root ${revocationV3.combinedRoot()}`,
+          `${resetShards} expired session shard(s) reset, ` +
+          `${acctReclaim.leavesReclaimed} account leaf/leaves reclaimed in ${acctReclaim.shardsRebaselined} shard(s), ` +
+          `combined root ${revocationV3.combinedRoot()}`,
       );
     }
   } catch (err) {

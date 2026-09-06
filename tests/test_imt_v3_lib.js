@@ -254,6 +254,43 @@ async function main() {
     console.log('OK: 8) rootToBytes32 — 필드 원소를 bytes32로 왼쪽 0채움');
   }
 
+  // ── 9) 계정 층 샤드 단위 재기준화 ─────────────────────────────────────
+  {
+    const { createIdPRevocationV3, LAYER_ACCOUNT } = await import('../lib/idp_revocation_v3.js');
+    const v3 = await createIdPRevocationV3();
+
+    // 같은 샤드에 만료/생존 리프를 하나씩 넣는다
+    let expired = null;
+    let liveLeaf = null;
+    let shard = null;
+    for (let i = 0; i < 600 && (expired === null || liveLeaf === null); i++) {
+      const leaf = (await leafValue(TAG_ACCOUNT, 900000n + BigInt(i))).toString();
+      const s2 = accountShardOf(leaf);
+      if (shard === null) shard = s2;
+      if (s2 !== shard) continue;
+      if (expired === null) expired = leaf;
+      else if (liveLeaf === null) liveLeaf = leaf;
+    }
+    assert.ok(expired && liveLeaf, '같은 샤드의 리프 2개를 찾지 못했다');
+
+    v3.record(expired, LAYER_ACCOUNT, 100n);   // 블록 100에 만료
+    v3.record(liveLeaf, LAYER_ACCOUNT, 9999n); // 아직 살아있음
+    await v3.applyCommit([expired, liveLeaf]);
+    const before = v3.combinedRoot();
+
+    // 만료 전에는 아무것도 회수되지 않는다
+    assert.deepEqual(await v3.rebaselineExpiredAccountShards(50n), { shardsRebaselined: 0, leavesReclaimed: 0 });
+    assert.equal(v3.combinedRoot(), before, '만료 전인데 root가 바뀌었다');
+
+    // 만료 후: 그 샤드만 재기준화되고 살아있는 리프는 남는다
+    const r = await v3.rebaselineExpiredAccountShards(500n);
+    assert.deepEqual(r, { shardsRebaselined: 1, leavesReclaimed: 1 });
+    assert.notEqual(v3.combinedRoot(), before);
+    const snap = v3.snapshot({ accountShard: shard });
+    assert.deepEqual(snap.accountShardLeaves, [liveLeaf], '살아있는 리프가 남지 않았다');
+    console.log('OK: 9) 계정 층 — 만료 리프만 샤드 단위로 회수되고 생존 리프는 남는다');
+  }
+
   console.log(`\nPASS: 샤드 포레스트(v3) — 라우팅·상위 트리·격리·만료 리셋·지갑 재구성 (계정 깊이 ${ACCOUNT_SUBTREE_DEPTH})`);
 }
 
