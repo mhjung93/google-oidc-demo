@@ -327,8 +327,19 @@ const codeOnly = src
   .split('\n')
   .filter((l) => !l.trim().startsWith('//'))
   .join('\n');
-assert.doesNotMatch(codeOnly, /revocationTreeV2|v2Leaves|epochV2|seqV2|mutationLogV2|v2Has\(/,
-  'custom_idp.js must not carry the v2 tree any more (13.1)');
+// 식별자가 **코드로 쓰이는** 모양만 잡는다. 마이그레이션 안내 문구처럼 사라진 필드
+// 이름을 문자열로 언급하는 것은 정상이고(운영자가 무엇이 없어졌는지 알아야 한다),
+// 그것까지 막으면 검사가 문서화를 방해한다.
+for (const [name, re] of [
+  ['revocationTreeV2', /\brevocationTreeV2\b/],
+  ['mutationLogV2', /\bmutationLogV2\b/],
+  ['v2Has()', /\bv2Has\s*\(/],
+  ['epochV2 (대입/인자)', /\bepochV2\s*[=,)]/],
+  ['seqV2 (대입/인자)', /\bseqV2\s*[=,)]/],
+  ['v2Leaves (속성 접근/키)', /\bv2Leaves\s*[:.]|\.v2Leaves\b/],
+]) {
+  assert.doesNotMatch(codeOnly, re, `custom_idp.js must not carry the v2 tree any more — ${name} (13.1)`);
+}
 assert.match(
   src,
   /function publishedLeaves\(\) \{\s*\n\s*return \[\.\.\.revocationV3\.publishedLeafSet\(\)\];/,

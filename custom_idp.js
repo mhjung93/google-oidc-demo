@@ -744,7 +744,8 @@ async function loadIdPState() {
     }
     if (fileVersion < 6) {
       changes.push(
-        'removed the v2 indexed Merkle tree and its fields (v2Leaves/publishedRootV2/epochV2/seqV2); ' +
+        'removed the v2 indexed Merkle tree and its state fields v2Leaves, publishedRootV2, ' +
+        'epochV2 and seqV2; ' +
         'the v3 dual tree is now the sole published-revocation source (its snapshot was already ' +
         'present, so the published set is unchanged)',
       );
