@@ -733,10 +733,22 @@ async function loadIdPState() {
     if (!hasDisabledField) {
       changes.push('accounts gained a disabled flag, defaulted to false for every restored account');
     }
-    changes.push(
-      'removed the v1 revocation tree (publishedRoot/revokedLeaves); the v2 indexed Merkle tree ' +
-      'is now the sole published-revocation source (the published set was carried over losslessly)',
-    );
+    // v4·v6에서 각각 한 번씩 게시 상태의 출처가 바뀌었다. 어느 단계를 건너온 파일인지에
+    // 따라 실제로 일어난 일이 다르므로 나눠 적는다 — 하나로 뭉뚱그리면 v5 -> v6 마이그레이션에
+    // v1 트리 제거 안내가 나온다(2026-09-07에 실제로 그랬다).
+    if (fileVersion < 4) {
+      changes.push(
+        'removed the v1 revocation tree (publishedRoot/revokedLeaves); the published set was ' +
+        'carried over losslessly',
+      );
+    }
+    if (fileVersion < 6) {
+      changes.push(
+        'removed the v2 indexed Merkle tree and its fields (v2Leaves/publishedRootV2/epochV2/seqV2); ' +
+        'the v3 dual tree is now the sole published-revocation source (its snapshot was already ' +
+        'present, so the published set is unchanged)',
+      );
+    }
     console.warn(
       `[CustomIdP] Migrated state file from version ${fileVersion} to ${IDP_STATE_FILE_VERSION}: ` +
       `${changes.join('; ')}.`,
