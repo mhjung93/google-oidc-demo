@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict';
-import { leafValue, TAG_ACCOUNT } from '../lib/imt.js';
-import { buildIMTv2 } from '../lib/imt_v2.js';
+import { fetchRevocationWitnessesV3 } from '../lib/wallet_revocation_v3.js';
 
-// 지갑이 하는 것과 동일하게, v2 전체 조회의 물리 순서 리프 배열로 트리를 재구성한다.
-const buildFromV2Full = (body) => buildIMTv2(20, body.leaves.slice(1).map((l) => BigInt(l.value)));
+// 13.1 이후 이 테스트는 지갑이 실제로 쓰는 모듈을 그대로 부른다. 예전에는 v2 전체 조회
+// 응답으로 테스트가 트리를 직접 재구성했는데, 그러면 "테스트가 재구성한 트리"를 검증할 뿐
+// 지갑의 실제 경로는 건드리지 않았다. fetchRevocationWitnessesV3는 응답을 스스로 검증하고
+// 폐기된 리프에는 witness를 내주지 않으므로, 그 호출 성공/실패가 곧 검증 대상이다.
+//
+// 계정 층만 보므로 max_height는 세션 샤드 선택에만 쓰이는 임의값이면 된다.
+const DUMMY_MAX_HEIGHT = 1n;
+const DUMMY_R_TOKEN = 1n;
 
 const IDP = process.env.CUSTOM_IDP_BASE_URL || 'http://127.0.0.1:4000';
 
@@ -28,12 +33,10 @@ async function main() {
   // 나온다")부터 실패한다 — IdP 결함이 아니라 테스트 자체의 비멱등성이다. 실행마다 새
   // 계정을 써서 재실행 가능하게 만든다.
   const victim = `987654321${Date.now()}`;
-  const leaf = await leafValue(TAG_ACCOUNT, victim);
 
-  const before = await (await fetch(`${IDP}/idp/revocation_state_v2`)).json();
-  const t1 = await buildFromV2Full(before);
-  const w = await t1.getNonMembershipWitness(leaf);
-  assert.equal(w.root, before.root, 'local tree must match IdP root before revocation');
+  const before = await (await fetch(`${IDP}/idp/revocation_state_v3`)).json();
+  const w = await fetchRevocationWitnessesV3(IDP, DUMMY_R_TOKEN, victim, DUMMY_MAX_HEIGHT);
+  assert.equal(w.topRoot, before.topRoot, 'wallet-side rebuild must match the IdP top root');
   console.log('OK: unrevoked account has a non-membership witness');
 
   const res = await fetch(`${IDP}/idp/revoke`, {
@@ -44,8 +47,8 @@ async function main() {
   assert.equal(res.status, 200);
 
   // 배칭: 폐기는 대기열에 들어갈 뿐이고, 게시 전까지 지갑이 보는 상태는 그대로다.
-  const queued = await (await fetch(`${IDP}/idp/revocation_state_v2`)).json();
-  assert.equal(queued.root, before.root, 'queued revocation must not change the published root');
+  const queued = await (await fetch(`${IDP}/idp/revocation_state_v3`)).json();
+  assert.equal(queued.topRoot, before.topRoot, 'queued revocation must not change the published root');
   console.log('OK: 폐기 접수만으로는 게시 상태가 바뀌지 않는다 (배칭)');
 
   // 게시(prepare -> commit). 이 테스트는 **온체인 push 없이 IdP 단계만** 돌린다.
@@ -63,21 +66,25 @@ async function main() {
   // (isCurrentRoot 확인 후 필요하면 게시) 실무상 문제가 되지 않는다.
   const adminHeaders = { 'Content-Type': 'application/json', 'X-IdP-Admin-Secret': ADMIN_SECRET };
   const prepared = await (await fetch(`${IDP}/idp/publish/prepare`, { method: 'POST', headers: adminHeaders, body: '{}' })).json();
-  assert.ok(prepared.expectedRoot, 'prepare must return an expected root');
-  assert.equal(prepared.currentRoot, before.root, 'prepare must not move the published root');
+  assert.ok(prepared.roundToken, 'prepare must return a round token');
+  assert.equal(prepared.currentRoot, before.topRoot, 'prepare must not move the published root');
   const commitRes = await fetch(`${IDP}/idp/publish/commit`, {
     method: 'POST',
     headers: adminHeaders,
-    body: JSON.stringify({ root: prepared.expectedRoot }),
+    body: JSON.stringify({ roundToken: prepared.roundToken }),
   });
-  assert.equal(commitRes.status, 200, 'commit must succeed with the prepared root');
+  assert.equal(commitRes.status, 200, 'commit must succeed with the prepared round token');
+  const committed = await commitRes.json();
 
-  const after = await (await fetch(`${IDP}/idp/revocation_state_v2`)).json();
-  assert.notEqual(after.root, before.root, 'root must change after publishing the revocation');
-  assert.equal(after.root, prepared.expectedRoot, 'published root must equal the prepared root');
+  const after = await (await fetch(`${IDP}/idp/revocation_state_v3`)).json();
+  assert.notEqual(after.topRoot, before.topRoot, 'root must change after publishing the revocation');
+  // 게시 순서가 prepare -> commit -> push이므로, 온체인에 올릴 root를 정하는 것은 commit이다.
+  assert.equal(after.topRoot, committed.root, 'the root commit returns must be the one it published');
 
-  const t2 = await buildFromV2Full(after);
-  await assert.rejects(() => t2.getNonMembershipWitness(leaf), /is a member/);
+  await assert.rejects(
+    () => fetchRevocationWitnessesV3(IDP, DUMMY_R_TOKEN, victim, DUMMY_MAX_HEIGHT),
+    /is a member/,
+  );
   console.log('OK: revoked account can no longer obtain a witness');
 
   console.log('PASS: revocation flips witness availability end to end (only after publication).');

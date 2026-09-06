@@ -24,7 +24,7 @@ const MAX_HEIGHT = 100000n;
 async function publish(idp) {
   const p = await idp.post('/idp/publish/prepare');
   assert.equal(p.status, 200, JSON.stringify(p.body));
-  const c = await idp.post('/idp/publish/commit', { root: p.body.expectedRoot });
+  const c = await idp.post('/idp/publish/commit', { roundToken: p.body.roundToken });
   assert.equal(c.status, 200, JSON.stringify(c.body));
 }
 
@@ -44,7 +44,6 @@ async function main() {
     assert.ok(w0.acctSiblings.length === 8, `계정 상위 경로 길이 ${w0.acctSiblings.length} != 8`);
     assert.ok(w0.sess.pathElements.length === 8 && w0.acct.pathElements.length === 10);
     assert.match(w0.topRoot, /^0x[0-9a-f]{64}$/);
-    assert.equal(w0.needsBackfill, false);
     console.log(`OK: 1) IdP 응답만으로 witness/경로 생성 (계정 샤드 ${myShard})`);
 
     // ── 2) Case 2 — 타인 폐기 ────────────────────────────────────────────

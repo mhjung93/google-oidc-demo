@@ -328,7 +328,9 @@ async function main() {
       assert.equal(r.failed.length, 1);
       assert.equal(r.failed[0].leaf, orphan);
       assert.match(r.failed[0].reason, /no recorded layer/);
-      assert.equal(v3.needsBackfill, true, '반영 실패가 있었는데 backfill 플래그가 서지 않았다');
+      // backfill 플래그는 13.1에서 사라졌다. 실패한 리프는 commit이 회차를 5xx로 되돌리고
+      // 대기열을 정리하지 않으므로 다음 prepare가 자동으로 다시 집어 든다 — 수동 복구
+      // 경로가 필요 없어졌고, 그래서 그것을 가리키는 플래그도 필요 없다.
       console.log('OK: 10-b) 층 미기록 리프는 건너뛰되 배치 나머지는 반영되고, 실패 목록이 보고된다');
     }
 
@@ -411,42 +413,6 @@ async function main() {
       console.log('OK: 11-b) 게시되지 않은 접수분의 만료 메타데이터가 정리된다');
     }
 
-    // (c) v2에만 있는 리프를 preimage로 되찾는다 (backfill).
-    //     /idp/revoke 재접수로는 안 되는 경로다 — 그래서 별도 관리자 경로를 뒀다.
-    {
-      const v3 = await createIdPRevocationV3();
-      const auid = 424242n;
-      const leaf = (await leafValue(TAG_ACCOUNT, auid)).toString();
-      const published = new Set([leaf]);           // v2에는 있고 v3에는 없는 상태
-      assert.equal(await v3.hasLeaf(leaf), false);
-
-      // 잘못된 후보는 v2 게시 집합과 대조돼 들어가지 않는다
-      const wrong = (await leafValue(TAG_ACCOUNT, 999999n)).toString();
-      let r = await v3.rebuildFromCandidates(
-        { account: [{ leaf: wrong, expiry: 9999n }] }, published, 100n);
-      assert.equal(r.routed.account, 0);
-      assert.match(r.skipped[0].reason, /not in the published v2 set/);
-
-      // 만료된 후보도 건너뛴다
-      r = await v3.rebuildFromCandidates(
-        { account: [{ leaf, expiry: 50n }] }, published, 100n);
-      assert.equal(r.routed.account, 0);
-      assert.match(r.skipped[0].reason, /already expired/);
-
-      // 올바른 후보는 되찾아진다
-      r = await v3.rebuildFromCandidates(
-        { account: [{ leaf, expiry: 9999n }] }, published, 100n);
-      assert.equal(r.routed.account, 1);
-      assert.equal(await v3.hasLeaf(leaf), true, 'backfill로 v3에 반영되지 않았다');
-      assert.equal(accountShardOf(leaf), Number(Object.keys(v3.snapshot().accountRootOverrides)[0]));
-
-      // 두 번 돌려도 중복되지 않는다(멱등)
-      r = await v3.rebuildFromCandidates(
-        { account: [{ leaf, expiry: 9999n }] }, published, 100n);
-      assert.equal(r.routed.account, 0);
-      assert.match(r.skipped[0].reason, /already in v3/);
-      console.log('OK: 11-c) v2에만 있는 리프를 preimage 대조로 되찾고, 오입력·만료·중복을 거른다');
-    }
   }
 
   // ── 12) 3차 리뷰 회귀: shardMaxHeight 없는 옛 스냅샷 복원 ──────────────

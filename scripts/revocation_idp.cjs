@@ -40,32 +40,9 @@ async function getIdPSigner(hre) {
   return signer;
 }
 
-async function fetchIdPRoot(idpBaseUrl) {
-  // 정석 IMT(v2)가 게시 상태의 유일한 진실이다(Stage B). 전체 조회 응답의 최상위 root가
-  // 온체인에 게시해야 할 v2 root다.
-  let res;
-  try {
-    res = await fetch(`${idpBaseUrl}/idp/revocation_state_v2`);
-  } catch (err) {
-    throw new Error(`IdP(${idpBaseUrl})에 연결할 수 없어 폐기 root를 가져오지 못했습니다: ${err.message}`);
-  }
-  if (!res.ok) throw new Error(`revocation_state_v2 failed (${idpBaseUrl}): ${res.status}`);
-  const { root } = await res.json();
-  if (root === undefined || root === null) {
-    throw new Error(`revocation_state_v2 응답에 root가 없습니다 (${idpBaseUrl})`);
-  }
-  return String(root);
-}
-
-// 회로의 root는 필드 요소(10진 문자열)이고 컨트랙트는 bytes32를 받는다.
-function rootToBytes32(hre, root) {
-  return hre.ethers.zeroPadValue(hre.ethers.toBeHex(BigInt(root)), 32);
-}
-
 /**
- * v3(이중 트리)의 게시 대상 root. v2와 두 가지가 다르다.
- *   - 출처가 /idp/revocation_state_v3 의 topRoot다(세션·계정 상위 root를 합친 값).
- *   - **이미 bytes32 hex다.** 필드 원소가 아니므로 rootToBytes32를 거치면 안 된다.
+ * 온체인에 게시하는 폐기 root = /idp/revocation_state_v3 의 topRoot(세션·계정 상위 root를
+ * 합친 값). **이미 bytes32 hex다** — 필드 원소가 아니므로 10진->bytes32 변환을 거치면 안 된다.
  */
 async function fetchIdPTopRootV3(idpBaseUrl) {
   let res;
@@ -84,16 +61,9 @@ async function fetchIdPTopRootV3(idpBaseUrl) {
   if (typeof body.topRoot !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(body.topRoot)) {
     throw new Error(`revocation_state_v3 응답의 topRoot가 bytes32가 아닙니다: ${body.topRoot}`);
   }
-  if (body.needsBackfill) {
-    console.warn(
-      '[revocation_idp] 경고: IdP가 needsBackfill 상태다. v4 이하 상태 파일에서 올라와 ' +
-      'v3 트리가 비어 있을 수 있다. 전환 전에 살아있는 폐기를 다시 접수해야 한다.'
-    );
-  }
   return body.topRoot;
 }
 
 module.exports = {
-  IDP_ADDRESS_ENV, requireIdPAddress, getIdPSigner, fetchIdPRoot, rootToBytes32,
-  fetchIdPTopRootV3,
+  IDP_ADDRESS_ENV, requireIdPAddress, getIdPSigner, fetchIdPTopRootV3,
 };

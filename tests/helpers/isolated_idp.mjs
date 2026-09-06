@@ -81,7 +81,7 @@ export async function startIsolatedIdP(opts = {}) {
     // 타임아웃까지 기다리지 않고 곧바로 실패 보고를 할 수 있다.
     if (child.exitCode !== null || child.signalCode !== null) break;
     try {
-      const r = await fetch(`${base}/idp/revocation_state_v2`);
+      const r = await fetch(`${base}/idp/revocation_state_v3`);
       if (r.ok) {
         ready = true;
         break;
@@ -162,7 +162,7 @@ export async function revokeAndPublish(idp, value, type = 'account') {
   if (revoked.status !== 200) throw new Error(`revoke -> ${revoked.status} ${JSON.stringify(revoked.body)}`);
   const prepared = await idp.post('/idp/publish/prepare');
   if (prepared.status !== 200) throw new Error(`prepare -> ${prepared.status} ${JSON.stringify(prepared.body)}`);
-  const committed = await idp.post('/idp/publish/commit', { root: prepared.body.expectedRoot });
+  const committed = await idp.post('/idp/publish/commit', { roundToken: prepared.body.roundToken });
   if (committed.status !== 200) throw new Error(`commit -> ${committed.status} ${JSON.stringify(committed.body)}`);
   return { prepared: prepared.body, committed: committed.body };
 }

@@ -1,10 +1,6 @@
 const hre = require("hardhat");
-const { getIdPSigner, fetchIdPRoot, rootToBytes32, fetchIdPTopRootV3 } = require("./revocation_idp.cjs");
+const { getIdPSigner, fetchIdPTopRootV3 } = require("./revocation_idp.cjs");
 
-// revocation_sweep.cjs와 같은 스위치. v3에서는 게시 대상이 두 층의 상위 root를 합친
-// topRoot이고 이미 bytes32라, v2 root를 그대로 밀면 레지스트리에 아무도 맞출 수 없는
-// 값이 올라간다(2026-09-06 전환 중 실제로 그랬다 — E2E 전제조건 검사가 잡았다).
-const TREE_VERSION = process.env.REVOCATION_TREE_VERSION === "v3" ? "v3" : "v2";
 
 // hardhat.config.cjs에 networks 블록이 없어 defaultNetwork가 "hardhat"이다.
 // 이 스크립트를 --network 없이 실행하면(예: `node scripts/push_revocation_root.cjs`)
@@ -30,16 +26,16 @@ async function main() {
   const registryAddress = process.env.REVOCATION_REGISTRY_ADDRESS;
   if (!registryAddress) throw new Error("REVOCATION_REGISTRY_ADDRESS is required");
 
-  const rootHex = TREE_VERSION === "v3"
-    ? await fetchIdPTopRootV3(idpBaseUrl)          // 이미 bytes32다
-    : rootToBytes32(hre, await fetchIdPRoot(idpBaseUrl));
-  console.log(`[push] 폐기 트리 버전: ${TREE_VERSION}`);
+  // 게시 대상은 두 층의 상위 root를 합친 topRoot다. 이미 bytes32라 필드 원소 변환을
+  // 거치지 않는다 — v2 root를 그대로 밀었다가 아무도 맞출 수 없는 값이 올라간 적이 있다
+  // (2026-09-06 전환 중. E2E 전제조건 검사가 잡았다).
+  const rootHex = await fetchIdPTopRootV3(idpBaseUrl);
 
   // onlyIdP 주소는 REVOCATION_IDP_ADDRESS로 명시한다 — 배포 스크립트와 같은 값을
   // 써야 pushRoot가 NotIdP로 revert하지 않는다.
   const idpSigner = await getIdPSigner(hre);
   const registry = await hre.ethers.getContractAt(
-    TREE_VERSION === "v3" ? "RevocationRegistryV3" : "RevocationRegistry",
+    "RevocationRegistryV3",
     registryAddress,
     idpSigner,
   );

@@ -30,9 +30,11 @@ const adminHeaders = { 'X-IdP-Admin-Secret': ADMIN_SECRET };
 const ACCOUNT_VALUE = `424242${Date.now()}`;
 
 async function main() {
-  const before = await (await fetch(`${BASE}/idp/revocation_state_v2`)).json();
-  assert.ok(typeof before.root === 'string', 'revocation_state_v2 must expose a root');
-  assert.ok(Array.isArray(before.leaves), 'revocation_state_v2 must expose a physical-order leaves array');
+  const before = await (await fetch(`${BASE}/idp/revocation_state_v3`)).json();
+  assert.match(String(before.topRoot), /^0x[0-9a-f]{64}$/,
+    'revocation_state_v3 must expose the combined top root as bytes32');
+  assert.ok(typeof before.sessionEmptyRoot === 'string' && typeof before.accountEmptyRoot === 'string',
+    'revocation_state_v3 must expose both layers\' empty-subtree roots');
 
   // 계정 폐기는 발급 기록이 없어도 항상 통과해야 한다(Stage A 입구 검사는
   // type === 'session'에만 적용된다) — 계정 층 폐기는 "이미 발급된 크레덴셜의
@@ -53,13 +55,13 @@ async function main() {
   // 배칭의 핵심 성질: 게시 전까지 지갑이 보는 상태는 조금도 변하지 않는다.
   // 여기서 상태가 바뀌면 지갑이 온체인에 없는 root로 witness를 만들어 정상 사용자
   // 전원의 execute()가 StaleRevocationRoot로 막힌다 — 이 배칭이 없애려는 장애다.
-  const after = await (await fetch(`${BASE}/idp/revocation_state_v2`)).json();
-  assert.equal(after.root, before.root, 'a queued revocation must not change the published root');
-  assert.equal(
-    after.leaves.length,
-    before.leaves.length,
-    'a queued revocation must not change the published leaf list',
-  );
+  const after = await (await fetch(`${BASE}/idp/revocation_state_v3`)).json();
+  // topRoot가 그대로면 지갑이 보는 상태가 조금도 바뀌지 않았다는 뜻이다 — 두 층의 모든
+  // 서브트리 root를 한 값으로 접은 것이므로, 리프 목록 비교보다 강한 확인이다.
+  assert.equal(after.topRoot, before.topRoot,
+    'a queued revocation must not change the published root');
+  assert.deepEqual(after.accountRootOverrides, before.accountRootOverrides,
+    'a queued revocation must not change any published subtree');
 
   // 재폐기는 에러가 아니라 no-op이어야 하고, 만료는 더 늦은 쪽으로만 움직여야 한다.
   const again = await fetch(`${BASE}/idp/revoke`, {
@@ -80,7 +82,7 @@ async function main() {
   // 없으면 임의의 숫자를 세션으로 폐기 신청해 트리를 무한정 부풀릴 수 있다.
   // 실제로 issuanceLog에 기록되는 r_token은 로그인 전체를 거쳐야 발급되므로,
   // 이 값은 IdP가 절대 발급하지 않았을 합성값이다.
-  const stateBeforeUnissuedSession = await (await fetch(`${BASE}/idp/revocation_state_v2`)).json();
+  const stateBeforeUnissuedSession = await (await fetch(`${BASE}/idp/revocation_state_v3`)).json();
   const unissuedSession = await fetch(`${BASE}/idp/revoke`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...adminHeaders },
@@ -89,10 +91,10 @@ async function main() {
   assert.equal(unissuedSession.status, 404, 'revoking a session with no issuance record must be rejected');
   const unissuedSessionBody = await unissuedSession.json();
   assert.ok(unissuedSessionBody.error, 'error field must be present');
-  const stateAfterUnissuedSession = await (await fetch(`${BASE}/idp/revocation_state_v2`)).json();
+  const stateAfterUnissuedSession = await (await fetch(`${BASE}/idp/revocation_state_v3`)).json();
   assert.equal(
-    stateAfterUnissuedSession.root,
-    stateBeforeUnissuedSession.root,
+    stateAfterUnissuedSession.topRoot,
+    stateBeforeUnissuedSession.topRoot,
     'a rejected session revocation must not change the revocation root',
   );
 
@@ -156,7 +158,7 @@ async function main() {
   assert.equal(aboveCapBody.alreadyPending, false, 'a fresh value must not be reported as already queued');
 
   // --- 관리자 인증 (I3) ---
-  const stateBeforeAuthChecks = await (await fetch(`${BASE}/idp/revocation_state_v2`)).json();
+  const stateBeforeAuthChecks = await (await fetch(`${BASE}/idp/revocation_state_v3`)).json();
 
   // 시크릿 헤더 없이 호출하면 401이어야 한다.
   const noAuth = await fetch(`${BASE}/idp/revoke`, {
@@ -184,10 +186,10 @@ async function main() {
   assert.equal(browserOrigin.status, 403, 'browser-originated revoke must be rejected with 403');
 
   // 위 세 번의 거부가 트리를 건드리지 않았는지 확인한다.
-  const stateAfterAuthChecks = await (await fetch(`${BASE}/idp/revocation_state_v2`)).json();
+  const stateAfterAuthChecks = await (await fetch(`${BASE}/idp/revocation_state_v3`)).json();
   assert.equal(
-    stateAfterAuthChecks.root,
-    stateBeforeAuthChecks.root,
+    stateAfterAuthChecks.topRoot,
+    stateBeforeAuthChecks.topRoot,
     'rejected revoke attempts must not change the revocation root',
   );
 

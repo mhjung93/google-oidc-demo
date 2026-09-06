@@ -211,14 +211,21 @@ assert.doesNotMatch(
 assert.match(evictionBlock, /issuanceLog\.delete\(rToken\)/, 'eviction must remove stale issuanceLog entries');
 assert.match(evictionBlock, /auidILog\.delete\(auidI\)/, 'eviction must remove stale auidILog entries');
 
-// 스키마 버전: Stage B에서 v1 폐기 트리(publishedRoot/revokedLeaves)를 제거하는 파괴적
-// 변경으로 버전이 4로 올라갔고, 옛 파일(v1/v2/v3)은 조용히 오독되지 않고 명시적으로
-// 처리(이 저장소는 무손실 마이그레이션을 택함 — 근거는 코드 주석과 보고서 참고)돼야 한다.
-assert.match(src, /const IDP_STATE_FILE_VERSION = 5;/, 'state file schema version must be bumped for the v3 dual-tree snapshot (D단계)');
+// 스키마 버전: v6(설계 문서 13.1절)에서 v2 트리와 그 필드를 제거하고 v3를 게시 상태의
+// 유일한 진실로 승격했다. v5 파일은 이미 v3 스냅샷을 담고 있어 무손실로 올라오지만,
+// **v4 이하는 마이그레이션 경로가 없다** — 리프 해시에서 층(session/account)을 되돌릴 수
+// 없어 게시 집합을 복원할 방법이 없다. 조용히 빈 트리로 시작하면 폐기된 사용자가 아니라
+// 전원이 StaleRevocationRoot로 막히므로, 명시적으로 거부해야 한다.
+assert.match(src, /const IDP_STATE_FILE_VERSION = 6;/, 'state file schema version must be bumped for the v2 removal (13.1)');
 assert.match(
   loadIdPStateSrc,
-  /isLegacyAuidILog/,
-  'loadIdPState must explicitly branch on the legacy (v1) auidILog shape rather than assuming the new shape',
+  /if \(fileVersion < 5\) \{[\s\S]*?throw stateFileError\(/,
+  'loadIdPState must refuse version 4 or older files instead of silently starting with an empty v3 forest',
+);
+assert.match(
+  loadIdPStateSrc,
+  /must contain a v3 snapshot/,
+  'loadIdPState must refuse a v5+ file that has no v3 snapshot — there would be no source of truth',
 );
 
 // ---------------------------------------------------------------------------
@@ -232,11 +239,13 @@ assert.match(
   /hasDisabledField/,
   'loadIdPState must explicitly branch on whether the disabled field is present (v3) or absent (v1/v2)',
 );
-// v1/v2/v3 files must still pass the version gate (migrated), not be rejected outright.
+// 버전 게이트는 알려진 버전 전체를 통과시키고, 마이그레이션 불가는 **그 다음** 검사에서
+// 이유와 함께 거부한다. 게이트에서 바로 잘라내면 "모르는 버전"과 "알지만 되살릴 수 없는
+// 버전"이 같은 메시지를 받아 운영자가 원인을 알 수 없다.
 assert.match(
   loadIdPStateSrc,
-  /\[1,\s*2,\s*3,\s*4,\s*5\]\.includes\(fileVersion\)/,
-  'loadIdPState must accept v1 through v5 — only truly unknown versions are rejected',
+  /\[1,\s*2,\s*3,\s*4,\s*5,\s*6\]\.includes\(fileVersion\)/,
+  'the version gate must list every known version, including 6',
 );
 
 // serializeIdPState must persist disabled per account, mirroring how lastAuid is persisted.
@@ -266,7 +275,7 @@ assert.match(
 // 차단한 계정이 복구 흐름으로 되살아난다.
 const unpinHandlerSrc = section(
   "app.post('/idp/account/unpin_auid', requireIdPAdmin, async (req, res) => {",
-  "\n// === v2(정석 IMT) 조회",
+  "\n// === v3(이중 트리) 조회",
   '/idp/account/unpin_auid handler',
 );
 assert.match(
@@ -301,19 +310,36 @@ assert.match(
 );
 
 // ---------------------------------------------------------------------------
-// 6. loadIdPState의 v2 트리 재구성 insert() 실패가 원시 에러가 아니라 stateFileError로
-//    감싸진다. Stage B: v1 트리 재구성이 제거됐으므로, 이제 게시 상태의 유일한 진실인
-//    v2 트리 재구성(v2Leaves 또는 legacy revokedLeaves 씨앗)이 감싸져야 한다.
+// 6. loadIdPState의 폐기 트리 복원 실패가 원시 에러가 아니라 stateFileError로 감싸진다.
+//    13.1에서 v2 재구성이 사라지고 v3 restore가 그 자리를 물려받았다 — 게시 상태의
+//    유일한 진실이므로 여기서 실패하면 조용히 넘어가면 안 된다.
 // ---------------------------------------------------------------------------
 assert.match(
   loadIdPStateSrc,
-  /\} catch \(err\) \{\s*\n\s*throw stateFileError\(`v2Leaves contains a value insert\(\) rejects/,
-  'the v2 tree rebuild from v2Leaves must wrap insert() failures in stateFileError',
+  /\} catch \(err\) \{\s*\n\s*throw stateFileError\(`v3 restore failed/,
+  'the v3 forest restore must wrap failures in stateFileError',
 );
+// v2 트리를 되살리는 코드가 다시 들어오지 않는지 고정한다. 남아 있으면 "게시의 진실이
+// 둘"인 상태로 되돌아가고, 13.1이 실측으로 잡아낸 '먹이를 못 받는 거울' 결함이 재발한다.
+// 주석은 v2를 **역사로** 계속 언급하므로(왜 그렇게 됐는지가 코드보다 중요하다), 주석을
+// 걷어낸 뒤 실제 코드만 본다.
+const codeOnly = src
+  .split('\n')
+  .filter((l) => !l.trim().startsWith('//'))
+  .join('\n');
+assert.doesNotMatch(codeOnly, /revocationTreeV2|v2Leaves|epochV2|seqV2|mutationLogV2|v2Has\(/,
+  'custom_idp.js must not carry the v2 tree any more (13.1)');
 assert.match(
-  loadIdPStateSrc,
-  /buildIMTv2\(REVOCATION_TREE_DEPTH, legacyLeaves\.map[\s\S]*?\} catch \(err\) \{\s*\n\s*throw stateFileError\(`revokedLeaves contains a value insert\(\) rejects/,
-  'the legacy-seed v2 rebuild must wrap insert() failures in stateFileError',
+  src,
+  /function publishedLeaves\(\) \{\s*\n\s*return \[\.\.\.revocationV3\.publishedLeafSet\(\)\];/,
+  'publishedLeaves() must be sourced from the v3 forest',
+);
+// 중복제거의 기준도 v3여야 한다. 이것만 v2에 남으면 v3가 "이미 있다"고 답하지 못해
+// 같은 리프가 매 회차 다시 삽입 시도된다(반대로 v2에만 두면 13.1이 잡은 결함이 된다).
+assert.match(
+  src,
+  /if \(!\(await revocationV3\.hasLeaf\(leafKey\)\)\) addedValues\.push\(leafKey\);/,
+  "publish/prepare must dedupe against the v3 forest",
 );
 
 console.log('PASS: custom_idp.js state-persistence fixes (items 1-6) are present in source.');

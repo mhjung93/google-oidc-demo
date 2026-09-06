@@ -42,7 +42,7 @@ function rebuildRoots(emptyRoot, overrides, count) {
 async function publish(idp) {
   const prepared = await idp.post('/idp/publish/prepare');
   assert.equal(prepared.status, 200, JSON.stringify(prepared.body));
-  const committed = await idp.post('/idp/publish/commit', { root: prepared.body.expectedRoot });
+  const committed = await idp.post('/idp/publish/commit', { roundToken: prepared.body.roundToken });
   assert.equal(committed.status, 200, JSON.stringify(committed.body));
   return committed.body;
 }
@@ -131,15 +131,18 @@ async function main() {
     const beforeRestart = (await idp.get('/idp/revocation_state_v3')).body;
     const stateFile = path.join(stateDir, 'idp_state.json');
     const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-    assert.equal(saved.version, 5, '상태 파일이 v5가 아니다');
+    assert.equal(saved.version, 6, '상태 파일이 v6가 아니다');
     assert.ok(saved.v3 && saved.v3.accountShards, 'v3 스냅샷이 저장되지 않았다');
+    // v6에서 v2 필드가 사라졌다. 남아 있으면 게시의 진실이 둘인 상태로 되돌아간 것이다.
+    for (const k of ['v2Leaves', 'publishedRootV2', 'epochV2', 'seqV2']) {
+      assert.ok(!(k in saved), `v6 상태 파일에 v2 필드 ${k}가 남아 있다`);
+    }
 
     await idp.stop();
     idp = await startIsolatedIdP({ dir: stateDir });
     const afterRestart = (await idp.get('/idp/revocation_state_v3')).body;
     assert.equal(afterRestart.topRoot, beforeRestart.topRoot, '재시작 후 combined root가 달라졌다');
     assert.deepEqual(afterRestart.accountRootOverrides, beforeRestart.accountRootOverrides);
-    assert.equal(afterRestart.needsBackfill, false, '갓 만든 v5 상태인데 backfill 플래그가 섰다');
     console.log('OK: 5) 재시작을 넘어 v3 상태가 같은 root로 복원된다');
 
     // ── 6) 잘못된 샤드 질의는 거부한다 ───────────────────────────────────
@@ -151,52 +154,30 @@ async function main() {
       console.log('OK: 6) 범위를 벗어난 샤드 질의를 400으로 거부한다');
     }
 
-    // ── 7) rebuild_from_v2 — v2에만 있는 리프를 되찾는 관리자 경로 ────────
-    // /idp/revoke 재접수로는 되지 않는다(이미 게시됐고 만료되지 않은 리프는 대기열에
-    // 들어가지 않는다). 그 사실도 여기서 함께 고정한다.
+    // ── 7) 이미 게시된 폐기의 재접수는 대기열을 오염시키지 않는다 ─────────
+    // 13.1 이전에는 이 성질이 "backfill이 무력했던 이유"였다(재접수로는 v2에만 있는
+    // 리프를 v3로 되찾을 수 없어 전용 관리자 경로 rebuild_from_v2가 필요했다). v2가
+    // 사라지면서 그 경로도 사라졌지만, 성질 자체는 여전히 유효하고 지켜져야 한다 —
+    // 게시된 폐기를 다시 접수할 때마다 대기열이 자라면 매 회차가 중복 삽입을 시도한다.
     {
       const v = uniqueValue();
       r = await idp.post('/idp/revoke', { type: 'account', value: v });
       assert.equal(r.status, 200, JSON.stringify(r.body));
       await publish(idp);
-      const leaf = r.body.leaf;
 
-      // (i) 재접수는 대기열에 들어가지 않는다 — 이게 backfill이 무력했던 이유다
       const again = await idp.post('/idp/revoke', { type: 'account', value: v });
-      assert.equal(again.body.alreadyPublished, true);
-      assert.equal(again.body.pendingCount, 0, '재접수가 대기열에 들어갔다(전제가 바뀌었다)');
+      assert.equal(again.body.alreadyPublished, true, '게시된 폐기인데 alreadyPublished가 서지 않았다');
+      assert.equal(again.body.pendingCount, 0, '재접수가 대기열에 들어갔다');
+
+      const before = (await idp.get('/idp/revocation_state_v3')).body.topRoot;
       const p2 = await idp.post('/idp/publish/prepare');
-      assert.equal(p2.body.added, 0, '재접수로 게시될 리프가 생겼다(전제가 바뀌었다)');
-      await idp.post('/idp/publish/commit', { root: p2.body.expectedRoot });
-
-      // (ii) 자동 분류만으로도 남는 리프가 없어야 한다. 이 리프는 commit 경로로 이미
-      //      v3에 들어가 있으므로 unresolved가 비어야 하고 플래그도 서지 않아야 한다.
-      const rb = await idp.post('/idp/v3/rebuild_from_v2', {});
-      assert.equal(rb.status, 200, JSON.stringify(rb.body));
-      assert.equal(rb.body.unresolved.length, 0, `되찾지 못한 리프가 있다: ${JSON.stringify(rb.body.unresolved)}`);
-      assert.equal(rb.body.needsBackfill, false);
-
-      // (ii-b) preimage를 명시로 주면 후보가 되고, 이미 반영돼 있으므로 멱등하게
-      //        건너뛴다(중복 삽입하지 않는다).
-      const rb2 = await idp.post('/idp/v3/rebuild_from_v2', { auids: [v] });
-      assert.equal(rb2.status, 200, JSON.stringify(rb2.body));
-      assert.equal(rb2.body.routed.account, 0, '이미 반영된 리프를 다시 넣었다');
-      assert.ok(
-        rb2.body.skipped.some((x) => x.leaf === leaf && /already in v3/.test(x.reason)),
-        `이미 반영된 리프를 already-in-v3로 건너뛰지 않았다: ${JSON.stringify(rb2.body.skipped)}`,
+      assert.equal(p2.body.added, 0, '재접수로 게시될 리프가 생겼다');
+      await idp.post('/idp/publish/commit', { roundToken: p2.body.roundToken });
+      assert.equal(
+        (await idp.get('/idp/revocation_state_v3')).body.topRoot, before,
+        '아무것도 추가되지 않았는데 root가 바뀌었다',
       );
-      assert.equal(rb2.body.topRoot, rb.body.topRoot, '멱등이어야 하는데 root가 바뀌었다');
-
-      // (iii) 관리자 인증이 필요하다
-      const noAuth = await fetch(`${idp.base}/idp/v3/rebuild_from_v2`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
-      });
-      assert.notEqual(noAuth.status, 200, '인증 없이 재구축이 실행됐다');
-
-      // (iv) 잘못된 입력은 400
-      const bad = await idp.post('/idp/v3/rebuild_from_v2', { rTokens: 'nope' });
-      assert.equal(bad.status, 400);
-      console.log('OK: 7) rebuild_from_v2 — 재접수로는 안 되던 복구가 전용 경로로 된다');
+      console.log('OK: 7) 게시된 폐기의 재접수는 대기열도 root도 건드리지 않는다');
     }
 
     console.log('\n== IdP v3 배선 7종 통과 ==');

@@ -1,14 +1,13 @@
-// 게시(prepare/commit)와 재기준화 사이의 불변식 검사.
+// 게시(prepare/commit) 회차 합의의 불변식 검사.
 //   node tests/test_idp_publish_invariants.js
 //
 // custom_idp.js는 모듈 최상위 부수효과(포트 바인딩, RPC, 파일 IO)가 있어 안전하게
 // import할 수 없다. tests/test_idp_state_persistence.js의 선례를 따라 소스를 텍스트로
 // 읽어 검사한다 — "그 자리에 있어야 할 코드가 실제로 있는지"만 잡는 방식이다.
 //
-// 이 파일을 behavioral 테스트로 쓸 수 없는 이유를 분명히 해 둔다: 아래 시나리오를
-// 살아있는 IdP에 실제로 돌리면 v2 트리가 되돌릴 수 없게 전진한 채 저장되지 않고
-// preparedPublish가 고착돼, 그 IdP가 이후 모든 커밋에서 500을 내는 상태가 된다.
-// 격리 실행(PORT/IDP_STATE_FILE 환경변수화)이 생기기 전까지는 소스 검사가 최선이다.
+// 동작 테스트는 tests/test_idp_publish_behavior.mjs가 격리 IdP를 띄워서 한다. 여기서는
+// "그 자리에 있어야 할 가드가 실제로 있는지"만 소스에서 확인한다 — 동작 테스트가 통과하는
+// 경로만으로는 가드가 사라졌는지 알 수 없기 때문이다(정상 경로에서는 어차피 토큰이 맞다).
 import assert from 'node:assert/strict';
 import fs from 'fs';
 
@@ -23,26 +22,56 @@ function section(startMarker, endMarker, label) {
 }
 
 // ---------------------------------------------------------------------------
-// 재기준화는 prepare가 예측해 둔 root를 무효로 만든다.
+// 회차 합의는 root가 아니라 **회차 토큰**으로 한다.
 //
-// commit 핸들러는 "prepare와 commit 사이에 v2를 바꾸는 경로는 없으므로(admin 직렬)"를
-// 전제로 적혀 있는데, /idp/rebaseline_v2가 정확히 그 경로다(같은 관리자 인증).
-// prepare(root R) -> 온체인 push -> rebaseline -> commit{root: R} 순서면, 최초 비교는
-// prepared.root와 하므로 통과하고, 리프를 **새 트리에** 삽입한 뒤에야 root 불일치를
-// 발견해 500을 낸다. 그 시점엔 트리가 이미 전진했고(append-only, 되돌릴 수 없음)
-// preparedPublish를 비우기 전에 리턴하므로 재시도는 영원히 500이다.
+// v2 시절 이 자리에는 다른 불변식이 있었다: /idp/rebaseline_v2가 prepare가 예측해 둔
+// root를 무효로 만들 수 있으므로 그 핸들러가 preparedPublish를 비워야 한다는 것. 13.1에서
+// 그 엔드포인트도, root 예측 자체도 사라져 위험 자체가 없어졌다(설계 문서 13.1절).
 //
-// 그러므로 재기준화는 미결 prepare를 스스로 무효화해야 한다.
+// 남은 불변식은 그 후임이다. commit은 "이 커밋이 그 prepare의 것인가"를 확인해야 하고,
+// 그 확인이 없으면 운영자가 A 회차를 push한다고 믿는 동안 B 회차가 반영된다.
 // ---------------------------------------------------------------------------
-const rebaselineHandlerSrc = section(
-  "app.post('/idp/rebaseline_v2', requireIdPAdmin, serializeAdminMutation(async (req, res) => {",
-  '\n});',
-  '/idp/rebaseline_v2 handler',
+const commitHandlerSrc = section(
+  "app.post('/idp/publish/commit', requireIdPAdmin, serializeAdminMutation(async (req, res) => {",
+  '\n}));',
+  '/idp/publish/commit handler',
 );
 assert.match(
-  rebaselineHandlerSrc,
-  /preparedPublish = null;/,
-  '/idp/rebaseline_v2 must invalidate any outstanding prepared publish — its root no longer applies',
+  commitHandlerSrc,
+  /roundToken !== preparedPublish\.roundToken/,
+  'publish/commit must verify the round token against the prepared publish',
+);
+assert.match(
+  commitHandlerSrc,
+  /res\.status\(409\)/,
+  'a mismatched round token must be refused with 409, not silently applied',
 );
 
-console.log('PASS: 재기준화가 미결 prepare를 무효화한다.');
+const prepareHandlerSrc = section(
+  "app.post('/idp/publish/prepare', requireIdPAdmin, serializeAdminMutation(async (req, res) => {",
+  '\n}));',
+  '/idp/publish/prepare handler',
+);
+// prepare가 root를 다시 예측하기 시작하면 순서(prepare -> commit -> push)가 조용히
+// 되돌아간다. 그 root는 commit이 만료를 회수하기 **전** 값이라 온체인에 올리면 어긋난다.
+assert.doesNotMatch(
+  prepareHandlerSrc,
+  /expectedRoot/,
+  'publish/prepare must not predict a root — the publishable root is only fixed after commit',
+);
+assert.match(
+  prepareHandlerSrc,
+  /roundToken/,
+  'publish/prepare must issue a round token',
+);
+
+// commit이 실패한 회차를 200으로 보고하면 운영자가 그 root를 push하고 빠진 폐기는
+// 조용히 사라진다. v2와 나란히 돌던 시절에는 5xx를 낼 수 없어 backfill 플래그로 미뤘지만,
+// 이제 push 이전이라 실패한 회차는 그냥 실패시킬 수 있다.
+assert.match(
+  commitHandlerSrc,
+  /applied\.failed\.length > 0[\s\S]*?res\.status\(500\)/,
+  'publish/commit must fail the round when some leaves could not be applied',
+);
+
+console.log('PASS: 회차 합의가 회차 토큰으로 이뤄지고, 부분 실패가 회차를 무른다.');

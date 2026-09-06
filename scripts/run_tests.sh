@@ -57,7 +57,6 @@ LIVE=(
   tests/test_rid_not_leaked.js
   tests/test_idp_revoke_endpoint.js
   tests/test_revocation_e2e.js
-  tests/test_imt_v2_wiring.js
   tests/test_idp_account_admin.js
   tests/test_par_endpoint.js
   tests/test_authorize_endpoint.js

@@ -1,9 +1,7 @@
 const hre = require("hardhat");
-const { getIdPSigner, rootToBytes32, fetchIdPTopRootV3 } = require("./revocation_idp.cjs");
+const { getIdPSigner, fetchIdPTopRootV3 } = require("./revocation_idp.cjs");
 
-// 폐기 트리 버전. v3(이중 트리)로 전환하면 게시 대상 root의 출처와 레지스트리
-// 컨트랙트가 함께 바뀐다. 기본값은 v2라, 환경변수를 세우기 전까지 기존 동작 그대로다.
-const TREE_VERSION = process.env.REVOCATION_TREE_VERSION === "v3" ? "v3" : "v2";
+
 
 // hardhat.config.cjs에 networks 블록이 없어 defaultNetwork가 "hardhat"이다.
 // push_revocation_root.cjs와 같은 이유로, --network 없이 실행하면 명령 종료와
@@ -41,180 +39,87 @@ async function callIdPAdmin(idpBaseUrl, adminSecret, pathname, body) {
 const DEFAULT_FAILURE_ALERT_THRESHOLD = 3; // 연속 이 횟수 이상 실패하면 경고 배너 출력
 const SLEEP_POLL_MS = 500; // 종료 신호를 얼마나 자주 확인하며 대기할지
 const COMMIT_RETRY_ATTEMPTS = 3; // 최초 시도 이후 추가로 시도할 횟수
-const COMMIT_RETRY_DELAY_MS = 2000; // 재시도 사이 대기. grace window가 없어 이 창이 곧 전면 장애 시간이므로 짧게 잡는다.
+const COMMIT_RETRY_DELAY_MS = 2000; // 재시도 사이 대기. push 이전이라 장애 구간은 아니다(위 주석 참고).
 
 // 폐기 게시 한 사이클(batch publish). IdP에 대기 중인 폐기를 반영하고 만료된 리프를
 // 정리한 다음 그 root를 온체인에 게시한다.
 //
-// 순서가 핵심이다: prepare(계산만) -> pushRoot(온체인 확정) -> commit(IdP 전진).
-// IdP를 먼저 전진시키면 push가 실패했을 때 '게시되지 않은 root'를 지갑이 받아가
-// 정상 사용자 전원의 execute()가 StaleRevocationRoot로 막힌다. push가 확정된
-// 뒤에만 commit하므로 그 창이 존재하지 않는다.
+// 순서는 prepare(집합 동결) -> commit(IdP 전진, root 확정) -> pushRoot(온체인 게시)다.
+// 게시할 root가 두 층의 상위 root를 합친 값이라 포레스트가 전진한 뒤에야 정해지기
+// 때문이다(설계 문서 13.1절). v2 시절에는 prepare가 root를 예측할 수 있어 순서가
+// prepare -> push -> commit이었다.
 //
-// 이 순서로 중단 지점 중 하나는 안전하지만, 다른 하나는 grace window가 없어진 뒤로
-// 더 이상 안전하지 않다(프로세스 kill, SIGINT 등으로 중단됐을 때):
-//   - prepare 이후 push 이전에 중단 -> IdP·온체인 둘 다 아무 변화 없음. 다음 사이클이
-//     처음부터 다시 prepare한다. (안전)
-//   - push 이후 commit 이전에 중단 -> 온체인 latestRoot는 이미 새 root로 확정됐는데
-//     IdP는 아직 이전 리프 집합을 서빙 중이다. grace window가 없으므로 지갑이 그
-//     이전 리프 집합으로 만드는 root는 더 이상 latestRoot와 같지 않고, 그 사이
-//     StaleRevocationRoot로 전원(폐기와 무관한 사용자 포함)이 막힌다 — "안전한
-//     중단 지점"이 아니라 전면 장애 구간이다. 그래서 commit은 실패 시 짧은 간격으로
-//     즉시 재시도해 이 창을 최대한 좁힌다(아래 COMMIT_RETRY_* 상수 참고). 재시도까지
-//     모두 실패하거나 프로세스 자체가 죽으면, 다음 사이클(또는 운영자가 재기동한
-//     데몬)이 같은 expectedRoot로 prepare를 재계산해 commit을 마저 진행한다(IdP가
-//     게시된 상태만 서빙하므로 재계산 결과는 같고, push도 같은 root 재게시라
-//     해롭지 않다).
+// 중단 지점(프로세스 kill, SIGINT 등)은 이제 **둘 다 안전하다.**
+//   - prepare 이후 commit 이전에 중단 -> IdP·온체인 둘 다 아무 변화 없음. 다음 사이클이
+//     처음부터 다시 prepare한다.
+//   - commit 이후 push 이전에 중단 -> IdP가 앞서고 체인이 뒤처진다. 체인의 latestRoot는
+//     아직 옛 root라, 그 root에 대한 witness를 이미 들고 있는 지갑은 그대로 동작한다.
+//     새로 조회하는 지갑은 아직 게시되지 않은 root로 증명을 만들어 막히지만, 다음
+//     사이클의 push가 같은 root를 올려 자동으로 수습된다. 유예 창이 인플라이트를 K블록
+//     더 보호한다.
+//
+// v2 시절에는 후자가 push 후 commit 실패였고, 체인이 앞서 있어 그 사이 만들어지는 모든
+// witness가 어긋나는 **전면 장애 구간**이었다. 순서를 뒤집으면서 그 구간이 사라졌다.
+// commit 재시도(COMMIT_RETRY_*)는 그 창을 좁히려던 장치였는데, 이제는 회차를 흘려보내지
+// 않으려는 용도로만 남는다.
+
 // 정상 종료(SIGINT/SIGTERM) 처리는 진행 중인 사이클이 위 커밋 재시도까지 포함해
 // 자연스럽게 끝나도록 기다렸다가 다음 사이클을 시작하지 않는 것으로 이뤄진다 —
 // 재시도 도중 종료 신호를 받아도 이번 사이클 자체를 강제로 끊지는 않는다(그러면
 // 전면 장애 구간을 연 채로 프로세스가 끝나 버린다).
 async function runOneCycle(ctx) {
-  const { idpBaseUrl, adminSecret, registry, hre: hreRef } = ctx;
+  const { idpBaseUrl, adminSecret, registry } = ctx;
 
-  // 1) prepare — 다음 게시 후보 root를 계산만 한다. IdP 게시 상태는 그대로다.
+  // 1) prepare — 이번 회차에 반영할 집합을 동결하고 회차 토큰을 받는다. IdP 게시 상태는
+  //    그대로다. v2 시절과 달리 여기서 root를 예측하지 않는다(설계 문서 13.1절).
   const prepared = await callIdPAdmin(idpBaseUrl, adminSecret, "/idp/publish/prepare");
-  const expectedRoot = prepared.expectedRoot;
-  if (expectedRoot === undefined || expectedRoot === null) {
-    throw new Error(`/idp/publish/prepare 응답에 expectedRoot가 없습니다 (${idpBaseUrl})`);
+  const roundToken = prepared.roundToken;
+  if (!roundToken) {
+    throw new Error(`/idp/publish/prepare 응답에 roundToken이 없습니다 (${idpBaseUrl})`);
   }
   console.log(
-    `1/3 prepare: added=${prepared.added}, removed=${prepared.removed}, ` +
+    `1/3 prepare: added=${prepared.added}, expiredPublished=${prepared.expiredPublished}, ` +
     `leaves=${prepared.leafCount}, pending=${prepared.pendingCount}`
   );
   console.log(`    currentRoot=${prepared.currentRoot}`);
-  console.log(`    expectedRoot=${expectedRoot}`);
 
-  // ── v3(이중 트리) ──────────────────────────────────────────────────────
-  // 게시 대상이 prepare가 계산한 v2 root가 아니라 두 층의 상위 root를 합친 topRoot이고,
-  // 그 값은 v3 포레스트가 전진하는 **commit 뒤에야** 정해진다. 그래서 순서가
-  // prepare -> commit -> push가 된다(v2는 prepare -> push -> commit).
+  // 2) commit — IdP 포레스트를 전진시킨다. 게시할 root는 여기서 정해진다.
   //
-  // 순서가 뒤집혀도 안전 방향은 오히려 낫다.
-  //   v2에서 push 후 commit 실패 = 체인이 앞서고 IdP가 뒤처짐 -> 그 사이 만들어지는
-  //     모든 witness가 어긋나 **전원**이 막힌다(전면 장애).
-  //   v3에서 commit 후 push 실패 = IdP가 앞서고 체인이 뒤처짐 -> 캐시가 유효한 지갑은
-  //     옛 topRoot로 계속 동작하고(체인의 latestRoot가 아직 그 값이다), 새로 조회하는
-  //     지갑만 "아직 게시되지 않음"이라는 명확한 에러를 받는다. 게다가 유예 창이
-  //     인플라이트를 K블록 더 보호한다.
-  if (TREE_VERSION === "v3") {
-    let committedV3;
-    let commitErrV3 = null;
-    for (let attempt = 0; attempt <= COMMIT_RETRY_ATTEMPTS; attempt++) {
-      try {
-        committedV3 = await callIdPAdmin(idpBaseUrl, adminSecret, "/idp/publish/commit", {
-          root: String(expectedRoot),
-        });
-        commitErrV3 = null;
-        break;
-      } catch (err) {
-        commitErrV3 = err;
-        if (attempt < COMMIT_RETRY_ATTEMPTS) {
-          console.error(`[sweep] commit 실패 (시도 ${attempt + 1}/${COMMIT_RETRY_ATTEMPTS + 1}): ${err.message}`);
-          await sleepInterruptible(COMMIT_RETRY_DELAY_MS, () => false);
-        }
-      }
-    }
-    if (commitErrV3) throw commitErrV3;
-    console.log(
-      `2/3 commit: leaves=${committedV3.leafCount}, pending=${committedV3.pendingCount}`
-    );
-    if (committedV3.persistenceWarning) {
-      console.error(
-        "\n" + "!".repeat(70) + "\n" +
-        `[sweep] 경고: commit은 성공했지만 IdP가 상태를 저장하지 못했습니다.\n` +
-        `        ${committedV3.persistenceWarning}\n` +
-        "!".repeat(70) + "\n"
-      );
-      const err = new Error(`commit succeeded but the IdP could not persist its state: ${committedV3.persistenceWarning}`);
-      err.persistenceWarning = true;
-      throw err;
-    }
-
-    const topRoot = await fetchIdPTopRootV3(idpBaseUrl);
-    // 같은 값이면 게시하지 않는다. heartbeat는 latestRoot를 바꾸지 않아 무의미하고,
-    // 매 주기 트랜잭션을 하나씩 태울 이유가 없다(v2에서는 굳이 막지 않았지만, 게시
-    // 주기를 짧게 가져가는 v3에서는 그 비용이 실제로 쌓인다).
-    const current = await registry.latestRoot();
-    if (String(current).toLowerCase() === topRoot.toLowerCase()) {
-      console.log(`3/3 pushRoot: skip — latestRoot가 이미 ${topRoot} (heartbeat 불필요)`);
-      return;
-    }
-    const txV3 = await registry.pushRoot(topRoot);
-    const rcV3 = await txV3.wait();
-    console.log(`3/3 pushRoot: ${topRoot} (block ${rcV3.blockNumber}, tx ${rcV3.hash})`);
-    console.log("Published v3 top root:", topRoot);
-    return;
-  }
-
-  // ── v2(현행) ───────────────────────────────────────────────────────────
-  // 2) pushRoot — 온체인에 게시하고 영수증까지 기다린다.
-  const rootHex = rootToBytes32(hreRef, String(expectedRoot));
-
-  // push_revocation_root.cjs와 동일하게 중복 게시 가드는 두지 않는다. grace window가
-  // 없어진 뒤로 같은 root 재게시는 heartbeat로서의 의미조차 없지만(latestRoot 값이
-  // 안 바뀌니 무효화도 없음), 데몬이 매 주기 같은 root를 밀어도 해롭지 않으므로 굳이
-  // 막지 않는다.
-  const tx = await registry.pushRoot(rootHex);
-  const receipt = await tx.wait();
-  console.log(`2/3 pushRoot: ${rootHex} (block ${receipt.blockNumber}, tx ${receipt.hash})`);
-
-  // 3) commit — push가 확정된 뒤에만 IdP를 전진시킨다.
-  //
-  // 여기서부터 commit이 성공할 때까지는 전면 장애 구간이다(파일 상단 주석 참고):
-  // 체인의 latestRoot는 이미 새 root인데 IdP는 옛 리프 집합을 서빙 중이라, 그 사이
-  // 만들어지는 모든 witness의 root가 latestRoot와 어긋나 전원이 StaleRevocationRoot로
-  // 막힌다. 그래서 commit 실패는 다음 사이클까지 기다리지 않고 짧은 간격으로 즉시
-  // 재시도해 이 창을 좁힌다.
+  // 실패 시 짧은 간격으로 재시도한다. v2 시절 이 재시도는 **전면 장애 구간을 좁히려는**
+  // 것이었다(push가 먼저라 체인이 앞서 있었다). v3에서는 아직 push 전이라 실패해도
+  // 체인·IdP 둘 다 그대로이므로 장애 구간이 아니다 — 그래도 회차를 흘려보내지 않으려고
+  // 재시도는 유지한다.
   let committed;
   let commitErr = null;
   for (let attempt = 0; attempt <= COMMIT_RETRY_ATTEMPTS; attempt++) {
     try {
-      committed = await callIdPAdmin(idpBaseUrl, adminSecret, "/idp/publish/commit", {
-        root: String(expectedRoot),
-      });
+      committed = await callIdPAdmin(idpBaseUrl, adminSecret, "/idp/publish/commit", { roundToken });
       commitErr = null;
       break;
     } catch (err) {
       commitErr = err;
       if (attempt < COMMIT_RETRY_ATTEMPTS) {
-        console.error(
-          `[sweep] commit 실패 (시도 ${attempt + 1}/${COMMIT_RETRY_ATTEMPTS + 1}): ${err.message}. ` +
-          `${COMMIT_RETRY_DELAY_MS}ms 후 재시도합니다 (체인은 이미 새 root로 전진했고 grace window가 ` +
-          `없어, 이 창이 열려 있는 동안 정상 사용자의 트랜잭션까지 막힙니다).`
-        );
+        console.error(`[sweep] commit 실패 (시도 ${attempt + 1}/${COMMIT_RETRY_ATTEMPTS + 1}): ${err.message}`);
         await sleepInterruptible(COMMIT_RETRY_DELAY_MS, () => false);
       }
     }
   }
-  if (commitErr) {
-    console.error(
-      "\n" + "!".repeat(70) + "\n" +
-      `[sweep] 경고: pushRoot(${rootHex})는 성공했지만 commit이 ${COMMIT_RETRY_ATTEMPTS + 1}번 시도 ` +
-      "모두 실패했습니다. 체인의 latestRoot는 이미 전진했는데 IdP는 옛 리프 집합을 서빙 중이라, " +
-      "이 상태가 이어지는 동안 폐기와 무관한 사용자를 포함해 전원의 /submitTransaction이 " +
-      "StaleRevocationRoot로 막힙니다. 운영자 확인이 필요합니다.\n" +
-      "!".repeat(70) + "\n"
-    );
-    throw commitErr;
-  }
+  if (commitErr) throw commitErr;
   console.log(
-    `3/3 commit: published root=${committed.root}, leaves=${committed.leafCount}, ` +
-    `pending=${committed.pendingCount}`
+    `2/3 commit: root=${committed.root}, leaves=${committed.leafCount}, pending=${committed.pendingCount}`
   );
 
-  // commit은 상태 저장에 실패해도 200을 돌려주고 persistenceWarning을 싣는다(트리 전진은
-  // append-only라 되돌릴 수 없고 재시도도 불가능하므로 5xx를 낼 수 없다 — custom_idp.js
-  // 참고). 그걸 읽지 않으면 저장 실패가 "3/3 commit 성공"으로 보고되고 연속 실패
-  // 카운터까지 리셋돼, IdP가 재시작하는 순간 전원이 StaleRevocationRoot로 막힌다.
+  // commit은 상태 저장에 실패해도 200을 돌려주고 persistenceWarning을 싣는다(포레스트
+  // 전진은 이미 끝났고 preparedPublish도 비워져 재시도가 불가능하므로 5xx를 낼 수 없다 —
+  // custom_idp.js 참고). 그때는 **push하지 않고 중단한다.** 저장되지 않은 root를 온체인에
+  // 올리면 IdP 재시작 후 옛 root를 서빙해 전원이 StaleRevocationRoot로 막힌다.
   if (committed.persistenceWarning) {
     console.error(
       "\n" + "!".repeat(70) + "\n" +
       `[sweep] 경고: commit은 성공했지만 IdP가 상태를 저장하지 못했습니다.\n` +
       `        ${committed.persistenceWarning}\n` +
-      "        지금은 정상 동작하지만 IdP를 재시작하면 커밋 이전 root를 서빙하게 되고, " +
-      "체인에는 새 root가 있으므로 전원의 트랜잭션이 막힙니다. 상태 파일을 복구하기 전에는 " +
-      "IdP를 재시작하지 마십시오.\n" +
+      "        이 root를 push하지 않고 중단합니다. 상태 파일을 복구하기 전에는 IdP를 " +
+      "재시작하지 마십시오.\n" +
       "!".repeat(70) + "\n"
     );
     const err = new Error(`commit succeeded but the IdP could not persist its state: ${committed.persistenceWarning}`);
@@ -222,13 +127,30 @@ async function runOneCycle(ctx) {
     throw err;
   }
 
-  if (String(committed.root) !== String(expectedRoot)) {
+  // 3) pushRoot — commit이 확정한 root를 온체인에 올린다.
+  //
+  // 커밋이 돌려준 root와 IdP가 서빙하는 topRoot가 같은지 대조한다. 다르면 그 사이에
+  // 폐기 상태를 바꾼 다른 경로가 있었다는 뜻이고, 어긋난 root를 올리면 지갑이 만드는
+  // witness와 체인이 어긋난다.
+  const topRoot = await fetchIdPTopRootV3(idpBaseUrl);
+  if (String(committed.root).toLowerCase() !== topRoot.toLowerCase()) {
     throw new Error(
-      `commit이 반영한 root(${committed.root})가 게시한 root(${expectedRoot})와 다릅니다. ` +
-      `IdP 상태와 온체인 root가 어긋났습니다.`
+      `commit이 돌려준 root(${committed.root})와 IdP가 서빙하는 topRoot(${topRoot})가 다릅니다. ` +
+      `그 사이 폐기 상태를 바꾼 다른 경로가 있었습니다 — 게시를 중단합니다.`
     );
   }
-  console.log("Published revocation root:", rootHex);
+
+  // 같은 값이면 게시하지 않는다. heartbeat는 latestRoot를 바꾸지 않아 무의미하고,
+  // 매 주기 트랜잭션을 하나씩 태울 이유가 없다.
+  const current = await registry.latestRoot();
+  if (String(current).toLowerCase() === topRoot.toLowerCase()) {
+    console.log(`3/3 pushRoot: skip — latestRoot가 이미 ${topRoot} (heartbeat 불필요)`);
+    return;
+  }
+  const tx = await registry.pushRoot(topRoot);
+  const rc = await tx.wait();
+  console.log(`3/3 pushRoot: ${topRoot} (block ${rc.blockNumber}, tx ${rc.hash})`);
+  console.log("Published revocation root:", topRoot);
 }
 
 // grace window와 K개 순환 버퍼가 사라지면서, "간격이 만료 상한에 비해 안전한가"라는
@@ -349,11 +271,11 @@ async function main() {
   const idpSigner = await getIdPSigner(hre);
   // v3에서는 레지스트리 컨트랙트가 다르다(유예 창 + isAcceptableRoot).
   const registry = await hre.ethers.getContractAt(
-    TREE_VERSION === "v3" ? "RevocationRegistryV3" : "RevocationRegistry",
+    "RevocationRegistryV3",
     registryAddress,
     idpSigner,
   );
-  console.log(`[sweep] 폐기 트리 버전: ${TREE_VERSION}`);
+
   const ctx = { idpBaseUrl, adminSecret, registry, hre };
 
   // REVOCATION_SWEEP_INTERVAL_SECONDS가 없으면 기존과 동일하게 1회만 실행하고 끝난다

@@ -12,10 +12,7 @@ import { fileURLToPath } from 'url';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import { recoverAddress, keccak256, AbiCoder } from 'ethers';
 import { leafValue, TAG_SESSION, TAG_ACCOUNT } from './lib/imt.js';
-// 정석 IMT(v2) — 이번 단계(Stage A)에서 v1과 **나란히** 유지한다. 회로는 아직 v1 리프
-// 해시를 쓰므로 v2는 어떤 소비자에게도 서빙되는 witness의 근거가 아니다. Stage B에서
-// 회로/zkey가 준비되면 v1을 걷어내고 v2로 스위치한다(docs/.../proper-imt-design.md 6절).
-import { createIMTv2, buildIMTv2 } from './lib/imt_v2.js';
+
 import { createIdPRevocationV3, LAYER_SESSION, LAYER_ACCOUNT } from './lib/idp_revocation_v3.js';
 import { SESSION_SHARD_COUNT, ACCOUNT_SHARD_COUNT } from './lib/imt_v3.js';
 
@@ -34,17 +31,16 @@ const vkeyAridI = JSON.parse(fs.readFileSync('build/mode2/pi_arid_i_vkey.json', 
 // (issuanceLog/auidILog/users[*].lastAuid도 함께 — 파일 하단의 영속화 절 참고).
 //
 // == 게시된 상태와 대기 상태의 분리 (배칭) ==
-// 정석 IMT(v2, revocationTreeV2)가 '마지막으로 온체인에 게시된' 폐기 상태의 유일한
-// 진실이다(Stage B에서 v1을 제거했다). /idp/revocation_state_v2가 이것만 서빙한다.
-// 폐기 요청은 즉시 트리에 들어가지 않고 pendingAdds에 쌓였다가 /idp/publish/prepare +
-// /idp/publish/commit 때 한꺼번에 반영된다.
+// v3 이중 트리(revocationV3)가 '마지막으로 온체인에 게시된' 폐기 상태의 유일한 진실이다
+// (13.1절에서 v2를 걷어냈다). /idp/revocation_state_v3가 이것만 서빙한다. 폐기 요청은 즉시
+// 트리에 들어가지 않고 pendingAdds에 쌓였다가 /idp/publish/prepare + /idp/publish/commit
+// 때 한꺼번에 반영된다.
 //
-// 왜 즉시 반영하면 안 되는가: 지갑은 /idp/revocation_state_v2로 트리를 재구성해
-// witness를 만드는데, 그 root가 RevocationRegistry에 게시돼 있지 않으면 온체인
+// 왜 즉시 반영하면 안 되는가: 지갑은 /idp/revocation_state_v3로 자기 샤드를 재구성해
+// witness를 만드는데, 그 root가 RevocationRegistryV3에 게시돼 있지 않으면 온체인
 // execute()가 StaleRevocationRoot로 revert한다. 폐기 즉시 IdP 상태만 전진하면
 // 게시 전까지 '정상 사용자 전원'이 막힌다. 게시될 때까지 옛(=게시된) 상태를 계속
 // 서빙하면 그 장애 창이 사라지고, 폐기 효력 지연은 게시 주기만큼으로 유계가 된다.
-const REVOCATION_TREE_DEPTH = 20;
 // 접수됐지만 아직 게시되지 않은 폐기 리프(leaf 문자열).
 const pendingAdds = new Set();
 // prepare가 계산해 둔 다음 게시 후보. commit이 재계산 없이 그대로 소비한다.
@@ -55,144 +51,43 @@ const pendingAdds = new Set();
 // 되살려서 옛 후보를 commit하는 것보다, 운영자가 prepare를 다시 불러 현재 상태로부터
 // 후보를 새로 계산하게 하는 편이 안전하다(재시작 후 commit은 409를 받는다).
 let preparedPublish = null;
-// 리프별 만료 블록. lib/imt_v2.js는 트리만 알아야 하므로, 만료 메타데이터(leaf 문자열 ->
+// 리프별 만료 블록. lib/imt_v3.js는 트리만 알아야 하므로, 만료 메타데이터(leaf 문자열 ->
 // expiryBlock BigInt)는 게시 상태와 나란히 IdP가 따로 관리한다. 게시분과 대기분을
-// 함께 담는다. append-only인 v2는 만료 리프를 즉시 뺄 수 없으므로(설계 문서 3.2절),
-// 만료 회수는 재기준화(rebaselineV2)가 살아있는 집합으로 트리를 새로 쌓을 때만 일어난다.
+// 함께 담는다.
 const leafExpiry = new Map();
 
 // ============================================================================
-// 정석 IMT(v2) — 접수·중복제거·게시 합의의 기준 (온체인 root는 이제 v3다)
+// 폐기 상태 — v3(이중 트리)가 유일한 진실이다
 //
-// 2026-09-06 전환 이후 **온체인에 게시되는 root는 v3의 combinedRoot**이고, 지갑도 v3만
-// 본다. 그런데 v2를 걷어내지 않은 이유가 있다: 대기열 중복제거(prepare의 !v2Has), 게시된
-// 집합의 출처(publishedLeaves), prepare/commit의 root 합의가 모두 아직 v2 위에 있다.
-// 즉 v2는 죽은 코드가 아니라 **게시 프로토콜의 뼈대**다. v3로 옮기는 것은 별도 단계다
-// (설계 문서 13절).
+// 2026-09-07에 v2를 게시 프로토콜에서 완전히 떼어냈다(설계 문서 13.1절). 그전까지 v2는
+// 죽은 코드가 아니라 뼈대였다: 대기열 중복제거, 게시된 집합의 출처, prepare/commit의 root
+// 합의가 전부 v2 위에 있었다. 셋을 **한 번에** 옮겼다 — 나눠서 옮기면 v2가 "먹이를 못 받는
+// 거울"이 되어 재폐기된 리프가 영영 들어가지 못한다(13.1절에 실측과 함께 기록해 뒀다).
+//
+// 함께 사라진 것과 그 이유:
+//   - epoch/seq/변경 로그(증분 동기화) — v3에서는 지갑이 자기 샤드 하나(최대 256~1,024
+//     리프)만 받으므로 캐시도 증분도 필요 없다. 캐시가 없으면 캐시 일관성 결함도 없다.
+//   - 용량 임계치와 강제 재기준화(80%/95%/하드 리밋) — v3에는 전역 용량이 없다. 세션 층은
+//     만료 축이 샤드 인덱스에 들어 있어 회수가 샤드 리셋 한 번이고(설계 문서 3.2절),
+//     계정 층은 샤드 단위 재기준화로 회수한다. 전 지갑 재다운로드를 부르는 전역
+//     재기준화라는 조작 자체가 없어졌다.
+//   - /idp/revocation_state_v2, /idp/rebaseline_v2, /idp/v3/rebuild_from_v2 —
+//     마지막 것은 v2를 원본 삼아 v3를 되찾는 장치였으므로 원본과 함께 사라진다.
+//   - prepare의 root 예측 — v3 게시 순서는 prepare -> commit -> push라 게시할 root는
+//     commit이 전진한 **뒤에야** 정해진다. 회차 합의는 root 대신 회차 토큰으로 한다.
+//
+// lib/imt_v2.js 자체는 남긴다. 논문이 인용하는 "깊이 20 트리 32,000리프 재구성 24.75초"의
+// 기준선이고 scripts/bench_imt_v2_wallet.mjs가 그것을 잰다 — 운영 경로가 아니라 측정 대상이다.
 // ============================================================================
-// Stage B에서 회로(circuits/pi_pk_i.circom)가 v2 리프 해시로 전환되고 v1이 제거됐다.
-// 지갑은 /idp/revocation_state_v2로 이 트리를 재구성해 비멤버십 witness를 만들고,
-// 온체인 RevocationRegistry에 게시되는 root도 이 트리의 root다.
-//
-// v2는 append-only라 remove()가 없다(설계 문서 3.2절: 언링크는 건전하지 않다).
-// 그래서 만료로 v1에서 빠지는 리프는 v2에서 즉시 제거되지 못하고, 재기준화
-// (rebaselineV2, 설계 문서 3.3절)가 그 자리를 대신해 살아있는 집합만으로 트리를
-// 새로 쌓아 슬롯을 회수한다.
-let revocationTreeV2 = await createIMTv2(REVOCATION_TREE_DEPTH);
-// v3(이중 트리) 폐기 상태. v2와 **나란히** 유지된다 — 접수/게시 시점에 같은 리프를
-// 받아 샤드 포레스트에도 반영하고, 조회는 별도 엔드포인트로 서빙한다. 온체인에 게시되는
-// root는 아직 v2 것이며, 전환은 zkey 재생성·재배포(E단계)와 함께 한다.
-// 설계: docs/superpowers/specs/2026-09-05-revocation-dual-tree-design.md
 let revocationV3 = await createIdPRevocationV3();
-// epoch: 재기준화가 일어날 때만 증가한다. 지갑은 자기 epoch와 다르면 증분이 아니라
-// 전체를 다시 받아야 한다는 것을 이걸로 안다(설계 문서 3.3절).
-let epochV2 = 0;
-// seq: 리프 쓰기 한 건마다 1씩 오르는 단조 증가 커서. 삽입 1건 = 쓰기 2건(low 갱신 +
-// append)이라 seq는 삽입당 2씩 는다(설계 문서 3.4절 — 커서는 인덱스가 아니라 seq여야
-// 한다: 새 리프의 물리 인덱스는 큰 값이지만 함께 갱신되는 low 리프의 인덱스는 훨씬
-// 작을 수 있어, "인덱스 k 이후" 요청으로는 이미 받은 구간의 갱신을 놓친다).
-let seqV2 = 0;
-// 변경 로그: [{ seq, index, leaf: { value, nextIndex, nextValue } }] (seq 오름차순).
-// 지갑이 since=<seq>로 증분 동기화하는 근거다.
-let mutationLogV2 = [];
-// 로그 절단 상한. epoch 안에서 삽입 2배로 자라므로(깊이 20 = 최악 2,097,152항목)
-// 무한히 들 수 없다.
+
+// 현재 게시된 폐기 리프(leaf 문자열) 집합 = v3 두 층의 합집합.
 //
-// 기본값 100,000의 근거(2026-09-03 실측, node v22): 항목 하나가 약 322바이트로
-// 선형이다(10,000개 3.1MB / 50,000개 15.3MB / 100,000개 30.7MB). 즉 기본값은 약 31MB고,
-// 상한이 없으면 최악 약 668MB다. 삽입 1건이 항목 2건이므로 100,000은 **최근 삽입
-// 50,000건**의 이력을 서빙한다 — 그보다 더 뒤처진 지갑만 tooOld로 전체 재조회를 한다.
-// 절단이 조용히 부분 결과를 주면 지갑 트리가 root와 어긋나므로, 그 경로는
-// tests/test_idp_publish_behavior.mjs가 실제로 절단시켜 검증한다.
-//
-// 테스트가 절단 경로를 강제할 수 있도록 환경변수로 덮을 수 있게 둔다.
-const MUTATION_LOG_MAX = Number(process.env.IDP_MUTATION_LOG_MAX) || 100_000;
-// 슬롯 사용률 임계치(설계 문서 3.3절). 80%에서 경고, 95%에서 재기준화를 강제한다.
-// 운영 정책이라 환경변수로 조정할 수 있게 둔다(테스트도 이 값을 낮춰 소진 경로를
-// 실제로 돌린다 — 깊이 20의 95%는 99만 리프라 테스트로 도달할 수 없다).
-const V2_REBASELINE_WARN_RATIO = Number(process.env.IDP_REBASELINE_WARN_RATIO) || 0.8;
-const V2_REBASELINE_FORCE_RATIO = Number(process.env.IDP_REBASELINE_FORCE_RATIO) || 0.95;
-// 실제 한계(2^depth)에 이만큼 남으면, 회수량이 적어 평소라면 미뤘을 재기준화도 수행한다.
-// 이 탈출구가 없으면 만료분이 (1-WARN)×capacity에 못 미치는 동안 회수를 영영 못 하고
-// append만 하다가 트리가 꽉 차 insert()가 던진다(= 폐기 게시 정지). 그 지점에서는 전
-// 지갑 재다운로드가 게시 정지보다 낫다.
-const V2_HARD_LIMIT_MARGIN = Number(process.env.IDP_HARD_LIMIT_MARGIN) || 1024;
-// value(BigInt) -> 물리 인덱스. 변경 로그 항목을 만들 때 갱신되는 low 리프의 물리
-// 인덱스가 필요한데, lib/imt_v2.js는 리프 튜플만 노출하고 물리 인덱스는 노출하지
-// 않는다. 이건 트리 밖 파생 인덱스라 해시 계산이 없다(설계 문서 6.2절과 같은 성격).
-let v2ValueToIndex = new Map([[0n, 0]]); // anchor(값 0)는 항상 물리 인덱스 0
-
-function v2LeafToStr(l) {
-  return {
-    value: l.value.toString(),
-    nextIndex: l.nextIndex.toString(),
-    nextValue: l.nextValue.toString(),
-  };
-}
-
-function v2Has(leafKey) {
-  return v2ValueToIndex.has(BigInt(leafKey));
-}
-
-// 현재 게시된 폐기 리프(leaf 문자열) 집합. v1의 revokedLeaves 배열을 대체한다 —
-// 접수·중복제거의 기준이 v2 트리이므로, 그 물리 리프에서 값만 뽑아(anchor 제외)
-// 파생한다. append-only라 아직 회수되지 않은 만료 리프도 포함할 수 있다.
+// 같은 이름이던 v2 판과 **집합이 다르다**: v2는 append-only라 만료 리프를 재기준화 전까지
+// 들고 있었고 v3는 만료를 실제로 회수한다. 전환 전 운영 IdP에서 한 회차 동안 병행 대조해
+// 차이가 전부 만료로 설명됨을 확인했다(설계 문서 13.1절: v2 9 / v3 1, 차이 8건 전부 만료).
 function publishedLeaves() {
-  return revocationTreeV2.getLeaves().slice(1).map((l) => l.value.toString());
-}
-
-// 게시된 리프 중 아직 만료되지 않은 것(재기준화의 살아있는 집합). 만료 정보가 없는
-// 리프는 fail-open을 피하려고 살아있는 것으로 남긴다(폐기 경로와 동일한 보수적 처리).
-function liveLeafValues(currentBlock) {
-  return publishedLeaves().filter((k) => {
-    const e = leafExpiry.get(k);
-    return e === undefined || e > currentBlock;
-  });
-}
-
-// v2ValueToIndex를 현재 트리의 물리 리프 배열로부터 다시 만든다. 로드/재기준화 후.
-function rebuildV2ValueToIndex() {
-  const m = new Map();
-  revocationTreeV2.getLeaves().forEach((l, i) => m.set(l.value, i));
-  v2ValueToIndex = m;
-}
-
-// v2 트리에 값 하나를 삽입하고 변경 로그 2건(append + low 갱신)을 남긴다. O(log n).
-// low 리프의 물리 인덱스는 트리 밖 파생 맵(v2ValueToIndex)에서, low의 옛 next
-// 필드는 삽입 직전 witness에서 얻는다 — 둘 다 lib/imt_v2.js가 검증한 값이라 여기서
-// 연결 리스트 로직을 다시 구현하지 않는다.
-async function v2InsertWithLog(leafKey) {
-  const v = BigInt(leafKey);
-  if (v2ValueToIndex.has(v)) return false; // 이미 폐기됨
-  // 삽입 직전 low 리프 정보(값/옛 nextIndex/옛 nextValue). v는 멤버가 아니므로 throw 안 함.
-  const w = await revocationTreeV2.getNonMembershipWitness(v);
-  const lowIdx = v2ValueToIndex.get(BigInt(w.lowValue));
-  const newIdx = revocationTreeV2.size(); // append 위치 = 삽입 전 리프 개수
-  await revocationTreeV2.insert(v);
-  v2ValueToIndex.set(v, newIdx);
-  // 새 리프 = (v, low의 옛 nextIndex, low의 옛 nextValue). low 리프 = (lowValue, newIdx, v).
-  const newLeaf = { value: v.toString(), nextIndex: w.lowNextIndex, nextValue: w.lowNextValue };
-  const lowLeaf = { value: w.lowValue, nextIndex: newIdx.toString(), nextValue: v.toString() };
-  // 새 리프를 먼저 기록한다(설계 문서 3.1절: 물리 배치 순서와 공유 조상 재계산 순서 일치).
-  mutationLogV2.push({ seq: ++seqV2, index: newIdx, leaf: newLeaf });
-  mutationLogV2.push({ seq: ++seqV2, index: lowIdx, leaf: lowLeaf });
-  if (mutationLogV2.length > MUTATION_LOG_MAX) {
-    // 오래된 항목부터 버린다. 뒤처진 지갑은 tooOld 응답을 받아 전체 재조회로 떨어진다.
-    mutationLogV2 = mutationLogV2.slice(-MUTATION_LOG_MAX);
-  }
-  return true;
-}
-
-// 재기준화(설계 문서 3.3절): 살아있는 값 집합만으로 v2 트리를 새로 쌓아 만료 슬롯을
-// 회수한다. append-only라 제거가 없으므로 회수는 오직 이 경로로만 일어난다. epoch를
-// 올려 지갑이 전체 재조회를 하도록 신호하고, 변경 로그를 비운다. tree.rebaseline()은
-// 입력을 정렬·중복제거해 쌓으므로 결과 root는 입력 순서와 무관하다.
-async function rebaselineV2(liveValues) {
-  revocationTreeV2 = await revocationTreeV2.rebaseline([...liveValues].map((x) => BigInt(x)));
-  rebuildV2ValueToIndex();
-  epochV2 += 1;
-  seqV2 = 0;
-  mutationLogV2 = [];
+  return [...revocationV3.publishedLeafSet()];
 }
 
 // custom_idp.js는 지금까지 체인 접근이 전혀 없었다. 만료 판정에 현재 블록이
@@ -601,14 +496,20 @@ const IDP_STATE_FILE = process.env.IDP_STATE_FILE
 // (기존 zkey·CREATE2 주소 무효화), 되돌림 안전성을 위해 버전 bump를 미룰 이유가 이제 없다.
 // v1/v2/v3 파일은 loadIdPState()가 v2 게시 집합으로 무손실 마이그레이션한다(아래 참고):
 // v2Leaves가 있으면(v3, Stage A) 그대로 쓰고, 없으면 revokedLeaves 값으로 v2를 초기화한다.
-const IDP_STATE_FILE_VERSION = 5;
+// v6(13.1절): v2 폐기 트리와 그 직렬화 필드(v2Leaves/publishedRootV2/epochV2/seqV2)를 제거하고
+// v3(이중 트리)를 게시 상태의 **유일한** 진실로 승격했다. v4에 이어 두 번째 파괴적 변경이다.
+// v5 파일은 이미 v3 스냅샷을 담고 있어 무손실로 올라온다. v4 이하는 v3 스냅샷이 없고 리프
+// 해시에서 층(session/account)을 되돌릴 수 없어 **마이그레이션이 불가능하다** — 빈 트리로
+// 시작하면 온체인 root와 어긋나 폐기된 사용자가 아니라 전원의 트랜잭션이 막히므로, 조용히
+// 시작하지 않고 거부한다.
+const IDP_STATE_FILE_VERSION = 6;
 const LEGACY_AUID_ILOG_MAX_HEIGHT = '0';
 
 function stateFileError(detail) {
   return new Error(
     `[CustomIdP] IdP state file ${IDP_STATE_FILE} is unusable (${detail}). ` +
     'Refusing to start with a silently wrong revocation state: if the published root does not ' +
-    'match what wallets rebuild from /idp/revocation_state_v2, every wallet transaction fails. ' +
+    'match what wallets rebuild from /idp/revocation_state_v3, every wallet transaction fails. ' +
     'Inspect the file to recover it. Do NOT delete it to "fix" this: the on-chain ' +
     'RevocationRegistry still holds the last root this IdP published, so starting from an empty ' +
     'tree makes the IdP serve a root that does not match it — every wallet\'s execute() then ' +
@@ -653,29 +554,14 @@ function serializeIdPState() {
     lastAuid: Object.fromEntries(Object.entries(users).map(([name, u]) => [name, u.lastAuid])),
     // disabled는 보안 상태라 반드시 영속화해야 한다 — 안 그러면 재시작마다 차단이 풀린다.
     disabled: Object.fromEntries(Object.entries(users).map(([name, u]) => [name, Boolean(u.disabled)])),
-    // === v2(정석 IMT) — 접수·중복제거·게시 합의의 기준 (온체인 root는 v3다) ===
-    epochV2,
-    seqV2,
-    // 로드 시 재구성한 v2 트리의 root가 저장 시점과 같은지 대조하는 무결성 기준값.
-    publishedRootV2: revocationTreeV2.getRoot().toString(),
-    // 물리 순서(삽입 순서) 리프 배열. anchor 포함. 정렬된 값 집합이 아니라 물리 배열로
-    // 저장해야 재구성 root가 같다(설계 문서 3.1절 — root는 삽입 순서에 의존한다).
-    v2Leaves: revocationTreeV2.getLeaves().map(v2LeafToStr),
-    // mutationLogV2는 **일부러 저장하지 않는다.**
+
+    // === v3(이중 트리) — 게시 상태의 유일한 진실 ===
+    // 샤드별 리프 배열은 물리 순서다(root가 삽입 순서에 의존한다).
     //
-    // 이 로그의 유일한 용도는 지갑의 v2 증분 동기화(since=<seq>)인데, v3 전환 이후
-    // 그 경로에는 운영 소비자가 없다(wallet_agent.js는 v3만 쓴다). 그런데 상한이
-    // 100,000항목 = 약 31MB라, 저장하면 **로그인마다** 그만큼을 동기 fsync로 다시
-    // 쓰게 된다(saveIdPState는 /token과 verifyPiIAndIssueToken이 부른다). 상태 파일에서
-    // 압도적인 지배항이었다.
-    //
-    // 안 저장해도 정합성이 깨지지 않는다: 재시작 후 로그가 비면 oldestRetained가
-    // seqV2 + 1이 되어 since < seqV2인 요청은 전부 tooOld를 받고 전체 재조회로 떨어진다.
-    // 이미 구현돼 있고 테스트(test_imt_v2_wiring.js)가 고정하는 경로다.
-    //
-    // v2 증분 동기화에 다시 소비자가 생기면 이 결정을 되돌려야 한다.
-    // === v3(이중 트리) — 아직 게시의 진실은 아니지만, 전환 시점에 v2와 같은 폐기 집합을
-    // 담고 있어야 하므로 v2와 동일하게 영속화한다. 샤드별 리프 배열은 물리 순서다. ===
+    // v6에서 사라진 것: v2Leaves/publishedRootV2/epochV2/seqV2. 마지막 둘은 지갑의 v2 증분
+    // 동기화(since=<seq>)를 위한 것이었는데, v3에서는 지갑이 자기 샤드 하나만 통째로 받으므로
+    // 증분 프로토콜 자체가 없다. 변경 로그는 그전부터 저장하지 않았다 — 상한 100,000항목이
+    // 약 31MB고 saveIdPState가 **로그인마다** 불리므로 상태 파일의 압도적 지배항이었다.
     v3: revocationV3.serialize(),
   };
 }
@@ -718,30 +604,37 @@ async function loadIdPState() {
   //   v1 -> v2: auidILog 값 모양(문자열 uid -> { uid, maxHeight }).
   //   v2 -> v3: users.disabled 추가(누락 = false).
   //   v3 -> v4(Stage B): v1 폐기 트리(revocationTree/publishedRoot/revokedLeaves) 제거,
-  //             v2를 게시 상태의 유일한 진실로 승격. 게시된 폐기 집합의 출처는 v4/v3(Stage
-  //             A)에서는 물리 순서 리프 배열 v2Leaves이고, 그보다 옛 파일에서는 v1
-  //             revokedLeaves 값 배열이다(아래 v2 복원 절에서 둘 중 하나로 초기화).
-  // 완전히 낯선 버전은(마이그레이션 경로가 없으므로) 계속 명확히 거부한다.
+  //             v2를 게시 상태의 유일한 진실로 승격.
+  //   v4 -> v5: v3(이중 트리) 스냅샷 추가. v2와 나란히 저장했다.
+  //   v5 -> v6(13.1절): v2 트리와 그 필드(v2Leaves/publishedRootV2/epochV2/seqV2) 제거,
+  //             v3를 유일한 진실로 승격. v5 파일은 이미 v3 스냅샷을 담고 있어 무손실이다.
+  // **v4 이하는 마이그레이션 경로가 없다** — v3 스냅샷이 없고 리프 해시에서 층을 되돌릴
+  // 수 없어 게시 집합을 복원할 방법이 없다. 위에서 명확히 거부한다.
+  // 완전히 낯선 버전도(마이그레이션 경로가 없으므로) 계속 명확히 거부한다.
   const fileVersion = parsed?.version;
-  const isLegacyAuidILog = fileVersion === 1;
-  const hasDisabledField = fileVersion === 3 || fileVersion === 4;
-  const isV4OrLater = fileVersion >= 4;
-  if (![1, 2, 3, 4, 5].includes(fileVersion)) {
+  // v1 파일은 위에서 이미 거부된다(v3 스냅샷 없음). 남겨 두면 죽은 분기가 되므로 상수로 고정한다.
+  const isLegacyAuidILog = false;
+  // v3 파일에서 disabled가 생겼다. 이제 v5 이상만 읽으므로 항상 존재해야 한다.
+  const hasDisabledField = fileVersion >= 3;
+  if (![1, 2, 3, 4, 5, 6].includes(fileVersion)) {
     throw stateFileError('unsupported version');
+  }
+  // v5 미만은 v3(이중 트리) 스냅샷이 없다. 그 파일에서 v3를 복원할 방법이 없고(리프가
+  // Poseidon 해시라 층을 되돌릴 수 없다), v3가 이제 게시의 유일한 진실이므로 빈 상태로
+  // 시작하면 온체인 root와 어긋난다 — 폐기된 사용자가 아니라 **전원**이 막힌다.
+  if (fileVersion < 5) {
+    throw stateFileError(
+      `version ${fileVersion} predates the v3 dual-tree snapshot and cannot be migrated: the ` +
+      'published revocation set cannot be reconstructed from it (leaf hashes do not reveal the ' +
+      'session/account layer). Starting from an empty tree would break every wallet, not just ' +
+      'revoked ones. Restore a version 5 or later state file.',
+    );
   }
   if (!Array.isArray(parsed.pendingAdds)) throw stateFileError('pendingAdds must be an array');
   for (const key of ['leafExpiry', 'issuanceLog', 'auidILog', 'lastAuid']) {
     if (!isPlainObject(parsed[key])) throw stateFileError(`${key} must be an object`);
   }
   if (hasDisabledField && !isPlainObject(parsed.disabled)) throw stateFileError('disabled must be an object');
-
-  // v1 트리 재구성과 publishedRoot 대조는 제거했다(v2가 유일 진실). v4 이전 파일의
-  // revokedLeaves는 v2Leaves가 없을 때만 v2 초기화 씨앗으로 쓴다(아래 v2 복원 절).
-  let legacyLeaves = null;
-  if (!isV4OrLater) {
-    if (!Array.isArray(parsed.revokedLeaves)) throw stateFileError('revokedLeaves must be an array');
-    legacyLeaves = parsed.revokedLeaves.map((l, i) => assertDecimalString(l, `revokedLeaves[${i}]`));
-  }
 
   pendingAdds.clear();
   for (const [i, leafKey] of parsed.pendingAdds.entries()) {
@@ -804,76 +697,21 @@ async function loadIdPState() {
     }
   }
 
-  // === v2(정석 IMT) 복원 — 접수·중복제거의 기준이므로 여전히 필수다 ===
-  // v2Leaves가 있으면(v4, 또는 v3 Stage A) 저장된 물리 순서 리프로 재구성하고
-  // publishedRootV2로 무결성을 대조한다. 없으면(v1/v2/pre-Stage-A v3) legacy revokedLeaves
-  // 값으로 v2를 초기화한다 — 로그·epoch는 빈 값(0). 어느 경우든 게시된 폐기 집합은 그대로
-  // 보존된다(무손실 마이그레이션). 물리 순서로 저장/복원해야 재구성 root가 같다(3.1절).
-  if (Array.isArray(parsed.v2Leaves) && parsed.v2Leaves.length > 0) {
-    const v2Vals = parsed.v2Leaves
-      .slice(1) // [0]은 anchor (0,0,0) — buildIMTv2가 자동으로 만든다
-      .map((l, i) => BigInt(assertDecimalString(String(l.value), `v2Leaves[${i + 1}].value`)));
-    let t2;
-    try {
-      t2 = await buildIMTv2(REVOCATION_TREE_DEPTH, v2Vals);
-    } catch (err) {
-      throw stateFileError(`v2Leaves contains a value insert() rejects: ${err.message}`);
-    }
-    const rebuiltV2Root = t2.getRoot().toString();
-    if (typeof parsed.publishedRootV2 === 'string' && rebuiltV2Root !== parsed.publishedRootV2) {
-      throw stateFileError(
-        `rebuilt v2 root ${rebuiltV2Root} does not match the saved publishedRootV2 ${parsed.publishedRootV2}`,
-      );
-    }
-    revocationTreeV2 = t2;
-    epochV2 = Number.isInteger(parsed.epochV2) ? parsed.epochV2 : 0;
-    seqV2 = Number.isInteger(parsed.seqV2) ? parsed.seqV2 : 0;
-    // 위 serializeIdPState 주석 참조 — 더 이상 저장하지 않으므로 옛 파일에 남아
-    // 있더라도 무시하고 빈 로그로 시작한다(뒤처진 조회는 tooOld로 전체 재조회).
-    mutationLogV2 = [];
-    rebuildV2ValueToIndex();
-  } else if (legacyLeaves !== null) {
-    // v4 이전 파일에 v2 필드가 없다 — v1 게시 집합으로부터 무손실 초기화한다.
-    try {
-      revocationTreeV2 = await buildIMTv2(REVOCATION_TREE_DEPTH, legacyLeaves.map((x) => BigInt(x)));
-    } catch (err) {
-      throw stateFileError(`revokedLeaves contains a value insert() rejects: ${err.message}`);
-    }
-    epochV2 = 0;
-    seqV2 = 0;
-    mutationLogV2 = [];
-    rebuildV2ValueToIndex();
-  } else {
-    // v4 이상인데 v2Leaves가 없다 — 게시 상태의 유일한 출처가 없으므로 명확히 거부한다.
-    throw stateFileError('a version 4 or later state file must contain a non-empty v2Leaves array');
+  // === v3(이중 트리) 복원 — 게시 상태의 유일한 진실 ===
+  // v5부터 저장된다. 위에서 v5 미만을 이미 거부했으므로 여기서는 반드시 있어야 하고,
+  // 없으면 "게시된 폐기 집합의 출처가 없다"는 뜻이라 조용히 빈 상태로 시작하지 않는다.
+  if (!isPlainObject(parsed.v3)) {
+    throw stateFileError('a version 5 or later state file must contain a v3 snapshot');
+  }
+  try {
+    await revocationV3.restore(parsed.v3);
+  } catch (err) {
+    throw stateFileError(`v3 restore failed: ${err.message}`);
   }
 
-  // === v3(이중 트리) 복원 ===
-  // v5부터 저장된다. v4 이하 파일에는 층 정보(session/account)가 없고 리프는 Poseidon
-  // 해시라 되돌릴 수 없으므로, v3는 **빈 상태로 시작하고 backfill 플래그를 세운다.**
-  // v3는 아직 게시의 진실이 아니라 이 상태로도 운영에 지장이 없지만, 전환(E단계) 전에
-  // 운영자가 살아있는 폐기를 다시 접수해야 한다.
-  if (isPlainObject(parsed.v3)) {
-    try {
-      await revocationV3.restore(parsed.v3);
-    } catch (err) {
-      throw stateFileError(`v3 restore failed: ${err.message}`);
-    }
-  } else {
-    revocationV3.markNeedsBackfill();
-    if (publishedLeaves().length > 0) {
-      console.warn(
-        `[CustomIdP] 상태 파일 v${fileVersion}에는 v3(이중 트리) 스냅샷이 없다. v3는 빈 상태로 ` +
-          `시작한다 — 이미 게시된 폐기 ${publishedLeaves().length}건의 층(session/account)을 ` +
-          '리프 해시에서 되돌릴 수 없기 때문이다. 전환 전에 살아있는 폐기를 다시 접수하라(backfill).',
-      );
-    }
-  }
-
-  const publishedRootV2Now = revocationTreeV2.getRoot().toString();
   console.log(
     `[CustomIdP] Loaded state from ${IDP_STATE_FILE}: ${publishedLeaves().length} published leaves ` +
-    `(v2 root ${publishedRootV2Now}, epoch ${epochV2}, seq ${seqV2}), ${pendingAdds.size} pending, ` +
+    `(combined root ${revocationV3.combinedRoot()}), ${pendingAdds.size} pending, ` +
     `${issuanceLog.size} issuance records, ${usedNonces.size} nonces seeded for replay protection`,
   );
 
@@ -1441,7 +1279,6 @@ async function verifyPiIAndIssueToken({ username, zkpProof, zkpPublicSignals, bu
     throw err;
   }
 
-
   // rp_nonce is never sent to the IdP (it would let the IdP recover rid via
   // arid_i / rp_nonce). r_i (mode2SessionNonce) is NOT usable for replay
   // protection here: it is never checked against the pi_i proof's public
@@ -1686,14 +1523,14 @@ function requireIdPAuditor(req, res, next) {
 
 // 폐기 대상 등록. type='session'이면 r_token, 'account'면 auid를 값으로 받는다.
 // 어느 쪽이든 IdP가 이미 알고 있는 값이다(issuanceLog / user.lastAuid).
-// 폐기 트리를 바꾸는 관리자 경로(/idp/revoke, publish/prepare, publish/commit,
-// rebaseline_v2)를 한 줄로 세운다.
+// 폐기 상태를 바꾸는 관리자 경로(/idp/revoke, publish/prepare, publish/commit)를
+// 한 줄로 세운다.
 //
-// 왜 필요한가. commit 핸들러는 "prepare와 commit 사이에 v2를 바꾸는 경로는 없다(admin
-// 직렬)"를 전제로 적혀 있지만, express는 요청을 동시에 처리하고 이 경로들은 전부 RPC·
-// Poseidon await를 품고 있어 실제로는 인터리브된다. 특히 v2InsertWithLog는 새 물리
-// 인덱스를 await **전에** 읽으므로, 겹친 commit 두 건이 같은 인덱스를 보고 가짜 변경
-// 로그를 남길 수 있다 — 그 로그는 그대로 지갑에 서빙된다.
+// 왜 필요한가. commit 핸들러는 "prepare와 commit 사이에 폐기 상태를 바꾸는 경로는
+// 없다(admin 직렬)"를 전제로 적혀 있지만, express는 요청을 동시에 처리하고 이 경로들은
+// 전부 RPC·Poseidon await를 품고 있어 실제로는 인터리브된다. 겹친 commit 두 건이 같은
+// 서브트리를 동시에 전진시키면 회차가 뒤섞이고, 운영자가 push하는 root가 어느 회차의
+// 것인지 알 수 없게 된다.
 let adminMutationChain = Promise.resolve();
 function serializeAdminMutation(handler) {
   return (req, res, next) => {
@@ -1782,14 +1619,18 @@ app.post('/idp/revoke', requireIdPAdmin, serializeAdminMutation(async (req, res)
 
     // 게시 트리는 여기서 건드리지 않는다. 대기열에만 넣고, 실제 반영은
     // /idp/publish/prepare + /idp/publish/commit이 한다.
-    const alreadyPublished = v2Has(leafKey);
+    const alreadyPublished = await revocationV3.hasLeaf(leafKey);
     const alreadyPending = pendingAdds.has(leafKey);
-    // 게시돼 있어도 **이미 만료된** 리프면 대기열에 넣는다. 재기준화는 만료 리프를
-    // 회수하는데, prepare가 그 집합을 동결한 뒤 이 재폐기가 들어오면 commit이 리프를
-    // 지워 버려 방금 접수한 폐기가 흔적 없이 사라진다(만료 메타데이터 고아 정리까지
-    // 함께 지운다). 대기열에 있으면 그 회차에서 빠지더라도 다음 회차에 다시 들어간다.
-    // 트리에 그대로 남는 평범한 경우에는 prepare의 !v2Has 필터가 걸러 무해하고,
+    // 게시돼 있어도 **이미 만료된** 리프면 대기열에 넣는다. 만료 회수는 만료된 리프를
+    // 트리에서 빼는데, prepare가 회차를 동결한 뒤 이 재폐기가 들어오면 그 회차의 commit이
+    // 리프를 회수해 버려 방금 접수한 폐기가 흔적 없이 사라질 수 있다(만료 메타데이터 고아
+    // 정리까지 함께 지운다). 대기열에 있으면 그 회차에서 빠지더라도 다음 회차에 다시
+    // 들어간다. 트리에 그대로 남는 평범한 경우에는 prepare의 hasLeaf 필터가 걸러 무해하고,
     // commit의 대기열 정리가 '게시됨'으로 보고 지운다.
+    //
+    // 아래에서 leafExpiry와 v3의 accountExpiry를 **더 늦은 만료로 갱신**하므로, 실제로는
+    // 그 회차의 회수가 이 리프를 건드리지 않고 지나간다 — 리프가 트리에 그대로 남은 채
+    // 만료만 연장되는 것이 재폐기의 올바른 최종 상태다.
     const publishedButExpired = alreadyPublished && (() => {
       const e = leafExpiry.get(leafKey);
       return e !== undefined && e <= currentBlock;
@@ -1889,268 +1730,157 @@ app.post('/idp/publish/prepare', requireIdPAdmin, serializeAdminMutation(async (
     return e !== undefined && e <= currentBlock;
   };
 
-  // 새로 게시될 리프 = 대기 중이고 아직 v2에 없는 것. 결정적 순서(Set 삽입 순서)로
-  // 고정한다 — commit이 이 순서 그대로 append하고, 지금 예측하는 root와 정확히 일치해야
-  // 한다(설계 문서 3.1절: v2 root는 삽입 순서에 의존한다).
+  // 새로 게시될 리프 = 대기 중이고 아직 v3에 없는 것.
   //
   // **여기서 만료된 대기 리프를 거르지 않는다.** "이미 만료됐으니 슬롯만 먹는다"는
   // 최적화는 계정 폐기에서 건전하지 않다: 계정 폐기의 만료는 접수 시점 +
   // CREDENTIAL_LIFETIME_BLOCKS로 고정되고(세션과 달리 실제 크레덴셜의 max_height가 아니다),
   // 계정 폐기는 disabled를 세우지 않으므로 그 계정은 재로그인해 더 늦은 max_height를 가진
   // 크레덴셜을 받을 수 있다. 게시가 지연돼 접수 리프를 "만료"로 버리면 그 크레덴셜을 막을
-  // 것이 사라진다 — 폐기가 조용히 무효가 되는 방향의 실패다. 슬롯 낭비는 재기준화가
-  // 회수하므로, 회수 가능한 낭비와 놓친 폐기는 교환 대상이 아니다.
-  // (tests/test_idp_publish_behavior.mjs 케이스 3이 이 불변식을 고정한다.)
-  const addedValues = [...pendingAdds].filter((k) => !v2Has(k));
-  const publishedNow = publishedLeaves();
-  const currentV2Values = publishedNow.map((v) => BigInt(v));
+  // 것이 사라진다 — 폐기가 조용히 무효가 되는 방향의 실패다.
+  // (tests/test_idp_publish_behavior.mjs가 이 불변식을 고정한다.)
+  const addedValues = [];
+  for (const leafKey of pendingAdds) {
+    if (!(await revocationV3.hasLeaf(leafKey))) addedValues.push(leafKey);
+  }
 
-  // append-only인 v2는 만료 리프를 즉시 뺄 수 없다(설계 문서 3.2절) — 재기준화 때만
-  // 회수된다. 게시된 리프 중 만료된 개수 = 재기준화로 회수 가능한 슬롯 수다.
+  const publishedNow = publishedLeaves();
   const expiredCount = publishedNow.filter(isExpired).length;
 
-  // 슬롯 사용률을 보고 재기준화가 필요한지 판단한다(설계 문서 3.3절). 후보 리프를
-  // 넣으면 v2가 얼마나 찰지까지 반영해 미리 본다(append-only라 '추가분'만큼 는다).
-  const v2Usage = revocationTreeV2.usage();
-  const v2ProjectedUsed = v2Usage.used + addedValues.length;
-  const v2ProjectedRatio = v2ProjectedUsed / v2Usage.capacity;
-
-  // 재기준화 회차가 실제로 쌓을 집합. **접수된 폐기(addedValues)는 조건 없이 포함한다** —
-  // 만료로 걸러내면 게시가 늦어진 접수 폐기가 트리에 한 번도 못 들어가고 commit의 대기열
-  // 정리에서 사라진다(위에서 addedValues에 만료 필터를 두지 않은 것과 같은 이유다).
-  // 회수 대상은 **이미 게시된** 만료 리프뿐이다.
-  const retainedValues = currentV2Values.filter((v) => !isExpired(v.toString()));
-  const rebaselineValues = [...retainedValues, ...addedValues.map((v) => BigInt(v))];
-  // rebaseline()이 중복을 제거하므로(lib/imt_v2.js) 실제 결과 크기는 유니크 개수 + anchor다.
-  // 추정식으로 계산하면 회수량을 과소평가해 아래 판단이 어긋난다.
-  const projectedUsedAfterRebaseline = new Set(rebaselineValues.map((v) => v.toString())).size + 1;
-
-  // 임계치를 넘었을 때 재기준화할지 판단한다.
+  // === 회차 토큰 ===
   //
-  // 조건이 "만료 리프가 하나라도 있으면"이면 안 된다. 사용률이 임계치 근처인 정상 운영에서
-  // 사이클마다 하나씩 만료되면 매 게시가 재기준화가 되고, 그때마다 epoch가 올라 **모든
-  // 지갑이 전체 재다운로드**를 한다 — 회수량은 미미한데 증분 설계만 무력화된다.
-  // 재기준화는 전 지갑에 O(n) 비용을 물리는 조작이므로 **헤드룸을 실제로 되찾을 때만**
-  // 할 가치가 있다: 회수 후 사용률이 경고선 아래로 내려가야 한다. 그러면 다음 강제까지
-  // 최소 (FORCE-WARN)×capacity 만큼의 삽입 여유가 생겨 반복이 구조적으로 막힌다.
-  //
-  // 다만 그 조건만 두면 **회수를 영영 못 하는 경우**가 생긴다: 만료분이 (1-WARN)×capacity에
-  // 못 미치면 사용률이 아무리 높아도 재기준화하지 않고 append만 계속하다가 실제 한계에
-  // 부딪혀 insert()가 던진다. 그래서 한계 근처에서는 회수량이 적어도 재기준화한다 —
-  // 그 지점에서는 전 지갑 재다운로드가 게시 정지보다 낫다.
-  const overForceThreshold = v2ProjectedRatio >= V2_REBASELINE_FORCE_RATIO;
-  const nearHardLimit = v2ProjectedUsed >= v2Usage.capacity - V2_HARD_LIMIT_MARGIN;
-  const reclaims = projectedUsedAfterRebaseline < v2ProjectedUsed;
-  const restoresHeadroom = projectedUsedAfterRebaseline / v2Usage.capacity <= V2_REBASELINE_WARN_RATIO;
-  const forceRebaselineV2 = overForceThreshold && reclaims && (restoresHeadroom || nearHardLimit);
-
-  // 임계치를 넘었는데 재기준화로 회수할 수 없다면 용량이 실질적으로 소진된 것이다.
-  // 그렇다고 게시를 거부하지는 않는다 — 임계치는 위생 경고선이지 실제 한계(2^20)가
-  // 아니라 삽입은 여전히 가능하고, 거부하면 폐기 게시 자체가 멈춘다(sweep 데몬은
-  // prepare 실패에 사이클을 중단하므로 root 재게시까지 함께 멈춘다). 보안 조작을 용량
-  // 위생 때문에 막는 것은 교환이 맞지 않는다. 대신 응답과 로그로 크게 알린다.
-  // 진짜 한계에 닿으면 lib/imt_v2.js의 insert()가 던져 500으로 드러난다.
-  const capacityExhausted = overForceThreshold && !forceRebaselineV2;
-  if (capacityExhausted) {
-    console.warn(
-      `[IdP] publish/prepare: v2 슬롯 사용률 ${(v2ProjectedRatio * 100).toFixed(2)}% ` +
-        `(${v2ProjectedUsed}/${v2Usage.capacity}) — 재기준화로 회수 가능한 만료 리프 ${expiredCount}개로는 ` +
-        '경고선 아래로 내려가지 않는다. 게시는 계속하지만 깊이 상향 등 운영 조치가 필요하다.',
-    );
-  }
-
-  // 재기준화면 위에서 만든 집합(게시된 만료분만 제외, 접수 폐기는 전부 포함)으로 정렬
-  // 재구성하고, 아니면 현재 트리에 append. commit이 이걸 그대로 재현해야 하므로 여기서
-  // 계산한 root가 곧 온체인에 게시될 root다.
-  const liveValues = forceRebaselineV2 ? rebaselineValues : null;
-
-  let expectedRoot;
-  let expectedLeafCount;
-  try {
-    let sim;
-    if (forceRebaselineV2) {
-      // rebaselineV2가 하는 것과 동일: 살아있는 값을 정렬·중복제거해 새로 쌓는다.
-      sim = await (await createIMTv2(REVOCATION_TREE_DEPTH)).rebaseline(liveValues);
-    } else {
-      // 현재 물리 리프를 물리 순서로 재삽입하면 같은 트리가 나오고(지갑 전체 재구성이
-      // 의존하는 성질), 그 위에 addedValues를 순서대로 append한다 = commit의 결과.
-      sim = await buildIMTv2(REVOCATION_TREE_DEPTH, [...currentV2Values, ...addedValues.map((v) => BigInt(v))]);
-    }
-    expectedRoot = sim.getRoot().toString();
-    expectedLeafCount = sim.size() - 1; // anchor 제외
-  } catch (err) {
-    return res.status(500).json({ error: `failed to compute prepared root: ${err.message}` });
-  }
+  // v2 시절 이 자리에는 "다음 게시 root 예측"이 있었고 commit이 그 root 일치로 회차를
+  // 확정했다. v3에서는 그럴 수 없고 그럴 필요도 없다: 게시 순서가 prepare -> commit ->
+  // push라 게시할 root는 commit이 포레스트를 전진시킨 **뒤에야** 정해진다(설계 문서
+  // 13.1절). 회차 합의에 필요한 것은 "이 commit이 그 prepare의 것인가"뿐이므로 불투명한
+  // 토큰이면 충분하다 — 그리고 root를 미리 계산하지 않으므로 트리 전체를 시뮬레이션하던
+  // 비용도 사라진다.
+  const roundToken = randomBytes(16).toString('hex');
 
   // 여러 번 호출하면 마지막 것이 유효하다. prepare와 commit 사이에 들어온 폐기는
   // 이번 회차에 포함되지 않고 다음 회차로 넘어간다 — 의도된 동작이다.
   preparedPublish = {
-    root: expectedRoot,
+    roundToken,
     addedValues,
-    forceRebaselineV2,
-    liveValues: liveValues ? liveValues.map(String) : null,
     blockHeight: currentBlock,
   };
 
-  const currentRoot = revocationTreeV2.getRoot().toString();
+  const shardStats = revocationV3.usage();
   console.log(
-    `[IdP] publish/prepare at block ${currentBlock}: +${addedValues.length} (expired published ${expiredCount}), ` +
-      `leaves ${publishedNow.length} -> ${expectedLeafCount}, rebaseline=${forceRebaselineV2}, expectedRoot ${expectedRoot}`,
+    `[IdP] publish/prepare at block ${currentBlock}: +${addedValues.length} ` +
+      `(expired published ${expiredCount}), published ${publishedNow.length}, round ${roundToken}`,
   );
   // 추가가 0건이어도 200이다 — 그 경우가 heartbeat다(같은 root를 다시 게시하는 no-op).
   res.json({
-    expectedRoot,
-    currentRoot,
+    roundToken,
+    // 지금 게시돼 있는 root. 새 root는 commit이 돌려준다.
+    currentRoot: revocationV3.combinedRoot(),
     added: addedValues.length,
-    // 만료 리프는 재기준화 때만 실제로 빠진다. 재기준화 회차면 그만큼 줄고, 아니면 0.
-    // 중복 제거까지 반영한 실제 감소량이다(expiredCount는 회수 '가능' 개수라 다를 수 있다).
-    removed: forceRebaselineV2 ? v2ProjectedUsed - projectedUsedAfterRebaseline : 0,
-    // 게시된 리프 중 이미 만료된 개수 = 재기준화로 회수 가능한 슬롯 수.
-    // (예전 이름 expiredPending은 "대기 중 만료"로 읽혀 내용과 달랐다.)
+    // 게시된 리프 중 이미 만료된 개수 = 이번 commit이 회수할 수 있는 상한.
+    // 세션 층은 샤드 리셋으로, 계정 층은 샤드 재기준화로 회수한다(설계 문서 3.2절).
     expiredPublished: expiredCount,
-    leafCount: expectedLeafCount,
+    leafCount: publishedNow.length,
     pendingCount: pendingAdds.size,
     blockHeight: currentBlock.toString(),
-    // v2(정석 IMT) 슬롯 상태.
-    v2: {
-      epoch: epochV2,
-      used: v2Usage.used,
-      capacity: v2Usage.capacity,
-      projectedUsed: v2ProjectedUsed,
-      projectedRatio: v2ProjectedRatio,
-      rebaselineWarning: v2ProjectedRatio >= V2_REBASELINE_WARN_RATIO,
-      rebaselineForced: forceRebaselineV2,
-      // 임계치를 넘었는데 재기준화로 헤드룸을 되찾을 수 없는 상태. 게시는 계속되지만
-      // 운영 조치(깊이 상향 등)가 필요하다는 신호다.
-      capacityExhausted,
+    // v3 샤드 상태. v2의 전역 사용률(80%/95% 임계치)에 대응하는 값이 없다 — 샤드마다
+    // 독립적인 작은 트리라 전역 용량이라는 개념 자체가 없다.
+    v3: {
+      sessionActiveShards: shardStats.session.activeShards,
+      sessionMaxShardRatio: shardStats.session.maxShardRatio,
+      accountActiveShards: shardStats.account.activeShards,
+      accountMaxShardRatio: shardStats.account.maxShardRatio,
+      totalLeaves: shardStats.session.totalLeaves + shardStats.account.totalLeaves,
     },
   });
 }));
 
-// prepare가 계산한 root가 온체인에 실제로 게시된 뒤에만 호출돼야 한다.
+// prepare가 확정한 회차를 IdP 상태에 반영한다.
+//
+// v2 시절과 순서가 뒤집혔다. v2는 prepare -> push -> commit이었고(prepare가 root를 예측할
+// 수 있었으므로 그 root를 먼저 온체인에 올렸다), v3는 게시할 root가 commit 뒤에야 정해지므로
+// prepare -> commit -> push다. 그래서 이 응답의 root가 곧 운영자가 push할 값이다.
+//
+// 중단 지점의 성격도 뒤집혔다. v2에서 push 후 commit 실패는 "체인이 앞서고 IdP가 뒤처짐"
+// 이라 지갑이 받아가는 root가 온체인과 어긋나 전원이 막혔다. v3에서 commit 후 push 실패는
+// "IdP가 앞서고 체인이 뒤처짐"이라, 아직 게시되지 않은 root를 지갑이 받아 쓰다가 막힌다 —
+// 다음 사이클의 push가 같은 root를 올려 자동으로 수습된다. 더 나은 쪽이다.
 app.post('/idp/publish/commit', requireIdPAdmin, serializeAdminMutation(async (req, res) => {
-  const { root } = req.body ?? {};
-  if (root === undefined || root === null) {
-    return res.status(400).json({ error: 'root is required' });
+  const { roundToken } = req.body ?? {};
+  if (typeof roundToken !== 'string' || roundToken.length === 0) {
+    return res.status(400).json({ error: 'roundToken is required' });
   }
   if (preparedPublish === null) {
     return res.status(409).json({ error: 'no prepared publish; call POST /idp/publish/prepare first' });
   }
-  if (String(root).trim() !== preparedPublish.root) {
-    // 그 사이 상태가 바뀌었거나 다른 회차의 root다. 조용히 적용하면 게시된 온체인
-    // root와 IdP 상태가 어긋난다.
+  if (roundToken !== preparedPublish.roundToken) {
+    // 다른 회차의 토큰이다. 조용히 적용하면 운영자가 A 회차를 push했다고 믿는 동안
+    // B 회차가 반영된다.
     return res.status(409).json({
-      error: 'root does not match the prepared publish; re-run POST /idp/publish/prepare',
-      expectedRoot: preparedPublish.root,
+      error: 'roundToken does not match the prepared publish; re-run POST /idp/publish/prepare',
     });
   }
 
   const prepared = preparedPublish;
 
-  // === v2(정석 IMT)를 준비된 대로 전진 = prepare가 예측한 그 root ===
-  // append-only이므로 일반 게시는 addedValues를 순서대로 삽입하고(seq만 전진), 재기준화
-  // 회차면 살아있는 집합으로 새로 쌓아 만료 슬롯을 회수한다(epoch↑, 설계 문서 3.2/3.3절).
-  // prepare와 commit 사이에 v2를 바꾸는 경로는 없으므로(admin 직렬), 적용 결과 root는
-  // prepared.root와 일치한다 — 그 root가 이미 온체인에 push된 값이다.
-  let actualRoot;
+  // === 만료 회수 ===
+  //
+  // **삽입보다 먼저 한다.** 순서가 뒤바뀌면, 게시가 지연돼 명목 만료가 지나간 폐기가
+  // 트리에 들어가자마자 같은 회차에서 회수돼 사라진다 — 한 번도 효력을 갖지 못한다.
+  // 회수 대상은 "이번 회차 **이전에** 이미 게시돼 있던 리프 중 만료된 것"이고, 그것이
+  // 정확히 prepare가 expiredPublished로 센 집합이다. 먼저 회수하면 그 정의가 코드로
+  // 성립한다. (tests/test_idp_publish_behavior.mjs 케이스 3이 이 순서를 고정한다.)
+  //
+  // 세션 층은 만료 축이 샤드 인덱스에 들어 있어 샤드 통째 리셋이면 되고(설계 문서 3.2절),
+  // 계정 층은 값 기반 샤딩이라 샤드 단위 재기준화로 회수한다.
+  let resetShards = 0;
+  let acctReclaim = { leavesReclaimed: 0, shardsRebaselined: 0 };
   try {
-    if (prepared.forceRebaselineV2) {
-      await rebaselineV2(prepared.liveValues.map((v) => BigInt(v)));
-      console.log(`[IdP] publish/commit: v2 rebaselined, epoch -> ${epochV2}, ${prepared.liveValues.length} live leaves`);
-    } else {
-      let addedV2 = 0;
-      for (const leafKey of prepared.addedValues) {
-        if (!v2Has(leafKey)) {
-          await v2InsertWithLog(leafKey);
-          addedV2 += 1;
-        }
-      }
-      if (addedV2 > 0) {
-        console.log(`[IdP] publish/commit: v2 +${addedV2} leaf(s), seq -> ${seqV2}, epoch ${epochV2}`);
-      }
-    }
-    actualRoot = revocationTreeV2.getRoot().toString();
+    resetShards = revocationV3.resetExpiredSessionShards(prepared.blockHeight);
+    acctReclaim = await revocationV3.rebaselineExpiredAccountShards(prepared.blockHeight);
   } catch (err) {
-    return res.status(500).json({ error: `failed to advance the v2 tree: ${err.message}` });
+    // 회수 실패는 슬롯이 늦게 회수된다는 뜻일 뿐 폐기가 새는 방향이 아니다. 회차를 무르지
+    // 않고 경고만 남긴다(다음 회차가 다시 시도한다) — 아래 삽입은 그대로 진행한다.
+    console.error(`[IdP] publish/commit: 만료 회수 실패 — ${err.message}. 다음 회차가 재시도한다.`);
   }
 
-  // v3(이중 트리)를 같은 리프로 나란히 전진시킨다. 아직 온체인 게시의 진실은 v2이므로,
-  // 여기서 실패해도 요청을 5xx로 만들지 않는다 — v2는 이미 되돌릴 수 없게 전진했고
-  // 게시도 끝났기 때문이다. 대신 backfill 플래그를 세워 전환(E단계) 전에 반드시
-  // 드러나게 한다. 조용히 넘어가면 v3 트리에 구멍이 난 채로 전환하게 된다.
-  // v3(이중 트리)를 같은 리프로 나란히 전진시킨다. 아직 온체인 게시의 진실은 v2이므로,
-  // 여기서 실패해도 요청을 5xx로 만들지 않는다 — v2는 이미 되돌릴 수 없게 전진했고
-  // 게시도 끝났기 때문이다. 대신 backfill 플래그를 세워 전환 전에 반드시 드러나게 한다.
+  // === 준비된 폐기를 반영 ===
   //
-  // 적용과 회수를 **별도 try로 나눈다.** 한 덩어리로 두면 회수 단계가 던졌을 때
-  // "어느 리프가 v3에 반영되지 못했는가"라는 목록이 catch에 가려 출력되지 않는다 —
-  // 그 목록이 backfill의 유일한 단서다(2026-09-06 2차 리뷰).
-  let v3Applied = null;
+  // 여기서 실패하면 **요청을 5xx로 되돌린다.** v2와 나란히 돌던 시절에는 그럴 수 없었다:
+  // v2가 이미 append-only로 전진했고 온체인 게시도 끝난 뒤였기 때문에, 실패를 backfill
+  // 플래그로 미뤄야 했다. 이제 v3가 유일한 트리이고 push는 아직 일어나지 않았으므로,
+  // 실패한 회차는 그냥 실패한 회차다 — 대기열도 정리하지 않으므로 다음 prepare가 실패한
+  // 리프를 자동으로 다시 집어 든다. 그 결과 v2/v3가 갈라질 수 있다는 문제와 그것을 되찾는
+  // 장치(rebuild_from_v2)가 함께 사라졌다.
+  let applied;
   try {
-    v3Applied = await revocationV3.applyCommit(prepared.addedValues);
+    applied = await revocationV3.applyCommit(prepared.addedValues);
   } catch (err) {
-    revocationV3.markNeedsBackfill();
-    console.error(`[IdP] publish/commit: v3 적용 자체가 실패했다 — ${err.message}`);
+    return res.status(500).json({ error: `failed to advance the revocation forest: ${err.message}` });
   }
-  if (v3Applied && v3Applied.failed.length > 0) {
-    // 어느 리프가 빠졌는지 남긴다. 이게 없으면 backfill 때 무엇을 다시 넣어야 하는지
-    // 알 수 없다 — v2에는 들어갔는데 v3에는 없는 상태로 조용히 갈라진다.
+  if (applied.failed.length > 0) {
+    // 일부만 들어간 상태다. 부분 성공을 200으로 보고하면 운영자가 그 root를 push하고
+    // 빠진 폐기는 조용히 사라진다. 어느 리프가 왜 빠졌는지 남기고 실패로 돌린다.
     console.error(
-      `[IdP] publish/commit: v3에 반영하지 못한 리프 ${v3Applied.failed.length}건 — ` +
-        v3Applied.failed.map((f) => `${f.leaf}(${f.reason})`).join(', ') +
-        '. needsBackfill을 세웠다. POST /idp/v3/rebuild_from_v2 로 되찾을 수 있다.',
+      `[IdP] publish/commit: 반영하지 못한 리프 ${applied.failed.length}건 — ` +
+        applied.failed.map((f) => `${f.leaf}(${f.reason})`).join(', '),
     );
+    return res.status(500).json({
+      error: 'some revocations could not be applied to the forest',
+      failed: applied.failed,
+    });
   }
-  try {
-    const resetShards = revocationV3.resetExpiredSessionShards(prepared.blockHeight);
-    // 계정 층은 샤드 인덱스가 만료를 담지 않으므로(값 기반) 샤드 단위 재기준화로 회수한다.
-    const acctReclaim = await revocationV3.rebaselineExpiredAccountShards(prepared.blockHeight);
-    if (
-      (v3Applied && (v3Applied.sessionAdded > 0 || v3Applied.accountAdded > 0)) ||
-      resetShards > 0 || acctReclaim.leavesReclaimed > 0
-    ) {
-      console.log(
-        `[IdP] publish/commit: v3 +${v3Applied?.sessionAdded ?? 0} session / ` +
-          `+${v3Applied?.accountAdded ?? 0} account, ${resetShards} expired session shard(s) reset, ` +
-          `${acctReclaim.leavesReclaimed} account leaf/leaves reclaimed in ${acctReclaim.shardsRebaselined} shard(s), ` +
-          `combined root ${revocationV3.combinedRoot()}`,
-      );
-    }
-  } catch (err) {
-    revocationV3.markNeedsBackfill();
-    console.error(`[IdP] publish/commit: v3 만료 회수 실패 — ${err.message}`);
+
+  const actualRoot = revocationV3.combinedRoot();
+  if (applied.sessionAdded > 0 || applied.accountAdded > 0 || resetShards > 0 || acctReclaim.leavesReclaimed > 0) {
+    console.log(
+      `[IdP] publish/commit: +${applied.sessionAdded} session / +${applied.accountAdded} account, ` +
+        `${resetShards} expired session shard(s) reset, ${acctReclaim.leavesReclaimed} account ` +
+        `leaf/leaves reclaimed in ${acctReclaim.shardsRebaselined} shard(s), root ${actualRoot}`,
+    );
   }
 
   const committed = new Set(publishedLeaves());
 
-  // === 13.1 1단계: v3 집합을 v2와 병행 대조한다 (아직 동작은 v2 기준) ===
-  //
-  // v2를 게시 프로토콜에서 떼어내려면 publishedLeaves()를 v3 합집합으로 바꿔야 하는데,
-  // 두 집합은 **설계상 어긋난다**: v2는 append-only라 만료 리프를 재기준화 전까지 들고
-  // 있고, v3는 세션 샤드를 만료 시 리셋하고 계정 샤드를 재기준화로 회수한다. 그래서
-  // 차이가 "만료됐지만 v2가 아직 회수하지 않은 리프"와 정확히 일치하는지가 전환의
-  // 전제다. 그 전제를 실제 운영 데이터로 확인하기 위해 한동안 로그로만 남긴다.
-  {
-    const v3Set = revocationV3.publishedLeafSet();
-    const onlyInV2 = [...committed].filter((k) => !v3Set.has(k));
-    const onlyInV3 = [...v3Set].filter((k) => !committed.has(k));
-    const expected = onlyInV2.filter((k) => {
-      const e = leafExpiry.get(k);
-      return e !== undefined && e <= prepared.blockHeight;
-    });
-    const unexpected = onlyInV2.filter((k) => !expected.includes(k));
-    if (unexpected.length > 0 || onlyInV3.length > 0) {
-      console.warn(
-        `[IdP] 13.1 대조: 설명되지 않는 차이 — v2에만 ${unexpected.length}건, v3에만 ${onlyInV3.length}건. ` +
-          `전환 전에 원인을 규명해야 한다. (v2 ${committed.size} / v3 ${v3Set.size}, ` +
-          `만료로 설명되는 차이 ${expected.length}건)`,
-      );
-    } else if (expected.length > 0) {
-      console.log(
-        `[IdP] 13.1 대조: v2 ${committed.size} / v3 ${v3Set.size}, 차이 ${expected.length}건은 전부 만료로 설명된다`,
-      );
-    }
-  }
   // 대기열 정리: 이번에 반영된 것과, prepare 시점에 이미 만료라 버려진 것을 뺀다.
   // prepare 이후에 새로 들어온 폐기는 남겨서 다음 회차로 넘긴다.
   for (const leafKey of [...pendingAdds]) {
@@ -2232,11 +1962,14 @@ app.post('/idp/publish/commit', requireIdPAdmin, serializeAdminMutation(async (r
   // 사용자가 아니라 **전원**의 execute()가 StaleRevocationRoot로 막히고, 방금 게시한
   // 폐기는 조용히 풀린다.
   //
-  // 그런데 여기서 5xx를 낼 수는 없다: v2 전진은 append-only라 되돌릴 수 없고
-  // preparedPublish도 이미 비워져 커밋을 재시도할 방법이 없다(재시도는 409다).
-  // 게시 자체는 성공했으므로 발급 경로와 같은 선례를 따른다 — 200으로 보고하되
-  // 저장 실패를 응답에 구조적으로 실어 운영자가 알아채게 한다. 성공 시(대다수)에는
-  // 필드를 넣지 않아 응답 모양이 그대로다.
+  // 그런데 여기서 5xx를 낼 수는 없다: 포레스트는 이미 전진했고 preparedPublish도 비워져
+  // 커밋을 재시도할 방법이 없다(재시도는 409다). 전진 자체는 성공했으므로 발급 경로와 같은
+  // 선례를 따른다 — 200으로 보고하되 저장 실패를 응답에 구조적으로 실어 운영자가 알아채게
+  // 한다. 성공 시(대다수)에는 필드를 넣지 않아 응답 모양이 그대로다.
+  //
+  // 이 경로에서는 **push하지 않는 것이 옳다.** 저장되지 않은 root를 온체인에 올리면
+  // 재시작 후 IdP가 옛 root를 서빙해 전원이 막힌다. sweep은 persistenceWarning을 받으면
+  // push 없이 중단한다.
   const persisted = saveIdPState();
   const persistenceWarning = persisted
     ? undefined
@@ -2246,7 +1979,7 @@ app.post('/idp/publish/commit', requireIdPAdmin, serializeAdminMutation(async (r
   if (!persisted) {
     console.error(
       `[IdP] publish/commit: FAILED TO PERSIST the published state (root ${actualRoot}). ` +
-        'Do not restart this IdP until the state file is recovered.',
+        'Do not push this root and do not restart this IdP until the state file is recovered.',
     );
   }
 
@@ -2347,7 +2080,7 @@ app.post('/idp/account/unpin_auid', requireIdPAdmin, async (req, res) => {
   if (previousAuid !== null) {
     try {
       const leaf = (await leafValue(TAG_ACCOUNT, String(previousAuid))).toString();
-      const published = v2Has(leaf);
+      const published = await revocationV3.hasLeaf(leaf);
       const pending = pendingAdds.has(leaf);
       if (published || pending) {
         staleRevocationLeaf = { leaf, published, pending };
@@ -2373,203 +2106,6 @@ app.post('/idp/account/unpin_auid', requireIdPAdmin, async (req, res) => {
     ...(staleRevocationLeaf ? { staleRevocationLeaf } : {}),
   });
 });
-
-// === v2(정석 IMT) 조회 — 지갑이 witness를 만드는 유일한 폐기 조회 경로다 ===
-// 지갑이 자기 witness를 계산하려면 폐기 목록이 필요하다. 리프는 Poseidon 해시라
-// preimage가 드러나지 않으므로 공개해도 안전하다. **마지막으로 게시된 상태만** 서빙한다
-// (대기 중인 pendingAdds는 넣지 않는다 — 넣으면 지갑이 온체인에 없는 root로 witness를
-// 만들어 전원이 막힌다). 응답은
-//   { epoch, seq, root, ... }
-// 이고, since 유무에 따라 전체(leaves) 또는 증분(mutations)을 싣는다(설계 문서 3.4절).
-//
-//  - since 없음        -> 전체. leaves를 **물리 순서**로 준다(3.1절: 값 집합이 아니라
-//                         물리 순서 배열이어야 지갑이 같은 root로 재구성한다).
-//  - since 있음         -> mutations(seq 오름차순). 단, 아래는 전체 재조회로 안내한다:
-//      · epoch 불일치    (재기준화가 일어났다) -> { tooOld: true }
-//      · since가 절단 지점보다 오래됨          -> { tooOld: true }
-//    조용히 부분 결과를 주면 지갑 트리가 root와 어긋나 모든 증명이 실패한다(3.4절).
-app.get('/idp/revocation_state_v2', (req, res) => {
-  const root = revocationTreeV2.getRoot().toString();
-  const sinceRaw = req.query.since;
-
-  if (sinceRaw === undefined) {
-    return res.json({
-      epoch: epochV2,
-      seq: seqV2,
-      root,
-      leaves: revocationTreeV2.getLeaves().map(v2LeafToStr),
-    });
-  }
-
-  if (!/^[0-9]+$/.test(String(sinceRaw))) {
-    return res.status(400).json({ error: 'since must be a non-negative integer' });
-  }
-  const since = Number(sinceRaw);
-
-  const epochRaw = req.query.epoch;
-  if (epochRaw !== undefined) {
-    if (!/^[0-9]+$/.test(String(epochRaw))) {
-      return res.status(400).json({ error: 'epoch must be a non-negative integer' });
-    }
-    if (Number(epochRaw) !== epochV2) {
-      return res.json({ epoch: epochV2, seq: seqV2, root, tooOld: true, reason: 'epoch changed; full fetch required' });
-    }
-  }
-
-  if (since >= seqV2) {
-    // 이미 최신(또는 방어적으로 미래 seq) — 적용할 변경이 없다.
-    return res.json({ epoch: epochV2, seq: seqV2, root, mutations: [] });
-  }
-
-  // 남아있는 가장 오래된 로그 항목의 seq. 로그가 비었으면 증분으로 서빙할 구간이 없다.
-  const oldestRetained = mutationLogV2.length ? mutationLogV2[0].seq : seqV2 + 1;
-  // since 다음(=since+1)이 절단돼 사라졌으면 증분으로 따라잡을 수 없다.
-  if (since < oldestRetained - 1) {
-    return res.json({ epoch: epochV2, seq: seqV2, root, tooOld: true, reason: 'log truncated; full fetch required' });
-  }
-
-  const mutations = mutationLogV2.filter((m) => m.seq > since);
-  return res.json({ epoch: epochV2, seq: seqV2, root, mutations });
-});
-
-// v4 이하 상태 파일에서 올라오면 v3가 비어 있고 needsBackfill이 선다(층 정보를 리프
-// 해시에서 되돌릴 수 없기 때문이다). 운영자가 "살아있는 폐기가 없거나 전부 다시
-// 접수했다"를 확인한 뒤 그 사실을 남기는 경로다.
-//
-// 자동으로 내리지 않는 이유: 무엇이 살아있는 폐기인지는 IdP가 판단할 수 없다(층을
-// 모른다는 것이 애초의 문제다). 확인의 주체는 운영자여야 하고, 이 엔드포인트는 그
-// 확인을 기록할 뿐이다. 플래그가 영원히 서 있으면 경고가 소음이 되어 무시하게 된다.
-// v2에 게시돼 있는데 v3에는 없는 리프를 되찾는다.
-//
-// IdP는 리프의 층(session/account)을 리프 해시에서 되돌릴 수 없다. 그런데 **preimage는
-// 일부 갖고 있다** — issuanceLog의 r_token들과 계정의 lastAuid다. 그것들로 후보 리프를
-// 다시 계산해 v2 게시 집합과 대조하면 대부분 자동으로 분류된다. 대조를 거치므로 잘못된
-// 값이 조용히 들어갈 수 없다.
-//
-// 자동으로 못 푸는 리프(예: issuanceLog에서 이미 축출된 옛 세션)는 응답에 남겨 운영자가
-// 알 수 있게 한다. 그 경우 운영자가 body로 preimage를 직접 줄 수 있다.
-//   POST /idp/v3/rebuild_from_v2  { rTokens: ["..."], auids: ["..."] }
-app.post('/idp/v3/rebuild_from_v2', requireIdPAdmin, serializeAdminMutation(async (req, res) => {
-  let currentBlock;
-  try {
-    currentBlock = await getCurrentBlockHeight();
-  } catch (err) {
-    return res.status(502).json({ error: `failed to read current block height: ${err.message}` });
-  }
-
-  const published = new Set(publishedLeaves());
-  const sessionCandidates = [];
-  const accountCandidates = [];
-
-  // (1) IdP가 이미 아는 preimage
-  for (const [rToken, entry] of issuanceLog) {
-    sessionCandidates.push({
-      rTokenLeaf: (await leafValue(TAG_SESSION, rToken)).toString(),
-      maxHeight: BigInt(entry.maxHeight),
-    });
-  }
-  const knownAuids = new Set();
-  for (const u of Object.values(users)) if (u.lastAuid) knownAuids.add(String(u.lastAuid));
-
-  // (2) 운영자가 body로 보탠 preimage
-  const { rTokens = [], auids = [] } = req.body ?? {};
-  if (!Array.isArray(rTokens) || !Array.isArray(auids)) {
-    return res.status(400).json({ error: 'rTokens and auids must be arrays of decimal strings' });
-  }
-  for (const t of rTokens) {
-    const str = String(t).trim();
-    if (!/^[0-9]+$/.test(str)) return res.status(400).json({ error: `rTokens contains a non-decimal value: ${t}` });
-    const issued = issuanceLog.get(str);
-    sessionCandidates.push({
-      rTokenLeaf: (await leafValue(TAG_SESSION, str)).toString(),
-      // 발급 기록이 없으면 만료를 알 수 없다. 그 경우 leafExpiry에 남아 있는 값을 쓴다.
-      maxHeight: issued ? BigInt(issued.maxHeight) : (leafExpiry.get((await leafValue(TAG_SESSION, str)).toString()) ?? 0n),
-    });
-  }
-  for (const a of auids) {
-    const str = String(a).trim();
-    if (!/^[0-9]+$/.test(str)) return res.status(400).json({ error: `auids contains a non-decimal value: ${a}` });
-    knownAuids.add(str);
-  }
-  for (const auid of knownAuids) {
-    const leafKey = (await leafValue(TAG_ACCOUNT, auid)).toString();
-    accountCandidates.push({ leaf: leafKey, expiry: leafExpiry.get(leafKey) ?? 0n });
-  }
-
-  let result;
-  try {
-    result = await revocationV3.rebuildFromCandidates(
-      { session: sessionCandidates, account: accountCandidates },
-      published,
-      currentBlock,
-    );
-  } catch (err) {
-    return res.status(500).json({ error: `rebuild failed: ${err.message}` });
-  }
-
-  // 되찾지 못한 채 남은 것: v2에 게시돼 있고, 만료되지 않았고, v3에도 없는 리프.
-  const unresolved = [];
-  for (const leafKey of published) {
-    const e = leafExpiry.get(leafKey);
-    if (e !== undefined && e <= currentBlock) continue;         // 만료 — 되찾을 필요 없다
-    if (await revocationV3.hasLeaf(leafKey)) continue;
-    unresolved.push({ leaf: leafKey, expiry: e === undefined ? null : e.toString() });
-  }
-  if (unresolved.length === 0) revocationV3.ackBackfill();
-
-  const saved = saveIdPState();
-  if (!saved) {
-    return res.status(500).json({
-      error: 'rebuild was applied in memory but could not be persisted; recover the state file and retry',
-      routed: result.routed,
-      unresolved: unresolved.length,
-    });
-  }
-  const routedAny = result.routed.session > 0 || result.routed.account > 0;
-  console.log(
-    `[IdP] v3 rebuild_from_v2: +${result.routed.session} session / +${result.routed.account} account, ` +
-      `되찾지 못한 리프 ${unresolved.length}건, needsBackfill=${revocationV3.needsBackfill}`,
-  );
-  if (routedAny) {
-    console.warn(
-      `[IdP] v3 rebuild_from_v2: v3 root가 ${revocationV3.combinedRoot()}로 바뀌었다. ` +
-        '온체인에 게시하기 전까지 지갑이 이 상태로 만드는 증명은 막힌다 — 즉시 push하라.',
-    );
-  }
-  res.json({
-    routed: result.routed,
-    skipped: result.skipped,
-    unresolved,
-    needsBackfill: revocationV3.needsBackfill,
-    topRoot: revocationV3.combinedRoot(),
-    // 되찾은 것이 있으면 v3 root가 바뀌었는데 온체인 latestRoot는 아직 옛 값이다.
-    // 그대로 두면 지갑이 새 상태로 만드는 witness가 전부 막힌다 — /idp/rebaseline_v2가
-    // 같은 이유로 내는 경고와 동일한 성격이다. 조용히 넘기지 않는다.
-    ...(routedAny
-      ? {
-          rootChanged: true,
-          warning:
-            'v3 root가 바뀌었다. scripts/push_revocation_root.cjs(또는 sweep 사이클)로 새 topRoot를 ' +
-            '온체인에 게시하기 전까지 지갑이 이 상태로 만드는 증명은 StaleRevocationRoot로 막힌다.',
-        }
-      : {}),
-    note: unresolved.length > 0
-      ? 'preimage를 알 수 없어 되찾지 못한 리프가 있다. POST body의 rTokens/auids로 직접 주면 된다.'
-      : '살아있는 v2 폐기가 전부 v3에 반영됐다.',
-  });
-}));
-
-app.post('/idp/v3/ack_backfill', requireIdPAdmin, serializeAdminMutation(async (req, res) => {
-  const was = revocationV3.needsBackfill;
-  revocationV3.ackBackfill();
-  const saved = saveIdPState();
-  if (!saved) {
-    revocationV3.markNeedsBackfill();
-    return res.status(500).json({ error: 'failed to persist; the flag was not cleared, please retry' });
-  }
-  console.log(`[IdP] v3 backfill 확인됨 (이전 needsBackfill=${was})`);
-  res.json({ needsBackfill: false, previous: was });
-}));
 
 // === v3(이중 트리) 조회 — 지갑이 자기 샤드 두 개만 받아가는 경로 ===
 //
@@ -2604,90 +2140,6 @@ app.get('/idp/revocation_state_v3', (req, res) => {
   }
   res.json(revocationV3.snapshot({ sessionShard, accountShard }));
 });
-
-// === v2 재기준화 수동 트리거 — 관리자 전용(설계 문서 3.3절) ===
-// 게시 경로(prepare/commit)의 자동 재기준화(사용률 임계치)와 별개로, 운영자가 활동이
-// 적은 시간대에 앞당겨 돌릴 수 있게 한다. 살아있는 값 = 현재 게시된 리프 중 만료되지
-// 않은 것. v2를 이 집합만으로(정렬) 새로 쌓아 만료 슬롯을 회수하고 epoch를 올린다.
-//
-// **중요(Stage B):** 재기준화는 물리 배치를 정렬 순서로 바꾸고 만료 리프를 빼므로 게시된
-// v2 root가 바뀐다. 온체인 latestRoot는 자동으로 따라오지 않으므로, 재기준화 직후 운영자가
-// push_revocation_root.cjs(또는 sweep 사이클)로 새 root를 온체인에 게시해야 한다. 그전까지
-// 지갑이 새 트리로 만드는 witness는 StaleRevocationRoot로 막힌다 — 활동이 적은 시간대에
-// 돌리고 곧바로 push하라는 것이 이 수동 트리거의 용도다.
-app.post('/idp/rebaseline_v2', requireIdPAdmin, serializeAdminMutation(async (req, res) => {
-  const previousEpoch = epochV2;
-  const previousRootV2 = revocationTreeV2.getRoot().toString();
-
-  let currentBlock;
-  try {
-    currentBlock = await getCurrentBlockHeight();
-  } catch (err) {
-    return res.status(502).json({ error: `failed to read current block height: ${err.message}` });
-  }
-
-  const liveValues = liveLeafValues(currentBlock);
-  try {
-    await rebaselineV2(liveValues.map((v) => BigInt(v)));
-  } catch (err) {
-    return res.status(500).json({ error: `v2 rebaseline failed: ${err.message}` });
-  }
-
-  // 미결 prepare가 있으면 그 root는 방금 무효가 됐다. 그대로 두면 commit이 초기
-  // 비교(prepared.root)는 통과한 뒤 **새 트리에** 리프를 삽입하고서야 불일치를
-  // 발견해 500을 내는데, 그 시점엔 트리가 되돌릴 수 없게 전진했고 preparedPublish를
-  // 비우기 전에 리턴하므로 재시도가 영원히 500이 된다. commit 핸들러가 "prepare와
-  // commit 사이에 v2를 바꾸는 경로는 없다"를 전제로 적혀 있으므로, 그 전제를 깨는
-  // 유일한 경로인 여기가 직접 정리한다.
-  const discardedPrepare = preparedPublish !== null;
-  preparedPublish = null;
-
-  const saved = saveIdPState();
-  if (!saved) {
-    // "computed but failed to persist; please retry"는 아무 일도 없었던 것처럼 읽히지만
-    // 사실이 아니다: rebaselineV2()가 이미 트리를 갈아끼우고 epoch를 올리고 로그를 비웠으며
-    // 되돌릴 방법이 없다. IdP는 지금 새 root를 서빙하고 있어 지갑들이 전체 재동기화하는데,
-    // 온체인 latestRoot는 옛 값이라 그대로 두면 전원이 StaleRevocationRoot로 막힌다.
-    // 그러니 지금 서빙 중인 root를 반드시 함께 알려 운영자가 push할 수 있게 한다.
-    const appliedRoot = revocationTreeV2.getRoot().toString();
-    console.error(
-      `[IdP] rebaseline_v2: FAILED TO PERSIST. 메모리는 이미 epoch ${epochV2}, root ${appliedRoot}로 ` +
-        '전진했다(되돌릴 수 없음). 이 root를 온체인에 push하고 상태 파일을 복구해야 한다.',
-    );
-    return res.status(500).json({
-      error:
-        'the rebaseline was already applied in memory (epoch bumped, tree replaced — not reversible) ' +
-        'but could not be persisted. This IdP is now serving the root below while the chain still holds ' +
-        'the previous one: push this root and recover the state file. Do NOT restart before recovering.',
-      epoch: epochV2,
-      rootV2: appliedRoot,
-      previousRootV2,
-      leafCount: liveValues.length,
-    });
-  }
-
-  const usage = revocationTreeV2.usage();
-  const newRootV2 = revocationTreeV2.getRoot().toString();
-  console.log(
-    `[IdP] rebaseline_v2: epoch ${previousEpoch} -> ${epochV2}, ${liveValues.length} live leaves, ` +
-      `v2 usage ${usage.used}/${usage.capacity}; root ${previousRootV2} -> ${newRootV2} ` +
-      '(push the new root on-chain before wallets prove against it)',
-  );
-  res.json({
-    epoch: epochV2,
-    previousEpoch,
-    rootV2: newRootV2,
-    previousRootV2,
-    leafCount: liveValues.length,
-    usage,
-    // 무효화된 미결 prepare가 있었다면 운영자에게 알린다 — 그 회차는 prepare부터
-    // 다시 해야 하고, 이미 온체인에 push했다면 새 root를 다시 push해야 한다.
-    ...(discardedPrepare ? { discardedPreparedPublish: true } : {}),
-    note:
-      'the published v2 root changed; run scripts/push_revocation_root.cjs (or a sweep cycle) to ' +
-      'publish it on-chain before wallets prove against the rebaselined tree',
-  });
-}));
 
 // 4. Public Keys Endpoint (for RP verification)
 app.get('/ps_public_keys', (req, res) => {
