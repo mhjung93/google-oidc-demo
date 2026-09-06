@@ -23,6 +23,7 @@ const MAX_CREDENTIAL_SPAN = 332;
 const GRACE_BLOCKS = 3;
 const KIND_INSERT = 0;
 const KIND_SESSION_RESET = 1;
+const KIND_ACCOUNT_REBASELINE = 2;
 
 describe('RevocationRegistryV4', function () {
   this.timeout(600000);
@@ -275,11 +276,29 @@ describe('RevocationRegistryV4', function () {
     const siblings = acct.topPathFor(shard);
     const emptyAcct = rootToBytes32(acct.emptyRoot);
 
-    await expect(reg.pushAccountRebaseline(shard, oldSub, emptyAcct, siblings))
-      .to.emit(reg, 'UntrustedAccountRebaseline');
+    const rb = {
+      kind: KIND_ACCOUNT_REBASELINE, account: true, shard,
+      oldSubRoot: oldSub, newSubRoot: emptyAcct, siblings,
+      ...NO_PROOF,
+    };
+    await expect(reg.pushUpdates([rb])).to.emit(reg, 'UntrustedAccountRebaseline');
 
     acct.resetShard(shard);
     expect(await reg.latestRoot()).to.equal(combineTopRoots(sess.getTopRoot(), acct.getTopRoot()));
+  });
+
+  it('세션 층에는 계정 재기준화를 허용하지 않는다', async function () {
+    const sess = await createSessionForest();
+    const acct = await createAccountForest();
+    const { reg } = await deploy(rootToBytes32(sess.getTopRoot()), rootToBytes32(acct.getTopRoot()));
+    const u = {
+      kind: KIND_ACCOUNT_REBASELINE, account: false, shard: 0,
+      oldSubRoot: rootToBytes32(sess.getSubtreeRoot(0)),
+      newSubRoot: rootToBytes32(sess.emptyRoot),
+      siblings: sess.topPathFor(0),
+      ...NO_PROOF,
+    };
+    await expect(reg.pushUpdates([u])).to.be.revertedWithCustomError(reg, 'RebaselineOnlyOnAccountLayer');
   });
 
   it('유예 창: 밀려난 root도 graceBlocks 동안은 받아준다', async function () {

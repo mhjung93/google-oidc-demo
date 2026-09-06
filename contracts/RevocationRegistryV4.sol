@@ -29,12 +29,24 @@ interface IInsertTransitionVerifier {
 ///
 ///         남는 것은 **애초에 제출되지 않은 폐기의 누락**이다. 체인은 무엇이 폐기돼야
 ///         하는지 모르므로 이것은 원리상 막을 수 없다(논문 §IV-G에도 명시).
-///         그리고 아래 pushAccountRebaseline 하나가 증명되지 않는 조작으로 남는다.
+///         그리고 AccountRebaseline 하나가 증명되지 않는 조작으로 남는다.
 ///
 ///         == 전이의 종류 ==
-///         Insert       — 서브트리에 리프를 K건까지 더한다. pi_ins_sess/pi_ins_acct 회로가
-///                        (oldSubRoot -> newSubRoot)를 증명한다. 더하기만 하므로 안전 방향이다.
-///         SessionReset — 세션 샤드를 통째로 비운다. **증명이 필요 없다** — 아래 참고.
+///         Insert            — 서브트리에 리프를 K건까지 더한다. pi_ins_sess/pi_ins_acct
+///                             회로가 (oldSubRoot -> newSubRoot)를 증명한다. 더하기만 하므로
+///                             안전 방향이다.
+///         SessionReset      — 세션 샤드를 통째로 비운다. **증명이 필요 없다** — 아래 참고.
+///         AccountRebaseline — 계정 층 만료 회수. **증명되지 않는다**(잔여 신뢰).
+///
+///         셋을 **한 스트림**으로 받는 것이 중요하다. 계정 회수만 별도 함수로 두면 IdP
+///         포레스트의 변경 순서와 체인의 적용 순서가 어긋날 수 있고, 그러면 형제 경로가
+///         맞지 않아 조용히 다른 root가 나온다.
+///
+///         == 형제 경로에 관한 호출자 의무 ==
+///         업데이트는 **IdP 포레스트를 실제로 바꾼 순서 그대로** 만들어야 하고, 각 업데이트의
+///         siblings는 **그 샤드를 바꾼 직후, 다음 업데이트를 적용하기 전에** 뽑아야 한다.
+///         컨트랙트가 순차로 접으므로 i번째 업데이트의 형제는 0..i-1이 반영된 상태여야 한다.
+///         (자기 샤드의 변경은 자기 형제에 영향을 주지 않으므로 "직후"로 충분하다.)
 ///
 ///         == 세션 리셋을 컨트랙트가 스스로 검증할 수 있는 이유 ==
 ///         세션 샤드 인덱스는 s = (max_height mod 512) * 8 + (리프 하위 3비트)다. 즉 샤드
@@ -89,7 +101,9 @@ contract RevocationRegistryV4 {
 
     enum Kind {
         Insert,
-        SessionReset
+        SessionReset,
+        /// @dev 계정 층 만료 회수. **증명되지 않는다** — 아래 잔여 신뢰 설명 참고.
+        AccountRebaseline
     }
 
     struct Update {
@@ -116,6 +130,7 @@ contract RevocationRegistryV4 {
     error SubtreeMismatch(uint16 shard, bool account);
     error InvalidTransitionProof(uint16 shard, bool account);
     error ResetNotAllowedOnAccountLayer();
+    error RebaselineOnlyOnAccountLayer();
     error ResetMustGoToEmptyRoot();
     /// @notice 이 샤드에는 아직 만료되지 않았을 수 있는 크레덴셜이 있다.
     error SessionShardNotExpired(uint16 shard, uint256 distance);
@@ -188,6 +203,20 @@ contract RevocationRegistryV4 {
                 if (u.account) revert ResetNotAllowedOnAccountLayer();
                 if (u.newSubRoot != emptySessionSubRoot) revert ResetMustGoToEmptyRoot();
                 _requireSessionShardExpired(u.shard);
+            } else if (u.kind == Kind.AccountRebaseline) {
+                // **증명되지 않는 유일한 전이다.**
+                //
+                // 왜 증명할 수 없는가. 계정 폐기 리프의 만료는 접수 시점 + 수명이고, 그
+                // 값은 리프(Poseidon(TAG_ACCOUNT, auid))에 들어 있지 않다. 세션 층처럼
+                // 만료를 샤드 인덱스에 담을 수도 없다 — 지갑은 자기 auid만 알지 그 폐기가
+                // 언제 접수됐는지 모르므로, 만료로 샤딩하면 조회할 샤드를 특정할 수 없다.
+                //
+                // 그래서 키를 쥔 쪽이 이 경로로 살아있는 계정 폐기를 떨어뜨릴 수 있다.
+                // 다만 위 oldSubRoot 검사는 그대로 받으므로 **다른 샤드는 건드릴 수 없다**.
+                // 별도 이벤트로 남겨 외부에서 감사할 수 있게 한다. 없애려면 "새 리프 집합이
+                // 옛 집합의 부분집합"을 증명하는 회로가 필요하다(설계 문서 13.2절의 남은 과제).
+                if (!u.account) revert RebaselineOnlyOnAccountLayer();
+                emit UntrustedAccountRebaseline(u.shard, u.oldSubRoot, u.newSubRoot);
             } else {
                 IInsertTransitionVerifier v = u.account ? acctVerifier : sessVerifier;
                 uint[2] memory signals = [uint256(u.oldSubRoot), uint256(u.newSubRoot)];
@@ -207,36 +236,6 @@ contract RevocationRegistryV4 {
         sessionTop = sTop;
         accountTop = aTop;
         _publish(keccak256(abi.encodePacked(sTop, aTop)));
-    }
-
-    /// @notice 계정 층 샤드의 만료 회수. **증명되지 않는다.**
-    ///
-    /// @dev 왜 증명할 수 없는가. 계정 폐기 리프의 만료는 접수 시점 + 수명이고, 그 값은
-    ///      리프(Poseidon(TAG_ACCOUNT, auid))에 들어 있지 않다. 세션 층처럼 만료를 샤드
-    ///      인덱스에 담을 수도 없다 — 지갑은 자기 auid만 알지 그 폐기가 언제 접수됐는지
-    ///      모르므로, 만료로 샤딩하면 조회할 샤드를 특정할 수 없다.
-    ///
-    ///      그래서 이것 하나가 잔여 신뢰로 남는다. 키를 쥔 쪽이 이 경로로 살아있는 계정
-    ///      폐기를 떨어뜨릴 수 있다. 별도 이벤트로 남겨 외부에서 감사할 수 있게 한다.
-    ///      제거하려면 "새 리프 집합이 옛 집합의 부분집합"을 증명하는 회로가 필요하다
-    ///      (설계 문서 13.2절의 남은 과제).
-    ///
-    ///      이 경로도 oldSubRoot 검사는 그대로 받는다. 즉 **다른 샤드는 건드릴 수 없고**,
-    ///      이 샤드의 롤백 이외의 임의 조작도 할 수 없다.
-    function pushAccountRebaseline(
-        uint16 shard,
-        bytes32 oldSubRoot,
-        bytes32 newSubRoot,
-        bytes32[] calldata siblings
-    ) external onlyIdP {
-        if (shard >= ACCOUNT_SHARD_COUNT) revert ShardOutOfRange(shard, ACCOUNT_SHARD_COUNT);
-        if (siblings.length != ACCOUNT_TOP_DEPTH) revert BadSiblingsLength(siblings.length, ACCOUNT_TOP_DEPTH);
-        if (_climb(oldSubRoot, shard, siblings) != accountTop) revert SubtreeMismatch(shard, true);
-
-        bytes32 nextTop = _climb(newSubRoot, shard, siblings);
-        accountTop = nextTop;
-        emit UntrustedAccountRebaseline(shard, oldSubRoot, newSubRoot);
-        _publish(keccak256(abi.encodePacked(sessionTop, nextTop)));
     }
 
     // ── 조회 (V3와 동일한 계약) ────────────────────────────────────────────
