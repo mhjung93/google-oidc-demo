@@ -1,5 +1,5 @@
 const hre = require("hardhat");
-const { getIdPSigner, fetchIdPTopRootV3 } = require("./revocation_idp.cjs");
+const { getIdPSigner } = require("./revocation_idp.cjs");
 
 
 
@@ -69,6 +69,8 @@ const COMMIT_RETRY_DELAY_MS = 2000; // 재시도 사이 대기. push 이전이�
 // 전면 장애 구간을 연 채로 프로세스가 끝나 버린다).
 async function runOneCycle(ctx) {
   const { idpBaseUrl, adminSecret, registry } = ctx;
+  // lib/은 ESM이라 CJS 스크립트에서 동적 import로 가져온다.
+  const { buildContractUpdates } = await import("../lib/transition_proof.js");
 
   // 1) prepare — 이번 회차에 반영할 집합을 동결하고 회차 토큰을 받는다. IdP 게시 상태는
   //    그대로다. v2 시절과 달리 여기서 root를 예측하지 않는다(설계 문서 13.1절).
@@ -127,30 +129,40 @@ async function runOneCycle(ctx) {
     throw err;
   }
 
-  // 3) pushRoot — commit이 확정한 root를 온체인에 올린다.
+  // 3) pushUpdates — commit이 기록한 전이에 증명을 붙여 올린다.
   //
-  // 커밋이 돌려준 root와 IdP가 서빙하는 topRoot가 같은지 대조한다. 다르면 그 사이에
-  // 폐기 상태를 바꾼 다른 경로가 있었다는 뜻이고, 어긋난 root를 올리면 지갑이 만드는
-  // witness와 체인이 어긋난다.
-  const topRoot = await fetchIdPTopRootV3(idpBaseUrl);
-  if (String(committed.root).toLowerCase() !== topRoot.toLowerCase()) {
-    throw new Error(
-      `commit이 돌려준 root(${committed.root})와 IdP가 서빙하는 topRoot(${topRoot})가 다릅니다. ` +
-      `그 사이 폐기 상태를 바꾼 다른 경로가 있었습니다 — 게시를 중단합니다.`
-    );
-  }
-
-  // 같은 값이면 게시하지 않는다. heartbeat는 latestRoot를 바꾸지 않아 무의미하고,
-  // 매 주기 트랜잭션을 하나씩 태울 이유가 없다.
-  const current = await registry.latestRoot();
-  if (String(current).toLowerCase() === topRoot.toLowerCase()) {
-    console.log(`3/3 pushRoot: skip — latestRoot가 이미 ${topRoot} (heartbeat 불필요)`);
+  // 여기서 root를 올리지 않는다는 것이 V4의 요점이다. 컨트랙트가 현재 root에서 시작해
+  // 검증된 전이만 접어 올려 새 root를 **유도한다**(설계 문서 13.2절). 그래서 롤백도,
+  // 아무도 witness를 만들 수 없는 쓰레기 root도 올릴 방법이 없다.
+  const descriptors = committed.updates ?? [];
+  if (descriptors.length === 0) {
+    // 넣을 것도 회수할 것도 없었던 회차다. 올릴 전이가 없으므로 트랜잭션을 만들지 않는다
+    // (V3에서 같은 root 재게시를 건너뛰던 것과 같은 자리다).
+    console.log("3/3 pushUpdates: skip — 이번 회차에 바뀐 서브트리가 없다");
     return;
   }
-  const tx = await registry.pushRoot(topRoot);
+
+  const updates = await buildContractUpdates(descriptors, (n, total, kind) => {
+    if (kind === "insert") console.log(`    증명 생성 ${n}/${total} (${kind})`);
+  });
+
+  const tx = await registry.pushUpdates(updates);
   const rc = await tx.wait();
-  console.log(`3/3 pushRoot: ${topRoot} (block ${rc.blockNumber}, tx ${rc.hash})`);
-  console.log("Published revocation root:", topRoot);
+  console.log(
+    `3/3 pushUpdates: ${updates.length}건 (block ${rc.blockNumber}, tx ${rc.hash}, gas ${rc.gasUsed})`
+  );
+
+  // 컨트랙트가 유도한 root가 IdP가 독립적으로 계산한 root와 같아야 한다. 다르면 전이
+  // 서술이 실제 포레스트 변경과 어긋났다는 뜻이고, 그대로 두면 지갑이 만드는 witness가
+  // 체인과 맞지 않는다.
+  const onchain = await registry.latestRoot();
+  if (String(onchain).toLowerCase() !== String(committed.root).toLowerCase()) {
+    throw new Error(
+      `컨트랙트가 유도한 root(${onchain})가 IdP의 root(${committed.root})와 다릅니다. ` +
+      `전이 서술이 실제 변경과 어긋났습니다 — 운영자 확인이 필요합니다.`
+    );
+  }
+  console.log("Published revocation root:", onchain);
 }
 
 // grace window와 K개 순환 버퍼가 사라지면서, "간격이 만료 상한에 비해 안전한가"라는
@@ -271,7 +283,7 @@ async function main() {
   const idpSigner = await getIdPSigner(hre);
   // v3에서는 레지스트리 컨트랙트가 다르다(유예 창 + isAcceptableRoot).
   const registry = await hre.ethers.getContractAt(
-    "RevocationRegistryV3",
+    "RevocationRegistryV4",
     registryAddress,
     idpSigner,
   );

@@ -364,6 +364,13 @@ async function main() {
     // (a) 정리 창을 놓쳐도 링 재사용 시 낡은 리프가 섞이지 않는다.
     //     예전에는 "링 슬롯이 지금 살아있는가"로 판정해, 36분 창을 놓치면 만료된 리프가
     //     다음 주기의 새 크레덴셜과 같은 샤드에 남았다.
+    //
+    //     2026-09-07 이후 두 갈래를 구분해 고정한다:
+    //       (a-1) 회수가 돌면 — 창을 여러 번 놓쳤어도 잔재가 정리되고 재사용된다
+    //       (a-2) 회수가 아예 안 돌면 — 조용히 자가 치유하지 않고 **실패한다**
+    //     (a-2)가 바뀐 부분이다. 그 자가 치유 리셋은 컨트랙트가 검증할 수 없다(그 샤드는
+    //     곧 살아있는 크레덴셜을 담으므로 리셋 창이 닫혀 있다 — 설계 문서 13.2절).
+    //     회수를 삽입보다 먼저 하게 바꾼 뒤로 정상 운영에서는 (a-2)에 닿지 않는다.
     {
       const v3 = await createIdPRevocationV3();
       let a = null, b = null;
@@ -390,7 +397,34 @@ async function main() {
         leaves, [b],
         '링 재사용 시 만료된 옛 리프가 새 크레덴셜과 같은 샤드에 남았다 (샤드 용량 잠식)',
       );
-      console.log('OK: 11-a) 정리 창을 놓쳐도 링 재사용이 자가 치유된다');
+      console.log('OK: 11-a-1) 회수가 돌면 창을 놓쳐도 링 재사용에 잔재가 남지 않는다');
+    }
+
+    // (a-2) 회수를 아예 건너뛰면 조용히 고치지 않고 실패한다.
+    {
+      const v3 = await createIdPRevocationV3();
+      let a = null, b = null;
+      for (let i = 0n; i < 400n && (a === null || b === null); i++) {
+        const l = (await leafValue(TAG_SESSION, 5000n + i)).toString();
+        if (a === null) a = l;
+        else if (sessionShardLowOf(l) === sessionShardLowOf(a)) b = l;
+      }
+      assert.ok(a && b, '값 버킷이 같은 리프 2개를 찾지 못했다');
+      const M1 = 100n, M2 = 100n + SESSION_RING;
+      v3.record(a, LAYER_SESSION, { expiry: M1, maxHeight: M1 });
+      await v3.applyCommit([a]);
+
+      // 회수를 **부르지 않고** 링이 재사용되는 크레덴셜을 넣는다.
+      v3.record(b, LAYER_SESSION, { expiry: M2, maxHeight: M2 });
+      const r = await v3.applyCommit([b]);
+      assert.equal(r.sessionAdded, 0, '실패해야 할 삽입이 반영됐다');
+      assert.equal(r.failed.length, 1);
+      assert.match(
+        r.failed[0].reason,
+        /still holds max_height/,
+        `조용한 자가 치유로 넘어갔다: ${JSON.stringify(r.failed[0])}`,
+      );
+      console.log('OK: 11-a-2) 회수를 건너뛴 링 재사용은 조용히 고치지 않고 실패한다');
     }
 
     // (b) 게시되지 않은 접수분의 메타데이터가 만료 후 정리된다.

@@ -1824,6 +1824,11 @@ app.post('/idp/publish/commit', requireIdPAdmin, serializeAdminMutation(async (r
 
   const prepared = preparedPublish;
 
+  // 이 회차가 포레스트를 어떻게 바꾸는지 순서대로 기록하기 시작한다. RevocationRegistryV4는
+  // root를 받지 않고 이 전이들로부터 **유도하므로**, 기록의 순서와 형제 경로가 곧 계약이다
+  // (설계 문서 13.2절). V3 레지스트리를 쓰는 동안에는 응답에 실려 나갈 뿐 소비자가 없다.
+  revocationV3.beginRound();
+
   // === 만료 회수 ===
   //
   // **삽입보다 먼저 한다.** 순서가 뒤바뀌면, 게시가 지연돼 명목 만료가 지나간 폐기가
@@ -1873,6 +1878,10 @@ app.post('/idp/publish/commit', requireIdPAdmin, serializeAdminMutation(async (r
   }
 
   const actualRoot = revocationV3.combinedRoot();
+  // 전이 서술자. sweep이 여기에 증명을 붙여 pushUpdates로 올린다(V4). 증명 생성은 IdP가
+  // 하지 않는다 — 관리자 경로가 직렬화돼 있어 회차마다 수 초를 잡으면 다른 관리 조작까지
+  // 막히고, 증명에 필요한 재료가 전부 이미 공개된 트리 내용이라 IdP가 쥐고 있을 이유가 없다.
+  const roundUpdates = revocationV3.takeRoundUpdates();
   if (applied.sessionAdded > 0 || applied.accountAdded > 0 || resetShards > 0 || acctReclaim.leavesReclaimed > 0) {
     console.log(
       `[IdP] publish/commit: +${applied.sessionAdded} session / +${applied.accountAdded} account, ` +
@@ -1994,6 +2003,8 @@ app.post('/idp/publish/commit', requireIdPAdmin, serializeAdminMutation(async (r
     root: actualRoot,
     leafCount: publishedCount,
     pendingCount: pendingAdds.size,
+    // 이 회차의 전이 서술자(순서대로). V3 레지스트리에서는 쓰이지 않는다.
+    updates: roundUpdates,
     ...(persistenceWarning ? { persistenceWarning } : {}),
   });
 }));
