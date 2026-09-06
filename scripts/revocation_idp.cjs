@@ -62,4 +62,38 @@ function rootToBytes32(hre, root) {
   return hre.ethers.zeroPadValue(hre.ethers.toBeHex(BigInt(root)), 32);
 }
 
-module.exports = { IDP_ADDRESS_ENV, requireIdPAddress, getIdPSigner, fetchIdPRoot, rootToBytes32 };
+/**
+ * v3(이중 트리)의 게시 대상 root. v2와 두 가지가 다르다.
+ *   - 출처가 /idp/revocation_state_v3 의 topRoot다(세션·계정 상위 root를 합친 값).
+ *   - **이미 bytes32 hex다.** 필드 원소가 아니므로 rootToBytes32를 거치면 안 된다.
+ */
+async function fetchIdPTopRootV3(idpBaseUrl) {
+  let res;
+  try {
+    res = await fetch(`${idpBaseUrl}/idp/revocation_state_v3`);
+  } catch (err) {
+    throw new Error(`IdP(${idpBaseUrl})에 연결할 수 없어 v3 root를 가져오지 못했습니다: ${err.message}`);
+  }
+  if (!res.ok) {
+    throw new Error(
+      `revocation_state_v3 failed (${idpBaseUrl}): ${res.status}. ` +
+      'IdP가 v3를 지원하는 코드로 떠 있는지 확인하세요.'
+    );
+  }
+  const body = await res.json();
+  if (typeof body.topRoot !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(body.topRoot)) {
+    throw new Error(`revocation_state_v3 응답의 topRoot가 bytes32가 아닙니다: ${body.topRoot}`);
+  }
+  if (body.needsBackfill) {
+    console.warn(
+      '[revocation_idp] 경고: IdP가 needsBackfill 상태다. v4 이하 상태 파일에서 올라와 ' +
+      'v3 트리가 비어 있을 수 있다. 전환 전에 살아있는 폐기를 다시 접수해야 한다.'
+    );
+  }
+  return body.topRoot;
+}
+
+module.exports = {
+  IDP_ADDRESS_ENV, requireIdPAddress, getIdPSigner, fetchIdPRoot, rootToBytes32,
+  fetchIdPTopRootV3,
+};

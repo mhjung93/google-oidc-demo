@@ -13,6 +13,7 @@ import { leafValue, TAG_SESSION, TAG_ACCOUNT } from './lib/imt.js';
 // 정석 IMT(v2) — Stage B: /submitTransaction의 witness 생성과 warm-up이 모두 이 경로를
 // 쓴다(회로가 v2 리프 해시 Poseidon(3)로 전환됨). v1 폐기 트리 경로는 제거됐다.
 import { createIMTv2, buildIMTv2 } from './lib/imt_v2.js';
+import { fetchRevocationWitnessesV3 } from './lib/wallet_revocation_v3.js';
 
 const { subtle } = webcrypto;
 const __filename = fileURLToPath(import.meta.url);
@@ -37,11 +38,13 @@ const PPID_WALLET_FACTORY_ABI = [
   'function deploy(uint256 ppid) returns (address)',
 ];
 const PPID_WALLET_ABI = [
-  'function execute((address to, uint256 value, bytes data, uint256 nonce) payload, bytes sig, uint[2] proofA, uint[2][2] proofB, uint[2] proofC, uint256 pk_i, uint256 pk_IdP_x, uint256 pk_IdP_y, uint256 max_height, bytes32 revocationRoot) returns (bool ok)',
+  // v3(이중 트리): revocationRoot 하나 대신 두 층의 서브트리 root·샤드 인덱스·상위 형제를
+  // 넘긴다. 컨트랙트가 상위 트리를 keccak으로 올라가 하나의 root로 합쳐 대조한다.
+  'function execute((address to, uint256 value, bytes data, uint256 nonce) payload, bytes sig, uint[2] proofA, uint[2][2] proofB, uint[2] proofC, uint256 pk_i, uint256 pk_IdP_x, uint256 pk_IdP_y, uint256 max_height, (bytes32 sessRoot, uint256 sessShardLow, bytes32[12] sessSiblings, bytes32 acctRoot, uint256 acctShard, bytes32[8] acctSiblings) rev) returns (bool ok)',
   'function nonce() view returns (uint256)',
 ];
 const REVOCATION_REGISTRY_ABI = [
-  'function isCurrentRoot(bytes32 root) view returns (bool)',
+  'function isAcceptableRoot(bytes32 root) view returns (bool)',
   'function latestRoot() view returns (bytes32)',
 ];
 const factoryInterface = new Interface(PPID_WALLET_FACTORY_ABI);
@@ -160,8 +163,8 @@ async function warmUpPiPkI() {
     const runStart = now();
     await snarkjs.groth16.fullProve(
       await buildWarmupPiPkIInput(i),
-      'build/mode2/pi_pk_i_js/pi_pk_i.wasm',
-      'build/mode2/pi_pk_i_final.zkey',
+      'build/mode2_v3/pi_pk_i_v3_js/pi_pk_i_v3.wasm',
+      'build/mode2_v3/pi_pk_i_v3_final.zkey',
     );
     console.log(`[WalletAgent] pi_pk_i warm-up run ${i + 1}/${PI_PK_I_WARMUP_RUNS}: ${now() - runStart}ms`);
   }
@@ -381,9 +384,10 @@ function revocationRootToBytes32(root) {
 // 타이밍 상관 신호가 된다(아래 /submitTransaction 주석 참고).
 async function isRevocationRootPublished(root) {
   if (!REVOCATION_REGISTRY_ADDRESS) throw new Error('REVOCATION_REGISTRY_ADDRESS not configured');
-  const data = registryInterface.encodeFunctionData('isCurrentRoot', [revocationRootToBytes32(root)]);
+  // v3의 topRoot는 이미 bytes32 hex다(필드 원소가 아니다).
+  const data = registryInterface.encodeFunctionData('isAcceptableRoot', [root]);
   const result = await rpcCall('eth_call', [{ to: REVOCATION_REGISTRY_ADDRESS, data }, 'latest']);
-  const [isCurrent] = registryInterface.decodeFunctionResult('isCurrentRoot', result);
+  const [isCurrent] = registryInterface.decodeFunctionResult('isAcceptableRoot', result);
   return Boolean(isCurrent);
 }
 
@@ -516,17 +520,24 @@ let currentSessionKey = null;
 // 세션 키와 수명을 같이 하며, HTTP로 나가지 않는다.
 let currentAccountSecrets = null; // { uid, salt, rid } — 전부 bigint
 
-// pi_pk_i는 세션 크레덴셜이라 같은 세션·같은 root면 증명을 재사용할 수 있다.
-let cachedPiPkI = null; // { sessionKeyId, root, proofA, proofB, proofC }
+// pi_pk_i 캐시.
+//   topRoot   — 온체인 대조용(레지스트리가 들고 있는 값). 아무 폐기에나 바뀐다.
+//   sessRoot/acctRoot — SNARK가 실제로 묶여 있는 값. **내 샤드가 바뀔 때만** 바뀐다.
+//   onchain   — execute calldata의 폐기 몫(서브트리 root·샤드 인덱스·상위 형제)
+let cachedPiPkI = null;
 
 // 캐시된 pi_pk_i 증명을 재사용해도 되는지 판정한다.
-// 세션 키가 같고 폐기 root도 같을 때만 재사용할 수 있다 — root가 바뀌었다면
-// 그 사이에 누군가 폐기됐을 수 있으므로 다시 증명해야 한다.
+//
+// v2에서는 판정 기준이 폐기 root 하나였다. v3에서는 **서브트리 root 두 개**다 —
+// 이게 이중 트리 설계의 요점이다. 다른 샤드에서 폐기가 나면 통합 topRoot는 바뀌지만
+// 내 서브트리 root는 그대로이므로, 상위 형제(평범한 calldata)만 갱신하면 되고
+// 500ms짜리 증명은 그대로 쓴다. topRoot로 판정하면 그 이득이 통째로 사라진다.
 // 테스트에서 직접 호출하므로 export 한다.
-export function shouldReuseProof(cache, currentRoot, sessionKeyId) {
+export function shouldReuseProof(cache, sessRoot, acctRoot, sessionKeyId) {
   if (!cache) return false;
   if (cache.sessionKeyId !== sessionKeyId) return false;
-  if (cache.root !== currentRoot) return false;
+  if (cache.sessRoot !== sessRoot) return false;
+  if (cache.acctRoot !== acctRoot) return false;
   return true;
 }
 
@@ -1190,32 +1201,57 @@ app.post('/submitTransaction', async (req, res) => {
     // 캐시가 유효한 기간은 오직 "root가 바뀌지 않는 동안"뿐이다 — 폐기가 게시돼
     // latestRoot가 바뀌는 순간 isCurrentRoot가 false를 돌려주므로 그 즉시 IdP
     // 재조회 경로를 탄다(지연은 게시 주기가 결정한다).
+    // 1) 먼저 **체인에** 캐시된 topRoot가 아직 유효한지 묻는다. IdP에 묻지 않는 것이
+    //    중요하다 — 트랜잭션 때마다 IdP에 요청을 보내면 그 자체가 타이밍 상관 신호가 된다.
+    //    유효하면 IdP를 전혀 건드리지 않고 캐시를 그대로 쓴다.
     let rev = null;
     let txRevocationRoot;
-    if (cachedPiPkI?.sessionKeyId === sessionKeyId && (await isRevocationRootPublished(cachedPiPkI.root))) {
-      txRevocationRoot = cachedPiPkI.root;
+    const cacheStillFresh =
+      cachedPiPkI?.sessionKeyId === sessionKeyId &&
+      cachedPiPkI.topRoot &&
+      (await isRevocationRootPublished(cachedPiPkI.topRoot));
+
+    if (cacheStillFresh) {
+      txRevocationRoot = cachedPiPkI.topRoot;
     } else {
-      rev = await fetchRevocationWitnessesV2(r_token.toString(), auidField.toString());
-      txRevocationRoot = rev.root;
-      // 지갑은 IdP의 '현재' 리프 집합으로만 witness를 만들 수 있는데, 온체인 게시는
-      // 운영자가 돌리는 별도 단계다. 그래서 폐기 발생 후 push 전까지는 무고한
-      // 사용자까지 전원이 execute()에서 StaleRevocationRoot로 revert한다. 여기서
-      // 미리 걸러 원인을 알 수 있는 에러로 바꿔준다(옛 root로 증명하는 기능은 IdP가
-      // 과거 리프 집합을 노출해야 하므로 이번 범위 밖).
+      // 2) topRoot가 바뀌었다(또는 캐시가 없다). 자기 샤드 두 개만 다시 받는다.
+      rev = await fetchRevocationWitnessesV3(
+        IDP_ORIGIN, r_token.toString(), auidField.toString(), maxHeightField,
+      );
+      txRevocationRoot = rev.topRoot;
+      // 지갑은 IdP의 '게시된' 상태로만 witness를 만들 수 있는데 온체인 게시는 운영자가
+      // 돌리는 별도 단계다. 그 사이에는 무고한 사용자까지 막히므로, 여기서 미리 걸러
+      // 원인을 알 수 있는 에러로 바꿔준다.
       if (!(await isRevocationRootPublished(txRevocationRoot))) {
         const detail = await describeUnpublishedRoot();
         throw new Error(
           '폐기 목록이 아직 온체인에 반영되지 않았습니다: IdP의 현재 revocation root가 ' +
-          `RevocationRegistry에 게시돼 있지 않습니다. ${detail} 운영자가 push_revocation_root를 ` +
-          '실행해 root를 게시한 뒤 다시 시도하세요.',
+          `RevocationRegistryV3에 게시돼 있지 않습니다. ${detail} 운영자가 root를 게시한 뒤 ` +
+          '다시 시도하세요.',
         );
       }
     }
 
     let proofA, proofB, proofC;
-    if (shouldReuseProof(cachedPiPkI, txRevocationRoot, sessionKeyId)) {
+    // 3) 증명 재사용 판정은 **서브트리 root**로 한다. 타인 폐기로 topRoot만 바뀐
+    //    경우가 여기서 걸러져, 형제만 갱신하고 증명은 그대로 쓴다.
+    if (rev === null || shouldReuseProof(cachedPiPkI, rev.sessRoot, rev.acctRoot, sessionKeyId)) {
       ({ proofA, proofB, proofC } = cachedPiPkI);
-      console.log('[WalletAgent][submitTransaction] reusing cached pi_pk_i proof (no IdP round-trip)');
+      if (rev === null) {
+        console.log('[WalletAgent][submitTransaction] reusing cached pi_pk_i proof (no IdP round-trip)');
+      } else {
+        // 타인 폐기로 topRoot만 바뀐 경우. 증명은 살아남고 상위 형제만 갱신한다 —
+        // 이중 트리 설계가 노린 바로 그 경로다.
+        cachedPiPkI = {
+          ...cachedPiPkI,
+          topRoot: txRevocationRoot,
+          onchain: {
+            sessRoot: rev.sessRootBytes32, sessShardLow: rev.sessShardLow, sessSiblings: rev.sessSiblings,
+            acctRoot: rev.acctRootBytes32, acctShard: rev.acctShard, acctSiblings: rev.acctSiblings,
+          },
+        };
+        console.log('[WalletAgent][submitTransaction] 타인 폐기로 top root만 바뀜 — 증명 재사용, 상위 형제만 갱신');
+      }
     } else {
       // 여기 도달했다는 것은 캐시 재사용이 불가능했다는 뜻이고, 그 경우는 위에서
       // 반드시 IdP 조회 경로를 타므로 rev(=witness)가 채워져 있다. 이 불변식은
@@ -1254,22 +1290,44 @@ app.post('/submitTransaction', async (req, res) => {
         pk_IdP_y: pkIdP_y.toString(),
         PPID: ppidField.toString(),
         max_height: maxHeightField.toString(),
-        revocationRoot: rev.root,
+        sess_root: rev.sessRoot,
+        sess_shard_low: String(rev.sessShardLow),
+        acct_root: rev.acctRoot,
+        acct_shard: String(rev.acctShard),
       };
       const { proof, publicSignals } = await snarkjs.groth16.fullProve(
         circuitInput,
-        'build/mode2/pi_pk_i_js/pi_pk_i.wasm',
-        'build/mode2/pi_pk_i_final.zkey',
+        'build/mode2_v3/pi_pk_i_v3_js/pi_pk_i_v3.wasm',
+        'build/mode2_v3/pi_pk_i_v3_final.zkey',
       );
       const calldata = JSON.parse(`[${await snarkjs.groth16.exportSolidityCallData(proof, publicSignals)}]`);
       [proofA, proofB, proofC] = calldata;
-      cachedPiPkI = { sessionKeyId, root: txRevocationRoot, proofA, proofB, proofC };
+      cachedPiPkI = {
+        sessionKeyId,
+        topRoot: txRevocationRoot,
+        sessRoot: rev.sessRoot,
+        acctRoot: rev.acctRoot,
+        proofA, proofB, proofC,
+        onchain: {
+          sessRoot: rev.sessRootBytes32, sessShardLow: rev.sessShardLow, sessSiblings: rev.sessSiblings,
+          acctRoot: rev.acctRootBytes32, acctShard: rev.acctShard, acctSiblings: rev.acctSiblings,
+        },
+      };
     }
 
-    // PPIDWallet.execute()의 revocationRoot 파라미터는 bytes32다(field element를
-    // 32바이트 hex로 표현). root는 스낙js·캐시 비교용 10진수 문자열이라서
-    // ABI 인코딩 직전에만 hex로 변환한다.
-    const revocationRootBytes32 = revocationRootToBytes32(txRevocationRoot);
+    // v3: 컨트랙트가 받는 것은 root 하나가 아니라 두 층의 (서브트리 root, 샤드 인덱스,
+    // 상위 형제)다. 증명을 캐시에서 재사용하는 경우에도 **상위 형제는 최신이어야 한다** —
+    // 다른 샤드의 폐기로 top root가 바뀌면 형제가 낡기 때문이다. 그게 이 설계의 요점이고,
+    // 비싼 SNARK는 그대로 두고 이 값만 갱신하면 된다.
+    const onchainRev = rev
+      ? {
+          sessRoot: rev.sessRootBytes32, sessShardLow: rev.sessShardLow, sessSiblings: rev.sessSiblings,
+          acctRoot: rev.acctRootBytes32, acctShard: rev.acctShard, acctSiblings: rev.acctSiblings,
+        }
+      : cachedPiPkI.onchain;
+    if (!onchainRev) {
+      throw new Error('internal error: no on-chain revocation witness available for execute()');
+    }
 
     const executeCalldata = walletInterface.encodeFunctionData('execute', [
       { to: payload.to, value: payload.value, data: payload.data, nonce: payload.nonce },
@@ -1281,7 +1339,7 @@ app.post('/submitTransaction', async (req, res) => {
       pkIdP_x.toString(),
       pkIdP_y.toString(),
       maxHeightField.toString(),
-      revocationRootBytes32,
+      onchainRev,
     ]);
 
     const deploy = isDeployed

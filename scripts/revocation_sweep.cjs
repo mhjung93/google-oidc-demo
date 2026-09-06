@@ -81,6 +81,69 @@ async function runOneCycle(ctx) {
   console.log(`    currentRoot=${prepared.currentRoot}`);
   console.log(`    expectedRoot=${expectedRoot}`);
 
+  // ── v3(이중 트리) ──────────────────────────────────────────────────────
+  // 게시 대상이 prepare가 계산한 v2 root가 아니라 두 층의 상위 root를 합친 topRoot이고,
+  // 그 값은 v3 포레스트가 전진하는 **commit 뒤에야** 정해진다. 그래서 순서가
+  // prepare -> commit -> push가 된다(v2는 prepare -> push -> commit).
+  //
+  // 순서가 뒤집혀도 안전 방향은 오히려 낫다.
+  //   v2에서 push 후 commit 실패 = 체인이 앞서고 IdP가 뒤처짐 -> 그 사이 만들어지는
+  //     모든 witness가 어긋나 **전원**이 막힌다(전면 장애).
+  //   v3에서 commit 후 push 실패 = IdP가 앞서고 체인이 뒤처짐 -> 캐시가 유효한 지갑은
+  //     옛 topRoot로 계속 동작하고(체인의 latestRoot가 아직 그 값이다), 새로 조회하는
+  //     지갑만 "아직 게시되지 않음"이라는 명확한 에러를 받는다. 게다가 유예 창이
+  //     인플라이트를 K블록 더 보호한다.
+  if (TREE_VERSION === "v3") {
+    let committedV3;
+    let commitErrV3 = null;
+    for (let attempt = 0; attempt <= COMMIT_RETRY_ATTEMPTS; attempt++) {
+      try {
+        committedV3 = await callIdPAdmin(idpBaseUrl, adminSecret, "/idp/publish/commit", {
+          root: String(expectedRoot),
+        });
+        commitErrV3 = null;
+        break;
+      } catch (err) {
+        commitErrV3 = err;
+        if (attempt < COMMIT_RETRY_ATTEMPTS) {
+          console.error(`[sweep] commit 실패 (시도 ${attempt + 1}/${COMMIT_RETRY_ATTEMPTS + 1}): ${err.message}`);
+          await sleepInterruptible(COMMIT_RETRY_DELAY_MS, () => false);
+        }
+      }
+    }
+    if (commitErrV3) throw commitErrV3;
+    console.log(
+      `2/3 commit: leaves=${committedV3.leafCount}, pending=${committedV3.pendingCount}`
+    );
+    if (committedV3.persistenceWarning) {
+      console.error(
+        "\n" + "!".repeat(70) + "\n" +
+        `[sweep] 경고: commit은 성공했지만 IdP가 상태를 저장하지 못했습니다.\n` +
+        `        ${committedV3.persistenceWarning}\n` +
+        "!".repeat(70) + "\n"
+      );
+      const err = new Error(`commit succeeded but the IdP could not persist its state: ${committedV3.persistenceWarning}`);
+      err.persistenceWarning = true;
+      throw err;
+    }
+
+    const topRoot = await fetchIdPTopRootV3(idpBaseUrl);
+    // 같은 값이면 게시하지 않는다. heartbeat는 latestRoot를 바꾸지 않아 무의미하고,
+    // 매 주기 트랜잭션을 하나씩 태울 이유가 없다(v2에서는 굳이 막지 않았지만, 게시
+    // 주기를 짧게 가져가는 v3에서는 그 비용이 실제로 쌓인다).
+    const current = await registry.latestRoot();
+    if (String(current).toLowerCase() === topRoot.toLowerCase()) {
+      console.log(`3/3 pushRoot: skip — latestRoot가 이미 ${topRoot} (heartbeat 불필요)`);
+      return;
+    }
+    const txV3 = await registry.pushRoot(topRoot);
+    const rcV3 = await txV3.wait();
+    console.log(`3/3 pushRoot: ${topRoot} (block ${rcV3.blockNumber}, tx ${rcV3.hash})`);
+    console.log("Published v3 top root:", topRoot);
+    return;
+  }
+
+  // ── v2(현행) ───────────────────────────────────────────────────────────
   // 2) pushRoot — 온체인에 게시하고 영수증까지 기다린다.
   const rootHex = rootToBytes32(hreRef, String(expectedRoot));
 
@@ -280,7 +343,13 @@ async function main() {
   // onlyIdP 주소는 REVOCATION_IDP_ADDRESS로 명시한다 — 배포 스크립트/
   // push_revocation_root.cjs와 같은 값을 써야 pushRoot가 NotIdP로 revert하지 않는다.
   const idpSigner = await getIdPSigner(hre);
-  const registry = await hre.ethers.getContractAt("RevocationRegistry", registryAddress, idpSigner);
+  // v3에서는 레지스트리 컨트랙트가 다르다(유예 창 + isAcceptableRoot).
+  const registry = await hre.ethers.getContractAt(
+    TREE_VERSION === "v3" ? "RevocationRegistryV3" : "RevocationRegistry",
+    registryAddress,
+    idpSigner,
+  );
+  console.log(`[sweep] 폐기 트리 버전: ${TREE_VERSION}`);
   const ctx = { idpBaseUrl, adminSecret, registry, hre };
 
   // REVOCATION_SWEEP_INTERVAL_SECONDS가 없으면 기존과 동일하게 1회만 실행하고 끝난다
