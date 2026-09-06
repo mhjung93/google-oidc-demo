@@ -2122,6 +2122,35 @@ app.post('/idp/publish/commit', requireIdPAdmin, serializeAdminMutation(async (r
   }
 
   const committed = new Set(publishedLeaves());
+
+  // === 13.1 1단계: v3 집합을 v2와 병행 대조한다 (아직 동작은 v2 기준) ===
+  //
+  // v2를 게시 프로토콜에서 떼어내려면 publishedLeaves()를 v3 합집합으로 바꿔야 하는데,
+  // 두 집합은 **설계상 어긋난다**: v2는 append-only라 만료 리프를 재기준화 전까지 들고
+  // 있고, v3는 세션 샤드를 만료 시 리셋하고 계정 샤드를 재기준화로 회수한다. 그래서
+  // 차이가 "만료됐지만 v2가 아직 회수하지 않은 리프"와 정확히 일치하는지가 전환의
+  // 전제다. 그 전제를 실제 운영 데이터로 확인하기 위해 한동안 로그로만 남긴다.
+  {
+    const v3Set = revocationV3.publishedLeafSet();
+    const onlyInV2 = [...committed].filter((k) => !v3Set.has(k));
+    const onlyInV3 = [...v3Set].filter((k) => !committed.has(k));
+    const expected = onlyInV2.filter((k) => {
+      const e = leafExpiry.get(k);
+      return e !== undefined && e <= prepared.blockHeight;
+    });
+    const unexpected = onlyInV2.filter((k) => !expected.includes(k));
+    if (unexpected.length > 0 || onlyInV3.length > 0) {
+      console.warn(
+        `[IdP] 13.1 대조: 설명되지 않는 차이 — v2에만 ${unexpected.length}건, v3에만 ${onlyInV3.length}건. ` +
+          `전환 전에 원인을 규명해야 한다. (v2 ${committed.size} / v3 ${v3Set.size}, ` +
+          `만료로 설명되는 차이 ${expected.length}건)`,
+      );
+    } else if (expected.length > 0) {
+      console.log(
+        `[IdP] 13.1 대조: v2 ${committed.size} / v3 ${v3Set.size}, 차이 ${expected.length}건은 전부 만료로 설명된다`,
+      );
+    }
+  }
   // 대기열 정리: 이번에 반영된 것과, prepare 시점에 이미 만료라 버려진 것을 뺀다.
   // prepare 이후에 새로 들어온 폐기는 남겨서 다음 회차로 넘긴다.
   for (const leafKey of [...pendingAdds]) {

@@ -489,6 +489,27 @@ async function main() {
     console.log('OK: 12) shardMaxHeight 없는 옛 스냅샷을 메타데이터로 재구성한다');
   }
 
+  // ── 13) publishedLeafSet — v2 집합과의 차이가 설계대로인가 ─────────────
+  {
+    const { createIdPRevocationV3, LAYER_SESSION, LAYER_ACCOUNT } =
+      await import('../lib/idp_revocation_v3.js');
+    const v3 = await createIdPRevocationV3();
+    const sLeaf = (await leafValue(TAG_SESSION, 8001n)).toString();
+    const aLeaf = (await leafValue(TAG_ACCOUNT, 8002n)).toString();
+    v3.record(sLeaf, LAYER_SESSION, { expiry: 100n, maxHeight: 100n });
+    v3.record(aLeaf, LAYER_ACCOUNT, { expiry: 100n });
+    await v3.applyCommit([sLeaf, aLeaf]);
+    assert.deepEqual([...v3.publishedLeafSet()].sort(), [sLeaf, aLeaf].sort(),
+      '두 층의 리프가 합집합에 안 들어왔다');
+
+    // 만료 회수 후에는 v3에서 빠진다 — v2였다면 재기준화 전까지 남아 있었을 것이다.
+    v3.resetExpiredSessionShards(1000n);
+    await v3.rebaselineExpiredAccountShards(1000n);
+    assert.equal(v3.publishedLeafSet().size, 0,
+      '만료 리프가 회수됐는데도 합집합에 남아 있다');
+    console.log('OK: 13) publishedLeafSet — 두 층 합집합이고, 만료 회수가 반영된다');
+  }
+
   console.log(`\nPASS: 샤드 포레스트(v3) — 라우팅·상위 트리·격리·만료 리셋·지갑 재구성 (계정 깊이 ${ACCOUNT_SUBTREE_DEPTH})`);
 }
 
