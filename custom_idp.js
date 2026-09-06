@@ -655,7 +655,19 @@ function serializeIdPState() {
     // 물리 순서(삽입 순서) 리프 배열. anchor 포함. 정렬된 값 집합이 아니라 물리 배열로
     // 저장해야 재구성 root가 같다(설계 문서 3.1절 — root는 삽입 순서에 의존한다).
     v2Leaves: revocationTreeV2.getLeaves().map(v2LeafToStr),
-    mutationLogV2,
+    // mutationLogV2는 **일부러 저장하지 않는다.**
+    //
+    // 이 로그의 유일한 용도는 지갑의 v2 증분 동기화(since=<seq>)인데, v3 전환 이후
+    // 그 경로에는 운영 소비자가 없다(wallet_agent.js는 v3만 쓴다). 그런데 상한이
+    // 100,000항목 = 약 31MB라, 저장하면 **로그인마다** 그만큼을 동기 fsync로 다시
+    // 쓰게 된다(saveIdPState는 /token과 verifyPiIAndIssueToken이 부른다). 상태 파일에서
+    // 압도적인 지배항이었다.
+    //
+    // 안 저장해도 정합성이 깨지지 않는다: 재시작 후 로그가 비면 oldestRetained가
+    // seqV2 + 1이 되어 since < seqV2인 요청은 전부 tooOld를 받고 전체 재조회로 떨어진다.
+    // 이미 구현돼 있고 테스트(test_imt_v2_wiring.js)가 고정하는 경로다.
+    //
+    // v2 증분 동기화에 다시 소비자가 생기면 이 결정을 되돌려야 한다.
     // === v3(이중 트리) — 아직 게시의 진실은 아니지만, 전환 시점에 v2와 같은 폐기 집합을
     // 담고 있어야 하므로 v2와 동일하게 영속화한다. 샤드별 리프 배열은 물리 순서다. ===
     v3: revocationV3.serialize(),
@@ -810,7 +822,9 @@ async function loadIdPState() {
     revocationTreeV2 = t2;
     epochV2 = Number.isInteger(parsed.epochV2) ? parsed.epochV2 : 0;
     seqV2 = Number.isInteger(parsed.seqV2) ? parsed.seqV2 : 0;
-    mutationLogV2 = Array.isArray(parsed.mutationLogV2) ? parsed.mutationLogV2 : [];
+    // 위 serializeIdPState 주석 참조 — 더 이상 저장하지 않으므로 옛 파일에 남아
+    // 있더라도 무시하고 빈 로그로 시작한다(뒤처진 조회는 tooOld로 전체 재조회).
+    mutationLogV2 = [];
     rebuildV2ValueToIndex();
   } else if (legacyLeaves !== null) {
     // v4 이전 파일에 v2 필드가 없다 — v1 게시 집합으로부터 무손실 초기화한다.
@@ -1788,10 +1802,15 @@ app.post('/idp/revoke', requireIdPAdmin, serializeAdminMutation(async (req, res)
 
     // v3: 리프가 어느 층인지 여기서만 알 수 있다(리프는 Poseidon 해시라 나중에 되돌릴
     // 수 없다). 게시 시점에 알맞은 포레스트로 라우팅하려면 지금 기억해 둬야 한다.
+    // 세션 샤드는 **그 크레덴셜의 max_height**로 정해진다. effectiveExpiry(= 여러 번
+    // 접수됐을 때의 더 늦은 만료)를 넘기면 리프가 틀린 샤드로 조용히 들어간다.
+    // 지금은 둘이 같지만 그건 불변식이 아니라 우연이므로 의존하지 않는다.
     const v3Undo = revocationV3.record(
       leafKey,
       type === 'session' ? LAYER_SESSION : LAYER_ACCOUNT,
-      effectiveExpiry,
+      type === 'session'
+        ? { expiry: effectiveExpiry, maxHeight: expiryBlock }
+        : { expiry: effectiveExpiry },
     );
 
     // 대기열과 만료 메타데이터가 재시작을 넘어 살아남아야 접수된 폐기가 사라지지 않는다.
@@ -2063,6 +2082,15 @@ app.post('/idp/publish/commit', requireIdPAdmin, serializeAdminMutation(async (r
     // 계정 층은 샤드 인덱스가 만료를 담지 않으므로(값 기반) 샤드 단위 재기준화로 회수한다.
     // v2의 전역 재기준화와 달리 그 샤드를 쓰는 지갑만 영향을 받는다.
     const acctReclaim = await revocationV3.rebaselineExpiredAccountShards(prepared.blockHeight);
+    if (v3Applied.failed.length > 0) {
+      // 어느 리프가 빠졌는지 남긴다. 이게 없으면 backfill 때 무엇을 다시 넣어야 하는지
+      // 알 수 없다 — v2에는 들어갔는데 v3에는 없는 상태로 조용히 갈라진다.
+      console.error(
+        `[IdP] publish/commit: v3에 반영하지 못한 리프 ${v3Applied.failed.length}건 — ` +
+          v3Applied.failed.map((f) => `${f.leaf}(${f.reason})`).join(', ') +
+          '. needsBackfill을 세웠다. 전환 전에 이 리프들을 다시 접수해야 한다.',
+      );
+    }
     if (
       v3Applied.sessionAdded > 0 || v3Applied.accountAdded > 0 ||
       resetShards > 0 || acctReclaim.leavesReclaimed > 0

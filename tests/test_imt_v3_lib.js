@@ -273,8 +273,8 @@ async function main() {
     }
     assert.ok(expired && liveLeaf, '같은 샤드의 리프 2개를 찾지 못했다');
 
-    v3.record(expired, LAYER_ACCOUNT, 100n);   // 블록 100에 만료
-    v3.record(liveLeaf, LAYER_ACCOUNT, 9999n); // 아직 살아있음
+    v3.record(expired, LAYER_ACCOUNT, { expiry: 100n });   // 블록 100에 만료
+    v3.record(liveLeaf, LAYER_ACCOUNT, { expiry: 9999n }); // 아직 살아있음
     await v3.applyCommit([expired, liveLeaf]);
     const before = v3.combinedRoot();
 
@@ -289,6 +289,68 @@ async function main() {
     const snap = v3.snapshot({ accountShard: shard });
     assert.deepEqual(snap.accountShardLeaves, [liveLeaf], '살아있는 리프가 남지 않았다');
     console.log('OK: 9) 계정 층 — 만료 리프만 샤드 단위로 회수되고 생존 리프는 남는다');
+  }
+
+  // ── 10) 리뷰 회귀: 라우팅 키·부분 적용·샤드 검증 ───────────────────────
+  // 2026-09-06 리뷰에서 나온 세 결함을 고정한다. 셋 다 공통점이 있다 — 실패해도
+  // 아무 데서도 드러나지 않고, 폐기가 조용히 무효가 된다.
+  {
+    const { createIdPRevocationV3, LAYER_SESSION, LAYER_ACCOUNT } =
+      await import('../lib/idp_revocation_v3.js');
+
+    // (a) 세션 라우팅 키는 만료가 아니라 max_height다.
+    //     같은 리프에 더 늦은 만료가 들어와도 샤드는 max_height가 정해야 한다.
+    {
+      const v3 = await createIdPRevocationV3();
+      const leaf = (await leafValue(TAG_SESSION, 4001n)).toString();
+      v3.record(leaf, LAYER_SESSION, { expiry: 2000n, maxHeight: 1000n });
+      await v3.applyCommit([leaf]);
+      const shards = Object.keys(v3.snapshot().sessionRootOverrides).map(Number);
+      assert.deepEqual(
+        shards, [sessionShardOf(leaf, 1000n)],
+        '세션 리프가 max_height가 아니라 만료로 라우팅됐다 — 그 폐기는 증명에 보이지 않는다',
+      );
+      // max_height 없이 세션을 기록하려 하면 거부해야 한다(조용히 만료를 쓰지 않도록)
+      assert.throws(() => v3.record(leaf, LAYER_SESSION, { expiry: 1000n }), /requires maxHeight/);
+      console.log('OK: 10-a) 세션 샤드는 만료가 아니라 max_height로 정해진다');
+    }
+
+    // (b) 층 미기록 리프 하나가 배치 나머지를 버리면 안 된다.
+    {
+      const v3 = await createIdPRevocationV3();
+      const g1 = (await leafValue(TAG_ACCOUNT, 5001n)).toString();
+      const orphan = (await leafValue(TAG_ACCOUNT, 5002n)).toString(); // 층 미기록
+      const g2 = (await leafValue(TAG_ACCOUNT, 5003n)).toString();
+      v3.record(g1, LAYER_ACCOUNT, { expiry: 9999n });
+      v3.record(g2, LAYER_ACCOUNT, { expiry: 9999n });
+      const r = await v3.applyCommit([g1, orphan, g2]);
+      assert.equal(r.accountAdded, 2, '층 미기록 리프 때문에 배치 나머지가 유실됐다');
+      assert.equal(r.failed.length, 1);
+      assert.equal(r.failed[0].leaf, orphan);
+      assert.match(r.failed[0].reason, /no recorded layer/);
+      assert.equal(v3.needsBackfill, true, '반영 실패가 있었는데 backfill 플래그가 서지 않았다');
+      console.log('OK: 10-b) 층 미기록 리프는 건너뛰되 배치 나머지는 반영되고, 실패 목록이 보고된다');
+    }
+
+    // (c) loadShard는 다른 샤드의 리프를 거부해야 한다.
+    {
+      const f = await createAccountForest();
+      const mine = (await leafValue(TAG_ACCOUNT, 6001n)).toString();
+      const myShard = accountShardOf(mine);
+      let foreign = null;
+      for (let i = 0; i < 500; i++) {
+        const c = (await leafValue(TAG_ACCOUNT, 7000n + BigInt(i))).toString();
+        if (accountShardOf(c) !== myShard) { foreign = c; break; }
+      }
+      assert.ok(foreign, '다른 샤드 리프를 찾지 못했다');
+      await assert.rejects(
+        () => f.loadShard(myShard, [foreign]),
+        /does not belong to shard/,
+        '다른 샤드의 리프를 검증 없이 적재했다',
+      );
+      await f.loadShard(myShard, [mine]); // 올바른 것은 통과
+      console.log('OK: 10-c) loadShard가 다른 샤드의 리프를 거부한다');
+    }
   }
 
   console.log(`\nPASS: 샤드 포레스트(v3) — 라우팅·상위 트리·격리·만료 리셋·지갑 재구성 (계정 깊이 ${ACCOUNT_SUBTREE_DEPTH})`);

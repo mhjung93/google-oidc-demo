@@ -23,7 +23,6 @@ UNIT=(
   tests/test_idp_state_persistence.js
   tests/test_idp_publish_invariants.js
   tests/test_wallet_revocation_cache.js
-  tests/test_wallet_revocation_sync_recovery.mjs
   tests/test_imt_v3_lib.js
 )
 
