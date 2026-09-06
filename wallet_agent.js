@@ -1,3 +1,7 @@
+// server.js·custom_idp.js와 달리 여기만 .env를 읽지 않았다. 그래서 배포 주소를
+// .env에 넣어도 반영되지 않고 셸에서 직접 넘겨야 했는데, 그 사실이 문서화돼 있지 않아
+// 재시작 때마다 주소를 잃을 위험이 있었다(2026-09-06 전환 중 실제로 걸렸다).
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import * as snarkjs from 'snarkjs';
@@ -14,6 +18,9 @@ import { leafValue, TAG_SESSION, TAG_ACCOUNT } from './lib/imt.js';
 // 쓴다(회로가 v2 리프 해시 Poseidon(3)로 전환됨). v1 폐기 트리 경로는 제거됐다.
 import { createIMTv2, buildIMTv2 } from './lib/imt_v2.js';
 import { fetchRevocationWitnessesV3 } from './lib/wallet_revocation_v3.js';
+import {
+  createSessionForest, createAccountForest, sessionShardLowOf, accountShardOf,
+} from './lib/imt_v3.js';
 
 const { subtle } = webcrypto;
 const __filename = fileURLToPath(import.meta.url);
@@ -121,11 +128,15 @@ async function buildWarmupPiPkIInput(index) {
   const msg = poseidon([DOMAIN_IDP_TOKEN, arid_i, auid_i, r_token, max_height, chain_id]);
   const sig = eddsa.signPoseidon(sk_dummy, msg);
 
-  const tree = await createIMTv2(20);
+  // v3: 층마다 서브트리 깊이가 다르므로(세션 8 / 계정 10) 각각의 포레스트에서 뽑는다.
+  // 빈 포레스트라도 anchor가 모든 값을 덮어 witness가 정상적으로 나온다 — 웜업에는
+  // 실제 폐기 상태를 반영할 필요가 없다.
   const sessTarget = await leafValue(TAG_SESSION, r_token.toString());
   const acctTarget = await leafValue(TAG_ACCOUNT, auid.toString());
-  const sessWitness = await tree.getNonMembershipWitness(sessTarget);
-  const acctWitness = await tree.getNonMembershipWitness(acctTarget);
+  const sessForest = await createSessionForest();
+  const acctForest = await createAccountForest();
+  const sessWitness = await sessForest.getNonMembershipWitness(sessTarget, { maxHeight: max_height });
+  const acctWitness = await acctForest.getNonMembershipWitness(acctTarget);
 
   return {
     rp_nonce: rp_nonce.toString(),
@@ -154,7 +165,10 @@ async function buildWarmupPiPkIInput(index) {
     pk_IdP_y: F.toObject(pk_dummy[1]).toString(),
     PPID: PPID.toString(),
     max_height: max_height.toString(),
-    revocationRoot: sessWitness.root,
+    sess_root: sessWitness.root,
+    sess_shard_low: String(sessionShardLowOf(sessTarget)),
+    acct_root: acctWitness.root,
+    acct_shard: String(accountShardOf(acctTarget)),
   };
 }
 

@@ -23,7 +23,7 @@
 //   grace window와 K개 순환 버퍼가 없어진 뒤로는 root가 시간이 지나도 만료되지 않으므로,
 //   이 테스트는 더 이상 체인 블록을 인위적으로 진행시키지도, 끝에서 별도로 root를
 //   복구하지도 않는다 — 구간 B에서 게시하는 root가 그대로 최종 상태이고, 그 상태는
-//   fetchIdpRoot()가 돌려주는 현재 IdP root와 항상 일치한다.
+//   fetchIdpRootHex()가 돌려주는 현재 IdP topRoot와 항상 일치한다.
 //
 // == 멱등성 ==
 //   이 테스트는 멱등이 아니지만 재실행은 안전하다. 매 실행마다 새로 로그인해서
@@ -74,7 +74,11 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const REGISTRY_ABI = [
   'function idp() view returns (address)',
   'function latestRoot() view returns (bytes32)',
-  'function isCurrentRoot(bytes32) view returns (bool)',
+  // v3(이중 트리) 레지스트리는 유예 창이 있어 이름이 다르다. v2의 isCurrentRoot를
+  // 그대로 부르면 함수가 없어 정체불명의 revert가 난다.
+  'function isAcceptableRoot(bytes32) view returns (bool)',
+  // 유예 창 길이. 테스트가 배포 파라미터를 추측하지 않고 체인에서 읽는다.
+  'function graceBlocks() view returns (uint256)',
 ];
 
 // PPIDWallet.execute()가 되돌릴 수 있는 커스텀 에러들. revert 사유를 이름으로
@@ -253,11 +257,17 @@ function rootToBytes32(root) {
   return '0x' + BigInt(root).toString(16).padStart(64, '0');
 }
 
-async function fetchIdpRoot() {
-  // 정석 IMT(v2)가 게시 상태의 유일한 진실이다(Stage B). 전체 조회의 최상위 root가 그것.
-  const res = await fetch(`${IDP}/idp/revocation_state_v2`);
-  if (!res.ok) throw new Error(`/idp/revocation_state_v2 failed: ${res.status}`);
-  return String((await res.json()).root);
+// 게시 대상 root. v3(이중 트리)에서는 두 층의 상위 root를 합친 topRoot이고 **이미
+// bytes32**라 필드 원소 변환(rootToBytes32)을 거치면 안 된다. v2 root는 10진 필드
+// 원소라 변환이 필요하다 — 그 차이가 이 함수의 반환 형식에 그대로 드러난다.
+async function fetchIdpRootHex() {
+  const res = await fetch(`${IDP}/idp/revocation_state_v3`);
+  if (!res.ok) throw new Error(`/idp/revocation_state_v3 failed: ${res.status}`);
+  const { topRoot } = await res.json();
+  if (typeof topRoot !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(topRoot)) {
+    throw new Error(`revocation_state_v3의 topRoot가 bytes32가 아니다: ${topRoot}`);
+  }
+  return topRoot;
 }
 
 // push_revocation_root.cjs는 반드시 `npx hardhat run ... --network localhost`로 돌려야
@@ -336,10 +346,10 @@ async function main() {
   // (tests/test_idp_revoke_endpoint.js, tests/test_revocation_e2e.js)를 먼저 돌리면
   // 그 가정이 깨져, 구간 A가 검증하려는 것과 무관하게 /submitTransaction이 400으로
   // 실패한다. 자기 전제조건은 스스로 세운다 — 시작 전에 현재 root를 한 번 게시한다.
-  if (!(await registry.isCurrentRoot(rootToBytes32(await fetchIdpRoot())))) {
+  if (!(await registry.isAcceptableRoot(await fetchIdpRootHex()))) {
     pushRevocationRoot(idpOperator);
     assert.equal(
-      await registry.isCurrentRoot(rootToBytes32(await fetchIdpRoot())),
+      await registry.isAcceptableRoot(await fetchIdpRootHex()),
       true,
       '전제조건 실패: 게시했는데도 IdP의 현재 root가 isCurrentRoot=false다',
     );
@@ -347,7 +357,7 @@ async function main() {
   }
 
   // grace window와 K개 순환 버퍼가 없어진 뒤로는 root가 시간이 지나도 만료되지
-  // 않는다. 구간 B에서 게시하는 root가 곧 최종 상태이고 fetchIdpRoot()와 항상
+  // 않는다. 구간 B에서 게시하는 root가 곧 최종 상태이고 fetchIdpRootHex()와 항상
   // 일치하므로, 예전과 달리 별도의 환경 복구가 필요 없다.
   await runSections({ provider, signer, registry, idpOperator, adminSecret });
 
@@ -409,7 +419,7 @@ async function runSections({ provider, signer, registry, idpOperator, adminSecre
   console.log("OK: 구간 A' — calldata#2 확보 (nonce 1, 지금 유효한 root, 전송하지 않음)");
 
   // ===== 구간 B — 지갑이 폐기된 크레덴셜로 증명 생성을 거부한다 =====
-  const rootBeforeRevoke = await fetchIdpRoot();
+  const rootBeforeRevoke = await fetchIdpRootHex();
   const revokeRes = await fetch(`${IDP}/idp/revoke`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-IdP-Admin-Secret': adminSecret },
@@ -425,7 +435,7 @@ async function runSections({ provider, signer, registry, idpOperator, adminSecre
   // 만든 witness의 root가 게시돼 있지 않아 '폐기와 무관한 정상 사용자 전원'의
   // /submitTransaction이 400으로 막혔다. 그 장애 창이 없어졌는지를 여기서 단언한다.
   assert.equal(
-    await fetchIdpRoot(),
+    await fetchIdpRootHex(),
     rootBeforeRevoke,
     '배칭 위반: 폐기 접수만으로 게시된 IdP root가 바뀌었다',
   );
@@ -442,18 +452,35 @@ async function runSections({ provider, signer, registry, idpOperator, adminSecre
   // 더 이상 '현재 root'가 아니게 된다 — grace 시절처럼 "폐기 직후에도 한동안은
   // 캐시가 통해 200이 나오는" 시간 창이 이제는 없다.
   publishPendingRevocations(idpOperator);
-  const publishedRoot = await fetchIdpRoot();
+  const publishedRoot = await fetchIdpRootHex();
   assert.notEqual(publishedRoot, rootBeforeRevoke, '게시했는데도 IdP root가 그대로다');
   assert.equal(
-    await registry.isCurrentRoot(rootToBytes32(publishedRoot)),
+    await registry.isAcceptableRoot(publishedRoot),
     true,
     '게시 후 새 root가 레지스트리에 등록되지 않았다',
   );
   console.log('OK: 대기 중이던 폐기를 게시했다 (IdP root 전진 + 온체인 latestRoot 갱신 확인)');
 
-  // 게시 직후 곧바로 다시 시도한다. 캐시된 root(폐기 전)가 더 이상 현재 root가
-  // 아니므로 지갑은 즉시 IdP 재조회 경로를 타고, 이 세션의 r_token이 이미 폐기된
-  // 리프임을 발견해 비멤버십 witness를 만들지 못하고 스스로 멈춘다.
+  // v3에서는 폐기가 **유예 창(graceBlocks)만큼 뒤에** 효력을 갖는다. 그 창 동안은
+  // 직전 root가 여전히 isAcceptableRoot이므로, 지갑은 캐시된 증명을 그대로 쓰고
+  // 트랜잭션도 통과한다 — 인플라이트 보호의 대가이고 설계 문서 6절에 적힌 교환이다.
+  // (v2에는 grace가 없어 게시 즉시 막혔다. 그 차이가 여기서 드러난다.)
+  const stillInGrace = await submitTransaction(session);
+  assert.equal(
+    stillInGrace.status,
+    200,
+    `구간 B: 유예 창 안에서는 아직 통과해야 한다: ${JSON.stringify(stillInGrace.body)}`,
+  );
+  console.log('OK: 구간 B — 유예 창 안에서는 폐기가 아직 효력을 갖지 않는다 (설계상 K블록 지연)');
+
+  // 창을 넘긴다. graceBlocks는 레지스트리에서 직접 읽어 테스트가 배포 파라미터를
+  // 추측하지 않게 한다.
+  const graceBlocks = Number(await registry.graceBlocks());
+  for (let i = 0; i < graceBlocks + 1; i++) {
+    await provider.send('evm_mine', []);
+  }
+  // 이제 직전 root가 창 밖이라 지갑은 IdP 재조회 경로를 타고, 이 세션의 r_token이
+  // 이미 폐기된 리프임을 발견해 비멤버십 witness를 만들지 못하고 스스로 멈춘다.
   const afterRevoke = await submitTransaction(session);
   assert.equal(
     afterRevoke.status,
@@ -466,15 +493,15 @@ async function runSections({ provider, signer, registry, idpOperator, adminSecre
     `구간 B: 오류 메시지가 비멤버십 실패가 아니다: ${JSON.stringify(afterRevoke.body)}`,
   );
   console.log(
-    'OK: 구간 B — 게시 직후 곧바로 지갑이 폐기된 세션의 증명 생성을 거부했다 (400, "is a member", grace 창 없음)',
+    `OK: 구간 B — 유예 창(${graceBlocks}블록)이 지나자 지갑이 폐기된 세션의 증명 생성을 거부했다 (400, "is a member")`,
   );
 
   // ===== 구간 C — 새 root가 게시되면 직전 root는 그 즉시 무효가 된다 =====
   //
-  // calldata#2는 구간 A'에서 만들어졌고, 그 시점의 revocationRoot는 rootBeforeRevoke
-  // (=구간 B가 방금 교체한 직전 root)다. K개 순환 버퍼도 grace window도 없으므로
-  // 이건 "아직 유효한 최근 root"가 아니라 그냥 latestRoot와 다른 틀린 root다.
-  // nonce는 1이라 NonceMismatch를 통과하고 root 검사(isCurrentRoot)에서 막혀야 한다.
+  // calldata#2는 구간 A'에서 만들어졌고, 그 시점의 root는 rootBeforeRevoke
+  // (=구간 B가 교체한 직전 root)다. 구간 B에서 유예 창을 이미 넘겼으므로 이건
+  // "아직 유효한 최근 root"가 아니라 창 밖으로 밀려난 틀린 root다.
+  // nonce는 1이라 NonceMismatch를 통과하고 root 검사(isAcceptableRoot)에서 막혀야 한다.
   // 여기서 나와야 하는 사유는 반드시 StaleRevocationRoot다 — 그래야 폐기 검사가
   // 실제로 발동했다는 뜻이다. NonceMismatch나 Expired가 나오면 검증하려던 것을
   // 검증하지 못한 것이다.
@@ -519,7 +546,7 @@ async function runSections({ provider, signer, registry, idpOperator, adminSecre
   // 보냈을 뿐 latestRoot를 바꾸지 않았으므로, 환경은 구간 B가 게시한 상태 그대로
   // 여전히 일관적이다 — 복구할 것이 없다는 사실 자체를 여기서 확인한다.
   assert.equal(
-    await registry.isCurrentRoot(rootToBytes32(await fetchIdpRoot())),
+    await registry.isAcceptableRoot(await fetchIdpRootHex()),
     true,
     '환경 불변 위반: 구간 C 이후 latestRoot가 현재 IdP root와 어긋났다',
   );

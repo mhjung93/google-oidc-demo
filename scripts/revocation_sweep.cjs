@@ -1,5 +1,9 @@
 const hre = require("hardhat");
-const { getIdPSigner, rootToBytes32 } = require("./revocation_idp.cjs");
+const { getIdPSigner, rootToBytes32, fetchIdPTopRootV3 } = require("./revocation_idp.cjs");
+
+// 폐기 트리 버전. v3(이중 트리)로 전환하면 게시 대상 root의 출처와 레지스트리
+// 컨트랙트가 함께 바뀐다. 기본값은 v2라, 환경변수를 세우기 전까지 기존 동작 그대로다.
+const TREE_VERSION = process.env.REVOCATION_TREE_VERSION === "v3" ? "v3" : "v2";
 
 // hardhat.config.cjs에 networks 블록이 없어 defaultNetwork가 "hardhat"이다.
 // push_revocation_root.cjs와 같은 이유로, --network 없이 실행하면 명령 종료와

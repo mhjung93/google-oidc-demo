@@ -2376,6 +2376,25 @@ app.get('/idp/revocation_state_v2', (req, res) => {
   return res.json({ epoch: epochV2, seq: seqV2, root, mutations });
 });
 
+// v4 이하 상태 파일에서 올라오면 v3가 비어 있고 needsBackfill이 선다(층 정보를 리프
+// 해시에서 되돌릴 수 없기 때문이다). 운영자가 "살아있는 폐기가 없거나 전부 다시
+// 접수했다"를 확인한 뒤 그 사실을 남기는 경로다.
+//
+// 자동으로 내리지 않는 이유: 무엇이 살아있는 폐기인지는 IdP가 판단할 수 없다(층을
+// 모른다는 것이 애초의 문제다). 확인의 주체는 운영자여야 하고, 이 엔드포인트는 그
+// 확인을 기록할 뿐이다. 플래그가 영원히 서 있으면 경고가 소음이 되어 무시하게 된다.
+app.post('/idp/v3/ack_backfill', requireIdPAdmin, serializeAdminMutation(async (req, res) => {
+  const was = revocationV3.needsBackfill;
+  revocationV3.ackBackfill();
+  const saved = saveIdPState();
+  if (!saved) {
+    revocationV3.markNeedsBackfill();
+    return res.status(500).json({ error: 'failed to persist; the flag was not cleared, please retry' });
+  }
+  console.log(`[IdP] v3 backfill 확인됨 (이전 needsBackfill=${was})`);
+  res.json({ needsBackfill: false, previous: was });
+}));
+
 // === v3(이중 트리) 조회 — 지갑이 자기 샤드 두 개만 받아가는 경로 ===
 //
 // v2 조회와 근본적으로 다른 점: **증분 동기화 프로토콜이 없다.** 서브트리 하나가 최대
