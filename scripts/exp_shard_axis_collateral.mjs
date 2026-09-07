@@ -42,7 +42,9 @@
 // **구조적으로** 결론이 난다. 아래 reclamationNote()가 그 근거를 함께 출력한다.
 import fs from 'node:fs';
 import { leafValue, TAG_SESSION } from '../lib/imt.js';
-import { SESSION_RING, SESSION_VALUE_BITS } from '../lib/imt_v3.js';
+import {
+  SESSION_RING, SESSION_VALUE_BITS, SESSION_SUBTREE_DEPTH, ACCOUNT_SUBTREE_DEPTH,
+} from '../lib/imt_v3.js';
 
 // ── 시스템 상수 (custom_idp.js와 같아야 한다) ────────────────────────────
 const CREDENTIAL_LIFETIME_BLOCKS = 300;
@@ -194,12 +196,19 @@ function drawScenario(name, rng, victim, R) {
 }
 
 // ── 한 시나리오 × 한 샤드 수에 대해 축별 부수 무효화를 센다 ──────────────
-function runScenario(name, S, rng) {
+function runScenario(name, S, rng, Roverride) {
   const axes = makeAxes(S);
-  const R = revocationsPerLifetime();
+  const R = Roverride ?? revocationsPerLifetime();
   const hits = Object.fromEntries(AXIS_NAMES.map((a) => [a, []]));
   // 척도 A용: 시행마다 (내 증명 유효 구간 t0, 내 샤드에 들어온 폐기들의 삽입 시각)
   const timeline = Object.fromEntries(AXIS_NAMES.map((a) => [a, []]));
+  // 척도 C용: 시행마다 **가장 붐비는 샤드의 리프 수**.
+  //
+  // 관측 창을 LIFETIME으로 잡는 근거: 그보다 오래된 리프는 만료돼 회수된다(세션은 샤드
+  // 리셋, 계정은 샤드 재기준화). 그래서 한 샤드에 동시에 존재할 수 있는 리프 수는
+  // 대략 "최근 LIFETIME 동안 그 샤드로 라우팅된 폐기 수"다 — 그것이 서브트리 용량과
+  // 직접 비교할 값이다.
+  const peakOccupancy = Object.fromEntries(AXIS_NAMES.map((a) => [a, []]));
 
   for (let t = 0; t < TRIALS; t++) {
     // 피해자: 아무 uid, 아무 로그인 블록.
@@ -214,9 +223,19 @@ function runScenario(name, S, rng) {
       for (const r of revs) if (axes[a](r) === mine) { n += 1; times.push(r.insertedAt); }
       hits[a].push(n);
       timeline[a].push({ t0: victim.loginBlock, times });
+
+      // 이 회차 폐기 전체를 샤드별로 세어 최대 점유를 본다.
+      const load = new Map();
+      for (const r of revs) {
+        const sh = axes[a](r);
+        load.set(sh, (load.get(sh) ?? 0) + 1);
+      }
+      let peak = 0;
+      for (const v of load.values()) if (v > peak) peak = v;
+      peakOccupancy[a].push(peak);
     }
   }
-  return { name, S, R, hits, timeline };
+  return { name, S, R, hits, timeline, peakOccupancy };
 }
 
 // ── 집계 ─────────────────────────────────────────────────────────────────
@@ -356,6 +375,92 @@ for (const sc of scenarios) {
 }
 console.log('');
 console.log(`(재증명 1회 = ${REPROVE_MS} ms, 실측 warm 평균. IdP 샤드 재조회 왕복은 별도다.)`);
+console.log('');
+
+// ── 척도 C: 샤드 점유 vs 서브트리 용량 ──────────────────────────────────
+//
+// 무효화는 지연(507 ms 재증명)이지만 **용량 초과는 보안 기능 정지**다. 서브트리가 꽉 차면
+// lib/imt_v2.js의 insert()가 던지고, 그 폐기는 게시 자체가 되지 않는다. 앞의 척도들이
+// 전혀 보지 못하는 실패라 따로 잰다.
+//
+// 집중형 축이 무효화 지표에서 이기는 바로 그 성질이 여기서는 정확히 불리하게 작용한다.
+const SESSION_SUBTREE_CAPACITY = 2 ** SESSION_SUBTREE_DEPTH - 1;   // 255 (anchor 제외)
+const ACCOUNT_SUBTREE_CAPACITY = 2 ** ACCOUNT_SUBTREE_DEPTH - 1;   // 1023
+
+console.log('## 척도 C — 가장 붐비는 샤드의 리프 수 vs 서브트리 용량 (샤드 4,096)');
+console.log('');
+console.log(`서브트리 용량: 세션(깊이 ${SESSION_SUBTREE_DEPTH}) ${SESSION_SUBTREE_CAPACITY}리프 / ` +
+            `계정(깊이 ${ACCOUNT_SUBTREE_DEPTH}) ${ACCOUNT_SUBTREE_CAPACITY}리프`);
+console.log('');
+console.log('| 시나리오 | 축 | 최대 점유(평균) | 최대 점유(최악) | 세션 용량 대비 | 계정 용량 대비 |');
+console.log('|:--|:--|--:|--:|--:|--:|');
+for (const sc of scenarios) {
+  const rng = makeRng(SEED + 4096);
+  const res = runScenario(sc, 4096, rng);
+  for (const a of AXIS_NAMES) {
+    const st = stats(res.peakOccupancy[a]);
+    const sPct = (st.max / SESSION_SUBTREE_CAPACITY) * 100;
+    const aPct = (st.max / ACCOUNT_SUBTREE_CAPACITY) * 100;
+    const mark = (p) => (p > 100 ? `**${p.toFixed(0)}% 초과**` : `${p.toFixed(0)}%`);
+    console.log(
+      `| ${sc} | ${a} | ${st.mean.toFixed(0)} | ${st.max} | ${mark(sPct)} | ${mark(aPct)} |`,
+    );
+    rows.push({ shards: 4096, scenario: `peak:${sc}`, axis: a, R: res.R,
+                anyRate: 0, mean: st.mean, p50: st.p50, p95: st.p95, p99: st.p99, max: st.max });
+  }
+}
+console.log('');
+console.log('“초과”는 그 시나리오에서 서브트리가 꽉 차 insert()가 던진다는 뜻이다 —');
+console.log('폐기가 지연되는 것이 아니라 **게시되지 않는다**.');
+console.log('');
+
+// ── 척도 C-2: 몇 건짜리 사건부터 서브트리가 넘치는가 ────────────────────
+//
+// "지금 규모에서 안전한가"보다 실무적으로 중요한 것은 **얼마나 여유가 있는가**다.
+// 시나리오별로 폐기 건수를 두 배씩 올리며 최대 점유가 용량을 넘는 지점을 찾는다.
+// (평균 최대점유 기준. 표본을 줄여 빠르게 훑는다.)
+function overflowThresholds(scenario, axis, S, capacities) {
+  const TRIALS_LIGHT = 40;
+  const R_MAX = 262_144;               // 2^18. 이보다 큰 사건은 "—"로 둔다.
+  const axes = makeAxes(S);
+  const found = capacities.map(() => null);
+  for (let R = 64; R <= R_MAX; R *= 2) {
+    const rng = makeRng(SEED + 77);
+    let peakSum = 0;
+    for (let t = 0; t < TRIALS_LIGHT; t++) {
+      const victim = makeCredential(randInt(rng, DAU), randInt(rng, BLOCKS_PER_DAY));
+      const revs = drawScenario(scenario, rng, victim, R);
+      const load = new Map();
+      for (const r of revs) {
+        const sh = axes[axis](r);
+        load.set(sh, (load.get(sh) ?? 0) + 1);
+      }
+      let peak = 0;
+      for (const v of load.values()) if (v > peak) peak = v;
+      peakSum += peak;
+    }
+    const meanPeak = peakSum / TRIALS_LIGHT;
+    // 두 용량을 한 번의 측정으로 함께 판정한다(따로 돌면 일이 두 배가 된다).
+    capacities.forEach((cap, k) => { if (found[k] === null && meanPeak > cap) found[k] = R; });
+    if (found.every((x) => x !== null)) break;
+  }
+  return found;
+}
+
+console.log('## 척도 C-2 — 서브트리가 넘치기 시작하는 사건 규모 (샤드 4,096)');
+console.log('');
+console.log('| 시나리오 | 축 | 세션 용량(255) 초과 | 계정 용량(1023) 초과 |');
+console.log('|:--|:--|--:|--:|');
+for (const sc of scenarios) {
+  for (const a of AXIS_NAMES) {
+    const fmt = (x) => (x === null ? '> 262,144건' : `${x.toLocaleString()}건`);
+    const [sT, aT] = overflowThresholds(sc, a, 4096,
+      [SESSION_SUBTREE_CAPACITY, ACCOUNT_SUBTREE_CAPACITY]);
+    console.log(`| ${sc} | ${a} | ${fmt(sT)} | ${fmt(aT)} |`);
+  }
+}
+console.log('');
+console.log(`(현재 기준 규모는 수명당 ${revocationsPerLifetime().toLocaleString()}건. 그보다 작은 값이 나오면 이미 넘친다는 뜻이다.)`);
 console.log('');
 
 // ── 현행 배포 구성: 세션(max_height, 4096) vs 계정(uid_hash, 256) ────────
