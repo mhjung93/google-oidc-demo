@@ -30,7 +30,8 @@ const adminHeaders = { 'X-IdP-Admin-Secret': ADMIN_SECRET };
 const ACCOUNT_VALUE = `424242${Date.now()}`;
 
 async function main() {
-  const before = await (await fetch(`${BASE}/idp/revocation_state_v3`)).json();
+  // 덮어쓰기 목록은 진단용이라 ?full=1일 때만 실린다(지갑은 형제 경로만 쓴다).
+  const before = await (await fetch(`${BASE}/idp/revocation_state_v3?full=1`)).json();
   assert.match(String(before.topRoot), /^0x[0-9a-f]{64}$/,
     'revocation_state_v3 must expose the combined top root as bytes32');
   assert.ok(typeof before.sessionEmptyRoot === 'string' && typeof before.accountEmptyRoot === 'string',
@@ -55,7 +56,7 @@ async function main() {
   // 배칭의 핵심 성질: 게시 전까지 지갑이 보는 상태는 조금도 변하지 않는다.
   // 여기서 상태가 바뀌면 지갑이 온체인에 없는 root로 witness를 만들어 정상 사용자
   // 전원의 execute()가 StaleRevocationRoot로 막힌다 — 이 배칭이 없애려는 장애다.
-  const after = await (await fetch(`${BASE}/idp/revocation_state_v3`)).json();
+  const after = await (await fetch(`${BASE}/idp/revocation_state_v3?full=1`)).json();
   // topRoot가 그대로면 지갑이 보는 상태가 조금도 바뀌지 않았다는 뜻이다 — 두 층의 모든
   // 서브트리 root를 한 값으로 접은 것이므로, 리프 목록 비교보다 강한 확인이다.
   assert.equal(after.topRoot, before.topRoot,

@@ -13,6 +13,7 @@ import {
   TAG_SESSION,
   TAG_ACCOUNT,
   SESSION_RING,
+  sessionShardResettable,
 } from '../lib/imt_v3.js';
 import { proveInsertTransition } from '../lib/transition_proof.js';
 
@@ -227,6 +228,33 @@ describe('RevocationRegistryV4', function () {
       // 오프체인도 같은 리셋을 하면 root가 일치해야 한다.
       sess.resetShard(shard);
       expect(await reg.latestRoot()).to.equal(combineTopRoots(sess.getTopRoot(), acct.getTopRoot()));
+    });
+
+    it('IdP와 컨트랙트의 리셋 판정식이 완전히 일치한다', async function () {
+      // 이 실험이 잡으려는 결함: IdP가 자기 만료 기록만 보고 샤드를 비우면, 컨트랙트는
+      // 링 위치로만 판정하므로 그 리셋을 SessionShardNotExpired로 거부한다. 그러면 그
+      // 회차의 pushUpdates가 통째로 막히고 백로그가 쌓여 체인이 따라잡지 못한다
+      // (2026-09-07 라이브에서 실제로 발생).
+      //
+      // 두 구현이 같은 식을 쓰는지를 **샤드 공간과 블록을 훑어** 직접 대조한다.
+      const sess = await createSessionForest();
+      const acct = await createAccountForest();
+      const { reg } = await deploy(rootToBytes32(sess.getTopRoot()), rootToBytes32(acct.getTopRoot()));
+
+      const ring = Number(SESSION_RING);
+      let checked = 0;
+      for (const mine of [0, 1, 7, 8, 9, 255, 256, 1000, 2047, 2048, 4095]) {
+        for (let step = 0; step < 5; step++) {
+          const B = await ethers.provider.getBlockNumber();
+          const onchain = await reg.sessionShardResettable(mine);
+          const offchain = sessionShardResettable(mine, B, MAX_CREDENTIAL_SPAN);
+          expect(onchain, `shard ${mine} @ block ${B}: 컨트랙트 ${onchain} vs 라이브러리 ${offchain}`)
+            .to.equal(offchain);
+          checked += 1;
+          await hre.network.provider.send('hardhat_mine', ['0x' + (ring / 4).toString(16)]);
+        }
+      }
+      expect(checked).to.be.greaterThan(50);
     });
 
     it('리셋의 목적지가 빈 서브트리 root가 아니면 거부한다', async function () {

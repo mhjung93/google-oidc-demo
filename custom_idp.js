@@ -2197,7 +2197,11 @@ app.get('/idp/revocation_state_v3', (req, res) => {
   } catch (err) {
     return res.status(400).json({ error: err.message });
   }
-  res.json(revocationV3.snapshot({ sessionShard, accountShard }));
+  // 비어 있지 않은 샤드의 root 목록은 기본으로 싣지 않는다. 지갑은 자기 서브트리를 받은
+  // 리프로 쌓고 형제 경로로 접어 올려 상위 root를 얻으므로 필요가 없고, 목록은 샤드 수에
+  // 비례해 커진다(계정 4,096 기준 233 KB 대 1 KB). 진단·도구용으로 ?full=1을 남긴다.
+  const includeOverrides = String(req.query.full ?? '') === '1';
+  res.json(revocationV3.snapshot({ sessionShard, accountShard, includeOverrides }));
 });
 
 // 4. Public Keys Endpoint (for RP verification)

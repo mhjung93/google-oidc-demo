@@ -25,6 +25,7 @@ const RPC = process.env.ETH_RPC_URL || 'http://127.0.0.1:8545';
 const DEPLOYER_KEY = '0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6';
 const MAX_CREDENTIAL_SPAN = 332;
 const GRACE_BLOCKS = 3;
+const KIND_SESSION_RESET = 1;   // RevocationRegistryV4.Kind
 
 function artifact(sol, name) {
   const p = `artifacts/contracts/${sol}/${name}.json`;
@@ -209,7 +210,31 @@ async function main() {
       console.log('OK: 7) push 없이 커밋한 회차도 다음 사이클이 백로그로 수습한다');
     }
 
-    console.log('\n== V4 게시 사이클 7종 통과 ==');
+    // ── 8) 블록이 흘러도 체인이 매번 IdP를 따라잡는다 ─────────────────────
+    //
+    // 회차마다 만료 회수가 섞여 들어오는데, 그중 하나라도 컨트랙트가 거부하면 그 회차의
+    // pushUpdates가 통째로 막히고 백로그가 쌓여 체인이 영영 뒤처진다. 2026-09-07에
+    // 세션 리셋이 정확히 그렇게 거부됐다(IdP는 자기 만료 기록으로, 컨트랙트는 링 위치로
+    // 판정해 조건이 달랐다).
+    //
+    // 주의: 격리 IdP에는 **세션 폐기를 만들 수 없다**(발급 기록이 있어야 접수된다).
+    // 그래서 이 케이스는 세션 리셋 경로를 덮지 못한다. 그쪽은 두 곳이 나눠 덮는다:
+    //   · 판정식 일치      — test/RevocationRegistryV4.test.mjs (컨트랙트 view와 직접 대조)
+    //   · 호출부가 그 판정을 쓰는가 — tests/test_imt_v3_lib.js 11-a-1 (창 밖에서 리셋 안 함)
+    {
+      for (let i = 0; i < 6; i++) {
+        await provider.send('hardhat_mine', [`0x${(120).toString(16)}`]);
+        const r = await publishCycle(idp, registry);
+        assert.equal(
+          String(await registry.latestRoot()).toLowerCase(),
+          String(r.committed.root).toLowerCase(),
+          `회차 ${i}: 체인이 IdP를 따라잡지 못했다`,
+        );
+      }
+      console.log('OK: 8) 블록을 밀며 여러 회차를 돌려도 체인이 매번 IdP를 따라잡는다');
+    }
+
+    console.log('\n== V4 게시 사이클 8종 통과 ==');
   } finally {
     await idp.stop();
   }

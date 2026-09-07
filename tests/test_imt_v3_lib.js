@@ -386,8 +386,17 @@ async function main() {
       const shard = sessionShardOf(a, M1);
       assert.equal(sessionShardOf(b, M2), shard, '두 리프가 같은 샤드여야 이 테스트가 의미 있다');
 
-      // 정리 창(블록 100~279)을 통째로 놓친다
-      for (const blk of [300n, 400n, 500n, 600n]) v3.resetExpiredSessionShards(blk);
+      // 리셋 창은 만료(M1=100) 직후 179블록, 즉 블록 101~279다. 컨트랙트가 받아주는
+      // 구간이 정확히 거기이므로(d = (k - B) mod 512 > 332) IdP도 그 안에서만 비운다.
+      //
+      // 먼저 **창 밖**에서 불러 아무 일도 안 일어나는지 본다. 예전에는 여기서 비웠고,
+      // 그 리셋은 컨트랙트가 SessionShardNotExpired로 거부했다(2026-09-07).
+      for (const blk of [300n, 400n, 500n, 600n]) {
+        assert.equal(v3.resetExpiredSessionShards(blk), 0,
+          `창 밖(블록 ${blk})에서 리셋했다 — 컨트랙트가 거부할 전이를 만든 것이다`);
+      }
+      // 창 안에서 부르면 비운다.
+      assert.equal(v3.resetExpiredSessionShards(150n), 1, '창 안인데 리셋되지 않았다');
 
       // 링이 재사용되는 새 크레덴셜이 들어온다
       v3.record(b, LAYER_SESSION, { expiry: M2, maxHeight: M2 });
@@ -503,7 +512,10 @@ async function main() {
       '두 층의 리프가 합집합에 안 들어왔다');
 
     // 만료 회수 후에는 v3에서 빠진다 — v2였다면 재기준화 전까지 남아 있었을 것이다.
-    v3.resetExpiredSessionShards(1000n);
+    //
+    // 세션 리셋은 창 안(만료 100 직후 179블록)에서만 일어난다. 계정 회수는 창이 없다
+    // (값 기반 샤딩이라 링 위치라는 개념 자체가 없다).
+    assert.equal(v3.resetExpiredSessionShards(150n), 1, '창 안인데 세션 샤드가 리셋되지 않았다');
     await v3.rebaselineExpiredAccountShards(1000n);
     assert.equal(v3.publishedLeafSet().size, 0,
       '만료 리프가 회수됐는데도 합집합에 남아 있다');

@@ -61,11 +61,12 @@ async function main() {
     assert.equal(r.body.leaf, acctLeaf);
 
     // 게시 전에는 v3에도 반영되지 않아야 한다 (게시된 상태만 서빙한다).
-    let snap = (await idp.get('/idp/revocation_state_v3')).body;
+    // 덮어쓰기 목록은 진단용이라 ?full=1일 때만 실린다(지갑은 형제 경로만 쓴다).
+    let snap = (await idp.get('/idp/revocation_state_v3?full=1')).body;
     assert.deepEqual(snap.accountRootOverrides, {}, '게시 전인데 v3에 반영됐다');
 
     await publish(idp);
-    snap = (await idp.get(`/idp/revocation_state_v3?accountShard=${acctShard}`)).body;
+    snap = (await idp.get(`/idp/revocation_state_v3?full=1&accountShard=${acctShard}`)).body;
     assert.deepEqual(
       Object.keys(snap.accountRootOverrides).map(Number),
       [acctShard],
@@ -121,14 +122,14 @@ async function main() {
       assert.equal(r.status, 200, JSON.stringify(r.body));
       await publish(idp);
 
-      const after = (await idp.get('/idp/revocation_state_v3')).body;
+      const after = (await idp.get('/idp/revocation_state_v3?full=1')).body;
       assert.equal(after.accountRootOverrides[acctShard], before, '타인 폐기가 내 서브트리 root를 바꿨다');
       assert.notEqual(after.topRoot, beforeTop, 'top root는 바뀌어야 한다');
       console.log('OK: 4) 타인 폐기에 내 서브트리 root가 불변, top root만 바뀐다');
     }
 
     // ── 5) 영속화 — 재시작을 넘어 같은 root ──────────────────────────────
-    const beforeRestart = (await idp.get('/idp/revocation_state_v3')).body;
+    const beforeRestart = (await idp.get('/idp/revocation_state_v3?full=1')).body;
     const stateFile = path.join(stateDir, 'idp_state.json');
     const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
     assert.equal(saved.version, 6, '상태 파일이 v6가 아니다');
@@ -140,7 +141,7 @@ async function main() {
 
     await idp.stop();
     idp = await startIsolatedIdP({ dir: stateDir });
-    const afterRestart = (await idp.get('/idp/revocation_state_v3')).body;
+    const afterRestart = (await idp.get('/idp/revocation_state_v3?full=1')).body;
     assert.equal(afterRestart.topRoot, beforeRestart.topRoot, '재시작 후 combined root가 달라졌다');
     assert.deepEqual(afterRestart.accountRootOverrides, beforeRestart.accountRootOverrides);
     console.log('OK: 5) 재시작을 넘어 v3 상태가 같은 root로 복원된다');
