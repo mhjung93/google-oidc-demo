@@ -122,7 +122,7 @@ async function buildPool() {
   POOL = { low3, lowBits };
 }
 
-function makeCredential(uid, loginBlock) {
+function makeCredential(uid, loginBlock, insertedAt = 0) {
   const k = uid % POOL_SIZE;
   return {
     uid,
@@ -130,6 +130,8 @@ function makeCredential(uid, loginBlock) {
     maxHeight: loginBlock + LIFETIME,
     leafLow3: POOL.low3[k],
     leafLowBits: POOL.lowBits[k],
+    // 이 폐기가 트리에 들어간 블록. 척도 A(트랜잭션 1회)가 쓴다.
+    insertedAt,
   };
 }
 
@@ -166,7 +168,7 @@ function drawScenario(name, rng, victim, R) {
     // 아무 사용자나, 내 수명 중 아무 때나 폐기된다.
     for (let i = 0; i < R; i++) {
       const T = t0 + randInt(rng, LIFETIME);
-      out.push(makeCredential(randInt(rng, DAU), liveAt(T)));
+      out.push(makeCredential(randInt(rng, DAU), liveAt(T), T));
     }
   } else if (name === 'session-wave') {
     // 특정 시간 창(10블록 = 2분)에 로그인한 세션이 한꺼번에 폐기된다.
@@ -175,14 +177,15 @@ function drawScenario(name, rng, victim, R) {
     const waveWidth = 10;
     const waveStart = Tw - LIFETIME + randInt(rng, LIFETIME - waveWidth);
     for (let i = 0; i < R; i++) {
-      out.push(makeCredential(randInt(rng, DAU), waveStart + randInt(rng, waveWidth)));
+      // wave는 한 시점에 통째로 들어간다.
+      out.push(makeCredential(randInt(rng, DAU), waveStart + randInt(rng, waveWidth), Tw));
     }
   } else if (name === 'cohort-burst') {
     // uid가 인접한 계정 무리가 통째로 폐기된다. 로그인 시각은 평범하게 흩어져 있다.
     const cohortStart = randInt(rng, Math.max(1, DAU - R));
     for (let i = 0; i < R; i++) {
       const T = t0 + randInt(rng, LIFETIME);
-      out.push(makeCredential(cohortStart + i, liveAt(T)));
+      out.push(makeCredential(cohortStart + i, liveAt(T), T));
     }
   } else {
     throw new Error(`unknown scenario ${name}`);
@@ -195,6 +198,8 @@ function runScenario(name, S, rng) {
   const axes = makeAxes(S);
   const R = revocationsPerLifetime();
   const hits = Object.fromEntries(AXIS_NAMES.map((a) => [a, []]));
+  // 척도 A용: 시행마다 (내 증명 유효 구간 t0, 내 샤드에 들어온 폐기들의 삽입 시각)
+  const timeline = Object.fromEntries(AXIS_NAMES.map((a) => [a, []]));
 
   for (let t = 0; t < TRIALS; t++) {
     // 피해자: 아무 uid, 아무 로그인 블록.
@@ -205,11 +210,13 @@ function runScenario(name, S, rng) {
       const mine = axes[a](victim);
       let n = 0;
       // drawScenario가 이미 "내 수명 안에 삽입되고 그때 살아있던" 것만 만든다.
-      for (const r of revs) if (axes[a](r) === mine) n += 1;
+      const times = [];
+      for (const r of revs) if (axes[a](r) === mine) { n += 1; times.push(r.insertedAt); }
       hits[a].push(n);
+      timeline[a].push({ t0: victim.loginBlock, times });
     }
   }
-  return { name, S, R, hits };
+  return { name, S, R, hits, timeline };
 }
 
 // ── 집계 ─────────────────────────────────────────────────────────────────
@@ -289,6 +296,67 @@ for (const S of SHARD_COUNTS) {
   }
   console.log('');
 }
+
+// ── 척도 A: 트랜잭션 1회 기준 ────────────────────────────────────────────
+//
+// 위 표는 "세션 수명 전체(66분) 동안 한 번이라도" 기준이다. 트랜잭션 하나만 놓고 보면
+// 노출 창이 훨씬 짧다: **마지막으로 증명을 만든 시점부터 지금 제출까지**만 문제다.
+// (wallet_agent.js의 shouldReuseProof가 sessRoot/acctRoot 불변을 조건으로 캐시를 재사용한다.)
+//
+// 그래서 트랜잭션 간격 Δ를 파라미터로 두고, 무작위 제출 시각 직전 Δ블록 안에 내 샤드로
+// 폐기가 들어왔을 확률을 잰다 = **이번 트랜잭션에서 캐시가 빗나갈 확률**.
+const TX_GAPS = [1, 10, 60];   // 블록. 12초 / 2분 / 12분
+function cacheMissRate(timelineForAxis, gap, rng) {
+  let miss = 0;
+  for (const { t0, times } of timelineForAxis) {
+    // 제출 시각을 내 증명 유효 구간에서 무작위로 잡는다. 그 직전 gap블록이 노출 창이다.
+    const tSub = t0 + randInt(rng, LIFETIME);
+    if (times.some((T) => T > tSub - gap && T <= tSub)) miss += 1;
+  }
+  return miss / timelineForAxis.length;
+}
+
+// ── 척도 B: 세션당 재증명 횟수와 그 비용 ────────────────────────────────
+//
+// 무효화 1회 = IdP에서 내 샤드 재조회 + pi_pk_i 재생성. 증명 시간은 실측값을 쓴다
+// (results/mode2_pi_pk_i_v3_proof_20260906.csv, warm 5회 평균 507.2 ms).
+const REPROVE_MS = 507.2;
+
+console.log('## 척도 A — 트랜잭션 1회 기준 캐시 미스율 (샤드 4,096, 축 비교)');
+console.log('');
+console.log('| 시나리오 | 축 | Δ=1블록(12초) | Δ=10블록(2분) | Δ=60블록(12분) |');
+console.log('|:--|:--|--:|--:|--:|');
+for (const sc of scenarios) {
+  const rng = makeRng(SEED + 4096);
+  const res = runScenario(sc, 4096, rng);
+  for (const a of AXIS_NAMES) {
+    const cells = TX_GAPS.map((g) => `${(cacheMissRate(res.timeline[a], g, makeRng(SEED + g)) * 100).toFixed(2)}%`);
+    console.log(`| ${sc} | ${a} | ${cells.join(' | ')} |`);
+    rows.push({ shards: 4096, scenario: `txgap:${sc}`, axis: a, R: res.R,
+                anyRate: Number(cells[1].replace('%','')) / 100, mean: 0, p50: 0, p95: 0, p99: 0, max: 0 });
+  }
+}
+console.log('');
+
+console.log('## 척도 B — 세션(66분) 하나당 재증명 횟수와 지연 (샤드 4,096, 축 비교)');
+console.log('');
+// p95만 보면 분포가 두 갈래인 행을 놓친다(대다수 0, 소수가 수십 회). p99와 최대를 함께 낸다.
+console.log('| 시나리오 | 축 | 평균 재증명 | p95 | p99 | 최대 | 평균 지연 | 최악 지연 |');
+console.log('|:--|:--|--:|--:|--:|--:|--:|--:|');
+for (const sc of scenarios) {
+  const rng = makeRng(SEED + 4096);
+  const res = runScenario(sc, 4096, rng);
+  for (const a of AXIS_NAMES) {
+    const st = stats(res.hits[a]);
+    console.log(
+      `| ${sc} | ${a} | ${st.mean.toFixed(2)}회 | ${st.p95} | ${st.p99} | ${st.max} | ` +
+      `${(st.mean * REPROVE_MS / 1000).toFixed(2)}초 | ${(st.max * REPROVE_MS / 1000).toFixed(1)}초 |`,
+    );
+  }
+}
+console.log('');
+console.log(`(재증명 1회 = ${REPROVE_MS} ms, 실측 warm 평균. IdP 샤드 재조회 왕복은 별도다.)`);
+console.log('');
 
 // ── 현행 배포 구성: 세션(max_height, 4096) vs 계정(uid_hash, 256) ────────
 // 위 표는 축의 효과를 분리하려고 샤드 수를 맞춘 것이다. 실제 시스템은 두 층이 서로 다른
