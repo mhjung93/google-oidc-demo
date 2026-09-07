@@ -162,6 +162,17 @@ async function runOneCycle(ctx) {
       `전이 서술이 실제 변경과 어긋났습니다 — 운영자 확인이 필요합니다.`
     );
   }
+
+  // 반영이 확인됐으니 IdP의 백로그에서 지운다. 이 호출이 실패하거나 생략되면 다음
+  // 사이클이 같은 전이를 다시 올리려다 SubtreeMismatch로 막힌다 — 그래서 실패를 삼키지
+  // 않는다. 반대로 push는 됐는데 ack만 실패한 경우는 다음 사이클에서 드러난다.
+  const acked = await callIdPAdmin(idpBaseUrl, adminSecret, "/idp/publish/ack", {
+    count: updates.length,
+  });
+  if (acked.persistenceWarning) {
+    console.error(`[sweep] 경고: ack이 저장되지 않았습니다 — ${acked.persistenceWarning}`);
+  }
+  console.log(`    ack: ${acked.acknowledged}건 확인, 백로그 ${acked.pending}건 남음`);
   console.log("Published revocation root:", onchain);
 }
 
@@ -332,4 +343,10 @@ async function main() {
   await runLoop(ctx, intervalSeconds, failureAlertThreshold);
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+// 명시적으로 종료한다. 13.2 전환으로 이 스크립트가 Groth16 증명을 만들게 되면서
+// snarkjs가 워커 스레드를 남기고, 그러면 단발 모드가 일을 다 끝내고도 프로세스가 살아
+// 있는다(cron으로 돌리면 영영 안 끝난다). 데몬 모드에서는 runLoop가 종료 신호로 빠져나온
+// 뒤에 여기에 닿는다.
+main()
+  .then(() => process.exit(0))
+  .catch((e) => { console.error(e); process.exit(1); });

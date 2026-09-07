@@ -92,6 +92,27 @@ const WALLET_ERRORS = new Interface([
   'error StaleRevocationRoot(bytes32 root)',
 ]);
 
+/**
+ * 네트워크 오류 한 번은 재시도한다.
+ *
+ * 왜 필요한가. publishPendingRevocations()는 execFileSync로 sweep을 부르는데, 13.2 전환
+ * 이후 그 안에서 Groth16 증명을 만들어 수 초간 이벤트 루프를 통째로 막는다. 그동안 IdP·
+ * wallet_agent의 HTTP keep-alive 타임아웃(기본 5초)이 지나 서버가 소켓을 닫고, 블록이
+ * 풀린 직후 첫 요청이 그 죽은 소켓을 재사용해 "fetch failed"로 떨어진다.
+ *
+ * 서버 결함이 아니라 **동기 블로킹을 하는 이 테스트 하네스의 사정**이다. 그래서 서버가
+ * 아니라 여기서 고친다. 상태 코드가 있는 응답(4xx/5xx 포함)은 그대로 돌려준다 — 재시도는
+ * 연결 자체가 실패했을 때만이다.
+ */
+async function fetchRetry(url, init) {
+  try {
+    return await globalThis.fetch(url, init);
+  } catch (err) {
+    if (!/fetch failed/i.test(String(err?.message ?? err))) throw err;
+    return globalThis.fetch(url, init);
+  }
+}
+
 function requireAdminSecret() {
   const secret = process.env.IDP_ADMIN_SECRET;
   if (!secret) {
@@ -106,7 +127,7 @@ function requireAdminSecret() {
 // --- 로그인 흐름 (tests/test_par_authorize_token_e2e.js의 testNewFlow와 동일) -------
 
 async function getWalletAgentToken() {
-  const res = await fetch(`${SERVER}/api/mode2/wallet_agent_token`);
+  const res = await fetchRetry(`${SERVER}/api/mode2/wallet_agent_token`);
   if (!res.ok) throw new Error(`/api/mode2/wallet_agent_token failed: ${res.status}`);
   return (await res.json()).token;
 }
@@ -135,13 +156,13 @@ function signBinding(state, nonce, codeChallenge) {
 
 async function loginAndIssueStatement() {
   const registration = await (
-    await fetch(`${SERVER}/api/mode2/register`, { method: 'POST' })
+    await fetchRetry(`${SERVER}/api/mode2/register`, { method: 'POST' })
   ).json();
   const walletAgentToken = await getWalletAgentToken();
 
   const rpNonce = '222';
   const step8 = await (
-    await fetch(`${WALLET}/generateStep8Proofs`, {
+    await fetchRetry(`${WALLET}/generateStep8Proofs`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -160,7 +181,7 @@ async function loginAndIssueStatement() {
   const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url');
 
   const par = await (
-    await fetch(`${IDP}/par`, {
+    await fetchRetry(`${IDP}/par`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -182,7 +203,7 @@ async function loginAndIssueStatement() {
 
   // 동의는 로그인한 브라우저 세션에 묶인다(2026-09-04). 로그인 응답의 세션 쿠키를
   // 들고 다녀야 한다 — request_uri 지식만으로는 동의할 수 없다.
-  const loginRes = await fetch(`${IDP}/authorize/login`, {
+  const loginRes = await fetchRetry(`${IDP}/authorize/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -196,7 +217,7 @@ async function loginAndIssueStatement() {
   if (!login.success) throw new Error(`/authorize/login failed: ${JSON.stringify(login)}`);
 
   const consent = await (
-    await fetch(`${IDP}/authorize/consent`, {
+    await fetchRetry(`${IDP}/authorize/consent`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: idpSession },
       body: JSON.stringify({ request_uri: par.request_uri, allowed: true }),
@@ -206,7 +227,7 @@ async function loginAndIssueStatement() {
   if (!code) throw new Error(`/authorize/consent failed: ${JSON.stringify(consent)}`);
 
   const statement = await (
-    await fetch(`${IDP}/token`, {
+    await fetchRetry(`${IDP}/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -229,7 +250,7 @@ async function submitTransaction({ step8, statement, rpNonce, walletAgentToken }
   // /token 응답은 새 9-field statement 안에 옛 6-field idpToken을 중첩해 내려준다.
   // /submitTransaction이 소비하는 것은 그 중첩된 idpToken 쪽이다.
   const { idpToken, ...statementFields } = statement;
-  const res = await fetch(`${WALLET}/submitTransaction`, {
+  const res = await fetchRetry(`${WALLET}/submitTransaction`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Wallet-Agent-Token': walletAgentToken },
     body: JSON.stringify({
@@ -261,7 +282,7 @@ function rootToBytes32(root) {
 // bytes32**라 필드 원소 변환(rootToBytes32)을 거치면 안 된다. v2 root는 10진 필드
 // 원소라 변환이 필요하다 — 그 차이가 이 함수의 반환 형식에 그대로 드러난다.
 async function fetchIdpRootHex() {
-  const res = await fetch(`${IDP}/idp/revocation_state_v3`);
+  const res = await fetchRetry(`${IDP}/idp/revocation_state_v3`);
   if (!res.ok) throw new Error(`/idp/revocation_state_v3 failed: ${res.status}`);
   const { topRoot } = await res.json();
   if (typeof topRoot !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(topRoot)) {
@@ -420,7 +441,7 @@ async function runSections({ provider, signer, registry, idpOperator, adminSecre
 
   // ===== 구간 B — 지갑이 폐기된 크레덴셜로 증명 생성을 거부한다 =====
   const rootBeforeRevoke = await fetchIdpRootHex();
-  const revokeRes = await fetch(`${IDP}/idp/revoke`, {
+  const revokeRes = await fetchRetry(`${IDP}/idp/revoke`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-IdP-Admin-Secret': adminSecret },
     body: JSON.stringify({ type: 'session', value: session.statement.r_token }),

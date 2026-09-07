@@ -57,19 +57,28 @@ async function deployRegistry(wallet, sessionTop, accountTop) {
   ]);
 }
 
-/** sweep이 하는 한 사이클. 마지막에 컨트랙트가 유도한 root를 돌려준다. */
-async function publishCycle(idp, registry) {
+/** prepare -> commit만. push하지 않는다(일부 테스트가 실제로 이렇게 쓴다). */
+async function commitOnly(idp) {
   const prepared = await idp.post('/idp/publish/prepare');
   assert.equal(prepared.status, 200, JSON.stringify(prepared.body));
   const committed = await idp.post('/idp/publish/commit', { roundToken: prepared.body.roundToken });
   assert.equal(committed.status, 200, JSON.stringify(committed.body));
+  return committed.body;
+}
 
-  const descriptors = committed.body.updates ?? [];
-  if (descriptors.length === 0) return { committed: committed.body, updates: [], pushed: false };
+/** sweep이 하는 한 사이클: prepare -> commit -> pushUpdates -> ack. */
+async function publishCycle(idp, registry) {
+  const committed = await commitOnly(idp);
+
+  const descriptors = committed.updates ?? [];
+  if (descriptors.length === 0) return { committed, updates: [], pushed: false };
 
   const updates = await buildContractUpdates(descriptors);
   const rc = await (await registry.pushUpdates(updates)).wait();
-  return { committed: committed.body, updates, pushed: true, gasUsed: rc.gasUsed };
+  const acked = await idp.post('/idp/publish/ack', { count: updates.length });
+  assert.equal(acked.status, 200, JSON.stringify(acked.body));
+  assert.equal(acked.body.pending, 0, '백로그가 비지 않았다');
+  return { committed, updates, pushed: true, gasUsed: rc.gasUsed };
 }
 
 
@@ -165,7 +174,42 @@ async function main() {
     );
     console.log(`OK: 6) 만료 회수가 같은 스트림으로 올라가고 root가 일치한다 (gas ${r4.gasUsed})`);
 
-    console.log('\n== V4 게시 사이클 6종 통과 ==');
+    // ── 7) push 없이 커밋한 회차도 다음 사이클이 수습한다 ────────────────
+    //
+    // 이것이 2026-09-07 전환 중 실제로 시스템을 갈라놓은 경로다. 전이를 회차 버퍼로 두고
+    // 응답에 실을 때 비웠더니, 커밋했지만 push하지 않은 회차의 전이가 사라졌다. 그러면
+    // 다음 사이클의 전이는 체인의 옛 상태와 맞지 않아 거부되고, **V4에는 root를 직접 미는
+    // 경로가 없어 영영 따라잡을 수 없다** — 레지스트리를 다시 배포하는 것 말고 방법이 없었다.
+    // 그래서 전이는 push가 확인될 때까지 남는 백로그가 됐다.
+    {
+      const skipped = uniqueValue();
+      assert.equal((await idp.post('/idp/revoke', { type: 'account', value: skipped })).status, 200);
+      const c = await commitOnly(idp);                    // 커밋만, push 없음
+      assert.ok(c.updates.length > 0, '커밋했는데 전이가 없다');
+      const rootBefore = await registry.latestRoot();
+      assert.notEqual(
+        String(rootBefore).toLowerCase(), String(c.root).toLowerCase(),
+        '전제가 깨졌다: push하지 않았는데 체인이 이미 따라와 있다',
+      );
+
+      // 다음 사이클은 백로그(지난 회차 + 이번 회차)를 통째로 올려 체인을 따라잡혀야 한다.
+      const another = uniqueValue();
+      assert.equal((await idp.post('/idp/revoke', { type: 'account', value: another })).status, 200);
+      const r = await publishCycle(idp, registry);
+      assert.ok(r.pushed);
+      assert.ok(
+        r.updates.length >= 2,
+        `백로그가 누락됐다: 전이 ${r.updates.length}건 (지난 회차분이 빠졌다)`,
+      );
+      assert.equal(
+        String(await registry.latestRoot()).toLowerCase(),
+        String(r.committed.root).toLowerCase(),
+        '백로그를 올렸는데도 체인이 IdP를 따라잡지 못했다',
+      );
+      console.log('OK: 7) push 없이 커밋한 회차도 다음 사이클이 백로그로 수습한다');
+    }
+
+    console.log('\n== V4 게시 사이클 7종 통과 ==');
   } finally {
     await idp.stop();
   }

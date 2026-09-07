@@ -1837,10 +1837,6 @@ app.post('/idp/publish/commit', requireIdPAdmin, serializeAdminMutation(async (r
 
   const prepared = preparedPublish;
 
-  // 이 회차가 포레스트를 어떻게 바꾸는지 순서대로 기록하기 시작한다. RevocationRegistryV4는
-  // root를 받지 않고 이 전이들로부터 **유도하므로**, 기록의 순서와 형제 경로가 곧 계약이다
-  // (설계 문서 13.2절). V3 레지스트리를 쓰는 동안에는 응답에 실려 나갈 뿐 소비자가 없다.
-  revocationV3.beginRound();
 
   // === 만료 회수 ===
   //
@@ -1891,10 +1887,16 @@ app.post('/idp/publish/commit', requireIdPAdmin, serializeAdminMutation(async (r
   }
 
   const actualRoot = revocationV3.combinedRoot();
-  // 전이 서술자. sweep이 여기에 증명을 붙여 pushUpdates로 올린다(V4). 증명 생성은 IdP가
-  // 하지 않는다 — 관리자 경로가 직렬화돼 있어 회차마다 수 초를 잡으면 다른 관리 조작까지
-  // 막히고, 증명에 필요한 재료가 전부 이미 공개된 트리 내용이라 IdP가 쥐고 있을 이유가 없다.
-  const roundUpdates = revocationV3.takeRoundUpdates();
+  // 아직 온체인에 반영되지 않은 전이 서술자 **전체**(이번 회차분만이 아니다). sweep이
+  // 여기에 증명을 붙여 pushUpdates로 올리고, 성공하면 /idp/publish/ack으로 지운다.
+  //
+  // 회차 단위로 비우지 않는 이유: 커밋했지만 push하지 않은 회차가 하나라도 생기면 그
+  // 전이가 사라져 체인이 영영 따라잡을 수 없다 — V4에는 root를 직접 미는 경로가 없다.
+  // (2026-09-07 전환 중 실제로 그렇게 갈라졌고, 레지스트리 재배포 말고는 복구 방법이 없었다.)
+  //
+  // 증명 생성은 IdP가 하지 않는다 — 관리자 경로가 직렬화돼 있어 회차마다 수 초를 잡으면
+  // 다른 관리 조작까지 막히고, 재료가 전부 이미 공개된 트리 내용이라 IdP가 쥘 이유도 없다.
+  const roundUpdates = revocationV3.getPendingUpdates();
   if (applied.sessionAdded > 0 || applied.accountAdded > 0 || resetShards > 0 || acctReclaim.leavesReclaimed > 0) {
     console.log(
       `[IdP] publish/commit: +${applied.sessionAdded} session / +${applied.accountAdded} account, ` +
@@ -2132,6 +2134,37 @@ app.post('/idp/account/unpin_auid', requireIdPAdmin, async (req, res) => {
     ...(staleRevocationLeaf ? { staleRevocationLeaf } : {}),
   });
 });
+
+// 온체인 반영을 확인해 전이 백로그를 지운다.
+//
+// V4에서 게시는 두 프로세스에 걸쳐 있다: IdP가 전이를 만들고, 운영자(sweep)가 그것을
+// 증명과 함께 올린다. 올리는 데 성공했는지는 IdP가 알 수 없으므로 여기서 받는다.
+// 확인되기 전까지 백로그가 남아 있어, 실패한 push도 다음 사이클이 그대로 다시 올린다.
+app.post('/idp/publish/ack', requireIdPAdmin, serializeAdminMutation(async (req, res) => {
+  const { count } = req.body ?? {};
+  if (!Number.isInteger(count) || count < 0) {
+    return res.status(400).json({ error: 'count must be a non-negative integer' });
+  }
+  let remaining;
+  try {
+    remaining = revocationV3.ackPushedUpdates(count);
+  } catch (err) {
+    // 백로그보다 많이 확인했다고 하면 뭔가 어긋난 것이다. 조용히 잘라내면 아직 올리지
+    // 않은 전이를 지워 체인이 따라잡을 수 없게 된다.
+    return res.status(409).json({ error: err.message, pending: revocationV3.pendingUpdateCount() });
+  }
+  const persisted = saveIdPState();
+  console.log(`[IdP] publish/ack: ${count}건 확인, 백로그 ${remaining}건 남음`);
+  res.json({
+    acknowledged: count,
+    pending: remaining,
+    ...(persisted ? {} : {
+      persistenceWarning:
+        'the acknowledgement could not be persisted; after a restart the IdP would offer ' +
+        'already-published transitions again (the push would then fail with SubtreeMismatch)',
+    }),
+  });
+}));
 
 // === v3(이중 트리) 조회 — 지갑이 자기 샤드 두 개만 받아가는 경로 ===
 //
