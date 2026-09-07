@@ -15,7 +15,10 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { leafValue, TAG_ACCOUNT } from '../lib/imt.js';
-import { accountShardOf, sessionShardOf, TAG_SESSION } from '../lib/imt_v3.js';
+import {
+  accountShardOf, sessionShardOf, TAG_SESSION,
+  ACCOUNT_SHARD_COUNT, SESSION_SHARD_COUNT,
+} from '../lib/imt_v3.js';
 import { fetchRevocationWitnessesV3 } from '../lib/wallet_revocation_v3.js';
 import { startIsolatedIdP } from './helpers/isolated_idp.mjs';
 
@@ -41,8 +44,11 @@ async function main() {
     // ── 1) 왕복 ──────────────────────────────────────────────────────────
     const w0 = await fetchRevocationWitnessesV3(idp.base, myRToken, myAuid, MAX_HEIGHT);
     assert.equal(w0.acctShard, myShard);
-    assert.ok(w0.sessSiblings.length === 12, `세션 상위 경로 길이 ${w0.sessSiblings.length} != 12`);
-    assert.ok(w0.acctSiblings.length === 8, `계정 상위 경로 길이 ${w0.acctSiblings.length} != 8`);
+    // 경로 길이는 log2(샤드 수)다. 하드코딩하면 샤드 수를 바꿀 때마다 여기서 걸린다.
+    const sessDepth = Math.log2(SESSION_SHARD_COUNT);
+    const acctDepth = Math.log2(ACCOUNT_SHARD_COUNT);
+    assert.equal(w0.sessSiblings.length, sessDepth, '세션 상위 경로 길이가 log2(샤드 수)가 아니다');
+    assert.equal(w0.acctSiblings.length, acctDepth, '계정 상위 경로 길이가 log2(샤드 수)가 아니다');
     assert.ok(w0.sess.pathElements.length === 8 && w0.acct.pathElements.length === 10);
     assert.match(w0.topRoot, /^0x[0-9a-f]{64}$/);
     console.log(`OK: 1) IdP 응답만으로 witness/경로 생성 (계정 샤드 ${myShard})`);

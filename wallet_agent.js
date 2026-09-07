@@ -18,7 +18,7 @@ import { leafValue, TAG_SESSION, TAG_ACCOUNT } from './lib/imt.js';
 // 쓴다(회로가 v2 리프 해시 Poseidon(3)로 전환됨). v1 폐기 트리 경로는 제거됐다.
 import { fetchRevocationWitnessesV3 } from './lib/wallet_revocation_v3.js';
 import {
-  createSessionForest, createAccountForest, sessionShardLowOf, accountShardOf,
+  createSessionForest, createAccountForest, sessionShardLowOf, accountShardOf, SESSION_SHARD_COUNT, ACCOUNT_SHARD_COUNT,
 } from './lib/imt_v3.js';
 
 const { subtle } = webcrypto;
@@ -46,7 +46,10 @@ const PPID_WALLET_FACTORY_ABI = [
 const PPID_WALLET_ABI = [
   // v3(이중 트리): revocationRoot 하나 대신 두 층의 서브트리 root·샤드 인덱스·상위 형제를
   // 넘긴다. 컨트랙트가 상위 트리를 keccak으로 올라가 하나의 root로 합쳐 대조한다.
-  'function execute((address to, uint256 value, bytes data, uint256 nonce) payload, bytes sig, uint[2] proofA, uint[2][2] proofB, uint[2] proofC, uint256 pk_i, uint256 pk_IdP_x, uint256 pk_IdP_y, uint256 max_height, (bytes32 sessRoot, uint256 sessShardLow, bytes32[12] sessSiblings, bytes32 acctRoot, uint256 acctShard, bytes32[8] acctSiblings) rev) returns (bool ok)',
+  // 상위 경로 배열 크기는 **샤드 수에서 유도한다.** 하드코딩하면 샤드 수를 바꿀 때
+  // (계정 256 -> 4,096) 여기가 조용히 어긋나 제출이 UNEXPECTED_ARGUMENT로 막힌다
+  // — 2026-09-07 전환에서 실제로 그랬다.
+  `function execute((address to, uint256 value, bytes data, uint256 nonce) payload, bytes sig, uint[2] proofA, uint[2][2] proofB, uint[2] proofC, uint256 pk_i, uint256 pk_IdP_x, uint256 pk_IdP_y, uint256 max_height, (bytes32 sessRoot, uint256 sessShardLow, bytes32[${Math.log2(SESSION_SHARD_COUNT)}] sessSiblings, bytes32 acctRoot, uint256 acctShard, bytes32[${Math.log2(ACCOUNT_SHARD_COUNT)}] acctSiblings) rev) returns (bool ok)`,
   'function nonce() view returns (uint256)',
 ];
 const REVOCATION_REGISTRY_ABI = [

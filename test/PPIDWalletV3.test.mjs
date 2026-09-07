@@ -26,6 +26,7 @@ import {
   leafValue,
   TAG_SESSION,
   TAG_ACCOUNT,
+  ACCOUNT_SHARD_COUNT,
 } from "../lib/imt_v3.js";
 
 const GRACE = 3;
@@ -217,7 +218,8 @@ describe("PPIDWalletV3 — 이중 트리 폐기", function () {
     await publish();
     await expect(callExecute({ witness: buildWitness({ sessShardLowOverride: 8 }) }))
       .to.be.revertedWithCustomError(wallet, "ShardOutOfRange");
-    await expect(callExecute({ witness: buildWitness({ acctShardOverride: 256 }) }))
+    // 하드코딩하지 않는다 — 계정 샤드 수가 바뀌면 이 값도 따라와야 한다(256 -> 4096).
+    await expect(callExecute({ witness: buildWitness({ acctShardOverride: ACCOUNT_SHARD_COUNT }) }))
       .to.be.revertedWithCustomError(wallet, "ShardOutOfRange");
   });
 

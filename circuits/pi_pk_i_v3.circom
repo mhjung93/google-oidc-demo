@@ -75,7 +75,7 @@ template PiPkIV3() {
     var TAG_SESSION = 1;
     var TAG_ACCOUNT = 2;
     var SESS_SHARD_BITS = 3;   // 값 축. 만료 축은 컨트랙트가 담당한다.
-    var ACCT_SHARD_BITS = 8;   // 256칸
+    var ACCT_SHARD_BITS = 12;  // 4,096칸 (2026-09-07: 256에서 상향)
 
     // auid_i = PPID * rp_nonce
     auid_i === PPID * rp_nonce;

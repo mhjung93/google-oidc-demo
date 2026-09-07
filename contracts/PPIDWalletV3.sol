@@ -39,8 +39,8 @@ contract PPIDWalletV3 {
     uint256 private constant SESSION_RING = 512;        // max_height mod 512
     uint256 private constant SESSION_VALUE_SPAN = 8;    // 2^3, 값 축
     uint256 private constant SESSION_TOP_DEPTH = 12;    // log2(512 * 8)
-    uint256 private constant ACCOUNT_SHARD_COUNT = 256;
-    uint256 private constant ACCOUNT_TOP_DEPTH = 8;     // log2(256)
+    uint256 private constant ACCOUNT_SHARD_COUNT = 4096;
+    uint256 private constant ACCOUNT_TOP_DEPTH = 12;    // log2(4096)
 
     struct Payload {
         address to;

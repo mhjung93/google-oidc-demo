@@ -40,11 +40,12 @@ import {
 async function main() {
   // ── 1) 샤드 규칙 ──────────────────────────────────────────────────────
   {
-    // 계정: 리프 하위 8비트
-    for (const v of [0n, 1n, 255n, 256n, 257n, 123456789012345678901234567890n]) {
-      assert.equal(accountShardOf(v), Number(v & 255n));
+    // 계정: 리프 하위 12비트 (2026-09-07: 8비트에서 상향)
+    const acctMask = BigInt(ACCOUNT_SHARD_COUNT - 1);
+    for (const v of [0n, 1n, 255n, 256n, 257n, 4095n, 4096n, 123456789012345678901234567890n]) {
+      assert.equal(accountShardOf(v), Number(v & acctMask));
     }
-    assert.equal(ACCOUNT_SHARD_COUNT, 256);
+    assert.equal(ACCOUNT_SHARD_COUNT, 4096);
 
     // 세션: (max_height mod 512) * 8 + 리프 하위 3비트
     assert.equal(sessionShardOf(0n, 0n), 0);
@@ -55,7 +56,7 @@ async function main() {
     assert.equal(sessionShardOf(2n, 5n), sessionShardOf(2n, 5n + SESSION_RING));
     assert.equal(sessionShardLowOf(13n), 5);
     assert.equal(SESSION_SHARD_COUNT, 4096);
-    console.log('OK: 1) 샤드 규칙 — 계정은 하위 8비트, 세션은 (max_height mod 512)*8 + 하위 3비트');
+    console.log('OK: 1) 샤드 규칙 — 계정은 하위 12비트, 세션은 (max_height mod 512)*8 + 하위 3비트');
   }
 
   // ── 2) 상위 트리 ──────────────────────────────────────────────────────
@@ -263,13 +264,20 @@ async function main() {
     let expired = null;
     let liveLeaf = null;
     let shard = null;
-    for (let i = 0; i < 600 && (expired === null || liveLeaf === null); i++) {
-      const leaf = (await leafValue(TAG_ACCOUNT, 900000n + BigInt(i))).toString();
-      const s2 = accountShardOf(leaf);
-      if (shard === null) shard = s2;
-      if (s2 !== shard) continue;
-      if (expired === null) expired = leaf;
-      else if (liveLeaf === null) liveLeaf = leaf;
+    // 첫 리프의 샤드를 고정해 두고 짝을 찾으면 기대 시도가 샤드 수만큼(4,096) 필요하다.
+    // 대신 **아무 샤드든 두 번 나오는 것**을 찾는다(생일 문제) — 기대 시도가 √샤드 수
+    // 수준으로 줄어 샤드를 더 늘려도 이 테스트가 계속 돈다.
+    {
+      const seen = new Map();
+      for (let i = 0; i < 20000 && liveLeaf === null; i++) {
+        const leaf = (await leafValue(TAG_ACCOUNT, 900000n + BigInt(i))).toString();
+        const s2 = accountShardOf(leaf);
+        const prev = seen.get(s2);
+        if (prev === undefined) { seen.set(s2, leaf); continue; }
+        shard = s2;
+        expired = prev;
+        liveLeaf = leaf;
+      }
     }
     assert.ok(expired && liveLeaf, '같은 샤드의 리프 2개를 찾지 못했다');
 
