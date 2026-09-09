@@ -8,13 +8,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { buildPoseidon, buildEddsa } from 'circomlibjs';
 import { credLeaf, createRevocationTree, MODE3_TREE_DEPTH } from '../lib/mode3_revocation.js';
+import { buildValidInput } from './helpers/mode3_fixture.mjs';
 
 const ROOT_DIR = fileURLToPath(new URL('..', import.meta.url));
 const OUT_DIR = path.join(ROOT_DIR, 'build', 'mode3');
 const NAME = 'pi_cred';
-const DOMAIN_MODE3_CRED = 1426111059989523219780n;
 
 function compile() {
   fs.mkdirSync(OUT_DIR, { recursive: true });
@@ -52,55 +51,6 @@ async function witness(input) {
   return calc.calculateWitness(input, true);
 }
 
-// --- 정상 입력 하나를 만든다 -------------------------------------------------
-async function buildValidInput() {
-  const poseidon = await buildPoseidon();
-  const F = poseidon.F;
-  const eddsa = await buildEddsa();
-
-  const uid   = 11111111111111111111n;
-  const arid  = 22222222222222222222n;
-  const s_u   = 33333333333333333333n;
-  const blind = 44444444444444444444n;
-  const pk_i  = 0x1234567890123456789012345678901234567890n; // 160비트
-  const max_height = 1000n;
-
-  const C = F.toObject(poseidon([uid, arid, s_u, blind, pk_i]));
-  const PPID = F.toObject(poseidon([uid, arid, s_u]));
-  const msg = F.toObject(poseidon([DOMAIN_MODE3_CRED, C, max_height]));
-
-  // CIA 서명키. 테스트 고정값이며 실제 키가 아니다.
-  const prv = Buffer.from('0001020304050607080900010203040506070809000102030405060708090001', 'hex');
-  const pub = eddsa.prv2pub(prv);
-  const sig = eddsa.signPoseidon(prv, F.e(msg));
-
-  // 폐기 트리에 남의 폐기를 하나 넣어 둔다 — 내 비멤버십은 여전히 성립해야 한다.
-  const tree = await createRevocationTree();
-  await tree.insert(await credLeaf(999n));
-  const w = await tree.getNonMembershipWitness(await credLeaf(C));
-
-  return {
-    uid: uid.toString(),
-    s_u: s_u.toString(),
-    blind: blind.toString(),
-    S: sig.S.toString(),
-    R8x: F.toObject(sig.R8[0]).toString(),
-    R8y: F.toObject(sig.R8[1]).toString(),
-    lowValue: w.lowValue.toString(),
-    lowNextIndex: w.lowNextIndex.toString(),
-    lowNextValue: w.lowNextValue.toString(),
-    pathElements: w.pathElements.map(String),
-    pathIndices: w.pathIndices.map(String),
-    PPID: PPID.toString(),
-    arid: arid.toString(),
-    pk_i: pk_i.toString(),
-    max_height: max_height.toString(),
-    revRoot: tree.getRoot().toString(),
-    pk_CIA_x: F.toObject(pub[0]).toString(),
-    pk_CIA_y: F.toObject(pub[1]).toString(),
-  };
-}
-
 let failed = 0;
 async function t(name, fn) {
   try { await fn(); console.log(`ok   ${name}`); }
@@ -108,7 +58,7 @@ async function t(name, fn) {
 }
 
 const constraints = compile();
-const valid = await buildValidInput();
+const { input: valid, C: validC } = await buildValidInput();
 
 await t('양성: 정상 credential의 witness가 계산된다', async () => {
   const w = await witness(valid);
@@ -145,15 +95,9 @@ await t('음성: 폐기 전에 만든 witness는 폐기 후 root에서 거부된
   // 그대로 내는 것이다. 회로는 revRoot에 묶여 있으므로, 옛 witness + 새 root 조합은
   // 경로 검증에서 걸려야 한다. 컨트랙트가 최신 root만 받으므로(N=1) 이것이 폐기가
   // 실제로 작동하는 지점이다.
-  const poseidon = await buildPoseidon();
-  const F = poseidon.F;
-  const C = F.toObject(poseidon([
-    11111111111111111111n, 22222222222222222222n, 33333333333333333333n,
-    44444444444444444444n, 0x1234567890123456789012345678901234567890n,
-  ]));
   const tree = await createRevocationTree();
-  await tree.insert(await credLeaf(999n));   // valid 을 만들 때와 같은 상태
-  await tree.insert(await credLeaf(C));       // 내 credential 폐기 → root 변경
+  await tree.insert(await credLeaf(999n));    // valid 을 만들 때와 같은 상태
+  await tree.insert(await credLeaf(validC));  // 내 credential 폐기 → root 변경
   await assert.rejects(
     () => witness({ ...valid, revRoot: tree.getRoot().toString() }),
     /Assert Failed|Error/,
