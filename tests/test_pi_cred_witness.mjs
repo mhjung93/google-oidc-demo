@@ -1,4 +1,4 @@
-// pi_cred 회로의 witness 계산. 양성 1건 + 음성 4건.
+// pi_cred 회로의 witness 계산. 양성 2건(정상 witness + JS/회로 리프 일치) + 음성 4건.
 //   node tests/test_pi_cred_witness.mjs
 //
 // zkey는 만들지 않는다 (Task 4에서 별도 승인 후). 여기서는 회로가 올바른 입력을
@@ -63,26 +63,27 @@ const { input: valid, C: validC } = await buildValidInput();
 await t('양성: 정상 credential의 witness가 계산된다', async () => {
   const w = await witness(valid);
   assert.ok(w.length > 0);
+  assert.equal(valid.pathElements.length, MODE3_TREE_DEPTH);
 });
 
 await t('음성: PPID가 다르면 거부된다', async () => {
   await assert.rejects(
     () => witness({ ...valid, PPID: (BigInt(valid.PPID) + 1n).toString() }),
-    /Assert Failed|Error/,
+    /Assert Failed/,
   );
 });
 
 await t('음성: 서명이 다른 max_height에 대한 것이면 거부된다', async () => {
   await assert.rejects(
     () => witness({ ...valid, max_height: (BigInt(valid.max_height) + 1n).toString() }),
-    /Assert Failed|Error/,
+    /Assert Failed/,
   );
 });
 
 await t('음성: pk_i를 바꾸면 거부된다 (C 바인딩이 깨진다)', async () => {
   await assert.rejects(
     () => witness({ ...valid, pk_i: (BigInt(valid.pk_i) + 1n).toString() }),
-    /Assert Failed|Error/,
+    /Assert Failed/,
   );
 });
 
@@ -100,9 +101,23 @@ await t('음성: 폐기 전에 만든 witness는 폐기 후 root에서 거부된
   await tree.insert(await credLeaf(validC));  // 내 credential 폐기 → root 변경
   await assert.rejects(
     () => witness({ ...valid, revRoot: tree.getRoot().toString() }),
-    /Assert Failed|Error/,
+    /Assert Failed/,
     '폐기 후 root에 대해 옛 witness가 통과하면 폐기가 무의미하다',
   );
+});
+
+await t('JS credLeaf 와 회로의 리프 계산이 일치한다', async () => {
+  // 회로가 폐기 트리에 넣는 리프(main.leafHasher.out)와 lib/mode3_revocation.js의
+  // credLeaf()가 같은 값을 내야 한다 — 어긋나면 CIA가 트리에 넣는 리프와 회로가
+  // 검증하는 리프가 달라져 폐기가 조용히 무력화된다.
+  const symPath = path.join(OUT_DIR, `${NAME}.sym`);
+  const sym = fs.readFileSync(symPath, 'utf8');
+  const line = sym.split('\n').find((l) => l.split(',')[3] === 'main.leafHasher.out');
+  assert.ok(line, 'pi_cred.sym에서 main.leafHasher.out 시그널을 찾지 못했다');
+  const witnessIdx = Number(line.split(',')[1]);
+  const w = await witness(valid);
+  const circuitLeaf = BigInt(w[witnessIdx]) & ((1n << 252n) - 1n);
+  assert.equal(circuitLeaf, await credLeaf(validC));
 });
 
 console.log('');
