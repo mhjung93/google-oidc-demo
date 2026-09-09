@@ -632,7 +632,7 @@ BAAR에는 CIA 서명이 없다(유효성 = 누적기 멤버십, `σ`는 사용�
 |---|---|
 | CIA 서명 스킴 | EdDSA-Poseidon 인서킷 (`pi_pk_i`에 이미 있음, pairing 불필요) |
 | `pk_i`의 스칼라 인코딩 | 커밋에 `(Ax, Ay)` 두 항으로 넣을지 압축 표현 하나로 할지 |
-| 커밋 스킴 | Pedersen 벡터 커밋 (baby jubjub) + Schnorr PoK |
+| 커밋 스킴 | **Poseidon 확정** (2026-09-09 실측: Poseidon 321 제약, Pedersen 4,827 제약, 15.0배). 발급 PoK는 별도 SNARK로 단계 (a)에서 만든다 |
 | `cm_u` 동일성 증명 | 표준 equality-of-committed-value (Schnorr) |
 | 트리 깊이·해시 | 깊이 32, Poseidon |
 | L2 소비 체인 하트비트 `H` | 초기에는 넣지 않음 |

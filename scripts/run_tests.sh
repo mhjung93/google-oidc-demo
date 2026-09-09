@@ -40,6 +40,7 @@ CIRCUIT=(
   tests/test_pi_pk_i_revocation.mjs
   tests/test_pi_pk_i_v3_shard.mjs
   tests/test_insert_transition_circuit.mjs
+  tests/test_mode3_commit_scheme.mjs
 )
 
 # hardhat 노드만 있으면 되는 것들. IdP가 필요하면 테스트가 스스로 격리 인스턴스를 띄운다
