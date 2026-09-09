@@ -103,7 +103,7 @@ RP         cm 없음. PPID로 사용자 식별
 ### 4.1 구성
 
 ```
-C          = Commit(uid, arid, s_u, blind, pk_i)          ← Pedersen 벡터 커밋 (hiding)
+C          = Commit(uid, arid, s_u, blind, pk_i)          ← Poseidon 커밋. blind 가 은닉을 담당 (§11 실측으로 확정)
 credential = (C, max_height, σ_CIA)
              σ_CIA = EdDSA-Poseidon.Sign(sk_CIA, H(C ‖ max_height))
 폐기 리프    = H(C)                                       ← Poseidon
@@ -153,8 +153,9 @@ CIA가 `pk_i`를 보면 체인에 공개된 `pk_i`와 대조해 "이 사용자�
 ## 5. 증명 π
 
 ```
-공개 입력   PPID, arid, pk_i, max_height, revRoot
-비공개 입력 C, σ_CIA, uid, s_u, blind, 비멤버십 witness (low leaf + 형제 경로)
+공개 입력   PPID, arid, pk_i, max_height, revRoot, pk_CIA_x, pk_CIA_y   ← 이 순서. 단계 (a)·(b)가 의존
+비공개 입력 uid, s_u, blind, σ_CIA(S, R8x, R8y), 비멤버십 witness
+             (C 는 입력이 아니라 회로가 계산하는 신호다 — 증명자가 C 를 고를 수 없다)
 
 증명 내용
   ① EdDSA-Poseidon.Verify(pk_CIA, H(C ‖ max_height), σ_CIA) = 1
@@ -162,6 +163,11 @@ CIA가 `pk_i`를 보면 체인에 공개된 `pk_i`와 대조해 "이 사용자�
   ③ PPID = H(uid, arid, s_u)
   ④ H(C) ∉ IMT(revRoot)                                       ← 비멤버십
 ```
+
+**검증자의 의무: `pk_CIA_x`, `pk_CIA_y`는 공개 입력이므로 회로는 '어떤 키에 대해 서명이 유효하다'만
+증명한다. 검증자(RP 서버, `CredentialVerifier`)는 반드시 이 두 값을 배포 시 고정된 CIA 키와
+비교해야 한다. 비교하지 않으면 공격자가 자기 키로 자기 credential 에 서명해 통과한다. circomlib
+`EdDSAPoseidonVerifier`는 `Ax/Ay`의 곡선·부분군 검사를 하지 않으므로 이 비교가 유일한 방어선이다.**
 
 **두 검증 경로가 같은 회로, 같은 검증키를 쓴다.** 온체인이 `PPID` 기반 지갑을 쓰기로 했으므로
 공개 입력 집합이 일치한다. 용도를 가르는 것은 π가 아니라 Schnorr 서명이 무엇을 덮느냐다.
@@ -186,7 +192,7 @@ R이 그대로면 다시 증명해도 같은 값이다. 매 요청마다 새로 
 1. 사용자 인증 (기존 계정 체계)
 2. CIA:   (pk_u, sk_u) 생성 → 사용자에게 전달 → sk_u 폐기
 3. 사용자: s_u 무작위 생성
-4. 사용자 → CIA: cm_u = Commit(s_u)
+4. 사용자 → CIA: cm_u = Poseidon(s_u, r_u)  (r_u 는 사용자가 보관하는 무작위 블라인딩)
 5. CIA:   (uid, pk_u, cm_u, disabled=false) 저장
 ```
 
@@ -201,10 +207,9 @@ R이 그대로면 다시 증명해도 같은 값이다. 매 요청마다 새로 
 
 2. 사용자 → CIA:
      C
-     PoK { (arid, s_u, blind, pk_i, sk_i) :
-             C - uid·G_uid 가 (arid, s_u, blind, pk_i)에 대한 커밋이고
-             그 s_u 가 cm_u 의 개봉과 같고
-             pk_i 에 대응하는 sk_i 를 알고 있다 }
+     π_issue : ZK 증명 { (arid, s_u, blind, pk_i, r_u) :
+                 C    = Poseidon(uid, arid, s_u, blind, pk_i)     ← uid 는 공개 입력 (CIA 가 안다)
+               ∧ cm_u = Poseidon(s_u, r_u) }                     ← 등록 시 커밋과 같은 s_u
      Sign(sk_u, C)
 
 3. CIA: 등록된 pk_u 로 서명 검증 (사용자 인증)
@@ -218,12 +223,12 @@ R이 그대로면 다시 증명해도 같은 값이다. 매 요청마다 새로 
 5. CIA → 사용자: (max_height, σ_CIA)
 ```
 
-`uid`는 CIA가 알고 있으므로 커밋에서 빼고 검사할 수 있다. 그래서 PoK는 나머지에 대해서만
-하면 되고, **`arid`는 끝까지 가려진다.**
-
-`sk_i` 소지 증명은 사용자가 **남의 공개키를 자기 credential에 넣는 것**을 막는다. 그렇게
-만든 credential은 만든 사람이 쓸 수 없어 직접적인 이득은 없지만, `(C, σ_CIA)`를 넘겨주면
-받은 쪽이 그 사람의 `PPID`로 행동할 수 있게 되므로 막아 둔다. 표준 Schnorr PoK 한 항이다.
+`uid`와 `cm_u`를 공개 입력으로 두면 CIA 는 `arid`·`pk_i`·`blind`를 모른 채로 `C` 가 자기
+사용자의 것이고 `s_u` 가 등록된 값임을 확인한다. `π_issue` 는 별도 회로이며 제약 수는
+미측정이다(§11). `sk_i` 소지 증명은 넣지 않는다 — `pk_i` 가 secp256k1 주소라 회로 안에서
+증명하려면 secp256k1 스칼라곱과 keccak 이 필요해 비용이 수백만 제약이고, 막는 공격(남의
+`pk_i` 를 자기 credential 에 넣기)은 `(C, σ_CIA)` 를 그 키 주인에게 건네주는 담합을 전제하므로
+위협 모형(§2.2) 밖이다.
 
 ### 6.3 RP 로그인 (오프체인 검증)
 
@@ -597,6 +602,12 @@ BAAR에는 CIA 서명이 없다(유효성 = 누적기 멤버십, `σ`는 사용�
 진실이 되어 **폐기 체인이 장식이 된다.** ③ CIA가 모든 사용자의 활동을 실시간으로 본다.
 **신뢰 여부와 무관하게 조회는 체인에서 한다.**
 
+### 9.10 `arid` 공개 노출 (감수)
+
+`arid`는 π의 공개 입력이라 온체인 경로에서는 관찰자가 지갑이 어느 RP 소속인지 본다. Mode 2는
+`rid`를 비공개로 두고 `arid_i`만 공개했다. Mode 3는 지갑이 RP마다 별개(`PPID` 기반)라 소속
+자체가 주소 구조에서 드러나므로 추가 손실이 없다고 보고 감수한다.
+
 ---
 
 ## 10. 설계 대화 중 정정한 것
@@ -632,11 +643,13 @@ BAAR에는 CIA 서명이 없다(유효성 = 누적기 멤버십, `σ`는 사용�
 |---|---|
 | CIA 서명 스킴 | EdDSA-Poseidon 인서킷 (`pi_pk_i`에 이미 있음, pairing 불필요) |
 | 커밋 스킴 | **Poseidon 확정** (2026-09-09 실측: Poseidon 321 제약, Pedersen 4,827 제약, 15.0배). 발급 PoK는 별도 SNARK로 단계 (a)에서 만든다 |
-| `cm_u` 동일성 증명 | 표준 equality-of-committed-value (Schnorr) |
+| `cm_u` 동일성 증명 | **π_issue 안에서 증명** (Poseidon 커밋이라 시그마 프로토콜 불가). 제약 수 미측정 — 단계 (a) 초반에 먼저 잰다 |
 | 트리 깊이·해시 | 깊이 32, Poseidon |
 | L2 소비 체인 하트비트 `H` | 초기에는 넣지 않음 |
 | `pk_i`의 인코딩 | **확정: 160비트 이더리움 주소.** Mode 2 `pi_pk_i.circom`과 같은 제약 |
 | 세션 서명 스킴 | **확정: secp256k1 ECDSA (`ecrecover`).** 설계 본문의 "Schnorr"는 BAAR 표기를 따른 것이며, 컨트랙트 안에서 Schnorr를 직접 검증하면 수십만 gas가 든다. 둘 다 이산로그 기반이라 보안 논증은 동일하다 |
+| `sk_i` 소지 증명 | **넣지 않음** — secp256k1+keccak 인서킷 비용 vs 담합 전제 공격. §6.2 참조. 재검토는 사용자 결정 |
+| 커밋 스킴 결정의 근거 범위 | show 회로(pi_cred) 비용만 실측해 내린 결정. 발급 회로(π_issue) 비용은 미측정. π_issue 가 예상 밖으로 크면 단계 (b) 전이 되돌리기 가장 싼 시점 |
 
 ### 11.1 실측값 (2026-09-09)
 
@@ -646,6 +659,8 @@ BAAR에는 CIA 서명이 없다(유효성 = 누적기 멤버십, `σ`는 사용�
 | 증명 시간 (중앙값) | 514.0 ms | 507.2 ms |
 | 검증 시간 (중앙값) | 22.0 ms | — |
 | zkey 크기 | 9.0 MB | — |
+| 사용 ptau | pot14_final.ptau (도메인 2^14 = 16,384, 92% 사용) | — |
+| 도메인 여유 | 1,376 제약. 공개 입력·제약이 이보다 늘면 pot15 이상으로 셋업 재실행 | — |
 
 이 값이 §8.4의 재증명 빈도가 감당 가능한지를 판정하는 근거다.
 브라우저는 이 값의 3~5배로 잡는다.
@@ -665,6 +680,7 @@ BAAR에는 CIA 서명이 없다(유효성 = 누적기 멤버십, `σ`는 사용�
 
 ### (a) 오프체인 전 구간
 
+- circuits/pi_issue.circom — §6.2 의 발급 증명. C 개봉 + cm_u 동일성. **제약 수를 (a) 의 첫 태스크로 잰다**
 - `cia.js` — 등록, 발급, 폐기, 트리 관리, root 게시 (Mode 2의 `custom_idp.js`는 손대지 않는다)
 - 폐기 체인 컨트랙트 (`RevocationLog`) + 로컬 hardhat 배포
 - RP 로그인 검증 (오프체인 Groth16 + 신선도 + Schnorr)

@@ -108,6 +108,7 @@ template PiCred(depth) {
 }
 
 // 공개 입력의 순서는 단계 (a)·(b)가 의존한다. 바꾸지 말 것.
+// pk_CIA_x/y 는 공개 입력이다. 검증자는 반드시 이 값을 고정된 CIA 키와 비교해야 한다 (설계 §5).
 component main {public [
     PPID, arid, pk_i, max_height, revRoot, pk_CIA_x, pk_CIA_y
 ]} = PiCred(32);
