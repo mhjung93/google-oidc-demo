@@ -636,6 +636,8 @@ BAAR에는 CIA 서명이 없다(유효성 = 누적기 멤버십, `σ`는 사용�
 | `cm_u` 동일성 증명 | 표준 equality-of-committed-value (Schnorr) |
 | 트리 깊이·해시 | 깊이 32, Poseidon |
 | L2 소비 체인 하트비트 `H` | 초기에는 넣지 않음 |
+| `pk_i`의 인코딩 | **확정: 160비트 이더리움 주소.** Mode 2 `pi_pk_i.circom`과 같은 제약 |
+| 세션 서명 스킴 | **확정: secp256k1 ECDSA (`ecrecover`).** 설계 본문의 "Schnorr"는 BAAR 표기를 따른 것이며, 컨트랙트 안에서 Schnorr를 직접 검증하면 수십만 gas가 든다. 둘 다 이산로그 기반이라 보안 논증은 동일하다 |
 
 ---
 
