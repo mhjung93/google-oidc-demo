@@ -20,6 +20,8 @@ wallet_state.json
 rp_registration.json
 idp_keys.json
 idp_state.json
+cia_keys.json
+cia_state.json
 
 # past snapshots
 backup_current_project/
