@@ -26,6 +26,7 @@ UNIT=(
   tests/test_wallet_revocation_cache.js
   tests/test_imt_v3_lib.js
   tests/test_mode3_revocation_tree.js
+  tests/test_mode3_issuance.js
 )
 
 CIRCUIT=(
