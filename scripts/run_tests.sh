@@ -53,6 +53,7 @@ CHAIN=(
   tests/test_wallet_revocation_v3.mjs
   tests/test_publish_v4_cycle.mjs
   tests/test_cia_register_issue.mjs
+  tests/test_mode3_wallet.mjs
 )
 
 # 살아있는 데모 스택과 IDP_ADMIN_SECRET이 필요하다.
