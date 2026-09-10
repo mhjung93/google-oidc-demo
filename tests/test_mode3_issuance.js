@@ -1,7 +1,7 @@
 // 발급 PoK 시그마 프로토콜 (설계 §6.2). 외부 의존 없음.
 //   node tests/test_mode3_issuance.js
 import assert from 'node:assert/strict';
-import { buildBabyjub } from 'circomlibjs';
+import { buildBabyjub, buildPoseidon } from 'circomlibjs';
 import { randomScalar, credCommit, PEDERSEN_GENERATORS, compressPoint } from '../lib/mode3_credential.js';
 import {
   DOMAIN_MODE3_ISSUE, randomZr, registrationCommit, proveIssuance, verifyIssuance,
@@ -61,6 +61,70 @@ await t('음성: 등록된 cm_u 와 다른 s_u 로 만든 C_pt 는 거절된다 
   assert.equal(await verifyIssuance({ uid, C_pt: forged.C_pt, cm_u: u.cm_u, proof: forged.proof }), false);
 });
 
+await t('음성: z_ru 를 바꾸면 거절된다 (두 번째 등식)', async () => {
+  const u = await freshUser();
+  const { C_pt, cm_u, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u });
+  const bj = await buildBabyjub();
+  const bad = { ...proof, z_ru: (proof.z_ru + 1n) % bj.subOrder };
+  assert.equal(await verifyIssuance({ uid, C_pt, cm_u, proof: bad }), false);
+});
+
+// C_pt 표현은 other_su 로 만들되, 챌린지·cm_u 는 등록된 (s_u, r_u) 로 맞춘 공격자 위조
+// 트랜스크립트. eq1(=C_pt 표현 지식)은 통과하지만 eq2(=cm_u 와의 s_u 결속)에서 걸려야
+// 한다 — 이것이 Sybil 을 막는 실제 등식이다.
+async function forgeMismatchedSu(u) {
+  const bj = await buildBabyjub();
+  const r = bj.subOrder;
+  const G = (name) => [bj.F.e(PEDERSEN_GENERATORS[name][0]), bj.F.e(PEDERSEN_GENERATORS[name][1])];
+  const [G1, G2, G3, G4, H] = ['uid', 'arid', 's_u', 'pk_i', 'blind'].map(G);
+  const msm = (terms) => terms.reduce((acc, [e, P]) => {
+    const Q = bj.mulPointEscalar(P, e);
+    return acc === null ? Q : bj.addPoint(acc, Q);
+  }, null);
+  const toObj = (P) => ({ x: bj.F.toObject(P[0]), y: bj.F.toObject(P[1]) });
+
+  const other_su = randomScalar();
+  const C_pt = toObj(msm([[uid, G1], [arid, G2], [other_su, G3], [pk_i, G4], [u.blind, H]]));
+  const cm_u = u.cm_u; // 등록된 커밋 그대로 제시
+
+  const a = {};
+  for (const k of ['arid', 'su', 'pki', 'blind', 'ru']) a[k] = await randomZr();
+  const T1 = toObj(msm([[a.arid, G2], [a.su, G3], [a.pki, G4], [a.blind, H]]));
+  const T2 = toObj(msm([[a.su, G3], [a.ru, H]]));
+
+  const ps = await buildPoseidon();
+  const c = ps.F.toObject(ps([
+    DOMAIN_MODE3_ISSUE, uid, C_pt.x, C_pt.y, cm_u.x, cm_u.y, T1.x, T1.y, T2.x, T2.y,
+  ])) & ((1n << 250n) - 1n);
+
+  const z = (ax, x) => (ax + c * x) % r;
+  const proof = {
+    T1, T2, c,
+    z_arid: z(a.arid, arid), z_su: z(a.su, other_su), z_pki: z(a.pki, pk_i),
+    z_blind: z(a.blind, u.blind), z_ru: z(a.ru, u.r_u),
+  };
+  return { C_pt, cm_u, proof, G1, G2, G3, G4, H, bj };
+}
+
+await t('음성: 챌린지를 등록된 cm_u 로 맞춰도 s_u 가 다르면 두 번째 등식에서 거절된다 (Sybil 의 실제 방어선)', async () => {
+  const u = await freshUser();
+  const { C_pt, cm_u, proof, G1, G2, G3, G4, H, bj } = await forgeMismatchedSu(u);
+
+  assert.equal(await verifyIssuance({ uid, C_pt, cm_u, proof }), false);
+
+  // eq1 은 로컬에서 재계산해도 통과함을 확인한다 — 즉 위 거절의 원인이 eq2 임을 보인다.
+  const mulP = (P, e) => bj.mulPointEscalar(P, e);
+  const addP = (A, B) => bj.addPoint(A, B);
+  const negP = (P) => [bj.F.neg(P[0]), P[1]];
+  const fromObj = (o) => [bj.F.e(o.x), bj.F.e(o.y)];
+  const eqPt = (A, B) => bj.F.eq(A[0], B[0]) && bj.F.eq(A[1], B[1]);
+
+  const Y1 = addP(fromObj(C_pt), negP(mulP(G1, uid)));
+  const lhs1 = addP(addP(addP(mulP(G2, proof.z_arid), mulP(G3, proof.z_su)), mulP(G4, proof.z_pki)), mulP(H, proof.z_blind));
+  const rhs1 = addP(fromObj(proof.T1), mulP(Y1, proof.c));
+  assert.ok(eqPt(lhs1, rhs1), 'eq1 은 통과해야 한다 (거절 원인이 eq2 임을 확인)');
+});
+
 await t('음성: 다른 uid 로 재생하면 거절된다 (Fiat-Shamir 가 uid 를 덮는다)', async () => {
   const u = await freshUser();
   const { C_pt, cm_u, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u });
@@ -78,6 +142,14 @@ await t('음성: 곡선 밖의 점은 거절된다', async () => {
   const u = await freshUser();
   const { C_pt, cm_u, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u });
   assert.equal(await verifyIssuance({ uid, C_pt: { x: 1n, y: 1n }, cm_u, proof }), false);
+});
+
+await t('음성: 좌표가 p 이상인 비정규 인코딩은 거절된다', async () => {
+  const u = await freshUser();
+  const { C_pt, cm_u, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u });
+  const bj = await buildBabyjub();
+  const nonCanonical = { x: C_pt.x + bj.F.p, y: C_pt.y };
+  assert.equal(await verifyIssuance({ uid, C_pt: nonCanonical, cm_u, proof }), false);
 });
 
 await t('직렬화 왕복이 값을 보존한다', async () => {
