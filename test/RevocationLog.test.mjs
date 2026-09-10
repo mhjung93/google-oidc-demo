@@ -2,17 +2,15 @@
 import { expect } from 'chai';
 import hre from 'hardhat';
 import { createRevocationTree } from '../lib/mode3_revocation.js';
+import { signRootPublication } from '../tests/helpers/mode3_chain.mjs';
 
 const { ethers } = hre;
 const DOMAIN = ethers.keccak256(ethers.toUtf8Bytes('MODE3_REVOCATION_ROOT_V1'));
 const b32 = (n) => ethers.zeroPadValue(ethers.toBeHex(n), 32);
 
-async function signPub(wallet, root, epoch, leaves) {
-  const leavesHash = ethers.keccak256(ethers.solidityPacked(leaves.map(() => 'bytes32'), leaves));
-  const inner = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
-    ['bytes32', 'bytes32', 'uint64', 'bytes32'], [DOMAIN, root, epoch, leavesHash]));
-  return wallet.signMessage(ethers.getBytes(inner));
-}
+// digest 계산은 헬퍼의 signRootPublication 하나만 쓴다 — 여기 사본을 두면 다음 태스크가 쓰는
+// 헬퍼가 드리프트해도 이 테스트가 잡지 못한다.
+const signPub = (wallet, root, epoch, leaves) => signRootPublication(wallet, { root, epoch, leaves });
 
 describe('RevocationLog', () => {
   let log, cia, relayer, stranger, emptyRoot;
