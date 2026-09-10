@@ -332,10 +332,14 @@ AND 합성으로 짜면 된다 — 교과서 구성이며 회로가 필요 없�
 ```
 publishRoot(bytes32 newRoot, uint64 epoch, bytes32[] calldata newLeaves, bytes sig)
     require(epoch > lastEpoch)                              ← 재생 방지
-    require(recover(H(DOMAIN, newRoot, epoch), sig) == CIA_KEY)
+    require(recover(H(DOMAIN, newRoot, epoch, keccak(newLeaves)), sig) == CIA_KEY)
     emit Revoked(epoch, newLeaves)                          ← calldata. 저장하지 않는다
     root = newRoot;  lastEpoch = epoch
 ```
+
+**서명이 리프 배열까지 덮는다(2026-09-10 구현에서 보강).** 제출이 무허가이므로 릴레이어가
+서명된 root 에 다른 리프를 붙여 calldata 를 오염시킬 수 있고, 그러면 지갑이 잘못된 트리를
+재구성해 root 불일치로 전원이 막힌다. 리프를 서명에 넣으면 그 경로가 닫힌다.
 
 (소비 체인이 있던 설계의 논거다 — §9.11. 여지를 남기기 위해 chainid 는 여전히 넣지 않는다.)
 서명 메시지에 **chainid를 넣지 않는다.** 넣으면 CIA가 체인 수만큼 서명해야 한다. 안 넣으면
@@ -845,13 +849,14 @@ Pedersen 판은 Poseidon 판보다 제약이 약 25% 늘고(15,008 → 18,786) �
 
 ### (a) 오프체인 전 구간
 
-- 발급 PoK — §6.2 의 시그마 프로토콜(`C_pt` 표현 PoK ∧ `cm_u` 표현 PoK, `s_u` 공유). **회로가 아니므로 두 번째 zkey·검증키·더 큰 ptau·CIA 측 Groth16 검증 경로가 전부 불필요하다.** 구현은 순수 JS(baby jubjub 스칼라곱)이고, Fiat-Shamir 트랜스크립트가 도메인 태그와 `(uid, C_pt, cm_u)` 를 덮는지 테스트로 고정한다
-- `cia.js` — 등록, 발급, 폐기, 트리 관리, root 게시 (Mode 2의 `custom_idp.js`는 손대지 않는다)
-- 폐기 체인 컨트랙트 (`RevocationLog`) + 로컬 hardhat 배포
-- RP 로그인 검증 (오프체인 Groth16 + 신선도 + Schnorr)
-- 지갑 측: 트리 전체 동기화, 위트니스 로컬 생성, π 캐시와 root 일치 확인
-- RP 검증기의 `pk_CIA` 고정 대조 (§5) — 설정에 박힌 CIA 키와 `publicSignals[5..6]` 비교.
-  **공격자가 자기 키로 서명한 credential 이 거부되는 음성 테스트**로 고정한다
+- ✅ 발급 PoK — §6.2 의 시그마 프로토콜(`C_pt` 표현 PoK ∧ `cm_u` 표현 PoK, `s_u` 공유). **회로가 아니므로 두 번째 zkey·검증키·더 큰 ptau·CIA 측 Groth16 검증 경로가 전부 불필요하다.** 구현은 순수 JS(baby jubjub 스칼라곱)이고, Fiat-Shamir 트랜스크립트가 도메인 태그와 `(uid, C_pt, cm_u)` 를 덮는지 테스트로 고정한다 — `lib/mode3_issuance.js`
+- ✅ `cia.js` — 등록, 발급, 폐기, 트리 관리, root 게시 (Mode 2의 `custom_idp.js`는 손대지 않는다) — `cia.js`, `lib/mode3_state.js`
+- ✅ 폐기 체인 컨트랙트 (`RevocationLog`) + 로컬 hardhat 배포 — `contracts/RevocationLog.sol`
+- ✅ RP 로그인 검증 (오프체인 Groth16 + 신선도 + Schnorr) — `lib/mode3_rp.js`
+- ✅ 지갑 측: 트리 전체 동기화, 위트니스 로컬 생성, π 캐시와 root 일치 확인 — `lib/mode3_wallet.js`
+- ✅ RP 검증기의 `pk_CIA` 고정 대조 (§5) — 설정에 박힌 CIA 키와 `publicSignals[5..6]` 비교.
+  **공격자가 자기 키로 서명한 credential 이 거부되는 음성 테스트**로 고정한다 —
+  `lib/mode3_rp.js` d단계 + `tests/test_mode3_rp.mjs`
 - §9.12 계정 폐기 묶음 노출 — 감수/패딩/분산 중 결정 (사용자)
 
 ### Poseidon 전환 (보류)
