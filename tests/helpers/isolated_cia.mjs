@@ -11,7 +11,7 @@ import { getProvider, fundAddress, deployRevocationLog } from './mode3_chain.mjs
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 
-function freePort() {
+export function freePort() {
   return new Promise((resolve, reject) => {
     const s = net.createServer();
     s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); });
