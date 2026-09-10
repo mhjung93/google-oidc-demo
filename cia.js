@@ -72,6 +72,22 @@ async function loadState() {
   state = readJson(STATE_FILE, defaultState());
   tree = await createRevocationTree();
   for (const l of state.revoked) await tree.insert(BigInt(l));
+  // 기동 시 로컬 epoch 가 체인보다 뒤처져 있으면(§I1 — 게시 tx 는 성공했는데 persist() 전에
+  // 죽은 경우) 컨트랙트를 진실로 삼아 따라잡는다. RPC 가 아직 안 떠 있어도 기동 자체는
+  // 막지 않는다 — 그 경우 발급은 headHeight() 가 알아서 503 을 낸다.
+  if (LOG_ADDRESS) {
+    try {
+      const log = new ethers.Contract(LOG_ADDRESS, LOG_ABI, ethWallet);
+      const onchainEpoch = Number(await log.epoch());
+      if (onchainEpoch > state.epoch) {
+        console.warn(`[cia] 상태 파일 epoch(${state.epoch})가 체인 epoch(${onchainEpoch})보다 뒤처져 있어 맞춘다`);
+        state.epoch = onchainEpoch;
+        persist();
+      }
+    } catch (e) {
+      console.warn(`[cia] 기동 시 체인 epoch 확인 실패, 계속 진행: ${e.message}`);
+    }
+  }
 }
 
 // ---- 유틸 ----
@@ -90,7 +106,12 @@ function requireAdmin(req, res, next) {
 }
 async function headHeight() {
   if (!LOG_ADDRESS) throw Object.assign(new Error('CIA_LOG_ADDRESS not configured'), { status: 503 });
-  return BigInt(await ethWallet.provider.getBlockNumber());
+  try {
+    return BigInt(await ethWallet.provider.getBlockNumber());
+  } catch {
+    // RPC 가 안 뜬 상태면 fail-closed — CIA_LOG_ADDRESS 미설정과 같은 취급(503)으로 통일한다.
+    throw Object.assign(new Error('chain unavailable'), { status: 503 });
+  }
 }
 function pruneExpired(uid, head) {
   const list = state.issued[uid] ?? [];
@@ -204,7 +225,13 @@ app.post('/cia/publish', requireAdmin, async (req, res) => {
     const log = new ethers.Contract(LOG_ADDRESS, LOG_ABI, ethWallet);
     const leaves = state.pending.map((l) => ethers.zeroPadValue(ethers.toBeHex(BigInt(l)), 32));
     const root = ethers.zeroPadValue(ethers.toBeHex(tree.getRoot()), 32);
-    const epoch = state.epoch + 1;
+    // tx 가 체인에 반영된 뒤 persist() 전에 죽으면 로컬 epoch 는 뒤처진 채로 남는다. 그 상태로
+    // 로컬 epoch+1 을 또 게시하면 이미 온체인에 있는 epoch 와 같아져 EpochNotIncreasing 으로
+    // 영원히 막힌다 — 컨트랙트의 epoch 를 진실로 삼아 로컬·온체인 중 큰 쪽의 다음 값을 쓴다.
+    // 이때 pending 이 비워지지 못해(위 크래시로 인해) 이미 게시됐던 리프가 이 새 epoch 로
+    // 한 번 더 올라갈 수 있는데, 그 자체는 무해하다 — 지갑 쪽 재구성이 중복 리프를 걸러낸다.
+    const onchainEpoch = Number(await log.epoch());
+    const epoch = Math.max(state.epoch, onchainEpoch) + 1;
     const leavesHash = ethers.keccak256(ethers.solidityPacked(leaves.map(() => 'bytes32'), leaves));
     const inner = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
       ['bytes32', 'bytes32', 'uint64', 'bytes32'], [DOMAIN_ROOT, root, epoch, leavesHash]));

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import { ethers } from 'ethers';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
-import { getProvider, logAbi } from './helpers/mode3_chain.mjs';
+import { getProvider, logAbi, signRootPublication } from './helpers/mode3_chain.mjs';
 import { randomScalar, credMessage, compressPoint } from '../lib/mode3_credential.js';
 import { credLeaf } from '../lib/mode3_revocation.js';
 import { registrationCommit, proveIssuance, serializeProof, pointToStrings } from '../lib/mode3_issuance.js';
@@ -139,6 +139,37 @@ try {
     assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid: '12345', disabled: false })).status, 200);
     const { body } = await issueRequest(user);
     assert.equal((await cia.post('/cia/issue', body)).status, 200);
+  });
+
+  await t('publish: 체인의 epoch 가 앞서 있어도 CIA 가 따라잡는다 (크래시 복구)', async () => {
+    // 새 credential 을 하나 발급해서 폐기한다 (계정은 앞의 'set_disabled false' 케이스에서 재활성화됨)
+    const { body: issueBody } = await issueRequest(user);
+    const issued = await cia.post('/cia/issue', issueBody);
+    assert.equal(issued.status, 200, JSON.stringify(issued.body));
+    const leaf = (await credLeaf(BigInt(issued.body.C))).toString();
+    const rv = await cia.adminPost('/cia/revoke', { uid: '12345', scope: 'credential', leaf });
+    assert.equal(rv.status, 200, JSON.stringify(rv.body));
+
+    // CIA 가 아직 게시하기 전에, 체인에 직접 다음 epoch 를 게시한다 — tx 는 성공했는데
+    // CIA 가 persist() 전에 죽어버린 크래시 시나리오를 흉내낸다.
+    const before = await cia.get('/cia/state');
+    const current = before.body.epoch;
+    const log = new ethers.Contract(cia.logAddress, logAbi(), provider);
+    assert.equal(await log.epoch(), BigInt(current), '아직은 로컬·온체인 epoch 가 같아야 한다');
+    const root = ethers.zeroPadValue(ethers.toBeHex(BigInt(before.body.root)), 32);
+    const directEpoch = current + 1;
+    const sig = await signRootPublication(cia.ciaEthWallet, { root, epoch: directEpoch, leaves: [] });
+    const tx = await log.connect(cia.ciaEthWallet).publishRoot(root, directEpoch, [], sig);
+    await tx.wait();
+    assert.equal(await log.epoch(), BigInt(directEpoch));
+
+    // CIA 가 로컬 epoch(current) 만 보고 게시하면 온체인과 같은 epoch 를 또 보내 영원히 막힌다.
+    // 수정 후에는 온체인 epoch 를 따라잡아 current+2 로 게시돼야 한다.
+    const r = await cia.adminPost('/cia/publish');
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.published, true);
+    assert.equal(r.body.epoch, current + 2);
+    assert.equal(await log.epoch(), BigInt(current + 2));
   });
 
   await t('admin 엔드포인트는 시크릿 없이 401', async () => {

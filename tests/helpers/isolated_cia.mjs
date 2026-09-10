@@ -26,6 +26,7 @@ export async function startIsolatedCia(opts = {}) {
   const adminSecret = randomBytes(16).toString('hex');
   const ethWallet = ethers.Wallet.createRandom();
   const provider = getProvider();
+  const ciaEthWallet = ethWallet.connect(provider);   // 테스트가 CIA 몰래 로그에 직접 게시할 때 씀(크래시 복구 테스트)
   await fundAddress(ethWallet.address, '1', provider);
   const { address: logAddress } = await deployRevocationLog(ethWallet.address, provider);
 
@@ -65,7 +66,7 @@ export async function startIsolatedCia(opts = {}) {
   const adminHeaders = { 'Content-Type': 'application/json', 'X-CIA-Admin-Secret': adminSecret };
   const json = async (r) => ({ status: r.status, body: await r.json().catch(() => null) });
   return {
-    base, port, dir, adminSecret, adminHeaders, ethAddress: ethWallet.address, logAddress,
+    base, port, dir, adminSecret, adminHeaders, ethAddress: ethWallet.address, logAddress, ciaEthWallet,
     log: () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : ''),
     post: (p, body) => fetch(`${base}${p}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) }).then(json),
     adminPost: (p, body) => fetch(`${base}${p}`, { method: 'POST', headers: adminHeaders, body: JSON.stringify(body ?? {}) }).then(json),
@@ -78,6 +79,7 @@ export async function startIsolatedCia(opts = {}) {
           child.once('exit', () => { clearTimeout(t); resolve(); });
         });
       }
+      provider.destroy();   // fundAddress/deployRevocationLog/ciaEthWallet 가 같이 쓰던 provider
       fs.rmSync(dir, { recursive: true, force: true });
     },
   };
