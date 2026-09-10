@@ -8,7 +8,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { buildPoseidon } from 'circomlibjs';
+import { buildPoseidon, buildBabyjub } from 'circomlibjs';
+import { credCommit, SCALAR_MAX, PEDERSEN_GENERATORS } from '../lib/mode3_credential.js';
 
 const ROOT_DIR = fileURLToPath(new URL('..', import.meta.url));
 const OUT_DIR = path.join(ROOT_DIR, 'build', 'mode3', 'commit');
@@ -100,6 +101,40 @@ await t('blind 하나만 바꿔도 C가 바뀐다 (hiding의 전제)', async () 
   const a = await witness('poseidon', INPUT);
   const b = await witness('poseidon', { ...INPUT, blind: '55555555555555555555' });
   assert.notEqual(a[1].toString(), b[1].toString());
+});
+
+await t('Pedersen 판: 회로의 (Cx, Cy) 가 JS credCommit 과 일치한다', async () => {
+  const w = await witness('pedersen', INPUT);
+  // main 출력은 witness[1], witness[2] (Cx, Cy)
+  const { Cx, Cy } = await credCommit({
+    uid: BigInt(INPUT.uid), arid: BigInt(INPUT.arid), s_u: BigInt(INPUT.s_u),
+    blind: BigInt(INPUT.blind), pk_i: BigInt(INPUT.pk_i),
+  });
+  assert.equal(w[1].toString(), Cx.toString(), 'Cx 불일치 — 생성원 순서나 스칼라 인코딩이 어긋났다');
+  assert.equal(w[2].toString(), Cy.toString(), 'Cy 불일치');
+});
+
+await t('Pedersen 판: 생성원 5개가 곡선 위·소수 부분군 안에 있다', async () => {
+  const bj = await buildBabyjub();
+  for (const [name, g] of Object.entries(PEDERSEN_GENERATORS)) {
+    const P = [bj.F.e(g[0]), bj.F.e(g[1])];
+    assert.ok(bj.inCurve(P), `${name} 가 곡선 위에 없다`);
+    assert.ok(bj.inSubgroup(P), `${name} 가 소수 부분군 밖이다 — binding 논증이 깨진다`);
+  }
+});
+
+await t('Pedersen 판: 스칼라가 2^250 이상이면 JS 가 거부한다 (회로의 Num2Bits(250) 과 같은 상한)', async () => {
+  await assert.rejects(
+    () => credCommit({ uid: 1n, arid: 2n, s_u: SCALAR_MAX, blind: 4n, pk_i: 5n }),
+    /2\^250/,
+  );
+});
+
+await t('Pedersen 판: 회로도 2^250 이상 스칼라를 거부한다', async () => {
+  await assert.rejects(
+    () => witness('pedersen', { ...INPUT, s_u: SCALAR_MAX.toString() }),
+    /Assert Failed/,
+  );
 });
 
 console.log('');
