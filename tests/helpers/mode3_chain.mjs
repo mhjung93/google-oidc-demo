@@ -23,7 +23,8 @@ function artifact() {
 }
 export const logAbi = () => artifact().abi;
 
-export function getProvider() { return new ethers.JsonRpcProvider(RPC_URL); }
+// 테스트는 게시 직후 수 ms 안에 동기화하므로 provider 레벨 250ms 캐시를 끈다.
+export function getProvider() { return new ethers.JsonRpcProvider(RPC_URL, undefined, { cacheTimeout: -1 }); }
 export async function getFunder(provider = getProvider()) { return provider.getSigner(0); }
 
 export async function fundAddress(addr, eth = '1', provider = getProvider()) {

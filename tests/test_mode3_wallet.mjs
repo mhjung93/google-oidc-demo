@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { ethers } from 'ethers';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import * as snarkjs from 'snarkjs';
-import { getProvider, fundAddress, deployRevocationLog, signRootPublication, rootToBytes32, logAbi } from './helpers/mode3_chain.mjs';
+import { getProvider, fundAddress, deployRevocationLog, signRootPublication, rootToBytes32 } from './helpers/mode3_chain.mjs';
 import { createRevocationTree, credLeaf } from '../lib/mode3_revocation.js';
 import { credMessage, compressPoint } from '../lib/mode3_credential.js';
 import {
@@ -22,16 +22,9 @@ async function t(name, fn) {
 assert.ok(fs.existsSync(ZKEY_PATH), `zkey 가 없다: ${ZKEY_PATH} — 단계 (c) Task 6 의 bench 를 먼저 돌려야 한다`);
 
 const provider = getProvider();
-// CIA 역할을 흉내내는 아래 헬퍼는 지갑(provider)과 별도의 provider 인스턴스를 쓴다.
-// 실제로는 CIA 서버와 지갑이 별 프로세스라 provider 도 당연히 갈라진다. 같은 provider를
-// 공유하면 ethers v6 의 provider 레벨 250ms 요청 캐시(#perform) 때문에, publish() 직전의
-// "발행 전 상태" queryFilter 호출과 지갑의 syncRevocationTree 호출이 (필터가 똑같으므로)
-// 같은 캐시 키로 충돌해 트랜잭션 확정 후인데도 확정 전 빈 결과를 되돌려주는 경우가 있었다
-// (실측: 별도 provider 없이 재현, 250ms 대기로도 재현·회피 확인).
-const ciaProvider = getProvider();
-const ciaEth = ethers.Wallet.createRandom().connect(ciaProvider);
-await fundAddress(ciaEth.address, '1', ciaProvider);
-const { address: logAddress, contract: log } = await deployRevocationLog(ciaEth.address, ciaProvider);
+const ciaEth = ethers.Wallet.createRandom().connect(provider);
+await fundAddress(ciaEth.address, '1', provider);
+const { address: logAddress, contract: log } = await deployRevocationLog(ciaEth.address, provider);
 const eddsa = await buildEddsa();
 const poseidon = await buildPoseidon();
 const F = poseidon.F;
@@ -116,5 +109,4 @@ await t('챌린지 서명은 세션키 주소로 복원된다', async () => {
 });
 
 provider.destroy();
-ciaProvider.destroy();
 process.exit(failed === 0 ? 0 : 1);
