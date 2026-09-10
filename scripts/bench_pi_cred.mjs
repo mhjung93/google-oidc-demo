@@ -1,8 +1,10 @@
 // pi_cred 회로의 zkey 생성과 증명·검증 시간 실측.
-//   node scripts/bench_pi_cred.mjs <ptau 파일 경로>
+//   node scripts/bench_pi_cred.mjs pot21_final.ptau
 //
 // 산출물은 전부 build/mode3/ 아래에 만든다. Mode 2 산출물(build/mode2/)을
 // 건드리지 않으며 npm run zk:key 를 쓰지 않는다.
+// 제약이 16,384(2^14)를 넘으면 pot14로는 셋업이 실패한다 — Pedersen 판(18,786)은
+// pot21_final.ptau(2^21)가 필요하다.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';

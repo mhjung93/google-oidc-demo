@@ -17,6 +17,7 @@ include "lib/mode3_commit.circom";
 //
 // ②는 커밋을 공개 입력 pk_i·arid로 **직접 계산**해서 얻는다. 별도 등식이 필요 없다 —
 // 계산에 쓴 값이 곧 공개 입력이므로 다른 값을 넣으면 서명 검증이 깨진다.
+// C는 교과서 Pedersen 점 (Cx, Cy)이고, 서명·리프에는 이를 Poseidon으로 압축한 Cf가 들어간다.
 //
 // 리프를 C 안의 속성이 아니라 C **로부터** 유도하는 것이 §4.3의 핵심이다.
 // 회로가 비공개 입력에서 직접 계산하므로 증명자가 다른 리프를 제시할 수 없고,
@@ -56,20 +57,28 @@ template PiCred(depth) {
     component pkIRange = Num2Bits(160);
     pkIRange.in <== pk_i;
 
-    // ---- C 계산 ----
-    component commit = CommitPoseidon();
+    // ---- C 계산 (교과서 Pedersen, 2026-09-10) ----
+    // C 는 곡선 점 (Cx, Cy). 서명 메시지와 폐기 리프에는 Poseidon(Cx, Cy) 로 압축한 Cf 를 넣는다.
+    // 압축 해시가 하나 더 붙지만(약 240 제약) 리프 규약 leafValue(tag, raw) 와 서명 메시지
+    // Poseidon(DOMAIN, ·, max_height) 를 Poseidon 판과 같은 모양으로 유지할 수 있다 —
+    // 나중에 Poseidon 으로 되돌릴 때 이 블록만 바꾸면 된다.
+    component commit = CommitPedersen();
     commit.uid   <== uid;
     commit.arid  <== arid;
     commit.s_u   <== s_u;
     commit.blind <== blind;
     commit.pk_i  <== pk_i;
-    signal C;
-    C <== commit.C;
+
+    component cf = Poseidon(2);
+    cf.inputs[0] <== commit.Cx;
+    cf.inputs[1] <== commit.Cy;
+    signal Cf;
+    Cf <== cf.out;
 
     // ---- ① CIA 서명 검증 ----
     component msgHasher = Poseidon(3);
     msgHasher.inputs[0] <== DOMAIN_MODE3_CRED;
-    msgHasher.inputs[1] <== C;
+    msgHasher.inputs[1] <== Cf;
     msgHasher.inputs[2] <== max_height;
 
     component sigVerifier = EdDSAPoseidonVerifier();
@@ -93,7 +102,7 @@ template PiCred(depth) {
     // ---- ④ 폐기 비멤버십 ----
     component leafHasher = Poseidon(2);
     leafHasher.inputs[0] <== TAG_MODE3_CRED;
-    leafHasher.inputs[1] <== C;
+    leafHasher.inputs[1] <== Cf;
 
     component nm = IMTNonMembershipV2(depth);
     nm.target <== leafHasher.out;

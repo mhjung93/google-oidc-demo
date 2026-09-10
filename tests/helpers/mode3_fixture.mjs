@@ -20,7 +20,10 @@ export async function buildValidInput() {
   const pk_i  = 0x1234567890123456789012345678901234567890n; // 160비트
   const max_height = 1000n;
 
-  const C = await credCommit({ uid, arid, s_u, blind, pk_i });
+  // s_u, blind 등 커밋에 들어가는 스칼라는 2^250 미만이어야 한다 (회로 Num2Bits(250)
+  // 과 같은 상한, lib/mode3_credential.js 의 SCALAR_MAX). 새 난수가 필요하면
+  // randomScalar()를 쓴다 — 전체 필드 난수는 92% 확률로 이 상한을 넘어 거부된다.
+  const { Cf: C } = await credCommit({ uid, arid, s_u, blind, pk_i });
   const PPID = await computePpid({ uid, arid, s_u });
   const msg = await credMessage(C, max_height);
 
