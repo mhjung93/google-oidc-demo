@@ -13,6 +13,13 @@ async function main() {
   const cia = hre.ethers.getAddress(raw.trim());
   const { createRevocationTree } = await import("../lib/mode3_revocation.js");
   const emptyRoot = hre.ethers.zeroPadValue(hre.ethers.toBeHex((await createRevocationTree()).getRoot()), 32);
+  // CIA 는 publishRoot tx 를 자기 키로 보낸다 — hardhat 기본 계정에서 가스비를 채워 준다.
+  const [funder] = await hre.ethers.getSigners();
+  const bal = await hre.ethers.provider.getBalance(cia);
+  if (bal < hre.ethers.parseEther("0.5")) {
+    await (await funder.sendTransaction({ to: cia, value: hre.ethers.parseEther("1") })).wait();
+    console.log(`funded ${cia} with 1 ETH`);
+  }
   const F = await hre.ethers.getContractFactory("RevocationLog");
   const log = await F.deploy(cia, emptyRoot);
   await log.waitForDeployment();

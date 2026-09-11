@@ -1093,7 +1093,7 @@ git commit -m "feat(mode3): 지갑·RP 로그인·CIA 관리자 페이지, cia.j
 
 **Interfaces:** 새 인터페이스 없음.
 
-- [ ] **Step 1: 배포 스크립트가 CIA 주소에 자금을 넣게 한다**
+- [x] **Step 1: 배포 스크립트가 CIA 주소에 자금을 넣게 한다**
 
 CIA 가 `/cia/publish`에서 tx 를 보내려면 ETH 가 필요하다. 격리 하네스는 `fundAddress`로 넣어주지만 실제 데모에는 그 단계가 없었다. `scripts/deploy_mode3_log.cjs`의 `const log = await F.deploy(cia, emptyRoot);` 앞에:
 
@@ -1107,7 +1107,7 @@ CIA 가 `/cia/publish`에서 tx 를 보내려면 ETH 가 필요하다. 격리 �
   }
 ```
 
-- [ ] **Step 2: `.gitignore`와 `run_tests.sh`**
+- [x] **Step 2: `.gitignore`와 `run_tests.sh`** — 앞선 리뷰 반영 커밋(`a616680`)과 Task 2 에서 이미 반영됨
 
 `.gitignore`의 `cia_state.json` 다음 줄에 `mode3_wallet_state.json`.
 
@@ -1118,15 +1118,15 @@ CIA 가 `/cia/publish`에서 tx 를 보내려면 ETH 가 필요하다. 격리 �
   tests/test_mode3_demo_stack.mjs
 ```
 
-- [ ] **Step 3: chain 그룹 전체를 돌린다**
+- [x] **Step 3: chain 그룹 전체를 돌린다** — 2026-09-11 12/12 (리뷰 반영으로 `test_cia_startup.mjs`·`test_cia_issue_race.mjs` 가 늘었다)
 
 ```bash
 bash scripts/run_tests.sh chain
 ```
 
-Expected: 10/10 PASS. 끝나고 `ss -ltn | grep -E ':(3100|5100|41[0-9]{2})\b'` 비어 있음, `pgrep -af 'cia.js|mode3_' | grep -v pgrep` 비어 있음.
+Expected: 12/12 PASS. 끝나고 `ss -ltn | grep -E ':(3100|5100|41[0-9]{2})\b'` 비어 있음, `pgrep -af 'cia.js|mode3_' | grep -v pgrep` 비어 있음.
 
-- [ ] **Step 4: `docs/MODE3_DEMO.md`**
+- [x] **Step 4: `docs/MODE3_DEMO.md`**
 
 ```markdown
 # Mode 3 데모 — 기동과 시연
@@ -1191,7 +1191,7 @@ node mode3_rp.js                # :3100 (기동 시 CIA 에서 pk_CIA 를 받아
 - `bash scripts/run_tests.sh chain` — 격리 스택(임시 포트)으로 전 구간. :8545 만 있으면 된다.
 ```
 
-- [ ] **Step 5: 실제 스택 스모크 (임시 상태 파일, 실제 포트)**
+- [x] **Step 5: 실제 스택 스모크 (임시 상태 파일, 실제 포트)** — 2026-09-11 playwright 로 8단계 통과, 8단계 PPID = 2단계 PPID
 
 `.env`를 고치지 않고 env 로 넘긴다. 상태 파일은 스크래치 디렉터리에 두어 저장소 루트에 남기지 않는다. `:8545`가 떠 있어야 한다. `SCRATCH`는 세션 스크래치 디렉터리.
 
@@ -1212,7 +1212,7 @@ CIA_LOG_ADDRESS=<addr> node mode3_rp.js > $SCRATCH/rp.log 2>&1 &
 
 끝나면 세 프로세스를 종료하고 `ss -ltn | grep -E ':(3100|4100|5100)\b'`가 비어 있는지, `$SCRATCH` 밖(저장소 루트)에 `cia_state.json`·`mode3_wallet_state.json`이 생기지 않았는지(`git status --short | grep -E 'cia_|mode3_wallet_state'` 비어 있음) 확인한다.
 
-- [ ] **Step 6: 커밋 (사용자 승인 후)**
+- [x] **Step 6: 커밋 (사용자 승인 후)**
 
 ```bash
 git add scripts/deploy_mode3_log.cjs docs/MODE3_DEMO.md .gitignore scripts/run_tests.sh
@@ -1223,13 +1223,13 @@ git commit -m "docs(mode3): 데모 기동·시연 문서, 배포 스크립트가
 
 ## 완료 기준
 
-- [ ] `bash scripts/run_tests.sh chain` 10/10 (기존 8 + `test_mode3_wallet_agent.mjs`, `test_mode3_demo_stack.mjs`)
-- [ ] `bash scripts/run_tests.sh unit` 8/8 (변화 없음)
-- [ ] 실제 스택(:4100/:5100/:3100) 브라우저 스모크 8단계 통과, 8단계 PPID = 2단계 PPID
-- [ ] Mode 2 파일 무변경: `git diff --stat c9d44a1..HEAD -- server.js client.js index.html wallet_agent.js custom_idp.js lib/imt_v3.js contracts circuits` 비어 있음. `lib/mode3_*.js`도 무변경
-- [ ] 개발용 포트(3000/4000/5001)와 :8545 프로세스 그대로, 임시 프로세스·디렉터리 잔존 없음
-- [ ] `mode3_wallet_state.json`이 `.gitignore`에 있고 저장소 루트에 상태 파일이 커밋되지 않음
-- [ ] `/wallet/login` 응답에 `uid` 없음(테스트로 고정), CORS 헤더는 RP 오리진에만(테스트로 고정)
+- [x] `bash scripts/run_tests.sh chain` 12/12 (기존 8 + `test_mode3_wallet_agent.mjs`, `test_mode3_demo_stack.mjs` + 리뷰 반영의 `test_cia_startup.mjs`·`test_cia_issue_race.mjs`)
+- [x] `bash scripts/run_tests.sh unit` 8/8 (변화 없음)
+- [x] 실제 스택(:4100/:5100/:3100) 브라우저 스모크 8단계 통과, 8단계 PPID = 2단계 PPID (2026-09-11)
+- [x] Mode 2 파일 무변경: `git diff --stat c9d44a1..HEAD -- server.js client.js index.html wallet_agent.js custom_idp.js lib/imt_v3.js circuits contracts/PPIDWallet*.sol contracts/RevocationRegistry*.sol` 비어 있음. 이 계획 밖의 리뷰 반영 커밋(`a616680`, `1d9e915`)이 Mode 3 파일 `lib/mode3_issuance.js`·`contracts/RevocationLog.sol` 을 바꿨다 — Mode 2 는 무변경
+- [x] 개발용 포트(3000/4000/5001)와 :8545 프로세스 그대로, 임시 프로세스·디렉터리 잔존 없음
+- [x] `mode3_wallet_state.json`이 `.gitignore`에 있고 저장소 루트에 상태 파일이 커밋되지 않음
+- [x] `/wallet/login` 응답에 `uid` 없음(테스트로 고정), CORS 헤더는 RP 오리진에만(테스트로 고정)
 
 ## 다음 (이 계획 밖)
 
