@@ -2,7 +2,7 @@
 //   node tests/test_mode3_issuance.js
 import assert from 'node:assert/strict';
 import { buildBabyjub, buildPoseidon } from 'circomlibjs';
-import { randomScalar, credCommit, PEDERSEN_GENERATORS, compressPoint } from '../lib/mode3_credential.js';
+import { randomScalar, credCommit, PEDERSEN_GENERATORS, compressPoint, SCALAR_MAX } from '../lib/mode3_credential.js';
 import {
   DOMAIN_MODE3_ISSUE, randomZr, registrationCommit, proveIssuance, verifyIssuance,
   serializeProof, parseProof, pointToStrings, pointFromStrings,
@@ -150,6 +150,18 @@ await t('음성: 좌표가 p 이상인 비정규 인코딩은 거절된다', asy
   const bj = await buildBabyjub();
   const nonCanonical = { x: C_pt.x + bj.F.p, y: C_pt.y };
   assert.equal(await verifyIssuance({ uid, C_pt: nonCanonical, cm_u, proof }), false);
+});
+
+await t('음성: uid·arid 가 2^250 이상이면 발급 요청을 만들지 않는다 (show 회로의 Num2Bits(250) 이 열 수 없는 credential)', async () => {
+  const u = await freshUser();
+  await assert.rejects(() => proveIssuance({ uid: SCALAR_MAX, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u }), /2\^250/);
+  await assert.rejects(() => proveIssuance({ uid, arid: SCALAR_MAX, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u }), /2\^250/);
+});
+
+await t('음성: CIA 쪽 검증도 uid 가 2^250 이상이면 거절한다', async () => {
+  const u = await freshUser();
+  const { C_pt, cm_u, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u });
+  assert.equal(await verifyIssuance({ uid: SCALAR_MAX, C_pt, cm_u, proof }), false);
 });
 
 await t('직렬화 왕복이 값을 보존한다', async () => {

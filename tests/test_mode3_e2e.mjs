@@ -20,10 +20,12 @@ async function t(name, fn) {
 }
 
 // 게시 직후 즉시 동기화한다 — ethers v6 의 250ms 로그·헤드 캐시를 끈다.
+// vkey 는 CIA 를 띄우기 전에 읽는다 — 없으면 자식 프로세스를 고아로 남기지 않고 바로 죽는다.
+assert.ok(fs.existsSync(VKEY_PATH), `pi_cred vkey 없음: ${VKEY_PATH} (build/mode3 산출물 필요)`);
+const vkey = JSON.parse(fs.readFileSync(VKEY_PATH, 'utf8'));
 const provider = getProvider();
 const cia = await startIsolatedCia();
 const uid = 12345n, arid = 22222222222222222222n;
-const vkey = JSON.parse(fs.readFileSync(VKEY_PATH, 'utf8'));
 
 try {
   const keys = (await cia.get('/cia/public_keys')).body;

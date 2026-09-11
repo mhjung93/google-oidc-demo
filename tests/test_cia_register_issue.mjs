@@ -1,13 +1,14 @@
 // CIA 엔드포인트 — 격리 인스턴스 + :8545. (chain 그룹)
 //   node tests/test_cia_register_issue.mjs
 import assert from 'node:assert/strict';
-import { buildEddsa, buildPoseidon } from 'circomlibjs';
+import { buildBabyjub, buildEddsa, buildPoseidon } from 'circomlibjs';
 import { ethers } from 'ethers';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { getProvider, logAbi, signRootPublication } from './helpers/mode3_chain.mjs';
 import { randomScalar, credMessage, compressPoint } from '../lib/mode3_credential.js';
 import { credLeaf } from '../lib/mode3_revocation.js';
 import { registrationCommit, proveIssuance, serializeProof, pointToStrings } from '../lib/mode3_issuance.js';
+import { syncRevocationTree } from '../lib/mode3_wallet.js';
 
 let failed = 0;
 async function t(name, fn) {
@@ -48,6 +49,17 @@ try {
     assert.equal(r.body.ethAddress.toLowerCase(), cia.ethAddress.toLowerCase());
     assert.equal(r.body.ttlBlocks, 300);
     assert.equal(r.body.logAddress.toLowerCase(), cia.logAddress.toLowerCase());
+  });
+
+  await t('register: 곡선 밖·부분군 밖의 cm_u 는 400 이고 uid 는 잠기지 않는다', async () => {
+    // 등록은 한 번뿐이고 되돌릴 길이 없다 — 여기서 걸러내지 않으면 이후 모든 발급이 400 이고 재등록은 409 다.
+    const r = await cia.post('/cia/register', { uid: '12345', pwd: 'password123', cm_u: { x: '1', y: '1' } });
+    assert.equal(r.status, 400, JSON.stringify(r.body));
+    const bj = await buildBabyjub();
+    const p = bj.F.p;
+    const G = { x: bj.F.toObject(bj.Base8[0]), y: bj.F.toObject(bj.Base8[1]) };
+    const nonCanonical = { x: (G.x + p).toString(), y: G.y.toString() };   // 값은 같아도 비정규 인코딩
+    assert.equal((await cia.post('/cia/register', { uid: '12345', pwd: 'password123', cm_u: nonCanonical })).status, 400);
   });
 
   await t('register: cm_u 등록, 장기키 발급', async () => {
@@ -170,6 +182,53 @@ try {
     assert.equal(r.body.published, true);
     assert.equal(r.body.epoch, current + 2);
     assert.equal(await log.epoch(), BigInt(current + 2));
+  });
+
+  await t('publish 도중 들어온 revoke 의 리프는 pending 에 남아 다음 publish 로 나간다', async () => {
+    // publish 는 tx.wait() 를 기다리는 동안 다른 요청을 받는다. 그 사이 revoke 가 pending 에 붙인
+    // 리프를 publish 가 pending 전체를 비우며 버리면, 그 리프는 온체인 이벤트로 영영 안 나가고
+    // 이후 모든 서명 root 에는 들어 있어 지갑의 재구성이 전부 fail-closed 된다.
+    // automine 을 꺼서 tx.wait() 를 확실히 붙잡아 둔 채로 revoke 를 끼워 넣는다.
+    const issueLeaf = async () => {
+      const { body } = await issueRequest(user);
+      const r = await cia.post('/cia/issue', body);
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      return (await credLeaf(BigInt(r.body.C))).toString();
+    };
+    const L1 = await issueLeaf();
+    assert.equal((await cia.adminPost('/cia/revoke', { uid: '12345', scope: 'credential', leaf: L1 })).status, 200);
+    const L2 = await issueLeaf();   // 아직 폐기하지 않는다 — publish 가 tx 를 보낸 뒤에 한다
+
+    await provider.send('evm_setAutomine', [false]);
+    try {
+      const publishing = cia.adminPost('/cia/publish');
+      // CIA 가 tx 를 mempool 에 넣고 tx.wait() 에 들어갈 때까지 기다린다
+      const deadline = Date.now() + 15_000;
+      while ((await provider.send('eth_pendingTransactions', [])).length === 0) {
+        assert.ok(Date.now() < deadline, 'publish tx 가 mempool 에 오지 않았다');
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const rv = await cia.adminPost('/cia/revoke', { uid: '12345', scope: 'credential', leaf: L2 });
+      assert.equal(rv.status, 200, JSON.stringify(rv.body));
+      assert.equal(rv.body.pending, 2, 'publish 가 아직 안 끝났으니 L1, L2 둘 다 pending 이어야 한다');
+      await provider.send('evm_mine', []);
+      const pub = await publishing;
+      assert.equal(pub.status, 200, JSON.stringify(pub.body));
+      assert.equal(pub.body.published, true);
+      assert.equal(pub.body.leaves.length, 1, '첫 publish 는 L1 만 실었어야 한다');
+    } finally {
+      await provider.send('evm_setAutomine', [true]);
+    }
+
+    const st = await cia.get('/cia/state');
+    assert.equal(st.body.pendingCount, 1, 'L2 는 pending 에 남아 있어야 한다');
+    const pub2 = await cia.adminPost('/cia/publish');
+    assert.equal(pub2.body.published, true, JSON.stringify(pub2.body));
+    assert.equal(pub2.body.leaves.length, 1);
+    assert.equal(BigInt(pub2.body.leaves[0]), BigInt(L2));
+    // 지갑이 이벤트만으로 재구성한 root 가 서명 root 와 같아야 한다 (fail-closed 검사가 통과)
+    const synced = await syncRevocationTree(provider, cia.logAddress);
+    assert.equal(synced.root.toString(), pub2.body.root);
   });
 
   await t('admin 엔드포인트는 시크릿 없이 401', async () => {

@@ -14,7 +14,7 @@ import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { credMessage, compressPoint } from './lib/mode3_credential.js';
 import { credLeaf, createRevocationTree } from './lib/mode3_revocation.js';
-import { verifyIssuance, pointFromStrings, parseProof } from './lib/mode3_issuance.js';
+import { verifyIssuance, isValidPoint, pointFromStrings, parseProof } from './lib/mode3_issuance.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.CIA_PORT) || 4100;
@@ -128,12 +128,15 @@ app.get('/cia/public_keys', (req, res) => {
 });
 
 // §6.1 등록. CIA 가 장기키를 만들어 주고 sk_u 는 기억하지 않는다(응답에 한 번 실어 보내고 버린다).
-app.post('/cia/register', (req, res) => {
+app.post('/cia/register', async (req, res) => {
   const { uid, pwd, cm_u } = req.body ?? {};
   if (!isDec(uid) || typeof pwd !== 'string' || !isPt(cm_u)) return res.status(400).json({ error: 'uid, pwd, cm_u{x,y} required' });
   const acct = Object.values(DEMO_ACCOUNTS).find((a) => a.uid === uid);
   if (!acct || acct.password !== pwd) return res.status(401).json({ error: 'invalid credentials' });
   if (state.accounts[uid]) return res.status(409).json({ error: 'already registered' });
+  // 등록은 한 번뿐이다. 곡선·부분군 밖이거나 비정규 인코딩이면 이후 모든 발급이 400 이 되고
+  // 재등록은 409 라 uid 가 영구히 잠기므로 여기서 거절한다.
+  if (!(await isValidPoint(pointFromStrings(cm_u)))) return res.status(400).json({ error: 'cm_u is not a valid subgroup point' });
   const prv = randomBytes(32);
   const pub = eddsa.prv2pub(prv);
   state.accounts[uid] = { pk_u: S(pub), cm_u: { x: cm_u.x, y: cm_u.y }, disabled: false };
@@ -239,7 +242,10 @@ app.post('/cia/publish', requireAdmin, async (req, res) => {
     const tx = await log.publishRoot(root, epoch, leaves, sig);
     await tx.wait();
     state.epoch = epoch;
-    state.pending = [];
+    // 위 await 들 사이에 /cia/revoke 가 pending 뒤에 붙인 리프는 이번 tx 에 실리지 않았다 —
+    // 이번에 실은 앞부분만 지운다. 통째로 비우면 그 리프는 온체인 이벤트로 영영 나가지 않으면서
+    // 이후 모든 서명 root 에는 들어 있어, 지갑의 이벤트 재구성이 전부 fail-closed 된다.
+    state.pending = state.pending.slice(leaves.length);
     persist();
     res.json({ published: true, epoch, root: tree.getRoot().toString(), txHash: tx.hash, leaves });
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }

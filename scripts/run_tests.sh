@@ -8,7 +8,8 @@
 #   bash scripts/run_tests.sh            # unit + circuit (자체 완결, 기본값)
 #   bash scripts/run_tests.sh unit       # 외부 의존 없음, 빠름
 #   bash scripts/run_tests.sh circuit    # circom/snarkjs 필요. 느리다(회로 컴파일)
-#   bash scripts/run_tests.sh chain      # hardhat 노드(:8545) 필요. IdP는 스스로 격리 기동
+#   bash scripts/run_tests.sh chain      # hardhat 노드(:8545) 필요. IdP/CIA는 스스로 격리 기동.
+#                                        # Mode 3 테스트는 build/mode3/pi_cred_*.zkey·vkey 도 필요
 #   bash scripts/run_tests.sh contract   # 컨트랙트(test/*.test.mjs). hardhat 인프로세스 체인
 #   bash scripts/run_tests.sh live       # 데모 스택(:3000/:4000/:5001) + 관리자 시크릿 필요
 #   bash scripts/run_tests.sh all
@@ -45,8 +46,9 @@ CIRCUIT=(
   tests/test_pi_cred_witness.mjs
 )
 
-# hardhat 노드만 있으면 되는 것들. IdP가 필요하면 테스트가 스스로 격리 인스턴스를 띄운다
-# (tests/helpers/isolated_idp.mjs).
+# hardhat 노드만 있으면 되는 것들. IdP/CIA가 필요하면 테스트가 스스로 격리 인스턴스를 띄운다
+# (tests/helpers/isolated_idp.mjs, isolated_cia.mjs). test_mode3_{wallet,rp,e2e,wallet_agent} 는
+# build/mode3/ 의 pi_cred zkey·vkey 산출물도 전제한다(없으면 vkey 존재 검사에서 바로 멈춘다).
 CHAIN=(
   tests/test_idp_publish_behavior.mjs
   tests/test_idp_revocation_v3.mjs
@@ -56,6 +58,7 @@ CHAIN=(
   tests/test_mode3_wallet.mjs
   tests/test_mode3_rp.mjs
   tests/test_mode3_e2e.mjs
+  tests/test_mode3_wallet_agent.mjs
 )
 
 # 살아있는 데모 스택과 IDP_ADMIN_SECRET이 필요하다.

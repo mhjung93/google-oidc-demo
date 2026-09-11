@@ -25,6 +25,7 @@ const { address: logAddress, contract: log } = await deployRevocationLog(ciaEth.
 const eddsa = await buildEddsa();
 const ps = await buildPoseidon();
 const F = ps.F;
+assert.ok(fs.existsSync(VKEY_PATH), `pi_cred vkey 없음: ${VKEY_PATH} (build/mode3 산출물 필요)`);
 const vkey = JSON.parse(fs.readFileSync(VKEY_PATH, 'utf8'));
 const keyOf = (prv) => { const p = eddsa.prv2pub(prv); return { prv, pub: { x: F.toObject(p[0]), y: F.toObject(p[1]) } }; };
 const CIA = keyOf(Buffer.alloc(32, 9));
