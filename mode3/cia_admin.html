@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="same-origin" />
+  <title>Mode 3 CIA 관리자</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 760px; margin: 24px auto; padding: 0 16px; }
+    fieldset { border: 2px solid #ef6c00; margin-bottom: 16px; }
+    pre { background: #f6f6f6; padding: 10px; white-space: pre-wrap; font-size: 0.85em; }
+    .muted { color: #666; font-size: 0.9em; }
+  </style>
+</head>
+<body>
+  <h2>Mode 3 CIA 관리자</h2>
+  <p class="muted">secret 은 요청 헤더로만 쓰고 저장하지 않는다. 폐기는 append-only 다 — 게시하면 되돌릴 수 없다(설계 §6.5).</p>
+
+  <fieldset>
+    <legend>인증</legend>
+    <label>CIA_ADMIN_SECRET <input id="secret" type="password" size="36" /></label>
+    <label style="margin-left:12px">uid <input id="uid" value="12345" size="8" /></label>
+  </fieldset>
+
+  <fieldset>
+    <legend>조작</legend>
+    <button id="stateBtn">상태 보기</button>
+    <button id="revokeBtn">계정 폐기 (scope=account)</button>
+    <button id="publishBtn">게시 (root → 체인)</button>
+    <button id="recoverBtn">복구 (disabled=false)</button>
+  </fieldset>
+
+  <pre id="out">-</pre>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    async function call(method, path, body) {
+      const headers = { 'Content-Type': 'application/json', 'X-CIA-Admin-Secret': $('secret').value };
+      const r = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+      const b = await r.json().catch(() => null);
+      $('out').textContent = `${method} ${path} → ${r.status}\n${JSON.stringify(b, null, 2)}`;
+    }
+    $('stateBtn').addEventListener('click', () => call('GET', '/cia/state'));
+    $('revokeBtn').addEventListener('click', () => call('POST', '/cia/revoke', { uid: $('uid').value.trim(), scope: 'account' }));
+    $('publishBtn').addEventListener('click', () => call('POST', '/cia/publish', {}));
+    $('recoverBtn').addEventListener('click', () => call('POST', '/cia/account/set_disabled', { uid: $('uid').value.trim(), disabled: false }));
+  </script>
+</body>
+</html>

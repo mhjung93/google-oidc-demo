@@ -809,7 +809,7 @@ git commit -m "feat(mode3): RP 서버 — pk_CIA 고정(env/TOFU)·1회용 chall
 - Consumes: Task 1·2의 HTTP API, `cia.js`의 기존 `GET /cia/state`, `POST /cia/revoke`, `POST /cia/publish`, `POST /cia/account/set_disabled` (관리자 헤더 `X-CIA-Admin-Secret`).
 - Produces: `GET /`(지갑·RP), `GET /admin`(CIA) → `text/html`.
 
-- [ ] **Step 1: 페이지 서빙 테스트를 `test_mode3_demo_stack.mjs` 끝(`login 입력 검증` 다음, `finally` 앞)에 추가한다**
+- [x] **Step 1: 페이지 서빙 테스트를 `test_mode3_demo_stack.mjs` 끝(`login 입력 검증` 다음, `finally` 앞)에 추가한다**
 
 ```js
   await t('페이지 서빙: 지갑 /, RP /, CIA /admin 이 text/html', async () => {
@@ -822,7 +822,7 @@ git commit -m "feat(mode3): RP 서버 — pk_CIA 고정(env/TOFU)·1회용 chall
   });
 ```
 
-- [ ] **Step 2: 실패를 확인한다**
+- [x] **Step 2: 실패를 확인한다**
 
 ```bash
 node tests/test_mode3_demo_stack.mjs 2>&1 | tail -5
@@ -830,7 +830,7 @@ node tests/test_mode3_demo_stack.mjs 2>&1 | tail -5
 
 Expected: 마지막 테스트만 `FAIL 페이지 서빙 ...` (404), 나머지 13줄 ok.
 
-- [ ] **Step 3: 지갑 페이지**
+- [x] **Step 3: 지갑 페이지**
 
 `mode3/wallet.html`:
 
@@ -902,7 +902,7 @@ Expected: 마지막 테스트만 `FAIL 페이지 서빙 ...` (404), 나머지 13
 </html>
 ```
 
-- [ ] **Step 4: RP 로그인 페이지**
+- [x] **Step 4: RP 로그인 페이지**
 
 `mode3/rp.html`:
 
@@ -993,7 +993,7 @@ Expected: 마지막 테스트만 `FAIL 페이지 서빙 ...` (404), 나머지 13
 </html>
 ```
 
-- [ ] **Step 5: CIA 관리자 패널**
+- [x] **Step 5: CIA 관리자 패널**
 
 `mode3/cia_admin.html`:
 
@@ -1051,7 +1051,7 @@ Expected: 마지막 테스트만 `FAIL 페이지 서빙 ...` (404), 나머지 13
 
 `GET /cia/state`는 관리자 헤더가 필요 없지만 같은 `call()`로 보내도 무해하다.
 
-- [ ] **Step 6: `cia.js` 두 곳**
+- [x] **Step 6: `cia.js` 두 곳**
 
 (1) 파일 맨 위 import 블록의 첫 import 앞에 한 줄:
 
@@ -1066,7 +1066,7 @@ import 'dotenv/config';
 app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_admin.html')));
 ```
 
-- [ ] **Step 7: 통과를 확인한다**
+- [x] **Step 7: 통과를 확인한다**
 
 ```bash
 node tests/test_mode3_demo_stack.mjs 2>&1 | tail -3
@@ -1075,7 +1075,7 @@ bash scripts/run_tests.sh unit 2>&1 | tail -3
 
 Expected: 14줄 ok; unit 8/8 (dotenv 추가가 `test_cia_register_issue.mjs` 같은 격리 CIA 테스트를 깨지 않는지는 Task 4의 chain 그룹에서 본다).
 
-- [ ] **Step 8: 커밋 (사용자 승인 후)**
+- [x] **Step 8: 커밋 (사용자 승인 후)**
 
 ```bash
 git add mode3/wallet.html mode3/rp.html mode3/cia_admin.html cia.js tests/test_mode3_demo_stack.mjs

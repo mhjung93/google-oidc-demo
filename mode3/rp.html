@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="same-origin" />
+  <title>Mode 3 RP</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 760px; margin: 24px auto; padding: 0 16px; }
+    fieldset { border: 2px solid #1976d2; margin-bottom: 16px; }
+    pre { background: #f6f6f6; padding: 10px; white-space: pre-wrap; font-size: 0.85em; }
+    .ok { color: #2e7d32; font-weight: bold; } .bad { color: #c62828; font-weight: bold; }
+    .muted { color: #666; font-size: 0.9em; }
+  </style>
+</head>
+<body>
+  <h2>Mode 3 로그인 (RP)</h2>
+  <p class="muted" id="rpInfo">RP 정보 불러오는 중…</p>
+
+  <fieldset>
+    <legend>로그인</legend>
+    <button id="loginBtn">Mode 3 로그인</button>
+    <label><input type="checkbox" id="skipSync" /> 동기화 생략(캐시된 π 재사용) — 폐기 후 <code>stale_root</code> 거절 시연</label>
+    <p id="verdict"></p>
+    <pre id="log"></pre>
+  </fieldset>
+
+  <fieldset>
+    <legend>이 RP 에 기록된 로그인 <button id="refreshLogins">새로고침</button></legend>
+    <pre id="logins">-</pre>
+  </fieldset>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let info = null;
+    const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) });
+    const ms = (t0) => `${Date.now() - t0} ms`;
+
+    async function loadInfo() {
+      info = await (await fetch('/api/mode3/rp_info')).json();
+      $('rpInfo').textContent = `arid=${info.arid}   RevocationLog=${info.logAddress}   지갑 에이전트=${info.walletAgentOrigin}   pk_CIA=${info.pkCiaSource}`;
+    }
+    async function refreshLogins() {
+      const { logins } = await (await fetch('/api/mode3/logins')).json();
+      $('logins').textContent = logins.length ? logins.map((l) => `${l.at}  PPID=${l.PPID}  root=${l.root.slice(0, 18)}…`).join('\n') : '(없음)';
+    }
+    $('loginBtn').addEventListener('click', async () => {
+      $('loginBtn').disabled = true; $('verdict').textContent = ''; $('log').textContent = '';
+      const log = (s) => { $('log').textContent += s + '\n'; };
+      try {
+        if (!info) await loadInfo();
+        let t0 = Date.now();
+        const { challenge } = await (await post('/api/mode3/challenge')).json();
+        log(`1. challenge 발급 ${ms(t0)}: ${challenge.slice(0, 16)}…`);
+
+        t0 = Date.now();
+        const w = await post(`${info.walletAgentOrigin}/wallet/login`, { arid: info.arid, challenge, skipSync: $('skipSync').checked });
+        const wb = await w.json().catch(() => ({}));
+        if (w.status !== 200) {
+          log(`2. 지갑 ${w.status} ${ms(t0)}: ${wb.reason ?? wb.error ?? ''} ${wb.detail ?? ''}`);
+          $('verdict').innerHTML = `<span class="bad">로그인 실패 — 지갑: ${wb.reason ?? w.status}</span>`;
+          return;
+        }
+        const tm = wb.timings ?? {};
+        log(`2. 지갑 π+σ ${ms(t0)} (동기화 ${tm.syncMs} ms, 발급 ${tm.issueMs} ms, 증명 ${tm.proveMs} ms, 캐시 히트=${wb.cacheHit}, 새 발급=${wb.issued})\n   root=${wb.root}`);
+
+        t0 = Date.now();
+        const r = await post('/api/mode3/login', { challenge, proof: wb.proof, publicSignals: wb.publicSignals, sig: wb.sig });
+        const rb = await r.json();
+        log(`3. RP 검증 ${ms(t0)}: ${JSON.stringify(rb)}`);
+        $('verdict').innerHTML = rb.ok
+          ? `<span class="ok">로그인 성공</span> PPID=${rb.PPID}`
+          : `<span class="bad">거절: ${rb.reason}</span>`;
+        refreshLogins();
+      } catch (e) {
+        log(`오류: ${e.message}`);
+        $('verdict').innerHTML = `<span class="bad">오류</span>`;
+      } finally { $('loginBtn').disabled = false; }
+    });
+    $('refreshLogins').addEventListener('click', refreshLogins);
+    loadInfo().then(refreshLogins);
+  </script>
+</body>
+</html>

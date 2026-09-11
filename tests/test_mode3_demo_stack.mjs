@@ -136,6 +136,15 @@ try {
   await t('login 입력 검증: 필드 누락 → 400', async () => {
     assert.equal((await rp.post('/api/mode3/login', { challenge: 'x' })).status, 400);
   });
+
+  await t('페이지 서빙: 지갑 /, RP /, CIA /admin 이 text/html', async () => {
+    for (const [c, p, marker] of [[wallet, '/', 'Mode 3 지갑'], [rp, '/', 'Mode 3 로그인'], [cia, '/admin', 'CIA 관리자']]) {
+      const r = await fetch(`${c.base}${p}`);
+      assert.equal(r.status, 200, `${p}`);
+      assert.match(r.headers.get('content-type') ?? '', /text\/html/);
+      assert.ok((await r.text()).includes(marker), `${p} 에 "${marker}" 가 있어야 한다`);
+    }
+  });
 } finally {
   await stack.stop();
 }

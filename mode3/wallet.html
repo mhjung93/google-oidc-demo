@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="same-origin" />
+  <title>Mode 3 지갑</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 760px; margin: 24px auto; padding: 0 16px; }
+    fieldset { border: 2px solid #4CAF50; margin-bottom: 16px; }
+    pre { background: #f6f6f6; padding: 10px; white-space: pre-wrap; font-size: 0.85em; }
+    .muted { color: #666; font-size: 0.9em; }
+  </style>
+</head>
+<body>
+  <h2>Mode 3 지갑 에이전트</h2>
+  <p class="muted">이 페이지는 지갑 에이전트(:5100)와 같은 오리진에서만 열린다. 비밀은 <code>mode3_wallet_state.json</code>에 있고 화면에 나오지 않는다.</p>
+
+  <fieldset>
+    <legend>등록 (§6.1, 한 번)</legend>
+    <label>uid <input id="uid" value="12345" size="8" /></label>
+    <label>pwd <input id="pwd" type="password" value="password123" size="12" /></label>
+    <button id="registerBtn">등록</button>
+    <span id="registerResult" class="muted"></span>
+  </fieldset>
+
+  <fieldset>
+    <legend>상태 <button id="refreshBtn">새로고침</button></legend>
+    <pre id="status">불러오는 중…</pre>
+  </fieldset>
+
+  <p class="muted">로그인·발급은 RP 페이지(:3100)의 버튼이 시작한다 — 발급은 로그인 안에서 필요할 때 자동으로 일어난다(설계 §6.2 "세션마다").</p>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    async function refresh() {
+      try {
+        const r = await fetch('/wallet/status');
+        const s = await r.json();
+        const lines = [
+          `등록: ${s.registered ? `예 (uid=${s.uid})` : '아니오'}`,
+          `체인 head: ${s.head ?? '(RPC 없음)'}   RevocationLog: ${s.logAddress ?? '(없음)'}`,
+          `마지막 동기화 root: ${s.lastRoot ?? '-'}`,
+          `캐시된 π 의 root:   ${s.cachedProofRoot ?? '-'}`,
+          '',
+          'credentials (arid 별):',
+        ];
+        const entries = Object.entries(s.credentials);
+        if (entries.length === 0) lines.push('  (없음)');
+        for (const [arid, c] of entries) lines.push(`  arid=${arid}\n    max_height=${c.max_height}  세션 주소=${c.sessionAddress}\n    발급=${c.issuedAt}`);
+        $('status').textContent = lines.join('\n');
+      } catch (e) { $('status').textContent = `상태 조회 실패: ${e.message}`; }
+    }
+    $('registerBtn').addEventListener('click', async () => {
+      $('registerResult').textContent = '…';
+      const r = await fetch('/wallet/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ uid: $('uid').value.trim(), pwd: $('pwd').value }) });
+      const b = await r.json().catch(() => ({}));
+      $('registerResult').textContent = r.status === 201 ? `등록됨 (uid=${b.uid})` : `${r.status}: ${b.reason ?? b.error ?? ''} ${b.cia ? JSON.stringify(b.cia) : ''}`;
+      refresh();
+    });
+    $('refreshBtn').addEventListener('click', refresh);
+    refresh();
+  </script>
+</body>
+</html>
