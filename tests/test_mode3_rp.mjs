@@ -42,7 +42,7 @@ async function publish(leavesBig) {
   const { tree } = await syncRevocationTree(provider, logAddress);
   for (const l of leavesBig) await tree.insert(l);
   const root = rootToBytes32(tree.getRoot()), epoch = (await log.epoch()) + 1n, leaves = leavesBig.map(rootToBytes32);
-  await (await log.connect(ciaEth).publishRoot(root, epoch, leaves, await signRootPublication(ciaEth, { root, epoch, leaves }))).wait();
+  await (await log.connect(ciaEth).publishRoot(root, epoch, leaves, await signRootPublication(ciaEth, { logAddress, root, epoch, leaves }))).wait();
 }
 async function makeLogin({ key = CIA, useArid = arid, ttl = 300n } = {}) {
   const reg = await createRegistration();

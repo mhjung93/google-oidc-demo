@@ -71,23 +71,54 @@ function persist() { writeJsonAtomic(STATE_FILE, state, 0o600); }
 async function loadState() {
   state = readJson(STATE_FILE, defaultState());
   tree = await createRevocationTree();
-  for (const l of state.revoked) await tree.insert(BigInt(l));
-  // 기동 시 로컬 epoch 가 체인보다 뒤처져 있으면(§I1 — 게시 tx 는 성공했는데 persist() 전에
-  // 죽은 경우) 컨트랙트를 진실로 삼아 따라잡는다. RPC 가 아직 안 떠 있어도 기동 자체는
-  // 막지 않는다 — 그 경우 발급은 headHeight() 가 알아서 503 을 낸다.
+  // pending 은 revoked 의 접미사다 — /cia/revoke 가 둘 다에 push 하고 /cia/publish 가 pending 의
+  // 앞부분만 지운다. 따라서 "게시된 리프" = revoked 의 앞 (revoked.length - pending.length) 개.
+  let published = state.revoked.length - state.pending.length;
+  for (const l of state.revoked.slice(0, published)) await tree.insert(BigInt(l));
+
+  // 기동 시 로컬 트리를 온체인 root 와 대조한다. 어긋난 채로 다음 게시를 하면 서명 root 와 지갑이
+  // 이벤트로 재구성한 root 가 달라져 전원이 fail-closed 되고, 로그 재배포 말고는 복구가 없다.
+  //   - 게시 tx 는 성공했는데 persist() 전에 죽은 경우: 그 tx 에 실렸던 pending 앞부분이 이미
+  //     체인에 있다. 게시된 접두사에 pending 을 하나씩 더해 가며 온체인 root 와 같아지는 지점을
+  //     찾고, 그 앞부분은 pending 에서 걷어낸다(다시 올리면 리프 이벤트가 중복될 뿐 무해하지만,
+  //     걷어내는 쪽이 정확하다). epoch 도 컨트랙트를 진실로 삼아 따라잡는다.
+  //   - 어느 접두사도 맞지 않으면(로그 재배포, 상태 파일 유실·옛 백업 복원) 기동을 거부한다.
+  //   - RPC 가 아직 안 떠 있으면 대조 없이 기동한다 — 발급은 headHeight() 가 503 을 내고,
+  //     게시는 다음 기동 때 다시 대조된다.
   if (LOG_ADDRESS) {
+    let onchainRoot = null, onchainEpoch = 0;
     try {
       const log = new ethers.Contract(LOG_ADDRESS, LOG_ABI, ethWallet);
-      const onchainEpoch = Number(await log.epoch());
+      onchainRoot = BigInt(await log.root());
+      onchainEpoch = Number(await log.epoch());
+    } catch (e) {
+      console.warn(`[cia] 기동 시 체인 확인 실패, root 대조 없이 계속 진행: ${e.message}`);
+    }
+    if (onchainRoot !== null) {
+      let n = published;
+      while (tree.getRoot() !== onchainRoot && n < state.revoked.length) { await tree.insert(BigInt(state.revoked[n])); n++; }
+      if (tree.getRoot() !== onchainRoot) {
+        console.error(`[cia] 기동 거부: 로컬 폐기 트리와 온체인 root 불일치 (로그 ${LOG_ADDRESS}, 온체인 epoch ${onchainEpoch}, ` +
+          `로컬 revoked ${state.revoked.length}개 / pending ${state.pending.length}개). 로그를 재배포했거나 상태 파일이 ` +
+          `유실·복원됐다. 이대로 게시하면 지갑의 이벤트 재구성이 전부 실패한다 — CIA_STATE_FILE 과 CIA_LOG_ADDRESS 를 확인할 것.`);
+        process.exit(1);
+      }
+      let changed = false;
+      if (n !== published) {
+        console.warn(`[cia] 크래시 복구: pending ${n - published}개는 이미 체인에 게시돼 있어 걷어낸다`);
+        state.pending = state.revoked.slice(n);
+        published = n;
+        changed = true;
+      }
       if (onchainEpoch > state.epoch) {
         console.warn(`[cia] 상태 파일 epoch(${state.epoch})가 체인 epoch(${onchainEpoch})보다 뒤처져 있어 맞춘다`);
         state.epoch = onchainEpoch;
-        persist();
+        changed = true;
       }
-    } catch (e) {
-      console.warn(`[cia] 기동 시 체인 epoch 확인 실패, 계속 진행: ${e.message}`);
+      if (changed) persist();
     }
   }
+  for (const l of state.revoked.slice(published)) await tree.insert(BigInt(l));
 }
 
 // ---- 유틸 ----
@@ -216,11 +247,12 @@ app.post('/cia/revoke', requireAdmin, async (req, res) => {
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
-// §6.5 게시. 서명이 리프 배열까지 덮는다 — 릴레이어의 calldata 오염 방지.
+// §6.5 게시. 서명이 리프 배열까지 덮는다 — 릴레이어의 calldata 오염 방지. 로그 주소도 덮는다 —
+// 같은 CIA 키로 재배포한 다른 로그에 옛 게시를 재생하지 못하게(재생되면 root 가 옛 트리로 바뀐다).
 // inner 의 계산은 tests/helpers/mode3_chain.mjs 의 signRootPublication() 및
-// RevocationLog.digestFor() 와 바이트 단위로 같아야 한다(keccak(DOMAIN, root, epoch,
-// keccak(leaves)) 를 personal_sign). cia.js 는 프로덕션 코드라 tests/ 를 import 하지 않으므로
-// 계산을 여기 그대로 다시 적는다.
+// RevocationLog.digestFor() 와 바이트 단위로 같아야 한다(keccak(DOMAIN, address(log), root,
+// epoch, keccak(leaves)) 를 personal_sign). cia.js 는 프로덕션 코드라 tests/ 를 import 하지
+// 않으므로 계산을 여기 그대로 다시 적는다.
 app.post('/cia/publish', requireAdmin, async (req, res) => {
   try {
     if (!LOG_ADDRESS) return res.status(503).json({ error: 'CIA_LOG_ADDRESS not configured' });
@@ -237,7 +269,7 @@ app.post('/cia/publish', requireAdmin, async (req, res) => {
     const epoch = Math.max(state.epoch, onchainEpoch) + 1;
     const leavesHash = ethers.keccak256(ethers.solidityPacked(leaves.map(() => 'bytes32'), leaves));
     const inner = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
-      ['bytes32', 'bytes32', 'uint64', 'bytes32'], [DOMAIN_ROOT, root, epoch, leavesHash]));
+      ['bytes32', 'address', 'bytes32', 'uint64', 'bytes32'], [DOMAIN_ROOT, LOG_ADDRESS, root, epoch, leavesHash]));
     const sig = await ethWallet.signMessage(ethers.getBytes(inner));
     const tx = await log.publishRoot(root, epoch, leaves, sig);
     await tx.wait();

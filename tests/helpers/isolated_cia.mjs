@@ -60,6 +60,9 @@ export async function startIsolatedCia(opts = {}) {
   if (!ready) {
     const log = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '';
     try { child.kill('SIGKILL'); } catch { /* */ }
+    // 기동 거부가 정상 경로인 테스트(test_cia_startup.mjs)가 있다 — 실패해도 잔존물을 남기지 않는다.
+    provider.destroy();
+    fs.rmSync(dir, { recursive: true, force: true });
     throw new Error(`격리 CIA 기동 실패(${port}).${spawnError ? ' spawn: ' + spawnError.message : ''}\n${log}`);
   }
 

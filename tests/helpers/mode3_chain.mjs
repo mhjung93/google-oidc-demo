@@ -45,10 +45,15 @@ export async function mineBlocks(n, provider = getProvider()) {
   await provider.send('hardhat_mine', ['0x' + n.toString(16)]);
 }
 
-/** 컨트랙트 digestFor 와 같은 내부 digest 에 EIP-191 서명. leaves 는 bytes32 hex 배열. */
-export async function signRootPublication(wallet, { root, epoch, leaves }) {
+/**
+ * 컨트랙트 digestFor 와 같은 내부 digest 에 EIP-191 서명. leaves 는 bytes32 hex 배열.
+ * logAddress 는 필수다 — digest 가 로그 주소를 덮어, 같은 CIA 키로 재배포한 다른 로그에
+ * 옛 게시를 재생할 수 없게 한다. cia.js 의 /cia/publish 와 바이트 단위로 같아야 한다.
+ */
+export async function signRootPublication(wallet, { logAddress, root, epoch, leaves }) {
+  if (!logAddress) throw new Error('signRootPublication: logAddress 가 필요하다 (digest 가 로그 주소를 덮는다)');
   const leavesHash = ethers.keccak256(ethers.solidityPacked(leaves.map(() => 'bytes32'), leaves));
   const inner = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
-    ['bytes32', 'bytes32', 'uint64', 'bytes32'], [DOMAIN, root, epoch, leavesHash]));
+    ['bytes32', 'address', 'bytes32', 'uint64', 'bytes32'], [DOMAIN, logAddress, root, epoch, leavesHash]));
   return wallet.signMessage(ethers.getBytes(inner));
 }

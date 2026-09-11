@@ -170,7 +170,7 @@ try {
     assert.equal(await log.epoch(), BigInt(current), '아직은 로컬·온체인 epoch 가 같아야 한다');
     const root = ethers.zeroPadValue(ethers.toBeHex(BigInt(before.body.root)), 32);
     const directEpoch = current + 1;
-    const sig = await signRootPublication(cia.ciaEthWallet, { root, epoch: directEpoch, leaves: [] });
+    const sig = await signRootPublication(cia.ciaEthWallet, { logAddress: cia.logAddress, root, epoch: directEpoch, leaves: [] });
     const tx = await log.connect(cia.ciaEthWallet).publishRoot(root, directEpoch, [], sig);
     await tx.wait();
     assert.equal(await log.epoch(), BigInt(directEpoch));

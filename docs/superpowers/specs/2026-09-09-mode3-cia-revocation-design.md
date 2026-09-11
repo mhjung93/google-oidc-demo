@@ -332,7 +332,7 @@ AND 합성으로 짜면 된다 — 교과서 구성이며 회로가 필요 없�
 ```
 publishRoot(bytes32 newRoot, uint64 epoch, bytes32[] calldata newLeaves, bytes sig)
     require(epoch > lastEpoch)                              ← 재생 방지
-    require(recover(H(DOMAIN, newRoot, epoch, keccak(newLeaves)), sig) == CIA_KEY)
+    require(recover(H(DOMAIN, address(this), newRoot, epoch, keccak(newLeaves)), sig) == CIA_KEY)
     emit Revoked(epoch, newLeaves)                          ← calldata. 저장하지 않는다
     root = newRoot;  lastEpoch = epoch
 ```
@@ -341,10 +341,22 @@ publishRoot(bytes32 newRoot, uint64 epoch, bytes32[] calldata newLeaves, bytes s
 서명된 root 에 다른 리프를 붙여 calldata 를 오염시킬 수 있고, 그러면 지갑이 잘못된 트리를
 재구성해 root 불일치로 전원이 막힌다. 리프를 서명에 넣으면 그 경로가 닫힌다.
 
+**서명이 로그 컨트랙트 주소도 덮는다(2026-09-11 리뷰 반영).** 원래는 "CIA 키 하나당 로그
+하나, 키 회전 = 재배포"를 전제로 주소를 넣지 않았는데, 운영 절차가 재배포 시 CIA 이더 키를
+유지하므로 그 전제가 지켜지지 않았다. 그러면 옛 로그의 공개 calldata `(root, epoch, leaves, sig)`
+하나를 새 로그에 그대로 제출해 root 를 옛 트리로 바꿀 수 있고, 결과는 위 calldata 오염과 같다
+(전원 root 불일치, 로그 재배포 외 복구 불가). 주소를 덮으면 서명이 그 로그에만 유효하다.
+
+같은 이유로 **CIA 는 기동 시 로컬 폐기 트리를 온체인 root 와 대조한다.** 게시 tx 는 성공했는데
+상태 저장 전에 죽은 경우는 이미 게시된 pending 접두사를 걷어내 복구하고, 어느 접두사도 맞지
+않으면(로그 재배포, 상태 파일 유실·옛 백업 복원) 기동을 거부한다 — 어긋난 채 다음 게시를 하면
+전원이 막히기 때문이다.
+
 (소비 체인이 있던 설계의 논거다 — §9.11. 여지를 남기기 위해 chainid 는 여전히 넣지 않는다.)
 서명 메시지에 **chainid를 넣지 않는다.** 넣으면 CIA가 체인 수만큼 서명해야 한다. 안 넣으면
 한 번 서명한 것을 모든 체인에 뿌릴 수 있고, 같은 root를 다른 체인에 재생하는 것은 공격이 아니라
-원하는 동작이다. 도메인 분리는 `DOMAIN` 태그 하나로 충분하다.
+원하는 동작이다. 도메인 분리는 `DOMAIN` 태그와 로그 주소로 한다 — 여러 체인에 같은 서명을
+쓰려면 CREATE2 로 주소를 맞추면 된다.
 
 **제출자는 아무나여도 된다.** 권한이 서명에 실려 있으므로 릴레이어를 신뢰할 필요가 없고,
 검열 저항이 따라온다.

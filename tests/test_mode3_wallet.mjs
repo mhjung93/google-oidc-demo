@@ -48,7 +48,7 @@ async function publish(leavesBig) {
   const root = rootToBytes32(tree.getRoot());
   const epoch = (await log.epoch()) + 1n;
   const leaves = leavesBig.map(rootToBytes32);
-  const sig = await signRootPublication(ciaEth, { root, epoch, leaves });
+  const sig = await signRootPublication(ciaEth, { logAddress, root, epoch, leaves });
   await (await log.connect(ciaEth).publishRoot(root, epoch, leaves, sig)).wait();
 }
 

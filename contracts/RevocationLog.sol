@@ -11,9 +11,11 @@ pragma solidity ^0.8.24;
 ///   **리프 배열까지** 덮어야 한다 — 안 그러면 릴레이어가 서명된 root 에 엉뚱한 리프를 붙여
 ///   calldata 를 오염시키고, 지갑이 잘못된 트리를 재구성해 전원이 root 불일치로 막힌다.
 ///
-///   digest 는 chainid·컨트랙트 주소에 바인딩되지 않는다 — **CIA 키 하나당 로그 하나**를 전제한다.
-///   같은 키가 두 로그(재배포본, 다른 체인)를 앞에 두면 한쪽의 게시를 다른 쪽에 재생할 수 있다.
-///   키 회전 = 재배포이므로 재배포 시 새 키를 쓰는 것이 이 전제를 지키는 방법이다.
+///   digest 는 **이 컨트랙트 주소**를 덮는다(2026-09-11). 같은 CIA 키로 로그를 재배포하면 옛 로그의
+///   공개 calldata (root, epoch, leaves, sig) 를 새 로그에 그대로 재생해 root 를 옛 트리로 바꿀 수
+///   있었다 — 운영 절차가 재배포 시 CIA 이더 키를 유지하므로 "키 하나당 로그 하나" 전제는 실제로
+///   지켜지지 않았다. chainid 는 여전히 넣지 않는다(설계 §6.5: 한 번 서명해 여러 체인에 뿌리는
+///   여지). 다중 체인에 같은 서명을 쓰려면 CREATE2 로 주소를 맞추면 된다.
 contract RevocationLog {
     bytes32 public constant DOMAIN = keccak256("MODE3_REVOCATION_ROOT_V1");
 
@@ -34,9 +36,9 @@ contract RevocationLog {
     /// @dev EIP-191 personal_sign 을 적용하기 **전의** 내부 digest. ethers 의
     ///   wallet.signMessage(getBytes(digestFor(...))) 가 이 컨트랙트가 기대하는 서명을 만든다.
     function digestFor(bytes32 newRoot, uint64 newEpoch, bytes32[] calldata leaves)
-        public pure returns (bytes32)
+        public view returns (bytes32)
     {
-        return keccak256(abi.encode(DOMAIN, newRoot, newEpoch, keccak256(abi.encodePacked(leaves))));
+        return keccak256(abi.encode(DOMAIN, address(this), newRoot, newEpoch, keccak256(abi.encodePacked(leaves))));
     }
 
     function publishRoot(bytes32 newRoot, uint64 newEpoch, bytes32[] calldata leaves, bytes calldata sig)
