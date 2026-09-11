@@ -60,6 +60,7 @@ CHAIN=(
   tests/test_mode3_rp.mjs
   tests/test_mode3_e2e.mjs
   tests/test_mode3_wallet_agent.mjs
+  tests/test_mode3_demo_stack.mjs
 )
 
 # 살아있는 데모 스택과 IDP_ADMIN_SECRET이 필요하다.

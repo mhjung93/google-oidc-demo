@@ -528,7 +528,7 @@ git commit -m "feat(mode3): 지갑 에이전트 — 등록·로그인(자동 발
   - `GET / → mode3/rp.html`
   - env: `MODE3_RP_PORT`(3100), `MODE3_RP_ARID`(`22222222222222222222`), `MODE3_PK_CIA_X`/`MODE3_PK_CIA_Y`, `MODE3_CIA_URL`, `MODE3_WALLET_AGENT_ORIGIN`, `CIA_LOG_ADDRESS`(필수), `CIA_RPC_URL`, `MODE3_CHALLENGE_TTL_MS`(120000)
 
-- [ ] **Step 1: 실패하는 테스트를 쓴다**
+- [x] **Step 1: 실패하는 테스트를 쓴다**
 
 `tests/test_mode3_demo_stack.mjs`:
 
@@ -669,7 +669,7 @@ try {
 process.exit(failed === 0 ? 0 : 1);
 ```
 
-- [ ] **Step 2: 실패를 확인한다**
+- [x] **Step 2: 실패를 확인한다**
 
 ```bash
 node tests/test_mode3_demo_stack.mjs
@@ -677,7 +677,7 @@ node tests/test_mode3_demo_stack.mjs
 
 Expected: `mode3_rp.js 기동 실패` throw, exit 1.
 
-- [ ] **Step 3: RP 를 쓴다**
+- [x] **Step 3: RP 를 쓴다**
 
 `mode3_rp.js`:
 
@@ -780,7 +780,7 @@ app.listen(PORT, '127.0.0.1', () => {
 });
 ```
 
-- [ ] **Step 4: 통과를 확인한다**
+- [x] **Step 4: 통과를 확인한다**
 
 ```bash
 node tests/test_mode3_demo_stack.mjs
@@ -788,7 +788,7 @@ node tests/test_mode3_demo_stack.mjs
 
 Expected: 13줄 `ok`, exit 0. (만료 테스트가 6.5초 기다린다.)
 
-- [ ] **Step 5: 포트·프로세스 잔존 확인 후 커밋 (사용자 승인 후)**
+- [x] **Step 5: 포트·프로세스 잔존 확인 후 커밋 (사용자 승인 후)** — CHAIN 등록은 Task 4 를 기다리지 않고 여기서 함께 했다(CLAUDE.md 규칙)
 
 ```bash
 ss -ltn | grep -E ':(3100|5100)\b'; pgrep -af 'mode3_rp|mode3_wallet_agent|cia.js' | grep -v pgrep
