@@ -56,6 +56,7 @@ CHAIN=(
   tests/test_publish_v4_cycle.mjs
   tests/test_cia_register_issue.mjs
   tests/test_cia_startup.mjs
+  tests/test_cia_issue_race.mjs
   tests/test_mode3_wallet.mjs
   tests/test_mode3_rp.mjs
   tests/test_mode3_e2e.mjs

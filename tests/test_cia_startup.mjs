@@ -44,10 +44,11 @@ async function registerAndIssueLeaf(cia, user) {
   }
   const blind = randomScalar();
   const { C_pt, proof } = await proveIssuance({ uid, arid, s_u: user.s_u, blind, pk_i, r_u: user.r_u });
-  const m = F.e(F.toObject(poseidon([C_pt.x, C_pt.y])));
+  const height = BigInt(await provider.getBlockNumber());
+  const m = F.e(F.toObject(poseidon([C_pt.x, C_pt.y, height])));
   const s = eddsa.signPoseidon(user.sk_u, m);
   const sig_u = { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() };
-  const r = await cia.post('/cia/issue', { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u });
+  const r = await cia.post('/cia/issue', { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u, height: height.toString() });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   return (await credLeaf(BigInt(r.body.C))).toString();
 }

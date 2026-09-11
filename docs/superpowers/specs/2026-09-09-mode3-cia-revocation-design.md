@@ -260,12 +260,16 @@ SNARK밖에 없다(§11).
      π_issue : 발급 PoK { 공개 입력 (uid, cm_u, C_pt),  witness (arid, s_u, blind, pk_i, r_u) :
                  C_pt = uid·G₁ + arid·G₂ + s_u·G₃ + pk_i·G₄ + blind·H   ← uid 는 공개 입력 (CIA 가 안다)
                ∧ cm_u = s_u·G₃ + r_u·H }                                  ← 등록 시 커밋과 같은 s_u
-     Sign(sk_u, C_pt)
+     h = 사용자가 본 현재 블록 높이
+     Sign(sk_u, Poseidon(C_pt.x, C_pt.y, h))
 
 3. CIA: C 를 사용자에게서 받지 않는다 — π_issue 의 공개 입력 C_pt 에서
              C = Poseidon(C_pt.x, C_pt.y) 를 스스로 계산한다. 사용자가 보낸 C 를
              서명하면 증명된 C_pt 와 무관한 값에 서명이 붙어 cm_u 동일성 증명이 무력화된다
         등록된 pk_u 로 서명 검증 (사용자 인증)
+        h ∈ [현재높이 − 30, 현재높이 + 1] 확인   ← 요청 본문에 nonce 가 없으면 만료된 요청을
+             그대로 다시 내서 새 σ_CIA(새 max_height)를 받을 수 있다(TTL 연장). 창 안의
+             재제출은 아래 "같은 C 재발급 거절" 이 막는다 (2026-09-11 리뷰 반영)
         π_issue 검증      ← arid·pk_i·blind 는 여전히 모른다
         disabled == false 확인
 

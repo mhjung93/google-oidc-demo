@@ -71,8 +71,8 @@ await t('발급 요청 → 로컬 CIA 서명 → 증명 생성 → vkey 로 검�
   reg = await createRegistration();
   session = createSessionKey();
   const sk_u = Buffer.alloc(32, 3).toString('hex');
-  req = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session });
   const head = await provider.getBlockNumber();
+  req = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, height: BigInt(head) });
   cred = await localIssue(pointFromStrings(req.body.C_pt), head);
   ({ tree: tree0 } = await syncRevocationTree(provider, logAddress));
   const { proof, publicSignals, revRoot } = await buildCredentialProof({

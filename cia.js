@@ -25,6 +25,12 @@ const ADMIN_SECRET = process.env.CIA_ADMIN_SECRET;
 const RPC_URL = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
 const LOG_ADDRESS = process.env.CIA_LOG_ADDRESS || null;
 const TTL_BLOCKS = Number(process.env.CIA_TTL_BLOCKS) || 300;
+// 발급 요청의 사용자 서명이 덮는 height 의 허용 창(블록). 요청 본문에 nonce 가 없으면 만료된
+// 요청을 그대로 다시 내서 새 σ_CIA(새 max_height)를 받을 수 있다 — height 를 서명에 넣고 창 밖이면 거절한다.
+const ISSUE_HEIGHT_WINDOW = 30n;
+// 같은 C 재발급 거절(409)은 발급 기록이 max_height 까지만 남아서 유효하다. TTL 이 창보다 짧으면
+// 기록이 지워진 뒤에도 창 안이라 만료된 본문을 그대로 다시 내서 새 σ_CIA 를 받을 수 있다.
+if (BigInt(TTL_BLOCKS) <= ISSUE_HEIGHT_WINDOW + 1n) throw new Error(`CIA_TTL_BLOCKS(${TTL_BLOCKS}) 는 발급 창 ${ISSUE_HEIGHT_WINDOW}+1 보다 커야 한다`);
 
 const DOMAIN_ROOT = ethers.keccak256(ethers.toUtf8Bytes('MODE3_REVOCATION_ROOT_V1'));
 const LOG_ABI = [
@@ -182,17 +188,18 @@ app.post('/cia/register', async (req, res) => {
 // §6.2 발급. C 는 받지 않는다 — C_pt 에서 스스로 유도한다.
 app.post('/cia/issue', async (req, res) => {
   try {
-    const { uid, C_pt, proof, sig_u } = req.body ?? {};
-    if (!isDec(uid) || !isPt(C_pt) || !proof || !sig_u) return res.status(400).json({ error: 'uid, C_pt, proof, sig_u required' });
+    const { uid, C_pt, proof, sig_u, height } = req.body ?? {};
+    if (!isDec(uid) || !isPt(C_pt) || !proof || !sig_u || !isDec(height)) return res.status(400).json({ error: 'uid, C_pt, proof, sig_u, height required' });
     const acct = state.accounts[uid];
     if (!acct) return res.status(404).json({ error: 'unknown account' });
     if (acct.disabled) return res.status(403).json({ error: 'account disabled' });
 
     const cpt = pointFromStrings(C_pt);
-    // 사용자 인증: 등록된 pk_u 로 C_pt 에 대한 EdDSA-Poseidon 서명 검증
+    const h = BigInt(height);
+    // 사용자 인증: 등록된 pk_u 로 (C_pt, height) 에 대한 EdDSA-Poseidon 서명 검증
     let sigOk = false;
     try {
-      const m = F.e(F.toObject(poseidon([cpt.x, cpt.y])));
+      const m = F.e(F.toObject(poseidon([cpt.x, cpt.y, h])));
       const sig = { R8: [F.e(BigInt(sig_u.R8x)), F.e(BigInt(sig_u.R8y))], S: BigInt(sig_u.S) };
       const pub = [F.e(BigInt(acct.pk_u.x)), F.e(BigInt(acct.pk_u.y))];
       sigOk = eddsa.verifyPoseidon(m, sig, pub);
@@ -206,6 +213,7 @@ app.post('/cia/issue', async (req, res) => {
     if (!proofOk) return res.status(400).json({ error: 'bad issuance proof' });
 
     const head = await headHeight();
+    if (h > head + 1n || h + ISSUE_HEIGHT_WINDOW < head) return res.status(400).json({ error: `stale issue request: height ${h} not within [${head - ISSUE_HEIGHT_WINDOW}, ${head + 1n}]` });
     const C = await compressPoint(cpt);
     const Cstr = C.toString();
     // 재전송 방지: 같은 C_pt(따라서 같은 C)로 이미 발급했다면 서명·증명을 그대로 재사용해
@@ -216,7 +224,12 @@ app.post('/cia/issue', async (req, res) => {
     const max_height = head + BigInt(TTL_BLOCKS);
     const s = eddsa.signPoseidon(ciaPrv, F.e(await credMessage(C, max_height)));
     const leaf = await credLeaf(C);
-    issuedList.push({ leaf: leaf.toString(), max_height: max_height.toString(), C: Cstr });
+    // 위 await 들(headHeight·compressPoint·credMessage·credLeaf) 사이에 /cia/revoke 가 끼어들 수 있다 —
+    // 폐기 직후의 발급이 살아남으면 트리에 없는 새 credential 이 TTL 동안 유효하다. 마지막 await 뒤,
+    // 기록 직전에 다시 확인한다. 끼어든 revoke 의 pruneExpired 가 목록 배열을 새로 만들었을 수 있어
+    // issuedList 가 아니라 state.issued[uid] 에 넣는다.
+    if (acct.disabled) return res.status(403).json({ error: 'account disabled' });
+    state.issued[uid].push({ leaf: leaf.toString(), max_height: max_height.toString(), C: Cstr });
     persist();
     res.json({
       C: Cstr, max_height: max_height.toString(),
@@ -231,7 +244,7 @@ app.post('/cia/issue', async (req, res) => {
 // §6.5 폐기. account = 그 uid 의 미만료 리프 전부 + disabled. credential = 리프 하나.
 app.post('/cia/revoke', requireAdmin, async (req, res) => {
   try {
-    const { uid, scope, leaf } = req.body ?? {};
+    const { uid, scope, leaf, C } = req.body ?? {};
     if (!isDec(uid) || !state.accounts[uid]) return res.status(404).json({ error: 'unknown account' });
     const head = await headHeight();
     let targets;
@@ -239,8 +252,17 @@ app.post('/cia/revoke', requireAdmin, async (req, res) => {
       targets = pruneExpired(uid, head).map((e) => e.leaf);
       state.accounts[uid].disabled = true;
     } else if (scope === 'credential') {
-      if (!isDec(leaf)) return res.status(400).json({ error: 'leaf required' });
-      targets = [leaf];
+      // 그 uid 의 미만료 발급 목록에 있는 리프만 받는다 — 폐기는 append-only 라 잘못 넣은 리프가
+      // 영구히 남고, 범위 밖 값은 트리가 throw 한다. leaf 대신 C 를 주면 서버가 리프를 유도한다.
+      // 발급 기록은 {leaf, C} 쌍이라 다시 해시하지 않고 기록에서 찾는다. isDec 은 앞자리 0 을 허용하므로
+      // BigInt 로 정규화한 뒤 비교한다.
+      const issued = pruneExpired(uid, head);
+      let entry;
+      if (isDec(C)) entry = issued.find((e) => e.C === BigInt(C).toString());
+      else if (isDec(leaf)) entry = issued.find((e) => e.leaf === BigInt(leaf).toString());
+      else return res.status(400).json({ error: 'leaf or C required' });
+      if (!entry) return res.status(404).json({ error: 'leaf not issued to this uid (or expired)' });
+      targets = [entry.leaf];
     } else return res.status(400).json({ error: "scope must be 'account' or 'credential'" });
     const inserted = [];
     for (const l of targets) {

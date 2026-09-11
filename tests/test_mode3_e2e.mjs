@@ -54,7 +54,7 @@ try {
   }
   async function newSessionAndIssue() {
     session = createSessionKey();
-    const req = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session });
+    const req = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, height: BigInt(await provider.getBlockNumber()) });
     blind = req.secrets.blind;
     const r = await cia.post('/cia/issue', req.body);
     return r;

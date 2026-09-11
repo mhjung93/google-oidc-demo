@@ -47,7 +47,7 @@ async function publish(leavesBig) {
 async function makeLogin({ key = CIA, useArid = arid, ttl = 300n } = {}) {
   const reg = await createRegistration();
   const session = createSessionKey();
-  const req = await buildIssueRequest({ uid, arid: useArid, s_u: reg.s_u, r_u: reg.r_u, sk_u: Buffer.alloc(32, 3).toString('hex'), session });
+  const req = await buildIssueRequest({ uid, arid: useArid, s_u: reg.s_u, r_u: reg.r_u, sk_u: Buffer.alloc(32, 3).toString('hex'), session, height: BigInt(await provider.getBlockNumber()) });
   const cred = await issueWith(key, pointFromStrings(req.body.C_pt), ttl);
   const { tree } = await syncRevocationTree(provider, logAddress);
   const { proof, publicSignals } = await buildCredentialProof({ uid, arid: useArid, s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, credential: cred, pk_CIA: key.pub, tree });

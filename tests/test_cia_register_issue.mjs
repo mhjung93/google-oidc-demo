@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { buildBabyjub, buildEddsa, buildPoseidon } from 'circomlibjs';
 import { ethers } from 'ethers';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
-import { getProvider, logAbi, signRootPublication } from './helpers/mode3_chain.mjs';
+import { getProvider, logAbi, signRootPublication, mineBlocks } from './helpers/mode3_chain.mjs';
 import { randomScalar, credMessage, compressPoint } from '../lib/mode3_credential.js';
 import { credLeaf } from '../lib/mode3_revocation.js';
 import { registrationCommit, proveIssuance, serializeProof, pointToStrings } from '../lib/mode3_issuance.js';
@@ -30,16 +30,19 @@ const arid = 22222222222222222222n;
 const pk_i = BigInt(ethers.Wallet.createRandom().address);
 let user;   // { s_u, r_u, cm_u, sk_u(Buffer), pk_u }
 
-function signUser(prvBuf, C_pt) {
-  const m = F.e(F.toObject(poseidon([C_pt.x, C_pt.y])));
+// 사용자 서명은 (C_pt, height) 를 덮는다 — 만료된 요청 본문을 그대로 다시 내서 새 σ_CIA 를 받는
+// 것(TTL 연장)을 막는다. CIA 는 height 가 [head − 창, head + 1] 안일 때만 받는다.
+function signUser(prvBuf, C_pt, height) {
+  const m = F.e(F.toObject(poseidon([C_pt.x, C_pt.y, height])));
   const s = eddsa.signPoseidon(prvBuf, m);
   return { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() };
 }
 
-async function issueRequest(u, overrides = {}) {
+async function issueRequest(u, overrides = {}, height = null) {
   const blind = randomScalar();
   const { C_pt, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind, pk_i, r_u: u.r_u });
-  return { body: { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: signUser(u.sk_u, C_pt), ...overrides }, C_pt, blind };
+  const h = height ?? BigInt(await provider.getBlockNumber());
+  return { body: { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: signUser(u.sk_u, C_pt, h), height: h.toString(), ...overrides }, C_pt, blind };
 }
 
 try {
@@ -105,8 +108,31 @@ try {
 
   await t('issue: 사용자 서명이 다른 키면 400', async () => {
     const { body, C_pt } = await issueRequest(user);
-    body.sig_u = signUser(Buffer.alloc(32, 7), C_pt);
+    body.sig_u = signUser(Buffer.alloc(32, 7), C_pt, BigInt(body.height));
     assert.equal((await cia.post('/cia/issue', body)).status, 400);
+  });
+
+  await t('issue: 서명한 height 가 너무 오래됐거나 미래면 400 (만료 요청 재제출로 TTL 연장 불가)', async () => {
+    // 새 체인에서 단독 실행하면 head 가 창(30)보다 작아 head−100 이 음수가 되고, 그러면 형식 검사(isDec)에
+    // 걸려 창 하한 분기를 타지 않은 채 통과한다 — 먼저 창보다 높이 쌓고 오류문으로 분기를 확인한다.
+    await mineBlocks(31, provider);
+    const head = BigInt(await provider.getBlockNumber());
+    const old = await issueRequest(user, {}, head - 31n);
+    const r1 = await cia.post('/cia/issue', old.body);
+    assert.equal(r1.status, 400, JSON.stringify(r1.body));
+    assert.match(r1.body.error, /stale issue request/);
+    const future = await issueRequest(user, {}, head + 5n);
+    const r2 = await cia.post('/cia/issue', future.body);
+    assert.equal(r2.status, 400, JSON.stringify(r2.body));
+    assert.match(r2.body.error, /stale issue request/);
+    // height 만 바꿔 끼우면 서명이 안 맞아 400
+    const tampered = await issueRequest(user, {}, head - 31n);
+    tampered.body.height = head.toString();
+    assert.equal((await cia.post('/cia/issue', tampered.body)).status, 400);
+    // height 없이 보내면 400
+    const missing = await issueRequest(user);
+    delete missing.body.height;
+    assert.equal((await cia.post('/cia/issue', missing.body)).status, 400);
   });
 
   await t('issue: 같은 C_pt 로 재요청하면 409 (재전송 방지)', async () => {
@@ -151,6 +177,25 @@ try {
     assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid: '12345', disabled: false })).status, 200);
     const { body } = await issueRequest(user);
     assert.equal((await cia.post('/cia/issue', body)).status, 200);
+  });
+
+  await t('revoke(credential): 이 uid 에 발급되지 않은 리프는 404 이고 트리에 들어가지 않는다', async () => {
+    // 폐기는 append-only 라 오타 하나가 영구히 남는다 — 그 uid 의 미만료 발급 목록에 있는 리프만 받는다.
+    const before = (await cia.get('/cia/state')).body.leafCount;
+    for (const leaf of ['777', '0']) {
+      const r = await cia.adminPost('/cia/revoke', { uid: '12345', scope: 'credential', leaf });
+      assert.equal(r.status, 404, `leaf=${leaf}: ${JSON.stringify(r.body)}`);
+    }
+    assert.equal((await cia.get('/cia/state')).body.leafCount, before);
+  });
+
+  await t('revoke(credential): C 로 지정하면 서버가 리프를 유도한다', async () => {
+    const { body } = await issueRequest(user);
+    const issued = await cia.post('/cia/issue', body);
+    assert.equal(issued.status, 200, JSON.stringify(issued.body));
+    const r = await cia.adminPost('/cia/revoke', { uid: '12345', scope: 'credential', C: issued.body.C });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(r.body.inserted, [(await credLeaf(BigInt(issued.body.C))).toString()]);
   });
 
   await t('publish: 체인의 epoch 가 앞서 있어도 CIA 가 따라잡는다 (크래시 복구)', async () => {

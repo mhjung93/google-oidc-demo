@@ -40,11 +40,11 @@ const isDec = (v) => typeof v === 'string' && /^[0-9]+$/.test(v);
 const json = async (r) => ({ status: r.status, body: await r.json().catch(() => null) });
 const ciaPost = (p, body) => fetch(`${CIA_URL}${p}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(json);
 
-async function issueCredential(arid) {
+async function issueCredential(arid, height) {
   const reg = state.registration;
   const session = createSessionKey();
   const req = await buildIssueRequest({
-    uid: BigInt(reg.uid), arid: BigInt(arid), s_u: BigInt(reg.s_u), r_u: BigInt(reg.r_u), sk_u: reg.sk_u, session,
+    uid: BigInt(reg.uid), arid: BigInt(arid), s_u: BigInt(reg.s_u), r_u: BigInt(reg.r_u), sk_u: reg.sk_u, session, height,
   });
   const r = await ciaPost('/cia/issue', req.body);
   if (r.status === 200) {
@@ -129,7 +129,7 @@ app.post('/wallet/login', loginCors, async (req, res) => {
       || synced.tree.has(await credLeaf(BigInt(entry.credential.C)));
     if (needIssue) {
       t = Date.now();
-      const r = await issueCredential(arid);
+      const r = await issueCredential(arid, synced.head);
       timings.issueMs = Date.now() - t;
       if (r.status === 403) return res.status(403).json({ reason: 'account_disabled', timings });
       if (r.status !== 200) return res.status(502).json({ reason: 'issue_failed', cia: r.body, timings });
