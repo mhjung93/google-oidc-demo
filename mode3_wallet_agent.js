@@ -129,7 +129,12 @@ app.post('/wallet/login', loginCors, async (req, res) => {
       || synced.tree.has(await credLeaf(BigInt(entry.credential.C)));
     if (needIssue) {
       t = Date.now();
-      const r = await issueCredential(arid, synced.head);
+      let r = await issueCredential(arid, synced.head);
+      if (r.status === 400 && /stale issue request/.test(r.body?.error ?? '')) {
+        // 동기화 때 본 head 가 CIA 의 창 밖이다 — 증명 생성이 오래 걸렸거나(창 30블록), CIA 쪽 250ms
+        // 캐시가 뒤처져 우리 head 가 CIA head+1 을 넘었다. head 를 다시 읽어 한 번만 다시 낸다.
+        r = await issueCredential(arid, BigInt(await provider.getBlockNumber()));
+      }
       timings.issueMs = Date.now() - t;
       if (r.status === 403) return res.status(403).json({ reason: 'account_disabled', timings });
       if (r.status !== 200) return res.status(502).json({ reason: 'issue_failed', cia: r.body, timings });

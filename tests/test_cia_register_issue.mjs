@@ -8,7 +8,7 @@ import { getProvider, logAbi, signRootPublication, mineBlocks } from './helpers/
 import { randomScalar, credMessage, compressPoint } from '../lib/mode3_credential.js';
 import { credLeaf } from '../lib/mode3_revocation.js';
 import { registrationCommit, proveIssuance, serializeProof, pointToStrings } from '../lib/mode3_issuance.js';
-import { syncRevocationTree } from '../lib/mode3_wallet.js';
+import { syncRevocationTree, signUserRequest } from '../lib/mode3_wallet.js';
 
 let failed = 0;
 async function t(name, fn) {
@@ -32,17 +32,14 @@ let user;   // { s_u, r_u, cm_u, sk_u(Buffer), pk_u }
 
 // 사용자 서명은 (C_pt, height) 를 덮는다 — 만료된 요청 본문을 그대로 다시 내서 새 σ_CIA 를 받는
 // 것(TTL 연장)을 막는다. CIA 는 height 가 [head − 창, head + 1] 안일 때만 받는다.
-function signUser(prvBuf, C_pt, height) {
-  const m = F.e(F.toObject(poseidon([C_pt.x, C_pt.y, height])));
-  const s = eddsa.signPoseidon(prvBuf, m);
-  return { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() };
-}
+// 서명은 지갑 라이브러리의 signUserRequest(sk hex) 를 그대로 쓴다 — 메시지 규약을 여기 복제하지 않는다.
+const signUser = (prvBuf, C_pt, height) => signUserRequest(prvBuf.toString('hex'), C_pt, height);
 
 async function issueRequest(u, overrides = {}, height = null) {
   const blind = randomScalar();
   const { C_pt, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind, pk_i, r_u: u.r_u });
   const h = height ?? BigInt(await provider.getBlockNumber());
-  return { body: { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: signUser(u.sk_u, C_pt, h), height: h.toString(), ...overrides }, C_pt, blind };
+  return { body: { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: await signUser(u.sk_u, C_pt, h), height: h.toString(), ...overrides }, C_pt, blind };
 }
 
 try {
@@ -108,7 +105,7 @@ try {
 
   await t('issue: 사용자 서명이 다른 키면 400', async () => {
     const { body, C_pt } = await issueRequest(user);
-    body.sig_u = signUser(Buffer.alloc(32, 7), C_pt, BigInt(body.height));
+    body.sig_u = await signUser(Buffer.alloc(32, 7), C_pt, BigInt(body.height));
     assert.equal((await cia.post('/cia/issue', body)).status, 400);
   });
 

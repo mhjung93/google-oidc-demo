@@ -15,7 +15,7 @@ import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { credMessage, compressPoint } from './lib/mode3_credential.js';
 import { credLeaf, createRevocationTree } from './lib/mode3_revocation.js';
-import { verifyIssuance, isValidPoint, pointFromStrings, parseProof } from './lib/mode3_issuance.js';
+import { verifyIssuance, isValidPoint, pointFromStrings, parseProof, issueRequestMessage } from './lib/mode3_issuance.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.CIA_PORT) || 4100;
@@ -196,10 +196,15 @@ app.post('/cia/issue', async (req, res) => {
 
     const cpt = pointFromStrings(C_pt);
     const h = BigInt(height);
+    // height 창 검사는 서명·π_issue 검증 앞에 둔다 — 만료된 본문을 그대로 다시 내는 요청이 매번
+    // ~170ms 의 증명 검증을 태우지 않고 RPC 한 번으로 거절되게(2026-09-11 리뷰 #4).
+    const head = await headHeight();
+    if (h > head + 1n || h + ISSUE_HEIGHT_WINDOW < head) return res.status(400).json({ error: `stale issue request: height ${h} not within [${head - ISSUE_HEIGHT_WINDOW}, ${head + 1n}]` });
+
     // 사용자 인증: 등록된 pk_u 로 (C_pt, height) 에 대한 EdDSA-Poseidon 서명 검증
     let sigOk = false;
     try {
-      const m = F.e(F.toObject(poseidon([cpt.x, cpt.y, h])));
+      const m = F.e(await issueRequestMessage(cpt, h));
       const sig = { R8: [F.e(BigInt(sig_u.R8x)), F.e(BigInt(sig_u.R8y))], S: BigInt(sig_u.S) };
       const pub = [F.e(BigInt(acct.pk_u.x)), F.e(BigInt(acct.pk_u.y))];
       sigOk = eddsa.verifyPoseidon(m, sig, pub);
@@ -212,8 +217,6 @@ app.post('/cia/issue', async (req, res) => {
     catch { proofOk = false; }
     if (!proofOk) return res.status(400).json({ error: 'bad issuance proof' });
 
-    const head = await headHeight();
-    if (h > head + 1n || h + ISSUE_HEIGHT_WINDOW < head) return res.status(400).json({ error: `stale issue request: height ${h} not within [${head - ISSUE_HEIGHT_WINDOW}, ${head + 1n}]` });
     const C = await compressPoint(cpt);
     const Cstr = C.toString();
     // 재전송 방지: 같은 C_pt(따라서 같은 C)로 이미 발급했다면 서명·증명을 그대로 재사용해
@@ -224,7 +227,7 @@ app.post('/cia/issue', async (req, res) => {
     const max_height = head + BigInt(TTL_BLOCKS);
     const s = eddsa.signPoseidon(ciaPrv, F.e(await credMessage(C, max_height)));
     const leaf = await credLeaf(C);
-    // 위 await 들(headHeight·compressPoint·credMessage·credLeaf) 사이에 /cia/revoke 가 끼어들 수 있다 —
+    // 위 await 들(headHeight·verifyIssuance·compressPoint·credMessage·credLeaf) 사이에 /cia/revoke 가 끼어들 수 있다 —
     // 폐기 직후의 발급이 살아남으면 트리에 없는 새 credential 이 TTL 동안 유효하다. 마지막 await 뒤,
     // 기록 직전에 다시 확인한다. 끼어든 revoke 의 pruneExpired 가 목록 배열을 새로 만들었을 수 있어
     // issuedList 가 아니라 state.issued[uid] 에 넣는다.
