@@ -15,6 +15,7 @@ import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { credMessage, compressPoint } from './lib/mode3_credential.js';
 import { credLeaf, createRevocationTree } from './lib/mode3_revocation.js';
 import { verifyIssuance, isValidPoint, pointFromStrings, parseProof, issueRequestMessage } from './lib/mode3_issuance.js';
+import { LOG_ABI, rootToBytes32, signRootPublication } from './lib/mode3_log.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.CIA_PORT) || 4100;
@@ -30,13 +31,6 @@ const ISSUE_HEIGHT_WINDOW = 30n;
 // 같은 C 재발급 거절(409)은 발급 기록이 max_height 까지만 남아서 유효하다. TTL 이 창보다 짧으면
 // 기록이 지워진 뒤에도 창 안이라 만료된 본문을 그대로 다시 내서 새 σ_CIA 를 받을 수 있다.
 if (BigInt(TTL_BLOCKS) <= ISSUE_HEIGHT_WINDOW + 1n) throw new Error(`CIA_TTL_BLOCKS(${TTL_BLOCKS}) 는 발급 창 ${ISSUE_HEIGHT_WINDOW}+1 보다 커야 한다`);
-
-const DOMAIN_ROOT = ethers.keccak256(ethers.toUtf8Bytes('MODE3_REVOCATION_ROOT_V1'));
-const LOG_ABI = [
-  'function root() view returns (bytes32)',
-  'function epoch() view returns (uint64)',
-  'function publishRoot(bytes32 newRoot, uint64 newEpoch, bytes32[] leaves, bytes sig)',
-];
 
 // 데모 계정. Mode 2 의 testuser 관례를 따른 프로토타입이다 — 실제 계정 체계가 아니다.
 const DEMO_ACCOUNTS = {
@@ -292,10 +286,7 @@ app.post('/cia/revoke', requireAdmin, async (req, res) => {
 
 // §6.5 게시. 서명이 리프 배열까지 덮는다 — 릴레이어의 calldata 오염 방지. 로그 주소도 덮는다 —
 // 같은 CIA 키로 재배포한 다른 로그에 옛 게시를 재생하지 못하게(재생되면 root 가 옛 트리로 바뀐다).
-// inner 의 계산은 tests/helpers/mode3_chain.mjs 의 signRootPublication() 및
-// RevocationLog.digestFor() 와 바이트 단위로 같아야 한다(keccak(DOMAIN, address(log), root,
-// epoch, keccak(leaves)) 를 personal_sign). cia.js 는 프로덕션 코드라 tests/ 를 import 하지
-// 않으므로 계산을 여기 그대로 다시 적는다.
+// digest 계산은 lib/mode3_log.js 하나다(컨트랙트의 digestFor 와 바이트 단위로 같다).
 //
 // 게시는 한 번에 하나만 돈다. 둘이 겹치면 각자 pending 을 자기 개수만큼 앞에서 잘라, 그 사이 들어온
 // revoke 의 리프가 pending 에서만 사라진다 — 트리·서명 root 에는 남아 지갑 재구성이 영구히 실패한다.
@@ -318,15 +309,12 @@ app.post('/cia/publish', requireAdmin, async (req, res) => {
     }
     if (state.pending.length === 0) return res.json({ published: false, epoch: state.epoch, root: tree.getRoot().toString() });
     const log = new ethers.Contract(LOG_ADDRESS, LOG_ABI, ethWallet);
-    const leaves = state.pending.map((l) => ethers.zeroPadValue(ethers.toBeHex(BigInt(l)), 32));
-    const root = ethers.zeroPadValue(ethers.toBeHex(tree.getRoot()), 32);
+    const leaves = state.pending.map(rootToBytes32);
+    const root = rootToBytes32(tree.getRoot());
     // reconcileWithChain 이 state.epoch 를 온체인과 맞췄다 — 로컬만 보고 이미 온체인에 있는 epoch 를 또
     // 보내면 EpochNotIncreasing 으로 영원히 막힌다.
     const epoch = state.epoch + 1;
-    const leavesHash = ethers.keccak256(ethers.solidityPacked(leaves.map(() => 'bytes32'), leaves));
-    const inner = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
-      ['bytes32', 'address', 'bytes32', 'uint64', 'bytes32'], [DOMAIN_ROOT, LOG_ADDRESS, root, epoch, leavesHash]));
-    const sig = await ethWallet.signMessage(ethers.getBytes(inner));
+    const sig = await signRootPublication(ethWallet, { logAddress: LOG_ADDRESS, root, epoch, leaves });
     const tx = await log.publishRoot(root, epoch, leaves, sig);
     await tx.wait();
     state.epoch = epoch;

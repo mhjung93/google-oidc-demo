@@ -2,14 +2,13 @@
 import { expect } from 'chai';
 import hre from 'hardhat';
 import { createRevocationTree } from '../lib/mode3_revocation.js';
-import { signRootPublication } from '../tests/helpers/mode3_chain.mjs';
+import { signRootPublication, publicationDigest } from '../lib/mode3_log.js';
 
 const { ethers } = hre;
-const DOMAIN = ethers.keccak256(ethers.toUtf8Bytes('MODE3_REVOCATION_ROOT_V1'));
 const b32 = (n) => ethers.zeroPadValue(ethers.toBeHex(n), 32);
 
-// digest 계산은 헬퍼의 signRootPublication 하나만 쓴다 — 여기 사본을 두면 다음 태스크가 쓰는
-// 헬퍼가 드리프트해도 이 테스트가 잡지 못한다.
+// digest 계산은 lib/mode3_log.js 하나만 쓴다(CIA 가 실제로 쓰는 코드) — 여기 사본을 두면 lib 이
+// 드리프트해도 이 테스트가 잡지 못한다.
 const signPubFor = async (target, wallet, root, epoch, leaves) =>
   signRootPublication(wallet, { logAddress: await target.getAddress(), root, epoch, leaves });
 
@@ -78,11 +77,9 @@ describe('RevocationLog', () => {
     expect(await other.epoch()).to.equal(1n);
   });
 
-  it('digestFor 가 JS 와 같은 digest 를 준다', async () => {
+  it('digestFor 가 JS(lib/mode3_log.js) 와 같은 digest 를 준다', async () => {
     const leaves = [b32(7n)];
-    const leavesHash = ethers.keccak256(ethers.solidityPacked(['bytes32'], leaves));
-    const inner = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
-      ['bytes32', 'address', 'bytes32', 'uint64', 'bytes32'], [DOMAIN, await log.getAddress(), b32(9n), 3n, leavesHash]));
+    const inner = publicationDigest({ logAddress: await log.getAddress(), root: b32(9n), epoch: 3n, leaves });
     expect(await log.digestFor(b32(9n), 3n, leaves)).to.equal(inner);
   });
 });

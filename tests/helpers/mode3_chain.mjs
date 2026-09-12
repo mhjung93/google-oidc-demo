@@ -6,13 +6,13 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
 import { createRevocationTree } from '../../lib/mode3_revocation.js';
+// digest·bytes32 변환은 lib/mode3_log.js 하나다 — 여기는 이름만 다시 내보낸다(이 파일 안에서도 쓴다).
+import { DOMAIN_ROOT, rootToBytes32, signRootPublication } from '../../lib/mode3_log.js';
+export { DOMAIN_ROOT as DOMAIN, rootToBytes32, signRootPublication };
 
 const ROOT_DIR = fileURLToPath(new URL('../..', import.meta.url));
 const RPC_URL = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
 const ARTIFACT = path.join(ROOT_DIR, 'artifacts', 'contracts', 'RevocationLog.sol', 'RevocationLog.json');
-
-export const DOMAIN = ethers.keccak256(ethers.toUtf8Bytes('MODE3_REVOCATION_ROOT_V1'));
-export const rootToBytes32 = (n) => ethers.zeroPadValue(ethers.toBeHex(BigInt(n)), 32);
 
 function artifact() {
   if (!fs.existsSync(ARTIFACT)) {
@@ -42,17 +42,4 @@ export async function deployRevocationLog(ciaAddress, provider = getProvider()) 
 
 export async function mineBlocks(n, provider = getProvider()) {
   await provider.send('hardhat_mine', ['0x' + n.toString(16)]);
-}
-
-/**
- * 컨트랙트 digestFor 와 같은 내부 digest 에 EIP-191 서명. leaves 는 bytes32 hex 배열.
- * logAddress 는 필수다 — digest 가 로그 주소를 덮어, 같은 CIA 키로 재배포한 다른 로그에
- * 옛 게시를 재생할 수 없게 한다. cia.js 의 /cia/publish 와 바이트 단위로 같아야 한다.
- */
-export async function signRootPublication(wallet, { logAddress, root, epoch, leaves }) {
-  if (!logAddress) throw new Error('signRootPublication: logAddress 가 필요하다 (digest 가 로그 주소를 덮는다)');
-  const leavesHash = ethers.keccak256(ethers.solidityPacked(leaves.map(() => 'bytes32'), leaves));
-  const inner = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
-    ['bytes32', 'address', 'bytes32', 'uint64', 'bytes32'], [DOMAIN, logAddress, root, epoch, leavesHash]));
-  return wallet.signMessage(ethers.getBytes(inner));
 }
