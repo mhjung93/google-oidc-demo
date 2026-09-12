@@ -12,7 +12,9 @@ import { credLeaf, createRevocationTree, MODE3_TREE_DEPTH } from '../lib/mode3_r
 import { buildValidInput } from './helpers/mode3_fixture.mjs';
 
 const ROOT_DIR = fileURLToPath(new URL('..', import.meta.url));
-const OUT_DIR = path.join(ROOT_DIR, 'build', 'mode3');
+// build/mode3 바로 아래가 아니라 하위 디렉터리에 컴파일한다 — 지갑이 증명에 쓰는 build/mode3/pi_cred_js/pi_cred.wasm
+// 은 pi_cred_final.zkey 와 짝이라, 회로를 고친 뒤 npm test 가 wasm 만 갈아치우면 데모 로그인이 전부 bad_proof 가 된다.
+const OUT_DIR = path.join(ROOT_DIR, 'build', 'mode3', 'witness_test');
 const NAME = 'pi_cred';
 
 function compile() {

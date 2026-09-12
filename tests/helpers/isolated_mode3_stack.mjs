@@ -9,10 +9,18 @@ import { startIsolatedCia, freePort } from './isolated_cia.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 
+// 자식은 dotenv/config 로 .env 를 읽는다 — 개발용 pk_CIA 고정·arid·TTL 이 새어 들어오면 격리 스택의 로그인이
+// untrusted_cia 로 깨진다. 테스트가 기대하는 값으로 고정한다(dotenv 는 이미 있는 키를 덮지 않으므로 빈 문자열이
+// "기본값 사용"이다). 호출자의 env 가 우선한다.
+const PINNED_ENV = {
+  CIA_RPC_URL: process.env.CIA_RPC_URL || 'http://127.0.0.1:8545',
+  MODE3_PK_CIA_X: '', MODE3_PK_CIA_Y: '', MODE3_RP_ARID: '', MODE3_CHALLENGE_TTL_MS: '',
+};
+
 /** node <script> 를 env 로 띄우고 readyUrl 이 200 을 줄 때까지 기다린다. */
 async function spawnServer(script, { env, readyUrl, logFile, readyTimeoutMs = 60_000 }) {
   const out = fs.openSync(logFile, 'a');
-  const child = spawn('node', [script], { cwd: REPO_ROOT, env: { ...process.env, ...env }, stdio: ['ignore', out, out] });
+  const child = spawn('node', [script], { cwd: REPO_ROOT, env: { ...process.env, ...PINNED_ENV, ...env }, stdio: ['ignore', out, out] });
   let spawnError = null;
   child.on('error', (e) => { spawnError = e; });
   const deadline = Date.now() + readyTimeoutMs;

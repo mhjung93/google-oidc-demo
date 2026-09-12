@@ -21,6 +21,10 @@ const CIA_URL = process.env.MODE3_CIA_URL || 'http://127.0.0.1:4100';
 const RP_ORIGIN = process.env.MODE3_RP_ORIGIN || 'http://127.0.0.1:3100';
 const LOG_ADDRESS = process.env.CIA_LOG_ADDRESS || null;
 const RPC_URL = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
+// 만료 여유(블록). 지갑은 동기화 때 본 head 로 판단하지만 RP 는 증명 생성(~1초)과 두 홉 뒤의 더 높은
+// head 로 같은 검사를 한다 — 여유 없이 max_height 직전 credential 을 재사용하면 RP 가 'expired' 로
+// 거절하고 1회용 challenge 만 소모된다. 여유 안이면 미리 새로 발급받는다.
+const EXPIRY_MARGIN_BLOCKS = 3n;
 
 // 게시 직후의 로그인이 옛 root 를 보지 않도록 ethers 의 250ms 캐시를 끈다(lib/mode3_wallet.js 주석).
 const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { cacheTimeout: -1 });
@@ -121,18 +125,18 @@ app.post('/wallet/login', loginCors, async (req, res) => {
     timings.syncMs = Date.now() - t;
     lastSync = { root: synced.root.toString(), head: synced.head.toString() };
 
-    // 없거나, 만료됐거나, 폐기 트리에 있으면 새로 발급받는다.
+    // 없거나, 만료됐거나(여유 포함), 폐기 트리에 있으면 새로 발급받는다.
     let entry = state.credentials[arid];
     let issued = false;
     const needIssue = !entry
-      || synced.head > BigInt(entry.credential.max_height)
+      || synced.head + EXPIRY_MARGIN_BLOCKS > BigInt(entry.credential.max_height)
       || synced.tree.has(await credLeaf(BigInt(entry.credential.C)));
     if (needIssue) {
       t = Date.now();
       let r = await issueCredential(arid, synced.head);
       if (r.status === 400 && /stale issue request/.test(r.body?.error ?? '')) {
-        // 동기화 때 본 head 가 CIA 의 창 밖이다 — 증명 생성이 오래 걸렸거나(창 30블록), CIA 쪽 250ms
-        // 캐시가 뒤처져 우리 head 가 CIA head+1 을 넘었다. head 를 다시 읽어 한 번만 다시 낸다.
+        // 동기화 때 본 head 가 CIA 의 창(30블록) 밖이다 — 증명 생성이 그만큼 오래 걸렸다. head 를 다시
+        // 읽어 한 번만 다시 낸다.
         r = await issueCredential(arid, BigInt(await provider.getBlockNumber()));
       }
       timings.issueMs = Date.now() - t;

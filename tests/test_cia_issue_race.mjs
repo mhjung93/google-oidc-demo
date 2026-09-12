@@ -1,15 +1,12 @@
-// /cia/issue 와 계정 비활성화(폐기)의 경합 — 격리 인스턴스 + :8545. (chain 그룹)
+// /cia/issue 와 /cia/revoke 의 경합 — 격리 인스턴스 + :8545. (chain 그룹)
 //   node tests/test_cia_issue_race.mjs
 //
 // /cia/issue 는 disabled 를 검사한 뒤 head 를 RPC 로 읽는다. 그 await 동안 관리자가 계정을 폐기하면
 // 폐기 직후의 발급이 살아남아, 트리에 없는 새 credential 이 TTL 동안 유효하다. 결정적으로 재현하기
 // 위해 CIA 의 RPC 앞에 eth_blockNumber 응답을 붙잡는 게이트 프록시를 둔다 — 요청이 게이트에 닿은
-// 것을 Promise 로 알고, 그 사이에 비활성화를 끼워 넣은 뒤 응답을 풀어 준다. 벽시계 대기가 없다.
-//
-// 끼워 넣는 것은 /cia/revoke(scope=account) 가 아니라 /cia/account/set_disabled 다. revoke 도
-// headHeight() 를 부르는데, CIA 의 ethers provider 가 인플라이트 eth_blockNumber 를 공유하므로
-// 붙잡힌 issue 의 조회에 합류해 게이트를 풀기 전에는 끝나지 않는다(교착). set_disabled 는 RPC 를
-// 부르지 않아 결정적이고, /cia/issue 의 기록 직전 재확인이 보는 것은 같은 disabled 플래그다.
+// 것을 Promise 로 알고, 게이트를 내린 뒤 revoke 를 끝까지 보내고 나서 응답을 풀어 준다. 벽시계 대기가 없다.
+// (CIA 의 provider 는 cacheTimeout:-1 이라 revoke 의 head 조회가 붙잡힌 issue 의 조회에 합류하지 않는다 —
+// 게이트가 내려간 뒤의 조회이므로 그대로 통과한다.)
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { ethers } from 'ethers';
@@ -50,8 +47,6 @@ const proxy = http.createServer(async (req, res) => {
 await new Promise((r) => proxy.listen(0, '127.0.0.1', r));
 const proxyUrl = `http://127.0.0.1:${proxy.address().port}`;
 
-// 테스트는 head 를 자기 provider 로 읽는다 — /cia/state 로 읽으면 CIA 의 250 ms 캐시가 데워져
-// 발급 요청의 head 조회가 프록시(게이트)를 타지 않는다.
 const provider = new ethers.JsonRpcProvider(UPSTREAM, undefined, { cacheTimeout: -1 });
 const uid = 12345n, arid = 22222222222222222222n;
 const pk_i = BigInt(ethers.Wallet.createRandom().address);
@@ -70,16 +65,15 @@ try {
     return { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: await signUserRequest(sk_u, C_pt, height), height: height.toString() };
   }
 
-  // 경합 테스트를 먼저 돌린다 — 앞에서 CIA 가 head 를 한 번이라도 읽으면 250 ms 캐시가 게이트를 우회할 수 있다.
-  await t('issue 가 head 를 읽는 동안 계정이 비활성화(폐기)되면 발급하지 않는다 (403, 기록도 남지 않는다)', async () => {
+  await t('issue 가 head 를 읽는 동안 계정이 폐기되면 발급하지 않는다 (403, 기록도 남지 않는다)', async () => {
     const body = await issueBody();
     hold = { seen: deferred(), released: deferred() };
     const inflight = cia.post('/cia/issue', body);   // disabled 검사를 지나 headHeight() 에서 게이트에 붙잡힌다
     await hold.seen.promise;
     const gate = hold;
-    hold = null;
-    const dis = await cia.adminPost('/cia/account/set_disabled', { uid: uid.toString(), disabled: true });
-    assert.equal(dis.status, 200, JSON.stringify(dis.body));
+    hold = null;                                      // 이후의 eth_blockNumber(revoke 의 것)는 그대로 통과
+    const rv = await cia.adminPost('/cia/revoke', { uid: uid.toString(), scope: 'account' });
+    assert.equal(rv.status, 200, JSON.stringify(rv.body));
     gate.released.resolve();
     const r = await inflight;
     assert.equal(r.status, 403, `폐기 뒤에 발급이 살아남았다: ${JSON.stringify(r.body)}`);

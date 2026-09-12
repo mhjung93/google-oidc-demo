@@ -30,8 +30,12 @@ export async function startIsolatedCia(opts = {}) {
   await fundAddress(ethWallet.address, '1', provider);
   const { address: logAddress } = await deployRevocationLog(ethWallet.address, provider);
 
+  // 자식은 dotenv/config 로 .env 를 읽는다 — 개발용 값이 새어 들어오지 않도록 테스트가 기대하는 값으로 고정한다.
+  // dotenv 는 이미 있는 키(빈 문자열 포함)를 덮지 않으므로 빈 문자열이 "기본값 사용"이 된다.
   const env = {
     ...process.env,
+    CIA_RPC_URL: process.env.CIA_RPC_URL || 'http://127.0.0.1:8545',
+    CIA_TTL_BLOCKS: '',
     CIA_PORT: String(port),
     CIA_STATE_FILE: path.join(dir, 'cia_state.json'),
     CIA_KEYS_FILE: path.join(dir, 'cia_keys.json'),

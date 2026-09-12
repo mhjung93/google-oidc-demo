@@ -10,14 +10,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import { ethers } from 'ethers';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { getProvider, logAbi, signRootPublication, rootToBytes32 } from './helpers/mode3_chain.mjs';
 import { randomScalar } from '../lib/mode3_credential.js';
 import { credLeaf, createRevocationTree } from '../lib/mode3_revocation.js';
 import { registrationCommit, proveIssuance, serializeProof, pointToStrings } from '../lib/mode3_issuance.js';
-import { syncRevocationTree } from '../lib/mode3_wallet.js';
+import { syncRevocationTree, signUserRequest } from '../lib/mode3_wallet.js';
 
 let failed = 0;
 async function t(name, fn) {
@@ -26,9 +25,6 @@ async function t(name, fn) {
 }
 
 const provider = getProvider();
-const eddsa = await buildEddsa();
-const poseidon = await buildPoseidon();
-const F = poseidon.F;
 const uid = 12345n, arid = 22222222222222222222n;
 const pk_i = BigInt(ethers.Wallet.createRandom().address);
 const keep = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-cia-startup-'));   // 첫 인스턴스의 상태·키 파일 사본
@@ -40,14 +36,12 @@ async function registerAndIssueLeaf(cia, user) {
   if (!user.sk_u) {
     const r = await cia.post('/cia/register', { uid: uid.toString(), pwd: 'password123', cm_u: pointToStrings(user.cm_u) });
     assert.equal(r.status, 201, JSON.stringify(r.body));
-    user.sk_u = Buffer.from(r.body.sk_u, 'hex');
+    user.sk_u = r.body.sk_u;
   }
   const blind = randomScalar();
   const { C_pt, proof } = await proveIssuance({ uid, arid, s_u: user.s_u, blind, pk_i, r_u: user.r_u });
   const height = BigInt(await provider.getBlockNumber());
-  const m = F.e(F.toObject(poseidon([C_pt.x, C_pt.y, height])));
-  const s = eddsa.signPoseidon(user.sk_u, m);
-  const sig_u = { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() };
+  const sig_u = await signUserRequest(user.sk_u, C_pt, height);
   const r = await cia.post('/cia/issue', { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u, height: height.toString() });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   return (await credLeaf(BigInt(r.body.C))).toString();

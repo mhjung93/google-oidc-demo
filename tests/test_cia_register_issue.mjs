@@ -196,6 +196,9 @@ try {
   });
 
   await t('publish: 체인의 epoch 가 앞서 있어도 CIA 가 따라잡는다 (크래시 복구)', async () => {
+    // 앞 케이스들이 남긴 pending 을 먼저 비운다 — 아래의 직접 게시는 "CIA 가 올렸을 것"과 똑같이 pending 전부를
+    // 실어야 하는데, 여기서는 이 케이스가 폐기한 리프 하나만 싣기 때문이다.
+    assert.equal((await cia.adminPost('/cia/publish')).status, 200);
     // 새 credential 을 하나 발급해서 폐기한다 (계정은 앞의 'set_disabled false' 케이스에서 재활성화됨)
     const { body: issueBody } = await issueRequest(user);
     const issued = await cia.post('/cia/issue', issueBody);
@@ -204,25 +207,37 @@ try {
     const rv = await cia.adminPost('/cia/revoke', { uid: '12345', scope: 'credential', leaf });
     assert.equal(rv.status, 200, JSON.stringify(rv.body));
 
-    // CIA 가 아직 게시하기 전에, 체인에 직접 다음 epoch 를 게시한다 — tx 는 성공했는데
-    // CIA 가 persist() 전에 죽어버린 크래시 시나리오를 흉내낸다.
+    // CIA 가 아직 게시하기 전에, 체인에 직접 다음 epoch 를 (이 리프를 실어) 게시한다 — tx 는 성공해
+    // 이벤트까지 나갔는데 CIA 가 persist() 전에 죽어버린 크래시 시나리오를 흉내낸다.
     const before = await cia.get('/cia/state');
     const current = before.body.epoch;
     const log = new ethers.Contract(cia.logAddress, logAbi(), provider);
     assert.equal(await log.epoch(), BigInt(current), '아직은 로컬·온체인 epoch 가 같아야 한다');
-    const root = ethers.zeroPadValue(ethers.toBeHex(BigInt(before.body.root)), 32);
+    const b32 = (n) => ethers.zeroPadValue(ethers.toBeHex(BigInt(n)), 32);
+    const root = b32(before.body.root);
     const directEpoch = current + 1;
-    const sig = await signRootPublication(cia.ciaEthWallet, { logAddress: cia.logAddress, root, epoch: directEpoch, leaves: [] });
-    const tx = await log.connect(cia.ciaEthWallet).publishRoot(root, directEpoch, [], sig);
+    const sig = await signRootPublication(cia.ciaEthWallet, { logAddress: cia.logAddress, root, epoch: directEpoch, leaves: [b32(leaf)] });
+    const tx = await log.connect(cia.ciaEthWallet).publishRoot(root, directEpoch, [b32(leaf)], sig);
     await tx.wait();
     assert.equal(await log.epoch(), BigInt(directEpoch));
 
-    // CIA 가 로컬 epoch(current) 만 보고 게시하면 온체인과 같은 epoch 를 또 보내 영원히 막힌다.
-    // 수정 후에는 온체인 epoch 를 따라잡아 current+2 로 게시돼야 한다.
+    // CIA 가 로컬 기록만 보고 게시하면 온체인과 같은 epoch 를 또 보내 영원히 막힌다. 게시 직전 대조가
+    // 이미 체인에 있는 리프를 pending 에서 걷어내고 epoch 를 따라잡아야 한다 — 남은 pending 이 없으니 이번엔
+    // 게시하지 않고(published:false) epoch 만 current+1 로 맞춘다.
     const r = await cia.adminPost('/cia/publish');
     assert.equal(r.status, 200, JSON.stringify(r.body));
-    assert.equal(r.body.published, true);
-    assert.equal(r.body.epoch, current + 2);
+    assert.equal(r.body.published, false);
+    assert.equal(r.body.epoch, current + 1);
+    assert.equal((await cia.get('/cia/state')).body.pendingCount, 0);
+    // 다음 폐기는 따라잡은 epoch 의 다음(current+2) 으로 나간다
+    const { body: issueBody2 } = await issueRequest(user);
+    const issued2 = await cia.post('/cia/issue', issueBody2);
+    assert.equal(issued2.status, 200, JSON.stringify(issued2.body));
+    assert.equal((await cia.adminPost('/cia/revoke', { uid: '12345', scope: 'credential', C: issued2.body.C })).status, 200);
+    const r2 = await cia.adminPost('/cia/publish');
+    assert.equal(r2.status, 200, JSON.stringify(r2.body));
+    assert.equal(r2.body.published, true);
+    assert.equal(r2.body.epoch, current + 2);
     assert.equal(await log.epoch(), BigInt(current + 2));
   });
 
@@ -275,6 +290,27 @@ try {
 
   await t('admin 엔드포인트는 시크릿 없이 401', async () => {
     assert.equal((await cia.post('/cia/revoke', { uid: '12345', scope: 'account' })).status, 401);
+  });
+
+  // 마지막에 둔다 — 이 뒤로는 온체인 root 가 로컬과 어긋난 채 남아 게시가 전부 503 이다.
+  await t('publish: 온체인 root 가 로컬 기록의 어느 접두사와도 다르면 503 이고 올리지 않는다', async () => {
+    // CIA 가 켜진 채로 로그가 (같은 CIA 키로) 다른 root 로 갈라졌다고 치자 — 직접 엉뚱한 root 를 올린다.
+    // 게시 직전 대조가 없으면 CIA 는 이벤트로 나간 적 없는 리프를 품은 root 를 서명해 올려 전원의 재구성이 깨진다.
+    const log = new ethers.Contract(cia.logAddress, logAbi(), provider);
+    const current = Number(await log.epoch());
+    const b32 = (n) => ethers.zeroPadValue(ethers.toBeHex(BigInt(n)), 32);
+    const bogus = b32(12345n);
+    const sig = await signRootPublication(cia.ciaEthWallet, { logAddress: cia.logAddress, root: bogus, epoch: current + 1, leaves: [] });
+    await (await log.connect(cia.ciaEthWallet).publishRoot(bogus, current + 1, [], sig)).wait();
+    const { body: ib } = await issueRequest(user);
+    const issued = await cia.post('/cia/issue', ib);
+    assert.equal(issued.status, 200, JSON.stringify(issued.body));
+    assert.equal((await cia.adminPost('/cia/revoke', { uid: '12345', scope: 'credential', C: issued.body.C })).status, 200);
+    const r = await cia.adminPost('/cia/publish');
+    assert.equal(r.status, 503, JSON.stringify(r.body));
+    assert.match(r.body.error, /어느 접두사와도 다르다/);
+    assert.equal(await log.epoch(), BigInt(current + 1), '올리지 않았어야 한다');
+    assert.equal((await cia.get('/cia/state')).body.pendingCount, 1, 'pending 은 그대로여야 한다');
   });
 } finally {
   await cia.stop();

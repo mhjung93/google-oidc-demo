@@ -13,7 +13,6 @@ const ARTIFACT = path.join(ROOT_DIR, 'artifacts', 'contracts', 'RevocationLog.so
 
 export const DOMAIN = ethers.keccak256(ethers.toUtf8Bytes('MODE3_REVOCATION_ROOT_V1'));
 export const rootToBytes32 = (n) => ethers.zeroPadValue(ethers.toBeHex(BigInt(n)), 32);
-export const bytes32ToBigint = (h) => BigInt(h);
 
 function artifact() {
   if (!fs.existsSync(ARTIFACT)) {
