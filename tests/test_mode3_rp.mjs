@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { ethers } from 'ethers';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
-import { getProvider, fundAddress, deployRevocationLog, signRootPublication, rootToBytes32, mineBlocks } from './helpers/mode3_chain.mjs';
+import { getProvider, fundAddress, deployRevocationLog, signRootPublication, rootToBytes32 } from './helpers/mode3_chain.mjs';
 import { credLeaf, createRevocationTree } from '../lib/mode3_revocation.js';
 import { credMessage, compressPoint } from '../lib/mode3_credential.js';
 import { pointFromStrings } from '../lib/mode3_issuance.js';
@@ -32,11 +32,11 @@ const CIA = keyOf(Buffer.alloc(32, 9));
 const ATTACKER = keyOf(Buffer.alloc(32, 66));
 const uid = 12345n, arid = 22222222222222222222n, otherArid = 33333333333333333333n;
 
-async function issueWith(key, C_pt, ttl = 300n) {
+async function issueWith(key, C_pt, nonce, ttlSec = 3600n, chainid = 31337n) {
   const C = await compressPoint(C_pt);
-  const max_height = BigInt(await provider.getBlockNumber()) + ttl;
-  const s = eddsa.signPoseidon(key.prv, F.e(await credMessage(C, max_height)));
-  return { C: C.toString(), max_height: max_height.toString(), sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() } };
+  const exptime = BigInt(Math.floor(Date.now() / 1000)) + ttlSec;
+  const s = eddsa.signPoseidon(key.prv, F.e(await credMessage(C, exptime, chainid, nonce)));
+  return { C: C.toString(), exptime: exptime.toString(), chainid: chainid.toString(), nonce: nonce.toString(), sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() } };
 }
 async function publish(leavesBig) {
   const { tree } = await syncRevocationTree(provider, logAddress);
@@ -44,18 +44,19 @@ async function publish(leavesBig) {
   const root = rootToBytes32(tree.getRoot()), epoch = (await log.epoch()) + 1n, leaves = leavesBig.map(rootToBytes32);
   await (await log.connect(ciaEth).publishRoot(root, epoch, leaves, await signRootPublication(ciaEth, { logAddress, root, epoch, leaves }))).wait();
 }
-async function makeLogin({ key = CIA, useArid = arid, ttl = 300n } = {}) {
+async function makeLogin({ key = CIA, useArid = arid, ttlSec = 3600n, chainid = 31337n } = {}) {
   const reg = await createRegistration();
   const session = createSessionKey();
-  const req = await buildIssueRequest({ uid, arid: useArid, s_u: reg.s_u, r_u: reg.r_u, sk_u: Buffer.alloc(32, 3).toString('hex'), session, height: BigInt(await provider.getBlockNumber()) });
-  const cred = await issueWith(key, pointFromStrings(req.body.C_pt), ttl);
+  const attrs = [19n, 410n, 0n, 0n];
+  const req = await buildIssueRequest({ uid, arid: useArid, s_u: reg.s_u, r_u: reg.r_u, sk_u: Buffer.alloc(32, 3).toString('hex'), session, chainid, attrs });
+  const cred = await issueWith(key, pointFromStrings(req.body.C_pt), req.secrets.nonce, ttlSec, chainid);
   const { tree } = await syncRevocationTree(provider, logAddress);
-  const { proof, publicSignals } = await buildCredentialProof({ uid, arid: useArid, s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, credential: cred, pk_CIA: key.pub, tree });
+  const { proof, publicSignals } = await buildCredentialProof({ uid, arid: useArid, s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs, credential: cred, pk_CIA: key.pub, tree });
   const challenge = 'rp-challenge-' + Math.random();
   return { proof, publicSignals, challenge, sig: await signChallenge(session.wallet, challenge), session, cred, reg };
 }
 
-const rp = createRpVerifier({ provider, logAddress, vkey, pkCIA: CIA.pub, arid });
+const rp = createRpVerifier({ provider, logAddress, vkey, pkCIA: CIA.pub, arid, chainId: 31337n });
 
 await t('양성: 7단계 전부 통과, PPID 와 pk_i 를 돌려준다', async () => {
   const L = await makeLogin();
@@ -87,11 +88,14 @@ await t('음성 arid: 다른 RP 용 credential 은 wrong_arid', async () => {
   assert.deepEqual(await rp.verifyLogin(L), { ok: false, reason: 'wrong_arid' });
 });
 
-await t('음성 c: max_height 를 지나면 expired', async () => {
-  const L = await makeLogin({ ttl: 5n });
-  await mineBlocks(10, provider);
-  rp.refreshChainView && await rp.refreshChainView();
+await t('음성 c: exptime 이 지나면 expired (벽시계)', async () => {
+  const L = await makeLogin({ ttlSec: -5n });
   assert.deepEqual(await rp.verifyLogin(L), { ok: false, reason: 'expired' });
+});
+
+await t("음성 c': 다른 chainid 로 발급된 credential 은 wrong_chain", async () => {
+  const L = await makeLogin({ chainid: 1n });
+  assert.deepEqual(await rp.verifyLogin(L), { ok: false, reason: 'wrong_chain' });
 });
 
 await t('음성 b: 폐기 게시 후 옛 root 의 π 는 stale_root', async () => {
@@ -111,7 +115,7 @@ await t('음성 e: 증명을 손대면 bad_proof', async () => {
 await t('음성 a: 체인을 못 읽고 캐시가 10분보다 오래되면 chain_unavailable (fail-closed)', async () => {
   let now = Date.now();
   const broken = { getBlockNumber: async () => { throw new Error('rpc down'); } };
-  const rp2 = createRpVerifier({ provider: broken, logAddress, vkey, pkCIA: CIA.pub, arid, now: () => now });
+  const rp2 = createRpVerifier({ provider: broken, logAddress, vkey, pkCIA: CIA.pub, arid, chainId: 31337n, now: () => now });
   const L = await makeLogin();
   assert.deepEqual(await rp2.verifyLogin(L), { ok: false, reason: 'chain_unavailable' });
 });
@@ -127,7 +131,7 @@ await t('a: 캐시가 10분 안이면 RPC 가 죽어도 캐시로 검증한다',
     const v = tgt[k];
     return typeof v === 'function' ? v.bind(tgt) : v;
   } });
-  const rp2 = createRpVerifier({ provider: flaky, logAddress, vkey, pkCIA: CIA.pub, arid, now: () => now });
+  const rp2 = createRpVerifier({ provider: flaky, logAddress, vkey, pkCIA: CIA.pub, arid, chainId: 31337n, now: () => now });
   const L = await makeLogin();
   assert.equal((await rp2.verifyLogin(L)).ok, true);
   alive = false; now += 5 * 60_000;
