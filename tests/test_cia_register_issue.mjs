@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { buildBabyjub, buildEddsa, buildPoseidon } from 'circomlibjs';
 import { ethers } from 'ethers';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
-import { getProvider, logAbi, signRootPublication, mineBlocks } from './helpers/mode3_chain.mjs';
+import { getProvider, logAbi, signRootPublication } from './helpers/mode3_chain.mjs';
 import { randomScalar, credMessage, compressPoint } from '../lib/mode3_credential.js';
 import { credLeaf } from '../lib/mode3_revocation.js';
 import { registrationCommit, proveIssuance, serializeProof, pointToStrings } from '../lib/mode3_issuance.js';
@@ -30,16 +30,15 @@ const arid = 22222222222222222222n;
 const pk_i = BigInt(ethers.Wallet.createRandom().address);
 let user;   // { s_u, r_u, cm_u, sk_u(Buffer), pk_u }
 
-// 사용자 서명은 (C_pt, height) 를 덮는다 — 만료된 요청 본문을 그대로 다시 내서 새 σ_CIA 를 받는
-// 것(TTL 연장)을 막는다. CIA 는 height 가 [head − 창, head + 1] 안일 때만 받는다.
-// 서명은 지갑 라이브러리의 signUserRequest(sk hex) 를 그대로 쓴다 — 메시지 규약을 여기 복제하지 않는다.
-const signUser = (prvBuf, C_pt, height) => signUserRequest(prvBuf.toString('hex'), C_pt, height);
+// 사용자 서명은 (C_pt, chainid, nonce) 를 덮는다 — 만료된 요청 본문을 그대로 다시 내서 새 σ_CIA 를 받는
+// 것(TTL 연장)은 CIA 의 (uid, nonce) 영구 집합이 막는다(설계 2026-09-14 §4).
+const CHAIN_ID = 31337n;
+const signUser = (prvBuf, C_pt, chainid, nonce) => signUserRequest(prvBuf.toString('hex'), C_pt, chainid, nonce);
 
-async function issueRequest(u, overrides = {}, height = null) {
+async function issueRequest(u, overrides = {}, { chainid = CHAIN_ID, nonce = randomScalar(), attrs = [19n, 410n, 0n, 0n] } = {}) {
   const blind = randomScalar();
-  const { C_pt, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind, pk_i, r_u: u.r_u });
-  const h = height ?? BigInt(await provider.getBlockNumber());
-  return { body: { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: await signUser(u.sk_u, C_pt, h), height: h.toString(), ...overrides }, C_pt, blind };
+  const { C_pt, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind, pk_i, r_u: u.r_u, attrs });
+  return { body: { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: await signUser(u.sk_u, C_pt, chainid, nonce), chainid: chainid.toString(), nonce: nonce.toString(), ...overrides }, C_pt, blind, nonce };
 }
 
 try {
@@ -47,7 +46,7 @@ try {
     const r = await cia.get('/cia/public_keys');
     assert.equal(r.status, 200);
     assert.equal(r.body.ethAddress.toLowerCase(), cia.ethAddress.toLowerCase());
-    assert.equal(r.body.ttlBlocks, 300);
+    assert.equal(r.body.ttlSeconds, 3600); assert.deepEqual(r.body.chainIds, ['31337']);
     assert.equal(r.body.logAddress.toLowerCase(), cia.logAddress.toLowerCase());
   });
 
@@ -87,14 +86,16 @@ try {
     cred = r.body;
     // C 는 CIA 가 C_pt 에서 유도한 값이어야 한다
     assert.equal(cred.C, (await compressPoint(C_pt)).toString());
-    // σ_CIA 가 credMessage(C, max_height) 에 대한 pk_CIA 서명인지
-    const msg = F.e(await credMessage(BigInt(cred.C), BigInt(cred.max_height)));
+    // σ_CIA 가 credMessage(C, exptime, chainid, nonce) 에 대한 pk_CIA 서명인지
+    const msg = F.e(await credMessage(BigInt(cred.C), BigInt(cred.exptime), BigInt(cred.chainid), BigInt(cred.nonce)));
     const sig = { R8: [F.e(BigInt(cred.sigma.R8x)), F.e(BigInt(cred.sigma.R8y))], S: BigInt(cred.sigma.S) };
     const pub = [F.e(BigInt(cred.pk_CIA.x)), F.e(BigInt(cred.pk_CIA.y))];
     assert.ok(eddsa.verifyPoseidon(msg, sig, pub));
-    // max_height = head + 300
-    const head = await provider.getBlockNumber();
-    assert.ok(BigInt(cred.max_height) >= BigInt(head) + 299n && BigInt(cred.max_height) <= BigInt(head) + 301n);
+    // exptime = now + 3600 (±5초), chainid·nonce 는 요청값 그대로
+    const nowSec = Math.floor(Date.now() / 1000);
+    assert.ok(Number(cred.exptime) >= nowSec + 3595 && Number(cred.exptime) <= nowSec + 3605, cred.exptime);
+    assert.equal(cred.chainid, '31337');
+    assert.equal(cred.nonce, body.nonce);
   });
 
   await t('issue: 다른 s_u 로 만든 C_pt 는 400 (cm_u 동일성)', async () => {
@@ -105,30 +106,30 @@ try {
 
   await t('issue: 사용자 서명이 다른 키면 400', async () => {
     const { body, C_pt } = await issueRequest(user);
-    body.sig_u = await signUser(Buffer.alloc(32, 7), C_pt, BigInt(body.height));
+    body.sig_u = await signUser(Buffer.alloc(32, 7), C_pt, CHAIN_ID, BigInt(body.nonce));
     assert.equal((await cia.post('/cia/issue', body)).status, 400);
   });
 
-  await t('issue: 서명한 height 가 너무 오래됐거나 미래면 400 (만료 요청 재제출로 TTL 연장 불가)', async () => {
-    // 새 체인에서 단독 실행하면 head 가 창(30)보다 작아 head−100 이 음수가 되고, 그러면 형식 검사(isDec)에
-    // 걸려 창 하한 분기를 타지 않은 채 통과한다 — 먼저 창보다 높이 쌓고 오류문으로 분기를 확인한다.
-    await mineBlocks(31, provider);
-    const head = BigInt(await provider.getBlockNumber());
-    const old = await issueRequest(user, {}, head - 31n);
-    const r1 = await cia.post('/cia/issue', old.body);
-    assert.equal(r1.status, 400, JSON.stringify(r1.body));
-    assert.match(r1.body.error, /stale issue request/);
-    const future = await issueRequest(user, {}, head + 5n);
-    const r2 = await cia.post('/cia/issue', future.body);
+  await t('issue: 같은 nonce 재사용은 409, 허용 목록 밖 chainid 는 400, 값만 바꿔 끼우면 서명 불일치 400, 누락은 400', async () => {
+    const first = await issueRequest(user);
+    assert.equal((await cia.post('/cia/issue', first.body)).status, 200);
+    // 같은 nonce 로 다른 C_pt 를 내도 409 — (uid, nonce) 는 영구 집합이다
+    const replay = await issueRequest(user, {}, { nonce: first.nonce });
+    const r1 = await cia.post('/cia/issue', replay.body);
+    assert.equal(r1.status, 409, JSON.stringify(r1.body));
+    assert.match(r1.body.error, /nonce/);
+    // 허용 목록(31337) 밖
+    const wrongChain = await issueRequest(user, {}, { chainid: 1n });
+    const r2 = await cia.post('/cia/issue', wrongChain.body);
     assert.equal(r2.status, 400, JSON.stringify(r2.body));
-    assert.match(r2.body.error, /stale issue request/);
-    // height 만 바꿔 끼우면 서명이 안 맞아 400
-    const tampered = await issueRequest(user, {}, head - 31n);
-    tampered.body.height = head.toString();
+    assert.match(r2.body.error, /chainid/);
+    // nonce 만 바꿔 끼우면 서명이 안 맞아 400
+    const tampered = await issueRequest(user);
+    tampered.body.nonce = (BigInt(tampered.body.nonce) + 1n).toString();
     assert.equal((await cia.post('/cia/issue', tampered.body)).status, 400);
-    // height 없이 보내면 400
+    // nonce 없이 보내면 400
     const missing = await issueRequest(user);
-    delete missing.body.height;
+    delete missing.body.nonce;
     assert.equal((await cia.post('/cia/issue', missing.body)).status, 400);
   });
 
@@ -230,13 +231,16 @@ try {
       const r = await dead.post('/cia/account/self_revoke', { uid: '12345', pwd: 'password123' });
       assert.equal(r.status, 200, JSON.stringify(r.body));
       assert.equal(r.body.disabled, true);
-      assert.equal(r.body.treeUpdated, false);
+      // 이 uid 는 등록 직후 곧바로 self_revoke 됐다 — 이 dead 인스턴스에서 발급받은 credential 이
+      // 아예 없으므로(체인이 죽어 있어 /cia/issue 도 503 이라 발급을 시도할 수도 없다) 넣을 리프가 없다.
+      // 삽입 자체가 벽시계 기준이라 체인이 필요 없다는 것은 앞의 '비밀번호만으로 계정 전체 폐기' 케이스(라이브
+      // 인스턴스에서 발급 → self_revoke → inserted 에 그 리프가 들어감)로 이미 검증됐다.
       assert.deepEqual(r.body.inserted, []);
       assert.equal((await dead.get('/cia/state')).body.pendingCount, 0);
 
       // 발급은 disabled 검사가 headHeight() 보다 먼저다(cia.js /cia/issue) — 체인 없이도 403 이어야 한다.
       const issued = await dead.post('/cia/issue', {
-        uid: '12345', C_pt: { x: '1', y: '1' }, proof: {}, sig_u: {}, height: '0',
+        uid: '12345', C_pt: { x: '1', y: '1' }, proof: {}, sig_u: {}, chainid: '31337', nonce: '1',
       });
       assert.equal(issued.status, 403, JSON.stringify(issued.body));
     } finally {

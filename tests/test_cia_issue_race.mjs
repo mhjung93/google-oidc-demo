@@ -59,13 +59,12 @@ try {
   const sk_u = reg.body.sk_u;
 
   async function issueBody() {
-    const blind = randomScalar();
-    const { C_pt, proof } = await proveIssuance({ uid, arid, s_u, blind, pk_i, r_u });
-    const height = BigInt(await provider.getBlockNumber());
-    return { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: await signUserRequest(sk_u, C_pt, height), height: height.toString() };
+    const blind = randomScalar(), nonce = randomScalar();
+    const { C_pt, proof } = await proveIssuance({ uid, arid, s_u, blind, pk_i, r_u, attrs: [0n, 0n, 0n, 0n] });
+    return { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: await signUserRequest(sk_u, C_pt, 31337n, nonce), chainid: '31337', nonce: nonce.toString() };
   }
 
-  await t('issue 가 head 를 읽는 동안 계정이 폐기되면 발급하지 않는다 (403, 기록도 남지 않는다)', async () => {
+  await t('issue 가 체인 가용성을 확인하는 동안 계정이 폐기되면 발급하지 않는다 (403, 기록도 남지 않는다)', async () => {
     const body = await issueBody();
     hold = { seen: deferred(), released: deferred() };
     const inflight = cia.post('/cia/issue', body);   // disabled 검사를 지나 headHeight() 에서 게이트에 붙잡힌다

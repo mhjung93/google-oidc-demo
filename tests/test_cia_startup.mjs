@@ -38,11 +38,10 @@ async function registerAndIssueLeaf(cia, user) {
     assert.equal(r.status, 201, JSON.stringify(r.body));
     user.sk_u = r.body.sk_u;
   }
-  const blind = randomScalar();
-  const { C_pt, proof } = await proveIssuance({ uid, arid, s_u: user.s_u, blind, pk_i, r_u: user.r_u });
-  const height = BigInt(await provider.getBlockNumber());
-  const sig_u = await signUserRequest(user.sk_u, C_pt, height);
-  const r = await cia.post('/cia/issue', { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u, height: height.toString() });
+  const blind = randomScalar(), nonce = randomScalar();
+  const { C_pt, proof } = await proveIssuance({ uid, arid, s_u: user.s_u, blind, pk_i, r_u: user.r_u, attrs: [0n, 0n, 0n, 0n] });
+  const sig_u = await signUserRequest(user.sk_u, C_pt, 31337n, nonce);
+  const r = await cia.post('/cia/issue', { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u, chainid: '31337', nonce: nonce.toString() });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   return (await credLeaf(BigInt(r.body.C))).toString();
 }
