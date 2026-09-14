@@ -291,29 +291,10 @@ async function fetchIdpRootHex() {
   return topRoot;
 }
 
-// push_revocation_root.cjs는 반드시 `npx hardhat run ... --network localhost`로 돌려야
-// 한다. `node`로 실행하면 defaultNetwork가 "hardhat"이라 명령 종료와 함께 사라지는
-// 임시 인프로세스 체인에 게시된다(스크립트 안에 가드가 있다).
-function pushRevocationRoot(idpOperatorAddress) {
-  return execFileSync(
-    'npx',
-    ['hardhat', 'run', 'scripts/push_revocation_root.cjs', '--network', 'localhost'],
-    {
-      cwd: REPO_ROOT,
-      encoding: 'utf8',
-      env: {
-        ...process.env,
-        REVOCATION_REGISTRY_ADDRESS: REGISTRY_ADDRESS,
-        REVOCATION_IDP_ADDRESS: idpOperatorAddress,
-      },
-    },
-  );
-}
-
 // 대기 중인 폐기를 실제로 게시한다: prepare -> pushRoot -> commit.
-// push_revocation_root.cjs는 '이미 게시된 상태'를 다시 올릴 뿐이라 대기 중인 폐기를
-// 반영하지 못한다. 배칭 이후 폐기를 유효하게 만드는 경로는 revocation_sweep.cjs
-// 하나뿐이므로, 테스트도 운영자와 같은 경로를 쓴다.
+// V4 레지스트리는 root를 직접 받지 않고 전이 증명으로 유도하므로(push_revocation_root.cjs는
+// 폐기됐다), 대기 중인 폐기든 아직 push되지 않은 백로그든 온체인에 반영하는 경로는
+// revocation_sweep.cjs 하나뿐이다. 테스트도 운영자와 같은 경로를 쓴다.
 function publishPendingRevocations(idpOperatorAddress) {
   return execFileSync(
     'npx',
@@ -366,9 +347,9 @@ async function main() {
   // 가정한다. 그런데 IdP root를 바꾸면서 게시는 하지 않는 다른 테스트
   // (tests/test_idp_revoke_endpoint.js, tests/test_revocation_e2e.js)를 먼저 돌리면
   // 그 가정이 깨져, 구간 A가 검증하려는 것과 무관하게 /submitTransaction이 400으로
-  // 실패한다. 자기 전제조건은 스스로 세운다 — 시작 전에 현재 root를 한 번 게시한다.
+  // 실패한다. 자기 전제조건은 스스로 세운다 — 시작 전에 백로그를 한 번 게시한다.
   if (!(await registry.isAcceptableRoot(await fetchIdpRootHex()))) {
-    pushRevocationRoot(idpOperator);
+    publishPendingRevocations(idpOperator);
     assert.equal(
       await registry.isAcceptableRoot(await fetchIdpRootHex()),
       true,
