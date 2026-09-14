@@ -13,6 +13,7 @@ import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { createRegistration, createSessionKey, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, ProofCache } from './lib/mode3_wallet.js';
 import { pointToStrings } from './lib/mode3_issuance.js';
 import { credLeaf } from './lib/mode3_revocation.js';
+import { normalizeAttrs } from './lib/mode3_credential.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.MODE3_WALLET_PORT) || 5100;
@@ -21,17 +22,17 @@ const CIA_URL = process.env.MODE3_CIA_URL || 'http://127.0.0.1:4100';
 const RP_ORIGIN = process.env.MODE3_RP_ORIGIN || 'http://127.0.0.1:3100';
 const LOG_ADDRESS = process.env.CIA_LOG_ADDRESS || null;
 const RPC_URL = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
-// 만료 여유(블록). 지갑은 동기화 때 본 head 로 판단하지만 RP 는 증명 생성(~1초)과 두 홉 뒤의 더 높은
-// head 로 같은 검사를 한다 — 여유 없이 max_height 직전 credential 을 재사용하면 RP 가 'expired' 로
-// 거절하고 1회용 challenge 만 소모된다. 여유 안이면 미리 새로 발급받는다.
-const EXPIRY_MARGIN_BLOCKS = 3n;
+// 만료 여유(초). 지갑은 지금 시각으로 판단하지만 RP 는 증명 생성(~1초)과 두 홉 뒤에 같은 검사를 한다 — 여유 없이
+// exptime 직전 credential 을 재사용하면 RP 가 'expired' 로 거절하고 1회용 challenge 만 소모된다. 여유 안이면 미리 새로 발급받는다.
+const EXPIRY_MARGIN_SECONDS = 30n;
+const nowSec = () => BigInt(Math.floor(Date.now() / 1000));
 
 // 게시 직후의 로그인이 옛 root 를 보지 않도록 ethers 의 250ms 캐시를 끈다(lib/mode3_wallet.js 주석).
 const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { cacheTimeout: -1 });
 
 // ---- 상태 ----
-// registration: { uid, s_u, r_u, cm_u:{x,y}, sk_u }            §6.1. 한 번
-// credentials:  arid → { credential:{C,max_height,sigma,pk_CIA}, blind, sessionPrivKey, pk_i, issuedAt }
+// registration: { uid, s_u, r_u, cm_u:{x,y}, sk_u, attrs:[4개 10진] }   §6.1. 한 번. attrs 는 사용자가 고른 속성(CIA 는 모른다)
+// credentials:  arid → { credential:{C,exptime,chainid,nonce,sigma,pk_CIA}, blind, sessionPrivKey, pk_i, issuedAt }
 // BigInt 는 전부 10진 문자열. 데모용이라 비밀이 평문으로 들어간다(0600).
 let state = readJson(STATE_FILE, { version: 1, registration: null, credentials: {} });
 function persist() { writeJsonAtomic(STATE_FILE, state, 0o600); }
@@ -44,11 +45,18 @@ const isDec = (v) => typeof v === 'string' && /^[0-9]+$/.test(v);
 const json = async (r) => ({ status: r.status, body: await r.json().catch(() => null) });
 const ciaPost = (p, body) => fetch(`${CIA_URL}${p}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(json);
 
-async function issueCredential(arid, height) {
+let chainIdCache = null;
+async function chainId() {
+  if (chainIdCache === null) chainIdCache = (await provider.getNetwork()).chainId;   // bigint
+  return chainIdCache;
+}
+
+async function issueCredential(arid) {
   const reg = state.registration;
   const session = createSessionKey();
   const req = await buildIssueRequest({
-    uid: BigInt(reg.uid), arid: BigInt(arid), s_u: BigInt(reg.s_u), r_u: BigInt(reg.r_u), sk_u: reg.sk_u, session, height,
+    uid: BigInt(reg.uid), arid: BigInt(arid), s_u: BigInt(reg.s_u), r_u: BigInt(reg.r_u), sk_u: reg.sk_u, session,
+    chainid: await chainId(), attrs: (reg.attrs ?? []).map(BigInt),
   });
   const r = await ciaPost('/cia/issue', req.body);
   if (r.status === 200) {
@@ -78,7 +86,7 @@ app.get('/wallet/status', async (req, res) => {
   try { head = (await provider.getBlockNumber()).toString(); } catch { /* 체인 없음 */ }
   const credentials = {};
   for (const [arid, e] of Object.entries(state.credentials)) {
-    credentials[arid] = { max_height: e.credential.max_height, sessionAddress: new ethers.Wallet(e.sessionPrivKey).address, issuedAt: e.issuedAt };
+    credentials[arid] = { exptime: e.credential.exptime, chainid: e.credential.chainid, sessionAddress: new ethers.Wallet(e.sessionPrivKey).address, issuedAt: e.issuedAt };
   }
   res.json({
     registered: Boolean(state.registration), uid: state.registration?.uid ?? null, credentials,
@@ -90,6 +98,9 @@ app.post('/wallet/register', async (req, res) => {
   try {
     const { uid, pwd } = req.body ?? {};
     if (!isDec(uid) || typeof pwd !== 'string') return res.status(400).json({ error: 'uid(10진 문자열), pwd 필요' });
+    let attrs;
+    try { attrs = normalizeAttrs(req.body?.attrs).map(String); }
+    catch (e) { return res.status(400).json({ error: `attrs: ${e.message}` }); }
     if (state.registration) return res.status(409).json({ reason: 'already_registered', uid: state.registration.uid });
     const reg = await createRegistration();
     const r = await ciaPost('/cia/register', { uid, pwd, cm_u: pointToStrings(reg.cm_u) });
@@ -97,7 +108,7 @@ app.post('/wallet/register', async (req, res) => {
       const status = r.status === 401 || r.status === 409 ? r.status : 502;
       return res.status(status).json({ reason: 'register_failed', cia: r.body });
     }
-    state.registration = { uid, s_u: reg.s_u.toString(), r_u: reg.r_u.toString(), cm_u: pointToStrings(reg.cm_u), sk_u: r.body.sk_u };
+    state.registration = { uid, s_u: reg.s_u.toString(), r_u: reg.r_u.toString(), cm_u: pointToStrings(reg.cm_u), sk_u: r.body.sk_u, attrs };
     persist();
     res.status(201).json({ uid });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -129,16 +140,11 @@ app.post('/wallet/login', loginCors, async (req, res) => {
     let entry = state.credentials[arid];
     let issued = false;
     const needIssue = !entry
-      || synced.head + EXPIRY_MARGIN_BLOCKS > BigInt(entry.credential.max_height)
+      || nowSec() + EXPIRY_MARGIN_SECONDS > BigInt(entry.credential.exptime)
       || synced.tree.has(await credLeaf(BigInt(entry.credential.C)));
     if (needIssue) {
       t = Date.now();
-      let r = await issueCredential(arid, synced.head);
-      if (r.status === 400 && /stale issue request/.test(r.body?.error ?? '')) {
-        // 동기화 때 본 head 가 CIA 의 창(30블록) 밖이다 — 증명 생성이 그만큼 오래 걸렸다. head 를 다시
-        // 읽어 한 번만 다시 낸다.
-        r = await issueCredential(arid, BigInt(await provider.getBlockNumber()));
-      }
+      const r = await issueCredential(arid);
       timings.issueMs = Date.now() - t;
       if (r.status === 403) return res.status(403).json({ reason: 'account_disabled', timings });
       if (r.status !== 200) return res.status(502).json({ reason: 'issue_failed', cia: r.body, timings });
@@ -154,6 +160,7 @@ app.post('/wallet/login', loginCors, async (req, res) => {
       t = Date.now();
       cached = await buildCredentialProof({
         uid: BigInt(reg.uid), arid: BigInt(arid), s_u: BigInt(reg.s_u), blind: BigInt(entry.blind), pk_i: BigInt(entry.pk_i),
+        attrs: (reg.attrs ?? []).map(BigInt),
         credential: entry.credential, pk_CIA: { x: BigInt(entry.credential.pk_CIA.x), y: BigInt(entry.credential.pk_CIA.y) }, tree: synced.tree,
       });
       timings.proveMs = Date.now() - t;

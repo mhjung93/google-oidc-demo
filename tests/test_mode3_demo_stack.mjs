@@ -41,7 +41,7 @@ try {
   });
 
   await t('1. 등록', async () => {
-    assert.equal((await wallet.post('/wallet/register', { uid, pwd: 'password123' })).status, 201);
+    assert.equal((await wallet.post('/wallet/register', { uid, pwd: 'password123', attrs: ['19', '410', '0', '0'] })).status, 201);
   });
 
   let PPID1, firstSignals;

@@ -25,7 +25,7 @@ const uid = '12345', arid = '22222222222222222222';
 try {
   const keys = (await cia.get('/cia/public_keys')).body;
   const pk_CIA = { x: BigInt(keys.pk_CIA.x), y: BigInt(keys.pk_CIA.y) };
-  const rp = createRpVerifier({ provider, logAddress: cia.logAddress, vkey, pkCIA: pk_CIA, arid: BigInt(arid) });
+  const rp = createRpVerifier({ provider, logAddress: cia.logAddress, vkey, pkCIA: pk_CIA, arid: BigInt(arid), chainId: 31337n });
 
   async function verify(body, challenge) {
     return rp.verifyLogin({ proof: body.proof, publicSignals: body.publicSignals, challenge, sig: body.sig });
@@ -41,7 +41,7 @@ try {
   });
 
   await t('등록: 201, 두 번째는 409, 잘못된 pwd 는 CIA 의 401 을 그대로', async () => {
-    const r = await wallet.post('/wallet/register', { uid, pwd: 'password123' });
+    const r = await wallet.post('/wallet/register', { uid, pwd: 'password123', attrs: ['19', '410', '0', '0'] });
     assert.equal(r.status, 201, j(r.body));
     assert.deepEqual(r.body, { uid });
     assert.equal((await wallet.post('/wallet/register', { uid, pwd: 'password123' })).status, 409);
@@ -59,6 +59,8 @@ try {
     assert.equal(r.body.cacheHit, false);
     assert.ok(!('uid' in r.body), 'uid 는 RP 로 나가면 안 된다');
     assert.equal(typeof r.body.timings.proveMs, 'number');
+    assert.equal(r.body.publicSignals.length, 8);
+    assert.equal(r.body.publicSignals[4], '31337');
     const v = await verify(r.body, challenge);
     assert.equal(v.ok, true, j(v));
     first = r.body; PPID1 = v.PPID;
@@ -117,6 +119,21 @@ try {
   await t('입력 검증: arid 비10진 / challenge 없음 → 400', async () => {
     assert.equal((await wallet.post('/wallet/login', { arid: '0x1', challenge: 'c' })).status, 400);
     assert.equal((await wallet.post('/wallet/login', { arid })).status, 400);
+  });
+
+  await t('status: credential 이 exptime(Unix 초)을 보여주고 max_height 는 없다', async () => {
+    const s = await wallet.get('/wallet/status');
+    const [, c] = Object.entries(s.body.credentials)[0];
+    assert.match(String(c.exptime), /^[0-9]+$/);
+    assert.equal(c.max_height, undefined);
+    assert.ok(Number(c.exptime) > Math.floor(Date.now() / 1000));
+  });
+
+  await t('register: attrs 가 4개를 넘거나 10진이 아니면 400', async () => {
+    // 이미 등록된 상태에서는 409 가 먼저이므로 형식 검사는 등록 앞에 있어야 한다 — 새 인스턴스 없이 확인하려면
+    // 400 이 409 보다 먼저 나오는지를 본다.
+    assert.equal((await wallet.post('/wallet/register', { uid, pwd: 'password123', attrs: ['1', '2', '3', '4', '5'] })).status, 400);
+    assert.equal((await wallet.post('/wallet/register', { uid, pwd: 'password123', attrs: ['x'] })).status, 400);
   });
 } finally {
   await stack.stop();

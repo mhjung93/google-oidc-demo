@@ -40,7 +40,9 @@ async function resolvePkCia() {
 const pkCIA = await resolvePkCia();
 const vkey = JSON.parse(fs.readFileSync(VKEY_PATH, 'utf8'));
 const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { cacheTimeout: -1 });
-const verifier = createRpVerifier({ provider, logAddress: LOG_ADDRESS, vkey, pkCIA, arid: BigInt(ARID) });
+// RP 가 읽는 폐기 체인의 id. credential 의 chainid 와 같아야 한다(설계 2026-09-14 §6 c'). 기동 시 한 번 읽어 고정한다.
+const chainId = (await provider.getNetwork()).chainId;
+const verifier = createRpVerifier({ provider, logAddress: LOG_ADDRESS, vkey, pkCIA, arid: BigInt(ARID), chainId });
 
 // ---- challenge: 메모리, TTL, 1회용 ----
 const challenges = new Map();   // challenge → expiresAt(ms)
@@ -69,7 +71,7 @@ app.use(express.json({ limit: '1mb' }));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'rp.html')));
 
 app.get('/api/mode3/rp_info', (req, res) => {
-  res.json({ arid: ARID, logAddress: LOG_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, pkCiaSource: pkCIA.source });
+  res.json({ arid: ARID, logAddress: LOG_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, pkCiaSource: pkCIA.source, chainId: chainId.toString() });
 });
 
 app.post('/api/mode3/challenge', (req, res) => res.json(issueChallenge()));
@@ -83,7 +85,7 @@ app.post('/api/mode3/login', async (req, res) => {
     if (!consumeChallenge(challenge)) return res.status(401).json({ ok: false, reason: 'bad_challenge' });
     const v = await verifier.verifyLogin({ proof, publicSignals, challenge, sig });
     if (!v.ok) return res.json({ ok: false, reason: v.reason });
-    const root = String(publicSignals[4]);
+    const root = String(publicSignals[5]);
     logins.push({ PPID: v.PPID.toString(), at: new Date().toISOString(), root });
     res.json({ ok: true, PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), root });
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
@@ -92,5 +94,5 @@ app.post('/api/mode3/login', async (req, res) => {
 app.get('/api/mode3/logins', (req, res) => res.json({ logins }));
 
 app.listen(PORT, '127.0.0.1', () => {
-  console.log(`Mode 3 RP at http://127.0.0.1:${PORT} (arid=${ARID}, log=${LOG_ADDRESS}, wallet=${WALLET_ORIGIN}, pk_CIA=${pkCIA.source})`);
+  console.log(`Mode 3 RP at http://127.0.0.1:${PORT} (arid=${ARID}, log=${LOG_ADDRESS}, wallet=${WALLET_ORIGIN}, pk_CIA=${pkCIA.source}, chain=${chainId})`);
 });

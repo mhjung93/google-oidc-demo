@@ -20,6 +20,12 @@
     <legend>등록 (§6.1, 한 번)</legend>
     <label>uid <input id="uid" value="12345" size="8" /></label>
     <label>pwd <input id="pwd" type="password" value="password123" size="12" /></label>
+    <br />
+    <label class="muted">속성(선택, 10진 4개 — CIA 는 값을 모른다. 설계 2026-09-14 §2)</label>
+    <input id="attr0" value="19" size="6" title="attr0" />
+    <input id="attr1" value="410" size="6" title="attr1" />
+    <input id="attr2" value="0" size="6" title="attr2" />
+    <input id="attr3" value="0" size="6" title="attr3" />
     <button id="registerBtn">등록</button>
     <span id="registerResult" class="muted"></span>
   </fieldset>
@@ -47,13 +53,13 @@
         ];
         const entries = Object.entries(s.credentials);
         if (entries.length === 0) lines.push('  (없음)');
-        for (const [arid, c] of entries) lines.push(`  arid=${arid}\n    max_height=${c.max_height}  세션 주소=${c.sessionAddress}\n    발급=${c.issuedAt}`);
+        for (const [arid, c] of entries) lines.push(`  arid=${arid}\n    exptime=${c.exptime}(${new Date(Number(c.exptime) * 1000).toLocaleTimeString()})  chainid=${c.chainid}  세션 주소=${c.sessionAddress}\n    발급=${c.issuedAt}`);
         $('status').textContent = lines.join('\n');
       } catch (e) { $('status').textContent = `상태 조회 실패: ${e.message}`; }
     }
     $('registerBtn').addEventListener('click', async () => {
       $('registerResult').textContent = '…';
-      const r = await fetch('/wallet/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ uid: $('uid').value.trim(), pwd: $('pwd').value }) });
+      const r = await fetch('/wallet/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ uid: $('uid').value.trim(), pwd: $('pwd').value, attrs: ['attr0', 'attr1', 'attr2', 'attr3'].map((id) => $(id).value.trim() || '0') }) });
       const b = await r.json().catch(() => ({}));
       $('registerResult').textContent = r.status === 201 ? `등록됨 (uid=${b.uid})` : `${r.status}: ${b.reason ?? b.error ?? ''} ${b.cia ? JSON.stringify(b.cia) : ''}`;
       refresh();
