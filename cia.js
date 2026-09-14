@@ -252,33 +252,40 @@ app.post('/cia/issue', async (req, res) => {
   }
 });
 
+// §6.5 계정 전체 폐기: 그 uid 의 미만료 리프 전부 삽입 + disabled. 관리자 폐기(/cia/revoke scope=account)와
+// 사용자 자기 폐기(/cia/account/self_revoke, §6.5.1)가 같은 처리를 탄다 — 다른 것은 "누가 개시하느냐"뿐이다.
+// tree.insert 는 이미 있는 리프에 false 를 돌려주므로 두 번 불러도 새 리프가 들어가지 않는다(멱등).
+async function revokeAccount(uid, head) {
+  const targets = pruneExpired(uid, head).map((e) => e.leaf);
+  state.accounts[uid].disabled = true;
+  const inserted = [];
+  for (const l of targets) {
+    if (await tree.insert(BigInt(l))) { state.revoked.push(l); state.pending.push(l); inserted.push(l); }
+  }
+  persist();
+  return { inserted, root: tree.getRoot().toString(), pending: state.pending.length };
+}
+
 // §6.5 폐기. account = 그 uid 의 미만료 리프 전부 + disabled. credential = 리프 하나.
 app.post('/cia/revoke', requireAdmin, async (req, res) => {
   try {
     const { uid, scope, leaf, C } = req.body ?? {};
     if (!isDec(uid) || !state.accounts[uid]) return res.status(404).json({ error: 'unknown account' });
     const head = await headHeight();
-    let targets;
-    if (scope === 'account') {
-      targets = pruneExpired(uid, head).map((e) => e.leaf);
-      state.accounts[uid].disabled = true;
-    } else if (scope === 'credential') {
-      // 그 uid 의 미만료 발급 목록에 있는 리프만 받는다 — 폐기는 append-only 라 잘못 넣은 리프가
-      // 영구히 남고, 범위 밖 값은 트리가 throw 한다. leaf 대신 C 를 주면 서버가 리프를 유도한다.
-      // 발급 기록은 {leaf, C} 쌍이라 다시 해시하지 않고 기록에서 찾는다. isDec 은 앞자리 0 을 허용하므로
-      // BigInt 로 정규화한 뒤 비교한다.
-      const issued = pruneExpired(uid, head);
-      let entry;
-      if (isDec(C)) entry = issued.find((e) => e.C === BigInt(C).toString());
-      else if (isDec(leaf)) entry = issued.find((e) => e.leaf === BigInt(leaf).toString());
-      else return res.status(400).json({ error: 'leaf or C required' });
-      if (!entry) return res.status(404).json({ error: 'leaf not issued to this uid (or expired)' });
-      targets = [entry.leaf];
-    } else return res.status(400).json({ error: "scope must be 'account' or 'credential'" });
+    if (scope === 'account') return res.json(await revokeAccount(uid, head));
+    if (scope !== 'credential') return res.status(400).json({ error: "scope must be 'account' or 'credential'" });
+    // 그 uid 의 미만료 발급 목록에 있는 리프만 받는다 — 폐기는 append-only 라 잘못 넣은 리프가
+    // 영구히 남고, 범위 밖 값은 트리가 throw 한다. leaf 대신 C 를 주면 서버가 리프를 유도한다.
+    // 발급 기록은 {leaf, C} 쌍이라 다시 해시하지 않고 기록에서 찾는다. isDec 은 앞자리 0 을 허용하므로
+    // BigInt 로 정규화한 뒤 비교한다.
+    const issued = pruneExpired(uid, head);
+    let entry;
+    if (isDec(C)) entry = issued.find((e) => e.C === BigInt(C).toString());
+    else if (isDec(leaf)) entry = issued.find((e) => e.leaf === BigInt(leaf).toString());
+    else return res.status(400).json({ error: 'leaf or C required' });
+    if (!entry) return res.status(404).json({ error: 'leaf not issued to this uid (or expired)' });
     const inserted = [];
-    for (const l of targets) {
-      if (await tree.insert(BigInt(l))) { state.revoked.push(l); state.pending.push(l); inserted.push(l); }
-    }
+    if (await tree.insert(BigInt(entry.leaf))) { state.revoked.push(entry.leaf); state.pending.push(entry.leaf); inserted.push(entry.leaf); }
     persist();
     res.json({ inserted, root: tree.getRoot().toString(), pending: state.pending.length });
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
@@ -335,6 +342,22 @@ app.post('/cia/account/set_disabled', requireAdmin, (req, res) => {
   state.accounts[uid].disabled = Boolean(disabled);
   persist();
   res.json({ uid, disabled: state.accounts[uid].disabled });
+});
+
+// §6.5.1 사용자 개시 폐기. 인증은 계정 비밀번호다 — 지갑 키가 아니다. 장치를 잃은 사용자에게 sk_u 는 없고
+// 공격자에게는 있으므로, 인증 수단은 장치 밖에 있어야 한다. 처리는 관리자의 계정 폐기와 같다.
+// 등록(§6.1)과 같은 순서로 검사한다: 형식 → 비밀번호 → 등록 여부. 비밀번호가 틀리면 등록 여부를 알려주지 않는다.
+app.post('/cia/account/self_revoke', async (req, res) => {
+  try {
+    const { uid, pwd } = req.body ?? {};
+    if (!isDec(uid) || typeof pwd !== 'string') return res.status(400).json({ error: 'uid, pwd required' });
+    const acct = Object.values(DEMO_ACCOUNTS).find((a) => a.uid === uid);
+    if (!acct || !secretMatches(pwd, acct.password)) return res.status(401).json({ error: 'invalid credentials' });
+    if (!state.accounts[uid]) return res.status(404).json({ error: 'not registered' });
+    const head = await headHeight();
+    const out = await revokeAccount(uid, head);
+    res.json({ ...out, disabled: true });
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
 app.get('/cia/state', async (req, res) => {

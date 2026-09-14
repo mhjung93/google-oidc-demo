@@ -176,6 +176,49 @@ try {
     assert.equal((await cia.post('/cia/issue', body)).status, 200);
   });
 
+  await t('self_revoke: 잘못된 비밀번호 401, 등록 안 된 계정 404, 형식 오류 400', async () => {
+    // 관리자 시크릿 없이 부른다 — 이 경로의 인증은 계정 비밀번호뿐이다(설계 §6.5.1).
+    assert.equal((await cia.post('/cia/account/self_revoke', { uid: '12345', pwd: 'wrong' })).status, 401);
+    // alice(67890) 는 데모 계정이지만 이 인스턴스에 등록한 적이 없다.
+    assert.equal((await cia.post('/cia/account/self_revoke', { uid: '67890', pwd: 'alicepw' })).status, 404);
+    assert.equal((await cia.post('/cia/account/self_revoke', { uid: 'abc', pwd: 'password123' })).status, 400);
+    assert.equal((await cia.post('/cia/account/self_revoke', { uid: '12345' })).status, 400);
+    // 실패한 요청은 아무것도 바꾸지 않는다
+    const { body } = await issueRequest(user);
+    assert.equal((await cia.post('/cia/issue', body)).status, 200, '계정은 여전히 활성이어야 한다');
+  });
+
+  await t('self_revoke: 비밀번호만으로 계정 전체 폐기 — 리프 삽입 + disabled, 이후 발급 403', async () => {
+    const { body: ib } = await issueRequest(user);
+    const issued = await cia.post('/cia/issue', ib);
+    assert.equal(issued.status, 200, JSON.stringify(issued.body));
+    const leaf = await credLeaf(BigInt(issued.body.C));
+    const before = (await cia.get('/cia/state')).body.pendingCount;
+
+    const r = await cia.post('/cia/account/self_revoke', { uid: '12345', pwd: 'password123' });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.disabled, true);
+    assert.ok(r.body.inserted.map((h) => BigInt(h)).includes(leaf), '방금 발급한 credential 의 리프가 들어가야 한다');
+    assert.equal(r.body.pending, before + r.body.inserted.length);
+    assert.equal((await cia.get('/cia/state')).body.pendingCount, r.body.pending);
+
+    const { body } = await issueRequest(user);
+    assert.equal((await cia.post('/cia/issue', body)).status, 403, 'disabled 계정은 발급 거절');
+  });
+
+  await t('self_revoke: 재요청은 멱등 — 새 리프 없이 200, disabled 유지', async () => {
+    const pendingBefore = (await cia.get('/cia/state')).body.pendingCount;
+    const r = await cia.post('/cia/account/self_revoke', { uid: '12345', pwd: 'password123' });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(r.body.inserted, []);
+    assert.equal(r.body.disabled, true);
+    assert.equal(r.body.pending, pendingBefore);
+    // 복구는 관리자만 한다(§6.6). 뒤 케이스들을 위해 여기서 되살린다.
+    assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid: '12345', disabled: false })).status, 200);
+    const { body } = await issueRequest(user);
+    assert.equal((await cia.post('/cia/issue', body)).status, 200);
+  });
+
   await t('revoke(credential): 이 uid 에 발급되지 않은 리프는 404 이고 트리에 들어가지 않는다', async () => {
     // 폐기는 append-only 라 오타 하나가 영구히 남는다 — 그 uid 의 미만료 발급 목록에 있는 리프만 받는다.
     const before = (await cia.get('/cia/state')).body.leafCount;
