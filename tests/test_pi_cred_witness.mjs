@@ -75,11 +75,21 @@ await t('음성: PPID가 다르면 거부된다', async () => {
   );
 });
 
-await t('음성: 서명이 다른 max_height에 대한 것이면 거부된다', async () => {
-  await assert.rejects(
-    () => witness({ ...valid, max_height: (BigInt(valid.max_height) + 1n).toString() }),
-    /Assert Failed/,
-  );
+await t('음성: exptime 을 바꾸면 거부된다 (서명이 exptime 을 덮는다)', async () => {
+  await assert.rejects(() => witness({ ...valid, exptime: (BigInt(valid.exptime) + 1n).toString() }), /Assert Failed/);
+});
+
+await t('음성: chainid 를 바꾸면 거부된다 (서명이 chainid 를 덮는다)', async () => {
+  await assert.rejects(() => witness({ ...valid, chainid: '1' }), /Assert Failed/);
+});
+
+await t('음성: nonce 를 바꾸면 거부된다 (서명이 nonce 를 덮는다)', async () => {
+  await assert.rejects(() => witness({ ...valid, nonce: (BigInt(valid.nonce) + 1n).toString() }), /Assert Failed/);
+});
+
+await t('음성: attr 하나를 바꾸면 거부된다 (C 가 달라져 서명이 안 맞는다)', async () => {
+  const attrs = [...valid.attrs]; attrs[0] = '20';
+  await assert.rejects(() => witness({ ...valid, attrs }), /Assert Failed/);
 });
 
 await t('음성: pk_i를 바꾸면 거부된다 (C 바인딩이 깨진다)', async () => {

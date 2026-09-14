@@ -1,5 +1,6 @@
 // pi_cred 회로의 zkey 생성과 증명·검증 시간 실측.
 //   node scripts/bench_pi_cred.mjs pot21_final.ptau
+//   (zkey 가 없으면 여기서 만들지만, 회로를 바꾼 뒤에는 scripts/build_mode3_circuit.sh 로 한 세트를 다시 만들 것)
 //
 // 산출물은 전부 build/mode3/ 아래에 만든다. Mode 2 산출물(build/mode2/)을
 // 건드리지 않으며 npm run zk:key 를 쓰지 않는다.

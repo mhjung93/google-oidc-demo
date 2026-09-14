@@ -18,14 +18,17 @@ export async function buildValidInput() {
   const s_u   = 33333333333333333333n;
   const blind = 44444444444444444444n;
   const pk_i  = 0x1234567890123456789012345678901234567890n; // 160비트
-  const max_height = 1000n;
+  const attrs = [19n, 410n, 0n, 0n];
+  const exptime = 1789000000n;   // Unix 초. 값 자체는 회로에 무관 — 서명 메시지에만 들어간다
+  const chainid = 31337n;
+  const nonce = 55555555555555555555n;
 
-  // s_u, blind 등 커밋에 들어가는 스칼라는 2^250 미만이어야 한다 (회로 Num2Bits(250)
+  // s_u, blind, attrs, nonce 등 스칼라는 2^250 미만이어야 한다 (회로 Num2Bits(250)
   // 과 같은 상한, lib/mode3_credential.js 의 SCALAR_MAX). 새 난수가 필요하면
   // randomScalar()를 쓴다 — 전체 필드 난수는 92% 확률로 이 상한을 넘어 거부된다.
-  const { Cf: C } = await credCommit({ uid, arid, s_u, blind, pk_i });
+  const { Cf: C } = await credCommit({ uid, arid, s_u, blind, pk_i, attrs });
   const PPID = await computePpid({ uid, arid, s_u });
-  const msg = await credMessage(C, max_height);
+  const msg = await credMessage(C, exptime, chainid, nonce);
 
   // CIA 서명키. 테스트 고정값이며 실제 키가 아니다.
   const prv = Buffer.from('0001020304050607080900010203040506070809000102030405060708090001', 'hex');
@@ -41,6 +44,8 @@ export async function buildValidInput() {
     uid: uid.toString(),
     s_u: s_u.toString(),
     blind: blind.toString(),
+    attrs: attrs.map(String),
+    nonce: nonce.toString(),
     S: sig.S.toString(),
     R8x: F.toObject(sig.R8[0]).toString(),
     R8y: F.toObject(sig.R8[1]).toString(),
@@ -52,7 +57,8 @@ export async function buildValidInput() {
     PPID: PPID.toString(),
     arid: arid.toString(),
     pk_i: pk_i.toString(),
-    max_height: max_height.toString(),
+    exptime: exptime.toString(),
+    chainid: chainid.toString(),
     revRoot: tree.getRoot().toString(),
     pk_CIA_x: F.toObject(pub[0]).toString(),
     pk_CIA_y: F.toObject(pub[1]).toString(),
