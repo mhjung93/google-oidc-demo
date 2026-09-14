@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="same-origin" />
+  <title>Mode 3 CIA 사용자</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 760px; margin: 24px auto; padding: 0 16px; }
+    fieldset { border: 2px solid #1565c0; margin-bottom: 16px; }
+    pre { background: #f6f6f6; padding: 10px; white-space: pre-wrap; font-size: 0.85em; }
+    .muted { color: #666; font-size: 0.9em; }
+  </style>
+</head>
+<body>
+  <h2>Mode 3 CIA 사용자</h2>
+  <p class="muted">장치를 잃었거나 빼앗겼을 때, 계정 비밀번호만으로 내 계정을 폐기한다(설계 §6.5.1). 지갑 키는 필요 없다.
+    폐기하면 재발급은 즉시 막히고, 이미 발급된 credential 은 관리자가 게시한 뒤부터 거절된다. 복구는 관리자만 할 수 있다.</p>
+
+  <fieldset>
+    <legend>인증</legend>
+    <label>uid <input id="uid" value="12345" size="8" /></label>
+    <label style="margin-left:12px">비밀번호 <input id="pwd" type="password" size="24" /></label>
+  </fieldset>
+
+  <fieldset>
+    <legend>조작</legend>
+    <button id="revokeBtn">내 계정 폐기</button>
+  </fieldset>
+
+  <pre id="out">-</pre>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    $('revokeBtn').addEventListener('click', async () => {
+      const r = await fetch('/cia/account/self_revoke', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uid: $('uid').value.trim(), pwd: $('pwd').value }),
+      });
+      const b = await r.json().catch(() => null);
+      $('pwd').value = '';
+      $('out').textContent = `POST /cia/account/self_revoke → ${r.status}\n${JSON.stringify(b, null, 2)}`;
+    });
+  </script>
+</body>
+</html>

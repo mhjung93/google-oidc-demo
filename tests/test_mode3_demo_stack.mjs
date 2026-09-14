@@ -95,6 +95,24 @@ try {
     assert.equal(r.rp.PPID, PPID1);
   });
 
+  await t("4'. 사용자 자기 폐기(비밀번호) → 게시 → 지갑 403 → 관리자 복구 → PPID 동일", async () => {
+    // 관리자 시크릿 없이, 계정 비밀번호만으로(설계 §6.5.1). 8 번에서 발급받은 credential 이 살아 있다.
+    const r = await cia.post('/cia/account/self_revoke', { uid, pwd: 'password123' });
+    assert.equal(r.status, 200, j(r.body));
+    assert.equal(r.body.disabled, true);
+    assert.ok(r.body.inserted.length >= 1, '8 번의 credential 리프가 들어가야 한다');
+    assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
+    const denied = await loginViaRp();
+    assert.equal(denied.walletStatus, 403, j(denied));
+    assert.equal(denied.wallet.reason, 'account_disabled');
+    assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid, disabled: false })).status, 200);
+    const again = await loginViaRp();
+    assert.equal(again.walletStatus, 200, j(again));
+    assert.equal(again.wallet.issued, true);
+    assert.equal(again.rp.ok, true, j(again.rp));
+    assert.equal(again.rp.PPID, PPID1);
+  });
+
   await t('challenge 음성: 미발급 → 401, 재사용 → 401', async () => {
     const info = (await rp.get('/api/mode3/rp_info')).body;
     const { challenge } = (await rp.post('/api/mode3/challenge')).body;
@@ -138,7 +156,7 @@ try {
   });
 
   await t('페이지 서빙: 지갑 /, RP /, CIA /admin 이 text/html', async () => {
-    for (const [c, p, marker] of [[wallet, '/', 'Mode 3 지갑'], [rp, '/', 'Mode 3 로그인'], [cia, '/admin', 'CIA 관리자']]) {
+    for (const [c, p, marker] of [[wallet, '/', 'Mode 3 지갑'], [rp, '/', 'Mode 3 로그인'], [cia, '/admin', 'CIA 관리자'], [cia, '/account', 'CIA 사용자']]) {
       const r = await fetch(`${c.base}${p}`);
       assert.equal(r.status, 200, `${p}`);
       assert.match(r.headers.get('content-type') ?? '', /text\/html/);

@@ -169,6 +169,9 @@ app.use(express.json({ limit: '256kb' }));
 // 관리자 패널(스펙 §5). 페이지 하나만 허용 목록으로 내보낸다 — express.static 은 쓰지 않는다.
 app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_admin.html')));
 
+// 사용자 페이지(§6.5.1). 잃어버린 지갑이 아니라 어느 장치에서든 열 수 있어야 하므로 CIA 가 직접 낸다.
+app.get('/account', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_account.html')));
+
 app.get('/cia/public_keys', (req, res) => {
   res.json({ pk_CIA: S(ciaPub), ethAddress: ethWallet.address, ttlBlocks: TTL_BLOCKS, logAddress: LOG_ADDRESS });
 });
