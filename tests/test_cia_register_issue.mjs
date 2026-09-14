@@ -220,7 +220,7 @@ try {
     assert.equal((await cia.post('/cia/issue', body)).status, 200);
   });
 
-  await t('self_revoke: 체인이 죽어도 disabled 는 즉시 걸리고 리프 삽입은 미룬다', async () => {
+  await t('self_revoke: 체인이 죽어도 200 이고 disabled 가 걸리며 treeUpdated 필드가 없다', async () => {
     // 죽은 RPC 로 두 번째 격리 인스턴스를 띄운다 — 기동 시 root 대조는 RPC 실패를 건너뛰므로 기동 자체는 된다.
     const dead = await startIsolatedCia({ env: { CIA_RPC_URL: 'http://127.0.0.1:1' } });
     try {
@@ -231,6 +231,9 @@ try {
       const r = await dead.post('/cia/account/self_revoke', { uid: '12345', pwd: 'password123' });
       assert.equal(r.status, 200, JSON.stringify(r.body));
       assert.equal(r.body.disabled, true);
+      // treeUpdated 는 옛 판(체인이 죽으면 삽입을 미루는)의 필드다 — 만료 판정이 벽시계가 되면서
+      // 삽입 자체에 체인이 필요 없어져 사라졌다(설계 2026-09-14 §7, 기반 설계 §6.5.1 개정).
+      assert.equal(r.body.treeUpdated, undefined);
       // 이 uid 는 등록 직후 곧바로 self_revoke 됐다 — 이 dead 인스턴스에서 발급받은 credential 이
       // 아예 없으므로(체인이 죽어 있어 /cia/issue 도 503 이라 발급을 시도할 수도 없다) 넣을 리프가 없다.
       // 삽입 자체가 벽시계 기준이라 체인이 필요 없다는 것은 앞의 '비밀번호만으로 계정 전체 폐기' 케이스(라이브
@@ -238,7 +241,7 @@ try {
       assert.deepEqual(r.body.inserted, []);
       assert.equal((await dead.get('/cia/state')).body.pendingCount, 0);
 
-      // 발급은 disabled 검사가 headHeight() 보다 먼저다(cia.js /cia/issue) — 체인 없이도 403 이어야 한다.
+      // 발급은 disabled 검사가 chainid 허용 목록 확인보다 먼저다(cia.js /cia/issue) — 체인 없이도 403 이어야 한다.
       const issued = await dead.post('/cia/issue', {
         uid: '12345', C_pt: { x: '1', y: '1' }, proof: {}, sig_u: {}, chainid: '31337', nonce: '1',
       });

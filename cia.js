@@ -51,8 +51,9 @@ function loadOrCreateKeys() {
   ciaPrv = Buffer.from(keys.eddsaPrv, 'hex');
   ciaPub = eddsa.prv2pub(ciaPrv);
   const ethPrv = process.env.CIA_ETH_PRIVATE_KEY || keys.ethPrv;   // 테스트는 배포한 로그와 맞는 키를 주입한다
-  // ethers 의 250ms eth_blockNumber 캐시를 끈다(RP·지갑과 같이). 발급 창이 head+1 까지만 허용하므로
-  // 캐시 안에 블록이 2개 나오면 지갑의 최신 height 가 'stale' 로 거절된다.
+  // ethers 의 250ms eth_blockNumber 캐시를 끈다(RP·지갑과 같이). /cia/state 가 항상 최신 head 를 보여주게
+  // 하고, race 테스트의 eth_blockNumber 게이트가 결정적으로 걸리게(캐시가 있으면 chainAlive() 의 조회가
+  // 캐시에 합류해 게이트를 건너뛸 수 있다) 하는 데만 쓰인다 — 발급 경로는 더 이상 head 값 자체를 보지 않는다.
   ethWallet = new ethers.Wallet(ethPrv, new ethers.JsonRpcProvider(RPC_URL, undefined, { cacheTimeout: -1 }));
 }
 
@@ -122,7 +123,8 @@ async function loadState() {
   }
   state.nonces ??= {};
   publishedTree = await buildPublishedTree();
-  // 기동 시 대조. RPC 가 아직 안 떠 있으면 대조 없이 기동한다 — 발급은 headHeight() 가 503 을 내고,
+  // 기동 시 대조. RPC 가 아직 안 떠 있으면 대조 없이 기동한다 — 발급은 chainAlive() 가 503 을 내거나
+  // (CIA_CHAIN_IDS 도 없어 허용 목록이 비어 있으면) chainid 허용 목록 검사에서 503 을 내고,
   // 게시는 게시 직전 대조에서 다시 확인된다.
   if (LOG_ADDRESS) {
     let chain = null;
@@ -265,12 +267,15 @@ app.post('/cia/issue', async (req, res) => {
     const exptime = nowSec() + BigInt(TTL_SECONDS);
     const s = eddsa.signPoseidon(ciaPrv, F.e(await credMessage(C, exptime, BigInt(chainStr), nonceBig)));
     const leaf = await credLeaf(C);
-    // 위 await 들 사이에 /cia/revoke·self_revoke 가 끼어들 수 있다 — 폐기 직후의 발급이 살아남으면 트리에 없는
-    // 새 credential 이 TTL 동안 유효하다. 마지막 await 뒤, 기록 직전에 다시 확인한다. 끼어든 revoke 의 pruneExpired 가
-    // 목록 배열을 새로 만들었을 수 있어 state.issued[uid] 에 넣는다. nonce 는 성공했을 때만 기록한다 — 실패한 요청의
-    // nonce 를 태우면 지갑이 재시도할 때마다 새 nonce 를 써야 하고, 실패 응답을 재생 방지에 쓸 이유도 없다.
+    // 위 await 들 사이에 /cia/revoke·self_revoke 나 같은 (C_pt, 다른 nonce) 의 동시 요청이 끼어들 수 있다 —
+    // 폐기 직후의 발급이 살아남으면 트리에 없는 새 credential 이 TTL 동안 유효하고, 같은 C 가 두 번 서명되면
+    // 서로 다른 σ_CIA 두 개가 credential 하나를 가리킨다. 마지막 await 뒤, 기록 직전에 disabled·nonce·같은 C
+    // 셋을 전부 다시 확인한다. 끼어든 revoke 의 pruneExpired 가 목록 배열을 새로 만들었을 수 있어
+    // state.issued[uid] 에 넣는다. nonce 는 성공했을 때만 기록한다 — 실패한 요청의 nonce 를 태우면 지갑이
+    // 재시도할 때마다 새 nonce 를 써야 하고, 실패 응답을 재생 방지에 쓸 이유도 없다.
     if (acct.disabled) return res.status(403).json({ error: 'account disabled' });
     if ((state.nonces[uid] ??= []).includes(nonceStr)) return res.status(409).json({ error: 'nonce already used' });
+    if (pruneExpired(uid).some((e) => e.C === Cstr)) return res.status(409).json({ error: 'credential already issued for this C_pt' });
     (state.issued[uid] ??= []).push({ leaf: leaf.toString(), C: Cstr, exptime: exptime.toString() });
     state.nonces[uid].push(nonceStr);
     persist();

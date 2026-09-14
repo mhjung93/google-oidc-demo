@@ -1,12 +1,13 @@
 // /cia/issue 와 /cia/revoke 의 경합 — 격리 인스턴스 + :8545. (chain 그룹)
 //   node tests/test_cia_issue_race.mjs
 //
-// /cia/issue 는 disabled 를 검사한 뒤 head 를 RPC 로 읽는다. 그 await 동안 관리자가 계정을 폐기하면
-// 폐기 직후의 발급이 살아남아, 트리에 없는 새 credential 이 TTL 동안 유효하다. 결정적으로 재현하기
-// 위해 CIA 의 RPC 앞에 eth_blockNumber 응답을 붙잡는 게이트 프록시를 둔다 — 요청이 게이트에 닿은
-// 것을 Promise 로 알고, 게이트를 내린 뒤 revoke 를 끝까지 보내고 나서 응답을 풀어 준다. 벽시계 대기가 없다.
-// (CIA 의 provider 는 cacheTimeout:-1 이라 revoke 의 head 조회가 붙잡힌 issue 의 조회에 합류하지 않는다 —
-// 게이트가 내려간 뒤의 조회이므로 그대로 통과한다.)
+// /cia/issue 는 disabled·서명·π_issue·같은 C 를 검사한 뒤 기록 직전에 chainAlive() 로 eth_blockNumber 를
+// 한 번 불러 체인 가용성만 본다(값은 쓰지 않는다). 그 await 동안 관리자가 계정을 폐기하면 폐기 직후의
+// 발급이 살아남아, 트리에 없는 새 credential 이 TTL 동안 유효하다. 결정적으로 재현하기 위해 CIA 의 RPC
+// 앞에 eth_blockNumber 응답을 붙잡는 게이트 프록시를 둔다 — 요청이 게이트에 닿은 것을 Promise 로 알고,
+// 게이트를 내린 뒤 revoke 를 끝까지 보내고 나서 응답을 풀어 준다. 벽시계 대기가 없다.
+// (CIA 의 provider 는 cacheTimeout:-1 이라 revoke 의 headHeight() 조회가 붙잡힌 issue 의 chainAlive() 조회에
+// 합류하지 않는다 — 게이트가 내려간 뒤의 조회이므로 그대로 통과한다.)
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { ethers } from 'ethers';
@@ -47,7 +48,6 @@ const proxy = http.createServer(async (req, res) => {
 await new Promise((r) => proxy.listen(0, '127.0.0.1', r));
 const proxyUrl = `http://127.0.0.1:${proxy.address().port}`;
 
-const provider = new ethers.JsonRpcProvider(UPSTREAM, undefined, { cacheTimeout: -1 });
 const uid = 12345n, arid = 22222222222222222222n;
 const pk_i = BigInt(ethers.Wallet.createRandom().address);
 
@@ -67,7 +67,7 @@ try {
   await t('issue 가 체인 가용성을 확인하는 동안 계정이 폐기되면 발급하지 않는다 (403, 기록도 남지 않는다)', async () => {
     const body = await issueBody();
     hold = { seen: deferred(), released: deferred() };
-    const inflight = cia.post('/cia/issue', body);   // disabled 검사를 지나 headHeight() 에서 게이트에 붙잡힌다
+    const inflight = cia.post('/cia/issue', body);   // 검증을 지나 chainAlive() 의 eth_blockNumber 에서 게이트에 붙잡힌다
     await hold.seen.promise;
     const gate = hold;
     hold = null;                                      // 이후의 eth_blockNumber(revoke 의 것)는 그대로 통과
