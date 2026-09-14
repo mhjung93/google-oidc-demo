@@ -5,7 +5,7 @@ import { buildBabyjub, buildPoseidon } from 'circomlibjs';
 import { randomScalar, credCommit, PEDERSEN_GENERATORS, compressPoint, SCALAR_MAX } from '../lib/mode3_credential.js';
 import {
   DOMAIN_MODE3_ISSUE, randomZr, registrationCommit, proveIssuance, verifyIssuance,
-  serializeProof, parseProof, pointToStrings, pointFromStrings,
+  serializeProof, parseProof, pointToStrings, pointFromStrings, issueRequestMessage,
 } from '../lib/mode3_issuance.js';
 
 let failed = 0;
@@ -23,7 +23,8 @@ async function freshUser() {
   const r_u = randomScalar();
   const blind = randomScalar();
   const cm_u = await registrationCommit(s_u, r_u);
-  return { s_u, r_u, blind, cm_u };
+  const attrs = [19n, 410n, 0n, 0n];
+  return { s_u, r_u, blind, cm_u, attrs };
 }
 
 await t('도메인 태그는 "MODE3ISSUE" 빅엔디언이다', () => {
@@ -40,15 +41,15 @@ await t('randomZr 는 [0, r) 안이다', async () => {
 
 await t('양성: 올바른 witness 의 증명이 검증된다', async () => {
   const u = await freshUser();
-  const { C_pt, cm_u, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u });
+  const { C_pt, cm_u, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u, attrs: u.attrs });
   assert.equal(cm_u.x, u.cm_u.x); assert.equal(cm_u.y, u.cm_u.y);
   assert.equal(await verifyIssuance({ uid, C_pt, cm_u, proof }), true);
 });
 
 await t('C_pt 는 credCommit 과 같은 점이다 (회로가 여는 그 커밋)', async () => {
   const u = await freshUser();
-  const { C_pt } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u });
-  const { Cx, Cy, Cf } = await credCommit({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i });
+  const { C_pt } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u, attrs: u.attrs });
+  const { Cx, Cy, Cf } = await credCommit({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, attrs: u.attrs });
   assert.equal(C_pt.x, Cx); assert.equal(C_pt.y, Cy);
   assert.equal(await compressPoint(C_pt), Cf, 'CIA 가 C_pt 에서 유도하는 C 가 credCommit 의 Cf 와 같아야 한다');
 });
@@ -63,7 +64,7 @@ await t('음성: 등록된 cm_u 와 다른 s_u 로 만든 C_pt 는 거절된다 
 
 await t('음성: z_ru 를 바꾸면 거절된다 (두 번째 등식)', async () => {
   const u = await freshUser();
-  const { C_pt, cm_u, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u });
+  const { C_pt, cm_u, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u, attrs: u.attrs });
   const bj = await buildBabyjub();
   const bad = { ...proof, z_ru: (proof.z_ru + 1n) % bj.subOrder };
   assert.equal(await verifyIssuance({ uid, C_pt, cm_u, proof: bad }), false);
@@ -77,6 +78,7 @@ async function forgeMismatchedSu(u) {
   const r = bj.subOrder;
   const G = (name) => [bj.F.e(PEDERSEN_GENERATORS[name][0]), bj.F.e(PEDERSEN_GENERATORS[name][1])];
   const [G1, G2, G3, G4, H] = ['uid', 'arid', 's_u', 'pk_i', 'blind'].map(G);
+  const GA = ['attr0', 'attr1', 'attr2', 'attr3'].map(G);
   const msm = (terms) => terms.reduce((acc, [e, P]) => {
     const Q = bj.mulPointEscalar(P, e);
     return acc === null ? Q : bj.addPoint(acc, Q);
@@ -84,12 +86,12 @@ async function forgeMismatchedSu(u) {
   const toObj = (P) => ({ x: bj.F.toObject(P[0]), y: bj.F.toObject(P[1]) });
 
   const other_su = randomScalar();
-  const C_pt = toObj(msm([[uid, G1], [arid, G2], [other_su, G3], [pk_i, G4], [u.blind, H]]));
+  const C_pt = toObj(msm([[uid, G1], [arid, G2], [other_su, G3], [pk_i, G4], ...u.attrs.map((v, i) => [v, GA[i]]), [u.blind, H]]));
   const cm_u = u.cm_u; // 등록된 커밋 그대로 제시
 
   const a = {};
-  for (const k of ['arid', 'su', 'pki', 'blind', 'ru']) a[k] = await randomZr();
-  const T1 = toObj(msm([[a.arid, G2], [a.su, G3], [a.pki, G4], [a.blind, H]]));
+  for (const k of ['arid', 'su', 'pki', 'blind', 'ru', 'attr0', 'attr1', 'attr2', 'attr3']) a[k] = await randomZr();
+  const T1 = toObj(msm([[a.arid, G2], [a.su, G3], [a.pki, G4], [a.attr0, GA[0]], [a.attr1, GA[1]], [a.attr2, GA[2]], [a.attr3, GA[3]], [a.blind, H]]));
   const T2 = toObj(msm([[a.su, G3], [a.ru, H]]));
 
   const ps = await buildPoseidon();
@@ -102,13 +104,14 @@ async function forgeMismatchedSu(u) {
     T1, T2, c,
     z_arid: z(a.arid, arid), z_su: z(a.su, other_su), z_pki: z(a.pki, pk_i),
     z_blind: z(a.blind, u.blind), z_ru: z(a.ru, u.r_u),
+    z_attr: u.attrs.map((v, i) => z(a[`attr${i}`], v)),
   };
-  return { C_pt, cm_u, proof, G1, G2, G3, G4, H, bj };
+  return { C_pt, cm_u, proof, G1, G2, G3, G4, H, GA, bj };
 }
 
 await t('음성: 챌린지를 등록된 cm_u 로 맞춰도 s_u 가 다르면 두 번째 등식에서 거절된다 (Sybil 의 실제 방어선)', async () => {
   const u = await freshUser();
-  const { C_pt, cm_u, proof, G1, G2, G3, G4, H, bj } = await forgeMismatchedSu(u);
+  const { C_pt, cm_u, proof, G1, G2, G3, G4, H, GA, bj } = await forgeMismatchedSu(u);
 
   assert.equal(await verifyIssuance({ uid, C_pt, cm_u, proof }), false);
 
@@ -120,33 +123,34 @@ await t('음성: 챌린지를 등록된 cm_u 로 맞춰도 s_u 가 다르면 두
   const eqPt = (A, B) => bj.F.eq(A[0], B[0]) && bj.F.eq(A[1], B[1]);
 
   const Y1 = addP(fromObj(C_pt), negP(mulP(G1, uid)));
-  const lhs1 = addP(addP(addP(mulP(G2, proof.z_arid), mulP(G3, proof.z_su)), mulP(G4, proof.z_pki)), mulP(H, proof.z_blind));
+  let lhs1 = addP(addP(addP(mulP(G2, proof.z_arid), mulP(G3, proof.z_su)), mulP(G4, proof.z_pki)), mulP(H, proof.z_blind));
+  for (let i = 0; i < 4; i++) lhs1 = addP(lhs1, mulP(GA[i], proof.z_attr[i]));
   const rhs1 = addP(fromObj(proof.T1), mulP(Y1, proof.c));
   assert.ok(eqPt(lhs1, rhs1), 'eq1 은 통과해야 한다 (거절 원인이 eq2 임을 확인)');
 });
 
 await t('음성: 다른 uid 로 재생하면 거절된다 (Fiat-Shamir 가 uid 를 덮는다)', async () => {
   const u = await freshUser();
-  const { C_pt, cm_u, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u });
+  const { C_pt, cm_u, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u, attrs: u.attrs });
   assert.equal(await verifyIssuance({ uid: uid + 1n, C_pt, cm_u, proof }), false);
 });
 
 await t('음성: 응답 하나를 바꾸면 거절된다', async () => {
   const u = await freshUser();
-  const { C_pt, cm_u, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u });
+  const { C_pt, cm_u, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u, attrs: u.attrs });
   const bad = { ...proof, z_arid: (proof.z_arid + 1n) };
   assert.equal(await verifyIssuance({ uid, C_pt, cm_u, proof: bad }), false);
 });
 
 await t('음성: 곡선 밖의 점은 거절된다', async () => {
   const u = await freshUser();
-  const { C_pt, cm_u, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u });
+  const { C_pt, cm_u, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u, attrs: u.attrs });
   assert.equal(await verifyIssuance({ uid, C_pt: { x: 1n, y: 1n }, cm_u, proof }), false);
 });
 
 await t('음성: 좌표가 p 이상인 비정규 인코딩은 거절된다', async () => {
   const u = await freshUser();
-  const { C_pt, cm_u, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u });
+  const { C_pt, cm_u, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u, attrs: u.attrs });
   const bj = await buildBabyjub();
   const nonCanonical = { x: C_pt.x + bj.F.p, y: C_pt.y };
   assert.equal(await verifyIssuance({ uid, C_pt: nonCanonical, cm_u, proof }), false);
@@ -160,13 +164,35 @@ await t('음성: uid·arid 가 2^250 이상이면 발급 요청을 만들지 않
 
 await t('음성: CIA 쪽 검증도 uid 가 2^250 이상이면 거절한다', async () => {
   const u = await freshUser();
-  const { C_pt, cm_u, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u });
+  const { C_pt, cm_u, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u, attrs: u.attrs });
   assert.equal(await verifyIssuance({ uid: SCALAR_MAX, C_pt, cm_u, proof }), false);
+});
+
+await t('음성: attr 하나를 바꿔 만든 C_pt 에 원래 증명을 붙이면 거절된다 (속성이 표현에 묶인다)', async () => {
+  const u = await freshUser();
+  const { cm_u, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u, attrs: u.attrs });
+  const other = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u, attrs: [20n, 410n, 0n, 0n] });
+  assert.equal(await verifyIssuance({ uid, C_pt: other.C_pt, cm_u, proof }), false);
+});
+
+await t('음성: z_attr 하나를 바꾸면 거절된다', async () => {
+  const u = await freshUser();
+  const { C_pt, cm_u, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u, attrs: u.attrs });
+  const bad = { ...proof, z_attr: proof.z_attr.map((z, i) => (i === 2 ? z + 1n : z)) };
+  assert.equal(await verifyIssuance({ uid, C_pt, cm_u, proof: bad }), false);
+});
+
+await t('issueRequestMessage 는 (C_pt, chainid, nonce) 를 덮는다 — 하나라도 다르면 다른 메시지', async () => {
+  const C_pt = { x: 1n, y: 2n };
+  const m = await issueRequestMessage(C_pt, 31337n, 7n);
+  assert.notEqual(m, await issueRequestMessage(C_pt, 1n, 7n));
+  assert.notEqual(m, await issueRequestMessage(C_pt, 31337n, 8n));
+  assert.notEqual(m, await issueRequestMessage({ x: 1n, y: 3n }, 31337n, 7n));
 });
 
 await t('직렬화 왕복이 값을 보존한다', async () => {
   const u = await freshUser();
-  const { C_pt, cm_u, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u });
+  const { C_pt, cm_u, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u, attrs: u.attrs });
   const wire = JSON.parse(JSON.stringify({ C_pt: pointToStrings(C_pt), cm_u: pointToStrings(cm_u), proof: serializeProof(proof) }));
   assert.equal(await verifyIssuance({ uid, C_pt: pointFromStrings(wire.C_pt), cm_u: pointFromStrings(wire.cm_u), proof: parseProof(wire.proof) }), true);
 });
