@@ -387,6 +387,7 @@ poseidon = await buildPoseidon();
 F = poseidon.F;
 loadOrCreateKeys();
 await loadState();
-app.listen(PORT, () => {
-  console.log(`Mode 3 CIA running at http://localhost:${PORT} (log=${LOG_ADDRESS ?? 'none'}, ttl=${TTL_BLOCKS})`);
+// RP·지갑 에이전트와 같이 루프백에만 묶는다 — 관리자·사용자 페이지와 발급 경로를 LAN 에 노출하지 않는다.
+app.listen(PORT, '127.0.0.1', () => {
+  console.log(`Mode 3 CIA running at http://127.0.0.1:${PORT} (log=${LOG_ADDRESS ?? 'none'}, ttl=${TTL_BLOCKS})`);
 });
