@@ -259,8 +259,10 @@ app.post('/cia/issue', async (req, res) => {
 // 사용자 자기 폐기(/cia/account/self_revoke, §6.5.1)가 같은 처리를 탄다 — 다른 것은 "누가 개시하느냐"뿐이다.
 // tree.insert 는 이미 있는 리프에 false 를 돌려주므로 두 번 불러도 새 리프가 들어가지 않는다(멱등).
 async function revokeAccount(uid, head) {
+  const acct = state.accounts[uid];
+  if (!acct) throw Object.assign(new Error('unknown account'), { status: 404 });
   const targets = pruneExpired(uid, head).map((e) => e.leaf);
-  state.accounts[uid].disabled = true;
+  acct.disabled = true;
   const inserted = [];
   for (const l of targets) {
     if (await tree.insert(BigInt(l))) { state.revoked.push(l); state.pending.push(l); inserted.push(l); }
@@ -349,17 +351,27 @@ app.post('/cia/account/set_disabled', requireAdmin, (req, res) => {
 
 // §6.5.1 사용자 개시 폐기. 인증은 계정 비밀번호다 — 지갑 키가 아니다. 장치를 잃은 사용자에게 sk_u 는 없고
 // 공격자에게는 있으므로, 인증 수단은 장치 밖에 있어야 한다. 처리는 관리자의 계정 폐기와 같다.
-// 등록(§6.1)과 같은 순서로 검사한다: 형식 → 비밀번호 → 등록 여부. 비밀번호가 틀리면 등록 여부를 알려주지 않는다.
+// 형식 → 비밀번호 → 등록 상태 순으로 검사한다. 비밀번호가 틀리면 등록 여부를 알려주지 않는다.
 app.post('/cia/account/self_revoke', async (req, res) => {
   try {
     const { uid, pwd } = req.body ?? {};
     if (!isDec(uid) || typeof pwd !== 'string') return res.status(400).json({ error: 'uid, pwd required' });
     const acct = Object.values(DEMO_ACCOUNTS).find((a) => a.uid === uid);
     if (!acct || !secretMatches(pwd, acct.password)) return res.status(401).json({ error: 'invalid credentials' });
-    if (!state.accounts[uid]) return res.status(404).json({ error: 'not registered' });
-    const head = await headHeight();
+    if (!state.accounts[uid]) return res.status(404).json({ error: 'unknown account' });
+    // disabled 는 인증만 통과하면 즉시 건다(설계 §6.5.1) — 재발급 차단은 트리·게시와 분리된 별개의 효력이다.
+    // 아래 headHeight() 가 체인 단절로 실패해도 이 저장은 이미 끝나 있다.
+    state.accounts[uid].disabled = true;
+    persist();
+    let head = null;
+    try { head = await headHeight(); } catch (e) { if (e.status !== 503) throw e; }
+    if (head === null) {
+      // 체인이 죽은 동안은 게시도 못 하므로 리프를 지금 넣어도 효력이 없다 — 삽입만 미룬다.
+      // 체인이 돌아온 뒤 같은 요청을 다시 보내면 tree.insert 의 멱등성으로 리프가 들어간다.
+      return res.json({ inserted: [], root: tree.getRoot().toString(), pending: state.pending.length, disabled: true, treeUpdated: false });
+    }
     const out = await revokeAccount(uid, head);
-    res.json({ ...out, disabled: true });
+    res.json({ ...out, disabled: true, treeUpdated: true });
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 

@@ -219,6 +219,31 @@ try {
     assert.equal((await cia.post('/cia/issue', body)).status, 200);
   });
 
+  await t('self_revoke: 체인이 죽어도 disabled 는 즉시 걸리고 리프 삽입은 미룬다', async () => {
+    // 죽은 RPC 로 두 번째 격리 인스턴스를 띄운다 — 기동 시 root 대조는 RPC 실패를 건너뛰므로 기동 자체는 된다.
+    const dead = await startIsolatedCia({ env: { CIA_RPC_URL: 'http://127.0.0.1:1' } });
+    try {
+      const cm_u = await registrationCommit(randomScalar(), randomScalar());
+      const reg = await dead.post('/cia/register', { uid: '12345', pwd: 'password123', cm_u: pointToStrings(cm_u) });
+      assert.equal(reg.status, 201, JSON.stringify(reg.body));
+
+      const r = await dead.post('/cia/account/self_revoke', { uid: '12345', pwd: 'password123' });
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.equal(r.body.disabled, true);
+      assert.equal(r.body.treeUpdated, false);
+      assert.deepEqual(r.body.inserted, []);
+      assert.equal((await dead.get('/cia/state')).body.pendingCount, 0);
+
+      // 발급은 disabled 검사가 headHeight() 보다 먼저다(cia.js /cia/issue) — 체인 없이도 403 이어야 한다.
+      const issued = await dead.post('/cia/issue', {
+        uid: '12345', C_pt: { x: '1', y: '1' }, proof: {}, sig_u: {}, height: '0',
+      });
+      assert.equal(issued.status, 403, JSON.stringify(issued.body));
+    } finally {
+      await dead.stop();
+    }
+  });
+
   await t('revoke(credential): 이 uid 에 발급되지 않은 리프는 404 이고 트리에 들어가지 않는다', async () => {
     // 폐기는 append-only 라 오타 하나가 영구히 남는다 — 그 uid 의 미만료 발급 목록에 있는 리프만 받는다.
     const before = (await cia.get('/cia/state')).body.leafCount;
@@ -242,7 +267,7 @@ try {
     // 앞 케이스들이 남긴 pending 을 먼저 비운다 — 아래의 직접 게시는 "CIA 가 올렸을 것"과 똑같이 pending 전부를
     // 실어야 하는데, 여기서는 이 케이스가 폐기한 리프 하나만 싣기 때문이다.
     assert.equal((await cia.adminPost('/cia/publish')).status, 200);
-    // 새 credential 을 하나 발급해서 폐기한다 (계정은 앞의 'set_disabled false' 케이스에서 재활성화됨)
+    // 새 credential 을 하나 발급해서 폐기한다 (계정은 앞의 self_revoke 멱등 케이스 끝에서 재활성화됨)
     const { body: issueBody } = await issueRequest(user);
     const issued = await cia.post('/cia/issue', issueBody);
     assert.equal(issued.status, 200, JSON.stringify(issued.body));

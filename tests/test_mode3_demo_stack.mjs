@@ -102,6 +102,10 @@ try {
     assert.equal(r.body.disabled, true);
     assert.ok(r.body.inserted.length >= 1, '8 번의 credential 리프가 들어가야 한다');
     assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
+    const stale = await loginViaRp({ skipSync: true });
+    assert.equal(stale.walletStatus, 200, j(stale));
+    assert.equal(stale.rp.ok, false);
+    assert.equal(stale.rp.reason, 'stale_root');
     const denied = await loginViaRp();
     assert.equal(denied.walletStatus, 403, j(denied));
     assert.equal(denied.wallet.reason, 'account_disabled');

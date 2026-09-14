@@ -33,14 +33,20 @@
   <script>
     const $ = (id) => document.getElementById(id);
     $('revokeBtn').addEventListener('click', async () => {
-      const r = await fetch('/cia/account/self_revoke', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uid: $('uid').value.trim(), pwd: $('pwd').value }),
-      });
-      const b = await r.json().catch(() => null);
-      $('pwd').value = '';
-      $('out').textContent = `POST /cia/account/self_revoke → ${r.status}\n${JSON.stringify(b, null, 2)}`;
+      try {
+        const r = await fetch('/cia/account/self_revoke', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uid: $('uid').value.trim(), pwd: $('pwd').value }),
+        });
+        const b = await r.json().catch(() => null);
+        $('out').textContent = `POST /cia/account/self_revoke → ${r.status}\n${JSON.stringify(b, null, 2)}`;
+      } catch (e) {
+        // 네트워크 오류(CIA 가 안 떠 있는 등)도 화면에 보여야 사용자가 재시도 여부를 판단할 수 있다.
+        $('out').textContent = `POST /cia/account/self_revoke → 네트워크 오류\n${e.message}`;
+      } finally {
+        $('pwd').value = '';
+      }
     });
   </script>
 </body>
