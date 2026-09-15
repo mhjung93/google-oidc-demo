@@ -10,6 +10,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { credLeaf, createRevocationTree, MODE3_TREE_DEPTH } from '../lib/mode3_revocation.js';
 import { buildValidInput } from './helpers/mode3_fixture.mjs';
+import { ppid } from '../lib/mode3_credential.js';
 
 const ROOT_DIR = fileURLToPath(new URL('..', import.meta.url));
 // build/mode3 바로 아래가 아니라 하위 디렉터리에 컴파일한다 — 지갑이 증명에 쓰는 build/mode3/pi_cred_js/pi_cred.wasm
@@ -66,6 +67,17 @@ await t('양성: 정상 credential의 witness가 계산된다', async () => {
   const w = await witness(valid);
   assert.ok(w.length > 0);
   assert.equal(valid.pathElements.length, MODE3_TREE_DEPTH);
+});
+
+await t('PPID 는 chainid 를 덮는다 — 같은 uid·s_u·arid 라도 체인이 다르면 가명이 다르고, 옛 가명은 거부된다', async () => {
+  // 체인 간 unlinkability(발표 자료 6장의 H(ID, salt, chain, rid)). chainid 는 서명 메시지에도 들어가므로
+  // 서명을 다시 만들지 않고는 chainid 만 바꿔 통과시킬 수 없다 — 여기서는 JS 유도값이 체인마다 다름과,
+  // 다른 체인용 PPID 를 그대로 내면 회로가 거부함을 본다.
+  const a = await ppid({ uid: BigInt(valid.uid), arid: BigInt(valid.arid), s_u: BigInt(valid.s_u), chainid: BigInt(valid.chainid) });
+  const b = await ppid({ uid: BigInt(valid.uid), arid: BigInt(valid.arid), s_u: BigInt(valid.s_u), chainid: BigInt(valid.chainid) + 1n });
+  assert.equal(a.toString(), valid.PPID, 'JS ppid 가 픽스처의 PPID 와 같아야 한다');
+  assert.notEqual(a, b);
+  await assert.rejects(() => witness({ ...valid, PPID: b.toString() }), /Assert Failed/);
 });
 
 await t('음성: PPID가 다르면 거부된다', async () => {

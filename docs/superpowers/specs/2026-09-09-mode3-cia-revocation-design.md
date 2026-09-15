@@ -165,7 +165,8 @@ RP에 로그인했다"를 알아낼 수 있다. 두 값이 정반대 방향을 �
 | `blind` | — (Mode 3 신규) | 커밋 블라인딩 |
 
 **`PPID`의 구조는 Mode 2와 동일하다** — `Poseidon(uid, arid, s_u)`는 Mode 2의
-`Poseidon(uid, rid, salt)`와 같은 것이다. §10의 6번 정정은 대화 중 제안했던 중간 설계
+`Poseidon(uid, rid, salt)`와 같은 것이다. (2026-09-15 개정으로 더 이상 동일하지 않다 — `chainid` 가
+들어가 `Poseidon(uid, s_u, chainid, arid)` 가 되었다. `2026-09-14-mode3-attribute-credential-design.md` §3.) §10의 6번 정정은 대화 중 제안했던 중간 설계
 (`H(uid, arid)`)에 대한 것이며, **Mode 2 구현에는 그 결함이 없다.**
 
 ### 4.2 각 항이 하는 일

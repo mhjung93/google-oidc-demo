@@ -27,7 +27,7 @@ export async function buildValidInput() {
   // 과 같은 상한, lib/mode3_credential.js 의 SCALAR_MAX). 새 난수가 필요하면
   // randomScalar()를 쓴다 — 전체 필드 난수는 92% 확률로 이 상한을 넘어 거부된다.
   const { Cf: C } = await credCommit({ uid, arid, s_u, blind, pk_i, attrs });
-  const PPID = await computePpid({ uid, arid, s_u });
+  const PPID = await computePpid({ uid, arid, s_u, chainid });
   const msg = await credMessage(C, exptime, chainid, nonce);
 
   // CIA 서명키. 테스트 고정값이며 실제 키가 아니다.

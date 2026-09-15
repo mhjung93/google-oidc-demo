@@ -20,8 +20,9 @@
 | 발급 재생 방지 | `sk_u` 서명이 덮는 `height` 창 `[head−30, head+1]` | `sk_u` 서명이 덮는 사용자 nonce, CIA 가 `(uid, nonce)` 영구 보관 |
 | 체인 식별 | 없음 | `chainid` — 사용자가 제시, CIA 허용 목록 대조, RP 가 자기 체인과 대조 |
 | 회로 공개 입력 | `[PPID, arid, pk_i, max_height, revRoot, pk_CIA_x, pk_CIA_y]` | `[PPID, arid, pk_i, exptime, chainid, revRoot, pk_CIA_x, pk_CIA_y]` |
+| 가명 `PPID` | `Poseidon(uid, arid, s_u)` | `Poseidon(uid, s_u, chainid, arid)` — 체인 간 unlinkability (2026-09-15 추가) |
 
-바뀌지 않는 것: PPID 유도, 폐기 리프 `H(C)`, 트리·게시·root 검사, 등록 프로토콜, `sk_i` 로 RP
+바뀌지 않는 것: 폐기 리프 `H(C)`, 트리·게시·root 검사, 등록 프로토콜, `sk_i` 로 RP
 challenge 에 서명하는 세션 바인딩, credential 캐시·재사용 규칙(§8.4).
 
 **목적.** 사용자가 CIA 에게 보이지 않는 속성을 credential 에 담아 두고, 다음 단계에서 RP 에 속성
@@ -50,7 +51,7 @@ C    = Poseidon(C_pt.x, C_pt.y)
 credential = (C, exptime, chainid, nonce, σ_CIA)
 σ_CIA = EdDSA-Poseidon.Sign(sk_CIA, Poseidon(DOMAIN_MODE3_CRED_V2, C, exptime, chainid, nonce))
 폐기 리프 = mask₂₅₂(Poseidon(TAG_MODE3_CRED, C))                       ← 변경 없음
-PPID = Poseidon(uid, arid, s_u)                                        ← 변경 없음
+PPID = Poseidon(uid, s_u, chainid, arid)                               ← chainid 추가 (2026-09-15)
 ```
 
 - 생성원 `G₁..G₈, H` 는 circomlib `pedersen.circom` 의 NUMS 점 `BASE[0..8]` 이다. 기존 다섯 개
@@ -62,6 +63,11 @@ PPID = Poseidon(uid, arid, s_u)                                        ← 변�
   옛 회로에 재생할 수 없게 한다.
 - `exptime` 은 Unix 초. `chainid` 는 폐기 체인(`RevocationLog` 가 있는 체인)의 chain id. `nonce` 는 사용자
   무작위 `[0, 2²⁵⁰)`.
+- **`PPID` 가 `chainid` 를 덮는다(2026-09-15).** 같은 사용자가 같은 RP 에 다른 체인으로 로그인하면 가명이 달라야
+  한다 — 그렇지 않으면 두 체인의 RP 로그를 맞대어 동일인임을 특정할 수 있다(발표 자료 6장의 `H(ID, salt, chain, rid)`;
+  인자 순서도 그 표기를 글자 단위로 따른다). `chainid` 는 이미 서명 메시지와 회로 공개 입력에 있으므로 비용은 Poseidon
+  입력 1개다. 서명과 가명이 같은 `chainid` 신호를 쓰므로 둘이 어긋날 수 없다. 이로써 Mode 2 의 `Poseidon(uid, rid, salt)`
+  와 같은 구조라는 기반 설계 §4.1 의 서술은 더 이상 성립하지 않는다.
 - **`exptime`·`chainid`·`nonce` 는 `C` 밖에서 서명된다.** 셋 다 CIA 가 값을 확인해야 하는 것들이라
   커밋 안에 숨기면 안 된다(기반 설계 §4.1 의 `max_height` 논거와 같다).
 
@@ -128,7 +134,7 @@ PPID = Poseidon(uid, arid, s_u)                                        ← 변�
 증명 내용
   ① EdDSA-Poseidon.Verify(pk_CIA, Poseidon(DOMAIN_MODE3_CRED_V2, C, exptime, chainid, nonce), σ_CIA) = 1
   ② C_pt = Commit(uid, arid, s_u, pk_i, attr₀..₃, blind)      ← 개봉. arid·pk_i 는 공개 입력과 일치
-  ③ PPID = Poseidon(uid, arid, s_u)
+  ③ PPID = Poseidon(uid, s_u, chainid, arid)                      ← chainid 는 ① 과 같은 공개 입력
   ④ mask₂₅₂(Poseidon(TAG_MODE3_CRED, C)) ∉ IMT(revRoot)
 ```
 

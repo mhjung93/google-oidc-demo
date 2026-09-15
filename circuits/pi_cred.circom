@@ -13,7 +13,7 @@ include "lib/mode3_commit.circom";
 // 네 가지를 함께 증명한다. 하나라도 빠지면 뚫린다:
 //   ① CIA가 (C, exptime, chainid, nonce)에 서명했다 — 없으면 아무나 credential을 만든다
 //   ② C 안에 이 pk_i가 있다                    — 없으면 남의 π를 주워 자기 키로 서명해 완전 사칭
-//   ③ PPID = Poseidon(uid, arid, s_u)          — 없으면 지갑 주소를 특정할 수 없다
+//   ③ PPID = Poseidon(uid, s_u, chainid, arid) — 없으면 지갑 주소를 특정할 수 없다
 //   ④ H(C)가 폐기 트리에 없다                   — 없으면 폐기가 무의미
 //
 //   attrs[4] 는 커밋에만 실린다 — CIA 는 값을 모르고(설계 2026-09-14 §2) 이 회로는 술어를 검증하지 않는다.
@@ -106,12 +106,15 @@ template PiCred(depth) {
     sigVerifier.M <== msgHasher.out;
 
     // ---- ③ PPID 유도 ----
-    // Mode 2 pi_ppid.circom 의 Poseidon(uid, rid, salt) 와 같은 구조다
-    // (arid = rid, s_u = salt).
-    component ppidHasher = Poseidon(3);
+    // PPID = Poseidon(uid, s_u, chainid, arid) — 발표 자료의 H(ID, salt, chain, rid) 순서.
+    // chainid 는 서명 메시지에도 들어가는 같은 공개 입력이라, 서명이 보증하는 체인과 가명의 체인이
+    // 어긋날 수 없다. 같은 사용자·같은 RP 라도 체인이 다르면 가명이 달라진다(2026-09-15).
+    // Mode 2 pi_ppid.circom 의 Poseidon(uid, rid, salt) 와는 더 이상 같은 구조가 아니다.
+    component ppidHasher = Poseidon(4);
     ppidHasher.inputs[0] <== uid;
-    ppidHasher.inputs[1] <== arid;
-    ppidHasher.inputs[2] <== s_u;
+    ppidHasher.inputs[1] <== s_u;
+    ppidHasher.inputs[2] <== chainid;
+    ppidHasher.inputs[3] <== arid;
     PPID === ppidHasher.out;
 
     // ---- ④ 폐기 비멤버십 ----

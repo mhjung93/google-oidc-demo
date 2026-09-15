@@ -140,5 +140,24 @@ await t('a: 캐시가 10분 안이면 RPC 가 죽어도 캐시로 검증한다',
   assert.deepEqual(await rp2.verifyLogin(L), { ok: false, reason: 'chain_unavailable' }, '11분이면 거절');
 });
 
+await t('같은 사용자·같은 RP 라도 chainid 가 다르면 PPID 가 다르다 (체인 간 unlinkability)', async () => {
+  // 등록값(s_u)을 공유하는 두 로그인을 체인 31337 과 1 로 만든다. 두 번째는 이 RP(31337)에서 wrong_chain 이지만,
+  // 여기서 보는 것은 공개 입력의 PPID 자체가 다르다는 사실이다 — 체인 1 의 RP 가 본 가명으로 체인 31337 의
+  // 사용자를 특정할 수 없다.
+  const reg = await createRegistration();
+  const sk_u = Buffer.alloc(32, 3).toString('hex');
+  const attrs = [0n, 0n, 0n, 0n];
+  const ppids = [];
+  for (const chainid of [31337n, 1n]) {
+    const session = createSessionKey();
+    const req = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid, attrs });
+    const cred = await issueWith(CIA, pointFromStrings(req.body.C_pt), req.secrets.nonce, 3600n, chainid);
+    const { tree } = await syncRevocationTree(provider, logAddress);
+    const { publicSignals } = await buildCredentialProof({ uid, arid, s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs, credential: cred, pk_CIA: CIA.pub, tree });
+    ppids.push(BigInt(publicSignals[0]));
+  }
+  assert.notEqual(ppids[0], ppids[1]);
+});
+
 provider.destroy();
 process.exit(failed === 0 ? 0 : 1);
