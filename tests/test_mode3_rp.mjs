@@ -7,7 +7,7 @@ import { ethers } from 'ethers';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import { getProvider, fundAddress, deployRevocationLog, signRootPublication, rootToBytes32 } from './helpers/mode3_chain.mjs';
 import { credLeaf, createRevocationTree } from '../lib/mode3_revocation.js';
-import { credMessage, compressPoint } from '../lib/mode3_credential.js';
+import { credMessage, compressPoint, randomScalar } from '../lib/mode3_credential.js';
 import { pointFromStrings } from '../lib/mode3_issuance.js';
 import { createRegistration, createSessionKey, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, VKEY_PATH } from '../lib/mode3_wallet.js';
 import { createRpVerifier } from '../lib/mode3_rp.js';
@@ -32,11 +32,11 @@ const CIA = keyOf(Buffer.alloc(32, 9));
 const ATTACKER = keyOf(Buffer.alloc(32, 66));
 const uid = 12345n, arid = 22222222222222222222n, otherArid = 33333333333333333333n;
 
-async function issueWith(key, C_pt, nonce, ttlSec = 3600n, chainid = 31337n) {
+async function issueWith(key, C_pt, r_s, ttlSec = 3600n, chainid = 31337n) {
   const C = await compressPoint(C_pt);
   const exptime = BigInt(Math.floor(Date.now() / 1000)) + ttlSec;
-  const s = eddsa.signPoseidon(key.prv, F.e(await credMessage(C, exptime, chainid, nonce)));
-  return { C: C.toString(), exptime: exptime.toString(), chainid: chainid.toString(), nonce: nonce.toString(), sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() } };
+  const s = eddsa.signPoseidon(key.prv, F.e(await credMessage(C, exptime, chainid, r_s)));
+  return { C: C.toString(), exptime: exptime.toString(), chainid: chainid.toString(), r_s: r_s.toString(), sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() } };
 }
 async function publish(leavesBig) {
   const { tree } = await syncRevocationTree(provider, logAddress);
@@ -48,12 +48,12 @@ async function makeLogin({ key = CIA, useArid = arid, ttlSec = 3600n, chainid = 
   const reg = await createRegistration();
   const session = createSessionKey();
   const attrs = [19n, 410n, 0n, 0n];
-  const req = await buildIssueRequest({ uid, arid: useArid, s_u: reg.s_u, r_u: reg.r_u, sk_u: Buffer.alloc(32, 3).toString('hex'), session, chainid, attrs });
-  const cred = await issueWith(key, pointFromStrings(req.body.C_pt), req.secrets.nonce, ttlSec, chainid);
+  const r_s = randomScalar();
+  const req = await buildIssueRequest({ uid, arid: useArid, s_u: reg.s_u, r_u: reg.r_u, sk_u: Buffer.alloc(32, 3).toString('hex'), session, chainid, attrs, r_s });
+  const cred = await issueWith(key, pointFromStrings(req.body.C_pt), r_s, ttlSec, chainid);
   const { tree } = await syncRevocationTree(provider, logAddress);
   const { proof, publicSignals } = await buildCredentialProof({ uid, arid: useArid, s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs, credential: cred, pk_CIA: key.pub, tree });
-  const challenge = 'rp-challenge-' + Math.random();
-  return { proof, publicSignals, challenge, sig: await signChallenge(session.wallet, challenge), session, cred, reg };
+  return { proof, publicSignals, r_s, sig: await signChallenge(session.wallet, r_s.toString()), session, cred, reg };
 }
 
 const rp = createRpVerifier({ provider, logAddress, vkey, pkCIA: CIA.pub, arid, chainId: 31337n });
@@ -74,13 +74,23 @@ await t('음성 d: 공격자가 자기 CIA 키로 서명한 credential 은 untru
 
 await t('음성 f: 챌린지 서명이 다른 키면 bad_signature', async () => {
   const L = await makeLogin();
-  L.sig = await signChallenge(ethers.Wallet.createRandom(), L.challenge);
+  L.sig = await signChallenge(ethers.Wallet.createRandom(), L.r_s.toString());
   assert.deepEqual(await rp.verifyLogin(L), { ok: false, reason: 'bad_signature' });
 });
 
-await t('음성 f: 다른 챌린지에 대한 서명 재생은 bad_signature', async () => {
+await t('음성 f: 다른 r_s 위의 서명을 붙이면 bad_signature', async () => {
   const L = await makeLogin();
-  assert.deepEqual(await rp.verifyLogin({ ...L, challenge: 'other' }), { ok: false, reason: 'bad_signature' });
+  const sig = await signChallenge(L.session.wallet, (L.r_s + 1n).toString());
+  assert.deepEqual(await rp.verifyLogin({ ...L, sig }), { ok: false, reason: 'bad_signature' });
+});
+
+await t('양성: verifyLogin 이 r_s·exptime·root 를 돌려준다 (서버가 세션을 만들 재료)', async () => {
+  const L = await makeLogin();
+  const r = await rp.verifyLogin(L);
+  assert.equal(r.ok, true);
+  assert.equal(r.r_s, L.r_s);
+  assert.equal(r.exptime, BigInt(L.cred.exptime));
+  assert.equal(r.root, BigInt(L.publicSignals[6]));
 });
 
 await t('음성 arid: 다른 RP 용 credential 은 wrong_arid', async () => {
@@ -150,8 +160,9 @@ await t('같은 사용자·같은 RP 라도 chainid 가 다르면 PPID 가 다�
   const ppids = [];
   for (const chainid of [31337n, 1n]) {
     const session = createSessionKey();
-    const req = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid, attrs });
-    const cred = await issueWith(CIA, pointFromStrings(req.body.C_pt), req.secrets.nonce, 3600n, chainid);
+    const r_s = randomScalar();
+    const req = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid, attrs, r_s });
+    const cred = await issueWith(CIA, pointFromStrings(req.body.C_pt), r_s, 3600n, chainid);
     const { tree } = await syncRevocationTree(provider, logAddress);
     const { publicSignals } = await buildCredentialProof({ uid, arid, s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs, credential: cred, pk_CIA: CIA.pub, tree });
     ppids.push(BigInt(publicSignals[0]));

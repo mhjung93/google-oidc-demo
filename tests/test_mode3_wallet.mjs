@@ -7,11 +7,12 @@ import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import * as snarkjs from 'snarkjs';
 import { getProvider, fundAddress, deployRevocationLog, signRootPublication, rootToBytes32 } from './helpers/mode3_chain.mjs';
 import { createRevocationTree, credLeaf } from '../lib/mode3_revocation.js';
-import { credMessage, compressPoint } from '../lib/mode3_credential.js';
+import { credMessage, compressPoint, randomScalar } from '../lib/mode3_credential.js';
 import {
   createRegistration, createSessionKey, buildIssueRequest, syncRevocationTree,
-  buildCredentialProof, ProofCache, signChallenge, ZKEY_PATH, VKEY_PATH,
+  buildCredentialProof, ProofCache, signChallenge, signSessionRequest, ZKEY_PATH, VKEY_PATH,
 } from '../lib/mode3_wallet.js';
+import { verifySessionRequest } from '../lib/mode3_rp.js';
 import { pointFromStrings } from '../lib/mode3_issuance.js';
 
 let failed = 0;
@@ -34,11 +35,11 @@ const pk_CIA = { x: F.toObject(ciaPub[0]), y: F.toObject(ciaPub[1]) };
 const uid = 12345n, arid = 22222222222222222222n;
 
 // 서버 없이 CIA 역할을 로컬에서 흉내낸다 (서명만)
-async function localIssue(C_pt, chainid, nonce, ttlSec = 3600n) {
+async function localIssue(C_pt, chainid, r_s, ttlSec = 3600n) {
   const C = await compressPoint(C_pt);
   const exptime = BigInt(Math.floor(Date.now() / 1000)) + ttlSec;
-  const s = eddsa.signPoseidon(ciaPrv, F.e(await credMessage(C, exptime, chainid, nonce)));
-  return { C: C.toString(), exptime: exptime.toString(), chainid: chainid.toString(), nonce: nonce.toString(), sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() } };
+  const s = eddsa.signPoseidon(ciaPrv, F.e(await credMessage(C, exptime, chainid, r_s)));
+  return { C: C.toString(), exptime: exptime.toString(), chainid: chainid.toString(), r_s: r_s.toString(), sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() } };
 }
 async function publish(leavesBig) {
   const tree = await createRevocationTree();
@@ -71,18 +72,20 @@ await t('발급 요청 → 로컬 CIA 서명 → 증명 생성 → vkey 로 검�
   reg = await createRegistration();
   session = createSessionKey();
   const sk_u = Buffer.alloc(32, 3).toString('hex');
-  req = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, attrs: [19n, 410n, 0n, 0n] });
-  cred = await localIssue(pointFromStrings(req.body.C_pt), 31337n, req.secrets.nonce);
+  const r_s = randomScalar();
+  req = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, attrs: [19n, 410n, 0n, 0n], r_s });
+  cred = await localIssue(pointFromStrings(req.body.C_pt), 31337n, r_s);
   ({ tree: tree0 } = await syncRevocationTree(provider, logAddress));
   const { proof, publicSignals, revRoot } = await buildCredentialProof({
     uid, arid, s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs: [19n, 410n, 0n, 0n], credential: cred, pk_CIA, tree: tree0,
   });
   assert.equal(revRoot, tree0.getRoot());
-  assert.equal(publicSignals.length, 8);
+  assert.equal(publicSignals.length, 9);
   assert.equal(BigInt(publicSignals[2]), session.pk_i);
   assert.equal(BigInt(publicSignals[3]), BigInt(cred.exptime));
   assert.equal(BigInt(publicSignals[4]), 31337n);
-  assert.equal(BigInt(publicSignals[5]), tree0.getRoot());
+  assert.equal(BigInt(publicSignals[5]), r_s);
+  assert.equal(BigInt(publicSignals[6]), tree0.getRoot());
   const vkey = JSON.parse(fs.readFileSync(VKEY_PATH, 'utf8'));
   assert.ok(await snarkjs.groth16.verify(vkey, publicSignals, proof));
 });
@@ -104,15 +107,22 @@ await t('내 credential 이 폐기되면 동기화된 트리로는 witness 를 �
   );
 });
 
-await t('buildIssueRequest 는 요청마다 새 nonce 를 뽑고 본문에 chainid·nonce 를 싣는다', async () => {
+await t('buildIssueRequest 는 r_s 를 그대로 싣고 요청마다 뽑지 않는다 — r_s 는 서비스가 준 값', async () => {
   const sk_u = Buffer.alloc(32, 3).toString('hex');
-  const a = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n });
-  const b = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n });
-  assert.equal(a.body.chainid, '31337');
-  assert.equal(a.body.nonce, a.secrets.nonce.toString());
-  assert.notEqual(a.body.nonce, b.body.nonce);
-  assert.equal(a.body.height, undefined, 'height 는 더 이상 보내지 않는다');
-  assert.equal(a.body.proof.z_attr.length, 4);
+  const r_s = randomScalar();
+  const a = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, r_s });
+  assert.equal(a.body.r_s, r_s.toString());
+  assert.equal(a.body.nonce, undefined);
+  assert.equal(a.secrets.nonce, undefined);
+  await assert.rejects(() => buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n }), /r_s/);
+});
+
+await t('signSessionRequest 는 (r_s, body) 를 세션키로 서명하고 verifySessionRequest 가 복원한다', async () => {
+  const r_s = randomScalar();
+  const sig = await signSessionRequest(session.wallet, r_s, 'hello');
+  assert.equal(verifySessionRequest({ pk_i: session.pk_i, r_s, body: 'hello', sig }), true);
+  assert.equal(verifySessionRequest({ pk_i: session.pk_i, r_s, body: 'hellp', sig }), false);
+  assert.equal(verifySessionRequest({ pk_i: session.pk_i, r_s: r_s + 1n, body: 'hello', sig }), false);
 });
 
 await t('챌린지 서명은 세션키 주소로 복원된다', async () => {
