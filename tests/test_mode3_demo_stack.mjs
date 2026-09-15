@@ -96,6 +96,16 @@ try {
     assert.equal(r.status, 401); assert.equal(r.body.reason, 'bad_challenge');
   });
 
+  await t('같은 r_s 로 /wallet/login 을 두 번 내면 두 번째는 409 duplicate_session (RP 에는 내지 않는다)', async () => {
+    const info = (await rp.get('/api/mode3/rp_info')).body;
+    const { r_s } = (await rp.post('/api/mode3/challenge')).body;
+    const body = { arid: info.arid, origin: info.origin, cert_s: info.cert_s, r_s };
+    const first = await wallet.post('/wallet/login', body, { Origin: rp.origin });
+    assert.equal(first.status, 200, j(first.body));
+    const again = await wallet.post('/wallet/login', body, { Origin: rp.origin });
+    assert.equal(again.status, 409); assert.equal(again.body.reason, 'duplicate_session');
+  });
+
   await t('4. 계정 폐기 + 게시', async () => {
     assert.equal((await cia.adminPost('/cia/revoke', { uid, scope: 'account' })).status, 200);
     assert.equal((await cia.adminPost('/cia/publish')).body.published, true);

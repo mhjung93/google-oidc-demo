@@ -82,7 +82,7 @@ try {
   });
 
   let PPID1, staleProof;
-  await t('같은 root 면 두 번째 요청은 캐시된 π 로 통과 (σ 만 새로, 같은 세션 r_s)', async () => {
+  await t('같은 root 면 두 번째 요청은 캐시된 π 를 재사용 (같은 r_s 위 결정적 서명이라 σ 도 같다)', async () => {
     const { root } = await syncRevocationTree(provider, cia.logAddress);
     const before = cache.get(root, session.wallet.address);
     assert.ok(before, '첫 로그인이 이 root 로 π 를 캐시해 뒀어야 한다');

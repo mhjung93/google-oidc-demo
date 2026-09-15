@@ -2,7 +2,7 @@
 //
 // server.js(:3000, Mode 1/2)와 나란히 두는 별도 프로세스다. 그쪽 코드를 import 하지 않는다.
 // 검증(설계 §6.3 7단계)은 전부 lib/mode3_rp.js 에 있고 여기는 등록·challenge 관리 + HTTP 만이다.
-// 세션·쿠키는 없다 — 데모의 요점은 검증 결과다(스펙 §4.2).
+// 세션은 메모리 Map(r_s → PPID·pk_i·exptime·root) 뿐이고 쿠키는 없다 — 데모의 요점은 검증 결과다(스펙 §4.2).
 import 'dotenv/config';
 import express from 'express';
 import fs from 'node:fs';
@@ -107,10 +107,16 @@ async function verifyBody(req, res) {
   return verifier.verifyLogin({ proof, publicSignals, sig });
 }
 
+/** publicSignals[5](r_s, 회로가 정한 순서) 를 10진 문자열로. 형식이 깨져 있으면(길이·비수치) null. */
+function rsFromSignals(publicSignals) {
+  try { return Array.isArray(publicSignals) && publicSignals.length === 9 ? String(BigInt(publicSignals[5])) : null; }
+  catch { return null; }
+}
+
 app.post('/api/mode3/login', async (req, res) => {
   try {
     const { publicSignals } = req.body ?? {};
-    const rsStr = Array.isArray(publicSignals) && publicSignals.length === 9 ? String(BigInt(publicSignals[5])) : null;
+    const rsStr = rsFromSignals(publicSignals);
     if (!rsStr) return res.status(400).json({ ok: false, reason: 'malformed' });
     if (!consumeChallenge(rsStr)) return res.status(401).json({ ok: false, reason: 'bad_challenge' });   // 검증 전에 소비
     const v = await verifyBody(req, res); if (v === null) return;
@@ -124,7 +130,7 @@ app.post('/api/mode3/login', async (req, res) => {
 app.post('/api/mode3/revalidate', async (req, res) => {
   try {
     const { publicSignals } = req.body ?? {};
-    const rsStr = Array.isArray(publicSignals) && publicSignals.length === 9 ? String(BigInt(publicSignals[5])) : null;
+    const rsStr = rsFromSignals(publicSignals);
     if (!rsStr) return res.status(400).json({ ok: false, reason: 'malformed' });
     const s = sessions.get(rsStr);
     if (!s) return res.status(401).json({ ok: false, reason: 'no_session' });
