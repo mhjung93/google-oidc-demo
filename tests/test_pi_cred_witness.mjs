@@ -95,8 +95,8 @@ await t('음성: chainid 를 바꾸면 거부된다 (서명이 chainid 를 덮�
   await assert.rejects(() => witness({ ...valid, chainid: '1' }), /Assert Failed/);
 });
 
-await t('음성: nonce 를 바꾸면 거부된다 (서명이 nonce 를 덮는다)', async () => {
-  await assert.rejects(() => witness({ ...valid, nonce: (BigInt(valid.nonce) + 1n).toString() }), /Assert Failed/);
+await t('음성: r_s 를 바꾸면 거부된다 (서명이 r_s 를 덮는다 — 다른 세션의 성명을 이 세션에 낼 수 없다)', async () => {
+  await assert.rejects(() => witness({ ...valid, r_s: (BigInt(valid.r_s) + 1n).toString() }), /Assert Failed/);
 });
 
 await t('음성: attr 하나를 바꾸면 거부된다 (C 가 달라져 서명이 안 맞는다)', async () => {
