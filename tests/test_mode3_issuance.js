@@ -182,7 +182,7 @@ await t('음성: z_attr 하나를 바꾸면 거절된다', async () => {
   assert.equal(await verifyIssuance({ uid, C_pt, cm_u, proof: bad }), false);
 });
 
-await t('issueRequestMessage 는 (C_pt, chainid, nonce) 를 덮는다 — 하나라도 다르면 다른 메시지', async () => {
+await t('issueRequestMessage 는 (C_pt, chainid, r_s) 를 덮는다 — 하나라도 다르면 다른 메시지', async () => {
   const C_pt = { x: 1n, y: 2n };
   const m = await issueRequestMessage(C_pt, 31337n, 7n);
   assert.notEqual(m, await issueRequestMessage(C_pt, 1n, 7n));

@@ -28,6 +28,7 @@ UNIT=(
   tests/test_imt_v3_lib.js
   tests/test_mode3_revocation_tree.js
   tests/test_mode3_issuance.js
+  tests/test_mode3_rp_cert.js
 )
 
 CIRCUIT=(
