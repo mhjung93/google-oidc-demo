@@ -14,7 +14,7 @@ const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 // "기본값 사용"이다). 호출자의 env 가 우선한다.
 const PINNED_ENV = {
   CIA_RPC_URL: process.env.CIA_RPC_URL || 'http://127.0.0.1:8545',
-  MODE3_PK_CIA_X: '', MODE3_PK_CIA_Y: '', MODE3_RP_ARID: '', MODE3_CHALLENGE_TTL_MS: '',
+  MODE3_PK_CIA_X: '', MODE3_PK_CIA_Y: '', MODE3_RP_REGISTRATION_FILE: '', MODE3_CHALLENGE_TTL_MS: '',
 };
 
 /** node <script> 를 env 로 띄우고 readyUrl 이 200 을 줄 때까지 기다린다. */
@@ -91,6 +91,8 @@ export async function startIsolatedMode3Stack(opts = {}) {
           MODE3_CIA_URL: cia.base,
           MODE3_WALLET_AGENT_ORIGIN: walletOrigin,
           CIA_LOG_ADDRESS: cia.logAddress,
+          MODE3_RP_REGISTRATION_FILE: path.join(dir, 'mode3_rp_registration.json'),
+          MODE3_RP_PUBLIC_ORIGIN: rpOrigin,
           ...rpEnv,
         },
         readyUrl: `${rpOrigin}/api/mode3/rp_info`, logFile: rpLog,

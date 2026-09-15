@@ -8,6 +8,7 @@ import { getProvider } from './helpers/mode3_chain.mjs';
 import { createRegistration, createSessionKey, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, ProofCache, VKEY_PATH } from '../lib/mode3_wallet.js';
 import { pointToStrings } from '../lib/mode3_issuance.js';
 import { createRpVerifier } from '../lib/mode3_rp.js';
+import { randomScalar } from '../lib/mode3_credential.js';
 
 // verifyLogin 은 PPID·pk_i 를 BigInt 로 준다. assert 의 메시지 인자는 단언 성공 여부와
 // 무관하게 먼저 평가되므로, 맨 JSON.stringify 를 쓰면 성공 경로에서도 터진다.
@@ -27,37 +28,41 @@ assert.ok(fs.existsSync(VKEY_PATH), `pi_cred vkey 없음: ${VKEY_PATH} (build/mo
 const vkey = JSON.parse(fs.readFileSync(VKEY_PATH, 'utf8'));
 const provider = getProvider();
 const cia = await startIsolatedCia();
-const uid = 12345n, arid = 22222222222222222222n;
+const uid = 12345n;
 
 try {
   const keys = (await cia.get('/cia/public_keys')).body;
   const pk_CIA = { x: BigInt(keys.pk_CIA.x), y: BigInt(keys.pk_CIA.y) };
+  // 라이브러리 e2e 라 cert_s 검증은 없다 — 등록만으로 arid 를 확보한다.
+  const { arid: aridStr } = await cia.registerRp('http://127.0.0.1:1');
+  const arid = BigInt(aridStr);
   const rp = createRpVerifier({ provider, logAddress: cia.logAddress, vkey, pkCIA: pk_CIA, arid, chainId: 31337n });
   const cache = new ProofCache();
 
   // 지갑 상태
   const reg = await createRegistration();
-  let sk_u, session, blind, cred;
+  let sk_u, session, blind, cred, sessionRs;
 
-  /** 최신 root 로 동기화해 π 를 만들고(캐시 히트면 재사용) 새 σ 와 함께 RP 에 제출. */
-  async function loginRound(label) {
+  /** 최신 root 로 동기화해 π 를 만들고(캐시 히트면 재사용) 세션의 r_s 위 새 σ 와 함께 RP 에 제출. */
+  async function loginRound() {
     const { tree, root } = await syncRevocationTree(provider, cia.logAddress);
     let cached = cache.get(root, session.wallet.address);
     if (!cached) {
       cached = await buildCredentialProof({ uid, arid, s_u: reg.s_u, blind, pk_i: session.pk_i, attrs: ATTRS, credential: cred, pk_CIA, tree });
       cache.set(root, session.wallet.address, cached);
     }
-    return submit(cached, label);
+    return submit(cached);
   }
   /** 이미 가진 π 를 그대로 제출 — root 가 바뀐 뒤의 재제출을 흉내낸다. */
-  async function submit(cached, label) {
-    const challenge = `${label}-${Date.now()}`;
-    return rp.verifyLogin({ proof: cached.proof, publicSignals: cached.publicSignals, challenge, sig: await signChallenge(session.wallet, challenge) });
+  async function submit(cached) {
+    return rp.verifyLogin({ proof: cached.proof, publicSignals: cached.publicSignals, sig: await signChallenge(session.wallet, sessionRs.toString()) });
   }
   async function newSessionAndIssue() {
     session = createSessionKey();
-    const req = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, attrs: ATTRS });
+    const r_s = randomScalar();
+    const req = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, attrs: ATTRS, r_s });
     blind = req.secrets.blind;
+    sessionRs = r_s;
     const r = await cia.post('/cia/issue', req.body);
     return r;
   }
@@ -72,16 +77,16 @@ try {
     const r = await newSessionAndIssue();
     assert.equal(r.status, 200, j(r.body));
     cred = r.body;
-    const v = await loginRound('login1');
+    const v = await loginRound();
     assert.equal(v.ok, true, j(v));
   });
 
   let PPID1, staleProof;
-  await t('같은 root 면 두 번째 요청은 캐시된 π 로 통과 (σ 만 새로)', async () => {
+  await t('같은 root 면 두 번째 요청은 캐시된 π 로 통과 (σ 만 새로, 같은 세션 r_s)', async () => {
     const { root } = await syncRevocationTree(provider, cia.logAddress);
     const before = cache.get(root, session.wallet.address);
     assert.ok(before, '첫 로그인이 이 root 로 π 를 캐시해 뒀어야 한다');
-    const v = await loginRound('login2');
+    const v = await loginRound();
     assert.equal(v.ok, true, j(v));
     assert.equal(cache.get(root, session.wallet.address), before, '같은 root·세션이면 π 를 다시 만들지 않는다');
     PPID1 = v.PPID;
@@ -92,7 +97,7 @@ try {
     assert.equal((await cia.adminPost('/cia/revoke', { uid: uid.toString(), scope: 'account' })).status, 200);
     assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
     // 지갑이 갖고 있던 옛 root 의 π 를 그대로 재제출 — 검증기가 최신 root 와 비교해 거절해야 한다
-    const v = await submit(staleProof, 'after-revoke');
+    const v = await submit(staleProof);
     assert.equal(v.ok, false);
     assert.equal(v.reason, 'stale_root');
   });
@@ -111,9 +116,9 @@ try {
     const r = await newSessionAndIssue();
     assert.equal(r.status, 200, j(r.body));
     cred = r.body;
-    const v = await loginRound('after-recover');
+    const v = await loginRound();
     assert.equal(v.ok, true, j(v));
-    assert.equal(v.PPID, PPID1, 'PPID = H(uid, arid, s_u) 는 폐기·복구로 바뀌지 않는다');
+    assert.equal(v.PPID, PPID1, 'PPID = H(uid, s_u, chainid, arid) 는 폐기·복구로 바뀌지 않는다');
   });
 } finally {
   await cia.stop();

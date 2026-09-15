@@ -47,13 +47,12 @@
           `등록: ${s.registered ? `예 (uid=${s.uid})` : '아니오'}`,
           `체인 head: ${s.head ?? '(RPC 없음)'}   RevocationLog: ${s.logAddress ?? '(없음)'}`,
           `마지막 동기화 root: ${s.lastRoot ?? '-'}`,
-          `캐시된 π 의 root:   ${s.cachedProofRoot ?? '-'}`,
           '',
-          'credentials (arid 별):',
+          'sessions (r_s 별):',
         ];
-        const entries = Object.entries(s.credentials);
+        const entries = Object.entries(s.sessions);
         if (entries.length === 0) lines.push('  (없음)');
-        for (const [arid, c] of entries) lines.push(`  arid=${arid}\n    exptime=${c.exptime}(${new Date(Number(c.exptime) * 1000).toLocaleTimeString()})  chainid=${c.chainid}  세션 주소=${c.sessionAddress}\n    발급=${c.issuedAt}`);
+        for (const [r_s, c] of entries) lines.push(`  r_s=${r_s.slice(0, 12)}…  arid=${c.arid}\n    exptime=${c.exptime}(${new Date(Number(c.exptime) * 1000).toLocaleTimeString()})  chainid=${c.chainid}  세션 주소=${c.sessionAddress}\n    발급=${c.issuedAt}`);
         $('status').textContent = lines.join('\n');
       } catch (e) { $('status').textContent = `상태 조회 실패: ${e.message}`; }
     }
