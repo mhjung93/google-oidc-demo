@@ -12,10 +12,11 @@ import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
-import { credMessage, compressPoint, SCALAR_MAX } from './lib/mode3_credential.js';
+import { credMessage, compressPoint, SCALAR_MAX, randomScalar } from './lib/mode3_credential.js';
 import { credLeaf, createRevocationTree } from './lib/mode3_revocation.js';
 import { verifyIssuance, isValidPoint, pointFromStrings, parseProof, issueRequestMessage } from './lib/mode3_issuance.js';
 import { LOG_ABI, rootToBytes32, signRootPublication } from './lib/mode3_log.js';
+import { signRpCert } from './lib/mode3_rp_cert.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.CIA_PORT) || 4100;
@@ -70,17 +71,16 @@ function loadOrCreateKeys() {
 
 // ---- 상태 ----
 // accounts:  uid → { pk_u:{x,y}, cm_u:{x,y}, disabled }
-// issued:    uid → [ { leaf(10진), C(10진), exptime(10진 Unix 초) } ]   폐기 시 열거·재전송 거절용. 만료되면 걷어낸다
-// nonces:    uid → [ nonce(10진) ]   발급 요청 재생 방지. **정리하지 않는다** — 만료 뒤 지우면 옛 본문 재생으로 TTL 연장이 된다
-// revoked:   [leaf(10진)]                              지금까지 트리에 넣은 전부 — 재기동 시 재구성
-// pending:   [leaf(10진)]                              아직 게시 안 한 것
-// epoch
-// version 2 (2026-09-14): issued 항목이 max_height 대신 exptime, nonces 추가. v1 은 옛 credential 형식이라 읽지 않는다.
-const STATE_VERSION = 2;
+// issued:    uid → [ { leaf(10진), C(10진), exptime(10진 Unix 초) } ]
+// used_rs:   uid → [ r_s(10진) ]   발급 요청 재생 방지. **정리하지 않는다**(만료 뒤 지우면 옛 본문 재생으로 TTL 연장)
+// rps:       arid → { name, origin, at }   서비스 등록(설계 2026-09-15 §3). cert_s 는 저장하지 않고 요청 때 재서명
+// revoked / pending / epoch
+// version 3 (2026-09-15): nonces → used_rs, rps 추가. v2 이하는 옛 서명 형식이라 읽지 않는다.
+const STATE_VERSION = 3;
 let state;
 let tree;            // 전체 폐기 트리(게시 여부 무관) — 서명해 올리는 root 의 출처
 let publishedTree;   // 온체인에 이벤트로 나간 리프만 — 게시 직전 온체인 root 와 대조하는 기준
-function defaultState() { return { version: STATE_VERSION, accounts: {}, issued: {}, nonces: {}, revoked: [], pending: [], epoch: 0 }; }
+function defaultState() { return { version: STATE_VERSION, accounts: {}, issued: {}, used_rs: {}, rps: {}, revoked: [], pending: [], epoch: 0 }; }
 function persist() { writeJsonAtomic(STATE_FILE, state, 0o600); }
 
 // pending 은 revoked 의 접미사다 — /cia/revoke 가 둘 다에 push 하고 /cia/publish 가 pending 의
@@ -128,11 +128,11 @@ async function reconcileWithChain({ onchainRoot, onchainEpoch }) {
 async function loadState() {
   state = readJson(STATE_FILE, defaultState());
   if (state.version !== STATE_VERSION) {
-    console.error(`[cia] 기동 거부: 상태 파일 버전 ${state.version} (기대 ${STATE_VERSION}). 옛 credential 형식(max_height)의 상태는 ` +
+    console.error(`[cia] 기동 거부: 상태 파일 버전 ${state.version} (기대 ${STATE_VERSION}). 옛 credential 형식(nonce/max_height)의 상태는 ` +
       `새 회로에서 어차피 검증되지 않으므로 마이그레이션하지 않는다 — 재시연 세트(로그 재배포 → 상태 파일 삭제)로 새로 시작할 것.`);
     process.exit(1);
   }
-  state.nonces ??= {};
+  state.used_rs ??= {}; state.rps ??= {};
   publishedTree = await buildPublishedTree();
   // 기동 시 대조. RPC 가 아직 안 떠 있으면 대조 없이 기동한다 — 발급은 chainAlive() 가 503 을 내거나
   // (CIA_CHAIN_IDS 도 없어 허용 목록이 비어 있으면) chainid 허용 목록 검사에서 503 을 내고,
@@ -211,6 +211,27 @@ app.get('/cia/public_keys', (req, res) => {
   res.json({ pk_CIA: S(ciaPub), ethAddress: ethWallet.address, ttlSeconds: TTL_SECONDS, chainIds: CHAIN_IDS, logAddress: LOG_ADDRESS });
 });
 
+// §3(2026-09-15) 서비스 등록. arid 는 CIA 가 배정한다(Mode 2 의 rid 와 같은 방식). 같은 origin 이 다시 오면 같은 arid 를
+// 돌려줘 RP 재기동 뒤에도 가명이 바뀌지 않게 한다. 승인 절차는 없다(데모, §9 한계).
+app.post('/cia/register_rp', async (req, res) => {
+  try {
+    const { name, origin } = req.body ?? {};
+    if (typeof name !== 'string' || name.length === 0 || typeof origin !== 'string' || !/^https?:\/\/[^/\s]+$/.test(origin)) {
+      return res.status(400).json({ error: 'name, origin(http(s)://host[:port], 경로 없음) required' });
+    }
+    let arid = Object.keys(state.rps).find((a) => state.rps[a].origin === origin);
+    let created = false;
+    if (!arid) {
+      arid = randomScalar().toString();
+      state.rps[arid] = { name, origin, at: new Date().toISOString() };
+      persist();
+      created = true;
+    }
+    const cert_s = await signRpCert(ciaPrv, { arid: BigInt(arid), origin });
+    res.status(created ? 201 : 200).json({ arid, name: state.rps[arid].name, origin, cert_s });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // §6.1 등록. CIA 가 장기키를 만들어 주고 sk_u 는 기억하지 않는다(응답에 한 번 실어 보내고 버린다).
 app.post('/cia/register', async (req, res) => {
   const { uid, pwd, cm_u } = req.body ?? {};
@@ -231,13 +252,13 @@ app.post('/cia/register', async (req, res) => {
   res.status(201).json({ pk_u: S(pub), sk_u: prv.toString('hex') });
 });
 
-// §4(2026-09-14) 발급. C 는 받지 않는다 — C_pt 에서 스스로 유도한다. 검사 순서: 형식 → disabled → chainid 허용 →
-// (uid, nonce) 미사용 → 사용자 서명 → π_issue → 같은 C → 체인 가용성 → disabled 재확인 → 서명·기록.
+// §5(2026-09-15) 발급. C 는 받지 않는다 — C_pt 에서 스스로 유도한다. 검사 순서: 형식 → disabled → chainid 허용 →
+// (uid, r_s) 미사용 → 사용자 서명 → π_issue → 같은 C → 체인 가용성 → disabled 재확인 → 서명·기록.
 app.post('/cia/issue', async (req, res) => {
   try {
-    const { uid, C_pt, proof, sig_u, chainid, nonce } = req.body ?? {};
-    if (!isDec(uid) || !isPt(C_pt) || !proof || !sig_u || !isDec(chainid) || !isDec(nonce)) {
-      return res.status(400).json({ error: 'uid, C_pt, proof, sig_u, chainid, nonce required' });
+    const { uid, C_pt, proof, sig_u, chainid, r_s } = req.body ?? {};
+    if (!isDec(uid) || !isPt(C_pt) || !proof || !sig_u || !isDec(chainid) || !isDec(r_s)) {
+      return res.status(400).json({ error: 'uid, C_pt, proof, sig_u, chainid, r_s required' });
     }
     const acct = state.accounts[uid];
     if (!acct) return res.status(404).json({ error: 'unknown account' });
@@ -247,18 +268,18 @@ app.post('/cia/issue', async (req, res) => {
     if (CHAIN_IDS.length === 0) return res.status(503).json({ error: 'chain id unknown: CIA_CHAIN_IDS not configured and RPC unreachable at startup' });
     if (!CHAIN_IDS.includes(chainStr)) return res.status(400).json({ error: `bad chainid ${chainStr}: allowed ${CHAIN_IDS.join(',')}` });
 
-    const nonceBig = BigInt(nonce);
-    if (nonceBig >= SCALAR_MAX) return res.status(400).json({ error: 'nonce must be < 2^250' });
-    const nonceStr = nonceBig.toString();
-    const used = (state.nonces[uid] ??= []);
+    const rsBig = BigInt(r_s);
+    if (rsBig >= SCALAR_MAX) return res.status(400).json({ error: 'r_s must be < 2^250' });
+    const rsStr = rsBig.toString();
+    const used = (state.used_rs[uid] ??= []);
     // 서명·증명 검증(~170ms) 앞에 둔다 — 재생 본문이 매번 검증을 태우지 않게.
-    if (used.includes(nonceStr)) return res.status(409).json({ error: 'nonce already used' });
+    if (used.includes(rsStr)) return res.status(409).json({ error: 'r_s already used' });
 
     const cpt = pointFromStrings(C_pt);
-    // 사용자 인증: 등록된 pk_u 로 (C_pt, chainid, nonce) 에 대한 EdDSA-Poseidon 서명 검증
+    // 사용자 인증: 등록된 pk_u 로 (C_pt, chainid, r_s) 에 대한 EdDSA-Poseidon 서명 검증
     let sigOk = false;
     try {
-      const m = F.e(await issueRequestMessage(cpt, BigInt(chainStr), nonceBig));
+      const m = F.e(await issueRequestMessage(cpt, BigInt(chainStr), rsBig));
       const sig = { R8: [F.e(BigInt(sig_u.R8x)), F.e(BigInt(sig_u.R8y))], S: BigInt(sig_u.S) };
       const pub = [F.e(BigInt(acct.pk_u.x)), F.e(BigInt(acct.pk_u.y))];
       sigOk = eddsa.verifyPoseidon(m, sig, pub);
@@ -273,28 +294,28 @@ app.post('/cia/issue', async (req, res) => {
 
     const C = await compressPoint(cpt);
     const Cstr = C.toString();
-    // 같은 C_pt 재발급 거절 — nonce 와 별개로, 같은 커밋에 서명이 두 번 붙지 않게.
+    // 같은 C_pt 재발급 거절 — r_s 와 별개로, 같은 커밋에 서명이 두 번 붙지 않게.
     if (pruneExpired(uid).some((e) => e.C === Cstr)) return res.status(409).json({ error: 'credential already issued for this C_pt' });
 
     await chainAlive();   // fail-closed: 체인이 죽어 있으면 발급하지 않는다(게시도 불가하므로 폐기가 닿지 않는 credential 이 된다)
 
     const exptime = nowSec() + BigInt(TTL_SECONDS);
-    const s = eddsa.signPoseidon(ciaPrv, F.e(await credMessage(C, exptime, BigInt(chainStr), nonceBig)));
+    const s = eddsa.signPoseidon(ciaPrv, F.e(await credMessage(C, exptime, BigInt(chainStr), rsBig)));
     const leaf = await credLeaf(C);
-    // 위 await 들 사이에 /cia/revoke·self_revoke 나 같은 (C_pt, 다른 nonce) 의 동시 요청이 끼어들 수 있다 —
+    // 위 await 들 사이에 /cia/revoke·self_revoke 나 같은 (C_pt, 다른 r_s) 의 동시 요청이 끼어들 수 있다 —
     // 폐기 직후의 발급이 살아남으면 트리에 없는 새 credential 이 TTL 동안 유효하고, 같은 C 가 두 번 서명되면
-    // 서로 다른 σ_CIA 두 개가 credential 하나를 가리킨다. 마지막 await 뒤, 기록 직전에 disabled·nonce·같은 C
+    // 서로 다른 σ_CIA 두 개가 credential 하나를 가리킨다. 마지막 await 뒤, 기록 직전에 disabled·r_s·같은 C
     // 셋을 전부 다시 확인한다. 끼어든 revoke 의 pruneExpired 가 목록 배열을 새로 만들었을 수 있어
-    // state.issued[uid] 에 넣는다. nonce 는 성공했을 때만 기록한다 — 실패한 요청의 nonce 를 태우면 지갑이
-    // 재시도할 때마다 새 nonce 를 써야 하고, 실패 응답을 재생 방지에 쓸 이유도 없다.
+    // state.issued[uid] 에 넣는다. r_s 는 성공했을 때만 기록한다 — 실패한 요청의 r_s 를 태우면 지갑이
+    // 재시도할 때마다 새 r_s 를 써야 하고, 실패 응답을 재생 방지에 쓸 이유도 없다.
     if (acct.disabled) return res.status(403).json({ error: 'account disabled' });
-    if ((state.nonces[uid] ??= []).includes(nonceStr)) return res.status(409).json({ error: 'nonce already used' });
+    if ((state.used_rs[uid] ??= []).includes(rsStr)) return res.status(409).json({ error: 'r_s already used' });
     if (pruneExpired(uid).some((e) => e.C === Cstr)) return res.status(409).json({ error: 'credential already issued for this C_pt' });
     (state.issued[uid] ??= []).push({ leaf: leaf.toString(), C: Cstr, exptime: exptime.toString() });
-    state.nonces[uid].push(nonceStr);
+    state.used_rs[uid].push(rsStr);
     persist();
     res.json({
-      C: Cstr, exptime: exptime.toString(), chainid: chainStr, nonce: nonceStr,
+      C: Cstr, exptime: exptime.toString(), chainid: chainStr, r_s: rsStr,
       sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() },
       pk_CIA: S(ciaPub),
     });

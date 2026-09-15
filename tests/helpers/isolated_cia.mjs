@@ -80,6 +80,7 @@ export async function startIsolatedCia(opts = {}) {
     post: (p, body) => fetch(`${base}${p}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) }).then(json),
     adminPost: (p, body) => fetch(`${base}${p}`, { method: 'POST', headers: adminHeaders, body: JSON.stringify(body ?? {}) }).then(json),
     get: (p) => fetch(`${base}${p}`).then(json),
+    registerRp: (origin, name = 'test-rp') => fetch(`${base}/cia/register_rp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, origin }) }).then(json).then((r) => { if (r.status !== 201 && r.status !== 200) throw new Error('register_rp 실패: ' + JSON.stringify(r.body)); return { arid: r.body.arid, cert_s: r.body.cert_s, origin: r.body.origin }; }),
     async stop() {
       if (child.exitCode === null && child.signalCode === null) {
         child.kill('SIGTERM');

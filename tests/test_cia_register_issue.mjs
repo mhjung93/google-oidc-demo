@@ -5,10 +5,11 @@ import { buildBabyjub, buildEddsa, buildPoseidon } from 'circomlibjs';
 import { ethers } from 'ethers';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { getProvider, logAbi, signRootPublication } from './helpers/mode3_chain.mjs';
-import { randomScalar, credMessage, compressPoint } from '../lib/mode3_credential.js';
+import { randomScalar, credMessage, compressPoint, SCALAR_MAX } from '../lib/mode3_credential.js';
 import { credLeaf } from '../lib/mode3_revocation.js';
 import { registrationCommit, proveIssuance, serializeProof, pointToStrings } from '../lib/mode3_issuance.js';
 import { syncRevocationTree, signUserRequest } from '../lib/mode3_wallet.js';
+import { verifyRpCert } from '../lib/mode3_rp_cert.js';
 
 let failed = 0;
 async function t(name, fn) {
@@ -30,15 +31,15 @@ const arid = 22222222222222222222n;
 const pk_i = BigInt(ethers.Wallet.createRandom().address);
 let user;   // { s_u, r_u, cm_u, sk_u(Buffer), pk_u }
 
-// 사용자 서명은 (C_pt, chainid, nonce) 를 덮는다 — 만료된 요청 본문을 그대로 다시 내서 새 σ_CIA 를 받는
-// 것(TTL 연장)은 CIA 의 (uid, nonce) 영구 집합이 막는다(설계 2026-09-14 §4).
+// 사용자 서명은 (C_pt, chainid, r_s) 를 덮는다 — 만료된 요청 본문을 그대로 다시 내서 새 σ_CIA 를 받는
+// 것(TTL 연장)은 CIA 의 (uid, r_s) 영구 집합이 막는다(설계 2026-09-14 §4).
 const CHAIN_ID = 31337n;
-const signUser = (prvBuf, C_pt, chainid, nonce) => signUserRequest(prvBuf.toString('hex'), C_pt, chainid, nonce);
+const signUser = (prvBuf, C_pt, chainid, r_s) => signUserRequest(prvBuf.toString('hex'), C_pt, chainid, r_s);
 
-async function issueRequest(u, overrides = {}, { chainid = CHAIN_ID, nonce = randomScalar(), attrs = [19n, 410n, 0n, 0n] } = {}) {
+async function issueRequest(u, overrides = {}, { chainid = CHAIN_ID, r_s = randomScalar(), attrs = [19n, 410n, 0n, 0n] } = {}) {
   const blind = randomScalar();
   const { C_pt, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind, pk_i, r_u: u.r_u, attrs });
-  return { body: { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: await signUser(u.sk_u, C_pt, chainid, nonce), chainid: chainid.toString(), nonce: nonce.toString(), ...overrides }, C_pt, blind, nonce };
+  return { body: { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: await signUser(u.sk_u, C_pt, chainid, r_s), chainid: chainid.toString(), r_s: r_s.toString(), ...overrides }, C_pt, blind, r_s };
 }
 
 try {
@@ -59,6 +60,19 @@ try {
     const G = { x: bj.F.toObject(bj.Base8[0]), y: bj.F.toObject(bj.Base8[1]) };
     const nonCanonical = { x: (G.x + p).toString(), y: G.y.toString() };   // 값은 같아도 비정규 인코딩
     assert.equal((await cia.post('/cia/register', { uid: '12345', pwd: 'password123', cm_u: nonCanonical })).status, 400);
+  });
+
+  await t('register_rp: (name, origin) 으로 arid 와 cert_s 를 받고, 같은 origin 재등록은 같은 arid', async () => {
+    const r = await cia.post('/cia/register_rp', { name: 'demo-rp', origin: 'http://127.0.0.1:3100' });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    assert.match(r.body.arid, /^[0-9]+$/);
+    assert.ok(BigInt(r.body.arid) < SCALAR_MAX);
+    const keys = (await cia.get('/cia/public_keys')).body;
+    assert.equal(await verifyRpCert({ x: BigInt(keys.pk_CIA.x), y: BigInt(keys.pk_CIA.y) }, { arid: BigInt(r.body.arid), origin: 'http://127.0.0.1:3100', cert: r.body.cert_s }), true);
+    const again = await cia.post('/cia/register_rp', { name: 'demo-rp', origin: 'http://127.0.0.1:3100' });
+    assert.equal(again.status, 200);
+    assert.equal(again.body.arid, r.body.arid);
+    assert.equal((await cia.post('/cia/register_rp', { name: 'x' })).status, 400);
   });
 
   await t('register: cm_u 등록, 장기키 발급', async () => {
@@ -86,16 +100,16 @@ try {
     cred = r.body;
     // C 는 CIA 가 C_pt 에서 유도한 값이어야 한다
     assert.equal(cred.C, (await compressPoint(C_pt)).toString());
-    // σ_CIA 가 credMessage(C, exptime, chainid, nonce) 에 대한 pk_CIA 서명인지
-    const msg = F.e(await credMessage(BigInt(cred.C), BigInt(cred.exptime), BigInt(cred.chainid), BigInt(cred.nonce)));
+    // σ_CIA 가 credMessage(C, exptime, chainid, r_s) 에 대한 pk_CIA 서명인지
+    const msg = F.e(await credMessage(BigInt(cred.C), BigInt(cred.exptime), BigInt(cred.chainid), BigInt(cred.r_s)));
     const sig = { R8: [F.e(BigInt(cred.sigma.R8x)), F.e(BigInt(cred.sigma.R8y))], S: BigInt(cred.sigma.S) };
     const pub = [F.e(BigInt(cred.pk_CIA.x)), F.e(BigInt(cred.pk_CIA.y))];
     assert.ok(eddsa.verifyPoseidon(msg, sig, pub));
-    // exptime = now + 3600 (±5초), chainid·nonce 는 요청값 그대로
+    // exptime = now + 3600 (±5초), chainid·r_s 는 요청값 그대로
     const nowSec = Math.floor(Date.now() / 1000);
     assert.ok(Number(cred.exptime) >= nowSec + 3595 && Number(cred.exptime) <= nowSec + 3605, cred.exptime);
     assert.equal(cred.chainid, '31337');
-    assert.equal(cred.nonce, body.nonce);
+    assert.equal(cred.r_s, body.r_s);
   });
 
   await t('issue: 다른 s_u 로 만든 C_pt 는 400 (cm_u 동일성)', async () => {
@@ -106,30 +120,30 @@ try {
 
   await t('issue: 사용자 서명이 다른 키면 400', async () => {
     const { body, C_pt } = await issueRequest(user);
-    body.sig_u = await signUser(Buffer.alloc(32, 7), C_pt, CHAIN_ID, BigInt(body.nonce));
+    body.sig_u = await signUser(Buffer.alloc(32, 7), C_pt, CHAIN_ID, BigInt(body.r_s));
     assert.equal((await cia.post('/cia/issue', body)).status, 400);
   });
 
-  await t('issue: 같은 nonce 재사용은 409, 허용 목록 밖 chainid 는 400, 값만 바꿔 끼우면 서명 불일치 400, 누락은 400', async () => {
+  await t('issue: 같은 r_s 재사용은 409, 허용 목록 밖 chainid 는 400, 값만 바꿔 끼우면 서명 불일치 400, 누락은 400', async () => {
     const first = await issueRequest(user);
     assert.equal((await cia.post('/cia/issue', first.body)).status, 200);
-    // 같은 nonce 로 다른 C_pt 를 내도 409 — (uid, nonce) 는 영구 집합이다
-    const replay = await issueRequest(user, {}, { nonce: first.nonce });
+    // 같은 r_s 로 다른 C_pt 를 내도 409 — (uid, r_s) 는 영구 집합이다
+    const replay = await issueRequest(user, {}, { r_s: first.r_s });
     const r1 = await cia.post('/cia/issue', replay.body);
     assert.equal(r1.status, 409, JSON.stringify(r1.body));
-    assert.match(r1.body.error, /nonce/);
+    assert.match(r1.body.error, /r_s/);
     // 허용 목록(31337) 밖
     const wrongChain = await issueRequest(user, {}, { chainid: 1n });
     const r2 = await cia.post('/cia/issue', wrongChain.body);
     assert.equal(r2.status, 400, JSON.stringify(r2.body));
     assert.match(r2.body.error, /chainid/);
-    // nonce 만 바꿔 끼우면 서명이 안 맞아 400
+    // r_s 만 바꿔 끼우면 서명이 안 맞아 400
     const tampered = await issueRequest(user);
-    tampered.body.nonce = (BigInt(tampered.body.nonce) + 1n).toString();
+    tampered.body.r_s = (BigInt(tampered.body.r_s) + 1n).toString();
     assert.equal((await cia.post('/cia/issue', tampered.body)).status, 400);
-    // nonce 없이 보내면 400
+    // r_s 없이 보내면 400
     const missing = await issueRequest(user);
-    delete missing.body.nonce;
+    delete missing.body.r_s;
     assert.equal((await cia.post('/cia/issue', missing.body)).status, 400);
   });
 
@@ -243,7 +257,7 @@ try {
 
       // 발급은 disabled 검사가 chainid 허용 목록 확인보다 먼저다(cia.js /cia/issue) — 체인 없이도 403 이어야 한다.
       const issued = await dead.post('/cia/issue', {
-        uid: '12345', C_pt: { x: '1', y: '1' }, proof: {}, sig_u: {}, chainid: '31337', nonce: '1',
+        uid: '12345', C_pt: { x: '1', y: '1' }, proof: {}, sig_u: {}, chainid: '31337', r_s: '1',
       });
       assert.equal(issued.status, 403, JSON.stringify(issued.body));
     } finally {
@@ -397,11 +411,11 @@ try {
       assert.equal(reg.status, 201, JSON.stringify(reg.body));
       const sk_u = Buffer.from(reg.body.sk_u, 'hex');
       const blind = randomScalar();
-      const nonce = randomScalar();
+      const r_s = randomScalar();
       const { C_pt, proof } = await proveIssuance({ uid, arid, s_u, blind, pk_i, r_u, attrs: [19n, 410n, 0n, 0n] });
       const body = {
         uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof),
-        sig_u: await signUser(sk_u, C_pt, CHAIN_ID, nonce), chainid: CHAIN_ID.toString(), nonce: nonce.toString(),
+        sig_u: await signUser(sk_u, C_pt, CHAIN_ID, r_s), chainid: CHAIN_ID.toString(), r_s: r_s.toString(),
       };
       const issued = await skewCia.post('/cia/issue', body);
       assert.equal(issued.status, 200, JSON.stringify(issued.body));
@@ -415,7 +429,7 @@ try {
     }
   });
 
-  await t('I3: 만료 뒤 같은 본문 재전송은 409 (nonce 영구 보관, TTL 연장 방지)', async () => {
+  await t('I3: 만료 뒤 같은 본문 재전송은 409 (r_s 영구 보관, TTL 연장 방지)', async () => {
     const ttlCia = await startIsolatedCia({ env: { CIA_TTL_SECONDS: '1', CIA_REVOKE_SKEW_SECONDS: '0' } });
     try {
       const s_u = randomScalar(), r_u = randomScalar();
@@ -424,19 +438,19 @@ try {
       assert.equal(reg.status, 201, JSON.stringify(reg.body));
       const sk_u = Buffer.from(reg.body.sk_u, 'hex');
       const blind = randomScalar();
-      const nonce = randomScalar();
+      const r_s = randomScalar();
       const { C_pt, proof } = await proveIssuance({ uid, arid, s_u, blind, pk_i, r_u, attrs: [19n, 410n, 0n, 0n] });
       const body = {
         uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof),
-        sig_u: await signUser(sk_u, C_pt, CHAIN_ID, nonce), chainid: CHAIN_ID.toString(), nonce: nonce.toString(),
+        sig_u: await signUser(sk_u, C_pt, CHAIN_ID, r_s), chainid: CHAIN_ID.toString(), r_s: r_s.toString(),
       };
       const first = await ttlCia.post('/cia/issue', body);
       assert.equal(first.status, 200, JSON.stringify(first.body));
-      // 발급 기록은 만료로 사라졌어도 (uid, nonce) 는 영구라 옛 본문으로 새 exptime 을 받을 수 없다(설계 §4).
+      // 발급 기록은 만료로 사라졌어도 (uid, r_s) 는 영구라 옛 본문으로 새 exptime 을 받을 수 없다(설계 §4).
       await new Promise((r) => setTimeout(r, 2000));
       const second = await ttlCia.post('/cia/issue', body);
       assert.equal(second.status, 409, JSON.stringify(second.body));
-      assert.match(second.body.error, /nonce/);
+      assert.match(second.body.error, /r_s/);
     } finally {
       await ttlCia.stop();
     }
