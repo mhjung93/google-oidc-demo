@@ -23,6 +23,7 @@ idp_state.json
 cia_keys.json
 cia_state.json
 mode3_wallet_state.json
+mode3_rp_registration.json
 
 # past snapshots
 backup_current_project/

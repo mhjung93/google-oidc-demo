@@ -23,7 +23,7 @@ export async function buildValidInput() {
   const chainid = 31337n;
   const r_s = 55555555555555555555n;   // 서비스가 뽑은 세션 값. 공개 입력
 
-  // s_u, blind, attrs, nonce 등 스칼라는 2^250 미만이어야 한다 (회로 Num2Bits(250)
+  // s_u, blind, attrs, r_s 등 스칼라는 2^250 미만이어야 한다 (회로 Num2Bits(250)
   // 과 같은 상한, lib/mode3_credential.js 의 SCALAR_MAX). 새 난수가 필요하면
   // randomScalar()를 쓴다 — 전체 필드 난수는 92% 확률로 이 상한을 넘어 거부된다.
   const { Cf: C } = await credCommit({ uid, arid, s_u, blind, pk_i, attrs });

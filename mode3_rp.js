@@ -89,6 +89,8 @@ function consumeChallenge(r_s) {
 }
 
 const logins = [];   // { PPID, at, root, r_s }. 메모리만
+// r_s 전문은 내지 않는다 — RP 기록이 공개되면 CIA 가 used_rs 와 맞대어 uid↔PPID 를 잇는다(설계 §2).
+const rsShort = (r) => r.slice(0, 8) + '…';
 
 // ---- 앱 ----
 const app = express();
@@ -122,7 +124,7 @@ app.post('/api/mode3/login', async (req, res) => {
     const v = await verifyBody(req, res); if (v === null) return;
     if (!v.ok) return res.json({ ok: false, reason: v.reason });
     sessions.set(rsStr, { PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), exptime: v.exptime.toString(), root: v.root.toString(), at: new Date().toISOString() });
-    logins.push({ PPID: v.PPID.toString(), at: new Date().toISOString(), root: v.root.toString(), r_s: rsStr });
+    logins.push({ PPID: v.PPID.toString(), at: new Date().toISOString(), root: v.root.toString(), r_s: rsShort(rsStr) });
     res.json({ ok: true, PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), r_s: rsStr, root: v.root.toString() });
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });
@@ -159,7 +161,7 @@ app.post('/api/mode3/request', async (req, res) => {
 });
 
 app.get('/api/mode3/logins', (req, res) => res.json({ logins }));
-app.get('/api/mode3/sessions', (req, res) => res.json({ sessions: [...sessions.entries()].map(([r_s, s]) => ({ r_s, ...s })) }));
+app.get('/api/mode3/sessions', (req, res) => res.json({ sessions: [...sessions.entries()].map(([r_s, s]) => ({ r_s: rsShort(r_s), PPID: s.PPID, pk_i: s.pk_i, exptime: s.exptime, root: s.root, at: s.at })) }));
 
 app.listen(PORT, '127.0.0.1', () => {
   console.log(`Mode 3 RP at http://127.0.0.1:${PORT} (arid=${ARID}, origin=${registration.origin}, log=${LOG_ADDRESS}, wallet=${WALLET_ORIGIN}, pk_CIA=${pkCIA.source}, chain=${chainId})`);

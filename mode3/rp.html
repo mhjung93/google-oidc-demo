@@ -60,7 +60,7 @@
     }
     async function refreshLogins() {
       const { logins } = await (await fetch('/api/mode3/logins')).json();
-      $('logins').textContent = logins.length ? logins.map((l) => `${l.at}  PPID=${l.PPID}  r_s=${(l.r_s ?? '').slice(0, 8)}…  root=${l.root.slice(0, 18)}…`).join('\n') : '(없음)';
+      $('logins').textContent = logins.length ? logins.map((l) => `${l.at}  PPID=${l.PPID}  r_s=${l.r_s ?? ''}  root=${l.root.slice(0, 18)}…`).join('\n') : '(없음)';
     }
     $('loginBtn').addEventListener('click', async () => {
       $('loginBtn').disabled = true; $('verdict').textContent = ''; $('log').textContent = '';

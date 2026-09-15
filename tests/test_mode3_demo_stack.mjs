@@ -3,7 +3,9 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
-import { VKEY_PATH } from '../lib/mode3_wallet.js';
+import { VKEY_PATH, createRegistration, createSessionKey, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge } from '../lib/mode3_wallet.js';
+import { pointToStrings } from '../lib/mode3_issuance.js';
+import { getProvider } from './helpers/mode3_chain.mjs';
 
 const j = (o) => JSON.stringify(o);
 let failed = 0;
@@ -63,6 +65,13 @@ try {
     assert.match(r.rp.PPID, /^[0-9]+$/);
     assert.equal(r.rp.r_s, r.r_s);
     PPID1 = r.rp.PPID; S1 = r.r_s;
+    // r_s 전문은 로그인 응답에만 낸다 — 조회 엔드포인트는 축약만(설계 §2, I1).
+    const { logins } = (await rp.get('/api/mode3/logins')).body;
+    const { sessions } = (await rp.get('/api/mode3/sessions')).body;
+    assert.ok(logins.length > 0);
+    for (const l of logins) assert.ok(l.r_s.length <= 9 && l.r_s.endsWith('…'), j(l));
+    assert.ok(sessions.length > 0);
+    for (const s of sessions) assert.ok(s.r_s.length <= 9 && s.r_s.endsWith('…'), j(s));
   });
 
   await t('3. 세션 재검증(root 같음): 캐시 π 재사용, RP ok', async () => {
@@ -88,6 +97,31 @@ try {
     assert.equal(r.rp.ok, true, j(r.rp));
     assert.equal(r.rp.PPID, PPID1);
     assert.notEqual(r.r_s, S1);
+  });
+
+  await t("session_mismatch: 다른 사용자가 같은 r_s 로 받은 성명으로 남의 세션을 재검증할 수 없다", async () => {
+    // alice(uid 67890) 를 라이브러리로 등록·발급한다 — 지갑 에이전트는 한 계정만 등록하므로 서버 없이 만든다.
+    // CIA 의 used_rs 는 uid 별이라 같은 r_s 로 두 번째 발급이 성공한다. RP 의 session_mismatch 가 이것을 막아야 한다.
+    const info = (await rp.get('/api/mode3/rp_info')).body;
+    const mine = await loginViaRp();
+    assert.equal(mine.rp.ok, true, j(mine));
+    const reg = await createRegistration();
+    const r = await cia.post('/cia/register', { uid: '67890', pwd: 'alicepw', cm_u: pointToStrings(reg.cm_u) });
+    assert.equal(r.status, 201, j(r.body));
+    const session = createSessionKey();
+    const req = await buildIssueRequest({ uid: 67890n, arid: BigInt(info.arid), s_u: reg.s_u, r_u: reg.r_u, sk_u: r.body.sk_u, session, chainid: BigInt(info.chainId), r_s: BigInt(mine.r_s) });
+    const issued = await cia.post('/cia/issue', req.body);
+    assert.equal(issued.status, 200, j(issued.body));
+    const provider = getProvider();
+    try {
+      const { tree } = await syncRevocationTree(provider, cia.logAddress);
+      const keys = (await cia.get('/cia/public_keys')).body;
+      const { proof, publicSignals } = await buildCredentialProof({ uid: 67890n, arid: BigInt(info.arid), s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs: [0n, 0n, 0n, 0n], credential: issued.body, pk_CIA: { x: BigInt(keys.pk_CIA.x), y: BigInt(keys.pk_CIA.y) }, tree });
+      const sig = await signChallenge(session.wallet, mine.r_s);
+      const rv = await rp.post('/api/mode3/revalidate', { proof, publicSignals, sig });
+      assert.equal(rv.status, 401, j(rv.body));
+      assert.equal(rv.body.reason, 'session_mismatch');
+    } finally { provider.destroy(); }
   });
 
   await t('같은 r_s 로 /login 을 다시 내면 bad_challenge (r_s 는 로그인 때 소비된다)', async () => {

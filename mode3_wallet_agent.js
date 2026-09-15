@@ -40,10 +40,12 @@ if (state.version !== WALLET_STATE_VERSION) {
   state = { version: WALLET_STATE_VERSION, registration: state.registration ?? null, sessions: {} };
   persist();
 }
+state.sessions ??= {};
 function pruneSessions() {
   const now = nowSec();
   for (const [k, s] of Object.entries(state.sessions)) if (BigInt(s.credential.exptime) < now) delete state.sessions[k];
 }
+pruneSessions();   // 기동 직후 만료된 세션을 걷어낸다(설계 §8) — 로그인 때도 다시 부른다
 
 const cache = new ProofCache();   // (root, r_s) → {proof, publicSignals}. 메모리만
 let lastSync = null;              // { root, head }
@@ -150,7 +152,8 @@ app.post('/wallet/login', loginCors, async (req, res) => {
     // 서비스 인증(설계 §3·§4): cert_s 가 pk_CIA 서명이고, 요청을 보낸 오리진이 cert 의 오리진과 같아야 한다.
     // 피싱 페이지는 진짜 서비스의 (arid, cert_s) 를 그대로 보여줄 수는 있어도 그 오리진에서 요청을 보낼 수는 없다.
     let pk;
-    try { pk = await pkCia(); } catch (e) { return res.status(503).json({ reason: 'chain_unavailable', detail: e.message }); }
+    // CIA 가 죽어 pk_CIA 를 못 받은 것이지 체인 문제가 아니다 — reason 목록엔 없지만 원인을 구분해 둔다.
+    try { pk = await pkCia(); } catch (e) { return res.status(503).json({ reason: 'cia_unavailable', detail: e.message }); }
     const reqOrigin = req.get('Origin');
     if (reqOrigin !== origin || !(await verifyRpCert(pk, { arid: BigInt(arid), origin, cert: cert_s }))) {
       return res.status(403).json({ reason: 'bad_rp_cert' });
