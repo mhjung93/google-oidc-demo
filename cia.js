@@ -25,9 +25,20 @@ const ADMIN_SECRET = process.env.CIA_ADMIN_SECRET;
 const RPC_URL = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
 const LOG_ADDRESS = process.env.CIA_LOG_ADDRESS || null;
 const TTL_SECONDS = Number(process.env.CIA_TTL_SECONDS) || 3600;   // exptime = now + TTL (Unix 초). 옛 300블록×12초에 상응
+if (!(TTL_SECONDS > 0)) throw new Error(`CIA_TTL_SECONDS(${process.env.CIA_TTL_SECONDS}) 는 양수여야 한다`);
+// 발급 기록을 만료 뒤에도 이만큼(초) 더 들고 있다가 걷어낸다. RP 시계가 CIA 보다 뒤처지면 RP 는 만료된
+// credential 을 그 차이만큼 더 받아들이는데, 그때 CIA 가 기록을 이미 버렸으면 계정 폐기가 그 리프를 넣지
+// 못한다(설계 2026-09-14 §8.3). 여유만큼 늦게 버리면 폐기 대상이 어떤 RP 가 받아들일 집합의 상위집합이 된다 —
+// 트리는 append-only 라 여분 리프는 무해하다.
+const REVOKE_SKEW_SECONDS = Number(process.env.CIA_REVOKE_SKEW_SECONDS ?? 300);
+if (!(REVOKE_SKEW_SECONDS >= 0)) throw new Error(`CIA_REVOKE_SKEW_SECONDS(${process.env.CIA_REVOKE_SKEW_SECONDS}) 는 0 이상이어야 한다`);
 // 발급을 허용하는 폐기 체인 id 목록(쉼표 구분). 미설정이면 기동 시 RPC 의 chainId 하나. 사용자가 요청에 넣은
 // chainid 가 이 목록에 없으면 400 — 다른 체인 기준 credential 을 이 CIA 가 서명하지 않는다(설계 2026-09-14 §4).
-let CHAIN_IDS = (process.env.CIA_CHAIN_IDS || '').split(',').map((s) => s.trim()).filter(Boolean);
+// BigInt(s) 가 실패하면(숫자가 아니면) 기동 시 거부 — 허용 목록에 비교 불가능한 값이 섞이는 것보다 낫다.
+let CHAIN_IDS = (process.env.CIA_CHAIN_IDS || '').split(',').map((s) => s.trim()).filter(Boolean).map((s) => {
+  try { return BigInt(s).toString(); }
+  catch { throw new Error(`CIA_CHAIN_IDS 의 값 "${s}" 은 정수가 아니다`); }
+});
 
 // 데모 계정. Mode 2 의 testuser 관례를 따른 프로토타입이다 — 실제 계정 체계가 아니다.
 const DEMO_ACCOUNTS = {
@@ -169,11 +180,14 @@ async function headHeight() {
   }
 }
 const nowSec = () => BigInt(Math.floor(Date.now() / 1000));
-/** 만료(exptime < now)된 발급 기록을 걷어내고 남은 것을 돌려준다. 체인이 필요 없다 — 만료는 벽시계다. */
+/**
+ * 만료(exptime + REVOKE_SKEW_SECONDS < now)된 발급 기록을 걷어내고 남은 것을 돌려준다. 체인이 필요 없다 —
+ * 만료는 벽시계다. 실제 만료(exptime)보다 여유만큼 늦게 지우는 이유는 위 REVOKE_SKEW_SECONDS 주석 참고.
+ */
 function pruneExpired(uid) {
   const list = state.issued[uid] ?? [];
   const now = nowSec();
-  state.issued[uid] = list.filter((e) => BigInt(e.exptime) >= now);
+  state.issued[uid] = list.filter((e) => BigInt(e.exptime) + BigInt(REVOKE_SKEW_SECONDS) >= now);
   return state.issued[uid];
 }
 /** 발급 직전의 체인 가용성 확인(fail-closed, 기반 설계 §2.1). 값은 쓰지 않는다 — 살아 있는지만 본다. */

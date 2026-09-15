@@ -20,8 +20,8 @@
 **개정 2026-09-14 (2) — 속성 credential 설계가 §4.1·§5·§6.2·§6.3 을 대체한다.** 커밋에 속성 슬롯 4개,
 서명 메시지 `(C, exptime, chainid, nonce)`, 벽시계 만료, nonce 기반 재생 방지. 본문은
 `2026-09-14-mode3-attribute-credential-design.md` 에 있고, 이 문서의 해당 절은 옛 형식의 기록으로 남긴다. 회로(`pi_cred.circom`)
-자체는 어느 쪽으로도 바뀌지 않았지만, §11.1의 실측값은 (2)를 반영해 Pedersen 판으로
-다시 쟀다(`8c3e65b`).
+자체는 어느 쪽으로도 바뀌지 않았지만(2026-09-14 속성 credential 개정에서는 회로가 바뀌었다 — 아래 개정 (2)), §11.1의
+실측값은 (2)를 반영해 Pedersen 판으로 다시 쟀다(`8c3e65b`).
 
 Mode 2(IdP + PS/EdDSA + Groth16 SSO)와 **공존하는 새 흐름**이다. Mode 2 코드·데모·상태
 파일은 건드리지 않는다. 진행 중 메모는 `2026-09-09-cia-revocation-redesign-notes.md`이고

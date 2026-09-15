@@ -8,6 +8,7 @@ include "lib/mode3_commit.circom";
 
 // Mode 3 credential 증명.
 // 설계: docs/superpowers/specs/2026-09-09-mode3-cia-revocation-design.md §5
+// 속성·(exptime, chainid, nonce) 서명: docs/superpowers/specs/2026-09-14-mode3-attribute-credential-design.md §3/§5
 //
 // 네 가지를 함께 증명한다. 하나라도 빠지면 뚫린다:
 //   ① CIA가 (C, exptime, chainid, nonce)에 서명했다 — 없으면 아무나 credential을 만든다

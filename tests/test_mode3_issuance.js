@@ -2,7 +2,7 @@
 //   node tests/test_mode3_issuance.js
 import assert from 'node:assert/strict';
 import { buildBabyjub, buildPoseidon } from 'circomlibjs';
-import { randomScalar, credCommit, PEDERSEN_GENERATORS, compressPoint, SCALAR_MAX } from '../lib/mode3_credential.js';
+import { randomScalar, credCommit, PEDERSEN_GENERATORS, compressPoint, SCALAR_MAX, normalizeAttrs } from '../lib/mode3_credential.js';
 import {
   DOMAIN_MODE3_ISSUE, randomZr, registrationCommit, proveIssuance, verifyIssuance,
   serializeProof, parseProof, pointToStrings, pointFromStrings, issueRequestMessage,
@@ -168,7 +168,7 @@ await t('음성: CIA 쪽 검증도 uid 가 2^250 이상이면 거절한다', asy
   assert.equal(await verifyIssuance({ uid: SCALAR_MAX, C_pt, cm_u, proof }), false);
 });
 
-await t('음성: attr 하나를 바꿔 만든 C_pt 에 원래 증명을 붙이면 거절된다 (속성이 표현에 묶인다)', async () => {
+await t('음성: 다른 attrs 의 C_pt 에 원래 증명을 붙이면 챌린지 재계산에서 거절된다', async () => {
   const u = await freshUser();
   const { cm_u, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u, attrs: u.attrs });
   const other = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u, attrs: [20n, 410n, 0n, 0n] });
@@ -195,6 +195,15 @@ await t('직렬화 왕복이 값을 보존한다', async () => {
   const { C_pt, cm_u, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind: u.blind, pk_i, r_u: u.r_u, attrs: u.attrs });
   const wire = JSON.parse(JSON.stringify({ C_pt: pointToStrings(C_pt), cm_u: pointToStrings(cm_u), proof: serializeProof(proof) }));
   assert.equal(await verifyIssuance({ uid, C_pt: pointFromStrings(wire.C_pt), cm_u: pointFromStrings(wire.cm_u), proof: parseProof(wire.proof) }), true);
+});
+
+await t('normalizeAttrs: 배열이 아닌 입력은 throw, 길이 초과·범위 밖도 throw, 정상값은 정규화된다', () => {
+  assert.throws(() => normalizeAttrs('12345'));
+  assert.throws(() => normalizeAttrs(5));
+  assert.throws(() => normalizeAttrs(['1', '2', '3', '4', '5']));
+  assert.throws(() => normalizeAttrs(['-1']));
+  assert.deepEqual(normalizeAttrs(['7']), [7n, 0n, 0n, 0n]);
+  assert.deepEqual(normalizeAttrs(undefined), [0n, 0n, 0n, 0n]);
 });
 
 process.exit(failed === 0 ? 0 : 1);

@@ -34,8 +34,17 @@ const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { cacheTimeout: 
 // registration: { uid, s_u, r_u, cm_u:{x,y}, sk_u, attrs:[4개 10진] }   §6.1. 한 번. attrs 는 사용자가 고른 속성(CIA 는 모른다)
 // credentials:  arid → { credential:{C,exptime,chainid,nonce,sigma,pk_CIA}, blind, sessionPrivKey, pk_i, issuedAt }
 // BigInt 는 전부 10진 문자열. 데모용이라 비밀이 평문으로 들어간다(0600).
-let state = readJson(STATE_FILE, { version: 1, registration: null, credentials: {} });
+let state = readJson(STATE_FILE, { version: 2, registration: null, credentials: {} });
 function persist() { writeJsonAtomic(STATE_FILE, state, 0o600); }
+
+// 상태 스키마 v2 (2026-09-14): credential 이 {C, exptime, chainid, nonce, sigma, pk_CIA}. 옛 파일(v1, max_height)은
+// 등록값(s_u·r_u·sk_u)은 그대로 쓸 수 있고 credential 만 새 회로에서 열리지 않으므로, credential 만 비우고 v2 로 올린다.
+const WALLET_STATE_VERSION = 2;
+if (state.version !== WALLET_STATE_VERSION) {
+  console.warn(`[wallet] 상태 파일 버전 ${state.version} → ${WALLET_STATE_VERSION}: credential 을 비운다(옛 형식). 등록은 유지.`);
+  state = { version: WALLET_STATE_VERSION, registration: state.registration ?? null, credentials: {} };
+  persist();
+}
 
 const cache = new ProofCache();   // (root, 세션 주소) → {proof, publicSignals}. 메모리만
 let lastSync = null;              // { root, head }

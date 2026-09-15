@@ -7,6 +7,7 @@ include "babyjub.circom";
 
 // Mode 3 커밋 스킴 두 판.
 // 설계: docs/superpowers/specs/2026-09-09-mode3-cia-revocation-design.md §4.1, §11
+// 속성 4슬롯: docs/superpowers/specs/2026-09-14-mode3-attribute-credential-design.md §3/§5
 //
 // 커밋이 담는 것은 (uid, arid, s_u, blind, pk_i) 다섯이다.
 //   uid   — 계정 식별자. PPID 유도에 쓰인다
@@ -47,7 +48,7 @@ template CommitPoseidon() {
 // 열어 PPID 두 개를 얻는 Sybil 이 가능해진다. lib/mode3_credential.js 도 같은 상한을 지킨다.
 //
 // 생성원은 circomlib pedersen.circom 의 NUMS 점 BASE[0..8]. 서로의 이산로그를 아무도 모른다.
-// 2026-09-10 circomlibjs 로 5개 모두 inCurve·inSubgroup 확인.
+// 2026-09-10 circomlibjs 로 9개 모두 inCurve·inSubgroup 확인.
 template CommitPedersen() {
     signal input uid;
     signal input arid;

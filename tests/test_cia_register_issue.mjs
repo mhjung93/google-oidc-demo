@@ -387,6 +387,60 @@ try {
     assert.equal(await log.epoch(), BigInt(current + 1), '올리지 않았어야 한다');
     assert.equal((await cia.get('/cia/state')).body.pendingCount, 1, 'pending 은 그대로여야 한다');
   });
+
+  await t('I1: exptime 이 지나도 CIA_REVOKE_SKEW_SECONDS 안이면 계정 폐기 대상에 남는다', async () => {
+    const skewCia = await startIsolatedCia({ env: { CIA_TTL_SECONDS: '1', CIA_REVOKE_SKEW_SECONDS: '600' } });
+    try {
+      const s_u = randomScalar(), r_u = randomScalar();
+      const cm_u = await registrationCommit(s_u, r_u);
+      const reg = await skewCia.post('/cia/register', { uid: '12345', pwd: 'password123', cm_u: pointToStrings(cm_u) });
+      assert.equal(reg.status, 201, JSON.stringify(reg.body));
+      const sk_u = Buffer.from(reg.body.sk_u, 'hex');
+      const blind = randomScalar();
+      const nonce = randomScalar();
+      const { C_pt, proof } = await proveIssuance({ uid, arid, s_u, blind, pk_i, r_u, attrs: [19n, 410n, 0n, 0n] });
+      const body = {
+        uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof),
+        sig_u: await signUser(sk_u, C_pt, CHAIN_ID, nonce), chainid: CHAIN_ID.toString(), nonce: nonce.toString(),
+      };
+      const issued = await skewCia.post('/cia/issue', body);
+      assert.equal(issued.status, 200, JSON.stringify(issued.body));
+      await new Promise((r) => setTimeout(r, 2000));   // exptime(1초)은 지났지만 여유(600초) 안
+      const leaf = await credLeaf(BigInt(issued.body.C));
+      const r = await skewCia.adminPost('/cia/revoke', { uid: '12345', scope: 'account' });
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.ok(r.body.inserted.map((h) => BigInt(h)).includes(leaf), '만료됐지만 여유 안이라 폐기 대상에 남아야 한다');
+    } finally {
+      await skewCia.stop();
+    }
+  });
+
+  await t('I3: 만료 뒤 같은 본문 재전송은 409 (nonce 영구 보관, TTL 연장 방지)', async () => {
+    const ttlCia = await startIsolatedCia({ env: { CIA_TTL_SECONDS: '1', CIA_REVOKE_SKEW_SECONDS: '0' } });
+    try {
+      const s_u = randomScalar(), r_u = randomScalar();
+      const cm_u = await registrationCommit(s_u, r_u);
+      const reg = await ttlCia.post('/cia/register', { uid: '12345', pwd: 'password123', cm_u: pointToStrings(cm_u) });
+      assert.equal(reg.status, 201, JSON.stringify(reg.body));
+      const sk_u = Buffer.from(reg.body.sk_u, 'hex');
+      const blind = randomScalar();
+      const nonce = randomScalar();
+      const { C_pt, proof } = await proveIssuance({ uid, arid, s_u, blind, pk_i, r_u, attrs: [19n, 410n, 0n, 0n] });
+      const body = {
+        uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof),
+        sig_u: await signUser(sk_u, C_pt, CHAIN_ID, nonce), chainid: CHAIN_ID.toString(), nonce: nonce.toString(),
+      };
+      const first = await ttlCia.post('/cia/issue', body);
+      assert.equal(first.status, 200, JSON.stringify(first.body));
+      // 발급 기록은 만료로 사라졌어도 (uid, nonce) 는 영구라 옛 본문으로 새 exptime 을 받을 수 없다(설계 §4).
+      await new Promise((r) => setTimeout(r, 2000));
+      const second = await ttlCia.post('/cia/issue', body);
+      assert.equal(second.status, 409, JSON.stringify(second.body));
+      assert.match(second.body.error, /nonce/);
+    } finally {
+      await ttlCia.stop();
+    }
+  });
 } finally {
   await cia.stop();
   provider.destroy();
