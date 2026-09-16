@@ -126,10 +126,14 @@ try {
       assert.equal(saved.version, 4); assert.equal(saved.used_rs, undefined); assert.deepEqual(saved.openings, []);
       const e = (await cia.adminGet('/cia/rps')).body.rps.find((x) => x.arid === '777');
       assert.equal(e.status, 'approved'); assert.equal(e.pk_trace, null); assert.equal(e.pk_service, null);
-      // 옛 등록이 키를 내며 재등록하면 그때 조각을 만들고 200
+      // 옛 등록이 키를 내며 재등록하면 무허가 바인딩을 막기 위해 pending 으로 돌아간다 — 운영자 승인이 다시 필요하다(§3)
       const w = ethers.Wallet.createRandom(); const share = await createShare();
-      const r = await cia.post('/cia/register_rp', { name: 'old', origin: 'http://127.0.0.1:3100', pk_service: w.address, X_svc: { x: share.X.x.toString(), y: share.X.y.toString() } });
-      assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.body.arid, '777'); assert.ok(r.body.pk_trace?.x);
+      const body = { name: 'old', origin: 'http://127.0.0.1:3100', pk_service: w.address, X_svc: { x: share.X.x.toString(), y: share.X.y.toString() } };
+      const r = await cia.post('/cia/register_rp', body);
+      assert.equal(r.status, 202, JSON.stringify(r.body)); assert.equal(r.body.arid, '777'); assert.equal(r.body.status, 'pending');
+      assert.equal((await cia.adminPost('/cia/rps/777/approve')).status, 200);
+      const ok = await cia.post('/cia/register_rp', body);
+      assert.equal(ok.status, 200, JSON.stringify(ok.body)); assert.equal(ok.body.arid, '777'); assert.ok(ok.body.pk_trace?.x);
     } finally { await cia.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
   });
 } finally {

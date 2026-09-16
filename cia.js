@@ -244,33 +244,40 @@ app.post('/cia/register_rp', async (req, res) => {
     const Xs = pointFromStrings(X_svc);
     // 항등원·부분군 밖은 거절 — 항등원 X_svc 면 pk_trace 가 CIA 조각만으로 열린다(§2).
     if (!(await isTracePoint(Xs))) return res.status(400).json({ error: 'X_svc is not a valid subgroup point' });
+    const Xn = { x: Xs.x.toString(), y: Xs.y.toString() };   // 정규 인코딩으로 저장·대조 — 비정규 입력이 다른 값으로 오인되지 않게
     let arid = Object.keys(state.rps).find((a) => state.rps[a].origin === origin);
     let e = arid ? state.rps[arid] : null;
     if (e && e.pk_service === null) {
-      // v3 에서 넘어온 등록(키 없음): 키를 내면 채운다. 승인은 이미 난 것으로 본다(§7).
-      e.pk_service = addr; e.X_svc = { x: X_svc.x, y: X_svc.y }; persist();
+      // v3 에서 넘어온 등록(키 없음): 키를 처음 내면 pending 으로 돌려 운영자 승인을 다시 받게 한다 —
+      // 그러지 않으면 첫 호출자가 승인 없이 조합 키를 얻어 진짜 서비스가 잠긴다(§3).
+      e.pk_service = addr; e.X_svc = Xn;
+      e.status = 'pending'; e.requestedAt = new Date().toISOString(); e.decidedAt = null;
+      e.x_AA = null; e.pk_trace = null;
+      persist();
     }
-    if (e && (e.pk_service !== addr || e.X_svc.x !== X_svc.x || e.X_svc.y !== X_svc.y)) {
+    if (e && (e.pk_service !== addr || e.X_svc.x !== Xn.x || e.X_svc.y !== Xn.y)) {
       return res.status(409).json({ error: 'service_key_mismatch' });
     }
     if (!e) {
       arid = randomScalar().toString();
-      e = state.rps[arid] = { name, origin, pk_service: addr, X_svc: { x: X_svc.x, y: X_svc.y }, x_AA: null, pk_trace: null, status: 'pending', requestedAt: new Date().toISOString(), decidedAt: null };
+      e = state.rps[arid] = { name, origin, pk_service: addr, X_svc: Xn, x_AA: null, pk_trace: null, status: 'pending', requestedAt: new Date().toISOString(), decidedAt: null };
       persist();
     }
     if (e.status === 'denied') return res.status(403).json({ arid, status: 'denied' });
     if (e.status === 'pending') return res.status(202).json({ arid, status: 'pending' });
-    if (!e.pk_trace) await makeShare(arid);   // v3 마이그레이션 항목이 키를 낸 첫 호출
     const cert_s = await signRpCert(ciaPrv, { arid: BigInt(arid), origin, pk_trace: e.pk_trace });
     res.json({ arid, name: e.name, origin, pk_trace: e.pk_trace, cert_s });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-/** CIA 조각을 만들어 조합 키를 채운다. 승인 때 한 번. */
+/** CIA 조각을 만들어 조합 키를 채운다. 승인 때 한 번 — await 사이 다른 요청이 먼저 채웠으면 덮어쓰지 않는다. */
 async function makeShare(arid) {
   const e = state.rps[arid];
+  if (e.pk_trace) return;
   const share = await createShare();
+  if (e.pk_trace) return;
   const pk = await combinePublicKey(pointFromStrings(e.X_svc), share.X);
+  if (e.pk_trace) return;
   e.x_AA = share.x.toString();
   e.pk_trace = { x: pk.x.toString(), y: pk.y.toString() };
   persist();
@@ -510,6 +517,7 @@ app.post('/cia/open/request', async (req, res) => {
     if (!isDec(arid) || !Array.isArray(publicSignals) || publicSignals.length !== 14 || !publicSignals.every(isDec) || !proof || !isPt(D_svc) || !isDec(ts) || typeof sig !== 'string') {
       return res.status(400).json({ error: 'arid, publicSignals[14], proof, D_svc{x,y}, ts, sig required' });
     }
+    if (!(await isTracePoint(pointFromStrings(D_svc)))) return res.status(400).json({ error: 'D_svc is not a valid subgroup point' });
     const e = state.rps[arid];
     if (!e) return res.status(404).json({ error: 'unknown_service' });
     if (e.status !== 'approved' || !e.pk_service || !e.pk_trace) return res.status(403).json({ error: 'not_approved' });
@@ -523,7 +531,8 @@ app.post('/cia/open/request', async (req, res) => {
     let vkey;
     try { vkey = await loadVkey(); } catch (err) { return res.status(503).json({ error: `vkey unavailable: ${err.message}` }); }
     let ok = false;
-    try { ok = await snarkjs.groth16.verify(vkey, publicSignals, proof); } catch { ok = false; }
+    try { ok = await snarkjs.groth16.verify(vkey, publicSignals, proof); }
+    catch (err) { console.warn('[cia] 개봉 요청의 증명 검증 예외 — vkey/회로 불일치일 수 있다: ' + err.message); ok = false; }
     if (!ok) return res.status(403).json({ error: 'bad_proof' });
     // pending·approved 는 같은 세션의 결정이 이미 있거나 진행 중이라 그 id 를 돌려주고, failed·denied 는
     // 새 요청을 허용한다 — 틀린 D_svc 를 고치거나 거절된 세션을 다시 심사에 올릴 길이 있어야 한다.

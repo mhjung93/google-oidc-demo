@@ -50,10 +50,12 @@ const PUBLIC_ORIGIN = process.env.MODE3_RP_PUBLIC_ORIGIN || `http://127.0.0.1:${
 const RP_NAME = process.env.MODE3_RP_NAME || 'demo-rp';
 const POLL_MS = Number(process.env.MODE3_RP_REGISTRATION_POLL_MS) || 5000;
 const LOGIN_LOG = process.env.MODE3_RP_LOGIN_LOG || path.join(__dirname, 'mode3_rp_logins.jsonl');
+if (fs.existsSync(LOGIN_LOG)) fs.chmodSync(LOGIN_LOG, 0o600);   // 옛 실행이 남긴 파일의 권한도 조인다
 
 let reg = readJson(REG_FILE, null);
 if (reg && (reg.version !== REG_VERSION || reg.origin !== PUBLIC_ORIGIN)) {
-  console.warn(`[rp] 등록 파일이 옛 형식이거나 origin(${reg.origin}) 이 현재(${PUBLIC_ORIGIN}) 와 달라 새로 등록한다`);
+  console.warn(`[rp] 등록 파일이 옛 형식이거나 origin(${reg.origin}) 이 현재(${PUBLIC_ORIGIN}) 와 달라 새로 등록한다` +
+    ` — 옛 서비스 조각(x_svc)도 버려지므로 이전 로그인 로그의 태그는 더 이상 열 수 없다`);
   reg = null;
 }
 if (!reg) {
@@ -69,8 +71,12 @@ async function registerOnce() {
   const r = await fetch(`${CIA_URL}/cia/register_rp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: RP_NAME, origin: PUBLIC_ORIGIN, pk_service: reg.pk_service, X_svc: reg.X_svc }) });
   const b = await r.json().catch(() => ({}));
   if (r.status === 202) { reg.arid = b.arid; reg.status = 'pending'; writeJsonAtomic(REG_FILE, reg, 0o600); return false; }
-  // 영구 실패 둘만 err.permanent 로 표시한다 — CIA 가 죽었거나 네트워크가 끊긴 것은 일시적이라 계속 재시도해야 한다.
+  // 403(거절)은 영구 상태로 기록한다. 408·429 를 뺀 나머지 4xx(예: 409 service_key_mismatch, 400 형식 오류)도
+  // 재시도해 봤자 같은 응답이 반복될 뿐이라 영구 실패다 — CIA 가 죽었거나 네트워크가 끊긴 것(5xx·예외)만 일시적이라 계속 재시도한다.
   if (r.status === 403) { reg.arid = b.arid; reg.status = 'denied'; writeJsonAtomic(REG_FILE, reg, 0o600); throw Object.assign(new Error(`CIA 가 등록을 거절했다 (arid=${b.arid})`), { permanent: true }); }
+  if (r.status >= 400 && r.status < 500 && r.status !== 408 && r.status !== 429) {
+    throw Object.assign(new Error(`CIA 등록 실패 (${r.status}) ${JSON.stringify(b)}`), { permanent: true });
+  }
   if (r.status !== 200) throw new Error(`CIA 등록 실패 (${r.status}) ${JSON.stringify(b)}`);
   const pk_trace = { x: BigInt(b.pk_trace.x), y: BigInt(b.pk_trace.y) };
   if (!(await verifyRpCert(pkCIA, { arid: BigInt(b.arid), origin: PUBLIC_ORIGIN, pk_trace, cert: b.cert_s }))) throw Object.assign(new Error('CIA 가 준 cert_s 가 pk_CIA 로 검증되지 않는다'), { permanent: true });
@@ -209,9 +215,11 @@ app.post('/api/mode3/request', async (req, res) => {
 // ---- §6 개봉(데모용, 인증 없음) ----
 function lastTranscriptOf(PPID) {
   if (!fs.existsSync(LOGIN_LOG)) return null;
-  // 마지막 줄이 쓰다 만 채로 잘려 있을 수 있다 — 그 한 줄만 건너뛰고 나머지는 그대로 쓴다.
+  // 마지막 줄이 쓰다 만 채로 잘려 있을 수 있다 — 파싱 안 되는 줄만 건너뛰고 나머지는 그대로 쓴다.
+  let dropped = 0;
   const lines = fs.readFileSync(LOGIN_LOG, 'utf8').split('\n').filter(Boolean)
-    .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+    .map((l) => { try { return JSON.parse(l); } catch { dropped++; return null; } }).filter(Boolean);
+  if (dropped > 0) console.warn(`[rp] 로그인 로그 손상 줄 ${dropped}개 건너뜀`);
   return lines.reverse().find((l) => l.PPID === PPID) ?? null;
 }
 app.post('/api/mode3/open', async (req, res) => {

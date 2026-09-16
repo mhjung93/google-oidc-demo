@@ -76,6 +76,15 @@ try {
     assert.equal(r.status, 200); assert.equal(r.body.id, id1);
   });
 
+  await t('D_svc 가 부분군 밖이면 400 — 서명·신선도보다 먼저 걸린다', async () => {
+    const T = await loginTranscript(S1);
+    const D_svc = { x: '1', y: '1' };
+    const ts = nowTs();
+    const sig = await signOpenRequest(S1.serviceWallet, { arid: S1.arid, r_s: T.r_s, PPID: T.PPID, D_svc, ts });
+    const r = await cia.post('/cia/open/request', { arid: S1.arid, publicSignals: T.publicSignals, proof: T.proof, D_svc, ts, sig });
+    assert.equal(r.status, 400, j(r.body));
+  });
+
   await t('거절 → 결과 403 denied', async () => {
     const T = await loginTranscript(S1);
     const { body: { id } } = await openRequest(S1, T);
@@ -142,6 +151,31 @@ try {
   await t('admin 엔드포인트는 시크릿 없이 401', async () => {
     assert.equal((await cia.get('/cia/openings')).status, 401);
     assert.equal((await cia.post(`/cia/openings/${id1}/approve`)).status, 401);
+    assert.equal((await cia.get('/cia/rps')).status, 401);
+  });
+
+  await t('MODE3_VKEY_PATH 가 없으면 개봉 요청은 503', async () => {
+    const cia2 = await startIsolatedCia({ env: { MODE3_VKEY_PATH: '/nonexistent/vkey.json' } });
+    try {
+      const S = await cia2.registerRp('http://127.0.0.1:3199', 's-vkey-missing');
+      const r0 = await cia2.post('/cia/register', { uid: '12345', pwd: 'password123', cm_u: { x: reg.cm_u.x.toString(), y: reg.cm_u.y.toString() } });
+      assert.equal(r0.status, 201, j(r0.body));
+      const session = createSessionKey();
+      const r_s = randomScalar();
+      const req = await buildIssueRequest({ uid, arid: BigInt(S.arid), s_u: reg.s_u, r_u: reg.r_u, sk_u: r0.body.sk_u, session, chainid: 31337n, attrs: [0n, 0n, 0n, 0n], r_s });
+      const issued = await cia2.post('/cia/issue', req.body);
+      assert.equal(issued.status, 200, j(issued.body));
+      const { tree } = await syncRevocationTree(provider, cia2.logAddress);
+      const keys2 = (await cia2.get('/cia/public_keys')).body;
+      const pk_CIA2 = { x: BigInt(keys2.pk_CIA.x), y: BigInt(keys2.pk_CIA.y) };
+      const { proof, publicSignals, tag } = await buildCredentialProof({ uid, arid: BigInt(S.arid), s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs: [0n, 0n, 0n, 0n], credential: issued.body, pk_CIA: pk_CIA2, pk_trace: S.pk_trace, tree });
+      const D = await partialDecrypt(S.share.x, tag.c1);
+      const D_svc = { x: D.x.toString(), y: D.y.toString() };
+      const ts = nowTs();
+      const sig = await signOpenRequest(S.serviceWallet, { arid: S.arid, r_s: r_s.toString(), PPID: publicSignals[0], D_svc, ts });
+      const r = await cia2.post('/cia/open/request', { arid: S.arid, publicSignals, proof, D_svc, ts, sig });
+      assert.equal(r.status, 503, j(r.body));
+    } finally { await cia2.stop(); }
   });
 } finally {
   await cia.stop();

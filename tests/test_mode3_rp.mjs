@@ -107,6 +107,13 @@ await t('음성 d″: 다른 조합 키로 만든 태그는 wrong_trace_key (서
   assert.deepEqual(await rp.verifyLogin(L), { ok: false, reason: 'wrong_trace_key' });
 });
 
+await t('음성 태그: c1 이 항등원(0,1)이면 bad_tag (r=0 이 평문을 드러내는 것을 막는다)', async () => {
+  const L = await makeLogin();
+  const bad = [...L.publicSignals];
+  bad[11] = '0'; bad[12] = '1';
+  assert.deepEqual(await rp.verifyLogin({ ...L, publicSignals: bad }), { ok: false, reason: 'bad_tag' });
+});
+
 await t('양성: verifyLogin 이 태그를 돌려준다 (서비스가 로그에 남길 재료)', async () => {
   const L = await makeLogin();
   const r = await rp.verifyLogin(L);

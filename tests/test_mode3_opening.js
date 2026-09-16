@@ -14,7 +14,7 @@ const svc = ethers.Wallet.createRandom();
 const fields = { arid: '22222', r_s: '55555', PPID: '99999', D_svc: { x: '123', y: '456' }, ts: '1789000000' };
 
 await t('메시지 형식은 스펙 §6 그대로', () => {
-  assert.equal(openRequestMessage(fields), 'mode3-open:22222:55555:99999:123:1789000000');
+  assert.equal(openRequestMessage(fields), 'mode3-open:22222:55555:99999:123:456:1789000000');
   assert.equal(openResultMessage('abcd', '1789000001'), 'mode3-open-result:abcd:1789000001');
 });
 
