@@ -5,6 +5,7 @@ include "lib/poseidon.circom";
 include "lib/imt_nonmembership_v2.circom";
 include "lib/bitify.circom";
 include "lib/mode3_commit.circom";
+include "lib/mode3_trace_tag.circom";
 
 // Mode 3 credential 증명.
 // 설계: docs/superpowers/specs/2026-09-09-mode3-cia-revocation-design.md §5
@@ -15,6 +16,7 @@ include "lib/mode3_commit.circom";
 //   ② C 안에 이 pk_i가 있다                    — 없으면 남의 π를 주워 자기 키로 서명해 완전 사칭
 //   ③ PPID = Poseidon(uid, s_u, chainid, arid) — 없으면 지갑 주소를 특정할 수 없다
 //   ④ H(C)가 폐기 트리에 없다                   — 없으면 폐기가 무의미
+//   ⑤ tag = Enc(pk_trace, uid) 가 잘 만들어졌다  — 없으면 개봉이 엉뚱한 값을 연다 (2026-09-16 §4)
 //
 //   attrs[4] 는 커밋에만 실린다 — CIA 는 값을 모르고(설계 2026-09-14 §2) 이 회로는 술어를 검증하지 않는다.
 //   r_s 는 서비스가 이 세션을 위해 뽑은 값이라 **공개 입력**이다 — RP 가 자기가 준 값과 대조한다(설계 2026-09-15 §7).
@@ -33,6 +35,7 @@ template PiCred(depth) {
     signal input s_u;
     signal input blind;
     signal input attrs[4];
+    signal input r;   // 태그 무작위값(로그인마다 새로)
 
     // CIA EdDSA-Poseidon 서명
     signal input S;
@@ -56,6 +59,11 @@ template PiCred(depth) {
     signal input revRoot;
     signal input pk_CIA_x;
     signal input pk_CIA_y;
+    signal input pk_trace_x;
+    signal input pk_trace_y;
+    signal input tag_c1_x;
+    signal input tag_c1_y;
+    signal input tag_c2;
 
     var DOMAIN_MODE3_CRED_V3 = 93461614427473393731524147;  // ASCII "MODE3CREDV3"
     var TAG_MODE3_CRED = 3;                                  // TAG_SESSION=1, TAG_ACCOUNT=2 와 갈라 둔다
@@ -131,10 +139,23 @@ template PiCred(depth) {
         nm.pathIndices[i] <== pathIndices[i];
     }
     nm.root <== revRoot;
+
+    // ---- ⑤ 트레이스 태그 ----
+    // uid 는 ② 의 커밋 개봉과 ③ 의 PPID 유도에 쓴 바로 그 신호다 — 태그를 열면 이 성명의 uid 가 나온다.
+    component tag = TraceTag();
+    tag.r <== r;
+    tag.uid <== uid;
+    tag.pk_trace_x <== pk_trace_x;
+    tag.pk_trace_y <== pk_trace_y;
+    tag_c1_x === tag.c1x;
+    tag_c1_y === tag.c1y;
+    tag_c2 === tag.c2;
 }
 
-// 공개 입력의 순서는 lib/mode3_wallet.js·lib/mode3_rp.js 가 의존한다. 바꾸지 말 것.
-// pk_CIA_x/y 는 공개 입력이다. 검증자는 반드시 이 값을 고정된 CIA 키와 비교해야 한다 (설계 §5).
+// 공개 입력의 순서는 lib/mode3_wallet.js·lib/mode3_rp.js·cia.js(개봉) 가 의존한다. 바꾸지 말 것.
+// pk_CIA_x/y 와 pk_trace_x/y 는 공개 입력이다. 검증자는 반드시 전자를 고정된 CIA 키와, 후자를 자기 등록 파일의
+// 조합 키와 비교해야 한다 (설계 §5, 2026-09-16 §4.2).
 component main {public [
-    PPID, arid, pk_i, exptime, chainid, r_s, revRoot, pk_CIA_x, pk_CIA_y
+    PPID, arid, pk_i, exptime, chainid, r_s, revRoot, pk_CIA_x, pk_CIA_y,
+    pk_trace_x, pk_trace_y, tag_c1_x, tag_c1_y, tag_c2
 ]} = PiCred(32);

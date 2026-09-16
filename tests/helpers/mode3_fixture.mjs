@@ -4,6 +4,8 @@
 import { buildPoseidon, buildEddsa } from 'circomlibjs';
 import { credLeaf, createRevocationTree } from '../../lib/mode3_revocation.js';
 import { credCommit, credMessage, ppid as computePpid } from '../../lib/mode3_credential.js';
+import { combinePublicKey, encryptTag } from '../../lib/mode3_trace.js';
+import { buildBabyjub } from 'circomlibjs';
 
 // --- 정상 입력 하나를 만든다 -------------------------------------------------
 // C(커밋)도 함께 돌려준다 — 폐기 후 root를 만드는 등 호출부가 C를 다시 계산할
@@ -22,6 +24,13 @@ export async function buildValidInput() {
   const exptime = 1789000000n;   // Unix 초. 값 자체는 회로에 무관 — 서명 메시지에만 들어간다
   const chainid = 31337n;
   const r_s = 55555555555555555555n;   // 서비스가 뽑은 세션 값. 공개 입력
+
+  // 트레이스 태그(설계 2026-09-16 §4.1). 조각은 테스트 고정값 — 실제 키가 아니다. r 도 고정(음성 케이스가 재현되게).
+  const bj = await buildBabyjub();
+  const shareOf = (x) => ({ x, X: { x: bj.F.toObject(bj.mulPointEscalar(bj.Base8, x)[0]), y: bj.F.toObject(bj.mulPointEscalar(bj.Base8, x)[1]) } });
+  const shares = { svc: shareOf(66666666666666666666n), aa: shareOf(77777777777777777777n) };
+  const pk_trace = await combinePublicKey(shares.svc.X, shares.aa.X);
+  const tag = await encryptTag(pk_trace, uid, 88888888888888888888n);
 
   // s_u, blind, attrs, r_s 등 스칼라는 2^250 미만이어야 한다 (회로 Num2Bits(250)
   // 과 같은 상한, lib/mode3_credential.js 의 SCALAR_MAX). 새 난수가 필요하면
@@ -62,7 +71,13 @@ export async function buildValidInput() {
     revRoot: tree.getRoot().toString(),
     pk_CIA_x: F.toObject(pub[0]).toString(),
     pk_CIA_y: F.toObject(pub[1]).toString(),
+    r: tag.r.toString(),
+    pk_trace_x: pk_trace.x.toString(),
+    pk_trace_y: pk_trace.y.toString(),
+    tag_c1_x: tag.c1.x.toString(),
+    tag_c1_y: tag.c1.y.toString(),
+    tag_c2: tag.c2.toString(),
   };
 
-  return { input, C };
+  return { input, C, pk_trace, shares, tag };
 }

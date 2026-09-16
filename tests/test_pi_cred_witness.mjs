@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { credLeaf, createRevocationTree, MODE3_TREE_DEPTH } from '../lib/mode3_revocation.js';
 import { buildValidInput } from './helpers/mode3_fixture.mjs';
 import { ppid } from '../lib/mode3_credential.js';
+import { partialDecrypt, combineDecrypt } from '../lib/mode3_trace.js';
 
 const ROOT_DIR = fileURLToPath(new URL('..', import.meta.url));
 // build/mode3 바로 아래가 아니라 하위 디렉터리에 컴파일한다 — 지갑이 증명에 쓰는 build/mode3/pi_cred_js/pi_cred.wasm
@@ -61,7 +62,7 @@ async function t(name, fn) {
 }
 
 const constraints = compile();
-const { input: valid, C: validC } = await buildValidInput();
+const { input: valid, C: validC, shares, tag } = await buildValidInput();
 
 await t('양성: 정상 credential의 witness가 계산된다', async () => {
   const w = await witness(valid);
@@ -109,6 +110,30 @@ await t('음성: pk_i를 바꾸면 거부된다 (C 바인딩이 깨진다)', asy
     () => witness({ ...valid, pk_i: (BigInt(valid.pk_i) + 1n).toString() }),
     /Assert Failed/,
   );
+});
+
+await t('⑤ 양성: 회로가 받아들인 태그는 두 조각으로 uid 로 열린다 (JS encryptTag 와 회로 계산이 일치)', async () => {
+  await witness(valid);   // 공개 입력 tag_* 가 회로 계산과 같아야 통과한다
+  const D_svc = await partialDecrypt(shares.svc.x, tag.c1);
+  const D_aa = await partialDecrypt(shares.aa.x, tag.c1);
+  assert.equal(await combineDecrypt(tag.c2, D_svc, D_aa), BigInt(valid.uid));
+});
+
+await t('⑤ 음성: c2 를 바꾸면 거부된다 (평문이 커밋 안의 uid 와 다르다)', async () => {
+  await assert.rejects(() => witness({ ...valid, tag_c2: (BigInt(valid.tag_c2) + 1n).toString() }), /Assert Failed/);
+});
+
+await t('⑤ 음성: pk_trace 를 바꾸면 거부된다 (다른 키로 만든 태그는 이 키의 태그가 아니다)', async () => {
+  // c1 은 r 만의 함수라 그대로이고 K 가 달라져 c2 가 안 맞는다.
+  await assert.rejects(() => witness({ ...valid, pk_trace_x: shares.svc.X.x.toString(), pk_trace_y: shares.svc.X.y.toString() }), /Assert Failed/);
+});
+
+await t('⑤ 음성: c1 을 바꾸면 거부된다 (c1 = r·B8 를 회로가 계산한다)', async () => {
+  await assert.rejects(() => witness({ ...valid, tag_c1_x: shares.svc.X.x.toString(), tag_c1_y: shares.svc.X.y.toString() }), /Assert Failed/);
+});
+
+await t('⑤ 음성: r 을 바꾸면 거부된다 (c1·c2 둘 다 어긋난다)', async () => {
+  await assert.rejects(() => witness({ ...valid, r: (BigInt(valid.r) + 1n).toString() }), /Assert Failed/);
 });
 
 await t('음성: 폐기 전에 만든 witness는 폐기 후 root에서 거부된다 (낡은 증명)', async () => {
