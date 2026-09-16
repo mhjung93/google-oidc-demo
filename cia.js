@@ -7,21 +7,26 @@
 import 'dotenv/config';
 import express from 'express';
 import path from 'node:path';
+import fs from 'node:fs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
+import * as snarkjs from 'snarkjs';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { credMessage, compressPoint, SCALAR_MAX, randomScalar } from './lib/mode3_credential.js';
 import { credLeaf, createRevocationTree } from './lib/mode3_revocation.js';
 import { verifyIssuance, isValidPoint, pointFromStrings, parseProof, issueRequestMessage } from './lib/mode3_issuance.js';
 import { LOG_ABI, rootToBytes32, signRootPublication } from './lib/mode3_log.js';
 import { signRpCert } from './lib/mode3_rp_cert.js';
+import { isTracePoint, createShare, combinePublicKey, partialDecrypt, combineDecrypt } from './lib/mode3_trace.js';
+import { openRequestMessage, openResultMessage, recoverSigner, isFreshTs } from './lib/mode3_opening.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.CIA_PORT) || 4100;
 const STATE_FILE = process.env.CIA_STATE_FILE || path.join(__dirname, 'cia_state.json');
 const KEYS_FILE = process.env.CIA_KEYS_FILE || path.join(__dirname, 'cia_keys.json');
+const VKEY_PATH = process.env.MODE3_VKEY_PATH || path.join(__dirname, 'build', 'mode3', 'pi_cred_vkey.json');
 const ADMIN_SECRET = process.env.CIA_ADMIN_SECRET;
 const RPC_URL = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
 const LOG_ADDRESS = process.env.CIA_LOG_ADDRESS || null;
@@ -72,15 +77,19 @@ function loadOrCreateKeys() {
 // ---- 상태 ----
 // accounts:  uid → { pk_u:{x,y}, cm_u:{x,y}, disabled }
 // issued:    uid → [ { leaf(10진), C(10진), exptime(10진 Unix 초) } ]
-// used_rs:   uid → [ r_s(10진) ]   발급 요청 재생 방지. **정리하지 않는다**(만료 뒤 지우면 옛 본문 재생으로 TTL 연장)
-// rps:       arid → { name, origin, at }   서비스 등록(설계 2026-09-15 §3). cert_s 는 저장하지 않고 요청 때 재서명
+// rps:       arid → { name, origin, pk_service(체크섬 주소)|null, X_svc:{x,y}|null, x_AA|null, pk_trace:{x,y}|null,
+//                     status: pending|approved|denied, requestedAt, decidedAt|null }   서비스 등록(2026-09-16 §3)
+//            x_AA 는 CIA 조각 — 밖으로 나가지 않는다. 잃으면 그 서비스의 과거 태그는 영원히 열 수 없다(§8 4번)
+// openings:  [ { id, arid, r_s, PPID, c1:{x,y}, c2, D_svc:{x,y}, status: pending|approved|denied|failed, requestedAt,
+//                decidedAt|null, uid? } ]   영구 감사 기록(§6). uid 는 approved 에만
 // revoked / pending / epoch
-// version 3 (2026-09-15): nonces → used_rs, rps 추가. v2 이하는 옛 서명 형식이라 읽지 않는다.
-const STATE_VERSION = 3;
+// version 4 (2026-09-16): used_rs 삭제(CIA 는 로그인당 기록이 없다 — §4.4), rps 에 키·상태, openings 추가.
+// v3 는 마이그레이션한다(사용자 쪽 서명 형식이 안 바뀌었다). v2 이하는 옛 서명 형식이라 읽지 않는다.
+const STATE_VERSION = 4;
 let state;
 let tree;            // 전체 폐기 트리(게시 여부 무관) — 서명해 올리는 root 의 출처
 let publishedTree;   // 온체인에 이벤트로 나간 리프만 — 게시 직전 온체인 root 와 대조하는 기준
-function defaultState() { return { version: STATE_VERSION, accounts: {}, issued: {}, used_rs: {}, rps: {}, revoked: [], pending: [], epoch: 0 }; }
+function defaultState() { return { version: STATE_VERSION, accounts: {}, issued: {}, rps: {}, openings: [], revoked: [], pending: [], epoch: 0 }; }
 function persist() { writeJsonAtomic(STATE_FILE, state, 0o600); }
 
 // pending 은 revoked 의 접미사다 — /cia/revoke 가 둘 다에 push 하고 /cia/publish 가 pending 의
@@ -127,12 +136,23 @@ async function reconcileWithChain({ onchainRoot, onchainEpoch }) {
 
 async function loadState() {
   state = readJson(STATE_FILE, defaultState());
+  if (state.version === 3) {
+    console.warn('[cia] 상태 파일 v3 → v4 마이그레이션: used_rs 버림, 기존 서비스 등록은 approved(조각 없음)로 둔다');
+    delete state.used_rs;
+    for (const e of Object.values(state.rps ?? {})) {
+      e.pk_service ??= null; e.X_svc ??= null; e.x_AA ??= null; e.pk_trace ??= null;
+      e.status ??= 'approved'; e.requestedAt ??= e.at ?? new Date().toISOString(); e.decidedAt ??= e.requestedAt;
+    }
+    state.openings ??= [];
+    state.version = STATE_VERSION;
+    persist();
+  }
   if (state.version !== STATE_VERSION) {
-    console.error(`[cia] 기동 거부: 상태 파일 버전 ${state.version} (기대 ${STATE_VERSION}). 옛 credential 형식(nonce/max_height)의 상태는 ` +
-      `새 회로에서 어차피 검증되지 않으므로 마이그레이션하지 않는다 — 재시연 세트(로그 재배포 → 상태 파일 삭제)로 새로 시작할 것.`);
+    console.error(`[cia] 기동 거부: 상태 파일 버전 ${state.version} (기대 ${STATE_VERSION}). v2 이하는 옛 credential 형식이라 ` +
+      `새 회로에서 검증되지 않으므로 마이그레이션하지 않는다 — 재시연 세트(로그 재배포 → 상태 파일 삭제)로 새로 시작할 것.`);
     process.exit(1);
   }
-  state.used_rs ??= {}; state.rps ??= {};
+  state.rps ??= {}; state.openings ??= [];
   publishedTree = await buildPublishedTree();
   // 기동 시 대조. RPC 가 아직 안 떠 있으면 대조 없이 기동한다 — 발급은 chainAlive() 가 503 을 내거나
   // (CIA_CHAIN_IDS 도 없어 허용 목록이 비어 있으면) chainid 허용 목록 검사에서 503 을 내고,
@@ -211,25 +231,70 @@ app.get('/cia/public_keys', (req, res) => {
   res.json({ pk_CIA: S(ciaPub), ethAddress: ethWallet.address, ttlSeconds: TTL_SECONDS, chainIds: CHAIN_IDS, logAddress: LOG_ADDRESS });
 });
 
-// §3(2026-09-15) 서비스 등록. arid 는 CIA 가 배정한다(Mode 2 의 rid 와 같은 방식). 같은 origin 이 다시 오면 같은 arid 를
-// 돌려줘 RP 재기동 뒤에도 가명이 바뀌지 않게 한다. 승인 절차는 없다(데모, §9 한계).
+// §3(2026-09-16) 서비스 등록 — pending 으로 받고 운영자가 승인하면 CIA 조각을 만들어 조합 키 pk_trace 와 cert_s(V2)를
+// 낸다. 같은 origin·같은 키의 재호출은 현재 상태를 돌려준다(상태 조회를 겸한다). arid 는 요청 시점에 배정한다.
+const isAddr = (v) => typeof v === 'string' && /^0x[0-9a-fA-F]{40}$/.test(v);
 app.post('/cia/register_rp', async (req, res) => {
   try {
-    const { name, origin } = req.body ?? {};
-    if (typeof name !== 'string' || name.length === 0 || typeof origin !== 'string' || !/^https?:\/\/[^/\s]+$/.test(origin)) {
-      return res.status(400).json({ error: 'name, origin(http(s)://host[:port], 경로 없음) required' });
+    const { name, origin, pk_service, X_svc } = req.body ?? {};
+    if (typeof name !== 'string' || name.length === 0 || typeof origin !== 'string' || !/^https?:\/\/[^/\s]+$/.test(origin) || !isAddr(pk_service) || !isPt(X_svc)) {
+      return res.status(400).json({ error: 'name, origin(http(s)://host[:port], 경로 없음), pk_service(주소), X_svc{x,y} required' });
     }
+    const addr = ethers.getAddress(pk_service);
+    const Xs = pointFromStrings(X_svc);
+    // 항등원·부분군 밖은 거절 — 항등원 X_svc 면 pk_trace 가 CIA 조각만으로 열린다(§2).
+    if (!(await isTracePoint(Xs))) return res.status(400).json({ error: 'X_svc is not a valid subgroup point' });
     let arid = Object.keys(state.rps).find((a) => state.rps[a].origin === origin);
-    let created = false;
-    if (!arid) {
-      arid = randomScalar().toString();
-      state.rps[arid] = { name, origin, at: new Date().toISOString() };
-      persist();
-      created = true;
+    let e = arid ? state.rps[arid] : null;
+    if (e && e.pk_service === null) {
+      // v3 에서 넘어온 등록(키 없음): 키를 내면 채운다. 승인은 이미 난 것으로 본다(§7).
+      e.pk_service = addr; e.X_svc = { x: X_svc.x, y: X_svc.y }; persist();
     }
-    const cert_s = await signRpCert(ciaPrv, { arid: BigInt(arid), origin });
-    res.status(created ? 201 : 200).json({ arid, name: state.rps[arid].name, origin, cert_s });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    if (e && (e.pk_service !== addr || e.X_svc.x !== X_svc.x || e.X_svc.y !== X_svc.y)) {
+      return res.status(409).json({ error: 'service_key_mismatch' });
+    }
+    if (!e) {
+      arid = randomScalar().toString();
+      e = state.rps[arid] = { name, origin, pk_service: addr, X_svc: { x: X_svc.x, y: X_svc.y }, x_AA: null, pk_trace: null, status: 'pending', requestedAt: new Date().toISOString(), decidedAt: null };
+      persist();
+    }
+    if (e.status === 'denied') return res.status(403).json({ arid, status: 'denied' });
+    if (e.status === 'pending') return res.status(202).json({ arid, status: 'pending' });
+    if (!e.pk_trace) await makeShare(arid);   // v3 마이그레이션 항목이 키를 낸 첫 호출
+    const cert_s = await signRpCert(ciaPrv, { arid: BigInt(arid), origin, pk_trace: e.pk_trace });
+    res.json({ arid, name: e.name, origin, pk_trace: e.pk_trace, cert_s });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+/** CIA 조각을 만들어 조합 키를 채운다. 승인 때 한 번. */
+async function makeShare(arid) {
+  const e = state.rps[arid];
+  const share = await createShare();
+  const pk = await combinePublicKey(pointFromStrings(e.X_svc), share.X);
+  e.x_AA = share.x.toString();
+  e.pk_trace = { x: pk.x.toString(), y: pk.y.toString() };
+  persist();
+}
+
+const rpView = (arid, e) => ({ arid, name: e.name, origin: e.origin, pk_service: e.pk_service, X_svc: e.X_svc, pk_trace: e.pk_trace, status: e.status, requestedAt: e.requestedAt, decidedAt: e.decidedAt });
+app.get('/cia/rps', requireAdmin, (req, res) => res.json({ rps: Object.entries(state.rps).map(([a, e]) => rpView(a, e)) }));
+app.post('/cia/rps/:arid/approve', requireAdmin, async (req, res) => {
+  try {
+    const e = state.rps[req.params.arid];
+    if (!e) return res.status(404).json({ error: 'unknown service' });
+    if (e.status !== 'pending') return res.status(409).json({ error: `already ${e.status}` });
+    if (!e.X_svc) return res.status(409).json({ error: 'no service key registered' });
+    e.status = 'approved'; e.decidedAt = new Date().toISOString();
+    await makeShare(req.params.arid);
+    res.json({ arid: req.params.arid, status: e.status });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.post('/cia/rps/:arid/deny', requireAdmin, (req, res) => {
+  const e = state.rps[req.params.arid];
+  if (!e) return res.status(404).json({ error: 'unknown service' });
+  if (e.status !== 'pending') return res.status(409).json({ error: `already ${e.status}` });
+  e.status = 'denied'; e.decidedAt = new Date().toISOString(); persist();
+  res.json({ arid: req.params.arid, status: e.status });
 });
 
 // §6.1 등록. CIA 가 장기키를 만들어 주고 sk_u 는 기억하지 않는다(응답에 한 번 실어 보내고 버린다).
@@ -253,7 +318,7 @@ app.post('/cia/register', async (req, res) => {
 });
 
 // §5(2026-09-15) 발급. C 는 받지 않는다 — C_pt 에서 스스로 유도한다. 검사 순서: 형식 → disabled → chainid 허용 →
-// (uid, r_s) 미사용 → 사용자 서명 → π_issue → 같은 C → 체인 가용성 → disabled 재확인 → 서명·기록.
+// 사용자 서명 → π_issue → 같은 C → 체인 가용성 → disabled 재확인 → 서명·기록.
 app.post('/cia/issue', async (req, res) => {
   try {
     const { uid, C_pt, proof, sig_u, chainid, r_s } = req.body ?? {};
@@ -271,9 +336,6 @@ app.post('/cia/issue', async (req, res) => {
     const rsBig = BigInt(r_s);
     if (rsBig >= SCALAR_MAX) return res.status(400).json({ error: 'r_s must be < 2^250' });
     const rsStr = rsBig.toString();
-    const used = (state.used_rs[uid] ??= []);
-    // 서명·증명 검증(~170ms) 앞에 둔다 — 재생 본문이 매번 검증을 태우지 않게.
-    if (used.includes(rsStr)) return res.status(409).json({ error: 'r_s already used' });
 
     const cpt = pointFromStrings(C_pt);
     // 사용자 인증: 등록된 pk_u 로 (C_pt, chainid, r_s) 에 대한 EdDSA-Poseidon 서명 검증
@@ -304,15 +366,12 @@ app.post('/cia/issue', async (req, res) => {
     const leaf = await credLeaf(C);
     // 위 await 들 사이에 /cia/revoke·self_revoke 나 같은 (C_pt, 다른 r_s) 의 동시 요청이 끼어들 수 있다 —
     // 폐기 직후의 발급이 살아남으면 트리에 없는 새 credential 이 TTL 동안 유효하고, 같은 C 가 두 번 서명되면
-    // 서로 다른 σ_CIA 두 개가 credential 하나를 가리킨다. 마지막 await 뒤, 기록 직전에 disabled·r_s·같은 C
-    // 셋을 전부 다시 확인한다. 끼어든 revoke 의 pruneExpired 가 목록 배열을 새로 만들었을 수 있어
-    // state.issued[uid] 에 넣는다. r_s 는 성공했을 때만 기록한다 — 실패한 요청의 r_s 를 태우면 지갑이
-    // 재시도할 때마다 새 r_s 를 써야 하고, 실패 응답을 재생 방지에 쓸 이유도 없다.
+    // 서로 다른 σ_CIA 두 개가 credential 하나를 가리킨다. 마지막 await 뒤, 기록 직전에 disabled·같은 C
+    // 둘을 다시 확인한다. 끼어든 revoke 의 pruneExpired 가 목록 배열을 새로 만들었을 수 있어
+    // state.issued[uid] 에 넣는다. r_s 는 기록하지 않는다(2026-09-16 §4.4) — 재생은 RP 의 소비가 막는다.
     if (acct.disabled) return res.status(403).json({ error: 'account disabled' });
-    if ((state.used_rs[uid] ??= []).includes(rsStr)) return res.status(409).json({ error: 'r_s already used' });
     if (pruneExpired(uid).some((e) => e.C === Cstr)) return res.status(409).json({ error: 'credential already issued for this C_pt' });
     (state.issued[uid] ??= []).push({ leaf: leaf.toString(), C: Cstr, exptime: exptime.toString() });
-    state.used_rs[uid].push(rsStr);
     persist();
     res.json({
       C: Cstr, exptime: exptime.toString(), chainid: chainStr, r_s: rsStr,
@@ -436,6 +495,82 @@ app.post('/cia/account/self_revoke', async (req, res) => {
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
+// ---- §6(2026-09-16) 승인된 개봉 ----
+// 요청: 서비스가 트랜스크립트(공개 입력 14개 + π)와 자기 부분 복호 D_svc 를 서비스 서명키로 서명해 낸다. CIA 는 서명·신선도·
+// arid·pk_trace·Groth16 을 검증하고 pending 으로 둔다 — 트랜스크립트 검증이 없으면 서비스가 임의 암호문을 내 CIA 를 복호
+// 오라클로 쓸 수 있고, arid 대조가 없으면 유출된 남의 로그로 연다. 승인 시점에야 CIA 조각을 더해 uid 를 계산한다.
+let vkeyP = null;
+function loadVkey() {
+  return (vkeyP ??= (async () => JSON.parse(fs.readFileSync(VKEY_PATH, 'utf8')))().catch((e) => { vkeyP = null; throw e; }));
+}
+const findOpening = (id) => state.openings.find((o) => o.id === id);
+app.post('/cia/open/request', async (req, res) => {
+  try {
+    const { arid, publicSignals, proof, D_svc, ts, sig } = req.body ?? {};
+    if (!isDec(arid) || !Array.isArray(publicSignals) || publicSignals.length !== 14 || !publicSignals.every(isDec) || !proof || !isPt(D_svc) || !isDec(ts) || typeof sig !== 'string') {
+      return res.status(400).json({ error: 'arid, publicSignals[14], proof, D_svc{x,y}, ts, sig required' });
+    }
+    const e = state.rps[arid];
+    if (!e) return res.status(404).json({ error: 'unknown_service' });
+    if (e.status !== 'approved' || !e.pk_service || !e.pk_trace) return res.status(403).json({ error: 'not_approved' });
+    if (!isFreshTs(ts)) return res.status(401).json({ error: 'stale' });
+    const [PPID, aridIn, , , , r_s, , ciaX, ciaY, traceX, traceY, c1x, c1y, c2] = publicSignals;
+    if (recoverSigner(openRequestMessage({ arid, r_s, PPID, D_svc, ts }), sig) !== e.pk_service) return res.status(401).json({ error: 'bad_signature' });
+    if (aridIn !== arid) return res.status(403).json({ error: 'wrong_arid' });
+    const pk = S(ciaPub);
+    if (ciaX !== pk.x || ciaY !== pk.y) return res.status(403).json({ error: 'untrusted_cia' });
+    if (traceX !== e.pk_trace.x || traceY !== e.pk_trace.y) return res.status(403).json({ error: 'wrong_trace_key' });
+    let vkey;
+    try { vkey = await loadVkey(); } catch (err) { return res.status(503).json({ error: `vkey unavailable: ${err.message}` }); }
+    let ok = false;
+    try { ok = await snarkjs.groth16.verify(vkey, publicSignals, proof); } catch { ok = false; }
+    if (!ok) return res.status(403).json({ error: 'bad_proof' });
+    // (arid, r_s) 는 로그인 세션당 하나다 — 상태와 무관하게 이미 있으면 그 id 를 돌려준다(결정된 항목을
+    // 다시 pending 으로 만들어 재심을 유도하지 않는다).
+    const dup = state.openings.find((o) => o.arid === arid && o.r_s === r_s);
+    if (dup) return res.status(200).json({ id: dup.id, status: dup.status });
+    const id = randomBytes(32).toString('hex');
+    state.openings.push({ id, arid, r_s, PPID, c1: { x: c1x, y: c1y }, c2, D_svc: { x: D_svc.x, y: D_svc.y }, status: 'pending', requestedAt: new Date().toISOString(), decidedAt: null });
+    persist();
+    res.status(202).json({ id, status: 'pending' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.get('/cia/openings', requireAdmin, (req, res) => res.json({ openings: state.openings }));
+app.post('/cia/openings/:id/approve', requireAdmin, async (req, res) => {
+  try {
+    const o = findOpening(req.params.id);
+    if (!o) return res.status(404).json({ error: 'unknown opening' });
+    if (o.status !== 'pending') return res.status(409).json({ error: `already ${o.status}` });
+    const e = state.rps[o.arid];
+    const D_aa = await partialDecrypt(BigInt(e.x_AA), pointFromStrings(o.c1));
+    const uid = (await combineDecrypt(BigInt(o.c2), pointFromStrings(o.D_svc), D_aa)).toString();
+    o.decidedAt = new Date().toISOString();
+    if (state.accounts[uid]) { o.status = 'approved'; o.uid = uid; }
+    else { o.status = 'failed'; }   // D_svc 가 틀렸다 — 서비스 자신의 요청만 망친다(§6)
+    persist();
+    res.json({ id: o.id, status: o.status });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.post('/cia/openings/:id/deny', requireAdmin, (req, res) => {
+  const o = findOpening(req.params.id);
+  if (!o) return res.status(404).json({ error: 'unknown opening' });
+  if (o.status !== 'pending') return res.status(409).json({ error: `already ${o.status}` });
+  o.status = 'denied'; o.decidedAt = new Date().toISOString(); persist();
+  res.json({ id: o.id, status: o.status });
+});
+app.get('/cia/open/:id', (req, res) => {
+  const { ts, sig } = req.query ?? {};
+  const o = findOpening(req.params.id);
+  if (!o) return res.status(404).json({ error: 'unknown opening' });
+  if (!isDec(ts) || typeof sig !== 'string') return res.status(400).json({ error: 'ts, sig required' });
+  if (!isFreshTs(ts)) return res.status(401).json({ error: 'stale' });
+  const e = state.rps[o.arid];
+  if (recoverSigner(openResultMessage(o.id, ts), sig) !== e.pk_service) return res.status(401).json({ error: 'bad_signature' });
+  if (o.status === 'pending') return res.status(202).json({ id: o.id, status: o.status });
+  if (o.status !== 'approved') return res.status(403).json({ id: o.id, status: o.status });
+  res.json({ id: o.id, status: o.status, uid: o.uid, PPID: o.PPID, r_s: o.r_s, decidedAt: o.decidedAt });
+});
+
 app.get('/cia/state', async (req, res) => {
   let head = null;
   try { head = (await headHeight()).toString(); } catch { /* 체인 없음 */ }
@@ -450,5 +585,5 @@ loadOrCreateKeys();
 await loadState();
 // RP·지갑 에이전트와 같이 루프백에만 묶는다 — 관리자·사용자 페이지와 발급 경로를 LAN 에 노출하지 않는다.
 app.listen(PORT, '127.0.0.1', () => {
-  console.log(`Mode 3 CIA running at http://127.0.0.1:${PORT} (log=${LOG_ADDRESS ?? 'none'}, ttl=${TTL_SECONDS}s, chains=${CHAIN_IDS.join(',') || 'none'})`);
+  console.log(`Mode 3 CIA running at http://127.0.0.1:${PORT} (log=${LOG_ADDRESS ?? 'none'}, ttl=${TTL_SECONDS}s, chains=${CHAIN_IDS.join(',') || 'none'}, vkey=${fs.existsSync(VKEY_PATH) ? 'ok' : 'missing'})`);
 });

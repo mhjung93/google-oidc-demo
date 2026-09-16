@@ -17,6 +17,7 @@ import { randomScalar } from '../lib/mode3_credential.js';
 import { credLeaf, createRevocationTree } from '../lib/mode3_revocation.js';
 import { registrationCommit, proveIssuance, serializeProof, pointToStrings } from '../lib/mode3_issuance.js';
 import { syncRevocationTree, signUserRequest } from '../lib/mode3_wallet.js';
+import { createShare } from '../lib/mode3_trace.js';
 
 let failed = 0;
 async function t(name, fn) {
@@ -113,6 +114,23 @@ try {
 
   await t('불일치 거부: 빈 상태 파일로 리프가 있는 로그를 가리켜도 기동하지 않는다 (상태 파일 유실)', async () => {
     await expectStartupRefused({ env: { CIA_LOG_ADDRESS: firstLog, CIA_ETH_PRIVATE_KEY: firstEthPrv } });
+  });
+
+  await t('v3 상태 파일은 v4 로 마이그레이션된다 — used_rs 버림, rps 는 approved·조각 없음, openings 빈 배열', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-v3-'));
+    const stateFile = path.join(dir, 'cia_state.json');
+    fs.writeFileSync(stateFile, JSON.stringify({ version: 3, accounts: {}, issued: {}, used_rs: { '12345': ['1', '2'] }, rps: { '777': { name: 'old', origin: 'http://127.0.0.1:3100', at: '2026-09-15T00:00:00.000Z' } }, revoked: [], pending: [], epoch: 0 }), { mode: 0o600 });
+    const cia = await startIsolatedCia({ env: { CIA_STATE_FILE: stateFile } });
+    try {
+      const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      assert.equal(saved.version, 4); assert.equal(saved.used_rs, undefined); assert.deepEqual(saved.openings, []);
+      const e = (await cia.adminGet('/cia/rps')).body.rps.find((x) => x.arid === '777');
+      assert.equal(e.status, 'approved'); assert.equal(e.pk_trace, null); assert.equal(e.pk_service, null);
+      // 옛 등록이 키를 내며 재등록하면 그때 조각을 만들고 200
+      const w = ethers.Wallet.createRandom(); const share = await createShare();
+      const r = await cia.post('/cia/register_rp', { name: 'old', origin: 'http://127.0.0.1:3100', pk_service: w.address, X_svc: { x: share.X.x.toString(), y: share.X.y.toString() } });
+      assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.body.arid, '777'); assert.ok(r.body.pk_trace?.x);
+    } finally { await cia.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
   });
 } finally {
   if (first) await first.stop();

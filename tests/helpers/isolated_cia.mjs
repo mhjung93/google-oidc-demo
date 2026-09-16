@@ -8,6 +8,7 @@ import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
 import { getProvider, fundAddress, deployRevocationLog } from './mode3_chain.mjs';
+import { createShare } from '../../lib/mode3_trace.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 
@@ -80,7 +81,22 @@ export async function startIsolatedCia(opts = {}) {
     post: (p, body) => fetch(`${base}${p}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) }).then(json),
     adminPost: (p, body) => fetch(`${base}${p}`, { method: 'POST', headers: adminHeaders, body: JSON.stringify(body ?? {}) }).then(json),
     get: (p) => fetch(`${base}${p}`).then(json),
-    registerRp: (origin, name = 'test-rp') => fetch(`${base}/cia/register_rp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, origin }) }).then(json).then((r) => { if (r.status !== 201 && r.status !== 200) throw new Error('register_rp 실패: ' + JSON.stringify(r.body)); return { arid: r.body.arid, cert_s: r.body.cert_s, origin: r.body.origin }; }),
+    adminGet: (p) => fetch(`${base}${p}`, { headers: adminHeaders }).then(json),
+    // 서비스 등록 + 운영자 승인 대행(설계 2026-09-16 §3). keys 를 주면 그 키로(재등록·불일치 테스트용).
+    async registerRp(origin, name = 'test-rp', keys = null) {
+      const serviceWallet = keys?.serviceWallet ?? ethers.Wallet.createRandom();
+      const share = keys?.share ?? await createShare();
+      const body = { name, origin, pk_service: serviceWallet.address, X_svc: { x: share.X.x.toString(), y: share.X.y.toString() } };
+      const post = () => fetch(`${base}/cia/register_rp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(json);
+      let r = await post();
+      if (r.status === 202) {
+        const a = await fetch(`${base}/cia/rps/${r.body.arid}/approve`, { method: 'POST', headers: adminHeaders }).then(json);
+        if (a.status !== 200) throw new Error('approve 실패: ' + JSON.stringify(a.body));
+        r = await post();
+      }
+      if (r.status !== 200) throw new Error('register_rp 실패: ' + JSON.stringify(r.body));
+      return { arid: r.body.arid, origin: r.body.origin, cert_s: r.body.cert_s, pk_trace: { x: BigInt(r.body.pk_trace.x), y: BigInt(r.body.pk_trace.y) }, serviceWallet, share };
+    },
     async stop() {
       if (child.exitCode === null && child.signalCode === null) {
         child.kill('SIGTERM');

@@ -10,6 +10,7 @@ import { credLeaf } from '../lib/mode3_revocation.js';
 import { registrationCommit, proveIssuance, serializeProof, pointToStrings } from '../lib/mode3_issuance.js';
 import { syncRevocationTree, signUserRequest } from '../lib/mode3_wallet.js';
 import { verifyRpCert } from '../lib/mode3_rp_cert.js';
+import { createShare } from '../lib/mode3_trace.js';
 
 let failed = 0;
 async function t(name, fn) {
@@ -31,8 +32,8 @@ const arid = 22222222222222222222n;
 const pk_i = BigInt(ethers.Wallet.createRandom().address);
 let user;   // { s_u, r_u, cm_u, sk_u(Buffer), pk_u }
 
-// 사용자 서명은 (C_pt, chainid, r_s) 를 덮는다 — 만료된 요청 본문을 그대로 다시 내서 새 σ_CIA 를 받는
-// 것(TTL 연장)은 CIA 의 (uid, r_s) 영구 집합이 막는다(설계 2026-09-14 §4).
+// 사용자 서명은 (C_pt, chainid, r_s) 를 덮는다. CIA 는 r_s 를 기록하지 않는다 — 옛 본문 재생으로 얻는 σ 는
+// RP 에서 bad_challenge 다(2026-09-16 §4.4).
 const CHAIN_ID = 31337n;
 const signUser = (prvBuf, C_pt, chainid, r_s) => signUserRequest(prvBuf.toString('hex'), C_pt, chainid, r_s);
 
@@ -62,17 +63,47 @@ try {
     assert.equal((await cia.post('/cia/register', { uid: '12345', pwd: 'password123', cm_u: nonCanonical })).status, 400);
   });
 
-  await t('register_rp: (name, origin) 으로 arid 와 cert_s 를 받고, 같은 origin 재등록은 같은 arid', async () => {
-    const r = await cia.post('/cia/register_rp', { name: 'demo-rp', origin: 'http://127.0.0.1:3100' });
-    assert.equal(r.status, 201, JSON.stringify(r.body));
-    assert.match(r.body.arid, /^[0-9]+$/);
-    assert.ok(BigInt(r.body.arid) < SCALAR_MAX);
+  await t('register_rp: 등록은 pending 202 → 승인 → 같은 키로 재호출하면 200 에 pk_trace·cert_s(V2), 같은 origin 은 같은 arid', async () => {
+    const w = ethers.Wallet.createRandom(); const share = await createShare();
+    const body = { name: 'demo-rp', origin: 'http://127.0.0.1:3100', pk_service: w.address, X_svc: { x: share.X.x.toString(), y: share.X.y.toString() } };
+    const r = await cia.post('/cia/register_rp', body);
+    assert.equal(r.status, 202, JSON.stringify(r.body)); assert.equal(r.body.status, 'pending');
+    assert.match(r.body.arid, /^[0-9]+$/); assert.ok(BigInt(r.body.arid) < SCALAR_MAX);
+    assert.equal(r.body.cert_s, undefined, '승인 전에는 인증서가 없다');
+    const again = await cia.post('/cia/register_rp', body);
+    assert.equal(again.status, 202); assert.equal(again.body.arid, r.body.arid);
+    const list = await cia.adminGet('/cia/rps');
+    assert.equal(list.status, 200);
+    const mine = list.body.rps.find((e) => e.arid === r.body.arid);
+    assert.equal(mine.status, 'pending'); assert.equal(mine.pk_trace, null); assert.equal(mine.pk_service, w.address);
+    assert.equal((await cia.adminPost(`/cia/rps/${r.body.arid}/approve`)).status, 200);
+    const ok = await cia.post('/cia/register_rp', body);
+    assert.equal(ok.status, 200, JSON.stringify(ok.body)); assert.equal(ok.body.arid, r.body.arid);
     const keys = (await cia.get('/cia/public_keys')).body;
-    assert.equal(await verifyRpCert({ x: BigInt(keys.pk_CIA.x), y: BigInt(keys.pk_CIA.y) }, { arid: BigInt(r.body.arid), origin: 'http://127.0.0.1:3100', cert: r.body.cert_s }), true);
-    const again = await cia.post('/cia/register_rp', { name: 'demo-rp', origin: 'http://127.0.0.1:3100' });
-    assert.equal(again.status, 200);
-    assert.equal(again.body.arid, r.body.arid);
+    const pk_trace = { x: BigInt(ok.body.pk_trace.x), y: BigInt(ok.body.pk_trace.y) };
+    assert.equal(await verifyRpCert({ x: BigInt(keys.pk_CIA.x), y: BigInt(keys.pk_CIA.y) }, { arid: BigInt(ok.body.arid), origin: body.origin, pk_trace, cert: ok.body.cert_s }), true);
+    // pk_trace = X_svc + x_AA·B8 — 서비스 조각이 들어 있어야 한다(같은 점이면 CIA 혼자 아는 키)
+    assert.notEqual(ok.body.pk_trace.x, body.X_svc.x);
+    assert.equal((await cia.adminPost(`/cia/rps/${r.body.arid}/approve`)).status, 409, '이미 결정된 항목은 409');
+  });
+
+  await t('register_rp: 다른 키로 같은 origin 은 409, 거절된 origin 은 403, 항등원·형식 오류는 400, 없는 arid 승인은 404', async () => {
+    const origin = 'http://127.0.0.1:3101';
+    const w = ethers.Wallet.createRandom(); const share = await createShare();
+    const base = { name: 'x', origin, pk_service: w.address, X_svc: { x: share.X.x.toString(), y: share.X.y.toString() } };
+    assert.equal((await cia.post('/cia/register_rp', { ...base, X_svc: { x: '0', y: '1' } })).status, 400);
+    assert.equal((await cia.post('/cia/register_rp', { ...base, X_svc: { x: '1', y: '1' } })).status, 400);
+    assert.equal((await cia.post('/cia/register_rp', { ...base, pk_service: 'nope' })).status, 400);
     assert.equal((await cia.post('/cia/register_rp', { name: 'x' })).status, 400);
+    const r = await cia.post('/cia/register_rp', base);
+    assert.equal(r.status, 202, JSON.stringify(r.body));
+    const other = await cia.post('/cia/register_rp', { ...base, pk_service: ethers.Wallet.createRandom().address });
+    assert.equal(other.status, 409); assert.equal(other.body.error, 'service_key_mismatch');
+    assert.equal((await cia.adminPost('/cia/rps/123/approve')).status, 404);
+    assert.equal((await cia.adminPost(`/cia/rps/${r.body.arid}/deny`)).status, 200);
+    const denied = await cia.post('/cia/register_rp', base);
+    assert.equal(denied.status, 403); assert.equal(denied.body.status, 'denied');
+    assert.equal((await cia.adminGet('/cia/rps')).body.rps.find((e) => e.arid === r.body.arid).status, 'denied');
   });
 
   await t('register: cm_u 등록, 장기키 발급', async () => {
@@ -124,14 +155,12 @@ try {
     assert.equal((await cia.post('/cia/issue', body)).status, 400);
   });
 
-  await t('issue: 같은 r_s 재사용은 409, 허용 목록 밖 chainid 는 400, 값만 바꿔 끼우면 서명 불일치 400, 누락은 400', async () => {
+  await t('issue: 같은 r_s 로 다른 C_pt 는 200 (CIA 는 로그인당 기록이 없다 — 재생은 RP 가 막는다), 허용 목록 밖 chainid 는 400, …', async () => {
     const first = await issueRequest(user);
     assert.equal((await cia.post('/cia/issue', first.body)).status, 200);
-    // 같은 r_s 로 다른 C_pt 를 내도 409 — (uid, r_s) 는 영구 집합이다
+    // CIA 는 r_s 를 기록하지 않는다(2026-09-16 §4.4) — 같은 r_s 로 다른 C_pt 를 내면 200 이다. 재생 방지는 RP 의 r_s 소비다.
     const replay = await issueRequest(user, {}, { r_s: first.r_s });
-    const r1 = await cia.post('/cia/issue', replay.body);
-    assert.equal(r1.status, 409, JSON.stringify(r1.body));
-    assert.match(r1.body.error, /r_s/);
+    assert.equal((await cia.post('/cia/issue', replay.body)).status, 200);
     // 허용 목록(31337) 밖
     const wrongChain = await issueRequest(user, {}, { chainid: 1n });
     const r2 = await cia.post('/cia/issue', wrongChain.body);
@@ -429,7 +458,7 @@ try {
     }
   });
 
-  await t('I3: 만료 뒤 같은 본문 재전송은 409 (r_s 영구 보관, TTL 연장 방지)', async () => {
+  await t('I3: 만료 뒤 같은 본문 재전송은 200 (CIA 기록 없음 — 옛 r_s 의 성명은 RP 가 거절한다)', async () => {
     const ttlCia = await startIsolatedCia({ env: { CIA_TTL_SECONDS: '1', CIA_REVOKE_SKEW_SECONDS: '0' } });
     try {
       const s_u = randomScalar(), r_u = randomScalar();
@@ -446,11 +475,9 @@ try {
       };
       const first = await ttlCia.post('/cia/issue', body);
       assert.equal(first.status, 200, JSON.stringify(first.body));
-      // 발급 기록은 만료로 사라졌어도 (uid, r_s) 는 영구라 옛 본문으로 새 exptime 을 받을 수 없다(설계 §4).
       await new Promise((r) => setTimeout(r, 2000));
       const second = await ttlCia.post('/cia/issue', body);
-      assert.equal(second.status, 409, JSON.stringify(second.body));
-      assert.match(second.body.error, /r_s/);
+      assert.equal(second.status, 200, JSON.stringify(second.body));
     } finally {
       await ttlCia.stop();
     }
