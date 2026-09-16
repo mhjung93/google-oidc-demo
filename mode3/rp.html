@@ -38,6 +38,8 @@
   <fieldset>
     <legend>이 RP 에 기록된 로그인 <button id="refreshLogins">새로고침</button></legend>
     <pre id="logins">-</pre>
+    <p class="muted">개봉 요청(설계 2026-09-16 §6): PPID <input id="openPpid" size="24" /> <button id="openBtn">요청</button> <button id="openPollBtn" disabled>결과 확인</button></p>
+    <pre id="openLog">-</pre>
   </fieldset>
 
   <script>
@@ -56,7 +58,12 @@
 
     async function loadInfo() {
       info = await (await fetch('/api/mode3/rp_info')).json();
-      $('rpInfo').textContent = `arid=${info.arid}   origin=${info.origin}   cert_s=${info.cert_s ? '있음' : '없음'}   RevocationLog=${info.logAddress}   지갑 에이전트=${info.walletAgentOrigin}   pk_CIA=${info.pkCiaSource}   chainId=${info.chainId}`;
+      const pending = info.status !== 'approved';
+      $('rpInfo').textContent = pending
+        ? `등록 대기 중 (arid=${info.arid ?? '-'}) — CIA 관리자 페이지(/admin)에서 승인하면 활성화된다. 5초마다 확인.`
+        : `arid=${info.arid}   origin=${info.origin}   cert_s=있음   pk_trace=있음   RevocationLog=${info.logAddress}   지갑 에이전트=${info.walletAgentOrigin}   pk_CIA=${info.pkCiaSource}   chainId=${info.chainId}`;
+      $('loginBtn').disabled = pending;
+      if (pending) setTimeout(loadInfo, 5000);
     }
     async function refreshLogins() {
       const { logins } = await (await fetch('/api/mode3/logins')).json();
@@ -72,7 +79,7 @@
         log(`1. r_s 발급 ${ms(t0)}: ${r_s.slice(0, 16)}…`);
 
         t0 = Date.now();
-        const w = await post(`${info.walletAgentOrigin}/wallet/login`, { arid: info.arid, origin: info.origin, cert_s: info.cert_s, r_s });
+        const w = await post(`${info.walletAgentOrigin}/wallet/login`, { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s });
         const wb = await w.json().catch(() => ({}));
         if (w.status !== 200) {
           log(`2. 지갑 ${w.status} ${ms(t0)}: ${wb.reason ?? wb.error ?? ''} ${wb.detail ?? ''}`);
@@ -90,6 +97,7 @@
           ? `<span class="ok">로그인 성공</span> PPID=${rb.PPID}`
           : `<span class="bad">거절: ${rb.reason}</span>`;
         setSession(rb.ok ? rb.r_s : null);
+        if (rb.ok) $('openPpid').value = rb.PPID;
         refreshLogins();
       } catch (e) {
         log(`오류: ${e.message}`);
@@ -146,6 +154,18 @@
         log(`오류: ${e.message}`);
         $('sessionVerdict').innerHTML = `<span class="bad">오류</span>`;
       } finally { $('requestBtn').disabled = !currentSession; }
+    });
+
+    let openingId = null;
+    $('openBtn').addEventListener('click', async () => {
+      const PPID = $('openPpid').value.trim();
+      const r = await post('/api/mode3/open', { PPID }); const b = await r.json().catch(() => ({}));
+      $('openLog').textContent = `요청 → ${r.status} ${JSON.stringify(b)}`;
+      openingId = b.id ?? null; $('openPollBtn').disabled = !openingId;
+    });
+    $('openPollBtn').addEventListener('click', async () => {
+      const r = await fetch(`/api/mode3/open/${openingId}`); const b = await r.json().catch(() => ({}));
+      $('openLog').textContent += `\n결과 → ${r.status} ${JSON.stringify(b)}`;
     });
 
     $('refreshLogins').addEventListener('click', refreshLogins);

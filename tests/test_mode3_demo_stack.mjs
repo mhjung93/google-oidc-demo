@@ -26,7 +26,7 @@ const uid = '12345';
 async function loginViaRp() {
   const info = (await rp.get('/api/mode3/rp_info')).body;
   const { r_s } = (await rp.post('/api/mode3/challenge')).body;
-  const w = await wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, r_s }, { Origin: rp.origin });
+  const w = await wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s }, { Origin: rp.origin });
   if (w.status !== 200) return { walletStatus: w.status, wallet: w.body, r_s };
   const r = await rp.post('/api/mode3/login', { proof: w.body.proof, publicSignals: w.body.publicSignals, sig: w.body.sig });
   return { walletStatus: 200, wallet: w.body, rpStatus: r.status, rp: r.body, r_s };
@@ -49,6 +49,14 @@ try {
     assert.equal(r.body.logAddress, cia.logAddress);
     assert.equal(r.body.walletAgentOrigin, wallet.origin);
     assert.equal(r.body.pkCiaSource, 'tofu');
+    assert.equal(r.body.status, 'approved'); assert.ok(r.body.pk_trace?.x);
+  });
+
+  await t('0. 서비스 등록 승인: 관리자 목록에 approved 이고 조합 키가 있다 (헬퍼가 승인을 대행했다)', async () => {
+    const list = (await cia.adminGet('/cia/rps')).body.rps;
+    const mine = list.find((e) => e.origin === rp.origin);
+    assert.equal(mine.status, 'approved'); assert.ok(mine.pk_trace?.x);
+    assert.equal((await rp.get('/api/mode3/rp_info')).body.status, 'approved');
   });
 
   await t('1. 등록', async () => {
@@ -116,7 +124,7 @@ try {
     try {
       const { tree } = await syncRevocationTree(provider, cia.logAddress);
       const keys = (await cia.get('/cia/public_keys')).body;
-      const { proof, publicSignals } = await buildCredentialProof({ uid: 67890n, arid: BigInt(info.arid), s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs: [0n, 0n, 0n, 0n], credential: issued.body, pk_CIA: { x: BigInt(keys.pk_CIA.x), y: BigInt(keys.pk_CIA.y) }, tree });
+      const { proof, publicSignals } = await buildCredentialProof({ uid: 67890n, arid: BigInt(info.arid), s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs: [0n, 0n, 0n, 0n], credential: issued.body, pk_CIA: { x: BigInt(keys.pk_CIA.x), y: BigInt(keys.pk_CIA.y) }, pk_trace: { x: BigInt(info.pk_trace.x), y: BigInt(info.pk_trace.y) }, tree });
       const sig = await signChallenge(session.wallet, mine.r_s);
       const rv = await rp.post('/api/mode3/revalidate', { proof, publicSignals, sig });
       assert.equal(rv.status, 401, j(rv.body));
@@ -133,7 +141,7 @@ try {
   await t('같은 r_s 로 /wallet/login 을 두 번 내면 두 번째는 409 duplicate_session (RP 에는 내지 않는다)', async () => {
     const info = (await rp.get('/api/mode3/rp_info')).body;
     const { r_s } = (await rp.post('/api/mode3/challenge')).body;
-    const body = { arid: info.arid, origin: info.origin, cert_s: info.cert_s, r_s };
+    const body = { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s };
     const first = await wallet.post('/wallet/login', body, { Origin: rp.origin });
     assert.equal(first.status, 200, j(first.body));
     const again = await wallet.post('/wallet/login', body, { Origin: rp.origin });
@@ -173,6 +181,24 @@ try {
     assert.equal(r.rp.PPID, PPID1);
   });
 
+  await t('9. 개봉: RP 가 PPID 로 요청 → 관리자 승인 → RP 가 uid 를 받는다; 거절이면 403', async () => {
+    const r = await rp.post('/api/mode3/open', { PPID: PPID1 });
+    assert.equal(r.status, 202, j(r.body)); const id = r.body.id;
+    assert.equal((await rp.get(`/api/mode3/open/${id}`)).status, 202);
+    const pend = (await cia.adminGet('/cia/openings')).body.openings.find((o) => o.id === id);
+    assert.equal(pend.status, 'pending'); assert.equal(pend.uid, undefined);
+    assert.equal((await cia.adminPost(`/cia/openings/${id}/approve`)).body.status, 'approved');
+    const res = await rp.get(`/api/mode3/open/${id}`);
+    assert.equal(res.status, 200, j(res.body)); assert.equal(res.body.uid, uid); assert.equal(res.body.PPID, PPID1);
+    const r2 = await rp.post('/api/mode3/open', { PPID: PPID1 });   // 같은 PPID 의 최신 트랜스크립트로 새 요청(r_s 가 다르면 새 id)
+    assert.ok([200, 202].includes(r2.status), j(r2.body));
+    if (r2.body.id !== id) {
+      assert.equal((await cia.adminPost(`/cia/openings/${r2.body.id}/deny`)).body.status, 'denied');
+      assert.equal((await rp.get(`/api/mode3/open/${r2.body.id}`)).status, 403);
+    }
+    assert.equal((await rp.post('/api/mode3/open', { PPID: '1' })).status, 404);
+  });
+
   await t("4'. 사용자 자기 폐기(비밀번호) → 게시 → 재검증 stale_root → 지갑 revoked → 관리자 복구 → PPID 동일", async () => {
     const before = await loginViaRp();
     assert.equal(before.rp.ok, true, j(before));
@@ -191,21 +217,21 @@ try {
   await t('bad_rp_cert: cert_s 의 origin 과 다른 origin 을 주장하면 지갑이 403', async () => {
     const info = (await rp.get('/api/mode3/rp_info')).body;
     const { r_s } = (await rp.post('/api/mode3/challenge')).body;
-    const w = await wallet.post('/wallet/login', { arid: info.arid, origin: 'http://evil.example', cert_s: info.cert_s, r_s }, { Origin: rp.origin });
+    const w = await wallet.post('/wallet/login', { arid: info.arid, origin: 'http://evil.example', cert_s: info.cert_s, pk_trace: info.pk_trace, r_s }, { Origin: rp.origin });
     assert.equal(w.status, 403); assert.equal(w.body.reason, 'bad_rp_cert');
-    const w2 = await wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: { ...info.cert_s, S: '1' }, r_s }, { Origin: rp.origin });
+    const w2 = await wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: { ...info.cert_s, S: '1' }, pk_trace: info.pk_trace, r_s }, { Origin: rp.origin });
     assert.equal(w2.status, 403); assert.equal(w2.body.reason, 'bad_rp_cert');
   });
 
   await t('r_s 음성: 미발급 r_s → RP bad_challenge, 만료(TTL 6s) → bad_challenge', async () => {
     const info = (await rp.get('/api/mode3/rp_info')).body;
     const bogus = '123456789';
-    const w = await wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, r_s: bogus }, { Origin: rp.origin });
+    const w = await wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s: bogus }, { Origin: rp.origin });
     assert.equal(w.status, 200, j(w.body));   // 지갑은 r_s 의 출처를 모른다 — RP 가 거절한다
     const r = await rp.post('/api/mode3/login', { proof: w.body.proof, publicSignals: w.body.publicSignals, sig: w.body.sig });
     assert.equal(r.status, 401); assert.equal(r.body.reason, 'bad_challenge');
     const { r_s } = (await rp.post('/api/mode3/challenge')).body;
-    const w2 = await wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, r_s }, { Origin: rp.origin });
+    const w2 = await wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s }, { Origin: rp.origin });
     await new Promise((res) => setTimeout(res, 6500));
     const r2 = await rp.post('/api/mode3/login', { proof: w2.body.proof, publicSignals: w2.body.publicSignals, sig: w2.body.sig });
     assert.equal(r2.status, 401); assert.equal(r2.body.reason, 'bad_challenge');

@@ -15,6 +15,7 @@ const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const PINNED_ENV = {
   CIA_RPC_URL: process.env.CIA_RPC_URL || 'http://127.0.0.1:8545',
   MODE3_PK_CIA_X: '', MODE3_PK_CIA_Y: '', MODE3_RP_REGISTRATION_FILE: '', MODE3_CHALLENGE_TTL_MS: '',
+  MODE3_RP_REGISTRATION_POLL_MS: '300', MODE3_RP_LOGIN_LOG: '',
 };
 
 /** node <script> 를 env 로 띄우고 readyUrl 이 200 을 줄 때까지 기다린다. */
@@ -93,11 +94,24 @@ export async function startIsolatedMode3Stack(opts = {}) {
           CIA_LOG_ADDRESS: cia.logAddress,
           MODE3_RP_REGISTRATION_FILE: path.join(dir, 'mode3_rp_registration.json'),
           MODE3_RP_PUBLIC_ORIGIN: rpOrigin,
+          MODE3_RP_LOGIN_LOG: path.join(dir, 'mode3_rp_logins.jsonl'),
           ...rpEnv,
         },
         readyUrl: `${rpOrigin}/api/mode3/rp_info`, logFile: rpLog,
       }));
       rp = client(rpOrigin, rpLog);
+
+      // 등록 승인 대행(2026-09-16 §3): RP 는 pending 으로 떠 있다. 관리자 시크릿으로 승인하고 활성화를 기다린다.
+      const deadline = Date.now() + 20_000;
+      let approved = false;
+      while (Date.now() < deadline) {
+        const list = (await cia.adminGet('/cia/rps')).body?.rps ?? [];
+        const mine = list.find((e) => e.origin === rpOrigin);
+        if (mine?.status === 'pending') await cia.adminPost(`/cia/rps/${mine.arid}/approve`);
+        if ((await rp.get('/api/mode3/rp_info')).body?.status === 'approved') { approved = true; break; }
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      if (!approved) throw new Error(`RP 등록 승인·활성화 실패\n${rp.log()}`);
     }
 
     return {

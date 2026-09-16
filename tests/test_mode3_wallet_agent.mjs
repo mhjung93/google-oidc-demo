@@ -28,11 +28,11 @@ try {
   const pk_CIA = { x: BigInt(keys.pk_CIA.x), y: BigInt(keys.pk_CIA.y) };
   // 실제 RP 프로세스는 안 띄우지만, 지갑의 CORS 오리진(rpOriginForWallet)으로 CIA 에 서비스를 등록해
   // (arid, cert_s) 를 얻는다 — /wallet/login 이 요구하는 서비스 인증 정보다.
-  const { arid, cert_s, origin } = await cia.registerRp(stack.rpOriginForWallet);
-  const rp = createRpVerifier({ provider, logAddress: cia.logAddress, vkey, pkCIA: pk_CIA, arid: BigInt(arid), chainId: 31337n });
+  const { arid, cert_s, origin, pk_trace } = await cia.registerRp(stack.rpOriginForWallet);
+  const rp = createRpVerifier({ provider, logAddress: cia.logAddress, vkey, pkCIA: pk_CIA, arid: BigInt(arid), chainId: 31337n, pkTrace: pk_trace });
 
   const newRs = () => randomScalar().toString();
-  const login = (r_s = newRs(), extra = {}) => wallet.post('/wallet/login', { arid, origin, cert_s, r_s, ...extra }, { Origin: stack.rpOriginForWallet });
+  const login = (r_s = newRs(), extra = {}) => wallet.post('/wallet/login', { arid, origin, cert_s, pk_trace: { x: pk_trace.x.toString(), y: pk_trace.y.toString() }, r_s, ...extra }, { Origin: stack.rpOriginForWallet });
   const revalidate = (r_s, extra = {}) => wallet.post('/wallet/revalidate', { r_s, ...extra }, { Origin: stack.rpOriginForWallet });
   const verify = (body) => rp.verifyLogin({ proof: body.proof, publicSignals: body.publicSignals, sig: body.sig });
 
@@ -65,7 +65,7 @@ try {
     assert.equal(r.body.r_s, rs);
     assert.ok(!('uid' in r.body), 'uid 는 RP 로 나가면 안 된다');
     assert.equal(typeof r.body.timings.proveMs, 'number');
-    assert.equal(r.body.publicSignals.length, 9);
+    assert.equal(r.body.publicSignals.length, 14);
     assert.equal(r.body.publicSignals[4], '31337');
     const v = await verify(r.body);
     assert.equal(v.ok, true, j(v));
@@ -123,9 +123,15 @@ try {
     S2 = rs;
   });
 
-  await t('입력 검증: r_s 없음 / cert_s 없음 → 400', async () => {
+  await t('입력 검증: r_s 없음 / cert_s 없음 / pk_trace 없음 → 400', async () => {
     assert.equal((await wallet.post('/wallet/login', { arid, origin, cert_s }, { Origin: stack.rpOriginForWallet })).status, 400);
     assert.equal((await wallet.post('/wallet/login', { arid, origin, r_s: newRs() }, { Origin: stack.rpOriginForWallet })).status, 400);
+    assert.equal((await wallet.post('/wallet/login', { arid, origin, cert_s, r_s: newRs() }, { Origin: stack.rpOriginForWallet })).status, 400);
+  });
+
+  await t('bad_rp_cert: 인증서와 다른 pk_trace 를 주면 403 (서비스 혼자 아는 키로 바꿔치기)', async () => {
+    const r = await login(newRs(), { pk_trace: { x: '1', y: '2' } });
+    assert.equal(r.status, 403); assert.equal(r.body.reason, 'bad_rp_cert');
   });
 
   await t('status: 세션이 exptime(Unix 초)을 보여주고 max_height 는 없다', async () => {

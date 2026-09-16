@@ -30,9 +30,10 @@ const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { cacheTimeout: 
 
 // ---- 상태 ----
 // registration: { uid, s_u, r_u, cm_u:{x,y}, sk_u, attrs:[4개 10진] }   §6.1. 한 번
-// sessions:     r_s → { arid, credential:{C,exptime,chainid,r_s,sigma,pk_CIA}, blind, sessionPrivKey, pk_i, issuedAt }
+// sessions:     r_s → { arid, pk_trace:{x,y}, credential:{…}, blind, sessionPrivKey, pk_i, issuedAt }
 // version 3 (2026-09-15): credentials[arid] → sessions[r_s]. 옛 파일은 등록만 살리고 세션은 비운다.
-const WALLET_STATE_VERSION = 3;
+// version 4 (2026-09-16): 세션에 pk_trace(인증서의 조합 키). 옛 파일은 등록만 살리고 세션은 비운다.
+const WALLET_STATE_VERSION = 4;
 let state = readJson(STATE_FILE, { version: WALLET_STATE_VERSION, registration: null, sessions: {} });
 function persist() { writeJsonAtomic(STATE_FILE, state, 0o600); }
 if (state.version !== WALLET_STATE_VERSION) {
@@ -73,7 +74,7 @@ async function chainId() {
   return chainIdCache;
 }
 
-async function issueCredential(arid, r_s) {
+async function issueCredential(arid, r_s, pk_trace) {
   const reg = state.registration;
   const session = createSessionKey();
   const req = await buildIssueRequest({
@@ -83,7 +84,7 @@ async function issueCredential(arid, r_s) {
   const r = await ciaPost('/cia/issue', req.body);
   if (r.status === 200) {
     state.sessions[r_s.toString()] = {
-      arid, credential: r.body, blind: req.secrets.blind.toString(),
+      arid, pk_trace: { x: pk_trace.x.toString(), y: pk_trace.y.toString() }, credential: r.body, blind: req.secrets.blind.toString(),
       sessionPrivKey: session.wallet.privateKey, pk_i: session.pk_i.toString(),
       issuedAt: new Date().toISOString(),
     };
@@ -110,7 +111,7 @@ app.get('/wallet/status', async (req, res) => {
   try { head = (await provider.getBlockNumber()).toString(); } catch { /* 체인 없음 */ }
   const sessions = {};
   for (const [r_s, e] of Object.entries(state.sessions)) {
-    sessions[r_s] = { arid: e.arid, exptime: e.credential.exptime, chainid: e.credential.chainid, sessionAddress: new ethers.Wallet(e.sessionPrivKey).address, issuedAt: e.issuedAt };
+    sessions[r_s] = { arid: e.arid, exptime: e.credential.exptime, chainid: e.credential.chainid, sessionAddress: new ethers.Wallet(e.sessionPrivKey).address, issuedAt: e.issuedAt, pk_trace: e.pk_trace };
   }
   res.json({
     registered: Boolean(state.registration), uid: state.registration?.uid ?? null, sessions,
@@ -140,8 +141,8 @@ app.post('/wallet/register', async (req, res) => {
 
 app.post('/wallet/login', loginCors, async (req, res) => {
   try {
-    const { arid, origin, cert_s, r_s } = req.body ?? {};
-    if (!isDec(arid) || typeof origin !== 'string' || !cert_s || !isDec(r_s)) return res.status(400).json({ error: 'arid, origin, cert_s, r_s 필요' });
+    const { arid, origin, cert_s, pk_trace, r_s } = req.body ?? {};
+    if (!isDec(arid) || typeof origin !== 'string' || !cert_s || !pk_trace || !isDec(pk_trace.x) || !isDec(pk_trace.y) || !isDec(r_s)) return res.status(400).json({ error: 'arid, origin, cert_s, pk_trace{x,y}, r_s 필요' });
     if (!state.registration) return res.status(409).json({ reason: 'not_registered' });
     if (!LOG_ADDRESS) return res.status(503).json({ reason: 'chain_unavailable', detail: 'CIA_LOG_ADDRESS not configured' });
     const rs = BigInt(r_s);
@@ -151,11 +152,12 @@ app.post('/wallet/login', loginCors, async (req, res) => {
 
     // 서비스 인증(설계 §3·§4): cert_s 가 pk_CIA 서명이고, 요청을 보낸 오리진이 cert 의 오리진과 같아야 한다.
     // 피싱 페이지는 진짜 서비스의 (arid, cert_s) 를 그대로 보여줄 수는 있어도 그 오리진에서 요청을 보낼 수는 없다.
+    // pk_trace 는 인증서가 덮는다 — 서비스가 자기만 아는 키를 주면 서비스 혼자 태그를 연다(2026-09-16 §2).
     let pk;
     // CIA 가 죽어 pk_CIA 를 못 받은 것이지 체인 문제가 아니다 — reason 목록엔 없지만 원인을 구분해 둔다.
     try { pk = await pkCia(); } catch (e) { return res.status(503).json({ reason: 'cia_unavailable', detail: e.message }); }
     const reqOrigin = req.get('Origin');
-    if (reqOrigin !== origin || !(await verifyRpCert(pk, { arid: BigInt(arid), origin, cert: cert_s }))) {
+    if (reqOrigin !== origin || !(await verifyRpCert(pk, { arid: BigInt(arid), origin, pk_trace, cert: cert_s }))) {
       return res.status(403).json({ reason: 'bad_rp_cert' });
     }
 
@@ -169,7 +171,7 @@ app.post('/wallet/login', loginCors, async (req, res) => {
 
     pruneSessions();
     t = Date.now();
-    const r = await issueCredential(arid, rs);      // 로그인마다 발급(설계 §5)
+    const r = await issueCredential(arid, rs, { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) });      // 로그인마다 발급(설계 §5)
     timings.issueMs = Date.now() - t;
     if (r.status === 403) return res.status(403).json({ reason: 'account_disabled', timings });
     if (r.status !== 200) return res.status(502).json({ reason: 'issue_failed', cia: r.body, timings });
@@ -191,7 +193,8 @@ async function proveSession(rsKey, synced, timings) {
     cached = await buildCredentialProof({
       uid: BigInt(reg.uid), arid: BigInt(s.arid), s_u: BigInt(reg.s_u), blind: BigInt(s.blind), pk_i: BigInt(s.pk_i),
       attrs: (reg.attrs ?? []).map(BigInt),
-      credential: s.credential, pk_CIA: { x: BigInt(s.credential.pk_CIA.x), y: BigInt(s.credential.pk_CIA.y) }, tree: synced.tree,
+      credential: s.credential, pk_CIA: { x: BigInt(s.credential.pk_CIA.x), y: BigInt(s.credential.pk_CIA.y) },
+      pk_trace: { x: BigInt(s.pk_trace.x), y: BigInt(s.pk_trace.y) }, tree: synced.tree,
     });
     timings.proveMs = Date.now() - t;
     cache.set(synced.root, rsKey, cached);

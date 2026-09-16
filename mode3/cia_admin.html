@@ -30,6 +30,18 @@
     <button id="recoverBtn">복구 (disabled=false)</button>
   </fieldset>
 
+  <fieldset>
+    <legend>등록된 서비스 <button id="rpsBtn">목록</button></legend>
+    <p class="muted">승인하면 CIA 조각을 만들어 조합 키 pk_trace 와 cert_s 를 낸다(설계 2026-09-16 §3). 거절은 되돌릴 수 없다.</p>
+    <div id="rps">-</div>
+  </fieldset>
+
+  <fieldset>
+    <legend>개봉 요청 <button id="openingsBtn">목록</button></legend>
+    <p class="muted">승인 시점에 CIA 조각으로 복호해 uid 를 기록한다(§6). pending 항목에는 uid 가 없다.</p>
+    <div id="openings">-</div>
+  </fieldset>
+
   <pre id="out">-</pre>
 
   <script>
@@ -44,6 +56,63 @@
     $('revokeBtn').addEventListener('click', () => call('POST', '/cia/revoke', { uid: $('uid').value.trim(), scope: 'account' }));
     $('publishBtn').addEventListener('click', () => call('POST', '/cia/publish', {}));
     $('recoverBtn').addEventListener('click', () => call('POST', '/cia/account/set_disabled', { uid: $('uid').value.trim(), disabled: false }));
+
+    async function adminJson(method, path) {
+      const r = await fetch(path, { method, headers: { 'X-CIA-Admin-Secret': $('secret').value } });
+      return { status: r.status, body: await r.json().catch(() => null) };
+    }
+    // /cia/register_rp 는 인증 없이 누구나 부를 수 있어 name·origin 이 공격자 입력일 수 있다 — innerHTML 로 조립하지
+    // 않고 DOM 노드 + textContent 로만 채운다(2026-09-16 보안 검토).
+    function td(content) {
+      const c = document.createElement('td'); c.style.padding = '2px 8px';
+      if (content instanceof Node) c.appendChild(content); else c.textContent = content ?? '';
+      return c;
+    }
+    function row(cells) {
+      const tr = document.createElement('tr');
+      cells.forEach((c) => tr.appendChild(td(c)));
+      return tr;
+    }
+    /** [{label, act, key, val}] → 버튼들을 담은 fragment. key 는 dataset 이름('a' 또는 'i'). */
+    function actionButtons(defs) {
+      const frag = document.createDocumentFragment();
+      defs.forEach((d, i) => {
+        if (i > 0) frag.appendChild(document.createTextNode(' '));
+        const b = document.createElement('button');
+        b.textContent = d.label; b.dataset[d.key] = d.val; b.dataset.act = d.act;
+        frag.appendChild(b);
+      });
+      return frag;
+    }
+    async function loadRps() {
+      const r = await adminJson('GET', '/cia/rps');
+      if (r.status !== 200) { $('rps').textContent = `${r.status}`; return; }
+      const table = document.createElement('table');
+      r.body.rps.forEach((e) => {
+        const last = e.status === 'pending'
+          ? actionButtons([{ label: '승인', act: 'approve', key: 'a', val: e.arid }, { label: '거절', act: 'deny', key: 'a', val: e.arid }])
+          : (e.decidedAt ?? '');
+        table.appendChild(row([e.status, e.name, e.origin, `${e.arid.slice(0, 10)}…`, last]));
+      });
+      $('rps').replaceChildren(table);
+      $('rps').querySelectorAll('button').forEach((b) => b.addEventListener('click', async () => { await call('POST', `/cia/rps/${b.dataset.a}/${b.dataset.act}`); loadRps(); }));
+    }
+    async function loadOpenings() {
+      const r = await adminJson('GET', '/cia/openings');
+      if (r.status !== 200) { $('openings').textContent = `${r.status}`; return; }
+      if (!r.body.openings.length) { $('openings').textContent = '(없음)'; return; }
+      const table = document.createElement('table');
+      r.body.openings.forEach((o) => {
+        const last = o.status === 'pending'
+          ? actionButtons([{ label: '승인', act: 'approve', key: 'i', val: o.id }, { label: '거절', act: 'deny', key: 'i', val: o.id }])
+          : '';
+        table.appendChild(row([o.status, o.requestedAt, `arid ${o.arid.slice(0, 10)}…`, `PPID ${o.PPID.slice(0, 10)}…`, o.uid ?? '', last]));
+      });
+      $('openings').replaceChildren(table);
+      $('openings').querySelectorAll('button').forEach((b) => b.addEventListener('click', async () => { await call('POST', `/cia/openings/${b.dataset.i}/${b.dataset.act}`); loadOpenings(); }));
+    }
+    $('rpsBtn').addEventListener('click', loadRps);
+    $('openingsBtn').addEventListener('click', loadOpenings);
   </script>
 </body>
 </html>
