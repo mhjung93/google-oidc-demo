@@ -11,6 +11,7 @@ import { credMessage, compressPoint, randomScalar } from '../lib/mode3_credentia
 import { pointFromStrings } from '../lib/mode3_issuance.js';
 import { createRegistration, createSessionKey, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, VKEY_PATH } from '../lib/mode3_wallet.js';
 import { createRpVerifier } from '../lib/mode3_rp.js';
+import { createShare, combinePublicKey } from '../lib/mode3_trace.js';
 
 let failed = 0;
 async function t(name, fn) {
@@ -31,6 +32,9 @@ const keyOf = (prv) => { const p = eddsa.prv2pub(prv); return { prv, pub: { x: F
 const CIA = keyOf(Buffer.alloc(32, 9));
 const ATTACKER = keyOf(Buffer.alloc(32, 66));
 const uid = 12345n, arid = 22222222222222222222n, otherArid = 33333333333333333333n;
+const svcShare = await createShare(), aaShare = await createShare();
+const pk_trace = await combinePublicKey(svcShare.X, aaShare.X);
+const other_trace = await combinePublicKey((await createShare()).X, (await createShare()).X);
 
 async function issueWith(key, C_pt, r_s, ttlSec = 3600n, chainid = 31337n) {
   const C = await compressPoint(C_pt);
@@ -44,7 +48,7 @@ async function publish(leavesBig) {
   const root = rootToBytes32(tree.getRoot()), epoch = (await log.epoch()) + 1n, leaves = leavesBig.map(rootToBytes32);
   await (await log.connect(ciaEth).publishRoot(root, epoch, leaves, await signRootPublication(ciaEth, { logAddress, root, epoch, leaves }))).wait();
 }
-async function makeLogin({ key = CIA, useArid = arid, ttlSec = 3600n, chainid = 31337n } = {}) {
+async function makeLogin({ key = CIA, useArid = arid, ttlSec = 3600n, chainid = 31337n, useTrace = pk_trace } = {}) {
   const reg = await createRegistration();
   const session = createSessionKey();
   const attrs = [19n, 410n, 0n, 0n];
@@ -52,11 +56,11 @@ async function makeLogin({ key = CIA, useArid = arid, ttlSec = 3600n, chainid = 
   const req = await buildIssueRequest({ uid, arid: useArid, s_u: reg.s_u, r_u: reg.r_u, sk_u: Buffer.alloc(32, 3).toString('hex'), session, chainid, attrs, r_s });
   const cred = await issueWith(key, pointFromStrings(req.body.C_pt), r_s, ttlSec, chainid);
   const { tree } = await syncRevocationTree(provider, logAddress);
-  const { proof, publicSignals } = await buildCredentialProof({ uid, arid: useArid, s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs, credential: cred, pk_CIA: key.pub, tree });
+  const { proof, publicSignals } = await buildCredentialProof({ uid, arid: useArid, s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs, credential: cred, pk_CIA: key.pub, pk_trace: useTrace, tree });
   return { proof, publicSignals, r_s, sig: await signChallenge(session.wallet, r_s.toString()), session, cred, reg };
 }
 
-const rp = createRpVerifier({ provider, logAddress, vkey, pkCIA: CIA.pub, arid, chainId: 31337n });
+const rp = createRpVerifier({ provider, logAddress, vkey, pkCIA: CIA.pub, arid, chainId: 31337n, pkTrace: pk_trace });
 
 await t('양성: 7단계 전부 통과, PPID 와 pk_i 를 돌려준다', async () => {
   const L = await makeLogin();
@@ -98,6 +102,22 @@ await t('음성 arid: 다른 RP 용 credential 은 wrong_arid', async () => {
   assert.deepEqual(await rp.verifyLogin(L), { ok: false, reason: 'wrong_arid' });
 });
 
+await t('음성 d″: 다른 조합 키로 만든 태그는 wrong_trace_key (서비스가 자기 키와 대조한다)', async () => {
+  const L = await makeLogin({ useTrace: other_trace });
+  assert.deepEqual(await rp.verifyLogin(L), { ok: false, reason: 'wrong_trace_key' });
+});
+
+await t('양성: verifyLogin 이 태그를 돌려준다 (서비스가 로그에 남길 재료)', async () => {
+  const L = await makeLogin();
+  const r = await rp.verifyLogin(L);
+  assert.equal(r.ok, true);
+  assert.equal(r.tag.c1x, BigInt(L.publicSignals[11])); assert.equal(r.tag.c2, BigInt(L.publicSignals[13]));
+});
+
+await t('createRpVerifier 는 pkTrace 없이는 throw', () => {
+  assert.throws(() => createRpVerifier({ provider, logAddress, vkey, pkCIA: CIA.pub, arid, chainId: 31337n }), /pkTrace/);
+});
+
 await t('음성 c: exptime 이 지나면 expired (벽시계)', async () => {
   const L = await makeLogin({ ttlSec: -5n });
   assert.deepEqual(await rp.verifyLogin(L), { ok: false, reason: 'expired' });
@@ -125,7 +145,7 @@ await t('음성 e: 증명을 손대면 bad_proof', async () => {
 await t('음성 a: 체인을 못 읽고 캐시가 10분보다 오래되면 chain_unavailable (fail-closed)', async () => {
   let now = Date.now();
   const broken = { getBlockNumber: async () => { throw new Error('rpc down'); } };
-  const rp2 = createRpVerifier({ provider: broken, logAddress, vkey, pkCIA: CIA.pub, arid, chainId: 31337n, now: () => now });
+  const rp2 = createRpVerifier({ provider: broken, logAddress, vkey, pkCIA: CIA.pub, arid, chainId: 31337n, pkTrace: pk_trace, now: () => now });
   const L = await makeLogin();
   assert.deepEqual(await rp2.verifyLogin(L), { ok: false, reason: 'chain_unavailable' });
 });
@@ -141,7 +161,7 @@ await t('a: 캐시가 10분 안이면 RPC 가 죽어도 캐시로 검증한다',
     const v = tgt[k];
     return typeof v === 'function' ? v.bind(tgt) : v;
   } });
-  const rp2 = createRpVerifier({ provider: flaky, logAddress, vkey, pkCIA: CIA.pub, arid, chainId: 31337n, now: () => now });
+  const rp2 = createRpVerifier({ provider: flaky, logAddress, vkey, pkCIA: CIA.pub, arid, chainId: 31337n, pkTrace: pk_trace, now: () => now });
   const L = await makeLogin();
   assert.equal((await rp2.verifyLogin(L)).ok, true);
   alive = false; now += 5 * 60_000;
@@ -164,7 +184,7 @@ await t('같은 사용자·같은 RP 라도 chainid 가 다르면 PPID 가 다�
     const req = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid, attrs, r_s });
     const cred = await issueWith(CIA, pointFromStrings(req.body.C_pt), r_s, 3600n, chainid);
     const { tree } = await syncRevocationTree(provider, logAddress);
-    const { publicSignals } = await buildCredentialProof({ uid, arid, s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs, credential: cred, pk_CIA: CIA.pub, tree });
+    const { publicSignals } = await buildCredentialProof({ uid, arid, s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs, credential: cred, pk_CIA: CIA.pub, pk_trace, tree });
     ppids.push(BigInt(publicSignals[0]));
   }
   assert.notEqual(ppids[0], ppids[1]);

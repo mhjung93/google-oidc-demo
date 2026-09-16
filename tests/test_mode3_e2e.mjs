@@ -9,6 +9,7 @@ import { createRegistration, createSessionKey, buildIssueRequest, syncRevocation
 import { pointToStrings } from '../lib/mode3_issuance.js';
 import { createRpVerifier } from '../lib/mode3_rp.js';
 import { randomScalar } from '../lib/mode3_credential.js';
+import { createShare, combinePublicKey } from '../lib/mode3_trace.js';
 
 // verifyLogin 은 PPID·pk_i 를 BigInt 로 준다. assert 의 메시지 인자는 단언 성공 여부와
 // 무관하게 먼저 평가되므로, 맨 JSON.stringify 를 쓰면 성공 경로에서도 터진다.
@@ -36,7 +37,8 @@ try {
   // 라이브러리 e2e 라 cert_s 검증은 없다 — 등록만으로 arid 를 확보한다.
   const { arid: aridStr } = await cia.registerRp('http://127.0.0.1:1');
   const arid = BigInt(aridStr);
-  const rp = createRpVerifier({ provider, logAddress: cia.logAddress, vkey, pkCIA: pk_CIA, arid, chainId: 31337n });
+  const pk_trace = await combinePublicKey((await createShare()).X, (await createShare()).X);
+  const rp = createRpVerifier({ provider, logAddress: cia.logAddress, vkey, pkCIA: pk_CIA, arid, chainId: 31337n, pkTrace: pk_trace });
   const cache = new ProofCache();
 
   // 지갑 상태
@@ -48,7 +50,7 @@ try {
     const { tree, root } = await syncRevocationTree(provider, cia.logAddress);
     let cached = cache.get(root, session.wallet.address);
     if (!cached) {
-      cached = await buildCredentialProof({ uid, arid, s_u: reg.s_u, blind, pk_i: session.pk_i, attrs: ATTRS, credential: cred, pk_CIA, tree });
+      cached = await buildCredentialProof({ uid, arid, s_u: reg.s_u, blind, pk_i: session.pk_i, attrs: ATTRS, credential: cred, pk_CIA, pk_trace, tree });
       cache.set(root, session.wallet.address, cached);
     }
     return submit(cached);
@@ -104,7 +106,7 @@ try {
 
   await t('폐기된 credential 로는 새 root 에 대한 π 도 만들 수 없다', async () => {
     const { tree } = await syncRevocationTree(provider, cia.logAddress);
-    await assert.rejects(() => buildCredentialProof({ uid, arid, s_u: reg.s_u, blind, pk_i: session.pk_i, attrs: ATTRS, credential: cred, pk_CIA, tree }), /is a member/);
+    await assert.rejects(() => buildCredentialProof({ uid, arid, s_u: reg.s_u, blind, pk_i: session.pk_i, attrs: ATTRS, credential: cred, pk_CIA, pk_trace, tree }), /is a member/);
   });
 
   await t('disabled 계정은 재발급 거절 (403)', async () => {

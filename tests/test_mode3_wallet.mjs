@@ -14,6 +14,7 @@ import {
 } from '../lib/mode3_wallet.js';
 import { verifySessionRequest } from '../lib/mode3_rp.js';
 import { pointFromStrings } from '../lib/mode3_issuance.js';
+import { createShare, combinePublicKey, partialDecrypt, combineDecrypt } from '../lib/mode3_trace.js';
 
 let failed = 0;
 async function t(name, fn) {
@@ -67,6 +68,9 @@ await t('게시된 리프가 동기화된 트리에 있고 root 가 컨트랙트
   assert.equal(rootToBytes32(root), await log.root());
 });
 
+const svcShare = await createShare(), aaShare = await createShare();
+const pk_trace = await combinePublicKey(svcShare.X, aaShare.X);
+
 let reg, session, req, cred, tree0;
 await t('발급 요청 → 로컬 CIA 서명 → 증명 생성 → vkey 로 검증된다', async () => {
   reg = await createRegistration();
@@ -76,16 +80,20 @@ await t('발급 요청 → 로컬 CIA 서명 → 증명 생성 → vkey 로 검�
   req = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, attrs: [19n, 410n, 0n, 0n], r_s });
   cred = await localIssue(pointFromStrings(req.body.C_pt), 31337n, r_s);
   ({ tree: tree0 } = await syncRevocationTree(provider, logAddress));
-  const { proof, publicSignals, revRoot } = await buildCredentialProof({
-    uid, arid, s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs: [19n, 410n, 0n, 0n], credential: cred, pk_CIA, tree: tree0,
+  const { proof, publicSignals, revRoot, tag } = await buildCredentialProof({
+    uid, arid, s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs: [19n, 410n, 0n, 0n], credential: cred, pk_CIA, pk_trace, tree: tree0,
   });
   assert.equal(revRoot, tree0.getRoot());
-  assert.equal(publicSignals.length, 9);
+  assert.equal(publicSignals.length, 14);
   assert.equal(BigInt(publicSignals[2]), session.pk_i);
   assert.equal(BigInt(publicSignals[3]), BigInt(cred.exptime));
   assert.equal(BigInt(publicSignals[4]), 31337n);
   assert.equal(BigInt(publicSignals[5]), r_s);
   assert.equal(BigInt(publicSignals[6]), tree0.getRoot());
+  assert.equal(BigInt(publicSignals[9]), pk_trace.x); assert.equal(BigInt(publicSignals[10]), pk_trace.y);
+  assert.equal(BigInt(publicSignals[11]), tag.c1.x); assert.equal(BigInt(publicSignals[13]), tag.c2);
+  // 태그는 두 조각으로 이 성명의 uid 로 열린다 (검증 가능 암호화)
+  assert.equal(await combineDecrypt(tag.c2, await partialDecrypt(svcShare.x, tag.c1), await partialDecrypt(aaShare.x, tag.c1)), uid);
   const vkey = JSON.parse(fs.readFileSync(VKEY_PATH, 'utf8'));
   assert.ok(await snarkjs.groth16.verify(vkey, publicSignals, proof));
 });
@@ -102,8 +110,15 @@ await t('내 credential 이 폐기되면 동기화된 트리로는 witness 를 �
   await publish([await credLeaf(BigInt(cred.C))]);
   const { tree } = await syncRevocationTree(provider, logAddress);
   await assert.rejects(
-    () => buildCredentialProof({ uid, arid, s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs: [19n, 410n, 0n, 0n], credential: cred, pk_CIA, tree }),
+    () => buildCredentialProof({ uid, arid, s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs: [19n, 410n, 0n, 0n], credential: cred, pk_CIA, pk_trace, tree }),
     /is a member/,
+  );
+});
+
+await t('buildCredentialProof 는 pk_trace 없이는 throw — 태그 없는 성명은 이제 없다', async () => {
+  await assert.rejects(
+    () => buildCredentialProof({ uid, arid, s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs: [19n, 410n, 0n, 0n], credential: cred, pk_CIA, tree: tree0 }),
+    /pk_trace/,
   );
 });
 
