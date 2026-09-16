@@ -147,6 +147,7 @@ EL PASSO 의 임계 복호 identity escrow 와 같은 자리다.
 - **예상 비용.** EscalarMulFix(250) + EscalarMulAny(250) + Poseidon(2) ≈ 5~7k 제약. 현재 22,224 → 약 28k, 증명 시간 0.8 초 → 약 1 초.
   실측은 구현 (c) 단계에서 하고 기반 설계 §11.1 표에 행을 더한다. zkey 는 `pot21_final.ptau` 로 재생성(수 분), 다른 기계의
   `build/mode3` 도 다시 옮긴다(속성 설계 §8 5번과 같은 비용).
+  실측(2026-09-16): 비선형 제약 25,505, 증명 시간 중앙값 882.8 ms — 예상(5~7k)보다 적게 늘었다(+3,281, +14.8%).
 
 ### 4.3 인증 요구·로그인 (세션 설계 §4·§7 의 필드 변경)
 
@@ -203,7 +204,8 @@ RP:         세션 설계 §7 의 a~g 에 더해  d'. 공개 입력의 pk_trace 
                     → publicSignals[7..8] == pk_CIA (403 untrusted_cia)
                     → publicSignals[9..10] == rps[arid].pk_trace (403 wrong_trace_key)   ← 이 서비스의 키로 만든 태그인가
                     → Groth16.Verify(vkey, publicSignals, proof) (403 bad_proof)          ← 태그가 잘 만들어졌음의 보증
-                    → 같은 (arid, r_s) 로 pending 인 요청이 있으면 그 id 를 돌려준다 (200, 중복 생성 안 함)
+                    → 같은 (arid, r_s) 로 pending·approved 인 요청이 있으면 그 id 를 돌려준다 (200, 중복 생성 안 함).
+                    failed·denied 는 새 요청을 허용한다 — 틀린 D_svc 를 바로잡거나 재심을 받을 길이 있어야 한다
                     → openings 에 추가: { id, arid, r_s, PPID, c1, c2, D_svc, status: "pending", requestedAt }   ← uid 는 아직 없다
          CIA → RP:  202 { id, status: "pending" }
 
