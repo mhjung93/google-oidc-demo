@@ -83,6 +83,10 @@ try {
     const res = await fetchResult(S1, id);
     assert.equal(res.status, 403); assert.equal(res.body.status, 'denied');
     assert.equal((await cia.adminPost(`/cia/openings/${id}/approve`)).status, 409, '결정된 항목은 다시 결정할 수 없다');
+    // denied 는 재요청을 막지 않는다 — 새 id 로 다시 심사에 올릴 수 있다.
+    const r2 = await openRequest(S1, T);
+    assert.equal(r2.status, 202, JSON.stringify(r2.body)); assert.notEqual(r2.body.id, id);
+    assert.equal((await cia.adminPost(`/cia/openings/${r2.body.id}/deny`)).status, 200);
   });
 
   await t('틀린 D_svc(다른 조각) → 승인 시 failed, 결과 403', async () => {
@@ -91,6 +95,13 @@ try {
     const a = await cia.adminPost(`/cia/openings/${id}/approve`);
     assert.equal(a.status, 200); assert.equal(a.body.status, 'failed');
     assert.equal((await fetchResult(S1, id)).status, 403);
+    // failed 는 재요청을 막지 않는다 — 맞는 조각으로 다시 내면 새 id 로 승인·개봉된다.
+    const r2 = await openRequest(S1, T);
+    assert.equal(r2.status, 202, JSON.stringify(r2.body)); assert.notEqual(r2.body.id, id);
+    const a2 = await cia.adminPost(`/cia/openings/${r2.body.id}/approve`);
+    assert.equal(a2.status, 200, JSON.stringify(a2.body)); assert.equal(a2.body.status, 'approved');
+    const res2 = await fetchResult(S1, r2.body.id);
+    assert.equal(res2.status, 200, JSON.stringify(res2.body)); assert.equal(res2.body.uid, '12345');
   });
 
   await t('남의 트랜스크립트: S2 가 S1 의 세션을 열려 하면 wrong_arid 403 (유출된 로그로는 못 연다)', async () => {

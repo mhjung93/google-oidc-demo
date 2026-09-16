@@ -525,9 +525,9 @@ app.post('/cia/open/request', async (req, res) => {
     let ok = false;
     try { ok = await snarkjs.groth16.verify(vkey, publicSignals, proof); } catch { ok = false; }
     if (!ok) return res.status(403).json({ error: 'bad_proof' });
-    // (arid, r_s) 는 로그인 세션당 하나다 — 상태와 무관하게 이미 있으면 그 id 를 돌려준다(결정된 항목을
-    // 다시 pending 으로 만들어 재심을 유도하지 않는다).
-    const dup = state.openings.find((o) => o.arid === arid && o.r_s === r_s);
+    // pending·approved 는 같은 세션의 결정이 이미 있거나 진행 중이라 그 id 를 돌려주고, failed·denied 는
+    // 새 요청을 허용한다 — 틀린 D_svc 를 고치거나 거절된 세션을 다시 심사에 올릴 길이 있어야 한다.
+    const dup = state.openings.find((o) => o.arid === arid && o.r_s === r_s && (o.status === 'pending' || o.status === 'approved'));
     if (dup) return res.status(200).json({ id: dup.id, status: dup.status });
     const id = randomBytes(32).toString('hex');
     state.openings.push({ id, arid, r_s, PPID, c1: { x: c1x, y: c1y }, c2, D_svc: { x: D_svc.x, y: D_svc.y }, status: 'pending', requestedAt: new Date().toISOString(), decidedAt: null });
