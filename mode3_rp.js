@@ -69,10 +69,11 @@ async function registerOnce() {
   const r = await fetch(`${CIA_URL}/cia/register_rp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: RP_NAME, origin: PUBLIC_ORIGIN, pk_service: reg.pk_service, X_svc: reg.X_svc }) });
   const b = await r.json().catch(() => ({}));
   if (r.status === 202) { reg.arid = b.arid; reg.status = 'pending'; writeJsonAtomic(REG_FILE, reg, 0o600); return false; }
-  if (r.status === 403) { reg.arid = b.arid; reg.status = 'denied'; writeJsonAtomic(REG_FILE, reg, 0o600); throw new Error(`CIA 가 등록을 거절했다 (arid=${b.arid})`); }
+  // 영구 실패 둘만 err.permanent 로 표시한다 — CIA 가 죽었거나 네트워크가 끊긴 것은 일시적이라 계속 재시도해야 한다.
+  if (r.status === 403) { reg.arid = b.arid; reg.status = 'denied'; writeJsonAtomic(REG_FILE, reg, 0o600); throw Object.assign(new Error(`CIA 가 등록을 거절했다 (arid=${b.arid})`), { permanent: true }); }
   if (r.status !== 200) throw new Error(`CIA 등록 실패 (${r.status}) ${JSON.stringify(b)}`);
   const pk_trace = { x: BigInt(b.pk_trace.x), y: BigInt(b.pk_trace.y) };
-  if (!(await verifyRpCert(pkCIA, { arid: BigInt(b.arid), origin: PUBLIC_ORIGIN, pk_trace, cert: b.cert_s }))) throw new Error('CIA 가 준 cert_s 가 pk_CIA 로 검증되지 않는다');
+  if (!(await verifyRpCert(pkCIA, { arid: BigInt(b.arid), origin: PUBLIC_ORIGIN, pk_trace, cert: b.cert_s }))) throw Object.assign(new Error('CIA 가 준 cert_s 가 pk_CIA 로 검증되지 않는다'), { permanent: true });
   reg = { ...reg, arid: b.arid, status: 'approved', pk_trace: b.pk_trace, cert_s: b.cert_s, issuedAt: new Date().toISOString() };
   writeJsonAtomic(REG_FILE, reg, 0o600);
   console.log(`[rp] CIA 등록 승인됨: arid=${reg.arid} origin=${reg.origin} → ${REG_FILE}`);
@@ -97,7 +98,11 @@ if (reg.status === 'approved' && reg.cert_s) {
     console.log(`[rp] 등록 대기 (arid=${reg.arid}) — CIA 관리자 페이지에서 승인하면 ${POLL_MS} ms 안에 활성화된다`);
     const timer = setInterval(async () => {
       try { if (await registerOnce()) { activate(); clearInterval(timer); } }
-      catch (e) { console.error(`[rp] ${e.message}`); clearInterval(timer); }
+      catch (e) {
+        // 거절·인증서 검증 실패는 영구 상태라 멈춘다. 그 외(CIA 일시 장애·네트워크 오류)는 계속 재시도한다.
+        if (e.permanent) { console.error(`[rp] ${e.message}`); clearInterval(timer); }
+        else console.warn(`[rp] 등록 조회 실패, 다시 시도: ${e.message}`);
+      }
     }, POLL_MS);
     timer.unref();
   }
@@ -204,7 +209,9 @@ app.post('/api/mode3/request', async (req, res) => {
 // ---- §6 개봉(데모용, 인증 없음) ----
 function lastTranscriptOf(PPID) {
   if (!fs.existsSync(LOGIN_LOG)) return null;
-  const lines = fs.readFileSync(LOGIN_LOG, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  // 마지막 줄이 쓰다 만 채로 잘려 있을 수 있다 — 그 한 줄만 건너뛰고 나머지는 그대로 쓴다.
+  const lines = fs.readFileSync(LOGIN_LOG, 'utf8').split('\n').filter(Boolean)
+    .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
   return lines.reverse().find((l) => l.PPID === PPID) ?? null;
 }
 app.post('/api/mode3/open', async (req, res) => {

@@ -181,7 +181,7 @@ try {
     assert.equal(r.rp.PPID, PPID1);
   });
 
-  await t('9. 개봉: RP 가 PPID 로 요청 → 관리자 승인 → RP 가 uid 를 받는다; 거절이면 403', async () => {
+  await t('9. 개봉: RP 가 PPID 로 요청 → 관리자 승인 → RP 가 uid 를 받는다; 같은 세션 재요청은 같은 id', async () => {
     const r = await rp.post('/api/mode3/open', { PPID: PPID1 });
     assert.equal(r.status, 202, j(r.body)); const id = r.body.id;
     assert.equal((await rp.get(`/api/mode3/open/${id}`)).status, 202);
@@ -190,12 +190,8 @@ try {
     assert.equal((await cia.adminPost(`/cia/openings/${id}/approve`)).body.status, 'approved');
     const res = await rp.get(`/api/mode3/open/${id}`);
     assert.equal(res.status, 200, j(res.body)); assert.equal(res.body.uid, uid); assert.equal(res.body.PPID, PPID1);
-    const r2 = await rp.post('/api/mode3/open', { PPID: PPID1 });   // 같은 PPID 의 최신 트랜스크립트로 새 요청(r_s 가 다르면 새 id)
-    assert.ok([200, 202].includes(r2.status), j(r2.body));
-    if (r2.body.id !== id) {
-      assert.equal((await cia.adminPost(`/cia/openings/${r2.body.id}/deny`)).body.status, 'denied');
-      assert.equal((await rp.get(`/api/mode3/open/${r2.body.id}`)).status, 403);
-    }
+    const r2 = await rp.post('/api/mode3/open', { PPID: PPID1 });   // 같은 (arid, r_s) — CIA 가 같은 id 로 dedup 한다
+    assert.equal(r2.status, 200); assert.equal(r2.body.id, id);
     assert.equal((await rp.post('/api/mode3/open', { PPID: '1' })).status, 404);
   });
 
