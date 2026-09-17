@@ -14,7 +14,7 @@ import {
 } from '../lib/mode3_wallet.js';
 import { verifySessionRequest } from '../lib/mode3_rp.js';
 import { pointFromStrings } from '../lib/mode3_issuance.js';
-import { createShare, combinePublicKey, partialDecrypt, combineDecrypt } from '../lib/mode3_trace.js';
+import { createShare, combinePublicKey, partialDecrypt, combineDecrypt, tagPlaintext } from '../lib/mode3_trace.js';
 
 let failed = 0;
 async function t(name, fn) {
@@ -35,12 +35,12 @@ const ciaPub = eddsa.prv2pub(ciaPrv);
 const pk_CIA = { x: F.toObject(ciaPub[0]), y: F.toObject(ciaPub[1]) };
 const uid = 12345n, arid = 22222222222222222222n;
 
-// 서버 없이 CIA 역할을 로컬에서 흉내낸다 (서명만)
-async function localIssue(C_pt, chainid, r_s, ttlSec = 3600n) {
+// 서버 없이 CIA 역할을 로컬에서 흉내낸다 (서명만). max_height 는 현재 head + ttlBlocks — 그리드 양자화는 CIA 의 일이라 여기선 안 한다.
+async function localIssue(C_pt, chainid, { ttlBlocks = 300n, allowAgent = 0n } = {}) {
   const C = await compressPoint(C_pt);
-  const exptime = BigInt(Math.floor(Date.now() / 1000)) + ttlSec;
-  const s = eddsa.signPoseidon(ciaPrv, F.e(await credMessage(C, exptime, chainid, r_s)));
-  return { C: C.toString(), exptime: exptime.toString(), chainid: chainid.toString(), r_s: r_s.toString(), sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() } };
+  const max_height = BigInt(await provider.getBlockNumber()) + ttlBlocks;
+  const s = eddsa.signPoseidon(ciaPrv, F.e(await credMessage(C, max_height, chainid, allowAgent)));
+  return { C: C.toString(), max_height: max_height.toString(), chainid: chainid.toString(), allowAgent: allowAgent.toString(), sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() } };
 }
 async function publish(leavesBig) {
   const tree = await createRevocationTree();
@@ -76,9 +76,8 @@ await t('발급 요청 → 로컬 CIA 서명 → 증명 생성 → vkey 로 검�
   reg = await createRegistration();
   session = createSessionKey();
   const sk_u = Buffer.alloc(32, 3).toString('hex');
-  const r_s = randomScalar();
-  req = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, attrs: [19n, 410n, 0n, 0n], r_s });
-  cred = await localIssue(pointFromStrings(req.body.C_pt), 31337n, r_s);
+  req = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, attrs: [19n, 410n, 0n, 0n] });
+  cred = await localIssue(pointFromStrings(req.body.C_pt), 31337n);
   ({ tree: tree0 } = await syncRevocationTree(provider, logAddress));
   const { proof, publicSignals, revRoot, tag } = await buildCredentialProof({
     uid, arid, s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs: [19n, 410n, 0n, 0n], credential: cred, pk_CIA, pk_trace, tree: tree0,
@@ -86,14 +85,15 @@ await t('발급 요청 → 로컬 CIA 서명 → 증명 생성 → vkey 로 검�
   assert.equal(revRoot, tree0.getRoot());
   assert.equal(publicSignals.length, 14);
   assert.equal(BigInt(publicSignals[2]), session.pk_i);
-  assert.equal(BigInt(publicSignals[3]), BigInt(cred.exptime));
+  assert.equal(BigInt(publicSignals[3]), BigInt(cred.max_height));
   assert.equal(BigInt(publicSignals[4]), 31337n);
-  assert.equal(BigInt(publicSignals[5]), r_s);
+  assert.equal(BigInt(publicSignals[5]), 0n, 'allowAgent');
   assert.equal(BigInt(publicSignals[6]), tree0.getRoot());
   assert.equal(BigInt(publicSignals[9]), pk_trace.x); assert.equal(BigInt(publicSignals[10]), pk_trace.y);
   assert.equal(BigInt(publicSignals[11]), tag.c1.x); assert.equal(BigInt(publicSignals[13]), tag.c2);
-  // 태그는 두 조각으로 이 성명의 uid 로 열린다 (검증 가능 암호화)
-  assert.equal(await combineDecrypt(tag.c2, await partialDecrypt(svcShare.x, tag.c1), await partialDecrypt(aaShare.x, tag.c1)), uid);
+  assert.equal(tag.h, await tagPlaintext(uid, arid), '태그 평문은 Poseidon(uid, arid)');
+  // 태그는 두 조각으로 이 성명의 평문 h = Poseidon(uid, arid) 로 열린다 (검증 가능 암호화)
+  assert.equal(await combineDecrypt(tag.c2, await partialDecrypt(svcShare.x, tag.c1), await partialDecrypt(aaShare.x, tag.c1)), await tagPlaintext(uid, arid));
   const vkey = JSON.parse(fs.readFileSync(VKEY_PATH, 'utf8'));
   assert.ok(await snarkjs.groth16.verify(vkey, publicSignals, proof));
 });
@@ -122,14 +122,15 @@ await t('buildCredentialProof 는 pk_trace 없이는 throw — 태그 없는 성
   );
 });
 
-await t('buildIssueRequest 는 r_s 를 그대로 싣고 요청마다 뽑지 않는다 — r_s 는 서비스가 준 값', async () => {
+await t('buildIssueRequest 는 allowAgent 를 싣고(기본 0) r_s 는 더 이상 받지 않는다', async () => {
+  const session = createSessionKey();
   const sk_u = Buffer.alloc(32, 3).toString('hex');
-  const r_s = randomScalar();
-  const a = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, r_s });
-  assert.equal(a.body.r_s, r_s.toString());
-  assert.equal(a.body.nonce, undefined);
-  assert.equal(a.secrets.nonce, undefined);
-  await assert.rejects(() => buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n }), /r_s/);
+  const a = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n });
+  assert.equal(a.body.allowAgent, '0');
+  assert.equal(a.body.r_s, undefined);
+  const b = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, allowAgent: 1n });
+  assert.equal(b.body.allowAgent, '1');
+  await assert.rejects(() => buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, allowAgent: 2n }), /allowAgent/);
 });
 
 await t('signSessionRequest 는 (r_s, body) 를 세션키로 서명하고 verifySessionRequest 가 복원한다', async () => {

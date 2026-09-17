@@ -57,14 +57,13 @@ try {
   }
   /** 이미 가진 π 를 그대로 제출 — root 가 바뀐 뒤의 재제출을 흉내낸다. */
   async function submit(cached) {
-    return rp.verifyLogin({ proof: cached.proof, publicSignals: cached.publicSignals, sig: await signChallenge(session.wallet, sessionRs.toString()) });
+    return rp.verifyLogin({ proof: cached.proof, publicSignals: cached.publicSignals, sig: await signChallenge(session.wallet, sessionRs.toString()), r_s: sessionRs });
   }
   async function newSessionAndIssue() {
     session = createSessionKey();
-    const r_s = randomScalar();
-    const req = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, attrs: ATTRS, r_s });
+    const req = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, attrs: ATTRS });
     blind = req.secrets.blind;
-    sessionRs = r_s;
+    sessionRs = randomScalar();
     const r = await cia.post('/cia/issue', req.body);
     return r;
   }
