@@ -11,10 +11,10 @@ async function t(name, fn) {
 }
 
 const svc = ethers.Wallet.createRandom();
-const fields = { arid: '22222', r_s: '55555', PPID: '99999', D_svc: { x: '123', y: '456' }, ts: '1789000000' };
+const fields = { arid: '22222', PPID: '99999', c1: { x: '11', y: '22' }, D_svc: { x: '123', y: '456' }, ts: '1789000000' };
 
-await t('메시지 형식은 스펙 §6 그대로', () => {
-  assert.equal(openRequestMessage(fields), 'mode3-open:22222:55555:99999:123:456:1789000000');
+await t('메시지 형식은 스펙(2026-09-18 §6.2) 그대로 — r_s 가 아니라 c1 이 요청을 특정한다', () => {
+  assert.equal(openRequestMessage(fields), 'mode3-open:22222:99999:11:22:123:456:1789000000');
   assert.equal(openResultMessage('abcd', '1789000001'), 'mode3-open-result:abcd:1789000001');
 });
 

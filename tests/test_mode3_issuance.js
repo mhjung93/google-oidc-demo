@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { buildBabyjub, buildPoseidon } from 'circomlibjs';
 import { randomScalar, credCommit, PEDERSEN_GENERATORS, compressPoint, SCALAR_MAX, normalizeAttrs } from '../lib/mode3_credential.js';
 import {
-  DOMAIN_MODE3_ISSUE, randomZr, registrationCommit, proveIssuance, verifyIssuance,
+  DOMAIN_MODE3_ISSUE, DOMAIN_MODE3_ISSUEREQ_V2, randomZr, registrationCommit, proveIssuance, verifyIssuance,
   serializeProof, parseProof, pointToStrings, pointFromStrings, issueRequestMessage,
 } from '../lib/mode3_issuance.js';
 
@@ -182,12 +182,17 @@ await t('음성: z_attr 하나를 바꾸면 거절된다', async () => {
   assert.equal(await verifyIssuance({ uid, C_pt, cm_u, proof: bad }), false);
 });
 
-await t('issueRequestMessage 는 (C_pt, chainid, r_s) 를 덮는다 — 하나라도 다르면 다른 메시지', async () => {
+await t('issueRequestMessage 는 (C_pt, chainid, allowAgent) 를 도메인과 함께 덮는다 — 하나라도 다르면 다른 메시지', async () => {
   const C_pt = { x: 1n, y: 2n };
-  const m = await issueRequestMessage(C_pt, 31337n, 7n);
-  assert.notEqual(m, await issueRequestMessage(C_pt, 1n, 7n));
-  assert.notEqual(m, await issueRequestMessage(C_pt, 31337n, 8n));
-  assert.notEqual(m, await issueRequestMessage({ x: 1n, y: 3n }, 31337n, 7n));
+  const m = await issueRequestMessage(C_pt, 31337n, 0n);
+  assert.notEqual(m, await issueRequestMessage(C_pt, 1n, 0n));
+  assert.notEqual(m, await issueRequestMessage(C_pt, 31337n, 1n));
+  assert.notEqual(m, await issueRequestMessage({ x: 1n, y: 3n }, 31337n, 0n));
+  // 도메인이 있다 — 옛 형식 Poseidon(C_pt.x, C_pt.y, chainid, x) 와 같은 값이 나오지 않는다
+  const ps = await buildPoseidon();
+  assert.notEqual(m, ps.F.toObject(ps([1n, 2n, 31337n, 0n])));
+  assert.equal(DOMAIN_MODE3_ISSUEREQ_V2, 401414577397388343646241740924474930n);
+  await assert.rejects(() => issueRequestMessage(C_pt, 31337n, 2n), /allowAgent/);
 });
 
 await t('직렬화 왕복이 값을 보존한다', async () => {
