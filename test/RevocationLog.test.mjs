@@ -28,6 +28,18 @@ describe('RevocationLog', () => {
     expect(await log.cia()).to.equal(cia.address);
   });
 
+  it('lastPublishedBlock: 배포 블록으로 시작하고 publishRoot 마다 그 블록으로 갱신된다 (하트비트 근거, 2026-09-18 §5.1)', async () => {
+    const deployed = await log.lastPublishedBlock();
+    expect(deployed).to.equal(BigInt(await ethers.provider.getBlockNumber()));
+    await ethers.provider.send('hardhat_mine', ['0x5']);
+    expect(await log.lastPublishedBlock()).to.equal(deployed, '게시 없이는 바뀌지 않는다');
+    // 같은 root 를 새 epoch 로 다시 게시(하트비트) — 리프 없이도 갱신된다
+    const sig = await signPub(cia, emptyRoot, 1n, []);
+    await log.publishRoot(emptyRoot, 1n, [], sig);
+    expect(await log.lastPublishedBlock()).to.equal(BigInt(await ethers.provider.getBlockNumber()));
+    expect(await log.root()).to.equal(emptyRoot);
+  });
+
   it('CIA 서명 게시: root·epoch 갱신, 리프 이벤트', async () => {
     const leaves = [b32(111n), b32(222n)];
     const newRoot = b32(999n);

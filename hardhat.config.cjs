@@ -42,6 +42,16 @@ module.exports = {
         version: "0.8.24",
         settings: WALLET_IR_SETTINGS,
       },
+      // Mode3Wallet 도 같은 이유로 IR이 필요하고(execute 가 스택 한도를 넘는다), 팩토리가
+      // 지갑을 import 하므로 같은 설정을 공유해야 CREATE2 주소가 컴파일 job 에 따라 달라지지 않는다.
+      "contracts/Mode3Wallet.sol": {
+        version: "0.8.24",
+        settings: WALLET_IR_SETTINGS,
+      },
+      "contracts/Mode3WalletFactory.sol": {
+        version: "0.8.24",
+        settings: WALLET_IR_SETTINGS,
+      },
     },
   },
   ethernal: {

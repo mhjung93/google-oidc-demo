@@ -16,12 +16,15 @@ pragma solidity ^0.8.24;
 ///   있었다 — 운영 절차가 재배포 시 CIA 이더 키를 유지하므로 "키 하나당 로그 하나" 전제는 실제로
 ///   지켜지지 않았다. chainid 는 여전히 넣지 않는다(설계 §6.5: 한 번 서명해 여러 체인에 뿌리는
 ///   여지). 다중 체인에 같은 서명을 쓰려면 CREATE2 로 주소를 맞추면 된다.
+///
+///   2026-09-18: lastPublishedBlock 추가. 같은 root 를 새 epoch 로 재게시하는 하트비트가 이 값을 갱신한다 — 컨트랙트 조건(epoch 증가)은 그대로다.
 contract RevocationLog {
     bytes32 public constant DOMAIN = keccak256("MODE3_REVOCATION_ROOT_V1");
 
     address public immutable cia;
     bytes32 public root;
     uint64 public epoch;
+    uint64 public lastPublishedBlock;   // publishRoot 가 성공한 마지막 블록. 지갑 컨트랙트가 root 의 나이를 잰다(2026-09-18 §5.1)
 
     event Revoked(uint64 indexed epoch, bytes32 root, bytes32[] leaves);
 
@@ -31,6 +34,7 @@ contract RevocationLog {
     constructor(address cia_, bytes32 emptyRoot) {
         cia = cia_;
         root = emptyRoot;
+        lastPublishedBlock = uint64(block.number);
     }
 
     /// @dev EIP-191 personal_sign 을 적용하기 **전의** 내부 digest. ethers 의
@@ -50,6 +54,7 @@ contract RevocationLog {
         if (_recover(ethDigest, sig) != cia) revert BadSignature();
         root = newRoot;
         epoch = newEpoch;
+        lastPublishedBlock = uint64(block.number);
         emit Revoked(newEpoch, newRoot, leaves);
     }
 
