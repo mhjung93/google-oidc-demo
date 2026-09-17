@@ -2,7 +2,7 @@
 //   node tests/test_mode3_issuance.js
 import assert from 'node:assert/strict';
 import { buildBabyjub, buildPoseidon } from 'circomlibjs';
-import { randomScalar, credCommit, PEDERSEN_GENERATORS, compressPoint, SCALAR_MAX, normalizeAttrs } from '../lib/mode3_credential.js';
+import { randomScalar, credCommit, PEDERSEN_GENERATORS, compressPoint, SCALAR_MAX, normalizeAttrs, credMessage, DOMAIN_MODE3_CRED_V4, MAX_HEIGHT_MAX } from '../lib/mode3_credential.js';
 import {
   DOMAIN_MODE3_ISSUE, DOMAIN_MODE3_ISSUEREQ_V2, randomZr, registrationCommit, proveIssuance, verifyIssuance,
   serializeProof, parseProof, pointToStrings, pointFromStrings, issueRequestMessage,
@@ -193,6 +193,23 @@ await t('issueRequestMessage 는 (C_pt, chainid, allowAgent) 를 도메인과 �
   assert.notEqual(m, ps.F.toObject(ps([1n, 2n, 31337n, 0n])));
   assert.equal(DOMAIN_MODE3_ISSUEREQ_V2, 401414577397388343646241740924474930n);
   await assert.rejects(() => issueRequestMessage(C_pt, 31337n, 2n), /allowAgent/);
+});
+
+await t('credMessage 는 (C, max_height, chainid, allowAgent) 를 도메인과 함께 덮는다 — 경계·비-bigint 는 거절된다', async () => {
+  const C = 424242n;
+  const m = await credMessage(C, 1000n, 31337n, 0n);
+  assert.equal(typeof m, 'bigint');
+  // 하나라도 다르면 다른 메시지
+  assert.notEqual(m, await credMessage(C, 1001n, 31337n, 0n));
+  assert.notEqual(m, await credMessage(C, 1000n, 1n, 0n));
+  assert.notEqual(m, await credMessage(C, 1000n, 31337n, 1n));
+  // 회로 msgHasher 와 같은 계산: Poseidon(DOMAIN_MODE3_CRED_V4, C, max_height, chainid, allowAgent)
+  const ps = await buildPoseidon();
+  assert.equal(m, ps.F.toObject(ps([DOMAIN_MODE3_CRED_V4, C, 1000n, 31337n, 0n])));
+  // 경계: max_height 는 2^64 미만, allowAgent 는 0 또는 1, 인자는 bigint 여야 한다
+  await assert.rejects(() => credMessage(C, MAX_HEIGHT_MAX, 31337n, 0n), /max_height/);
+  await assert.rejects(() => credMessage(C, 1000n, 31337n, 2n), /allowAgent/);
+  await assert.rejects(() => credMessage(C, 1000n, 31337n, 1));
 });
 
 await t('직렬화 왕복이 값을 보존한다', async () => {
