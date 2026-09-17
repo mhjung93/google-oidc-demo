@@ -3,6 +3,7 @@
 // Mode 2 의 wallet_agent.js 와 나란히 두는 별도 프로세스다. 그쪽 코드를 import 하지 않는다.
 // 암호학은 전부 lib/mode3_wallet.js 에 있고 여기는 상태 파일 + HTTP 만이다.
 // 로그인마다 발급된다(설계 2026-09-15 §5) — 성명은 세션(r_s) 단위이고 세션 안에서만 재사용한다.
+// V4(2026-09-18): 자격증명은 max_height·allowAgent, 세션은 서비스 팩토리 주소를 들고 /wallet/tx 로 온체인 실행(설계 §6.3).
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
@@ -11,9 +12,10 @@ import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { createRegistration, createSessionKey, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, signSessionRequest, ProofCache } from './lib/mode3_wallet.js';
+import { signPayload, proofToCalldata, parseExecuteReceipt, factoryAt, walletAt } from './lib/mode3_onchain.js';
 import { pointToStrings } from './lib/mode3_issuance.js';
 import { credLeaf } from './lib/mode3_revocation.js';
-import { normalizeAttrs, SCALAR_MAX } from './lib/mode3_credential.js';
+import { normalizeAttrs, SCALAR_MAX, ppid } from './lib/mode3_credential.js';
 import { verifyRpCert } from './lib/mode3_rp_cert.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -23,17 +25,16 @@ const CIA_URL = process.env.MODE3_CIA_URL || 'http://127.0.0.1:4100';
 const RP_ORIGIN = process.env.MODE3_RP_ORIGIN || 'http://127.0.0.1:3100';
 const LOG_ADDRESS = process.env.CIA_LOG_ADDRESS || null;
 const RPC_URL = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
-const nowSec = () => BigInt(Math.floor(Date.now() / 1000));
 
 // 게시 직후의 로그인이 옛 root 를 보지 않도록 ethers 의 250ms 캐시를 끈다(lib/mode3_wallet.js 주석).
 const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { cacheTimeout: -1 });
 
 // ---- 상태 ----
 // registration: { uid, s_u, r_u, cm_u:{x,y}, sk_u, attrs:[4개 10진] }   §6.1. 한 번
-// sessions:     r_s → { arid, pk_trace:{x,y}, credential:{…}, blind, sessionPrivKey, pk_i, issuedAt }
-// version 3 (2026-09-15): credentials[arid] → sessions[r_s]. 옛 파일은 등록만 살리고 세션은 비운다.
-// version 4 (2026-09-16): 세션에 pk_trace(인증서의 조합 키). 옛 파일은 등록만 살리고 세션은 비운다.
-const WALLET_STATE_VERSION = 4;
+// sessions:     r_s → { arid, PPID, pk_trace:{x,y}, factoryAddress|null, allowAgent("0"|"1"),
+//                       credential:{C,max_height,chainid,allowAgent,sigma,pk_CIA}, blind, sessionPrivKey, pk_i, issuedAt }
+// version 5 (2026-09-18): 자격증명 V4·PPID·factoryAddress·allowAgent. 옛 파일은 등록만 살리고 세션은 비운다.
+const WALLET_STATE_VERSION = 5;
 let state = readJson(STATE_FILE, { version: WALLET_STATE_VERSION, registration: null, sessions: {} });
 function persist() { writeJsonAtomic(STATE_FILE, state, 0o600); }
 if (state.version !== WALLET_STATE_VERSION) {
@@ -42,11 +43,12 @@ if (state.version !== WALLET_STATE_VERSION) {
   persist();
 }
 state.sessions ??= {};
-function pruneSessions() {
-  const now = nowSec();
-  for (const [k, s] of Object.entries(state.sessions)) if (BigInt(s.credential.exptime) < now) delete state.sessions[k];
+/** 만료(head > max_height)된 세션을 걷어낸다(설계 §8). 동기화 뒤 head 를 알 때 부른다. */
+function pruneSessions(head) {
+  let changed = false;
+  for (const [k, s] of Object.entries(state.sessions)) if (BigInt(s.credential.max_height) < head) { delete state.sessions[k]; changed = true; }
+  if (changed) persist();
 }
-pruneSessions();   // 기동 직후 만료된 세션을 걷어낸다(설계 §8) — 로그인 때도 다시 부른다
 
 const cache = new ProofCache();   // (root, r_s) → {proof, publicSignals}. 메모리만
 let lastSync = null;              // { root, head }
@@ -65,6 +67,7 @@ function pkCia() {
 }
 
 const isDec = (v) => typeof v === 'string' && /^[0-9]+$/.test(v);
+const isAddr = (v) => typeof v === 'string' && /^0x[0-9a-fA-F]{40}$/.test(v);
 const json = async (r) => ({ status: r.status, body: await r.json().catch(() => null) });
 const ciaPost = (p, body) => fetch(`${CIA_URL}${p}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(json);
 
@@ -74,17 +77,20 @@ async function chainId() {
   return chainIdCache;
 }
 
-async function issueCredential(arid, r_s, pk_trace) {
+async function issueCredential(arid, r_s, pk_trace, allowAgent, factoryAddress) {
   const reg = state.registration;
   const session = createSessionKey();
+  const chainid = await chainId();
   const req = await buildIssueRequest({
     uid: BigInt(reg.uid), arid: BigInt(arid), s_u: BigInt(reg.s_u), r_u: BigInt(reg.r_u), sk_u: reg.sk_u, session,
-    chainid: await chainId(), attrs: (reg.attrs ?? []).map(BigInt), r_s,
+    chainid, attrs: (reg.attrs ?? []).map(BigInt), allowAgent: BigInt(allowAgent),
   });
   const r = await ciaPost('/cia/issue', req.body);
   if (r.status === 200) {
+    const PPID = await ppid({ uid: BigInt(reg.uid), arid: BigInt(arid), s_u: BigInt(reg.s_u), chainid });
     state.sessions[r_s.toString()] = {
-      arid, pk_trace: { x: pk_trace.x.toString(), y: pk_trace.y.toString() }, credential: r.body, blind: req.secrets.blind.toString(),
+      arid, PPID: PPID.toString(), pk_trace: { x: pk_trace.x.toString(), y: pk_trace.y.toString() }, factoryAddress, allowAgent,
+      credential: r.body, blind: req.secrets.blind.toString(),
       sessionPrivKey: session.wallet.privateKey, pk_i: session.pk_i.toString(),
       issuedAt: new Date().toISOString(),
     };
@@ -103,6 +109,7 @@ const loginCors = cors({ origin: (origin, cb) => cb(null, origin === RP_ORIGIN),
 app.options('/wallet/login', loginCors);
 app.options('/wallet/revalidate', loginCors);
 app.options('/wallet/request', loginCors);
+app.options('/wallet/tx', loginCors);
 
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'wallet.html')));
 
@@ -111,7 +118,7 @@ app.get('/wallet/status', async (req, res) => {
   try { head = (await provider.getBlockNumber()).toString(); } catch { /* 체인 없음 */ }
   const sessions = {};
   for (const [r_s, e] of Object.entries(state.sessions)) {
-    sessions[r_s] = { arid: e.arid, exptime: e.credential.exptime, chainid: e.credential.chainid, sessionAddress: new ethers.Wallet(e.sessionPrivKey).address, issuedAt: e.issuedAt, pk_trace: e.pk_trace };
+    sessions[r_s] = { arid: e.arid, PPID: e.PPID, max_height: e.credential.max_height, chainid: e.credential.chainid, allowAgent: e.allowAgent, factoryAddress: e.factoryAddress, sessionAddress: new ethers.Wallet(e.sessionPrivKey).address, issuedAt: e.issuedAt, pk_trace: e.pk_trace };
   }
   res.json({
     registered: Boolean(state.registration), uid: state.registration?.uid ?? null, sessions,
@@ -141,8 +148,10 @@ app.post('/wallet/register', async (req, res) => {
 
 app.post('/wallet/login', loginCors, async (req, res) => {
   try {
-    const { arid, origin, cert_s, pk_trace, r_s } = req.body ?? {};
+    const { arid, origin, cert_s, pk_trace, r_s, allowAgent = '0', factoryAddress = null } = req.body ?? {};
     if (!isDec(arid) || typeof origin !== 'string' || !cert_s || !pk_trace || !isDec(pk_trace.x) || !isDec(pk_trace.y) || !isDec(r_s)) return res.status(400).json({ error: 'arid, origin, cert_s, pk_trace{x,y}, r_s 필요' });
+    if (allowAgent !== '0' && allowAgent !== '1') return res.status(400).json({ error: 'allowAgent 는 "0" 또는 "1"' });
+    if (factoryAddress !== null && !isAddr(factoryAddress)) return res.status(400).json({ error: 'factoryAddress 는 주소' });
     if (!state.registration) return res.status(409).json({ reason: 'not_registered' });
     if (!LOG_ADDRESS) return res.status(503).json({ reason: 'chain_unavailable', detail: 'CIA_LOG_ADDRESS not configured' });
     const rs = BigInt(r_s);
@@ -169,14 +178,14 @@ app.post('/wallet/login', loginCors, async (req, res) => {
     timings.syncMs = Date.now() - t;
     lastSync = { root: synced.root.toString(), head: synced.head.toString() };
 
-    pruneSessions();
+    pruneSessions(synced.head);
     t = Date.now();
-    const r = await issueCredential(arid, rs, { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) });      // 로그인마다 발급(설계 §5)
+    const r = await issueCredential(arid, rs, { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress ? ethers.getAddress(factoryAddress) : null);      // 로그인마다 발급(설계 §5)
     timings.issueMs = Date.now() - t;
     if (r.status === 403) return res.status(403).json({ reason: 'account_disabled', timings });
     if (r.status !== 200) return res.status(502).json({ reason: 'issue_failed', cia: r.body, timings });
     const out = await proveSession(rs.toString(), synced, timings);
-    res.json({ ...out, issued: true, timings });
+    res.json({ ...out, issued: true, allowAgent, timings });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -200,7 +209,7 @@ async function proveSession(rsKey, synced, timings) {
     cache.set(synced.root, rsKey, cached);
   }
   const sig = await signChallenge(sessionWallet, rsKey);
-  return { proof: cached.proof, publicSignals: cached.publicSignals, sig, pk_i: s.pk_i, r_s: rsKey, root: synced.root.toString(), cacheHit };
+  return { proof: cached.proof, publicSignals: cached.publicSignals, sig, pk_i: s.pk_i, r_s: rsKey, root: synced.root.toString(), cacheHit, allowAgent: s.allowAgent, max_height: s.credential.max_height };
 }
 
 app.post('/wallet/revalidate', loginCors, async (req, res) => {
@@ -226,6 +235,8 @@ app.post('/wallet/revalidate', loginCors, async (req, res) => {
     catch (e) { return res.status(503).json({ reason: 'chain_unavailable', detail: e.message }); }
     timings.syncMs = Date.now() - t;
     lastSync = { root: synced.root.toString(), head: synced.head.toString() };
+    pruneSessions(synced.head);
+    if (!state.sessions[rsKey]) return res.status(410).json({ reason: 'session_expired', timings });
     try {
       const out = await proveSession(rsKey, synced, timings);
       res.json({ ...out, timings });
@@ -244,6 +255,67 @@ app.post('/wallet/request', loginCors, async (req, res) => {
     if (!s) return res.status(404).json({ reason: 'no_session' });
     const sig = await signSessionRequest(new ethers.Wallet(s.sessionPrivKey), BigInt(r_s), body);
     res.json({ sig, pk_i: s.pk_i });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ---- 온체인 실행(설계 2026-09-18 §6.3) ----
+// 세션의 성명(같은 π)을 트랜잭션마다 첨부한다 — 컨트랙트가 매번 검증한다(사용자 결정 2026-09-17). 지갑 주소는 서비스 팩토리의
+// computeAddress(PPID). 릴레이어는 hardhat 언락 계정(후원 실행 설계 2026-07-20 과 같은 방식) — 데모용이며 실제 배포의 번들러 자리다.
+const RELAYER_INDEX = Number(process.env.MODE3_RELAYER_INDEX ?? 0);
+app.post('/wallet/tx', loginCors, async (req, res) => {
+  try {
+    const { r_s, to, value = '0', data = '0x' } = req.body ?? {};
+    if (!isDec(r_s) || !isAddr(to) || !isDec(value) || typeof data !== 'string' || !/^0x([0-9a-fA-F]{2})*$/.test(data)) {
+      return res.status(400).json({ error: 'r_s, to(주소), value(wei 10진, 선택), data(hex, 선택) 필요' });
+    }
+    const rsKey = BigInt(r_s).toString();
+    const s = state.sessions[rsKey];
+    if (!s) return res.status(404).json({ reason: 'no_session' });
+    if (!s.factoryAddress) return res.status(409).json({ reason: 'no_factory', detail: '서비스가 로그인 때 factoryAddress 를 주지 않았다' });
+    if (!LOG_ADDRESS) return res.status(503).json({ reason: 'chain_unavailable', detail: 'CIA_LOG_ADDRESS not configured' });
+    const timings = { syncMs: 0, issueMs: 0, proveMs: 0, txMs: 0 };
+    let t = Date.now();
+    let synced;
+    try { synced = await syncRevocationTree(provider, LOG_ADDRESS); }
+    catch (e) { return res.status(503).json({ reason: 'chain_unavailable', detail: e.message }); }
+    timings.syncMs = Date.now() - t;
+    lastSync = { root: synced.root.toString(), head: synced.head.toString() };
+    pruneSessions(synced.head);
+    if (!state.sessions[rsKey]) return res.status(409).json({ reason: 'session_expired', timings });
+    let proved;
+    try { proved = await proveSession(rsKey, synced, timings); }   // root 가 같으면 캐시 π, 아니면 재증명
+    catch (e) {
+      if (e.reason === 'revoked') { delete state.sessions[rsKey]; persist(); return res.status(403).json({ reason: 'revoked', timings }); }
+      throw e;
+    }
+    const relayer = await provider.getSigner(RELAYER_INDEX);
+    const factory = factoryAt(s.factoryAddress, relayer);
+    const walletAddr = await factory.computeAddress(BigInt(s.PPID));
+    let deployed = false;
+    if ((await provider.getCode(walletAddr)) === '0x') { await (await factory.deploy(BigInt(s.PPID))).wait(); deployed = true; }
+    const walletC = walletAt(walletAddr, relayer);
+    const nonce = await walletC.nonce();
+    const payload = { to: ethers.getAddress(to), value: BigInt(value), data, nonce };
+    const sig = signPayload(new ethers.Wallet(s.sessionPrivKey), { chainId: await chainId(), wallet: walletAddr, ...payload });
+    const { a, b, c, pub } = await proofToCalldata(proved.proof, proved.publicSignals);
+    t = Date.now();
+    let receipt;
+    try { receipt = await (await walletC.execute(payload, sig, a, b, c, pub)).wait(); }
+    catch (e) {
+      // revert 이름(NonceMismatch·StaleRevocationRoot·RootTooOld·Expired…)을 그대로 돌려준다 — 서비스 페이지가 보여준다.
+      // ethers v6 는 send()(execute 처럼 상태를 바꾸는 함수는 내부적으로 estimateGas 를 먼저 부른다)의 revert 를
+      // 컨트랙트 ABI 로 자동 디코드하지 않는다 — staticCall 경로에서만 contract.interface.makeError 를 거친다.
+      // 그래서 e.revert 는 항상 null 이고 e.data 에 원본 바이트만 남는다 — 직접 파싱한다.
+      let name = e?.revert?.name ?? e?.reason ?? e?.shortMessage ?? e.message;
+      if (e?.data) { try { name = walletC.interface.parseError(e.data)?.name ?? name; } catch { /* 알려진 커스텀 에러가 아니면 원래 메시지를 쓴다 */ } }
+      return res.status(409).json({ reason: 'execute_reverted', detail: String(name), wallet: walletAddr, nonce: nonce.toString(), timings });
+    }
+    timings.txMs = Date.now() - t;
+    const { executed } = parseExecuteReceipt(receipt, walletAddr);
+    res.json({
+      txHash: receipt.hash, wallet: walletAddr, nonce: nonce.toString(), status: receipt.status, ok: executed?.success ?? null,
+      gasUsed: receipt.gasUsed.toString(), deployed, cacheHit: proved.cacheHit, root: synced.root.toString(), timings,
+    });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

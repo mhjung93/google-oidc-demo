@@ -2,7 +2,8 @@
 //
 // server.js(:3000, Mode 1/2)와 나란히 두는 별도 프로세스다. 그쪽 코드를 import 하지 않는다.
 // 검증(설계 §6.3 7단계)은 전부 lib/mode3_rp.js 에 있고 여기는 등록·challenge 관리 + HTTP 만이다.
-// 세션은 메모리 Map(r_s → PPID·pk_i·exptime·root) 뿐이고 쿠키는 없다 — 데모의 요점은 검증 결과다(스펙 §4.2).
+// 세션은 메모리 Map(r_s → PPID·pk_i·max_height·allowAgent·root) 뿐이고 쿠키는 없다 — 데모의 요점은 검증 결과다(스펙 §4.2).
+// V4(2026-09-18): 팩토리 배포(§6.1), 로그인 V4(max_height·allowAgent, σ 는 서버 챌린지 위), 트랜잭션 해시 개봉(§6.2).
 import 'dotenv/config';
 import express from 'express';
 import fs from 'node:fs';
@@ -16,6 +17,7 @@ import { verifyRpCert } from './lib/mode3_rp_cert.js';
 import { randomScalar } from './lib/mode3_credential.js';
 import { createShare, partialDecrypt } from './lib/mode3_trace.js';
 import { signOpenRequest, signOpenResult } from './lib/mode3_opening.js';
+import { deployVerifier, deployFactory, decodeExecuteCalldata, parseExecuteReceipt, MAX_ROOT_AGE_DEFAULT } from './lib/mode3_onchain.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.MODE3_RP_PORT) || 3100;
@@ -45,7 +47,7 @@ const pkCIA = await resolvePkCia();
 // 키 둘: secp256k1 서명키(pk_service, 개봉 요청)와 Baby Jubjub 조각(x_svc, 태그). 첫 기동에서 만들어 파일에 두고 CIA 에
 // 등록한다. CIA 는 pending 으로 받고 운영자가 승인하면 조합 키 pk_trace 와 cert_s 를 준다 — 그때까지는 대기 상태로 뜬다.
 const REG_FILE = process.env.MODE3_RP_REGISTRATION_FILE || path.join(__dirname, 'mode3_rp_registration.json');
-const REG_VERSION = 2;
+const REG_VERSION = 3;
 const PUBLIC_ORIGIN = process.env.MODE3_RP_PUBLIC_ORIGIN || `http://127.0.0.1:${PORT}`;
 const RP_NAME = process.env.MODE3_RP_NAME || 'demo-rp';
 const POLL_MS = Number(process.env.MODE3_RP_REGISTRATION_POLL_MS) || 5000;
@@ -53,6 +55,8 @@ const LOGIN_LOG = process.env.MODE3_RP_LOGIN_LOG || path.join(__dirname, 'mode3_
 if (fs.existsSync(LOGIN_LOG)) fs.chmodSync(LOGIN_LOG, 0o600);   // 옛 실행이 남긴 파일의 권한도 조인다
 
 let reg = readJson(REG_FILE, null);
+// v2 → v3(2026-09-18): 팩토리·검증자 주소 필드. 조각(x_svc)은 그대로 — 버리면 이전 로그인 로그의 태그를 열 수 없다.
+if (reg && reg.version === 2) { reg = { ...reg, version: 3, factoryAddress: null, verifierAddress: null }; writeJsonAtomic(REG_FILE, reg, 0o600); }
 if (reg && (reg.version !== REG_VERSION || reg.origin !== PUBLIC_ORIGIN)) {
   console.warn(`[rp] 등록 파일이 옛 형식이거나 origin(${reg.origin}) 이 현재(${PUBLIC_ORIGIN}) 와 달라 새로 등록한다` +
     ` — 옛 서비스 조각(x_svc)도 버려지므로 이전 로그인 로그의 태그는 더 이상 열 수 없다`);
@@ -61,7 +65,7 @@ if (reg && (reg.version !== REG_VERSION || reg.origin !== PUBLIC_ORIGIN)) {
 if (!reg) {
   const w = ethers.Wallet.createRandom();
   const share = await createShare();
-  reg = { version: REG_VERSION, origin: PUBLIC_ORIGIN, pk_service: w.address, sk_service: w.privateKey, X_svc: { x: share.X.x.toString(), y: share.X.y.toString() }, x_svc: share.x.toString(), status: 'pending', arid: null, pk_trace: null, cert_s: null, issuedAt: null };
+  reg = { version: REG_VERSION, origin: PUBLIC_ORIGIN, pk_service: w.address, sk_service: w.privateKey, X_svc: { x: share.X.x.toString(), y: share.X.y.toString() }, x_svc: share.x.toString(), status: 'pending', arid: null, pk_trace: null, cert_s: null, issuedAt: null, factoryAddress: null, verifierAddress: null };
   writeJsonAtomic(REG_FILE, reg, 0o600);
 }
 const serviceWallet = new ethers.Wallet(reg.sk_service);
@@ -90,25 +94,49 @@ const vkey = JSON.parse(fs.readFileSync(VKEY_PATH, 'utf8'));
 const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { cacheTimeout: -1 });
 const chainId = (await provider.getNetwork()).chainId;
 let verifier = null;   // 승인 뒤에만 만든다 — arid 와 pk_trace 가 있어야 한다
-function activate() {
+
+// ---- 팩토리(설계 2026-09-18 §6.1): 승인 뒤 한 번 배포. env 가 있으면 그것. 배포자·가스는 hardhat 언락 계정(개인키 없음). ----
+const RELAYER_INDEX = Number(process.env.MODE3_RELAYER_INDEX ?? 0);
+// PINNED_ENV(tests/helpers/isolated_mode3_stack.mjs)가 빈 문자열로 고정한다 — 다른 CIA_* env 와 같은 관례로
+// 빈 문자열도 "기본값 사용"이어야 한다(?? 는 빈 문자열을 값으로 본다 — cia.js 의 envBig 과 같은 이유로 || 를 쓴다).
+const MAX_ROOT_AGE = BigInt(process.env.MODE3_MAX_ROOT_AGE || MAX_ROOT_AGE_DEFAULT);
+async function ensureFactory() {
+  if (process.env.MODE3_RP_FACTORY_ADDRESS) { reg.factoryAddress = ethers.getAddress(process.env.MODE3_RP_FACTORY_ADDRESS); return; }
+  if (reg.factoryAddress) return;
+  const signer = await provider.getSigner(RELAYER_INDEX);
+  const verifierAddress = process.env.MODE3_VERIFIER_ADDRESS || reg.verifierAddress || await deployVerifier(signer);
+  const factoryAddress = await deployFactory(signer, { verifierAddress, arid: reg.arid, pkCIA, pkTrace: { x: BigInt(reg.pk_trace.x), y: BigInt(reg.pk_trace.y) }, logAddress: LOG_ADDRESS, maxRootAge: MAX_ROOT_AGE });
+  reg = { ...reg, verifierAddress, factoryAddress };
+  writeJsonAtomic(REG_FILE, reg, 0o600);
+  console.log(`[rp] 팩토리 배포: ${factoryAddress} (verifier ${verifierAddress}, maxRootAge ${MAX_ROOT_AGE}) → ${REG_FILE}`);
+}
+async function activate() {
   verifier = createRpVerifier({ provider, logAddress: LOG_ADDRESS, vkey, pkCIA, arid: BigInt(reg.arid), chainId, pkTrace: { x: BigInt(reg.pk_trace.x), y: BigInt(reg.pk_trace.y) } });
+  // 팩토리가 없어도 오프체인 로그인은 된다 — 실패는 경고로 남기고 /wallet/tx 만 no_factory 가 된다.
+  try { await ensureFactory(); } catch (e) { console.warn(`[rp] 팩토리 배포 실패(오프체인 로그인만 가능): ${e.message}`); }
 }
 if (reg.status === 'approved' && reg.cert_s) {
   if (!(await verifyRpCert(pkCIA, { arid: BigInt(reg.arid), origin: reg.origin, pk_trace: { x: BigInt(reg.pk_trace.x), y: BigInt(reg.pk_trace.y) }, cert: reg.cert_s }))) {
     throw new Error('등록 파일의 cert_s 가 현재 pk_CIA 로 검증되지 않는다 — CIA 키가 바뀌었으면 파일을 지우고 재기동');
   }
-  activate();
+  await activate();
 } else {
-  if (await registerOnce()) activate();
+  if (await registerOnce()) await activate();
   else {
     console.log(`[rp] 등록 대기 (arid=${reg.arid}) — CIA 관리자 페이지에서 승인하면 ${POLL_MS} ms 안에 활성화된다`);
+    // 한 틱이 끝나기 전에(특히 activate() 의 팩토리 배포는 느리다) 다음 틱이 시작하지 않도록 재진입을 막는다 —
+    // clearInterval 만으로는 부족하다: 두 틱이 거의 동시에 registerOnce() 를 시작해 버리면 clearInterval 이
+    // 걸리기 전에 이미 둘 다 진행 중이라 팩토리가 중복 배포되고 reg.factoryAddress 가 경합으로 덮어써진다.
+    let activating = false;
     const timer = setInterval(async () => {
-      try { if (await registerOnce()) { activate(); clearInterval(timer); } }
+      if (activating) return;
+      activating = true;
+      try { if (await registerOnce()) { clearInterval(timer); await activate(); } }
       catch (e) {
         // 거절·인증서 검증 실패는 영구 상태라 멈춘다. 그 외(CIA 일시 장애·네트워크 오류)는 계속 재시도한다.
         if (e.permanent) { console.error(`[rp] ${e.message}`); clearInterval(timer); }
         else console.warn(`[rp] 등록 조회 실패, 다시 시도: ${e.message}`);
-      }
+      } finally { activating = false; }
     }, POLL_MS);
     timer.unref();
   }
@@ -116,7 +144,7 @@ if (reg.status === 'approved' && reg.cert_s) {
 
 // ---- r_s: 메모리, TTL, 로그인 때 1회 소비. 소비된 r_s 는 세션 식별자가 된다(설계 §7) ----
 const challenges = new Map();   // r_s(10진) → expiresAt(ms)
-const sessions = new Map();     // r_s(10진) → { PPID, pk_i, exptime, root, at }
+const sessions = new Map();     // r_s(10진) → { PPID, pk_i, max_height, allowAgent, root, at }
 function sweepChallenges() { const now = Date.now(); for (const [c, exp] of challenges) if (exp < now) challenges.delete(c); }
 function issueChallenge() {
   sweepChallenges();
@@ -143,51 +171,46 @@ app.use(express.json({ limit: '1mb' }));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'rp.html')));
 
 app.get('/api/mode3/rp_info', (req, res) => {
-  res.json({ status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, pkCiaSource: pkCIA.source, chainId: chainId.toString() });
+  res.json({ status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, pkCiaSource: pkCIA.source, chainId: chainId.toString(), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null });
 });
 app.post('/api/mode3/challenge', (req, res) => {
   if (!verifier) return res.status(503).json({ reason: 'registration_pending' });
-  res.json(issueChallenge());
+  res.json({ ...issueChallenge(), factoryAddress: reg.factoryAddress ?? null });
 });
 
-async function verifyBody(req, res) {
+async function verifyBody(req, res, r_s) {
   const { proof, publicSignals, sig } = req.body ?? {};
   if (!proof || !Array.isArray(publicSignals) || typeof sig !== 'string') { res.status(400).json({ ok: false, reason: 'malformed' }); return null; }
-  return verifier.verifyLogin({ proof, publicSignals, sig });
-}
-
-/** publicSignals[5](r_s, 회로가 정한 순서) 를 10진 문자열로. 형식이 깨져 있으면(길이·비수치) null. */
-function rsFromSignals(publicSignals) {
-  try { return Array.isArray(publicSignals) && publicSignals.length === 14 ? String(BigInt(publicSignals[5])) : null; }
-  catch { return null; }
+  return verifier.verifyLogin({ proof, publicSignals, sig, r_s });
 }
 
 app.post('/api/mode3/login', async (req, res) => {
   try {
     if (!verifier) return res.status(503).json({ ok: false, reason: 'registration_pending' });
-    const { publicSignals } = req.body ?? {};
-    const rsStr = rsFromSignals(publicSignals);
-    if (!rsStr) return res.status(400).json({ ok: false, reason: 'malformed' });
+    const { r_s } = req.body ?? {};
+    if (typeof r_s !== 'string' || !/^[0-9]+$/.test(r_s)) return res.status(400).json({ ok: false, reason: 'malformed' });
+    const rsStr = BigInt(r_s).toString();
     if (!consumeChallenge(rsStr)) return res.status(401).json({ ok: false, reason: 'bad_challenge' });   // 검증 전에 소비
-    const v = await verifyBody(req, res); if (v === null) return;
+    const v = await verifyBody(req, res, BigInt(rsStr)); if (v === null) return;
     if (!v.ok) return res.json({ ok: false, reason: v.reason });
-    sessions.set(rsStr, { PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), exptime: v.exptime.toString(), root: v.root.toString(), at: new Date().toISOString() });
-    logins.push({ PPID: v.PPID.toString(), at: new Date().toISOString(), root: v.root.toString(), r_s: rsShort(rsStr) });
+    const at = new Date().toISOString();
+    sessions.set(rsStr, { PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), at });
+    logins.push({ PPID: v.PPID.toString(), at, root: v.root.toString(), r_s: rsShort(rsStr), allowAgent: v.allowAgent.toString() });
     // §5 로그인 로그 — 전체 r_s 와 트랜스크립트(태그 포함). 개봉 요청의 재료다. 조회 API 로는 내지 않는다.
-    fs.appendFileSync(LOGIN_LOG, JSON.stringify({ at: new Date().toISOString(), PPID: v.PPID.toString(), r_s: rsStr, pk_i: v.pk_i.toString(), exptime: v.exptime.toString(), root: v.root.toString(), publicSignals, proof: req.body.proof }) + '\n', { mode: 0o600 });
-    res.json({ ok: true, PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), r_s: rsStr, root: v.root.toString() });
+    fs.appendFileSync(LOGIN_LOG, JSON.stringify({ at, PPID: v.PPID.toString(), r_s: rsStr, pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), publicSignals: req.body.publicSignals, proof: req.body.proof }) + '\n', { mode: 0o600 });
+    res.json({ ok: true, PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), r_s: rsStr, root: v.root.toString(), allowAgent: v.allowAgent.toString() });
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });
 
 app.post('/api/mode3/revalidate', async (req, res) => {
   try {
     if (!verifier) return res.status(503).json({ ok: false, reason: 'registration_pending' });
-    const { publicSignals } = req.body ?? {};
-    const rsStr = rsFromSignals(publicSignals);
-    if (!rsStr) return res.status(400).json({ ok: false, reason: 'malformed' });
+    const { r_s } = req.body ?? {};
+    if (typeof r_s !== 'string' || !/^[0-9]+$/.test(r_s)) return res.status(400).json({ ok: false, reason: 'malformed' });
+    const rsStr = BigInt(r_s).toString();
     const s = sessions.get(rsStr);
     if (!s) return res.status(401).json({ ok: false, reason: 'no_session' });
-    const v = await verifyBody(req, res); if (v === null) return;
+    const v = await verifyBody(req, res, BigInt(rsStr)); if (v === null) return;
     if (!v.ok) return res.json({ ok: false, reason: v.reason });
     if (v.PPID.toString() !== s.PPID || v.pk_i.toString() !== s.pk_i) return res.status(401).json({ ok: false, reason: 'session_mismatch' });
     s.root = v.root.toString();
@@ -202,10 +225,10 @@ app.post('/api/mode3/request', async (req, res) => {
     if (typeof r_s !== 'string' || typeof body !== 'string' || typeof sig !== 'string') return res.status(400).json({ ok: false, reason: 'malformed' });
     const s = sessions.get(r_s);
     if (!s) return res.status(401).json({ ok: false, reason: 'no_session' });
-    if (BigInt(Math.floor(Date.now() / 1000)) > BigInt(s.exptime)) { sessions.delete(r_s); return res.status(401).json({ ok: false, reason: 'expired' }); }
     // 폐기가 효력을 갖는 지점: root 가 바뀌었으면 세션은 재검증 전까지 요청을 받지 않는다.
     const view = await verifier.refreshChainView().catch(() => null);
     if (!view) return res.status(503).json({ ok: false, reason: 'chain_unavailable' });
+    if (view.head > BigInt(s.max_height)) { sessions.delete(r_s); return res.status(401).json({ ok: false, reason: 'expired' }); }
     if (view.root.toString() !== s.root) return res.status(401).json({ ok: false, reason: 'revalidate_required' });
     if (!verifySessionRequest({ pk_i: s.pk_i, r_s, body, sig })) return res.status(401).json({ ok: false, reason: 'bad_signature' });
     res.json({ ok: true, echo: body, PPID: s.PPID });
@@ -222,18 +245,41 @@ function lastTranscriptOf(PPID) {
   if (dropped > 0) console.warn(`[rp] 로그인 로그 손상 줄 ${dropped}개 건너뜀`);
   return lines.reverse().find((l) => l.PPID === PPID) ?? null;
 }
+/** 트랜잭션 해시에서 개봉 재료(§6.2): calldata 의 (a, b, c, pub) 을 snarkjs 증명 형식으로 되돌린다. 성공한 execute 만 받는다. */
+async function transcriptFromTx(txHash) {
+  const tx = await provider.getTransaction(txHash);
+  if (!tx) return { error: 'no_tx' };
+  const d = decodeExecuteCalldata(tx.data);
+  if (!d) return { error: 'not_execute' };
+  const receipt = await provider.getTransactionReceipt(txHash);
+  if (!receipt || receipt.status !== 1 || !parseExecuteReceipt(receipt, tx.to).auth) return { error: 'tx_failed' };
+  // exportSolidityCallData 는 b 의 각 행을 (y, x) 로 뒤집는다 — 되돌린다.
+  const proof = {
+    pi_a: [d.a[0], d.a[1], '1'],
+    pi_b: [[d.b[0][1], d.b[0][0]], [d.b[1][1], d.b[1][0]], ['1', '0']],
+    pi_c: [d.c[0], d.c[1], '1'],
+    protocol: 'groth16', curve: 'bn128',
+  };
+  return { publicSignals: d.pub, proof, PPID: d.pub[0] };
+}
 app.post('/api/mode3/open', async (req, res) => {
   try {
     if (!verifier) return res.status(503).json({ ok: false, reason: 'registration_pending' });
-    const { PPID } = req.body ?? {};
-    if (typeof PPID !== 'string') return res.status(400).json({ ok: false, reason: 'malformed' });
-    const T = lastTranscriptOf(PPID);
-    if (!T) return res.status(404).json({ ok: false, reason: 'no_transcript' });
+    const { PPID, txHash } = req.body ?? {};
+    let T;
+    if (typeof txHash === 'string') {
+      if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) return res.status(400).json({ ok: false, reason: 'malformed' });
+      T = await transcriptFromTx(txHash);
+      if (T.error) return res.status(404).json({ ok: false, reason: T.error });
+    } else if (typeof PPID === 'string') {
+      T = lastTranscriptOf(PPID);
+      if (!T) return res.status(404).json({ ok: false, reason: 'no_transcript' });
+    } else return res.status(400).json({ ok: false, reason: 'malformed' });
     const c1 = { x: BigInt(T.publicSignals[11]), y: BigInt(T.publicSignals[12]) };
     const D = await partialDecrypt(BigInt(reg.x_svc), c1);
     const D_svc = { x: D.x.toString(), y: D.y.toString() };
     const ts = Math.floor(Date.now() / 1000).toString();
-    const sig = await signOpenRequest(serviceWallet, { arid: reg.arid, r_s: T.r_s, PPID, D_svc, ts });
+    const sig = await signOpenRequest(serviceWallet, { arid: reg.arid, PPID: T.PPID, c1: { x: c1.x.toString(), y: c1.y.toString() }, D_svc, ts });
     const r = await fetch(`${CIA_URL}/cia/open/request`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ arid: reg.arid, publicSignals: T.publicSignals, proof: T.proof, D_svc, ts, sig }) });
     res.status(r.status).json(await r.json().catch(() => ({})));
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
@@ -248,7 +294,7 @@ app.get('/api/mode3/open/:id', async (req, res) => {
 });
 
 app.get('/api/mode3/logins', (req, res) => res.json({ logins }));
-app.get('/api/mode3/sessions', (req, res) => res.json({ sessions: [...sessions.entries()].map(([r_s, s]) => ({ r_s: rsShort(r_s), PPID: s.PPID, pk_i: s.pk_i, exptime: s.exptime, root: s.root, at: s.at })) }));
+app.get('/api/mode3/sessions', (req, res) => res.json({ sessions: [...sessions.entries()].map(([r_s, s]) => ({ r_s: rsShort(r_s), PPID: s.PPID, pk_i: s.pk_i, max_height: s.max_height, allowAgent: s.allowAgent, root: s.root, at: s.at })) }));
 
 app.listen(PORT, '127.0.0.1', () => {
   console.log(`Mode 3 RP at http://127.0.0.1:${PORT} (arid=${reg.arid ?? '-'} status=${reg.status}, origin=${reg.origin}, log=${LOG_ADDRESS}, wallet=${WALLET_ORIGIN}, pk_CIA=${pkCIA.source}, chain=${chainId})`);

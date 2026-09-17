@@ -16,6 +16,7 @@ const PINNED_ENV = {
   CIA_RPC_URL: process.env.CIA_RPC_URL || 'http://127.0.0.1:8545',
   MODE3_PK_CIA_X: '', MODE3_PK_CIA_Y: '', MODE3_RP_REGISTRATION_FILE: '', MODE3_CHALLENGE_TTL_MS: '',
   MODE3_RP_REGISTRATION_POLL_MS: '300', MODE3_RP_LOGIN_LOG: '',
+  MODE3_RP_FACTORY_ADDRESS: '', MODE3_VERIFIER_ADDRESS: '', MODE3_RELAYER_INDEX: '', MODE3_MAX_ROOT_AGE: '',
 };
 
 /** node <script> 를 env 로 띄우고 readyUrl 이 200 을 줄 때까지 기다린다. */
@@ -60,8 +61,8 @@ function client(base, logFile) {
 }
 
 export async function startIsolatedMode3Stack(opts = {}) {
-  const { rp: withRp = true, rpEnv = {}, walletEnv = {} } = opts;
-  const cia = await startIsolatedCia();
+  const { rp: withRp = true, rpEnv = {}, walletEnv = {}, ciaEnv = {} } = opts;
+  const cia = await startIsolatedCia({ env: ciaEnv });
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-stack-'));
   const walletPort = await freePort();
   const rpPort = await freePort();
