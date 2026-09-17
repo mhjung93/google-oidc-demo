@@ -32,4 +32,10 @@ npx snarkjs groth16 setup "$OUT/pi_cred.r1cs" "$PTAU" "$OUT/pi_cred_0000.zkey"
 npx snarkjs zkey contribute "$OUT/pi_cred_0000.zkey" "$OUT/pi_cred_final.zkey" --name=mode3 -v -e=mode3-bench
 npx snarkjs zkey export verificationkey "$OUT/pi_cred_final.zkey" "$OUT/pi_cred_vkey.json"
 
-echo "완료: $OUT/pi_cred_final.zkey, $OUT/pi_cred_vkey.json, $OUT/pi_cred_js/pi_cred.wasm"
+echo "=== solidity verifier ==="
+# snarkjs 0.7 템플릿의 컨트랙트 이름은 Groth16Verifier 다 — 저장소 관례(PiPkIVerifier)대로 회로 이름으로 바꾼다.
+npx snarkjs zkey export solidityverifier "$OUT/pi_cred_final.zkey" contracts/PiCredVerifier.sol
+sed -i -E 's/contract (Groth16Verifier|Verifier) /contract PiCredVerifier /' contracts/PiCredVerifier.sol
+grep -q 'contract PiCredVerifier' contracts/PiCredVerifier.sol || { echo "PiCredVerifier 이름 치환 실패" >&2; exit 1; }
+
+echo "완료: $OUT/pi_cred_final.zkey, $OUT/pi_cred_vkey.json, $OUT/pi_cred_js/pi_cred.wasm, contracts/PiCredVerifier.sol"

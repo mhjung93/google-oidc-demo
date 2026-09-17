@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { credLeaf, createRevocationTree, MODE3_TREE_DEPTH } from '../lib/mode3_revocation.js';
 import { buildValidInput } from './helpers/mode3_fixture.mjs';
 import { ppid } from '../lib/mode3_credential.js';
-import { partialDecrypt, combineDecrypt } from '../lib/mode3_trace.js';
+import { partialDecrypt, combineDecrypt, resolveTagPlaintext } from '../lib/mode3_trace.js';
 
 const ROOT_DIR = fileURLToPath(new URL('..', import.meta.url));
 // build/mode3 바로 아래가 아니라 하위 디렉터리에 컴파일한다 — 지갑이 증명에 쓰는 build/mode3/pi_cred_js/pi_cred.wasm
@@ -62,7 +62,7 @@ async function t(name, fn) {
 }
 
 const constraints = compile();
-const { input: valid, C: validC, shares, tag } = await buildValidInput();
+const { input: valid, C: validC, shares, tag, arid: validArid } = await buildValidInput();
 
 await t('양성: 정상 credential의 witness가 계산된다', async () => {
   const w = await witness(valid);
@@ -88,16 +88,23 @@ await t('음성: PPID가 다르면 거부된다', async () => {
   );
 });
 
-await t('음성: exptime 을 바꾸면 거부된다 (서명이 exptime 을 덮는다)', async () => {
-  await assert.rejects(() => witness({ ...valid, exptime: (BigInt(valid.exptime) + 1n).toString() }), /Assert Failed/);
+await t('음성: max_height 를 바꾸면 거부된다 (서명이 max_height 를 덮는다)', async () => {
+  await assert.rejects(() => witness({ ...valid, max_height: (BigInt(valid.max_height) + 1n).toString() }), /Assert Failed/);
 });
 
 await t('음성: chainid 를 바꾸면 거부된다 (서명이 chainid 를 덮는다)', async () => {
   await assert.rejects(() => witness({ ...valid, chainid: '1' }), /Assert Failed/);
 });
 
-await t('음성: r_s 를 바꾸면 거부된다 (서명이 r_s 를 덮는다 — 다른 세션의 성명을 이 세션에 낼 수 없다)', async () => {
-  await assert.rejects(() => witness({ ...valid, r_s: (BigInt(valid.r_s) + 1n).toString() }), /Assert Failed/);
+await t('음성: allowAgent 를 뒤집으면 거부된다 (서명이 allowAgent 를 덮는다), 2 는 불리언 제약에서 거부된다', async () => {
+  await assert.rejects(() => witness({ ...valid, allowAgent: '1' }), /Assert Failed/);
+  await assert.rejects(() => witness({ ...valid, allowAgent: '2' }), /Assert Failed/);
+});
+
+await t('양성: allowAgent = 1 로 서명한 자격증명은 통과한다', async () => {
+  const { input } = await buildValidInput({ allowAgent: 1n });
+  const w = await witness(input);
+  assert.ok(w.length > 0);
 });
 
 await t('음성: attr 하나를 바꾸면 거부된다 (C 가 달라져 서명이 안 맞는다)', async () => {
@@ -116,10 +123,12 @@ await t('⑤ 양성: 회로가 받아들인 태그는 두 조각으로 uid 로 �
   await witness(valid);   // 공개 입력 tag_* 가 회로 계산과 같아야 통과한다
   const D_svc = await partialDecrypt(shares.svc.x, tag.c1);
   const D_aa = await partialDecrypt(shares.aa.x, tag.c1);
-  assert.equal(await combineDecrypt(tag.c2, D_svc, D_aa), BigInt(valid.uid));
+  const h = await combineDecrypt(tag.c2, D_svc, D_aa);
+  assert.equal(h, tag.h, '복호 결과는 Poseidon(uid, arid)');
+  assert.equal(await resolveTagPlaintext(h, validArid, ['1', valid.uid]), valid.uid);
 });
 
-await t('⑤ 음성: c2 를 바꾸면 거부된다 (평문이 커밋 안의 uid 와 다르다)', async () => {
+await t('⑤ 음성: c2 를 바꾸면 거부된다 (평문이 커밋 안의 uid·공개 입력 arid 의 Poseidon 과 다르다)', async () => {
   await assert.rejects(() => witness({ ...valid, tag_c2: (BigInt(valid.tag_c2) + 1n).toString() }), /Assert Failed/);
 });
 
@@ -172,5 +181,6 @@ await t('JS credLeaf 와 회로의 리프 계산이 일치한다', async () => {
 console.log('');
 console.log(`## pi_cred 비선형 제약: ${constraints.toLocaleString()}`);
 console.log(`   (참고 — Mode 2 pi_pk_i_v3: 13,905)`);
+console.log('   (V3 2026-09-16: 25,505)');
 
 process.exit(failed === 0 ? 0 : 1);

@@ -10,17 +10,18 @@ include "lib/mode3_trace_tag.circom";
 // Mode 3 credential 증명.
 // 설계: docs/superpowers/specs/2026-09-09-mode3-cia-revocation-design.md §5
 // 속성·(exptime, chainid, r_s) 서명: docs/superpowers/specs/2026-09-14-mode3-attribute-credential-design.md §3/§5
+// V4(max_height·allowAgent, 태그 평문 Poseidon(uid, arid)): docs/superpowers/specs/2026-09-18-mode3-onchain-execution-design.md §3
 //
 // 네 가지를 함께 증명한다. 하나라도 빠지면 뚫린다:
-//   ① CIA가 (C, exptime, chainid, r_s)에 서명했다 — 없으면 아무나 credential을 만든다
+//   ① CIA가 (C, max_height, chainid, allowAgent)에 서명했다 — 없으면 아무나 credential을 만든다
 //   ② C 안에 이 pk_i가 있다                    — 없으면 남의 π를 주워 자기 키로 서명해 완전 사칭
 //   ③ PPID = Poseidon(uid, s_u, chainid, arid) — 없으면 지갑 주소를 특정할 수 없다
 //   ④ H(C)가 폐기 트리에 없다                   — 없으면 폐기가 무의미
 //   ⑤ tag = Enc(pk_trace, uid) 가 잘 만들어졌다  — 없으면 개봉이 엉뚱한 값을 연다 (2026-09-16 §4)
 //
 //   attrs[4] 는 커밋에만 실린다 — CIA 는 값을 모르고(설계 2026-09-14 §2) 이 회로는 술어를 검증하지 않는다.
-//   r_s 는 서비스가 이 세션을 위해 뽑은 값이라 **공개 입력**이다 — RP 가 자기가 준 값과 대조한다(설계 2026-09-15 §7).
-//   CIA 도 r_s 를 보므로 CIA·RP 기록을 맞대면 uid↔PPID 가 이어진다(§2, 의도된 조건부 추적 가능성).
+//   r_s 는 더 이상 서명·공개 입력에 없다(설계 2026-09-18 §2) — 온체인 공개 입력은 AA 도 보므로 AA 가 발급 때 본 값을 두지 않는다.
+//   allowAgent ∈ {0,1} 은 AA 속성이다(2026-09-18 §3.1) — 서명이 덮고, 공개 입력으로 나가 온체인 이벤트·개봉 결과에 남는다.
 //
 // ②는 커밋을 공개 입력 pk_i·arid로 **직접 계산**해서 얻는다. 별도 등식이 필요 없다 —
 // 계산에 쓴 값이 곧 공개 입력이므로 다른 값을 넣으면 서명 검증이 깨진다.
@@ -53,9 +54,9 @@ template PiCred(depth) {
     signal input PPID;
     signal input arid;
     signal input pk_i;
-    signal input exptime;
+    signal input max_height;
     signal input chainid;
-    signal input r_s;
+    signal input allowAgent;
     signal input revRoot;
     signal input pk_CIA_x;
     signal input pk_CIA_y;
@@ -65,7 +66,7 @@ template PiCred(depth) {
     signal input tag_c1_y;
     signal input tag_c2;
 
-    var DOMAIN_MODE3_CRED_V3 = 93461614427473393731524147;  // ASCII "MODE3CREDV3"
+    var DOMAIN_MODE3_CRED_V4 = 93461614427473393731524148;  // ASCII "MODE3CREDV4"
     var TAG_MODE3_CRED = 3;                                  // TAG_SESSION=1, TAG_ACCOUNT=2 와 갈라 둔다
 
     // pk_i는 세션키의 이더리움 주소다. 160비트를 넘을 수 없다.
@@ -93,15 +94,16 @@ template PiCred(depth) {
     Cf <== cf.out;
 
     // ---- ① CIA 서명 검증 ----
-    // r_s 는 공개 입력이지만 스칼라 상한 규약(2^250)은 지킨다 — JS 쪽(credMessage·CIA·RP)이 같은 상한을 강제한다.
-    component rsRange = Num2Bits(250);
-    rsRange.in <== r_s;
+    // max_height 는 2^64 미만(컨트랙트 uint64 비교와 맞춘다), allowAgent 는 불리언.
+    component mhRange = Num2Bits(64);
+    mhRange.in <== max_height;
+    allowAgent * (allowAgent - 1) === 0;
     component msgHasher = Poseidon(5);
-    msgHasher.inputs[0] <== DOMAIN_MODE3_CRED_V3;
+    msgHasher.inputs[0] <== DOMAIN_MODE3_CRED_V4;
     msgHasher.inputs[1] <== Cf;
-    msgHasher.inputs[2] <== exptime;
+    msgHasher.inputs[2] <== max_height;
     msgHasher.inputs[3] <== chainid;
-    msgHasher.inputs[4] <== r_s;
+    msgHasher.inputs[4] <== allowAgent;
 
     component sigVerifier = EdDSAPoseidonVerifier();
     sigVerifier.enabled <== 1;
@@ -142,9 +144,11 @@ template PiCred(depth) {
 
     // ---- ⑤ 트레이스 태그 ----
     // uid 는 ② 의 커밋 개봉과 ③ 의 PPID 유도에 쓴 바로 그 신호다 — 태그를 열면 이 성명의 uid 가 나온다.
+    // 평문은 Poseidon(uid, arid) 다 — 태그를 열면 이 성명의 (uid, arid) 값이 나오고 CIA 가 등록부로 uid 를 되찾는다(2026-09-18 §6.2).
     component tag = TraceTag();
     tag.r <== r;
     tag.uid <== uid;
+    tag.arid <== arid;
     tag.pk_trace_x <== pk_trace_x;
     tag.pk_trace_y <== pk_trace_y;
     tag_c1_x === tag.c1x;
@@ -152,10 +156,10 @@ template PiCred(depth) {
     tag_c2 === tag.c2;
 }
 
-// 공개 입력의 순서는 lib/mode3_wallet.js·lib/mode3_rp.js·cia.js(개봉) 가 의존한다. 바꾸지 말 것.
+// 공개 입력의 순서는 lib/mode3_wallet.js·lib/mode3_rp.js·cia.js(개봉)·contracts/Mode3Wallet.sol 가 의존한다. 바꾸지 말 것.
 // pk_CIA_x/y 와 pk_trace_x/y 는 공개 입력이다. 검증자는 반드시 전자를 고정된 CIA 키와, 후자를 자기 등록 파일의
 // 조합 키와 비교해야 한다 (설계 §5, 2026-09-16 §4.2).
 component main {public [
-    PPID, arid, pk_i, exptime, chainid, r_s, revRoot, pk_CIA_x, pk_CIA_y,
+    PPID, arid, pk_i, max_height, chainid, allowAgent, revRoot, pk_CIA_x, pk_CIA_y,
     pk_trace_x, pk_trace_y, tag_c1_x, tag_c1_y, tag_c2
 ]} = PiCred(32);
