@@ -5,7 +5,6 @@ import fs from 'node:fs';
 import { ethers } from 'ethers';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { getProvider } from './helpers/mode3_chain.mjs';
-import { randomScalar } from '../lib/mode3_credential.js';
 import { createRegistration, createSessionKey, buildIssueRequest, syncRevocationTree, buildCredentialProof, VKEY_PATH } from '../lib/mode3_wallet.js';
 import { createShare, combinePublicKey, partialDecrypt } from '../lib/mode3_trace.js';
 import { signOpenRequest, signOpenResult } from '../lib/mode3_opening.js';
@@ -34,20 +33,19 @@ try {
   const r0 = await cia.post('/cia/register', { uid: '12345', pwd: 'password123', cm_u: { x: reg.cm_u.x.toString(), y: reg.cm_u.y.toString() } });
   assert.equal(r0.status, 201, j(r0.body));
   const sk_u = r0.body.sk_u;
-  async function loginTranscript(svc, pk_trace = svc.pk_trace) {
+  async function loginTranscript(svc, pk_trace = svc.pk_trace, allowAgent = 0n) {
     const session = createSessionKey();
-    const r_s = randomScalar();
-    const req = await buildIssueRequest({ uid, arid: BigInt(svc.arid), s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, attrs: [0n, 0n, 0n, 0n], r_s });
+    const req = await buildIssueRequest({ uid, arid: BigInt(svc.arid), s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, attrs: [0n, 0n, 0n, 0n], allowAgent });
     const issued = await cia.post('/cia/issue', req.body);
     assert.equal(issued.status, 200, j(issued.body));
     const { tree } = await syncRevocationTree(provider, cia.logAddress);
     const { proof, publicSignals, tag } = await buildCredentialProof({ uid, arid: BigInt(svc.arid), s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs: [0n, 0n, 0n, 0n], credential: issued.body, pk_CIA, pk_trace, tree });
-    return { proof, publicSignals, tag, r_s: r_s.toString(), PPID: publicSignals[0] };
+    return { proof, publicSignals, tag, PPID: publicSignals[0] };
   }
   async function openRequest(svc, T, { share = svc.share, wallet = svc.serviceWallet, ts = nowTs(), arid = svc.arid } = {}) {
     const D = await partialDecrypt(share.x, T.tag.c1);
     const D_svc = { x: D.x.toString(), y: D.y.toString() };
-    const sig = await signOpenRequest(wallet, { arid, r_s: T.r_s, PPID: T.PPID, D_svc, ts });
+    const sig = await signOpenRequest(wallet, { arid, PPID: T.PPID, c1: { x: T.tag.c1.x.toString(), y: T.tag.c1.y.toString() }, D_svc, ts });
     return cia.post('/cia/open/request', { arid, publicSignals: T.publicSignals, proof: T.proof, D_svc, ts, sig });
   }
   async function fetchResult(svc, id, { wallet = svc.serviceWallet, ts = nowTs() } = {}) {
@@ -62,16 +60,26 @@ try {
     assert.equal(r.status, 202, j(r.body)); assert.equal(r.body.status, 'pending'); id1 = r.body.id;
     const list = (await cia.adminGet('/cia/openings')).body.openings;
     const mine = list.find((o) => o.id === id1);
-    assert.equal(mine.status, 'pending'); assert.equal(mine.uid, undefined, '승인 전에는 uid 가 계산되지 않는다');
+    assert.equal(mine.status, 'pending'); assert.equal(mine.uid, null, '승인 전에는 uid 가 계산되지 않는다');
     assert.equal((await fetchResult(S1, id1)).status, 202);
     const a = await cia.adminPost(`/cia/openings/${id1}/approve`);
     assert.equal(a.status, 200, j(a.body)); assert.equal(a.body.status, 'approved');
     const res = await fetchResult(S1, id1);
-    assert.equal(res.status, 200, j(res.body)); assert.equal(res.body.uid, '12345'); assert.equal(res.body.PPID, T1.PPID); assert.equal(res.body.r_s, T1.r_s);
+    assert.equal(res.status, 200, j(res.body)); assert.equal(res.body.uid, '12345'); assert.equal(res.body.resolved, true);
+    assert.equal(res.body.PPID, T1.PPID); assert.equal(res.body.r_s, undefined);
+    assert.equal(res.body.allowAgent, '0'); assert.equal(res.body.max_height, T1.publicSignals[3]); assert.equal(res.body.chainid, '31337');
     assert.equal((await cia.adminGet('/cia/openings')).body.openings.find((o) => o.id === id1).uid, '12345', '감사 기록에 uid');
   });
 
-  await t('같은 (arid, r_s) 재요청은 새 id 를 만들지 않는다 (200, 같은 id)', async () => {
+  await t('allowAgent = 1 로 로그인한 세션의 개봉 결과에는 allowAgent 1 이 남는다 (덱 22장의 용도)', async () => {
+    const T = await loginTranscript(S1, S1.pk_trace, 1n);
+    const { body: { id } } = await openRequest(S1, T);
+    assert.equal((await cia.adminPost(`/cia/openings/${id}/approve`)).status, 200);
+    const res = await fetchResult(S1, id);
+    assert.equal(res.status, 200, j(res.body)); assert.equal(res.body.allowAgent, '1'); assert.equal(res.body.uid, '12345');
+  });
+
+  await t('같은 (arid, c1) 재요청은 새 id 를 만들지 않는다 (200, 같은 id)', async () => {
     const r = await openRequest(S1, T1);
     assert.equal(r.status, 200); assert.equal(r.body.id, id1);
   });
@@ -80,7 +88,7 @@ try {
     const T = await loginTranscript(S1);
     const D_svc = { x: '1', y: '1' };
     const ts = nowTs();
-    const sig = await signOpenRequest(S1.serviceWallet, { arid: S1.arid, r_s: T.r_s, PPID: T.PPID, D_svc, ts });
+    const sig = await signOpenRequest(S1.serviceWallet, { arid: S1.arid, PPID: T.PPID, c1: { x: T.tag.c1.x.toString(), y: T.tag.c1.y.toString() }, D_svc, ts });
     const r = await cia.post('/cia/open/request', { arid: S1.arid, publicSignals: T.publicSignals, proof: T.proof, D_svc, ts, sig });
     assert.equal(r.status, 400, j(r.body));
   });
@@ -98,18 +106,22 @@ try {
     assert.equal((await cia.adminPost(`/cia/openings/${r2.body.id}/deny`)).status, 200);
   });
 
-  await t('틀린 D_svc(다른 조각) → 승인 시 failed, 결과 403', async () => {
+  await t('틀린 D_svc(다른 조각) → 승인해도 uid 를 못 찾아 approved+resolved:false (§6.2)', async () => {
     const T = await loginTranscript(S1);
     const { body: { id } } = await openRequest(S1, T, { share: await createShare() });
     const a = await cia.adminPost(`/cia/openings/${id}/approve`);
-    assert.equal(a.status, 200); assert.equal(a.body.status, 'failed');
-    assert.equal((await fetchResult(S1, id)).status, 403);
-    // failed 는 재요청을 막지 않는다 — 맞는 조각으로 다시 내면 새 id 로 승인·개봉된다.
-    const r2 = await openRequest(S1, T);
-    assert.equal(r2.status, 202, JSON.stringify(r2.body)); assert.notEqual(r2.body.id, id);
-    const a2 = await cia.adminPost(`/cia/openings/${r2.body.id}/approve`);
-    assert.equal(a2.status, 200, JSON.stringify(a2.body)); assert.equal(a2.body.status, 'approved');
-    const res2 = await fetchResult(S1, r2.body.id);
+    assert.equal(a.status, 200); assert.equal(a.body.status, 'approved'); assert.equal(a.body.resolved, false);
+    const res = await fetchResult(S1, id);
+    assert.equal(res.status, 200, JSON.stringify(res.body)); assert.equal(res.body.uid, null); assert.equal(res.body.resolved, false);
+    // 이미 approved 라 같은 (arid, c1) 재요청은 새 id 를 만들지 않는다 — 맞는 조각으로 고쳐 내려면 새 로그인(새 태그)이 필요하다.
+    const dup = await openRequest(S1, T);
+    assert.equal(dup.status, 200); assert.equal(dup.body.id, id);
+    const T2 = await loginTranscript(S1);
+    const { body: { id: id2 } } = await openRequest(S1, T2);
+    assert.notEqual(id2, id);
+    const a2 = await cia.adminPost(`/cia/openings/${id2}/approve`);
+    assert.equal(a2.status, 200, JSON.stringify(a2.body)); assert.equal(a2.body.resolved, true);
+    const res2 = await fetchResult(S1, id2);
     assert.equal(res2.status, 200, JSON.stringify(res2.body)); assert.equal(res2.body.uid, '12345');
   });
 
@@ -161,8 +173,7 @@ try {
       const r0 = await cia2.post('/cia/register', { uid: '12345', pwd: 'password123', cm_u: { x: reg.cm_u.x.toString(), y: reg.cm_u.y.toString() } });
       assert.equal(r0.status, 201, j(r0.body));
       const session = createSessionKey();
-      const r_s = randomScalar();
-      const req = await buildIssueRequest({ uid, arid: BigInt(S.arid), s_u: reg.s_u, r_u: reg.r_u, sk_u: r0.body.sk_u, session, chainid: 31337n, attrs: [0n, 0n, 0n, 0n], r_s });
+      const req = await buildIssueRequest({ uid, arid: BigInt(S.arid), s_u: reg.s_u, r_u: reg.r_u, sk_u: r0.body.sk_u, session, chainid: 31337n, attrs: [0n, 0n, 0n, 0n] });
       const issued = await cia2.post('/cia/issue', req.body);
       assert.equal(issued.status, 200, j(issued.body));
       const { tree } = await syncRevocationTree(provider, cia2.logAddress);
@@ -172,7 +183,7 @@ try {
       const D = await partialDecrypt(S.share.x, tag.c1);
       const D_svc = { x: D.x.toString(), y: D.y.toString() };
       const ts = nowTs();
-      const sig = await signOpenRequest(S.serviceWallet, { arid: S.arid, r_s: r_s.toString(), PPID: publicSignals[0], D_svc, ts });
+      const sig = await signOpenRequest(S.serviceWallet, { arid: S.arid, PPID: publicSignals[0], c1: { x: tag.c1.x.toString(), y: tag.c1.y.toString() }, D_svc, ts });
       const r = await cia2.post('/cia/open/request', { arid: S.arid, publicSignals, proof, D_svc, ts, sig });
       assert.equal(r.status, 503, j(r.body));
     } finally { await cia2.stop(); }

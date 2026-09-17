@@ -31,14 +31,16 @@ export async function startIsolatedCia(opts = {}) {
   await fundAddress(ethWallet.address, '1', provider);
   const { address: logAddress } = await deployRevocationLog(ethWallet.address, provider);
 
-  // 자식은 dotenv/config 로 .env 를 읽는다 — 개발용 값(CIA_TTL_SECONDS·CIA_CHAIN_IDS 포함)이 새어 들어오지
-  // 않도록 테스트가 기대하는 값으로 고정한다. dotenv 는 이미 있는 키(빈 문자열 포함)를 덮지 않으므로
-  // 빈 문자열이 "기본값 사용"(TTL 3600 초, chainId 는 기동 시 RPC 에서 읽은 값 하나)이 된다.
+  // 자식은 dotenv/config 로 .env 를 읽는다 — 개발용 값(TTL·그리드·체인 RPC·하트비트)이 새어 들어오지 않도록 테스트가
+  // 기대하는 값으로 고정한다. dotenv 는 이미 있는 키(빈 문자열 포함)를 덮지 않으므로 빈 문자열이 "기본값 사용"이다
+  // (TTL 300블록, 그리드 100, chainId 는 기동 시 RPC 에서 읽은 값 하나). 하트비트는 끈다 — 테스트가 기대하지 않은
+  // epoch 증가·블록 소비를 막는다. 하트비트 테스트는 extraEnv 로 다시 켠다.
   const env = {
     ...process.env,
     CIA_RPC_URL: process.env.CIA_RPC_URL || 'http://127.0.0.1:8545',
-    CIA_TTL_SECONDS: '',
-    CIA_CHAIN_IDS: '',
+    CIA_TTL_BLOCKS: '', CIA_HEIGHT_GRID: '', CIA_REVOKE_SKEW_BLOCKS: '', CIA_CHAIN_RPCS: '',
+    CIA_HEARTBEAT_BLOCKS: '0',
+    CIA_TTL_SECONDS: '', CIA_CHAIN_IDS: '',   // 옛 키 — 경고만 나오게 비운다
     CIA_PORT: String(port),
     CIA_STATE_FILE: path.join(dir, 'cia_state.json'),
     CIA_KEYS_FILE: path.join(dir, 'cia_keys.json'),

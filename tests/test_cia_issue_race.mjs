@@ -59,15 +59,15 @@ try {
   const sk_u = reg.body.sk_u;
 
   async function issueBody() {
-    const blind = randomScalar(), r_s = randomScalar();
+    const blind = randomScalar();
     const { C_pt, proof } = await proveIssuance({ uid, arid, s_u, blind, pk_i, r_u, attrs: [0n, 0n, 0n, 0n] });
-    return { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: await signUserRequest(sk_u, C_pt, 31337n, r_s), chainid: '31337', r_s: r_s.toString() };
+    return { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: await signUserRequest(sk_u, C_pt, 31337n, 0n), chainid: '31337', allowAgent: '0' };
   }
 
   await t('issue 가 체인 가용성을 확인하는 동안 계정이 폐기되면 발급하지 않는다 (403, 기록도 남지 않는다)', async () => {
     const body = await issueBody();
     hold = { seen: deferred(), released: deferred() };
-    const inflight = cia.post('/cia/issue', body);   // 검증을 지나 chainAlive() 의 eth_blockNumber 에서 게이트에 붙잡힌다
+    const inflight = cia.post('/cia/issue', body);   // 검증을 지나 headOf() 의 eth_blockNumber 에서 게이트에 붙잡힌다
     await hold.seen.promise;
     const gate = hold;
     hold = null;                                      // 이후의 eth_blockNumber(revoke 의 것)는 그대로 통과

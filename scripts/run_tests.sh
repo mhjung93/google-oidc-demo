@@ -31,6 +31,7 @@ UNIT=(
   tests/test_mode3_rp_cert.js
   tests/test_mode3_trace.js
   tests/test_mode3_opening.js
+  tests/test_mode3_cia_state.js
 )
 
 CIRCUIT=(

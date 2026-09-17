@@ -39,10 +39,10 @@ async function registerAndIssueLeaf(cia, user) {
     assert.equal(r.status, 201, JSON.stringify(r.body));
     user.sk_u = r.body.sk_u;
   }
-  const blind = randomScalar(), r_s = randomScalar();
+  const blind = randomScalar();
   const { C_pt, proof } = await proveIssuance({ uid, arid, s_u: user.s_u, blind, pk_i, r_u: user.r_u, attrs: [0n, 0n, 0n, 0n] });
-  const sig_u = await signUserRequest(user.sk_u, C_pt, 31337n, r_s);
-  const r = await cia.post('/cia/issue', { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u, chainid: '31337', r_s: r_s.toString() });
+  const sig_u = await signUserRequest(user.sk_u, C_pt, 31337n, 0n);
+  const r = await cia.post('/cia/issue', { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u, chainid: '31337', allowAgent: '0' });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   return (await credLeaf(BigInt(r.body.C))).toString();
 }
@@ -116,14 +116,14 @@ try {
     await expectStartupRefused({ env: { CIA_LOG_ADDRESS: firstLog, CIA_ETH_PRIVATE_KEY: firstEthPrv } });
   });
 
-  await t('v3 상태 파일은 v4 로 마이그레이션된다 — used_rs 버림, rps 는 approved·조각 없음, openings 빈 배열', async () => {
+  await t('v3 상태 파일은 v5 로 마이그레이션된다 — used_rs 버림, rps 는 approved·조각 없음, openings 빈 배열', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-v3-'));
     const stateFile = path.join(dir, 'cia_state.json');
     fs.writeFileSync(stateFile, JSON.stringify({ version: 3, accounts: {}, issued: {}, used_rs: { '12345': ['1', '2'] }, rps: { '777': { name: 'old', origin: 'http://127.0.0.1:3100', at: '2026-09-15T00:00:00.000Z' } }, revoked: [], pending: [], epoch: 0 }), { mode: 0o600 });
     const cia = await startIsolatedCia({ env: { CIA_STATE_FILE: stateFile } });
     try {
       const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-      assert.equal(saved.version, 4); assert.equal(saved.used_rs, undefined); assert.deepEqual(saved.openings, []);
+      assert.equal(saved.version, 5); assert.equal(saved.used_rs, undefined); assert.deepEqual(saved.openings, []);
       const e = (await cia.adminGet('/cia/rps')).body.rps.find((x) => x.arid === '777');
       assert.equal(e.status, 'approved'); assert.equal(e.pk_trace, null); assert.equal(e.pk_service, null);
       // 옛 등록이 키를 내며 재등록하면 무허가 바인딩을 막기 위해 pending 으로 돌아간다 — 운영자 승인이 다시 필요하다(§3)
@@ -134,6 +134,18 @@ try {
       assert.equal((await cia.adminPost('/cia/rps/777/approve')).status, 200);
       const ok = await cia.post('/cia/register_rp', body);
       assert.equal(ok.status, 200, JSON.stringify(ok.body)); assert.equal(ok.body.arid, '777'); assert.ok(ok.body.pk_trace?.x);
+    } finally { await cia.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  await t('v4 상태 파일은 v5 로 이행된다 — 발급 기록은 비우고 계정·서비스·폐기·epoch 는 유지', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-v4-'));
+    const stateFile = path.join(dir, 'cia_state.json');
+    fs.writeFileSync(stateFile, JSON.stringify({ version: 4, accounts: {}, issued: { '12345': [{ leaf: '9', C: '8', exptime: '1789000000' }] }, rps: {}, openings: [], revoked: [], pending: [], epoch: 0 }), { mode: 0o600 });
+    const cia = await startIsolatedCia({ env: { CIA_STATE_FILE: stateFile } });
+    try {
+      const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      assert.equal(saved.version, 5); assert.deepEqual(saved.issued, {});
+      assert.match(cia.log(), /v4→v5/);
     } finally { await cia.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
   });
 } finally {

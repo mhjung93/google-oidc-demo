@@ -11,6 +11,7 @@ import { registrationCommit, proveIssuance, serializeProof, pointToStrings } fro
 import { syncRevocationTree, signUserRequest } from '../lib/mode3_wallet.js';
 import { verifyRpCert } from '../lib/mode3_rp_cert.js';
 import { createShare } from '../lib/mode3_trace.js';
+import { LOG_ABI } from '../lib/mode3_log.js';
 
 let failed = 0;
 async function t(name, fn) {
@@ -32,15 +33,15 @@ const arid = 22222222222222222222n;
 const pk_i = BigInt(ethers.Wallet.createRandom().address);
 let user;   // { s_u, r_u, cm_u, sk_u(Buffer), pk_u }
 
-// 사용자 서명은 (C_pt, chainid, r_s) 를 덮는다. CIA 는 r_s 를 기록하지 않는다 — 옛 본문 재생으로 얻는 σ 는
-// RP 에서 bad_challenge 다(2026-09-16 §4.4).
+// 사용자 서명은 (C_pt, chainid, allowAgent) 를 덮는다(2026-09-18 §3.3). CIA 는 로그인당 기록이 없다 — 옛 본문 재생으로
+// 얻는 것은 같은 C_pt 의 자격증명 하나뿐이고 sk_i 없이는 쓸 수 없다.
 const CHAIN_ID = 31337n;
-const signUser = (prvBuf, C_pt, chainid, r_s) => signUserRequest(prvBuf.toString('hex'), C_pt, chainid, r_s);
+const signUser = (prvBuf, C_pt, chainid, allowAgent) => signUserRequest(prvBuf.toString('hex'), C_pt, chainid, allowAgent);
 
-async function issueRequest(u, overrides = {}, { chainid = CHAIN_ID, r_s = randomScalar(), attrs = [19n, 410n, 0n, 0n] } = {}) {
+async function issueRequest(u, overrides = {}, { chainid = CHAIN_ID, allowAgent = 0n, attrs = [19n, 410n, 0n, 0n] } = {}) {
   const blind = randomScalar();
   const { C_pt, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind, pk_i, r_u: u.r_u, attrs });
-  return { body: { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: await signUser(u.sk_u, C_pt, chainid, r_s), chainid: chainid.toString(), r_s: r_s.toString(), ...overrides }, C_pt, blind, r_s };
+  return { body: { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: await signUser(u.sk_u, C_pt, chainid, allowAgent), chainid: chainid.toString(), allowAgent: allowAgent.toString(), ...overrides }, C_pt, blind };
 }
 
 try {
@@ -48,7 +49,7 @@ try {
     const r = await cia.get('/cia/public_keys');
     assert.equal(r.status, 200);
     assert.equal(r.body.ethAddress.toLowerCase(), cia.ethAddress.toLowerCase());
-    assert.equal(r.body.ttlSeconds, 3600); assert.deepEqual(r.body.chainIds, ['31337']);
+    assert.equal(r.body.ttlBlocks, 300); assert.equal(r.body.heightGrid, 100); assert.equal(r.body.heartbeatBlocks, 0); assert.deepEqual(r.body.chainIds, ['31337']);
     assert.equal(r.body.logAddress.toLowerCase(), cia.logAddress.toLowerCase());
   });
 
@@ -131,16 +132,19 @@ try {
     cred = r.body;
     // C 는 CIA 가 C_pt 에서 유도한 값이어야 한다
     assert.equal(cred.C, (await compressPoint(C_pt)).toString());
-    // σ_CIA 가 credMessage(C, exptime, chainid, r_s) 에 대한 pk_CIA 서명인지
-    const msg = F.e(await credMessage(BigInt(cred.C), BigInt(cred.exptime), BigInt(cred.chainid), BigInt(cred.r_s)));
+    // σ_CIA 가 credMessage(C, max_height, chainid, allowAgent) 에 대한 pk_CIA 서명인지
+    const msg = F.e(await credMessage(BigInt(cred.C), BigInt(cred.max_height), BigInt(cred.chainid), BigInt(cred.allowAgent)));
     const sig = { R8: [F.e(BigInt(cred.sigma.R8x)), F.e(BigInt(cred.sigma.R8y))], S: BigInt(cred.sigma.S) };
     const pub = [F.e(BigInt(cred.pk_CIA.x)), F.e(BigInt(cred.pk_CIA.y))];
     assert.ok(eddsa.verifyPoseidon(msg, sig, pub));
-    // exptime = now + 3600 (±5초), chainid·r_s 는 요청값 그대로
-    const nowSec = Math.floor(Date.now() / 1000);
-    assert.ok(Number(cred.exptime) >= nowSec + 3595 && Number(cred.exptime) <= nowSec + 3605, cred.exptime);
+    // max_height = ceil((head + 300) / 100) × 100 — 그리드 배수이고 [head+300, head+400) 안(2026-09-18 §3.2)
+    const head = BigInt(await provider.getBlockNumber());
+    const mh = BigInt(cred.max_height);
+    assert.equal(mh % 100n, 0n, cred.max_height);
+    assert.ok(mh >= head + 300n && mh < head + 400n, `max_height ${mh} vs head ${head}`);
     assert.equal(cred.chainid, '31337');
-    assert.equal(cred.r_s, body.r_s);
+    assert.equal(cred.allowAgent, '0');
+    assert.equal(cred.exptime, undefined); assert.equal(cred.r_s, undefined);
   });
 
   await t('issue: 다른 s_u 로 만든 C_pt 는 400 (cm_u 동일성)', async () => {
@@ -151,45 +155,55 @@ try {
 
   await t('issue: 사용자 서명이 다른 키면 400', async () => {
     const { body, C_pt } = await issueRequest(user);
-    body.sig_u = await signUser(Buffer.alloc(32, 7), C_pt, CHAIN_ID, BigInt(body.r_s));
+    body.sig_u = await signUser(Buffer.alloc(32, 7), C_pt, CHAIN_ID, 0n);
     assert.equal((await cia.post('/cia/issue', body)).status, 400);
   });
 
-  await t('issue: 같은 r_s 로 다른 C_pt 는 200 (CIA 는 로그인당 기록이 없다 — 재생은 RP 가 막는다), 허용 목록 밖 chainid 는 400, …', async () => {
-    const first = await issueRequest(user);
-    assert.equal((await cia.post('/cia/issue', first.body)).status, 200);
-    // CIA 는 r_s 를 기록하지 않는다(2026-09-16 §4.4) — 같은 r_s 로 다른 C_pt 를 내면 200 이다. 재생 방지는 RP 의 r_s 소비다.
-    const replay = await issueRequest(user, {}, { r_s: first.r_s });
-    assert.equal((await cia.post('/cia/issue', replay.body)).status, 200);
-    // 허용 목록(31337) 밖
+  await t('issue: allowAgent 는 서명이 덮는다 — 플래그만 바꾸면 400, 2 는 400, 없으면 400, 허용 목록 밖 chainid 는 400', async () => {
+    const flipped = await issueRequest(user);
+    flipped.body.allowAgent = '1';
+    assert.equal((await cia.post('/cia/issue', flipped.body)).status, 400);
+    const two = await issueRequest(user, { allowAgent: '2' });
+    assert.equal((await cia.post('/cia/issue', two.body)).status, 400);
+    const missing = await issueRequest(user);
+    delete missing.body.allowAgent;
+    assert.equal((await cia.post('/cia/issue', missing.body)).status, 400);
     const wrongChain = await issueRequest(user, {}, { chainid: 1n });
     const r2 = await cia.post('/cia/issue', wrongChain.body);
     assert.equal(r2.status, 400, JSON.stringify(r2.body));
     assert.match(r2.body.error, /chainid/);
-    // r_s 만 바꿔 끼우면 서명이 안 맞아 400
-    const tampered = await issueRequest(user);
-    tampered.body.r_s = (BigInt(tampered.body.r_s) + 1n).toString();
-    assert.equal((await cia.post('/cia/issue', tampered.body)).status, 400);
-    // r_s 없이 보내면 400
-    const missing = await issueRequest(user);
-    delete missing.body.r_s;
-    assert.equal((await cia.post('/cia/issue', missing.body)).status, 400);
   });
 
-  await t('issue: 같은 C_pt 로 재요청하면 409 (재전송 방지)', async () => {
+  await t('issue: allowAgent = 1 로 서명한 요청은 200 이고 응답의 allowAgent 도 1', async () => {
+    const { body } = await issueRequest(user, {}, { allowAgent: 1n });
+    const r = await cia.post('/cia/issue', body);
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.allowAgent, '1');
+  });
+
+  await t('issue: 같은 C_pt 재요청은 200 — 같은 C 의 기록은 하나이고 max_height 는 큰 쪽(2026-09-18 §3.3·§4.3)', async () => {
     const { body } = await issueRequest(user);
-    const first = await cia.post('/cia/issue', body);
-    assert.equal(first.status, 200, JSON.stringify(first.body));
-    const second = await cia.post('/cia/issue', body);
-    assert.equal(second.status, 409, JSON.stringify(second.body));
+    const a = await cia.post('/cia/issue', body);
+    assert.equal(a.status, 200, JSON.stringify(a.body));
+    await provider.send('hardhat_mine', ['0x64']);   // 100 블록 → 다음 그리드
+    const b = await cia.post('/cia/issue', body);
+    assert.equal(b.status, 200, JSON.stringify(b.body));
+    assert.equal(b.body.C, a.body.C);
+    assert.ok(BigInt(b.body.max_height) > BigInt(a.body.max_height));
+    // 기록이 하나여야 한다: 리프로 폐기하면 inserted 가 정확히 1 개
+    const r = await cia.adminPost('/cia/revoke', { uid: '12345', scope: 'credential', C: a.body.C });
+    assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.body.inserted.length, 1);
   });
 
   await t('revoke(account): 미만료 credential 리프가 트리에 들어가고 disabled 된다', async () => {
+    // 앞의 '같은 C_pt 재요청' 케이스가 리프 하나를 이미 pending 에 남겨 뒀다(§3.3·§4.3 재요청 갱신 테스트) — 이번
+    // 호출이 넣는 개수만큼 늘었는지를 본다(절대값 대신).
+    const pendingBefore = (await cia.get('/cia/state')).body.pendingCount;
     const r = await cia.adminPost('/cia/revoke', { uid: '12345', scope: 'account' });
     assert.equal(r.status, 200, JSON.stringify(r.body));
     const leaf = await credLeaf(BigInt(cred.C));
     assert.ok(r.body.inserted.map((h) => BigInt(h)).includes(leaf), '발급했던 credential 의 리프가 있어야 한다');
-    assert.equal(r.body.pending, r.body.inserted.length);
+    assert.equal(r.body.pending, pendingBefore + r.body.inserted.length);
     const { body } = await issueRequest(user);
     assert.equal((await cia.post('/cia/issue', body)).status, 403, 'disabled 계정은 발급 거절');
   });
@@ -286,7 +300,7 @@ try {
 
       // 발급은 disabled 검사가 chainid 허용 목록 확인보다 먼저다(cia.js /cia/issue) — 체인 없이도 403 이어야 한다.
       const issued = await dead.post('/cia/issue', {
-        uid: '12345', C_pt: { x: '1', y: '1' }, proof: {}, sig_u: {}, chainid: '31337', r_s: '1',
+        uid: '12345', C_pt: { x: '1', y: '1' }, proof: {}, sig_u: {}, chainid: '31337', allowAgent: '0',
       });
       assert.equal(issued.status, 403, JSON.stringify(issued.body));
     } finally {
@@ -431,8 +445,8 @@ try {
     assert.equal((await cia.get('/cia/state')).body.pendingCount, 1, 'pending 은 그대로여야 한다');
   });
 
-  await t('I1: exptime 이 지나도 CIA_REVOKE_SKEW_SECONDS 안이면 계정 폐기 대상에 남는다', async () => {
-    const skewCia = await startIsolatedCia({ env: { CIA_TTL_SECONDS: '1', CIA_REVOKE_SKEW_SECONDS: '600' } });
+  await t('I1: max_height 가 지나도 CIA_REVOKE_SKEW_BLOCKS 안이면 계정 폐기 대상에 남는다', async () => {
+    const skewCia = await startIsolatedCia({ env: { CIA_TTL_BLOCKS: '1', CIA_HEIGHT_GRID: '1', CIA_REVOKE_SKEW_BLOCKS: '600' } });
     try {
       const s_u = randomScalar(), r_u = randomScalar();
       const cm_u = await registrationCommit(s_u, r_u);
@@ -440,26 +454,20 @@ try {
       assert.equal(reg.status, 201, JSON.stringify(reg.body));
       const sk_u = Buffer.from(reg.body.sk_u, 'hex');
       const blind = randomScalar();
-      const r_s = randomScalar();
       const { C_pt, proof } = await proveIssuance({ uid, arid, s_u, blind, pk_i, r_u, attrs: [19n, 410n, 0n, 0n] });
-      const body = {
-        uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof),
-        sig_u: await signUser(sk_u, C_pt, CHAIN_ID, r_s), chainid: CHAIN_ID.toString(), r_s: r_s.toString(),
-      };
+      const body = { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: await signUser(sk_u, C_pt, CHAIN_ID, 0n), chainid: CHAIN_ID.toString(), allowAgent: '0' };
       const issued = await skewCia.post('/cia/issue', body);
       assert.equal(issued.status, 200, JSON.stringify(issued.body));
-      await new Promise((r) => setTimeout(r, 2000));   // exptime(1초)은 지났지만 여유(600초) 안
+      await provider.send('hardhat_mine', ['0x5']);   // max_height(head+1) 는 지났지만 여유(600) 안
       const leaf = await credLeaf(BigInt(issued.body.C));
       const r = await skewCia.adminPost('/cia/revoke', { uid: '12345', scope: 'account' });
       assert.equal(r.status, 200, JSON.stringify(r.body));
       assert.ok(r.body.inserted.map((h) => BigInt(h)).includes(leaf), '만료됐지만 여유 안이라 폐기 대상에 남아야 한다');
-    } finally {
-      await skewCia.stop();
-    }
+    } finally { await skewCia.stop(); }
   });
 
-  await t('I3: 만료 뒤 같은 본문 재전송은 200 (CIA 기록 없음 — 옛 r_s 의 성명은 RP 가 거절한다)', async () => {
-    const ttlCia = await startIsolatedCia({ env: { CIA_TTL_SECONDS: '1', CIA_REVOKE_SKEW_SECONDS: '0' } });
+  await t('I2: 여유까지 지난 기록은 걷어내져 계정 폐기 대상에서 빠진다', async () => {
+    const ttlCia = await startIsolatedCia({ env: { CIA_TTL_BLOCKS: '1', CIA_HEIGHT_GRID: '1', CIA_REVOKE_SKEW_BLOCKS: '0' } });
     try {
       const s_u = randomScalar(), r_u = randomScalar();
       const cm_u = await registrationCommit(s_u, r_u);
@@ -467,20 +475,30 @@ try {
       assert.equal(reg.status, 201, JSON.stringify(reg.body));
       const sk_u = Buffer.from(reg.body.sk_u, 'hex');
       const blind = randomScalar();
-      const r_s = randomScalar();
       const { C_pt, proof } = await proveIssuance({ uid, arid, s_u, blind, pk_i, r_u, attrs: [19n, 410n, 0n, 0n] });
-      const body = {
-        uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof),
-        sig_u: await signUser(sk_u, C_pt, CHAIN_ID, r_s), chainid: CHAIN_ID.toString(), r_s: r_s.toString(),
-      };
+      const body = { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: await signUser(sk_u, C_pt, CHAIN_ID, 0n), chainid: CHAIN_ID.toString(), allowAgent: '0' };
       const first = await ttlCia.post('/cia/issue', body);
       assert.equal(first.status, 200, JSON.stringify(first.body));
-      await new Promise((r) => setTimeout(r, 2000));
-      const second = await ttlCia.post('/cia/issue', body);
-      assert.equal(second.status, 200, JSON.stringify(second.body));
-    } finally {
-      await ttlCia.stop();
-    }
+      await provider.send('hardhat_mine', ['0x5']);
+      const r = await ttlCia.adminPost('/cia/revoke', { uid: '12345', scope: 'account' });
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.deepEqual(r.body.inserted, [], '만료·여유 0 이면 리프가 걷어내져 있어야 한다');
+    } finally { await ttlCia.stop(); }
+  });
+
+  await t('하트비트: CIA_HEARTBEAT_BLOCKS=2 면 게시 없이 블록이 지나도 같은 root 가 새 epoch 로 재게시되고 lastPublishedBlock 이 갱신된다', async () => {
+    const hbCia = await startIsolatedCia({ env: { CIA_HEARTBEAT_BLOCKS: '2', CIA_HEARTBEAT_POLL_MS: '300' } });
+    try {
+      const log = new ethers.Contract(hbCia.logAddress, LOG_ABI, provider);
+      const root0 = await log.root(), epoch0 = await log.epoch();
+      await provider.send('hardhat_mine', ['0x3']);
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline && (await log.epoch()) === epoch0) await new Promise((r) => setTimeout(r, 200));
+      assert.equal(await log.epoch(), epoch0 + 1n, hbCia.log());
+      assert.equal(await log.root(), root0, '하트비트는 root 를 바꾸지 않는다');
+      assert.ok(BigInt(await log.lastPublishedBlock()) > 0n);
+      assert.equal((await hbCia.get('/cia/state')).body.epoch, Number(epoch0) + 1, 'CIA 상태의 epoch 도 따라간다');
+    } finally { await hbCia.stop(); }
   });
 } finally {
   await cia.stop();
