@@ -28,6 +28,7 @@
     <button id="revokeBtn">계정 폐기 (scope=account)</button>
     <button id="publishBtn">게시 (root → 체인)</button>
     <button id="recoverBtn">복구 (disabled=false)</button>
+    <p class="muted">하트비트(CIA_HEARTBEAT_BLOCKS)가 켜져 있으면 변화가 없어도 주기적으로 재게시된다.</p>
   </fieldset>
 
   <fieldset>
@@ -39,6 +40,7 @@
   <fieldset>
     <legend>개봉 요청 <button id="openingsBtn">목록</button></legend>
     <p class="muted">승인 시점에 CIA 조각으로 복호해 uid 를 기록한다(§6). pending 항목에는 uid 가 없다.</p>
+    <p class="muted">복호 결과는 Poseidon(uid, arid) 라 등록부로 uid 를 되찾는다(2026-09-18 §6.2).</p>
     <div id="openings">-</div>
   </fieldset>
 
@@ -106,7 +108,7 @@
         const last = o.status === 'pending'
           ? actionButtons([{ label: '승인', act: 'approve', key: 'i', val: o.id }, { label: '거절', act: 'deny', key: 'i', val: o.id }])
           : '';
-        table.appendChild(row([o.status, o.requestedAt, `arid ${o.arid.slice(0, 10)}…`, `PPID ${o.PPID.slice(0, 10)}…`, o.uid ?? '', last]));
+        table.appendChild(row([o.status, o.requestedAt, `arid ${o.arid.slice(0, 10)}…`, `PPID ${o.PPID.slice(0, 10)}…`, o.uid ?? (o.resolved === false ? '(역조회 실패)' : ''), o.allowAgent == null ? '' : `agent=${o.allowAgent}`, last]));
       });
       $('openings').replaceChildren(table);
       $('openings').querySelectorAll('button').forEach((b) => b.addEventListener('click', async () => { await call('POST', `/cia/openings/${b.dataset.i}/${b.dataset.act}`); loadOpenings(); }));

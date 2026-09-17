@@ -36,6 +36,7 @@
   </fieldset>
 
   <p class="muted">로그인·발급은 RP 페이지(:3100)의 버튼이 시작한다 — 발급은 로그인 안에서 필요할 때 자동으로 일어난다(설계 §6.2 "세션마다").</p>
+  <p class="muted">온체인 트랜잭션도 RP 페이지의 버튼이 시작한다(<code>/wallet/tx</code>).</p>
 
   <script>
     const $ = (id) => document.getElementById(id);
@@ -52,7 +53,7 @@
         ];
         const entries = Object.entries(s.sessions);
         if (entries.length === 0) lines.push('  (없음)');
-        for (const [r_s, c] of entries) lines.push(`  r_s=${r_s.slice(0, 12)}…  arid=${c.arid}\n    exptime=${c.exptime}(${new Date(Number(c.exptime) * 1000).toLocaleTimeString()})  chainid=${c.chainid}  세션 주소=${c.sessionAddress}\n    발급=${c.issuedAt}`);
+        for (const [r_s, c] of entries) lines.push(`  r_s=${r_s.slice(0, 12)}…  arid=${c.arid}\n    max_height=${c.max_height}  chainid=${c.chainid}  allowAgent=${c.allowAgent}  PPID=${String(c.PPID).slice(0, 12)}…\n    세션 주소=${c.sessionAddress}  팩토리=${c.factoryAddress ?? '-'}\n    발급=${c.issuedAt}`);
         $('status').textContent = lines.join('\n');
       } catch (e) { $('status').textContent = `상태 조회 실패: ${e.message}`; }
     }
