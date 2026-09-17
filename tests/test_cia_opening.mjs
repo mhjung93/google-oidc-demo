@@ -106,22 +106,20 @@ try {
     assert.equal((await cia.adminPost(`/cia/openings/${r2.body.id}/deny`)).status, 200);
   });
 
-  await t('틀린 D_svc(다른 조각) → 승인해도 uid 를 못 찾아 approved+resolved:false (§6.2)', async () => {
+  await t('틀린 D_svc(다른 조각) → 승인해도 uid 를 못 찾아 approved+resolved:false, 같은 트랜스크립트로 재요청 가능', async () => {
     const T = await loginTranscript(S1);
     const { body: { id } } = await openRequest(S1, T, { share: await createShare() });
     const a = await cia.adminPost(`/cia/openings/${id}/approve`);
     assert.equal(a.status, 200); assert.equal(a.body.status, 'approved'); assert.equal(a.body.resolved, false);
     const res = await fetchResult(S1, id);
     assert.equal(res.status, 200, JSON.stringify(res.body)); assert.equal(res.body.uid, null); assert.equal(res.body.resolved, false);
-    // 이미 approved 라 같은 (arid, c1) 재요청은 새 id 를 만들지 않는다 — 맞는 조각으로 고쳐 내려면 새 로그인(새 태그)이 필요하다.
-    const dup = await openRequest(S1, T);
-    assert.equal(dup.status, 200); assert.equal(dup.body.id, id);
-    const T2 = await loginTranscript(S1);
-    const { body: { id: id2 } } = await openRequest(S1, T2);
-    assert.notEqual(id2, id);
-    const a2 = await cia.adminPost(`/cia/openings/${id2}/approve`);
-    assert.equal(a2.status, 200, JSON.stringify(a2.body)); assert.equal(a2.body.resolved, true);
-    const res2 = await fetchResult(S1, id2);
+    // resolved:false 는 denied 처럼 재요청을 막지 않는다 — 서비스가 D_svc 를 고쳐 같은 트랜스크립트로 다시 내면 새 id 로
+    // 승인·개봉된다(§6.2).
+    const r2 = await openRequest(S1, T);
+    assert.equal(r2.status, 202, JSON.stringify(r2.body)); assert.notEqual(r2.body.id, id);
+    const a2 = await cia.adminPost(`/cia/openings/${r2.body.id}/approve`);
+    assert.equal(a2.status, 200, JSON.stringify(a2.body)); assert.equal(a2.body.status, 'approved'); assert.equal(a2.body.resolved, true);
+    const res2 = await fetchResult(S1, r2.body.id);
     assert.equal(res2.status, 200, JSON.stringify(res2.body)); assert.equal(res2.body.uid, '12345');
   });
 

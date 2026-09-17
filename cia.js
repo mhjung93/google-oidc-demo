@@ -32,18 +32,24 @@ const VKEY_PATH = process.env.MODE3_VKEY_PATH || path.join(__dirname, 'build', '
 const ADMIN_SECRET = process.env.CIA_ADMIN_SECRET;
 const RPC_URL = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
 const LOG_ADDRESS = process.env.CIA_LOG_ADDRESS || null;
+// dotenv 는 이미 있는 키를 덮지 않으므로 격리 테스트 하네스는 "기본값 사용"을 빈 문자열로 표시한다(isolated_cia.mjs).
+// `||` 는 빈 문자열을 falsy 로 봐 기본값으로 떨어지지만 `??` 는 아니라서 `BigInt('') === 0n` 이 그대로 상수가 돼
+// 버린다 — 하트비트가 경고 없이 꺼지는 등 조용한 오설정으로 이어진다. 미설정·빈 문자열만 "기본값"으로 다룬다:
+// 하트비트를 끄려면 명시적으로 '0' 이어야 한다.
+const envBig = (k, d) => { const v = process.env[k]; return v === undefined || v === '' ? BigInt(d) : BigInt(v); };
 // 만료는 블록 높이다(설계 2026-09-18 §3.2). max_height = ceil((head + TTL) / GRID) × GRID — 같은 그리드 창에서 발급된
 // 자격증명은 같은 값이라 AA 가 시각으로 특정하지 못한다(§2).
-const TTL_BLOCKS = BigInt(process.env.CIA_TTL_BLOCKS || 300);
-const HEIGHT_GRID = BigInt(process.env.CIA_HEIGHT_GRID || 100);
+const TTL_BLOCKS = envBig('CIA_TTL_BLOCKS', 300);
+const HEIGHT_GRID = envBig('CIA_HEIGHT_GRID', 100);
 if (TTL_BLOCKS <= 0n || HEIGHT_GRID <= 0n) throw new Error(`CIA_TTL_BLOCKS(${TTL_BLOCKS})·CIA_HEIGHT_GRID(${HEIGHT_GRID}) 는 양수여야 한다`);
 // 발급 기록을 만료 뒤에도 이만큼(블록) 더 들고 있다가 걷어낸다(설계 §4.3). 서비스의 체인 뷰가 CIA 보다 뒤처지면 그만큼 더
 // 받아들이는데, 그때 기록을 이미 버렸으면 계정 폐기가 그 리프를 넣지 못한다 — 트리는 append-only 라 여분 리프는 무해하다.
-const REVOKE_SKEW_BLOCKS = BigInt(process.env.CIA_REVOKE_SKEW_BLOCKS ?? 50);
+const REVOKE_SKEW_BLOCKS = envBig('CIA_REVOKE_SKEW_BLOCKS', 50);
 if (REVOKE_SKEW_BLOCKS < 0n) throw new Error(`CIA_REVOKE_SKEW_BLOCKS(${REVOKE_SKEW_BLOCKS}) 는 0 이상이어야 한다`);
 // 하트비트(설계 §4.5): 마지막 게시에서 이만큼 블록이 지나면 같은 root 를 새 epoch 로 재게시한다. 지갑 컨트랙트의
-// MAX_ROOT_AGE(기본 100) 보다 작아야 한다. 0 이면 끈다(테스트).
-const HEARTBEAT_BLOCKS = BigInt(process.env.CIA_HEARTBEAT_BLOCKS ?? 50);
+// MAX_ROOT_AGE(기본 100) 보다 작아야 한다. 0 이면 끈다(테스트) — envBig 은 빈 문자열을 기본값으로 보므로 끄려면
+// 명시적으로 '0' 을 줘야 한다(격리 하네스가 그렇게 한다).
+const HEARTBEAT_BLOCKS = envBig('CIA_HEARTBEAT_BLOCKS', 50);
 const HEARTBEAT_POLL_MS = Number(process.env.CIA_HEARTBEAT_POLL_MS) || 5000;
 for (const k of ['CIA_TTL_SECONDS', 'CIA_REVOKE_SKEW_SECONDS', 'CIA_CHAIN_IDS']) {
   if (process.env[k]) console.warn(`[cia] ${k} 는 더 이상 읽지 않는다(2026-09-18: 블록 높이·CIA_CHAIN_RPCS) — 무시`);
@@ -90,7 +96,8 @@ function loadOrCreateKeys() {
 
 // ---- 상태 ----
 // accounts:  uid → { pk_u:{x,y}, cm_u:{x,y}, disabled }
-// issued:    uid → [ { leaf(10진), C(10진), max_height(10진 블록), chainid(10진) } ]   같은 leaf 는 하나(§4.3)
+// issued:    uid → [ { leaf(10진), C(10진), max_height(10진 블록), chainid(10진) } ]   같은 (leaf, chainid) 는 하나(§4.3) —
+//            leaf 는 C 에서만 유도돼 chainid 를 타지 않으므로 leaf 만으로 합치면 다른 체인의 max_height 를 덮어쓴다
 // rps:       arid → { name, origin, pk_service, X_svc, x_AA, pk_trace, status, requestedAt, decidedAt }   (2026-09-16 §3)
 // openings:  [ { id, arid, PPID, c1:{x,y}, c2, D_svc:{x,y}, allowAgent, max_height, chainid, status, requestedAt, decidedAt,
 //                uid|null, resolved } ]   영구 감사 기록(§6). uid·resolved 는 approved 에만 의미 있다
@@ -382,11 +389,14 @@ app.post('/cia/issue', async (req, res) => {
     const leaf = await credLeaf(C);
     // 위 await 들 사이에 /cia/revoke·self_revoke 가 끼어들 수 있다 — 폐기 직후의 발급이 살아남으면 트리에 없는 새 credential 이
     // TTL 동안 유효하다. 마지막 await 뒤, 기록 직전에 disabled 를 다시 확인한다. 끼어든 revoke 의 pruneExpired 가 목록 배열을
-    // 새로 만들었을 수 있어 state.issued[uid] 에 넣는다.
+    // 새로 만들었을 수 있어 state.issued[uid] 에 넣는다. 키는 (leaf, chainid) 다 — leaf 는 C 에서만 유도돼 chainid 를 타지
+    // 않으므로, 같은 C_pt 를 허용된 두 체인으로 각각 발급하면 leaf 만으로는 같은 기록으로 오인해 max_height·chainid 를
+    // 비교 불가능한 두 체인 사이에서 덮어쓰게 된다(그러면 pruneExpired 가 엉뚱한 체인의 head 로 만료를 판정해 폐기 누락이
+    // 가능하다).
     if (acct.disabled) return res.status(403).json({ error: 'account disabled' });
     const list = (state.issued[uid] ??= []);
-    const existing = list.find((e) => e.leaf === leaf.toString());
-    if (existing) { if (BigInt(existing.max_height) < max_height) existing.max_height = max_height.toString(); existing.chainid = chainStr; }
+    const existing = list.find((e) => e.leaf === leaf.toString() && e.chainid === chainStr);
+    if (existing) { if (BigInt(existing.max_height) < max_height) existing.max_height = max_height.toString(); }
     else list.push({ leaf: leaf.toString(), C: Cstr, max_height: max_height.toString(), chainid: chainStr });
     persist();
     res.json({
@@ -401,7 +411,8 @@ app.post('/cia/issue', async (req, res) => {
 
 // §6.5 계정 전체 폐기: 그 uid 의 미만료 리프 전부 삽입 + disabled. 관리자 폐기(/cia/revoke scope=account)와
 // 사용자 자기 폐기(/cia/account/self_revoke, §6.5.1)가 같은 처리를 탄다 — 다른 것은 "누가 개시하느냐"뿐이다.
-// tree.insert 는 이미 있는 리프에 false 를 돌려주므로 두 번 불러도 새 리프가 들어가지 않는다(멱등).
+// tree.insert 는 이미 있는 리프에 false 를 돌려주므로 두 번 불러도 새 리프가 들어가지 않는다(멱등) — 같은 C_pt 가
+// 서로 다른 체인으로 발급돼 issued 목록에 leaf 가 같은 항목이 둘 있어도(그때는 chainid 가 다르다) 여기서 또 멱등하게 처리된다.
 async function revokeAccount(uid) {
   const acct = state.accounts[uid];
   if (!acct) throw Object.assign(new Error('unknown account'), { status: 404 });
@@ -559,11 +570,11 @@ app.post('/cia/open/request', async (req, res) => {
     try { ok = await snarkjs.groth16.verify(vkey, publicSignals, proof); }
     catch (err) { console.warn('[cia] 개봉 요청의 증명 검증 예외 — vkey/회로 불일치일 수 있다: ' + err.message); ok = false; }
     if (!ok) return res.status(403).json({ error: 'bad_proof' });
-    // pending·approved 는 같은 (arid, c1) 의 결정이 이미 있거나 진행 중이라 그 id 를 돌려주고, denied 는
-    // 새 요청을 허용한다 — 거절된 세션을 다시 심사에 올릴 길이 있어야 한다. approve 는 이제 항상 approved 로
-    // 끝나므로(resolved 로 성공 여부만 구분, §6.2) 틀린 D_svc 를 고치려면 같은 c1(같은 로그인)이 아니라 새
-    // 로그인으로 새 태그를 내야 한다 — arid 대조가 없으면 유출된 남의 로그로 연다.
-    const dup = state.openings.find((o) => o.arid === arid && o.c1.x === c1x && o.c1.y === c1y && (o.status === 'pending' || o.status === 'approved'));
+    // pending 이거나, approved 지만 uid 를 찾은(resolved:true) 경우는 같은 (arid, c1) 의 결정이 이미 있거나
+    // 진행 중이라 그 id 를 돌려준다. denied 와 approved+resolved:false(틀린 D_svc — 서비스 자신의 요청만 망친다,
+    // §6.2)는 새 요청을 허용한다 — 거절된 세션을 다시 심사에 올리거나 서비스가 D_svc 를 고쳐 다시 낼 길이
+    // 있어야 한다. arid 대조가 없으면 유출된 남의 로그로 연다.
+    const dup = state.openings.find((o) => o.arid === arid && o.c1.x === c1x && o.c1.y === c1y && (o.status === 'pending' || (o.status === 'approved' && o.resolved !== false)));
     if (dup) return res.status(200).json({ id: dup.id, status: dup.status });
     const id = randomBytes(32).toString('hex');
     state.openings.push({ id, arid, PPID, c1: { x: c1x, y: c1y }, c2, D_svc: { x: D_svc.x, y: D_svc.y }, allowAgent, max_height, chainid: chainIn, status: 'pending', requestedAt: new Date().toISOString(), decidedAt: null, uid: null, resolved: null });

@@ -445,6 +445,30 @@ try {
     assert.equal((await cia.get('/cia/state')).body.pendingCount, 1, 'pending 은 그대로여야 한다');
   });
 
+  await t('skew 미지정(하네스 핀 빈 문자열) 기본 인스턴스는 기본값 50 을 쓴다 — 빈 문자열이 0 으로 굳지 않는다', async () => {
+    // CIA_REVOKE_SKEW_BLOCKS 를 주지 않는다 — isolated_cia.mjs 가 이미 CIA_REVOKE_SKEW_BLOCKS:'' 로 고정해 뒀으므로
+    // envBig() 이 이를 "미설정"으로 보고 기본값 50 을 쓰는지 검증한다(`??` 였다면 BigInt('')===0n 이 돼 5블록만
+    // 지나도 곧바로 걷어내졌을 것).
+    const skewCia = await startIsolatedCia({ env: { CIA_TTL_BLOCKS: '1', CIA_HEIGHT_GRID: '1' } });
+    try {
+      const s_u = randomScalar(), r_u = randomScalar();
+      const cm_u = await registrationCommit(s_u, r_u);
+      const reg = await skewCia.post('/cia/register', { uid: '12345', pwd: 'password123', cm_u: pointToStrings(cm_u) });
+      assert.equal(reg.status, 201, JSON.stringify(reg.body));
+      const sk_u = Buffer.from(reg.body.sk_u, 'hex');
+      const blind = randomScalar();
+      const { C_pt, proof } = await proveIssuance({ uid, arid, s_u, blind, pk_i, r_u, attrs: [19n, 410n, 0n, 0n] });
+      const body = { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: await signUser(sk_u, C_pt, CHAIN_ID, 0n), chainid: CHAIN_ID.toString(), allowAgent: '0' };
+      const issued = await skewCia.post('/cia/issue', body);
+      assert.equal(issued.status, 200, JSON.stringify(issued.body));
+      await provider.send('hardhat_mine', ['0x5']);   // max_height(head+1) 는 지났지만 기본 여유(50) 안
+      const leaf = await credLeaf(BigInt(issued.body.C));
+      const r = await skewCia.adminPost('/cia/revoke', { uid: '12345', scope: 'account' });
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.ok(r.body.inserted.map((h) => BigInt(h)).includes(leaf), '빈 문자열이 기본값 50 으로 처리돼야 5블록 뒤에도 폐기 대상에 남는다');
+    } finally { await skewCia.stop(); }
+  });
+
   await t('I1: max_height 가 지나도 CIA_REVOKE_SKEW_BLOCKS 안이면 계정 폐기 대상에 남는다', async () => {
     const skewCia = await startIsolatedCia({ env: { CIA_TTL_BLOCKS: '1', CIA_HEIGHT_GRID: '1', CIA_REVOKE_SKEW_BLOCKS: '600' } });
     try {
