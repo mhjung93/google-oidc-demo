@@ -182,16 +182,18 @@ try {
     const w = await wallet.post('/wallet/request', { r_s: S1, body: 'x' }, { Origin: rp.origin });
     const q = await rp.post('/api/mode3/request', { r_s: S1, body: 'x', sig: w.body.sig });
     assert.equal(q.status, 401); assert.equal(q.body.reason, 'revalidate_required');
-    const tx = await wallet.post('/wallet/tx', { r_s: S1, to: '0x000000000000000000000000000000000000dEaD' }, { Origin: rp.origin });
-    assert.equal(tx.status, 403, j(tx.body)); assert.equal(tx.body.reason, 'revoked');
   });
 
   await t('6. 동기화 재검증 → 지갑 403 revoked; 새 로그인 → 지갑 403 account_disabled', async () => {
-    // S1 은 5. 의 /wallet/tx 호출에서 이미 동기화 중 폐기를 감지해 지워졌다(/wallet/revalidate 와 같은 삭제 규칙) — 재검증은 no_session.
     const r = await revalidateViaRp(S1);
-    assert.equal(r.walletStatus, 404, j(r)); assert.equal(r.wallet.reason, 'no_session');
+    assert.equal(r.walletStatus, 403, j(r)); assert.equal(r.wallet.reason, 'revoked');
     const l = await loginViaRp();
     assert.equal(l.walletStatus, 403, j(l)); assert.equal(l.wallet.reason, 'account_disabled');
+    // 위 재검증이 이미 S1 을 지웠다(/wallet/tx 도 revoked 를 보면 같은 규칙으로 지운다) — 그래서 여기 tx 는
+    // revoked 를 다시 보지 못하고 no_session 이 된다. 순서(재검증이 먼저 revoked 를 관측)를 보존하기 위해
+    // /wallet/tx 호출은 재검증 뒤로 옮겼다.
+    const tx = await wallet.post('/wallet/tx', { r_s: S1, to: '0x000000000000000000000000000000000000dEaD' }, { Origin: rp.origin });
+    assert.equal(tx.status, 404, j(tx.body)); assert.equal(tx.body.reason, 'no_session');
   });
 
   await t('7. 복구', async () => {
