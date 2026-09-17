@@ -85,6 +85,7 @@ contract Mode3Wallet {
         // 검증 통과 후 실행 결과와 무관하게 nonce 를 올린다 — 실패한 payload 의 재생을 막는다.
         nonce += 1;
         (ok, ) = payload.to.call{value: payload.value}(payload.data);
+        // 이벤트는 내부 호출 뒤에 낸다 — 호출 앞으로 옮기지 말 것(JS 는 발신 주소로도 거르지만 순서도 지킨다).
         emit Executed(payload.nonce, payload.to, payload.value, ok);
         emit Mode3Auth(payload.nonce, pub[2], pub[3], pub[5], pub[11], pub[12], pub[13]);
     }
@@ -101,11 +102,17 @@ contract Mode3Wallet {
         if (block.number > pub[3]) revert Expired(block.number, pub[3]);
     }
 
+    /// @dev RevocationLog 와 같은 기준으로 서명 가변성을 막는다: s 의 상위 절반과 v ∉ {27,28} 을 거절한다.
+    ///   안 그러면 릴레이어가 mempool 의 execute 를 가로채 s → n-s, v 를 뒤집어 같은 payload 를
+    ///   다른 트랜잭션 해시로 먼저 올릴 수 있고, 원본은 nonce 가 이미 올라 NonceMismatch 로 실패한다 —
+    ///   §6.2 의 해시 기반 개봉 장부가 어긋난다.
     function _recover(bytes32 hash, bytes calldata sig) internal pure returns (address) {
         if (sig.length != 65) revert BadSignature();
         bytes32 r = bytes32(sig[0:32]);
         bytes32 s = bytes32(sig[32:64]);
         uint8 v = uint8(sig[64]);
+        if (uint256(s) > 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0) revert BadSignature();
+        if (v != 27 && v != 28) revert BadSignature();
         return ecrecover(hash, v, r, s);
     }
 

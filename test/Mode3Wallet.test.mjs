@@ -69,6 +69,13 @@ describe('Mode3Wallet', function () {
     expect(auth.allowAgent).to.equal(0n);
     expect(auth.tag.c2).to.equal(ST.fx.tag.c2);
     console.log(`      execute() gas: ${receipt.gasUsed}`);
+    // 발신 주소 필터: 지갑 주소를 명시해도 같은 결과, 엉뚱한 주소를 주면 아무것도 안 찾는다
+    // (payload.to 가 악의적이면 내부 호출 중 같은 이름의 가짜 이벤트를 낼 수 있다).
+    const filtered = parseExecuteReceipt(receipt, wallet.target);
+    expect(filtered.executed.success).to.equal(true);
+    expect(filtered.auth.tag.c2).to.equal(ST.fx.tag.c2);
+    const wrongTarget = parseExecuteReceipt(receipt, ethers.Wallet.createRandom().address);
+    expect(wrongTarget).to.deep.equal({ executed: null, auth: null });
   });
 
   it('allowAgent = 1 성명은 이벤트에 1 로 남는다', async () => {
@@ -104,6 +111,19 @@ describe('Mode3Wallet', function () {
     await expect(wallet.execute(payload, '0x' + '11'.repeat(64) + '00', ST.a, ST.b, ST.c, ST.pub)).to.be.revertedWithCustomError(wallet, 'BadSignature');
   });
 
+  it('가변 서명(malleated: s → n-s, v 뒤집기)은 BadSignature (RevocationLog 와 같은 기준)', async () => {
+    const { wallet } = await deployStack(ST);
+    const { payload, sig } = await signedPayload(ST, wallet);
+    const N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141n;
+    const r = sig.slice(0, 66);
+    const s = BigInt('0x' + sig.slice(66, 130));
+    const v = parseInt(sig.slice(130, 132), 16);
+    const flippedS = (N - s).toString(16).padStart(64, '0');
+    const flippedV = (v === 27 ? 28 : 27).toString(16).padStart(2, '0');
+    const malleated = r + flippedS + flippedV;
+    await expect(wallet.execute(payload, malleated, ST.a, ST.b, ST.c, ST.pub)).to.be.revertedWithCustomError(wallet, 'BadSignature');
+  });
+
   it('다른 지갑 주소로 서명한 payload 는 BadSignature (도메인 분리)', async () => {
     const { wallet } = await deployStack(ST);
     const { payload } = await signedPayload(ST, wallet);
@@ -111,9 +131,11 @@ describe('Mode3Wallet', function () {
     await expect(wallet.execute(payload, sig, ST.a, ST.b, ST.c, ST.pub)).to.be.revertedWithCustomError(wallet, 'BadSignature');
   });
 
-  it('공개 입력의 arid·chainid 가 지갑과 다르면 WrongWallet (다른 서비스·다른 체인의 성명 재생)', async () => {
+  it('공개 입력의 PPID·arid·chainid 가 지갑과 다르면 WrongWallet (다른 계정·다른 서비스·다른 체인의 성명 재생)', async () => {
     const { wallet } = await deployStack(ST);
     const { payload, sig } = await signedPayload(ST, wallet);
+    const otherPpid = [...ST.pub]; otherPpid[0] = '0x1';
+    await expect(wallet.execute(payload, sig, ST.a, ST.b, ST.c, otherPpid)).to.be.revertedWithCustomError(wallet, 'WrongWallet');
     const otherArid = [...ST.pub]; otherArid[1] = '0x1';
     await expect(wallet.execute(payload, sig, ST.a, ST.b, ST.c, otherArid)).to.be.revertedWithCustomError(wallet, 'WrongWallet');
     const otherChain = [...ST.pub]; otherChain[4] = '0x1';
