@@ -87,13 +87,14 @@ try {
     assert.equal((await verify(r.body, S1)).ok, true);
   });
 
-  await t('CORS: RP 오리진에만 Access-Control-Allow-Origin, 다른 오리진엔 없음', async () => {
+  await t('CORS: RP 오리진에만 Access-Control-Allow-Origin, 다른 오리진엔 없음. /wallet/tx 는 오리진 불문 열지 않는다(I1)', async () => {
     const good = await wallet.raw('/wallet/login', { method: 'OPTIONS', headers: { Origin: stack.rpOriginForWallet, 'Access-Control-Request-Method': 'POST' } });
     assert.equal(good.headers.get('access-control-allow-origin'), stack.rpOriginForWallet);
     const bad = await wallet.raw('/wallet/login', { method: 'OPTIONS', headers: { Origin: 'http://evil.example', 'Access-Control-Request-Method': 'POST' } });
     assert.equal(bad.headers.get('access-control-allow-origin'), null);
-    const goodTx = await wallet.raw('/wallet/tx', { method: 'OPTIONS', headers: { Origin: stack.rpOriginForWallet, 'Access-Control-Request-Method': 'POST' } });
-    assert.equal(goodTx.headers.get('access-control-allow-origin'), stack.rpOriginForWallet);
+    // /wallet/tx 는 지갑 페이지(같은 오리진)에서만 부른다 — RP 오리진이라도 CORS 를 열지 않는다.
+    const txFromRp = await wallet.raw('/wallet/tx', { method: 'OPTIONS', headers: { Origin: stack.rpOriginForWallet, 'Access-Control-Request-Method': 'POST' } });
+    assert.equal(txFromRp.headers.get('access-control-allow-origin'), null);
   });
 
   await t('계정 폐기 + 게시 → skipSync 재검증은 옛 π 를 그대로 → 검증기 stale_root', async () => {

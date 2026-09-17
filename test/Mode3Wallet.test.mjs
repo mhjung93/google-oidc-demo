@@ -162,6 +162,13 @@ describe('Mode3Wallet', function () {
     await expect(wallet.execute(payload, sig, ST.a, ST.b, ST.c, p)).to.be.revertedWithCustomError(wallet, 'BadAllowAgent');
   });
 
+  it('c1 이 항등원(r = 0)이면 BadTag (증명 검증 전에 걸린다)', async () => {
+    const { wallet } = await deployStack(ST);
+    const { payload, sig } = await signedPayload(ST, wallet);
+    const p = [...ST.pub]; p[11] = '0x0'; p[12] = '0x1';
+    await expect(wallet.execute(payload, sig, ST.a, ST.b, ST.c, p)).to.be.revertedWithCustomError(wallet, 'BadTag');
+  });
+
   it('root 가 게시로 바뀌면 옛 π 는 StaleRevocationRoot', async () => {
     const { wallet, log, cia } = await deployStack(ST);
     const newRoot = rootToBytes32(12345n);

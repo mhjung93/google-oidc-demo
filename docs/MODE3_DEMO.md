@@ -33,6 +33,8 @@ Mode 2 데모(:3000/:4000/:5001)와 **공존**한다. 포트·상태 파일이 �
    활성화된다. CIA 키를 바꾸거나 cia_state.json 을 지웠으면 이 파일도 지운다(그러면 새 키로 다시 승인받아야 한다).
 6. RP 는 승인 뒤 팩토리를 배포해 `mode3_rp_registration.json` 에 `factoryAddress` 를 둔다. 재배포하려면 그 필드를 지우거나
    `MODE3_RP_FACTORY_ADDRESS` 로 덮어쓴다.
+   **경고**: 팩토리를 다시 배포하거나 `MODE3_MAX_ROOT_AGE` 를 바꾸면 모든 PPID 계정 주소가 바뀐다 — 옛 계정의 잔액은 옛
+   팩토리 주소로만 접근할 수 있으니, 잔액이 있는 데모를 진행 중이면 먼저 빼낸다.
 
 선택 env: `CIA_TTL_BLOCKS`(credential 만료, 기본 300)·`CIA_HEIGHT_GRID`(max_height 양자화 그리드, 기본 100)·
 `CIA_REVOKE_SKEW_BLOCKS`(기본 50)·`CIA_HEARTBEAT_BLOCKS`(하트비트 재게시 주기, 기본 50, 0=끔)·`CIA_HEARTBEAT_POLL_MS`(기본 5000)·
@@ -67,15 +69,15 @@ RP 페이지는 반드시 `127.0.0.1`로 연다 — 지갑 에이전트의 CORS 
 | 0 | 관리자 | 등록된 서비스 → 승인 (RP 첫 기동 뒤 한 번) | RP 페이지가 "등록 대기" → 활성 |
 | 1 | 지갑 | 등록 (`12345` / `password123`, 속성 4칸 기본값) | `등록됨` |
 | 2 | RP | 로그인 (AI agent 허용 체크 여부) | `새 발급=true`, 로그인 성공, PPID, 세션 r_s, allowAgent 표시 |
-| 2a | RP | 트랜잭션 보내기 | 첫 번째 `deployed=true`·`ok=true`, 두 번째 캐시 히트·`nonce=1` |
-| 2b | RP → 관리자 → RP | 해시로 개봉 → 승인 → 결과 확인 | `uid=12345`, AI agent 허용 여부 |
+| 2a | 지갑 | 세션 선택 → 트랜잭션 보내기 | 첫 번째 `deployed=true`·`ok=true`, 두 번째 캐시 히트·`nonce=1` |
+| 2b | 지갑 → RP → 관리자 → RP | 지갑 페이지의 txHash 를 RP "해시로 개봉"에 붙여 넣기 → 승인 → 결과 확인 | `uid=12345`, AI agent 허용 여부 |
 | 3 | RP | 세션 재검증 | `캐시 히트=true`, 증명 0 ms, ok |
 | 3′ | RP | 세션 요청 | 세션키 서명 검증 ok |
 | 3″ | RP | 로그인 (다시) | 새 세션 = `새 발급=true`, **같은 PPID** |
 | 4 | 관리자 | 계정 폐기 → 게시 | `published:true`, epoch +1 |
 | 4′ | 사용자 페이지 → 관리자 | (4 대신) 내 계정 폐기 → 게시 | `disabled:true`, 이후 5~8 동일 |
 | 5 | RP | "동기화 생략" 체크 → 세션 재검증 | 거절 `stale_root`. 세션 요청은 `revalidate_required` |
-| 5a | RP | (폐기·게시 뒤) 트랜잭션 보내기 | 지갑 `revoked` |
+| 5a | 지갑 | (폐기·게시 뒤) 트랜잭션 보내기 | `revoked` |
 | 6 | RP | 체크 해제 → 세션 재검증 → 로그인 | 지갑 `revoked` → 새 로그인은 `account_disabled` |
 | 7 | 관리자 | 복구 | `disabled:false` |
 | 8 | RP | 로그인 | `새 발급=true`, 성공, **PPID 가 2 와 같다** |
@@ -83,6 +85,7 @@ RP 페이지는 반드시 `127.0.0.1`로 연다 — 지갑 에이전트의 CORS 
 
 온체인 실행은 트랜잭션마다 π 를 첨부하고 컨트랙트가 매번 검증한다(가스 실측 387,675 — `Mode3Wallet.execute()` 정상 실행, 배포
 제외, Task 3 값). root 게시가 `MAX_ROOT_AGE` 블록보다 오래되면 `RootTooOld` 로 멈추므로 CIA 하트비트를 켜 둔다.
+트랜잭션은 지갑 페이지에서만 시작한다 — 서비스 페이지는 지갑의 `/wallet/tx` 를 부를 수 없다(CORS).
 
 성명은 로그인마다 새로 발급되고(설계 2026-09-15 §5) 세션 r_s 안에서만 재사용된다. RP 는 r_s 를 로그인 때 한 번 소비하고 그 뒤 세션 식별자로 쓴다. 폐기는 재검증에서 효력을 갖는다.
 
@@ -101,9 +104,9 @@ RP 페이지는 반드시 `127.0.0.1`로 연다 — 지갑 에이전트의 CORS 
 ## 하지 말 것 / 재시연
 
 - **옛 상태 파일(cia_state.json version 2 이하, mode3_wallet_state.json version 4 이하, 키 없는 mode3_rp_registration.json)을 새 서버에 물리지 않는다.** CIA 는 기동을 거부하고 지갑은 세션을 비운다. `cia_state.json` v3·v4 는 기동 시 v5 로 이행된다(v3 의 used_rs 는 버려지고 기존 서비스 등록은 승인된 것으로 남는다 — v4 의 발급 기록은 형식이 바뀌어 비워진다). `mode3_wallet_state.json` v4 이하는 등록은 유지하고 세션이 비워진다. `mode3_rp_registration.json` v2 는 v3 로 이행된다(`X_svc`·`x_svc` 조각은 유지, `factoryAddress`·`verifierAddress` 는 비운다). 그 밖의 옛 형식이거나 origin 이 다른 `mode3_rp_registration.json`은 RP 가 기동 시 새로 등록한다 — 옛 서비스 조각(x_svc)도 버려지므로 이전 로그인 로그의 태그는 더 이상 열 수 없다.
-- **옛 상태 파일(`version: 1`, `max_height`)을 새 CIA 에 물리지 않는다.** CIA 가 기동을 거부한다 — 재시연 세트로 새로 시작한다.
+- **옛 상태 파일(version 2 이하)을 새 CIA 에 물리지 않는다.** CIA 가 기동을 거부한다 — 재시연 세트로 새로 시작한다.
 - **`cia_state.json`을 지우지 않는다.** 체인의 `RevocationLog.root`와 어긋나 지갑의 `syncRevocationTree`가 root 불일치로 전원을 막는다(Mode 2의 `idp_state.json`과 같은 이유). CIA 는 기동 시 로컬 트리를 온체인 root 와 대조해 어긋나면 `root 불일치`로 기동을 거부하므로, 지웠다면 아래 재시연 세트를 통째로 다시 한다.
-- 재시연은 **한 세트로만**: hardhat 노드 재시작 → 위 "처음 한 번" 2~3(재배포, `.env`의 `CIA_LOG_ADDRESS` 갱신) → `RevocationLog` 재배포와
+- 재시연은 **한 세트로만**: hardhat 노드 재시작 → 위 "처음 한 번" 2~3(재배포, `.env`의 `CIA_LOG_ADDRESS` 갱신) →
   `mode3_rp_registration.json` 의 `factoryAddress` 삭제(로그 주소가 바뀌면 팩토리도 새로 배포해야 한다 — 삭제하면 RP 가 다시
   배포한다) → `cia_state.json`·`mode3_wallet_state.json`·`mode3_rp_registration.json`·`mode3_rp_logins.jsonl` 삭제 → 세 서버 재시작.
   `cia_keys.json`은 그대로 둬도 된다 — 게시 서명이 로그 주소를 덮으므로 같은 키로 재배포해도 옛 로그의 게시를 새 로그에 재생할 수 없다.
@@ -111,6 +114,7 @@ RP 페이지는 반드시 `127.0.0.1`로 연다 — 지갑 에이전트의 CORS 
 - `CIA_ADMIN_SECRET` 없이 띄운 CIA 에서 사용자 페이지의 폐기를 누르지 않는다 — 자기 폐기는 시크릿 없이도 되지만 복구(`set_disabled`)와 게시는 503 이라 계정이 되돌릴 수 없게 비활성으로 남는다.
 - **한계**: 트랜잭션 해시로 개봉을 요청하는 경로는 체인을 읽을 수 있는 누구나 이 서비스의 트랜잭션에 대해 개봉을 신청할 수 있게
   한다 — CIA 는 여전히 서비스 서명·`wrong_arid`·운영자 승인으로 걸러내고 `D_svc` 는 응답에 나오지 않지만, 신청 자체는 막지 않는다.
+  `GET /api/mode3/open/:id` 결과 조회도 인증이 없어 승인 뒤 누구나 uid 를 읽을 수 있다(데모 한정).
 
 ## 테스트
 

@@ -109,7 +109,6 @@ const loginCors = cors({ origin: (origin, cb) => cb(null, origin === RP_ORIGIN),
 app.options('/wallet/login', loginCors);
 app.options('/wallet/revalidate', loginCors);
 app.options('/wallet/request', loginCors);
-app.options('/wallet/tx', loginCors);
 
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'wallet.html')));
 
@@ -262,7 +261,8 @@ app.post('/wallet/request', loginCors, async (req, res) => {
 // 세션의 성명(같은 π)을 트랜잭션마다 첨부한다 — 컨트랙트가 매번 검증한다(사용자 결정 2026-09-17). 지갑 주소는 서비스 팩토리의
 // computeAddress(PPID). 릴레이어는 hardhat 언락 계정(후원 실행 설계 2026-07-20 과 같은 방식) — 데모용이며 실제 배포의 번들러 자리다.
 const RELAYER_INDEX = Number(process.env.MODE3_RELAYER_INDEX ?? 0);
-app.post('/wallet/tx', loginCors, async (req, res) => {
+// 자산 이동은 지갑 UI 에서만 시작한다(스펙 §6.3) — 서비스 오리진에는 열지 않는다.
+app.post('/wallet/tx', async (req, res) => {
   try {
     const { r_s, to, value = '0', data = '0x' } = req.body ?? {};
     if (!isDec(r_s) || !isAddr(to) || !isDec(value) || typeof data !== 'string' || !/^0x([0-9a-fA-F]{2})*$/.test(data)) {

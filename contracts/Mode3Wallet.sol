@@ -32,6 +32,7 @@ contract Mode3Wallet {
     error WrongWallet();
     error UntrustedKeys();
     error BadAllowAgent();
+    error BadTag();
     error StaleRevocationRoot(bytes32 root);
     error RootTooOld(uint256 lastPublished, uint256 current);
     error Expired(uint256 currentBlock, uint256 maxHeight);
@@ -95,6 +96,7 @@ contract Mode3Wallet {
         if (pub[0] != ppid || pub[1] != arid || pub[4] != block.chainid) revert WrongWallet();
         if (pub[7] != pkCIAX || pub[8] != pkCIAY || pub[9] != pkTraceX || pub[10] != pkTraceY) revert UntrustedKeys();
         if (pub[5] > 1) revert BadAllowAgent();
+        if (pub[11] == 0 && pub[12] == 1) revert BadTag();   // r = 0 — c1 이 항등원이면 태그가 평문을 그대로 드러낸다(오프체인 검증기 lib/mode3_rp.js 의 bad_tag 와 같은 규칙)
         bytes32 root = bytes32(pub[6]);
         if (root != log.root()) revert StaleRevocationRoot(root);          // N=1: 최신 root 만
         uint256 last = log.lastPublishedBlock();

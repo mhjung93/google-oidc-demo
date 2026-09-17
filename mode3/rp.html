@@ -37,20 +37,10 @@
   </fieldset>
 
   <fieldset>
-    <legend>온체인 트랜잭션 (설계 2026-09-18 §6.3 — sender = PPID 계정)</legend>
-    <p class="muted">지갑이 같은 π 를 트랜잭션마다 첨부하고 컨트랙트가 매번 검증한다. 첫 트랜잭션은 CREATE2 로 계정을 배포한다. 가스는 릴레이어(hardhat 계정 0).</p>
-    <label>to <input id="txTo" value="0x000000000000000000000000000000000000dEaD" size="44" /></label>
-    <label>value(wei) <input id="txValue" value="0" size="10" /></label>
-    <button id="txBtn" disabled>트랜잭션 보내기</button>
-    <p id="txVerdict"></p>
-    <pre id="txLog"></pre>
-    <p class="muted">해시로 개봉: <input id="openTx" size="66" placeholder="0x…" /> <button id="openTxBtn">요청</button></p>
-  </fieldset>
-
-  <fieldset>
     <legend>이 RP 에 기록된 로그인 <button id="refreshLogins">새로고침</button></legend>
     <pre id="logins">-</pre>
     <p class="muted">개봉 요청(설계 2026-09-16 §6): PPID <input id="openPpid" size="24" /> <button id="openBtn">요청</button> <button id="openPollBtn" disabled>결과 확인</button></p>
+    <p class="muted">해시로 개봉(트랜잭션은 지갑 페이지에서 보낸다): <input id="openTx" size="66" placeholder="0x…" /> <button id="openTxBtn">요청</button></p>
     <pre id="openLog">-</pre>
   </fieldset>
 
@@ -58,7 +48,6 @@
     const $ = (id) => document.getElementById(id);
     let info = null;
     let currentSession = null;
-    let currentFactory = null;
     const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) });
     const ms = (t0) => `${Date.now() - t0} ms`;
 
@@ -67,7 +56,6 @@
       $('sessionId').textContent = r_s ? `${r_s.slice(0, 12)}…` : '(없음)';
       $('revalidateBtn').disabled = !r_s;
       $('requestBtn').disabled = !r_s;
-      $('txBtn').disabled = !r_s;
     }
 
     async function loadInfo() {
@@ -90,7 +78,6 @@
         if (!info) await loadInfo();
         let t0 = Date.now();
         const { r_s, factoryAddress } = await (await post('/api/mode3/challenge')).json();
-        currentFactory = factoryAddress;
         log(`1. r_s 발급 ${ms(t0)}: ${r_s.slice(0, 16)}…`);
 
         t0 = Date.now();
@@ -169,26 +156,6 @@
         log(`오류: ${e.message}`);
         $('sessionVerdict').innerHTML = `<span class="bad">오류</span>`;
       } finally { $('requestBtn').disabled = !currentSession; }
-    });
-
-    $('txBtn').addEventListener('click', async () => {
-      $('txBtn').disabled = true; $('txVerdict').textContent = '';
-      const log = (s) => { $('txLog').textContent += s + '\n'; };
-      try {
-        const r = await post(`${info.walletAgentOrigin}/wallet/tx`, { r_s: currentSession, to: $('txTo').value.trim(), value: $('txValue').value.trim() || '0' });
-        const b = await r.json().catch(() => ({}));
-        if (r.status !== 200) {
-          log(`${r.status}: ${b.reason ?? b.error ?? ''} ${b.detail ?? ''}`);
-          $('txVerdict').innerHTML = `<span class="bad">트랜잭션 실패 — ${b.reason ?? r.status}</span>`;
-          return;
-        }
-        log(`txHash=${b.txHash}\n지갑=${b.wallet}  nonce=${b.nonce}  ok=${b.ok}  gasUsed=${b.gasUsed}\n배포=${b.deployed}  캐시 히트=${b.cacheHit}  root=${b.root}\ntimings=${JSON.stringify(b.timings)}`);
-        $('txVerdict').innerHTML = `<span class="ok">전송 성공</span>`;
-        $('openTx').value = b.txHash;
-      } catch (e) {
-        log(`오류: ${e.message}`);
-        $('txVerdict').innerHTML = `<span class="bad">오류</span>`;
-      } finally { $('txBtn').disabled = !currentSession; }
     });
 
     let openingId = null;

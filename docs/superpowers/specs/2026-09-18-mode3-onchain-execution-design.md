@@ -233,6 +233,7 @@ contract Mode3Wallet {
 3. `pub[0] == ppid && pub[1] == arid && pub[4] == block.chainid` — 아니면 `WrongWallet`
 4. `pub[7..10] == (pkCIAX, pkCIAY, pkTraceX, pkTraceY)` — 아니면 `UntrustedKeys`
 5. `pub[5] <= 1` — 아니면 `BadAllowAgent`(회로도 막지만 이벤트 값의 의미를 위해 한 번 더)
+5'. `pub[11..12] ≠ (0, 1)` — 아니면 `BadTag`(오프체인 검증기의 `bad_tag` 와 같은 규칙; 회로는 `r ≠ 0` 을 강제하지 않는다)
 6. `bytes32(pub[6]) == log.root()` — 아니면 `StaleRevocationRoot`(N=1. 세션 설계 §8.2 와 같은 규칙)
 7. `block.number - log.lastPublishedBlock() <= maxRootAge` — 아니면 `RootTooOld`
 8. `block.number <= pub[3]` — 아니면 `Expired`
@@ -363,6 +364,11 @@ CIA 의 검사 순서: 서비스 승인 상태 → ts 신선도 → 서명 → `
 - **서비스가 팩토리를 정한다.** 지갑은 `factoryAddress` 를 검증하지 않는다. 악의적 서비스가 엉뚱한 팩토리를 주면 사용자는 다른
   주소로 트랜잭션을 보내지만, 그 지갑도 같은 π 규칙(arid·pk_trace 가 생성자 인자)을 따르지 않으면 실행이 안 되고, 따르면 결국
   그 서비스의 계정이다. 사용자 손해는 가스뿐이다(릴레이어 부담).
+- 데모의 지갑 에이전트는 로컬 프로세스이고 사용자 확인 대화상자가 없다 — 지갑 페이지의 버튼이 곧 확인이다. 실제 배포에서는
+  트랜잭션마다 지갑 UI 확인이 필요하다.
+- 회로에 `r ≠ 0` 제약을 넣는 것은 다음 zkey 재생성 때다. 지금은 컨트랙트의 `BadTag`(§5.3) 만으로 막는다.
+- 팩토리의 `pk_CIA` 와 `RevocationLog.cia`(이더 주소) 사이에 온체인 연결이 없다 — 잘못된 로그를 가리키도록 배포해도
+  컨트랙트가 감지하지 못한다(배포 절차 가정).
 
 ---
 
@@ -398,4 +404,5 @@ CIA 의 검사 순서: 서비스 승인 상태 → ts 신선도 → 서명 → `
 
 - Fig. 1·Table 2·V-C/V-D/V-E/VI: `exptime → max_height`, `r_s` 는 σ 에만, 공개 입력 V4, 태그 평문, `allowAgent` 구현됨(V-H 의
   "미구현" 삭제), 온체인 실행 절 신설(§5 컨트랙트, 가스 실측), VII 한계에 §2·§8.
+- 논문 한계에 "지갑 UI 확인" 항목을 추가한다(§8).
 - 덱 25장의 `nonce`·`H(C)` 공개 입력은 §2 의 이유로 논문에서 다르게 적어야 한다 — 발표 자료도 맞출 것.

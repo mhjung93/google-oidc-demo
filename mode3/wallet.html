@@ -9,6 +9,7 @@
     body { font-family: system-ui, sans-serif; max-width: 760px; margin: 24px auto; padding: 0 16px; }
     fieldset { border: 2px solid #4CAF50; margin-bottom: 16px; }
     pre { background: #f6f6f6; padding: 10px; white-space: pre-wrap; font-size: 0.85em; }
+    .ok { color: #2e7d32; font-weight: bold; } .bad { color: #c62828; font-weight: bold; }
     .muted { color: #666; font-size: 0.9em; }
   </style>
 </head>
@@ -35,8 +36,19 @@
     <pre id="status">불러오는 중…</pre>
   </fieldset>
 
+  <fieldset>
+    <legend>온체인 트랜잭션 (설계 2026-09-18 §6.3 — sender = PPID 계정)</legend>
+    <p class="muted">지갑이 같은 π 를 트랜잭션마다 첨부하고 컨트랙트가 매번 검증한다. 첫 트랜잭션은 CREATE2 로 계정을 배포한다. 가스는 릴레이어(hardhat 계정 0).</p>
+    <label>세션 <select id="txSession"></select></label><br />
+    <label>to <input id="txTo" value="0x000000000000000000000000000000000000dEaD" size="44" /></label>
+    <label>value(wei) <input id="txValue" value="0" size="10" /></label>
+    <button id="txBtn" disabled>트랜잭션 보내기</button>
+    <p id="txVerdict"></p>
+    <pre id="txLog"></pre>
+    <p class="muted">해시를 복사해 서비스 페이지의 "해시로 개봉"에 붙여 넣을 수 있다.</p>
+  </fieldset>
+
   <p class="muted">로그인·발급은 RP 페이지(:3100)의 버튼이 시작한다 — 발급은 로그인 안에서 필요할 때 자동으로 일어난다(설계 §6.2 "세션마다").</p>
-  <p class="muted">온체인 트랜잭션도 RP 페이지의 버튼이 시작한다(<code>/wallet/tx</code>).</p>
 
   <script>
     const $ = (id) => document.getElementById(id);
@@ -55,6 +67,20 @@
         if (entries.length === 0) lines.push('  (없음)');
         for (const [r_s, c] of entries) lines.push(`  r_s=${r_s.slice(0, 12)}…  arid=${c.arid}\n    max_height=${c.max_height}  chainid=${c.chainid}  allowAgent=${c.allowAgent}  PPID=${String(c.PPID).slice(0, 12)}…\n    세션 주소=${c.sessionAddress}  팩토리=${c.factoryAddress ?? '-'}\n    발급=${c.issuedAt}`);
         $('status').textContent = lines.join('\n');
+
+        const sel = $('txSession');
+        const prev = sel.value;
+        sel.textContent = '';
+        let anyFactory = false;
+        for (const [r_s, c] of entries) {
+          const opt = document.createElement('option');
+          opt.value = r_s;
+          opt.textContent = `arid ${String(c.arid).slice(0, 10)}… / PPID ${String(c.PPID).slice(0, 12)}… / 팩토리 ${c.factoryAddress ? '있음' : '없음'}`;
+          if (c.factoryAddress) anyFactory = true;
+          sel.appendChild(opt);
+        }
+        if (entries.some(([r_s]) => r_s === prev)) sel.value = prev;
+        $('txBtn').disabled = !anyFactory;
       } catch (e) { $('status').textContent = `상태 조회 실패: ${e.message}`; }
     }
     $('registerBtn').addEventListener('click', async () => {
@@ -65,6 +91,29 @@
       refresh();
     });
     $('refreshBtn').addEventListener('click', refresh);
+
+    $('txBtn').addEventListener('click', async () => {
+      $('txBtn').disabled = true; $('txVerdict').textContent = ''; $('txLog').textContent = '';
+      try {
+        const r_s = $('txSession').value;
+        const r = await fetch('/wallet/tx', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ r_s, to: $('txTo').value.trim(), value: $('txValue').value.trim() || '0' }),
+        });
+        const b = await r.json().catch(() => ({}));
+        if (r.status !== 200) {
+          $('txLog').textContent = `${r.status}: ${b.reason ?? b.error ?? ''} ${b.detail ?? ''}`;
+          $('txVerdict').innerHTML = `<span class="bad">트랜잭션 실패 — ${b.reason ?? r.status}</span>`;
+          return;
+        }
+        $('txLog').textContent = `txHash=${b.txHash}\n지갑=${b.wallet}  nonce=${b.nonce}  ok=${b.ok}  gasUsed=${b.gasUsed}\n배포=${b.deployed}  캐시 히트=${b.cacheHit}  root=${b.root}\ntimings=${JSON.stringify(b.timings)}`;
+        $('txVerdict').innerHTML = `<span class="ok">전송 성공</span>`;
+      } catch (e) {
+        $('txLog').textContent = `오류: ${e.message}`;
+        $('txVerdict').innerHTML = `<span class="bad">오류</span>`;
+      } finally { $('txBtn').disabled = false; refresh(); }
+    });
+
     refresh();
   </script>
 </body>

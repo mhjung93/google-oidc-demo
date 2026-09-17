@@ -9,7 +9,7 @@ include "lib/mode3_trace_tag.circom";
 
 // Mode 3 credential 증명.
 // 설계: docs/superpowers/specs/2026-09-09-mode3-cia-revocation-design.md §5
-// 속성·(exptime, chainid, r_s) 서명: docs/superpowers/specs/2026-09-14-mode3-attribute-credential-design.md §3/§5
+// 속성·(max_height, chainid, allowAgent) 서명: docs/superpowers/specs/2026-09-18-mode3-onchain-execution-design.md §3
 // V4(max_height·allowAgent, 태그 평문 Poseidon(uid, arid)): docs/superpowers/specs/2026-09-18-mode3-onchain-execution-design.md §3
 //
 // 네 가지를 함께 증명한다. 하나라도 빠지면 뚫린다:
@@ -77,7 +77,7 @@ template PiCred(depth) {
     // ---- C 계산 (교과서 Pedersen, 2026-09-10) ----
     // C 는 곡선 점 (Cx, Cy). 서명 메시지와 폐기 리프에는 Poseidon(Cx, Cy) 로 압축한 Cf 를 넣는다.
     // 압축 해시가 하나 더 붙지만(약 240 제약) 리프 규약 leafValue(tag, raw) 와 서명 메시지
-    // Poseidon(DOMAIN, ·, exptime, chainid, r_s) 를 Poseidon 판과 같은 모양으로 유지할 수 있다 —
+    // Poseidon(DOMAIN, ·, max_height, chainid, allowAgent) 를 Poseidon 판과 같은 모양으로 유지할 수 있다 —
     // 나중에 Poseidon 으로 되돌릴 때 이 블록만 바꾸면 된다.
     component commit = CommitPedersen();
     commit.uid   <== uid;
