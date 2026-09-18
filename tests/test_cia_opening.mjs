@@ -84,6 +84,25 @@ try {
     assert.equal(r.status, 200); assert.equal(r.body.id, id1);
   });
 
+  await t('앞자리 0 이 붙은 공개 입력으로 요청해도 CIA 는 정규형으로 맞춰 받는다 (2026-09-18 점검 1)', async () => {
+    const T = await loginTranscript(S1);
+    const ps = [...T.publicSignals]; ps[1] = '0' + ps[1]; ps[11] = '0' + ps[11];
+    const r = await openRequest(S1, { ...T, publicSignals: ps });   // 서명은 정규 c1 위(openRequest 가 T.tag 로 만든다)
+    assert.ok([200, 202].includes(r.status), j(r.body));
+  });
+
+  await t('c1 이 항등원인 트랜스크립트는 bad_tag (증명 검증 전, 서비스·컨트랙트와 같은 규칙)', async () => {
+    const T = await loginTranscript(S1);
+    const ps = [...T.publicSignals]; ps[11] = '0'; ps[12] = '1';
+    // D_svc 는 부분군 검사를 지나야 하므로 진짜 c1 의 부분 복호를 그대로 쓴다 — bad_tag 가 그보다 뒤, 증명 검증보다 앞에서 난다.
+    const D = await partialDecrypt(S1.share.x, T.tag.c1);
+    const D_svc = { x: D.x.toString(), y: D.y.toString() };
+    const ts = nowTs();
+    const sig = await signOpenRequest(S1.serviceWallet, { arid: S1.arid, PPID: T.PPID, c1: { x: '0', y: '1' }, D_svc, ts });
+    const r = await cia.post('/cia/open/request', { arid: S1.arid, publicSignals: ps, proof: T.proof, D_svc, ts, sig });
+    assert.equal(r.status, 403, j(r.body)); assert.equal(r.body.error, 'bad_tag');
+  });
+
   await t('D_svc 가 부분군 밖이면 400 — 서명·신선도보다 먼저 걸린다', async () => {
     const T = await loginTranscript(S1);
     const D_svc = { x: '1', y: '1' };

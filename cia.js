@@ -530,7 +530,8 @@ app.post('/cia/account/self_revoke', async (req, res) => {
     // disabled 는 인증만 통과하면 즉시 건다(설계 §6.5.1) — 재발급 차단은 트리·게시와 분리된 별개의 효력이다.
     state.accounts[uid].disabled = true;
     persist();
-    // 만료 판정이 벽시계라(2026-09-14 설계 §7) 리프 삽입에도 체인이 필요 없다 — 체인이 죽어 있어도 전부 걸린다.
+    // 만료 판정은 블록 높이라 리프 정리에 헤드를 읽지만, 못 읽은 체인의 기록은 보존하므로(설계 2026-09-18 §4.3)
+    // 체인이 죽어 있어도 전부 걸린다.
     const out = await revokeAccount(uid);
     res.json({ ...out, disabled: true });
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
@@ -556,7 +557,9 @@ app.post('/cia/open/request', async (req, res) => {
     if (!e) return res.status(404).json({ error: 'unknown_service' });
     if (e.status !== 'approved' || !e.pk_service || !e.pk_trace) return res.status(403).json({ error: 'not_approved' });
     if (!isFreshTs(ts)) return res.status(401).json({ error: 'stale' });
-    const [PPID, aridIn, , max_height, chainIn, allowAgent, , ciaX, ciaY, traceX, traceY, c1x, c1y, c2] = publicSignals;
+    // 정규 10진으로 맞춘다(앞자리 0 허용 입력 대비 — 서명 메시지·문자열 비교·저장 전부 정규형 위에서, 2026-09-18 점검 1).
+    const ps = publicSignals.map((v) => BigInt(v).toString());
+    const [PPID, aridIn, , max_height, chainIn, allowAgent, , ciaX, ciaY, traceX, traceY, c1x, c1y, c2] = ps;
     if (recoverSigner(openRequestMessage({ arid, PPID, c1: { x: c1x, y: c1y }, D_svc, ts }), sig) !== e.pk_service) return res.status(401).json({ error: 'bad_signature' });
     if (aridIn !== arid) return res.status(403).json({ error: 'wrong_arid' });
     const pk = S(ciaPub);
@@ -564,10 +567,11 @@ app.post('/cia/open/request', async (req, res) => {
     if (traceX !== e.pk_trace.x || traceY !== e.pk_trace.y) return res.status(403).json({ error: 'wrong_trace_key' });
     if (!CHAIN_RPCS.has(BigInt(chainIn).toString())) return res.status(403).json({ error: 'wrong_chain' });
     if (BigInt(allowAgent) > 1n) return res.status(403).json({ error: 'bad_allow_agent' });
+    if (c1x === '0' && c1y === '1') return res.status(403).json({ error: 'bad_tag' });   // r = 0 — 서비스·컨트랙트와 같은 규칙(심층 방어)
     let vkey;
     try { vkey = await loadVkey(); } catch (err) { return res.status(503).json({ error: `vkey unavailable: ${err.message}` }); }
     let ok = false;
-    try { ok = await snarkjs.groth16.verify(vkey, publicSignals, proof); }
+    try { ok = await snarkjs.groth16.verify(vkey, ps, proof); }
     catch (err) { console.warn('[cia] 개봉 요청의 증명 검증 예외 — vkey/회로 불일치일 수 있다: ' + err.message); ok = false; }
     if (!ok) return res.status(403).json({ error: 'bad_proof' });
     // pending 이거나, approved 지만 uid 를 찾은(resolved:true) 경우는 같은 (arid, c1) 의 결정이 이미 있거나

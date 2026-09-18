@@ -168,6 +168,17 @@ app.post('/wallet/login', loginCors, async (req, res) => {
     if (reqOrigin !== origin || !(await verifyRpCert(pk, { arid: BigInt(arid), origin, pk_trace, cert: cert_s }))) {
       return res.status(403).json({ reason: 'bad_rp_cert' });
     }
+    // 팩토리는 서비스가 정하지만 임의 코드일 수 있다 — 인증서의 arid·pk_trace, 고정된 pk_CIA·로그 주소와 온체인 값을 대조해
+    // 검증 규칙이 같은 계정만 받아들인다(2026-09-18 점검 3). 값이 안 맞거나 컨트랙트가 아니면 bad_factory.
+    if (factoryAddress !== null) {
+      try {
+        const f = factoryAt(factoryAddress, provider);
+        const [fa, fl, fx, fy, tx, ty] = await Promise.all([f.arid(), f.log(), f.pkCIAX(), f.pkCIAY(), f.pkTraceX(), f.pkTraceY()]);
+        if (fa !== BigInt(arid) || fl.toLowerCase() !== LOG_ADDRESS.toLowerCase() || fx !== pk.x || fy !== pk.y || tx !== BigInt(pk_trace.x) || ty !== BigInt(pk_trace.y)) {
+          return res.status(409).json({ reason: 'bad_factory' });
+        }
+      } catch (e) { return res.status(409).json({ reason: 'bad_factory', detail: e.shortMessage ?? e.message }); }
+    }
 
     const timings = { syncMs: 0, issueMs: 0, proveMs: 0 };
     let t = Date.now();

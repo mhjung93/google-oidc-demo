@@ -174,6 +174,16 @@ try {
     assert.equal((await verify(r.body, rs)).ok, true);
   });
 
+  await t('login: 인증서와 다른 arid 로 배포된 팩토리, 또는 컨트랙트가 아닌 주소를 factoryAddress 로 주면 409 bad_factory (2026-09-18 점검 3)', async () => {
+    const signer = await provider.getSigner(0);
+    const v = await deployVerifier(signer);
+    const wrongArid = await deployFactory(signer, { verifierAddress: v, arid: BigInt(arid) + 1n, pkCIA: pk_CIA, pkTrace: pk_trace, logAddress: cia.logAddress, maxRootAge: 10n });
+    const r1 = await login(newRs(), { factoryAddress: wrongArid });
+    assert.equal(r1.status, 409, j(r1.body)); assert.equal(r1.body.reason, 'bad_factory');
+    const r2 = await login(newRs(), { factoryAddress: ethers.Wallet.createRandom().address });
+    assert.equal(r2.status, 409, j(r2.body)); assert.equal(r2.body.reason, 'bad_factory');
+  });
+
   let factoryAddress, S3, walletAddr;
   await t('tx: factoryAddress 없이 로그인한 세션은 409 no_factory', async () => {
     const r = await wallet.post('/wallet/tx', { r_s: S2, to: ethers.Wallet.createRandom().address }, { Origin: stack.rpOriginForWallet });

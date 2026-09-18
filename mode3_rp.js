@@ -197,7 +197,7 @@ app.post('/api/mode3/login', async (req, res) => {
     sessions.set(rsStr, { PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), at });
     logins.push({ PPID: v.PPID.toString(), at, root: v.root.toString(), r_s: rsShort(rsStr), allowAgent: v.allowAgent.toString() });
     // §5 로그인 로그 — 전체 r_s 와 트랜스크립트(태그 포함). 개봉 요청의 재료다. 조회 API 로는 내지 않는다.
-    fs.appendFileSync(LOGIN_LOG, JSON.stringify({ at, PPID: v.PPID.toString(), r_s: rsStr, pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), publicSignals: req.body.publicSignals, proof: req.body.proof }) + '\n', { mode: 0o600 });
+    fs.appendFileSync(LOGIN_LOG, JSON.stringify({ at, PPID: v.PPID.toString(), r_s: rsStr, pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), publicSignals: v.publicSignals, proof: req.body.proof }) + '\n', { mode: 0o600 });
     res.json({ ok: true, PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), r_s: rsStr, root: v.root.toString(), allowAgent: v.allowAgent.toString() });
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });
@@ -222,15 +222,16 @@ app.post('/api/mode3/request', async (req, res) => {
   try {
     if (!verifier) return res.status(503).json({ ok: false, reason: 'registration_pending' });
     const { r_s, body, sig } = req.body ?? {};
-    if (typeof r_s !== 'string' || typeof body !== 'string' || typeof sig !== 'string') return res.status(400).json({ ok: false, reason: 'malformed' });
-    const s = sessions.get(r_s);
+    if (typeof r_s !== 'string' || !/^[0-9]+$/.test(r_s) || typeof body !== 'string' || typeof sig !== 'string') return res.status(400).json({ ok: false, reason: 'malformed' });
+    const rsKey = BigInt(r_s).toString();   // login·revalidate 와 같은 정규 키(2026-09-18 점검 9)
+    const s = sessions.get(rsKey);
     if (!s) return res.status(401).json({ ok: false, reason: 'no_session' });
     // 폐기가 효력을 갖는 지점: root 가 바뀌었으면 세션은 재검증 전까지 요청을 받지 않는다.
     const view = await verifier.refreshChainView().catch(() => null);
     if (!view) return res.status(503).json({ ok: false, reason: 'chain_unavailable' });
-    if (view.head > BigInt(s.max_height)) { sessions.delete(r_s); return res.status(401).json({ ok: false, reason: 'expired' }); }
+    if (view.head > BigInt(s.max_height)) { sessions.delete(rsKey); return res.status(401).json({ ok: false, reason: 'expired' }); }
     if (view.root.toString() !== s.root) return res.status(401).json({ ok: false, reason: 'revalidate_required' });
-    if (!verifySessionRequest({ pk_i: s.pk_i, r_s, body, sig })) return res.status(401).json({ ok: false, reason: 'bad_signature' });
+    if (!verifySessionRequest({ pk_i: s.pk_i, r_s: rsKey, body, sig })) return res.status(401).json({ ok: false, reason: 'bad_signature' });
     res.json({ ok: true, echo: body, PPID: s.PPID });
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });

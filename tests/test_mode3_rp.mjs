@@ -139,6 +139,14 @@ await t('음성 c: head 가 max_height 를 넘으면 expired (블록 높이)', a
   assert.equal(r.ok, false); assert.equal(r.reason, 'expired');
 });
 
+await t('앞자리 0 이 붙은 10진 공개 입력도 통과하지만, 돌려주는 publicSignals 는 정규형이다 (개봉 재료 — 2026-09-18 점검 1)', async () => {
+  const L = await makeLogin();
+  const ps = [...L.publicSignals]; ps[1] = '0' + ps[1]; ps[11] = '00' + ps[11];
+  const r = await rp.verifyLogin({ proof: L.proof, publicSignals: ps, sig: L.sig, r_s: L.r_s });
+  assert.equal(r.ok, true, JSON.stringify(r, (k, v) => (typeof v === 'bigint' ? v.toString() : v)));
+  assert.deepEqual(r.publicSignals, L.publicSignals, '기록·개봉에는 정규 문자열을 써야 CIA 의 문자열 비교·서명 재구성과 맞는다');
+});
+
 await t('음성: allowAgent 가 1 을 넘는 공개 입력은 bad_allow_agent (증명 검증 전에 걸린다)', async () => {
   const L = await makeLogin();
   const ps = [...L.publicSignals]; ps[5] = '2';

@@ -151,7 +151,10 @@
         const r = await post('/api/mode3/request', { r_s: currentSession, body, sig: wb.sig });
         const rb = await r.json();
         log(`RP 요청 ${ms(t0)}: ${JSON.stringify(rb)}`);
-        $('sessionVerdict').innerHTML = rb.ok ? `<span class="ok">요청 성공</span> echo=${rb.echo}` : `<span class="bad">거절: ${rb.reason}</span>`;
+        // echo 는 서버가 되돌린 요청 본문(자유 문자열)이라 innerHTML 에 넣지 않는다.
+        const sv = $('sessionVerdict'); sv.textContent = '';
+        const sp = document.createElement('span'); sp.className = rb.ok ? 'ok' : 'bad'; sp.textContent = rb.ok ? '요청 성공' : `거절: ${rb.reason}`;
+        sv.appendChild(sp); if (rb.ok) sv.appendChild(document.createTextNode(` echo=${rb.echo}`));
       } catch (e) {
         log(`오류: ${e.message}`);
         $('sessionVerdict').innerHTML = `<span class="bad">오류</span>`;
