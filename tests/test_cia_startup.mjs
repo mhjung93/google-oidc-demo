@@ -41,8 +41,9 @@ async function registerAndIssueLeaf(cia, user) {
   }
   const blind = randomScalar();
   const { C_pt, proof } = await proveIssuance({ uid, arid, s_u: user.s_u, blind, pk_i, r_u: user.r_u, attrs: [0n, 0n, 0n, 0n] });
-  const sig_u = await signUserRequest(user.sk_u, C_pt, 31337n, 0n);
-  const r = await cia.post('/cia/issue', { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u, chainid: '31337', allowAgent: '0' });
+  const max_height = BigInt(await getProvider().getBlockNumber()) + 300n;
+  const sig_u = await signUserRequest(user.sk_u, C_pt, 31337n, 0n, max_height);
+  const r = await cia.post('/cia/issue', { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u, chainid: '31337', allowAgent: '0', max_height: max_height.toString() });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   return (await credLeaf(BigInt(r.body.C))).toString();
 }

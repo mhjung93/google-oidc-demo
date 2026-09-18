@@ -10,7 +10,7 @@ import { createRevocationTree, credLeaf } from '../lib/mode3_revocation.js';
 import { credMessage, compressPoint, randomScalar } from '../lib/mode3_credential.js';
 import {
   createRegistration, createSessionKey, buildIssueRequest, syncRevocationTree,
-  buildCredentialProof, ProofCache, signChallenge, signSessionRequest, ZKEY_PATH, VKEY_PATH,
+  buildCredentialProof, ProofCache, signChallenge, signSessionRequest, ZKEY_PATH, VKEY_PATH, chooseMaxHeight,
 } from '../lib/mode3_wallet.js';
 import { verifySessionRequest } from '../lib/mode3_rp.js';
 import { pointFromStrings } from '../lib/mode3_issuance.js';
@@ -35,10 +35,11 @@ const ciaPub = eddsa.prv2pub(ciaPrv);
 const pk_CIA = { x: F.toObject(ciaPub[0]), y: F.toObject(ciaPub[1]) };
 const uid = 12345n, arid = 22222222222222222222n;
 
-// 서버 없이 CIA 역할을 로컬에서 흉내낸다 (서명만). max_height 는 현재 head + ttlBlocks — 그리드 양자화는 CIA 의 일이라 여기선 안 한다.
-async function localIssue(C_pt, chainid, { ttlBlocks = 300n, allowAgent = 0n } = {}) {
+// 서버 없이 CIA 역할을 로컬에서 흉내낸다 (서명만). max_height 는 지갑(요청)이 정한 값을 그대로 서명한다(2026-09-18 §3.2 갱신).
+const mh = async (ttl = 300n) => chooseMaxHeight(BigInt(await provider.getBlockNumber()), { ttlBlocks: ttl });
+async function localIssue(C_pt, chainid, { max_height, allowAgent = 0n } = {}) {
   const C = await compressPoint(C_pt);
-  const max_height = BigInt(await provider.getBlockNumber()) + ttlBlocks;
+  if (max_height === undefined) max_height = await mh();
   const s = eddsa.signPoseidon(ciaPrv, F.e(await credMessage(C, max_height, chainid, allowAgent)));
   return { C: C.toString(), max_height: max_height.toString(), chainid: chainid.toString(), allowAgent: allowAgent.toString(), sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() } };
 }
@@ -76,8 +77,8 @@ await t('발급 요청 → 로컬 CIA 서명 → 증명 생성 → vkey 로 검�
   reg = await createRegistration();
   session = createSessionKey();
   const sk_u = Buffer.alloc(32, 3).toString('hex');
-  req = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, attrs: [19n, 410n, 0n, 0n] });
-  cred = await localIssue(pointFromStrings(req.body.C_pt), 31337n);
+  req = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, attrs: [19n, 410n, 0n, 0n], max_height: await mh() });
+  cred = await localIssue(pointFromStrings(req.body.C_pt), 31337n, { max_height: BigInt(req.body.max_height) });
   ({ tree: tree0 } = await syncRevocationTree(provider, logAddress));
   const { proof, publicSignals, revRoot, tag } = await buildCredentialProof({
     uid, arid, s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs: [19n, 410n, 0n, 0n], credential: cred, pk_CIA, pk_trace, tree: tree0,
@@ -125,12 +126,18 @@ await t('buildCredentialProof 는 pk_trace 없이는 throw — 태그 없는 성
 await t('buildIssueRequest 는 allowAgent 를 싣고(기본 0) r_s 는 더 이상 받지 않는다', async () => {
   const session = createSessionKey();
   const sk_u = Buffer.alloc(32, 3).toString('hex');
-  const a = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n });
+  const h = await mh();
+  const a = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, max_height: h });
   assert.equal(a.body.allowAgent, '0');
   assert.equal(a.body.r_s, undefined);
-  const b = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, allowAgent: 1n });
+  assert.equal(a.body.max_height, h.toString(), '지갑이 정한 max_height 를 그대로 싣는다');
+  const b = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, allowAgent: 1n, max_height: h });
   assert.equal(b.body.allowAgent, '1');
-  await assert.rejects(() => buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, allowAgent: 2n }), /allowAgent/);
+  await assert.rejects(() => buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, allowAgent: 2n, max_height: h }), /allowAgent/);
+  await assert.rejects(() => buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n }), /max_height/);
+  // 그리드: 같은 창의 head 는 같은 값, 항상 head + ttl 이상, 그리드 배수
+  assert.equal(chooseMaxHeight(1234n), 1600n); assert.equal(chooseMaxHeight(1299n), 1600n); assert.equal(chooseMaxHeight(1300n), 1600n); assert.equal(chooseMaxHeight(1301n), 1700n);
+  assert.equal(chooseMaxHeight(10n, { ttlBlocks: 5n, grid: 1n }), 15n);
 });
 
 await t('signSessionRequest 는 (r_s, body) 를 세션키로 서명하고 verifySessionRequest 가 복원한다', async () => {

@@ -30,6 +30,7 @@ function deferred() {
 // ---- eth_blockNumber 응답을 게이트로 붙잡는 JSON-RPC 프록시 (이 프로세스 안, 변수로 제어) ----
 // hold = { seen, released }: eth_blockNumber 가 오면 seen 을 resolve 하고 released 가 풀릴 때까지 기다린다.
 const UPSTREAM = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
+const provider = new ethers.JsonRpcProvider(UPSTREAM);   // 테스트의 헤드 조회는 프록시(게이트)를 거치지 않는다
 let hold = null;
 const proxy = http.createServer(async (req, res) => {
   let body = '';
@@ -61,7 +62,8 @@ try {
   async function issueBody() {
     const blind = randomScalar();
     const { C_pt, proof } = await proveIssuance({ uid, arid, s_u, blind, pk_i, r_u, attrs: [0n, 0n, 0n, 0n] });
-    return { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: await signUserRequest(sk_u, C_pt, 31337n, 0n), chainid: '31337', allowAgent: '0' };
+    const max_height = BigInt(await provider.getBlockNumber()) + 300n;
+    return { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: await signUserRequest(sk_u, C_pt, 31337n, 0n, max_height), chainid: '31337', allowAgent: '0', max_height: max_height.toString() };
   }
 
   await t('issue 가 체인 가용성을 확인하는 동안 계정이 폐기되면 발급하지 않는다 (403, 기록도 남지 않는다)', async () => {

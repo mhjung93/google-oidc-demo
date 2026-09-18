@@ -61,7 +61,8 @@ try {
   }
   async function newSessionAndIssue() {
     session = createSessionKey();
-    const req = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, attrs: ATTRS });
+    const max_height = BigInt(await provider.getBlockNumber()) + 300n;   // 지갑이 정한다
+    const req = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, attrs: ATTRS, max_height });
     blind = req.secrets.blind;
     sessionRs = randomScalar();
     const r = await cia.post('/cia/issue', req.body);

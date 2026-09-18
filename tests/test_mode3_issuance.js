@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { buildBabyjub, buildPoseidon } from 'circomlibjs';
 import { randomScalar, credCommit, PEDERSEN_GENERATORS, compressPoint, SCALAR_MAX, normalizeAttrs, credMessage, DOMAIN_MODE3_CRED_V4, MAX_HEIGHT_MAX } from '../lib/mode3_credential.js';
 import {
-  DOMAIN_MODE3_ISSUE, DOMAIN_MODE3_ISSUEREQ_V2, randomZr, registrationCommit, proveIssuance, verifyIssuance,
+  DOMAIN_MODE3_ISSUE, DOMAIN_MODE3_ISSUEREQ_V3, randomZr, registrationCommit, proveIssuance, verifyIssuance,
   serializeProof, parseProof, pointToStrings, pointFromStrings, issueRequestMessage,
 } from '../lib/mode3_issuance.js';
 
@@ -182,17 +182,19 @@ await t('음성: z_attr 하나를 바꾸면 거절된다', async () => {
   assert.equal(await verifyIssuance({ uid, C_pt, cm_u, proof: bad }), false);
 });
 
-await t('issueRequestMessage 는 (C_pt, chainid, allowAgent) 를 도메인과 함께 덮는다 — 하나라도 다르면 다른 메시지', async () => {
+await t('issueRequestMessage 는 (C_pt, chainid, allowAgent, max_height) 를 도메인과 함께 덮는다 — 하나라도 다르면 다른 메시지', async () => {
   const C_pt = { x: 1n, y: 2n };
-  const m = await issueRequestMessage(C_pt, 31337n, 0n);
-  assert.notEqual(m, await issueRequestMessage(C_pt, 1n, 0n));
-  assert.notEqual(m, await issueRequestMessage(C_pt, 31337n, 1n));
-  assert.notEqual(m, await issueRequestMessage({ x: 1n, y: 3n }, 31337n, 0n));
+  const m = await issueRequestMessage(C_pt, 31337n, 0n, 1000n);
+  assert.notEqual(m, await issueRequestMessage(C_pt, 1n, 0n, 1000n));
+  assert.notEqual(m, await issueRequestMessage(C_pt, 31337n, 1n, 1000n));
+  assert.notEqual(m, await issueRequestMessage(C_pt, 31337n, 0n, 1001n), '지갑이 정한 max_height 도 서명이 덮는다(재생으로 바꿔치기 불가)');
+  assert.notEqual(m, await issueRequestMessage({ x: 1n, y: 3n }, 31337n, 0n, 1000n));
+  await assert.rejects(() => issueRequestMessage(C_pt, 31337n, 0n, 1n << 64n), /max_height/);
   // 도메인이 있다 — 옛 형식 Poseidon(C_pt.x, C_pt.y, chainid, x) 와 같은 값이 나오지 않는다
   const ps = await buildPoseidon();
   assert.notEqual(m, ps.F.toObject(ps([1n, 2n, 31337n, 0n])));
-  assert.equal(DOMAIN_MODE3_ISSUEREQ_V2, 401414577397388343646241740924474930n);
-  await assert.rejects(() => issueRequestMessage(C_pt, 31337n, 2n), /allowAgent/);
+  assert.equal(DOMAIN_MODE3_ISSUEREQ_V3, 401414577397388343646241740924474931n);
+  await assert.rejects(() => issueRequestMessage(C_pt, 31337n, 2n, 1000n), /allowAgent/);
 });
 
 await t('credMessage 는 (C, max_height, chainid, allowAgent) 를 도메인과 함께 덮는다 — 경계·비-bigint 는 거절된다', async () => {

@@ -38,7 +38,7 @@ export async function startIsolatedCia(opts = {}) {
   const env = {
     ...process.env,
     CIA_RPC_URL: process.env.CIA_RPC_URL || 'http://127.0.0.1:8545',
-    CIA_TTL_BLOCKS: '', CIA_HEIGHT_GRID: '', CIA_REVOKE_SKEW_BLOCKS: '', CIA_CHAIN_RPCS: '',
+    CIA_REVOKE_SKEW_BLOCKS: '', CIA_CHAIN_RPCS: '',
     CIA_HEARTBEAT_BLOCKS: '0',
     CIA_TTL_SECONDS: '', CIA_CHAIN_IDS: '',   // 옛 키 — 경고만 나오게 비운다
     CIA_PORT: String(port),

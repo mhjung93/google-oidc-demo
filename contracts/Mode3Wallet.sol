@@ -18,6 +18,7 @@ contract Mode3Wallet {
     PiCredVerifier public immutable verifier;
     RevocationLog public immutable log;
     uint64 public immutable maxRootAge;   // 블록. root 가 이보다 오래됐으면 CIA 가 죽었거나 withholding 이다 — fail-closed
+    uint64 public immutable maxLifetime;  // 블록. 지갑이 정한 max_height 의 상한(설계 §3.2 갱신) — 없으면 만료 없는 성명이 된다
     uint256 public nonce;
 
     struct Payload {
@@ -36,6 +37,7 @@ contract Mode3Wallet {
     error StaleRevocationRoot(bytes32 root);
     error RootTooOld(uint256 lastPublished, uint256 current);
     error Expired(uint256 currentBlock, uint256 maxHeight);
+    error TooFarExpiry(uint256 currentBlock, uint256 maxHeight);
     error InvalidProof();
 
     /// @dev 내부 호출의 성공 여부는 영수증에 남지 않으므로 이벤트로 낸다(PPIDWallet 과 같은 이유).
@@ -47,13 +49,14 @@ contract Mode3Wallet {
     constructor(
         uint256 _ppid, uint256 _arid,
         uint256 _pkCIAX, uint256 _pkCIAY, uint256 _pkTraceX, uint256 _pkTraceY,
-        address _verifier, address _log, uint64 _maxRootAge
+        address _verifier, address _log, uint64 _maxRootAge, uint64 _maxLifetime
     ) {
         ppid = _ppid; arid = _arid;
         pkCIAX = _pkCIAX; pkCIAY = _pkCIAY; pkTraceX = _pkTraceX; pkTraceY = _pkTraceY;
         verifier = PiCredVerifier(_verifier);
         log = RevocationLog(_log);
         maxRootAge = _maxRootAge;
+        maxLifetime = _maxLifetime;
     }
 
     /// @param pub 공개 입력 14개(circuits/pi_cred.circom 의 순서):
@@ -102,6 +105,8 @@ contract Mode3Wallet {
         uint256 last = log.lastPublishedBlock();
         if (block.number - last > maxRootAge) revert RootTooOld(last, block.number);
         if (block.number > pub[3]) revert Expired(block.number, pub[3]);
+        // 만료는 지갑이 정하므로 상한을 여기서 강제한다: 성명은 [max_height − maxLifetime, max_height] 창에서만 쓰인다.
+        if (pub[3] > block.number + maxLifetime) revert TooFarExpiry(block.number, pub[3]);
     }
 
     /// @dev RevocationLog 와 같은 기준으로 서명 가변성을 막는다: s 의 상위 절반과 v ∉ {27,28} 을 거절한다.

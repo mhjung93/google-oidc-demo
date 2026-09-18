@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import * as snarkjs from 'snarkjs';
 import { buildValidInput } from '../tests/helpers/mode3_fixture.mjs';
 import { signRootPublication, rootToBytes32 } from '../lib/mode3_log.js';
-import { signPayload, proofToCalldata, decodeExecuteCalldata, parseExecuteReceipt, MAX_ROOT_AGE_DEFAULT } from '../lib/mode3_onchain.js';
+import { signPayload, proofToCalldata, decodeExecuteCalldata, parseExecuteReceipt, MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT } from '../lib/mode3_onchain.js';
 
 const { ethers } = hre;
 const WASM = 'build/mode3/pi_cred_js/pi_cred.wasm', ZKEY = 'build/mode3/pi_cred_final.zkey';
@@ -20,21 +20,23 @@ describe('Mode3Wallet', function () {
   /** 세션키 + 픽스처 증명. 옵션은 픽스처로 전달. */
   async function statement(opts = {}) {
     const session = ethers.Wallet.createRandom();
-    const fx = await buildValidInput({ pk_i: BigInt(session.address), chainid: await chainId(), ...opts });
+    // 만료는 지갑이 정한다 — 컨트랙트가 head + maxLifetime 상한을 강제하므로 현재 블록 기준으로 정한다
+    const maxHeight = opts.maxHeight ?? BigInt(await ethers.provider.getBlockNumber()) + 300n;
+    const fx = await buildValidInput({ pk_i: BigInt(session.address), chainid: await chainId(), ...opts, maxHeight });
     const { proof, publicSignals } = await snarkjs.groth16.fullProve(fx.input, WASM, ZKEY);
     const cd = await proofToCalldata(proof, publicSignals);
     return { session, fx, proof, publicSignals, ...cd };
   }
 
   /** 픽스처의 root 로 RevocationLog 를 배포하고(초기 root = 픽스처 트리), 검증자·팩토리·지갑까지. */
-  async function deployStack(st, { arid = st.fx.arid, maxRootAge = MAX_ROOT_AGE_DEFAULT } = {}) {
+  async function deployStack(st, { arid = st.fx.arid, maxRootAge = MAX_ROOT_AGE_DEFAULT, maxLifetime = MAX_LIFETIME_DEFAULT } = {}) {
     const [deployer, cia] = await ethers.getSigners();
     const Log = await ethers.getContractFactory('RevocationLog');
     const log = await Log.deploy(cia.address, rootToBytes32(BigInt(st.input().revRoot)));
     const Verifier = await ethers.getContractFactory('PiCredVerifier');
     const verifier = await Verifier.deploy();
     const Factory = await ethers.getContractFactory('Mode3WalletFactory');
-    const factory = await Factory.deploy(await verifier.getAddress(), arid, st.fx.ciaPub.x, st.fx.ciaPub.y, st.fx.pk_trace.x, st.fx.pk_trace.y, await log.getAddress(), maxRootAge);
+    const factory = await Factory.deploy(await verifier.getAddress(), arid, st.fx.ciaPub.x, st.fx.ciaPub.y, st.fx.pk_trace.x, st.fx.pk_trace.y, await log.getAddress(), maxRootAge, maxLifetime);
     const ppid = BigInt(st.input().PPID);
     const walletAddr = await factory.computeAddress(ppid);
     await (await deployer.sendTransaction({ to: walletAddr, value: ethers.parseEther('1') })).wait();
@@ -187,6 +189,13 @@ describe('Mode3Wallet', function () {
     const sig = await signRootPublication(cia, { logAddress: await log.getAddress(), root, epoch: 1n, leaves: [] });
     await (await log.publishRoot(root, 1n, [], sig)).wait();
     await expect(wallet.execute(sp.payload, sp.sig, ST.a, ST.b, ST.c, ST.pub)).to.not.be.reverted;
+  });
+
+  it('max_height 가 block.number + maxLifetime 을 넘으면 TooFarExpiry (지갑이 정한 만료의 상한)', async () => {
+    const st = withInput(await statement({ maxHeight: BigInt(await ethers.provider.getBlockNumber()) + 10_000n }));
+    const { wallet } = await deployStack(st);
+    const { payload, sig } = await signedPayload(st, wallet);
+    await expect(wallet.execute(payload, sig, st.a, st.b, st.c, st.pub)).to.be.revertedWithCustomError(wallet, 'TooFarExpiry');
   });
 
   it('block.number > max_height 면 Expired', async () => {

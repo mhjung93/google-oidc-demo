@@ -14,21 +14,22 @@ contract Mode3WalletFactory {
     uint256 public immutable pkTraceY;
     address public immutable log;
     uint64 public immutable maxRootAge;
+    uint64 public immutable maxLifetime;
 
     constructor(
         address _verifier, uint256 _arid,
         uint256 _pkCIAX, uint256 _pkCIAY, uint256 _pkTraceX, uint256 _pkTraceY,
-        address _log, uint64 _maxRootAge
+        address _log, uint64 _maxRootAge, uint64 _maxLifetime
     ) {
         verifier = _verifier; arid = _arid;
         pkCIAX = _pkCIAX; pkCIAY = _pkCIAY; pkTraceX = _pkTraceX; pkTraceY = _pkTraceY;
-        log = _log; maxRootAge = _maxRootAge;
+        log = _log; maxRootAge = _maxRootAge; maxLifetime = _maxLifetime;
     }
 
     function _initCode(uint256 ppid) internal view returns (bytes memory) {
         return abi.encodePacked(
             type(Mode3Wallet).creationCode,
-            abi.encode(ppid, arid, pkCIAX, pkCIAY, pkTraceX, pkTraceY, verifier, log, maxRootAge)
+            abi.encode(ppid, arid, pkCIAX, pkCIAY, pkTraceX, pkTraceY, verifier, log, maxRootAge, maxLifetime)
         );
     }
 
@@ -42,7 +43,7 @@ contract Mode3WalletFactory {
         wallet = computeAddress(ppid);
         if (wallet.code.length > 0) return wallet;
         Mode3Wallet deployed = new Mode3Wallet{salt: bytes32(ppid)}(
-            ppid, arid, pkCIAX, pkCIAY, pkTraceX, pkTraceY, verifier, log, maxRootAge
+            ppid, arid, pkCIAX, pkCIAY, pkTraceX, pkTraceY, verifier, log, maxRootAge, maxLifetime
         );
         require(address(deployed) == wallet, "CREATE2 address mismatch");
     }

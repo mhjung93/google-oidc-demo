@@ -35,7 +35,8 @@ try {
   const sk_u = r0.body.sk_u;
   async function loginTranscript(svc, pk_trace = svc.pk_trace, allowAgent = 0n) {
     const session = createSessionKey();
-    const req = await buildIssueRequest({ uid, arid: BigInt(svc.arid), s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, attrs: [0n, 0n, 0n, 0n], allowAgent });
+    const max_height = BigInt(await provider.getBlockNumber()) + 300n;
+    const req = await buildIssueRequest({ uid, arid: BigInt(svc.arid), s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, attrs: [0n, 0n, 0n, 0n], allowAgent, max_height });
     const issued = await cia.post('/cia/issue', req.body);
     assert.equal(issued.status, 200, j(issued.body));
     const { tree } = await syncRevocationTree(provider, cia.logAddress);
@@ -190,7 +191,7 @@ try {
       const r0 = await cia2.post('/cia/register', { uid: '12345', pwd: 'password123', cm_u: { x: reg.cm_u.x.toString(), y: reg.cm_u.y.toString() } });
       assert.equal(r0.status, 201, j(r0.body));
       const session = createSessionKey();
-      const req = await buildIssueRequest({ uid, arid: BigInt(S.arid), s_u: reg.s_u, r_u: reg.r_u, sk_u: r0.body.sk_u, session, chainid: 31337n, attrs: [0n, 0n, 0n, 0n] });
+      const req = await buildIssueRequest({ uid, arid: BigInt(S.arid), s_u: reg.s_u, r_u: reg.r_u, sk_u: r0.body.sk_u, session, chainid: 31337n, attrs: [0n, 0n, 0n, 0n], max_height: BigInt(await provider.getBlockNumber()) + 300n });
       const issued = await cia2.post('/cia/issue', req.body);
       assert.equal(issued.status, 200, j(issued.body));
       const { tree } = await syncRevocationTree(provider, cia2.logAddress);

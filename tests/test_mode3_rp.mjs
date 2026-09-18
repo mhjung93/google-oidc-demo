@@ -36,9 +36,8 @@ const svcShare = await createShare(), aaShare = await createShare();
 const pk_trace = await combinePublicKey(svcShare.X, aaShare.X);
 const other_trace = await combinePublicKey((await createShare()).X, (await createShare()).X);
 
-async function issueWith(key, C_pt, { ttlBlocks = 300n, chainid = 31337n, allowAgent = 0n } = {}) {
+async function issueWith(key, C_pt, { max_height, chainid = 31337n, allowAgent = 0n } = {}) {
   const C = await compressPoint(C_pt);
-  const max_height = BigInt(await provider.getBlockNumber()) + ttlBlocks;
   const s = eddsa.signPoseidon(key.prv, F.e(await credMessage(C, max_height, chainid, allowAgent)));
   return { C: C.toString(), max_height: max_height.toString(), chainid: chainid.toString(), allowAgent: allowAgent.toString(), sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() } };
 }
@@ -53,8 +52,9 @@ async function makeLogin({ key = CIA, useArid = arid, ttlBlocks = 300n, chainid 
   const session = createSessionKey();
   const attrs = [19n, 410n, 0n, 0n];
   const r_s = randomScalar();   // 서비스 챌린지 — σ 에만 쓴다(공개 입력엔 없다)
-  const req = await buildIssueRequest({ uid, arid: useArid, s_u: reg.s_u, r_u: reg.r_u, sk_u: Buffer.alloc(32, 3).toString('hex'), session, chainid, attrs, allowAgent });
-  const cred = await issueWith(key, pointFromStrings(req.body.C_pt), { ttlBlocks, chainid, allowAgent });
+  const max_height = BigInt(await provider.getBlockNumber()) + ttlBlocks;   // 지갑이 정한다(2026-09-18 §3.2 갱신)
+  const req = await buildIssueRequest({ uid, arid: useArid, s_u: reg.s_u, r_u: reg.r_u, sk_u: Buffer.alloc(32, 3).toString('hex'), session, chainid, attrs, allowAgent, max_height });
+  const cred = await issueWith(key, pointFromStrings(req.body.C_pt), { max_height, chainid, allowAgent });
   const { tree } = await syncRevocationTree(provider, logAddress);
   const { proof, publicSignals } = await buildCredentialProof({ uid, arid: useArid, s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs, credential: cred, pk_CIA: key.pub, pk_trace: useTrace, tree });
   return { proof, publicSignals, r_s, sig: await signChallenge(session.wallet, r_s.toString()), session, cred, reg };
@@ -130,6 +130,14 @@ await t('양성: verifyLogin 이 태그를 돌려준다 (서비스가 로그에 
 
 await t('createRpVerifier 는 pkTrace 없이는 throw', () => {
   assert.throws(() => createRpVerifier({ provider, logAddress, vkey, pkCIA: CIA.pub, arid, chainId: 31337n }), /pkTrace/);
+});
+
+await t('음성 c\'\': max_height 가 head + L(400) 을 넘으면 bad_expiry — 지갑이 정한 만료의 상한 (2026-09-18 §3.2 갱신)', async () => {
+  const L = await makeLogin({ ttlBlocks: 401n });
+  const r = await rp.verifyLogin({ proof: L.proof, publicSignals: L.publicSignals, sig: L.sig, r_s: L.r_s });
+  assert.equal(r.ok, false); assert.equal(r.reason, 'bad_expiry');
+  const ok = await makeLogin({ ttlBlocks: 400n });
+  assert.equal((await rp.verifyLogin({ proof: ok.proof, publicSignals: ok.publicSignals, sig: ok.sig, r_s: ok.r_s })).ok, true, '경계 head + L 은 통과');
 });
 
 await t('음성 c: head 가 max_height 를 넘으면 expired (블록 높이)', async () => {
@@ -211,8 +219,9 @@ await t('같은 사용자·같은 RP 라도 chainid 가 다르면 PPID 가 다�
   const ppids = [];
   for (const chainid of [31337n, 1n]) {
     const session = createSessionKey();
-    const req = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid, attrs });
-    const cred = await issueWith(CIA, pointFromStrings(req.body.C_pt), { chainid });
+    const max_height = BigInt(await provider.getBlockNumber()) + 300n;
+    const req = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid, attrs, max_height });
+    const cred = await issueWith(CIA, pointFromStrings(req.body.C_pt), { max_height, chainid });
     const { tree } = await syncRevocationTree(provider, logAddress);
     const { publicSignals } = await buildCredentialProof({ uid, arid, s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs, credential: cred, pk_CIA: CIA.pub, pk_trace, tree });
     ppids.push(BigInt(publicSignals[0]));

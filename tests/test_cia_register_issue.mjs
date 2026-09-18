@@ -36,12 +36,15 @@ let user;   // { s_u, r_u, cm_u, sk_u(Buffer), pk_u }
 // 사용자 서명은 (C_pt, chainid, allowAgent) 를 덮는다(2026-09-18 §3.3). CIA 는 로그인당 기록이 없다 — 옛 본문 재생으로
 // 얻는 것은 같은 C_pt 의 자격증명 하나뿐이고 sk_i 없이는 쓸 수 없다.
 const CHAIN_ID = 31337n;
-const signUser = (prvBuf, C_pt, chainid, allowAgent) => signUserRequest(prvBuf.toString('hex'), C_pt, chainid, allowAgent);
+const signUser = (prvBuf, C_pt, chainid, allowAgent, max_height) => signUserRequest(prvBuf.toString('hex'), C_pt, chainid, allowAgent, max_height);
+// 만료는 지갑이 정한다(2026-09-18 §3.2 갱신) — 테스트는 head + ttl 로 정하고 CIA 는 그대로 서명해야 한다.
+const mhOf = async (ttl = 300n) => BigInt(await provider.getBlockNumber()) + ttl;
 
-async function issueRequest(u, overrides = {}, { chainid = CHAIN_ID, allowAgent = 0n, attrs = [19n, 410n, 0n, 0n] } = {}) {
+async function issueRequest(u, overrides = {}, { chainid = CHAIN_ID, allowAgent = 0n, attrs = [19n, 410n, 0n, 0n], max_height } = {}) {
   const blind = randomScalar();
+  if (max_height === undefined) max_height = await mhOf();
   const { C_pt, proof } = await proveIssuance({ uid, arid, s_u: u.s_u, blind, pk_i, r_u: u.r_u, attrs });
-  return { body: { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: await signUser(u.sk_u, C_pt, chainid, allowAgent), chainid: chainid.toString(), allowAgent: allowAgent.toString(), ...overrides }, C_pt, blind };
+  return { body: { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: await signUser(u.sk_u, C_pt, chainid, allowAgent, max_height), chainid: chainid.toString(), allowAgent: allowAgent.toString(), max_height: max_height.toString(), ...overrides }, C_pt, blind, max_height };
 }
 
 try {
@@ -49,7 +52,7 @@ try {
     const r = await cia.get('/cia/public_keys');
     assert.equal(r.status, 200);
     assert.equal(r.body.ethAddress.toLowerCase(), cia.ethAddress.toLowerCase());
-    assert.equal(r.body.ttlBlocks, 300); assert.equal(r.body.heightGrid, 100); assert.equal(r.body.heartbeatBlocks, 0); assert.deepEqual(r.body.chainIds, ['31337']);
+    assert.equal(r.body.ttlBlocks, undefined, 'CIA 는 더 이상 만료를 정하지 않는다'); assert.equal(r.body.heartbeatBlocks, 0); assert.deepEqual(r.body.chainIds, ['31337']);
     assert.equal(r.body.logAddress.toLowerCase(), cia.logAddress.toLowerCase());
   });
 
@@ -137,11 +140,8 @@ try {
     const sig = { R8: [F.e(BigInt(cred.sigma.R8x)), F.e(BigInt(cred.sigma.R8y))], S: BigInt(cred.sigma.S) };
     const pub = [F.e(BigInt(cred.pk_CIA.x)), F.e(BigInt(cred.pk_CIA.y))];
     assert.ok(eddsa.verifyPoseidon(msg, sig, pub));
-    // max_height = ceil((head + 300) / 100) × 100 — 그리드 배수이고 [head+300, head+400) 안(2026-09-18 §3.2)
-    const head = BigInt(await provider.getBlockNumber());
-    const mh = BigInt(cred.max_height);
-    assert.equal(mh % 100n, 0n, cred.max_height);
-    assert.ok(mh >= head + 300n && mh < head + 400n, `max_height ${mh} vs head ${head}`);
+    // max_height 는 요청(지갑)이 정한 값 그대로다(2026-09-18 §3.2 갱신) — CIA 는 계산하지도 양자화하지도 않는다
+    assert.equal(cred.max_height, body.max_height);
     assert.equal(cred.chainid, '31337');
     assert.equal(cred.allowAgent, '0');
     assert.equal(cred.exptime, undefined); assert.equal(cred.r_s, undefined);
@@ -155,8 +155,23 @@ try {
 
   await t('issue: 사용자 서명이 다른 키면 400', async () => {
     const { body, C_pt } = await issueRequest(user);
-    body.sig_u = await signUser(Buffer.alloc(32, 7), C_pt, CHAIN_ID, 0n);
+    body.sig_u = await signUser(Buffer.alloc(32, 7), C_pt, CHAIN_ID, 0n, BigInt(body.max_height));
     assert.equal((await cia.post('/cia/issue', body)).status, 400);
+  });
+
+  await t('issue: max_height 는 서명이 덮는다 — 값만 바꾸면 400, 2^64 이상 400, 없으면 400; 먼 미래 값도 CIA 는 그대로 서명(상한은 검증자)', async () => {
+    const tampered = await issueRequest(user);
+    tampered.body.max_height = (BigInt(tampered.body.max_height) + 1n).toString();
+    assert.equal((await cia.post('/cia/issue', tampered.body)).status, 400);
+    const huge = await issueRequest(user);
+    huge.body.max_height = (1n << 64n).toString();   // 서명은 정상값 위 — 범위 검사가 서명 검사보다 먼저 400
+    assert.equal((await cia.post('/cia/issue', huge.body)).status, 400);
+    const missing = await issueRequest(user);
+    delete missing.body.max_height;
+    assert.equal((await cia.post('/cia/issue', missing.body)).status, 400);
+    const far = await issueRequest(user, {}, { max_height: 10_000_000n });
+    const r = await cia.post('/cia/issue', far.body);
+    assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.body.max_height, '10000000');
   });
 
   await t('issue: allowAgent 는 서명이 덮는다 — 플래그만 바꾸면 400, 2 는 400, 없으면 400, 허용 목록 밖 chainid 는 400', async () => {
@@ -182,11 +197,13 @@ try {
   });
 
   await t('issue: 같은 C_pt 재요청은 200 — 같은 C 의 기록은 하나이고 max_height 는 큰 쪽(2026-09-18 §3.3·§4.3)', async () => {
-    const { body } = await issueRequest(user);
+    const { body, C_pt } = await issueRequest(user);
     const a = await cia.post('/cia/issue', body);
     assert.equal(a.status, 200, JSON.stringify(a.body));
-    await provider.send('hardhat_mine', ['0x64']);   // 100 블록 → 다음 그리드
-    const b = await cia.post('/cia/issue', body);
+    // 같은 C_pt, 더 큰 max_height 로 다시(지갑이 정하므로 서명도 다시)
+    const body2 = { ...body, max_height: (BigInt(body.max_height) + 100n).toString() };
+    body2.sig_u = await signUser(user.sk_u, C_pt, CHAIN_ID, 0n, BigInt(body2.max_height));
+    const b = await cia.post('/cia/issue', body2);
     assert.equal(b.status, 200, JSON.stringify(b.body));
     assert.equal(b.body.C, a.body.C);
     assert.ok(BigInt(b.body.max_height) > BigInt(a.body.max_height));
@@ -300,7 +317,7 @@ try {
 
       // 발급은 disabled 검사가 chainid 허용 목록 확인보다 먼저다(cia.js /cia/issue) — 체인 없이도 403 이어야 한다.
       const issued = await dead.post('/cia/issue', {
-        uid: '12345', C_pt: { x: '1', y: '1' }, proof: {}, sig_u: {}, chainid: '31337', allowAgent: '0',
+        uid: '12345', C_pt: { x: '1', y: '1' }, proof: {}, sig_u: {}, chainid: '31337', allowAgent: '0', max_height: '1',
       });
       assert.equal(issued.status, 403, JSON.stringify(issued.body));
     } finally {
@@ -449,7 +466,7 @@ try {
     // CIA_REVOKE_SKEW_BLOCKS 를 주지 않는다 — isolated_cia.mjs 가 이미 CIA_REVOKE_SKEW_BLOCKS:'' 로 고정해 뒀으므로
     // envBig() 이 이를 "미설정"으로 보고 기본값 50 을 쓰는지 검증한다(`??` 였다면 BigInt('')===0n 이 돼 5블록만
     // 지나도 곧바로 걷어내졌을 것).
-    const skewCia = await startIsolatedCia({ env: { CIA_TTL_BLOCKS: '1', CIA_HEIGHT_GRID: '1' } });
+    const skewCia = await startIsolatedCia();
     try {
       const s_u = randomScalar(), r_u = randomScalar();
       const cm_u = await registrationCommit(s_u, r_u);
@@ -458,7 +475,8 @@ try {
       const sk_u = Buffer.from(reg.body.sk_u, 'hex');
       const blind = randomScalar();
       const { C_pt, proof } = await proveIssuance({ uid, arid, s_u, blind, pk_i, r_u, attrs: [19n, 410n, 0n, 0n] });
-      const body = { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: await signUser(sk_u, C_pt, CHAIN_ID, 0n), chainid: CHAIN_ID.toString(), allowAgent: '0' };
+      const mh1 = await mhOf(1n);   // 만료를 head + 1 로 — 곧 지난다
+      const body = { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: await signUser(sk_u, C_pt, CHAIN_ID, 0n, mh1), chainid: CHAIN_ID.toString(), allowAgent: '0', max_height: mh1.toString() };
       const issued = await skewCia.post('/cia/issue', body);
       assert.equal(issued.status, 200, JSON.stringify(issued.body));
       await provider.send('hardhat_mine', ['0x5']);   // max_height(head+1) 는 지났지만 기본 여유(50) 안
@@ -470,7 +488,7 @@ try {
   });
 
   await t('I1: max_height 가 지나도 CIA_REVOKE_SKEW_BLOCKS 안이면 계정 폐기 대상에 남는다', async () => {
-    const skewCia = await startIsolatedCia({ env: { CIA_TTL_BLOCKS: '1', CIA_HEIGHT_GRID: '1', CIA_REVOKE_SKEW_BLOCKS: '600' } });
+    const skewCia = await startIsolatedCia({ env: { CIA_REVOKE_SKEW_BLOCKS: '600' } });
     try {
       const s_u = randomScalar(), r_u = randomScalar();
       const cm_u = await registrationCommit(s_u, r_u);
@@ -479,7 +497,8 @@ try {
       const sk_u = Buffer.from(reg.body.sk_u, 'hex');
       const blind = randomScalar();
       const { C_pt, proof } = await proveIssuance({ uid, arid, s_u, blind, pk_i, r_u, attrs: [19n, 410n, 0n, 0n] });
-      const body = { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: await signUser(sk_u, C_pt, CHAIN_ID, 0n), chainid: CHAIN_ID.toString(), allowAgent: '0' };
+      const mh1 = await mhOf(1n);   // 만료를 head + 1 로 — 곧 지난다
+      const body = { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: await signUser(sk_u, C_pt, CHAIN_ID, 0n, mh1), chainid: CHAIN_ID.toString(), allowAgent: '0', max_height: mh1.toString() };
       const issued = await skewCia.post('/cia/issue', body);
       assert.equal(issued.status, 200, JSON.stringify(issued.body));
       await provider.send('hardhat_mine', ['0x5']);   // max_height(head+1) 는 지났지만 여유(600) 안
@@ -491,7 +510,7 @@ try {
   });
 
   await t('I2: 여유까지 지난 기록은 걷어내져 계정 폐기 대상에서 빠진다', async () => {
-    const ttlCia = await startIsolatedCia({ env: { CIA_TTL_BLOCKS: '1', CIA_HEIGHT_GRID: '1', CIA_REVOKE_SKEW_BLOCKS: '0' } });
+    const ttlCia = await startIsolatedCia({ env: { CIA_REVOKE_SKEW_BLOCKS: '0' } });
     try {
       const s_u = randomScalar(), r_u = randomScalar();
       const cm_u = await registrationCommit(s_u, r_u);
@@ -500,7 +519,8 @@ try {
       const sk_u = Buffer.from(reg.body.sk_u, 'hex');
       const blind = randomScalar();
       const { C_pt, proof } = await proveIssuance({ uid, arid, s_u, blind, pk_i, r_u, attrs: [19n, 410n, 0n, 0n] });
-      const body = { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: await signUser(sk_u, C_pt, CHAIN_ID, 0n), chainid: CHAIN_ID.toString(), allowAgent: '0' };
+      const mh1 = await mhOf(1n);   // 만료를 head + 1 로 — 곧 지난다
+      const body = { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u: await signUser(sk_u, C_pt, CHAIN_ID, 0n, mh1), chainid: CHAIN_ID.toString(), allowAgent: '0', max_height: mh1.toString() };
       const first = await ttlCia.post('/cia/issue', body);
       assert.equal(first.status, 200, JSON.stringify(first.body));
       await provider.send('hardhat_mine', ['0x5']);

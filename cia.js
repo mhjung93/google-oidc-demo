@@ -37,11 +37,8 @@ const LOG_ADDRESS = process.env.CIA_LOG_ADDRESS || null;
 // 버린다 — 하트비트가 경고 없이 꺼지는 등 조용한 오설정으로 이어진다. 미설정·빈 문자열만 "기본값"으로 다룬다:
 // 하트비트를 끄려면 명시적으로 '0' 이어야 한다.
 const envBig = (k, d) => { const v = process.env[k]; return v === undefined || v === '' ? BigInt(d) : BigInt(v); };
-// 만료는 블록 높이다(설계 2026-09-18 §3.2). max_height = ceil((head + TTL) / GRID) × GRID — 같은 그리드 창에서 발급된
-// 자격증명은 같은 값이라 AA 가 시각으로 특정하지 못한다(§2).
-const TTL_BLOCKS = envBig('CIA_TTL_BLOCKS', 300);
-const HEIGHT_GRID = envBig('CIA_HEIGHT_GRID', 100);
-if (TTL_BLOCKS <= 0n || HEIGHT_GRID <= 0n) throw new Error(`CIA_TTL_BLOCKS(${TTL_BLOCKS})·CIA_HEIGHT_GRID(${HEIGHT_GRID}) 는 양수여야 한다`);
+// 만료 max_height 는 지갑이 정하고 CIA 는 그대로 서명한다(설계 2026-09-18 §3.2 갱신, zkLogin 의 max_epoch 와 같은 구조).
+// 상한은 검증자(서비스·컨트랙트)가 head + L 로 강제한다. CIA 는 발급 때 헤드를 읽지 않는다 — 체인 가용성만 확인한다.
 // 발급 기록을 만료 뒤에도 이만큼(블록) 더 들고 있다가 걷어낸다(설계 §4.3). 서비스의 체인 뷰가 CIA 보다 뒤처지면 그만큼 더
 // 받아들이는데, 그때 기록을 이미 버렸으면 계정 폐기가 그 리프를 넣지 못한다 — 트리는 append-only 라 여분 리프는 무해하다.
 const REVOKE_SKEW_BLOCKS = envBig('CIA_REVOKE_SKEW_BLOCKS', 50);
@@ -51,7 +48,7 @@ if (REVOKE_SKEW_BLOCKS < 0n) throw new Error(`CIA_REVOKE_SKEW_BLOCKS(${REVOKE_SK
 // 명시적으로 '0' 을 줘야 한다(격리 하네스가 그렇게 한다).
 const HEARTBEAT_BLOCKS = envBig('CIA_HEARTBEAT_BLOCKS', 50);
 const HEARTBEAT_POLL_MS = Number(process.env.CIA_HEARTBEAT_POLL_MS) || 5000;
-for (const k of ['CIA_TTL_SECONDS', 'CIA_REVOKE_SKEW_SECONDS', 'CIA_CHAIN_IDS']) {
+for (const k of ['CIA_TTL_SECONDS', 'CIA_REVOKE_SKEW_SECONDS', 'CIA_CHAIN_IDS', 'CIA_TTL_BLOCKS', 'CIA_HEIGHT_GRID']) {
   if (process.env[k]) console.warn(`[cia] ${k} 는 더 이상 읽지 않는다(2026-09-18: 블록 높이·CIA_CHAIN_RPCS) — 무시`);
 }
 // 발급을 허용하는 체인과 그 헤드를 읽을 RPC(설계 §4.2). "chainid=url,chainid=url". 비어 있으면 기동 시 자기 provider 의
@@ -220,8 +217,8 @@ async function headOf(chainStr) {
   try { return BigInt(await providerFor(chainStr).getBlockNumber()); }
   catch { throw Object.assign(new Error('chain head unavailable'), { status: 503 }); }
 }
-/** 설계 §3.2: ceil((head + TTL) / GRID) × GRID. */
-const quantizedMaxHeight = (head) => ((head + TTL_BLOCKS + HEIGHT_GRID - 1n) / HEIGHT_GRID) * HEIGHT_GRID;
+/** 발급 직전의 체인 가용성 확인(fail-closed, 기반 설계 §2.1). 값은 쓰지 않는다 — 살아 있는지만 본다. 발급은 head 를 쓰지 않는다. */
+async function chainAlive(chainStr) { await headOf(chainStr); }
 /**
  * 만료(max_height + REVOKE_SKEW_BLOCKS < 그 체인의 head)된 발급 기록을 걷어내고 남은 것을 돌려준다. 체인별로 헤드를 읽는다.
  * 헤드를 못 읽은 체인의 항목은 남긴다(설계 §4.3) — 폐기 때 죽은 리프를 더 넣는 쪽이 산 리프를 빠뜨리는 쪽보다 낫다.
@@ -248,7 +245,7 @@ app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_
 app.get('/account', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_account.html')));
 
 app.get('/cia/public_keys', (req, res) => {
-  res.json({ pk_CIA: S(ciaPub), ethAddress: ethWallet.address, ttlBlocks: Number(TTL_BLOCKS), heightGrid: Number(HEIGHT_GRID), heartbeatBlocks: Number(HEARTBEAT_BLOCKS), chainIds: [...CHAIN_RPCS.keys()], logAddress: LOG_ADDRESS });
+  res.json({ pk_CIA: S(ciaPub), ethAddress: ethWallet.address, heartbeatBlocks: Number(HEARTBEAT_BLOCKS), chainIds: [...CHAIN_RPCS.keys()], logAddress: LOG_ADDRESS });
 });
 
 // §3(2026-09-16) 서비스 등록 — pending 으로 받고 운영자가 승인하면 CIA 조각을 만들어 조합 키 pk_trace 와 cert_s(V2)를
@@ -350,10 +347,13 @@ app.post('/cia/register', async (req, res) => {
 // 같은 C_pt 에 묶여 sk_i·증인 없이는 쓸 수 없다.
 app.post('/cia/issue', async (req, res) => {
   try {
-    const { uid, C_pt, proof, sig_u, chainid, allowAgent } = req.body ?? {};
-    if (!isDec(uid) || !isPt(C_pt) || !proof || !sig_u || !isDec(chainid) || (allowAgent !== '0' && allowAgent !== '1')) {
-      return res.status(400).json({ error: 'uid, C_pt, proof, sig_u, chainid, allowAgent("0"|"1") required' });
+    const { uid, C_pt, proof, sig_u, chainid, allowAgent, max_height } = req.body ?? {};
+    if (!isDec(uid) || !isPt(C_pt) || !proof || !sig_u || !isDec(chainid) || (allowAgent !== '0' && allowAgent !== '1') || !isDec(max_height)) {
+      return res.status(400).json({ error: 'uid, C_pt, proof, sig_u, chainid, allowAgent("0"|"1"), max_height required' });
     }
+    // 지갑이 정한 만료. CIA 는 범위만 본다(회로 Num2Bits(64)) — 상한은 검증자의 몫(§3.2). 값을 정규화해 기록·서명에 쓴다.
+    const mh = BigInt(max_height);
+    if (mh >= (1n << 64n)) return res.status(400).json({ error: 'max_height must be < 2^64' });
     const acct = state.accounts[uid];
     if (!acct) return res.status(404).json({ error: 'unknown account' });
     if (acct.disabled) return res.status(403).json({ error: 'account disabled' });
@@ -364,10 +364,10 @@ app.post('/cia/issue', async (req, res) => {
     const agent = BigInt(allowAgent);
 
     const cpt = pointFromStrings(C_pt);
-    // 사용자 인증: 등록된 pk_u 로 (C_pt, chainid, allowAgent) 에 대한 EdDSA-Poseidon 서명 검증
+    // 사용자 인증: 등록된 pk_u 로 (C_pt, chainid, allowAgent, max_height) 에 대한 EdDSA-Poseidon 서명 검증
     let sigOk = false;
     try {
-      const m = F.e(await issueRequestMessage(cpt, BigInt(chainStr), agent));
+      const m = F.e(await issueRequestMessage(cpt, BigInt(chainStr), agent, mh));
       const sig = { R8: [F.e(BigInt(sig_u.R8x)), F.e(BigInt(sig_u.R8y))], S: BigInt(sig_u.S) };
       const pub = [F.e(BigInt(acct.pk_u.x)), F.e(BigInt(acct.pk_u.y))];
       sigOk = eddsa.verifyPoseidon(m, sig, pub);
@@ -383,9 +383,8 @@ app.post('/cia/issue', async (req, res) => {
     const C = await compressPoint(cpt);
     const Cstr = C.toString();
 
-    const head = await headOf(chainStr);   // fail-closed: 체인이 죽어 있으면 발급하지 않는다(게시도 불가하므로 폐기가 닿지 않는 credential 이 된다)
-    const max_height = quantizedMaxHeight(head);
-    const s = eddsa.signPoseidon(ciaPrv, F.e(await credMessage(C, max_height, BigInt(chainStr), agent)));
+    await chainAlive(chainStr);   // fail-closed: 체인이 죽어 있으면 발급하지 않는다(게시도 불가하므로 폐기가 닿지 않는 credential 이 된다)
+    const s = eddsa.signPoseidon(ciaPrv, F.e(await credMessage(C, mh, BigInt(chainStr), agent)));
     const leaf = await credLeaf(C);
     // 위 await 들 사이에 /cia/revoke·self_revoke 가 끼어들 수 있다 — 폐기 직후의 발급이 살아남으면 트리에 없는 새 credential 이
     // TTL 동안 유효하다. 마지막 await 뒤, 기록 직전에 disabled 를 다시 확인한다. 끼어든 revoke 의 pruneExpired 가 목록 배열을
@@ -396,11 +395,11 @@ app.post('/cia/issue', async (req, res) => {
     if (acct.disabled) return res.status(403).json({ error: 'account disabled' });
     const list = (state.issued[uid] ??= []);
     const existing = list.find((e) => e.leaf === leaf.toString() && e.chainid === chainStr);
-    if (existing) { if (BigInt(existing.max_height) < max_height) existing.max_height = max_height.toString(); }
-    else list.push({ leaf: leaf.toString(), C: Cstr, max_height: max_height.toString(), chainid: chainStr });
+    if (existing) { if (BigInt(existing.max_height) < mh) existing.max_height = mh.toString(); }
+    else list.push({ leaf: leaf.toString(), C: Cstr, max_height: mh.toString(), chainid: chainStr });
     persist();
     res.json({
-      C: Cstr, max_height: max_height.toString(), chainid: chainStr, allowAgent: agent.toString(),
+      C: Cstr, max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString(),
       sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() },
       pk_CIA: S(ciaPub),
     });
@@ -642,5 +641,5 @@ if (HEARTBEAT_BLOCKS > 0n) {
 }
 // RP·지갑 에이전트와 같이 루프백에만 묶는다 — 관리자·사용자 페이지와 발급 경로를 LAN 에 노출하지 않는다.
 app.listen(PORT, '127.0.0.1', () => {
-  console.log(`Mode 3 CIA running at http://127.0.0.1:${PORT} (log=${LOG_ADDRESS ?? 'none'}, ttl=${TTL_BLOCKS}blk/grid ${HEIGHT_GRID}, heartbeat=${HEARTBEAT_BLOCKS}, chains=${[...CHAIN_RPCS.keys()].join(',') || 'none'}, vkey=${fs.existsSync(VKEY_PATH) ? 'ok' : 'missing'})`);
+  console.log(`Mode 3 CIA running at http://127.0.0.1:${PORT} (log=${LOG_ADDRESS ?? 'none'}, heartbeat=${HEARTBEAT_BLOCKS}, chains=${[...CHAIN_RPCS.keys()].join(',') || 'none'}, vkey=${fs.existsSync(VKEY_PATH) ? 'ok' : 'missing'})`);
 });

@@ -151,6 +151,7 @@ try {
     assert.equal(c.allowAgent, '0');
     assert.match(String(c.PPID), /^[0-9]+$/);
     assert.ok(BigInt(c.max_height) > BigInt(await provider.getBlockNumber()));
+    assert.equal(BigInt(c.max_height) % 100n, 0n, '지갑이 그리드(100)로 정한 max_height');
   });
 
   await t('revalidate: 모르는 r_s 는 404 no_session', async () => {

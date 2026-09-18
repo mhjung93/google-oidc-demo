@@ -45,7 +45,7 @@
 | `r_s`(세션 설계) | 발급 기록과 즉시 대조 | 서명·공개 입력에서 제거 |
 | `chainid` | 체인 하나에 수만 사용자 — 연결 가치 없음 | 공개 |
 | `allowAgent` | 1비트 | 공개 |
-| `max_height` | 정확한 발급 블록을 드러내면 시각 상관으로 좁혀진다 | **그리드 양자화**(§3.2): 같은 창에서 발급된 자격증명은 같은 값 |
+| `max_height` | 정확한 발급 블록을 드러내면 시각 상관으로 좁혀진다 | **그리드 양자화**(§3.2): 같은 창에서 발급된 자격증명은 같은 값. 양자화는 지갑이 한다(2026-09-18 갱신) |
 | 발급 시각 자체 | AA 로그 | 양자화 창 안의 사용자들 사이 k-익명. 창이 넓을수록 익명성↑, 만료 정밀도↓ |
 
 AA 가 서명하는 값은 `(C, max_height, chainid, allowAgent)` 뿐이다. 이 중 공개되는 것은 뒤의 셋이고, 셋 다 저엔트로피다.
@@ -71,23 +71,33 @@ DOMAIN_MODE3_CRED_V4 = 93461614427473393731524148   // ASCII "MODE3CREDV4" 빅�
 
 ### 3.2 `max_height`
 
-CIA 는 요청의 `chainid` 에 해당하는 체인의 헤드 `head` 를 읽고(§4.2)
+**(2026-09-18 갱신 — 지갑이 정하고 CIA 는 그대로 서명한다.)** 첫 판은 CIA 가 요청의 `chainid` 체인 헤드를 읽어 양자화까지
+해 주었다. 그러면 자격증명의 수명 정책이 발급자(CIA)에 묶이고, CIA 가 체인마다 "지금 몇 블록인가"를 알아야 하는 역할이 생긴다.
+zkLogin 의 `max_epoch` 처럼 **만료는 사용자(지갑)가 정하고, 발급자는 그 값을 서명에 묶기만 하며, 상한은 검증자가 강제**한다.
 
 ```
-max_height = ceil((head + CIA_TTL_BLOCKS) / CIA_HEIGHT_GRID) × CIA_HEIGHT_GRID
+지갑:   max_height = ceil((head + MODE3_TTL_BLOCKS) / MODE3_HEIGHT_GRID) × MODE3_HEIGHT_GRID    (head 는 지갑의 체인 뷰)
+CIA:    max_height < 2^64 만 검사하고 그대로 서명(§3.1 메시지). 계산도 양자화도 하지 않는다.
+검증자: head ≤ max_height ≤ head + L      L = MODE3_MAX_LIFETIME_BLOCKS (기본 400)
 ```
 
-기본값 `CIA_TTL_BLOCKS = 300`, `CIA_HEIGHT_GRID = 100`. 유효 기간은 TTL 이상 TTL+GRID 미만이다. 검증자는 값만 비교한다:
-컨트랙트는 `block.number ≤ max_height`, 서비스는 자기 체인 뷰의 `head ≤ max_height`.
+기본값 `MODE3_TTL_BLOCKS = 300`, `MODE3_HEIGHT_GRID = 100`(지갑 env). 유효 기간은 TTL 이상 TTL+GRID 미만이고, 검증자의
+상한 `L` 은 `TTL + GRID` 이상이어야 정상 발급이 통과한다(기본 400 = 300 + 100). 상한이 없으면 지갑이 `2^64 − 1` 을 넣어
+영구 자격증명을 만들 수 있으므로 상한은 검증자에게 필수다: 컨트랙트는 `block.number ≤ pub[3] ≤ block.number + maxLifetime`
+(`maxLifetime` 은 팩토리 생성자 인자 → 계정 주소에 새겨진다), 서비스는 `view.head ≤ max_height ≤ view.head + L`.
+양자화(§2 의 k-익명)는 이제 지갑의 책임이다 — 지갑이 그리드를 지키지 않으면 자기 발급 시각을 정확히 드러내는 것이므로
+손해는 본인에게만 간다. CIA 는 `chainid` 허용 목록과 체인 생존 확인(헤드 조회 성공)은 그대로 한다(§4.2).
 
 ### 3.3 발급 요청 서명 `sig_u`
 
 ```
-issueRequestMessage(C_pt, chainid, allowAgent) = Poseidon(DOMAIN_MODE3_ISSUEREQ_V2, C_pt.x, C_pt.y, chainid, allowAgent)
-DOMAIN_MODE3_ISSUEREQ_V2 = 401414577397388343646241740924474930   // ASCII "MODE3ISSUEREQV2"
+issueRequestMessage(C_pt, chainid, allowAgent, max_height) = Poseidon(DOMAIN_MODE3_ISSUEREQ_V3, C_pt.x, C_pt.y, chainid, allowAgent, max_height)
+DOMAIN_MODE3_ISSUEREQ_V3 = 401414577397388343646241740924474931   // ASCII "MODE3ISSUEREQV3"
 ```
 
 지금 메시지 `Poseidon(C_pt.x, C_pt.y, chainid, r_s)` 에는 도메인이 없었다. 인자 구조가 바뀌므로 도메인을 넣어 옛 서명과 갈라 둔다.
+(2026-09-18 갱신: 지갑이 `max_height` 를 정하므로 서명이 그 값도 덮는다 — 안 덮으면 중간자가 요청의 만료를 바꿔 CIA 서명을
+받을 수 있다. 도메인 V2 → V3.)
 
 **요청 재생.** `r_s` 가 빠지면 같은 발급 요청을 제3자가 다시 보낼 수 있다. 얻는 것은 같은 `C_pt` 에 묶인 자격증명 하나인데,
 그것을 쓰려면 `sk_i`(커밋 안 `pk_i` 의 비밀키)와 커밋 증인이 필요하므로 재생자는 아무것도 못 한다. CIA 쪽 부작용은
@@ -134,8 +144,9 @@ c2 = h + Poseidon(K.x, K.y)   (mod p)
 
 ### 4.1 발급 `POST /cia/issue`
 
-요청 `{uid, C_pt, proof, sig_u, chainid, allowAgent}`. `allowAgent` 는 `"0"`/`"1"` 문자열(다른 값은 400).
-검사 순서: 형식 → disabled → `chainid` 허용·헤드 조회(§4.2) → `sig_u` → π_issue → 서명·기록.
+요청 `{uid, C_pt, proof, sig_u, chainid, allowAgent, max_height}`. `allowAgent` 는 `"0"`/`"1"` 문자열(다른 값은 400).
+`max_height` 는 10진 문자열, `< 2^64`(아니면 400) — 값은 그대로 서명한다(§3.2).
+검사 순서: 형식 → disabled → `chainid` 허용·체인 생존 확인(§4.2) → `sig_u` → π_issue → 서명·기록.
 응답 `{C, max_height, chainid, allowAgent, sig: {R8, S}}`. `exptime`·`r_s` 는 응답에서 사라진다.
 
 ### 4.2 체인 헤드
@@ -146,6 +157,7 @@ CIA_CHAIN_RPCS = "31337=http://127.0.0.1:8545,11155111=https://…"    # chainid
 
 허용 체인 = 이 맵의 키. 맵이 비어 있으면 지금처럼 CIA 자신의 provider(`CIA_RPC_URL`) 의 `chainId` 하나만 허용하고 그 provider 로
 헤드를 읽는다. `CIA_CHAIN_IDS` 는 없앤다(맵의 키가 그 역할). 헤드 조회 실패는 503 `chain head unavailable`.
+발급 때의 헤드 조회는 이제 **생존 확인**이다(값은 안 쓴다 — §3.2 갱신). 만료 정리(§4.3)는 헤드 값을 그대로 쓴다.
 provider 는 chainid 별로 하나씩 만들어 재사용한다.
 
 ### 4.3 발급 기록과 만료 정리
@@ -169,7 +181,7 @@ provider 는 chainid 별로 하나씩 만들어 재사용한다.
 컨트랙트 쪽 조건은 그대로다. pending 이 있으면 하트비트 대신 정식 게시를 한다(지금의 `/cia/publish` 와 같은 경로를 타이머가 호출).
 `CIA_HEARTBEAT_BLOCKS = 0` 이면 끈다(테스트용). 하트비트도 가스를 쓴다 — 데모 측정치는 §8.
 
-`/cia/public_keys` 응답에 `ttlBlocks, heightGrid, chainIds` 를 싣는다(`ttlSeconds` 제거).
+`/cia/public_keys` 응답에 `chainIds` 를 싣는다(`ttlSeconds` 제거. `ttlBlocks, heightGrid` 도 2026-09-18 갱신으로 제거 — 만료는 지갑 몫).
 
 ---
 
@@ -200,6 +212,7 @@ contract Mode3Wallet {
     PiCredVerifier public immutable verifier;
     RevocationLog public immutable log;
     uint64  public immutable maxRootAge;   // 블록
+    uint64  public immutable maxLifetime;  // 블록 — 지갑이 정한 max_height 의 상한 L (§3.2 갱신)
     uint256 public nonce;
 
     struct Payload { address to; uint256 value; bytes data; uint256 nonce; }
@@ -216,6 +229,7 @@ contract Mode3Wallet {
     error StaleRevocationRoot(bytes32 root);
     error RootTooOld(uint256 lastPublished, uint256 current);
     error Expired(uint256 currentBlock, uint256 maxHeight);
+    error TooFarExpiry(uint256 currentBlock, uint256 maxHeight);
     error InvalidProof();
 
     function execute(Payload calldata payload, bytes calldata sig,
@@ -237,6 +251,7 @@ contract Mode3Wallet {
 6. `bytes32(pub[6]) == log.root()` — 아니면 `StaleRevocationRoot`(N=1. 세션 설계 §8.2 와 같은 규칙)
 7. `block.number - log.lastPublishedBlock() <= maxRootAge` — 아니면 `RootTooOld`
 8. `block.number <= pub[3]` — 아니면 `Expired`
+8'. `pub[3] <= block.number + maxLifetime` — 아니면 `TooFarExpiry`(§3.2 갱신: 지갑이 정한 만료의 상한)
 9. `verifier.verifyProof(a, b, c, pub)` — 아니면 `InvalidProof`
 10. `nonce += 1`, `(ok,) = to.call{value}(data)`, `emit Executed`, `emit Mode3Auth(nonceUsed, pub[2], pub[3], pub[5], pub[11], pub[12], pub[13])`
 
@@ -247,7 +262,7 @@ contract Mode3Wallet {
 
 ```solidity
 constructor(address verifier, uint256 arid, uint256 pkCIAX, uint256 pkCIAY,
-            uint256 pkTraceX, uint256 pkTraceY, address log, uint64 maxRootAge)
+            uint256 pkTraceX, uint256 pkTraceY, address log, uint64 maxRootAge, uint64 maxLifetime)
 function computeAddress(uint256 ppid) public view returns (address)   // CREATE2, salt = bytes32(ppid)
 function deploy(uint256 ppid) external returns (address)             // 이미 있으면 그 주소
 ```
@@ -264,11 +279,11 @@ function deploy(uint256 ppid) external returns (address)             // 이미 �
 - 등록이 `approved` 가 되면(폴링 결과 포함) `MODE3_RP_FACTORY_ADDRESS` 가 없고 등록 파일에 `factoryAddress` 도 없을 때
   `Mode3WalletFactory` 를 배포하고 등록 파일에 저장한다. 배포자·가스는 `provider.getSigner(0)`(hardhat 언락 계정, 후원 실행 설계와
   같은 방식, 개인키 없음). 생성자 인자는 `/cia/public_keys` 의 `pk_CIA`·`logAddress`, 등록의 `arid`·`pk_trace`, `PiCredVerifier`
-  주소(`MODE3_VERIFIER_ADDRESS`, 없으면 서비스가 함께 배포), `MODE3_MAX_ROOT_AGE`(기본 100).
+  주소(`MODE3_VERIFIER_ADDRESS`, 없으면 서비스가 함께 배포), `MODE3_MAX_ROOT_AGE`(기본 100), `MODE3_MAX_LIFETIME_BLOCKS`(기본 400 — §3.2 갱신).
   아티팩트는 `artifacts/contracts/*.sol/*.json` 에서 읽는다(`npx hardhat compile` 전제). 서명·배포 코드는 `lib/mode3_onchain.js` 에 둔다.
 - `GET /api/mode3/rp_info` 와 `POST /api/mode3/challenge` 응답에 `factoryAddress` 를 싣는다. 지갑은 이 값을 서비스 주장으로
   받아들인다(서비스가 자기 dApp 의 계정 규칙을 정한다). `cert_s` 는 바꾸지 않는다.
-- `verifyLogin`: 공개 입력 V4 파싱. 검사 b(root 일치)·f(σ 가 `r_s` 위)·g(세션 생성)는 그대로, c(만료)는 `view.head ≤ max_height`,
+- `verifyLogin`: 공개 입력 V4 파싱. 검사 b(root 일치)·f(σ 가 `r_s` 위)·g(세션 생성)는 그대로, c(만료)는 `view.head ≤ max_height`, c'(상한)은 `max_height ≤ view.head + MODE3_MAX_LIFETIME_BLOCKS`(아니면 `bad_expiry`),
   e(키·arid 일치)에 `allowAgent ≤ 1` 추가. 세션과 로그인 로그에 `max_height, allowAgent` 를 기록(`exptime`·`r_s` 필드는 σ 검증용
   `r_s` 만 남는다). `verifySessionRequest` 는 그대로(`${r_s}:${body}`).
 - 재검증(`/api/mode3/revalidate`)은 그대로: root 가 바뀌면 새 π. `max_height` 가 지나면 세션 종료(`expired`).
@@ -302,10 +317,11 @@ CIA 의 검사 순서: 서비스 승인 상태 → ts 신선도 → 서명 → `
 
 ### 6.3 지갑(`mode3_wallet_agent.js`)
 
-- 발급 요청에 `allowAgent`(로그인 폼 체크박스, 기본 0). 자격증명 저장 형식 `{C, max_height, chainid, allowAgent, sig}`.
+- 발급 요청에 `allowAgent`(로그인 폼 체크박스, 기본 0)와 지갑이 정한 `max_height`(§3.2: `MODE3_TTL_BLOCKS`·`MODE3_HEIGHT_GRID`,
+  헤드는 지갑의 체인 뷰). 자격증명 저장 형식 `{C, max_height, chainid, allowAgent, sig}`.
   `buildCredentialProof` 는 `Poseidon(uid, arid)` 평문으로 태그를 만들고 V4 공개 입력을 낸다.
 - 로그인 흐름은 세션 설계 §5 그대로되, 단계 (1) 에서 서비스가 준 `factoryAddress` 를 세션에 보관하고, 단계 (2) 발급 요청에
-  `r_s` 대신 `allowAgent` 를 보낸다. `r_s` 는 (4) 의 σ 에만 쓴다.
+  `r_s` 대신 `allowAgent` 와 `max_height` 를 보낸다. `r_s` 는 (4) 의 σ 에만 쓴다.
 - 새 API `POST /wallet/tx { arid, to, value, data }` (`data` 는 hex, 기본 `0x`):
   1. 세션(`arid`)이 살아 있어야 한다(`head ≤ max_height`). 아니면 409 `session_expired`.
   2. `wallet = factory.computeAddress(PPID)`. 코드가 없으면 `factory.deploy(PPID)` 를 릴레이어로 보낸다.
@@ -335,7 +351,7 @@ CIA 의 검사 순서: 서비스 승인 상태 → ts 신선도 → 서명 → `
   복호 후 역조회), `test_mode3_opening.js`(메시지 형식, `(arid, c1)` 중복), 상태 v4→v5 이행 테스트(신규 `test_mode3_state_migration.js`).
 - `circuit`: `test_pi_cred_witness.mjs` — 공개 입력 14개 순서, `allowAgent = 2` 로 witness 실패, `r_s` 부재.
 - `contract`(신규 `test/Mode3Wallet.test.mjs`, hardhat 인프로세스): 픽스처 증명으로 정상 실행·`Mode3Auth` 이벤트, nonce 불일치,
-  잘못된 서명, `pk_i = 0`, 다른 arid 팩토리, stale root, `RootTooOld`(블록 진행 후), `Expired`, `allowAgent = 2`, 다른 chainid 재생
+  잘못된 서명, `pk_i = 0`, 다른 arid 팩토리, stale root, `RootTooOld`(블록 진행 후), `Expired`, `TooFarExpiry`, `allowAgent = 2`, 다른 chainid 재생
   (chainid 를 바꾼 인프로세스 체인), `value` 초과 시 `ok = false` + nonce 소모. `RevocationLog.lastPublishedBlock` 갱신.
 - `chain`: `test_mode3_e2e.mjs` 에 격리 CIA·서비스로 "발급(allowAgent=1) → 로그인 → 팩토리 배포 → 지갑 배포 → tx 2회(π 재사용) →
   root 게시 → tx 실패(stale) → 재증명 → tx 성공 → 해시로 개봉 → uid·allowAgent 확인 → 하트비트 후 `RootTooOld` 회복" 추가.
@@ -359,7 +375,10 @@ CIA 의 검사 순서: 서비스 승인 상태 → ts 신선도 → 서명 → `
   지갑은 재증명 후 재제출한다(§6.3 4). 기반 설계 §9.11 의 "절반 fail-closed" 가 그대로 남는다.
 - **withholding.** 컨트랙트는 체인 헤드로 root 의 나이를 알 수 없다. 하트비트(§4.5)와 `MAX_ROOT_AGE`(§5.3) 로 노출을 "무한" 에서
   `MAX_ROOT_AGE` 블록으로 줄인다. CIA 가 죽으면 그 뒤 모든 지갑이 `RootTooOld` 로 멈춘다 — 가용성과 안전성의 교환이며 의도된 것이다.
-- **AA 의 시각 상관**(§2). 양자화 창 안 사용자 수가 익명 집합이다.
+- **AA 의 시각 상관**(§2). 양자화 창 안 사용자 수가 익명 집합이다. 양자화는 지갑이 하므로(§3.2 갱신) 지갑 구현이 그리드를
+  무시하면 그 사용자만 익명 집합에서 빠진다.
+- **만료 상한 `L` 은 정책 상수다.** 팩토리 생성자에 새겨지므로 바꾸면 PPID 계정 주소가 전부 바뀐다(`MAX_ROOT_AGE` 와 같음). 서비스의
+  `MODE3_MAX_LIFETIME_BLOCKS` 와 지갑의 `TTL + GRID` 가 어긋나면(L < TTL + GRID) 정상 발급도 `bad_expiry`·`TooFarExpiry` 로 막힌다.
 - **릴레이어**(§2)는 데모용 언락 계정이다. 실제 배포는 ERC-4337 번들러 등으로 바꿔야 하며 이 문서 범위 밖이다.
 - **서비스가 팩토리를 정한다.** 지갑은 `factoryAddress` 의 온체인 값(arid·pk_CIA·pk_trace·로그 주소)을 인증서·고정값과 대조한다(2026-09-18 점검 3 반영; 그전 판은 검증하지 않았고 "같은 π 규칙을 따른다"는 논거는 틀렸다 — 팩토리는 임의 코드다). 검증자 컨트랙트 주소는 대조하지 못하므로 남는 위험은 다음과 같다: 지갑은 `factoryAddress` 를 그 밖의 점에서는 검증하지 않는다. 악의적 서비스가 엉뚱한 팩토리를 주면 사용자는 다른
   주소로 트랜잭션을 보내지만, 그 지갑도 같은 π 규칙(arid·pk_trace 가 생성자 인자)을 따르지 않으면 실행이 안 되고, 따르면 결국

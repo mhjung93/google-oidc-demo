@@ -11,7 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
-import { createRegistration, createSessionKey, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, signSessionRequest, ProofCache } from './lib/mode3_wallet.js';
+import { createRegistration, createSessionKey, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, signSessionRequest, ProofCache, chooseMaxHeight } from './lib/mode3_wallet.js';
 import { signPayload, proofToCalldata, parseExecuteReceipt, factoryAt, walletAt } from './lib/mode3_onchain.js';
 import { pointToStrings } from './lib/mode3_issuance.js';
 import { credLeaf } from './lib/mode3_revocation.js';
@@ -25,6 +25,11 @@ const CIA_URL = process.env.MODE3_CIA_URL || 'http://127.0.0.1:4100';
 const RP_ORIGIN = process.env.MODE3_RP_ORIGIN || 'http://127.0.0.1:3100';
 const LOG_ADDRESS = process.env.CIA_LOG_ADDRESS || null;
 const RPC_URL = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
+// 만료는 지갑이 정한다(설계 2026-09-18 §3.2 갱신): max_height = ceil((head + TTL) / GRID) × GRID. 빈 문자열은 기본값(cia.js 의 envBig 과 같은 관례).
+const envBig = (k, d) => { const v = process.env[k]; return v === undefined || v === '' ? BigInt(d) : BigInt(v); };
+const TTL_BLOCKS = envBig('MODE3_TTL_BLOCKS', 300);
+const HEIGHT_GRID = envBig('MODE3_HEIGHT_GRID', 100);
+if (TTL_BLOCKS <= 0n || HEIGHT_GRID <= 0n) throw new Error(`MODE3_TTL_BLOCKS(${TTL_BLOCKS})·MODE3_HEIGHT_GRID(${HEIGHT_GRID}) 는 양수여야 한다`);
 
 // 게시 직후의 로그인이 옛 root 를 보지 않도록 ethers 의 250ms 캐시를 끈다(lib/mode3_wallet.js 주석).
 const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { cacheTimeout: -1 });
@@ -77,13 +82,14 @@ async function chainId() {
   return chainIdCache;
 }
 
-async function issueCredential(arid, r_s, pk_trace, allowAgent, factoryAddress) {
+async function issueCredential(arid, r_s, pk_trace, allowAgent, factoryAddress, head) {
   const reg = state.registration;
   const session = createSessionKey();
   const chainid = await chainId();
   const req = await buildIssueRequest({
     uid: BigInt(reg.uid), arid: BigInt(arid), s_u: BigInt(reg.s_u), r_u: BigInt(reg.r_u), sk_u: reg.sk_u, session,
     chainid, attrs: (reg.attrs ?? []).map(BigInt), allowAgent: BigInt(allowAgent),
+    max_height: chooseMaxHeight(head, { ttlBlocks: TTL_BLOCKS, grid: HEIGHT_GRID }),
   });
   const r = await ciaPost('/cia/issue', req.body);
   if (r.status === 200) {
@@ -190,7 +196,7 @@ app.post('/wallet/login', loginCors, async (req, res) => {
 
     pruneSessions(synced.head);
     t = Date.now();
-    const r = await issueCredential(arid, rs, { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress ? ethers.getAddress(factoryAddress) : null);      // 로그인마다 발급(설계 §5)
+    const r = await issueCredential(arid, rs, { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress ? ethers.getAddress(factoryAddress) : null, synced.head);      // 로그인마다 발급(설계 §5), 만료는 방금 읽은 head 기준
     timings.issueMs = Date.now() - t;
     if (r.status === 403) return res.status(403).json({ reason: 'account_disabled', timings });
     if (r.status !== 200) return res.status(502).json({ reason: 'issue_failed', cia: r.body, timings });

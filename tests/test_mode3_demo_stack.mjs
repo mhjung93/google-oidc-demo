@@ -139,7 +139,7 @@ try {
     const r = await cia.post('/cia/register', { uid: '67890', pwd: 'alicepw', cm_u: pointToStrings(reg.cm_u) });
     assert.equal(r.status, 201, j(r.body));
     const session = createSessionKey();
-    const req = await buildIssueRequest({ uid: 67890n, arid: BigInt(info.arid), s_u: reg.s_u, r_u: reg.r_u, sk_u: r.body.sk_u, session, chainid: BigInt(info.chainId) });
+    const req = await buildIssueRequest({ uid: 67890n, arid: BigInt(info.arid), s_u: reg.s_u, r_u: reg.r_u, sk_u: r.body.sk_u, session, chainid: BigInt(info.chainId), max_height: BigInt(await getProvider().getBlockNumber()) + 300n });
     const issued = await cia.post('/cia/issue', req.body);
     assert.equal(issued.status, 200, j(issued.body));
     const provider = getProvider();
