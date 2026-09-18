@@ -139,6 +139,7 @@ const f1 = (x) => x.toFixed(1);
 const inputs = await buildInputs();
 const rows = [];
 const perRunSum = [];
+const vkeys = Object.fromEntries(CIRCUITS.map((c) => [c.name, JSON.parse(fs.readFileSync(c.zkey.replace(/_final\.zkey$/, '_vkey.json'), 'utf8'))]));
 
 console.log(`Mode 2 세 회로 ${RUNS}회 측정 (같은 크레덴셜, run마다 순차 실행)`);
 for (let run = 1; run <= RUNS; run++) {
@@ -146,9 +147,14 @@ for (let run = 1; run <= RUNS; run++) {
   const parts = [];
   for (const c of CIRCUITS) {
     const t0 = process.hrtime.bigint();
-    const { proof } = await snarkjs.groth16.fullProve(inputs[c.name], c.wasm, c.zkey);
+    const { proof, publicSignals } = await snarkjs.groth16.fullProve(inputs[c.name], c.wasm, c.zkey);
     const ms = Number(process.hrtime.bigint() - t0) / 1e6;
-    rows.push({ circuit: c.name, run, ms, bytes: JSON.stringify(proof).length });
+    // 검증 시간도 같이 잰다(2026-09-18 추가 — 열만 늘고 기존 열은 그대로).
+    const v0 = process.hrtime.bigint();
+    const ok = await snarkjs.groth16.verify(vkeys[c.name], publicSignals, proof);
+    const verifyMs = Number(process.hrtime.bigint() - v0) / 1e6;
+    if (!ok) throw new Error(`${c.name}: 검증 실패`);
+    rows.push({ circuit: c.name, run, ms, verifyMs, bytes: JSON.stringify(proof).length, publics: publicSignals.length });
     parts.push(`${c.name} ${f1(ms)}`);
     sum += ms;
   }
@@ -160,7 +166,9 @@ for (let run = 1; run <= RUNS; run++) {
 console.log('\n=== warm (1회차 제외) ===');
 for (const c of CIRCUITS) {
   const s = stats(rows.filter((r) => r.circuit === c.name && r.run > 1).map((r) => r.ms));
-  console.log(`  ${c.name.padEnd(10)} 평균 ${f1(s.mean)} ms (SD ${f1(s.sd)}), 중앙값 ${f1(s.median)}, 범위 ${f1(s.min)}-${f1(s.max)}`);
+  const v = stats(rows.filter((r) => r.circuit === c.name && r.run > 1).map((r) => r.verifyMs));
+  const r0 = rows.find((r) => r.circuit === c.name);
+  console.log(`  ${c.name.padEnd(10)} 평균 ${f1(s.mean)} ms (SD ${f1(s.sd)}), 중앙값 ${f1(s.median)}, 범위 ${f1(s.min)}-${f1(s.max)} | verify 중앙값 ${f1(v.median)} ms | 증명 ${r0.bytes} B, 공개 입력 ${r0.publics}`);
 }
 const S = stats(perRunSum.filter((r) => r.run > 1).map((r) => r.ms));
 console.log(`  ${'per-run 합'.padEnd(10)} 평균 ${f1(S.mean)} ms (SD ${f1(S.sd)}), 중앙값 ${f1(S.median)}, 범위 ${f1(S.min)}-${f1(S.max)}`);
@@ -172,9 +180,9 @@ fs.writeFileSync(
   out,
   '# Mode 2 세 회로를 한 실행 안에서 순차로 돌린 결과. pi_pk_i는 폐기 이중 트리(v3) 판이다.\n' +
     '# per-run 합은 run별로 세 회로 시간을 더한 값이다(회로별 평균의 합이 아니다).\n' +
-    'circuit,run,duration_ms,proof_json_bytes\n' +
-    rows.map((r) => `${r.circuit},${r.run},${f1(r.ms)},${r.bytes}`).join('\n') + '\n' +
-    perRunSum.map((r) => `sum_of_three,${r.run},${f1(r.ms)},`).join('\n') + '\n',
+    'circuit,run,duration_ms,proof_json_bytes,verify_ms,public_inputs\n' +
+    rows.map((r) => `${r.circuit},${r.run},${f1(r.ms)},${r.bytes},${f1(r.verifyMs)},${r.publics}`).join('\n') + '\n' +
+    perRunSum.map((r) => `sum_of_three,${r.run},${f1(r.ms)},,,`).join('\n') + '\n',
 );
 console.log(`\nwrote ${out}`);
 
