@@ -368,9 +368,21 @@ CIA 의 검사 순서: 서비스 승인 상태 → ts 신선도 → 서명 → `
 
 ## 8. 알려진 한계와 비용
 
-- **트랜잭션마다 검증 가스.** Groth16 검증 ~200k + 공개 입력 14개 + 이벤트. 실측(`Mode3Wallet.test.mjs`): `Mode3Wallet.execute()`
-  gas 387,675(정상 실행, 배포 제외). 회로 실측: 비선형 제약 25,560(V3 는 25,505) — 증명 863 ms 중앙값 / 검증 13.6 ms / zkey
-  15,459,179 bytes. 세션 안 재사용은 증명 생성 시간만 아끼고 검증 가스는 못 아낀다(사용자 결정 2026-09-17: 덱 25장 문면).
+- **트랜잭션마다 검증 가스.** Groth16 검증 ~200k + 공개 입력 14개 + 이벤트. 실측(`Mode3Wallet.test.mjs`, 2026-09-18 max_height
+  지갑 결정 판): `Mode3Wallet.execute()` gas 387,905(값 전송 + 새 수신 계정, 배포 제외; `TooFarExpiry` 검사 추가로 +223).
+  회로 실측: 비선형 제약 25,560(V3 는 25,505) — 증명 857 ms 중앙값 / 검증 14.4 ms / zkey 15,459,179 bytes(`bench_pi_cred.mjs`).
+  세션 안 재사용은 증명 생성 시간만 아끼고 검증 가스는 못 아낀다(사용자 결정 2026-09-17: 덱 25장 문면).
+  격리 스택 실측(`scripts/bench_mode3_onchain.mjs`, N=10 중앙값, 원본 `results/mode3_onchain_bench_20260918.md`):
+
+  | 항목 | 값 |
+  |---|--:|
+  | 로그인 전체 왕복(발급 + 증명, 지갑 HTTP) | 1,394 ms (sync 31 / CIA 발급 422 / 증명 898) |
+  | 서비스 `verifyLogin` | 39 ms (재검증 캐시 π 왕복 33 ms) |
+  | `/wallet/tx` 왕복(캐시 π, 서명 + 제출 + 채굴) | 157 ms |
+  | `execute` gas — 값 0·EOA 호출, 캐시 π | 339,341 (첫 tx 356,441: nonce 0→1 저장) |
+  | 계정 배포(`factory.deploy`, CREATE2) | 713,542 |
+  | `PiCredVerifier` / `Mode3WalletFactory` 배포 | 648,683 / 1,269,466 |
+  | `RevocationLog` 게시(리프 10) / 하트비트(리프 0) | 50,968 / 40,261 |
 - **stale root 실패.** root 게시와 같은 블록 창에 채굴된 트랜잭션은 `StaleRevocationRoot` 로 revert 하고 가스가 소각된다.
   지갑은 재증명 후 재제출한다(§6.3 4). 기반 설계 §9.11 의 "절반 fail-closed" 가 그대로 남는다.
 - **withholding.** 컨트랙트는 체인 헤드로 root 의 나이를 알 수 없다. 하트비트(§4.5)와 `MAX_ROOT_AGE`(§5.3) 로 노출을 "무한" 에서
