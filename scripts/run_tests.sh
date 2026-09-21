@@ -28,6 +28,7 @@ UNIT=(
   tests/test_imt_v3_lib.js
   tests/test_mode3_revocation_tree.js
   tests/test_mode3_issuance.js
+  tests/test_mode3_credential_v5.js
   tests/test_mode3_rp_cert.js
   tests/test_mode3_trace.js
   tests/test_mode3_opening.js
