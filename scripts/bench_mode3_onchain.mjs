@@ -1,11 +1,12 @@
-// Mode 3 온체인 실행 모델 성능 실측 (2026-09-18, max_height 지갑 결정 판).
+// Mode 3 온체인 실행 모델 성능 실측 (2026-09-18 max_height 지갑 결정 판, 2026-09-21 자격증명 이중 구조 V5).
 //   node scripts/bench_mode3_onchain.mjs [N]        (기본 N=10, :8545 hardhat 노드 필요)
 //
 // 격리 스택(CIA + 지갑 에이전트, 각자 빈 포트)을 띄우고 실제 HTTP 경로로 측정한다 — 개발 서버(:4100/:5100/:3100)는
 // 건드리지 않는다. 검증기는 이 프로세스에서 조립한다(tests/test_mode3_wallet_agent.mjs 와 같은 방식).
 //
 // 측정 항목:
-//   1. 로그인(첫 발급): 지갑의 timings(sync/issue/prove) + 전체 왕복 + 서비스 verifyLogin
+//   1. 로그인(첫 발급): 지갑의 timings(sync/userCred/issue/prove) + 전체 왕복 + 서비스 verifyLogin
+//      userCredMs 는 사용자 자격증명(π_u) 발급 — 첫 로그인만 > 0 이고 이후는 재사용이라 0 이 정상(2026-09-21 §6.2)
 //   2. 재검증(캐시 π): 왕복 + verifyLogin
 //   3. 가스: PiCredVerifier·Mode3WalletFactory 배포, 계정 배포(CREATE2), execute(첫/캐시), RevocationLog 게시·하트비트
 //   4. /wallet/tx 왕복(캐시 π, 채굴 포함)
@@ -53,7 +54,7 @@ try {
   const verify = (body, r_s) => rp.verifyLogin({ proof: body.proof, publicSignals: body.publicSignals, sig: body.sig, r_s: BigInt(r_s) });
 
   // 1. 로그인 N회 — 매번 새 r_s = 새 세션 = 새 발급 + 새 증명
-  const L = { total: [], sync: [], issue: [], prove: [], verify: [] };
+  const L = { total: [], sync: [], userCred: [], issue: [], prove: [], verify: [] };
   let lastRs;
   for (let i = 0; i < N; i++) {
     const rs = randomScalar().toString();
@@ -61,7 +62,7 @@ try {
     const r = await login(rs);
     L.total.push(performance.now() - t0);
     if (r.status !== 200 || !r.body.issued) throw new Error(`login ${r.status} ${j(r.body)}`);
-    L.sync.push(r.body.timings.syncMs); L.issue.push(r.body.timings.issueMs); L.prove.push(r.body.timings.proveMs);
+    L.sync.push(r.body.timings.syncMs); L.userCred.push(r.body.timings.userCredMs ?? 0); L.issue.push(r.body.timings.issueMs); L.prove.push(r.body.timings.proveMs);
     const t1 = performance.now();
     const v = await verify(r.body, rs);
     L.verify.push(performance.now() - t1);
@@ -132,8 +133,9 @@ try {
   console.log('|---|--:|');
   console.log(`| 로그인 전체 왕복(발급+증명, 지갑 HTTP) | ${fmt(L.total)} |`);
   console.log(`| ├ 체인 동기화 syncMs | ${fmt(L.sync)} |`);
-  console.log(`| ├ CIA 발급 issueMs (π_issue 포함) | ${fmt(L.issue)} |`);
-  console.log(`| ├ 증명 proveMs (pi_cred) | ${fmt(L.prove)} |`);
+  console.log(`| ├ 사용자 자격증명 발급 userCredMs (π_u; 첫 로그인 ${L.userCred[0]} ms, 이후 재사용) | ${fmt(L.userCred)} |`);
+  console.log(`| ├ CIA 세션 발급 issueMs (ZKP 없음, sig_u 검증 + 서명) | ${fmt(L.issue)} |`);
+  console.log(`| ├ 증명 proveMs (pi_cred V5) | ${fmt(L.prove)} |`);
   console.log(`| 서비스 verifyLogin (Groth16 + σ + root) | ${fmt(L.verify)} |`);
   console.log(`| 재검증 왕복(캐시 π) | ${fmt(R.total)} |`);
   console.log(`| 재검증 verifyLogin | ${fmt(R.verify)} |`);

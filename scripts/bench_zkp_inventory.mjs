@@ -1,4 +1,5 @@
-// 저장소의 ZKP 전체 목록 실측 — Mode 2 v4 삽입 전이 회로, (레거시) pi_uid, Mode 3 π_issue(시그마)·pi_cred(Groth16).
+// 저장소의 ZKP 전체 목록 실측 — Mode 2 v4 삽입 전이 회로, (레거시) pi_uid, Mode 3 π_u(시그마, 사용자 자격증명)·pi_cred(Groth16 V5).
+// 2026-09-21 부터 세션 발급(/cia/issue)에는 ZKP 가 없다 — π_u 는 사용자 자격증명 발급(/cia/user_cred) 때만 한 번.
 //   node scripts/bench_zkp_inventory.mjs [N]        (기본 N=10; build/ 는 읽기만 한다)
 //
 // Mode 2 의 pi_ppid·pi_arid_i·pi_pk_i(v3) 는 scripts/bench_mode2_zkp_all.mjs 가 잰다(같은 크레덴셜을 세 회로에 먹여야
@@ -8,12 +9,14 @@
 // Groth16 은 witness 생성(WASM)과 증명(zkey MSM)을 나눠 재고, 검증 시간·증명 JSON 크기·vkey 크기도 함께 낸다.
 // 첫 회는 WASM 초기화가 섞이므로 중앙값을 쓰고, 최소–최대를 같이 적는다.
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import * as snarkjs from 'snarkjs';
 import { buildPoseidon } from 'circomlibjs';
 import { createSessionForest, createAccountForest, leafValue, TAG_SESSION, TAG_ACCOUNT } from '../lib/imt_v3.js';
 import { buildInsertInput, circuitFor } from '../lib/transition_proof.js';
 import { randomScalar } from '../lib/mode3_credential.js';
-import { registrationCommit, proveIssuance, verifyIssuance, serializeProof } from '../lib/mode3_issuance.js';
+import { registrationCommit, proveUserCred, verifyUserCred, serializeUserCredProof } from '../lib/mode3_issuance.js';
 import { buildValidInput } from '../tests/helpers/mode3_fixture.mjs';
 
 const N = Number(process.argv[2] || 10);
@@ -26,7 +29,7 @@ async function benchGroth16(name, input, wasm, zkey, vkeyPath) {
   const vkey = JSON.parse(fs.readFileSync(vkeyPath, 'utf8'));
   const W = [], P = [], V = [];
   let proof, publicSignals, wtnsBytes = 0;
-  const wtnsPath = `/home/node1phi/.claude/jobs/f2b73366/tmp/${name}.wtns`;
+  const wtnsPath = path.join(os.tmpdir(), `zkp_inventory_${process.pid}_${name}.wtns`);
   for (let i = 0; i < N; i++) {
     const t0 = now();
     await snarkjs.wtns.calculate(input, wasm, wtnsPath);
@@ -48,30 +51,30 @@ async function benchGroth16(name, input, wasm, zkey, vkeyPath) {
 
 const rows = [];
 
-// ---- Mode 3 π_issue: 시그마 프로토콜(회로·셋업 없음) ----
+// ---- Mode 3 π_u: 사용자 자격증명 시그마 프로토콜(회로·셋업 없음). 공개 (uid, C_u_pt, cm_u) ----
 {
-  const uid = 12345n, arid = 777n, s_u = randomScalar(), r_u = randomScalar(), pk_i = BigInt('0x' + 'ab'.repeat(20));
+  const uid = 12345n, s_u = randomScalar(), r_u = randomScalar();
   const attrs = [19n, 410n, 0n, 0n];
   const cm_u = await registrationCommit(s_u, r_u);
   const P = [], V = []; let out;
   for (let i = 0; i < N; i++) {
-    const blind = randomScalar();
+    const blind_u = randomScalar();
     const t0 = now();
-    out = await proveIssuance({ uid, arid, s_u, blind, pk_i, r_u, attrs });
+    out = await proveUserCred({ uid, s_u, blind_u, r_u, attrs });
     const t1 = now();
-    const ok = await verifyIssuance({ uid, C_pt: out.C_pt, cm_u, proof: out.proof });
+    const ok = await verifyUserCred({ uid, C_u_pt: out.C_u_pt, cm_u, proof: out.proof });
     const t2 = now();
-    if (!ok) throw new Error('π_issue 검증 실패');
+    if (!ok) throw new Error('π_u 검증 실패');
     P.push(t1 - t0); V.push(t2 - t1);
   }
-  rows.push({ name: 'π_issue (Σ, Mode 3)', witnessMs: '-', proveMs: fmt(P), fullMs: fmt(P), verifyMs: fmt(V),
-    proofBytes: JSON.stringify(serializeProof(out.proof)).length, publics: 3, zkeyBytes: 0, vkeyBytes: 0, wasmBytes: 0, wtnsBytes: 0 });
+  rows.push({ name: 'π_u (Σ, Mode 3 사용자 자격증명)', witnessMs: '-', proveMs: fmt(P), fullMs: fmt(P), verifyMs: fmt(V),
+    proofBytes: JSON.stringify(serializeUserCredProof(out.proof)).length, publics: 3, zkeyBytes: 0, vkeyBytes: 0, wasmBytes: 0, wtnsBytes: 0 });
 }
 
-// ---- Mode 3 pi_cred (Groth16, V4) ----
+// ---- Mode 3 pi_cred (Groth16, V5 — 커밋 둘) ----
 {
   const { input } = await buildValidInput();
-  rows.push(await benchGroth16('pi_cred (Mode 3)', input, 'build/mode3/pi_cred_js/pi_cred.wasm', 'build/mode3/pi_cred_final.zkey', 'build/mode3/pi_cred_vkey.json'));
+  rows.push(await benchGroth16('pi_cred (Mode 3 V5)', input, 'build/mode3/pi_cred_js/pi_cred.wasm', 'build/mode3/pi_cred_final.zkey', 'build/mode3/pi_cred_vkey.json'));
 }
 
 // ---- Mode 2 v4 삽입 전이: 세션 층(깊이 8, K=4) / 계정 층(깊이 10, K=4) — 배치 1건과 4건 ----

@@ -14,22 +14,23 @@ include "lib/mode3_trace_tag.circom";
 // V4(max_height·allowAgent, 태그 평문 Poseidon(uid, arid)): docs/superpowers/specs/2026-09-18-mode3-onchain-execution-design.md §3
 //
 // V5(2026-09-21): 커밋 둘(C_u 사용자 자격증명, C_s 세션) — 서명은 둘을 덮고 리프는 C_u 에서만 뽑는다. 설계 docs/superpowers/specs/2026-09-21-mode3-two-tier-credential-design.md §5
-// 네 가지를 함께 증명한다. 하나라도 빠지면 뚫린다:
-//   ① CIA가 (C, max_height, chainid, allowAgent)에 서명했다 — 없으면 아무나 credential을 만든다
-//   ② C 안에 이 pk_i가 있다                    — 없으면 남의 π를 주워 자기 키로 서명해 완전 사칭
+// 다섯 가지를 함께 증명한다. 하나라도 빠지면 뚫린다:
+//   ① CIA가 (Cf_u, Cf_s, max_height, chainid, allowAgent)에 서명했다 — 없으면 아무나 credential을 만든다
+//   ② C_s 안에 이 pk_i·arid 가 있다                — 없으면 남의 π를 주워 자기 키로 서명해 완전 사칭
 //   ③ PPID = Poseidon(uid, s_u, chainid, arid) — 없으면 지갑 주소를 특정할 수 없다
-//   ④ H(C)가 폐기 트리에 없다                   — 없으면 폐기가 무의미
+//   ④ Poseidon(TAG=4, Cf_u) 가 폐기 트리에 없다     — 없으면 폐기가 무의미. 리프는 C_u 에서만 뽑는다(세션이 아니라 사용자당 하나)
 //   ⑤ tag = Enc(pk_trace, uid) 가 잘 만들어졌다  — 없으면 개봉이 엉뚱한 값을 연다 (2026-09-16 §4)
 //
-//   attrs[4] 는 커밋에만 실린다 — CIA 는 값을 모르고(설계 2026-09-14 §2) 이 회로는 술어를 검증하지 않는다.
+//   attrs[4] 는 C_u 에만 실린다 — CIA 는 값을 모르고(설계 2026-09-14 §2) 이 회로는 술어를 검증하지 않는다.
 //   r_s 는 더 이상 서명·공개 입력에 없다(설계 2026-09-18 §2) — 온체인 공개 입력은 AA 도 보므로 AA 가 발급 때 본 값을 두지 않는다.
 //   allowAgent ∈ {0,1} 은 AA 속성이다(2026-09-18 §3.1) — 서명이 덮고, 공개 입력으로 나가 온체인 이벤트·개봉 결과에 남는다.
 //
-// ②는 커밋을 공개 입력 pk_i·arid로 **직접 계산**해서 얻는다. 별도 등식이 필요 없다 —
+// ②는 세션 커밋 C_s 를 공개 입력 pk_i·arid로 **직접 계산**해서 얻는다. 별도 등식이 필요 없다 —
 // 계산에 쓴 값이 곧 공개 입력이므로 다른 값을 넣으면 서명 검증이 깨진다.
-// C는 교과서 Pedersen 점 (Cx, Cy)이고, 서명·리프에는 이를 Poseidon으로 압축한 Cf가 들어간다.
+// C_u·C_s 는 각각 교과서 Pedersen 점 (Cx, Cy)이고, 서명에는 둘을 Poseidon으로 압축한 Cf_u·Cf_s 가,
+// 리프에는 Cf_u 만 들어간다. uid·s_u 는 C_u 안에 있어 서명이 C_u 를 덮는 것으로 PPID 의 출처가 묶인다.
 //
-// 리프를 C 안의 속성이 아니라 C **로부터** 유도하는 것이 §4.3의 핵심이다.
+// 리프를 커밋 안의 속성이 아니라 C_u **로부터** 유도하는 것이 §4.3의 핵심이다.
 // 회로가 비공개 입력에서 직접 계산하므로 증명자가 다른 리프를 제시할 수 없고,
 // 그 덕에 발급 시 리프 정합성 ZKP가 통째로 불필요해진다.
 template PiCred(depth) {

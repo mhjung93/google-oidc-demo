@@ -1,4 +1,4 @@
-// pi_cred 회로의 witness 계산. 양성 2건(정상 witness + JS/회로 리프 일치) + 음성 4건.
+// pi_cred 회로(V5)의 witness 계산. 양성·음성 20건 — 정상 witness, JS/회로 리프 일치, 태그 개봉, 잘못된 입력 거부.
 //   node tests/test_pi_cred_witness.mjs
 //
 // zkey는 만들지 않는다 (Task 4에서 별도 승인 후). 여기서는 회로가 올바른 입력을

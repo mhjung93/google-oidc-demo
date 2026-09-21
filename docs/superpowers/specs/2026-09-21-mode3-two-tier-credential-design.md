@@ -20,7 +20,7 @@ nonce)으로 나눈다. AA 는 사용자 속성으로 만든 자격증명 하나
 | AA 의 세션 기록 | `issued[uid] = [{leaf, C, max_height, chainid}]` | 없음 | 폐기가 세션 기록에 의존하지 않는다 |
 | 만료 정리 | `CIA_REVOKE_SKEW_BLOCKS`, 체인별 헤드로 정리 | 없음 | 지울 세션 기록이 없다 |
 | 공개 입력 | 14개 | 14개 그대로 | 서비스·컨트랙트 검사 불변 |
-| 회로 | 25,560 제약 | ≈ 27k(추정) | 커밋 항 9 → 10, Poseidon 압축 +1 |
+| 회로 | 25,560 제약 | 26,601 제약(실측, §8) | 커밋 항 9 → 10, Poseidon 압축 +1, r ≠ 0 |
 | 세션 폐기(하나만) | 가능(`scope=credential`, C 지정) | 불가 — 계정 단위만 | 사용자 결정. §9 |
 
 바뀌지 않는 것: PPID 유도, 트레이스 태그·개봉, RevocationLog·게시·하트비트, 서비스 검사 순서(§6.1 2026-09-18), Mode3Wallet
@@ -127,8 +127,9 @@ leaf = Poseidon(TAG_MODE3_USER, Cf_u),   TAG_MODE3_USER = 4      // TAG_MODE3_CR
 ### 4.2 `POST /cia/issue` — 세션 발급 (V5)
 
 요청 `{uid, Cf_u, C_s_pt, chainid, allowAgent, max_height, sig_u}`.
-검사 순서: 형식 → disabled → chainid 허용·체인 생존(`chainAlive`) → `max_height < 2^64` → `allowAgent ∈ {"0","1"}` → sig_u(§3.4)
-→ **Cf_u 가 이 uid 의 활성 자격증명**(`creds` 에서 `revoked:false` 인 항목과 일치; 아니면 403 `no_user_cred`) → C_s_pt 부분군 점 → 서명.
+검사 순서(구현 `cia.js`, Ruling 8): 형식(`allowAgent ∈ {"0","1"}` 포함) → `max_height < 2^64` → 계정 존재·disabled 아님 → chainid 허용 → sig_u(§3.4)
+→ **Cf_u 가 이 uid 의 활성 자격증명**(`creds` 에서 `revoked:false` 인 항목과 일치; 아니면 403 `no_user_cred`) → C_s_pt 부분군 점
+→ 체인 생존(`chainAlive`, fail-closed) → disabled·활성 Cf_u 재확인(await 사이의 폐기) → 서명.
 응답 `{Cf_u, Cf_s, max_height, chainid, allowAgent, sig:{R8,S}}`.
 **기록하지 않는다.** `issued` 맵, `pruneExpired`, `CIA_REVOKE_SKEW_BLOCKS` 는 삭제한다(env 는 경고 후 무시).
 π_issue 검증이 사라지므로 발급 지연은 서명 비용(수 ms)이 된다.
@@ -181,7 +182,7 @@ issued 삭제.  rps, openings, revoked, pending, epoch 는 그대로.
 7. `allowAgent·(allowAgent−1) = 0`, `pk_i < 2^160`, `max_height < 2^64`, 커밋 스칼라 250비트 — 변경 없음. **`r ≠ 0` 을 회로에 넣는다**
    (사용자 결정 2026-09-21; `IsZero(r).out === 0`, 제약 2개). 컨트랙트·서비스의 `c1 ≠ O` 검사는 방어선 중복으로 그대로 둔다.
 
-제약 추정: 스칼라곱 +1(≈ +1.3k), Poseidon(2) +1(≈ +240), Poseidon 인자 5→6(≈ +60) → 약 27.2k. 실측은 빌드 후 §8 에 적는다.
+제약 추정은 스칼라곱 +1(≈ +1.3k), Poseidon(2) +1(≈ +240), Poseidon 인자 5→6(≈ +60) → 약 27.2k 였고, 실측은 26,601(+1,041; `snarkjs r1cs info`, 와이어 26,633, 비공개 입력 79, 공개 14). §8.
 빌드: `bash scripts/build_mode3_circuit.sh`(pot21). vkey·`PiCredVerifier.sol` 재생성 → 서비스가 검증자·팩토리를 재배포 → PPID 계정 주소가
 전부 바뀐다(2026-09-18 과 같은 수용).
 
@@ -233,16 +234,25 @@ sessions[r_s] = { arid, PPID, chainid, allowAgent, factoryAddress, pk_trace,
 
 ---
 
-## 8. 성능·비용 (예상 → 실측으로 교체)
+## 8. 성능·비용 (실측, 2026-09-21)
 
-| 항목 | 지금 | 예상 |
-|---|--:|--:|
-| 세션 발급(AA) | 422 ms (π_issue 155 + 검증 164 + 서명) | ≈ 10 ms |
-| 사용자 자격증명 발급 | — | ≈ 300 ms, 속성 변경 때만 |
-| π_rp 증명 | 858 ms, 25,560 제약 | ≈ 900 ms, ≈ 27.2k 제약 |
-| 로그인 왕복 | 1,394 ms | ≈ 950 ms (첫 로그인은 + 300 ms) |
-| 계정 폐기 게시 | 리프 N개 ≈ 40k + 1.1k·N gas | 리프 1개 ≈ 41k gas |
-| 공개 입력·execute gas | 14 / 339k–388k | 불변 |
+측정: `results/zkp_inventory_20260921.md`(`scripts/bench_zkp_inventory.mjs 10`, `scripts/bench_pi_cred.mjs`), `results/mode3_onchain_bench_20260921.md`
+(`scripts/bench_mode3_onchain.mjs 10`, 격리 스택 + hardhat :8545), `bash scripts/run_tests.sh contract` 의 `execute() gas`. N=10 중앙값, AMD Ryzen 9 5950X, Node v22.20.0.
+"지금" 열은 2026-09-18 실측(`results/*_20260918.md`), "예상" 열은 이 설계를 쓸 때의 추정이다.
+
+| 항목 | 지금(2026-09-18) | 예상 | 실측(2026-09-21) |
+|---|--:|--:|--:|
+| 세션 발급(AA), 지갑이 재는 issueMs | 422 ms (π_issue 155 + 검증 164 + 서명) | ≈ 10 ms | 124 ms (120–245) — ZKP 없음. CIA 안의 부분군 검사+메시지+서명은 29.6 ms, 나머지는 세션키 생성·chainId·chainAlive RPC·HTTP·상태 저장 |
+| 사용자 자격증명 발급 π_u | — | ≈ 300 ms, 속성 변경 때만 | 생성 121.9 ms + CIA 검증 140.5 ms (warm). 첫 로그인의 userCredMs 는 1,962 ms — 지갑 프로세스의 circomlibjs 첫 초기화가 섞인 것으로 보이며, 이후 로그인은 0 |
+| π_rp(pi_cred) 증명 | 858 ms, 25,560 제약 | ≈ 900 ms, ≈ 27.2k 제약 | 859.6 ms (witness 237.4 + prove 624.1; fullProve 841.6), 검증 11.5–13.6 ms, **26,601 제약**, zkey 16,022,463 B, wasm 4,712,707 B |
+| 로그인 왕복(지갑 HTTP, 발급+증명) | 1,394 ms | ≈ 950 ms (첫 로그인은 + 300 ms) | 1,073 ms (1,048–4,762; 최대값은 첫 로그인) — sync 29 + issue 124 + prove 870 |
+| 서비스 verifyLogin / 재검증 왕복 | 39 / 33 ms | 불변 | 38 / 31 ms |
+| 계정 폐기 게시(RevocationLog) | 리프 10개 50,968 gas, 하트비트 40,261 | 리프 1개 ≈ 41k gas | 리프 1개 43,888 gas, 하트비트 40,305 |
+| 공개 입력·execute gas | 14 / 339,341(캐시 π) · 356,441(첫 tx) | 불변 | 14 / 339,321(캐시 π) · 356,453(첫 tx) · 387,961(컨트랙트 테스트의 `execute() gas`) |
+| 계정 배포 / PiCredVerifier / Factory 배포 gas | 713,542 / 648,683 / 1,269,466 | 불변 | 713,542 / 648,923 / 1,269,478 |
+
+읽는 법: 로그인 왕복은 1,394 → 1,073 ms(−321)로 줄었고 그 대부분이 세션 발급의 π_issue 제거(422 → 124)다. 회로는 +1,041 제약이지만 증명 시간은 잡음 범위 안이다.
+세션 발급 예상 ≈ 10 ms 는 CIA 의 서명 비용만 본 것이었고, 지갑이 재는 issueMs 에는 RPC 두 번과 커밋·서명 계산이 들어간다.
 
 ---
 

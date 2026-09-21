@@ -3,10 +3,10 @@
 import assert from 'node:assert/strict';
 import { buildBabyjub, buildPoseidon } from 'circomlibjs';
 import {
-  userCommit, sessionCommit, credMessageV5, credCommit, compressPoint,
-  PEDERSEN_GENERATORS, SCALAR_MAX, DOMAIN_MODE3_CRED_V5, DOMAIN_MODE3_CRED_V4, MAX_HEIGHT_MAX,
+  userCommit, sessionCommit, credMessageV5, compressPoint,
+  PEDERSEN_GENERATORS, SCALAR_MAX, DOMAIN_MODE3_CRED_V5, MAX_HEIGHT_MAX,
 } from '../lib/mode3_credential.js';
-import { userLeaf, TAG_MODE3_USER, TAG_MODE3_CRED } from '../lib/mode3_revocation.js';
+import { userLeaf, TAG_MODE3_USER } from '../lib/mode3_revocation.js';
 import { TAG_SESSION, TAG_ACCOUNT, leafValue } from '../lib/imt_v2.js';
 
 let failed = 0;
@@ -39,15 +39,6 @@ await t('sessionCommit = arid·G_ARID + pk_i·G_PKI + blind_s·H', async () => {
   assert.equal(Cf, ps.F.toObject(ps([Cx, Cy])));
 });
 
-await t('userCommit + sessionCommit(같은 blind) 은 V4 credCommit 과 점이 같다 — 생성원 재사용의 정합', async () => {
-  // V4: uid·G1 + arid·G2 + s_u·G3 + pk_i·G4 + Σattr + blind·H. V5 두 커밋의 합에서 H 항이 둘이므로 blind 를 나눠 비교한다.
-  const u = await userCommit({ uid, s_u, blind_u: 10n, attrs });
-  const s = await sessionCommit({ arid, pk_i, blind_s: 20n });
-  const v4 = await credCommit({ uid, arid, s_u, pk_i, attrs, blind: 30n });
-  const sum = bj.addPoint([bj.F.e(u.Cx), bj.F.e(u.Cy)], [bj.F.e(s.Cx), bj.F.e(s.Cy)]);
-  assert.equal(bj.F.toObject(sum[0]), v4.Cx); assert.equal(bj.F.toObject(sum[1]), v4.Cy);
-});
-
 await t('blind_u 하나만 바꿔도 C_u 가 바뀐다; attrs 생략은 전부 0', async () => {
   const a = await userCommit({ uid, s_u, blind_u, attrs });
   const b = await userCommit({ uid, s_u, blind_u: blind_u + 1n, attrs });
@@ -63,11 +54,11 @@ await t('범위: 스칼라가 2^250 이상이면 두 커밋 다 throw', async ()
   await assert.rejects(() => userCommit({ uid: 'x', s_u, blind_u, attrs }), /bigint/);
 });
 
-await t('credMessageV5 = Poseidon(D_V5, Cf_u, Cf_s, max_height, chainid, allowAgent); V4 와 다르다', async () => {
+await t('credMessageV5 = Poseidon(D_V5, Cf_u, Cf_s, max_height, chainid, allowAgent); 도메인은 "MODE3CREDV5"', async () => {
   const m = await credMessageV5(1n, 2n, 1000n, 31337n, 0n);
   assert.equal(m, ps.F.toObject(ps([DOMAIN_MODE3_CRED_V5, 1n, 2n, 1000n, 31337n, 0n])));
   assert.equal(DOMAIN_MODE3_CRED_V5, 93461614427473393731524149n);
-  assert.equal(DOMAIN_MODE3_CRED_V5, DOMAIN_MODE3_CRED_V4 + 1n);
+  assert.equal(DOMAIN_MODE3_CRED_V5, BigInt('0x' + Buffer.from('MODE3CREDV5').toString('hex')));
   assert.notEqual(m, await credMessageV5(2n, 1n, 1000n, 31337n, 0n), 'Cf_u 와 Cf_s 자리는 바뀌면 다른 메시지');
   assert.notEqual(m, await credMessageV5(1n, 2n, 1000n, 31337n, 1n));
   await assert.rejects(() => credMessageV5(1n, 2n, MAX_HEIGHT_MAX, 31337n, 0n), /2\^64/);
@@ -75,10 +66,10 @@ await t('credMessageV5 = Poseidon(D_V5, Cf_u, Cf_s, max_height, chainid, allowAg
   await assert.rejects(() => credMessageV5(1n, 2n, 1000n, '31337', 0n), /bigint/);
 });
 
-await t('userLeaf = leafValue(4, Cf_u); 태그 4 는 1·2·3 과 다르다', async () => {
+await t('userLeaf = leafValue(4, Cf_u); 태그 4 는 Mode 2 의 1·2 와 다르다', async () => {
   const { Cf } = await userCommit({ uid, s_u, blind_u, attrs });
   assert.equal(TAG_MODE3_USER, 4n);
-  assert.notEqual(TAG_MODE3_USER, TAG_SESSION); assert.notEqual(TAG_MODE3_USER, TAG_ACCOUNT); assert.notEqual(TAG_MODE3_USER, TAG_MODE3_CRED);
+  assert.notEqual(TAG_MODE3_USER, TAG_SESSION); assert.notEqual(TAG_MODE3_USER, TAG_ACCOUNT);
   assert.equal(await userLeaf(Cf), await leafValue(4n, Cf));
   assert.ok((await userLeaf(Cf)) < (1n << 252n));
   assert.notEqual(await userLeaf(Cf), await userLeaf(Cf + 1n));
