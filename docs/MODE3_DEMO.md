@@ -26,13 +26,16 @@ Mode 2 데모(:3000/:4000/:5001)와 **공존**한다. 포트·상태 파일이 �
    새 π 가 온체인에서 `InvalidProof` 나 root 불일치로 막힌다):
    (1) `bash scripts/build_mode3_circuit.sh …` — zkey·vkey·wasm 과 `contracts/PiCredVerifier.sol` 재생성.
    (2) `npx hardhat compile` — `artifacts/` 의 `PiCredVerifier` 를 다시 만든다(옛 아티팩트로 배포한 검증기는 새 π 를 `InvalidProof` 로 거절한다).
-   (3) CIA: 폐기 리프 규약이 바뀌었으므로(사용자 자격증명 리프, 태그 4) `RevocationLog` 를 새로 배포하고(아래 3) `.env` 의 `CIA_LOG_ADDRESS` 를 갱신한다
-       — 옛 로그의 리프는 새 규약과 섞이지 않는다.
+   (3) CIA: `RevocationLog` 재배포는 필수가 아니다 — 옛 TAG 3 리프는 Poseidon(4, Cf_u) 와 겹치지 않으므로 옛 로그를 그대로 써도 된다.
+       새로 배포한다면(아래 3, `.env` 의 `CIA_LOG_ADDRESS` 갱신) `cia_state.json` 도 함께 지워야 한다 — v5→v6 이행은 폐기·pending·epoch 를
+       그대로 두므로, 남아 있으면 기동 시 빈 로그와의 root 대조 실패로 종료한다(아래 "재시연 세트" 와 같은 이유).
    (4) 서비스: `mode3_rp_registration.json` 에서 **`verifierAddress` 와 `factoryAddress` 를 둘 다 지운 뒤** 재시작한다. `factoryAddress` 만 지우면
        RP 가 옛 `verifierAddress`(V4 검증기)를 그대로 다시 써 새 팩토리가 옛 검증기를 가리키고 π 는 여전히 `InvalidProof` 다(`mode3_rp.js` `ensureFactory`).
        env 에 `MODE3_VERIFIER_ADDRESS` 가 있으면 새로 배포한 V5 검증기 주소로 바꾸거나 지운다.
-   (5) 지갑: 상태 v6 는 기동 시 자동 이행된다(세션·userCred 비움, 등록 유지).
-   즉 아래 "재시연 세트" 를 통째로 한 번 하는 것과 같다.
+   (5) 상태 파일: 옛 로그를 그대로 쓰면 `cia_state.json` 은 기동 시 v6 로 자동 이행되고(발급 기록만 비움, 폐기 트리 유지) 지갑의
+       `mode3_wallet_state.json` 도 v6 로 자동 이행된다(세션·userCred 비움, 등록 유지 — 다음 로그인이 새 C_u 를 받는다). 로그를 새로
+       배포했다면 (3) 대로 `cia_state.json` 을 지운다 — 그러면 계정 등록도 사라지므로 지갑 상태 파일도 같이 지우는 편이 맞다.
+   로그를 새로 배포하는 쪽을 택하면 아래 "재시연 세트" 를 통째로 한 번 하는 것과 같다.
 1. `npx hardhat node` (다른 터미널에 상주).
 2. `CIA_ADMIN_SECRET=<아무 문자열> node cia.js` — 처음 기동에서 `cia_keys.json`을 만든다. `curl -s 127.0.0.1:4100/cia/public_keys`의 `ethAddress`를 적어 두고 종료한다.
 3. `CIA_ETH_ADDRESS=<ethAddress> npx hardhat run scripts/deploy_mode3_log.cjs --network localhost` — `RevocationLog`를 배포하고 CIA 주소에 1 ETH를 넣는다. 출력의 `CIA_LOG_ADDRESS=0x…`를 `.env`에 추가한다.
@@ -114,8 +117,10 @@ CIA 는 값을 모른다)을 받아 두고, 로그인마다 그 위에 `POST /ci
 
 속성 4칸은 사용자가 고르는 값이고 CIA 는 보지 못한다(설계 2026-09-14 §2). 등록 뒤 값을 바꾸려면 지갑 페이지의 **속성 변경** 버튼
 (`POST /wallet/attrs`) — 새 사용자 자격증명을 받고, 옛 것은 CIA 가 폐기 리프로 pending 에 넣어 다음 게시에 나간다. 그래서 지갑은
-기존 세션을 그 자리에서 모두 지우며(`sessionsDropped`), 다음 로그인은 새 자격증명 위에 세션만 받는다(`userCredMs = 0`). credential 은 발급 시점 head 기준 300~400 블록(그리드
-양자화)에 만료되며 지갑 상태 페이지에 `max_height` 로 보인다.
+기존 세션을 그 자리에서 모두 지우며(`sessionsDropped`), 다음 로그인은 새 자격증명 위에 세션만 받는다(`userCredMs = 0`).
+시각 상관에 주의: 옛 리프가 게시되는 블록에 그 사용자의 세션이 전부 죽고 곧 같은 PPID 로 재로그인하므로, CIA 와 서비스가 결탁하면 그 게시의
+리프 수(데모에선 보통 1)가 익명 집합이다 — 속성 변경 직후 `/cia/publish` 를 따로 부르지 말고 하트비트 게시에 묶이게 두는 것이 완화다(설계 2026-09-21 §2).
+credential 은 발급 시점 head 기준 300~400 블록(그리드 양자화)에 만료되며 지갑 상태 페이지에 `max_height` 로 보인다.
 
 4′ 은 관리자 없이 사용자가 스스로 폐기하는 경로다(설계 §6.5.1). 인증은 계정 비밀번호이고 지갑 키가 아니다 —
 장치를 잃은 사용자에게 지갑 키는 없고 공격자에게는 있기 때문이다. 처리와 게시는 4 와 같고, 복구는 여전히 관리자만 한다.

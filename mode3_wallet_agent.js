@@ -5,7 +5,8 @@
 // 로그인마다 발급된다(설계 2026-09-15 §5) — 성명은 세션(r_s) 단위이고 세션 안에서만 재사용한다.
 // V4(2026-09-18): 자격증명은 max_height·allowAgent, 세션은 서비스 팩토리 주소를 들고 /wallet/tx 로 온체인 실행(설계 §6.3).
 // V5(2026-09-21): 자격증명 이중 구조 — 사용자 자격증명(C_u, 사용자당 하나, 폐기 리프)과 세션 자격증명(C_s, 로그인마다).
-//   사용자 자격증명은 첫 로그인 또는 속성 변경(/wallet/attrs) 때 받고, 폐기되면 다음 로그인이 알아채 새로 받는다.
+//   사용자 자격증명은 첫 로그인 또는 속성 변경(/wallet/attrs) 때 받고, 폐기되면 다음 로그인이 알아채(트리의 리프, 또는 게시 전이면
+//   세션 발급의 no_user_cred 거절) 새로 받는다.
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
@@ -86,6 +87,13 @@ async function chainId() {
   return chainIdCache;
 }
 
+/** 사용자 자격증명을 바꿔 앉힌다(null 이면 버린다). 옛 자격증명의 세션은 다음 게시에 죽으므로 지금 지우고 증명 캐시도 비운다. */
+function replaceUserCred(userCred) {
+  state.registration.userCred = userCred;
+  state.sessions = {}; cache.clear();
+  persist();
+}
+
 /** 사용자 자격증명 확보(설계 2026-09-21 §6.2 3단계). 없거나 폐기됐으면 새로 받는다. 돌려주는 값은 { status, body, fresh }. */
 async function ensureUserCred(tree) {
   const reg = state.registration;
@@ -93,10 +101,7 @@ async function ensureUserCred(tree) {
   const req = await buildUserCredRequest({ uid: BigInt(reg.uid), s_u: BigInt(reg.s_u), r_u: BigInt(reg.r_u), sk_u: reg.sk_u, attrs: (reg.attrs ?? []).map(BigInt) });
   const r = await ciaPost('/cia/user_cred', req.body);
   if (r.status === 201 || r.status === 200) {
-    reg.userCred = { C_u_pt: { x: req.C_u_pt.x.toString(), y: req.C_u_pt.y.toString() }, Cf_u: req.Cf_u.toString(), blind_u: req.secrets.blind_u.toString(), leaf: req.leaf.toString(), issuedAt: new Date().toISOString() };
-    // 옛 자격증명의 세션은 다음 게시에 죽는다 — 지금 지운다
-    state.sessions = {}; cache.clear();
-    persist();
+    replaceUserCred({ C_u_pt: { x: req.C_u_pt.x.toString(), y: req.C_u_pt.y.toString() }, Cf_u: req.Cf_u.toString(), blind_u: req.secrets.blind_u.toString(), leaf: req.leaf.toString(), issuedAt: new Date().toISOString() });
     return { status: 200, body: r.body, fresh: true };
   }
   return { status: r.status, body: r.body, fresh: false };
@@ -218,24 +223,47 @@ app.post('/wallet/login', loginCors, async (req, res) => {
     pruneSessions(synced.head);
     // 사용자 자격증명은 사용자당 하나 — 없거나 폐기됐을 때만 새로 받는다(userCredMs 는 재사용이면 0)
     t = Date.now();
-    const uc = await ensureUserCred(synced.tree);
+    let uc = await ensureUserCred(synced.tree);
     timings.userCredMs = uc.fresh ? Date.now() - t : 0;
     if (uc.status === 403) return res.status(403).json({ reason: 'account_disabled', timings });
     if (uc.status !== 200) return res.status(502).json({ reason: 'user_cred_failed', cia: uc.body, timings });
+    // 세션 자격증명은 로그인마다(설계 §5), 만료는 방금 읽은 head 기준
+    const issue = () => issueSession(arid, rs, { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress ? ethers.getAddress(factoryAddress) : null, synced.head);
     t = Date.now();
-    const r = await issueSession(arid, rs, { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress ? ethers.getAddress(factoryAddress) : null, synced.head);      // 세션 자격증명은 로그인마다(설계 §5), 만료는 방금 읽은 head 기준
+    let r = await issue();
     timings.issueMs = Date.now() - t;
-    // no_user_cred: 방금 확보한 자격증명이 그 사이(경합) 물렸다 — 다음 로그인의 ensureUserCred 가 새로 받는다
+    // no_user_cred: 지갑이 든 C_u 가 CIA 에서는 이미 물렸는데 리프가 아직 게시되지 않았다(/cia/revoke scope=credential 직후, 또는
+    // 동시 로그인 경합으로 지갑이 활성이 아닌 Cf_u 를 들고 남은 경우). 트리에는 없어 ensureUserCred 가 알아채지 못하므로 여기서
+    // 그 자격증명을 버리고 새로 받아 한 번만 다시 시도한다 — 게시·하트비트를 기다리지 않는다. s_u 는 같으니 PPID 는 그대로다.
+    if (r.status === 403 && r.body?.reason === 'no_user_cred') {
+      replaceUserCred(null);
+      t = Date.now();
+      uc = await ensureUserCred(synced.tree);
+      timings.userCredMs += Date.now() - t;
+      if (uc.status === 403) return res.status(403).json({ reason: 'account_disabled', timings });
+      if (uc.status !== 200) return res.status(502).json({ reason: 'user_cred_failed', cia: uc.body, timings });
+      t = Date.now();
+      r = await issue();
+      timings.issueMs += Date.now() - t;
+    }
+    // 재시도까지 no_user_cred 면 CIA 쪽에서 방금 받은 C_u 도 물린 것이다(연속 폐기·경합) — 다음 로그인이 다시 시도한다
     if (r.status === 403) return res.status(403).json({ reason: r.body?.reason === 'no_user_cred' ? 'user_cred_retired' : 'account_disabled', timings });
     if (r.status !== 200) return res.status(502).json({ reason: 'issue_failed', cia: r.body, timings });
-    const out = await proveSession(rs.toString(), synced, timings);
+    let out;
+    try { out = await proveSession(rs.toString(), synced, timings); }
+    catch (e) {
+      if (e.reason === 'no_session') return res.status(409).json({ reason: 'no_session', timings });
+      throw e;
+    }
     res.json({ ...out, issued: true, allowAgent, timings });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-/** 세션의 성명으로 현재 root 에 대한 π 를 만든다(캐시). 사용자 자격증명 리프가 트리에 있으면 throw('revoked') — 그 사용자의 모든 세션이 같이 죽는다. */
+/** 세션의 성명으로 현재 root 에 대한 π 를 만든다(캐시). 사용자 자격증명 리프가 트리에 있으면 throw('revoked') — 그 사용자의 모든 세션이 같이 죽는다.
+ *  세션이 없으면 throw('no_session') — 호출자가 404/409 로 옮긴다(500 이 아니다). */
 async function proveSession(rsKey, synced, timings) {
   const s = state.sessions[rsKey];
+  if (!s) throw Object.assign(new Error('no_session'), { reason: 'no_session' });
   const reg = state.registration;
   const sessionWallet = new ethers.Wallet(s.sessionPrivKey);
   let cached = cache.get(synced.root, rsKey);
@@ -290,6 +318,7 @@ app.post('/wallet/revalidate', loginCors, async (req, res) => {
     } catch (e) {
       // 그 세션만 지운다. reg.userCred 는 그대로 둔다 — 다음 로그인의 ensureUserCred 가 tree.has 로 알아채 새로 받는다.
       if (e.reason === 'revoked') { delete state.sessions[rsKey]; persist(); return res.status(403).json({ reason: 'revoked', timings }); }
+      if (e.reason === 'no_session') return res.status(404).json({ reason: 'no_session', timings });
       throw e;
     }
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -308,15 +337,18 @@ app.post('/wallet/attrs', async (req, res) => {
     pruneSessions(synced.head);   // 만료된 세션은 sessionsDropped 에 세지 않는다
     const dropped = Object.keys(state.sessions).length;
     const prev = { attrs: state.registration.attrs, userCred: state.registration.userCred };
-    state.registration.attrs = attrs;
-    state.registration.userCred = null;   // 강제 재발급
-    const uc = await ensureUserCred(synced.tree);
-    if (uc.status !== 200) {
-      // CIA 가 거절하면 아무것도 바뀌지 않는다 — 옛 자격증명·속성을 되돌려 기존 세션이 그대로 쓰이게 한다(성공 전엔 persist 하지 않았다)
-      Object.assign(state.registration, prev);
-      if (uc.status === 403) return res.status(403).json({ reason: 'account_disabled' });
-      return res.status(502).json({ reason: 'user_cred_failed', cia: uc.body });
+    let uc;
+    try {
+      state.registration.attrs = attrs;
+      state.registration.userCred = null;   // 강제 재발급
+      uc = await ensureUserCred(synced.tree);
+    } finally {
+      // 성공이 아니면(CIA 거절, CIA 다운으로 ciaPost 가 throw) 아무것도 바뀌지 않는다 — 옛 자격증명·속성을 되돌려 기존 세션이
+      // 그대로 쓰이게 한다. 메모리만 되돌리면 된다(성공 전엔 persist 하지 않았다). throw 는 바깥 catch 가 500 으로 낸다.
+      if (!(uc?.status === 200 && uc.fresh)) Object.assign(state.registration, prev);
     }
+    if (uc.status === 403) return res.status(403).json({ reason: 'account_disabled' });
+    if (uc.status !== 200) return res.status(502).json({ reason: 'user_cred_failed', cia: uc.body });
     res.json({ Cf_u: state.registration.userCred.Cf_u, leaf: state.registration.userCred.leaf, sessionsDropped: dropped });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -361,6 +393,7 @@ app.post('/wallet/tx', async (req, res) => {
     try { proved = await proveSession(rsKey, synced, timings); }   // root 가 같으면 캐시 π, 아니면 재증명
     catch (e) {
       if (e.reason === 'revoked') { delete state.sessions[rsKey]; persist(); return res.status(403).json({ reason: 'revoked', timings }); }
+      if (e.reason === 'no_session') return res.status(404).json({ reason: 'no_session', timings });
       throw e;
     }
     const relayer = await provider.getSigner(RELAYER_INDEX);

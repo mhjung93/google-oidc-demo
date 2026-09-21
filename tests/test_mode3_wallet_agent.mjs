@@ -154,6 +154,32 @@ try {
     S2 = rs;
   });
 
+  await t('자격증명만 폐기(scope=credential), 게시 전 로그인: CIA no_user_cred → 지갑이 새 C_u 를 받아 재시도 → 200, PPID 동일, Cf_u 바뀜', async () => {
+    const before = (await wallet.get('/wallet/status')).body.userCred;
+    assert.equal(before.revoked, false);
+    const rv = await cia.adminPost('/cia/revoke', { uid, scope: 'credential' });
+    assert.equal(rv.status, 200, j(rv.body)); assert.equal(rv.body.inserted.length, 1, '활성 C_u 리프 하나가 pending 에 들어간다');
+    // 게시하지 않는다 — 체인 트리에는 리프가 없어 ensureUserCred 는 옛 C_u 를 그대로 쓰고 /cia/issue 가 403 no_user_cred 를 낸다.
+    const rs = newRs();
+    const r = await login(rs);
+    assert.equal(r.status, 200, j(r.body));
+    assert.equal(r.body.issued, true);
+    assert.ok(r.body.timings.userCredMs > 0, '거절을 받고 사용자 자격증명을 새로 받았어야 한다');
+    const v = await verify(r.body, rs);
+    assert.equal(v.ok, true, j(v));
+    assert.equal(v.PPID, PPID1, 'PPID 는 s_u 에서 나오므로 C_u 재발급으로 바뀌지 않는다');
+    const s = await wallet.get('/wallet/status');
+    assert.notEqual(s.body.userCred.Cf_u, before.Cf_u, '새 사용자 자격증명은 Cf_u 가 다르다');
+    assert.equal(s.body.userCred.revoked, false);
+    assert.equal(s.body.sessions[S2], undefined, '물린 자격증명 위의 옛 세션은 지워진다');
+    assert.equal(s.body.sessions[rs].PPID, PPID1.toString());
+    S2 = rs;   // 이후 테스트는 이 세션을 쓴다
+    // 그 사이 pending 이던 옛 리프가 게시돼도 새 C_u 는 영향이 없다
+    assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
+    const rr = await revalidate(S2);
+    assert.equal(rr.status, 200, j(rr.body)); assert.equal(rr.body.cacheHit, false);
+  });
+
   await t('입력 검증: r_s 없음 / cert_s 없음 / pk_trace 없음 → 400', async () => {
     assert.equal((await wallet.post('/wallet/login', { arid, origin, cert_s }, { Origin: stack.rpOriginForWallet })).status, 400);
     assert.equal((await wallet.post('/wallet/login', { arid, origin, r_s: newRs() }, { Origin: stack.rpOriginForWallet })).status, 400);
@@ -309,6 +335,18 @@ try {
     assert.deepEqual(Object.keys(after.sessions), Object.keys(before.sessions), '거절되면 세션도 그대로');
     assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid, disabled: false })).status, 200);
     assert.equal((await revalidate(Object.keys(after.sessions)[0])).status, 200, '옛 자격증명으로 재검증이 계속 된다');
+  });
+
+  // 마지막에 둔다 — CIA 를 끈다. stack.stop() 의 cia.stop() 은 이미 죽은 프로세스를 건너뛴다.
+  await t('attrs: CIA 가 죽어 요청 자체가 실패해도(500) 옛 자격증명·속성·세션이 그대로 남고 재검증은 계속 된다', async () => {
+    const before = (await wallet.get('/wallet/status')).body;
+    await cia.stop();
+    const r = await wallet.post('/wallet/attrs', { attrs: ['22', '410', '0', '0'] });
+    assert.equal(r.status, 500, j(r.body));
+    const after = (await wallet.get('/wallet/status')).body;
+    assert.equal(after.userCred.Cf_u, before.userCred.Cf_u, 'CIA 다운이어도 옛 자격증명이 남는다');
+    assert.deepEqual(Object.keys(after.sessions), Object.keys(before.sessions), 'CIA 다운이어도 세션은 그대로');
+    assert.equal((await revalidate(Object.keys(after.sessions)[0])).status, 200, '재검증은 CIA 없이 된다');
   });
 } finally {
   await stack.stop();

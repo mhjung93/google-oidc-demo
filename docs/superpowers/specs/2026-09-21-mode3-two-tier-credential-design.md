@@ -41,6 +41,9 @@ allowAgent, root, pk_AA, pk_trace, tag`. 대조 가능한 값은 여전히 `(cha
   를 쓰므로 트랜스크립트 재생은 arid 불일치로 거절된다.
 - **폐기 시각 상관**: 리프 하나가 게시되면 그 사용자의 모든 서비스 세션이 같은 블록에 죽는다. 지금 계정 폐기(리프 전부 일괄 삽입)와
   같은 상관이며, 게시 한 번에 섞인 리프 수가 익명 집합이다. 리프 값은 Poseidon(4, Cf_u) 라 서비스가 대조할 수 없다.
+  속성 변경(§6.3)도 같은 채널이다 — 옛 리프가 게시되는 블록에 그 사용자의 모든 세션이 죽고 곧 같은 PPID 로 재로그인하므로, AA 와
+  서비스가 결탁하면 "이 게시의 리프 중 하나 = 이 PPID" 를 안다(데모처럼 리프가 하나면 익명 집합 1). 완화는 게시 묶기 —
+  속성 변경 리프를 즉시 게시하지 않고 하트비트 주기에 맞춰 여러 사용자의 리프와 함께 내보내는 것이다.
 - **AA 가 세션별로 갖는 기록이 사라진다.** 논문 V-D "AA 는 성명이 만료된 뒤 사용자를 로그인과 잇는 것을 아무것도 갖지 않는다"가
   "발급 직후부터 아무것도 갖지 않는다"로 강해진다.
 
@@ -152,7 +155,9 @@ issued 삭제.  rps, openings, revoked, pending, epoch 는 그대로.
 ```
 
 이행(v5 → v6): `issued` 를 버리고(경고 로그) 각 계정에 `creds: []` 를 넣는다. 옛 세션 자격증명은 서명 도메인이 달라 어차피 V5 회로에서
-안 열린다. RevocationLog 는 리프 태그가 바뀌므로 새로 배포한다(`.env` `CIA_LOG_ADDRESS` 갱신).
+안 열린다. RevocationLog 재배포는 필수가 아니다 — 옛 TAG 3 리프는 Poseidon(4, Cf_u) 와 겹치지 않으므로 옛 로그를 그대로 써도 되고,
+새로 배포한다면 `cia_state.json` 도 함께 지워야 한다(이행은 `revoked`·`pending`·`epoch` 를 그대로 두므로, 남아 있으면 기동 시 빈 로그와의
+root 대조 실패로 종료한다).
 
 ### 4.5 개봉
 
@@ -206,9 +211,12 @@ sessions[r_s] = { arid, PPID, chainid, allowAgent, factoryAddress, pk_trace,
 
 1. 인증서·오리진·pk_trace·팩토리 검증 — 그대로.
 2. 체인 동기화 `synced = syncRevocationTree()` — 그대로.
-3. **사용자 자격증명 확보**: `userCred` 가 없거나 `synced.tree.has(userCred.leaf)` 이면(폐기됨) 새로 만든다:
+3. **사용자 자격증명 확보**: `userCred` 가 없거나, 트리에 리프가 있거나(`synced.tree.has(userCred.leaf)`, 폐기됨), **세션 발급이
+   `no_user_cred` 로 거절되면**(게시 전에 물린 경우 — `/cia/revoke scope=credential` 직후나 동시 로그인 경합) 새로 만든다:
    blind_u 뽑기 → C_u_pt → π_u(§3.5) → sig_u → `POST /cia/user_cred`. 403(disabled)이면 `account_disabled` 로 끝.
    ※ 폐기된 뒤 `set_disabled false` 로 복구된 계정은 여기서 자동으로 새 C_u 를 받는다.
+   ※ 세 번째 경우는 4단계의 거절을 받은 뒤 지갑이 `userCred` 를 버리고(세션·증명 캐시도 함께) 3→4 를 한 번만 다시 돈다. s_u 는
+   같으니 PPID 는 그대로다. 재시도도 거절되면 `user_cred_retired`(403).
 4. **세션 발급**: 세션키 생성, blind_s, C_s_pt, `max_height = chooseMaxHeight(head)`, sig_u → `POST /cia/issue`(§4.2).
 5. 증명: 증인에 `blind_u, blind_s` 와 userCred 의 속성, 세션의 arid 등. 캐시 키 `(root, r_s)` 그대로.
 6. 이후(σ, 세션 요청, 재검증, /wallet/tx) — 그대로.
@@ -219,6 +227,8 @@ sessions[r_s] = { arid, PPID, chainid, allowAgent, factoryAddress, pk_trace,
 
 등록의 attrs 를 바꾸고 §6.2 3단계를 강제 실행한다(새 C_u). AA 가 옛 리프를 pending 에 넣으므로 다음 게시에 옛 C_u 의 세션이 죽는다 —
 지갑은 기존 세션을 즉시 지우고 사용자에게 재로그인을 안내한다. 데모 페이지에 버튼 하나.
+시각 상관(§2): 옛 리프의 게시 블록에 모든 세션이 죽고 같은 PPID 로 곧 재로그인하므로 AA·서비스 결탁 시 그 게시의 리프 수가 익명
+집합이다 — 속성 변경 뒤 곧바로 `/cia/publish` 를 부르지 않고 하트비트 게시에 다른 리프와 묶어 내보내는 것이 완화다.
 
 ### 6.4 `/wallet/status`
 
