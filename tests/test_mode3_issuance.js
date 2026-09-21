@@ -230,4 +230,61 @@ await t('normalizeAttrs: 배열이 아닌 입력은 throw, 길이 초과·범위
   assert.deepEqual(normalizeAttrs(undefined), [0n, 0n, 0n, 0n]);
 });
 
+// ---- V5 (2026-09-21): 사용자 자격증명 증명 π_u ----
+const { proveUserCred, verifyUserCred, userCredRequestMessage, issueRequestMessageV4, serializeUserCredProof, parseUserCredProof,
+        DOMAIN_MODE3_USERCRED, DOMAIN_MODE3_USERCREDREQ, DOMAIN_MODE3_ISSUEREQ_V4 } = await import('../lib/mode3_issuance.js');
+const { userCommit, sessionCommit } = await import('../lib/mode3_credential.js');
+
+await t('V5 도메인 세 개는 ASCII 빅엔디언이고 서로·옛 값과 다르다', () => {
+  assert.equal(DOMAIN_MODE3_USERCRED, BigInt('0x' + Buffer.from('MODE3USERCRED').toString('hex')));
+  assert.equal(DOMAIN_MODE3_USERCREDREQ, BigInt('0x' + Buffer.from('MODE3USERCREDREQ').toString('hex')));
+  assert.equal(DOMAIN_MODE3_ISSUEREQ_V4, BigInt('0x' + Buffer.from('MODE3ISSUEREQV4').toString('hex')));
+  assert.equal(new Set([DOMAIN_MODE3_USERCRED, DOMAIN_MODE3_USERCREDREQ, DOMAIN_MODE3_ISSUEREQ_V4, DOMAIN_MODE3_ISSUE, DOMAIN_MODE3_ISSUEREQ_V3]).size, 5);
+});
+
+await t('π_u 양성: 올바른 증인이면 검증되고 C_u_pt 는 userCommit 과 같은 점', async () => {
+  const u = await freshUser();
+  const { C_u_pt, cm_u, proof } = await proveUserCred({ uid, s_u: u.s_u, blind_u: u.blind, r_u: u.r_u, attrs: u.attrs });
+  assert.equal(cm_u.x, u.cm_u.x); assert.equal(cm_u.y, u.cm_u.y);
+  assert.equal(await verifyUserCred({ uid, C_u_pt, cm_u, proof }), true);
+  const { Cx, Cy } = await userCommit({ uid, s_u: u.s_u, blind_u: u.blind, attrs: u.attrs });
+  assert.equal(C_u_pt.x, Cx); assert.equal(C_u_pt.y, Cy);
+});
+
+await t('π_u 음성: cm_u 와 다른 s_u (Sybil), 다른 uid 재생, 응답 변조, 다른 attrs 의 C_u_pt, 곡선 밖 점', async () => {
+  const u = await freshUser();
+  const good = await proveUserCred({ uid, s_u: u.s_u, blind_u: u.blind, r_u: u.r_u, attrs: u.attrs });
+  const other = await proveUserCred({ uid, s_u: u.s_u + 1n, blind_u: u.blind, r_u: u.r_u, attrs: u.attrs });
+  assert.equal(await verifyUserCred({ uid, C_u_pt: other.C_u_pt, cm_u: u.cm_u, proof: other.proof }), false, 'cm_u 는 등록된 s_u 의 것');
+  assert.equal(await verifyUserCred({ uid: uid + 1n, C_u_pt: good.C_u_pt, cm_u: good.cm_u, proof: good.proof }), false);
+  assert.equal(await verifyUserCred({ uid, C_u_pt: good.C_u_pt, cm_u: good.cm_u, proof: { ...good.proof, z_su: good.proof.z_su + 1n } }), false);
+  assert.equal(await verifyUserCred({ uid, C_u_pt: good.C_u_pt, cm_u: good.cm_u, proof: { ...good.proof, z_attr: [good.proof.z_attr[0] + 1n, ...good.proof.z_attr.slice(1)] } }), false);
+  const { C_u_pt: C2 } = await proveUserCred({ uid, s_u: u.s_u, blind_u: u.blind, r_u: u.r_u, attrs: [1n, 0n, 0n, 0n] });
+  assert.equal(await verifyUserCred({ uid, C_u_pt: C2, cm_u: good.cm_u, proof: good.proof }), false);
+  assert.equal(await verifyUserCred({ uid, C_u_pt: { x: 1n, y: 1n }, cm_u: good.cm_u, proof: good.proof }), false);
+  await assert.rejects(() => proveUserCred({ uid: SCALAR_MAX, s_u: u.s_u, blind_u: u.blind, r_u: u.r_u, attrs: u.attrs }), /2\^250/);
+});
+
+await t('π_u 직렬화 왕복', async () => {
+  const u = await freshUser();
+  const { C_u_pt, cm_u, proof } = await proveUserCred({ uid, s_u: u.s_u, blind_u: u.blind, r_u: u.r_u, attrs: u.attrs });
+  const back = parseUserCredProof(JSON.parse(JSON.stringify(serializeUserCredProof(proof))));
+  assert.deepEqual(back, proof);
+  assert.equal(await verifyUserCred({ uid, C_u_pt, cm_u, proof: back }), true);
+  assert.throws(() => parseUserCredProof({ ...serializeUserCredProof(proof), z_attr: ['1'] }), /z_attr/);
+});
+
+await t('요청 서명 메시지: userCredRequestMessage(C_u_pt), issueRequestMessageV4(Cf_u, C_s_pt, chainid, allowAgent, max_height)', async () => {
+  const ps = await buildPoseidon();
+  const P = { x: 5n, y: 6n };
+  assert.equal(await userCredRequestMessage(P), ps.F.toObject(ps([DOMAIN_MODE3_USERCREDREQ, 5n, 6n])));
+  const m = await issueRequestMessageV4(7n, P, 31337n, 0n, 1000n);
+  assert.equal(m, ps.F.toObject(ps([DOMAIN_MODE3_ISSUEREQ_V4, 7n, 5n, 6n, 31337n, 0n, 1000n])));
+  assert.notEqual(m, await issueRequestMessageV4(8n, P, 31337n, 0n, 1000n), 'Cf_u 를 덮는다 — 남의 C_u 에 내 C_s 를 못 붙인다');
+  assert.notEqual(m, await issueRequestMessageV4(7n, P, 31337n, 0n, 1001n));
+  await assert.rejects(() => issueRequestMessageV4(7n, P, 31337n, 2n, 1000n), /allowAgent/);
+  await assert.rejects(() => issueRequestMessageV4(7n, P, 31337n, 0n, 1n << 64n), /max_height/);
+  await assert.rejects(() => issueRequestMessageV4('7', P, 31337n, 0n, 1000n), /bigint/);
+});
+
 process.exit(failed === 0 ? 0 : 1);
