@@ -13,10 +13,11 @@ import path from 'node:path';
 import { ethers } from 'ethers';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { getProvider, logAbi, signRootPublication, rootToBytes32 } from './helpers/mode3_chain.mjs';
-import { randomScalar } from '../lib/mode3_credential.js';
-import { credLeaf, createRevocationTree } from '../lib/mode3_revocation.js';
-import { registrationCommit, proveIssuance, serializeProof, pointToStrings } from '../lib/mode3_issuance.js';
-import { syncRevocationTree, signUserRequest } from '../lib/mode3_wallet.js';
+import { buildEddsa, buildPoseidon } from 'circomlibjs';
+import { randomScalar, sessionCommit, compressPoint } from '../lib/mode3_credential.js';
+import { createRevocationTree } from '../lib/mode3_revocation.js';
+import { registrationCommit, proveUserCred, serializeUserCredProof, userCredRequestMessage, issueRequestMessageV4, pointToStrings } from '../lib/mode3_issuance.js';
+import { syncRevocationTree } from '../lib/mode3_wallet.js';
 import { createShare } from '../lib/mode3_trace.js';
 
 let failed = 0;
@@ -26,26 +27,37 @@ async function t(name, fn) {
 }
 
 const provider = getProvider();
+const eddsa = await buildEddsa();
+const F = (await buildPoseidon()).F;
 const uid = 12345n, arid = 22222222222222222222n;
 const pk_i = BigInt(ethers.Wallet.createRandom().address);
+const signMsg = (prvHex, m) => { const sg = eddsa.signPoseidon(Buffer.from(prvHex, 'hex'), F.e(m)); return { R8x: F.toObject(sg.R8[0]).toString(), R8y: F.toObject(sg.R8[1]).toString(), S: sg.S.toString() }; };
 const keep = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-cia-startup-'));   // 첫 인스턴스의 상태·키 파일 사본
 const keptState = path.join(keep, 'cia_state.json');
 const keptKeys = path.join(keep, 'cia_keys.json');
 
-/** 등록 → 발급 한 번. 폐기 리프(10진)를 돌려준다. */
+/**
+ * 등록 → 사용자 자격증명(/cia/user_cred, 매번 새 blind_u 라 새 Cf_u) → 세션 발급 V5 한 번. 폐기 리프(10진)를 돌려준다.
+ * 새 사용자 자격증명은 앞의 활성 자격증명을 물리므로(리프 → pending) 호출자는 그 pending 을 감안해야 한다.
+ */
 async function registerAndIssueLeaf(cia, user) {
   if (!user.sk_u) {
     const r = await cia.post('/cia/register', { uid: uid.toString(), pwd: 'password123', cm_u: pointToStrings(user.cm_u) });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     user.sk_u = r.body.sk_u;
   }
-  const blind = randomScalar();
-  const { C_pt, proof } = await proveIssuance({ uid, arid, s_u: user.s_u, blind, pk_i, r_u: user.r_u, attrs: [0n, 0n, 0n, 0n] });
+  const { C_u_pt, proof } = await proveUserCred({ uid, s_u: user.s_u, blind_u: randomScalar(), r_u: user.r_u, attrs: [0n, 0n, 0n, 0n] });
+  const uc = await cia.post('/cia/user_cred', { uid: uid.toString(), C_u_pt: pointToStrings(C_u_pt), proof: serializeUserCredProof(proof), sig_u: signMsg(user.sk_u, await userCredRequestMessage(C_u_pt)) });
+  assert.equal(uc.status, 201, JSON.stringify(uc.body));
+  const Cf_u = BigInt(uc.body.Cf_u);
+  const { Cx, Cy } = await sessionCommit({ arid, pk_i, blind_s: randomScalar() });
+  const C_s_pt = { x: Cx, y: Cy };
   const max_height = BigInt(await getProvider().getBlockNumber()) + 300n;
-  const sig_u = await signUserRequest(user.sk_u, C_pt, 31337n, 0n, max_height);
-  const r = await cia.post('/cia/issue', { uid: uid.toString(), C_pt: pointToStrings(C_pt), proof: serializeProof(proof), sig_u, chainid: '31337', allowAgent: '0', max_height: max_height.toString() });
+  const sig_u = signMsg(user.sk_u, await issueRequestMessageV4(Cf_u, C_s_pt, 31337n, 0n, max_height));
+  const r = await cia.post('/cia/issue', { uid: uid.toString(), Cf_u: Cf_u.toString(), C_s_pt: pointToStrings(C_s_pt), sig_u, chainid: '31337', allowAgent: '0', max_height: max_height.toString() });
   assert.equal(r.status, 200, JSON.stringify(r.body));
-  return (await credLeaf(BigInt(r.body.C))).toString();
+  assert.equal(r.body.Cf_s, (await compressPoint(C_s_pt)).toString());
+  return uc.body.leaf;
 }
 
 /** 기동이 거부돼야 한다. 거부되지 않고 떠 버리면 잔존 프로세스를 남기지 않도록 멈춘 뒤 실패시킨다. */
@@ -65,16 +77,18 @@ const b32 = (leaf) => rootToBytes32(BigInt(leaf));
 try {
   const s_u = randomScalar(), r_u = randomScalar();
   const user = { s_u, r_u, cm_u: await registrationCommit(s_u, r_u), sk_u: null };
-  const L1 = await registerAndIssueLeaf(first, user);
-  const L2 = await registerAndIssueLeaf(first, user);
-  const L3 = await registerAndIssueLeaf(first, user);
-
   // 상황 만들기: L1 은 정상 게시(epoch 1). L2, L3 는 pending. 그 다음 "L2 만 실은 epoch 2 게시 tx 는
   // 성공했는데 CIA 가 persist() 전에 죽었다" 를 흉내낸다 — 체인에 직접 게시하고 상태 파일은 그대로 둔다.
-  assert.equal((await first.adminPost('/cia/revoke', { uid: uid.toString(), scope: 'credential', leaf: L1 })).status, 200);
+  // V5 에서 리프는 사용자 자격증명(Cf_u)에서 나온다: 폐기(scope=credential)는 활성 자격증명을 물리고, 새 자격증명 발급은
+  // 앞의 활성 자격증명을 물린다 — 둘 다 리프를 pending 에 넣는다. 그 순서를 써서 L1 → 게시, L2·L3 → pending 을 만든다.
+  const L1 = await registerAndIssueLeaf(first, user);
+  const rv1 = await first.adminPost('/cia/revoke', { uid: uid.toString(), scope: 'credential' });
+  assert.equal(rv1.status, 200, JSON.stringify(rv1.body)); assert.deepEqual(rv1.body.inserted, [L1]);
   assert.equal((await first.adminPost('/cia/publish')).body.epoch, 1);
-  assert.equal((await first.adminPost('/cia/revoke', { uid: uid.toString(), scope: 'credential', leaf: L2 })).status, 200);
-  assert.equal((await first.adminPost('/cia/revoke', { uid: uid.toString(), scope: 'credential', leaf: L3 })).status, 200);
+  const L2 = await registerAndIssueLeaf(first, user);   // 활성 자격증명 L2 (L1 은 이미 revoked)
+  const L3 = await registerAndIssueLeaf(first, user);   // L2 를 물린다 → pending [L2]
+  const rv3 = await first.adminPost('/cia/revoke', { uid: uid.toString(), scope: 'credential' });
+  assert.equal(rv3.status, 200, JSON.stringify(rv3.body)); assert.deepEqual(rv3.body.inserted, [L3]);
   assert.equal((await first.get('/cia/state')).body.pendingCount, 2);
 
   const tree12 = await createRevocationTree();
@@ -117,14 +131,14 @@ try {
     await expectStartupRefused({ env: { CIA_LOG_ADDRESS: firstLog, CIA_ETH_PRIVATE_KEY: firstEthPrv } });
   });
 
-  await t('v3 상태 파일은 v5 로 마이그레이션된다 — used_rs 버림, rps 는 approved·조각 없음, openings 빈 배열', async () => {
+  await t('v3 상태 파일은 v6 으로 마이그레이션된다 — used_rs 버림, rps 는 approved·조각 없음, openings 빈 배열', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-v3-'));
     const stateFile = path.join(dir, 'cia_state.json');
     fs.writeFileSync(stateFile, JSON.stringify({ version: 3, accounts: {}, issued: {}, used_rs: { '12345': ['1', '2'] }, rps: { '777': { name: 'old', origin: 'http://127.0.0.1:3100', at: '2026-09-15T00:00:00.000Z' } }, revoked: [], pending: [], epoch: 0 }), { mode: 0o600 });
     const cia = await startIsolatedCia({ env: { CIA_STATE_FILE: stateFile } });
     try {
       const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-      assert.equal(saved.version, 5); assert.equal(saved.used_rs, undefined); assert.deepEqual(saved.openings, []);
+      assert.equal(saved.version, 6); assert.equal(saved.used_rs, undefined); assert.equal(saved.issued, undefined); assert.deepEqual(saved.openings, []);
       const e = (await cia.adminGet('/cia/rps')).body.rps.find((x) => x.arid === '777');
       assert.equal(e.status, 'approved'); assert.equal(e.pk_trace, null); assert.equal(e.pk_service, null);
       // 옛 등록이 키를 내며 재등록하면 무허가 바인딩을 막기 위해 pending 으로 돌아간다 — 운영자 승인이 다시 필요하다(§3)
@@ -138,15 +152,15 @@ try {
     } finally { await cia.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
-  await t('v4 상태 파일은 v5 로 이행된다 — 발급 기록은 비우고 계정·서비스·폐기·epoch 는 유지', async () => {
+  await t('v4 상태 파일은 v6 으로 이행된다 — 발급 기록은 버리고 계정에 creds:[], 서비스·폐기·epoch 는 유지', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-v4-'));
     const stateFile = path.join(dir, 'cia_state.json');
-    fs.writeFileSync(stateFile, JSON.stringify({ version: 4, accounts: {}, issued: { '12345': [{ leaf: '9', C: '8', exptime: '1789000000' }] }, rps: {}, openings: [], revoked: [], pending: [], epoch: 0 }), { mode: 0o600 });
+    fs.writeFileSync(stateFile, JSON.stringify({ version: 4, accounts: { '12345': { pk_u: { x: '1', y: '2' }, cm_u: { x: '3', y: '4' }, disabled: false } }, issued: { '12345': [{ leaf: '9', C: '8', exptime: '1789000000' }] }, rps: {}, openings: [], revoked: [], pending: [], epoch: 0 }), { mode: 0o600 });
     const cia = await startIsolatedCia({ env: { CIA_STATE_FILE: stateFile } });
     try {
       const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-      assert.equal(saved.version, 5); assert.deepEqual(saved.issued, {});
-      assert.match(cia.log(), /v4→v5/);
+      assert.equal(saved.version, 6); assert.equal(saved.issued, undefined); assert.deepEqual(saved.accounts['12345'].creds, []);
+      assert.match(cia.log(), /v4→v5/); assert.match(cia.log(), /v5→v6/);
     } finally { await cia.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
   });
 } finally {
