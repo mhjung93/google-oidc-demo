@@ -28,6 +28,7 @@
     <input id="attr2" value="0" size="6" title="attr2" />
     <input id="attr3" value="0" size="6" title="attr3" />
     <button id="registerBtn">등록</button>
+    <button id="attrsBtn" title="등록 뒤 속성을 바꾼다 — 새 사용자 자격증명을 받고 기존 세션은 지운다(설계 2026-09-21 §6.3)">속성 변경</button>
     <span id="registerResult" class="muted"></span>
   </fieldset>
 
@@ -58,6 +59,7 @@
         const s = await r.json();
         const lines = [
           `등록: ${s.registered ? `예 (uid=${s.uid})` : '아니오'}`,
+          `사용자 자격증명: ${s.userCred ? `${s.userCred.revoked === true ? '폐기됨' : s.userCred.revoked === false ? '있음' : '있음(폐기 여부는 다음 동기화 뒤)'} (Cf_u=${String(s.userCred.Cf_u).slice(0, 8)}…, 발급=${s.userCred.issuedAt})` : '없음 (첫 로그인 때 받는다)'}`,
           `체인 head: ${s.head ?? '(RPC 없음)'}   RevocationLog: ${s.logAddress ?? '(없음)'}`,
           `마지막 동기화 root: ${s.lastRoot ?? '-'}`,
           '',
@@ -88,6 +90,14 @@
       const r = await fetch('/wallet/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ uid: $('uid').value.trim(), pwd: $('pwd').value, attrs: ['attr0', 'attr1', 'attr2', 'attr3'].map((id) => $(id).value.trim() || '0') }) });
       const b = await r.json().catch(() => ({}));
       $('registerResult').textContent = r.status === 201 ? `등록됨 (uid=${b.uid})` : `${r.status}: ${b.reason ?? b.error ?? ''} ${b.cia ? JSON.stringify(b.cia) : ''}`;
+      refresh();
+    });
+    // 속성 변경(설계 2026-09-21 §6.3): 새 사용자 자격증명을 받는다. 옛 리프는 다음 게시에 나가므로 기존 세션은 지워진다.
+    $('attrsBtn').addEventListener('click', async () => {
+      $('registerResult').textContent = '…';
+      const r = await fetch('/wallet/attrs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ attrs: ['attr0', 'attr1', 'attr2', 'attr3'].map((id) => $(id).value.trim() || '0') }) });
+      const b = await r.json().catch(() => ({}));
+      $('registerResult').textContent = r.status === 200 ? `속성 변경됨 (새 Cf_u=${String(b.Cf_u).slice(0, 8)}…, 지운 세션 ${b.sessionsDropped}개)` : `${r.status}: ${b.reason ?? b.error ?? ''} ${b.cia ? JSON.stringify(b.cia) : ''}`;
       refresh();
     });
     $('refreshBtn').addEventListener('click', refresh);

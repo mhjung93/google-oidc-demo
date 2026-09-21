@@ -74,8 +74,21 @@ try {
     const v = await verify(r.body, rs);
     assert.equal(v.ok, true, j(v));
     first = r.body; PPID1 = v.PPID; S1 = rs;
+    assert.ok(r.body.timings.userCredMs > 0, '첫 로그인은 사용자 자격증명을 새로 받는다');
     const s = await wallet.get('/wallet/status');
     assert.ok(s.body.sessions[rs], 'r_s 별 세션이 상태에 있어야 한다');
+    assert.ok(s.body.userCred?.Cf_u, '사용자 자격증명이 상태에 있어야 한다');
+    assert.equal(s.body.userCred.revoked, false);
+  });
+
+  let S1b;
+  await t('두 번째 로그인(새 r_s): 사용자 자격증명 재사용 → userCredMs=0, 세션만 새로 발급', async () => {
+    S1b = newRs();
+    const r = await login(S1b);
+    assert.equal(r.status, 200, j(r.body));
+    assert.equal(r.body.issued, true);
+    assert.equal(r.body.timings.userCredMs, 0);
+    assert.equal((await verify(r.body, S1b)).ok, true);
   });
 
   await t('재검증: 캐시 히트(cacheHit=true), publicSignals 동일, σ 는 r_s 위 서명(ECDSA 결정적이라 매번 같다)', async () => {
@@ -108,25 +121,36 @@ try {
     assert.equal(v.reason, 'stale_root');
   });
 
-  await t('동기화: 재검증 → 폐기 감지 → 403 revoked; 새 로그인 → CIA 403 → account_disabled', async () => {
+  await t('동기화: 재검증 → 폐기 감지 → 두 세션 모두 403 revoked(리프 하나); status userCred.revoked=true; 새 로그인 → CIA 403 → account_disabled', async () => {
     const r = await revalidate(S1);
     assert.equal(r.status, 403, j(r.body));
     assert.equal(r.body.reason, 'revoked');
+    // 폐기 리프는 사용자 자격증명 하나 — 같은 자격증명 위의 다른 세션도 함께 죽는다(설계 2026-09-21 §3.6)
+    const r2 = await revalidate(S1b);
+    assert.equal(r2.status, 403, j(r2.body));
+    assert.equal(r2.body.reason, 'revoked');
+    const s = await wallet.get('/wallet/status');
+    assert.equal(s.body.userCred?.revoked, true, j(s.body.userCred));
     const l = await login();
     assert.equal(l.status, 403, j(l.body));
     assert.equal(l.body.reason, 'account_disabled');
   });
 
   let S2;
-  await t('복구 → 로그인: 재발급(issued=true), 검증 통과, PPID 동일', async () => {
+  await t('복구 → 로그인: 사용자 자격증명 재발급(userCredMs>0, Cf_u 바뀜), issued=true, 검증 통과, PPID 동일', async () => {
+    const before = (await wallet.get('/wallet/status')).body.userCred.Cf_u;
     assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid, disabled: false })).status, 200);
     const rs = newRs();
     const r = await login(rs);
     assert.equal(r.status, 200, j(r.body));
     assert.equal(r.body.issued, true);
+    assert.ok(r.body.timings.userCredMs > 0, '폐기된 사용자 자격증명은 새로 받는다');
     const v = await verify(r.body, rs);
     assert.equal(v.ok, true, j(v));
     assert.equal(v.PPID, PPID1, 'PPID 는 폐기·복구로 바뀌지 않는다');
+    const s = await wallet.get('/wallet/status');
+    assert.notEqual(s.body.userCred.Cf_u, before, '새 사용자 자격증명은 Cf_u 가 다르다');
+    assert.equal(s.body.userCred.revoked, false);
     S2 = rs;
   });
 
@@ -261,6 +285,30 @@ try {
     // 400 이 409 보다 먼저 나오는지를 본다.
     assert.equal((await wallet.post('/wallet/register', { uid, pwd: 'password123', attrs: ['1', '2', '3', '4', '5'] })).status, 400);
     assert.equal((await wallet.post('/wallet/register', { uid, pwd: 'password123', attrs: ['x'] })).status, 400);
+  });
+
+  await t('attrs: 속성을 바꾸면 새 사용자 자격증명, 기존 세션은 지워지고, 옛 리프는 다음 게시에 나간다', async () => {
+    const S9 = newRs(); assert.equal((await login(S9)).status, 200);
+    const before = (await wallet.get('/wallet/status')).body.userCred.Cf_u;
+    const r = await wallet.post('/wallet/attrs', { attrs: ['20', '410', '0', '0'] });
+    assert.equal(r.status, 200, j(r.body)); assert.notEqual(r.body.Cf_u, before); assert.ok(r.body.sessionsDropped >= 1);
+    assert.equal((await wallet.get('/wallet/status')).body.sessions[S9], undefined);
+    assert.equal((await cia.adminPost('/cia/publish')).body.published, true, '옛 리프가 pending 에 있었다');
+    const S10 = newRs(); const l = await login(S10); assert.equal(l.status, 200); assert.equal(l.body.timings.userCredMs, 0);
+  });
+
+  await t('attrs 입력 검증: 4개 초과·10진 아님 → 400; 비활성 계정은 403 account_disabled 이고 자격증명·세션은 그대로', async () => {
+    assert.equal((await wallet.post('/wallet/attrs', { attrs: ['1', '2', '3', '4', '5'] })).status, 400);
+    assert.equal((await wallet.post('/wallet/attrs', { attrs: ['x'] })).status, 400);
+    const before = (await wallet.get('/wallet/status')).body;
+    assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid, disabled: true })).status, 200);
+    const r = await wallet.post('/wallet/attrs', { attrs: ['21', '410', '0', '0'] });
+    assert.equal(r.status, 403, j(r.body)); assert.equal(r.body.reason, 'account_disabled');
+    const after = (await wallet.get('/wallet/status')).body;
+    assert.equal(after.userCred.Cf_u, before.userCred.Cf_u, '거절되면 옛 자격증명이 남는다');
+    assert.deepEqual(Object.keys(after.sessions), Object.keys(before.sessions), '거절되면 세션도 그대로');
+    assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid, disabled: false })).status, 200);
+    assert.equal((await revalidate(Object.keys(after.sessions)[0])).status, 200, '옛 자격증명으로 재검증이 계속 된다');
   });
 } finally {
   await stack.stop();

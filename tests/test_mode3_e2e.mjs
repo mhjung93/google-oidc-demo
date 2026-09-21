@@ -127,6 +127,9 @@ try {
     const { tree: t2 } = await syncRevocationTree(provider, cia.logAddress);
     await assert.rejects(() => buildCredentialProof({ uid, arid, s_u: reg.s_u, blind_u, blind_s: blindA, pk_i: sessA.pk_i, attrs: ATTRS, credential: credA, pk_CIA, pk_trace, tree: t2 }), /is a member/);
     await assert.rejects(() => buildCredentialProof({ uid, arid: aridB, s_u: reg.s_u, blind_u, blind_s, pk_i: session.pk_i, attrs: ATTRS, credential: cred, pk_CIA, pk_trace: pk_traceB, tree: t2 }), /is a member/);
+    // RP 쪽에서도 B 가 죽는 것을 직접 본다 — 폐기 전 π_B 를 그대로 재제출하면 검증기가 최신 root 와 달라 stale_root
+    const vB = await rpB.verifyLogin({ proof: piB.proof, publicSignals: piB.publicSignals, sig: await signChallenge(session.wallet, sessionRs.toString()), r_s: sessionRs });
+    assert.equal(vB.ok, false); assert.equal(vB.reason, 'stale_root', j(vB));
     // 물린 Cf_u 로는 새 세션도 못 받는다(403 no_user_cred)
     const stale = await buildIssueRequest({ uid, Cf_u: userCred.Cf_u, arid, sk_u, session: createSessionKey(), chainid: 31337n, max_height: BigInt(await provider.getBlockNumber()) + 300n });
     const rs = await cia.post('/cia/issue', stale.body);
