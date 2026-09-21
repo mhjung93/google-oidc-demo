@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { credLeaf, createRevocationTree, MODE3_TREE_DEPTH } from '../lib/mode3_revocation.js';
+import { userLeaf, createRevocationTree, MODE3_TREE_DEPTH } from '../lib/mode3_revocation.js';
 import { buildValidInput } from './helpers/mode3_fixture.mjs';
 import { ppid } from '../lib/mode3_credential.js';
 import { partialDecrypt, combineDecrypt, resolveTagPlaintext } from '../lib/mode3_trace.js';
@@ -62,7 +62,7 @@ async function t(name, fn) {
 }
 
 const constraints = compile();
-const { input: valid, C: validC, shares, tag, arid: validArid } = await buildValidInput();
+const { input: valid, Cf_u: validCfU, shares, tag, arid: validArid } = await buildValidInput();
 
 await t('양성: 정상 credential의 witness가 계산된다', async () => {
   const w = await witness(valid);
@@ -112,11 +112,28 @@ await t('음성: attr 하나를 바꾸면 거부된다 (C 가 달라져 서명�
   await assert.rejects(() => witness({ ...valid, attrs }), /Assert Failed/);
 });
 
-await t('음성: pk_i를 바꾸면 거부된다 (C 바인딩이 깨진다)', async () => {
+await t('음성: pk_i를 바꾸면 거부된다 (C_s 바인딩이 깨진다 — 서명이 Cf_s 를 덮는다)', async () => {
   await assert.rejects(
     () => witness({ ...valid, pk_i: (BigInt(valid.pk_i) + 1n).toString() }),
     /Assert Failed/,
   );
+});
+
+await t('V5 음성: blind_u 를 바꾸면 거부된다 (C_u 가 달라져 서명·리프가 안 맞는다)', async () => {
+  await assert.rejects(() => witness({ ...valid, blind_u: (BigInt(valid.blind_u) + 1n).toString() }), /Assert Failed/);
+});
+await t('V5 음성: blind_s 를 바꾸면 거부된다 (C_s 가 달라져 서명이 안 맞는다)', async () => {
+  await assert.rejects(() => witness({ ...valid, blind_s: (BigInt(valid.blind_s) + 1n).toString() }), /Assert Failed/);
+});
+await t('V5 음성: 폐기 트리에 내 userLeaf 가 들어 있으면 비멤버십이 거부된다', async () => {
+  const { input, tree, Cf_u } = await buildValidInput();
+  await tree.insert(await userLeaf(Cf_u));
+  await assert.rejects(async () => tree.getNonMembershipWitness(await userLeaf(Cf_u)), /member/);
+  // 옛 witness 를 새 root 에 그대로 내밀면 회로가 거부한다
+  await assert.rejects(() => witness({ ...input, revRoot: tree.getRoot().toString() }), /Assert Failed/);
+});
+await t('V5 음성: r = 0 은 회로가 거부한다 (2026-09-21 결정 — IsZero 제약)', async () => {
+  await assert.rejects(() => witness({ ...valid, r: '0' }), /Assert Failed/);
 });
 
 await t('⑤ 양성: 회로가 받아들인 태그는 두 조각으로 uid 로 열린다 (JS encryptTag 와 회로 계산이 일치)', async () => {
@@ -155,8 +172,8 @@ await t('음성: 폐기 전에 만든 witness는 폐기 후 root에서 거부된
   // 경로 검증에서 걸려야 한다. 컨트랙트가 최신 root만 받으므로(N=1) 이것이 폐기가
   // 실제로 작동하는 지점이다.
   const tree = await createRevocationTree();
-  await tree.insert(await credLeaf(999n));    // valid 을 만들 때와 같은 상태
-  await tree.insert(await credLeaf(validC));  // 내 credential 폐기 → root 변경
+  await tree.insert(await userLeaf(999n));    // valid 을 만들 때와 같은 상태
+  await tree.insert(await userLeaf(validCfU));  // 내 credential 폐기 → root 변경
   await assert.rejects(
     () => witness({ ...valid, revRoot: tree.getRoot().toString() }),
     /Assert Failed/,
@@ -164,9 +181,9 @@ await t('음성: 폐기 전에 만든 witness는 폐기 후 root에서 거부된
   );
 });
 
-await t('JS credLeaf 와 회로의 리프 계산이 일치한다', async () => {
+await t('JS userLeaf 와 회로의 리프 계산이 일치한다', async () => {
   // 회로가 폐기 트리에 넣는 리프(main.leafHasher.out)와 lib/mode3_revocation.js의
-  // credLeaf()가 같은 값을 내야 한다 — 어긋나면 CIA가 트리에 넣는 리프와 회로가
+  // userLeaf()가 같은 값을 내야 한다 — 어긋나면 CIA가 트리에 넣는 리프와 회로가
   // 검증하는 리프가 달라져 폐기가 조용히 무력화된다.
   const symPath = path.join(OUT_DIR, `${NAME}.sym`);
   const sym = fs.readFileSync(symPath, 'utf8');
@@ -175,7 +192,7 @@ await t('JS credLeaf 와 회로의 리프 계산이 일치한다', async () => {
   const witnessIdx = Number(line.split(',')[1]);
   const w = await witness(valid);
   const circuitLeaf = BigInt(w[witnessIdx]) & ((1n << 252n) - 1n);
-  assert.equal(circuitLeaf, await credLeaf(validC));
+  assert.equal(circuitLeaf, await userLeaf(validCfU));
 });
 
 console.log('');

@@ -4,6 +4,7 @@ include "lib/eddsaposeidon.circom";
 include "lib/poseidon.circom";
 include "lib/imt_nonmembership_v2.circom";
 include "lib/bitify.circom";
+include "lib/comparators.circom";
 include "lib/mode3_commit.circom";
 include "lib/mode3_trace_tag.circom";
 
@@ -12,6 +13,7 @@ include "lib/mode3_trace_tag.circom";
 // 속성·(max_height, chainid, allowAgent) 서명: docs/superpowers/specs/2026-09-18-mode3-onchain-execution-design.md §3
 // V4(max_height·allowAgent, 태그 평문 Poseidon(uid, arid)): docs/superpowers/specs/2026-09-18-mode3-onchain-execution-design.md §3
 //
+// V5(2026-09-21): 커밋 둘(C_u 사용자 자격증명, C_s 세션) — 서명은 둘을 덮고 리프는 C_u 에서만 뽑는다. 설계 docs/superpowers/specs/2026-09-21-mode3-two-tier-credential-design.md §5
 // 네 가지를 함께 증명한다. 하나라도 빠지면 뚫린다:
 //   ① CIA가 (C, max_height, chainid, allowAgent)에 서명했다 — 없으면 아무나 credential을 만든다
 //   ② C 안에 이 pk_i가 있다                    — 없으면 남의 π를 주워 자기 키로 서명해 완전 사칭
@@ -34,7 +36,8 @@ template PiCred(depth) {
     // ---- Private ----
     signal input uid;
     signal input s_u;
-    signal input blind;
+    signal input blind_u;
+    signal input blind_s;
     signal input attrs[4];
     signal input r;   // 태그 무작위값(로그인마다 새로)
 
@@ -66,44 +69,43 @@ template PiCred(depth) {
     signal input tag_c1_y;
     signal input tag_c2;
 
-    var DOMAIN_MODE3_CRED_V4 = 93461614427473393731524148;  // ASCII "MODE3CREDV4"
-    var TAG_MODE3_CRED = 3;                                  // TAG_SESSION=1, TAG_ACCOUNT=2 와 갈라 둔다
+    var DOMAIN_MODE3_CRED_V5 = 93461614427473393731524149;  // ASCII "MODE3CREDV5"
+    var TAG_MODE3_USER = 4;  // 사용자 자격증명 리프. Mode 2 의 1·2, V4 의 3 과 갈라 둔다
 
     // pk_i는 세션키의 이더리움 주소다. 160비트를 넘을 수 없다.
     // (Mode 2 pi_pk_i.circom과 같은 제약 — 형제 크레덴셜 구멍을 막는다.)
     component pkIRange = Num2Bits(160);
     pkIRange.in <== pk_i;
 
-    // ---- C 계산 (교과서 Pedersen, 2026-09-10) ----
-    // C 는 곡선 점 (Cx, Cy). 서명 메시지와 폐기 리프에는 Poseidon(Cx, Cy) 로 압축한 Cf 를 넣는다.
-    // 압축 해시가 하나 더 붙지만(약 240 제약) 리프 규약 leafValue(tag, raw) 와 서명 메시지
-    // Poseidon(DOMAIN, ·, max_height, chainid, allowAgent) 를 Poseidon 판과 같은 모양으로 유지할 수 있다 —
-    // 나중에 Poseidon 으로 되돌릴 때 이 블록만 바꾸면 된다.
-    component commit = CommitPedersen();
-    commit.uid   <== uid;
-    commit.arid  <== arid;
-    commit.s_u   <== s_u;
-    commit.blind <== blind;
-    commit.pk_i  <== pk_i;
-    for (var j = 0; j < 4; j++) commit.attrs[j] <== attrs[j];
-
-    component cf = Poseidon(2);
-    cf.inputs[0] <== commit.Cx;
-    cf.inputs[1] <== commit.Cy;
-    signal Cf;
-    Cf <== cf.out;
+    // ---- 커밋 둘 (2026-09-21 §3) ----
+    // C_u: 사용자 속성(uid, s_u, attrs). 사용자당 하나. 서명·리프에는 Poseidon(Cx, Cy) 로 압축한 Cf_u.
+    component cu = CommitUser();
+    cu.uid <== uid;  cu.s_u <== s_u;  cu.blind_u <== blind_u;
+    for (var j = 0; j < 4; j++) cu.attrs[j] <== attrs[j];
+    component cfu = Poseidon(2);
+    cfu.inputs[0] <== cu.Cx;  cfu.inputs[1] <== cu.Cy;
+    signal Cf_u;
+    Cf_u <== cfu.out;
+    // C_s: 세션 속성(arid, pk_i). 공개 입력 arid·pk_i 로 직접 계산 — 다른 값을 넣으면 서명 검증이 깨진다.
+    component cs = CommitSession();
+    cs.arid <== arid;  cs.pk_i <== pk_i;  cs.blind_s <== blind_s;
+    component cfs = Poseidon(2);
+    cfs.inputs[0] <== cs.Cx;  cfs.inputs[1] <== cs.Cy;
+    signal Cf_s;
+    Cf_s <== cfs.out;
 
     // ---- ① CIA 서명 검증 ----
     // max_height 는 2^64 미만(컨트랙트 uint64 비교와 맞춘다), allowAgent 는 불리언.
     component mhRange = Num2Bits(64);
     mhRange.in <== max_height;
     allowAgent * (allowAgent - 1) === 0;
-    component msgHasher = Poseidon(5);
-    msgHasher.inputs[0] <== DOMAIN_MODE3_CRED_V4;
-    msgHasher.inputs[1] <== Cf;
-    msgHasher.inputs[2] <== max_height;
-    msgHasher.inputs[3] <== chainid;
-    msgHasher.inputs[4] <== allowAgent;
+    component msgHasher = Poseidon(6);
+    msgHasher.inputs[0] <== DOMAIN_MODE3_CRED_V5;
+    msgHasher.inputs[1] <== Cf_u;
+    msgHasher.inputs[2] <== Cf_s;
+    msgHasher.inputs[3] <== max_height;
+    msgHasher.inputs[4] <== chainid;
+    msgHasher.inputs[5] <== allowAgent;
 
     component sigVerifier = EdDSAPoseidonVerifier();
     sigVerifier.enabled <== 1;
@@ -128,8 +130,8 @@ template PiCred(depth) {
 
     // ---- ④ 폐기 비멤버십 ----
     component leafHasher = Poseidon(2);
-    leafHasher.inputs[0] <== TAG_MODE3_CRED;
-    leafHasher.inputs[1] <== Cf;
+    leafHasher.inputs[0] <== TAG_MODE3_USER;
+    leafHasher.inputs[1] <== Cf_u;
 
     component nm = IMTNonMembershipV2(depth);
     nm.target <== leafHasher.out;
@@ -143,6 +145,11 @@ template PiCred(depth) {
     nm.root <== revRoot;
 
     // ---- ⑤ 트레이스 태그 ----
+    // r ≠ 0 (2026-09-21 결정): c1 = r·B8 가 항등원이면 c2 가 평문을 그대로 드러낸다. 컨트랙트·서비스의 c1 ≠ O 검사와 중복 방어.
+    component rNZ = IsZero();
+    rNZ.in <== r;
+    rNZ.out === 0;
+
     // uid 는 ② 의 커밋 개봉과 ③ 의 PPID 유도에 쓴 바로 그 신호다 — 태그를 열면 이 성명의 uid 가 나온다.
     // 평문은 Poseidon(uid, arid) 다 — 태그를 열면 이 성명의 (uid, arid) 값이 나오고 CIA 가 등록부로 uid 를 되찾는다(2026-09-18 §6.2).
     component tag = TraceTag();

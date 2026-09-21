@@ -24,6 +24,15 @@ include "lib/mode3_commit.circom";
 component main = CommitPedersen();
 `,
 };
+// V5(2026-09-21) 커밋 둘. 제약 수 비교표(VARIANTS 루프)에는 넣지 않고 JS 일치만 본다.
+const SRC = {
+  user: `pragma circom 2.0.0;
+include "lib/mode3_commit.circom";
+component main = CommitUser();`,
+  session: `pragma circom 2.0.0;
+include "lib/mode3_commit.circom";
+component main = CommitSession();`,
+};
 
 // 제약 수를 세려면 컴파일해야 한다. circom은 컴파일 요약에 비선형 제약 수를 찍는다.
 function compile(name, src) {
@@ -118,6 +127,22 @@ await t('Pedersen 판: 회로의 (Cx, Cy) 가 JS credCommit 과 일치한다', a
   });
   assert.equal(w[1].toString(), Cx.toString(), 'Cx 불일치 — 생성원 순서나 스칼라 인코딩이 어긋났다');
   assert.equal(w[2].toString(), Cy.toString(), 'Cy 불일치');
+});
+
+await t('V5: CommitUser 회로의 (Cx, Cy) 가 JS userCommit 과 일치한다', async () => {
+  const { userCommit } = await import('../lib/mode3_credential.js');
+  const n = compile('user', SRC.user);
+  assert.ok(n > 0);
+  const w = await witness('user', { uid: '11', s_u: '22', blind_u: '33', attrs: ['19', '410', '0', '0'] });
+  const { Cx, Cy } = await userCommit({ uid: 11n, s_u: 22n, blind_u: 33n, attrs: [19n, 410n, 0n, 0n] });
+  assert.equal(BigInt(w[1]), Cx); assert.equal(BigInt(w[2]), Cy);
+});
+await t('V5: CommitSession 회로의 (Cx, Cy) 가 JS sessionCommit 과 일치한다', async () => {
+  const { sessionCommit } = await import('../lib/mode3_credential.js');
+  compile('session', SRC.session);
+  const w = await witness('session', { arid: '44', pk_i: '4660', blind_s: '55' });
+  const { Cx, Cy } = await sessionCommit({ arid: 44n, pk_i: 4660n, blind_s: 55n });
+  assert.equal(BigInt(w[1]), Cx); assert.equal(BigInt(w[2]), Cy);
 });
 
 await t('Pedersen 판: 생성원 9개가 곡선 위·소수 부분군 안에 있다', async () => {
