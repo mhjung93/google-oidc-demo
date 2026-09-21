@@ -107,10 +107,11 @@ try {
   });
 
   await t('V5: 두 서비스(arid A·B)에 로그인한 뒤 사용자 자격증명 리프 하나가 게시되면 두 세션 모두 죽는다', async () => {
-    // B 는 CIA 에 실제로 등록된 두 번째 서비스다 — 임의의 arid+1 대신 등록 경로를 그대로 탄다
-    const aridB = BigInt((await cia.registerRp('http://127.0.0.1:2', 'test-rp-b')).arid);
+    // B 는 CIA 에 실제로 등록된 두 번째 서비스다 — 임의의 arid+1 대신 등록 경로를 그대로 타고, pk_trace 도 등록 응답의 것을 쓴다
+    const rpBReg = await cia.registerRp('http://127.0.0.1:2', 'test-rp-b');
+    const aridB = BigInt(rpBReg.arid);
     assert.notEqual(aridB, arid);
-    const pk_traceB = await combinePublicKey((await createShare()).X, (await createShare()).X);
+    const pk_traceB = rpBReg.pk_trace;
     const rpB = createRpVerifier({ provider, logAddress: cia.logAddress, vkey, pkCIA: pk_CIA, arid: aridB, chainId: 31337n, pkTrace: pk_traceB });
     // A: 현재 세션(앞 케이스에서 로그인 성공). B: 새 세션 — 같은 사용자 자격증명(Cf_u) 위에 다른 arid 로 발급
     const sessA = session, rsA = sessionRs, blindA = blind_s, credA = cred;

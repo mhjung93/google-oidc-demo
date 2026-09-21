@@ -26,7 +26,7 @@ include "babyjub.circom";
 // 공유하는 문제가 생긴다. 스칼라마다 생성원을 따로 두면 PoK 가 교과서 그대로다.
 //
 // 스칼라 상한 2^250. baby jubjub 소수 부분군 위수 r 은 251비트(≈2^250.6)라 2^250 < r.
-// 이 검사가 없으면 e 와 e+r 이 같은 점을 만들어 binding 이 깨진다 — 한 C 를 두 s_u 로
+// 이 검사가 없으면 e 와 e+r 이 같은 점을 만들어 binding 이 깨진다 — 한 C_u 를 두 s_u 로
 // 열어 PPID 두 개를 얻는 Sybil 이 가능해진다. lib/mode3_credential.js 도 같은 상한을 지킨다.
 //
 // 생성원은 circomlib pedersen.circom 의 NUMS 점 BASE[0..8]. 서로의 이산로그를 아무도 모른다.

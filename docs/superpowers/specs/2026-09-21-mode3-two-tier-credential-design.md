@@ -173,7 +173,7 @@ issued 삭제.  rps, openings, revoked, pending, epoch 는 그대로.
 
 조건:
 1. `C_u_pt = CommitUser(uid, s_u, attrs, blind_u)`, `Cf_u = Poseidon(C_u_pt)` — `circuits/lib/mode3_commit.circom` 에 `CommitUser`(7항)
-   와 `CommitSession`(3항) 템플릿을 추가한다. 생성원 상수는 기존 `CommitPedersen` 의 것을 글자 단위로 복사.
+   와 `CommitSession`(3항) 템플릿을 추가한다. 생성원 상수는 기존 `CommitPedersen` 의 것을 글자 단위로 복사. (CommitPedersen 은 2026-09-21 Task 8 에서 삭제됨 — 생성원 상수는 CommitUser/CommitSession 에 그대로 있다)
 2. `C_s_pt = CommitSession(arid, pk_i, blind_s)`, `Cf_s = Poseidon(C_s_pt)`.
 3. `EdDSA-Poseidon.Verify(pk_CIA, σ, Poseidon(DOMAIN_MODE3_CRED_V5, Cf_u, Cf_s, max_height, chainid, allowAgent))`.
 4. `PPID = Poseidon(uid, s_u, chainid, arid)` — 변경 없음.

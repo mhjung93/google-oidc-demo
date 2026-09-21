@@ -1,6 +1,6 @@
 # ZKP 전체 목록과 실측 (2026-09-21, Mode 3 자격증명 이중 구조 V5)
 
-2026-09-18 판(`results/zkp_inventory_20260918.md`)에서 Mode 3 행만 바뀌었다: π_issue(세션마다) → π_u(사용자 자격증명, 속성 바뀔 때만), pi_cred V4 → V5(커밋 둘). **세션 발급(`/cia/issue`)에는 ZKP 가 없다** — Cf_u 조회 + sig_u 만. Mode 1·2 행은 이번에 다시 잰 값이다(같은 스크립트, 같은 회로).
+2026-09-18 판(`results/zkp_inventory_20260918.md`)에서 Mode 3 행만 바뀌었다: π_issue(세션마다) → π_u(사용자 자격증명, 속성 바뀔 때만), pi_cred V4 → V5(커밋 둘). **세션 발급(`/cia/issue`)에는 ZKP 가 없다** — Cf_u 조회 + sig_u 만. pi_uid·pi_ins 행은 이번에 다시 잰 값, pi_ppid·pi_arid_i·pi_pk_i_v3 는 2026-09-18 값(재측정 안 함), Mode 1 은 제약 수만.
 
 측정 환경: AMD Ryzen 9 5950X(16코어), Node v22.20.0, snarkjs(Groth16, BN254), WASM witness 생성기. N=10, 중앙값 (최소–최대) ms.
 스크립트: `scripts/bench_zkp_inventory.mjs`(Mode 3·v4 삽입·pi_uid), `scripts/bench_mode2_zkp_all.mjs`(Mode 2 세 회로, 같은 크레덴셜, CSV `results/mode2_zkp_all_20260918.csv` — Mode 2 세 회로는 이번에 다시 재지 않아 2026-09-18 값 그대로), `scripts/bench_pi_cred.mjs`.
@@ -26,7 +26,7 @@
 | 회로 | R1CS 제약 | 와이어 | 비공개 입력 | 공개 입력 | zkey | wasm |
 |---|--:|--:|--:|--:|--:|--:|
 | bind_key_to_idtoken (Mode 1) | 561,638 | 555,067 | 1,434 | 0 (출력 2) | 382,496,286 B | — |
-| pi_uid (레거시) | 31.9 (30.3–34.6) | 37.4 (36.0–39.0) | 69.3 (66.9–72.0) | 10.1 (9.8–11.3) | 723 B | |
+| pi_uid (레거시) | 240 | 243 | 2 | 1 | 137,488 B | 1,739,229 B |
 | pi_ppid | 261 | 265 | 2 | 2 | 175,608 B | — |
 | pi_arid_i | 5,389 | 5,397 | 8 | 8 | 3,384,376 B | — |
 | pi_pk_i_v3 | 13,905 | 13,924 | 53 | 9 | 8,587,780 B | — |
