@@ -51,6 +51,10 @@ EL PASSO 의 임계 복호 identity escrow 와 같은 자리다.
 - **서비스가 지갑에게 가짜 `pk_trace` 를 주는 공격.** 서비스가 전체 비밀을 아는 키를 주면 서비스 혼자 복호할 수 있다. 그래서
   `pk_trace` 는 `cert_s` 에 실려 CIA 서명으로 묶이고, 지갑은 인증서의 값만 쓴다(§3). CIA 는 승인 때 자기 조각을 더해 조합 키를
   만들므로 서비스 혼자 아는 키는 인증서에 실리지 않는다.
+- **CIA 가 자기 조각을 나중에 고르는 순서의 rogue key(2026-09-21 보강).** 서비스가 `X_svc` 를 먼저 내므로, 능동적 CIA 는
+  `X_AA = X′ − X_svc` 로 골라 `pk_trace = X′` 의 이산로그를 혼자 알 수 있다. 승인 응답에 `X_AA` 와 그 Schnorr 지식 증명
+  `share_pok` 을 실어 서비스가 `pk_trace = X_svc + X_AA` 와 증명을 확인한다(§3 5·6). `x_AA` 를 모르면 증명을 낼 수 없으므로
+  이 공격은 모델 밖에서도 닫힌다. 남는 것은 두 조각을 합치는 담합(아래)뿐이다.
 - honest-but-curious CIA, 지갑 신뢰, 능동적 CIA 부정(위조 root)·네트워크 관측은 기반 설계 그대로다.
 
 ---
@@ -72,7 +76,7 @@ EL PASSO 의 임계 복호 identity escrow 와 같은 자리다.
                                   rps[arid] = { name, origin, pk_service, X_svc, status: "pending", requestedAt }   → 202 { arid, status }
               origin 이 있고 (pk_service, X_svc) 가 같으면 현재 상태를 돌려준다 (멱등 — 이 호출이 상태 조회를 겸한다):
                                   pending  → 202 { arid, status }
-                                  approved → 200 { arid, origin, pk_trace, cert_s }
+                                  approved → 200 { arid, origin, pk_trace, cert_s, X_AA, share_pok }   (X_AA·share_pok 는 2026-09-21 추가)
                                   denied   → 403 { arid, status }
               origin 이 있고 키가 다르면 → 409 service_key_mismatch (키 회전은 지원하지 않는다 — §8)
 4. 운영자:    GET  /cia/rps                    (requireAdmin) — 전부: arid, name, origin, pk_service, X_svc, pk_trace, status, requestedAt, decidedAt
@@ -83,10 +87,15 @@ EL PASSO 의 임계 복호 identity escrow 와 같은 자리다.
               cia_admin.html 에 "등록된 서비스" 표와 승인/거절 버튼
 5. CIA:       cert_s = EdDSA-Poseidon.Sign(sk_CIA, Poseidon(DOMAIN_MODE3_CERT_S_V2, arid, H(origin), pk_trace.x, pk_trace.y))
               승인된 서비스에게만. 결정적이라 저장하지 않고 조회 때 다시 서명한다
+              share_pok = Schnorr PoK{ x_AA,s : X_AA = x_AA,s·B8 } (Fiat–Shamir, 챌린지 = Poseidon(DOMAIN_MODE3_SHAREPOK, arid, X_svc, X_AA, T) 의 하위 250비트)
+              — 2026-09-21 추가(§2·§8 2번). 저장하지 않고 응답마다 x_AA,s 로 새로 낸다. 지갑은 받지 않는다(cert_s 형식 불변)
 6. RP:        202 면 **등록 대기 상태로 기동**: 서버는 뜨되 /api/mode3/challenge·login·revalidate·request 는 503 registration_pending,
               rp_info 는 { arid, origin, status: "pending" }. 5초마다 2 를 다시 보내 200 이 오면 pk_trace·cert_s 를 파일에 쓰고 활성.
+              200 을 받으면 cert_s 검증에 더해 **pk_trace = X_svc + X_AA 와 share_pok** 를 검증한다(lib/mode3_trace.js verifyShare) —
+              어느 하나라도 실패하면 영구 실패로 기록하고 활성화하지 않는다(rogue key 의심). 2026-09-21 이전에 승인된 파일(X_AA 없음)은
+              경고만 남기고 활성한다 — 재등록하면 x_svc 가 바뀌어 옛 태그를 열 수 없기 때문이다.
               403 이면 로그에 남기고 대기를 멈춘다. 파일에 cert_s 가 있으면 기동 시 pk_CIA 로 검증하고 바로 활성
-7. RP 파일:   mode3_rp_registration.json = { arid, origin, pk_service, sk_service, X_svc, x_svc, status, pk_trace?, cert_s?, issuedAt? }  (0600)
+7. RP 파일:   mode3_rp_registration.json = { arid, origin, pk_service, sk_service, X_svc, x_svc, status, pk_trace?, cert_s?, X_AA?, share_pok?, issuedAt? }  (0600)
 ```
 
 - **`DOMAIN_MODE3_CERT_S_V2`** = ASCII "MODE3CERTS2" 빅엔디언. 옛 인증서(`pk_trace` 없음)가 새 지갑에서 통과하지 않게 한다.
@@ -254,14 +263,15 @@ RP:         세션 설계 §7 의 a~g 에 더해  d'. 공개 입력의 pk_trace 
 ## 8. 알려진 한계
 
 1. **CIA·서비스 담합은 운영자 승인을 우회한다**(§2). 기록 결합 판과 같다.
-2. **악의적 CIA 는 혼자 열 수 있는 조합 키를 만들 수 있다.** CIA 가 자기 조각의 이산로그를 알도록 `pk_trace` 를 고르면(서비스는
-   `X_AA = pk_trace − X_svc` 라는 주장을 검증할 수 없다) 그 서비스의 태그를 CIA 혼자 연다. 2-of-2 보장은 honest-but-curious
-   CIA 가정 위에서만 성립한다. 등록 때 CIA 가 `x_AA` 의 Schnorr PoK(기저 B8, 공개값 `pk_trace − X_svc`)를 내고 RP 가 검증하는
-   확장이 후속 과제다(태그 형식은 그대로).
+2. **(2026-09-21 해소) 악의적 CIA 의 rogue key.** CIA 가 자기 조각의 이산로그를 알도록 `pk_trace` 를 고르는 공격은 승인 응답의
+   `X_AA` + Schnorr PoK(`share_pok`)를 서비스가 검증하면서 닫혔다(§2·§3). 2-of-2 보장이 더 이상 honest-but-curious 가정에 기대지
+   않는다. 단 2026-09-21 이전에 승인된 등록 파일은 증명 없이 활성되며(경고), 그 등록에 대해서는 예전 한계가 그대로다.
 3. **2-of-3 은 범위 밖.** 조각 하나를 감사자에게 주면 CIA·서비스 담합에도 안전해지지만, 감사자 키 관리·부분 복호 프로토콜이 더
    든다. 태그 형식은 그대로 확장 가능하므로 다음 단계다.
 4. **승인자가 운영자 한 명이다.** 승인 기준·분리된 감사자·다중 서명은 배포 정책이다.
-5. **CIA 조각 유실 = 그 서비스의 과거 태그 영구 봉인.** `cia_state.json` 백업 정책이 곧 개봉 가능성이다.
+5. **조각 유실 = 그 서비스의 과거 태그 영구 봉인.** CIA 조각(`cia_state.json`)이든 서비스 조각(`mode3_rp_registration.json` 의
+   `x_svc`)이든 하나만 잃어도 과거 태그는 영원히 열리지 않는다. 서비스 키를 바꾸면 `pk_trace`·`cert_s` 가 새로 발급되고 이전
+   태그는 열리지 않는다. 개봉이 법적 요구에 답하는 기능이라면 양쪽의 키 백업 절차가 요구사항이다(2026-09-21 명시).
 6. **키 회전·재심사 없음.** 서비스 키가 바뀌면 같은 origin 으로 재등록할 수 없고(409), 거절된 origin 은 재요청할 수 없다(403).
    운영자가 항목을 지우거나 되돌리는 수단은 범위 밖이다.
 7. **승인 기준은 프로토콜 밖이다.** 데모의 운영자는 버튼을 누른다.

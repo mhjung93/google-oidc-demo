@@ -15,7 +15,7 @@ import { VKEY_PATH } from './lib/mode3_wallet.js';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { verifyRpCert } from './lib/mode3_rp_cert.js';
 import { randomScalar } from './lib/mode3_credential.js';
-import { createShare, partialDecrypt } from './lib/mode3_trace.js';
+import { createShare, partialDecrypt, combinePublicKey, verifyShare } from './lib/mode3_trace.js';
 import { signOpenRequest, signOpenResult } from './lib/mode3_opening.js';
 import { deployVerifier, deployFactory, decodeExecuteCalldata, parseExecuteReceipt, MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT } from './lib/mode3_onchain.js';
 
@@ -70,6 +70,18 @@ if (!reg) {
 }
 const serviceWallet = new ethers.Wallet(reg.sk_service);
 
+/** pk_trace == X_svc + X_AA 이고 X_AA 의 Schnorr PoK 가 (arid, X_svc) 에 대해 검증되는가. 형식이 깨지면 false. */
+async function verifyCiaShare(arid, pk_trace, X_AA, share_pok) {
+  try {
+    const P = (o) => ({ x: BigInt(o.x), y: BigInt(o.y) });
+    const X_svc = P(reg.X_svc), Xaa = P(X_AA), pt = P(pk_trace);
+    const pok = { T: P(share_pok.T), c: BigInt(share_pok.c), z: BigInt(share_pok.z) };
+    if (!(await verifyShare(Xaa, pok, { arid: BigInt(arid), X_svc }))) return false;
+    const sum = await combinePublicKey(X_svc, Xaa);
+    return sum.x === pt.x && sum.y === pt.y;
+  } catch { return false; }
+}
+
 /** CIA 에 등록/조회. 200 이면 파일을 채우고 true. 202 면 false. 403 이면 throw. */
 async function registerOnce() {
   const r = await fetch(`${CIA_URL}/cia/register_rp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: RP_NAME, origin: PUBLIC_ORIGIN, pk_service: reg.pk_service, X_svc: reg.X_svc }) });
@@ -84,7 +96,10 @@ async function registerOnce() {
   if (r.status !== 200) throw new Error(`CIA 등록 실패 (${r.status}) ${JSON.stringify(b)}`);
   const pk_trace = { x: BigInt(b.pk_trace.x), y: BigInt(b.pk_trace.y) };
   if (!(await verifyRpCert(pkCIA, { arid: BigInt(b.arid), origin: PUBLIC_ORIGIN, pk_trace, cert: b.cert_s }))) throw Object.assign(new Error('CIA 가 준 cert_s 가 pk_CIA 로 검증되지 않는다'), { permanent: true });
-  reg = { ...reg, arid: b.arid, status: 'approved', pk_trace: b.pk_trace, cert_s: b.cert_s, issuedAt: new Date().toISOString() };
+  // CIA 조각 검사(2026-09-21, rogue key 방지): pk_trace 가 정말 "내 조각 + CIA 가 이산로그를 아는 조각"인지.
+  // CIA 가 X_AA = X′ − X_svc 로 골라 조합 키 전체를 혼자 알게 되는 것을 막는다 — 스펙 2026-09-16 §2.
+  if (!(await verifyCiaShare(b.arid, b.pk_trace, b.X_AA, b.share_pok))) throw Object.assign(new Error('CIA 조각 X_AA 의 지식 증명이 검증되지 않거나 pk_trace ≠ X_svc + X_AA — rogue key 의심'), { permanent: true });
+  reg = { ...reg, arid: b.arid, status: 'approved', pk_trace: b.pk_trace, cert_s: b.cert_s, X_AA: b.X_AA, share_pok: b.share_pok, issuedAt: new Date().toISOString() };
   writeJsonAtomic(REG_FILE, reg, 0o600);
   console.log(`[rp] CIA 등록 승인됨: arid=${reg.arid} origin=${reg.origin} → ${REG_FILE}`);
   return true;
@@ -120,6 +135,13 @@ async function activate() {
 if (reg.status === 'approved' && reg.cert_s) {
   if (!(await verifyRpCert(pkCIA, { arid: BigInt(reg.arid), origin: reg.origin, pk_trace: { x: BigInt(reg.pk_trace.x), y: BigInt(reg.pk_trace.y) }, cert: reg.cert_s }))) {
     throw new Error('등록 파일의 cert_s 가 현재 pk_CIA 로 검증되지 않는다 — CIA 키가 바뀌었으면 파일을 지우고 재기동');
+  }
+  // 2026-09-21 이전에 승인된 등록 파일에는 X_AA·share_pok 가 없다. 등록을 다시 받으면 x_svc 가 바뀌어 옛 태그를 못 열므로
+  // 강제하지 않고 경고만 남긴다 — 조각 검사를 원하면 파일을 지우고 재등록한다.
+  if (reg.X_AA && reg.share_pok) {
+    if (!(await verifyCiaShare(reg.arid, reg.pk_trace, reg.X_AA, reg.share_pok))) throw new Error('등록 파일의 CIA 조각 증명(share_pok)이 검증되지 않는다 — 파일이 손상됐거나 pk_trace ≠ X_svc + X_AA');
+  } else {
+    console.warn('[rp] 등록 파일에 CIA 조각 증명(X_AA·share_pok)이 없다(2026-09-21 이전 승인) — rogue key 검사를 건너뛴다');
   }
   await activate();
 } else {

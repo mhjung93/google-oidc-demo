@@ -22,7 +22,7 @@ import { userLeaf, createRevocationTree } from './lib/mode3_revocation.js';
 import { isValidPoint, pointFromStrings, verifyUserCred, parseUserCredProof, userCredRequestMessage, issueRequestMessageV4 } from './lib/mode3_issuance.js';
 import { LOG_ABI, rootToBytes32, signRootPublication } from './lib/mode3_log.js';
 import { signRpCert } from './lib/mode3_rp_cert.js';
-import { isTracePoint, createShare, combinePublicKey, partialDecrypt, combineDecrypt, resolveTagPlaintext } from './lib/mode3_trace.js';
+import { isTracePoint, createShare, combinePublicKey, partialDecrypt, combineDecrypt, resolveTagPlaintext, proveShare } from './lib/mode3_trace.js';
 import { openRequestMessage, openResultMessage, recoverSigner, isFreshTs } from './lib/mode3_opening.js';
 import { CIA_STATE_VERSION, defaultCiaState, migrateCiaState } from './lib/mode3_cia_state.js';
 
@@ -280,7 +280,11 @@ app.post('/cia/register_rp', async (req, res) => {
     if (e.status === 'denied') return res.status(403).json({ arid, status: 'denied' });
     if (e.status === 'pending') return res.status(202).json({ arid, status: 'pending' });
     const cert_s = await signRpCert(ciaPrv, { arid: BigInt(arid), origin, pk_trace: e.pk_trace });
-    res.json({ arid, name: e.name, origin, pk_trace: e.pk_trace, cert_s });
+    // CIA 조각 X_AA 와 그 지식 증명(2026-09-21, rogue key 방지). 저장하지 않고 x_AA 로 매번 새로 낸다 — 옛 상태 파일의 승인 항목에도 그대로 나간다.
+    // 서비스는 pk_trace = X_svc + X_AA 와 PoK 를 확인한다(mode3_rp.js). 지갑은 cert_s 만 본다 — 인증서 형식은 그대로다.
+    const pok = await proveShare(BigInt(e.x_AA), { arid: BigInt(arid), X_svc: pointFromStrings(e.X_svc) });
+    const S = (o) => ({ x: o.x.toString(), y: o.y.toString() });
+    res.json({ arid, name: e.name, origin, pk_trace: e.pk_trace, cert_s, X_AA: S(pok.X), share_pok: { T: S(pok.T), c: pok.c.toString(), z: pok.z.toString() } });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

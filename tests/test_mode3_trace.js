@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { buildBabyjub } from 'circomlibjs';
 import { SCALAR_MAX } from '../lib/mode3_credential.js';
-import { B8, isTracePoint, createShare, combinePublicKey, randomTraceScalar, encryptTag, partialDecrypt, combineDecrypt, tagPlaintext, resolveTagPlaintext } from '../lib/mode3_trace.js';
+import { B8, isTracePoint, createShare, combinePublicKey, randomTraceScalar, encryptTag, partialDecrypt, combineDecrypt, tagPlaintext, resolveTagPlaintext, proveShare, verifyShare, sharePublicKey } from '../lib/mode3_trace.js';
 
 let failed = 0;
 async function t(name, fn) {
@@ -78,6 +78,41 @@ await t('encryptTag 는 r = 0, r ≥ 2^250, 상한 밖 uid 를 거절한다', as
   await assert.rejects(() => encryptTag(pk, uid, arid, SCALAR_MAX), /r/);
   await assert.rejects(() => encryptTag(pk, SCALAR_MAX, arid, 5n), /uid/);
   assert.ok(randomTraceScalar() > 0n);
+});
+
+// ---- CIA 조각의 Schnorr PoK — rogue key 방지(2026-09-21) ----
+await t('proveShare/verifyShare: 정직한 조각은 통과하고, 다른 arid·다른 X_svc·다른 X·변조된 z 는 실패한다', async () => {
+  const svc = await createShare(), aa = await createShare();
+  const ctx = { arid: 77n, X_svc: svc.X };
+  const pok = await proveShare(aa.x, ctx);
+  assert.deepEqual(pok.X, aa.X);
+  assert.deepEqual(await sharePublicKey(aa.x), aa.X);
+  assert.equal(await verifyShare(pok.X, pok, ctx), true);
+  assert.equal(await verifyShare(pok.X, pok, { arid: 78n, X_svc: svc.X }), false, '다른 등록의 증명은 재사용할 수 없다');
+  assert.equal(await verifyShare(pok.X, pok, { arid: 77n, X_svc: (await createShare()).X }), false);
+  assert.equal(await verifyShare((await createShare()).X, pok, ctx), false);
+  assert.equal(await verifyShare(pok.X, { ...pok, z: (pok.z + 1n) % bj.subOrder }, ctx), false);
+  assert.equal(await verifyShare(pok.X, { ...pok, c: pok.c ^ 1n }, ctx), false);
+  assert.equal(await verifyShare({ x: 0n, y: 1n }, pok, ctx), false, '항등원 조각은 거절');
+  assert.equal(await verifyShare(pok.X, null, ctx), false);
+  assert.equal(await verifyShare(pok.X, { T: { x: '1', y: 1n }, c: pok.c, z: pok.z }, ctx), false);
+});
+
+await t('rogue key: CIA 가 X_AA = X′ − X_svc 로 고르면 pk_trace = X′ 의 비밀을 혼자 알지만, x_AA 를 몰라 PoK 를 낼 수 없다', async () => {
+  const svc = await createShare();
+  const rogue = await createShare();               // X′ = x′·B8 — CIA 가 이산로그를 아는 점
+  const negSvc = { x: (F.p - svc.X.x) % F.p, y: svc.X.y };
+  const X_AA = await combinePublicKey(rogue.X, negSvc);   // X′ − X_svc
+  const pk_trace = await combinePublicKey(svc.X, X_AA);
+  assert.deepEqual(pk_trace, rogue.X, '조합 키가 CIA 혼자 아는 X′ 가 된다');
+  // CIA 가 손에 쥔 것은 x′ 뿐 — 그것으로 낸 증명은 X_AA 에 대해 검증되지 않는다
+  const ctx = { arid: 77n, X_svc: svc.X };
+  const forged = await proveShare(rogue.x, ctx);
+  assert.equal(await verifyShare(X_AA, forged, ctx), false);
+  assert.equal(await verifyShare(X_AA, { ...forged, X: X_AA }, ctx), false);
+  // 정직한 조각이면 통과 — 대조군
+  const honest = await createShare();
+  assert.equal(await verifyShare(honest.X, await proveShare(honest.x, ctx), ctx), true);
 });
 
 process.exit(failed === 0 ? 0 : 1);

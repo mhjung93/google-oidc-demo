@@ -10,6 +10,7 @@ import { userLeaf } from '../lib/mode3_revocation.js';
 import { registrationCommit, proveUserCred, serializeUserCredProof, userCredRequestMessage, issueRequestMessageV4, pointToStrings } from '../lib/mode3_issuance.js';
 import { syncRevocationTree } from '../lib/mode3_wallet.js';
 import { verifyRpCert } from '../lib/mode3_rp_cert.js';
+import { verifyShare, combinePublicKey } from '../lib/mode3_trace.js';
 import { createShare } from '../lib/mode3_trace.js';
 import { LOG_ABI } from '../lib/mode3_log.js';
 
@@ -116,6 +117,13 @@ try {
     assert.equal(await verifyRpCert({ x: BigInt(keys.pk_CIA.x), y: BigInt(keys.pk_CIA.y) }, { arid: BigInt(ok.body.arid), origin: body.origin, pk_trace, cert: ok.body.cert_s }), true);
     // pk_trace = X_svc + x_AA·B8 — 서비스 조각이 들어 있어야 한다(같은 점이면 CIA 혼자 아는 키)
     assert.notEqual(ok.body.pk_trace.x, body.X_svc.x);
+    // CIA 조각 X_AA 와 Schnorr PoK(2026-09-21, rogue key 방지): pk_trace == X_svc + X_AA 이고 PoK 가 (arid, X_svc) 에 대해 검증된다
+    const P = (o) => ({ x: BigInt(o.x), y: BigInt(o.y) });
+    const X_AA = P(ok.body.X_AA);
+    const pok = { T: P(ok.body.share_pok.T), c: BigInt(ok.body.share_pok.c), z: BigInt(ok.body.share_pok.z) };
+    assert.equal(await verifyShare(X_AA, pok, { arid: BigInt(ok.body.arid), X_svc: share.X }), true, 'CIA 조각 PoK');
+    assert.deepEqual(await combinePublicKey(share.X, X_AA), pk_trace, 'pk_trace = X_svc + X_AA');
+    assert.equal(await verifyShare(X_AA, pok, { arid: BigInt(ok.body.arid) + 1n, X_svc: share.X }), false, '다른 arid 에는 재사용 불가');
     assert.equal((await cia.adminPost(`/cia/rps/${r.body.arid}/approve`)).status, 409, '이미 결정된 항목은 409');
   });
 
