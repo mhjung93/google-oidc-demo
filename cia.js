@@ -333,7 +333,7 @@ app.post('/cia/register', async (req, res) => {
   if (state.accounts[uid]) return res.status(409).json({ error: 'already registered' });
   const prv = randomBytes(32);
   const pub = eddsa.prv2pub(prv);
-  state.accounts[uid] = { pk_u: S(pub), cm_u: { x: cm_u.x, y: cm_u.y }, disabled: false };
+  state.accounts[uid] = { pk_u: S(pub), cm_u: { x: cm_u.x, y: cm_u.y }, disabled: false, creds: [] };
   persist();
   res.status(201).json({ pk_u: S(pub), sk_u: prv.toString('hex') });
 });
@@ -363,10 +363,19 @@ app.post('/cia/user_cred', async (req, res) => {
     const leaf = (await userLeaf(BigInt(Cf_u))).toString();
     if (acct.disabled) return res.status(403).json({ error: 'account disabled' });   // await 사이에 폐기가 끼어들 수 있다
     acct.creds ??= [];
-    const existing = acct.creds.find((c) => c.Cf_u === Cf_u);
-    if (existing && !existing.revoked) return res.json({ Cf_u, leaf });   // 멱등
-    if (existing && existing.revoked) return res.status(409).json({ error: 'this user credential was revoked; make a new one' });
-    await retireActiveCred(uid);
+    if (acct.creds.some((c) => c.Cf_u === Cf_u && c.revoked)) return res.status(409).json({ error: 'this user credential was revoked; make a new one' });
+    // 활성 자격증명을 물리고 새 것을 활성으로. retireActiveCred 안의 await(리프 삽입) 동안 같은 uid 의 다른 user_cred 가
+    // 먼저 push 했거나 /cia/revoke·self_revoke 가 disabled 를 걸었을 수 있다 — 활성이 없어질 때까지 반복하고, 마지막 await
+    // 뒤(아래는 전부 동기)에 disabled 와 같은 Cf_u 의 폐기 여부를 다시 본다. 어느 순서로 끼어들어도 활성은 정확히 하나고,
+    // disabled 계정에 활성 자격증명이 남지 않는다.
+    for (;;) {
+      const cur = activeCred(uid);
+      if (cur && cur.Cf_u === Cf_u) return res.json({ Cf_u, leaf });   // 멱등 — 동시에 온 같은 Cf_u 가 먼저 기록된 경우 포함
+      if (!cur) break;
+      await retireActiveCred(uid);
+    }
+    if (acct.disabled) return res.status(403).json({ error: 'account disabled' });   // 위 await 동안 폐기가 끼어들었다
+    if (acct.creds.some((c) => c.Cf_u === Cf_u)) return res.status(409).json({ error: 'this user credential was revoked; make a new one' });   // 여기 오면 같은 Cf_u 는 전부 revoked
     acct.creds.push({ Cf_u, C_u_pt: { x: cpt.x.toString(), y: cpt.y.toString() }, leaf, issuedAt: new Date().toISOString(), revoked: false });
     persist();
     res.status(201).json({ Cf_u, leaf });
@@ -426,8 +435,8 @@ async function revokeAccount(uid) {
   return { inserted, root: tree.getRoot().toString(), pending: state.pending.length };
 }
 
-// §6.5 폐기. account = 활성 자격증명 리프 + disabled. credential = 활성 자격증명 리프만(계정은 살려 둔다 — 다음 로그인 때
-// 사용자 자격증명이 다시 발급된다). 리프는 서버가 기록에서 꺼내므로 leaf·C 를 받지 않는다(폐기는 append-only 라 잘못 넣은 리프가 영구히 남는다).
+// §4.3(2026-09-21) 폐기. account = 활성 사용자 자격증명 리프 + disabled. credential = 리프만(계정은 살아 있어 새 user_cred 를 받아야 한다).
+// 리프는 사용자당 하나라 leaf/C 인자를 받지 않는다(있어도 무시). 트리 삽입은 멱등(이미 있으면 false).
 app.post('/cia/revoke', requireAdmin, async (req, res) => {
   try {
     const { uid, scope } = req.body ?? {};
@@ -436,7 +445,7 @@ app.post('/cia/revoke', requireAdmin, async (req, res) => {
     if (scope !== 'credential') return res.status(400).json({ error: "scope must be 'account' or 'credential'" });
     const inserted = await retireActiveCred(uid);
     persist();
-    return res.json({ inserted, root: tree.getRoot().toString(), pending: state.pending.length });
+    res.json({ inserted, root: tree.getRoot().toString(), pending: state.pending.length });
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 

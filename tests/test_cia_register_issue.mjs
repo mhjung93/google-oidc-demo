@@ -40,12 +40,20 @@ const signMsg = async (prvBuf, m) => { const s = eddsa.signPoseidon(prvBuf, F.e(
 // 만료는 지갑이 정한다(2026-09-18 §3.2 갱신) — 테스트는 head + ttl 로 정하고 CIA 는 그대로 서명해야 한다.
 const mhOf = async (ttl = 300n) => BigInt(await provider.getBlockNumber()) + ttl;
 
-/** 사용자 자격증명 요청 본문. u 는 { s_u, r_u, sk_u(Buffer), attrs }. */
-async function userCredRequest(u, overrides = {}) {
+/** 사용자 자격증명 요청 본문. u 는 { s_u, r_u, sk_u(Buffer), attrs }. 다른 계정이면 uidBig 을 준다. */
+async function userCredRequest(u, overrides = {}, uidBig = uid) {
   const blind_u = randomScalar();
-  const { C_u_pt, proof } = await proveUserCred({ uid, s_u: u.s_u, blind_u, r_u: u.r_u, attrs: u.attrs ?? [19n, 410n, 0n, 0n] });
+  const { C_u_pt, proof } = await proveUserCred({ uid: uidBig, s_u: u.s_u, blind_u, r_u: u.r_u, attrs: u.attrs ?? [19n, 410n, 0n, 0n] });
   const Cf_u = await compressPoint(C_u_pt);
-  return { body: { uid: uid.toString(), C_u_pt: pointToStrings(C_u_pt), proof: serializeUserCredProof(proof), sig_u: await signMsg(u.sk_u, await userCredRequestMessage(C_u_pt)), ...overrides }, C_u_pt, Cf_u, blind_u, leaf: await userLeaf(Cf_u) };
+  return { body: { uid: uidBig.toString(), C_u_pt: pointToStrings(C_u_pt), proof: serializeUserCredProof(proof), sig_u: await signMsg(u.sk_u, await userCredRequestMessage(C_u_pt)), ...overrides }, C_u_pt, Cf_u, blind_u, leaf: await userLeaf(Cf_u) };
+}
+/** 데모 계정 하나를 등록만 한다(user_cred 없음). { s_u, r_u, cm_u, sk_u(Buffer) } 를 돌려준다. */
+async function freshRegistered(uidStr, pwd) {
+  const s_u = randomScalar(), r_u = randomScalar();
+  const cm_u = await registrationCommit(s_u, r_u);
+  const r = await cia.post('/cia/register', { uid: uidStr, pwd, cm_u: pointToStrings(cm_u) });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  return { s_u, r_u, cm_u, sk_u: Buffer.from(r.body.sk_u, 'hex') };
 }
 /** 세션 발급 요청 본문. cred 는 userCredRequest 의 반환값. */
 async function issueRequest(u, cred, overrides = {}, { chainid = CHAIN_ID, allowAgent = 0n, max_height, pk_i = 0x1234n } = {}) {
@@ -196,7 +204,7 @@ try {
 
   await t('issue V5: 서명이 Cf_u·C_s·chainid·allowAgent·max_height 를 덮는다 — 하나라도 바꾸면 400; 등록 안 된 Cf_u 는 403 no_user_cred; C_s_pt 가 부분군 밖이면 400', async () => {
     const cred = await userCredRequest(user); assert.equal((await cia.post('/cia/user_cred', cred.body)).status, 201);
-    for (const patch of [{ max_height: '1' }, { allowAgent: '1' }, { chainid: '1' }]) {
+    for (const patch of [{ max_height: '1' }, { allowAgent: '1' }, { chainid: '1' }, { Cf_u: (BigInt(cred.Cf_u) + 1n).toString() }]) {
       const req = await issueRequest(user, cred, patch);
       assert.equal((await cia.post('/cia/issue', req.body)).status, 400, JSON.stringify(patch));
     }
@@ -251,19 +259,19 @@ try {
     assert.equal(r.body.allowAgent, '1');
   });
 
-  await t('revoke(account): 활성 사용자 자격증명의 리프가 트리에 들어가고 disabled 된다', async () => {
+  await t('revoke(account): 활성 자격증명 리프 하나가 트리에 들어가고 disabled; 재요청은 멱등(새 리프 없음); 이후 issue 403', async () => {
     const cred = await userCredRequest(user); assert.equal((await cia.post('/cia/user_cred', cred.body)).status, 201);
-    // 앞 케이스들이 리프를 pending 에 남겨 뒀다 — 이번 호출이 넣는 개수만큼 늘었는지를 본다(절대값 대신).
     const pendingBefore = (await cia.get('/cia/state')).body.pendingCount;
-    const r = await cia.adminPost('/cia/revoke', { uid: '12345', scope: 'account' });
-    assert.equal(r.status, 200, JSON.stringify(r.body));
-    assert.deepEqual(r.body.inserted, [cred.leaf.toString()], '활성 사용자 자격증명의 리프 하나');
+    const r = await cia.adminPost('/cia/revoke', { uid: uid.toString(), scope: 'account' });
+    assert.equal(r.status, 200, JSON.stringify(r.body)); assert.deepEqual(r.body.inserted, [cred.leaf.toString()]);
     assert.equal(r.body.pending, pendingBefore + 1);
+    const again = await cia.adminPost('/cia/revoke', { uid: uid.toString(), scope: 'account' });
+    assert.equal(again.status, 200); assert.deepEqual(again.body.inserted, []);
     assert.equal((await cia.get('/cia/state')).body.credCount, 0);
-    const { body } = await issueRequest(user, cred);
-    const denied = await cia.post('/cia/issue', body);
-    assert.equal(denied.status, 403, 'disabled 계정은 발급 거절'); assert.equal(denied.body.reason, 'account_disabled');
-    assert.equal((await cia.post('/cia/user_cred', (await userCredRequest(user)).body)).status, 403, 'disabled 계정은 사용자 자격증명도 거절');
+    const req = await issueRequest(user, cred);
+    const denied = await cia.post('/cia/issue', req.body);
+    assert.equal(denied.status, 403); assert.equal(denied.body.reason, 'account_disabled');
+    assert.equal((await cia.post('/cia/user_cred', (await userCredRequest(user)).body)).status, 403, 'disabled 면 새 자격증명도 안 준다');
   });
 
   await t('publish: 서명 root 가 RevocationLog 에 올라가고 epoch 1', async () => {
@@ -286,11 +294,18 @@ try {
     assert.equal((await cia.get('/cia/state')).body.epoch, 1);
   });
 
-  await t('set_disabled false → 다시 발급된다 (복구, §6.6) — 사용자 자격증명부터 새로 받는다', async () => {
-    assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid: '12345', disabled: false })).status, 200);
+  await t('revoke(credential): 리프만 넣고 계정은 살아 있다 — 새 user_cred 를 받으면 다시 발급된다 (set_disabled false 복구 §6.6 포함)', async () => {
+    assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid: uid.toString(), disabled: false })).status, 200);
     const cred = await userCredRequest(user); assert.equal((await cia.post('/cia/user_cred', cred.body)).status, 201);
-    const { body } = await issueRequest(user, cred);
-    assert.equal((await cia.post('/cia/issue', body)).status, 200);
+    const r = await cia.adminPost('/cia/revoke', { uid: uid.toString(), scope: 'credential' });
+    assert.equal(r.status, 200, JSON.stringify(r.body)); assert.deepEqual(r.body.inserted, [cred.leaf.toString()]);
+    const denied = await cia.post('/cia/issue', (await issueRequest(user, cred)).body);
+    assert.equal(denied.status, 403); assert.equal(denied.body.reason, 'no_user_cred');
+    // leaf/C 인자는 무시된다(400 아님) — 활성 자격증명이 없으니 inserted 는 빈 배열
+    const ignored = await cia.adminPost('/cia/revoke', { uid: uid.toString(), scope: 'credential', leaf: '777', C: '1' });
+    assert.equal(ignored.status, 200, JSON.stringify(ignored.body)); assert.deepEqual(ignored.body.inserted, []);
+    const cred2 = await userCredRequest(user); assert.equal((await cia.post('/cia/user_cred', cred2.body)).status, 201);
+    assert.equal((await cia.post('/cia/issue', (await issueRequest(user, cred2)).body)).status, 200);
   });
 
   await t('self_revoke: 잘못된 비밀번호 401, 등록 안 된 계정 404, 형식 오류 400', async () => {
@@ -306,35 +321,35 @@ try {
     assert.equal((await cia.post('/cia/issue', body)).status, 200, '계정은 여전히 활성이어야 한다');
   });
 
-  await t('self_revoke: 비밀번호만으로 계정 전체 폐기 — 리프 삽입 + disabled, 이후 발급 403', async () => {
+  await t('revoke: 활성 자격증명이 없는 계정의 account 폐기는 disabled 만 건다 (inserted 빈 배열)', async () => {
+    // 등록만 하고 user_cred 를 받지 않은 새 계정 — 데모 계정 alice(67890). 앞 케이스가 "등록 안 된 계정 404" 를 본 뒤여야 한다.
+    const u2 = await freshRegistered('67890', 'alicepw');
+    const pendingBefore = (await cia.get('/cia/state')).body.pendingCount;
+    const r = await cia.adminPost('/cia/revoke', { uid: '67890', scope: 'account' });
+    assert.equal(r.status, 200, JSON.stringify(r.body)); assert.deepEqual(r.body.inserted, []);
+    assert.equal(r.body.pending, pendingBefore);
+    assert.equal((await cia.post('/cia/user_cred', (await userCredRequest(u2, {}, 67890n)).body)).status, 403);
+  });
+
+  await t('self_revoke: 비밀번호만으로 계정 폐기 — 활성 자격증명 리프 하나 + disabled; 재요청은 새 리프 없이 200', async () => {
+    assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid: uid.toString(), disabled: false })).status, 200);
     const cred = await userCredRequest(user); assert.equal((await cia.post('/cia/user_cred', cred.body)).status, 201);
     const issued = await cia.post('/cia/issue', (await issueRequest(user, cred)).body);
     assert.equal(issued.status, 200, JSON.stringify(issued.body));
     const before = (await cia.get('/cia/state')).body.pendingCount;
-
-    const r = await cia.post('/cia/account/self_revoke', { uid: '12345', pwd: 'password123' });
+    const r = await cia.post('/cia/account/self_revoke', { uid: uid.toString(), pwd: 'password123' });
     assert.equal(r.status, 200, JSON.stringify(r.body));
-    assert.equal(r.body.disabled, true);
-    assert.deepEqual(r.body.inserted, [cred.leaf.toString()], '활성 사용자 자격증명의 리프가 들어가야 한다(세션 리프는 없다)');
+    assert.deepEqual(r.body.inserted, [cred.leaf.toString()], '활성 사용자 자격증명의 리프가 들어가야 한다(세션 리프는 없다)'); assert.equal(r.body.disabled, true);
     assert.equal(r.body.pending, before + 1);
     assert.equal((await cia.get('/cia/state')).body.pendingCount, r.body.pending);
-
-    const { body } = await issueRequest(user, cred);
-    assert.equal((await cia.post('/cia/issue', body)).status, 403, 'disabled 계정은 발급 거절');
-  });
-
-  await t('self_revoke: 재요청은 멱등 — 새 리프 없이 200, disabled 유지', async () => {
-    const pendingBefore = (await cia.get('/cia/state')).body.pendingCount;
-    const r = await cia.post('/cia/account/self_revoke', { uid: '12345', pwd: 'password123' });
-    assert.equal(r.status, 200, JSON.stringify(r.body));
-    assert.deepEqual(r.body.inserted, []);
-    assert.equal(r.body.disabled, true);
-    assert.equal(r.body.pending, pendingBefore);
-    // 복구는 관리자만 한다(§6.6). 뒤 케이스들을 위해 여기서 되살린다.
-    assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid: '12345', disabled: false })).status, 200);
-    const cred = await userCredRequest(user); assert.equal((await cia.post('/cia/user_cred', cred.body)).status, 201);
-    const { body } = await issueRequest(user, cred);
-    assert.equal((await cia.post('/cia/issue', body)).status, 200);
+    const again = await cia.post('/cia/account/self_revoke', { uid: uid.toString(), pwd: 'password123' });
+    assert.equal(again.status, 200); assert.deepEqual(again.body.inserted, []); assert.equal(again.body.disabled, true);
+    assert.equal(again.body.pending, r.body.pending);
+    assert.equal((await cia.post('/cia/issue', (await issueRequest(user, cred)).body)).status, 403);
+    // 복구는 관리자만 한다(§6.6). 뒤 케이스들을 위해 여기서 되살린다 — 사용자 자격증명부터 다시 받아야 발급된다.
+    assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid: uid.toString(), disabled: false })).status, 200);
+    const cred2 = await userCredRequest(user); assert.equal((await cia.post('/cia/user_cred', cred2.body)).status, 201);
+    assert.equal((await cia.post('/cia/issue', (await issueRequest(user, cred2)).body)).status, 200);
   });
 
   await t('self_revoke: 체인이 죽어도 200 이고 disabled 가 걸리며 treeUpdated 필드가 없다', async () => {
