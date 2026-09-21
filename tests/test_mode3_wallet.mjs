@@ -6,14 +6,14 @@ import { ethers } from 'ethers';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import * as snarkjs from 'snarkjs';
 import { getProvider, fundAddress, deployRevocationLog, signRootPublication, rootToBytes32 } from './helpers/mode3_chain.mjs';
-import { createRevocationTree, credLeaf } from '../lib/mode3_revocation.js';
-import { credMessage, compressPoint, randomScalar } from '../lib/mode3_credential.js';
+import { createRevocationTree, userLeaf } from '../lib/mode3_revocation.js';
+import { credMessageV5, compressPoint, randomScalar } from '../lib/mode3_credential.js';
 import {
-  createRegistration, createSessionKey, buildIssueRequest, syncRevocationTree,
+  createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree,
   buildCredentialProof, ProofCache, signChallenge, signSessionRequest, ZKEY_PATH, VKEY_PATH, chooseMaxHeight,
 } from '../lib/mode3_wallet.js';
 import { verifySessionRequest } from '../lib/mode3_rp.js';
-import { pointFromStrings } from '../lib/mode3_issuance.js';
+import { verifyUserCred, parseUserCredProof } from '../lib/mode3_issuance.js';
 import { createShare, combinePublicKey, partialDecrypt, combineDecrypt, tagPlaintext } from '../lib/mode3_trace.js';
 
 let failed = 0;
@@ -35,13 +35,13 @@ const ciaPub = eddsa.prv2pub(ciaPrv);
 const pk_CIA = { x: F.toObject(ciaPub[0]), y: F.toObject(ciaPub[1]) };
 const uid = 12345n, arid = 22222222222222222222n;
 
-// 서버 없이 CIA 역할을 로컬에서 흉내낸다 (서명만). max_height 는 지갑(요청)이 정한 값을 그대로 서명한다(2026-09-18 §3.2 갱신).
+// 서버 없이 CIA 역할을 로컬에서 흉내낸다 (서명만). V5: Sign(D_V5, Cf_u, Cf_s, max_height, chainid, allowAgent). max_height 는 요청 값 그대로.
 const mh = async (ttl = 300n) => chooseMaxHeight(BigInt(await provider.getBlockNumber()), { ttlBlocks: ttl });
-async function localIssue(C_pt, chainid, { max_height, allowAgent = 0n } = {}) {
-  const C = await compressPoint(C_pt);
+async function localIssue(Cf_u, C_s_pt, chainid, { max_height, allowAgent = 0n } = {}) {
+  const Cf_s = await compressPoint(C_s_pt);
   if (max_height === undefined) max_height = await mh();
-  const s = eddsa.signPoseidon(ciaPrv, F.e(await credMessage(C, max_height, chainid, allowAgent)));
-  return { C: C.toString(), max_height: max_height.toString(), chainid: chainid.toString(), allowAgent: allowAgent.toString(), sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() } };
+  const s = eddsa.signPoseidon(ciaPrv, F.e(await credMessageV5(Cf_u, Cf_s, max_height, chainid, allowAgent)));
+  return { Cf_u: Cf_u.toString(), Cf_s: Cf_s.toString(), max_height: max_height.toString(), chainid: chainid.toString(), allowAgent: allowAgent.toString(), sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() } };
 }
 async function publish(leavesBig) {
   const tree = await createRevocationTree();
@@ -72,16 +72,25 @@ await t('게시된 리프가 동기화된 트리에 있고 root 가 컨트랙트
 const svcShare = await createShare(), aaShare = await createShare();
 const pk_trace = await combinePublicKey(svcShare.X, aaShare.X);
 
-let reg, session, req, cred, tree0;
-await t('발급 요청 → 로컬 CIA 서명 → 증명 생성 → vkey 로 검증된다', async () => {
+let reg, session, uc, req, cred, tree0;
+await t('사용자 자격증명 요청(π_u) → 세션 발급 요청 → 로컬 CIA 서명 → 증명 생성 → vkey 로 검증된다', async () => {
   reg = await createRegistration();
   session = createSessionKey();
   const sk_u = Buffer.alloc(32, 3).toString('hex');
-  req = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, attrs: [19n, 410n, 0n, 0n], max_height: await mh() });
-  cred = await localIssue(pointFromStrings(req.body.C_pt), 31337n, { max_height: BigInt(req.body.max_height) });
+  uc = await buildUserCredRequest({ uid, s_u: reg.s_u, r_u: reg.r_u, sk_u, attrs: [19n, 410n, 0n, 0n] });
+  assert.equal(await verifyUserCred({ uid, C_u_pt: uc.C_u_pt, cm_u: reg.cm_u, proof: parseUserCredProof(uc.body.proof) }), true, 'CIA 가 하는 검증');
+  assert.equal(uc.body.uid, uid.toString());
+  assert.equal(uc.body.C_u_pt.x, uc.C_u_pt.x.toString());
+  assert.equal(uc.Cf_u, await compressPoint(uc.C_u_pt));
+  assert.equal(uc.leaf, await userLeaf(uc.Cf_u), '지갑이 보관하는 리프 = userLeaf(Cf_u)');
+  assert.ok(uc.body.sig_u?.S, '요청 서명');
+  req = await buildIssueRequest({ uid, Cf_u: uc.Cf_u, arid, sk_u, session, chainid: 31337n, max_height: await mh() });
+  cred = await localIssue(uc.Cf_u, req.C_s_pt, 31337n, { max_height: BigInt(req.body.max_height) });
+  assert.equal(cred.Cf_s, req.Cf_s.toString(), 'CIA 가 압축한 Cf_s 와 지갑의 Cf_s 가 같다');
   ({ tree: tree0 } = await syncRevocationTree(provider, logAddress));
   const { proof, publicSignals, revRoot, tag } = await buildCredentialProof({
-    uid, arid, s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs: [19n, 410n, 0n, 0n], credential: cred, pk_CIA, pk_trace, tree: tree0,
+    uid, arid, s_u: reg.s_u, blind_u: uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs: [19n, 410n, 0n, 0n],
+    credential: cred, pk_CIA, pk_trace, tree: tree0,
   });
   assert.equal(revRoot, tree0.getRoot());
   assert.equal(publicSignals.length, 14);
@@ -107,34 +116,43 @@ await t('ProofCache 는 같은 root·세션이면 재사용, root 가 바뀌면 
   assert.equal(cache.get(tree0.getRoot(), 's2'), null);
 });
 
-await t('내 credential 이 폐기되면 동기화된 트리로는 witness 를 만들 수 없다', async () => {
-  await publish([await credLeaf(BigInt(cred.C))]);
+await t('내 사용자 자격증명 리프(userLeaf(Cf_u))가 폐기되면 동기화된 트리로는 witness 를 만들 수 없다', async () => {
+  await publish([await userLeaf(BigInt(cred.Cf_u))]);
   const { tree } = await syncRevocationTree(provider, logAddress);
   await assert.rejects(
-    () => buildCredentialProof({ uid, arid, s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs: [19n, 410n, 0n, 0n], credential: cred, pk_CIA, pk_trace, tree }),
+    () => buildCredentialProof({ uid, arid, s_u: reg.s_u, blind_u: uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs: [19n, 410n, 0n, 0n], credential: cred, pk_CIA, pk_trace, tree }),
     /is a member/,
   );
 });
 
 await t('buildCredentialProof 는 pk_trace 없이는 throw — 태그 없는 성명은 이제 없다', async () => {
   await assert.rejects(
-    () => buildCredentialProof({ uid, arid, s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs: [19n, 410n, 0n, 0n], credential: cred, pk_CIA, tree: tree0 }),
+    () => buildCredentialProof({ uid, arid, s_u: reg.s_u, blind_u: uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs: [19n, 410n, 0n, 0n], credential: cred, pk_CIA, tree: tree0 }),
     /pk_trace/,
   );
 });
 
-await t('buildIssueRequest 는 allowAgent 를 싣고(기본 0) r_s 는 더 이상 받지 않는다', async () => {
+await t('buildIssueRequest 는 allowAgent 를 싣고(기본 0) ZKP·C_pt 없이 Cf_u·C_s_pt 를 싣는다', async () => {
   const session = createSessionKey();
   const sk_u = Buffer.alloc(32, 3).toString('hex');
   const h = await mh();
-  const a = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, max_height: h });
+  const a = await buildIssueRequest({ uid, Cf_u: uc.Cf_u, arid, sk_u, session, chainid: 31337n, max_height: h });
   assert.equal(a.body.allowAgent, '0');
   assert.equal(a.body.r_s, undefined);
+  assert.equal(a.body.proof, undefined, 'V5 세션 요청에는 ZKP 가 없다');
+  assert.equal(a.body.C_pt, undefined);
+  assert.equal(a.body.Cf_u, uc.Cf_u.toString());
+  assert.equal(a.body.chainid, '31337');
+  assert.deepEqual(Object.keys(a.body).sort(), ['C_s_pt', 'Cf_u', 'allowAgent', 'chainid', 'max_height', 'sig_u', 'uid']);
+  assert.equal(a.body.C_s_pt.x, a.C_s_pt.x.toString());
+  assert.equal(a.Cf_s, await compressPoint(a.C_s_pt));
+  assert.equal(typeof a.secrets.blind_s, 'bigint');
   assert.equal(a.body.max_height, h.toString(), '지갑이 정한 max_height 를 그대로 싣는다');
-  const b = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, allowAgent: 1n, max_height: h });
+  const b = await buildIssueRequest({ uid, Cf_u: uc.Cf_u, arid, sk_u, session, chainid: 31337n, allowAgent: 1n, max_height: h });
   assert.equal(b.body.allowAgent, '1');
-  await assert.rejects(() => buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, allowAgent: 2n, max_height: h }), /allowAgent/);
-  await assert.rejects(() => buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n }), /max_height/);
+  await assert.rejects(() => buildIssueRequest({ uid, Cf_u: uc.Cf_u, arid, sk_u, session, chainid: 31337n, allowAgent: 2n, max_height: h }), /allowAgent/);
+  await assert.rejects(() => buildIssueRequest({ uid, Cf_u: uc.Cf_u, arid, sk_u, session, chainid: 31337n }), /max_height/);
+  await assert.rejects(() => buildIssueRequest({ uid, arid, sk_u, session, chainid: 31337n, max_height: h }), /Cf_u/);
   // 그리드: 같은 창의 head 는 같은 값, 항상 head + ttl 이상, 그리드 배수
   assert.equal(chooseMaxHeight(1234n), 1600n); assert.equal(chooseMaxHeight(1299n), 1600n); assert.equal(chooseMaxHeight(1300n), 1600n); assert.equal(chooseMaxHeight(1301n), 1700n);
   assert.equal(chooseMaxHeight(10n, { ttlBlocks: 5n, grid: 1n }), 15n);

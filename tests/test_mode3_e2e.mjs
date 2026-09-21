@@ -1,11 +1,12 @@
-// Mode 3 전 구간: 등록 → 발급 → 로그인 → 계정 폐기 → 게시 → 거절 → 복구 → 재발급 → 로그인.
+// Mode 3 전 구간: 등록 → 사용자 자격증명(π_u) → 세션 발급 → 로그인 → 계정 폐기 → 게시 → 거절 → 복구 → 재발급 → 로그인.
+// V5(2026-09-21): 폐기 리프는 사용자 자격증명 Cf_u 하나 — 두 서비스의 세션이 리프 하나로 함께 죽는 것도 본다.
 // 격리 CIA + :8545 RevocationLog + 지갑 라이브러리 + RP 검증기. (chain 그룹)
 //   node tests/test_mode3_e2e.mjs
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { getProvider } from './helpers/mode3_chain.mjs';
-import { createRegistration, createSessionKey, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, ProofCache, VKEY_PATH } from '../lib/mode3_wallet.js';
+import { createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, ProofCache, VKEY_PATH } from '../lib/mode3_wallet.js';
 import { pointToStrings } from '../lib/mode3_issuance.js';
 import { createRpVerifier } from '../lib/mode3_rp.js';
 import { randomScalar } from '../lib/mode3_credential.js';
@@ -41,16 +42,16 @@ try {
   const rp = createRpVerifier({ provider, logAddress: cia.logAddress, vkey, pkCIA: pk_CIA, arid, chainId: 31337n, pkTrace: pk_trace });
   const cache = new ProofCache();
 
-  // 지갑 상태
+  // 지갑 상태. userCred = buildUserCredRequest 결과(C_u_pt·Cf_u·leaf), blind_u 는 그 비밀, blind_s 는 현재 세션의 비밀.
   const reg = await createRegistration();
-  let sk_u, session, blind, cred, sessionRs;
+  let sk_u, session, userCred, blind_u, blind_s, cred, sessionRs;
 
   /** 최신 root 로 동기화해 π 를 만들고(캐시 히트면 재사용) 세션의 r_s 위 새 σ 와 함께 RP 에 제출. */
   async function loginRound() {
     const { tree, root } = await syncRevocationTree(provider, cia.logAddress);
     let cached = cache.get(root, session.wallet.address);
     if (!cached) {
-      cached = await buildCredentialProof({ uid, arid, s_u: reg.s_u, blind, pk_i: session.pk_i, attrs: ATTRS, credential: cred, pk_CIA, pk_trace, tree });
+      cached = await buildCredentialProof({ uid, arid, s_u: reg.s_u, blind_u, blind_s, pk_i: session.pk_i, attrs: ATTRS, credential: cred, pk_CIA, pk_trace, tree });
       cache.set(root, session.wallet.address, cached);
     }
     return submit(cached);
@@ -59,11 +60,21 @@ try {
   async function submit(cached) {
     return rp.verifyLogin({ proof: cached.proof, publicSignals: cached.publicSignals, sig: await signChallenge(session.wallet, sessionRs.toString()), r_s: sessionRs });
   }
-  async function newSessionAndIssue() {
+  /** 사용자 자격증명이 없으면 받는다(사용자당 하나 — 첫 로그인 또는 폐기 뒤). */
+  async function ensureUserCred() {
+    if (userCred) return;
+    const uc = await buildUserCredRequest({ uid, s_u: reg.s_u, r_u: reg.r_u, sk_u, attrs: ATTRS });
+    const r = await cia.post('/cia/user_cred', uc.body);
+    assert.equal(r.status, 201, j(r.body));
+    assert.equal(r.body.Cf_u, uc.Cf_u.toString()); assert.equal(r.body.leaf, uc.leaf.toString(), 'CIA 의 리프 = 지갑의 userLeaf(Cf_u)');
+    userCred = uc; blind_u = uc.secrets.blind_u;
+  }
+  async function newSessionAndIssue(aridFor = arid) {
+    await ensureUserCred();
     session = createSessionKey();
     const max_height = BigInt(await provider.getBlockNumber()) + 300n;   // 지갑이 정한다
-    const req = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, attrs: ATTRS, max_height });
-    blind = req.secrets.blind;
+    const req = await buildIssueRequest({ uid, Cf_u: userCred.Cf_u, arid: aridFor, sk_u, session, chainid: 31337n, max_height });
+    blind_s = req.secrets.blind_s;
     sessionRs = randomScalar();
     const r = await cia.post('/cia/issue', req.body);
     return r;
@@ -95,6 +106,44 @@ try {
     staleProof = before;   // 폐기 뒤 재제출용
   });
 
+  await t('V5: 두 서비스(arid A·B)에 로그인한 뒤 사용자 자격증명 리프 하나가 게시되면 두 세션 모두 죽는다', async () => {
+    const aridB = arid + 1n;
+    const pk_traceB = await combinePublicKey((await createShare()).X, (await createShare()).X);
+    const rpB = createRpVerifier({ provider, logAddress: cia.logAddress, vkey, pkCIA: pk_CIA, arid: aridB, chainId: 31337n, pkTrace: pk_traceB });
+    // A: 현재 세션(앞 케이스에서 로그인 성공). B: 새 세션 — 같은 사용자 자격증명(Cf_u) 위에 다른 arid 로 발급
+    const sessA = session, rsA = sessionRs, blindA = blind_s, credA = cred;
+    const rB = await newSessionAndIssue(aridB);
+    assert.equal(rB.status, 200, j(rB.body));
+    cred = rB.body;
+    assert.equal(cred.Cf_u, credA.Cf_u, '두 세션 자격증명은 같은 Cf_u 를 가리킨다');
+    const { tree } = await syncRevocationTree(provider, cia.logAddress);
+    const piB = await buildCredentialProof({ uid, arid: aridB, s_u: reg.s_u, blind_u, blind_s, pk_i: session.pk_i, attrs: ATTRS, credential: cred, pk_CIA, pk_trace: pk_traceB, tree });
+    assert.equal((await rpB.verifyLogin({ proof: piB.proof, publicSignals: piB.publicSignals, sig: await signChallenge(session.wallet, sessionRs.toString()), r_s: sessionRs })).ok, true);
+    // 폐기 리프 하나 게시(scope=credential: 계정은 살아 있다)
+    const rv = await cia.adminPost('/cia/revoke', { uid: uid.toString(), scope: 'credential' });
+    assert.equal(rv.status, 200, j(rv.body));
+    assert.equal(rv.body.inserted.length, 1);
+    assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
+    const { tree: t2 } = await syncRevocationTree(provider, cia.logAddress);
+    await assert.rejects(() => buildCredentialProof({ uid, arid, s_u: reg.s_u, blind_u, blind_s: blindA, pk_i: sessA.pk_i, attrs: ATTRS, credential: credA, pk_CIA, pk_trace, tree: t2 }), /is a member/);
+    await assert.rejects(() => buildCredentialProof({ uid, arid: aridB, s_u: reg.s_u, blind_u, blind_s, pk_i: session.pk_i, attrs: ATTRS, credential: cred, pk_CIA, pk_trace: pk_traceB, tree: t2 }), /is a member/);
+    // 물린 Cf_u 로는 새 세션도 못 받는다(403 no_user_cred)
+    const stale = await buildIssueRequest({ uid, Cf_u: userCred.Cf_u, arid, sk_u, session: createSessionKey(), chainid: 31337n, max_height: BigInt(await provider.getBlockNumber()) + 300n });
+    const rs = await cia.post('/cia/issue', stale.body);
+    assert.equal(rs.status, 403, j(rs.body)); assert.equal(rs.body.reason, 'no_user_cred');
+    // 계정은 살아 있으므로 새 사용자 자격증명을 받으면 다시 로그인된다(PPID 는 s_u 에서 나오므로 그대로)
+    userCred = null; session = sessA; sessionRs = rsA; blind_s = blindA; cred = credA;
+    const r2 = await newSessionAndIssue();
+    assert.equal(r2.status, 200, j(r2.body));
+    cred = r2.body;
+    const v = await loginRound();
+    assert.equal(v.ok, true, j(v));
+    assert.equal(v.PPID, PPID1, '사용자 자격증명을 새로 받아도 PPID 는 같다');
+    // 다음 케이스(계정 폐기 → 옛 π stale_root)가 쓸 옛 π 를 현재 root 로 갈아 둔다
+    staleProof = cache.get((await syncRevocationTree(provider, cia.logAddress)).root, session.wallet.address);
+    assert.ok(staleProof);
+  });
+
   await t('계정 폐기 + 게시 → 옛 π 는 stale_root 로 거절', async () => {
     assert.equal((await cia.adminPost('/cia/revoke', { uid: uid.toString(), scope: 'account' })).status, 200);
     assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
@@ -106,15 +155,20 @@ try {
 
   await t('폐기된 credential 로는 새 root 에 대한 π 도 만들 수 없다', async () => {
     const { tree } = await syncRevocationTree(provider, cia.logAddress);
-    await assert.rejects(() => buildCredentialProof({ uid, arid, s_u: reg.s_u, blind, pk_i: session.pk_i, attrs: ATTRS, credential: cred, pk_CIA, pk_trace, tree }), /is a member/);
+    await assert.rejects(() => buildCredentialProof({ uid, arid, s_u: reg.s_u, blind_u, blind_s, pk_i: session.pk_i, attrs: ATTRS, credential: cred, pk_CIA, pk_trace, tree }), /is a member/);
   });
 
   await t('disabled 계정은 재발급 거절 (403)', async () => {
-    assert.equal((await newSessionAndIssue()).status, 403);
+    // 폐기된 Cf_u 로 세션 요청 → disabled 가 먼저 걸린다(account_disabled). 사용자 자격증명 요청도 403.
+    const r = await newSessionAndIssue();
+    assert.equal(r.status, 403, j(r.body)); assert.equal(r.body.reason, 'account_disabled');
+    const uc = await buildUserCredRequest({ uid, s_u: reg.s_u, r_u: reg.r_u, sk_u, attrs: ATTRS });
+    assert.equal((await cia.post('/cia/user_cred', uc.body)).status, 403);
   });
 
-  await t('복구(set_disabled false) → 재발급 → 로그인, PPID 유지 (§6.6)', async () => {
+  await t('복구(set_disabled false) → 새 사용자 자격증명 → 재발급 → 로그인, PPID 유지 (§6.6)', async () => {
     assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid: uid.toString(), disabled: false })).status, 200);
+    userCred = null;   // 폐기된 사용자 자격증명은 못 쓴다 — ensureUserCred 가 새 것을 받는다
     const r = await newSessionAndIssue();
     assert.equal(r.status, 200, j(r.body));
     cred = r.body;

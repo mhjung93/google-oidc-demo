@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { ethers } from 'ethers';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { getProvider } from './helpers/mode3_chain.mjs';
-import { createRegistration, createSessionKey, buildIssueRequest, syncRevocationTree, buildCredentialProof, VKEY_PATH } from '../lib/mode3_wallet.js';
+import { createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree, buildCredentialProof, VKEY_PATH } from '../lib/mode3_wallet.js';
 import { createShare, combinePublicKey, partialDecrypt } from '../lib/mode3_trace.js';
 import { signOpenRequest, signOpenResult } from '../lib/mode3_opening.js';
 
@@ -33,14 +33,18 @@ try {
   const r0 = await cia.post('/cia/register', { uid: '12345', pwd: 'password123', cm_u: { x: reg.cm_u.x.toString(), y: reg.cm_u.y.toString() } });
   assert.equal(r0.status, 201, j(r0.body));
   const sk_u = r0.body.sk_u;
+  // V5: 사용자 자격증명(π_u)은 사용자당 하나 — 한 번 받아 모든 트랜스크립트에 쓴다.
+  const uc = await buildUserCredRequest({ uid, s_u: reg.s_u, r_u: reg.r_u, sk_u, attrs: [0n, 0n, 0n, 0n] });
+  const r1 = await cia.post('/cia/user_cred', uc.body);
+  assert.equal(r1.status, 201, j(r1.body));
   async function loginTranscript(svc, pk_trace = svc.pk_trace, allowAgent = 0n) {
     const session = createSessionKey();
     const max_height = BigInt(await provider.getBlockNumber()) + 300n;
-    const req = await buildIssueRequest({ uid, arid: BigInt(svc.arid), s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid: 31337n, attrs: [0n, 0n, 0n, 0n], allowAgent, max_height });
+    const req = await buildIssueRequest({ uid, Cf_u: uc.Cf_u, arid: BigInt(svc.arid), sk_u, session, chainid: 31337n, allowAgent, max_height });
     const issued = await cia.post('/cia/issue', req.body);
     assert.equal(issued.status, 200, j(issued.body));
     const { tree } = await syncRevocationTree(provider, cia.logAddress);
-    const { proof, publicSignals, tag } = await buildCredentialProof({ uid, arid: BigInt(svc.arid), s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs: [0n, 0n, 0n, 0n], credential: issued.body, pk_CIA, pk_trace, tree });
+    const { proof, publicSignals, tag } = await buildCredentialProof({ uid, arid: BigInt(svc.arid), s_u: reg.s_u, blind_u: uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs: [0n, 0n, 0n, 0n], credential: issued.body, pk_CIA, pk_trace, tree });
     return { proof, publicSignals, tag, PPID: publicSignals[0] };
   }
   async function openRequest(svc, T, { share = svc.share, wallet = svc.serviceWallet, ts = nowTs(), arid = svc.arid } = {}) {
@@ -191,13 +195,16 @@ try {
       const r0 = await cia2.post('/cia/register', { uid: '12345', pwd: 'password123', cm_u: { x: reg.cm_u.x.toString(), y: reg.cm_u.y.toString() } });
       assert.equal(r0.status, 201, j(r0.body));
       const session = createSessionKey();
-      const req = await buildIssueRequest({ uid, arid: BigInt(S.arid), s_u: reg.s_u, r_u: reg.r_u, sk_u: r0.body.sk_u, session, chainid: 31337n, attrs: [0n, 0n, 0n, 0n], max_height: BigInt(await provider.getBlockNumber()) + 300n });
+      const uc2 = await buildUserCredRequest({ uid, s_u: reg.s_u, r_u: reg.r_u, sk_u: r0.body.sk_u, attrs: [0n, 0n, 0n, 0n] });
+      const ru = await cia2.post('/cia/user_cred', uc2.body);
+      assert.equal(ru.status, 201, j(ru.body));
+      const req = await buildIssueRequest({ uid, Cf_u: uc2.Cf_u, arid: BigInt(S.arid), sk_u: r0.body.sk_u, session, chainid: 31337n, max_height: BigInt(await provider.getBlockNumber()) + 300n });
       const issued = await cia2.post('/cia/issue', req.body);
       assert.equal(issued.status, 200, j(issued.body));
       const { tree } = await syncRevocationTree(provider, cia2.logAddress);
       const keys2 = (await cia2.get('/cia/public_keys')).body;
       const pk_CIA2 = { x: BigInt(keys2.pk_CIA.x), y: BigInt(keys2.pk_CIA.y) };
-      const { proof, publicSignals, tag } = await buildCredentialProof({ uid, arid: BigInt(S.arid), s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs: [0n, 0n, 0n, 0n], credential: issued.body, pk_CIA: pk_CIA2, pk_trace: S.pk_trace, tree });
+      const { proof, publicSignals, tag } = await buildCredentialProof({ uid, arid: BigInt(S.arid), s_u: reg.s_u, blind_u: uc2.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs: [0n, 0n, 0n, 0n], credential: issued.body, pk_CIA: pk_CIA2, pk_trace: S.pk_trace, tree });
       const D = await partialDecrypt(S.share.x, tag.c1);
       const D_svc = { x: D.x.toString(), y: D.y.toString() };
       const ts = nowTs();

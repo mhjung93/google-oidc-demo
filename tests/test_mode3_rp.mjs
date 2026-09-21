@@ -6,10 +6,9 @@ import fs from 'node:fs';
 import { ethers } from 'ethers';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import { getProvider, fundAddress, deployRevocationLog, signRootPublication, rootToBytes32 } from './helpers/mode3_chain.mjs';
-import { credLeaf, createRevocationTree } from '../lib/mode3_revocation.js';
-import { credMessage, compressPoint, randomScalar } from '../lib/mode3_credential.js';
-import { pointFromStrings } from '../lib/mode3_issuance.js';
-import { createRegistration, createSessionKey, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, VKEY_PATH } from '../lib/mode3_wallet.js';
+import { userLeaf } from '../lib/mode3_revocation.js';
+import { credMessageV5, compressPoint, randomScalar } from '../lib/mode3_credential.js';
+import { createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, VKEY_PATH } from '../lib/mode3_wallet.js';
 import { createRpVerifier } from '../lib/mode3_rp.js';
 import { createShare, combinePublicKey } from '../lib/mode3_trace.js';
 
@@ -36,10 +35,11 @@ const svcShare = await createShare(), aaShare = await createShare();
 const pk_trace = await combinePublicKey(svcShare.X, aaShare.X);
 const other_trace = await combinePublicKey((await createShare()).X, (await createShare()).X);
 
-async function issueWith(key, C_pt, { max_height, chainid = 31337n, allowAgent = 0n } = {}) {
-  const C = await compressPoint(C_pt);
-  const s = eddsa.signPoseidon(key.prv, F.e(await credMessage(C, max_height, chainid, allowAgent)));
-  return { C: C.toString(), max_height: max_height.toString(), chainid: chainid.toString(), allowAgent: allowAgent.toString(), sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() } };
+// 서버 없이 CIA 서명만 흉내낸다. V5: Sign(D_V5, Cf_u, Cf_s, max_height, chainid, allowAgent).
+async function issueWith(key, Cf_u, C_s_pt, { max_height, chainid = 31337n, allowAgent = 0n } = {}) {
+  const Cf_s = await compressPoint(C_s_pt);
+  const s = eddsa.signPoseidon(key.prv, F.e(await credMessageV5(Cf_u, Cf_s, max_height, chainid, allowAgent)));
+  return { Cf_u: Cf_u.toString(), Cf_s: Cf_s.toString(), max_height: max_height.toString(), chainid: chainid.toString(), allowAgent: allowAgent.toString(), sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() } };
 }
 async function publish(leavesBig) {
   const { tree } = await syncRevocationTree(provider, logAddress);
@@ -53,10 +53,12 @@ async function makeLogin({ key = CIA, useArid = arid, ttlBlocks = 300n, chainid 
   const attrs = [19n, 410n, 0n, 0n];
   const r_s = randomScalar();   // 서비스 챌린지 — σ 에만 쓴다(공개 입력엔 없다)
   const max_height = BigInt(await provider.getBlockNumber()) + ttlBlocks;   // 지갑이 정한다(2026-09-18 §3.2 갱신)
-  const req = await buildIssueRequest({ uid, arid: useArid, s_u: reg.s_u, r_u: reg.r_u, sk_u: Buffer.alloc(32, 3).toString('hex'), session, chainid, attrs, allowAgent, max_height });
-  const cred = await issueWith(key, pointFromStrings(req.body.C_pt), { max_height, chainid, allowAgent });
+  const sk_u = Buffer.alloc(32, 3).toString('hex');
+  const uc = await buildUserCredRequest({ uid, s_u: reg.s_u, r_u: reg.r_u, sk_u, attrs });   // 사용자 자격증명(π_u) — CIA 검증은 test_mode3_wallet 에서
+  const req = await buildIssueRequest({ uid, Cf_u: uc.Cf_u, arid: useArid, sk_u, session, chainid, allowAgent, max_height });
+  const cred = await issueWith(key, uc.Cf_u, req.C_s_pt, { max_height, chainid, allowAgent });
   const { tree } = await syncRevocationTree(provider, logAddress);
-  const { proof, publicSignals } = await buildCredentialProof({ uid, arid: useArid, s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs, credential: cred, pk_CIA: key.pub, pk_trace: useTrace, tree });
+  const { proof, publicSignals } = await buildCredentialProof({ uid, arid: useArid, s_u: reg.s_u, blind_u: uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs, credential: cred, pk_CIA: key.pub, pk_trace: useTrace, tree });
   return { proof, publicSignals, r_s, sig: await signChallenge(session.wallet, r_s.toString()), session, cred, reg };
 }
 
@@ -170,7 +172,7 @@ await t("음성 c': 다른 chainid 로 발급된 credential 은 wrong_chain", as
 await t('음성 b: 폐기 게시 후 옛 root 의 π 는 stale_root', async () => {
   const L = await makeLogin();
   assert.equal((await rp.verifyLogin(L)).ok, true);
-  await publish([await credLeaf(BigInt(L.cred.C))]);
+  await publish([await userLeaf(BigInt(L.cred.Cf_u))]);
   assert.deepEqual(await rp.verifyLogin(L), { ok: false, reason: 'stale_root' });
 });
 
@@ -216,14 +218,15 @@ await t('같은 사용자·같은 RP 라도 chainid 가 다르면 PPID 가 다�
   const reg = await createRegistration();
   const sk_u = Buffer.alloc(32, 3).toString('hex');
   const attrs = [0n, 0n, 0n, 0n];
+  const uc = await buildUserCredRequest({ uid, s_u: reg.s_u, r_u: reg.r_u, sk_u, attrs });   // 사용자 자격증명은 체인과 무관 — 하나를 두 체인에 쓴다
   const ppids = [];
   for (const chainid of [31337n, 1n]) {
     const session = createSessionKey();
     const max_height = BigInt(await provider.getBlockNumber()) + 300n;
-    const req = await buildIssueRequest({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, sk_u, session, chainid, attrs, max_height });
-    const cred = await issueWith(CIA, pointFromStrings(req.body.C_pt), { max_height, chainid });
+    const req = await buildIssueRequest({ uid, Cf_u: uc.Cf_u, arid, sk_u, session, chainid, max_height });
+    const cred = await issueWith(CIA, uc.Cf_u, req.C_s_pt, { max_height, chainid });
     const { tree } = await syncRevocationTree(provider, logAddress);
-    const { publicSignals } = await buildCredentialProof({ uid, arid, s_u: reg.s_u, blind: req.secrets.blind, pk_i: session.pk_i, attrs, credential: cred, pk_CIA: CIA.pub, pk_trace, tree });
+    const { publicSignals } = await buildCredentialProof({ uid, arid, s_u: reg.s_u, blind_u: uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs, credential: cred, pk_CIA: CIA.pub, pk_trace, tree });
     ppids.push(BigInt(publicSignals[0]));
   }
   assert.notEqual(ppids[0], ppids[1]);
