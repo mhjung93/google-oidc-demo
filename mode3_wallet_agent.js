@@ -95,7 +95,7 @@ async function ensureUserCred(tree) {
   if (r.status === 201 || r.status === 200) {
     reg.userCred = { C_u_pt: { x: req.C_u_pt.x.toString(), y: req.C_u_pt.y.toString() }, Cf_u: req.Cf_u.toString(), blind_u: req.secrets.blind_u.toString(), leaf: req.leaf.toString(), issuedAt: new Date().toISOString() };
     // 옛 자격증명의 세션은 다음 게시에 죽는다 — 지금 지운다
-    state.sessions = {}; cache.clear?.();
+    state.sessions = {}; cache.clear();
     persist();
     return { status: 200, body: r.body, fresh: true };
   }
@@ -241,7 +241,10 @@ async function proveSession(rsKey, synced, timings) {
   let cached = cache.get(synced.root, rsKey);
   const cacheHit = Boolean(cached);
   if (!cached) {
-    if (synced.tree.has(BigInt(reg.userCred?.leaf ?? 0n))) throw Object.assign(new Error('revoked'), { reason: 'revoked' });
+    // 세션이 물린 사용자 자격증명 위에 발급된 경우(동시 로그인 경합으로 ensureUserCred 가 그 사이 새 C_u 를 받았다) — 지금 C_u 의
+    // blind_u 로는 증명이 안 만들어진다(witness 실패 → 500). 그 세션은 다음 게시에 어차피 죽으므로 revoked 로 정리한다.
+    if (s.credential.Cf_u !== reg.userCred?.Cf_u) throw Object.assign(new Error('revoked'), { reason: 'revoked' });
+    if (synced.tree.has(BigInt(reg.userCred.leaf))) throw Object.assign(new Error('revoked'), { reason: 'revoked' });
     const t = Date.now();
     cached = await buildCredentialProof({
       uid: BigInt(reg.uid), arid: BigInt(s.arid), s_u: BigInt(reg.s_u), blind_u: BigInt(reg.userCred.blind_u), blind_s: BigInt(s.blind_s), pk_i: BigInt(s.pk_i),
@@ -302,6 +305,7 @@ app.post('/wallet/attrs', async (req, res) => {
     let synced;
     try { synced = await syncRevocationTree(provider, LOG_ADDRESS); } catch (e) { return res.status(503).json({ reason: 'chain_unavailable', detail: e.message }); }
     lastSync = { root: synced.root.toString(), head: synced.head.toString(), tree: synced.tree };
+    pruneSessions(synced.head);   // 만료된 세션은 sessionsDropped 에 세지 않는다
     const dropped = Object.keys(state.sessions).length;
     const prev = { attrs: state.registration.attrs, userCred: state.registration.userCred };
     state.registration.attrs = attrs;

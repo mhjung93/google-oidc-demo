@@ -22,10 +22,17 @@ Mode 2 데모(:3000/:4000/:5001)와 **공존**한다. 포트·상태 파일이 �
    2026-09-16 회로 변경(트레이스 태그)으로 build/mode3 를 다시 만들었다 — 노트북 등 다른 기계의 build/mode3 도 다시 복사해야 한다.
    회로 V4(2026-09-18)로 build/mode3 를 다시 만들었다 — 다른 기계의 build/mode3 도 다시 복사. 이 스크립트가
    `contracts/PiCredVerifier.sol` 도 만든다.
-   회로 V5(2026-09-21, 자격증명 이중 구조)로 build/mode3 를 또 다시 만들었다. **운영 주의**: 회로가 바뀌면 (a) `npx hardhat compile` 로
-   `PiCredVerifier` 아티팩트를 다시 만들고(옛 아티팩트로 배포한 검증기는 새 π 를 `InvalidProof` 로 거절한다), (b) RP 팩토리를 재배포하고
-   (`mode3_rp_registration.json` 의 `factoryAddress` 삭제 — 아래 6), (c) 폐기 리프 규약이 바뀌었으므로(사용자 자격증명 리프, 태그 4)
-   `RevocationLog` 도 재배포한다(아래 3, 옛 로그의 리프는 새 규약과 섞이지 않는다). 즉 아래 "재시연 세트" 를 통째로 한 번 한다.
+   회로 V5(2026-09-21, 자격증명 이중 구조)로 build/mode3 를 또 다시 만들었다. **운영 주의 — 회로가 바뀐 뒤의 순서**(하나라도 빠지면
+   새 π 가 온체인에서 `InvalidProof` 나 root 불일치로 막힌다):
+   (1) `bash scripts/build_mode3_circuit.sh …` — zkey·vkey·wasm 과 `contracts/PiCredVerifier.sol` 재생성.
+   (2) `npx hardhat compile` — `artifacts/` 의 `PiCredVerifier` 를 다시 만든다(옛 아티팩트로 배포한 검증기는 새 π 를 `InvalidProof` 로 거절한다).
+   (3) CIA: 폐기 리프 규약이 바뀌었으므로(사용자 자격증명 리프, 태그 4) `RevocationLog` 를 새로 배포하고(아래 3) `.env` 의 `CIA_LOG_ADDRESS` 를 갱신한다
+       — 옛 로그의 리프는 새 규약과 섞이지 않는다.
+   (4) 서비스: `mode3_rp_registration.json` 에서 **`verifierAddress` 와 `factoryAddress` 를 둘 다 지운 뒤** 재시작한다. `factoryAddress` 만 지우면
+       RP 가 옛 `verifierAddress`(V4 검증기)를 그대로 다시 써 새 팩토리가 옛 검증기를 가리키고 π 는 여전히 `InvalidProof` 다(`mode3_rp.js` `ensureFactory`).
+       env 에 `MODE3_VERIFIER_ADDRESS` 가 있으면 새로 배포한 V5 검증기 주소로 바꾸거나 지운다.
+   (5) 지갑: 상태 v6 는 기동 시 자동 이행된다(세션·userCred 비움, 등록 유지).
+   즉 아래 "재시연 세트" 를 통째로 한 번 하는 것과 같다.
 1. `npx hardhat node` (다른 터미널에 상주).
 2. `CIA_ADMIN_SECRET=<아무 문자열> node cia.js` — 처음 기동에서 `cia_keys.json`을 만든다. `curl -s 127.0.0.1:4100/cia/public_keys`의 `ethAddress`를 적어 두고 종료한다.
 3. `CIA_ETH_ADDRESS=<ethAddress> npx hardhat run scripts/deploy_mode3_log.cjs --network localhost` — `RevocationLog`를 배포하고 CIA 주소에 1 ETH를 넣는다. 출력의 `CIA_LOG_ADDRESS=0x…`를 `.env`에 추가한다.
@@ -36,7 +43,8 @@ Mode 2 데모(:3000/:4000/:5001)와 **공존**한다. 포트·상태 파일이 �
    (`/admin` → 등록된 서비스 → 승인)에서 승인하면 5초 안에 arid·pk_trace·cert_s 를 받아 mode3_rp_registration.json 에 두고
    활성화된다. CIA 키를 바꾸거나 cia_state.json 을 지웠으면 이 파일도 지운다(그러면 새 키로 다시 승인받아야 한다).
 6. RP 는 승인 뒤 팩토리를 배포해 `mode3_rp_registration.json` 에 `factoryAddress` 를 둔다. 재배포하려면 그 필드를 지우거나
-   `MODE3_RP_FACTORY_ADDRESS` 로 덮어쓴다.
+   `MODE3_RP_FACTORY_ADDRESS` 로 덮어쓴다. **주의**: 회로를 다시 빌드한 뒤라면 `verifierAddress` 도 함께 지워야 한다 — 그 필드가 남아 있으면
+   새 팩토리가 옛 검증기를 그대로 가리킨다(위 0 의 (4)).
    **경고**: 팩토리를 다시 배포하거나 `MODE3_MAX_ROOT_AGE` 를 바꾸면 모든 PPID 계정 주소가 바뀐다 — 옛 계정의 잔액은 옛
    팩토리 주소로만 접근할 수 있으니, 잔액이 있는 데모를 진행 중이면 먼저 빼낸다.
 
@@ -87,8 +95,8 @@ RP 페이지는 반드시 `127.0.0.1`로 연다 — 지갑 에이전트의 CORS 
 | 8 | RP | 로그인 | `새 발급=true`, 성공, **PPID 가 2 와 같다** |
 | 9 | RP → 관리자 → RP | 로그인 기록 아래 PPID 로 "개봉 요청" → 관리자 "개봉 요청 → 승인" → RP "결과 확인" | 202 pending → approved → uid=12345 |
 
-온체인 실행은 트랜잭션마다 π 를 첨부하고 컨트랙트가 매번 검증한다(가스 실측 387,675 — `Mode3Wallet.execute()` 정상 실행, 배포
-제외, Task 3 값). root 게시가 `MAX_ROOT_AGE` 블록보다 오래되면 `RootTooOld` 로 멈추므로 CIA 하트비트를 켜 둔다.
+온체인 실행은 트랜잭션마다 π 를 첨부하고 컨트랙트가 매번 검증한다(가스 실측: V4 회로 387,675(Task 3 값), V5 회로 356,441~356,477(실행마다 π 바이트에 따라 수십 가스 차이) —
+`Mode3Wallet.execute()` 정상 실행, EOA 로 value 0 호출, 계정 배포 제외; `tests/test_mode3_wallet_agent.mjs` 의 tx 케이스 출력. Task 8 이 다시 측정한다). root 게시가 `MAX_ROOT_AGE` 블록보다 오래되면 `RootTooOld` 로 멈추므로 CIA 하트비트를 켜 둔다.
 트랜잭션은 지갑 페이지에서만 시작한다 — 서비스 페이지는 지갑의 `/wallet/tx` 를 부를 수 없다(CORS).
 
 성명은 로그인마다 새로 발급되고(설계 2026-09-15 §5) 세션 r_s 안에서만 재사용된다. RP 는 r_s 를 로그인 때 한 번 소비하고 그 뒤 세션 식별자로 쓴다. 폐기는 재검증에서 효력을 갖는다.
