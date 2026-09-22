@@ -21,7 +21,8 @@ import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { createSecretSource, stripSecrets, validateWitness } from './lib/mode3_secret_source.js';
-import { createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, signSessionRequest, signAttrsRequest, normalizeDisclosure, disclosureKey, ProofCache, chooseMaxHeight } from './lib/mode3_wallet.js';
+import { createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, buildCredentialProof, signChallenge, signSessionRequest, signAttrsRequest, normalizeDisclosure, disclosureKey, ProofCache, chooseMaxHeight } from './lib/mode3_wallet.js';
+import { createRevocationSync } from './lib/mode3_rcl_sync.js';
 import { signPayload, proofToCalldata, parseExecuteReceipt, decodeExecuteCalldata, factoryAt, walletAt, walletInterface, FACTORY_ABI } from './lib/mode3_onchain.js';
 import { pointToStrings } from './lib/mode3_issuance.js';
 import { normalizeAttrs, SCALAR_MAX, ppid, randomScalar } from './lib/mode3_credential.js';
@@ -30,6 +31,8 @@ import { verifyRpCert } from './lib/mode3_rp_cert.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.MODE3_WALLET_PORT) || 5100;
 const STATE_FILE = process.env.MODE3_WALLET_STATE_FILE || path.join(__dirname, 'mode3_wallet_state.json');
+// 폐기 트리 체크포인트(공개 데이터만). 지우면 다음 동기화가 창세기부터 재생한다(스펙 2026-09-23 §4).
+const RCL_CACHE_FILE = process.env.MODE3_WALLET_RCL_CACHE || path.join(path.dirname(STATE_FILE), 'mode3_wallet_rcl.json');
 const CIA_URL = process.env.MODE3_CIA_URL || 'http://127.0.0.1:4100';
 const RP_ORIGIN = process.env.MODE3_RP_ORIGIN || 'http://127.0.0.1:3100';
 const LOG_ADDRESS = process.env.CIA_LOG_ADDRESS || null;
@@ -80,6 +83,13 @@ function pruneSessions(head) {
 
 const cache = new ProofCache();   // (root, r_s) → {proof, publicSignals}. 메모리만
 let lastSync = null;              // { root, head, tree } — tree 는 /wallet/status 가 userCred.revoked 를 다시 동기화하지 않고 판정하는 데 쓴다
+
+// 증분 동기화 객체. LOG_ADDRESS 가 없으면 null — 그 경우 세 라우트는 지금처럼 chain_unavailable 을 낸다.
+const rcl = LOG_ADDRESS ? createRevocationSync({ provider, logAddress: LOG_ADDRESS, cacheFile: RCL_CACHE_FILE, log: (m) => console.warn(`[wallet] ${m}`) }) : null;
+async function syncTree() {
+  if (!rcl) throw new Error('CIA_LOG_ADDRESS not configured');
+  return rcl.sync();
+}
 
 // pk_CIA — cert_s 검증용. env 가 있으면 그것, 없으면 CIA 에서 한 번 받아 고정(TOFU, RP 와 같은 규칙).
 let pkCiaP = null;
@@ -243,9 +253,11 @@ app.get('/wallet/status', async (req, res) => {
   const reg = state.registration;
   const uc = reg?.userCred ?? null;
   const userCred = uc ? { Cf_u: uc.Cf_u, issuedAt: uc.issuedAt, revoked: lastSync?.tree ? lastSync.tree.has(BigInt(uc.leaf)) : null } : null;
+  const st = rcl ? rcl.stats() : null;
   res.json({
     registered: Boolean(reg), uid: reg?.uid ?? null, attrs: reg?.attrs ?? null, userCred, sessions,
     head, lastRoot: lastSync?.root ?? null, logAddress: LOG_ADDRESS,
+    rcl: st ? { leaves: st.leaves, lastSyncedBlock: st.lastSyncedBlock === null ? null : st.lastSyncedBlock.toString(), lastMode: st.lastMode, cacheFile: st.cacheFile } : null,
   });
 });
 
@@ -328,7 +340,7 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     const timings = { syncMs: 0, userCredMs: 0, issueMs: 0, proveMs: 0 };
     let t = Date.now();
     let synced;
-    try { synced = await syncRevocationTree(provider, LOG_ADDRESS); }
+    try { synced = await syncTree(); }
     catch (e) { return res.status(503).json({ reason: 'chain_unavailable', detail: e.message }); }
     timings.syncMs = Date.now() - t;
     lastSync = { root: synced.root.toString(), head: synced.head.toString(), tree: synced.tree };
@@ -432,10 +444,14 @@ async function proveSession(rsKey, synced, timings, disclosure = null, src) {
       pk_trace: { x: BigInt(s.pk_trace.x), y: BigInt(s.pk_trace.y) }, tree: synced.tree, disclosure,
     });
     timings.proveMs = Date.now() - t;
-    cache.set(synced.root, rsKey, cached, discKey);
+    // 증명은 증인이 계산된 root(cached.revRoot)에 대한 것이다. 동기화와 증인 생성 사이에 다른 요청이 리프를 붙였다면
+    // synced.root 보다 새 root 이고, 그 root 로 캐시해야 다음 재검증이 맞는 π 를 찾는다(스펙 §5).
+    cache.set(cached.revRoot, rsKey, cached, discKey);
+    if (cached.revRoot !== synced.root) cache.set(synced.root, rsKey, cached, discKey);   // 이번 sync 의 root 로 찾는 호출도 맞춰 준다
   }
+  const root = (cached.revRoot ?? synced.root).toString();
   const sig = await signChallenge(sessionWallet, rsKey);
-  return { proof: cached.proof, publicSignals: cached.publicSignals, sig, pk_i: s.pk_i, r_s: rsKey, root: synced.root.toString(), cacheHit, allowAgent: s.allowAgent, max_height: s.credential.max_height };
+  return { proof: cached.proof, publicSignals: cached.publicSignals, sig, pk_i: s.pk_i, r_s: rsKey, root, cacheHit, allowAgent: s.allowAgent, max_height: s.credential.max_height };
 }
 
 app.post('/wallet/revalidate', loginCors, async (req, res) => {
@@ -457,7 +473,7 @@ app.post('/wallet/revalidate', loginCors, async (req, res) => {
     }
     let t = Date.now();
     let synced;
-    try { synced = await syncRevocationTree(provider, LOG_ADDRESS); }
+    try { synced = await syncTree(); }
     catch (e) { return res.status(503).json({ reason: 'chain_unavailable', detail: e.message }); }
     timings.syncMs = Date.now() - t;
     lastSync = { root: synced.root.toString(), head: synced.head.toString(), tree: synced.tree };
@@ -515,6 +531,13 @@ app.post('/wallet/self_revoke', async (req, res) => {
   } catch (e) { res.status(502).json({ reason: 'cia_unavailable', detail: e.message }); }
 });
 
+// 운영·시연용: 폐기 트리 체크포인트를 버린다. 다음 동기화가 창세기부터 재생한다(스펙 §8). 같은 오리진만.
+app.post('/wallet/rcl/reset', (req, res) => {
+  if (!rcl) return res.status(503).json({ reason: 'chain_unavailable', detail: 'CIA_LOG_ADDRESS not configured' });
+  const { deferred } = rcl.reset();
+  res.json({ ok: true, deferred });
+});
+
 app.post('/wallet/request', loginCors, async (req, res) => {
   try {
     const { r_s, body } = req.body ?? {};
@@ -555,7 +578,7 @@ async function buildExecute(req) {
   const timings = { syncMs: 0, issueMs: 0, proveMs: 0, txMs: 0 };
   let t = Date.now();
   let synced;
-  try { synced = await syncRevocationTree(provider, LOG_ADDRESS); }
+  try { synced = await syncTree(); }
   catch (e) { return fail(503, { reason: 'chain_unavailable', detail: e.message }); }
   timings.syncMs = Date.now() - t;
   lastSync = { root: synced.root.toString(), head: synced.head.toString(), tree: synced.tree };

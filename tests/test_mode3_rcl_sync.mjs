@@ -223,7 +223,7 @@ await t('진행 중인 sync() 와 겹치는 reset() 은 그 sync() 를 깨지 �
   await rcl.sync();                                    // tree·lastSyncedBlock 을 먼저 확립한다(복원 또는 부트스트랩)
   await publish([18n]);                                 // 델타가 실제로 있어야 다음 sync() 가 lastSyncedBlock+1n 을 밟는다
   const p = rcl.sync();
-  rcl.reset();                                           // in-flight 도중 — 수정 전이면 head > lastSyncedBlock(null) 비교에서 TypeError
+  rcl.reset();                                           // in-flight 도중 — 수정 전이면 즉시 tree=null 로 지워 재개한 run() 의 tree.insert()/getRoot() 가 null 역참조로 깨진다
   const r = await p;
   assert.equal(r.root, (await syncRevocationTree(provider, logAddress)).root);
   assert.ok(!fs.existsSync(cacheFile), 'in-flight 종료 후 지연된 reset 이 캐시를 지운다');

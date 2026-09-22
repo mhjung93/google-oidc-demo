@@ -156,6 +156,36 @@ try {
     S2 = rs;
   });
 
+  // 이 지점부터는 first(첫 로그인의 π)를 더는 참조하지 않는다 — 재시작으로 증명 캐시가 비면 새로 만든 π 의 tag(재무작위화)가
+  // first 와 달라 앞의 deepEqual 비교들이 깨진다. S2 는 방금 복구돼 살아 있고 폐기되지 않았다.
+  await t('폐기 트리 동기화: 리셋 뒤 sync 는 bootstrap, 재시작 뒤 재검증은 restore, 다시 리셋하면 bootstrap 으로 돈다 (스펙 §3·§6·§8)', async () => {
+    // 여기까지 이미 로그인·재검증이 여러 번 지나 lastMode 가 delta 일 수 있다 — 먼저 리셋해 다음 sync 가 확실히 bootstrap 이 되게 한다.
+    assert.equal((await wallet.post('/wallet/rcl/reset', {})).body.deferred, false);
+    const boot = await revalidate(S2);
+    assert.equal(boot.status, 200, j(boot.body));
+    const s1 = (await wallet.get('/wallet/status')).body;
+    assert.equal(s1.rcl.lastMode, 'bootstrap');
+    assert.ok(fs.existsSync(s1.rcl.cacheFile), `캐시 파일이 있어야 한다: ${s1.rcl.cacheFile}`);
+    const leavesBefore = s1.rcl.leaves;
+    await stack.restartWallet();
+    const r = await revalidate(S2);
+    assert.equal(r.status, 200, j(r.body));
+    const s2 = (await wallet.get('/wallet/status')).body;
+    assert.equal(s2.rcl.lastMode, 'restore');
+    assert.equal(s2.rcl.leaves, leavesBefore);
+  });
+
+  await t('POST /wallet/rcl/reset 은 캐시를 지우고 다음 재검증이 bootstrap 으로 돈다', async () => {
+    const before = (await wallet.get('/wallet/status')).body.rcl.cacheFile;
+    const r = await wallet.post('/wallet/rcl/reset', {});
+    assert.equal(r.status, 200, j(r.body));
+    assert.equal(r.body.deferred, false, '이 시점엔 진행 중인 동기화가 없다');
+    assert.ok(!fs.existsSync(before));
+    const v = await revalidate(S2);
+    assert.equal(v.status, 200, j(v.body));
+    assert.equal((await wallet.get('/wallet/status')).body.rcl.lastMode, 'bootstrap');
+  });
+
   await t('자격증명만 폐기(scope=credential), 게시 전 로그인: CIA no_user_cred → 지갑이 새 C_u 를 받아 재시도 → 200, PPID 동일, Cf_u 바뀜', async () => {
     const before = (await wallet.get('/wallet/status')).body.userCred;
     assert.equal(before.revoked, false);
