@@ -97,12 +97,13 @@ contract Mode3Wallet {
 
         // 검증 통과 후 실행 결과와 무관하게 nonce 를 올린다 — 실패한 payload 의 재생을 막는다.
         nonce += 1;
-        bytes memory data = payload.data;
-        if (pub[14] != 0) {
-            // 꼬리 9워드(288바이트): mask, lo[4], hi[4]. 대상은 calldatasize 끝에서 읽는다(ERC-2771 방식). mask = 0 이면 붙이지 않아
-            // 꼬리를 모르는 대상과 호환된다. Solidity ABI 디코더는 남는 calldata 를 무시한다.
-            data = abi.encodePacked(payload.data, pub[14], pub[15], pub[16], pub[17], pub[18], pub[19], pub[20], pub[21], pub[22]);
-        }
+        // 꼬리 9워드(288바이트: mask, lo[4], hi[4])는 mask 값과 무관하게 항상 붙인다(mask = 0 이면 아홉 워드가 전부 0).
+        // payload.data 는 사용자가 임의로 채우는 필드라, mask ≠ 0 일 때만 붙이면 사용자가 캐시된 mask = 0 의 π 를 재사용하면서
+        // payload.data 끝에 스스로 위조한 (mask, lo, hi) 9워드를 덧붙여 대상이 그것을 읽게 만들 수 있다(2026-09-22 최종 리뷰
+        // Critical, PoC 로 재현). 항상 붙이면 calldata 끝 288바이트는 반드시 이번 실행에서 검증된 π 의 공개 입력이므로
+        // payload.data 안의 위조 꼬리는 그 앞에 묻혀 대상이 읽지 못한다. 대상은 calldatasize 끝에서 읽는다(ERC-2771 방식).
+        // Solidity ABI 디코더는 남는 calldata 를 무시하므로 꼬리를 모르는 대상과도 호환된다.
+        bytes memory data = abi.encodePacked(payload.data, pub[14], pub[15], pub[16], pub[17], pub[18], pub[19], pub[20], pub[21], pub[22]);
         (ok, ) = payload.to.call{value: payload.value}(data);
         // 이벤트는 내부 호출 뒤에 낸다 — 호출 앞으로 옮기지 말 것(JS 는 발신 주소로도 거르지만 순서도 지킨다).
         emit Executed(payload.nonce, payload.to, payload.value, ok);

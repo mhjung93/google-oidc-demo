@@ -240,13 +240,42 @@ describe('Mode3Wallet', function () {
     expect(await factory.isWallet(walletAddr)).to.equal(true);
   });
 
-  it('V6: pub 은 23개이고 mask = 0 이면 꼬리 없이 실행, Disclosure 이벤트 없음', async () => {
+  it('V6: pub 은 23개이고 mask = 0 이면 꼬리는 항상 붙지만 Disclosure 이벤트는 없음', async () => {
     const { wallet } = await deployStack(ST);
     const { payload, sig } = await signedPayload(ST, wallet);
     const rc = await (await wallet.execute(payload, sig, ST.a, ST.b, ST.c, ST.pub)).wait();
     assert.equal(ST.pub.length, 23);
     const { disclosure } = parseExecuteReceipt(rc, wallet.target);
     assert.equal(disclosure, null);
+  });
+
+  // 최종 리뷰 Critical(2026-09-22, Ruling 7) — reviewer PoC(scratchpad/poc_tail_forgery.test.mjs) 를 회귀 테스트로 옮긴 것.
+  // 캐시된 mask = 0 의 π 로 payload.data 안에 직접 위조한 꼬리(mask=3, lo/hi)를 실어 AttrGate.claim 을 속일 수 있는지 확인한다.
+  // 꼬리를 mask 와 무관하게 항상 붙이면(고정 후) 지갑이 실제로 계산한 (mask=0, 0×9) 꼬리가 위조 꼬리 뒤에 또 붙어
+  // calldata 끝 288바이트는 항상 0 이 되므로 AttrGate 가 "need slot0,1" 로 거절해야 한다.
+  it('V6(회귀): mask = 0 π + payload.data 안의 위조 꼬리로는 AttrGate.claim 을 속일 수 없다; 진짜 mask = 3 π 는 여전히 통과', async () => {
+    const { wallet, factory } = await deployStack(ST);
+    const Gate = await ethers.getContractFactory('AttrGate');
+    const gate = await Gate.deploy(await factory.getAddress(), 840n, 2007n);   // 정책이 ST 의 실제 국가(410)와 다르게 잡혀 있다 — 위조 없이는 통과 못 한다
+    // 위조 꼬리: mask=3, lo=[0,840,0,0], hi=[2007,840,0,0] — 실제로는 mask=0 π 라 회로가 이런 값을 검증하지 않았다.
+    const fakeTail = ethers.AbiCoder.defaultAbiCoder().encode(['uint256', 'uint256[4]', 'uint256[4]'], [3n, [0n, 840n, 0n, 0n], [2007n, 840n, 0n, 0n]]);
+    const data = gate.interface.encodeFunctionData('claim') + fakeTail.slice(2);
+    const { payload, sig } = await signedPayload(ST, wallet, { to: await gate.getAddress(), data });   // discMask 0 — 진짜 π 와 일치
+    const rc = await (await wallet.execute(payload, sig, ST.a, ST.b, ST.c, ST.pub)).wait();
+    const { executed, disclosure } = parseExecuteReceipt(rc, wallet.target);
+    assert.equal(executed.success, false, '위조 꼬리가 통과하면 안 된다');
+    assert.equal(disclosure, null);
+    assert.equal(await gate.claimed(wallet.target), false, 'claim 이 통과했다 = 위조 성공(회귀)');
+
+    // 대조: 실제 속성(국가 410)에 맞는 정책의 게이트에 진짜 mask=3 π(국가 410 공개)로 보내면 통과한다.
+    const DS = withInput(await statement({ disclosure: { mask: 0b0011n, lo: [0n, 410n, 0n, 0n], hi: [2007n, 410n, 0n, 0n] } }));
+    const { wallet: wallet2, factory: factory2 } = await deployStack(DS);
+    const gate2 = await Gate.deploy(await factory2.getAddress(), 410n, 2007n);
+    const data2 = gate2.interface.encodeFunctionData('claim');
+    const real = await signedPayload(DS, wallet2, { to: await gate2.getAddress(), data: data2, discMask: 0b0011n, discLo: DS.fx.disclosure.lo, discHi: DS.fx.disclosure.hi });
+    const rc2 = await (await wallet2.execute(real.payload, real.sig, DS.a, DS.b, DS.c, DS.pub)).wait();
+    assert.equal(parseExecuteReceipt(rc2, wallet2.target).executed.success, true, '진짜 mask=3 π 는 여전히 통과해야 한다');
+    assert.equal(await gate2.claimed(wallet2.target), true);
   });
 
   it('V6: mask ≠ 0 이면 대상이 꼬리 9워드를 읽고 AttrGate.claim 이 통과한다; Disclosure 이벤트; 두 번째 claim 은 already claimed', async () => {

@@ -4,8 +4,10 @@ pragma solidity ^0.8.24;
 import "./Mode3WalletFactory.sol";
 
 /// @title 데모 대상 — 공개된 속성 구간으로 문을 연다 (선택 공개 설계 2026-09-22 §5.3)
-/// @notice Mode3Wallet.execute 가 π 검증 뒤 호출 데이터 꼬리에 붙인 (mask, lo[4], hi[4]) 를 읽는다. 꼬리는 팩토리가 배포한
-///   지갑만 붙일 수 있으므로 msg.sender 를 팩토리로 확인한다. 정책: 국가(a₁) = countryEq, 출생연도(a₀) ≤ birthYearMax.
+/// @notice Mode3Wallet.execute 가 π 검증 뒤 호출 데이터 꼬리에 붙인 (mask, lo[4], hi[4]) 를 읽는다. 이 꼬리는 mask 값과
+///   무관하게 항상 붙는다(mask = 0 이면 전부 0) — 그래야 payload.data 안에 사용자가 넣은 위조 꼬리가 그 앞에 묻힌다
+///   (2026-09-22 최종 리뷰 Critical). 꼬리는 팩토리가 배포한 지갑만 붙일 수 있으므로 msg.sender 를 팩토리로 확인한다.
+///   정책: 국가(a₁) = countryEq, 출생연도(a₀) ≤ birthYearMax.
 contract AttrGate {
     Mode3WalletFactory public immutable factory;
     uint64 public immutable countryEq;
