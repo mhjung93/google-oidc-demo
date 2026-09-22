@@ -442,6 +442,32 @@ try {
       assert.ok((await r.text()).includes(marker), `${p} 에 "${marker}" 가 있어야 한다`);
     }
   });
+  // 블록을 상한 너머로 진행시키므로(앞 케이스들의 세션이 만료된다) 끝부분에 둔다.
+  await t('Ruling 1: 세션 요청도 root 나이로 fail-closed — 게시 없이 상한을 넘기면 root_too_old, 새 게시 뒤 새 세션은 통과', async () => {
+    // 나이를 스스로 0 으로 만든다(속성 변경 → 게시). 앞 케이스의 게시 시점에 기대지 않는다.
+    assert.equal((await cia.adminPost(`/cia/accounts/${uid}/attrs`, { attrs: ['1991', '410', '3', '0'] })).status, 200);
+    assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
+    const l = await loginViaRp();
+    assert.equal(l.rp?.ok, true, j(l.rp));
+    const w = await wallet.post('/wallet/request', { r_s: l.r_s, body: 'hello' }, { Origin: rp.origin });
+    assert.equal(w.status, 200, j(w.body));
+    const ok1 = await rp.post('/api/mode3/request', { r_s: l.r_s, body: 'hello', sig: w.body.sig });
+    assert.equal(ok1.body.ok, true, j(ok1.body));
+    // 게시 없이 101블록 — 팩토리 maxRootAge(100) 초과. max_height(head+300~400)는 아직 안 지났으므로 expired 가 아니다.
+    const provider = getProvider();
+    try { await provider.send('hardhat_mine', ['0x65']); } finally { provider.destroy(); }
+    const stale = await rp.post('/api/mode3/request', { r_s: l.r_s, body: 'hello', sig: w.body.sig });
+    assert.equal(stale.status, 503, j(stale.body)); assert.equal(stale.body.reason, 'root_too_old', j(stale.body));
+    // 새 게시가 나이를 0 으로 되돌린다. 게시로 root 가 바뀌므로 옛 세션이 아니라 새 로그인으로 확인한다.
+    assert.equal((await cia.adminPost(`/cia/accounts/${uid}/attrs`, { attrs: ['1992', '410', '3', '0'] })).status, 200);
+    assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
+    const l2 = await loginViaRp();
+    assert.equal(l2.rp?.ok, true, j(l2.rp));
+    const w2 = await wallet.post('/wallet/request', { r_s: l2.r_s, body: 'hi' }, { Origin: rp.origin });
+    const ok2 = await rp.post('/api/mode3/request', { r_s: l2.r_s, body: 'hi', sig: w2.body.sig });
+    assert.equal(ok2.body.ok, true, j(ok2.body));
+  });
+
   // 맨 끝에 둔다 — RP 를 재기동하면 메모리 세션·챌린지가 사라져 앞 케이스들이 쓰던 세션이 죽는다.
   await t('D-I2: 팩토리 배포 뒤 env 만 바꿔 RP 를 재기동하면 팩토리의 maxRootAge·maxLifetime 을 채택하고 경고한다', async () => {
     const before = (await rp.get('/api/mode3/rp_info')).body;
@@ -454,6 +480,18 @@ try {
     assert.match(rp.log(), /온체인 값을 쓴다/, 'env 와 다르면 경고가 남아야 한다');
     const l = await loginViaRp();
     assert.equal(l.rp?.ok, true, `env(200)가 아니라 팩토리(400)를 써야 통과한다: ${j(l.rp)}`);
+  });
+  // 이 케이스는 RP 를 활성화되지 않는 상태로 두므로 반드시 맨 마지막이다.
+  await t('I-1: 팩토리 상수를 못 읽으면 env 로 되돌아가지 않고 검증기를 만들지 않는다 (503 factory_constants_unavailable, fail-closed)', async () => {
+    // MODE3_RP_FACTORY_ADDRESS 에 팩토리가 아닌 주소(폐기 로그)를 주면 maxRootAge()/maxLifetime() 조회가 실패한다.
+    await stack.restartRp({ MODE3_RP_FACTORY_ADDRESS: cia.logAddress }, { waitActive: false });
+    const info = (await rp.get('/api/mode3/rp_info')).body;
+    assert.equal(info.active, false, 'verifier 를 만들면 안 된다');
+    const login = await rp.post('/api/mode3/login', {});
+    assert.equal(login.status, 503); assert.equal(login.body.reason, 'factory_constants_unavailable', j(login.body));
+    const req = await rp.post('/api/mode3/request', {});
+    assert.equal(req.status, 503); assert.equal(req.body.reason, 'factory_constants_unavailable', j(req.body));
+    assert.match(rp.log(), /검증기를 만들지 않는다\(fail-closed\)/);
   });
 } finally {
   await stack.stop();

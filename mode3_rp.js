@@ -120,8 +120,8 @@ const MAX_ROOT_AGE = BigInt(process.env.MODE3_MAX_ROOT_AGE || MAX_ROOT_AGE_DEFAU
 // 지갑이 정한 max_height 의 상한 L(설계 2026-09-18 §3.2 갱신): head ≤ max_height ≤ head + L. 서비스·컨트랙트가 같은 값을 쓴다.
 const MAX_LIFETIME = BigInt(process.env.MODE3_MAX_LIFETIME_BLOCKS || MAX_LIFETIME_DEFAULT);
 async function ensureFactory() {
-  if (process.env.MODE3_RP_FACTORY_ADDRESS) { reg.factoryAddress = ethers.getAddress(process.env.MODE3_RP_FACTORY_ADDRESS); return adoptFactoryConstants(); }
-  if (reg.factoryAddress) return adoptFactoryConstants();
+  if (process.env.MODE3_RP_FACTORY_ADDRESS) { reg.factoryAddress = ethers.getAddress(process.env.MODE3_RP_FACTORY_ADDRESS); return; }
+  if (reg.factoryAddress) return;
   const signer = await provider.getSigner(RELAYER_INDEX);
   const verifierAddress = process.env.MODE3_VERIFIER_ADDRESS || reg.verifierAddress || await deployVerifier(signer);
   const factoryAddress = await deployFactory(signer, { verifierAddress, arid: reg.arid, pkCIA, pkTrace: { x: BigInt(reg.pk_trace.x), y: BigInt(reg.pk_trace.y) }, logAddress: LOG_ADDRESS, maxRootAge: MAX_ROOT_AGE, maxLifetime: MAX_LIFETIME });
@@ -140,6 +140,46 @@ async function adoptFactoryConstants() {
     console.warn(`[rp] 팩토리 ${reg.factoryAddress} 의 maxRootAge=${EFFECTIVE_MAX_ROOT_AGE}·maxLifetime=${EFFECTIVE_MAX_LIFETIME} 가 env(${MAX_ROOT_AGE}·${MAX_LIFETIME})와 다르다 — 온체인 값을 쓴다. 바꾸려면 팩토리를 재배포한다`);
   }
 }
+// 팩토리는 있는데 상수 조회만 실패하는 경우(RPC 일시 오류·팩토리가 아닌 주소·ABI 불일치) env 값으로 되돌아가면
+// D-I2 가 그대로 재발한다 — 온체인은 100/400 인데 오프체인만 env 값으로 계속 서비스하게 된다(2026-09-23 리뷰 I-1).
+// 그래서 검증기를 아예 만들지 않고(fail-closed) 주기적으로 다시 시도한다. 그 동안 로그인·재검증·세션 요청은
+// 503 factory_constants_unavailable 이다(등록 대기와 구분한다).
+const FACTORY_CONSTANTS_RETRY_MS = Number(process.env.MODE3_FACTORY_CONSTANTS_RETRY_MS) || 5000;
+let factoryConstantsFailed = false;
+let constantsRetryTimer = null;
+let syncingConstants = false;
+/** 검증기가 없을 때 돌려줄 사유. 팩토리 상수를 못 읽은 것과 등록 대기를 구분한다. */
+const inactiveReason = () => (factoryConstantsFailed ? 'factory_constants_unavailable' : 'registration_pending');
+/** 팩토리 상수를 채택한 뒤에만 검증기를 만든다. 조회에 실패하면 검증기를 비우고 재시도를 건다. */
+async function syncFactoryConstantsAndVerifier() {
+  if (syncingConstants) return;
+  syncingConstants = true;
+  try {
+    if (reg.factoryAddress) {
+      try { await adoptFactoryConstants(); }
+      catch (e) {
+        factoryConstantsFailed = true;
+        verifier = null;
+        console.warn(`[rp] 팩토리 ${reg.factoryAddress} 의 maxRootAge/maxLifetime 조회 실패 — 검증기를 만들지 않는다(fail-closed): ${e.message}`);
+        startFactoryConstantsRetry();
+        return;
+      }
+    }
+    factoryConstantsFailed = false;
+    verifier = createRpVerifier({ provider, logAddress: LOG_ADDRESS, vkey, pkCIA, arid: BigInt(reg.arid), chainId, pkTrace: { x: BigInt(reg.pk_trace.x), y: BigInt(reg.pk_trace.y) }, maxLifetimeBlocks: EFFECTIVE_MAX_LIFETIME, maxRootAge: EFFECTIVE_MAX_ROOT_AGE });
+  } finally { syncingConstants = false; }
+}
+function startFactoryConstantsRetry() {
+  if (constantsRetryTimer) return;
+  constantsRetryTimer = setInterval(async () => {
+    await syncFactoryConstantsAndVerifier();
+    if (!factoryConstantsFailed) {
+      clearInterval(constantsRetryTimer); constantsRetryTimer = null;
+      console.log(`[rp] 팩토리 상수 조회 성공 — 검증기 활성화(maxRootAge ${EFFECTIVE_MAX_ROOT_AGE}, maxLifetime ${EFFECTIVE_MAX_LIFETIME})`);
+    }
+  }, FACTORY_CONSTANTS_RETRY_MS);
+  constantsRetryTimer.unref();
+}
 // AttrGate(설계 2026-09-22 §5.3): 팩토리 다음에 한 번 배포하는 데모 대상. 정책은 국가=410, 출생연도≤2007 고정(데모).
 // reg.attrGateFactory(그 배포가 물린 팩토리)가 지금의 reg.factoryAddress 와 다르면 다시 배포한다 — factoryAddress 가
 // 파일에 없는 채 env(MODE3_RP_FACTORY_ADDRESS)로만 매번 정해지는 경로에서도, factoryAddress 자체는 안 바뀌었는데
@@ -155,9 +195,10 @@ async function ensureAttrGate() {
 }
 async function activate() {
   // 팩토리를 먼저 본다(2026-09-23 점검 D-I2): 이미 배포된 팩토리가 있으면 그 immutable 이 오프체인 검증기의 상한이 된다.
-  // 팩토리가 없어도 오프체인 로그인은 된다 — 실패는 경고로 남기고(상한은 env 값) /wallet/tx 만 no_factory 가 된다.
+  // 팩토리를 **배포하지 못한** 경우(주소 자체가 없다)는 오프체인 로그인만 된다 — 대조할 온체인 상수가 없으니
+  // env 값이 곧 상한이고 /wallet/tx 만 no_factory 가 된다. 팩토리는 있는데 상수를 못 읽는 경우는 다르다(아래 fail-closed).
   try { await ensureFactory(); } catch (e) { console.warn(`[rp] 팩토리 배포 실패(오프체인 로그인만 가능): ${e.message}`); }
-  verifier = createRpVerifier({ provider, logAddress: LOG_ADDRESS, vkey, pkCIA, arid: BigInt(reg.arid), chainId, pkTrace: { x: BigInt(reg.pk_trace.x), y: BigInt(reg.pk_trace.y) }, maxLifetimeBlocks: EFFECTIVE_MAX_LIFETIME, maxRootAge: EFFECTIVE_MAX_ROOT_AGE });
+  await syncFactoryConstantsAndVerifier();
   try { await ensureAttrGate(); } catch (e) { console.warn(`[rp] AttrGate 배포 실패: ${e.message}`); }
 }
 if (reg.status === 'approved' && reg.cert_s) {
@@ -225,10 +266,10 @@ app.use(express.json({ limit: '1mb' }));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'rp.html')));
 
 app.get('/api/mode3/rp_info', (req, res) => {
-  res.json({ status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, pkCiaSource: pkCIA.source, chainId: chainId.toString(), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null });
+  res.json({ status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, pkCiaSource: pkCIA.source, chainId: chainId.toString(), active: Boolean(verifier), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null });
 });
 app.post('/api/mode3/challenge', (req, res) => {
-  if (!verifier) return res.status(503).json({ reason: 'registration_pending' });
+  if (!verifier) return res.status(503).json({ reason: inactiveReason() });
   res.json({ ...issueChallenge(), factoryAddress: reg.factoryAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null });
 });
 
@@ -240,7 +281,7 @@ async function verifyBody(req, res, r_s) {
 
 app.post('/api/mode3/login', async (req, res) => {
   try {
-    if (!verifier) return res.status(503).json({ ok: false, reason: 'registration_pending' });
+    if (!verifier) return res.status(503).json({ ok: false, reason: inactiveReason() });
     const { r_s } = req.body ?? {};
     if (typeof r_s !== 'string' || !/^[0-9]+$/.test(r_s)) return res.status(400).json({ ok: false, reason: 'malformed' });
     const rsStr = BigInt(r_s).toString();
@@ -259,7 +300,7 @@ app.post('/api/mode3/login', async (req, res) => {
 
 app.post('/api/mode3/revalidate', async (req, res) => {
   try {
-    if (!verifier) return res.status(503).json({ ok: false, reason: 'registration_pending' });
+    if (!verifier) return res.status(503).json({ ok: false, reason: inactiveReason() });
     const { r_s } = req.body ?? {};
     if (typeof r_s !== 'string' || !/^[0-9]+$/.test(r_s)) return res.status(400).json({ ok: false, reason: 'malformed' });
     const rsStr = BigInt(r_s).toString();
@@ -276,7 +317,7 @@ app.post('/api/mode3/revalidate', async (req, res) => {
 
 app.post('/api/mode3/request', async (req, res) => {
   try {
-    if (!verifier) return res.status(503).json({ ok: false, reason: 'registration_pending' });
+    if (!verifier) return res.status(503).json({ ok: false, reason: inactiveReason() });
     const { r_s, body, sig } = req.body ?? {};
     if (typeof r_s !== 'string' || !/^[0-9]+$/.test(r_s) || typeof body !== 'string' || typeof sig !== 'string') return res.status(400).json({ ok: false, reason: 'malformed' });
     const rsKey = BigInt(r_s).toString();   // login·revalidate 와 같은 정규 키(2026-09-18 점검 9)
@@ -287,6 +328,10 @@ app.post('/api/mode3/request', async (req, res) => {
     if (!view) return res.status(503).json({ ok: false, reason: 'chain_unavailable' });
     if (view.head > BigInt(s.max_height)) { sessions.delete(rsKey); return res.status(401).json({ ok: false, reason: 'expired' }); }
     if (view.root.toString() !== s.root) return res.status(401).json({ ok: false, reason: 'revalidate_required' });
+    // b′ — root 게시 나이(2026-09-23 점검 C-1, 리뷰 Ruling 1). verifyLogin 의 b′ 와 같은 상한·같은 위치(root 일치 뒤).
+    // CIA 게시가 멈추면 새 로그인뿐 아니라 이미 있는 세션의 요청도 함께 멈춘다. 세션 상태가 아니라 게시 생존의
+    // 문제이므로 chain_unavailable 과 같은 503 이다.
+    if (view.head - view.lastPublishedBlock > EFFECTIVE_MAX_ROOT_AGE) return res.status(503).json({ ok: false, reason: 'root_too_old' });
     if (!verifySessionRequest({ pk_i: s.pk_i, r_s: rsKey, body, sig })) return res.status(401).json({ ok: false, reason: 'bad_signature' });
     res.json({ ok: true, echo: body, PPID: s.PPID });
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
@@ -321,7 +366,7 @@ async function transcriptFromTx(txHash) {
 }
 app.post('/api/mode3/open', async (req, res) => {
   try {
-    if (!verifier) return res.status(503).json({ ok: false, reason: 'registration_pending' });
+    if (!verifier) return res.status(503).json({ ok: false, reason: inactiveReason() });
     const { PPID, txHash } = req.body ?? {};
     let T;
     if (typeof txHash === 'string') {

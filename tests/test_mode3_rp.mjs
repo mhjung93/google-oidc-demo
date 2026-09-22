@@ -189,8 +189,8 @@ await t('음성 b: 폐기 게시 후 옛 root 의 π 는 stale_root', async () =
 
 await t('음성 b′(C-1): 마지막 게시가 maxRootAge 블록보다 오래되면 root_too_old (온체인 RootTooOld 와 같은 상한, fail-closed)', async () => {
   const short = createRpVerifier({ provider, logAddress, vkey, pkCIA: CIA.pub, arid, chainId: 31337n, pkTrace: pk_trace, maxLifetimeBlocks: 400n, maxRootAge: 5n });
+  await publish([]);   // 나이를 스스로 0 으로 만든다 — 앞 케이스의 게시에 기대지 않는다(2026-09-23 리뷰 M-1)
   const L = await makeLogin();
-  // 직전 케이스의 게시 직후라 root 나이는 0 이다.
   assert.equal((await short.verifyLogin(L)).ok, true, '게시 직후에는 통과한다');
   await mineBlocks(6, provider);   // 게시 없이 6블록 → 나이 6 > 5
   const r = await short.verifyLogin({ ...L, sig: await signChallenge(L.session.wallet, L.r_s.toString()) });
@@ -262,6 +262,8 @@ await t('C-2: maskDisclosure 는 mask 비트가 0 인 슬롯의 lo/hi 를 0 으�
   assert.deepEqual(d.lo, [0n, 0n, 0n, 0n]); assert.deepEqual(d.hi, [2007n, 0n, 0n, 0n]); assert.equal(d.mask, 1n);
   const e = maskDisclosure({ mask: 10n, lo: [1n, 2n, 3n, 4n], hi: [5n, 6n, 7n, 8n] });   // 비트 1·3
   assert.deepEqual(e.lo, [0n, 2n, 0n, 4n]); assert.deepEqual(e.hi, [0n, 6n, 0n, 8n]);
+  // 길이 4 가 아니면 mask 비트와 슬롯이 어긋난다 — 공개 함수이므로 오용을 막는다(2026-09-23 리뷰 M-4)
+  assert.throws(() => maskDisclosure({ mask: 1n, lo: [0n, 0n, 0n], hi: [0n, 0n, 0n, 0n] }), /길이 4/);
 });
 
 provider.destroy();

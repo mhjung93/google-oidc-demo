@@ -103,13 +103,17 @@ export async function startIsolatedMode3Stack(opts = {}) {
       rp = client(rpOrigin, rpLog);
 
       // 등록 승인 대행(2026-09-16 §3): RP 는 pending 으로 떠 있다. 관리자 시크릿으로 승인하고 활성화를 기다린다.
-      const deadline = Date.now() + 20_000;
+      // status==='approved' 만 보면 안 된다 — 그 값은 registerOnce() 가 세팅하고 activate() 는 그 뒤에 돌아,
+      // "approved 인데 verifier 는 아직 null" 창이 컨트랙트 2개 배포 시간만큼 열린다(2026-09-23 리뷰 I-2).
+      // rp_info.active(= verifier 가 생겼는가)까지 기다려야 첫 /challenge 가 503 을 맞지 않는다.
+      const deadline = Date.now() + 60_000;
       let approved = false;
       while (Date.now() < deadline) {
         const list = (await cia.adminGet('/cia/rps')).body?.rps ?? [];
         const mine = list.find((e) => e.origin === rpOrigin);
         if (mine?.status === 'pending') await cia.adminPost(`/cia/rps/${mine.arid}/approve`);
-        if ((await rp.get('/api/mode3/rp_info')).body?.status === 'approved') { approved = true; break; }
+        const info = (await rp.get('/api/mode3/rp_info')).body;
+        if (info?.status === 'approved' && info?.active) { approved = true; break; }
         await new Promise((r) => setTimeout(r, 200));
       }
       if (!approved) throw new Error(`RP 등록 승인·활성화 실패\n${rp.log()}`);
@@ -129,14 +133,23 @@ export async function startIsolatedMode3Stack(opts = {}) {
        * RP 자식만 죽이고 같은 등록 파일·같은 공개 오리진으로 다시 띄운다(env 는 extraEnv 로 덮는다).
        * 메모리(챌린지·세션·logins 배열)만 사라진다 — 등록·팩토리·AttrGate 는 파일에 있어 그대로 물고 뜬다.
        * 팩토리 배포 뒤 env 만 바꿔 재기동하는 상황(2026-09-23 점검 D-I2)을 시험한다.
+       * 기본으로 rp_info.active 까지 기다린다. 일부러 활성화에 실패시키는 시험(예: 팩토리가 아닌 주소를
+       * MODE3_RP_FACTORY_ADDRESS 로 주기)에서는 waitActive:false 로 끈다.
        */
-      async restartRp(extraEnv = {}) {
+      async restartRp(extraEnv = {}, { waitActive = true } = {}) {
         if (!rpChild) throw new Error('restartRp: rp:false 로 띄운 스택이다');
         await stopChild(rpChild);
         children.splice(children.indexOf(rpChild), 1);
         rpSpawn = { ...rpSpawn, env: { ...rpSpawn.env, ...extraEnv } };
         rpChild = await spawnServer('mode3_rp.js', rpSpawn);
         children.push(rpChild);
+        if (!waitActive) return;
+        const deadline = Date.now() + 60_000;
+        while (Date.now() < deadline) {
+          if ((await rp.get('/api/mode3/rp_info')).body?.active) return;
+          await new Promise((r) => setTimeout(r, 200));
+        }
+        throw new Error(`restartRp: 재기동한 RP 가 활성화되지 않았다\n${rp.log()}`);
       },
       async stop() {
         for (const c of children.reverse()) await stopChild(c);
