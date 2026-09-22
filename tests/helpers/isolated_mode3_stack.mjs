@@ -80,9 +80,12 @@ export async function startIsolatedMode3Stack(opts = {}) {
     const wallet = client(walletOrigin, walletLog);
 
     let rp = null;
+    let rpChild = null;
+    // RP 자식은 restartRp() 가 같은 등록 파일·오리진으로 다시 띄운다(이미 배포된 팩토리를 물고 뜨는 경로 시험용).
+    let rpSpawn = null;
     if (withRp) {
       const rpLog = path.join(dir, 'rp.log');
-      children.push(await spawnServer('mode3_rp.js', {
+      rpSpawn = {
         env: {
           MODE3_RP_PORT: String(rpPort),
           MODE3_CIA_URL: cia.base,
@@ -94,7 +97,9 @@ export async function startIsolatedMode3Stack(opts = {}) {
           ...rpEnv,
         },
         readyUrl: `${rpOrigin}/api/mode3/rp_info`, logFile: rpLog,
-      }));
+      };
+      rpChild = await spawnServer('mode3_rp.js', rpSpawn);
+      children.push(rpChild);
       rp = client(rpOrigin, rpLog);
 
       // 등록 승인 대행(2026-09-16 §3): RP 는 pending 으로 떠 있다. 관리자 시크릿으로 승인하고 활성화를 기다린다.
@@ -119,6 +124,19 @@ export async function startIsolatedMode3Stack(opts = {}) {
         children.splice(children.indexOf(walletChild), 1);
         walletChild = await spawnServer('mode3_wallet_agent.js', walletSpawn);
         children.push(walletChild);
+      },
+      /**
+       * RP 자식만 죽이고 같은 등록 파일·같은 공개 오리진으로 다시 띄운다(env 는 extraEnv 로 덮는다).
+       * 메모리(챌린지·세션·logins 배열)만 사라진다 — 등록·팩토리·AttrGate 는 파일에 있어 그대로 물고 뜬다.
+       * 팩토리 배포 뒤 env 만 바꿔 재기동하는 상황(2026-09-23 점검 D-I2)을 시험한다.
+       */
+      async restartRp(extraEnv = {}) {
+        if (!rpChild) throw new Error('restartRp: rp:false 로 띄운 스택이다');
+        await stopChild(rpChild);
+        children.splice(children.indexOf(rpChild), 1);
+        rpSpawn = { ...rpSpawn, env: { ...rpSpawn.env, ...extraEnv } };
+        rpChild = await spawnServer('mode3_rp.js', rpSpawn);
+        children.push(rpChild);
       },
       async stop() {
         for (const c of children.reverse()) await stopChild(c);

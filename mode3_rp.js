@@ -17,7 +17,7 @@ import { verifyRpCert } from './lib/mode3_rp_cert.js';
 import { randomScalar } from './lib/mode3_credential.js';
 import { createShare, partialDecrypt, combinePublicKey, verifyShare } from './lib/mode3_trace.js';
 import { signOpenRequest, signOpenResult } from './lib/mode3_opening.js';
-import { deployVerifier, deployFactory, deployAttrGate, decodeExecuteCalldata, parseExecuteReceipt, MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT } from './lib/mode3_onchain.js';
+import { deployVerifier, deployFactory, deployAttrGate, decodeExecuteCalldata, parseExecuteReceipt, FACTORY_ABI, MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT } from './lib/mode3_onchain.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.MODE3_RP_PORT) || 3100;
@@ -120,14 +120,25 @@ const MAX_ROOT_AGE = BigInt(process.env.MODE3_MAX_ROOT_AGE || MAX_ROOT_AGE_DEFAU
 // 지갑이 정한 max_height 의 상한 L(설계 2026-09-18 §3.2 갱신): head ≤ max_height ≤ head + L. 서비스·컨트랙트가 같은 값을 쓴다.
 const MAX_LIFETIME = BigInt(process.env.MODE3_MAX_LIFETIME_BLOCKS || MAX_LIFETIME_DEFAULT);
 async function ensureFactory() {
-  if (process.env.MODE3_RP_FACTORY_ADDRESS) { reg.factoryAddress = ethers.getAddress(process.env.MODE3_RP_FACTORY_ADDRESS); return; }
-  if (reg.factoryAddress) return;
+  if (process.env.MODE3_RP_FACTORY_ADDRESS) { reg.factoryAddress = ethers.getAddress(process.env.MODE3_RP_FACTORY_ADDRESS); return adoptFactoryConstants(); }
+  if (reg.factoryAddress) return adoptFactoryConstants();
   const signer = await provider.getSigner(RELAYER_INDEX);
   const verifierAddress = process.env.MODE3_VERIFIER_ADDRESS || reg.verifierAddress || await deployVerifier(signer);
   const factoryAddress = await deployFactory(signer, { verifierAddress, arid: reg.arid, pkCIA, pkTrace: { x: BigInt(reg.pk_trace.x), y: BigInt(reg.pk_trace.y) }, logAddress: LOG_ADDRESS, maxRootAge: MAX_ROOT_AGE, maxLifetime: MAX_LIFETIME });
   reg = { ...reg, verifierAddress, factoryAddress };
   writeJsonAtomic(REG_FILE, reg, 0o600);
   console.log(`[rp] 팩토리 배포: ${factoryAddress} (verifier ${verifierAddress}, maxRootAge ${MAX_ROOT_AGE}, maxLifetime ${MAX_LIFETIME}) → ${REG_FILE}`);
+}
+// 팩토리가 이미 있으면 그 immutable(maxRootAge·maxLifetime)이 진실이다 — env 를 나중에 바꿔도 온체인은 안 바뀌므로
+// 오프체인 검증기는 온체인 값을 채택하고 경고한다(2026-09-23 점검 D-I2). 바꾸려면 팩토리를 재배포한다(문서 "처음 한 번" 6).
+let EFFECTIVE_MAX_ROOT_AGE = MAX_ROOT_AGE, EFFECTIVE_MAX_LIFETIME = MAX_LIFETIME;
+async function adoptFactoryConstants() {
+  const f = new ethers.Contract(reg.factoryAddress, FACTORY_ABI, provider);
+  const [ra, ml] = await Promise.all([f.maxRootAge(), f.maxLifetime()]);
+  EFFECTIVE_MAX_ROOT_AGE = BigInt(ra); EFFECTIVE_MAX_LIFETIME = BigInt(ml);
+  if (EFFECTIVE_MAX_ROOT_AGE !== MAX_ROOT_AGE || EFFECTIVE_MAX_LIFETIME !== MAX_LIFETIME) {
+    console.warn(`[rp] 팩토리 ${reg.factoryAddress} 의 maxRootAge=${EFFECTIVE_MAX_ROOT_AGE}·maxLifetime=${EFFECTIVE_MAX_LIFETIME} 가 env(${MAX_ROOT_AGE}·${MAX_LIFETIME})와 다르다 — 온체인 값을 쓴다. 바꾸려면 팩토리를 재배포한다`);
+  }
 }
 // AttrGate(설계 2026-09-22 §5.3): 팩토리 다음에 한 번 배포하는 데모 대상. 정책은 국가=410, 출생연도≤2007 고정(데모).
 // reg.attrGateFactory(그 배포가 물린 팩토리)가 지금의 reg.factoryAddress 와 다르면 다시 배포한다 — factoryAddress 가
@@ -143,9 +154,10 @@ async function ensureAttrGate() {
   console.log(`[rp] AttrGate 배포: ${attrGateAddress} (factory ${reg.factoryAddress}) → ${REG_FILE}`);
 }
 async function activate() {
-  verifier = createRpVerifier({ provider, logAddress: LOG_ADDRESS, vkey, pkCIA, arid: BigInt(reg.arid), chainId, pkTrace: { x: BigInt(reg.pk_trace.x), y: BigInt(reg.pk_trace.y) }, maxLifetimeBlocks: MAX_LIFETIME });
-  // 팩토리가 없어도 오프체인 로그인은 된다 — 실패는 경고로 남기고 /wallet/tx 만 no_factory 가 된다.
+  // 팩토리를 먼저 본다(2026-09-23 점검 D-I2): 이미 배포된 팩토리가 있으면 그 immutable 이 오프체인 검증기의 상한이 된다.
+  // 팩토리가 없어도 오프체인 로그인은 된다 — 실패는 경고로 남기고(상한은 env 값) /wallet/tx 만 no_factory 가 된다.
   try { await ensureFactory(); } catch (e) { console.warn(`[rp] 팩토리 배포 실패(오프체인 로그인만 가능): ${e.message}`); }
+  verifier = createRpVerifier({ provider, logAddress: LOG_ADDRESS, vkey, pkCIA, arid: BigInt(reg.arid), chainId, pkTrace: { x: BigInt(reg.pk_trace.x), y: BigInt(reg.pk_trace.y) }, maxLifetimeBlocks: EFFECTIVE_MAX_LIFETIME, maxRootAge: EFFECTIVE_MAX_ROOT_AGE });
   try { await ensureAttrGate(); } catch (e) { console.warn(`[rp] AttrGate 배포 실패: ${e.message}`); }
 }
 if (reg.status === 'approved' && reg.cert_s) {

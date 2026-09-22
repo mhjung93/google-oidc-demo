@@ -5,11 +5,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { ethers } from 'ethers';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
-import { getProvider, fundAddress, deployRevocationLog, signRootPublication, rootToBytes32 } from './helpers/mode3_chain.mjs';
+import { getProvider, fundAddress, deployRevocationLog, signRootPublication, rootToBytes32, mineBlocks } from './helpers/mode3_chain.mjs';
 import { userLeaf } from '../lib/mode3_revocation.js';
 import { credMessageV5, compressPoint, randomScalar } from '../lib/mode3_credential.js';
 import { createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, VKEY_PATH } from '../lib/mode3_wallet.js';
-import { createRpVerifier } from '../lib/mode3_rp.js';
+import { createRpVerifier, maskDisclosure } from '../lib/mode3_rp.js';
 import { createShare, combinePublicKey } from '../lib/mode3_trace.js';
 
 let failed = 0;
@@ -187,6 +187,20 @@ await t('음성 b: 폐기 게시 후 옛 root 의 π 는 stale_root', async () =
   assert.deepEqual(await rp.verifyLogin(L), { ok: false, reason: 'stale_root' });
 });
 
+await t('음성 b′(C-1): 마지막 게시가 maxRootAge 블록보다 오래되면 root_too_old (온체인 RootTooOld 와 같은 상한, fail-closed)', async () => {
+  const short = createRpVerifier({ provider, logAddress, vkey, pkCIA: CIA.pub, arid, chainId: 31337n, pkTrace: pk_trace, maxLifetimeBlocks: 400n, maxRootAge: 5n });
+  const L = await makeLogin();
+  // 직전 케이스의 게시 직후라 root 나이는 0 이다.
+  assert.equal((await short.verifyLogin(L)).ok, true, '게시 직후에는 통과한다');
+  await mineBlocks(6, provider);   // 게시 없이 6블록 → 나이 6 > 5
+  const r = await short.verifyLogin({ ...L, sig: await signChallenge(L.session.wallet, L.r_s.toString()) });
+  assert.equal(r.ok, false); assert.equal(r.reason, 'root_too_old');
+  // 하트비트(같은 root, 새 epoch)를 게시하면 나이가 0 으로 돌아와 다시 통과한다.
+  await publish([]);
+  const again = await short.verifyLogin({ ...L, sig: await signChallenge(L.session.wallet, L.r_s.toString()) });
+  assert.equal(again.ok, true, JSON.stringify(again, (k, v) => (typeof v === 'bigint' ? v.toString() : v)));
+});
+
 await t('음성 e: 증명을 손대면 bad_proof', async () => {
   const L = await makeLogin();
   const bad = JSON.parse(JSON.stringify(L.proof));
@@ -241,6 +255,13 @@ await t('같은 사용자·같은 RP 라도 chainid 가 다르면 PPID 가 다�
     ppids.push(BigInt(publicSignals[0]));
   }
   assert.notEqual(ppids[0], ppids[1]);
+});
+
+await t('C-2: maskDisclosure 는 mask 비트가 0 인 슬롯의 lo/hi 를 0 으로 지운다 (회로가 그 슬롯을 검증하지 않으므로 기록·표시하면 안 된다)', () => {
+  const d = maskDisclosure({ mask: 1n, lo: [0n, 410n, 7n, 0n], hi: [2007n, 410n, 9n, 0n] });
+  assert.deepEqual(d.lo, [0n, 0n, 0n, 0n]); assert.deepEqual(d.hi, [2007n, 0n, 0n, 0n]); assert.equal(d.mask, 1n);
+  const e = maskDisclosure({ mask: 10n, lo: [1n, 2n, 3n, 4n], hi: [5n, 6n, 7n, 8n] });   // 비트 1·3
+  assert.deepEqual(e.lo, [0n, 2n, 0n, 4n]); assert.deepEqual(e.hi, [0n, 6n, 0n, 8n]);
 });
 
 provider.destroy();

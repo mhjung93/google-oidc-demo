@@ -442,6 +442,19 @@ try {
       assert.ok((await r.text()).includes(marker), `${p} 에 "${marker}" 가 있어야 한다`);
     }
   });
+  // 맨 끝에 둔다 — RP 를 재기동하면 메모리 세션·챌린지가 사라져 앞 케이스들이 쓰던 세션이 죽는다.
+  await t('D-I2: 팩토리 배포 뒤 env 만 바꿔 RP 를 재기동하면 팩토리의 maxRootAge·maxLifetime 을 채택하고 경고한다', async () => {
+    const before = (await rp.get('/api/mode3/rp_info')).body;
+    assert.ok(before.factoryAddress, '이 시점엔 팩토리가 배포돼 있어야 한다');
+    // env 상한을 200 으로 내려 다시 띄운다. env 를 따랐다면 지갑의 max_height(head+300~400)가 bad_expiry 로 막힌다 —
+    // 온체인 immutable(400)을 채택하므로 로그인은 그대로 통과해야 한다.
+    await stack.restartRp({ MODE3_MAX_LIFETIME_BLOCKS: '200', MODE3_MAX_ROOT_AGE: '7' });
+    const after = (await rp.get('/api/mode3/rp_info')).body;
+    assert.equal(after.factoryAddress, before.factoryAddress, '팩토리는 재배포되지 않는다');
+    assert.match(rp.log(), /온체인 값을 쓴다/, 'env 와 다르면 경고가 남아야 한다');
+    const l = await loginViaRp();
+    assert.equal(l.rp?.ok, true, `env(200)가 아니라 팩토리(400)를 써야 통과한다: ${j(l.rp)}`);
+  });
 } finally {
   await stack.stop();
 }
