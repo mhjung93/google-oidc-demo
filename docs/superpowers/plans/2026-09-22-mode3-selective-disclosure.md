@@ -4,7 +4,7 @@
 
 **Goal:** AA 가 보증하는 속성을 C_u 에 싣고, 트랜잭션(또는 로그인)의 π_rp 에 구간 술어 `lo ≤ a_k ≤ hi` 를 공개 입력으로 붙여 체인이 검증한 뒤 대상 컨트랙트(`AttrGate`)가 그 값으로 동작하게 한다.
 
-**Architecture:** (1) 속성 출처를 AA 계정 기록으로 옮기고 π_u 를 "AA 가 uid·Σa_k 항을 빼고 (s_u, blind_u) 만 PoK" 로 바꾼다. (2) 회로 V6 는 공개 입력 23개(기존 14 + `disc_mask` + `disc_lo[4]` + `disc_hi[4]`)이고 속성은 64비트다. (3) `Mode3Wallet.execute` 가 `uint[23]` 을 받아 mask ≠ 0 이면 공개 값 9워드를 호출 데이터 꼬리에 붙여 대상에 전달하고, 세션키 서명 다이제스트가 공개 값 9워드(mask, lo[4], hi[4])를 덮는다. (4) 지갑 `/wallet/tx` 가 `disclose` 를 받아 새 π 를 만들고, 속성은 등록 응답·`/cia/attrs` 로 AA 에서 받는다.
+**Architecture:** (1) 속성 출처를 AA 계정 기록으로 옮기고 π_u 를 "AA 가 uid·Σa_k 항을 빼고 (s_u, blind_u) 만 PoK" 로 바꾼다. (2) 회로 V6 는 공개 입력 23개(기존 14 + `disc_mask` + `disc_lo[4]` + `disc_hi[4]`)이고 속성은 64비트다. (3) `Mode3Wallet.execute` 가 `uint[23]` 을 받아 mask 값과 무관하게 공개 값 9워드를 항상 호출 데이터 꼬리에 붙여 대상에 전달하고(mask = 0 이면 아홉 워드가 전부 0 — 최종 리뷰 Critical 대응, Ruling 7), 세션키 서명 다이제스트가 공개 값 9워드(mask, lo[4], hi[4])를 덮는다. (4) 지갑 `/wallet/tx` 가 `disclose` 를 받아 새 π 를 만들고, 속성은 등록 응답·`/cia/attrs` 로 AA 에서 받는다.
 
 **Tech Stack:** Node 22 ESM, circom 2.1.9 + snarkjs 0.7.5 (Groth16/BN254), circomlibjs (Baby Jubjub·Poseidon·EdDSA), Solidity 0.8.24 (hardhat), express, `node:assert` 테스트, `scripts/run_tests.sh` 그룹.
 
@@ -20,6 +20,9 @@
 - 세션키 서명 다이제스트: `keccak256(abi.encode(chainid, wallet, to, value, data, nonce, pub[14], pub[15..18], pub[19..22]))`(공개 값
   9워드 전부 — mask 만 덮으면 같은 세션키·같은 mask 로 만든 다른 구간의 π 를 릴레이어가 바꿔 끼울 수 있다, 리뷰에서 발견,
   2026-09-22) — JS `payloadDigest` 와 컨트랙트가 같아야 한다.
+- `Mode3Wallet.execute` 의 calldata 꼬리 9워드는 mask 값과 무관하게 **항상** 붙인다(mask = 0 이면 전부 0). `payload.data` 는
+  사용자 임의값이라, mask ≠ 0 일 때만 붙이면 캐시된 mask = 0 π 로 payload.data 안에 위조한 꼬리를 실어 대상이 그것을 읽게
+  만들 수 있다(2026-09-22 최종 리뷰 Critical, Ruling 7). `Disclosure` 이벤트는 여전히 mask ≠ 0 일 때만 낸다.
 - 데모 계정 속성(스펙 §3.1): `testuser` `['1990','410','2','0']`, `alice` `['2005','840','1','0']`. 슬롯 뜻: a₀ 출생연도, a₁ 국가 코드, a₂ 등급, a₃ 예비.
 - `AttrGate` 정책: `countryEq = 410`, `birthYearMax = 2007`; `claim()` 은 mask 비트 0·1 필수, `lo[1] == hi[1] == 410`, `hi[0] ≤ 2007`.
 - CIA 상태 v7: `accounts[uid].attrs` 추가, v6→v7 마이그레이션에서 활성 자격증명 전부 물림(리프 → pending). `idp_state.json`·`cia_state.json` 을 지우지 않는다.
@@ -569,7 +572,8 @@ Expected: 컴파일 단계에서 `Mode3Wallet.sol` 이 `uint[14]` 로 `PiCredVer
     }
 ```
 
-(구현 시 리뷰 반영으로 lo/hi 까지 덮도록 확장됨 — Global Constraints 참조.)
+(구현 시 리뷰 반영으로 lo/hi 까지 덮도록 확장됨 — Global Constraints 참조. 이어 최종 리뷰 반영으로 꼬리 9워드도 mask 와
+무관하게 항상 붙도록 바뀜 — Global Constraints 참조.)
 
 (`BadAllowAgent` 검사 바로 뒤에 `BadDisclosure` 를 둔다 — 싼 검사부터.) `contracts/Mode3WalletFactory.sol`:
 

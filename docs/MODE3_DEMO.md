@@ -41,7 +41,9 @@ Mode 2 데모(:3000/:4000/:5001)와 **공존**한다. 포트·상태 파일이 �
    를 **셋 다** 지운 뒤 재시작 — `attrGateAddress` 를 안 지워도 RP 가 알아서 다시 배포하지만(팩토리 주소가 바뀌면 자동으로
    재배포한다, `ensureAttrGate`), 옛 `verifierAddress`·`factoryAddress` 를 남기면 V5 와 같은 문제(새 π 가 옛 검증기에서
    `InvalidProof`)가 난다. (4) CIA 상태는 v7 로 **자동 마이그레이션**된다(코드 변경 불필요) — 계정마다 활성 C_u 를 물려(pending
-   에 리프로 넣어) 다음 게시에 나가게 한다. (5) 지갑 상태도 v7 로 **자동 이행**된다(옛 C_u·세션을 비운다, 등록 자체는 유지) —
+   에 리프로 넣어) 다음 게시에 나가게 한다. **CIA 기동이 이 v7 이행 리프를 자동 게시한다** — 옛 C_u 로 여전히 증명 가능한
+   창이 다음 하트비트까지 열려 있지 않게 한다(2026-09-22 최종 리뷰 Important, Ruling 8). 체인 RPC 가 아직 없으면 게시를
+   건너뛰고 경고만 남기므로, 그때는 체인이 뜬 뒤 `/cia/publish` 를 수동으로 호출한다. (5) 지갑 상태도 v7 로 **자동 이행**된다(옛 C_u·세션을 비운다, 등록 자체는 유지) —
    다음 로그인에서 지갑이 새 사용자 자격증명을 자동으로 다시 받는다(`userCredMs > 0`). `RevocationLog` 재배포는 V5 와 같은 이유로
    필수가 아니다.
 1. `npx hardhat node` (다른 터미널에 상주).
@@ -167,7 +169,7 @@ AA 의 현재 값을 받아 두고(바뀌었으면 지갑이 옛 C_u·세션을 
 | # | 조작 | 기대 |
 |---|---|---|
 | 1 | testuser 등록 | 속성 `[1990, 410, 2, 0]` 이 AA 에서 내려온다(지갑 화면은 읽기 전용) |
-| 2 | 로그인(mask 0) → 트랜잭션 폼에서 슬롯 0 을 `[0, 2007]`, 슬롯 1 을 `[410, 410]` 으로 공개 → `to`=`attrGateAddress`, `data`=`claim()` 셀렉터 | `Claimed` 이벤트, `AttrGate.claimed(wallet) == true` |
+| 2 | 로그인(mask 0) → 트랜잭션 폼에서 슬롯 0 을 `[0, 2007]`, 슬롯 1 을 `[410, 410]` 으로 공개 → `to`=`attrGateAddress`, `data`=`claim()` 셀렉터(`0x4e71d92d`, 지갑 폼 기본값) | `Claimed` 이벤트, `AttrGate.claimed(wallet) == true` |
 | 3 | alice(2005, 840)로 같은 시도 | `claim()` 이 `country` 로 revert(`Executed` success=false, nonce 는 소모) |
 | 4 | 슬롯 0 을 `[0, 1980]` 으로 공개 시도 | 지갑이 `disclosure_unsatisfiable`(1990 ∉ [0, 1980], 체인에 보내기 전에 막힌다) |
 | 5 | 관리자가 testuser 의 a₂ 를 3 으로 변경 → 다음 로그인 | 지갑이 옛 C_u 폐기를 알아채 새 C_u 를 받고 로그인 성공, **PPID 동일** |

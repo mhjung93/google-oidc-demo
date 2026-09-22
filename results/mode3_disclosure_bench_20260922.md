@@ -3,6 +3,13 @@
 설계: `docs/superpowers/specs/2026-09-22-mode3-selective-disclosure-design.md`. V5(자격증명 이중 구조, `results/zkp_inventory_20260921.md`)
 대비 회로 V6(선택 공개: `disc_mask`·`disc_lo[4]`·`disc_hi[4]` 공개 입력 9개 추가, π_u V2: 속성 4개가 AA 기록값으로 공개)의 비용을 잰다.
 
+**2026-09-22 재실측(최종 리뷰 Critical Ruling 7 반영 뒤).** `Mode3Wallet.execute` 가 호출 데이터 꼬리 9워드를 mask 값과
+무관하게 항상 붙이도록 고친 뒤 `node scripts/bench_mode3_onchain.mjs 10` 을 다시 돌렸다(원본은 §4 끝의 "재실측 원본 stdout"
+블록). mask=0 행은 이제 항상 0 아홉 워드를 붙이므로 살짝 오르고(내부 호출의 `abi.encodePacked` 메모리 쓰기 비용뿐 — 이
+데이터는 트랜잭션 calldata 가 아니라 내부 호출의 메모리 인자라 바이트당 calldata 요금이 붙지 않는다), mask=3 행은 이미
+항상 붙던 값이라 잡음 범위에서 거의 그대로다. 갱신 대상은 §3 의 `execute` gas 세 행뿐이다 — 로그인 왕복(§2)·회로 시간(§1)은
+회로·서비스가 바뀌지 않아 이전 실측 그대로 둔다(재실측에서 같이 나온 값도 잡음 범위 안이었다).
+
 측정 환경: AMD Ryzen 9 5950X(16코어), Node v22.20.0, snarkjs(Groth16, BN254), hardhat 인프로세스/로컬 노드(:8545). N=10, 중앙값
 (최소–최대). 스크립트: `node scripts/bench_zkp_inventory.mjs 10`, `node scripts/bench_mode3_onchain.mjs 10`(격리 CIA·지갑 에이전트
 스택, `tests/helpers/isolated_mode3_stack.mjs`).
@@ -45,19 +52,24 @@ mask=3 왕복은 반복마다 disclosure(discKey)를 바꿔(슬롯 0 의 상한�
 
 | 항목 | V5 (2026-09-21, 참고) | V6 (2026-09-22, 이번 실측) |
 |---|--:|--:|
-| `execute` gas, 캐시 π (mask=0) | 339,321 | **402,079 (402,035–402,091)** |
-| `execute` gas, 첫 tx(계정 배포 별도) | 356,453 | **419,135** |
-| `execute` gas, mask=3(새 π) + `AttrGate.claim` | — | **444,973 (444,881–444,997)** |
-| `RevocationLog` 게시(리프 1) | 43,888 | 43,888 (동일 — 회로 변경과 무관) |
+| `execute` gas, 캐시 π (mask=0) | 339,321 | ~~402,079 (402,035–402,091)~~ → **402,130 (402,118–402,174)**(재실측, Ruling 7) |
+| `execute` gas, 첫 tx(계정 배포 별도) | 356,453 | ~~419,135~~ → **419,262**(재실측, Ruling 7) |
+| `execute` gas, mask=3(새 π) + `AttrGate.claim` | — | ~~444,973 (444,881–444,997)~~ → **444,509 (444,449–444,553)**(재실측, Ruling 7) |
+| `RevocationLog` 게시(리프 1) | 43,888 | 43,888–43,900 (동일 — 회로 변경과 무관, 잡음 범위) |
 | `RevocationLog` 하트비트(리프 0) | 40,305 | 40,285–40,305 (동일) |
 
-**검증자 gas 차이(공개 입력 14 → 23).** mask=0 캐시 π 기준 402,079 − 339,321 = **+62,758 gas**. 별도로 컨트랙트 단위 테스트
-(`npx hardhat test test/Mode3Wallet.test.mjs`, mask=0, 이번 실행 실측)에서도 450,675 − 387,961 = **+62,714 gas** 로 거의 같은
-증가폭이 나온다(두 측정의 절대값 차이는 `to`·`value` 등 시나리오 차이 때문이지만, 공개 입력 9개 추가에 따른 증가분은 두 갈래
-측정이 일치한다. 컨트랙트 테스트 gas 는 π 바이트 크기에 따라 실행마다 수십 gas 잡음이 있다 — 다른 실행에서 450,631 관측).
+**검증자 gas 차이(공개 입력 14 → 23).** mask=0 캐시 π 기준 402,130 − 339,321 = **+62,809 gas**(재실측 전 402,079 −
+339,321 = +62,758 gas — 최종 리뷰 Ruling 7(꼬리를 mask 와 무관하게 항상 붙임)로 mask=0 이 이제 0 아홉 워드를 추가로 붙이면서
++51 gas 늘었다). 별도로 컨트랙트 단위 테스트(`npx hardhat test test/Mode3Wallet.test.mjs`, mask=0)에서도 이전 실행에서
+450,675 − 387,961 = **+62,714 gas** 로 거의 같은 증가폭이 나왔다(두 측정의 절대값 차이는 `to`·`value` 등 시나리오 차이
+때문이지만, 공개 입력 9개 추가에 따른 증가분은 두 갈래 측정이 일치한다. 컨트랙트 테스트 gas 는 π 바이트 크기에 따라 실행마다
+수십 gas 잡음이 있다 — 다른 실행에서 450,631·450,746·450,770 관측, Ruling 7 전후 차이가 이 잡음보다 작아 이 비교 값 자체는
+다시 재지 않았다).
 
-mask=3(선택 공개 + `AttrGate.claim`) 오버헤드는 mask=0 대비 444,973 − 402,079 = **+42,894 gas**(호출 데이터 꼬리 9워드 부착,
-`Disclosure` 이벤트, `AttrGate.claim` 자체의 `SSTORE`·`require` 를 합친 값이며 항목별로 분해하지는 않았다).
+mask=3(선택 공개 + `AttrGate.claim`) 오버헤드는 mask=0 대비 444,509 − 402,130 = **+42,379 gas**(재실측 전 444,973 − 402,079
+= +42,894 gas — mask=3 쪽은 이전에도 이미 꼬리를 붙이고 있었으므로 Ruling 7 의 영향은 mask=0 쪽 분모가 조금 커진 것뿐이다.
+호출 데이터 꼬리 9워드 부착, `Disclosure` 이벤트, `AttrGate.claim` 자체의 `SSTORE`·`require` 를 합친 값이며 항목별로
+분해하지는 않았다).
 
 ## 4. 원본 stdout
 
@@ -98,6 +110,41 @@ $ node scripts/bench_mode3_onchain.mjs 10
 | zkey 크기 | 15433687 bytes |
 | 공개 입력 수 | 23 |
 ```
+
+### 재실측 원본 stdout (2026-09-22, 최종 리뷰 Ruling 7 뒤 — `Mode3Wallet.execute` 꼬리 9워드 항상 붙임)
+
+```
+$ node scripts/bench_mode3_onchain.mjs 10
+## Mode 3 온체인 실행 실측 (N=10, 중앙값 (최소–최대), ms)
+
+| 항목 | 값 |
+|---|--:|
+| 로그인 전체 왕복(발급+증명, 지갑 HTTP) | 1037 (1020–4608) |
+| ├ 체인 동기화 syncMs | 29 (28–210) |
+| ├ 사용자 자격증명 발급 userCredMs (π_u; 첫 로그인 1909 ms, 이후 재사용) | 0 (0–1909) |
+| ├ CIA 세션 발급 issueMs (ZKP 없음, sig_u 검증 + 서명) | 123 (120–246) |
+| ├ 증명 proveMs (pi_cred V6) | 841 (822–1412) |
+| 서비스 verifyLogin (Groth16 + σ + root) | 35 (34–386) |
+| 재검증 왕복(캐시 π) | 31 (30–37) |
+| 재검증 verifyLogin | 33 (32–35) |
+| /wallet/tx 왕복(mask=0, 캐시 π, 서명+제출+채굴) | 153 (151–155) |
+| execute gas (mask=0, 캐시 π, N회) | 402130 (402118–402174) |
+| execute gas (첫 tx, 계정 배포 tx 는 별도) | 419262 |
+| /wallet/tx 왕복(mask=3, 새 π + AttrGate.claim, N회) | 985 (980–1006) |
+| execute gas (mask=3, 새 π + claim, N회) | 444509 (444449–444553) |
+| 계정 배포 gas (factory.deploy, CREATE2) | 852198 |
+| PiCredVerifier 배포 gas | 833149 |
+| Mode3WalletFactory 배포 gas | 1425083 |
+| RevocationLog 게시 gas (리프 1) | 43900 |
+| RevocationLog 하트비트 gas (리프 0) | 40285, 40305, 40305, 40285, 40285 |
+| zkey 크기 | 15433687 bytes |
+| 공개 입력 수 | 23 |
+```
+
+로그인 왕복·issueMs·proveMs 등은 이 재실측에서도 잡음 범위 안에서 위 §2 값과 같다 — 갱신 대상은 위 §3 의 `execute` gas
+세 행뿐이다. `계정 배포 gas`·`Mode3WalletFactory 배포 gas` 가 살짝 다른 것(852,198/1,425,083 vs 861,813/1,434,080)은
+`Mode3Wallet.sol` 소스가 바뀌어(주석·한 줄 코드) 팩토리가 새로 컴파일된 바이트코드로 CREATE2 배포됐기 때문이지, 선택
+공개 로직과는 무관하다.
 
 ## 5. 남은 것
 

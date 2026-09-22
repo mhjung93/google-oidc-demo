@@ -165,11 +165,8 @@ function execute(Payload calldata payload, bytes calldata sig,
 
 ```solidity
 nonce += 1;
-bytes memory data = payload.data;
-if (pub[14] != 0) {
-    // 꼬리 9워드: mask, lo[4], hi[4]. 대상은 calldatasize 끝에서 288바이트를 읽는다(ERC-2771 과 같은 방식).
-    data = abi.encodePacked(payload.data, pub[14], pub[15], pub[16], pub[17], pub[18], pub[19], pub[20], pub[21], pub[22]);
-}
+// 꼬리 9워드(mask, lo[4], hi[4])는 mask 값과 무관하게 항상 붙인다. 대상은 calldatasize 끝에서 288바이트를 읽는다(ERC-2771 과 같은 방식).
+bytes memory data = abi.encodePacked(payload.data, pub[14], pub[15], pub[16], pub[17], pub[18], pub[19], pub[20], pub[21], pub[22]);
 (ok, ) = payload.to.call{value: payload.value}(data);
 emit Executed(...); emit Mode3Auth(...);
 if (pub[14] != 0) emit Disclosure(payload.nonce, pub[14], [pub[15..18]], [pub[19..22]]);
@@ -183,8 +180,13 @@ if (pub[14] != 0) emit Disclosure(payload.nonce, pub[14], [pub[15..18]], [pub[19
   다이제스트를 검사한다(`contracts/Mode3Wallet.sol`, `lib/mode3_onchain.js` `payloadDigest({ …, discMask, discLo, discHi })`).
   mask 만 덮으면 같은 세션키·같은 mask 로 만든 다른 구간의 π 를 릴레이어가 바꿔 끼울 수 있다(리뷰에서 발견, 2026-09-22) — 이 때문에
   9워드 전부를 다이제스트에 넣는다. 이러면 릴레이어는 사용자가 정한 mask·lo·hi 의 π 만 쓸 수 있다.
-- 꼬리 9워드를 항상 붙이지 않고 mask ≠ 0 일 때만 붙이는 이유: 기존 대상(꼬리를 모르는 컨트랙트)과의 호환. Solidity ABI 디코더는
-  남는 calldata 를 무시한다.
+- 꼬리 9워드는 mask 값과 무관하게 항상 붙인다(mask = 0 이면 아홉 워드가 전부 0). `payload.data` 는 사용자가 임의로 채우는
+  필드라, mask ≠ 0 일 때만 붙이면 사용자가 캐시된 mask = 0 의 π 를 재사용하면서 `payload.data` 끝에 스스로 위조한
+  (mask, lo, hi) 9워드를 덧붙여 대상이 그것을 읽게 만들 수 있다(2026-09-22 최종 리뷰 Critical, PoC 로 재현 — 대상은
+  `AttrGate.claim()` 이 자기 나라·나이를 만족한다고 믿고 통과시켰다). 항상 붙이면 calldata 끝 288바이트는 반드시 이번
+  실행에서 지갑이 검증한 π 의 공개 입력이므로, `payload.data` 안의 위조 꼬리는 그 앞에 묻혀 대상이 읽지 못한다.
+  Solidity ABI 디코더는 남는 calldata 를 무시하므로 꼬리를 모르는 기존 대상과도 여전히 호환된다. `Disclosure` 이벤트는
+  로그 소음을 줄이려 여전히 mask ≠ 0 일 때만 낸다(이벤트는 보안 경계가 아니다 — 대상이 실제로 읽는 것은 calldata 꼬리다).
 - 저장소를 쓰지 않는다(트랜지언트 저장 대신 calldata 꼬리) — 추가 gas 는 calldata 288바이트(≈4.6k) + 이벤트뿐.
 
 ### 5.2 `Mode3WalletFactory`
@@ -264,6 +266,11 @@ contract AttrGate {
   슬롯은 Groth16 ZK 로 숨는다.
 - **바뀌지 않는 것.** Cross-RP unlinkability(G3): 두 서비스에 같은 값을 공개하면 그 값으로 묶일 수 있다 — 사용자가 고른 공개의
   당연한 결과이며 PPID 자체는 여전히 독립이다. 조건부 추적(G10)·폐기(G8·G9)·세션 바인딩(G7)은 영향 없음.
+- **M3(데모 한계).** `/cia/attrs` 는 nonce 신선도를 확인하지 않는다 — `sig_u` 하나를 가로챈 공격자가 그 서명을 그대로
+  재생해 속성 조회를 반복할 수 있다(응답이 바뀌는 상태가 아니므로 피해는 제한적이지만, 신선도 없는 서명 재생이라는 패턴
+  자체가 다른 곳에 잘못 재사용될 위험이 있다). 데모 범위 밖.
+- **M4(데모 한계).** `/api/mode3/sessions` 와 `/api/mode3/logins` 는 인증 없는 데모 API이고, 이번 선택 공개 작업으로
+  `disclosure`(공개한 속성 구간)까지 추가로 노출한다 — 인증 없이 부를 수 있는 누구나 다른 사람의 공개 값을 읽을 수 있다.
 
 ---
 
@@ -286,13 +293,16 @@ contract AttrGate {
 | 로그인 전체 왕복 | 1,073 ms | **1,054 (1,023–4,710) ms** |
 | /wallet/tx 왕복, mask=0(캐시 π) | — | **151 (149–154) ms** |
 | /wallet/tx 왕복, mask=3(새 π + `AttrGate.claim`) | — | **1,000 (979–1,043) ms** |
-| `execute` gas, 캐시 π (mask=0) | 339,321 | **402,079 (402,035–402,091)** |
-| `execute` gas, 첫 tx | 356,453 | **419,135** |
-| `execute` gas, mask=3(새 π) + `AttrGate.claim` | — | **444,973 (444,881–444,997)** |
+| `execute` gas, 캐시 π (mask=0) | 339,321 | **402,130 (402,118–402,174)**(재실측 2026-09-22, Ruling 7) |
+| `execute` gas, 첫 tx | 356,453 | **419,262**(재실측, Ruling 7) |
+| `execute` gas, mask=3(새 π) + `AttrGate.claim` | — | **444,509 (444,449–444,553)**(재실측, Ruling 7) |
 
-검증자 gas 차이(공개 입력 14 → 23): mask=0 캐시 π 기준 +62,758 gas. 컨트랙트 단위 테스트(mask=0, 450,675 − 387,961, π 바이트
-잡음으로 실행마다 수십 gas 차이)에서도 +62,714 gas 로 거의 같은 증가폭이 나온다. mask=3(선택 공개 + `AttrGate.claim`) 오버헤드는
-mask=0 대비 +42,894 gas.
+검증자 gas 차이(공개 입력 14 → 23): mask=0 캐시 π 기준 +62,809 gas(최종 리뷰 Critical 대응 — `Mode3Wallet.execute` 가 꼬리
+9워드를 mask 값과 무관하게 항상 붙이도록 고친 뒤 재실측, Ruling 7 — 이전 수치는 +62,758 gas 였고 mask=0 이 0 아홉 워드를
+추가로 붙이는 만큼만 늘었다). 컨트랙트 단위 테스트(mask=0, 이전 실행 450,675 − 387,961, π 바이트 잡음으로 실행마다 수십 gas
+차이)에서도 +62,714 gas 로 거의 같은 증가폭이 나온다(이 비교값은 Ruling 7 전후 차이가 잡음보다 작아 다시 재지 않았다).
+mask=3(선택 공개 + `AttrGate.claim`) 오버헤드는 mask=0 대비 +42,379 gas(재실측 전 +42,894 gas — mask=3 쪽은 이전에도 이미
+꼬리를 붙이고 있어 실질적으로는 거의 그대로다).
 
 회로 제약은 V5 → V6 에서 −1,232(26,601 → 25,369) 줄었다. §4.2 의 사전 예상은 ≈ −2,500 이었으므로 **예측보다 작게 줄었다** —
 왜 예상만큼 줄지 않았는지는 항목별로 분해하지 않았다.
@@ -344,7 +354,7 @@ mask=0 대비 +42,894 gas.
 - **논문(`documents/` PairCT 원고) 반영 항목(2026-09-22, T7 시점 미착수):**
   - V-B(속성 출처): "사용자가 지갑에 입력" → "AA 계정 기록, 관리자만 변경"으로 서술 수정.
   - Table 2·3: π_rp 제약(26,601 → 25,369), 공개 입력(14 → 23), π_u 시간(121.9/140.5 → 79.7/98.7 ms, V2), `execute` gas(339,321/356,453
-    → 402,079/419,135, mask=0 기준) 로 갱신. mask≠0(선택 공개) 행은 새로 추가해야 한다(V5 표에는 없던 개념). 원 수치는
-    `results/mode3_disclosure_bench_20260922.md` §1·§3.
+    → 402,130/419,262, mask=0 기준, 2026-09-22 Ruling 7 재실측치) 로 갱신. mask≠0(선택 공개) 행은 새로 추가해야 한다(V5 표에는
+    없던 개념, 444,509). 원 수치는 `results/mode3_disclosure_bench_20260922.md` §1·§3.
   - IX(한계): "공개 값에 의한 익명 집합 축소" 항목 추가 — 본 스펙 §7 의 G4′ 약화(AA 가 술어를 만족하는 사용자 집합을 알 수 있다)를
     그대로 옮긴다. 정확한 값 공개(등식)는 구간 공개보다 집합을 더 줄인다는 점을 명시.
