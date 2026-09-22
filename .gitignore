@@ -23,6 +23,7 @@ idp_state.json
 cia_keys.json
 cia_state.json
 mode3_wallet_state.json
+mode3_wallet_rcl.json
 mode3_rp_registration.json
 mode3_rp_logins.jsonl
 
