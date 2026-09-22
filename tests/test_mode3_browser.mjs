@@ -1,7 +1,7 @@
 // Mode 3 브라우저 경로 — 실제 Chrome 에서 지갑 페이지·승인 팝업·RP 페이지를 돌린다(스펙 2026-09-22 metamask-snap §7).
 // MetaMask 는 tests/helpers/ethereum_stub.js 가 대신하고, Snap 은 **진짜 snap-mode3/src/index.js 의 onRpcRequest** 가 답한다
 // (Task 5 Ruling 5 — 시뮬레이터가 아니다). 대화상자 답과 체인 전송만 이 하네스가 맡는다.
-// hardhat :8545 와 build/mode3 의 pi_cred zkey·vkey 필요. (chain 그룹)
+// hardhat :8545 와 build/mode3 의 pi_cred zkey·vkey, 그리고 Chrome(또는 Chromium)이 필요하다. (browser 그룹)
 //   node tests/test_mode3_browser.mjs
 //   MODE3_BROWSER_DEBUG=1 로 브라우저 콘솔·페이지 오류를 그대로 흘려 본다.
 import assert from 'node:assert/strict';
@@ -45,6 +45,8 @@ let snapState = null;
 const dialogs = [];        // 사용자에게 보인 대화상자(문구 검사용)
 const answers = [];        // 다음 대화상자들이 돌려줄 값
 const sentTxs = [];        // 스텁이 실제로 보낸 트랜잭션
+// 설정하면 대화상자가 여기서 멈춘다 — "팝업이 동의를 기다리는 중"인 순간을 붙잡아야 하는 테스트가 쓴다.
+let dialogGate = null;
 
 try {
   const eoa = await provider.getSigner(1);       // MetaMask 의 사용자 계정 역할(가스를 낸다)
@@ -59,8 +61,9 @@ try {
     if (op === 'clear') { snapState = null; return null; }
     throw new Error(`하네스: 모르는 snap_manageState operation ${op}`);
   });
-  await context.exposeFunction('__snapDialog', (params) => {
+  await context.exposeFunction('__snapDialog', async (params) => {
     dialogs.push(params);
+    if (dialogGate) await dialogGate;
     if (!answers.length) throw new Error(`하네스: 대화상자 응답 큐가 비었다 — ${j(params).slice(0, 200)}`);
     return answers.shift();
   });
@@ -91,6 +94,21 @@ try {
     }
   }
   const lastDialog = () => j(dialogs[dialogs.length - 1] ?? null);
+  /** 팝업이 닫힐 때까지 기다린다. 창 이름이 'mode3-authorize' 로 같아서, 아직 살아 있으면 다음 window.open 이
+   *  새 창을 만들지 않고 그 창을 재사용한다 — 그러면 다음 테스트의 'page' 이벤트가 오지 않는다. */
+  const awaitPopupClosed = async (popup) => { if (!popup.isClosed()) await popup.waitForEvent('close', { timeout: 15_000 }); };
+  /** 하네스 쪽 조건을 기다린다(대화상자가 떴는지 등 — 페이지 밖에서 일어나는 일). */
+  async function waitFor(cond, what, timeout = 60_000) {
+    const deadline = Date.now() + timeout;
+    while (!cond() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+    assert.ok(cond(), `${what} 를 기다리다 시간이 지났다 (${timeout}ms)`);
+  }
+  /** 페이지가 밖으로 드러내는 모든 문자열 — DOM, 입력값, localStorage·sessionStorage. */
+  const pageDump = (page) => page.evaluate(() => {
+    const inputs = [...document.querySelectorAll('input,textarea,select')].map((e) => `${e.id}=${e.value}`).join('\n');
+    const store = (s) => { try { return JSON.stringify(s); } catch { return ''; } };
+    return [document.documentElement.outerHTML, inputs, store(localStorage), store(sessionStorage)].join('\n');
+  });
 
   const walletPage = await context.newPage();
   await walletPage.goto(wallet.base);
@@ -133,6 +151,7 @@ try {
   });
 
   await t('로그인: 팝업이 열려 Snap 동의를 받고 결과를 postMessage 로 돌려준다 → RP 세션', async () => {
+    await rpPage.check('#allowAgent');          // allowAgent='1' — 재승인 동의 창이 같은 값을 보여야 한다(§4.3)
     answers.push(true);                        // consentLogin 확인
     const before = dialogs.length;
     const [popup] = await Promise.all([context.waitForEvent('page'), rpPage.click('#loginBtn')]);
@@ -140,7 +159,9 @@ try {
     await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
     assert.equal(dialogs.length, before + 1, '로그인 동의 대화상자 한 번');
     assert.ok(lastDialog().includes(rp.origin), `동의 창이 서비스 오리진을 보여 준다: ${lastDialog().slice(0, 300)}`);
-    if (!popup.isClosed()) await popup.waitForEvent('close', { timeout: 10_000 });
+    assert.ok(lastDialog().includes('AI 에이전트 허용: 예'), `동의 창이 allowAgent=1 을 보여 준다: ${lastDialog().slice(0, 400)}`);
+    assert.ok((await text(rpPage, '#log')).includes('allowAgent=1'), 'RP 검증 결과의 allowAgent 가 1');
+    await awaitPopupClosed(popup);
     assert.ok((await text(rpPage, '#log')).includes('3. RP 검증'), 'RP 페이지가 /api/mode3/login 까지 냈다');
     assert.equal((await text(rpPage, '#sessionId')).includes('(없음)'), false, '세션이 잡혔다');
     // 팝업 결과에는 지갑 안 정보가 실리지 않는다(스펙 §3.2) — 그래도 Snap 에는 새 C_u 가 저장돼 있어야 한다.
@@ -149,6 +170,28 @@ try {
     // 목록의 r_s 는 잘라 보여 주는 값이라, 전체 r_s 는 RP 페이지가 들고 있는 것을 그대로 읽는다(전역 스크립트라 이름이 보인다).
     sessionRs = await rpPage.evaluate(() => (typeof currentSession === 'undefined' ? null : currentSession));
     assert.match(String(sessionRs), /^[0-9]+$/, 'RP 페이지가 세션 r_s 를 들고 있다');
+  });
+
+  await t('비밀은 Snap 에만: 에이전트 응답·양쪽 페이지 DOM·브라우저 저장소 어디에도 s_u·r_u·sk_u·blind_u 가 없다', async () => {
+    const secrets = {
+      s_u: snapState.registration.s_u, r_u: snapState.registration.r_u,
+      sk_u: snapState.registration.sk_u, blind_u: snapState.userCred.blind_u,
+    };
+    for (const [k, v] of Object.entries(secrets)) assert.ok(typeof v === 'string' && v.length >= 16, `${k} 가 Snap 상태에 있어야 한다: ${v}`);
+    // 에이전트가 HTTP 로 내보내는 것(파일은 열지 않는다 — 공개 표면만 본다) + RP 가 기록·노출하는 것
+    const surfaces = {
+      'wallet/status': j((await wallet.get('/wallet/status')).body),
+      'wallet/config': j((await wallet.get('/wallet/config')).body),
+      'rp/logins': j((await rp.get('/api/mode3/logins')).body),
+      'rp/sessions': j((await rp.get('/api/mode3/sessions')).body),
+      'wallet page': await pageDump(walletPage),
+      'rp page': await pageDump(rpPage),
+    };
+    for (const [where, dump] of Object.entries(surfaces)) {
+      for (const [k, v] of Object.entries(secrets)) assert.equal(dump.includes(v), false, `${where} 에 ${k} 가 있다`);
+    }
+    // 한편 공개 부분(Cf_u)은 에이전트가 정상으로 들고 있어야 한다 — 위 검사가 "아무것도 안 봤다"로 지나가지 않게.
+    assert.equal((await wallet.get('/wallet/status')).body.userCred.Cf_u, snapState.userCred.Cf_u);
   });
 
   await t('재검증: /wallet/revalidate 는 RP 오리진에 CORS 로 열려 있어 팝업 없이 된다', async () => {
@@ -194,9 +237,21 @@ try {
     assert.ok(popup.url().includes('authorize=1'));
     await waitText(rpPage, '#sessionVerdict', '재검증 성공', 180_000);
     assert.equal(dialogs.length, before + 1, '재승인 동의 대화상자 한 번');
+    // 세션은 allowAgent='1' 로 만들어졌고 /wallet/session/witness 는 그 값을 바꾸지 않는다 — 동의 창도 '예' 여야 한다.
+    assert.ok(lastDialog().includes('AI 에이전트 허용: 예'), `재승인 동의 창이 세션의 allowAgent 를 보여 준다: ${lastDialog().slice(0, 400)}`);
     const log = await text(rpPage, '#sessionLog');
     assert.ok(log.includes('재승인 팝업을 연다'), log);
     assert.ok(log.includes('재승인 완료'), log);
+    await awaitPopupClosed(popup);
+  });
+
+  await t('재승인 가드: 세션의 allowAgent 를 모르면 팝업을 열지 않고 다시 로그인하라고 안내한다', async () => {
+    await stack.restartWallet();
+    await rpPage.evaluate(() => { currentSessionAllowAgent = null; });
+    const before = dialogs.length;
+    await rpPage.click('#revalidateBtn');
+    await waitText(rpPage, '#sessionVerdict', '재승인 불가', 60_000);
+    assert.equal(dialogs.length, before, '동의 창을 띄우지 않는다');
   });
 
   await t('팝업 차단: window.open 이 null 이면 안내만 하고 로그인 버튼이 다시 살아난다', async () => {
@@ -210,13 +265,49 @@ try {
     }
   });
 
+  await t('RP 오리진·r_s 필터: 다른 창이 보낸 결과와 r_s 가 다른 결과는 무시하고 진짜 결과만 받는다', async () => {
+    // 이번 로그인의 r_s 를 가로챈다 — (1) 검사가 "오리진 때문에" 거절됐음을 확인하려면 r_s 는 맞아야 한다.
+    let challengeRs = null;
+    const onResp = async (resp) => {
+      if (!resp.url().endsWith('/api/mode3/challenge')) return;
+      try { challengeRs = (await resp.json()).r_s; } catch { /* 본문을 못 읽으면 넘어간다 */ }
+    };
+    rpPage.on('response', onResp);
+    let release = null;
+    dialogGate = new Promise((r) => { release = r; });
+    answers.push(true);
+    const before = dialogs.length;
+    let popup = null;
+    try {
+      [popup] = await Promise.all([context.waitForEvent('page'), rpPage.click('#loginBtn')]);
+      await waitFor(() => dialogs.length > before, '팝업이 동의 창까지 오는 것');
+      assert.ok(challengeRs, '챌린지 r_s 를 가로챘다');
+      // (1) r_s 는 맞지만 지갑 오리진이 아닌 창(RP 페이지 자신)이 보낸 결과
+      await rpPage.evaluate((rs) => window.postMessage({ type: 'mode3-authorize-result', r_s: rs, result: { ok: false, reason: 'forged_from_rp_origin' } }, '*'), challengeRs);
+      // (2) 지갑 오리진(팝업)이 보냈지만 r_s 가 다른 결과
+      await popup.evaluate(() => window.opener.postMessage({ type: 'mode3-authorize-result', r_s: '424242', result: { ok: false, reason: 'forged_wrong_rs' } }, '*'));
+      await rpPage.waitForTimeout(500);
+      assert.equal((await text(rpPage, '#verdict')).includes('forged'), false, `위조 결과가 받아들여졌다: ${await text(rpPage, '#verdict')}`);
+      assert.equal((await text(rpPage, '#log')).includes('3. RP 검증'), false, '아직 진짜 결과가 오지 않았다');
+    } finally {
+      release(); dialogGate = null;
+    }
+    await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
+    assert.equal((await text(rpPage, '#log')).includes('forged'), false);
+    rpPage.off('response', onResp);
+    await awaitPopupClosed(popup);
+  });
+
   await t('동의 거절: Snap 이 denied 를 주면 RP 에 user_denied 가 돌아오고 새 세션은 생기지 않는다', async () => {
     const before = (await rp.get('/api/mode3/logins')).body.logins.length;
     answers.push(false);                       // consentLogin 거절
     const [popup] = await Promise.all([context.waitForEvent('page'), rpPage.click('#loginBtn')]);
     await waitText(rpPage, '#verdict', 'user_denied', 120_000);
-    if (!popup.isClosed()) await popup.waitForEvent('close', { timeout: 10_000 });
+    await awaitPopupClosed(popup);
     assert.equal((await rp.get('/api/mode3/logins')).body.logins.length, before, '거절은 로그인을 남기지 않는다');
+  });
+  await t('하네스: 준비한 대화상자 응답이 남지 않았다(기대한 동의 창이 다 떴다)', async () => {
+    assert.equal(answers.length, 0, `쓰이지 않은 응답이 남았다: ${j(answers)}`);
   });
 } finally {
   await browser.close();

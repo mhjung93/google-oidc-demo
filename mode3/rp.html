@@ -50,6 +50,10 @@
     const $ = (id) => document.getElementById(id);
     let info = null;
     let currentSession = null;
+    // 이 세션이 어떤 allowAgent 로 승인됐는지. 재승인(§4.3) 동의 창이 보여 주는 값이라 반드시 세션과 같아야 한다 —
+    // /wallet/session/witness 는 세션의 allowAgent 를 바꾸지 않으므로, 여기서 '0' 으로 가정하면 사용자가 본 문구와
+    // 실제 권한이 어긋난다. 모르면(페이지를 새로 고쳤다) 재승인하지 않고 다시 로그인하게 한다.
+    let currentSessionAllowAgent = null;
     // 지갑 에이전트의 비밀 보관 방식(스펙 2026-09-22 metamask-snap Ruling 1). /wallet/config 를 못 읽으면 지금까지의
     // 동작(file 모드 — RP 페이지가 /wallet/login 을 직접 부른다)으로 본다.
     let walletCfg = { secrets: 'file' };
@@ -66,8 +70,9 @@
       return sp;
     }
 
-    function setSession(r_s) {
+    function setSession(r_s, allowAgent = null) {
       currentSession = r_s;
+      currentSessionAllowAgent = r_s ? allowAgent : null;
       $('sessionId').textContent = r_s ? `${r_s.slice(0, 12)}…` : '(없음)';
       $('revalidateBtn').disabled = !r_s;
       $('requestBtn').disabled = !r_s;
@@ -111,6 +116,10 @@
     // 에이전트를 같은 오리진에서 부른 뒤 결과를 postMessage 로 돌려준다. 최종 제출(POST /api/mode3/login)은 지금처럼
     // RP 페이지가 한다 — 팝업은 RP 서버에 직접 내지 않는다.
     const POPUP_TIMEOUT_MS = 120_000;
+    const POPUP_CLOSED_POLL_MS = 300;        // 창이 닫혔는지 보는 주기
+    // 팝업은 결과를 보낸 뒤 스스로 닫는다(mode3/wallet.html 은 성공 200ms·실패 3000ms 뒤 close). 닫힘을 먼저 보더라도
+    // 이미 큐에 있는 결과 메시지를 받을 수 있게 이만큼 기다렸다가 "결과 없이 닫혔다"로 판정한다.
+    const POPUP_RESULT_GRACE_MS = 400;
     const popupError = (reason, message) => Object.assign(new Error(message), { reason });
     function authorizeViaPopup(request) {
       const walletOrigin = info.walletAgentOrigin;
@@ -126,8 +135,9 @@
           fn(v);
         };
         const onMessage = (ev) => {
-          // 지갑 오리진이 보낸 것만 본다. ready 는 오리진을 모른 채 '*' 로 오지만, 우리는 보낸 쪽 오리진으로 거른다.
-          if (ev.origin !== walletOrigin || !ev.data) return;
+          // 지갑 오리진이, 그것도 우리가 연 그 창이 보낸 것만 본다(ev.source 는 심층 방어 — 같은 오리진의 다른 창·프레임
+          // 이 끼어들지 못하게 한다). ready 는 오리진을 모른 채 '*' 로 오지만, 우리는 보낸 쪽을 보고 거른다.
+          if (ev.origin !== walletOrigin || ev.source !== popup || !ev.data) return;
           if (ev.data.type === 'mode3-authorize-ready') { popup.postMessage({ type: 'mode3-authorize', ...request }, walletOrigin); return; }
           if (ev.data.type !== 'mode3-authorize-result') return;
           if (ev.data.r_s !== request.r_s) return;      // 다른 요청의 결과는 무시한다
@@ -138,12 +148,11 @@
           try { popup.close(); } catch { /* 이미 닫혔을 수 있다 */ }
           finish(reject, popupError('timeout', `승인 창이 ${POPUP_TIMEOUT_MS / 1000}초 안에 끝나지 않았다.`));
         }, POPUP_TIMEOUT_MS);
-        // 성공한 팝업도 결과를 보낸 뒤 스스로 닫는다 — 닫힘을 본 뒤 잠깐 기다려 이미 큐에 있는 결과 메시지를 먼저 받는다.
         const closedPoll = setInterval(() => {
           if (!popup.closed) return;
           clearInterval(closedPoll);
-          setTimeout(() => finish(reject, popupError('popup_closed', '승인 창이 결과 없이 닫혔다.')), 400);
-        }, 300);
+          setTimeout(() => finish(reject, popupError('popup_closed', '승인 창이 결과 없이 닫혔다.')), POPUP_RESULT_GRACE_MS);
+        }, POPUP_CLOSED_POLL_MS);
       });
     }
     /** 팝업 요청 본문 — 로그인·재승인이 함께 쓴다(재승인은 r_s 만 있으면 된다). */
@@ -201,7 +210,7 @@
         $('verdict').innerHTML = rb.ok
           ? `<span class="ok">로그인 성공</span> PPID=${rb.PPID}${discTxt}`
           : `<span class="bad">거절: ${rb.reason}</span>`;
-        setSession(rb.ok ? rb.r_s : null);
+        setSession(rb.ok ? rb.r_s : null, rb.ok ? rb.allowAgent : null);
         if (rb.ok) $('openPpid').value = rb.PPID;
         refreshLogins();
       } catch (e) {
@@ -223,10 +232,16 @@
         let { status, body: wb } = await callRevalidate();
         // 지갑이 재시작해 세션 증인이 사라졌을 때(스펙 §4.3). 같은 팝업을 reauth 로 열어 동의를 다시 받고 한 번만 재시도한다.
         if (status === 409 && wb.reason === 'needs_consent' && walletCfg.secrets === 'snap') {
-          log('세션 증인이 없다(지갑 재시작) — 재승인 팝업을 연다.');
+          // 재승인 동의 창은 이 세션이 실제로 가진 allowAgent 를 보여 줘야 한다. 모르면(페이지 새로고침 등) 진행하지 않는다.
+          if (currentSessionAllowAgent !== '0' && currentSessionAllowAgent !== '1') {
+            log(`세션 증인이 없는데 이 세션의 allowAgent 를 모른다(allowAgent=${currentSessionAllowAgent}).`);
+            setVerdict($('sessionVerdict'), false, '재승인 불가 — 이 페이지는 세션의 AI agent 허용 여부를 모른다. 다시 로그인하세요.');
+            return;
+          }
+          log(`세션 증인이 없다(지갑 재시작) — 재승인 팝업을 연다(allowAgent=${currentSessionAllowAgent}).`);
           let result;
           try {
-            result = await authorizeViaPopup(authorizeRequest({ r_s: currentSession, reauth: true, allowAgent: '0' }));
+            result = await authorizeViaPopup(authorizeRequest({ r_s: currentSession, reauth: true, allowAgent: currentSessionAllowAgent }));
           } catch (e) {
             log(`재승인 팝업 ${ms(t0)}: ${e.reason ?? ''} ${e.message}`);
             setVerdict($('sessionVerdict'), false, `재검증 실패 — ${e.message}`);

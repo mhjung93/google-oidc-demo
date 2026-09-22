@@ -11,11 +11,13 @@
 #   bash scripts/run_tests.sh chain      # hardhat 노드(:8545) 필요. IdP/CIA는 스스로 격리 기동.
 #                                        # Mode 3 테스트는 build/mode3/pi_cred_*.zkey·vkey 도 필요
 #   bash scripts/run_tests.sh contract   # 컨트랙트(test/*.test.mjs). hardhat 인프로세스 체인
+#   bash scripts/run_tests.sh browser    # chain 의 조건 + Chrome(또는 Chromium) 필요. Playwright 로 페이지를 띄운다
 #   bash scripts/run_tests.sh live       # 데모 스택(:3000/:4000/:5001) + 관리자 시크릿 필요
 #   bash scripts/run_tests.sh all
 #
 # live 그룹은 실행 중인 IdP의 폐기 트리를 실제로 바꾸고(되돌릴 수 없음) 체인 블록을
-# 진행시킨다. CI에서 돌릴 수 있는 것은 unit·circuit·chain·contract이다.
+# 진행시킨다. CI에서 돌릴 수 있는 것은 unit·circuit·chain·contract이고,
+# browser는 Chrome/Chromium이 있는 러너에서만 된다.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -70,7 +72,12 @@ CHAIN=(
   tests/test_mode3_wallet_agent.mjs
   tests/test_mode3_wallet_snap.mjs
   tests/test_mode3_demo_stack.mjs
-  # 브라우저 경로(팝업·postMessage·MetaMask 스텁). 설치된 Chrome 을 Playwright 로 띄운다.
+)
+
+# 브라우저가 필요한 것들 — chain 과 나누는 이유는 의존성이 하나 더 있기 때문이다.
+# Playwright 가 설치된 Chrome 또는 Chromium 을 띄운다(channel:'chrome' → 없으면 번들 chromium). 둘 다 없으면 이 그룹만 실패한다.
+# hardhat 노드(:8545)와 build/mode3 산출물은 chain 과 똑같이 필요하다.
+BROWSER=(
   tests/test_mode3_browser.mjs
 )
 
@@ -106,6 +113,7 @@ case "$GROUP" in
   unit)    FILES=("${UNIT[@]}") ;;
   circuit) FILES=("${CIRCUIT[@]}") ;;
   chain)   FILES=("${CHAIN[@]}") ;;
+  browser) FILES=("${BROWSER[@]}") ;;
   contract)
     # 컨트랙트 테스트는 hardhat이 자기 인프로세스 체인에서 돌린다(:8545가 필요 없다).
     # 파일 단위로 node를 부르는 아래 루프와 실행 방식이 달라 여기서 끝낸다.
@@ -137,10 +145,11 @@ case "$GROUP" in
     fi
     # contract는 실행 방식이 달라 여기서 먼저 돌리고, 실패하면 거기서 멈춘다.
     npx hardhat test || exit 1
-    FILES=("${UNIT[@]}" "${CIRCUIT[@]}" "${CHAIN[@]}" "${LIVE[@]}")
+    # browser 도 넣는다 — "all"이 실제로 전부여야 한다. 다만 Chrome/Chromium 이 없는 머신에서는 이 한 줄 때문에 all 이 실패한다.
+    FILES=("${UNIT[@]}" "${CIRCUIT[@]}" "${CHAIN[@]}" "${BROWSER[@]}" "${LIVE[@]}")
     ;;
   default) FILES=("${UNIT[@]}" "${CIRCUIT[@]}") ;;
-  *) echo "알 수 없는 그룹: $GROUP (unit|circuit|chain|contract|live|all)" >&2; exit 2 ;;
+  *) echo "알 수 없는 그룹: $GROUP (unit|circuit|chain|browser|contract|live|all)" >&2; exit 2 ;;
 esac
 
 echo "== 그룹 '$GROUP' — ${#FILES[@]}개 실행 =="
