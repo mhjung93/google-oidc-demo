@@ -17,6 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
+import { createSecretSource } from './lib/mode3_secret_source.js';
 import { createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, signSessionRequest, signAttrsRequest, normalizeDisclosure, disclosureKey, ProofCache, chooseMaxHeight } from './lib/mode3_wallet.js';
 import { signPayload, proofToCalldata, parseExecuteReceipt, factoryAt, walletAt } from './lib/mode3_onchain.js';
 import { pointToStrings } from './lib/mode3_issuance.js';
@@ -30,6 +31,12 @@ const CIA_URL = process.env.MODE3_CIA_URL || 'http://127.0.0.1:4100';
 const RP_ORIGIN = process.env.MODE3_RP_ORIGIN || 'http://127.0.0.1:3100';
 const LOG_ADDRESS = process.env.CIA_LOG_ADDRESS || null;
 const RPC_URL = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
+// 비밀 공급원(설계 2026-09-22 metamask-snap §3.3): file 은 지금처럼 상태 파일, snap 은 요청에 실린 witness. 이 Task 에서는
+// witness 가 항상 null(file 전용)이라 SECRETS 값과 무관하게 동작이 같다 — snap 경로는 이후 Task 에서 붙인다.
+const SECRETS = process.env.MODE3_WALLET_SECRETS || 'file';
+if (!['file', 'snap'].includes(SECRETS)) throw new Error(`MODE3_WALLET_SECRETS 는 'file' 또는 'snap' 이어야 한다: ${SECRETS}`);
+const SNAP_ID = process.env.MODE3_SNAP_ID || 'local:http://localhost:8082';
+const WALLET_ORIGIN = process.env.MODE3_WALLET_PUBLIC_ORIGIN || `http://127.0.0.1:${PORT}`;
 // 만료는 지갑이 정한다(설계 2026-09-18 §3.2 갱신): max_height = ceil((head + TTL) / GRID) × GRID. 빈 문자열은 기본값(cia.js 의 envBig 과 같은 관례).
 const envBig = (k, d) => { const v = process.env[k]; return v === undefined || v === '' ? BigInt(d) : BigInt(v); };
 const TTL_BLOCKS = envBig('MODE3_TTL_BLOCKS', 300);
@@ -94,48 +101,50 @@ async function chainId() {
 }
 
 /** 사용자 자격증명을 바꿔 앉힌다(null 이면 버린다). 옛 자격증명의 세션은 다음 게시에 죽으므로 지금 지우고 증명 캐시도 비운다. */
-function replaceUserCred(userCred) {
-  state.registration.userCred = userCred;
+function replaceUserCred(src, userCred) {
+  src.setUserCred(userCred);
   state.sessions = {}; cache.clear();
   persist();
 }
 
 /** /cia/attrs 로 속성을 다시 받는다(2026-09-22 §3.3). 바뀌었으면 옛 C_u·세션을 버린다(재발급은 다음 로그인에서). */
-async function syncAttrsFromCia() {
-  const reg = state.registration;
+async function syncAttrsFromCia(src) {
+  const reg = src.registration();
   const nonce = randomScalar();
   const r = await ciaPost('/cia/attrs', { uid: reg.uid, nonce: nonce.toString(), sig_u: await signAttrsRequest(reg.sk_u, BigInt(reg.uid), nonce) });
   if (r.status !== 200) return { changed: false, status: r.status, body: r.body };
   const attrs = normalizeAttrs(r.body.attrs).map(String);
   const changed = JSON.stringify(attrs) !== JSON.stringify(reg.attrs);
-  if (changed) { reg.attrs = attrs; replaceUserCred(null); } else persist();
+  if (changed) { src.setAttrs(attrs); replaceUserCred(src, null); } else persist();
   return { changed, status: 200, attrs };
 }
 
 /** 사용자 자격증명 확보(설계 2026-09-21 §6.2 3단계). 없거나 폐기됐으면 새로 받는다. 돌려주는 값은 { status, body, fresh }. */
-async function ensureUserCred(tree, { resynced = false } = {}) {
-  const reg = state.registration;
-  if (reg.userCred && !tree.has(BigInt(reg.userCred.leaf))) return { status: 200, fresh: false };
+async function ensureUserCred(tree, src, { resynced = false } = {}) {
+  const reg = src.registration();
+  const uc = src.userCred();
+  if (uc && !tree.has(BigInt(uc.leaf))) return { status: 200, fresh: false };
   const req = await buildUserCredRequest({ uid: BigInt(reg.uid), s_u: BigInt(reg.s_u), r_u: BigInt(reg.r_u), sk_u: reg.sk_u, attrs: (reg.attrs ?? []).map(BigInt) });
   const r = await ciaPost('/cia/user_cred', req.body);
   if (r.status === 201 || r.status === 200) {
-    replaceUserCred({ C_u_pt: { x: req.C_u_pt.x.toString(), y: req.C_u_pt.y.toString() }, Cf_u: req.Cf_u.toString(), blind_u: req.secrets.blind_u.toString(), leaf: req.leaf.toString(), issuedAt: new Date().toISOString() });
+    replaceUserCred(src, { C_u_pt: { x: req.C_u_pt.x.toString(), y: req.C_u_pt.y.toString() }, Cf_u: req.Cf_u.toString(), blind_u: req.secrets.blind_u.toString(), leaf: req.leaf.toString(), issuedAt: new Date().toISOString() });
     return { status: 200, body: r.body, fresh: true };
   }
   // AA 기록이 바뀌어 π_u 가 깨진 경우(2026-09-22 §3.3): 속성을 다시 받아 한 번만 재시도한다
   if (r.status === 400 && !resynced && r.body?.error === 'bad user credential proof') {
-    const s = await syncAttrsFromCia();
-    if (s.status === 200) return ensureUserCred(tree, { resynced: true });
+    const s = await syncAttrsFromCia(src);
+    if (s.status === 200) return ensureUserCred(tree, src, { resynced: true });
   }
   return { status: r.status, body: r.body, fresh: false };
 }
 
-async function issueSession(arid, r_s, pk_trace, allowAgent, factoryAddress, attrGateAddress, head) {
-  const reg = state.registration;
+async function issueSession(arid, r_s, pk_trace, allowAgent, factoryAddress, attrGateAddress, head, src) {
+  const reg = src.registration();
+  const uc = src.userCred();
   const session = createSessionKey();
   const chainid = await chainId();
   const req = await buildIssueRequest({
-    uid: BigInt(reg.uid), Cf_u: BigInt(reg.userCred.Cf_u), arid: BigInt(arid), sk_u: reg.sk_u, session, chainid, allowAgent: BigInt(allowAgent),
+    uid: BigInt(reg.uid), Cf_u: BigInt(uc.Cf_u), arid: BigInt(arid), sk_u: reg.sk_u, session, chainid, allowAgent: BigInt(allowAgent),
     max_height: chooseMaxHeight(head, { ttlBlocks: TTL_BLOCKS, grid: HEIGHT_GRID }),
   });
   const r = await ciaPost('/cia/issue', req.body);
@@ -155,14 +164,21 @@ async function issueSession(arid, r_s, pk_trace, allowAgent, factoryAddress, att
 const app = express();
 app.use(express.json({ limit: '1mb' }));
 
-// RP 페이지(다른 오리진)가 부르는 것은 /wallet/login·/wallet/revalidate·/wallet/request 뿐이다. 문자열 origin 은
+// RP 페이지(다른 오리진)가 부르는 것은 /wallet/login·/wallet/revalidate·/wallet/request·/wallet/config 뿐이다. 문자열 origin 은
 // cors 가 요청 Origin 과 무관하게 헤더를 붙이므로, 일치할 때만 붙이도록 함수형으로 둔다.
 const loginCors = cors({ origin: (origin, cb) => cb(null, origin === RP_ORIGIN), methods: ['POST'] });
 app.options('/wallet/login', loginCors);
 app.options('/wallet/revalidate', loginCors);
 app.options('/wallet/request', loginCors);
+// /wallet/config 는 GET 전용 — Snap 연동(설계 2026-09-22 metamask-snap) 전 RP 페이지가 비밀 모드·rpcUrl 등을 미리 읽는다.
+const configCors = cors({ origin: (origin, cb) => cb(null, origin === RP_ORIGIN), methods: ['GET'] });
 
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'wallet.html')));
+
+// 비밀 없음 — RP 페이지가 로그인 전에 지갑의 비밀 모드·체인 정보를 미리 읽는다(설계 2026-09-22 metamask-snap Ruling 1).
+app.get('/wallet/config', configCors, async (req, res) => {
+  res.json({ secrets: SECRETS, snapId: SNAP_ID, walletOrigin: WALLET_ORIGIN, rpcUrl: RPC_URL, chainId: (await chainId()).toString() });
+});
 
 app.get('/wallet/status', async (req, res) => {
   let head = null;
@@ -172,10 +188,12 @@ app.get('/wallet/status', async (req, res) => {
     sessions[r_s] = { arid: e.arid, PPID: e.PPID, max_height: e.credential.max_height, chainid: e.credential.chainid, allowAgent: e.allowAgent, factoryAddress: e.factoryAddress, attrGateAddress: e.attrGateAddress ?? null, sessionAddress: new ethers.Wallet(e.sessionPrivKey).address, issuedAt: e.issuedAt, pk_trace: e.pk_trace };
   }
   // userCred.revoked 는 마지막 동기화의 트리로 판정한다(여기서 다시 동기화하지 않는다). 아직 동기화가 없으면 null.
-  const uc = state.registration?.userCred;
+  const src = createSecretSource({ mode: SECRETS, state, witness: null });
+  const reg = src.registration();
+  const uc = src.userCred();
   const userCred = uc ? { Cf_u: uc.Cf_u, issuedAt: uc.issuedAt, revoked: lastSync?.tree ? lastSync.tree.has(BigInt(uc.leaf)) : null } : null;
   res.json({
-    registered: Boolean(state.registration), uid: state.registration?.uid ?? null, attrs: state.registration?.attrs ?? null, userCred, sessions,
+    registered: Boolean(state.registration), uid: reg?.uid ?? null, attrs: reg?.attrs ?? null, userCred, sessions,
     head, lastRoot: lastSync?.root ?? null, logAddress: LOG_ADDRESS,
   });
 });
@@ -235,6 +253,8 @@ app.post('/wallet/login', loginCors, async (req, res) => {
       } catch (e) { return res.status(409).json({ reason: 'bad_factory', detail: e.shortMessage ?? e.message }); }
     }
 
+    // 이 Task 에서는 witness 가 항상 null(file 모드) — snap 모드의 witness 전달은 이후 Task 에서 붙인다.
+    const src = createSecretSource({ mode: SECRETS, state, witness: null });
     const timings = { syncMs: 0, userCredMs: 0, issueMs: 0, proveMs: 0 };
     let t = Date.now();
     let synced;
@@ -246,12 +266,12 @@ app.post('/wallet/login', loginCors, async (req, res) => {
     pruneSessions(synced.head);
     // 사용자 자격증명은 사용자당 하나 — 없거나 폐기됐을 때만 새로 받는다(userCredMs 는 재사용이면 0)
     t = Date.now();
-    let uc = await ensureUserCred(synced.tree);
+    let uc = await ensureUserCred(synced.tree, src);
     timings.userCredMs = uc.fresh ? Date.now() - t : 0;
     if (uc.status === 403) return res.status(403).json({ reason: 'account_disabled', timings });
     if (uc.status !== 200) return res.status(502).json({ reason: 'user_cred_failed', cia: uc.body, timings });
     // 세션 자격증명은 로그인마다(설계 §5), 만료는 방금 읽은 head 기준
-    const issue = () => issueSession(arid, rs, { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress ? ethers.getAddress(attrGateAddress) : null, synced.head);
+    const issue = () => issueSession(arid, rs, { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress ? ethers.getAddress(attrGateAddress) : null, synced.head, src);
     t = Date.now();
     let r = await issue();
     timings.issueMs = Date.now() - t;
@@ -259,9 +279,9 @@ app.post('/wallet/login', loginCors, async (req, res) => {
     // 동시 로그인 경합으로 지갑이 활성이 아닌 Cf_u 를 들고 남은 경우). 트리에는 없어 ensureUserCred 가 알아채지 못하므로 여기서
     // 그 자격증명을 버리고 새로 받아 한 번만 다시 시도한다 — 게시·하트비트를 기다리지 않는다. s_u 는 같으니 PPID 는 그대로다.
     if (r.status === 403 && r.body?.reason === 'no_user_cred') {
-      replaceUserCred(null);
+      replaceUserCred(src, null);
       t = Date.now();
-      uc = await ensureUserCred(synced.tree);
+      uc = await ensureUserCred(synced.tree, src);
       timings.userCredMs += Date.now() - t;
       if (uc.status === 403) return res.status(403).json({ reason: 'account_disabled', timings });
       if (uc.status !== 200) return res.status(502).json({ reason: 'user_cred_failed', cia: uc.body, timings });
@@ -273,7 +293,7 @@ app.post('/wallet/login', loginCors, async (req, res) => {
     if (r.status === 403) return res.status(403).json({ reason: r.body?.reason === 'no_user_cred' ? 'user_cred_retired' : 'account_disabled', timings });
     if (r.status !== 200) return res.status(502).json({ reason: 'issue_failed', cia: r.body, timings });
     let out;
-    try { out = await proveSession(rs.toString(), synced, timings); }
+    try { out = await proveSession(rs.toString(), synced, timings, null, src); }
     catch (e) {
       if (e.reason === 'no_session') return res.status(409).json({ reason: 'no_session', timings });
       throw e;
@@ -284,10 +304,11 @@ app.post('/wallet/login', loginCors, async (req, res) => {
 
 /** 세션의 성명으로 현재 root 에 대한 π 를 만든다(캐시, disclosure 별). 사용자 자격증명 리프가 트리에 있으면 throw('revoked') — 그 사용자의
  *  모든 세션이 같이 죽는다. 세션이 없으면 throw('no_session') — 호출자가 404/409 로 옮긴다(500 이 아니다). disclosure 가 없으면(mask 0) 기본 π. */
-async function proveSession(rsKey, synced, timings, disclosure = null) {
+async function proveSession(rsKey, synced, timings, disclosure = null, src) {
   const s = state.sessions[rsKey];
   if (!s) throw Object.assign(new Error('no_session'), { reason: 'no_session' });
-  const reg = state.registration;
+  const reg = src.registration();
+  const uc = src.userCred();
   const sessionWallet = new ethers.Wallet(s.sessionPrivKey);
   const discKey = disclosure && disclosure.mask !== 0n ? disclosureKey(disclosure) : '0';
   let cached = cache.get(synced.root, rsKey, discKey);
@@ -295,11 +316,11 @@ async function proveSession(rsKey, synced, timings, disclosure = null) {
   if (!cached) {
     // 세션이 물린 사용자 자격증명 위에 발급된 경우(동시 로그인 경합으로 ensureUserCred 가 그 사이 새 C_u 를 받았다) — 지금 C_u 의
     // blind_u 로는 증명이 안 만들어진다(witness 실패 → 500). 그 세션은 다음 게시에 어차피 죽으므로 revoked 로 정리한다.
-    if (s.credential.Cf_u !== reg.userCred?.Cf_u) throw Object.assign(new Error('revoked'), { reason: 'revoked' });
-    if (synced.tree.has(BigInt(reg.userCred.leaf))) throw Object.assign(new Error('revoked'), { reason: 'revoked' });
+    if (s.credential.Cf_u !== uc?.Cf_u) throw Object.assign(new Error('revoked'), { reason: 'revoked' });
+    if (synced.tree.has(BigInt(uc.leaf))) throw Object.assign(new Error('revoked'), { reason: 'revoked' });
     const t = Date.now();
     cached = await buildCredentialProof({
-      uid: BigInt(reg.uid), arid: BigInt(s.arid), s_u: BigInt(reg.s_u), blind_u: BigInt(reg.userCred.blind_u), blind_s: BigInt(s.blind_s), pk_i: BigInt(s.pk_i),
+      uid: BigInt(reg.uid), arid: BigInt(s.arid), s_u: BigInt(reg.s_u), blind_u: BigInt(uc.blind_u), blind_s: BigInt(s.blind_s), pk_i: BigInt(s.pk_i),
       attrs: (reg.attrs ?? []).map(BigInt),
       credential: s.credential, pk_CIA: { x: BigInt(s.credential.pk_CIA.x), y: BigInt(s.credential.pk_CIA.y) },
       pk_trace: { x: BigInt(s.pk_trace.x), y: BigInt(s.pk_trace.y) }, tree: synced.tree, disclosure,
@@ -337,7 +358,8 @@ app.post('/wallet/revalidate', loginCors, async (req, res) => {
     pruneSessions(synced.head);
     if (!state.sessions[rsKey]) return res.status(410).json({ reason: 'session_expired', timings });
     try {
-      const out = await proveSession(rsKey, synced, timings);
+      const src = createSecretSource({ mode: SECRETS, state, witness: null });
+      const out = await proveSession(rsKey, synced, timings, null, src);
       res.json({ ...out, timings });
     } catch (e) {
       // 그 세션만 지운다. reg.userCred 는 그대로 둔다 — 다음 로그인의 ensureUserCred 가 tree.has 로 알아채 새로 받는다.
@@ -352,9 +374,10 @@ app.post('/wallet/revalidate', loginCors, async (req, res) => {
 app.post('/wallet/attrs/sync', async (req, res) => {
   try {
     if (!state.registration) return res.status(409).json({ reason: 'not_registered' });
-    const s = await syncAttrsFromCia();
+    const src = createSecretSource({ mode: SECRETS, state, witness: null });
+    const s = await syncAttrsFromCia(src);
     if (s.status !== 200) return res.status(502).json({ reason: 'attrs_failed', cia: s.body });
-    res.json({ attrs: state.registration.attrs, changed: s.changed });
+    res.json({ attrs: src.registration()?.attrs ?? null, changed: s.changed });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -398,8 +421,9 @@ app.post('/wallet/tx', async (req, res) => {
     lastSync = { root: synced.root.toString(), head: synced.head.toString(), tree: synced.tree };
     pruneSessions(synced.head);
     if (!state.sessions[rsKey]) return res.status(409).json({ reason: 'session_expired', timings });
+    const src = createSecretSource({ mode: SECRETS, state, witness: null });
     let proved;
-    try { proved = await proveSession(rsKey, synced, timings, disclosure); }   // root·disclosure 가 같으면 캐시 π, 아니면 재증명
+    try { proved = await proveSession(rsKey, synced, timings, disclosure, src); }   // root·disclosure 가 같으면 캐시 π, 아니면 재증명
     catch (e) {
       if (e.reason === 'revoked') { delete state.sessions[rsKey]; persist(); return res.status(403).json({ reason: 'revoked', timings }); }
       if (e.reason === 'no_session') return res.status(404).json({ reason: 'no_session', timings });
