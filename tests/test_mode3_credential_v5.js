@@ -3,8 +3,8 @@
 import assert from 'node:assert/strict';
 import { buildBabyjub, buildPoseidon } from 'circomlibjs';
 import {
-  userCommit, sessionCommit, credMessageV5, compressPoint,
-  PEDERSEN_GENERATORS, SCALAR_MAX, DOMAIN_MODE3_CRED_V5, MAX_HEIGHT_MAX,
+  userCommit, sessionCommit, credMessageV5, compressPoint, normalizeAttrs,
+  PEDERSEN_GENERATORS, SCALAR_MAX, DOMAIN_MODE3_CRED_V5, MAX_HEIGHT_MAX, ATTR_MAX,
 } from '../lib/mode3_credential.js';
 import { userLeaf, TAG_MODE3_USER } from '../lib/mode3_revocation.js';
 import { TAG_SESSION, TAG_ACCOUNT, leafValue } from '../lib/imt_v2.js';
@@ -52,6 +52,11 @@ await t('범위: 스칼라가 2^250 이상이면 두 커밋 다 throw', async ()
   await assert.rejects(() => userCommit({ uid, s_u: SCALAR_MAX, blind_u, attrs }), /2\^250/);
   await assert.rejects(() => sessionCommit({ arid, pk_i: SCALAR_MAX, blind_s }), /2\^250/);
   await assert.rejects(() => userCommit({ uid: 'x', s_u, blind_u, attrs }), /bigint/);
+});
+
+await t('normalizeAttrs: 2^64 이상은 throw, 2^64 − 1 은 통과 (스펙 2026-09-22 §4.1)', () => {
+  assert.throws(() => normalizeAttrs([ATTR_MAX]), /attr0/);
+  assert.deepEqual(normalizeAttrs([ATTR_MAX - 1n]), [ATTR_MAX - 1n, 0n, 0n, 0n]);
 });
 
 await t('credMessageV5 = Poseidon(D_V5, Cf_u, Cf_s, max_height, chainid, allowAgent); 도메인은 "MODE3CREDV5"', async () => {
