@@ -62,9 +62,10 @@ try {
   assert.equal(reg.status, 201, JSON.stringify(reg.body));
   const sk_u = reg.body.sk_u;
 
-  /** 사용자 자격증명 요청 본문(매번 새 blind_u → 새 Cf_u). 응답의 Cf_u 는 요청자가 미리 알 수 없으니 CIA 응답에서 읽는다. */
+  /** 사용자 자격증명 요청 본문(매번 새 blind_u → 새 Cf_u). 응답의 Cf_u 는 요청자가 미리 알 수 없으니 CIA 응답에서 읽는다.
+   *  attrs 는 cia.js DEMO_ACCOUNTS.testuser(uid 12345) 의 AA 기록과 같아야 π_u 가 통과한다(2026-09-22 §3.4). */
   async function userCredBody() {
-    const { C_u_pt, proof } = await proveUserCred({ uid, s_u, blind_u: randomScalar(), r_u, attrs: [0n, 0n, 0n, 0n] });
+    const { C_u_pt, proof } = await proveUserCred({ uid, s_u, blind_u: randomScalar(), r_u, attrs: [1990n, 410n, 2n, 0n] });
     return { uid: uid.toString(), C_u_pt: pointToStrings(C_u_pt), proof: serializeUserCredProof(proof), sig_u: signMsg(sk_u, await userCredRequestMessage(C_u_pt)) };
   }
   /** 세션 발급 V5 본문. Cf_u 는 /cia/user_cred 응답값(10진 문자열). */

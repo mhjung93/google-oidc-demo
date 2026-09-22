@@ -32,6 +32,12 @@
   </fieldset>
 
   <fieldset>
+    <legend>계정 <button id="accountsBtn">목록</button></legend>
+    <p class="muted">속성 4슬롯을 바꾸면 활성 사용자 자격증명이 물린다(다음 게시까지 pending) — 지갑은 다음 발급에서 재동기화한다(2026-09-22 §3.3).</p>
+    <div id="accounts">-</div>
+  </fieldset>
+
+  <fieldset>
     <legend>등록된 서비스 <button id="rpsBtn">목록</button></legend>
     <p class="muted">승인하면 CIA 조각을 만들어 조합 키 pk_trace 와 cert_s 를 낸다(설계 2026-09-16 §3). 거절은 되돌릴 수 없다.</p>
     <div id="rps">-</div>
@@ -86,6 +92,30 @@
       });
       return frag;
     }
+    async function loadAccounts() {
+      const r = await adminJson('GET', '/cia/accounts');
+      if (r.status !== 200) { $('accounts').textContent = `${r.status}`; return; }
+      const table = document.createElement('table');
+      r.body.accounts.forEach((a) => {
+        const inputs = a.attrs.map((v) => {
+          const i = document.createElement('input');
+          i.value = v; i.size = 6; i.dataset.attr = '1';
+          return i;
+        });
+        const cell = document.createElement('td');
+        inputs.forEach((i, idx) => { if (idx > 0) cell.appendChild(document.createTextNode(' ')); cell.appendChild(i); });
+        const save = document.createElement('button');
+        save.textContent = '저장';
+        save.addEventListener('click', async () => {
+          await call('POST', `/cia/accounts/${a.uid}/attrs`, { attrs: inputs.map((i) => i.value.trim()) });
+          loadAccounts();
+        });
+        const tr = document.createElement('tr');
+        [td(a.uid), td(a.disabled ? 'disabled' : ''), cell, td(save)].forEach((c) => tr.appendChild(c));
+        table.appendChild(tr);
+      });
+      $('accounts').replaceChildren(table);
+    }
     async function loadRps() {
       const r = await adminJson('GET', '/cia/rps');
       if (r.status !== 200) { $('rps').textContent = `${r.status}`; return; }
@@ -113,6 +143,7 @@
       $('openings').replaceChildren(table);
       $('openings').querySelectorAll('button').forEach((b) => b.addEventListener('click', async () => { await call('POST', `/cia/openings/${b.dataset.i}/${b.dataset.act}`); loadOpenings(); }));
     }
+    $('accountsBtn').addEventListener('click', loadAccounts);
     $('rpsBtn').addEventListener('click', loadRps);
     $('openingsBtn').addEventListener('click', loadOpenings);
   </script>

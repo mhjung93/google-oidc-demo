@@ -7,8 +7,8 @@ import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { getProvider, logAbi, signRootPublication } from './helpers/mode3_chain.mjs';
 import { randomScalar, sessionCommit, compressPoint, credMessageV5, SCALAR_MAX } from '../lib/mode3_credential.js';
 import { userLeaf } from '../lib/mode3_revocation.js';
-import { registrationCommit, proveUserCred, serializeUserCredProof, userCredRequestMessage, issueRequestMessageV4, pointToStrings } from '../lib/mode3_issuance.js';
-import { syncRevocationTree } from '../lib/mode3_wallet.js';
+import { registrationCommit, proveUserCred, serializeUserCredProof, userCredRequestMessage, issueRequestMessageV4, pointToStrings, attrsRequestMessage } from '../lib/mode3_issuance.js';
+import { syncRevocationTree, buildUserCredRequest } from '../lib/mode3_wallet.js';
 import { verifyRpCert } from '../lib/mode3_rp_cert.js';
 import { verifyShare, combinePublicKey } from '../lib/mode3_trace.js';
 import { createShare } from '../lib/mode3_trace.js';
@@ -41,10 +41,13 @@ const signMsg = async (prvBuf, m) => { const s = eddsa.signPoseidon(prvBuf, F.e(
 // 만료는 지갑이 정한다(2026-09-18 §3.2 갱신) — 테스트는 head + ttl 로 정하고 CIA 는 그대로 서명해야 한다.
 const mhOf = async (ttl = 300n) => BigInt(await provider.getBlockNumber()) + ttl;
 
+// AA 가 보증하는 데모 계정 속성(cia.js DEMO_ACCOUNTS, 2026-09-22 §3.4) — user_cred 의 π_u 가 이 값과 다르면 400.
+const TESTUSER_ATTRS = [1990n, 410n, 2n, 0n];
+
 /** 사용자 자격증명 요청 본문. u 는 { s_u, r_u, sk_u(Buffer), attrs }. 다른 계정이면 uidBig 을 준다. */
 async function userCredRequest(u, overrides = {}, uidBig = uid) {
   const blind_u = randomScalar();
-  const { C_u_pt, proof } = await proveUserCred({ uid: uidBig, s_u: u.s_u, blind_u, r_u: u.r_u, attrs: u.attrs ?? [19n, 410n, 0n, 0n] });
+  const { C_u_pt, proof } = await proveUserCred({ uid: uidBig, s_u: u.s_u, blind_u, r_u: u.r_u, attrs: u.attrs ?? TESTUSER_ATTRS });
   const Cf_u = await compressPoint(C_u_pt);
   return { body: { uid: uidBig.toString(), C_u_pt: pointToStrings(C_u_pt), proof: serializeUserCredProof(proof), sig_u: await signMsg(u.sk_u, await userCredRequestMessage(C_u_pt)), ...overrides }, C_u_pt, Cf_u, blind_u, leaf: await userLeaf(Cf_u) };
 }
@@ -55,6 +58,24 @@ async function freshRegistered(uidStr, pwd) {
   const r = await cia.post('/cia/register', { uid: uidStr, pwd, cm_u: pointToStrings(cm_u) });
   assert.equal(r.status, 201, JSON.stringify(r.body));
   return { s_u, r_u, cm_u, sk_u: Buffer.from(r.body.sk_u, 'hex') };
+}
+let _testuserWallet = null;
+/** uid 12345(testuser) 등록 — uid 는 한 번만 등록되므로 메모이즈해 재사용한다(2026-09-22 브리프의 freshWallet).
+ *  { s_u, r_u, cm_u, sk_u(16진 문자열), registerBody } 를 돌려준다. */
+async function freshWallet() {
+  if (_testuserWallet) return _testuserWallet;
+  const s_u = randomScalar(), r_u = randomScalar();
+  const cm_u = await registrationCommit(s_u, r_u);
+  const r = await cia.post('/cia/register', { uid: '12345', pwd: 'password123', cm_u: pointToStrings(cm_u) });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  _testuserWallet = { s_u, r_u, cm_u, sk_u: r.body.sk_u, registerBody: r.body };
+  return _testuserWallet;
+}
+/** /cia/attrs 요청 서명(2026-09-22 §3.3). Task 5 에서 lib/mode3_wallet.js 로 옮긴다 — 그때까지 로컬 헬퍼. */
+async function signAttrsRequest(sk_uHex, uid, nonce) {
+  const eddsa = await buildEddsa(); const F = eddsa.F;
+  const s = eddsa.signPoseidon(Buffer.from(sk_uHex, 'hex'), F.e(await attrsRequestMessage(uid, nonce)));
+  return { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() };
 }
 /** 세션 발급 요청 본문. cred 는 userCredRequest 의 반환값. */
 async function issueRequest(u, cred, overrides = {}, { chainid = CHAIN_ID, allowAgent = 0n, max_height, pk_i = 0x1234n } = {}) {
@@ -146,15 +167,13 @@ try {
     assert.equal((await cia.adminGet('/cia/rps')).body.rps.find((e) => e.arid === r.body.arid).status, 'denied');
   });
 
-  await t('register: cm_u 등록, 장기키 발급', async () => {
-    const s_u = randomScalar(), r_u = randomScalar();
-    const cm_u = await registrationCommit(s_u, r_u);
-    const r = await cia.post('/cia/register', { uid: '12345', pwd: 'password123', cm_u: pointToStrings(cm_u) });
-    assert.equal(r.status, 201, JSON.stringify(r.body));
-    const sk_u = Buffer.from(r.body.sk_u, 'hex');
+  await t('register: cm_u 등록, 장기키 발급, 응답에 AA 기록 attrs', async () => {
+    const w = await freshWallet();
+    assert.deepEqual(w.registerBody.attrs, ['1990', '410', '2', '0']);
+    const sk_u = Buffer.from(w.sk_u, 'hex');
     const pub = eddsa.prv2pub(sk_u);
-    assert.equal(F.toObject(pub[0]).toString(), r.body.pk_u.x, '돌려준 sk_u 가 pk_u 와 맞아야 한다');
-    user = { s_u, r_u, cm_u, sk_u, pk_u: r.body.pk_u };
+    assert.equal(F.toObject(pub[0]).toString(), w.registerBody.pk_u.x, '돌려준 sk_u 가 pk_u 와 맞아야 한다');
+    user = { s_u: w.s_u, r_u: w.r_u, cm_u: w.cm_u, sk_u, pk_u: w.registerBody.pk_u };
   });
 
   await t('register: 잘못된 비밀번호는 401, 재등록은 409', async () => {
@@ -178,10 +197,10 @@ try {
     assert.equal((await cia.get('/cia/state')).body.credCount, 1, '활성 자격증명은 하나');
   });
 
-  await t('user_cred: 새 자격증명을 받으면 옛 것은 revoked 되고 리프가 pending 에 들어간다 (속성 변경)', async () => {
+  await t('user_cred: 새 자격증명을 받으면 옛 것은 revoked 되고 리프가 pending 에 들어간다 (재발급 — attrs 는 AA 기록이라 매번 같다, 매번 새 blind_u)', async () => {
     const a = await userCredRequest(user); assert.equal((await cia.post('/cia/user_cred', a.body)).status, 201);
     const before = (await cia.get('/cia/state')).body.pendingCount;
-    const b = await userCredRequest({ ...user, attrs: [20n, 410n, 0n, 0n] }); assert.equal((await cia.post('/cia/user_cred', b.body)).status, 201);
+    const b = await userCredRequest(user); assert.equal((await cia.post('/cia/user_cred', b.body)).status, 201);
     const st = (await cia.get('/cia/state')).body;
     assert.equal(st.pendingCount, before + 1);
     assert.equal(st.credCount, 1);
@@ -511,6 +530,39 @@ try {
       assert.ok(BigInt(await log.lastPublishedBlock()) > 0n);
       assert.equal((await hbCia.get('/cia/state')).body.epoch, Number(epoch0) + 1, 'CIA 상태의 epoch 도 따라간다');
     } finally { await hbCia.stop(); }
+  });
+
+  // 2026-09-22 §3.3·§3.4: 속성은 AA 기록이다. 이 셋은 uid 12345(testuser) 의 attrs 를 관리자 엔드포인트로 영구히 바꾸므로
+  // (앞의 revokedLeaf()·userCredRequest(user) 는 모두 기본 attrs 를 가정한다) 파일의 맨 끝, publish 가 이미 깨진 뒤에 둔다.
+  await t('register 응답에 AA 기록 attrs 가 실린다; /cia/attrs 는 sk_u 서명으로 같은 값을 돌려준다', async () => {
+    const w = await freshWallet();                                           // 파일의 등록 헬퍼(uid 12345 testuser)
+    assert.deepEqual(w.registerBody.attrs, ['1990', '410', '2', '0']);
+    const nonce = 99n;
+    const sig_u = await signAttrsRequest(w.sk_u, 12345n, nonce);
+    const r = await cia.post('/cia/attrs', { uid: '12345', nonce: nonce.toString(), sig_u });
+    assert.equal(r.status, 200); assert.deepEqual(r.body.attrs, ['1990', '410', '2', '0']);
+    assert.equal((await cia.post('/cia/attrs', { uid: '12345', nonce: '100', sig_u })).status, 400, '다른 nonce 의 서명은 거절');
+  });
+
+  await t('user_cred: 지갑이 AA 기록과 다른 attrs 로 만든 C_u 는 400 bad proof; 같은 값이면 201', async () => {
+    const w = await freshWallet();
+    const bad = await buildUserCredRequest({ uid: 12345n, s_u: w.s_u, r_u: w.r_u, sk_u: w.sk_u, attrs: [1991n, 410n, 2n, 0n] });
+    assert.equal((await cia.post('/cia/user_cred', bad.body)).status, 400);
+    const good = await buildUserCredRequest({ uid: 12345n, s_u: w.s_u, r_u: w.r_u, sk_u: w.sk_u, attrs: [1990n, 410n, 2n, 0n] });
+    assert.equal((await cia.post('/cia/user_cred', good.body)).status, 201);
+  });
+
+  await t('관리자 속성 변경: 활성 C_u 가 물리고(inserted 1) 다음 user_cred 는 새 값으로만 통과', async () => {
+    const w = await freshWallet();
+    const good = await buildUserCredRequest({ uid: 12345n, s_u: w.s_u, r_u: w.r_u, sk_u: w.sk_u, attrs: [1990n, 410n, 2n, 0n] });
+    assert.equal((await cia.post('/cia/user_cred', good.body)).status, 201);
+    const r = await cia.adminPost('/cia/accounts/12345/attrs', { attrs: ['1990', '410', '3', '0'] });
+    assert.equal(r.status, 200); assert.equal(r.body.inserted.length, 1);
+    assert.equal((await cia.post('/cia/user_cred', good.body)).status, 400, '옛 속성의 C_u 는 더 이상 통과하지 않는다');
+    const next = await buildUserCredRequest({ uid: 12345n, s_u: w.s_u, r_u: w.r_u, sk_u: w.sk_u, attrs: [1990n, 410n, 3n, 0n] });
+    assert.equal((await cia.post('/cia/user_cred', next.body)).status, 201);
+    assert.equal((await cia.adminPost('/cia/accounts/12345/attrs', { attrs: [(1n << 64n).toString(), '0', '0', '0'] })).status, 400);
+    assert.equal((await cia.adminPost('/cia/accounts/424242/attrs', { attrs: ['1', '0', '0', '0'] })).status, 404);
   });
 } finally {
   await cia.stop();

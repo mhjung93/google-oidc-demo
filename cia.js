@@ -17,9 +17,9 @@ import { ethers } from 'ethers';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import * as snarkjs from 'snarkjs';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
-import { credMessageV5, compressPoint, randomScalar } from './lib/mode3_credential.js';
+import { credMessageV5, compressPoint, randomScalar, normalizeAttrs } from './lib/mode3_credential.js';
 import { userLeaf, createRevocationTree } from './lib/mode3_revocation.js';
-import { isValidPoint, pointFromStrings, verifyUserCred, parseUserCredProof, userCredRequestMessage, issueRequestMessageV4 } from './lib/mode3_issuance.js';
+import { isValidPoint, pointFromStrings, verifyUserCred, parseUserCredProof, userCredRequestMessage, issueRequestMessageV4, attrsRequestMessage } from './lib/mode3_issuance.js';
 import { LOG_ABI, rootToBytes32, signRootPublication } from './lib/mode3_log.js';
 import { signRpCert } from './lib/mode3_rp_cert.js';
 import { isTracePoint, createShare, combinePublicKey, partialDecrypt, combineDecrypt, resolveTagPlaintext, proveShare } from './lib/mode3_trace.js';
@@ -63,8 +63,8 @@ const chainProviders = new Map();   // chainid → JsonRpcProvider (재사용)
 
 // 데모 계정. Mode 2 의 testuser 관례를 따른 프로토타입이다 — 실제 계정 체계가 아니다.
 const DEMO_ACCOUNTS = {
-  testuser: { password: 'password123', uid: '12345' },
-  alice: { password: 'alicepw', uid: '67890' },
+  testuser: { password: 'password123', uid: '12345', attrs: ['1990', '410', '2', '0'] },   // a₀ 출생연도, a₁ 국가(ISO 3166 numeric), a₂ 등급, a₃ 예비
+  alice: { password: 'alicepw', uid: '67890', attrs: ['2005', '840', '1', '0'] },
 };
 
 // ---- 키 ----
@@ -149,7 +149,7 @@ async function reconcileWithChain({ onchainRoot, onchainEpoch }) {
 async function loadState() {
   state = readJson(STATE_FILE, defaultState());
   let migrated;
-  try { migrated = migrateCiaState(state); }
+  try { migrated = migrateCiaState(state, { demoAttrs: (uid) => Object.values(DEMO_ACCOUNTS).find((a) => a.uid === uid)?.attrs ?? null }); }
   catch (e) {
     console.error(`[cia] 기동 거부: ${e.message}. v2 이하는 옛 credential 형식이라 새 회로에서 검증되지 않으므로 마이그레이션하지 않는다 — ` +
       `재시연 세트(로그 재배포 → 상태 파일 삭제)로 새로 시작할 것.`);
@@ -337,9 +337,9 @@ app.post('/cia/register', async (req, res) => {
   if (state.accounts[uid]) return res.status(409).json({ error: 'already registered' });
   const prv = randomBytes(32);
   const pub = eddsa.prv2pub(prv);
-  state.accounts[uid] = { pk_u: S(pub), cm_u: { x: cm_u.x, y: cm_u.y }, disabled: false, creds: [] };
+  state.accounts[uid] = { pk_u: S(pub), cm_u: { x: cm_u.x, y: cm_u.y }, disabled: false, creds: [], attrs: [...acct.attrs] };
   persist();
-  res.status(201).json({ pk_u: S(pub), sk_u: prv.toString('hex') });
+  res.status(201).json({ pk_u: S(pub), sk_u: prv.toString('hex'), attrs: state.accounts[uid].attrs });
 });
 
 // §4.1(2026-09-21) 사용자 자격증명 발급. 세션과 무관 — 속성이 바뀔 때만 다시 온다. AA 서명은 없다(세션 서명이 Cf_u 를 덮는다).
@@ -360,7 +360,8 @@ app.post('/cia/user_cred', async (req, res) => {
     } catch { sigOk = false; }
     if (!sigOk) return res.status(400).json({ error: 'bad user signature' });
     let proofOk = false;
-    try { proofOk = await verifyUserCred({ uid: BigInt(uid), C_u_pt: cpt, cm_u: pointFromStrings(acct.cm_u), proof: parseUserCredProof(proof) }); }
+    // 속성은 AA 기록(acct.attrs) — 요청의 값은 받지 않는다(2026-09-22 §3.4).
+    try { proofOk = await verifyUserCred({ uid: BigInt(uid), attrs: acct.attrs.map(BigInt), C_u_pt: cpt, cm_u: pointFromStrings(acct.cm_u), proof: parseUserCredProof(proof) }); }
     catch { proofOk = false; }
     if (!proofOk) return res.status(400).json({ error: 'bad user credential proof' });
     const Cf_u = (await compressPoint(cpt)).toString();
@@ -384,6 +385,38 @@ app.post('/cia/user_cred', async (req, res) => {
     persist();
     res.status(201).json({ Cf_u, leaf });
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+
+// 2026-09-22 §3.3 지갑이 자기 속성을 다시 받는다 — user_cred 가 bad proof 로 거절됐을 때(AA 기록이 바뀜). sk_u 서명으로 인증.
+app.post('/cia/attrs', async (req, res) => {
+  try {
+    const { uid, nonce, sig_u } = req.body ?? {};
+    if (!isDec(uid) || !isDec(nonce) || !sig_u) return res.status(400).json({ error: 'uid, nonce, sig_u required' });
+    const acct = state.accounts[uid];
+    if (!acct) return res.status(404).json({ error: 'unknown account' });
+    let ok = false;
+    try {
+      const m = F.e(await attrsRequestMessage(BigInt(uid), BigInt(nonce)));
+      ok = eddsa.verifyPoseidon(m, { R8: [F.e(BigInt(sig_u.R8x)), F.e(BigInt(sig_u.R8y))], S: BigInt(sig_u.S) }, [F.e(BigInt(acct.pk_u.x)), F.e(BigInt(acct.pk_u.y))]);
+    } catch { ok = false; }
+    if (!ok) return res.status(400).json({ error: 'bad user signature' });
+    res.json({ attrs: acct.attrs });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 2026-09-22 §3.3 관리자가 속성을 바꾼다. 활성 자격증명은 옛 속성이라 물린다(리프 → 다음 게시). 지갑은 다음 발급에서 재동기화한다.
+app.post('/cia/accounts/:uid/attrs', requireAdmin, async (req, res) => {
+  try {
+    const uid = req.params.uid;
+    const acct = state.accounts[uid];
+    if (!isDec(uid) || !acct) return res.status(404).json({ error: 'unknown account' });
+    let attrs;
+    try { attrs = normalizeAttrs(req.body?.attrs).map(String); } catch (e) { return res.status(400).json({ error: `attrs: ${e.message}` }); }
+    acct.attrs = attrs;
+    const inserted = await retireActiveCred(uid);
+    persist();
+    res.json({ uid, attrs, inserted });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // §4.2(2026-09-21) 세션 발급 V5. ZKP 없음 — uid·s_u 는 사용자 자격증명 발급 때 π_u 로 이미 증명됐다.
@@ -519,6 +552,11 @@ app.post('/cia/account/set_disabled', requireAdmin, (req, res) => {
   persist();
   res.json({ uid, disabled: state.accounts[uid].disabled });
 });
+
+// 관리자 계정 목록(관리 페이지의 속성 편집용). activeCred 는 위의 기존 헬퍼(사용자당 활성 자격증명 하나).
+app.get('/cia/accounts', requireAdmin, (req, res) => res.json({
+  accounts: Object.entries(state.accounts).map(([uid, a]) => ({ uid, disabled: a.disabled, attrs: a.attrs, activeCf_u: activeCred(uid)?.Cf_u ?? null })),
+}));
 
 // §6.5.1 사용자 개시 폐기. 인증은 계정 비밀번호다 — 지갑 키가 아니다. 장치를 잃은 사용자에게 sk_u 는 없고
 // 공격자에게는 있으므로, 인증 수단은 장치 밖에 있어야 한다. 처리는 관리자의 계정 폐기와 같다.
