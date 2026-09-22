@@ -1,6 +1,6 @@
 # Mode 3 — 폐기 트리(RCL) 증분 동기화 설계: 체크포인트 + 델타
 
-**상태: 초안. 사용자 검토 대기.**
+**상태: 구현 완료(2026-09-23).**
 작성 2026-09-23. 브레인스토밍 결정(사용자): ①체크포인트는 지갑 상태 파일이 아니라 **별도 캐시 파일** `mode3_wallet_rcl.json`(상태 파일 버전 7 유지),
 ②델타를 적용한 root 가 컨트랙트 root 와 다르면 **전체 재생 1회**로 복구하고 그래도 다르면 throw(지금의 fail-closed 유지),
 ③리프가 새로 붙었을 때만 캐시를 쓴다, ④동시 `sync()` 는 진행 중인 호출 하나를 공유한다.
@@ -52,7 +52,8 @@ export function createRevocationSync({ provider, logAddress, cacheFile, log = co
 //   sync()  → Promise<{ tree, root: bigint, epoch: bigint, head: bigint, mode: 'delta'|'restore'|'bootstrap'|'fallback' }>
 //             (앞 네 필드는 syncRevocationTree 와 같은 의미·타입. mode 는 관측용 — proveSession 은 읽지 않는다)
 //   stats() → { leaves: number, lastSyncedBlock: bigint|null, lastMode: string|null, cacheFile: string }
-//   reset() → 메모리 트리와 캐시 파일을 버린다(테스트·운영 복구용). 다음 sync() 는 부트스트랩
+//   reset() → { deferred: boolean }. 메모리 트리와 캐시 파일을 버린다(테스트·운영 복구용). 다음 sync() 는 부트스트랩.
+//             진행 중인 sync() 와 겹치면 그 sync() 를 방해하지 않고 끝난 뒤로 미룬다(deferred:true) — 진행 중이 아니면 즉시(deferred:false)
 ```
 
 `provider` 는 에이전트가 이미 `{ cacheTimeout: -1 }` 로 만든다(`mode3_wallet_agent.js:49`). 그 밖의 provider 로 부를 때는 `syncRevocationTree` 주석의 250 ms 캐시 주의가 그대로 적용된다.
@@ -64,21 +65,24 @@ export function createRevocationSync({ provider, logAddress, cacheFile, log = co
 ```
 sync():
   if inFlight: return inFlight                                   # §5 동시성
-  inFlight = run(); try { return await inFlight } finally { inFlight = null }
+  inFlight = run(); try { return await inFlight } finally { inFlight = null; 지연된 reset() 처리 }
 
 run():
   head ← BigInt(provider.getBlockNumber())
   [onchainRoot, epoch] ← log.root({blockTag: head}), log.epoch({blockTag: head})     # eth_call 2회 — 지금과 같음
 
+  mode ← 'delta'
   if 메모리 트리 없음:
-      c ← 캐시 파일 읽기 (§4). 유효하면:
-          tree ← createRevocationTree(); for v of c.leaves: tree.insert(v)             # 'restore'
-          lastSyncedBlock ← c.lastSyncedBlock
-      아니면:
-          return bootstrap(head, onchainRoot, epoch)                                     # 'bootstrap'
-
-  if head < lastSyncedBlock:                                       # 체인 리셋(hardhat 재기동 등)
-      경고; return bootstrap(...)
+      c ← 캐시 파일 읽기 (§4).
+      없으면: return bootstrap('bootstrap')                        # 캐시 없음은 경고 없이 부트스트랩(첫 기동, §8)
+      if head < c.lastSyncedBlock:                                 # 체인 리셋 — 리프를 O(N) 재삽입해 복원하기 전에 검사한다(어차피 버릴 작업을 먼저 하지 않기 위함)
+          경고; return bootstrap('bootstrap')
+      restored ← createRevocationTree(); for v of c.leaves: restored.insert(v)
+      if restored.getRoot() ≠ c.root:
+          경고("캐시 손상"); return bootstrap('bootstrap')
+      tree ← restored; lastSyncedBlock ← c.lastSyncedBlock; mode ← 'restore'
+  else if head < lastSyncedBlock:                                  # 메모리 트리가 이미 있는 상태(연속 delta)에서도 체인이 되감길 수 있다
+      경고; return bootstrap('bootstrap')
 
   if head > lastSyncedBlock:
       events ← log.queryFilter(Revoked, lastSyncedBlock + 1, head)
@@ -86,18 +90,20 @@ run():
   # head == lastSyncedBlock 이면 조회 생략(같은 블록을 두 번 훑지 않는다)
 
   if tree.getRoot() ≠ BigInt(onchainRoot):
-      경고("델타 root 불일치 — 전체 재생으로 복구")
-      return bootstrap(...)                                        # 'fallback'. bootstrap 안에서도 다르면 throw
+      경고("델타 적용 root 가 컨트랙트 root 와 다르다 — 전체 재생으로 복구")
+      return bootstrap('fallback')                                 # bootstrap 안에서도 다르면 throw
 
   lastSyncedBlock ← head
   if appended > 0: 캐시 쓰기 (§4)
-  return { tree, root, epoch, head, mode: 'delta' }
+  return { tree, root: tree.getRoot(), epoch, head, mode }
 
-bootstrap(head, onchainRoot, epoch):
-  메모리 트리·캐시 파일 폐기
-  { tree, root, epoch, head } ← syncRevocationTree(provider, logAddress)      # 창세기부터. root ≠ 컨트랙트면 throw (기존 fail-closed)
+bootstrap(mode):
+  메모리 트리 폐기(tree ← null)
+  { tree, root, epoch, head } ← syncRevocationTree(provider, logAddress)      # 창세기부터. 위에서 읽은 head 를 넘기지 않고
+                                                                               #   자기 head 를 새로 읽는다(§3 "head 고정" 참고 — 더 새 스냅샷이므로 무해).
+                                                                               #   root ≠ 컨트랙트면 throw (기존 fail-closed)
   lastSyncedBlock ← head; 캐시 쓰기
-  return { ..., mode }
+  return { tree, root, epoch, head, mode }
 ```
 
 - **하트비트**(리프가 빈 `Revoked`, `cia.js:514 publishNow({heartbeat:true})`)는 델타 0. `epoch` 은 매 호출 컨트랙트에서 읽으므로 그대로 갱신된다.
@@ -162,19 +168,22 @@ hardhat(:8545)에 `RevocationLog` 를 새로 배포하고, 테스트가 CIA 키�
 
 `scripts/bench_mode3_rcl_sync.mjs`: 리프 N ∈ {0, 100, 1000} 를 게시한 뒤 (a) 전체 재생 `syncRevocationTree` (b) 캐시 복원 첫 `sync()` (c) 델타 `sync()`(리프 1개 추가 후) (d) 델타 0 `sync()` 의 벽시계 시간을 각 5회 중앙값으로. 결과는 `results/mode3_rcl_sync_<YYYYMMDD>.md` 에 새 파일로(기존 결과 덮어쓰지 않음). 기존 벤치(`scripts/bench_mode3_onchain.mjs`)의 표 형식을 따른다.
 
+**실측(2026-09-23)**: `results/mode3_rcl_sync_20260923.md`(반복 5). N=1005 에서 (a) 전체 재생 141ms(139–141) vs (c) 델타 1 40ms(40–41)·(d) 델타 0 23ms(23–25) — 리프 1천 개에서 전체 재생이 로그인당 비용을 약 3.5~6배 줄인다. (b) 캐시 복원 139ms(138–142)는 (a)와 비슷하다(둘 다 O(N) Poseidon, `getLogs` 구간만 짧다) — §7 서술과 일치.
+
 ---
 
 ## 8. 오류·운영
 
 | 상황 | 동작 | 사용자에게 |
 |---|---|---|
-| 캐시 파일 없음/손상/다른 컨트랙트 | 경고 1줄, 부트스트랩 | 첫 로그인이 느릴 뿐 |
+| 캐시 파일 없음(첫 기동) | 경고 없음, 부트스트랩 | 첫 로그인이 느릴 뿐 |
+| 캐시 파일 손상·다른 컨트랙트(logAddress·chainId 불일치)·version 불일치 | 경고 1줄, 부트스트랩 | 첫 로그인이 느릴 뿐 |
 | 델타 root 불일치 | 경고 1줄, 전체 재생 1회 | 그 로그인이 느릴 뿐 |
 | 전체 재생도 불일치 | throw(기존 메시지) → 라우트가 지금처럼 `sync_failed` 계열 오류 | 기존과 같음 |
 | 캐시 쓰기 실패(권한·디스크) | 경고, 계속 진행 | 없음 |
-| 체인 리셋(head < lastSyncedBlock) | 경고, 부트스트랩 | 없음 |
+| 체인 리셋(head < lastSyncedBlock) | 경고 1줄, 부트스트랩 | 없음 |
 
-운영 메모(`docs/MODE3_DEMO.md`): `RevocationLog` 를 재배포하면 캐시는 `logAddress` 불일치로 자동 무시된다 — 지울 필요 없음. hardhat 을 재기동해 블록이 되감기면 체인 리셋으로 잡힌다. 강제로 처음부터 재생하려면 `mode3_wallet_rcl.json` 을 지우거나 `POST /wallet/rcl/reset`(같은 오리진, 데모용)을 부른다.
+운영 메모(`docs/MODE3_DEMO.md`): `RevocationLog` 를 재배포하면 캐시는 `logAddress` 불일치로 자동 무시된다 — 지울 필요 없음. hardhat 을 재기동해 블록이 되감기면 체인 리셋으로 잡힌다. 강제로 처음부터 재생하려면 `mode3_wallet_rcl.json` 을 지우거나 `POST /wallet/rcl/reset`(같은 오리진, 본문 `{confirm:true}` 필요, 데모용)을 부른다.
 
 ---
 
@@ -182,4 +191,4 @@ hardhat(:8545)에 `RevocationLog` 를 새로 배포하고, 테스트가 CIA 키�
 
 - **범위 밖**: CIA 의 트리(자체 상태 `cia_state.json`)는 무관. 인덱서 스냅샷으로 부트스트랩하는 선택지는 넣지 않는다(YAGNI — 데모 규모에서 전체 재생 1회는 충분히 빠르다). 회로·컨트랙트 무변경.
 - **결정**(2026-09-23, 사용자): 캐시는 별도 파일(상태 파일 v7 유지); 불일치 시 전체 재생 1회 후 throw; 리프가 붙었을 때만 캐시 쓰기; 동시 호출은 in-flight 공유.
-- **열린 것**: 없음. (`POST /wallet/rcl/reset` 은 §8 운영 편의용으로 넣되, 구현 부담이 크면 `reset()` 만 두고 라우트는 뺀다 — 계획 단계에서 정한다.)
+- **열린 것**: `POST /wallet/rcl/reset` 넣음(Task 3). 같은 오리진만 부를 수 있고, 본문 `{confirm:true}` 가 없으면 400(§8 운영 메모) — `express.json()` 이 `text/plain` 단순 요청을 파싱하지 않는 성질에 기대어 CSRF 로 캐시를 지우는 통로를 막는다.
