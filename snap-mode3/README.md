@@ -19,8 +19,9 @@ Node 시뮬레이터가 `tests/helpers/snap_sim.mjs` 다. Mode 2 의 `snap/` 과
 ```
 node snap-mode3/test/rpc.test.mjs        # = cd snap-mode3 && npm test
 ```
-전역 `snap` 객체(`snap_manageState`·`snap_dialog`)를 스텁으로 대신해 RPC 9개를 검사한다. 패키지 지역 테스트라 `scripts/run_tests.sh`
-그룹에는 넣지 않았다 — Snap 을 고치면 이 명령을 직접 돌린다. 루트 `lib/` 를 상대 경로로 import 하므로 저장소 안에서 실행해야 한다.
+전역 `snap` 객체(`snap_manageState`·`snap_dialog`)를 스텁으로 대신해 RPC 9종을 검사한다. 루트 `run_tests.sh` 에서는
+`bash scripts/run_tests.sh snap` 으로 같은 파일을 돌린다(2026-09-22 Ruling 9 — 이 패키지의 `node_modules` 를 전제하므로 `unit` 이
+아니라 별도 그룹이다). 루트 `lib/` 를 상대 경로로 import 하므로 저장소 안에서 실행해야 한다.
 
 ## 메모: 왜 circomlibjs 를 안 쓰는가
 

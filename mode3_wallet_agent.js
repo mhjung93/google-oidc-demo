@@ -491,6 +491,10 @@ app.post('/wallet/self_revoke', async (req, res) => {
   try {
     const { uid, pwd } = req.body ?? {};
     if (!isDec(uid) || typeof pwd !== 'string') return res.status(400).json({ error: 'uid(10진 문자열), pwd 필요' });
+    // 이 지갑이 들고 있는 계정만 중계한다 — 다른 경로가 validateWitness 로 등록 uid 를 대조하는 것과 같은 규칙이다.
+    // 없으면 임의 uid·pwd 를 CIA 에 던져 보는 통로가 된다(Ruling 9 라운드, 리뷰 Minor 3).
+    if (!state.registration) return res.status(409).json({ reason: 'not_registered' });
+    if (uid !== state.registration.uid) return res.status(403).json({ reason: 'uid_mismatch' });
     const r = await ciaPost('/cia/account/self_revoke', { uid, pwd });
     res.status(r.status).json(r.body ?? {});
   } catch (e) { res.status(502).json({ reason: 'cia_unavailable', detail: e.message }); }

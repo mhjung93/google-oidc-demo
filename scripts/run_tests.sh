@@ -12,12 +12,14 @@
 #                                        # Mode 3 테스트는 build/mode3/pi_cred_*.zkey·vkey 도 필요
 #   bash scripts/run_tests.sh contract   # 컨트랙트(test/*.test.mjs). hardhat 인프로세스 체인
 #   bash scripts/run_tests.sh browser    # chain 의 조건 + Chrome(또는 Chromium) 필요. Playwright 로 페이지를 띄운다
+#   bash scripts/run_tests.sh snap       # snap-mode3/node_modules 필요(cd snap-mode3 && npm install)
 #   bash scripts/run_tests.sh live       # 데모 스택(:3000/:4000/:5001) + 관리자 시크릿 필요
 #   bash scripts/run_tests.sh all
 #
 # live 그룹은 실행 중인 IdP의 폐기 트리를 실제로 바꾸고(되돌릴 수 없음) 체인 블록을
 # 진행시킨다. CI에서 돌릴 수 있는 것은 unit·circuit·chain·contract이고,
-# browser는 Chrome/Chromium이 있는 러너에서만 된다.
+# browser는 Chrome/Chromium이 있는 러너에서만, snap은 snap-mode3 패키지를 install한
+# 러너에서만 된다.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -81,6 +83,13 @@ BROWSER=(
   tests/test_mode3_browser.mjs
 )
 
+# Snap 패키지(snap-mode3)의 지역 테스트. 전역 snap 객체를 스텁해 RPC 9종을 검사한다 —
+# 체인도 브라우저도 필요 없지만 snap-mode3/node_modules(@metamask/snaps-sdk)를 전제하므로
+# unit 의 "외부 의존 없음" 계약을 깨지 않도록 그룹을 따로 둔다(2026-09-22 Ruling 9).
+SNAP=(
+  snap-mode3/test/rpc.test.mjs
+)
+
 # 살아있는 데모 스택과 IDP_ADMIN_SECRET이 필요하다.
 LIVE=(
   # RP 백엔드(:3000)의 노출면 — 민감 파일 비공개, 추적 권한 분리, 열린 릴레이 부재.
@@ -114,6 +123,7 @@ case "$GROUP" in
   circuit) FILES=("${CIRCUIT[@]}") ;;
   chain)   FILES=("${CHAIN[@]}") ;;
   browser) FILES=("${BROWSER[@]}") ;;
+  snap)    FILES=("${SNAP[@]}") ;;
   contract)
     # 컨트랙트 테스트는 hardhat이 자기 인프로세스 체인에서 돌린다(:8545가 필요 없다).
     # 파일 단위로 node를 부르는 아래 루프와 실행 방식이 달라 여기서 끝낸다.
@@ -145,11 +155,12 @@ case "$GROUP" in
     fi
     # contract는 실행 방식이 달라 여기서 먼저 돌리고, 실패하면 거기서 멈춘다.
     npx hardhat test || exit 1
-    # browser 도 넣는다 — "all"이 실제로 전부여야 한다. 다만 Chrome/Chromium 이 없는 머신에서는 이 한 줄 때문에 all 이 실패한다.
-    FILES=("${UNIT[@]}" "${CIRCUIT[@]}" "${CHAIN[@]}" "${BROWSER[@]}" "${LIVE[@]}")
+    # browser·snap 도 넣는다 — "all"이 실제로 전부여야 한다. 다만 Chrome/Chromium 이 없거나
+    # snap-mode3 의 패키지 install 이 안 돼 있는 머신에서는 이 두 줄 때문에 all 이 실패한다.
+    FILES=("${UNIT[@]}" "${CIRCUIT[@]}" "${CHAIN[@]}" "${BROWSER[@]}" "${SNAP[@]}" "${LIVE[@]}")
     ;;
   default) FILES=("${UNIT[@]}" "${CIRCUIT[@]}") ;;
-  *) echo "알 수 없는 그룹: $GROUP (unit|circuit|chain|browser|contract|live|all)" >&2; exit 2 ;;
+  *) echo "알 수 없는 그룹: $GROUP (unit|circuit|chain|browser|snap|contract|live|all)" >&2; exit 2 ;;
 esac
 
 echo "== 그룹 '$GROUP' — ${#FILES[@]}개 실행 =="

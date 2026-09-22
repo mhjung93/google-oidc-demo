@@ -274,8 +274,9 @@ AA 의 현재 값을 받아 두고(바뀌었으면 지갑이 옛 C_u·세션을 
   Playwright 가 `channel: 'chrome'` 으로 띄우고, `window.ethereum` 을 스텁해 진짜 `snap-mode3/src/index.js` 의 `onRpcRequest` 를
   물린다. 그래서 `chain` 과 그룹을 나눴다. **Snap 경로(`snap-mode3/`, `mode3/wallet.html`, `mode3/rp.html`, 에이전트의 snap 분기)를
   건드렸으면 이 그룹도 돌린다.**
-- `node snap-mode3/test/rpc.test.mjs` — Snap RPC 9개의 단위 테스트(전역 `snap` 객체를 스텁). 패키지 지역 테스트라
-  `scripts/run_tests.sh` 그룹에는 없다 — Snap 을 고치면 이 명령을 직접 돌린다.
+- `bash scripts/run_tests.sh snap` — Snap RPC 9종의 단위 테스트(`snap-mode3/test/rpc.test.mjs`, 전역 `snap` 객체를 스텁).
+  체인도 브라우저도 필요 없지만 `snap-mode3/node_modules` 를 전제하므로(`cd snap-mode3 && npm install`) `unit` 이 아니라
+  별도 그룹이다. `node snap-mode3/test/rpc.test.mjs` 로 직접 돌려도 같다.
 - `bash scripts/run_tests.sh contract` — `test/Mode3Wallet.test.mjs`(`execute()` 검사 순서·가스). hardhat 인프로세스 체인이라 :8545 가 필요 없다.
 - `bash scripts/run_tests.sh unit` 의 `tests/test_mode3_cia_state.js` — 상태 v5 이행을 커버한다.
 - 개봉은 `tests/test_cia_opening.mjs`(CIA 단독)와 `test_mode3_demo_stack.mjs` 시나리오 9(전 구간)로 고정돼 있다.

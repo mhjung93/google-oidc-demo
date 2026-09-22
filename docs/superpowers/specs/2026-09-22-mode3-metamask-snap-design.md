@@ -277,3 +277,7 @@ Snap `reset` 은 사용자가 따로 누른다.
   작업에서 바꾸지 않는다는 계획을 지키고, 에이전트는 이미 `ciaPost` 로 CIA 와 통신한다. §3.2·§4.5 참고.
 - **Ruling 8** — 브라우저 테스트는 `chain` 이 아니라 새 **`browser` 그룹**이다. `chain` 의 계약("hardhat :8545 만 있으면 된다")을
   지키기 위해서다. `all` 에는 포함하되, Chrome/Chromium 이 없는 머신에서는 그 한 줄 때문에 `all` 이 실패한다는 주석을 남겼다.
+- **Ruling 9** — `snap-mode3/test/rpc.test.mjs` 도 `run_tests.sh` 에 **`snap` 그룹**으로 등록한다(패키지 지역 테스트라는 이유로
+  어느 그룹에도 없으면 아무도 돌리지 않는다 — CLAUDE.md). `snap-mode3/node_modules` 를 전제하므로 `unit` 의 "외부 의존 없음"
+  계약은 건드리지 않고, `browser` 와 같은 방식으로 `all` 에 포함하되 install 이 안 된 머신에서는 그 줄 때문에 `all` 이
+  실패한다는 주석을 남긴다. 같은 라운드에서 프록시가 등록된 `uid` 만 중계하도록 403 검사를 더했다(리뷰 Minor 3).

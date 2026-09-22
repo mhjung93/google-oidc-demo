@@ -387,11 +387,17 @@ try {
 
   // 자기 폐기 프록시(metamask-snap §4.5, Ruling 7). snap 모드의 지갑 페이지는 cia.js 에 CORS 가 없어 :4100 을 직접 부를 수
   // 없다 — 에이전트가 중계한다. 여기서는 file 모드 스택으로 그 중계 경로만 본다(Snap 은 비밀번호를 묻는 역할일 뿐이다).
-  await t("4″. 자기 폐기 프록시: 지갑 POST /wallet/self_revoke 가 CIA 로 중계한다(잘못된 비밀번호는 401, 형식 오류는 400)", async () => {
+  await t("4″. 자기 폐기 프록시: 지갑 POST /wallet/self_revoke 가 CIA 로 중계한다(형식 400, 남의 uid 403, 잘못된 비밀번호 401)", async () => {
     assert.equal((await wallet.post('/wallet/self_revoke', { uid })).status, 400);
+    // 이 지갑이 들고 있지 않은 계정(alice)은 CIA 에 닿기 전에 막힌다 — 임의 uid·pwd 를 던져 보는 통로가 되지 않는다.
+    const other = await wallet.post('/wallet/self_revoke', { uid: '67890', pwd: 'alicepw' });
+    assert.equal(other.status, 403, j(other.body)); assert.equal(other.body.reason, 'uid_mismatch');
     assert.equal((await wallet.post('/wallet/self_revoke', { uid, pwd: 'wrong-password' })).status, 401);
     const r = await wallet.post('/wallet/self_revoke', { uid, pwd: 'password123' });
     assert.equal(r.status, 200, j(r.body)); assert.equal(r.body.disabled, true);
+    // 이 태스크의 핵심 불변식: 비밀번호는 중계만 되고 에이전트의 상태 파일·로그 어디에도 남지 않는다.
+    assert.ok(!fs.readFileSync(stack.walletStateFile, 'utf8').includes('password123'), '비밀번호가 지갑 상태 파일에 남았다');
+    assert.ok(!wallet.log().includes('password123'), '비밀번호가 지갑 로그에 남았다');
     assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
     // 뒤 시나리오들이 로그인을 이어 가므로 복구해 둔다 — 4′ 과 같이 PPID 는 그대로여야 한다.
     assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid, disabled: false })).status, 200);
