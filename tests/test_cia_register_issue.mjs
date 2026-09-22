@@ -7,8 +7,8 @@ import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { getProvider, logAbi, signRootPublication } from './helpers/mode3_chain.mjs';
 import { randomScalar, sessionCommit, compressPoint, credMessageV5, SCALAR_MAX } from '../lib/mode3_credential.js';
 import { userLeaf } from '../lib/mode3_revocation.js';
-import { registrationCommit, proveUserCred, serializeUserCredProof, userCredRequestMessage, issueRequestMessageV4, pointToStrings, attrsRequestMessage } from '../lib/mode3_issuance.js';
-import { syncRevocationTree, buildUserCredRequest } from '../lib/mode3_wallet.js';
+import { registrationCommit, proveUserCred, serializeUserCredProof, userCredRequestMessage, issueRequestMessageV4, pointToStrings } from '../lib/mode3_issuance.js';
+import { syncRevocationTree, buildUserCredRequest, signAttrsRequest } from '../lib/mode3_wallet.js';
 import { verifyRpCert } from '../lib/mode3_rp_cert.js';
 import { verifyShare, combinePublicKey } from '../lib/mode3_trace.js';
 import { createShare } from '../lib/mode3_trace.js';
@@ -70,12 +70,6 @@ async function freshWallet() {
   assert.equal(r.status, 201, JSON.stringify(r.body));
   _testuserWallet = { s_u, r_u, cm_u, sk_u: r.body.sk_u, registerBody: r.body };
   return _testuserWallet;
-}
-/** /cia/attrs 요청 서명(2026-09-22 §3.3). Task 5 에서 lib/mode3_wallet.js 로 옮긴다 — 그때까지 로컬 헬퍼. */
-async function signAttrsRequest(sk_uHex, uid, nonce) {
-  const eddsa = await buildEddsa(); const F = eddsa.F;
-  const s = eddsa.signPoseidon(Buffer.from(sk_uHex, 'hex'), F.e(await attrsRequestMessage(uid, nonce)));
-  return { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() };
 }
 /** 세션 발급 요청 본문. cred 는 userCredRequest 의 반환값. */
 async function issueRequest(u, cred, overrides = {}, { chainid = CHAIN_ID, allowAgent = 0n, max_height, pk_i = 0x1234n } = {}) {

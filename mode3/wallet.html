@@ -22,13 +22,13 @@
     <label>uid <input id="uid" value="12345" size="8" /></label>
     <label>pwd <input id="pwd" type="password" value="password123" size="12" /></label>
     <br />
-    <label class="muted">속성(선택, 10진 4개 — CIA 는 값을 모른다. 설계 2026-09-14 §2)</label>
-    <input id="attr0" value="19" size="6" title="attr0" />
-    <input id="attr1" value="410" size="6" title="attr1" />
-    <input id="attr2" value="0" size="6" title="attr2" />
-    <input id="attr3" value="0" size="6" title="attr3" />
+    <label class="muted">속성(10진 4개 — AA(CIA) 가 관리한다. 2026-09-22 §3.3: 지갑은 등록·재동기화 때 받아 여기 채우기만 한다)</label>
+    <input id="attr0" size="6" title="attr0" readonly />
+    <input id="attr1" size="6" title="attr1" readonly />
+    <input id="attr2" size="6" title="attr2" readonly />
+    <input id="attr3" size="6" title="attr3" readonly />
     <button id="registerBtn">등록</button>
-    <button id="attrsBtn" title="등록 뒤 속성을 바꾼다 — 새 사용자 자격증명을 받고 기존 세션은 지운다(설계 2026-09-21 §6.3)">속성 변경</button>
+    <button id="attrsBtn" title="/wallet/attrs/sync — AA 기록을 다시 받는다. 값이 바뀌었으면 옛 사용자 자격증명·세션을 버린다(다음 로그인이 새로 받는다)">AA 에서 속성 다시 받기</button>
     <span id="registerResult" class="muted"></span>
   </fieldset>
 
@@ -43,6 +43,17 @@
     <label>세션 <select id="txSession"></select></label><br />
     <label>to <input id="txTo" value="0x000000000000000000000000000000000000dEaD" size="44" /></label>
     <label>value(wei) <input id="txValue" value="0" size="10" /></label>
+    <label>data <input id="txData" value="0x" size="20" /></label>
+    <br />
+    <p class="muted">선택 공개(2026-09-22 §4.2): 체크한 슬롯만 [lo, hi] 구간을 π 에 싣는다. lo=hi 면 정확한 값 공개. "정확히 공개"는 체크된 슬롯을 내 현재 속성값으로 채운다.</p>
+    <div id="discloseRows">
+      <div><label><input type="checkbox" id="dk0" /> 슬롯0</label> lo <input id="discLo0" size="10" /> hi <input id="discHi0" size="10" /></div>
+      <div><label><input type="checkbox" id="dk1" /> 슬롯1</label> lo <input id="discLo1" size="10" /> hi <input id="discHi1" size="10" /></div>
+      <div><label><input type="checkbox" id="dk2" /> 슬롯2</label> lo <input id="discLo2" size="10" /> hi <input id="discHi2" size="10" /></div>
+      <div><label><input type="checkbox" id="dk3" /> 슬롯3</label> lo <input id="discLo3" size="10" /> hi <input id="discHi3" size="10" /></div>
+    </div>
+    <button id="discExactBtn" type="button">정확히 공개(체크된 슬롯)</button>
+    <br />
     <button id="txBtn" disabled>트랜잭션 보내기</button>
     <p id="txVerdict"></p>
     <pre id="txLog"></pre>
@@ -53,10 +64,13 @@
 
   <script>
     const $ = (id) => document.getElementById(id);
+    let lastAttrs = null;   // /wallet/status 가 준 값 — "정확히 공개" 버튼이 쓴다
     async function refresh() {
       try {
         const r = await fetch('/wallet/status');
         const s = await r.json();
+        lastAttrs = s.attrs ?? null;
+        for (let k = 0; k < 4; k++) $('attr' + k).value = lastAttrs ? lastAttrs[k] : '';
         const lines = [
           `등록: ${s.registered ? `예 (uid=${s.uid})` : '아니오'}`,
           `사용자 자격증명: ${s.userCred ? `${s.userCred.revoked === true ? '폐기됨' : s.userCred.revoked === false ? '있음' : '있음(폐기 여부는 다음 동기화 뒤)'} (Cf_u=${String(s.userCred.Cf_u).slice(0, 8)}…, 발급=${s.userCred.issuedAt})` : '없음 (첫 로그인 때 받는다)'}`,
@@ -87,28 +101,39 @@
     }
     $('registerBtn').addEventListener('click', async () => {
       $('registerResult').textContent = '…';
-      const r = await fetch('/wallet/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ uid: $('uid').value.trim(), pwd: $('pwd').value, attrs: ['attr0', 'attr1', 'attr2', 'attr3'].map((id) => $(id).value.trim() || '0') }) });
+      // attrs 는 AA(CIA) 기록이다(2026-09-22 §3.3) — 본문에 실어도 무시되므로 uid·pwd 만 보낸다.
+      const r = await fetch('/wallet/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ uid: $('uid').value.trim(), pwd: $('pwd').value }) });
       const b = await r.json().catch(() => ({}));
-      $('registerResult').textContent = r.status === 201 ? `등록됨 (uid=${b.uid})` : `${r.status}: ${b.reason ?? b.error ?? ''} ${b.cia ? JSON.stringify(b.cia) : ''}`;
+      $('registerResult').textContent = r.status === 201 ? `등록됨 (uid=${b.uid}, attrs=${JSON.stringify(b.attrs)})` : `${r.status}: ${b.reason ?? b.error ?? ''} ${b.cia ? JSON.stringify(b.cia) : ''}`;
       refresh();
     });
-    // 속성 변경(설계 2026-09-21 §6.3): 새 사용자 자격증명을 받는다. 옛 리프는 다음 게시에 나가므로 기존 세션은 지워진다.
+    // 속성 재동기화(2026-09-22 §3.3): AA 기록을 다시 받는다. 값이 바뀌었으면 옛 사용자 자격증명·세션이 지워진다(다음 로그인이 새로 받는다).
     $('attrsBtn').addEventListener('click', async () => {
       $('registerResult').textContent = '…';
-      const r = await fetch('/wallet/attrs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ attrs: ['attr0', 'attr1', 'attr2', 'attr3'].map((id) => $(id).value.trim() || '0') }) });
+      const r = await fetch('/wallet/attrs/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
       const b = await r.json().catch(() => ({}));
-      $('registerResult').textContent = r.status === 200 ? `속성 변경됨 (새 Cf_u=${String(b.Cf_u).slice(0, 8)}…, 지운 세션 ${b.sessionsDropped}개)` : `${r.status}: ${b.reason ?? b.error ?? ''} ${b.cia ? JSON.stringify(b.cia) : ''}`;
+      $('registerResult').textContent = r.status === 200 ? `재동기화됨 (attrs=${JSON.stringify(b.attrs)}, 바뀜=${b.changed})` : `${r.status}: ${b.reason ?? b.error ?? ''} ${b.cia ? JSON.stringify(b.cia) : ''}`;
       refresh();
     });
     $('refreshBtn').addEventListener('click', refresh);
+
+    // "정확히 공개": 체크된 슬롯의 lo=hi=내 현재 속성값으로 채운다.
+    $('discExactBtn').addEventListener('click', () => {
+      if (!lastAttrs) return;
+      for (let k = 0; k < 4; k++) {
+        if ($('dk' + k).checked) { $('discLo' + k).value = lastAttrs[k]; $('discHi' + k).value = lastAttrs[k]; }
+      }
+    });
 
     $('txBtn').addEventListener('click', async () => {
       $('txBtn').disabled = true; $('txVerdict').textContent = ''; $('txLog').textContent = '';
       try {
         const r_s = $('txSession').value;
+        // 체크된 슬롯만 {lo, hi}, 나머지는 null — normalizeDisclosure(lib/mode3_wallet.js) 가 회로 입력(mask/lo/hi)으로 바꾼다.
+        const disclose = [0, 1, 2, 3].map((k) => ($('dk' + k).checked ? { lo: $('discLo' + k).value.trim(), hi: $('discHi' + k).value.trim() } : null));
         const r = await fetch('/wallet/tx', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ r_s, to: $('txTo').value.trim(), value: $('txValue').value.trim() || '0' }),
+          body: JSON.stringify({ r_s, to: $('txTo').value.trim(), value: $('txValue').value.trim() || '0', data: $('txData').value.trim() || '0x', disclose }),
         });
         const b = await r.json().catch(() => ({}));
         if (r.status !== 200) {
@@ -116,7 +141,7 @@
           $('txVerdict').innerHTML = `<span class="bad">트랜잭션 실패 — ${b.reason ?? r.status}</span>`;
           return;
         }
-        $('txLog').textContent = `txHash=${b.txHash}\n지갑=${b.wallet}  nonce=${b.nonce}  ok=${b.ok}  gasUsed=${b.gasUsed}\n배포=${b.deployed}  캐시 히트=${b.cacheHit}  root=${b.root}\ntimings=${JSON.stringify(b.timings)}`;
+        $('txLog').textContent = `txHash=${b.txHash}\n지갑=${b.wallet}  nonce=${b.nonce}  ok(실행 성공)=${b.ok}  gasUsed=${b.gasUsed}\n배포=${b.deployed}  캐시 히트=${b.cacheHit}  root=${b.root}\n공개=${JSON.stringify(b.disclosure)}\n영수증 공개(온체인 이벤트)=${JSON.stringify(b.receipt?.disclosure)}\ntimings=${JSON.stringify(b.timings)}`;
         $('txVerdict').innerHTML = `<span class="ok">전송 성공</span>`;
       } catch (e) {
         $('txLog').textContent = `오류: ${e.message}`;

@@ -5,8 +5,11 @@
 // 로그인마다 발급된다(설계 2026-09-15 §5) — 성명은 세션(r_s) 단위이고 세션 안에서만 재사용한다.
 // V4(2026-09-18): 자격증명은 max_height·allowAgent, 세션은 서비스 팩토리 주소를 들고 /wallet/tx 로 온체인 실행(설계 §6.3).
 // V5(2026-09-21): 자격증명 이중 구조 — 사용자 자격증명(C_u, 사용자당 하나, 폐기 리프)과 세션 자격증명(C_s, 로그인마다).
-//   사용자 자격증명은 첫 로그인 또는 속성 변경(/wallet/attrs) 때 받고, 폐기되면 다음 로그인이 알아채(트리의 리프, 또는 게시 전이면
+//   사용자 자격증명은 첫 로그인 때 받고, 폐기되면 다음 로그인이 알아채(트리의 리프, 또는 게시 전이면
 //   세션 발급의 no_user_cred 거절) 새로 받는다.
+// V6(2026-09-22): 속성은 AA(cia.js DEMO_ACCOUNTS)가 관리한다 — 지갑은 등록·로그인 때 받아 캐싱만 한다. AA 가 속성을
+//   바꾸면 π_u(사용자 자격증명)가 깨지므로(/cia/user_cred 의 bad proof), ensureUserCred 가 /cia/attrs 로 재동기화하고
+//   한 번 재시도한다(/wallet/attrs/sync 로 수동 재동기화도 가능 — 옛 /wallet/attrs 는 없앴다).
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
@@ -14,10 +17,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
-import { createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, signSessionRequest, ProofCache, chooseMaxHeight } from './lib/mode3_wallet.js';
+import { createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, signSessionRequest, signAttrsRequest, normalizeDisclosure, disclosureKey, ProofCache, chooseMaxHeight } from './lib/mode3_wallet.js';
 import { signPayload, proofToCalldata, parseExecuteReceipt, factoryAt, walletAt } from './lib/mode3_onchain.js';
 import { pointToStrings } from './lib/mode3_issuance.js';
-import { normalizeAttrs, SCALAR_MAX, ppid } from './lib/mode3_credential.js';
+import { normalizeAttrs, SCALAR_MAX, ppid, randomScalar } from './lib/mode3_credential.js';
 import { verifyRpCert } from './lib/mode3_rp_cert.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -43,12 +46,15 @@ const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { cacheTimeout: 
 //                       credential:{Cf_u,Cf_s,max_height,chainid,allowAgent,sigma,pk_CIA}, sessionPrivKey, pk_i, issuedAt }
 // version 6 (2026-09-21): 자격증명 이중 구조(userCred·blind_u / C_s·blind_s). 옛 파일은 등록만 살리고 세션은 비운다 —
 // 옛 등록에는 userCred 가 없으므로 다음 로그인이 새로 받는다.
-const WALLET_STATE_VERSION = 6;
+// version 7 (2026-09-22): 속성은 AA 기록 — registration.attrs 는 지갑이 고르는 값이 아니라 AA 가 준 값이다. 옛 C_u 는
+// 사용자가 고른 속성 위에서 만들어졌으므로 물리고(userCred = null) 다음 로그인이 AA 속성으로 새로 받는다.
+const WALLET_STATE_VERSION = 7;
 let state = readJson(STATE_FILE, { version: WALLET_STATE_VERSION, registration: null, sessions: {} });
 function persist() { writeJsonAtomic(STATE_FILE, state, 0o600); }
 if (state.version !== WALLET_STATE_VERSION) {
   console.warn(`[wallet] 상태 파일 버전 ${state.version} → ${WALLET_STATE_VERSION}: 세션·credential 을 비운다(옛 형식). 등록은 유지.`);
   state = { version: WALLET_STATE_VERSION, registration: state.registration ?? null, sessions: {} };
+  if (state.registration) state.registration.userCred = null;
   persist();
 }
 state.sessions ??= {};
@@ -94,8 +100,20 @@ function replaceUserCred(userCred) {
   persist();
 }
 
+/** /cia/attrs 로 속성을 다시 받는다(2026-09-22 §3.3). 바뀌었으면 옛 C_u·세션을 버린다(재발급은 다음 로그인에서). */
+async function syncAttrsFromCia() {
+  const reg = state.registration;
+  const nonce = randomScalar();
+  const r = await ciaPost('/cia/attrs', { uid: reg.uid, nonce: nonce.toString(), sig_u: await signAttrsRequest(reg.sk_u, BigInt(reg.uid), nonce) });
+  if (r.status !== 200) return { changed: false, status: r.status, body: r.body };
+  const attrs = normalizeAttrs(r.body.attrs).map(String);
+  const changed = JSON.stringify(attrs) !== JSON.stringify(reg.attrs);
+  if (changed) { reg.attrs = attrs; replaceUserCred(null); } else persist();
+  return { changed, status: 200, attrs };
+}
+
 /** 사용자 자격증명 확보(설계 2026-09-21 §6.2 3단계). 없거나 폐기됐으면 새로 받는다. 돌려주는 값은 { status, body, fresh }. */
-async function ensureUserCred(tree) {
+async function ensureUserCred(tree, { resynced = false } = {}) {
   const reg = state.registration;
   if (reg.userCred && !tree.has(BigInt(reg.userCred.leaf))) return { status: 200, fresh: false };
   const req = await buildUserCredRequest({ uid: BigInt(reg.uid), s_u: BigInt(reg.s_u), r_u: BigInt(reg.r_u), sk_u: reg.sk_u, attrs: (reg.attrs ?? []).map(BigInt) });
@@ -103,6 +121,11 @@ async function ensureUserCred(tree) {
   if (r.status === 201 || r.status === 200) {
     replaceUserCred({ C_u_pt: { x: req.C_u_pt.x.toString(), y: req.C_u_pt.y.toString() }, Cf_u: req.Cf_u.toString(), blind_u: req.secrets.blind_u.toString(), leaf: req.leaf.toString(), issuedAt: new Date().toISOString() });
     return { status: 200, body: r.body, fresh: true };
+  }
+  // AA 기록이 바뀌어 π_u 가 깨진 경우(2026-09-22 §3.3): 속성을 다시 받아 한 번만 재시도한다
+  if (r.status === 400 && !resynced && /proof/.test(r.body?.error ?? '')) {
+    const s = await syncAttrsFromCia();
+    if (s.status === 200) return ensureUserCred(tree, { resynced: true });
   }
   return { status: r.status, body: r.body, fresh: false };
 }
@@ -152,18 +175,16 @@ app.get('/wallet/status', async (req, res) => {
   const uc = state.registration?.userCred;
   const userCred = uc ? { Cf_u: uc.Cf_u, issuedAt: uc.issuedAt, revoked: lastSync?.tree ? lastSync.tree.has(BigInt(uc.leaf)) : null } : null;
   res.json({
-    registered: Boolean(state.registration), uid: state.registration?.uid ?? null, userCred, sessions,
+    registered: Boolean(state.registration), uid: state.registration?.uid ?? null, attrs: state.registration?.attrs ?? null, userCred, sessions,
     head, lastRoot: lastSync?.root ?? null, logAddress: LOG_ADDRESS,
   });
 });
 
+// 2026-09-22 §3.3 — 속성은 AA(cia.js DEMO_ACCOUNTS)가 관리한다. 본문의 attrs 는 받지 않는다(있어도 무시).
 app.post('/wallet/register', async (req, res) => {
   try {
     const { uid, pwd } = req.body ?? {};
     if (!isDec(uid) || typeof pwd !== 'string') return res.status(400).json({ error: 'uid(10진 문자열), pwd 필요' });
-    let attrs;
-    try { attrs = normalizeAttrs(req.body?.attrs).map(String); }
-    catch (e) { return res.status(400).json({ error: `attrs: ${e.message}` }); }
     if (state.registration) return res.status(409).json({ reason: 'already_registered', uid: state.registration.uid });
     const reg = await createRegistration();
     const r = await ciaPost('/cia/register', { uid, pwd, cm_u: pointToStrings(reg.cm_u) });
@@ -171,9 +192,9 @@ app.post('/wallet/register', async (req, res) => {
       const status = r.status === 401 || r.status === 409 ? r.status : 502;
       return res.status(status).json({ reason: 'register_failed', cia: r.body });
     }
-    state.registration = { uid, s_u: reg.s_u.toString(), r_u: reg.r_u.toString(), cm_u: pointToStrings(reg.cm_u), sk_u: r.body.sk_u, attrs };
+    state.registration = { uid, s_u: reg.s_u.toString(), r_u: reg.r_u.toString(), cm_u: pointToStrings(reg.cm_u), sk_u: r.body.sk_u, attrs: normalizeAttrs(r.body.attrs).map(String) };
     persist();
-    res.status(201).json({ uid });
+    res.status(201).json({ uid, attrs: state.registration.attrs });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -259,14 +280,15 @@ app.post('/wallet/login', loginCors, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-/** 세션의 성명으로 현재 root 에 대한 π 를 만든다(캐시). 사용자 자격증명 리프가 트리에 있으면 throw('revoked') — 그 사용자의 모든 세션이 같이 죽는다.
- *  세션이 없으면 throw('no_session') — 호출자가 404/409 로 옮긴다(500 이 아니다). */
-async function proveSession(rsKey, synced, timings) {
+/** 세션의 성명으로 현재 root 에 대한 π 를 만든다(캐시, disclosure 별). 사용자 자격증명 리프가 트리에 있으면 throw('revoked') — 그 사용자의
+ *  모든 세션이 같이 죽는다. 세션이 없으면 throw('no_session') — 호출자가 404/409 로 옮긴다(500 이 아니다). disclosure 가 없으면(mask 0) 기본 π. */
+async function proveSession(rsKey, synced, timings, disclosure = null) {
   const s = state.sessions[rsKey];
   if (!s) throw Object.assign(new Error('no_session'), { reason: 'no_session' });
   const reg = state.registration;
   const sessionWallet = new ethers.Wallet(s.sessionPrivKey);
-  let cached = cache.get(synced.root, rsKey);
+  const discKey = disclosure && disclosure.mask !== 0n ? disclosureKey(disclosure) : '0';
+  let cached = cache.get(synced.root, rsKey, discKey);
   const cacheHit = Boolean(cached);
   if (!cached) {
     // 세션이 물린 사용자 자격증명 위에 발급된 경우(동시 로그인 경합으로 ensureUserCred 가 그 사이 새 C_u 를 받았다) — 지금 C_u 의
@@ -278,10 +300,10 @@ async function proveSession(rsKey, synced, timings) {
       uid: BigInt(reg.uid), arid: BigInt(s.arid), s_u: BigInt(reg.s_u), blind_u: BigInt(reg.userCred.blind_u), blind_s: BigInt(s.blind_s), pk_i: BigInt(s.pk_i),
       attrs: (reg.attrs ?? []).map(BigInt),
       credential: s.credential, pk_CIA: { x: BigInt(s.credential.pk_CIA.x), y: BigInt(s.credential.pk_CIA.y) },
-      pk_trace: { x: BigInt(s.pk_trace.x), y: BigInt(s.pk_trace.y) }, tree: synced.tree,
+      pk_trace: { x: BigInt(s.pk_trace.x), y: BigInt(s.pk_trace.y) }, tree: synced.tree, disclosure,
     });
     timings.proveMs = Date.now() - t;
-    cache.set(synced.root, rsKey, cached);
+    cache.set(synced.root, rsKey, cached, discKey);
   }
   const sig = await signChallenge(sessionWallet, rsKey);
   return { proof: cached.proof, publicSignals: cached.publicSignals, sig, pk_i: s.pk_i, r_s: rsKey, root: synced.root.toString(), cacheHit, allowAgent: s.allowAgent, max_height: s.credential.max_height };
@@ -324,32 +346,13 @@ app.post('/wallet/revalidate', loginCors, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// §6.3(2026-09-21) 속성 변경: 새 사용자 자격증명을 받는다. AA 가 옛 리프를 pending 에 넣으므로 옛 세션은 다음 게시에 죽는다 — 지금 지운다.
-app.post('/wallet/attrs', async (req, res) => {
+// 2026-09-22 §3.3 — 속성은 AA 가 관리한다. 여기서는 값을 다시 받아 저장만 하고, 바뀌었으면 옛 C_u·세션을 버린다(재발급은 다음 로그인).
+app.post('/wallet/attrs/sync', async (req, res) => {
   try {
     if (!state.registration) return res.status(409).json({ reason: 'not_registered' });
-    let attrs;
-    try { attrs = normalizeAttrs(req.body?.attrs).map(String); } catch (e) { return res.status(400).json({ error: `attrs: ${e.message}` }); }
-    if (!LOG_ADDRESS) return res.status(503).json({ reason: 'chain_unavailable', detail: 'CIA_LOG_ADDRESS not configured' });
-    let synced;
-    try { synced = await syncRevocationTree(provider, LOG_ADDRESS); } catch (e) { return res.status(503).json({ reason: 'chain_unavailable', detail: e.message }); }
-    lastSync = { root: synced.root.toString(), head: synced.head.toString(), tree: synced.tree };
-    pruneSessions(synced.head);   // 만료된 세션은 sessionsDropped 에 세지 않는다
-    const dropped = Object.keys(state.sessions).length;
-    const prev = { attrs: state.registration.attrs, userCred: state.registration.userCred };
-    let uc;
-    try {
-      state.registration.attrs = attrs;
-      state.registration.userCred = null;   // 강제 재발급
-      uc = await ensureUserCred(synced.tree);
-    } finally {
-      // 성공이 아니면(CIA 거절, CIA 다운으로 ciaPost 가 throw) 아무것도 바뀌지 않는다 — 옛 자격증명·속성을 되돌려 기존 세션이
-      // 그대로 쓰이게 한다. 메모리만 되돌리면 된다(성공 전엔 persist 하지 않았다). throw 는 바깥 catch 가 500 으로 낸다.
-      if (!(uc?.status === 200 && uc.fresh)) Object.assign(state.registration, prev);
-    }
-    if (uc.status === 403) return res.status(403).json({ reason: 'account_disabled' });
-    if (uc.status !== 200) return res.status(502).json({ reason: 'user_cred_failed', cia: uc.body });
-    res.json({ Cf_u: state.registration.userCred.Cf_u, leaf: state.registration.userCred.leaf, sessionsDropped: dropped });
+    const s = await syncAttrsFromCia();
+    if (s.status !== 200) return res.status(502).json({ reason: 'attrs_failed', cia: s.body });
+    res.json({ attrs: state.registration.attrs, changed: s.changed });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -371,7 +374,7 @@ const RELAYER_INDEX = Number(process.env.MODE3_RELAYER_INDEX ?? 0);
 // 자산 이동은 지갑 UI 에서만 시작한다(스펙 §6.3) — 서비스 오리진에는 열지 않는다.
 app.post('/wallet/tx', async (req, res) => {
   try {
-    const { r_s, to, value = '0', data = '0x' } = req.body ?? {};
+    const { r_s, to, value = '0', data = '0x', disclose } = req.body ?? {};
     if (!isDec(r_s) || !isAddr(to) || !isDec(value) || typeof data !== 'string' || !/^0x([0-9a-fA-F]{2})*$/.test(data)) {
       return res.status(400).json({ error: 'r_s, to(주소), value(wei 10진, 선택), data(hex, 선택) 필요' });
     }
@@ -380,6 +383,10 @@ app.post('/wallet/tx', async (req, res) => {
     if (!s) return res.status(404).json({ reason: 'no_session' });
     if (!s.factoryAddress) return res.status(409).json({ reason: 'no_factory', detail: '서비스가 로그인 때 factoryAddress 를 주지 않았다' });
     if (!LOG_ADDRESS) return res.status(503).json({ reason: 'chain_unavailable', detail: 'CIA_LOG_ADDRESS not configured' });
+    // 2026-09-22 §4.2 선택 공개: disclose 를 회로 입력으로. 형식·범위 오류·불만족은 체인·증명 작업 전에 걸러낸다.
+    let disclosure;
+    try { disclosure = normalizeDisclosure(disclose, (state.registration.attrs ?? []).map(BigInt)); }
+    catch (e) { if (e.reason) return res.status(400).json({ reason: e.reason, detail: e.message }); throw e; }
     const timings = { syncMs: 0, issueMs: 0, proveMs: 0, txMs: 0 };
     let t = Date.now();
     let synced;
@@ -390,7 +397,7 @@ app.post('/wallet/tx', async (req, res) => {
     pruneSessions(synced.head);
     if (!state.sessions[rsKey]) return res.status(409).json({ reason: 'session_expired', timings });
     let proved;
-    try { proved = await proveSession(rsKey, synced, timings); }   // root 가 같으면 캐시 π, 아니면 재증명
+    try { proved = await proveSession(rsKey, synced, timings, disclosure); }   // root·disclosure 가 같으면 캐시 π, 아니면 재증명
     catch (e) {
       if (e.reason === 'revoked') { delete state.sessions[rsKey]; persist(); return res.status(403).json({ reason: 'revoked', timings }); }
       if (e.reason === 'no_session') return res.status(404).json({ reason: 'no_session', timings });
@@ -404,7 +411,7 @@ app.post('/wallet/tx', async (req, res) => {
     const walletC = walletAt(walletAddr, relayer);
     const nonce = await walletC.nonce();
     const payload = { to: ethers.getAddress(to), value: BigInt(value), data, nonce };
-    const sig = signPayload(new ethers.Wallet(s.sessionPrivKey), { chainId: await chainId(), wallet: walletAddr, ...payload });
+    const sig = signPayload(new ethers.Wallet(s.sessionPrivKey), { chainId: await chainId(), wallet: walletAddr, ...payload, discMask: disclosure.mask, discLo: disclosure.lo, discHi: disclosure.hi });
     const { a, b, c, pub } = await proofToCalldata(proved.proof, proved.publicSignals);
     t = Date.now();
     let receipt;
@@ -419,10 +426,13 @@ app.post('/wallet/tx', async (req, res) => {
       return res.status(409).json({ reason: 'execute_reverted', detail: String(name), wallet: walletAddr, nonce: nonce.toString(), timings });
     }
     timings.txMs = Date.now() - t;
-    const { executed } = parseExecuteReceipt(receipt, walletAddr);
+    const parsed = parseExecuteReceipt(receipt, walletAddr);
+    const discOut = disclosure.mask === 0n ? null : { mask: disclosure.mask.toString(), lo: disclosure.lo.map(String), hi: disclosure.hi.map(String) };
     res.json({
-      txHash: receipt.hash, wallet: walletAddr, nonce: nonce.toString(), status: receipt.status, ok: executed?.success ?? null,
+      txHash: receipt.hash, wallet: walletAddr, nonce: nonce.toString(), status: receipt.status, ok: parsed.executed?.success ?? null,
       gasUsed: receipt.gasUsed.toString(), deployed, cacheHit: proved.cacheHit, root: synced.root.toString(), timings,
+      disclosure: discOut,
+      receipt: { disclosure: parsed.disclosure ? { mask: parsed.disclosure.mask.toString(), lo: parsed.disclosure.lo.map(String), hi: parsed.disclosure.hi.map(String) } : null },
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

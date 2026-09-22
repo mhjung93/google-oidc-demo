@@ -48,14 +48,16 @@ try {
     assert.equal(r.body.reason, 'not_registered');
   });
 
-  await t('등록: 201, 두 번째는 409, 잘못된 pwd 는 CIA 의 401 을 그대로', async () => {
-    const r = await wallet.post('/wallet/register', { uid, pwd: 'password123', attrs: ['19', '410', '0', '0'] });
+  await t('등록: AA 속성을 저장하고 본문의 attrs 는 무시한다(201); 두 번째는 409, 잘못된 pwd 는 CIA 의 401 을 그대로; /wallet/status 에 attrs', async () => {
+    // uid 12345 는 cia.js DEMO_ACCOUNTS.testuser — AA 기록 attrs = ['1990','410','2','0'](2026-09-22 §3.3). 본문의 attrs 는 무시된다.
+    const r = await wallet.post('/wallet/register', { uid, pwd: 'password123', attrs: ['1', '2', '3', '4'] });
     assert.equal(r.status, 201, j(r.body));
-    assert.deepEqual(r.body, { uid });
+    assert.deepEqual(r.body, { uid, attrs: ['1990', '410', '2', '0'] });
     assert.equal((await wallet.post('/wallet/register', { uid, pwd: 'password123' })).status, 409);
     const s = await wallet.get('/wallet/status');
     assert.equal(s.body.registered, true);
     assert.equal(s.body.uid, uid);
+    assert.deepEqual(s.body.attrs, ['1990', '410', '2', '0']);
   });
 
   let first, PPID1, S1;
@@ -68,7 +70,7 @@ try {
     assert.equal(r.body.r_s, rs);
     assert.ok(!('uid' in r.body), 'uid 는 RP 로 나가면 안 된다');
     assert.equal(typeof r.body.timings.proveMs, 'number');
-    assert.equal(r.body.publicSignals.length, 14);
+    assert.equal(r.body.publicSignals.length, 23, 'V6: 기존 14 + 선택 공개 disc_mask·disc_lo[4]·disc_hi[4]');
     assert.equal(r.body.publicSignals[4], '31337');
     assert.equal(r.body.allowAgent, '0'); assert.equal(r.body.publicSignals[5], '0');
     const v = await verify(r.body, rs);
@@ -306,42 +308,63 @@ try {
     assert.equal((await wallet.post('/wallet/tx', { r_s: newRs(), to: walletAddr }, { Origin: stack.rpOriginForWallet })).status, 404);
   });
 
-  await t('register: attrs 가 4개를 넘거나 10진이 아니면 400', async () => {
-    // 이미 등록된 상태에서는 409 가 먼저이므로 형식 검사는 등록 앞에 있어야 한다 — 새 인스턴스 없이 확인하려면
-    // 400 이 409 보다 먼저 나오는지를 본다.
-    assert.equal((await wallet.post('/wallet/register', { uid, pwd: 'password123', attrs: ['1', '2', '3', '4', '5'] })).status, 400);
-    assert.equal((await wallet.post('/wallet/register', { uid, pwd: 'password123', attrs: ['x'] })).status, 400);
+  await t('register: 이미 등록된 계정에는 attrs 내용과 무관하게 409(2026-09-22 §3.3 — attrs 본문은 이제 형식도 검사하지 않고 무시한다)', async () => {
+    assert.equal((await wallet.post('/wallet/register', { uid, pwd: 'password123', attrs: ['1', '2', '3', '4', '5'] })).status, 409);
+    assert.equal((await wallet.post('/wallet/register', { uid, pwd: 'password123', attrs: ['x'] })).status, 409);
   });
 
-  await t('attrs: 속성을 바꾸면 새 사용자 자격증명, 기존 세션은 지워지고, 옛 리프는 다음 게시에 나간다', async () => {
-    const S9 = newRs(); assert.equal((await login(S9)).status, 200);
-    const before = (await wallet.get('/wallet/status')).body.userCred.Cf_u;
-    const r = await wallet.post('/wallet/attrs', { attrs: ['20', '410', '0', '0'] });
-    assert.equal(r.status, 200, j(r.body)); assert.notEqual(r.body.Cf_u, before); assert.ok(r.body.sessionsDropped >= 1);
-    assert.equal((await wallet.get('/wallet/status')).body.sessions[S9], undefined);
-    assert.equal((await cia.adminPost('/cia/publish')).body.published, true, '옛 리프가 pending 에 있었다');
-    const S10 = newRs(); const l = await login(S10); assert.equal(l.status, 200); assert.equal(l.body.timings.userCredMs, 0);
+  // 지갑이 로그인용으로 쓰는 헬퍼 — 등록은 이미 위에서 됐으므로 새 r_s 로 로그인만 한다. PPID 는 verify(RP 검증기)를
+  // 거치지 않고 publicSignals[0](회로가 정하는 자리) 에서 바로 읽는다 — lib/mode3_rp.js 는 아직 publicSignals.length===14 를
+  // 요구해(Task 6 전) 23개짜리 V6 신호를 malformed 로 거절하기 때문이다(2026-09-22 선택 공개 설계 §4).
+  async function loginOnce(extra = {}) {
+    const rs = newRs();
+    const r = await login(rs, extra);
+    assert.equal(r.status, 200, j(r.body));
+    return { ...r.body, r_s: rs, PPID: r.body.publicSignals[0] };
+  }
+  async function publishOnce() {
+    const r = await cia.adminPost('/cia/publish');
+    assert.equal(r.body.published, true, j(r.body));
+  }
+
+  await t('관리자가 속성을 바꾸면 다음 로그인이 bad proof → /cia/attrs 재동기화 → 새 C_u 로 성공, PPID 동일', async () => {
+    const first = await loginOnce();
+    assert.equal((await cia.adminPost(`/cia/accounts/${uid}/attrs`, { attrs: ['1990', '410', '3', '0'] })).status, 200);
+    await publishOnce();   // 물린 옛 리프가 트리에 올라야 ensureUserCred 가 새 C_u 를 시도하고(옛 attrs 로) bad proof 를 만난다
+    const second = await loginOnce();
+    assert.equal(second.PPID, first.PPID);
+    assert.equal(second.timings.userCredMs > 0, true, '재동기화 뒤 새 C_u 를 받았다');
+    assert.deepEqual((await wallet.get('/wallet/status')).body.attrs, ['1990', '410', '3', '0']);
   });
 
-  await t('attrs 입력 검증: 4개 초과·10진 아님 → 400; 비활성 계정은 403 account_disabled 이고 자격증명·세션은 그대로', async () => {
-    assert.equal((await wallet.post('/wallet/attrs', { attrs: ['1', '2', '3', '4', '5'] })).status, 400);
-    assert.equal((await wallet.post('/wallet/attrs', { attrs: ['x'] })).status, 400);
-    const before = (await wallet.get('/wallet/status')).body;
-    assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid, disabled: true })).status, 200);
-    const r = await wallet.post('/wallet/attrs', { attrs: ['21', '410', '0', '0'] });
-    assert.equal(r.status, 403, j(r.body)); assert.equal(r.body.reason, 'account_disabled');
-    const after = (await wallet.get('/wallet/status')).body;
-    assert.equal(after.userCred.Cf_u, before.userCred.Cf_u, '거절되면 옛 자격증명이 남는다');
-    assert.deepEqual(Object.keys(after.sessions), Object.keys(before.sessions), '거절되면 세션도 그대로');
-    assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid, disabled: false })).status, 200);
-    assert.equal((await revalidate(Object.keys(after.sessions)[0])).status, 200, '옛 자격증명으로 재검증이 계속 된다');
+  await t('/wallet/attrs 는 사라졌고(404) /wallet/attrs/sync 는 값을 다시 받는다', async () => {
+    assert.equal((await wallet.post('/wallet/attrs', { attrs: ['1', '0', '0', '0'] })).status, 404);
+    const r = await wallet.post('/wallet/attrs/sync', {});
+    assert.equal(r.status, 200, j(r.body)); assert.equal(Array.isArray(r.body.attrs), true);
+    assert.deepEqual(r.body.attrs, ['1990', '410', '3', '0']); assert.equal(r.body.changed, false, '이미 최신이라 바뀐 게 없다');
+  });
+
+  await t('/wallet/tx disclose: 만족하는 구간은 새 π 로 실행되고 receipt.disclosure 가 있다; 불만족은 400 disclosure_unsatisfiable; mask 0 은 그대로 진행된다', async () => {
+    // attrGateAddress 는 Task 6 가 RP 에 준다 — 그 전엔 dEaD 로 보내고 receipt.disclosure 만 본다(회로·컨트랙트 배선 확인이 목적).
+    const to = '0x000000000000000000000000000000000000dEaD';
+    const s = await loginOnce({ factoryAddress });
+    const ok = await wallet.post('/wallet/tx', { r_s: s.r_s, to, data: '0x4e71d92d', disclose: [{ lo: '0', hi: '2007' }, { lo: '410', hi: '410' }, null, null] }, { Origin: stack.rpOriginForWallet });
+    assert.equal(ok.status, 200, j(ok.body));
+    assert.equal(ok.body.disclosure.mask, '3'); assert.equal(ok.body.cacheHit, false);
+    assert.equal(ok.body.receipt.disclosure.mask, '3');
+    assert.deepEqual(ok.body.receipt.disclosure.lo, ['0', '410', '0', '0']);
+    assert.deepEqual(ok.body.receipt.disclosure.hi, ['2007', '410', '0', '0']);
+    const bad = await wallet.post('/wallet/tx', { r_s: s.r_s, to, disclose: [{ lo: '0', hi: '1980' }, null, null, null] }, { Origin: stack.rpOriginForWallet });
+    assert.equal(bad.status, 400, j(bad.body)); assert.equal(bad.body.reason, 'disclosure_unsatisfiable');
+    const plain = await wallet.post('/wallet/tx', { r_s: s.r_s, to }, { Origin: stack.rpOriginForWallet });
+    assert.equal(plain.status, 200, j(plain.body)); assert.equal(plain.body.disclosure, null); assert.equal(plain.body.receipt.disclosure, null);
   });
 
   // 마지막에 둔다 — CIA 를 끈다. stack.stop() 의 cia.stop() 은 이미 죽은 프로세스를 건너뛴다.
-  await t('attrs: CIA 가 죽어 요청 자체가 실패해도(500) 옛 자격증명·속성·세션이 그대로 남고 재검증은 계속 된다', async () => {
+  await t('attrs/sync: CIA 가 죽어 요청 자체가 실패해도(500) 옛 자격증명·속성·세션이 그대로 남고 재검증은 계속 된다', async () => {
     const before = (await wallet.get('/wallet/status')).body;
     await cia.stop();
-    const r = await wallet.post('/wallet/attrs', { attrs: ['22', '410', '0', '0'] });
+    const r = await wallet.post('/wallet/attrs/sync', {});
     assert.equal(r.status, 500, j(r.body));
     const after = (await wallet.get('/wallet/status')).body;
     assert.equal(after.userCred.Cf_u, before.userCred.Cf_u, 'CIA 다운이어도 옛 자격증명이 남는다');

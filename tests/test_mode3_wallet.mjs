@@ -11,7 +11,9 @@ import { credMessageV5, compressPoint, randomScalar } from '../lib/mode3_credent
 import {
   createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree,
   buildCredentialProof, ProofCache, signChallenge, signSessionRequest, ZKEY_PATH, VKEY_PATH, chooseMaxHeight,
+  normalizeDisclosure, signAttrsRequest,
 } from '../lib/mode3_wallet.js';
+import { attrsRequestMessage } from '../lib/mode3_issuance.js';
 import { verifySessionRequest } from '../lib/mode3_rp.js';
 import { verifyUserCred, parseUserCredProof } from '../lib/mode3_issuance.js';
 import { createShare, combinePublicKey, partialDecrypt, combineDecrypt, tagPlaintext } from '../lib/mode3_trace.js';
@@ -78,7 +80,7 @@ await t('사용자 자격증명 요청(π_u) → 세션 발급 요청 → 로컬
   session = createSessionKey();
   const sk_u = Buffer.alloc(32, 3).toString('hex');
   uc = await buildUserCredRequest({ uid, s_u: reg.s_u, r_u: reg.r_u, sk_u, attrs: [19n, 410n, 0n, 0n] });
-  assert.equal(await verifyUserCred({ uid, C_u_pt: uc.C_u_pt, cm_u: reg.cm_u, proof: parseUserCredProof(uc.body.proof) }), true, 'CIA 가 하는 검증');
+  assert.equal(await verifyUserCred({ uid, attrs: [19n, 410n, 0n, 0n], C_u_pt: uc.C_u_pt, cm_u: reg.cm_u, proof: parseUserCredProof(uc.body.proof) }), true, 'CIA 가 하는 검증');
   assert.equal(uc.body.uid, uid.toString());
   assert.equal(uc.body.C_u_pt.x, uc.C_u_pt.x.toString());
   assert.equal(uc.Cf_u, await compressPoint(uc.C_u_pt));
@@ -93,7 +95,7 @@ await t('사용자 자격증명 요청(π_u) → 세션 발급 요청 → 로컬
     credential: cred, pk_CIA, pk_trace, tree: tree0,
   });
   assert.equal(revRoot, tree0.getRoot());
-  assert.equal(publicSignals.length, 14);
+  assert.equal(publicSignals.length, 23, 'V6: 기존 14 + 선택 공개 disc_mask·disc_lo[4]·disc_hi[4] 9개(2026-09-22)');
   assert.equal(BigInt(publicSignals[2]), session.pk_i);
   assert.equal(BigInt(publicSignals[3]), BigInt(cred.max_height));
   assert.equal(BigInt(publicSignals[4]), 31337n);
@@ -169,6 +171,28 @@ await t('signSessionRequest 는 (r_s, body) 를 세션키로 서명하고 verify
 await t('챌린지 서명은 세션키 주소로 복원된다', async () => {
   const sig = await signChallenge(session.wallet, 'challenge-123');
   assert.equal(BigInt(ethers.verifyMessage('challenge-123', sig)), session.pk_i);
+});
+
+await t('normalizeDisclosure: null 넷 → mask 0; 구간·등식; 불만족은 disclosure_unsatisfiable; 64비트 밖·lo > hi 는 bad_disclosure', async () => {
+  const attrs = [1990n, 410n, 2n, 0n];
+  assert.deepEqual(normalizeDisclosure([null, null, null, null], attrs), { mask: 0n, lo: [0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n] });
+  assert.deepEqual(normalizeDisclosure(undefined, attrs).mask, 0n);
+  assert.deepEqual(normalizeDisclosure([{ lo: '0', hi: '2007' }, { lo: '410', hi: '410' }, null, null], attrs), { mask: 3n, lo: [0n, 410n, 0n, 0n], hi: [2007n, 410n, 0n, 0n] });
+  assert.throws(() => normalizeDisclosure([{ lo: '0', hi: '1980' }, null, null, null], attrs), (e) => e.reason === 'disclosure_unsatisfiable');
+  assert.throws(() => normalizeDisclosure([{ lo: '5', hi: '4' }, null, null, null], attrs), (e) => e.reason === 'bad_disclosure');
+  assert.throws(() => normalizeDisclosure([null, null, null, { lo: '0', hi: (1n << 64n).toString() }], attrs), (e) => e.reason === 'bad_disclosure');
+  assert.throws(() => normalizeDisclosure([null, null, null, null, null], attrs), (e) => e.reason === 'bad_disclosure');
+});
+await t('signAttrsRequest 는 attrsRequestMessage 위 EdDSA 서명이다', async () => {
+  const eddsa = await buildEddsa(); const F = eddsa.F;
+  const prv = Buffer.from('11'.repeat(32), 'hex'); const pub = eddsa.prv2pub(prv);
+  const sig = await signAttrsRequest(prv.toString('hex'), 12345n, 7n);
+  assert.equal(eddsa.verifyPoseidon(F.e(await attrsRequestMessage(12345n, 7n)), { R8: [F.e(BigInt(sig.R8x)), F.e(BigInt(sig.R8y))], S: BigInt(sig.S) }, pub), true);
+});
+await t('ProofCache 는 공개 키가 다르면 다른 항목이다', () => {
+  const c = new ProofCache();
+  c.set('r', 's', 'A'); c.set('r', 's', 'B', '3:0,410,0,0:2007,410,0,0');
+  assert.equal(c.get('r', 's'), 'A'); assert.equal(c.get('r', 's', '3:0,410,0,0:2007,410,0,0'), 'B'); assert.equal(c.get('r', 's', '1:0,0,0,0:9,0,0,0'), null);
 });
 
 provider.destroy();
