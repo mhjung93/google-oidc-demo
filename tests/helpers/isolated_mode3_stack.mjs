@@ -72,17 +72,11 @@ export async function startIsolatedMode3Stack(opts = {}) {
   const children = [];
   try {
     const walletLog = path.join(dir, 'wallet.log');
-    children.push(await spawnServer('mode3_wallet_agent.js', {
-      env: {
-        MODE3_WALLET_PORT: String(walletPort),
-        MODE3_WALLET_STATE_FILE: path.join(dir, 'mode3_wallet_state.json'),
-        MODE3_CIA_URL: cia.base,
-        MODE3_RP_ORIGIN: rpOrigin,
-        CIA_LOG_ADDRESS: cia.logAddress,
-        ...walletEnv,
-      },
-      readyUrl: `${walletOrigin}/wallet/status`, logFile: walletLog,
-    }));
+    const walletStateFile = path.join(dir, 'mode3_wallet_state.json');
+    // 지갑 자식은 restartWallet() 이 같은 상태 파일·env 로 다시 띄운다(snap 모드의 "재시작 뒤 needs_consent" 시험용).
+    const walletSpawn = { env: { MODE3_WALLET_PORT: String(walletPort), MODE3_WALLET_STATE_FILE: walletStateFile, MODE3_CIA_URL: cia.base, MODE3_RP_ORIGIN: rpOrigin, CIA_LOG_ADDRESS: cia.logAddress, ...walletEnv }, readyUrl: `${walletOrigin}/wallet/status`, logFile: walletLog };
+    let walletChild = await spawnServer('mode3_wallet_agent.js', walletSpawn);
+    children.push(walletChild);
     const wallet = client(walletOrigin, walletLog);
 
     let rp = null;
@@ -117,8 +111,15 @@ export async function startIsolatedMode3Stack(opts = {}) {
     }
 
     return {
-      cia, wallet, rp, dir,
+      cia, wallet, rp, dir, walletStateFile,
       rpOriginForWallet: rpOrigin,   // rp:false 여도 지갑에는 이 값을 CORS 오리진으로 넘겼다
+      /** 지갑 자식만 죽이고 같은 상태 파일·env 로 다시 띄운다. 메모리(세션 witness·증명 캐시)만 사라진다. */
+      async restartWallet() {
+        await stopChild(walletChild);
+        children.splice(children.indexOf(walletChild), 1);
+        walletChild = await spawnServer('mode3_wallet_agent.js', walletSpawn);
+        children.push(walletChild);
+      },
       async stop() {
         for (const c of children.reverse()) await stopChild(c);
         await cia.stop();

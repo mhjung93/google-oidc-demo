@@ -68,6 +68,7 @@ CHAIN=(
   tests/test_mode3_rp.mjs
   tests/test_mode3_e2e.mjs
   tests/test_mode3_wallet_agent.mjs
+  tests/test_mode3_wallet_snap.mjs
   tests/test_mode3_demo_stack.mjs
 )
 
