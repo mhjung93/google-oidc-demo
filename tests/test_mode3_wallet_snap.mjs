@@ -163,9 +163,9 @@ try {
     assert.equal(pre.status, 409, j(pre.body)); assert.equal(pre.body.reason, 'needs_consent');
     // 재승인: 팝업이 consentLogin 을 다시 받아 세션에 채운다
     const w = sim.consentLogin({ origin: info.origin, arid: info.arid, allowAgent: '0' });
-    assert.equal((await wallet.post('/wallet/session/witness', { r_s: S1, witness: { ...w, uid: '1' } })).body.reason, 'bad_witness');
-    assert.equal((await wallet.post('/wallet/session/witness', { r_s: '424242', witness: w })).status, 404);
-    const sw = await wallet.post('/wallet/session/witness', { r_s: S1, witness: w });
+    assert.equal((await wallet.post('/wallet/session/witness', { r_s: S1, witness: { ...w, uid: '1' }, allowAgent: '0' })).body.reason, 'bad_witness');
+    assert.equal((await wallet.post('/wallet/session/witness', { r_s: '424242', witness: w, allowAgent: '0' })).status, 404);
+    const sw = await wallet.post('/wallet/session/witness', { r_s: S1, witness: w, allowAgent: '0' });
     assert.equal(sw.status, 200, j(sw.body)); assert.equal(sw.body.ok, true);
     const rv2 = await wallet.post('/wallet/revalidate', { r_s: S1 }, { Origin: rp.origin });
     assert.equal(rv2.status, 200, j(rv2.body)); assert.equal(rv2.body.cacheHit, false, '재시작으로 캐시가 비어 재증명');
@@ -182,6 +182,8 @@ try {
     const w = sim.consentLogin({ origin: info.origin, arid: info.arid, allowAgent: '1' });
     const bad = await wallet.post('/wallet/session/witness', { r_s: S2, witness: w, allowAgent: '0' });
     assert.equal(bad.status, 409, j(bad.body)); assert.equal(bad.body.reason, 'allow_agent_mismatch');
+    // allowAgent 는 필수다 — 빼면 "문구와 세션이 어긋났는지" 를 판정할 수 없다(리뷰 Ruling 5).
+    assert.equal((await wallet.post('/wallet/session/witness', { r_s: S2, witness: w })).status, 400);
     const good = await wallet.post('/wallet/session/witness', { r_s: S2, witness: w, allowAgent: '1' });
     assert.equal(good.status, 200, j(good.body));
     const none = await wallet.post('/wallet/authorize/precheck', { ...base, r_s: '424242' });
@@ -189,6 +191,13 @@ try {
     // 세션을 보는 precheck 도 인증서 검사를 먼저 거친다 — 남의 오리진이 세션의 allowAgent 를 물어볼 수 없다.
     const badCert = await wallet.post('/wallet/authorize/precheck', { ...base, origin: 'http://evil.example', r_s: S2 });
     assert.equal(badCert.status, 403, j(badCert.body)); assert.equal(badCert.body.reason, 'bad_rp_cert');
+    // 제 인증서를 가진 **다른** 서비스도 남의 세션은 못 본다 — 세션의 arid 와 다르면 없는 것과 같이 404(리뷰 Minor 3).
+    const other = await cia.registerRp('http://other-rp.example', 'other-rp');
+    const otherArid = await wallet.post('/wallet/authorize/precheck', {
+      arid: other.arid, origin: other.origin, cert_s: other.cert_s,
+      pk_trace: { x: other.pk_trace.x.toString(), y: other.pk_trace.y.toString() }, r_s: S2,
+    });
+    assert.equal(otherArid.status, 404, j(otherArid.body)); assert.equal(otherArid.body.reason, 'no_session');
   });
 
   await t('tx/prepare + hardhat 계정이 EOA 로 전송 + tx/record 가 영수증을 파싱한다 (mask 3 → AttrGate claim)', async () => {

@@ -95,6 +95,24 @@ try {
     assert.equal((await verify(r.body, S1b)).ok, true);
   });
 
+  // 2026-09-23 점검 B-I1: precheck 의 r_s 분기(재승인 동의 창이 쓸 세션의 실제 allowAgent). 라우트에 모드 분기가 없어
+  // snap 테스트와 같은 코드를 타지만, file 모드에서도 돈다는 것을 여기서 못 박는다(리뷰 Minor 7).
+  await t('precheck: r_s 를 주면 그 세션의 allowAgent 를 돌려주고, 모르는 r_s 는 404 no_session', async () => {
+    const pkt = { x: pk_trace.x.toString(), y: pk_trace.y.toString() };
+    const S1c = newRs();
+    assert.equal((await login(S1c, { allowAgent: '1' })).status, 200);
+    const base = { arid, origin, cert_s, pk_trace: pkt };
+    const noRs = await wallet.post('/wallet/authorize/precheck', base);
+    assert.equal(noRs.status, 200, j(noRs.body)); assert.equal('sessionAllowAgent' in noRs.body, false, 'r_s 가 없으면 세션 값을 싣지 않는다');
+    const one = await wallet.post('/wallet/authorize/precheck', { ...base, r_s: S1c });
+    assert.equal(one.status, 200, j(one.body)); assert.equal(one.body.sessionAllowAgent, '1');
+    const zero = await wallet.post('/wallet/authorize/precheck', { ...base, r_s: S1 });
+    assert.equal(zero.status, 200, j(zero.body)); assert.equal(zero.body.sessionAllowAgent, '0');
+    const none = await wallet.post('/wallet/authorize/precheck', { ...base, r_s: '424242' });
+    assert.equal(none.status, 404, j(none.body)); assert.equal(none.body.reason, 'no_session');
+    assert.equal((await wallet.post('/wallet/authorize/precheck', { ...base, r_s: 'nope' })).status, 400);
+  });
+
   await t('재검증: 캐시 히트(cacheHit=true), publicSignals 동일, σ 는 r_s 위 서명(ECDSA 결정적이라 매번 같다)', async () => {
     const r = await revalidate(S1);
     assert.equal(r.status, 200, j(r.body));

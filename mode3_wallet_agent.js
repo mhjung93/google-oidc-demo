@@ -306,7 +306,9 @@ app.post('/wallet/authorize/precheck', async (req, res) => {
     if (r_s !== null) {
       if (!isDec(r_s)) return res.status(400).json({ error: 'r_s 는 10진 문자열' });
       const s = state.sessions[BigInt(r_s).toString()];
-      if (!s) return res.status(404).json({ reason: 'no_session' });
+      // 남의 서비스 세션은 없는 것과 같이 다룬다 — 유효한 인증서를 가진 서비스 A 가 서비스 B 세션의 r_s 로
+      // A 의 이름이 적힌 동의 창을 띄우지 못하게 한다(리뷰 Minor 3). 새 사유는 만들지 않는다.
+      if (!s || String(s.arid) !== String(arid)) return res.status(404).json({ reason: 'no_session' });
       return res.json({ ok: true, sessionAllowAgent: String(s.allowAgent) });
     }
     res.json({ ok: true });
@@ -410,15 +412,16 @@ app.post('/wallet/session/witness', async (req, res) => {
     if (SECRETS !== 'snap') return res.status(409).json({ reason: 'not_snap_mode' });
     const { r_s, witness, allowAgent = null } = req.body ?? {};
     if (!isDec(r_s) || !witness) return res.status(400).json({ error: 'r_s, witness 필요' });
+    // allowAgent 는 팝업이 동의 창에 실제로 쓴 값이다 — 필수로 받아야 "문구와 세션이 어긋났는지" 를 판정할 수 있다(리뷰 Ruling 5).
+    if (allowAgent !== '0' && allowAgent !== '1') return res.status(400).json({ error: 'allowAgent 필요' });
     if (!state.registration) return res.status(409).json({ reason: 'not_registered' });
     try { await validateWitness(witness, state.registration.uid, state.registration.cm_u); }
     catch (e) { if (e.reason === 'bad_witness') return res.status(400).json({ reason: 'bad_witness', detail: e.message }); throw e; }
     const rsKey = BigInt(r_s).toString();
     const s = state.sessions[rsKey];
     if (!s) return res.status(404).json({ reason: 'no_session' });
-    // 팝업이 동의 창에 쓴 allowAgent 를 함께 보낸다 — 세션의 실제 값과 다르면 사용자가 읽은 문구가 세션 권한과 어긋난 것이므로
-    // 증인을 채우지 않는다(2026-09-23 점검 B-I1). 보내지 않으면(null) 예전처럼 통과한다.
-    if (allowAgent !== null && String(allowAgent) !== String(s.allowAgent)) return res.status(409).json({ reason: 'allow_agent_mismatch' });
+    // 세션의 실제 값과 다르면 사용자가 읽은 문구가 세션 권한과 어긋난 것이므로 증인을 채우지 않는다(2026-09-23 점검 B-I1).
+    if (allowAgent !== String(s.allowAgent)) return res.status(409).json({ reason: 'allow_agent_mismatch' });
     // 세션은 특정 C_u 위에 발급됐다 — Snap 이 든 C_u 가 그것이 아니면(다른 기기, 지워진 상태) 이 증인으로는 증명이 안 된다
     if (!witness.userCred || witness.userCred.Cf_u !== s.credential.Cf_u) return res.status(409).json({ reason: 'user_cred_mismatch' });
     // 파일의 공개 userCred 가 비어 있으면(상태 파일 버전 올림 등) secretSourceFor 가 증인을 재조립하지 못해 계속
@@ -499,7 +502,7 @@ app.post('/wallet/revalidate', loginCors, async (req, res) => {
     timings.syncMs = Date.now() - t;
     lastSync = { root: synced.root.toString(), head: synced.head.toString(), tree: synced.tree };
     pruneSessions(synced.head);
-    if (!state.sessions[rsKey]) { cache.deleteSession(rsKey); return res.status(410).json({ reason: 'session_expired', timings }); }
+    if (!state.sessions[rsKey]) return res.status(410).json({ reason: 'session_expired', timings });   // 캐시는 바로 위 pruneSessions 가 이미 지웠다
     try {
       // snap 모드에서 세션 증인이 없으면(재시작) needs_consent — RP 페이지가 팝업을 다시 열어 /wallet/session/witness 로 채운다(§4.3)
       const src = secretSourceFor(req, rsKey);
@@ -607,7 +610,7 @@ async function buildExecute(req) {
   timings.syncMs = Date.now() - t;
   lastSync = { root: synced.root.toString(), head: synced.head.toString(), tree: synced.tree };
   pruneSessions(synced.head);
-  if (!state.sessions[rsKey]) { cache.deleteSession(rsKey); return fail(409, { reason: 'session_expired', timings }); }
+  if (!state.sessions[rsKey]) return fail(409, { reason: 'session_expired', timings });   // 캐시는 바로 위 pruneSessions 가 이미 지웠다
   let src;
   try { src = secretSourceFor(req, rsKey); }
   catch (e) { if (e.reason === 'needs_consent') return fail(409, { reason: 'needs_consent', timings }); throw e; }

@@ -299,6 +299,19 @@ try {
     await awaitPopupClosed(popup);
   });
 
+  // 리뷰 I-1: 세션 값을 못 받으면(reauth 만 넣고 r_s 를 뺀 요청) precheck 이 r_s 분기를 타지 않아 sessionAllowAgent 가 없다.
+  // 그대로 진행하면 정규화가 undefined 를 '0' 으로 만들어 "AI 에이전트 허용: 아니오" 동의 창이 떠 버린다 — 그 전에 멈춰야 한다.
+  await t('재승인 가드(지갑): r_s 없는 reauth 요청은 동의 창 없이 no_session 이다', async () => {
+    const before = dialogs.length;
+    const { popup, result } = await forgeAuthorize('mode3-authorize-forged-nors', {
+      ...(await rpRequestBase()), reauth: true, allowAgent: '1', serviceName: '○○은행',
+    });
+    assert.equal(result.ok, false, j(result));
+    assert.equal(result.reason, 'no_session', j(result));
+    assert.equal(dialogs.length, before, '동의 창을 띄우지 않는다');
+    await awaitPopupClosed(popup);
+  });
+
   // 팝업의 오리진 검사(최종 리뷰 Minor 7) — 지금까지 RP 쪽 필터만 테스트가 있었다.
   await t('팝업 오리진 검사: 메시지 오리진과 요청의 origin 이 다르면 동의 창 없이 origin_mismatch', async () => {
     const before = dialogs.length;
