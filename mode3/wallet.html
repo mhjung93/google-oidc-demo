@@ -91,6 +91,9 @@
     const $ = (id) => document.getElementById(id);
     // 팝업 모드는 같은 파일을 쿼리로 가른다(스펙 §3.2) — 에이전트는 /?authorize=1 에도 이 파일을 낸다.
     const IS_AUTHORIZE = new URLSearchParams(location.search).get('authorize') === '1';
+    // 뷰 전환은 설정을 기다리지 않는다 — 쿼리만 보면 알 수 있고, config fetch 를 기다리면 팝업에 지갑 화면이 한 프레임 비친다.
+    // ready 전송은 예정대로 config·리스너가 준비된 뒤다(init → runAuthorize).
+    if (IS_AUTHORIZE) { $('mainView').hidden = true; $('authorizeView').hidden = false; }
     // /wallet/config 를 못 읽으면 지금까지의 동작(file 모드)으로 본다.
     let cfg = { secrets: 'file', snapId: null, walletOrigin: location.origin, rpcUrl: null, ciaUrl: null, chainId: null };
     let account = null;        // MetaMask 가 준 EOA — 가스를 내는 계정이다(PPID 계정과 다르다)
@@ -138,9 +141,12 @@
     }
     /** 로그인·재동기화 응답의 pending(userCredIssued·attrsChanged)을 Snap 에 반영한다. 에이전트는 Snap 을 못 부른다(스펙 §3.3). */
     async function applyPendingToSnap(result) {
+      // 순서가 중요하다: Snap 의 syncAttrs 는 속성이 바뀌면 저장된 userCred 를 함께 버린다. 에이전트는 AA 속성 변경 경로에서
+      // attrsChanged 와 (재시도로 받은) 새 userCredIssued 를 함께 실으므로, syncAttrs 를 먼저 하고 새 C_u 는 그 뒤에 저장한다 —
+      // 반대로 하면 갓 저장한 C_u 가 지워져 재시작 뒤 /wallet/session/witness 가 409 user_cred_mismatch 로 막힌다.
+      if (result.attrsChanged) await invokeSnap('syncAttrs', { attrs: result.attrsChanged });
       // null 은 "저장된 C_u 를 버려라"는 뜻이다 — 값이 없는 것(필드 자체가 없음)과 구분해야 한다.
       if (result.userCredIssued !== undefined) await invokeSnap('updateUserCred', { userCred: result.userCredIssued });
-      if (result.attrsChanged) await invokeSnap('syncAttrs', { attrs: result.attrsChanged });
     }
 
     // ---- /authorize 팝업(스펙 §3.2·§4.2) ----
@@ -393,7 +399,13 @@
         txLog('배포 트랜잭션 — MetaMask 확인 창을 확인하세요.');
         deployHash = await eth.request({ method: 'eth_sendTransaction', params: [{ from: account, to: b.factoryAddress, data: b.deployCalldata }] });
         txLog(`배포 txHash=${deployHash} — 영수증 대기…`);
-        await waitReceipt(deployHash);      // execute 는 배포된 계정으로 가야 한다
+        const dr = await waitReceipt(deployHash);      // execute 는 배포된 계정으로 가야 한다
+        // 배포가 revert 되면 execute 는 코드 없는 주소로 간다 — 여기서 멈춘다.
+        if (dr.status !== 1 && dr.status !== '0x1') {
+          txLog(`배포 실패 (status=${dr.status})`);
+          $('txVerdict').innerHTML = '<span class="bad">계정 배포 실패 — execute 를 보내지 않았다</span>';
+          return;
+        }
       }
       txLog('execute 트랜잭션 — MetaMask 확인 창을 확인하세요.');
       const txHash = await eth.request({ method: 'eth_sendTransaction', params: [{ from: account, to: b.walletAddr, data: b.calldata }] });
@@ -470,8 +482,6 @@
         if (r.ok) cfg = { ...cfg, ...(await r.json()) };
       } catch { /* 설정을 못 읽으면 file 모드로 본다 */ }
       if (IS_AUTHORIZE) {
-        $('mainView').hidden = true;
-        $('authorizeView').hidden = false;
         runAuthorize();
         return;
       }
