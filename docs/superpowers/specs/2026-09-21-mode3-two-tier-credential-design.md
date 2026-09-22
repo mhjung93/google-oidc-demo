@@ -53,6 +53,9 @@ allowAgent, root, pk_AA, pk_trace, tag`. 대조 가능한 값은 여전히 `(cha
 
 ### 3.1 사용자 자격증명 C_u
 
+> **2026-09-22 선택 공개 설계가 대체.** 속성 a₁..a₄ 의 출처가 "사용자 입력"에서 "AA 계정 기록"으로 바뀌었다 — 아래 커밋 식은
+> 그대로지만 값의 출처는 `2026-09-22-mode3-selective-disclosure-design.md` §2·§3 를 본다.
+
 ```
 C_u_pt = uid·G_UID + s_u·G_SU + a₁·G_ATTR0 + a₂·G_ATTR1 + a₃·G_ATTR2 + a₄·G_ATTR3 + blind_u·H
 Cf_u   = Poseidon(C_u_pt.x, C_u_pt.y)
@@ -94,6 +97,10 @@ Poseidon 인자 6개(V4 는 5개). max_height 는 지갑이 정한 값 그대로
 둘 다 등록 때 받은 sk_u 로 서명한다. 세션 요청 서명이 Cf_u 를 덮으므로 제3자가 남의 C_u 에 자기 C_s 를 붙여 달라고 할 수 없다.
 
 ### 3.5 사용자 자격증명 증명 π_u (시그마 프로토콜)
+
+> **2026-09-22 선택 공개 설계가 대체.** π_u 는 V2 로 바뀌었다 — 속성이 AA 기록값이 되면서 AA 가 `uid·G_UID + Σaₖ·G_ATTR` 을
+> 스스로 빼고 검증하고(공개 attrs), PoK 대상은 `(s_u, blind_u, r_u)` 만 남는다. 아래는 옛(V1) 식이며 구현은
+> `2026-09-22-mode3-selective-disclosure-design.md` §3, `lib/mode3_issuance.js` 를 본다.
 
 지금 `proveIssuance` 에서 arid·pk_i 항을 뺀 것이다.
 

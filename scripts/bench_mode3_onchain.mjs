@@ -1,15 +1,18 @@
-// Mode 3 온체인 실행 모델 성능 실측 (2026-09-18 max_height 지갑 결정 판, 2026-09-21 자격증명 이중 구조 V5).
+// Mode 3 온체인 실행 모델 성능 실측 (2026-09-18 max_height 지갑 결정 판, 2026-09-21 자격증명 이중 구조 V5,
+// 2026-09-22 선택 공개 V6 — 회로 공개 입력 23개, AttrGate).
 //   node scripts/bench_mode3_onchain.mjs [N]        (기본 N=10, :8545 hardhat 노드 필요)
 //
 // 격리 스택(CIA + 지갑 에이전트, 각자 빈 포트)을 띄우고 실제 HTTP 경로로 측정한다 — 개발 서버(:4100/:5100/:3100)는
 // 건드리지 않는다. 검증기는 이 프로세스에서 조립한다(tests/test_mode3_wallet_agent.mjs 와 같은 방식).
 //
 // 측정 항목:
-//   1. 로그인(첫 발급): 지갑의 timings(sync/userCred/issue/prove) + 전체 왕복 + 서비스 verifyLogin
-//      userCredMs 는 사용자 자격증명(π_u) 발급 — 첫 로그인만 > 0 이고 이후는 재사용이라 0 이 정상(2026-09-21 §6.2)
+//   1. 로그인(첫 발급): 지갑의 timings(sync/userCred/issue/prove) + 전체 왕복 + 서비스 verifyLogin (mask=0 고정)
 //   2. 재검증(캐시 π): 왕복 + verifyLogin
 //   3. 가스: PiCredVerifier·Mode3WalletFactory 배포, 계정 배포(CREATE2), execute(첫/캐시), RevocationLog 게시·하트비트
-//   4. /wallet/tx 왕복(캐시 π, 채굴 포함)
+//   4. /wallet/tx 왕복(mask=0, 캐시 π, 채굴 포함)
+//   5. /wallet/tx 왕복(mask=3, 매번 새 π) + AttrGate.claim — claimed 매핑이 지갑 주소당 한 번뿐이라(지갑 주소는 PPID 로
+//      정해지고 세션과 무관하다) 반복마다 AttrGate 를 새로 배포한다. discKey 도 반복마다 바꿔(hi[0] 를 늘려) 캐시를 피하고
+//      매번 진짜 새 π 를 잰다 — AttrGate 정책(국가=410, 출생연도 ≤ 2007)은 그대로 만족시킨다.
 // 결과는 Markdown 표로 stdout 에 낸다. 스펙 §8·논문 Table 3 에 옮겨 적는다.
 import fs from 'node:fs';
 import { ethers } from 'ethers';
@@ -18,7 +21,7 @@ import { getProvider } from '../tests/helpers/mode3_chain.mjs';
 import { VKEY_PATH, ZKEY_PATH } from '../lib/mode3_wallet.js';
 import { createRpVerifier } from '../lib/mode3_rp.js';
 import { randomScalar } from '../lib/mode3_credential.js';
-import { deployVerifier, deployFactory, FACTORY_ABI } from '../lib/mode3_onchain.js';
+import { deployVerifier, deployFactory, FACTORY_ABI, deployAttrGate, ATTR_GATE_ABI } from '../lib/mode3_onchain.js';
 import { LOG_ABI } from '../lib/mode3_log.js';
 
 const N = Number(process.argv[2] || 10);
@@ -96,6 +99,21 @@ try {
     T.gas.push(Number(r.body.gasUsed));
   }
 
+  // 5. mask=3(선택 공개) 새 π + AttrGate.claim — 국가(a₁)=410 정확 공개, 출생연도(a₀) 구간 공개(반복마다 hi 를 늘려 discKey 를 바꾼다)
+  const claimSelector = ethers.id('claim()').slice(0, 10);
+  const G = { total: [], gas: [] };
+  for (let i = 0; i < N; i++) {
+    const gateAddress = await deployAttrGate(signer, { factoryAddress });
+    const disclose = [{ lo: '0', hi: String(1990 + i) }, { lo: '410', hi: '410' }, null, null];
+    const t0 = performance.now();
+    const r = await wallet.post('/wallet/tx', { r_s: lastRs, to: gateAddress, data: claimSelector, disclose }, { Origin: stack.rpOriginForWallet });
+    G.total.push(performance.now() - t0);
+    if (r.status !== 200 || !r.body.ok) throw new Error(`claim tx ${r.status} ${j(r.body)}`);
+    const gate = new ethers.Contract(gateAddress, ATTR_GATE_ABI, provider);
+    if (!(await gate.claimed(r.body.wallet))) throw new Error('claim 이 반영되지 않음');
+    G.gas.push(Number(r.body.gasUsed));
+  }
+
   // RevocationLog: 게시(리프 있음)와 하트비트(리프 없음) 가스 — 폐기 한 건을 만들어 정식 게시를 한 번 일으키고, 그 뒤 하트비트를 기다린다
   const logIface = new ethers.Interface(LOG_ABI);
   const collectPublishes = async () => {
@@ -135,20 +153,22 @@ try {
   console.log(`| ├ 체인 동기화 syncMs | ${fmt(L.sync)} |`);
   console.log(`| ├ 사용자 자격증명 발급 userCredMs (π_u; 첫 로그인 ${L.userCred[0]} ms, 이후 재사용) | ${fmt(L.userCred)} |`);
   console.log(`| ├ CIA 세션 발급 issueMs (ZKP 없음, sig_u 검증 + 서명) | ${fmt(L.issue)} |`);
-  console.log(`| ├ 증명 proveMs (pi_cred V5) | ${fmt(L.prove)} |`);
+  console.log(`| ├ 증명 proveMs (pi_cred V6) | ${fmt(L.prove)} |`);
   console.log(`| 서비스 verifyLogin (Groth16 + σ + root) | ${fmt(L.verify)} |`);
   console.log(`| 재검증 왕복(캐시 π) | ${fmt(R.total)} |`);
   console.log(`| 재검증 verifyLogin | ${fmt(R.verify)} |`);
-  console.log(`| /wallet/tx 왕복(캐시 π, 서명+제출+채굴) | ${fmt(T.total)} |`);
-  console.log(`| execute gas (캐시 π, N회) | ${med(T.gas)} (${Math.min(...T.gas)}–${Math.max(...T.gas)}) |`);
+  console.log(`| /wallet/tx 왕복(mask=0, 캐시 π, 서명+제출+채굴) | ${fmt(T.total)} |`);
+  console.log(`| execute gas (mask=0, 캐시 π, N회) | ${med(T.gas)} (${Math.min(...T.gas)}–${Math.max(...T.gas)}) |`);
   console.log(`| execute gas (첫 tx, 계정 배포 tx 는 별도) | ${r1.body.gasUsed} |`);
+  console.log(`| /wallet/tx 왕복(mask=3, 새 π + AttrGate.claim, N회) | ${fmt(G.total)} |`);
+  console.log(`| execute gas (mask=3, 새 π + claim, N회) | ${med(G.gas)} (${Math.min(...G.gas)}–${Math.max(...G.gas)}) |`);
   console.log(`| 계정 배포 gas (factory.deploy, CREATE2) | ${walletDeployGas} |`);
   console.log(`| PiCredVerifier 배포 gas | ${verifierGas} |`);
   console.log(`| Mode3WalletFactory 배포 gas | ${factoryGas} |`);
   console.log(`| RevocationLog 게시 gas (리프 ${pubs.filter((p) => p.leaves > 0).map((p) => p.leaves).join('/')}) | ${publishGas.join(', ') || '-'} |`);
   console.log(`| RevocationLog 하트비트 gas (리프 0) | ${heartbeatGas.join(', ') || '-'} |`);
   console.log(`| zkey 크기 | ${zkeyBytes} bytes |`);
-  console.log(`| 공개 입력 수 | 14 |`);
+  console.log(`| 공개 입력 수 | 23 |`);
 } finally {
   await stack.stop();
 }

@@ -54,7 +54,7 @@ const rows = [];
 // ---- Mode 3 π_u: 사용자 자격증명 시그마 프로토콜(회로·셋업 없음). 공개 (uid, C_u_pt, cm_u) ----
 {
   const uid = 12345n, s_u = randomScalar(), r_u = randomScalar();
-  const attrs = [19n, 410n, 0n, 0n];
+  const attrs = [1990n, 410n, 2n, 0n];   // 데모 testuser 와 같은 값(스펙 2026-09-22 §3.1)
   const cm_u = await registrationCommit(s_u, r_u);
   const P = [], V = []; let out;
   for (let i = 0; i < N; i++) {
@@ -62,19 +62,19 @@ const rows = [];
     const t0 = now();
     out = await proveUserCred({ uid, s_u, blind_u, r_u, attrs });
     const t1 = now();
-    const ok = await verifyUserCred({ uid, C_u_pt: out.C_u_pt, cm_u, proof: out.proof });
+    const ok = await verifyUserCred({ uid, attrs, C_u_pt: out.C_u_pt, cm_u, proof: out.proof });
     const t2 = now();
     if (!ok) throw new Error('π_u 검증 실패');
     P.push(t1 - t0); V.push(t2 - t1);
   }
-  rows.push({ name: 'π_u (Σ, Mode 3 사용자 자격증명)', witnessMs: '-', proveMs: fmt(P), fullMs: fmt(P), verifyMs: fmt(V),
-    proofBytes: JSON.stringify(serializeUserCredProof(out.proof)).length, publics: 3, zkeyBytes: 0, vkeyBytes: 0, wasmBytes: 0, wtnsBytes: 0 });
+  rows.push({ name: 'π_u V2 (Σ, Mode 3 사용자 자격증명, 속성 공개)', witnessMs: '-', proveMs: fmt(P), fullMs: fmt(P), verifyMs: fmt(V),
+    proofBytes: JSON.stringify(serializeUserCredProof(out.proof)).length, publics: 7, zkeyBytes: 0, vkeyBytes: 0, wasmBytes: 0, wtnsBytes: 0 });
 }
 
-// ---- Mode 3 pi_cred (Groth16, V5 — 커밋 둘) ----
+// ---- Mode 3 pi_cred (Groth16, V6 — 선택 공개, disc_mask=0) ----
 {
   const { input } = await buildValidInput();
-  rows.push(await benchGroth16('pi_cred (Mode 3 V5)', input, 'build/mode3/pi_cred_js/pi_cred.wasm', 'build/mode3/pi_cred_final.zkey', 'build/mode3/pi_cred_vkey.json'));
+  rows.push(await benchGroth16('pi_cred (Mode 3 V6)', input, 'build/mode3/pi_cred_js/pi_cred.wasm', 'build/mode3/pi_cred_final.zkey', 'build/mode3/pi_cred_vkey.json'));
 }
 
 // ---- Mode 2 v4 삽입 전이: 세션 층(깊이 8, K=4) / 계정 층(깊이 10, K=4) — 배치 1건과 4건 ----

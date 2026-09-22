@@ -36,6 +36,14 @@ Mode 2 데모(:3000/:4000/:5001)와 **공존**한다. 포트·상태 파일이 �
        `mode3_wallet_state.json` 도 v6 로 자동 이행된다(세션·userCred 비움, 등록 유지 — 다음 로그인이 새 C_u 를 받는다). 로그를 새로
        배포했다면 (3) 대로 `cia_state.json` 을 지운다 — 그러면 계정 등록도 사라지므로 지갑 상태 파일도 같이 지우는 편이 맞다.
    로그를 새로 배포하는 쪽을 택하면 아래 "재시연 세트" 를 통째로 한 번 하는 것과 같다.
+   회로 V6(2026-09-22, 선택 공개)로 build/mode3 를 또 다시 만들었다 — 순서: (1) `bash scripts/build_mode3_circuit.sh …` (2)
+   `npx hardhat compile` (3) 서비스 등록 파일(`mode3_rp_registration.json`)에서 `verifierAddress`·`factoryAddress`·`attrGateAddress`
+   를 **셋 다** 지운 뒤 재시작 — `attrGateAddress` 를 안 지워도 RP 가 알아서 다시 배포하지만(팩토리 주소가 바뀌면 자동으로
+   재배포한다, `ensureAttrGate`), 옛 `verifierAddress`·`factoryAddress` 를 남기면 V5 와 같은 문제(새 π 가 옛 검증기에서
+   `InvalidProof`)가 난다. (4) CIA 상태는 v7 로 **자동 마이그레이션**된다(코드 변경 불필요) — 계정마다 활성 C_u 를 물려(pending
+   에 리프로 넣어) 다음 게시에 나가게 한다. (5) 지갑 상태도 v7 로 **자동 이행**된다(옛 C_u·세션을 비운다, 등록 자체는 유지) —
+   다음 로그인에서 지갑이 새 사용자 자격증명을 자동으로 다시 받는다(`userCredMs > 0`). `RevocationLog` 재배포는 V5 와 같은 이유로
+   필수가 아니다.
 1. `npx hardhat node` (다른 터미널에 상주).
 2. `CIA_ADMIN_SECRET=<아무 문자열> node cia.js` — 처음 기동에서 `cia_keys.json`을 만든다. `curl -s 127.0.0.1:4100/cia/public_keys`의 `ethAddress`를 적어 두고 종료한다.
 3. `CIA_ETH_ADDRESS=<ethAddress> npx hardhat run scripts/deploy_mode3_log.cjs --network localhost` — `RevocationLog`를 배포하고 CIA 주소에 1 ETH를 넣는다. 출력의 `CIA_LOG_ADDRESS=0x…`를 `.env`에 추가한다.
@@ -82,7 +90,7 @@ RP 페이지는 반드시 `127.0.0.1`로 연다 — 지갑 에이전트의 CORS 
 | # | 어디서 | 조작 | 기대 |
 |---|---|---|---|
 | 0 | 관리자 | 등록된 서비스 → 승인 (RP 첫 기동 뒤 한 번) | RP 페이지가 "등록 대기" → 활성 |
-| 1 | 지갑 | 등록 (`12345` / `password123`, 속성 4칸 기본값) | `등록됨` |
+| 1 | 지갑 | 등록 (`12345` / `password123`) | `등록됨`, 속성은 AA 기록값(`[1990, 410, 2, 0]`)이 응답으로 내려온다 — "속성과 선택 공개" 절 참고 |
 | 2 | RP | 로그인 (AI agent 허용 체크 여부) | `새 발급=true`, 로그인 성공, PPID, 세션 r_s, allowAgent 표시 |
 | 2a | 지갑 | 세션 선택 → 트랜잭션 보내기 | 첫 번째 `deployed=true`·`ok=true`, 두 번째 캐시 히트·`nonce=1` |
 | 2b | 지갑 → RP → 관리자 → RP | 지갑 페이지의 txHash 를 RP "해시로 개봉"에 붙여 넣기 → 승인 → 결과 확인 | `uid=12345`, AI agent 허용 여부 |
@@ -98,8 +106,10 @@ RP 페이지는 반드시 `127.0.0.1`로 연다 — 지갑 에이전트의 CORS 
 | 8 | RP | 로그인 | `새 발급=true`, 성공, **PPID 가 2 와 같다** |
 | 9 | RP → 관리자 → RP | 로그인 기록 아래 PPID 로 "개봉 요청" → 관리자 "개봉 요청 → 승인" → RP "결과 확인" | 202 pending → approved → uid=12345 |
 
-온체인 실행은 트랜잭션마다 π 를 첨부하고 컨트랙트가 매번 검증한다(가스 실측: V4 회로 387,675(Task 3 값), V5 회로 356,441~356,477(실행마다 π 바이트에 따라 수십 가스 차이) —
-`Mode3Wallet.execute()` 정상 실행, EOA 로 value 0 호출, 계정 배포 제외; `tests/test_mode3_wallet_agent.mjs` 의 tx 케이스 출력. Task 8 이 다시 측정한다). root 게시가 `MAX_ROOT_AGE` 블록보다 오래되면 `RootTooOld` 로 멈추므로 CIA 하트비트를 켜 둔다.
+온체인 실행은 트랜잭션마다 π 를 첨부하고 컨트랙트가 매번 검증한다(가스 실측, `Mode3Wallet.execute()` 정상 실행 — EOA 로 value 0
+호출, 계정 배포 제외: V4 회로 387,675, V5 회로 356,441~356,477, **V6 회로(2026-09-22, 선택 공개, 공개 입력 23개) mask=0 캐시 π
+402,079(402,035–402,091), mask=3(선택 공개) + `AttrGate.claim` 444,973(444,881–444,997)** — `results/mode3_disclosure_bench_20260922.md`,
+`node scripts/bench_mode3_onchain.mjs` 출력). root 게시가 `MAX_ROOT_AGE` 블록보다 오래되면 `RootTooOld` 로 멈추므로 CIA 하트비트를 켜 둔다.
 트랜잭션은 지갑 페이지에서만 시작한다 — 서비스 페이지는 지갑의 `/wallet/tx` 를 부를 수 없다(CORS).
 
 성명은 로그인마다 새로 발급되고(설계 2026-09-15 §5) 세션 r_s 안에서만 재사용된다. RP 는 r_s 를 로그인 때 한 번 소비하고 그 뒤 세션 식별자로 쓴다. 폐기는 재검증에서 효력을 갖는다.
@@ -115,15 +125,57 @@ CIA 는 값을 모른다)을 받아 두고, 로그인마다 그 위에 `POST /ci
 
 0~9·3′·3″ 은 `tests/test_mode3_demo_stack.mjs`(HTTP)로, 2·3·4 의 라이브러리 판은 `tests/test_mode3_e2e.mjs` 로 고정돼 있다.
 
-속성 4칸은 사용자가 고르는 값이고 CIA 는 보지 못한다(설계 2026-09-14 §2). 등록 뒤 값을 바꾸려면 지갑 페이지의 **속성 변경** 버튼
-(`POST /wallet/attrs`) — 새 사용자 자격증명을 받고, 옛 것은 CIA 가 폐기 리프로 pending 에 넣어 다음 게시에 나간다. 그래서 지갑은
-기존 세션을 그 자리에서 모두 지우며(`sessionsDropped`), 다음 로그인은 새 자격증명 위에 세션만 받는다(`userCredMs = 0`).
-시각 상관에 주의: 옛 리프가 게시되는 블록에 그 사용자의 세션이 전부 죽고 곧 같은 PPID 로 재로그인하므로, CIA 와 서비스가 결탁하면 그 게시의
-리프 수(데모에선 보통 1)가 익명 집합이다 — 속성 변경 직후 `/cia/publish` 를 따로 부르지 말고 하트비트 게시에 묶이게 두는 것이 완화다(설계 2026-09-21 §2).
 credential 은 발급 시점 head 기준 300~400 블록(그리드 양자화)에 만료되며 지갑 상태 페이지에 `max_height` 로 보인다.
 
 4′ 은 관리자 없이 사용자가 스스로 폐기하는 경로다(설계 §6.5.1). 인증은 계정 비밀번호이고 지갑 키가 아니다 —
 장치를 잃은 사용자에게 지갑 키는 없고 공격자에게는 있기 때문이다. 처리와 게시는 4 와 같고, 복구는 여전히 관리자만 한다.
+
+## 속성과 선택 공개 (설계 2026-09-22)
+
+**속성 출처.** 속성 4칸(`a₀` 출생연도, `a₁` 국가(ISO 3166 numeric), `a₂` 등급, `a₃` 예비)은 더 이상 사용자가 지갑에서 입력하지
+않는다 — **AA(`cia.js`) 계정 기록**이고 관리자만 바꾼다. 데모 계정: `testuser`(uid 12345) `[1990, 410, 2, 0]`, `alice`(uid 67890)
+`[2005, 840, 1, 0]`. `POST /wallet/register` 응답의 `attrs` 는 AA 가 내려준 값이고, 본문에 attrs 를 실어 보내도 무시된다.
+
+**관리자 속성 변경.** CIA 관리자 페이지(또는 `POST /cia/accounts/:uid/attrs`, `requireAdmin`)에서 속성을 바꾸면 그 계정의
+**활성 C_u 가 물린다**(폐기 리프가 pending 에 들어가 다음 게시에 나간다 — CIA 상태 v7). `GET /cia/accounts` 로 전 계정의
+`attrs`·`disabled`·`activeCf_u` 를 볼 수 있다. 시각 상관 주의사항(옛 리프가 게시되는 블록에 세션이 죽고 곧 재로그인하므로 그 게시의
+리프 수가 익명 집합)은 이중 구조 설계(2026-09-21 §2)와 같다 — 속성 변경 직후 `/cia/publish` 를 따로 부르지 말고 하트비트 게시에
+묶이게 둔다.
+
+**지갑의 재동기화.** 속성이 바뀌면 지갑이 들고 있던 C_u 는 다음 게시 뒤 폐기 트리에 들어간다. 지갑은 로그인 때 이를 알아채(동기화한
+트리에 자기 리프가 있으면) 새 사용자 자격증명을 자동으로 받는다. 로그인 없이 먼저 확인하고 싶으면 `POST /wallet/attrs/sync` 로
+AA 의 현재 값을 받아 두고(바뀌었으면 지갑이 옛 C_u·세션을 그 자리에서 지운다), 다음 로그인이 새 C_u 위에 세션을 받는다.
+
+**트랜잭션의 선택 공개.** 지갑 페이지의 트랜잭션 폼에 슬롯별(a₀..a₃) 체크박스 + lo/hi 입력, "정확히 공개" 버튼(lo = hi = 내 값)이
+있다. `POST /wallet/tx` 의 `disclose`(길이 4, 각 원소 `{lo, hi}` 또는 `null`)가 회로 공개 입력 `disc_mask`·`disc_lo[4]`·`disc_hi[4]`
+가 된다. 지갑은 제출 전에 `lo ≤ 내 속성 ≤ hi` 를 스스로 검사한다 — 안 맞으면 증명을 만들기 전에 400 `disclosure_unsatisfiable`,
+형식·범위가 잘못됐으면 400 `bad_disclosure`. `disclose` 가 있으면(mask ≠ 0) 캐시된 π 를 못 쓰고 매번 새로 증명한다.
+
+**`AttrGate` (데모 대상).** RP 가 팩토리 다음에 한 번 배포하는 컨트랙트로(`rp_info.attrGateAddress`), 정책은 국가(a₁) = 410,
+출생연도(a₀) ≤ 2007 고정이다. `claim()` 은 `Mode3Wallet.execute()` 가 호출 데이터 끝에 붙인 (mask, lo[4], hi[4]) 9워드를 읽어
+`mask & 0x3 == 0x3`(슬롯 0·1 공개 필요)·`lo[1] == hi[1] == countryEq`·`hi[0] ≤ birthYearMax` 를 확인하고 `Claimed` 이벤트를 낸다.
+팩토리가 배포한 지갑에서 온 호출만 받는다(`factory.isWallet(msg.sender)`).
+
+**시나리오 1~5** (설계 §6.3, 위 0~9 각본과 별도로 확인):
+
+| # | 조작 | 기대 |
+|---|---|---|
+| 1 | testuser 등록 | 속성 `[1990, 410, 2, 0]` 이 AA 에서 내려온다(지갑 화면은 읽기 전용) |
+| 2 | 로그인(mask 0) → 트랜잭션 폼에서 슬롯 0 을 `[0, 2007]`, 슬롯 1 을 `[410, 410]` 으로 공개 → `to`=`attrGateAddress`, `data`=`claim()` 셀렉터 | `Claimed` 이벤트, `AttrGate.claimed(wallet) == true` |
+| 3 | alice(2005, 840)로 같은 시도 | `claim()` 이 `country` 로 revert(`Executed` success=false, nonce 는 소모) |
+| 4 | 슬롯 0 을 `[0, 1980]` 으로 공개 시도 | 지갑이 `disclosure_unsatisfiable`(1990 ∉ [0, 1980], 체인에 보내기 전에 막힌다) |
+| 5 | 관리자가 testuser 의 a₂ 를 3 으로 변경 → 다음 로그인 | 지갑이 옛 C_u 폐기를 알아채 새 C_u 를 받고 로그인 성공, **PPID 동일** |
+
+## 엔드포인트 (2026-09-22 선택 공개로 바뀌거나 추가된 것)
+
+| 메서드/경로 | 프로세스 | 설명 |
+|---|---|---|
+| `POST /cia/attrs` | CIA | 사용자 서명(`sig_u`)으로 자기 속성 조회(지갑이 `/wallet/attrs/sync` 안에서 부른다) |
+| `POST /cia/accounts/:uid/attrs` | CIA(관리자) | 속성 변경 — 활성 C_u 를 물린다(폐기 리프 pending) |
+| `GET /cia/accounts` | CIA(관리자) | 전 계정의 `attrs`·`disabled`·`activeCf_u` |
+| `POST /wallet/attrs/sync` | 지갑 | AA 최신 속성 재확인, 바뀌었으면 옛 C_u·세션 삭제 |
+| `POST /wallet/tx` (`disclose` 필드) | 지갑 | 트랜잭션에 선택 공개 첨부 — `{lo,hi}\|null` × 4, mask ≠ 0 이면 새 π |
+| `GET /api/mode3/rp_info` (`attrGateAddress` 필드) | RP | 배포된 `AttrGate` 주소 |
 
 ## 하지 말 것 / 재시연
 
