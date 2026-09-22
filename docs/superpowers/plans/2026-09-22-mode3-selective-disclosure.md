@@ -4,7 +4,7 @@
 
 **Goal:** AA 가 보증하는 속성을 C_u 에 싣고, 트랜잭션(또는 로그인)의 π_rp 에 구간 술어 `lo ≤ a_k ≤ hi` 를 공개 입력으로 붙여 체인이 검증한 뒤 대상 컨트랙트(`AttrGate`)가 그 값으로 동작하게 한다.
 
-**Architecture:** (1) 속성 출처를 AA 계정 기록으로 옮기고 π_u 를 "AA 가 uid·Σa_k 항을 빼고 (s_u, blind_u) 만 PoK" 로 바꾼다. (2) 회로 V6 는 공개 입력 23개(기존 14 + `disc_mask` + `disc_lo[4]` + `disc_hi[4]`)이고 속성은 64비트다. (3) `Mode3Wallet.execute` 가 `uint[23]` 을 받아 mask ≠ 0 이면 공개 값 9워드를 호출 데이터 꼬리에 붙여 대상에 전달하고, 세션키 서명 다이제스트에 mask 를 넣는다. (4) 지갑 `/wallet/tx` 가 `disclose` 를 받아 새 π 를 만들고, 속성은 등록 응답·`/cia/attrs` 로 AA 에서 받는다.
+**Architecture:** (1) 속성 출처를 AA 계정 기록으로 옮기고 π_u 를 "AA 가 uid·Σa_k 항을 빼고 (s_u, blind_u) 만 PoK" 로 바꾼다. (2) 회로 V6 는 공개 입력 23개(기존 14 + `disc_mask` + `disc_lo[4]` + `disc_hi[4]`)이고 속성은 64비트다. (3) `Mode3Wallet.execute` 가 `uint[23]` 을 받아 mask ≠ 0 이면 공개 값 9워드를 호출 데이터 꼬리에 붙여 대상에 전달하고, 세션키 서명 다이제스트가 공개 값 9워드(mask, lo[4], hi[4])를 덮는다. (4) 지갑 `/wallet/tx` 가 `disclose` 를 받아 새 π 를 만들고, 속성은 등록 응답·`/cia/attrs` 로 AA 에서 받는다.
 
 **Tech Stack:** Node 22 ESM, circom 2.1.9 + snarkjs 0.7.5 (Groth16/BN254), circomlibjs (Baby Jubjub·Poseidon·EdDSA), Solidity 0.8.24 (hardhat), express, `node:assert` 테스트, `scripts/run_tests.sh` 그룹.
 
@@ -678,6 +678,8 @@ export async function deployAttrGate(signer, { factoryAddress, countryEq = 410n,
 }
 export const attrGateAt = (address, runner) => new ethers.Contract(address, ATTR_GATE_ABI, runner);
 ```
+
+(구현 시 리뷰 반영으로 `discLo`·`discHi` 까지 받도록 확장됨 — Global Constraints 참조.)
 
 `parseExecuteReceipt` 루프에 `if (p.name === 'Disclosure') disclosure = { mask: p.args.mask, lo: [...p.args.lo], hi: [...p.args.hi] };` 를 더하고 `return { executed, auth, disclosure }` (초기값 `null`). `proofToCalldata` 주석의 "14개" 를 "23개" 로.
 
