@@ -17,7 +17,9 @@
 - `disc_mask ∈ [0, 16)`, 비트 k = 슬롯 k 공개. 공개하지 않는 슬롯은 `lo = hi = 0`. 등식 공개 = `lo = hi`.
 - 새 도메인 상수: `DOMAIN_MODE3_USERCRED_V2 = 1568025692958769574353059516335154n` (ASCII "MODE3USERCRED2"), `DOMAIN_MODE3_ATTRSREQ = 6125100363118752795903799739729n` (ASCII "MODE3ATTRSREQ"). 옛 `DOMAIN_MODE3_USERCRED` 는 삭제.
 - σ_AA 메시지(`credMessageV5`)·C_s·PPID·리프·태그·`cert_s`·`share_pok` 는 바뀌지 않는다.
-- 세션키 서명 다이제스트: `keccak256(abi.encode(chainid, wallet, to, value, data, nonce, disc_mask))` — JS `payloadDigest` 와 컨트랙트가 같아야 한다.
+- 세션키 서명 다이제스트: `keccak256(abi.encode(chainid, wallet, to, value, data, nonce, pub[14], pub[15..18], pub[19..22]))`(공개 값
+  9워드 전부 — mask 만 덮으면 같은 세션키·같은 mask 로 만든 다른 구간의 π 를 릴레이어가 바꿔 끼울 수 있다, 리뷰에서 발견,
+  2026-09-22) — JS `payloadDigest` 와 컨트랙트가 같아야 한다.
 - 데모 계정 속성(스펙 §3.1): `testuser` `['1990','410','2','0']`, `alice` `['2005','840','1','0']`. 슬롯 뜻: a₀ 출생연도, a₁ 국가 코드, a₂ 등급, a₃ 예비.
 - `AttrGate` 정책: `countryEq = 410`, `birthYearMax = 2007`; `claim()` 은 mask 비트 0·1 필수, `lo[1] == hi[1] == 410`, `hi[0] ≤ 2007`.
 - CIA 상태 v7: `accounts[uid].attrs` 추가, v6→v7 마이그레이션에서 활성 자격증명 전부 물림(리프 → pending). `idp_state.json`·`cia_state.json` 을 지우지 않는다.
@@ -566,6 +568,8 @@ Expected: 컴파일 단계에서 `Mode3Wallet.sol` 이 `uint[14]` 로 `PiCredVer
         ... root·만료 검사 그대로 ...
     }
 ```
+
+(구현 시 리뷰 반영으로 lo/hi 까지 덮도록 확장됨 — Global Constraints 참조.)
 
 (`BadAllowAgent` 검사 바로 뒤에 `BadDisclosure` 를 둔다 — 싼 검사부터.) `contracts/Mode3WalletFactory.sol`:
 

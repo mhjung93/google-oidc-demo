@@ -156,6 +156,12 @@ AA 의 현재 값을 받아 두고(바뀌었으면 지갑이 옛 C_u·세션을 
 `mask & 0x3 == 0x3`(슬롯 0·1 공개 필요)·`lo[1] == hi[1] == countryEq`·`hi[0] ≤ birthYearMax` 를 확인하고 `Claimed` 이벤트를 낸다.
 팩토리가 배포한 지갑에서 온 호출만 받는다(`factory.isWallet(msg.sender)`).
 
+`mode3_rp_registration.json` 에는 `attrGateAddress`(배포된 주소)와 `attrGateFactory`(그 배포가 실제로 물린 `factoryAddress`) 두
+필드가 있다(`mode3_rp.js` `ensureAttrGate`). **`AttrGate` 는 `attrGateFactory` 가 지금의 `factoryAddress` 와 다를 때만 재배포된다**
+— 즉 팩토리가 실제로 바뀐 경우에만 다시 배포하고, 같은 팩토리로 재기동을 반복해도 재배포하지 않는다. `attrGateFactory` 가 없는
+옛 등록 파일(이 필드가 생기기 전)은 이 대조가 항상 "다르다"로 나와 **첫 기동에 `AttrGate` 를 한 번 재배포한다**(주소가 바뀐다 —
+이전에 그 주소를 써 둔 데모 스크립트·문서가 있다면 갱신해야 한다).
+
 **시나리오 1~5** (설계 §6.3, 위 0~9 각본과 별도로 확인):
 
 | # | 조작 | 기대 |
