@@ -31,12 +31,16 @@ if (!LOG_ADDRESS) { console.error('[rp] CIA_LOG_ADDRESS 가 없다'); process.ex
 
 // pk_CIA 고정(설계 §5 — 유일한 위조 방어선). env 가 있으면 그것, 없으면 기동 시 CIA 에서 한 번 받아
 // 프로세스 수명 동안 고정한다(TOFU, 데모 단축). 기동 후에는 CIA 에 다시 묻지 않는다(설계 §9.9).
+// CIA 가 알려 준 하트비트 주기(블록). 아래 TOFU 경로에서만 받는다 — pk_CIA 를 env 로 박으면 CIA 에 묻지 않으므로 null 이고,
+// 그때는 maxRootAge 와 대조할 수 없다(경고를 위해 새 RPC·HTTP 호출을 만들지는 않는다. 2026-09-23 최종 리뷰 M4).
+let ciaHeartbeatBlocks = null;
 async function resolvePkCia() {
   const { MODE3_PK_CIA_X: x, MODE3_PK_CIA_Y: y } = process.env;
   if (x && y) return { x: BigInt(x), y: BigInt(y), source: 'env' };
   const r = await fetch(`${CIA_URL}/cia/public_keys`);
   if (!r.ok) throw new Error(`CIA ${CIA_URL} 에서 pk_CIA 를 받지 못했다 (${r.status})`);
   const k = await r.json();
+  if (Number.isFinite(k.heartbeatBlocks)) ciaHeartbeatBlocks = BigInt(k.heartbeatBlocks);
   console.warn(`[rp] pk_CIA 를 CIA 에서 받아 고정한다(TOFU). 운영이라면 env 로 박는다:\n  MODE3_PK_CIA_X=${k.pk_CIA.x}\n  MODE3_PK_CIA_Y=${k.pk_CIA.y}`);
   return { x: BigInt(k.pk_CIA.x), y: BigInt(k.pk_CIA.y), source: 'tofu' };
 }
@@ -167,6 +171,11 @@ async function syncFactoryConstantsAndVerifier() {
     }
     factoryConstantsFailed = false;
     verifier = createRpVerifier({ provider, logAddress: LOG_ADDRESS, vkey, pkCIA, arid: BigInt(reg.arid), chainId, pkTrace: { x: BigInt(reg.pk_trace.x), y: BigInt(reg.pk_trace.y) }, maxLifetimeBlocks: EFFECTIVE_MAX_LIFETIME, maxRootAge: EFFECTIVE_MAX_ROOT_AGE });
+    // 하트비트 주기가 상한 이상이면 폐기가 없어도 root 나이가 상한을 넘는 창이 생겨 **전원**이 root_too_old(온체인 RootTooOld)로
+    // 막힌다. 두 값은 서로 다른 프로세스의 env 라 아무도 대조하지 않는다(2026-09-23 최종 리뷰 M4).
+    if (ciaHeartbeatBlocks !== null && ciaHeartbeatBlocks > 0n && ciaHeartbeatBlocks >= EFFECTIVE_MAX_ROOT_AGE) {
+      console.warn(`[rp] CIA 하트비트 주기 ${ciaHeartbeatBlocks} 블록 ≥ maxRootAge ${EFFECTIVE_MAX_ROOT_AGE} — 정상 운영에서도 root_too_old 가 난다. CIA 의 CIA_HEARTBEAT_BLOCKS 를 낮추거나 더 큰 maxRootAge 로 팩토리를 재배포한다`);
+    }
   } finally { syncingConstants = false; }
 }
 function startFactoryConstantsRetry() {
@@ -269,8 +278,9 @@ app.get('/api/mode3/rp_info', (req, res) => {
   res.json({ status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, pkCiaSource: pkCIA.source, chainId: chainId.toString(), active: Boolean(verifier), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null });
 });
 app.post('/api/mode3/challenge', (req, res) => {
-  if (!verifier) return res.status(503).json({ reason: inactiveReason() });
-  res.json({ ...issueChallenge(), factoryAddress: reg.factoryAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null });
+  // 봉투를 다른 라우트와 같은 { ok, reason } 으로 맞춘다 — 페이지가 상태 코드가 아니라 본문으로 사유를 읽는다(2026-09-23 최종 리뷰 M3).
+  if (!verifier) return res.status(503).json({ ok: false, reason: inactiveReason() });
+  res.json({ ok: true, ...issueChallenge(), factoryAddress: reg.factoryAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null });
 });
 
 async function verifyBody(req, res, r_s) {

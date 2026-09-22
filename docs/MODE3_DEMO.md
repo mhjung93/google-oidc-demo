@@ -60,7 +60,7 @@ Mode 2 데모(:3000/:4000/:5001)와 **공존**한다. 포트·상태 파일이 �
    `MODE3_RP_FACTORY_ADDRESS` 로 덮어쓴다. **주의**: 회로를 다시 빌드한 뒤라면 `verifierAddress` 도 함께 지워야 한다 — 그 필드가 남아 있으면
    새 팩토리가 옛 검증기를 그대로 가리킨다(위 0 의 (4)).
    **경고**: 팩토리를 다시 배포하거나 팩토리 생성자 인자 중 하나라도(`MODE3_MAX_ROOT_AGE`, `MODE3_MAX_LIFETIME_BLOCKS`, 검증기
-   주소, 로그 주소, CIA 키, 서비스 조합 키) 바꾸면 모든 PPID 계정 주소가 바뀐다 — 옛 계정의 잔액은 옛 팩토리 주소로만
+   주소, `arid`(서비스 식별자 — RP 를 다시 등록하면 새로 배정된다), 로그 주소, CIA 키, 서비스 조합 키 — 생성자 9인자 전부) 바꾸면 모든 PPID 계정 주소가 바뀐다 — 옛 계정의 잔액은 옛 팩토리 주소로만
    접근할 수 있으니, 잔액이 있는 데모를 진행 중이면 먼저 빼낸다. 팩토리가 이미 있으면 RP 는 env 대신 **팩토리의 값**을
    쓰고 경고한다(2026-09-23) — env 를 바꿨는데 안 먹는다면 그 경고를 보라.
 
@@ -281,11 +281,11 @@ MetaMask/Snap 경로(2026-09-22 metamask-snap)로 새로 생긴 지갑 라우트
 |---|---|---|---|
 | `root_too_old` | `POST /api/mode3/login`, `POST /api/mode3/revalidate` | 200 `{ok:false, reason}` | 게시된 root 가 `MODE3_MAX_ROOT_AGE` 보다 오래됐다 — CIA 가 하트비트(또는 `/cia/publish`)를 멈추면 온체인 `RootTooOld` 와 함께 오프체인 로그인·재검증도 막힌다. CIA 를 살리고 게시를 기다린다 |
 | `root_too_old` | `POST /api/mode3/request` | 503 | 세션 요청도 같은 상한 — 다만 세션이 이미 있는데 체인 쪽 문제라 5xx 로 구분한다 |
-| `factory_constants_unavailable` | 위 세 엔드포인트 공통(`inactiveReason`) | 503 | 팩토리 `maxRootAge`·`maxLifetime` 조회 실패 — 등록 대기(`registration_pending`)와 구분한다. 아래 "하지 말 것" 의 함정 참고 |
+| `factory_constants_unavailable` | 검증기가 없는 동안 RP API 전부(`inactiveReason`) — `/api/mode3/challenge`·`/login`·`/revalidate`·`/request`·`/open` | 503 | 팩토리 `maxRootAge`·`maxLifetime` 조회 실패 — 등록 대기(`registration_pending`)와 구분한다. 아래 "하지 말 것" 의 함정 참고 |
 
 RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는데(`headMaxAgeMs`), 그 창 동안은 root 나이(b′) 판정도 **캐시 시점 값에 얼어붙는다** — 실시간 게시 지연을 그동안은 못 본다.
 
-`rp.html` 페이지는 응답 본문의 `{ ok, reason }` 만 읽고 상태 코드는 구분하지 않는다.
+`rp.html` 페이지는 응답 본문의 `{ ok, reason }` 만 읽고 상태 코드는 구분하지 않는다 — `/challenge` 도 같은 봉투를 쓴다(성공 `{ok:true, r_s, …}`, 거절 `{ok:false, reason}`. 2026-09-23 점검 M3 전에는 사유 대신 JS TypeError 가 보였다).
 
 **함정(fail-closed)**: 체인을 새로 띄운(hardhat 재기동) 뒤 **옛 `mode3_rp_registration.json`**(예전 체인의 `factoryAddress`)으로 RP 를 올리면 팩토리 `maxRootAge()` 조회가 그 주소에 컨트랙트가 없어 실패하고, 위 표대로 모든 로그인·재검증·세션 요청이 `503 factory_constants_unavailable` 로 막힌다(5초마다 재시도, 새 체인에 맞는 팩토리가 없는 한 무기한). 증상은 RP 로그의 "팩토리 상수 조회 실패"(fail-closed) 줄로 보인다. 복구는 등록 파일의 `factoryAddress`·`verifierAddress` 를 지우고 재시작하거나(RP 가 새로 배포한다), 아래 재시연 세트를 탄다.
 

@@ -174,7 +174,15 @@
       try {
         if (!info) await loadInfo();
         let t0 = Date.now();
-        const { r_s, factoryAddress, attrGateAddress } = await (await post('/api/mode3/challenge')).json();
+        const ch = await (await post('/api/mode3/challenge')).json().catch(() => ({}));
+        // 503(factory_constants_unavailable·registration_pending)에는 r_s 가 없다 — 바로 구조분해해 slice 하면
+        // 사유 대신 "Cannot read properties of undefined" 만 보인다(2026-09-23 최종 리뷰 M3). 본문의 reason 을 보여 주고 멈춘다.
+        if (!ch.ok || !ch.r_s) {
+          log(`1. 챌린지 실패 ${ms(t0)}: ${JSON.stringify(ch)}`);
+          setVerdict($('verdict'), false, `로그인 불가: ${ch.reason ?? 'challenge_failed'}`);
+          return;
+        }
+        const { r_s, factoryAddress, attrGateAddress } = ch;
         log(`1. r_s 발급 ${ms(t0)}: ${r_s.slice(0, 16)}…`);
 
         const allowAgent = $('allowAgent').checked ? '1' : '0';

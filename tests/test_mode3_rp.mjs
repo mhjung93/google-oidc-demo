@@ -47,7 +47,7 @@ async function publish(leavesBig) {
   const root = rootToBytes32(tree.getRoot()), epoch = (await log.epoch()) + 1n, leaves = leavesBig.map(rootToBytes32);
   await (await log.connect(ciaEth).publishRoot(root, epoch, leaves, await signRootPublication(ciaEth, { logAddress, root, epoch, leaves }))).wait();
 }
-async function makeLogin({ key = CIA, useArid = arid, ttlBlocks = 300n, chainid = 31337n, useTrace = pk_trace, allowAgent = 0n } = {}) {
+async function makeLogin({ key = CIA, useArid = arid, ttlBlocks = 300n, chainid = 31337n, useTrace = pk_trace, allowAgent = 0n, disclosure = null } = {}) {
   const reg = await createRegistration();
   const session = createSessionKey();
   const attrs = [19n, 410n, 0n, 0n];
@@ -58,7 +58,9 @@ async function makeLogin({ key = CIA, useArid = arid, ttlBlocks = 300n, chainid 
   const req = await buildIssueRequest({ uid, Cf_u: uc.Cf_u, arid: useArid, sk_u, session, chainid, allowAgent, max_height });
   const cred = await issueWith(key, uc.Cf_u, req.C_s_pt, { max_height, chainid, allowAgent });
   const { tree } = await syncRevocationTree(provider, logAddress);
-  const { proof, publicSignals } = await buildCredentialProof({ uid, arid: useArid, s_u: reg.s_u, blind_u: uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs, credential: cred, pk_CIA: key.pub, pk_trace: useTrace, tree });
+  // disclosure 는 정규화 없이 그대로 회로로 간다(lib/mode3_wallet.js 의 buildCredentialProof) — 지갑의 normalizeDisclosure 를
+  // 거치지 않는 경로라, 마스크 밖 슬롯이 0 이 아닌 유효한 π 를 일부러 만들 수 있다(아래 C-2 E2E 케이스).
+  const { proof, publicSignals } = await buildCredentialProof({ uid, arid: useArid, s_u: reg.s_u, blind_u: uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs, credential: cred, pk_CIA: key.pub, pk_trace: useTrace, tree, disclosure });
   return { proof, publicSignals, r_s, sig: await signChallenge(session.wallet, r_s.toString()), session, cred, reg };
 }
 
@@ -264,6 +266,23 @@ await t('C-2: maskDisclosure 는 mask 비트가 0 인 슬롯의 lo/hi 를 0 으�
   assert.deepEqual(e.lo, [0n, 2n, 0n, 4n]); assert.deepEqual(e.hi, [0n, 6n, 0n, 8n]);
   // 길이 4 가 아니면 mask 비트와 슬롯이 어긋난다 — 공개 함수이므로 오용을 막는다(2026-09-23 리뷰 M-4)
   assert.throws(() => maskDisclosure({ mask: 1n, lo: [0n, 0n, 0n], hi: [0n, 0n, 0n, 0n] }), /길이 4/);
+});
+
+await t('C-2 E2E: 마스크 밖 슬롯이 0 이 아닌 **유효한** π 여도 verifyLogin 은 그 슬롯을 지워 돌려준다 (maskDisclosure 호출 고정)', async () => {
+  // 회로는 mask 비트가 0 인 슬롯의 disc_lo/hi 에 64비트 범위 말고 아무 제약도 걸지 않는다(2026-09-22 §4.3). 지갑의
+  // normalizeDisclosure 를 거치지 않고 buildCredentialProof 에 직접 넘기면 그런 π 가 실제로 만들어진다 — 즉 "실제 증명으로는
+  // 재현 불가" 가 아니다(2026-09-23 최종 리뷰 M5). lib/mode3_rp.js 의 maskDisclosure 래핑을 벗기면 이 케이스가 빨개진다.
+  const L = await makeLogin({ disclosure: { mask: 1n, lo: [0n, 410n, 0n, 0n], hi: [2007n, 410n, 0n, 0n] } });
+  // 전제: 공개 입력에는 마스크 밖 슬롯(1)의 값이 그대로 실려 있다. [14]=mask, [15..18]=lo, [19..22]=hi
+  assert.equal(BigInt(L.publicSignals[14]), 1n, 'mask 는 슬롯 0 만');
+  assert.equal(BigInt(L.publicSignals[16]), 410n, 'lo[1] 이 0 이 아닌 π 여야 이 케이스가 의미가 있다');
+  assert.equal(BigInt(L.publicSignals[20]), 410n, 'hi[1] 도 마찬가지');
+  const r = await rp.verifyLogin(L);
+  assert.equal(r.ok, true, JSON.stringify(r, (k, v) => (typeof v === 'bigint' ? v.toString() : v)));
+  assert.equal(r.disclosure.mask, 1n);
+  assert.equal(r.disclosure.lo[0], 0n); assert.equal(r.disclosure.hi[0], 2007n, '공개한 슬롯 0 은 그대로');
+  assert.equal(r.disclosure.lo[1], 0n, '마스크 밖 슬롯 1 의 lo 는 지워야 한다 — AA 가 보증하지 않은 값이다');
+  assert.equal(r.disclosure.hi[1], 0n, '마스크 밖 슬롯 1 의 hi 도 마찬가지');
 });
 
 provider.destroy();

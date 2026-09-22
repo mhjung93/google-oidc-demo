@@ -409,6 +409,24 @@ try {
     assert.equal((await wallet.get('/wallet/status')).body.userCred.Cf_u, snapState.userCred.Cf_u, '에이전트의 공개 Cf_u 와 같다');
   });
 
+  // 2026-09-23 최종 리뷰 M3: 검증기가 없는 동안 /challenge 는 503 { ok:false, reason } 이다. 예전 페이지는 본문을 바로
+  // 구조분해해 r_s.slice 에서 죽었고, 화면에는 "Cannot read properties of undefined" 만 남아 사유가 묻혔다.
+  await t('챌린지 503: 페이지가 사유(factory_constants_unavailable)를 보여 주고 멈춘다 — TypeError 가 아니다', async () => {
+    const before = dialogs.length;
+    await rpPage.route('**/api/mode3/challenge', (route) => route.fulfill({
+      status: 503, contentType: 'application/json', body: j({ ok: false, reason: 'factory_constants_unavailable' }),
+    }));
+    try {
+      await rpPage.click('#loginBtn');
+      await waitText(rpPage, '#verdict', 'factory_constants_unavailable', 30_000);
+      assert.equal((await text(rpPage, '#verdict')).includes('Cannot read'), false, `TypeError 가 아니라 사유가 보여야 한다: ${await text(rpPage, '#verdict')}`);
+      await rpPage.waitForFunction(() => !document.querySelector('#loginBtn').disabled, undefined, { timeout: 10_000 });
+      assert.equal(dialogs.length, before, '챌린지 단계에서 멈추므로 지갑 팝업·동의 창까지 가지 않는다');
+    } finally {
+      await rpPage.unroute('**/api/mode3/challenge');
+    }
+  });
+
   await t('하네스: 준비한 대화상자 응답이 남지 않았다(기대한 동의 창이 다 떴다)', async () => {
     assert.equal(answers.length, 0, `쓰이지 않은 응답이 남았다: ${j(answers)}`);
   });

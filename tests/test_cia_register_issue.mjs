@@ -561,6 +561,11 @@ try {
     assert.equal((await cia.adminPost('/cia/accounts/12345/attrs', {})).status, 400);
     assert.equal((await cia.adminPost('/cia/accounts/12345/attrs', { attrs: ['1990', '410'] })).status, 400);
     assert.equal((await cia.adminPost('/cia/accounts/12345/attrs', { attrs: 'x' })).status, 400);
+    // M2(2026-09-23 최종 리뷰): 길이 4 라도 빈 칸은 BigInt('') === 0n 으로 통과했다 — 관리자 UI 가 보내는 바로 그 모양
+    // (cia_admin.html 의 `i.value.trim()`). 슬롯이 조용히 0 이 되고 옛 C_u 리프가 되돌릴 수 없게 게시된다.
+    assert.equal((await cia.adminPost('/cia/accounts/12345/attrs', { attrs: ['1990', '', '2', '0'] })).status, 400, '빈 슬롯');
+    assert.equal((await cia.adminPost('/cia/accounts/12345/attrs', { attrs: ['1990', ' 410 ', '2', '0'] })).status, 400, '공백이 낀 값(BigInt 는 받아들인다)');
+    assert.deepEqual((await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === '12345').attrs, ['1990', '410', '3', '0'], '거절된 요청은 속성을 바꾸지 않았다');
   });
 } finally {
   await cia.stop();

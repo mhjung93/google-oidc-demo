@@ -426,6 +426,10 @@ app.post('/cia/accounts/:uid/attrs', requireAdmin, async (req, res) => {
     // 속성 4칸이 0" 이 되고 옛 C_u 리프가 append-only 트리에 들어가 되돌릴 수 없다(2026-09-23 점검 A-I2).
     const raw = req.body?.attrs;
     if (!Array.isArray(raw) || raw.length !== ATTR_SLOTS) return res.status(400).json({ error: `attrs 는 길이 ${ATTR_SLOTS} 배열이어야 한다` });
+    // 길이만 보면 빈 칸이 통과한다 — BigInt('') === 0n 이라 관리자 UI(mode3/cia_admin.html 의 `i.value.trim()`)가 보낸
+    // 빈 슬롯이 조용히 0 이 되고, 바로 아래 retireActiveCred 가 옛 C_u 리프를 append-only 트리에 게시해 되돌릴 수 없다
+    // (2026-09-23 최종 리뷰 M2 — 점검 A-I2 의 현실적 트리거).
+    if (!raw.every((v) => /^[0-9]+$/.test(String(v)))) return res.status(400).json({ error: 'attrs 원소는 10진 문자열' });
     let attrs;
     try { attrs = normalizeAttrs(raw).map(String); } catch (e) { return res.status(400).json({ error: `attrs: ${e.message}` }); }
     acct.attrs = attrs;

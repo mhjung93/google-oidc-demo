@@ -311,14 +311,17 @@
         if (status !== 201) {
           // Snap 의 register 가 이미 s_u·r_u 를 저장한 뒤라 그냥 다시 누르면 Snap 이 already_registered 로 막는다.
           // 빠져나오는 길은 실패 원인에 따라 다르다(2026-09-22 최종 리뷰 Minor 3):
-          //  - 에이전트가 409 already_registered: 에이전트 상태 파일에 옛 등록이 있다. Snap 과 파일은 다른 보관소라
-          //    "Snap 초기화" 만으로는 풀리지 않는다 — 재시연 세트로 상태 파일까지 비워야 한다.
+          //  - 에이전트가 409 already_registered: 에이전트 상태 파일에 옛 등록이 있다. "Snap 초기화" + 상태 파일 삭제만으로는
+          //    풀리지 않는다 — 새 s_u·r_u 로 만든 cm_u 는 CIA 에 이미 있는 uid 등록과 달라 /cia/register 가 다시 409 를 낸다
+          //    (CIA 는 uid 존재만 본다). CIA·에이전트·Snap 세 보관소를 함께 비우는 재시연 세트가 유일한 출구다
+          //    (2026-09-23 최종 리뷰 M1 — 아래 storeRegistration 실패 안내와 같은 문구로 맞춘다).
           //  - 그 밖(비밀번호 오류·CIA 오류): Snap 만 초기화하고 다시 등록하면 된다.
           const stuckOnAgent = status === 409 && b.reason === 'already_registered';
           const hint = cfg.secrets !== 'snap' ? ''
             : stuckOnAgent
-              ? ' — 에이전트 상태 파일에 이미 등록이 있다(Snap 과 다른 보관소라 "Snap 초기화" 만으로는 풀리지 않는다).'
-                + ' docs/MODE3_DEMO.md 의 재시연 세트로 mode3_wallet_state.json 까지 비운 뒤 "Snap 초기화" → 다시 등록한다'
+              ? ' — 에이전트 상태 파일에 이미 등록이 있다. "Snap 초기화" + 상태 파일 삭제만으로는 풀리지 않는다:'
+                + ' 새 cm_u 가 CIA 에 이미 있는 uid 등록과 달라 /cia/register 가 다시 409 를 낸다.'
+                + ' docs/MODE3_DEMO.md 의 "하지 말 것 / 재시연" 재시연 세트로 CIA·에이전트·Snap 세 보관소를 함께 비워야 한다'
               : ' — Snap 에는 등록 비밀이 이미 만들어졌다. "Snap 초기화" 를 누른 뒤 다시 등록한다';
           $('registerResult').textContent = errText(status, b) + hint;
           return;

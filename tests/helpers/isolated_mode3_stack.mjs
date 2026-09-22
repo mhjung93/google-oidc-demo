@@ -135,6 +135,9 @@ export async function startIsolatedMode3Stack(opts = {}) {
        * 팩토리 배포 뒤 env 만 바꿔 재기동하는 상황(2026-09-23 점검 D-I2)을 시험한다.
        * 기본으로 rp_info.active 까지 기다린다. 일부러 활성화에 실패시키는 시험(예: 팩토리가 아닌 주소를
        * MODE3_RP_FACTORY_ADDRESS 로 주기)에서는 waitActive:false 로 끈다.
+       * **extraEnv 는 이전 재기동의 env 위에 누적된다** — 한 번 넣은 값은 뒤의 재기동에도 그대로 남는다.
+       * 잘못된 팩토리 주소 등을 넣은 케이스 뒤에 정상 케이스를 두지 말 것(원인 불명의 503 factory_constants_unavailable
+       * 로 깨진다). 꼭 필요하면 그 값을 되돌리는 extraEnv 를 명시적으로 다시 넘긴다(2026-09-23 최종 리뷰 M6).
        */
       async restartRp(extraEnv = {}, { waitActive = true } = {}) {
         if (!rpChild) throw new Error('restartRp: rp:false 로 띄운 스택이다');
