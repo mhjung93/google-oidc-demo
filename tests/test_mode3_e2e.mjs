@@ -16,7 +16,9 @@ import { createShare, combinePublicKey } from '../lib/mode3_trace.js';
 // 무관하게 먼저 평가되므로, 맨 JSON.stringify 를 쓰면 성공 경로에서도 터진다.
 const j = (o) => JSON.stringify(o, (k, v) => (typeof v === 'bigint' ? v.toString() : v));
 
-const ATTRS = [19n, 410n, 0n, 0n];
+// AA(cia.js DEMO_ACCOUNTS)가 uid=12345(testuser) 에 매긴 속성과 같아야 한다 — /cia/user_cred 가 요청의 attrs 를
+// 받지 않고 AA 기록과 대조하므로(2026-09-22 §3.4), 다른 값이면 bad user credential proof 로 거절된다.
+const ATTRS = [1990n, 410n, 2n, 0n];
 
 let failed = 0;
 async function t(name, fn) {
@@ -148,6 +150,17 @@ try {
     // 다음 케이스(계정 폐기 → 옛 π stale_root)가 쓸 옛 π 를 현재 root 로 갈아 둔다
     staleProof = cache.get((await syncRevocationTree(provider, cia.logAddress)).root, session.wallet.address);
     assert.ok(staleProof);
+  });
+
+  await t('V6: 공개 mask ≠ 0 인 로그인도 RP 가 받아 세션에 disclosure 를 기록한다', async () => {
+    const { tree } = await syncRevocationTree(provider, cia.logAddress);
+    const disclosure = { mask: 3n, lo: [0n, 410n, 0n, 0n], hi: [2007n, 410n, 0n, 0n] };
+    const piD = await buildCredentialProof({ uid, arid, s_u: reg.s_u, blind_u, blind_s, pk_i: session.pk_i, attrs: ATTRS, credential: cred, pk_CIA, pk_trace, tree, disclosure });
+    const v = await rp.verifyLogin({ proof: piD.proof, publicSignals: piD.publicSignals, sig: await signChallenge(session.wallet, sessionRs.toString()), r_s: sessionRs });
+    assert.equal(v.ok, true, j(v));
+    assert.equal(v.disclosure.mask, 3n);
+    assert.deepEqual(v.disclosure.lo.map(String), ['0', '410', '0', '0']);
+    assert.deepEqual(v.disclosure.hi.map(String), ['2007', '410', '0', '0']);
   });
 
   await t('계정 폐기 + 게시 → 옛 π 는 stale_root 로 거절', async () => {

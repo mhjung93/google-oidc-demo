@@ -72,6 +72,17 @@ await t('양성: 7단계 전부 통과, PPID 와 pk_i 를 돌려준다', async (
   assert.equal(r.pk_i, L.session.pk_i);
 });
 
+await t('V6: publicSignals 가 14개면 malformed, 23개면 통과하고 disclosure 를 돌려준다, [14] ≥ 16 은 bad_disclosure', async () => {
+  const good = await makeLogin();
+  assert.equal(good.publicSignals.length, 23);
+  const v = await rp.verifyLogin(good);
+  assert.equal(v.ok, true, JSON.stringify(v, (k, vv) => (typeof vv === 'bigint' ? vv.toString() : vv)));
+  assert.equal(v.disclosure.mask, 0n);
+  assert.equal((await rp.verifyLogin({ ...good, publicSignals: good.publicSignals.slice(0, 14) })).reason, 'malformed');
+  const ps = [...good.publicSignals]; ps[14] = '16';
+  assert.equal((await rp.verifyLogin({ ...good, publicSignals: ps })).reason, 'bad_disclosure');
+});
+
 await t('음성 d: 공격자가 자기 CIA 키로 서명한 credential 은 untrusted_cia (유일한 위조 방어선)', async () => {
   const L = await makeLogin({ key: ATTACKER });
   const r = await rp.verifyLogin(L);

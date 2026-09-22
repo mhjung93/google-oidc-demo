@@ -3,8 +3,9 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
-import { VKEY_PATH, createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge } from '../lib/mode3_wallet.js';
+import { VKEY_PATH, createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, normalizeDisclosure } from '../lib/mode3_wallet.js';
 import { pointToStrings } from '../lib/mode3_issuance.js';
+import { signPayload, proofToCalldata, parseExecuteReceipt, factoryAt, walletAt } from '../lib/mode3_onchain.js';
 import { getProvider } from './helpers/mode3_chain.mjs';
 
 const j = (o) => JSON.stringify(o);
@@ -37,6 +38,57 @@ async function revalidateViaRp(r_s, { skipSync = false } = {}) {
   if (w.status !== 200) return { walletStatus: w.status, wallet: w.body };
   const r = await rp.post('/api/mode3/revalidate', { proof: w.body.proof, publicSignals: w.body.publicSignals, sig: w.body.sig, r_s });
   return { walletStatus: 200, wallet: w.body, rpStatus: r.status, rp: r.body };
+}
+
+// ---- alice(uid 67890, 2005/840/1/0) — 지갑 에이전트는 testuser 하나만 들고 있으므로(§4.1) 선택 공개 시나리오 11 은
+// 라이브러리로 alice 의 등록·자격증명·세션을 직접 만들고 signPayload/walletAt 으로 execute() 를 직접 보낸다
+// (Ruling 2 — /wallet/tx 를 흉내낸다. mode3_wallet_agent.js 의 같은 이름 로직과 순서를 맞춘다).
+let aliceReg = null;   // { reg, sk_u, attrs(bigint[]) } — uid 67890 등록은 한 번뿐이라 캐시한다
+async function ensureAlice() {
+  if (aliceReg) return aliceReg;
+  const reg = await createRegistration();
+  const r = await cia.post('/cia/register', { uid: '67890', pwd: 'alicepw', cm_u: pointToStrings(reg.cm_u) });
+  assert.equal(r.status, 201, j(r.body));
+  aliceReg = { reg, sk_u: r.body.sk_u, attrs: r.body.attrs.map(BigInt) };
+  return aliceReg;
+}
+/** alice 의 사용자 자격증명 + 세션 자격증명을 한 번 받아 execute() 를 직접 서명·제출하는 tx(to, data, disclose) 를 돌려준다. */
+async function makeAliceAgent() {
+  const info = (await rp.get('/api/mode3/rp_info')).body;
+  const { reg, sk_u, attrs } = await ensureAlice();
+  const provider = getProvider();
+  const arid = BigInt(info.arid), chainId = BigInt(info.chainId), factoryAddress = info.factoryAddress;
+  const keys = (await cia.get('/cia/public_keys')).body;
+  const pk_CIA = { x: BigInt(keys.pk_CIA.x), y: BigInt(keys.pk_CIA.y) };
+  const pk_trace = { x: BigInt(info.pk_trace.x), y: BigInt(info.pk_trace.y) };
+  const ucReq = await buildUserCredRequest({ uid: 67890n, s_u: reg.s_u, r_u: reg.r_u, sk_u, attrs });
+  const uc = await cia.post('/cia/user_cred', ucReq.body);
+  assert.ok(uc.status === 200 || uc.status === 201, j(uc.body));
+  const session = createSessionKey();
+  const max_height = BigInt(await provider.getBlockNumber()) + 300n;
+  const issueReq = await buildIssueRequest({ uid: 67890n, Cf_u: ucReq.Cf_u, arid, sk_u, session, chainid: chainId, max_height });
+  const issued = await cia.post('/cia/issue', issueReq.body);
+  assert.equal(issued.status, 200, j(issued.body));
+  async function tx(to, data, disclose) {
+    let disclosure;
+    try { disclosure = normalizeDisclosure(disclose, attrs); }
+    catch (e) { if (e.reason) return { status: 400, body: { reason: e.reason, detail: e.message } }; throw e; }
+    const { tree } = await syncRevocationTree(provider, cia.logAddress);
+    const built = await buildCredentialProof({ uid: 67890n, arid, s_u: reg.s_u, blind_u: ucReq.secrets.blind_u, blind_s: issueReq.secrets.blind_s, pk_i: session.pk_i, attrs, credential: issued.body, pk_CIA, pk_trace, tree, disclosure });
+    const PPID = BigInt(built.publicSignals[0]);
+    const walletAddr = await factoryAt(factoryAddress, provider).computeAddress(PPID);
+    const relayer = await provider.getSigner(0);
+    if ((await provider.getCode(walletAddr)) === '0x') await (await factoryAt(factoryAddress, relayer).deploy(PPID)).wait();
+    const walletC = walletAt(walletAddr, relayer);
+    const nonce = await walletC.nonce();
+    const payload = { to, value: 0n, data, nonce };
+    const sig = signPayload(session.wallet, { chainId, wallet: walletAddr, ...payload, discMask: disclosure.mask, discLo: disclosure.lo, discHi: disclosure.hi });
+    const { a, b, c, pub } = await proofToCalldata(built.proof, built.publicSignals);
+    const receipt = await (await walletC.execute(payload, sig, a, b, c, pub)).wait();
+    const parsed = parseExecuteReceipt(receipt, walletAddr);
+    return { status: 200, body: { ok: parsed.executed?.success ?? null, receipt: { disclosure: parsed.disclosure ? { mask: parsed.disclosure.mask.toString(), lo: parsed.disclosure.lo.map(String), hi: parsed.disclosure.hi.map(String) } : null } } };
+  }
+  return { tx, stop: () => provider.destroy() };
 }
 
 try {
@@ -135,16 +187,14 @@ try {
     const info = (await rp.get('/api/mode3/rp_info')).body;
     const mine = await loginViaRp();
     assert.equal(mine.rp.ok, true, j(mine));
-    const reg = await createRegistration();
-    const r = await cia.post('/cia/register', { uid: '67890', pwd: 'alicepw', cm_u: pointToStrings(reg.cm_u) });
-    assert.equal(r.status, 201, j(r.body));
-    // V5(2026-09-21): 사용자 자격증명(/cia/user_cred) 을 먼저 받고 그 Cf_u 위에 세션 자격증명(/cia/issue) 을 받는다
-    const attrs = [0n, 0n, 0n, 0n];
-    const ucReq = await buildUserCredRequest({ uid: 67890n, s_u: reg.s_u, r_u: reg.r_u, sk_u: r.body.sk_u, attrs });
+    const { reg, sk_u, attrs } = await ensureAlice();
+    // V5(2026-09-21): 사용자 자격증명(/cia/user_cred) 을 먼저 받고 그 Cf_u 위에 세션 자격증명(/cia/issue) 을 받는다.
+    // 속성은 AA 기록(§3.4) — 여기서 임의 값을 쓰면 bad user credential proof 로 거절되므로 alice 의 실제 속성을 쓴다.
+    const ucReq = await buildUserCredRequest({ uid: 67890n, s_u: reg.s_u, r_u: reg.r_u, sk_u, attrs });
     const uc = await cia.post('/cia/user_cred', ucReq.body);
-    assert.equal(uc.status, 201, j(uc.body));
+    assert.ok(uc.status === 200 || uc.status === 201, j(uc.body));
     const session = createSessionKey();
-    const req = await buildIssueRequest({ uid: 67890n, Cf_u: ucReq.Cf_u, arid: BigInt(info.arid), sk_u: r.body.sk_u, session, chainid: BigInt(info.chainId), max_height: BigInt(await getProvider().getBlockNumber()) + 300n });
+    const req = await buildIssueRequest({ uid: 67890n, Cf_u: ucReq.Cf_u, arid: BigInt(info.arid), sk_u, session, chainid: BigInt(info.chainId), max_height: BigInt(await getProvider().getBlockNumber()) + 300n });
     const issued = await cia.post('/cia/issue', req.body);
     assert.equal(issued.status, 200, j(issued.body));
     const provider = getProvider();
@@ -235,6 +285,47 @@ try {
     assert.equal((await cia.adminPost(`/cia/openings/${o.body.id}/approve`)).status, 200);
     const res = await rp.get(`/api/mode3/open/${o.body.id}`);
     assert.equal(res.body.allowAgent, '1'); assert.equal(res.body.uid, uid);
+  });
+
+  await t('10. 선택 공개: testuser 가 [0,2007]·[410,410] 을 공개해 AttrGate.claim → Claimed; 두 번째는 already claimed(success=false)', async () => {
+    const info = (await rp.get('/api/mode3/rp_info')).body;
+    assert.ok(info.attrGateAddress);
+    const s = await loginViaRp();
+    assert.equal(s.rp.ok, true, j(s));
+    const disclose = [{ lo: '0', hi: '2007' }, { lo: '410', hi: '410' }, null, null];
+    const tx = await wallet.post('/wallet/tx', { r_s: s.r_s, to: info.attrGateAddress, data: '0x4e71d92d', disclose }, { Origin: rp.origin });
+    assert.equal(tx.status, 200, j(tx.body));
+    assert.equal(tx.body.ok, true, j(tx.body));
+    assert.equal(tx.body.receipt.disclosure.mask, '3');
+    const again = await wallet.post('/wallet/tx', { r_s: s.r_s, to: info.attrGateAddress, data: '0x4e71d92d', disclose }, { Origin: rp.origin });
+    assert.equal(again.status, 200, j(again.body));
+    assert.equal(again.body.ok, false, j(again.body));   // already claimed — nonce 는 소비되지만 성공은 아니다
+  });
+
+  // Ruling 2: 지갑 에이전트는 testuser 하나만 들고 있어(§4.1) alice(우리 DEMO_ACCOUNTS) 는 라이브러리로 직접 만든다.
+  await t('11. 선택 공개: alice(2005, 840) 는 country 로 실패(success=false); 슬롯 0 을 [0,1980] 으로 공개하면 지갑이 disclosure_unsatisfiable', async () => {
+    const info = (await rp.get('/api/mode3/rp_info')).body;
+    assert.ok(info.attrGateAddress);
+    const alice = await makeAliceAgent();
+    try {
+      const tx = await alice.tx(info.attrGateAddress, '0x4e71d92d', [{ lo: '0', hi: '2007' }, { lo: '840', hi: '840' }, null, null]);
+      assert.equal(tx.status, 200, j(tx.body));
+      assert.equal(tx.body.ok, false, j(tx.body));   // 국가 불일치(840 ≠ 410) — claim() 이 country 로 revert, Executed(success=false)
+      const bad = await alice.tx(info.attrGateAddress, '0x4e71d92d', [{ lo: '0', hi: '1980' }, null, null, null]);
+      assert.equal(bad.status, 400, j(bad.body));
+      assert.equal(bad.body.reason, 'disclosure_unsatisfiable');   // alice 의 출생연도(2005) 가 [0,1980] 밖
+    } finally { alice.stop(); }
+  });
+
+  await t('12. 선택 공개: 관리자가 testuser a₂ 를 3 으로 → 게시 → 다음 로그인이 재동기화·새 C_u, PPID 동일', async () => {
+    const before = await loginViaRp();
+    assert.equal(before.rp.ok, true, j(before));
+    assert.equal((await cia.adminPost(`/cia/accounts/${uid}/attrs`, { attrs: ['1990', '410', '3', '0'] })).status, 200);
+    assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
+    const after = await loginViaRp();
+    assert.equal(after.rp.ok, true, j(after));
+    assert.equal(after.rp.PPID, before.rp.PPID);
+    assert.deepEqual((await wallet.get('/wallet/status')).body.attrs, ['1990', '410', '3', '0']);
   });
 
   await t("4'. 사용자 자기 폐기(비밀번호) → 게시 → 재검증 stale_root → 지갑 revoked → 관리자 복구 → PPID 동일", async () => {

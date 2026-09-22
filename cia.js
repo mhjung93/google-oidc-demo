@@ -589,8 +589,8 @@ const findOpening = (id) => state.openings.find((o) => o.id === id);
 app.post('/cia/open/request', async (req, res) => {
   try {
     const { arid, publicSignals, proof, D_svc, ts, sig } = req.body ?? {};
-    if (!isDec(arid) || !Array.isArray(publicSignals) || publicSignals.length !== 14 || !publicSignals.every(isDec) || !proof || !isPt(D_svc) || !isDec(ts) || typeof sig !== 'string') {
-      return res.status(400).json({ error: 'arid, publicSignals[14], proof, D_svc{x,y}, ts, sig required' });
+    if (!isDec(arid) || !Array.isArray(publicSignals) || publicSignals.length !== 23 || !publicSignals.every(isDec) || !proof || !isPt(D_svc) || !isDec(ts) || typeof sig !== 'string') {
+      return res.status(400).json({ error: 'arid, publicSignals[23], proof, D_svc{x,y}, ts, sig required' });
     }
     if (!(await isTracePoint(pointFromStrings(D_svc)))) return res.status(400).json({ error: 'D_svc is not a valid subgroup point' });
     const e = state.rps[arid];

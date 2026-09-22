@@ -123,7 +123,7 @@ async function ensureUserCred(tree, { resynced = false } = {}) {
     return { status: 200, body: r.body, fresh: true };
   }
   // AA 기록이 바뀌어 π_u 가 깨진 경우(2026-09-22 §3.3): 속성을 다시 받아 한 번만 재시도한다
-  if (r.status === 400 && !resynced && /proof/.test(r.body?.error ?? '')) {
+  if (r.status === 400 && !resynced && r.body?.error === 'bad user credential proof') {
     const s = await syncAttrsFromCia();
     if (s.status === 200) return ensureUserCred(tree, { resynced: true });
   }

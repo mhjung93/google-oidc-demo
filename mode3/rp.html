@@ -16,6 +16,7 @@
 <body>
   <h2>Mode 3 로그인 (RP)</h2>
   <p class="muted" id="rpInfo">RP 정보 불러오는 중…</p>
+  <p class="muted" id="attrGateInfo">-</p>
 
   <fieldset>
     <legend>로그인</legend>
@@ -64,12 +65,16 @@
       $('rpInfo').textContent = pending
         ? `등록 대기 중 (arid=${info.arid ?? '-'}) — CIA 관리자 페이지(/admin)에서 승인하면 활성화된다. 5초마다 확인.`
         : `arid=${info.arid}   origin=${info.origin}   cert_s=있음   pk_trace=있음   RevocationLog=${info.logAddress}   지갑 에이전트=${info.walletAgentOrigin}   pk_CIA=${info.pkCiaSource}   chainId=${info.chainId}   팩토리=${info.factoryAddress ?? '(없음)'}`;
+      $('attrGateInfo').textContent = info.attrGateAddress
+        ? `AttrGate=${info.attrGateAddress}   정책: 국가(a₁)=410, 출생연도(a₀)≤2007`
+        : 'AttrGate 없음(팩토리 미배포)';
       $('loginBtn').disabled = pending;
       if (pending) setTimeout(loadInfo, 5000);
     }
     async function refreshLogins() {
       const { logins } = await (await fetch('/api/mode3/logins')).json();
-      $('logins').textContent = logins.length ? logins.map((l) => `${l.at}  PPID=${l.PPID}  r_s=${l.r_s ?? ''}  root=${l.root.slice(0, 18)}…  allowAgent=${l.allowAgent}`).join('\n') : '(없음)';
+      const discOf = (l) => l.disclosure && l.disclosure.mask !== '0' ? `  disclose(mask=${l.disclosure.mask}): lo=${l.disclosure.lo.join(',')} hi=${l.disclosure.hi.join(',')}` : '';
+      $('logins').textContent = logins.length ? logins.map((l) => `${l.at}  PPID=${l.PPID}  r_s=${l.r_s ?? ''}  root=${l.root.slice(0, 18)}…  allowAgent=${l.allowAgent}${discOf(l)}`).join('\n') : '(없음)';
     }
     $('loginBtn').addEventListener('click', async () => {
       $('loginBtn').disabled = true; $('verdict').textContent = ''; $('log').textContent = '';
@@ -95,8 +100,10 @@
         const r = await post('/api/mode3/login', { proof: wb.proof, publicSignals: wb.publicSignals, sig: wb.sig, r_s });
         const rb = await r.json();
         log(`3. RP 검증 ${ms(t0)}: ${JSON.stringify(rb)}\n   allowAgent=${rb.allowAgent}`);
+        const discTxt = rb.ok && rb.disclosure && rb.disclosure.mask !== '0'
+          ? ` 공개(mask=${rb.disclosure.mask}): lo=${rb.disclosure.lo.join(',')} hi=${rb.disclosure.hi.join(',')}` : '';
         $('verdict').innerHTML = rb.ok
-          ? `<span class="ok">로그인 성공</span> PPID=${rb.PPID}`
+          ? `<span class="ok">로그인 성공</span> PPID=${rb.PPID}${discTxt}`
           : `<span class="bad">거절: ${rb.reason}</span>`;
         setSession(rb.ok ? rb.r_s : null);
         if (rb.ok) $('openPpid').value = rb.PPID;

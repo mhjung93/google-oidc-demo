@@ -17,7 +17,7 @@ import { verifyRpCert } from './lib/mode3_rp_cert.js';
 import { randomScalar } from './lib/mode3_credential.js';
 import { createShare, partialDecrypt, combinePublicKey, verifyShare } from './lib/mode3_trace.js';
 import { signOpenRequest, signOpenResult } from './lib/mode3_opening.js';
-import { deployVerifier, deployFactory, decodeExecuteCalldata, parseExecuteReceipt, MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT } from './lib/mode3_onchain.js';
+import { deployVerifier, deployFactory, deployAttrGate, decodeExecuteCalldata, parseExecuteReceipt, MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT } from './lib/mode3_onchain.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.MODE3_RP_PORT) || 3100;
@@ -65,9 +65,11 @@ if (reg && (reg.version !== REG_VERSION || reg.origin !== PUBLIC_ORIGIN)) {
 if (!reg) {
   const w = ethers.Wallet.createRandom();
   const share = await createShare();
-  reg = { version: REG_VERSION, origin: PUBLIC_ORIGIN, pk_service: w.address, sk_service: w.privateKey, X_svc: { x: share.X.x.toString(), y: share.X.y.toString() }, x_svc: share.x.toString(), status: 'pending', arid: null, pk_trace: null, cert_s: null, issuedAt: null, factoryAddress: null, verifierAddress: null };
+  reg = { version: REG_VERSION, origin: PUBLIC_ORIGIN, pk_service: w.address, sk_service: w.privateKey, X_svc: { x: share.X.x.toString(), y: share.X.y.toString() }, x_svc: share.x.toString(), status: 'pending', arid: null, pk_trace: null, cert_s: null, issuedAt: null, factoryAddress: null, verifierAddress: null, attrGateAddress: null };
   writeJsonAtomic(REG_FILE, reg, 0o600);
 }
+// 팩토리를 재배포하려고 factoryAddress 를 지운 경우(§6.1 재배포 절차) AttrGate 도 옛 팩토리에 묶여 있어 같이 무효다.
+if (!reg.factoryAddress && reg.attrGateAddress) { reg.attrGateAddress = null; writeJsonAtomic(REG_FILE, reg, 0o600); }
 const serviceWallet = new ethers.Wallet(reg.sk_service);
 
 /** pk_trace == X_svc + X_AA 이고 X_AA 의 Schnorr PoK 가 (arid, X_svc) 에 대해 검증되는가. 형식이 깨지면 false. */
@@ -127,10 +129,21 @@ async function ensureFactory() {
   writeJsonAtomic(REG_FILE, reg, 0o600);
   console.log(`[rp] 팩토리 배포: ${factoryAddress} (verifier ${verifierAddress}, maxRootAge ${MAX_ROOT_AGE}, maxLifetime ${MAX_LIFETIME}) → ${REG_FILE}`);
 }
+// AttrGate(설계 2026-09-22 §5.3): 팩토리 다음에 한 번 배포하는 데모 대상. 정책은 국가=410, 출생연도≤2007 고정(데모).
+async function ensureAttrGate() {
+  if (!reg.factoryAddress) { console.warn('[rp] 팩토리가 없어 AttrGate 배포를 건너뛴다'); return; }
+  if (reg.attrGateAddress) return;
+  const signer = await provider.getSigner(RELAYER_INDEX);
+  const attrGateAddress = await deployAttrGate(signer, { factoryAddress: reg.factoryAddress });
+  reg = { ...reg, attrGateAddress };
+  writeJsonAtomic(REG_FILE, reg, 0o600);
+  console.log(`[rp] AttrGate 배포: ${attrGateAddress} (factory ${reg.factoryAddress}) → ${REG_FILE}`);
+}
 async function activate() {
   verifier = createRpVerifier({ provider, logAddress: LOG_ADDRESS, vkey, pkCIA, arid: BigInt(reg.arid), chainId, pkTrace: { x: BigInt(reg.pk_trace.x), y: BigInt(reg.pk_trace.y) }, maxLifetimeBlocks: MAX_LIFETIME });
   // 팩토리가 없어도 오프체인 로그인은 된다 — 실패는 경고로 남기고 /wallet/tx 만 no_factory 가 된다.
   try { await ensureFactory(); } catch (e) { console.warn(`[rp] 팩토리 배포 실패(오프체인 로그인만 가능): ${e.message}`); }
+  try { await ensureAttrGate(); } catch (e) { console.warn(`[rp] AttrGate 배포 실패: ${e.message}`); }
 }
 if (reg.status === 'approved' && reg.cert_s) {
   if (!(await verifyRpCert(pkCIA, { arid: BigInt(reg.arid), origin: reg.origin, pk_trace: { x: BigInt(reg.pk_trace.x), y: BigInt(reg.pk_trace.y) }, cert: reg.cert_s }))) {
@@ -187,6 +200,8 @@ function consumeChallenge(r_s) {
 const logins = [];   // { PPID, at, root, r_s }. 메모리만
 // r_s 전문은 내지 않는다 — (PPID, 시각) 과 함께 서비스의 사용자 활동 기록이다(설계 2026-09-16 §5).
 const rsShort = (r) => r.slice(0, 8) + '…';
+// 선택 공개(2026-09-22 §6.2) — verifyLogin 이 돌려주는 bigint 조각을 세션·로그인 로그·조회 API 에 쓸 문자열로.
+const discOf = (d) => ({ mask: d.mask.toString(), lo: d.lo.map(String), hi: d.hi.map(String) });
 
 // ---- 앱 ----
 const app = express();
@@ -195,11 +210,11 @@ app.use(express.json({ limit: '1mb' }));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'rp.html')));
 
 app.get('/api/mode3/rp_info', (req, res) => {
-  res.json({ status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, pkCiaSource: pkCIA.source, chainId: chainId.toString(), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null });
+  res.json({ status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, pkCiaSource: pkCIA.source, chainId: chainId.toString(), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null });
 });
 app.post('/api/mode3/challenge', (req, res) => {
   if (!verifier) return res.status(503).json({ reason: 'registration_pending' });
-  res.json({ ...issueChallenge(), factoryAddress: reg.factoryAddress ?? null });
+  res.json({ ...issueChallenge(), factoryAddress: reg.factoryAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null });
 });
 
 async function verifyBody(req, res, r_s) {
@@ -218,11 +233,12 @@ app.post('/api/mode3/login', async (req, res) => {
     const v = await verifyBody(req, res, BigInt(rsStr)); if (v === null) return;
     if (!v.ok) return res.json({ ok: false, reason: v.reason });
     const at = new Date().toISOString();
-    sessions.set(rsStr, { PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), at });
-    logins.push({ PPID: v.PPID.toString(), at, root: v.root.toString(), r_s: rsShort(rsStr), allowAgent: v.allowAgent.toString() });
+    const disclosure = discOf(v.disclosure);
+    sessions.set(rsStr, { PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), disclosure, at });
+    logins.push({ PPID: v.PPID.toString(), at, root: v.root.toString(), r_s: rsShort(rsStr), allowAgent: v.allowAgent.toString(), disclosure });
     // §5 로그인 로그 — 전체 r_s 와 트랜스크립트(태그 포함). 개봉 요청의 재료다. 조회 API 로는 내지 않는다.
-    fs.appendFileSync(LOGIN_LOG, JSON.stringify({ at, PPID: v.PPID.toString(), r_s: rsStr, pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), publicSignals: v.publicSignals, proof: req.body.proof }) + '\n', { mode: 0o600 });
-    res.json({ ok: true, PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), r_s: rsStr, root: v.root.toString(), allowAgent: v.allowAgent.toString() });
+    fs.appendFileSync(LOGIN_LOG, JSON.stringify({ at, PPID: v.PPID.toString(), r_s: rsStr, pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), disclosure, publicSignals: v.publicSignals, proof: req.body.proof }) + '\n', { mode: 0o600 });
+    res.json({ ok: true, PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), r_s: rsStr, root: v.root.toString(), allowAgent: v.allowAgent.toString(), disclosure });
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });
 
@@ -238,6 +254,7 @@ app.post('/api/mode3/revalidate', async (req, res) => {
     if (!v.ok) return res.json({ ok: false, reason: v.reason });
     if (v.PPID.toString() !== s.PPID || v.pk_i.toString() !== s.pk_i) return res.status(401).json({ ok: false, reason: 'session_mismatch' });
     s.root = v.root.toString();
+    s.disclosure = discOf(v.disclosure);
     res.json({ ok: true, r_s: rsStr, root: s.root });
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });
@@ -319,7 +336,7 @@ app.get('/api/mode3/open/:id', async (req, res) => {
 });
 
 app.get('/api/mode3/logins', (req, res) => res.json({ logins }));
-app.get('/api/mode3/sessions', (req, res) => res.json({ sessions: [...sessions.entries()].map(([r_s, s]) => ({ r_s: rsShort(r_s), PPID: s.PPID, pk_i: s.pk_i, max_height: s.max_height, allowAgent: s.allowAgent, root: s.root, at: s.at })) }));
+app.get('/api/mode3/sessions', (req, res) => res.json({ sessions: [...sessions.entries()].map(([r_s, s]) => ({ r_s: rsShort(r_s), PPID: s.PPID, pk_i: s.pk_i, max_height: s.max_height, allowAgent: s.allowAgent, root: s.root, disclosure: s.disclosure, at: s.at })) }));
 
 app.listen(PORT, '127.0.0.1', () => {
   console.log(`Mode 3 RP at http://127.0.0.1:${PORT} (arid=${reg.arid ?? '-'} status=${reg.status}, origin=${reg.origin}, log=${LOG_ADDRESS}, wallet=${WALLET_ORIGIN}, pk_CIA=${pkCIA.source}, chain=${chainId})`);
