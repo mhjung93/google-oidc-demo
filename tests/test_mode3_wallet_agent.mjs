@@ -181,6 +181,10 @@ try {
     const before = (await wallet.get('/wallet/status')).body.rcl.cacheFile;
     const noConfirm = await wallet.post('/wallet/rcl/reset', {});
     assert.equal(noConfirm.status, 400, j(noConfirm.body));
+    // CSRF 방어 논거 자체를 고정한다: 다른 오리진 페이지가 프리플라이트 없이 보낼 수 있는 것은 text/plain 같은 단순 요청뿐인데,
+    // express.json() 은 그걸 파싱하지 않으므로 req.body 가 비어 400 이 된다(mode3_wallet_agent.js 의 주석).
+    const plain = await wallet.raw('/wallet/rcl/reset', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ confirm: true }) });
+    assert.equal(plain.status, 400, 'text/plain 단순 요청은 파싱되지 않아 confirm 이 없다');
     assert.ok(fs.existsSync(before), 'confirm 없이는 캐시가 지워지면 안 된다');
     const r = await wallet.post('/wallet/rcl/reset', { confirm: true });
     assert.equal(r.status, 200, j(r.body));

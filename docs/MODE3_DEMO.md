@@ -270,6 +270,8 @@ MetaMask/Snap 경로(2026-09-22 metamask-snap)로 새로 생긴 지갑 라우트
 | `GET /wallet/status` (`rcl` 필드) | 지갑 | `{ leaves, lastSyncedBlock, lastMode, cacheFile }` — 폐기 트리 캐시 상태(리프 수, 마지막 동기화 블록, `restore`\|`delta`\|`bootstrap`\|`fallback`, 캐시 파일 경로). `CIA_LOG_ADDRESS` 미설정이면 `null` |
 | `POST /wallet/rcl/reset` | 지갑 | 같은 오리진만, 본문 `{confirm:true}` 필요(없으면 400) — 폐기 트리 캐시 파일을 버린다. 응답 `{ ok:true, deferred }`(진행 중인 동기화와 겹쳤으면 `deferred:true` — 그 동기화가 끝난 뒤 적용) |
 
+`deferred:true` 로 답했다면 **그 동기화가 끝날 때까지는 아무것도 지워지지 않는다** — 그동안 `GET /wallet/status` 의 `rcl` 은 옛 `leaves`·`lastSyncedBlock`·`lastMode` 를 그대로 보이고 캐시 파일도 아직 있다. 실제로 적용됐는지는 `rcl.lastMode === null && rcl.leaves === 0` 으로 확인한다.
+
 ## 하지 말 것 / 재시연
 
 - **옛 상태 파일(cia_state.json version 2 이하, mode3_wallet_state.json version 5 이하, 키 없는 mode3_rp_registration.json)을 새 서버에 물리지 않는다.** CIA 는 기동을 거부하고 지갑은 세션을 비운다. `cia_state.json` v3·v4 는 기동 시 v5 로 이행된다(v3 의 used_rs 는 버려지고 기존 서비스 등록은 승인된 것으로 남는다 — v4 의 발급 기록은 형식이 바뀌어 비워진다). `mode3_wallet_state.json` v5 이하는 등록은 유지하고 세션이 비워진다(v6 부터 `registration.userCred` — 없으면 다음 로그인이 새로 받는다). `mode3_rp_registration.json` v2 는 v3 로 이행된다(`X_svc`·`x_svc` 조각은 유지, `factoryAddress`·`verifierAddress` 는 비운다). 그 밖의 옛 형식이거나 origin 이 다른 `mode3_rp_registration.json`은 RP 가 기동 시 새로 등록한다 — 옛 서비스 조각(x_svc)도 버려지므로 이전 로그인 로그의 태그는 더 이상 열 수 없다.
@@ -283,6 +285,7 @@ MetaMask/Snap 경로(2026-09-22 metamask-snap)로 새로 생긴 지갑 라우트
   있어서 파일만 지우면 Snap 쪽에 옛 등록이 남고 다음 "등록" 이 `already_registered` 로 막힌다.
 - `mode3_wallet_rcl.json`(지갑의 폐기 트리 체크포인트, 공개 데이터)은 지워도 되고 안 지워도 된다 — 로그 주소가 바뀌면 자동으로
   무시되고, 지우면 첫 로그인이 창세기부터 재생한다. 강제로 다시 재생시키려면 `POST /wallet/rcl/reset`(본문 `{confirm:true}`).
+  경로는 `MODE3_WALLET_RCL_CACHE` 로 바꿀 수 있다(기본값은 `MODE3_WALLET_STATE_FILE` 과 같은 디렉터리의 `mode3_wallet_rcl.json`).
 - 데모 계정은 `cia.js`의 `DEMO_ACCOUNTS`(`testuser`/`password123` → uid 12345, `alice`/`alicepw` → uid 67890). 지갑 에이전트는 한 계정만 등록한다.
 - `CIA_ADMIN_SECRET` 없이 띄운 CIA 에서 사용자 페이지의 폐기를 누르지 않는다 — 자기 폐기는 시크릿 없이도 되지만 복구(`set_disabled`)와 게시는 503 이라 계정이 되돌릴 수 없게 비활성으로 남는다.
 - **한계**: 트랜잭션 해시로 개봉을 요청하는 경로는 체인을 읽을 수 있는 누구나 이 서비스의 트랜잭션에 대해 개봉을 신청할 수 있게

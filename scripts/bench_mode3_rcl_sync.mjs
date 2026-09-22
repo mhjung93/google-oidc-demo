@@ -44,6 +44,7 @@ const rows = [];
 let total = 0;
 for (const N of [0, 100, 1000]) {
   while (total < N) { const c = Math.min(50, N - total); await publish(c); total += c; }
+  const startTotal = total;                    // 라벨은 측정 **시작 시** 리프 수 — 반복마다 델타 1개가 더해진다
   const full = [], restore = [], delta1 = [], delta0 = [];
   for (let i = 0; i < REPS; i++) {
     let t = now(); await syncRevocationTree(provider, logAddress); full.push(now() - t);
@@ -58,12 +59,14 @@ for (const N of [0, 100, 1000]) {
     if (d1.mode !== 'delta') throw new Error(`델타여야 한다: ${d1.mode}`);
     t = now(); await cold.sync(); delta0.push(now() - t);
   }
-  rows.push({ N: total, full, restore, delta1, delta0 });
+  rows.push({ N: startTotal, full, restore, delta1, delta0 });
 }
 
-const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+// 로컬 날짜로 이름을 짓는다(toISOString 은 UTC 라 KST 새벽에 돌리면 전날 이름이 된다 — results/ 는 재현성 산출물이다).
+const d = new Date();
+const date = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
 let md = `## Mode 3 RCL 동기화 실측 (반복 ${REPS}, 중앙값 (최소–최대), ms)\n\n`;
-md += `hardhat 로컬 노드, 임시 RevocationLog, 리프는 50개씩 게시. N 은 측정 시점의 누적 리프 수(반복마다 델타 1개가 더해진다).\n\n`;
+md += `hardhat 로컬 노드, 임시 RevocationLog, 리프는 50개씩 게시. N 은 측정 시작 시의 리프 수 — 반복마다 델타 1개가 더해지므로 마지막 반복은 N+${REPS - 1} 리프에서 잰 값이다.\n\n`;
 md += `| 리프 N | (a) 전체 재생 syncRevocationTree | (b) 캐시 복원 첫 sync | (c) 델타 1 | (d) 델타 0 |\n|--:|--:|--:|--:|--:|\n`;
 for (const r of rows) md += `| ${r.N} | ${fmt(r.full)} | ${fmt(r.restore)} | ${fmt(r.delta1)} | ${fmt(r.delta0)} |\n`;
 md += `\n(a) 는 로그인마다 내던 비용(옛 동작), (c)/(d) 가 새 동작의 로그인당 비용, (b) 는 에이전트 재시작 1회 비용이다.\n`;

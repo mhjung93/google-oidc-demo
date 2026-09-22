@@ -86,7 +86,8 @@ run():
 
   if head > lastSyncedBlock:
       events ← log.queryFilter(Revoked, lastSyncedBlock + 1, head)
-      for e of events (블록·로그 순서대로): for l of e.args.leaves: tree.insert(BigInt(l)); appended++
+      for e of events (블록·로그 순서대로): for l of e.args.leaves: pending.push(tree.insert(BigInt(l)))   # 삽입마다 await 하지 않는다(§5)
+      appended ← (await Promise.all(pending)).filter(Boolean).length
   # head == lastSyncedBlock 이면 조회 생략(같은 블록을 두 번 훑지 않는다)
 
   if tree.getRoot() ≠ BigInt(onchainRoot):
@@ -122,6 +123,7 @@ bootstrap(mode):
 - 리프는 IMT `getLeaves()` 의 삽입 순서 그대로(anchor 제외). 전부 **공개 데이터**(체인 calldata 에 이미 있는 값) — snap 모드의 "상태 파일에 비밀 없음" 불변식과 무관하다.
 - **유효 조건**(모두 만족해야 복원): `version === 1`, `logAddress` 가 현재 값과 같음(대소문자 무시), `chainId` 가 `provider.getNetwork()` 와 같음, `leaves` 가 10진 문자열 배열, `lastSyncedBlock` 이 10진 문자열. 하나라도 틀리면 경고 후 무시 → 부트스트랩.
 - 복원 뒤 `tree.getRoot()` 가 파일의 `root` 와 다르면 파일 손상으로 보고 경고 후 부트스트랩(§3 의 델타 root 검사보다 먼저).
+- 10진 문자열이어도 IMT 가 받지 않는 리프 값이 있다(anchor `"0"`, 2^252 이상 — `lib/imt_v2.js` 의 `validateValue`). 복원 중 `insert` 가 던지면 그 예외를 잡아 경고 1줄 뒤 부트스트랩한다. 잡지 않으면 `sync()` 전체가 reject 돼 세 라우트가 영구히 503 을 내고, 실패한 sync 는 캐시를 다시 쓰지 않아 재시작해도 같다 — "캐시는 정확성에 관여하지 않는다"는 아래 성질이 가용성 쪽에서 깨진다.
 - **쓰는 시점**: 리프가 새로 붙었을 때와 bootstrap 뒤에만. 리프 변화 없는 로그인마다 쓰지 않는다. 따라서 파일의 `lastSyncedBlock` 은 메모리보다 뒤처질 수 있고, 재시작 뒤 그 블록부터 다시 훑는 구간은 리프가 없는 것이 확실하므로(있었다면 그때 썼다) 결과가 같다.
 - **원자적 쓰기**: 같은 디렉터리의 임시 파일에 쓰고 `rename`. 쓰기 실패는 경고만(다음 sync 가 다시 시도) — 캐시는 정확성에 관여하지 않는다.
 - 캐시는 언제 지워도 안전하다. 지우면 다음 `sync()` 가 부트스트랩한다. `reset()` 이 같은 일을 한다.
@@ -144,6 +146,8 @@ bootstrap(mode):
 
 이 두 줄이 없으면 캐시를 공유하는 순간 동시 로그인·재검증에서 간헐적 증명 실패가 생긴다. 지금 코드는 호출마다 새 트리를 만들어 이 경합이 없었을 뿐이다.
 
+**델타는 한 틱에 적용한다**(2026-09-23 최종 리뷰 I2 로 추가). 위 두 줄은 "증인과 공개 입력이 어긋나는" 경우만 다뤘고, **증인은 자기 일관성이 있는데 그 root 가 체인에 게시된 적이 없는** 경우를 빼놓았다. `insert()` 본문에 `await` 가 없어도 `for … await tree.insert(…)` 는 삽입마다 마이크로태스크 경계를 만들고, 그 사이에 다른 요청의 `getNonMembershipWitness` 가 끼면 리프가 절반만 들어간 **중간 root** 로 증명이 만들어진다(한 `publishRoot` 에 리프 여러 개가 실릴 때). 그런 root 는 게시된 적이 없어 서비스는 `stale_root`(`lib/mode3_rp.js`), 온체인은 `StaleRevocationRoot` 로 거절한다 — fail-closed 이지만 원인이 로그에 남지 않는 간헐 실패다. 그래서 델타 적용은 `insert` 를 전부 먼저 호출해 한 틱에 넣고 결과만 `Promise.all` 로 모은다(§3 의사코드). 같은 이유로 캐시 복원 루프도 같은 모양이다. 그러면 끼어든 증인이 보는 root 는 "델타 이전" 아니면 "델타 이후" 둘 중 하나이고, 둘 다 게시된 root 다.
+
 ---
 
 ## 6. 테스트 (`tests/test_mode3_rcl_sync.mjs`, chain 그룹)
@@ -154,11 +158,15 @@ hardhat(:8545)에 `RevocationLog` 를 새로 배포하고, 테스트가 CIA 키�
 2. **조회 범위**: provider 를 감싸 `eth_getLogs` 의 `fromBlock` 을 기록. 두 번째 `sync()` 가 `lastSyncedBlock+1` 부터만 부른다. 같은 head 에서 세 번째 `sync()` 는 `eth_getLogs` 를 부르지 않는다.
 3. **하트비트**: `publishRoot(같은 root, epoch+1, [])` → `sync()` 가 리프 0·`epoch` 갱신·캐시 파일 미변경(mtime).
 4. **복원**: 새 `createRevocationSync`(같은 캐시 파일) → 첫 `sync()` 가 `mode === 'restore'`, root 일치, `eth_getLogs` 는 캐시의 `lastSyncedBlock+1` 부터.
-5. **캐시 무효**: (a) `logAddress` 다른 파일 (b) JSON 손상 (c) `version: 0` → 각각 `mode === 'bootstrap'`, 경고 1회.
+5. **캐시 무효**: (a) `logAddress` 다른 파일 (b) JSON 손상 (c) `version: 0` (d) `chainId` 불일치 (e) 10진 검사는 통과하지만 IMT 가 거부하는 리프(`"0"` = anchor) → 각각 `mode === 'bootstrap'`, 경고 1회. (e) 가 없으면 복원 루프의 예외가 `sync()` 밖으로 나가 라우트가 영구히 503 을 낸다.
 6. **델타 불일치 → fallback**: 캐시 파일의 리프 하나를 바꿔 둔 뒤 새 인스턴스로 `sync()` → 복원 root ≠ 파일 root 로 잡히면 §4 규칙이 먼저 걸리므로, 이 케이스는 **파일 root 도 함께 위조**해 복원은 통과시키고 델타 후 컨트랙트 root 와 어긋나게 만든다 → `mode === 'fallback'`, 결과 root 는 컨트랙트와 일치, 경고 1회, 캐시 파일이 올바른 리프로 다시 써짐.
 7. **fail-closed**: 컨트랙트 `root()` 를 가로채 다른 값을 돌려주는 provider 스텁 → `sync()` 가 throw(메시지에 "root"), 캐시 파일 미변경.
 8. **동시성**: `Promise.all([sync(), sync(), sync()])` 의 세 결과가 같은 `tree` 객체·같은 `head`, `eth_getLogs` 호출 1회.
-9. **체인 리셋**: 캐시의 `lastSyncedBlock` 을 head 보다 크게 써 둠 → `mode === 'bootstrap'`, 경고.
+9. **델타 원자성**: 한 번의 `publishRoot` 에 리프 4개를 실어 게시한 뒤, `eth_getLogs` 응답이 도착한 마이크로태스크 드레인 안에서 `tree.getRoot()` 를 반복 관측 → 관측된 root 가 전부 "델타 이전 root" 또는 "델타 이후 root" 여야 한다(게시된 적 없는 중간 root 0개). 삽입마다 `await` 하면 3개가 관측된다.
+10. **체인 리셋(복원 전)**: 캐시의 `lastSyncedBlock` 을 head 보다 크게 써 둠 → `mode === 'bootstrap'`, 경고.
+11. **체인 리셋(메모리 트리 있음)**: `eth_blockNumber` 를 가로채 head 를 뒤로 돌려 `head < lastSyncedBlock` 을 만든다 → `mode === 'bootstrap'`, 경고.
+12. **되감김을 지나가는 조합의 최종 안전망**: `lastSyncedBlock < head` 라 되감김 검사에 걸리지 않지만 컨트랙트 root 가 다른 경우(같은 주소 재배포 + 앞질러 채굴) → fallback 을 거쳐 끝내 throw.
+13. **`reset()` 계약**: 진행 중인 `sync()` 와 겹치면 `{deferred:true}`, 없으면 `{deferred:false}`, 겹친 `sync()` 는 깨지지 않고 끝난 뒤에 지워진다.
 
 기존: `syncRevocationTree` 를 쓰는 7개 테스트는 변경 없음. 데모 스택·e2e 는 에이전트 경로가 캐시를 지나므로 그대로 통과해야 하고, `test_mode3_wallet_agent.mjs` 에 "재시작 뒤 캐시 복원으로 로그인·재검증 성공(상태 `rcl.lastMode === 'restore'`)" 한 케이스를 더한다.
 
@@ -168,7 +176,7 @@ hardhat(:8545)에 `RevocationLog` 를 새로 배포하고, 테스트가 CIA 키�
 
 `scripts/bench_mode3_rcl_sync.mjs`: 리프 N ∈ {0, 100, 1000} 를 게시한 뒤 (a) 전체 재생 `syncRevocationTree` (b) 캐시 복원 첫 `sync()` (c) 델타 `sync()`(리프 1개 추가 후) (d) 델타 0 `sync()` 의 벽시계 시간을 각 5회 중앙값으로. 결과는 `results/mode3_rcl_sync_<YYYYMMDD>.md` 에 새 파일로(기존 결과 덮어쓰지 않음). 기존 벤치(`scripts/bench_mode3_onchain.mjs`)의 표 형식을 따른다.
 
-**실측(2026-09-23)**: `results/mode3_rcl_sync_20260923.md`(반복 5). N=1005 에서 (a) 전체 재생 141ms(139–141) vs (c) 델타 1 40ms(40–41)·(d) 델타 0 23ms(23–25) — 리프 1천 개에서 전체 재생이 로그인당 비용을 약 3.5~6배 줄인다. (b) 캐시 복원 139ms(138–142)는 (a)와 비슷하다(둘 다 O(N) Poseidon, `getLogs` 구간만 짧다) — §7 서술과 일치.
+**실측(2026-09-23)**: `results/mode3_rcl_sync_20260923.md`(반복 5). N=1000 에서 (a) 전체 재생 141ms(139–141) vs (c) 델타 1 40ms(40–41)·(d) 델타 0 23ms(23–25) — 리프 1천 개에서 델타가 로그인당 비용을 전체 재생의 약 1/3.5~1/6 로 줄인다. (b) 캐시 복원 139ms(138–142)는 (a)와 비슷하다(둘 다 O(N) Poseidon, `getLogs` 구간만 짧다).
 
 ---
 
@@ -177,13 +185,15 @@ hardhat(:8545)에 `RevocationLog` 를 새로 배포하고, 테스트가 CIA 키�
 | 상황 | 동작 | 사용자에게 |
 |---|---|---|
 | 캐시 파일 없음(첫 기동) | 경고 없음, 부트스트랩 | 첫 로그인이 느릴 뿐 |
-| 캐시 파일 손상·다른 컨트랙트(logAddress·chainId 불일치)·version 불일치 | 경고 1줄, 부트스트랩 | 첫 로그인이 느릴 뿐 |
+| 캐시 파일 손상(JSON·형식·리프 값이 IMT 가 거부하는 값)·다른 컨트랙트(logAddress·chainId 불일치)·version 불일치 | 경고 1줄, 부트스트랩 | 첫 로그인이 느릴 뿐 |
 | 델타 root 불일치 | 경고 1줄, 전체 재생 1회 | 그 로그인이 느릴 뿐 |
 | 전체 재생도 불일치 | throw(기존 메시지) → 라우트가 지금처럼 `sync_failed` 계열 오류 | 기존과 같음 |
 | 캐시 쓰기 실패(권한·디스크) | 경고, 계속 진행 | 없음 |
 | 체인 리셋(head < lastSyncedBlock) | 경고 1줄, 부트스트랩 | 없음 |
 
 운영 메모(`docs/MODE3_DEMO.md`): `RevocationLog` 를 재배포하면 캐시는 `logAddress` 불일치로 자동 무시된다 — 지울 필요 없음. hardhat 을 재기동해 블록이 되감기면 체인 리셋으로 잡힌다. 강제로 처음부터 재생하려면 `mode3_wallet_rcl.json` 을 지우거나 `POST /wallet/rcl/reset`(같은 오리진, 본문 `{confirm:true}` 필요, 데모용)을 부른다.
+
+`reset()` 이 `{deferred:true}` 를 돌려줬다면 진행 중인 동기화가 끝난 뒤에야 실제로 지워진다. 그동안 `GET /wallet/status` 의 `rcl` 은 옛 `leaves`·`lastSyncedBlock`·`lastMode` 를 그대로 보이고 캐시 파일도 남아 있다 — 적용 여부는 `lastMode === null && leaves === 0` 으로 본다.
 
 ---
 

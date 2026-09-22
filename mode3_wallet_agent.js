@@ -437,12 +437,20 @@ async function proveSession(rsKey, synced, timings, disclosure = null, src) {
     if (s.credential.Cf_u !== uc?.Cf_u) throw Object.assign(new Error('revoked'), { reason: 'revoked' });
     if (synced.tree.has(BigInt(uc.leaf))) throw Object.assign(new Error('revoked'), { reason: 'revoked' });
     const t = Date.now();
-    cached = await buildCredentialProof({
-      uid: BigInt(reg.uid), arid: BigInt(s.arid), s_u: BigInt(reg.s_u), blind_u: BigInt(uc.blind_u), blind_s: BigInt(s.blind_s), pk_i: BigInt(s.pk_i),
-      attrs: (reg.attrs ?? []).map(BigInt),
-      credential: s.credential, pk_CIA: { x: BigInt(s.credential.pk_CIA.x), y: BigInt(s.credential.pk_CIA.y) },
-      pk_trace: { x: BigInt(s.pk_trace.x), y: BigInt(s.pk_trace.y) }, tree: synced.tree, disclosure,
-    });
+    try {
+      cached = await buildCredentialProof({
+        uid: BigInt(reg.uid), arid: BigInt(s.arid), s_u: BigInt(reg.s_u), blind_u: BigInt(uc.blind_u), blind_s: BigInt(s.blind_s), pk_i: BigInt(s.pk_i),
+        attrs: (reg.attrs ?? []).map(BigInt),
+        credential: s.credential, pk_CIA: { x: BigInt(s.credential.pk_CIA.x), y: BigInt(s.credential.pk_CIA.y) },
+        pk_trace: { x: BigInt(s.pk_trace.x), y: BigInt(s.pk_trace.y) }, tree: synced.tree, disclosure,
+      });
+    } catch (e) {
+      // 위 has() 사전 검사와 증인 생성 사이에 다른 요청의 sync() 가 내 리프를 붙이면 getNonMembershipWitness 가
+      // "… is a member of the revocation set" 로 던진다(lib/imt_v2.js). 그건 폐기됐다는 뜻이므로 사전 검사와 같게
+      // revoked 로 올린다 — 그래야 라우트가 500 이 아니라 403 으로 세션까지 정리한다.
+      if (/is a member of the revocation set/.test(e.message ?? '')) throw Object.assign(new Error('revoked'), { reason: 'revoked' });
+      throw e;
+    }
     timings.proveMs = Date.now() - t;
     // 증명은 증인이 계산된 root(cached.revRoot)에 대한 것이다. 동기화와 증인 생성 사이에 다른 요청이 리프를 붙였다면
     // synced.root 보다 새 root 이고, 그 root 로 캐시해야 다음 재검증이 맞는 π 를 찾는다(스펙 §5).
@@ -625,7 +633,7 @@ app.post('/wallet/tx', async (req, res) => {
     if (SECRETS === 'snap') return res.status(409).json({ reason: 'use_tx_prepare' });
     const b = await buildExecute(req);
     if (b.error) return res.status(b.error.status).json(b.error.body);
-    const { s, walletAddr, deployNeeded, nonce, args, timings, disclosure, proved, synced } = b;
+    const { s, walletAddr, deployNeeded, nonce, args, timings, disclosure, proved } = b;
     const relayer = await provider.getSigner(RELAYER_INDEX);
     let deployed = false;
     if (deployNeeded) { await (await factoryAt(s.factoryAddress, relayer).deploy(BigInt(s.PPID))).wait(); deployed = true; }
@@ -653,7 +661,7 @@ app.post('/wallet/tx/prepare', async (req, res) => {
   try {
     const b = await buildExecute(req);
     if (b.error) return res.status(b.error.status).json(b.error.body);
-    const { s, walletAddr, deployNeeded, nonce, args, timings, disclosure, proved, synced } = b;
+    const { s, walletAddr, deployNeeded, nonce, args, timings, disclosure, proved } = b;
     res.json({
       walletAddr, factoryAddress: s.factoryAddress, deployNeeded,
       deployCalldata: deployNeeded ? factoryInterface.encodeFunctionData('deploy', [BigInt(s.PPID)]) : null,
