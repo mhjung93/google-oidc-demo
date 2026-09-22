@@ -252,7 +252,7 @@ await t('한 번에 게시된 리프 4개를 델타로 적용하는 동안 게�
   p.destroy();
   assert.equal(b.mode, 'delta');
   assert.equal(b.root, (await syncRevocationTree(provider, logAddress)).root);
-  assert.ok(observed.length > 0, '관측 체인이 델타 구간에서 실제로 돌았어야 한다');
+  assert.ok(observed.includes(a.root) && observed.includes(b.root), '관측 창이 델타 전후 root 를 모두 봤어야 한다(삽입 구간을 덮었다는 증거)');
   const published = new Set([a.root, b.root]);        // 게시된 적 있는 root 는 이 둘뿐이다
   const mid = [...new Set(observed)].filter((r) => !published.has(r));
   assert.deepEqual(mid.map(String), [], `게시된 적 없는 중간 root 가 관측됐다(${mid.length}개)`);

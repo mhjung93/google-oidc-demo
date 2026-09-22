@@ -59,13 +59,16 @@ Mode 2 데모(:3000/:4000/:5001)와 **공존**한다. 포트·상태 파일이 �
 6. RP 는 승인 뒤 팩토리를 배포해 `mode3_rp_registration.json` 에 `factoryAddress` 를 둔다. 재배포하려면 그 필드를 지우거나
    `MODE3_RP_FACTORY_ADDRESS` 로 덮어쓴다. **주의**: 회로를 다시 빌드한 뒤라면 `verifierAddress` 도 함께 지워야 한다 — 그 필드가 남아 있으면
    새 팩토리가 옛 검증기를 그대로 가리킨다(위 0 의 (4)).
-   **경고**: 팩토리를 다시 배포하거나 `MODE3_MAX_ROOT_AGE` 를 바꾸면 모든 PPID 계정 주소가 바뀐다 — 옛 계정의 잔액은 옛
-   팩토리 주소로만 접근할 수 있으니, 잔액이 있는 데모를 진행 중이면 먼저 빼낸다.
+   **경고**: 팩토리를 다시 배포하거나 팩토리 생성자 인자 중 하나라도(`MODE3_MAX_ROOT_AGE`, `MODE3_MAX_LIFETIME_BLOCKS`, 검증기
+   주소, 로그 주소, CIA 키, 서비스 조합 키) 바꾸면 모든 PPID 계정 주소가 바뀐다 — 옛 계정의 잔액은 옛 팩토리 주소로만
+   접근할 수 있으니, 잔액이 있는 데모를 진행 중이면 먼저 빼낸다. 팩토리가 이미 있으면 RP 는 env 대신 **팩토리의 값**을
+   쓰고 경고한다(2026-09-23) — env 를 바꿨는데 안 먹는다면 그 경고를 보라.
 
 선택 env: 지갑의 `MODE3_TTL_BLOCKS`(credential 만료, 기본 300)·`MODE3_HEIGHT_GRID`(max_height 양자화 그리드, 기본 100 — 만료는 지갑이 정하고 CIA 는 그대로 서명), 서비스·컨트랙트의 `MODE3_MAX_LIFETIME_BLOCKS`(지갑이 정한 만료의 상한 L, 기본 400; TTL+GRID 이상이어야 로그인이 된다)·
 `CIA_HEARTBEAT_BLOCKS`(하트비트 재게시 주기, 기본 50, 0=끔)·`CIA_HEARTBEAT_POLL_MS`(기본 5000)·
 `CIA_CHAIN_RPCS`(발급을 허용할 체인의 RPC 맵, 기본 `"31337=http://127.0.0.1:8545"`, 비면 자기 RPC 하나)·
-`MODE3_MAX_ROOT_AGE`(지갑이 받아들이는 게시 root 의 최대 나이, 블록, 기본 100 — 하트비트 주기보다 커야 한다)·
+`MODE3_MAX_ROOT_AGE`(지갑과 **RP 오프체인 로그인·재검증·세션 요청도 같은 상한**으로 받아들이는 게시 root 의 최대 나이,
+블록, 기본 100 — 온체인 `RootTooOld` 와 같은 값, 하트비트 주기보다 커야 한다)·
 `MODE3_RELAYER_INDEX`(트랜잭션 릴레이어로 쓸 hardhat 계정 인덱스, 기본 0)·`MODE3_RP_FACTORY_ADDRESS`·`MODE3_VERIFIER_ADDRESS`,
 `MODE3_VKEY_PATH`(CIA 의 개봉 검증용 vkey, 기본 `build/mode3/pi_cred_vkey.json`), `MODE3_RP_LOGIN_LOG`(RP 로그인 로그, 기본
 `mode3_rp_logins.jsonl`, 0600 — 개봉 요청의 재료라 비밀로 둔다). 옛 `CIA_TTL_SECONDS`·`CIA_REVOKE_SKEW_SECONDS`·`CIA_CHAIN_IDS`·`CIA_REVOKE_SKEW_BLOCKS` 는
@@ -223,7 +226,7 @@ AA 의 현재 값을 받아 두고(바뀌었으면 지갑이 옛 C_u·세션을 
 | S6 | 지갑 | 세션 선택 → 슬롯 0 `[0, 2007]`·슬롯 1 `[410, 410]` 공개 → `to`=AttrGate, `data`=`0x4e71d92d` → "트랜잭션 보내기" | **Snap 속성 공개 동의 창**(슬롯별 범위·대상 주소) → **MetaMask 트랜잭션 확인 창**(첫 번째는 계정 배포, 두 번째가 `claim()`) → 영수증에 `ok=true`, `Claimed` |
 | S7 | 지갑 | MetaMask 확인 창에서 **거절** | 페이지에 `user_rejected`. 에이전트 상태는 그대로(nonce 는 컨트랙트가 관리한다) |
 | S8 | 터미널 → RP | 지갑 에이전트를 재시작 → RP 에서 "세션 재검증" | 에이전트가 `409 needs_consent` → RP 가 **재승인 팝업**을 연다 → Snap 동의 창(이 세션의 AI agent 허용 값이 그대로 보여야 한다) → 승인하면 재검증이 이어져 성공 |
-| S8′ | 관리자 → RP → 지갑 | CIA 관리자 페이지에서 testuser 의 a₂ 를 3 으로 변경 → `/cia/publish` → RP 에서 "Mode 3 로그인" | 로그인 동의 창 한 번으로 성공한다(지갑이 옛 C_u 폐기를 알아채 속성을 다시 받고 새 C_u 를 받는다, PPID 동일). 끝난 뒤 "Snap 상태 보기" 로 **속성이 `[1990, 410, 3, 0]` 으로 바뀌었고 `사용자 자격증명 보관: true`** 인지 본다 — 페이지가 `syncAttrs` 뒤에 `updateUserCred` 를 하므로 새 C_u 가 남아 있어야 한다(순서가 뒤집히면 여기서 `false` 가 되고 다음 재검증이 막힌다). 지갑 페이지의 "AA 에서 속성 다시 받기" 로도 같은 값을 확인할 수 있다(이쪽은 동의 창이 한 번 더 뜬다) |
+| S8′ | 관리자 → RP → 지갑 | CIA 관리자 페이지에서 testuser 의 a₂ 를 3 으로 변경 → `/cia/publish`(시연 편의로 즉시 게시 — 운영에선 위 "관리자 속성 변경" 의 이유로 하트비트에 묶는다) → RP 에서 "Mode 3 로그인" | 로그인 동의 창 한 번으로 성공한다(지갑이 옛 C_u 폐기를 알아채 속성을 다시 받고 새 C_u 를 받는다, PPID 동일). 끝난 뒤 "Snap 상태 보기" 로 **속성이 `[1990, 410, 3, 0]` 으로 바뀌었고 `사용자 자격증명 보관: true`** 인지 본다 — 페이지가 `syncAttrs` 뒤에 `updateUserCred` 를 하므로 새 C_u 가 남아 있어야 한다(순서가 뒤집히면 여기서 `false` 가 되고 다음 재검증이 막힌다). 지갑 페이지의 "AA 에서 속성 다시 받기" 로도 같은 값을 확인할 수 있다(이쪽은 동의 창이 한 번 더 뜬다) |
 | S9 | 지갑 | "자기 폐기" | **Snap 비밀번호 대화상자** → 에이전트 `POST /wallet/self_revoke` 가 CIA 로 중계 → `자기 폐기 완료`. 관리자 페이지에서 `/cia/publish` 뒤 재검증이 `revoked` 가 되는지 본다 |
 | S10 | 지갑 | "Snap 초기화" | Snap 의 등록이 지워진다. 에이전트 파일의 **공개** 등록은 그대로다(재시연은 재시연 세트로) |
 
@@ -257,8 +260,8 @@ MetaMask/Snap 경로(2026-09-22 metamask-snap)로 새로 생긴 지갑 라우트
 | 메서드/경로 | 프로세스 | 설명 |
 |---|---|---|
 | `GET /wallet/config` | 지갑 | `{ secrets, snapId, walletOrigin, rpcUrl, chainId }` — RP 페이지가 로그인 경로(직접 호출/팝업)를 고르려고 CORS 로 읽는다. 비밀 없음 |
-| `POST /wallet/authorize/precheck` | 지갑 | 승인 팝업이 Snap 동의 창 전에 부르는 인증서·팩토리 검증(`{ arid, origin, cert_s, pk_trace, factoryAddress }`). 로그인·재승인이 함께 쓴다 |
-| `POST /wallet/session/witness` | 지갑 | 재승인(§4.3) — 재시작으로 사라진 세션 메모리 증인을 `{ r_s, witness }` 로 다시 채운다 |
+| `POST /wallet/authorize/precheck` | 지갑 | 승인 팝업이 Snap 동의 창 전에 부르는 인증서·팩토리 검증(`{ arid, origin, cert_s, pk_trace, factoryAddress }`). 로그인·재승인이 함께 쓴다. 선택 `r_s` 를 실으면 응답에 `sessionAllowAgent`('0'\|'1')를 얹는다 — 세션이 없거나 `arid` 가 다르면 404 `no_session`(2026-09-23 점검 B-I1) |
+| `POST /wallet/session/witness` | 지갑 | 재승인(§4.3) — 재시작으로 사라진 세션 메모리 증인을 `{ r_s, witness, allowAgent }` 로 다시 채운다. `allowAgent`('0'\|'1')는 **필수**이고 팝업이 동의 창에 실제로 쓴 값이다 — 세션의 실제 값과 다르면 409 `allow_agent_mismatch`(2026-09-23 점검 B-I1) |
 | `POST /wallet/tx/prepare` | 지갑 | snap 모드의 트랜잭션 1단계 — 증명·서명·`calldata`(필요하면 `deployCalldata`)까지만 만든다 |
 | `POST /wallet/tx/record` | 지갑 | 2단계 — MetaMask 가 보낸 `txHash` 의 영수증을 파싱해 `/wallet/tx` 와 같은 형식으로 돌려준다(영수증 전이면 202) |
 | `POST /wallet/self_revoke` | 지갑 | 자기 폐기 프록시 — `{ uid, pwd }` 를 CIA `/cia/account/self_revoke` 로 중계한다(`cia.js` 에 CORS 가 없어서). 등록 uid 가 아니면 403 `uid_mismatch` |
@@ -272,6 +275,20 @@ MetaMask/Snap 경로(2026-09-22 metamask-snap)로 새로 생긴 지갑 라우트
 
 `deferred:true` 로 답했다면 **그 동기화가 끝날 때까지는 아무것도 지워지지 않는다** — 그동안 `GET /wallet/status` 의 `rcl` 은 옛 `leaves`·`lastSyncedBlock`·`lastMode` 를 그대로 보이고 캐시 파일도 아직 있다. 실제로 적용됐는지는 `rcl.lastMode === null && rcl.leaves === 0` 으로 확인한다.
 
+## RP 거절 사유 (2026-09-23 점검 C-1)
+
+| `reason` | 어디서 | 상태 코드 | 뜻 |
+|---|---|---|---|
+| `root_too_old` | `POST /api/mode3/login`, `POST /api/mode3/revalidate` | 200 `{ok:false, reason}` | 게시된 root 가 `MODE3_MAX_ROOT_AGE` 보다 오래됐다 — CIA 가 하트비트(또는 `/cia/publish`)를 멈추면 온체인 `RootTooOld` 와 함께 오프체인 로그인·재검증도 막힌다. CIA 를 살리고 게시를 기다린다 |
+| `root_too_old` | `POST /api/mode3/request` | 503 | 세션 요청도 같은 상한 — 다만 세션이 이미 있는데 체인 쪽 문제라 5xx 로 구분한다 |
+| `factory_constants_unavailable` | 위 세 엔드포인트 공통(`inactiveReason`) | 503 | 팩토리 `maxRootAge`·`maxLifetime` 조회 실패 — 등록 대기(`registration_pending`)와 구분한다. 아래 "하지 말 것" 의 함정 참고 |
+
+RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는데(`headMaxAgeMs`), 그 창 동안은 root 나이(b′) 판정도 **캐시 시점 값에 얼어붙는다** — 실시간 게시 지연을 그동안은 못 본다.
+
+`rp.html` 페이지는 응답 본문의 `{ ok, reason }` 만 읽고 상태 코드는 구분하지 않는다.
+
+**함정(fail-closed)**: 체인을 새로 띄운(hardhat 재기동) 뒤 **옛 `mode3_rp_registration.json`**(예전 체인의 `factoryAddress`)으로 RP 를 올리면 팩토리 `maxRootAge()` 조회가 그 주소에 컨트랙트가 없어 실패하고, 위 표대로 모든 로그인·재검증·세션 요청이 `503 factory_constants_unavailable` 로 막힌다(5초마다 재시도, 새 체인에 맞는 팩토리가 없는 한 무기한). 증상은 RP 로그의 "팩토리 상수 조회 실패"(fail-closed) 줄로 보인다. 복구는 등록 파일의 `factoryAddress`·`verifierAddress` 를 지우고 재시작하거나(RP 가 새로 배포한다), 아래 재시연 세트를 탄다.
+
 ## 하지 말 것 / 재시연
 
 - **옛 상태 파일(cia_state.json version 2 이하, mode3_wallet_state.json version 5 이하, 키 없는 mode3_rp_registration.json)을 새 서버에 물리지 않는다.** CIA 는 기동을 거부하고 지갑은 세션을 비운다. `cia_state.json` v3·v4 는 기동 시 v5 로 이행된다(v3 의 used_rs 는 버려지고 기존 서비스 등록은 승인된 것으로 남는다 — v4 의 발급 기록은 형식이 바뀌어 비워진다). `mode3_wallet_state.json` v5 이하는 등록은 유지하고 세션이 비워진다(v6 부터 `registration.userCred` — 없으면 다음 로그인이 새로 받는다). `mode3_rp_registration.json` v2 는 v3 로 이행된다(`X_svc`·`x_svc` 조각은 유지, `factoryAddress`·`verifierAddress` 는 비운다). 그 밖의 옛 형식이거나 origin 이 다른 `mode3_rp_registration.json`은 RP 가 기동 시 새로 등록한다 — 옛 서비스 조각(x_svc)도 버려지므로 이전 로그인 로그의 태그는 더 이상 열 수 없다.
@@ -283,6 +300,11 @@ MetaMask/Snap 경로(2026-09-22 metamask-snap)로 새로 생긴 지갑 라우트
   `cia_keys.json`은 그대로 둬도 된다 — 게시 서명이 로그 주소를 덮으므로 같은 키로 재배포해도 옛 로그의 게시를 새 로그에 재생할 수 없다.
   **`snap` 모드로 시연 중이었다면 지갑 페이지의 "Snap 초기화"(`reset`)도 함께 누른다** — 등록 비밀은 상태 파일이 아니라 MetaMask 안에
   있어서 파일만 지우면 Snap 쪽에 옛 등록이 남고 다음 "등록" 이 `already_registered` 로 막힌다.
+- **등록 직후 Snap 저장 실패 복구 절차(2026-09-23 점검 주목 Minor)**: `snap` 모드에서 `POST /wallet/register` 가 201 로 이미
+  끝난 뒤(에이전트 상태 파일에는 등록이 남았다) 탭이 닫히거나 MetaMask 를 거절해 Snap 쪽 `storeRegistration` 이 실패하면
+  Snap 은 `sk_u`·`attrs` 가 빈 `registration_incomplete` 로 굳는다. **부분 복구는 안 된다** — "Snap 초기화" 만 하거나 상태
+  파일만 지워도 다시 등록하면 CIA 쪽 uid 가 이미 있어 `cm_u` 가 달라진 만큼 `/cia/register` 가 409 를 내고 같은 골목으로
+  돌아온다. 유일한 출구는 **CIA·에이전트·Snap 세 보관소를 한꺼번에 비우는 재시연 세트**(위 문단)뿐이다.
 - `mode3_wallet_rcl.json`(지갑의 폐기 트리 체크포인트, 공개 데이터)은 지워도 되고 안 지워도 된다 — 로그 주소가 바뀌면 자동으로
   무시되고, 지우면 첫 로그인이 창세기부터 재생한다. 강제로 다시 재생시키려면 `POST /wallet/rcl/reset`(본문 `{confirm:true}`).
   경로는 `MODE3_WALLET_RCL_CACHE` 로 바꿀 수 있다(기본값은 `MODE3_WALLET_STATE_FILE` 과 같은 디렉터리의 `mode3_wallet_rcl.json`).
@@ -296,6 +318,9 @@ MetaMask/Snap 경로(2026-09-22 metamask-snap)로 새로 생긴 지갑 라우트
 
 - `bash scripts/run_tests.sh chain` — 격리 스택(임시 포트)으로 전 구간. :8545 와 `build/mode3/`의 `pi_cred` zkey·vkey 만 있으면 된다.
   `tests/test_mode3_rcl_sync.mjs` — 증분 동기화(복원·델타·불일치 fallback·fail-closed·동시성). `node scripts/bench_mode3_rcl_sync.mjs` 가 실측을 낸다(`results/mode3_rcl_sync_*.md`).
+  격리 CIA(`tests/helpers/isolated_cia.mjs`)는 하트비트를 끄고 뜬다(`CIA_HEARTBEAT_BLOCKS: '0'`) — 게시 없이 `MODE3_MAX_ROOT_AGE`
+  (기본 100) 블록을 넘기는 시나리오는 오프체인 로그인·재검증·세션 요청도 `root_too_old` 로 막힌다(정상 fail-closed, 2026-09-23
+  점검 C-1). 그런 블록 수를 진행시키는 테스트를 새로 짜면 `publish([])` 로 하트비트를 대신 넣는다.
 - `bash scripts/run_tests.sh browser` — 팝업 로그인·`needs_consent` 재승인·MetaMask 트랜잭션을 실제 페이지로 돌린다
   (`tests/test_mode3_browser.mjs`). `chain` 과 같은 조건에 더해 **설치된 Google Chrome(또는 Chromium)** 이 필요하다 —
   Playwright 가 `channel: 'chrome'` 으로 띄우고, `window.ethereum` 을 스텁해 진짜 `snap-mode3/src/index.js` 의 `onRpcRequest` 를
@@ -305,5 +330,7 @@ MetaMask/Snap 경로(2026-09-22 metamask-snap)로 새로 생긴 지갑 라우트
   체인도 브라우저도 필요 없지만 `snap-mode3/node_modules` 를 전제하므로(`cd snap-mode3 && npm install`) `unit` 이 아니라
   별도 그룹이다. `node snap-mode3/test/rpc.test.mjs` 로 직접 돌려도 같다.
 - `bash scripts/run_tests.sh contract` — `test/Mode3Wallet.test.mjs`(`execute()` 검사 순서·가스). hardhat 인프로세스 체인이라 :8545 가 필요 없다.
+  단 `build/mode3/` 의 `pi_cred` zkey·wasm 은 필요하다(`test/Mode3Wallet.test.mjs` 가 실제 π 를 만든다) — 깨끗한 체크아웃에서
+  그룹 전체가 실패하면 그 이유다.
 - `bash scripts/run_tests.sh unit` 의 `tests/test_mode3_cia_state.js` — 상태 v5 이행을 커버한다.
 - 개봉은 `tests/test_cia_opening.mjs`(CIA 단독)와 `test_mode3_demo_stack.mjs` 시나리오 9(전 구간)로 고정돼 있다.

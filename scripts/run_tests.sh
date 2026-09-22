@@ -11,6 +11,7 @@
 #   bash scripts/run_tests.sh chain      # hardhat 노드(:8545) 필요. IdP/CIA는 스스로 격리 기동.
 #                                        # Mode 3 테스트는 build/mode3/pi_cred_*.zkey·vkey 도 필요
 #   bash scripts/run_tests.sh contract   # 컨트랙트(test/*.test.mjs). hardhat 인프로세스 체인
+#                                        # build/mode3 zkey·wasm 필요(Mode3Wallet.test.mjs 가 실제 π 를 만든다)
 #   bash scripts/run_tests.sh browser    # chain 의 조건 + Chrome(또는 Chromium) 필요. Playwright 로 페이지를 띄운다
 #   bash scripts/run_tests.sh snap       # snap-mode3/node_modules 필요(cd snap-mode3 && npm install)
 #   bash scripts/run_tests.sh live       # 데모 스택(:3000/:4000/:5001) + 관리자 시크릿 필요

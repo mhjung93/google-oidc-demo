@@ -37,3 +37,28 @@
 - **C-1 정책**: RP 오프체인 로그인도 컨트랙트와 같은 상한(`MODE3_MAX_ROOT_AGE`, 기본 100블록)으로 root 나이를 검사해 fail-closed 로 간다. 온체인과 오프체인의 폐기 보장을 같게 맞추고, 하트비트가 있어 정상 운영에선 영향이 없다.
 - **수정 범위**: Important 8 + 주목 Minor(pruneSessions/ProofCache, 등록 직후 Snap 저장 실패 복구 창 문서화, 문서 내 publish 지침 모순) + RCL 증분 동기화 최종 리뷰 잔여 N1·N2·N4 를 한 묶음으로 계획 → SDD. 나머지 Minor 는 이 문서에 기록으로 남긴다.
 - 이 점검은 HEAD `725f010` 기준이며, 이후 RCL 증분 동기화 커밋(`76bae84..cf3ff0c`)은 별도 최종 리뷰를 거쳤다(`lib/mode3_rcl_sync.js` 는 점검 제외 대상이었음).
+
+## 처리 결과 (2026-09-23)
+
+4개 태스크(SDD)로 나눠 처리했다: T1(CIA) → T2(RP) → T3(지갑) → T4(문서·테스트, 본 커밋).
+
+**Important 8건**
+- A-I1(개봉 dup 키에 c2·PPID 없음) — T1 `c4e798d`.
+- A-I2(관리자 속성 변경 0 패딩) — T1 `c4e798d`.
+- B-I1(재승인 동의 창 allowAgent 스푸핑) — T3 `31401b3`+`53049b0`.
+- C-1(RP 오프체인 root 나이 미검사, 정책 결정: fail-closed) — T2 `bb27145`+`8a21a8b`.
+- C-2(mask 필터 없이 공개값 노출) — T2 `bb27145`+`8a21a8b`.
+- D-I1(주소 변경 경고가 MODE3_MAX_ROOT_AGE 만 언급) — T4(본 커밋, `docs/MODE3_DEMO.md`).
+- D-I2(팩토리 재배포 시 maxLifetime·maxRootAge 대조 없음) — T2 `bb27145`+`8a21a8b`.
+- D-I3(contract 그룹의 build/mode3 전제가 문서에 없음) — T4(본 커밋, `docs/MODE3_DEMO.md`·`scripts/run_tests.sh`).
+
+**주목한 Minor 3건**
+- B M-1(pruneSessions 가 ProofCache 를 안 비움) — T3 `31401b3`.
+- 등록 직후 Snap 저장 실패 복구 창 미문서화 — T3 `53049b0`(UI 안내 문구) + T4(본 커밋, `docs/MODE3_DEMO.md` 운영 메모로 정리).
+- 문서 내 publish 지침 모순(`:146-147` vs `:226` S8′) — T4(본 커밋).
+
+**RCL 증분 동기화 최종 리뷰 잔여**
+- N1(정규식 관련)·N4(죽은 반환값) — T3 `31401b3`.
+- N2(`tests/test_mode3_rcl_sync.mjs` 의 델타 관측 단언이 `observed.length > 0` 로 약함) — T4(본 커밋, root 두 개를 모두 관측했는지로 강화).
+
+**기록으로 남김(이번 묶음에서 처리하지 않은 Minor)**: A 의 `imt_v2.rebaseline` 이벤트 재생 비호환(현재 미사용) / 개봉 승인 시 `x_AA` null 이면 500·영구 pending / D 의 `publishRoot` leaves 무제한(청크 없음)·`transcriptFromTx` 주석 부정확 / B M-8 CSRF·Host 미검사 / C 의 `/api/mode3/open` txHash 경로 지역 arid·팩토리 미검사·challenges/sessions/logins 무제한 증가·revalidate 가 max_height·allowAgent 미갱신 / B M-4·M-5 Snap 트랜잭션 동의 창의 data 미표시·serviceName 원문 사용 / D 커버리지 구멍(digest 변조, recovered==0, 팩토리 재배포 주소 변화, AttrGate no-disclosure, 재진입 시나리오).
