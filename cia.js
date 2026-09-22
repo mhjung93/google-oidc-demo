@@ -17,7 +17,7 @@ import { ethers } from 'ethers';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import * as snarkjs from 'snarkjs';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
-import { credMessageV5, compressPoint, randomScalar, normalizeAttrs } from './lib/mode3_credential.js';
+import { credMessageV5, compressPoint, randomScalar, normalizeAttrs, ATTR_SLOTS } from './lib/mode3_credential.js';
 import { userLeaf, createRevocationTree } from './lib/mode3_revocation.js';
 import { isValidPoint, pointFromStrings, verifyUserCred, parseUserCredProof, userCredRequestMessage, issueRequestMessageV4, attrsRequestMessage } from './lib/mode3_issuance.js';
 import { LOG_ABI, rootToBytes32, signRootPublication } from './lib/mode3_log.js';
@@ -422,8 +422,12 @@ app.post('/cia/accounts/:uid/attrs', requireAdmin, async (req, res) => {
     const uid = req.params.uid;
     const acct = state.accounts[uid];
     if (!isDec(uid) || !acct) return res.status(404).json({ error: 'unknown account' });
+    // 관리자 변경은 길이 4 배열만 받는다 — normalizeAttrs 의 0 패딩(발급 경로엔 필요)이 여기서는 "본문 없는 호출 한 번에
+    // 속성 4칸이 0" 이 되고 옛 C_u 리프가 append-only 트리에 들어가 되돌릴 수 없다(2026-09-23 점검 A-I2).
+    const raw = req.body?.attrs;
+    if (!Array.isArray(raw) || raw.length !== ATTR_SLOTS) return res.status(400).json({ error: `attrs 는 길이 ${ATTR_SLOTS} 배열이어야 한다` });
     let attrs;
-    try { attrs = normalizeAttrs(req.body?.attrs).map(String); } catch (e) { return res.status(400).json({ error: `attrs: ${e.message}` }); }
+    try { attrs = normalizeAttrs(raw).map(String); } catch (e) { return res.status(400).json({ error: `attrs: ${e.message}` }); }
     acct.attrs = attrs;
     const inserted = await retireActiveCred(uid);
     persist();
@@ -630,7 +634,10 @@ app.post('/cia/open/request', async (req, res) => {
     // 진행 중이라 그 id 를 돌려준다. denied 와 approved+resolved:false(틀린 D_svc — 서비스 자신의 요청만 망친다,
     // §6.2)는 새 요청을 허용한다 — 거절된 세션을 다시 심사에 올리거나 서비스가 D_svc 를 고쳐 다시 낼 길이
     // 있어야 한다. arid 대조가 없으면 유출된 남의 로그로 연다.
-    const dup = state.openings.find((o) => o.arid === arid && o.c1.x === c1x && o.c1.y === c1y && (o.status === 'pending' || (o.status === 'approved' && o.resolved !== false)));
+    // dup 키는 (arid, c1, c2, PPID) — c1 = r·B8 은 사용자와 무관해 두 사용자가 같은 r 을 쓰면 겹친다(2026-09-23 점검 A-I1).
+    // c2·PPID 까지 같아야 "같은 트랜스크립트"다. 아니면 뒤 요청이 앞 사용자의 승인 항목을 받아 uid 가 오귀속된다.
+    const dup = state.openings.find((o) => o.arid === arid && o.c1.x === c1x && o.c1.y === c1y && o.c2 === c2 && o.PPID === PPID
+      && (o.status === 'pending' || (o.status === 'approved' && o.resolved !== false)));
     if (dup) return res.status(200).json({ id: dup.id, status: dup.status });
     const id = randomBytes(32).toString('hex');
     state.openings.push({ id, arid, PPID, c1: { x: c1x, y: c1y }, c2, D_svc: { x: D_svc.x, y: D_svc.y }, allowAgent, max_height, chainid: chainIn, status: 'pending', requestedAt: new Date().toISOString(), decidedAt: null, uid: null, resolved: null });

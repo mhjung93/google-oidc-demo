@@ -90,6 +90,38 @@ try {
     assert.equal(r.status, 200); assert.equal(r.body.id, id1);
   });
 
+  // A-I1 회귀: dup 키가 (arid, c1) 뿐이면 같은 태그 난수 r 로 만든 **다른 사용자**의 트랜스크립트가 앞 항목 id 를 받는다.
+  // alice(uid 67890)를 testuser 와 같은 방식으로 등록·발급한다 — attrs 는 cia.js DEMO_ACCOUNTS.alice 의 AA 기록과 같아야 π_u 가 통과한다.
+  const regA = await createRegistration();
+  const rA = await cia.post('/cia/register', { uid: '67890', pwd: 'alicepw', cm_u: { x: regA.cm_u.x.toString(), y: regA.cm_u.y.toString() } });
+  assert.equal(rA.status, 201, j(rA.body));
+  const skA = rA.body.sk_u;
+  const attrsA = [2005n, 840n, 1n, 0n];
+  const ucA = await buildUserCredRequest({ uid: 67890n, s_u: regA.s_u, r_u: regA.r_u, sk_u: skA, attrs: attrsA });
+  assert.equal((await cia.post('/cia/user_cred', ucA.body)).status, 201);
+  // loginTranscript 를 사용자별로 일반화한 것(기존 헬퍼는 그대로 둔다). tagR 은 태그 난수를 고정해 같은 c1 을 만드는 테스트 전용 옵션이다.
+  async function loginTranscriptFor(svc, who, tagR) {   // who = { uid, reg, uc, attrs, sk_u }
+    const session = createSessionKey();
+    const max_height = BigInt(await provider.getBlockNumber()) + 300n;
+    const req = await buildIssueRequest({ uid: who.uid, Cf_u: who.uc.Cf_u, arid: BigInt(svc.arid), sk_u: who.sk_u, session, chainid: 31337n, allowAgent: 0n, max_height });
+    const issued = await cia.post('/cia/issue', req.body);
+    assert.equal(issued.status, 200, j(issued.body));
+    const { tree } = await syncRevocationTree(provider, cia.logAddress);
+    const { proof, publicSignals, tag } = await buildCredentialProof({ uid: who.uid, arid: BigInt(svc.arid), s_u: who.reg.s_u, blind_u: who.uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs: who.attrs, credential: issued.body, pk_CIA, pk_trace: svc.pk_trace, tree, tagR });
+    return { proof, publicSignals, tag, PPID: publicSignals[0] };
+  }
+
+  await t('A-I1: 같은 c1(같은 태그 난수)·다른 사용자의 개봉 요청은 앞 항목 id 를 받지 않는다', async () => {
+    const r = 123456789n;
+    const Ta = await loginTranscriptFor(S1, { uid, reg, uc, attrs: [1990n, 410n, 2n, 0n], sk_u }, r);
+    const Tb = await loginTranscriptFor(S1, { uid: 67890n, reg: regA, uc: ucA, attrs: attrsA, sk_u: skA }, r);
+    assert.equal(Ta.tag.c1.x, Tb.tag.c1.x, '같은 r → 같은 c1');
+    assert.notEqual(Ta.PPID, Tb.PPID);
+    const o1 = await openRequest(S1, Ta); assert.equal(o1.status, 202, j(o1.body));
+    const o2 = await openRequest(S1, Tb); assert.equal(o2.status, 202, j(o2.body));
+    assert.notEqual(o1.body.id, o2.body.id, '다른 사용자의 트랜스크립트는 새 항목이어야 한다');
+  });
+
   await t('앞자리 0 이 붙은 공개 입력으로 요청해도 CIA 는 정규형으로 맞춰 받는다 (2026-09-18 점검 1)', async () => {
     const T = await loginTranscript(S1);
     const ps = [...T.publicSignals]; ps[1] = '0' + ps[1]; ps[11] = '0' + ps[11];

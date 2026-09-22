@@ -557,6 +557,10 @@ try {
     assert.equal((await cia.post('/cia/user_cred', next.body)).status, 201);
     assert.equal((await cia.adminPost('/cia/accounts/12345/attrs', { attrs: [(1n << 64n).toString(), '0', '0', '0'] })).status, 400);
     assert.equal((await cia.adminPost('/cia/accounts/424242/attrs', { attrs: ['1', '0', '0', '0'] })).status, 404);
+    // A-I2: 본문이 없거나 짧으면 0 패딩으로 속성이 지워지고 옛 C_u 리프가 되돌릴 수 없게 게시된다 → 길이 4 배열만 받는다
+    assert.equal((await cia.adminPost('/cia/accounts/12345/attrs', {})).status, 400);
+    assert.equal((await cia.adminPost('/cia/accounts/12345/attrs', { attrs: ['1990', '410'] })).status, 400);
+    assert.equal((await cia.adminPost('/cia/accounts/12345/attrs', { attrs: 'x' })).status, 400);
   });
 } finally {
   await cia.stop();
