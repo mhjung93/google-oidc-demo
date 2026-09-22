@@ -39,12 +39,15 @@ contract Mode3Wallet {
     error Expired(uint256 currentBlock, uint256 maxHeight);
     error TooFarExpiry(uint256 currentBlock, uint256 maxHeight);
     error InvalidProof();
+    error BadDisclosure();
 
     /// @dev 내부 호출의 성공 여부는 영수증에 남지 않으므로 이벤트로 낸다(PPIDWallet 과 같은 이유).
     event Executed(uint256 indexed nonceUsed, address indexed to, uint256 value, bool success);
     /// @dev 서비스가 개봉 재료를 체인에서 바로 읽을 수 있게 태그·플래그를 남긴다. calldata 에도 있지만 이벤트가 조회하기 쉽다.
     event Mode3Auth(uint256 indexed nonceUsed, uint256 pk_i, uint256 maxHeight, uint256 allowAgent,
                     uint256 tagC1X, uint256 tagC1Y, uint256 tagC2);
+    /// @notice 공개한 속성 구간(2026-09-22 선택 공개 §5.1). 대상 컨트랙트가 읽은 값과 같은 것을 이벤트로 남긴다.
+    event Disclosure(uint256 indexed nonceUsed, uint256 mask, uint256[4] lo, uint256[4] hi);
 
     constructor(
         uint256 _ppid, uint256 _arid,
@@ -59,23 +62,25 @@ contract Mode3Wallet {
         maxLifetime = _maxLifetime;
     }
 
-    /// @param pub 공개 입력 14개(circuits/pi_cred.circom 의 순서):
+    /// @param pub 공개 입력 23개(circuits/pi_cred.circom 의 순서):
     ///   [0] PPID [1] arid [2] pk_i [3] max_height [4] chainid [5] allowAgent [6] revRoot
     ///   [7] pk_CIA_x [8] pk_CIA_y [9] pk_trace_x [10] pk_trace_y [11] tag_c1_x [12] tag_c1_y [13] tag_c2
+    ///   [14] disc_mask [15..18] disc_lo [19..22] disc_hi
     function execute(
         Payload calldata payload,
         bytes calldata sig,
         uint[2] calldata a,
         uint[2][2] calldata b,
         uint[2] calldata c,
-        uint[14] calldata pub
+        uint[23] calldata pub
     ) external returns (bool ok) {
         if (payload.nonce != nonce) revert NonceMismatch(nonce, payload.nonce);
 
         // 서명은 이 체인과 이 지갑에 묶인다(PPIDWallet 과 같은 도메인 분리). 같은 팩토리를 두 체인에 배포해도
         // PPID 가 chainid 를 포함해 주소가 다르지만, 서명까지 묶어 두는 편이 싸고 안전하다.
+        // 다이제스트가 disc_mask 를 덮는다 — 같은 세션키의 π 가 둘(mask 0·mask ≠ 0) 있어도 릴레이어가 고르지 못한다(§5.1).
         bytes32 payloadHash = keccak256(
-            abi.encode(block.chainid, address(this), payload.to, payload.value, payload.data, payload.nonce)
+            abi.encode(block.chainid, address(this), payload.to, payload.value, payload.data, payload.nonce, pub[14])
         );
         address recovered = _recover(payloadHash, sig);
         // ecrecover 는 잘못된 서명에 address(0) 을 돌려준다. 회로는 pk_i < 2^160 만 제약하므로 pk_i = 0 인
@@ -88,18 +93,28 @@ contract Mode3Wallet {
 
         // 검증 통과 후 실행 결과와 무관하게 nonce 를 올린다 — 실패한 payload 의 재생을 막는다.
         nonce += 1;
-        (ok, ) = payload.to.call{value: payload.value}(payload.data);
+        bytes memory data = payload.data;
+        if (pub[14] != 0) {
+            // 꼬리 9워드(288바이트): mask, lo[4], hi[4]. 대상은 calldatasize 끝에서 읽는다(ERC-2771 방식). mask = 0 이면 붙이지 않아
+            // 꼬리를 모르는 대상과 호환된다. Solidity ABI 디코더는 남는 calldata 를 무시한다.
+            data = abi.encodePacked(payload.data, pub[14], pub[15], pub[16], pub[17], pub[18], pub[19], pub[20], pub[21], pub[22]);
+        }
+        (ok, ) = payload.to.call{value: payload.value}(data);
         // 이벤트는 내부 호출 뒤에 낸다 — 호출 앞으로 옮기지 말 것(JS 는 발신 주소로도 거르지만 순서도 지킨다).
         emit Executed(payload.nonce, payload.to, payload.value, ok);
         emit Mode3Auth(payload.nonce, pub[2], pub[3], pub[5], pub[11], pub[12], pub[13]);
+        if (pub[14] != 0) {
+            emit Disclosure(payload.nonce, pub[14], [pub[15], pub[16], pub[17], pub[18]], [pub[19], pub[20], pub[21], pub[22]]);
+        }
     }
 
     /// @dev 성명의 공개 입력을 이 지갑의 고정값·체인 상태와 대조한다. 순서는 설계 §5.3 의 3~8.
-    function _checkStatement(uint[14] calldata pub) internal view {
+    function _checkStatement(uint[23] calldata pub) internal view {
         if (pub[0] != ppid || pub[1] != arid || pub[4] != block.chainid) revert WrongWallet();
         if (pub[7] != pkCIAX || pub[8] != pkCIAY || pub[9] != pkTraceX || pub[10] != pkTraceY) revert UntrustedKeys();
         if (pub[5] > 1) revert BadAllowAgent();
         if (pub[11] == 0 && pub[12] == 1) revert BadTag();   // r = 0 — c1 이 항등원이면 태그가 평문을 그대로 드러낸다(오프체인 검증기 lib/mode3_rp.js 의 bad_tag 와 같은 규칙)
+        if (pub[14] >= 16) revert BadDisclosure();   // ⑤′ mask 는 4비트. 회로도 막지만 이벤트·꼬리에 남는 값이라 한 번 더
         bytes32 root = bytes32(pub[6]);
         if (root != log.root()) revert StaleRevocationRoot(root);          // N=1: 최신 root 만
         uint256 last = log.lastPublishedBlock();

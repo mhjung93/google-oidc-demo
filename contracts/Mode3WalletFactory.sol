@@ -16,6 +16,9 @@ contract Mode3WalletFactory {
     uint64 public immutable maxRootAge;
     uint64 public immutable maxLifetime;
 
+    /// @notice 이 팩토리가 배포한 지갑. 대상 컨트랙트(AttrGate)가 msg.sender 를 확인하는 데 쓴다 — 꼬리 9워드는 π 를 검증한 지갑만 붙일 수 있다.
+    mapping(address => bool) public isWallet;
+
     constructor(
         address _verifier, uint256 _arid,
         uint256 _pkCIAX, uint256 _pkCIAY, uint256 _pkTraceX, uint256 _pkTraceY,
@@ -41,10 +44,11 @@ contract Mode3WalletFactory {
 
     function deploy(uint256 ppid) external returns (address wallet) {
         wallet = computeAddress(ppid);
-        if (wallet.code.length > 0) return wallet;
+        if (wallet.code.length > 0) { isWallet[wallet] = true; return wallet; }   // 다른 경로로 이미 있어도 이 팩토리 코드로 만든 주소다
         Mode3Wallet deployed = new Mode3Wallet{salt: bytes32(ppid)}(
             ppid, arid, pkCIAX, pkCIAY, pkTraceX, pkTraceY, verifier, log, maxRootAge, maxLifetime
         );
         require(address(deployed) == wallet, "CREATE2 address mismatch");
+        isWallet[wallet] = true;
     }
 }

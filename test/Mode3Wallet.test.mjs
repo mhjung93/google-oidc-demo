@@ -1,6 +1,7 @@
 // Mode3Wallet / Mode3WalletFactory — 설계 2026-09-18 §5. hardhat 인프로세스 체인(contract 그룹).
 // 증명은 tests/helpers/mode3_fixture.mjs 의 픽스처로 실제로 만든다(build/mode3 산출물 필요).
 import { expect } from 'chai';
+import assert from 'node:assert';
 import hre from 'hardhat';
 import fs from 'node:fs';
 import * as snarkjs from 'snarkjs';
@@ -46,10 +47,10 @@ describe('Mode3Wallet', function () {
   }
   const withInput = (st) => ({ ...st, input: () => st.fx.input });
 
-  async function signedPayload(st, wallet, { to = ethers.Wallet.createRandom().address, value = 0n, data = '0x' } = {}) {
+  async function signedPayload(st, wallet, { to = ethers.Wallet.createRandom().address, value = 0n, data = '0x', discMask = 0n } = {}) {
     const nonce = await wallet.nonce();
     const payload = { to, value, data, nonce };
-    const sig = signPayload(st.session, { chainId: await chainId(), wallet: wallet.target, ...payload });
+    const sig = signPayload(st.session, { chainId: await chainId(), wallet: wallet.target, ...payload, discMask });
     return { payload, sig };
   }
 
@@ -77,7 +78,7 @@ describe('Mode3Wallet', function () {
     expect(filtered.executed.success).to.equal(true);
     expect(filtered.auth.tag.c2).to.equal(ST.fx.tag.c2);
     const wrongTarget = parseExecuteReceipt(receipt, ethers.Wallet.createRandom().address);
-    expect(wrongTarget).to.deep.equal({ executed: null, auth: null });
+    expect(wrongTarget).to.deep.equal({ executed: null, auth: null, disclosure: null });
   });
 
   it('allowAgent = 1 성명은 이벤트에 1 로 남는다', async () => {
@@ -236,5 +237,75 @@ describe('Mode3Wallet', function () {
     expect(await factory.computeAddress(ppid)).to.equal(walletAddr);
     await (await factory.deploy(ppid)).wait();
     expect(await ethers.provider.getCode(walletAddr)).to.not.equal('0x');
+  });
+
+  it('V6: pub 은 23개이고 mask = 0 이면 꼬리 없이 실행, Disclosure 이벤트 없음', async () => {
+    const { wallet } = await deployStack(ST);
+    const { payload, sig } = await signedPayload(ST, wallet);
+    const rc = await (await wallet.execute(payload, sig, ST.a, ST.b, ST.c, ST.pub)).wait();
+    assert.equal(ST.pub.length, 23);
+    const { disclosure } = parseExecuteReceipt(rc, wallet.target);
+    assert.equal(disclosure, null);
+  });
+
+  it('V6: mask ≠ 0 이면 대상이 꼬리 9워드를 읽고 AttrGate.claim 이 통과한다; Disclosure 이벤트; 두 번째 claim 은 already claimed', async () => {
+    const DS = withInput(await statement({ disclosure: { mask: 0b0011n, lo: [0n, 410n, 0n, 0n], hi: [2007n, 410n, 0n, 0n] } }));
+    const { wallet, factory } = await deployStack(DS);
+    const Gate = await ethers.getContractFactory('AttrGate');
+    const gate = await Gate.deploy(await factory.getAddress(), 410n, 2007n);
+    const data = gate.interface.encodeFunctionData('claim');
+    const { payload, sig } = await signedPayload(DS, wallet, { to: await gate.getAddress(), data, discMask: 0b0011n });
+    const rc = await (await wallet.execute(payload, sig, DS.a, DS.b, DS.c, DS.pub)).wait();
+    const { executed, disclosure } = parseExecuteReceipt(rc, wallet.target);
+    assert.equal(executed.success, true);
+    assert.equal(disclosure.mask, 3n); assert.equal(disclosure.hi[0], 2007n); assert.equal(disclosure.lo[1], 410n);
+    assert.equal(await gate.claimed(wallet.target), true);
+    const again = await signedPayload(DS, wallet, { to: await gate.getAddress(), data, discMask: 0b0011n });
+    const rc2 = await (await wallet.execute(again.payload, again.sig, DS.a, DS.b, DS.c, DS.pub)).wait();
+    assert.equal(parseExecuteReceipt(rc2, wallet.target).executed.success, false, 'already claimed → 내부 호출 실패, nonce 는 소모');
+  });
+
+  it('V6: 국가가 다르면 claim 이 실패(success=false), 나이 상한을 넘겨도 실패', async () => {
+    // 픽스처 속성은 [1990, 410, 2, 0] 이라 a₁ = 840 등식은 증명 자체가 안 만들어진다(회로가 거절) →
+    // 국가 불일치 케이스는 alice 형 속성의 픽스처가 없어 이 테스트에서 시험하지 않는다(데모 스택 단계에서 시험).
+    // 대신 "정책보다 넓은 구간" 으로 시험한다: hi[0] = 2010 (> birthYearMax 2007) 는 증명은 되지만 게이트가 거절한다.
+    const wide = withInput(await statement({ disclosure: { mask: 0b0011n, lo: [0n, 410n, 0n, 0n], hi: [2010n, 410n, 0n, 0n] } }));
+    const { wallet, factory } = await deployStack(wide);
+    const Gate = await ethers.getContractFactory('AttrGate');
+    const gate = await Gate.deploy(await factory.getAddress(), 410n, 2007n);
+    const data = gate.interface.encodeFunctionData('claim');
+    const { payload, sig } = await signedPayload(wide, wallet, { to: await gate.getAddress(), data, discMask: 0b0011n });
+    const rc = await (await wallet.execute(payload, sig, wide.a, wide.b, wide.c, wide.pub)).wait();
+    assert.equal(parseExecuteReceipt(rc, wallet.target).executed.success, false);
+    assert.equal(await gate.claimed(wallet.target), false);
+  });
+
+  it('V6: EOA 가 꼬리를 흉내 내 AttrGate.claim 을 직접 부르면 not a mode3 wallet', async () => {
+    const { factory } = await deployStack(ST);
+    const Gate = await ethers.getContractFactory('AttrGate');
+    const gate = await Gate.deploy(await factory.getAddress(), 410n, 2007n);
+    const [eoa] = await ethers.getSigners();
+    const tail = ethers.AbiCoder.defaultAbiCoder().encode(['uint256', 'uint256[4]', 'uint256[4]'], [3n, [0n, 410n, 0n, 0n], [2007n, 410n, 0n, 0n]]);
+    await assert.rejects(eoa.sendTransaction({ to: await gate.getAddress(), data: gate.interface.encodeFunctionData('claim') + tail.slice(2) }), /not a mode3 wallet/);
+  });
+
+  it('V6: 다이제스트가 mask 를 덮는다 — mask 0 으로 서명한 σ 로 mask 3 의 π 를 붙이면 BadSignature', async () => {
+    const DS = withInput(await statement({ disclosure: { mask: 0b0011n, lo: [0n, 410n, 0n, 0n], hi: [2007n, 410n, 0n, 0n] } }));
+    const { wallet } = await deployStack(DS);
+    const { payload, sig } = await signedPayload(DS, wallet, { discMask: 0n });
+    await assert.rejects(wallet.execute(payload, sig, DS.a, DS.b, DS.c, DS.pub), /BadSignature/);
+  });
+
+  it('V6: pub[14] ≥ 16 은 BadDisclosure (증명 검증 전에 걸린다)', async () => {
+    const { wallet } = await deployStack(ST);
+    const { payload, sig } = await signedPayload(ST, wallet, { discMask: 16n });
+    const pub = [...ST.pub]; pub[14] = 16n;
+    await assert.rejects(wallet.execute(payload, sig, ST.a, ST.b, ST.c, pub), /BadDisclosure/);
+  });
+
+  it('V6: factory.isWallet 은 배포한 지갑만 true', async () => {
+    const { factory, walletAddr } = await deployStack(ST);
+    assert.equal(await factory.isWallet(walletAddr), true);
+    assert.equal(await factory.isWallet(ethers.Wallet.createRandom().address), false);
   });
 });
