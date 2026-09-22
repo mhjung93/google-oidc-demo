@@ -41,7 +41,8 @@ await t('stripSecrets 는 s_u·r_u·sk_u·blind_u 를 지운다', () => {
 await t('validateWitness: uid 불일치·형식·범위 오류는 bad_witness', () => {
   const w = { uid: '12345', s_u: '11', r_u: '22', sk_u: 'ab'.repeat(32), attrs: ['1', '2', '3', '4'], userCred: null };
   validateWitness(w, '12345');
-  for (const bad of [{ ...w, uid: '1' }, { ...w, s_u: 'x' }, { ...w, s_u: (1n << 250n).toString() }, { ...w, sk_u: 'zz' }, { ...w, attrs: ['1'] }, { ...w, attrs: [(1n << 64n).toString(), '0', '0', '0'] }, null]) {
+  for (const bad of [{ ...w, uid: '1' }, { ...w, s_u: 'x' }, { ...w, s_u: (1n << 250n).toString() }, { ...w, sk_u: 'zz' }, { ...w, attrs: ['1'] }, { ...w, attrs: [(1n << 64n).toString(), '0', '0', '0'] },
+    { ...w, userCred: { Cf_u: '1' } }, { ...w, userCred: { C_u_pt: { x: '1', y: '2' }, Cf_u: '1', blind_u: (1n << 250n).toString(), leaf: '1' } }, null]) {
     assert.throws(() => validateWitness(bad, '12345'), (e) => e.reason === 'bad_witness', JSON.stringify(bad));
   }
 });

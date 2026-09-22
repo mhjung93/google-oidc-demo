@@ -177,7 +177,8 @@ app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'wallet.ht
 
 // 비밀 없음 — RP 페이지가 로그인 전에 지갑의 비밀 모드·체인 정보를 미리 읽는다(설계 2026-09-22 metamask-snap Ruling 1).
 app.get('/wallet/config', configCors, async (req, res) => {
-  res.json({ secrets: SECRETS, snapId: SNAP_ID, walletOrigin: WALLET_ORIGIN, rpcUrl: RPC_URL, chainId: (await chainId()).toString() });
+  try { res.json({ secrets: SECRETS, snapId: SNAP_ID, walletOrigin: WALLET_ORIGIN, rpcUrl: RPC_URL, chainId: (await chainId()).toString() }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/wallet/status', async (req, res) => {
