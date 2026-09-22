@@ -65,11 +65,11 @@ if (reg && (reg.version !== REG_VERSION || reg.origin !== PUBLIC_ORIGIN)) {
 if (!reg) {
   const w = ethers.Wallet.createRandom();
   const share = await createShare();
-  reg = { version: REG_VERSION, origin: PUBLIC_ORIGIN, pk_service: w.address, sk_service: w.privateKey, X_svc: { x: share.X.x.toString(), y: share.X.y.toString() }, x_svc: share.x.toString(), status: 'pending', arid: null, pk_trace: null, cert_s: null, issuedAt: null, factoryAddress: null, verifierAddress: null, attrGateAddress: null };
+  // attrGateAddress: 배포된 AttrGate 주소. attrGateFactory: 그 배포에 실제로 쓰인 factoryAddress — 팩토리가
+  // 바뀌면(재배포로 factoryAddress 가 달라지면) ensureAttrGate() 가 이 값과 비교해 다시 배포할지 정한다(2026-09-22 리뷰).
+  reg = { version: REG_VERSION, origin: PUBLIC_ORIGIN, pk_service: w.address, sk_service: w.privateKey, X_svc: { x: share.X.x.toString(), y: share.X.y.toString() }, x_svc: share.x.toString(), status: 'pending', arid: null, pk_trace: null, cert_s: null, issuedAt: null, factoryAddress: null, verifierAddress: null, attrGateAddress: null, attrGateFactory: null };
   writeJsonAtomic(REG_FILE, reg, 0o600);
 }
-// 팩토리를 재배포하려고 factoryAddress 를 지운 경우(§6.1 재배포 절차) AttrGate 도 옛 팩토리에 묶여 있어 같이 무효다.
-if (!reg.factoryAddress && reg.attrGateAddress) { reg.attrGateAddress = null; writeJsonAtomic(REG_FILE, reg, 0o600); }
 const serviceWallet = new ethers.Wallet(reg.sk_service);
 
 /** pk_trace == X_svc + X_AA 이고 X_AA 의 Schnorr PoK 가 (arid, X_svc) 에 대해 검증되는가. 형식이 깨지면 false. */
@@ -130,12 +130,15 @@ async function ensureFactory() {
   console.log(`[rp] 팩토리 배포: ${factoryAddress} (verifier ${verifierAddress}, maxRootAge ${MAX_ROOT_AGE}, maxLifetime ${MAX_LIFETIME}) → ${REG_FILE}`);
 }
 // AttrGate(설계 2026-09-22 §5.3): 팩토리 다음에 한 번 배포하는 데모 대상. 정책은 국가=410, 출생연도≤2007 고정(데모).
+// reg.attrGateFactory(그 배포가 물린 팩토리)가 지금의 reg.factoryAddress 와 다르면 다시 배포한다 — factoryAddress 가
+// 파일에 없는 채 env(MODE3_RP_FACTORY_ADDRESS)로만 매번 정해지는 경로에서도, factoryAddress 자체는 안 바뀌었는데
+// attrGateAddress 유무만으로 리셋하던 옛 방식(재기동마다 불필요하게 재배포)과 달리 실제로 팩토리가 바뀐 경우에만 걸린다.
 async function ensureAttrGate() {
   if (!reg.factoryAddress) { console.warn('[rp] 팩토리가 없어 AttrGate 배포를 건너뛴다'); return; }
-  if (reg.attrGateAddress) return;
+  if (reg.attrGateAddress && reg.attrGateFactory === reg.factoryAddress) return;
   const signer = await provider.getSigner(RELAYER_INDEX);
   const attrGateAddress = await deployAttrGate(signer, { factoryAddress: reg.factoryAddress });
-  reg = { ...reg, attrGateAddress };
+  reg = { ...reg, attrGateAddress, attrGateFactory: reg.factoryAddress };
   writeJsonAtomic(REG_FILE, reg, 0o600);
   console.log(`[rp] AttrGate 배포: ${attrGateAddress} (factory ${reg.factoryAddress}) → ${REG_FILE}`);
 }

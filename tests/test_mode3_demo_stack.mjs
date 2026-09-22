@@ -88,7 +88,14 @@ async function makeAliceAgent() {
     const parsed = parseExecuteReceipt(receipt, walletAddr);
     return { status: 200, body: { ok: parsed.executed?.success ?? null, receipt: { disclosure: parsed.disclosure ? { mask: parsed.disclosure.mask.toString(), lo: parsed.disclosure.lo.map(String), hi: parsed.disclosure.hi.map(String) } : null } } };
   }
-  return { tx, stop: () => provider.destroy() };
+  /** RP 챌린지 r_s 위의 로그인 성명(π+σ)만 만든다 — 온체인 실행은 하지 않는다. disclosure 는 { mask, lo, hi }(bigint). */
+  async function login(rs, disclosure) {
+    const { tree } = await syncRevocationTree(provider, cia.logAddress);
+    const built = await buildCredentialProof({ uid: 67890n, arid, s_u: reg.s_u, blind_u: ucReq.secrets.blind_u, blind_s: issueReq.secrets.blind_s, pk_i: session.pk_i, attrs, credential: issued.body, pk_CIA, pk_trace, tree, disclosure });
+    const sig = await signChallenge(session.wallet, rs.toString());
+    return { proof: built.proof, publicSignals: built.publicSignals, sig };
+  }
+  return { tx, login, stop: () => provider.destroy() };
 }
 
 try {
@@ -326,6 +333,38 @@ try {
     assert.equal(after.rp.ok, true, j(after));
     assert.equal(after.rp.PPID, before.rp.PPID);
     assert.deepEqual((await wallet.get('/wallet/status')).body.attrs, ['1990', '410', '3', '0']);
+  });
+
+  // 리뷰 반영(2026-09-22): 위의 disclosure 기록은 지금까지 인프로세스 rp.verifyLogin() 이나 execute() 경로로만 봤다 —
+  // 실제 RP 서버(HTTP)의 /api/mode3/login → sessions/logins/LOGIN_LOG 경로는 아무 테스트도 거치지 않았다.
+  await t('13. 선택 공개(HTTP): /api/mode3/login 이 disclosure 를 세션·logins 에 기록한다; mask ≥ 16 은 bad_disclosure', async () => {
+    const alice = await makeAliceAgent();
+    try {
+      const disclosure = { mask: 3n, lo: [0n, 840n, 0n, 0n], hi: [2007n, 840n, 0n, 0n] };   // alice[2005,840,1,0] 에 맞는 구간
+      const { r_s } = (await rp.post('/api/mode3/challenge')).body;
+      const good = await alice.login(r_s, disclosure);
+      const login = await rp.post('/api/mode3/login', { proof: good.proof, publicSignals: good.publicSignals, sig: good.sig, r_s });
+      assert.equal(login.status, 200, j(login.body));
+      assert.equal(login.body.ok, true, j(login.body));
+      assert.equal(login.body.disclosure.mask, '3');
+
+      const rsShortForm = r_s.slice(0, 8) + '…';   // mode3_rp.js 의 rsShort() 와 같은 규칙
+      const mine = (await rp.get('/api/mode3/sessions')).body.sessions.find((s) => s.r_s === rsShortForm);
+      assert.ok(mine, '방금 로그인한 세션이 목록에 있어야 한다');
+      assert.deepEqual(mine.disclosure, { mask: '3', lo: ['0', '840', '0', '0'], hi: ['2007', '840', '0', '0'] });
+
+      const logins = (await rp.get('/api/mode3/logins')).body.logins;
+      assert.equal(logins[logins.length - 1].disclosure.mask, '3');
+
+      // mask ≥ 16 은 Groth16 검증 전에 걸리므로 증명 자체는 손대지 않고 publicSignals[14] 만 바꿔도 충분하다.
+      const { r_s: r_s2 } = (await rp.post('/api/mode3/challenge')).body;
+      const bad = await alice.login(r_s2, disclosure);
+      const badPs = [...bad.publicSignals]; badPs[14] = '16';
+      const r2 = await rp.post('/api/mode3/login', { proof: bad.proof, publicSignals: badPs, sig: bad.sig, r_s: r_s2 });
+      assert.equal(r2.status, 200, j(r2.body));
+      assert.equal(r2.body.ok, false);
+      assert.equal(r2.body.reason, 'bad_disclosure');
+    } finally { alice.stop(); }
   });
 
   await t("4'. 사용자 자기 폐기(비밀번호) → 게시 → 재검증 stale_root → 지갑 revoked → 관리자 복구 → PPID 동일", async () => {
