@@ -136,12 +136,22 @@ try {
     const rv = await wallet.post('/wallet/revalidate', { r_s: S1 }, { Origin: rp.origin });
     assert.equal(rv.status, 200, j(rv.body)); assert.equal(rv.body.cacheHit, true);
     assert.equal((await verify(rv.body, S1)).ok, true);
+    // 세션 경로는 동의 때 검증된 메모리 증인만 쓴다 — RP 오리진이 CORS 로 부를 수 있으므로 본문 증인은 무시한다(리뷰 Ruling 4).
+    // 엉뚱한 증인(userCred:null)을 실어도 세션이 지워지지 않고 정상 200 이어야 한다.
+    const evil = { ...sim.consentLogin({ origin: info.origin, arid: info.arid, allowAgent: '0' }), userCred: null };
+    const rvEvil = await wallet.post('/wallet/revalidate', { r_s: S1, witness: evil }, { Origin: rp.origin });
+    assert.equal(rvEvil.status, 200, j(rvEvil.body));
+    assert.equal((await verify(rvEvil.body, S1)).ok, true);
+    assert.ok((await wallet.get('/wallet/status')).body.sessions[S1], '본문 증인으로 세션을 지울 수 없다');
     await stack.restartWallet();
     assert.equal((await wallet.get('/wallet/config')).body.secrets, 'snap');
     const s = (await wallet.get('/wallet/status')).body;
     assert.ok(s.sessions[S1], '세션은 파일에서 살아난다');
     const nc = await wallet.post('/wallet/revalidate', { r_s: S1 }, { Origin: rp.origin });
     assert.equal(nc.status, 409, j(nc.body)); assert.equal(nc.body.reason, 'needs_consent');
+    // 재시작 뒤에도 본문 증인은 세션 경로를 열어 주지 않는다 — /wallet/session/witness 로만 채운다
+    const ncW = await wallet.post('/wallet/revalidate', { r_s: S1, witness: sim.consentLogin({ origin: info.origin, arid: info.arid, allowAgent: '0' }) }, { Origin: rp.origin });
+    assert.equal(ncW.status, 409, j(ncW.body)); assert.equal(ncW.body.reason, 'needs_consent');
     const req = await wallet.post('/wallet/request', { r_s: S1, body: 'hello' }, { Origin: rp.origin });
     assert.equal(req.status, 200, j(req.body)); assert.equal(req.body.pk_i, W1.pk_i);
     const pre = await wallet.post('/wallet/tx/prepare', { r_s: S1, to: attrGateAddress });
@@ -175,7 +185,8 @@ try {
     assert.equal(dec.payload.to.toLowerCase(), info.attrGateAddress.toLowerCase()); assert.equal(dec.payload.data, '0x4e71d92d'); assert.equal(dec.pub[14], '3');
     // MetaMask 대신 hardhat 계정 #1 이 사용자 EOA 로 두 트랜잭션을 순서대로 보낸다
     const eoa = await provider.getSigner(1);
-    await (await eoa.sendTransaction({ to: pre.body.factoryAddress, data: pre.body.deployCalldata })).wait();
+    const deployTx = await eoa.sendTransaction({ to: pre.body.factoryAddress, data: pre.body.deployCalldata });
+    await deployTx.wait();
     assert.notEqual(await provider.getCode(pre.body.walletAddr), '0x', '팩토리 deploy 로 지갑 코드가 생겼다');
     const tx = await eoa.sendTransaction({ to: pre.body.walletAddr, data: pre.body.calldata });
     await tx.wait();
@@ -195,6 +206,9 @@ try {
     assert.equal(pre2.body.cacheHit, true);
     assert.equal((await wallet.post('/wallet/tx/prepare', { r_s: S1, to: info.attrGateAddress, disclose: [{ lo: '0', hi: '1980' }, null, null, null] })).body.reason, 'disclosure_unsatisfiable');
     assert.equal((await wallet.post('/wallet/tx/record', { r_s: S1, txHash: 'nope' })).status, 400);
+    // 배포 tx 처럼 이 지갑으로 가지 않은 트랜잭션은 실행 결과로 받지 않는다(리뷰 Minor)
+    const notOurs = await wallet.post('/wallet/tx/record', { r_s: S1, txHash: deployTx.hash });
+    assert.equal(notOurs.status, 409, j(notOurs.body)); assert.equal(notOurs.body.reason, 'not_our_tx');
     assert.equal((await wallet.post('/wallet/tx/record', { r_s: '424242', txHash: tx.hash })).status, 404);
   });
 

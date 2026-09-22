@@ -165,17 +165,20 @@ async function issueSession(arid, r_s, pk_trace, allowAgent, factoryAddress, att
   return r;
 }
 
-/** 요청 범위 비밀 공급원. file 은 상태 파일. snap 은 본문 witness(로그인·재승인) 또는 세션의 메모리 witness(재검증·tx/prepare) —
- *  둘 다 없으면 throw({ reason }) : 세션 경로면 needs_consent(409, RP 페이지가 팝업을 다시 연다), 아니면 witness_required(400). */
+/** 요청 범위 비밀 공급원. file 은 상태 파일. snap 은 증인이 어디서 오는지가 경로마다 다르다.
+ *  - 세션 경로(rsKey 있음 — 재검증·tx/prepare): **세션의 메모리 증인만** 쓴다. 본문 witness 는 보지 않는다 —
+ *    /wallet/revalidate 는 RP 오리진에 CORS 로 열려 있어 서비스 페이지가 엉뚱한 증인을 실어 보내면 proveSession 이
+ *    revoked 로 던져 세션이 지워진다(리뷰 Ruling 4). 없으면 needs_consent(409) — 팝업이 동의를 다시 받아 채운다.
+ *  - 그 밖(rsKey 없음 — 로그인·재승인·속성 동기화): 본문 witness. 호출자가 validateWitness 를 먼저 거친다. 없으면 witness_required(400). */
 function secretSourceFor(req, rsKey = null) {
   if (SECRETS === 'file') return createSecretSource({ mode: 'file', state });
-  let w = req.body?.witness ?? null;
-  if (!w && rsKey && state.sessions[rsKey]?.witness) {
+  let w = null;
+  if (rsKey) {
     // 세션 증인은 { s_u, blind_u, attrs, sk_u } 만 든다 — 공개 부분(uid, userCred 의 Cf_u·leaf)은 파일에서 채운다. r_u 는 발급 뒤엔 필요 없다.
-    const sw = state.sessions[rsKey].witness;
+    const sw = state.sessions[rsKey]?.witness;
     const pub = state.registration?.userCred;
-    w = { uid: state.registration?.uid, s_u: sw.s_u, r_u: null, sk_u: sw.sk_u, attrs: sw.attrs, userCred: pub ? { ...pub, blind_u: sw.blind_u } : null };
-  }
+    if (sw) w = { uid: state.registration?.uid, s_u: sw.s_u, r_u: null, sk_u: sw.sk_u, attrs: sw.attrs, userCred: pub ? { ...pub, blind_u: sw.blind_u } : null };
+  } else w = req.body?.witness ?? null;
   if (!w) throw Object.assign(new Error(rsKey ? 'needs_consent' : 'witness_required'), { reason: rsKey ? 'needs_consent' : 'witness_required' });
   return createSecretSource({ mode: 'snap', state, witness: w });
 }
@@ -613,11 +616,12 @@ app.post('/wallet/tx/record', async (req, res) => {
     const walletAddr = await factoryAt(s.factoryAddress, provider).computeAddress(BigInt(s.PPID));
     const [receipt, tx] = await Promise.all([provider.getTransactionReceipt(txHash), provider.getTransaction(txHash)]);
     if (!receipt) return res.status(202).json({ pending: true, txHash, wallet: walletAddr });
+    // 이 세션의 지갑으로 간 트랜잭션만 받는다 — 배포 tx 나 남의 트랜잭션을 실행 결과로 오인하지 않는다(리뷰 Minor)
+    const txTo = receipt.to ?? tx?.to ?? null;
+    if (!txTo || txTo.toLowerCase() !== walletAddr.toLowerCase()) return res.status(409).json({ reason: 'not_our_tx', txHash, wallet: walletAddr });
     let disclosure = null;
-    if (tx?.to && tx.to.toLowerCase() === walletAddr.toLowerCase()) {
-      const dec = decodeExecuteCalldata(tx.data);
-      if (dec) { const pub = dec.pub.map(BigInt); disclosure = { mask: pub[14], lo: pub.slice(15, 19), hi: pub.slice(19, 23) }; }
-    }
+    const dec = tx ? decodeExecuteCalldata(tx.data) : null;
+    if (dec) { const pub = dec.pub.map(BigInt); disclosure = { mask: pub[14], lo: pub.slice(15, 19), hi: pub.slice(19, 23) }; }
     res.json(receiptResult(receipt, walletAddr, disclosure));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
