@@ -171,6 +171,14 @@ await t('updateUserCred(null) 은 저장된 C_u 를 버린다', async () => {
   assert.equal(store.state.userCred, null);
 });
 
+await t('updateUserCred: 인자가 아예 없으면 bad_params (조용한 폐기를 막는다 — T3 리뷰 Ruling 6)', async () => {
+  await call('updateUserCred', USER_CRED);
+  await assert.rejects(() => call('updateUserCred', undefined), /bad_params/);
+  assert.equal((await call('getPublicInfo', {})).hasUserCred, true, '거절된 호출은 C_u 를 건드리지 않는다');
+  assert.deepEqual(await call('updateUserCred', { userCred: null }), { ok: true }, '{ userCred: null } 은 폐기다');
+  assert.equal((await call('getPublicInfo', {})).hasUserCred, false);
+});
+
 await t('syncAttrs: 같으면 changed=false, 바뀌면 true 와 C_u 폐기', async () => {
   await call('updateUserCred', USER_CRED);
   assert.deepEqual(await call('syncAttrs', { attrs: ATTRS }), { ok: true, changed: false });

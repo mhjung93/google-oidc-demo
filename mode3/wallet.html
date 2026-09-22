@@ -14,14 +14,38 @@
   </style>
 </head>
 <body>
+  <!-- 팝업 모드(?authorize=1, 스펙 2026-09-22 metamask-snap §3.2): 폼 대신 승인 진행 화면만 보인다. -->
+  <div id="authorizeView" hidden>
+    <h2>로그인 승인</h2>
+    <p id="authTitle">서비스 요청을 기다리는 중…</p>
+    <p id="authStep" class="muted"></p>
+    <pre id="authLog"></pre>
+    <p class="muted">이 창은 서비스 페이지가 연다. 요청은 쿼리가 아니라 <code>postMessage</code> 로 받고, 메시지를 보낸 오리진이 서비스 인증서의 오리진과 같을 때만 진행한다.</p>
+  </div>
+
+  <div id="mainView">
   <h2>Mode 3 지갑 에이전트</h2>
-  <p class="muted">이 페이지는 지갑 에이전트(:5100)와 같은 오리진에서만 열린다. 비밀은 <code>mode3_wallet_state.json</code>에 있고 화면에 나오지 않는다.</p>
+  <p class="muted" id="intro">이 페이지는 지갑 에이전트(:5100)와 같은 오리진에서만 열린다. 비밀은 <code>mode3_wallet_state.json</code>에 있고 화면에 나오지 않는다.</p>
+
+  <!-- snap 모드 전용(스펙 §3.2). file 모드에서는 숨긴 채로 둔다. -->
+  <fieldset id="snapPanel" hidden>
+    <legend>MetaMask · Snap (비밀은 Snap 에 있다)</legend>
+    <button id="connectBtn" type="button">MetaMask 연결</button>
+    <span id="mmStatus" class="muted">연결 안 됨</span>
+    <br />
+    <button id="snapInfoBtn" type="button" title="Snap 의 getPublicInfo — 비밀은 실리지 않는다">Snap 상태 보기</button>
+    <button id="selfRevokeBtn" type="button" title="Snap 이 비밀번호를 묻고 CIA 에 자기 폐기를 낸다 — 되돌릴 수 없다">자기 폐기</button>
+    <button id="snapResetBtn" type="button" title="Snap 의 등록 비밀·동의 기록을 지운다(데모 초기화)">Snap 초기화</button>
+    <pre id="snapInfo">(Snap 상태를 아직 읽지 않았다)</pre>
+  </fieldset>
 
   <fieldset>
     <legend>등록 (§6.1, 한 번)</legend>
-    <label>uid <input id="uid" value="12345" size="8" /></label>
-    <label>pwd <input id="pwd" type="password" value="password123" size="12" /></label>
-    <br />
+    <span id="fileRegFields">
+      <label>uid <input id="uid" value="12345" size="8" /></label>
+      <label>pwd <input id="pwd" type="password" value="password123" size="12" /></label>
+      <br />
+    </span>
     <label class="muted">속성(10진 4개 — AA(CIA) 가 관리한다. 2026-09-22 §3.3: 지갑은 등록·재동기화 때 받아 여기 채우기만 한다)</label>
     <input id="attr0" size="6" title="attr0" readonly />
     <input id="attr1" size="6" title="attr1" readonly />
@@ -39,7 +63,7 @@
 
   <fieldset>
     <legend>온체인 트랜잭션 (설계 2026-09-18 §6.3 — sender = PPID 계정)</legend>
-    <p class="muted">지갑이 같은 π 를 트랜잭션마다 첨부하고 컨트랙트가 매번 검증한다. 첫 트랜잭션은 CREATE2 로 계정을 배포한다. 가스는 릴레이어(hardhat 계정 0).</p>
+    <p class="muted" id="txNote">지갑이 같은 π 를 트랜잭션마다 첨부하고 컨트랙트가 매번 검증한다. 첫 트랜잭션은 CREATE2 로 계정을 배포한다. 가스는 릴레이어(hardhat 계정 0).</p>
     <label>세션 <select id="txSession"></select></label><br />
     <label>to <input id="txTo" value="0x000000000000000000000000000000000000dEaD" size="44" /></label>
     <label>value(wei) <input id="txValue" value="0" size="10" /></label>
@@ -61,11 +85,148 @@
   </fieldset>
 
   <p class="muted">로그인·발급은 RP 페이지(:3100)의 버튼이 시작한다 — 발급은 로그인 안에서 필요할 때 자동으로 일어난다(설계 §6.2 "세션마다").</p>
+  </div>
 
   <script>
     const $ = (id) => document.getElementById(id);
+    // 팝업 모드는 같은 파일을 쿼리로 가른다(스펙 §3.2) — 에이전트는 /?authorize=1 에도 이 파일을 낸다.
+    const IS_AUTHORIZE = new URLSearchParams(location.search).get('authorize') === '1';
+    // /wallet/config 를 못 읽으면 지금까지의 동작(file 모드)으로 본다.
+    let cfg = { secrets: 'file', snapId: null, walletOrigin: location.origin, rpcUrl: null, ciaUrl: null, chainId: null };
+    let account = null;        // MetaMask 가 준 EOA — 가스를 내는 계정이다(PPID 계정과 다르다)
     let lastAttrs = null;      // /wallet/status 가 준 값 — "정확히 공개" 버튼이 쓴다
     let lastSessions = {};     // /wallet/status 의 sessions — 선택된 세션의 attrGateAddress 로 tx 폼 기본값을 채운다(스펙 §6.1)
+
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    async function postJson(url, body) {
+      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      return { status: r.status, body: await r.json().catch(() => ({})) };
+    }
+    const errText = (status, b) => `${status}: ${b.reason ?? b.error ?? ''}${b.detail ? ` (${b.detail})` : ''}${b.cia ? ` ${JSON.stringify(b.cia)}` : ''}`;
+
+    // ---- MetaMask · Snap ----
+    function requireEthereum() {
+      if (!window.ethereum) throw Object.assign(new Error('MetaMask 확장이 없다(window.ethereum 없음)'), { reason: 'snap_unavailable' });
+      return window.ethereum;
+    }
+    /** eth_requestAccounts → 계정, wallet_requestSnaps → Snap 설치·연결. 둘 다 사용자 확인 창을 띄운다. */
+    async function connectMetaMask() {
+      const eth = requireEthereum();
+      const accounts = await eth.request({ method: 'eth_requestAccounts' });
+      account = accounts && accounts.length ? accounts[0] : null;
+      if (!cfg.snapId) throw new Error('snapId 가 없다(/wallet/config)');
+      await eth.request({ method: 'wallet_requestSnaps', params: { [cfg.snapId]: {} } });
+      $('mmStatus').textContent = `계정 ${account} · Snap ${cfg.snapId}`;
+      return account;
+    }
+    const ensureConnected = async () => (account ? account : connectMetaMask());
+    /** params 를 생략하면 request.params 자체를 보내지 않는다 — updateUserCred 는 명시적 null 만 폐기로 본다(Snap Ruling 6). */
+    function invokeSnap(method, params) {
+      const eth = requireEthereum();
+      const request = params === undefined ? { method } : { method, params };
+      return eth.request({ method: 'wallet_invokeSnap', params: { snapId: cfg.snapId, request } });
+    }
+    // MetaMask 가 사용자 거절에 쓰는 코드. Snap 대화상자 거절은 { denied: true } 로 오고, 연결·트랜잭션 거절은 이 코드로 온다.
+    const isUserRejected = (e) => e && (e.code === 4001 || e.code === 'ACTION_REJECTED');
+    /** 로그인 동의 — 승인이면 증인 묶음, 거절이면 null. */
+    async function consentLogin({ origin, arid, allowAgent, serviceName }) {
+      const w = await invokeSnap('consentLogin', {
+        origin, arid: arid === undefined || arid === null ? null : String(arid),
+        allowAgent: allowAgent === '1' || allowAgent === true ? '1' : '0', serviceName: serviceName ?? null,
+      });
+      return w && w.denied ? null : w;
+    }
+    /** 로그인·재동기화 응답의 pending(userCredIssued·attrsChanged)을 Snap 에 반영한다. 에이전트는 Snap 을 못 부른다(스펙 §3.3). */
+    async function applyPendingToSnap(result) {
+      // null 은 "저장된 C_u 를 버려라"는 뜻이다 — 값이 없는 것(필드 자체가 없음)과 구분해야 한다.
+      if (result.userCredIssued !== undefined) await invokeSnap('updateUserCred', { userCred: result.userCredIssued });
+      if (result.attrsChanged) await invokeSnap('syncAttrs', { attrs: result.attrsChanged });
+    }
+
+    // ---- /authorize 팝업(스펙 §3.2·§4.2) ----
+    function runAuthorize() {
+      const step = (s) => { $('authStep').textContent = s; };
+      const log = (s) => { $('authLog').textContent += `${s}\n`; };
+      if (!window.opener) { step('이 창은 서비스 페이지가 열어야 한다(window.opener 가 없다).'); return; }
+      let handled = false;
+      const onMessage = async (ev) => {
+        const req = ev.data;
+        if (handled || !req || req.type !== 'mode3-authorize') return;
+        handled = true;
+        window.removeEventListener('message', onMessage);
+        // 결과는 요청을 보낸 창에만 돌려준다. 오리진이 어긋나면 진행하지 않고, 실제로 말을 건 오리진에 실패만 알린다
+        // (인증서의 오리진에 남의 요청 결과를 보내지 않는다).
+        const target = ev.origin === req.origin ? req.origin : ev.origin;
+        const reply = (result) => {
+          try { window.opener.postMessage({ type: 'mode3-authorize-result', r_s: req.r_s ?? null, result }, target); }
+          catch (e) { log(`결과 전송 실패: ${e.message}`); }
+          setTimeout(() => window.close(), result.ok ? 200 : 3000);   // 실패는 이유를 잠시 보이게 둔다
+        };
+        $('authTitle').textContent = `서비스 ${req.serviceName || req.origin} 로그인 승인 중…`;
+        if (ev.origin !== req.origin) {
+          step('오리진 불일치 — 이 요청은 진행하지 않는다.');
+          log(`메시지 오리진=${ev.origin}\n인증서 오리진=${req.origin}`);
+          return reply({ ok: false, reason: 'origin_mismatch' });
+        }
+        if (cfg.secrets !== 'snap') { step('이 지갑은 file 모드다 — 팝업 경로를 쓰지 않는다.'); return reply({ ok: false, reason: 'not_snap_mode' }); }
+        try {
+          step('MetaMask·Snap 연결 중…');
+          try { await connectMetaMask(); }
+          catch (e) {
+            step('MetaMask·Snap 연결 실패');
+            log(e.message);
+            return reply({ ok: false, reason: isUserRejected(e) ? 'user_denied' : 'snap_unavailable', detail: e.message });
+          }
+
+          // 재승인(스펙 §4.3): 이미 있는 세션에 증인만 다시 채운다 — 증명·발급은 하지 않는다.
+          if (req.reauth === true) {
+            step('세션 재승인 — Snap 동의 창을 확인하세요.');
+            const witness = await consentLogin(req);
+            if (!witness) { step('동의 거절'); return reply({ ok: false, reason: 'user_denied' }); }
+            const w = await postJson('/wallet/session/witness', { r_s: req.r_s, witness });
+            if (w.status !== 200) { step('재승인 실패'); log(errText(w.status, w.body)); return reply({ ok: false, reason: w.body.reason ?? 'session_witness_failed', detail: w.body.detail ?? null, status: w.status }); }
+            step('재승인 완료 — 창을 닫는다.');
+            return reply({ ok: true, reauth: true });
+          }
+
+          step('서비스 인증서·팩토리 검사 중…');
+          const pre = await postJson('/wallet/authorize/precheck', {
+            arid: req.arid, origin: req.origin, cert_s: req.cert_s, pk_trace: req.pk_trace, factoryAddress: req.factoryAddress ?? null,
+          });
+          if (pre.status !== 200) { step('서비스 검증 실패'); log(errText(pre.status, pre.body)); return reply({ ok: false, reason: pre.body.reason ?? 'precheck_failed', detail: pre.body.detail ?? null, status: pre.status }); }
+
+          step('Snap 동의 창을 확인하세요.');
+          const witness = await consentLogin(req);
+          if (!witness) { step('동의 거절'); return reply({ ok: false, reason: 'user_denied' }); }
+
+          step('로그인·증명 생성 중… (수 초 걸린다)');
+          const lg = await postJson('/wallet/login', {
+            arid: req.arid, origin: req.origin, cert_s: req.cert_s, pk_trace: req.pk_trace, r_s: req.r_s,
+            allowAgent: req.allowAgent === '1' || req.allowAgent === true ? '1' : '0',
+            factoryAddress: req.factoryAddress ?? null, attrGateAddress: req.attrGateAddress ?? null,
+            witness, verifiedOrigin: ev.origin,          // Origin 헤더 대신 팝업이 확인한 값(스펙 §3.3)
+          });
+          if (lg.status !== 200) { step('로그인 실패'); log(errText(lg.status, lg.body)); return reply({ ok: false, reason: lg.body.reason ?? 'login_failed', detail: lg.body.detail ?? null, status: lg.status }); }
+
+          step('Snap 에 새 자격증명·속성 반영 중…');
+          await applyPendingToSnap(lg.body);
+          // userCredIssued 에는 blind_u 가 들어 있다 — 서비스에 넘기지 않는다. attrsChanged 도 지갑 안 정보다.
+          const { userCredIssued, attrsChanged, ...toRp } = lg.body;
+          step('로그인 성공 — 창을 닫는다.');
+          reply({ ok: true, ...toRp });
+        } catch (e) {
+          step('오류');
+          log(e.message);
+          reply({ ok: false, reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
+        }
+      };
+      window.addEventListener('message', onMessage);
+      // 준비 신호는 오리진을 모르는 상태에서 보낸다('*'). 비밀은 실리지 않는다 — 요청을 받고 나서야 오리진을 대조한다.
+      window.opener.postMessage({ type: 'mode3-authorize-ready' }, '*');
+      step('서비스 페이지의 요청을 기다리는 중…');
+    }
+
+    // ---- 지갑 화면 ----
     // 세션을 고르면(또는 새로 목록에 들어오면) to=attrGateAddress, data=claim() 셀렉터로 채운다. 사용자가 이미 값을
     // 바꿔 놨으면 덮어쓰지 않는다 — 기본값(사망 주소·"0x")일 때만 채운다.
     function applyTxDefaults() {
@@ -74,7 +235,6 @@
       if ($('txTo').value.trim() === '0x000000000000000000000000000000000000dEaD') $('txTo').value = c.attrGateAddress;
       if ($('txData').value.trim() === '0x') $('txData').value = '0x4e71d92d';
     }
-    $('txSession').addEventListener('change', applyTxDefaults);
     async function refresh() {
       try {
         const r = await fetch('/wallet/status');
@@ -111,23 +271,55 @@
         applyTxDefaults();
       } catch (e) { $('status').textContent = `상태 조회 실패: ${e.message}`; }
     }
+    $('txSession').addEventListener('change', applyTxDefaults);
+    $('refreshBtn').addEventListener('click', refresh);
+
+    // 등록: file 모드는 지금처럼 폼의 uid·pwd, snap 모드는 Snap 이 묻고(§4.1) 페이지는 cm_u 만 나른다.
+    // 비밀번호는 Snap → 페이지 → 에이전트 → CIA 를 한 번 지날 뿐이다 — 화면·로그 어디에도 남기지 않는다.
     $('registerBtn').addEventListener('click', async () => {
       $('registerResult').textContent = '…';
-      // attrs 는 AA(CIA) 기록이다(2026-09-22 §3.3) — 본문에 실어도 무시되므로 uid·pwd 만 보낸다.
-      const r = await fetch('/wallet/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ uid: $('uid').value.trim(), pwd: $('pwd').value }) });
-      const b = await r.json().catch(() => ({}));
-      $('registerResult').textContent = r.status === 201 ? `등록됨 (uid=${b.uid}, attrs=${JSON.stringify(b.attrs)})` : `${r.status}: ${b.reason ?? b.error ?? ''} ${b.cia ? JSON.stringify(b.cia) : ''}`;
+      try {
+        let body;
+        if (cfg.secrets === 'snap') {
+          await ensureConnected();
+          const reg = await invokeSnap('register');
+          if (!reg || reg.denied) { $('registerResult').textContent = '등록 취소됨'; return; }
+          body = { uid: reg.uid, pwd: reg.pwd, cm_u: reg.cm_u };
+        } else {
+          // attrs 는 AA(CIA) 기록이다(2026-09-22 §3.3) — 본문에 실어도 무시되므로 uid·pwd 만 보낸다.
+          body = { uid: $('uid').value.trim(), pwd: $('pwd').value };
+        }
+        const { status, body: b } = await postJson('/wallet/register', body);
+        body = null;
+        if (status !== 201) {
+          $('registerResult').textContent = errText(status, b) + (cfg.secrets === 'snap' ? ' — 다시 등록하려면 Snap 초기화 후 시도한다' : '');
+          return;
+        }
+        if (cfg.secrets === 'snap') await invokeSnap('storeRegistration', { sk_u: b.sk_u, attrs: b.attrs });
+        $('registerResult').textContent = `등록됨 (uid=${b.uid}, attrs=${JSON.stringify(b.attrs)})`;
+      } catch (e) { $('registerResult').textContent = `오류: ${e.message}`; }
       refresh();
     });
+
     // 속성 재동기화(2026-09-22 §3.3): AA 기록을 다시 받는다. 값이 바뀌었으면 옛 사용자 자격증명·세션이 지워진다(다음 로그인이 새로 받는다).
+    // snap 모드는 sk_u 서명이 필요해 본문 증인을 실어야 하므로 동의 창을 한 번 거친다(에이전트는 Snap 을 못 부른다).
     $('attrsBtn').addEventListener('click', async () => {
       $('registerResult').textContent = '…';
-      const r = await fetch('/wallet/attrs/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
-      const b = await r.json().catch(() => ({}));
-      $('registerResult').textContent = r.status === 200 ? `재동기화됨 (attrs=${JSON.stringify(b.attrs)}, 바뀜=${b.changed})` : `${r.status}: ${b.reason ?? b.error ?? ''} ${b.cia ? JSON.stringify(b.cia) : ''}`;
+      try {
+        let payload = {};
+        if (cfg.secrets === 'snap') {
+          await ensureConnected();
+          const witness = await consentLogin({ origin: cfg.walletOrigin || location.origin, arid: null, allowAgent: '0', serviceName: '지갑 페이지(속성 재동기화)' });
+          if (!witness) { $('registerResult').textContent = '동의 거절'; return; }
+          payload = { witness };
+        }
+        const { status, body: b } = await postJson('/wallet/attrs/sync', payload);
+        if (status !== 200) { $('registerResult').textContent = errText(status, b); return; }
+        if (cfg.secrets === 'snap') await applyPendingToSnap(b);
+        $('registerResult').textContent = `재동기화됨 (attrs=${JSON.stringify(b.attrs)}, 바뀜=${b.changed})`;
+      } catch (e) { $('registerResult').textContent = `오류: ${e.message}`; }
       refresh();
     });
-    $('refreshBtn').addEventListener('click', refresh);
 
     // "정확히 공개": 체크된 슬롯의 lo=hi=내 현재 속성값으로 채운다.
     $('discExactBtn').addEventListener('click', () => {
@@ -137,31 +329,156 @@
       }
     });
 
+    // 체크된 슬롯만 {lo, hi}, 나머지는 null — normalizeDisclosure(lib/mode3_wallet.js) 가 회로 입력(mask/lo/hi)으로 바꾼다.
+    const readDisclose = () => [0, 1, 2, 3].map((k) => ($('dk' + k).checked ? { lo: $('discLo' + k).value.trim(), hi: $('discHi' + k).value.trim() } : null));
+    const txForm = () => ({ r_s: $('txSession').value, to: $('txTo').value.trim(), value: $('txValue').value.trim() || '0', data: $('txData').value.trim() || '0x', disclose: readDisclose() });
+    const txLog = (s) => { $('txLog').textContent += `${s}\n`; };
+    function showTxResult(b, extra) {
+      txLog(`${extra}지갑=${b.wallet}  nonce=${b.nonce}  ok(실행 성공)=${b.ok}  gasUsed=${b.gasUsed}\n공개=${JSON.stringify(b.disclosure)}\n온체인 공개(Disclosure 이벤트)=${JSON.stringify(b.onchainDisclosure)}\n실행=${JSON.stringify(b.executed)}`);
+      $('txVerdict').innerHTML = '<span class="ok">전송 성공</span>';
+    }
+
+    /** file 모드: 에이전트의 릴레이어가 보낸다(기존 경로). */
+    async function sendTxViaRelayer() {
+      const f = txForm();
+      const { status, body: b } = await postJson('/wallet/tx', f);
+      if (status !== 200) {
+        txLog(errText(status, b));
+        $('txVerdict').innerHTML = `<span class="bad">트랜잭션 실패 — ${b.reason ?? status}</span>`;
+        return;
+      }
+      showTxResult(b, `txHash=${b.txHash}\n배포=${b.deployed}  캐시 히트=${b.cacheHit}  root=${b.root}\ntimings=${JSON.stringify(b.timings)}\n`);
+    }
+
+    /** 영수증이 나올 때까지 기다린다(MetaMask 가 보낸 트랜잭션은 페이지가 직접 폴링한다). */
+    async function waitReceipt(txHash, tries = 60) {
+      const eth = requireEthereum();
+      for (let i = 0; i < tries; i++) {
+        const r = await eth.request({ method: 'eth_getTransactionReceipt', params: [txHash] });
+        if (r) return r;
+        await sleep(700);
+      }
+      throw new Error(`영수증을 못 받았다(txHash=${txHash})`);
+    }
+    /** 202 pending 이면 몇 번 다시 묻는다 — 에이전트는 기다리지 않는다(스펙 §3.3). */
+    async function recordTx(r_s, txHash, tries = 30) {
+      for (let i = 0; i < tries; i++) {
+        const r = await postJson('/wallet/tx/record', { r_s, txHash });
+        if (r.status !== 202) return r;
+        await sleep(700);
+      }
+      return { status: 202, body: { pending: true, txHash } };
+    }
+
+    /** snap 모드(스펙 §4.4): 동의 → prepare → (배포) → execute 를 MetaMask 로 → record. 가스는 MetaMask 가 추정한다. */
+    async function sendTxViaMetaMask() {
+      const f = txForm();
+      await ensureConnected();
+      const arid = lastSessions[f.r_s] ? lastSessions[f.r_s].arid : null;
+      const c = await invokeSnap('consentDisclosure', { arid, origin: null, disclose: f.disclose, to: f.to, value: f.value });
+      if (!c || c.denied) { $('txVerdict').innerHTML = '<span class="bad">공개 동의 거절</span>'; return; }
+
+      txLog('POST /wallet/tx/prepare — 증명 생성 중…');
+      const p = await postJson('/wallet/tx/prepare', f);
+      if (p.status !== 200) {
+        txLog(errText(p.status, p.body) + (p.body.reason === 'needs_consent' ? ' — 서비스 페이지에서 다시 로그인(재승인)해야 한다' : ''));
+        $('txVerdict').innerHTML = `<span class="bad">준비 실패 — ${p.body.reason ?? p.status}</span>`;
+        return;
+      }
+      const b = p.body;
+      const eth = requireEthereum();
+      txLog(`지갑 주소=${b.walletAddr}  nonce=${b.nonce}  배포 필요=${b.deployNeeded}  캐시 히트=${b.cacheHit}  root=${b.root}\ntimings=${JSON.stringify(b.timings)}`);
+      let deployHash = null;
+      if (b.deployNeeded) {
+        txLog('배포 트랜잭션 — MetaMask 확인 창을 확인하세요.');
+        deployHash = await eth.request({ method: 'eth_sendTransaction', params: [{ from: account, to: b.factoryAddress, data: b.deployCalldata }] });
+        txLog(`배포 txHash=${deployHash} — 영수증 대기…`);
+        await waitReceipt(deployHash);      // execute 는 배포된 계정으로 가야 한다
+      }
+      txLog('execute 트랜잭션 — MetaMask 확인 창을 확인하세요.');
+      const txHash = await eth.request({ method: 'eth_sendTransaction', params: [{ from: account, to: b.walletAddr, data: b.calldata }] });
+      txLog(`txHash=${txHash} — 영수증 대기…`);
+      const rec = await recordTx(f.r_s, txHash);
+      if (rec.status !== 200) {
+        txLog(errText(rec.status, rec.body));
+        $('txVerdict').innerHTML = `<span class="bad">영수증 기록 실패 — ${rec.body.reason ?? rec.status}</span>`;
+        return;
+      }
+      showTxResult(rec.body, `txHash=${rec.body.txHash}${deployHash ? `\n배포 txHash=${deployHash}` : ''}\n캐시 히트=${b.cacheHit}  root=${b.root}\n`);
+    }
+
     $('txBtn').addEventListener('click', async () => {
       $('txBtn').disabled = true; $('txVerdict').textContent = ''; $('txLog').textContent = '';
       try {
-        const r_s = $('txSession').value;
-        // 체크된 슬롯만 {lo, hi}, 나머지는 null — normalizeDisclosure(lib/mode3_wallet.js) 가 회로 입력(mask/lo/hi)으로 바꾼다.
-        const disclose = [0, 1, 2, 3].map((k) => ($('dk' + k).checked ? { lo: $('discLo' + k).value.trim(), hi: $('discHi' + k).value.trim() } : null));
-        const r = await fetch('/wallet/tx', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ r_s, to: $('txTo').value.trim(), value: $('txValue').value.trim() || '0', data: $('txData').value.trim() || '0x', disclose }),
-        });
-        const b = await r.json().catch(() => ({}));
-        if (r.status !== 200) {
-          $('txLog').textContent = `${r.status}: ${b.reason ?? b.error ?? ''} ${b.detail ?? ''}`;
-          $('txVerdict').innerHTML = `<span class="bad">트랜잭션 실패 — ${b.reason ?? r.status}</span>`;
-          return;
-        }
-        $('txLog').textContent = `txHash=${b.txHash}\n지갑=${b.wallet}  nonce=${b.nonce}  ok(실행 성공)=${b.ok}  gasUsed=${b.gasUsed}\n배포=${b.deployed}  캐시 히트=${b.cacheHit}  root=${b.root}\n공개=${JSON.stringify(b.disclosure)}\n온체인 공개(Disclosure 이벤트)=${JSON.stringify(b.onchainDisclosure)}\ntimings=${JSON.stringify(b.timings)}`;
-        $('txVerdict').innerHTML = `<span class="ok">전송 성공</span>`;
+        if (cfg.secrets === 'snap') await sendTxViaMetaMask();
+        else await sendTxViaRelayer();
       } catch (e) {
-        $('txLog').textContent = `오류: ${e.message}`;
-        $('txVerdict').innerHTML = `<span class="bad">오류</span>`;
+        txLog(`오류: ${e.message}`);
+        $('txVerdict').innerHTML = `<span class="bad">${isUserRejected(e) ? 'user_rejected — MetaMask 에서 거절했다' : '오류'}</span>`;
       } finally { $('txBtn').disabled = false; refresh(); }
     });
 
-    refresh();
+    // ---- snap 모드 전용 버튼 ----
+    $('connectBtn').addEventListener('click', async () => {
+      try { await connectMetaMask(); }
+      catch (e) { $('mmStatus').textContent = `연결 실패: ${e.message}`; }
+    });
+    $('snapInfoBtn').addEventListener('click', async () => {
+      try {
+        await ensureConnected();
+        const i = await invokeSnap('getPublicInfo', {});
+        $('snapInfo').textContent = `등록: ${i.registered ? `예 (uid=${i.uid})` : '아니오'}\n속성: ${JSON.stringify(i.attrs)}\n사용자 자격증명 보관: ${i.hasUserCred}\n동의 기록: ${JSON.stringify(i.consents)}`;
+      } catch (e) { $('snapInfo').textContent = `오류: ${e.message}`; }
+    });
+    // 자기 폐기(스펙 §4.5): 에이전트에는 이 경로가 없다 — Snap 이 비밀번호를 묻고 페이지가 CIA 에 직접 낸다(ciaUrl 은 /wallet/config).
+    $('selfRevokeBtn').addEventListener('click', async () => {
+      try {
+        await ensureConnected();
+        const r = await invokeSnap('selfRevoke');
+        if (!r || r.denied) { $('snapInfo').textContent = '자기 폐기 취소됨'; return; }
+        if (!cfg.ciaUrl) { $('snapInfo').textContent = '자기 폐기 실패: /wallet/config 에 ciaUrl 이 없다'; return; }
+        let res;
+        try { res = await postJson(`${cfg.ciaUrl}/cia/account/self_revoke`, { uid: r.uid, pwd: r.pwd }); }
+        catch (e) {
+          // CIA(:4100)가 교차 오리진 요청을 받지 않으면 브라우저가 막는다 — 그때는 CIA 계정 페이지에서 직접 한다.
+          $('snapInfo').textContent = `CIA 에 직접 낼 수 없다(${e.message}) — ${cfg.ciaUrl}/account 에서 폐기하세요.`;
+          return;
+        }
+        $('snapInfo').textContent = res.status === 200 ? `자기 폐기 완료 (uid=${r.uid}, treeUpdated=${res.body.treeUpdated ?? '-'})` : errText(res.status, res.body);
+      } catch (e) { $('snapInfo').textContent = `오류: ${e.message}`; }
+      refresh();
+    });
+    $('snapResetBtn').addEventListener('click', async () => {
+      try {
+        await ensureConnected();
+        const r = await invokeSnap('reset', {});
+        $('snapInfo').textContent = r && r.denied ? '초기화 취소됨' : 'Snap 등록을 지웠다 — 에이전트 파일의 공개 등록은 그대로다';
+      } catch (e) { $('snapInfo').textContent = `오류: ${e.message}`; }
+    });
+
+    function applySnapMode() {
+      $('snapPanel').hidden = false;
+      $('fileRegFields').hidden = true;
+      $('intro').innerHTML = '이 페이지는 지갑 에이전트(:5100)와 같은 오리진에서만 열린다. 등록 비밀은 MetaMask Snap 이 들고 있고, 에이전트 파일에는 공개 부분만 남는다. 로그인 동의·속성 공개 동의는 Snap 대화상자가 묻는다.';
+      $('txNote').textContent = '지갑이 같은 π 를 트랜잭션마다 첨부하고 컨트랙트가 매번 검증한다. 첫 트랜잭션은 CREATE2 로 계정을 배포한다. 가스는 MetaMask 의 내 계정이 낸다(에이전트는 calldata 만 만든다).';
+      $('registerBtn').title = 'Snap 이 uid·비밀번호를 묻는다 — 이 페이지는 비밀번호를 보관하지 않는다';
+    }
+
+    async function init() {
+      try {
+        const r = await fetch('/wallet/config');
+        if (r.ok) cfg = { ...cfg, ...(await r.json()) };
+      } catch { /* 설정을 못 읽으면 file 모드로 본다 */ }
+      if (IS_AUTHORIZE) {
+        $('mainView').hidden = true;
+        $('authorizeView').hidden = false;
+        runAuthorize();
+        return;
+      }
+      if (cfg.secrets === 'snap') applySnapMode();
+      refresh();
+    }
+    init();
   </script>
 </body>
 </html>

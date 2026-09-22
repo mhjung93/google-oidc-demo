@@ -218,11 +218,13 @@ app.options('/wallet/request', loginCors);
 // /wallet/config 는 GET 전용 — Snap 연동(설계 2026-09-22 metamask-snap) 전 RP 페이지가 비밀 모드·rpcUrl 등을 미리 읽는다.
 const configCors = cors({ origin: (origin, cb) => cb(null, origin === RP_ORIGIN), methods: ['GET'] });
 
+// 같은 파일이 지갑 화면과 /authorize 팝업(?authorize=1)을 겸한다 — 팝업은 쿼리로 모드만 바꾼다(metamask-snap §3.2).
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'wallet.html')));
 
 // 비밀 없음 — RP 페이지가 로그인 전에 지갑의 비밀 모드·체인 정보를 미리 읽는다(설계 2026-09-22 metamask-snap Ruling 1).
+// ciaUrl: snap 모드의 자기 폐기는 에이전트를 거치지 않고 페이지가 CIA 에 직접 낸다(§4.5, 에이전트에 그 경로가 없다).
 app.get('/wallet/config', configCors, async (req, res) => {
-  try { res.json({ secrets: SECRETS, snapId: SNAP_ID, walletOrigin: WALLET_ORIGIN, rpcUrl: RPC_URL, chainId: (await chainId()).toString() }); }
+  try { res.json({ secrets: SECRETS, snapId: SNAP_ID, walletOrigin: WALLET_ORIGIN, rpcUrl: RPC_URL, ciaUrl: CIA_URL, chainId: (await chainId()).toString() }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 

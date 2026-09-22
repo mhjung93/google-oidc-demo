@@ -157,10 +157,12 @@ export const onRpcRequest = async ({ origin, request }) => {
       return ok ? { ok: true } : { denied: true };
     }
 
-    // 에이전트 응답의 userCredIssued 를 저장한다. null 이면 저장된 C_u 를 버린다.
+    // 에이전트 응답의 userCredIssued 를 저장한다. 명시적 null(또는 { userCred: null })이면 저장된 C_u 를 버린다.
+    // 인자 자체가 없으면 거절한다(T3 리뷰 Ruling 6) — 페이지의 빈 호출이 조용히 C_u 를 버리면 안 된다.
     case 'updateUserCred': {
       requireRegistered(state);
-      state.userCred = unwrapUserCred(request.params ?? null);
+      if (request.params === undefined) fail('bad_params: updateUserCred 는 C_u 또는 명시적 null(폐기) 이 필요하다');
+      state.userCred = unwrapUserCred(request.params);
       await setState(state);
       return { ok: true };
     }
