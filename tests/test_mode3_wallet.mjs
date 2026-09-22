@@ -195,6 +195,16 @@ await t('ProofCache 는 공개 키가 다르면 다른 항목이다', () => {
   assert.equal(c.get('r', 's'), 'A'); assert.equal(c.get('r', 's', '3:0,410,0,0:2007,410,0,0'), 'B'); assert.equal(c.get('r', 's', '1:0,0,0,0:9,0,0,0'), null);
 });
 
+// 2026-09-23 점검 M-1: 세션이 만료로 정리되면 그 세션의 π 도 같이 버린다(같은 r_s 재로그인이 옛 π 를 히트하지 않게).
+await t('ProofCache.deleteSession 은 그 세션 항목만 지운다(공개 키가 달라도)', () => {
+  const c = new ProofCache();
+  c.set('r', 's', 'A'); c.set('r', 's', 'B', '3:0,410,0,0:2007,410,0,0'); c.set('r', 'other', 'C');
+  c.deleteSession('s');
+  assert.equal(c.get('r', 's'), null);
+  assert.equal(c.get('r', 's', '3:0,410,0,0:2007,410,0,0'), null);
+  assert.notEqual(c.get('r', 'other'), null);
+});
+
 await t('증인을 만든 뒤 트리가 바뀌어도 증명의 revRoot 는 증인 root 다 (스펙 §5)', async () => {
   // 위 121행 테스트가 cred.Cf_u 의 리프를 온체인에 폐기해 버렸다(append-only — 되돌릴 수 없다).
   // 그 cred 를 그대로 쓰면 root 고정과 무관하게 getNonMembershipWitness 가 "is a member" 로

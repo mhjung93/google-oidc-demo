@@ -74,15 +74,17 @@ if (state.version !== WALLET_STATE_VERSION) {
 }
 state.sessions ??= {};
 if (state.registration) state.registration.userCred ??= null;
-/** 만료(head > max_height)된 세션을 걷어낸다(설계 §8). 동기화 뒤 head 를 알 때 부른다. */
-function pruneSessions(head) {
-  let changed = false;
-  for (const [k, s] of Object.entries(state.sessions)) if (BigInt(s.credential.max_height) < head) { delete state.sessions[k]; changed = true; }
-  if (changed) persist();
-}
-
 const cache = new ProofCache();   // (root, r_s) → {proof, publicSignals}. 메모리만
 let lastSync = null;              // { root, head, tree } — tree 는 /wallet/status 가 userCred.revoked 를 다시 동기화하지 않고 판정하는 데 쓴다
+
+/** 만료(head > max_height)된 세션을 걷어낸다(설계 §8). 동기화 뒤 head 를 알 때 부른다.
+ *  세션의 π 캐시도 같이 버린다 — 남겨 두면 같은 r_s 로 다시 로그인했을 때(root 가 그대로면) 옛 세션의 π 가
+ *  히트해 새 pk_i·sig 와 어긋난다(2026-09-23 점검 M-1). */
+function pruneSessions(head) {
+  let changed = false;
+  for (const [k, s] of Object.entries(state.sessions)) if (BigInt(s.credential.max_height) < head) { delete state.sessions[k]; cache.deleteSession(k); changed = true; }
+  if (changed) persist();
+}
 
 // 증분 동기화 객체. LOG_ADDRESS 가 없으면 null — 그 경우 세 라우트는 지금처럼 chain_unavailable 을 낸다.
 const rcl = LOG_ADDRESS ? createRevocationSync({ provider, logAddress: LOG_ADDRESS, cacheFile: RCL_CACHE_FILE, log: (m) => console.warn(`[wallet] ${m}`) }) : null;
@@ -293,12 +295,20 @@ app.post('/wallet/register', async (req, res) => {
 // 오리진 대조는 여기서 하지 않는다: 팝업이 postMessage 의 event.origin 으로 확인한 값을 /wallet/login 의 verifiedOrigin 으로 낸다.
 app.post('/wallet/authorize/precheck', async (req, res) => {
   try {
-    const { arid, origin, cert_s, pk_trace, factoryAddress = null } = req.body ?? {};
+    const { arid, origin, cert_s, pk_trace, factoryAddress = null, r_s = null } = req.body ?? {};
     if (!isDec(arid) || typeof origin !== 'string' || !cert_s || !pk_trace || !isDec(pk_trace.x) || !isDec(pk_trace.y)) return res.status(400).json({ error: 'arid, origin, cert_s, pk_trace{x,y} 필요' });
     if (factoryAddress !== null && !isAddr(factoryAddress)) return res.status(400).json({ error: 'factoryAddress 는 주소' });
     if (!LOG_ADDRESS) return res.status(503).json({ reason: 'chain_unavailable', detail: 'CIA_LOG_ADDRESS not configured' });
     const bad = await checkService({ arid, origin, cert_s, pk_trace, factoryAddress });
     if (bad) return res.status(bad.status).json(bad.body);
+    // 재승인(r_s 있음): 동의 창의 "AI 에이전트 허용" 은 서비스가 보낸 값이 아니라 **이 세션의 실제 값**이어야 한다(2026-09-23 점검 B-I1).
+    // 인증서 검사를 통과한 뒤에만 답한다 — 남의 오리진이 세션의 allowAgent 를 물어볼 수 없다.
+    if (r_s !== null) {
+      if (!isDec(r_s)) return res.status(400).json({ error: 'r_s 는 10진 문자열' });
+      const s = state.sessions[BigInt(r_s).toString()];
+      if (!s) return res.status(404).json({ reason: 'no_session' });
+      return res.json({ ok: true, sessionAllowAgent: String(s.allowAgent) });
+    }
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -398,7 +408,7 @@ function setSessionWitness(rsKey, src) {
 app.post('/wallet/session/witness', async (req, res) => {
   try {
     if (SECRETS !== 'snap') return res.status(409).json({ reason: 'not_snap_mode' });
-    const { r_s, witness } = req.body ?? {};
+    const { r_s, witness, allowAgent = null } = req.body ?? {};
     if (!isDec(r_s) || !witness) return res.status(400).json({ error: 'r_s, witness 필요' });
     if (!state.registration) return res.status(409).json({ reason: 'not_registered' });
     try { await validateWitness(witness, state.registration.uid, state.registration.cm_u); }
@@ -406,6 +416,9 @@ app.post('/wallet/session/witness', async (req, res) => {
     const rsKey = BigInt(r_s).toString();
     const s = state.sessions[rsKey];
     if (!s) return res.status(404).json({ reason: 'no_session' });
+    // 팝업이 동의 창에 쓴 allowAgent 를 함께 보낸다 — 세션의 실제 값과 다르면 사용자가 읽은 문구가 세션 권한과 어긋난 것이므로
+    // 증인을 채우지 않는다(2026-09-23 점검 B-I1). 보내지 않으면(null) 예전처럼 통과한다.
+    if (allowAgent !== null && String(allowAgent) !== String(s.allowAgent)) return res.status(409).json({ reason: 'allow_agent_mismatch' });
     // 세션은 특정 C_u 위에 발급됐다 — Snap 이 든 C_u 가 그것이 아니면(다른 기기, 지워진 상태) 이 증인으로는 증명이 안 된다
     if (!witness.userCred || witness.userCred.Cf_u !== s.credential.Cf_u) return res.status(409).json({ reason: 'user_cred_mismatch' });
     // 파일의 공개 userCred 가 비어 있으면(상태 파일 버전 올림 등) secretSourceFor 가 증인을 재조립하지 못해 계속
@@ -446,9 +459,9 @@ async function proveSession(rsKey, synced, timings, disclosure = null, src) {
       });
     } catch (e) {
       // 위 has() 사전 검사와 증인 생성 사이에 다른 요청의 sync() 가 내 리프를 붙이면 getNonMembershipWitness 가
-      // "… is a member of the revocation set" 로 던진다(lib/imt_v2.js). 그건 폐기됐다는 뜻이므로 사전 검사와 같게
+      // "… is a member …" 로 던진다(lib/imt_v2.js). 테스트가 못 박은 계약은 이 부분 문구다. 그건 폐기됐다는 뜻이므로 사전 검사와 같게
       // revoked 로 올린다 — 그래야 라우트가 500 이 아니라 403 으로 세션까지 정리한다.
-      if (/is a member of the revocation set/.test(e.message ?? '')) throw Object.assign(new Error('revoked'), { reason: 'revoked' });
+      if (/is a member/.test(e.message ?? '')) throw Object.assign(new Error('revoked'), { reason: 'revoked' });
       throw e;
     }
     timings.proveMs = Date.now() - t;
@@ -486,7 +499,7 @@ app.post('/wallet/revalidate', loginCors, async (req, res) => {
     timings.syncMs = Date.now() - t;
     lastSync = { root: synced.root.toString(), head: synced.head.toString(), tree: synced.tree };
     pruneSessions(synced.head);
-    if (!state.sessions[rsKey]) return res.status(410).json({ reason: 'session_expired', timings });
+    if (!state.sessions[rsKey]) { cache.deleteSession(rsKey); return res.status(410).json({ reason: 'session_expired', timings }); }
     try {
       // snap 모드에서 세션 증인이 없으면(재시작) needs_consent — RP 페이지가 팝업을 다시 열어 /wallet/session/witness 로 채운다(§4.3)
       const src = secretSourceFor(req, rsKey);
@@ -495,7 +508,7 @@ app.post('/wallet/revalidate', loginCors, async (req, res) => {
     } catch (e) {
       if (e.reason === 'needs_consent') return res.status(409).json({ reason: 'needs_consent', timings });
       // 그 세션만 지운다. reg.userCred 는 그대로 둔다 — 다음 로그인의 ensureUserCred 가 tree.has 로 알아채 새로 받는다.
-      if (e.reason === 'revoked') { delete state.sessions[rsKey]; persist(); return res.status(403).json({ reason: 'revoked', timings }); }
+      if (e.reason === 'revoked') { delete state.sessions[rsKey]; cache.deleteSession(rsKey); persist(); return res.status(403).json({ reason: 'revoked', timings }); }
       if (e.reason === 'no_session') return res.status(404).json({ reason: 'no_session', timings });
       throw e;
     }
@@ -594,14 +607,14 @@ async function buildExecute(req) {
   timings.syncMs = Date.now() - t;
   lastSync = { root: synced.root.toString(), head: synced.head.toString(), tree: synced.tree };
   pruneSessions(synced.head);
-  if (!state.sessions[rsKey]) return fail(409, { reason: 'session_expired', timings });
+  if (!state.sessions[rsKey]) { cache.deleteSession(rsKey); return fail(409, { reason: 'session_expired', timings }); }
   let src;
   try { src = secretSourceFor(req, rsKey); }
   catch (e) { if (e.reason === 'needs_consent') return fail(409, { reason: 'needs_consent', timings }); throw e; }
   let proved;
   try { proved = await proveSession(rsKey, synced, timings, disclosure, src); }   // root·disclosure 가 같으면 캐시 π, 아니면 재증명
   catch (e) {
-    if (e.reason === 'revoked') { delete state.sessions[rsKey]; persist(); return fail(403, { reason: 'revoked', timings }); }
+    if (e.reason === 'revoked') { delete state.sessions[rsKey]; cache.deleteSession(rsKey); persist(); return fail(403, { reason: 'revoked', timings }); }
     if (e.reason === 'no_session') return fail(404, { reason: 'no_session', timings });
     throw e;
   }
@@ -612,7 +625,7 @@ async function buildExecute(req) {
   const payload = { to: ethers.getAddress(to), value: BigInt(value), data, nonce };
   const sig = signPayload(new ethers.Wallet(s.sessionPrivKey), { chainId: await chainId(), wallet: walletAddr, ...payload, discMask: disclosure.mask, discLo: disclosure.lo, discHi: disclosure.hi });
   const { a, b, c, pub } = await proofToCalldata(proved.proof, proved.publicSignals);
-  return { s, rsKey, disclosure, synced, timings, proved, walletAddr, deployNeeded, nonce, payload, args: [payload, sig, a, b, c, pub] };
+  return { s, rsKey, disclosure, timings, proved, walletAddr, deployNeeded, nonce, payload, args: [payload, sig, a, b, c, pub] };
 }
 
 /** execute 영수증 → 응답 공통부. disclosure = 요청값(지갑이 증명에 넣은 것), onchainDisclosure = Disclosure 이벤트에서 읽은 값(mask=0 이면 이벤트가 없어 null). */

@@ -285,6 +285,20 @@ try {
     assert.equal(dialogs.length, before, '동의 창을 띄우지 않는다');
   });
 
+  // 2026-09-23 점검 B-I1: 재승인 동의 창의 allowAgent 를 서비스가 정하면 안 된다. 세션은 allowAgent='1' 인데
+  // 요청에 '0' 을 실어 보내도, 팝업은 precheck 이 돌려준 세션 값을 쓰므로 문구는 '예' 여야 한다.
+  await t('재승인 allowAgent 바인딩: 요청이 0 이라도 동의 창은 세션의 실제 값(예)을 보여 준다', async () => {
+    const before = dialogs.length;
+    answers.push(true);                        // 재승인 consentLogin
+    const { popup, result } = await forgeAuthorize('mode3-authorize-forged-allowagent', {
+      ...(await rpRequestBase()), reauth: true, r_s: sessionRs, allowAgent: '0', serviceName: '○○은행',
+    });
+    assert.equal(result.ok, true, j(result));
+    assert.equal(dialogs.length, before + 1, '재승인 동의 대화상자 한 번');
+    assert.ok(lastDialog().includes('AI 에이전트 허용: 예'), `요청의 allowAgent 가 아니라 세션 값을 보여야 한다: ${lastDialog().slice(0, 400)}`);
+    await awaitPopupClosed(popup);
+  });
+
   // 팝업의 오리진 검사(최종 리뷰 Minor 7) — 지금까지 RP 쪽 필터만 테스트가 있었다.
   await t('팝업 오리진 검사: 메시지 오리진과 요청의 origin 이 다르면 동의 창 없이 origin_mismatch', async () => {
     const before = dialogs.length;
