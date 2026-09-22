@@ -26,11 +26,11 @@ const uid = '12345';
 /** 브라우저의 RP 페이지가 하는 일을 그대로: rp_info → r_s → 지갑 login → RP login. 세션 r_s 를 돌려준다. */
 async function loginViaRp(allowAgent = '0') {
   const info = (await rp.get('/api/mode3/rp_info')).body;
-  const { r_s, factoryAddress } = (await rp.post('/api/mode3/challenge')).body;
-  const w = await wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s, allowAgent, factoryAddress }, { Origin: rp.origin });
+  const { r_s, factoryAddress, attrGateAddress } = (await rp.post('/api/mode3/challenge')).body;
+  const w = await wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s, allowAgent, factoryAddress, attrGateAddress }, { Origin: rp.origin });
   if (w.status !== 200) return { walletStatus: w.status, wallet: w.body, r_s };
   const r = await rp.post('/api/mode3/login', { proof: w.body.proof, publicSignals: w.body.publicSignals, sig: w.body.sig, r_s });
-  return { walletStatus: 200, wallet: w.body, rpStatus: r.status, rp: r.body, r_s, factoryAddress };
+  return { walletStatus: 200, wallet: w.body, rpStatus: r.status, rp: r.body, r_s, factoryAddress, attrGateAddress };
 }
 /** 세션 재검증: 지갑이 같은 성명으로 (root 가 바뀌었으면 새) π 를 만들어 RP 에 낸다. */
 async function revalidateViaRp(r_s, { skipSync = false } = {}) {
@@ -299,6 +299,9 @@ try {
     assert.ok(info.attrGateAddress);
     const s = await loginViaRp();
     assert.equal(s.rp.ok, true, j(s));
+    // 스펙 §6.1(Ruling 9): 지갑은 로그인 때 받은 attrGateAddress 를 세션에 실어 /wallet/status 로 내준다(폼 기본값 to 로 쓰인다).
+    const status = (await wallet.get('/wallet/status')).body;
+    assert.equal(status.sessions[s.r_s].attrGateAddress, info.attrGateAddress);
     const disclose = [{ lo: '0', hi: '2007' }, { lo: '410', hi: '410' }, null, null];
     const tx = await wallet.post('/wallet/tx', { r_s: s.r_s, to: info.attrGateAddress, data: '0x4e71d92d', disclose }, { Origin: rp.origin });
     assert.equal(tx.status, 200, j(tx.body));

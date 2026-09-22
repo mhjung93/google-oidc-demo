@@ -42,7 +42,7 @@ const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { cacheTimeout: 
 // ---- 상태 ----
 // registration: { uid, s_u, r_u, cm_u:{x,y}, sk_u, attrs:[4개 10진],
 //                 userCred: { C_u_pt:{x,y}, Cf_u, blind_u, leaf, issuedAt } | null }   §6.1. 등록은 한 번, userCred 는 사용자당 하나
-// sessions:     r_s → { arid, PPID, pk_trace:{x,y}, factoryAddress|null, allowAgent("0"|"1"), C_s_pt:{x,y}, blind_s,
+// sessions:     r_s → { arid, PPID, pk_trace:{x,y}, factoryAddress|null, attrGateAddress|null, allowAgent("0"|"1"), C_s_pt:{x,y}, blind_s,
 //                       credential:{Cf_u,Cf_s,max_height,chainid,allowAgent,sigma,pk_CIA}, sessionPrivKey, pk_i, issuedAt }
 // version 6 (2026-09-21): 자격증명 이중 구조(userCred·blind_u / C_s·blind_s). 옛 파일은 등록만 살리고 세션은 비운다 —
 // 옛 등록에는 userCred 가 없으므로 다음 로그인이 새로 받는다.
@@ -130,7 +130,7 @@ async function ensureUserCred(tree, { resynced = false } = {}) {
   return { status: r.status, body: r.body, fresh: false };
 }
 
-async function issueSession(arid, r_s, pk_trace, allowAgent, factoryAddress, head) {
+async function issueSession(arid, r_s, pk_trace, allowAgent, factoryAddress, attrGateAddress, head) {
   const reg = state.registration;
   const session = createSessionKey();
   const chainid = await chainId();
@@ -142,7 +142,7 @@ async function issueSession(arid, r_s, pk_trace, allowAgent, factoryAddress, hea
   if (r.status === 200) {
     const PPID = await ppid({ uid: BigInt(reg.uid), arid: BigInt(arid), s_u: BigInt(reg.s_u), chainid });
     state.sessions[r_s.toString()] = {
-      arid, PPID: PPID.toString(), pk_trace: { x: pk_trace.x.toString(), y: pk_trace.y.toString() }, factoryAddress, allowAgent,
+      arid, PPID: PPID.toString(), pk_trace: { x: pk_trace.x.toString(), y: pk_trace.y.toString() }, factoryAddress, attrGateAddress, allowAgent,
       C_s_pt: { x: req.C_s_pt.x.toString(), y: req.C_s_pt.y.toString() }, blind_s: req.secrets.blind_s.toString(),
       credential: r.body, sessionPrivKey: session.wallet.privateKey, pk_i: session.pk_i.toString(), issuedAt: new Date().toISOString(),
     };
@@ -169,7 +169,7 @@ app.get('/wallet/status', async (req, res) => {
   try { head = (await provider.getBlockNumber()).toString(); } catch { /* 체인 없음 */ }
   const sessions = {};
   for (const [r_s, e] of Object.entries(state.sessions)) {
-    sessions[r_s] = { arid: e.arid, PPID: e.PPID, max_height: e.credential.max_height, chainid: e.credential.chainid, allowAgent: e.allowAgent, factoryAddress: e.factoryAddress, sessionAddress: new ethers.Wallet(e.sessionPrivKey).address, issuedAt: e.issuedAt, pk_trace: e.pk_trace };
+    sessions[r_s] = { arid: e.arid, PPID: e.PPID, max_height: e.credential.max_height, chainid: e.credential.chainid, allowAgent: e.allowAgent, factoryAddress: e.factoryAddress, attrGateAddress: e.attrGateAddress ?? null, sessionAddress: new ethers.Wallet(e.sessionPrivKey).address, issuedAt: e.issuedAt, pk_trace: e.pk_trace };
   }
   // userCred.revoked 는 마지막 동기화의 트리로 판정한다(여기서 다시 동기화하지 않는다). 아직 동기화가 없으면 null.
   const uc = state.registration?.userCred;
@@ -200,10 +200,12 @@ app.post('/wallet/register', async (req, res) => {
 
 app.post('/wallet/login', loginCors, async (req, res) => {
   try {
-    const { arid, origin, cert_s, pk_trace, r_s, allowAgent = '0', factoryAddress = null } = req.body ?? {};
+    const { arid, origin, cert_s, pk_trace, r_s, allowAgent = '0', factoryAddress = null, attrGateAddress = null } = req.body ?? {};
     if (!isDec(arid) || typeof origin !== 'string' || !cert_s || !pk_trace || !isDec(pk_trace.x) || !isDec(pk_trace.y) || !isDec(r_s)) return res.status(400).json({ error: 'arid, origin, cert_s, pk_trace{x,y}, r_s 필요' });
     if (allowAgent !== '0' && allowAgent !== '1') return res.status(400).json({ error: 'allowAgent 는 "0" 또는 "1"' });
     if (factoryAddress !== null && !isAddr(factoryAddress)) return res.status(400).json({ error: 'factoryAddress 는 주소' });
+    // attrGateAddress 는 서비스가 알려주는 값을 세션에 실어 나를 뿐 지갑이 검증하지 않는다(스펙 §6.1) — 지갑 폼 기본값(to)으로만 쓰인다.
+    if (attrGateAddress !== null && !isAddr(attrGateAddress)) return res.status(400).json({ error: 'attrGateAddress 는 주소' });
     if (!state.registration) return res.status(409).json({ reason: 'not_registered' });
     if (!LOG_ADDRESS) return res.status(503).json({ reason: 'chain_unavailable', detail: 'CIA_LOG_ADDRESS not configured' });
     const rs = BigInt(r_s);
@@ -249,7 +251,7 @@ app.post('/wallet/login', loginCors, async (req, res) => {
     if (uc.status === 403) return res.status(403).json({ reason: 'account_disabled', timings });
     if (uc.status !== 200) return res.status(502).json({ reason: 'user_cred_failed', cia: uc.body, timings });
     // 세션 자격증명은 로그인마다(설계 §5), 만료는 방금 읽은 head 기준
-    const issue = () => issueSession(arid, rs, { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress ? ethers.getAddress(factoryAddress) : null, synced.head);
+    const issue = () => issueSession(arid, rs, { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress ? ethers.getAddress(attrGateAddress) : null, synced.head);
     t = Date.now();
     let r = await issue();
     timings.issueMs = Date.now() - t;

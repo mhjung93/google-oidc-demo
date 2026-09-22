@@ -82,11 +82,11 @@
       try {
         if (!info) await loadInfo();
         let t0 = Date.now();
-        const { r_s, factoryAddress } = await (await post('/api/mode3/challenge')).json();
+        const { r_s, factoryAddress, attrGateAddress } = await (await post('/api/mode3/challenge')).json();
         log(`1. r_s 발급 ${ms(t0)}: ${r_s.slice(0, 16)}…`);
 
         t0 = Date.now();
-        const w = await post(`${info.walletAgentOrigin}/wallet/login`, { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s, allowAgent: $('allowAgent').checked ? '1' : '0', factoryAddress });
+        const w = await post(`${info.walletAgentOrigin}/wallet/login`, { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s, allowAgent: $('allowAgent').checked ? '1' : '0', factoryAddress, attrGateAddress });
         const wb = await w.json().catch(() => ({}));
         if (w.status !== 200) {
           log(`2. 지갑 ${w.status} ${ms(t0)}: ${wb.reason ?? wb.error ?? ''} ${wb.detail ?? ''}`);

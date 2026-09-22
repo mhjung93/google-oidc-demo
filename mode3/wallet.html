@@ -64,7 +64,17 @@
 
   <script>
     const $ = (id) => document.getElementById(id);
-    let lastAttrs = null;   // /wallet/status 가 준 값 — "정확히 공개" 버튼이 쓴다
+    let lastAttrs = null;      // /wallet/status 가 준 값 — "정확히 공개" 버튼이 쓴다
+    let lastSessions = {};     // /wallet/status 의 sessions — 선택된 세션의 attrGateAddress 로 tx 폼 기본값을 채운다(스펙 §6.1)
+    // 세션을 고르면(또는 새로 목록에 들어오면) to=attrGateAddress, data=claim() 셀렉터로 채운다. 사용자가 이미 값을
+    // 바꿔 놨으면 덮어쓰지 않는다 — 기본값(사망 주소·"0x")일 때만 채운다.
+    function applyTxDefaults() {
+      const c = lastSessions[$('txSession').value];
+      if (!c || !c.attrGateAddress) return;
+      if ($('txTo').value.trim() === '0x000000000000000000000000000000000000dEaD') $('txTo').value = c.attrGateAddress;
+      if ($('txData').value.trim() === '0x') $('txData').value = '0x4e71d92d';
+    }
+    $('txSession').addEventListener('change', applyTxDefaults);
     async function refresh() {
       try {
         const r = await fetch('/wallet/status');
@@ -84,6 +94,7 @@
         for (const [r_s, c] of entries) lines.push(`  r_s=${r_s.slice(0, 12)}…  arid=${c.arid}\n    max_height=${c.max_height}  chainid=${c.chainid}  allowAgent=${c.allowAgent}  PPID=${String(c.PPID).slice(0, 12)}…\n    세션 주소=${c.sessionAddress}  팩토리=${c.factoryAddress ?? '-'}\n    발급=${c.issuedAt}`);
         $('status').textContent = lines.join('\n');
 
+        lastSessions = s.sessions;
         const sel = $('txSession');
         const prev = sel.value;
         sel.textContent = '';
@@ -97,6 +108,7 @@
         }
         if (entries.some(([r_s]) => r_s === prev)) sel.value = prev;
         $('txBtn').disabled = !anyFactory;
+        applyTxDefaults();
       } catch (e) { $('status').textContent = `상태 조회 실패: ${e.message}`; }
     }
     $('registerBtn').addEventListener('click', async () => {
