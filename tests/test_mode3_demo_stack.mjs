@@ -397,6 +397,8 @@ try {
     assert.equal(r.status, 200, j(r.body)); assert.equal(r.body.disabled, true);
     // 이 태스크의 핵심 불변식: 비밀번호는 중계만 되고 에이전트의 상태 파일·로그 어디에도 남지 않는다.
     assert.ok(!fs.readFileSync(stack.walletStateFile, 'utf8').includes('password123'), '비밀번호가 지갑 상태 파일에 남았다');
+    // 양성 대조: stdout 캡처가 깨져 log() 가 늘 빈 문자열이면 위 "비밀번호가 없다" 단언이 조용히 무장해제된다.
+    assert.ok(wallet.log().includes('Mode 3 wallet agent at'), '로그 캡처 양성 대조');
     assert.ok(!wallet.log().includes('password123'), '비밀번호가 지갑 로그에 남았다');
     assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
     // 뒤 시나리오들이 로그인을 이어 가므로 복구해 둔다 — 4′ 과 같이 PPID 는 그대로여야 한다.

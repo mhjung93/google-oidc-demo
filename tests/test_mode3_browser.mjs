@@ -110,6 +110,37 @@ try {
     return [document.documentElement.outerHTML, inputs, store(localStorage), store(sessionStorage)].join('\n');
   });
 
+  /** RP 페이지가 들고 있는 서비스 정보(진짜 arid·origin·cert_s·pk_trace). */
+  const rpRequestBase = () => rpPage.evaluate(() => ({ arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace }));
+  /**
+   * 정상 흐름을 타지 않고 승인 팝업에 **임의의 요청 본문**을 직접 보낸다(피싱 페이지 흉내).
+   * 팝업은 사용자 제스처로만 열리므로 버튼을 하나 만들어 Playwright 가 실제로 누른다.
+   * 돌려주는 것은 { popup, result } — result 는 팝업이 postMessage 로 보낸 mode3-authorize-result 의 result.
+   */
+  async function forgeAuthorize(name, request) {
+    await rpPage.evaluate(({ walletOrigin, request: req, name: winName }) => {
+      document.getElementById('forgedBtn')?.remove();
+      window.__forged = new Promise((resolve) => { window.__forgedResolve = resolve; });
+      const btn = document.createElement('button');
+      btn.id = 'forgedBtn';
+      btn.addEventListener('click', () => {
+        const popup = window.open(`${walletOrigin}/?authorize=1`, winName, 'width=480,height=680');
+        window.addEventListener('message', (ev) => {
+          if (ev.origin !== walletOrigin || ev.source !== popup || !ev.data) return;
+          if (ev.data.type === 'mode3-authorize-ready') { popup.postMessage({ type: 'mode3-authorize', ...req }, walletOrigin); return; }
+          if (ev.data.type === 'mode3-authorize-result') window.__forgedResolve(ev.data.result);
+        });
+      });
+      document.body.appendChild(btn);
+    }, { walletOrigin: wallet.base, request, name });
+    const [popup] = await Promise.all([context.waitForEvent('page'), rpPage.click('#forgedBtn')]);
+    const result = await rpPage.evaluate(() => Promise.race([
+      window.__forged,
+      new Promise((_, rej) => setTimeout(() => rej(new Error('위조 요청의 결과가 60초 안에 오지 않았다')), 60_000)),
+    ]));
+    return { popup, result };
+  }
+
   const walletPage = await context.newPage();
   await walletPage.goto(wallet.base);
 
@@ -254,6 +285,32 @@ try {
     assert.equal(dialogs.length, before, '동의 창을 띄우지 않는다');
   });
 
+  // 팝업의 오리진 검사(최종 리뷰 Minor 7) — 지금까지 RP 쪽 필터만 테스트가 있었다.
+  await t('팝업 오리진 검사: 메시지 오리진과 요청의 origin 이 다르면 동의 창 없이 origin_mismatch', async () => {
+    const before = dialogs.length;
+    const { popup, result } = await forgeAuthorize('mode3-authorize-forged-origin', {
+      ...(await rpRequestBase()), origin: 'http://evil.example', r_s: '424243', allowAgent: '1', serviceName: '○○은행',
+    });
+    assert.equal(result.ok, false, j(result));
+    assert.equal(result.reason, 'origin_mismatch', j(result));
+    assert.equal(dialogs.length, before, '동의 창을 띄우지 않는다');
+    await awaitPopupClosed(popup);
+  });
+
+  // 최종 리뷰 Important 1: reauth 분기가 precheck 을 건너뛰면 임의 페이지가 자기 오리진·자기가 쓴 서비스 이름으로
+  // Snap 로그인 동의 창을 띄울 수 있었다. 오리진은 자기일치(RP 페이지가 보내니 ev.origin === req.origin)지만
+  // arid 가 인증서와 맞지 않으므로 precheck 이 403 bad_rp_cert 로 막아야 하고, 동의 창은 뜨지 않아야 한다.
+  await t('재승인 위조: 인증서가 맞지 않는 reauth 요청은 precheck 에서 막히고 동의 창이 뜨지 않는다', async () => {
+    const before = dialogs.length;
+    const { popup, result } = await forgeAuthorize('mode3-authorize-forged-reauth', {
+      ...(await rpRequestBase()), arid: '999', reauth: true, r_s: sessionRs, allowAgent: '1', serviceName: '○○은행',
+    });
+    assert.equal(result.ok, false, j(result));
+    assert.equal(result.reason, 'bad_rp_cert', j(result));
+    assert.equal(dialogs.length, before, 'precheck 을 통과하기 전에는 Snap 동의 창을 띄우지 않는다');
+    await awaitPopupClosed(popup);
+  });
+
   await t('팝업 차단: window.open 이 null 이면 안내만 하고 로그인 버튼이 다시 살아난다', async () => {
     await rpPage.evaluate(() => { window.__realOpen = window.open; window.open = () => null; });
     try {
@@ -306,6 +363,25 @@ try {
     await awaitPopupClosed(popup);
     assert.equal((await rp.get('/api/mode3/logins')).body.logins.length, before, '거절은 로그인을 남기지 않는다');
   });
+  // 최종 리뷰 Important 2: AA 가 속성을 바꾸면 다음 로그인 응답에 attrsChanged 와 **새** userCredIssued 가 함께 실린다.
+  // 지갑 페이지의 applyPendingToSnap 은 syncAttrs 를 먼저 하고(속성이 바뀌면 Snap 이 옛 C_u 를 함께 버린다) 새 C_u 를
+  // 그 뒤에 저장해야 한다 — 순서를 뒤집으면 갓 저장한 C_u 가 지워져 아래 "C_u 가 남아 있다" 단언이 깨진다.
+  await t('AA 속성 변경 뒤 로그인: Snap 의 속성이 갱신되고 새 C_u 가 남는다(syncAttrs → updateUserCred 순서)', async () => {
+    const beforeCf = snapState.userCred?.Cf_u ?? null;
+    assert.ok(beforeCf, '시작 시 Snap 에 C_u 가 있다');
+    assert.deepEqual(snapState.registration.attrs, ['1990', '410', '2', '0']);
+    assert.equal((await stack.cia.adminPost('/cia/accounts/12345/attrs', { attrs: ['1990', '410', '3', '0'] })).status, 200);
+    assert.equal((await stack.cia.adminPost('/cia/publish')).body.published, true);
+    answers.push(true);                        // 로그인 동의
+    const [popup] = await Promise.all([context.waitForEvent('page'), rpPage.click('#loginBtn')]);
+    await waitText(rpPage, '#verdict', '로그인 성공', 240_000);
+    await awaitPopupClosed(popup);
+    assert.deepEqual(snapState.registration.attrs, ['1990', '410', '3', '0'], 'syncAttrs 가 Snap 의 속성을 갱신했다');
+    assert.ok(snapState.userCred, '새 C_u 가 Snap 에 남아 있어야 한다(syncAttrs 를 나중에 하면 지워진다)');
+    assert.notEqual(snapState.userCred.Cf_u, beforeCf, '옛 C_u 가 아니라 새로 받은 것이다');
+    assert.equal((await wallet.get('/wallet/status')).body.userCred.Cf_u, snapState.userCred.Cf_u, '에이전트의 공개 Cf_u 와 같다');
+  });
+
   await t('하네스: 준비한 대화상자 응답이 남지 않았다(기대한 동의 창이 다 떴다)', async () => {
     assert.equal(answers.length, 0, `쓰이지 않은 응답이 남았다: ${j(answers)}`);
   });

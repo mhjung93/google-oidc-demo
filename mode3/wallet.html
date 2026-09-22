@@ -184,6 +184,15 @@
             return reply({ ok: false, reason: isUserRejected(e) ? 'user_denied' : 'snap_unavailable', detail: e.message });
           }
 
+          // 인증서·팩토리 검사는 **로그인과 재승인이 함께** 거친다(스펙 §4.2·§4.3). 오리진 자기일치만 보고 동의 창을 띄우면
+          // 임의 페이지가 자기 오리진·자기가 쓴 서비스 이름으로 Snap 로그인 동의 창을 띄울 수 있다(2026-09-22 최종 리뷰 Important 1).
+          // 재승인 요청에도 arid·cert_s·pk_trace 가 실려 오므로 같은 precheck 을 통과해야만 동의 창으로 간다.
+          step('서비스 인증서·팩토리 검사 중…');
+          const pre = await postJson('/wallet/authorize/precheck', {
+            arid: req.arid, origin: req.origin, cert_s: req.cert_s, pk_trace: req.pk_trace, factoryAddress: req.factoryAddress ?? null,
+          });
+          if (pre.status !== 200) { step('서비스 검증 실패'); log(errText(pre.status, pre.body)); return reply({ ok: false, reason: pre.body.reason ?? 'precheck_failed', detail: pre.body.detail ?? null, status: pre.status }); }
+
           // 재승인(스펙 §4.3): 이미 있는 세션에 증인만 다시 채운다 — 증명·발급은 하지 않는다.
           if (req.reauth === true) {
             step('세션 재승인 — Snap 동의 창을 확인하세요.');
@@ -194,12 +203,6 @@
             step('재승인 완료 — 창을 닫는다.');
             return reply({ ok: true, reauth: true });
           }
-
-          step('서비스 인증서·팩토리 검사 중…');
-          const pre = await postJson('/wallet/authorize/precheck', {
-            arid: req.arid, origin: req.origin, cert_s: req.cert_s, pk_trace: req.pk_trace, factoryAddress: req.factoryAddress ?? null,
-          });
-          if (pre.status !== 200) { step('서비스 검증 실패'); log(errText(pre.status, pre.body)); return reply({ ok: false, reason: pre.body.reason ?? 'precheck_failed', detail: pre.body.detail ?? null, status: pre.status }); }
 
           step('Snap 동의 창을 확인하세요.');
           const witness = await consentLogin(req);
@@ -298,7 +301,18 @@
         const { status, body: b } = await postJson('/wallet/register', body);
         body = null;
         if (status !== 201) {
-          $('registerResult').textContent = errText(status, b) + (cfg.secrets === 'snap' ? ' — 다시 등록하려면 Snap 초기화 후 시도한다' : '');
+          // Snap 의 register 가 이미 s_u·r_u 를 저장한 뒤라 그냥 다시 누르면 Snap 이 already_registered 로 막는다.
+          // 빠져나오는 길은 실패 원인에 따라 다르다(2026-09-22 최종 리뷰 Minor 3):
+          //  - 에이전트가 409 already_registered: 에이전트 상태 파일에 옛 등록이 있다. Snap 과 파일은 다른 보관소라
+          //    "Snap 초기화" 만으로는 풀리지 않는다 — 재시연 세트로 상태 파일까지 비워야 한다.
+          //  - 그 밖(비밀번호 오류·CIA 오류): Snap 만 초기화하고 다시 등록하면 된다.
+          const stuckOnAgent = status === 409 && b.reason === 'already_registered';
+          const hint = cfg.secrets !== 'snap' ? ''
+            : stuckOnAgent
+              ? ' — 에이전트 상태 파일에 이미 등록이 있다(Snap 과 다른 보관소라 "Snap 초기화" 만으로는 풀리지 않는다).'
+                + ' docs/MODE3_DEMO.md 의 재시연 세트로 mode3_wallet_state.json 까지 비운 뒤 "Snap 초기화" → 다시 등록한다'
+              : ' — Snap 에는 등록 비밀이 이미 만들어졌다. "Snap 초기화" 를 누른 뒤 다시 등록한다';
+          $('registerResult').textContent = errText(status, b) + hint;
           return;
         }
         if (cfg.secrets === 'snap') await invokeSnap('storeRegistration', { sk_u: b.sk_u, attrs: b.attrs });

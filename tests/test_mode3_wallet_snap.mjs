@@ -93,10 +93,14 @@ try {
     const noW = await wallet.post('/wallet/login', base);
     assert.equal(noW.status, 400, j(noW.body)); assert.equal(noW.body.reason, 'witness_required');
     const w = sim.consentLogin({ origin: info.origin, arid: info.arid, allowAgent: '0' });
-    validateWitness(w, '12345');   // 시뮬레이터의 증인은 에이전트의 형식 검사를 통과해야 한다
+    await validateWitness(w, '12345', sim.state.registration.cm_u);   // 시뮬레이터의 증인은 에이전트의 형식·cm_u 검사를 통과해야 한다
     assert.equal(w.userCred, null, '첫 로그인 전에는 C_u 가 없다');
     const badW = await wallet.post('/wallet/login', { ...base, witness: { ...w, uid: '1' } });
     assert.equal(badW.status, 400, j(badW.body)); assert.equal(badW.body.reason, 'bad_witness');
+    // cm_u 바인딩(최종 리뷰 Minor 1): 형식은 맞지만 등록의 s_u 가 아닌 증인은 거절된다.
+    const badCm = await wallet.post('/wallet/login', { ...base, witness: { ...w, s_u: '12345' } });
+    assert.equal(badCm.status, 400, j(badCm.body)); assert.equal(badCm.body.reason, 'bad_witness');
+    assert.match(badCm.body.detail ?? '', /cm_u/);
     const badO = await wallet.post('/wallet/login', { ...base, witness: w, verifiedOrigin: 'http://evil:1' });
     assert.equal(badO.status, 403, j(badO.body)); assert.equal(badO.body.reason, 'bad_rp_cert');
     // Origin 헤더는 snap 모드에서 무시된다(같은 오리진 호출) — verifiedOrigin 만 본다

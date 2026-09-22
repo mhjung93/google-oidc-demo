@@ -2,7 +2,8 @@
 // tests/helpers/snap_sim.mjs(시뮬레이터)와 같은 입출력을 지켜야 한다. MetaMask 없이 전역 `snap` 을 스텁으로 대신한다
 // (`snap_manageState` 는 메모리 맵, `snap_dialog` 는 시나리오별 응답 큐).
 //   node snap-mode3/test/rpc.test.mjs
-// 이 파일은 패키지 지역 테스트라 scripts/run_tests.sh 그룹에는 넣지 않는다(README 참고).
+// scripts/run_tests.sh 의 `snap` 그룹이 이 파일을 돌린다(2026-09-22 Ruling 9): `bash scripts/run_tests.sh snap`.
+// 체인도 브라우저도 필요 없지만 snap-mode3/node_modules(@metamask/snaps-sdk)를 전제하므로 unit 이 아니라 별도 그룹이다.
 import assert from 'node:assert/strict';
 import { validateWitness } from '../../lib/mode3_secret_source.js';
 import { registrationCommit } from '../../lib/mode3_issuance.js';
@@ -120,7 +121,8 @@ await t('getPublicInfo 에는 비밀이 없다', async () => {
 await t('consentLogin 승인 → validateWitness 를 통과하는 증인, consents 기록', async () => {
   answers.push(true);
   const w = await call('consentLogin', { origin: RP_ORIGIN, arid: '777', allowAgent: '1', serviceName: '데모 RP' });
-  validateWitness(w, '12345');
+  // cm_u 까지 준다 — 증인의 s_u·r_u 가 register 가 낸 cm_u 와 실제로 묶였는지 본다(최종 리뷰 Minor 1).
+  await validateWitness(w, '12345', registered.cm_u);
   assert.equal(w.uid, '12345');
   assert.equal(w.sk_u, SK_U);
   assert.deepEqual(w.attrs, ATTRS);
@@ -160,7 +162,7 @@ await t('updateUserCred(obj) 저장 → 증인에 실리고 getPublicInfo 는 ha
   assert.ok(!JSON.stringify(info).includes(USER_CRED.blind_u), 'blind_u 는 공개 정보에 없다');
   answers.push(true);
   const w = await call('consentLogin', { origin: RP_ORIGIN, arid: '777', allowAgent: '1', serviceName: '데모 RP' });
-  validateWitness(w, '12345');
+  await validateWitness(w, '12345', registered.cm_u);
   assert.deepEqual(w.userCred.C_u_pt, USER_CRED.C_u_pt);
   assert.equal(w.userCred.blind_u, USER_CRED.blind_u);
 });

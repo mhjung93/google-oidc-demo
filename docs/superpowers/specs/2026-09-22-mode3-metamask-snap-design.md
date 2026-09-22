@@ -109,7 +109,7 @@
     mode: 'snap' | 'file'
     registration(): { uid, s_u, r_u, sk_u, attrs, cm_u } | null   // 비밀 포함
     userCred(): { C_u_pt, Cf_u, blind_u, leaf } | null
-    setRegistration(reg), setUserCred(uc), setAttrs(attrs)
+    setUserCred(uc), setAttrs(attrs)      // 등록 자체를 바꾸는 setter 는 두지 않았다 — 등록은 /wallet/register 가 state 에 직접 쓴다
   }
   ```
   - `file`: 지금 상태 파일 그대로(`registration`, `registration.userCred`).
@@ -171,8 +171,11 @@ RP 페이지: 결과로 POST /api/mode3/login → 세션
 ### 4.3 재검증·세션 요청·재증명
 - `/wallet/revalidate`·`/wallet/request`: RP 페이지가 CORS 로 호출(지금과 같음). 재증명이 필요하면 `sessions[r_s].witness` 를 쓴다.
 - 프로세스 재시작 등으로 `witness` 가 없으면 `409 needs_consent` → RP 페이지가 같은 팝업을 열고 `{ type:'mode3-authorize', reauth:true,
-  r_s, … }` 를 보낸다. 팝업은 `consentLogin` 을 다시 받아 `POST /wallet/session/witness { r_s, witness }` 로 채운 뒤 결과를 돌려주고,
-  RP 페이지가 재검증을 이어 간다.
+  r_s, arid, origin, cert_s, pk_trace, allowAgent, … }` 를 보낸다. 팝업은 **로그인 경로와 똑같이** `event.origin === request.origin` 확인 →
+  `POST /wallet/authorize/precheck`(인증서 검증) 를 먼저 통과시킨 뒤에만 `consentLogin` 을 다시 받고, `POST /wallet/session/witness
+  { r_s, witness }` 로 채운 뒤 결과를 돌려주고 RP 페이지가 재검증을 이어 간다. 검증 실패의 문구·`reason` 은 로그인 경로와 같다.
+  (초안에는 이 precheck 단계가 빠져 있었고 구현도 그대로 따라가, 임의 페이지가 자기 오리진·자기가 쓴 서비스 이름으로 Snap 로그인
+  동의 창을 띄울 수 있었다 — 2026-09-22 최종 리뷰 Important 1. 재승인 요청에도 `cert_s`·`pk_trace` 가 실려 오므로 같은 검사를 쓴다.)
 
 ### 4.4 트랜잭션(MetaMask)
 ```
@@ -196,8 +199,12 @@ Snap `reset` 은 사용자가 따로 누른다.
 - 동의 거절: `{ ok:false, reason:'user_denied' }`. RP 페이지는 그대로 표시.
 - 팝업 차단: RP 페이지가 `window.open` 이 `null` 이면 안내 문구.
 - `witness` 형식 오류(스칼라 범위, uid 불일치): 에이전트 `400 bad_witness`. 파일의 공개 `uid` 와 증인의 `uid` 가 다르면 거절.
+  형식뿐 아니라 **등록과의 바인딩**도 본다: `cm_u = s_u·G₃ + r_u·H` 가 파일의 공개 `registration.cm_u` 와 다르면 같은 `400 bad_witness`
+  (최종 리뷰 Minor 1 — 이 검사가 없으면 형식만 맞는 아무 스칼라나 증인으로 받아들인다).
 - MetaMask 트랜잭션 거절: 페이지가 `user_rejected` 표시, 에이전트 상태 변화 없음(nonce 는 컨트랙트가 관리하므로 문제 없음).
 - `snap` 모드에서 `witness` 없이 `/wallet/login` 호출: `400 witness_required`. `file` 모드에서 `witness` 가 오면 무시(경고 로그).
+- 자기 폐기 프록시(`POST /wallet/self_revoke`)가 이 지갑의 등록 uid 가 아닌 uid 를 받으면 `403 uid_mismatch`, 등록 자체가 없으면
+  `409 not_registered`(Ruling 9 라운드). CIA 에 닿기 전에 막아 임의 uid·비밀번호를 던져 보는 통로가 되지 않게 한다.
 
 ---
 
@@ -222,7 +229,7 @@ Snap `reset` 은 사용자가 따로 누른다.
   s_u·sk_u·blind_u 가 없음을 grep 으로 확인.
 - 브라우저 경로(팝업·postMessage·MetaMask): Playwright 로 지갑 페이지·RP 페이지를 띄우고 `window.ethereum` 을 **스텁**(eth_requestAccounts,
   wallet_requestSnaps, wallet_invokeSnap → 시뮬레이터, eth_sendTransaction → hardhat 계정으로 실제 전송)해 로그인·공개·트랜잭션 시나리오를
-  돌린다(`tests/test_mode3_browser.mjs`, `run_tests.sh` 의 `chain` 그룹). Playwright 는 이미 의존성에 있는지 T1 에서 확인, 없으면 추가는
+  돌린다(`tests/test_mode3_browser.mjs`, `run_tests.sh` 의 **`browser` 그룹** — Ruling 8·§9(b)). Playwright 는 이미 의존성에 있는지 T1 에서 확인, 없으면 추가는
   사용자 승인.
 - 실제 MetaMask Flask: `docs/MODE3_DEMO.md` 에 수동 체크리스트(Flask 설치, `snap-mode3` 빌드·serve, 연결, 등록, 로그인, 공개 트랜잭션).
 

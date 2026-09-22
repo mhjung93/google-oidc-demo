@@ -177,7 +177,10 @@ function secretSourceFor(req, rsKey = null) {
     // 세션 증인은 { s_u, blind_u, attrs, sk_u } 만 든다 — 공개 부분(uid, userCred 의 Cf_u·leaf)은 파일에서 채운다. r_u 는 발급 뒤엔 필요 없다.
     const sw = state.sessions[rsKey]?.witness;
     const pub = state.registration?.userCred;
-    if (sw) w = { uid: state.registration?.uid, s_u: sw.s_u, r_u: null, sk_u: sw.sk_u, attrs: sw.attrs, userCred: pub ? { ...pub, blind_u: sw.blind_u } : null };
+    // pub 이 없으면(상태 파일 버전을 올려 userCred 를 비운 경우 등) 증인을 재조립할 수 없다. 그대로 두면 userCred:null 로
+    // 조립돼 proveSession 이 revoked 로 던지고 **세션이 지워진다** — 복구할 수 없는 손실이다. 대신 needs_consent 로 떨어뜨려
+    // 팝업이 Snap 의 C_u 로 /wallet/session/witness 를 다시 채우게 한다(그 라우트가 파일의 공개 부분도 되살린다).
+    if (sw && pub) w = { uid: state.registration?.uid, s_u: sw.s_u, r_u: null, sk_u: sw.sk_u, attrs: sw.attrs, userCred: { ...pub, blind_u: sw.blind_u } };
   } else w = req.body?.witness ?? null;
   if (!w) throw Object.assign(new Error(rsKey ? 'needs_consent' : 'witness_required'), { reason: rsKey ? 'needs_consent' : 'witness_required' });
   return createSecretSource({ mode: 'snap', state, witness: w });
@@ -307,7 +310,7 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     if (state.sessions[rs.toString()]) return res.status(409).json({ reason: 'duplicate_session' });
     if (SECRETS === 'snap') {
       if (!witness) return res.status(400).json({ reason: 'witness_required' });
-      try { validateWitness(witness, state.registration.uid); }
+      try { await validateWitness(witness, state.registration.uid, state.registration.cm_u); }
       catch (e) { if (e.reason === 'bad_witness') return res.status(400).json({ reason: 'bad_witness', detail: e.message }); throw e; }
     } else if (witness) console.warn('[wallet] file 모드에 witness 가 왔다 — 무시한다');
 
@@ -386,13 +389,20 @@ app.post('/wallet/session/witness', async (req, res) => {
     const { r_s, witness } = req.body ?? {};
     if (!isDec(r_s) || !witness) return res.status(400).json({ error: 'r_s, witness 필요' });
     if (!state.registration) return res.status(409).json({ reason: 'not_registered' });
-    try { validateWitness(witness, state.registration.uid); }
+    try { await validateWitness(witness, state.registration.uid, state.registration.cm_u); }
     catch (e) { if (e.reason === 'bad_witness') return res.status(400).json({ reason: 'bad_witness', detail: e.message }); throw e; }
     const rsKey = BigInt(r_s).toString();
     const s = state.sessions[rsKey];
     if (!s) return res.status(404).json({ reason: 'no_session' });
     // 세션은 특정 C_u 위에 발급됐다 — Snap 이 든 C_u 가 그것이 아니면(다른 기기, 지워진 상태) 이 증인으로는 증명이 안 된다
     if (!witness.userCred || witness.userCred.Cf_u !== s.credential.Cf_u) return res.status(409).json({ reason: 'user_cred_mismatch' });
+    // 파일의 공개 userCred 가 비어 있으면(상태 파일 버전 올림 등) secretSourceFor 가 증인을 재조립하지 못해 계속
+    // needs_consent 가 난다. 방금 세션의 Cf_u 와 일치를 확인한 C_u 의 **공개 부분만** 되살린다(비밀은 파일에 쓰지 않는다).
+    if (!state.registration.userCred) {
+      const u = witness.userCred;
+      state.registration.userCred = { Cf_u: u.Cf_u, leaf: u.leaf, issuedAt: u.issuedAt ?? new Date().toISOString() };
+      persist();
+    }
     setSessionWitness(rsKey, createSecretSource({ mode: 'snap', state, witness }));
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -476,7 +486,7 @@ app.post('/wallet/attrs/sync', async (req, res) => {
     let src;
     try { src = secretSourceFor(req); }
     catch (e) { if (e.reason) return res.status(400).json({ reason: e.reason }); throw e; }
-    if (SECRETS === 'snap') { try { validateWitness(req.body.witness, state.registration.uid); } catch (e) { if (e.reason === 'bad_witness') return res.status(400).json({ reason: 'bad_witness', detail: e.message }); throw e; } }
+    if (SECRETS === 'snap') { try { await validateWitness(req.body.witness, state.registration.uid, state.registration.cm_u); } catch (e) { if (e.reason === 'bad_witness') return res.status(400).json({ reason: 'bad_witness', detail: e.message }); throw e; } }
     const s = await syncAttrsFromCia(src);
     if (s.status !== 200) return res.status(502).json({ reason: 'attrs_failed', cia: s.body });
     res.json({ attrs: src.registration()?.attrs ?? null, changed: s.changed, ...src.pending });
@@ -487,6 +497,11 @@ app.post('/wallet/attrs/sync', async (req, res) => {
 // 중계한다 — cia.js 에는 CORS 가 전혀 없어 브라우저가 :5100 → :4100 으로 직접 JSON POST 를 낼 수 없기 때문이다
 // (CIA 서버는 이 작업에서 바꾸지 않는다). CORS 를 붙이지 않으므로 /wallet/login 과 같이 같은 오리진만 부를 수 있다.
 // 비밀번호는 중계할 뿐 로그에도 상태 파일에도 남기지 않는다(이 경로는 state 를 건드리지 않아 persist() 와 무관하다).
+//
+// CSRF 주의(2026-09-22 최종 리뷰 Minor 5): 이 라우트는 CORS 를 열지 않지만, **폼 전송으로는 부를 수 없다는 보장이
+// `express.json()` 하나에 걸려 있다** — 브라우저 폼은 application/json 을 보낼 수 없어 preflight 가 필요하고(CORS 가 없으니 차단),
+// text/plain 으로 보내면 express.json() 이 파싱하지 않아 본문이 비어 400 이 난다. 나중에 `express.urlencoded()` 를 추가하면
+// 남의 페이지가 숨긴 폼으로 이 라우트(되돌릴 수 없는 자기 폐기)를 부를 수 있게 된다. 그때는 CSRF 토큰이나 Origin 검사를 함께 넣는다.
 app.post('/wallet/self_revoke', async (req, res) => {
   try {
     const { uid, pwd } = req.body ?? {};

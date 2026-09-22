@@ -1,6 +1,7 @@
 // SecretSource — 스펙 2026-09-22 metamask-snap §3.3. 외부 의존 없음.   node tests/test_mode3_secret_source.js
 import assert from 'node:assert/strict';
 import { createSecretSource, stripSecrets, validateWitness } from '../lib/mode3_secret_source.js';
+import { registrationCommit } from '../lib/mode3_issuance.js';
 
 let failed = 0;
 async function t(name, fn) { try { await fn(); console.log(`ok   ${name}`); } catch (e) { failed++; console.error(`FAIL ${name}\n     ${e.message}`); } }
@@ -38,12 +39,25 @@ await t('stripSecrets 는 s_u·r_u·sk_u·blind_u 를 지운다', () => {
   assert.equal(stripSecrets({ ...REG, userCred: null }).userCred, null);
 });
 
-await t('validateWitness: uid 불일치·형식·범위 오류는 bad_witness', () => {
+await t('validateWitness: uid 불일치·형식·범위 오류는 bad_witness', async () => {
   const w = { uid: '12345', s_u: '11', r_u: '22', sk_u: 'ab'.repeat(32), attrs: ['1', '2', '3', '4'], userCred: null };
-  validateWitness(w, '12345');
+  await validateWitness(w, '12345');
   for (const bad of [{ ...w, uid: '1' }, { ...w, s_u: 'x' }, { ...w, s_u: (1n << 250n).toString() }, { ...w, sk_u: 'zz' }, { ...w, attrs: ['1'] }, { ...w, attrs: [(1n << 64n).toString(), '0', '0', '0'] },
     { ...w, userCred: { Cf_u: '1' } }, { ...w, userCred: { C_u_pt: { x: '1', y: '2' }, Cf_u: '1', blind_u: (1n << 250n).toString(), leaf: '1' } }, null]) {
-    assert.throws(() => validateWitness(bad, '12345'), (e) => e.reason === 'bad_witness', JSON.stringify(bad));
+    await assert.rejects(() => validateWitness(bad, '12345'), (e) => e.reason === 'bad_witness', JSON.stringify(bad));
   }
+});
+
+// cm_u 바인딩(2026-09-22 최종 리뷰 Minor 1): 파일의 공개 cm_u 를 주면 증인의 s_u·r_u 가 그 등록의 것이어야 한다.
+await t('validateWitness: cm_u 를 주면 s_u·r_u 가 등록과 묶였는지 본다', async () => {
+  const w = { uid: '12345', s_u: '11', r_u: '22', sk_u: 'ab'.repeat(32), attrs: ['1', '2', '3', '4'], userCred: null };
+  const cm = await registrationCommit(BigInt(w.s_u), BigInt(w.r_u));
+  const publicCm = { x: cm.x.toString(), y: cm.y.toString() };
+  await validateWitness(w, '12345', publicCm);                     // 맞는 증인은 통과
+  await validateWitness({ ...w, s_u: '12' }, '12345');             // cm_u 를 안 주면 형식만 본다(종전 동작)
+  for (const bad of [{ ...w, s_u: '12' }, { ...w, r_u: '23' }]) {
+    await assert.rejects(() => validateWitness(bad, '12345', publicCm), (e) => e.reason === 'bad_witness', JSON.stringify(bad));
+  }
+  await assert.rejects(() => validateWitness(w, '12345', { x: 'zz', y: '1' }), (e) => e.reason === 'bad_witness', '등록 cm_u 형식 오류');
 });
 process.exit(failed === 0 ? 0 : 1);
