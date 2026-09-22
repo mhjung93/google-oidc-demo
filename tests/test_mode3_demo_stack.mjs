@@ -86,7 +86,7 @@ async function makeAliceAgent() {
     const { a, b, c, pub } = await proofToCalldata(built.proof, built.publicSignals);
     const receipt = await (await walletC.execute(payload, sig, a, b, c, pub)).wait();
     const parsed = parseExecuteReceipt(receipt, walletAddr);
-    return { status: 200, body: { ok: parsed.executed?.success ?? null, receipt: { disclosure: parsed.disclosure ? { mask: parsed.disclosure.mask.toString(), lo: parsed.disclosure.lo.map(String), hi: parsed.disclosure.hi.map(String) } : null } } };
+    return { status: 200, body: { ok: parsed.executed?.success ?? null, onchainDisclosure: parsed.disclosure ? { mask: parsed.disclosure.mask.toString(), lo: parsed.disclosure.lo.map(String), hi: parsed.disclosure.hi.map(String) } : null } };
   }
   /** RP 챌린지 r_s 위의 로그인 성명(π+σ)만 만든다 — 온체인 실행은 하지 않는다. disclosure 는 { mask, lo, hi }(bigint). */
   async function login(rs, disclosure) {
@@ -306,7 +306,7 @@ try {
     const tx = await wallet.post('/wallet/tx', { r_s: s.r_s, to: info.attrGateAddress, data: '0x4e71d92d', disclose }, { Origin: rp.origin });
     assert.equal(tx.status, 200, j(tx.body));
     assert.equal(tx.body.ok, true, j(tx.body));
-    assert.equal(tx.body.receipt.disclosure.mask, '3');
+    assert.equal(tx.body.onchainDisclosure.mask, '3');
     const again = await wallet.post('/wallet/tx', { r_s: s.r_s, to: info.attrGateAddress, data: '0x4e71d92d', disclose }, { Origin: rp.origin });
     assert.equal(again.status, 200, j(again.body));
     assert.equal(again.body.ok, false, j(again.body));   // already claimed — nonce 는 소비되지만 성공은 아니다

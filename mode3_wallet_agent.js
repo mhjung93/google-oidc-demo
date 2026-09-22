@@ -434,7 +434,8 @@ app.post('/wallet/tx', async (req, res) => {
       txHash: receipt.hash, wallet: walletAddr, nonce: nonce.toString(), status: receipt.status, ok: parsed.executed?.success ?? null,
       gasUsed: receipt.gasUsed.toString(), deployed, cacheHit: proved.cacheHit, root: synced.root.toString(), timings,
       disclosure: discOut,
-      receipt: { disclosure: parsed.disclosure ? { mask: parsed.disclosure.mask.toString(), lo: parsed.disclosure.lo.map(String), hi: parsed.disclosure.hi.map(String) } : null },
+      // disclosure = 요청값(지갑이 증명에 넣은 것), onchainDisclosure = Disclosure 이벤트에서 읽은 값(mask=0 이면 이벤트가 없어 null)
+      onchainDisclosure: parsed.disclosure ? { mask: parsed.disclosure.mask.toString(), lo: parsed.disclosure.lo.map(String), hi: parsed.disclosure.hi.map(String) } : null,
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

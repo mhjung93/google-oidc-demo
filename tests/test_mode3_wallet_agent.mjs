@@ -345,20 +345,20 @@ try {
     assert.deepEqual(r.body.attrs, ['1990', '410', '3', '0']); assert.equal(r.body.changed, false, '이미 최신이라 바뀐 게 없다');
   });
 
-  await t('/wallet/tx disclose: 만족하는 구간은 새 π 로 실행되고 receipt.disclosure 가 있다; 불만족은 400 disclosure_unsatisfiable; mask 0 은 그대로 진행된다', async () => {
-    // attrGateAddress 는 Task 6 가 RP 에 준다 — 그 전엔 dEaD 로 보내고 receipt.disclosure 만 본다(회로·컨트랙트 배선 확인이 목적).
+  await t('/wallet/tx disclose: 만족하는 구간은 새 π 로 실행되고 onchainDisclosure 가 있다; 불만족은 400 disclosure_unsatisfiable; mask 0 은 그대로 진행된다', async () => {
+    // attrGateAddress 는 Task 6 가 RP 에 준다 — 그 전엔 dEaD 로 보내고 onchainDisclosure 만 본다(회로·컨트랙트 배선 확인이 목적).
     const to = '0x000000000000000000000000000000000000dEaD';
     const s = await loginOnce({ factoryAddress });
     const ok = await wallet.post('/wallet/tx', { r_s: s.r_s, to, data: '0x4e71d92d', disclose: [{ lo: '0', hi: '2007' }, { lo: '410', hi: '410' }, null, null] }, { Origin: stack.rpOriginForWallet });
     assert.equal(ok.status, 200, j(ok.body));
     assert.equal(ok.body.disclosure.mask, '3'); assert.equal(ok.body.cacheHit, false);
-    assert.equal(ok.body.receipt.disclosure.mask, '3');
-    assert.deepEqual(ok.body.receipt.disclosure.lo, ['0', '410', '0', '0']);
-    assert.deepEqual(ok.body.receipt.disclosure.hi, ['2007', '410', '0', '0']);
+    assert.equal(ok.body.onchainDisclosure.mask, '3');
+    assert.deepEqual(ok.body.onchainDisclosure.lo, ['0', '410', '0', '0']);
+    assert.deepEqual(ok.body.onchainDisclosure.hi, ['2007', '410', '0', '0']);
     const bad = await wallet.post('/wallet/tx', { r_s: s.r_s, to, disclose: [{ lo: '0', hi: '1980' }, null, null, null] }, { Origin: stack.rpOriginForWallet });
     assert.equal(bad.status, 400, j(bad.body)); assert.equal(bad.body.reason, 'disclosure_unsatisfiable');
     const plain = await wallet.post('/wallet/tx', { r_s: s.r_s, to }, { Origin: stack.rpOriginForWallet });
-    assert.equal(plain.status, 200, j(plain.body)); assert.equal(plain.body.disclosure, null); assert.equal(plain.body.receipt.disclosure, null);
+    assert.equal(plain.status, 200, j(plain.body)); assert.equal(plain.body.disclosure, null); assert.equal(plain.body.onchainDisclosure, null);
   });
 
   // 마지막에 둔다 — CIA 를 끈다. stack.stop() 의 cia.stop() 은 이미 죽은 프로세스를 건너뛴다.

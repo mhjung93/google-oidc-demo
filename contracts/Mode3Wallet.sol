@@ -102,8 +102,14 @@ contract Mode3Wallet {
         // payload.data 끝에 스스로 위조한 (mask, lo, hi) 9워드를 덧붙여 대상이 그것을 읽게 만들 수 있다(2026-09-22 최종 리뷰
         // Critical, PoC 로 재현). 항상 붙이면 calldata 끝 288바이트는 반드시 이번 실행에서 검증된 π 의 공개 입력이므로
         // payload.data 안의 위조 꼬리는 그 앞에 묻혀 대상이 읽지 못한다. 대상은 calldatasize 끝에서 읽는다(ERC-2771 방식).
-        // Solidity ABI 디코더는 남는 calldata 를 무시하므로 꼬리를 모르는 대상과도 호환된다.
-        bytes memory data = abi.encodePacked(payload.data, pub[14], pub[15], pub[16], pub[17], pub[18], pub[19], pub[20], pub[21], pub[22]);
+        // Solidity ABI 디코더는 남는 calldata 를 무시하므로 함수 호출 대상과는 호환된다.
+        // 예외 하나(2026-09-22 사용자 결정): payload.data 가 비어 있고 mask = 0 이면 꼬리를 붙이지 않는다. 그래야 receive() 만 있는
+        // 컨트랙트(다른 Mode3Wallet·PPIDWallet 등)로의 단순 송금이 revert 하지 않는다(receive 는 msg.data 가 비어야 실행된다).
+        // 이 예외는 위조 방어를 약화시키지 않는다: 위조 꼬리는 payload.data 안에 있어야 하므로 data 가 비어 있지 않고 → 꼬리가 붙어
+        // 위조분이 묻히며, data 가 비어 있으면 셀렉터가 없어 어떤 함수도 꼬리를 읽을 수 없다.
+        bytes memory data = (payload.data.length == 0 && pub[14] == 0)
+            ? payload.data
+            : abi.encodePacked(payload.data, pub[14], pub[15], pub[16], pub[17], pub[18], pub[19], pub[20], pub[21], pub[22]);
         (ok, ) = payload.to.call{value: payload.value}(data);
         // 이벤트는 내부 호출 뒤에 낸다 — 호출 앞으로 옮기지 말 것(JS 는 발신 주소로도 거르지만 순서도 지킨다).
         emit Executed(payload.nonce, payload.to, payload.value, ok);

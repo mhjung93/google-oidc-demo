@@ -153,7 +153,7 @@
           $('txVerdict').innerHTML = `<span class="bad">트랜잭션 실패 — ${b.reason ?? r.status}</span>`;
           return;
         }
-        $('txLog').textContent = `txHash=${b.txHash}\n지갑=${b.wallet}  nonce=${b.nonce}  ok(실행 성공)=${b.ok}  gasUsed=${b.gasUsed}\n배포=${b.deployed}  캐시 히트=${b.cacheHit}  root=${b.root}\n공개=${JSON.stringify(b.disclosure)}\n영수증 공개(온체인 이벤트)=${JSON.stringify(b.receipt?.disclosure)}\ntimings=${JSON.stringify(b.timings)}`;
+        $('txLog').textContent = `txHash=${b.txHash}\n지갑=${b.wallet}  nonce=${b.nonce}  ok(실행 성공)=${b.ok}  gasUsed=${b.gasUsed}\n배포=${b.deployed}  캐시 히트=${b.cacheHit}  root=${b.root}\n공개=${JSON.stringify(b.disclosure)}\n온체인 공개(Disclosure 이벤트)=${JSON.stringify(b.onchainDisclosure)}\ntimings=${JSON.stringify(b.timings)}`;
         $('txVerdict').innerHTML = `<span class="ok">전송 성공</span>`;
       } catch (e) {
         $('txLog').textContent = `오류: ${e.message}`;

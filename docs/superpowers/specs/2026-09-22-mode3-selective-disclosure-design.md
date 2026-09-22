@@ -187,7 +187,8 @@ if (pub[14] != 0) emit Disclosure(payload.nonce, pub[14], [pub[15..18]], [pub[19
   실행에서 지갑이 검증한 π 의 공개 입력이므로, `payload.data` 안의 위조 꼬리는 그 앞에 묻혀 대상이 읽지 못한다.
   Solidity ABI 디코더는 남는 calldata 를 무시하므로 꼬리를 모르는 기존 대상과도 여전히 호환된다. `Disclosure` 이벤트는
   로그 소음을 줄이려 여전히 mask ≠ 0 일 때만 낸다(이벤트는 보안 경계가 아니다 — 대상이 실제로 읽는 것은 calldata 꼬리다).
-- 저장소를 쓰지 않는다(트랜지언트 저장 대신 calldata 꼬리) — 추가 gas 는 calldata 288바이트(≈4.6k) + 이벤트뿐.
+- 저장소를 쓰지 않는다(트랜지언트 저장 대신 호출 데이터 꼬리). 꼬리는 트랜잭션 calldata 가 아니라 내부 호출의 메모리 인자라 바이트당 요금이 없다 — mask=0 실측 증가는 약 +50 gas 이고(§8), mask≠0 은 `Disclosure` 이벤트 비용이 더해진다.
+- **예외(2026-09-22 사용자 결정):** `payload.data` 가 비어 있고 mask = 0 이면 꼬리를 붙이지 않는다. 그래야 `receive()` 만 있는 컨트랙트(다른 Mode3Wallet·PPIDWallet 등)로의 단순 송금이 revert 하지 않는다(`receive` 는 `msg.data` 가 비어야 실행된다). 위조 방어는 그대로다: 위조 꼬리는 `payload.data` 안에 있어야 하므로 그때는 data 가 비어 있지 않아 꼬리가 붙고, data 가 비어 있으면 셀렉터가 없어 어떤 함수도 꼬리를 읽지 못한다. 컨트랙트 테스트가 두 경우(receive-only 송금 성공, data 있는 호출은 꼬리 부착)를 고정한다.
 
 ### 5.2 `Mode3WalletFactory`
 

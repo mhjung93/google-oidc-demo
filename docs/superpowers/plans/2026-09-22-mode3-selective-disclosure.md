@@ -20,7 +20,7 @@
 - 세션키 서명 다이제스트: `keccak256(abi.encode(chainid, wallet, to, value, data, nonce, pub[14], pub[15..18], pub[19..22]))`(공개 값
   9워드 전부 — mask 만 덮으면 같은 세션키·같은 mask 로 만든 다른 구간의 π 를 릴레이어가 바꿔 끼울 수 있다, 리뷰에서 발견,
   2026-09-22) — JS `payloadDigest` 와 컨트랙트가 같아야 한다.
-- `Mode3Wallet.execute` 의 calldata 꼬리 9워드는 mask 값과 무관하게 **항상** 붙인다(mask = 0 이면 전부 0). `payload.data` 는
+- `Mode3Wallet.execute` 의 calldata 꼬리 9워드는 mask 값과 무관하게 **항상** 붙인다(mask = 0 이면 전부 0; 유일한 예외는 `payload.data` 가 비어 있고 mask = 0 인 단순 송금 — Ruling 10, receive()-only 대상 호환). `payload.data` 는
   사용자 임의값이라, mask ≠ 0 일 때만 붙이면 캐시된 mask = 0 π 로 payload.data 안에 위조한 꼬리를 실어 대상이 그것을 읽게
   만들 수 있다(2026-09-22 최종 리뷰 Critical, Ruling 7). `Disclosure` 이벤트는 여전히 mask ≠ 0 일 때만 낸다.
 - 데모 계정 속성(스펙 §3.1): `testuser` `['1990','410','2','0']`, `alice` `['2005','840','1','0']`. 슬롯 뜻: a₀ 출생연도, a₁ 국가 코드, a₂ 등급, a₃ 예비.

@@ -278,6 +278,24 @@ describe('Mode3Wallet', function () {
     assert.equal(await gate2.claimed(wallet2.target), true);
   });
 
+  // 2026-09-22 사용자 결정(Ruling 10): data 가 비어 있고 mask = 0 이면 꼬리를 붙이지 않는다 — receive() 만 있는 컨트랙트로의
+  // 단순 송금이 살아야 한다. 다른 Mode3Wallet(receive() 만 있음)을 수신자로 써서 확인한다. 위조 방어는 위 회귀 테스트가 그대로 지킨다.
+  it('V6: payload.data 가 비어 있고 mask = 0 이면 꼬리 없이 보내 receive()-only 컨트랙트(다른 Mode3Wallet)로 송금이 된다', async () => {
+    const { wallet, factory, deployer } = await deployStack(ST);
+    const other = await factory.computeAddress(BigInt(ST.input().PPID) + 1n);
+    await (await factory.deploy(BigInt(ST.input().PPID) + 1n)).wait();
+    assert.equal(await deployer.provider.getCode(other) !== '0x', true);
+    const before = await deployer.provider.getBalance(other);
+    const { payload, sig } = await signedPayload(ST, wallet, { to: other, value: ethers.parseEther('0.1'), data: '0x' });
+    const rc = await (await wallet.execute(payload, sig, ST.a, ST.b, ST.c, ST.pub)).wait();
+    assert.equal(parseExecuteReceipt(rc, wallet.target).executed.success, true, 'receive()-only 대상 송금은 성공해야 한다');
+    assert.equal(await deployer.provider.getBalance(other) - before, ethers.parseEther('0.1'));
+    // 같은 대상에 data 가 비어 있지 않으면(꼬리가 붙어) receive() 가 실행되지 않아 실패한다 — 예외의 경계 확인
+    const withData = await signedPayload(ST, wallet, { to: other, value: 0n, data: '0x01' });
+    const rc2 = await (await wallet.execute(withData.payload, withData.sig, ST.a, ST.b, ST.c, ST.pub)).wait();
+    assert.equal(parseExecuteReceipt(rc2, wallet.target).executed.success, false);
+  });
+
   it('V6: mask ≠ 0 이면 대상이 꼬리 9워드를 읽고 AttrGate.claim 이 통과한다; Disclosure 이벤트; 두 번째 claim 은 already claimed', async () => {
     const DS = withInput(await statement({ disclosure: { mask: 0b0011n, lo: [0n, 410n, 0n, 0n], hi: [2007n, 410n, 0n, 0n] } }));
     const { wallet, factory } = await deployStack(DS);
