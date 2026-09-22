@@ -178,6 +178,18 @@ async function loadState() {
     try { CHAIN_RPCS.set((await ethWallet.provider.getNetwork()).chainId.toString(), RPC_URL); }
     catch (e) { console.warn(`[cia] 기동 시 chainId 를 읽지 못했다 — CIA_CHAIN_RPCS 가 없으면 발급은 503: ${e.message}`); }
   }
+  // 이행(v6→v7 등)이 pending 리프를 남겼으면 게시를 한 번 자동으로 시도한다 — 그러지 않으면 다음 하트비트까지
+  // 옛(보증되지 않은) C_u 로도 여전히 π 가 만들어져 세션 발급이 통과한다(2026-09-22 최종 리뷰 Important, Ruling 8).
+  // RPC 가 아직 없으면(또는 다른 이유로 게시가 실패하면) 경고만 남긴다 — 기동 자체는 막지 않는다.
+  if (migrated.notes.length && state.pending.length > 0) {
+    try {
+      const r = await publishNow();
+      console.log(`[cia] 이행 뒤 자동 게시: epoch ${r.epoch}, 리프 ${r.leaves?.length ?? 0}개`);
+    } catch (e) {
+      console.warn(`[cia] 이행 뒤 자동 게시 실패(${e.message}) — pending ${state.pending.length}개가 남아 있다. ` +
+        `체인이 준비되면 /cia/publish 를 수동으로 호출할 것.`);
+    }
+  }
 }
 
 // ---- 유틸 ----

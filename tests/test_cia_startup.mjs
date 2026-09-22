@@ -165,6 +165,49 @@ try {
       assert.match(cia.log(), /v4→v5/); assert.match(cia.log(), /v5→v6/); assert.match(cia.log(), /v6→v7/);
     } finally { await cia.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
   });
+
+  // 최종 리뷰 Important(2026-09-22, Ruling 8): v6→v7 이행이 pending 리프를 남기면(보증되지 않은 활성 C_u 물림) CIA 기동이
+  // 게시를 한 번 자동으로 시도한다 — 안 그러면 다음 하트비트까지 옛 C_u 로도 π 가 여전히 만들어져 세션 발급이 통과한다.
+  await t('v6→v7 이행이 pending 리프를 남기면 CIA 기동이 자동으로 게시한다', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-v6-autopublish-'));
+    const stateFile = path.join(dir, 'cia_state.json');
+    // uid 99999 는 DEMO_ACCOUNTS 에 없다 — demoAttrs 콜백이 null 을 돌려줘 attrs 는 0 네 개가 된다(이행 로직 확인에는 무관).
+    fs.writeFileSync(stateFile, JSON.stringify({
+      version: 6,
+      accounts: { '99999': { cm_u: { x: '1', y: '2' }, disabled: false, creds: [{ Cf_u: '111', C_u_pt: { x: '3', y: '4' }, leaf: '555666777888', issuedAt: '2026-01-01T00:00:00.000Z', revoked: false }] } },
+      rps: {}, openings: [], revoked: [], pending: [], epoch: 0,
+    }), { mode: 0o600 });
+    const cia = await startIsolatedCia({ env: { CIA_STATE_FILE: stateFile } });
+    try {
+      assert.match(cia.log(), /v6→v7/);
+      assert.match(cia.log(), /이행 뒤 자동 게시/, '기동이 v7 이행 리프를 자동 게시했어야 한다');
+      const st = (await cia.get('/cia/state')).body;
+      assert.equal(st.epoch, 1, '자동 게시가 epoch 를 올렸어야 한다');
+      assert.equal(st.leafCount, 1);
+      assert.equal(st.pendingCount, 0, '자동 게시가 pending 을 비웠어야 한다');
+      const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      assert.equal(saved.epoch, 1); assert.deepEqual(saved.pending, []);
+    } finally { await cia.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  await t('자동 게시가 체인 RPC 를 못 읽으면 경고만 남기고 기동은 계속한다(수동 /cia/publish 안내)', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-v6-autopublish-norpc-'));
+    const stateFile = path.join(dir, 'cia_state.json');
+    fs.writeFileSync(stateFile, JSON.stringify({
+      version: 6,
+      accounts: { '99999': { cm_u: { x: '1', y: '2' }, disabled: false, creds: [{ Cf_u: '111', C_u_pt: { x: '3', y: '4' }, leaf: '999888777666', issuedAt: '2026-01-01T00:00:00.000Z', revoked: false }] } },
+      rps: {}, openings: [], revoked: [], pending: [], epoch: 0,
+    }), { mode: 0o600 });
+    // CIA 앱 자체는 뜨지만(readiness 는 체인을 안 본다), CIA_RPC_URL 을 응답 없는 주소로 돌려 게시 시도가 실패하게 한다.
+    const cia = await startIsolatedCia({ env: { CIA_STATE_FILE: stateFile, CIA_RPC_URL: 'http://127.0.0.1:1' } });
+    try {
+      assert.match(cia.log(), /v6→v7/);
+      assert.match(cia.log(), /이행 뒤 자동 게시 실패/);
+      assert.match(cia.log(), /\/cia\/publish/, '수동으로 /cia/publish 를 호출하라는 안내가 있어야 한다');
+      const st = (await cia.get('/cia/state')).body;
+      assert.equal(st.pendingCount, 1, '게시가 실패했으므로 pending 은 그대로 남아 있어야 한다');
+    } finally { await cia.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
+  });
 } finally {
   if (first) await first.stop();
   fs.rmSync(keep, { recursive: true, force: true });
