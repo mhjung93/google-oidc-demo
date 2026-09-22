@@ -195,5 +195,36 @@ await t('ProofCache 는 공개 키가 다르면 다른 항목이다', () => {
   assert.equal(c.get('r', 's'), 'A'); assert.equal(c.get('r', 's', '3:0,410,0,0:2007,410,0,0'), 'B'); assert.equal(c.get('r', 's', '1:0,0,0,0:9,0,0,0'), null);
 });
 
+await t('증인을 만든 뒤 트리가 바뀌어도 증명의 revRoot 는 증인 root 다 (스펙 §5)', async () => {
+  // 위 121행 테스트가 cred.Cf_u 의 리프를 온체인에 폐기해 버렸다(append-only — 되돌릴 수 없다).
+  // 그 cred 를 그대로 쓰면 root 고정과 무관하게 getNonMembershipWitness 가 "is a member" 로
+  // 즉시 throw 하므로, 이 테스트만은 새 등록·세션·발급으로 폐기되지 않은 자격증명을 새로 만든다.
+  const reg2 = await createRegistration();
+  const session2 = createSessionKey();
+  const sk_u2 = Buffer.alloc(32, 5).toString('hex');
+  const uc2 = await buildUserCredRequest({ uid, s_u: reg2.s_u, r_u: reg2.r_u, sk_u: sk_u2, attrs: [19n, 410n, 0n, 0n] });
+  const req2 = await buildIssueRequest({ uid, Cf_u: uc2.Cf_u, arid, sk_u: sk_u2, session: session2, chainid: 31337n, max_height: await mh() });
+  const cred2 = await localIssue(uc2.Cf_u, req2.C_s_pt, 31337n, { max_height: BigInt(req2.body.max_height) });
+
+  const { tree } = await syncRevocationTree(provider, logAddress);
+  const rootBefore = tree.getRoot();
+  const orig = tree.getNonMembershipWitness.bind(tree);
+  let witnessRoot = null;
+  tree.getNonMembershipWitness = async (target) => {
+    const w = await orig(target);
+    witnessRoot = BigInt(w.root);
+    await tree.insert(999_999_999n);            // 다른 요청의 sync() 가 끼어든 상황을 흉내
+    return w;
+  };
+  const out = await buildCredentialProof({
+    uid, arid, s_u: reg2.s_u, blind_u: uc2.secrets.blind_u, blind_s: req2.secrets.blind_s, pk_i: session2.pk_i, attrs: [19n, 410n, 0n, 0n],
+    credential: cred2, pk_CIA, pk_trace, tree,
+  });
+  assert.equal(witnessRoot, rootBefore);
+  assert.equal(out.revRoot, rootBefore, '증인 root 여야 한다');
+  assert.notEqual(tree.getRoot(), rootBefore, '트리는 실제로 바뀌었다');
+  assert.equal(BigInt(out.publicSignals[6]), rootBefore, '공개 입력의 revRoot 자리도 증인 root 여야 한다');
+});
+
 provider.destroy();
 process.exit(failed === 0 ? 0 : 1);
