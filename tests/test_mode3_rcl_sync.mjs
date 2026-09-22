@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ethers } from 'ethers';
-import { getProvider, fundAddress, deployRevocationLog, signRootPublication, rootToBytes32 } from './helpers/mode3_chain.mjs';
+import { getProvider, fundAddress, deployRevocationLog, signRootPublication, rootToBytes32, mineBlocks } from './helpers/mode3_chain.mjs';
 import { createRevocationTree } from '../lib/mode3_revocation.js';
 import { syncRevocationTree } from '../lib/mode3_wallet.js';
 import { createRevocationSync, RCL_CACHE_VERSION } from '../lib/mode3_rcl_sync.js';
@@ -65,6 +65,31 @@ function lyingRootProvider(fakeRootBig, lieCount = Infinity) {
     return orig(method, params);
   };
   return p;
+}
+
+// eth_getLogs 응답이 도착한 **그 마이크로태스크 드레인 안에서** 콜백을 건다. 델타 삽입 루프는 그 드레인 안에서 돌기 때문에
+// setTimeout(매크로태스크)으로는 삽입 사이를 절대 볼 수 없다 — 드레인이 끝난 뒤에야 깨어나기 때문이다.
+function observingProvider(onLogs) {
+  const p = getProvider();
+  const orig = p.send.bind(p);
+  p.send = async (method, params) => {
+    const r = await orig(method, params);
+    if (method === 'eth_getLogs') onLogs();
+    return r;
+  };
+  return p;
+}
+
+// eth_blockNumber 만 가로채 head 를 뒤로 돌린 것처럼 보이게 한다 — 프로세스가 살아 있는 동안 체인이 되감기는 상황.
+function rewindingProvider() {
+  const p = getProvider();
+  const orig = p.send.bind(p);
+  let back = 0n;
+  p.send = async (method, params) => {
+    const r = await orig(method, params);
+    return method === 'eth_blockNumber' && back > 0n ? `0x${(BigInt(r) - back).toString(16)}` : r;
+  };
+  return { p, rewind: (n) => { back = BigInt(n); } };
 }
 
 const readCache = () => JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
@@ -135,13 +160,16 @@ await t('새 인스턴스는 캐시에서 복원하고 캐시의 lastSyncedBlock
   p.destroy();
 });
 
-// 5. 캐시 무효 세 가지
-await t('logAddress 불일치·JSON 손상·version 불일치 캐시는 경고 후 부트스트랩', async () => {
+// 5. 캐시 무효 다섯 가지
+await t('logAddress·chainId 불일치·JSON 손상·version 불일치·insert 가 거부하는 리프는 경고 후 부트스트랩', async () => {
   const good = readCache();
   for (const bad of [
     { ...good, logAddress: ethers.ZeroAddress },
     'not json {',
     { ...good, version: RCL_CACHE_VERSION + 1 },
+    { ...good, chainId: String(BigInt(good.chainId) + 1n) },
+    // 10진 검사는 통과하지만 IMT 가 거부하는 값(anchor). 복원 루프가 이걸 잡지 않으면 sync() 가 reject 돼 영구 503 이 된다.
+    { ...good, leaves: [...good.leaves, '0'] },
   ]) {
     fs.writeFileSync(cacheFile, typeof bad === 'string' ? bad : JSON.stringify(bad));
     warnings.length = 0;
@@ -206,7 +234,31 @@ await t('동시 sync() 3개는 같은 tree 객체·같은 head 를 받고 getLog
   p.destroy();
 });
 
-// 9. 체인 리셋
+// 9. 델타 원자성 — 중간 root 가 다른 요청에 보이지 않는다
+await t('한 번에 게시된 리프 4개를 델타로 적용하는 동안 게시된 적 없는 중간 root 가 관측되지 않는다', async () => {
+  // 삽입마다 await 하면 삽입 사이에 마이크로태스크 경계가 생겨, 같은 트리를 쥔 다른 요청의 getNonMembershipWitness 가
+  // 절반만 들어간 트리의 root 로 증인을 뽑는다. 그런 root 는 체인에 게시된 적이 없어 RP 는 stale_root, 온체인은
+  // StaleRevocationRoot 로 거절한다(간헐 실패). 아래 관측 체인은 그 경계에 끼어드는 요청을 흉내 낸다.
+  const observed = [];
+  let watched = null;
+  const burst = (n) => { if (!watched || n <= 0) return; observed.push(watched.getRoot()); Promise.resolve().then(() => burst(n - 1)); };
+  const p = observingProvider(() => burst(300));
+  const rcl = createRevocationSync({ provider: p, logAddress, cacheFile, log: warn });
+  const a = await rcl.sync();
+  watched = a.tree;                                   // 델타는 같은 트리 객체를 그대로 갱신한다
+  observed.length = 0;
+  await publish([21n, 22n, 23n, 24n]);                // 한 번의 publishRoot → 리프 4개가 실린 Revoked 이벤트 하나
+  const b = await rcl.sync();
+  p.destroy();
+  assert.equal(b.mode, 'delta');
+  assert.equal(b.root, (await syncRevocationTree(provider, logAddress)).root);
+  assert.ok(observed.length > 0, '관측 체인이 델타 구간에서 실제로 돌았어야 한다');
+  const published = new Set([a.root, b.root]);        // 게시된 적 있는 root 는 이 둘뿐이다
+  const mid = [...new Set(observed)].filter((r) => !published.has(r));
+  assert.deepEqual(mid.map(String), [], `게시된 적 없는 중간 root 가 관측됐다(${mid.length}개)`);
+});
+
+// 10. 체인 리셋 — 캐시에서 복원하기 전
 await t('캐시의 lastSyncedBlock 이 head 보다 크면 경고 후 부트스트랩', async () => {
   const good = readCache();
   fs.writeFileSync(cacheFile, JSON.stringify({ ...good, lastSyncedBlock: String(Number(good.lastSyncedBlock) + 100000) }));
@@ -217,13 +269,44 @@ await t('캐시의 lastSyncedBlock 이 head 보다 크면 경고 후 부트스�
   assert.equal(warnings.length, 1, warnings.join(' | '));
 });
 
+// 11. 체인 리셋 — 메모리 트리가 이미 있는 상태(연속 delta 중 hardhat 재기동 등)
+await t('메모리 트리가 있는 인스턴스에서 head 가 lastSyncedBlock 보다 작아지면 경고 후 부트스트랩', async () => {
+  const { p, rewind } = rewindingProvider();
+  await mineBlocks(2, provider);                      // head 를 마지막 게시보다 뒤로 밀어, 되감긴 head 에서도 트리가 온전하게
+  const rcl = createRevocationSync({ provider: p, logAddress, cacheFile, log: warn });
+  const a = await rcl.sync();                         // 메모리 트리·lastSyncedBlock 확립
+  await mineBlocks(2, provider);
+  rewind(3);                                          // 보이는 head = 실제 head - 3 < lastSyncedBlock
+  warnings.length = 0;
+  const r = await rcl.sync();
+  assert.equal(r.mode, 'bootstrap');
+  assert.equal(warnings.length, 1, warnings.join(' | '));
+  assert.match(warnings[0], /되감겼다/);
+  assert.ok(r.head < a.head, '되감긴 head 로 부트스트랩한다');
+  p.destroy();
+});
+
+// 12. 되감김 검사에 걸리지 않는 조합의 최종 안전망(같은 주소 재배포 + head 를 앞질러 채굴한 경우)
+await t('lastSyncedBlock < head 라 되감김 검사를 지나가도, 컨트랙트 root 와 다르면 fallback 을 거쳐 끝내 throw 한다', async () => {
+  const good = readCache();                           // 리프·root 는 올바른 그대로 두고 lastSyncedBlock 만 뒤로
+  fs.writeFileSync(cacheFile, JSON.stringify({ ...good, lastSyncedBlock: String(Number(good.lastSyncedBlock) - 1) }));
+  warnings.length = 0;
+  const p = lyingRootProvider(777777n);               // 항상 거짓말 — 델타 뒤 대조도, 전체 재생 대조도 실패한다
+  const rcl = createRevocationSync({ provider: p, logAddress, cacheFile, log: warn });
+  await assert.rejects(() => rcl.sync(), /root/);
+  assert.equal(warnings.length, 1, warnings.join(' | '));
+  assert.match(warnings[0], /델타 적용 root/, '되감김이 아니라 root 대조가 잡아야 한다');
+  p.destroy();
+});
+
 // reset() vs 진행 중인 sync() — I1
 await t('진행 중인 sync() 와 겹치는 reset() 은 그 sync() 를 깨지 않고, 완료된 뒤에만 효력이 있다', async () => {
   const rcl = createRevocationSync({ provider, logAddress, cacheFile, log: warn });
   await rcl.sync();                                    // tree·lastSyncedBlock 을 먼저 확립한다(복원 또는 부트스트랩)
   await publish([18n]);                                 // 델타가 실제로 있어야 다음 sync() 가 lastSyncedBlock+1n 을 밟는다
   const p = rcl.sync();
-  rcl.reset();                                           // in-flight 도중 — 수정 전이면 즉시 tree=null 로 지워 재개한 run() 의 tree.insert()/getRoot() 가 null 역참조로 깨진다
+  // in-flight 도중 — 수정 전이면 즉시 tree=null 로 지워 재개한 run() 의 tree.insert()/getRoot() 가 null 역참조로 깨진다.
+  assert.deepEqual(rcl.reset(), { deferred: true }, '진행 중인 sync() 와 겹치면 지연 적용임을 호출자에게 알린다');
   const r = await p;
   assert.equal(r.root, (await syncRevocationTree(provider, logAddress)).root);
   assert.ok(!fs.existsSync(cacheFile), 'in-flight 종료 후 지연된 reset 이 캐시를 지운다');
@@ -235,7 +318,7 @@ await t('진행 중인 sync() 와 겹치는 reset() 은 그 sync() 를 깨지 �
 await t('reset() 은 캐시 파일을 지우고 다음 sync 는 부트스트랩', async () => {
   const rcl = createRevocationSync({ provider, logAddress, cacheFile, log: warn });
   await rcl.sync();
-  rcl.reset();
+  assert.deepEqual(rcl.reset(), { deferred: false }, '진행 중인 sync() 가 없으면 즉시 적용');
   assert.ok(!fs.existsSync(cacheFile));
   assert.equal(rcl.stats().leaves, 0);
   assert.equal((await rcl.sync()).mode, 'bootstrap');
