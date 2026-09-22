@@ -7,7 +7,7 @@ import { combinePublicKey, encryptTag } from '../../lib/mode3_trace.js';
 
 // --- 정상 입력 하나를 만든다 -------------------------------------------------
 // 옵션은 컨트랙트 테스트용이다: pk_i 는 실제 세션키의 주소, maxHeight 는 만료 케이스, allowAgent 는 플래그 케이스.
-export async function buildValidInput({ pk_i: pkIOpt, maxHeight = 1789000000n, allowAgent = 0n, chainid = 31337n } = {}) {
+export async function buildValidInput({ pk_i: pkIOpt, maxHeight = 1789000000n, allowAgent = 0n, chainid = 31337n, disclosure = null } = {}) {
   const poseidon = await buildPoseidon();
   const F = poseidon.F;
   const eddsa = await buildEddsa();
@@ -18,7 +18,7 @@ export async function buildValidInput({ pk_i: pkIOpt, maxHeight = 1789000000n, a
   const blind_u = 44444444444444444444n;
   const blind_s = 55555555555555555555n;
   const pk_i    = pkIOpt ?? 0x1234567890123456789012345678901234567890n; // 160비트
-  const attrs   = [19n, 410n, 0n, 0n];
+  const attrs   = [1990n, 410n, 2n, 0n];   // 데모 testuser 와 같은 값(스펙 2026-09-22 §3.1) — 64비트
   const max_height = maxHeight;   // 블록 높이. 회로는 값만 통과시키고 검증자가 비교한다
 
   // 트레이스 태그(설계 2026-09-16 §4.1, 평문은 2026-09-18 §3.4). 조각은 테스트 고정값 — 실제 키가 아니다. r 도 고정.
@@ -45,6 +45,8 @@ export async function buildValidInput({ pk_i: pkIOpt, maxHeight = 1789000000n, a
   await tree.insert(await userLeaf(999n));
   const w = await tree.getNonMembershipWitness(await userLeaf(Cf_u));
 
+  const disc = disclosure ?? { mask: 0n, lo: [0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n] };
+
   const input = {
     uid: uid.toString(), s_u: s_u.toString(), blind_u: blind_u.toString(), blind_s: blind_s.toString(), attrs: attrs.map(String),
     S: sig.S.toString(), R8x: F.toObject(sig.R8[0]).toString(), R8y: F.toObject(sig.R8[1]).toString(),
@@ -57,7 +59,8 @@ export async function buildValidInput({ pk_i: pkIOpt, maxHeight = 1789000000n, a
     pk_CIA_x: ciaPub.x.toString(), pk_CIA_y: ciaPub.y.toString(),
     pk_trace_x: pk_trace.x.toString(), pk_trace_y: pk_trace.y.toString(),
     tag_c1_x: tag.c1.x.toString(), tag_c1_y: tag.c1.y.toString(), tag_c2: tag.c2.toString(),
+    disc_mask: disc.mask.toString(), disc_lo: disc.lo.map(String), disc_hi: disc.hi.map(String),
   };
 
-  return { input, Cf_u, Cf_s, pk_trace, shares, tag, ciaPub, arid, uid, tree };
+  return { input, Cf_u, Cf_s, pk_trace, shares, tag, ciaPub, arid, uid, tree, attrs, disclosure: disc };
 }

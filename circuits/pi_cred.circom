@@ -14,6 +14,7 @@ include "lib/mode3_trace_tag.circom";
 // V4(max_height·allowAgent, 태그 평문 Poseidon(uid, arid)): docs/superpowers/specs/2026-09-18-mode3-onchain-execution-design.md §3
 //
 // V5(2026-09-21): 커밋 둘(C_u 사용자 자격증명, C_s 세션) — 서명은 둘을 덮고 리프는 C_u 에서만 뽑는다. 설계 docs/superpowers/specs/2026-09-21-mode3-two-tier-credential-design.md §5
+// V6(2026-09-22): 공개 술어 disc_mask/lo/hi, 속성 64비트. 설계 2026-09-22-mode3-selective-disclosure-design.md §4
 // 다섯 가지를 함께 증명한다. 하나라도 빠지면 뚫린다:
 //   ① CIA가 (Cf_u, Cf_s, max_height, chainid, allowAgent)에 서명했다 — 없으면 아무나 credential을 만든다
 //   ② C_s 안에 이 pk_i·arid 가 있다                — 없으면 남의 π를 주워 자기 키로 서명해 완전 사칭
@@ -69,6 +70,11 @@ template PiCred(depth) {
     signal input tag_c1_x;
     signal input tag_c1_y;
     signal input tag_c2;
+
+    // 선택 공개(2026-09-22 §4.2). 비트 k 가 1 이면 disc_lo[k] ≤ attrs[k] ≤ disc_hi[k]. 등식 공개는 lo = hi. 0 인 슬롯은 무시.
+    signal input disc_mask;
+    signal input disc_lo[4];
+    signal input disc_hi[4];
 
     var DOMAIN_MODE3_CRED_V5 = 93461614427473393731524149;  // ASCII "MODE3CREDV5"
     var TAG_MODE3_USER = 4;  // 사용자 자격증명 리프. Mode 2 의 1·2, V4 의 3 과 갈라 둔다
@@ -162,12 +168,29 @@ template PiCred(depth) {
     tag_c1_x === tag.c1x;
     tag_c1_y === tag.c1y;
     tag_c2 === tag.c2;
+
+    // ---- ⑥ 선택 공개 술어 (2026-09-22) ----
+    // 속성은 CommitUser 에서 Num2Bits(64) 로 잘려 있다. lo·hi 도 64비트로 묶어야 LessEqThan(64) 이 성립한다.
+    component maskBits = Num2Bits(4);
+    maskBits.in <== disc_mask;
+    component loBits[4]; component hiBits[4]; component ge[4]; component le[4];
+    signal discOk[4];
+    for (var k = 0; k < 4; k++) {
+        loBits[k] = Num2Bits(64); loBits[k].in <== disc_lo[k];
+        hiBits[k] = Num2Bits(64); hiBits[k].in <== disc_hi[k];
+        ge[k] = LessEqThan(64); ge[k].in[0] <== disc_lo[k]; ge[k].in[1] <== attrs[k];
+        le[k] = LessEqThan(64); le[k].in[0] <== attrs[k];   le[k].in[1] <== disc_hi[k];
+        discOk[k] <== ge[k].out * le[k].out;
+        maskBits.out[k] * (1 - discOk[k]) === 0;
+    }
 }
 
 // 공개 입력의 순서는 lib/mode3_wallet.js·lib/mode3_rp.js·cia.js(개봉)·contracts/Mode3Wallet.sol 가 의존한다. 바꾸지 말 것.
 // pk_CIA_x/y 와 pk_trace_x/y 는 공개 입력이다. 검증자는 반드시 전자를 고정된 CIA 키와, 후자를 자기 등록 파일의
 // 조합 키와 비교해야 한다 (설계 §5, 2026-09-16 §4.2).
+// [14] disc_mask [15..18] disc_lo [19..22] disc_hi
 component main {public [
     PPID, arid, pk_i, max_height, chainid, allowAgent, revRoot, pk_CIA_x, pk_CIA_y,
-    pk_trace_x, pk_trace_y, tag_c1_x, tag_c1_y, tag_c2
+    pk_trace_x, pk_trace_y, tag_c1_x, tag_c1_y, tag_c2,
+    disc_mask, disc_lo, disc_hi
 ]} = PiCred(32);

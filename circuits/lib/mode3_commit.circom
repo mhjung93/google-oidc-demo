@@ -45,6 +45,7 @@ template CommitUser() {
     signal output Cy;
 
     var N = 250;
+    var NA = 64;   // 속성은 64비트 정수(2026-09-22 선택 공개 §4.1) — pi_cred 의 LessEqThan(64) 전제. 다른 스칼라는 250비트 그대로
     var G_UID[2]   = [10457101036533406547632367118273992217979173478358440826365724437999023779287,
                       19824078218392094440610104313265183977899662750282163392862422243483260492317];
     var G_SU[2]    = [5802099305472655231388284418920769829666717045250560929368476121199858275951,
@@ -66,18 +67,18 @@ template CommitUser() {
     component bSu    = Num2Bits(N);  bSu.in    <== s_u;
     component bBlind = Num2Bits(N);  bBlind.in <== blind_u;
     component bAttr[4];
-    for (var j = 0; j < 4; j++) { bAttr[j] = Num2Bits(N); bAttr[j].in <== attrs[j]; }
+    for (var j = 0; j < 4; j++) { bAttr[j] = Num2Bits(NA); bAttr[j].in <== attrs[j]; }
     component mUid   = EscalarMulFix(N, G_UID);
     component mSu    = EscalarMulFix(N, G_SU);
     component mBlind = EscalarMulFix(N, H_BLIND);
     component mAttr[4];
-    for (var j = 0; j < 4; j++) mAttr[j] = EscalarMulFix(N, G_ATTR[j]);
+    for (var j = 0; j < 4; j++) mAttr[j] = EscalarMulFix(NA, G_ATTR[j]);
     for (var i = 0; i < N; i++) {
         mUid.e[i]   <== bUid.out[i];
         mSu.e[i]    <== bSu.out[i];
         mBlind.e[i] <== bBlind.out[i];
-        for (var j = 0; j < 4; j++) mAttr[j].e[i] <== bAttr[j].out[i];
     }
+    for (var i = 0; i < NA; i++) for (var j = 0; j < 4; j++) mAttr[j].e[i] <== bAttr[j].out[i];
     // 덧셈 순서: uid + s_u + attr0..3 + blind_u (JS userCommit 과 같다).
     component a1 = BabyAdd();
     a1.x1 <== mUid.out[0];  a1.y1 <== mUid.out[1];

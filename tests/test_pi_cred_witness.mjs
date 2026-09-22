@@ -195,6 +195,35 @@ await t('JS userLeaf 와 회로의 리프 계산이 일치한다', async () => {
   assert.equal(circuitLeaf, await userLeaf(validCfU));
 });
 
+await t('V6 양성: mask = 0 이면 lo·hi 가 0 이어도 통과 (로그인 문장)', async () => {
+  const fx = await buildValidInput();
+  assert.equal(fx.input.disc_mask, '0');
+  await witness(fx.input);
+});
+await t('V6 양성: 슬롯 0 구간 [0, 2007], 슬롯 1 등식 410 — 통과', async () => {
+  const fx = await buildValidInput({ disclosure: { mask: 0b0011n, lo: [0n, 410n, 0n, 0n], hi: [2007n, 410n, 0n, 0n] } });
+  await witness(fx.input);
+});
+await t('V6 음성: 구간 밖(a₀ = 1990 ∉ [0, 1980]) 은 거부', async () => {
+  const fx = await buildValidInput({ disclosure: { mask: 0b0001n, lo: [0n, 0n, 0n, 0n], hi: [1980n, 0n, 0n, 0n] } });
+  await assert.rejects(() => witness(fx.input), /Assert Failed/);
+});
+await t('V6 음성: 등식 불일치(a₁ = 410, lo = hi = 840) 는 거부', async () => {
+  const fx = await buildValidInput({ disclosure: { mask: 0b0010n, lo: [0n, 840n, 0n, 0n], hi: [0n, 840n, 0n, 0n] } });
+  await assert.rejects(() => witness(fx.input), /Assert Failed/);
+});
+await t('V6 양성: 공개하지 않는 슬롯의 lo·hi 는 무시된다 (mask 비트 0 인 슬롯 2 에 불가능한 구간)', async () => {
+  const fx = await buildValidInput({ disclosure: { mask: 0b0001n, lo: [0n, 0n, 999n, 0n], hi: [2007n, 0n, 5n, 0n] } });
+  await witness(fx.input);
+});
+await t('V6 음성: mask ≥ 16, lo ≥ 2^64, attr ≥ 2^64 는 거부', async () => {
+  const ok = await buildValidInput({ disclosure: { mask: 0b0001n, lo: [0n, 0n, 0n, 0n], hi: [2007n, 0n, 0n, 0n] } });
+  await assert.rejects(() => witness({ ...ok.input, disc_mask: '16' }), /Assert Failed/);
+  await assert.rejects(() => witness({ ...ok.input, disc_lo: [(1n << 64n).toString(), '0', '0', '0'] }), /Assert Failed/);
+  const big = await buildValidInput();
+  await assert.rejects(() => witness({ ...big.input, attrs: [(1n << 64n).toString(), '410', '2', '0'] }), /Assert Failed/);   // C_u 가 달라져 서명도 깨지지만 Num2Bits(64) 가 먼저 막는다
+});
+
 console.log('');
 console.log(`## pi_cred 비선형 제약: ${constraints.toLocaleString()}`);
 console.log(`   (참고 — Mode 2 pi_pk_i_v3: 13,905)`);
