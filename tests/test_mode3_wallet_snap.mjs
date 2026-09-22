@@ -224,8 +224,9 @@ try {
     assert.equal(sim.getPublicInfo().registered, false);
   });
 } finally {
-  provider.destroy();
   await stack.stop();
+  provider.destroy();
 }
-if (failed) { console.error(`\n${failed} failed`); process.exit(1); }
-console.log('\nall passed');
+console.log(failed ? `\n${failed} failed` : '\nall passed');
+// 다른 Mode 3 테스트와 같은 관례 — snarkjs 가 남기는 핸들 때문에 저절로 끝나지 않는다
+process.exit(failed === 0 ? 0 : 1);
