@@ -47,10 +47,10 @@ describe('Mode3Wallet', function () {
   }
   const withInput = (st) => ({ ...st, input: () => st.fx.input });
 
-  async function signedPayload(st, wallet, { to = ethers.Wallet.createRandom().address, value = 0n, data = '0x', discMask = 0n } = {}) {
+  async function signedPayload(st, wallet, { to = ethers.Wallet.createRandom().address, value = 0n, data = '0x', discMask = 0n, discLo = [0n, 0n, 0n, 0n], discHi = [0n, 0n, 0n, 0n] } = {}) {
     const nonce = await wallet.nonce();
     const payload = { to, value, data, nonce };
-    const sig = signPayload(st.session, { chainId: await chainId(), wallet: wallet.target, ...payload, discMask });
+    const sig = signPayload(st.session, { chainId: await chainId(), wallet: wallet.target, ...payload, discMask, discLo, discHi });
     return { payload, sig };
   }
 
@@ -237,6 +237,7 @@ describe('Mode3Wallet', function () {
     expect(await factory.computeAddress(ppid)).to.equal(walletAddr);
     await (await factory.deploy(ppid)).wait();
     expect(await ethers.provider.getCode(walletAddr)).to.not.equal('0x');
+    expect(await factory.isWallet(walletAddr)).to.equal(true);
   });
 
   it('V6: pub 은 23개이고 mask = 0 이면 꼬리 없이 실행, Disclosure 이벤트 없음', async () => {
@@ -254,18 +255,18 @@ describe('Mode3Wallet', function () {
     const Gate = await ethers.getContractFactory('AttrGate');
     const gate = await Gate.deploy(await factory.getAddress(), 410n, 2007n);
     const data = gate.interface.encodeFunctionData('claim');
-    const { payload, sig } = await signedPayload(DS, wallet, { to: await gate.getAddress(), data, discMask: 0b0011n });
+    const { payload, sig } = await signedPayload(DS, wallet, { to: await gate.getAddress(), data, discMask: 0b0011n, discLo: DS.fx.disclosure.lo, discHi: DS.fx.disclosure.hi });
     const rc = await (await wallet.execute(payload, sig, DS.a, DS.b, DS.c, DS.pub)).wait();
     const { executed, disclosure } = parseExecuteReceipt(rc, wallet.target);
     assert.equal(executed.success, true);
     assert.equal(disclosure.mask, 3n); assert.equal(disclosure.hi[0], 2007n); assert.equal(disclosure.lo[1], 410n);
     assert.equal(await gate.claimed(wallet.target), true);
-    const again = await signedPayload(DS, wallet, { to: await gate.getAddress(), data, discMask: 0b0011n });
+    const again = await signedPayload(DS, wallet, { to: await gate.getAddress(), data, discMask: 0b0011n, discLo: DS.fx.disclosure.lo, discHi: DS.fx.disclosure.hi });
     const rc2 = await (await wallet.execute(again.payload, again.sig, DS.a, DS.b, DS.c, DS.pub)).wait();
     assert.equal(parseExecuteReceipt(rc2, wallet.target).executed.success, false, 'already claimed → 내부 호출 실패, nonce 는 소모');
   });
 
-  it('V6: 국가가 다르면 claim 이 실패(success=false), 나이 상한을 넘겨도 실패', async () => {
+  it('V6: 공개 구간이 정책보다 넓으면(hi[0] > birthYearMax) claim 이 실패(success=false)', async () => {
     // 픽스처 속성은 [1990, 410, 2, 0] 이라 a₁ = 840 등식은 증명 자체가 안 만들어진다(회로가 거절) →
     // 국가 불일치 케이스는 alice 형 속성의 픽스처가 없어 이 테스트에서 시험하지 않는다(데모 스택 단계에서 시험).
     // 대신 "정책보다 넓은 구간" 으로 시험한다: hi[0] = 2010 (> birthYearMax 2007) 는 증명은 되지만 게이트가 거절한다.
@@ -274,7 +275,7 @@ describe('Mode3Wallet', function () {
     const Gate = await ethers.getContractFactory('AttrGate');
     const gate = await Gate.deploy(await factory.getAddress(), 410n, 2007n);
     const data = gate.interface.encodeFunctionData('claim');
-    const { payload, sig } = await signedPayload(wide, wallet, { to: await gate.getAddress(), data, discMask: 0b0011n });
+    const { payload, sig } = await signedPayload(wide, wallet, { to: await gate.getAddress(), data, discMask: 0b0011n, discLo: wide.fx.disclosure.lo, discHi: wide.fx.disclosure.hi });
     const rc = await (await wallet.execute(payload, sig, wide.a, wide.b, wide.c, wide.pub)).wait();
     assert.equal(parseExecuteReceipt(rc, wallet.target).executed.success, false);
     assert.equal(await gate.claimed(wallet.target), false);
@@ -293,6 +294,14 @@ describe('Mode3Wallet', function () {
     const DS = withInput(await statement({ disclosure: { mask: 0b0011n, lo: [0n, 410n, 0n, 0n], hi: [2007n, 410n, 0n, 0n] } }));
     const { wallet } = await deployStack(DS);
     const { payload, sig } = await signedPayload(DS, wallet, { discMask: 0n });
+    await assert.rejects(wallet.execute(payload, sig, DS.a, DS.b, DS.c, DS.pub), /BadSignature/);
+  });
+
+  it('V6: 다이제스트가 lo/hi 를 덮는다 — 같은 mask 로 서명하되 hi[0] 만 다르게 서명한 σ 는 BadSignature', async () => {
+    const DS = withInput(await statement({ disclosure: { mask: 0b0011n, lo: [0n, 410n, 0n, 0n], hi: [2007n, 410n, 0n, 0n] } }));
+    const { wallet } = await deployStack(DS);
+    const wrongHi = [9999n, ...DS.fx.disclosure.hi.slice(1)];
+    const { payload, sig } = await signedPayload(DS, wallet, { discMask: 0b0011n, discLo: DS.fx.disclosure.lo, discHi: wrongHi });
     await assert.rejects(wallet.execute(payload, sig, DS.a, DS.b, DS.c, DS.pub), /BadSignature/);
   });
 
