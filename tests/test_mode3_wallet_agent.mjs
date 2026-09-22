@@ -81,6 +81,8 @@ try {
     assert.ok(s.body.sessions[rs], 'r_s 별 세션이 상태에 있어야 한다');
     assert.ok(s.body.userCred?.Cf_u, '사용자 자격증명이 상태에 있어야 한다');
     assert.equal(s.body.userCred.revoked, false);
+    // 격리 스택은 임시 디렉터리라 캐시 파일이 없는 상태에서 시작한다 — 콜드 스타트 첫 로그인은 항상 bootstrap.
+    assert.equal(s.body.rcl.lastMode, 'bootstrap', '콜드 스타트 첫 로그인 뒤에는 캐시가 없어 bootstrap 이어야 한다');
   });
 
   let S1b;
@@ -160,7 +162,7 @@ try {
   // first 와 달라 앞의 deepEqual 비교들이 깨진다. S2 는 방금 복구돼 살아 있고 폐기되지 않았다.
   await t('폐기 트리 동기화: 리셋 뒤 sync 는 bootstrap, 재시작 뒤 재검증은 restore, 다시 리셋하면 bootstrap 으로 돈다 (스펙 §3·§6·§8)', async () => {
     // 여기까지 이미 로그인·재검증이 여러 번 지나 lastMode 가 delta 일 수 있다 — 먼저 리셋해 다음 sync 가 확실히 bootstrap 이 되게 한다.
-    assert.equal((await wallet.post('/wallet/rcl/reset', {})).body.deferred, false);
+    assert.equal((await wallet.post('/wallet/rcl/reset', { confirm: true })).body.deferred, false);
     const boot = await revalidate(S2);
     assert.equal(boot.status, 200, j(boot.body));
     const s1 = (await wallet.get('/wallet/status')).body;
@@ -175,9 +177,12 @@ try {
     assert.equal(s2.rcl.leaves, leavesBefore);
   });
 
-  await t('POST /wallet/rcl/reset 은 캐시를 지우고 다음 재검증이 bootstrap 으로 돈다', async () => {
+  await t('POST /wallet/rcl/reset 은 confirm:true 없으면 400, 있으면 캐시를 지우고 다음 재검증이 bootstrap 으로 돈다', async () => {
     const before = (await wallet.get('/wallet/status')).body.rcl.cacheFile;
-    const r = await wallet.post('/wallet/rcl/reset', {});
+    const noConfirm = await wallet.post('/wallet/rcl/reset', {});
+    assert.equal(noConfirm.status, 400, j(noConfirm.body));
+    assert.ok(fs.existsSync(before), 'confirm 없이는 캐시가 지워지면 안 된다');
+    const r = await wallet.post('/wallet/rcl/reset', { confirm: true });
     assert.equal(r.status, 200, j(r.body));
     assert.equal(r.body.deferred, false, '이 시점엔 진행 중인 동기화가 없다');
     assert.ok(!fs.existsSync(before));

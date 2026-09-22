@@ -532,7 +532,10 @@ app.post('/wallet/self_revoke', async (req, res) => {
 });
 
 // 운영·시연용: 폐기 트리 체크포인트를 버린다. 다음 동기화가 창세기부터 재생한다(스펙 §8). 같은 오리진만.
+// CORS 를 열지 않지만 self_revoke 와 같은 이유로 본문에 JSON `{confirm:true}` 를 요구한다 — express.json() 은
+// text/plain 단순 요청(폼 전송 등)을 파싱하지 않으므로, 이 확인 없이는 다른 오리진 페이지가 폼으로 캐시를 지울 수 없다.
 app.post('/wallet/rcl/reset', (req, res) => {
+  if (req.body?.confirm !== true) return res.status(400).json({ error: 'confirm:true 필요' });
   if (!rcl) return res.status(503).json({ reason: 'chain_unavailable', detail: 'CIA_LOG_ADDRESS not configured' });
   const { deferred } = rcl.reset();
   res.json({ ok: true, deferred });
@@ -640,7 +643,7 @@ app.post('/wallet/tx', async (req, res) => {
       return res.status(409).json({ reason: 'execute_reverted', detail: String(name), wallet: walletAddr, nonce: nonce.toString(), timings });
     }
     timings.txMs = Date.now() - t;
-    res.json({ ...receiptResult(receipt, walletAddr, disclosure), nonce: nonce.toString(), deployed, cacheHit: proved.cacheHit, root: synced.root.toString(), timings });
+    res.json({ ...receiptResult(receipt, walletAddr, disclosure), nonce: nonce.toString(), deployed, cacheHit: proved.cacheHit, root: proved.root, timings });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -656,7 +659,7 @@ app.post('/wallet/tx/prepare', async (req, res) => {
       deployCalldata: deployNeeded ? factoryInterface.encodeFunctionData('deploy', [BigInt(s.PPID)]) : null,
       calldata: walletInterface.encodeFunctionData('execute', args),
       nonce: nonce.toString(), disclosure: disclosure.mask === 0n ? null : discStrings(disclosure),
-      cacheHit: proved.cacheHit, root: synced.root.toString(), timings,
+      cacheHit: proved.cacheHit, root: proved.root, timings,
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
