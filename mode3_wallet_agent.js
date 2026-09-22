@@ -222,9 +222,9 @@ const configCors = cors({ origin: (origin, cb) => cb(null, origin === RP_ORIGIN)
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'wallet.html')));
 
 // 비밀 없음 — RP 페이지가 로그인 전에 지갑의 비밀 모드·체인 정보를 미리 읽는다(설계 2026-09-22 metamask-snap Ruling 1).
-// ciaUrl: snap 모드의 자기 폐기는 에이전트를 거치지 않고 페이지가 CIA 에 직접 낸다(§4.5, 에이전트에 그 경로가 없다).
+// CIA 주소는 싣지 않는다 — 이 응답은 RP 오리진에도 나가고(configCors), 자기 폐기는 아래 프록시가 대신 낸다(Ruling 7).
 app.get('/wallet/config', configCors, async (req, res) => {
-  try { res.json({ secrets: SECRETS, snapId: SNAP_ID, walletOrigin: WALLET_ORIGIN, rpcUrl: RPC_URL, ciaUrl: CIA_URL, chainId: (await chainId()).toString() }); }
+  try { res.json({ secrets: SECRETS, snapId: SNAP_ID, walletOrigin: WALLET_ORIGIN, rpcUrl: RPC_URL, chainId: (await chainId()).toString() }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -481,6 +481,19 @@ app.post('/wallet/attrs/sync', async (req, res) => {
     if (s.status !== 200) return res.status(502).json({ reason: 'attrs_failed', cia: s.body });
     res.json({ attrs: src.registration()?.attrs ?? null, changed: s.changed, ...src.pending });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 자기 폐기 프록시(metamask-snap §4.5, Ruling 7). Snap 이 비밀번호를 묻고 지갑 페이지가 여기로 내면 에이전트가 CIA 로
+// 중계한다 — cia.js 에는 CORS 가 전혀 없어 브라우저가 :5100 → :4100 으로 직접 JSON POST 를 낼 수 없기 때문이다
+// (CIA 서버는 이 작업에서 바꾸지 않는다). CORS 를 붙이지 않으므로 /wallet/login 과 같이 같은 오리진만 부를 수 있다.
+// 비밀번호는 중계할 뿐 로그에도 상태 파일에도 남기지 않는다(이 경로는 state 를 건드리지 않아 persist() 와 무관하다).
+app.post('/wallet/self_revoke', async (req, res) => {
+  try {
+    const { uid, pwd } = req.body ?? {};
+    if (!isDec(uid) || typeof pwd !== 'string') return res.status(400).json({ error: 'uid(10진 문자열), pwd 필요' });
+    const r = await ciaPost('/cia/account/self_revoke', { uid, pwd });
+    res.status(r.status).json(r.body ?? {});
+  } catch (e) { res.status(502).json({ reason: 'cia_unavailable', detail: e.message }); }
 });
 
 app.post('/wallet/request', loginCors, async (req, res) => {

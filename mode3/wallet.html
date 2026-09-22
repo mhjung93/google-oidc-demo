@@ -34,7 +34,7 @@
     <span id="mmStatus" class="muted">연결 안 됨</span>
     <br />
     <button id="snapInfoBtn" type="button" title="Snap 의 getPublicInfo — 비밀은 실리지 않는다">Snap 상태 보기</button>
-    <button id="selfRevokeBtn" type="button" title="Snap 이 비밀번호를 묻고 CIA 에 자기 폐기를 낸다 — 되돌릴 수 없다">자기 폐기</button>
+    <button id="selfRevokeBtn" type="button" title="Snap 이 비밀번호를 묻고 에이전트가 CIA 로 중계한다 — 되돌릴 수 없다">자기 폐기</button>
     <button id="snapResetBtn" type="button" title="Snap 의 등록 비밀·동의 기록을 지운다(데모 초기화)">Snap 초기화</button>
     <pre id="snapInfo">(Snap 상태를 아직 읽지 않았다)</pre>
   </fieldset>
@@ -95,7 +95,7 @@
     // ready 전송은 예정대로 config·리스너가 준비된 뒤다(init → runAuthorize).
     if (IS_AUTHORIZE) { $('mainView').hidden = true; $('authorizeView').hidden = false; }
     // /wallet/config 를 못 읽으면 지금까지의 동작(file 모드)으로 본다.
-    let cfg = { secrets: 'file', snapId: null, walletOrigin: location.origin, rpcUrl: null, ciaUrl: null, chainId: null };
+    let cfg = { secrets: 'file', snapId: null, walletOrigin: location.origin, rpcUrl: null, chainId: null };
     let account = null;        // MetaMask 가 준 EOA — 가스를 내는 계정이다(PPID 계정과 다르다)
     let lastAttrs = null;      // /wallet/status 가 준 값 — "정확히 공개" 버튼이 쓴다
     let lastSessions = {};     // /wallet/status 의 sessions — 선택된 세션의 attrGateAddress 로 tx 폼 기본값을 채운다(스펙 §6.1)
@@ -442,20 +442,14 @@
         $('snapInfo').textContent = `등록: ${i.registered ? `예 (uid=${i.uid})` : '아니오'}\n속성: ${JSON.stringify(i.attrs)}\n사용자 자격증명 보관: ${i.hasUserCred}\n동의 기록: ${JSON.stringify(i.consents)}`;
       } catch (e) { $('snapInfo').textContent = `오류: ${e.message}`; }
     });
-    // 자기 폐기(스펙 §4.5): 에이전트에는 이 경로가 없다 — Snap 이 비밀번호를 묻고 페이지가 CIA 에 직접 낸다(ciaUrl 은 /wallet/config).
+    // 자기 폐기(스펙 §4.5): Snap 이 비밀번호를 묻고, 에이전트의 프록시가 CIA 로 중계한다(같은 오리진 — cia.js 에는
+    // CORS 가 없어 이 페이지가 :4100 을 직접 부를 수 없다). 비밀번호는 이 페이지도 에이전트도 보관하지 않는다.
     $('selfRevokeBtn').addEventListener('click', async () => {
       try {
         await ensureConnected();
         const r = await invokeSnap('selfRevoke');
         if (!r || r.denied) { $('snapInfo').textContent = '자기 폐기 취소됨'; return; }
-        if (!cfg.ciaUrl) { $('snapInfo').textContent = '자기 폐기 실패: /wallet/config 에 ciaUrl 이 없다'; return; }
-        let res;
-        try { res = await postJson(`${cfg.ciaUrl}/cia/account/self_revoke`, { uid: r.uid, pwd: r.pwd }); }
-        catch (e) {
-          // CIA(:4100)가 교차 오리진 요청을 받지 않으면 브라우저가 막는다 — 그때는 CIA 계정 페이지에서 직접 한다.
-          $('snapInfo').textContent = `CIA 에 직접 낼 수 없다(${e.message}) — ${cfg.ciaUrl}/account 에서 폐기하세요.`;
-          return;
-        }
+        const res = await postJson('/wallet/self_revoke', { uid: r.uid, pwd: r.pwd });
         $('snapInfo').textContent = res.status === 200 ? `자기 폐기 완료 (uid=${r.uid}, treeUpdated=${res.body.treeUpdated ?? '-'})` : errText(res.status, res.body);
       } catch (e) { $('snapInfo').textContent = `오류: ${e.message}`; }
       refresh();

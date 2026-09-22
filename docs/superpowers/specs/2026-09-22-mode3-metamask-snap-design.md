@@ -54,8 +54,9 @@
 
 - 빌드: Mode 2 `snap/` 과 같은 `@metamask/snaps-cli`(`mm-snap build`, `mm-snap serve`), 포트 **8082**(Mode 2 는 8081). `snap.manifest.json`
   권한: `endowment:rpc { dapps: true }`, `snap_dialog`, `snap_manageState`. `endowment:ethereum-provider`·`network-access`·`webassembly` 는
-  필요 없다(체인·CIA 통신은 에이전트, 증명은 에이전트). 암호 계산은 `circomlibjs` 의 Baby Jubjub·Poseidon·EdDSA 로 s_u·r_u·cm_u 생성과
-  요청 서명을 한다 — 번들 크기·SES 호환은 T1 에서 실측(Mode 2 에서 EdDSA-Poseidon 이 SES 아래 동작함을 확인한 기록이 있다).
+  필요 없다(체인·CIA 통신은 에이전트, 증명은 에이전트). 암호 계산은 Baby Jubjub·Poseidon 으로 s_u·r_u·cm_u 생성을 한다 —
+  **`circomlibjs` 는 쓰지 않는다**(WASM 이 필요해 `endowment:webassembly` 없는 manifest 와 충돌한다. §9(c) — 대신 점 연산을
+  `snap-mode3/src/crypto.js` 에 BigInt 로 직접 적고 루트 `lib` 의 `registrationCommit` 과 같은 점인지 테스트로 고정했다).
 - 상태(`snap_manageState`, 암호화 저장):
   ```
   { version: 1,
@@ -97,7 +98,8 @@
 - 트랜잭션 폼: 공개 슬롯 선택 → Snap `consentDisclosure` → 에이전트 `POST /wallet/tx/prepare` → `{ to: walletAddr, data: executeCalldata,
   value: 0 }` 를 `eth_sendTransaction` 으로 MetaMask 에 → 영수증 해시를 에이전트 `POST /wallet/tx/record { r_s, txHash }` 에 → 에이전트가
   영수증을 파싱해 기존 응답 형식(`executed`, `disclosure`, `onchainDisclosure`)으로 돌려준다.
-- 자기 폐기: Snap `selfRevoke` → 에이전트 `POST /wallet/self_revoke { uid, pwd }`(기존 경로).
+- 자기 폐기: Snap `selfRevoke` → 에이전트 `POST /wallet/self_revoke { uid, pwd }`(**T6 에서 새로 만든 프록시** — 초안은 이것을
+  기존 경로로 적었지만 에이전트에 그 라우트가 없었다. §9 Ruling 7).
 
 ### 3.3 지갑 에이전트 `mode3_wallet_agent.js`
 
@@ -181,7 +183,10 @@ RP 페이지: 결과로 POST /api/mode3/login → 세션
 `file` 모드는 기존 `/wallet/tx`(릴레이어)를 그대로 쓴다.
 
 ### 4.5 자기 폐기
-지갑 페이지 → Snap.selfRevoke(비밀번호 prompt) → `POST /wallet/self_revoke { uid, pwd }`(기존) → Snap `reset` 은 사용자가 따로 누른다.
+지갑 페이지 → Snap.selfRevoke(비밀번호 prompt) → `POST /wallet/self_revoke { uid, pwd }` → 에이전트가 `POST /cia/account/self_revoke`
+로 중계하고 CIA 응답을 그대로 돌려준다(T6 에서 추가. `cia.js` 에는 CORS 가 없어 브라우저가 :5100 → :4100 을 직접 부를 수 없다 —
+Ruling 7). CORS 를 붙이지 않아 같은 오리진(지갑 페이지)만 부른다. 비밀번호는 중계만 하고 로그·상태 파일에 남지 않는다.
+Snap `reset` 은 사용자가 따로 누른다.
 
 ---
 
@@ -239,6 +244,36 @@ RP 페이지: 결과로 POST /api/mode3/login → 세션
 ## 9. 결정된 것 / 열린 것
 
 - 결정(2026-09-22, 사용자): ①~④(머리말). 등록 uid·비밀번호 입력은 Snap 대화상자.
-- 열린 것: (a) 세션 동안 증인 메모리 보유의 TTL(세션 만료 max_height 까지로 둔다 — 기본값), (b) Playwright 의존성 추가 여부(T1 에서 확인),
-  (c) Snap 번들에 circomlibjs 가 SES 아래 동작하는지(Mode 2 기록상 EdDSA-Poseidon 은 됨; Baby Jubjub 점 연산도 같은 라이브러리라 될 것으로
-  예상 — T3 첫 단계에서 실측, 안 되면 s_u·r_u 생성만 Snap 에서 하고 cm_u 계산은 페이지로 옮긴다).
+
+### 열린 것 → 닫힌 결과 (2026-09-22 구현)
+
+- **(a) 세션 증인의 TTL — 기본값대로 닫았다.** `sessions[r_s].witness` 는 세션 엔트리와 수명을 같이한다(세션 만료 `max_height`,
+  폐기·속성 변경으로 세션을 버릴 때, 그리고 프로세스 재시작). `persist()` 가 `witness` 를 빼고 쓰므로 재시작 뒤에는 `409 needs_consent`
+  가 나고 RP 페이지가 팝업을 다시 연다(§4.3).
+- **(b) Playwright — 추가했다(사용자 승인).** 루트 devDependency `@playwright/test`. 단 번들 chromium 을 내려받지 않고 **설치된
+  Google Chrome**(`channel: 'chrome'`)을 쓴다. 이 의존성이 필요한 테스트는 `run_tests.sh` 의 별도 `browser` 그룹이다(Ruling 8).
+- **(c) Snap 번들의 circomlibjs — 쓰지 않는다.** `circomlibjs.buildBabyjub` 은 ffjavascript 의 WASM 곡선을 올리는데 이 Snap 의
+  manifest 에는 `endowment:webassembly` 가 없어야 해서 런타임에 죽는다(실측: `WebAssembly` 를 지우면 `buildBabyjub` 이
+  `Cannot read properties of undefined (reading 'Memory')`). 그래서 Baby Jubjub 덧셈·스칼라곱을 BigInt 로 `snap-mode3/src/crypto.js` 에
+  직접 적고, 결과 `cm_u` 가 루트 `lib/mode3_issuance.js` 의 `registrationCommit`(circomlibjs 사용)과 **같은 점**인지 단위 테스트로
+  고정했다. §3.1 의 "circomlibjs 로 계산한다" 는 이 결정으로 대체된다(계산 위치는 그대로 Snap 안이다 — §3.1 의 대안은 쓰지 않았다).
+
+### 실행 중 내린 판정(Ruling)
+
+- **Ruling 1** — `/wallet/config` 는 T1 에서 만들고 RP 오리진 CORS(GET)를 처음부터 붙인다. RP 페이지가 지갑의 비밀 모드를 알아야
+  로그인 경로(직접 호출 / 팝업)를 고르기 때문이고, 이 응답에는 비밀이 없다. (T6 에서 `ciaUrl` 은 뺐다 — Ruling 7 로 필요가 없어졌고
+  RP 오리진에도 나가던 값이다.)
+- **Ruling 2** — 새 의존성은 사용자 승인이 필요하다(CLAUDE.md). `snap-mode3` 의 `@metamask/snaps-sdk`·`@metamask/snaps-cli` 와 루트
+  devDep `@playwright/test` 를 승인받았다(`circomlibjs` 는 (c) 대로 결국 쓰지 않았다).
+- **Ruling 3** — `chain`·`browser` 테스트용 hardhat 노드(:8545)는 이 작업 세션이 띄우고 끝에 내린다(CLAUDE.md 2026-09-11 허용).
+- **Ruling 4** — 세션 경로(`/wallet/revalidate`·`/wallet/request`·`/wallet/tx/*`)는 **본문 `witness` 를 무시하고 메모리 증인만** 쓴다.
+  본문 증인을 받는 곳은 `/wallet/login`·`/wallet/session/witness`·`/wallet/attrs/sync` 뿐이다 — 세션 경로는 RP 오리진에 열려 있으므로,
+  거기서 증인을 받으면 Snap 동의를 우회하는 입력 경로가 생긴다.
+- **Ruling 5** — 브라우저 테스트의 `wallet_invokeSnap` 스텁은 시뮬레이터가 아니라 **`snap-mode3/src/index.js` 의 진짜 `onRpcRequest`**
+  를 주입해 돌린다(import 만 치환하고, 치환 정규식이 안 맞으면 throw 해서 드리프트가 조용히 넘어가지 않는다).
+- **Ruling 6** — Snap `updateUserCred` 는 인자 없음(`params` 부재)을 `bad_params` 로 막고, **명시적 `null`** 만 폐기로 본다. 페이지의
+  실수로 보관 중인 사용자 자격증명이 지워지지 않게 한다.
+- **Ruling 7** — 자기 폐기는 `cia.js` 에 CORS 를 여는 대신 **에이전트 프록시**(`POST /wallet/self_revoke`)로 푼다. CIA 서버는 이
+  작업에서 바꾸지 않는다는 계획을 지키고, 에이전트는 이미 `ciaPost` 로 CIA 와 통신한다. §3.2·§4.5 참고.
+- **Ruling 8** — 브라우저 테스트는 `chain` 이 아니라 새 **`browser` 그룹**이다. `chain` 의 계약("hardhat :8545 만 있으면 된다")을
+  지키기 위해서다. `all` 에는 포함하되, Chrome/Chromium 이 없는 머신에서는 그 한 줄 때문에 `all` 이 실패한다는 주석을 남겼다.

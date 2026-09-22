@@ -14,6 +14,7 @@ Mode 2 데모(:3000/:4000/:5001)와 **공존**한다. 포트·상태 파일이 �
 | CIA | :4100 | `node cia.js` | `cia_state.json`, `cia_keys.json` |
 | 지갑 에이전트 | :5100 | `node mode3_wallet_agent.js` | `mode3_wallet_state.json` |
 | RP | :3100 | `node mode3_rp.js` | `mode3_rp_registration.json`, `mode3_rp_logins.jsonl` |
+| Snap serve (`snap` 모드에만) | :8082 | `cd snap-mode3 && npm run serve` | — (비밀은 MetaMask 안에) |
 
 ## 처음 한 번: 배포와 `.env`
 
@@ -82,6 +83,8 @@ node mode3_rp.js                # :3100 (기동 시 CIA 에서 pk_CIA 를 받아
 ```
 
 RP 는 등록 파일이 없거나 승인 전이면 CIA 에 등록/조회하므로 CIA 가 먼저 떠 있어야 한다.
+
+지갑 에이전트를 `MODE3_WALLET_SECRETS=snap` 으로 띄우면 MetaMask/Snap 경로가 된다(아래 "MetaMask / Snap 경로" 절). 기본은 `file` 이다.
 
 페이지: 지갑 `http://127.0.0.1:5100/`, RP `http://127.0.0.1:3100/`, CIA 관리자 `http://127.0.0.1:4100/admin`, CIA 사용자 `http://127.0.0.1:4100/account`.
 
@@ -174,6 +177,69 @@ AA 의 현재 값을 받아 두고(바뀌었으면 지갑이 옛 C_u·세션을 
 | 4 | 슬롯 0 을 `[0, 1980]` 으로 공개 시도 | 지갑이 `disclosure_unsatisfiable`(1990 ∉ [0, 1980], 체인에 보내기 전에 막힌다) |
 | 5 | 관리자가 testuser 의 a₂ 를 3 으로 변경 → 다음 로그인 | 지갑이 옛 C_u 폐기를 알아채 새 C_u 를 받고 로그인 성공, **PPID 동일** |
 
+## MetaMask / Snap 경로 (`MODE3_WALLET_SECRETS`, 설계 2026-09-22 metamask-snap)
+
+지갑 에이전트는 등록 비밀(uid·s_u·r_u·sk_u·blind_u)을 어디서 얻을지 `MODE3_WALLET_SECRETS` 로 고른다. 기본은 `file` 이고,
+지금까지의 헤드리스 데모·자동 테스트는 모두 `file` 이다. `snap` 은 브라우저 + MetaMask Flask 로 사람이 직접 하는 경로다.
+회로·컨트랙트·CIA·서비스 로직·증명 형식은 두 모드가 같다.
+
+| | `file`(기본) | `snap` |
+|---|---|---|
+| 등록 비밀 보관 | `mode3_wallet_state.json` | MetaMask Snap 의 암호화 상태. 에이전트 파일에는 **공개 부분만**(uid·cm_u·attrs·`Cf_u`·`leaf`) |
+| 사용자 동의 | 없음(자동 처리) | Snap 대화상자 — 등록 uid·비밀번호, 로그인 동의, 속성 공개 동의, 자기 폐기 비밀번호. 트랜잭션은 MetaMask 확인 창 |
+| RP → 지갑 로그인 | RP 페이지가 `POST /wallet/login` 을 CORS 로 직접 부른다 | RP 페이지가 지갑 페이지 팝업(`/?authorize=1`)을 열고 `postMessage` 로 결과만 받는다(`/wallet/login` 의 CORS 는 닫힌다) |
+| 재검증·세션 요청 | RP 페이지가 CORS 로 직접 | 같다(비밀이 필요 없다). 증인이 없으면 `409 needs_consent` → RP 가 재승인 팝업을 연다 |
+| 세션 증인 | 상태 파일 | **에이전트 메모리만** — `persist()` 가 제외한다. 에이전트를 재시작하면 재승인이 필요하다 |
+| 트랜잭션 전송 | 릴레이어(hardhat 언락 계정 `MODE3_RELAYER_INDEX`), `POST /wallet/tx` | MetaMask `eth_sendTransaction`(사용자 EOA 가 가스). `POST /wallet/tx/prepare` → `/wallet/tx/record` |
+| 등록 | 에이전트가 s_u·r_u 를 만든다 | Snap 이 만들고 페이지는 `cm_u` 만 넘긴다. 응답의 `sk_u`·`attrs` 를 Snap 이 보관한다 |
+| 자동 테스트 | `chain` 그룹 전 구간 | `tests/test_mode3_wallet_snap.mjs`(시뮬레이터, `chain`) + `tests/test_mode3_browser.mjs`(`browser`) |
+
+### 준비 (처음 한 번)
+
+1. MetaMask **Flask** 를 설치한다 — 로컬 Snap(`local:…`)은 일반 MetaMask 로는 설치되지 않는다.
+2. `cd snap-mode3 && npm install && npm run build` — `dist/bundle.js` 를 만들고 `snap.manifest.json` 의 `shasum` 을 갱신한다
+   (빌드가 번들을 SES 에서 한 번 평가한다 — `Snap bundle evaluated successfully`). 루트 `node_modules` 는 건드리지 않는다.
+3. `cd snap-mode3 && npm run serve` — 포트 **8082** 로 manifest·번들을 띄운다. Snap ID 는 `local:http://localhost:8082` 이고
+   에이전트의 기본값이다(바꾸려면 에이전트에 `MODE3_SNAP_ID`).
+4. 지갑 에이전트를 snap 모드로 띄운다: `MODE3_WALLET_SECRETS=snap node mode3_wallet_agent.js`.
+5. **지갑 페이지는 `http://127.0.0.1:5100` 으로 연다**(`http://localhost:5100` 도 Snap 은 받지만 에이전트가 127.0.0.1 에만 바인딩한다).
+   `snap-mode3/src/index.js` 의 `WALLET_ORIGINS` 가 이 두 값 고정이라 **다른 오리진으로 열면 Snap 이 모든 RPC 를
+   `unauthorized_origin` 으로 거절한다** — 포트를 바꾸려면 그 상수도 같이 고쳐야 한다. RP 페이지는 기존대로 `http://127.0.0.1:3100`.
+6. 지갑을 snap 모드로 처음 쓰기 전에 `mode3_wallet_state.json` 의 `registration` 이 이미 있으면 `already_registered` 로 막힌다 —
+   비밀이 파일에 있는 옛 등록과 Snap 의 등록은 서로 다른 보관소다. 새로 시연하려면 "하지 말 것 / 재시연" 의 재시연 세트를 탄다.
+
+### 수동 체크리스트 (`snap` 모드)
+
+자동 테스트가 없는 경로라 사람이 확인한다. 각 단계에서 **어느 창이 뜨는지**가 확인 포인트다.
+
+| # | 어디서 | 조작 | 떠야 할 창 / 확인할 것 |
+|---|---|---|---|
+| S0 | 지갑(:5100) | 페이지를 연다 | "Snap" 패널이 보이고 uid·비밀번호 폼은 숨는다(= 에이전트가 snap 모드) |
+| S1 | 지갑 | "MetaMask 연결" | MetaMask 계정 선택 창 → Snap 설치·권한 창. 상태줄에 `계정 0x… · Snap local:http://localhost:8082` |
+| S2 | 지갑 | "등록" | **Snap 대화상자 2개**(uid → 비밀번호). 끝나면 상태에 `등록됨`, 속성은 AA 값(`[1990, 410, 2, 0]`). "Snap 상태 보기" 로 `등록: 예`, `사용자 자격증명 보관` 확인 |
+| S3 | RP(:3100) | "Mode 3 로그인" | 지갑 오리진의 **팝업 창**이 뜨고 그 안에서 **Snap 로그인 동의 창**(서비스 이름·origin·arid·AI agent 허용)이 뜬다. 승인하면 팝업이 스스로 닫히고 RP 에 `로그인 성공 PPID=…` |
+| S4 | RP | (S3 에서 동의를 **거절**) | RP 에 `로그인 실패 — 지갑: user_denied`. 세션이 생기지 않는다 |
+| S5 | RP | "세션 재검증" | 팝업 없이 성공(비밀이 필요 없다). `캐시 히트=true` |
+| S6 | 지갑 | 세션 선택 → 슬롯 0 `[0, 2007]`·슬롯 1 `[410, 410]` 공개 → `to`=AttrGate, `data`=`0x4e71d92d` → "트랜잭션 보내기" | **Snap 속성 공개 동의 창**(슬롯별 범위·대상 주소) → **MetaMask 트랜잭션 확인 창**(첫 번째는 계정 배포, 두 번째가 `claim()`) → 영수증에 `ok=true`, `Claimed` |
+| S7 | 지갑 | MetaMask 확인 창에서 **거절** | 페이지에 `user_rejected`. 에이전트 상태는 그대로(nonce 는 컨트랙트가 관리한다) |
+| S8 | 터미널 → RP | 지갑 에이전트를 재시작 → RP 에서 "세션 재검증" | 에이전트가 `409 needs_consent` → RP 가 **재승인 팝업**을 연다 → Snap 동의 창(이 세션의 AI agent 허용 값이 그대로 보여야 한다) → 승인하면 재검증이 이어져 성공 |
+| S9 | 지갑 | "자기 폐기" | **Snap 비밀번호 대화상자** → 에이전트 `POST /wallet/self_revoke` 가 CIA 로 중계 → `자기 폐기 완료`. 관리자 페이지에서 `/cia/publish` 뒤 재검증이 `revoked` 가 되는지 본다 |
+| S10 | 지갑 | "Snap 초기화" | Snap 의 등록이 지워진다. 에이전트 파일의 **공개** 등록은 그대로다(재시연은 재시연 세트로) |
+
+`file` 모드에서 RP 페이지를 브라우저로 여는 경로(RP 페이지가 `/wallet/login` 을 CORS 로 직접 부르는 지금까지의 흐름)는
+**자동 테스트가 덮지 않는다** — 브라우저 테스트는 snap 모드만 돌린다. `file` 모드로 데모를 바꿨다면 위 "시연 각본" 0~9 를 손으로 한 번 훑는다.
+
+### `snap` 모드의 한계
+
+- **EOA 가 드러난다.** 트랜잭션 수수료를 MetaMask 의 사용자 계정이 내므로 체인에서 그 EOA 와 PPID 지갑이 이어진다.
+  릴레이어를 쓰는 `file` 모드에는 이 연결이 없다. Mode 2 와 같은 데모 한계다.
+- **증인은 요청마다 Snap 에서 온다.** 에이전트는 등록 비밀을 디스크에 쓰지 않지만, 세션 동안 `{ s_u, blind_u, attrs, sk_u }` 를
+  **메모리에** 들고 재검증·재증명·`tx/prepare` 에 쓴다. "Snap 이 보관한다"는 영속 저장에 대한 보증이지 프로세스 메모리에 대한
+  보증이 아니다.
+- **에이전트 재시작 = 재승인.** 메모리 증인이 사라져 그 세션의 재검증이 `409 needs_consent` 가 된다(S8).
+- 로컬 Snap 이라 **Flask 전용**이고 npm 게시·감사는 범위 밖이다.
+- 지갑 페이지 오리진이 `WALLET_ORIGINS` 두 값으로 고정이다(위 준비 5).
+
 ## 엔드포인트 (2026-09-22 선택 공개로 바뀌거나 추가된 것)
 
 | 메서드/경로 | 프로세스 | 설명 |
@@ -203,6 +269,13 @@ AA 의 현재 값을 받아 두고(바뀌었으면 지갑이 옛 C_u·세션을 
 ## 테스트
 
 - `bash scripts/run_tests.sh chain` — 격리 스택(임시 포트)으로 전 구간. :8545 와 `build/mode3/`의 `pi_cred` zkey·vkey 만 있으면 된다.
+- `bash scripts/run_tests.sh browser` — 팝업 로그인·`needs_consent` 재승인·MetaMask 트랜잭션을 실제 페이지로 돌린다
+  (`tests/test_mode3_browser.mjs`). `chain` 과 같은 조건에 더해 **설치된 Google Chrome(또는 Chromium)** 이 필요하다 —
+  Playwright 가 `channel: 'chrome'` 으로 띄우고, `window.ethereum` 을 스텁해 진짜 `snap-mode3/src/index.js` 의 `onRpcRequest` 를
+  물린다. 그래서 `chain` 과 그룹을 나눴다. **Snap 경로(`snap-mode3/`, `mode3/wallet.html`, `mode3/rp.html`, 에이전트의 snap 분기)를
+  건드렸으면 이 그룹도 돌린다.**
+- `node snap-mode3/test/rpc.test.mjs` — Snap RPC 9개의 단위 테스트(전역 `snap` 객체를 스텁). 패키지 지역 테스트라
+  `scripts/run_tests.sh` 그룹에는 없다 — Snap 을 고치면 이 명령을 직접 돌린다.
 - `bash scripts/run_tests.sh contract` — `test/Mode3Wallet.test.mjs`(`execute()` 검사 순서·가스). hardhat 인프로세스 체인이라 :8545 가 필요 없다.
 - `bash scripts/run_tests.sh unit` 의 `tests/test_mode3_cia_state.js` — 상태 v5 이행을 커버한다.
 - 개봉은 `tests/test_cia_opening.mjs`(CIA 단독)와 `test_mode3_demo_stack.mjs` 시나리오 9(전 구간)로 고정돼 있다.

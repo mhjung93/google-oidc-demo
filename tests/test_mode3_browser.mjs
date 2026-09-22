@@ -94,8 +94,8 @@ try {
     }
   }
   const lastDialog = () => j(dialogs[dialogs.length - 1] ?? null);
-  /** 팝업이 닫힐 때까지 기다린다. 창 이름이 'mode3-authorize' 로 같아서, 아직 살아 있으면 다음 window.open 이
-   *  새 창을 만들지 않고 그 창을 재사용한다 — 그러면 다음 테스트의 'page' 이벤트가 오지 않는다. */
+  /** 팝업이 닫힐 때까지 기다린다. 창 이름은 `mode3-authorize-${r_s}` 라 같은 세션(로그인 뒤 재승인)이면 이름이 같고,
+   *  아직 살아 있으면 다음 window.open 이 새 창을 만들지 않고 그 창을 재사용한다 — 그러면 다음 테스트의 'page' 이벤트가 오지 않는다. */
   const awaitPopupClosed = async (popup) => { if (!popup.isClosed()) await popup.waitForEvent('close', { timeout: 15_000 }); };
   /** 하네스 쪽 조건을 기다린다(대화상자가 떴는지 등 — 페이지 밖에서 일어나는 일). */
   async function waitFor(cond, what, timeout = 60_000) {
