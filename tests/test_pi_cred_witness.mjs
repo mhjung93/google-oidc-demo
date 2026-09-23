@@ -224,6 +224,52 @@ await t('V6 음성: mask ≥ 16, lo ≥ 2^64, attr ≥ 2^64 는 거부', async (
   await assert.rejects(() => witness({ ...big.input, attrs: [(1n << 64n).toString(), '410', '2', '0'] }), /Assert Failed/);   // C_u 가 달라져 서명도 깨지지만 Num2Bits(64) 가 먼저 막는다
 });
 
+const COUNTRIES = [410, 392, 840, 276, 250];
+await t('V7 양성: set_sel = 0, set_root = 0 (집합 술어 없음) — 기존 입력 그대로 통과, 공개 입력에 set_sel·set_root 가 있다', async () => {
+  const fx = await buildValidInput();
+  assert.equal(fx.input.set_sel, '0'); assert.equal(fx.input.set_root, '0');
+  await witness(fx.input);
+});
+await t('V7 양성: 국가(a₁ = 410) ∈ {410,392,840,276,250} — set_sel = 2 통과', async () => {
+  const fx = await buildValidInput({ set: { slot: 1, members: COUNTRIES } });
+  assert.equal(fx.input.set_sel, '2');
+  await witness(fx.input);
+});
+await t('V7 양성: 범위 + 집합 동시(슬롯 0 범위, 슬롯 1 집합)', async () => {
+  const fx = await buildValidInput({ disclosure: { mask: 0b0001n, lo: [0n, 0n, 0n, 0n], hi: [2007n, 0n, 0n, 0n] }, set: { slot: 1, members: COUNTRIES } });
+  await witness(fx.input);
+});
+await t('V7 음성: root 를 바꾸면 거부', async () => {
+  const fx = await buildValidInput({ set: { slot: 1, members: COUNTRIES } });
+  await assert.rejects(() => witness({ ...fx.input, set_root: (BigInt(fx.input.set_root) + 1n).toString() }), /Assert Failed/);
+});
+await t('V7 음성: 다른 슬롯을 가리키면(set_sel = 1, a₀ = 1990 ∉ S) 거부', async () => {
+  const fx = await buildValidInput({ set: { slot: 1, members: COUNTRIES } });
+  await assert.rejects(() => witness({ ...fx.input, set_sel: '1' }), /Assert Failed/);
+});
+await t('V7 음성: 경로 index 를 바꾸면 거부', async () => {
+  const fx = await buildValidInput({ set: { slot: 1, members: COUNTRIES } });
+  await assert.rejects(() => witness({ ...fx.input, set_index: String((Number(fx.input.set_index) + 1) % 256) }), /Assert Failed/);
+});
+await t('V7 음성: set_sel = 0 인데 set_root ≠ 0 은 거부(검증자가 무시하는 값에 쓰레기를 실을 수 없다)', async () => {
+  const fx = await buildValidInput();
+  await assert.rejects(() => witness({ ...fx.input, set_root: '1' }), /Assert Failed/);
+});
+await t('V7 음성: set_sel = 5 는 거부', async () => {
+  const fx = await buildValidInput({ set: { slot: 1, members: COUNTRIES } });
+  await assert.rejects(() => witness({ ...fx.input, set_sel: '5' }), /Assert Failed/);
+});
+await t('V7 양성: set_sel = 0 이면 set_index·set_path 는 무시된다', async () => {
+  const fx = await buildValidInput();
+  await witness({ ...fx.input, set_index: '77', set_path: Array(8).fill('123456789') });
+});
+await t('V7: 패딩 리프(2^64)는 어떤 속성으로도 못 맞춘다 — 속성이 64비트라 2^64 자체가 거부된다', async () => {
+  // 집합에 원소 하나만 두면 index 1..255 는 전부 패딩. 속성 값을 2^64 로 바꿔 패딩 자리에 맞추려 해도 C_u 의 Num2Bits(64) 가 먼저 막는다.
+  const fx = await buildValidInput({ set: { slot: 3, members: [0] } });   // a₃ = 0 ∈ {0}
+  await witness(fx.input);
+  await assert.rejects(() => witness({ ...fx.input, attrs: ['1990', '410', '2', (1n << 64n).toString()], set_index: '1' }), /Assert Failed/);
+});
+
 console.log('');
 console.log(`## pi_cred 비선형 제약: ${constraints.toLocaleString()}`);
 console.log(`   (참고 — Mode 2 pi_pk_i_v3: 13,905)`);

@@ -5,6 +5,7 @@ include "lib/poseidon.circom";
 include "lib/imt_nonmembership_v2.circom";
 include "lib/bitify.circom";
 include "lib/comparators.circom";
+include "lib/mux1.circom";
 include "lib/mode3_commit.circom";
 include "lib/mode3_trace_tag.circom";
 
@@ -15,6 +16,7 @@ include "lib/mode3_trace_tag.circom";
 //
 // V5(2026-09-21): 커밋 둘(C_u 사용자 자격증명, C_s 세션) — 서명은 둘을 덮고 리프는 C_u 에서만 뽑는다. 설계 docs/superpowers/specs/2026-09-21-mode3-two-tier-credential-design.md §5
 // V6(2026-09-22): 공개 술어 disc_mask/lo/hi, 속성 64비트. 설계 2026-09-22-mode3-selective-disclosure-design.md §4
+// V7(2026-09-23): 집합 소속 set_sel/set_root(공개)·set_index/set_path(비공개). 설계 2026-09-23-mode3-predicates-design.md §3
 // 다섯 가지를 함께 증명한다. 하나라도 빠지면 뚫린다:
 //   ① CIA가 (Cf_u, Cf_s, max_height, chainid, allowAgent)에 서명했다 — 없으면 아무나 credential을 만든다
 //   ② C_s 안에 이 pk_i·arid 가 있다                — 없으면 남의 π를 주워 자기 키로 서명해 완전 사칭
@@ -55,6 +57,10 @@ template PiCred(depth) {
     signal input pathElements[depth];
     signal input pathIndices[depth];
 
+    // V7 집합 소속 경로(비공개). set_sel = 0 이면 무시된다(지갑은 0 을 넣는다).
+    signal input set_index;        // 리프 인덱스 0..255
+    signal input set_path[8];      // 형제 노드, 리프에서 root 쪽으로
+
     // ---- Public ----
     signal input PPID;
     signal input arid;
@@ -75,6 +81,10 @@ template PiCred(depth) {
     signal input disc_mask;
     signal input disc_lo[4];
     signal input disc_hi[4];
+
+    // V7 집합 소속(2026-09-23 §3): set_sel ∈ {0..4}, 0 = 없음, k = 슬롯 k−1 이 set_root 의 집합에 속한다. sel = 0 이면 root = 0 이어야 한다.
+    signal input set_sel;
+    signal input set_root;
 
     var DOMAIN_MODE3_CRED_V5 = 93461614427473393731524149;  // ASCII "MODE3CREDV5"
     var TAG_MODE3_USER = 4;  // 사용자 자격증명 리프. Mode 2 의 1·2, V4 의 3 과 갈라 둔다
@@ -183,14 +193,51 @@ template PiCred(depth) {
         discOk[k] <== ge[k].out * le[k].out;
         maskBits.out[k] * (1 - discOk[k]) === 0;
     }
+
+    // ---- ⑦ 집합 소속 (2026-09-23 V7 §3.2) ----
+    // sel 을 원핫 5개로 풀고 합이 1 이어야 한다 — sel ∉ {0..4} 는 여기서 죽는다.
+    component selIs[5];
+    var selSum = 0;
+    for (var j = 0; j < 5; j++) {
+        selIs[j] = IsEqual();
+        selIs[j].in[0] <== set_sel;
+        selIs[j].in[1] <== j;
+        selSum += selIs[j].out;
+    }
+    selSum === 1;
+    // 선택된 속성 값(sel = 0 이면 0). 곱 하나당 신호 하나 — 사차 항 여러 개를 한 제약에 못 둔다.
+    signal selTerm[4];
+    for (var k = 0; k < 4; k++) selTerm[k] <== selIs[k + 1].out * attrs[k];
+    signal setVal;
+    setVal <== selTerm[0] + selTerm[1] + selTerm[2] + selTerm[3];
+    // 깊이 8 경로. index 비트가 0 이면 현재 노드가 왼쪽(lib/mode3_set_tree.js setPath 와 같은 규약).
+    component setIdxBits = Num2Bits(8);
+    setIdxBits.in <== set_index;
+    component setMux[8];
+    component setHash[8];
+    signal setCur[9];
+    setCur[0] <== setVal;
+    for (var i = 0; i < 8; i++) {
+        setMux[i] = MultiMux1(2);
+        setMux[i].c[0][0] <== setCur[i];     setMux[i].c[0][1] <== set_path[i];
+        setMux[i].c[1][0] <== set_path[i];   setMux[i].c[1][1] <== setCur[i];
+        setMux[i].s <== setIdxBits.out[i];
+        setHash[i] = Poseidon(2);
+        setHash[i].inputs[0] <== setMux[i].out[0];
+        setHash[i].inputs[1] <== setMux[i].out[1];
+        setCur[i + 1] <== setHash[i].out;
+    }
+    // sel ≠ 0 → 계산한 root == set_root;  sel = 0 → set_root == 0.
+    (1 - selIs[0].out) * (setCur[8] - set_root) === 0;
+    selIs[0].out * set_root === 0;
 }
 
 // 공개 입력의 순서는 lib/mode3_wallet.js·lib/mode3_rp.js·cia.js(개봉)·contracts/Mode3Wallet.sol 가 의존한다. 바꾸지 말 것.
 // pk_CIA_x/y 와 pk_trace_x/y 는 공개 입력이다. 검증자는 반드시 전자를 고정된 CIA 키와, 후자를 자기 등록 파일의
 // 조합 키와 비교해야 한다 (설계 §5, 2026-09-16 §4.2).
-// [14] disc_mask [15..18] disc_lo [19..22] disc_hi
+// [14] disc_mask [15..18] disc_lo [19..22] disc_hi [23] set_sel [24] set_root
 component main {public [
     PPID, arid, pk_i, max_height, chainid, allowAgent, revRoot, pk_CIA_x, pk_CIA_y,
     pk_trace_x, pk_trace_y, tag_c1_x, tag_c1_y, tag_c2,
-    disc_mask, disc_lo, disc_hi
+    disc_mask, disc_lo, disc_hi, set_sel, set_root
 ]} = PiCred(32);

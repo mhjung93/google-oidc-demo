@@ -4,10 +4,11 @@ import { buildPoseidon, buildEddsa, buildBabyjub } from 'circomlibjs';
 import { userLeaf, createRevocationTree } from '../../lib/mode3_revocation.js';
 import { userCommit, sessionCommit, credMessageV5, ppid as computePpid } from '../../lib/mode3_credential.js';
 import { combinePublicKey, encryptTag } from '../../lib/mode3_trace.js';
+import { setPath, NO_SET } from '../../lib/mode3_set_tree.js';
 
 // --- 정상 입력 하나를 만든다 -------------------------------------------------
 // 옵션은 컨트랙트 테스트용이다: pk_i 는 실제 세션키의 주소, maxHeight 는 만료 케이스, allowAgent 는 플래그 케이스.
-export async function buildValidInput({ pk_i: pkIOpt, maxHeight = 1789000000n, allowAgent = 0n, chainid = 31337n, disclosure = null } = {}) {
+export async function buildValidInput({ pk_i: pkIOpt, maxHeight = 1789000000n, allowAgent = 0n, chainid = 31337n, disclosure = null, set = null } = {}) {
   const poseidon = await buildPoseidon();
   const F = poseidon.F;
   const eddsa = await buildEddsa();
@@ -47,6 +48,13 @@ export async function buildValidInput({ pk_i: pkIOpt, maxHeight = 1789000000n, a
 
   const disc = disclosure ?? { mask: 0n, lo: [0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n] };
 
+  // V7 집합 소속(spec §3): set = { slot: 0..3, members: [...] } 이면 attrs[slot] 의 경로를 만든다. 없으면 NO_SET.
+  let st = NO_SET;
+  if (set) {
+    const { index, path, root } = await setPath(set.members, attrs[set.slot]);
+    st = { sel: BigInt(set.slot) + 1n, root, index, path };
+  }
+
   const input = {
     uid: uid.toString(), s_u: s_u.toString(), blind_u: blind_u.toString(), blind_s: blind_s.toString(), attrs: attrs.map(String),
     S: sig.S.toString(), R8x: F.toObject(sig.R8[0]).toString(), R8y: F.toObject(sig.R8[1]).toString(),
@@ -60,7 +68,8 @@ export async function buildValidInput({ pk_i: pkIOpt, maxHeight = 1789000000n, a
     pk_trace_x: pk_trace.x.toString(), pk_trace_y: pk_trace.y.toString(),
     tag_c1_x: tag.c1.x.toString(), tag_c1_y: tag.c1.y.toString(), tag_c2: tag.c2.toString(),
     disc_mask: disc.mask.toString(), disc_lo: disc.lo.map(String), disc_hi: disc.hi.map(String),
+    set_sel: st.sel.toString(), set_root: st.root.toString(), set_index: String(st.index), set_path: st.path.map(String),
   };
 
-  return { input, Cf_u, Cf_s, pk_trace, shares, tag, ciaPub, arid, uid, tree, attrs, disclosure: disc };
+  return { input, Cf_u, Cf_s, pk_trace, shares, tag, ciaPub, arid, uid, tree, attrs, disclosure: disc, set: st };
 }
