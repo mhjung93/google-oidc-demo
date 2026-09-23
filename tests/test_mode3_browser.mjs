@@ -234,20 +234,22 @@ try {
 
   // ---- 공개 트랜잭션: MetaMask(스텁)가 배포·execute 를 보낸다 ----
   const info = (await rp.get('/api/mode3/rp_info')).body;
-  await t('공개 트랜잭션: 슬롯 0·1 공개(mask 3) 로 AttrGate.claim 이 성공한다', async () => {
+  await t('공개 트랜잭션: 슬롯 0 범위 + 집합(V7) 으로 AttrGate.claim 이 성공한다', async () => {
     assert.ok(info.attrGateAddress, 'AttrGate 가 배포돼 있어야 한다');
     await walletPage.click('#refreshBtn');
     await walletPage.waitForFunction(() => !document.querySelector('#txBtn').disabled, undefined, { timeout: 15_000 });
     await walletPage.fill('#txTo', info.attrGateAddress);
     await walletPage.fill('#txData', '0x4e71d92d');
-    await walletPage.check('#dk0'); await walletPage.fill('#discLo0', '0'); await walletPage.fill('#discHi0', '2007');
-    await walletPage.check('#dk1'); await walletPage.fill('#discLo1', '410'); await walletPage.fill('#discHi1', '410');
+    const year = new Date().getUTCFullYear();
+    await walletPage.check('#dk0'); await walletPage.fill('#discLo0', '0'); await walletPage.fill('#discHi0', String(year - Number(info.predicates.minAge)));
+    // V7: AttrGate 는 국가를 범위 공개가 아니라 집합 소속(슬롯 1)으로 요구한다 — 폼 기본값은 "없음"(리뷰 Important 3)이라 명시로 선택한다.
+    await walletPage.selectOption('#setSlot', '1');
     answers.push(true);                        // consentDisclosure 확인
     const before = dialogs.length;
     await walletPage.click('#txBtn');
     await waitText(walletPage, '#txVerdict', '전송 성공', 180_000);
     assert.equal(dialogs.length, before + 1, '공개 동의 대화상자 한 번');
-    assert.ok(lastDialog().includes('410'), `동의 창이 공개 구간을 보여 준다: ${lastDialog().slice(0, 300)}`);
+    assert.ok(lastDialog().includes('∈ {'), `동의 창이 집합 소속 줄을 보여 준다: ${lastDialog().slice(0, 300)}`);
     const log = await text(walletPage, '#txLog');
     assert.ok(log.includes('배포 txHash='), '첫 트랜잭션은 CREATE2 배포를 먼저 보낸다');
     assert.ok(log.includes('온체인 공개(Disclosure 이벤트)'), '영수증 파싱 결과가 표시된다');

@@ -301,13 +301,15 @@ app.post('/api/mode3/login', async (req, res) => {
     if (!verifier) return res.status(503).json({ ok: false, reason: inactiveReason() });
     const { r_s } = req.body ?? {};
     if (typeof r_s !== 'string' || !/^[0-9]+$/.test(r_s)) return res.status(400).json({ ok: false, reason: 'malformed' });
+    // V7 술어 요구(스펙 §6, Ruling 항목 5): 요구는 페이지가 `require` 로 싣는다 — 서버 정책 게이트가 아니다(데모 의미).
+    // 운영이라면 서버가 강제해야 한다. 여기서는 형식만 검사한다 — plain object 가 아니면(배열 등) 조용히 무시하지 않고 막는다.
+    const requireP = req.body.require ?? null;
+    if (requireP !== null && (typeof requireP !== 'object' || Array.isArray(requireP))) return res.status(400).json({ ok: false, reason: 'malformed' });
     const rsStr = BigInt(r_s).toString();
     if (!consumeChallenge(rsStr)) return res.status(401).json({ ok: false, reason: 'bad_challenge' });   // 검증 전에 소비
     const v = await verifyBody(req, res, BigInt(rsStr)); if (v === null) return;
     if (!v.ok) return res.json({ ok: false, reason: v.reason });
-    // V7 술어 요구(스펙 §6): 페이지가 요구한 술어를 성명이 만족하는지. 오프체인 나이는 UTC 연 단위.
-    const requireP = req.body.require ?? null;
-    if (requireP && typeof requireP === 'object') {
+    if (requireP) {
       const d = v.disclosure;
       if (requireP.countrySet && !(d.sel === 2n && d.root === ALLOWED_COUNTRIES_ROOT)) return res.json({ ok: false, reason: 'predicate_unmet' });
       if (requireP.minAge && !(((d.mask & 1n) === 1n) && d.hi[0] + MIN_AGE <= BigInt(new Date().getUTCFullYear()))) return res.json({ ok: false, reason: 'predicate_unmet' });

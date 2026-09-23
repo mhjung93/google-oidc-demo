@@ -200,21 +200,26 @@ try {
     assert.equal(otherArid.status, 404, j(otherArid.body)); assert.equal(otherArid.body.reason, 'no_session');
   });
 
-  await t('tx/prepare + hardhat 계정이 EOA 로 전송 + tx/record 가 영수증을 파싱한다 (mask 3 → AttrGate claim)', async () => {
+  await t('tx/prepare + hardhat 계정이 EOA 로 전송 + tx/record 가 영수증을 파싱한다 (mask 1 + set(V7) → AttrGate claim)', async () => {
     const info = await rpInfo();
     assert.ok(info.attrGateAddress);
-    const disclose = [{ lo: '0', hi: '2007' }, { lo: '410', hi: '410' }, null, null];
-    assert.deepEqual(sim.consentDisclosure({ arid: info.arid, origin: info.origin, disclose, to: info.attrGateAddress, value: '0' }), { ok: true });
-    const pre = await wallet.post('/wallet/tx/prepare', { r_s: S1, to: info.attrGateAddress, data: '0x4e71d92d', disclose });
+    const year = new Date().getUTCFullYear();
+    // V7: AttrGate 는 set_sel==2 && set_root==allowedCountriesRoot 와 hi[0]+minAge<=올해 를 요구한다(국가 범위 공개가 아니다).
+    const disclose = [{ lo: '0', hi: String(year - Number(info.predicates.minAge)) }, null, null, null];
+    const set = { slot: 1, members: info.predicates.allowedCountries };
+    assert.deepEqual(sim.consentDisclosure({ arid: info.arid, origin: info.origin, disclose, set, to: info.attrGateAddress, value: '0' }), { ok: true });
+    const pre = await wallet.post('/wallet/tx/prepare', { r_s: S1, to: info.attrGateAddress, data: '0x4e71d92d', disclose, set });
     assert.equal(pre.status, 200, j(pre.body));
     assert.match(pre.body.walletAddr, /^0x[0-9a-fA-F]{40}$/);
     assert.equal(pre.body.factoryAddress, info.factoryAddress);
     assert.equal(pre.body.deployNeeded, true); assert.match(pre.body.deployCalldata, /^0x[0-9a-f]+$/);
     assert.equal(pre.body.nonce, '0');
-    assert.equal(pre.body.disclosure.mask, '3');
+    assert.equal(pre.body.disclosure.mask, '1');
+    assert.equal(pre.body.disclosure.set.sel, '2');
+    assert.equal(pre.body.disclosure.set.root, info.predicates.allowedCountriesRoot);
     assert.equal(typeof pre.body.timings.proveMs, 'number');
     const dec = decodeExecuteCalldata(pre.body.calldata);
-    assert.equal(dec.payload.to.toLowerCase(), info.attrGateAddress.toLowerCase()); assert.equal(dec.payload.data, '0x4e71d92d'); assert.equal(dec.pub[14], '3');
+    assert.equal(dec.payload.to.toLowerCase(), info.attrGateAddress.toLowerCase()); assert.equal(dec.payload.data, '0x4e71d92d'); assert.equal(dec.pub[14], '1');
     // MetaMask 대신 hardhat 계정 #1 이 사용자 EOA 로 두 트랜잭션을 순서대로 보낸다
     const eoa = await provider.getSigner(1);
     const deployTx = await eoa.sendTransaction({ to: pre.body.factoryAddress, data: pre.body.deployCalldata });
@@ -229,11 +234,13 @@ try {
     assert.equal(rec.status, 200, j(rec.body));
     assert.equal(rec.body.ok, true); assert.equal(rec.body.txHash, tx.hash); assert.equal(rec.body.wallet, pre.body.walletAddr);
     assert.match(rec.body.gasUsed, /^[0-9]+$/); assert.equal(rec.body.executed.success, true); assert.equal(rec.body.executed.nonceUsed, '0');
-    assert.equal(rec.body.disclosure.mask, '3'); assert.equal(rec.body.onchainDisclosure.mask, '3');
-    assert.deepEqual(rec.body.onchainDisclosure.lo, ['0', '410', '0', '0']); assert.deepEqual(rec.body.onchainDisclosure.hi, ['2007', '410', '0', '0']);
+    assert.equal(rec.body.disclosure.mask, '1'); assert.equal(rec.body.onchainDisclosure.mask, '1');
+    assert.equal(rec.body.disclosure.set.sel, '2'); assert.equal(rec.body.onchainDisclosure.set.sel, '2');
+    assert.equal(rec.body.onchainDisclosure.set.root, info.predicates.allowedCountriesRoot);
+    assert.deepEqual(rec.body.onchainDisclosure.lo, ['0', '0', '0', '0']); assert.deepEqual(rec.body.onchainDisclosure.hi, [String(year - Number(info.predicates.minAge)), '0', '0', '0']);
     assert.equal(await attrGateAt(info.attrGateAddress, provider).claimed(pre.body.walletAddr), true);
     // 두 번째 prepare: 배포 끝났으니 deployNeeded=false, nonce 1, 같은 root·disclosure 라 캐시 히트
-    const pre2 = await wallet.post('/wallet/tx/prepare', { r_s: S1, to: info.attrGateAddress, data: '0x4e71d92d', disclose });
+    const pre2 = await wallet.post('/wallet/tx/prepare', { r_s: S1, to: info.attrGateAddress, data: '0x4e71d92d', disclose, set });
     assert.equal(pre2.status, 200, j(pre2.body)); assert.equal(pre2.body.deployNeeded, false); assert.equal(pre2.body.deployCalldata, null); assert.equal(pre2.body.nonce, '1');
     assert.equal(pre2.body.cacheHit, true);
     assert.equal((await wallet.post('/wallet/tx/prepare', { r_s: S1, to: info.attrGateAddress, disclose: [{ lo: '0', hi: '1980' }, null, null, null] })).body.reason, 'disclosure_unsatisfiable');

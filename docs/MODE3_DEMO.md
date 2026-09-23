@@ -192,15 +192,17 @@ disclosure(`set`·`disc_hi[0]`)로 그 술어를 만족하는지 오프체인에
 reason: 'predicate_unmet'}` 로 거절한다(200, 컨트랙트 호출 없이 오프체인 판정 — RP env `MODE3_ALLOWED_COUNTRIES`·
 `MODE3_MIN_AGE` 기준).
 
-**시나리오 1~5** (설계 §6.3, 위 0~9 각본과 별도로 확인):
+**시나리오 1~6**(설계 §6.3, 위 0~9 각본과 별도로 확인; V7 이후 `AttrGate` 는 국가 **범위** 공개가 아니라 슬롯 1 **집합 소속**을 요구한다 —
+문구는 `tests/test_mode3_demo_stack.mjs` 케이스 10–11 에서 그대로 가져왔다):
 
 | # | 조작 | 기대 |
 |---|---|---|
 | 1 | testuser 등록 | 속성 `[1990, 410, 2, 0]` 이 AA 에서 내려온다(지갑 화면은 읽기 전용) |
-| 2 | 로그인(mask 0) → 트랜잭션 폼에서 슬롯 0 을 `[0, 2007]`, 슬롯 1 을 `[410, 410]` 으로 공개 → `to`=`attrGateAddress`, `data`=`claim()` 셀렉터(`0x4e71d92d`, 지갑 폼 기본값) | `Claimed` 이벤트, `AttrGate.claimed(wallet) == true` |
-| 3 | alice(2005, 840)로 같은 시도 | `claim()` 이 `country` 로 revert(`Executed` success=false, nonce 는 소모) |
-| 4 | 슬롯 0 을 `[0, 1980]` 으로 공개 시도 | 지갑이 `disclosure_unsatisfiable`(1990 ∉ [0, 1980], 체인에 보내기 전에 막힌다) |
-| 5 | 관리자가 testuser 의 a₂ 를 3 으로 변경 → 다음 로그인 | 지갑이 옛 C_u 폐기를 알아채 새 C_u 를 받고 로그인 성공, **PPID 동일** |
+| 2 | 로그인(mask 0) → 트랜잭션 폼에서 슬롯 0 을 `[0, 올해−minAge]` 로 공개 + 집합 소속(슬롯 1, `MODE3_ALLOWED_COUNTRIES`) → `to`=`attrGateAddress`, `data`=`claim()` 셀렉터(`0x4e71d92d`, 지갑 폼 기본값) | `Claimed` 이벤트, `AttrGate.claimed(wallet) == true` |
+| 3 | alice(2005, 840)로 같은 슬롯 0 범위 + 허용 집합이 아닌 임의 집합(예: `{840, 392}`)으로 시도 | 840 은 이 임의 집합 안에 있어 지갑의 setPath 는 성공하지만 그 root 가 `allowedCountriesRoot` 와 달라 `claim()` 이 `country` 로 revert(`Executed` success=false, nonce 는 소모). 허용 집합에서 840 을 빼면 지갑이 온체인에 내기 전에 `disclosure_unsatisfiable` 로 막는다 |
+| 4 | 슬롯 0 을 `[0, 1980]` 으로 공개 시도(집합 없이) | 지갑이 `disclosure_unsatisfiable`(1990 ∉ [0, 1980], 체인에 보내기 전에 막힌다) |
+| 5 | alice(2005, 840): 허용 집합은 그대로 공개하되 슬롯 0 을 정책보다 넓은 구간(`[0, 올해−5]`)으로 공개 | 국가는 실제 허용 집합이라 `country` 는 통과하지만 minAge 를 증명하지 못해 `claim()` 이 `age` 로 revert |
+| 6 | 관리자가 testuser 의 a₂ 를 3 으로 변경 → 다음 로그인 | 지갑이 옛 C_u 폐기를 알아채 새 C_u 를 받고 로그인 성공, **PPID 동일** |
 
 ## MetaMask / Snap 경로 (`MODE3_WALLET_SECRETS`, 설계 2026-09-22 metamask-snap)
 
@@ -305,7 +307,7 @@ MetaMask/Snap 경로(2026-09-22 metamask-snap)로 새로 생긴 지갑 라우트
 | `root_too_old` | `POST /api/mode3/login`, `POST /api/mode3/revalidate` | 200 `{ok:false, reason}` | 게시된 root 가 `MODE3_MAX_ROOT_AGE` 보다 오래됐다 — CIA 가 하트비트(또는 `/cia/publish`)를 멈추면 온체인 `RootTooOld` 와 함께 오프체인 로그인·재검증도 막힌다. CIA 를 살리고 게시를 기다린다 |
 | `root_too_old` | `POST /api/mode3/request` | 503 | 세션 요청도 같은 상한 — 다만 세션이 이미 있는데 체인 쪽 문제라 5xx 로 구분한다 |
 | `factory_constants_unavailable` | 검증기가 없는 동안 RP API 전부(`inactiveReason`) — `/api/mode3/challenge`·`/login`·`/revalidate`·`/request`·`/open` | 503 | 팩토리 `maxRootAge`·`maxLifetime` 조회 실패 — 등록 대기(`registration_pending`)와 구분한다. 아래 "하지 말 것" 의 함정 참고 |
-| `predicate_unmet` | `POST /api/mode3/login` (V7, `require` 필드가 있을 때만) | 200 `{ok:false, reason}` | 로그인 성명은 유효하지만 요구한 술어(국가 집합 소속·최소 나이)를 만족하지 못한다 — 컨트랙트 호출 없이 오프체인에서 판정한다. `RP 거절 사유` 절 위쪽 "로그인 경로 술어(V7)" 참고 |
+| `predicate_unmet` | `POST /api/mode3/login` (V7, `require` 필드가 있을 때만) | 200 `{ok:false, reason}` | 로그인 성명은 유효하지만 요구한 술어(국가 집합 소속·최소 나이)를 만족하지 못한다 — 컨트랙트 호출 없이 오프체인에서 판정한다. `RP 거절 사유` 절 위쪽 "로그인 경로 술어(V7)" 참고. **요구는 페이지가 `require` 로 싣는다 — 서버 정책 게이트가 아니다(데모 의미). 운영이라면 서버가 강제해야 한다.** **재검증(`revalidate`)은 술어를 다시 증명하지 않는다** — 로그인 때의 술어는 세션 기록에만 남고, 재검증 뒤 `disclosure` 는 갱신된다(후속: 세션에 `require` 를 기억하고 지갑이 같은 술어로 재증명) |
 
 RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는데(`headMaxAgeMs`), 그 창 동안은 root 나이(b′) 판정도 **캐시 시점 값에 얼어붙는다** — 실시간 게시 지연을 그동안은 못 본다.
 

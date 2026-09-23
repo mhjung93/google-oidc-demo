@@ -589,6 +589,8 @@ app.post('/wallet/request', loginCors, async (req, res) => {
 // /wallet/tx/record 가 영수증을 파싱한다.
 const RELAYER_INDEX = Number(process.env.MODE3_RELAYER_INDEX ?? 0);
 const factoryInterface = new ethers.Interface(FACTORY_ABI);
+// d.sel ?? d.setSel: 지갑이 계산한 disclosure 는 {sel,root}, parseExecuteReceipt 가 읽은 온체인 값은 {setSel,setRoot} — 둘 다 받는다.
+// sel 이 우선이다(0n 은 nullish 가 아니라 ?? 로는 걸러지지 않으므로, sel 이 있으면 항상 sel 을 쓰고 setSel 은 sel 이 없을 때만 본다).
 const discStrings = (d) => (d ? { mask: d.mask.toString(), lo: d.lo.map(String), hi: d.hi.map(String), set: (d.sel ?? d.setSel ?? 0n) !== 0n ? { sel: (d.sel ?? d.setSel).toString(), root: (d.root ?? d.setRoot).toString() } : null } : null);
 
 /** /wallet/tx 와 /wallet/tx/prepare 의 공통부: 검증 → 동기화 → π(캐시) → 지갑 주소·nonce → 세션키 서명 → execute 인자.

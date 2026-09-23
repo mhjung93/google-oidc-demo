@@ -226,8 +226,8 @@
         const r = await post('/api/mode3/login', { proof: wb.proof, publicSignals: wb.publicSignals, sig: wb.sig, r_s, require: pred?.require ?? null });
         const rb = await r.json();
         log(`3. RP 검증 ${ms(t0)}: ${JSON.stringify(rb)}\n   allowAgent=${rb.allowAgent}`);
-        const discTxt = rb.ok && rb.disclosure && rb.disclosure.mask !== '0'
-          ? ` 공개(mask=${rb.disclosure.mask}): lo=${rb.disclosure.lo.join(',')} hi=${rb.disclosure.hi.join(',')}` : '';
+        const discTxt = rb.ok && rb.disclosure && (rb.disclosure.mask !== '0' || rb.disclosure.set)
+          ? ` 공개(mask=${rb.disclosure.mask}): lo=${rb.disclosure.lo.join(',')} hi=${rb.disclosure.hi.join(',')}${rb.disclosure.set ? ` set(sel=${rb.disclosure.set.sel}, root=${rb.disclosure.set.root.slice(0, 10)}…)` : ''}` : '';
         if (rb.ok) {
           setVerdict($('verdict'), true, '로그인 성공');
           $('verdict').appendChild(document.createTextNode(` PPID=${rb.PPID}${discTxt}`));

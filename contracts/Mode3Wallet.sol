@@ -78,8 +78,8 @@ contract Mode3Wallet {
 
         // 서명은 이 체인과 이 지갑에 묶인다(PPIDWallet 과 같은 도메인 분리). 같은 팩토리를 두 체인에 배포해도
         // PPID 가 chainid 를 포함해 주소가 다르지만, 서명까지 묶어 두는 편이 싸고 안전하다.
-        // 다이제스트가 공개 값 9워드 전부를 덮는다 — 같은 세션키·같은 mask 의 π 가 둘(예: 어떤 대상엔 정확한
-        // 값 공개, 다른 대상엔 구간 공개) 있어도 릴레이어가 lo/hi 를 바꿔 끼우지 못한다(§5.1).
+        // 다이제스트가 공개 값 11워드 전부를 덮는다 — 같은 세션키·같은 mask 의 π 가 둘(예: 어떤 대상엔 정확한
+        // 값 공개, 다른 대상엔 구간 공개) 있어도 릴레이어가 lo/hi/setSel/setRoot 를 바꿔 끼우지 못한다(§5.1).
         bytes32 payloadHash = keccak256(
             abi.encode(
                 block.chainid, address(this), payload.to, payload.value, payload.data, payload.nonce,

@@ -181,7 +181,7 @@ try {
   console.log(`| ├ 체인 동기화 syncMs | ${fmt(L.sync)} |`);
   console.log(`| ├ 사용자 자격증명 발급 userCredMs (π_u; 첫 로그인 ${L.userCred[0]} ms, 이후 재사용) | ${fmt(L.userCred)} |`);
   console.log(`| ├ CIA 세션 발급 issueMs (ZKP 없음, sig_u 검증 + 서명) | ${fmt(L.issue)} |`);
-  console.log(`| ├ 증명 proveMs (pi_cred V6) | ${fmt(L.prove)} |`);
+  console.log(`| ├ 증명 proveMs (pi_cred V7) | ${fmt(L.prove)} |`);
   console.log(`| 서비스 verifyLogin (Groth16 + σ + root) | ${fmt(L.verify)} |`);
   console.log(`| 재검증 왕복(캐시 π) | ${fmt(R.total)} |`);
   console.log(`| 재검증 verifyLogin | ${fmt(R.verify)} |`);
