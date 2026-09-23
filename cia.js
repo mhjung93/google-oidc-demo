@@ -609,8 +609,9 @@ const findOpening = (id) => state.openings.find((o) => o.id === id);
 app.post('/cia/open/request', async (req, res) => {
   try {
     const { arid, publicSignals, proof, D_svc, ts, sig } = req.body ?? {};
-    if (!isDec(arid) || !Array.isArray(publicSignals) || publicSignals.length !== 23 || !publicSignals.every(isDec) || !proof || !isPt(D_svc) || !isDec(ts) || typeof sig !== 'string') {
-      return res.status(400).json({ error: 'arid, publicSignals[23], proof, D_svc{x,y}, ts, sig required' });
+    // V7(2026-09-23): 공개 입력 25개 — 태그 위치([11..13])는 그대로라 개봉 로직은 바뀌지 않는다.
+    if (!isDec(arid) || !Array.isArray(publicSignals) || publicSignals.length !== 25 || !publicSignals.every(isDec) || !proof || !isPt(D_svc) || !isDec(ts) || typeof sig !== 'string') {
+      return res.status(400).json({ error: 'arid, publicSignals[25], proof, D_svc{x,y}, ts, sig required' });
     }
     if (!(await isTracePoint(pointFromStrings(D_svc)))) return res.status(400).json({ error: 'D_svc is not a valid subgroup point' });
     const e = state.rps[arid];

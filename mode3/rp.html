@@ -88,7 +88,7 @@
         ? `등록 대기 중 (arid=${info.arid ?? '-'}) — CIA 관리자 페이지(/admin)에서 승인하면 활성화된다. 5초마다 확인.`
         : `arid=${info.arid}   origin=${info.origin}   cert_s=있음   pk_trace=있음   RevocationLog=${info.logAddress}   지갑 에이전트=${info.walletAgentOrigin}   pk_CIA=${info.pkCiaSource}   chainId=${info.chainId}   팩토리=${info.factoryAddress ?? '(없음)'}`;
       $('attrGateInfo').textContent = info.attrGateAddress
-        ? `AttrGate=${info.attrGateAddress}   정책: 국가(a₁)=410, 출생연도(a₀)≤2007`
+        ? `AttrGate=${info.attrGateAddress}   정책: 국가(a₁) ∈ {${info.predicates.allowedCountries.join(', ')}}, 올해 − 출생연도(a₀) ≥ ${info.predicates.minAge}`
         : 'AttrGate 없음(팩토리 미배포)';
       $('loginBtn').disabled = pending;
       await loadWalletConfig();
@@ -114,7 +114,7 @@
     }
     async function refreshLogins() {
       const { logins } = await (await fetch('/api/mode3/logins')).json();
-      const discOf = (l) => l.disclosure && l.disclosure.mask !== '0' ? `  disclose(mask=${l.disclosure.mask}): lo=${l.disclosure.lo.join(',')} hi=${l.disclosure.hi.join(',')}` : '';
+      const discOf = (l) => l.disclosure && (l.disclosure.mask !== '0' || l.disclosure.set) ? `  disclose(mask=${l.disclosure.mask}): lo=${l.disclosure.lo.join(',')} hi=${l.disclosure.hi.join(',')}${l.disclosure.set ? ` set(sel=${l.disclosure.set.sel}, root=${l.disclosure.set.root.slice(0, 10)}…)` : ''}` : '';
       $('logins').textContent = logins.length ? logins.map((l) => `${l.at}  PPID=${l.PPID}  r_s=${l.r_s ?? ''}  root=${l.root.slice(0, 18)}…  allowAgent=${l.allowAgent}${discOf(l)}`).join('\n') : '(없음)';
     }
     // ---- 지갑 승인 팝업(스펙 2026-09-22 metamask-snap §3.4·§4.2·§4.3) ----

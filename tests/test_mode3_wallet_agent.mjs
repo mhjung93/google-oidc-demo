@@ -372,7 +372,7 @@ try {
   });
 
   // 지갑이 로그인용으로 쓰는 헬퍼 — 등록은 이미 위에서 됐으므로 새 r_s 로 로그인만 한다. PPID 는 다른 케이스와 같이
-  // verify(RP 검증기)를 거쳐 검증된 로그인에서 읽는다(Task 6 이후 publicSignals.length===23 을 받아들인다).
+  // verify(RP 검증기)를 거쳐 검증된 로그인에서 읽는다(Task 6 이후 publicSignals.length===25 을 받아들인다).
   async function loginOnce(extra = {}) {
     const rs = newRs();
     const r = await login(rs, extra);

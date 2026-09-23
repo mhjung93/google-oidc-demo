@@ -17,7 +17,8 @@ import { verifyRpCert } from './lib/mode3_rp_cert.js';
 import { randomScalar } from './lib/mode3_credential.js';
 import { createShare, partialDecrypt, combinePublicKey, verifyShare } from './lib/mode3_trace.js';
 import { signOpenRequest, signOpenResult } from './lib/mode3_opening.js';
-import { deployVerifier, deployFactory, deployAttrGate, decodeExecuteCalldata, parseExecuteReceipt, FACTORY_ABI, MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT } from './lib/mode3_onchain.js';
+import { deployVerifier, deployFactory, deployAttrGate, decodeExecuteCalldata, parseExecuteReceipt, FACTORY_ABI, MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT, ALLOWED_COUNTRIES_DEFAULT, MIN_AGE_DEFAULT } from './lib/mode3_onchain.js';
+import { setRoot } from './lib/mode3_set_tree.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.MODE3_RP_PORT) || 3100;
@@ -123,6 +124,11 @@ const RELAYER_INDEX = Number(process.env.MODE3_RELAYER_INDEX ?? 0);
 const MAX_ROOT_AGE = BigInt(process.env.MODE3_MAX_ROOT_AGE || MAX_ROOT_AGE_DEFAULT);
 // 지갑이 정한 max_height 의 상한 L(설계 2026-09-18 §3.2 갱신): head ≤ max_height ≤ head + L. 서비스·컨트랙트가 같은 값을 쓴다.
 const MAX_LIFETIME = BigInt(process.env.MODE3_MAX_LIFETIME_BLOCKS || MAX_LIFETIME_DEFAULT);
+// V7 술어 정책(설계 2026-09-23 §4.3·§6): AttrGate 배포와 오프체인 로그인 정책이 같은 값을 쓴다.
+const ALLOWED_COUNTRIES = (process.env.MODE3_ALLOWED_COUNTRIES ?? '').split(',').map((s) => s.trim()).filter(Boolean).map(BigInt);
+const ALLOWED_COUNTRIES_EFFECTIVE = ALLOWED_COUNTRIES.length ? ALLOWED_COUNTRIES : [...ALLOWED_COUNTRIES_DEFAULT];
+const MIN_AGE = BigInt(process.env.MODE3_MIN_AGE || MIN_AGE_DEFAULT);
+const ALLOWED_COUNTRIES_ROOT = await setRoot(ALLOWED_COUNTRIES_EFFECTIVE);
 async function ensureFactory() {
   if (process.env.MODE3_RP_FACTORY_ADDRESS) { reg.factoryAddress = ethers.getAddress(process.env.MODE3_RP_FACTORY_ADDRESS); return; }
   if (reg.factoryAddress) return;
@@ -189,18 +195,19 @@ function startFactoryConstantsRetry() {
   }, FACTORY_CONSTANTS_RETRY_MS);
   constantsRetryTimer.unref();
 }
-// AttrGate(설계 2026-09-22 §5.3): 팩토리 다음에 한 번 배포하는 데모 대상. 정책은 국가=410, 출생연도≤2007 고정(데모).
+// AttrGate(설계 2026-09-22 §5.3): 팩토리 다음에 한 번 배포하는 데모 대상. 정책은 국가 ∈ MODE3_ALLOWED_COUNTRIES, 올해 − 출생연도 ≥ MODE3_MIN_AGE.
 // reg.attrGateFactory(그 배포가 물린 팩토리)가 지금의 reg.factoryAddress 와 다르면 다시 배포한다 — factoryAddress 가
 // 파일에 없는 채 env(MODE3_RP_FACTORY_ADDRESS)로만 매번 정해지는 경로에서도, factoryAddress 자체는 안 바뀌었는데
 // attrGateAddress 유무만으로 리셋하던 옛 방식(재기동마다 불필요하게 재배포)과 달리 실제로 팩토리가 바뀐 경우에만 걸린다.
+// 정책(root·minAge)이 바뀌어도 다시 배포한다 — AttrGate 는 immutable 이라 env 를 바꾼 뒤 재기동만으로는 온체인이 안 바뀐다.
 async function ensureAttrGate() {
   if (!reg.factoryAddress) { console.warn('[rp] 팩토리가 없어 AttrGate 배포를 건너뛴다'); return; }
-  if (reg.attrGateAddress && reg.attrGateFactory === reg.factoryAddress) return;
+  if (reg.attrGateAddress && reg.attrGateFactory === reg.factoryAddress && reg.attrGatePolicy?.root === ALLOWED_COUNTRIES_ROOT.toString() && reg.attrGatePolicy?.minAge === MIN_AGE.toString()) return;
   const signer = await provider.getSigner(RELAYER_INDEX);
-  const attrGateAddress = await deployAttrGate(signer, { factoryAddress: reg.factoryAddress });
-  reg = { ...reg, attrGateAddress, attrGateFactory: reg.factoryAddress };
+  const attrGateAddress = await deployAttrGate(signer, { factoryAddress: reg.factoryAddress, allowedCountries: ALLOWED_COUNTRIES_EFFECTIVE, minAge: MIN_AGE });
+  reg = { ...reg, attrGateAddress, attrGateFactory: reg.factoryAddress, attrGatePolicy: { root: ALLOWED_COUNTRIES_ROOT.toString(), minAge: MIN_AGE.toString() } };
   writeJsonAtomic(REG_FILE, reg, 0o600);
-  console.log(`[rp] AttrGate 배포: ${attrGateAddress} (factory ${reg.factoryAddress}) → ${REG_FILE}`);
+  console.log(`[rp] AttrGate 배포: ${attrGateAddress} (factory ${reg.factoryAddress}, 국가∈{${ALLOWED_COUNTRIES_EFFECTIVE.join(',')}}, minAge ${MIN_AGE}) → ${REG_FILE}`);
 }
 async function activate() {
   // 팩토리를 먼저 본다(2026-09-23 점검 D-I2): 이미 배포된 팩토리가 있으면 그 immutable 이 오프체인 검증기의 상한이 된다.
@@ -266,7 +273,7 @@ const logins = [];   // { PPID, at, root, r_s }. 메모리만
 // r_s 전문은 내지 않는다 — (PPID, 시각) 과 함께 서비스의 사용자 활동 기록이다(설계 2026-09-16 §5).
 const rsShort = (r) => r.slice(0, 8) + '…';
 // 선택 공개(2026-09-22 §6.2) — verifyLogin 이 돌려주는 bigint 조각을 세션·로그인 로그·조회 API 에 쓸 문자열로.
-const discOf = (d) => ({ mask: d.mask.toString(), lo: d.lo.map(String), hi: d.hi.map(String) });
+const discOf = (d) => ({ mask: d.mask.toString(), lo: d.lo.map(String), hi: d.hi.map(String), set: d.sel !== 0n ? { sel: d.sel.toString(), root: d.root.toString() } : null });
 
 // ---- 앱 ----
 const app = express();
@@ -275,7 +282,7 @@ app.use(express.json({ limit: '1mb' }));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'rp.html')));
 
 app.get('/api/mode3/rp_info', (req, res) => {
-  res.json({ status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, pkCiaSource: pkCIA.source, chainId: chainId.toString(), active: Boolean(verifier), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null });
+  res.json({ status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, pkCiaSource: pkCIA.source, chainId: chainId.toString(), active: Boolean(verifier), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null, predicates: { allowedCountries: ALLOWED_COUNTRIES_EFFECTIVE.map(String), allowedCountriesRoot: ALLOWED_COUNTRIES_ROOT.toString(), minAge: MIN_AGE.toString() } });
 });
 app.post('/api/mode3/challenge', (req, res) => {
   // 봉투를 다른 라우트와 같은 { ok, reason } 으로 맞춘다 — 페이지가 상태 코드가 아니라 본문으로 사유를 읽는다(2026-09-23 최종 리뷰 M3).

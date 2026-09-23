@@ -8,9 +8,10 @@ import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import { getProvider, fundAddress, deployRevocationLog, signRootPublication, rootToBytes32, mineBlocks } from './helpers/mode3_chain.mjs';
 import { userLeaf } from '../lib/mode3_revocation.js';
 import { credMessageV5, compressPoint, randomScalar } from '../lib/mode3_credential.js';
-import { createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, VKEY_PATH } from '../lib/mode3_wallet.js';
+import { createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, normalizeSet, VKEY_PATH } from '../lib/mode3_wallet.js';
 import { createRpVerifier, maskDisclosure } from '../lib/mode3_rp.js';
 import { createShare, combinePublicKey } from '../lib/mode3_trace.js';
+import { setRoot } from '../lib/mode3_set_tree.js';
 
 let failed = 0;
 async function t(name, fn) {
@@ -74,15 +75,32 @@ await t('양성: 7단계 전부 통과, PPID 와 pk_i 를 돌려준다', async (
   assert.equal(r.pk_i, L.session.pk_i);
 });
 
-await t('V6: publicSignals 가 14개면 malformed, 23개면 통과하고 disclosure 를 돌려준다, [14] ≥ 16 은 bad_disclosure', async () => {
+await t('V7: publicSignals 가 14개면 malformed, 25개면 통과하고 disclosure 를 돌려준다, [14] ≥ 16 은 bad_disclosure', async () => {
   const good = await makeLogin();
-  assert.equal(good.publicSignals.length, 23);
+  assert.equal(good.publicSignals.length, 25);
   const v = await rp.verifyLogin(good);
   assert.equal(v.ok, true, JSON.stringify(v, (k, vv) => (typeof vv === 'bigint' ? vv.toString() : vv)));
   assert.equal(v.disclosure.mask, 0n);
   assert.equal((await rp.verifyLogin({ ...good, publicSignals: good.publicSignals.slice(0, 14) })).reason, 'malformed');
   const ps = [...good.publicSignals]; ps[14] = '16';
   assert.equal((await rp.verifyLogin({ ...good, publicSignals: ps })).reason, 'bad_disclosure');
+});
+
+await t('V7: set_sel/set_root 가 disclosure 에 실린다; sel 5·(sel 0, root ≠ 0) 은 bad_disclosure; maskDisclosure 는 sel 0 이면 root 를 지운다', async () => {
+  const members = [410, 392, 840, 276, 250];
+  const attrs = [19n, 410n, 0n, 0n];   // makeLogin 이 쓰는 attrs 와 같다(위 함수 정의)
+  const st = await normalizeSet({ slot: 1, members }, attrs);
+  const good = await makeLogin({ disclosure: { mask: 0n, lo: [0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n], ...st } });
+  const v = await rp.verifyLogin(good);
+  assert.equal(v.ok, true, v.reason);
+  assert.equal(v.disclosure.sel, 2n); assert.equal(v.disclosure.root, await setRoot(members));
+  const ps = [...good.publicSignals]; ps[23] = '5';
+  assert.equal((await rp.verifyLogin({ ...good, publicSignals: ps })).reason, 'bad_disclosure');
+  const plain = await makeLogin();
+  const ps2 = [...plain.publicSignals]; ps2[24] = '7';
+  assert.equal((await rp.verifyLogin({ ...plain, publicSignals: ps2 })).reason, 'bad_disclosure');
+  assert.deepEqual(maskDisclosure({ mask: 0n, lo: [0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n], sel: 0n, root: 9n }).root, 0n);
+  assert.deepEqual(maskDisclosure({ mask: 0n, lo: [0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n] }), { mask: 0n, lo: [0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n], sel: 0n, root: 0n });
 });
 
 await t('음성 d: 공격자가 자기 CIA 키로 서명한 credential 은 untrusted_cia (유일한 위조 방어선)', async () => {
