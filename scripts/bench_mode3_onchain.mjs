@@ -99,19 +99,32 @@ try {
     T.gas.push(Number(r.body.gasUsed));
   }
 
-  // 5. mask=3(선택 공개) 새 π + AttrGate.claim — 국가(a₁)=410 정확 공개, 출생연도(a₀) 구간 공개(반복마다 hi 를 늘려 discKey 를 바꾼다)
+  // 5. mask=1 + set(V7 선택 공개) 새 π + AttrGate.claim — 국가(a₁)=410 은 집합 소속으로, 출생연도(a₀) 는 구간 공개
+  // (반복마다 hi 를 늘려 discKey 를 바꾼다). deployAttrGate 의 기본 정책(집합 [410,392,840,276,250]·minAge 19)을 그대로 쓴다.
   const claimSelector = ethers.id('claim()').slice(0, 10);
   const G = { total: [], gas: [] };
   for (let i = 0; i < N; i++) {
     const gateAddress = await deployAttrGate(signer, { factoryAddress });
-    const disclose = [{ lo: '0', hi: String(1990 + i) }, { lo: '410', hi: '410' }, null, null];
+    const disclose = [{ lo: '0', hi: String(1990 + i) }, null, null, null];
+    const set = { slot: 1, members: [410, 392, 840, 276, 250] };
     const t0 = performance.now();
-    const r = await wallet.post('/wallet/tx', { r_s: lastRs, to: gateAddress, data: claimSelector, disclose }, { Origin: stack.rpOriginForWallet });
+    const r = await wallet.post('/wallet/tx', { r_s: lastRs, to: gateAddress, data: claimSelector, disclose, set }, { Origin: stack.rpOriginForWallet });
     G.total.push(performance.now() - t0);
     if (r.status !== 200 || !r.body.ok) throw new Error(`claim tx ${r.status} ${j(r.body)}`);
     const gate = new ethers.Contract(gateAddress, ATTR_GATE_ABI, provider);
     if (!(await gate.claimed(r.body.wallet))) throw new Error('claim 이 반영되지 않음');
     G.gas.push(Number(r.body.gasUsed));
+  }
+
+  // 6. 집합만(mask=0, set 만, to=dEaD) — V6 대비 공개 입력 +2(set_sel, set_root)의 gas 비용. members 를 반복마다 바꿔
+  // (더미 원소 추가) discKey 를 바꾸고 캐시를 피한다 — 국가(410)는 항상 그대로 포함해 membership 은 유지한다.
+  const deadAddress = '0x000000000000000000000000000000000000dEaD';
+  const S = { gas: [] };
+  for (let i = 0; i < N; i++) {
+    const set = { slot: 1, members: [410, 392, 840, 276, 250, 900 + i] };
+    const r = await wallet.post('/wallet/tx', { r_s: lastRs, to: deadAddress, set }, { Origin: stack.rpOriginForWallet });
+    if (r.status !== 200 || !r.body.ok) throw new Error(`set-only tx ${r.status} ${j(r.body)}`);
+    S.gas.push(Number(r.body.gasUsed));
   }
 
   // RevocationLog: 게시(리프 있음)와 하트비트(리프 없음) 가스 — 폐기 한 건을 만들어 정식 게시를 한 번 일으키고, 그 뒤 하트비트를 기다린다
@@ -160,8 +173,9 @@ try {
   console.log(`| /wallet/tx 왕복(mask=0, 캐시 π, 서명+제출+채굴) | ${fmt(T.total)} |`);
   console.log(`| execute gas (mask=0, 캐시 π, N회) | ${med(T.gas)} (${Math.min(...T.gas)}–${Math.max(...T.gas)}) |`);
   console.log(`| execute gas (첫 tx, 계정 배포 tx 는 별도) | ${r1.body.gasUsed} |`);
-  console.log(`| /wallet/tx 왕복(mask=3, 새 π + AttrGate.claim, N회) | ${fmt(G.total)} |`);
-  console.log(`| execute gas (mask=3, 새 π + claim, N회) | ${med(G.gas)} (${Math.min(...G.gas)}–${Math.max(...G.gas)}) |`);
+  console.log(`| /wallet/tx 왕복(mask=1 + set, 새 π + AttrGate.claim, N회) | ${fmt(G.total)} |`);
+  console.log(`| execute gas (mask=1 + set, 새 π + claim, N회) | ${med(G.gas)} (${Math.min(...G.gas)}–${Math.max(...G.gas)}) |`);
+  console.log(`| execute gas (집합만, mask=0 + set, to=dEaD, N회) | ${med(S.gas)} (${Math.min(...S.gas)}–${Math.max(...S.gas)}) |`);
   console.log(`| 계정 배포 gas (factory.deploy, CREATE2) | ${walletDeployGas} |`);
   console.log(`| PiCredVerifier 배포 gas | ${verifierGas} |`);
   console.log(`| Mode3WalletFactory 배포 gas | ${factoryGas} |`);

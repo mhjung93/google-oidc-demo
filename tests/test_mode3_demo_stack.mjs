@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
-import { VKEY_PATH, createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, normalizeDisclosure } from '../lib/mode3_wallet.js';
+import { VKEY_PATH, createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, normalizeDisclosure, normalizeSet } from '../lib/mode3_wallet.js';
 import { pointToStrings } from '../lib/mode3_issuance.js';
 import { signPayload, proofToCalldata, parseExecuteReceipt, factoryAt, walletAt } from '../lib/mode3_onchain.js';
 import { getProvider } from './helpers/mode3_chain.mjs';
@@ -69,9 +69,9 @@ async function makeAliceAgent() {
   const issueReq = await buildIssueRequest({ uid: 67890n, Cf_u: ucReq.Cf_u, arid, sk_u, session, chainid: chainId, max_height });
   const issued = await cia.post('/cia/issue', issueReq.body);
   assert.equal(issued.status, 200, j(issued.body));
-  async function tx(to, data, disclose) {
+  async function tx(to, data, disclose, set = null) {
     let disclosure;
-    try { disclosure = normalizeDisclosure(disclose, attrs); }
+    try { disclosure = { ...normalizeDisclosure(disclose, attrs), ...(await normalizeSet(set, attrs)) }; }
     catch (e) { if (e.reason) return { status: 400, body: { reason: e.reason, detail: e.message } }; throw e; }
     const { tree } = await syncRevocationTree(provider, cia.logAddress);
     const built = await buildCredentialProof({ uid: 67890n, arid, s_u: reg.s_u, blind_u: ucReq.secrets.blind_u, blind_s: issueReq.secrets.blind_s, pk_i: session.pk_i, attrs, credential: issued.body, pk_CIA, pk_trace, tree, disclosure });
@@ -82,11 +82,11 @@ async function makeAliceAgent() {
     const walletC = walletAt(walletAddr, relayer);
     const nonce = await walletC.nonce();
     const payload = { to, value: 0n, data, nonce };
-    const sig = signPayload(session.wallet, { chainId, wallet: walletAddr, ...payload, discMask: disclosure.mask, discLo: disclosure.lo, discHi: disclosure.hi });
+    const sig = signPayload(session.wallet, { chainId, wallet: walletAddr, ...payload, discMask: disclosure.mask, discLo: disclosure.lo, discHi: disclosure.hi, setSel: disclosure.sel, setRoot: disclosure.root });
     const { a, b, c, pub } = await proofToCalldata(built.proof, built.publicSignals);
     const receipt = await (await walletC.execute(payload, sig, a, b, c, pub)).wait();
     const parsed = parseExecuteReceipt(receipt, walletAddr);
-    return { status: 200, body: { ok: parsed.executed?.success ?? null, onchainDisclosure: parsed.disclosure ? { mask: parsed.disclosure.mask.toString(), lo: parsed.disclosure.lo.map(String), hi: parsed.disclosure.hi.map(String) } : null } };
+    return { status: 200, body: { ok: parsed.executed?.success ?? null, onchainDisclosure: parsed.disclosure ? { mask: parsed.disclosure.mask.toString(), lo: parsed.disclosure.lo.map(String), hi: parsed.disclosure.hi.map(String), set: parsed.disclosure.setSel !== 0n ? { sel: parsed.disclosure.setSel.toString(), root: parsed.disclosure.setRoot.toString() } : null } : null } };
   }
   /** RP 챌린지 r_s 위의 로그인 성명(π+σ)만 만든다 — 온체인 실행은 하지 않는다. disclosure 는 { mask, lo, hi }(bigint). */
   async function login(rs, disclosure) {
@@ -294,7 +294,7 @@ try {
     assert.equal(res.body.allowAgent, '1'); assert.equal(res.body.uid, uid);
   });
 
-  await t('10. 선택 공개: testuser 가 [0,2007]·[410,410] 을 공개해 AttrGate.claim → Claimed; 두 번째는 already claimed(success=false)', async () => {
+  await t('10. V7 술어: testuser 가 나이 ≥ minAge(올해 − 출생연도) + 국가 ∈ 허용 집합으로 AttrGate.claim → Claimed; 두 번째는 already claimed', async () => {
     const info = (await rp.get('/api/mode3/rp_info')).body;
     assert.ok(info.attrGateAddress);
     const s = await loginViaRp();
@@ -302,28 +302,43 @@ try {
     // 스펙 §6.1(Ruling 9): 지갑은 로그인 때 받은 attrGateAddress 를 세션에 실어 /wallet/status 로 내준다(폼 기본값 to 로 쓰인다).
     const status = (await wallet.get('/wallet/status')).body;
     assert.equal(status.sessions[s.r_s].attrGateAddress, info.attrGateAddress);
-    const disclose = [{ lo: '0', hi: '2007' }, { lo: '410', hi: '410' }, null, null];
-    const tx = await wallet.post('/wallet/tx', { r_s: s.r_s, to: info.attrGateAddress, data: '0x4e71d92d', disclose }, { Origin: rp.origin });
+    const year = new Date().getUTCFullYear();
+    const disclose = [{ lo: '0', hi: String(year - Number(info.predicates.minAge)) }, null, null, null];
+    const set = { slot: 1, members: info.predicates.allowedCountries };
+    const tx = await wallet.post('/wallet/tx', { r_s: s.r_s, to: info.attrGateAddress, data: '0x4e71d92d', disclose, set }, { Origin: rp.origin });
     assert.equal(tx.status, 200, j(tx.body));
     assert.equal(tx.body.ok, true, j(tx.body));
-    assert.equal(tx.body.onchainDisclosure.mask, '3');
-    const again = await wallet.post('/wallet/tx', { r_s: s.r_s, to: info.attrGateAddress, data: '0x4e71d92d', disclose }, { Origin: rp.origin });
+    assert.equal(tx.body.onchainDisclosure.mask, '1');
+    assert.equal(tx.body.onchainDisclosure.set.root, info.predicates.allowedCountriesRoot);
+    const again = await wallet.post('/wallet/tx', { r_s: s.r_s, to: info.attrGateAddress, data: '0x4e71d92d', disclose, set }, { Origin: rp.origin });
     assert.equal(again.status, 200, j(again.body));
     assert.equal(again.body.ok, false, j(again.body));   // already claimed — nonce 는 소비되지만 성공은 아니다
   });
 
   // Ruling 2: 지갑 에이전트는 testuser 하나만 들고 있어(§4.1) alice(우리 DEMO_ACCOUNTS) 는 라이브러리로 직접 만든다.
-  await t('11. 선택 공개: alice(2005, 840) 는 country 로 실패(success=false); 슬롯 0 을 [0,1980] 으로 공개하면 지갑이 disclosure_unsatisfiable', async () => {
+  await t('11. V7 술어: alice(2005, 840) — 임의 집합([840,392])은 root 불일치로 country revert; 허용 집합에서 840 을 빼면 disclosure_unsatisfiable; 정책보다 넓은 나이 구간([0,year-5])은 age revert', async () => {
     const info = (await rp.get('/api/mode3/rp_info')).body;
     assert.ok(info.attrGateAddress);
+    const year = new Date().getUTCFullYear();
     const alice = await makeAliceAgent();
     try {
-      const tx = await alice.tx(info.attrGateAddress, '0x4e71d92d', [{ lo: '0', hi: '2007' }, { lo: '840', hi: '840' }, null, null]);
-      assert.equal(tx.status, 200, j(tx.body));
-      assert.equal(tx.body.ok, false, j(tx.body));   // 국가 불일치(840 ≠ 410) — claim() 이 country 로 revert, Executed(success=false)
-      const bad = await alice.tx(info.attrGateAddress, '0x4e71d92d', [{ lo: '0', hi: '1980' }, null, null, null]);
-      assert.equal(bad.status, 400, j(bad.body));
-      assert.equal(bad.body.reason, 'disclosure_unsatisfiable');   // alice 의 출생연도(2005) 가 [0,1980] 밖
+      // 840 은 이 작은 members 안에 있어 지갑의 setPath 는 성공하지만, 그 root 는 RP 의 allowedCountriesRoot 와 다르다
+      // → claim() 이 country 로 revert(Executed(success=false)). 슬롯 0(나이)도 같이 공개해야 need slot0 을 지난다.
+      const rootMismatch = await alice.tx(info.attrGateAddress, '0x4e71d92d', [{ lo: '0', hi: '2007' }, null, null, null], { slot: 1, members: [840, 392] });
+      assert.equal(rootMismatch.status, 200, j(rootMismatch.body));
+      assert.equal(rootMismatch.body.ok, false, j(rootMismatch.body));
+
+      // 허용 집합에서 자신의 국가(840)를 빼면 지갑이 온체인에 내기 전에 disclosure_unsatisfiable 로 막는다
+      const excluded = { slot: 1, members: info.predicates.allowedCountries.filter((c) => c !== '840') };
+      const unsatisfiable = await alice.tx(info.attrGateAddress, '0x4e71d92d', null, excluded);
+      assert.equal(unsatisfiable.status, 400, j(unsatisfiable.body));
+      assert.equal(unsatisfiable.body.reason, 'disclosure_unsatisfiable');
+
+      // 나이: 실제 정책([0, year-19])은 2005 ≤ year-19 이므로 통과하지만, 정책보다 넓은 구간(hi=year-5)을 공개하면
+      // minAge 를 증명하지 못해 claim() 이 age 로 revert 한다(국가는 실제 허용 집합이라 country 는 통과).
+      const ageBad = await alice.tx(info.attrGateAddress, '0x4e71d92d', [{ lo: '0', hi: String(year - 5) }, null, null, null], { slot: 1, members: info.predicates.allowedCountries });
+      assert.equal(ageBad.status, 200, j(ageBad.body));
+      assert.equal(ageBad.body.ok, false, j(ageBad.body));
     } finally { alice.stop(); }
   });
 
@@ -374,7 +389,7 @@ try {
       const rsShortForm = r_s.slice(0, 8) + '…';   // mode3_rp.js 의 rsShort() 와 같은 규칙
       const mine = (await rp.get('/api/mode3/sessions')).body.sessions.find((s) => s.r_s === rsShortForm);
       assert.ok(mine, '방금 로그인한 세션이 목록에 있어야 한다');
-      assert.deepEqual(mine.disclosure, { mask: '3', lo: ['0', '840', '0', '0'], hi: ['2007', '840', '0', '0'] });
+      assert.deepEqual(mine.disclosure, { mask: '3', lo: ['0', '840', '0', '0'], hi: ['2007', '840', '0', '0'], set: null });
 
       const logins = (await rp.get('/api/mode3/logins')).body.logins;
       assert.equal(logins[logins.length - 1].disclosure.mask, '3');
