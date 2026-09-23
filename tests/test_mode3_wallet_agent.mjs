@@ -10,6 +10,7 @@ import { createRpVerifier } from '../lib/mode3_rp.js';
 import { randomScalar } from '../lib/mode3_credential.js';
 import { deployVerifier, deployFactory, walletAt } from '../lib/mode3_onchain.js';
 import { LOG_ABI } from '../lib/mode3_log.js';
+import { setRoot } from '../lib/mode3_set_tree.js';
 
 const j = (o) => JSON.stringify(o, (k, v) => (typeof v === 'bigint' ? v.toString() : v));
 let failed = 0;
@@ -70,7 +71,7 @@ try {
     assert.equal(r.body.r_s, rs);
     assert.ok(!('uid' in r.body), 'uid 는 RP 로 나가면 안 된다');
     assert.equal(typeof r.body.timings.proveMs, 'number');
-    assert.equal(r.body.publicSignals.length, 23, 'V6: 기존 14 + 선택 공개 disc_mask·disc_lo[4]·disc_hi[4]');
+    assert.equal(r.body.publicSignals.length, 25, 'V7: 기존 14 + 선택 공개 disc_mask·disc_lo[4]·disc_hi[4] + 집합 소속 set_sel·set_root');
     assert.equal(r.body.publicSignals[4], '31337');
     assert.equal(r.body.allowAgent, '0'); assert.equal(r.body.publicSignals[5], '0');
     const v = await verify(r.body, rs);
@@ -416,6 +417,21 @@ try {
     assert.equal(bad.status, 400, j(bad.body)); assert.equal(bad.body.reason, 'disclosure_unsatisfiable');
     const plain = await wallet.post('/wallet/tx', { r_s: s.r_s, to }, { Origin: stack.rpOriginForWallet });
     assert.equal(plain.status, 200, j(plain.body)); assert.equal(plain.body.disclosure, null); assert.equal(plain.body.onchainDisclosure, null);
+  });
+
+  await t('V7 /wallet/tx: set 으로 국가 ∈ 집합을 증명하면 onchainDisclosure.set 이 sel 2·root 로 남는다; 비소속 집합은 400 disclosure_unsatisfiable; slot 4 는 bad_disclosure', async () => {
+    const to = '0x000000000000000000000000000000000000dEaD';
+    const s = await loginOnce({ factoryAddress });
+    const members = [410, 392, 840, 276, 250];
+    const ok = await wallet.post('/wallet/tx', { r_s: s.r_s, to, disclose: [null, null, null, null], set: { slot: 1, members } }, { Origin: stack.rpOriginForWallet });
+    assert.equal(ok.status, 200, j(ok.body));
+    assert.equal(ok.body.onchainDisclosure.mask, '0');
+    assert.equal(ok.body.onchainDisclosure.set.sel, '2');
+    assert.equal(ok.body.onchainDisclosure.set.root, (await setRoot(members)).toString());
+    const miss = await wallet.post('/wallet/tx', { r_s: s.r_s, to, set: { slot: 1, members: [392, 840] } }, { Origin: stack.rpOriginForWallet });
+    assert.equal(miss.status, 400, j(miss.body)); assert.equal(miss.body.reason, 'disclosure_unsatisfiable');
+    const bad = await wallet.post('/wallet/tx', { r_s: s.r_s, to, set: { slot: 4, members } }, { Origin: stack.rpOriginForWallet });
+    assert.equal(bad.status, 400, j(bad.body)); assert.equal(bad.body.reason, 'bad_disclosure');
   });
 
   // 마지막에 둔다 — CIA 를 끈다. stack.stop() 의 cia.stop() 은 이미 죽은 프로세스를 건너뛴다.

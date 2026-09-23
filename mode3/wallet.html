@@ -69,7 +69,7 @@
     <label>value(wei) <input id="txValue" value="0" size="10" /></label>
     <label>data <input id="txData" value="0x" size="20" /></label>
     <br />
-    <p class="muted">선택 공개(2026-09-22 §4.2): 체크한 슬롯만 [lo, hi] 구간을 π 에 싣는다. lo=hi 면 정확한 값 공개. "정확히 공개"는 체크된 슬롯을 내 현재 속성값으로 채운다.</p>
+    <p class="muted">선택 공개(2026-09-22 §4.2): 체크한 슬롯만 [lo, hi] 구간을 π 에 싣는다. lo=hi 면 정확한 값 공개. "정확히 공개"는 체크된 슬롯을 내 현재 속성값으로 채운다. 집합 소속(V7)은 슬롯 하나만 — 지갑이 원소 목록으로 root 를 계산해 증명에 넣는다. 나이는 연 단위(올해 − 출생연도).</p>
     <div id="discloseRows">
       <div><label><input type="checkbox" id="dk0" /> 슬롯0</label> lo <input id="discLo0" size="10" /> hi <input id="discHi0" size="10" /></div>
       <div><label><input type="checkbox" id="dk1" /> 슬롯1</label> lo <input id="discLo1" size="10" /> hi <input id="discHi1" size="10" /></div>
@@ -77,6 +77,12 @@
       <div><label><input type="checkbox" id="dk3" /> 슬롯3</label> lo <input id="discLo3" size="10" /> hi <input id="discHi3" size="10" /></div>
     </div>
     <button id="discExactBtn" type="button">정확히 공개(체크된 슬롯)</button>
+    <br />
+    <div id="setRow">
+      집합 소속(V7): 슬롯 <select id="setSlot"><option value="">없음</option><option value="0">슬롯0</option><option value="1" selected>슬롯1(국가)</option><option value="2">슬롯2</option><option value="3">슬롯3</option></select>
+      원소 <input id="setMembers" value="410,392,840,276,250" size="28" />
+      <button id="ageBtn" type="button">나이 ≥ <input id="minAgeIn" value="19" size="3" /> 증명(슬롯0 hi = 올해 − N)</button>
+    </div>
     <br />
     <button id="txBtn" disabled>트랜잭션 보내기</button>
     <p id="txVerdict"></p>
@@ -374,9 +380,16 @@
       }
     });
 
+    // "나이 ≥ N": 슬롯0(출생연도)을 체크하고 hi = 올해 − N 으로 채운다(lo 는 0 그대로 — 하한 없음).
+    $('ageBtn').addEventListener('click', () => {
+      $('dk0').checked = true; $('discLo0').value = '0'; $('discHi0').value = String(new Date().getUTCFullYear() - Number($('minAgeIn').value || 19));
+    });
+
     // 체크된 슬롯만 {lo, hi}, 나머지는 null — normalizeDisclosure(lib/mode3_wallet.js) 가 회로 입력(mask/lo/hi)으로 바꾼다.
     const readDisclose = () => [0, 1, 2, 3].map((k) => ($('dk' + k).checked ? { lo: $('discLo' + k).value.trim(), hi: $('discHi' + k).value.trim() } : null));
-    const txForm = () => ({ r_s: $('txSession').value, to: $('txTo').value.trim(), value: $('txValue').value.trim() || '0', data: $('txData').value.trim() || '0x', disclose: readDisclose() });
+    // 집합 소속(V7): 슬롯이 "없음" 이면 null — 지갑이 members 로 root 를 계산해 증명에 넣는다(normalizeSet, lib/mode3_wallet.js).
+    const readSet = () => { const s = $('setSlot').value; if (s === '') return null; return { slot: Number(s), members: $('setMembers').value.split(',').map((x) => x.trim()).filter(Boolean) }; };
+    const txForm = () => ({ r_s: $('txSession').value, to: $('txTo').value.trim(), value: $('txValue').value.trim() || '0', data: $('txData').value.trim() || '0x', disclose: readDisclose(), set: readSet() });
     const txLog = (s) => { $('txLog').textContent += `${s}\n`; };
     function showTxResult(b, extra) {
       txLog(`${extra}지갑=${b.wallet}  nonce=${b.nonce}  ok(실행 성공)=${b.ok}  gasUsed=${b.gasUsed}\n공개=${JSON.stringify(b.disclosure)}\n온체인 공개(Disclosure 이벤트)=${JSON.stringify(b.onchainDisclosure)}\n실행=${JSON.stringify(b.executed)}`);
@@ -420,7 +433,7 @@
       const f = txForm();
       await ensureConnected();
       const arid = lastSessions[f.r_s] ? lastSessions[f.r_s].arid : null;
-      const c = await invokeSnap('consentDisclosure', { arid, origin: null, disclose: f.disclose, to: f.to, value: f.value });
+      const c = await invokeSnap('consentDisclosure', { arid, origin: null, disclose: f.disclose, to: f.to, value: f.value, set: f.set });
       if (!c || c.denied) { $('txVerdict').innerHTML = '<span class="bad">공개 동의 거절</span>'; return; }
 
       txLog('POST /wallet/tx/prepare — 증명 생성 중…');

@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { createSecretSource, stripSecrets, validateWitness } from './lib/mode3_secret_source.js';
-import { createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, buildCredentialProof, signChallenge, signSessionRequest, signAttrsRequest, normalizeDisclosure, disclosureKey, ProofCache, chooseMaxHeight } from './lib/mode3_wallet.js';
+import { createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, buildCredentialProof, signChallenge, signSessionRequest, signAttrsRequest, normalizeDisclosure, normalizeSet, disclosureKey, hasPredicate, ProofCache, chooseMaxHeight } from './lib/mode3_wallet.js';
 import { createRevocationSync } from './lib/mode3_rcl_sync.js';
 import { signPayload, proofToCalldata, parseExecuteReceipt, decodeExecuteCalldata, factoryAt, walletAt, walletInterface, FACTORY_ABI } from './lib/mode3_onchain.js';
 import { pointToStrings } from './lib/mode3_issuance.js';
@@ -444,7 +444,7 @@ async function proveSession(rsKey, synced, timings, disclosure = null, src) {
   const reg = src.registration();
   const uc = src.userCred();
   const sessionWallet = new ethers.Wallet(s.sessionPrivKey);
-  const discKey = disclosure && disclosure.mask !== 0n ? disclosureKey(disclosure) : '0';
+  const discKey = hasPredicate(disclosure) ? disclosureKey(disclosure) : '0';
   let cached = cache.get(synced.root, rsKey, discKey);
   const cacheHit = Boolean(cached);
   if (!cached) {
@@ -583,13 +583,13 @@ app.post('/wallet/request', loginCors, async (req, res) => {
 // /wallet/tx/record 가 영수증을 파싱한다.
 const RELAYER_INDEX = Number(process.env.MODE3_RELAYER_INDEX ?? 0);
 const factoryInterface = new ethers.Interface(FACTORY_ABI);
-const discStrings = (d) => (d ? { mask: d.mask.toString(), lo: d.lo.map(String), hi: d.hi.map(String) } : null);
+const discStrings = (d) => (d ? { mask: d.mask.toString(), lo: d.lo.map(String), hi: d.hi.map(String), set: (d.sel ?? d.setSel ?? 0n) !== 0n ? { sel: (d.sel ?? d.setSel).toString(), root: (d.root ?? d.setRoot).toString() } : null } : null);
 
 /** /wallet/tx 와 /wallet/tx/prepare 의 공통부: 검증 → 동기화 → π(캐시) → 지갑 주소·nonce → 세션키 서명 → execute 인자.
  *  실패면 { error: { status, body } } (revoked 는 그 세션을 지운 뒤). */
 async function buildExecute(req) {
   const fail = (status, body) => ({ error: { status, body } });
-  const { r_s, to, value = '0', data = '0x', disclose } = req.body ?? {};
+  const { r_s, to, value = '0', data = '0x', disclose, set = null } = req.body ?? {};
   if (!isDec(r_s) || !isAddr(to) || !isDec(value) || typeof data !== 'string' || !/^0x([0-9a-fA-F]{2})*$/.test(data)) {
     return fail(400, { error: 'r_s, to(주소), value(wei 10진, 선택), data(hex, 선택) 필요' });
   }
@@ -600,8 +600,10 @@ async function buildExecute(req) {
   if (!LOG_ADDRESS) return fail(503, { reason: 'chain_unavailable', detail: 'CIA_LOG_ADDRESS not configured' });
   // 2026-09-22 §4.2 선택 공개: disclose 를 회로 입력으로. 형식·범위 오류·불만족은 체인·증명 작업 전에 걸러낸다(attrs 는 두 모드 모두 파일의 공개값).
   let disclosure;
-  try { disclosure = normalizeDisclosure(disclose, (state.registration.attrs ?? []).map(BigInt)); }
-  catch (e) { if (e.reason) return fail(400, { reason: e.reason, detail: e.message }); throw e; }
+  try {
+    const attrs = (state.registration.attrs ?? []).map(BigInt);
+    disclosure = { ...normalizeDisclosure(disclose, attrs), ...(await normalizeSet(set, attrs)) };   // V7: 범위 + 집합
+  } catch (e) { if (e.reason) return fail(400, { reason: e.reason, detail: e.message }); throw e; }
   const timings = { syncMs: 0, issueMs: 0, proveMs: 0, txMs: 0 };
   let t = Date.now();
   let synced;
@@ -626,7 +628,7 @@ async function buildExecute(req) {
   const deployNeeded = (await provider.getCode(walletAddr)) === '0x';
   const nonce = deployNeeded ? 0n : await walletAt(walletAddr, provider).nonce();
   const payload = { to: ethers.getAddress(to), value: BigInt(value), data, nonce };
-  const sig = signPayload(new ethers.Wallet(s.sessionPrivKey), { chainId: await chainId(), wallet: walletAddr, ...payload, discMask: disclosure.mask, discLo: disclosure.lo, discHi: disclosure.hi });
+  const sig = signPayload(new ethers.Wallet(s.sessionPrivKey), { chainId: await chainId(), wallet: walletAddr, ...payload, discMask: disclosure.mask, discLo: disclosure.lo, discHi: disclosure.hi, setSel: disclosure.sel, setRoot: disclosure.root });
   const { a, b, c, pub } = await proofToCalldata(proved.proof, proved.publicSignals);
   return { s, rsKey, disclosure, timings, proved, walletAddr, deployNeeded, nonce, payload, args: [payload, sig, a, b, c, pub] };
 }
@@ -638,7 +640,7 @@ function receiptResult(receipt, walletAddr, disclosure) {
     txHash: receipt.hash, wallet: walletAddr, status: receipt.status, ok: parsed.executed?.success ?? null, gasUsed: receipt.gasUsed.toString(),
     nonce: parsed.executed ? parsed.executed.nonceUsed.toString() : null,
     executed: parsed.executed ? { nonceUsed: parsed.executed.nonceUsed.toString(), to: parsed.executed.to, value: parsed.executed.value.toString(), success: parsed.executed.success } : null,
-    disclosure: disclosure && disclosure.mask !== 0n ? discStrings(disclosure) : null,
+    disclosure: hasPredicate(disclosure) ? discStrings(disclosure) : null,
     onchainDisclosure: discStrings(parsed.disclosure),
   };
 }
@@ -682,7 +684,7 @@ app.post('/wallet/tx/prepare', async (req, res) => {
       walletAddr, factoryAddress: s.factoryAddress, deployNeeded,
       deployCalldata: deployNeeded ? factoryInterface.encodeFunctionData('deploy', [BigInt(s.PPID)]) : null,
       calldata: walletInterface.encodeFunctionData('execute', args),
-      nonce: nonce.toString(), disclosure: disclosure.mask === 0n ? null : discStrings(disclosure),
+      nonce: nonce.toString(), disclosure: hasPredicate(disclosure) ? discStrings(disclosure) : null,
       cacheHit: proved.cacheHit, root: proved.root, timings,
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -705,7 +707,7 @@ app.post('/wallet/tx/record', async (req, res) => {
     if (!txTo || txTo.toLowerCase() !== walletAddr.toLowerCase()) return res.status(409).json({ reason: 'not_our_tx', txHash, wallet: walletAddr });
     let disclosure = null;
     const dec = tx ? decodeExecuteCalldata(tx.data) : null;
-    if (dec) { const pub = dec.pub.map(BigInt); disclosure = { mask: pub[14], lo: pub.slice(15, 19), hi: pub.slice(19, 23) }; }
+    if (dec) { const pub = dec.pub.map(BigInt); disclosure = { mask: pub[14], lo: pub.slice(15, 19), hi: pub.slice(19, 23), sel: pub[23], root: pub[24] }; }
     res.json(receiptResult(receipt, walletAddr, disclosure));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

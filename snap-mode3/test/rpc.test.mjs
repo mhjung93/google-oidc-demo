@@ -155,6 +155,18 @@ await t('consentDisclosure: 대화상자에 슬롯·구간·대상·금액, 승�
   assert.deepEqual(await call('consentDisclosure', args), { denied: true });
 });
 
+await t('consentDisclosure(V7): set 이 있으면 "a₁(국가) ∈ {…} (N개)" 줄, 33개 이상이면 앞 8개 + "외 N개"', async () => {
+  answers.push(true);
+  const base = { arid: '777', origin: RP_ORIGIN, disclose: [null, null, null, null], to: '0x1111111111111111111111111111111111111111', value: '0' };
+  assert.deepEqual(await call('consentDisclosure', { ...base, set: { slot: 1, members: [410, 392, 840, 276, 250] } }), { ok: true });
+  let d = lastDialogText();
+  for (const part of ['a₁', '국가', '∈', '410', '250', '(5개)']) assert.ok(d.includes(part), `대화상자에 ${part} 가 없다`);
+  answers.push(true);
+  await call('consentDisclosure', { ...base, set: { slot: 2, members: Array.from({ length: 40 }, (_, i) => i + 1) } });
+  d = lastDialogText();
+  assert.ok(d.includes('… 외 32개') && d.includes('a₂') && !d.includes(' 40,') , d);
+});
+
 await t('updateUserCred(obj) 저장 → 증인에 실리고 getPublicInfo 는 hasUserCred 만 알린다', async () => {
   assert.deepEqual(await call('updateUserCred', USER_CRED), { ok: true });
   const info = await call('getPublicInfo', {});

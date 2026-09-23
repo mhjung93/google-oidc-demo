@@ -135,13 +135,19 @@ export const onRpcRequest = async ({ origin, request }) => {
 
     // 속성 공개 동의(스펙 §4.4). 공개할 슬롯·구간과 트랜잭션 대상·금액을 보여 준다.
     case 'consentDisclosure': {
-      const { arid, origin: rpOrigin, disclose, to, value } = params;
+      const { arid, origin: rpOrigin, disclose, to, value, set } = params;
       const slots = Array.isArray(disclose) ? disclose : [];
       const lines = [];
       for (let i = 0; i < 4; i++) {
         const d = slots[i];
         if (!d) continue;
         lines.push(`${SLOT_NAMES[i]}(${SLOT_LABELS[i]}) ∈ [${d.lo}, ${d.hi}]`);
+      }
+      // V7 집합 소속: 에이전트가 members 로부터 root 를 계산해 증명에 넣는다 — 여기서는 사용자에게 원소를 보여 준다(root 검산은 에이전트 몫, 스펙 §5.2).
+      if (set && Number.isInteger(set.slot) && set.slot >= 0 && set.slot <= 3 && Array.isArray(set.members)) {
+        const ms = set.members.map(String);
+        const shown = ms.length > 32 ? `${ms.slice(0, 8).join(', ')} … 외 ${ms.length - 8}개` : ms.join(', ');
+        lines.push(`${SLOT_NAMES[set.slot]}(${SLOT_LABELS[set.slot]}) ∈ {${shown}} (${ms.length}개)`);
       }
       if (lines.length === 0) lines.push('공개하는 속성 없음');
       const ok = await confirm('속성 공개 동의', [
