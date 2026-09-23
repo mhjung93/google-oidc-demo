@@ -74,7 +74,8 @@ Mode 2 데모(:3000/:4000/:5001)와 **공존**한다. 포트·상태 파일이 �
 `mode3_rp_logins.jsonl`, 0600 — 개봉 요청의 재료라 비밀로 둔다). 옛 `CIA_TTL_SECONDS`·`CIA_REVOKE_SKEW_SECONDS`·`CIA_CHAIN_IDS`·`CIA_REVOKE_SKEW_BLOCKS` 는
 경고와 함께 무시된다(skew 는 2026-09-21 자격증명 이중 구조에서 제거됐다 — 폐기는 리프 하나라 세션 기록이 필요 없다).
 
-선택: 운영이라면 RP의 `pk_CIA`를 TOFU가 아니라 env로 박는다 — `curl -s 127.0.0.1:4100/cia/public_keys`의 `pk_CIA.x/y`를 `MODE3_PK_CIA_X`/`MODE3_PK_CIA_Y`에.
+선택: 운영이라면 RP의 `pk_CIA`를 TOFU가 아니라 env로 박는다 — `curl -s 127.0.0.1:4100/cia/public_keys`의 `pk_CIA.x/y`를 `MODE3_PK_CIA_X`/`MODE3_PK_CIA_Y`에. 단 env 로 박으면 RP 는 기동 때 CIA 에 묻지 않으므로 CIA 하트비트 주기와
+`MODE3_MAX_ROOT_AGE` 의 대조 경고(하트비트 ≥ maxRootAge 면 전원이 `root_too_old`)가 나오지 않는다 — 두 값은 사람이 맞춘다(2026-09-23 최종 리뷰 M4).
 
 ## 매번: 기동 순서
 

@@ -320,7 +320,7 @@
           const hint = cfg.secrets !== 'snap' ? ''
             : stuckOnAgent
               ? ' — 에이전트 상태 파일에 이미 등록이 있다. "Snap 초기화" + 상태 파일 삭제만으로는 풀리지 않는다:'
-                + ' 새 cm_u 가 CIA 에 이미 있는 uid 등록과 달라 /cia/register 가 다시 409 를 낸다.'
+                + ' CIA 에 그 uid 가 이미 등록돼 있어(cm_u 와 무관하게 uid 존재만 본다) /cia/register 가 다시 409 를 낸다.'
                 + ' docs/MODE3_DEMO.md 의 "하지 말 것 / 재시연" 재시연 세트로 CIA·에이전트·Snap 세 보관소를 함께 비워야 한다'
               : ' — Snap 에는 등록 비밀이 이미 만들어졌다. "Snap 초기화" 를 누른 뒤 다시 등록한다';
           $('registerResult').textContent = errText(status, b) + hint;
@@ -328,8 +328,8 @@
         }
         // 에이전트는 이미 201 로 등록을 마쳤다 — 여기서 Snap 저장이 실패하면(탭 닫힘·MetaMask 거절) 양쪽이 어긋난 채 굳는다.
         // Snap 의 등록은 sk_u·attrs 가 빈 registration_incomplete 로 남아 증인 생성이 영구히 막히고, 다시 등록하려 해도
-        // 에이전트가 409 already_registered 로 거절한다. "Snap 초기화" + 상태 파일 삭제만으로도 풀리지 않는다 — 새 cm_u 가
-        // CIA 에 이미 있는 uid 등록과 달라 /cia/register 가 409 를 내고 같은 골목에 다시 도달한다. 세 보관소(CIA·에이전트·Snap)를
+        // 에이전트가 409 already_registered 로 거절한다. "Snap 초기화" + 상태 파일 삭제만으로도 풀리지 않는다 — CIA 에
+        // 그 uid 가 이미 등록돼 있어(cm_u 와 무관) /cia/register 가 409 를 내고 같은 골목에 다시 도달한다. 세 보관소(CIA·에이전트·Snap)를
         // 함께 비우는 재시연 세트가 유일한 출구라, 일반 오류 문구 대신 그 길을 알려 준다(2026-09-23 점검 B).
         if (cfg.secrets === 'snap') {
           try { await invokeSnap('storeRegistration', { sk_u: b.sk_u, attrs: b.attrs }); }
