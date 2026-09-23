@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1250" height="760" viewBox="0 0 1250 760">
+  <defs>
+    <style>
+      .title{font-family:Arial,Helvetica,sans-serif;font-size:30px;font-weight:700;fill:#111827}
+      .head{font-family:Arial,Helvetica,sans-serif;font-size:24px;font-weight:700;fill:#111827}
+      .body{font-family:Arial,Helvetica,sans-serif;font-size:18px;fill:#1f2937}
+      .small{font-family:Arial,Helvetica,sans-serif;font-size:16px;fill:#374151}
+      .box{fill:#ffffff;stroke:#111827;stroke-width:2.2;rx:12;ry:12}
+      .formal{fill:#eef6ff;stroke:#1f77b4;stroke-width:2.3;rx:12;ry:12}
+      .proto{fill:#f8fafc;stroke:#64748b;stroke-width:2.3;rx:12;ry:12}
+      .note{fill:#fff7ed;stroke:#c2410c;stroke-width:2;rx:10;ry:10}
+      .divider{stroke:#9ca3af;stroke-width:2;stroke-dasharray:10 8}
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1250" height="760" fill="#ffffff"/>
+  <text x="60" y="62" class="title">Formal Protocol and Prototype Validation Scope</text>
+
+  <line x1="625" y1="105" x2="625" y2="675" class="divider"/>
+
+  <rect x="75" y="120" width="500" height="450" class="formal"/>
+  <text x="245" y="162" class="head">Formal PairCT</text>
+  <text x="110" y="210" class="body">Pairwise account identifier</text>
+  <text x="125" y="242" class="small">auid = H("PairCT.auid", uid, rid, salt_u)</text>
+  <text x="110" y="292" class="body">Hidden witnesses</text>
+  <text x="125" y="324" class="small">rid, salt_u, rho_i, eta_i</text>
+  <text x="110" y="374" class="body">IdP-facing artifacts</text>
+  <text x="125" y="406" class="small">arid_i, auid_i, nonce_i, auth_digest_i</text>
+  <text x="110" y="456" class="body">Security claims apply here</text>
+  <text x="125" y="488" class="small">IdP-side RP hiding</text>
+  <text x="125" y="514" class="small">offline dictionary resistance</text>
+  <text x="125" y="540" class="small">session-bound authentication</text>
+
+  <rect x="675" y="120" width="500" height="450" class="proto"/>
+  <text x="850" y="162" class="head">Prototype</text>
+  <text x="710" y="210" class="body">Observable pairwise alias</text>
+  <text x="725" y="242" class="small">PPID denotes auid in the implementation</text>
+  <text x="710" y="292" class="body">Transparent validation relation</text>
+  <text x="725" y="324" class="small">prototype-only: PPID = uid * rid * salt</text>
+  <text x="710" y="374" class="body">Purpose</text>
+  <text x="725" y="406" class="small">validate message dependencies</text>
+  <text x="725" y="432" class="small">validate verifier boundaries</text>
+  <text x="725" y="458" class="small">measure authentication proof path</text>
+  <text x="710" y="508" class="body">Scope</text>
+  <text x="725" y="540" class="small">not the full hiding instantiation</text>
+
+  <rect x="135" y="615" width="980" height="80" class="note"/>
+  <text x="165" y="648" class="body">Interpretation:</text>
+  <text x="285" y="648" class="small">the formal protocol defines privacy properties; the prototype validates binding logic and implementation path.</text>
+  <text x="165" y="676" class="small">This separation prevents transparent demo values from being mistaken for the claimed IdP-side RP-hiding construction.</text>
+</svg>
