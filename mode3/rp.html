@@ -22,6 +22,7 @@
   <fieldset>
     <legend>로그인</legend>
     <label><input type="checkbox" id="allowAgent" /> 이번 세션에서 AI agent 동작 허용 (allowAgent, 덱 22장)</label><br />
+    <label><input type="checkbox" id="requirePred" /> 속성 술어 요구(V7): 국가 ∈ 허용 집합, 올해 − 출생연도 ≥ minAge</label><br />
     <button id="loginBtn">Mode 3 로그인</button>
     <p id="verdict"></p>
     <pre id="log"></pre>
@@ -173,6 +174,11 @@
       const log = (s) => { $('log').textContent += s + '\n'; };
       try {
         if (!info) await loadInfo();
+        const pred = $('requirePred').checked ? {
+          disclose: [{ lo: '0', hi: String(new Date().getUTCFullYear() - Number(info.predicates.minAge)) }, null, null, null],
+          set: { slot: 1, members: info.predicates.allowedCountries },
+          require: { countrySet: true, minAge: true },
+        } : null;
         let t0 = Date.now();
         const ch = await (await post('/api/mode3/challenge')).json().catch(() => ({}));
         // 503(factory_constants_unavailable·registration_pending)에는 r_s 가 없다 — 바로 구조분해해 slice 하면
@@ -192,7 +198,7 @@
           log('2. 지갑 승인 팝업 — 지갑 창에서 MetaMask·Snap 동의를 확인하세요.');
           let result;
           try {
-            result = await authorizeViaPopup(authorizeRequest({ r_s, allowAgent, factoryAddress, attrGateAddress }));
+            result = await authorizeViaPopup(authorizeRequest({ r_s, allowAgent, factoryAddress, attrGateAddress, disclose: pred?.disclose ?? null, set: pred?.set ?? null }));
           } catch (e) {
             log(`2. 팝업 ${ms(t0)}: ${e.reason ?? ''} ${e.message}`);
             setVerdict($('verdict'), false, `로그인 실패 — ${e.message}`);
@@ -205,7 +211,7 @@
           }
           wb = result;
         } else {
-          const w = await post(`${info.walletAgentOrigin}/wallet/login`, { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s, allowAgent, factoryAddress, attrGateAddress });
+          const w = await post(`${info.walletAgentOrigin}/wallet/login`, { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s, allowAgent, factoryAddress, attrGateAddress, disclose: pred?.disclose ?? null, set: pred?.set ?? null });
           wb = await w.json().catch(() => ({}));
           if (w.status !== 200) {
             log(`2. 지갑 ${w.status} ${ms(t0)}: ${wb.reason ?? wb.error ?? ''} ${wb.detail ?? ''}`);
@@ -217,7 +223,7 @@
         log(`2. 지갑 π+σ ${ms(t0)} (동기화 ${tm.syncMs} ms, 발급 ${tm.issueMs} ms, 증명 ${tm.proveMs} ms, 캐시 히트=${wb.cacheHit}, 새 발급=${wb.issued})\n   root=${wb.root}`);
 
         t0 = Date.now();
-        const r = await post('/api/mode3/login', { proof: wb.proof, publicSignals: wb.publicSignals, sig: wb.sig, r_s });
+        const r = await post('/api/mode3/login', { proof: wb.proof, publicSignals: wb.publicSignals, sig: wb.sig, r_s, require: pred?.require ?? null });
         const rb = await r.json();
         log(`3. RP 검증 ${ms(t0)}: ${JSON.stringify(rb)}\n   allowAgent=${rb.allowAgent}`);
         const discTxt = rb.ok && rb.disclosure && rb.disclosure.mask !== '0'

@@ -138,10 +138,11 @@
     // MetaMask 가 사용자 거절에 쓰는 코드. Snap 대화상자 거절은 { denied: true } 로 오고, 연결·트랜잭션 거절은 이 코드로 온다.
     const isUserRejected = (e) => e && (e.code === 4001 || e.code === 'ACTION_REJECTED');
     /** 로그인 동의 — 승인이면 증인 묶음, 거절이면 null. */
-    async function consentLogin({ origin, arid, allowAgent, serviceName }) {
+    async function consentLogin({ origin, arid, allowAgent, serviceName, disclose, set }) {
       const w = await invokeSnap('consentLogin', {
         origin, arid: arid === undefined || arid === null ? null : String(arid),
         allowAgent: allowAgent === '1' || allowAgent === true ? '1' : '0', serviceName: serviceName ?? null,
+        disclose: disclose ?? null, set: set ?? null,
       });
       return w && w.denied ? null : w;
     }
@@ -227,6 +228,7 @@
             arid: req.arid, origin: req.origin, cert_s: req.cert_s, pk_trace: req.pk_trace, r_s: req.r_s,
             allowAgent: req.allowAgent === '1' || req.allowAgent === true ? '1' : '0',
             factoryAddress: req.factoryAddress ?? null, attrGateAddress: req.attrGateAddress ?? null,
+            disclose: req.disclose ?? null, set: req.set ?? null,
             witness, verifiedOrigin: ev.origin,          // Origin 헤더 대신 팝업이 확인한 값(스펙 §3.3)
           });
           if (lg.status !== 200) { step('로그인 실패'); log(errText(lg.status, lg.body)); return reply({ ok: false, reason: lg.body.reason ?? 'login_failed', detail: lg.body.detail ?? null, status: lg.status }); }

@@ -305,6 +305,13 @@ app.post('/api/mode3/login', async (req, res) => {
     if (!consumeChallenge(rsStr)) return res.status(401).json({ ok: false, reason: 'bad_challenge' });   // 검증 전에 소비
     const v = await verifyBody(req, res, BigInt(rsStr)); if (v === null) return;
     if (!v.ok) return res.json({ ok: false, reason: v.reason });
+    // V7 술어 요구(스펙 §6): 페이지가 요구한 술어를 성명이 만족하는지. 오프체인 나이는 UTC 연 단위.
+    const requireP = req.body.require ?? null;
+    if (requireP && typeof requireP === 'object') {
+      const d = v.disclosure;
+      if (requireP.countrySet && !(d.sel === 2n && d.root === ALLOWED_COUNTRIES_ROOT)) return res.json({ ok: false, reason: 'predicate_unmet' });
+      if (requireP.minAge && !(((d.mask & 1n) === 1n) && d.hi[0] + MIN_AGE <= BigInt(new Date().getUTCFullYear()))) return res.json({ ok: false, reason: 'predicate_unmet' });
+    }
     const at = new Date().toISOString();
     const disclosure = discOf(v.disclosure);
     sessions.set(rsStr, { PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), disclosure, at });

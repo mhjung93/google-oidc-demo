@@ -21,6 +21,19 @@ const WALLET_ORIGINS = [
 const SLOT_LABELS = ['출생연도', '국가', '등급', '예비'];      // a₀..a₃ (스펙 2026-09-22 selective-disclosure §3)
 const SLOT_NAMES = ['a₀', 'a₁', 'a₂', 'a₃'];
 
+/** 공개 술어를 대화상자 줄로(V6 범위 + V7 집합). consentLogin·consentDisclosure 가 같이 쓴다. */
+function predicateLines(disclose, set) {
+  const lines = [];
+  const slots = Array.isArray(disclose) ? disclose : [];
+  for (let i = 0; i < 4; i++) { const d = slots[i]; if (d) lines.push(`${SLOT_NAMES[i]}(${SLOT_LABELS[i]}) ∈ [${d.lo}, ${d.hi}]`); }
+  if (set && Number.isInteger(set.slot) && set.slot >= 0 && set.slot <= 3 && Array.isArray(set.members)) {
+    const ms = set.members.map(String);
+    const shown = ms.length > 32 ? `${ms.slice(0, 8).join(', ')} … 외 ${ms.length - 8}개` : ms.join(', ');
+    lines.push(`${SLOT_NAMES[set.slot]}(${SLOT_LABELS[set.slot]}) ∈ {${shown}} (${ms.length}개)`);
+  }
+  return lines;
+}
+
 const EMPTY_STATE = { version: 1, registration: null, userCred: null, consents: {} };
 const clone = (v) => (v === null || v === undefined ? null : JSON.parse(JSON.stringify(v)));
 const isDec = (v) => typeof v === 'string' && /^[0-9]+$/.test(v);
@@ -114,15 +127,17 @@ export const onRpcRequest = async ({ origin, request }) => {
     // 로그인 동의(스펙 §4.2). 승인이면 증인 묶음, 거절이면 { denied:true }.
     case 'consentLogin': {
       requireRegistered(state);
-      const { origin: rpOrigin, arid, allowAgent, serviceName } = params;
+      const { origin: rpOrigin, arid, allowAgent, serviceName, disclose, set } = params;
       if (typeof rpOrigin !== 'string' || !rpOrigin) fail('bad_params: origin 필요');
       const agentOk = allowAgent === true || allowAgent === 1 || allowAgent === '1';
+      const pred = predicateLines(disclose, set);
       const ok = await confirm('로그인 동의', [
         `서비스: ${serviceName || rpOrigin}`,
         `오리진: ${rpOrigin}`,
         `요청 식별자(arid): ${arid}`,
         null,
         `AI 에이전트 허용: ${agentOk ? '예' : '아니오'}`,
+        ...(pred.length ? [null, '공개할 속성:', ...pred] : []),
         '승인하면 이 로그인에 쓸 등록 비밀이 지갑 페이지로 전달됩니다.',
       ]);
       if (!ok) return { denied: true };
@@ -136,19 +151,8 @@ export const onRpcRequest = async ({ origin, request }) => {
     // 속성 공개 동의(스펙 §4.4). 공개할 슬롯·구간과 트랜잭션 대상·금액을 보여 준다.
     case 'consentDisclosure': {
       const { arid, origin: rpOrigin, disclose, to, value, set } = params;
-      const slots = Array.isArray(disclose) ? disclose : [];
-      const lines = [];
-      for (let i = 0; i < 4; i++) {
-        const d = slots[i];
-        if (!d) continue;
-        lines.push(`${SLOT_NAMES[i]}(${SLOT_LABELS[i]}) ∈ [${d.lo}, ${d.hi}]`);
-      }
       // V7 집합 소속: 에이전트가 members 로부터 root 를 계산해 증명에 넣는다 — 여기서는 사용자에게 원소를 보여 준다(root 검산은 에이전트 몫, 스펙 §5.2).
-      if (set && Number.isInteger(set.slot) && set.slot >= 0 && set.slot <= 3 && Array.isArray(set.members)) {
-        const ms = set.members.map(String);
-        const shown = ms.length > 32 ? `${ms.slice(0, 8).join(', ')} … 외 ${ms.length - 8}개` : ms.join(', ');
-        lines.push(`${SLOT_NAMES[set.slot]}(${SLOT_LABELS[set.slot]}) ∈ {${shown}} (${ms.length}개)`);
-      }
+      const lines = predicateLines(disclose, set);
       if (lines.length === 0) lines.push('공개하는 속성 없음');
       const ok = await confirm('속성 공개 동의', [
         rpOrigin ? `서비스: ${rpOrigin}` : '서비스: (지갑 페이지)',

@@ -142,6 +142,13 @@ await t('consentLogin 거절 → { denied: true }, consents 는 그대로', asyn
   assert.ok(!store.state.consents['http://127.0.0.1:3001'], '거절은 기록하지 않는다');
 });
 
+await t('consentLogin(V7): disclose·set 이 있으면 공개 줄이 보인다', async () => {
+  answers.push(true);
+  await call('consentLogin', { origin: RP_ORIGIN, arid: '777', allowAgent: '0', serviceName: '데모 RP', disclose: [{ lo: '0', hi: '2007' }, null, null, null], set: { slot: 1, members: [410, 392] } });
+  const d = lastDialogText();
+  for (const part of ['a₀', '2007', 'a₁', '∈', '410', '(2개)']) assert.ok(d.includes(part), `대화상자에 ${part} 가 없다`);
+});
+
 await t('consentDisclosure: 대화상자에 슬롯·구간·대상·금액, 승인/거절', async () => {
   answers.push(true);
   const args = { arid: '777', origin: RP_ORIGIN, disclose: [{ lo: '0', hi: '2007' }, { lo: '410', hi: '410' }, null, null], to: '0x1111111111111111111111111111111111111111', value: '0' };

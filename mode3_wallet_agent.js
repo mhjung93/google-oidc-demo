@@ -320,7 +320,7 @@ app.post('/wallet/authorize/precheck', async (req, res) => {
 // 새 C_u·속성 변경은 응답의 userCredIssued·attrsChanged 로 페이지가 Snap 에 저장한다.
 app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
   try {
-    const { arid, origin, cert_s, pk_trace, r_s, allowAgent = '0', factoryAddress = null, attrGateAddress = null, witness = null, verifiedOrigin = null } = req.body ?? {};
+    const { arid, origin, cert_s, pk_trace, r_s, allowAgent = '0', factoryAddress = null, attrGateAddress = null, witness = null, verifiedOrigin = null, disclose = null, set = null } = req.body ?? {};
     if (!isDec(arid) || typeof origin !== 'string' || !cert_s || !pk_trace || !isDec(pk_trace.x) || !isDec(pk_trace.y) || !isDec(r_s)) return res.status(400).json({ error: 'arid, origin, cert_s, pk_trace{x,y}, r_s 필요' });
     if (allowAgent !== '0' && allowAgent !== '1') return res.status(400).json({ error: 'allowAgent 는 "0" 또는 "1"' });
     if (factoryAddress !== null && !isAddr(factoryAddress)) return res.status(400).json({ error: 'factoryAddress 는 주소' });
@@ -332,6 +332,12 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     if (rs >= SCALAR_MAX) return res.status(400).json({ error: 'r_s 는 2^250 미만' });
     // r_s 는 세션 식별자다 — 같은 값으로 두 번 로그인할 정당한 경로가 없고, 덮어쓰면 캐시의 옛 π 와 새 세션키가 어긋난다.
     if (state.sessions[rs.toString()]) return res.status(409).json({ reason: 'duplicate_session' });
+    // V7: 로그인 성명에도 술어를 실을 수 있다(스펙 §6). 형식·불만족은 체인 작업 전에 걸러낸다.
+    let disclosure = null;
+    if (disclose || set) {
+      try { const attrs = (state.registration.attrs ?? []).map(BigInt); disclosure = { ...normalizeDisclosure(disclose, attrs), ...(await normalizeSet(set, attrs)) }; }
+      catch (e) { if (e.reason) return res.status(400).json({ reason: e.reason, detail: e.message }); throw e; }
+    }
     if (SECRETS === 'snap') {
       if (!witness) return res.status(400).json({ reason: 'witness_required' });
       try { await validateWitness(witness, state.registration.uid, state.registration.cm_u); }
@@ -387,14 +393,14 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     if (r.status === 403) return res.status(403).json({ reason: r.body?.reason === 'no_user_cred' ? 'user_cred_retired' : 'account_disabled', timings });
     if (r.status !== 200) return res.status(502).json({ reason: 'issue_failed', cia: r.body, timings });
     let out;
-    try { out = await proveSession(rs.toString(), synced, timings, null, src); }
+    try { out = await proveSession(rs.toString(), synced, timings, disclosure, src); }
     catch (e) {
       if (e.reason === 'no_session') return res.status(409).json({ reason: 'no_session', timings });
       throw e;
     }
     if (SECRETS === 'snap') setSessionWitness(rs.toString(), src);
     // src.pending: snap 모드에서 이 로그인이 새로 받은 C_u(userCredIssued)·바뀐 속성(attrsChanged) — 페이지가 Snap 에 저장한다. file 모드는 {}.
-    res.json({ ...out, issued: true, allowAgent, timings, ...src.pending });
+    res.json({ ...out, issued: true, allowAgent, timings, disclosure: hasPredicate(disclosure) ? discStrings(disclosure) : null, ...src.pending });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

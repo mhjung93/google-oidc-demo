@@ -327,6 +327,26 @@ try {
     } finally { alice.stop(); }
   });
 
+  await t('V7 로그인 술어: require.countrySet+minAge 를 만족하는 로그인은 ok·세션에 set; 술어 없이 보내면 predicate_unmet', async () => {
+    const info = (await rp.get('/api/mode3/rp_info')).body;
+    const year = new Date().getUTCFullYear();
+    const disclose = [{ lo: '0', hi: String(year - Number(info.predicates.minAge)) }, null, null, null];
+    const set = { slot: 1, members: info.predicates.allowedCountries };
+    const ch = (await rp.post('/api/mode3/challenge')).body;
+    const w = await wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s: ch.r_s, allowAgent: '0', factoryAddress: ch.factoryAddress, attrGateAddress: ch.attrGateAddress, disclose, set }, { Origin: rp.origin });
+    assert.equal(w.status, 200, j(w.body));
+    assert.equal(w.body.disclosure.set.sel, '2');
+    const r = await rp.post('/api/mode3/login', { r_s: ch.r_s, proof: w.body.proof, publicSignals: w.body.publicSignals, sig: w.body.sig, require: { countrySet: true, minAge: true } });
+    assert.equal(r.body.ok, true, j(r.body));
+    assert.equal(r.body.disclosure.set.root, info.predicates.allowedCountriesRoot);
+    // 술어 없는 성명 + require → predicate_unmet
+    const ch2 = (await rp.post('/api/mode3/challenge')).body;
+    const w2 = await wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s: ch2.r_s, allowAgent: '0', factoryAddress: ch2.factoryAddress, attrGateAddress: ch2.attrGateAddress }, { Origin: rp.origin });
+    assert.equal(w2.status, 200, j(w2.body));
+    const r2 = await rp.post('/api/mode3/login', { r_s: ch2.r_s, proof: w2.body.proof, publicSignals: w2.body.publicSignals, sig: w2.body.sig, require: { countrySet: true } });
+    assert.deepEqual(r2.body, { ok: false, reason: 'predicate_unmet' });
+  });
+
   await t('12. 선택 공개: 관리자가 testuser a₂ 를 3 으로 → 게시 → 다음 로그인이 재동기화·새 C_u, PPID 동일', async () => {
     const before = await loginViaRp();
     assert.equal(before.rp.ok, true, j(before));
