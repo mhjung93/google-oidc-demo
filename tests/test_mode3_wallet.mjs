@@ -11,7 +11,7 @@ import { credMessageV5, compressPoint, randomScalar } from '../lib/mode3_credent
 import {
   createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree,
   buildCredentialProof, ProofCache, signChallenge, signSessionRequest, ZKEY_PATH, VKEY_PATH, chooseMaxHeight,
-  normalizeDisclosure, signAttrsRequest,
+  normalizeDisclosure, signAttrsRequest, normalizeSet, hasPredicate, disclosureKey,
 } from '../lib/mode3_wallet.js';
 import { attrsRequestMessage } from '../lib/mode3_issuance.js';
 import { verifySessionRequest } from '../lib/mode3_rp.js';
@@ -75,27 +75,36 @@ const svcShare = await createShare(), aaShare = await createShare();
 const pk_trace = await combinePublicKey(svcShare.X, aaShare.X);
 
 let reg, session, uc, req, cred, tree0;
-await t('사용자 자격증명 요청(π_u) → 세션 발급 요청 → 로컬 CIA 서명 → 증명 생성 → vkey 로 검증된다', async () => {
+/**
+ * 등록 → 사용자 자격증명(C_u) → 세션 발급 → 로컬 CIA 서명 → buildCredentialProof 까지의 픽스처 준비를 묶는다.
+ * disclosure 를 그대로 buildCredentialProof 에 넘긴다(null 이면 선택 공개 없음). reg·session·uc·req·cred·tree0 는
+ * 이 파일의 이후 테스트가 그대로 참조하는 전역이라 여기서도 채운다.
+ */
+async function proveWith(disclosure) {
   reg = await createRegistration();
   session = createSessionKey();
   const sk_u = Buffer.alloc(32, 3).toString('hex');
   uc = await buildUserCredRequest({ uid, s_u: reg.s_u, r_u: reg.r_u, sk_u, attrs: [19n, 410n, 0n, 0n] });
+  req = await buildIssueRequest({ uid, Cf_u: uc.Cf_u, arid, sk_u, session, chainid: 31337n, max_height: await mh() });
+  cred = await localIssue(uc.Cf_u, req.C_s_pt, 31337n, { max_height: BigInt(req.body.max_height) });
+  ({ tree: tree0 } = await syncRevocationTree(provider, logAddress));
+  return buildCredentialProof({
+    uid, arid, s_u: reg.s_u, blind_u: uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs: [19n, 410n, 0n, 0n],
+    credential: cred, pk_CIA, pk_trace, tree: tree0, disclosure,
+  });
+}
+
+await t('사용자 자격증명 요청(π_u) → 세션 발급 요청 → 로컬 CIA 서명 → 증명 생성 → vkey 로 검증된다', async () => {
+  const { proof, publicSignals, revRoot, tag } = await proveWith(null);
   assert.equal(await verifyUserCred({ uid, attrs: [19n, 410n, 0n, 0n], C_u_pt: uc.C_u_pt, cm_u: reg.cm_u, proof: parseUserCredProof(uc.body.proof) }), true, 'CIA 가 하는 검증');
   assert.equal(uc.body.uid, uid.toString());
   assert.equal(uc.body.C_u_pt.x, uc.C_u_pt.x.toString());
   assert.equal(uc.Cf_u, await compressPoint(uc.C_u_pt));
   assert.equal(uc.leaf, await userLeaf(uc.Cf_u), '지갑이 보관하는 리프 = userLeaf(Cf_u)');
   assert.ok(uc.body.sig_u?.S, '요청 서명');
-  req = await buildIssueRequest({ uid, Cf_u: uc.Cf_u, arid, sk_u, session, chainid: 31337n, max_height: await mh() });
-  cred = await localIssue(uc.Cf_u, req.C_s_pt, 31337n, { max_height: BigInt(req.body.max_height) });
   assert.equal(cred.Cf_s, req.Cf_s.toString(), 'CIA 가 압축한 Cf_s 와 지갑의 Cf_s 가 같다');
-  ({ tree: tree0 } = await syncRevocationTree(provider, logAddress));
-  const { proof, publicSignals, revRoot, tag } = await buildCredentialProof({
-    uid, arid, s_u: reg.s_u, blind_u: uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs: [19n, 410n, 0n, 0n],
-    credential: cred, pk_CIA, pk_trace, tree: tree0,
-  });
   assert.equal(revRoot, tree0.getRoot());
-  assert.equal(publicSignals.length, 23, 'V6: 기존 14 + 선택 공개 disc_mask·disc_lo[4]·disc_hi[4] 9개(2026-09-22)');
+  assert.equal(publicSignals.length, 25, 'V7: 기존 23 + 집합 소속 술어 set_sel·set_root 2개(2026-09-23)');
   assert.equal(BigInt(publicSignals[2]), session.pk_i);
   assert.equal(BigInt(publicSignals[3]), BigInt(cred.max_height));
   assert.equal(BigInt(publicSignals[4]), 31337n);
@@ -108,6 +117,16 @@ await t('사용자 자격증명 요청(π_u) → 세션 발급 요청 → 로컬
   assert.equal(await combineDecrypt(tag.c2, await partialDecrypt(svcShare.x, tag.c1), await partialDecrypt(aaShare.x, tag.c1)), await tagPlaintext(uid, arid));
   const vkey = JSON.parse(fs.readFileSync(VKEY_PATH, 'utf8'));
   assert.ok(await snarkjs.groth16.verify(vkey, publicSignals, proof));
+});
+
+await t('V7 buildCredentialProof: set 을 주면 publicSignals[23] = sel, [24] = root; 안 주면 0·0 — 25개', async () => {
+  const attrs = [1990n, 410n, 2n, 0n];
+  const st = await normalizeSet({ slot: 1, members: [410, 392] }, attrs);
+  const built = await proveWith({ mask: 0n, lo: [0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n], ...st });
+  assert.equal(built.publicSignals.length, 25);
+  assert.equal(built.publicSignals[23], '2'); assert.equal(built.publicSignals[24], st.root.toString());
+  const plain = await proveWith(null);
+  assert.equal(plain.publicSignals[23], '0'); assert.equal(plain.publicSignals[24], '0');
 });
 
 await t('ProofCache 는 같은 root·세션이면 재사용, root 가 바뀌면 miss', async () => {
@@ -182,6 +201,25 @@ await t('normalizeDisclosure: null 넷 → mask 0; 구간·등식; 불만족은 
   assert.throws(() => normalizeDisclosure([{ lo: '5', hi: '4' }, null, null, null], attrs), (e) => e.reason === 'bad_disclosure');
   assert.throws(() => normalizeDisclosure([null, null, null, { lo: '0', hi: (1n << 64n).toString() }], attrs), (e) => e.reason === 'bad_disclosure');
   assert.throws(() => normalizeDisclosure([null, null, null, null, null], attrs), (e) => e.reason === 'bad_disclosure');
+});
+await t('V7 normalizeSet: 없음 → NO_SET; 소속이면 sel = slot+1·root·경로; 비소속은 disclosure_unsatisfiable; 형식 오류는 bad_disclosure', async () => {
+  const attrs = [1990n, 410n, 2n, 0n];
+  const none = await normalizeSet(null, attrs);
+  assert.deepEqual({ sel: none.sel, root: none.root, index: none.index, path: [...none.path] }, { sel: 0n, root: 0n, index: 0, path: Array(8).fill(0n) });
+  const s = await normalizeSet({ slot: 1, members: [410, 392, 840, 276, 250] }, attrs);
+  assert.equal(s.sel, 2n); assert.equal(s.index, 3); assert.equal(s.path.length, 8); assert.notEqual(s.root, 0n);
+  await assert.rejects(() => normalizeSet({ slot: 1, members: [392, 840] }, attrs), (e) => e.reason === 'disclosure_unsatisfiable');
+  for (const bad of [{ slot: 4, members: [1] }, { slot: -1, members: [1] }, { slot: '1', members: [1] }, { slot: 1, members: [] }, { slot: 1 }, { members: [1] }, 'x']) {
+    await assert.rejects(() => normalizeSet(bad, attrs), (e) => e.reason === 'bad_disclosure', `허용되면 안 됨: ${JSON.stringify(bad)}`);
+  }
+});
+await t('V7 disclosureKey·hasPredicate: set 이 키에 들어가고, mask 0 이라도 sel ≠ 0 이면 술어가 있다', async () => {
+  const attrs = [1990n, 410n, 2n, 0n];
+  const base = normalizeDisclosure(null, attrs);
+  const withSet = { ...base, ...(await normalizeSet({ slot: 1, members: [410] }, attrs)) };
+  assert.notEqual(disclosureKey(base), disclosureKey(withSet));
+  assert.equal(hasPredicate(base), false); assert.equal(hasPredicate(withSet), true);
+  assert.equal(hasPredicate(normalizeDisclosure([{ lo: '0', hi: '2007' }, null, null, null], attrs)), true);
 });
 await t('signAttrsRequest 는 attrsRequestMessage 위 EdDSA 서명이다', async () => {
   const eddsa = await buildEddsa(); const F = eddsa.F;
