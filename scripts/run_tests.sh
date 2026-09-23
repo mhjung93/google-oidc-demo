@@ -39,6 +39,7 @@ UNIT=(
   tests/test_mode3_opening.js
   tests/test_mode3_cia_state.js
   tests/test_mode3_secret_source.js
+  tests/test_mode3_set_tree.mjs
 )
 
 CIRCUIT=(
