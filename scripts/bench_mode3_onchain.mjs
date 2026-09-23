@@ -1,6 +1,6 @@
 // Mode 3 온체인 실행 모델 성능 실측 (2026-09-18 max_height 지갑 결정 판, 2026-09-21 자격증명 이중 구조 V5,
-// 2026-09-22 선택 공개 V6 — 회로 공개 입력 23개, AttrGate,
-// 2026-09-23 집합 소속 술어 V7 — 회로 공개 입력 25개(set_sel, set_root 추가), AttrGate v2).
+// 2026-09-22 선택 공개 V6, 2026-09-23 집합 소속 술어 V7 — 회로 공개 입력 25개(V6 은 23개; V7 에서 set_sel·set_root
+// 추가), AttrGate v2).
 //   node scripts/bench_mode3_onchain.mjs [N]        (기본 N=10, :8545 hardhat 노드 필요)
 //
 // 격리 스택(CIA + 지갑 에이전트, 각자 빈 포트)을 띄우고 실제 HTTP 경로로 측정한다 — 개발 서버(:4100/:5100/:3100)는
@@ -10,10 +10,13 @@
 //   1. 로그인(첫 발급): 지갑의 timings(sync/userCred/issue/prove) + 전체 왕복 + 서비스 verifyLogin (mask=0 고정)
 //   2. 재검증(캐시 π): 왕복 + verifyLogin
 //   3. 가스: PiCredVerifier·Mode3WalletFactory 배포, 계정 배포(CREATE2), execute(첫/캐시), RevocationLog 게시·하트비트
-//   4. /wallet/tx 왕복(mask=0, 캐시 π, 채굴 포함)
-//   5. /wallet/tx 왕복(mask=3, 매번 새 π) + AttrGate.claim — claimed 매핑이 지갑 주소당 한 번뿐이라(지갑 주소는 PPID 로
-//      정해지고 세션과 무관하다) 반복마다 AttrGate 를 새로 배포한다. discKey 도 반복마다 바꿔(hi[0] 를 늘려) 캐시를 피하고
-//      매번 진짜 새 π 를 잰다 — AttrGate 정책(국가=410, 출생연도 ≤ 2007)은 그대로 만족시킨다.
+//   4. /wallet/tx 왕복(mask=0, 캐시 π, 채굴 포함) — "공개 0" 변형
+//   5. /wallet/tx 왕복(mask=1 + set, 매번 새 π) + AttrGate.claim — "범위+집합" 변형. claimed 매핑이 지갑 주소당 한 번뿐이라
+//      (지갑 주소는 PPID 로 정해지고 세션과 무관하다) 반복마다 AttrGate 를 새로 배포한다. discKey 도 반복마다 바꿔(hi[0] 를
+//      늘려) 캐시를 피하고 매번 진짜 새 π 를 잰다 — AttrGate 정책(국가 집합·minAge)은 그대로 만족시킨다.
+//   6. /wallet/tx(mask=1, set 없음, to=dEaD) — "범위만" 변형. hi[0] 를 반복마다 늘려 캐시를 피한다.
+//   7. /wallet/tx(mask=0, set 만, to=dEaD) — "집합만" 변형. members 에 더미 원소를 반복마다 추가해 캐시를 피한다
+//      (국가는 항상 포함해 membership 은 유지).
 // 결과는 Markdown 표로 stdout 에 낸다. 스펙 §8·논문 Table 3 에 옮겨 적는다.
 import fs from 'node:fs';
 import { ethers } from 'ethers';
@@ -117,9 +120,20 @@ try {
     G.gas.push(Number(r.body.gasUsed));
   }
 
-  // 6. 집합만(mask=0, set 만, to=dEaD) — V6 대비 공개 입력 +2(set_sel, set_root)의 gas 비용. members 를 반복마다 바꿔
-  // (더미 원소 추가) discKey 를 바꾸고 캐시를 피한다 — 국가(410)는 항상 그대로 포함해 membership 은 유지한다.
   const deadAddress = '0x000000000000000000000000000000000000dEaD';
+
+  // 6. 범위만(mask=1, set 없음, to=dEaD) — "네 가지 disclosure 변형"(공개 0 / 범위만 / 집합만 / 범위+집합) 표의 나머지 한 칸.
+  // hi[0] 를 반복마다 늘려 discKey 를 바꾸고 캐시를 피한다(lo=0 은 항상 만족 — 하한 없음).
+  const RA = { gas: [] };
+  for (let i = 0; i < N; i++) {
+    const disclose = [{ lo: '0', hi: String(2000 + i) }, null, null, null];
+    const r = await wallet.post('/wallet/tx', { r_s: lastRs, to: deadAddress, disclose }, { Origin: stack.rpOriginForWallet });
+    if (r.status !== 200 || !r.body.ok) throw new Error(`range-only tx ${r.status} ${j(r.body)}`);
+    RA.gas.push(Number(r.body.gasUsed));
+  }
+
+  // 7. 집합만(mask=0, set 만, to=dEaD) — V6 대비 공개 입력 +2(set_sel, set_root)의 gas 비용. members 를 반복마다 바꿔
+  // (더미 원소 추가) discKey 를 바꾸고 캐시를 피한다 — 국가(410)는 항상 그대로 포함해 membership 은 유지한다.
   const S = { gas: [] };
   for (let i = 0; i < N; i++) {
     const set = { slot: 1, members: [410, 392, 840, 276, 250, 900 + i] };
@@ -176,6 +190,7 @@ try {
   console.log(`| execute gas (첫 tx, 계정 배포 tx 는 별도) | ${r1.body.gasUsed} |`);
   console.log(`| /wallet/tx 왕복(mask=1 + set, 새 π + AttrGate.claim, N회) | ${fmt(G.total)} |`);
   console.log(`| execute gas (mask=1 + set, 새 π + claim, N회) | ${med(G.gas)} (${Math.min(...G.gas)}–${Math.max(...G.gas)}) |`);
+  console.log(`| execute gas (범위만, mask=1, to=dEaD, N회) | ${med(RA.gas)} (${Math.min(...RA.gas)}–${Math.max(...RA.gas)}) |`);
   console.log(`| execute gas (집합만, mask=0 + set, to=dEaD, N회) | ${med(S.gas)} (${Math.min(...S.gas)}–${Math.max(...S.gas)}) |`);
   console.log(`| 계정 배포 gas (factory.deploy, CREATE2) | ${walletDeployGas} |`);
   console.log(`| PiCredVerifier 배포 gas | ${verifierGas} |`);
