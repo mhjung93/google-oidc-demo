@@ -295,6 +295,16 @@ try {
     assert.equal(r2.status, 409, j(r2.body)); assert.equal(r2.body.reason, 'bad_factory');
   });
 
+  await t('login: 무엇이든 통과시키는 검증자를 가리키는 팩토리(immutable 은 전부 정상)는 409 bad_factory / verifier_code_mismatch (참조 코드 대조, 2026-09-23)', async () => {
+    const signer = await provider.getSigner(0);
+    const { abi, bytecode } = JSON.parse(fs.readFileSync(new URL('../artifacts/contracts/test/AcceptAllPiCredVerifier.sol/AcceptAllPiCredVerifier.json', import.meta.url), 'utf8'));   // 테스트 전용 검증자(contracts/test)
+    const fake = await new ethers.ContractFactory(abi, bytecode, signer).deploy();
+    await fake.waitForDeployment();
+    const rogue = await deployFactory(signer, { verifierAddress: await fake.getAddress(), arid: BigInt(arid), pkCIA: pk_CIA, pkTrace: pk_trace, logAddress: cia.logAddress });
+    const r = await login(newRs(), { factoryAddress: rogue });
+    assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'bad_factory'); assert.equal(r.body.detail, 'verifier_code_mismatch');
+  });
+
   let factoryAddress, S3, walletAddr;
   await t('tx: factoryAddress 없이 로그인한 세션은 409 no_factory', async () => {
     const r = await wallet.post('/wallet/tx', { r_s: S2, to: ethers.Wallet.createRandom().address }, { Origin: stack.rpOriginForWallet });

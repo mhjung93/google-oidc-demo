@@ -23,7 +23,7 @@ import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { createSecretSource, stripSecrets, validateWitness } from './lib/mode3_secret_source.js';
 import { createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, buildCredentialProof, signChallenge, signSessionRequest, signAttrsRequest, normalizeDisclosure, normalizeSet, disclosureKey, hasPredicate, ProofCache, chooseMaxHeight } from './lib/mode3_wallet.js';
 import { createRevocationSync } from './lib/mode3_rcl_sync.js';
-import { signPayload, proofToCalldata, parseExecuteReceipt, decodeExecuteCalldata, factoryAt, walletAt, walletInterface, FACTORY_ABI } from './lib/mode3_onchain.js';
+import { signPayload, proofToCalldata, parseExecuteReceipt, decodeExecuteCalldata, factoryAt, walletAt, walletInterface, FACTORY_ABI, verifyReferenceCode } from './lib/mode3_onchain.js';
 import { pointToStrings } from './lib/mode3_issuance.js';
 import { normalizeAttrs, SCALAR_MAX, ppid, randomScalar } from './lib/mode3_credential.js';
 import { verifyRpCert } from './lib/mode3_rp_cert.js';
@@ -200,7 +200,7 @@ function secretSourceFor(req, rsKey = null) {
 
 /** 서비스 인증(설계 §3·§4)·팩토리 검증 — /wallet/login 과 /wallet/authorize/precheck 가 같이 쓴다. 통과면 null, 아니면 { status, body }.
  *  cert_s 가 pk_CIA 서명이어야 하고(오리진은 호출자가 대조한다), 팩토리는 인증서의 arid·pk_trace, 고정된 pk_CIA·로그 주소와 온체인 값이
- *  같아야 한다 — 임의 코드일 수 있으므로 검증 규칙이 같은 계정만 받아들인다(2026-09-18 점검 3). */
+ *  같아야 하고(2026-09-18 점검 3), 팩토리·검증자 코드가 지갑의 참조 빌드와 같아야 한다(2026-09-23 참조 코드 대조). */
 async function checkService({ arid, origin, cert_s, pk_trace, factoryAddress }) {
   // CIA 가 죽어 pk_CIA 를 못 받은 것이지 체인 문제가 아니다 — reason 목록엔 없지만 원인을 구분해 둔다.
   let pk;
@@ -213,6 +213,10 @@ async function checkService({ arid, origin, cert_s, pk_trace, factoryAddress }) 
       if (fa !== BigInt(arid) || fl.toLowerCase() !== LOG_ADDRESS.toLowerCase() || fx !== pk.x || fy !== pk.y || tx !== BigInt(pk_trace.x) || ty !== BigInt(pk_trace.y)) {
         return { status: 409, body: { reason: 'bad_factory' } };
       }
+      // 값이 맞아도 코드가 가짜일 수 있다(2026-09-23): 무엇이든 통과시키는 검증자를 가리키는 팩토리면 공개 입력을 고르는 쪽이
+      // pk_i 를 제 키로 넣어 계정을 비운다. 팩토리·검증자 코드를 지갑의 참조 빌드(artifacts/)와 대조한다 — lib/mode3_onchain.js.
+      const code = await verifyReferenceCode(provider, factoryAddress);
+      if (!code.ok) return { status: 409, body: { reason: 'bad_factory', detail: code.reason } };
     } catch (e) { return { status: 409, body: { reason: 'bad_factory', detail: e.shortMessage ?? e.message } }; }
   }
   return null;
