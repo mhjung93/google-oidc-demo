@@ -52,6 +52,13 @@ module.exports = {
         version: "0.8.24",
         settings: WALLET_IR_SETTINGS,
       },
+      // AttrGate.sol 도 Mode3WalletFactory.sol → Mode3Wallet.sol 을 import 하므로 같은 override 가 필요하다.
+      // 이 파일이 진입점인 컴파일 job 은 override 가 없으면 그 폐쇄(closure) 전체를 기본(비-viaIR) 설정으로
+      // 다시 컴파일하려다 execute() 의 stack too deep 에서 실패한다(V7 꼬리 11워드 확장 후 실제로 발생, 2026-09-23).
+      "contracts/AttrGate.sol": {
+        version: "0.8.24",
+        settings: WALLET_IR_SETTINGS,
+      },
     },
   },
   ethernal: {
