@@ -47,6 +47,8 @@ Mode 2 데모(:3000/:4000/:5001)와 **공존**한다. 포트·상태 파일이 �
    건너뛰고 경고만 남기므로, 그때는 체인이 뜬 뒤 `/cia/publish` 를 수동으로 호출한다. (5) 지갑 상태도 v7 로 **자동 이행**된다(옛 C_u·세션을 비운다, 등록 자체는 유지) —
    다음 로그인에서 지갑이 새 사용자 자격증명을 자동으로 다시 받는다(`userCredMs > 0`). `RevocationLog` 재배포는 V5 와 같은 이유로
    필수가 아니다.
+   회로 V7(2026-09-23, 집합 소속)로 build/mode3 를 다시 만들었다 — 다른 기계의 build/mode3 도 다시 복사. 팩토리·AttrGate 재배포
+   필요(V6 증명과 호환 없음).
 1. `npx hardhat node` (다른 터미널에 상주).
 2. `CIA_ADMIN_SECRET=<아무 문자열> node cia.js` — 처음 기동에서 `cia_keys.json`을 만든다. `curl -s 127.0.0.1:4100/cia/public_keys`의 `ethAddress`를 적어 두고 종료한다.
 3. `CIA_ETH_ADDRESS=<ethAddress> npx hardhat run scripts/deploy_mode3_log.cjs --network localhost` — `RevocationLog`를 배포하고 CIA 주소에 1 ETH를 넣는다. 출력의 `CIA_LOG_ADDRESS=0x…`를 `.env`에 추가한다.
@@ -73,6 +75,8 @@ Mode 2 데모(:3000/:4000/:5001)와 **공존**한다. 포트·상태 파일이 �
 `MODE3_VKEY_PATH`(CIA 의 개봉 검증용 vkey, 기본 `build/mode3/pi_cred_vkey.json`), `MODE3_RP_LOGIN_LOG`(RP 로그인 로그, 기본
 `mode3_rp_logins.jsonl`, 0600 — 개봉 요청의 재료라 비밀로 둔다). 옛 `CIA_TTL_SECONDS`·`CIA_REVOKE_SKEW_SECONDS`·`CIA_CHAIN_IDS`·`CIA_REVOKE_SKEW_BLOCKS` 는
 경고와 함께 무시된다(skew 는 2026-09-21 자격증명 이중 구조에서 제거됐다 — 폐기는 리프 하나라 세션 기록이 필요 없다).
+`MODE3_ALLOWED_COUNTRIES`(V7 AttrGate 정책의 허용 국가 집합, 쉼표 구분 ISO 3166 numeric, 기본 `410,392,840,276,250`)·
+`MODE3_MIN_AGE`(V7 AttrGate 정책의 최소 나이, 연 단위, 기본 19).
 
 선택: 운영이라면 RP의 `pk_CIA`를 TOFU가 아니라 env로 박는다 — `curl -s 127.0.0.1:4100/cia/public_keys`의 `pk_CIA.x/y`를 `MODE3_PK_CIA_X`/`MODE3_PK_CIA_Y`에. 단 env 로 박으면 RP 는 기동 때 CIA 에 묻지 않으므로 CIA 하트비트 주기와
 `MODE3_MAX_ROOT_AGE` 의 대조 경고(하트비트 ≥ maxRootAge 면 전원이 `root_too_old`)가 나오지 않는다 — 두 값은 사람이 맞춘다(2026-09-23 최종 리뷰 M4).
@@ -160,16 +164,30 @@ AA 의 현재 값을 받아 두고(바뀌었으면 지갑이 옛 C_u·세션을 
 가 된다. 지갑은 제출 전에 `lo ≤ 내 속성 ≤ hi` 를 스스로 검사한다 — 안 맞으면 증명을 만들기 전에 400 `disclosure_unsatisfiable`,
 형식·범위가 잘못됐으면 400 `bad_disclosure`. `disclose` 가 있으면(mask ≠ 0) 캐시된 π 를 못 쓰고 매번 새로 증명한다.
 
-**`AttrGate` (데모 대상).** RP 가 팩토리 다음에 한 번 배포하는 컨트랙트로(`rp_info.attrGateAddress`), 정책은 국가(a₁) = 410,
-출생연도(a₀) ≤ 2007 고정이다. `claim()` 은 `Mode3Wallet.execute()` 가 호출 데이터 끝에 붙인 (mask, lo[4], hi[4]) 9워드를 읽어
-`mask & 0x3 == 0x3`(슬롯 0·1 공개 필요)·`lo[1] == hi[1] == countryEq`·`hi[0] ≤ birthYearMax` 를 확인하고 `Claimed` 이벤트를 낸다.
-팩토리가 배포한 지갑에서 온 호출만 받는다(`factory.isWallet(msg.sender)`).
+`set: { slot, members }`(선택, 슬롯 하나) — 지갑이 `members` 로 root 를 계산해 회로 공개 입력 `set_sel`·`set_root`([23],[24])에
+넣는다. 비소속이면(내 속성이 `members`에 없으면) 역시 증명을 만들기 전에 400 `disclosure_unsatisfiable`, 형식이 잘못됐으면
+400 `bad_disclosure`. 나이는 "나이 ≥ N" 버튼으로 지정한다 — 이 버튼은 `hi[0] = 올해 − N`(연 단위)로 슬롯 0 을 공개한다.
 
-`mode3_rp_registration.json` 에는 `attrGateAddress`(배포된 주소)와 `attrGateFactory`(그 배포가 실제로 물린 `factoryAddress`) 두
-필드가 있다(`mode3_rp.js` `ensureAttrGate`). **`AttrGate` 는 `attrGateFactory` 가 지금의 `factoryAddress` 와 다를 때만 재배포된다**
-— 즉 팩토리가 실제로 바뀐 경우에만 다시 배포하고, 같은 팩토리로 재기동을 반복해도 재배포하지 않는다. `attrGateFactory` 가 없는
-옛 등록 파일(이 필드가 생기기 전)은 이 대조가 항상 "다르다"로 나와 **첫 기동에 `AttrGate` 를 한 번 재배포한다**(주소가 바뀐다 —
-이전에 그 주소를 써 둔 데모 스크립트·문서가 있다면 갱신해야 한다).
+**`AttrGate` v2 (데모 대상).** RP 가 팩토리 다음에 한 번 배포하는 컨트랙트로(`rp_info.attrGateAddress`), 정책은 국가(a₁) ∈
+`allowedCountriesRoot`(집합 소속, env `MODE3_ALLOWED_COUNTRIES`)·출생연도(a₀) 기준 나이 ≥ `minAge`(env `MODE3_MIN_AGE`)이다.
+`claim()` 은 `Mode3Wallet.execute()` 가 호출 데이터 끝에 붙인 (mask, lo[4], hi[4], set_sel, set_root) 11워드를 읽어
+`mask & 1 == 1`(슬롯 0 공개 필요)·`set_sel == 2 && set_root == allowedCountriesRoot`(집합 소속)·`hi[0] + minAge ≤ yearOf(block.timestamp)`
+(나이는 `block.timestamp` 를 연 단위로 바꾼 `yearOf` 기준)를 확인하고 `Claimed` 이벤트를 낸다. 팩토리가 배포한 지갑에서 온
+호출만 받는다(`factory.isWallet(msg.sender)`). `mode3_rp.js` 의 `ensureAttrGate` 는 `attrGateFactory` 뿐 아니라 등록 파일의
+`attrGatePolicy`(root·minAge)가 지금의 env 값과 다를 때도 재배포한다.
+
+`mode3_rp_registration.json` 에는 `attrGateAddress`(배포된 주소)·`attrGateFactory`(그 배포가 실제로 물린 `factoryAddress`)·
+`attrGatePolicy`(그 배포가 물린 `{root, minAge}`) 필드가 있다(`mode3_rp.js` `ensureAttrGate`). **`AttrGate` 는 `attrGateFactory`
+가 지금의 `factoryAddress` 와 다르거나 `attrGatePolicy` 가 지금의 env(`MODE3_ALLOWED_COUNTRIES`·`MODE3_MIN_AGE`)와 다를 때만
+재배포된다** — 팩토리가 바뀌거나 정책 env 가 바뀐 경우에만 다시 배포하고, 둘 다 같으면 재기동을 반복해도 재배포하지 않는다.
+`attrGateFactory`·`attrGatePolicy` 가 없는 옛 등록 파일(이 필드들이 생기기 전)은 이 대조가 항상 "다르다"로 나와 **첫 기동에
+`AttrGate` 를 한 번 재배포한다**(주소가 바뀐다 — 이전에 그 주소를 써 둔 데모 스크립트·문서가 있다면 갱신해야 한다).
+
+**로그인 경로 술어(V7).** 온체인 `AttrGate.claim()` 과 별개로, RP 페이지의 "속성 술어 요구(V7)" 체크박스를 켜면 로그인
+요청(`POST /api/mode3/login`)에 `require: { countrySet, minAge }` 를 함께 보낸다. RP 는 로그인 성명이 이미 제출한
+disclosure(`set`·`disc_hi[0]`)로 그 술어를 만족하는지 오프체인에서 검사하고, 만족하지 못하면 로그인 자체를 `{ok:false,
+reason: 'predicate_unmet'}` 로 거절한다(200, 컨트랙트 호출 없이 오프체인 판정 — RP env `MODE3_ALLOWED_COUNTRIES`·
+`MODE3_MIN_AGE` 기준).
 
 **시나리오 1~5** (설계 §6.3, 위 0~9 각본과 별도로 확인):
 
@@ -253,8 +271,9 @@ AA 의 현재 값을 받아 두고(바뀌었으면 지갑이 옛 C_u·세션을 
 | `POST /cia/accounts/:uid/attrs` | CIA(관리자) | 속성 변경 — 활성 C_u 를 물린다(폐기 리프 pending) |
 | `GET /cia/accounts` | CIA(관리자) | 전 계정의 `attrs`·`disabled`·`activeCf_u` |
 | `POST /wallet/attrs/sync` | 지갑 | AA 최신 속성 재확인, 바뀌었으면 옛 C_u·세션 삭제 |
-| `POST /wallet/tx` (`disclose` 필드) | 지갑 | 트랜잭션에 선택 공개 첨부 — `{lo,hi}\|null` × 4, mask ≠ 0 이면 새 π |
-| `GET /api/mode3/rp_info` (`attrGateAddress` 필드) | RP | 배포된 `AttrGate` 주소 |
+| `POST /wallet/tx` (`disclose`·`set` 필드, V7) | 지갑 | 트랜잭션에 선택 공개 첨부 — `disclose`: `{lo,hi}\|null` × 4; `set`: `{slot, members}`(선택, 슬롯 하나 — root 를 지갑이 계산). 둘 중 하나라도 있으면(mask ≠ 0 또는 set_sel ≠ 0) 새 π |
+| `GET /api/mode3/rp_info` (`attrGateAddress`·`predicates` 필드, V7) | RP | 배포된 `AttrGate` 주소, `predicates: { allowedCountries, allowedCountriesRoot, minAge }` |
+| `POST /api/mode3/login` (`require` 필드, V7) | RP | 로그인 성명이 만족해야 할 오프체인 술어 — `{ countrySet, minAge }`, 미충족 시 `predicate_unmet` |
 
 MetaMask/Snap 경로(2026-09-22 metamask-snap)로 새로 생긴 지갑 라우트:
 
@@ -283,6 +302,7 @@ MetaMask/Snap 경로(2026-09-22 metamask-snap)로 새로 생긴 지갑 라우트
 | `root_too_old` | `POST /api/mode3/login`, `POST /api/mode3/revalidate` | 200 `{ok:false, reason}` | 게시된 root 가 `MODE3_MAX_ROOT_AGE` 보다 오래됐다 — CIA 가 하트비트(또는 `/cia/publish`)를 멈추면 온체인 `RootTooOld` 와 함께 오프체인 로그인·재검증도 막힌다. CIA 를 살리고 게시를 기다린다 |
 | `root_too_old` | `POST /api/mode3/request` | 503 | 세션 요청도 같은 상한 — 다만 세션이 이미 있는데 체인 쪽 문제라 5xx 로 구분한다 |
 | `factory_constants_unavailable` | 검증기가 없는 동안 RP API 전부(`inactiveReason`) — `/api/mode3/challenge`·`/login`·`/revalidate`·`/request`·`/open` | 503 | 팩토리 `maxRootAge`·`maxLifetime` 조회 실패 — 등록 대기(`registration_pending`)와 구분한다. 아래 "하지 말 것" 의 함정 참고 |
+| `predicate_unmet` | `POST /api/mode3/login` (V7, `require` 필드가 있을 때만) | 200 `{ok:false, reason}` | 로그인 성명은 유효하지만 요구한 술어(국가 집합 소속·최소 나이)를 만족하지 못한다 — 컨트랙트 호출 없이 오프체인에서 판정한다. `RP 거절 사유` 절 위쪽 "로그인 경로 술어(V7)" 참고 |
 
 RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는데(`headMaxAgeMs`), 그 창 동안은 root 나이(b′) 판정도 **캐시 시점 값에 얼어붙는다** — 실시간 게시 지연을 그동안은 못 본다.
 

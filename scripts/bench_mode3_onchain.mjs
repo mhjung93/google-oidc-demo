@@ -1,5 +1,6 @@
 // Mode 3 온체인 실행 모델 성능 실측 (2026-09-18 max_height 지갑 결정 판, 2026-09-21 자격증명 이중 구조 V5,
-// 2026-09-22 선택 공개 V6 — 회로 공개 입력 23개, AttrGate).
+// 2026-09-22 선택 공개 V6 — 회로 공개 입력 23개, AttrGate,
+// 2026-09-23 집합 소속 술어 V7 — 회로 공개 입력 25개(set_sel, set_root 추가), AttrGate v2).
 //   node scripts/bench_mode3_onchain.mjs [N]        (기본 N=10, :8545 hardhat 노드 필요)
 //
 // 격리 스택(CIA + 지갑 에이전트, 각자 빈 포트)을 띄우고 실제 HTTP 경로로 측정한다 — 개발 서버(:4100/:5100/:3100)는
@@ -182,7 +183,7 @@ try {
   console.log(`| RevocationLog 게시 gas (리프 ${pubs.filter((p) => p.leaves > 0).map((p) => p.leaves).join('/')}) | ${publishGas.join(', ') || '-'} |`);
   console.log(`| RevocationLog 하트비트 gas (리프 0) | ${heartbeatGas.join(', ') || '-'} |`);
   console.log(`| zkey 크기 | ${zkeyBytes} bytes |`);
-  console.log(`| 공개 입력 수 | 23 |`);
+  console.log(`| 공개 입력 수 | 25 |`);
 } finally {
   await stack.stop();
 }

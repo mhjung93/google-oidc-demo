@@ -22,7 +22,7 @@
 | `execute` 꼬리 | 9워드(288 B) | **11워드(352 B)**: mask, lo[4], hi[4], set_sel, set_root |
 | σ 다이제스트 | 공개 9워드 | 공개 11워드 |
 | AttrGate 정책 | `a₁ = countryEq`, `a₀ ≤ 2007`(상수) | `a₁ ∈ S(allowedCountriesRoot)`, `올해(block.timestamp) − a₀ ≥ minAge` |
-| CIA | — | **변경 없음**(속성·π_u·발급·개봉 그대로) |
+| CIA | — | 개봉 API 의 공개 입력 길이 검사만 23 → 25(태그 위치 [11..13] 불변, 로직 그대로) |
 
 호환: V7 검증자는 V6 증명을 받지 않는다(공개 입력 수). 팩토리·AttrGate 재배포, 데모 스택 재기동.
 
