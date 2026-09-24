@@ -1,14 +1,14 @@
 // pi_cred 회로용 공유 입력 픽스처 (V5 — 설계 2026-09-21 §5).
 // tests/test_pi_cred_witness.mjs, scripts/bench_pi_cred.mjs, test/Mode3Wallet.test.mjs 가 같은 입력 생성기를 쓴다.
 import { buildPoseidon, buildEddsa, buildBabyjub } from 'circomlibjs';
-import { userLeaf, createRevocationTree } from '../../lib/mode3_revocation.js';
+import { userLeaf, sessionLeaf, createRevocationTree } from '../../lib/mode3_revocation.js';
 import { userCommit, sessionCommit, credMessageV5, ppid as computePpid } from '../../lib/mode3_credential.js';
 import { combinePublicKey, encryptTag } from '../../lib/mode3_trace.js';
 import { setPath, NO_SET } from '../../lib/mode3_set_tree.js';
 
 // --- 정상 입력 하나를 만든다 -------------------------------------------------
 // 옵션은 컨트랙트 테스트용이다: pk_i 는 실제 세션키의 주소, maxHeight 는 만료 케이스, allowAgent 는 플래그 케이스.
-export async function buildValidInput({ pk_i: pkIOpt, maxHeight = 1789000000n, allowAgent = 0n, chainid = 31337n, disclosure = null, set = null } = {}) {
+export async function buildValidInput({ pk_i: pkIOpt, maxHeight = 1789000000n, allowAgent = 0n, chainid = 31337n, disclosure = null, set = null, revokedSessions = [] } = {}) {
   const poseidon = await buildPoseidon();
   const F = poseidon.F;
   const eddsa = await buildEddsa();
@@ -44,7 +44,9 @@ export async function buildValidInput({ pk_i: pkIOpt, maxHeight = 1789000000n, a
   // 폐기 트리에 남의 폐기를 하나 넣어 둔다 — 내 비멤버십은 여전히 성립해야 한다. 리프는 Cf_u 에서(§3.6).
   const tree = await createRevocationTree();
   await tree.insert(await userLeaf(999n));
+  for (const c of revokedSessions) await tree.insert(await sessionLeaf(BigInt(c)));   // 남의 세션 폐기 리프 — 내 세션 비멤버십은 성립해야 한다
   const w = await tree.getNonMembershipWitness(await userLeaf(Cf_u));
+  const ws = await tree.getNonMembershipWitness(await sessionLeaf(Cf_s));
 
   const disc = disclosure ?? { mask: 0n, lo: [0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n] };
 
@@ -60,6 +62,8 @@ export async function buildValidInput({ pk_i: pkIOpt, maxHeight = 1789000000n, a
     S: sig.S.toString(), R8x: F.toObject(sig.R8[0]).toString(), R8y: F.toObject(sig.R8[1]).toString(),
     lowValue: w.lowValue.toString(), lowNextIndex: w.lowNextIndex.toString(), lowNextValue: w.lowNextValue.toString(),
     pathElements: w.pathElements.map(String), pathIndices: w.pathIndices.map(String),
+    s_lowValue: ws.lowValue.toString(), s_lowNextIndex: ws.lowNextIndex.toString(), s_lowNextValue: ws.lowNextValue.toString(),
+    s_pathElements: ws.pathElements.map(String), s_pathIndices: ws.pathIndices.map(String),
     r: tag.r.toString(),
     PPID: PPID.toString(), arid: arid.toString(), pk_i: pk_i.toString(),
     max_height: max_height.toString(), chainid: chainid.toString(), allowAgent: allowAgent.toString(),

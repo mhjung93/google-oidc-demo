@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { userLeaf, createRevocationTree, MODE3_TREE_DEPTH } from '../lib/mode3_revocation.js';
+import { userLeaf, sessionLeaf, createRevocationTree, MODE3_TREE_DEPTH } from '../lib/mode3_revocation.js';
 import { buildValidInput } from './helpers/mode3_fixture.mjs';
 import { ppid } from '../lib/mode3_credential.js';
 import { partialDecrypt, combineDecrypt, resolveTagPlaintext } from '../lib/mode3_trace.js';
@@ -268,6 +268,33 @@ await t('V7: 패딩 리프(2^64)는 어떤 속성으로도 못 맞춘다 — 속
   const fx = await buildValidInput({ set: { slot: 3, members: [0] } });   // a₃ = 0 ∈ {0}
   await witness(fx.input);
   await assert.rejects(() => witness({ ...fx.input, attrs: ['1990', '410', '2', (1n << 64n).toString()], set_index: '1' }), /Assert Failed/);
+});
+
+await t('V8 양성: 남의 세션 폐기 리프가 있어도 내 세션 비멤버십은 성립', async () => {
+  const fx = await buildValidInput({ revokedSessions: [777n, 778n] });
+  await witness(fx.input);
+});
+await t('V8 음성: 내 세션 리프 Poseidon(5, Cf_s) 가 트리에 있으면 거부 — 사용자 리프는 그대로', async () => {
+  const fx = await buildValidInput();
+  await fx.tree.insert(await sessionLeaf(fx.Cf_s));
+  await assert.rejects(() => witness({ ...fx.input, revRoot: fx.tree.getRoot().toString() }), /Assert Failed/);
+});
+await t('V8 음성: 세션 폐기 후 사용자 증인을 세션 증인 자리에 넣어도 거부 (④ 는 통과, ④′ 가 잡는다)', async () => {
+  // 폐기되지 않은 상태에서는 두 증인이 같은 구간(leaf(4,999) → ∞)을 가리켜 값이 아예 동일하다 —
+  // 그래서 "바꿔치기" 자체는 정상 입력이며 거부될 수 없다. 실제 공격은 세션이 폐기된 뒤다:
+  // 사용자 리프는 여전히 트리에 없으므로 ④ 용 증인은 새 root 에서도 멀쩡하다. 그 멀쩡한 증인을
+  // 세션 자리에 그대로 밀어 넣어도 ④′ 가 거부해야 한다.
+  const fx = await buildValidInput();
+  await fx.tree.insert(await sessionLeaf(fx.Cf_s));   // 내 세션만 폐기
+  const wu = await fx.tree.getNonMembershipWitness(await userLeaf(fx.Cf_u));
+  await assert.rejects(() => witness({
+    ...fx.input,
+    revRoot: fx.tree.getRoot().toString(),
+    lowValue: wu.lowValue.toString(), lowNextIndex: wu.lowNextIndex.toString(), lowNextValue: wu.lowNextValue.toString(),
+    pathElements: wu.pathElements.map(String), pathIndices: wu.pathIndices.map(String),
+    s_lowValue: wu.lowValue.toString(), s_lowNextIndex: wu.lowNextIndex.toString(), s_lowNextValue: wu.lowNextValue.toString(),
+    s_pathElements: wu.pathElements.map(String), s_pathIndices: wu.pathIndices.map(String),
+  }), /Assert Failed/);
 });
 
 console.log('');

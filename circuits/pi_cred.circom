@@ -17,6 +17,7 @@ include "lib/mode3_trace_tag.circom";
 // V5(2026-09-21): 커밋 둘(C_u 사용자 자격증명, C_s 세션) — 서명은 둘을 덮고 리프는 C_u 에서만 뽑는다. 설계 docs/superpowers/specs/2026-09-21-mode3-two-tier-credential-design.md §5
 // V6(2026-09-22): 공개 술어 disc_mask/lo/hi, 속성 64비트. 설계 2026-09-22-mode3-selective-disclosure-design.md §4
 // V7(2026-09-23): 집합 소속 set_sel/set_root(공개)·set_index/set_path(비공개). 설계 2026-09-23-mode3-predicates-design.md §3
+// V8(2026-09-24): 세션 리프 Poseidon(5, Cf_s) 비멤버십 추가 — 설계 2026-09-24-mode3-session-revocation-design.md §3
 // 다섯 가지를 함께 증명한다. 하나라도 빠지면 뚫린다:
 //   ① CIA가 (Cf_u, Cf_s, max_height, chainid, allowAgent)에 서명했다 — 없으면 아무나 credential을 만든다
 //   ② C_s 안에 이 pk_i·arid 가 있다                — 없으면 남의 π를 주워 자기 키로 서명해 완전 사칭
@@ -57,6 +58,13 @@ template PiCred(depth) {
     signal input pathElements[depth];
     signal input pathIndices[depth];
 
+    // V8(2026-09-24) 세션 리프 비멤버십 증인
+    signal input s_lowValue;
+    signal input s_lowNextIndex;
+    signal input s_lowNextValue;
+    signal input s_pathElements[depth];
+    signal input s_pathIndices[depth];
+
     // V7 집합 소속 경로(비공개). set_sel = 0 이면 무시된다(지갑은 0 을 넣는다).
     signal input set_index;        // 리프 인덱스 0..255
     signal input set_path[8];      // 형제 노드, 리프에서 root 쪽으로
@@ -88,6 +96,7 @@ template PiCred(depth) {
 
     var DOMAIN_MODE3_CRED_V5 = 93461614427473393731524149;  // ASCII "MODE3CREDV5"
     var TAG_MODE3_USER = 4;  // 사용자 자격증명 리프. Mode 2 의 1·2, V4 의 3 과 갈라 둔다
+    var TAG_MODE3_SESSION = 5;  // 세션 리프(2026-09-24)
 
     // pk_i는 세션키의 이더리움 주소다. 160비트를 넘을 수 없다.
     // (Mode 2 pi_pk_i.circom과 같은 제약 — 형제 크레덴셜 구멍을 막는다.)
@@ -160,6 +169,22 @@ template PiCred(depth) {
         nm.pathIndices[i] <== pathIndices[i];
     }
     nm.root <== revRoot;
+
+    // ---- ④′ 세션 비멤버십 (2026-09-24 V8) ----
+    // Cf_s 는 ② 에서 공개 arid·pk_i 로 재계산한 값 — 다른 세션의 Cf_s 를 들이밀 수 없다. 같은 트리, 같은 root.
+    component sLeaf = Poseidon(2);
+    sLeaf.inputs[0] <== TAG_MODE3_SESSION;
+    sLeaf.inputs[1] <== Cf_s;
+    component nmS = IMTNonMembershipV2(depth);
+    nmS.target <== sLeaf.out;
+    nmS.lowValue <== s_lowValue;
+    nmS.lowNextIndex <== s_lowNextIndex;
+    nmS.lowNextValue <== s_lowNextValue;
+    for (var i = 0; i < depth; i++) {
+        nmS.pathElements[i] <== s_pathElements[i];
+        nmS.pathIndices[i] <== s_pathIndices[i];
+    }
+    nmS.root <== revRoot;
 
     // ---- ⑤ 트레이스 태그 ----
     // r ≠ 0 (2026-09-21 결정): c1 = r·B8 가 항등원이면 c2 가 평문을 그대로 드러낸다. 컨트랙트·서비스의 c1 ≠ O 검사와 중복 방어.
