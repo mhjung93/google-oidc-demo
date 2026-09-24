@@ -247,6 +247,9 @@ async function retireActiveCred(uid) {
 const app = express();
 app.use(express.json({ limit: '256kb' }));
 
+// 데모 공통 레이어(설계 2026-09-24-mode3-demo-ux §1.2) — mode3/common 만 정적으로 낸다.
+app.use('/common', express.static(path.join(__dirname, 'mode3', 'common')));
+
 // 관리자 패널(스펙 §5). 페이지 하나만 허용 목록으로 내보낸다 — express.static 은 쓰지 않는다.
 app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_admin.html')));
 

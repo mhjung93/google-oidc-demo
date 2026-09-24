@@ -238,6 +238,9 @@ app.options('/wallet/request', loginCors);
 // /wallet/config 는 GET 전용 — Snap 연동(설계 2026-09-22 metamask-snap) 전 RP 페이지가 비밀 모드·rpcUrl 등을 미리 읽는다.
 const configCors = cors({ origin: (origin, cb) => cb(null, origin === RP_ORIGIN), methods: ['GET'] });
 
+// 데모 공통 레이어(설계 2026-09-24-mode3-demo-ux §1.2) — 같은 오리진 페이지만 읽는다(CORS 를 열지 않는다).
+app.use('/common', express.static(path.join(__dirname, 'mode3', 'common')));
+
 // 같은 파일이 지갑 화면과 /authorize 팝업(?authorize=1)을 겸한다 — 팝업은 쿼리로 모드만 바꾼다(metamask-snap §3.2).
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'wallet.html')));
 
@@ -263,7 +266,7 @@ app.get('/wallet/status', async (req, res) => {
   const st = rcl ? rcl.stats() : null;
   res.json({
     registered: Boolean(reg), uid: reg?.uid ?? null, attrs: reg?.attrs ?? null, userCred, sessions,
-    head, lastRoot: lastSync?.root ?? null, logAddress: LOG_ADDRESS,
+    head, lastRoot: lastSync?.root ?? null, logAddress: LOG_ADDRESS, ciaUrl: CIA_URL,
     rcl: st ? { leaves: st.leaves, lastSyncedBlock: st.lastSyncedBlock === null ? null : st.lastSyncedBlock.toString(), lastMode: st.lastMode, cacheFile: st.cacheFile } : null,
   });
 });

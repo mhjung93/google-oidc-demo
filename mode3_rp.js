@@ -279,10 +279,13 @@ const discOf = (d) => ({ mask: d.mask.toString(), lo: d.lo.map(String), hi: d.hi
 const app = express();
 app.use(express.json({ limit: '1mb' }));
 
+// 데모 공통 레이어(설계 2026-09-24-mode3-demo-ux §1.2) — mode3/common 만 정적으로 낸다.
+app.use('/common', express.static(path.join(__dirname, 'mode3', 'common')));
+
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'rp.html')));
 
 app.get('/api/mode3/rp_info', (req, res) => {
-  res.json({ status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, pkCiaSource: pkCIA.source, chainId: chainId.toString(), active: Boolean(verifier), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null, predicates: { allowedCountries: ALLOWED_COUNTRIES_EFFECTIVE.map(String), allowedCountriesRoot: ALLOWED_COUNTRIES_ROOT.toString(), minAge: MIN_AGE.toString() } });
+  res.json({ status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, ciaUrl: CIA_URL, pkCiaSource: pkCIA.source, chainId: chainId.toString(), active: Boolean(verifier), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null, predicates: { allowedCountries: ALLOWED_COUNTRIES_EFFECTIVE.map(String), allowedCountriesRoot: ALLOWED_COUNTRIES_ROOT.toString(), minAge: MIN_AGE.toString() } });
 });
 app.post('/api/mode3/challenge', (req, res) => {
   // 봉투를 다른 라우트와 같은 { ok, reason } 으로 맞춘다 — 페이지가 상태 코드가 아니라 본문으로 사유를 읽는다(2026-09-23 최종 리뷰 M3).
