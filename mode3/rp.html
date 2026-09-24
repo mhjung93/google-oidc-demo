@@ -64,6 +64,7 @@
         <label><span data-i18n="rp_open_tx_label">트랜잭션 해시</span> <input id="openTx" size="66" placeholder="0x…" /></label>
         <button id="openTxBtn" data-i18n="rp_open_tx">해시로 요청</button>
       </p>
+      <p class="muted"><span data-term="tag">추적용 봉인</span> — <span data-i18n="rp_open_tag_note">로그인마다 함께 실린 추적용 봉인을 서비스와 신원 기관이 함께 열어야 uid 가 나옵니다 — 어느 한쪽만으로는 열리지 않습니다.</span></p>
       <p class="muted expert" data-i18n="rp_open_tx_note">트랜잭션은 지갑 페이지에서 보냅니다(설계 2026-09-16 §6).</p>
       <div id="openVerdict"></div>
       <pre id="openLog" class="expert">-</pre>
@@ -76,7 +77,7 @@
     // demo.js 만 빠졌다면 사전(strings.js)은 그대로 읽는다 — 둘 다 없을 때만 키가 그대로 남는다.
     const Demo = window.Demo ?? {
       lang: 'ko', expert: false,
-      t(k, vars = {}) { const e = window.DemoStrings?.ui?.[k]; let s = e ? e.ko : k; for (const [n, v] of Object.entries(vars)) s = s.replace(`{${n}}`, String(v)); return s; },
+      t(k, vars = {}) { const e = window.DemoStrings?.ui?.[k]; let s = e ? e.ko : k; for (const [n, v] of Object.entries(vars)) s = s.split(`{${n}}`).join(String(v)); return s; },
       term: (n) => window.DemoStrings?.terms?.[n]?.ko ?? n,
       reason: () => null,
       init() { /* 안내 바 없음 */ }, guide() { /* 안내 바 없음 */ }, setLang() {}, setExpert() {},
@@ -109,7 +110,11 @@
     const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) });
     const ms = (t0) => `${Date.now() - t0} ms`;
     /** 사전 텍스트를 요소에 쓴다. 사전에 없는 키(= /common 미로딩)면 아무것도 쓰지 않아 HTML 의 기본 텍스트가 남는다. */
-    const tx = (el, k, vars) => { const s = Demo.t(k, vars); if (s !== k) el.textContent = s; };
+    const tte = (el, k, vars) => { const s = Demo.t(k, vars); if (s !== k) el.textContent = s; };
+    /** 스크립트가 값과 엮어 만드는 문구. 사전이 없으면 키를 화면에 흘리지 않고 ''(호출부가 대신 쓸 말을 고른다). */
+    const tt = (k, vars) => { const s = Demo.t(k, vars); return s === k ? '' : s; };
+    /** data-term 라벨 요소 — 전문가 토글 때 applyI18n 이 원래 기호를 붙여 다시 그린다(설계 §3.1). */
+    const termEl = (name) => { const e = document.createElement('span'); e.dataset.term = name; e.textContent = Demo.term(name); return e; };
     /**
      * 결과 카드. title 은 판정 키(사전 verdicts) 또는 ui 키이고, extra 는 객체이거나 — 사전을 읽어 만드는 값이면 —
      * 그것을 돌려주는 함수다. 인자 생성기를 그대로 넘기면 Demo 가 들고 있다가 언어·전문가 전환 때 다시 그린다.
@@ -143,10 +148,10 @@
       const pending = info.status !== 'approved';
       const badge = $('rpStatusBadge');
       badge.className = `badge ${pending ? 'warn' : 'ok'}`;
-      tx(badge, pending ? 'rp_pending_badge' : 'rp_active_badge');
-      tx($('rpInfo'), pending ? 'rp_status_pending' : 'rp_status_approved');
-      if (info.attrGateAddress) tx($('attrGateInfo'), 'rp_policy', { countries: info.predicates.allowedCountries.join(', '), minAge: info.predicates.minAge });
-      else tx($('attrGateInfo'), 'rp_no_attrgate');
+      tte(badge, pending ? 'rp_pending_badge' : 'rp_active_badge');
+      tte($('rpInfo'), pending ? 'rp_status_pending' : 'rp_status_approved');
+      if (info.attrGateAddress) tte($('attrGateInfo'), 'rp_policy', { countries: info.predicates.allowedCountries.join(', '), minAge: info.predicates.minAge });
+      else tte($('attrGateInfo'), 'rp_no_attrgate');
       $('rpInfoExpert').textContent = `arid=${info.arid ?? '-'}   origin=${info.origin}   cert_s=있음   pk_trace=있음   RevocationLog=${info.logAddress}`
         + `   지갑 에이전트=${info.walletAgentOrigin}   pk_CIA=${info.pkCiaSource}   chainId=${info.chainId}   팩토리=${info.factoryAddress ?? '(없음)'}`
         + `   AttrGate=${info.attrGateAddress ?? '(없음)'}`;
@@ -157,23 +162,23 @@
       const el = $('walletMode');
       const note = $('walletModeNote');
       el.querySelector('span.expert')?.remove();      // 앞선 렌더의 Snap 줄(사전이 없어 textContent 를 못 갈아끼운 경우)
-      if (!walletCfgLoaded && !walletCfgError) { el.className = 'badge'; tx(el, 'rp_wallet_checking'); note.textContent = ''; return; }
+      if (!walletCfgLoaded && !walletCfgError) { el.className = 'badge'; tte(el, 'rp_wallet_checking'); note.textContent = ''; return; }
       if (walletCfgError) {
         el.className = 'badge warn';
-        tx(el, 'rp_wallet_unknown');
-        tx(note, 'rp_wallet_unknown_note', { url: `${info?.walletAgentOrigin ?? '?'}/wallet/config`, err: walletCfgError });
+        tte(el, 'rp_wallet_unknown');
+        tte(note, 'rp_wallet_unknown_note', { url: `${info?.walletAgentOrigin ?? '?'}/wallet/config`, err: walletCfgError });
         return;
       }
       const snap = walletCfg.secrets === 'snap';
       el.className = 'badge';
-      tx(el, snap ? 'rp_wallet_snap' : 'rp_wallet_file');
+      tte(el, snap ? 'rp_wallet_snap' : 'rp_wallet_file');
       if (snap) { const sp = document.createElement('span'); sp.className = 'expert'; sp.textContent = ` (Snap=${walletCfg.snapId})`; el.appendChild(sp); }
-      tx(note, snap ? 'rp_wallet_snap_note' : 'rp_wallet_file_note');
+      tte(note, snap ? 'rp_wallet_snap_note' : 'rp_wallet_file_note');
     }
 
     function renderSession() {
       if (currentSession) $('sessionId').textContent = `${currentSession.slice(0, 12)}…`;
-      else tx($('sessionId'), 'none');
+      else tte($('sessionId'), 'none');
     }
     function setSession(r_s, allowAgent = null) {
       currentSession = r_s;
@@ -212,11 +217,15 @@
     // ---- 로그인 기록 표 ----
     /** 공개된 속성 조건을 사람 말로. 슬롯 비트(mask)는 범위, set.sel 은 슬롯+1 이다(lib/mode3_wallet.js normalizeSet). */
     function discSummary(d) {
-      if (!d || (d.mask === '0' && !d.set)) return Demo.t('rp_disc_none');
+      if (!d || (d.mask === '0' && !d.set)) return tt('rp_disc_none') || '공개 없음';
       const parts = [];
       const mask = Number(d.mask);
-      for (let i = 0; i < 4; i++) if (mask & (1 << i)) parts.push(Demo.t('rp_disc_range', { attr: Demo.term(`attr${i}`), lo: d.lo[i], hi: d.hi[i] }));
-      if (d.set) parts.push(Demo.t('rp_disc_set', { attr: Demo.term(`attr${Number(d.set.sel) - 1}`) }));
+      for (let i = 0; i < 4; i++) {
+        if (!(mask & (1 << i))) continue;
+        const attr = Demo.term(`attr${i}`);
+        parts.push(tt('rp_disc_range', { attr, lo: d.lo[i], hi: d.hi[i] }) || `${attr} ${d.lo[i]}–${d.hi[i]}`);
+      }
+      if (d.set) { const attr = Demo.term(`attr${Number(d.set.sel) - 1}`); parts.push(tt('rp_disc_set', { attr }) || `${attr} ∈ 허용 집합`); }
       return parts.join(', ');
     }
     const fmtAt = (at) => { const t = new Date(at); return Number.isNaN(t.getTime()) ? at : t.toLocaleString(Demo.lang === 'en' ? 'en-US' : 'ko-KR'); };
@@ -224,15 +233,18 @@
       const host = $('logins');
       host.textContent = '';
       if (!lastLogins.length) {
-        const p = document.createElement('p'); p.className = 'muted'; tx(p, 'rp_no_logins'); host.appendChild(p);
+        const p = document.createElement('p'); p.className = 'muted'; tte(p, 'rp_no_logins'); host.appendChild(p);
         return;
       }
       const table = document.createElement('table');
       table.className = 'list';
       const head = table.createTHead().insertRow();
       // r_s·root 는 예전 <pre> 목록에 있던 값이다 — 전문가 보기에서만 보이는 칸으로 남긴다(열 전체가 숨는다).
-      for (const [k, expert] of [['rp_col_time'], ['rp_col_address'], ['rp_col_rs', true], ['rp_col_root', true], ['rp_col_disclosure'], ['rp_col_agent'], ['rp_col_action']]) {
-        const th = document.createElement('th'); if (expert) th.className = 'expert'; tx(th, k); head.appendChild(th);
+      for (const c of [{ key: 'rp_col_time' }, { term: 'PPID' }, { key: 'rp_col_rs', expert: true }, { term: 'root', expert: true }, { key: 'rp_col_disclosure' }, { key: 'rp_col_agent' }, { key: 'rp_col_action' }]) {
+        const th = document.createElement('th');
+        if (c.expert) th.className = 'expert';
+        if (c.term) th.appendChild(termEl(c.term)); else tte(th, c.key);
+        head.appendChild(th);
       }
       const body = table.createTBody();
       for (const l of lastLogins) {
@@ -249,11 +261,11 @@
         const agent = row.insertCell();
         const b = document.createElement('span');
         b.className = `badge ${l.allowAgent === '1' ? 'ok' : 'muted'}`;
-        tx(b, l.allowAgent === '1' ? 'rp_agent_yes' : 'rp_agent_no');
+        tte(b, l.allowAgent === '1' ? 'rp_agent_yes' : 'rp_agent_no');
         agent.appendChild(b);
         const act = row.insertCell();
         const btn = document.createElement('button');
-        btn.type = 'button'; btn.className = 'btn-ghost'; tx(btn, 'rp_open_req');
+        btn.type = 'button'; btn.className = 'btn-ghost'; tte(btn, 'rp_open_req');
         btn.addEventListener('click', () => { $('openPpid').value = l.PPID; $('openBtn').click(); });
         act.appendChild(btn);
       }
@@ -354,7 +366,7 @@
           } catch (e) {
             log(`2. 팝업 ${ms(t0)}: ${e.reason ?? ''} ${e.message}`);
             setVerdict($('verdict'), false, e.reason === 'popup_blocked' ? 'popup_blocked' : 'login_failed',
-              () => ({ summary: POPUP_HINT[e.reason] ? Demo.t(POPUP_HINT[e.reason]) : e.message, reason: e.reason, detail: e.message }));
+              () => ({ summary: tt(POPUP_HINT[e.reason] ?? '') || e.message, reason: e.reason, detail: e.message }));
             return;
           }
           if (!result.ok) {
@@ -385,8 +397,8 @@
           lastPPID = rb.PPID;
           const disclosed = rb.disclosure && (rb.disclosure.mask !== '0' || rb.disclosure.set);
           setVerdict($('verdict'), true, 'login_ok', () => ({
-            summary: Demo.t(same ? 'rp_login_same_ppid' : 'rp_login_new_ppid')
-              + (disclosed ? ` ${Demo.t('rp_disclosed', { what: discSummary(rb.disclosure) })}` : ''),
+            summary: (tt(same ? 'rp_login_same_ppid' : 'rp_login_new_ppid') || (same ? '새 세션. 이 서비스에서의 내 주소는 이전과 같습니다.' : '새 세션. 이 서비스에서만 쓰는 주소를 받았습니다.'))
+              + (disclosed ? ` ${tt('rp_disclosed', { what: discSummary(rb.disclosure) }) || `공개한 조건: ${discSummary(rb.disclosure)}`}` : ''),
             detail: rb,
           }));
           if (pred?.require) progress.disclosed = true;
@@ -397,7 +409,7 @@
       } catch (e) {
         log(`오류: ${e.message}`);
         setVerdict($('verdict'), false, 'login_failed', () => ({
-          summary: walletCfgLoaded ? e.message : Demo.t('rp_error_wallet_cfg', { origin: info?.walletAgentOrigin ?? '?' }),
+          summary: walletCfgLoaded ? e.message : (tt('rp_error_wallet_cfg', { origin: info?.walletAgentOrigin ?? '?' }) || e.message),
           detail: e.message,
         }));
       } finally { $('loginBtn').disabled = false; }
@@ -420,7 +432,7 @@
           // 재승인 동의 창은 이 세션이 실제로 가진 allowAgent 를 보여 줘야 한다. 모르면(페이지 새로고침 등) 진행하지 않는다.
           if (currentSessionAllowAgent !== '0' && currentSessionAllowAgent !== '1') {
             log(`세션 증인이 없는데 이 세션의 allowAgent 를 모른다(allowAgent=${currentSessionAllowAgent}).`);
-            setVerdict($('sessionVerdict'), false, 'reauth_denied', () => ({ summary: Demo.t('rp_reauth_unknown') }));
+            setVerdict($('sessionVerdict'), false, 'reauth_denied', () => ({ summary: tt('rp_reauth_unknown') || '이 페이지는 이 세션의 AI 에이전트 허용 여부를 모릅니다. 다시 로그인하세요.' }));
             return;
           }
           log(`세션 증인이 없다(지갑 재시작) — 재승인 팝업을 연다(allowAgent=${currentSessionAllowAgent}).`);
@@ -430,7 +442,7 @@
           } catch (e) {
             log(`재승인 팝업 ${ms(t0)}: ${e.reason ?? ''} ${e.message}`);
             setVerdict($('sessionVerdict'), false, e.reason === 'popup_blocked' ? 'popup_blocked' : 'reval_failed',
-              () => ({ summary: POPUP_HINT[e.reason] ? Demo.t(POPUP_HINT[e.reason]) : e.message, reason: e.reason, detail: e.message }));
+              () => ({ summary: tt(POPUP_HINT[e.reason] ?? '') || e.message, reason: e.reason, detail: e.message }));
             return;
           }
           if (!result.ok) {
@@ -455,7 +467,7 @@
         const rb = await r.json();
         log(`RP 재검증 ${ms(t0)}: ${JSON.stringify(rb)}`);
         if (rb.ok) {
-          setVerdict($('sessionVerdict'), true, 'reval_ok', () => ({ summary: Demo.t(wb.cacheHit ? 'rp_reval_cached' : 'rp_reval_fresh'), detail: rb }));
+          setVerdict($('sessionVerdict'), true, 'reval_ok', () => ({ summary: tt(wb.cacheHit ? 'rp_reval_cached' : 'rp_reval_fresh') || (wb.cacheHit ? '캐시된 증명 재사용' : '새 폐기 목록으로 증명을 다시 만들었습니다.'), detail: rb }));
           progress.used = true;
           renderGuide();
         } else setVerdict($('sessionVerdict'), false, 'reval_failed', { reason: rb.reason ?? 'internal', detail: rb });
@@ -486,7 +498,7 @@
         log(`RP 요청 ${ms(t0)}: ${JSON.stringify(rb)}`);
         // echo 는 서버가 되돌린 요청 본문(자유 문자열)이라 결과 카드의 textContent 로만 들어간다.
         if (rb.ok) {
-          setVerdict($('sessionVerdict'), true, 'request_ok', () => ({ summary: Demo.t('rp_request_echo', { echo: rb.echo }), detail: rb }));
+          setVerdict($('sessionVerdict'), true, 'request_ok', () => ({ summary: tt('rp_request_echo', { echo: rb.echo }) || `서비스가 세션 서명을 확인하고 “${rb.echo}” 를 돌려줬습니다.`, detail: rb }));
           progress.used = true;
           renderGuide();
         } else setVerdict($('sessionVerdict'), false, 'request_failed', { reason: rb.reason ?? 'internal', detail: rb });
@@ -506,7 +518,7 @@
         $('openLog').textContent = `요청 → ${r.status} ${JSON.stringify(b)}`;
         openingId = b.id ?? null;
         $('openPollBtn').disabled = !openingId;
-        if (r.ok && openingId) setVerdict($('openVerdict'), true, 'rp_open_requested_title', () => ({ summary: Demo.t('rp_open_requested'), detail: b }));
+        if (r.ok && openingId) setVerdict($('openVerdict'), true, 'rp_open_requested_title', () => ({ summary: tt('rp_open_requested') || '개봉 요청을 보냈습니다. 신원 기관 관리자가 승인하면 "결과 확인"에서 볼 수 있습니다.', detail: b }));
         else setVerdict($('openVerdict'), false, 'rp_open_failed', { reason: b.reason ?? b.error ?? `HTTP ${r.status}`, detail: b });
       } catch (e) {
         $('openLog').textContent = `요청 오류: ${e.message}`;
@@ -525,7 +537,7 @@
         if (r.status === 202) { setVerdict($('openVerdict'), null, 'rp_open_awaiting', { pending: true, detail: b }); return; }
         if (r.ok && b.uid) {
           setVerdict($('openVerdict'), true, 'rp_open_result_title', () => ({
-            summary: Demo.t('rp_open_result', { uid: b.uid, agent: Demo.t(b.allowAgent === '1' ? 'rp_agent_yes' : 'rp_agent_no') }), detail: b,
+            summary: tt('rp_open_result', { uid: b.uid, agent: tt(b.allowAgent === '1' ? 'rp_agent_yes' : 'rp_agent_no') || b.allowAgent }) || `uid=${b.uid}`, detail: b,
           }));
           progress.opened = true;
           renderGuide();

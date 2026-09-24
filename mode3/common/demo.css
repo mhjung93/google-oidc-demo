@@ -19,10 +19,9 @@ input[type=text], input:not([type]), input[type=password], input[type=number], s
 .verdict { margin-top:10px; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:#fafbfd } .verdict .badge { margin-right:8px }
 .verdict.ok { border-color:#bfe3c9 } .verdict.bad { border-color:#f1c2be } .verdict.pending strong::after { content:''; display:inline-block; width:12px; height:12px; margin-left:8px; border:2px solid var(--accent); border-right-color:transparent; border-radius:50%; animation:spin .8s linear infinite; vertical-align:middle }
 @keyframes spin { to { transform:rotate(360deg) } } .verdict p { margin:6px 0 0; overflow-wrap:anywhere }   /* 요약에 트랜잭션 해시 같은 긴 값이 들어온다 — 좁은 창에서 가로로 삐져나오지 않게 끊는다 */ .verdict .summary { font-weight:500 } .verdict .cause { color:var(--muted) } .verdict .action { font-weight:600 } .verdict details { margin-top:6px } .verdict pre, pre { background:#f2f4f8; padding:8px 10px; border-radius:8px; white-space:pre-wrap; font-size:12.5px; margin:6px 0 0 }
-.spinner { display:inline-block; width:12px; height:12px; border:2px solid var(--accent); border-right-color:transparent; border-radius:50%; animation:spin .8s linear infinite; vertical-align:middle }
 table.list { width:100%; border-collapse:collapse; font-size:14px } table.list th, table.list td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top }
 .kv { display:grid; grid-template-columns:auto 1fr; gap:4px 12px; font-size:14px } .kv dt { color:var(--muted) } .kv dd { margin:0; overflow-wrap:anywhere; min-width:0 }   /* min-width:0 이 없으면 1fr 칸이 안에 든 select·input 의 고유 너비만큼 벌어져 좁은 창에서 페이지가 가로로 넘친다 */
-.muted { color:var(--muted); font-size:13px } .expert { display:none } html[data-expert] .expert { display:revert } .hidden, [hidden] { display:none !important }
+.muted { color:var(--muted); font-size:13px } .expert { display:none } html[data-expert] .expert { display:revert } [hidden] { display:none !important }
 /* 전문가 보기의 원문 로그는 공백 없는 긴 JSON 한 덩어리다 — 격자 칸(min-width:auto)이 그만큼 늘어나 페이지가 가로로
    커진다. 칸이 줄 수 있게 하고, 긴 토큰과 넓은 입력칸(tx hash size=66 등)을 칸 안에서 끊는다. */
 .card { min-width:0 } pre { overflow-wrap:anywhere } .card input, .card select { max-width:100% }

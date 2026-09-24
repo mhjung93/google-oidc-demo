@@ -74,7 +74,7 @@
     // demo.js 만 빠졌다면 사전(strings.js)은 그대로 읽는다 — 둘 다 없을 때만 키가 그대로 남는다.
     const Demo = window.Demo ?? {
       lang: 'ko', expert: false,
-      t(k, vars = {}) { const e = window.DemoStrings?.ui?.[k]; let s = e ? e.ko : k; for (const [n, v] of Object.entries(vars)) s = s.replace(`{${n}}`, String(v)); return s; },
+      t(k, vars = {}) { const e = window.DemoStrings?.ui?.[k]; let s = e ? e.ko : k; for (const [n, v] of Object.entries(vars)) s = s.split(`{${n}}`).join(String(v)); return s; },
       term: (n) => window.DemoStrings?.terms?.[n]?.ko ?? n,
       reason: () => null,
       init() { /* 안내 바 없음 */ }, guide() { /* 안내 바 없음 */ }, setLang() {}, setExpert() {},
@@ -88,7 +88,9 @@
       confirmDanger: (k) => window.confirm(window.DemoStrings?.ui?.[k]?.ko ?? k),
     };
     /** 사전 텍스트를 요소에 쓴다. 사전에 없는 키(= /common 미로딩)면 아무것도 쓰지 않아 HTML 의 기본 텍스트가 남는다. */
-    const tt = (el, k, vars) => { const s = Demo.t(k, vars); if (s !== k) el.textContent = s; };
+    const tte = (el, k, vars) => { const s = Demo.t(k, vars); if (s !== k) el.textContent = s; };
+    /** data-term 라벨 요소 — 전문가 토글 때 applyI18n 이 원래 기호를 붙여 다시 그린다(설계 §3.1). */
+    const termEl = (name) => { const e = document.createElement('span'); e.dataset.term = name; e.textContent = Demo.term(name); return e; };
     /** 결과 카드. title 은 판정 키(사전 verdicts) 또는 ui 키다. extra 가 함수면 언어·전문가 전환 때 다시 읽는다. */
     function setVerdict(el, ok, title, extra = {}) {
       Demo.verdict(el, () => ({ ok, title: window.DemoStrings?.verdicts?.[title] ? title : Demo.t(title), ...(typeof extra === 'function' ? extra() : extra) }));
@@ -162,7 +164,14 @@
       const t = document.createElement('table');
       t.className = 'list';
       const head = t.createTHead().insertRow();
-      for (const [k, expert] of headKeys) { const th = document.createElement('th'); if (expert) th.className = 'expert'; tt(th, k); head.appendChild(th); }
+      // 항목은 [키, 전문가여부] 또는 { term, expert } — term 은 사전의 용어(전문가 보기에서 원래 기호가 붙는다).
+      for (const h of headKeys) {
+        const c = Array.isArray(h) ? { key: h[0], expert: h[1] } : h;
+        const th = document.createElement('th');
+        if (c.expert) th.className = 'expert';
+        if (c.term) th.appendChild(termEl(c.term)); else tte(th, c.key);
+        head.appendChild(th);
+      }
       t.createTBody();
       return t;
     }
@@ -180,27 +189,27 @@
       code.title = s;
       return code;
     }
-    function badge(key, kind) { const b = document.createElement('span'); b.className = `badge ${kind}`; tt(b, key); return b; }
+    function badge(key, kind) { const b = document.createElement('span'); b.className = `badge ${kind}`; tte(b, key); return b; }
     function button(key, cls, onClick) {
       const b = document.createElement('button');
       b.type = 'button';
       if (cls) b.className = cls;
-      tt(b, key);
+      tte(b, key);
       b.addEventListener('click', onClick);
       return b;
     }
     const fmtAt = (at) => { if (!at) return ''; const t = new Date(at); return Number.isNaN(t.getTime()) ? String(at) : t.toLocaleString(Demo.lang === 'en' ? 'en-US' : 'ko-KR'); };
-    const placeholder = (host, key) => { const p = document.createElement('p'); p.className = 'muted'; tt(p, key); host.replaceChildren(p); };
+    const placeholder = (host, key) => { const p = document.createElement('p'); p.className = 'muted'; tte(p, key); host.replaceChildren(p); };
 
     // ---- 대기 배지 ----
     function renderBadges() {
       const host = $('pendingBadges');
       host.textContent = '';
-      if (pendingRps === null && pendingOpenings === null) { const p = document.createElement('span'); p.className = 'muted'; tt(p, 'admin_need_secret'); host.appendChild(p); return; }
-      const add = (key, n) => { const b = document.createElement('span'); b.className = `badge ${n > 0 ? 'warn' : 'muted'}`; tt(b, key, { n }); host.appendChild(b); host.appendChild(document.createTextNode(' ')); };
+      if (pendingRps === null && pendingOpenings === null) { const p = document.createElement('span'); p.className = 'muted'; tte(p, 'admin_need_secret'); host.appendChild(p); return; }
+      const add = (key, n) => { const b = document.createElement('span'); b.className = `badge ${n > 0 ? 'warn' : 'muted'}`; tte(b, key, { n }); host.appendChild(b); host.appendChild(document.createTextNode(' ')); };
       add('admin_pending_rps', pendingRps ?? 0);
       add('admin_pending_openings', pendingOpenings ?? 0);
-      if (!pendingRps && !pendingOpenings) { const p = document.createElement('span'); p.className = 'muted'; tt(p, 'admin_no_pending'); host.appendChild(p); }
+      if (!pendingRps && !pendingOpenings) { const p = document.createElement('span'); p.className = 'muted'; tte(p, 'admin_no_pending'); host.appendChild(p); }
     }
     /** 대기 건수는 목록과 따로 센다 — 표를 펼치지 않아도 배지는 맞는다(로드 때와 조작 뒤마다). */
     async function refreshBadges() {
@@ -270,9 +279,9 @@
     /** 한 계정의 세션 목록(2026-09-24 V8). 폐기 버튼은 활성 세션에만 — 만료·이미 폐기된 세션은 각각 409·멱등이다. */
     function renderSessions(uid, host) {
       const list = sessionsByUid[uid];
-      if (list === undefined) { const p = document.createElement('p'); p.className = 'muted'; tt(p, 'working'); host.replaceChildren(p); return; }
-      if (list === null) { const p = document.createElement('p'); p.className = 'muted'; tt(p, 'admin_load_failed'); host.replaceChildren(p); return; }
-      if (!list.length) { const p = document.createElement('p'); p.className = 'muted'; tt(p, 'admin_no_sessions'); host.replaceChildren(p); return; }
+      if (list === undefined) { const p = document.createElement('p'); p.className = 'muted'; tte(p, 'working'); host.replaceChildren(p); return; }
+      if (list === null) { const p = document.createElement('p'); p.className = 'muted'; tte(p, 'admin_load_failed'); host.replaceChildren(p); return; }
+      if (!list.length) { const p = document.createElement('p'); p.className = 'muted'; tte(p, 'admin_no_sessions'); host.replaceChildren(p); return; }
       // 좁은 창에서 7칸은 카드를 넘는다 — 기술적인 칸(만료 블록·체인)은 전문가 보기에서만 펼친다.
       const t = table([['admin_col_session'], ['admin_col_status'], ['rp_col_agent'], ['admin_col_issued'], ['admin_col_expiry', true], ['admin_col_chain', true], ['admin_col_action']]);
       const body = t.tBodies[0];
@@ -398,7 +407,7 @@
       const host = $('openings');
       if (!openings) { placeholder(host, 'admin_need_secret'); return; }
       if (!openings.length) { placeholder(host, 'admin_no_openings'); return; }
-      const t = table([['admin_col_status'], ['admin_col_requested'], ['admin_col_ppid'], ['admin_col_founduid'], ['rp_col_agent'], ['admin_col_arid', true], ['admin_col_action']]);
+      const t = table([['admin_col_status'], ['admin_col_requested'], { term: 'PPID' }, ['admin_col_founduid'], ['rp_col_agent'], ['admin_col_arid', true], ['admin_col_action']]);
       const body = t.tBodies[0];
       for (const o of openings) {
         const row = body.insertRow();
@@ -408,7 +417,7 @@
         at.title = o.requestedAt ?? '';
         cell(row, short(o.PPID));
         if (o.uid) cell(row, o.uid);
-        else if (o.resolved === false) { const p = document.createElement('span'); p.className = 'muted'; tt(p, 'admin_open_unresolved'); cell(row, p); }
+        else if (o.resolved === false) { const p = document.createElement('span'); p.className = 'muted'; tte(p, 'admin_open_unresolved'); cell(row, p); }
         else cell(row, '');
         if (o.allowAgent == null) cell(row, '');
         else cell(row, badge(String(o.allowAgent) === '1' ? 'rp_agent_yes' : 'rp_agent_no', String(o.allowAgent) === '1' ? 'ok' : 'muted'));
@@ -454,7 +463,7 @@
       host.textContent = '';
       if (!ciaState) return;
       const rows = [
-        ['admin_kv_root', ciaState.root],
+        [{ term: 'root' }, ciaState.root],
         ['admin_kv_epoch', ciaState.epoch],
         ['admin_kv_pending', ciaState.pendingCount],
         ['admin_kv_leaves', ciaState.leafCount],
@@ -462,9 +471,11 @@
         ['admin_kv_head', ciaState.head],
       ];
       for (const [k, v] of rows) {
-        const dt = document.createElement('dt'); tt(dt, k); host.appendChild(dt);
+        const dt = document.createElement('dt');
+        if (k && k.term) dt.appendChild(termEl(k.term)); else tte(dt, k);
+        host.appendChild(dt);
         const dd = document.createElement('dd');
-        if (v === null || v === undefined) tt(dd, 'admin_unknown'); else dd.textContent = String(v);
+        if (v === null || v === undefined) tte(dd, 'admin_unknown'); else dd.textContent = String(v);
         host.appendChild(dd);
       }
     }

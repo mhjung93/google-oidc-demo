@@ -6,7 +6,9 @@
     lang: S.langs.includes(store.get('mode3.lang')) ? store.get('mode3.lang') : 'ko',
     expert: store.get('mode3.expert') === '1',
     page: null, lastGuide: null,
-    t(key, vars = {}) { const e = S.ui[key]; let s = e ? (e[D.lang] ?? e.ko) : key; for (const [k, v] of Object.entries(vars)) s = s.replace(`{${k}}`, String(v)); return s; },
+    // split/join 으로 갈아 끼운다 — replace 의 치환 문자열은 $&·$' 같은 패턴을 해석해, 값에 $ 가 든 오류 메시지가
+    // 문구를 망가뜨린다(문구 값에 든 {키} 는 그대로 두고 값만 넣어야 한다).
+    t(key, vars = {}) { const e = S.ui[key]; let s = e ? (e[D.lang] ?? e.ko) : key; for (const [k, v] of Object.entries(vars)) s = s.split(`{${k}}`).join(String(v)); return s; },
     term(name) { const e = S.terms[name]; if (!e) return name; return D.expert ? `${e[D.lang]} (${e.expert})` : e[D.lang]; },
     verdictText(key) { const e = S.verdicts[key]; return e ? (e[D.lang] ?? e.ko) : key; },
     reason(code) { const r = S.reasons[code]; return r ? r[D.lang] ?? r.ko : null; },
@@ -62,11 +64,6 @@
       // 사유 코드는 번역 여부와 상관없이 원문 그대로 함께 남긴다 — 사전에 있는 코드도 화면·로그에서 코드로 짚을 수 있어야 한다.
       if (reason) { const code = document.createElement('code'); code.className = 'reason'; code.textContent = reason; el.appendChild(code); }
       if (detail !== undefined) { const d = document.createElement('details'); if (D.expert) d.open = true; const s = document.createElement('summary'); s.textContent = D.t('details'); d.appendChild(s); const pre = document.createElement('pre'); pre.textContent = typeof detail === 'string' ? detail : JSON.stringify(detail, null, 2); d.appendChild(pre); el.appendChild(d); }
-    },
-    async call(el, hintKey, fn) {
-      if (el) D.verdict(el, { pending: true, title: D.t(hintKey || 'working') });
-      try { return await fn(); }
-      catch (e) { if (el) D.verdict(el, { ok: false, title: e.title ?? D.t('error_title'), reason: e.reason, detail: e.detail ?? e.message }); throw e; }
     },
     confirmDanger(key, vars) { return window.confirm(D.t(key, vars)); },
   };

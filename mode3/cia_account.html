@@ -34,7 +34,7 @@
     // demo.js 만 빠졌다면 사전(strings.js)은 그대로 읽는다 — 둘 다 없을 때만 키가 그대로 남는다.
     const Demo = window.Demo ?? {
       lang: 'ko', expert: false,
-      t(k, vars = {}) { const e = window.DemoStrings?.ui?.[k]; let s = e ? e.ko : k; for (const [n, v] of Object.entries(vars)) s = s.replace(`{${n}}`, String(v)); return s; },
+      t(k, vars = {}) { const e = window.DemoStrings?.ui?.[k]; let s = e ? e.ko : k; for (const [n, v] of Object.entries(vars)) s = s.split(`{${n}}`).join(String(v)); return s; },
       term: (n) => window.DemoStrings?.terms?.[n]?.ko ?? n,
       reason: () => null,
       init() { /* 안내 바 없음 */ }, guide() { /* 안내 바 없음 */ }, setLang() {}, setExpert() {},
