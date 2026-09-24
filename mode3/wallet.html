@@ -59,6 +59,9 @@
   <fieldset>
     <legend>상태 <button id="refreshBtn">새로고침</button></legend>
     <pre id="status">불러오는 중…</pre>
+    <!-- V8 세션 폐기(설계 2026-09-24 §4): 세션 하나만 죽인다. 자격증명(계정)은 그대로라 다른 세션·다음 로그인은 계속 된다. -->
+    <div id="sessionActions"></div>
+    <pre id="sessionLog" hidden></pre>
   </fieldset>
 
   <fieldset>
@@ -294,7 +297,44 @@
         if (entries.some(([r_s]) => r_s === prev)) sel.value = prev;
         $('txBtn').disabled = !anyFactory;
         applyTxDefaults();
+
+        // 세션마다 폐기 버튼. 목록은 새로고침마다 다시 만든다 — 지워진 세션의 버튼이 남지 않게.
+        const acts = $('sessionActions');
+        acts.textContent = '';
+        for (const [r_s, c] of entries) {
+          const row = document.createElement('div');
+          const label = document.createElement('span');
+          label.className = 'muted';
+          label.textContent = `r_s=${r_s.slice(0, 12)}…  arid=${String(c.arid).slice(0, 10)}…  발급=${c.issuedAt} `;
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.textContent = '이 세션 폐기';
+          btn.title = 'AA 에 이 세션만 폐기를 요청한다 — 다음 게시부터 이 세션의 로그인·트랜잭션이 거부된다. 계정·다른 세션은 그대로.';
+          btn.addEventListener('click', () => revokeSession(r_s, c, btn));
+          row.append(label, btn);
+          acts.appendChild(row);
+        }
       } catch (e) { $('status').textContent = `상태 조회 실패: ${e.message}`; }
+    }
+
+    // V8 세션 폐기(설계 2026-09-24 §4). snap 모드는 Snap 동의 창을 먼저 받는다 — Snap 에는 Poseidon 이 없어 서명 자체는
+    // 에이전트가 세션의 메모리 증인에 든 sk_u 로 한다. 거절하면 에이전트를 부르지 않는다.
+    async function revokeSession(r_s, c, btn) {
+      const out = (m) => { $('sessionLog').hidden = false; $('sessionLog').textContent = m; };
+      btn.disabled = true;
+      try {
+        if (cfg.secrets === 'snap') {
+          await ensureConnected();
+          const consent = await invokeSnap('consentRevokeSession', { arid: String(c.arid), issuedAt: c.issuedAt, maxHeight: String(c.max_height) });
+          if (!consent || consent.denied) { out('세션 폐기 취소됨'); return; }
+        }
+        const { status, body: b } = await postJson('/wallet/session/revoke', { r_s });
+        out(status === 200
+          ? `세션 폐기 요청 완료 (r_s=${r_s.slice(0, 12)}…): inserted=${b.inserted}, pending=${b.pending} — 다음 게시부터 효력`
+          : `세션 폐기 실패 — ${errText(status, b)}`);
+      } catch (e) {
+        out(isUserRejected(e) ? '세션 폐기 취소됨' : `세션 폐기 실패: ${e.message}`);
+      } finally { btn.disabled = false; refresh(); }
     }
     $('txSession').addEventListener('change', applyTxDefaults);
     $('refreshBtn').addEventListener('click', refresh);

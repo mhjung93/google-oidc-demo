@@ -21,7 +21,8 @@ import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { createSecretSource, stripSecrets, validateWitness } from './lib/mode3_secret_source.js';
-import { createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, buildCredentialProof, signChallenge, signSessionRequest, signAttrsRequest, normalizeDisclosure, normalizeSet, disclosureKey, hasPredicate, ProofCache, chooseMaxHeight } from './lib/mode3_wallet.js';
+import { createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, buildCredentialProof, signChallenge, signSessionRequest, signAttrsRequest, signRevokeSession, normalizeDisclosure, normalizeSet, disclosureKey, hasPredicate, ProofCache, chooseMaxHeight } from './lib/mode3_wallet.js';
+import { sessionLeaf } from './lib/mode3_revocation.js';
 import { createRevocationSync } from './lib/mode3_rcl_sync.js';
 import { signPayload, proofToCalldata, parseExecuteReceipt, decodeExecuteCalldata, factoryAt, walletAt, walletInterface, FACTORY_ABI, verifyReferenceCode } from './lib/mode3_onchain.js';
 import { pointToStrings } from './lib/mode3_issuance.js';
@@ -447,7 +448,8 @@ app.post('/wallet/session/witness', async (req, res) => {
 });
 
 /** 세션의 성명으로 현재 root 에 대한 π 를 만든다(캐시, disclosure 별). 사용자 자격증명 리프가 트리에 있으면 throw('revoked') — 그 사용자의
- *  모든 세션이 같이 죽는다. 세션이 없으면 throw('no_session') — 호출자가 404/409 로 옮긴다(500 이 아니다). disclosure 가 없으면(mask 0) 기본 π. */
+ *  모든 세션이 같이 죽는다. V8(2026-09-24 §4): 세션 리프가 트리에 있으면 throw('revoked_session') — 그 세션 하나만 죽고 자격증명은 그대로다.
+ *  세션이 없으면 throw('no_session') — 호출자가 404/409 로 옮긴다(500 이 아니다). disclosure 가 없으면(mask 0) 기본 π. */
 async function proveSession(rsKey, synced, timings, disclosure = null, src) {
   const s = state.sessions[rsKey];
   if (!s) throw Object.assign(new Error('no_session'), { reason: 'no_session' });
@@ -462,6 +464,8 @@ async function proveSession(rsKey, synced, timings, disclosure = null, src) {
     // blind_u 로는 증명이 안 만들어진다(witness 실패 → 500). 그 세션은 다음 게시에 어차피 죽으므로 revoked 로 정리한다.
     if (s.credential.Cf_u !== uc?.Cf_u) throw Object.assign(new Error('revoked'), { reason: 'revoked' });
     if (synced.tree.has(BigInt(uc.leaf))) throw Object.assign(new Error('revoked'), { reason: 'revoked' });
+    // V8: 세션 리프(설계 2026-09-24 §4). 사용자 리프 뒤에 본다 — 둘 다 폐기됐으면 자격증명 쪽이 더 넓은 사유다.
+    if (synced.tree.has(await sessionLeaf(BigInt(s.credential.Cf_s)))) throw Object.assign(new Error('revoked_session'), { reason: 'revoked_session' });
     const t = Date.now();
     try {
       cached = await buildCredentialProof({
@@ -474,7 +478,12 @@ async function proveSession(rsKey, synced, timings, disclosure = null, src) {
       // 위 has() 사전 검사와 증인 생성 사이에 다른 요청의 sync() 가 내 리프를 붙이면 getNonMembershipWitness 가
       // "… is a member …" 로 던진다(lib/imt_v2.js). 테스트가 못 박은 계약은 이 부분 문구다. 그건 폐기됐다는 뜻이므로 사전 검사와 같게
       // revoked 로 올린다 — 그래야 라우트가 500 이 아니라 403 으로 세션까지 정리한다.
-      if (/is a member/.test(e.message ?? '')) throw Object.assign(new Error('revoked'), { reason: 'revoked' });
+      // V8: 증인은 사용자 리프·세션 리프 두 개라 문구만으로는 어느 쪽인지 모른다(Promise.all 이라 순서도 보장이 없다).
+      // 사전 검사와 같은 방법으로 트리를 다시 보고 가른다 — 사용자 리프가 들어왔으면 revoked(자격증명 전체), 아니면 revoked_session.
+      if (/is a member/.test(e.message ?? '')) {
+        const rs = synced.tree.has(BigInt(uc.leaf)) ? 'revoked' : (synced.tree.has(await sessionLeaf(BigInt(s.credential.Cf_s))) ? 'revoked_session' : 'revoked');
+        throw Object.assign(new Error(rs), { reason: rs });
+      }
       throw e;
     }
     timings.proveMs = Date.now() - t;
@@ -522,6 +531,8 @@ app.post('/wallet/revalidate', loginCors, async (req, res) => {
       if (e.reason === 'needs_consent') return res.status(409).json({ reason: 'needs_consent', timings });
       // 그 세션만 지운다. reg.userCred 는 그대로 둔다 — 다음 로그인의 ensureUserCred 가 tree.has 로 알아채 새로 받는다.
       if (e.reason === 'revoked') { delete state.sessions[rsKey]; cache.deleteSession(rsKey); persist(); return res.status(403).json({ reason: 'revoked', timings }); }
+      // V8: 이 세션 하나만 폐기됐다 — 지우는 범위는 같지만(그 세션) 사유가 다르다. 다른 세션·자격증명은 그대로 쓴다.
+      if (e.reason === 'revoked_session') { delete state.sessions[rsKey]; cache.deleteSession(rsKey); persist(); return res.status(403).json({ reason: 'revoked_session', timings }); }
       if (e.reason === 'no_session') return res.status(404).json({ reason: 'no_session', timings });
       throw e;
     }
@@ -562,6 +573,28 @@ app.post('/wallet/self_revoke', async (req, res) => {
     if (uid !== state.registration.uid) return res.status(403).json({ reason: 'uid_mismatch' });
     const r = await ciaPost('/cia/account/self_revoke', { uid, pwd });
     res.status(r.status).json(r.body ?? {});
+  } catch (e) { res.status(502).json({ reason: 'cia_unavailable', detail: e.message }); }
+});
+
+// V8 세션 폐기(설계 2026-09-24 §4): 이 지갑의 세션 하나를 AA 에 폐기 요청한다. 서명은 sk_u — file 모드는 상태 파일,
+// snap 모드는 세션의 메모리 증인(로그인·재승인 때 채워진다). 증인이 없으면 409 needs_consent 로 떨어뜨려 페이지가
+// 팝업으로 동의를 다시 받게 한다. self_revoke 와 같이 CORS 를 열지 않는다(지갑 페이지, 같은 오리진 전용).
+app.post('/wallet/session/revoke', async (req, res) => {
+  try {
+    const { r_s } = req.body ?? {};
+    if (!isDec(r_s)) return res.status(400).json({ error: 'r_s 필요' });
+    const rsKey = BigInt(r_s).toString();
+    const s = state.sessions[rsKey];
+    if (!s) return res.status(404).json({ reason: 'no_session' });
+    const sk_u = SECRETS === 'snap' ? s.witness?.sk_u : state.registration?.sk_u;
+    if (!sk_u) return res.status(409).json({ reason: 'needs_consent' });
+    const nonce = randomScalar();   // lib/mode3_credential.js — 다른 요청과 같은 난수원. 신선도는 CIA 가 보지 않는다(재생 = 같은 세션 재폐기, 멱등)
+    const sig_u = await signRevokeSession(sk_u, BigInt(state.registration.uid), BigInt(s.credential.Cf_s), nonce);
+    const r = await ciaPost('/cia/revoke', { uid: state.registration.uid, scope: 'session', Cf_s: s.credential.Cf_s, sig_u, nonce: nonce.toString() });
+    if (r.status !== 200) return res.status(r.status).json(r.body ?? {});
+    // AA 가 받아들인 순간부터 이 지갑은 그 세션을 더 쓰지 않는다 — 게시 전이라도(게시 뒤에는 어차피 π 가 안 만들어진다).
+    delete state.sessions[rsKey]; cache.deleteSession(rsKey); persist();
+    res.json({ revoked: true, inserted: r.body.inserted, pending: r.body.pending });
   } catch (e) { res.status(502).json({ reason: 'cia_unavailable', detail: e.message }); }
 });
 
@@ -632,6 +665,8 @@ async function buildExecute(req) {
   try { proved = await proveSession(rsKey, synced, timings, disclosure, src); }   // root·disclosure 가 같으면 캐시 π, 아니면 재증명
   catch (e) {
     if (e.reason === 'revoked') { delete state.sessions[rsKey]; cache.deleteSession(rsKey); persist(); return fail(403, { reason: 'revoked', timings }); }
+    // V8: 이 세션만 폐기됐다(/wallet/tx 와 /wallet/tx/prepare 가 함께 탄다).
+    if (e.reason === 'revoked_session') { delete state.sessions[rsKey]; cache.deleteSession(rsKey); persist(); return fail(403, { reason: 'revoked_session', timings }); }
     if (e.reason === 'no_session') return fail(404, { reason: 'no_session', timings });
     throw e;
   }

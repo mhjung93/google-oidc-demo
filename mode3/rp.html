@@ -283,7 +283,8 @@
         if (status !== 200) {
           log(`지갑 ${status} ${ms(t0)}: ${wb.reason ?? wb.error ?? ''}`);
           setVerdict($('sessionVerdict'), false, `재검증 실패 — 지갑: ${wb.reason ?? status}`);
-          if (wb.reason === 'revoked') setSession(null);
+          // V8(2026-09-24): revoked_session 은 이 세션 하나만 죽은 것이지만, 서비스 페이지가 할 일은 같다 — 세션을 버린다.
+          if (wb.reason === 'revoked' || wb.reason === 'revoked_session') setSession(null);
           return;
         }
         log(`지갑 π+σ ${ms(t0)} (캐시 히트=${wb.cacheHit})\n   root=${wb.root}`);

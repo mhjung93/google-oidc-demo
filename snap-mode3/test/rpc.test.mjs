@@ -218,6 +218,15 @@ await t('selfRevoke: prompt(비밀번호) → { uid, pwd }, 거절은 denied', a
   assert.deepEqual(await call('selfRevoke', {}), { denied: true });
 });
 
+await t('consentRevokeSession: 대화상자에 arid·발급 시각이 보이고 승인/거절', async () => {
+  answers.push(true);
+  assert.deepEqual(await call('consentRevokeSession', { arid: '777', issuedAt: '2026-09-24T00:00:00Z', maxHeight: '1000' }), { ok: true });
+  const d = lastDialogText();
+  for (const part of ['777', '2026-09-24', '폐기']) assert.ok(d.includes(part), `대화상자에 ${part} 가 없다`);
+  answers.push(false);
+  assert.deepEqual(await call('consentRevokeSession', { arid: '777', issuedAt: 'x', maxHeight: '1' }), { denied: true });
+});
+
 await t('모르는 method 는 거절', async () => {
   await assert.rejects(() => call('nope', {}), /nope/);
 });
@@ -236,7 +245,7 @@ await t('reset: 확인 뒤 상태를 비운다(거절하면 그대로)', async (
 });
 
 await t('등록 전에는 비밀이 필요한 RPC 가 거절된다', async () => {
-  for (const m of ['storeRegistration', 'consentLogin', 'updateUserCred', 'syncAttrs', 'selfRevoke']) {
+  for (const m of ['storeRegistration', 'consentLogin', 'updateUserCred', 'syncAttrs', 'selfRevoke', 'consentRevokeSession']) {
     await assert.rejects(() => call(m, {}), /not_registered|등록/, `${m} 은 등록을 요구한다`);
   }
 });

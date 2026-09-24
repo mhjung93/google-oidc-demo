@@ -196,6 +196,21 @@ export const onRpcRequest = async ({ origin, request }) => {
       return { uid: reg.uid, pwd };
     }
 
+    // V8 세션 폐기 동의(설계 2026-09-24 §4). Snap 에는 Poseidon 이 없어 서명은 에이전트가 세션 증인의 sk_u 로 한다 —
+    // 여기서는 동의만 받는다(스펙 §4 의 signRevokeSession RPC 를 이 이름으로 갱신).
+    case 'consentRevokeSession': {
+      requireRegistered(state);
+      const { arid, issuedAt, maxHeight } = params;
+      const ok = await confirm('세션 폐기', [
+        `서비스 arid: ${arid}`,
+        `발급 시각: ${issuedAt}`,
+        `만료 블록: ${maxHeight}`,
+        null,
+        '이 세션을 폐기합니다. 다음 게시부터 이 세션의 로그인·트랜잭션이 거부됩니다.',
+      ]);
+      return ok ? { ok: true } : { denied: true };
+    }
+
     // 데모 초기화 — 등록 비밀·동의 기록을 모두 지운다.
     case 'reset': {
       const ok = await confirm('등록 초기화', [

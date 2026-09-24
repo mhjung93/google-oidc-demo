@@ -413,6 +413,39 @@ try {
     assert.deepEqual(r.body.attrs, ['1990', '410', '3', '0']); assert.equal(r.body.changed, false, '이미 최신이라 바뀐 게 없다');
   });
 
+  // V8 세션 폐기(설계 2026-09-24 §4). 계획서는 이 두 케이스를 앞쪽 '동기화: 재검증 → 폐기 감지 …' 앞에 두라고 했지만,
+  // 그 자리는 바로 앞 케이스가 계정을 폐기·게시해 둔 구간이라 loginOnce 가 account_disabled 로 막히고, 게시로 root 가
+  // 바뀌면 그 케이스의 skipSync 단언(캐시 π 재제출)도 깨진다. 계정이 살아 있고 loginOnce·publishOnce 가 이미 쓰이는
+  // 이 지점으로 옮겼다 — 단언 내용은 계획서 그대로다.
+  await t('V8 세션 폐기: 세션 둘 중 하나를 /wallet/session/revoke → 게시 → 그 세션만 403 revoked_session, 다른 세션은 재검증 성공, 새 로그인 정상', async () => {
+    const a = await loginOnce(), b = await loginOnce();
+    const r = await wallet.post('/wallet/session/revoke', { r_s: a.r_s });
+    assert.equal(r.status, 200, j(r.body)); assert.equal(r.body.revoked, true);
+    assert.equal((await wallet.get('/wallet/status')).body.sessions[a.r_s], undefined, '폐기 요청 뒤 지갑은 세션을 버린다');
+    await publishOnce();
+    const rb = await revalidate(b.r_s);
+    assert.equal(rb.status, 200, j(rb.body));
+    const c = await loginOnce();   // 사용자 자격증명은 살아 있다
+    assert.ok(c.r_s);
+    const missing = await wallet.post('/wallet/session/revoke', { r_s: '999' });
+    assert.equal(missing.status, 404); assert.equal(missing.body.reason, 'no_session');
+  });
+
+  await t('V8: 세션 하나가 지갑 밖에서(관리자) 폐기되면 재검증이 403 revoked_session 으로 그 세션만 지운다 — 사용자 자격증명은 그대로', async () => {
+    const a = await loginOnce();
+    // 관리자가 이 세션만 폐기(지갑은 모른다)
+    const cf = (await cia.adminGet(`/cia/admin/sessions?uid=${uid}`)).body.sessions.filter((s) => !s.revokedAt).at(-1).Cf_s;
+    assert.equal((await cia.adminPost('/cia/revoke', { uid, scope: 'session', Cf_s: cf })).status, 200);
+    await publishOnce();
+    const r = await revalidate(a.r_s);
+    assert.equal(r.status, 403, j(r.body)); assert.equal(r.body.reason, 'revoked_session');
+    const s = await wallet.get('/wallet/status');
+    assert.equal(s.body.userCred?.revoked, false, '사용자 자격증명은 그대로');
+    assert.equal(s.body.sessions[a.r_s], undefined, '폐기된 세션만 지워진다');
+    // 같은 세션을 다시 재검증하면 이미 지워져 404 no_session 이다(지갑은 그 세션을 더 들고 있지 않다)
+    assert.equal((await revalidate(a.r_s)).status, 404);
+  });
+
   await t('/wallet/tx disclose: 만족하는 구간은 새 π 로 실행되고 onchainDisclosure 가 있다; 불만족은 400 disclosure_unsatisfiable; mask 0 은 그대로 진행된다', async () => {
     // attrGateAddress 는 Task 6 가 RP 에 준다 — 그 전엔 dEaD 로 보내고 onchainDisclosure 만 본다(회로·컨트랙트 배선 확인이 목적).
     const to = '0x000000000000000000000000000000000000dEaD';
