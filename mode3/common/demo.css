@@ -28,3 +28,6 @@ table.list { width:100%; border-collapse:collapse; font-size:14px } table.list t
 .card { min-width:0 } pre { overflow-wrap:anywhere } .card input, .card select { max-width:100% }
 /* 사유 코드는 제목·원인·조치 뒤에 원문 그대로 붙는다 — 붙어 읽히지 않게 띄우고 작게 죽인다. */
 .verdict > code { margin-left:6px } .verdict > code.reason { font-size:12px; color:var(--muted) }
+/* 좁은 창(휴대폰 폭)에서 표는 칸마다 한 글자씩 세로로 접혀 읽을 수 없게 된다 — 칸을 접지 말고 표 자체를
+   가로로 넘겨 읽게 한다(2026-09-25 스크린샷 점검). 넓은 창의 표 레이아웃은 그대로다. */
+@media (max-width:640px) { table.list { display:block; overflow-x:auto; white-space:nowrap } }

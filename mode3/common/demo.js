@@ -12,7 +12,9 @@
     reason(code) { const r = S.reasons[code]; return r ? r[D.lang] ?? r.ko : null; },
     setLang(l) { if (!S.langs.includes(l)) return; D.lang = l; store.set('mode3.lang', l); document.documentElement.lang = l; D.applyI18n(); D.rerenderVerdicts(); if (D.lastGuide) D.guide(D.lastGuide); },
     // 토글을 페이지가 직접 부를 수도 있으므로(안내 바의 체크박스만이 아니다) 체크 상태를 여기서 맞춘다.
-    setExpert(b) { D.expert = !!b; store.set('mode3.expert', b ? '1' : '0'); document.documentElement.toggleAttribute('data-expert', D.expert); const ex = document.getElementById('expertToggle'); if (ex) ex.checked = D.expert; D.rerenderVerdicts(); if (D.lastGuide) D.guide(D.lastGuide); },
+    // applyI18n 을 함께 부른다 — data-term 라벨은 term() 이 전문가 여부로 원래 기호를 덧붙이므로(설계 §3.1),
+    // 여기서 다시 그리지 않으면 토글 뒤에도 옛 표기가 남는다(껐는데 기호가 보이는 등).
+    setExpert(b) { D.expert = !!b; store.set('mode3.expert', b ? '1' : '0'); document.documentElement.toggleAttribute('data-expert', D.expert); const ex = document.getElementById('expertToggle'); if (ex) ex.checked = D.expert; D.applyI18n(); D.rerenderVerdicts(); if (D.lastGuide) D.guide(D.lastGuide); },
     applyI18n() { document.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = D.t(el.dataset.i18n); }); document.querySelectorAll('[data-term]').forEach((el) => { el.textContent = D.term(el.dataset.term); }); },
     init({ page }) {
       D.page = page; document.documentElement.lang = D.lang; document.documentElement.toggleAttribute('data-expert', D.expert);
