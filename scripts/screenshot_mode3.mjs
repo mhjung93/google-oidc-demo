@@ -128,10 +128,13 @@ try {
   await rpPage.click('#refreshLogins');
   await rpPage.waitForTimeout(500);
 
-  // ---- 지갑: 트랜잭션 한 건(폼 기본값 — 공개 조건 없이) ----
+  // ---- 지갑: 트랜잭션 한 건 — 폼 기본값은 AttrGate.claim() 이라 공개 조건(나이·국가 집합)을 채워야 내부 호출이
+  // 성공한다(안 채우면 최종 리뷰 M2 뒤로는 "전송 실패(내부 호출 실패)" 카드가 뜬다). 나이 프리셋 + 국가 집합 슬롯.
   console.log('트랜잭션…');
   await walletPage.click('#refreshBtn');
   await walletPage.waitForFunction(() => !document.querySelector('#txBtn').disabled, undefined, { timeout: 30_000 });
+  await walletPage.click('#ageBtn');
+  await walletPage.selectOption('#setSlot', '1');
   await walletPage.click('#txBtn');
   await waitText(walletPage, '#txVerdict', '전송 성공');
 
