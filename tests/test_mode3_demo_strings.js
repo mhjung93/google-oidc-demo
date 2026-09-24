@@ -48,4 +48,23 @@ t('ui 에 안내 바·토글·공통 버튼 키가 있다', () => {
 t('ui 에 상태 패널 키가 있다', () => {
   for (const k of ['stack_aa', 'stack_rp', 'stack_wallet', 'stack_chain', 'stack_unknown', 'stack_no_response', 'stack_chain_none', 'stack_root_stale', 'stack_root_warn', 'stack_pending_leaves', 'stack_rp_pending', 'stack_rp_inactive', 'stack_wallet_unregistered', 'stack_wallet_cia_down', 'stack_ok', 'stack_panel_title', 'stack_head']) assert.ok(S.ui[k], k);
 });
+// 체험 모드(설계 2026-09-25 §3) — 단계마다 말풍선 문구와 대상 요소 id, 그리고 스위치·잠금·완료 문구.
+const TOUR_PAGES = ['rp', 'wallet', 'admin', 'account'];
+t('steps 에 체험 모드 말풍선 문구(tour)와 대상 요소(target)가 있다', () => {
+  for (const s of S.steps) {
+    for (const l of S.langs) { assert.ok(s.tour?.[l]?.title, `${s.key}.tour.${l}.title`); assert.ok(s.tour?.[l]?.body, `${s.key}.tour.${l}.body`); }
+    assert.ok(s.target && typeof s.target === 'object' && !Array.isArray(s.target), `${s.key}.target 은 객체`);
+    const pages = Object.keys(s.target);
+    assert.ok(pages.length > 0, `${s.key}.target 이 비었다`);
+    for (const p of pages) {
+      assert.ok(TOUR_PAGES.includes(p), `${s.key}.target.${p} 는 알 수 없는 페이지`);
+      assert.ok(typeof s.target[p] === 'string' && s.target[p].length, `${s.key}.target.${p} 값`);
+      // 대상은 그 단계가 일어나는 당사자의 페이지여야 한다 — 없는 곳을 가리키면 말풍선이 뜨지 않는다.
+      assert.ok(s.where.includes(p), `${s.key}.target.${p} 가 where 밖`);
+    }
+  }
+});
+t('ui 에 체험 모드 키가 있다', () => {
+  for (const k of ['tour_on', 'tour_off', 'tour_lock_login', 'tour_lock_register', 'tour_elsewhere', 'tour_done_title', 'tour_done_body', 'tour_next']) assert.ok(S.ui[k], k);
+});
 if (fails) { console.log(`\n${fails} FAIL`); process.exit(1); } else console.log('\nall ok');

@@ -57,7 +57,12 @@
     let revoked = false;   // 이 페이지가 아는 완료 신호(설계 §2.1 6단계)
     // 서비스·지갑 주소는 자기 health 가 알려 준다(설계 2026-09-25 §2.3) — 알기 전에는 관리자 페이지만 잇는다.
     let stackLinks = { wallet: null, rp: null };
-    const renderGuide = () => Demo.guide({ done: revoked ? ['revoke'] : [], current: 'revoke', links: { admin: '/admin', wallet: stackLinks.wallet, rp: stackLinks.rp } });
+    const renderGuide = () => {
+      const links = { admin: '/admin', wallet: stackLinks.wallet, rp: stackLinks.rp };
+      // 단계 판정은 공통 레이어가 한다(설계 2026-09-25 §3.2). 계정 페이지는 잠그지 않는다.
+      if (Demo.tour) { Demo.tour.evaluate({ progress: { revoked }, links }); return; }
+      Demo.guide({ done: revoked ? ['revoke'] : [], current: 'revoke', links });
+    };
     // 상태 패널(설계 2026-09-25 §2). 자기 health 의 walletOrigin·rpOrigins[0] 로 폴링 대상과 안내 바 링크를 채운다.
     function initStack() {
       if (!window.Demo?.stack) return;

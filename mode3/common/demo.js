@@ -12,16 +12,24 @@
     term(name) { const e = S.terms[name]; if (!e) return name; return D.expert ? `${e[D.lang]} (${e.expert})` : e[D.lang]; },
     verdictText(key) { const e = S.verdicts[key]; return e ? (e[D.lang] ?? e.ko) : key; },
     reason(code) { const r = S.reasons[code]; return r ? r[D.lang] ?? r.ko : null; },
-    setLang(l) { if (!S.langs.includes(l)) return; D.lang = l; store.set('mode3.lang', l); document.documentElement.lang = l; D.applyI18n(); D.rerenderVerdicts(); if (D.lastGuide) D.guide(D.lastGuide); if (D.stack.state) D.stack.renderDots(); },
+    setLang(l) { if (!S.langs.includes(l)) return; D.lang = l; store.set('mode3.lang', l); document.documentElement.lang = l; D.applyI18n(); D.rerenderVerdicts(); if (D.tour.lastEval) D.tour.evaluate(D.tour.lastEval); else if (D.lastGuide) D.guide(D.lastGuide); if (D.stack.state) D.stack.renderDots(); },
     // 토글을 페이지가 직접 부를 수도 있으므로(안내 바의 체크박스만이 아니다) 체크 상태를 여기서 맞춘다.
     // applyI18n 을 함께 부른다 — data-term 라벨은 term() 이 전문가 여부로 원래 기호를 덧붙이므로(설계 §3.1),
     // 여기서 다시 그리지 않으면 토글 뒤에도 옛 표기가 남는다(껐는데 기호가 보이는 등).
-    setExpert(b) { D.expert = !!b; store.set('mode3.expert', b ? '1' : '0'); document.documentElement.toggleAttribute('data-expert', D.expert); const ex = document.getElementById('expertToggle'); if (ex) ex.checked = D.expert; D.applyI18n(); D.rerenderVerdicts(); if (D.lastGuide) D.guide(D.lastGuide); if (D.stack.state) D.stack.renderDots(); },
+    setExpert(b) { D.expert = !!b; store.set('mode3.expert', b ? '1' : '0'); document.documentElement.toggleAttribute('data-expert', D.expert); const ex = document.getElementById('expertToggle'); if (ex) ex.checked = D.expert; D.applyI18n(); D.rerenderVerdicts(); if (D.tour.lastEval) D.tour.evaluate(D.tour.lastEval); else if (D.lastGuide) D.guide(D.lastGuide); if (D.stack.state) D.stack.renderDots(); },
     applyI18n() { document.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = D.t(el.dataset.i18n); }); document.querySelectorAll('[data-term]').forEach((el) => { el.textContent = D.term(el.dataset.term); }); },
-    init({ page }) {
+    /** tour:false 면 체험 모드를 아예 켜지 않는다(승인 팝업 — 설계 2026-09-25 §3.1). */
+    init({ page, tour = true }) {
       D.page = page; document.documentElement.lang = D.lang; document.documentElement.toggleAttribute('data-expert', D.expert);
       const bar = document.getElementById('demoBar'); if (bar) { bar.innerHTML = '<div class="bar-steps"></div><div class="bar-next"></div><div class="bar-tools"><button type="button" class="btn-ghost" id="langToggle"></button><label class="switch"><input type="checkbox" id="expertToggle"> <span data-i18n="toggle_expert"></span></label></div>'; bar.querySelector('#langToggle').addEventListener('click', () => D.setLang(D.lang === 'ko' ? 'en' : 'ko')); const ex = bar.querySelector('#expertToggle'); ex.checked = D.expert; ex.addEventListener('change', () => D.setExpert(ex.checked)); }
       D.applyI18n(); D.guide({ done: [], current: null, hint: null, links: {} });
+      if (tour !== false) D.tour.init();
+    },
+    /** 다른 당사자 링크에 체험 모드를 나른다 — 오리진마다 저장소가 다르다(설계 §3.1). 쿼리·해시가 이미 있어도 망가지지 않게 붙인다. */
+    withTour(url) {
+      if (!url || !D.tour.enabled) return url;
+      const [before, hash = ''] = String(url).split('#');
+      return `${before}${before.includes('?') ? '&' : '?'}tour=1${hash ? '#' + hash : ''}`;
     },
     guide(g) {
       D.lastGuide = g; const bar = document.getElementById('demoBar'); if (!bar) return;
@@ -42,9 +50,11 @@
         q.textContent = D.t('bar_next', { where: D.t(`where_${whereKey}`), what: D.t(g.hint || `hint_${cur.key}`) }); next.appendChild(q);
         // 이 페이지에서 끝나는 단계가 아니면 "다른 창에서 진행"을 함께 보인다(설계 §2.1).
         if (whereKey !== D.page) { const b = document.createElement('span'); b.className = 'badge muted'; b.textContent = D.t('bar_other_window'); next.appendChild(b); }
-        if (whereKey !== D.page && g.links?.[whereKey]) { const a = document.createElement('a'); a.className = 'btn'; a.href = g.links[whereKey]; a.target = '_blank'; a.rel = 'noopener'; a.textContent = D.t(`go_${whereKey}`); next.appendChild(a); seen.add(a.href); }
+        if (whereKey !== D.page && g.links?.[whereKey]) { const a = document.createElement('a'); a.className = 'btn'; a.href = D.withTour(g.links[whereKey]); a.target = '_blank'; a.rel = 'noopener'; a.textContent = D.t(`go_${whereKey}`); next.appendChild(a); seen.add(a.href); }
       }
-      for (const [k, url] of Object.entries(g.links || {})) { if (k === D.page || !url) continue; const a = document.createElement('a'); a.className = 'btn-ghost'; a.href = url; if (seen.has(a.href)) continue; a.target = '_blank'; a.rel = 'noopener'; a.textContent = D.t(`go_${k}`); next.appendChild(a); seen.add(a.href); }
+      for (const [k, url] of Object.entries(g.links || {})) { if (k === D.page || !url) continue; const a = document.createElement('a'); a.className = 'btn-ghost'; a.href = D.withTour(url); if (seen.has(a.href)) continue; a.target = '_blank'; a.rel = 'noopener'; a.textContent = D.t(`go_${k}`); next.appendChild(a); seen.add(a.href); }
+      // 안내 바의 높이가 바뀌면 그 아래 요소가 밀린다 — 말풍선을 다시 앉힌다(설계 §3.4).
+      D.tour.place();
     },
     /**
      * 결과 카드. args 는 인자 객체이거나 — 사전을 읽어 만드는 값이면 — 그것을 돌려주는 함수다. 인자를 요소에 붙여 두고
@@ -72,7 +82,7 @@
      * 자기 서버는 상대 주소 없이 '/mode3/health' 로 부른다(CORS 를 타지 않는다).
      */
     stack(cfg) {
-      const st = (D.stack.state ??= { urls: {}, last: { at: 0, aa: null, rp: null, wallet: null, errors: {} }, timer: null, subs: [], open: false, sig: null });
+      const st = D.stack.ensure();
       Object.assign(st.urls, cfg?.urls || {});
       if (cfg?.self) st.self = cfg.self;
       if (!st.timer) {
@@ -87,6 +97,151 @@
       }
       D.stack.renderDots();
     },
+    /**
+     * 체험 모드(설계 2026-09-25 §3). 켜면 단계 순서대로만 진행되도록 앞 3단계 버튼을 잠그고, 지금 눌러야 할 곳에
+     * 말풍선 하나를 붙인다. 기본은 꺼짐이고, 꺼지면 잠금·말풍선이 사라지고 버튼은 페이지의 원래 규칙으로 돌아간다.
+     * 단계 판정은 서버 사실(Demo.stack 의 health)과 페이지 메모리(progress)를 합쳐 여기 한 곳에서 한다.
+     */
+    tour: {
+      enabled: false, locks: [], lastEval: null, anchor: null, epochRose: false, openingsDrained: false, started: false,
+      init() {
+        if (D.tour.started) return;
+        D.tour.started = true;
+        // ?tour=1|0 은 다른 당사자 창에서 건너온 신호다 — 자기 저장소에 새기고 주소창에서는 지운다(설계 §3.1).
+        const q = new URLSearchParams(location.search), v = q.get('tour');
+        if (v === '1' || v === '0') {
+          store.set('mode3.tour', v === '1' ? '1' : '');
+          q.delete('tour');
+          const qs = q.toString();
+          history.replaceState(null, '', location.pathname + (qs ? `?${qs}` : '') + location.hash);
+        }
+        D.tour.enabled = store.get('mode3.tour') === '1';
+        const tools = document.querySelector('#demoBar .bar-tools');
+        if (tools && !tools.querySelector('#tourToggle')) {
+          const l = document.createElement('label'); l.className = 'switch';
+          l.innerHTML = '<input type="checkbox" id="tourToggle"> <span data-i18n="tour_on"></span>';   // 값이 섞이지 않는 고정 틀
+          tools.prepend(l);
+          const cb = l.querySelector('input');
+          cb.checked = D.tour.enabled;
+          cb.addEventListener('change', () => D.tour.set(cb.checked));
+          D.applyI18n();
+        }
+        D.tour.syncSwitch();
+        // 서버 사실이 바뀌면 다시 판정한다. 폐기 게시(epoch 증가)와 개봉 처리(대기 0)는 지나가는 사건이라 여기서 붙잡아 둔다.
+        let prev = null;
+        D.stack.onChange((cur) => {
+          if (prev?.aa && cur.aa) {
+            if (Number(prev.aa.epoch) < Number(cur.aa.epoch)) D.tour.epochRose = true;
+            if (prev.aa.pendingOpenings > 0 && cur.aa.pendingOpenings === 0) D.tour.openingsDrained = true;
+          }
+          prev = cur;
+          if (D.tour.lastEval) D.tour.evaluate(D.tour.lastEval);
+        });
+        addEventListener('scroll', D.tour.place, { passive: true });
+        addEventListener('resize', D.tour.place);
+      },
+      set(on) {
+        D.tour.enabled = !!on; store.set('mode3.tour', on ? '1' : '');
+        const cb = document.getElementById('tourToggle'); if (cb) cb.checked = D.tour.enabled;
+        D.tour.syncSwitch();
+        if (D.tour.lastEval) D.tour.evaluate(D.tour.lastEval); else D.tour.renderOverlay(null, false, null);
+      },
+      /** 스위치에 지금 무엇을 하게 되는지 붙인다(켜져 있으면 "끄면 …"). */
+      syncSwitch() { const cb = document.getElementById('tourToggle'); if (cb?.parentElement) cb.parentElement.title = D.t(D.tour.enabled ? 'tour_off' : 'tour_on'); },
+      /** 페이지가 버튼의 원래 활성 규칙(otherwise)과 함께 잠금을 건다. 같은 id 는 마지막 것만 남는다. */
+      lock(spec) { if (!spec?.id) return; D.tour.locks = D.tour.locks.filter((l) => l.id !== spec.id); D.tour.locks.push(spec); D.tour.applyLocks(); },
+      /** 설계 §3.2 판정. 서버 사실을 아직 모르면 null 을 돌려준다 — 모르는 동안에는 잠그지 않는다(막히는 것보다 열려 있는 편이 안전). */
+      condMet(cond) {
+        const l = D.stack.last; if (!l || l.at === 0) return null;
+        if (cond === 'rp_approved') return l.rp ? l.rp.status === 'approved' : null;
+        if (cond === 'wallet_registered') return l.wallet ? !!l.wallet.registered : null;
+        if (cond === 'has_session') return (l.wallet?.sessions ?? 0) > 0 || (l.rp?.sessions ?? 0) > 0;
+        return null;
+      },
+      /** 페이지의 renderGuide 가 부른다 — done/current 를 여기서 계산해 안내 바·잠금·말풍선을 한꺼번에 맞춘다. */
+      evaluate({ progress = {}, links } = {}) {
+        D.tour.lastEval = { progress, links };
+        const l = D.stack.last, done = [];
+        if (D.tour.condMet('rp_approved')) done.push('approve');
+        if (D.tour.condMet('wallet_registered')) done.push('register');
+        if (D.tour.condMet('has_session') || progress.login) done.push('login');
+        if (progress.used) done.push('use');
+        if (progress.disclosed) done.push('disclose');
+        if (progress.revoked || (l?.aa?.pendingLeaves ?? 0) > 0 || D.tour.epochRose) done.push('revoke');
+        if (progress.opened || D.tour.openingsDrained) done.push('open');
+        const order = S.steps.map((s) => s.key);
+        const current = order.find((k) => !done.includes(k)) ?? null;
+        const lk = links || D.lastGuide?.links || {};
+        D.guide({ done, current, links: lk });
+        D.tour.applyLocks();
+        D.tour.renderOverlay(current, done.length === order.length, lk);
+        return true;
+      },
+      /** 잠긴 버튼은 disabled + 사유 배지. 체험 모드가 꺼져 있거나 조건을 모르면 페이지의 원래 규칙으로 돌린다. */
+      applyLocks() {
+        for (const { id, cond, otherwise } of D.tour.locks) {
+          const el = document.getElementById(id); if (!el) continue;
+          // 페이지가 처리 중이라 스스로 막아 둔 버튼은 건드리지 않는다 — 폴링이 요청 도중에 다시 열어 주면 두 번 눌린다.
+          if (el.dataset.tourBusy === '1') continue;
+          const met = D.tour.enabled ? D.tour.condMet(cond) : true;
+          const locked = D.tour.enabled && met === false;
+          el.disabled = locked ? true : !(otherwise ? otherwise() : true);
+          let badge = el.nextElementSibling?.classList?.contains('tour-lock') ? el.nextElementSibling : null;
+          if (locked) {
+            if (!badge) { badge = document.createElement('span'); badge.className = 'tour-lock badge warn'; el.after(badge); }
+            badge.textContent = D.t(cond === 'rp_approved' ? 'tour_lock_register' : 'tour_lock_login');
+          } else if (badge) badge.remove();
+        }
+      },
+      /**
+       * 말풍선 하나(#tourBubble)와, 이 페이지에 대상이 없을 때의 카드(#tourCard). 체험 모드가 꺼져 있으면 둘 다 치운다.
+       * 다른 요소를 덮지 않도록 배경막은 두지 않는다 — 말풍선 자체만 화면에 얹힌다(설계 §3.4).
+       */
+      renderOverlay(current, allDone, links) {
+        const bubble = document.getElementById('tourBubble'), card = document.getElementById('tourCard');
+        if (!D.tour.enabled) { bubble?.remove(); card?.remove(); D.tour.anchor = null; return; }
+        const step = S.steps.find((s) => s.key === current) ?? null;
+        const targetId = allDone ? null : (step?.target?.[D.page] ?? null);
+        let el = targetId ? document.getElementById(targetId) : null;
+        if (el && el.offsetParent === null) el = null;             // 숨겨진 대상(다른 모드의 카드 등)에는 붙이지 않는다 — 화면 구석에 뜬다
+        if (!el) { bubble?.remove(); D.tour.anchor = null; D.tour.renderCard(allDone, step, links); return; }
+        card?.remove();
+        let b = bubble;
+        if (!b) { b = document.createElement('div'); b.id = 'tourBubble'; b.className = 'tour-bubble'; b.innerHTML = '<strong class="tour-title"></strong><p class="tour-body"></p>'; document.body.appendChild(b); }
+        const txt = step.tour[D.lang] ?? step.tour.ko;
+        b.querySelector('.tour-title').textContent = txt.title;
+        b.querySelector('.tour-body').textContent = txt.body;
+        D.tour.anchor = el;
+        D.tour.place();
+      },
+      /** 안내 바 아래 카드 — 지금 할 일이 다른 창에 있거나(링크 포함) 7단계를 다 마쳤을 때. */
+      renderCard(allDone, step, links) {
+        const bar = document.getElementById('demoBar');
+        if (!bar || (!allDone && !step)) { document.getElementById('tourCard')?.remove(); return; }
+        let c = document.getElementById('tourCard');
+        if (!c) { c = document.createElement('div'); c.id = 'tourCard'; c.className = 'tour-elsewhere'; bar.appendChild(c); }
+        c.textContent = '';
+        const title = document.createElement('strong');
+        const body = document.createElement('p');
+        if (allDone) { title.textContent = D.t('tour_done_title'); body.textContent = D.t('tour_done_body'); c.append(title, body); return; }
+        const txt = step.tour[D.lang] ?? step.tour.ko;
+        // 대상이 정해진 당사자 중 이 페이지가 아닌 첫 번째. 링크를 모르면 문구만 남는다.
+        const whereKey = step.where.find((w) => w !== D.page && step.target?.[w]) ?? step.where.find((w) => w !== D.page) ?? step.where[0];
+        title.textContent = txt.title;
+        body.textContent = D.t('tour_elsewhere', { where: D.t(`where_${whereKey}`) });
+        c.append(title, body);
+        const url = links?.[whereKey];
+        if (url) { const a = document.createElement('a'); a.className = 'btn'; a.href = D.withTour(url); a.target = '_blank'; a.rel = 'noopener'; a.textContent = D.t('tour_next'); c.appendChild(a); }
+      },
+      /** 대상 요소 바로 아래에 앉힌다. 좁은 창에서는 CSS 가 전폭으로 펴므로 top 만 쓰인다. */
+      place() {
+        const b = document.getElementById('tourBubble'), el = D.tour.anchor;
+        if (!b || !el || !el.isConnected) return;
+        const r = el.getBoundingClientRect();
+        b.style.top = `${Math.round(r.bottom + window.scrollY + 8)}px`;
+        b.style.left = `${Math.round(r.left + window.scrollX)}px`;
+      },
+    },
   };
   // ---- 상태 패널의 나머지(폴링·판정·그리기). stack() 이 함수라 여기에 붙인다. ----
   /** 판정 키 → 1차 사유 사전 코드(설계 §2.1). 서비스 비활성은 서버가 준 inactiveReason 을 그대로 쓴다. */
@@ -94,6 +249,8 @@
   const STACK_ROLES = ['aa', 'rp', 'wallet'];
   Object.assign(D.stack, {
     state: null,
+    /** 상태 묶음을 만들어 둔다 — 폴링은 stack() 이 걸고, 여기서는 구독만 먼저 받을 수 있게 한다(체험 모드가 페이지보다 먼저 켜진다). */
+    ensure() { return (D.stack.state ??= { urls: {}, last: { at: 0, aa: null, rp: null, wallet: null, errors: {} }, timer: null, subs: [], open: false, sig: null }); },
     /** 2초 예산. AbortSignal.timeout 이 없는 브라우저면 AbortController + 타이머로 같은 일을 한다. */
     budget(ms) {
       if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) return { signal: AbortSignal.timeout(ms), done() { /* 자체 타이머 */ } };
@@ -103,7 +260,7 @@
     /** 구독자에게 알릴지 판단하는 값 — now(매 응답 달라짐)는 뺀다. 응답이 없으면 실패 종류('timeout'|'error')로 비교한다. */
     signature(last) { return JSON.stringify(STACK_ROLES.map((r) => (last[r] ? { ...last[r], now: undefined } : (last.errors[r] ?? null)))); },
     /** 폴링 결과가 바뀔 때 부른다(체험 모드·페이지가 주소를 알아내는 데 쓴다). 구독 해제 함수를 돌려준다. */
-    onChange(fn) { const st = D.stack.state; if (!st || typeof fn !== 'function') return () => {}; st.subs.push(fn); return () => { const i = st.subs.indexOf(fn); if (i >= 0) st.subs.splice(i, 1); }; },
+    onChange(fn) { if (typeof fn !== 'function') return () => {}; const st = D.stack.ensure(); st.subs.push(fn); return () => { const i = st.subs.indexOf(fn); if (i >= 0) st.subs.splice(i, 1); }; },
     async poll() {
       const st = D.stack.state; if (!st) return;
       const next = { at: Date.now(), aa: null, rp: null, wallet: null, errors: {} };
@@ -146,21 +303,24 @@
     },
     /** 안내 바 오른쪽의 점 4개 + (열려 있으면) 패널. 언어·전문가 전환과 폴링마다 다시 그린다. */
     renderDots() {
-      const st = D.stack.state; if (!st) return;
+      const st = D.stack.state; if (!st || !st.self) return;      // 폴링을 아직 걸지 않았으면(체험 모드만 구독한 상태) 점을 만들지 않는다
       const bar = document.getElementById('demoBar'); if (!bar) return;
       const tools = bar.querySelector('.bar-tools'); if (!tools) return;
       let dots = bar.querySelector('.stack-dots');
       if (!dots) { dots = document.createElement('div'); dots.className = 'stack-dots'; tools.insertBefore(dots, tools.firstChild); }
       const v = D.stack.judge(st.last);
-      dots.textContent = '';
       for (const role of ['aa', 'rp', 'wallet', 'chain']) {
-        const b = document.createElement('button');
-        b.type = 'button'; b.className = `dot ${role} ${v[role].level}`;
+        // 점은 한 번만 만들고 이후에는 색·문구만 갈아 끼운다 — 5초마다 다시 만들면 눌러 둔 초점이 폴링마다 날아간다.
+        let b = dots.querySelector(`button.${role}`);
+        if (!b) {
+          b = document.createElement('button'); b.type = 'button'; b.className = `dot ${role}`;
+          b.addEventListener('click', (ev) => { ev.stopPropagation(); st.open = !st.open; D.stack.renderDots(); });
+          dots.appendChild(b);
+        }
         const label = D.t(`stack_${role}`), msg = D.t(v[role].key, v[role].vars);
-        b.textContent = label;                       // 색만으로 구분하지 않는다(1차 §4.5) — 라벨과 판정 문구를 함께 붙인다
+        b.className = `dot ${role} ${v[role].level}`;
+        if (b.textContent !== label) b.textContent = label;       // 색만으로 구분하지 않는다(1차 §4.5) — 라벨과 판정 문구를 함께 붙인다
         b.title = `${label}: ${msg}`; b.setAttribute('aria-label', `${label}: ${msg}`); b.setAttribute('aria-expanded', st.open ? 'true' : 'false');
-        b.addEventListener('click', (ev) => { ev.stopPropagation(); st.open = !st.open; D.stack.renderDots(); });
-        dots.appendChild(b);
       }
       D.stack.renderPanel(v);
     },

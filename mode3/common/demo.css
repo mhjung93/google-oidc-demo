@@ -43,3 +43,11 @@ table.list { width:100%; border-collapse:collapse; font-size:14px } table.list t
 .stack-panel p { margin:0 } .stack-panel .cause { color:var(--muted) } .stack-panel .action { font-weight:600 }
 .stack-panel code.reason { font-size:12px; color:var(--muted) } .stack-panel pre { margin:4px 0 0; max-height:140px; overflow:auto }   /* 전문가 보기의 원문 셋이 화면을 다 먹지 않게 */
 .stack-panel .row.warn .msg { color:var(--warn) } .stack-panel .row.bad .msg { color:var(--bad) } .stack-panel .row.unknown .msg { color:var(--muted) }
+/* 체험 모드(설계 2026-09-25 §3.3·§3.4) — 잠금 배지, 대상 요소 아래의 말풍선 하나, 다른 창에서 할 차례일 때의 카드. */
+.tour-lock { margin-left:6px }
+.tour-bubble { position:absolute; z-index:20; max-width:360px; background:#1d2433; color:#fff; border-radius:10px; padding:10px 12px; font-size:14px; box-shadow:0 6px 24px rgba(0,0,0,.25) }
+.tour-bubble::before { content:''; position:absolute; top:-6px; left:16px; border:6px solid transparent; border-bottom-color:#1d2433; border-top:0 }
+.tour-bubble strong { display:block } .tour-bubble p { margin:4px 0 0; color:#dbe3f0 } .tour-bubble a { color:#cfe0ff }
+.tour-elsewhere { grid-column:1 / -1; display:flex; flex-wrap:wrap; gap:6px 12px; align-items:center; border-top:1px solid var(--line); padding-top:8px; font-size:13px }
+.tour-elsewhere p { margin:0; color:var(--muted) } .tour-elsewhere .btn { padding:4px 10px; font-size:13px }
+@media (max-width:900px) { .tour-bubble { left:16px !important; right:16px; max-width:none } }

@@ -387,6 +387,9 @@
     function renderGuide() {
       const s = lastStatus;
       const sessions = s ? Object.keys(s.sessions ?? {}).length : 0;
+      const links = { admin: s?.ciaUrl ? `${s.ciaUrl}/admin` : null, account: s?.ciaUrl ? `${s.ciaUrl}/account` : null };
+      // 단계 판정은 공통 레이어가 한다(설계 2026-09-25 §3.2) — 이 페이지는 자기가 아는 완료 신호만 넘긴다.
+      if (Demo.tour) { Demo.tour.evaluate({ progress: { login: sessions > 0, used: progress.txOk, disclosed: progress.disclosed, revoked: progress.revoked }, links }); return; }
       const done = [];
       if (s?.registered) done.push('register');
       if (sessions) done.push('login');
@@ -394,7 +397,7 @@
       if (progress.disclosed) done.push('disclose');
       if (progress.revoked) done.push('revoke');
       const current = !s?.registered ? 'register' : !sessions ? 'login' : !progress.txOk ? 'use' : 'disclose';
-      Demo.guide({ done, current, links: { admin: s?.ciaUrl ? `${s.ciaUrl}/admin` : null, account: s?.ciaUrl ? `${s.ciaUrl}/account` : null } });
+      Demo.guide({ done, current, links });
     }
     /** 짧게 줄인 값 + 전체 값은 title 로(둘 다 공개 값이다 — 비밀은 /wallet/status 에 실리지 않는다). */
     function shortCode(full, n = 12) {
@@ -538,7 +541,11 @@
     let stackRpOrigin = null, stackSubscribed = false;
     function syncStack() {
       if (IS_AUTHORIZE || !window.Demo?.stack) return;
-      Demo.stack({ self: 'wallet', urls: { aa: lastStatus?.ciaUrl || null, rp: stackRpOrigin } });
+      // 한 번 알아낸 주소는 지우지 않는다 — /wallet/status 가 잠깐 실패했다고 신원 기관 점이 '모름'으로 돌아가지 않게.
+      const urls = {};
+      if (lastStatus?.ciaUrl) urls.aa = lastStatus.ciaUrl;
+      if (stackRpOrigin) urls.rp = stackRpOrigin;
+      Demo.stack({ self: 'wallet', urls });
       if (stackSubscribed) return;
       stackSubscribed = true;
       Demo.stack.onChange((last) => {
@@ -872,9 +879,12 @@
     }
 
     async function init() {
-      Demo.init({ page: 'wallet' });
+      // 승인 팝업에는 체험 모드를 두지 않는다(설계 2026-09-25 §3.1 — 안내 바가 없는 창이다).
+      Demo.init({ page: 'wallet', tour: !IS_AUTHORIZE });
       // 승인 팝업은 좁고 할 일이 하나뿐이다 — 7단계 안내 바는 숨기고 카드 하나만 보인다(언어·전문가는 그대로 동작한다).
       if (IS_AUTHORIZE) $('demoBar').hidden = true;
+      // 체험 모드의 잠금(설계 §3.3). #registerBtn 은 지금까지 늘 활성이었다 — 그 규칙을 otherwise 로 그대로 옮긴다.
+      else Demo.tour?.lock({ id: 'registerBtn', cond: 'rp_approved', otherwise: () => true });
       try {
         const r = await fetch('/wallet/config');
         if (r.ok) cfg = { ...cfg, ...(await r.json()) };

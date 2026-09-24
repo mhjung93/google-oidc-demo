@@ -127,6 +127,10 @@
 
     // ---- 안내 바 ----
     function renderGuide() {
+      const links = { wallet: info?.walletAgentOrigin, admin: info?.ciaUrl ? `${info.ciaUrl}/admin` : null, account: info?.ciaUrl ? `${info.ciaUrl}/account` : null };
+      // 단계 판정은 공통 레이어가 한다(설계 2026-09-25 §3.2) — 이 페이지는 자기가 아는 완료 신호만 넘긴다.
+      if (Demo.tour) { Demo.tour.evaluate({ progress: { login: !!currentSession, used: progress.used, disclosed: progress.disclosed, opened: progress.opened }, links }); return; }
+      // 공통 레이어가 없을 때(demo.js 미로딩)의 1차 계산.
       const done = [];
       if (info?.status === 'approved') done.push('approve');
       if (currentSession) done.push('login');
@@ -134,7 +138,7 @@
       if (progress.disclosed) done.push('disclose');
       if (progress.opened) done.push('open');
       const current = info?.status !== 'approved' ? 'approve' : !currentSession ? 'login' : !progress.used ? 'use' : 'open';
-      Demo.guide({ done, current, links: { wallet: info?.walletAgentOrigin, admin: info?.ciaUrl ? `${info.ciaUrl}/admin` : null, account: info?.ciaUrl ? `${info.ciaUrl}/account` : null } });
+      Demo.guide({ done, current, links });
     }
     // 언어·전문가 전환은 사전이 채우는 요소와 결과 카드만 바꾼다(Demo) — 스크립트가 만든 텍스트(상태·표·세션)는 여기서 다시 그린다.
     for (const k of ['setLang', 'setExpert']) {
@@ -332,6 +336,8 @@
     });
 
     $('loginBtn').addEventListener('click', async () => {
+      // tourBusy: 처리 중에는 체험 모드의 잠금 적용이 이 버튼을 건드리지 않는다(폴링이 요청 도중에 다시 열지 않게).
+      $('loginBtn').dataset.tourBusy = '1';
       $('loginBtn').disabled = true; $('log').textContent = '';
       pendingVerdict($('verdict'), 'working');
       const log = (s) => { $('log').textContent += s + '\n'; };
@@ -414,7 +420,7 @@
           summary: walletCfgLoaded ? e.message : (tt('rp_error_wallet_cfg', { origin: info?.walletAgentOrigin ?? '?' }) || e.message),
           detail: e.message,
         }));
-      } finally { $('loginBtn').disabled = false; }
+      } finally { delete $('loginBtn').dataset.tourBusy; $('loginBtn').disabled = false; Demo.tour?.applyLocks(); }
     });
 
     $('revalidateBtn').addEventListener('click', async () => {
@@ -552,6 +558,9 @@
 
     $('refreshLogins').addEventListener('click', refreshLogins);
     Demo.init({ page: 'rp' });
+    // 체험 모드의 잠금(설계 2026-09-25 §3.3). otherwise 는 이 버튼의 원래 활성 규칙 — 서비스가 승인된 뒤에만 로그인할 수 있다.
+    // (rp_info 를 아직 못 읽었으면 지금까지처럼 열어 둔다 — 눌리면 핸들러가 먼저 loadInfo 를 한다.)
+    Demo.tour?.lock({ id: 'loginBtn', cond: 'wallet_registered', otherwise: () => !info || info.status === 'approved' });
     loadInfo().then(refreshLogins);
   </script>
 </body>
