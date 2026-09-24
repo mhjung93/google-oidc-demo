@@ -442,6 +442,47 @@ try {
     assert.equal(again.rp.ok, true, j(again)); assert.equal(again.rp.PPID, PPID1);
   });
 
+  // V8 세션 폐기(설계 2026-09-24). 계정이 살아 있고(바로 위 4″ 가 복구해 뒀다) 블록을 크게 진행시키는 케이스
+  // (맨 끝의 Ruling 1)보다 앞인 이 자리에 둔다 — 앞 케이스들의 세션이 만료되면 폐기가 409 expired 로 막힌다.
+  await t('V8 세션 폐기: 세션 둘 → 하나만 폐기(지갑 버튼 경로) → 게시 → 그 세션은 더 못 쓰고 다른 세션·재로그인은 정상; 관리자 폐기는 revoked_session', async () => {
+    const s1 = await loginViaRp(), s2 = await loginViaRp();
+    assert.equal(s1.rp?.ok, true, j(s1)); assert.equal(s2.rp?.ok, true, j(s2));
+    // 양성 대조: 폐기 전에는 s1 의 세션 요청이 통과한다(같은 서명을 폐기 뒤에 다시 써서 대조한다).
+    const w1 = await wallet.post('/wallet/request', { r_s: s1.r_s, body: 'x' }, { Origin: rp.origin });
+    assert.equal(w1.status, 200, j(w1.body));
+    assert.equal((await rp.post('/api/mode3/request', { r_s: s1.r_s, body: 'x', sig: w1.body.sig })).body.ok, true);
+
+    const rev = await wallet.post('/wallet/session/revoke', { r_s: s1.r_s });
+    assert.equal(rev.status, 200, j(rev.body));
+    assert.equal(rev.body.revoked, true); assert.equal(rev.body.inserted, true);
+    // AA 가 받아들인 순간 지갑은 그 세션을 버린다 — 게시 전이라도 두 번째 요청은 404 no_session 이다.
+    assert.equal((await wallet.post('/wallet/session/revoke', { r_s: s1.r_s })).status, 404);
+    assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
+
+    // s1: 서비스 관점 — 게시로 root 가 바뀌어 옛 서명은 revalidate_required 이고, 재검증할 지갑 세션은 이미 없다.
+    const q1 = await rp.post('/api/mode3/request', { r_s: s1.r_s, body: 'x', sig: w1.body.sig });
+    assert.notEqual(q1.body.ok, true, j(q1.body));
+    assert.equal(q1.body.reason, 'revalidate_required', j(q1.body));
+    const rv1 = await wallet.post('/wallet/revalidate', { r_s: s1.r_s }, { Origin: rp.origin });
+    assert.equal(rv1.status, 404, j(rv1.body)); assert.equal(rv1.body.reason, 'no_session');
+
+    // s2 는 그대로 산다 — 사용자 자격증명은 폐기되지 않았다.
+    const rv2 = await revalidateViaRp(s2.r_s);
+    assert.equal(rv2.walletStatus, 200, j(rv2));
+    assert.equal(rv2.rp.ok, true, j(rv2.rp));
+
+    // 관리자 경로: 지갑 밖에서 s2 를 폐기하면 지갑은 그 세션만 403 revoked_session 으로 버린다.
+    const cf = (await cia.adminGet(`/cia/admin/sessions?uid=${uid}`)).body.sessions.filter((s) => !s.revokedAt).at(-1).Cf_s;
+    assert.equal((await cia.adminPost('/cia/revoke', { uid, scope: 'session', Cf_s: cf })).status, 200);
+    assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
+    const rv2b = await revalidateViaRp(s2.r_s);
+    assert.equal(rv2b.walletStatus, 403, j(rv2b)); assert.equal(rv2b.wallet.reason, 'revoked_session');
+
+    // 계정은 살아 있다 — 새 로그인은 같은 PPID 로 정상이다(계정 폐기(4·6)와 달리 account_disabled 가 아니다).
+    const s3 = await loginViaRp();
+    assert.equal(s3.rp?.ok, true, j(s3)); assert.equal(s3.rp.PPID, PPID1);
+  });
+
   await t('bad_rp_cert: cert_s 의 origin 과 다른 origin 을 주장하면 지갑이 403', async () => {
     const info = (await rp.get('/api/mode3/rp_info')).body;
     const { r_s } = (await rp.post('/api/mode3/challenge')).body;

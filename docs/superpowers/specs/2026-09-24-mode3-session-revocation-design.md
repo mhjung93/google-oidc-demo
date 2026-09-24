@@ -65,6 +65,7 @@ component nmS = IMTNonMembershipV2(depth); nmS.target <== sLeaf.out; (증인 배
 - `buildCredentialProof`: `tree.getNonMembershipWitness(await sessionLeaf(Cf_s))` 를 하나 더 만들어 `s_*` 입력으로. 세션 리프가 트리에 있으면 `"is a member"` 로 던진다 — 호출자가 사용자 리프와 구분한다: `proveSession` 은 먼저 `tree.has(userLeaf)` → `revoked`, 다음 `tree.has(sessionLeaf)` → **`revoked_session`**.
 - 에이전트: `revoked_session` 이면 **그 세션만** 삭제(`state.sessions[rsKey]`, 캐시), 403 `{ reason:'revoked_session' }`. 다른 세션·C_u 는 그대로. 재로그인은 새 C_s 로 즉시 가능.
 - `POST /wallet/session/revoke { r_s }`(같은 오리진, `{confirm:true}` 없음 — 파괴적이지 않음): 세션의 `credential.Cf_s` 로 `sig` 를 만들어 `/cia/revoke scope=session` 호출. file 모드는 파일의 `sk_u`, snap 모드는 Snap RPC `signRevokeSession { Cf_s, nonce }`(동의 창: "이 세션(서비스 arid, 발급 시각)을 폐기합니다" 예/아니오) 로 서명을 받는다. 성공하면 로컬 세션도 지운다(게시 전이라도 지갑은 더 쓰지 않는다).
+  **정정(2026-09-24 구현)**: Snap 에는 Poseidon 이 없어 서명을 만들 수 없다 — Snap RPC 는 동의만 받는 `consentRevokeSession { arid, issuedAt, maxHeight }` 이고, 서명은 에이전트가 그 세션의 메모리 증인 `sk_u` 로 한다(V7 까지의 다른 서명들과 같은 자리). 증인이 없으면 409 `needs_consent`.
 - 지갑 페이지: 세션 목록 각 행에 "이 세션 폐기" 버튼. 결과 표시.
 - 캐시 키·트리 동기화 불변(리프 종류가 늘어도 델타 동기화 동일).
 

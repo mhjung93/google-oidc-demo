@@ -49,6 +49,13 @@ Mode 2 데모(:3000/:4000/:5001)와 **공존**한다. 포트·상태 파일이 �
    필수가 아니다.
    회로 V7(2026-09-23, 집합 소속)로 build/mode3 를 다시 만들었다 — 다른 기계의 build/mode3 도 다시 복사. 팩토리·AttrGate 재배포
    필요(V6 증명과 호환 없음).
+   회로 V8(2026-09-24, 세션 폐기 — 비멤버십 2개)로 build/mode3 를 또 다시 만들었다(설계
+   `docs/superpowers/specs/2026-09-24-mode3-session-revocation-design.md`). **공개 입력은 25개 그대로**라 서비스·컨트랙트
+   인터페이스는 안 바뀌지만 `contracts/PiCredVerifier.sol` 이 다시 생성되므로 **검증기·팩토리·AttrGate 재배포가 필요하다**
+   (V7 검증기는 V8 π 를 `InvalidProof` 로 거절한다). 순서는 V6·V7 과 같다: (1) `bash scripts/build_mode3_circuit.sh …`
+   (2) `npx hardhat compile` (3) `mode3_rp_registration.json` 의 `verifierAddress`·`factoryAddress`·`attrGateAddress` 를
+   셋 다 지운 뒤 RP 재시작(**팩토리가 바뀌면 PPID 계정 주소도 바뀐다** — 아래 6 의 경고와 같다). (4) CIA 상태는 v8 로 자동
+   이행된다(`accounts[uid].sessions = []` — 아래 "세션 폐기(V8)" 절의 주의). 다른 기계의 build/mode3 도 다시 복사한다.
 1. `npx hardhat node` (다른 터미널에 상주).
 2. `CIA_ADMIN_SECRET=<아무 문자열> node cia.js` — 처음 기동에서 `cia_keys.json`을 만든다. `curl -s 127.0.0.1:4100/cia/public_keys`의 `ethAddress`를 적어 두고 종료한다.
 3. `CIA_ETH_ADDRESS=<ethAddress> npx hardhat run scripts/deploy_mode3_log.cjs --network localhost` — `RevocationLog`를 배포하고 CIA 주소에 1 ETH를 넣는다. 출력의 `CIA_LOG_ADDRESS=0x…`를 `.env`에 추가한다.
@@ -112,6 +119,7 @@ RP 페이지는 반드시 `127.0.0.1`로 연다 — 지갑 에이전트의 CORS 
 | 3″ | RP | 로그인 (다시) | 새 세션 = `새 발급=true`, **같은 PPID** |
 | 4 | 관리자 | 계정 폐기 → 게시 | `published:true`, epoch +1 |
 | 4′ | 사용자 페이지 → 관리자 | (4 대신) 내 계정 폐기 → 게시 | `disabled:true`, 이후 5~8 동일 |
+| 4″ | 지갑 → 관리자 → RP | (4 대신, V8) 세션 둘을 만든 뒤 지갑 세션 목록에서 한 세션의 "이 세션 폐기" → 관리자 게시 → RP 에서 두 세션을 각각 재검증 | **세션 하나만 죽는다** — 폐기한 세션은 지갑에서 이미 사라져 재검증이 404 `no_session`(지갑 밖에서 관리자가 폐기했으면 403 `revoked_session`), 다른 세션은 그대로 ok, 새 로그인도 ok(같은 PPID). 계정 폐기(4)와 달리 `account_disabled` 가 아니다 |
 | 5 | RP | "동기화 생략" 체크 → 세션 재검증 | 거절 `stale_root`. 세션 요청은 `revalidate_required` |
 | 5a | 지갑 | (폐기·게시 뒤) 트랜잭션 보내기 | `revoked` |
 | 6 | RP | 체크 해제 → 세션 재검증 → 로그인 | 지갑 `revoked` → 새 로그인은 `account_disabled` |
@@ -125,7 +133,13 @@ mask=0 캐시 π 402,079(402,035–402,091), mask=3(선택 공개) + `AttrGate.c
 `results/mode3_disclosure_bench_20260922.md`. **V7 회로(2026-09-23, 집합 소속 술어, 공개 입력 25개, 지금 데모가 쓰는 판)
 mask=0 캐시 π 415,991(415,991–416,035), 범위만(mask=1, set 없음) 421,052(420,996–421,076), 집합만(mask=0 + set)
 421,436(421,388–421,460), 범위+집합 + `AttrGate.claim`(새 π) 455,138(455,094–455,174)** — `results/mode3_predicates_20260923.md`,
-`node scripts/bench_mode3_onchain.mjs` 출력). root 게시가 `MAX_ROOT_AGE` 블록보다 오래되면 `RootTooOld` 로 멈추므로 CIA 하트비트를 켜 둔다.
+`node scripts/bench_mode3_onchain.mjs` 출력).
+**V8 회로(2026-09-24, 세션 폐기, 공개 입력 25개 그대로, 지금 데모가 쓰는 판) — gas 는 V7 과 사실상 같다**: mask=0 캐시 π
+416,015(416,003–416,059), 범위만 421,076(421,020–421,100), 집합만 421,428(421,368–421,484), 범위+집합 + `AttrGate.claim`
+455,162(455,142–455,174), 계정 배포 908,232, `PiCredVerifier` 배포 874,396, `Mode3WalletFactory` 배포 1,483,740
+(`results/mode3_session_revocation_20260924.md`). **오프체인 비용은 올랐다**: 제약 27,329 → **37,130**, 증명 시간(pi_cred)
+832.8 ms → **1,191.7 ms**, zkey 16.4 MB → **23.4 MB**(검증 10.0 ms 는 그대로). 비멤버십 증명이 하나 더 붙은 값이다.
+root 게시가 `MAX_ROOT_AGE` 블록보다 오래되면 `RootTooOld` 로 멈추므로 CIA 하트비트를 켜 둔다.
 트랜잭션은 지갑 페이지에서만 시작한다 — 서비스 페이지는 지갑의 `/wallet/tx` 를 부를 수 없다(CORS).
 
 성명은 로그인마다 새로 발급되고(설계 2026-09-15 §5) 세션 r_s 안에서만 재사용된다. RP 는 r_s 를 로그인 때 한 번 소비하고 그 뒤 세션 식별자로 쓴다. 폐기는 재검증에서 효력을 갖는다.
@@ -139,7 +153,7 @@ CIA 는 값을 모른다)을 받아 두고, 로그인마다 그 위에 `POST /ci
 (조건 ⑤), 서비스는 자기 조각으로 반만 풀어 CIA 에 낸다. 운영자가 승인하면 CIA 가 자기 조각으로 마저 풀어 uid 를 돌려준다 —
 서비스 혼자도, CIA 혼자도 열 수 없고, 열리는 것은 그 세션의 uid 하나다. CIA 는 로그인당 아무것도 저장하지 않는다.
 
-0~9·3′·3″ 은 `tests/test_mode3_demo_stack.mjs`(HTTP)로, 2·3·4 의 라이브러리 판은 `tests/test_mode3_e2e.mjs` 로 고정돼 있다.
+0~9·3′·3″·4″ 은 `tests/test_mode3_demo_stack.mjs`(HTTP)로, 2·3·4 의 라이브러리 판은 `tests/test_mode3_e2e.mjs` 로 고정돼 있다.
 
 credential 은 발급 시점 head 기준 300~400 블록(그리드 양자화)에 만료되며 지갑 상태 페이지에 `max_height` 로 보인다.
 
@@ -204,6 +218,58 @@ reason: 'predicate_unmet'}` 로 거절한다(200, 컨트랙트 호출 없이 오
 | 5 | alice(2005, 840): 허용 집합은 그대로 공개하되 슬롯 0 을 정책보다 넓은 구간(`[0, 올해−5]`)으로 공개 | 국가는 실제 허용 집합이라 `country` 는 통과하지만 minAge 를 증명하지 못해 `claim()` 이 `age` 로 revert |
 | 6 | 관리자가 testuser 의 a₂ 를 3 으로 변경 → 다음 로그인 | 지갑이 옛 C_u 폐기를 알아채 새 C_u 를 받고 로그인 성공, **PPID 동일** |
 
+## 세션 폐기 (V8, 설계 2026-09-24)
+
+계정 폐기(4·4′)는 사용자 자격증명 리프 하나로 그 사용자의 **모든** 세션을 죽인다. V8 은 그 아래 단위를 더한다 — **세션 하나만**
+폐기한다. 폐기 트리(RCL)에 세션 리프 `Poseidon(5, Cf_s)` 를 넣고(사용자 리프는 `Poseidon(4, Cf_u)`, **같은 트리·같은 root**),
+회로가 비멤버십을 하나 더 증명한다(④′). 공개 입력은 25개 그대로라 서비스·컨트랙트 인터페이스는 바뀌지 않는다.
+
+**누가 폐기하나.** 사용자(지갑)는 등록 키 `sk_u` 서명으로 자기 세션의 `Cf_s` 를 지정하고, 운영자는 관리자 시크릿으로 한다.
+서비스는 `Cf_s` 를 모르므로 세션을 폐기할 수 없다.
+
+- 지갑 페이지(`/`)의 세션 목록 각 행에 **"이 세션 폐기"** 버튼 → `POST /wallet/session/revoke {r_s}`. 에이전트가 서명을 만들어
+  CIA `/cia/revoke scope=session` 으로 보내고, CIA 가 받아들이면 **게시 전이라도 그 세션을 로컬에서 지운다**.
+- CIA 관리자 페이지(`/admin`)의 계정 행 **"세션"** 버튼 → `GET /cia/admin/sessions?uid=` 목록(활성/폐기됨/만료) + 행마다 "폐기".
+
+**AA 가 기록하는 것.** 발급 때 `{Cf_s, max_height, chainid, allowAgent, issuedAt, revokedAt}` 을 계정에 남긴다(상태 v8). 전부 발급
+때 이미 본 값이라 AA 가 새로 알게 되는 것은 없다 — `arid`·`pk_i` 는 여전히 `C_s` 안이라 못 본다. 남는 것은 **상태**(사용자별 세션
+수·발급 시각)다. 하트비트마다 만료된 기록은 지운다(리프는 트리에 남는다 — append-only).
+
+| 메서드/경로 | 프로세스 | 설명 |
+|---|---|---|
+| `POST /cia/revoke` `{uid, scope:'session', Cf_s, sig_u?, nonce?}` | CIA | 세션 하나 폐기. **관리자 시크릿** 또는 **사용자 서명**(`Poseidon(DOMAIN_MODE3_REVOKESESS, uid, Cf_s, nonce)` 위 `sk_u` EdDSA-Poseidon). 성공 `{inserted, leaf, root, pending}` |
+| `GET /cia/admin/sessions?uid=` | CIA(관리자) | 그 계정의 세션 기록 + `expired`(그 체인 head 기준, 못 읽으면 `null`) |
+| `POST /wallet/session/revoke` `{r_s}` | 지갑 | 같은 오리진 전용(CORS 없음). 서명 후 CIA 로 중계하고 성공하면 로컬 세션 삭제. 응답 `{revoked:true, inserted, pending}` |
+| Snap RPC `consentRevokeSession` `{arid, issuedAt, maxHeight}` | Snap | snap 모드의 **동의 창만**. Snap 에는 Poseidon 이 없어 서명은 에이전트가 세션의 메모리 증인 `sk_u` 로 한다 |
+
+**사유.**
+
+| `reason` | 어디서 | 상태 코드 | 뜻 |
+|---|---|---|---|
+| `revoked_session` | 지갑 `POST /wallet/revalidate`·`/wallet/tx`(`/tx/prepare`) | 403 | 이 **세션 리프**가 폐기 트리에 있다 — 그 세션만 죽는다(지갑이 그 세션을 지운다). 사용자 자격증명은 그대로라 다른 세션·새 로그인은 된다. 계정/자격증명 폐기는 지금까지처럼 `revoked` 다. `mode3/rp.html` 은 둘을 같은 분기로 처리한다(세션 버림) |
+| `unknown_session` | CIA `POST /cia/revoke scope=session` | 404 | 그 `Cf_s` 기록이 이 계정에 없다(옛 세션이거나 만료 정리로 사라졌다). **서명 검사를 먼저 하므로** 서명 없이 "이 Cf_s 가 이 계정 것인가" 를 떠볼 수는 없다 |
+| `expired` | CIA `POST /cia/revoke scope=session` | 409 | 그 체인 head ≥ `max_height` — 만료가 이미 막으므로 리프를 넣지 않는다 |
+| `needs_consent` | 지갑 `POST /wallet/session/revoke`(snap 모드) | 409 | 그 세션의 메모리 증인이 없다(에이전트 재시작) — 서명할 `sk_u` 가 없다. 지갑 페이지는 사유만 보이고 스스로 팝업을 열지 않는다. RP 페이지에서 그 세션을 한 번 재검증해 재승인(§4.3, 아래 S8)을 거친 뒤 다시 누른다 |
+| `not_registered` | 지갑 `POST /wallet/session/revoke` | 409 | 이 에이전트에 등록이 없다 |
+| `no_session` | 지갑 `POST /wallet/session/revoke` | 404 | 그 `r_s` 세션을 지갑이 들고 있지 않다(이미 폐기했거나 만료) |
+
+같은 세션을 다시 폐기하면 CIA 는 200 `{inserted:false}` 로 멱등하게 답한다.
+
+**한계(그대로 적는다).**
+
+- **효력은 다음 게시(또는 하트비트) 뒤부터다.** 그 사이의 온체인 실행은 막지 못한다 — 지갑은 스스로 그 세션을 버리지만,
+  이미 나간 π·서명을 계정 컨트랙트가 즉시 거부하게 하는 것(세션키 블랙리스트)은 후속이다.
+- **상태 v8 이행 전에 발급된 세션은 폐기할 수 없다.** `v7→v8` 은 `sessions = []` 로 시작하므로 기록이 없고, `/cia/revoke` 는
+  404 `unknown_session` 으로 답한다 — 그 세션들은 `max_height` 만료로만 끝난다.
+- **`CIA_CHAIN_RPCS` 에 없는 chainid 의 세션은 폐기도 정리도 못 한다.** head 를 못 읽어 만료 판정이 실패하고(폐기는
+  fail-closed, 정리는 건너뜀) 기록이 남는다. 체인 RPC 장애 때도 같다 — 그동안 세션 폐기는 503 으로 막힌다(안전 쪽 실패).
+- **`nonce` 는 메시지 바인딩이지 재생 방지가 아니다.** 같은 요청을 재생해도 같은 세션을 다시 폐기할 뿐이라 멱등하다.
+  `nonce` 형식이 잘못되면 401 이다(`/cia/attrs` 는 같은 경우 400 — 사유 코드가 통일돼 있지 않다).
+- 지갑의 `POST /wallet/session/revoke` 는 CIA 호출 실패뿐 아니라 **로컬 서명 오류까지** 502 `cia_unavailable` 로 뭉친다.
+- **재검증은 술어를 다시 증명하지 않는다**(V7부터의 기존 한계, 세션 폐기와 무관).
+- 폐기된 세션 리프는 만료 뒤 죽은 리프지만 트리에서 빠지지 않는다(append-only). 만료된 리프를 접는 **재기준화는 후속**이다
+  (설계 §6) — 데모 규모에서는 문제없다.
+
 ## MetaMask / Snap 경로 (`MODE3_WALLET_SECRETS`, 설계 2026-09-22 metamask-snap)
 
 지갑 에이전트는 등록 비밀(uid·s_u·r_u·sk_u·blind_u)을 어디서 얻을지 `MODE3_WALLET_SECRETS` 로 고른다. 기본은 `file` 이고,
@@ -252,6 +318,7 @@ reason: 'predicate_unmet'}` 로 거절한다(200, 컨트랙트 호출 없이 오
 | S8 | 터미널 → RP | 지갑 에이전트를 재시작 → RP 에서 "세션 재검증" | 에이전트가 `409 needs_consent` → RP 가 **재승인 팝업**을 연다 → Snap 동의 창(이 세션의 AI agent 허용 값이 그대로 보여야 한다) → 승인하면 재검증이 이어져 성공 |
 | S8′ | 관리자 → RP → 지갑 | CIA 관리자 페이지에서 testuser 의 a₂ 를 3 으로 변경 → `/cia/publish`(시연 편의로 즉시 게시 — 운영에선 위 "관리자 속성 변경" 의 이유로 하트비트에 묶는다) → RP 에서 "Mode 3 로그인" | 로그인 동의 창 한 번으로 성공한다(지갑이 옛 C_u 폐기를 알아채 속성을 다시 받고 새 C_u 를 받는다, PPID 동일). 끝난 뒤 "Snap 상태 보기" 로 **속성이 `[1990, 410, 3, 0]` 으로 바뀌었고 `사용자 자격증명 보관: true`** 인지 본다 — 페이지가 `syncAttrs` 뒤에 `updateUserCred` 를 하므로 새 C_u 가 남아 있어야 한다(순서가 뒤집히면 여기서 `false` 가 되고 다음 재검증이 막힌다). 지갑 페이지의 "AA 에서 속성 다시 받기" 로도 같은 값을 확인할 수 있다(이쪽은 동의 창이 한 번 더 뜬다) |
 | S9 | 지갑 | "자기 폐기" | **Snap 비밀번호 대화상자** → 에이전트 `POST /wallet/self_revoke` 가 CIA 로 중계 → `자기 폐기 완료`. 관리자 페이지에서 `/cia/publish` 뒤 재검증이 `revoked` 가 되는지 본다 |
+| S9′ | 지갑 → 관리자 → RP | (V8) 세션 목록에서 한 세션의 "이 세션 폐기" | **Snap 동의 창**(그 세션의 서비스 arid·발급 시각·max_height — 서명은 에이전트가 한다) → `세션 폐기 요청 완료 … 다음 게시부터 효력`. 관리자 페이지에서 게시한 뒤 RP 에서 그 세션을 재검증하면 죽고(`revoked_session` 또는 세션이 이미 없어 `no_session`) 다른 세션은 산다. 에이전트를 재시작한 직후라면 메모리 증인이 없어 `세션 폐기 실패 — needs_consent` 가 뜬다 — 지갑 페이지는 팝업을 열지 않으므로 RP 에서 그 세션을 한 번 재검증(S8 의 재승인)한 뒤 다시 누른다 |
 | S10 | 지갑 | "Snap 초기화" | Snap 의 등록이 지워진다. 에이전트 파일의 **공개** 등록은 그대로다(재시연은 재시연 세트로) |
 
 `file` 모드에서 RP 페이지를 브라우저로 여는 경로(RP 페이지가 `/wallet/login` 을 CORS 로 직접 부르는 지금까지의 흐름)는
@@ -319,6 +386,9 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
 ## 하지 말 것 / 재시연
 
 - **옛 상태 파일(cia_state.json version 2 이하, mode3_wallet_state.json version 5 이하, 키 없는 mode3_rp_registration.json)을 새 서버에 물리지 않는다.** CIA 는 기동을 거부하고 지갑은 세션을 비운다. `cia_state.json` v3·v4 는 기동 시 v5 로 이행된다(v3 의 used_rs 는 버려지고 기존 서비스 등록은 승인된 것으로 남는다 — v4 의 발급 기록은 형식이 바뀌어 비워진다). `mode3_wallet_state.json` v5 이하는 등록은 유지하고 세션이 비워진다(v6 부터 `registration.userCred` — 없으면 다음 로그인이 새로 받는다). `mode3_rp_registration.json` v2 는 v3 로 이행된다(`X_svc`·`x_svc` 조각은 유지, `factoryAddress`·`verifierAddress` 는 비운다). 그 밖의 옛 형식이거나 origin 이 다른 `mode3_rp_registration.json`은 RP 가 기동 시 새로 등록한다 — 옛 서비스 조각(x_svc)도 버려지므로 이전 로그인 로그의 태그는 더 이상 열 수 없다.
+- **CIA 상태 v7 → v8 이행(2026-09-24)**: 기동 시 자동으로 `accounts[uid].sessions = []` 를 만든다(코드 변경 불필요, 폐기 트리·
+  epoch·계정은 그대로). 이행 **전에** 발급된 세션은 기록이 없어 세션 단위로 폐기할 수 없다 — `max_height` 만료로만 끝난다.
+  새로 발급받은 세션부터 지갑·관리자 페이지의 세션 폐기가 듣는다. 지갑 상태 파일은 이 이행에서 손대지 않는다.
 - **옛 상태 파일(version 2 이하)을 새 CIA 에 물리지 않는다.** CIA 가 기동을 거부한다 — 재시연 세트로 새로 시작한다.
 - **`cia_state.json`을 지우지 않는다.** 체인의 `RevocationLog.root`와 어긋나 지갑의 `syncRevocationTree`가 root 불일치로 전원을 막는다(Mode 2의 `idp_state.json`과 같은 이유). CIA 는 기동 시 로컬 트리를 온체인 root 와 대조해 어긋나면 `root 불일치`로 기동을 거부하므로, 지웠다면 아래 재시연 세트를 통째로 다시 한다.
 - 재시연은 **한 세트로만**: hardhat 노드 재시작 → 위 "처음 한 번" 2~3(재배포, `.env`의 `CIA_LOG_ADDRESS` 갱신) →
@@ -359,5 +429,9 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
 - `bash scripts/run_tests.sh contract` — `test/Mode3Wallet.test.mjs`(`execute()` 검사 순서·가스). hardhat 인프로세스 체인이라 :8545 가 필요 없다.
   단 `build/mode3/` 의 `pi_cred` zkey·wasm 은 필요하다(`test/Mode3Wallet.test.mjs` 가 실제 π 를 만든다) — 깨끗한 체크아웃에서
   그룹 전체가 실패하면 그 이유다.
+- 세션 폐기(V8)는 `tests/test_mode3_session_revoke.mjs`(CIA 단독 — 404·409 `expired`·멱등·사용자 서명/관리자 두 갈래,
+  `chain`), `tests/test_mode3_wallet_agent.mjs`·`tests/test_mode3_wallet_snap.mjs`(지갑 라우트·`revoked_session`·snap
+  동의, `chain`), `tests/test_mode3_demo_stack.mjs` 각본 4″(전 구간), `tests/test_pi_cred_witness.mjs`(회로 ④′, `circuit`)로
+  고정돼 있다.
 - `bash scripts/run_tests.sh unit` 의 `tests/test_mode3_cia_state.js` — 상태 v5 이행을 커버한다.
 - 개봉은 `tests/test_cia_opening.mjs`(CIA 단독)와 `test_mode3_demo_stack.mjs` 시나리오 9(전 구간)로 고정돼 있다.
