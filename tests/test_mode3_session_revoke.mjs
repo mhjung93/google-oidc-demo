@@ -78,11 +78,14 @@ try {
     assert.equal(list.find((s) => s.Cf_s === issued2.body.Cf_s).revokedAt, null);
   });
 
-  await t('서명이 다른 세션 것이면 400, 관리자 헤더 없이 서명도 없으면 401, 모르는 Cf_s 는 404', async () => {
+  await t('서명이 다른 세션 것이면 400, 관리자 헤더 없이 서명도 없으면 401, 모르는 Cf_s 는 관리자에게만 404', async () => {
     const bad = await signRevokeSession(sk_u, uid, BigInt(issued2.body.Cf_s), 1n);
     assert.equal((await cia.post('/cia/revoke', { uid: UID, scope: 'session', Cf_s: issued1.body.Cf_s, sig_u: bad, nonce: '1' })).status, 400);
     assert.equal((await cia.post('/cia/revoke', { uid: UID, scope: 'session', Cf_s: issued2.body.Cf_s })).status, 401);
     assert.equal((await cia.adminPost('/cia/revoke', { uid: UID, scope: 'session', Cf_s: '424242' })).status, 404);
+    // 검사 순서 고정: 인증 없는 요청은 기록 조회보다 서명을 먼저 본다 — 모르는 Cf_s 라도 404 가 아니라 400 이라야
+    // "그 Cf_s 가 이 계정 것인지" 가 서명 없이 새지 않는다.
+    assert.equal((await cia.post('/cia/revoke', { uid: UID, scope: 'session', Cf_s: '424242', sig_u: bad, nonce: '1' })).status, 400, '서명이 먼저다');
   });
 
   await t('scope=account·credential 은 여전히 관리자 전용(401)', async () => {

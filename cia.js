@@ -537,9 +537,13 @@ app.post('/cia/revoke', async (req, res) => {
     // 만료된 세션은 리프를 넣지 않는다 — append-only 트리를 이미 죽은 세션으로 불리는 일이다(설계 §6).
     if ((await headOf(rec.chainid)) >= BigInt(rec.max_height)) return res.status(409).json({ error: 'session expired', reason: 'expired' });
     const leaf = (await sessionLeaf(BigInt(Cf_s))).toString();
+    // 위 await 들 사이에 하트비트의 pruneExpiredSessions() 가 acct.sessions 를 통째로 갈아끼울 수 있다 — 그러면 rec 은 버려진
+    // 객체라 revokedAt 이 아무 데도 안 남고, 그 사이 만료된 세션에 리프만 들어간다. 삽입 직전에 다시 찾는다.
+    const cur = (acct.sessions ?? []).find((s) => s.Cf_s === BigInt(Cf_s).toString());
+    if (!cur) return res.status(409).json({ error: 'session expired', reason: 'expired' });
     const inserted = await tree.insert(BigInt(leaf));
     if (inserted) { state.revoked.push(leaf); state.pending.push(leaf); }
-    rec.revokedAt = new Date().toISOString();
+    cur.revokedAt = new Date().toISOString();
     persist();
     res.json({ inserted, leaf, root: tree.getRoot().toString(), pending: state.pending.length });
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }

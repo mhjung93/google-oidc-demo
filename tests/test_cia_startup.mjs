@@ -139,7 +139,7 @@ try {
     const cia = await startIsolatedCia({ env: { CIA_STATE_FILE: stateFile } });
     try {
       const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-      assert.equal(saved.version, 7); assert.equal(saved.used_rs, undefined); assert.equal(saved.issued, undefined); assert.deepEqual(saved.openings, []);
+      assert.equal(saved.version, 8); assert.equal(saved.used_rs, undefined); assert.equal(saved.issued, undefined); assert.deepEqual(saved.openings, []);
       const e = (await cia.adminGet('/cia/rps')).body.rps.find((x) => x.arid === '777');
       assert.equal(e.status, 'approved'); assert.equal(e.pk_trace, null); assert.equal(e.pk_service, null);
       // 옛 등록이 키를 내며 재등록하면 무허가 바인딩을 막기 위해 pending 으로 돌아간다 — 운영자 승인이 다시 필요하다(§3)
@@ -160,7 +160,7 @@ try {
     const cia = await startIsolatedCia({ env: { CIA_STATE_FILE: stateFile } });
     try {
       const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-      assert.equal(saved.version, 7); assert.equal(saved.issued, undefined); assert.deepEqual(saved.accounts['12345'].creds, []);
+      assert.equal(saved.version, 8); assert.equal(saved.issued, undefined); assert.deepEqual(saved.accounts['12345'].creds, []);
       assert.deepEqual(saved.accounts['12345'].attrs, ['1990', '410', '2', '0'], 'uid 12345 는 cia.js DEMO_ACCOUNTS.testuser 라 demoAttrs 콜백이 채운다');
       assert.match(cia.log(), /v4→v5/); assert.match(cia.log(), /v5→v6/); assert.match(cia.log(), /v6→v7/);
     } finally { await cia.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
