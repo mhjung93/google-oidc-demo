@@ -63,6 +63,13 @@ export function createSnapSim() {
       return { ok: true, changed };
     },
 
+    /** V8 세션 폐기 동의 창(설계 2026-09-24 §4). arid·발급 시각·만료 블록은 표시용이라 시뮬레이터는 보지 않는다.
+     *  Snap 은 서명하지 않는다 — 서명은 에이전트가 세션의 메모리 증인에 든 sk_u 로 한다. */
+    consentRevokeSession(_args, decision = 'allow') {
+      requireRegistered();
+      return decision === 'allow' ? { ok: true } : { denied: true };
+    },
+
     /** prompt(pwd) 대신 인자로. */
     selfRevoke({ pwd }) {
       requireRegistered();

@@ -256,6 +256,35 @@ try {
     assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'use_tx_prepare');
   });
 
+  // V8 세션 폐기(설계 2026-09-24 §4). snap 모드의 서명 키는 세션의 **메모리** 증인에 있다 — Snap 은 Poseidon 이 없어
+  // 동의(consentRevokeSession)만 하고 서명은 에이전트가 한다. 위 revalidate 케이스와 같은 재시작 패턴으로 증인 없는
+  // 상태(409 needs_consent)와 증인 있는 상태(200)를 모두 지난다. 여기서 S1·S2 의 메모리 증인도 함께 사라지지만
+  // 아래 케이스들은 그것을 쓰지 않는다.
+  await t('V8 세션 폐기(snap 모드): 증인이 없으면 409 needs_consent, /wallet/session/witness 로 채우면 200 revoked 와 세션 삭제', async () => {
+    const base = await loginBase();
+    const l = await wallet.post('/wallet/login', { ...base, witness: sim.consentLogin({ origin: info.origin, arid: info.arid, allowAgent: '0' }) });
+    assert.equal(l.status, 200, j(l.body));
+    const rs = base.r_s;
+    const c = (await wallet.get('/wallet/status')).body.sessions[rs];
+    assert.ok(c, '폐기할 세션이 상태에 있어야 한다');
+    // 페이지는 에이전트를 부르기 전에 Snap 동의를 받는다 — 거절이면 아예 부르지 않는다.
+    assert.deepEqual(sim.consentRevokeSession({ arid: c.arid, issuedAt: c.issuedAt, maxHeight: c.max_height }, 'deny'), { denied: true });
+    assert.ok((await wallet.get('/wallet/status')).body.sessions[rs], '동의 거절은 세션을 건드리지 않는다');
+    // 재시작하면 메모리 증인이 사라진다 → sk_u 가 없어 409 needs_consent
+    await stack.restartWallet();
+    assert.deepEqual(sim.consentRevokeSession({ arid: c.arid, issuedAt: c.issuedAt, maxHeight: c.max_height }), { ok: true });
+    const nc = await wallet.post('/wallet/session/revoke', { r_s: rs });
+    assert.equal(nc.status, 409, j(nc.body)); assert.equal(nc.body.reason, 'needs_consent');
+    assert.ok((await wallet.get('/wallet/status')).body.sessions[rs], 'needs_consent 는 세션을 지우지 않는다');
+    // 팝업이 동의를 다시 받아 세션 증인을 채우면(재승인 경로) 서명이 되고 폐기된다
+    const w = sim.consentLogin({ origin: info.origin, arid: info.arid, allowAgent: '0' });
+    assert.equal((await wallet.post('/wallet/session/witness', { r_s: rs, witness: w, allowAgent: '0' })).status, 200);
+    const r = await wallet.post('/wallet/session/revoke', { r_s: rs });
+    assert.equal(r.status, 200, j(r.body)); assert.equal(r.body.revoked, true);
+    assert.equal((await wallet.get('/wallet/status')).body.sessions[rs], undefined, '폐기 요청 뒤 지갑은 세션을 버린다');
+    assert.equal((await wallet.post('/wallet/session/revoke', { r_s: rs })).status, 404, '이미 버린 세션은 no_session');
+  });
+
   await t('consent 거절: 시뮬레이터가 denied 를 주면 페이지가 로그인하지 않는다(시뮬레이터 수준 검증)', async () => {
     const base = await loginBase();
     const before = Object.keys((await wallet.get('/wallet/status')).body.sessions).length;

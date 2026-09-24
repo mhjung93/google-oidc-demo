@@ -314,7 +314,11 @@
           row.append(label, btn);
           acts.appendChild(row);
         }
-      } catch (e) { $('status').textContent = `상태 조회 실패: ${e.message}`; }
+      } catch (e) {
+        $('status').textContent = `상태 조회 실패: ${e.message}`;
+        // 상태를 못 읽었으면 세션 목록도 믿을 수 없다 — 이미 지워진 세션의 폐기 버튼이 남지 않게 함께 비운다.
+        $('sessionActions').textContent = '';
+      }
     }
 
     // V8 세션 폐기(설계 2026-09-24 §4). snap 모드는 Snap 동의 창을 먼저 받는다 — Snap 에는 Poseidon 이 없어 서명 자체는

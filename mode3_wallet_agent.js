@@ -586,7 +586,9 @@ app.post('/wallet/session/revoke', async (req, res) => {
     const rsKey = BigInt(r_s).toString();
     const s = state.sessions[rsKey];
     if (!s) return res.status(404).json({ reason: 'no_session' });
-    const sk_u = SECRETS === 'snap' ? s.witness?.sk_u : state.registration?.sk_u;
+    // self_revoke 와 같은 규칙 — 등록이 없으면 여기서 끝낸다. 없으면 file 모드가 snap 전용 사유인 needs_consent 를 내게 된다.
+    if (!state.registration) return res.status(409).json({ reason: 'not_registered' });
+    const sk_u = SECRETS === 'snap' ? s.witness?.sk_u : state.registration.sk_u;
     if (!sk_u) return res.status(409).json({ reason: 'needs_consent' });
     const nonce = randomScalar();   // lib/mode3_credential.js — 다른 요청과 같은 난수원. 신선도는 CIA 가 보지 않는다(재생 = 같은 세션 재폐기, 멱등)
     const sig_u = await signRevokeSession(sk_u, BigInt(state.registration.uid), BigInt(s.credential.Cf_s), nonce);
