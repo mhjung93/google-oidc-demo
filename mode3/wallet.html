@@ -4,97 +4,125 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="same-origin" />
+  <!-- 제목의 "Mode 3 지갑" 은 tests/test_mode3_demo_stack.mjs 의 페이지 서빙 검사 marker 다. -->
   <title>Mode 3 지갑</title>
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 760px; margin: 24px auto; padding: 0 16px; }
-    fieldset { border: 2px solid #4CAF50; margin-bottom: 16px; }
-    pre { background: #f6f6f6; padding: 10px; white-space: pre-wrap; font-size: 0.85em; }
-    .ok { color: #2e7d32; font-weight: bold; } .bad { color: #c62828; font-weight: bold; }
-    .muted { color: #666; font-size: 0.9em; }
-  </style>
+  <link rel="stylesheet" href="/common/demo.css" />
+  <script src="/common/strings.js"></script>
+  <script src="/common/demo.js"></script>
 </head>
-<body>
+<body data-page="wallet">
+  <header id="demoBar"></header>
+
   <!-- 팝업 모드(?authorize=1, 스펙 2026-09-22 metamask-snap §3.2): 폼 대신 승인 진행 화면만 보인다. -->
-  <div id="authorizeView" hidden>
-    <h2>로그인 승인</h2>
-    <p id="authTitle">서비스 요청을 기다리는 중…</p>
-    <p id="authStep" class="muted"></p>
-    <pre id="authLog"></pre>
-    <p class="muted">이 창은 서비스 페이지가 연다. 요청은 쿼리가 아니라 <code>postMessage</code> 로 받고, 메시지를 보낸 오리진이 서비스 인증서의 오리진과 같을 때만 진행한다.</p>
-  </div>
+  <main class="cards" id="authorizeView" hidden>
+    <section class="card span2">
+      <h3 data-i18n="wallet_auth_title">로그인 승인</h3>
+      <p id="authTitle">서비스 페이지의 요청을 기다리는 중…</p>
+      <dl class="kv" id="authSummary"></dl>
+      <p id="authStep" class="muted expert"></p>
+      <pre id="authLog" class="expert"></pre>
+      <p class="muted" data-i18n="wallet_auth_note">요청은 주소창이 아니라 postMessage 로 받습니다. 메시지를 보낸 오리진이 서비스 인증서의 오리진과 같을 때만 진행합니다.</p>
+    </section>
+  </main>
 
-  <div id="mainView">
-  <h2>Mode 3 지갑 에이전트</h2>
-  <p class="muted" id="intro">이 페이지는 지갑 에이전트(:5100)와 같은 오리진에서만 열린다. 비밀은 <code>mode3_wallet_state.json</code>에 있고 화면에 나오지 않는다.</p>
+  <main class="cards" id="mainView">
+    <section class="card" id="identityCard">
+      <h3 data-i18n="wallet_identity_title">내 신원</h3>
+      <p class="desc" data-i18n="wallet_identity_desc">신원 기관에 한 번 등록합니다. 속성은 기관이 관리하고 지갑은 읽기만 합니다.</p>
+      <p><span id="regBadge" class="badge">미등록</span> <span id="regInfo" class="muted"></span></p>
+      <span id="fileRegFields"><label>uid <input id="uid" value="12345" size="8" /></label> <label>pwd <input id="pwd" type="password" value="password123" size="12" /></label><br /></span>
+      <dl class="kv" id="attrsView">
+        <dt data-term="attr0">출생연도</dt><dd><input id="attr0" size="6" readonly /></dd>
+        <dt data-term="attr1">국가</dt><dd><input id="attr1" size="6" readonly /></dd>
+        <dt data-term="attr2">등급</dt><dd><input id="attr2" size="6" readonly /></dd>
+        <dt data-term="attr3">예비</dt><dd><input id="attr3" size="6" readonly /></dd>
+      </dl>
+      <p>
+        <button id="registerBtn" data-i18n="wallet_register_btn">등록</button>
+        <button id="attrsBtn" class="btn-ghost" data-i18n="wallet_attrs_btn">신원 기관에서 다시 받기</button>
+      </p>
+      <div id="registerResult"></div>
+      <p id="intro" class="muted expert"></p>
+    </section>
 
-  <!-- snap 모드 전용(스펙 §3.2). file 모드에서는 숨긴 채로 둔다. -->
-  <fieldset id="snapPanel" hidden>
-    <legend>MetaMask · Snap (비밀은 Snap 에 있다)</legend>
-    <button id="connectBtn" type="button">MetaMask 연결</button>
-    <span id="mmStatus" class="muted">연결 안 됨</span>
-    <br />
-    <button id="snapInfoBtn" type="button" title="Snap 의 getPublicInfo — 비밀은 실리지 않는다">Snap 상태 보기</button>
-    <button id="selfRevokeBtn" type="button" title="Snap 이 비밀번호를 묻고 에이전트가 CIA 로 중계한다 — 되돌릴 수 없다">자기 폐기</button>
-    <button id="snapResetBtn" type="button" title="Snap 의 등록 비밀·동의 기록을 지운다(데모 초기화)">Snap 초기화</button>
-    <pre id="snapInfo">(Snap 상태를 아직 읽지 않았다)</pre>
-  </fieldset>
+    <section class="card" id="sessionsCard">
+      <h3 data-i18n="wallet_sessions_title">로그인 세션</h3>
+      <p class="desc" data-i18n="wallet_sessions_desc">서비스마다 다른 주소로 로그인합니다. 세션 하나만 끝낼 수도 있습니다.</p>
+      <p><button id="refreshBtn" class="btn-ghost" data-i18n="refresh">새로고침</button></p>
+      <div id="sessionActions"></div>
+      <div id="sessionVerdict"></div>
+      <p class="muted" data-i18n="wallet_sessions_note">로그인은 서비스 페이지에서 시작합니다 — 자격증명 발급은 로그인 안에서 필요할 때 자동으로 일어납니다.</p>
+      <p id="chainInfo" class="muted expert"></p>
+      <pre id="status" class="expert">불러오는 중…</pre>
+      <pre id="sessionLog" class="expert"></pre>
+    </section>
 
-  <fieldset>
-    <legend>등록 (§6.1, 한 번)</legend>
-    <span id="fileRegFields">
-      <label>uid <input id="uid" value="12345" size="8" /></label>
-      <label>pwd <input id="pwd" type="password" value="password123" size="12" /></label>
-      <br />
-    </span>
-    <label class="muted">속성(10진 4개 — AA(CIA) 가 관리한다. 2026-09-22 §3.3: 지갑은 등록·재동기화 때 받아 여기 채우기만 한다)</label>
-    <input id="attr0" size="6" title="attr0" readonly />
-    <input id="attr1" size="6" title="attr1" readonly />
-    <input id="attr2" size="6" title="attr2" readonly />
-    <input id="attr3" size="6" title="attr3" readonly />
-    <button id="registerBtn">등록</button>
-    <button id="attrsBtn" title="/wallet/attrs/sync — AA 기록을 다시 받는다. 값이 바뀌었으면 옛 사용자 자격증명·세션을 버린다(다음 로그인이 새로 받는다)">AA 에서 속성 다시 받기</button>
-    <span id="registerResult" class="muted"></span>
-  </fieldset>
+    <section class="card span2" id="txCard">
+      <h3 data-i18n="wallet_tx_title">트랜잭션 보내기</h3>
+      <p class="desc" data-i18n="wallet_tx_desc">이 서비스 전용 주소에서 보냅니다. 필요하면 속성 조건만 골라 공개합니다.</p>
+      <p id="txNote" class="muted"></p>
+      <dl class="kv">
+        <dt data-i18n="wallet_tx_session">보낼 세션</dt><dd><select id="txSession"></select></dd>
+        <dt data-i18n="wallet_tx_to">받는 주소</dt><dd><input id="txTo" value="0x000000000000000000000000000000000000dEaD" size="44" /></dd>
+        <dt data-i18n="wallet_tx_value">보낼 금액(wei)</dt><dd><input id="txValue" value="0" size="10" /></dd>
+        <dt data-i18n="wallet_tx_data">데이터</dt><dd><input id="txData" value="0x" size="20" /></dd>
+      </dl>
+      <!-- open: 접어 두면 안에 든 입력칸이 보이지 않아 tests/test_mode3_browser.mjs 의 fill·check·selectOption 이
+           실패한다(Playwright 는 숨은 요소를 다루지 않는다). 사용자는 직접 접을 수 있다. -->
+      <details id="discloseBox" open>
+        <summary data-term="disclosure">공개할 속성 조건</summary>
+        <p class="muted" data-i18n="wallet_disclose_desc">체크한 조건만 증명에 실립니다. 최소=최대 면 그 값 하나를 공개합니다. 집합 소속은 슬롯 하나만 고를 수 있고, 지갑이 허용 원소 목록으로 계산해 증명에 넣습니다. 나이는 연 단위(올해 − 출생연도)입니다.</p>
+        <div id="discloseRows">
+          <div><label><input type="checkbox" id="dk0" /> <span data-term="attr0">출생연도</span></label>
+            <label><span data-i18n="wallet_lo">최소</span> <input id="discLo0" size="10" /></label>
+            <label><span data-i18n="wallet_hi">최대</span> <input id="discHi0" size="10" /></label></div>
+          <div><label><input type="checkbox" id="dk1" /> <span data-term="attr1">국가</span></label>
+            <label><span data-i18n="wallet_lo">최소</span> <input id="discLo1" size="10" /></label>
+            <label><span data-i18n="wallet_hi">최대</span> <input id="discHi1" size="10" /></label></div>
+          <div><label><input type="checkbox" id="dk2" /> <span data-term="attr2">등급</span></label>
+            <label><span data-i18n="wallet_lo">최소</span> <input id="discLo2" size="10" /></label>
+            <label><span data-i18n="wallet_hi">최대</span> <input id="discHi2" size="10" /></label></div>
+          <div><label><input type="checkbox" id="dk3" /> <span data-term="attr3">예비</span></label>
+            <label><span data-i18n="wallet_lo">최소</span> <input id="discLo3" size="10" /></label>
+            <label><span data-i18n="wallet_hi">최대</span> <input id="discHi3" size="10" /></label></div>
+        </div>
+        <p><button id="discExactBtn" type="button" class="btn-ghost" data-i18n="wallet_disc_exact_btn">내 실제 값으로 채우기(체크한 조건)</button></p>
+        <div id="setRow">
+          <label><span data-i18n="wallet_set_label">집합 소속 조건</span>
+            <select id="setSlot">
+              <option value="" selected data-i18n="wallet_set_none">쓰지 않음</option>
+              <option value="0" data-term="attr0">출생연도</option>
+              <option value="1" data-term="attr1">국가</option>
+              <option value="2" data-term="attr2">등급</option>
+              <option value="3" data-term="attr3">예비</option>
+            </select></label>
+          <label><span data-i18n="wallet_set_members">허용 원소</span> <input id="setMembers" value="410,392,840,276,250" size="28" /></label>
+        </div>
+        <p>
+          <label><span data-i18n="wallet_min_age_label">나이 ≥</span> <input id="minAgeIn" value="19" size="3" /></label>
+          <button id="ageBtn" type="button" class="btn-ghost" data-i18n="wallet_age_btn">이 나이 조건으로 채우기</button>
+        </p>
+      </details>
+      <p><button id="txBtn" disabled data-i18n="wallet_tx_btn">트랜잭션 보내기</button></p>
+      <div id="txVerdict"></div>
+      <pre id="txLog" class="expert"></pre>
+      <p class="muted" data-i18n="wallet_tx_hash_hint">이 해시를 서비스 페이지의 "해시로 요청"에 붙여 넣으면 승인 개봉을 시연할 수 있습니다.</p>
+    </section>
 
-  <fieldset>
-    <legend>상태 <button id="refreshBtn">새로고침</button></legend>
-    <pre id="status">불러오는 중…</pre>
-    <!-- V8 세션 폐기(설계 2026-09-24 §4): 세션 하나만 죽인다. 자격증명(계정)은 그대로라 다른 세션·다음 로그인은 계속 된다. -->
-    <div id="sessionActions"></div>
-    <pre id="sessionLog" hidden></pre>
-  </fieldset>
-
-  <fieldset>
-    <legend>온체인 트랜잭션 (설계 2026-09-18 §6.3 — sender = PPID 계정)</legend>
-    <p class="muted" id="txNote">지갑이 같은 π 를 트랜잭션마다 첨부하고 컨트랙트가 매번 검증한다. 첫 트랜잭션은 CREATE2 로 계정을 배포한다. 가스는 릴레이어(hardhat 계정 0).</p>
-    <label>세션 <select id="txSession"></select></label><br />
-    <label>to <input id="txTo" value="0x000000000000000000000000000000000000dEaD" size="44" /></label>
-    <label>value(wei) <input id="txValue" value="0" size="10" /></label>
-    <label>data <input id="txData" value="0x" size="20" /></label>
-    <br />
-    <p class="muted">선택 공개(2026-09-22 §4.2): 체크한 슬롯만 [lo, hi] 구간을 π 에 싣는다. lo=hi 면 정확한 값 공개. "정확히 공개"는 체크된 슬롯을 내 현재 속성값으로 채운다. 집합 소속(V7)은 슬롯 하나만 — 지갑이 원소 목록으로 root 를 계산해 증명에 넣는다. 나이는 연 단위(올해 − 출생연도).</p>
-    <div id="discloseRows">
-      <div><label><input type="checkbox" id="dk0" /> 슬롯0</label> lo <input id="discLo0" size="10" /> hi <input id="discHi0" size="10" /></div>
-      <div><label><input type="checkbox" id="dk1" /> 슬롯1</label> lo <input id="discLo1" size="10" /> hi <input id="discHi1" size="10" /></div>
-      <div><label><input type="checkbox" id="dk2" /> 슬롯2</label> lo <input id="discLo2" size="10" /> hi <input id="discHi2" size="10" /></div>
-      <div><label><input type="checkbox" id="dk3" /> 슬롯3</label> lo <input id="discLo3" size="10" /> hi <input id="discHi3" size="10" /></div>
-    </div>
-    <button id="discExactBtn" type="button">정확히 공개(체크된 슬롯)</button>
-    <br />
-    <div id="setRow">
-      집합 소속(V7): 슬롯 <select id="setSlot"><option value="" selected>없음</option><option value="0">슬롯0</option><option value="1">슬롯1(국가)</option><option value="2">슬롯2</option><option value="3">슬롯3</option></select>
-      원소 <input id="setMembers" value="410,392,840,276,250" size="28" />
-      <button id="ageBtn" type="button">나이 ≥ <input id="minAgeIn" value="19" size="3" /> 증명(슬롯0 hi = 올해 − N)</button>
-    </div>
-    <br />
-    <button id="txBtn" disabled>트랜잭션 보내기</button>
-    <p id="txVerdict"></p>
-    <pre id="txLog"></pre>
-    <p class="muted">해시를 복사해 서비스 페이지의 "해시로 개봉"에 붙여 넣을 수 있다.</p>
-  </fieldset>
-
-  <p class="muted">로그인·발급은 RP 페이지(:3100)의 버튼이 시작한다 — 발급은 로그인 안에서 필요할 때 자동으로 일어난다(설계 §6.2 "세션마다").</p>
-  </div>
+    <!-- snap 모드 전용(스펙 §3.2). file 모드에서는 숨긴 채로 둔다. -->
+    <section class="card" id="snapPanel" hidden>
+      <h3 data-i18n="wallet_snap_title">MetaMask · Snap</h3>
+      <p class="desc" data-i18n="wallet_snap_desc">비밀은 Snap 안에 있습니다. 이 페이지는 동의만 받습니다.</p>
+      <p><button id="connectBtn" data-i18n="wallet_connect_btn">MetaMask 연결</button> <span id="mmStatus" class="badge">연결 안 됨</span></p>
+      <p>
+        <button id="snapInfoBtn" class="btn-ghost" data-i18n="wallet_snap_info_btn">Snap 상태 보기</button>
+        <button id="selfRevokeBtn" class="danger" data-i18n="wallet_self_revoke_btn">계정 자기 폐기</button>
+        <button id="snapResetBtn" class="danger" data-i18n="wallet_snap_reset_btn">Snap 초기화</button>
+      </p>
+      <div id="snapVerdict"></div>
+      <pre id="snapInfo" class="expert"></pre>
+    </section>
+  </main>
 
   <script>
     const $ = (id) => document.getElementById(id);
@@ -103,11 +131,30 @@
     // 뷰 전환은 설정을 기다리지 않는다 — 쿼리만 보면 알 수 있고, config fetch 를 기다리면 팝업에 지갑 화면이 한 프레임 비친다.
     // ready 전송은 예정대로 config·리스너가 준비된 뒤다(init → runAuthorize).
     if (IS_AUTHORIZE) { $('mainView').hidden = true; $('authorizeView').hidden = false; }
+    // /common 이 뜨지 않아도(404) 페이지는 HTML 의 한국어 기본 텍스트로 계속 돌아간다(설계 §5).
+    // demo.js 만 빠졌다면 사전(strings.js)은 그대로 읽는다 — 둘 다 없을 때만 키가 그대로 남는다.
+    const Demo = window.Demo ?? {
+      lang: 'ko', expert: false,
+      t(k, vars = {}) { const e = window.DemoStrings?.ui?.[k]; let s = e ? e.ko : k; for (const [n, v] of Object.entries(vars)) s = s.replace(`{${n}}`, String(v)); return s; },
+      term: (n) => window.DemoStrings?.terms?.[n]?.ko ?? n,
+      reason: () => null,
+      init() { /* 안내 바 없음 */ }, guide() { /* 안내 바 없음 */ }, setLang() {}, setExpert() {},
+      verdict(el, args) {
+        const { ok, title, summary, reason, detail, pending } = typeof args === 'function' ? args() : args;
+        el.className = `verdict ${pending ? 'pending' : ok ? 'ok' : 'bad'}`;
+        const d = detail === undefined ? null : (typeof detail === 'string' ? detail : JSON.stringify(detail));
+        el.textContent = [window.DemoStrings?.verdicts?.[title]?.ko ?? title, summary, reason, d].filter(Boolean).join(' — ');
+      },
+      confirmDanger: (k) => window.confirm(k),
+    };
     // /wallet/config 를 못 읽으면 지금까지의 동작(file 모드)으로 본다.
     let cfg = { secrets: 'file', snapId: null, walletOrigin: location.origin, rpcUrl: null, chainId: null };
     let account = null;        // MetaMask 가 준 EOA — 가스를 내는 계정이다(PPID 계정과 다르다)
     let lastAttrs = null;      // /wallet/status 가 준 값 — "정확히 공개" 버튼이 쓴다
     let lastSessions = {};     // /wallet/status 의 sessions — 선택된 세션의 attrGateAddress 로 tx 폼 기본값을 채운다(스펙 §6.1)
+    let lastStatus = null;     // 마지막 /wallet/status 본문(언어·전문가 전환 때 다시 그린다)
+    let statusError = null;    // 상태를 못 읽었을 때의 원문
+    const progress = { txOk: false, disclosed: false, revoked: false };   // 이 페이지가 아는 완료 신호(세션 중 메모리)
 
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     async function postJson(url, body) {
@@ -115,6 +162,26 @@
       return { status: r.status, body: await r.json().catch(() => ({})) };
     }
     const errText = (status, b) => `${status}: ${b.reason ?? b.error ?? ''}${b.detail ? ` (${b.detail})` : ''}${b.cia ? ` ${JSON.stringify(b.cia)}` : ''}`;
+    /** 사전 텍스트를 요소에 쓴다. 사전에 없는 키(= /common 미로딩)면 아무것도 쓰지 않아 HTML 의 기본 텍스트가 남는다. */
+    const tx = (el, k, vars) => { const s = Demo.t(k, vars); if (s !== k) el.textContent = s; };
+    /** 스크립트가 값과 엮어 만드는 문구 — 사전이 없으면 키를 화면에 흘리지 않고 빈 문자열로 둔다. */
+    const tt = (k, vars) => { const s = Demo.t(k, vars); return s === k ? '' : s; };
+    /**
+     * 결과 카드. title 은 판정 키(사전 verdicts) 또는 ui 키이고, extra 는 객체이거나 — 사전을 읽어 만드는 값이면 —
+     * 그것을 돌려주는 함수다. 인자 생성기를 그대로 넘기면 Demo 가 언어·전문가 전환 때 다시 그린다.
+     * 에이전트·Snap·MetaMask 가 준 문자열은 전부 textContent 로만 들어간다(Demo.verdict).
+     */
+    function setVerdict(el, ok, title, extra = {}) {
+      Demo.verdict(el, () => ({ ok, title: window.DemoStrings?.verdicts?.[title] ? title : Demo.t(title), ...(typeof extra === 'function' ? extra() : extra) }));
+    }
+    const pendingVerdict = (el, key) => setVerdict(el, null, key, { pending: true });
+    /**
+     * '자세히'에 실을 응답 본문. 에이전트 응답에는 지갑 밖으로 내면 안 되는 값이 섞여 있다 —
+     * /wallet/register 의 sk_u(snap 모드), 로그인·재동기화의 userCredIssued(blind_u)·attrsChanged.
+     * 이 페이지는 그 값들을 Snap 에 넘길 뿐 화면·DOM 에 남기지 않는다(browser 테스트의 "비밀은 Snap 에만" 계약).
+     */
+    const safeDetail = (b) => { const { sk_u, pwd, witness, userCredIssued, attrsChanged, ...rest } = b ?? {}; return rest; };
+    const attrsText = (attrs) => (Array.isArray(attrs) ? attrs.map((v, i) => `${Demo.term(`attr${i}`)} ${v}`).join(', ') : String(attrs));
 
     // ---- MetaMask · Snap ----
     function requireEthereum() {
@@ -128,7 +195,10 @@
       account = accounts && accounts.length ? accounts[0] : null;
       if (!cfg.snapId) throw new Error('snapId 가 없다(/wallet/config)');
       await eth.request({ method: 'wallet_requestSnaps', params: { [cfg.snapId]: {} } });
-      $('mmStatus').textContent = `계정 ${account} · Snap ${cfg.snapId}`;
+      // 계정 주소와 Snap id 는 browser 테스트가 #mmStatus 에서 찾는 값이다 — 사전이 없어도 남게 직접 잇는다.
+      const el = $('mmStatus');
+      el.className = 'badge ok';
+      el.textContent = tt('wallet_mm_connected', { account, snap: cfg.snapId }) || `${account} · ${cfg.snapId}`;
       return account;
     }
     const ensureConnected = async () => (account ? account : connectMetaMask());
@@ -160,10 +230,42 @@
     }
 
     // ---- /authorize 팝업(스펙 §3.2·§4.2) ----
+    /** 요청이 무엇을 공개하라는지 사람 말로. 서비스가 보낸 값이므로 전부 textContent 로만 들어간다. */
+    function requestConditions(req) {
+      if (req.reauth === true) return [tt('wallet_auth_reauth')];
+      const out = [];
+      const d = Array.isArray(req.disclose) ? req.disclose : [];
+      for (let i = 0; i < 4; i++) {
+        const s = d[i];
+        if (!s) continue;
+        const attr = Demo.term(`attr${i}`);
+        // 하한이 없는 범위(로그인의 "나이 ≥ N" 이 그렇다)는 "≤ 상한" 한 줄로 읽는 편이 쉽다.
+        out.push(String(s.lo ?? '0') === '0' ? tt('wallet_cond_le', { attr, hi: s.hi }) : tt('wallet_cond_range', { attr, lo: s.lo, hi: s.hi }));
+      }
+      if (req.set && req.set.slot !== undefined && req.set.slot !== null) out.push(tt('wallet_cond_set', { attr: Demo.term(`attr${Number(req.set.slot)}`) }));
+      if (req.allowAgent === '1' || req.allowAgent === true) out.push(tt('wallet_cond_agent'));
+      return out.filter(Boolean);
+    }
+    /** 승인 요청을 문장으로 — 서비스·주소·요청한 조건. */
+    function renderAuthSummary(req) {
+      const dl = $('authSummary');
+      dl.textContent = '';
+      const row = (labelKey, value) => {
+        const dt = document.createElement('dt');
+        dt.textContent = tt(labelKey) || labelKey;
+        const dd = document.createElement('dd');
+        dd.textContent = value;
+        dl.append(dt, dd);
+      };
+      row('wallet_auth_service', req.serviceName || req.origin);
+      row('wallet_auth_origin', req.origin);
+      const conds = requestConditions(req);
+      row('wallet_auth_conditions', conds.length ? conds.join(' · ') : tt('wallet_cond_none'));
+    }
     function runAuthorize() {
       const step = (s) => { $('authStep').textContent = s; };
       const log = (s) => { $('authLog').textContent += `${s}\n`; };
-      if (!window.opener) { step('이 창은 서비스 페이지가 열어야 한다(window.opener 가 없다).'); return; }
+      if (!window.opener) { tx($('authTitle'), 'wallet_auth_no_opener'); step('이 창은 서비스 페이지가 열어야 한다(window.opener 가 없다).'); return; }
       let handled = false;
       const onMessage = async (ev) => {
         const req = ev.data;
@@ -178,12 +280,14 @@
           catch (e) { log(`결과 전송 실패: ${e.message}`); }
           setTimeout(() => window.close(), result.ok ? 200 : 3000);   // 실패는 이유를 잠시 보이게 둔다
         };
-        $('authTitle').textContent = `서비스 ${req.serviceName || req.origin} 로그인 승인 중…`;
+        $('authTitle').textContent = tt('wallet_auth_approving', { service: req.serviceName || req.origin }) || `${req.serviceName || req.origin} 로그인 승인 중…`;
         if (ev.origin !== req.origin) {
           step('오리진 불일치 — 이 요청은 진행하지 않는다.');
           log(`메시지 오리진=${ev.origin}\n인증서 오리진=${req.origin}`);
           return reply({ ok: false, reason: 'origin_mismatch' });
         }
+        // 요약은 오리진 대조를 통과한 뒤에만 그린다 — 남이 보낸 서비스 이름을 승인 화면에 먼저 띄우지 않는다.
+        renderAuthSummary(req);
         if (cfg.secrets !== 'snap') { step('이 지갑은 file 모드다 — 팝업 경로를 쓰지 않는다.'); return reply({ ok: false, reason: 'not_snap_mode' }); }
         try {
           step('MetaMask·Snap 연결 중…');
@@ -263,81 +367,170 @@
       if ($('txTo').value.trim() === '0x000000000000000000000000000000000000dEaD') $('txTo').value = c.attrGateAddress;
       if ($('txData').value.trim() === '0x') $('txData').value = '0x4e71d92d';
     }
+    /** 안내 바(설계 §2). 다른 당사자에서 끝나는 단계는 링크가 있으면 링크로, 없으면 "다른 창에서" 로 표시된다. */
+    function renderGuide() {
+      const s = lastStatus;
+      const sessions = s ? Object.keys(s.sessions ?? {}).length : 0;
+      const done = [];
+      if (s?.registered) done.push('register');
+      if (sessions) done.push('login');
+      if (progress.txOk) done.push('use');
+      if (progress.disclosed) done.push('disclose');
+      if (progress.revoked) done.push('revoke');
+      const current = !s?.registered ? 'register' : !sessions ? 'login' : !progress.txOk ? 'use' : 'disclose';
+      Demo.guide({ done, current, links: { admin: s?.ciaUrl ? `${s.ciaUrl}/admin` : null, account: s?.ciaUrl ? `${s.ciaUrl}/account` : null } });
+    }
+    /** 짧게 줄인 값 + 전체 값은 title 로(둘 다 공개 값이다 — 비밀은 /wallet/status 에 실리지 않는다). */
+    function shortCode(full, n = 12) {
+      const c = document.createElement('code');
+      const s = String(full ?? '');
+      c.textContent = s.length > n ? `${s.slice(0, n)}…` : s;
+      c.title = s;
+      return c;
+    }
+    function kvRow(dl, label, value, expert = false) {
+      const dt = document.createElement('dt');
+      const dd = document.createElement('dd');
+      if (label instanceof Node) dt.appendChild(label); else dt.textContent = label;
+      if (value instanceof Node) dd.appendChild(value); else dd.textContent = value;
+      if (expert) { dt.className = 'expert'; dd.className = 'expert'; }
+      dl.append(dt, dd);
+    }
+    const termEl = (name) => { const s = document.createElement('span'); s.dataset.term = name; s.textContent = Demo.term(name); return s; };
+
+    // ---- 내 신원 카드 ----
+    function renderIdentity() {
+      const s = lastStatus;
+      lastAttrs = s?.attrs ?? null;
+      for (let k = 0; k < 4; k++) $('attr' + k).value = lastAttrs ? lastAttrs[k] : '';
+      const badge = $('regBadge');
+      badge.className = `badge ${s?.registered ? 'ok' : 'muted'}`;
+      tx(badge, s?.registered ? 'wallet_reg_yes' : 'wallet_reg_no');
+      const uc = s?.userCred ?? null;
+      const credKey = !uc ? 'wallet_cred_none' : uc.revoked === true ? 'wallet_cred_revoked' : uc.revoked === false ? 'wallet_cred_yes' : 'wallet_cred_unknown';
+      $('regInfo').textContent = s?.registered ? [tt('wallet_uid', { uid: s.uid }), tt(credKey)].filter(Boolean).join(' · ') : '';
+      // 등록 폼은 미등록일 때만 펼친다(설계 §4.1). snap 모드는 Snap 이 묻는다 — 항상 접힌 채다.
+      if (cfg.secrets !== 'snap') $('fileRegFields').hidden = Boolean(s?.registered);
+    }
+
+    // ---- 로그인 세션 카드 + 트랜잭션 세션 선택 ----
+    function renderSessions() {
+      const s = lastStatus;
+      const entries = s ? Object.entries(s.sessions ?? {}) : [];
+      lastSessions = s?.sessions ?? {};
+      // 원문 상태는 전문가 보기에 그대로 남긴다(설계 §3.2).
+      $('status').textContent = s ? JSON.stringify(s, null, 2) : `상태 조회 실패: ${statusError}`;
+      $('chainInfo').textContent = s ? tt('wallet_chain_info', { head: s.head ?? '-', log: s.logAddress ?? '-', root: s.lastRoot ?? '-' }) : '';
+
+      const sel = $('txSession');
+      const prev = sel.value;
+      sel.textContent = '';
+      let anyFactory = false;
+      for (const [r_s, c] of entries) {
+        const opt = document.createElement('option');
+        opt.value = r_s;
+        const factory = tt(c.factoryAddress ? 'wallet_factory_yes' : 'wallet_factory_no');
+        opt.textContent = tt('wallet_tx_session_opt', { arid: String(c.arid).slice(0, 10), ppid: String(c.PPID).slice(0, 12), factory })
+          || `${String(c.arid).slice(0, 10)}… / ${String(c.PPID).slice(0, 12)}…`;
+        if (c.factoryAddress) anyFactory = true;
+        sel.appendChild(opt);
+      }
+      if (entries.some(([r_s]) => r_s === prev)) sel.value = prev;
+      $('txBtn').disabled = !anyFactory;
+      applyTxDefaults();
+
+      // 세션마다 요약 + 폐기 버튼. 목록은 새로고침마다 다시 만든다 — 지워진 세션의 버튼이 남지 않게.
+      const acts = $('sessionActions');
+      acts.textContent = '';
+      if (!entries.length) {
+        const p = document.createElement('p');
+        p.className = 'muted';
+        p.textContent = '로그인 세션이 없습니다. 서비스에서 로그인하세요.';
+        tx(p, 'wallet_no_sessions');
+        acts.appendChild(p);
+        return;
+      }
+      for (const [r_s, c] of entries) {
+        const box = document.createElement('div');
+        const dl = document.createElement('dl');
+        dl.className = 'kv';
+        kvRow(dl, tt('wallet_session_service') || '서비스', shortCode(c.arid, 8));
+        kvRow(dl, termEl('PPID'), shortCode(c.PPID, 12));
+        kvRow(dl, tt('wallet_session_expiry') || '만료', tt('wallet_session_expires', { h: c.max_height }) || String(c.max_height));
+        const agent = document.createElement('span');
+        agent.className = `badge ${c.allowAgent === '1' ? 'ok' : 'muted'}`;
+        agent.textContent = tt(c.allowAgent === '1' ? 'rp_agent_yes' : 'rp_agent_no') || c.allowAgent;
+        kvRow(dl, termEl('allowAgent'), agent);
+        kvRow(dl, termEl('session'), shortCode(r_s, 16), true);
+        kvRow(dl, tt('wallet_session_addr') || '세션 주소', shortCode(c.sessionAddress, 20), true);
+        kvRow(dl, tt('wallet_session_factory') || '팩토리', shortCode(c.factoryAddress ?? '-', 20), true);
+        kvRow(dl, tt('wallet_session_issued') || '발급 시각', String(c.issuedAt), true);
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'danger';
+        btn.textContent = tt('wallet_end_session') || '이 세션 끝내기(폐기)';
+        btn.addEventListener('click', () => revokeSession(r_s, c, btn));
+        box.append(dl, btn);
+        acts.appendChild(box);
+      }
+    }
+    /** 모드에 따라 달라지는 안내 문구(언어 전환 때 다시 부른다). */
+    function renderModeTexts() {
+      const snap = cfg.secrets === 'snap';
+      tx($('intro'), snap ? 'wallet_intro_snap' : 'wallet_intro');
+      tx($('txNote'), snap ? 'wallet_tx_note_snap' : 'wallet_tx_note');
+      if (snap) $('registerBtn').title = tt('wallet_register_title_snap');
+    }
+
     async function refresh() {
       try {
         const r = await fetch('/wallet/status');
-        const s = await r.json();
-        lastAttrs = s.attrs ?? null;
-        for (let k = 0; k < 4; k++) $('attr' + k).value = lastAttrs ? lastAttrs[k] : '';
-        const lines = [
-          `등록: ${s.registered ? `예 (uid=${s.uid})` : '아니오'}`,
-          `사용자 자격증명: ${s.userCred ? `${s.userCred.revoked === true ? '폐기됨' : s.userCred.revoked === false ? '있음' : '있음(폐기 여부는 다음 동기화 뒤)'} (Cf_u=${String(s.userCred.Cf_u).slice(0, 8)}…, 발급=${s.userCred.issuedAt})` : '없음 (첫 로그인 때 받는다)'}`,
-          `체인 head: ${s.head ?? '(RPC 없음)'}   RevocationLog: ${s.logAddress ?? '(없음)'}`,
-          `마지막 동기화 root: ${s.lastRoot ?? '-'}`,
-          '',
-          'sessions (r_s 별):',
-        ];
-        const entries = Object.entries(s.sessions);
-        if (entries.length === 0) lines.push('  (없음)');
-        for (const [r_s, c] of entries) lines.push(`  r_s=${r_s.slice(0, 12)}…  arid=${c.arid}\n    max_height=${c.max_height}  chainid=${c.chainid}  allowAgent=${c.allowAgent}  PPID=${String(c.PPID).slice(0, 12)}…\n    세션 주소=${c.sessionAddress}  팩토리=${c.factoryAddress ?? '-'}\n    발급=${c.issuedAt}`);
-        $('status').textContent = lines.join('\n');
-
-        lastSessions = s.sessions;
-        const sel = $('txSession');
-        const prev = sel.value;
-        sel.textContent = '';
-        let anyFactory = false;
-        for (const [r_s, c] of entries) {
-          const opt = document.createElement('option');
-          opt.value = r_s;
-          opt.textContent = `arid ${String(c.arid).slice(0, 10)}… / PPID ${String(c.PPID).slice(0, 12)}… / 팩토리 ${c.factoryAddress ? '있음' : '없음'}`;
-          if (c.factoryAddress) anyFactory = true;
-          sel.appendChild(opt);
-        }
-        if (entries.some(([r_s]) => r_s === prev)) sel.value = prev;
-        $('txBtn').disabled = !anyFactory;
-        applyTxDefaults();
-
-        // 세션마다 폐기 버튼. 목록은 새로고침마다 다시 만든다 — 지워진 세션의 버튼이 남지 않게.
-        const acts = $('sessionActions');
-        acts.textContent = '';
-        for (const [r_s, c] of entries) {
-          const row = document.createElement('div');
-          const label = document.createElement('span');
-          label.className = 'muted';
-          label.textContent = `r_s=${r_s.slice(0, 12)}…  arid=${String(c.arid).slice(0, 10)}…  발급=${c.issuedAt} `;
-          const btn = document.createElement('button');
-          btn.type = 'button';
-          btn.textContent = '이 세션 폐기';
-          btn.title = 'AA 에 이 세션만 폐기를 요청한다 — 다음 게시부터 이 세션의 로그인·트랜잭션이 거부된다. 계정·다른 세션은 그대로.';
-          btn.addEventListener('click', () => revokeSession(r_s, c, btn));
-          row.append(label, btn);
-          acts.appendChild(row);
-        }
+        lastStatus = await r.json();
+        statusError = null;
       } catch (e) {
-        $('status').textContent = `상태 조회 실패: ${e.message}`;
         // 상태를 못 읽었으면 세션 목록도 믿을 수 없다 — 이미 지워진 세션의 폐기 버튼이 남지 않게 함께 비운다.
-        $('sessionActions').textContent = '';
+        lastStatus = null;
+        statusError = e.message;
       }
+      renderIdentity();
+      renderSessions();
+      renderGuide();
+    }
+    // 언어·전문가 전환은 사전이 채우는 요소와 결과 카드만 바꾼다(Demo) — 스크립트가 만든 텍스트는 여기서 다시 그린다.
+    for (const k of ['setLang', 'setExpert']) {
+      const orig = Demo[k];
+      Demo[k] = (v) => { orig(v); renderModeTexts(); renderIdentity(); renderSessions(); };
     }
 
     // V8 세션 폐기(설계 2026-09-24 §4). snap 모드는 Snap 동의 창을 먼저 받는다 — Snap 에는 Poseidon 이 없어 서명 자체는
     // 에이전트가 세션의 메모리 증인에 든 sk_u 로 한다. 거절하면 에이전트를 부르지 않는다.
     async function revokeSession(r_s, c, btn) {
-      const out = (m) => { $('sessionLog').hidden = false; $('sessionLog').textContent = m; };
+      if (!Demo.confirmDanger('confirm_revoke')) return;
+      const out = (m) => { $('sessionLog').textContent = m; };
       btn.disabled = true;
+      pendingVerdict($('sessionVerdict'), 'working');
       try {
         if (cfg.secrets === 'snap') {
           await ensureConnected();
           const consent = await invokeSnap('consentRevokeSession', { arid: String(c.arid), issuedAt: c.issuedAt, maxHeight: String(c.max_height) });
-          if (!consent || consent.denied) { out('세션 폐기 취소됨'); return; }
+          if (!consent || consent.denied) {
+            out('세션 폐기 취소됨');
+            setVerdict($('sessionVerdict'), false, 'wallet_session_revoke_failed', () => ({ summary: Demo.t('wallet_cancelled') }));
+            return;
+          }
         }
         const { status, body: b } = await postJson('/wallet/session/revoke', { r_s });
-        out(status === 200
-          ? `세션 폐기 요청 완료 (r_s=${r_s.slice(0, 12)}…): inserted=${b.inserted}, pending=${b.pending} — 다음 게시부터 효력`
-          : `세션 폐기 실패 — ${errText(status, b)}`);
+        if (status === 200) {
+          out(`세션 폐기 요청 완료 (r_s=${r_s.slice(0, 12)}…): inserted=${b.inserted}, pending=${b.pending} — 다음 게시부터 효력`);
+          progress.revoked = true;
+          setVerdict($('sessionVerdict'), true, 'revoked_ok', () => ({ summary: Demo.t('wallet_session_revoked'), detail: safeDetail(b) }));
+        } else {
+          out(`세션 폐기 실패 — ${errText(status, b)}`);
+          setVerdict($('sessionVerdict'), false, 'wallet_session_revoke_failed', { reason: b.reason ?? `HTTP ${status}`, detail: safeDetail(b) });
+        }
       } catch (e) {
-        out(isUserRejected(e) ? '세션 폐기 취소됨' : `세션 폐기 실패: ${e.message}`);
+        out(`세션 폐기 실패: ${e.message}`);
+        setVerdict($('sessionVerdict'), false, 'wallet_session_revoke_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
       } finally { btn.disabled = false; refresh(); }
     }
     $('txSession').addEventListener('change', applyTxDefaults);
@@ -346,13 +539,13 @@
     // 등록: file 모드는 지금처럼 폼의 uid·pwd, snap 모드는 Snap 이 묻고(§4.1) 페이지는 cm_u 만 나른다.
     // 비밀번호는 Snap → 페이지 → 에이전트 → CIA 를 한 번 지날 뿐이다 — 화면·로그 어디에도 남기지 않는다.
     $('registerBtn').addEventListener('click', async () => {
-      $('registerResult').textContent = '…';
+      pendingVerdict($('registerResult'), 'working');
       try {
         let body;
         if (cfg.secrets === 'snap') {
           await ensureConnected();
           const reg = await invokeSnap('register');
-          if (!reg || reg.denied) { $('registerResult').textContent = '등록 취소됨'; return; }
+          if (!reg || reg.denied) { setVerdict($('registerResult'), false, 'wallet_register_failed', () => ({ summary: Demo.t('wallet_register_cancel') })); return; }
           body = { uid: reg.uid, pwd: reg.pwd, cm_u: reg.cm_u };
         } else {
           // attrs 는 AA(CIA) 기록이다(2026-09-22 §3.3) — 본문에 실어도 무시되므로 uid·pwd 만 보낸다.
@@ -369,13 +562,10 @@
           //    (2026-09-23 최종 리뷰 M1 — 아래 storeRegistration 실패 안내와 같은 문구로 맞춘다).
           //  - 그 밖(비밀번호 오류·CIA 오류): Snap 만 초기화하고 다시 등록하면 된다.
           const stuckOnAgent = status === 409 && b.reason === 'already_registered';
-          const hint = cfg.secrets !== 'snap' ? ''
-            : stuckOnAgent
-              ? ' — 에이전트 상태 파일에 이미 등록이 있다. "Snap 초기화" + 상태 파일 삭제만으로는 풀리지 않는다:'
-                + ' CIA 에 그 uid 가 이미 등록돼 있어(cm_u 와 무관하게 uid 존재만 본다) /cia/register 가 다시 409 를 낸다.'
-                + ' docs/MODE3_DEMO.md 의 "하지 말 것 / 재시연" 재시연 세트로 CIA·에이전트·Snap 세 보관소를 함께 비워야 한다'
-              : ' — Snap 에는 등록 비밀이 이미 만들어졌다. "Snap 초기화" 를 누른 뒤 다시 등록한다';
-          $('registerResult').textContent = errText(status, b) + hint;
+          const hintKey = cfg.secrets !== 'snap' ? null : stuckOnAgent ? 'wallet_register_stuck' : 'wallet_register_snap_reset';
+          setVerdict($('registerResult'), false, 'wallet_register_failed', () => ({
+            summary: hintKey ? Demo.t(hintKey) : undefined, reason: b.reason ?? `HTTP ${status}`, detail: safeDetail(b),
+          }));
           return;
         }
         // 에이전트는 이미 201 로 등록을 마쳤다 — 여기서 Snap 저장이 실패하면(탭 닫힘·MetaMask 거절) 양쪽이 어긋난 채 굳는다.
@@ -386,35 +576,46 @@
         if (cfg.secrets === 'snap') {
           try { await invokeSnap('storeRegistration', { sk_u: b.sk_u, attrs: b.attrs }); }
           catch (e) {
-            $('registerResult').textContent = `등록이 반만 됐다: 에이전트에는 등록(uid=${b.uid})됐지만 Snap 저장에 실패했다 — ${e.message}.`
-              + ' Snap 은 registration_incomplete 상태라 이대로는 로그인할 수 없다.'
-              + ' 복구는 docs/MODE3_DEMO.md 의 "하지 말 것 / 재시연" 재시연 세트를 통째로 한 번 타는 것뿐이다 —'
-              + ' CIA·에이전트·Snap 세 보관소를 함께 비워야 한다("Snap 초기화" + 상태 파일 삭제만으로는 CIA 가 409 를 낸다).';
+            setVerdict($('registerResult'), false, 'wallet_register_failed', () => ({ summary: Demo.t('wallet_register_half', { uid: b.uid, err: e.message }) }));
             return;
           }
         }
-        $('registerResult').textContent = `등록됨 (uid=${b.uid}, attrs=${JSON.stringify(b.attrs)})`;
-      } catch (e) { $('registerResult').textContent = `오류: ${e.message}`; }
+        // 응답의 sk_u(snap 모드)는 Snap 에만 넘긴다 — '자세히'에도, 카드가 들고 있는 인자에도 남기지 않는다.
+        const uid = b.uid;
+        const attrs = b.attrs;
+        const detail = safeDetail(b);
+        setVerdict($('registerResult'), true, 'registered', () => ({ summary: Demo.t('wallet_registered_summary', { uid, attrs: attrsText(attrs) }), detail }));
+      } catch (e) {
+        setVerdict($('registerResult'), false, 'wallet_register_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
+      }
       refresh();
     });
 
     // 속성 재동기화(2026-09-22 §3.3): AA 기록을 다시 받는다. 값이 바뀌었으면 옛 사용자 자격증명·세션이 지워진다(다음 로그인이 새로 받는다).
     // snap 모드는 sk_u 서명이 필요해 본문 증인을 실어야 하므로 동의 창을 한 번 거친다(에이전트는 Snap 을 못 부른다).
     $('attrsBtn').addEventListener('click', async () => {
-      $('registerResult').textContent = '…';
+      pendingVerdict($('registerResult'), 'working');
       try {
         let payload = {};
         if (cfg.secrets === 'snap') {
           await ensureConnected();
           const witness = await consentLogin({ origin: cfg.walletOrigin || location.origin, arid: null, allowAgent: '0', serviceName: '지갑 페이지(속성 재동기화)' });
-          if (!witness) { $('registerResult').textContent = '동의 거절'; return; }
+          if (!witness) { setVerdict($('registerResult'), false, 'wallet_attrs_failed', () => ({ summary: Demo.t('wallet_cancelled') })); return; }
           payload = { witness };
         }
         const { status, body: b } = await postJson('/wallet/attrs/sync', payload);
-        if (status !== 200) { $('registerResult').textContent = errText(status, b); return; }
+        if (status !== 200) { setVerdict($('registerResult'), false, 'wallet_attrs_failed', { reason: b.reason ?? `HTTP ${status}`, detail: safeDetail(b) }); return; }
         if (cfg.secrets === 'snap') await applyPendingToSnap(b);
-        $('registerResult').textContent = `재동기화됨 (attrs=${JSON.stringify(b.attrs)}, 바뀜=${b.changed})`;
-      } catch (e) { $('registerResult').textContent = `오류: ${e.message}`; }
+        // userCredIssued(blind_u)·attrsChanged 는 Snap 에만 간다 — 카드가 붙잡지 않게 여기서 떼어 둔다.
+        const attrs = b.attrs;
+        const changed = Boolean(b.changed);
+        const detail = safeDetail(b);
+        setVerdict($('registerResult'), true, 'wallet_attrs_ok', () => ({
+          summary: Demo.t(changed ? 'wallet_attrs_changed' : 'wallet_attrs_same', { attrs: attrsText(attrs) }), detail,
+        }));
+      } catch (e) {
+        setVerdict($('registerResult'), false, 'wallet_attrs_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
+      }
       refresh();
     });
 
@@ -437,9 +638,17 @@
     const readSet = () => { const s = $('setSlot').value; if (s === '') return null; return { slot: Number(s), members: $('setMembers').value.split(',').map((x) => x.trim()).filter(Boolean) }; };
     const txForm = () => ({ r_s: $('txSession').value, to: $('txTo').value.trim(), value: $('txValue').value.trim() || '0', data: $('txData').value.trim() || '0x', disclose: readDisclose(), set: readSet() });
     const txLog = (s) => { $('txLog').textContent += `${s}\n`; };
-    function showTxResult(b, extra) {
+    const txFailed = (summaryKey, reason, detail) => setVerdict($('txVerdict'), false, 'tx_failed', () => ({ summary: summaryKey ? Demo.t(summaryKey) : undefined, reason, detail }));
+    function showTxResult(b, extra, deployed) {
       txLog(`${extra}지갑=${b.wallet}  nonce=${b.nonce}  ok(실행 성공)=${b.ok}  gasUsed=${b.gasUsed}\n공개=${JSON.stringify(b.disclosure)}\n온체인 공개(Disclosure 이벤트)=${JSON.stringify(b.onchainDisclosure)}\n실행=${JSON.stringify(b.executed)}`);
-      $('txVerdict').innerHTML = '<span class="ok">전송 성공</span>';
+      progress.txOk = true;
+      const d = b.disclosure;
+      if (d && (String(d.mask ?? '0') !== '0' || d.set)) progress.disclosed = true;
+      const hash = b.txHash;
+      setVerdict($('txVerdict'), true, 'tx_ok', () => ({
+        summary: [Demo.t(deployed ? 'wallet_tx_deployed' : 'wallet_tx_sent'), hash ? Demo.t('wallet_tx_hash', { hash }) : ''].filter(Boolean).join(' '),
+        detail: safeDetail(b),
+      }));
     }
 
     /** file 모드: 에이전트의 릴레이어가 보낸다(기존 경로). */
@@ -448,10 +657,10 @@
       const { status, body: b } = await postJson('/wallet/tx', f);
       if (status !== 200) {
         txLog(errText(status, b));
-        $('txVerdict').innerHTML = `<span class="bad">트랜잭션 실패 — ${b.reason ?? status}</span>`;
+        txFailed(null, b.reason ?? `HTTP ${status}`, safeDetail(b));
         return;
       }
-      showTxResult(b, `txHash=${b.txHash}\n배포=${b.deployed}  캐시 히트=${b.cacheHit}  root=${b.root}\ntimings=${JSON.stringify(b.timings)}\n`);
+      showTxResult(b, `txHash=${b.txHash}\n배포=${b.deployed}  캐시 히트=${b.cacheHit}  root=${b.root}\ntimings=${JSON.stringify(b.timings)}\n`, Boolean(b.deployed));
     }
 
     /** 영수증이 나올 때까지 기다린다(MetaMask 가 보낸 트랜잭션은 페이지가 직접 폴링한다). */
@@ -480,13 +689,13 @@
       await ensureConnected();
       const arid = lastSessions[f.r_s] ? lastSessions[f.r_s].arid : null;
       const c = await invokeSnap('consentDisclosure', { arid, origin: null, disclose: f.disclose, to: f.to, value: f.value, set: f.set });
-      if (!c || c.denied) { $('txVerdict').innerHTML = '<span class="bad">공개 동의 거절</span>'; return; }
+      if (!c || c.denied) { txFailed('wallet_tx_denied', 'user_denied'); return; }
 
       txLog('POST /wallet/tx/prepare — 증명 생성 중…');
       const p = await postJson('/wallet/tx/prepare', f);
       if (p.status !== 200) {
         txLog(errText(p.status, p.body) + (p.body.reason === 'needs_consent' ? ' — 서비스 페이지에서 다시 로그인(재승인)해야 한다' : ''));
-        $('txVerdict').innerHTML = `<span class="bad">준비 실패 — ${p.body.reason ?? p.status}</span>`;
+        txFailed('wallet_tx_prepare_failed', p.body.reason ?? `HTTP ${p.status}`, safeDetail(p.body));
         return;
       }
       const b = p.body;
@@ -501,7 +710,7 @@
         // 배포가 revert 되면 execute 는 코드 없는 주소로 간다 — 여기서 멈춘다.
         if (dr.status !== 1 && dr.status !== '0x1') {
           txLog(`배포 실패 (status=${dr.status})`);
-          $('txVerdict').innerHTML = '<span class="bad">계정 배포 실패 — execute 를 보내지 않았다</span>';
+          txFailed('wallet_tx_deploy_failed', null, dr);
           return;
         }
       }
@@ -511,73 +720,98 @@
       const rec = await recordTx(f.r_s, txHash);
       if (rec.status !== 200) {
         txLog(errText(rec.status, rec.body));
-        $('txVerdict').innerHTML = `<span class="bad">영수증 기록 실패 — ${rec.body.reason ?? rec.status}</span>`;
+        txFailed('wallet_tx_record_failed', rec.body.reason ?? `HTTP ${rec.status}`, safeDetail(rec.body));
         return;
       }
-      showTxResult(rec.body, `txHash=${rec.body.txHash}${deployHash ? `\n배포 txHash=${deployHash}` : ''}\n캐시 히트=${b.cacheHit}  root=${b.root}\n`);
+      showTxResult(rec.body, `txHash=${rec.body.txHash}${deployHash ? `\n배포 txHash=${deployHash}` : ''}\n캐시 히트=${b.cacheHit}  root=${b.root}\n`, Boolean(deployHash));
     }
 
     $('txBtn').addEventListener('click', async () => {
-      $('txBtn').disabled = true; $('txVerdict').textContent = ''; $('txLog').textContent = '';
+      $('txBtn').disabled = true; $('txLog').textContent = '';
+      pendingVerdict($('txVerdict'), 'proving');
       try {
         if (cfg.secrets === 'snap') await sendTxViaMetaMask();
         else await sendTxViaRelayer();
       } catch (e) {
         txLog(`오류: ${e.message}`);
-        $('txVerdict').innerHTML = `<span class="bad">${isUserRejected(e) ? 'user_rejected — MetaMask 에서 거절했다' : '오류'}</span>`;
+        txFailed(null, isUserRejected(e) ? 'user_denied' : 'wallet_error', e.message);
       } finally { $('txBtn').disabled = false; refresh(); }
     });
 
     // ---- snap 모드 전용 버튼 ----
     $('connectBtn').addEventListener('click', async () => {
       try { await connectMetaMask(); }
-      catch (e) { $('mmStatus').textContent = `연결 실패: ${e.message}`; }
+      catch (e) { const el = $('mmStatus'); el.className = 'badge bad'; el.textContent = tt('wallet_mm_failed', { err: e.message }) || e.message; }
     });
     $('snapInfoBtn').addEventListener('click', async () => {
+      pendingVerdict($('snapVerdict'), 'working');
       try {
         await ensureConnected();
         const i = await invokeSnap('getPublicInfo', {});
         $('snapInfo').textContent = `등록: ${i.registered ? `예 (uid=${i.uid})` : '아니오'}\n속성: ${JSON.stringify(i.attrs)}\n사용자 자격증명 보관: ${i.hasUserCred}\n동의 기록: ${JSON.stringify(i.consents)}`;
-      } catch (e) { $('snapInfo').textContent = `오류: ${e.message}`; }
+        const reg = Boolean(i.registered);
+        const cred = Boolean(i.hasUserCred);
+        const consents = Array.isArray(i.consents) ? i.consents.length : Object.keys(i.consents ?? {}).length;
+        setVerdict($('snapVerdict'), true, 'wallet_snap_info_title', () => ({
+          summary: Demo.t('wallet_snap_info_summary', { reg: Demo.t(reg ? 'wallet_yes' : 'wallet_no'), cred: Demo.t(cred ? 'wallet_yes' : 'wallet_no'), consents }),
+          detail: i,
+        }));
+      } catch (e) {
+        $('snapInfo').textContent = `오류: ${e.message}`;
+        setVerdict($('snapVerdict'), false, 'wallet_snap_info_failed', { reason: isUserRejected(e) ? 'user_denied' : 'snap_unavailable', detail: e.message });
+      }
     });
     // 자기 폐기(스펙 §4.5): Snap 이 비밀번호를 묻고, 에이전트의 프록시가 CIA 로 중계한다(같은 오리진 — cia.js 에는
     // CORS 가 없어 이 페이지가 :4100 을 직접 부를 수 없다). 비밀번호는 이 페이지도 에이전트도 보관하지 않는다.
     $('selfRevokeBtn').addEventListener('click', async () => {
+      if (!Demo.confirmDanger('confirm_revoke')) return;
+      pendingVerdict($('snapVerdict'), 'working');
       try {
         await ensureConnected();
         const r = await invokeSnap('selfRevoke');
-        if (!r || r.denied) { $('snapInfo').textContent = '자기 폐기 취소됨'; return; }
+        if (!r || r.denied) { setVerdict($('snapVerdict'), false, 'wallet_self_revoke_failed', () => ({ summary: Demo.t('wallet_cancelled') })); return; }
+        // uid 만 따로 꺼내 쓴다 — 결과 카드의 인자 생성기가 비밀번호가 든 응답을 붙잡고 있지 않게 한다.
+        const uid = r.uid;
         const res = await postJson('/wallet/self_revoke', { uid: r.uid, pwd: r.pwd });
-        $('snapInfo').textContent = res.status === 200 ? `자기 폐기 완료 (uid=${r.uid}, treeUpdated=${res.body.treeUpdated ?? '-'})` : errText(res.status, res.body);
-      } catch (e) { $('snapInfo').textContent = `오류: ${e.message}`; }
+        if (res.status === 200) {
+          progress.revoked = true;
+          setVerdict($('snapVerdict'), true, 'revoked_ok', () => ({ summary: Demo.t('wallet_self_revoke_ok', { uid }), detail: safeDetail(res.body) }));
+        } else setVerdict($('snapVerdict'), false, 'wallet_self_revoke_failed', { reason: res.body.reason ?? `HTTP ${res.status}`, detail: safeDetail(res.body) });
+      } catch (e) {
+        setVerdict($('snapVerdict'), false, 'wallet_self_revoke_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
+      }
       refresh();
     });
     $('snapResetBtn').addEventListener('click', async () => {
+      if (!Demo.confirmDanger('confirm_reset')) return;
+      pendingVerdict($('snapVerdict'), 'working');
       try {
         await ensureConnected();
         const r = await invokeSnap('reset', {});
-        $('snapInfo').textContent = r && r.denied ? '초기화 취소됨' : 'Snap 등록을 지웠다 — 에이전트 파일의 공개 등록은 그대로다';
-      } catch (e) { $('snapInfo').textContent = `오류: ${e.message}`; }
+        if (r && r.denied) { setVerdict($('snapVerdict'), false, 'wallet_snap_reset_failed', () => ({ summary: Demo.t('wallet_cancelled') })); return; }
+        setVerdict($('snapVerdict'), true, 'wallet_snap_reset_ok', () => ({ summary: Demo.t('wallet_snap_reset_summary') }));
+      } catch (e) {
+        setVerdict($('snapVerdict'), false, 'wallet_snap_reset_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
+      }
     });
 
     function applySnapMode() {
       $('snapPanel').hidden = false;
       $('fileRegFields').hidden = true;
-      $('intro').innerHTML = '이 페이지는 지갑 에이전트(:5100)와 같은 오리진에서만 열린다. 등록 비밀은 MetaMask Snap 이 들고 있고, 에이전트 파일에는 공개 부분만 남는다. 로그인 동의·속성 공개 동의는 Snap 대화상자가 묻는다.';
-      $('txNote').textContent = '지갑이 같은 π 를 트랜잭션마다 첨부하고 컨트랙트가 매번 검증한다. 첫 트랜잭션은 CREATE2 로 계정을 배포한다. 가스는 MetaMask 의 내 계정이 낸다(에이전트는 calldata 만 만든다).';
-      $('registerBtn').title = 'Snap 이 uid·비밀번호를 묻는다 — 이 페이지는 비밀번호를 보관하지 않는다';
     }
 
     async function init() {
+      Demo.init({ page: 'wallet' });
       try {
         const r = await fetch('/wallet/config');
         if (r.ok) cfg = { ...cfg, ...(await r.json()) };
       } catch { /* 설정을 못 읽으면 file 모드로 본다 */ }
+      if (cfg.secrets === 'snap') applySnapMode();
+      renderModeTexts();
       if (IS_AUTHORIZE) {
         runAuthorize();
         return;
       }
-      if (cfg.secrets === 'snap') applySnapMode();
       refresh();
     }
     init();
