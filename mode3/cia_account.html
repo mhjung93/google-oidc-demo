@@ -55,8 +55,22 @@
     const safeDetail = (b) => { const { pwd, secret, ...rest } = b ?? {}; return rest; };
 
     let revoked = false;   // 이 페이지가 아는 완료 신호(설계 §2.1 6단계)
-    // 관리자 페이지와 서로만 링크한다(설계 §1.3) — 계정 페이지는 서비스·지갑 주소를 모른다.
-    const renderGuide = () => Demo.guide({ done: revoked ? ['revoke'] : [], current: 'revoke', links: { admin: '/admin' } });
+    // 서비스·지갑 주소는 자기 health 가 알려 준다(설계 2026-09-25 §2.3) — 알기 전에는 관리자 페이지만 잇는다.
+    let stackLinks = { wallet: null, rp: null };
+    const renderGuide = () => Demo.guide({ done: revoked ? ['revoke'] : [], current: 'revoke', links: { admin: '/admin', wallet: stackLinks.wallet, rp: stackLinks.rp } });
+    // 상태 패널(설계 2026-09-25 §2). 자기 health 의 walletOrigin·rpOrigins[0] 로 폴링 대상과 안내 바 링크를 채운다.
+    function initStack() {
+      if (!window.Demo?.stack) return;
+      Demo.stack({ self: 'aa', urls: {} });
+      Demo.stack.onChange((last) => {
+        const wallet = last.aa?.walletOrigin || null;
+        const rp = last.aa?.rpOrigins?.[0] || null;
+        if (wallet === stackLinks.wallet && rp === stackLinks.rp) return;
+        stackLinks = { wallet, rp };
+        Demo.stack({ self: 'aa', urls: { wallet, rp } });
+        renderGuide();
+      });
+    }
 
     $('revokeBtn').addEventListener('click', async () => {
       const uid = $('uid').value.trim();
@@ -90,6 +104,7 @@
     });
 
     Demo.init({ page: 'account' });
+    initStack();
     renderGuide();
   </script>
 </body>

@@ -231,8 +231,23 @@
       if (progress.revoked) done.push('revoke');
       if (progress.opened) done.push('open');
       const current = pendingRps > 0 ? 'approve' : pendingOpenings > 0 ? 'open' : 'revoke';
-      // 관리자 페이지는 서비스·지갑 주소를 모른다(설계 §1.3) — 같은 신원 기관의 계정 페이지만 잇는다.
-      Demo.guide({ done, current, links: { account: '/account' } });
+      // 서비스·지갑 주소는 자기 health 가 알려 준다(설계 2026-09-25 §2.3) — 알기 전에는 계정 페이지만 잇는다.
+      Demo.guide({ done, current, links: { account: '/account', wallet: stackLinks.wallet, rp: stackLinks.rp } });
+    }
+    // 상태 패널(설계 2026-09-25 §2). 자기 health 의 walletOrigin·rpOrigins[0] 로 상대 주소를 알게 되면
+    // 폴링 대상과 안내 바 링크를 함께 채운다(승인된 서비스가 여럿이면 첫 번째).
+    let stackLinks = { wallet: null, rp: null };
+    function initStack() {
+      if (!window.Demo?.stack) return;
+      Demo.stack({ self: 'aa', urls: {} });
+      Demo.stack.onChange((last) => {
+        const wallet = last.aa?.walletOrigin || null;
+        const rp = last.aa?.rpOrigins?.[0] || null;
+        if (wallet === stackLinks.wallet && rp === stackLinks.rp) return;
+        stackLinks = { wallet, rp };
+        Demo.stack({ self: 'aa', urls: { wallet, rp } });
+        renderGuide();
+      });
     }
     // 언어·전문가 전환은 사전이 채우는 요소와 결과 카드만 바꾼다(Demo) — 스크립트가 만든 표는 여기서 다시 그린다.
     for (const k of ['setLang', 'setExpert']) {
@@ -522,6 +537,7 @@
     $('secret').addEventListener('change', () => { clearTimeout(secretTimer); if (hasSecret()) reloadAll(); });
 
     Demo.init({ page: 'admin' });
+    initStack();
     const kept = readKept();
     if (kept) { $('secret').value = kept; $('rememberSecret').checked = true; }
     renderBadges();

@@ -44,4 +44,8 @@ t('ui·terms 항목은 전부 ko·en 이 있고 빈 문자열이 없다', () => 
 t('ui 에 안내 바·토글·공통 버튼 키가 있다', () => {
   for (const k of ['bar_next', 'bar_other_window', 'toggle_lang', 'toggle_expert', 'details', 'working', 'proving', 'confirm_revoke', 'confirm_publish', 'confirm_reset', 'go_wallet', 'go_rp', 'go_admin', 'go_account']) assert.ok(S.ui[k], k);
 });
+// 상태 패널(설계 2026-09-25 §2) — 점 라벨·판정 문구. Demo.stack.judge 가 돌려주는 key 는 전부 여기 있어야 한다.
+t('ui 에 상태 패널 키가 있다', () => {
+  for (const k of ['stack_aa', 'stack_rp', 'stack_wallet', 'stack_chain', 'stack_unknown', 'stack_no_response', 'stack_chain_none', 'stack_root_stale', 'stack_root_warn', 'stack_pending_leaves', 'stack_rp_pending', 'stack_rp_inactive', 'stack_wallet_unregistered', 'stack_wallet_cia_down', 'stack_ok', 'stack_panel_title', 'stack_head']) assert.ok(S.ui[k], k);
+});
 if (fails) { console.log(`\n${fails} FAIL`); process.exit(1); } else console.log('\nall ok');

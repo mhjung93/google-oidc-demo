@@ -531,6 +531,22 @@
       renderIdentity();
       renderSessions();
       renderGuide();
+      syncStack();
+    }
+    // 상태 패널(설계 2026-09-25 §2). 신원 기관 주소는 /wallet/status 가, 서비스 주소는 지갑 자신의 health(rpOrigin)가
+    // 알려 준다 — 첫 폴링 결과를 구독해 한 번 더 건다. 승인 팝업(안내 바를 숨긴 창)에서는 걸지 않는다.
+    let stackRpOrigin = null, stackSubscribed = false;
+    function syncStack() {
+      if (IS_AUTHORIZE || !window.Demo?.stack) return;
+      Demo.stack({ self: 'wallet', urls: { aa: lastStatus?.ciaUrl || null, rp: stackRpOrigin } });
+      if (stackSubscribed) return;
+      stackSubscribed = true;
+      Demo.stack.onChange((last) => {
+        const rp = last.wallet?.rpOrigin || null;
+        if (!rp || rp === stackRpOrigin) return;
+        stackRpOrigin = rp;
+        Demo.stack({ self: 'wallet', urls: { rp } });
+      });
     }
     // 언어·전문가 전환은 사전이 채우는 요소와 결과 카드만 바꾼다(Demo) — 스크립트가 만든 텍스트는 여기서 다시 그린다.
     for (const k of ['setLang', 'setExpert']) {

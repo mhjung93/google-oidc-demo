@@ -12,11 +12,11 @@
     term(name) { const e = S.terms[name]; if (!e) return name; return D.expert ? `${e[D.lang]} (${e.expert})` : e[D.lang]; },
     verdictText(key) { const e = S.verdicts[key]; return e ? (e[D.lang] ?? e.ko) : key; },
     reason(code) { const r = S.reasons[code]; return r ? r[D.lang] ?? r.ko : null; },
-    setLang(l) { if (!S.langs.includes(l)) return; D.lang = l; store.set('mode3.lang', l); document.documentElement.lang = l; D.applyI18n(); D.rerenderVerdicts(); if (D.lastGuide) D.guide(D.lastGuide); },
+    setLang(l) { if (!S.langs.includes(l)) return; D.lang = l; store.set('mode3.lang', l); document.documentElement.lang = l; D.applyI18n(); D.rerenderVerdicts(); if (D.lastGuide) D.guide(D.lastGuide); if (D.stack.state) D.stack.renderDots(); },
     // 토글을 페이지가 직접 부를 수도 있으므로(안내 바의 체크박스만이 아니다) 체크 상태를 여기서 맞춘다.
     // applyI18n 을 함께 부른다 — data-term 라벨은 term() 이 전문가 여부로 원래 기호를 덧붙이므로(설계 §3.1),
     // 여기서 다시 그리지 않으면 토글 뒤에도 옛 표기가 남는다(껐는데 기호가 보이는 등).
-    setExpert(b) { D.expert = !!b; store.set('mode3.expert', b ? '1' : '0'); document.documentElement.toggleAttribute('data-expert', D.expert); const ex = document.getElementById('expertToggle'); if (ex) ex.checked = D.expert; D.applyI18n(); D.rerenderVerdicts(); if (D.lastGuide) D.guide(D.lastGuide); },
+    setExpert(b) { D.expert = !!b; store.set('mode3.expert', b ? '1' : '0'); document.documentElement.toggleAttribute('data-expert', D.expert); const ex = document.getElementById('expertToggle'); if (ex) ex.checked = D.expert; D.applyI18n(); D.rerenderVerdicts(); if (D.lastGuide) D.guide(D.lastGuide); if (D.stack.state) D.stack.renderDots(); },
     applyI18n() { document.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = D.t(el.dataset.i18n); }); document.querySelectorAll('[data-term]').forEach((el) => { el.textContent = D.term(el.dataset.term); }); },
     init({ page }) {
       D.page = page; document.documentElement.lang = D.lang; document.documentElement.toggleAttribute('data-expert', D.expert);
@@ -66,6 +66,131 @@
       if (detail !== undefined) { const d = document.createElement('details'); if (D.expert) d.open = true; const s = document.createElement('summary'); s.textContent = D.t('details'); d.appendChild(s); const pre = document.createElement('pre'); pre.textContent = typeof detail === 'string' ? detail : JSON.stringify(detail, null, 2); d.appendChild(pre); el.appendChild(d); }
     },
     confirmDanger(key, vars) { return window.confirm(D.t(key, vars)); },
+    /**
+     * 상태 패널(설계 2026-09-25 §2). cfg = { self:'aa'|'rp'|'wallet', urls:{ aa, rp, wallet } }.
+     * 주소를 나중에 알게 되면(rp_info·health 응답) 같은 인자 모양으로 다시 부른다 — 주소만 합쳐지고 폴링은 한 번만 건다.
+     * 자기 서버는 상대 주소 없이 '/mode3/health' 로 부른다(CORS 를 타지 않는다).
+     */
+    stack(cfg) {
+      const st = (D.stack.state ??= { urls: {}, last: { at: 0, aa: null, rp: null, wallet: null, errors: {} }, timer: null, subs: [], open: false, sig: null });
+      Object.assign(st.urls, cfg?.urls || {});
+      if (cfg?.self) st.self = cfg.self;
+      if (!st.timer) {
+        const tick = () => { D.stack.poll(); };
+        // 탭이 숨겨지면 읽지 않고, 다시 보이면 즉시 한 번 읽는다(설계 §2.3).
+        st.timer = setInterval(() => { if (!document.hidden) tick(); }, 5000);
+        document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
+        // 패널 밖 클릭·Esc 로 닫는다. 점 자체의 클릭은 점 쪽에서 막는다(토글이 곧바로 되돌려지지 않게).
+        document.addEventListener('click', (ev) => { if (!st.open) return; if (ev.target?.closest?.('#stackPanel, .stack-dots')) return; st.open = false; D.stack.renderDots(); });
+        document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && st.open) { st.open = false; D.stack.renderDots(); } });
+        tick();
+      }
+      D.stack.renderDots();
+    },
   };
+  // ---- 상태 패널의 나머지(폴링·판정·그리기). stack() 이 함수라 여기에 붙인다. ----
+  /** 판정 키 → 1차 사유 사전 코드(설계 §2.1). 서비스 비활성은 서버가 준 inactiveReason 을 그대로 쓴다. */
+  const STACK_REASON = { stack_root_stale: 'root_too_old', stack_rp_pending: 'registration_pending', stack_wallet_cia_down: 'cia_unavailable' };
+  const STACK_ROLES = ['aa', 'rp', 'wallet'];
+  Object.assign(D.stack, {
+    state: null,
+    /** 2초 예산. AbortSignal.timeout 이 없는 브라우저면 AbortController + 타이머로 같은 일을 한다. */
+    budget(ms) {
+      if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) return { signal: AbortSignal.timeout(ms), done() { /* 자체 타이머 */ } };
+      const c = new AbortController(); const t = setTimeout(() => c.abort(), ms);
+      return { signal: c.signal, done() { clearTimeout(t); } };
+    },
+    /** 구독자에게 알릴지 판단하는 값 — now(매 응답 달라짐)는 뺀다. 응답이 없으면 실패 종류('timeout'|'error')로 비교한다. */
+    signature(last) { return JSON.stringify(STACK_ROLES.map((r) => (last[r] ? { ...last[r], now: undefined } : (last.errors[r] ?? null)))); },
+    /** 폴링 결과가 바뀔 때 부른다(체험 모드·페이지가 주소를 알아내는 데 쓴다). 구독 해제 함수를 돌려준다. */
+    onChange(fn) { const st = D.stack.state; if (!st || typeof fn !== 'function') return () => {}; st.subs.push(fn); return () => { const i = st.subs.indexOf(fn); if (i >= 0) st.subs.splice(i, 1); }; },
+    async poll() {
+      const st = D.stack.state; if (!st) return;
+      const next = { at: Date.now(), aa: null, rp: null, wallet: null, errors: {} };
+      await Promise.all(STACK_ROLES.map(async (role) => {
+        const url = role === st.self ? '/mode3/health' : (st.urls[role] ? `${st.urls[role]}/mode3/health` : null);
+        if (!url) return;                       // 주소를 아직 모른다 — 오류가 아니라 회색(모름)이다
+        const b = D.stack.budget(2000);
+        try {
+          const r = await fetch(url, { signal: b.signal, cache: 'no-store' });
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          const body = await r.json();
+          if (body?.role !== role) throw new Error('role');   // 다른 서버를 가리키고 있으면 초록으로 속이지 않는다
+          next[role] = body;
+        } catch (e) {
+          // 실패는 콘솔에 남기지 않는다(설계 §2.3) — 점 색과 패널 문구로만 말한다.
+          next.errors[role] = e && (e.name === 'AbortError' || e.name === 'TimeoutError') ? 'timeout' : 'error';
+        } finally { b.done(); }
+      }));
+      st.last = next;
+      D.stack.renderDots();
+      const sig = D.stack.signature(next);
+      if (sig !== st.sig) { st.sig = sig; for (const fn of st.subs.slice()) { try { fn(next); } catch { /* 구독자 오류가 폴링을 멈추지 않는다 */ } } }
+    },
+    /** 설계 §2.2 판정표. last 만 보는 순수 함수다(tests/test_mode3_stack_judge.js). */
+    judge(last) {
+      const lv = (level, key, vars = {}) => ({ level, key, vars });
+      const anyChain = [last.aa, last.rp, last.wallet].find((h) => h?.chain);
+      const chain = last.at === 0 ? lv('unknown', 'stack_unknown') : anyChain ? lv('ok', 'stack_head', { head: anyChain.chain.head }) : lv('bad', 'stack_chain_none');
+      // 상한은 서비스가 체인에서 읽은 값이 정본이다. 서비스가 없으면 AA 의 하트비트 간격 2배를 임시 상한으로 쓴다.
+      const maxAge = last.rp?.maxRootAge ?? (last.aa ? last.aa.heartbeatBlocks * 2 : null);
+      const aa = !last.aa ? (last.errors.aa ? lv('bad', 'stack_no_response') : lv('unknown', 'stack_unknown'))
+        : (maxAge && last.aa.rootAge !== null && last.aa.rootAge >= maxAge) ? lv('bad', 'stack_root_stale')
+          : (maxAge && ((last.aa.rootAge !== null && last.aa.rootAge >= maxAge / 2) || last.aa.heartbeatBlocks >= maxAge)) ? lv('warn', 'stack_root_warn', { age: last.aa.rootAge ?? '?' })
+            : last.aa.pendingLeaves > 0 ? lv('warn', 'stack_pending_leaves', { n: last.aa.pendingLeaves }) : lv('ok', 'stack_ok');
+      const rp = !last.rp ? (last.errors.rp ? lv('bad', 'stack_no_response') : lv('unknown', 'stack_unknown'))
+        : !last.rp.active ? lv('bad', 'stack_rp_inactive') : last.rp.status !== 'approved' ? lv('warn', 'stack_rp_pending') : lv('ok', 'stack_ok');
+      const wallet = !last.wallet ? (last.errors.wallet ? lv('bad', 'stack_no_response') : lv('unknown', 'stack_unknown'))
+        : !last.wallet.ciaReachable ? lv('warn', 'stack_wallet_cia_down') : !last.wallet.registered ? lv('unknown', 'stack_wallet_unregistered') : lv('ok', 'stack_ok');
+      return { aa, rp, wallet, chain };
+    },
+    /** 안내 바 오른쪽의 점 4개 + (열려 있으면) 패널. 언어·전문가 전환과 폴링마다 다시 그린다. */
+    renderDots() {
+      const st = D.stack.state; if (!st) return;
+      const bar = document.getElementById('demoBar'); if (!bar) return;
+      const tools = bar.querySelector('.bar-tools'); if (!tools) return;
+      let dots = bar.querySelector('.stack-dots');
+      if (!dots) { dots = document.createElement('div'); dots.className = 'stack-dots'; tools.insertBefore(dots, tools.firstChild); }
+      const v = D.stack.judge(st.last);
+      dots.textContent = '';
+      for (const role of ['aa', 'rp', 'wallet', 'chain']) {
+        const b = document.createElement('button');
+        b.type = 'button'; b.className = `dot ${role} ${v[role].level}`;
+        const label = D.t(`stack_${role}`), msg = D.t(v[role].key, v[role].vars);
+        b.textContent = label;                       // 색만으로 구분하지 않는다(1차 §4.5) — 라벨과 판정 문구를 함께 붙인다
+        b.title = `${label}: ${msg}`; b.setAttribute('aria-label', `${label}: ${msg}`); b.setAttribute('aria-expanded', st.open ? 'true' : 'false');
+        b.addEventListener('click', (ev) => { ev.stopPropagation(); st.open = !st.open; D.stack.renderDots(); });
+        dots.appendChild(b);
+      }
+      D.stack.renderPanel(v);
+    },
+    renderPanel(v) {
+      const st = D.stack.state; const bar = document.getElementById('demoBar'); if (!st || !bar) return;
+      let panel = document.getElementById('stackPanel');
+      if (!panel) { panel = document.createElement('div'); panel.id = 'stackPanel'; panel.className = 'stack-panel'; bar.appendChild(panel); }
+      panel.textContent = ''; panel.hidden = !st.open;
+      if (!st.open) return;
+      const title = document.createElement('strong'); title.className = 'panel-title'; title.textContent = D.t('stack_panel_title'); panel.appendChild(title);
+      for (const role of ['aa', 'rp', 'wallet', 'chain']) {
+        const j = v[role];
+        const row = document.createElement('div'); row.className = `row ${role} ${j.level}`;
+        const name = document.createElement('span'); name.className = 'name'; name.textContent = D.t(`stack_${role}`); row.appendChild(name);
+        const body = document.createElement('div');
+        const msg = document.createElement('p'); msg.className = 'msg'; msg.textContent = D.t(j.key, j.vars); body.appendChild(msg);
+        const code = j.key === 'stack_rp_inactive' ? (st.last.rp?.inactiveReason ?? null) : (STACK_REASON[j.key] ?? null);
+        const r = code ? D.reason(code) : null;
+        if (r) {
+          const c = document.createElement('p'); c.className = 'cause'; c.textContent = r.cause; body.appendChild(c);
+          const a = document.createElement('p'); a.className = 'action'; a.textContent = r.action; body.appendChild(a);
+          const el = document.createElement('code'); el.className = 'reason'; el.textContent = code; body.appendChild(el);
+        }
+        // 원본 응답은 전문가 보기에서만. 체인은 세 응답이 함께 준 값이라 따로 싣지 않는다.
+        if (role !== 'chain') { const pre = document.createElement('pre'); pre.className = 'expert'; pre.textContent = st.last[role] ? JSON.stringify(st.last[role], null, 2) : (st.last.errors[role] ?? '—'); body.appendChild(pre); }
+        row.appendChild(body); panel.appendChild(row);
+      }
+    },
+  });
+  /** 마지막 폴링 묶음 — 페이지·체험 모드가 읽는다(설계 §2.3). */
+  Object.defineProperty(D.stack, 'last', { get() { return D.stack.state ? D.stack.state.last : null; } });
   window.Demo = D;
 })();

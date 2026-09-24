@@ -30,3 +30,16 @@ table.list { width:100%; border-collapse:collapse; font-size:14px } table.list t
 /* 좁은 창(휴대폰 폭)에서 표는 칸마다 한 글자씩 세로로 접혀 읽을 수 없게 된다 — 칸을 접지 말고 표 자체를
    가로로 넘겨 읽게 한다(2026-09-25 스크린샷 점검). 넓은 창의 표 레이아웃은 그대로다. */
 @media (max-width:640px) { table.list { display:block; overflow-x:auto; white-space:nowrap } }
+/* 상태 패널(설계 2026-09-25 §2) — 안내 바 오른쪽의 점 4개와 바 아래로 펼쳐지는 패널. 점은 색 + 텍스트 라벨이다. */
+.stack-dots { display:flex; gap:6px; flex-wrap:wrap }
+.dot { display:inline-flex; align-items:center; gap:4px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); font-size:12px; background:transparent; color:var(--ink); cursor:pointer }
+.dot::before { content:''; width:8px; height:8px; border-radius:50%; background:#9aa4b2 }
+.dot.ok::before { background:var(--ok) } .dot.warn::before { background:var(--warn) } .dot.bad::before { background:var(--bad) }
+.dot[aria-expanded="true"] { border-color:var(--accent) }
+.stack-panel { grid-column:1 / -1; border-top:1px solid var(--line); padding-top:8px; display:grid; gap:6px }
+.stack-panel .panel-title { font-size:13px; color:var(--muted) }
+.stack-panel .row { display:grid; grid-template-columns:auto 1fr; gap:10px; font-size:13px }
+.stack-panel .row .name { color:var(--muted); min-width:84px } .stack-panel .row > div { min-width:0 }
+.stack-panel p { margin:0 } .stack-panel .cause { color:var(--muted) } .stack-panel .action { font-weight:600 }
+.stack-panel code.reason { font-size:12px; color:var(--muted) } .stack-panel pre { margin:4px 0 0; max-height:140px; overflow:auto }   /* 전문가 보기의 원문 셋이 화면을 다 먹지 않게 */
+.stack-panel .row.warn .msg { color:var(--warn) } .stack-panel .row.bad .msg { color:var(--bad) } .stack-panel .row.unknown .msg { color:var(--muted) }
