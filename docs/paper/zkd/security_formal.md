@@ -17,6 +17,7 @@
 | G9 라이브니스 독립 | 의존 그래프 명제 | (구조) | 명제 10 |
 | G10 승인 개봉 | 태그 익명성·추적 가능성·국소성 | CDH(RO) + Groth16 + EdDSA | 정리 11–15 |
 | 온체인 계정 | 주소 결정성·재진입·보류 상한 | keccak 충돌 저항성 + 상태기계 | 명제 16–18 |
+| 세션 단위 폐기 권한·검증자 코드 대조(2026-09-24) | 폐기 요청 위조 게임 / 검증자 교체 게임 | EdDSA EUF-CMA + 기록 소유 / keccak 충돌 저항성 + 참조 빌드 가정 | 명제 20·21 (§10) |
 
 정리의 상한은 모두 "표준 가정의 이점 + q·2^{−250}" 꼴이고, 예외는 정리 4′의 1/n 항이다. 형식화하지 않은 것은 §5에 모았다.
 
@@ -352,3 +353,53 @@ Pr[𝒜 wins] ≤ 2·ε_KS + 2·ε_SS + 3·Adv^{DL}(B) + Adv^{EUF}_{EdDSA}(B′)
 | S3 | 서비스 검사에 b′(root 나이 ≤ MAX_ROOT_AGE) 추가, 로그인·재검증·세션 요청 모두 | `lib/mode3_rp.js verifyLogin`, `mode3_rp.js /api/mode3/request` |
 | K1 | 검증자 상한(maxRootAge·maxLifetime)은 팩토리 immutable 이 정본 — RP 는 env 대신 팩토리 값을 채택하고 조회 실패는 fail-closed | `mode3_rp.js adoptFactoryConstants` |
 | 신규 W1 | 지갑 트리 캐시: 복원·델타 뒤 root 대조, 불일치 시 전체 재생 1회, 델타 원자 적용 | `lib/mode3_rcl_sync.js`, `tests/test_mode3_rcl_sync.mjs` |
+
+## 10. 2026-09-24 갱신 — 집합 소속 술어(V7), 검증자 코드 대조, 세션 단위 폐기(V8)
+
+구현 기준 feat/mode3-cia @ 9d966e4. 설계 `docs/superpowers/specs/2026-09-23-mode3-predicates-design.md`(V7), `2026-09-24-mode3-session-revocation-design.md`(V8), 검증자 코드 대조는 2026-09-23 후속 5(해결책 B, 커밋 dda98cf). 실측 `results/mode3_predicates_20260923.md`, `results/mode3_session_revocation_20260924.md`. 이 절은 §9 의 표기 위에 덮어쓴다(§7–§9 와 같은 방식). §9.3 의 "세션 단위 폐기는 없다(AA 가 성명 기록을 갖지 않는다)" 는 이 절로 **철회**된다.
+
+### 10.1 표기 갱신 (§9.1 위에)
+
+- **관계 R — 공개 입력 25개.** §8 의 23개 + set_sel[23], set_root[24]. 증인 w 에 (set_index, set_path[8]) (V7) 와 (s_lowValue, s_lowNextIndex, s_lowNextValue, s_pathElements[32], s_pathIndices[32]) (V8) 가 더해진다. 코드의 슬롯은 a₀..a₃, 이 문서는 a₁..a₄.
+- **조건 8 (V7 집합 소속).** set_sel ∈ {0,…,4} (원핫 분해로 강제). sel = k ≥ 1 이면 a_k 가 깊이 8 Poseidon(2) 머클 트리 Tree_S 의 리프이고 그 root 가 set_root 다(경로는 증인). sel = 0 이면 set_root = 0. 집합 트리는 원소를 정렬·중복 제거하고 빈 자리를 SET_PAD = 2^64 로 채운다 — 속성이 [0, 2^64) 이므로 어떤 속성도 패딩과 같을 수 없다(패딩을 원소로 오인하는 증명 불가). 서비스와 컨트랙트는 set_sel ≤ 4, sel = 0 ⇒ set_root = 0 을 검사하고(BadDisclosure), set_root 가 자기 정책 집합 S 의 root 와 같은지 대조한다.
+- **시각 상대 술어(V7).** 회로 밖이다. 검증자(`AttrGate` v2)가 공개된 hi₁(출생연도 상한) 에 대해 hi₁ + minAge ≤ year(block.timestamp) 를 검사한다. 시계는 체인이라 증명자가 고르지 못한다. 회로·관계 R 은 그대로이므로 정리에 영향이 없고, 공개된 값의 해석만 늘어난다.
+- **σ_tx 다이제스트·execute 꼬리 11워드.** §8 의 9워드 + (set_sel, set_root). 정리 8 의 튜플이 (…, disc_mask, disc_lo, disc_hi, set_sel, set_root) 로 늘어난다.
+- **조건 4′ (V8 세션 비멤버십).** leaf_s = mask₂₅₂(H(5, Cf_s)) ∉ Tree(root). 조건 4 의 leaf(Cf_u) = mask₂₅₂(H(4, Cf_u)) 와 **같은 트리·같은 root** 에 대한 두 번째 비회원 증명. 태그 4·5 로 도메인이 분리돼 두 리프 종류는 충돌하지 않는다.
+- **AA 상태(V8).** accounts[uid].sessions = [(Cf_s, max_height, chainid, allowAgent, issuedAt, revokedAt)]. §9.1 의 "AA 는 발급 기록을 남기지 않는다" 를 대체한다. 기록에 arid·pk_i 는 없다(C_s 안). 만료(head > max_height)된 기록은 하트비트와 그 계정의 다음 발급 때 지운다 — 리프는 남는다.
+- **오라클 O_revoke_s(uid, Cf_s, auth).** auth 는 sig_u = Sign_{sk_u}(H(D_revsess, uid, Cf_s, nonce)) (사용자) 또는 운영자 시크릿. AA 는 auth 를 **먼저** 검증하고, 그 다음 accounts[uid].sessions 에서 Cf_s 를 찾아(없으면 unknown_session) 만료가 아니면 leaf_s 를 트리에 넣고 pending 에 둔다. 효력은 다음 O_publish 부터.
+- **검증자 코드 대조 W_ref.** 지갑이 승인(로그인·재승인) 전에 서비스의 팩토리·검증자 배포 코드를 자기 참조 빌드(`artifacts/`, immutable 참조는 마스킹)와 keccak 으로 대조한다. 불일치면 진행하지 않는다(bad_factory).
+
+### 10.2 정리에 미치는 영향
+
+- **정리 1·2 (G1·G2).** 조건 8·4′ 는 PPID 유도에 관여하지 않는다. 그대로.
+- **정리 3·5 (G3·G5) — 집합 공개.** 검증자 측: set_root 는 서비스 정책 집합의 root(공개값)이고 sel 은 슬롯 번호다. 경로·인덱스는 증인이므로 a_k 가 S 의 **어느 원소**인지는 영지식성으로 숨는다 — 검증자가 얻는 것은 a_k ∈ S 한 비트다(정리 5 의 상한 그대로; 공개 슬롯의 정보량이 lo = hi 의 등식 공개보다 작다). AA 측 정리 5′ 의 n′ 은 창 ∩ (범위 술어 ∧ a_sel ∈ S) 만족 집합으로 읽는다. |S| = 1 이면 등식 공개와 같다(§10.3 (g)).
+- **정리 8 (G7c).** 튜플에 (set_sel, set_root) 가 들어가므로, 같은 세션키로 만든 π 가 둘 이상일 때 릴레이어가 다른 집합의 π 를 끼워 넣는 것도 막힌다(§8 3 과 같은 논증). 상한 Adv^{EUF}_{ECDSA} + Adv^{coll}_{keccak} 동일.
+- **정리 9 (G8 폐기 건전성) — V8.** "폐기된 C" 를 "폐기된 Cf_u **또는** 폐기된 Cf_s" 로 읽는다. Cf_s 는 조건 2 에서 공개 arid·pk_i 와 증인 blind_s 로 재계산되고 σ_AA 가 (Cf_u, Cf_s) 를 덮으므로(A5), 증명자는 서명된 Cf_s 와 다른 Cf_s 를 조건 4′ 에 쓸 수 없다. 따라서 leaf_s 가 Tree(root) 에 있으면 그 세션의 T 는 조건 4′ 를 만족하지 못하고, (A3) 의 추출기와 (A2) 의 충돌 저항으로 상한은 ε_KS + q_H²·2^{−252} + negl 로 같다. 사용자 리프 폐기는 §9.3 과 같이 그 사용자의 모든 세션을 죽인다. 따름정리 9′(root 나이 상한)도 같다.
+- **명제 20 (세션 폐기 권한).** 𝒜 가 sk_u 도 운영자 시크릿도 없이 O_revoke_s 로 다른 사용자의 세션 리프를 넣게 하면 이긴다. Pr ≤ Adv^{EUF}_{EdDSA}: 요청은 (uid, Cf_s, nonce) 에 대한 사용자 서명을 요구하고 Cf_s 는 accounts[uid].sessions 안에서만 찾으므로, 다른 uid 의 Cf_s 를 지정하려면 그 uid 의 서명을 위조해야 한다. 부수 성질: 서명 검증이 존재 조회에 앞서므로 비인증 호출자는 (uid, Cf_s) 쌍의 존재 여부를 응답 코드로 얻지 못한다. nonce 는 도메인 분리이지 재생 방지가 아니다 — 재생의 효과는 같은 세션의 재폐기(멱등)뿐이다.
+- **정리 4·4′ (G4) — V8.** AA 의 뷰에 sessions[] 가 더해지지만 원소는 발급 때 이미 본 값(Cf_s, chainid, allowAgent, max_height)과 시각이다. 사용자 폐기 요청은 (uid, Cf_s, 시각)을 주므로 AA 는 "uid 가 세션 하나를 t 에 폐기했다" 를 알게 된다 — 계정 자기 폐기 요청과 같은 종류의 정보이고 arid·pk_i 는 여전히 C_s 안(구간 DL 은닉)이다. 정리 4 의 상한 Adv^{hide} 그대로. 온체인(정리 4′·13)에서 게시 리프는 H 출력이라 관찰자는 사용자 리프·세션 리프를 구분하지 못하고, 세션 폐기 게시 시각과 서비스가 관측하는 revoked_session 시각의 상관은 §8 (c) 와 같은 배포의 성질이다.
+- **정리 11–15 (G10).** 태그 평문 H(uid, arid) 는 세션과 무관하므로 세션 하나를 폐기해도 개봉 결과는 uid 까지다. 세션 단위 개봉 범위는 제공하지 않는다(태그 구조 불변).
+- **명제 21 (검증자 교체).** 𝒜 는 정당하게 등록된 서비스(arid·cert_s 보유)로서 "어떤 π 도 통과시키는" 검증자·팩토리를 배포한다. 정리 6(피싱)은 origin↔arid 만 다루므로 이 경우를 닫지 못했고, 그러면 그 서비스의 사용자 계정은 π 없이 조작될 수 있었다(사용자 자산). W_ref 아래 지갑은 팩토리·검증자의 배포 코드가 참조 빌드와 keccak 으로 같을 때만 진행하므로, 𝒜 가 이기려면 참조 빌드와 같은 코드 해시를 갖는 다른 코드를 만들어야 한다: Pr ≤ Adv^{coll}_{keccak} (A8). 가정: 지갑 기계의 `artifacts/` 가 정본이다(§10.3 (h)). cert_s 에 검증자 주소를 넣는 대안은 채택하지 않았다(인증서·재배포 결합).
+
+### 10.3 한계 추가 (§5·§8 위에)
+
+- **(f) 세션 폐기의 효력 시점과 범위.** 효력은 다음 root 게시부터다 — 게시 전 창의 온체인 실행은 막지 못한다. v8 이전에 발급된 세션은 기록이 없어 세션 단위로는 폐기할 수 없다(만료만). 설정에서 빠진 chainid 의 세션은 폐기·정리가 되지 않고, RPC 장애 시 폐기는 fail-closed(503)다. 나쁜 nonce 형식은 401 로 응답한다(`/cia/attrs` 는 400). 리프는 append-only 라 세션 리프 수는 폐기 수만큼 자란다 — 재기준화(rebaseline)는 후속.
+- **(g) 집합 공개의 정보량.** a_k ∈ S 는 log₂ 관점에서 한 비트지만 |S| 가 작을수록 등식 공개에 가까워진다(|S| = 1 이면 같다). 공개 값은 체인에 영구히 남는다(§8 (d) 와 같음).
+- **(h) 참조 빌드 신뢰.** W_ref 는 지갑이 가진 `artifacts/` 가 정본이라는 공급망 가정 위에 있다. 다른 컴파일러 설정으로 빌드하면 정당한 서비스도 bad_factory 가 된다(운영 제약).
+- **(i) 신뢰 설정.** V7·V8 에서 Groth16 phase-2 를 다시 수행했고 여전히 고정 엔트로피의 단일 기여다(§8 (a)).
+- **(j) 지갑 라우트의 권한.** `/wallet/session/revoke` 는 r_s 를 bearer 로 받는다(`/wallet/revalidate` 와 같은 자세, CORS 미개방). Snap 의 동의 창은 지갑 페이지가 띄우고 에이전트는 그 동의를 검증하지 않는다 — (A9) 오리진 모델 위의 UI 수준 안내다.
+
+### 10.4 대응표 갱신 (§6·§9.4 위에)
+
+| 행 | 갱신 내용 | 구현 |
+|---|---|---|
+| C13 (신규) | 조건 8 집합 소속: set_sel 원핫, 깊이 8 Poseidon(2) 경로, SET_PAD = 2^64, sel = 0 ⇒ root = 0 | `circuits/pi_cred.circom` ⑦, `lib/mode3_set_tree.js` |
+| C14 (신규) | 조건 4′ 세션 리프 mask₂₅₂(H(5, Cf_s)) 비회원, 같은 revRoot | `circuits/pi_cred.circom` ④′, `lib/mode3_revocation.js sessionLeaf` |
+| S11 (신규) | 서비스 검사: set_sel ≤ 4, sel = 0 ⇒ root = 0, set_root = 정책 집합 root; 로그인 `require` 는 페이지 주도(서버 게이트 아님) | `lib/mode3_rp.js`, `mode3_rp.js rp_info.predicates` |
+| K11 (신규) | `AttrGate` v2: allowedCountriesRoot·minAge, year(block.timestamp) | `contracts/AttrGate.sol` |
+| K12 | execute 꼬리·σ_tx 다이제스트 11워드 | `contracts/Mode3Wallet.sol`, `lib/mode3_onchain.js payloadDigest` |
+| A18 (신규) | 상태 v8 sessions[]; `/cia/revoke scope=session`(서명 → 조회 순서, 만료 head > max_height 거절, 삽입 직전 재조회); `/cia/admin/sessions`; 만료 기록 정리(하트비트·발급) | `cia.js`, `lib/mode3_cia_state.js`, `lib/mode3_issuance.js revokeSessionMessage` |
+| W11 (신규) | 지갑: 두 비회원 증인 동시 채취(같은 트리 상태), revoked_session 은 그 세션만 삭제, `/wallet/session/revoke`(sk_u 서명) | `lib/mode3_wallet.js buildCredentialProof·signRevokeSession`, `mode3_wallet_agent.js` |
+| W12 (신규) | W_ref 검증자 코드 대조(bad_factory: no_code / factory_code_mismatch / verifier_code_mismatch) | `lib/mode3_onchain.js verifyReferenceCode`, `mode3_wallet_agent.js checkService` |
+| N (신규) | Snap `consentRevokeSession` — 동의만, 서명은 에이전트 | `snap-mode3/src/index.js` |
+
+실측(N=10 중앙값). V7: pi_cred 27,329 제약(V6 25,369), prove 832.8 ms, verify 10.0 ms; `execute` gas mask=0 415,991, 범위만 421,052, 집합만 421,436, 범위+집합+claim 455,138; 계정 배포 908,232. V8: 37,130 제약(+9,801 = IMTNonMembershipV2 하나), prove 1,191.7 ms(+43%), verify 10.0 ms; gas mask=0 416,015, 범위만 421,076, 집합만 421,428, 범위+집합+claim 455,162 — 공개 입력 수가 같아 검증 gas 는 사실상 불변이고 비용은 증명자가 부담한다. 로그인 왕복 1,059 → 1,475 ms.
