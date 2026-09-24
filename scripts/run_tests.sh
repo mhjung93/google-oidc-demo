@@ -89,6 +89,7 @@ CHAIN=(
 # hardhat 노드(:8545)와 build/mode3 산출물은 chain 과 똑같이 필요하다.
 BROWSER=(
   tests/test_mode3_browser.mjs
+  tests/test_mode3_tour.mjs
 )
 
 # Snap 패키지(snap-mode3)의 지역 테스트. 전역 snap 객체를 스텁해 RPC 9종을 검사한다 —

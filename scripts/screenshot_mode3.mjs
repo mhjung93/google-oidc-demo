@@ -4,8 +4,12 @@
 // 네 페이지(서비스·지갑·관리자·내 계정)를 ko·en·전문가 세 상태로 fullPage 캡처한다. 서비스·지갑은
 // 좁은 창(400px) 한 장을 더 찍는다. 개발용 :3100/:4100/:5100 은 건드리지 않는다.
 //
+// --tour 를 주면 대신 **체험 모드**(설계 2026-09-25 §3)의 네 장면을 찍는다 — 서비스 잠김·지갑 말풍선·
+// 잠금이 풀린 서비스 말풍선·상태 패널 펼침. 기본 저장 위치도 results/mode3_ux_20260925/ 로 바뀐다.
+//
 //   node scripts/screenshot_mode3.mjs                       # results/mode3_ux_20260924/ 에 저장
 //   node scripts/screenshot_mode3.mjs --out results/foo      # 다른 디렉터리에 저장
+//   node scripts/screenshot_mode3.mjs --tour                 # results/mode3_ux_20260925/ 에 체험 모드 4장
 //
 // 전제: hardhat 노드(:8545), build/mode3 의 pi_cred zkey·vkey, 설치된 Chrome(또는 Chromium).
 // 끝나면 스택과 브라우저를 모두 내린다 — 포트를 남기지 않는다.
@@ -20,17 +24,20 @@ const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 // ---- 인자 ----
 const argv = process.argv.slice(2);
-let outArg = 'results/mode3_ux_20260924';
+let TOUR = false;
+let outArg = null;                  // --out 이 없으면 모드에 따라 아래에서 기본값을 고른다
 for (let i = 0; i < argv.length; i++) {
+  if (argv[i] === '--tour') { TOUR = true; continue; }
   if (argv[i] === '--out') { outArg = argv[++i] ?? outArg; continue; }
   if (argv[i].startsWith('--out=')) { outArg = argv[i].slice('--out='.length); continue; }
   if (argv[i] === '--help' || argv[i] === '-h') {
-    console.log('사용법: node scripts/screenshot_mode3.mjs [--out <디렉터리>]');
+    console.log('사용법: node scripts/screenshot_mode3.mjs [--tour] [--out <디렉터리>]');
     process.exit(0);
   }
   console.error(`알 수 없는 인자: ${argv[i]}`);
   process.exit(2);
 }
+outArg ??= TOUR ? 'results/mode3_ux_20260925' : 'results/mode3_ux_20260924';
 const OUT_DIR = path.isAbsolute(outArg) ? outArg : path.join(REPO_ROOT, outArg);
 
 // 무거운 것을 띄우기 전에 전제를 확인한다 — 실패해도 자식 프로세스를 고아로 남기지 않는다.
@@ -95,17 +102,9 @@ async function waitText(page, sel, needle, timeout = 180_000) {
   }
 }
 
-const browser = await launchBrowser();
-let stack = null;
-try {
-  console.log('격리 스택 기동(file 모드)…');
-  stack = await startIsolatedMode3Stack();          // 헬퍼가 RP 등록 승인·활성화까지 기다린다
+/** 기본 세트: 네 페이지를 조작이 끝난 상태로 만들고 ko·en·전문가(+좁은 창)를 찍는다. */
+async function captureAll(context, stack) {
   const { cia, wallet, rp } = stack;
-  console.log(`  CIA ${cia.base} · 지갑 ${wallet.base} · 서비스 ${rp.base}`);
-
-  const context = await browser.newContext({ viewport: WIDE });
-  // 파괴적 조작의 확인창(설계 §4.5) — 자동화는 모두 승인한다.
-  context.on('page', (p) => p.on('dialog', (d) => d.accept().catch(() => {})));
 
   // ---- 지갑: 등록 ----
   const walletPage = await context.newPage();
@@ -157,6 +156,64 @@ try {
   await captureStates(walletPage, 'wallet', { narrow: true });
   await captureStates(adminPage, 'admin');
   await captureStates(accountPage, 'account');
+}
+
+/**
+ * 체험 모드 세트(설계 2026-09-25 §3). 두 창을 ?tour=1 로 열어 잠김 → 등록 → 잠금 해제 → 로그인 → 상태 패널
+ * 순서로 네 장을 찍는다. 체험 모드는 오리진마다 localStorage 에 새겨지므로 각 창을 한 번씩 ?tour=1 로 연다.
+ */
+async function captureTour(context, stack) {
+  const { wallet, rp } = stack;
+
+  // ---- 서비스: 지갑 등록 전이라 로그인 버튼이 잠긴 화면 ----
+  const rpPage = await context.newPage();
+  await rpPage.goto(`${rp.base}/?tour=1`);
+  await rpPage.waitForFunction(() => document.querySelector('#loginBtn')?.disabled === true, undefined, { timeout: 30_000 });
+  await rpPage.waitForSelector('.tour-lock', { timeout: 30_000 });
+  await rpPage.waitForTimeout(300);
+  await shot(rpPage, 'rp-tour-locked');
+
+  // ---- 지갑: 말풍선이 등록 버튼을 가리키는 화면(누르기 전) ----
+  const walletPage = await context.newPage();
+  await walletPage.goto(`${wallet.base}/?tour=1`);
+  await walletPage.waitForSelector('#mainView:not([hidden])', { timeout: 30_000 });
+  await walletPage.waitForSelector('.tour-bubble', { timeout: 30_000 });
+  await walletPage.waitForTimeout(300);
+  await shot(walletPage, 'wallet-tour');
+
+  // ---- 등록 → 다음 폴링에 서비스 잠금이 풀리고 말풍선이 로그인 버튼으로 ----
+  console.log('지갑 등록…');
+  await walletPage.click('#registerBtn');
+  await waitText(walletPage, '#registerResult', '등록됨', 60_000);
+  await rpPage.waitForFunction(() => document.querySelector('#loginBtn')?.disabled === false, undefined, { timeout: 30_000 });
+  await rpPage.waitForFunction(() => (document.querySelector('.tour-bubble')?.textContent ?? '').includes('로그인'), undefined, { timeout: 30_000 });
+  await rpPage.waitForTimeout(300);
+  await shot(rpPage, 'rp-tour-bubble');
+
+  // ---- 로그인 뒤 점을 눌러 상태 패널을 펼친 화면 ----
+  console.log('로그인…');
+  await rpPage.click('#loginBtn');
+  await waitText(rpPage, '#verdict', '로그인 성공');
+  await rpPage.click('.stack-dots .dot.aa');
+  await rpPage.waitForSelector('#stackPanel:not([hidden])', { timeout: 10_000 });
+  await rpPage.waitForTimeout(300);
+  await shot(rpPage, 'rp-stack-panel');
+}
+
+const browser = await launchBrowser();
+let stack = null;
+try {
+  console.log('격리 스택 기동(file 모드)…');
+  stack = await startIsolatedMode3Stack();          // 헬퍼가 RP 등록 승인·활성화까지 기다린다
+  const { cia, wallet, rp } = stack;
+  console.log(`  CIA ${cia.base} · 지갑 ${wallet.base} · 서비스 ${rp.base}`);
+
+  const context = await browser.newContext({ viewport: WIDE });
+  // 파괴적 조작의 확인창(설계 §4.5) — 자동화는 모두 승인한다.
+  context.on('page', (p) => p.on('dialog', (d) => d.accept().catch(() => {})));
+
+  if (TOUR) await captureTour(context, stack);
+  else await captureAll(context, stack);
 
   console.log(`\n${shots.length}장 저장: ${OUT_DIR}`);
 } finally {
