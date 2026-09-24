@@ -59,8 +59,8 @@
     let stackLinks = { wallet: null, rp: null };
     const renderGuide = () => {
       const links = { admin: '/admin', wallet: stackLinks.wallet, rp: stackLinks.rp };
-      // 단계 판정은 공통 레이어가 한다(설계 2026-09-25 §3.2). 계정 페이지는 잠그지 않는다.
-      if (Demo.tour) { Demo.tour.evaluate({ progress: { revoked }, links }); return; }
+      // 체험 모드일 때만 공통 레이어가 7단계를 통째로 판정한다(설계 2026-09-25 §3.2). 꺼져 있으면 아래 1차 규칙이 그린다.
+      if (Demo.tour?.enabled) { Demo.tour.evaluate({ progress: { revoked }, links }); return; }
       Demo.guide({ done: revoked ? ['revoke'] : [], current: 'revoke', links });
     };
     // 상태 패널(설계 2026-09-25 §2). 자기 health 의 walletOrigin·rpOrigins[0] 로 폴링 대상과 안내 바 링크를 채운다.
@@ -109,6 +109,7 @@
     });
 
     Demo.init({ page: 'account' });
+    Demo.tour?.onToggle(renderGuide);   // 스위치를 켜고 끌 때 이 페이지의 규칙으로 안내를 다시 그린다
     initStack();
     renderGuide();
   </script>

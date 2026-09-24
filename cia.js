@@ -27,7 +27,7 @@ import { signRpCert } from './lib/mode3_rp_cert.js';
 import { isTracePoint, createShare, combinePublicKey, partialDecrypt, combineDecrypt, resolveTagPlaintext, proveShare } from './lib/mode3_trace.js';
 import { openRequestMessage, openResultMessage, recoverSigner, isFreshTs } from './lib/mode3_opening.js';
 import { CIA_STATE_VERSION, defaultCiaState, migrateCiaState } from './lib/mode3_cia_state.js';
-import { buildAaHealth, applyHealthHeaders, bounded } from './lib/mode3_health.js';
+import { buildAaHealth, applyHealthHeaders, bounded, originList } from './lib/mode3_health.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.CIA_PORT) || 4100;
@@ -267,10 +267,16 @@ app.get('/cia/public_keys', (req, res) => {
 const WALLET_AGENT_ORIGIN = process.env.MODE3_WALLET_AGENT_ORIGIN || 'http://127.0.0.1:5100';
 app.get('/mode3/health', async (req, res) => {
   const rpOrigins = Object.values(state.rps).filter((r) => r.status === 'approved').map((r) => r.origin);
-  applyHealthHeaders(req, res, [...rpOrigins, WALLET_AGENT_ORIGIN]);
+  // 허용 오리진은 origin 으로 정규화한다 — 설정값 끝의 '/' 같은 것이 CORS 를 조용히 깨뜨리지 않게.
+  applyHealthHeaders(req, res, originList(rpOrigins, WALLET_AGENT_ORIGIN));
   let chain = null, last = null;
-  try { const head = await bounded(headHeight()); chain = { id: selfChainId ?? '', head: head.toString() }; } catch { /* 체인 없음·응답 없음 */ }
-  try { if (chain && LOG_ADDRESS) last = (await bounded(new ethers.Contract(LOG_ADDRESS, LOG_ABI, ethWallet).lastPublishedBlock())).toString(); } catch { /* 로그 못 읽음 */ }
+  // 두 조회를 함께 돌리고 한 예산(1.2초)만 씌운다 — 직렬로 1.5초씩 걸면 페이지의 요청 예산을 넘길 수 있다(설계 §1.3).
+  try {
+    const log = LOG_ADDRESS ? new ethers.Contract(LOG_ADDRESS, LOG_ABI, ethWallet) : null;
+    const [head, lastPub] = await bounded(Promise.all([headHeight(), log ? log.lastPublishedBlock().catch(() => null) : null]), 1200);
+    chain = { id: selfChainId ?? '', head: head.toString() };
+    last = lastPub === null || lastPub === undefined ? null : lastPub.toString();
+  } catch { /* 체인 없음·응답 없음 */ }
   res.json(buildAaHealth({ now: new Date().toISOString(), chain, root: tree.getRoot().toString(), epoch: state.epoch, lastPublishedBlock: last, heartbeatBlocks: Number(HEARTBEAT_BLOCKS),
     pendingLeaves: state.pending.length, pendingRps: Object.values(state.rps).filter((r) => r.status === 'pending').length, pendingOpenings: state.openings.filter((o) => o.status === 'pending').length,
     accounts: Object.keys(state.accounts).length, walletOrigin: WALLET_AGENT_ORIGIN, rpOrigins }));

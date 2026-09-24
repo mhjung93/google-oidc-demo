@@ -35,11 +35,13 @@ async function launchBrowser() {
 }
 
 const browser = await launchBrowser();
-const stack = await startIsolatedMode3Stack();      // file 모드(MetaMask·Snap 없이 도는 데모 경로)
-const { wallet, rp } = stack;
+// 스택은 try 안에서 띄운다 — 기동이 실패해도 finally 가 브라우저를 닫는다(안 그러면 Chrome 이 남는다).
+let stack = null;
 let ciaStopped = false;
 
 try {
+  stack = await startIsolatedMode3Stack();          // file 모드(MetaMask·Snap 없이 도는 데모 경로)
+  const { wallet, rp } = stack;
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   // 파괴적 조작의 확인창(2026-09-24 UX §4.5) — 자동화는 모두 승인한다.
   context.on('page', (p) => p.on('dialog', (d) => d.accept().catch(() => {})));
@@ -104,7 +106,8 @@ try {
     ciaStopped = true;
     await rpPage.waitForFunction(() => document.querySelector('.stack-dots .dot.aa')?.classList.contains('bad'), undefined, { timeout: 30_000 })
       .catch(async () => { throw new Error(`신원 기관 점이 빨강이 되지 않았다: ${j(await dotClasses(rpPage))}`); });
-    // 지갑은 5초마다 스스로 CIA 를 찔러 본다(1.5초 예산) — 그 결과가 health 의 ciaReachable 로 내려온다.
+    // 지갑은 health 를 줄 때마다 CIA 를 뒤에서 찔러 보고(1.5초 예산, 응답은 기다리지 않는다) 결과를 10초 동안 쓴다 —
+    // 그래서 CIA 를 내리면 ciaReachable 은 10초 안팎 뒤의 폴링부터 false 가 된다(아래 30초 여유 안에 든다).
     await rpPage.waitForFunction(() => document.querySelector('.stack-dots .dot.wallet')?.classList.contains('warn'), undefined, { timeout: 30_000 })
       .catch(async () => { throw new Error(`지갑 점이 노랑이 되지 않았다: ${j(await dotClasses(rpPage))}`); });
     assert.ok((await rpPage.$eval('.stack-dots .dot.wallet', (d) => d.getAttribute('aria-label'))).includes('신원 기관'), '지갑 점의 사유가 신원 기관 쪽임을 말한다');
@@ -112,7 +115,7 @@ try {
 } finally {
   await browser.close().catch(() => {});
   if (ciaStopped) console.log('(CIA 는 테스트가 이미 내렸다 — 스택 stop 은 나머지를 정리한다)');
-  await stack.stop().catch((e) => console.error(`스택 정리 실패: ${e.message}`));
+  await stack?.stop().catch((e) => console.error(`스택 정리 실패: ${e.message}`));
 }
 console.log(failed ? `\n${failed} failed` : '\nall passed');
 // 다른 Mode 3 테스트와 같은 관례 — 남는 핸들 때문에 저절로 끝나지 않는다

@@ -28,7 +28,7 @@ import { signPayload, proofToCalldata, parseExecuteReceipt, decodeExecuteCalldat
 import { pointToStrings } from './lib/mode3_issuance.js';
 import { normalizeAttrs, SCALAR_MAX, ppid, randomScalar } from './lib/mode3_credential.js';
 import { verifyRpCert } from './lib/mode3_rp_cert.js';
-import { buildWalletHealth, applyHealthHeaders, bounded } from './lib/mode3_health.js';
+import { buildWalletHealth, applyHealthHeaders, bounded, originList } from './lib/mode3_health.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.MODE3_WALLET_PORT) || 5100;
@@ -255,6 +255,16 @@ app.get('/wallet/config', configCors, async (req, res) => {
 // 상태 엔드포인트(설계 2026-09-25 §1) — 민감정보 없음, 서비스·AA 오리진에만 CORS(cors 미들웨어가 아니라 같은 헤더 헬퍼).
 let ciaSeenAt = 0;    // 마지막으로 CIA 가 200 을 준 시각(ms) — health 의 ciaReachable
 let pinging = null;   // 동시에 여러 health 요청이 와도 ping 은 한 번만(느린 CIA 에 요청을 쌓지 않는다)
+const CIA_FRESH_MS = 10_000;   // 이 동안의 결과는 그대로 쓴다 — health 는 캐시로만 답하고 ping 은 뒤에서 돈다
+// 체험 모드의 4·5단계 판정용 프로세스 안 카운터(설계 §3.2). 개수만 싣고 다시 띄우면 0 부터다.
+let txCount = 0, disclosedTxCount = 0;
+const countedTxHashes = new Set();   // /wallet/tx/record 는 페이지가 여러 번 부를 수 있다 — 같은 해시는 한 번만 센다
+function countTx(d) {
+  txCount++;
+  const mask = d && d.mask !== undefined && d.mask !== null ? BigInt(d.mask) : 0n;
+  const sel = d ? BigInt(d.sel ?? d.setSel ?? 0) : 0n;
+  if (mask !== 0n || sel !== 0n) disclosedTxCount++;
+}
 async function doPingCia() {
   const c = new AbortController();
   const tm = setTimeout(() => c.abort(), 1500);
@@ -266,13 +276,17 @@ function pingCia() {
   if (!pinging) pinging = doPingCia().finally(() => { pinging = null; });
   return pinging;
 }
+// 허용 오리진은 설정값에서 origin 만 남겨 만든다 — 끝의 '/' 같은 것이 CORS 를 조용히 깨뜨리지 않게.
+const HEALTH_ALLOW = originList(RP_ORIGIN, CIA_URL);
 app.get('/mode3/health', async (req, res) => {
-  applyHealthHeaders(req, res, [RP_ORIGIN, CIA_URL]);
-  if (Date.now() - ciaSeenAt > 5000) await pingCia();
+  applyHealthHeaders(req, res, HEALTH_ALLOW);
+  // ping 은 기다리지 않는다(설계 §1.3) — 이 응답은 캐시(ciaSeenAt)로만 답하고, 결과는 다음 폴링이 본다.
+  // 그래서 CIA 가 느리거나 죽어 있어도 health 응답 시간은 체인 예산(1.2초)만큼만이다.
+  if (Date.now() - ciaSeenAt > CIA_FRESH_MS) pingCia();
   let chain = null;
-  try { chain = { id: (await bounded(chainId())).toString(), head: (await bounded(provider.getBlockNumber())).toString() }; } catch { /* 체인 없음·응답 없음 */ }
+  try { const [id, head] = await bounded(Promise.all([chainId(), provider.getBlockNumber()]), 1200); chain = { id: id.toString(), head: head.toString() }; } catch { /* 체인 없음·응답 없음 */ }
   res.json(buildWalletHealth({ now: new Date().toISOString(), chain, secrets: SECRETS, registered: !!state.registration, hasCred: !!state.registration?.userCred, sessions: Object.keys(state.sessions).length,
-    ciaReachable: Date.now() - ciaSeenAt <= 5000, rpOrigin: RP_ORIGIN, ciaUrl: CIA_URL }));
+    txs: txCount, disclosedTxs: disclosedTxCount, ciaReachable: Date.now() - ciaSeenAt <= CIA_FRESH_MS, rpOrigin: RP_ORIGIN, ciaUrl: CIA_URL }));
 });
 
 app.get('/wallet/status', async (req, res) => {
@@ -749,6 +763,7 @@ app.post('/wallet/tx', async (req, res) => {
       return res.status(409).json({ reason: 'execute_reverted', detail: String(name), wallet: walletAddr, nonce: nonce.toString(), timings });
     }
     timings.txMs = Date.now() - t;
+    countTx(disclosure);
     res.json({ ...receiptResult(receipt, walletAddr, disclosure), nonce: nonce.toString(), deployed, cacheHit: proved.cacheHit, root: proved.root, timings });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -788,6 +803,7 @@ app.post('/wallet/tx/record', async (req, res) => {
     let disclosure = null;
     const dec = tx ? decodeExecuteCalldata(tx.data) : null;
     if (dec) { const pub = dec.pub.map(BigInt); disclosure = { mask: pub[14], lo: pub.slice(15, 19), hi: pub.slice(19, 23), sel: pub[23], root: pub[24] }; }
+    if (!countedTxHashes.has(txHash)) { countedTxHashes.add(txHash); countTx(disclosure); }
     res.json(receiptResult(receipt, walletAddr, disclosure));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

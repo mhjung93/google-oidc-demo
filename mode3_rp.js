@@ -19,7 +19,7 @@ import { createShare, partialDecrypt, combinePublicKey, verifyShare } from './li
 import { signOpenRequest, signOpenResult } from './lib/mode3_opening.js';
 import { deployVerifier, deployFactory, deployAttrGate, decodeExecuteCalldata, parseExecuteReceipt, FACTORY_ABI, MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT, ALLOWED_COUNTRIES_DEFAULT, MIN_AGE_DEFAULT } from './lib/mode3_onchain.js';
 import { setRoot } from './lib/mode3_set_tree.js';
-import { buildRpHealth, applyHealthHeaders, bounded } from './lib/mode3_health.js';
+import { buildRpHealth, applyHealthHeaders, bounded, originList } from './lib/mode3_health.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.MODE3_RP_PORT) || 3100;
@@ -273,6 +273,10 @@ function consumeChallenge(r_s) {
 // 마지막으로 본 head − lastPublishedBlock(health 표시용, 설계 2026-09-25 §1.1 "서비스가 마지막으로 본 값").
 // 체인 조회를 새로 하지 않는다 — 세션 요청이 이미 읽은 view 에서만 기록하므로 아직 본 적이 없으면 null 이다.
 let lastRootAge = null;
+// 체험 모드의 4·5단계 판정용 프로세스 안 카운터(설계 §3.2 — 관리자·계정 페이지에는 페이지 메모리가 없다).
+// 개수만 health 에 싣고, 서버를 다시 띄우면 0 부터다.
+let requestCount = 0;          // 받아들인 세션 요청(/api/mode3/request)
+let disclosedLoginCount = 0;   // 공개 조건을 실은 로그인(mask ≠ 0 이거나 집합 공개)
 
 const logins = [];   // { PPID, at, root, r_s }. 메모리만
 // r_s 전문은 내지 않는다 — (PPID, 시각) 과 함께 서비스의 사용자 활동 기록이다(설계 2026-09-16 §5).
@@ -297,13 +301,17 @@ app.get('/api/mode3/rp_info', (req, res) => {
 });
 
 // 상태 엔드포인트(설계 2026-09-25 §1) — 민감정보 없음, 지갑·AA 오리진에만 CORS.
+// 허용 오리진은 설정값에서 origin 만 남겨 만든다 — MODE3_CIA_URL 끝의 '/' 같은 것이 CORS 를 조용히 깨뜨리지 않게.
+const HEALTH_ALLOW = originList(WALLET_ORIGIN, CIA_URL);
 app.get('/mode3/health', async (req, res) => {
-  applyHealthHeaders(req, res, [WALLET_ORIGIN, CIA_URL]);
+  applyHealthHeaders(req, res, HEALTH_ALLOW);
   let chain = null;
-  try { chain = { id: chainId.toString(), head: (await bounded(provider.getBlockNumber())).toString() }; } catch { /* 체인 없음·응답 없음 */ }
+  // 체인 조회 예산은 1.2초 — 페이지의 요청 예산(3초)보다 넉넉히 짧게 둔다(설계 §1.3).
+  try { chain = { id: chainId.toString(), head: (await bounded(provider.getBlockNumber(), 1200)).toString() }; } catch { /* 체인 없음·응답 없음 */ }
   const p = currentPredicates();
   res.json(buildRpHealth({ now: new Date().toISOString(), chain, status: reg.status, active: !!verifier, inactiveReason: verifier ? null : inactiveReason(), maxRootAge: Number(EFFECTIVE_MAX_ROOT_AGE), rootAge: lastRootAge,
-    sessions: sessions.size, predicates: { countries: p.allowedCountries.length, minAge: Number(p.minAge) }, walletAgentOrigin: WALLET_ORIGIN, ciaUrl: CIA_URL }));
+    sessions: sessions.size, requests: requestCount, disclosures: disclosedLoginCount,
+    predicates: { countries: p.allowedCountries.length, minAge: Number(p.minAge) }, walletAgentOrigin: WALLET_ORIGIN, ciaUrl: CIA_URL }));
 });
 app.post('/api/mode3/challenge', (req, res) => {
   // 봉투를 다른 라우트와 같은 { ok, reason } 으로 맞춘다 — 페이지가 상태 코드가 아니라 본문으로 사유를 읽는다(2026-09-23 최종 리뷰 M3).
@@ -338,6 +346,7 @@ app.post('/api/mode3/login', async (req, res) => {
     const at = new Date().toISOString();
     const disclosure = discOf(v.disclosure);
     sessions.set(rsStr, { PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), disclosure, at });
+    if (disclosure.mask !== '0' || disclosure.set) disclosedLoginCount++;
     logins.push({ PPID: v.PPID.toString(), at, root: v.root.toString(), r_s: rsShort(rsStr), allowAgent: v.allowAgent.toString(), disclosure });
     // §5 로그인 로그 — 전체 r_s 와 트랜스크립트(태그 포함). 개봉 요청의 재료다. 조회 API 로는 내지 않는다.
     fs.appendFileSync(LOGIN_LOG, JSON.stringify({ at, PPID: v.PPID.toString(), r_s: rsStr, pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), disclosure, publicSignals: v.publicSignals, proof: req.body.proof }) + '\n', { mode: 0o600 });
@@ -381,6 +390,7 @@ app.post('/api/mode3/request', async (req, res) => {
     // 문제이므로 chain_unavailable 과 같은 503 이다.
     if (view.head - view.lastPublishedBlock > EFFECTIVE_MAX_ROOT_AGE) return res.status(503).json({ ok: false, reason: 'root_too_old' });
     if (!verifySessionRequest({ pk_i: s.pk_i, r_s: rsKey, body, sig })) return res.status(401).json({ ok: false, reason: 'bad_signature' });
+    requestCount++;
     res.json({ ok: true, echo: body, PPID: s.PPID });
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });

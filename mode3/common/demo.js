@@ -12,11 +12,11 @@
     term(name) { const e = S.terms[name]; if (!e) return name; return D.expert ? `${e[D.lang]} (${e.expert})` : e[D.lang]; },
     verdictText(key) { const e = S.verdicts[key]; return e ? (e[D.lang] ?? e.ko) : key; },
     reason(code) { const r = S.reasons[code]; return r ? r[D.lang] ?? r.ko : null; },
-    setLang(l) { if (!S.langs.includes(l)) return; D.lang = l; store.set('mode3.lang', l); document.documentElement.lang = l; D.applyI18n(); D.rerenderVerdicts(); D.tour.syncSwitch(); if (D.tour.lastEval) D.tour.evaluate(D.tour.lastEval); else if (D.lastGuide) D.guide(D.lastGuide); if (D.stack.state) D.stack.renderDots(); },
+    setLang(l) { if (!S.langs.includes(l)) return; D.lang = l; store.set('mode3.lang', l); document.documentElement.lang = l; D.applyI18n(); D.rerenderVerdicts(); D.tour.syncSwitch(); if (D.tour.enabled && D.tour.lastEval) D.tour.evaluate(D.tour.lastEval); else if (D.lastGuide) D.guide(D.lastGuide); if (D.stack.state) D.stack.renderDots(); },
     // 토글을 페이지가 직접 부를 수도 있으므로(안내 바의 체크박스만이 아니다) 체크 상태를 여기서 맞춘다.
     // applyI18n 을 함께 부른다 — data-term 라벨은 term() 이 전문가 여부로 원래 기호를 덧붙이므로(설계 §3.1),
     // 여기서 다시 그리지 않으면 토글 뒤에도 옛 표기가 남는다(껐는데 기호가 보이는 등).
-    setExpert(b) { D.expert = !!b; store.set('mode3.expert', b ? '1' : '0'); document.documentElement.toggleAttribute('data-expert', D.expert); const ex = document.getElementById('expertToggle'); if (ex) ex.checked = D.expert; D.applyI18n(); D.rerenderVerdicts(); D.tour.syncSwitch(); if (D.tour.lastEval) D.tour.evaluate(D.tour.lastEval); else if (D.lastGuide) D.guide(D.lastGuide); if (D.stack.state) D.stack.renderDots(); },
+    setExpert(b) { D.expert = !!b; store.set('mode3.expert', b ? '1' : '0'); document.documentElement.toggleAttribute('data-expert', D.expert); const ex = document.getElementById('expertToggle'); if (ex) ex.checked = D.expert; D.applyI18n(); D.rerenderVerdicts(); D.tour.syncSwitch(); if (D.tour.enabled && D.tour.lastEval) D.tour.evaluate(D.tour.lastEval); else if (D.lastGuide) D.guide(D.lastGuide); if (D.stack.state) D.stack.renderDots(); },
     applyI18n() { document.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = D.t(el.dataset.i18n); }); document.querySelectorAll('[data-term]').forEach((el) => { el.textContent = D.term(el.dataset.term); }); },
     /** tour:false 면 체험 모드를 아예 켜지 않는다(승인 팝업 — 설계 2026-09-25 §3.1). */
     init({ page, tour = true }) {
@@ -103,7 +103,7 @@
      * 단계 판정은 서버 사실(Demo.stack 의 health)과 페이지 메모리(progress)를 합쳐 여기 한 곳에서 한다.
      */
     tour: {
-      enabled: false, locks: [], lastEval: null, anchor: null, mode: 'below', epochRose: false, openingsDrained: false, started: false,
+      enabled: false, locks: [], lastEval: null, lastRender: null, anchor: null, mode: 'below', epochRose: false, openingsDrained: false, started: false,
       init() {
         if (D.tour.started) return;
         D.tour.started = true;
@@ -137,7 +137,9 @@
             }
             prevAa = cur.aa;
           }
-          if (D.tour.lastEval) D.tour.evaluate(D.tour.lastEval);
+          // 페이지의 renderGuide 로 되돌려 준다 — 체험 모드가 꺼져 있으면 그 페이지의 1차 규칙이 안내를 그린다.
+          if (D.tour.lastRender) D.tour.lastRender();
+          else if (D.tour.lastEval) D.tour.evaluate(D.tour.lastEval);
         });
         addEventListener('scroll', () => D.tour.place(), { passive: true });
         addEventListener('resize', () => D.tour.place(true));
@@ -146,18 +148,35 @@
         D.tour.enabled = !!on; store.set('mode3.tour', on ? '1' : '');
         const cb = document.getElementById('tourToggle'); if (cb) cb.checked = D.tour.enabled;
         D.tour.syncSwitch();
-        if (D.tour.lastEval) D.tour.evaluate(D.tour.lastEval); else D.tour.renderOverlay(null, false, null);
+        D.tour.refresh();
+      },
+      /** 페이지가 자기 renderGuide 를 걸어 둔다 — 스위치를 켜고 끌 때 그 페이지의 규칙으로 안내를 다시 그린다(설계 §3.1). */
+      onToggle(fn) { if (typeof fn === 'function') D.tour.lastRender = fn; },
+      /** 안내·잠금·오버레이를 지금 상태에 맞춘다. 꺼져 있으면 페이지의 1차 규칙이 안내를 그리고 잠금·말풍선은 사라진다. */
+      refresh() {
+        if (D.tour.lastRender) D.tour.lastRender();
+        else if (D.tour.lastEval) D.tour.evaluate(D.tour.lastEval);
+        D.tour.applyLocks();
+        const g = D.lastGuide;
+        D.tour.renderOverlay(D.tour.enabled ? (g?.current ?? null) : null, !!g && (g.done?.length ?? 0) === S.steps.length, g?.links);
       },
       /** 스위치에 지금 무엇을 하게 되는지 붙인다(켜져 있으면 "끄면 …"). */
       syncSwitch() { const cb = document.getElementById('tourToggle'); if (cb?.parentElement) cb.parentElement.title = D.t(D.tour.enabled ? 'tour_off' : 'tour_on'); },
       /** 페이지가 버튼의 원래 활성 규칙(otherwise)과 함께 잠금을 건다. 같은 id 는 마지막 것만 남는다. */
       lock(spec) { if (!spec?.id) return; D.tour.locks = D.tour.locks.filter((l) => l.id !== spec.id); D.tour.locks.push(spec); D.tour.applyLocks(); },
-      /** 설계 §3.2 판정. 서버 사실을 아직 모르면 null 을 돌려준다 — 모르는 동안에는 잠그지 않는다(막히는 것보다 열려 있는 편이 안전). */
+      /**
+       * 설계 §3.2 판정. 서버 사실을 아직 모르면 null 을 돌려준다 — 모르는 동안에는 잠그지 않는다(막히는 것보다 열려
+       * 있는 편이 안전). 두 서버를 함께 보는 조건(세션·이용·공개)은 **둘 다 모를 때만** 모름이다.
+       */
       condMet(cond) {
         const l = D.stack.last; if (!l || l.at === 0) return null;
         if (cond === 'rp_approved') return l.rp ? l.rp.status === 'approved' : null;
         if (cond === 'wallet_registered') return l.wallet ? !!l.wallet.registered : null;
+        if (!l.rp && !l.wallet) return null;
         if (cond === 'has_session') return (l.wallet?.sessions ?? 0) > 0 || (l.rp?.sessions ?? 0) > 0;
+        // 4·5단계는 서버의 프로세스 안 카운터로도 본다 — 관리자·계정 페이지에는 이용·공개의 페이지 메모리가 없다.
+        if (cond === 'used') return (l.rp?.requests ?? 0) > 0 || (l.wallet?.txs ?? 0) > 0;
+        if (cond === 'disclosed') return (l.rp?.disclosures ?? 0) > 0 || (l.wallet?.disclosedTxs ?? 0) > 0;
         return null;
       },
       /** 페이지의 renderGuide 가 부른다 — done/current 를 여기서 계산해 안내 바·잠금·말풍선을 한꺼번에 맞춘다. */
@@ -169,8 +188,8 @@
         if (D.tour.condMet('rp_approved') || progress.approved) done.push('approve');
         if (D.tour.condMet('wallet_registered') || progress.registered) done.push('register');
         if (D.tour.condMet('has_session') || progress.login) done.push('login');
-        if (progress.used) done.push('use');
-        if (progress.disclosed) done.push('disclose');
+        if (progress.used || D.tour.condMet('used')) done.push('use');
+        if (progress.disclosed || D.tour.condMet('disclosed')) done.push('disclose');
         if (progress.revoked || (l?.aa?.pendingLeaves ?? 0) > 0 || D.tour.epochRose) done.push('revoke');
         if (progress.opened || D.tour.openingsDrained) done.push('open');
         const order = S.steps.map((s) => s.key);
@@ -294,14 +313,17 @@
     state: null,
     /** 상태 묶음을 만들어 둔다 — 폴링은 stack() 이 걸고, 여기서는 구독만 먼저 받을 수 있게 한다(체험 모드가 페이지보다 먼저 켜진다). */
     ensure() { return (D.stack.state ??= { urls: {}, last: { at: 0, aa: null, rp: null, wallet: null, errors: {} }, timer: null, subs: [], open: false, sig: null }); },
-    /** 2초 예산. AbortSignal.timeout 이 없는 브라우저면 AbortController + 타이머로 같은 일을 한다. */
+    /** 요청당 예산(설계 §1.3). 서버의 체인 조회 예산 1.2초보다 넉넉하고 5초 폴링보다는 짧다.
+     *  AbortSignal.timeout 이 없는 브라우저면 AbortController + 타이머로 같은 일을 한다. */
     budget(ms) {
       if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) return { signal: AbortSignal.timeout(ms), done() { /* 자체 타이머 */ } };
       const c = new AbortController(); const t = setTimeout(() => c.abort(), ms);
       return { signal: c.signal, done() { clearTimeout(t); } };
     },
-    /** 구독자에게 알릴지 판단하는 값 — now(매 응답 달라짐)는 뺀다. 응답이 없으면 실패 종류('timeout'|'error')로 비교한다. */
-    signature(last) { return JSON.stringify(STACK_ROLES.map((r) => (last[r] ? { ...last[r], now: undefined } : (last.errors[r] ?? null)))); },
+    /** 구독자에게 알릴지 판단하는 값 — now 와 chain.head 는 뺀다(둘 다 몇 초마다 달라져 안내·말풍선을 쉬지 않고 다시
+     *  그리게 한다). 체인이 있는지 없는지(chain 이 null 인지)는 남으므로 점 색이 바뀌는 순간은 그대로 알린다.
+     *  응답이 없으면 실패 종류('timeout'|'error')로 비교한다. */
+    signature(last) { return JSON.stringify(STACK_ROLES.map((r) => (last[r] ? { ...last[r], now: undefined, chain: last[r].chain ? { ...last[r].chain, head: undefined } : null } : (last.errors[r] ?? null)))); },
     /** 폴링 결과가 바뀔 때 부른다(체험 모드·페이지가 주소를 알아내는 데 쓴다). 구독 해제 함수를 돌려준다. */
     onChange(fn) { if (typeof fn !== 'function') return () => {}; const st = D.stack.ensure(); st.subs.push(fn); return () => { const i = st.subs.indexOf(fn); if (i >= 0) st.subs.splice(i, 1); }; },
     async poll() {
@@ -310,7 +332,7 @@
       await Promise.all(STACK_ROLES.map(async (role) => {
         const url = role === st.self ? '/mode3/health' : (st.urls[role] ? `${st.urls[role]}/mode3/health` : null);
         if (!url) return;                       // 주소를 아직 모른다 — 오류가 아니라 회색(모름)이다
-        const b = D.stack.budget(2000);
+        const b = D.stack.budget(3000);
         try {
           const r = await fetch(url, { signal: b.signal, cache: 'no-store' });
           if (!r.ok) throw new Error(`HTTP ${r.status}`);

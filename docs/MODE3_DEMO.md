@@ -171,13 +171,13 @@ RP 페이지는 반드시 `127.0.0.1`로 연다 — 지갑 에이전트의 CORS 
 | 신원 기관 | CIA 의 `GET /mode3/health` |
 | 서비스 | RP 의 `GET /mode3/health` |
 | 지갑 | 지갑 에이전트의 `GET /mode3/health` |
-| 체인 | 위 셋 중 먼저 응답한 것의 `chain`(체인 id·블록 높이) |
+| 체인 | 신원 기관 → 서비스 → 지갑 **고정 순서**로 처음 `chain` 을 준 응답의 값(체인 id·블록 높이). 먼저 도착한 응답이 아니라 이 순서다 |
 
 점을 누르면 안내 바 아래에 **상태 패널**(`#stackPanel`)이 전폭으로 펼쳐진다 — 역할마다 판정 한 줄, 노랑·빨강이면
 원인·조치·사유 코드(`root_too_old`·`registration_pending`·`cia_unavailable`, 서비스 비활성은 서버가 준
 `inactiveReason`), 전문가 보기에서는 그 역할의 원본 JSON 까지. 바깥을 누르거나 Esc 로 닫는다.
 
-읽기는 **5초 폴링**, 요청마다 2초 예산이다. 탭이 숨겨져 있으면 읽지 않고 다시 보이면 즉시 한 번 읽는다. 실패는
+읽기는 **5초 폴링**, 요청마다 3초 예산이다(서버 쪽 체인 조회 예산 1.2초보다 넉넉하고 폴링 간격보다는 짧다). 탭이 숨겨져 있으면 읽지 않고 다시 보이면 즉시 한 번 읽는다. 실패는
 콘솔에 남기지 않고 점 색과 패널 문구로만 말한다. 자기 서버는 상대 주소 없이 `/mode3/health` 로 부르고(같은
 오리진이라 CORS 를 타지 않는다), 상대 주소는 `rp_info`·`/wallet/status`·상대 health 응답에서 알아낸다. **아직 주소를
 모르는 역할은 빨강이 아니라 회색(모름)** 이다. 응답의 `role` 이 기대와 다르면 오류로 본다(엉뚱한 서버를 초록으로
@@ -187,7 +187,7 @@ RP 페이지는 반드시 `127.0.0.1`로 연다 — 지갑 에이전트의 CORS 
 
 | 점 | 초록 | 노랑 | 빨강 | 회색 |
 |---|---|---|---|---|
-| 신원 기관 | 아래 어느 것도 아님 | root 게시가 상한의 절반을 넘음(또는 하트비트 간격이 상한 이상), 아직 게시 안 한 폐기가 있음 | root 게시가 상한(`maxRootAge`) 이상으로 오래됨, 응답 없음 | 첫 폴링 전 |
+| 신원 기관 | 아래 어느 것도 아님 | root 나이가 상한의 절반 이상(`rootAge ≥ maxRootAge/2`, 또는 하트비트 간격이 상한 이상), 아직 게시 안 한 폐기가 있음 | root 게시가 상한(`maxRootAge`) 이상으로 오래됨, 응답 없음 | 첫 폴링 전 |
 | 서비스 | 승인됨 + 활성 | 승인 대기 | 비활성(사유는 `inactiveReason`), 응답 없음 | 첫 폴링 전 |
 | 지갑 | 등록됨 + 신원 기관에 닿음 | 신원 기관에 못 닿음 | 응답 없음 | 아직 등록 전, 주소 모름 |
 | 체인 | 셋 중 하나라도 `chain` 을 줌(블록 높이를 보인다) | — | 아무도 체인을 못 읽음 | 첫 폴링 전 |
@@ -198,16 +198,17 @@ RP 페이지는 반드시 `127.0.0.1`로 연다 — 지갑 에이전트의 CORS 
 
 세 서버(`cia.js`·`mode3_rp.js`·`mode3_wallet_agent.js`)가 모두 연다. 응답 조립은 `lib/mode3_health.js` 한 곳이고,
 **민감한 값은 어느 깊이에도 넣지 않는다** — `uid`·PPID·비밀·`sk_u`/`pk_u`·`pk_CIA`·`arid`·`r_s` 가 없다
-(`tests/test_mode3_health_shape.js` 가 고정한다). root 는 앞 12자만 남겨 축약한다.
+(`tests/test_mode3_health_shape.js` 가 고정한다). root 는 앞 12자만 남겨 축약한다. 싣는 것은 **이 데모가 공개로 다루기로
+한 개수와 오리진뿐이다**(`rpOrigins`·`pendingOpenings`·`accounts`·아래 카운터 등) — 설계상의 선택이다(스펙 §1.1).
 
 ```
 aa     {"role":"aa","ok":true,"now":…,"chain":{"id":"31337","head":"13"},"root":"1810138…","epoch":0,
         "lastPublishedBlock":"11","rootAge":2,"heartbeatBlocks":0,"pendingLeaves":0,"pendingRps":0,
         "pendingOpenings":0,"accounts":0,"walletOrigin":…,"rpOrigins":[…]}
 rp     {"role":"rp",…,"status":"approved","active":true,"inactiveReason":null,"maxRootAge":100,"rootAge":null,
-        "sessions":0,"predicates":{"countries":5,"minAge":19},"walletAgentOrigin":…,"ciaUrl":…}
-wallet {"role":"wallet",…,"secrets":"file","registered":false,"hasCred":false,"sessions":0,"ciaReachable":true,
-        "rpOrigin":…,"ciaUrl":…}
+        "sessions":0,"requests":0,"disclosures":0,"predicates":{"countries":5,"minAge":19},"walletAgentOrigin":…,"ciaUrl":…}
+wallet {"role":"wallet",…,"secrets":"file","registered":false,"hasCred":false,"sessions":0,"txs":0,"disclosedTxs":0,
+        "ciaReachable":true,"rpOrigin":…,"ciaUrl":…}
 ```
 
 - 응답에는 **`Cache-Control: no-store`** 와 `Vary: Origin` 이 늘 붙는다.
@@ -221,8 +222,14 @@ wallet {"role":"wallet",…,"secrets":"file","registered":false,"hasCred":false,
 
 CIA 는 지갑 오리진을 알 방법이 없으므로 **`MODE3_WALLET_AGENT_ORIGIN`** 으로 받는다(승인된 서비스 origin 은 CIA 가
 스스로 안다). 기본값이 아닌 포트로 지갑을 띄웠다면 CIA 에도 같은 값을 줘야 한다 — 관리자·내 계정 페이지는 CIA health 의
-`walletOrigin` 으로 지갑을 찾으므로, 값이 없으면 지갑 점이 회색(주소 모름)에 머물고 값이 틀리면 CORS 에 막혀 빨강이 된다. 지갑의 `ciaReachable` 은 health 를 줄 때 CIA 의 `/cia/public_keys` 를 1.5초 예산으로 찔러 본 결과이고
-5초 동안 재사용한다 — 그래서 CIA 를 내리면 지갑 점은 한두 번의 폴링 뒤에 노랑이 된다.
+`walletOrigin` 으로 지갑을 찾으므로, 값이 없으면 지갑 점이 회색(주소 모름)에 머물고 값이 틀리면 CORS 에 막혀 빨강이 된다. 지갑의 `ciaReachable` 은 health 를 줄 때 CIA 의 `/cia/public_keys` 를 1.5초 예산으로 **뒤에서** 찔러 본 결과다 —
+응답은 기다리지 않고(그래야 CIA 가 느려도 health 가 늦지 않는다) 결과를 10초 동안 재사용한다. 그래서 CIA 를 내리면
+지갑 점은 두세 번의 폴링 뒤에 노랑이 된다.
+
+`requests`·`disclosures`(서비스)와 `txs`·`disclosedTxs`(지갑)는 체험 모드의 4·5단계 판정에 쓰는 **프로세스 안 카운터**다.
+개수만 싣고(무엇을 공개했는지는 싣지 않는다) **서버를 다시 띄우면 0 부터** 센다 — 그러면 그 두 단계는 다시 "안 한 것"으로
+보인다(화면 표시만 그렇고 실제 세션·트랜잭션과는 무관하다). 서비스 쪽 `requests` 는 세션 요청(`/api/mode3/request`)만
+세고 재검증은 세지 않는다 — 재검증은 서비스 페이지가 자기 메모리로 안다.
 
 ## 체험 모드 (2026-09-25 UX 2차)
 
@@ -257,9 +264,14 @@ CIA 는 지갑 오리진을 알 방법이 없으므로 **`MODE3_WALLET_AGENT_ORI
   **"다음 단계로"** 링크.
 - 7단계를 모두 마치면 같은 자리에 **"체험 완료"** 카드가 뜬다.
 
-**단계 판정** — 1~3 단계는 서버 사실(health: 서비스 승인·지갑 등록·세션 수)과 페이지가 자기 눈으로 본 사실을 OR 한다.
-4·5·7(서비스 쪽)은 페이지 메모리, 6 은 `aa.pendingLeaves > 0` 또는 **이 창이 열려 있는 동안** 관측한 epoch 상승,
-7(관리자)은 `pendingOpenings` 가 1 이상에서 0 으로 떨어지는 관측이다.
+**단계 판정** — 체험 모드가 **켜져 있을 때만** 7단계를 한 곳(`Demo.tour.evaluate`)에서 판정한다. 꺼져 있으면 각
+페이지가 1차(2026-09-24)의 자기 규칙으로 안내 바를 그린다.
+
+1~3 단계는 서버 사실(health: 서비스 승인·지갑 등록·세션 수)과 페이지가 자기 눈으로 본 사실을 OR 한다. 4·5 단계도
+마찬가지로 페이지 메모리와 서버 카운터(`rp.requests`/`wallet.txs`, `rp.disclosures`/`wallet.disclosedTxs`)를 OR 한다 —
+관리자·계정 페이지에는 이용·공개의 페이지 메모리가 없기 때문이다. 6 은 `aa.pendingLeaves > 0` 또는 **이 창이 열려 있는
+동안** 관측한 epoch 상승, 7 은 서비스의 개봉 결과(페이지 메모리) 또는 관리자의 `pendingOpenings` 가 1 이상에서 0 으로
+떨어지는 관측이다.
 
 > **알려진 비대칭(그대로 두는 것)**: 6단계(폐기·복구)는 **게시하고 나서 새로고침하면 다시 "안 한 것"으로 돌아간다.**
 > 게시하면 `pendingLeaves` 가 0 이 되고 epoch 상승은 그 창이 열려 있는 동안에만 기억하기 때문이다. 화면 표시만

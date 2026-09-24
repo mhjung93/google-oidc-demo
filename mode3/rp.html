@@ -128,9 +128,9 @@
     // ---- 안내 바 ----
     function renderGuide() {
       const links = { wallet: info?.walletAgentOrigin, admin: info?.ciaUrl ? `${info.ciaUrl}/admin` : null, account: info?.ciaUrl ? `${info.ciaUrl}/account` : null };
-      // 단계 판정은 공통 레이어가 한다(설계 2026-09-25 §3.2) — 이 페이지는 자기가 아는 완료 신호만 넘긴다.
-      if (Demo.tour) { Demo.tour.evaluate({ progress: { approved: info?.status === 'approved', login: !!currentSession, used: progress.used, disclosed: progress.disclosed, opened: progress.opened }, links }); return; }
-      // 공통 레이어가 없을 때(demo.js 미로딩)의 1차 계산.
+      // 체험 모드일 때만 공통 레이어가 7단계를 통째로 판정한다(설계 2026-09-25 §3.2) — 이 페이지는 자기가 아는 완료 신호만 넘긴다.
+      if (Demo.tour?.enabled) { Demo.tour.evaluate({ progress: { approved: info?.status === 'approved', login: !!currentSession, used: progress.used, disclosed: progress.disclosed, opened: progress.opened }, links }); return; }
+      // 체험 모드가 꺼져 있을 때(그리고 demo.js 가 아예 없을 때)의 1차 계산 — 이 페이지가 아는 사실만으로 그린다.
       const done = [];
       if (info?.status === 'approved') done.push('approve');
       if (currentSession) done.push('login');
@@ -561,6 +561,8 @@
     // 체험 모드의 잠금(설계 2026-09-25 §3.3). otherwise 는 이 버튼의 원래 활성 규칙 — 서비스가 승인된 뒤에만 로그인할 수 있다.
     // (rp_info 를 아직 못 읽었으면 지금까지처럼 열어 둔다 — 눌리면 핸들러가 먼저 loadInfo 를 한다.)
     Demo.tour?.lock({ id: 'loginBtn', cond: 'wallet_registered', otherwise: () => !info || info.status === 'approved' });
+    // 스위치를 켜고 끌 때 이 페이지의 규칙으로 안내를 다시 그린다(설계 §3.1).
+    Demo.tour?.onToggle(renderGuide);
     loadInfo().then(refreshLogins);
   </script>
 </body>
