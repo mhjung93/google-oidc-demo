@@ -7,6 +7,8 @@
 // V4(2026-09-18): 만료는 블록 높이(max_height), allowAgent, 체인 헤드 조회, 하트비트 게시, 개봉 평문 역조회 — 설계 2026-09-18-mode3-onchain-execution-design.md §4·§6.
 // V5(2026-09-21): 자격증명 이중 구조 — 사용자 자격증명(/cia/user_cred, π_u)과 세션 발급(/cia/issue, ZKP 없음)을 나눈다. 폐기 리프는 Cf_u 에서
 //   나오므로 세션 기록(issued)이 없다 — 설계 2026-09-21-mode3-two-tier-credential §3·§4.
+// V8(2026-09-24): 세션 단위 폐기 — 발급이 accounts[uid].sessions 에 기록을 남기고, /cia/revoke scope=session 이 sessionLeaf(Cf_s) 를
+//   트리에 넣는다. 만료된 기록은 하트비트에서 지운다(리프는 남는다) — 설계 2026-09-24-mode3-session-revocation §2.2·§6.
 import 'dotenv/config';
 import express from 'express';
 import path from 'node:path';
@@ -18,8 +20,8 @@ import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import * as snarkjs from 'snarkjs';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { credMessageV5, compressPoint, randomScalar, normalizeAttrs, ATTR_SLOTS } from './lib/mode3_credential.js';
-import { userLeaf, createRevocationTree } from './lib/mode3_revocation.js';
-import { isValidPoint, pointFromStrings, verifyUserCred, parseUserCredProof, userCredRequestMessage, issueRequestMessageV4, attrsRequestMessage } from './lib/mode3_issuance.js';
+import { userLeaf, sessionLeaf, createRevocationTree } from './lib/mode3_revocation.js';
+import { isValidPoint, pointFromStrings, verifyUserCred, parseUserCredProof, userCredRequestMessage, issueRequestMessageV4, attrsRequestMessage, revokeSessionMessage } from './lib/mode3_issuance.js';
 import { LOG_ABI, rootToBytes32, signRootPublication } from './lib/mode3_log.js';
 import { signRpCert } from './lib/mode3_rp_cert.js';
 import { isTracePoint, createShare, combinePublicKey, partialDecrypt, combineDecrypt, resolveTagPlaintext, proveShare } from './lib/mode3_trace.js';
@@ -472,6 +474,10 @@ app.post('/cia/issue', async (req, res) => {
     await chainAlive(chainStr);   // fail-closed: 체인이 죽어 있으면 발급하지 않는다(게시도 불가하므로 폐기가 닿지 않는 세션이 된다)
     if (acct.disabled || activeCred(uid)?.Cf_u !== cfu.toString()) return res.status(403).json({ error: 'account disabled or credential retired', reason: 'no_user_cred' });   // await 사이의 폐기
     const s = eddsa.signPoseidon(ciaPrv, F.e(await credMessageV5(cfu, Cf_s, mh, BigInt(chainStr), agent)));
+    // V8(2026-09-24 §2.1): 세션 단위 폐기를 하려면 CIA 가 Cf_s 를 알아야 한다. 기록은 만료 뒤 하트비트가 지운다.
+    acct.sessions ??= [];
+    acct.sessions.push({ Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString(), issuedAt: new Date().toISOString(), revokedAt: null });
+    persist();
     res.json({
       Cf_u: cfu.toString(), Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString(),
       sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() },
@@ -494,16 +500,62 @@ async function revokeAccount(uid) {
 
 // §4.3(2026-09-21) 폐기. account = 활성 사용자 자격증명 리프 + disabled. credential = 리프만(계정은 살아 있어 새 user_cred 를 받아야 한다).
 // 리프는 사용자당 하나라 leaf/C 인자를 받지 않는다(있어도 무시). 트리 삽입은 멱등(이미 있으면 false).
-app.post('/cia/revoke', requireAdmin, async (req, res) => {
+// V8(2026-09-24 §2.2) session = 세션 하나만 — 사용자는 sk_u 서명으로, 운영자는 관리자 시크릿으로. 그래서 requireAdmin 을 미들웨어로
+// 걸지 않고 안에서 분기한다. 관리자 헤더가 틀리게 오면 isAdmin=false 라 scope=session 은 서명 경로로 흐르고 account/credential 은 401 이다.
+app.post('/cia/revoke', async (req, res) => {
   try {
-    const { uid, scope } = req.body ?? {};
+    const { uid, scope, Cf_s, sig_u, nonce } = req.body ?? {};
+    const hdr = req.get('X-CIA-Admin-Secret');
+    const isAdmin = Boolean(ADMIN_SECRET) && typeof hdr === 'string' && secretMatches(hdr, ADMIN_SECRET);
+    if (scope !== 'session') {   // requireAdmin 과 같은 응답을 그대로 유지한다(시크릿 미설정 503, 틀린 시크릿 401)
+      if (!ADMIN_SECRET) return res.status(503).json({ error: 'admin endpoints disabled: CIA_ADMIN_SECRET is not configured' });
+      if (!isAdmin) return res.status(401).json({ error: 'unauthorized' });
+    }
     if (!isDec(uid) || !state.accounts[uid]) return res.status(404).json({ error: 'unknown account' });
     if (scope === 'account') return res.json(await revokeAccount(uid));
-    if (scope !== 'credential') return res.status(400).json({ error: "scope must be 'account' or 'credential'" });
-    const inserted = await retireActiveCred(uid);
+    if (scope === 'credential') {
+      const inserted = await retireActiveCred(uid);
+      persist();
+      return res.json({ inserted, root: tree.getRoot().toString(), pending: state.pending.length });
+    }
+    if (scope !== 'session') return res.status(400).json({ error: "scope must be 'account', 'credential' or 'session'" });
+    if (!isDec(Cf_s)) return res.status(400).json({ error: 'Cf_s required' });
+    const acct = state.accounts[uid];
+    const rec = (acct.sessions ?? []).find((s) => s.Cf_s === BigInt(Cf_s).toString());
+    // 서명은 기록 조회보다 먼저 본다 — 서명 없이 "그 Cf_s 가 이 계정에 있는지" 를 알아내지 못하게.
+    if (!isAdmin) {
+      if (!sig_u || !isDec(nonce)) return res.status(401).json({ error: 'sig_u and nonce required without admin secret' });
+      let ok = false;
+      try {
+        const m = F.e(await revokeSessionMessage(BigInt(uid), BigInt(Cf_s), BigInt(nonce)));
+        ok = eddsa.verifyPoseidon(m, { R8: [F.e(BigInt(sig_u.R8x)), F.e(BigInt(sig_u.R8y))], S: BigInt(sig_u.S) }, [F.e(BigInt(acct.pk_u.x)), F.e(BigInt(acct.pk_u.y))]);
+      } catch { ok = false; }
+      if (!ok) return res.status(400).json({ error: 'bad user signature' });
+    }
+    if (!rec) return res.status(404).json({ error: 'unknown session', reason: 'unknown_session' });
+    if (rec.revokedAt) return res.json({ inserted: false, root: tree.getRoot().toString(), pending: state.pending.length });
+    // 만료된 세션은 리프를 넣지 않는다 — append-only 트리를 이미 죽은 세션으로 불리는 일이다(설계 §6).
+    if ((await headOf(rec.chainid)) >= BigInt(rec.max_height)) return res.status(409).json({ error: 'session expired', reason: 'expired' });
+    const leaf = (await sessionLeaf(BigInt(Cf_s))).toString();
+    const inserted = await tree.insert(BigInt(leaf));
+    if (inserted) { state.revoked.push(leaf); state.pending.push(leaf); }
+    rec.revokedAt = new Date().toISOString();
     persist();
-    res.json({ inserted, root: tree.getRoot().toString(), pending: state.pending.length });
+    res.json({ inserted, leaf, root: tree.getRoot().toString(), pending: state.pending.length });
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+
+// V8(2026-09-24 §2.3) 관리자 세션 목록. expired 는 그 체인 헤드로 계산하고, 못 읽으면 null(모름)이다.
+app.get('/cia/admin/sessions', requireAdmin, async (req, res) => {
+  const uid = String(req.query.uid ?? '');
+  if (!isDec(uid) || !state.accounts[uid]) return res.status(404).json({ error: 'unknown account' });
+  const heads = {};
+  const out = [];
+  for (const s of state.accounts[uid].sessions ?? []) {
+    if (heads[s.chainid] === undefined) { try { heads[s.chainid] = await headOf(s.chainid); } catch { heads[s.chainid] = null; } }
+    out.push({ ...s, expired: heads[s.chainid] === null ? null : heads[s.chainid] >= BigInt(s.max_height) });
+  }
+  res.json({ sessions: out });
 });
 
 // §6.5 게시. 서명이 리프 배열까지 덮는다 — 릴레이어의 calldata 오염 방지. 로그 주소도 덮는다 —
@@ -557,12 +609,29 @@ app.post('/cia/publish', requireAdmin, async (req, res) => {
 async function heartbeatTick() {
   if (publishing || !LOG_ADDRESS) return;
   try {
+    await pruneExpiredSessions();   // try 안에 둔다 — setInterval 콜백이라 여기서 던지면 unhandled rejection 이다
     const log = new ethers.Contract(LOG_ADDRESS, LOG_ABI, ethWallet);
     const [head, last] = await Promise.all([ethWallet.provider.getBlockNumber(), log.lastPublishedBlock()]);
     if (BigInt(head) - BigInt(last) < HEARTBEAT_BLOCKS) return;
     const r = await publishNow({ heartbeat: true });
     console.log(`[cia] 하트비트 게시: epoch ${r.epoch}, 리프 ${r.leaves.length}개, head ${head}`);
   } catch (e) { console.warn(`[cia] 하트비트 실패: ${e.message}`); }
+}
+
+/** V8: 만료된 세션 기록 삭제(리프는 남는다 — 설계 §6). 체인별 head 는 한 번만 읽는다. */
+async function pruneExpiredSessions() {
+  const heads = {};
+  let dropped = 0;
+  for (const acct of Object.values(state.accounts)) {
+    if (!acct.sessions?.length) continue;
+    const keep = [];
+    for (const s of acct.sessions) {
+      if (heads[s.chainid] === undefined) { try { heads[s.chainid] = await headOf(s.chainid); } catch { heads[s.chainid] = null; } }
+      if (heads[s.chainid] !== null && heads[s.chainid] >= BigInt(s.max_height)) dropped++; else keep.push(s);
+    }
+    acct.sessions = keep;
+  }
+  if (dropped) persist();
 }
 
 app.post('/cia/account/set_disabled', requireAdmin, (req, res) => {

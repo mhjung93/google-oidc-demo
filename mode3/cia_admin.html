@@ -34,6 +34,7 @@
   <fieldset>
     <legend>계정 <button id="accountsBtn">목록</button></legend>
     <p class="muted">속성 4슬롯을 바꾸면 활성 사용자 자격증명이 물린다(다음 게시까지 pending) — 지갑은 다음 발급에서 재동기화한다(2026-09-22 §3.3).</p>
+    <p class="muted">"세션" 은 그 계정의 발급 세션 목록이다(2026-09-24 V8). 활성 세션만 폐기할 수 있고 — 만료된 세션은 리프를 넣지 않는다 — 폐기 리프도 append-only 다.</p>
     <div id="accounts">-</div>
   </fieldset>
 
@@ -110,11 +111,47 @@
           await call('POST', `/cia/accounts/${a.uid}/attrs`, { attrs: inputs.map((i) => i.value.trim()) });
           loadAccounts();
         });
+        // V8(2026-09-24): 계정마다 세션 목록을 접었다 폈다 한다. 표가 들어갈 행은 계정 행 바로 아래에 둔다.
+        const sessions = document.createElement('button');
+        sessions.textContent = '세션';
+        const sessionsRow = document.createElement('tr');
+        const sessionsCell = document.createElement('td');
+        sessionsCell.colSpan = 5; sessionsCell.style.padding = '2px 8px';
+        sessionsRow.appendChild(sessionsCell);
+        sessionsRow.style.display = 'none';
+        sessions.addEventListener('click', async () => {
+          if (sessionsRow.style.display !== 'none') { sessionsRow.style.display = 'none'; return; }
+          sessionsRow.style.display = '';
+          await loadSessions(a.uid, sessionsCell);
+        });
         const tr = document.createElement('tr');
-        [td(a.uid), td(a.disabled ? 'disabled' : ''), cell, td(save)].forEach((c) => tr.appendChild(c));
+        [td(a.uid), td(a.disabled ? 'disabled' : ''), cell, td(save), td(sessions)].forEach((c) => tr.appendChild(c));
         table.appendChild(tr);
+        table.appendChild(sessionsRow);
       });
       $('accounts').replaceChildren(table);
+    }
+    /** 한 계정의 세션 목록(2026-09-24 V8). 폐기 버튼은 활성 세션에만 — 만료·이미 폐기된 세션은 각각 409·멱등이다. */
+    async function loadSessions(uid, cell) {
+      const r = await adminJson('GET', `/cia/admin/sessions?uid=${encodeURIComponent(uid)}`);
+      if (r.status !== 200) { cell.textContent = `${r.status}`; return; }
+      if (!r.body.sessions.length) { cell.textContent = '(세션 없음)'; return; }
+      const table = document.createElement('table');
+      r.body.sessions.forEach((s) => {
+        const status = s.revokedAt ? '폐기됨' : (s.expired === null ? '(체인 모름)' : (s.expired ? '만료' : '활성'));
+        let last = '';
+        if (!s.revokedAt && s.expired === false) {
+          const b = document.createElement('button');
+          b.textContent = '폐기';
+          b.addEventListener('click', async () => {
+            await call('POST', '/cia/revoke', { uid, scope: 'session', Cf_s: s.Cf_s });
+            loadSessions(uid, cell);
+          });
+          last = b;
+        }
+        table.appendChild(row([`${s.Cf_s.slice(0, 10)}…`, `chain ${s.chainid}`, `max_height ${s.max_height}`, `agent=${s.allowAgent}`, s.issuedAt, status, last]));
+      });
+      cell.replaceChildren(table);
     }
     async function loadRps() {
       const r = await adminJson('GET', '/cia/rps');
