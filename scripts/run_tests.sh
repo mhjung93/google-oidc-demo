@@ -41,6 +41,7 @@ UNIT=(
   tests/test_mode3_secret_source.js
   tests/test_mode3_set_tree.mjs
   tests/test_mode3_demo_strings.js
+  tests/test_mode3_health_shape.js
 )
 
 CIRCUIT=(
@@ -79,6 +80,7 @@ CHAIN=(
   tests/test_mode3_wallet_agent.mjs
   tests/test_mode3_wallet_snap.mjs
   tests/test_mode3_demo_stack.mjs
+  tests/test_mode3_health.mjs
 )
 
 # 브라우저가 필요한 것들 — chain 과 나누는 이유는 의존성이 하나 더 있기 때문이다.

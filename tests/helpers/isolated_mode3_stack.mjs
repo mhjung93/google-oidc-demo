@@ -63,11 +63,13 @@ function client(base, logFile) {
 
 export async function startIsolatedMode3Stack(opts = {}) {
   const { rp: withRp = true, rpEnv = {}, walletEnv = {}, ciaEnv = {} } = opts;
-  const cia = await startIsolatedCia({ env: ciaEnv });
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-stack-'));
+  // 지갑 포트·오리진은 CIA 보다 **먼저** 잡는다 — CIA 의 /mode3/health CORS 허용 목록(설계 2026-09-25 §1.2)에
+  // MODE3_WALLET_AGENT_ORIGIN 으로 넘겨야 한다. 호출자의 ciaEnv 가 우선한다.
   const walletPort = await freePort();
-  const rpPort = await freePort();
   const walletOrigin = `http://127.0.0.1:${walletPort}`;
+  const cia = await startIsolatedCia({ env: { MODE3_WALLET_AGENT_ORIGIN: walletOrigin, ...ciaEnv } });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-stack-'));
+  const rpPort = await freePort();
   const rpOrigin = `http://127.0.0.1:${rpPort}`;
   const children = [];
   try {

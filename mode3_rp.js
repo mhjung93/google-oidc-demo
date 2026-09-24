@@ -19,6 +19,7 @@ import { createShare, partialDecrypt, combinePublicKey, verifyShare } from './li
 import { signOpenRequest, signOpenResult } from './lib/mode3_opening.js';
 import { deployVerifier, deployFactory, deployAttrGate, decodeExecuteCalldata, parseExecuteReceipt, FACTORY_ABI, MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT, ALLOWED_COUNTRIES_DEFAULT, MIN_AGE_DEFAULT } from './lib/mode3_onchain.js';
 import { setRoot } from './lib/mode3_set_tree.js';
+import { buildRpHealth, applyHealthHeaders } from './lib/mode3_health.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.MODE3_RP_PORT) || 3100;
@@ -269,6 +270,10 @@ function consumeChallenge(r_s) {
   return Date.now() <= exp;
 }
 
+// 마지막으로 본 head − lastPublishedBlock(health 표시용, 설계 2026-09-25 §1.1 "서비스가 마지막으로 본 값").
+// 체인 조회를 새로 하지 않는다 — 세션 요청이 이미 읽은 view 에서만 기록하므로 아직 본 적이 없으면 null 이다.
+let lastRootAge = null;
+
 const logins = [];   // { PPID, at, root, r_s }. 메모리만
 // r_s 전문은 내지 않는다 — (PPID, 시각) 과 함께 서비스의 사용자 활동 기록이다(설계 2026-09-16 §5).
 const rsShort = (r) => r.slice(0, 8) + '…';
@@ -284,8 +289,21 @@ app.use('/common', express.static(path.join(__dirname, 'mode3', 'common')));
 
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'rp.html')));
 
+// rp_info 와 health(§1.1)가 같은 정책 값을 쓴다 — 한 곳에서만 만든다.
+const currentPredicates = () => ({ allowedCountries: ALLOWED_COUNTRIES_EFFECTIVE.map(String), allowedCountriesRoot: ALLOWED_COUNTRIES_ROOT.toString(), minAge: MIN_AGE.toString() });
+
 app.get('/api/mode3/rp_info', (req, res) => {
-  res.json({ status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, ciaUrl: CIA_URL, pkCiaSource: pkCIA.source, chainId: chainId.toString(), active: Boolean(verifier), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null, predicates: { allowedCountries: ALLOWED_COUNTRIES_EFFECTIVE.map(String), allowedCountriesRoot: ALLOWED_COUNTRIES_ROOT.toString(), minAge: MIN_AGE.toString() } });
+  res.json({ status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, ciaUrl: CIA_URL, pkCiaSource: pkCIA.source, chainId: chainId.toString(), active: Boolean(verifier), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null, predicates: currentPredicates() });
+});
+
+// 상태 엔드포인트(설계 2026-09-25 §1) — 민감정보 없음, 지갑·AA 오리진에만 CORS.
+app.get('/mode3/health', async (req, res) => {
+  applyHealthHeaders(req, res, [WALLET_ORIGIN, CIA_URL]);
+  let chain = null;
+  try { chain = { id: chainId.toString(), head: (await provider.getBlockNumber()).toString() }; } catch { /* 체인 없음 */ }
+  const p = currentPredicates();
+  res.json(buildRpHealth({ now: new Date().toISOString(), chain, status: reg.status, active: !!verifier, inactiveReason: verifier ? null : inactiveReason(), maxRootAge: Number(EFFECTIVE_MAX_ROOT_AGE), rootAge: lastRootAge,
+    sessions: sessions.size, predicates: { countries: p.allowedCountries.length, minAge: Number(p.minAge) }, walletAgentOrigin: WALLET_ORIGIN, ciaUrl: CIA_URL }));
 });
 app.post('/api/mode3/challenge', (req, res) => {
   // 봉투를 다른 라우트와 같은 { ok, reason } 으로 맞춘다 — 페이지가 상태 코드가 아니라 본문으로 사유를 읽는다(2026-09-23 최종 리뷰 M3).
@@ -354,6 +372,7 @@ app.post('/api/mode3/request', async (req, res) => {
     if (!s) return res.status(401).json({ ok: false, reason: 'no_session' });
     // 폐기가 효력을 갖는 지점: root 가 바뀌었으면 세션은 재검증 전까지 요청을 받지 않는다.
     const view = await verifier.refreshChainView().catch(() => null);
+    if (view) lastRootAge = Number(view.head - view.lastPublishedBlock);   // health 표시용(§1.1)
     if (!view) return res.status(503).json({ ok: false, reason: 'chain_unavailable' });
     if (view.head > BigInt(s.max_height)) { sessions.delete(rsKey); return res.status(401).json({ ok: false, reason: 'expired' }); }
     if (view.root.toString() !== s.root) return res.status(401).json({ ok: false, reason: 'revalidate_required' });

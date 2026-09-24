@@ -28,6 +28,7 @@ import { signPayload, proofToCalldata, parseExecuteReceipt, decodeExecuteCalldat
 import { pointToStrings } from './lib/mode3_issuance.js';
 import { normalizeAttrs, SCALAR_MAX, ppid, randomScalar } from './lib/mode3_credential.js';
 import { verifyRpCert } from './lib/mode3_rp_cert.js';
+import { buildWalletHealth, applyHealthHeaders } from './lib/mode3_health.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.MODE3_WALLET_PORT) || 5100;
@@ -249,6 +250,18 @@ app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'wallet.ht
 app.get('/wallet/config', configCors, async (req, res) => {
   try { res.json({ secrets: SECRETS, snapId: SNAP_ID, walletOrigin: WALLET_ORIGIN, rpcUrl: RPC_URL, chainId: (await chainId()).toString() }); }
   catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 상태 엔드포인트(설계 2026-09-25 §1) — 민감정보 없음, 서비스·AA 오리진에만 CORS(cors 미들웨어가 아니라 같은 헤더 헬퍼).
+let ciaSeenAt = 0;   // 마지막으로 CIA 가 200 을 준 시각(ms) — health 의 ciaReachable
+async function pingCia() { try { const c = new AbortController(); const tm = setTimeout(() => c.abort(), 1500); const r = await fetch(`${CIA_URL}/cia/public_keys`, { signal: c.signal }); clearTimeout(tm); if (r.ok) ciaSeenAt = Date.now(); } catch { /* 못 닿음 */ } }
+app.get('/mode3/health', async (req, res) => {
+  applyHealthHeaders(req, res, [RP_ORIGIN, CIA_URL]);
+  if (Date.now() - ciaSeenAt > 5000) await pingCia();
+  let chain = null;
+  try { chain = { id: (await chainId()).toString(), head: (await provider.getBlockNumber()).toString() }; } catch { /* 체인 없음 */ }
+  res.json(buildWalletHealth({ now: new Date().toISOString(), chain, secrets: SECRETS, registered: !!state.registration, hasCred: !!state.registration?.userCred, sessions: Object.keys(state.sessions).length,
+    ciaReachable: Date.now() - ciaSeenAt <= 5000, rpOrigin: RP_ORIGIN, ciaUrl: CIA_URL }));
 });
 
 app.get('/wallet/status', async (req, res) => {

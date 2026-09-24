@@ -27,6 +27,7 @@ import { signRpCert } from './lib/mode3_rp_cert.js';
 import { isTracePoint, createShare, combinePublicKey, partialDecrypt, combineDecrypt, resolveTagPlaintext, proveShare } from './lib/mode3_trace.js';
 import { openRequestMessage, openResultMessage, recoverSigner, isFreshTs } from './lib/mode3_opening.js';
 import { CIA_STATE_VERSION, defaultCiaState, migrateCiaState } from './lib/mode3_cia_state.js';
+import { buildAaHealth, applyHealthHeaders } from './lib/mode3_health.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.CIA_PORT) || 4100;
@@ -258,6 +259,19 @@ app.get('/account', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'ci
 
 app.get('/cia/public_keys', (req, res) => {
   res.json({ pk_CIA: S(ciaPub), ethAddress: ethWallet.address, heartbeatBlocks: Number(HEARTBEAT_BLOCKS), chainIds: [...CHAIN_RPCS.keys()], logAddress: LOG_ADDRESS });
+});
+
+// 상태 엔드포인트(설계 2026-09-25 §1) — 민감정보 없음, 승인된 서비스·지갑 오리진에만 CORS.
+const WALLET_AGENT_ORIGIN = process.env.MODE3_WALLET_AGENT_ORIGIN || 'http://127.0.0.1:5100';
+app.get('/mode3/health', async (req, res) => {
+  const rpOrigins = Object.values(state.rps).filter((r) => r.status === 'approved').map((r) => r.origin);
+  applyHealthHeaders(req, res, [...rpOrigins, WALLET_AGENT_ORIGIN]);
+  let chain = null, last = null;
+  try { const head = await headHeight(); chain = { id: [...CHAIN_RPCS.keys()][0] ?? '', head: head.toString() }; } catch { /* 체인 없음 */ }
+  try { if (chain && LOG_ADDRESS) last = (await new ethers.Contract(LOG_ADDRESS, LOG_ABI, ethWallet).lastPublishedBlock()).toString(); } catch { /* 로그 못 읽음 */ }
+  res.json(buildAaHealth({ now: new Date().toISOString(), chain, root: tree.getRoot().toString(), epoch: state.epoch, lastPublishedBlock: last, heartbeatBlocks: Number(HEARTBEAT_BLOCKS),
+    pendingLeaves: state.pending.length, pendingRps: Object.values(state.rps).filter((r) => r.status === 'pending').length, pendingOpenings: state.openings.filter((o) => o.status === 'pending').length,
+    accounts: Object.keys(state.accounts).length, walletOrigin: WALLET_AGENT_ORIGIN, rpOrigins }));
 });
 
 // §3(2026-09-16) 서비스 등록 — pending 으로 받고 운영자가 승인하면 CIA 조각을 만들어 조합 키 pk_trace 와 cert_s(V2)를
