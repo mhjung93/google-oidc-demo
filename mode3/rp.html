@@ -7,16 +7,6 @@
   <!-- 제목의 "Mode 3 로그인" 은 tests/test_mode3_demo_stack.mjs 의 페이지 서빙 검사 marker 다. -->
   <title>Mode 3 로그인 (서비스)</title>
   <link rel="stylesheet" href="/common/demo.css" />
-  <style>
-    /* 전문가 보기의 원문 로그는 공백 없는 긴 JSON 한 덩어리다 — 격자 칸(min-width:auto)이 그만큼 늘어나
-       페이지가 가로로 커진다. 칸이 줄 수 있게 하고 긴 토큰을 칸 안에서 끊는다. */
-    .card { min-width: 0 }
-    .card pre, .verdict pre { overflow-wrap: anywhere }
-    /* 사전에 없는 사유 코드는 제목 바로 뒤에 <code> 로 붙는다 — 붙어 읽히지 않게 사이를 띄운다. */
-    .verdict > code { margin-left: 6px }
-    /* tx hash 칸(size=66)이 좁은 창에서 가로 스크롤을 만들지 않게 한다. */
-    .card input { max-width: 100% }
-  </style>
   <script src="/common/strings.js"></script>
   <script src="/common/demo.js"></script>
 </head>
@@ -90,7 +80,8 @@
       term: (n) => window.DemoStrings?.terms?.[n]?.ko ?? n,
       reason: () => null,
       init() { /* 안내 바 없음 */ }, guide() { /* 안내 바 없음 */ }, setLang() {}, setExpert() {},
-      verdict(el, { ok, title, summary, reason, detail, pending }) {
+      verdict(el, args) {
+        const { ok, title, summary, reason, detail, pending } = typeof args === 'function' ? args() : args;
         el.className = `verdict ${pending ? 'pending' : ok ? 'ok' : 'bad'}`;
         const d = detail === undefined ? null : (typeof detail === 'string' ? detail : JSON.stringify(detail));
         el.textContent = [window.DemoStrings?.verdicts?.[title]?.ko ?? title, summary, reason, d].filter(Boolean).join(' — ');
@@ -118,16 +109,13 @@
     const ms = (t0) => `${Date.now() - t0} ms`;
     /** 사전 텍스트를 요소에 쓴다. 사전에 없는 키(= /common 미로딩)면 아무것도 쓰지 않아 HTML 의 기본 텍스트가 남는다. */
     const tx = (el, k, vars) => { const s = Demo.t(k, vars); if (s !== k) el.textContent = s; };
-    const lastVerdict = new Map();          // 결과 카드 → 인자 생성기. 언어·전문가를 바꾸면 같은 인자로 다시 그린다.
     /**
      * 결과 카드. title 은 판정 키(사전 verdicts) 또는 ui 키이고, extra 는 객체이거나 — 사전을 읽어 만드는 값이면 —
-     * 그것을 돌려주는 함수다. 사전은 그릴 때 읽으므로 언어 전환이 카드에도 반영된다.
+     * 그것을 돌려주는 함수다. 인자 생성기를 그대로 넘기면 Demo 가 들고 있다가 언어·전문가 전환 때 다시 그린다.
      * 지갑·팝업·서버가 준 문자열은 전부 textContent 로만 들어간다(Demo.verdict).
      */
     function setVerdict(el, ok, title, extra = {}) {
-      const build = () => ({ ok, title: window.DemoStrings?.verdicts?.[title] ? title : Demo.t(title), ...(typeof extra === 'function' ? extra() : extra) });
-      lastVerdict.set(el, build);
-      Demo.verdict(el, build());
+      Demo.verdict(el, () => ({ ok, title: window.DemoStrings?.verdicts?.[title] ? title : Demo.t(title), ...(typeof extra === 'function' ? extra() : extra) }));
     }
     const pendingVerdict = (el, key) => setVerdict(el, null, key, { pending: true });
 
@@ -142,14 +130,10 @@
       const current = info?.status !== 'approved' ? 'approve' : !currentSession ? 'login' : !progress.used ? 'use' : 'open';
       Demo.guide({ done, current, links: { wallet: info?.walletAgentOrigin, admin: info?.ciaUrl ? `${info.ciaUrl}/admin` : null, account: info?.ciaUrl ? `${info.ciaUrl}/account` : null } });
     }
-    // 언어·전문가 전환은 사전이 채우는 요소만 바꾼다 — 스크립트가 만든 텍스트(상태·표·세션)는 여기서 다시 그린다.
+    // 언어·전문가 전환은 사전이 채우는 요소와 결과 카드만 바꾼다(Demo) — 스크립트가 만든 텍스트(상태·표·세션)는 여기서 다시 그린다.
     for (const k of ['setLang', 'setExpert']) {
       const orig = Demo[k];
-      Demo[k] = (v) => {
-        orig(v);
-        renderStatus(); renderSession(); renderLogins();
-        for (const [el, build] of lastVerdict) Demo.verdict(el, build());
-      };
+      Demo[k] = (v) => { orig(v); renderStatus(); renderSession(); renderLogins(); };
     }
 
     // ---- 서비스 상태 카드 ----

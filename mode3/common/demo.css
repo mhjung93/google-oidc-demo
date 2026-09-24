@@ -23,3 +23,8 @@ input[type=text], input:not([type]), input[type=password], input[type=number], s
 table.list { width:100%; border-collapse:collapse; font-size:14px } table.list th, table.list td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top }
 .kv { display:grid; grid-template-columns:auto 1fr; gap:4px 12px; font-size:14px } .kv dt { color:var(--muted) } .kv dd { margin:0; overflow-wrap:anywhere }
 .muted { color:var(--muted); font-size:13px } .expert { display:none } html[data-expert] .expert { display:revert } .hidden, [hidden] { display:none !important }
+/* 전문가 보기의 원문 로그는 공백 없는 긴 JSON 한 덩어리다 — 격자 칸(min-width:auto)이 그만큼 늘어나 페이지가 가로로
+   커진다. 칸이 줄 수 있게 하고, 긴 토큰과 넓은 입력칸(tx hash size=66 등)을 칸 안에서 끊는다. */
+.card { min-width:0 } pre { overflow-wrap:anywhere } .card input { max-width:100% }
+/* 사유 코드는 제목·원인·조치 뒤에 원문 그대로 붙는다 — 붙어 읽히지 않게 띄우고 작게 죽인다. */
+.verdict > code { margin-left:6px } .verdict > code.reason { font-size:12px; color:var(--muted) }

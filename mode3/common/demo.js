@@ -10,8 +10,9 @@
     term(name) { const e = S.terms[name]; if (!e) return name; return D.expert ? `${e[D.lang]} (${e.expert})` : e[D.lang]; },
     verdictText(key) { const e = S.verdicts[key]; return e ? (e[D.lang] ?? e.ko) : key; },
     reason(code) { const r = S.reasons[code]; return r ? r[D.lang] ?? r.ko : null; },
-    setLang(l) { if (!S.langs.includes(l)) return; D.lang = l; store.set('mode3.lang', l); document.documentElement.lang = l; D.applyI18n(); if (D.lastGuide) D.guide(D.lastGuide); },
-    setExpert(b) { D.expert = !!b; store.set('mode3.expert', b ? '1' : '0'); document.documentElement.toggleAttribute('data-expert', D.expert); if (D.lastGuide) D.guide(D.lastGuide); },
+    setLang(l) { if (!S.langs.includes(l)) return; D.lang = l; store.set('mode3.lang', l); document.documentElement.lang = l; D.applyI18n(); D.rerenderVerdicts(); if (D.lastGuide) D.guide(D.lastGuide); },
+    // 토글을 페이지가 직접 부를 수도 있으므로(안내 바의 체크박스만이 아니다) 체크 상태를 여기서 맞춘다.
+    setExpert(b) { D.expert = !!b; store.set('mode3.expert', b ? '1' : '0'); document.documentElement.toggleAttribute('data-expert', D.expert); const ex = document.getElementById('expertToggle'); if (ex) ex.checked = D.expert; D.rerenderVerdicts(); if (D.lastGuide) D.guide(D.lastGuide); },
     applyI18n() { document.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = D.t(el.dataset.i18n); }); document.querySelectorAll('[data-term]').forEach((el) => { el.textContent = D.term(el.dataset.term); }); },
     init({ page }) {
       D.page = page; document.documentElement.lang = D.lang; document.documentElement.toggleAttribute('data-expert', D.expert);
@@ -41,7 +42,14 @@
       }
       for (const [k, url] of Object.entries(g.links || {})) { if (k === D.page || !url) continue; const a = document.createElement('a'); a.className = 'btn-ghost'; a.href = url; if (seen.has(a.href)) continue; a.target = '_blank'; a.rel = 'noopener'; a.textContent = D.t(`go_${k}`); next.appendChild(a); seen.add(a.href); }
     },
-    verdict(el, { ok, title, summary, reason, detail, pending }) {
+    /**
+     * 결과 카드. args 는 인자 객체이거나 — 사전을 읽어 만드는 값이면 — 그것을 돌려주는 함수다. 인자를 요소에 붙여 두고
+     * 언어·전문가가 바뀌면 같은 인자로 다시 그린다(사전은 그릴 때 읽으므로 번역이 카드에도 반영된다).
+     */
+    verdict(el, args) { el.__verdictArgs = args; D.renderVerdict(el, typeof args === 'function' ? args() : args); },
+    /** 인자를 들고 있는 결과 카드를 전부 다시 그린다 — 페이지가 따로 기억할 필요가 없다. */
+    rerenderVerdicts() { document.querySelectorAll('.verdict').forEach((el) => { if (el.__verdictArgs) D.verdict(el, el.__verdictArgs); }); },
+    renderVerdict(el, { ok, title, summary, reason, detail, pending }) {
       // 페이지가 붙여 둔 다른 클래스(레이아웃·browser 테스트가 잡는 것)를 지우지 않는다 — 판정 클래스만 갈아 끼운다.
       el.innerHTML = ''; el.classList.add('verdict'); el.classList.remove('ok', 'bad', 'pending'); el.classList.add(pending ? 'pending' : ok ? 'ok' : 'bad');
       const badge = document.createElement('span'); badge.className = 'badge'; badge.textContent = pending ? '…' : ok ? '✓' : '✕'; el.appendChild(badge);
@@ -49,7 +57,8 @@
       const r = reason ? D.reason(reason) : null;
       if (summary || r) { const p = document.createElement('p'); p.className = 'summary'; p.textContent = summary ?? r.title; el.appendChild(p); }
       if (r && !ok) { const c = document.createElement('p'); c.className = 'cause'; c.textContent = r.cause; el.appendChild(c); const a = document.createElement('p'); a.className = 'action'; a.textContent = r.action; el.appendChild(a); }
-      if (reason && !r) { const code = document.createElement('code'); code.textContent = reason; el.appendChild(code); }   // 사전에 없는 코드는 그대로
+      // 사유 코드는 번역 여부와 상관없이 원문 그대로 함께 남긴다 — 사전에 있는 코드도 화면·로그에서 코드로 짚을 수 있어야 한다.
+      if (reason) { const code = document.createElement('code'); code.className = 'reason'; code.textContent = reason; el.appendChild(code); }
       if (detail !== undefined) { const d = document.createElement('details'); if (D.expert) d.open = true; const s = document.createElement('summary'); s.textContent = D.t('details'); d.appendChild(s); const pre = document.createElement('pre'); pre.textContent = typeof detail === 'string' ? detail : JSON.stringify(detail, null, 2); d.appendChild(pre); el.appendChild(d); }
     },
     async call(el, hintKey, fn) {
