@@ -592,12 +592,16 @@ app.post('/wallet/session/revoke', async (req, res) => {
     if (!sk_u) return res.status(409).json({ reason: 'needs_consent' });
     const nonce = randomScalar();   // lib/mode3_credential.js — 다른 요청과 같은 난수원. 신선도는 CIA 가 보지 않는다(재생 = 같은 세션 재폐기, 멱등)
     const sig_u = await signRevokeSession(sk_u, BigInt(state.registration.uid), BigInt(s.credential.Cf_s), nonce);
-    const r = await ciaPost('/cia/revoke', { uid: state.registration.uid, scope: 'session', Cf_s: s.credential.Cf_s, sig_u, nonce: nonce.toString() });
+    // 502 cia_unavailable 은 **CIA 호출 실패만** 가리킨다(최종 리뷰 F3). 서명·BigInt 같은 지역 오류는 아래 500 internal 로 간다 —
+    // 둘을 뭉치면 운영자가 "AA 가 죽었나" 를 잘못 쫓는다.
+    let r;
+    try { r = await ciaPost('/cia/revoke', { uid: state.registration.uid, scope: 'session', Cf_s: s.credential.Cf_s, sig_u, nonce: nonce.toString() }); }
+    catch (e) { return res.status(502).json({ reason: 'cia_unavailable', detail: e.message }); }
     if (r.status !== 200) return res.status(r.status).json(r.body ?? {});
     // AA 가 받아들인 순간부터 이 지갑은 그 세션을 더 쓰지 않는다 — 게시 전이라도(게시 뒤에는 어차피 π 가 안 만들어진다).
     delete state.sessions[rsKey]; cache.deleteSession(rsKey); persist();
     res.json({ revoked: true, inserted: r.body.inserted, pending: r.body.pending });
-  } catch (e) { res.status(502).json({ reason: 'cia_unavailable', detail: e.message }); }
+  } catch (e) { res.status(500).json({ reason: 'internal', detail: e.message }); }
 });
 
 // 운영·시연용: 폐기 트리 체크포인트를 버린다. 다음 동기화가 창세기부터 재생한다(스펙 §8). 같은 오리진만.

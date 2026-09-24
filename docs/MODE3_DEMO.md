@@ -233,13 +233,14 @@ reason: 'predicate_unmet'}` 로 거절한다(200, 컨트랙트 호출 없이 오
 
 **AA 가 기록하는 것.** 발급 때 `{Cf_s, max_height, chainid, allowAgent, issuedAt, revokedAt}` 을 계정에 남긴다(상태 v8). 전부 발급
 때 이미 본 값이라 AA 가 새로 알게 되는 것은 없다 — `arid`·`pk_i` 는 여전히 `C_s` 안이라 못 본다. 남는 것은 **상태**(사용자별 세션
-수·발급 시각)다. 하트비트마다 만료된 기록은 지운다(리프는 트리에 남는다 — append-only).
+수·발급 시각)다. 만료된 기록은 **하트비트 틱마다, 그리고 그 계정의 다음 발급 때** 지운다(리프는 트리에 남는다 — append-only).
+발급 쪽 정리가 같이 있는 이유는 하트비트가 꺼져 있으면(`CIA_HEARTBEAT_BLOCKS=0`) 틱 자체가 설치되지 않기 때문이다.
 
 | 메서드/경로 | 프로세스 | 설명 |
 |---|---|---|
 | `POST /cia/revoke` `{uid, scope:'session', Cf_s, sig_u?, nonce?}` | CIA | 세션 하나 폐기. **관리자 시크릿** 또는 **사용자 서명**(`Poseidon(DOMAIN_MODE3_REVOKESESS, uid, Cf_s, nonce)` 위 `sk_u` EdDSA-Poseidon). 성공 `{inserted, leaf, root, pending}` |
 | `GET /cia/admin/sessions?uid=` | CIA(관리자) | 그 계정의 세션 기록 + `expired`(그 체인 head 기준, 못 읽으면 `null`) |
-| `POST /wallet/session/revoke` `{r_s}` | 지갑 | 같은 오리진 전용(CORS 없음). 서명 후 CIA 로 중계하고 성공하면 로컬 세션 삭제. 응답 `{revoked:true, inserted, pending}` |
+| `POST /wallet/session/revoke` `{r_s}` | 지갑 | 같은 오리진 전용(CORS 없음). 서명 후 CIA 로 중계하고 성공하면 로컬 세션 삭제. 응답 `{revoked:true, inserted, pending}`. 인증은 `r_s` 를 아는 것뿐이다(`/wallet/revalidate` 와 같은 bearer) — **Snap 동의 창은 지갑 페이지가 거치는 절차이고 에이전트는 검증하지 않는다** |
 | Snap RPC `consentRevokeSession` `{arid, issuedAt, maxHeight}` | Snap | snap 모드의 **동의 창만**. Snap 에는 Poseidon 이 없어 서명은 에이전트가 세션의 메모리 증인 `sk_u` 로 한다 |
 
 **사유.**
@@ -248,7 +249,8 @@ reason: 'predicate_unmet'}` 로 거절한다(200, 컨트랙트 호출 없이 오
 |---|---|---|---|
 | `revoked_session` | 지갑 `POST /wallet/revalidate`·`/wallet/tx`(`/tx/prepare`) | 403 | 이 **세션 리프**가 폐기 트리에 있다 — 그 세션만 죽는다(지갑이 그 세션을 지운다). 사용자 자격증명은 그대로라 다른 세션·새 로그인은 된다. 계정/자격증명 폐기는 지금까지처럼 `revoked` 다. `mode3/rp.html` 은 둘을 같은 분기로 처리한다(세션 버림) |
 | `unknown_session` | CIA `POST /cia/revoke scope=session` | 404 | 그 `Cf_s` 기록이 이 계정에 없다(옛 세션이거나 만료 정리로 사라졌다). **서명 검사를 먼저 하므로** 서명 없이 "이 Cf_s 가 이 계정 것인가" 를 떠볼 수는 없다 |
-| `expired` | CIA `POST /cia/revoke scope=session` | 409 | 그 체인 head ≥ `max_height` — 만료가 이미 막으므로 리프를 넣지 않는다 |
+| `expired` | CIA `POST /cia/revoke scope=session` | 409 | 그 체인 head > `max_height` — 만료가 이미 막으므로 리프를 넣지 않는다. 경계는 컨트랙트(`block.number > pub[3]`)·서비스와 같다: `head == max_height` 는 아직 산 세션이라 폐기된다 |
+| `unknown_session`(중계) | 지갑 `POST /wallet/session/revoke` | 404 | CIA 의 404 를 그대로 옮긴 것 — 지갑은 그 `r_s` 세션을 들고 있는데 **AA 쪽에 기록이 없다**(v8 이행 전 세션이거나 만료 정리로 사라졌다). 지갑이 세션 자체를 모르는 `no_session` 과 다르다 |
 | `needs_consent` | 지갑 `POST /wallet/session/revoke`(snap 모드) | 409 | 그 세션의 메모리 증인이 없다(에이전트 재시작) — 서명할 `sk_u` 가 없다. 지갑 페이지는 사유만 보이고 스스로 팝업을 열지 않는다. RP 페이지에서 그 세션을 한 번 재검증해 재승인(§4.3, 아래 S8)을 거친 뒤 다시 누른다 |
 | `not_registered` | 지갑 `POST /wallet/session/revoke` | 409 | 이 에이전트에 등록이 없다 |
 | `no_session` | 지갑 `POST /wallet/session/revoke` | 404 | 그 `r_s` 세션을 지갑이 들고 있지 않다(이미 폐기했거나 만료) |
@@ -265,7 +267,8 @@ reason: 'predicate_unmet'}` 로 거절한다(200, 컨트랙트 호출 없이 오
   fail-closed, 정리는 건너뜀) 기록이 남는다. 체인 RPC 장애 때도 같다 — 그동안 세션 폐기는 503 으로 막힌다(안전 쪽 실패).
 - **`nonce` 는 메시지 바인딩이지 재생 방지가 아니다.** 같은 요청을 재생해도 같은 세션을 다시 폐기할 뿐이라 멱등하다.
   `nonce` 형식이 잘못되면 401 이다(`/cia/attrs` 는 같은 경우 400 — 사유 코드가 통일돼 있지 않다).
-- 지갑의 `POST /wallet/session/revoke` 는 CIA 호출 실패뿐 아니라 **로컬 서명 오류까지** 502 `cia_unavailable` 로 뭉친다.
+- 지갑의 `POST /wallet/session/revoke` 는 이제 CIA 호출 실패만 502 `cia_unavailable` 이고, 서명·형식 같은 지역 오류는
+  500 `{reason:'internal', detail}` 이다(2026-09-24 최종 리뷰 F3).
 - **재검증은 술어를 다시 증명하지 않는다**(V7부터의 기존 한계, 세션 폐기와 무관).
 - 폐기된 세션 리프는 만료 뒤 죽은 리프지만 트리에서 빠지지 않는다(append-only). 만료된 리프를 접는 **재기준화는 후속**이다
   (설계 §6) — 데모 규모에서는 문제없다.

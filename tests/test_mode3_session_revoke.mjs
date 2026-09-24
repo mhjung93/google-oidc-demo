@@ -107,6 +107,41 @@ try {
     assert.equal(rec.expired, true);
     assert.equal(rec.revokedAt, null, '만료된 세션은 폐기 기록이 남지 않는다');
   });
+
+  // 경계는 컨트랙트(Mode3Wallet.sol `block.number > pub[3]`)·서비스(lib/mode3_rp.js)와 같아야 한다 — head == max_height 는 아직 산 세션이다.
+  await t('경계: head == max_height 면 아직 살아 있어 폐기 200, head > max_height 라야 409 expired', async () => {
+    const mhA = BigInt(await provider.getBlockNumber()) + 1n;
+    const a = await issueWith({ max_height: mhA });
+    await provider.send('evm_mine', []);
+    assert.equal(BigInt(await provider.getBlockNumber()), mhA, 'head == max_height 인 순간');
+    const listed = (await cia.adminGet(`/cia/admin/sessions?uid=${UID}`)).body.sessions.find((s) => s.Cf_s === a.body.Cf_s);
+    assert.equal(listed.expired, false, 'head == max_height 는 만료가 아니다');
+    const ok = await cia.adminPost('/cia/revoke', { uid: UID, scope: 'session', Cf_s: a.body.Cf_s });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    assert.equal(ok.body.inserted, true);
+    // 한 블록 더 — 같은 만료로 새로 발급한 세션은 이제 head > max_height 라 409 다.
+    await provider.send('evm_mine', []);
+    const b = await issueWith({ max_height: mhA });
+    const e = await cia.adminPost('/cia/revoke', { uid: UID, scope: 'session', Cf_s: b.body.Cf_s });
+    assert.equal(e.status, 409, JSON.stringify(e.body));
+    assert.equal(e.body.reason, 'expired');
+  });
+
+  // 하트비트가 꺼져 있으면(격리 CIA 의 기본) 정리가 하트비트에서는 영영 안 돈다 — 발급 경로가 같은 일을 한다(최종 리뷰 F2).
+  await t('하트비트가 꺼져 있어도 발급이 이 계정의 만료 기록을 지운다 — 리프·pending 은 그대로', async () => {
+    const short = await issueWith({ max_height: BigInt(await provider.getBlockNumber()) + 2n });
+    const rv = await cia.adminPost('/cia/revoke', { uid: UID, scope: 'session', Cf_s: short.body.Cf_s });
+    assert.equal(rv.status, 200, JSON.stringify(rv.body));
+    assert.equal(rv.body.inserted, true);
+    const { root, pending } = rv.body;   // 세션 리프가 막 들어간 직후의 트리 상태
+    for (let i = 0; i < 3; i++) await provider.send('evm_mine', []);
+    await issueWith();                   // 이 발급이 정리를 돌린다(하트비트는 꺼져 있다)
+    const list = (await cia.adminGet(`/cia/admin/sessions?uid=${UID}`)).body.sessions;
+    assert.equal(list.find((s) => s.Cf_s === short.body.Cf_s), undefined, '만료된 기록은 사라진다');
+    const st = (await cia.adminGet('/cia/state')).body;
+    assert.equal(st.root, root, '리프는 트리에 남는다 — 기록만 지운다(설계 §6)');
+    assert.equal(st.pendingCount, pending, 'pending 도 그대로');
+  });
 } finally {
   await cia.stop();
   provider.destroy();

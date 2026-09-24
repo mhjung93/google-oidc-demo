@@ -34,13 +34,13 @@ RCL 을 사용자별 슬롯(latest valid/revoked)으로 바꾸는 안은 보류 
 ### 2.1 상태 v8
 `accounts[uid].sessions: [{ Cf_s: string, max_height: string, chainid: string, allowAgent: '0'|'1', issuedAt: ISO, revokedAt: ISO|null }]`.
 마이그레이션 v7→v8: `sessions = []`(옛 세션은 기록이 없으므로 폐기 불가 — 만료로만 끝난다. 문서화).
-`/cia/issue` 성공 응답 직전에 push. 하트비트마다 정리: 체인별 head(`CIA_CHAIN_RPCS` 로 이미 읽는다)보다 `max_height` 가 작은 기록 삭제(폐기 여부 무관 — 리프는 남는다, §6).
+`/cia/issue` 성공 응답 직전에 push. 정리(체인별 head 가 `max_height` **보다 큰**(`head > max_height`) 기록 삭제, 폐기 여부 무관 — 리프는 남는다, §6)는 두 자리에서 돈다: 하트비트 틱(게시 게이트보다 앞 — 게시 중이거나 `CIA_LOG_ADDRESS` 가 없어도 돈다)과 `/cia/issue`(그 계정·그 체인만, 발급이 이미 읽은 head 를 재사용). 하트비트는 `CIA_HEARTBEAT_BLOCKS=0` 이면 아예 설치되지 않으므로 발급 쪽이 있어야 정리가 도달한다(2026-09-24 최종 리뷰 F2).
 
 ### 2.2 `/cia/revoke scope=session`
 - 본문 `{ uid, scope:'session', Cf_s, sig_u?: {R8x,R8y,S}, nonce? }  — 필드명은 `/cia/attrs` 와 같이 `sig_u`·`nonce`(10진)`.
 - **인증 두 갈래**: (a) 관리자 시크릿(`requireAdmin`) — 지금 `/cia/revoke` 와 같은 헤더; (b) 사용자 — `sig` 가 `Poseidon(DOMAIN_MODE3_REVOKESESS, uid, Cf_s, nonce)` 위 `sk_u`(EdDSA-Poseidon, `acct.pk_u`) 서명. `DOMAIN_MODE3_REVOKESESS` = ASCII "MODE3REVOKESESS" 의 정수(`lib/mode3_issuance.js` 의 다른 도메인 상수와 같은 방식). nonce 는 지갑 난수(신선도 검사 없음 — `/cia/attrs` 와 같은 규칙; 재생해도 같은 세션을 다시 폐기할 뿐 멱등).
   라우트: 관리자 헤더가 없으면 `sig` 필수. 둘 다 없으면 401.
-- 처리: 기록에서 `Cf_s` 찾기 → 없으면 404 `unknown_session`; `revokedAt` 이미 있으면 200 `{inserted:false}`(멱등); 해당 체인 head ≥ `max_height` 면 409 `expired`; 아니면 `leaf = Poseidon(5, Cf_s)` 를 트리 삽입(`pending` 으로 다음 게시), `revokedAt = now`, `persist()`. 응답 `{ inserted, leaf, root, pending }`.
+- 처리: 기록에서 `Cf_s` 찾기 → 없으면 404 `unknown_session`; `revokedAt` 이미 있으면 200 `{inserted:false}`(멱등); 해당 체인 head > `max_height` 면 409 `expired`(경계는 컨트랙트 `Mode3Wallet.sol` 의 `block.number > pub[3]`·서비스 `lib/mode3_rp.js` 와 같다 — `head == max_height` 는 아직 산 세션이라 폐기된다, 최종 리뷰 F1); 아니면 `leaf = Poseidon(5, Cf_s)` 를 트리 삽입(`pending` 으로 다음 게시), `revokedAt = now`, `persist()`. 응답 `{ inserted, leaf, root, pending }`.
 - `scope=account`(계정 전체)는 그대로 — 사용자 리프 하나로 전 세션이 죽으므로 세션 리프를 따로 넣지 않는다.
 
 ### 2.3 관리자 페이지 (`mode3/cia_admin.html`)
@@ -67,6 +67,7 @@ component nmS = IMTNonMembershipV2(depth); nmS.target <== sLeaf.out; (증인 배
 - `POST /wallet/session/revoke { r_s }`(같은 오리진, `{confirm:true}` 없음 — 파괴적이지 않음): 세션의 `credential.Cf_s` 로 `sig` 를 만들어 `/cia/revoke scope=session` 호출. file 모드는 파일의 `sk_u`, snap 모드는 Snap RPC `signRevokeSession { Cf_s, nonce }`(동의 창: "이 세션(서비스 arid, 발급 시각)을 폐기합니다" 예/아니오) 로 서명을 받는다. 성공하면 로컬 세션도 지운다(게시 전이라도 지갑은 더 쓰지 않는다).
   **정정(2026-09-24 구현)**: Snap 에는 Poseidon 이 없어 서명을 만들 수 없다 — Snap RPC 는 동의만 받는 `consentRevokeSession { arid, issuedAt, maxHeight }` 이고, 서명은 에이전트가 그 세션의 메모리 증인 `sk_u` 로 한다(V7 까지의 다른 서명들과 같은 자리). 증인이 없으면 409 `needs_consent`.
 - 지갑 페이지: 세션 목록 각 행에 "이 세션 폐기" 버튼. 결과 표시.
+  `POST /wallet/session/revoke` 의 인증은 `r_s` 를 아는 것뿐이다(`/wallet/revalidate` 와 같은 bearer 취급). Snap 동의 창은 **지갑 페이지가** 거치는 절차이고 에이전트는 그것을 검증하지 않는다 — 같은 오리진에서 `r_s` 로 직접 부르면 동의 창 없이 폐기된다. 세션 폐기는 파괴적이지만 되돌릴 수 있는 종류가 아니어서(재로그인이면 새 세션) 확인 필드를 두지 않는다(2026-09-24 최종 리뷰 F4 판정).
 - 캐시 키·트리 동기화 불변(리프 종류가 늘어도 델타 동기화 동일).
 
 ## 5. 서비스(RP)

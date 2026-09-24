@@ -445,7 +445,12 @@ try {
   // V8 세션 폐기(설계 2026-09-24). 계정이 살아 있고(바로 위 4″ 가 복구해 뒀다) 블록을 크게 진행시키는 케이스
   // (맨 끝의 Ruling 1)보다 앞인 이 자리에 둔다 — 앞 케이스들의 세션이 만료되면 폐기가 409 expired 로 막힌다.
   await t('V8 세션 폐기: 세션 둘 → 하나만 폐기(지갑 버튼 경로) → 게시 → 그 세션은 더 못 쓰고 다른 세션·재로그인은 정상; 관리자 폐기는 revoked_session', async () => {
-    const s1 = await loginViaRp(), s2 = await loginViaRp();
+    const s1 = await loginViaRp();
+    // s2 의 Cf_s 를 뒤에서 직접 집으려고 로그인 직전 기록을 찍어 둔다 — 목록 순서·만료 정리에 기대지 않는다(최종 리뷰 F6).
+    const before = new Set((await cia.adminGet(`/cia/admin/sessions?uid=${uid}`)).body.sessions.map((x) => x.Cf_s));
+    const s2 = await loginViaRp();
+    const cf2 = (await cia.adminGet(`/cia/admin/sessions?uid=${uid}`)).body.sessions.map((x) => x.Cf_s).find((c) => !before.has(c));
+    assert.ok(cf2, 's2 의 세션 기록이 있어야 한다');
     assert.equal(s1.rp?.ok, true, j(s1)); assert.equal(s2.rp?.ok, true, j(s2));
     // 양성 대조: 폐기 전에는 s1 의 세션 요청이 통과한다(같은 서명을 폐기 뒤에 다시 써서 대조한다).
     const w1 = await wallet.post('/wallet/request', { r_s: s1.r_s, body: 'x' }, { Origin: rp.origin });
@@ -472,8 +477,7 @@ try {
     assert.equal(rv2.rp.ok, true, j(rv2.rp));
 
     // 관리자 경로: 지갑 밖에서 s2 를 폐기하면 지갑은 그 세션만 403 revoked_session 으로 버린다.
-    const cf = (await cia.adminGet(`/cia/admin/sessions?uid=${uid}`)).body.sessions.filter((s) => !s.revokedAt).at(-1).Cf_s;
-    assert.equal((await cia.adminPost('/cia/revoke', { uid, scope: 'session', Cf_s: cf })).status, 200);
+    assert.equal((await cia.adminPost('/cia/revoke', { uid, scope: 'session', Cf_s: cf2 })).status, 200);
     assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
     const rv2b = await revalidateViaRp(s2.r_s);
     assert.equal(rv2b.walletStatus, 403, j(rv2b)); assert.equal(rv2b.wallet.reason, 'revoked_session');

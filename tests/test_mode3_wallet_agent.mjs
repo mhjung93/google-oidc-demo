@@ -432,9 +432,12 @@ try {
   });
 
   await t('V8: 세션 하나가 지갑 밖에서(관리자) 폐기되면 재검증이 403 revoked_session 으로 그 세션만 지운다 — 사용자 자격증명은 그대로', async () => {
+    const before = new Set((await cia.adminGet(`/cia/admin/sessions?uid=${uid}`)).body.sessions.map((x) => x.Cf_s));
     const a = await loginOnce();
-    // 관리자가 이 세션만 폐기(지갑은 모른다)
-    const cf = (await cia.adminGet(`/cia/admin/sessions?uid=${uid}`)).body.sessions.filter((s) => !s.revokedAt).at(-1).Cf_s;
+    // 관리자가 이 세션만 폐기(지갑은 모른다). 이 로그인이 새로 만든 기록을 Cf_s 로 직접 집는다 —
+    // 목록 순서나 만료 정리 시점에 기대지 않는다(최종 리뷰 F6).
+    const cf = (await cia.adminGet(`/cia/admin/sessions?uid=${uid}`)).body.sessions.map((x) => x.Cf_s).find((c) => !before.has(c));
+    assert.ok(cf, '방금 로그인의 세션 기록이 있어야 한다');
     assert.equal((await cia.adminPost('/cia/revoke', { uid, scope: 'session', Cf_s: cf })).status, 200);
     await publishOnce();
     const r = await revalidate(a.r_s);

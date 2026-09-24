@@ -228,8 +228,6 @@ async function headOf(chainStr) {
   try { return BigInt(await providerFor(chainStr).getBlockNumber()); }
   catch { throw Object.assign(new Error('chain head unavailable'), { status: 503 }); }
 }
-/** 발급 직전의 체인 가용성 확인(fail-closed, 기반 설계 §2.1). 값은 쓰지 않는다 — 살아 있는지만 본다. 발급은 head 를 쓰지 않는다. */
-async function chainAlive(chainStr) { await headOf(chainStr); }
 /** 사용자당 활성 자격증명 하나(설계 §3.1). 없으면 null. */
 function activeCred(uid) {
   return (state.accounts[uid]?.creds ?? []).find((c) => !c.revoked) ?? null;
@@ -471,11 +469,13 @@ app.post('/cia/issue', async (req, res) => {
     if (!cred || cred.Cf_u !== cfu.toString()) return res.status(403).json({ error: 'no active user credential for this Cf_u', reason: 'no_user_cred' });
     if (!(await isValidPoint(cspt))) return res.status(400).json({ error: 'C_s_pt is not a valid subgroup point' });
     const Cf_s = await compressPoint(cspt);
-    await chainAlive(chainStr);   // fail-closed: 체인이 죽어 있으면 발급하지 않는다(게시도 불가하므로 폐기가 닿지 않는 세션이 된다)
+    const head = await headOf(chainStr);   // fail-closed: 체인이 죽어 있으면 발급하지 않는다(게시도 불가하므로 폐기가 닿지 않는 세션이 된다)
     if (acct.disabled || activeCred(uid)?.Cf_u !== cfu.toString()) return res.status(403).json({ error: 'account disabled or credential retired', reason: 'no_user_cred' });   // await 사이의 폐기
     const s = eddsa.signPoseidon(ciaPrv, F.e(await credMessageV5(cfu, Cf_s, mh, BigInt(chainStr), agent)));
-    // V8(2026-09-24 §2.1): 세션 단위 폐기를 하려면 CIA 가 Cf_s 를 알아야 한다. 기록은 만료 뒤 하트비트가 지운다.
-    acct.sessions ??= [];
+    // V8(2026-09-24 §2.1): 세션 단위 폐기를 하려면 CIA 가 Cf_s 를 알아야 한다.
+    // 기록 정리는 하트비트뿐 아니라 여기서도 한다(최종 리뷰 F2) — 하트비트가 꺼져 있으면(CIA_HEARTBEAT_BLOCKS=0) 그것만으로는
+    // 영영 안 돌기 때문이다. 방금 읽은 head 를 쓰므로 RPC 를 더 부르지 않고, 같은 체인의 이 계정 기록만 본다. 리프는 남는다(§6).
+    acct.sessions = (acct.sessions ?? []).filter((r) => r.chainid !== chainStr || BigInt(r.max_height) >= head);
     acct.sessions.push({ Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString(), issuedAt: new Date().toISOString(), revokedAt: null });
     persist();
     res.json({
@@ -535,7 +535,9 @@ app.post('/cia/revoke', async (req, res) => {
     if (!rec) return res.status(404).json({ error: 'unknown session', reason: 'unknown_session' });
     if (rec.revokedAt) return res.json({ inserted: false, root: tree.getRoot().toString(), pending: state.pending.length });
     // 만료된 세션은 리프를 넣지 않는다 — append-only 트리를 이미 죽은 세션으로 불리는 일이다(설계 §6).
-    if ((await headOf(rec.chainid)) >= BigInt(rec.max_height)) return res.status(409).json({ error: 'session expired', reason: 'expired' });
+    // 만료 기준은 head > max_height 다 — 컨트랙트(Mode3Wallet.sol `block.number > pub[3]`)·서비스(lib/mode3_rp.js)와 같은 부등호를
+    // 쓴다. head == max_height 는 아직 살아 있는 세션이라 폐기할 수 있어야 한다(최종 리뷰 F1).
+    if ((await headOf(rec.chainid)) > BigInt(rec.max_height)) return res.status(409).json({ error: 'session expired', reason: 'expired' });
     const leaf = (await sessionLeaf(BigInt(Cf_s))).toString();
     // 위 await 들 사이에 하트비트의 pruneExpiredSessions() 가 acct.sessions 를 통째로 갈아끼울 수 있다 — 그러면 rec 은 버려진
     // 객체라 revokedAt 이 아무 데도 안 남고, 그 사이 만료된 세션에 리프만 들어간다. 삽입 직전에 다시 찾는다.
@@ -557,7 +559,7 @@ app.get('/cia/admin/sessions', requireAdmin, async (req, res) => {
   const out = [];
   for (const s of state.accounts[uid].sessions ?? []) {
     if (heads[s.chainid] === undefined) { try { heads[s.chainid] = await headOf(s.chainid); } catch { heads[s.chainid] = null; } }
-    out.push({ ...s, expired: heads[s.chainid] === null ? null : heads[s.chainid] >= BigInt(s.max_height) });
+    out.push({ ...s, expired: heads[s.chainid] === null ? null : heads[s.chainid] > BigInt(s.max_height) });
   }
   res.json({ sessions: out });
 });
@@ -611,9 +613,11 @@ app.post('/cia/publish', requireAdmin, async (req, res) => {
 });
 /** 하트비트 틱(설계 §4.5): 마지막 게시에서 HEARTBEAT_BLOCKS 이상 지났으면 재게시. pending 이 있으면 그것도 같이 나간다. */
 async function heartbeatTick() {
+  // 정리는 게시 게이트보다 **앞**이다(최종 리뷰 F2): 게시 중이거나 LOG_ADDRESS 가 없어도 만료 기록은 지워야 한다.
+  // 자체 try 로 감싼다 — setInterval 콜백이라 여기서 던지면 unhandled rejection 이다.
+  try { await pruneExpiredSessions(); } catch (e) { console.warn(`[cia] 세션 기록 정리 실패: ${e.message}`); }
   if (publishing || !LOG_ADDRESS) return;
   try {
-    await pruneExpiredSessions();   // try 안에 둔다 — setInterval 콜백이라 여기서 던지면 unhandled rejection 이다
     const log = new ethers.Contract(LOG_ADDRESS, LOG_ABI, ethWallet);
     const [head, last] = await Promise.all([ethWallet.provider.getBlockNumber(), log.lastPublishedBlock()]);
     if (BigInt(head) - BigInt(last) < HEARTBEAT_BLOCKS) return;
@@ -631,7 +635,7 @@ async function pruneExpiredSessions() {
     const keep = [];
     for (const s of acct.sessions) {
       if (heads[s.chainid] === undefined) { try { heads[s.chainid] = await headOf(s.chainid); } catch { heads[s.chainid] = null; } }
-      if (heads[s.chainid] !== null && heads[s.chainid] >= BigInt(s.max_height)) dropped++; else keep.push(s);
+      if (heads[s.chainid] !== null && heads[s.chainid] > BigInt(s.max_height)) dropped++; else keep.push(s);
     }
     acct.sessions = keep;
   }
