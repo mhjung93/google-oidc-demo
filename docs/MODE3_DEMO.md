@@ -105,27 +105,83 @@ RP 는 등록 파일이 없거나 승인 전이면 CIA 에 등록/조회하므�
 
 RP 페이지는 반드시 `127.0.0.1`로 연다 — 지갑 에이전트의 CORS 허용 오리진이 `http://127.0.0.1:3100`(`MODE3_RP_ORIGIN`)이라 `localhost`로 열면 지갑 호출이 막힌다.
 
+## 언어·전문가 보기 (2026-09-24 UX 개선)
+
+네 페이지 모두 맨 위 안내 바 오른쪽에 토글 둘이 있다.
+
+| 토글 | 하는 일 | `localStorage` 키 | 기본값 |
+|---|---|---|---|
+| `EN` / `한국어` 버튼 | 화면 문구를 한국어 ↔ English 로 바꾼다 | `mode3.lang` (`ko`\|`en`) | `ko` |
+| "전문가 보기" 체크박스 | 아래의 전문가 요소를 켠다 | `mode3.expert` (`1`\|`0`) | 꺼짐 |
+
+둘 다 페이지·오리진마다 브라우저에 기억된다(같은 오리진의 관리자·내 계정 페이지는 설정을 공유하고, 지갑·RP 는 각자
+기억한다). 콘솔에서 `Demo.setLang('en')`·`Demo.setExpert(true)` 로도 바꿀 수 있다 — 스크린샷 스크립트가 쓰는 길이다.
+
+**전문가 보기가 켜면 보이는 것**
+
+- 원문 로그 요소 — RP `#log`·`#sessionLog`·`#openLog`, 지갑 `#status`·`#sessionLog`·`#txLog`·`#authLog`,
+  관리자·내 계정 `#out`. 이 요소들은 꺼져 있어도 DOM 에 그대로 있다(`textContent` 를 보는 테스트는 영향받지 않는다).
+- 결과 카드의 "자세히"(원본 JSON)가 접히지 않고 펼쳐진 채 뜬다.
+- 용어 라벨에 원래 기호가 붙는다 — "이 서비스에서의 내 주소 (PPID = Poseidon(uid, s_u, chainid, arid))",
+  "로그인 세션 (r_s, pk_i, max_height)", "공개할 속성 조건 (disc_mask, lo[4], hi[4], set_sel, set_root)" 등.
+- RP 의 서비스 상태 카드에 `arid`·`cert_s`·`pk_trace`·`RevocationLog`·팩토리·`AttrGate` 주소 한 줄, 로그인 기록 표에
+  `세션 r_s`·`폐기 목록 root` 열, 관리자 서비스 표에 `서비스 식별자`(arid) 열이 더 나온다.
+- RP (내 세션) 카드의 **"skipSync (stale_root 시연)" 체크박스** — 각본 5 의 `stale_root` 시연은 이제 **전문가 보기를
+  먼저 켜야** 보인다.
+
+## 페이지 구성 (2026-09-24 UX 개선)
+
+페이지마다 맨 위 안내 바(7단계 진행 표시 + "다음에 할 일" 한 줄 + 다른 페이지로 가는 링크) 아래에 카드가 놓인다.
+
+| 페이지 | 카드 |
+|---|---|
+| 지갑 `:5100/` | 내 신원 · 로그인 세션 · 트랜잭션 보내기 · MetaMask · Snap(`snap` 모드에서만 보인다). `?authorize=1` 팝업은 "로그인 승인" 카드 하나만 |
+| 서비스 `:3100/` | 서비스 상태 · 로그인 · 내 세션 · 로그인 기록 · 승인 개봉 |
+| 관리자 `:4100/admin` | 인증 · 최근 결과 / 계정 / 서비스 / 개봉 요청 / 폐기 목록 |
+| 내 계정 `:4100/account` | 내 계정 폐기 (하나) |
+
+알아 둘 것:
+
+- 조작 결과는 **결과 카드**(판정 배지 + 한 줄 요약 + 접힌 "자세히")로 뜬다. 세션 폐기도 마찬가지다 — 원문은 전문가
+  보기의 로그 요소에 그대로 남는다.
+- **되돌릴 수 없는 버튼**은 빨간 테두리로 표시하고 누르면 확인창이 한 번 뜬다 — 관리자의 "계정 폐기"·세션 목록의
+  "폐기"·"게시(체인에 올리기)", 지갑의 "이 세션 끝내기(폐기)"·"계정 자기 폐기"·"Snap 초기화", 내 계정 페이지의
+  "내 계정 폐기". (서비스·개봉 요청의 "거절" 도 되돌릴 수 없지만 확인창은 없다.)
+  **브라우저 자동화는 이 대화상자를 받아야 한다**(`page.on('dialog', d => d.accept())`).
+- 관리자 페이지의 **계정 폐기는 경로가 하나다** — (계정) 카드의 uid 칸에 값을 넣고 "계정 폐기" 를 누른다. 목록 행의
+  "선택" 버튼은 그 uid 를 칸에 채워 줄 뿐이다.
+- 관리자 (인증 · 최근 결과) 카드에 **대기 배지**("승인 대기 서비스 N", "개봉 요청 N", 없으면 "대기 중인 건 없음")가
+  있어 승인할 것이 남았는지 한눈에 보인다. RP 페이지에도 "승인 대기"/"활성" 배지가 있다.
+- 관리자 시크릿은 요청 헤더로만 나가고 화면·결과 카드·원문 로그 어디에도 실리지 않는다. "이 창에서 기억"(기본 꺼짐)을
+  켠 동안만 `sessionStorage` 에 둔다.
+- 공통 레이어(`mode3/common/{strings.js,demo.js,demo.css}`)는 세 서버가 각자 **`/common`** 으로 정적 제공한다
+  (`cia.js`, `mode3_wallet_agent.js`, `mode3_rp.js`). 이 경로가 404 여도 페이지는 마크업에 박아 둔 **한국어 기본
+  문구**로 계속 돈다 — 토글과 안내 바만 사라진다(설계 §5).
+
 ## 시연 각본
+
+버튼 이름은 2026-09-24 UX 개선(설계 `docs/superpowers/specs/2026-09-24-mode3-demo-ux-design.md`) 뒤의 화면 문구다.
+괄호 안은 그 버튼이 있는 카드다. 5 의 "skipSync (stale_root 시연)" 처럼 **전문가 보기에서만 보이는** 것은 따로 적었다.
 
 | # | 어디서 | 조작 | 기대 |
 |---|---|---|---|
-| 0 | 관리자 | 등록된 서비스 → 승인 (RP 첫 기동 뒤 한 번) | RP 페이지가 "등록 대기" → 활성 |
-| 1 | 지갑 | 등록 (`12345` / `password123`) | `등록됨`, 속성은 AA 기록값(`[1990, 410, 2, 0]`)이 응답으로 내려온다 — "속성과 선택 공개" 절 참고 |
-| 2 | RP | 로그인 (AI agent 허용 체크 여부) | `새 발급=true`, 로그인 성공, PPID, 세션 r_s, allowAgent 표시 |
-| 2a | 지갑 | 세션 선택 → 트랜잭션 보내기 | 첫 번째 `deployed=true`·`ok=true`, 두 번째 캐시 히트·`nonce=1` |
-| 2b | 지갑 → RP → 관리자 → RP | 지갑 페이지의 txHash 를 RP "해시로 개봉"에 붙여 넣기 → 승인 → 결과 확인 | `uid=12345`, AI agent 허용 여부 |
-| 3 | RP | 세션 재검증 | `캐시 히트=true`, 증명 0 ms, ok |
-| 3′ | RP | 세션 요청 | 세션키 서명 검증 ok |
-| 3″ | RP | 로그인 (다시) | 새 세션 = `새 발급=true`, **같은 PPID** |
-| 4 | 관리자 | 계정 폐기 → 게시 | `published:true`, epoch +1 |
-| 4′ | 사용자 페이지 → 관리자 | (4 대신) 내 계정 폐기 → 게시 | `disabled:true`, 이후 5~8 동일 |
-| 4″ | 지갑 → 관리자 → RP | (4 대신, V8) 세션 둘을 만든 뒤 지갑 세션 목록에서 한 세션의 "이 세션 폐기" → 관리자 게시 → RP 에서 두 세션을 각각 재검증 | **세션 하나만 죽는다** — 폐기한 세션은 지갑에서 이미 사라져 재검증이 404 `no_session`(지갑 밖에서 관리자가 폐기했으면 403 `revoked_session`), 다른 세션은 그대로 ok, 새 로그인도 ok(같은 PPID). 계정 폐기(4)와 달리 `account_disabled` 가 아니다 |
-| 5 | RP | "동기화 생략" 체크 → 세션 재검증 | 거절 `stale_root`. 세션 요청은 `revalidate_required` |
-| 5a | 지갑 | (폐기·게시 뒤) 트랜잭션 보내기 | `revoked` |
-| 6 | RP | 체크 해제 → 세션 재검증 → 로그인 | 지갑 `revoked` → 새 로그인은 `account_disabled` |
-| 7 | 관리자 | 복구 | `disabled:false` |
-| 8 | RP | 로그인 | `새 발급=true`, 성공, **PPID 가 2 와 같다** |
-| 9 | RP → 관리자 → RP | 로그인 기록 아래 PPID 로 "개봉 요청" → 관리자 "개봉 요청 → 승인" → RP "결과 확인" | 202 pending → approved → uid=12345 |
+| 0 | 관리자 | (서비스) "목록 불러오기" → 해당 행의 "승인" (RP 첫 기동 뒤 한 번) | RP 페이지가 "승인 대기" → "활성" |
+| 1 | 지갑 | (내 신원) "등록" — uid `12345` / pwd `password123` | 결과 카드 `등록됨`, 속성은 AA 기록값(`[1990, 410, 2, 0]`)이 응답으로 내려온다 — "속성과 선택 공개" 절 참고 |
+| 2 | RP | (로그인) "로그인" ("AI 에이전트 허용" 체크 여부) | `새 발급=true`, 결과 카드 `로그인 성공`, PPID, 세션 r_s, allowAgent 표시 |
+| 2a | 지갑 | (트랜잭션 보내기) "보낼 세션" 선택 → "트랜잭션 보내기" | 첫 번째 `deployed=true`·`ok=true`, 두 번째 캐시 히트·`nonce=1` |
+| 2b | 지갑 → RP → 관리자 → RP | 지갑 페이지의 txHash 를 RP (승인 개봉) "트랜잭션 해시" 에 붙여 넣고 "해시로 요청" → 관리자에서 승인 → RP "결과 확인" | `uid=12345`, AI 에이전트 허용 여부 |
+| 3 | RP | (내 세션) "세션 재검증" | `캐시 히트=true`, 증명 0 ms, 결과 카드 `재검증 성공` |
+| 3′ | RP | (내 세션) "세션 요청 보내기" | 세션키 서명 검증 ok |
+| 3″ | RP | (로그인) "로그인" (다시) | 새 세션 = `새 발급=true`, **같은 PPID** |
+| 4 | 관리자 | (계정) uid 를 넣고 "계정 폐기" → (폐기 목록) "게시(체인에 올리기)" | `published:true`, epoch +1 |
+| 4′ | 사용자 페이지 → 관리자 | (4 대신) 내 계정 페이지의 "내 계정 폐기" → 관리자 "게시(체인에 올리기)" | `disabled:true`, 이후 5~8 동일 |
+| 4″ | 지갑 → 관리자 → RP | (4 대신, V8) 세션 둘을 만든 뒤 지갑 (로그인 세션) 목록에서 한 세션의 "이 세션 끝내기(폐기)" → 관리자 "게시(체인에 올리기)" → RP 에서 두 세션을 각각 재검증 | **세션 하나만 죽는다** — 폐기한 세션은 지갑에서 이미 사라져 재검증이 404 `no_session`(지갑 밖에서 관리자가 폐기했으면 403 `revoked_session`), 다른 세션은 그대로 ok, 새 로그인도 ok(같은 PPID). 계정 폐기(4)와 달리 `account_disabled` 가 아니다 |
+| 5 | RP | **전문가 보기를 켜고** (내 세션) "skipSync (stale_root 시연)" 체크 → "세션 재검증" | 거절 `stale_root`. "세션 요청 보내기" 는 `revalidate_required` |
+| 5a | 지갑 | (폐기·게시 뒤) "트랜잭션 보내기" | `revoked` |
+| 6 | RP | 체크 해제 → "세션 재검증" → "로그인" | 지갑 `revoked` → 새 로그인은 `account_disabled` |
+| 7 | 관리자 | (계정) "복구(다시 쓰게)" | `disabled:false` |
+| 8 | RP | (로그인) "로그인" | `새 발급=true`, 성공, **PPID 가 2 와 같다** |
+| 9 | RP → 관리자 → RP | (로그인 기록) 행의 "개봉 요청"(또는 (승인 개봉) 카드에 PPID 를 넣고 "개봉 요청") → 관리자 (개봉 요청) "목록 불러오기" → "승인" → RP "결과 확인" | 202 pending → approved → uid=12345 |
 
 온체인 실행은 트랜잭션마다 π 를 첨부하고 컨트랙트가 매번 검증한다(가스 실측, `Mode3Wallet.execute()` 정상 실행 — EOA 로 value 0
 호출, 계정 배포 제외: V4 회로 387,675, V5 회로 356,441~356,477, V6 회로(2026-09-22, 선택 공개, 공개 입력 23개, 이전 baseline)
@@ -176,14 +232,16 @@ credential 은 발급 시점 head 기준 300~400 블록(그리드 양자화)에 
 트리에 자기 리프가 있으면) 새 사용자 자격증명을 자동으로 받는다. 로그인 없이 먼저 확인하고 싶으면 `POST /wallet/attrs/sync` 로
 AA 의 현재 값을 받아 두고(바뀌었으면 지갑이 옛 C_u·세션을 그 자리에서 지운다), 다음 로그인이 새 C_u 위에 세션을 받는다.
 
-**트랜잭션의 선택 공개.** 지갑 페이지의 트랜잭션 폼에 슬롯별(a₀..a₃) 체크박스 + lo/hi 입력, "정확히 공개" 버튼(lo = hi = 내 값)이
-있다. `POST /wallet/tx` 의 `disclose`(길이 4, 각 원소 `{lo, hi}` 또는 `null`)가 회로 공개 입력 `disc_mask`·`disc_lo[4]`·`disc_hi[4]`
+**트랜잭션의 선택 공개.** 지갑 페이지 (트랜잭션 보내기) 카드의 "공개할 속성 조건" 을 펼치면 슬롯별(a₀..a₃) 체크박스 +
+"최소"/"최대" 입력, "내 실제 값으로 채우기(체크한 조건)" 버튼(최소 = 최대 = 내 값)이 있다. `POST /wallet/tx` 의 `disclose`(길이 4, 각 원소 `{lo, hi}` 또는 `null`)가 회로 공개 입력 `disc_mask`·`disc_lo[4]`·`disc_hi[4]`
 가 된다. 지갑은 제출 전에 `lo ≤ 내 속성 ≤ hi` 를 스스로 검사한다 — 안 맞으면 증명을 만들기 전에 400 `disclosure_unsatisfiable`,
 형식·범위가 잘못됐으면 400 `bad_disclosure`. `disclose` 가 있으면(mask ≠ 0) 캐시된 π 를 못 쓰고 매번 새로 증명한다.
 
-`set: { slot, members }`(선택, 슬롯 하나) — 지갑이 `members` 로 root 를 계산해 회로 공개 입력 `set_sel`·`set_root`([23],[24])에
+`set: { slot, members }`(선택, 슬롯 하나) — 화면에서는 같은 카드의 "집합 소속 조건" 고르개 + "허용 원소" 입력이다.
+지갑이 `members` 로 root 를 계산해 회로 공개 입력 `set_sel`·`set_root`([23],[24])에
 넣는다. 비소속이면(내 속성이 `members`에 없으면) 역시 증명을 만들기 전에 400 `disclosure_unsatisfiable`, 형식이 잘못됐으면
-400 `bad_disclosure`. 나이는 "나이 ≥ N" 버튼으로 지정한다 — 이 버튼은 `hi[0] = 올해 − N`(연 단위)로 슬롯 0 을 공개한다.
+400 `bad_disclosure`. 나이는 "나이 ≥" 입력 옆의 "이 나이 조건으로 채우기" 버튼으로 지정한다 — 이 버튼은
+`hi[0] = 올해 − N`(연 단위)로 슬롯 0 을 공개한다.
 
 **`AttrGate` v2 (데모 대상).** RP 가 팩토리 다음에 한 번 배포하는 컨트랙트로(`rp_info.attrGateAddress`), 정책은 국가(a₁) ∈
 `allowedCountriesRoot`(집합 소속, env `MODE3_ALLOWED_COUNTRIES`)·출생연도(a₀) 기준 나이 ≥ `minAge`(env `MODE3_MIN_AGE`)이다.
@@ -200,7 +258,7 @@ AA 의 현재 값을 받아 두고(바뀌었으면 지갑이 옛 C_u·세션을 
 `attrGateFactory`·`attrGatePolicy` 가 없는 옛 등록 파일(이 필드들이 생기기 전)은 이 대조가 항상 "다르다"로 나와 **첫 기동에
 `AttrGate` 를 한 번 재배포한다**(주소가 바뀐다 — 이전에 그 주소를 써 둔 데모 스크립트·문서가 있다면 갱신해야 한다).
 
-**로그인 경로 술어(V7).** 온체인 `AttrGate.claim()` 과 별개로, RP 페이지의 "속성 술어 요구(V7)" 체크박스를 켜면 로그인
+**로그인 경로 술어(V7).** 온체인 `AttrGate.claim()` 과 별개로, RP 페이지 (로그인) 카드의 "조건 요구(국가·나이)" 체크박스를 켜면 로그인
 요청(`POST /api/mode3/login`)에 `require: { countrySet, minAge }` 를 함께 보낸다. RP 는 로그인 성명이 이미 제출한
 disclosure(`set`·`disc_hi[0]`)로 그 술어를 만족하는지 오프체인에서 검사하고, 만족하지 못하면 로그인 자체를 `{ok:false,
 reason: 'predicate_unmet'}` 로 거절한다(200, 컨트랙트 호출 없이 오프체인 판정 — RP env `MODE3_ALLOWED_COUNTRIES`·
@@ -212,7 +270,7 @@ reason: 'predicate_unmet'}` 로 거절한다(200, 컨트랙트 호출 없이 오
 | # | 조작 | 기대 |
 |---|---|---|
 | 1 | testuser 등록 | 속성 `[1990, 410, 2, 0]` 이 AA 에서 내려온다(지갑 화면은 읽기 전용) |
-| 2 | 로그인(mask 0) → 트랜잭션 폼에서 슬롯 0 을 `[0, 올해−minAge]` 로 공개 + 집합 소속(슬롯 1, `MODE3_ALLOWED_COUNTRIES`) → `to`=`attrGateAddress`, `data`=`claim()` 셀렉터(`0x4e71d92d`, 지갑 폼 기본값) | `Claimed` 이벤트, `AttrGate.claimed(wallet) == true` |
+| 2 | 로그인(mask 0) → (트랜잭션 보내기) "공개할 속성 조건" 에서 슬롯 0 을 `[0, 올해−minAge]` 로 공개 + "집합 소속 조건"=국가(슬롯 1)·"허용 원소"=`MODE3_ALLOWED_COUNTRIES` → "받는 주소"=`attrGateAddress`, "데이터"=`claim()` 셀렉터(`0x4e71d92d`, 지갑 폼 기본값) | `Claimed` 이벤트, `AttrGate.claimed(wallet) == true` |
 | 3 | alice(2005, 840)로 같은 슬롯 0 범위 + 허용 집합이 아닌 임의 집합(예: `{840, 392}`)으로 시도 | 840 은 이 임의 집합 안에 있어 지갑의 setPath 는 성공하지만 그 root 가 `allowedCountriesRoot` 와 달라 `claim()` 이 `country` 로 revert(`Executed` success=false, nonce 는 소모). 허용 집합에서 840 을 빼면 지갑이 온체인에 내기 전에 `disclosure_unsatisfiable` 로 막는다 |
 | 4 | 슬롯 0 을 `[0, 1980]` 으로 공개 시도(집합 없이) | 지갑이 `disclosure_unsatisfiable`(1990 ∉ [0, 1980], 체인에 보내기 전에 막힌다) |
 | 5 | alice(2005, 840): 허용 집합은 그대로 공개하되 슬롯 0 을 정책보다 넓은 구간(`[0, 올해−5]`)으로 공개 | 국가는 실제 허용 집합이라 `country` 는 통과하지만 minAge 를 증명하지 못해 `claim()` 이 `age` 로 revert |
@@ -227,9 +285,11 @@ reason: 'predicate_unmet'}` 로 거절한다(200, 컨트랙트 호출 없이 오
 **누가 폐기하나.** 사용자(지갑)는 등록 키 `sk_u` 서명으로 자기 세션의 `Cf_s` 를 지정하고, 운영자는 관리자 시크릿으로 한다.
 서비스는 `Cf_s` 를 모르므로 세션을 폐기할 수 없다.
 
-- 지갑 페이지(`/`)의 세션 목록 각 행에 **"이 세션 폐기"** 버튼 → `POST /wallet/session/revoke {r_s}`. 에이전트가 서명을 만들어
+- 지갑 페이지(`/`) (로그인 세션) 카드의 각 세션 요약 아래 **"이 세션 끝내기(폐기)"** 버튼 → `POST /wallet/session/revoke {r_s}`.
+  누르면 확인창이 한 번 뜬다(되돌릴 수 없는 조작). 에이전트가 서명을 만들어
   CIA `/cia/revoke scope=session` 으로 보내고, CIA 가 받아들이면 **게시 전이라도 그 세션을 로컬에서 지운다**.
-- CIA 관리자 페이지(`/admin`)의 계정 행 **"세션"** 버튼 → `GET /cia/admin/sessions?uid=` 목록(활성/폐기됨/만료) + 행마다 "폐기".
+  결과는 결과 카드로 뜨고(원문은 전문가 보기의 `#sessionLog`), 지갑 페이지는 스스로 팝업을 열지 않는다.
+- CIA 관리자 페이지(`/admin`) (계정) 카드 행의 **"세션"** 버튼 → `GET /cia/admin/sessions?uid=` 목록(활성/폐기됨/만료) + 행마다 "폐기".
 
 **AA 가 기록하는 것.** 발급 때 `{Cf_s, max_height, chainid, allowAgent, issuedAt, revokedAt}` 을 계정에 남긴다(상태 v8). 전부 발급
 때 이미 본 값이라 AA 가 새로 알게 되는 것은 없다 — `arid`·`pk_i` 는 여전히 `C_s` 안이라 못 본다. 남는 것은 **상태**(사용자별 세션
@@ -243,17 +303,18 @@ reason: 'predicate_unmet'}` 로 거절한다(200, 컨트랙트 호출 없이 오
 | `POST /wallet/session/revoke` `{r_s}` | 지갑 | 같은 오리진 전용(CORS 없음). 서명 후 CIA 로 중계하고 성공하면 로컬 세션 삭제. 응답 `{revoked:true, inserted, pending}`. 인증은 `r_s` 를 아는 것뿐이다(`/wallet/revalidate` 와 같은 bearer) — **Snap 동의 창은 지갑 페이지가 거치는 절차이고 에이전트는 검증하지 않는다** |
 | Snap RPC `consentRevokeSession` `{arid, issuedAt, maxHeight}` | Snap | snap 모드의 **동의 창만**. Snap 에는 Poseidon 이 없어 서명은 에이전트가 세션의 메모리 증인 `sk_u` 로 한다 |
 
-**사유.**
+**사유.** "화면 문구" 는 `mode3/common/strings.js` 의 `reasons[코드].ko.title` — 페이지가 결과 카드 제목으로 쓰는 말이다
+(원인·조치 두 줄이 그 아래 붙고, 코드 자체도 제목 옆에 작게 그대로 남는다).
 
-| `reason` | 어디서 | 상태 코드 | 뜻 |
-|---|---|---|---|
-| `revoked_session` | 지갑 `POST /wallet/revalidate`·`/wallet/tx`(`/tx/prepare`) | 403 | 이 **세션 리프**가 폐기 트리에 있다 — 그 세션만 죽는다(지갑이 그 세션을 지운다). 사용자 자격증명은 그대로라 다른 세션·새 로그인은 된다. 계정/자격증명 폐기는 지금까지처럼 `revoked` 다. `mode3/rp.html` 은 둘을 같은 분기로 처리한다(세션 버림) |
-| `unknown_session` | CIA `POST /cia/revoke scope=session` | 404 | 그 `Cf_s` 기록이 이 계정에 없다(옛 세션이거나 만료 정리로 사라졌다). **서명 검사를 먼저 하므로** 서명 없이 "이 Cf_s 가 이 계정 것인가" 를 떠볼 수는 없다 |
-| `expired` | CIA `POST /cia/revoke scope=session` | 409 | 그 체인 head > `max_height` — 만료가 이미 막으므로 리프를 넣지 않는다. 경계는 컨트랙트(`block.number > pub[3]`)·서비스와 같다: `head == max_height` 는 아직 산 세션이라 폐기된다 |
-| `unknown_session`(중계) | 지갑 `POST /wallet/session/revoke` | 404 | CIA 의 404 를 그대로 옮긴 것 — 지갑은 그 `r_s` 세션을 들고 있는데 **AA 쪽에 기록이 없다**(v8 이행 전 세션이거나 만료 정리로 사라졌다). 지갑이 세션 자체를 모르는 `no_session` 과 다르다 |
-| `needs_consent` | 지갑 `POST /wallet/session/revoke`(snap 모드) | 409 | 그 세션의 메모리 증인이 없다(에이전트 재시작) — 서명할 `sk_u` 가 없다. 지갑 페이지는 사유만 보이고 스스로 팝업을 열지 않는다. RP 페이지에서 그 세션을 한 번 재검증해 재승인(§4.3, 아래 S8)을 거친 뒤 다시 누른다 |
-| `not_registered` | 지갑 `POST /wallet/session/revoke` | 409 | 이 에이전트에 등록이 없다 |
-| `no_session` | 지갑 `POST /wallet/session/revoke` | 404 | 그 `r_s` 세션을 지갑이 들고 있지 않다(이미 폐기했거나 만료) |
+| `reason` | 화면 문구 | 어디서 | 상태 코드 | 뜻 |
+|---|---|---|---|---|
+| `revoked_session` | 이 세션은 폐기됐습니다 | 지갑 `POST /wallet/revalidate`·`/wallet/tx`(`/tx/prepare`) | 403 | 이 **세션 리프**가 폐기 트리에 있다 — 그 세션만 죽는다(지갑이 그 세션을 지운다). 사용자 자격증명은 그대로라 다른 세션·새 로그인은 된다. 계정/자격증명 폐기는 지금까지처럼 `revoked` 다. `mode3/rp.html` 은 둘을 같은 분기로 처리한다(세션 버림) |
+| `unknown_session` | 신원 기관에 그 세션 기록이 없습니다 | CIA `POST /cia/revoke scope=session` | 404 | 그 `Cf_s` 기록이 이 계정에 없다(옛 세션이거나 만료 정리로 사라졌다). **서명 검사를 먼저 하므로** 서명 없이 "이 Cf_s 가 이 계정 것인가" 를 떠볼 수는 없다 |
+| `expired` | 세션이 만료됐습니다 | CIA `POST /cia/revoke scope=session` | 409 | 그 체인 head > `max_height` — 만료가 이미 막으므로 리프를 넣지 않는다. 경계는 컨트랙트(`block.number > pub[3]`)·서비스와 같다: `head == max_height` 는 아직 산 세션이라 폐기된다 |
+| `unknown_session`(중계) | 신원 기관에 그 세션 기록이 없습니다 | 지갑 `POST /wallet/session/revoke` | 404 | CIA 의 404 를 그대로 옮긴 것 — 지갑은 그 `r_s` 세션을 들고 있는데 **AA 쪽에 기록이 없다**(v8 이행 전 세션이거나 만료 정리로 사라졌다). 지갑이 세션 자체를 모르는 `no_session` 과 다르다 |
+| `needs_consent` | 다시 승인해야 합니다 | 지갑 `POST /wallet/session/revoke`(snap 모드) | 409 | 그 세션의 메모리 증인이 없다(에이전트 재시작) — 서명할 `sk_u` 가 없다. 지갑 페이지는 사유만 보이고 스스로 팝업을 열지 않는다. RP 페이지에서 그 세션을 한 번 재검증해 재승인(§4.3, 아래 S8)을 거친 뒤 다시 누른다 |
+| `not_registered` | 지갑이 등록되지 않았습니다 | 지갑 `POST /wallet/session/revoke` | 409 | 이 에이전트에 등록이 없다 |
+| `no_session` | 그 세션을 지갑이 들고 있지 않습니다 | 지갑 `POST /wallet/session/revoke` | 404 | 그 `r_s` 세션을 지갑이 들고 있지 않다(이미 폐기했거나 만료) |
 
 같은 세션을 다시 폐기하면 CIA 는 200 `{inserted:false}` 로 멱등하게 답한다.
 
@@ -311,18 +372,18 @@ reason: 'predicate_unmet'}` 로 거절한다(200, 컨트랙트 호출 없이 오
 | # | 어디서 | 조작 | 떠야 할 창 / 확인할 것 |
 |---|---|---|---|
 | S0 | 지갑(:5100) | 페이지를 연다 | "Snap" 패널이 보이고 uid·비밀번호 폼은 숨는다(= 에이전트가 snap 모드) |
-| S1 | 지갑 | "MetaMask 연결" | MetaMask 계정 선택 창 → Snap 설치·권한 창. 상태줄에 `계정 0x… · Snap local:http://localhost:8082` |
-| S2 | 지갑 | "등록" | **Snap 대화상자 2개**(uid → 비밀번호). 끝나면 상태에 `등록됨`, 속성은 AA 값(`[1990, 410, 2, 0]`). "Snap 상태 보기" 로 `등록: 예`, `사용자 자격증명 보관` 확인 |
-| S3 | RP(:3100) | "Mode 3 로그인" | 지갑 오리진의 **팝업 창**이 뜨고 그 안에서 **Snap 로그인 동의 창**(서비스 이름·origin·arid·AI agent 허용)이 뜬다. 승인하면 팝업이 스스로 닫히고 RP 에 `로그인 성공 PPID=…` |
-| S4 | RP | (S3 에서 동의를 **거절**) | RP 에 `로그인 실패 — 지갑: user_denied`. 세션이 생기지 않는다 |
-| S5 | RP | "세션 재검증" | 팝업 없이 성공(비밀이 필요 없다). `캐시 히트=true` |
-| S6 | 지갑 | 세션 선택 → 슬롯 0 `[0, 2007]`·슬롯 1 `[410, 410]` 공개 → `to`=AttrGate, `data`=`0x4e71d92d` → "트랜잭션 보내기" | **Snap 속성 공개 동의 창**(슬롯별 범위·대상 주소) → **MetaMask 트랜잭션 확인 창**(첫 번째는 계정 배포, 두 번째가 `claim()`) → 영수증에 `ok=true`, `Claimed` |
+| S1 | 지갑 | (MetaMask · Snap) "MetaMask 연결" | MetaMask 계정 선택 창 → Snap 설치·권한 창. 상태줄에 `계정 0x… · Snap local:http://localhost:8082` |
+| S2 | 지갑 | (내 신원) "등록" | **Snap 대화상자 2개**(uid → 비밀번호). 끝나면 상태에 `등록됨`, 속성은 AA 값(`[1990, 410, 2, 0]`). "Snap 상태 보기" 로 `등록: 예`, `사용자 자격증명 보관` 확인 |
+| S3 | RP(:3100) | (로그인) "로그인" | 지갑 오리진의 **팝업 창**이 뜨고 그 안에서 **Snap 로그인 동의 창**(서비스 이름·origin·arid·AI agent 허용)이 뜬다. 승인하면 팝업이 스스로 닫히고 RP 결과 카드에 `로그인 성공`(PPID 는 "자세히" 또는 전문가 보기의 `#log`) |
+| S4 | RP | (S3 에서 동의를 **거절**) | RP 결과 카드에 `로그인 실패` + "승인 창에서 거절했습니다" + 코드 `user_denied`. 세션이 생기지 않는다 |
+| S5 | RP | (내 세션) "세션 재검증" | 팝업 없이 성공(비밀이 필요 없다). `캐시 히트=true` |
+| S6 | 지갑 | (트랜잭션 보내기) "보낼 세션" 선택 → "공개할 속성 조건" 에서 슬롯 0 `[0, 2007]`·슬롯 1 `[410, 410]` 공개 → "받는 주소"=AttrGate, "데이터"=`0x4e71d92d` → "트랜잭션 보내기" | **Snap 속성 공개 동의 창**(슬롯별 범위·대상 주소) → **MetaMask 트랜잭션 확인 창**(첫 번째는 계정 배포, 두 번째가 `claim()`) → 영수증에 `ok=true`, `Claimed` |
 | S7 | 지갑 | MetaMask 확인 창에서 **거절** | 페이지에 `user_rejected`. 에이전트 상태는 그대로(nonce 는 컨트랙트가 관리한다) |
-| S8 | 터미널 → RP | 지갑 에이전트를 재시작 → RP 에서 "세션 재검증" | 에이전트가 `409 needs_consent` → RP 가 **재승인 팝업**을 연다 → Snap 동의 창(이 세션의 AI agent 허용 값이 그대로 보여야 한다) → 승인하면 재검증이 이어져 성공 |
-| S8′ | 관리자 → RP → 지갑 | CIA 관리자 페이지에서 testuser 의 a₂ 를 3 으로 변경 → `/cia/publish`(시연 편의로 즉시 게시 — 운영에선 위 "관리자 속성 변경" 의 이유로 하트비트에 묶는다) → RP 에서 "Mode 3 로그인" | 로그인 동의 창 한 번으로 성공한다(지갑이 옛 C_u 폐기를 알아채 속성을 다시 받고 새 C_u 를 받는다, PPID 동일). 끝난 뒤 "Snap 상태 보기" 로 **속성이 `[1990, 410, 3, 0]` 으로 바뀌었고 `사용자 자격증명 보관: true`** 인지 본다 — 페이지가 `syncAttrs` 뒤에 `updateUserCred` 를 하므로 새 C_u 가 남아 있어야 한다(순서가 뒤집히면 여기서 `false` 가 되고 다음 재검증이 막힌다). 지갑 페이지의 "AA 에서 속성 다시 받기" 로도 같은 값을 확인할 수 있다(이쪽은 동의 창이 한 번 더 뜬다) |
-| S9 | 지갑 | "자기 폐기" | **Snap 비밀번호 대화상자** → 에이전트 `POST /wallet/self_revoke` 가 CIA 로 중계 → `자기 폐기 완료`. 관리자 페이지에서 `/cia/publish` 뒤 재검증이 `revoked` 가 되는지 본다 |
-| S9′ | 지갑 → 관리자 → RP | (V8) 세션 목록에서 한 세션의 "이 세션 폐기" | **Snap 동의 창**(그 세션의 서비스 arid·발급 시각·max_height — 서명은 에이전트가 한다) → `세션 폐기 요청 완료 … 다음 게시부터 효력`. 관리자 페이지에서 게시한 뒤 RP 에서 그 세션을 재검증하면 죽고(`revoked_session` 또는 세션이 이미 없어 `no_session`) 다른 세션은 산다. 에이전트를 재시작한 직후라면 메모리 증인이 없어 `세션 폐기 실패 — needs_consent` 가 뜬다 — 지갑 페이지는 팝업을 열지 않으므로 RP 에서 그 세션을 한 번 재검증(S8 의 재승인)한 뒤 다시 누른다 |
-| S10 | 지갑 | "Snap 초기화" | Snap 의 등록이 지워진다. 에이전트 파일의 **공개** 등록은 그대로다(재시연은 재시연 세트로) |
+| S8 | 터미널 → RP | 지갑 에이전트를 재시작 → RP 에서 (내 세션) "세션 재검증" | 에이전트가 `409 needs_consent` → RP 가 **재승인 팝업**을 연다 → Snap 동의 창(이 세션의 AI agent 허용 값이 그대로 보여야 한다) → 승인하면 재검증이 이어져 성공 |
+| S8′ | 관리자 → RP → 지갑 | CIA 관리자 페이지에서 testuser 의 a₂ 를 3 으로 변경 → `/cia/publish`(시연 편의로 즉시 게시 — 운영에선 위 "관리자 속성 변경" 의 이유로 하트비트에 묶는다) → RP 에서 (로그인) "로그인" | 로그인 동의 창 한 번으로 성공한다(지갑이 옛 C_u 폐기를 알아채 속성을 다시 받고 새 C_u 를 받는다, PPID 동일). 끝난 뒤 "Snap 상태 보기" 로 **속성이 `[1990, 410, 3, 0]` 으로 바뀌었고 `사용자 자격증명 보관: true`** 인지 본다 — 페이지가 `syncAttrs` 뒤에 `updateUserCred` 를 하므로 새 C_u 가 남아 있어야 한다(순서가 뒤집히면 여기서 `false` 가 되고 다음 재검증이 막힌다). 지갑 페이지의 "신원 기관에서 다시 받기" 로도 같은 값을 확인할 수 있다(이쪽은 동의 창이 한 번 더 뜬다) |
+| S9 | 지갑 | (MetaMask · Snap) "계정 자기 폐기" | **Snap 비밀번호 대화상자** → 에이전트 `POST /wallet/self_revoke` 가 CIA 로 중계 → 결과 카드 `폐기 요청 접수`("uid … 계정의 폐기를 신원 기관에 요청했습니다 — 되돌릴 수 없습니다"). 관리자 페이지에서 `/cia/publish` 뒤 재검증이 `revoked` 가 되는지 본다 |
+| S9′ | 지갑 → 관리자 → RP | (V8) (로그인 세션) 목록에서 한 세션의 "이 세션 끝내기(폐기)" | **Snap 동의 창**(그 세션의 서비스 arid·발급 시각·max_height — 서명은 에이전트가 한다) → 결과 카드 `폐기 요청 접수`("이 세션만 폐기를 요청했습니다 — 다음 게시부터 …"). 관리자 페이지에서 게시한 뒤 RP 에서 그 세션을 재검증하면 죽고(`revoked_session` 또는 세션이 이미 없어 `no_session`) 다른 세션은 산다. 에이전트를 재시작한 직후라면 메모리 증인이 없어 결과 카드 `세션 폐기 실패` + "다시 승인해야 합니다"(코드 `needs_consent`)가 뜬다 — 지갑 페이지는 팝업을 열지 않으므로 RP 에서 그 세션을 한 번 재검증(S8 의 재승인)한 뒤 다시 누른다 |
+| S10 | 지갑 | (MetaMask · Snap) "Snap 초기화" | Snap 의 등록이 지워진다. 에이전트 파일의 **공개** 등록은 그대로다(재시연은 재시연 세트로) |
 
 `file` 모드에서 RP 페이지를 브라우저로 여는 경로(RP 페이지가 `/wallet/login` 을 CORS 로 직접 부르는 지금까지의 흐름)는
 **자동 테스트가 덮지 않는다** — 브라우저 테스트는 snap 모드만 돌린다. `file` 모드로 데모를 바꿨다면 위 "시연 각본" 0~9 를 손으로 한 번 훑는다.
@@ -372,13 +433,16 @@ MetaMask/Snap 경로(2026-09-22 metamask-snap)로 새로 생긴 지갑 라우트
 
 ## RP 거절 사유 (2026-09-23 점검 C-1)
 
-| `reason` | 어디서 | 상태 코드 | 뜻 |
-|---|---|---|---|
-| `root_too_old` | `POST /api/mode3/login`, `POST /api/mode3/revalidate` | 200 `{ok:false, reason}` | 게시된 root 가 `MODE3_MAX_ROOT_AGE` 보다 오래됐다 — CIA 가 하트비트(또는 `/cia/publish`)를 멈추면 온체인 `RootTooOld` 와 함께 오프체인 로그인·재검증도 막힌다. CIA 를 살리고 게시를 기다린다 |
-| `bad_factory` | `POST /wallet/login`, `POST /wallet/authorize/precheck` | 409 `{reason, detail?}` | 서비스가 준 `factoryAddress` 가 인증서·CIA 키·로그 주소와 다르거나(immutable 대조), **팩토리·검증자 코드가 지갑의 참조 빌드(`artifacts/`)와 다르다**(2026-09-23 참조 코드 대조 — `detail` 이 `factory_code_mismatch`·`verifier_code_mismatch`·`no_code`). 무엇이든 통과시키는 검증자를 가리키는 팩토리는 여기서 막힌다. 지갑 쪽 `artifacts/` 가 낡았으면(컨트랙트를 바꾸고 `npx hardhat compile` 을 안 했으면) 진짜 팩토리도 거절되니 먼저 컴파일한다 |
-| `root_too_old` | `POST /api/mode3/request` | 503 | 세션 요청도 같은 상한 — 다만 세션이 이미 있는데 체인 쪽 문제라 5xx 로 구분한다 |
-| `factory_constants_unavailable` | 검증기가 없는 동안 RP API 전부(`inactiveReason`) — `/api/mode3/challenge`·`/login`·`/revalidate`·`/request`·`/open` | 503 | 팩토리 `maxRootAge`·`maxLifetime` 조회 실패 — 등록 대기(`registration_pending`)와 구분한다. 아래 "하지 말 것" 의 함정 참고 |
-| `predicate_unmet` | `POST /api/mode3/login` (V7, `require` 필드가 있을 때만) | 200 `{ok:false, reason}` | 로그인 성명은 유효하지만 요구한 술어(국가 집합 소속·최소 나이)를 만족하지 못한다 — 컨트랙트 호출 없이 오프체인에서 판정한다. `RP 거절 사유` 절 위쪽 "로그인 경로 술어(V7)" 참고. **요구는 페이지가 `require` 로 싣는다 — 서버 정책 게이트가 아니다(데모 의미). 운영이라면 서버가 강제해야 한다.** **재검증(`revalidate`)은 술어를 다시 증명하지 않는다** — 로그인 때의 술어는 세션 기록에만 남고, 재검증 뒤 `disclosure` 는 갱신된다(후속: 세션에 `require` 를 기억하고 지갑이 같은 술어로 재증명) |
+"화면 문구" 는 `mode3/common/strings.js` 의 `reasons[코드].ko.title`(결과 카드 제목)이다 — 원인·조치가 그 아래 두 줄로
+붙고, 코드 자체도 제목 옆에 그대로 남는다.
+
+| `reason` | 화면 문구 | 어디서 | 상태 코드 | 뜻 |
+|---|---|---|---|---|
+| `root_too_old` | 폐기 목록이 너무 오래 게시되지 않았습니다 | `POST /api/mode3/login`, `POST /api/mode3/revalidate` | 200 `{ok:false, reason}` | 게시된 root 가 `MODE3_MAX_ROOT_AGE` 보다 오래됐다 — CIA 가 하트비트(또는 `/cia/publish`)를 멈추면 온체인 `RootTooOld` 와 함께 오프체인 로그인·재검증도 막힌다. CIA 를 살리고 게시를 기다린다 |
+| `bad_factory` | 팩토리 컨트랙트를 믿을 수 없습니다 | `POST /wallet/login`, `POST /wallet/authorize/precheck` | 409 `{reason, detail?}` | 서비스가 준 `factoryAddress` 가 인증서·CIA 키·로그 주소와 다르거나(immutable 대조), **팩토리·검증자 코드가 지갑의 참조 빌드(`artifacts/`)와 다르다**(2026-09-23 참조 코드 대조 — `detail` 이 `factory_code_mismatch`·`verifier_code_mismatch`·`no_code`). 무엇이든 통과시키는 검증자를 가리키는 팩토리는 여기서 막힌다. 지갑 쪽 `artifacts/` 가 낡았으면(컨트랙트를 바꾸고 `npx hardhat compile` 을 안 했으면) 진짜 팩토리도 거절되니 먼저 컴파일한다 |
+| `root_too_old` | 폐기 목록이 너무 오래 게시되지 않았습니다 | `POST /api/mode3/request` | 503 | 세션 요청도 같은 상한 — 다만 세션이 이미 있는데 체인 쪽 문제라 5xx 로 구분한다 |
+| `factory_constants_unavailable` | 서비스가 체인 설정을 읽지 못했습니다 | 검증기가 없는 동안 RP API 전부(`inactiveReason`) — `/api/mode3/challenge`·`/login`·`/revalidate`·`/request`·`/open` | 503 | 팩토리 `maxRootAge`·`maxLifetime` 조회 실패 — 등록 대기(`registration_pending`)와 구분한다. 아래 "하지 말 것" 의 함정 참고 |
+| `predicate_unmet` | 요구한 조건을 만족하지 못했습니다 | `POST /api/mode3/login` (V7, `require` 필드가 있을 때만) | 200 `{ok:false, reason}` | 로그인 성명은 유효하지만 요구한 술어(국가 집합 소속·최소 나이)를 만족하지 못한다 — 컨트랙트 호출 없이 오프체인에서 판정한다. `RP 거절 사유` 절 위쪽 "로그인 경로 술어(V7)" 참고. **요구는 페이지가 `require` 로 싣는다 — 서버 정책 게이트가 아니다(데모 의미). 운영이라면 서버가 강제해야 한다.** **재검증(`revalidate`)은 술어를 다시 증명하지 않는다** — 로그인 때의 술어는 세션 기록에만 남고, 재검증 뒤 `disclosure` 는 갱신된다(후속: 세션에 `require` 를 기억하고 지갑이 같은 술어로 재증명) |
 
 RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는데(`headMaxAgeMs`), 그 창 동안은 root 나이(b′) 판정도 **캐시 시점 값에 얼어붙는다** — 실시간 게시 지연을 그동안은 못 본다.
 
@@ -426,6 +490,9 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
   Playwright 가 `channel: 'chrome'` 으로 띄우고, `window.ethereum` 을 스텁해 진짜 `snap-mode3/src/index.js` 의 `onRpcRequest` 를
   물린다. 그래서 `chain` 과 그룹을 나눴다. **Snap 경로(`snap-mode3/`, `mode3/wallet.html`, `mode3/rp.html`, 에이전트의 snap 분기)를
   건드렸으면 이 그룹도 돌린다.**
+- `node scripts/screenshot_mode3.mjs` — 테스트는 아니고 **화면 캡처**다. `browser` 그룹과 같은 전제(:8545,
+  `build/mode3`, Chrome)로 격리 스택을 file 모드로 띄워 네 페이지를 ko·en·전문가(+좁은 창)로 찍는다. 기본 출력은
+  `results/mode3_ux_20260924/`(`--out` 으로 바꾼다). 끝나면 스택과 브라우저를 내린다.
 - `bash scripts/run_tests.sh snap` — Snap RPC 9종의 단위 테스트(`snap-mode3/test/rpc.test.mjs`, 전역 `snap` 객체를 스텁).
   체인도 브라우저도 필요 없지만 `snap-mode3/node_modules` 를 전제하므로(`cd snap-mode3 && npm install`) `unit` 이 아니라
   별도 그룹이다. `node snap-mode3/test/rpc.test.mjs` 로 직접 돌려도 같다.
