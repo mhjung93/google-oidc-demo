@@ -22,7 +22,8 @@ include "lib/mode3_trace_tag.circom";
 //   ① CIA가 (Cf_u, Cf_s, max_height, chainid, allowAgent)에 서명했다 — 없으면 아무나 credential을 만든다
 //   ② C_s 안에 이 pk_i·arid 가 있다                — 없으면 남의 π를 주워 자기 키로 서명해 완전 사칭
 //   ③ PPID = Poseidon(uid, s_u, chainid, arid) — 없으면 지갑 주소를 특정할 수 없다
-//   ④ Poseidon(TAG=4, Cf_u) 가 폐기 트리에 없다     — 없으면 폐기가 무의미. 리프는 C_u 에서만 뽑는다(세션이 아니라 사용자당 하나)
+//   ④ Poseidon(TAG=4, Cf_u) 가 폐기 트리에 없다     — 없으면 폐기가 무의미. 이 리프는 C_u 에서 뽑아 사용자당 하나다 — 하나로 그 사용자의 모든 세션이 함께 죽는다
+//   ④′ Poseidon(TAG=5, Cf_s) 가 같은 트리에 없다 — 세션 단위 폐기(V8, 2026-09-24)
 //   ⑤ tag = Enc(pk_trace, uid) 가 잘 만들어졌다  — 없으면 개봉이 엉뚱한 값을 연다 (2026-09-16 §4)
 //
 //   attrs[4] 는 C_u 에만 실린다 — CIA 는 값을 모르고(설계 2026-09-14 §2) 이 회로는 술어를 검증하지 않는다.

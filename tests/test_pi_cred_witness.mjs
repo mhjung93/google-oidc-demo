@@ -279,11 +279,25 @@ await t('V8 음성: 내 세션 리프 Poseidon(5, Cf_s) 가 트리에 있으면 
   await fx.tree.insert(await sessionLeaf(fx.Cf_s));
   await assert.rejects(() => witness({ ...fx.input, revRoot: fx.tree.getRoot().toString() }), /Assert Failed/);
 });
+await t('V8 대조군: 세션이 폐기되지 않았으면 사용자 증인을 두 자리에 넣어도 통과한다', async () => {
+  // 아래 거부 케이스의 대조군이다. 폐기 전에는 두 비멤버십 증인이 같은 구간(leaf(4,999) → ∞)을
+  // 가리켜 값이 아예 동일하다 — 그러므로 "사용자 증인을 세션 자리에 넣는" 것 자체는 정상 입력이고
+  // 거부되면 오히려 버그다. 거부를 만드는 것은 바꿔치기가 아니라 세션 폐기 그 자체임을 보인다.
+  const fx = await buildValidInput();
+  await witness({
+    ...fx.input,
+    s_lowValue: fx.input.lowValue, s_lowNextIndex: fx.input.lowNextIndex, s_lowNextValue: fx.input.lowNextValue,
+    s_pathElements: fx.input.pathElements, s_pathIndices: fx.input.pathIndices,
+  });
+});
 await t('V8 음성: 세션 폐기 후 사용자 증인을 세션 증인 자리에 넣어도 거부 (④ 는 통과, ④′ 가 잡는다)', async () => {
-  // 폐기되지 않은 상태에서는 두 증인이 같은 구간(leaf(4,999) → ∞)을 가리켜 값이 아예 동일하다 —
-  // 그래서 "바꿔치기" 자체는 정상 입력이며 거부될 수 없다. 실제 공격은 세션이 폐기된 뒤다:
-  // 사용자 리프는 여전히 트리에 없으므로 ④ 용 증인은 새 root 에서도 멀쩡하다. 그 멀쩡한 증인을
-  // 세션 자리에 그대로 밀어 넣어도 ④′ 가 거부해야 한다.
+  // 실제 공격은 세션이 폐기된 뒤다: 사용자 리프는 여전히 트리에 없으므로 ④ 용 증인은 새 root 에서도
+  // 멀쩡하게 다시 만들 수 있다. 그 멀쩡한 증인을 세션 자리에 그대로 밀어 넣어도 ④′ 가 거부해야 한다.
+  //
+  // 거부는 값 순서와 무관하다: sessionLeaf(Cf_s) 는 이제 트리의 **원소**고, 진짜 비멤버십 증인은
+  // 어느 것도 원소를 증명할 수 없다 — 실제 리프가 여는 구간 (low, next) 는 열린 구간이라 자기
+  // 경계값을 품지 못하고, 센티널 구간(lowNextValue == 0, 최대 리프)도 그 리프보다 큰 값만 품는다.
+  // 어떤 증인을 들이밀어도 ④′ 가 거부한다.
   const fx = await buildValidInput();
   await fx.tree.insert(await sessionLeaf(fx.Cf_s));   // 내 세션만 폐기
   const wu = await fx.tree.getNonMembershipWitness(await userLeaf(fx.Cf_u));
