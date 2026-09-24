@@ -4,51 +4,96 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="same-origin" />
-  <title>Mode 3 RP</title>
+  <!-- 제목의 "Mode 3 로그인" 은 tests/test_mode3_demo_stack.mjs 의 페이지 서빙 검사 marker 다. -->
+  <title>Mode 3 로그인 (서비스)</title>
+  <link rel="stylesheet" href="/common/demo.css" />
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 760px; margin: 24px auto; padding: 0 16px; }
-    fieldset { border: 2px solid #1976d2; margin-bottom: 16px; }
-    pre { background: #f6f6f6; padding: 10px; white-space: pre-wrap; font-size: 0.85em; }
-    .ok { color: #2e7d32; font-weight: bold; } .bad { color: #c62828; font-weight: bold; }
-    .muted { color: #666; font-size: 0.9em; }
+    /* 전문가 보기의 원문 로그는 공백 없는 긴 JSON 한 덩어리다 — 격자 칸(min-width:auto)이 그만큼 늘어나
+       페이지가 가로로 커진다. 칸이 줄 수 있게 하고 긴 토큰을 칸 안에서 끊는다. */
+    .card { min-width: 0 }
+    .card pre, .verdict pre { overflow-wrap: anywhere }
+    /* 사전에 없는 사유 코드는 제목 바로 뒤에 <code> 로 붙는다 — 붙어 읽히지 않게 사이를 띄운다. */
+    .verdict > code { margin-left: 6px }
+    /* tx hash 칸(size=66)이 좁은 창에서 가로 스크롤을 만들지 않게 한다. */
+    .card input { max-width: 100% }
   </style>
+  <script src="/common/strings.js"></script>
+  <script src="/common/demo.js"></script>
 </head>
-<body>
-  <h2>Mode 3 로그인 (RP)</h2>
-  <p class="muted" id="rpInfo">RP 정보 불러오는 중…</p>
-  <p class="muted" id="attrGateInfo">-</p>
-  <p class="muted" id="walletMode">지갑 비밀 모드 확인 중…</p>
+<body data-page="rp">
+  <header id="demoBar"></header>
+  <main class="cards">
+    <section class="card span2">
+      <h3 data-i18n="rp_status_title">서비스 상태</h3>
+      <p><span id="rpStatusBadge" class="badge">확인 중…</span> <span id="walletMode" class="badge">지갑 비밀 모드 확인 중…</span></p>
+      <p id="rpInfo" class="muted">서비스 정보를 불러오는 중…</p>
+      <p id="walletModeNote" class="muted"></p>
+      <p id="attrGateInfo" class="muted">-</p>
+      <p id="rpInfoExpert" class="muted expert"></p>
+    </section>
 
-  <fieldset>
-    <legend>로그인</legend>
-    <label><input type="checkbox" id="allowAgent" /> 이번 세션에서 AI agent 동작 허용 (allowAgent, 덱 22장)</label><br />
-    <label><input type="checkbox" id="requirePred" /> 속성 술어 요구(V7): 국가 ∈ 허용 집합, 올해 − 출생연도 ≥ minAge</label><br />
-    <button id="loginBtn">Mode 3 로그인</button>
-    <p id="verdict"></p>
-    <pre id="log"></pre>
-  </fieldset>
+    <section class="card">
+      <h3 data-i18n="rp_login_title">로그인</h3>
+      <p class="desc" data-i18n="rp_login_desc">지갑이 신원 기관의 서명과 영지식 증명으로 이 서비스 전용 주소를 만듭니다. 신원 기관은 어느 서비스인지 모릅니다.</p>
+      <label><input type="checkbox" id="allowAgent" /> <span data-term="allowAgent">AI 에이전트 허용</span></label><br />
+      <label><input type="checkbox" id="requirePred" /> <span id="requirePredLabel" data-i18n="rp_require_pred">조건 요구(국가·나이)</span></label><br />
+      <p><button id="loginBtn" data-i18n="rp_login_btn">로그인</button></p>
+      <div id="verdict"></div>
+      <pre id="log" class="expert"></pre>
+    </section>
 
-  <fieldset>
-    <legend>세션 (로그인 뒤에 활성화)</legend>
-    <p class="muted">현재 세션 r_s: <code id="sessionId">(없음)</code></p>
-    <button id="revalidateBtn" disabled>세션 재검증</button>
-    <label><input type="checkbox" id="skipSync" /> 동기화 생략(캐시된 π 재사용) — 폐기 후 <code>stale_root</code> 거절 시연</label>
-    <br />
-    <button id="requestBtn" disabled>세션 요청 (body: "hello")</button>
-    <p id="sessionVerdict"></p>
-    <pre id="sessionLog"></pre>
-  </fieldset>
+    <section class="card">
+      <h3 data-i18n="rp_session_title">내 세션</h3>
+      <p class="desc" data-i18n="rp_session_desc">로그인 뒤에 활성화됩니다. 재검증은 이 세션이 아직 폐기되지 않았음을 다시 보입니다.</p>
+      <dl class="kv"><dt data-term="session">로그인 세션</dt><dd><code id="sessionId">(없음)</code></dd></dl>
+      <p>
+        <button id="revalidateBtn" disabled data-i18n="rp_reval_btn">세션 재검증</button>
+        <button id="requestBtn" disabled data-i18n="rp_request_btn">세션 요청 보내기</button>
+      </p>
+      <label class="expert"><input type="checkbox" id="skipSync" /> skipSync (stale_root 시연)</label>
+      <div id="sessionVerdict"></div>
+      <pre id="sessionLog" class="expert"></pre>
+    </section>
 
-  <fieldset>
-    <legend>이 RP 에 기록된 로그인 <button id="refreshLogins">새로고침</button></legend>
-    <pre id="logins">-</pre>
-    <p class="muted">개봉 요청(설계 2026-09-16 §6): PPID <input id="openPpid" size="24" /> <button id="openBtn">요청</button> <button id="openPollBtn" disabled>결과 확인</button></p>
-    <p class="muted">해시로 개봉(트랜잭션은 지갑 페이지에서 보낸다): <input id="openTx" size="66" placeholder="0x…" /> <button id="openTxBtn">요청</button></p>
-    <pre id="openLog">-</pre>
-  </fieldset>
+    <section class="card span2">
+      <h3 data-i18n="rp_logins_title">로그인 기록</h3>
+      <p class="desc" data-i18n="rp_logins_desc">이 서비스에 남은 기록입니다. 서비스는 누구인지 모르고 이 주소만 압니다.</p>
+      <p><button id="refreshLogins" class="btn-ghost" data-i18n="refresh">새로고침</button></p>
+      <div id="logins"></div>
+    </section>
+
+    <section class="card span2">
+      <h3 data-i18n="rp_open_title">승인 개봉</h3>
+      <p class="desc" data-i18n="rp_open_desc">서비스와 신원 기관이 함께, 운영자 승인 아래에서만 사용자를 알아냅니다.</p>
+      <p>
+        <label><span data-term="PPID">이 서비스에서의 내 주소</span> <input id="openPpid" size="24" /></label>
+        <button id="openBtn" data-i18n="rp_open_req">개봉 요청</button>
+        <button id="openPollBtn" class="btn-ghost" disabled data-i18n="rp_open_poll">결과 확인</button>
+      </p>
+      <p>
+        <label>tx hash <input id="openTx" size="66" placeholder="0x…" /></label>
+        <button id="openTxBtn" data-i18n="rp_open_tx">해시로 요청</button>
+      </p>
+      <p class="muted expert" data-i18n="rp_open_tx_note">트랜잭션은 지갑 페이지에서 보냅니다(설계 2026-09-16 §6).</p>
+      <div id="openVerdict"></div>
+      <pre id="openLog" class="expert">-</pre>
+    </section>
+  </main>
 
   <script>
     const $ = (id) => document.getElementById(id);
+    // /common 이 뜨지 않아도(404) 페이지는 HTML 의 한국어 기본 텍스트로 계속 돌아간다(설계 §5).
+    const Demo = window.Demo ?? {
+      lang: 'ko', expert: false,
+      t: (k) => k, term: (n) => n, reason: () => null,
+      init() { /* 안내 바 없음 */ }, guide() { /* 안내 바 없음 */ }, setLang() {}, setExpert() {},
+      verdict(el, { ok, title, summary, reason, detail, pending }) {
+        el.className = `verdict ${pending ? 'pending' : ok ? 'ok' : 'bad'}`;
+        const d = detail === undefined ? null : (typeof detail === 'string' ? detail : JSON.stringify(detail));
+        el.textContent = [window.DemoStrings?.verdicts?.[title]?.ko ?? title, summary, reason, d].filter(Boolean).join(' — ');
+      },
+      confirmDanger: (k) => window.confirm(k),
+    };
     let info = null;
     let currentSession = null;
     // 이 세션이 어떤 allowAgent 로 승인됐는지. 재승인(§4.3) 동의 창이 보여 주는 값이라 반드시 세션과 같아야 한다 —
@@ -61,38 +106,101 @@
     // 그 기본값이 실제로 확인된 것인지 — 못 읽었다면 지갑이 snap 모드인데 file 모드로 잘못 보고 /wallet/login 을 직접 부를 수
     // 있다(그 경로에는 CORS 가 없어 브라우저가 막는다). 실패 문구가 원인을 짚도록 이 값을 본다.
     let walletCfgLoaded = false;
+    let walletCfgError = null;              // 못 읽었을 때의 원문(화면·언어 전환에서 다시 쓴다)
+    let lastLogins = [];                    // 마지막으로 받아온 로그인 기록(언어·전문가 전환 때 다시 그린다)
+    let lastPPID = null;                    // 직전 로그인의 PPID — 같은 주소가 다시 나오는지 한 줄 요약에 쓴다
+    const progress = { used: false, disclosed: false, opened: false };   // 이 페이지가 아는 완료 신호(세션 중 메모리)
     const SERVICE_NAME = 'Mode 3 데모 RP';
     const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) });
     const ms = (t0) => `${Date.now() - t0} ms`;
-    /** 지갑·팝업이 준 문자열은 innerHTML 에 넣지 않는다(요청 경로의 echo 와 같은 이유). */
-    function setVerdict(el, ok, text) {
-      el.textContent = '';
-      const sp = document.createElement('span');
-      sp.className = ok ? 'ok' : 'bad';
-      sp.textContent = text;
-      el.appendChild(sp);
-      return sp;
+    const lastVerdict = new Map();          // 결과 카드 → 인자 생성기. 언어·전문가를 바꾸면 같은 인자로 다시 그린다.
+    /**
+     * 결과 카드. title 은 판정 키(사전 verdicts) 또는 ui 키이고, extra 는 객체이거나 — 사전을 읽어 만드는 값이면 —
+     * 그것을 돌려주는 함수다. 사전은 그릴 때 읽으므로 언어 전환이 카드에도 반영된다.
+     * 지갑·팝업·서버가 준 문자열은 전부 textContent 로만 들어간다(Demo.verdict).
+     */
+    function setVerdict(el, ok, title, extra = {}) {
+      const build = () => ({ ok, title: window.DemoStrings?.verdicts?.[title] ? title : Demo.t(title), ...(typeof extra === 'function' ? extra() : extra) });
+      lastVerdict.set(el, build);
+      Demo.verdict(el, build());
+    }
+    const pendingVerdict = (el, key) => setVerdict(el, null, key, { pending: true });
+
+    // ---- 안내 바 ----
+    function renderGuide() {
+      const done = [];
+      if (info?.status === 'approved') done.push('approve');
+      if (currentSession) done.push('login');
+      if (progress.used) done.push('use');
+      if (progress.disclosed) done.push('disclose');
+      if (progress.opened) done.push('open');
+      const current = info?.status !== 'approved' ? 'approve' : !currentSession ? 'login' : !progress.used ? 'use' : 'open';
+      Demo.guide({ done, current, links: { wallet: info?.walletAgentOrigin, admin: info?.ciaUrl ? `${info.ciaUrl}/admin` : null, account: info?.ciaUrl ? `${info.ciaUrl}/account` : null } });
+    }
+    // 언어·전문가 전환은 사전이 채우는 요소만 바꾼다 — 스크립트가 만든 텍스트(상태·표·세션)는 여기서 다시 그린다.
+    for (const k of ['setLang', 'setExpert']) {
+      const orig = Demo[k];
+      Demo[k] = (v) => {
+        orig(v);
+        renderStatus(); renderSession(); renderLogins();
+        for (const [el, build] of lastVerdict) Demo.verdict(el, build());
+      };
     }
 
+    // ---- 서비스 상태 카드 ----
+    function renderStatus() {
+      if (!info) return;
+      const pending = info.status !== 'approved';
+      const badge = $('rpStatusBadge');
+      badge.className = `badge ${pending ? 'warn' : 'ok'}`;
+      badge.textContent = Demo.t(pending ? 'rp_pending_badge' : 'rp_active_badge');
+      $('rpInfo').textContent = Demo.t(pending ? 'rp_status_pending' : 'rp_status_approved');
+      $('attrGateInfo').textContent = info.attrGateAddress
+        ? Demo.t('rp_policy', { countries: info.predicates.allowedCountries.join(', '), minAge: info.predicates.minAge })
+        : Demo.t('rp_no_attrgate');
+      $('rpInfoExpert').textContent = `arid=${info.arid ?? '-'}   origin=${info.origin}   cert_s=있음   pk_trace=있음   RevocationLog=${info.logAddress}`
+        + `   지갑 에이전트=${info.walletAgentOrigin}   pk_CIA=${info.pkCiaSource}   chainId=${info.chainId}   팩토리=${info.factoryAddress ?? '(없음)'}`
+        + `   AttrGate=${info.attrGateAddress ?? '(없음)'}`;
+      renderWalletMode();
+    }
+    /** 지갑 비밀 모드 배지. '지갑 비밀=snap' 은 browser 테스트가 잡는 문구이고, Snap id 는 전문가 줄로 함께 남긴다. */
+    function renderWalletMode() {
+      const el = $('walletMode');
+      el.textContent = '';
+      const note = $('walletModeNote');
+      if (!walletCfgLoaded && !walletCfgError) { el.className = 'badge'; el.textContent = Demo.t('rp_wallet_checking'); note.textContent = ''; return; }
+      if (walletCfgError) {
+        el.className = 'badge warn';
+        el.textContent = Demo.t('rp_wallet_unknown');
+        note.textContent = Demo.t('rp_wallet_unknown_note', { url: `${info?.walletAgentOrigin ?? '?'}/wallet/config`, err: walletCfgError });
+        return;
+      }
+      const snap = walletCfg.secrets === 'snap';
+      el.className = 'badge';
+      el.appendChild(document.createTextNode(Demo.t(snap ? 'rp_wallet_snap' : 'rp_wallet_file')));
+      if (snap) { const sp = document.createElement('span'); sp.className = 'expert'; sp.textContent = ` (Snap=${walletCfg.snapId})`; el.appendChild(sp); }
+      note.textContent = Demo.t(snap ? 'rp_wallet_snap_note' : 'rp_wallet_file_note');
+    }
+
+    function renderSession() {
+      $('sessionId').textContent = currentSession ? `${currentSession.slice(0, 12)}…` : Demo.t('none');
+    }
     function setSession(r_s, allowAgent = null) {
       currentSession = r_s;
       currentSessionAllowAgent = r_s ? allowAgent : null;
-      $('sessionId').textContent = r_s ? `${r_s.slice(0, 12)}…` : '(없음)';
+      renderSession();
       $('revalidateBtn').disabled = !r_s;
       $('requestBtn').disabled = !r_s;
+      renderGuide();
     }
 
     async function loadInfo() {
       info = await (await fetch('/api/mode3/rp_info')).json();
       const pending = info.status !== 'approved';
-      $('rpInfo').textContent = pending
-        ? `등록 대기 중 (arid=${info.arid ?? '-'}) — CIA 관리자 페이지(/admin)에서 승인하면 활성화된다. 5초마다 확인.`
-        : `arid=${info.arid}   origin=${info.origin}   cert_s=있음   pk_trace=있음   RevocationLog=${info.logAddress}   지갑 에이전트=${info.walletAgentOrigin}   pk_CIA=${info.pkCiaSource}   chainId=${info.chainId}   팩토리=${info.factoryAddress ?? '(없음)'}`;
-      $('attrGateInfo').textContent = info.attrGateAddress
-        ? `AttrGate=${info.attrGateAddress}   정책: 국가(a₁) ∈ {${info.predicates.allowedCountries.join(', ')}}, 올해 − 출생연도(a₀) ≥ ${info.predicates.minAge}`
-        : 'AttrGate 없음(팩토리 미배포)';
+      renderStatus();
       $('loginBtn').disabled = pending;
       await loadWalletConfig();
+      renderGuide();
       if (pending) setTimeout(loadInfo, 5000);
     }
     // 지갑의 비밀 모드는 rp_info 에 없다 — 지갑 에이전트에 직접 묻는다(GET /wallet/config, RP 오리진에 CORS 허용).
@@ -102,21 +210,66 @@
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         walletCfg = { secrets: 'file', ...(await r.json()) };
         walletCfgLoaded = true;
+        walletCfgError = null;
       } catch (e) {
         walletCfg = { secrets: 'file' };
         walletCfgLoaded = false;
-        $('walletMode').textContent = `지갑 설정(${info.walletAgentOrigin}/wallet/config)을 못 읽었다(${e.message}) — 일단 file 모드로 본다. `
-          + '지갑 에이전트가 떠 있는지 확인하세요 — 지갑이 실제로 snap 모드라면 로그인이 CORS 로 막힌다.';
+        walletCfgError = e.message;
+      }
+      renderWalletMode();
+    }
+
+    // ---- 로그인 기록 표 ----
+    /** 공개된 속성 조건을 사람 말로. 슬롯 비트(mask)는 범위, set.sel 은 슬롯+1 이다(lib/mode3_wallet.js normalizeSet). */
+    function discSummary(d) {
+      if (!d || (d.mask === '0' && !d.set)) return Demo.t('rp_disc_none');
+      const parts = [];
+      const mask = Number(d.mask);
+      for (let i = 0; i < 4; i++) if (mask & (1 << i)) parts.push(Demo.t('rp_disc_range', { attr: Demo.term(`attr${i}`), lo: d.lo[i], hi: d.hi[i] }));
+      if (d.set) parts.push(Demo.t('rp_disc_set', { attr: Demo.term(`attr${Number(d.set.sel) - 1}`) }));
+      return parts.join(', ');
+    }
+    const fmtAt = (at) => { const t = new Date(at); return Number.isNaN(t.getTime()) ? at : t.toLocaleString(Demo.lang === 'en' ? 'en-US' : 'ko-KR'); };
+    function renderLogins() {
+      const host = $('logins');
+      host.textContent = '';
+      if (!lastLogins.length) {
+        const p = document.createElement('p'); p.className = 'muted'; p.textContent = Demo.t('rp_no_logins'); host.appendChild(p);
         return;
       }
-      $('walletMode').textContent = walletCfg.secrets === 'snap'
-        ? `지갑 비밀=snap — 로그인은 지갑 승인 팝업으로 간다(Snap=${walletCfg.snapId}).`
-        : '지갑 비밀=file — 로그인은 지갑 에이전트를 직접 부른다(기존 경로).';
+      const table = document.createElement('table');
+      table.className = 'list';
+      const head = table.createTHead().insertRow();
+      for (const k of ['rp_col_time', 'rp_col_address', 'rp_col_disclosure', 'rp_col_agent', 'rp_col_action']) {
+        const th = document.createElement('th'); th.textContent = Demo.t(k); head.appendChild(th);
+      }
+      const body = table.createTBody();
+      for (const l of lastLogins) {
+        const row = body.insertRow();
+        const at = row.insertCell(); at.textContent = fmtAt(l.at); at.title = l.at;
+        const addr = row.insertCell();
+        const code = document.createElement('code');
+        code.textContent = `${l.PPID.slice(0, 10)}…`;
+        if (Demo.expert) code.title = l.PPID;          // 전문가 보기에서만 전체 값을 붙인다
+        addr.appendChild(code);
+        row.insertCell().textContent = discSummary(l.disclosure);
+        const agent = row.insertCell();
+        const b = document.createElement('span');
+        b.className = `badge ${l.allowAgent === '1' ? 'ok' : 'muted'}`;
+        b.textContent = Demo.t(l.allowAgent === '1' ? 'rp_agent_yes' : 'rp_agent_no');
+        agent.appendChild(b);
+        const act = row.insertCell();
+        const btn = document.createElement('button');
+        btn.type = 'button'; btn.className = 'btn-ghost'; btn.textContent = Demo.t('rp_open_req');
+        btn.addEventListener('click', () => { $('openPpid').value = l.PPID; $('openBtn').click(); });
+        act.appendChild(btn);
+      }
+      host.appendChild(table);
     }
     async function refreshLogins() {
       const { logins } = await (await fetch('/api/mode3/logins')).json();
-      const discOf = (l) => l.disclosure && (l.disclosure.mask !== '0' || l.disclosure.set) ? `  disclose(mask=${l.disclosure.mask}): lo=${l.disclosure.lo.join(',')} hi=${l.disclosure.hi.join(',')}${l.disclosure.set ? ` set(sel=${l.disclosure.set.sel}, root=${l.disclosure.set.root.slice(0, 10)}…)` : ''}` : '';
-      $('logins').textContent = logins.length ? logins.map((l) => `${l.at}  PPID=${l.PPID}  r_s=${l.r_s ?? ''}  root=${l.root.slice(0, 18)}…  allowAgent=${l.allowAgent}${discOf(l)}`).join('\n') : '(없음)';
+      lastLogins = logins ?? [];
+      renderLogins();
     }
     // ---- 지갑 승인 팝업(스펙 2026-09-22 metamask-snap §3.4·§4.2·§4.3) ----
     // snap 모드에서는 /wallet/login 에 CORS 가 없다. RP 페이지가 지갑 오리진의 팝업을 열고, 팝업이 Snap 동의를 받아
@@ -128,6 +281,8 @@
     // 이미 큐에 있는 결과 메시지를 받을 수 있게 이만큼 기다렸다가 "결과 없이 닫혔다"로 판정한다.
     const POPUP_RESULT_GRACE_MS = 400;
     const popupError = (reason, message) => Object.assign(new Error(message), { reason });
+    // 팝업이 실패한 까닭별 한 줄 안내(사전 키). 사유 코드 자체는 결과 카드가 코드 그대로 함께 보인다.
+    const POPUP_HINT = { popup_blocked: 'rp_popup_blocked_hint', timeout: 'rp_popup_timeout', popup_closed: 'rp_popup_closed' };
     function authorizeViaPopup(request) {
       const walletOrigin = info.walletAgentOrigin;
       // 창 이름은 r_s 로 가른다 — 이름이 고정이면 로그인 팝업이 떠 있는 동안 다른 세션의 재승인(409)이 그 창을 재사용한다.
@@ -170,7 +325,8 @@
     });
 
     $('loginBtn').addEventListener('click', async () => {
-      $('loginBtn').disabled = true; $('verdict').textContent = ''; $('log').textContent = '';
+      $('loginBtn').disabled = true; $('log').textContent = '';
+      pendingVerdict($('verdict'), 'working');
       const log = (s) => { $('log').textContent += s + '\n'; };
       try {
         if (!info) await loadInfo();
@@ -185,7 +341,7 @@
         // 사유 대신 "Cannot read properties of undefined" 만 보인다(2026-09-23 최종 리뷰 M3). 본문의 reason 을 보여 주고 멈춘다.
         if (!ch.ok || !ch.r_s) {
           log(`1. 챌린지 실패 ${ms(t0)}: ${JSON.stringify(ch)}`);
-          setVerdict($('verdict'), false, `로그인 불가: ${ch.reason ?? 'challenge_failed'}`);
+          setVerdict($('verdict'), false, 'login_failed', { reason: ch.reason ?? 'challenge_failed', detail: ch });
           return;
         }
         const { r_s, factoryAddress, attrGateAddress } = ch;
@@ -193,6 +349,7 @@
 
         const allowAgent = $('allowAgent').checked ? '1' : '0';
         t0 = Date.now();
+        pendingVerdict($('verdict'), 'proving');
         let wb;
         if (walletCfg.secrets === 'snap') {
           log('2. 지갑 승인 팝업 — 지갑 창에서 MetaMask·Snap 동의를 확인하세요.');
@@ -201,12 +358,13 @@
             result = await authorizeViaPopup(authorizeRequest({ r_s, allowAgent, factoryAddress, attrGateAddress, disclose: pred?.disclose ?? null, set: pred?.set ?? null }));
           } catch (e) {
             log(`2. 팝업 ${ms(t0)}: ${e.reason ?? ''} ${e.message}`);
-            setVerdict($('verdict'), false, `로그인 실패 — ${e.message}`);
+            setVerdict($('verdict'), false, e.reason === 'popup_blocked' ? 'popup_blocked' : 'login_failed',
+              () => ({ summary: POPUP_HINT[e.reason] ? Demo.t(POPUP_HINT[e.reason]) : e.message, reason: e.reason, detail: e.message }));
             return;
           }
           if (!result.ok) {
             log(`2. 팝업 ${ms(t0)}: ${result.reason ?? ''} ${result.detail ?? ''}`);
-            setVerdict($('verdict'), false, `로그인 실패 — 지갑: ${result.reason ?? '알 수 없음'}`);
+            setVerdict($('verdict'), false, 'login_failed', { reason: result.reason ?? 'internal', detail: result });
             return;
           }
           wb = result;
@@ -215,7 +373,7 @@
           wb = await w.json().catch(() => ({}));
           if (w.status !== 200) {
             log(`2. 지갑 ${w.status} ${ms(t0)}: ${wb.reason ?? wb.error ?? ''} ${wb.detail ?? ''}`);
-            setVerdict($('verdict'), false, `로그인 실패 — 지갑: ${wb.reason ?? w.status}`);
+            setVerdict($('verdict'), false, 'login_failed', { reason: wb.reason ?? `HTTP ${w.status}`, detail: wb });
             return;
           }
         }
@@ -226,25 +384,32 @@
         const r = await post('/api/mode3/login', { proof: wb.proof, publicSignals: wb.publicSignals, sig: wb.sig, r_s, require: pred?.require ?? null });
         const rb = await r.json();
         log(`3. RP 검증 ${ms(t0)}: ${JSON.stringify(rb)}\n   allowAgent=${rb.allowAgent}`);
-        const discTxt = rb.ok && rb.disclosure && (rb.disclosure.mask !== '0' || rb.disclosure.set)
-          ? ` 공개(mask=${rb.disclosure.mask}): lo=${rb.disclosure.lo.join(',')} hi=${rb.disclosure.hi.join(',')}${rb.disclosure.set ? ` set(sel=${rb.disclosure.set.sel}, root=${rb.disclosure.set.root.slice(0, 10)}…)` : ''}` : '';
         if (rb.ok) {
-          setVerdict($('verdict'), true, '로그인 성공');
-          $('verdict').appendChild(document.createTextNode(` PPID=${rb.PPID}${discTxt}`));
-        } else setVerdict($('verdict'), false, `거절: ${rb.reason}`);
+          const same = lastPPID !== null && lastPPID === rb.PPID;
+          lastPPID = rb.PPID;
+          const disclosed = rb.disclosure && (rb.disclosure.mask !== '0' || rb.disclosure.set);
+          setVerdict($('verdict'), true, 'login_ok', () => ({
+            summary: Demo.t(same ? 'rp_login_same_ppid' : 'rp_login_new_ppid')
+              + (disclosed ? ` ${Demo.t('rp_disclosed', { what: discSummary(rb.disclosure) })}` : ''),
+            detail: rb,
+          }));
+          if (pred?.require) progress.disclosed = true;
+        } else setVerdict($('verdict'), false, 'login_failed', { reason: rb.reason ?? 'internal', detail: rb });
         setSession(rb.ok ? rb.r_s : null, rb.ok ? rb.allowAgent : null);
         if (rb.ok) $('openPpid').value = rb.PPID;
         refreshLogins();
       } catch (e) {
         log(`오류: ${e.message}`);
-        setVerdict($('verdict'), false, walletCfgLoaded
-          ? `오류 — ${e.message}`
-          : `오류 — 지갑 설정(/wallet/config)을 못 읽어 비밀 모드를 모른다. 지갑 에이전트(${info?.walletAgentOrigin ?? '?'})를 확인하세요.`);
+        setVerdict($('verdict'), false, 'login_failed', () => ({
+          summary: walletCfgLoaded ? e.message : Demo.t('rp_error_wallet_cfg', { origin: info?.walletAgentOrigin ?? '?' }),
+          detail: e.message,
+        }));
       } finally { $('loginBtn').disabled = false; }
     });
 
     $('revalidateBtn').addEventListener('click', async () => {
-      $('revalidateBtn').disabled = true; $('sessionVerdict').textContent = ''; $('sessionLog').textContent = '';
+      $('revalidateBtn').disabled = true; $('sessionLog').textContent = '';
+      pendingVerdict($('sessionVerdict'), 'proving');
       const log = (s) => { $('sessionLog').textContent += s + '\n'; };
       try {
         const skipSync = $('skipSync').checked;
@@ -259,7 +424,7 @@
           // 재승인 동의 창은 이 세션이 실제로 가진 allowAgent 를 보여 줘야 한다. 모르면(페이지 새로고침 등) 진행하지 않는다.
           if (currentSessionAllowAgent !== '0' && currentSessionAllowAgent !== '1') {
             log(`세션 증인이 없는데 이 세션의 allowAgent 를 모른다(allowAgent=${currentSessionAllowAgent}).`);
-            setVerdict($('sessionVerdict'), false, '재승인 불가 — 이 페이지는 세션의 AI agent 허용 여부를 모른다. 다시 로그인하세요.');
+            setVerdict($('sessionVerdict'), false, 'reauth_denied', () => ({ summary: Demo.t('rp_reauth_unknown') }));
             return;
           }
           log(`세션 증인이 없다(지갑 재시작) — 재승인 팝업을 연다(allowAgent=${currentSessionAllowAgent}).`);
@@ -268,12 +433,13 @@
             result = await authorizeViaPopup(authorizeRequest({ r_s: currentSession, reauth: true, allowAgent: currentSessionAllowAgent }));
           } catch (e) {
             log(`재승인 팝업 ${ms(t0)}: ${e.reason ?? ''} ${e.message}`);
-            setVerdict($('sessionVerdict'), false, `재검증 실패 — ${e.message}`);
+            setVerdict($('sessionVerdict'), false, e.reason === 'popup_blocked' ? 'popup_blocked' : 'reval_failed',
+              () => ({ summary: POPUP_HINT[e.reason] ? Demo.t(POPUP_HINT[e.reason]) : e.message, reason: e.reason, detail: e.message }));
             return;
           }
           if (!result.ok) {
             log(`재승인 거절/실패: ${result.reason ?? ''} ${result.detail ?? ''}`);
-            setVerdict($('sessionVerdict'), false, `재승인 실패 — 지갑: ${result.reason ?? '알 수 없음'}`);
+            setVerdict($('sessionVerdict'), false, 'reval_failed', { reason: result.reason ?? 'internal', detail: result });
             return;
           }
           log('재승인 완료 — 재검증을 다시 시도한다.');
@@ -282,7 +448,7 @@
         }
         if (status !== 200) {
           log(`지갑 ${status} ${ms(t0)}: ${wb.reason ?? wb.error ?? ''}`);
-          setVerdict($('sessionVerdict'), false, `재검증 실패 — 지갑: ${wb.reason ?? status}`);
+          setVerdict($('sessionVerdict'), false, 'reval_failed', { reason: wb.reason ?? `HTTP ${status}`, detail: wb });
           // V8(2026-09-24): revoked_session 은 이 세션 하나만 죽은 것이지만, 서비스 페이지가 할 일은 같다 — 세션을 버린다.
           if (wb.reason === 'revoked' || wb.reason === 'revoked_session') setSession(null);
           return;
@@ -292,15 +458,20 @@
         const r = await post('/api/mode3/revalidate', { proof: wb.proof, publicSignals: wb.publicSignals, sig: wb.sig, r_s: currentSession });
         const rb = await r.json();
         log(`RP 재검증 ${ms(t0)}: ${JSON.stringify(rb)}`);
-        setVerdict($('sessionVerdict'), rb.ok, rb.ok ? '재검증 성공' : `거절: ${rb.reason}`);
+        if (rb.ok) {
+          setVerdict($('sessionVerdict'), true, 'reval_ok', () => ({ summary: Demo.t(wb.cacheHit ? 'rp_reval_cached' : 'rp_reval_fresh'), detail: rb }));
+          progress.used = true;
+          renderGuide();
+        } else setVerdict($('sessionVerdict'), false, 'reval_failed', { reason: rb.reason ?? 'internal', detail: rb });
       } catch (e) {
         log(`오류: ${e.message}`);
-        setVerdict($('sessionVerdict'), false, '오류');
+        setVerdict($('sessionVerdict'), false, 'reval_failed', { summary: e.message, detail: e.message });
       } finally { $('revalidateBtn').disabled = !currentSession; }
     });
 
     $('requestBtn').addEventListener('click', async () => {
-      $('requestBtn').disabled = true; $('sessionVerdict').textContent = ''; $('sessionLog').textContent = '';
+      $('requestBtn').disabled = true; $('sessionLog').textContent = '';
+      pendingVerdict($('sessionVerdict'), 'working');
       const log = (s) => { $('sessionLog').textContent += s + '\n'; };
       try {
         const body = 'hello';
@@ -309,7 +480,7 @@
         const wb = await w.json().catch(() => ({}));
         if (w.status !== 200) {
           log(`지갑 ${w.status} ${ms(t0)}: ${wb.reason ?? wb.error ?? ''}`);
-          setVerdict($('sessionVerdict'), false, `요청 실패 — 지갑: ${wb.reason ?? w.status}`);
+          setVerdict($('sessionVerdict'), false, 'request_failed', { reason: wb.reason ?? `HTTP ${w.status}`, detail: wb });
           return;
         }
         log(`지갑 σ ${ms(t0)}`);
@@ -317,36 +488,60 @@
         const r = await post('/api/mode3/request', { r_s: currentSession, body, sig: wb.sig });
         const rb = await r.json();
         log(`RP 요청 ${ms(t0)}: ${JSON.stringify(rb)}`);
-        // echo 는 서버가 되돌린 요청 본문(자유 문자열)이라 innerHTML 에 넣지 않는다.
-        const sv = $('sessionVerdict');
-        setVerdict(sv, rb.ok, rb.ok ? '요청 성공' : `거절: ${rb.reason}`);
-        if (rb.ok) sv.appendChild(document.createTextNode(` echo=${rb.echo}`));
+        // echo 는 서버가 되돌린 요청 본문(자유 문자열)이라 결과 카드의 textContent 로만 들어간다.
+        if (rb.ok) {
+          setVerdict($('sessionVerdict'), true, 'request_ok', () => ({ summary: Demo.t('rp_request_echo', { echo: rb.echo }), detail: rb }));
+          progress.used = true;
+          renderGuide();
+        } else setVerdict($('sessionVerdict'), false, 'request_failed', { reason: rb.reason ?? 'internal', detail: rb });
       } catch (e) {
         log(`오류: ${e.message}`);
-        setVerdict($('sessionVerdict'), false, '오류');
+        setVerdict($('sessionVerdict'), false, 'request_failed', { summary: e.message, detail: e.message });
       } finally { $('requestBtn').disabled = !currentSession; }
     });
 
     let openingId = null;
-    $('openBtn').addEventListener('click', async () => {
-      const PPID = $('openPpid').value.trim();
-      const r = await post('/api/mode3/open', { PPID }); const b = await r.json().catch(() => ({}));
-      $('openLog').textContent = `요청 → ${r.status} ${JSON.stringify(b)}`;
-      openingId = b.id ?? null; $('openPollBtn').disabled = !openingId;
-    });
-    $('openTxBtn').addEventListener('click', async () => {
-      const txHash = $('openTx').value.trim();
-      const r = await post('/api/mode3/open', { txHash }); const b = await r.json().catch(() => ({}));
-      $('openLog').textContent = `요청 → ${r.status} ${JSON.stringify(b)}`;
-      openingId = b.id ?? null; $('openPollBtn').disabled = !openingId;
-    });
+    /** 개봉 요청(PPID 또는 tx hash). 원문 로그는 지금처럼 #openLog 에 그대로 남긴다. */
+    async function requestOpening(body) {
+      pendingVerdict($('openVerdict'), 'working');
+      try {
+        const r = await post('/api/mode3/open', body);
+        const b = await r.json().catch(() => ({}));
+        $('openLog').textContent = `요청 → ${r.status} ${JSON.stringify(b)}`;
+        openingId = b.id ?? null;
+        $('openPollBtn').disabled = !openingId;
+        if (r.ok && openingId) setVerdict($('openVerdict'), true, 'rp_open_requested_title', () => ({ summary: Demo.t('rp_open_requested'), detail: b }));
+        else setVerdict($('openVerdict'), false, 'rp_open_failed', { reason: b.reason ?? b.error ?? `HTTP ${r.status}`, detail: b });
+      } catch (e) {
+        $('openLog').textContent = `요청 오류: ${e.message}`;
+        setVerdict($('openVerdict'), false, 'rp_open_failed', { summary: e.message, detail: e.message });
+      }
+    }
+    $('openBtn').addEventListener('click', () => requestOpening({ PPID: $('openPpid').value.trim() }));
+    $('openTxBtn').addEventListener('click', () => requestOpening({ txHash: $('openTx').value.trim() }));
     $('openPollBtn').addEventListener('click', async () => {
-      const r = await fetch(`/api/mode3/open/${openingId}`); const b = await r.json().catch(() => ({}));
-      $('openLog').textContent += `\n결과 → ${r.status} ${JSON.stringify(b)}`;
-      if (b.allowAgent != null) $('openLog').textContent += `\nAI agent ${b.allowAgent === '1' ? '허용됨' : '허용 안 됨'}`;
+      pendingVerdict($('openVerdict'), 'working');
+      try {
+        const r = await fetch(`/api/mode3/open/${openingId}`);
+        const b = await r.json().catch(() => ({}));
+        $('openLog').textContent += `\n결과 → ${r.status} ${JSON.stringify(b)}`;
+        if (b.allowAgent != null) $('openLog').textContent += `\nAI agent ${b.allowAgent === '1' ? '허용됨' : '허용 안 됨'}`;
+        if (r.status === 202) { setVerdict($('openVerdict'), null, 'rp_open_awaiting', { pending: true, detail: b }); return; }
+        if (r.ok && b.uid) {
+          setVerdict($('openVerdict'), true, 'rp_open_result_title', () => ({
+            summary: Demo.t('rp_open_result', { uid: b.uid, agent: Demo.t(b.allowAgent === '1' ? 'rp_agent_yes' : 'rp_agent_no') }), detail: b,
+          }));
+          progress.opened = true;
+          renderGuide();
+        } else setVerdict($('openVerdict'), false, 'rp_open_failed', { reason: b.reason ?? b.error ?? b.status ?? `HTTP ${r.status}`, detail: b });
+      } catch (e) {
+        $('openLog').textContent += `\n결과 오류: ${e.message}`;
+        setVerdict($('openVerdict'), false, 'rp_open_failed', { summary: e.message, detail: e.message });
+      }
     });
 
     $('refreshLogins').addEventListener('click', refreshLogins);
+    Demo.init({ page: 'rp' });
     loadInfo().then(refreshLogins);
   </script>
 </body>
