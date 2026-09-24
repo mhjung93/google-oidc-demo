@@ -18,7 +18,7 @@ const NEEDLES = { login_ok: '로그인 성공', registered: '등록됨', tx_ok: 
 // 문서(docs/MODE3_DEMO.md)에 있는 사유 코드 — 전부 ko·en 세 줄(title·cause·action)이 있어야 한다.
 const REASONS = ['stale_root', 'root_too_old', 'revalidate_required', 'predicate_unmet', 'factory_constants_unavailable', 'registration_pending', 'bad_signature', 'bad_rp_cert', 'bad_proof', 'expired', 'malformed',
   'revoked', 'revoked_session', 'account_disabled', 'needs_consent', 'bad_factory', 'no_code', 'factory_code_mismatch', 'verifier_code_mismatch', 'allow_agent_mismatch', 'no_session', 'not_registered', 'cia_unavailable', 'witness_required', 'internal',
-  'user_denied', 'snap_unavailable', 'wallet_error', 'unknown_session', 'no_user_cred'];
+  'user_denied', 'snap_unavailable', 'wallet_error', 'unknown_session', 'no_user_cred', 'user_cred_retired'];
 
 t('langs 는 ko, en', () => assert.deepEqual(S.langs, ['ko', 'en']));
 t('steps 는 7개, 키 고유, 순서 approve→register→login→use→disclose→revoke→open, 각 언어에 title·hint', () => {

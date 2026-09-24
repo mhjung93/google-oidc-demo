@@ -28,18 +28,22 @@
         el.title = s[D.lang].hint; el.innerHTML = `<span class="n">${i + 1}</span><span class="label"></span>`; el.querySelector('.label').textContent = s[D.lang].title; stepsEl.appendChild(el);
       });
       const next = bar.querySelector('.bar-next'); next.innerHTML = '';
+      const seen = new Set();   // 이미 붙인 링크 — URL 을 CSS 선택자에 끼워 넣지 않는다(따옴표가 든 URL 이면 선택자가 깨진다)
       const cur = S.steps.find((s) => s.key === g.current);
       if (cur) {
         const p = document.createElement('p'); p.className = 'hint'; p.textContent = cur[D.lang].hint; next.appendChild(p);
         const whereKey = cur.where.includes(D.page) ? D.page : cur.where[0];
         const q = document.createElement('p'); q.className = 'next';
         q.textContent = D.t('bar_next', { where: D.t(`where_${whereKey}`), what: D.t(g.hint || `hint_${cur.key}`) }); next.appendChild(q);
-        if (whereKey !== D.page && g.links?.[whereKey]) { const a = document.createElement('a'); a.className = 'btn'; a.href = g.links[whereKey]; a.target = '_blank'; a.rel = 'noopener'; a.textContent = D.t(`go_${whereKey}`); next.appendChild(a); }
+        // 이 페이지에서 끝나는 단계가 아니면 "다른 창에서 진행"을 함께 보인다(설계 §2.1).
+        if (whereKey !== D.page) { const b = document.createElement('span'); b.className = 'badge muted'; b.textContent = D.t('bar_other_window'); next.appendChild(b); }
+        if (whereKey !== D.page && g.links?.[whereKey]) { const a = document.createElement('a'); a.className = 'btn'; a.href = g.links[whereKey]; a.target = '_blank'; a.rel = 'noopener'; a.textContent = D.t(`go_${whereKey}`); next.appendChild(a); seen.add(a.href); }
       }
-      for (const [k, url] of Object.entries(g.links || {})) { if (k === D.page || !url) continue; if (next.querySelector(`a[href="${url}"]`)) continue; const a = document.createElement('a'); a.className = 'btn-ghost'; a.href = url; a.target = '_blank'; a.rel = 'noopener'; a.textContent = D.t(`go_${k}`); next.appendChild(a); }
+      for (const [k, url] of Object.entries(g.links || {})) { if (k === D.page || !url) continue; const a = document.createElement('a'); a.className = 'btn-ghost'; a.href = url; if (seen.has(a.href)) continue; a.target = '_blank'; a.rel = 'noopener'; a.textContent = D.t(`go_${k}`); next.appendChild(a); seen.add(a.href); }
     },
     verdict(el, { ok, title, summary, reason, detail, pending }) {
-      el.innerHTML = ''; el.className = 'verdict ' + (pending ? 'pending' : ok ? 'ok' : 'bad');
+      // 페이지가 붙여 둔 다른 클래스(레이아웃·browser 테스트가 잡는 것)를 지우지 않는다 — 판정 클래스만 갈아 끼운다.
+      el.innerHTML = ''; el.classList.add('verdict'); el.classList.remove('ok', 'bad', 'pending'); el.classList.add(pending ? 'pending' : ok ? 'ok' : 'bad');
       const badge = document.createElement('span'); badge.className = 'badge'; badge.textContent = pending ? '…' : ok ? '✓' : '✕'; el.appendChild(badge);
       const h = document.createElement('strong'); h.textContent = S.verdicts[title] ? D.verdictText(title) : (title ?? ''); el.appendChild(h);
       const r = reason ? D.reason(reason) : null;
@@ -51,7 +55,7 @@
     async call(el, hintKey, fn) {
       if (el) D.verdict(el, { pending: true, title: D.t(hintKey || 'working') });
       try { return await fn(); }
-      catch (e) { if (el) D.verdict(el, { ok: false, title: e.title ?? 'error', reason: e.reason, detail: e.detail ?? e.message }); throw e; }
+      catch (e) { if (el) D.verdict(el, { ok: false, title: e.title ?? D.t('error_title'), reason: e.reason, detail: e.detail ?? e.message }); throw e; }
     },
     confirmDanger(key, vars) { return window.confirm(D.t(key, vars)); },
   };
