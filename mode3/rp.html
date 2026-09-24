@@ -71,7 +71,7 @@
         <button id="openPollBtn" class="btn-ghost" disabled data-i18n="rp_open_poll">결과 확인</button>
       </p>
       <p>
-        <label>tx hash <input id="openTx" size="66" placeholder="0x…" /></label>
+        <label><span data-i18n="rp_open_tx_label">트랜잭션 해시</span> <input id="openTx" size="66" placeholder="0x…" /></label>
         <button id="openTxBtn" data-i18n="rp_open_tx">해시로 요청</button>
       </p>
       <p class="muted expert" data-i18n="rp_open_tx_note">트랜잭션은 지갑 페이지에서 보냅니다(설계 2026-09-16 §6).</p>
@@ -83,9 +83,12 @@
   <script>
     const $ = (id) => document.getElementById(id);
     // /common 이 뜨지 않아도(404) 페이지는 HTML 의 한국어 기본 텍스트로 계속 돌아간다(설계 §5).
+    // demo.js 만 빠졌다면 사전(strings.js)은 그대로 읽는다 — 둘 다 없을 때만 키가 그대로 남는다.
     const Demo = window.Demo ?? {
       lang: 'ko', expert: false,
-      t: (k) => k, term: (n) => n, reason: () => null,
+      t(k, vars = {}) { const e = window.DemoStrings?.ui?.[k]; let s = e ? e.ko : k; for (const [n, v] of Object.entries(vars)) s = s.replace(`{${n}}`, String(v)); return s; },
+      term: (n) => window.DemoStrings?.terms?.[n]?.ko ?? n,
+      reason: () => null,
       init() { /* 안내 바 없음 */ }, guide() { /* 안내 바 없음 */ }, setLang() {}, setExpert() {},
       verdict(el, { ok, title, summary, reason, detail, pending }) {
         el.className = `verdict ${pending ? 'pending' : ok ? 'ok' : 'bad'}`;
@@ -113,6 +116,8 @@
     const SERVICE_NAME = 'Mode 3 데모 RP';
     const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) });
     const ms = (t0) => `${Date.now() - t0} ms`;
+    /** 사전 텍스트를 요소에 쓴다. 사전에 없는 키(= /common 미로딩)면 아무것도 쓰지 않아 HTML 의 기본 텍스트가 남는다. */
+    const tx = (el, k, vars) => { const s = Demo.t(k, vars); if (s !== k) el.textContent = s; };
     const lastVerdict = new Map();          // 결과 카드 → 인자 생성기. 언어·전문가를 바꾸면 같은 인자로 다시 그린다.
     /**
      * 결과 카드. title 은 판정 키(사전 verdicts) 또는 ui 키이고, extra 는 객체이거나 — 사전을 읽어 만드는 값이면 —
@@ -153,11 +158,10 @@
       const pending = info.status !== 'approved';
       const badge = $('rpStatusBadge');
       badge.className = `badge ${pending ? 'warn' : 'ok'}`;
-      badge.textContent = Demo.t(pending ? 'rp_pending_badge' : 'rp_active_badge');
-      $('rpInfo').textContent = Demo.t(pending ? 'rp_status_pending' : 'rp_status_approved');
-      $('attrGateInfo').textContent = info.attrGateAddress
-        ? Demo.t('rp_policy', { countries: info.predicates.allowedCountries.join(', '), minAge: info.predicates.minAge })
-        : Demo.t('rp_no_attrgate');
+      tx(badge, pending ? 'rp_pending_badge' : 'rp_active_badge');
+      tx($('rpInfo'), pending ? 'rp_status_pending' : 'rp_status_approved');
+      if (info.attrGateAddress) tx($('attrGateInfo'), 'rp_policy', { countries: info.predicates.allowedCountries.join(', '), minAge: info.predicates.minAge });
+      else tx($('attrGateInfo'), 'rp_no_attrgate');
       $('rpInfoExpert').textContent = `arid=${info.arid ?? '-'}   origin=${info.origin}   cert_s=있음   pk_trace=있음   RevocationLog=${info.logAddress}`
         + `   지갑 에이전트=${info.walletAgentOrigin}   pk_CIA=${info.pkCiaSource}   chainId=${info.chainId}   팩토리=${info.factoryAddress ?? '(없음)'}`
         + `   AttrGate=${info.attrGateAddress ?? '(없음)'}`;
@@ -166,24 +170,25 @@
     /** 지갑 비밀 모드 배지. '지갑 비밀=snap' 은 browser 테스트가 잡는 문구이고, Snap id 는 전문가 줄로 함께 남긴다. */
     function renderWalletMode() {
       const el = $('walletMode');
-      el.textContent = '';
       const note = $('walletModeNote');
-      if (!walletCfgLoaded && !walletCfgError) { el.className = 'badge'; el.textContent = Demo.t('rp_wallet_checking'); note.textContent = ''; return; }
+      el.querySelector('span.expert')?.remove();      // 앞선 렌더의 Snap 줄(사전이 없어 textContent 를 못 갈아끼운 경우)
+      if (!walletCfgLoaded && !walletCfgError) { el.className = 'badge'; tx(el, 'rp_wallet_checking'); note.textContent = ''; return; }
       if (walletCfgError) {
         el.className = 'badge warn';
-        el.textContent = Demo.t('rp_wallet_unknown');
-        note.textContent = Demo.t('rp_wallet_unknown_note', { url: `${info?.walletAgentOrigin ?? '?'}/wallet/config`, err: walletCfgError });
+        tx(el, 'rp_wallet_unknown');
+        tx(note, 'rp_wallet_unknown_note', { url: `${info?.walletAgentOrigin ?? '?'}/wallet/config`, err: walletCfgError });
         return;
       }
       const snap = walletCfg.secrets === 'snap';
       el.className = 'badge';
-      el.appendChild(document.createTextNode(Demo.t(snap ? 'rp_wallet_snap' : 'rp_wallet_file')));
+      tx(el, snap ? 'rp_wallet_snap' : 'rp_wallet_file');
       if (snap) { const sp = document.createElement('span'); sp.className = 'expert'; sp.textContent = ` (Snap=${walletCfg.snapId})`; el.appendChild(sp); }
-      note.textContent = Demo.t(snap ? 'rp_wallet_snap_note' : 'rp_wallet_file_note');
+      tx(note, snap ? 'rp_wallet_snap_note' : 'rp_wallet_file_note');
     }
 
     function renderSession() {
-      $('sessionId').textContent = currentSession ? `${currentSession.slice(0, 12)}…` : Demo.t('none');
+      if (currentSession) $('sessionId').textContent = `${currentSession.slice(0, 12)}…`;
+      else tx($('sessionId'), 'none');
     }
     function setSession(r_s, allowAgent = null) {
       currentSession = r_s;
@@ -234,14 +239,15 @@
       const host = $('logins');
       host.textContent = '';
       if (!lastLogins.length) {
-        const p = document.createElement('p'); p.className = 'muted'; p.textContent = Demo.t('rp_no_logins'); host.appendChild(p);
+        const p = document.createElement('p'); p.className = 'muted'; tx(p, 'rp_no_logins'); host.appendChild(p);
         return;
       }
       const table = document.createElement('table');
       table.className = 'list';
       const head = table.createTHead().insertRow();
-      for (const k of ['rp_col_time', 'rp_col_address', 'rp_col_disclosure', 'rp_col_agent', 'rp_col_action']) {
-        const th = document.createElement('th'); th.textContent = Demo.t(k); head.appendChild(th);
+      // r_s·root 는 예전 <pre> 목록에 있던 값이다 — 전문가 보기에서만 보이는 칸으로 남긴다(열 전체가 숨는다).
+      for (const [k, expert] of [['rp_col_time'], ['rp_col_address'], ['rp_col_rs', true], ['rp_col_root', true], ['rp_col_disclosure'], ['rp_col_agent'], ['rp_col_action']]) {
+        const th = document.createElement('th'); if (expert) th.className = 'expert'; tx(th, k); head.appendChild(th);
       }
       const body = table.createTBody();
       for (const l of lastLogins) {
@@ -252,15 +258,17 @@
         code.textContent = `${l.PPID.slice(0, 10)}…`;
         if (Demo.expert) code.title = l.PPID;          // 전문가 보기에서만 전체 값을 붙인다
         addr.appendChild(code);
+        const rs = row.insertCell(); rs.className = 'expert'; rs.textContent = l.r_s ?? '';
+        const root = row.insertCell(); root.className = 'expert'; root.textContent = `${l.root.slice(0, 18)}…`; root.title = l.root;
         row.insertCell().textContent = discSummary(l.disclosure);
         const agent = row.insertCell();
         const b = document.createElement('span');
         b.className = `badge ${l.allowAgent === '1' ? 'ok' : 'muted'}`;
-        b.textContent = Demo.t(l.allowAgent === '1' ? 'rp_agent_yes' : 'rp_agent_no');
+        tx(b, l.allowAgent === '1' ? 'rp_agent_yes' : 'rp_agent_no');
         agent.appendChild(b);
         const act = row.insertCell();
         const btn = document.createElement('button');
-        btn.type = 'button'; btn.className = 'btn-ghost'; btn.textContent = Demo.t('rp_open_req');
+        btn.type = 'button'; btn.className = 'btn-ghost'; tx(btn, 'rp_open_req');
         btn.addEventListener('click', () => { $('openPpid').value = l.PPID; $('openBtn').click(); });
         act.appendChild(btn);
       }
@@ -341,6 +349,8 @@
         // 사유 대신 "Cannot read properties of undefined" 만 보인다(2026-09-23 최종 리뷰 M3). 본문의 reason 을 보여 주고 멈춘다.
         if (!ch.ok || !ch.r_s) {
           log(`1. 챌린지 실패 ${ms(t0)}: ${JSON.stringify(ch)}`);
+          // browser 테스트는 #verdict 에서 'factory_constants_unavailable' 코드 자체를 찾는다 — 사전에 있는 코드는
+          // 번역돼 제목·원인·조치로 나오므로, 원문 코드는 detail 의 JSON 이 싣는다(자세히가 접혀 있어도 textContent 에 남는다).
           setVerdict($('verdict'), false, 'login_failed', { reason: ch.reason ?? 'challenge_failed', detail: ch });
           return;
         }
@@ -364,6 +374,7 @@
           }
           if (!result.ok) {
             log(`2. 팝업 ${ms(t0)}: ${result.reason ?? ''} ${result.detail ?? ''}`);
+            // 위와 같다 — browser 테스트가 찾는 'user_denied' 코드 자체는 detail 의 JSON 이 싣는다(번역된 문구에는 코드가 없다).
             setVerdict($('verdict'), false, 'login_failed', { reason: result.reason ?? 'internal', detail: result });
             return;
           }
