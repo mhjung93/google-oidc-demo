@@ -8,7 +8,9 @@ import assert from 'node:assert/strict';
 import {
   MODE3_TREE_DEPTH,
   TAG_MODE3_USER,
+  TAG_MODE3_SESSION,
   userLeaf,
+  sessionLeaf,
   createRevocationTree,
 } from '../lib/mode3_revocation.js';
 import { TAG_SESSION, TAG_ACCOUNT } from '../lib/imt_v2.js';
@@ -78,6 +80,22 @@ await t('다른 사용자 자격증명은 남의 폐기에 영향받지 않는�
 await t('제거 기능이 없다 (append-only)', async () => {
   const tree = await createRevocationTree();
   assert.equal(typeof tree.remove, 'undefined');
+});
+
+await t('세션 리프 태그는 5 — 같은 Cf 라도 userLeaf 와 sessionLeaf 는 다르다', async () => {
+  assert.equal(TAG_MODE3_SESSION, 5n);
+  const a = await userLeaf(123n), b = await sessionLeaf(123n);
+  assert.notEqual(a, b);
+  assert.ok(b < (1n << 252n));
+  assert.equal(b, await sessionLeaf(123n));
+});
+
+await t('revokeSessionMessage: 도메인은 ASCII MODE3REVOKESESS, 입력이 하나라도 다르면 값이 다르다', async () => {
+  const { DOMAIN_MODE3_REVOKESESS, revokeSessionMessage } = await import('../lib/mode3_issuance.js');
+  assert.equal(Buffer.from(DOMAIN_MODE3_REVOKESESS.toString(16), 'hex').toString(), 'MODE3REVOKESESS');
+  const m = await revokeSessionMessage(1n, 2n, 3n);
+  assert.notEqual(m, await revokeSessionMessage(1n, 2n, 4n));
+  assert.notEqual(m, await revokeSessionMessage(1n, 5n, 3n));
 });
 
 process.exit(failed === 0 ? 0 : 1);
