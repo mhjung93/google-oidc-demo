@@ -12,11 +12,11 @@
     term(name) { const e = S.terms[name]; if (!e) return name; return D.expert ? `${e[D.lang]} (${e.expert})` : e[D.lang]; },
     verdictText(key) { const e = S.verdicts[key]; return e ? (e[D.lang] ?? e.ko) : key; },
     reason(code) { const r = S.reasons[code]; return r ? r[D.lang] ?? r.ko : null; },
-    setLang(l) { if (!S.langs.includes(l)) return; D.lang = l; store.set('mode3.lang', l); document.documentElement.lang = l; D.applyI18n(); D.rerenderVerdicts(); if (D.tour.lastEval) D.tour.evaluate(D.tour.lastEval); else if (D.lastGuide) D.guide(D.lastGuide); if (D.stack.state) D.stack.renderDots(); },
+    setLang(l) { if (!S.langs.includes(l)) return; D.lang = l; store.set('mode3.lang', l); document.documentElement.lang = l; D.applyI18n(); D.rerenderVerdicts(); D.tour.syncSwitch(); if (D.tour.lastEval) D.tour.evaluate(D.tour.lastEval); else if (D.lastGuide) D.guide(D.lastGuide); if (D.stack.state) D.stack.renderDots(); },
     // 토글을 페이지가 직접 부를 수도 있으므로(안내 바의 체크박스만이 아니다) 체크 상태를 여기서 맞춘다.
     // applyI18n 을 함께 부른다 — data-term 라벨은 term() 이 전문가 여부로 원래 기호를 덧붙이므로(설계 §3.1),
     // 여기서 다시 그리지 않으면 토글 뒤에도 옛 표기가 남는다(껐는데 기호가 보이는 등).
-    setExpert(b) { D.expert = !!b; store.set('mode3.expert', b ? '1' : '0'); document.documentElement.toggleAttribute('data-expert', D.expert); const ex = document.getElementById('expertToggle'); if (ex) ex.checked = D.expert; D.applyI18n(); D.rerenderVerdicts(); if (D.tour.lastEval) D.tour.evaluate(D.tour.lastEval); else if (D.lastGuide) D.guide(D.lastGuide); if (D.stack.state) D.stack.renderDots(); },
+    setExpert(b) { D.expert = !!b; store.set('mode3.expert', b ? '1' : '0'); document.documentElement.toggleAttribute('data-expert', D.expert); const ex = document.getElementById('expertToggle'); if (ex) ex.checked = D.expert; D.applyI18n(); D.rerenderVerdicts(); D.tour.syncSwitch(); if (D.tour.lastEval) D.tour.evaluate(D.tour.lastEval); else if (D.lastGuide) D.guide(D.lastGuide); if (D.stack.state) D.stack.renderDots(); },
     applyI18n() { document.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = D.t(el.dataset.i18n); }); document.querySelectorAll('[data-term]').forEach((el) => { el.textContent = D.term(el.dataset.term); }); },
     /** tour:false 면 체험 모드를 아예 켜지 않는다(승인 팝업 — 설계 2026-09-25 §3.1). */
     init({ page, tour = true }) {
@@ -54,7 +54,7 @@
       }
       for (const [k, url] of Object.entries(g.links || {})) { if (k === D.page || !url) continue; const a = document.createElement('a'); a.className = 'btn-ghost'; a.href = D.withTour(url); if (seen.has(a.href)) continue; a.target = '_blank'; a.rel = 'noopener'; a.textContent = D.t(`go_${k}`); next.appendChild(a); seen.add(a.href); }
       // 안내 바의 높이가 바뀌면 그 아래 요소가 밀린다 — 말풍선을 다시 앉힌다(설계 §3.4).
-      D.tour.place();
+      D.tour.place(true);
     },
     /**
      * 결과 카드. args 는 인자 객체이거나 — 사전을 읽어 만드는 값이면 — 그것을 돌려주는 함수다. 인자를 요소에 붙여 두고
@@ -103,7 +103,7 @@
      * 단계 판정은 서버 사실(Demo.stack 의 health)과 페이지 메모리(progress)를 합쳐 여기 한 곳에서 한다.
      */
     tour: {
-      enabled: false, locks: [], lastEval: null, anchor: null, epochRose: false, openingsDrained: false, started: false,
+      enabled: false, locks: [], lastEval: null, anchor: null, mode: 'below', epochRose: false, openingsDrained: false, started: false,
       init() {
         if (D.tour.started) return;
         D.tour.started = true;
@@ -128,17 +128,19 @@
         }
         D.tour.syncSwitch();
         // 서버 사실이 바뀌면 다시 판정한다. 폐기 게시(epoch 증가)와 개봉 처리(대기 0)는 지나가는 사건이라 여기서 붙잡아 둔다.
-        let prev = null;
+        let prevAa = null;                     // 마지막으로 읽힌 aa 응답(못 읽은 회차는 건너뛴다 — 비교 기준을 잃지 않게)
         D.stack.onChange((cur) => {
-          if (prev?.aa && cur.aa) {
-            if (Number(prev.aa.epoch) < Number(cur.aa.epoch)) D.tour.epochRose = true;
-            if (prev.aa.pendingOpenings > 0 && cur.aa.pendingOpenings === 0) D.tour.openingsDrained = true;
+          if (cur.aa) {
+            if (prevAa) {
+              if (Number(prevAa.epoch) < Number(cur.aa.epoch)) D.tour.epochRose = true;
+              if (prevAa.pendingOpenings > 0 && cur.aa.pendingOpenings === 0) D.tour.openingsDrained = true;
+            }
+            prevAa = cur.aa;
           }
-          prev = cur;
           if (D.tour.lastEval) D.tour.evaluate(D.tour.lastEval);
         });
-        addEventListener('scroll', D.tour.place, { passive: true });
-        addEventListener('resize', D.tour.place);
+        addEventListener('scroll', () => D.tour.place(), { passive: true });
+        addEventListener('resize', () => D.tour.place(true));
       },
       set(on) {
         D.tour.enabled = !!on; store.set('mode3.tour', on ? '1' : '');
@@ -162,8 +164,10 @@
       evaluate({ progress = {}, links } = {}) {
         D.tour.lastEval = { progress, links };
         const l = D.stack.last, done = [];
-        if (D.tour.condMet('rp_approved')) done.push('approve');
-        if (D.tour.condMet('wallet_registered')) done.push('register');
+        // 상대 서버에 닿지 못하면 health 판정은 null 이다 — 그때도 페이지가 자기 눈으로 본 사실(progress)이 있으면
+        // 그 단계는 done 이다(1차의 판정 근거). 잠금은 이 값을 쓰지 않는다(설계 §3.2 "모르면 잠그지 않는다").
+        if (D.tour.condMet('rp_approved') || progress.approved) done.push('approve');
+        if (D.tour.condMet('wallet_registered') || progress.registered) done.push('register');
         if (D.tour.condMet('has_session') || progress.login) done.push('login');
         if (progress.used) done.push('use');
         if (progress.disclosed) done.push('disclose');
@@ -186,9 +190,9 @@
           const met = D.tour.enabled ? D.tour.condMet(cond) : true;
           const locked = D.tour.enabled && met === false;
           el.disabled = locked ? true : !(otherwise ? otherwise() : true);
-          let badge = el.nextElementSibling?.classList?.contains('tour-lock') ? el.nextElementSibling : null;
+          let badge = el.parentElement?.querySelector(`:scope > .tour-lock[data-for="${id}"]`) ?? null;
           if (locked) {
-            if (!badge) { badge = document.createElement('span'); badge.className = 'tour-lock badge warn'; el.after(badge); }
+            if (!badge) { badge = document.createElement('span'); badge.className = 'tour-lock badge warn'; badge.dataset.for = id; el.after(badge); }
             badge.textContent = D.t(cond === 'rp_approved' ? 'tour_lock_register' : 'tour_lock_login');
           } else if (badge) badge.remove();
         }
@@ -212,7 +216,7 @@
         b.querySelector('.tour-title').textContent = txt.title;
         b.querySelector('.tour-body').textContent = txt.body;
         D.tour.anchor = el;
-        D.tour.place();
+        D.tour.place(true);
       },
       /** 안내 바 아래 카드 — 지금 할 일이 다른 창에 있거나(링크 포함) 7단계를 다 마쳤을 때. */
       renderCard(allDone, step, links) {
@@ -233,13 +237,52 @@
         const url = links?.[whereKey];
         if (url) { const a = document.createElement('a'); a.className = 'btn'; a.href = D.withTour(url); a.target = '_blank'; a.rel = 'noopener'; a.textContent = D.t('tour_next'); c.appendChild(a); }
       },
-      /** 대상 요소 바로 아래에 앉힌다. 좁은 창에서는 CSS 가 전폭으로 펴므로 top 만 쓰인다. */
-      place() {
+      /**
+       * 대상 요소 바로 아래에 앉힌다(좁은 창에서는 CSS 가 전폭으로 펴므로 top 만 쓰인다). 그 자리가 누를 수 있는 것을
+       * 덮으면 오른쪽(빈 폭 392px 이상)으로, 그마저 안 되면 대상이 든 카드 아래로 내린다(설계 §3.4 "클릭을 막지 않는다").
+       * recheck 는 자리 판단을 다시 하라는 뜻이다 — 스크롤은 같은 자리를 따라가기만 한다(매 프레임 짚어 보지 않는다).
+       */
+      place(recheck = false) {
         const b = document.getElementById('tourBubble'), el = D.tour.anchor;
         if (!b || !el || !el.isConnected) return;
+        const put = (top, left, side = false) => {
+          b.classList.toggle('side', side);
+          b.style.top = `${Math.round(top + window.scrollY)}px`;
+          b.style.left = `${Math.round(left + window.scrollX)}px`;
+        };
         const r = el.getBoundingClientRect();
-        b.style.top = `${Math.round(r.bottom + window.scrollY + 8)}px`;
-        b.style.left = `${Math.round(r.left + window.scrollX)}px`;
+        const card = el.closest('.card');
+        const cardRect = () => card.getBoundingClientRect();
+        if (!recheck) {                                   // 스크롤: 직전에 고른 자리를 그대로 따라간다
+          if (D.tour.mode === 'side') put(r.top, r.right + 12, true);
+          else if (D.tour.mode === 'card' && card) { const c = cardRect(); put(c.bottom + 8, c.left); }
+          else put(r.bottom + 8, r.left);
+          return;
+        }
+        D.tour.mode = 'below'; put(r.bottom + 8, r.left);
+        if (!D.tour.covers(b, el)) return;
+        if (window.innerWidth - r.right >= 392) {
+          put(r.top, r.right + 12, true);
+          if (!D.tour.covers(b, el)) { D.tour.mode = 'side'; return; }
+        }
+        if (card) { const c = cardRect(); put(c.bottom + 8, c.left); D.tour.mode = 'card'; return; }
+        put(r.bottom + 8, r.left);                        // 옮길 데가 없으면 원래 자리
+      },
+      /**
+       * 말풍선 자리에 눌러야 할 것이 깔려 있나. 점 몇 개를 짚는 elementFromPoint 로는 작은 버튼이 샘플 사이로 빠져나가므로
+       * 보이는 조작 요소들의 사각형과 직접 겹쳐 본다(대상 자신과 안내 바는 뺀다 — 안내 바는 sticky 라 스크롤이면 늘 걸린다).
+       */
+      covers(b, anchor) {
+        const q = b.getBoundingClientRect();
+        if (q.width === 0) return false;
+        for (const e of document.querySelectorAll('button, a, input, select, textarea, summary, label')) {
+          if (e === anchor || anchor.contains(e) || e.contains(anchor) || b.contains(e) || e.closest('#demoBar')) continue;
+          if (e.offsetParent === null || e.disabled) continue;      // 안 보이거나 못 누르는 것은 덮여도 그만이다
+          const r = e.getBoundingClientRect();
+          if (r.width === 0 || r.height === 0) continue;
+          if (r.left < q.right && r.right > q.left && r.top < q.bottom && r.bottom > q.top) return true;
+        }
+        return false;
       },
     },
   };

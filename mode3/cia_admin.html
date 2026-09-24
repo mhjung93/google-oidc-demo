@@ -229,7 +229,7 @@
       // 서비스·지갑 주소는 자기 health 가 알려 준다(설계 2026-09-25 §2.3) — 알기 전에는 계정 페이지만 잇는다.
       const links = { account: '/account', wallet: stackLinks.wallet, rp: stackLinks.rp };
       // 단계 판정은 공통 레이어가 한다(설계 2026-09-25 §3.2). 관리자 페이지는 잠그지 않는다.
-      if (Demo.tour) { Demo.tour.evaluate({ progress: { revoked: progress.revoked, opened: progress.opened }, links }); return; }
+      if (Demo.tour) { Demo.tour.evaluate({ progress: { approved: pendingRps === 0 && approvedRps >= 1, revoked: progress.revoked, opened: progress.opened }, links }); return; }
       const done = [];
       if (pendingRps === 0 && approvedRps >= 1) done.push('approve');
       if (progress.revoked) done.push('revoke');
