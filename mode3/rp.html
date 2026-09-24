@@ -86,7 +86,8 @@
         const d = detail === undefined ? null : (typeof detail === 'string' ? detail : JSON.stringify(detail));
         el.textContent = [window.DemoStrings?.verdicts?.[title]?.ko ?? title, summary, reason, d].filter(Boolean).join(' — ');
       },
-      confirmDanger: (k) => window.confirm(k),
+      // 사전이 살아 있으면 확인창에도 사람 말이 뜬다 — demo.js 가 없다고 키를 그대로 보여 주지 않는다.
+      confirmDanger: (k) => window.confirm(window.DemoStrings?.ui?.[k]?.ko ?? k),
     };
     let info = null;
     let currentSession = null;

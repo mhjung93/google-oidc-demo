@@ -149,6 +149,7 @@ window.DemoStrings = {
     wallet_session_revoke_failed: { ko: '세션 폐기 실패', en: 'Session revocation failed' },
     wallet_cancelled: { ko: '창에서 취소했습니다.', en: 'Cancelled in the dialog.' },
     wallet_chain_info: { ko: '체인 head {head} · RevocationLog {log} · 마지막 동기화 root {root}', en: 'Chain head {head} · RevocationLog {log} · last synced root {root}' },
+    wallet_status_failed: { ko: '상태 조회 실패: {err}', en: 'Status query failed: {err}' },
     wallet_tx_session: { ko: '보낼 세션', en: 'Session to send from' },
     wallet_tx_session_opt: { ko: '서비스 {arid}… · 주소 {ppid}… · 팩토리 {factory}', en: 'Service {arid}… · address {ppid}… · factory {factory}' },
     wallet_factory_yes: { ko: '있음', en: 'yes' },
