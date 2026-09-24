@@ -4,50 +4,93 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="same-origin" />
+  <!-- 제목의 "CIA 사용자" 는 tests/test_mode3_demo_stack.mjs 의 페이지 서빙 검사 marker 다. -->
   <title>Mode 3 CIA 사용자</title>
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 760px; margin: 24px auto; padding: 0 16px; }
-    fieldset { border: 2px solid #1565c0; margin-bottom: 16px; }
-    pre { background: #f6f6f6; padding: 10px; white-space: pre-wrap; font-size: 0.85em; }
-    .muted { color: #666; font-size: 0.9em; }
-  </style>
+  <link rel="stylesheet" href="/common/demo.css" />
+  <script src="/common/strings.js"></script>
+  <script src="/common/demo.js"></script>
 </head>
-<body>
-  <h2>Mode 3 CIA 사용자</h2>
-  <p class="muted">장치를 잃었거나 빼앗겼을 때, 계정 비밀번호만으로 내 계정을 폐기한다(설계 §6.5.1). 지갑 키는 필요 없다.
-    폐기하면 재발급은 즉시 막히고, 이미 발급된 credential 은 관리자가 게시한 뒤부터 거절된다. 복구는 관리자만 할 수 있다.</p>
-
-  <fieldset>
-    <legend>인증</legend>
-    <label>uid <input id="uid" value="12345" size="8" /></label>
-    <label style="margin-left:12px">비밀번호 <input id="pwd" type="password" size="24" /></label>
-  </fieldset>
-
-  <fieldset>
-    <legend>조작</legend>
-    <button id="revokeBtn">내 계정 폐기</button>
-  </fieldset>
-
-  <pre id="out">-</pre>
+<body data-page="account">
+  <header id="demoBar"></header>
+  <main class="cards">
+    <section class="card span2">
+      <h3 data-i18n="account_revoke_title">내 계정 폐기</h3>
+      <p class="desc" data-i18n="account_revoke_desc">기기를 잃었을 때 비밀번호만으로 계정을 폐기합니다. 지갑 키는 필요 없습니다.</p>
+      <p>
+        <label><span data-i18n="account_uid_label">uid</span> <input id="uid" value="12345" size="8" /></label>
+        <label><span data-i18n="account_pwd_label">계정 비밀번호</span> <input id="pwd" type="password" size="24" autocomplete="off" /></label>
+        <button id="revokeBtn" class="danger" data-i18n="account_revoke_btn">내 계정 폐기</button>
+      </p>
+      <p class="muted" data-i18n="account_note">폐기하면 재발급이 즉시 막히고, 이미 발급된 자격증명은 관리자가 폐기 목록을 게시한 뒤부터 거절됩니다. 복구는 관리자만 할 수 있습니다.</p>
+      <p class="muted" data-i18n="account_pwd_note">비밀번호는 이 요청에만 쓰이고 화면·결과 어디에도 남지 않습니다.</p>
+      <div id="accountVerdict"></div>
+      <pre id="out" class="expert">-</pre>
+    </section>
+  </main>
 
   <script>
     const $ = (id) => document.getElementById(id);
+    // /common 이 뜨지 않아도(404) 페이지는 HTML 의 한국어 기본 텍스트로 계속 돌아간다(설계 §5).
+    // demo.js 만 빠졌다면 사전(strings.js)은 그대로 읽는다 — 둘 다 없을 때만 키가 그대로 남는다.
+    const Demo = window.Demo ?? {
+      lang: 'ko', expert: false,
+      t(k, vars = {}) { const e = window.DemoStrings?.ui?.[k]; let s = e ? e.ko : k; for (const [n, v] of Object.entries(vars)) s = s.replace(`{${n}}`, String(v)); return s; },
+      term: (n) => window.DemoStrings?.terms?.[n]?.ko ?? n,
+      reason: () => null,
+      init() { /* 안내 바 없음 */ }, guide() { /* 안내 바 없음 */ }, setLang() {}, setExpert() {},
+      verdict(el, args) {
+        const { ok, title, summary, reason, detail, pending } = typeof args === 'function' ? args() : args;
+        el.className = `verdict ${pending ? 'pending' : ok ? 'ok' : 'bad'}`;
+        const d = detail === undefined ? null : (typeof detail === 'string' ? detail : JSON.stringify(detail));
+        el.textContent = [window.DemoStrings?.verdicts?.[title]?.ko ?? title, summary, reason, d].filter(Boolean).join(' — ');
+      },
+      // 사전이 살아 있으면 확인창에도 사람 말이 뜬다 — demo.js 가 없다고 키를 그대로 보여 주지 않는다.
+      confirmDanger: (k) => window.confirm(window.DemoStrings?.ui?.[k]?.ko ?? k),
+    };
+    /** 결과 카드. title 은 판정 키(사전 verdicts) 또는 ui 키다. extra 가 함수면 언어·전문가 전환 때 다시 읽는다. */
+    function setVerdict(el, ok, title, extra = {}) {
+      Demo.verdict(el, () => ({ ok, title: window.DemoStrings?.verdicts?.[title] ? title : Demo.t(title), ...(typeof extra === 'function' ? extra() : extra) }));
+    }
+    // 비밀번호는 응답에 실리지 않지만, '자세히'로 흘러 들어갈 길을 애초에 막는다(심층 방어).
+    const safeDetail = (b) => { const { pwd, secret, ...rest } = b ?? {}; return rest; };
+
+    let revoked = false;   // 이 페이지가 아는 완료 신호(설계 §2.1 6단계)
+    // 관리자 페이지와 서로만 링크한다(설계 §1.3) — 계정 페이지는 서비스·지갑 주소를 모른다.
+    const renderGuide = () => Demo.guide({ done: revoked ? ['revoke'] : [], current: 'revoke', links: { admin: '/admin' } });
+
     $('revokeBtn').addEventListener('click', async () => {
+      const uid = $('uid').value.trim();
+      if (!Demo.confirmDanger('confirm_revoke')) return;
+      Demo.verdict($('accountVerdict'), { pending: true, title: Demo.t('working') });
       try {
+        // 요청 형식은 예전 페이지와 글자 그대로 같다(POST /cia/account/self_revoke, 헤더 없음).
         const r = await fetch('/cia/account/self_revoke', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ uid: $('uid').value.trim(), pwd: $('pwd').value }),
+          body: JSON.stringify({ uid, pwd: $('pwd').value }),
         });
         const b = await r.json().catch(() => null);
         $('out').textContent = `POST /cia/account/self_revoke → ${r.status}\n${JSON.stringify(b, null, 2)}`;
+        if (r.ok) {
+          revoked = true;
+          setVerdict($('accountVerdict'), true, 'revoked_ok', () => ({ summary: Demo.t('account_revoked_summary', { uid }), detail: safeDetail(b) }));
+        } else {
+          // cia.js 는 이 경로에 reason 을 싣지 않는다 — 상태로 사유 코드를 붙인다(401 은 uid·비밀번호를 가르지 않는다).
+          const reason = r.status === 401 ? 'invalid_credentials' : r.status === 404 ? 'unknown_account' : b?.error ?? `HTTP ${r.status}`;
+          setVerdict($('accountVerdict'), false, 'account_revoke_failed', { reason, detail: safeDetail(b) });
+        }
       } catch (e) {
-        // 네트워크 오류(CIA 가 안 떠 있는 등)도 화면에 보여야 사용자가 재시도 여부를 판단할 수 있다.
-        $('out').textContent = `POST /cia/account/self_revoke → 네트워크 오류\n${e.message}`;
+        // 네트워크 오류(신원 기관이 안 떠 있는 등)도 화면에 보여야 사용자가 재시도 여부를 판단할 수 있다.
+        $('out').textContent = `POST /cia/account/self_revoke → ${Demo.t('error_title')}\n${e.message}`;
+        setVerdict($('accountVerdict'), false, 'account_revoke_failed', () => ({ summary: Demo.t('account_network_error', { err: e.message }), detail: e.message }));
       } finally {
         $('pwd').value = '';
+        renderGuide();
       }
     });
+
+    Demo.init({ page: 'account' });
+    renderGuide();
   </script>
 </body>
 </html>

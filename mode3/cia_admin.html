@@ -4,185 +4,517 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="same-origin" />
+  <!-- 제목의 "CIA 관리자" 는 tests/test_mode3_demo_stack.mjs 의 페이지 서빙 검사 marker 다. -->
   <title>Mode 3 CIA 관리자</title>
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 760px; margin: 24px auto; padding: 0 16px; }
-    fieldset { border: 2px solid #ef6c00; margin-bottom: 16px; }
-    pre { background: #f6f6f6; padding: 10px; white-space: pre-wrap; font-size: 0.85em; }
-    .muted { color: #666; font-size: 0.9em; }
-  </style>
+  <link rel="stylesheet" href="/common/demo.css" />
+  <script src="/common/strings.js"></script>
+  <script src="/common/demo.js"></script>
 </head>
-<body>
-  <h2>Mode 3 CIA 관리자</h2>
-  <p class="muted">secret 은 요청 헤더로만 쓰고 저장하지 않는다. 폐기는 append-only 다 — 게시하면 되돌릴 수 없다(설계 §6.5).</p>
+<body data-page="admin">
+  <header id="demoBar"></header>
+  <main class="cards">
+    <section class="card span2">
+      <h3 data-i18n="admin_auth_title">인증 · 최근 결과</h3>
+      <p class="desc" data-i18n="admin_auth_desc">시크릿은 요청 헤더로만 쓰입니다. 화면·결과 카드·원문 로그 어디에도 남기지 않습니다.</p>
+      <p>
+        <label><span data-i18n="admin_secret_label">관리자 시크릿</span> <input id="secret" type="password" size="36" autocomplete="off" /></label>
+        <label><input type="checkbox" id="rememberSecret" /> <span data-i18n="admin_remember">이 창에서 기억</span></label>
+        <button id="reloadBtn" class="btn-ghost" data-i18n="admin_reload">모두 새로고침</button>
+      </p>
+      <p class="muted" data-i18n="admin_remember_note">이 탭을 닫으면 지워집니다(sessionStorage). 기본은 꺼짐입니다.</p>
+      <p id="pendingBadges"></p>
+      <div id="adminVerdict"></div>
+      <pre id="out" class="expert">-</pre>
+    </section>
 
-  <fieldset>
-    <legend>인증</legend>
-    <label>CIA_ADMIN_SECRET <input id="secret" type="password" size="36" /></label>
-    <label style="margin-left:12px">uid <input id="uid" value="12345" size="8" /></label>
-  </fieldset>
+    <section class="card span2">
+      <h3 data-i18n="admin_accounts_title">계정</h3>
+      <p class="desc" data-i18n="admin_accounts_desc">등록된 계정의 속성을 고치고, 계정이나 로그인 세션 하나를 폐기합니다.</p>
+      <p>
+        <button id="accountsBtn" data-i18n="admin_list_btn">목록 불러오기</button>
+        <label><span data-i18n="admin_col_uid">uid</span> <input id="uid" value="12345" size="8" /></label>
+        <button id="revokeBtn" class="danger" data-i18n="admin_revoke_btn">계정 폐기</button>
+        <button id="recoverBtn" class="btn-ghost" data-i18n="admin_recover_btn">복구(다시 쓰게)</button>
+      </p>
+      <p class="muted" data-i18n="admin_accounts_attrs_note">속성 4슬롯을 바꾸면 활성 자격증명이 물립니다(다음 게시까지 대기) — 지갑은 다음 발급에서 다시 받습니다.</p>
+      <p class="muted" data-i18n="admin_sessions_note">"세션" 은 그 계정의 발급 세션 목록입니다. 활성 세션만 폐기할 수 있고, 폐기 리프도 되돌릴 수 없습니다.</p>
+      <div id="accounts"><p class="muted" data-i18n="admin_need_secret">관리자 시크릿을 넣으면 목록과 대기 건수를 불러옵니다.</p></div>
+    </section>
 
-  <fieldset>
-    <legend>조작</legend>
-    <button id="stateBtn">상태 보기</button>
-    <button id="revokeBtn">계정 폐기 (scope=account)</button>
-    <button id="publishBtn">게시 (root → 체인)</button>
-    <button id="recoverBtn">복구 (disabled=false)</button>
-    <p class="muted">하트비트(CIA_HEARTBEAT_BLOCKS)가 켜져 있으면 변화가 없어도 주기적으로 재게시된다.</p>
-  </fieldset>
+    <section class="card span2">
+      <h3 data-i18n="admin_rps_title">서비스</h3>
+      <p class="desc" data-i18n="admin_rps_desc">승인하면 이 서비스 전용 추적 조각을 만들어 인증서를 냅니다. 거절은 되돌릴 수 없습니다.</p>
+      <p><button id="rpsBtn" data-i18n="admin_list_btn">목록 불러오기</button></p>
+      <div id="rps"><p class="muted" data-i18n="admin_need_secret">관리자 시크릿을 넣으면 목록과 대기 건수를 불러옵니다.</p></div>
+    </section>
 
-  <fieldset>
-    <legend>계정 <button id="accountsBtn">목록</button></legend>
-    <p class="muted">속성 4슬롯을 바꾸면 활성 사용자 자격증명이 물린다(다음 게시까지 pending) — 지갑은 다음 발급에서 재동기화한다(2026-09-22 §3.3).</p>
-    <p class="muted">"세션" 은 그 계정의 발급 세션 목록이다(2026-09-24 V8). 활성 세션만 폐기할 수 있고 — 만료된 세션은 리프를 넣지 않는다 — 폐기 리프도 append-only 다.</p>
-    <div id="accounts">-</div>
-  </fieldset>
+    <section class="card span2">
+      <h3 data-i18n="admin_openings_title">개봉 요청</h3>
+      <p class="desc" data-i18n="admin_openings_desc">서비스가 올린 개봉 요청입니다. 승인하면 신원 기관 조각으로 봉인을 풀어 uid 를 기록합니다 — 대기 중인 항목에는 uid 가 없습니다.</p>
+      <p><button id="openingsBtn" data-i18n="admin_list_btn">목록 불러오기</button></p>
+      <p class="muted expert" data-i18n="admin_openings_note">복호 결과는 Poseidon(uid, arid) 라 등록부를 훑어 uid 를 되찾습니다(2026-09-18 §6.2).</p>
+      <div id="openings"><p class="muted" data-i18n="admin_need_secret">관리자 시크릿을 넣으면 목록과 대기 건수를 불러옵니다.</p></div>
+    </section>
 
-  <fieldset>
-    <legend>등록된 서비스 <button id="rpsBtn">목록</button></legend>
-    <p class="muted">승인하면 CIA 조각을 만들어 조합 키 pk_trace 와 cert_s 를 낸다(설계 2026-09-16 §3). 거절은 되돌릴 수 없다.</p>
-    <div id="rps">-</div>
-  </fieldset>
-
-  <fieldset>
-    <legend>개봉 요청 <button id="openingsBtn">목록</button></legend>
-    <p class="muted">승인 시점에 CIA 조각으로 복호해 uid 를 기록한다(§6). pending 항목에는 uid 가 없다.</p>
-    <p class="muted">복호 결과는 Poseidon(uid, arid) 라 등록부로 uid 를 되찾는다(2026-09-18 §6.2).</p>
-    <div id="openings">-</div>
-  </fieldset>
-
-  <pre id="out">-</pre>
+    <section class="card span2">
+      <h3 data-i18n="admin_rcl_title">폐기 목록</h3>
+      <p class="desc" data-i18n="admin_rcl_desc">폐기는 덧붙이기만 됩니다 — 게시하면 되돌릴 수 없습니다(설계 §6.5).</p>
+      <p>
+        <button id="stateBtn" data-i18n="admin_state_btn">상태 보기</button>
+        <button id="publishBtn" class="danger" data-i18n="admin_publish_btn">게시(체인에 올리기)</button>
+      </p>
+      <dl class="kv" id="stateKv"></dl>
+      <p class="muted" data-i18n="admin_rcl_heartbeat">하트비트(CIA_HEARTBEAT_BLOCKS)가 켜져 있으면 변화가 없어도 주기적으로 재게시됩니다.</p>
+    </section>
+  </main>
 
   <script>
     const $ = (id) => document.getElementById(id);
+    // /common 이 뜨지 않아도(404) 페이지는 HTML 의 한국어 기본 텍스트로 계속 돌아간다(설계 §5).
+    // demo.js 만 빠졌다면 사전(strings.js)은 그대로 읽는다 — 둘 다 없을 때만 키가 그대로 남는다.
+    const Demo = window.Demo ?? {
+      lang: 'ko', expert: false,
+      t(k, vars = {}) { const e = window.DemoStrings?.ui?.[k]; let s = e ? e.ko : k; for (const [n, v] of Object.entries(vars)) s = s.replace(`{${n}}`, String(v)); return s; },
+      term: (n) => window.DemoStrings?.terms?.[n]?.ko ?? n,
+      reason: () => null,
+      init() { /* 안내 바 없음 */ }, guide() { /* 안내 바 없음 */ }, setLang() {}, setExpert() {},
+      verdict(el, args) {
+        const { ok, title, summary, reason, detail, pending } = typeof args === 'function' ? args() : args;
+        el.className = `verdict ${pending ? 'pending' : ok ? 'ok' : 'bad'}`;
+        const d = detail === undefined ? null : (typeof detail === 'string' ? detail : JSON.stringify(detail));
+        el.textContent = [window.DemoStrings?.verdicts?.[title]?.ko ?? title, summary, reason, d].filter(Boolean).join(' — ');
+      },
+      // 사전이 살아 있으면 확인창에도 사람 말이 뜬다 — demo.js 가 없다고 키를 그대로 보여 주지 않는다.
+      confirmDanger: (k) => window.confirm(window.DemoStrings?.ui?.[k]?.ko ?? k),
+    };
+    /** 사전 텍스트를 요소에 쓴다. 사전에 없는 키(= /common 미로딩)면 아무것도 쓰지 않아 HTML 의 기본 텍스트가 남는다. */
+    const tt = (el, k, vars) => { const s = Demo.t(k, vars); if (s !== k) el.textContent = s; };
+    /** 결과 카드. title 은 판정 키(사전 verdicts) 또는 ui 키다. extra 가 함수면 언어·전문가 전환 때 다시 읽는다. */
+    function setVerdict(el, ok, title, extra = {}) {
+      Demo.verdict(el, () => ({ ok, title: window.DemoStrings?.verdicts?.[title] ? title : Demo.t(title), ...(typeof extra === 'function' ? extra() : extra) }));
+    }
+
+    // ---- 관리자 시크릿 ----
+    // 기본은 메모리(입력칸)뿐이다. "이 창에서 기억" 을 켠 동안만 sessionStorage 에 둔다 — 탭을 닫으면 사라진다.
+    // 시크릿은 요청 헤더로만 나가고 #out·결과 카드·안내 문구 어디에도 실리지 않는다.
+    const SECRET_KEY = 'mode3.adminSecret';
+    const readKept = () => { try { return sessionStorage.getItem(SECRET_KEY); } catch { return null; } };
+    const writeKept = (v) => { try { if (v === null) sessionStorage.removeItem(SECRET_KEY); else sessionStorage.setItem(SECRET_KEY, v); } catch { /* 사생활 모드 등 */ } };
+    const hasSecret = () => $('secret').value.length > 0;
+
+    // ---- 화면 상태(세션 중 메모리) ----
+    let accounts = null;             // /cia/accounts 의 마지막 응답
+    let rps = null;                  // /cia/rps
+    let openings = null;             // /cia/openings
+    let ciaState = null;             // /cia/state
+    const sessionsByUid = {};        // uid → 마지막으로 읽은 세션 목록(언어 전환 때 다시 그린다)
+    const expandedUids = new Set();  // 세션 표를 펼친 계정
+    let pendingRps = null;           // 배지 숫자. null = 아직 모름(시크릿 없음·조회 실패)
+    let approvedRps = null;
+    let pendingOpenings = null;
+    const progress = { revoked: false, opened: false };   // 이 페이지가 아는 완료 신호(설계 §2.1)
+
+    // ---- 요청 ----
+    // 요청 형식은 예전 페이지와 글자 그대로 같다(메서드·경로·헤더·본문) — 결과를 돌려주는 것만 더했다.
     async function call(method, path, body) {
       const headers = { 'Content-Type': 'application/json', 'X-CIA-Admin-Secret': $('secret').value };
       const r = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
       const b = await r.json().catch(() => null);
       $('out').textContent = `${method} ${path} → ${r.status}\n${JSON.stringify(b, null, 2)}`;
+      return { status: r.status, body: b };
     }
-    $('stateBtn').addEventListener('click', () => call('GET', '/cia/state'));
-    $('revokeBtn').addEventListener('click', () => call('POST', '/cia/revoke', { uid: $('uid').value.trim(), scope: 'account' }));
-    $('publishBtn').addEventListener('click', () => call('POST', '/cia/publish', {}));
-    $('recoverBtn').addEventListener('click', () => call('POST', '/cia/account/set_disabled', { uid: $('uid').value.trim(), disabled: false }));
-
     async function adminJson(method, path) {
       const r = await fetch(path, { method, headers: { 'X-CIA-Admin-Secret': $('secret').value } });
       return { status: r.status, body: await r.json().catch(() => null) };
     }
+    // 시크릿·비밀번호·서명이 실수로 '자세히'에 실리지 않게 응답에서 덜어낸다(관리자 응답에는 원래 없다 — 심층 방어).
+    const safeDetail = (b) => { const { secret, pwd, sig_u, ...rest } = b ?? {}; return rest; };
+    /** HTTP 상태를 사유 코드로. cia.js 는 이 경로들에 reason 을 싣지 않고 error 문자열만 낸다. */
+    function reasonFor({ status, body }) {
+      if (body?.reason) return body.reason;
+      if (status === 401) return 'admin_unauthorized';
+      if (status === 503 && String(body?.error ?? '').includes('CIA_ADMIN_SECRET')) return 'admin_secret_required';
+      if (status === 404 && body?.error === 'unknown account') return 'unknown_account';
+      return body?.error ?? `HTTP ${status}`;
+    }
+    /** 조작 한 번: 진행 중 카드 → 성공이면 onOk, 아니면 실패 카드. 끝나면 대기 배지를 다시 센다. */
+    async function run(failTitle, doIt, onOk) {
+      if (!hasSecret()) { setVerdict($('adminVerdict'), false, failTitle, { summary: Demo.t('admin_need_secret') }); return null; }
+      Demo.verdict($('adminVerdict'), { pending: true, title: Demo.t('working') });
+      let res = null;
+      try {
+        res = await doIt();
+        if (res.status >= 200 && res.status < 300) await onOk(res);
+        else setVerdict($('adminVerdict'), false, failTitle, { reason: reasonFor(res), detail: safeDetail(res.body) });
+      } catch (e) {
+        // 네트워크 오류(신원 기관이 안 떠 있는 등)도 화면에 보여야 재시도 여부를 판단할 수 있다.
+        $('out').textContent = `${Demo.t('error_title')}\n${e.message}`;
+        setVerdict($('adminVerdict'), false, failTitle, { reason: 'cia_unavailable', detail: e.message });
+      }
+      await refreshBadges();
+      return res;
+    }
+
+    // ---- 표 만들기 ----
     // /cia/register_rp 는 인증 없이 누구나 부를 수 있어 name·origin 이 공격자 입력일 수 있다 — innerHTML 로 조립하지
     // 않고 DOM 노드 + textContent 로만 채운다(2026-09-16 보안 검토).
-    function td(content) {
-      const c = document.createElement('td'); c.style.padding = '2px 8px';
+    function table(headKeys) {
+      const t = document.createElement('table');
+      t.className = 'list';
+      const head = t.createTHead().insertRow();
+      for (const [k, expert] of headKeys) { const th = document.createElement('th'); if (expert) th.className = 'expert'; tt(th, k); head.appendChild(th); }
+      t.createTBody();
+      return t;
+    }
+    function cell(row, content, cls) {
+      const c = row.insertCell();
+      if (cls) c.className = cls;
       if (content instanceof Node) c.appendChild(content); else c.textContent = content ?? '';
       return c;
     }
-    function row(cells) {
-      const tr = document.createElement('tr');
-      cells.forEach((c) => tr.appendChild(td(c)));
-      return tr;
+    /** 긴 16진·10진 값은 앞자리만 보이고 전체는 title 로 붙인다. */
+    function short(v, n = 10) {
+      const code = document.createElement('code');
+      const s = String(v ?? '');
+      code.textContent = s.length > n ? `${s.slice(0, n)}…` : s;
+      code.title = s;
+      return code;
     }
-    /** [{label, act, key, val}] → 버튼들을 담은 fragment. key 는 dataset 이름('a' 또는 'i'). */
-    function actionButtons(defs) {
-      const frag = document.createDocumentFragment();
-      defs.forEach((d, i) => {
-        if (i > 0) frag.appendChild(document.createTextNode(' '));
-        const b = document.createElement('button');
-        b.textContent = d.label; b.dataset[d.key] = d.val; b.dataset.act = d.act;
-        frag.appendChild(b);
-      });
-      return frag;
+    function badge(key, kind) { const b = document.createElement('span'); b.className = `badge ${kind}`; tt(b, key); return b; }
+    function button(key, cls, onClick) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      if (cls) b.className = cls;
+      tt(b, key);
+      b.addEventListener('click', onClick);
+      return b;
     }
-    async function loadAccounts() {
-      const r = await adminJson('GET', '/cia/accounts');
-      if (r.status !== 200) { $('accounts').textContent = `${r.status}`; return; }
-      const table = document.createElement('table');
-      r.body.accounts.forEach((a) => {
-        const inputs = a.attrs.map((v) => {
-          const i = document.createElement('input');
-          i.value = v; i.size = 6; i.dataset.attr = '1';
-          return i;
+    const fmtAt = (at) => { if (!at) return ''; const t = new Date(at); return Number.isNaN(t.getTime()) ? String(at) : t.toLocaleString(Demo.lang === 'en' ? 'en-US' : 'ko-KR'); };
+    const placeholder = (host, key) => { const p = document.createElement('p'); p.className = 'muted'; tt(p, key); host.replaceChildren(p); };
+
+    // ---- 대기 배지 ----
+    function renderBadges() {
+      const host = $('pendingBadges');
+      host.textContent = '';
+      if (pendingRps === null && pendingOpenings === null) { const p = document.createElement('span'); p.className = 'muted'; tt(p, 'admin_need_secret'); host.appendChild(p); return; }
+      const add = (key, n) => { const b = document.createElement('span'); b.className = `badge ${n > 0 ? 'warn' : 'muted'}`; tt(b, key, { n }); host.appendChild(b); host.appendChild(document.createTextNode(' ')); };
+      add('admin_pending_rps', pendingRps ?? 0);
+      add('admin_pending_openings', pendingOpenings ?? 0);
+      if (!pendingRps && !pendingOpenings) { const p = document.createElement('span'); p.className = 'muted'; tt(p, 'admin_no_pending'); host.appendChild(p); }
+    }
+    /** 대기 건수는 목록과 따로 센다 — 표를 펼치지 않아도 배지는 맞는다(로드 때와 조작 뒤마다). */
+    async function refreshBadges() {
+      if (!hasSecret()) { pendingRps = approvedRps = pendingOpenings = null; renderBadges(); renderGuide(); return; }
+      try {
+        const [r, o] = await Promise.all([adminJson('GET', '/cia/rps'), adminJson('GET', '/cia/openings')]);
+        pendingRps = r.status === 200 ? r.body.rps.filter((e) => e.status === 'pending').length : null;
+        approvedRps = r.status === 200 ? r.body.rps.filter((e) => e.status === 'approved').length : null;
+        pendingOpenings = o.status === 200 ? o.body.openings.filter((x) => x.status === 'pending').length : null;
+      } catch { pendingRps = approvedRps = pendingOpenings = null; }
+      renderBadges();
+      renderGuide();
+    }
+
+    // ---- 안내 바 ----
+    function renderGuide() {
+      const done = [];
+      if (pendingRps === 0 && approvedRps >= 1) done.push('approve');
+      if (progress.revoked) done.push('revoke');
+      if (progress.opened) done.push('open');
+      const current = pendingRps > 0 ? 'approve' : pendingOpenings > 0 ? 'open' : 'revoke';
+      // 관리자 페이지는 서비스·지갑 주소를 모른다(설계 §1.3) — 같은 신원 기관의 계정 페이지만 잇는다.
+      Demo.guide({ done, current, links: { account: '/account' } });
+    }
+    // 언어·전문가 전환은 사전이 채우는 요소와 결과 카드만 바꾼다(Demo) — 스크립트가 만든 표는 여기서 다시 그린다.
+    for (const k of ['setLang', 'setExpert']) {
+      const orig = Demo[k];
+      Demo[k] = (v) => { orig(v); renderBadges(); renderAccounts(); renderRps(); renderOpenings(); renderState(); };
+    }
+
+    // ---- 계정 ----
+    function renderAccounts() {
+      const host = $('accounts');
+      if (!accounts) { placeholder(host, 'admin_need_secret'); return; }
+      if (!accounts.length) { placeholder(host, 'admin_no_accounts'); return; }
+      const t = table([['admin_col_uid'], ['admin_col_status'], ['admin_col_attrs'], ['admin_col_action']]);
+      const body = t.tBodies[0];
+      for (const a of accounts) {
+        const row = body.insertRow();
+        cell(row, a.uid);
+        cell(row, badge(a.disabled ? 'admin_acct_disabled' : 'admin_acct_active', a.disabled ? 'bad' : 'ok'));
+        const inputs = (a.attrs ?? []).map((v, i) => {
+          const input = document.createElement('input');
+          input.value = v; input.size = 4; input.dataset.attr = '1';
+          input.title = Demo.term(`attr${i}`);
+          return input;
         });
-        const cell = document.createElement('td');
-        inputs.forEach((i, idx) => { if (idx > 0) cell.appendChild(document.createTextNode(' ')); cell.appendChild(i); });
-        const save = document.createElement('button');
-        save.textContent = '저장';
-        save.addEventListener('click', async () => {
-          await call('POST', `/cia/accounts/${a.uid}/attrs`, { attrs: inputs.map((i) => i.value.trim()) });
-          loadAccounts();
-        });
+        const attrCell = row.insertCell();
+        inputs.forEach((input, i) => { if (i > 0) attrCell.appendChild(document.createTextNode(' ')); attrCell.appendChild(input); });
+        const act = row.insertCell();
+        act.appendChild(button('admin_save_btn', 'btn-ghost', () => saveAttrs(a.uid, inputs.map((i) => i.value.trim()))));
+        act.appendChild(document.createTextNode(' '));
+        act.appendChild(button('admin_sessions_btn', 'btn-ghost', () => toggleSessions(a.uid)));
+        act.appendChild(document.createTextNode(' '));
+        // 파괴적 조작은 uid 입력칸 + 계정 폐기 버튼 하나로 모은다 — 표에서는 그 칸을 채우기만 한다.
+        act.appendChild(button('admin_select_btn', 'btn-ghost', () => { $('uid').value = a.uid; $('uid').focus(); }));
         // V8(2026-09-24): 계정마다 세션 목록을 접었다 폈다 한다. 표가 들어갈 행은 계정 행 바로 아래에 둔다.
-        const sessions = document.createElement('button');
-        sessions.textContent = '세션';
-        const sessionsRow = document.createElement('tr');
-        const sessionsCell = document.createElement('td');
-        sessionsCell.colSpan = 5; sessionsCell.style.padding = '2px 8px';
-        sessionsRow.appendChild(sessionsCell);
-        sessionsRow.style.display = 'none';
-        sessions.addEventListener('click', async () => {
-          if (sessionsRow.style.display !== 'none') { sessionsRow.style.display = 'none'; return; }
-          sessionsRow.style.display = '';
-          await loadSessions(a.uid, sessionsCell);
-        });
-        const tr = document.createElement('tr');
-        [td(a.uid), td(a.disabled ? 'disabled' : ''), cell, td(save), td(sessions)].forEach((c) => tr.appendChild(c));
-        table.appendChild(tr);
-        table.appendChild(sessionsRow);
-      });
-      $('accounts').replaceChildren(table);
+        if (expandedUids.has(a.uid)) {
+          const sub = body.insertRow();
+          const c = sub.insertCell();
+          c.colSpan = 4;
+          renderSessions(a.uid, c);
+        }
+      }
+      host.replaceChildren(t);
     }
     /** 한 계정의 세션 목록(2026-09-24 V8). 폐기 버튼은 활성 세션에만 — 만료·이미 폐기된 세션은 각각 409·멱등이다. */
-    async function loadSessions(uid, cell) {
-      const r = await adminJson('GET', `/cia/admin/sessions?uid=${encodeURIComponent(uid)}`);
-      if (r.status !== 200) { cell.textContent = `${r.status}`; return; }
-      if (!r.body.sessions.length) { cell.textContent = '(세션 없음)'; return; }
-      const table = document.createElement('table');
-      r.body.sessions.forEach((s) => {
-        const status = s.revokedAt ? '폐기됨' : (s.expired === null ? '(체인 모름)' : (s.expired ? '만료' : '활성'));
-        let last = '';
-        if (!s.revokedAt && s.expired === false) {
-          const b = document.createElement('button');
-          b.textContent = '폐기';
-          b.addEventListener('click', async () => {
-            await call('POST', '/cia/revoke', { uid, scope: 'session', Cf_s: s.Cf_s });
-            loadSessions(uid, cell);
-          });
-          last = b;
-        }
-        table.appendChild(row([`${s.Cf_s.slice(0, 10)}…`, `chain ${s.chainid}`, `max_height ${s.max_height}`, `agent=${s.allowAgent}`, s.issuedAt, status, last]));
-      });
-      cell.replaceChildren(table);
+    function renderSessions(uid, host) {
+      const list = sessionsByUid[uid];
+      if (list === undefined) { const p = document.createElement('p'); p.className = 'muted'; tt(p, 'working'); host.replaceChildren(p); return; }
+      if (list === null) { const p = document.createElement('p'); p.className = 'muted'; tt(p, 'admin_load_failed'); host.replaceChildren(p); return; }
+      if (!list.length) { const p = document.createElement('p'); p.className = 'muted'; tt(p, 'admin_no_sessions'); host.replaceChildren(p); return; }
+      // 좁은 창에서 7칸은 카드를 넘는다 — 기술적인 칸(만료 블록·체인)은 전문가 보기에서만 펼친다.
+      const t = table([['admin_col_session'], ['admin_col_status'], ['rp_col_agent'], ['admin_col_issued'], ['admin_col_expiry', true], ['admin_col_chain', true], ['admin_col_action']]);
+      const body = t.tBodies[0];
+      for (const s of list) {
+        const row = body.insertRow();
+        cell(row, short(s.Cf_s, 8));
+        const active = !s.revokedAt && s.expired === false;
+        cell(row, badge(s.revokedAt ? 'admin_sess_revoked' : s.expired === null ? 'admin_sess_unknown' : s.expired ? 'admin_sess_expired' : 'admin_sess_active',
+          s.revokedAt ? 'bad' : active ? 'ok' : 'muted'));
+        cell(row, badge(String(s.allowAgent) === '1' ? 'rp_agent_yes' : 'rp_agent_no', String(s.allowAgent) === '1' ? 'ok' : 'muted'));
+        const at = cell(row, fmtAt(s.issuedAt));
+        at.title = s.issuedAt ?? '';
+        cell(row, String(s.max_height), 'expert');
+        cell(row, String(s.chainid), 'expert');
+        const act = row.insertCell();
+        if (active) act.appendChild(button('admin_revoke_session_btn', 'danger', () => revokeSession(uid, s.Cf_s)));
+      }
+      host.replaceChildren(t);
     }
-    async function loadRps() {
-      const r = await adminJson('GET', '/cia/rps');
-      if (r.status !== 200) { $('rps').textContent = `${r.status}`; return; }
-      const table = document.createElement('table');
-      r.body.rps.forEach((e) => {
-        const last = e.status === 'pending'
-          ? actionButtons([{ label: '승인', act: 'approve', key: 'a', val: e.arid }, { label: '거절', act: 'deny', key: 'a', val: e.arid }])
-          : (e.decidedAt ?? '');
-        table.appendChild(row([e.status, e.name, e.origin, `${e.arid.slice(0, 10)}…`, last]));
-      });
-      $('rps').replaceChildren(table);
-      $('rps').querySelectorAll('button').forEach((b) => b.addEventListener('click', async () => { await call('POST', `/cia/rps/${b.dataset.a}/${b.dataset.act}`); loadRps(); }));
+    async function loadAccounts() {
+      if (!hasSecret()) { placeholder($('accounts'), 'admin_need_secret'); return; }
+      try {
+        const r = await adminJson('GET', '/cia/accounts');
+        if (r.status !== 200) { accounts = null; placeholder($('accounts'), 'admin_load_failed'); setVerdict($('adminVerdict'), false, 'admin_load_failed', { reason: reasonFor(r), detail: safeDetail(r.body) }); return; }
+        accounts = r.body.accounts;
+      } catch (e) { accounts = null; placeholder($('accounts'), 'admin_load_failed'); setVerdict($('adminVerdict'), false, 'admin_load_failed', { reason: 'cia_unavailable', detail: e.message }); return; }
+      renderAccounts();
     }
-    async function loadOpenings() {
-      const r = await adminJson('GET', '/cia/openings');
-      if (r.status !== 200) { $('openings').textContent = `${r.status}`; return; }
-      if (!r.body.openings.length) { $('openings').textContent = '(없음)'; return; }
-      const table = document.createElement('table');
-      r.body.openings.forEach((o) => {
-        const last = o.status === 'pending'
-          ? actionButtons([{ label: '승인', act: 'approve', key: 'i', val: o.id }, { label: '거절', act: 'deny', key: 'i', val: o.id }])
-          : '';
-        table.appendChild(row([o.status, o.requestedAt, `arid ${o.arid.slice(0, 10)}…`, `PPID ${o.PPID.slice(0, 10)}…`, o.uid ?? (o.resolved === false ? '(역조회 실패)' : ''), o.allowAgent == null ? '' : `agent=${o.allowAgent}`, last]));
+    async function loadSessions(uid) {
+      try {
+        const r = await adminJson('GET', `/cia/admin/sessions?uid=${encodeURIComponent(uid)}`);
+        sessionsByUid[uid] = r.status === 200 ? r.body.sessions : null;
+      } catch { sessionsByUid[uid] = null; }
+      renderAccounts();
+    }
+    function toggleSessions(uid) {
+      if (expandedUids.has(uid)) { expandedUids.delete(uid); renderAccounts(); return; }
+      expandedUids.add(uid);
+      delete sessionsByUid[uid];      // '불러오는 중' 으로 다시 그린 뒤 채운다
+      renderAccounts();
+      loadSessions(uid);
+    }
+    function saveAttrs(uid, attrs) {
+      run('admin_attrs_failed', () => call('POST', `/cia/accounts/${uid}/attrs`, { attrs }), ({ body }) => {
+        setVerdict($('adminVerdict'), true, 'admin_attrs_title', () => ({ summary: Demo.t('admin_attrs_summary', { uid, attrs: attrs.join(', ') }), detail: safeDetail(body) }));
+        loadAccounts(); loadState();
       });
-      $('openings').replaceChildren(table);
-      $('openings').querySelectorAll('button').forEach((b) => b.addEventListener('click', async () => { await call('POST', `/cia/openings/${b.dataset.i}/${b.dataset.act}`); loadOpenings(); }));
+    }
+    function revokeSession(uid, Cf_s) {
+      if (!Demo.confirmDanger('confirm_revoke')) return;
+      run('admin_revoke_failed', () => call('POST', '/cia/revoke', { uid, scope: 'session', Cf_s }), ({ body }) => {
+        progress.revoked = true;
+        setVerdict($('adminVerdict'), true, 'revoked_ok', () => ({ summary: Demo.t('admin_session_revoke_summary'), detail: safeDetail(body) }));
+        loadSessions(uid); loadState();
+      });
     }
     $('accountsBtn').addEventListener('click', loadAccounts);
+    $('revokeBtn').addEventListener('click', () => {
+      const uid = $('uid').value.trim();
+      if (!Demo.confirmDanger('confirm_revoke')) return;
+      run('admin_revoke_failed', () => call('POST', '/cia/revoke', { uid, scope: 'account' }), ({ body }) => {
+        progress.revoked = true;
+        setVerdict($('adminVerdict'), true, 'revoked_ok', () => ({ summary: Demo.t('admin_revoke_summary', { uid }), detail: safeDetail(body) }));
+        loadAccounts(); loadState();
+      });
+    });
+    $('recoverBtn').addEventListener('click', () => {
+      const uid = $('uid').value.trim();
+      run('admin_recover_failed', () => call('POST', '/cia/account/set_disabled', { uid, disabled: false }), ({ body }) => {
+        setVerdict($('adminVerdict'), true, 'admin_recover_title', () => ({ summary: Demo.t('admin_recover_summary', { uid }), detail: safeDetail(body) }));
+        loadAccounts();
+      });
+    });
+
+    // ---- 서비스 ----
+    const RP_BADGE = { pending: ['admin_rp_pending', 'warn'], approved: ['admin_rp_approved', 'ok'], denied: ['admin_rp_denied', 'bad'] };
+    function renderRps() {
+      const host = $('rps');
+      if (!rps) { placeholder(host, 'admin_need_secret'); return; }
+      if (!rps.length) { placeholder(host, 'admin_no_rps'); return; }
+      const t = table([['admin_col_status'], ['admin_col_service'], ['admin_col_origin'], ['admin_col_arid', true], ['admin_col_decided'], ['admin_col_action']]);
+      const body = t.tBodies[0];
+      for (const e of rps) {
+        const row = body.insertRow();
+        const [key, kind] = RP_BADGE[e.status] ?? ['admin_unknown', 'muted'];
+        cell(row, badge(key, kind));
+        cell(row, e.name);
+        // origin 은 공백 없는 한 덩어리라 좁은 창에서 칸을 밀어낸다 — 칸 안에서 끊는다(demo.css 의 pre·kv 와 같은 규칙).
+        cell(row, e.origin).style.overflowWrap = 'anywhere';
+        cell(row, short(e.arid), 'expert');
+        const at = cell(row, fmtAt(e.decidedAt));
+        at.title = e.decidedAt ?? '';
+        const act = row.insertCell();
+        if (e.status === 'pending') {
+          act.appendChild(button('admin_approve_btn', null, () => decideRp(e, 'approve')));
+          act.appendChild(document.createTextNode(' '));
+          act.appendChild(button('admin_deny_btn', 'btn-ghost', () => decideRp(e, 'deny')));
+        }
+      }
+      host.replaceChildren(t);
+    }
+    async function loadRps() {
+      if (!hasSecret()) { placeholder($('rps'), 'admin_need_secret'); return; }
+      try {
+        const r = await adminJson('GET', '/cia/rps');
+        if (r.status !== 200) { rps = null; placeholder($('rps'), 'admin_load_failed'); setVerdict($('adminVerdict'), false, 'admin_load_failed', { reason: reasonFor(r), detail: safeDetail(r.body) }); return; }
+        rps = r.body.rps;
+      } catch (e) { rps = null; placeholder($('rps'), 'admin_load_failed'); setVerdict($('adminVerdict'), false, 'admin_load_failed', { reason: 'cia_unavailable', detail: e.message }); return; }
+      renderRps();
+    }
+    function decideRp(e, act) {
+      run('admin_rp_failed', () => call('POST', `/cia/rps/${e.arid}/${act}`), ({ body }) => {
+        const key = act === 'approve' ? 'admin_rp_approve_summary' : 'admin_rp_deny_summary';
+        setVerdict($('adminVerdict'), true, act === 'approve' ? 'admin_rp_approve_title' : 'admin_rp_deny_title', () => ({ summary: Demo.t(key, { name: e.name }), detail: safeDetail(body) }));
+        loadRps();
+      });
+    }
     $('rpsBtn').addEventListener('click', loadRps);
+
+    // ---- 개봉 요청 ----
+    const OPEN_BADGE = { pending: ['admin_rp_pending', 'warn'], approved: ['admin_rp_approved', 'ok'], denied: ['admin_rp_denied', 'bad'] };
+    function renderOpenings() {
+      const host = $('openings');
+      if (!openings) { placeholder(host, 'admin_need_secret'); return; }
+      if (!openings.length) { placeholder(host, 'admin_no_openings'); return; }
+      const t = table([['admin_col_status'], ['admin_col_requested'], ['admin_col_ppid'], ['admin_col_founduid'], ['rp_col_agent'], ['admin_col_arid', true], ['admin_col_action']]);
+      const body = t.tBodies[0];
+      for (const o of openings) {
+        const row = body.insertRow();
+        const [key, kind] = OPEN_BADGE[o.status] ?? ['admin_unknown', 'muted'];
+        cell(row, badge(key, kind));
+        const at = cell(row, fmtAt(o.requestedAt));
+        at.title = o.requestedAt ?? '';
+        cell(row, short(o.PPID));
+        if (o.uid) cell(row, o.uid);
+        else if (o.resolved === false) { const p = document.createElement('span'); p.className = 'muted'; tt(p, 'admin_open_unresolved'); cell(row, p); }
+        else cell(row, '');
+        if (o.allowAgent == null) cell(row, '');
+        else cell(row, badge(String(o.allowAgent) === '1' ? 'rp_agent_yes' : 'rp_agent_no', String(o.allowAgent) === '1' ? 'ok' : 'muted'));
+        cell(row, short(o.arid), 'expert');
+        const act = row.insertCell();
+        if (o.status === 'pending') {
+          act.appendChild(button('admin_approve_btn', null, () => decideOpening(o, 'approve')));
+          act.appendChild(document.createTextNode(' '));
+          act.appendChild(button('admin_deny_btn', 'btn-ghost', () => decideOpening(o, 'deny')));
+        }
+      }
+      host.replaceChildren(t);
+    }
+    async function loadOpenings() {
+      if (!hasSecret()) { placeholder($('openings'), 'admin_need_secret'); return; }
+      try {
+        const r = await adminJson('GET', '/cia/openings');
+        if (r.status !== 200) { openings = null; placeholder($('openings'), 'admin_load_failed'); setVerdict($('adminVerdict'), false, 'admin_load_failed', { reason: reasonFor(r), detail: safeDetail(r.body) }); return; }
+        openings = r.body.openings;
+      } catch (e) { openings = null; placeholder($('openings'), 'admin_load_failed'); setVerdict($('adminVerdict'), false, 'admin_load_failed', { reason: 'cia_unavailable', detail: e.message }); return; }
+      renderOpenings();
+    }
+    function decideOpening(o, act) {
+      run('admin_open_failed', () => call('POST', `/cia/openings/${o.id}/${act}`), async ({ body }) => {
+        // uid 는 승인 응답에 없다(resolved 만 온다) — 목록을 다시 읽어 그 기록에서 꺼낸다.
+        await loadOpenings();
+        const fresh = (openings ?? []).find((x) => x.id === o.id);
+        if (act === 'approve') {
+          progress.opened = true;
+          setVerdict($('adminVerdict'), true, 'admin_open_approve_title', () => (body?.resolved
+            ? { summary: Demo.t('admin_open_approve_summary', { uid: fresh?.uid ?? Demo.t('admin_unknown') }), detail: safeDetail(body) }
+            : { summary: Demo.t('admin_open_unresolved_summary'), detail: safeDetail(body) }));
+        } else {
+          setVerdict($('adminVerdict'), true, 'admin_open_deny_title', () => ({ summary: Demo.t('admin_open_deny_summary'), detail: safeDetail(body) }));
+        }
+      });
+    }
     $('openingsBtn').addEventListener('click', loadOpenings);
+
+    // ---- 폐기 목록 ----
+    function renderState() {
+      const host = $('stateKv');
+      host.textContent = '';
+      if (!ciaState) return;
+      const rows = [
+        ['admin_kv_root', ciaState.root],
+        ['admin_kv_epoch', ciaState.epoch],
+        ['admin_kv_pending', ciaState.pendingCount],
+        ['admin_kv_leaves', ciaState.leafCount],
+        ['admin_kv_creds', ciaState.credCount],
+        ['admin_kv_head', ciaState.head],
+      ];
+      for (const [k, v] of rows) {
+        const dt = document.createElement('dt'); tt(dt, k); host.appendChild(dt);
+        const dd = document.createElement('dd');
+        if (v === null || v === undefined) tt(dd, 'admin_unknown'); else dd.textContent = String(v);
+        host.appendChild(dd);
+      }
+    }
+    async function loadState() {
+      if (!hasSecret()) return;
+      try {
+        const r = await adminJson('GET', '/cia/state');
+        ciaState = r.status === 200 ? r.body : null;
+      } catch { ciaState = null; }
+      renderState();
+    }
+    $('stateBtn').addEventListener('click', () => {
+      run('admin_state_failed', () => call('GET', '/cia/state'), ({ body }) => {
+        ciaState = body;
+        renderState();
+        setVerdict($('adminVerdict'), true, 'admin_state_title', () => ({ summary: Demo.t('admin_state_summary', { epoch: body.epoch, leaves: body.leafCount, pending: body.pendingCount }), detail: safeDetail(body) }));
+      });
+    });
+    $('publishBtn').addEventListener('click', () => {
+      if (!Demo.confirmDanger('confirm_publish')) return;
+      run('admin_publish_failed', () => call('POST', '/cia/publish', {}), ({ body }) => {
+        if (body?.published) progress.revoked = true;
+        setVerdict($('adminVerdict'), true, 'admin_publish_title', () => (body?.published
+          ? { summary: Demo.t('admin_publish_summary', { epoch: body.epoch, n: (body.leaves ?? []).length }), detail: safeDetail(body) }
+          : { summary: Demo.t('admin_publish_none'), detail: safeDetail(body) }));
+        loadState(); loadAccounts();
+      });
+    });
+
+    // ---- 기동 ----
+    function reloadAll() {
+      if (!hasSecret()) { accounts = rps = openings = ciaState = null; renderAccounts(); renderRps(); renderOpenings(); renderState(); refreshBadges(); return; }
+      loadAccounts(); loadRps(); loadOpenings(); loadState(); refreshBadges();
+    }
+    $('reloadBtn').addEventListener('click', reloadAll);
+    $('rememberSecret').addEventListener('change', () => writeKept($('rememberSecret').checked ? $('secret').value : null));
+    // 타이핑이 멎으면 한 번만 불러온다 — 키 입력마다 401 을 내지 않고, 사용자가 따로 버튼을 누를 필요도 없다.
+    let secretTimer = null;
+    $('secret').addEventListener('input', () => {
+      if ($('rememberSecret').checked) writeKept($('secret').value);
+      clearTimeout(secretTimer);
+      secretTimer = setTimeout(() => { if (hasSecret()) reloadAll(); }, 600);
+    });
+    $('secret').addEventListener('change', () => { clearTimeout(secretTimer); if (hasSecret()) reloadAll(); });
+
+    Demo.init({ page: 'admin' });
+    const kept = readKept();
+    if (kept) { $('secret').value = kept; $('rememberSecret').checked = true; }
+    renderBadges();
+    if (hasSecret()) reloadAll(); else renderGuide();
   </script>
 </body>
 </html>
