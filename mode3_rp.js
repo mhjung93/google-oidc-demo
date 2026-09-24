@@ -19,7 +19,7 @@ import { createShare, partialDecrypt, combinePublicKey, verifyShare } from './li
 import { signOpenRequest, signOpenResult } from './lib/mode3_opening.js';
 import { deployVerifier, deployFactory, deployAttrGate, decodeExecuteCalldata, parseExecuteReceipt, FACTORY_ABI, MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT, ALLOWED_COUNTRIES_DEFAULT, MIN_AGE_DEFAULT } from './lib/mode3_onchain.js';
 import { setRoot } from './lib/mode3_set_tree.js';
-import { buildRpHealth, applyHealthHeaders } from './lib/mode3_health.js';
+import { buildRpHealth, applyHealthHeaders, bounded } from './lib/mode3_health.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.MODE3_RP_PORT) || 3100;
@@ -300,7 +300,7 @@ app.get('/api/mode3/rp_info', (req, res) => {
 app.get('/mode3/health', async (req, res) => {
   applyHealthHeaders(req, res, [WALLET_ORIGIN, CIA_URL]);
   let chain = null;
-  try { chain = { id: chainId.toString(), head: (await provider.getBlockNumber()).toString() }; } catch { /* 체인 없음 */ }
+  try { chain = { id: chainId.toString(), head: (await bounded(provider.getBlockNumber())).toString() }; } catch { /* 체인 없음·응답 없음 */ }
   const p = currentPredicates();
   res.json(buildRpHealth({ now: new Date().toISOString(), chain, status: reg.status, active: !!verifier, inactiveReason: verifier ? null : inactiveReason(), maxRootAge: Number(EFFECTIVE_MAX_ROOT_AGE), rootAge: lastRootAge,
     sessions: sessions.size, predicates: { countries: p.allowedCountries.length, minAge: Number(p.minAge) }, walletAgentOrigin: WALLET_ORIGIN, ciaUrl: CIA_URL }));

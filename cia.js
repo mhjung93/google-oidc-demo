@@ -27,7 +27,7 @@ import { signRpCert } from './lib/mode3_rp_cert.js';
 import { isTracePoint, createShare, combinePublicKey, partialDecrypt, combineDecrypt, resolveTagPlaintext, proveShare } from './lib/mode3_trace.js';
 import { openRequestMessage, openResultMessage, recoverSigner, isFreshTs } from './lib/mode3_opening.js';
 import { CIA_STATE_VERSION, defaultCiaState, migrateCiaState } from './lib/mode3_cia_state.js';
-import { buildAaHealth, applyHealthHeaders } from './lib/mode3_health.js';
+import { buildAaHealth, applyHealthHeaders, bounded } from './lib/mode3_health.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.CIA_PORT) || 4100;
@@ -63,6 +63,9 @@ for (const item of (process.env.CIA_CHAIN_RPCS || '').split(',').map((s) => s.tr
   CHAIN_RPCS.set(id, item.slice(i + 1).trim());
 }
 const chainProviders = new Map();   // chainid → JsonRpcProvider (재사용)
+// 자기 provider(RPC_URL)의 chainId — health 의 chain.id. head 를 읽는 provider 와 같은 체인이어야 하므로
+// CHAIN_RPCS 의 첫 키를 쓰지 않는다(여러 체인이 설정돼 있으면 어긋난다). 기동 시 한 번 읽는다.
+let selfChainId = null;
 
 // 데모 계정. Mode 2 의 testuser 관례를 따른 프로토타입이다 — 실제 계정 체계가 아니다.
 const DEMO_ACCOUNTS = {
@@ -177,10 +180,9 @@ async function loadState() {
   }
   tree = await createRevocationTree();
   for (const l of state.revoked) await tree.insert(BigInt(l));
-  if (CHAIN_RPCS.size === 0) {
-    try { CHAIN_RPCS.set((await ethWallet.provider.getNetwork()).chainId.toString(), RPC_URL); }
-    catch (e) { console.warn(`[cia] 기동 시 chainId 를 읽지 못했다 — CIA_CHAIN_RPCS 가 없으면 발급은 503: ${e.message}`); }
-  }
+  try { selfChainId = (await ethWallet.provider.getNetwork()).chainId.toString(); }
+  catch (e) { console.warn(`[cia] 기동 시 chainId 를 읽지 못했다 — health 의 chain.id 가 비고, CIA_CHAIN_RPCS 가 없으면 발급은 503: ${e.message}`); }
+  if (CHAIN_RPCS.size === 0 && selfChainId) CHAIN_RPCS.set(selfChainId, RPC_URL);
   // 이행(v6→v7 등)이 pending 리프를 남겼으면 게시를 한 번 자동으로 시도한다 — 그러지 않으면 다음 하트비트까지
   // 옛(보증되지 않은) C_u 로도 여전히 π 가 만들어져 세션 발급이 통과한다(2026-09-22 최종 리뷰 Important, Ruling 8).
   // RPC 가 아직 없으면(또는 다른 이유로 게시가 실패하면) 경고만 남긴다 — 기동 자체는 막지 않는다.
@@ -267,8 +269,8 @@ app.get('/mode3/health', async (req, res) => {
   const rpOrigins = Object.values(state.rps).filter((r) => r.status === 'approved').map((r) => r.origin);
   applyHealthHeaders(req, res, [...rpOrigins, WALLET_AGENT_ORIGIN]);
   let chain = null, last = null;
-  try { const head = await headHeight(); chain = { id: [...CHAIN_RPCS.keys()][0] ?? '', head: head.toString() }; } catch { /* 체인 없음 */ }
-  try { if (chain && LOG_ADDRESS) last = (await new ethers.Contract(LOG_ADDRESS, LOG_ABI, ethWallet).lastPublishedBlock()).toString(); } catch { /* 로그 못 읽음 */ }
+  try { const head = await bounded(headHeight()); chain = { id: selfChainId ?? '', head: head.toString() }; } catch { /* 체인 없음·응답 없음 */ }
+  try { if (chain && LOG_ADDRESS) last = (await bounded(new ethers.Contract(LOG_ADDRESS, LOG_ABI, ethWallet).lastPublishedBlock())).toString(); } catch { /* 로그 못 읽음 */ }
   res.json(buildAaHealth({ now: new Date().toISOString(), chain, root: tree.getRoot().toString(), epoch: state.epoch, lastPublishedBlock: last, heartbeatBlocks: Number(HEARTBEAT_BLOCKS),
     pendingLeaves: state.pending.length, pendingRps: Object.values(state.rps).filter((r) => r.status === 'pending').length, pendingOpenings: state.openings.filter((o) => o.status === 'pending').length,
     accounts: Object.keys(state.accounts).length, walletOrigin: WALLET_AGENT_ORIGIN, rpOrigins }));

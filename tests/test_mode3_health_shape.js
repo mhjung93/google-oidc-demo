@@ -1,6 +1,6 @@
 // lib/mode3_health.js 의 순수 함수. node tests/test_mode3_health_shape.js
 import assert from 'node:assert/strict';
-import { SENSITIVE_KEYS, shortRoot, rootAge, allowOrigin, buildAaHealth, buildRpHealth, buildWalletHealth } from '../lib/mode3_health.js';
+import { SENSITIVE_KEYS, shortRoot, rootAge, allowOrigin, bounded, buildAaHealth, buildRpHealth, buildWalletHealth } from '../lib/mode3_health.js';
 let fails = 0;
 function t(name, fn) { try { fn(); console.log('ok   -', name); } catch (e) { fails++; console.log('FAIL -', name, '\n      ', e.message); } }
 function deepKeys(o, acc = []) { if (o && typeof o === 'object') for (const [k, v] of Object.entries(o)) { acc.push(k); deepKeys(v, acc); } return acc; }
@@ -36,4 +36,11 @@ t('값 형식: string|boolean|number|null|string[] 뿐', () => {
   const ok = (v) => v === null || ['string', 'boolean', 'number'].includes(typeof v) || (Array.isArray(v) && v.every((x) => typeof x === 'string')) || (v && typeof v === 'object' && Object.values(v).every(ok));
   assert.ok(ok(h));
 });
+// bounded: 체인 조회 예산. 넘기면 reject → 서버의 기존 catch 가 chain: null 로 떨어뜨린다.
+const passed = await bounded(Promise.resolve('x'), 50);
+t('bounded: 예산 안에 끝나면 값 그대로', () => assert.equal(passed, 'x'));
+let rejected = null;
+await bounded(new Promise(() => {}), 30).catch((e) => { rejected = e.message; });
+t('bounded: 예산을 넘기면 timeout 으로 reject', () => assert.equal(rejected, 'timeout'));
+
 if (fails) { console.log(`\n${fails} FAIL`); process.exit(1); } else console.log('\nall ok');
