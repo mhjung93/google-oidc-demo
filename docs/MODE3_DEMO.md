@@ -622,9 +622,11 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
   (등록 uid·`s_u`·`sk_u`·`Cf_u`·`Cf_s`)이 세 응답 어디에도 없는지 확인한다.
 - **`countedTxHashes` 가 자란다.** 지갑 에이전트가 `/wallet/tx/record` 의 중복 집계를 막으려고 처리한 트랜잭션 해시를 Set 에
   모은다. **왜 지금 안 고치나**: 메모리에만 있어 재시작이면 사라지고, 한 시연에서 보내는 트랜잭션 수는 손에 꼽는다.
-- **세션 라우트의 서비스 대조가 fail-open 이다.** `/wallet/revalidate`·`/wallet/request` 는 본문 `arid` 가 있으면 그것과, 없으면
-  `Origin` 헤더와 세션의 서비스를 대조하지만 **둘 다 없으면 `r_s` 만으로 판정한다** — 브라우저 밖의 서버-대-서버 호출, 그리고
-  커밋 `8a7cb62` 이전에 만들어진 세션이 그렇다. 브라우저는 교차 오리진 요청에 늘 `Origin` 을 붙이므로 브라우저 공격면은
+- **세션 라우트의 서비스 대조가 fail-open 이다.** `/wallet/revalidate`·`/wallet/request` 는 요청에 있는 서비스 단서를 **전부**
+  세션과 대조한다 — 요청 `Origin` 과 세션 오리진이 둘 다 있으면 같아야 하고, 본문 `arid` 가 있으면 세션 `arid` 와 같아야 한다
+  (본문 `arid` 는 공개값이라 그것을 실어도 오리진 대조가 꺼지지 않는다). 남는 fail-open 은 **대조할 단서가 하나도 없을 때**다:
+  오리진 쌍이 갖춰지지 않고(브라우저 밖의 서버-대-서버 호출, 또는 커밋 `8a7cb62` 이전에 만들어져 `origin` 이 적히지 않은 세션)
+  본문 `arid` 도 없으면 `r_s` 만으로 판정한다. 브라우저는 교차 오리진 요청에 늘 `Origin` 을 붙이므로 브라우저 공격면은
   닫혀 있다. **왜 지금 안 고치나**: 더 조이려면 `arid` 를 필수로 만들어야 하고 그것은 `mode3/rp.html` 과의 계약을 바꾼다.
 - **오류 이름의 우선순위.** 마스크 밖 공개 워드가 0 이 아니면서 root 도 낡은 입력은 이제 `StaleRevocationRoot` 가 아니라
   `BadDisclosure` 로 되돌아간다 — 마스크 위생 검사가 외부 `log.root()` 읽기보다 앞에 있기 때문이다(싼 검사를 먼저 하는 순서).
@@ -658,6 +660,15 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
   올린다면 `mode3_rp_registration.json` 의 `factoryAddress`·`verifierAddress` 를 지우고 RP 를 재시작해 **팩토리를 새로
   배포**한다(위 재시연 세트를 통째로 타도 된다). 지갑 쪽 참조는 `artifacts/` 를 런타임에 읽으므로 커밋된 해시 파일은
   없다 — 코드 쪽은 `npx hardhat compile` 이면 끝난다.
+  **그 `npx hardhat compile` 이 첫 단계다**(2026-09-25 최종 리뷰 F-5). `artifacts/` 는 gitignore 대상인데 팩토리 **배포**
+  (`lib/mode3_onchain.js` `deployFactory`)와 지갑의 **참조 코드 대조**(`verifyReferenceCode`)가 *같은* 디렉터리를 읽는다.
+  컴파일하지 않고 띄우면 RP 가 옛 바이트코드로 팩토리를 배포하고 참조 대조는 같은 옛 산출물과 비교하므로 **통과해 버린다** —
+  그런데 JS 의 `payloadDigest` 는 새 16워드 형식이라 `factory_code_mismatch` 가 아니라 **모든 `execute` 가 `BadSignature`**
+  로 실패한다. 증상이 원인에서 멀어 훨씬 찾기 어렵다.
+  같은 이유로 **재배포 기준선은 `4aa5589` 에 고정돼 있지 않다**: solc 가 소스 텍스트의 메타데이터 해시를 바이트코드에 넣으므로
+  `Mode3Wallet.sol`·`Mode3WalletFactory.sol` 은 **주석만 고쳐도** 배포 코드가 바뀐다(실측: 최종 리뷰 F-4 의 주석 한 줄로
+  `Mode3Wallet`·`Mode3WalletFactory` 의 `deployedBytecode` 가 길이는 그대로인 채 값이 달라졌다 — `PiCredVerifier` 는 그대로).
+  그 두 파일을 건드린 커밋 뒤에는 팩토리를 다시 배포한다.
 - 데모 계정은 `cia.js`의 `DEMO_ACCOUNTS`(`testuser`/`password123` → uid 12345, `alice`/`alicepw` → uid 67890). 지갑 에이전트는 한 계정만 등록한다.
 - `CIA_ADMIN_SECRET` 없이 띄운 CIA 에서 사용자 페이지의 폐기를 누르지 않는다 — 자기 폐기는 시크릿 없이도 되지만 복구(`set_disabled`)와 게시는 503 이라 계정이 되돌릴 수 없게 비활성으로 남는다.
 - **한계**: 트랜잭션 해시로 개봉을 요청하는 경로는 체인을 읽을 수 있는 누구나 이 서비스의 트랜잭션에 대해 개봉을 신청할 수 있게

@@ -279,7 +279,7 @@ try {
 
   // 2026-09-25 리뷰 D-4: precheck 의 r_s 분기와 같은 규칙을 세션 라우트에도. 지금은 CORS 가 서비스 오리진 하나만
   // 열어 브라우저에서는 실현되지 않지만, CORS 는 브라우저에만 걸리므로 서버가 직접 거절해야 한다.
-  await t('D-4: 세션 라우트는 남의 서비스 요청을 세션 없는 것으로 다룬다 — 본문 arid·요청 오리진이 세션과 다르면 404 no_session', async () => {
+  await t('D-4: 세션 라우트는 남의 서비스 요청을 세션 없는 것으로 다룬다 — 본문 arid·요청 오리진이 세션과 다르면 404 no_session (F-1: 맞는 arid 로도 Origin 대조를 끄지 못한다)', async () => {
     const otherArid = (BigInt(arid) + 1n).toString();
     const evilOrigin = { Origin: 'http://evil.example' };
     const rq = (extra, headers) => wallet.post('/wallet/request', { r_s: S2, body: 'ping', ...extra }, headers);
@@ -287,12 +287,18 @@ try {
     assert.equal(badArid.status, 404, j(badArid.body)); assert.equal(badArid.body.reason, 'no_session');
     const badOrigin = await rq({}, evilOrigin);
     assert.equal(badOrigin.status, 404, j(badOrigin.body)); assert.equal(badOrigin.body.reason, 'no_session');
+    // 2026-09-25 최종 리뷰 F-1: arid 는 비밀이 아니다(GET /api/mode3/rp_info 가 그대로 싣는다). 맞는 arid 를
+    // 실어도 Origin 대조가 꺼지면 안 된다 — 둘 다 있으면 둘 다 본다.
+    const goodAridBadOrigin = await rq({ arid }, evilOrigin);
+    assert.equal(goodAridBadOrigin.status, 404, j(goodAridBadOrigin.body)); assert.equal(goodAridBadOrigin.body.reason, 'no_session');
     const same = await rq({ arid }, { Origin: stack.rpOriginForWallet });
     assert.equal(same.status, 200, j(same.body)); assert.equal(typeof same.body.sig, 'string');
     const rvArid = await revalidate(S2, { arid: otherArid });
     assert.equal(rvArid.status, 404, j(rvArid.body)); assert.equal(rvArid.body.reason, 'no_session');
     const rvOrigin = await wallet.post('/wallet/revalidate', { r_s: S2 }, evilOrigin);
     assert.equal(rvOrigin.status, 404, j(rvOrigin.body)); assert.equal(rvOrigin.body.reason, 'no_session');
+    const rvGoodAridBadOrigin = await wallet.post('/wallet/revalidate', { r_s: S2, arid }, evilOrigin);
+    assert.equal(rvGoodAridBadOrigin.status, 404, j(rvGoodAridBadOrigin.body)); assert.equal(rvGoodAridBadOrigin.body.reason, 'no_session');
   });
 
   await t('allowAgent=1 로그인: 공개 입력 [5] 가 1', async () => {

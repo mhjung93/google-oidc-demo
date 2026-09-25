@@ -229,15 +229,18 @@ async function checkService({ arid, origin, cert_s, pk_trace, factoryAddress }) 
   return null;
 }
 
-/** 세션 라우트(/wallet/revalidate·/wallet/request)의 서비스 대조(2026-09-25 리뷰 D-4). precheck 의 r_s 분기와 같은 규칙 —
- *  남의 서비스 세션은 "없는 것"과 같이 다룬다(새 사유를 만들지 않는다). 지금은 loginCors 가 오리진 하나만 허용해
- *  브라우저에서는 실현되지 않지만 CORS 는 브라우저에만 걸리고, 서비스를 둘 이상 열면 그 순간 교차 서비스 인증이 된다.
- *  요청이 가리키는 서비스는 본문 arid 가 있으면 그것, 없으면 요청 오리진(로그인 때 세션에 적은 서비스 오리진)이다.
- *  둘 다 없으면(브라우저 밖 호출, 또는 origin 을 적기 전에 만들어진 옛 세션) 지금처럼 r_s 만으로 판정한다. */
+/** 세션 라우트(/wallet/revalidate·/wallet/request)의 서비스 대조(2026-09-25 리뷰 D-4). 남의 서비스 세션은 "없는 것"과
+ *  같이 다룬다(새 사유를 만들지 않는다). 지금은 loginCors 가 오리진 하나만 허용해 브라우저에서는 실현되지 않지만
+ *  CORS 는 브라우저에만 걸리고, 서비스를 둘 이상 열면 그 순간 교차 서비스 인증이 된다.
+ *  **있는 단서는 전부 본다**(최종 리뷰 F-1): 요청 오리진과 세션 오리진이 둘 다 있으면 같아야 하고, 본문 arid 가
+ *  있으면 세션 arid 와 같아야 한다. 본문 arid 는 precheck 의 r_s 분기와 달리 cert_s 로 인증된 값이 아니고 공개돼
+ *  있으므로(GET /api/mode3/rp_info 가 그대로 싣는다), 그것을 실었다는 이유로 오리진 대조를 끄면 막으려던 교차
+ *  서비스 사용이 그대로 통과한다. 둘 다 없을 때만(브라우저 밖 호출, 또는 origin 을 적기 전에 만들어진 옛 세션)
+ *  지금처럼 r_s 만으로 판정한다. */
 function sessionMatchesRequester(req, s, arid) {
-  if (arid !== undefined && arid !== null) return String(arid) === String(s.arid);
   const origin = req.get('Origin');
-  if (origin && s.origin) return origin === s.origin;
+  if (origin && s.origin && origin !== s.origin) return false;
+  if (arid !== undefined && arid !== null) return String(arid) === String(s.arid);
   return true;
 }
 

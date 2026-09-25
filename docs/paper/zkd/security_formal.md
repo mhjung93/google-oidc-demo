@@ -468,14 +468,14 @@ JS 쪽은 다섯 필드에 기본값을 두지 않고 빠뜨리면 던진다(`pa
 | 행 | 갱신 내용 | 구현 |
 |---|---|---|
 | S3–S10 | 공개 입력 25개가 **정규 10진 문자열**이어야 한다(아니면 `malformed`), `groth16.verify` 에도 정규형을 넘긴다 | `lib/mode3_rp.js verifyLogin` |
-| S11 | `policySetRoot` 가 bigint 면 `set_sel ≠ 0` 일 때 `set_root = policySetRoot` 강제(`bad_disclosure`), 로그인·재검증 공통; `null` 이면 예전처럼 검사하지 않는다 | `lib/mode3_rp.js createRpVerifier`, `mode3_rp.js` (`ALLOWED_COUNTRIES_ROOT`) |
+| S11 | `policySetRoot` 가 bigint 면 `set_sel ≠ 0` 일 때 `set_root = policySetRoot` 강제(`bad_disclosure`), 로그인·재검증 공통; `null` 이면 예전처럼 검사하지 않는다. **집합 root 만 묶고 어느 슬롯인지(`set_sel`)는 묶지 않는다** — 특정 속성 슬롯의 소속이 필요한 서비스는 `set_sel` 을 스스로 봐야 한다(데모 RP 의 `require.countrySet` 이 `set_sel = 2` 를 따로 요구한다) | `lib/mode3_rp.js createRpVerifier`, `mode3_rp.js` (`ALLOWED_COUNTRIES_ROOT`) |
 | S12 | 재검증이 세션의 `max_height`·`allowAgent` 를 이번 성명의 값으로 다시 묶는다(세션 기록이 마지막 증명과 어긋나지 않게) | `mode3_rp.js /api/mode3/revalidate` |
 | S19 (신규) | `GET /api/mode3/open/:id` 도 검증기가 없으면 503 fail-closed(다른 라우트와 같은 자세) | `mode3_rp.js` |
 | K1 | ⑤″ 마스크 비트가 0 인 슬롯의 `lo`·`hi` 가 0 이 아니면 `BadDisclosure`; σ 다이제스트 16워드 | `contracts/Mode3Wallet.sol` (`_checkStatement`·`execute`) |
 | K12 | execute 꼬리는 11워드 그대로, σ_tx 다이제스트만 16워드 | `contracts/Mode3Wallet.sol`, `lib/mode3_onchain.js payloadDigest`·`statementDigestFields` |
 | W7 | 다이제스트 16워드 — 성명 쪽 다섯은 `statementDigestFields(publicSignals)` 로 이번에 붙일 π 에서 뽑는다(기본값 없음, 빠뜨리면 throw) | `lib/mode3_onchain.js:87-103`, `mode3_wallet_agent.js:748` |
 | W12 | W_ref 에 팩토리 상한 밴드 대조를 더한다(`bad_factory` + `detail`) — 코드 대조는 immutable 을 마스킹하므로 이 둘을 못 잡는다 | `lib/mode3_onchain.js FACTORY_MAX_ROOT_AGE_BAND`·`FACTORY_MAX_LIFETIME_BAND`, `mode3_wallet_agent.js checkService` |
-| W13 (신규) | `/wallet/revalidate`·`/wallet/request` 가 요청이 가리키는 서비스와 세션의 `arid` 를 대조한다(다르면 404 `no_session`) | `mode3_wallet_agent.js sessionMatchesRequester` |
+| W13 (신규) | `/wallet/revalidate`·`/wallet/request` 가 요청에 있는 서비스 단서를 **전부** 세션과 대조한다 — 요청 오리진과 세션 오리진이 둘 다 있으면 같아야 하고, 본문 `arid` 가 있으면 세션 `arid` 와 같아야 한다(다르면 404 `no_session`). 본문 `arid` 는 `cert_s` 로 인증된 값이 아니고 공개돼 있으므로(`GET /api/mode3/rp_info`) 그것을 실었다는 이유로 오리진 대조가 꺼지지는 않는다 | `mode3_wallet_agent.js sessionMatchesRequester` |
 | A11 | 결정(승인·거절)된 개봉 항목에서 `D_svc`·`c1`·`c2` 를 지운다 — 거절된 요청의 복호 재료가 `x_AA` 와 같은 파일에 남지 않는다 | `cia.js` |
 | A18 | 만료 세션 기록 정리가 원자적이다: 체인별 head 를 계정 순회 **전에** 모두 읽고 순회에는 `await` 가 없다(발급과의 경합으로 방금 발급된 기록이 덮여 사라지던 것) | `cia.js pruneExpiredSessions` |
 
@@ -484,10 +484,12 @@ JS 쪽은 다섯 필드에 기본값을 두지 않고 빠뜨리면 던진다(`pa
 
 ### 11.3 한계 추가 (§5·§8·§10.3 위에)
 
-- **(k) 세션 라우트의 서비스 대조는 fail-open 이다.** `/wallet/revalidate`·`/wallet/request` 는 본문 `arid` 가 있으면 그것과, 없으면
-  `Origin` 헤더와 세션의 서비스를 대조하지만 **둘 다 없으면 `r_s` 만으로 판정한다**(브라우저 밖의 서버-대-서버 호출, 그리고
-  `8a7cb62` 이전에 만들어져 `origin` 이 적히지 않은 세션). 브라우저는 교차 오리진 요청에 늘 `Origin` 을 붙이므로 (A9) 아래
-  브라우저 공격면은 닫혀 있다. 더 조이려면 `arid` 를 필수로 만들어야 하고, 그것은 `mode3/rp.html` 과의 계약을 바꾼다.
+- **(k) 세션 라우트의 서비스 대조는 fail-open 이다.** `/wallet/revalidate`·`/wallet/request` 는 요청에 있는 서비스 단서를 **전부**
+  세션과 대조한다(요청 `Origin` 과 세션 오리진이 둘 다 있으면 같아야 하고, 본문 `arid` 가 있으면 세션 `arid` 와 같아야 한다).
+  남는 fail-open 은 **대조할 단서가 하나도 없을 때**다 — 오리진 쌍이 갖춰지지 않고(브라우저 밖의 서버-대-서버 호출, 또는
+  `8a7cb62` 이전에 만들어져 `origin` 이 적히지 않은 세션) 본문 `arid` 도 없으면 `r_s` 만으로 판정한다. 브라우저는 교차 오리진
+  요청에 늘 `Origin` 을 붙이므로 (A9) 아래 브라우저 공격면은 닫혀 있다. 더 조이려면 `arid` 를 필수로 만들어야 하고, 그것은
+  `mode3/rp.html` 과의 계약을 바꾼다.
 - **(l) 오류 우선순위.** 마스크 밖 공개 워드가 더럽혀져 있으면서 root 도 낡은 입력은 이제 `StaleRevocationRoot` 가 아니라
   `BadDisclosure` 로 되돌아간다 — 위생 검사가 외부 `log.root()` 읽기보다 **앞**에 있기 때문이다(싼 검사를 먼저 하는 순서).
   어느 테스트도 그 조합을 단언하지 않고 어느 JS 도 오류 이름으로 분기하지 않으므로 관측되는 계약 차이는 없지만, 그 조합을
