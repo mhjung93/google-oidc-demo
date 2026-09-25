@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { ethers } from 'ethers';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
-import { getProvider } from './helpers/mode3_chain.mjs';
+import { getProvider, deployRevocationLog } from './helpers/mode3_chain.mjs';
 import { VKEY_PATH } from '../lib/mode3_wallet.js';
 import { createRpVerifier } from '../lib/mode3_rp.js';
 import { randomScalar } from '../lib/mode3_credential.js';
@@ -277,6 +277,24 @@ try {
     assert.equal(typeof r.body.pk_i, 'string');
   });
 
+  // 2026-09-25 리뷰 D-4: precheck 의 r_s 분기와 같은 규칙을 세션 라우트에도. 지금은 CORS 가 서비스 오리진 하나만
+  // 열어 브라우저에서는 실현되지 않지만, CORS 는 브라우저에만 걸리므로 서버가 직접 거절해야 한다.
+  await t('D-4: 세션 라우트는 남의 서비스 요청을 세션 없는 것으로 다룬다 — 본문 arid·요청 오리진이 세션과 다르면 404 no_session', async () => {
+    const otherArid = (BigInt(arid) + 1n).toString();
+    const evilOrigin = { Origin: 'http://evil.example' };
+    const rq = (extra, headers) => wallet.post('/wallet/request', { r_s: S2, body: 'ping', ...extra }, headers);
+    const badArid = await rq({ arid: otherArid }, { Origin: stack.rpOriginForWallet });
+    assert.equal(badArid.status, 404, j(badArid.body)); assert.equal(badArid.body.reason, 'no_session');
+    const badOrigin = await rq({}, evilOrigin);
+    assert.equal(badOrigin.status, 404, j(badOrigin.body)); assert.equal(badOrigin.body.reason, 'no_session');
+    const same = await rq({ arid }, { Origin: stack.rpOriginForWallet });
+    assert.equal(same.status, 200, j(same.body)); assert.equal(typeof same.body.sig, 'string');
+    const rvArid = await revalidate(S2, { arid: otherArid });
+    assert.equal(rvArid.status, 404, j(rvArid.body)); assert.equal(rvArid.body.reason, 'no_session');
+    const rvOrigin = await wallet.post('/wallet/revalidate', { r_s: S2 }, evilOrigin);
+    assert.equal(rvOrigin.status, 404, j(rvOrigin.body)); assert.equal(rvOrigin.body.reason, 'no_session');
+  });
+
   await t('allowAgent=1 로그인: 공개 입력 [5] 가 1', async () => {
     const rs = newRs();
     const r = await login(rs, { allowAgent: '1' });
@@ -303,6 +321,31 @@ try {
     const rogue = await deployFactory(signer, { verifierAddress: await fake.getAddress(), arid: BigInt(arid), pkCIA: pk_CIA, pkTrace: pk_trace, logAddress: cia.logAddress });
     const r = await login(newRs(), { factoryAddress: rogue });
     assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'bad_factory'); assert.equal(r.body.detail, 'verifier_code_mismatch');
+  });
+
+  // 2026-09-25 리뷰 I-3(+시험 공백 E-2): 위 두 건은 arid·코드만 본다. 나머지 생성자 인자 — 폐기 로그·pk_CIA·pk_trace 와
+  // 참조 코드 대조가 0 으로 지우는 maxRootAge·maxLifetime — 도 값으로 막히는지 한 번에 본다. 상한이 너무 크면 AA 가
+  // 게시를 멈춰도 온체인 실행이 계속되고(폐기 신선도 상실), 0 이면 그 계정의 모든 execute 가 revert 해 이미 보낸 자산이
+  // 영구 동결된다(주소가 이 인자들로 결정돼 다른 값으로 재배포할 수 없다).
+  await t('I-3/E-2: 팩토리의 log·pk_CIA·pk_trace·maxRootAge·maxLifetime 이 기대와 다르면 409 bad_factory', async () => {
+    const signer = await provider.getSigner(0);
+    const v = await deployVerifier(signer);
+    const base = { verifierAddress: v, arid: BigInt(arid), pkCIA: pk_CIA, pkTrace: pk_trace, logAddress: cia.logAddress };
+    const otherLog = (await deployRevocationLog(await signer.getAddress(), provider)).address;   // 서비스가 통제하는 로그
+    const cases = [
+      ['다른 폐기 로그', { ...base, logAddress: otherLog }],
+      ['다른 pk_CIA', { ...base, pkCIA: { x: pk_CIA.x + 1n, y: pk_CIA.y } }],
+      ['다른 pk_trace', { ...base, pkTrace: { x: BigInt(pk_trace.x) + 1n, y: BigInt(pk_trace.y) } }],
+      ['maxRootAge 상한 밖', { ...base, maxRootAge: 2n ** 40n }],
+      ['maxRootAge 0 (계정 영구 동결)', { ...base, maxRootAge: 0n }],
+      ['maxLifetime 상한 밖', { ...base, maxLifetime: 2n ** 40n }],
+    ];
+    for (const [name, opts] of cases) {
+      const f = await deployFactory(signer, opts);
+      const r = await login(newRs(), { factoryAddress: f });
+      assert.equal(r.status, 409, `${name}: ${j(r.body)}`);
+      assert.equal(r.body.reason, 'bad_factory', name);
+    }
   });
 
   let factoryAddress, S3, walletAddr;

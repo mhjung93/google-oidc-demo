@@ -21,6 +21,18 @@ const WALLET_ORIGINS = [
 const SLOT_LABELS = ['출생연도', '국가', '등급', '예비'];      // a₀..a₃ (스펙 2026-09-22 selective-disclosure §3)
 const SLOT_NAMES = ['a₀', 'a₁', 'a₂', 'a₃'];
 
+/** 동의 창에 보이는 서비스 이름 위생(2026-09-25 리뷰 D-2). 인증서(cert_s)가 덮는 것은 `origin` 뿐이고 serviceName 은
+ *  서비스가 고른 임의의 문자열이다 — 개행·제어문자로 창에 가짜 줄("오리진: …" 같은)을 끼워 넣거나 긴 이름으로 아래
+ *  줄을 밀어내지 못하도록 한 줄·48자로 자른다. 잘라서 빈 문자열이 되면 호출자가 오리진으로 대체한다. */
+const MAX_SERVICE_NAME = 48;
+function cleanServiceName(v) {
+  if (typeof v !== 'string') return '';
+  // 제어문자(BEL 등)를 먼저 공백으로 바꾸고, 남은 공백류(\s 는 U+2028·U+2029 도 포함)를 한 칸으로 모은다.
+  const one = v.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const cp = [...one];
+  return cp.length > MAX_SERVICE_NAME ? `${cp.slice(0, MAX_SERVICE_NAME - 1).join('')}…` : one;
+}
+
 /** 공개 술어를 대화상자 줄로(V6 범위 + V7 집합). consentLogin·consentDisclosure 가 같이 쓴다. */
 function predicateLines(disclose, set) {
   const lines = [];
@@ -132,7 +144,7 @@ export const onRpcRequest = async ({ origin, request }) => {
       const agentOk = allowAgent === true || allowAgent === 1 || allowAgent === '1';
       const pred = predicateLines(disclose, set);
       const ok = await confirm('로그인 동의', [
-        `서비스: ${serviceName || rpOrigin}`,
+        `서비스: ${cleanServiceName(serviceName) || rpOrigin}`,   // 이름은 서비스가 고른 값이다 — 인증서가 덮는 것은 아래 오리진 뿐
         `오리진: ${rpOrigin}`,
         `요청 식별자(arid): ${arid}`,
         null,

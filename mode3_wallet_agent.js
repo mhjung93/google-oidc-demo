@@ -24,7 +24,7 @@ import { createSecretSource, stripSecrets, validateWitness } from './lib/mode3_s
 import { createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, buildCredentialProof, signChallenge, signSessionRequest, signAttrsRequest, signRevokeSession, normalizeDisclosure, normalizeSet, disclosureKey, hasPredicate, ProofCache, chooseMaxHeight } from './lib/mode3_wallet.js';
 import { sessionLeaf } from './lib/mode3_revocation.js';
 import { createRevocationSync } from './lib/mode3_rcl_sync.js';
-import { signPayload, proofToCalldata, parseExecuteReceipt, decodeExecuteCalldata, factoryAt, walletAt, walletInterface, FACTORY_ABI, verifyReferenceCode } from './lib/mode3_onchain.js';
+import { signPayload, proofToCalldata, parseExecuteReceipt, decodeExecuteCalldata, factoryAt, walletAt, walletInterface, FACTORY_ABI, verifyReferenceCode, FACTORY_MAX_ROOT_AGE_BAND, FACTORY_MAX_LIFETIME_BAND } from './lib/mode3_onchain.js';
 import { pointToStrings } from './lib/mode3_issuance.js';
 import { normalizeAttrs, SCALAR_MAX, ppid, randomScalar } from './lib/mode3_credential.js';
 import { verifyRpCert } from './lib/mode3_rp_cert.js';
@@ -56,7 +56,7 @@ const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { cacheTimeout: 
 // ---- 상태 ----
 // registration: { uid, s_u, r_u, cm_u:{x,y}, sk_u, attrs:[4개 10진],
 //                 userCred: { C_u_pt:{x,y}, Cf_u, blind_u, leaf, issuedAt } | null }   §6.1. 등록은 한 번, userCred 는 사용자당 하나
-// sessions:     r_s → { arid, PPID, pk_trace:{x,y}, factoryAddress|null, attrGateAddress|null, allowAgent("0"|"1"), C_s_pt:{x,y}, blind_s,
+// sessions:     r_s → { arid, origin, PPID, pk_trace:{x,y}, factoryAddress|null, attrGateAddress|null, allowAgent("0"|"1"), C_s_pt:{x,y}, blind_s,
 //                       credential:{Cf_u,Cf_s,max_height,chainid,allowAgent,sigma,pk_CIA}, sessionPrivKey, pk_i, issuedAt,
 //                       witness?: { s_u, blind_u, attrs, sk_u } }   ← snap 모드 전용, 메모리에만(persist 가 뺀다)
 // snap 모드의 registration 은 stripSecrets 결과({ uid, cm_u, attrs, userCred:{Cf_u,leaf,issuedAt} }) 다.
@@ -211,10 +211,15 @@ async function checkService({ arid, origin, cert_s, pk_trace, factoryAddress }) 
   if (factoryAddress !== null) {
     try {
       const f = factoryAt(factoryAddress, provider);
-      const [fa, fl, fx, fy, tx, ty] = await Promise.all([f.arid(), f.log(), f.pkCIAX(), f.pkCIAY(), f.pkTraceX(), f.pkTraceY()]);
+      const [fa, fl, fx, fy, tx, ty, fra, flt] = await Promise.all([f.arid(), f.log(), f.pkCIAX(), f.pkCIAY(), f.pkTraceX(), f.pkTraceY(), f.maxRootAge(), f.maxLifetime()]);
       if (fa !== BigInt(arid) || fl.toLowerCase() !== LOG_ADDRESS.toLowerCase() || fx !== pk.x || fy !== pk.y || tx !== BigInt(pk_trace.x) || ty !== BigInt(pk_trace.y)) {
         return { status: 409, body: { reason: 'bad_factory' } };
       }
+      // 상한 두 개도 본다(2026-09-25 리뷰 I-3): 참조 코드 대조는 immutable 을 0 으로 지우고 비교하므로 이 둘을 못 잡는다.
+      // 너무 크면 AA 가 게시를 멈춰도 온체인 실행이 계속되고(폐기 신선도 상실), 0 이면 그 계정의 모든 execute 가 revert 해
+      // 이미 넣은 자산이 영구 동결된다(주소가 이 인자들로 결정돼 다른 값으로 재배포할 수 없다).
+      if (BigInt(fra) < FACTORY_MAX_ROOT_AGE_BAND.min || BigInt(fra) > FACTORY_MAX_ROOT_AGE_BAND.max) return { status: 409, body: { reason: 'bad_factory', detail: 'maxRootAge out of band' } };
+      if (BigInt(flt) < FACTORY_MAX_LIFETIME_BAND.min || BigInt(flt) > FACTORY_MAX_LIFETIME_BAND.max) return { status: 409, body: { reason: 'bad_factory', detail: 'maxLifetime out of band' } };
       // 값이 맞아도 코드가 가짜일 수 있다(2026-09-23): 무엇이든 통과시키는 검증자를 가리키는 팩토리면 공개 입력을 고르는 쪽이
       // pk_i 를 제 키로 넣어 계정을 비운다. 팩토리·검증자 코드를 지갑의 참조 빌드(artifacts/)와 대조한다 — lib/mode3_onchain.js.
       const code = await verifyReferenceCode(provider, factoryAddress);
@@ -222,6 +227,18 @@ async function checkService({ arid, origin, cert_s, pk_trace, factoryAddress }) 
     } catch (e) { return { status: 409, body: { reason: 'bad_factory', detail: e.shortMessage ?? e.message } }; }
   }
   return null;
+}
+
+/** 세션 라우트(/wallet/revalidate·/wallet/request)의 서비스 대조(2026-09-25 리뷰 D-4). precheck 의 r_s 분기와 같은 규칙 —
+ *  남의 서비스 세션은 "없는 것"과 같이 다룬다(새 사유를 만들지 않는다). 지금은 loginCors 가 오리진 하나만 허용해
+ *  브라우저에서는 실현되지 않지만 CORS 는 브라우저에만 걸리고, 서비스를 둘 이상 열면 그 순간 교차 서비스 인증이 된다.
+ *  요청이 가리키는 서비스는 본문 arid 가 있으면 그것, 없으면 요청 오리진(로그인 때 세션에 적은 서비스 오리진)이다.
+ *  둘 다 없으면(브라우저 밖 호출, 또는 origin 을 적기 전에 만들어진 옛 세션) 지금처럼 r_s 만으로 판정한다. */
+function sessionMatchesRequester(req, s, arid) {
+  if (arid !== undefined && arid !== null) return String(arid) === String(s.arid);
+  const origin = req.get('Origin');
+  if (origin && s.origin) return origin === s.origin;
+  return true;
 }
 
 // ---- 앱 ----
@@ -438,6 +455,10 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     // 재시도까지 no_user_cred 면 CIA 쪽에서 방금 받은 C_u 도 물린 것이다(연속 폐기·경합) — 다음 로그인이 다시 시도한다
     if (r.status === 403) return res.status(403).json({ reason: r.body?.reason === 'no_user_cred' ? 'user_cred_retired' : 'account_disabled', timings });
     if (r.status !== 200) return res.status(502).json({ reason: 'issue_failed', cia: r.body, timings });
+    // 이 세션이 어느 서비스 오리진의 것인지 남긴다(2026-09-25 리뷰 D-4) — 세션 라우트가 요청 오리진과 대조한다.
+    // origin 은 바로 위에서 인증서(cert_s)와 대조를 마친 값이다.
+    state.sessions[rs.toString()].origin = origin;
+    persist();
     let out;
     try { out = await proveSession(rs.toString(), synced, timings, disclosure, src); }
     catch (e) {
@@ -540,11 +561,11 @@ async function proveSession(rsKey, synced, timings, disclosure = null, src) {
 
 app.post('/wallet/revalidate', loginCors, async (req, res) => {
   try {
-    const { r_s, skipSync } = req.body ?? {};
+    const { r_s, skipSync, arid = null } = req.body ?? {};
     if (!isDec(r_s)) return res.status(400).json({ error: 'r_s 필요' });
     const rsKey = BigInt(r_s).toString();
     const s = state.sessions[rsKey];
-    if (!s) return res.status(404).json({ reason: 'no_session' });
+    if (!s || !sessionMatchesRequester(req, s, arid)) return res.status(404).json({ reason: 'no_session' });
     if (!LOG_ADDRESS) return res.status(503).json({ reason: 'chain_unavailable', detail: 'CIA_LOG_ADDRESS not configured' });
     const timings = { syncMs: 0, issueMs: 0, proveMs: 0 };
     // 시연용: 동기화를 건너뛰고 마지막 root 의 π 를 그대로 재제출한다(RP 의 stale_root 거절을 보이기 위해).
@@ -657,10 +678,10 @@ app.post('/wallet/rcl/reset', (req, res) => {
 
 app.post('/wallet/request', loginCors, async (req, res) => {
   try {
-    const { r_s, body } = req.body ?? {};
+    const { r_s, body, arid = null } = req.body ?? {};
     if (!isDec(r_s) || typeof body !== 'string') return res.status(400).json({ error: 'r_s, body(string) 필요' });
     const s = state.sessions[BigInt(r_s).toString()];
-    if (!s) return res.status(404).json({ reason: 'no_session' });
+    if (!s || !sessionMatchesRequester(req, s, arid)) return res.status(404).json({ reason: 'no_session' });
     const sig = await signSessionRequest(new ethers.Wallet(s.sessionPrivKey), BigInt(r_s), body);
     res.json({ sig, pk_i: s.pk_i });
   } catch (e) { res.status(500).json({ error: e.message }); }

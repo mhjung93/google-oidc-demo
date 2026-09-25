@@ -237,6 +237,17 @@
     }
 
     // ---- /authorize 팝업(스펙 §3.2·§4.2) ----
+    /** 동의 창에 보이는 서비스 이름 위생(2026-09-25 리뷰 D-2) — Snap 의 cleanServiceName 과 같은 규칙.
+     *  인증서(cert_s)가 덮는 것은 `origin` 뿐이고 이름은 서비스가 고른 임의의 문자열이다. textContent 라 태그는
+     *  못 넣지만, 개행·제어문자로 가짜 줄을 만들거나 긴 이름으로 아래 줄을 밀어내는 것은 막아야 한다. */
+    const MAX_SERVICE_NAME = 48;
+    function cleanServiceName(v) {
+      if (typeof v !== 'string') return '';
+      // 제어문자를 먼저 공백으로 바꾸고, 남은 공백류(\s 는 U+2028·U+2029 도 포함)를 한 칸으로 모은다.
+      const one = v.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+      const cp = [...one];
+      return cp.length > MAX_SERVICE_NAME ? `${cp.slice(0, MAX_SERVICE_NAME - 1).join('')}…` : one;
+    }
     /** 요청이 무엇을 공개하라는지 사람 말로. 서비스가 보낸 값이므로 전부 textContent 로만 들어간다. */
     function requestConditions(req) {
       if (req.reauth === true) return [tt('wallet_auth_reauth')];
@@ -264,7 +275,7 @@
         dd.textContent = value;
         dl.append(dt, dd);
       };
-      row('wallet_auth_service', req.serviceName || req.origin);
+      row('wallet_auth_service', cleanServiceName(req.serviceName) || req.origin);
       row('wallet_auth_origin', req.origin);
       const conds = requestConditions(req);
       row('wallet_auth_conditions', conds.length ? conds.join(' · ') : tt('wallet_cond_none'));
@@ -273,7 +284,7 @@
     function renderAuthTitle() {
       if (!window.opener) { tte($('authTitle'), 'wallet_auth_no_opener'); return; }
       if (!lastAuthReq) { tte($('authTitle'), 'wallet_auth_waiting'); return; }
-      const service = lastAuthReq.serviceName || lastAuthReq.origin;
+      const service = cleanServiceName(lastAuthReq.serviceName) || lastAuthReq.origin;
       $('authTitle').textContent = tt('wallet_auth_approving', { service }) || service;
     }
     function runAuthorize() {

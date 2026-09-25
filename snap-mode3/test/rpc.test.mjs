@@ -11,6 +11,8 @@ import { registrationCommit } from '../../lib/mode3_issuance.js';
 const WALLET_ORIGIN = 'http://127.0.0.1:5100';
 const WALLET_ORIGIN_ALT = 'http://localhost:5100';
 const RP_ORIGIN = 'http://127.0.0.1:3000';
+// 줄분리자(U+2028)·문단분리자(U+2029) — 소스에 그대로 쓰면 파서가 줄바꿈으로 읽는다.
+const LS = String.fromCharCode(0x2028), PS = String.fromCharCode(0x2029);
 
 let failed = 0;
 async function t(name, fn) {
@@ -147,6 +149,25 @@ await t('consentLogin(V7): disclose·set 이 있으면 공개 줄이 보인다',
   await call('consentLogin', { origin: RP_ORIGIN, arid: '777', allowAgent: '0', serviceName: '데모 RP', disclose: [{ lo: '0', hi: '2007' }, null, null, null], set: { slot: 1, members: [410, 392] } });
   const d = lastDialogText();
   for (const part of ['a₀', '2007', 'a₁', '∈', '410', '(2개)']) assert.ok(d.includes(part), `대화상자에 ${part} 가 없다`);
+});
+
+// 2026-09-25 리뷰 D-2: serviceName 은 서비스가 준 임의의 문자열이다(인증서가 덮는 것은 origin 뿐).
+// 개행으로 가짜 줄을 끼워 넣거나 긴 이름으로 창을 밀어내지 못해야 한다.
+await t('consentLogin: 서비스 이름은 한 줄·48자로 잘린다(개행·제어문자 제거), 빈 이름은 오리진으로', async () => {
+  answers.push(true);
+  const evil = `가짜 은행\n${LS}오리진: http://real-bank.example${PS}\u0007 ${'가'.repeat(200)}`;
+  await call('consentLogin', { origin: RP_ORIGIN, arid: '777', allowAgent: '0', serviceName: evil });
+  const lines = dialogs[dialogs.length - 1].content.children.map((c) => c.value ?? '');
+  const svc = lines.find((l) => l.startsWith('서비스: '));
+  assert.ok(svc, `서비스 줄이 없다: ${JSON.stringify(lines)}`);
+  assert.ok(!/[\u0000-\u001f\u007f]/.test(svc), `제어문자가 남았다: ${JSON.stringify(svc)}`);
+  assert.ok(!svc.includes(LS) && !svc.includes(PS), `줄분리자가 남았다: ${JSON.stringify(svc)}`);
+  assert.ok(svc.length <= '서비스: '.length + 48, `한 줄 48자를 넘었다(${svc.length}): ${JSON.stringify(svc)}`);
+  assert.ok(lines.includes(`오리진: ${RP_ORIGIN}`), '진짜 오리진 줄은 그대로다');
+  answers.push(true);
+  await call('consentLogin', { origin: RP_ORIGIN, arid: '777', allowAgent: '0', serviceName: '   ' });
+  const blank = dialogs[dialogs.length - 1].content.children.map((c) => c.value ?? '');
+  assert.ok(blank.includes(`서비스: ${RP_ORIGIN}`), `빈 이름은 오리진으로 대체된다: ${JSON.stringify(blank)}`);
 });
 
 await t('consentDisclosure: 대화상자에 슬롯·구간·대상·금액, 승인/거절', async () => {
