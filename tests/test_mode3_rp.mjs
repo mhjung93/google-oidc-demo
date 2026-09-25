@@ -303,5 +303,35 @@ await t('C-2 E2E: 마스크 밖 슬롯이 0 이 아닌 **유효한** π 여도 v
   assert.equal(r.disclosure.hi[1], 0n, '마스크 밖 슬롯 1 의 hi 도 마찬가지');
 });
 
+// C-1(2026-09-25 전체 코드 리뷰 Critical): 정책 검사와 groth16.verify 가 **같은 값**을 봐야 한다.
+// snarkjs 의 unstringifyBigInts 는 /^[0-9]+$/ 가 아닌 문자열을 BigInt 로 바꾸지 않고 그대로 두고,
+// Scalar.toRprLE 가 그 문자열에 .toString(16) 을 불러 16진으로 파싱한다(실측: " 1"→0, " 2000"→0, "2007 "→8199).
+// 그래서 정상 로그인 π(mask=0, lo=hi=0)에 " 1"·" 2000" 을 실으면 증명 검증은 원래 값 0 으로 통과하는데
+// 서비스는 BigInt 로 1·2000 을 읽어 "출생연도 ≤ 2000 을 공개했다" 고 믿는다 — 나이·집합·allowAgent 술어가 통째로 위조된다.
+await t('C-1: 정규 10진 문자열이 아닌 공개 입력은 malformed — 증명과 정책이 다른 값을 보지 못한다', async () => {
+  const good = await makeLogin();
+  assert.equal(good.publicSignals[14], '0', '전제: 로그인 π 의 disc_mask 는 0');
+  assert.equal(good.publicSignals[19], '0', '전제: 로그인 π 의 disc_hi[0] 은 0');
+
+  // 공격: 증명은 그대로 두고 공개 입력에 공백만 넣는다.
+  const forged = [...good.publicSignals];
+  forged[14] = ' 1';      // 서비스가 보면 mask = 1, 증명이 보증하는 값은 0
+  forged[19] = ' 2000';   // 서비스가 보면 disc_hi[0] = 2000, 증명이 보증하는 값은 0
+  assert.equal(BigInt(forged[14]), 1n); assert.equal(BigInt(forged[19]), 2000n);   // 서비스 쪽 파싱을 못 박는다
+  const r = await rp.verifyLogin({ ...good, publicSignals: forged });
+  assert.equal(r.ok, false, '공백 섞인 공개 입력이 통과하면 술어 위조가 된다');
+  assert.equal(r.reason, 'malformed');
+
+  // 같은 이유로 막아야 하는 다른 표기들(전부 BigInt 는 받아 주지만 snarkjs 와 어긋나거나 비정규형이다)
+  for (const bad of [' 410', '410 ', '0x10', '', ' ', 0, 1n, null]) {
+    const ps2 = [...good.publicSignals]; ps2[14] = bad;
+    const v = await rp.verifyLogin({ ...good, publicSignals: ps2 });
+    assert.equal(v.reason, 'malformed', `${JSON.stringify(String(bad))} 는 malformed 여야 한다`);
+  }
+
+  // 정상 입력은 그대로 통과한다(회귀 방지).
+  assert.equal((await rp.verifyLogin(good)).ok, true);
+});
+
 provider.destroy();
 process.exit(failed === 0 ? 0 : 1);
