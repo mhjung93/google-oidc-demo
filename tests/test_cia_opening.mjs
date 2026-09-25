@@ -163,6 +163,31 @@ try {
     assert.equal((await cia.adminPost(`/cia/openings/${r2.body.id}/deny`)).status, 200);
   });
 
+  // 2026-09-25 리뷰 B-4: 결정이 끝난 항목의 복호 재료(D_svc·c1·c2)는 쓸 일이 없는데 x_AA 와 같은 파일에 남는다 —
+  // 거절한 요청까지 나중에 열 수 있는 재료다. 감사 기록(arid·PPID·uid·resolved·시각)은 남기고 그 셋만 지운다.
+  await t('결정 뒤에는 복호 재료(D_svc·c1·c2)가 남지 않는다 — 감사 기록과 재요청 대조는 그대로 (2026-09-25 리뷰 B-4)', async () => {
+    const Ta = await loginTranscript(S1);
+    const { body: { id: okId } } = await openRequest(S1, Ta);
+    assert.equal((await cia.adminPost(`/cia/openings/${okId}/approve`)).status, 200);
+    const Tb = await loginTranscript(S1);
+    const { body: { id: noId } } = await openRequest(S1, Tb);
+    assert.equal((await cia.adminPost(`/cia/openings/${noId}/deny`)).status, 200);
+    const list = (await cia.adminGet('/cia/openings')).body.openings;
+    for (const id of [okId, noId]) {
+      const o = list.find((x) => x.id === id);
+      assert.ok(o, `${id} 는 감사 기록으로 남아야 한다`);
+      assert.equal(o.D_svc, undefined, `${o.status}: D_svc 가 남았다`);
+      assert.equal(o.c1, undefined, `${o.status}: c1 이 남았다`);
+      assert.equal(o.c2, undefined, `${o.status}: c2 가 남았다`);
+      assert.ok(o.arid && o.PPID && o.decidedAt, `${o.status}: 감사 기록(arid·PPID·시각)은 남아야 한다`);
+    }
+    assert.equal(list.find((x) => x.id === okId).uid, '12345', '승인 항목의 uid 는 그대로');
+    // 재료를 지워도 같은 트랜스크립트의 재요청은 여전히 같은 항목을 가리킨다(심사 중복 방지).
+    const again = await openRequest(S1, Ta);
+    assert.equal(again.status, 200, j(again.body));
+    assert.equal(again.body.id, okId);
+  });
+
   await t('틀린 D_svc(다른 조각) → 승인해도 uid 를 못 찾아 approved+resolved:false, 같은 트랜스크립트로 재요청 가능', async () => {
     const T = await loginTranscript(S1);
     const { body: { id } } = await openRequest(S1, T, { share: await createShare() });

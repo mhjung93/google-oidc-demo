@@ -147,6 +147,53 @@ try {
     const r = await cia.post('/cia/issue', await issueBody(uc.body.Cf_u));
     assert.equal(r.status, 200, JSON.stringify(r.body));
   });
+
+  // 2026-09-25 리뷰 I-1: pruneExpiredSessions() 가 계정 순회 **안**에서 head 를 읽으면, 그 await 동안 /cia/issue 가
+  // acct.sessions 를 새 배열로 갈아끼운다 — 재개한 정리는 옛 배열로 만든 keep 을 대입해 방금 발급된 기록을 덮어쓴다.
+  // 그 세션은 이후 /cia/revoke scope=session 에서 404 unknown_session 이라 만료될 때까지 개별 폐기가 안 된다.
+  // 결정적으로 재현하려고 하트비트를 켠 두 번째 격리 CIA 를 띄우되, **세션 헤드 조회(headOf)만** 게이트 프록시를
+  // 거치게 하고(CIA_CHAIN_RPCS) 로그·하트비트 게시용 provider 는 업스트림에 직접 물린다(CIA_RPC_URL).
+  // 그래야 게이트에 걸리는 eth_blockNumber 가 정리의 것 하나뿐이라 "정리가 head 를 기다리는 순간"을 골라 발급을 끼워 넣을 수 있다.
+  await t('경합: 하트비트 정리가 head 를 기다리는 동안 발급해도 세션 기록이 사라지지 않는다 (2026-09-25 리뷰 I-1)', async () => {
+    const hb = await startIsolatedCia({ env: { CIA_RPC_URL: UPSTREAM, CIA_CHAIN_RPCS: `31337=${proxyUrl}`, CIA_HEARTBEAT_BLOCKS: '1', CIA_HEARTBEAT_POLL_MS: '200' } });
+    try {
+      const s_u2 = randomScalar(), r_u2 = randomScalar();
+      const reg = await hb.post('/cia/register', { uid: uid.toString(), pwd: 'password123', cm_u: pointToStrings(await registrationCommit(s_u2, r_u2)) });
+      assert.equal(reg.status, 201, JSON.stringify(reg.body));
+      const sk = reg.body.sk_u;
+      const { C_u_pt, proof } = await proveUserCred({ uid, s_u: s_u2, blind_u: randomScalar(), r_u: r_u2, attrs: [1990n, 410n, 2n, 0n] });
+      const uc = await hb.post('/cia/user_cred', { uid: uid.toString(), C_u_pt: pointToStrings(C_u_pt), proof: serializeUserCredProof(proof), sig_u: signMsg(sk, await userCredRequestMessage(C_u_pt)) });
+      assert.equal(uc.status, 201, JSON.stringify(uc.body));
+      async function issueOne() {
+        const { Cx, Cy } = await sessionCommit({ arid, pk_i, blind_s: randomScalar() });
+        const C_s_pt = { x: Cx, y: Cy };
+        const mh = BigInt(await provider.getBlockNumber()) + 300n;
+        const body = { uid: uid.toString(), Cf_u: uc.body.Cf_u, C_s_pt: pointToStrings(C_s_pt), sig_u: signMsg(sk, await issueRequestMessageV4(BigInt(uc.body.Cf_u), C_s_pt, 31337n, 0n, mh)), chainid: '31337', allowAgent: '0', max_height: mh.toString() };
+        const r = await hb.post('/cia/issue', body);
+        assert.equal(r.status, 200, JSON.stringify(r.body));
+        return r;
+      }
+      const first = await issueOne();   // 기록이 하나 있어야 정리의 계정 순회가 head 조회까지 간다
+      hold = { seen: deferred(), released: deferred() };
+      let timer;
+      await Promise.race([
+        hold.seen.promise,
+        new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('하트비트 정리가 15초 안에 head 를 읽지 않았다')), 15_000); }),
+      ]).finally(() => clearTimeout(timer));
+      const gate = hold;
+      hold = null;                      // 발급의 head 조회는 그대로 통과시킨다
+      const second = await issueOne();  // 정리가 멈춰 있는 사이 acct.sessions 가 새 배열로 바뀐다
+      gate.released.resolve();          // 정리 재개 — 옛 배열로 만든 keep 을 대입하면 second 가 사라진다
+      await new Promise((r) => setTimeout(r, 500));   // 정리가 끝날 시간(하트비트 주기 200ms)
+      const list = (await hb.adminGet(`/cia/admin/sessions?uid=${uid}`)).body.sessions;
+      const have = new Set(list.map((s) => s.Cf_s));
+      const missing = [first, second].map((r) => r.body.Cf_s).filter((c) => !have.has(c));
+      assert.deepEqual(missing, [], '발급된 세션 기록이 정리에 덮여 사라졌다');
+      // 사용자에게 보이는 증상까지 본다 — 기록이 없으면 개별 폐기가 404 unknown_session 이다.
+      const rv = await hb.adminPost('/cia/revoke', { uid: uid.toString(), scope: 'session', Cf_s: second.body.Cf_s });
+      assert.equal(rv.status, 200, `정리에 덮인 세션은 개별 폐기가 안 된다: ${JSON.stringify(rv.body)}`);
+    } finally { await hb.stop(); }
+  });
 } finally {
   await cia.stop();
   proxy.close();

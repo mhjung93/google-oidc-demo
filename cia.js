@@ -13,7 +13,7 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'node:path';
 import fs from 'node:fs';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes, timingSafeEqual, createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
@@ -99,8 +99,9 @@ function loadOrCreateKeys() {
 // accounts:  uid → { pk_u:{x,y}, cm_u:{x,y}, disabled, creds: [ { Cf_u(10진), C_u_pt:{x,y}, leaf(10진), issuedAt, revoked } ] }
 //            creds 중 revoked:false 는 하나뿐(사용자당 활성 자격증명 하나, 2026-09-21 §3.1). 세션 발급은 기록하지 않는다.
 // rps:       arid → { name, origin, pk_service, X_svc, x_AA, pk_trace, status, requestedAt, decidedAt }   (2026-09-16 §3)
-// openings:  [ { id, arid, PPID, c1:{x,y}, c2, D_svc:{x,y}, allowAgent, max_height, chainid, status, requestedAt, decidedAt,
-//                uid|null, resolved } ]   영구 감사 기록(§6). uid·resolved 는 approved 에만 의미 있다
+// openings:  [ { id, arid, PPID, tagKey, c1:{x,y}, c2, D_svc:{x,y}, allowAgent, max_height, chainid, status, requestedAt, decidedAt,
+//                uid|null, resolved } ]   영구 감사 기록(§6). uid·resolved 는 approved 에만 의미 있다.
+//            결정(승인·거절)이 끝나면 복호 재료 c1·c2·D_svc 는 지운다(2026-09-25 리뷰 B-4) — 재요청 대조는 tagKey 가 맡는다
 // revoked / pending / epoch
 // 버전·이행은 lib/mode3_cia_state.js (v6, 2026-09-21).
 const STATE_VERSION = CIA_STATE_VERSION;
@@ -346,8 +347,12 @@ app.post('/cia/rps/:arid/approve', requireAdmin, async (req, res) => {
     if (!e) return res.status(404).json({ error: 'unknown service' });
     if (e.status !== 'pending') return res.status(409).json({ error: `already ${e.status}` });
     if (!e.X_svc) return res.status(409).json({ error: 'no service key registered' });
-    e.status = 'approved'; e.decidedAt = new Date().toISOString();
+    // 조각을 먼저 만들고, 성공한 **뒤에** status 를 바꾼다(2026-09-25 리뷰 B-6). 순서가 반대면 makeShare 가 던졌을 때
+    // pk_trace = null 인 approved 로 굳는다 — 재승인은 409(already approved)고, 재등록도 status 가 pending 이 아니라
+    // 조각을 다시 만들지 않는다. 그 서비스는 영영 조합 키를 못 받는다.
     await makeShare(req.params.arid);
+    e.status = 'approved'; e.decidedAt = new Date().toISOString();
+    persist();   // makeShare 의 persist 는 status 변경 전이다(이미 조각이 있어 일찍 반환한 경우 아예 안 쓴다)
     res.json({ arid: req.params.arid, status: e.status });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -410,14 +415,18 @@ app.post('/cia/user_cred', async (req, res) => {
     // 먼저 push 했거나 /cia/revoke·self_revoke 가 disabled 를 걸었을 수 있다 — 활성이 없어질 때까지 반복하고, 마지막 await
     // 뒤(아래는 전부 동기)에 disabled 와 같은 Cf_u 의 폐기 여부를 다시 본다. 어느 순서로 끼어들어도 활성은 정확히 하나고,
     // disabled 계정에 활성 자격증명이 남지 않는다.
+    // retired: 아래 이른 반환들이 은퇴(트리·revoked·pending 변경)를 파일에 안 쓴 채 끝나지 않게 하는 표시다(2026-09-25 리뷰 B-5).
+    // 안 쓰면 프로세스가 죽을 때 그 폐기가 되돌아간다. 지금은 retireActiveCred 안에 매크로태스크 경계가 없어(tree.insert 의
+    // 본문이 동기다) 은퇴 뒤에 이 반환들에 닿는 끼어들기가 실제로는 생기지 않지만, await 이 하나만 늘어도 바로 닿는다.
+    let retired = false;
     for (;;) {
       const cur = activeCred(uid);
-      if (cur && cur.Cf_u === Cf_u) return res.json({ Cf_u, leaf });   // 멱등 — 동시에 온 같은 Cf_u 가 먼저 기록된 경우 포함
+      if (cur && cur.Cf_u === Cf_u) { if (retired) persist(); return res.json({ Cf_u, leaf }); }   // 멱등 — 동시에 온 같은 Cf_u 가 먼저 기록된 경우 포함
       if (!cur) break;
-      await retireActiveCred(uid);
+      await retireActiveCred(uid); retired = true;
     }
-    if (acct.disabled) return res.status(403).json({ error: 'account disabled' });   // 위 await 동안 폐기가 끼어들었다
-    if (acct.creds.some((c) => c.Cf_u === Cf_u)) return res.status(409).json({ error: 'this user credential was revoked; make a new one' });   // 여기 오면 같은 Cf_u 는 전부 revoked
+    if (acct.disabled) { if (retired) persist(); return res.status(403).json({ error: 'account disabled' }); }   // 위 await 동안 폐기가 끼어들었다
+    if (acct.creds.some((c) => c.Cf_u === Cf_u)) { if (retired) persist(); return res.status(409).json({ error: 'this user credential was revoked; make a new one' }); }   // 여기 오면 같은 Cf_u 는 전부 revoked
     acct.creds.push({ Cf_u, C_u_pt: { x: cpt.x.toString(), y: cpt.y.toString() }, leaf, issuedAt: new Date().toISOString(), revoked: false });
     persist();
     res.status(201).json({ Cf_u, leaf });
@@ -651,18 +660,27 @@ async function heartbeatTick() {
   } catch (e) { console.warn(`[cia] 하트비트 실패: ${e.message}`); }
 }
 
-/** V8: 만료된 세션 기록 삭제(리프는 남는다 — 설계 §6). 체인별 head 는 한 번만 읽는다. */
+/** V8: 만료된 세션 기록 삭제(리프는 남는다 — 설계 §6). 체인별 head 는 한 번만 읽는다.
+ *  head 는 계정 순회 **전에** 모두 읽는다(2026-09-25 리뷰 I-1): 순회 안에서 await 하면 그 사이 /cia/issue 가
+ *  acct.sessions 를 새 배열로 갈아끼우고, 재개한 정리가 옛 배열로 만든 keep 을 대입해 방금 발급된 기록을 덮어썼다.
+ *  그러면 그 세션은 404 unknown_session 이라 개별 폐기가 영영 안 된다. 아래 순회는 await 이 하나도 없어 원자적이다. */
 async function pruneExpiredSessions() {
+  const chainIds = new Set();
+  for (const acct of Object.values(state.accounts)) for (const s of acct.sessions ?? []) chainIds.add(s.chainid);
+  if (chainIds.size === 0) return;
   const heads = {};
+  for (const id of chainIds) { try { heads[id] = await headOf(id); } catch { heads[id] = null; } }
+  // ↓ 여기부터 await 없음 — 이벤트 루프가 끼어들지 못한다. 그 사이 새로 생긴 체인의 기록은 heads 에 없어(undefined) 그대로 남는다.
   let dropped = 0;
   for (const acct of Object.values(state.accounts)) {
     if (!acct.sessions?.length) continue;
-    const keep = [];
-    for (const s of acct.sessions) {
-      if (heads[s.chainid] === undefined) { try { heads[s.chainid] = await headOf(s.chainid); } catch { heads[s.chainid] = null; } }
-      if (heads[s.chainid] !== null && heads[s.chainid] > BigInt(s.max_height)) dropped++; else keep.push(s);
-    }
-    acct.sessions = keep;
+    const keep = acct.sessions.filter((s) => {
+      const h = heads[s.chainid];
+      const gone = h !== null && h !== undefined && h > BigInt(s.max_height);
+      if (gone) dropped++;
+      return !gone;
+    });
+    if (keep.length !== acct.sessions.length) acct.sessions = keep;
   }
   if (dropped) persist();
 }
@@ -708,6 +726,12 @@ function loadVkey() {
   return (vkeyP ??= (async () => JSON.parse(fs.readFileSync(VKEY_PATH, 'utf8')))().catch((e) => { vkeyP = null; throw e; }));
 }
 const findOpening = (id) => state.openings.find((o) => o.id === id);
+/** 같은 트랜스크립트의 재요청을 알아보는 열쇠 — (arid, c1, c2, PPID) 의 해시. 복호 재료를 지운 뒤에도 남길 수 있다(§6 감사 기록). */
+const openingTagKey = (arid, c1x, c1y, c2, PPID) => createHash('sha256').update([arid, c1x, c1y, c2, PPID].join('|')).digest('hex');
+/** 결정이 끝난 항목에서 복호 재료를 지운다(2026-09-25 리뷰 B-4): D_svc·c1·c2 는 결정 뒤 쓸 일이 없는데 x_AA 와 같은
+ *  파일에 남아 있으면 거절한 요청까지 나중에 열 수 있는 재료가 된다. 감사 기록(arid·PPID·uid·resolved·시각·allowAgent·
+ *  max_height·chainid)과 대조용 tagKey 는 남긴다. */
+function forgetOpeningShards(o) { delete o.D_svc; delete o.c1; delete o.c2; }
 app.post('/cia/open/request', async (req, res) => {
   try {
     const { arid, publicSignals, proof, D_svc, ts, sig } = req.body ?? {};
@@ -743,11 +767,15 @@ app.post('/cia/open/request', async (req, res) => {
     // 있어야 한다. arid 대조가 없으면 유출된 남의 로그로 연다.
     // dup 키는 (arid, c1, c2, PPID) — c1 = r·B8 은 사용자와 무관해 두 사용자가 같은 r 을 쓰면 겹친다(2026-09-23 점검 A-I1).
     // c2·PPID 까지 같아야 "같은 트랜스크립트"다. 아니면 뒤 요청이 앞 사용자의 승인 항목을 받아 uid 가 오귀속된다.
-    const dup = state.openings.find((o) => o.arid === arid && o.c1.x === c1x && o.c1.y === c1y && o.c2 === c2 && o.PPID === PPID
+    // 결정된 항목에서는 c1·c2 를 지우므로(2026-09-25 리뷰 B-4) 대조는 요청 때 박아 둔 tagKey(그 넷의 해시)로 한다.
+    // tagKey 는 복호에 쓸 수 없다. tagKey 가 없는 옛 항목은 예전처럼 원본 값으로 본다.
+    const tagKey = openingTagKey(arid, c1x, c1y, c2, PPID);
+    const dup = state.openings.find((o) => (o.tagKey ? o.tagKey === tagKey
+      : (o.arid === arid && o.c1?.x === c1x && o.c1?.y === c1y && o.c2 === c2 && o.PPID === PPID))
       && (o.status === 'pending' || (o.status === 'approved' && o.resolved !== false)));
     if (dup) return res.status(200).json({ id: dup.id, status: dup.status });
     const id = randomBytes(32).toString('hex');
-    state.openings.push({ id, arid, PPID, c1: { x: c1x, y: c1y }, c2, D_svc: { x: D_svc.x, y: D_svc.y }, allowAgent, max_height, chainid: chainIn, status: 'pending', requestedAt: new Date().toISOString(), decidedAt: null, uid: null, resolved: null });
+    state.openings.push({ id, arid, PPID, tagKey, c1: { x: c1x, y: c1y }, c2, D_svc: { x: D_svc.x, y: D_svc.y }, allowAgent, max_height, chainid: chainIn, status: 'pending', requestedAt: new Date().toISOString(), decidedAt: null, uid: null, resolved: null });
     persist();
     res.status(202).json({ id, status: 'pending' });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -766,6 +794,7 @@ app.post('/cia/openings/:id/approve', requireAdmin, async (req, res) => {
     const uid = await resolveTagPlaintext(h, BigInt(o.arid), Object.keys(state.accounts));
     o.decidedAt = new Date().toISOString();
     o.status = 'approved'; o.uid = uid; o.resolved = uid !== null;
+    forgetOpeningShards(o);
     persist();
     res.json({ id: o.id, status: o.status, resolved: o.resolved });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -774,7 +803,7 @@ app.post('/cia/openings/:id/deny', requireAdmin, (req, res) => {
   const o = findOpening(req.params.id);
   if (!o) return res.status(404).json({ error: 'unknown opening' });
   if (o.status !== 'pending') return res.status(409).json({ error: `already ${o.status}` });
-  o.status = 'denied'; o.decidedAt = new Date().toISOString(); persist();
+  o.status = 'denied'; o.decidedAt = new Date().toISOString(); forgetOpeningShards(o); persist();
   res.json({ id: o.id, status: o.status });
 });
 app.get('/cia/open/:id', (req, res) => {
