@@ -177,7 +177,10 @@ async function syncFactoryConstantsAndVerifier() {
       }
     }
     factoryConstantsFailed = false;
-    verifier = createRpVerifier({ provider, logAddress: LOG_ADDRESS, vkey, pkCIA, arid: BigInt(reg.arid), chainId, pkTrace: { x: BigInt(reg.pk_trace.x), y: BigInt(reg.pk_trace.y) }, maxLifetimeBlocks: EFFECTIVE_MAX_LIFETIME, maxRootAge: EFFECTIVE_MAX_ROOT_AGE });
+    // policySetRoot: 집합 술어를 실은 성명은 **이 서비스의 정책 집합**이어야 한다(2026-09-25 리뷰 I-2).
+    // 회로는 "어떤 트리에 속한다" 만 증명하므로, 대조하지 않으면 자기 국가만 든 집합의 root 로 "허용 집합 소속" 을
+    // 주장할 수 있다. AttrGate(온체인)는 이미 같은 대조를 한다 — 로그인·재검증에도 같은 선을 긋는다.
+    verifier = createRpVerifier({ provider, logAddress: LOG_ADDRESS, vkey, pkCIA, arid: BigInt(reg.arid), chainId, pkTrace: { x: BigInt(reg.pk_trace.x), y: BigInt(reg.pk_trace.y) }, maxLifetimeBlocks: EFFECTIVE_MAX_LIFETIME, maxRootAge: EFFECTIVE_MAX_ROOT_AGE, policySetRoot: ALLOWED_COUNTRIES_ROOT });
     // 하트비트 주기가 상한 이상이면 폐기가 없어도 root 나이가 상한을 넘는 창이 생겨 **전원**이 root_too_old(온체인 RootTooOld)로
     // 막힌다. 두 값은 서로 다른 프로세스의 env 라 아무도 대조하지 않는다(2026-09-23 최종 리뷰 M4).
     if (ciaHeartbeatBlocks !== null && ciaHeartbeatBlocks > 0n && ciaHeartbeatBlocks >= EFFECTIVE_MAX_ROOT_AGE) {
@@ -365,8 +368,13 @@ app.post('/api/mode3/revalidate', async (req, res) => {
     const v = await verifyBody(req, res, BigInt(rsStr)); if (v === null) return;
     if (!v.ok) return res.json({ ok: false, reason: v.reason });
     if (v.PPID.toString() !== s.PPID || v.pk_i.toString() !== s.pk_i) return res.status(401).json({ ok: false, reason: 'session_mismatch' });
+    // 재검증은 세션을 **마지막 증명에 다시 묶는다**(2026-09-25 리뷰 C-4). root·disclosure 만 갱신하면
+    // allowAgent=1 로 만든 세션이 allowAgent=0 인 성명으로 재검증된 뒤에도 1 로 남아, 세션 상태가 실제로
+    // 보증된 것보다 넓어진다(만료 max_height 도 같다 — /api/mode3/request 의 만료 판정이 그 값을 쓴다).
     s.root = v.root.toString();
     s.disclosure = discOf(v.disclosure);
+    s.max_height = v.max_height.toString();
+    s.allowAgent = v.allowAgent.toString();
     res.json({ ok: true, r_s: rsStr, root: s.root });
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });
@@ -446,6 +454,8 @@ app.post('/api/mode3/open', async (req, res) => {
 });
 app.get('/api/mode3/open/:id', async (req, res) => {
   try {
+    // 다른 라우트와 같이 fail-closed(2026-09-25 리뷰 C-5) — 검증기가 없는 RP 가 CIA 로 서명한 조회를 중계하지 않는다.
+    if (!verifier) return res.status(503).json({ ok: false, reason: inactiveReason() });
     const ts = Math.floor(Date.now() / 1000).toString();
     const sig = await signOpenResult(serviceWallet, req.params.id, ts);
     const r = await fetch(`${CIA_URL}/cia/open/${encodeURIComponent(req.params.id)}?ts=${ts}&sig=${encodeURIComponent(sig)}`);

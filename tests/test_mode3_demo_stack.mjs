@@ -405,6 +405,56 @@ try {
     } finally { alice.stop(); }
   });
 
+  // C-4(2026-09-25 리뷰): 재검증은 세션을 **마지막 증명에 다시 묶어야** 한다. root·disclosure 만 갱신하면
+  // allowAgent=1 로 로그인한 세션이 allowAgent=0 인 성명으로 재검증돼도 조회 API·화면은 1 을 계속 싣는다 —
+  // 세션 상태가 실제로 보증된 것보다 넓어진다. max_height(만료)도 같다.
+  await t('C-4: 재검증이 세션의 allowAgent·max_height 를 마지막 증명의 값으로 다시 묶는다', async () => {
+    const info = (await rp.get('/api/mode3/rp_info')).body;
+    const { reg, sk_u, attrs } = await ensureAlice();
+    const provider = getProvider();
+    try {
+      const arid = BigInt(info.arid), chainId = BigInt(info.chainId);
+      const keys = (await cia.get('/cia/public_keys')).body;
+      const pk_CIA = { x: BigInt(keys.pk_CIA.x), y: BigInt(keys.pk_CIA.y) };
+      const pk_trace = { x: BigInt(info.pk_trace.x), y: BigInt(info.pk_trace.y) };
+      const ucReq = await buildUserCredRequest({ uid: 67890n, s_u: reg.s_u, r_u: reg.r_u, sk_u, attrs });
+      const uc = await cia.post('/cia/user_cred', ucReq.body);
+      assert.ok(uc.status === 200 || uc.status === 201, j(uc.body));
+      // 같은 세션 키(pk_i) 위에 allowAgent·만료가 다른 자격증명을 둘 발급한다 — PPID·pk_i 가 같아야 재검증이 그 세션에 붙는다.
+      const session = createSessionKey();
+      const issue = async (allowAgent, ttl) => {
+        const max_height = BigInt(await provider.getBlockNumber()) + ttl;
+        const req = await buildIssueRequest({ uid: 67890n, Cf_u: ucReq.Cf_u, arid, sk_u, session, chainid: chainId, allowAgent, max_height });
+        const r = await cia.post('/cia/issue', req.body);
+        assert.equal(r.status, 200, j(r.body));
+        return { cred: r.body, blind_s: req.secrets.blind_s, max_height };
+      };
+      const prove = async (c, rs) => {
+        const { tree } = await syncRevocationTree(provider, cia.logAddress);
+        const built = await buildCredentialProof({ uid: 67890n, arid, s_u: reg.s_u, blind_u: ucReq.secrets.blind_u, blind_s: c.blind_s, pk_i: session.pk_i, attrs, credential: c.cred, pk_CIA, pk_trace, tree });
+        return { proof: built.proof, publicSignals: built.publicSignals, sig: await signChallenge(session.wallet, rs.toString()), r_s: rs };
+      };
+      const agentCred = await issue(1n, 300n);
+      const plainCred = await issue(0n, 200n);
+
+      const { r_s } = (await rp.post('/api/mode3/challenge')).body;
+      const login = await rp.post('/api/mode3/login', await prove(agentCred, r_s));
+      assert.equal(login.body.ok, true, j(login.body));
+      assert.equal(login.body.allowAgent, '1');
+      const shortRs = r_s.slice(0, 8) + '…';   // mode3_rp.js 의 rsShort() 와 같은 규칙
+      const sessionOf = async () => (await rp.get('/api/mode3/sessions')).body.sessions.find((s) => s.r_s === shortRs);
+      const first = await sessionOf();
+      assert.ok(first, '방금 로그인한 세션이 목록에 있어야 한다');
+      assert.equal(first.allowAgent, '1'); assert.equal(first.max_height, agentCred.max_height.toString());
+
+      const rv = await rp.post('/api/mode3/revalidate', await prove(plainCred, r_s));
+      assert.equal(rv.body.ok, true, j(rv.body));
+      const after = await sessionOf();
+      assert.equal(after.allowAgent, '0', '재검증한 성명이 대리 실행을 허용하지 않으면 세션도 허용하지 않아야 한다');
+      assert.equal(after.max_height, plainCred.max_height.toString(), '만료도 마지막 증명의 값이어야 한다');
+    } finally { provider.destroy(); }
+  });
+
   await t("4'. 사용자 자기 폐기(비밀번호) → 게시 → 재검증 stale_root → 지갑 revoked → 관리자 복구 → PPID 동일", async () => {
     const before = await loginViaRp();
     assert.equal(before.rp.ok, true, j(before));
@@ -572,6 +622,16 @@ try {
     const req = await rp.post('/api/mode3/request', {});
     assert.equal(req.status, 503); assert.equal(req.body.reason, 'factory_constants_unavailable', j(req.body));
     assert.match(rp.log(), /검증기를 만들지 않는다\(fail-closed\)/);
+  });
+  // C-5(2026-09-25 리뷰): 개봉 **조회**만 fail-closed 가 빠져 있었다 — 검증기가 없는(등록 대기·팩토리 상수 조회 실패)
+  // RP 가 CIA 로 서명한 조회를 계속 중계했다. 다른 라우트와 같은 503 이어야 한다. 위 I-1 과 같은 이유로 맨 끝에 둔다.
+  await t('C-5: 검증기가 없으면 GET /api/mode3/open/:id 도 503 (개봉 조회 fail-closed)', async () => {
+    await stack.restartRp({ MODE3_RP_FACTORY_ADDRESS: cia.logAddress }, { waitActive: false });
+    assert.equal((await rp.get('/api/mode3/rp_info')).body.active, false, '전제: 검증기가 없는 상태');
+    const post = await rp.post('/api/mode3/open', { PPID: '1' });   // 양성 대조 — 개봉 요청은 이미 막혀 있다
+    assert.equal(post.status, 503, j(post.body)); assert.equal(post.body.reason, 'factory_constants_unavailable');
+    const get = await rp.get('/api/mode3/open/abc');
+    assert.equal(get.status, 503, j(get.body)); assert.equal(get.body.reason, 'factory_constants_unavailable', j(get.body));
   });
 } finally {
   await stack.stop();

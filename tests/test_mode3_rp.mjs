@@ -103,6 +103,44 @@ await t('V7: set_sel/set_root 가 disclosure 에 실린다; sel 5·(sel 0, root 
   assert.deepEqual(maskDisclosure({ mask: 0n, lo: [0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n] }), { mask: 0n, lo: [0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n], sel: 0n, root: 0n });
 });
 
+// I-2(2026-09-25 전체 코드 리뷰): 회로 ⑦ 은 "선택한 속성이 set_root 의 트리에 들어 있다" 만 증명한다 —
+// **누구의 트리인지는 모른다.** 정책 집합을 아는 서비스가 대조하지 않으면, 자기 국가 하나만 든 집합의 root 로
+// "허용 집합 소속" 을 주장하는 유효한 π 가 만들어지고 세션·로그인 기록·화면이 그것을 보증처럼 싣는다.
+// 온체인 AttrGate 는 이미 setRoot == allowedCountriesRoot 를 요구하므로 오프체인도 같은 선을 그어야 한다.
+await t('I-2: policySetRoot 를 준 검증기는 정책 집합이 아닌 set_root 를 bad_disclosure 로 거절한다', async () => {
+  const members = [410, 392, 840, 276, 250];
+  const attrs = [19n, 410n, 0n, 0n];   // makeLogin 이 쓰는 attrs 와 같다(위 함수 정의)
+  const policyRoot = await setRoot(members);
+  const rpPolicy = createRpVerifier({ provider, logAddress, vkey, pkCIA: CIA.pub, arid, chainId: 31337n, pkTrace: pk_trace, policySetRoot: policyRoot });
+  const zeros = { mask: 0n, lo: [0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n] };
+
+  // 자기 국가만 든 집합([410])으로 "소속" 을 주장하는 **유효한** π — 회로도 서명도 정상이다.
+  const mineSet = await normalizeSet({ slot: 1, members: [410] }, attrs);
+  const bad = await makeLogin({ disclosure: { ...zeros, ...mineSet } });
+  assert.equal(BigInt(bad.publicSignals[23]), 2n, '전제: set_sel = 2(슬롯 1)');
+  assert.notEqual(BigInt(bad.publicSignals[24]), policyRoot, '전제: 정책 집합이 아닌 트리의 root 다');
+  const r = await rpPolicy.verifyLogin(bad);
+  assert.equal(r.ok, false); assert.equal(r.reason, 'bad_disclosure');
+
+  // 정책 집합이면 통과한다.
+  const good = await makeLogin({ disclosure: { ...zeros, ...(await normalizeSet({ slot: 1, members }, attrs)) } });
+  const g = await rpPolicy.verifyLogin(good);
+  assert.equal(g.ok, true, JSON.stringify(g, (k, v) => (typeof v === 'bigint' ? v.toString() : v)));
+  assert.equal(g.disclosure.root, policyRoot);
+
+  // 집합 술어가 없는 로그인(sel = 0)은 정책과 무관하게 그대로 통과한다.
+  const plain = await makeLogin();
+  assert.equal((await rpPolicy.verifyLogin(plain)).ok, true, 'sel = 0 은 집합을 주장하지 않는다');
+
+  // policySetRoot 를 안 주면 예전처럼 검사하지 않는다(일반 검증기 계약 유지).
+  assert.equal((await rp.verifyLogin(bad)).ok, true);
+
+  // 타입 검사: 실수로 문자열·숫자를 넘기면 비교가 늘 false 가 되어 모든 집합 로그인이 막힌다 — 기동 때 막는다.
+  for (const v of [policyRoot.toString(), 1, {}]) {
+    assert.throws(() => createRpVerifier({ provider, logAddress, vkey, pkCIA: CIA.pub, arid, chainId: 31337n, pkTrace: pk_trace, policySetRoot: v }), /policySetRoot/);
+  }
+});
+
 await t('음성 d: 공격자가 자기 CIA 키로 서명한 credential 은 untrusted_cia (유일한 위조 방어선)', async () => {
   const L = await makeLogin({ key: ATTACKER });
   const r = await rp.verifyLogin(L);
