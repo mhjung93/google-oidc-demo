@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import * as snarkjs from 'snarkjs';
 import { buildValidInput } from '../tests/helpers/mode3_fixture.mjs';
 import { signRootPublication, rootToBytes32 } from '../lib/mode3_log.js';
-import { signPayload, proofToCalldata, decodeExecuteCalldata, parseExecuteReceipt, MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT } from '../lib/mode3_onchain.js';
+import { signPayload, payloadDigest, statementDigestFields, proofToCalldata, decodeExecuteCalldata, parseExecuteReceipt, MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT } from '../lib/mode3_onchain.js';
 import { setRoot } from '../lib/mode3_set_tree.js';
 
 const { ethers } = hre;
@@ -19,9 +19,9 @@ describe('Mode3Wallet', function () {
 
   const chainId = () => ethers.provider.getNetwork().then((n) => n.chainId);
 
-  /** 세션키 + 픽스처 증명. 옵션은 픽스처로 전달. */
-  async function statement(opts = {}) {
-    const session = ethers.Wallet.createRandom();
+  /** 세션키 + 픽스처 증명. 옵션은 픽스처로 전달. session 을 주면 그 세션키를 재사용한다(같은 pk_i 의 다른 성명 두 개를 만들 때). */
+  async function statement({ session: reuse = null, ...opts } = {}) {
+    const session = reuse ?? ethers.Wallet.createRandom();
     // 만료는 지갑이 정한다 — 컨트랙트가 head + maxLifetime 상한을 강제하므로 현재 블록 기준으로 정한다
     const maxHeight = opts.maxHeight ?? BigInt(await ethers.provider.getBlockNumber()) + 300n;
     const fx = await buildValidInput({ pk_i: BigInt(session.address), chainid: await chainId(), ...opts, maxHeight });
@@ -48,10 +48,17 @@ describe('Mode3Wallet', function () {
   }
   const withInput = (st) => ({ ...st, input: () => st.fx.input });
 
-  async function signedPayload(st, wallet, { to = ethers.Wallet.createRandom().address, value = 0n, data = '0x', discMask = 0n, discLo = [0n, 0n, 0n, 0n], discHi = [0n, 0n, 0n, 0n], setSel = 0n, setRoot = 0n } = {}) {
+  /** 다이제스트의 성명 쪽 다섯 필드(2026-09-25 리뷰 A-2) 기본값 — π 의 공개 입력 그대로. 음성 테스트는 opts 로 덮어쓴다. */
+  const stmtFields = (st) => statementDigestFields(st.publicSignals);
+  const STMT_KEYS = ['maxHeight', 'allowAgent', 'tagC1X', 'tagC1Y', 'tagC2'];
+
+  async function signedPayload(st, wallet, opts = {}) {
+    const { to = ethers.Wallet.createRandom().address, value = 0n, data = '0x', discMask = 0n, discLo = [0n, 0n, 0n, 0n], discHi = [0n, 0n, 0n, 0n], setSel = 0n, setRoot = 0n } = opts;
+    const stmt = stmtFields(st);
+    for (const k of STMT_KEYS) if (opts[k] !== undefined) stmt[k] = opts[k];
     const nonce = await wallet.nonce();
     const payload = { to, value, data, nonce };
-    const sig = signPayload(st.session, { chainId: await chainId(), wallet: wallet.target, ...payload, discMask, discLo, discHi, setSel, setRoot });
+    const sig = signPayload(st.session, { chainId: await chainId(), wallet: wallet.target, ...payload, discMask, discLo, discHi, setSel, setRoot, ...stmt });
     return { payload, sig };
   }
 
@@ -110,7 +117,7 @@ describe('Mode3Wallet', function () {
     const { wallet } = await deployStack(ST);
     const { payload } = await signedPayload(ST, wallet);
     const other = ethers.Wallet.createRandom();
-    const wrong = signPayload(other, { chainId: await chainId(), wallet: wallet.target, ...payload });
+    const wrong = signPayload(other, { chainId: await chainId(), wallet: wallet.target, ...payload, ...stmtFields(ST) });
     await expect(wallet.execute(payload, wrong, ST.a, ST.b, ST.c, ST.pub)).to.be.revertedWithCustomError(wallet, 'BadSignature');
     await expect(wallet.execute(payload, '0x' + '11'.repeat(64) + '00', ST.a, ST.b, ST.c, ST.pub)).to.be.revertedWithCustomError(wallet, 'BadSignature');
   });
@@ -131,7 +138,7 @@ describe('Mode3Wallet', function () {
   it('다른 지갑 주소로 서명한 payload 는 BadSignature (도메인 분리)', async () => {
     const { wallet } = await deployStack(ST);
     const { payload } = await signedPayload(ST, wallet);
-    const sig = signPayload(ST.session, { chainId: await chainId(), wallet: ethers.Wallet.createRandom().address, ...payload });
+    const sig = signPayload(ST.session, { chainId: await chainId(), wallet: ethers.Wallet.createRandom().address, ...payload, ...stmtFields(ST) });
     await expect(wallet.execute(payload, sig, ST.a, ST.b, ST.c, ST.pub)).to.be.revertedWithCustomError(wallet, 'BadSignature');
   });
 
@@ -161,14 +168,17 @@ describe('Mode3Wallet', function () {
 
   it('allowAgent = 2 는 BadAllowAgent (증명 검증 전에 걸린다)', async () => {
     const { wallet } = await deployStack(ST);
-    const { payload, sig } = await signedPayload(ST, wallet);
+    // 다이제스트가 allowAgent 를 덮으므로(2026-09-25 A-2) 그 값으로 서명해야 _checkStatement 까지 간다 —
+    // 즉 세션키를 쥔 악의적 지갑이 스스로 2 를 실은 경우다. 남이 바꿔 끼우는 것은 이제 BadSignature 로 먼저 막힌다.
+    const { payload, sig } = await signedPayload(ST, wallet, { allowAgent: 2n });
     const p = [...ST.pub]; p[5] = '0x2';
     await expect(wallet.execute(payload, sig, ST.a, ST.b, ST.c, p)).to.be.revertedWithCustomError(wallet, 'BadAllowAgent');
   });
 
   it('c1 이 항등원(r = 0)이면 BadTag (증명 검증 전에 걸린다)', async () => {
     const { wallet } = await deployStack(ST);
-    const { payload, sig } = await signedPayload(ST, wallet);
+    // 위와 같은 이유(A-2): 태그도 다이제스트가 덮으므로 그 태그로 서명한 경우를 본다.
+    const { payload, sig } = await signedPayload(ST, wallet, { tagC1X: 0n, tagC1Y: 1n });
     const p = [...ST.pub]; p[11] = '0x0'; p[12] = '0x1';
     await expect(wallet.execute(payload, sig, ST.a, ST.b, ST.c, p)).to.be.revertedWithCustomError(wallet, 'BadTag');
   });
@@ -382,5 +392,77 @@ describe('Mode3Wallet', function () {
     const { payload, sig } = await signedPayload(DS, wallet, { to: other, value: 0n, data: '0x', setSel: 2n, setRoot: DS.fx.set.root });
     const rc = await (await wallet.execute(payload, sig, DS.a, DS.b, DS.c, DS.pub)).wait();
     assert.equal(parseExecuteReceipt(rc, wallet.target).executed.success, false);
+  });
+
+  // ── 2026-09-25 리뷰 ────────────────────────────────────────────────────────────────────────────
+
+  it('E-1: 서명한 payload 와 다른 payload 를 제출하면 BadSignature (다이제스트가 to·value·data 를 덮는다)', async () => {
+    const { wallet } = await deployStack(ST);
+    const recipientA = ethers.Wallet.createRandom().address;
+    const { payload, sig } = await signedPayload(ST, wallet, { to: recipientA, value: 1n, data: '0x1234' });
+    for (const tampered of [
+      { ...payload, to: ethers.Wallet.createRandom().address },
+      { ...payload, value: payload.value + 1n },
+      { ...payload, data: payload.data + 'ff' },
+    ]) {
+      await expect(wallet.execute(tampered, sig, ST.a, ST.b, ST.c, ST.pub)).to.be.revertedWithCustomError(wallet, 'BadSignature');
+    }
+    // 대조: 서명한 그대로면 통과한다 — 위 셋이 "아무 payload 나 막는다" 로 공허하게 통과하지 않게 한다.
+    await expect(wallet.execute(payload, sig, ST.a, ST.b, ST.c, ST.pub)).to.not.be.reverted;
+  });
+
+  it('I-4: 마스크 비트가 0 인 슬롯의 lo/hi 가 0 이 아니면 BadDisclosure (회로가 제약하지 않는 값이라 꼬리·이벤트로 내보내지 않는다)', async () => {
+    // mask = 0b0001 이라 회로가 검사하는 것은 슬롯 0 뿐이다(0 ≤ 1990 ≤ 2007). 슬롯 1 의 hi 에 1990 을 실어도
+    // 회로는 64비트 범위 말고 아무 제약도 걸지 않아 π 는 정상적으로 만들어진다 — 즉 증명자가 고른 값이다.
+    const DS = withInput(await statement({ disclosure: { mask: 0b0001n, lo: [0n, 0n, 0n, 0n], hi: [2007n, 1990n, 0n, 0n] } }));
+    assert.equal(DS.publicSignals[20], '1990', '픽스처가 마스크 밖 슬롯(pub[20] = disc_hi[1])에 값을 싣지 못했다 — 전제가 깨졌다');
+    const { wallet } = await deployStack(DS);
+    const { payload, sig } = await signedPayload(DS, wallet, { discMask: 0b0001n, discLo: [0n, 0n, 0n, 0n], discHi: [2007n, 1990n, 0n, 0n] });
+    await expect(wallet.execute(payload, sig, DS.a, DS.b, DS.c, DS.pub)).to.be.revertedWithCustomError(wallet, 'BadDisclosure');
+  });
+
+  it('I-4: 마스크 밖 슬롯이 0 이면 그대로 통과한다 (정직한 지갑 normalizeDisclosure 의 출력)', async () => {
+    const DS = withInput(await statement({ disclosure: { mask: 0b0001n, lo: [0n, 0n, 0n, 0n], hi: [2007n, 0n, 0n, 0n] } }));
+    const { wallet } = await deployStack(DS);
+    const { payload, sig } = await signedPayload(DS, wallet, { discMask: 0b0001n, discLo: [0n, 0n, 0n, 0n], discHi: [2007n, 0n, 0n, 0n] });
+    await expect(wallet.execute(payload, sig, DS.a, DS.b, DS.c, DS.pub)).to.not.be.reverted;
+  });
+
+  it('A-2: 다이제스트가 allowAgent 를 덮는다 — 같은 사용자·같은 세션키의 다른 π 로 바꿔 끼우면 BadSignature', async () => {
+    const S0 = withInput(await statement({ allowAgent: 0n }));
+    const { wallet } = await deployStack(S0);
+    // 같은 pk_i·같은 max_height 인데 allowAgent 만 1 인 두 번째 성명. PPID 가 같으니 같은 지갑에 들어간다.
+    const S1 = withInput(await statement({ allowAgent: 1n, session: S0.session, maxHeight: BigInt(S0.fx.input.max_height) }));
+    assert.equal(S1.publicSignals[0], S0.publicSignals[0], '같은 지갑이어야 바꿔 끼우기가 성립한다');
+    assert.equal(S1.publicSignals[5], '1');
+    assert.equal(S0.publicSignals[5], '0');
+    const { payload, sig } = await signedPayload(S0, wallet);
+    // 릴레이어가 σ 는 그대로 두고 π 만 바꾼다 — Mode3Auth 가 허가받지 않은 allowAgent = 1 을 남기게 된다.
+    await expect(wallet.execute(payload, sig, S1.a, S1.b, S1.c, S1.pub)).to.be.revertedWithCustomError(wallet, 'BadSignature');
+    // 대조: 서명한 그 π 는 같은 σ 로 통과한다(바뀐 것이 π 뿐임을 못 박는다).
+    await expect(wallet.execute(payload, sig, S0.a, S0.b, S0.c, S0.pub)).to.not.be.reverted;
+  });
+
+  it('A-2: 다이제스트가 max_height·allowAgent·태그 세 워드를 각각 덮는다 — pub 한 워드만 바꿔도 BadSignature', async () => {
+    const { wallet } = await deployStack(ST);
+    const { payload, sig } = await signedPayload(ST, wallet);
+    for (const i of [3, 5, 11, 12, 13]) {
+      const p = [...ST.pub];
+      p[i] = '0x' + (BigInt(ST.pub[i]) + 1n).toString(16);
+      await expect(wallet.execute(payload, sig, ST.a, ST.b, ST.c, p)).to.be.revertedWithCustomError(wallet, 'BadSignature');
+    }
+  });
+
+  it('A-2: payloadDigest 는 성명 다섯 필드를 기본값으로 채우지 않는다 — 빠뜨리면 던진다(조용히 틀린 σ 방지)', () => {
+    const base = {
+      chainId: 31337n, wallet: ethers.ZeroAddress, to: ethers.ZeroAddress, value: 0n, data: '0x', nonce: 0n,
+      maxHeight: 1n, allowAgent: 0n, tagC1X: 1n, tagC1Y: 2n, tagC2: 3n,
+    };
+    expect(() => payloadDigest(base)).to.not.throw();
+    for (const k of STMT_KEYS) {
+      const missing = { ...base };
+      delete missing[k];
+      expect(() => payloadDigest(missing), k).to.throw(new RegExp(k));
+    }
   });
 });

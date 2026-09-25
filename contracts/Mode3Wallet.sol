@@ -5,7 +5,7 @@ import "./PiCredVerifier.sol";
 import "./RevocationLog.sol";
 
 /// @title Mode 3 PPID 계정 — 설계 2026-09-18 §5.3
-/// @notice PPIDWallet(Mode 2)과 같은 구조다. 다른 점: 검증자가 pi_cred(공개 입력 14개), 폐기 근거가 RevocationLog(root + 게시 블록),
+/// @notice PPIDWallet(Mode 2)과 같은 구조다. 다른 점: 검증자가 pi_cred(공개 입력 25개), 폐기 근거가 RevocationLog(root + 게시 블록),
 ///   성명의 arid·pk_CIA·pk_trace 를 immutable 로 고정한다(서비스 검증기 lib/mode3_rp.js 의 d 단계와 같다), 트레이스 태그와
 ///   allowAgent 를 이벤트로 남긴다. 검사 순서는 싼 것부터다(§5.3).
 contract Mode3Wallet {
@@ -80,10 +80,14 @@ contract Mode3Wallet {
         // PPID 가 chainid 를 포함해 주소가 다르지만, 서명까지 묶어 두는 편이 싸고 안전하다.
         // 다이제스트가 공개 값 11워드 전부를 덮는다 — 같은 세션키·같은 mask 의 π 가 둘(예: 어떤 대상엔 정확한
         // 값 공개, 다른 대상엔 구간 공개) 있어도 릴레이어가 lo/hi/setSel/setRoot 를 바꿔 끼우지 못한다(§5.1).
+        // 2026-09-25 리뷰 A-2: 여기에 max_height·allowAgent·태그도 넣는다. 그전에는 릴레이어가 σ 는 그대로 두고
+        // 같은 사용자·같은 세션키의 **다른** π 로 바꿔 끼울 수 있었고, 그러면 Mode3Auth 가 이번 실행을 인가하지 않은
+        // 만료·에이전트 허용·개봉 태그를 남겨 §6.2 의 해시 기반 개봉 장부가 어긋났다.
         bytes32 payloadHash = keccak256(
             abi.encode(
                 block.chainid, address(this), payload.to, payload.value, payload.data, payload.nonce,
-                pub[14], [pub[15], pub[16], pub[17], pub[18]], [pub[19], pub[20], pub[21], pub[22]], pub[23], pub[24]
+                pub[14], [pub[15], pub[16], pub[17], pub[18]], [pub[19], pub[20], pub[21], pub[22]], pub[23], pub[24],
+                pub[3], pub[5], pub[11], pub[12], pub[13]
             )
         );
         address recovered = _recover(payloadHash, sig);
@@ -129,6 +133,13 @@ contract Mode3Wallet {
         if (pub[14] >= 16) revert BadDisclosure();   // ⑤′ mask 는 4비트. 회로도 막지만 이벤트·꼬리에 남는 값이라 한 번 더
         // V7: set_sel ∈ {0..4}, sel = 0 이면 root = 0 — 회로도 막지만 꼬리·이벤트·다이제스트에 남는 값이라 한 번 더
         if (pub[23] > 4 || (pub[23] == 0 && pub[24] != 0)) revert BadDisclosure();
+        // 2026-09-25 리뷰 I-4: 마스크 비트가 0 인 슬롯의 lo/hi 에 회로는 64비트 범위 말고 아무 제약도 걸지 않는다
+        // (pi_cred.circom 의 maskBits.out[k] * (1 - discOk[k]) === 0) — 증명자가 고른 값이다. 그대로 두면 꼬리·Disclosure
+        // 이벤트를 읽는 쪽이 그것을 "CIA 가 보증한 공개" 로 오인한다. 지우지 않고 거절한다: 정직한 지갑은 늘 0 을 보내므로
+        // (lib/mode3_wallet.js normalizeDisclosure) 깨질 것이 없고, 대신 "마스크 밖 워드는 항상 0" 을 믿을 수 있다.
+        for (uint256 k = 0; k < 4; k++) {
+            if (((pub[14] >> k) & 1) == 0 && (pub[15 + k] != 0 || pub[19 + k] != 0)) revert BadDisclosure();
+        }
         bytes32 root = bytes32(pub[6]);
         if (root != log.root()) revert StaleRevocationRoot(root);          // N=1: 최신 root 만
         uint256 last = log.lastPublishedBlock();

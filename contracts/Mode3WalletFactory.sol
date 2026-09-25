@@ -16,7 +16,7 @@ contract Mode3WalletFactory {
     uint64 public immutable maxRootAge;
     uint64 public immutable maxLifetime;
 
-    /// @notice 이 팩토리가 배포한 지갑. 대상 컨트랙트(AttrGate)가 msg.sender 를 확인하는 데 쓴다 — 꼬리 9워드는 π 를 검증한 지갑만 붙일 수 있다.
+    /// @notice 이 팩토리가 배포한 지갑. 대상 컨트랙트(AttrGate)가 msg.sender 를 확인하는 데 쓴다 — 꼬리 11워드는 π 를 검증한 지갑만 붙일 수 있다.
     mapping(address => bool) public isWallet;
 
     constructor(

@@ -24,7 +24,7 @@ import { createSecretSource, stripSecrets, validateWitness } from './lib/mode3_s
 import { createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, buildCredentialProof, signChallenge, signSessionRequest, signAttrsRequest, signRevokeSession, normalizeDisclosure, normalizeSet, disclosureKey, hasPredicate, ProofCache, chooseMaxHeight } from './lib/mode3_wallet.js';
 import { sessionLeaf } from './lib/mode3_revocation.js';
 import { createRevocationSync } from './lib/mode3_rcl_sync.js';
-import { signPayload, proofToCalldata, parseExecuteReceipt, decodeExecuteCalldata, factoryAt, walletAt, walletInterface, FACTORY_ABI, verifyReferenceCode, FACTORY_MAX_ROOT_AGE_BAND, FACTORY_MAX_LIFETIME_BAND } from './lib/mode3_onchain.js';
+import { signPayload, statementDigestFields, proofToCalldata, parseExecuteReceipt, decodeExecuteCalldata, factoryAt, walletAt, walletInterface, FACTORY_ABI, verifyReferenceCode, FACTORY_MAX_ROOT_AGE_BAND, FACTORY_MAX_LIFETIME_BAND } from './lib/mode3_onchain.js';
 import { pointToStrings } from './lib/mode3_issuance.js';
 import { normalizeAttrs, SCALAR_MAX, ppid, randomScalar } from './lib/mode3_credential.js';
 import { verifyRpCert } from './lib/mode3_rp_cert.js';
@@ -743,7 +743,9 @@ async function buildExecute(req) {
   const deployNeeded = (await provider.getCode(walletAddr)) === '0x';
   const nonce = deployNeeded ? 0n : await walletAt(walletAddr, provider).nonce();
   const payload = { to: ethers.getAddress(to), value: BigInt(value), data, nonce };
-  const sig = signPayload(new ethers.Wallet(s.sessionPrivKey), { chainId: await chainId(), wallet: walletAddr, ...payload, discMask: disclosure.mask, discLo: disclosure.lo, discHi: disclosure.hi, setSel: disclosure.sel, setRoot: disclosure.root });
+  // 다이제스트의 성명 쪽 다섯 필드(max_height·allowAgent·태그)는 이번에 붙일 π 의 공개 입력에서 그대로 가져온다
+  // (2026-09-25 리뷰 A-2). 세션 기록의 값으로 조립하면 캐시된 π 와 어긋난 σ 가 나올 수 있다.
+  const sig = signPayload(new ethers.Wallet(s.sessionPrivKey), { chainId: await chainId(), wallet: walletAddr, ...payload, discMask: disclosure.mask, discLo: disclosure.lo, discHi: disclosure.hi, setSel: disclosure.sel, setRoot: disclosure.root, ...statementDigestFields(proved.publicSignals) });
   const { a, b, c, pub } = await proofToCalldata(proved.proof, proved.publicSignals);
   return { s, rsKey, disclosure, timings, proved, walletAddr, deployNeeded, nonce, payload, args: [payload, sig, a, b, c, pub] };
 }

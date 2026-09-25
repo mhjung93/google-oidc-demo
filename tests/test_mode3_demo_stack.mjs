@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
 import { VKEY_PATH, createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, normalizeDisclosure, normalizeSet } from '../lib/mode3_wallet.js';
 import { pointToStrings } from '../lib/mode3_issuance.js';
-import { signPayload, proofToCalldata, parseExecuteReceipt, factoryAt, walletAt } from '../lib/mode3_onchain.js';
+import { signPayload, statementDigestFields, proofToCalldata, parseExecuteReceipt, factoryAt, walletAt } from '../lib/mode3_onchain.js';
 import { getProvider } from './helpers/mode3_chain.mjs';
 
 const j = (o) => JSON.stringify(o);
@@ -82,7 +82,7 @@ async function makeAliceAgent() {
     const walletC = walletAt(walletAddr, relayer);
     const nonce = await walletC.nonce();
     const payload = { to, value: 0n, data, nonce };
-    const sig = signPayload(session.wallet, { chainId, wallet: walletAddr, ...payload, discMask: disclosure.mask, discLo: disclosure.lo, discHi: disclosure.hi, setSel: disclosure.sel, setRoot: disclosure.root });
+    const sig = signPayload(session.wallet, { chainId, wallet: walletAddr, ...payload, discMask: disclosure.mask, discLo: disclosure.lo, discHi: disclosure.hi, setSel: disclosure.sel, setRoot: disclosure.root, ...statementDigestFields(built.publicSignals) });
     const { a, b, c, pub } = await proofToCalldata(built.proof, built.publicSignals);
     const receipt = await (await walletC.execute(payload, sig, a, b, c, pub)).wait();
     const parsed = parseExecuteReceipt(receipt, walletAddr);
