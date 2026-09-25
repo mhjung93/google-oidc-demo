@@ -30,7 +30,7 @@
 - **관계 R** (논문 Table 2): 공개 pub = (PPID, arid, pk_i, max_height, chainid, allowAgent, root, pk_A, pk_T, c1, c2, **disc_mask, disc_lo[4], disc_hi[4]**) — 23개, 증인 w = (uid, s_u, blind, a, σ_AA, r, path). 조건 1–6: 서명 검증, 커밋 재계산, PPID = H(uid, s_u, chainid, arid), leaf(C) ∉ Tree(root), 태그, 범위·불리언. **조건 7**(2026-09-22): disc_mask < 16, 비트 k 가 1 인 슬롯마다 disc_lo_k ≤ a_k ≤ disc_hi_k (lo·hi < 2^64); 비트가 0 인 슬롯은 무제약. 로그인 증명은 disc_mask = 0.
 - **트랜스크립트** T = (pub, π). **검증** Vf_X(T) (X ∈ {서비스, 컨트랙트})는 Groth16.Verify(vk, pub, π)와 공개 입력 대조(pk_A·pk_T·arid·chainid 고정값, root = 현재 root, head/블록 ≤ max_height, allowAgent ≤ 1, disc_mask < 16, c1 ≠ O)의 논리곱이며, 서비스는 추가로 σ = Sign_{sk_i}(r_s)를, 컨트랙트는 nonce·payload 서명을 검사한다.
 - **폐기 트리.** 깊이 32 인덱스드 머클 트리, 리프 leaf(C) = mask₂₅₂(H(3, C)), 비회원 증명 = 인접 리프 (v, v_next)와 경로. 로그 L은 (root, epoch, lastPublished)를 갖고 publishRoot(root′, epoch′, leaves, sig)로 갱신된다.
-- **계정.** addr(PPID) = CREATE2(F_s, salt = PPID, initCode(PPID, arid, pk_A, pk_T, verifier, L, MAX_ROOT_AGE)). execute(payload, σ_tx, π, pub), σ_tx = Sign_{sk_i}(keccak(chainid, addr, to, value, data, nonce, disc_mask, disc_lo[4], disc_hi[4])) — 다이제스트가 π 의 공개 값 9워드를 덮는다(2026-09-22, §8). 컨트랙트는 π 검증 뒤 내부 호출 데이터 끝에 같은 9워드를 붙인다(payload.data 가 비어 있고 mask = 0 이면 예외).
+- **계정.** addr(PPID) = CREATE2(F_s, salt = PPID, initCode(PPID, arid, pk_A, pk_T, verifier, L, MAX_ROOT_AGE)). execute(payload, σ_tx, π, pub), σ_tx = Sign_{sk_i}(keccak(chainid, addr, to, value, data, nonce, disc_mask, disc_lo[4], disc_hi[4], set_sel, set_root, max_height, allowAgent, c1.x, c1.y, c2)) — 다이제스트가 π 의 공개 값 **16워드**를 덮는다(9워드 2026-09-22 §8 → +집합 2워드 2026-09-24 §10 → +성명 5워드 2026-09-25 §11). 컨트랙트가 π 검증 뒤 내부 호출 데이터 끝에 붙이는 꼬리는 그중 앞 11워드뿐이라, 2026-09-25 부터 다이제스트와 꼬리는 같지 않다(payload.data 가 비어 있고 mask = 0, set_sel = 0 이면 꼬리를 붙이지 않는다).
 - **오라클 표기.** 게임에서 정직한 당사자는 오라클로 나타난다: O_issue(요청) (AA), O_login·O_req·O_reval (서비스), O_exec (컨트랙트), O_publish (AA→L), O_open (개봉).
 
 ## 2. 가정
@@ -130,11 +130,11 @@ Pr[𝒜 wins] ≤ 2·ε_KS + 2·ε_SS + 3·Adv^{DL}(B) + Adv^{EUF}_{EdDSA}(B′)
 
 ### 4.8 G7′ 온체인 실행 위조와 재생
 
-**정의 G7c.** 𝒜는 sk_i를 모르는 임의 당사자(릴레이어 포함)로 체인 전체를 읽고, 정직한 지갑이 제출한 execute 호출들을 관찰한다. 𝒜가 이기는 것은 계정 addr(PPID)에서 execute가 성공했는데 그 (chainid, addr, to, value, data, nonce, disc_mask, disc_lo, disc_hi)에 대해 정직한 지갑이 서명한 적이 없는 경우. 공개 값 9워드가 튜플에 든 이유(2026-09-22): 같은 세션키로 만든 π 가 둘 이상 있으면(예: 정확한 값 공개와 구간 공개) 릴레이어가 다른 π 를 끼워 대상에 다른 공개 값을 전달할 수 있었다 — 다이제스트가 9워드를 덮으면 릴레이어는 지갑이 서명한 (mask, lo, hi) 의 π 만 쓸 수 있다.
+**정의 G7c.** 𝒜는 sk_i를 모르는 임의 당사자(릴레이어 포함)로 체인 전체를 읽고, 정직한 지갑이 제출한 execute 호출들을 관찰한다. 𝒜가 이기는 것은 계정 addr(PPID)에서 execute가 성공했는데 그 (chainid, addr, to, value, data, nonce, disc_mask, disc_lo, disc_hi, set_sel, set_root, max_height, allowAgent, c1.x, c1.y, c2)에 대해 정직한 지갑이 서명한 적이 없는 경우. 공개 값 9워드가 튜플에 든 이유(2026-09-22): 같은 세션키로 만든 π 가 둘 이상 있으면(예: 정확한 값 공개와 구간 공개) 릴레이어가 다른 π 를 끼워 대상에 다른 공개 값을 전달할 수 있었다 — 다이제스트가 9워드를 덮으면 릴레이어는 지갑이 서명한 (mask, lo, hi) 의 π 만 쓸 수 있다. (set_sel, set_root) 는 2026-09-24(§10.1), (max_height, allowAgent, c1.x, c1.y, c2) 는 2026-09-25(§11.1 (c))에 같은 이유로 더해졌다 — 뒤의 다섯은 꼬리에는 안 붙지만 `Mode3Auth` 이벤트로 남아 개봉 장부의 재료가 된다.
 
 **정리 8.** (A6) 아래 Pr[𝒜 wins] ≤ Adv^{EUF}_{ECDSA}(B).
 
-**증명.** 성공 조건은 ecrecover(digest, σ_tx) = address(pub[2])이고 pub[2] = pk_i는 π에 의해 C_pt의 세션키와 같다(조건 2). digest = keccak(chainid, addr, to, value, data, nonce, pub[14], pub[15..18], pub[19..22])이며 nonce는 컨트랙트의 현재 값과 같아야 한다. 정직한 지갑이 이 튜플에 서명한 적이 없으면 σ_tx는 위조다. 재생: 같은 서명은 nonce가 다른 상태에서는 digest가 달라 실패한다(nonce는 성공마다 1 증가, 감소하지 않음). 다른 체인·다른 계정: digest에 chainid와 addr이 들어 있어 실패한다. 서명 가변성: 컨트랙트가 low-s·v ∈ {27,28}을 요구하므로 (r, s, v)의 표현은 유일하고, 트랜잭션 해시를 바꾼 재제출은 revert된다 — 권한과는 무관하나 §V-G의 해시 기반 개봉 장부의 무결성에 필요하다. pk_i = 0인 성명은 ecrecover의 address(0)과 공허하게 일치할 수 있어 별도로 거절된다. □
+**증명.** 성공 조건은 ecrecover(digest, σ_tx) = address(pub[2])이고 pub[2] = pk_i는 π에 의해 C_pt의 세션키와 같다(조건 2). digest = keccak(chainid, addr, to, value, data, nonce, pub[14], pub[15..18], pub[19..22], pub[23], pub[24], pub[3], pub[5], pub[11..13])이며(2026-09-25 현재 — §10.1·§11.1 (c)) nonce는 컨트랙트의 현재 값과 같아야 한다. 정직한 지갑이 이 튜플에 서명한 적이 없으면 σ_tx는 위조다. 재생: 같은 서명은 nonce가 다른 상태에서는 digest가 달라 실패한다(nonce는 성공마다 1 증가, 감소하지 않음). 다른 체인·다른 계정: digest에 chainid와 addr이 들어 있어 실패한다. 서명 가변성: 컨트랙트가 low-s·v ∈ {27,28}을 요구하므로 (r, s, v)의 표현은 유일하고, 트랜잭션 해시를 바꾼 재제출은 revert된다 — 권한과는 무관하나 §V-G의 해시 기반 개봉 장부의 무결성에 필요하다. pk_i = 0인 성명은 ecrecover의 address(0)과 공허하게 일치할 수 있어 별도로 거절된다. □
 
 ### 4.9 G8 폐기 건전성
 
@@ -213,7 +213,7 @@ Pr[𝒜 wins] ≤ 2·ε_KS + 2·ε_SS + 3·Adv^{DL}(B) + Adv^{EUF}_{EdDSA}(B′)
 | W4 | σ = EIP-191(r_s), 요청 서명 `${r_s}:${body}` | `lib/mode3_wallet.js:133,138-139` | ENFORCED |
 | W5 | 증명 캐시 (root, r_s, mask, lo, hi), root 나 공개 술어가 바뀌면 재증명 | `lib/mode3_wallet.js:83` (`disclosureKey`), `mode3_wallet_agent.js` `/wallet/tx` | ENFORCED (2026-09-22 갱신) |
 | W6 | cert_s 검증 + Origin 헤더 = 인증서 오리진 | `mode3_wallet_agent.js:167-170`, `lib/mode3_rp_cert.js:34-38` | ENFORCED |
-| W7 | /wallet/tx 같은 오리진만, raw digest 서명(다이제스트에 disc_mask·disc_lo·disc_hi 9워드 포함), 재사용·릴레이 | `mode3_wallet_agent.js:379-390`, `lib/mode3_onchain.js:66-73` (`payloadDigest`) | ENFORCED (2026-09-22 갱신) |
+| W7 | /wallet/tx 같은 오리진만, raw digest 서명(다이제스트 16워드 = disc_mask·disc_lo·disc_hi 9 + set_sel·set_root 2 + max_height·allowAgent·태그 5), 재사용·릴레이 | `lib/mode3_onchain.js:87-103` (`payloadDigest`·`statementDigestFields`), `mode3_wallet_agent.js:748` | ENFORCED (2026-09-25 갱신) |
 | W8 | 상태 파일 0600, 비밀 로그 없음 | `lib/mode3_state.js:13-16` | ENFORCED |
 | W9 | `disclose` 검사: 길이 4, 0 ≤ lo ≤ hi < 2^64 (`bad_disclosure`), lo ≤ a_k ≤ hi 를 증명 전에 확인(`disclosure_unsatisfiable`) | `lib/mode3_wallet.js:68-78` (`normalizeDisclosure`) | ENFORCED (2026-09-22 추가) |
 | W10 | 속성은 AA 에서만 받음: 등록 응답 `attrs` 저장, `bad_proof` 면 `/cia/attrs` 로 재동기화 뒤 1회 재시도, `/wallet/attrs/sync`; 사용자 입력 경로(`/wallet/attrs`) 삭제 | `mode3_wallet_agent.js:12,352` | ENFORCED (2026-09-22 추가) |
@@ -260,7 +260,7 @@ Pr[𝒜 wins] ≤ 2·ε_KS + 2·ε_SS + 3·Adv^{DL}(B) + Adv^{EUF}_{EdDSA}(B′)
 
 | ID | 검사 | 위치 | 판정 |
 |---|---|---|---|
-| K1 | execute 검사 순서 12단계(§5.3 + BadTag + TooFarExpiry) + ⑤′ pub[14] < 16 (`BadDisclosure`); σ 다이제스트 = keccak(abi.encode(chainid, wallet, to, value, data, nonce, pub[14], pub[15..18], pub[19..22])) | `contracts/Mode3Wallet.sol:84-86,128` | ENFORCED (2026-09-22 갱신) |
+| K1 | execute 검사 순서 12단계(§5.3 + BadTag + TooFarExpiry) + ⑤′ pub[14] < 16 (`BadDisclosure`) + ⑤″ 마스크 밖 슬롯의 lo·hi = 0 (`BadDisclosure`, §11.1 (b)); σ 다이제스트 = keccak(abi.encode(chainid, wallet, to, value, data, nonce, pub[14], pub[15..18], pub[19..22], pub[23], pub[24], pub[3], pub[5], pub[11], pub[12], pub[13])) | `contracts/Mode3Wallet.sol` (`execute`·`_checkStatement`) | ENFORCED (2026-09-25 갱신) |
 | K2 | 서명 길이 65, low-s, v ∈ {27,28}, address(0) 거절 | `Mode3Wallet.sol:80,111-118` | ENFORCED |
 | K3 | nonce++ 를 외부 호출 전에; 다른 가변 상태 없음 | `Mode3Wallet.sol:87-88` | ENFORCED |
 | K4 | CREATE2 salt = PPID, initCode에 인자 9개, 멱등 배포, 주소 대조 | `contracts/Mode3WalletFactory.sol:28-48` | ENFORCED |
@@ -304,8 +304,8 @@ Pr[𝒜 wins] ≤ 2·ε_KS + 2·ε_SS + 3·Adv^{DL}(B) + Adv^{EUF}_{EdDSA}(B′)
 
 **무엇이 바뀌었나.**
 1. **속성 출처.** a 는 AA 계정 기록(관리자만 변경)이고 [0, 2^64) 정수다. 등록 응답과 `/cia/attrs` 로 지갑이 받는다. π_issue V2 는 uid·a 를 공개 입력으로 두고 AA 가 uid·G₁ + Σa_k·G_{4+k} 를 뺀 나머지에 대한 PoK 만 받으므로, σ_AA 는 "C_pt 의 속성 = AA 기록"을 보증한다(정리 2 의 논증에 그대로 편입, §4.2).
-2. **회로 조건 7.** 공개 입력 23개(14 + disc_mask + disc_lo[4] + disc_hi[4]). mask 비트가 1 인 슬롯만 lo ≤ a_k ≤ hi 를 강제(등식은 lo = hi), 0 인 슬롯은 무제약·lo = hi = 0. 로그인은 mask = 0. 제약 26,601 → 25,369(속성 250 → 64비트 절감이 술어 추가분 ≈ 1.1k 를 상쇄).
-3. **온체인.** σ_tx 다이제스트가 9워드를 덮는다(정리 8, §4.8). `execute` 는 π 검증 뒤 내부 호출 데이터 끝에 9워드를 항상 붙인다 — "mask ≠ 0 일 때만"은 사용자가 payload.data 안에 위조 꼬리를 넣고 캐시된 mask = 0 π 를 재사용하는 공격(리뷰에서 PoC)으로 기각됐다. 예외: payload.data 가 비고 mask = 0 이면 붙이지 않는다(receive-only 송금; 위조 꼬리는 data 를 비울 수 없으므로 방어는 유지). 대상은 `factory.isWallet(msg.sender)` 와 calldata 끝 288바이트로 읽는다(데모 `AttrGate`: a₂ = 410 ∧ a₁ ≤ 2007).
+2. **회로 조건 7.** 공개 입력 23개(14 + disc_mask + disc_lo[4] + disc_hi[4]). mask 비트가 1 인 슬롯만 lo ≤ a_k ≤ hi 를 강제(등식은 lo = hi), 0 인 슬롯은 **회로가 무제약**이다(64비트 범위만) — 정직한 지갑은 0 을 넣지만 회로가 강제하지는 않으므로, 2026-09-25 부터 **컨트랙트가** 0 이 아니면 거절한다(§11.1 (b)). 로그인은 mask = 0. 제약 26,601 → 25,369(속성 250 → 64비트 절감이 술어 추가분 ≈ 1.1k 를 상쇄).
+3. **온체인.** σ_tx 다이제스트가 9워드를 덮는다(정리 8, §4.8; 2026-09-24 에 11워드, 2026-09-25 에 16워드로 늘었다 — §10.1·§11.1 (c)). `execute` 는 π 검증 뒤 내부 호출 데이터 끝에 9워드를 항상 붙인다 — "mask ≠ 0 일 때만"은 사용자가 payload.data 안에 위조 꼬리를 넣고 캐시된 mask = 0 π 를 재사용하는 공격(리뷰에서 PoC)으로 기각됐다. 예외: payload.data 가 비고 mask = 0 이면 붙이지 않는다(receive-only 송금; 위조 꼬리는 data 를 비울 수 없으므로 방어는 유지). 대상은 `factory.isWallet(msg.sender)` 와 calldata 끝 288바이트로 읽는다(데모 `AttrGate`: a₂ = 410 ∧ a₁ ≤ 2007).
 4. **G5 재정의**(§4.5). "AA 가 값을 모른다" → "AA 가 사용처를 모른다"(정리 5′: 1/n′, n′ = 창 ∩ 술어 만족 집합) + "검증자는 비공개 슬롯을 모른다"(정리 5: hiding + ZK).
 5. **바뀌지 않는 것.** G1·G2·G3·G6·G7·G8·G9·G10 의 정리는 서명·다이제스트에 인자가 늘어난 것 외에 그대로다. 두 서비스에 같은 값을 공개하면 그 값으로 이어질 수 있으나 이는 사용자가 고른 공개의 결과이고 PPID 자체(G3)는 독립이다.
 
@@ -363,7 +363,7 @@ Pr[𝒜 wins] ≤ 2·ε_KS + 2·ε_SS + 3·Adv^{DL}(B) + Adv^{EUF}_{EdDSA}(B′)
 - **관계 R — 공개 입력 25개.** §8 의 23개 + set_sel[23], set_root[24]. 증인 w 에 (set_index, set_path[8]) (V7) 와 (s_lowValue, s_lowNextIndex, s_lowNextValue, s_pathElements[32], s_pathIndices[32]) (V8) 가 더해진다. 코드의 슬롯은 a₀..a₃, 이 문서는 a₁..a₄.
 - **조건 8 (V7 집합 소속).** set_sel ∈ {0,…,4} (원핫 분해로 강제). sel = k ≥ 1 이면 a_k 가 깊이 8 Poseidon(2) 머클 트리 Tree_S 의 리프이고 그 root 가 set_root 다(경로는 증인). sel = 0 이면 set_root = 0. 집합 트리는 원소를 정렬·중복 제거하고 빈 자리를 SET_PAD = 2^64 로 채운다 — 속성이 [0, 2^64) 이므로 어떤 속성도 패딩과 같을 수 없다(패딩을 원소로 오인하는 증명 불가). 서비스와 컨트랙트는 set_sel ≤ 4, sel = 0 ⇒ set_root = 0 을 검사하고(BadDisclosure), set_root 가 자기 정책 집합 S 의 root 와 같은지 대조한다.
 - **시각 상대 술어(V7).** 회로 밖이다. 검증자(`AttrGate` v2)가 공개된 hi₁(출생연도 상한) 에 대해 hi₁ + minAge ≤ year(block.timestamp) 를 검사한다. 시계는 체인이라 증명자가 고르지 못한다. 회로·관계 R 은 그대로이므로 정리에 영향이 없고, 공개된 값의 해석만 늘어난다.
-- **σ_tx 다이제스트·execute 꼬리 11워드.** §8 의 9워드 + (set_sel, set_root). 정리 8 의 튜플이 (…, disc_mask, disc_lo, disc_hi, set_sel, set_root) 로 늘어난다.
+- **σ_tx 다이제스트·execute 꼬리 11워드.** §8 의 9워드 + (set_sel, set_root). 정리 8 의 튜플이 (…, disc_mask, disc_lo, disc_hi, set_sel, set_root) 로 늘어난다. (2026-09-25: 다이제스트에만 (max_height, allowAgent, c1.x, c1.y, c2) 다섯이 더해져 16워드가 됐다 — 꼬리는 11워드 그대로다. §11.1 (c).)
 - **조건 4′ (V8 세션 비멤버십).** leaf_s = mask₂₅₂(H(5, Cf_s)) ∉ Tree(root). 조건 4 의 leaf(Cf_u) = mask₂₅₂(H(4, Cf_u)) 와 **같은 트리·같은 root** 에 대한 두 번째 비회원 증명. 태그 4·5 로 도메인이 분리돼 두 리프 종류는 충돌하지 않는다.
 - **AA 상태(V8).** accounts[uid].sessions = [(Cf_s, max_height, chainid, allowAgent, issuedAt, revokedAt)]. §9.1 의 "AA 는 발급 기록을 남기지 않는다" 를 대체한다. 기록에 arid·pk_i 는 없다(C_s 안). 만료(head > max_height)된 기록은 하트비트와 그 계정의 다음 발급 때 지운다 — 리프는 남는다.
 - **오라클 O_revoke_s(uid, Cf_s, auth).** auth 는 sig_u = Sign_{sk_u}(H(D_revsess, uid, Cf_s, nonce)) (사용자) 또는 운영자 시크릿. AA 는 auth 를 **먼저** 검증하고, 그 다음 accounts[uid].sessions 에서 Cf_s 를 찾아(없으면 unknown_session) 만료가 아니면 leaf_s 를 트리에 넣고 pending 에 둔다. 효력은 다음 O_publish 부터.
@@ -396,10 +396,124 @@ Pr[𝒜 wins] ≤ 2·ε_KS + 2·ε_SS + 3·Adv^{DL}(B) + Adv^{EUF}_{EdDSA}(B′)
 | C14 (신규) | 조건 4′ 세션 리프 mask₂₅₂(H(5, Cf_s)) 비회원, 같은 revRoot | `circuits/pi_cred.circom` ④′, `lib/mode3_revocation.js sessionLeaf` |
 | S11 (신규) | 서비스 검사: set_sel ≤ 4, sel = 0 ⇒ root = 0, set_root = 정책 집합 root; 로그인 `require` 는 페이지 주도(서버 게이트 아님) | `lib/mode3_rp.js`, `mode3_rp.js rp_info.predicates` |
 | K11 (신규) | `AttrGate` v2: allowedCountriesRoot·minAge, year(block.timestamp) | `contracts/AttrGate.sol` |
-| K12 | execute 꼬리·σ_tx 다이제스트 11워드 | `contracts/Mode3Wallet.sol`, `lib/mode3_onchain.js payloadDigest` |
+| K12 | execute 꼬리 11워드; σ_tx 다이제스트는 2026-09-25 부터 16워드(§11.1 (c)) | `contracts/Mode3Wallet.sol`, `lib/mode3_onchain.js payloadDigest` |
 | A18 (신규) | 상태 v8 sessions[]; `/cia/revoke scope=session`(서명 → 조회 순서, 만료 head > max_height 거절, 삽입 직전 재조회); `/cia/admin/sessions`; 만료 기록 정리(하트비트·발급) | `cia.js`, `lib/mode3_cia_state.js`, `lib/mode3_issuance.js revokeSessionMessage` |
 | W11 (신규) | 지갑: 두 비회원 증인 동시 채취(같은 트리 상태), revoked_session 은 그 세션만 삭제, `/wallet/session/revoke`(sk_u 서명) | `lib/mode3_wallet.js buildCredentialProof·signRevokeSession`, `mode3_wallet_agent.js` |
 | W12 (신규) | W_ref 검증자 코드 대조(bad_factory: no_code / factory_code_mismatch / verifier_code_mismatch) | `lib/mode3_onchain.js verifyReferenceCode`, `mode3_wallet_agent.js checkService` |
 | N (신규) | Snap `consentRevokeSession` — 동의만, 서명은 에이전트 | `snap-mode3/src/index.js` |
 
-실측(N=10 중앙값). V7: pi_cred 27,329 제약(V6 25,369), prove 832.8 ms, verify 10.0 ms; `execute` gas mask=0 415,991, 범위만 421,052, 집합만 421,436, 범위+집합+claim 455,138; 계정 배포 908,232. V8: 37,130 제약(+9,801 = IMTNonMembershipV2 하나), prove 1,191.7 ms(+43%), verify 10.0 ms; gas mask=0 416,015, 범위만 421,076, 집합만 421,428, 범위+집합+claim 455,162 — 공개 입력 수가 같아 검증 gas 는 사실상 불변이고 비용은 증명자가 부담한다. 로그인 왕복 1,059 → 1,475 ms.
+실측(N=10 중앙값). V7: pi_cred 27,329 제약(V6 25,369), prove 832.8 ms, verify 10.0 ms; `execute` gas mask=0 415,991, 범위만 421,052, 집합만 421,436, 범위+집합+claim 455,138; 계정 배포 908,232. V8: 37,130 제약(+9,801 = IMTNonMembershipV2 하나), prove 1,191.7 ms(+43%), verify 10.0 ms; gas mask=0 416,015, 범위만 421,076, 집합만 421,428, 범위+집합+claim 455,162 — 공개 입력 수가 같아 검증 gas 는 사실상 불변이고 비용은 증명자가 부담한다. 로그인 왕복 1,059 → 1,475 ms. 이 수치들은 V7→V8 **회로** 비교다 — 2026-09-25 컨트랙트 변경 뒤의 현재 gas 는 §11.4.
+
+## 11. 2026-09-25 갱신 — 전체 코드 리뷰 반영
+
+구현 기준 feat/mode3-cia @ d9af457. 커밋 `25d56fe`(C-1), `64bae37`(AA), `8854e87`(서비스), `8a7cb62`(지갑), `4aa5589`(컨트랙트),
+`d9af457`(테스트). **회로·zkey·`PiCredVerifier.sol` 은 바꾸지 않았다** — 리뷰가 짚은 회로 쪽 공백(마스크 밖 슬롯)은 같은 보장을
+컨트랙트에서 얻었다. 이 절은 §10 위에 덮어쓴다(§7–§10 과 같은 방식).
+
+### 11.1 바뀐 보장
+
+**(a) 서비스 검증기는 공개 입력을 정규 10진 문자열로만 받는다(C-1, `25d56fe`).** 그전에는 정책 검사와 Groth16 검증이 **다른 값**을
+볼 수 있었다: snarkjs 의 `unstringifyBigInts` 는 `/^[0-9]+$/` 가 아닌 문자열을 BigInt 로 바꾸지 않고 그대로 두고, `Scalar.toRprLE`
+가 그 문자열에 `.toString(16)` 을 불러 **16진으로** 파싱한다(실측 `" 1"`→0, `" 2000"`→0, `"2007 "`→8199). 정상 로그인 π(mask = 0,
+lo = hi = 0)에 공개 입력만 `" 1"`·`" 2000"` 으로 바꿔 내면 증명 검증은 원래 값 0 으로 통과하는데 서비스는 BigInt 로 1·2000 을 읽어
+"출생연도 ≤ 2000 을 공개했다" 고 믿었다(나이 술어·집합 소속·allowAgent 위조). §1 의 **검증** Vf_서비스 정의에서 "공개 입력 대조" 와
+"Groth16.Verify(vk, pub, π)" 의 pub 이 같은 값이라는 것은 이제 코드로 강제된다 — `verifyLogin` 이 25개 원소의 형식을 검사하고
+`groth16.verify` 에도 정규형을 넘긴다(이중 방어). 정리 5·9·14 와 명제 21 은 모두 이 동일성을 암묵적으로 썼으므로, 그전까지는 그
+전제가 구현에서 성립하지 않았다. 온체인은 무관하다 — Solidity 검증자는 `uint256` 을 받아 문자열 파싱이 없다.
+
+**(b) 컨트랙트가 마스크 밖 슬롯의 lo·hi = 0 을 강제한다(I-4, `4aa5589`).** §8 (2) 의 "0 인 슬롯은 무제약·lo = hi = 0" 은 절반만
+맞았다 — 회로(조건 7)는 비트가 0 인 슬롯에 64비트 범위 말고 아무 제약도 걸지 않으므로 그 lo·hi 는 **증명자가 고른 값**이다.
+정직한 지갑은 늘 0 을 보내지만(`lib/mode3_wallet.js` `normalizeDisclosure`) 변조된 지갑은 아무 값이나 실을 수 있었고, `execute`
+의 꼬리 11워드와 `Disclosure` 이벤트를 읽는 쪽이 그것을 "AA 가 보증한 공개" 로 오인할 수 있었다. `_checkStatement` 가 이제
+마스크 비트가 0 인 슬롯의 `lo`·`hi` 가 0 이 아니면 `BadDisclosure` 로 되돌린다 — 0 으로 지우지 않고 **거절**하므로, 꼬리·이벤트를
+읽는 쪽은 "온체인에 올라온 마스크 밖 워드는 항상 0" 을 믿을 수 있다. **정리에는 영향이 없다**(관계 R 도 Vf 의 상한도 그대로다):
+바뀐 것은 정리가 다루지 않던 제3자(대상 컨트랙트·이벤트 소비자)의 보장이고, 그 보장은 회로가 아니라 컨트랙트가 준다.
+오프체인 서비스 검증기에는 같은 검사가 없다 — 서비스는 꼬리를 읽지 않고 `[14..24]` 를 기록에만 남기며, 그 기록의 의미는 예나
+지금이나 "mask 비트가 1 인 슬롯만 뜻이 있다" 이다.
+
+**(c) σ_tx 다이제스트가 max_height·allowAgent·태그까지 덮는다(A-2, `4aa5589`) — 정리 8 의 튜플 갱신.** §10.1 의 11워드에 `pub[3]`
+(max_height)·`pub[5]`(allowAgent)·`pub[11..13]`(태그 c1.x·c1.y·c2) 다섯이 더해져 **16워드**가 됐다:
+
+> σ_tx = Sign_{sk_i}(keccak(abi.encode(chainid, addr, to, value, data, nonce, disc_mask, disc_lo[4], disc_hi[4], set_sel, set_root, max_height, allowAgent, c1.x, c1.y, c2)))
+
+닫은 것: 릴레이어가 σ_tx 는 그대로 두고 **같은 사용자·같은 세션키의 다른 π** 로 바꿔 끼우는 경우다. 공개 술어(mask·lo·hi·set)가
+같은 두 성명은 만료·에이전트 허용·태그만 다를 수 있고, 그 셋은 꼬리에는 붙지 않지만 `Mode3Auth` 이벤트로 남아 §V-G 의 해시 기반
+개봉 장부의 재료가 된다. 바꿔 끼우면 이번 실행이 인가하지 않은 만료·`allowAgent`·개봉 태그가 장부에 남았다. **정리 8 의 상한은
+그대로다**(Adv^{EUF}_{ECDSA} + Adv^{coll}_{keccak}) — 가정이 바뀐 것이 아니라 "정직한 지갑이 서명한 적 없는 조합" 의 범위가
+넓어졌고, 이제 그 조합에 만료와 태그가 들어간다. 꼬리는 11워드 그대로이므로 **이 판부터 다이제스트와 꼬리는 같지 않다**.
+JS 쪽은 다섯 필드에 기본값을 두지 않고 빠뜨리면 던진다(`payloadDigest`) — 기본값 0 을 두면 넘기지 않은 호출부가 조용히 틀린 σ 를
+만든다. 서명하는 쪽은 언제나 `statementDigestFields(publicSignals)` 로 **이번에 붙일 π** 에서 뽑는다.
+
+**(d) 서비스가 set_root 를 자기 정책 집합의 root 와 대조한다(I-2, `8854e87`) — §10.4 S11 이 이제 코드와 맞는다.** §10.1 은 "서비스와
+컨트랙트는 … set_root 가 자기 정책 집합 S 의 root 와 같은지 대조한다" 고 적었고 온체인 `AttrGate` 는 실제로 그랬지만, 오프체인
+`verifyLogin` 은 `set_sel ≤ 4` 와 `sel = 0 ⇒ set_root = 0` 만 봤다. 회로는 "set_root 의 트리에 속한다" 만 증명하고 **누구 트리인지는
+모르므로**, 자기 국가 하나만 든 트리의 root 로 "허용 집합 소속" 을 주장하면 로그인이 통과하고 세션·로그인 기록·화면이 그것을
+보증처럼 실었다 — 정리 3·5 의 "검증자가 얻는 것은 a_k ∈ S 한 비트" 에서 S 가 적의 선택이 되는 경우다. `createRpVerifier` 의 새
+옵션 `policySetRoot`(기본 `null` = 검사 안 함)가 로그인·재검증 두 경로를 한 곳에서 덮고 `mode3_rp.js` 가 `ALLOWED_COUNTRIES_ROOT`
+를 넘긴다(사유 `bad_disclosure`). 기본값을 `null` 로 둔 것은 정책 집합이 없는 검증기의 기존 계약을 유지하려는 선택이라, 정책을
+아는 서비스가 넘기지 않으면 보장도 없다(운영 책임).
+
+**(e) 지갑이 팩토리의 maxRootAge·maxLifetime 밴드를 검증한다(I-3, `8a7cb62`) — 명제 21 의 W_ref 보완.** W_ref(§10.1)는 배포 코드를
+참조 빌드와 대조하면서 immutable 슬롯을 **0 으로 마스킹**하므로, 팩토리 생성자 인자로 들어간 `maxRootAge`·`maxLifetime` 은 코드
+대조로 잡히지 않는다. 그 둘은 계정 주소를 정하는 initCode 인자라 배포 뒤에는 바꿀 수 없다. 너무 크면 AA 가 게시를 멈춰도 온체인
+실행이 계속돼 따름정리 9′(root 나이 상한)의 효력이 사라지고, `maxRootAge = 0` 이면 그 계정의 모든 `execute` 가 되돌려져 이미 넣은
+자산이 **영구 동결**된다(같은 인자라야 같은 주소가 나오므로 다른 값으로 재배포할 수 없다). `checkService` 가 두 값을
+`FACTORY_MAX_ROOT_AGE_BAND`(1..200 블록) · `FACTORY_MAX_LIFETIME_BAND`(1..1600 블록) 안인지 보고 밖이면 409 `bad_factory`
+(`detail`: `maxRootAge out of band` / `maxLifetime out of band`). 명제 21 의 상한은 그대로이고 바뀐 것은 그 명제가 덮는 범위다 —
+"참조 빌드와 같은 코드" 에 "밴드 안의 상한" 이 더해졌다. 밴드 자체는 기본값의 2배·4배로 잡은 **운영 선택**이지 보안 논증에서
+유도한 값이 아니다.
+
+### 11.2 대응표 갱신 (§6·§9.4·§10.4 위에)
+
+| 행 | 갱신 내용 | 구현 |
+|---|---|---|
+| S3–S10 | 공개 입력 25개가 **정규 10진 문자열**이어야 한다(아니면 `malformed`), `groth16.verify` 에도 정규형을 넘긴다 | `lib/mode3_rp.js verifyLogin` |
+| S11 | `policySetRoot` 가 bigint 면 `set_sel ≠ 0` 일 때 `set_root = policySetRoot` 강제(`bad_disclosure`), 로그인·재검증 공통; `null` 이면 예전처럼 검사하지 않는다 | `lib/mode3_rp.js createRpVerifier`, `mode3_rp.js` (`ALLOWED_COUNTRIES_ROOT`) |
+| S12 | 재검증이 세션의 `max_height`·`allowAgent` 를 이번 성명의 값으로 다시 묶는다(세션 기록이 마지막 증명과 어긋나지 않게) | `mode3_rp.js /api/mode3/revalidate` |
+| S19 (신규) | `GET /api/mode3/open/:id` 도 검증기가 없으면 503 fail-closed(다른 라우트와 같은 자세) | `mode3_rp.js` |
+| K1 | ⑤″ 마스크 비트가 0 인 슬롯의 `lo`·`hi` 가 0 이 아니면 `BadDisclosure`; σ 다이제스트 16워드 | `contracts/Mode3Wallet.sol` (`_checkStatement`·`execute`) |
+| K12 | execute 꼬리는 11워드 그대로, σ_tx 다이제스트만 16워드 | `contracts/Mode3Wallet.sol`, `lib/mode3_onchain.js payloadDigest`·`statementDigestFields` |
+| W7 | 다이제스트 16워드 — 성명 쪽 다섯은 `statementDigestFields(publicSignals)` 로 이번에 붙일 π 에서 뽑는다(기본값 없음, 빠뜨리면 throw) | `lib/mode3_onchain.js:87-103`, `mode3_wallet_agent.js:748` |
+| W12 | W_ref 에 팩토리 상한 밴드 대조를 더한다(`bad_factory` + `detail`) — 코드 대조는 immutable 을 마스킹하므로 이 둘을 못 잡는다 | `lib/mode3_onchain.js FACTORY_MAX_ROOT_AGE_BAND`·`FACTORY_MAX_LIFETIME_BAND`, `mode3_wallet_agent.js checkService` |
+| W13 (신규) | `/wallet/revalidate`·`/wallet/request` 가 요청이 가리키는 서비스와 세션의 `arid` 를 대조한다(다르면 404 `no_session`) | `mode3_wallet_agent.js sessionMatchesRequester` |
+| A11 | 결정(승인·거절)된 개봉 항목에서 `D_svc`·`c1`·`c2` 를 지운다 — 거절된 요청의 복호 재료가 `x_AA` 와 같은 파일에 남지 않는다 | `cia.js` |
+| A18 | 만료 세션 기록 정리가 원자적이다: 체인별 head 를 계정 순회 **전에** 모두 읽고 순회에는 `await` 가 없다(발급과의 경합으로 방금 발급된 기록이 덮여 사라지던 것) | `cia.js pruneExpiredSessions` |
+
+**정리 1–19 와 명제 16–21 의 상한은 하나도 바뀌지 않았다.** 이 절의 다섯 항목은 정리가 이미 가정하던 검사를 구현이 실제로 하게
+만든 것((a)·(d)·(e))이거나, 정리 밖의 제3자 보장을 더한 것((b))이거나, 튜플을 넓힌 것((c))이다.
+
+### 11.3 한계 추가 (§5·§8·§10.3 위에)
+
+- **(k) 세션 라우트의 서비스 대조는 fail-open 이다.** `/wallet/revalidate`·`/wallet/request` 는 본문 `arid` 가 있으면 그것과, 없으면
+  `Origin` 헤더와 세션의 서비스를 대조하지만 **둘 다 없으면 `r_s` 만으로 판정한다**(브라우저 밖의 서버-대-서버 호출, 그리고
+  `8a7cb62` 이전에 만들어져 `origin` 이 적히지 않은 세션). 브라우저는 교차 오리진 요청에 늘 `Origin` 을 붙이므로 (A9) 아래
+  브라우저 공격면은 닫혀 있다. 더 조이려면 `arid` 를 필수로 만들어야 하고, 그것은 `mode3/rp.html` 과의 계약을 바꾼다.
+- **(l) 오류 우선순위.** 마스크 밖 공개 워드가 더럽혀져 있으면서 root 도 낡은 입력은 이제 `StaleRevocationRoot` 가 아니라
+  `BadDisclosure` 로 되돌아간다 — 위생 검사가 외부 `log.root()` 읽기보다 **앞**에 있기 때문이다(싼 검사를 먼저 하는 순서).
+  어느 테스트도 그 조합을 단언하지 않고 어느 JS 도 오류 이름으로 분기하지 않으므로 관측되는 계약 차이는 없지만, 그 조합을
+  디버깅할 때 먼저 보이는 이름이 바뀐다는 점은 적어 둔다.
+- **(m) 배포 코드가 바뀌었다(운영).** `4aa5589` 가 `Mode3Wallet` 바이트코드를 바꿨으므로 그 전에 배포된 서비스 팩토리는 W_ref
+  대조에서 `factory_code_mismatch` 가 된다 — §10.3 (h) 의 운영 제약이 실제로 발생한 경우다. 데모 스택을 다시 띄우려면 팩토리를
+  재배포한다. 지갑 쪽 참조는 `artifacts/` 를 런타임에 읽으므로 커밋된 해시 파일은 없고, 코드 쪽은 `npx hardhat compile` 이면 된다.
+
+### 11.4 실측 — 컨트랙트 변경 뒤 온체인 gas
+
+`results/mode3_review_fixes_20260925.md`(2026-09-25 15:58 KST, `node scripts/bench_mode3_onchain.mjs 10`, N=10 중앙값 (최소–최대)).
+§10.4 의 수치는 V7→V8 **회로** 비교이고 여기는 같은 V8 회로 위에서 **컨트랙트만** 바뀐 뒤의 재측정이다.
+
+| 항목 | V8 (09-24) | 지금 (09-25) | 차이 |
+|---|--:|--:|--:|
+| execute gas (mask=0, 캐시 π) | 416,015 | 417,533 (417,509–417,577) | +1,518 |
+| execute gas (첫 tx) | 433,135 | 434,665 | +1,530 |
+| execute gas (범위만) | 421,076 | 422,366 (422,298–422,378) | +1,290 |
+| execute gas (집합만) | 421,428 | 422,982 (422,946–423,026) | +1,554 |
+| execute gas (범위+집합+`AttrGate.claim`) | 455,162 | 456,439 (456,383–456,463) | +1,277 |
+| 계정 배포 (CREATE2) | 908,232 | 939,808 | +31,576 |
+| `Mode3WalletFactory` 배포 | 1,483,740 | 1,517,288 | +33,548 |
+| `PiCredVerifier` 배포 | 874,396 | 874,396 | **0** |
+
+실행당 1,300~1,550 gas(+0.31~0.37%)는 다이제스트가 5워드 넓어져 `abi.encode` 와 keccak 입력이 160바이트 커진 것과 마스크 위생
+루프의 calldata 읽기 8회가 합쳐진 값이다. 공개 입력 수(25)는 그대로라 Groth16 검증 비용은 바뀌지 않았다. 배포 gas 가 3만대 오른
+것은 `Mode3Wallet` 바이트코드가 커졌기 때문이고(팩토리는 그 `creationCode` 를 품고 있어 같이 오른다), **`PiCredVerifier` 의 차이가
+정확히 0 인 것은 생성된 검증자를 건드리지 않았다는 독립적인 증거다**. 오프체인 비용(제약 37,130, prove 1,191.7 ms, verify 10.0 ms,
+zkey 23.4 MB)은 회로가 그대로이므로 §10.4 와 같다.
