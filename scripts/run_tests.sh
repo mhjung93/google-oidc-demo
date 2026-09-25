@@ -7,7 +7,8 @@
 #
 #   bash scripts/run_tests.sh            # unit + circuit (자체 완결, 기본값)
 #   bash scripts/run_tests.sh unit       # 외부 의존 없음, 빠름
-#   bash scripts/run_tests.sh circuit    # circom/snarkjs 필요. 느리다(회로 컴파일)
+#   bash scripts/run_tests.sh circuit    # circom/snarkjs 필요. 느리다(회로 컴파일).
+#                                        # test_mode3_artifacts.mjs 만 build/mode3 의 배포용 산출물(vkey·zkey·wasm)도 본다
 #   bash scripts/run_tests.sh chain      # hardhat 노드(:8545) 필요. IdP/CIA는 스스로 격리 기동.
 #                                        # Mode 3 테스트는 build/mode3/pi_cred_*.zkey·vkey 도 필요
 #   bash scripts/run_tests.sh contract   # 컨트랙트(test/*.test.mjs). hardhat 인프로세스 체인
@@ -59,6 +60,9 @@ CIRCUIT=(
   tests/test_insert_transition_circuit.mjs
   tests/test_mode3_commit_scheme.mjs
   tests/test_pi_cred_witness.mjs
+  # 배포용 build/mode3 산출물이 지금의 회로 소스에서 나온 것인지(2026-09-25 리뷰 E-3).
+  # 바로 위 test_pi_cred_witness.mjs 가 witness_test/ 에 해 둔 컴파일을 재사용하므로 그 뒤에 둔다.
+  tests/test_mode3_artifacts.mjs
 )
 
 # hardhat 노드만 있으면 되는 것들. IdP/CIA가 필요하면 테스트가 스스로 격리 인스턴스를 띄운다

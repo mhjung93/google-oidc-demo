@@ -5,6 +5,7 @@
 // scripts/run_tests.sh 의 `snap` 그룹이 이 파일을 돌린다(2026-09-22 Ruling 9): `bash scripts/run_tests.sh snap`.
 // 체인도 브라우저도 필요 없지만 snap-mode3/node_modules(@metamask/snaps-sdk)를 전제하므로 unit 이 아니라 별도 그룹이다.
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { validateWitness } from '../../lib/mode3_secret_source.js';
 import { registrationCommit } from '../../lib/mode3_issuance.js';
 
@@ -53,11 +54,23 @@ const SK_U = 'ab'.repeat(32);
 const ATTRS = ['1990', '410', '2', '0'];
 const USER_CRED = { C_u_pt: { x: '11', y: '22' }, Cf_u: '33', blind_u: '987654321098765432109876543210', leaf: '55', issuedAt: '2026-09-22T00:00:00.000Z' };
 
+// onRpcRequest 의 switch 에서 method 이름을 직접 뽑는다 — 목록을 손으로 적어 두면 새 RPC 가 늘어날 때
+// 아래 검사에서 조용히 빠진다(2026-09-25 리뷰: 제목은 "모든 RPC" 인데 getPublicInfo 하나만 보고 있었다).
+const RPC_METHODS = [...fs.readFileSync(new URL('../src/index.js', import.meta.url), 'utf8').matchAll(/^\s*case '([A-Za-z]+)':/gm)].map((m) => m[1]);
+
 await t('다른 오리진은 모든 RPC 에서 거절된다', async () => {
+  assert.ok(RPC_METHODS.length >= 9, `RPC 목록을 못 뽑았다: ${JSON.stringify(RPC_METHODS)}`);
+  for (const must of ['register', 'getPublicInfo', 'consentLogin', 'consentDisclosure', 'selfRevoke', 'reset']) {
+    assert.ok(RPC_METHODS.includes(must), `${must} 가 목록에 없다 — 정규식이 소스와 어긋났다`);
+  }
   for (const bad of ['http://evil.example', 'http://127.0.0.1:3000', 'https://127.0.0.1:5100', 'metamask']) {
-    await assert.rejects(() => call('getPublicInfo', {}, bad), /origin/i, `거절해야 한다: ${bad}`);
+    for (const m of RPC_METHODS) {
+      await assert.rejects(() => call(m, {}, bad), /origin/i, `거절해야 한다: ${m} @ ${bad}`);
+    }
   }
   assert.equal(store.state, null, '거절된 호출은 상태를 만들지 않는다');
+  assert.equal(dialogs.length, 0, '거절된 호출은 대화상자를 띄우지 않는다 — 오리진 검사가 맨 앞이어야 한다');
+  console.log(`     (RPC ${RPC_METHODS.length}종: ${RPC_METHODS.join(', ')})`);
 });
 
 await t('지갑 오리진 두 철자(127.0.0.1·localhost)는 모두 허용된다', async () => {

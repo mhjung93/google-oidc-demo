@@ -218,6 +218,24 @@ await t('음성 c: head 가 max_height 를 넘으면 expired (블록 높이)', a
   assert.equal(r.ok, false); assert.equal(r.reason, 'expired');
 });
 
+// 2026-09-25 리뷰 E-6: 위 케이스는 "한참 지난" 만료만 본다 — 부등호가 >= 로 바뀌어도(= 마지막 한 블록을
+// 잃어도) 그대로 초록색이다. 경계 두 칸을 같은 π 로 붙여서 본다. 컨트랙트(Mode3Wallet.sol `block.number > pub[3]`)·
+// AA(cia.js 의 세션 폐기)가 쓰는 부등호와 같아야 한다 — head == max_height 는 아직 산 성명이다.
+await t('E-6 만료 경계: head == max_height 는 통과, 한 블록 더 가면 expired', async () => {
+  await publish([]);                     // root 나이를 0 으로 — 아래 채굴이 root_too_old 를 먼저 맞지 않게
+  const L = await makeLogin({ ttlBlocks: 3n });
+  const maxHeight = BigInt(L.publicSignals[3]);
+  const gap = maxHeight - BigInt(await provider.getBlockNumber());
+  assert.ok(gap >= 0n, `전제가 깨졌다: 이미 head > max_height (gap=${gap})`);
+  if (gap > 0n) await mineBlocks(Number(gap), provider);
+  assert.equal(BigInt(await provider.getBlockNumber()), maxHeight, '전제: head == max_height');
+  const at = await rp.verifyLogin(L);
+  assert.equal(at.ok, true, `head == max_height 는 만료가 아니다: ${JSON.stringify(at, (k, v) => (typeof v === 'bigint' ? v.toString() : v))}`);
+  await mineBlocks(1, provider);
+  const after = await rp.verifyLogin(L);
+  assert.equal(after.ok, false); assert.equal(after.reason, 'expired');
+});
+
 await t('앞자리 0 이 붙은 10진 공개 입력도 통과하지만, 돌려주는 publicSignals 는 정규형이다 (개봉 재료 — 2026-09-18 점검 1)', async () => {
   const L = await makeLogin();
   const ps = [...L.publicSignals]; ps[1] = '0' + ps[1]; ps[11] = '00' + ps[11];

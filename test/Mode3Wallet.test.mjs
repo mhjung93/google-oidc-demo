@@ -217,6 +217,25 @@ describe('Mode3Wallet', function () {
     await expect(wallet.execute(payload, sig, st.a, st.b, st.c, st.pub)).to.be.revertedWithCustomError(wallet, 'Expired');
   });
 
+  // 2026-09-25 리뷰 E-6: 위 케이스는 "한참 지난" 만료만 본다. 부등호가 `>=` 로 바뀌어도(= 마지막 한 블록을
+  // 잃어도) 빨개지지 않는다. 경계 두 칸을 같은 지갑·같은 π 로 붙여서 본다 — AA(cia.js)·서비스(lib/mode3_rp.js)가
+  // 쓰는 부등호와 같아야 한다: head == max_height 는 아직 산 성명이다.
+  it('E-6 만료 경계: block.number == max_height 는 유효, 그 다음 블록부터 Expired', async () => {
+    const st = withInput(await statement({ maxHeight: BigInt(await ethers.provider.getBlockNumber()) + 30n }));
+    const { wallet } = await deployStack(st);
+    const maxHeight = BigInt(st.fx.input.max_height);
+    // execute 는 "지금 head + 1" 블록에 들어간다. 그 블록이 정확히 max_height 가 되게 채운다.
+    const gap = maxHeight - 1n - BigInt(await ethers.provider.getBlockNumber());
+    assert.ok(gap >= 0n, `배포가 경계를 넘겨 버렸다(gap=${gap}) — maxHeight 여유를 늘려야 한다`);
+    if (gap > 0n) await ethers.provider.send('hardhat_mine', ['0x' + gap.toString(16)]);
+    const a = await signedPayload(st, wallet);
+    const receipt = await (await wallet.execute(a.payload, a.sig, st.a, st.b, st.c, st.pub)).wait();
+    expect(BigInt(receipt.blockNumber)).to.equal(maxHeight, '경계 블록에서 실행돼야 이 케이스가 의미가 있다');
+    // 한 블록만 더 가면(= head == max_height 인 상태에서 보낸 다음 트랜잭션) 같은 π 가 만료된다.
+    const b = await signedPayload(st, wallet);
+    await expect(wallet.execute(b.payload, b.sig, st.a, st.b, st.c, st.pub)).to.be.revertedWithCustomError(wallet, 'Expired');
+  });
+
   it('증명을 손상하면 InvalidProof', async () => {
     const { wallet } = await deployStack(ST);
     const { payload, sig } = await signedPayload(ST, wallet);

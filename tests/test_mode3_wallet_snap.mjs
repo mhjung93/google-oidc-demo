@@ -67,7 +67,10 @@ try {
     assert.equal(sim.getPublicInfo().registered, true); assert.equal(sim.getPublicInfo().hasUserCred, false);
   });
 
-  await t('precheck: 정상 ok, 인증서 위조 403 bad_rp_cert, 팩토리 주소 오류 409 bad_factory', async () => {
+  // 아래 bad_factory 케이스는 팩토리가 **아닌** 컨트랙트를 줘서 게터가 revert 하는 경로만 탄다. 팩토리이긴 한데
+  // arid·log·pk_CIA·pk_trace·maxRootAge·maxLifetime 이 기대와 다른 경우(값 대조)는 tests/test_mode3_wallet_agent.mjs
+  // 의 'I-3/E-2' 케이스가 본다 — 제목이 그 둘을 다 덮는 것처럼 읽히지 않게 여기서 범위를 밝힌다(2026-09-25 리뷰).
+  await t('precheck: 정상 ok, 인증서 위조 403 bad_rp_cert, 팩토리가 아닌 컨트랙트 주소(게터 revert) 409 bad_factory', async () => {
     const ch = (await rp.post('/api/mode3/challenge')).body;
     const base = { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, factoryAddress: ch.factoryAddress };
     const ok = await wallet.post('/wallet/authorize/precheck', base);

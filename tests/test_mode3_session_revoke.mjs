@@ -142,6 +142,41 @@ try {
     assert.equal(st.root, root, '리프는 트리에 남는다 — 기록만 지운다(설계 §6)');
     assert.equal(st.pendingCount, pending, 'pending 도 그대로');
   });
+
+  // 2026-09-25 리뷰 E-8: 기록 조회는 **그 계정의** sessions 안에서만 해야 한다. 계정 밖에서 찾으면
+  // A 가 자기 키로 서명한 요청 하나로 남의 세션을 끊을 수 있다(서명은 (uid, Cf_s, nonce) 위라 A 의 uid 로도
+  // 다른 계정의 Cf_s 를 서명할 수 있다 — 그 자체는 막을 수 없고, 막는 것은 기록 조회의 범위다).
+  await t('E-8: 다른 계정의 세션은 내 서명으로 폐기되지 않는다 — 404 unknown_session, 그 세션은 그대로', async () => {
+    // B(alice, uid 67890) 계정 → 사용자 자격증명 → 세션 하나.
+    const UID_B = '67890', uidB = BigInt(UID_B);
+    const ALICE_ATTRS = [2005n, 840n, 1n, 0n];   // cia.js DEMO_ACCOUNTS 의 alice
+    const regB = await createRegistration();
+    const rB = await cia.post('/cia/register', { uid: UID_B, pwd: 'alicepw', cm_u: pointToStrings(regB.cm_u) });
+    assert.equal(rB.status, 201, JSON.stringify(rB.body));
+    const sk_uB = rB.body.sk_u;
+    const ucB = await buildUserCredRequest({ uid: uidB, s_u: regB.s_u, r_u: regB.r_u, sk_u: sk_uB, attrs: ALICE_ATTRS });
+    assert.equal((await cia.post('/cia/user_cred', ucB.body)).status, 201);
+    const reqB = await buildIssueRequest({ uid: uidB, Cf_u: ucB.Cf_u, arid, sk_u: sk_uB, session: createSessionKey(), chainid: CHAIN_ID, max_height: BigInt(await provider.getBlockNumber()) + 300n });
+    const issuedB = await cia.post('/cia/issue', reqB.body);
+    assert.equal(issuedB.status, 200, JSON.stringify(issuedB.body));
+
+    // A(testuser)가 자기 uid 와 **B 의 Cf_s** 위에 제대로 서명해 보낸다 — 서명 자체는 유효하다.
+    const nonce = 777n;
+    const sig_u = await signRevokeSession(sk_u, uid, BigInt(issuedB.body.Cf_s), nonce);
+    const cross = await cia.post('/cia/revoke', { uid: UID, scope: 'session', Cf_s: issuedB.body.Cf_s, sig_u, nonce: nonce.toString() });
+    assert.equal(cross.status, 404, JSON.stringify(cross.body));
+    assert.equal(cross.body.reason, 'unknown_session');
+
+    // B 의 세션은 그대로고(리프도 안 들어갔고), B 자신은 여전히 폐기할 수 있다.
+    const recB = (await cia.adminGet(`/cia/admin/sessions?uid=${UID_B}`)).body.sessions.find((s) => s.Cf_s === issuedB.body.Cf_s);
+    assert.ok(recB, 'B 의 세션 기록이 있어야 한다');
+    assert.equal(recB.revokedAt, null, 'A 의 요청으로 B 의 세션이 폐기되면 안 된다');
+    const sigB = await signRevokeSession(sk_uB, uidB, BigInt(issuedB.body.Cf_s), 1n);
+    const own = await cia.post('/cia/revoke', { uid: UID_B, scope: 'session', Cf_s: issuedB.body.Cf_s, sig_u: sigB, nonce: '1' });
+    assert.equal(own.status, 200, JSON.stringify(own.body));
+    assert.equal(own.body.inserted, true, '주인의 폐기는 리프를 넣는다');
+    assert.equal(BigInt(own.body.leaf), await sessionLeaf(BigInt(issuedB.body.Cf_s)));
+  });
 } finally {
   await cia.stop();
   provider.destroy();

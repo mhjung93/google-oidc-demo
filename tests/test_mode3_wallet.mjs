@@ -274,5 +274,36 @@ await t('증인을 만든 뒤 트리가 바뀌어도 증명의 revRoot 는 증�
   assert.equal(BigInt(out.publicSignals[6]), rootBefore, '공개 입력의 revRoot 자리도 증인 root 여야 한다');
 });
 
+// 2026-09-25 리뷰 E-7: lib/mode3_wallet.js 의 "두 비멤버십 증인의 root 가 다르면 던진다" 가드.
+// 실제 트리에서는 getNonMembershipWitness 본문에 await 가 없어 두 호출 사이에 insert 가 끼어들 수 없다
+// (바로 위 케이스가 그 불변식을 본다). 그래서 이 가드는 그 불변식이 깨진 경우 — 스텁, 다른 트리 구현,
+// 미래에 그 함수가 진짜로 비동기가 되는 경우 — 를 위한 것이고, 여기서 그 조건을 직접 만들어 본다.
+// 없으면 revRoot 하나로 두 경로를 검증하는 회로가 "Assert Failed" 로 튕겨 원인을 알 수 없게 된다.
+await t('두 비멤버십 증인의 root 가 다르면 증명을 만들지 않고 던진다 (공개 입력 revRoot 는 하나뿐)', async () => {
+  const reg3 = await createRegistration();
+  const session3 = createSessionKey();
+  const sk_u3 = Buffer.alloc(32, 7).toString('hex');
+  const uc3 = await buildUserCredRequest({ uid, s_u: reg3.s_u, r_u: reg3.r_u, sk_u: sk_u3, attrs: [19n, 410n, 0n, 0n] });
+  const req3 = await buildIssueRequest({ uid, Cf_u: uc3.Cf_u, arid, sk_u: sk_u3, session: session3, chainid: 31337n, max_height: await mh() });
+  const cred3 = await localIssue(uc3.Cf_u, req3.C_s_pt, 31337n, { max_height: BigInt(req3.body.max_height) });
+
+  const { tree } = await syncRevocationTree(provider, logAddress);
+  const orig = tree.getNonMembershipWitness.bind(tree);
+  let n = 0;
+  // 두 번째 증인(세션 리프)만 바뀐 트리에서 나오게 한다 — await 가 하나 끼어 그 사이에 insert 가 끝난다.
+  tree.getNonMembershipWitness = async (target) => {
+    if (n++ === 1) await tree.insert(123_456_789n);
+    return orig(target);
+  };
+  await assert.rejects(
+    () => buildCredentialProof({
+      uid, arid, s_u: reg3.s_u, blind_u: uc3.secrets.blind_u, blind_s: req3.secrets.blind_s, pk_i: session3.pk_i,
+      attrs: [19n, 410n, 0n, 0n], credential: cred3, pk_CIA, pk_trace, tree,
+    }),
+    /증인 두 개의 root 가 다르다/,
+  );
+  assert.equal(n, 2, '증인을 둘 다 요청했어야 한다(가드가 그 뒤에 온다)');
+});
+
 provider.destroy();
 process.exit(failed === 0 ? 0 : 1);
