@@ -10,11 +10,15 @@
 # 근거: docs/paper/zkd/security_formal.md §10·§11, docs/paper/zkd/conditional_privacy_formal.md 주석(2026-09-24·09-25),
 # docs/MODE3_DEMO.md, 실측 results/mode3_review_fixes_20260925.md(컨트랙트 변경 뒤 gas·로그인 왕복) 와
 # results/mode3_session_revocation_20260924.md(V7→V8 회로 비교: 제약·증명 시간·zkey).
+# 그림(2026-09-30): Fig. 1 = 구조도 fig1_boxes_v6.png(§III-A 에 신설; fig1_boxes_v6.svg + render_svg.mjs), 기존 Fig. 1 은 Fig. 2 로
+# 번호를 올리고 v6 순서도 fig1_login_v6.png(draw_fig1_v6.py)로 교체한다.
 import copy, shutil
 from docx import Document
 from docx.oxml.ns import qn
 from docx.text.paragraph import Paragraph
 from lxml import etree
+from docx.shared import Inches
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 SRC = 'documents/2026-09-23_v5_zk-Delegation_research_article.docx'
 DST = 'documents/2026-09-25_v6_zk-Delegation_research_article.docx'
@@ -352,6 +356,38 @@ rep(p, 'The prototype shows that the whole flow fits in one Groth16 argument of 
     'The prototype shows that the whole flow fits in one Groth16 argument of about thirty-seven thousand constraints, proved in about 1.2 s and verified in milliseconds, with a per-request cost of a single signature off chain and one verification per transaction on chain, at about 420,000 gas; the same argument discloses a chosen range of an attested attribute to a contract, or its membership in a set the verifier names, and proves that neither the credential nor the session has been revoked, and the cost of verifying it follows the number of public inputs and not the size of the circuit: the two inputs of the set predicate added about three per cent, and session revocation, which added ten thousand constraints and no input, added nothing measurable.')
 rep(p, 'Future work is to extend the range predicates over the committed slots to set membership and time-relative predicates, to constrain r ≠ 0 in the circuit rather than in the verifiers, to let a contract cache a verified session',
     'Future work is to extend the predicates over the committed slots to relations between two slots, to fold away the leaves of expired sessions so that the revocation tree grows with what is live rather than with everything ever revoked, to let a contract cache a verified session')
+
+# ---------------------------------------------------------------- 그림 (2026-09-30): Fig. 1 구조도 신설(§III-A), 기존 Fig. 1 → Fig. 2 (v6 순서도)
+FIG_BOXES = 'docs/paper/zkd/fig1_boxes_v6.png'     # fig1_boxes_v6.svg → render_svg.mjs
+FIG_SEQ   = 'docs/paper/zkd/fig1_login_v6.png'     # draw_fig1_v6.py
+CAP = find('FIGURE 1. One user credential')                       # 기존 캡션(번호 바꾸기 전에 잡아 둔다 — 새 캡션의 서식 템플릿)
+FIGP = next(q for q in PARAS if q._p.findall('.//' + qn('w:drawing')))   # 기존 그림 문단
+assert CAP.style.name == 'Figure Caption' and FIGP.style.name == 'PARA', (CAP.style.name, FIGP.style.name)
+
+# (a) §III-A ENTITIES 뒤에 Fig. 1(구조도) + 캡션
+p = find('zk-Delegation has five parties.')
+rep(p, 'zk-Delegation has five parties.', 'zk-Delegation has five parties (Fig. 1).')
+q = clone_after(p, '', template=BODY)
+for r in list(q.runs): r._r.getparent().remove(r._r)
+q.alignment = WD_ALIGN_PARAGRAPH.CENTER
+q.add_run().add_picture(FIG_BOXES, width=Inches(6.5))
+LOG.append((pidx(q), 'figure', '', FIG_BOXES))
+clone_after(q, 'FIGURE 1. The parties of zk-Delegation and what passes between them. The AA verifies the user credential once and signs a statement per session without a proof, keeping a record of the session; the wallet builds the proof and logs in to the service under a pairwise pseudonym; the same proof authorizes transactions from the pseudonym\'s account on the chain, whose signature binds sixteen words of the statement; revoking a session or an account reaches the chain as a new root of the append-only log; opening a disputed transcript needs the service\'s share, the AA\'s share, and an operator. Solid arrows carry what the AA sees, dashed blue arrows never reach the AA, and dotted arrows are chain reads.', template=CAP)
+
+# (b) 기존 Fig. 1 → Fig. 2: 참조·캡션 번호·내용, 그림 교체
+p = find('Fig. 1 shows one login.')
+rep(p, 'Fig. 1 shows one login.', 'Fig. 2 shows one login.')
+rep(CAP, 'FIGURE 1. One user credential', 'FIGURE 2. One user credential')
+rep(CAP, 'one on-chain transaction (step 6\'), and one authorized opening (steps 7–8)',
+         'one on-chain transaction (step 6\'), one session revocation (steps R1–R2), and one authorized opening (steps 7–8)')
+rep(CAP, 'the green arrow is public on the chain.',
+         'the green arrows are public on the chain; orange arrows are revocation, which reaches the chain as a new root.')
+for r in list(FIGP.runs): r._r.getparent().remove(r._r)
+FIGP.alignment = WD_ALIGN_PARAGRAPH.CENTER
+FIGP.add_run().add_picture(FIG_SEQ, width=Inches(6.5))
+LOG.append((pidx(FIGP), 'figure', 'fig1_login_v5.png', FIG_SEQ))
+assert sum(1 for q in d.paragraphs if q._p.findall('.//' + qn('w:drawing'))) == 2, 'figures'
+assert not any('Fig. 1 shows' in q.text for q in d.paragraphs), 'stale Fig. 1 reference'
 
 d.save(DST)
 print('saved', DST)
