@@ -14,10 +14,28 @@ Mode 2 데모(:3000/:4000/:5001)와 **공존**한다. 포트·상태 파일이 �
 | CIA | :4100 | `node cia.js` | `cia_state.json`, `cia_keys.json` |
 | 지갑 에이전트 | :5100 | `node mode3_wallet_agent.js` | `mode3_wallet_state.json` |
 | RP | :3100 | `node mode3_rp.js` | `mode3_rp_registration.json`, `mode3_rp_logins.jsonl` |
+| RP #2 (선택) | :3101 | `bash scripts/run_mode3_rp2.sh` | `mode3_rp2_registration.json`, `mode3_rp2_logins.jsonl` — 아래 "두 번째 서비스" 절 |
 | Snap serve (`snap` 모드에만) | :8082 | `cd snap-mode3 && npm run serve` | — (비밀은 MetaMask 안에) |
 | (상태 확인) | 세 서버 공통 | `curl -s http://127.0.0.1:4100/mode3/health` (`:3100`·`:5100` 도 같다) | — |
 
 `GET /mode3/health` 는 2026-09-25 에 붙은 상태 엔드포인트다 — 페이지 위쪽의 상태 점 4개가 이것을 읽는다(아래 "상태 패널" 절).
+
+## 두 번째 서비스 — 같은 사용자, 다른 주소 (2026-09-30)
+
+같은 지갑으로 서비스 둘에 로그인하면 **서비스마다 다른 PPID 계정**을 받고, AA 는 어느 쪽인지 모른다는 것을 눈으로 보이는 구성이다.
+서비스 서버는 포트·이름·오리진·등록 파일이 전부 환경 변수라 인스턴스를 하나 더 띄우면 되고, AA 는 오리진별로 서비스를 여럿 등록한다.
+막고 있던 것은 지갑의 CORS 허용 오리진이 하나뿐이던 점이었고, 이제 `MODE3_RP_ORIGIN` 이 쉼표 목록을 받는다.
+
+1. 지갑을 두 오리진으로 띄운다(이미 떠 있으면 재시작):
+   `MODE3_RP_ORIGIN=http://127.0.0.1:3100,http://127.0.0.1:3101 node mode3_wallet_agent.js`
+2. 두 번째 서비스를 띄운다: `bash scripts/run_mode3_rp2.sh` — `:3101`, 이름 `demo-rp2`, 등록 파일 `mode3_rp2_registration.json`, 릴레이어 계정 인덱스 1
+   (첫 서비스와 같은 계정을 쓰면 팩토리 배포 nonce 가 겹칠 수 있다). 허용 국가·최소 나이도 바꿔 두면 정책이 서비스마다 다르다는 것까지 보인다.
+3. 관리자 페이지(`:4100`)에서 두 번째 서비스 등록을 승인한다 — 승인되면 서비스가 자기 팩토리·검증자를 배포한다(`:3101` 로그).
+4. `http://127.0.0.1:3101` 을 열어 같은 사용자로 로그인한다. 세션 카드의 PPID 와 계정 주소가 `:3100` 의 것과 다르다.
+   지갑 페이지의 세션 목록에는 두 서비스가 나란히 보이고, 각 세션을 따로 폐기할 수 있다.
+
+`GET /mode3/health` 의 지갑 응답에는 허용 목록이 `rpOrigins` 로 실린다(`rpOrigin` 은 첫 항목).
+지갑의 세션 라우트는 요청 오리진과 세션의 서비스 오리진을 대조하므로(9/25 리뷰 D-4·F-1) 한 서비스 페이지가 다른 서비스의 세션을 쓸 수 없다.
 
 ## 처음 한 번: 배포와 `.env`
 
@@ -106,7 +124,7 @@ RP 는 등록 파일이 없거나 승인 전이면 CIA 에 등록/조회하므�
 
 페이지: 지갑 `http://127.0.0.1:5100/`, RP `http://127.0.0.1:3100/`, CIA 관리자 `http://127.0.0.1:4100/admin`, CIA 사용자 `http://127.0.0.1:4100/account`.
 
-RP 페이지는 반드시 `127.0.0.1`로 연다 — 지갑 에이전트의 CORS 허용 오리진이 `http://127.0.0.1:3100`(`MODE3_RP_ORIGIN`)이라 `localhost`로 열면 지갑 호출이 막힌다.
+RP 페이지는 반드시 `127.0.0.1`로 연다 — 지갑 에이전트의 CORS 허용 오리진이 `http://127.0.0.1:3100`(`MODE3_RP_ORIGIN`, 쉼표로 여럿 가능)이라 `localhost`로 열면 지갑 호출이 막힌다.
 
 ## 언어·전문가 보기 (2026-09-24 UX 개선)
 
@@ -218,7 +236,7 @@ wallet {"role":"wallet",…,"secrets":"file","registered":false,"hasCred":false,
 |---|---|
 | CIA `:4100` | 승인된 서비스들의 origin + 지갑 오리진(`MODE3_WALLET_AGENT_ORIGIN`, 기본 `http://127.0.0.1:5100`) |
 | 서비스 `:3100` | 지갑 오리진(`MODE3_WALLET_AGENT_ORIGIN`) + `MODE3_CIA_URL` |
-| 지갑 `:5100` | 서비스 오리진(`MODE3_RP_ORIGIN`) + `MODE3_CIA_URL` |
+| 지갑 `:5100` | 서비스 오리진 목록(`MODE3_RP_ORIGIN`, 쉼표 구분) + `MODE3_CIA_URL` |
 
 CIA 는 지갑 오리진을 알 방법이 없으므로 **`MODE3_WALLET_AGENT_ORIGIN`** 으로 받는다(승인된 서비스 origin 은 CIA 가
 스스로 안다). 기본값이 아닌 포트로 지갑을 띄웠다면 CIA 에도 같은 값을 줘야 한다 — 관리자·내 계정 페이지는 CIA health 의

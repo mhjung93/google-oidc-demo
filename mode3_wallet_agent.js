@@ -28,7 +28,7 @@ import { signPayload, statementDigestFields, proofToCalldata, parseExecuteReceip
 import { pointToStrings } from './lib/mode3_issuance.js';
 import { normalizeAttrs, SCALAR_MAX, ppid, randomScalar } from './lib/mode3_credential.js';
 import { verifyRpCert } from './lib/mode3_rp_cert.js';
-import { buildWalletHealth, applyHealthHeaders, bounded, originList } from './lib/mode3_health.js';
+import { buildWalletHealth, applyHealthHeaders, bounded, originList, allowOrigin } from './lib/mode3_health.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.MODE3_WALLET_PORT) || 5100;
@@ -36,7 +36,12 @@ const STATE_FILE = process.env.MODE3_WALLET_STATE_FILE || path.join(__dirname, '
 // 폐기 트리 체크포인트(공개 데이터만). 지우면 다음 동기화가 창세기부터 재생한다(스펙 2026-09-23 §4).
 const RCL_CACHE_FILE = process.env.MODE3_WALLET_RCL_CACHE || path.join(path.dirname(STATE_FILE), 'mode3_wallet_rcl.json');
 const CIA_URL = process.env.MODE3_CIA_URL || 'http://127.0.0.1:4100';
-const RP_ORIGIN = process.env.MODE3_RP_ORIGIN || 'http://127.0.0.1:3100';
+// 서비스 오리진 허용 목록(2026-09-30): 쉼표로 여럿 — 지갑 하나가 서비스 여럿에 로그인한다(같은 사용자, 서비스마다 다른 PPID).
+// 끝의 '/' 나 경로가 붙어도 origin 만 남기고, 주소가 아닌 항목은 버린다(originList). 비교는 정확히 같은 origin 만(allowOrigin).
+const RP_ORIGINS = originList((process.env.MODE3_RP_ORIGIN || 'http://127.0.0.1:3100').split(',').map((s) => s.trim()));
+if (RP_ORIGINS.length === 0) throw new Error('MODE3_RP_ORIGIN 에 유효한 origin 이 하나도 없다');
+const RP_ORIGIN = RP_ORIGINS[0];                       // 첫 서비스 — 로그·health 의 기존 필드(rpOrigin) 표기용
+const isRpOrigin = (o) => allowOrigin(o, RP_ORIGINS);
 const LOG_ADDRESS = process.env.CIA_LOG_ADDRESS || null;
 const RPC_URL = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
 // 비밀 공급원(설계 2026-09-22 metamask-snap §3.3): file 은 지금처럼 상태 파일, snap 은 요청에 실린 witness(secretSourceFor).
@@ -251,13 +256,13 @@ app.use(express.json({ limit: '1mb' }));
 // RP 페이지(다른 오리진)가 부르는 것은 /wallet/revalidate·/wallet/request·/wallet/config, 그리고 file 모드의 /wallet/login 뿐이다.
 // snap 모드의 /wallet/login 은 같은 오리진(지갑 페이지 팝업)만 부른다 — CORS 를 열지 않는다(스펙 §3.3). 문자열 origin 은
 // cors 가 요청 Origin 과 무관하게 헤더를 붙이므로, 일치할 때만 붙이도록 함수형으로 둔다.
-const loginCors = cors({ origin: (origin, cb) => cb(null, origin === RP_ORIGIN), methods: ['POST'] });
+const loginCors = cors({ origin: (origin, cb) => cb(null, isRpOrigin(origin)), methods: ['POST'] });
 const loginMiddleware = SECRETS === 'file' ? [loginCors] : [];
 if (SECRETS === 'file') app.options('/wallet/login', loginCors);
 app.options('/wallet/revalidate', loginCors);
 app.options('/wallet/request', loginCors);
 // /wallet/config 는 GET 전용 — Snap 연동(설계 2026-09-22 metamask-snap) 전 RP 페이지가 비밀 모드·rpcUrl 등을 미리 읽는다.
-const configCors = cors({ origin: (origin, cb) => cb(null, origin === RP_ORIGIN), methods: ['GET'] });
+const configCors = cors({ origin: (origin, cb) => cb(null, isRpOrigin(origin)), methods: ['GET'] });
 
 // 데모 공통 레이어(설계 2026-09-24-mode3-demo-ux §1.2) — 같은 오리진 페이지만 읽는다(CORS 를 열지 않는다).
 app.use('/common', express.static(path.join(__dirname, 'mode3', 'common')));
@@ -297,7 +302,7 @@ function pingCia() {
   return pinging;
 }
 // 허용 오리진은 설정값에서 origin 만 남겨 만든다 — 끝의 '/' 같은 것이 CORS 를 조용히 깨뜨리지 않게.
-const HEALTH_ALLOW = originList(RP_ORIGIN, CIA_URL);
+const HEALTH_ALLOW = originList(RP_ORIGINS, CIA_URL);
 app.get('/mode3/health', async (req, res) => {
   applyHealthHeaders(req, res, HEALTH_ALLOW);
   // ping 은 기다리지 않는다(설계 §1.3) — 이 응답은 캐시(ciaSeenAt)로만 답하고, 결과는 다음 폴링이 본다.
@@ -306,7 +311,7 @@ app.get('/mode3/health', async (req, res) => {
   let chain = null;
   try { const [id, head] = await bounded(Promise.all([chainId(), provider.getBlockNumber()]), 1200); chain = { id: id.toString(), head: head.toString() }; } catch { /* 체인 없음·응답 없음 */ }
   res.json(buildWalletHealth({ now: new Date().toISOString(), chain, secrets: SECRETS, registered: !!state.registration, hasCred: !!state.registration?.userCred, sessions: Object.keys(state.sessions).length,
-    txs: txCount, disclosedTxs: disclosedTxCount, ciaReachable: Date.now() - ciaSeenAt <= CIA_FRESH_MS, rpOrigin: RP_ORIGIN, ciaUrl: CIA_URL }));
+    txs: txCount, disclosedTxs: disclosedTxCount, ciaReachable: Date.now() - ciaSeenAt <= CIA_FRESH_MS, rpOrigin: RP_ORIGIN, rpOrigins: RP_ORIGINS, ciaUrl: CIA_URL }));
 });
 
 app.get('/wallet/status', async (req, res) => {
@@ -835,5 +840,5 @@ app.post('/wallet/tx/record', async (req, res) => {
 });
 
 app.listen(PORT, '127.0.0.1', () => {
-  console.log(`Mode 3 wallet agent at http://127.0.0.1:${PORT} (cia=${CIA_URL}, rp=${RP_ORIGIN}, log=${LOG_ADDRESS ?? 'none'})`);
+  console.log(`Mode 3 wallet agent at http://127.0.0.1:${PORT} (cia=${CIA_URL}, rp=${RP_ORIGINS.join(',')}, log=${LOG_ADDRESS ?? 'none'})`);
 });

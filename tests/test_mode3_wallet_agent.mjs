@@ -23,7 +23,8 @@ async function t(name, fn) {
 assert.ok(fs.existsSync(VKEY_PATH), `pi_cred vkey 없음: ${VKEY_PATH} (build/mode3 산출물 필요)`);
 const vkey = JSON.parse(fs.readFileSync(VKEY_PATH, 'utf8'));
 const provider = getProvider();
-const stack = await startIsolatedMode3Stack({ rp: false, ciaEnv: { CIA_HEARTBEAT_BLOCKS: '5', CIA_HEARTBEAT_POLL_MS: '300' } });
+const SECOND_RP_ORIGIN = 'http://127.0.0.1:3199';   // 두 번째 서비스 오리진 — 서버는 안 띄운다(CORS 허용 목록만 시험)
+const stack = await startIsolatedMode3Stack({ rp: false, ciaEnv: { CIA_HEARTBEAT_BLOCKS: '5', CIA_HEARTBEAT_POLL_MS: '300' }, extraRpOrigins: [SECOND_RP_ORIGIN] });
 const { cia, wallet } = stack;
 const uid = '12345';
 
@@ -131,6 +132,23 @@ try {
     // /wallet/tx 는 지갑 페이지(같은 오리진)에서만 부른다 — RP 오리진이라도 CORS 를 열지 않는다.
     const txFromRp = await wallet.raw('/wallet/tx', { method: 'OPTIONS', headers: { Origin: stack.rpOriginForWallet, 'Access-Control-Request-Method': 'POST' } });
     assert.equal(txFromRp.headers.get('access-control-allow-origin'), null);
+  });
+
+  // 2026-09-30: MODE3_RP_ORIGIN 은 쉼표 목록 — 지갑 하나가 서비스 여럿에 로그인한다(같은 사용자, 서비스마다 다른 PPID).
+  await t('CORS: MODE3_RP_ORIGIN 목록의 두 번째 서비스 오리진도 login·revalidate·request·config 에 허용, 목록 밖은 거절', async () => {
+    for (const p of ['/wallet/login', '/wallet/revalidate', '/wallet/request']) {
+      const r = await wallet.raw(p, { method: 'OPTIONS', headers: { Origin: SECOND_RP_ORIGIN, 'Access-Control-Request-Method': 'POST' } });
+      assert.equal(r.headers.get('access-control-allow-origin'), SECOND_RP_ORIGIN, p);
+      const first = await wallet.raw(p, { method: 'OPTIONS', headers: { Origin: stack.rpOriginForWallet, 'Access-Control-Request-Method': 'POST' } });
+      assert.equal(first.headers.get('access-control-allow-origin'), stack.rpOriginForWallet, p + ' (첫 오리진도 그대로)');
+    }
+    const cfg = await wallet.raw('/wallet/config', { headers: { Origin: SECOND_RP_ORIGIN } });
+    assert.equal(cfg.headers.get('access-control-allow-origin'), SECOND_RP_ORIGIN, '/wallet/config');
+    const other = await wallet.raw('/wallet/revalidate', { method: 'OPTIONS', headers: { Origin: 'http://127.0.0.1:3198', 'Access-Control-Request-Method': 'POST' } });
+    assert.equal(other.headers.get('access-control-allow-origin'), null, '목록에 없는 오리진');
+    const h = (await wallet.get('/mode3/health')).body;
+    assert.deepEqual(h.rpOrigins, [stack.rpOriginForWallet, SECOND_RP_ORIGIN], 'health 가 허용 목록을 그대로 낸다');
+    assert.equal(h.rpOrigin, stack.rpOriginForWallet, '첫 오리진은 기존 필드로도');
   });
 
   await t('계정 폐기 + 게시 → skipSync 재검증은 옛 π 를 그대로 → 검증기 stale_root', async () => {

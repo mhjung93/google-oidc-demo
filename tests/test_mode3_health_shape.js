@@ -33,13 +33,15 @@ t('RP health: 카운터를 안 넘기면 0', () => {
   assert.equal(h.requests, 0); assert.equal(h.disclosures, 0);
 });
 t('wallet health', () => {
-  const h = buildWalletHealth({ now, chain, secrets: 'file', registered: true, hasCred: true, sessions: 1, txs: 2, disclosedTxs: 1, ciaReachable: false, rpOrigin: 'http://r', ciaUrl: 'http://c' });
+  const h = buildWalletHealth({ now, chain, secrets: 'file', registered: true, hasCred: true, sessions: 1, txs: 2, disclosedTxs: 1, ciaReachable: false, rpOrigin: 'http://r', rpOrigins: ['http://r', 'http://r2'], ciaUrl: 'http://c' });
+  assert.deepEqual(h.rpOrigins, ['http://r', 'http://r2'], '서비스 오리진 목록을 그대로 낸다(2026-09-30)');
   assert.equal(h.role, 'wallet'); assert.equal(h.ciaReachable, false);
   assert.equal(h.txs, 2); assert.equal(h.disclosedTxs, 1);
   for (const k of SENSITIVE_KEYS) assert.ok(!deepKeys(h).includes(k), k);
 });
 t('wallet health: 카운터를 안 넘기면 0', () => {
   const h = buildWalletHealth({ now, chain: null, secrets: 'snap', registered: false, hasCred: false, sessions: 0, ciaReachable: true, rpOrigin: '', ciaUrl: '' });
+  assert.deepEqual(h.rpOrigins, [], 'rpOrigins 를 안 주면 빈 목록');
   assert.equal(h.txs, 0); assert.equal(h.disclosedTxs, 0);
 });
 t('toOrigin·originList: origin 만 남기고 주소가 아니면 버린다', () => {

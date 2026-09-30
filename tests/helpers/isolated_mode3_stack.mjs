@@ -62,7 +62,7 @@ function client(base, logFile) {
 }
 
 export async function startIsolatedMode3Stack(opts = {}) {
-  const { rp: withRp = true, rpEnv = {}, walletEnv = {}, ciaEnv = {} } = opts;
+  const { rp: withRp = true, rpEnv = {}, walletEnv = {}, ciaEnv = {}, extraRpOrigins = [] } = opts;   // extraRpOrigins: 지갑 CORS 허용 목록에 더할 서비스 오리진(두 번째 서비스 시험용)
   // 지갑 포트·오리진은 CIA 보다 **먼저** 잡는다 — CIA 의 /mode3/health CORS 허용 목록(설계 2026-09-25 §1.2)에
   // MODE3_WALLET_AGENT_ORIGIN 으로 넘겨야 한다. 호출자의 ciaEnv 가 우선한다.
   const walletPort = await freePort();
@@ -76,7 +76,7 @@ export async function startIsolatedMode3Stack(opts = {}) {
     const walletLog = path.join(dir, 'wallet.log');
     const walletStateFile = path.join(dir, 'mode3_wallet_state.json');
     // 지갑 자식은 restartWallet() 이 같은 상태 파일·env 로 다시 띄운다(snap 모드의 "재시작 뒤 needs_consent" 시험용).
-    const walletSpawn = { env: { MODE3_WALLET_PORT: String(walletPort), MODE3_WALLET_STATE_FILE: walletStateFile, MODE3_CIA_URL: cia.base, MODE3_RP_ORIGIN: rpOrigin, CIA_LOG_ADDRESS: cia.logAddress, ...walletEnv }, readyUrl: `${walletOrigin}/wallet/status`, logFile: walletLog };
+    const walletSpawn = { env: { MODE3_WALLET_PORT: String(walletPort), MODE3_WALLET_STATE_FILE: walletStateFile, MODE3_CIA_URL: cia.base, MODE3_RP_ORIGIN: [rpOrigin, ...extraRpOrigins].join(','), CIA_LOG_ADDRESS: cia.logAddress, ...walletEnv }, readyUrl: `${walletOrigin}/wallet/status`, logFile: walletLog };
     let walletChild = await spawnServer('mode3_wallet_agent.js', walletSpawn);
     children.push(walletChild);
     const wallet = client(walletOrigin, walletLog);
