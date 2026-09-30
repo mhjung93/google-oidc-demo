@@ -119,7 +119,7 @@ def textbox(slide, left, top, width, height, lines, size=13, color=BLUE):
 # ================================================================ 2장 Attributes (AlternateContent)
 s = sl[1]
 p = one(s, lambda t: 'Session attributes' in t and '???' in t, '2장 예시 ???')
-set_para(p, '예 : user attributes (출생연도, 국가 코드, KYC 등급, 계정 등급 — AA 계정 기록의 64비트 정수 4개). '
+set_para(p, '예 : user attributes (출생연도, 국가 코드, 등급, 예비(미사용) — AA 계정 기록의 64비트 정수 4개). '
             'Session attributes (세션 키 pk_i, 만료 max_height, chainid, allowAgent, 서비스 arid)', color=BLUE)
 p = one(s, lambda t: 'session key (pk)' in t and 'max_height' in t, '2장 세션 속성 임베딩')
 add_after(p, '→ 본 설계: 세션 키 pk_i 는 세션 커밋먼트 C_s 안(reserved slot 방식), max_height·chainid·allowAgent 는 서명 본문 — '
@@ -129,7 +129,7 @@ add_after(p, '→ 본 설계: 세션 키 pk_i 는 세션 커밋먼트 C_s 안(re
 s = sl[2]
 p = one(s, lambda t: '통합 구조 제안' in t, '3장 통합 구조 ???')
 set_para(p, '통합 구조: 트리 하나(RCL)만 — "유효함"은 트리가 아니라 AA 서명이 보증한다. 세션마다 서명하기 전에 Cf_u 가 활성 자격증명인지 '
-            'AA 상태에서 확인하므로 VCL 이 필요 없고, 트리는 "발급 뒤 만료 전에 폐기됐는가"(비멤버십)만 답한다 → 온체인 쓰기는 폐기 때만', color=BLUE, size=14)
+            'AA 상태에서 확인하므로 VCL 이 필요 없고, 트리는 "발급 뒤 만료 전에 폐기됐는가"(비멤버십)만 답한다 → 리프 쓰기는 폐기 때만(발급 때 0; 하트비트 재게시는 50블록마다)', color=BLUE, size=14)
 p = one(s, lambda t: '별도 Merkle Tree 유지 관리' in t, '3장 별도 트리')
 q = add_after(p, '→ 지원함(V8, 9/24): 별도 트리 없이 같은 트리에 세션 리프 mask(Poseidon(5, Cf_s)) 를 추가하고 비멤버십을 둘 증명 — '
                  '사용자가 세션 하나만 폐기 가능. 제약 +9,801, 증명 +0.36 s, 온체인 검증 gas 불변(공개 입력 25 그대로). Todo 1 슬롯 리프는 부록 A', level=1, size=14)
@@ -180,7 +180,7 @@ for ac in s._element.iter(MC):
 assert moved >= 1, 'π_RP 작은 수식을 못 찾았다'
 textbox(s, 0.5, 5.05, 12.3, 1.95, [
     (0, '재수정 — 현재 π_rp(Groth16, 공개 입력 25, 제약 37,130, 증명 1.19 s / 검증 10 ms)가 증명하는 것'),
-    (1, '(1) σ_AA 가 (Cf_u, Cf_s, max_height, chainid, allowAgent) 위의 AA 서명이고, head ≤ max_height ≤ head + L (만료는 검증자가 대조)'),
+    (1, '(1) σ_AA 가 (Cf_u, Cf_s, max_height, chainid, allowAgent) 위의 AA 서명 — 만료 창 head ≤ max_height ≤ head + L 은 검증자·컨트랙트가 대조 (회로는 max_height < 2^64 만)'),
     (1, '(2) C_u 가 (uid, s_u, a_1..a_4) 로, C_s 가 (arid, pk_i) 로 열린다 — "IDs 정확성" 에 해당 (auid·auid_i 대신 커밋먼트)'),
     (1, '(3) PPID = Poseidon(uid, s_u, chainid, arid)'),
     (1, '(4) 선택 공개: 마스크가 켜진 슬롯의 범위, 집합 술어 a_sel ∈ set_root 의 트리'),
@@ -194,14 +194,14 @@ bx = next(sh for sh in s.shapes if sh.has_text_frame and sh.text_frame.text.stri
 bx._element.getparent().remove(bx._element)
 th = next(sh for sh in s.shapes if sh.has_text_frame and sh.text_frame.text.strip() == 'threshold public key')
 th.left = Inches(0.1); th.top = Inches(6.5); th.width = Inches(8.0); th.height = Inches(0.45)
-set_para(next(th._element.iter(A + 'p')), 'threshold 제거(9/16) → 2-of-2: pk_trace = X_svc + X_AA, 조각은 Schnorr PoK', color=BLUE, size=12)
+set_para(next(th._element.iter(A + 'p')), 'threshold 서명 없음 — 추적 키만 2-of-2 가산 임계 복호(9/16 설계): pk_trace = X_svc + X_AA; AA 조각에 Schnorr PoK, 서비스 조각은 부분군·비항등원 검사', color=BLUE, size=12)
 textbox(s, 4.0, 4.3, 9.1, 2.15, [
     (0, '재수정 — 현재'),
     (1, '별도 π_i 는 없다: 태그는 π_rp 의 조건 ⑤로 묶이고, 같은 π 를 트랜잭션에 그대로 첨부한다 (TX + π + 25 공개 입력)'),
     (1, '(1)(2) 는 π_rp 가 이미 증명 — 세션 키 pk_i 는 C_s 안, 트랜잭션 서명 σ_tx 는 sk_i 로'),
     (1, '(3) Trace Tag = Enc(pk_trace, Poseidon(uid, arid)) — "auid 기반" 대신 서비스별 가명 H(uid, arid) 을 암호화 (auid 의 역할)'),
     (1, 'σ_tx 다이제스트가 태그 3워드를 묶는다(9/25) — 같은 세션의 다른 π 로 바꿔 끼우기 불가'),
-    (1, 'condition: 분쟁 세션·트랜잭션에 한해, 서비스 조각 D_svc + AA 조각 + 운영자 승인 → uid 까지만(세션 아님). 정리 11–15'),
+    (1, 'condition: 서비스 조각 D_svc + AA 조각 + 운영자 승인 → uid 까지만(세션 아님). "분쟁에 한해" 는 운영 정책(운영자 승인)이지 프로토콜이 강제하지 않음. 정리 11–15'),
 ], size=12)
 
 # ================================================================ 8장 Properties — "Address Abstraction 특성은 어디에 ????"
@@ -228,11 +228,11 @@ status = {
     'user attribute와 session attribute의 분리': '  — 완료 (V5 9/21 이중 구조, V8 9/24 세션 폐기)',
     'ZKP 내용 보완': '  — 완료 (π_u 시그마 한 번 / 세션 무증명 / π_rp 25 입력)',
     '전체 flow 정리': '  — 완료 (논문 Fig. 1 구조도·Fig. 2 순서도, 9/30)',
-    '프로토타잎 구현': '  — 완료 (AA·지갑 에이전트·서비스 + MetaMask Snap, 테스트 5그룹)',
+    '프로토타잎 구현': '  — 완료 (AA·지갑 에이전트·서비스 + MetaMask Snap, 테스트 7그룹 전부 초록)',
     '데모 시나리오': '  — 초안: 로그인 / 조건부 트랜잭션(AttrGate) / 세션 폐기 / 승인 개봉',
     '대상 서비스와 통합 연계': '  — 착수 예정 (거래소 로그인 화면·KYC 속성 연동)',
     '성능 평가및 오버헤드 분석': '  — 완료 (로그인 1.50 s, execute 417,533 gas; 논문 §VIII)',
-    'formal proof': '  — 완료 (security_formal 정리 1–19·명제 16–21, conditional_privacy; 9/25 갱신)',
+    'formal proof': '  — 완료 (security_formal 정리 1–15·명제 10·16–21, conditional_privacy; 9/25 갱신)',
     '기존 연구와의 비교': '  — 보류 (Todo 6)',
 }
 for key, add in status.items():
@@ -246,7 +246,7 @@ todo = {
     'pi_idp는': '  → 완료 (π_u 한 번, 세션 무증명)',
     'pi_rp는': '  → 토큰·ID·PPID 는 완료; Merkle(비멤버십) 유지 여부 결정 요청 (부록 B)',
     'pi_i는': '  → 완료 (태그 = Enc(pk_trace, H(uid, arid)), 조건 = 분쟁 + 2-of-2 + 운영자)',
-    'threshold signature': '  → 완료 (9/16 제거)',
+    'threshold signature': '  → 완료 (threshold 서명 없음; 추적 키만 2-of-2 가산 복호, 9/16)',
     '4. 특허': '  → (사용자 액션)',
     '5. 데모': '  → 9장: 거래소 인증, 시나리오 4개',
     '6. 기존 연구': '  → 보류 유지',
@@ -280,7 +280,7 @@ def table_slide(title, header, rows, widths_in, size=12, note=None, top_in=1.35,
 
 table_slide('부록 A. Todo 1 슬롯 리프 — 득실',
     ['항목', '현재: append-only 폐기 리프', '제안: 사용자당 슬롯(latest valid / latest revoked)'],
-    [['온체인 쓰기 시점', '폐기·은퇴 때만 (발급 때 0)',            '자격증명 (재)발급 때마다 슬롯 갱신 → 발급당 1 tx (≈ 43,856 gas)'],
+    [['온체인 쓰기 시점', '폐기·은퇴 때만 (발급 때 0)',            '자격증명 (재)발급 때마다 슬롯 갱신 → 발급당 1 tx (≈ 43,856 gas — 현 로그의 리프 1개 게시 단가를 대용)'],
      ['상태 크기',       '폐기 수만큼 증가 (append-only)',          '사용자 수로 유계 — 이 점이 장점'],
      ['증명',           '비멤버십 ×2 (리프 + 경로)',               '"내 Cf_u = 슬롯의 latest valid" 멤버십 — 리프 + 경로, 비용 같음 (절감 없음)'],
      ['세션 폐기',       '세션 리프를 같은 트리에 추가',             'latest revoked 칸 하나 → 동시에 폐기된 세션 둘은 표현 불가; 세션 슬롯을 두면 세션 수만큼 증가'],
@@ -291,9 +291,9 @@ table_slide('부록 A. Todo 1 슬롯 리프 — 득실',
 
 table_slide('부록 B. π_rp 의 비멤버십(Merkle) 증명 — 유지 vs 제거',
     ['항목', '유지 (현재, V8)', '제거 (zkLogin 식: 만료에만 의존)'],
-    [['세션 중 폐기',   '다음 root 게시부터 효력 (하트비트 H 블록 이내)',        '불가 — 만료(max_height)까지 유효. TTL 300 블록 ≈ 최대 지연'],
+    [['세션 중 폐기',   '다음 root 게시부터 효력 (하트비트 H 블록 이내)',        '불가 — 만료(max_height)까지 유효. 최대 지연 ~400 블록 (TTL 300 + grid 반올림, L = 400)'],
      ['Todo 2 세션 폐기', '지원',                                                 '세션 폐기 자체가 무의미해진다'],
-     ['회로',           '37,130 제약, 증명 1.19 s',                               '약 17,500 (비멤버십 둘 ≈ 19,600 제거, 추정), 증명 약 0.6 s'],
+     ['회로',           '37,130 제약, 증명 1.19 s',                               '약 17,500 (비멤버십 둘 ≈ 19,600 제거, 추정), 증명 약 0.5 s (추정)'],
      ['지갑',           '폐기 트리 동기화 (체크포인트+델타, 로그인당 25 ms)',      '동기화 없음'],
      ['AA·서비스',       '하트비트 필요, 서비스는 root·root 나이 대조',            '하트비트·폐기 로그 불필요, 서비스는 만료만'],
      ['권고',           '유지 — 세션 폐기가 요구사항(Todo 2)이고 비용은 증명자 0.36 s 뿐', '요구사항이 "만료로 충분"이면 이쪽 — 결정 요청']],
