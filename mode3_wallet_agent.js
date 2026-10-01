@@ -176,6 +176,9 @@ async function ensureUserCred(synced, src, { resynced = false } = {}) {
   const uc = src.userCred();
   if (uc) {
     const chk = await registryCheck(synced, reg, uc);
+    // reg.slot 이 정수가 아니면(/cia/slot 이 망가진 값을 준 경우 등) registryCheck 가 null 을 돌려준다 — match/leaf 를
+    // 그대로 읽으면 TypeError 로 500 이 난다(리뷰 Minor 1). 등록부를 판정할 수 없다는 뜻이므로 403 으로 분명히 끊는다.
+    if (!chk) return { status: 403, reason: 'registry_slot_unknown' };
     if (chk.match) return { status: 200, fresh: false };
     if (chk.leaf !== '0') return { status: 403, reason: 'registry_mismatch', registry: chk };   // 내 슬롯에 남의 자격증명 — 신원 기관의 부정(또는 내가 모르는 재발급)
     // 슬롯 0: 은퇴됐다 — 새로 받는다
@@ -483,7 +486,9 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     if (reg.slot === null || reg.slot === undefined) {
       const nonce = randomScalar();
       const r0 = await ciaPost('/cia/slot', { uid: reg.uid, nonce: nonce.toString(), sig_u: await signAttrsRequest(reg.sk_u, BigInt(reg.uid), nonce) });
-      if (r0.status !== 200) return res.status(502).json({ reason: 'slot_failed', cia: r0.body });
+      // 슬롯은 음이 아닌 정수여야 한다(리뷰 Minor 1) — CIA 가 망가진 값을 주면 state.registration.slot 에 그대로 박혀
+      // registryCheck 가 영구히 null 을 돌려주게 된다. 여기서 막으면 그 상태로 persist() 되는 일이 없다.
+      if (r0.status !== 200 || !Number.isInteger(r0.body?.slot) || r0.body.slot < 0) return res.status(502).json({ reason: 'slot_failed', cia: r0.body });
       state.registration.slot = r0.body.slot;
       persist();
     }
@@ -501,6 +506,7 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     let uc = await ensureUserCred(synced, src);
     timings.userCredMs = uc.fresh ? Date.now() - t : 0;
     if (uc.status === 403 && uc.reason === 'registry_mismatch') return res.status(403).json({ reason: 'registry_mismatch', registry: uc.registry, timings });
+    if (uc.status === 403 && uc.reason === 'registry_slot_unknown') return res.status(403).json({ reason: 'registry_slot_unknown', timings });
     if (uc.status === 403) return res.status(403).json({ reason: 'account_disabled', timings });
     if (uc.status !== 200) return res.status(502).json({ reason: 'user_cred_failed', cia: uc.body, demo: uc.demo, timings });
     // 세션 자격증명은 로그인마다(설계 §5), 만료는 방금 읽은 head 기준
@@ -517,6 +523,7 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
       uc = await ensureUserCred(synced, src);
       timings.userCredMs += Date.now() - t;
       if (uc.status === 403 && uc.reason === 'registry_mismatch') return res.status(403).json({ reason: 'registry_mismatch', registry: uc.registry, timings });
+      if (uc.status === 403 && uc.reason === 'registry_slot_unknown') return res.status(403).json({ reason: 'registry_slot_unknown', timings });
       if (uc.status === 403) return res.status(403).json({ reason: 'account_disabled', timings });
       if (uc.status !== 200) return res.status(502).json({ reason: 'user_cred_failed', cia: uc.body, demo: uc.demo, timings });
       t = Date.now();
@@ -535,8 +542,13 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     if (uc.fresh) {
       const deadline = Date.now() + 30_000;
       for (;;) {
-        synced = await syncAll(); lastSync = { root: synced.root.toString(), regRoot: synced.regRoot.toString(), head: synced.head.toString(), tree: synced.tree, registry: synced.registry };
+        // 다른 세 syncAll() 호출부(로그인 첫 동기화·재검증·buildExecute)와 같은 모양으로 감싼다(리뷰 Important) — 안 그러면
+        // 일시적 RPC 오류나 sync_unstable 이 바깥 catch 로 새어나가 이미 세션이 저장된 뒤에 분류 안 된 500 이 된다.
+        try { synced = await syncAll(); }
+        catch (e) { return res.status(503).json({ reason: 'chain_unavailable', detail: e.message }); }
+        lastSync = { root: synced.root.toString(), regRoot: synced.regRoot.toString(), head: synced.head.toString(), tree: synced.tree, registry: synced.registry };
         const chk = await registryCheck(synced, src.registration(), src.userCred());
+        if (!chk) return res.status(403).json({ reason: 'registry_slot_unknown', timings });   // 리뷰 Minor 1 — null 을 그대로 읽으면 TypeError
         if (chk.match) break;
         if (Date.now() > deadline) return res.status(503).json({ reason: 'registry_unpublished', registry: chk, timings });
         await new Promise((r) => setTimeout(r, 2000));
@@ -547,6 +559,7 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     catch (e) {
       if (e.reason === 'no_session') return res.status(409).json({ reason: 'no_session', timings });
       if (e.reason === 'demo_proof_failed') return res.status(409).json({ reason: e.reason, detail: e.detail, demo: 'override:prove', timings });
+      if (e.reason === 'registry_slot_unknown') return res.status(403).json({ reason: 'registry_slot_unknown', timings });
       throw e;
     }
     if (SECRETS === 'snap') setSessionWitness(rs.toString(), src);
@@ -614,6 +627,8 @@ async function proveSession(rsKey, synced, timings, disclosure = null, src) {
     if (s.credential.Cf_u !== uc?.Cf_u) throw Object.assign(new Error('revoked'), { reason: 'revoked' });
     // V9: 폐기 리프 대신 등록부 — 내 슬롯의 리프가 내 자격증명이 아니면(은퇴돼 0 이거나 바꿔치기) 죽는다(설계 §8.2).
     const chk = await registryCheck(synced, reg, uc);
+    // reg.slot 이 정수가 아니면 registryCheck 가 null 이다 — !chk.match 를 그대로 읽으면 TypeError(리뷰 Minor 1).
+    if (!chk) throw Object.assign(new Error('registry_slot_unknown'), { reason: 'registry_slot_unknown' });
     if (!chk.match) throw Object.assign(new Error('revoked'), { reason: 'revoked', registry: chk });
     // V8: 세션 리프(설계 2026-09-24 §4). 사용자 쪽을 먼저 본다 — 둘 다 폐기됐으면 자격증명 쪽이 더 넓은 사유다.
     if (synced.tree.has(await sessionLeaf(BigInt(s.credential.Cf_s)))) throw Object.assign(new Error('revoked_session'), { reason: 'revoked_session' });
@@ -686,6 +701,7 @@ app.post('/wallet/revalidate', loginCors, async (req, res) => {
       // V8: 이 세션 하나만 폐기됐다 — 지우는 범위는 같지만(그 세션) 사유가 다르다. 다른 세션·자격증명은 그대로 쓴다.
       if (e.reason === 'revoked_session') { delete state.sessions[rsKey]; cache.deleteSession(rsKey); persist(); return res.status(403).json({ reason: 'revoked_session', timings }); }
       if (e.reason === 'demo_proof_failed') return res.status(409).json({ reason: e.reason, detail: e.detail, demo: 'override:prove', timings });
+      if (e.reason === 'registry_slot_unknown') return res.status(403).json({ reason: 'registry_slot_unknown', timings });
       if (e.reason === 'no_session') return res.status(404).json({ reason: 'no_session', timings });
       throw e;
     }
@@ -827,6 +843,7 @@ async function buildExecute(req) {
     // V8: 이 세션만 폐기됐다(/wallet/tx 와 /wallet/tx/prepare 가 함께 탄다).
     if (e.reason === 'revoked_session') { delete state.sessions[rsKey]; cache.deleteSession(rsKey); persist(); return fail(403, { reason: 'revoked_session', timings }); }
     if (e.reason === 'demo_proof_failed') return fail(409, { reason: e.reason, detail: e.detail, demo: 'override:prove', timings });
+    if (e.reason === 'registry_slot_unknown') return fail(403, { reason: 'registry_slot_unknown', timings });
     if (e.reason === 'no_session') return fail(404, { reason: 'no_session', timings });
     throw e;
   }
@@ -879,7 +896,7 @@ app.post('/wallet/tx', async (req, res) => {
     }
     timings.txMs = Date.now() - t;
     countTx(disclosure);
-    res.json({ ...receiptResult(receipt, walletAddr, disclosure), nonce: nonce.toString(), deployed, cacheHit: proved.cacheHit, root: proved.root, timings });
+    res.json({ ...receiptResult(receipt, walletAddr, disclosure), nonce: nonce.toString(), deployed, cacheHit: proved.cacheHit, root: proved.root, regRoot: proved.regRoot, timings });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -895,7 +912,7 @@ app.post('/wallet/tx/prepare', async (req, res) => {
       deployCalldata: deployNeeded ? factoryInterface.encodeFunctionData('deploy', [BigInt(s.PPID)]) : null,
       calldata: walletInterface.encodeFunctionData('execute', args),
       nonce: nonce.toString(), disclosure: hasPredicate(disclosure) ? discStrings(disclosure) : null,
-      cacheHit: proved.cacheHit, root: proved.root, timings,
+      cacheHit: proved.cacheHit, root: proved.root, regRoot: proved.regRoot, timings,
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
