@@ -38,7 +38,7 @@
 
 ### 3.1 트리
 - 깊이 `REG_DEPTH = 20`(슬롯 2²⁰ = 1,048,576). 내부 노드 `Poseidon(left, right)`, 빈 리프 0, 영해시 체인은 깊이별로 미리 계산.
-- 새 모듈 `lib/mode3_registry.js`: `createRegistryTree(depth = 20)` → `{ set(index, leaf), leafAt(index), path(index) → {pathElements[depth], pathIndices[depth]}, root(), size }`. 리프 배열은 희소(Map). root 는 갱신마다 경로 20개만 다시 계산.
+- 새 모듈 `lib/mode3_registry.js`: `createRegistryTree(depth = 20)` → `{ set(index, leaf), leafAt(index), path(index) → {pathElements[depth], pathIndices[depth]}, root(), entries() }` — `entries()` 는 0 이 아닌 슬롯만 `[index, leaf]` 로 정렬해 돌려준다(`size` 필드가 아니다). 리프 배열은 희소(Map). root 는 갱신마다 경로 20개만 다시 계산.
 - CIA 상태 `state.registry = { depth: 20, next: <다음 슬롯 번호>, leaves: { "<index>": "<leaf 10진>" }, pendingSlots: [{index, leaf}] }` — `cia_state.json` 에 저장. 기동 때 `leaves` 로 트리를 다시 만든다.
 
 ### 3.2 슬롯과 상태
@@ -111,7 +111,7 @@ contract Mode3Log {
 슬롯 값은 **64비트 정수**다. 문자열·날짜·열거형·구조체는 스펙 2 의 인코딩(사전 코드, epoch 일수, Poseidon 하위 64비트, 필드 펼치기)으로 정수가 되어 들어온다. CIA·지갑·RP 의 `attrs` 인터페이스는 "10진 문자열 6개"로 두고, 스펙 2 가 그 앞에 스키마·인코더를 얹는다. 범위 술어는 순서가 있는 인코딩에서만 뜻이 있다(스펙 2 가 슬롯별로 허용 술어를 표시).
 
 ### 5.5 비용 추정과 산출물
-V8 37,130 − 사용자 비멤버십 ≈ 9.5천 + 포함 20단 ≈ 4.9천 + 곱셈 2 ≈ 2.2천 + Poseidon(3) ≈ 0.3천 + 속성 항 2 ≈ 2.2천 + 범위 술어 2 ≈ 0.6천 ≈ **V8 ± 1천**. 실측으로 확정(§12).
+실측(§12, `results/mode3_v9_registry_20261002.md`): R1CS 제약(비선형) **34,934**(공개 입력 30·비공개 입력 131). 설계 당시 추정은 V8 37,130 − 사용자 비멤버십 ≈ 9.5천 + 포함 20단 ≈ 4.9천 + 곱셈 2 ≈ 2.2천 + Poseidon(3) ≈ 0.3천 + 속성 항 2 ≈ 2.2천 + 범위 술어 2 ≈ 0.6천 ≈ V8 ± 1천이었다(참고용 역사 기록 — 선형 가산 추정이라 실측과는 어긋났다).
 산출물 재생성: `scripts/build_mode3_circuit.sh` → `build/mode3/pi_cred.r1cs`, `pi_cred_final.zkey`, `pi_cred_vkey.json`, `pi_cred_js/`, `contracts/PiCredVerifier.sol`(snarkjs export). 기존 ptau 재사용. 이 재생성은 본 스펙 승인으로 허가된 것으로 본다.
 
 ## 6. 컨트랙트 변경
@@ -125,7 +125,7 @@ V8 37,130 − 사용자 비멤버십 ≈ 9.5천 + 포함 20단 ≈ 4.9천 + 곱�
 ## 7. 프로토콜 흐름
 
 ### 7.1 등록 (R4)
-- 지갑 `createRegistration()`(`lib/mode3_wallet.js`): `s_u, r_u, cm_u` + EdDSA-Poseidon 키 `(sk_u, pk_u)`(circomlibjs `eddsa.prv2pub`). Snap 은 `createRegistrationSecrets()` 가 같은 일을 하고 sk_u 는 Snap 밖으로 나가지 않는다(`storeRegistration` 은 `slot, attrs` 만 받음).
+- 지갑 `createRegistration()`(`lib/mode3_wallet.js`): `s_u, r_u, cm_u` + EdDSA-Poseidon 키 `(sk_u, pk_u)`(circomlibjs `eddsa.prv2pub`). Snap 은 `createRegistrationSecrets()` 가 같은 일을 하고 `sk_u` 를 자기 저장소(`snap_manageState`)에 두면서, `register` RPC 응답에도 **한 번**(로그인 증인과 같은 1회성 모델) 실어 페이지로 돌려준다 — 페이지는 그 `sk_u` 를 에이전트의 `POST /wallet/register`(아래)에 넘겨 `signRegistration` 에 쓰고, 에이전트는 snap 모드에서 그것을 파일에 남기지 않는다(`stripSecrets`); CIA 는 `sk_u` 를 전혀 보지 않는다. (후속 가능: Snap 에 `signRegister` RPC 를 둬 `sk_u` 가 Snap 경계를 아예 넘지 않게 하는 대안 — 미구현.)
 - `sig_reg = EdDSA.Sign_sk_u(Poseidon(D_REG, uid, cm_u.x, cm_u.y))`, `D_REG = ASCII("MODE3REGISTER")` 를 bigint 로(현행 도메인 상수 관례, `lib/mode3_issuance.js registerMessage`).
 - `POST /cia/register { uid, pwd, cm_u:{x,y}, pk_u:{x,y}, sig_reg:{R8x,R8y,S} }` → CIA: 형식 → 비밀번호 → `cm_u`·`pk_u` 부분군 점 → `sig_reg` 검증(`bad_registration_signature`) → 이미 등록이면 409 → `accounts[uid] = { pk_u, cm_u, slot, disabled:false, creds:[], attrs }`, `persist` → **201 `{ slot, attrs }`**. `sk_u` 는 더 이상 내려주지 않는다.
 - V9 이전 계정(CIA 가 키를 만들어 준 계정)은 그대로 쓴다 — 지갑에 sk_u 가 있고 CIA 는 pk_u 만 쓴다. `slot` 은 마이그레이션(§3.4)이 준다.
@@ -155,7 +155,7 @@ V8 37,130 − 사용자 비멤버십 ≈ 9.5천 + 포함 20단 ≈ 4.9천 + 곱�
 ### 8.2 확인 (R1 의 사용자 쪽, G12)
 동기화 뒤 `registry = { slot, leaf: tree.leafAt(slot), expected: L_reg(cm_u, Cf_u), match, regRoot, epoch, checkedAt }` 를 계산해 `/wallet/status` 에 싣고, 지갑 페이지 신원 카드에 한 줄로 보인다.
 - `match === true`: "등록부의 내 자격증명이 내 것입니다 (슬롯 N, epoch E)".
-- 리프 0: "등록부 게시 대기" — 자격증명 발급 직후 게시 전. 로그인은 게시될 때까지 짧게 재시도(최대 30 s, 2 s 간격)하고 안 되면 `registry_unpublished`.
+- 리프 0: 체인만 봐서는 "은퇴"와 "아직 게시 전"을 구분할 수 없다 — 지갑은 둘을 같은 조치로 다룬다. `ensureUserCred` 가 새 사용자 자격증명을 발급받고(`POST /cia/user_cred`), 로그인은 그 **새 슬롯 리프**가 게시될 때까지 최대 30 s(2 s 간격)로 재확인하다가 끝내 안 보이면 `registry_unpublished`. (관리자 속성 변경·자격증명 은퇴 뒤 다음 로그인이 자동으로 재발급받는 흐름이 이것이다.)
 - 그 외 불일치: "등록부의 내 자격증명이 바뀌었습니다 — 내가 요청한 재발급이 아니면 신원 기관의 부정입니다" (`registry_mismatch`). 로그인·트랜잭션은 시도하지 않는다(증명이 성립하지 않으므로).
 - 사용자 자격증명이 없는 상태(첫 로그인 전·은퇴 뒤)는 "자격증명 없음" 으로 현행 표시.
 

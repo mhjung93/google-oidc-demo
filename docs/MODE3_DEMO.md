@@ -94,10 +94,12 @@ Mode 2 데모(:3000/:4000/:5001)와 **공존**한다. 포트·상태 파일이 �
    바뀐다** — 아래 6 의 경고와 같다). (6) 지갑 상태는 v8 로 자동 이행된다(세션·사용자 자격증명을 비우고 등록은 유지) —
    옛 등록(슬롯 번호가 없다)은 첫 로그인 때 `/cia/slot` 으로 슬롯을 되찾는다. **`snap` 모드로 시연한다면** 등록 키 생성이
    Task 13 에서 Snap 쪽(`snap-mode3/src/index.js`)으로 옮겨 가 `src/` 가 바뀌었으므로, `cd snap-mode3 && npm run build`
-   로 `dist/` 를 다시 만든 뒤에 MetaMask 에 Snap 을 다시 설치한다(아래 "준비 (처음 한 번)" 절 2).
+   로 `dist/` 를 다시 만든 뒤에 MetaMask 에 Snap 을 다시 설치한다(아래 "준비 (처음 한 번)" 절 2). Snap 을 다시
+   설치하면 저장된 등록(`snap_manageState`)도 함께 지워지므로 등록부터 다시 해야 한다 — v8 시절의 4속성 등록이
+   남아 있었다면 로그인 witness 검사(`validateWitness`)가 `attrs 길이` 로 `bad_witness` 를 던졌을 것이다.
 1. `npx hardhat node` (다른 터미널에 상주).
 2. `CIA_ADMIN_SECRET=<아무 문자열> node cia.js` — 처음 기동에서 `cia_keys.json`을 만든다. `curl -s 127.0.0.1:4100/cia/public_keys`의 `ethAddress`를 적어 두고 종료한다.
-3. `CIA_ETH_ADDRESS=<ethAddress> npx hardhat run scripts/deploy_mode3_log.cjs --network localhost` — `RevocationLog`를 배포하고 CIA 주소에 1 ETH를 넣는다. 출력의 `CIA_LOG_ADDRESS=0x…`를 `.env`에 추가한다.
+3. `CIA_ETH_ADDRESS=<ethAddress> npx hardhat run scripts/deploy_mode3_log.cjs --network localhost` — `Mode3Log`를 배포하고 CIA 주소에 1 ETH를 넣는다. 출력의 `CIA_LOG_ADDRESS=0x…`를 `.env`에 추가한다.
 3'. `npx hardhat compile` — RP 가 기동 시 `PiCredVerifier`·`Mode3WalletFactory` 를 아티팩트에서 읽어 배포하고, **지갑도 같은 아티팩트로 팩토리·검증자 코드를 대조한다**(2026-09-23 — 지갑 기계에도 `artifacts/` 가 있어야 한다)(`artifacts/` 가
    없으면 RP 로그에 "팩토리 배포 실패", 오프체인 로그인만 된다).
 4. `.env`에 `CIA_ADMIN_SECRET=<2의 값>`도 넣는다. (세 서버 모두 `dotenv`로 `.env`를 읽는다. `CIA_*`·`MODE3_*` 키는 이 데모만 쓴다.)
@@ -162,8 +164,8 @@ RP 페이지는 반드시 `127.0.0.1`로 연다 — 지갑 에이전트의 CORS 
   관리자·내 계정 `#out`. 이 요소들은 꺼져 있어도 DOM 에 그대로 있다(`textContent` 를 보는 테스트는 영향받지 않는다).
 - 결과 카드의 "자세히"(원본 JSON)가 접히지 않고 펼쳐진 채 뜬다.
 - 용어 라벨에 원래 기호가 붙는다 — "이 서비스에서의 내 주소 (PPID = Poseidon(uid, s_u, chainid, arid))",
-  "로그인 세션 (r_s, pk_i, max_height)", "공개할 속성 조건 (disc_mask, lo[4], hi[4], set_sel, set_root)" 등.
-- RP 의 서비스 상태 카드에 `arid`·`cert_s`·`pk_trace`·`RevocationLog`·팩토리·`AttrGate` 주소 한 줄, 로그인 기록 표에
+  "로그인 세션 (r_s, pk_i, max_height)", "공개할 속성 조건 (disc_mask, lo[6], hi[6], set_sel, set_root)" 등.
+- RP 의 서비스 상태 카드에 `arid`·`cert_s`·`pk_trace`·`Mode3Log`·팩토리·`AttrGate` 주소 한 줄, 로그인 기록 표에
   `세션 r_s`·`폐기 목록 root` 열, 관리자 서비스 표에 `서비스 식별자`(arid) 열이 더 나온다.
 - RP (내 세션) 카드의 **"skipSync (stale_root 시연)" 체크박스**(UI 라벨은 그대로다) — 각본 5 시연은 이제 **전문가 보기를
   먼저 켜야** 보인다. 체크박스 이름은 `stale_root` 지만 V9 에서 각본 5(계정 폐기 뒤)의 실제 결과는 등록부만 바뀐
