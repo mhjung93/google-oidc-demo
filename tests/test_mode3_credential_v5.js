@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { buildBabyjub, buildPoseidon } from 'circomlibjs';
 import {
   userCommit, sessionCommit, credMessageV5, compressPoint, normalizeAttrs,
-  PEDERSEN_GENERATORS, SCALAR_MAX, DOMAIN_MODE3_CRED_V5, MAX_HEIGHT_MAX, ATTR_MAX,
+  PEDERSEN_GENERATORS, SCALAR_MAX, DOMAIN_MODE3_CRED_V5, MAX_HEIGHT_MAX, ATTR_MAX, ATTR_SLOTS,
 } from '../lib/mode3_credential.js';
 import { userLeaf, TAG_MODE3_USER } from '../lib/mode3_revocation.js';
 import { TAG_SESSION, TAG_ACCOUNT, leafValue } from '../lib/imt_v2.js';
@@ -17,13 +17,13 @@ async function t(name, fn) {
 const bj = await buildBabyjub();
 const ps = await buildPoseidon();
 const mul = (g, e) => bj.mulPointEscalar([bj.F.e(g[0]), bj.F.e(g[1])], e);
-const uid = 11n, s_u = 22n, blind_u = 33n, attrs = [19n, 410n, 0n, 0n], arid = 44n, pk_i = 0x1234n, blind_s = 55n;
+const uid = 11n, s_u = 22n, blind_u = 33n, attrs = [19n, 410n, 0n, 0n, 0n, 0n], arid = 44n, pk_i = 0x1234n, blind_s = 55n;
 
 await t('userCommit = uid·G_UID + s_u·G_SU + Σattr·G_ATTR + blind_u·H (arid·pk_i 항 없음)', async () => {
   const { Cx, Cy, Cf } = await userCommit({ uid, s_u, blind_u, attrs });
   let acc = mul(PEDERSEN_GENERATORS.uid, uid);
   acc = bj.addPoint(acc, mul(PEDERSEN_GENERATORS.s_u, s_u));
-  for (let i = 0; i < 4; i++) acc = bj.addPoint(acc, mul(PEDERSEN_GENERATORS[`attr${i}`], attrs[i]));
+  for (let i = 0; i < ATTR_SLOTS; i++) acc = bj.addPoint(acc, mul(PEDERSEN_GENERATORS[`attr${i}`], attrs[i]));
   acc = bj.addPoint(acc, mul(PEDERSEN_GENERATORS.blind, blind_u));
   assert.equal(Cx, bj.F.toObject(acc[0])); assert.equal(Cy, bj.F.toObject(acc[1]));
   assert.equal(Cf, ps.F.toObject(ps([Cx, Cy])));
@@ -44,7 +44,7 @@ await t('blind_u 하나만 바꿔도 C_u 가 바뀐다; attrs 생략은 전부 0
   const b = await userCommit({ uid, s_u, blind_u: blind_u + 1n, attrs });
   assert.notEqual(a.Cf, b.Cf);
   const c = await userCommit({ uid, s_u, blind_u });
-  const d = await userCommit({ uid, s_u, blind_u, attrs: [0n, 0n, 0n, 0n] });
+  const d = await userCommit({ uid, s_u, blind_u, attrs: [0n, 0n, 0n, 0n, 0n, 0n] });
   assert.equal(c.Cf, d.Cf);
 });
 
@@ -56,7 +56,7 @@ await t('범위: 스칼라가 2^250 이상이면 두 커밋 다 throw', async ()
 
 await t('normalizeAttrs: 2^64 이상은 throw, 2^64 − 1 은 통과 (스펙 2026-09-22 §4.1)', () => {
   assert.throws(() => normalizeAttrs([ATTR_MAX]), /attr0/);
-  assert.deepEqual(normalizeAttrs([ATTR_MAX - 1n]), [ATTR_MAX - 1n, 0n, 0n, 0n]);
+  assert.deepEqual(normalizeAttrs([ATTR_MAX - 1n]), [ATTR_MAX - 1n, 0n, 0n, 0n, 0n, 0n]);
 });
 
 await t('credMessageV5 = Poseidon(D_V5, Cf_u, Cf_s, max_height, chainid, allowAgent); 도메인은 "MODE3CREDV5"', async () => {

@@ -3,9 +3,8 @@
 import assert from 'node:assert/strict';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { getProvider } from './helpers/mode3_chain.mjs';
-import { createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, signRevokeSession } from '../lib/mode3_wallet.js';
+import { createSessionKey, buildUserCredRequest, buildIssueRequest, signRevokeSession } from '../lib/mode3_wallet.js';
 import { sessionLeaf } from '../lib/mode3_revocation.js';
-import { pointToStrings } from '../lib/mode3_issuance.js';
 
 let failed = 0;
 async function t(name, fn) {
@@ -21,14 +20,12 @@ const UID = '12345';                    // 데모 계정 testuser
 const uid = BigInt(UID);
 const arid = 22222222222222222222n;
 const CHAIN_ID = 31337n;
-const TESTUSER_ATTRS = [1990n, 410n, 2n, 0n];   // AA 가 보증하는 데모 속성(cia.js DEMO_ACCOUNTS)
+const TESTUSER_ATTRS = [1990n, 410n, 2n, 0n, 0n, 0n];   // AA 가 보증하는 데모 속성(cia.js DEMO_ACCOUNTS)
 
 try {
   // 등록 → 사용자 자격증명(C_u) → 세션 발급. test_mode3_wallet.mjs / test_cia_register_issue.mjs 의 준비 코드와 같은 흐름이다.
-  const reg = await createRegistration();
-  const registered = await cia.post('/cia/register', { uid: UID, pwd: 'password123', cm_u: pointToStrings(reg.cm_u) });
-  assert.equal(registered.status, 201, JSON.stringify(registered.body));
-  const sk_u = registered.body.sk_u;
+  const reg = await cia.registerUser(UID, 'password123');
+  const sk_u = reg.sk_u;
   const uc = await buildUserCredRequest({ uid, s_u: reg.s_u, r_u: reg.r_u, sk_u, attrs: TESTUSER_ATTRS });
   const userCred = await cia.post('/cia/user_cred', uc.body);
   assert.equal(userCred.status, 201, JSON.stringify(userCred.body));
@@ -149,11 +146,9 @@ try {
   await t('E-8: 다른 계정의 세션은 내 서명으로 폐기되지 않는다 — 404 unknown_session, 그 세션은 그대로', async () => {
     // B(alice, uid 67890) 계정 → 사용자 자격증명 → 세션 하나.
     const UID_B = '67890', uidB = BigInt(UID_B);
-    const ALICE_ATTRS = [2005n, 840n, 1n, 0n];   // cia.js DEMO_ACCOUNTS 의 alice
-    const regB = await createRegistration();
-    const rB = await cia.post('/cia/register', { uid: UID_B, pwd: 'alicepw', cm_u: pointToStrings(regB.cm_u) });
-    assert.equal(rB.status, 201, JSON.stringify(rB.body));
-    const sk_uB = rB.body.sk_u;
+    const ALICE_ATTRS = [2005n, 840n, 1n, 0n, 0n, 0n];   // cia.js DEMO_ACCOUNTS 의 alice
+    const regB = await cia.registerUser(UID_B, 'alicepw');
+    const sk_uB = regB.sk_u;
     const ucB = await buildUserCredRequest({ uid: uidB, s_u: regB.s_u, r_u: regB.r_u, sk_u: sk_uB, attrs: ALICE_ATTRS });
     assert.equal((await cia.post('/cia/user_cred', ucB.body)).status, 201);
     const reqB = await buildIssueRequest({ uid: uidB, Cf_u: ucB.Cf_u, arid, sk_u: sk_uB, session: createSessionKey(), chainid: CHAIN_ID, max_height: BigInt(await provider.getBlockNumber()) + 300n });

@@ -3,8 +3,7 @@ import assert from 'node:assert/strict';
 import { ethers } from 'ethers';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
 import { createShare } from '../lib/mode3_trace.js';
-import { createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest } from '../lib/mode3_wallet.js';
-import { pointToStrings } from '../lib/mode3_issuance.js';
+import { createSessionKey, buildUserCredRequest, buildIssueRequest } from '../lib/mode3_wallet.js';
 const stack = await startIsolatedMode3Stack();
 const { cia, rp, wallet } = stack;
 let fails = 0; async function t(n, f) { try { await f(); console.log('ok   -', n); } catch (e) { fails++; console.log('FAIL -', n, '\n      ', e.message); } }
@@ -60,11 +59,9 @@ await t('민감 "값" 없음 — 등록 uid·s_u·r_u·sk_u, C_u 의 Cf_u, 세�
   assert.equal(wreg.status, 201, JSON.stringify(wreg.body));
   // AA 에는 alice(67890) 로 등록 → 사용자 자격증명 → 세션. 비밀을 테스트가 직접 뽑으므로 값을 전부 안다.
   const uidB = 67890n;
-  const reg = await createRegistration();
-  const r = await cia.post('/cia/register', { uid: '67890', pwd: 'alicepw', cm_u: pointToStrings(reg.cm_u) });
-  assert.equal(r.status, 201, JSON.stringify(r.body));
-  const sk_u = r.body.sk_u;
-  const uc = await buildUserCredRequest({ uid: uidB, s_u: reg.s_u, r_u: reg.r_u, sk_u, attrs: [2005n, 840n, 1n, 0n] });
+  const reg = await cia.registerUser('67890', 'alicepw');
+  const sk_u = reg.sk_u;
+  const uc = await buildUserCredRequest({ uid: uidB, s_u: reg.s_u, r_u: reg.r_u, sk_u, attrs: [2005n, 840n, 1n, 0n, 0n, 0n] });
   assert.equal((await cia.post('/cia/user_cred', uc.body)).status, 201);
   const chain = (await (await get(cia.base)).json()).chain;
   const iss = await buildIssueRequest({ uid: uidB, Cf_u: uc.Cf_u, arid: 22222222222222222222n, sk_u, session: createSessionKey(), chainid: BigInt(chain.id), max_height: BigInt(chain.head) + 300n });

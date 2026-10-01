@@ -14,7 +14,8 @@ import { ethers } from 'ethers';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import { randomScalar, sessionCommit } from '../lib/mode3_credential.js';
-import { registrationCommit, proveUserCred, serializeUserCredProof, userCredRequestMessage, issueRequestMessageV4, pointToStrings } from '../lib/mode3_issuance.js';
+import { proveUserCred, serializeUserCredProof, userCredRequestMessage, issueRequestMessageV4, pointToStrings } from '../lib/mode3_issuance.js';
+import { registryLeaf } from '../lib/mode3_registry.js';
 
 let failed = 0;
 async function t(name, fn) {
@@ -57,15 +58,12 @@ const signMsg = (prvHex, m) => { const sg = eddsa.signPoseidon(Buffer.from(prvHe
 
 const cia = await startIsolatedCia({ env: { CIA_RPC_URL: proxyUrl } });
 try {
-  const s_u = randomScalar(), r_u = randomScalar();
-  const reg = await cia.post('/cia/register', { uid: uid.toString(), pwd: 'password123', cm_u: pointToStrings(await registrationCommit(s_u, r_u)) });
-  assert.equal(reg.status, 201, JSON.stringify(reg.body));
-  const sk_u = reg.body.sk_u;
+  const { s_u, r_u, sk_u, cm_u } = await cia.registerUser(uid.toString(), 'password123');
 
   /** 사용자 자격증명 요청 본문(매번 새 blind_u → 새 Cf_u). 응답의 Cf_u 는 요청자가 미리 알 수 없으니 CIA 응답에서 읽는다.
    *  attrs 는 cia.js DEMO_ACCOUNTS.testuser(uid 12345) 의 AA 기록과 같아야 π_u 가 통과한다(2026-09-22 §3.4). */
   async function userCredBody() {
-    const { C_u_pt, proof } = await proveUserCred({ uid, s_u, blind_u: randomScalar(), r_u, attrs: [1990n, 410n, 2n, 0n] });
+    const { C_u_pt, proof } = await proveUserCred({ uid, s_u, blind_u: randomScalar(), r_u, attrs: [1990n, 410n, 2n, 0n, 0n, 0n] });
     return { uid: uid.toString(), C_u_pt: pointToStrings(C_u_pt), proof: serializeUserCredProof(proof), sig_u: signMsg(sk_u, await userCredRequestMessage(C_u_pt)) };
   }
   /** 세션 발급 V5 본문. Cf_u 는 /cia/user_cred 응답값(10진 문자열). */
@@ -76,7 +74,7 @@ try {
     return { uid: uid.toString(), Cf_u, C_s_pt: pointToStrings(C_s_pt), sig_u: signMsg(sk_u, await issueRequestMessageV4(BigInt(Cf_u), C_s_pt, 31337n, 0n, max_height)), chainid: '31337', allowAgent: '0', max_height: max_height.toString() };
   }
 
-  await t('user_cred 동시 요청 둘(같은 uid, 다른 blind_u): 둘 다 201, 활성 자격증명은 정확히 하나, 물린 리프는 옛 활성 + 패자 둘', async () => {
+  await t('user_cred 동시 요청 둘(같은 uid, 다른 blind_u): 둘 다 201, 활성 자격증명은 정확히 하나, 등록부 슬롯은 승자의 리프로 수렴한다', async () => {
     // 활성 자격증명이 있는 상태에서 겹치게 한다 — retireActiveCred 의 await(리프 삽입) 가 있어야 두 요청이 교차할 수 있다.
     // (실제 교차는 이벤트 루프 스케줄에 달려 결정적으로 강제할 수 없다 — 이 케이스는 어느 순서로 처리돼도 성립해야 하는 불변식만 본다.)
     const first = await cia.post('/cia/user_cred', await userCredBody());
@@ -88,8 +86,11 @@ try {
     assert.equal(ra.status, 201, JSON.stringify(ra.body)); assert.equal(rb.status, 201, JSON.stringify(rb.body));
     const after = (await cia.get('/cia/state')).body;
     assert.equal(after.credCount, 1, '활성 자격증명은 하나여야 한다');
-    assert.equal(after.pendingCount, before.pendingCount + 2, '옛 활성 리프와 패자의 리프, 둘이 pending 에');
-    assert.equal(after.leafCount, before.leafCount + 2);
+    // V9: 교체는 등록부 슬롯만 바꾸고(폐기 트리는 건드리지 않는다) — 두 승자 후보(ra·rb) 중 나중에 물린 쪽의
+    // Cf_u 로 등록부 슬롯·activeCf_u 가 함께 수렴해야 한다.
+    const acct = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === uid.toString());
+    assert.ok([ra.body.Cf_u, rb.body.Cf_u].includes(acct.activeCf_u), `activeCf_u(${acct.activeCf_u}) 는 ra·rb 중 하나여야 한다`);
+    assert.equal(acct.registryLeaf, String(await registryLeaf(cm_u, BigInt(acct.activeCf_u))));
     // 둘 중 정확히 하나만 세션을 받는다
     const [ia, ib] = await Promise.all([cia.post('/cia/issue', await issueBody(ra.body.Cf_u)), cia.post('/cia/issue', await issueBody(rb.body.Cf_u))]);
     assert.deepEqual([ia.status, ib.status].sort(), [200, 403], JSON.stringify([ia.body, ib.body]));
@@ -99,7 +100,7 @@ try {
   await t('user_cred 와 revoke(account) 동시 요청: 어느 쪽이 먼저든 disabled 계정에 활성 자격증명이 남지 않는다', async () => {
     // user_cred 가 retireActiveCred 의 await 에 있는 동안 revoke 가 disabled 를 걸 수 있다 — 마지막 await 뒤 disabled 재확인이
     // 없으면 disabled 계정에 새 활성 자격증명이 올라간다. 둘 다 체인을 부르지 않아 게이트로 순서를 강제할 수는 없다 — 두 순서
-    // 모두에서 성립해야 하는 불변식(credCount 0, 이후 user_cred 403 'account disabled')과 pending 증가량을 본다.
+    // 모두에서 성립해야 하는 불변식(credCount 0, 이후 user_cred 403 'account disabled')을 본다.
     const before = (await cia.get('/cia/state')).body;
     assert.equal(before.credCount, 1, '앞 케이스가 활성 자격증명 하나를 남겨 둔다');
     const body = await userCredBody();
@@ -108,8 +109,10 @@ try {
     assert.ok(uc.status === 201 || uc.status === 403, JSON.stringify(uc.body));
     const after = (await cia.get('/cia/state')).body;
     assert.equal(after.credCount, 0, 'disabled 계정에 활성 자격증명이 남았다');
-    // user_cred 가 먼저면 옛 활성 + 새 것(revoke 가 물림) = +2, revoke 가 먼저면 옛 활성만 +1
-    assert.equal(after.pendingCount, before.pendingCount + (uc.status === 201 ? 2 : 1), `uc=${uc.status}`);
+    // V9: user_cred 교체·revoke(account) 모두 등록부 슬롯만 바꾸고 폐기 트리는 건드리지 않는다 — 어느 쪽이
+    // 이기든 슬롯은 0 으로 수렴해야 한다(교체가 이기면 새 자격증명이 바로 뒤이어 revoke 에 물려 슬롯이 다시 0 이 된다).
+    const acct = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === uid.toString());
+    assert.equal(acct.registryLeaf, '0');
     const denied = await cia.post('/cia/user_cred', await userCredBody());
     assert.equal(denied.status, 403); assert.equal(denied.body.error, 'account disabled');
     if (uc.status === 201) assert.equal((await cia.post('/cia/issue', await issueBody(uc.body.Cf_u))).status, 403);
@@ -127,7 +130,7 @@ try {
     hold = null;                                      // 이후의 eth_blockNumber(revoke 의 것)는 그대로 통과
     const rv = await cia.adminPost('/cia/revoke', { uid: uid.toString(), scope: 'account' });
     assert.equal(rv.status, 200, JSON.stringify(rv.body));
-    assert.equal(rv.body.inserted.length, 1, "활성 자격증명 리프 하나가 물려야 한다");
+    assert.equal(rv.body.retired, 1, "활성 자격증명이 물려야 한다");
     gate.released.resolve();
     const r = await inflight;
     assert.equal(r.status, 403, `폐기 뒤에 발급이 살아남았다: ${JSON.stringify(r.body)}`);
@@ -157,11 +160,8 @@ try {
   await t('경합: 하트비트 정리가 head 를 기다리는 동안 발급해도 세션 기록이 사라지지 않는다 (2026-09-25 리뷰 I-1)', async () => {
     const hb = await startIsolatedCia({ env: { CIA_RPC_URL: UPSTREAM, CIA_CHAIN_RPCS: `31337=${proxyUrl}`, CIA_HEARTBEAT_BLOCKS: '1', CIA_HEARTBEAT_POLL_MS: '200' } });
     try {
-      const s_u2 = randomScalar(), r_u2 = randomScalar();
-      const reg = await hb.post('/cia/register', { uid: uid.toString(), pwd: 'password123', cm_u: pointToStrings(await registrationCommit(s_u2, r_u2)) });
-      assert.equal(reg.status, 201, JSON.stringify(reg.body));
-      const sk = reg.body.sk_u;
-      const { C_u_pt, proof } = await proveUserCred({ uid, s_u: s_u2, blind_u: randomScalar(), r_u: r_u2, attrs: [1990n, 410n, 2n, 0n] });
+      const { s_u: s_u2, r_u: r_u2, sk_u: sk } = await hb.registerUser(uid.toString(), 'password123');
+      const { C_u_pt, proof } = await proveUserCred({ uid, s_u: s_u2, blind_u: randomScalar(), r_u: r_u2, attrs: [1990n, 410n, 2n, 0n, 0n, 0n] });
       const uc = await hb.post('/cia/user_cred', { uid: uid.toString(), C_u_pt: pointToStrings(C_u_pt), proof: serializeUserCredProof(proof), sig_u: signMsg(sk, await userCredRequestMessage(C_u_pt)) });
       assert.equal(uc.status, 201, JSON.stringify(uc.body));
       async function issueOne() {

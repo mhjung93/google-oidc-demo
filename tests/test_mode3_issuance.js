@@ -22,7 +22,7 @@ async function freshUser() {
   const r_u = randomScalar();
   const blind = randomScalar();
   const cm_u = await registrationCommit(s_u, r_u);
-  const attrs = [19n, 410n, 0n, 0n];
+  const attrs = [19n, 410n, 0n, 0n, 0n, 0n];
   return { s_u, r_u, blind, cm_u, attrs };
 }
 
@@ -37,10 +37,10 @@ await t('randomZr 는 [0, r) 안이다', async () => {
 await t('normalizeAttrs: 배열이 아닌 입력은 throw, 길이 초과·범위 밖도 throw, 정상값은 정규화된다', () => {
   assert.throws(() => normalizeAttrs('12345'));
   assert.throws(() => normalizeAttrs(5));
-  assert.throws(() => normalizeAttrs(['1', '2', '3', '4', '5']));
+  assert.throws(() => normalizeAttrs(['1', '2', '3', '4', '5', '6', '7']));
   assert.throws(() => normalizeAttrs(['-1']));
-  assert.deepEqual(normalizeAttrs(['7']), [7n, 0n, 0n, 0n]);
-  assert.deepEqual(normalizeAttrs(undefined), [0n, 0n, 0n, 0n]);
+  assert.deepEqual(normalizeAttrs(['7']), [7n, 0n, 0n, 0n, 0n, 0n]);
+  assert.deepEqual(normalizeAttrs(undefined), [0n, 0n, 0n, 0n, 0n, 0n]);
 });
 
 // ---- V5 (2026-09-21): 사용자 자격증명 증명 π_u; V2(2026-09-22): 속성은 AA 기록, PoK 는 (s_u, blind_u, r_u) 만 ----
@@ -55,7 +55,7 @@ await t('도메인 상수는 ASCII 빅엔디언이고 서로·옛 값과 다르�
 });
 
 await t('π_u V2 양성: AA 가 자기 기록 attrs 로 검증하면 통과하고 C_u_pt 는 userCommit 과 같은 점', async () => {
-  const uid = 12345n, s_u = randomScalar(), r_u = randomScalar(), blind_u = randomScalar(), attrs = [1990n, 410n, 2n, 0n];
+  const uid = 12345n, s_u = randomScalar(), r_u = randomScalar(), blind_u = randomScalar(), attrs = [1990n, 410n, 2n, 0n, 0n, 0n];
   const { C_u_pt, cm_u, proof } = await proveUserCred({ uid, s_u, blind_u, r_u, attrs });
   const c = await userCommit({ uid, s_u, blind_u, attrs });
   assert.equal(C_u_pt.x, c.Cx); assert.equal(C_u_pt.y, c.Cy);
@@ -64,15 +64,15 @@ await t('π_u V2 양성: AA 가 자기 기록 attrs 로 검증하면 통과하�
 });
 
 await t('π_u V2 음성: AA 기록과 다른 attrs, cm_u 와 다른 s_u(Sybil), 다른 uid, 응답 변조, 곡선 밖 점', async () => {
-  const uid = 12345n, s_u = randomScalar(), r_u = randomScalar(), blind_u = randomScalar(), attrs = [1990n, 410n, 2n, 0n];
+  const uid = 12345n, s_u = randomScalar(), r_u = randomScalar(), blind_u = randomScalar(), attrs = [1990n, 410n, 2n, 0n, 0n, 0n];
   const { C_u_pt, cm_u, proof } = await proveUserCred({ uid, s_u, blind_u, r_u, attrs });
-  assert.equal(await verifyUserCred({ uid, attrs: [1991n, 410n, 2n, 0n], C_u_pt, cm_u, proof }), false, '지갑이 넣은 속성이 AA 기록과 다르면 실패');
+  assert.equal(await verifyUserCred({ uid, attrs: [1991n, 410n, 2n, 0n, 0n, 0n], C_u_pt, cm_u, proof }), false, '지갑이 넣은 속성이 AA 기록과 다르면 실패');
   assert.equal(await verifyUserCred({ uid: 12346n, attrs, C_u_pt, cm_u, proof }), false);
   const other = await proveUserCred({ uid, s_u: randomScalar(), blind_u, r_u, attrs });
   assert.equal(await verifyUserCred({ uid, attrs, C_u_pt: other.C_u_pt, cm_u, proof: other.proof }), false, 'cm_u 의 s_u 와 다르면 실패');
   assert.equal(await verifyUserCred({ uid, attrs, C_u_pt, cm_u, proof: { ...proof, z_su: (proof.z_su + 1n) } }), false);
   assert.equal(await verifyUserCred({ uid, attrs, C_u_pt: { x: 1n, y: 1n }, cm_u, proof }), false);
-  await assert.rejects(() => proveUserCred({ uid, s_u, blind_u, r_u, attrs: [1n << 64n, 0n, 0n, 0n] }), /attr0/);
+  await assert.rejects(() => proveUserCred({ uid, s_u, blind_u, r_u, attrs: [1n << 64n, 0n, 0n, 0n, 0n, 0n] }), /attr0/);
 });
 
 await t('attrsRequestMessage = Poseidon(DOMAIN_MODE3_ATTRSREQ, uid, nonce)', async () => {
@@ -90,7 +90,7 @@ await t('π_u V2 음성: 챌린지를 등록된 cm_u 로 맞춰도 s_u 가 다�
   const r = bj.subOrder;
   const G = (name) => [bj.F.e(PEDERSEN_GENERATORS[name][0]), bj.F.e(PEDERSEN_GENERATORS[name][1])];
   const [G1, G3, H] = ['uid', 's_u', 'blind'].map(G);
-  const GA = ['attr0', 'attr1', 'attr2', 'attr3'].map(G);
+  const GA = ['attr0', 'attr1', 'attr2', 'attr3', 'attr4', 'attr5'].map(G);
   const msm = (terms) => terms.reduce((acc, [e, P]) => {
     const Q = bj.mulPointEscalar(P, e);
     return acc === null ? Q : bj.addPoint(acc, Q);
