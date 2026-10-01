@@ -15,7 +15,7 @@ import { userCommit, sessionCommit, SCALAR_MAX, PEDERSEN_GENERATORS } from '../l
 const ROOT_DIR = fileURLToPath(new URL('..', import.meta.url));
 const OUT_DIR = path.join(ROOT_DIR, 'build', 'mode3', 'commit');
 
-// V5(2026-09-21) 커밋 둘.
+// V5(2026-09-21) 커밋 둘, V9(2026-10-01) 등록 커밋 하나.
 const SRC = {
   user: `pragma circom 2.0.0;
 include "lib/mode3_commit.circom";
@@ -23,6 +23,9 @@ component main = CommitUser();`,
   session: `pragma circom 2.0.0;
 include "lib/mode3_commit.circom";
 component main = CommitSession();`,
+  registration: `pragma circom 2.0.0;
+include "lib/mode3_commit.circom";
+component main = RegistrationCommit();`,
 };
 
 // 제약 수를 세려면 컴파일해야 한다. circom은 컴파일 요약에 비선형 제약 수를 찍는다.
@@ -60,7 +63,7 @@ async function witness(name, input) {
   return calc.calculateWitness(input, true);
 }
 
-const USER_INPUT = { uid: '11111111111111111111', s_u: '33333333333333333333', blind_u: '44444444444444444444', attrs: ['19', '410', '0', '0'] };   // 예: 나이·국가코드, 빈 슬롯은 0
+const USER_INPUT = { uid: '11111111111111111111', s_u: '33333333333333333333', blind_u: '44444444444444444444', attrs: ['19', '410', '0', '0', '0', '0'] };   // 예: 나이·국가코드, 빈 슬롯은 0
 const SESSION_INPUT = { arid: '22222222222222222222', pk_i: '1234567890123456789012345678901234567890', blind_s: '55555555555555555555' };   // pk_i 는 160비트 주소 범위
 
 let failed = 0;
@@ -87,9 +90,9 @@ await t('CommitSession 회로의 (Cx, Cy) 가 JS sessionCommit 과 일치한다'
   assert.equal(BigInt(w[1]), Cx); assert.equal(BigInt(w[2]), Cy);
 });
 
-await t('생성원 9개가 곡선 위·소수 부분군 안에 있다', async () => {
+await t('생성원 11개가 곡선 위·소수 부분군 안에 있다', async () => {
   const bj = await buildBabyjub();
-  assert.equal(Object.keys(PEDERSEN_GENERATORS).length, 9, 'uid, arid, s_u, pk_i, attr0..3, blind');
+  assert.equal(Object.keys(PEDERSEN_GENERATORS).length, 11, 'uid, arid, s_u, pk_i, attr0..5, blind');
   for (const [name, g] of Object.entries(PEDERSEN_GENERATORS)) {
     const P = [bj.F.e(g[0]), bj.F.e(g[1])];
     assert.ok(bj.inCurve(P), `${name} 가 곡선 위에 없다`);
@@ -109,16 +112,27 @@ await t('회로도 2^250 이상 스칼라를 거부한다', async () => {
 
 await t('attr 하나만 바꿔도 C_u 가 바뀐다 (속성이 커밋에 실린다); blind 하나만 바꿔도 바뀐다 (hiding 의 전제)', async () => {
   const a = await witness('user', USER_INPUT);
-  const b = await witness('user', { ...USER_INPUT, attrs: ['20', '410', '0', '0'] });
+  const b = await witness('user', { ...USER_INPUT, attrs: ['20', '410', '0', '0', '0', '0'] });
   const c = await witness('user', { ...USER_INPUT, blind_u: '66666666666666666666' });
   assert.notEqual(a[1].toString(), b[1].toString());
   assert.notEqual(a[1].toString(), c[1].toString());
 });
 
 await t('attrs 를 생략한 JS userCommit 은 전부 0 과 같다', async () => {
-  const withZero = await userCommit({ uid: 1n, s_u: 3n, blind_u: 4n, attrs: [0n, 0n, 0n, 0n] });
+  const withZero = await userCommit({ uid: 1n, s_u: 3n, blind_u: 4n, attrs: [0n, 0n, 0n, 0n, 0n, 0n] });
   const omitted = await userCommit({ uid: 1n, s_u: 3n, blind_u: 4n });
   assert.equal(withZero.Cf, omitted.Cf);
+});
+
+await t('RegistrationCommit 회로 = JS registrationCommit(s_u, r_u)', async () => {
+  const { registrationCommit } = await import('../lib/mode3_issuance.js');
+  const n = compile('registration', SRC.registration);
+  console.log(`   RegistrationCommit 비선형 제약: ${n.toLocaleString()}`);
+  const s_u = 123456789n, r_u = 987654321n;
+  const cm = await registrationCommit(s_u, r_u);
+  const w = await witness('registration', { s_u: s_u.toString(), r_u: r_u.toString() });
+  // main.Cx, main.Cy 는 출력 신호 1·2 번(출력은 witness 의 앞에 온다)
+  assert.equal(BigInt(w[1]), cm.x); assert.equal(BigInt(w[2]), cm.y);
 });
 
 console.log('');

@@ -10,12 +10,12 @@ include "babyjub.circom";
 // 속성 4슬롯: docs/superpowers/specs/2026-09-14-mode3-attribute-credential-design.md §3/§5
 // 스킴 선택(Pedersen vs Poseidon) 근거: docs/superpowers/specs/2026-09-09-mode3-cia-revocation-design.md §4.1, §11
 //
-//   C_u = uid·G_UID + s_u·G_SU + attr₀·G_ATTR0 + … + attr₃·G_ATTR3 + blind_u·H   (사용자당 하나)
+//   C_u = uid·G_UID + s_u·G_SU + attr₀·G_ATTR0 + … + attr₅·G_ATTR5 + blind_u·H   (사용자당 하나)
 //   C_s = arid·G_ARID + pk_i·G_PKI + blind_s·H                                    (세션마다)
 //
 //   uid     — 계정 식별자. PPID 유도에 쓰인다
 //   s_u     — 사용자 비밀. CIA가 PPID를 열거하지 못하게 막는다 (Mode 2의 salt)
-//   attrs   — 속성 4슬롯. CIA 는 값을 모른다
+//   attrs   — 속성 6슬롯. CIA 는 값을 모른다
 //   blind_u — C_u 블라인딩. CIA 가 자기가 아는 uid 로 C_u 를 재계산해 대조하는 것을 막는다
 //   arid    — RP 식별자. 세션 자격증명을 RP에 묶는다 (Mode 2의 rid)
 //   pk_i    — 세션키. 이 π가 이 서명자의 것임을 묶는다
@@ -29,7 +29,8 @@ include "babyjub.circom";
 // 이 검사가 없으면 e 와 e+r 이 같은 점을 만들어 binding 이 깨진다 — 한 C_u 를 두 s_u 로
 // 열어 PPID 두 개를 얻는 Sybil 이 가능해진다. lib/mode3_credential.js 도 같은 상한을 지킨다.
 //
-// 생성원은 circomlib pedersen.circom 의 NUMS 점 BASE[0..8]. 서로의 이산로그를 아무도 모른다.
+// 생성원은 circomlib pedersen.circom 의 NUMS 점 BASE[0..10]. 서로의 이산로그를 아무도 모른다.
+// circomlib 표는 index 0..9 까지라, index 10(attr5) 은 표에는 없고 circomlibjs getBasePoint('blake', 10) 으로 계산한 값이다(lib/mode3_credential.js 와 같다).
 // 2026-09-10 circomlibjs 로 9개 모두 inCurve·inSubgroup 확인. 두 커밋이 생성원을 나눠 쓴다
 // (H 만 공유) — 각 커밋의 binding 은 자기 항의 생성원만으로 성립한다.
 
@@ -40,7 +41,7 @@ template CommitUser() {
     signal input uid;
     signal input s_u;
     signal input blind_u;
-    signal input attrs[4];
+    signal input attrs[6];
     signal output Cx;
     signal output Cy;
 
@@ -50,7 +51,7 @@ template CommitUser() {
                       19824078218392094440610104313265183977899662750282163392862422243483260492317];
     var G_SU[2]    = [5802099305472655231388284418920769829666717045250560929368476121199858275951,
                       5980429700218124965372158798884772646841287887664001482443826541541529227896];
-    var G_ATTR[4][2] = [
+    var G_ATTR[6][2] = [
         [1487999857809287756929114517587739322941449154962237464737694709326309567994,
          14017256862867289575056460215526364897734808720610101650676790868051368668003],
         [14618644331049802168996997831720384953259095788558646464435263343433563860015,
@@ -58,7 +59,11 @@ template CommitUser() {
         [6814338563135591367010655964669793483652536871717891893032616415581401894627,
          13660303521961041205824633772157003587453809761793065294055279768121314853695],
         [3571615583211663069428808372184817973703476260057504149923239576077102575715,
-         11981351099832644138306422070127357074117642951423551606012551622164230222506]
+         11981351099832644138306422070127357074117642951423551606012551622164230222506],
+        [18597552580465440374022635246985743886550544261632147935254624835147509493269,
+         6753322320275422086923032033899357299485124665258735666995435957890214041481],
+        [16246587114701919230396141881596483298016809673932703125119295166936827150109,
+         2008259283001433748666303325888612438000671916354550248296035439458960131795]
     ];
     var H_BLIND[2] = [20265828622013100949498132415626198973119240347465898028410217039057588424236,
                       1160461593266035632937973507065134938065359936056410650153315956301179689506];
@@ -66,32 +71,32 @@ template CommitUser() {
     component bUid   = Num2Bits(N);  bUid.in   <== uid;
     component bSu    = Num2Bits(N);  bSu.in    <== s_u;
     component bBlind = Num2Bits(N);  bBlind.in <== blind_u;
-    component bAttr[4];
-    for (var j = 0; j < 4; j++) { bAttr[j] = Num2Bits(NA); bAttr[j].in <== attrs[j]; }
+    component bAttr[6];
+    for (var j = 0; j < 6; j++) { bAttr[j] = Num2Bits(NA); bAttr[j].in <== attrs[j]; }
     component mUid   = EscalarMulFix(N, G_UID);
     component mSu    = EscalarMulFix(N, G_SU);
     component mBlind = EscalarMulFix(N, H_BLIND);
-    component mAttr[4];
-    for (var j = 0; j < 4; j++) mAttr[j] = EscalarMulFix(NA, G_ATTR[j]);
+    component mAttr[6];
+    for (var j = 0; j < 6; j++) mAttr[j] = EscalarMulFix(NA, G_ATTR[j]);
     for (var i = 0; i < N; i++) {
         mUid.e[i]   <== bUid.out[i];
         mSu.e[i]    <== bSu.out[i];
         mBlind.e[i] <== bBlind.out[i];
     }
-    for (var i = 0; i < NA; i++) for (var j = 0; j < 4; j++) mAttr[j].e[i] <== bAttr[j].out[i];
-    // 덧셈 순서: uid + s_u + attr0..3 + blind_u (JS userCommit 과 같다).
+    for (var i = 0; i < NA; i++) for (var j = 0; j < 6; j++) mAttr[j].e[i] <== bAttr[j].out[i];
+    // 덧셈 순서: uid + s_u + attr0..5 + blind_u (JS userCommit 과 같다).
     component a1 = BabyAdd();
     a1.x1 <== mUid.out[0];  a1.y1 <== mUid.out[1];
     a1.x2 <== mSu.out[0];   a1.y2 <== mSu.out[1];
-    component aAttr[4];
-    for (var j = 0; j < 4; j++) {
+    component aAttr[6];
+    for (var j = 0; j < 6; j++) {
         aAttr[j] = BabyAdd();
         if (j == 0) { aAttr[j].x1 <== a1.xout; aAttr[j].y1 <== a1.yout; }
         else        { aAttr[j].x1 <== aAttr[j-1].xout; aAttr[j].y1 <== aAttr[j-1].yout; }
         aAttr[j].x2 <== mAttr[j].out[0]; aAttr[j].y2 <== mAttr[j].out[1];
     }
     component a2 = BabyAdd();
-    a2.x1 <== aAttr[3].xout; a2.y1 <== aAttr[3].yout;
+    a2.x1 <== aAttr[5].xout; a2.y1 <== aAttr[5].yout;
     a2.x2 <== mBlind.out[0]; a2.y2 <== mBlind.out[1];
     Cx <== a2.xout;
     Cy <== a2.yout;
@@ -135,4 +140,30 @@ template CommitSession() {
     a2.x2 <== mBlind.out[0]; a2.y2 <== mBlind.out[1];
     Cx <== a2.xout;
     Cy <== a2.yout;
+}
+
+// V9(2026-10-01 등록부 §5.2 조건 9): 등록 커밋 cm_u = s_u·G_SU + r_u·H — lib/mode3_issuance.js registrationCommit 과 같은 생성원·순서.
+// π_RP 가 "C_u 의 s_u 가 등록 때 낸 cm_u 의 s_u 와 같다" 를 보이려고 회로 안에서 다시 계산한다.
+template RegistrationCommit() {
+    signal input s_u;
+    signal input r_u;
+    signal output Cx;
+    signal output Cy;
+
+    var N = 250;
+    var G_SU[2]    = [5802099305472655231388284418920769829666717045250560929368476121199858275951,
+                      5980429700218124965372158798884772646841287887664001482443826541541529227896];
+    var H_BLIND[2] = [20265828622013100949498132415626198973119240347465898028410217039057588424236,
+                      1160461593266035632937973507065134938065359936056410650153315956301179689506];
+
+    component bSu = Num2Bits(N);  bSu.in <== s_u;
+    component bRu = Num2Bits(N);  bRu.in <== r_u;
+    component mSu = EscalarMulFix(N, G_SU);
+    component mRu = EscalarMulFix(N, H_BLIND);
+    for (var i = 0; i < N; i++) { mSu.e[i] <== bSu.out[i]; mRu.e[i] <== bRu.out[i]; }
+    component a = BabyAdd();
+    a.x1 <== mSu.out[0]; a.y1 <== mSu.out[1];
+    a.x2 <== mRu.out[0]; a.y2 <== mRu.out[1];
+    Cx <== a.xout;
+    Cy <== a.yout;
 }
