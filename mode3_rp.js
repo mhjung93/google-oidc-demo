@@ -17,7 +17,7 @@ import { verifyRpCert } from './lib/mode3_rp_cert.js';
 import { randomScalar } from './lib/mode3_credential.js';
 import { createShare, partialDecrypt, combinePublicKey, verifyShare } from './lib/mode3_trace.js';
 import { signOpenRequest, signOpenResult } from './lib/mode3_opening.js';
-import { deployVerifier, deployFactory, deployAttrGate, decodeExecuteCalldata, parseExecuteReceipt, FACTORY_ABI, MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT, ALLOWED_COUNTRIES_DEFAULT, MIN_AGE_DEFAULT } from './lib/mode3_onchain.js';
+import { deployVerifier, deployFactory, deployAttrGate, decodeExecuteCalldata, parseExecuteReceipt, FACTORY_ABI, MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT, ALLOWED_COUNTRIES_DEFAULT, MIN_AGE_DEFAULT, PUB_INDEX } from './lib/mode3_onchain.js';
 import { setRoot } from './lib/mode3_set_tree.js';
 import { buildRpHealth, applyHealthHeaders, bounded, originList } from './lib/mode3_health.js';
 
@@ -443,7 +443,7 @@ app.post('/api/mode3/open', async (req, res) => {
       T = lastTranscriptOf(PPID);
       if (!T) return res.status(404).json({ ok: false, reason: 'no_transcript' });
     } else return res.status(400).json({ ok: false, reason: 'malformed' });
-    const c1 = { x: BigInt(T.publicSignals[11]), y: BigInt(T.publicSignals[12]) };
+    const c1 = { x: BigInt(T.publicSignals[PUB_INDEX.TAG_C1_X]), y: BigInt(T.publicSignals[PUB_INDEX.TAG_C1_Y]) };
     const D = await partialDecrypt(BigInt(reg.x_svc), c1);
     const D_svc = { x: D.x.toString(), y: D.y.toString() };
     const ts = Math.floor(Date.now() / 1000).toString();
