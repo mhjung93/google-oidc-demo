@@ -53,7 +53,7 @@
 ### 3.4 마이그레이션 (기존 `cia_state.json`)
 - 기동 때 `state.registry` 가 없으면 만든다: `slot` 이 없는 계정에 **uid 오름차순**(결정적)으로 번호를 주고, 활성 자격증명이 있으면 `L_reg(cm_u, Cf_u)` 를, 없으면 0 을 둔다. 전부 `pendingSlots` 에 넣고 첫 하트비트(또는 첫 변경)에서 게시한다.
 - 폐기 트리·revoked·pending 은 그대로 둔다. 옛 사용자 리프(태그 4)는 트리에 남지만 V9 회로가 그 비멤버십을 보지 않으므로 효력이 없다 — 상태 파일은 지우지 않는다(CLAUDE.md 규칙).
-- 상태 파일 버전은 올리지 않는다(필드 추가뿐). V9 CIA 가 V8 파일을 읽을 수 있고, V8 CIA 가 V9 파일을 읽으면 `registry` 를 무시한다.
+- 상태 파일 버전은 v9 로 올린다(`lib/mode3_cia_state.js` 의 이행 단계 하나 추가 — 저장소 관례). V9 CIA 가 V8 파일을 읽어 위 규칙으로 이행하고, V8 CIA 는 v9 파일을 거부한다(현행 `unsupported CIA state version` 규칙).
 
 ## 4. 로그 컨트랙트 V2 — `contracts/Mode3Log.sol` (새 파일, `RevocationLog.sol` 은 그대로 둔다)
 
@@ -197,7 +197,7 @@ V8 37,130 − 사용자 비멤버십 ≈ 9.5천 + 포함 20단 ≈ 4.9천 + 곱�
 |---|---|---|
 | unit | `tests/test_mode3_registry.js`(새) | 트리 set/path/root, 빈 트리 root, 깊이 20 경로 검증 |
 | unit | `tests/test_mode3_issuance.js`, `tests/test_mode3_credential_v5.js`(수정) | attrs 6, 제너레이터 두 쪽 일치, `registerMessage`·sig_reg, 등록부 리프 |
-| unit | `tests/test_mode3_health_shape.js` | status 의 `registry`·`demoOverride` 모양 |
+| chain | `tests/test_mode3_wallet_agent.mjs`(수정) | `/wallet/status` 의 `registry`·`demoOverride` 모양, `registry_unpublished`·`registry_mismatch`, 시연 덮어쓰기 3경로 |
 | circuit | `tests/test_pi_cred_witness.mjs`(수정) | 양성; 음성 — 틀린 r_u, 틀린 경로, 리프 0, 6번 슬롯 범위·집합, salt 바꾼 증인 |
 | contract | `test/Mode3Log.test.mjs`(새), `test/Mode3Wallet.test.mjs`·`test/AttrGate.test.mjs`·`test/Mode3ReferenceCode.test.mjs`(수정) | 게시·다이제스트·epoch·길이 불일치; regRoot stale; 입력 30; 마스크 6; 꼬리 15; AttrGate 6 |
 | chain | `tests/test_mode3_e2e.mjs`, `tests/test_mode3_demo_stack.mjs`(수정), `tests/test_cia_registry.mjs`(새) | 등록(지갑 키) → 발급 → 게시 → 로그인 → tx; 은퇴 → 슬롯 0 → 거절; tamper → ✗·거절 → restore; 옛 상태 파일 마이그레이션; 시연 덮어쓰기 3경로 |
