@@ -622,7 +622,7 @@
           await ensureConnected();
           const reg = await invokeSnap('register');
           if (!reg || reg.denied) { setVerdict($('registerResult'), false, 'wallet_register_failed', () => ({ summary: tt('wallet_register_cancel') || 'Snap 대화상자에서 등록을 취소했습니다.' })); return; }
-          body = { uid: reg.uid, pwd: reg.pwd, cm_u: reg.cm_u };
+          body = { uid: reg.uid, pwd: reg.pwd, cm_u: reg.cm_u, sk_u: reg.sk_u };
         } else {
           // attrs 는 AA(CIA) 기록이다(2026-09-22 §3.3) — 본문에 실어도 무시되므로 uid·pwd 만 보낸다.
           body = { uid: $('uid').value.trim(), pwd: $('pwd').value };
@@ -649,14 +649,14 @@
         // 에이전트가 409 already_registered 로 거절한다. "Snap 초기화" + 상태 파일 삭제만으로도 풀리지 않는다 — CIA 에
         // 그 uid 가 이미 등록돼 있어(cm_u 와 무관) /cia/register 가 409 를 내고 같은 골목에 다시 도달한다. 세 보관소(CIA·에이전트·Snap)를
         // 함께 비우는 재시연 세트가 유일한 출구라, 일반 오류 문구 대신 그 길을 알려 준다(2026-09-23 점검 B).
-        // 응답의 sk_u(snap 모드)는 Snap 에만 넘긴다 — '자세히'에도, 카드가 들고 있는 인자에도 남기지 않는다.
+        // 요청의 sk_u 는 Snap 이 준 값으로 한 번만 지나간다 — '자세히'에도, 카드가 들고 있는 인자에도 남기지 않는다.
         // 그래서 카드에 쓸 값은 성공·반쪽 실패 양쪽 모두 여기서 먼저 꺼내 둔다(인자 생성기가 b 를 붙잡으면
         // Demo 가 그 생성기를 #registerResult 에 페이지 수명 내내 들고 있어 sk_u 가 함께 남는다).
         const uid = b.uid;
         const attrs = b.attrs;
         const detail = safeDetail(b);
         if (cfg.secrets === 'snap') {
-          try { await invokeSnap('storeRegistration', { sk_u: b.sk_u, attrs: b.attrs }); }
+          try { await invokeSnap('storeRegistration', { attrs: b.attrs, slot: b.slot }); }
           catch (e) {
             const err = e.message;
             setVerdict($('registerResult'), false, 'wallet_register_failed', () => ({ summary: tt('wallet_register_half', { uid, err }) || `등록이 반만 됐습니다(uid=${uid}): ${err}` }));

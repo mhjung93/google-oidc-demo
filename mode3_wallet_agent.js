@@ -231,13 +231,14 @@ function secretSourceFor(req, rsKey = null) {
   if (SECRETS === 'file') return createSecretSource({ mode: 'file', state });
   let w = null;
   if (rsKey) {
-    // 세션 증인은 { s_u, blind_u, attrs, sk_u } 만 든다 — 공개 부분(uid, userCred 의 Cf_u)은 파일에서 채운다. r_u 는 발급 뒤엔 필요 없다.
+    // 세션 증인은 { s_u, r_u, blind_u, attrs, sk_u } 를 든다 — 공개 부분(uid, userCred 의 Cf_u)은 파일에서 채운다.
+    // r_u 는 V9 조건 9(등록부 증명, buildCredentialProof) 가 재증명마다 요구한다 — 발급 뒤엔 필요 없다는 옛 가정은 더는 맞지 않는다.
     const sw = state.sessions[rsKey]?.witness;
     const pub = state.registration?.userCred;
     // pub 이 없으면(상태 파일 버전을 올려 userCred 를 비운 경우 등) 증인을 재조립할 수 없다. 그대로 두면 userCred:null 로
     // 조립돼 proveSession 이 revoked 로 던지고 **세션이 지워진다** — 복구할 수 없는 손실이다. 대신 needs_consent 로 떨어뜨려
     // 팝업이 Snap 의 C_u 로 /wallet/session/witness 를 다시 채우게 한다(그 라우트가 파일의 공개 부분도 되살린다).
-    if (sw && pub) w = { uid: state.registration?.uid, s_u: sw.s_u, r_u: null, sk_u: sw.sk_u, attrs: sw.attrs, userCred: { ...pub, blind_u: sw.blind_u } };
+    if (sw && pub) w = { uid: state.registration?.uid, s_u: sw.s_u, r_u: sw.r_u, sk_u: sw.sk_u, attrs: sw.attrs, userCred: { ...pub, blind_u: sw.blind_u } };
   } else w = req.body?.witness ?? null;
   if (!w) throw Object.assign(new Error(rsKey ? 'needs_consent' : 'witness_required'), { reason: rsKey ? 'needs_consent' : 'witness_required' });
   return createSecretSource({ mode: 'snap', state, witness: w });
@@ -568,12 +569,14 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-/** snap 모드: 로그인·재승인한 세션의 증인을 메모리에만 둔다(스펙 §3.3, persist 가 뺀다). blind_u 는 지금 C_u 의 것(로그인 중 새로 받았으면 그것). */
+/** snap 모드: 로그인·재승인한 세션의 증인을 메모리에만 둔다(스펙 §3.3, persist 가 뺀다). blind_u 는 지금 C_u 의 것(로그인 중 새로 받았으면 그것).
+ *  r_u 도 담는다(V9 조건 9 수정) — buildCredentialProof 가 등록부 증명마다 등록 커밋 cm_u 의 블라인딩으로 r_u 를 요구해서,
+ *  발급 이후엔 필요 없다고 가정했던 옛 설계(secretSourceFor 참고)가 더는 맞지 않는다. */
 function setSessionWitness(rsKey, src) {
   const s = state.sessions[rsKey];
   if (!s) return;
   const reg = src.registration(), uc = src.userCred();
-  s.witness = { s_u: reg.s_u, blind_u: uc?.blind_u ?? null, attrs: reg.attrs, sk_u: reg.sk_u };
+  s.witness = { s_u: reg.s_u, r_u: reg.r_u, blind_u: uc?.blind_u ?? null, attrs: reg.attrs, sk_u: reg.sk_u };
 }
 
 // 재시작 등으로 세션 증인이 없을 때(revalidate·tx/prepare 의 needs_consent) 팝업이 consentLogin 을 다시 받아 채운다(metamask-snap §4.3).

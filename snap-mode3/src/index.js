@@ -18,8 +18,8 @@ const WALLET_ORIGINS = [
   'http://localhost:5100',
 ];
 
-const SLOT_LABELS = ['출생연도', '국가', '등급', '예비'];      // a₀..a₃ (스펙 2026-09-22 selective-disclosure §3)
-const SLOT_NAMES = ['a₀', 'a₁', 'a₂', 'a₃'];
+const SLOT_LABELS = ['출생연도', '국가', '등급', '예비', '속성 5', '속성 6'];      // a₀..a₅ (V9 §7.1, 스펙 2026-09-22 selective-disclosure §3)
+const SLOT_NAMES = ['a₀', 'a₁', 'a₂', 'a₃', 'a₄', 'a₅'];
 
 /** 동의 창에 보이는 서비스 이름 위생(2026-09-25 리뷰 D-2). 인증서(cert_s)가 덮는 것은 `origin` 뿐이고 serviceName 은
  *  서비스가 고른 임의의 문자열이다 — 개행·제어문자로 창에 가짜 줄("오리진: …" 같은)을 끼워 넣거나 긴 이름으로 아래
@@ -37,8 +37,8 @@ function cleanServiceName(v) {
 function predicateLines(disclose, set) {
   const lines = [];
   const slots = Array.isArray(disclose) ? disclose : [];
-  for (let i = 0; i < 4; i++) { const d = slots[i]; if (d) lines.push(`${SLOT_NAMES[i]}(${SLOT_LABELS[i]}) ∈ [${d.lo}, ${d.hi}]`); }
-  if (set && Number.isInteger(set.slot) && set.slot >= 0 && set.slot <= 3 && Array.isArray(set.members)) {
+  for (let i = 0; i < 6; i++) { const d = slots[i]; if (d) lines.push(`${SLOT_NAMES[i]}(${SLOT_LABELS[i]}) ∈ [${d.lo}, ${d.hi}]`); }
+  if (set && Number.isInteger(set.slot) && set.slot >= 0 && set.slot <= 5 && Array.isArray(set.members)) {
     const ms = set.members.map(String);
     const shown = ms.length > 32 ? `${ms.slice(0, 8).join(', ')} … 외 ${ms.length - 8}개` : ms.join(', ');
     lines.push(`${SLOT_NAMES[set.slot]}(${SLOT_LABELS[set.slot]}) ∈ {${shown}} (${ms.length}개)`);
@@ -85,8 +85,8 @@ function unwrapUserCred(params) {
   const uc = (raw && typeof raw === 'object' && !Array.isArray(raw) && 'userCred' in raw) ? raw.userCred : raw;
   if (!uc) return null;
   const okPt = uc.C_u_pt && isDec(uc.C_u_pt.x) && isDec(uc.C_u_pt.y);
-  if (!okPt || !isDec(uc.Cf_u) || !isDec(uc.blind_u) || !isDec(uc.leaf)) fail('bad_user_cred: C_u_pt{x,y}·Cf_u·blind_u·leaf(10진 문자열) 필요');
-  return { C_u_pt: { x: uc.C_u_pt.x, y: uc.C_u_pt.y }, Cf_u: uc.Cf_u, blind_u: uc.blind_u, leaf: uc.leaf, issuedAt: uc.issuedAt ?? new Date().toISOString() };
+  if (!okPt || !isDec(uc.Cf_u) || !isDec(uc.blind_u)) fail('bad_user_cred: C_u_pt{x,y}·Cf_u·blind_u(10진 문자열) 필요');
+  return { C_u_pt: { x: uc.C_u_pt.x, y: uc.C_u_pt.y }, Cf_u: uc.Cf_u, blind_u: uc.blind_u, issuedAt: uc.issuedAt ?? new Date().toISOString() };
 }
 
 export const onRpcRequest = async ({ origin, request }) => {
@@ -108,21 +108,21 @@ export const onRpcRequest = async ({ origin, request }) => {
       const secrets = createRegistrationSecrets();
       state.registration = {
         uid: String(uid).trim(), s_u: secrets.s_u, r_u: secrets.r_u, cm_u: secrets.cm_u,
-        sk_u: null, attrs: null, registeredAt: new Date().toISOString(),
+        sk_u: secrets.sk_u, slot: null, attrs: null, registeredAt: new Date().toISOString(),
       };
       state.userCred = null;
       await setState(state);
-      return { uid: state.registration.uid, pwd, cm_u: clone(secrets.cm_u) };
+      return { uid: state.registration.uid, pwd, cm_u: clone(secrets.cm_u), sk_u: secrets.sk_u };
     }
 
-    // 에이전트 POST /wallet/register 응답(sk_u·attrs)을 저장한다.
+    // 에이전트 POST /wallet/register 응답(slot·attrs)을 저장한다. sk_u 는 register 때 이미 만들어 저장했으므로 받지 않는다(V9 §7.1).
     case 'storeRegistration': {
       const reg = requireRegistered(state);
-      const { sk_u, attrs } = params;
-      if (typeof sk_u !== 'string' || !/^[0-9a-fA-F]{64}$/.test(sk_u)) fail('bad_sk_u: sk_u 는 64자리 16진 문자열');
-      if (!Array.isArray(attrs) || attrs.length !== 4 || !attrs.every((a) => isDec(String(a)))) fail('bad_attrs: attrs 는 10진 문자열 4개');
-      reg.sk_u = sk_u;
+      const { attrs, slot } = params;
+      if (!Array.isArray(attrs) || attrs.length !== 6 || !attrs.every((a) => isDec(String(a)))) fail('bad_attrs: attrs 는 10진 문자열 6개');
+      if (!Number.isInteger(slot) || slot < 0) fail('bad_slot');
       reg.attrs = attrs.map(String);
+      reg.slot = slot;
       await setState(state);
       return { ok: true };
     }
@@ -131,7 +131,7 @@ export const onRpcRequest = async ({ origin, request }) => {
     case 'getPublicInfo': {
       const r = state.registration;
       return {
-        registered: Boolean(r), uid: r?.uid ?? null, cm_u: clone(r?.cm_u), attrs: clone(r?.attrs),
+        registered: Boolean(r), uid: r?.uid ?? null, cm_u: clone(r?.cm_u), attrs: clone(r?.attrs), slot: r?.slot ?? null,
         hasUserCred: Boolean(state.userCred), consents: clone(state.consents) ?? {},
       };
     }
@@ -193,7 +193,7 @@ export const onRpcRequest = async ({ origin, request }) => {
     case 'syncAttrs': {
       const reg = requireRegistered(state);
       const { attrs } = params;
-      if (!Array.isArray(attrs) || attrs.length !== 4 || !attrs.every((a) => isDec(String(a)))) fail('bad_attrs: attrs 는 10진 문자열 4개');
+      if (!Array.isArray(attrs) || attrs.length !== 6 || !attrs.every((a) => isDec(String(a)))) fail('bad_attrs: attrs 는 10진 문자열 6개');
       const next = attrs.map(String);
       const changed = JSON.stringify(next) !== JSON.stringify(reg.attrs);
       if (changed) { reg.attrs = next; state.userCred = null; await setState(state); }

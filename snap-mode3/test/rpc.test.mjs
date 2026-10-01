@@ -50,9 +50,9 @@ const call = (method, params, origin = WALLET_ORIGIN) => onRpcRequest({ origin, 
 const lastDialogText = () => JSON.stringify(dialogs[dialogs.length - 1]);
 const stateJson = () => JSON.stringify(store.state);
 
-const SK_U = 'ab'.repeat(32);
-const ATTRS = ['1990', '410', '2', '0'];
-const USER_CRED = { C_u_pt: { x: '11', y: '22' }, Cf_u: '33', blind_u: '987654321098765432109876543210', leaf: '55', issuedAt: '2026-09-22T00:00:00.000Z' };
+const ATTRS = ['1990', '410', '2', '0', '0', '0'];
+const SLOT = 3;
+const USER_CRED = { C_u_pt: { x: '11', y: '22' }, Cf_u: '33', blind_u: '987654321098765432109876543210', issuedAt: '2026-09-22T00:00:00.000Z' };
 
 // onRpcRequest 의 switch 에서 method 이름을 직접 뽑는다 — 목록을 손으로 적어 두면 새 RPC 가 늘어날 때
 // 아래 검사에서 조용히 빠진다(2026-09-25 리뷰: 제목은 "모든 RPC" 인데 getPublicInfo 하나만 보고 있었다).
@@ -81,13 +81,14 @@ await t('지갑 오리진 두 철자(127.0.0.1·localhost)는 모두 허용된�
 });
 
 let registered = null;
-await t('register: prompt 두 번 → { uid, pwd, cm_u }, 상태에 s_u·r_u, 비밀번호는 저장 안 함', async () => {
+await t('register: prompt 두 번 → { uid, pwd, cm_u, sk_u }, 상태에 s_u·r_u·sk_u, 비밀번호는 저장 안 함', async () => {
   answers.push('12345', 'password123');
   registered = await call('register', {});
   assert.equal(registered.uid, '12345');
   assert.equal(registered.pwd, 'password123');
   assert.match(registered.cm_u.x, /^[0-9]+$/);
   assert.match(registered.cm_u.y, /^[0-9]+$/);
+  assert.match(registered.sk_u, /^[0-9a-fA-F]{64}$/);
   assert.equal(dialogs.length, 2, '대화상자 두 번(uid, 비밀번호)');
   assert.equal(dialogs[0].type, 'prompt');
   assert.equal(dialogs[1].type, 'prompt');
@@ -97,7 +98,7 @@ await t('register: prompt 두 번 → { uid, pwd, cm_u }, 상태에 s_u·r_u, �
   assert.match(reg.r_u, /^[0-9]+$/);
   assert.ok(BigInt(reg.s_u) < (1n << 250n) && BigInt(reg.r_u) < (1n << 250n), '스칼라는 2^250 미만');
   assert.deepEqual(reg.cm_u, registered.cm_u);
-  assert.equal(reg.sk_u, null);
+  assert.equal(reg.sk_u, registered.sk_u);
   assert.equal(reg.attrs, null);
   assert.ok(reg.registeredAt, 'registeredAt 기록');
   assert.ok(!stateJson().includes('password123'), '비밀번호는 상태에 남지 않는다');
@@ -114,21 +115,24 @@ await t('register 두 번째는 거절된다', async () => {
   await assert.rejects(() => call('register', {}), /already_registered|이미/);
 });
 
-await t('storeRegistration: sk_u·attrs 저장', async () => {
-  assert.deepEqual(await call('storeRegistration', { sk_u: SK_U, attrs: ATTRS }), { ok: true });
-  assert.equal(store.state.registration.sk_u, SK_U);
+await t('storeRegistration: attrs 는 6개(짧으면 bad_attrs)·slot 저장, sk_u 는 받지 않는다', async () => {
+  await assert.rejects(() => call('storeRegistration', { attrs: ATTRS.slice(0, 4), slot: SLOT }), /bad_attrs/);
+  assert.deepEqual(await call('storeRegistration', { attrs: ATTRS, slot: SLOT }), { ok: true });
   assert.deepEqual(store.state.registration.attrs, ATTRS);
+  assert.equal(store.state.registration.slot, SLOT);
+  assert.equal(store.state.registration.sk_u, registered.sk_u, 'storeRegistration 은 sk_u 를 건드리지 않는다');
 });
 
 await t('getPublicInfo 에는 비밀이 없다', async () => {
   const info = await call('getPublicInfo', {});
-  assert.deepEqual(Object.keys(info).sort(), ['attrs', 'cm_u', 'consents', 'hasUserCred', 'registered', 'uid']);
+  assert.deepEqual(Object.keys(info).sort(), ['attrs', 'cm_u', 'consents', 'hasUserCred', 'registered', 'slot', 'uid']);
   assert.equal(info.registered, true);
   assert.equal(info.uid, '12345');
   assert.deepEqual(info.attrs, ATTRS);
+  assert.equal(info.slot, SLOT);
   assert.equal(info.hasUserCred, false);
   const s = JSON.stringify(info);
-  for (const secret of [store.state.registration.s_u, store.state.registration.r_u, SK_U]) {
+  for (const secret of [store.state.registration.s_u, store.state.registration.r_u, registered.sk_u]) {
     assert.ok(!s.includes(secret), `공개 정보에 비밀이 실렸다: ${secret.slice(0, 8)}…`);
   }
 });
@@ -139,7 +143,7 @@ await t('consentLogin 승인 → validateWitness 를 통과하는 증인, consen
   // cm_u 까지 준다 — 증인의 s_u·r_u 가 register 가 낸 cm_u 와 실제로 묶였는지 본다(최종 리뷰 Minor 1).
   await validateWitness(w, '12345', registered.cm_u);
   assert.equal(w.uid, '12345');
-  assert.equal(w.sk_u, SK_U);
+  assert.equal(w.sk_u, registered.sk_u, 'buildWitness 의 sk_u 는 register 때 만든 것과 같다');
   assert.deepEqual(w.attrs, ATTRS);
   assert.equal(w.userCred, null);
   const d = lastDialogText();
@@ -238,8 +242,8 @@ await t('syncAttrs: 같으면 changed=false, 바뀌면 true 와 C_u 폐기', asy
   await call('updateUserCred', USER_CRED);
   assert.deepEqual(await call('syncAttrs', { attrs: ATTRS }), { ok: true, changed: false });
   assert.equal((await call('getPublicInfo', {})).hasUserCred, true, '안 바뀌면 C_u 유지');
-  assert.deepEqual(await call('syncAttrs', { attrs: ['1991', '410', '2', '0'] }), { ok: true, changed: true });
-  assert.deepEqual(store.state.registration.attrs, ['1991', '410', '2', '0']);
+  assert.deepEqual(await call('syncAttrs', { attrs: ['1991', '410', '2', '0', '0', '0'] }), { ok: true, changed: true });
+  assert.deepEqual(store.state.registration.attrs, ['1991', '410', '2', '0', '0', '0']);
   assert.equal((await call('getPublicInfo', {})).hasUserCred, false, '속성이 바뀌면 옛 C_u 는 물린다');
 });
 
@@ -275,7 +279,7 @@ await t('reset: 확인 뒤 상태를 비운다(거절하면 그대로)', async (
   assert.equal(info.registered, false);
   assert.equal(info.uid, null);
   assert.deepEqual(info.consents, {});
-  assert.ok(!stateJson().includes(SK_U), '초기화 뒤 비밀이 남지 않는다');
+  assert.ok(!stateJson().includes(registered.sk_u), '초기화 뒤 비밀이 남지 않는다');
 });
 
 await t('등록 전에는 비밀이 필요한 RPC 가 거절된다', async () => {

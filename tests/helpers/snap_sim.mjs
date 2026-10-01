@@ -12,26 +12,27 @@ export function createSnapSim() {
   return {
     state,   // 검사용 — 테스트가 상태 파일과 대조한다
 
-    /** prompt(uid)·prompt(pwd) 대신 인자로 받는다. s_u·r_u 를 만들어 상태에 두고 공개 cm_u 만 돌려준다. */
+    /** prompt(uid)·prompt(pwd) 대신 인자로 받는다. s_u·r_u·sk_u 를 만들어 상태에 두고(sk_u 는 register 응답에 한 번만 싣는다 —
+     *  V9 §7.1, index.js 의 register 와 같은 모양) 공개 cm_u 와 함께 돌려준다. */
     async register({ uid, pwd }) {
       if (state.registration) throw new Error('snap_sim: 이미 등록돼 있다');
       const reg = await createRegistration();
-      state.registration = { uid, pwdHash: null, s_u: reg.s_u.toString(), r_u: reg.r_u.toString(), cm_u: pointToStrings(reg.cm_u), sk_u: null, attrs: null, registeredAt: new Date().toISOString() };
-      return { uid, pwd, cm_u: clone(state.registration.cm_u) };
+      state.registration = { uid, pwdHash: null, s_u: reg.s_u.toString(), r_u: reg.r_u.toString(), cm_u: pointToStrings(reg.cm_u), sk_u: reg.sk_u, slot: null, attrs: null, registeredAt: new Date().toISOString() };
+      return { uid, pwd, cm_u: clone(state.registration.cm_u), sk_u: reg.sk_u };
     },
 
-    /** 에이전트 /wallet/register 응답의 sk_u·attrs 를 저장한다. */
-    storeRegistration({ sk_u, attrs }) {
+    /** 에이전트 /wallet/register 응답의 slot·attrs 를 저장한다(sk_u 는 register 때 이미 저장했으므로 받지 않는다). */
+    storeRegistration({ attrs, slot }) {
       requireRegistered();
-      state.registration.sk_u = sk_u;
       state.registration.attrs = clone(attrs);
+      state.registration.slot = slot;
       return { ok: true };
     },
 
     /** 비밀 없음. */
     getPublicInfo() {
       const r = state.registration;
-      return { registered: Boolean(r), uid: r?.uid ?? null, cm_u: clone(r?.cm_u), attrs: clone(r?.attrs), hasUserCred: Boolean(state.userCred), consents: clone(state.consents) };
+      return { registered: Boolean(r), uid: r?.uid ?? null, cm_u: clone(r?.cm_u), attrs: clone(r?.attrs), slot: r?.slot ?? null, hasUserCred: Boolean(state.userCred), consents: clone(state.consents) };
     },
 
     /** 로그인 동의 창. 승인이면 증인 묶음(validateWitness 형식), 거절이면 { denied:true }. */

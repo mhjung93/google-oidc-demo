@@ -75,8 +75,12 @@ export function registrationCommit(s_u, r_u) {
   return { x: x.toString(), y: y.toString() };
 }
 
-/** 등록 한 벌 — s_u·r_u 는 Snap 상태에만 남고 cm_u 만 밖으로 나간다(스펙 §4.1). */
+/** 등록 한 벌 — s_u·r_u·sk_u 는 Snap 상태에만 남고 cm_u·sk_u 만 밖으로 나간다(V9 §7.1, 스펙 §4.1).
+ *  sk_u 는 등록 키(서명용) — 32바이트를 그대로 16진으로 적는다(randomScalar 처럼 250비트로 자르지 않는다). */
 export function createRegistrationSecrets() {
   const s_u = randomScalar(), r_u = randomScalar();
-  return { s_u: s_u.toString(), r_u: r_u.toString(), cm_u: registrationCommit(s_u, r_u) };
+  const sk = new Uint8Array(32);
+  crypto.getRandomValues(sk);
+  const sk_u = [...sk].map((b) => b.toString(16).padStart(2, '0')).join('');
+  return { s_u: s_u.toString(), r_u: r_u.toString(), cm_u: registrationCommit(s_u, r_u), sk_u };
 }

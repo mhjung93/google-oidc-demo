@@ -10,7 +10,7 @@ import { getProvider } from './helpers/mode3_chain.mjs';
 import { VKEY_PATH } from '../lib/mode3_wallet.js';
 import { createRpVerifier } from '../lib/mode3_rp.js';
 import { validateWitness } from '../lib/mode3_secret_source.js';
-import { attrGateAt, decodeExecuteCalldata } from '../lib/mode3_onchain.js';
+import { attrGateAt, decodeExecuteCalldata, PUB_INDEX } from '../lib/mode3_onchain.js';
 
 const j = (o) => JSON.stringify(o, (k, v) => (typeof v === 'bigint' ? v.toString() : v));
 let failed = 0;
@@ -48,22 +48,23 @@ try {
     assert.equal(r.status, 200); assert.equal(r.body.secrets, 'snap');
   });
 
-  await t('register: cm_u 없으면 400; 응답에 sk_u·attrs; 상태 파일에는 비밀 없음; status 는 공개 uid·attrs 를 보인다', async () => {
+  await t('register: cm_u·sk_u 없으면 400; 응답에 slot·attrs(sk_u 없음); 상태 파일에는 비밀 없음; status 는 공개 uid·attrs 를 보인다', async () => {
     const r0 = await sim.register({ uid: '12345', pwd: 'password123' });
-    assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, pwd: r0.pwd })).status, 400, 'snap 모드는 cm_u 필수');
-    assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, pwd: r0.pwd, cm_u: { x: 'zz', y: '1' } })).status, 400);
-    const r = await wallet.post('/wallet/register', { uid: r0.uid, pwd: r0.pwd, cm_u: r0.cm_u });
+    assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, pwd: r0.pwd })).status, 400, 'snap 모드는 cm_u·sk_u 필수');
+    assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, pwd: r0.pwd, cm_u: { x: 'zz', y: '1' }, sk_u: r0.sk_u })).status, 400);
+    const r = await wallet.post('/wallet/register', { uid: r0.uid, pwd: r0.pwd, cm_u: r0.cm_u, sk_u: r0.sk_u });
     assert.equal(r.status, 201, j(r.body));
-    assert.match(r.body.sk_u, /^[0-9a-f]{64}$/);
-    assert.deepEqual(r.body.attrs, ['1990', '410', '2', '0']);
+    assert.equal('sk_u' in r.body, false, '응답에는 sk_u 가 없다(요청에만 한 번 실린다)');
+    assert.equal(typeof r.body.slot, 'number');
+    assert.deepEqual(r.body.attrs, ['1990', '410', '2', '0', '0', '0']);
     assert.equal(r.body.uid, '12345');
-    sim.storeRegistration({ sk_u: r.body.sk_u, attrs: r.body.attrs });
+    sim.storeRegistration({ attrs: r.body.attrs, slot: r.body.slot });
     const file = stateFile();
     for (const k of ['"s_u"', '"r_u"', '"sk_u"', '"blind_u"']) assert.equal(file.includes(k), false, `${k} 가 파일에 있다`);
     assert.ok(file.includes('"cm_u"'), '공개 cm_u 는 파일에 있다');
-    assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, pwd: r0.pwd, cm_u: r0.cm_u })).status, 409);
+    assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, pwd: r0.pwd, cm_u: r0.cm_u, sk_u: r0.sk_u })).status, 409);
     const s = (await wallet.get('/wallet/status')).body;
-    assert.equal(s.registered, true); assert.equal(s.uid, '12345'); assert.deepEqual(s.attrs, ['1990', '410', '2', '0']); assert.equal(s.userCred, null);
+    assert.equal(s.registered, true); assert.equal(s.uid, '12345'); assert.deepEqual(s.attrs, ['1990', '410', '2', '0', '0', '0']); assert.equal(s.userCred, null);
     assert.equal(sim.getPublicInfo().registered, true); assert.equal(sim.getPublicInfo().hasUserCred, false);
   });
 
@@ -111,7 +112,7 @@ try {
     assert.equal(ok.status, 200, j(ok.body));
     assert.equal(ok.body.issued, true);
     assert.ok(ok.body.userCredIssued, '첫 로그인은 새 C_u 를 응답에 실어 페이지가 Snap 에 저장한다');
-    for (const k of ['C_u_pt', 'Cf_u', 'blind_u', 'leaf', 'issuedAt']) assert.ok(k in ok.body.userCredIssued, `userCredIssued.${k}`);
+    for (const k of ['C_u_pt', 'Cf_u', 'blind_u', 'issuedAt']) assert.ok(k in ok.body.userCredIssued, `userCredIssued.${k}`);
     assert.equal('attrsChanged' in ok.body, false);
     assert.ok(!('uid' in ok.body) && !('s_u' in ok.body), '비밀·uid 는 응답에 없다');
     sim.updateUserCred(ok.body.userCredIssued);
@@ -120,7 +121,7 @@ try {
     S1 = base.r_s; W1 = ok.body;
     const file = stateFile();
     for (const k of ['"s_u"', '"r_u"', '"sk_u"', '"blind_u"', '"witness"']) assert.equal(file.includes(k), false, `${k} 가 파일에 있다`);
-    assert.ok(file.includes('"Cf_u"') && file.includes('"leaf"'), 'C_u 의 공개 부분(Cf_u·leaf)은 파일에 있다');
+    assert.ok(file.includes('"Cf_u"'), 'C_u 의 공개 부분(Cf_u)은 파일에 있다');
     const s = (await wallet.get('/wallet/status')).body;
     assert.ok(s.sessions[S1]); assert.equal(s.userCred?.Cf_u, ok.body.userCredIssued.Cf_u); assert.equal(s.userCred.revoked, false);
     assert.equal((await wallet.post('/wallet/login', { ...base, witness: w })).body.reason, 'duplicate_session');
@@ -222,7 +223,7 @@ try {
     assert.equal(pre.body.disclosure.set.root, info.predicates.allowedCountriesRoot);
     assert.equal(typeof pre.body.timings.proveMs, 'number');
     const dec = decodeExecuteCalldata(pre.body.calldata);
-    assert.equal(dec.payload.to.toLowerCase(), info.attrGateAddress.toLowerCase()); assert.equal(dec.payload.data, '0x4e71d92d'); assert.equal(dec.pub[14], '1');
+    assert.equal(dec.payload.to.toLowerCase(), info.attrGateAddress.toLowerCase()); assert.equal(dec.payload.data, '0x4e71d92d'); assert.equal(dec.pub[PUB_INDEX.DISC_MASK], '1');
     // MetaMask 대신 hardhat 계정 #1 이 사용자 EOA 로 두 트랜잭션을 순서대로 보낸다
     const eoa = await provider.getSigner(1);
     const deployTx = await eoa.sendTransaction({ to: pre.body.factoryAddress, data: pre.body.deployCalldata });
@@ -240,7 +241,7 @@ try {
     assert.equal(rec.body.disclosure.mask, '1'); assert.equal(rec.body.onchainDisclosure.mask, '1');
     assert.equal(rec.body.disclosure.set.sel, '2'); assert.equal(rec.body.onchainDisclosure.set.sel, '2');
     assert.equal(rec.body.onchainDisclosure.set.root, info.predicates.allowedCountriesRoot);
-    assert.deepEqual(rec.body.onchainDisclosure.lo, ['0', '0', '0', '0']); assert.deepEqual(rec.body.onchainDisclosure.hi, [String(year - Number(info.predicates.minAge)), '0', '0', '0']);
+    assert.deepEqual(rec.body.onchainDisclosure.lo, ['0', '0', '0', '0', '0', '0']); assert.deepEqual(rec.body.onchainDisclosure.hi, [String(year - Number(info.predicates.minAge)), '0', '0', '0', '0', '0']);
     assert.equal(await attrGateAt(info.attrGateAddress, provider).claimed(pre.body.walletAddr), true);
     // 두 번째 prepare: 배포 끝났으니 deployNeeded=false, nonce 1, 같은 root·disclosure 라 캐시 히트
     const pre2 = await wallet.post('/wallet/tx/prepare', { r_s: S1, to: info.attrGateAddress, data: '0x4e71d92d', disclose, set });
@@ -302,8 +303,8 @@ try {
 
   await t('시뮬레이터: selfRevoke 는 uid·pwd, syncAttrs 는 changed 와 C_u 폐기, reset 은 상태를 비운다', async () => {
     assert.deepEqual(sim.selfRevoke({ pwd: 'password123' }), { uid: '12345', pwd: 'password123' });
-    assert.deepEqual(sim.syncAttrs({ attrs: ['1990', '410', '2', '0'] }), { ok: true, changed: false });
-    assert.deepEqual(sim.syncAttrs({ attrs: ['1991', '410', '2', '0'] }), { ok: true, changed: true });
+    assert.deepEqual(sim.syncAttrs({ attrs: ['1990', '410', '2', '0', '0', '0'] }), { ok: true, changed: false });
+    assert.deepEqual(sim.syncAttrs({ attrs: ['1991', '410', '2', '0', '0', '0'] }), { ok: true, changed: true });
     assert.equal(sim.getPublicInfo().hasUserCred, false, '속성이 바뀌면 옛 C_u 는 물린다');
     assert.deepEqual(sim.reset(), { ok: true });
     assert.equal(sim.getPublicInfo().registered, false);
