@@ -35,7 +35,7 @@ include "babyjub.circom";
 // (H 만 공유) — 각 커밋의 binding 은 자기 항의 생성원만으로 성립한다.
 
 // 2026-09-21 자격증명 이중 구조(설계 §3.1). 사용자 자격증명 커밋 — 사용자당 하나.
-//   C_u = uid·G_UID + s_u·G_SU + attr₀·G_ATTR0 + … + attr₃·G_ATTR3 + blind_u·H
+//   C_u = uid·G_UID + s_u·G_SU + attr₀·G_ATTR0 + … + attr₅·G_ATTR5 + blind_u·H
 // arid·pk_i 항이 없다(세션 커밋에). 생성원·순서는 lib/mode3_credential.js userCommit 과 같다.
 template CommitUser() {
     signal input uid;
