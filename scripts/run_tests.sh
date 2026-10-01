@@ -46,6 +46,7 @@ UNIT=(
   tests/test_mode3_stack_judge.js
   tests/test_mode3_v9_lib.js
   tests/test_mode3_registry.js
+  tests/test_mode3_cia_state_v9.js
 )
 
 CIRCUIT=(
@@ -78,6 +79,7 @@ CHAIN=(
   tests/test_cia_register_issue.mjs
   tests/test_cia_startup.mjs
   tests/test_cia_issue_race.mjs
+  tests/test_cia_registry.mjs
   tests/test_cia_opening.mjs
   tests/test_mode3_session_revoke.mjs
   tests/test_mode3_wallet.mjs

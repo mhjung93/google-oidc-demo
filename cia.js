@@ -20,9 +20,10 @@ import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import * as snarkjs from 'snarkjs';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { credMessageV5, compressPoint, randomScalar, normalizeAttrs, ATTR_SLOTS } from './lib/mode3_credential.js';
-import { userLeaf, sessionLeaf, createRevocationTree } from './lib/mode3_revocation.js';
-import { isValidPoint, pointFromStrings, verifyUserCred, parseUserCredProof, userCredRequestMessage, issueRequestMessageV4, attrsRequestMessage, revokeSessionMessage } from './lib/mode3_issuance.js';
-import { LOG_ABI, rootToBytes32, signRootPublication } from './lib/mode3_log.js';
+import { sessionLeaf, createRevocationTree } from './lib/mode3_revocation.js';
+import { isValidPoint, pointFromStrings, verifyUserCred, parseUserCredProof, userCredRequestMessage, issueRequestMessageV4, attrsRequestMessage, revokeSessionMessage, registerMessage } from './lib/mode3_issuance.js';
+import { MODE3_LOG_ABI, rootToBytes32, signPublicationV2 } from './lib/mode3_log.js';
+import { createRegistryTree, registryLeaf } from './lib/mode3_registry.js';
 import { signRpCert } from './lib/mode3_rp_cert.js';
 import { isTracePoint, createShare, combinePublicKey, partialDecrypt, combineDecrypt, resolveTagPlaintext, proveShare } from './lib/mode3_trace.js';
 import { openRequestMessage, openResultMessage, recoverSigner, isFreshTs } from './lib/mode3_opening.js';
@@ -69,8 +70,8 @@ let selfChainId = null;
 
 // 데모 계정. Mode 2 의 testuser 관례를 따른 프로토타입이다 — 실제 계정 체계가 아니다.
 const DEMO_ACCOUNTS = {
-  testuser: { password: 'password123', uid: '12345', attrs: ['1990', '410', '2', '0'] },   // a₀ 출생연도, a₁ 국가(ISO 3166 numeric), a₂ 등급, a₃ 예비
-  alice: { password: 'alicepw', uid: '67890', attrs: ['2005', '840', '1', '0'] },
+  testuser: { password: 'password123', uid: '12345', attrs: ['1990', '410', '2', '0', '0', '0'] },   // a₀ 출생연도, a₁ 국가(ISO 3166 numeric), a₂ 등급, a₃·a₄·a₅ 예비
+  alice: { password: 'alicepw', uid: '67890', attrs: ['2005', '840', '1', '0', '0', '0'] },
 };
 
 // ---- 키 ----
@@ -96,18 +97,21 @@ function loadOrCreateKeys() {
 }
 
 // ---- 상태 ----
-// accounts:  uid → { pk_u:{x,y}, cm_u:{x,y}, disabled, creds: [ { Cf_u(10진), C_u_pt:{x,y}, leaf(10진), issuedAt, revoked } ] }
+// accounts:  uid → { pk_u:{x,y}, cm_u:{x,y}, disabled, slot(등록부 인덱스), tampered(관리자 시연용 바꿔치기 표시, Task 9),
+//                     creds: [ { Cf_u(10진), C_u_pt:{x,y}, leaf(10진), issuedAt, revoked } ] }
 //            creds 중 revoked:false 는 하나뿐(사용자당 활성 자격증명 하나, 2026-09-21 §3.1). 세션 발급은 기록하지 않는다.
 // rps:       arid → { name, origin, pk_service, X_svc, x_AA, pk_trace, status, requestedAt, decidedAt }   (2026-09-16 §3)
 // openings:  [ { id, arid, PPID, tagKey, c1:{x,y}, c2, D_svc:{x,y}, allowAgent, max_height, chainid, status, requestedAt, decidedAt,
 //                uid|null, resolved } ]   영구 감사 기록(§6). uid·resolved 는 approved 에만 의미 있다.
 //            결정(승인·거절)이 끝나면 복호 재료 c1·c2·D_svc 는 지운다(2026-09-25 리뷰 B-4) — 재요청 대조는 tagKey 가 맡는다
+// registry:  { depth, next, leaves: {"<index>": "<leaf>"(10진)}, pendingSlots: [{index, leaf}] }   사용자 자격증명 등록부(V9, 2026-10-01 §3)
 // revoked / pending / epoch
 // 버전·이행은 lib/mode3_cia_state.js (v6, 2026-09-21).
 const STATE_VERSION = CIA_STATE_VERSION;
 let state;
 let tree;            // 전체 폐기 트리(게시 여부 무관) — 서명해 올리는 root 의 출처
 let publishedTree;   // 온체인에 이벤트로 나간 리프만 — 게시 직전 온체인 root 와 대조하는 기준
+let registry;        // 등록부(설계 2026-10-01 §3) — state.registry.leaves 에서 복원
 function defaultState() { return defaultCiaState(); }
 function persist() { writeJsonAtomic(STATE_FILE, state, 0o600); }
 
@@ -120,9 +124,9 @@ async function buildPublishedTree() {
   return t;
 }
 async function readChain() {
-  const log = new ethers.Contract(LOG_ADDRESS, LOG_ABI, ethWallet);
-  const [root, epoch] = await Promise.all([log.root(), log.epoch()]);
-  return { onchainRoot: BigInt(root), onchainEpoch: Number(epoch) };
+  const log = new ethers.Contract(LOG_ADDRESS, MODE3_LOG_ABI, ethWallet);
+  const [root, regRoot, epoch] = await Promise.all([log.revRoot(), log.regRoot(), log.epoch()]);
+  return { onchainRoot: BigInt(root), onchainRegRoot: BigInt(regRoot), onchainEpoch: Number(epoch) };
 }
 // 로컬 게시 기록을 온체인 (root, epoch) 과 대조한다. 어긋난 채로 게시하면 서명 root 와 지갑이
 // 이벤트로 재구성한 root 가 달라져 전원이 fail-closed 되고, 로그 재배포 말고는 복구가 없다.
@@ -134,7 +138,7 @@ async function readChain() {
 //     publishedTree 는 걷다 만 상태라 호출자가 다시 만들거나 종료해야 한다.
 // 기동 시와 게시 직전 둘 다 이 함수를 쓴다 — 기동 때 RPC 가 죽어 대조를 건너뛰었거나 CIA 가 켜진
 // 채로 로그가 재배포된 경우를 게시 직전 대조가 잡는다(2026-09-12 리뷰 반영).
-async function reconcileWithChain({ onchainRoot, onchainEpoch }) {
+async function reconcileWithChain({ onchainRoot, onchainRegRoot, onchainEpoch }) {
   let k = 0;
   while (publishedTree.getRoot() !== onchainRoot && k < state.pending.length) { await publishedTree.insert(BigInt(state.pending[k])); k++; }
   if (publishedTree.getRoot() !== onchainRoot) return false;
@@ -147,6 +151,15 @@ async function reconcileWithChain({ onchainRoot, onchainEpoch }) {
   if (onchainEpoch > state.epoch) {
     console.warn(`[cia] 상태 파일 epoch(${state.epoch})가 체인 epoch(${onchainEpoch})보다 뒤처져 있어 맞춘다`);
     state.epoch = onchainEpoch;
+    changed = true;
+  }
+  // 등록부(V9): 갱신형이라 접두사 대조가 없다. 체인과 같으면 미게시 갱신이 없는 것이고, 다르면 지금 트리의 모든 칸(미게시 0 포함)을
+  // 다음 게시에 전부 다시 내보낸다 — 지갑은 SlotUpdated 를 순서대로 재생해 root 를 맞추므로 중복 이벤트는 무해하다.
+  if (registry.root() === onchainRegRoot) {
+    if (state.registry.pendingSlots.length) { state.registry.pendingSlots = []; changed = true; }
+  } else {
+    const idx = new Set([...state.registry.pendingSlots.map((p) => p.index), ...registry.entries().map(([i]) => i)]);
+    state.registry.pendingSlots = [...idx].sort((a, b) => a - b).map((i) => ({ index: i, leaf: registry.leafAt(i).toString() }));
     changed = true;
   }
   if (changed) persist();
@@ -165,6 +178,19 @@ async function loadState() {
   state = migrated.state;
   if (migrated.notes.length) { for (const n of migrated.notes) console.warn(`[cia] 상태 파일 이행 ${n}`); persist(); }
   publishedTree = await buildPublishedTree();
+  tree = await createRevocationTree();
+  for (const l of state.revoked) await tree.insert(BigInt(l));
+  registry = await createRegistryTree(state.registry.depth);
+  for (const [i, leaf] of Object.entries(state.registry.leaves)) registry.set(Number(i), BigInt(leaf));
+  // v9 이행 뒤(또는 리프가 비어 있는 슬롯): 활성 자격증명의 리프를 채운다 — Poseidon 이 비동기라 이행 함수가 못 한다.
+  let filled = 0;
+  for (const [uid, acct] of Object.entries(state.accounts)) {
+    const cur = activeCred(uid);
+    if (!cur || !Number.isInteger(acct.slot) || state.registry.leaves[acct.slot] !== undefined) continue;
+    const leaf = await registryLeaf(acct.cm_u, cur.Cf_u);
+    setSlot(uid, leaf); filled++;
+  }
+  if (filled) { console.warn(`[cia] 등록부: 활성 자격증명 ${filled}개의 슬롯을 채웠다 — 다음 게시에 나간다`); persist(); }
   // 기동 시 대조. RPC 가 아직 안 떠 있으면 대조 없이 기동한다 — 발급은 headOf() 가 503 을 내거나
   // (CIA_CHAIN_RPCS 도 없어 허용 목록이 비어 있으면) chainid 허용 목록 검사에서 503 을 내고,
   // 게시는 게시 직전 대조에서 다시 확인된다.
@@ -179,18 +205,16 @@ async function loadState() {
       process.exit(1);
     }
   }
-  tree = await createRevocationTree();
-  for (const l of state.revoked) await tree.insert(BigInt(l));
   try { selfChainId = (await ethWallet.provider.getNetwork()).chainId.toString(); }
   catch (e) { console.warn(`[cia] 기동 시 chainId 를 읽지 못했다 — health 의 chain.id 가 비고, CIA_CHAIN_RPCS 가 없으면 발급은 503: ${e.message}`); }
   if (CHAIN_RPCS.size === 0 && selfChainId) CHAIN_RPCS.set(selfChainId, RPC_URL);
-  // 이행(v6→v7 등)이 pending 리프를 남겼으면 게시를 한 번 자동으로 시도한다 — 그러지 않으면 다음 하트비트까지
+  // 이행(v6→v7 등)이 pending 리프를 남겼거나 등록부 슬롯을 채웠으면 게시를 한 번 자동으로 시도한다 — 그러지 않으면 다음 하트비트까지
   // 옛(보증되지 않은) C_u 로도 여전히 π 가 만들어져 세션 발급이 통과한다(2026-09-22 최종 리뷰 Important, Ruling 8).
   // RPC 가 아직 없으면(또는 다른 이유로 게시가 실패하면) 경고만 남긴다 — 기동 자체는 막지 않는다.
-  if (migrated.notes.length && state.pending.length > 0) {
+  if ((migrated.notes.length || filled) && (state.pending.length > 0 || state.registry.pendingSlots.length > 0)) {
     try {
       const r = await publishNow();
-      console.log(`[cia] 이행 뒤 자동 게시: epoch ${r.epoch}, 리프 ${r.leaves?.length ?? 0}개`);
+      console.log(`[cia] 이행 뒤 자동 게시: epoch ${r.epoch}, 리프 ${r.leaves?.length ?? 0}개, 슬롯 ${r.slots ?? 0}개`);
     } catch (e) {
       console.warn(`[cia] 이행 뒤 자동 게시 실패(${e.message}) — pending ${state.pending.length}개가 남아 있다. ` +
         `체인이 준비되면 /cia/publish 를 수동으로 호출할 것.`);
@@ -236,15 +260,25 @@ async function headOf(chainStr) {
 function activeCred(uid) {
   return (state.accounts[uid]?.creds ?? []).find((c) => !c.revoked) ?? null;
 }
-/** 활성 자격증명을 revoked 로 돌리고 리프를 트리·pending 에 넣는다. 돌려주는 값은 새로 들어간 리프 목록(멱등). */
-async function retireActiveCred(uid) {
-  const inserted = [];
-  for (const c of state.accounts[uid]?.creds ?? []) {
-    if (c.revoked) continue;
-    c.revoked = true;
-    if (await tree.insert(BigInt(c.leaf))) { state.revoked.push(c.leaf); state.pending.push(c.leaf); inserted.push(c.leaf); }
-  }
-  return inserted;
+/** 등록부 슬롯 갱신(설계 2026-10-01 §3.2). leaf 0 = 비움. 다음 게시(pendingSlots)에 실린다 — 호출자가 persist·publish 한다. */
+function setSlot(uid, leaf) {
+  const acct = state.accounts[uid];
+  if (!Number.isInteger(acct?.slot)) throw new Error(`setSlot: ${uid} 에 슬롯이 없다`);
+  const v = BigInt(leaf);
+  registry.set(acct.slot, v);
+  if (v === 0n) delete state.registry.leaves[acct.slot]; else state.registry.leaves[acct.slot] = v.toString();
+  state.registry.pendingSlots.push({ index: acct.slot, leaf: v.toString() });
+}
+/** 등록부가 바뀐 직후의 즉시 게시. 실패해도 상태는 유지하고 pendingSlots 가 남아 하트비트가 재시도한다(§3.3). */
+async function publishSafely() {
+  try { return await publishNow(); }
+  catch (e) { console.warn(`[cia] 즉시 게시 실패(다음 하트비트가 재시도): ${e.message}`); return { published: false, error: e.message }; }
+}
+/** 활성 자격증명을 revoked 로 돌린다(V9: 폐기 트리에 넣지 않는다 — 슬롯을 0 으로 두는 것이 호출자의 몫). 돌려주는 값은 물린 개수. */
+function retireActiveCred(uid) {
+  let n = 0;
+  for (const c of state.accounts[uid]?.creds ?? []) if (!c.revoked) { c.revoked = true; n++; }
+  return n;
 }
 
 // ---- 앱 ----
@@ -273,7 +307,7 @@ app.get('/mode3/health', async (req, res) => {
   let chain = null, last = null;
   // 두 조회를 함께 돌리고 한 예산(1.2초)만 씌운다 — 직렬로 1.5초씩 걸면 페이지의 요청 예산을 넘길 수 있다(설계 §1.3).
   try {
-    const log = LOG_ADDRESS ? new ethers.Contract(LOG_ADDRESS, LOG_ABI, ethWallet) : null;
+    const log = LOG_ADDRESS ? new ethers.Contract(LOG_ADDRESS, MODE3_LOG_ABI, ethWallet) : null;
     const [head, lastPub] = await bounded(Promise.all([headHeight(), log ? log.lastPublishedBlock().catch(() => null) : null]), 1200);
     chain = { id: selfChainId ?? '', head: head.toString() };
     last = lastPub === null || lastPub === undefined ? null : lastPub.toString();
@@ -364,24 +398,26 @@ app.post('/cia/rps/:arid/deny', requireAdmin, (req, res) => {
   res.json({ arid: req.params.arid, status: e.status });
 });
 
-// §6.1 등록. CIA 가 장기키를 만들어 주고 sk_u 는 기억하지 않는다(응답에 한 번 실어 보내고 버린다).
+// §6.1 + V9 §7.1 등록. 키는 지갑이 만든다 — CIA 는 pk_u 와 소유 증명 서명만 받고 슬롯 번호를 배정한다.
 app.post('/cia/register', async (req, res) => {
-  const { uid, pwd, cm_u } = req.body ?? {};
-  if (!isDec(uid) || typeof pwd !== 'string' || !isPt(cm_u)) return res.status(400).json({ error: 'uid, pwd, cm_u{x,y} required' });
+  const { uid, pwd, cm_u, pk_u, sig_reg } = req.body ?? {};
+  if (!isDec(uid) || typeof pwd !== 'string' || !isPt(cm_u) || !isPt(pk_u) || !sig_reg) return res.status(400).json({ error: 'uid, pwd, cm_u{x,y}, pk_u{x,y}, sig_reg required' });
   const acct = Object.values(DEMO_ACCOUNTS).find((a) => a.uid === uid);
   if (!acct || acct.password !== pwd) return res.status(401).json({ error: 'invalid credentials' });
   if (state.accounts[uid]) return res.status(409).json({ error: 'already registered' });
-  // 등록은 한 번뿐이다. 곡선·부분군 밖이거나 비정규 인코딩이면 이후 모든 발급이 400 이 되고
-  // 재등록은 409 라 uid 가 영구히 잠기므로 여기서 거절한다.
   if (!(await isValidPoint(pointFromStrings(cm_u)))) return res.status(400).json({ error: 'cm_u is not a valid subgroup point' });
-  // 위 await 동안 같은 uid 의 등록이 먼저 끝났을 수 있다(기동 직후 첫 요청은 babyjub WASM 빌드로 길다).
-  // 여기서 다시 확인하지 않으면 뒤의 것이 덮어써 먼저 등록한 지갑의 sk_u·cm_u 가 영구히 맞지 않게 된다.
-  if (state.accounts[uid]) return res.status(409).json({ error: 'already registered' });
-  const prv = randomBytes(32);
-  const pub = eddsa.prv2pub(prv);
-  state.accounts[uid] = { pk_u: S(pub), cm_u: { x: cm_u.x, y: cm_u.y }, disabled: false, creds: [], attrs: [...acct.attrs] };
+  if (!(await isValidPoint(pointFromStrings(pk_u)))) return res.status(400).json({ error: 'pk_u is not a valid subgroup point' });
+  let ok = false;
+  try {
+    const m = F.e(await registerMessage(BigInt(uid), pointFromStrings(cm_u)));
+    ok = eddsa.verifyPoseidon(m, { R8: [F.e(BigInt(sig_reg.R8x)), F.e(BigInt(sig_reg.R8y))], S: BigInt(sig_reg.S) }, [F.e(BigInt(pk_u.x)), F.e(BigInt(pk_u.y))]);
+  } catch { ok = false; }
+  if (!ok) return res.status(400).json({ error: 'bad_registration_signature' });
+  if (state.accounts[uid]) return res.status(409).json({ error: 'already registered' });   // await 사이 경합
+  const slot = state.registry.next++;
+  state.accounts[uid] = { pk_u: { x: BigInt(pk_u.x).toString(), y: BigInt(pk_u.y).toString() }, cm_u: { x: cm_u.x, y: cm_u.y }, slot, tampered: false, disabled: false, creds: [], attrs: [...acct.attrs], sessions: [] };
   persist();
-  res.status(201).json({ pk_u: S(pub), sk_u: prv.toString('hex'), attrs: state.accounts[uid].attrs });
+  res.status(201).json({ slot, attrs: state.accounts[uid].attrs });
 });
 
 // §4.1(2026-09-21) 사용자 자격증명 발급. 세션과 무관 — 속성이 바뀔 때만 다시 온다. AA 서명은 없다(세션 서명이 Cf_u 를 덮는다).
@@ -407,29 +443,19 @@ app.post('/cia/user_cred', async (req, res) => {
     catch { proofOk = false; }
     if (!proofOk) return res.status(400).json({ error: 'bad user credential proof' });
     const Cf_u = (await compressPoint(cpt)).toString();
-    const leaf = (await userLeaf(BigInt(Cf_u))).toString();
     if (acct.disabled) return res.status(403).json({ error: 'account disabled' });   // await 사이에 폐기가 끼어들 수 있다
     acct.creds ??= [];
     if (acct.creds.some((c) => c.Cf_u === Cf_u && c.revoked)) return res.status(409).json({ error: 'this user credential was revoked; make a new one' });
-    // 활성 자격증명을 물리고 새 것을 활성으로. retireActiveCred 안의 await(리프 삽입) 동안 같은 uid 의 다른 user_cred 가
-    // 먼저 push 했거나 /cia/revoke·self_revoke 가 disabled 를 걸었을 수 있다 — 활성이 없어질 때까지 반복하고, 마지막 await
-    // 뒤(아래는 전부 동기)에 disabled 와 같은 Cf_u 의 폐기 여부를 다시 본다. 어느 순서로 끼어들어도 활성은 정확히 하나고,
-    // disabled 계정에 활성 자격증명이 남지 않는다.
-    // retired: 아래 이른 반환들이 은퇴(트리·revoked·pending 변경)를 파일에 안 쓴 채 끝나지 않게 하는 표시다(2026-09-25 리뷰 B-5).
-    // 안 쓰면 프로세스가 죽을 때 그 폐기가 되돌아간다. 지금은 retireActiveCred 안에 매크로태스크 경계가 없어(tree.insert 의
-    // 본문이 동기다) 은퇴 뒤에 이 반환들에 닿는 끼어들기가 실제로는 생기지 않지만, await 이 하나만 늘어도 바로 닿는다.
-    let retired = false;
-    for (;;) {
-      const cur = activeCred(uid);
-      if (cur && cur.Cf_u === Cf_u) { if (retired) persist(); return res.json({ Cf_u, leaf }); }   // 멱등 — 동시에 온 같은 Cf_u 가 먼저 기록된 경우 포함
-      if (!cur) break;
-      await retireActiveCred(uid); retired = true;
-    }
-    if (acct.disabled) { if (retired) persist(); return res.status(403).json({ error: 'account disabled' }); }   // 위 await 동안 폐기가 끼어들었다
-    if (acct.creds.some((c) => c.Cf_u === Cf_u)) { if (retired) persist(); return res.status(409).json({ error: 'this user credential was revoked; make a new one' }); }   // 여기 오면 같은 Cf_u 는 전부 revoked
-    acct.creds.push({ Cf_u, C_u_pt: { x: cpt.x.toString(), y: cpt.y.toString() }, leaf, issuedAt: new Date().toISOString(), revoked: false });
+    const cur = activeCred(uid);
+    if (cur && cur.Cf_u === Cf_u) return res.json({ Cf_u, slot: acct.slot, regRoot: registry.root().toString(), epoch: state.epoch, published: false });   // 멱등 — 동시에 온 같은 Cf_u 가 먼저 기록된 경우 포함
+    const retired = retireActiveCred(uid);
+    if (acct.disabled) { if (retired) { setSlot(uid, 0n); persist(); await publishSafely(); } return res.status(403).json({ error: 'account disabled' }); }
+    if (acct.creds.some((c) => c.Cf_u === Cf_u)) return res.status(409).json({ error: 'this user credential was revoked; make a new one' });
+    acct.creds.push({ Cf_u, C_u_pt: { x: cpt.x.toString(), y: cpt.y.toString() }, issuedAt: new Date().toISOString(), revoked: false });
+    setSlot(uid, await registryLeaf(acct.cm_u, BigInt(Cf_u)));
     persist();
-    res.status(201).json({ Cf_u, leaf });
+    const pub = await publishSafely();
+    res.status(201).json({ Cf_u, slot: acct.slot, regRoot: registry.root().toString(), epoch: state.epoch, published: Boolean(pub.published) });
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
@@ -450,7 +476,7 @@ app.post('/cia/attrs', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// 2026-09-22 §3.3 관리자가 속성을 바꾼다. 활성 자격증명은 옛 속성이라 물린다(리프 → 다음 게시). 지갑은 다음 발급에서 재동기화한다.
+// 2026-09-22 §3.3 관리자가 속성을 바꾼다. 활성 자격증명은 옛 속성이라 물린다(슬롯 0 → 즉시 게시). 지갑은 다음 발급에서 재동기화한다.
 app.post('/cia/accounts/:uid/attrs', requireAdmin, async (req, res) => {
   try {
     const uid = req.params.uid;
@@ -467,9 +493,10 @@ app.post('/cia/accounts/:uid/attrs', requireAdmin, async (req, res) => {
     let attrs;
     try { attrs = normalizeAttrs(raw).map(String); } catch (e) { return res.status(400).json({ error: `attrs: ${e.message}` }); }
     acct.attrs = attrs;
-    const inserted = await retireActiveCred(uid);
-    persist();
-    res.json({ uid, attrs, inserted });
+    const retired = retireActiveCred(uid);
+    setSlot(uid, 0n); persist();
+    const pub = await publishSafely();
+    res.json({ uid, attrs, retired, published: Boolean(pub.published) });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -527,9 +554,11 @@ async function revokeAccount(uid) {
   const acct = state.accounts[uid];
   if (!acct) throw Object.assign(new Error('unknown account'), { status: 404 });
   acct.disabled = true;
-  const inserted = await retireActiveCred(uid);
+  const retired = retireActiveCred(uid);
+  setSlot(uid, 0n);
   persist();
-  return { inserted, root: tree.getRoot().toString(), pending: state.pending.length };
+  const pub = await publishSafely();
+  return { retired, disabled: true, slot: acct.slot, regRoot: registry.root().toString(), published: Boolean(pub.published), pending: state.pending.length };
 }
 
 // §4.3(2026-09-21) 폐기. account = 활성 사용자 자격증명 리프 + disabled. credential = 리프만(계정은 살아 있어 새 user_cred 를 받아야 한다).
@@ -548,9 +577,10 @@ app.post('/cia/revoke', async (req, res) => {
     if (!isDec(uid) || !state.accounts[uid]) return res.status(404).json({ error: 'unknown account' });
     if (scope === 'account') return res.json(await revokeAccount(uid));
     if (scope === 'credential') {
-      const inserted = await retireActiveCred(uid);
-      persist();
-      return res.json({ inserted, root: tree.getRoot().toString(), pending: state.pending.length });
+      const retired = retireActiveCred(uid);
+      setSlot(uid, 0n); persist();
+      const pub = await publishSafely();
+      return res.json({ retired, slot: state.accounts[uid].slot, regRoot: registry.root().toString(), published: Boolean(pub.published), pending: state.pending.length });
     }
     if (scope !== 'session') return res.status(400).json({ error: "scope must be 'account', 'credential' or 'session'" });
     if (!isDec(Cf_s)) return res.status(400).json({ error: 'Cf_s required' });
@@ -625,20 +655,23 @@ async function publishNow({ heartbeat = false } = {}) {
       throw Object.assign(new Error(`onchain root ${chain.onchainRoot} 가 로컬 게시 기록의 어느 접두사와도 다르다 — ` +
         `로그를 재배포했거나 상태 파일이 유실·복원됐다. CIA_STATE_FILE 과 CIA_LOG_ADDRESS 를 확인할 것`), { status: 503 });
     }
-    if (state.pending.length === 0 && !heartbeat) return { published: false, heartbeat: false, epoch: state.epoch, root: tree.getRoot().toString() };
-    const log = new ethers.Contract(LOG_ADDRESS, LOG_ABI, ethWallet);
+    const noRev = state.pending.length === 0, noSlots = state.registry.pendingSlots.length === 0;
+    if (noRev && noSlots && !heartbeat) return { published: false, heartbeat: false, epoch: state.epoch, root: tree.getRoot().toString(), regRoot: registry.root().toString() };
+    const log = new ethers.Contract(LOG_ADDRESS, MODE3_LOG_ABI, ethWallet);
     const leaves = state.pending.map(rootToBytes32);
-    const root = rootToBytes32(tree.getRoot());
-    const epoch = state.epoch + 1;   // reconcileWithChain 이 state.epoch 를 온체인과 맞췄다
-    const sig = await signRootPublication(ethWallet, { logAddress: LOG_ADDRESS, root, epoch, leaves });
-    const tx = await log.publishRoot(root, epoch, leaves, sig);
+    const slots = state.registry.pendingSlots.slice();   // 이번 tx 에 실을 갱신(순서 유지 — 같은 칸의 set→0 도 순서대로 재생돼야 한다)
+    const slotIdx = slots.map((s) => s.index), slotLeaves = slots.map((s) => rootToBytes32(s.leaf));
+    const revRoot = rootToBytes32(tree.getRoot()), regRoot = rootToBytes32(registry.root());
+    const epoch = state.epoch + 1;
+    const sig = await signPublicationV2(ethWallet, { logAddress: LOG_ADDRESS, revRoot, regRoot, epoch, revLeaves: leaves, slotIdx, slotLeaves });
+    const tx = await log.publish(revRoot, regRoot, epoch, leaves, slotIdx, slotLeaves, sig);
     await tx.wait();
     state.epoch = epoch;
-    // 위 await 들 사이에 pending 뒤에 붙은 리프는 이번 tx 에 실리지 않았다 — 이번에 실은 앞부분만 지운다.
     for (const l of state.pending.slice(0, leaves.length)) await publishedTree.insert(BigInt(l));
     state.pending = state.pending.slice(leaves.length);
+    state.registry.pendingSlots = state.registry.pendingSlots.slice(slots.length);
     persist();
-    return { published: true, heartbeat: leaves.length === 0, epoch, root: tree.getRoot().toString(), txHash: tx.hash, leaves };
+    return { published: true, heartbeat: leaves.length === 0 && slots.length === 0, epoch, root: tree.getRoot().toString(), regRoot: registry.root().toString(), txHash: tx.hash, leaves, slots: slots.length };
   } finally { publishing = false; }
 }
 app.post('/cia/publish', requireAdmin, async (req, res) => {
@@ -652,7 +685,7 @@ async function heartbeatTick() {
   try { await pruneExpiredSessions(); } catch (e) { console.warn(`[cia] 세션 기록 정리 실패: ${e.message}`); }
   if (publishing || !LOG_ADDRESS) return;
   try {
-    const log = new ethers.Contract(LOG_ADDRESS, LOG_ABI, ethWallet);
+    const log = new ethers.Contract(LOG_ADDRESS, MODE3_LOG_ABI, ethWallet);
     const [head, last] = await Promise.all([ethWallet.provider.getBlockNumber(), log.lastPublishedBlock()]);
     if (BigInt(head) - BigInt(last) < HEARTBEAT_BLOCKS) return;
     const r = await publishNow({ heartbeat: true });
@@ -695,7 +728,7 @@ app.post('/cia/account/set_disabled', requireAdmin, (req, res) => {
 
 // 관리자 계정 목록(관리 페이지의 속성 편집용). activeCred 는 위의 기존 헬퍼(사용자당 활성 자격증명 하나).
 app.get('/cia/accounts', requireAdmin, (req, res) => res.json({
-  accounts: Object.entries(state.accounts).map(([uid, a]) => ({ uid, disabled: a.disabled, attrs: a.attrs, activeCf_u: activeCred(uid)?.Cf_u ?? null })),
+  accounts: Object.entries(state.accounts).map(([uid, a]) => ({ uid, disabled: a.disabled, attrs: a.attrs, activeCf_u: activeCred(uid)?.Cf_u ?? null, slot: a.slot, tampered: Boolean(a.tampered), registryLeaf: state.registry.leaves[a.slot] ?? '0' })),
 }));
 
 // §6.5.1 사용자 개시 폐기. 인증은 계정 비밀번호다 — 지갑 키가 아니다. 장치를 잃은 사용자에게 sk_u 는 없고
@@ -708,12 +741,10 @@ app.post('/cia/account/self_revoke', async (req, res) => {
     const acct = Object.values(DEMO_ACCOUNTS).find((a) => a.uid === uid);
     if (!acct || !secretMatches(pwd, acct.password)) return res.status(401).json({ error: 'invalid credentials' });
     if (!state.accounts[uid]) return res.status(404).json({ error: 'unknown account' });
-    // disabled 는 인증만 통과하면 즉시 건다(설계 §6.5.1) — 재발급 차단은 트리·게시와 분리된 별개의 효력이다.
-    state.accounts[uid].disabled = true;
-    persist();
-    // 리프는 활성 사용자 자격증명 하나에서 나오고 체인을 읽지 않으므로(2026-09-21 §3.6) 체인이 죽어 있어도 걸린다.
-    const out = await revokeAccount(uid);
-    res.json({ ...out, disabled: true });
+    // revokeAccount 안에서 disabled 가 동기적으로(await 전에) 걸린다(설계 §6.5.1) — 재발급 차단은 트리·게시와 분리된
+    // 별개의 효력이다. 슬롯은 체인을 읽지 않고 활성 사용자 자격증명 하나에서 나오므로(2026-09-21 §3.6) 체인이 죽어 있어도 걸린다.
+    const r = await revokeAccount(uid);
+    res.json(r);
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
@@ -735,9 +766,9 @@ function forgetOpeningShards(o) { delete o.D_svc; delete o.c1; delete o.c2; }
 app.post('/cia/open/request', async (req, res) => {
   try {
     const { arid, publicSignals, proof, D_svc, ts, sig } = req.body ?? {};
-    // V7(2026-09-23): 공개 입력 25개 — 태그 위치([11..13])는 그대로라 개봉 로직은 바뀌지 않는다.
-    if (!isDec(arid) || !Array.isArray(publicSignals) || publicSignals.length !== 25 || !publicSignals.every(isDec) || !proof || !isPt(D_svc) || !isDec(ts) || typeof sig !== 'string') {
-      return res.status(400).json({ error: 'arid, publicSignals[25], proof, D_svc{x,y}, ts, sig required' });
+    // V9: 공개 입력 30 — [7] regRoot 가 끼어 태그는 [12..14]
+    if (!isDec(arid) || !Array.isArray(publicSignals) || publicSignals.length !== 30 || !publicSignals.every(isDec) || !proof || !isPt(D_svc) || !isDec(ts) || typeof sig !== 'string') {
+      return res.status(400).json({ error: 'arid, publicSignals[30], proof, D_svc{x,y}, ts, sig required' });
     }
     if (!(await isTracePoint(pointFromStrings(D_svc)))) return res.status(400).json({ error: 'D_svc is not a valid subgroup point' });
     const e = state.rps[arid];
@@ -746,7 +777,7 @@ app.post('/cia/open/request', async (req, res) => {
     if (!isFreshTs(ts)) return res.status(401).json({ error: 'stale' });
     // 정규 10진으로 맞춘다(앞자리 0 허용 입력 대비 — 서명 메시지·문자열 비교·저장 전부 정규형 위에서, 2026-09-18 점검 1).
     const ps = publicSignals.map((v) => BigInt(v).toString());
-    const [PPID, aridIn, , max_height, chainIn, allowAgent, , ciaX, ciaY, traceX, traceY, c1x, c1y, c2] = ps;
+    const [PPID, aridIn, , max_height, chainIn, allowAgent, , , ciaX, ciaY, traceX, traceY, c1x, c1y, c2] = ps;
     if (recoverSigner(openRequestMessage({ arid, PPID, c1: { x: c1x, y: c1y }, D_svc, ts }), sig) !== e.pk_service) return res.status(401).json({ error: 'bad_signature' });
     if (aridIn !== arid) return res.status(403).json({ error: 'wrong_arid' });
     const pk = S(ciaPub);
@@ -823,7 +854,8 @@ app.get('/cia/state', async (req, res) => {
   let head = null;
   try { head = (await headHeight()).toString(); } catch { /* 체인 없음 */ }
   const credCount = Object.values(state.accounts).reduce((n, a) => n + (a.creds ?? []).filter((c) => !c.revoked).length, 0);
-  res.json({ root: tree.getRoot().toString(), epoch: state.epoch, pendingCount: state.pending.length, leafCount: state.revoked.length, credCount, head });
+  res.json({ root: tree.getRoot().toString(), epoch: state.epoch, pendingCount: state.pending.length, leafCount: state.revoked.length, credCount, head,
+    regRoot: registry.root().toString(), registrySlots: registry.entries().length, pendingSlots: state.registry.pendingSlots.length });
 });
 
 // ---- 기동 ----
@@ -838,5 +870,5 @@ if (HEARTBEAT_BLOCKS > 0n) {
 }
 // RP·지갑 에이전트와 같이 루프백에만 묶는다 — 관리자·사용자 페이지와 발급 경로를 LAN 에 노출하지 않는다.
 app.listen(PORT, '127.0.0.1', () => {
-  console.log(`Mode 3 CIA running at http://127.0.0.1:${PORT} (log=${LOG_ADDRESS ?? 'none'}, heartbeat=${HEARTBEAT_BLOCKS}, chains=${[...CHAIN_RPCS.keys()].join(',') || 'none'}, vkey=${fs.existsSync(VKEY_PATH) ? 'ok' : 'missing'})`);
+  console.log(`Mode 3 CIA running at http://127.0.0.1:${PORT} (log=${LOG_ADDRESS ?? 'none'}, heartbeat=${HEARTBEAT_BLOCKS}, chains=${[...CHAIN_RPCS.keys()].join(',') || 'none'}, vkey=${fs.existsSync(VKEY_PATH) ? 'ok' : 'missing'}, registry=${registry.entries().length})`);
 });

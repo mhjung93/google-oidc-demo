@@ -1,4 +1,4 @@
-// 격리 CIA 인스턴스. 임시 포트·임시 디렉터리·자체 키·자체 RevocationLog. :4100 개발용을 건드리지 않는다.
+// 격리 CIA 인스턴스. 임시 포트·임시 디렉터리·자체 키·자체 Mode3Log. :4100 개발용을 건드리지 않는다.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,8 +7,10 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
-import { getProvider, fundAddress, deployRevocationLog } from './mode3_chain.mjs';
+import { getProvider, fundAddress, deployMode3Log } from './mode3_chain.mjs';
 import { createShare } from '../../lib/mode3_trace.js';
+import { createRegistration, signRegistration } from '../../lib/mode3_wallet.js';
+import { pointToStrings } from '../../lib/mode3_issuance.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 
@@ -29,7 +31,7 @@ export async function startIsolatedCia(opts = {}) {
   const provider = getProvider();
   const ciaEthWallet = ethWallet.connect(provider);   // 테스트가 CIA 몰래 로그에 직접 게시할 때 씀(크래시 복구 테스트)
   await fundAddress(ethWallet.address, '1', provider);
-  const { address: logAddress } = await deployRevocationLog(ethWallet.address, provider);
+  const { address: logAddress } = await deployMode3Log(ethWallet.address, provider);
 
   // 자식은 dotenv/config 로 .env 를 읽는다 — 개발용 값(체인 RPC·하트비트)이 새어 들어오지 않도록 테스트가 기대하는 값으로
   // 고정한다. dotenv 는 이미 있는 키(빈 문자열 포함)를 덮지 않으므로 빈 문자열이 "기본값 사용"이다(CIA_CHAIN_RPCS 가 비면
@@ -84,6 +86,13 @@ export async function startIsolatedCia(opts = {}) {
     adminPost: (p, body) => fetch(`${base}${p}`, { method: 'POST', headers: adminHeaders, body: JSON.stringify(body ?? {}) }).then(json),
     get: (p) => fetch(`${base}${p}`).then(json),
     adminGet: (p) => fetch(`${base}${p}`, { headers: adminHeaders }).then(json),
+    /** V9 등록(설계 2026-10-01 §7.1): 지갑 키·등록 커밋을 만들어 /cia/register 를 부른다. { s_u, r_u, cm_u, sk_u, pk_u, slot, attrs, body } */
+    async registerUser(uid, pwd) {
+      const reg = await createRegistration();
+      const r = await this.post('/cia/register', { uid, pwd, cm_u: pointToStrings(reg.cm_u), pk_u: { x: reg.pk_u.x.toString(), y: reg.pk_u.y.toString() }, sig_reg: await signRegistration(reg.sk_u, BigInt(uid), reg.cm_u) });
+      if (r.status !== 201) throw new Error(`register 실패(${r.status}): ${JSON.stringify(r.body)}`);
+      return { ...reg, slot: r.body.slot, attrs: r.body.attrs, body: r.body };
+    },
     // 서비스 등록 + 운영자 승인 대행(설계 2026-09-16 §3). keys 를 주면 그 키로(재등록·불일치 테스트용).
     async registerRp(origin, name = 'test-rp', keys = null) {
       const serviceWallet = keys?.serviceWallet ?? ethers.Wallet.createRandom();
@@ -107,7 +116,7 @@ export async function startIsolatedCia(opts = {}) {
           child.once('exit', () => { clearTimeout(t); resolve(); });
         });
       }
-      provider.destroy();   // fundAddress/deployRevocationLog/ciaEthWallet 가 같이 쓰던 provider
+      provider.destroy();   // fundAddress/deployMode3Log/ciaEthWallet 가 같이 쓰던 provider
       fs.rmSync(dir, { recursive: true, force: true });
     },
   };
