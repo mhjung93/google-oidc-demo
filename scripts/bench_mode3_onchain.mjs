@@ -10,7 +10,8 @@
 // 측정 항목:
 //   1. 로그인(첫 발급): 지갑의 timings(sync/userCred/issue/prove) + 전체 왕복 + 서비스 verifyLogin (mask=0 고정)
 //   2. 재검증(캐시 π): 왕복 + verifyLogin
-//   3. 가스: PiCredVerifier·Mode3WalletFactory 배포, 계정 배포(CREATE2), execute(첫/캐시), RevocationLog 게시·하트비트
+//   3. 가스: PiCredVerifier·Mode3WalletFactory·Mode3Log 배포, 계정 배포(CREATE2), execute(첫/캐시),
+//      Mode3Log 게시(등록부 슬롯 1개 / 폐기 리프 1개 / 하트비트)
 //   4. /wallet/tx 왕복(mask=0, 캐시 π, 채굴 포함) — "공개 0" 변형
 //   5. /wallet/tx 왕복(mask=1 + set, 매번 새 π) + AttrGate.claim — "범위+집합" 변형. claimed 매핑이 지갑 주소당 한 번뿐이라
 //      (지갑 주소는 PPID 로 정해지고 세션과 무관하다) 반복마다 AttrGate 를 새로 배포한다. discKey 도 반복마다 바꿔(hi[0] 를
@@ -26,8 +27,10 @@ import { getProvider } from '../tests/helpers/mode3_chain.mjs';
 import { VKEY_PATH, ZKEY_PATH } from '../lib/mode3_wallet.js';
 import { createRpVerifier } from '../lib/mode3_rp.js';
 import { randomScalar } from '../lib/mode3_credential.js';
-import { deployVerifier, deployFactory, FACTORY_ABI, deployAttrGate, ATTR_GATE_ABI } from '../lib/mode3_onchain.js';
-import { MODE3_LOG_ABI } from '../lib/mode3_log.js';
+import { deployVerifier, deployFactory, deployLog, FACTORY_ABI, deployAttrGate, ATTR_GATE_ABI } from '../lib/mode3_onchain.js';
+import { MODE3_LOG_ABI, rootToBytes32 } from '../lib/mode3_log.js';
+import { createRevocationTree } from '../lib/mode3_revocation.js';
+import { createRegistryTree } from '../lib/mode3_registry.js';
 
 const N = Number(process.argv[2] || 10);
 const med = (a) => [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)];
@@ -58,6 +61,13 @@ try {
   const factoryGas = (await provider.getTransactionReceipt((await provider.getBlock('latest', true)).transactions[0])).gasUsed;
   const factory = new ethers.Contract(factoryAddress, FACTORY_ABI, signer);
   const walletDeployGas = (await (await factory.deploy(randomScalar() % (1n << 250n))).wait()).gasUsed;   // 임의 PPID — 계정 배포 가스만
+  // Mode3Log 배포 가스: 측정 전용 더미(이 주소는 스택에 연결하지 않는다 — cia.logAddress 가 이미 따로 떠 있다).
+  // 빈 트리 root 는 격리 CIA 가 Mode3Log 를 처음 배포할 때(tests/helpers/mode3_chain.mjs deployMode3Log)와 같은 값이라
+  // 생성자 인자 값은 gas 에 영향이 없다(Mode3Log 생성자는 분기 없이 그대로 저장만 한다) — 결정적이라 N=1 로도 충분하다.
+  const emptyRevRoot = rootToBytes32((await createRevocationTree()).getRoot());
+  const emptyRegRoot = rootToBytes32((await createRegistryTree()).root());
+  await deployLog(signer, { ciaAddress: cia.ethAddress, emptyRevRoot, emptyRegRoot });
+  const logDeployGas = (await provider.getTransactionReceipt((await provider.getBlock('latest', true)).transactions[0])).gasUsed;
 
   const login = (r_s, extra = {}) => wallet.post('/wallet/login', { arid, origin, cert_s, pk_trace: { x: pk_trace.x.toString(), y: pk_trace.y.toString() }, r_s, factoryAddress, ...extra }, { Origin: stack.rpOriginForWallet });
   const verify = (body, r_s) => rp.verifyLogin({ proof: body.proof, publicSignals: body.publicSignals, sig: body.sig, r_s: BigInt(r_s) });
@@ -214,6 +224,7 @@ try {
   console.log(`| 계정 배포 gas (factory.deploy, CREATE2) | ${walletDeployGas} |`);
   console.log(`| PiCredVerifier 배포 gas | ${verifierGas} |`);
   console.log(`| Mode3WalletFactory 배포 gas | ${factoryGas} |`);
+  console.log(`| Mode3Log 배포 gas | ${logDeployGas} |`);
   console.log(`| Mode3Log 등록부 슬롯 게시 gas (슬롯 1개, SlotUpdated 1건) | ${slotPublishGas.join(', ') || '미측정'} |`);
   console.log(`| Mode3Log 폐기 리프 게시 gas (리프 1개) | ${leafPublishGas} |`);
   console.log(`| Mode3Log 하트비트 게시 gas (리프 0, 슬롯 0) | ${heartbeatGas.join(', ') || '미측정(15s 내 관측 안 됨)'} |`);

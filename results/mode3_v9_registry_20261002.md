@@ -20,6 +20,9 @@ gas 는 `results/mode3_review_fixes_20260925.md`(같은 V8 회로 위에서 컨�
   CIA + 지갑 에이전트(임시 포트, 임시 상태 파일)를 띄운다 — 개발용 :4100/:5100/:3100 은 건드리지 않는다.
 - N=10, 중앙값 (최소–최대). 스크립트: `scripts/bench_pi_cred.mjs pot21_final.ptau`(zkey 는 `build/mode3/pi_cred_final.zkey`
   기존 것을 재사용 — 새로 만들지 않았다), `npx snarkjs r1cs info build/mode3/pi_cred.r1cs`, `node scripts/bench_mode3_onchain.mjs 10`.
+- 중앙값은 두 스크립트 모두 `med(a) = [...a].sort((x,y)=>x-y)[Math.floor(a.length/2)]` 로 계산한다 — 짝수 N(=10)에서는
+  가운데 두 값 중 **큰 쪽**(upper-middle)을 쓴다. V8 쪽 결과 파일들도 같은 스크립트의 같은 함수로 냈으므로 같은 기준으로
+  비교된다.
 
 **측정 방법 메모(재현성)**: 처음에 `bench_pi_cred.mjs` 와 `bench_mode3_onchain.mjs 10` 을 서로 겹쳐(병렬로) 돌렸더니
 `bench_pi_cred.mjs` 의 증명 시간이 1,673.0 ms 로 나와 V8(1,191.7 ms) 대비 +40% 로 튀었다 — 두 프로세스가 같은 머신에서
@@ -61,9 +64,16 @@ gas 는 `results/mode3_review_fixes_20260925.md`(같은 V8 회로 위에서 컨�
 | 계정 배포(factory.deploy, CREATE2) | 939,808 | **995,731** | +55,923 (+6.0%) |
 | PiCredVerifier 배포 | 874,396 | **976,980** | +102,584 (+11.7%) |
 | Mode3WalletFactory 배포 | 1,517,288 | **1,577,919** | +60,631 (+4.0%) |
+| Mode3Log 배포¹ | 측정한 적 없음(V8 의 `RevocationLog` 배포 gas 도 어느 결과 파일에도 없다) | **1,104,315** | — |
 | 폐기 리프 게시(리프 1개) | 43,856 | **49,771** | +5,915 (+13.5%) |
 | 등록부 슬롯 게시(슬롯 1개, `SlotUpdated` 1건) | 해당 없음(V8 에는 등록부가 없다) | **52,480** | V9 신규 |
 | 하트비트 게시(리프 0, 슬롯 0) | 40,273–40,305(그 실행에서 9건 관측) | **46,176**(1건 관측) | +5,871(40,305 기준, +14.6%) |
+
+¹ `node scripts/bench_mode3_onchain.mjs 1`(N=1) 로 별도 검증·측정했다 — 배포 gas 는 생성자 인자 값(ciaAddress·빈
+root 둘)에 분기하지 않아 결정적이므로 N=10 으로 다시 돌릴 필요가 없다. `lib/mode3_onchain.js` 의 `deployLog()`(벤치
+전용 — 실제 스택·테스트는 `tests/helpers/mode3_chain.mjs` 의 `deployMode3Log()` 를 쓴다)로 측정 전용 더미를 하나
+배포했고, 빈 폐기 root·빈 등록부 root 는 스택이 `cia.logAddress` 를 처음 띄울 때와 같은 방법(`createRevocationTree().getRoot()`,
+`createRegistryTree().root()`)으로 만들었다. 이 더미 주소는 스택 어디에도 연결하지 않았다(§6.3b).
 
 ## 4. 로그인 지연 (N=10, 중앙값 (최소–최대), ms)
 
@@ -106,6 +116,10 @@ V8 쪽 "첫 로그인" 비교값: `mode3_review_fixes_20260925.md` 의 로그인
 - **배포 gas 가 전부 오르는 이유**: `Mode3Wallet`·`Mode3WalletFactory`·`PiCredVerifier` 세 컨트랙트 모두 바이트코드가
   커졌다 — `PiCredVerifier.sol` 은 공개 입력 30개용으로 재생성됐고(IC 포인트 5개 추가), `Mode3Wallet.sol` 은 `regRoot`
   필드·`StaleRegistryRoot` 검사·6슬롯 디스클로저 검사가 늘었다(설계 §6). 팩토리는 `creationCode` 를 품고 있어 같이 오른다.
+  `Mode3Log` 자체의 배포 gas(1,104,315)는 네 컨트랙트 중 가장 크다 — root 두 개(`revRoot`·`regRoot`)를 저장하고
+  `publish()` 안에서 이벤트 두 종류(`Revoked`·`SlotUpdated`)를 내는 분기까지 포함하는 코드이기 때문으로 보인다. V8 의
+  `RevocationLog`(root 하나, 이벤트 하나)와 나란히 둘 값이 없다 — 이번이 이 저장소에서 로그 컨트랙트 배포 gas 를 처음
+  잰 것이다(§3 각주 1).
 - **등록부 슬롯 게시(52,480 gas)는 V9 신규 항목**이다 — `Mode3Log.publish()` 가 같은 tx 에서 `SlotUpdated` 이벤트를
   하나 더 내는 비용(스토리지 쓰기 1회 + 이벤트 로그)이 더해진 값이고, V8 에는 등록부 자체가 없어 비교 대상이 없다.
   폐기 리프 게시(+13.5%)·하트비트(+14.6%)가 함께 오른 것은 `publish()` 서명이 `regRoot`·`slotIdx`·`slotLeaves` 세
@@ -176,6 +190,25 @@ zkey 는 `build/mode3/pi_cred_final.zkey`(2026-10-01 14:14 생성)를 그대로 
 
 실행 뒤 `ps aux` 로 `cia.js`·`mode3_wallet_agent.js` 잔여 프로세스가 없음을 확인했고, hardhat 노드(:8545)는 이
 작업을 시작하기 전과 같은 프로세스로 계속 떠 있다(블록 번호만 진행했다 — 이 작업이 새로 띄우거나 끈 적 없다).
+
+### 6.3b `node scripts/bench_mode3_onchain.mjs 1` (N=1, Mode3Log 배포 gas 전용 검증 — 리뷰 Important 수정)
+
+Mode3Log 배포 gas 행(§3)을 추가하려고 스크립트에 측정 전용 더미 배포를 넣은 뒤(스택의 `cia.logAddress` 는 건드리지
+않는다) N=1 로 한 번 더 돌려 확인했다. 다른 행은 N=10 재실행 없이 §6.3 의 값을 그대로 쓴다(배포 gas 는 결정적이라
+N=1 과 N=10 에서 같은 값이어야 하고, 실제로 아래 값들이 §6.3 의 N=10 값과 잡음 범위 안에서 일치한다).
+
+```
+| 계정 배포 gas (factory.deploy, CREATE2) | 995731 |
+| PiCredVerifier 배포 gas | 976980 |
+| Mode3WalletFactory 배포 gas | 1577919 |
+| Mode3Log 배포 gas | 1104315 |
+| Mode3Log 등록부 슬롯 게시 gas (슬롯 1개, SlotUpdated 1건) | 52480 |
+| Mode3Log 폐기 리프 게시 gas (리프 1개) | 49763 |
+| Mode3Log 하트비트 게시 gas (리프 0, 슬롯 0) | 46156 |
+```
+
+실행 뒤 `ps aux` 로 `cia.js`·`mode3_wallet_agent.js` 잔여 프로세스가 없음을, hardhat 노드(:8545)는 이 작업 시작 전과
+같은 프로세스로 계속 떠 있음을(블록 번호만 진행) 다시 확인했다.
 
 ### 6.4 버려진 1차(병렬) 실행값 — 참고용, 위 표에는 쓰지 않음
 
