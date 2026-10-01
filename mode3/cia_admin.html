@@ -263,12 +263,14 @@
       const host = $('accounts');
       if (!accounts) { placeholder(host, 'admin_need_secret'); return; }
       if (!accounts.length) { placeholder(host, 'admin_no_accounts'); return; }
-      const t = table([['admin_col_uid'], ['admin_col_status'], ['admin_col_attrs'], ['admin_col_action']]);
+      const t = table([['admin_col_uid'], ['admin_col_status'], ['admin_col_registry'], ['admin_col_attrs'], ['admin_col_action']]);
       const body = t.tBodies[0];
       for (const a of accounts) {
         const row = body.insertRow();
         cell(row, a.uid);
         cell(row, badge(a.disabled ? 'admin_acct_disabled' : 'admin_acct_active', a.disabled ? 'bad' : 'ok'));
+        const regCell = cell(row, badge(a.tampered ? 'admin_reg_tampered' : a.registryLeaf !== '0' ? 'admin_reg_active' : 'admin_reg_empty', a.tampered ? 'bad' : a.registryLeaf !== '0' ? 'ok' : 'muted'));
+        regCell.insertBefore(document.createTextNode(`#${a.slot} `), regCell.firstChild);
         const inputs = (a.attrs ?? []).map((v, i) => {
           const input = document.createElement('input');
           input.value = v; input.size = 4; input.dataset.attr = '1';
@@ -284,11 +286,15 @@
         act.appendChild(document.createTextNode(' '));
         // 파괴적 조작은 uid 입력칸 + 계정 폐기 버튼 하나로 모은다 — 표에서는 그 칸을 채우기만 한다.
         act.appendChild(button('admin_select_btn', 'btn-ghost', () => { $('uid').value = a.uid; $('uid').focus(); }));
+        act.appendChild(document.createTextNode(' '));
+        act.appendChild(button('admin_tamper_btn', 'danger', () => { if (!Demo.confirmDanger('confirm_tamper')) return; run('admin_tamper_failed', () => call('POST', '/cia/admin/registry/tamper', { uid: a.uid }), ({ body }) => { setVerdict($('adminVerdict'), true, 'admin_tamper_title', () => ({ summary: Demo.t('admin_tamper_summary', { uid: a.uid, slot: body.slot }), detail: safeDetail(body) })); loadAccounts(); loadState(); }); }));
+        act.appendChild(document.createTextNode(' '));
+        act.appendChild(button('admin_restore_btn', 'btn-ghost', () => run('admin_restore_failed', () => call('POST', '/cia/admin/registry/restore', { uid: a.uid }), ({ body }) => { setVerdict($('adminVerdict'), true, 'admin_restore_title', () => ({ summary: Demo.t('admin_restore_summary', { uid: a.uid, slot: body.slot }), detail: safeDetail(body) })); loadAccounts(); loadState(); })));
         // V8(2026-09-24): 계정마다 세션 목록을 접었다 폈다 한다. 표가 들어갈 행은 계정 행 바로 아래에 둔다.
         if (expandedUids.has(a.uid)) {
           const sub = body.insertRow();
           const c = sub.insertCell();
-          c.colSpan = 4;
+          c.colSpan = 5;
           renderSessions(a.uid, c);
         }
       }

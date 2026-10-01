@@ -756,6 +756,41 @@ app.get('/cia/accounts', requireAdmin, (req, res) => res.json({
   accounts: Object.entries(state.accounts).map(([uid, a]) => ({ uid, disabled: a.disabled, attrs: a.attrs, activeCf_u: activeCred(uid)?.Cf_u ?? null, slot: a.slot, tampered: Boolean(a.tampered), registryLeaf: state.registry.leaves[a.slot] ?? '0' })),
 }));
 
+// ---- V9 등록부 관리(설계 2026-10-01 §9) ----
+app.get('/cia/admin/registry', requireAdmin, (req, res) => {
+  const byIndex = new Map(Object.entries(state.accounts).map(([uid, a]) => [a.slot, { uid, a }]));
+  const slots = registry.entries().map(([index, leaf]) => {
+    const e = byIndex.get(index);
+    return { index, uid: e?.uid ?? null, leaf: leaf.toString(), tampered: Boolean(e?.a.tampered), active: e ? Boolean(activeCred(e.uid)) : false };
+  });
+  res.json({ depth: registry.depth, next: state.registry.next, regRoot: registry.root().toString(), epoch: state.epoch, pendingSlots: state.registry.pendingSlots.length, slots });
+});
+/** 시연: "장부를 속이는 AA" — 활성 자격증명은 그대로 두고 슬롯에 가짜 리프를 게시한다. 지갑의 등록부 확인이 ✗ 가 되고 로그인이 막힌다. */
+app.post('/cia/admin/registry/tamper', requireAdmin, async (req, res) => {
+  try {
+    const { uid } = req.body ?? {};
+    const acct = state.accounts[uid];
+    if (!isDec(uid) || !acct) return res.status(404).json({ error: 'unknown account' });
+    if (!activeCred(uid)) return res.status(409).json({ error: 'no_active_credential' });
+    const fake = (await registryLeaf(acct.cm_u, randomScalar())).toString();
+    setSlot(uid, fake); acct.tampered = true; persist();
+    const pub = await publishSafely();
+    res.json({ slot: acct.slot, leaf: fake, regRoot: registry.root().toString(), published: Boolean(pub.published) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/cia/admin/registry/restore', requireAdmin, async (req, res) => {
+  try {
+    const { uid } = req.body ?? {};
+    const acct = state.accounts[uid];
+    if (!isDec(uid) || !acct) return res.status(404).json({ error: 'unknown account' });
+    const cur = activeCred(uid);
+    const leaf = cur ? (await registryLeaf(acct.cm_u, BigInt(cur.Cf_u))).toString() : '0';
+    setSlot(uid, leaf); acct.tampered = false; persist();
+    const pub = await publishSafely();
+    res.json({ slot: acct.slot, leaf, regRoot: registry.root().toString(), published: Boolean(pub.published) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // §6.5.1 사용자 개시 폐기. 인증은 계정 비밀번호다 — 지갑 키가 아니다. 장치를 잃은 사용자에게 sk_u 는 없고
 // 공격자에게는 있으므로, 인증 수단은 장치 밖에 있어야 한다. 처리는 관리자의 계정 폐기와 같다.
 // 형식 → 비밀번호 → 등록 상태 순으로 검사한다. 비밀번호가 틀리면 등록 여부를 알려주지 않는다.

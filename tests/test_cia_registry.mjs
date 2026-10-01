@@ -21,6 +21,7 @@ const log = new ethers.Contract(cia.logAddress, MODE3_LOG_ABI, provider);
 const ATTRS = [1990n, 410n, 2n, 0n, 0n, 0n];
 const b32 = (n) => ethers.zeroPadValue(ethers.toBeHex(BigInt(n)), 32);
 let u;   // registerUser 결과
+let alice;   // registerUser('67890', 'alicepw') 결과 — 관리자 바꿔치기 케이스(Task 9)가 쓴다
 try {
   await t('등록: pk_u·sig_reg 필수, 틀린 서명 400, 정상 201 { slot 0, attrs 6 }, sk_u 없음, 두 번째 계정은 슬롯 1', async () => {
     const reg = await createRegistration();
@@ -31,8 +32,8 @@ try {
     assert.equal(bad.status, 400); assert.equal(bad.body.error, 'bad_registration_signature');
     u = await cia.registerUser('12345', 'password123');
     assert.equal(u.slot, 0); assert.deepEqual(u.attrs, ['1990', '410', '2', '0', '0', '0']); assert.equal(u.body.sk_u, undefined);
-    const a = await cia.registerUser('67890', 'alicepw');
-    assert.equal(a.slot, 1);
+    alice = await cia.registerUser('67890', 'alicepw');
+    assert.equal(alice.slot, 1);
   });
   let cred;
   await t('발급: 201 { Cf_u, slot, regRoot, epoch, published:true } — 체인 regRoot·SlotUpdated(0, L_reg) 가 같이 간다', async () => {
@@ -89,6 +90,22 @@ try {
     assert.equal(b32(s.regRoot), await log.regRoot()); assert.equal(s.pendingSlots, 0);
     const a = (await cia.adminGet('/cia/accounts')).body.accounts.find((x) => x.uid === '12345');
     assert.equal(a.slot, 0); assert.equal(a.tampered, false); assert.equal(a.registryLeaf, '0');
+  });
+  await t('관리자 바꿔치기: 슬롯에 가짜 리프를 게시하면 regRoot 가 바뀌고 tampered:true; 되돌리기로 진짜 리프·false', async () => {
+    const c4 = await buildUserCredRequest({ uid: 67890n, s_u: alice.s_u, r_u: alice.r_u, sk_u: alice.sk_u, attrs: [2005n, 840n, 1n, 0n, 0n, 0n] });
+    assert.equal((await cia.post('/cia/user_cred', c4.body)).status, 201);
+    const real = await registryLeaf(alice.cm_u, c4.Cf_u);
+    const before = await log.regRoot();
+    const tp = await cia.adminPost('/cia/admin/registry/tamper', { uid: '67890' });
+    assert.equal(tp.status, 200, j(tp.body)); assert.equal(tp.body.slot, 1); assert.notEqual(BigInt(tp.body.leaf), real); assert.equal(tp.body.published, true);
+    assert.notEqual(await log.regRoot(), before);
+    const reg = (await cia.adminGet('/cia/admin/registry')).body;
+    const s = reg.slots.find((x) => x.index === 1);
+    assert.equal(s.uid, '67890'); assert.equal(s.tampered, true); assert.equal(s.leaf, tp.body.leaf);
+    const rs = await cia.adminPost('/cia/admin/registry/restore', { uid: '67890' });
+    assert.equal(rs.status, 200, j(rs.body)); assert.equal(BigInt(rs.body.leaf), real);
+    assert.equal((await cia.adminGet('/cia/admin/registry')).body.slots.find((x) => x.index === 1).tampered, false);
+    assert.equal((await cia.adminPost('/cia/admin/registry/tamper', { uid: '12345' })).status, 409, '활성 자격증명 없음(폐기된 계정)');
   });
 } finally { await cia.stop(); }
 
