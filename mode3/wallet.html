@@ -486,7 +486,7 @@
       // 건드리지 않는다 — 실패하지도 않았는데 "상태 조회 실패: null" 이 남지 않게.
       if (s) $('status').textContent = JSON.stringify(s, null, 2);
       else if (statusError) $('status').textContent = tt('wallet_status_failed', { err: statusError }) || `상태 조회 실패: ${statusError}`;
-      $('chainInfo').textContent = s ? tt('wallet_chain_info', { head: s.head ?? '-', log: s.logAddress ?? '-', root: s.lastRoot ?? '-' }) : '';
+      $('chainInfo').textContent = s ? tt('wallet_chain_info', { head: s.head ?? '-', log: s.logAddress ?? '-', root: s.lastRoot ?? '-', regRoot: s.lastRegRoot ?? '-' }) : '';
 
       const sel = $('txSession');
       const prev = sel.value;

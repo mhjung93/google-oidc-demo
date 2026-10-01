@@ -215,5 +215,35 @@ await t('게시 직전 대조: 두 사용자가 있어도 교체 게시는 바�
   } finally { await cia6.stop(); }
 });
 
+// ---- 게시 경합(최종 리뷰 A2): publishSafely/heartbeatTick 이 진행 중인 게시를 기다렸다 재시도해야, 그 사이 들어온
+// 슬롯 변경이 조용한 로컬 체인에서 하트비트 없이 영영 묻히지 않는다. 두 사용자를 동시에 credential 폐기해 본다 —
+// 이 레이스는 타이밍에 따라 한쪽 게시가 상대방의 트랜잭션에 자연히 묻어갈 수도 있어(둘 다 setSlot 은 동기라 pending
+// 스냅샷 시점에 이미 같이 들어 있을 수 있다) 옛 코드에서도 항상 관찰되지는 않는다 — 그래도 고친 코드에서 두 슬롯이
+// 모두 수렴해 게시됨을 보장하는 회귀 방지 시험으로 남긴다. ----
+await t('게시 경합: 두 사용자를 동시에 credential 폐기해도 두 슬롯 모두 결국 게시된다(pendingSlots 0, regRoot 일치)', async () => {
+  const cia7 = await startIsolatedCia();
+  try {
+    const v1 = await cia7.registerUser('12345', 'password123');
+    const v2 = await cia7.registerUser('67890', 'alicepw');
+    const c1 = await buildUserCredRequest({ uid: 12345n, s_u: v1.s_u, r_u: v1.r_u, sk_u: v1.sk_u, attrs: ATTRS });
+    assert.equal((await cia7.post('/cia/user_cred', c1.body)).status, 201, j(c1));
+    const c2 = await buildUserCredRequest({ uid: 67890n, s_u: v2.s_u, r_u: v2.r_u, sk_u: v2.sk_u, attrs: v2.attrs.map(BigInt) });   // alice 는 자기 attrs 를 써야 한다
+    assert.equal((await cia7.post('/cia/user_cred', c2.body)).status, 201, j(c2));
+    const log7 = new ethers.Contract(cia7.logAddress, MODE3_LOG_ABI, provider);
+    const [r1, r2] = await Promise.all([
+      cia7.adminPost('/cia/revoke', { uid: '12345', scope: 'credential' }),
+      cia7.adminPost('/cia/revoke', { uid: '67890', scope: 'credential' }),
+    ]);
+    assert.equal(r1.status, 200, j(r1.body)); assert.equal(r2.status, 200, j(r2.body));
+    assert.equal(r1.body.retired, 1); assert.equal(r2.body.retired, 1);
+    const s = (await cia7.get('/cia/state')).body;
+    assert.equal(s.pendingSlots, 0, '동시 폐기 중 한쪽이 publishing 중(409)이어도 그 몫이 다음 하트비트까지 묻히면 안 된다');
+    assert.equal(b32(s.regRoot), await log7.regRoot());
+    const ev = await log7.queryFilter(log7.filters.SlotUpdated(), 0, 'latest');
+    assert.ok(ev.some((e) => Number(e.args.index) === 0 && BigInt(e.args.leaf) === 0n), '슬롯 0(uid 12345) 이 0 으로 게시돼야 한다');
+    assert.ok(ev.some((e) => Number(e.args.index) === 1 && BigInt(e.args.leaf) === 0n), '슬롯 1(uid 67890) 이 0 으로 게시돼야 한다');
+  } finally { await cia7.stop(); }
+});
+
 provider.destroy();
 process.exit(failed === 0 ? 0 : 1);

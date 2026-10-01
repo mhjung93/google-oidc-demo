@@ -288,8 +288,14 @@ function setSlot(uid, leaf) {
   if (v === 0n) delete state.registry.leaves[acct.slot]; else state.registry.leaves[acct.slot] = v.toString();
   state.registry.pendingSlots.push({ index: acct.slot, leaf: v.toString() });
 }
-/** 등록부가 바뀐 직후의 즉시 게시. 실패해도 상태는 유지하고 pendingSlots 가 남아 하트비트가 재시도한다(§3.3). */
+/** 등록부가 바뀐 직후의 즉시 게시. 실패해도 상태는 유지하고 pendingSlots 가 남아 하트비트가 재시도한다(§3.3).
+ *  이미 다른 게시가 진행 중이면(publishing) 그 promise 를 먼저 기다린 뒤 한 번 더 시도한다(2026-10-01 최종 리뷰
+ *  A2) — publishNow 를 바로 불러 409 를 맞고 그대로 { published: false } 를 돌려주면, 그 사이 들어온 이 호출의
+ *  슬롯·폐기 변경은 (먼저 끝난 게시의 스냅샷에 이미 끼어 있지 않은 한) pendingSlots/pending 에만 남아 다음
+ *  하트비트 — 꺼져 있으면 사실상 다음 변경 — 까지 게시되지 않는다. 기다렸다 다시 부르면 그 백로그를 이 호출이
+ *  그대로 집어간다. */
 async function publishSafely() {
+  if (publishing) { try { await publishing; } catch { /* 먼저 가던 게시의 실패는 그쪽 책임 — 여기서는 내 몫만 새로 시도 */ } }
   try { return await publishNow(); }
   catch (e) { console.warn(`[cia] 즉시 게시 실패(다음 하트비트가 재시도): ${e.message}`); return { published: false, error: e.message }; }
 }
@@ -434,7 +440,7 @@ app.post('/cia/register', async (req, res) => {
   if (!ok) return res.status(400).json({ error: 'bad_registration_signature' });
   if (state.accounts[uid]) return res.status(409).json({ error: 'already registered' });   // await 사이 경합
   const slot = state.registry.next++;
-  state.accounts[uid] = { pk_u: { x: BigInt(pk_u.x).toString(), y: BigInt(pk_u.y).toString() }, cm_u: { x: cm_u.x, y: cm_u.y }, slot, tampered: false, disabled: false, creds: [], attrs: [...acct.attrs], sessions: [] };
+  state.accounts[uid] = { pk_u: { x: BigInt(pk_u.x).toString(), y: BigInt(pk_u.y).toString() }, cm_u: { x: BigInt(cm_u.x).toString(), y: BigInt(cm_u.y).toString() }, slot, tampered: false, disabled: false, creds: [], attrs: [...acct.attrs], sessions: [] };
   persist();
   res.status(201).json({ slot, attrs: state.accounts[uid].attrs });
 });
@@ -677,16 +683,21 @@ app.get('/cia/admin/sessions', requireAdmin, async (req, res) => {
 // 게시는 한 번에 하나만 돈다. 둘이 겹치면 각자 pending 을 자기 개수만큼 앞에서 잘라, 그 사이 들어온
 // revoke 의 리프가 pending 에서만 사라진다 — 트리·서명 root 에는 남아 지갑 재구성이 영구히 실패한다.
 // 관리자 페이지의 게시 버튼을 두 번 누르는 것이 그 경로다.
-let publishing = false;
+// publishing 은 "진행 중 여부"가 아니라 **진행 중인 게시의 promise** 다(2026-10-01 최종 리뷰 A2). publishNow 를
+// 그대로 다시 부르면(관리자의 /cia/publish 이중 클릭 등) 여전히 409 로 막지만, publishSafely·heartbeatTick 같은
+// 내부 호출자는 이 promise 를 기다렸다가 끝난 뒤 자기 몫을 다시 시도한다 — 예전에는 409 를 캐치하고 그냥
+// { published: false } 를 돌려줘, 그 사이 들어온 슬롯·폐기 변경이 다음 하트비트(또는 그 다음 변경)까지, 하트비트가
+// 꺼져 있으면 사실상 영영 게시되지 않을 수 있었다(조용한 로컬 체인에서 폐기된 자격증명이 계속 유효하게 남는다).
+let publishing = null;
 /**
  * root 게시. heartbeat=true 면 pending 이 비어 있어도 같은 root 를 새 epoch 로 올린다(설계 §4.5) — 컨트랙트 조건은 epoch
  * 증가뿐이라 그대로다. 한 번에 하나만 돈다: 둘이 겹치면 각자 pending 을 자기 개수만큼 앞에서 잘라 그 사이 들어온 revoke 의
- * 리프가 pending 에서만 사라진다(트리·서명 root 에는 남아 지갑 재구성이 영구히 실패).
+ * 리프가 pending 에서만 사라진다(트리·서명 root 에는 남아 지갑 재구성이 영구히 실패). 진짜 동시 호출(수동 게시 버튼 이중
+ * 클릭 등)은 여전히 409 — 대기·재시도는 호출자(publishSafely·heartbeatTick) 의 몫이다.
  */
 async function publishNow({ heartbeat = false } = {}) {
   if (publishing) throw Object.assign(new Error('publish already in progress'), { status: 409 });
-  publishing = true;
-  try {
+  publishing = (async () => {
     if (!LOG_ADDRESS) throw Object.assign(new Error('CIA_LOG_ADDRESS not configured'), { status: 503 });
     // 게시 직전 대조(기동 시와 같은 규칙). 온체인 root 가 우리가 아는 어느 접두사와도 다르면 올리지 않는다.
     let chain;
@@ -714,7 +725,8 @@ async function publishNow({ heartbeat = false } = {}) {
     state.registry.pendingSlots = state.registry.pendingSlots.slice(slots.length);
     persist();
     return { published: true, heartbeat: leaves.length === 0 && slots.length === 0, epoch, root: tree.getRoot().toString(), regRoot: registry.root().toString(), txHash: tx.hash, leaves, slots: slots.length };
-  } finally { publishing = false; }
+  })();
+  try { return await publishing; } finally { publishing = null; }
 }
 app.post('/cia/publish', requireAdmin, async (req, res) => {
   try { res.json(await publishNow()); }
@@ -725,7 +737,12 @@ async function heartbeatTick() {
   // 정리는 게시 게이트보다 **앞**이다(최종 리뷰 F2): 게시 중이거나 LOG_ADDRESS 가 없어도 만료 기록은 지워야 한다.
   // 자체 try 로 감싼다 — setInterval 콜백이라 여기서 던지면 unhandled rejection 이다.
   try { await pruneExpiredSessions(); } catch (e) { console.warn(`[cia] 세션 기록 정리 실패: ${e.message}`); }
-  if (publishing || !LOG_ADDRESS) return;
+  if (!LOG_ADDRESS) return;
+  // 게시 중이면(publishing) 그냥 return 하지 않는다(2026-10-01 최종 리뷰 A2) — 끝날 때까지 기다린 뒤 아래에서
+  // head-last 를 다시 재서 하트비트가 여전히 필요한지 다시 판단한다. 예전에는 여기서 바로 돌아가, 그 사이 끝난
+  // 게시가 이미 비운 pending 을 모르고 다음 HEARTBEAT_POLL_MS 를 통째로 날렸다(틱 자체가 막힌 건 아니지만, 한
+  // 틱만큼 재게시가 늦어질 수 있었다 — publishSafely 쪽의 진짜 유실과는 결이 다르지만 같은 변수를 쓰므로 함께 고친다).
+  if (publishing) { try { await publishing; } catch { /* 그 게시의 실패는 그쪽 catch 가 이미 경고를 냈다 */ } }
   try {
     const log = new ethers.Contract(LOG_ADDRESS, MODE3_LOG_ABI, ethWallet);
     const [head, last] = await Promise.all([ethWallet.provider.getBlockNumber(), log.lastPublishedBlock()]);

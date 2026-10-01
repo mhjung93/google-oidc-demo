@@ -77,6 +77,14 @@ const WALLET_STATE_VERSION = 8;
 let state = readJson(STATE_FILE, { version: WALLET_STATE_VERSION, registration: null, sessions: {} });
 // 세션의 witness 는 메모리에만(스펙 §3.3) — 재시작하면 사라지고 /wallet/revalidate 가 needs_consent 로 다시 동의를 받는다.
 function persist() { writeJsonAtomic(STATE_FILE, JSON.parse(JSON.stringify(state, (k, v) => (k === 'witness' ? undefined : v))), 0o600); }
+/** registration.attrs 를 정확히 6칸(10진 문자열)으로 맞춘다 — 모자라면 '0' 으로 채우고 넘치면 자른다. CIA 쪽
+ *  (lib/mode3_cia_state.js 의 v8→v9 이행)과 같은 규칙이다. 7→8 이행 분기에서만이 아니라 매 기동 로드 시에도 걸어
+ *  둔다 — 그래야 손으로 고친(또는 옛 버전에서 그대로 복사해 온) 상태 파일이 길이 4짜리 attrs 를 다시 들여보내도
+ *  6칸으로 복구된다(2026-10-01 최종 리뷰 A1: 패딩이 없으면 지갑 페이지가 5·6번째 속성 행에 "undefined"를 보여주고,
+ *  그 빈 슬롯을 공개하면 normalizeDisclosure 는 통과하지만 회로가 미분류 500 으로 죽었다). */
+function padAttrs6(attrs) {
+  return [...(Array.isArray(attrs) ? attrs : []), '0', '0', '0', '0', '0', '0'].slice(0, 6).map(String);
+}
 if (state.version !== WALLET_STATE_VERSION) {
   console.warn(`[wallet] 상태 파일 버전 ${state.version} → ${WALLET_STATE_VERSION}: 세션·credential 을 비운다(옛 형식). 등록은 유지.`);
   state = { version: WALLET_STATE_VERSION, registration: state.registration ?? null, sessions: {} };
@@ -84,11 +92,20 @@ if (state.version !== WALLET_STATE_VERSION) {
     state.registration.userCred = null;
     state.registration.slot ??= null;
     state.registration.pk_u ??= null;
+    state.registration.attrs = padAttrs6(state.registration.attrs);   // v7 이하는 4칸 — padAttrs6 로 6칸으로
   }
   persist();
 }
 state.sessions ??= {};
-if (state.registration) state.registration.userCred ??= null;
+if (state.registration) {
+  state.registration.userCred ??= null;
+  // 버전은 이미 8이지만 attrs 길이가 6이 아닌 경우(손으로 고친 상태 파일 등) 방어 — 위 이행 분기와 별개로 매번 건다.
+  if (!Array.isArray(state.registration.attrs) || state.registration.attrs.length !== 6) {
+    console.warn('[wallet] registration.attrs 길이가 6이 아니다 — 6칸으로 맞춘다(상태 파일이 손상됐거나 손으로 고쳤을 수 있다).');
+    state.registration.attrs = padAttrs6(state.registration.attrs);
+    persist();
+  }
+}
 const cache = new ProofCache();   // (root, r_s) → {proof, publicSignals}. 메모리만
 let lastSync = null;              // { root, regRoot, head, tree, registry } — V9: userCred.revoked 판정은 lastRegistry(registryCheck 결과)가 대신한다
 

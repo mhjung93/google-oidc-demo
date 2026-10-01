@@ -393,7 +393,7 @@ try {
 
   // 리뷰 반영(2026-09-22): 위의 disclosure 기록은 지금까지 인프로세스 rp.verifyLogin() 이나 execute() 경로로만 봤다 —
   // 실제 RP 서버(HTTP)의 /api/mode3/login → sessions/logins/LOGIN_LOG 경로는 아무 테스트도 거치지 않았다.
-  await t('13. 선택 공개(HTTP): /api/mode3/login 이 disclosure 를 세션·logins 에 기록한다; mask ≥ 16 은 bad_disclosure', async () => {
+  await t('13. 선택 공개(HTTP): /api/mode3/login 이 disclosure 를 세션·logins 에 기록한다; mask ≥ 64 는 bad_disclosure', async () => {
     const alice = await makeAliceAgent();
     try {
       const disclosure = { mask: 3n, lo: [0n, 840n, 0n, 0n, 0n, 0n], hi: [2007n, 840n, 0n, 0n, 0n, 0n] };   // alice[2005,840,1,0,0,0] 에 맞는 구간(V9 6슬롯)

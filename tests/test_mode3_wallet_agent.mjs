@@ -2,15 +2,18 @@
 //   node tests/test_mode3_wallet_agent.mjs
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { ethers } from 'ethers';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
 import { getProvider, deployRevocationLog } from './helpers/mode3_chain.mjs';
-import { VKEY_PATH } from '../lib/mode3_wallet.js';
+import { VKEY_PATH, createRegistration } from '../lib/mode3_wallet.js';
 import { createRpVerifier } from '../lib/mode3_rp.js';
 import { randomScalar } from '../lib/mode3_credential.js';
 import { deployVerifier, deployFactory, walletAt } from '../lib/mode3_onchain.js';
 import { LOG_ABI } from '../lib/mode3_log.js';
 import { setRoot } from '../lib/mode3_set_tree.js';
+import { pointToStrings } from '../lib/mode3_issuance.js';
 
 const j = (o) => JSON.stringify(o, (k, v) => (typeof v === 'bigint' ? v.toString() : v));
 let failed = 0;
@@ -612,4 +615,32 @@ try {
   await stack.stop();
   provider.destroy();
 }
+
+// ---- 독립 시험(공유 stack 과 무관한 자기 CIA·지갑): 지갑 상태 파일 7→8 이행이 attrs 를 6칸으로 패딩하는지
+// (2026-10-01 최종 리뷰 A1 — 패딩이 없으면 지갑 페이지가 "undefined" 를 보여주고 비어 있는 슬롯 공개가 회로에서
+// 미분류 500 으로 죽었다). isolated_mode3_stack.mjs 의 walletEnv 는 자신의 MODE3_WALLET_STATE_FILE 뒤에
+// 스프레드되므로(헬퍼 수정 없이) 이 경로를 바로 덮어쓸 수 있다 — v7 모양 상태 파일을 그 경로에 미리 써 둔다.
+// uid 424242 는 CIA 에 등록돼 있지 않지만 /wallet/status 는 파일의 공개 부분만 읽고 CIA 를 부르지 않으므로 상관없다.
+await t('지갑 상태 파일 7→8 이행: v7 4칸 attrs 가 6칸으로 패딩되고 slot·pk_u 는 null', async () => {
+  const reg = await createRegistration();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-wallet-v7-'));
+  const stateFile = path.join(dir, 'mode3_wallet_state.json');
+  fs.writeFileSync(stateFile, JSON.stringify({
+    version: 7,
+    registration: { uid: '424242', s_u: reg.s_u.toString(), r_u: reg.r_u.toString(), cm_u: pointToStrings(reg.cm_u), sk_u: reg.sk_u, attrs: ['1990', '410', '2', '0'], userCred: null },
+    sessions: {},
+  }));
+  const stack2 = await startIsolatedMode3Stack({ rp: false, walletEnv: { MODE3_WALLET_STATE_FILE: stateFile } });
+  try {
+    const s = (await stack2.wallet.get('/wallet/status')).body;
+    assert.equal(s.registered, true);
+    assert.equal(s.uid, '424242');
+    assert.equal(s.slot, null, '7→8 이행은 슬롯을 모르므로 null(다음 로그인이 /cia/slot 으로 되찾는다)');
+    assert.deepEqual(s.attrs, ['1990', '410', '2', '0', '0', '0'], '4칸 attrs 가 6칸으로 패딩돼야 한다');
+    // 저장된 파일 자체도 패딩된 채로 영속화됐는지(persist) 확인 — 메모리에서만 고치고 안 쓰면 재시작마다 되풀이된다.
+    const onDisk = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.deepEqual(onDisk.registration.attrs, ['1990', '410', '2', '0', '0', '0']);
+  } finally { await stack2.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 process.exit(failed === 0 ? 0 : 1);

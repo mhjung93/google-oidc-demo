@@ -7,7 +7,8 @@ include "babyjub.circom";
 
 // Mode 3 커밋 — 교과서 Pedersen 벡터 커밋 둘(2026-09-21 자격증명 이중 구조).
 // 설계: docs/superpowers/specs/2026-09-21-mode3-two-tier-credential-design.md §3.1·§3.2
-// 속성 4슬롯: docs/superpowers/specs/2026-09-14-mode3-attribute-credential-design.md §3/§5
+// 속성 6슬롯(최초 4슬롯 설계: docs/superpowers/specs/2026-09-14-mode3-attribute-credential-design.md §3/§5,
+// 4→6 로 늘린 V9: docs/superpowers/specs/2026-10-01-mode3-v9-registry-design.md §5.3)
 // 스킴 선택(Pedersen vs Poseidon) 근거: docs/superpowers/specs/2026-09-09-mode3-cia-revocation-design.md §4.1, §11
 //
 //   C_u = uid·G_UID + s_u·G_SU + attr₀·G_ATTR0 + … + attr₅·G_ATTR5 + blind_u·H   (사용자당 하나)
@@ -31,7 +32,9 @@ include "babyjub.circom";
 //
 // 생성원은 circomlib pedersen.circom 의 NUMS 점 BASE[0..10]. 서로의 이산로그를 아무도 모른다.
 // circomlib 표는 index 0..9 까지라, index 10(attr5) 은 표에는 없고 circomlibjs getBasePoint('blake', 10) 으로 계산한 값이다(lib/mode3_credential.js 와 같다).
-// 2026-09-10 circomlibjs 로 9개 모두 inCurve·inSubgroup 확인. 두 커밋이 생성원을 나눠 쓴다
+// 2026-09-10 circomlibjs 로 (그때는 9개였던) 생성원 전부의 inCurve·inSubgroup 을 확인했다. V9 에서 속성이
+// 6슬롯으로 늘며 추가된 attr4·attr5(index 9·10) 두 점도 tests/test_mode3_v9_lib.js 가 circomlibjs
+// getBasePoint('blake', 9)·(10) 과 글자 일치로 검증한다 — 지금은 11개 모두 확인됨. 두 커밋이 생성원을 나눠 쓴다
 // (H 만 공유) — 각 커밋의 binding 은 자기 항의 생성원만으로 성립한다.
 
 // 2026-09-21 자격증명 이중 구조(설계 §3.1). 사용자 자격증명 커밋 — 사용자당 하나.
