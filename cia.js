@@ -144,11 +144,13 @@ async function readChain() {
 // **정상**이다 — 로컬이 pendingSlots 만큼만 앞서 있을 뿐이다. 그때는 손대지 않는다: pendingSlots 가 이미
 // 정확히 그 칸들이다(2026-10-01 리뷰 2차) — 여기서 "지금 non-zero 인 칸 전부" 를 섞으면(1차 수정의 실수)
 // 사용자가 N 명이면 매 게시마다 N 칸이 전부 실려 가스·SlotUpdated 양이 가입자 수에 비례해 버린다. CIA 키만
-// 게시할 수 있으므로, 런타임에 "로컬 − pendingSlots" 와 체인이 달라질 수 있는 유일한 경우는 상태 파일이
-// 복원된 경우뿐이고 그건 재시작을 전제하므로 기동 호출(fullRegistryRebuild: true)이 잡는다. pendingSlots 가
-// 비어 있는데도 불일치하면(기동이든 — 드물지만 — 런타임이든) 설명할 길이 없는 진짜 어긋남이므로 0..next-1
-// 전부(설계 §3.4, 비어 있어 0 인 칸 포함)를 다시 내보낸다 — 지갑은 SlotUpdated 를 순서대로 재생해 root 를
-// 맞추므로 중복은 무해하다.
+// 게시할 수 있으므로 런타임에 "로컬 − pendingSlots" 와 체인이 달라지는 경우는 보통 기동 호출
+// (fullRegistryRebuild: true)이 잡지만, RPC 가 안 떠 기동 대조 자체를 건너뛰었거나(아래 loadState 의
+// chain === null 분기) CIA 가 켜진 채로 로그가 같은 주소로 재배포된 경우는 기동 호출을 거치지 않으므로
+// pendingSlots 가 그 순간 비어 있지 않으면 놓칠 수 있다 — epochDiverged 를 추가 신호로 쓰는 이유다(2026-10-01
+// 리뷰 3차, 아래). pendingSlots 가 비어 있는데도 불일치하면(기동이든 런타임이든) 설명할 길이 없는 진짜
+// 어긋남이므로 마찬가지로 0..next-1 전부(설계 §3.4, 비어 있어 0 인 칸 포함)를 다시 내보낸다 — 지갑은
+// SlotUpdated 를 순서대로 재생해 root 를 맞추므로 중복은 무해하다.
 async function reconcileWithChain({ onchainRoot, onchainRegRoot, onchainEpoch }, { fullRegistryRebuild = false } = {}) {
   let k = 0;
   while (publishedTree.getRoot() !== onchainRoot && k < state.pending.length) { await publishedTree.insert(BigInt(state.pending[k])); k++; }
@@ -159,6 +161,10 @@ async function reconcileWithChain({ onchainRoot, onchainRegRoot, onchainEpoch },
     state.pending = state.pending.slice(k);
     changed = true;
   }
+  // epoch 은 이 함수의 따라잡기 줄(바로 아래)과 publishNow() 의 tx.wait() 뒤에서만 바뀐다 — 정상 런타임이면
+  // 항상 state.epoch === onchainEpoch 다. 어긋나면(재배포는 <, 옛 백업 복원은 >) 등록부 쪽도 진짜 어긋났다는
+  // 신호로 쓴다(2026-10-01 리뷰 3차) — 드문 경우라 비용은 전 칸 재발행 한 번뿐이다.
+  const epochDiverged = onchainEpoch !== state.epoch;
   if (onchainEpoch > state.epoch) {
     console.warn(`[cia] 상태 파일 epoch(${state.epoch})가 체인 epoch(${onchainEpoch})보다 뒤처져 있어 맞춘다`);
     state.epoch = onchainEpoch;
@@ -166,7 +172,7 @@ async function reconcileWithChain({ onchainRoot, onchainRegRoot, onchainEpoch },
   }
   if (registry.root() === onchainRegRoot) {
     if (state.registry.pendingSlots.length) { state.registry.pendingSlots = []; changed = true; }
-  } else if (fullRegistryRebuild || state.registry.pendingSlots.length === 0) {
+  } else if (fullRegistryRebuild || epochDiverged || state.registry.pendingSlots.length === 0) {
     state.registry.pendingSlots = Array.from({ length: state.registry.next }, (_, i) => ({ index: i, leaf: registry.leafAt(i).toString() }));
     changed = true;
   } else {
@@ -226,7 +232,8 @@ async function loadState() {
   if (state.registry.pendingSlots.length > 0 || state.pending.length > 0 || migrated.notes.length || filled) {
     try {
       const r = await publishNow();
-      console.log(`[cia] 이행 뒤 자동 게시: epoch ${r.epoch}, 리프 ${r.leaves?.length ?? 0}개, 슬롯 ${r.slots ?? 0}개`);
+      if (r.published) console.log(`[cia] 이행 뒤 자동 게시: epoch ${r.epoch}, 리프 ${r.leaves?.length ?? 0}개, 슬롯 ${r.slots ?? 0}개`);
+      else console.log('[cia] 이행 뒤 자동 게시: 게시할 것이 없어 건너뜀');
     } catch (e) {
       console.warn(`[cia] 이행 뒤 자동 게시 실패(${e.message}) — pending ${state.pending.length}개가 남아 있다. ` +
         `체인이 준비되면 /cia/publish 를 수동으로 호출할 것.`);
