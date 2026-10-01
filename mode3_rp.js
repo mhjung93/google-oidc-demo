@@ -348,7 +348,7 @@ app.post('/api/mode3/login', async (req, res) => {
     }
     const at = new Date().toISOString();
     const disclosure = discOf(v.disclosure);
-    sessions.set(rsStr, { PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), disclosure, at });
+    sessions.set(rsStr, { PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), regRoot: v.regRoot.toString(), disclosure, at });
     if (disclosure.mask !== '0' || disclosure.set) disclosedLoginCount++;
     logins.push({ PPID: v.PPID.toString(), at, root: v.root.toString(), r_s: rsShort(rsStr), allowAgent: v.allowAgent.toString(), disclosure });
     // §5 로그인 로그 — 전체 r_s 와 트랜스크립트(태그 포함). 개봉 요청의 재료다. 조회 API 로는 내지 않는다.
@@ -372,6 +372,7 @@ app.post('/api/mode3/revalidate', async (req, res) => {
     // allowAgent=1 로 만든 세션이 allowAgent=0 인 성명으로 재검증된 뒤에도 1 로 남아, 세션 상태가 실제로
     // 보증된 것보다 넓어진다(만료 max_height 도 같다 — /api/mode3/request 의 만료 판정이 그 값을 쓴다).
     s.root = v.root.toString();
+    s.regRoot = v.regRoot.toString();
     s.disclosure = discOf(v.disclosure);
     s.max_height = v.max_height.toString();
     s.allowAgent = v.allowAgent.toString();
@@ -388,11 +389,12 @@ app.post('/api/mode3/request', async (req, res) => {
     const s = sessions.get(rsKey);
     if (!s) return res.status(401).json({ ok: false, reason: 'no_session' });
     // 폐기가 효력을 갖는 지점: root 가 바뀌었으면 세션은 재검증 전까지 요청을 받지 않는다.
+    // V9 에서는 계정·자격증명 폐기가 등록부 root(regRoot)만 바꾸므로 두 root 를 함께 본다.
     const view = await verifier.refreshChainView().catch(() => null);
     if (view) lastRootAge = Number(view.head - view.lastPublishedBlock);   // health 표시용(§1.1)
     if (!view) return res.status(503).json({ ok: false, reason: 'chain_unavailable' });
     if (view.head > BigInt(s.max_height)) { sessions.delete(rsKey); return res.status(401).json({ ok: false, reason: 'expired' }); }
-    if (view.root.toString() !== s.root) return res.status(401).json({ ok: false, reason: 'revalidate_required' });
+    if (view.root.toString() !== s.root || view.regRoot.toString() !== s.regRoot) return res.status(401).json({ ok: false, reason: 'revalidate_required' });
     // b′ — root 게시 나이(2026-09-23 점검 C-1, 리뷰 Ruling 1). verifyLogin 의 b′ 와 같은 상한·같은 위치(root 일치 뒤).
     // CIA 게시가 멈추면 새 로그인뿐 아니라 이미 있는 세션의 요청도 함께 멈춘다. 세션 상태가 아니라 게시 생존의
     // 문제이므로 chain_unavailable 과 같은 503 이다.
