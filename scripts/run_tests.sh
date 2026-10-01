@@ -45,6 +45,7 @@ UNIT=(
   tests/test_mode3_health_shape.js
   tests/test_mode3_stack_judge.js
   tests/test_mode3_v9_lib.js
+  tests/test_mode3_registry.js
 )
 
 CIRCUIT=(
