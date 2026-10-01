@@ -77,8 +77,11 @@ try {
   let PPID1, staleProof;
   await t('같은 root 둘이면 캐시 π 재사용', async () => {
     const tr = await trees();
-    const before = cache.get(ProofCache.rootKey(tr.revRoot, tr.regRoot), session.wallet.address);
+    const key = ProofCache.rootKey(tr.revRoot, tr.regRoot);
+    const before = cache.get(key, session.wallet.address);
+    assert.ok(before, '첫 로그인 결과가 캐시에 있어야 한다');
     const v = await loginRound(); assert.equal(v.ok, true, j(v));
+    assert.equal(cache.get(key, session.wallet.address), before, '같은 root·세션이면 π 를 다시 만들지 않는다');
     PPID1 = v.PPID; staleProof = before;
   });
   await t('은퇴(scope=credential): 슬롯 0 게시 → 옛 π 는 stale_registry_root, 새 π 는 registry_empty; 재발급 뒤 PPID 는 그대로', async () => {
@@ -115,13 +118,20 @@ try {
     const { tree, registry } = await trees();
     await assert.rejects(() => buildCredentialProof({ uid, arid, s_u: u.s_u, r_u: u.r_u, blind_u, blind_s, pk_i: session.pk_i, attrs: ATTRS, credential: cred, pk_CIA, pk_trace, tree, registry, slot: u.slot, cm_u: u.cm_u }), /is a member/);
   });
-  await t('계정 폐기 → disabled 재발급 거절(403) → 복구 → 새 자격증명 → 로그인, PPID 유지', async () => {
+  await t('계정 폐기 → disabled 재발급 거절(403, account_disabled) → 복구 → 새 자격증명 → 로그인, PPID 유지', async () => {
     assert.equal((await cia.adminPost('/cia/revoke', { uid: '12345', scope: 'account' })).status, 200);
+    // /cia/issue 는 disabled 를 서명·활성 자격증명 확인보다 먼저 본다 — 옛(여전히 구문상 유효한) Cf_u 로도 재현된다.
+    // 옛 V8 테스트가 같은 403 에 묶어 두던 reason 단언을 여기서 되살린다(리뷰 Important, fix round 1).
+    const issueReq = await buildIssueRequest({ uid, Cf_u: BigInt(cred.Cf_u), arid, sk_u: u.sk_u, session: createSessionKey(), chainid: 31337n, max_height: BigInt(await provider.getBlockNumber()) + 300n });
+    const rIssue = await cia.post('/cia/issue', issueReq.body);
+    assert.equal(rIssue.status, 403, j(rIssue.body)); assert.equal(rIssue.body.reason, 'account_disabled');
     userCred = null;
     // ensureUserCred 는 201 을 단언하므로 newSessionAndIssue 를 그대로 쓰면 403 응답이 아니라 그 단언에서 먼저 던진다 —
-    // 여기서는 /cia/user_cred 를 직접 불러 403 을 확인한다(task-10-brief.md Step 1 바로 아래 지시).
+    // 여기서는 /cia/user_cred 를 직접 불러 403 을 확인한다(task-10-brief.md Step 1 바로 아래 지시). 이 분기는 /cia/issue 와
+    // 달리 reason 필드가 없다(cia.js: disabled 면 { error: 'account disabled' }만 준다) — 있는 필드로 대신 확인한다.
     const uc = await buildUserCredRequest({ uid, s_u: u.s_u, r_u: u.r_u, sk_u: u.sk_u, attrs: ATTRS });
-    assert.equal((await cia.post('/cia/user_cred', uc.body)).status, 403);
+    const rUc = await cia.post('/cia/user_cred', uc.body);
+    assert.equal(rUc.status, 403, j(rUc.body)); assert.equal(rUc.body.error, 'account disabled');
     assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid: '12345', disabled: false })).status, 200);
     const r2 = await newSessionAndIssue(); assert.equal(r2.status, 200, j(r2.body)); cred = r2.body;
     const v = await loginRound(); assert.equal(v.ok, true, j(v)); assert.equal(v.PPID, PPID1);
