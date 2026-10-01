@@ -139,17 +139,16 @@ async function readChain() {
 // 기동 시와 게시 직전 둘 다 이 함수를 쓴다 — 기동 때 RPC 가 죽어 대조를 건너뛰었거나 CIA 가 켜진
 // 채로 로그가 재배포된 경우를 게시 직전 대조가 잡는다(2026-09-12 리뷰 반영).
 //
-// 등록부(V9) 쪽 대조는 두 호출 자리가 다르게 군다(fullRegistryRebuild). registry.root() 는 — 폐기 쪽의
-// publishedTree 와 달리 — "아직 게시 안 된 pendingSlots 까지 포함한" 전체 현재 상태라서, 이번에 막 올릴
-// 참이면 onchainRegRoot 와 다른 것이 **정상**이다(게시 직전 호출, publishNow 안). 그 경우 지금 pendingSlots
-// 에 없는 칸까지 전부 다시 올리면(설계 §3.4 식) 아무 일도 없었던 다른 사용자 슬롯까지 매 게시마다 덩달아
-// 재게시된다 — 2026-10-01 리뷰 Important 3 수정 1차 시도에서 이렇게 했다가 발급·교체 테스트가 깨져 드러났다.
-// 그래서 게시 직전 호출은 기존 그대로 "pendingSlots ∪ 지금 non-zero 인 칸"만 좁게 다시 모은다 — 정상 동작에서
-// 이 둘은 이미 같은 칸을 가리킨다. fullRegistryRebuild 는 **기동 시**(loadState)에만 켠다: 상태 파일이 옛
-// 백업으로 복원됐거나 손으로 편집된 경우가 유일한 대상이고, 그때는 "지금까지 배정된 모든 칸(0..next-1,
-// 비어 있어 0 인 칸 포함)" 을 다시 내보내야 한다 — 그러지 않으면 로컬에서 0 으로 보이는데 체인 이벤트 역사에는
-// 0 이 아닌 값이 남은 칸을 영영 못 고친다(설계 §3.4: "활성 자격증명이 없으면 0 을 둔다. 전부 pendingSlots 에
-// 넣고"). 지갑은 SlotUpdated 를 순서대로 재생해 root 를 맞추므로 기동 시의 넓은 재게시도 중복만 될 뿐 무해하다.
+// 등록부(V9) 쪽 대조(fullRegistryRebuild). registry.root() 는 폐기 쪽 publishedTree 와 달리 "아직 게시 안 된
+// pendingSlots 까지 포함한" 전체 현재 상태라서, 게시 직전(publishNow 안)에는 onchainRegRoot 와 다른 것이
+// **정상**이다 — 로컬이 pendingSlots 만큼만 앞서 있을 뿐이다. 그때는 손대지 않는다: pendingSlots 가 이미
+// 정확히 그 칸들이다(2026-10-01 리뷰 2차) — 여기서 "지금 non-zero 인 칸 전부" 를 섞으면(1차 수정의 실수)
+// 사용자가 N 명이면 매 게시마다 N 칸이 전부 실려 가스·SlotUpdated 양이 가입자 수에 비례해 버린다. CIA 키만
+// 게시할 수 있으므로, 런타임에 "로컬 − pendingSlots" 와 체인이 달라질 수 있는 유일한 경우는 상태 파일이
+// 복원된 경우뿐이고 그건 재시작을 전제하므로 기동 호출(fullRegistryRebuild: true)이 잡는다. pendingSlots 가
+// 비어 있는데도 불일치하면(기동이든 — 드물지만 — 런타임이든) 설명할 길이 없는 진짜 어긋남이므로 0..next-1
+// 전부(설계 §3.4, 비어 있어 0 인 칸 포함)를 다시 내보낸다 — 지갑은 SlotUpdated 를 순서대로 재생해 root 를
+// 맞추므로 중복은 무해하다.
 async function reconcileWithChain({ onchainRoot, onchainRegRoot, onchainEpoch }, { fullRegistryRebuild = false } = {}) {
   let k = 0;
   while (publishedTree.getRoot() !== onchainRoot && k < state.pending.length) { await publishedTree.insert(BigInt(state.pending[k])); k++; }
@@ -167,13 +166,11 @@ async function reconcileWithChain({ onchainRoot, onchainRegRoot, onchainEpoch },
   }
   if (registry.root() === onchainRegRoot) {
     if (state.registry.pendingSlots.length) { state.registry.pendingSlots = []; changed = true; }
-  } else if (fullRegistryRebuild) {
+  } else if (fullRegistryRebuild || state.registry.pendingSlots.length === 0) {
     state.registry.pendingSlots = Array.from({ length: state.registry.next }, (_, i) => ({ index: i, leaf: registry.leafAt(i).toString() }));
     changed = true;
   } else {
-    const idx = new Set([...state.registry.pendingSlots.map((p) => p.index), ...registry.entries().map(([i]) => i)]);
-    state.registry.pendingSlots = [...idx].sort((a, b) => a - b).map((i) => ({ index: i, leaf: registry.leafAt(i).toString() }));
-    changed = true;
+    // 로컬이 pendingSlots 만큼만 앞서 있다 — 게시 직전의 정상 상태. 할 일 없음(이미 정확히 그 칸들이다).
   }
   if (changed) persist();
   return true;

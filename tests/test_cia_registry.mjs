@@ -175,5 +175,28 @@ await t('대조(체인이 앞섬): 로컬에서 비워진 칸도 다시 게시�
   } finally { await cia5.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+// ---- 게시 직전 대조는 pendingSlots 만 싣는다(리뷰 2차): 사용자가 N 명이면 교체 게시가 N 칸을 전부 다시
+// 실으면 가스·SlotUpdated 양이 가입자 수에 비례해 버린다 — 바뀐 슬롯 하나만 실려야 한다. ----
+await t('게시 직전 대조: 두 사용자가 있어도 교체 게시는 바뀐 슬롯 하나만 싣는다(N 명분 전체 재발행 금지)', async () => {
+  const cia6 = await startIsolatedCia();
+  try {
+    const v1 = await cia6.registerUser('12345', 'password123');
+    const v2 = await cia6.registerUser('67890', 'alicepw');
+    const c1a = await buildUserCredRequest({ uid: 12345n, s_u: v1.s_u, r_u: v1.r_u, sk_u: v1.sk_u, attrs: ATTRS });
+    assert.equal((await cia6.post('/cia/user_cred', c1a.body)).status, 201);   // 첫 게시 — 슬롯 0
+    const c2 = await buildUserCredRequest({ uid: 67890n, s_u: v2.s_u, r_u: v2.r_u, sk_u: v2.sk_u, attrs: v2.attrs.map(BigInt) });   // alice 는 자기 attrs 를 써야 한다
+    assert.equal((await cia6.post('/cia/user_cred', c2.body)).status, 201);   // 둘째 게시 — 슬롯 1
+    const c1b = await buildUserCredRequest({ uid: 12345n, s_u: v1.s_u, r_u: v1.r_u, sk_u: v1.sk_u, attrs: ATTRS });   // 교체 — 슬롯 0 만 바뀐다
+    const r3 = await cia6.post('/cia/user_cred', c1b.body);   // 셋째 게시
+    assert.equal(r3.status, 201, j(r3.body)); assert.equal(r3.body.published, true);
+    const log6 = new ethers.Contract(cia6.logAddress, MODE3_LOG_ABI, provider);
+    const ev = await log6.queryFilter(log6.filters.SlotUpdated(BigInt(r3.body.epoch)), 0, 'latest');
+    assert.equal(ev.length, 1, `세 번째 게시가 SlotUpdated 를 ${ev.length}개 냈다 — pendingSlots 대신 non-zero 인 칸 전부를 실었는지 의심`);
+    assert.equal(Number(ev[0].args.index), 0);
+    assert.equal(BigInt(ev[0].args.leaf), await registryLeaf(v1.cm_u, c1b.Cf_u));
+    assert.equal(b32(r3.body.regRoot), await log6.regRoot());
+  } finally { await cia6.stop(); }
+});
+
 provider.destroy();
 process.exit(failed === 0 ? 0 : 1);
