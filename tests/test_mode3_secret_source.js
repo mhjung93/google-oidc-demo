@@ -6,8 +6,8 @@ import { registrationCommit } from '../lib/mode3_issuance.js';
 let failed = 0;
 async function t(name, fn) { try { await fn(); console.log(`ok   ${name}`); } catch (e) { failed++; console.error(`FAIL ${name}\n     ${e.message}`); } }
 
-const REG = { uid: '12345', s_u: '11', r_u: '22', sk_u: 'ab'.repeat(32), attrs: ['1990', '410', '2', '0'], cm_u: { x: '1', y: '2' },
-  userCred: { C_u_pt: { x: '3', y: '4' }, Cf_u: '5', blind_u: '33', leaf: '6', issuedAt: 'now' } };
+const REG = { uid: '12345', s_u: '11', r_u: '22', sk_u: 'ab'.repeat(32), attrs: ['1990', '410', '2', '0', '0', '0'], cm_u: { x: '1', y: '2' }, pk_u: { x: '9', y: '10' }, slot: 0,
+  userCred: { C_u_pt: { x: '3', y: '4' }, Cf_u: '5', blind_u: '33', issuedAt: 'now' } };
 
 await t('file 모드: registration()/userCred() 는 상태 파일 값 그대로, setUserCred/setAttrs 는 상태를 바꾼다', () => {
   const state = { registration: structuredClone(REG) };
@@ -24,33 +24,34 @@ await t('snap 모드: 비밀은 witness 에서만 오고 상태는 바꾸지 않
   const witness = { uid: '12345', s_u: '11', r_u: '22', sk_u: 'ab'.repeat(32), attrs: REG.attrs, userCred: REG.userCred };
   const src = createSecretSource({ mode: 'snap', state, witness });
   assert.equal(src.registration().s_u, '11'); assert.equal(src.registration().cm_u.x, '1', 'cm_u 는 파일의 공개값');
-  const uc = { C_u_pt: { x: '7', y: '8' }, Cf_u: '9', blind_u: '44', leaf: '10', issuedAt: 'later' };
+  assert.equal(src.registration().slot, 0); assert.equal(src.registration().pk_u.x, '9', 'pk_u 도 파일의 공개값');
+  const uc = { C_u_pt: { x: '7', y: '8' }, Cf_u: '9', blind_u: '44', issuedAt: 'later' };
   src.setUserCred(uc);
   assert.deepEqual(src.pending.userCredIssued, uc);
-  assert.deepEqual(state.registration.userCred, { Cf_u: '9', leaf: '10', issuedAt: 'later' }, '파일에는 공개 부분만');
+  assert.deepEqual(state.registration.userCred, { Cf_u: '9', issuedAt: 'later' }, '파일에는 공개 부분만');
   assert.equal(JSON.stringify(state).includes('"blind_u"'), false);
-  src.setAttrs(['1', '2', '3', '4']); assert.deepEqual(src.pending.attrsChanged, ['1', '2', '3', '4']); assert.deepEqual(state.registration.attrs, ['1', '2', '3', '4']);
+  src.setAttrs(['1', '2', '3', '4', '5', '6']); assert.deepEqual(src.pending.attrsChanged, ['1', '2', '3', '4', '5', '6']); assert.deepEqual(state.registration.attrs, ['1', '2', '3', '4', '5', '6']);
 });
 
 await t('stripSecrets 는 s_u·r_u·sk_u·blind_u 를 지운다', () => {
   const s = stripSecrets(REG);
-  assert.deepEqual(Object.keys(s).sort(), ['attrs', 'cm_u', 'uid', 'userCred']);
-  assert.deepEqual(s.userCred, { Cf_u: '5', leaf: '6', issuedAt: 'now' });
+  assert.deepEqual(Object.keys(s).sort(), ['attrs', 'cm_u', 'pk_u', 'slot', 'uid', 'userCred']);
+  assert.deepEqual(s.userCred, { Cf_u: '5', issuedAt: 'now' });
   assert.equal(stripSecrets({ ...REG, userCred: null }).userCred, null);
 });
 
 await t('validateWitness: uid 불일치·형식·범위 오류는 bad_witness', async () => {
-  const w = { uid: '12345', s_u: '11', r_u: '22', sk_u: 'ab'.repeat(32), attrs: ['1', '2', '3', '4'], userCred: null };
+  const w = { uid: '12345', s_u: '11', r_u: '22', sk_u: 'ab'.repeat(32), attrs: ['1', '2', '3', '4', '5', '6'], userCred: null };
   await validateWitness(w, '12345');
-  for (const bad of [{ ...w, uid: '1' }, { ...w, s_u: 'x' }, { ...w, s_u: (1n << 250n).toString() }, { ...w, sk_u: 'zz' }, { ...w, attrs: ['1'] }, { ...w, attrs: [(1n << 64n).toString(), '0', '0', '0'] },
-    { ...w, userCred: { Cf_u: '1' } }, { ...w, userCred: { C_u_pt: { x: '1', y: '2' }, Cf_u: '1', blind_u: (1n << 250n).toString(), leaf: '1' } }, null]) {
+  for (const bad of [{ ...w, uid: '1' }, { ...w, s_u: 'x' }, { ...w, s_u: (1n << 250n).toString() }, { ...w, sk_u: 'zz' }, { ...w, attrs: ['1'] }, { ...w, attrs: [(1n << 64n).toString(), '0', '0', '0', '0', '0'] },
+    { ...w, userCred: { Cf_u: '1' } }, { ...w, userCred: { C_u_pt: { x: '1', y: '2' }, Cf_u: '1', blind_u: (1n << 250n).toString() } }, null]) {
     await assert.rejects(() => validateWitness(bad, '12345'), (e) => e.reason === 'bad_witness', JSON.stringify(bad));
   }
 });
 
 // cm_u 바인딩(2026-09-22 최종 리뷰 Minor 1): 파일의 공개 cm_u 를 주면 증인의 s_u·r_u 가 그 등록의 것이어야 한다.
 await t('validateWitness: cm_u 를 주면 s_u·r_u 가 등록과 묶였는지 본다', async () => {
-  const w = { uid: '12345', s_u: '11', r_u: '22', sk_u: 'ab'.repeat(32), attrs: ['1', '2', '3', '4'], userCred: null };
+  const w = { uid: '12345', s_u: '11', r_u: '22', sk_u: 'ab'.repeat(32), attrs: ['1', '2', '3', '4', '5', '6'], userCred: null };
   const cm = await registrationCommit(BigInt(w.s_u), BigInt(w.r_u));
   const publicCm = { x: cm.x.toString(), y: cm.y.toString() };
   await validateWitness(w, '12345', publicCm);                     // 맞는 증인은 통과

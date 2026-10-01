@@ -499,6 +499,23 @@ app.post('/cia/attrs', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// V9: 옛 지갑 상태 파일(슬롯 없음)이 자기 슬롯 번호를 되찾는다. sk_u 서명 인증, 메시지는 /cia/attrs 와 같은 Poseidon(D_ATTRSREQ, uid, nonce).
+app.post('/cia/slot', async (req, res) => {
+  try {
+    const { uid, nonce, sig_u } = req.body ?? {};
+    if (!isDec(uid) || !isDec(nonce) || !sig_u) return res.status(400).json({ error: 'uid, nonce, sig_u required' });
+    const acct = state.accounts[uid];
+    if (!acct) return res.status(404).json({ error: 'unknown account' });
+    let ok = false;
+    try {
+      const m = F.e(await attrsRequestMessage(BigInt(uid), BigInt(nonce)));
+      ok = eddsa.verifyPoseidon(m, { R8: [F.e(BigInt(sig_u.R8x)), F.e(BigInt(sig_u.R8y))], S: BigInt(sig_u.S) }, [F.e(BigInt(acct.pk_u.x)), F.e(BigInt(acct.pk_u.y))]);
+    } catch { ok = false; }
+    if (!ok) return res.status(400).json({ error: 'bad user signature' });
+    res.json({ slot: acct.slot });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // 2026-09-22 §3.3 관리자가 속성을 바꾼다. 활성 자격증명은 옛 속성이라 물린다(슬롯 0 → 즉시 게시). 지갑은 다음 발급에서 재동기화한다.
 app.post('/cia/accounts/:uid/attrs', requireAdmin, async (req, res) => {
   try {
