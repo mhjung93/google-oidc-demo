@@ -8,7 +8,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { userLeaf, sessionLeaf, createRevocationTree, MODE3_TREE_DEPTH } from '../lib/mode3_revocation.js';
+import { sessionLeaf, createRevocationTree, MODE3_TREE_DEPTH } from '../lib/mode3_revocation.js';
+import { registryLeaf } from '../lib/mode3_registry.js';
 import { buildValidInput } from './helpers/mode3_fixture.mjs';
 import { ppid } from '../lib/mode3_credential.js';
 import { partialDecrypt, combineDecrypt, resolveTagPlaintext } from '../lib/mode3_trace.js';
@@ -67,7 +68,8 @@ const { input: valid, Cf_u: validCfU, shares, tag, arid: validArid } = await bui
 await t('양성: 정상 credential의 witness가 계산된다', async () => {
   const w = await witness(valid);
   assert.ok(w.length > 0);
-  assert.equal(valid.pathElements.length, MODE3_TREE_DEPTH);
+  assert.equal(valid.s_pathElements.length, MODE3_TREE_DEPTH);
+  assert.equal(valid.reg_pathElements.length, 20);
 });
 
 await t('PPID 는 chainid 를 덮는다 — 같은 uid·s_u·arid 라도 체인이 다르면 가명이 다르고, 옛 가명은 거부된다', async () => {
@@ -125,13 +127,6 @@ await t('V5 음성: blind_u 를 바꾸면 거부된다 (C_u 가 달라져 서명
 await t('V5 음성: blind_s 를 바꾸면 거부된다 (C_s 가 달라져 서명이 안 맞는다)', async () => {
   await assert.rejects(() => witness({ ...valid, blind_s: (BigInt(valid.blind_s) + 1n).toString() }), /Assert Failed/);
 });
-await t('V5 음성: 폐기 트리에 내 userLeaf 가 들어 있으면 비멤버십이 거부된다', async () => {
-  const { input, tree, Cf_u } = await buildValidInput();
-  await tree.insert(await userLeaf(Cf_u));
-  await assert.rejects(async () => tree.getNonMembershipWitness(await userLeaf(Cf_u)), /member/);
-  // 옛 witness 를 새 root 에 그대로 내밀면 회로가 거부한다
-  await assert.rejects(() => witness({ ...input, revRoot: tree.getRoot().toString() }), /Assert Failed/);
-});
 await t('V5 음성: r = 0 은 회로가 거부한다 (2026-09-21 결정 — IsZero 제약)', async () => {
   await assert.rejects(() => witness({ ...valid, r: '0' }), /Assert Failed/);
 });
@@ -162,66 +157,33 @@ await t('⑤ 음성: r 을 바꾸면 거부된다 (c1·c2 둘 다 어긋난다)'
   await assert.rejects(() => witness({ ...valid, r: (BigInt(valid.r) + 1n).toString() }), /Assert Failed/);
 });
 
-await t('음성: 폐기 전에 만든 witness는 폐기 후 root에서 거부된다 (낡은 증명)', async () => {
-  // 회로 수준의 폐기 검증이다. 라이브러리가 폐기된 리프의 witness 생성을 거부하는
-  // 것은 Task 1 테스트가 이미 확인했다 — 여기서 볼 것은 **회로가** 낡은 증명을
-  // 거부하는가다.
-  //
-  // 폐기된 사용자가 증명을 제시할 수 있는 유일한 길은 폐기 **전**에 만든 witness를
-  // 그대로 내는 것이다. 회로는 revRoot에 묶여 있으므로, 옛 witness + 새 root 조합은
-  // 경로 검증에서 걸려야 한다. 컨트랙트가 최신 root만 받으므로(N=1) 이것이 폐기가
-  // 실제로 작동하는 지점이다.
-  const tree = await createRevocationTree();
-  await tree.insert(await userLeaf(999n));    // valid 을 만들 때와 같은 상태
-  await tree.insert(await userLeaf(validCfU));  // 내 credential 폐기 → root 변경
-  await assert.rejects(
-    () => witness({ ...valid, revRoot: tree.getRoot().toString() }),
-    /Assert Failed/,
-    '폐기 후 root에 대해 옛 witness가 통과하면 폐기가 무의미하다',
-  );
-});
-
-await t('JS userLeaf 와 회로의 리프 계산이 일치한다', async () => {
-  // 회로가 폐기 트리에 넣는 리프(main.leafHasher.out)와 lib/mode3_revocation.js의
-  // userLeaf()가 같은 값을 내야 한다 — 어긋나면 CIA가 트리에 넣는 리프와 회로가
-  // 검증하는 리프가 달라져 폐기가 조용히 무력화된다.
-  const symPath = path.join(OUT_DIR, `${NAME}.sym`);
-  const sym = fs.readFileSync(symPath, 'utf8');
-  const line = sym.split('\n').find((l) => l.split(',')[3] === 'main.leafHasher.out');
-  assert.ok(line, 'pi_cred.sym에서 main.leafHasher.out 시그널을 찾지 못했다');
-  const witnessIdx = Number(line.split(',')[1]);
-  const w = await witness(valid);
-  const circuitLeaf = BigInt(w[witnessIdx]) & ((1n << 252n) - 1n);
-  assert.equal(circuitLeaf, await userLeaf(validCfU));
-});
-
 await t('V6 양성: mask = 0 이면 lo·hi 가 0 이어도 통과 (로그인 문장)', async () => {
   const fx = await buildValidInput();
   assert.equal(fx.input.disc_mask, '0');
   await witness(fx.input);
 });
 await t('V6 양성: 슬롯 0 구간 [0, 2007], 슬롯 1 등식 410 — 통과', async () => {
-  const fx = await buildValidInput({ disclosure: { mask: 0b0011n, lo: [0n, 410n, 0n, 0n], hi: [2007n, 410n, 0n, 0n] } });
+  const fx = await buildValidInput({ disclosure: { mask: 0b0011n, lo: [0n, 410n, 0n, 0n, 0n, 0n], hi: [2007n, 410n, 0n, 0n, 0n, 0n] } });
   await witness(fx.input);
 });
 await t('V6 음성: 구간 밖(a₀ = 1990 ∉ [0, 1980]) 은 거부', async () => {
-  const fx = await buildValidInput({ disclosure: { mask: 0b0001n, lo: [0n, 0n, 0n, 0n], hi: [1980n, 0n, 0n, 0n] } });
+  const fx = await buildValidInput({ disclosure: { mask: 0b0001n, lo: [0n, 0n, 0n, 0n, 0n, 0n], hi: [1980n, 0n, 0n, 0n, 0n, 0n] } });
   await assert.rejects(() => witness(fx.input), /Assert Failed/);
 });
 await t('V6 음성: 등식 불일치(a₁ = 410, lo = hi = 840) 는 거부', async () => {
-  const fx = await buildValidInput({ disclosure: { mask: 0b0010n, lo: [0n, 840n, 0n, 0n], hi: [0n, 840n, 0n, 0n] } });
+  const fx = await buildValidInput({ disclosure: { mask: 0b0010n, lo: [0n, 840n, 0n, 0n, 0n, 0n], hi: [0n, 840n, 0n, 0n, 0n, 0n] } });
   await assert.rejects(() => witness(fx.input), /Assert Failed/);
 });
 await t('V6 양성: 공개하지 않는 슬롯의 lo·hi 는 무시된다 (mask 비트 0 인 슬롯 2 에 불가능한 구간)', async () => {
-  const fx = await buildValidInput({ disclosure: { mask: 0b0001n, lo: [0n, 0n, 999n, 0n], hi: [2007n, 0n, 5n, 0n] } });
+  const fx = await buildValidInput({ disclosure: { mask: 0b0001n, lo: [0n, 0n, 999n, 0n, 0n, 0n], hi: [2007n, 0n, 5n, 0n, 0n, 0n] } });
   await witness(fx.input);
 });
-await t('V6 음성: mask ≥ 16, lo ≥ 2^64, attr ≥ 2^64 는 거부', async () => {
-  const ok = await buildValidInput({ disclosure: { mask: 0b0001n, lo: [0n, 0n, 0n, 0n], hi: [2007n, 0n, 0n, 0n] } });
-  await assert.rejects(() => witness({ ...ok.input, disc_mask: '16' }), /Assert Failed/);
-  await assert.rejects(() => witness({ ...ok.input, disc_lo: [(1n << 64n).toString(), '0', '0', '0'] }), /Assert Failed/);
+await t('V6 음성: mask ≥ 64, lo ≥ 2^64, attr ≥ 2^64 는 거부', async () => {
+  const ok = await buildValidInput({ disclosure: { mask: 0b0001n, lo: [0n, 0n, 0n, 0n, 0n, 0n], hi: [2007n, 0n, 0n, 0n, 0n, 0n] } });
+  await assert.rejects(() => witness({ ...ok.input, disc_mask: '64' }), /Assert Failed/);
+  await assert.rejects(() => witness({ ...ok.input, disc_lo: [(1n << 64n).toString(), '0', '0', '0', '0', '0'] }), /Assert Failed/);
   const big = await buildValidInput();
-  await assert.rejects(() => witness({ ...big.input, attrs: [(1n << 64n).toString(), '410', '2', '0'] }), /Assert Failed/);   // C_u 가 달라져 서명도 깨지지만 Num2Bits(64) 가 먼저 막는다
+  await assert.rejects(() => witness({ ...big.input, attrs: [(1n << 64n).toString(), '410', '2', '0', '0', '0'] }), /Assert Failed/);   // C_u 가 달라져 서명도 깨지지만 Num2Bits(64) 가 먼저 막는다
 });
 
 const COUNTRIES = [410, 392, 840, 276, 250];
@@ -236,7 +198,7 @@ await t('V7 양성: 국가(a₁ = 410) ∈ {410,392,840,276,250} — set_sel = 2
   await witness(fx.input);
 });
 await t('V7 양성: 범위 + 집합 동시(슬롯 0 범위, 슬롯 1 집합)', async () => {
-  const fx = await buildValidInput({ disclosure: { mask: 0b0001n, lo: [0n, 0n, 0n, 0n], hi: [2007n, 0n, 0n, 0n] }, set: { slot: 1, members: COUNTRIES } });
+  const fx = await buildValidInput({ disclosure: { mask: 0b0001n, lo: [0n, 0n, 0n, 0n, 0n, 0n], hi: [2007n, 0n, 0n, 0n, 0n, 0n] }, set: { slot: 1, members: COUNTRIES } });
   await witness(fx.input);
 });
 await t('V7 음성: root 를 바꾸면 거부', async () => {
@@ -255,9 +217,9 @@ await t('V7 음성: set_sel = 0 인데 set_root ≠ 0 은 거부(검증자가 �
   const fx = await buildValidInput();
   await assert.rejects(() => witness({ ...fx.input, set_root: '1' }), /Assert Failed/);
 });
-await t('V7 음성: set_sel = 5 는 거부', async () => {
+await t('V7 음성: set_sel = 7 은 거부', async () => {
   const fx = await buildValidInput({ set: { slot: 1, members: COUNTRIES } });
-  await assert.rejects(() => witness({ ...fx.input, set_sel: '5' }), /Assert Failed/);
+  await assert.rejects(() => witness({ ...fx.input, set_sel: '7' }), /Assert Failed/);
 });
 await t('V7 양성: set_sel = 0 이면 set_index·set_path 는 무시된다', async () => {
   const fx = await buildValidInput();
@@ -267,7 +229,7 @@ await t('V7: 패딩 리프(2^64)는 어떤 속성으로도 못 맞춘다 — 속
   // 집합에 원소 하나만 두면 index 1..255 는 전부 패딩. 속성 값을 2^64 로 바꿔 패딩 자리에 맞추려 해도 C_u 의 Num2Bits(64) 가 먼저 막는다.
   const fx = await buildValidInput({ set: { slot: 3, members: [0] } });   // a₃ = 0 ∈ {0}
   await witness(fx.input);
-  await assert.rejects(() => witness({ ...fx.input, attrs: ['1990', '410', '2', (1n << 64n).toString()], set_index: '1' }), /Assert Failed/);
+  await assert.rejects(() => witness({ ...fx.input, attrs: ['1990', '410', '2', (1n << 64n).toString(), '0', '0'], set_index: '1' }), /Assert Failed/);
 });
 
 await t('V8 양성: 남의 세션 폐기 리프가 있어도 내 세션 비멤버십은 성립', async () => {
@@ -279,41 +241,52 @@ await t('V8 음성: 내 세션 리프 Poseidon(5, Cf_s) 가 트리에 있으면 
   await fx.tree.insert(await sessionLeaf(fx.Cf_s));
   await assert.rejects(() => witness({ ...fx.input, revRoot: fx.tree.getRoot().toString() }), /Assert Failed/);
 });
-await t('V8 대조군: 세션이 폐기되지 않았으면 사용자 증인을 두 자리에 넣어도 통과한다', async () => {
-  // 아래 거부 케이스의 대조군이다. 폐기 전에는 두 비멤버십 증인이 같은 구간(leaf(4,999) → ∞)을
-  // 가리켜 값이 아예 동일하다 — 그러므로 "사용자 증인을 세션 자리에 넣는" 것 자체는 정상 입력이고
-  // 거부되면 오히려 버그다. 거부를 만드는 것은 바꿔치기가 아니라 세션 폐기 그 자체임을 보인다.
-  const fx = await buildValidInput();
-  await witness({
-    ...fx.input,
-    s_lowValue: fx.input.lowValue, s_lowNextIndex: fx.input.lowNextIndex, s_lowNextValue: fx.input.lowNextValue,
-    s_pathElements: fx.input.pathElements, s_pathIndices: fx.input.pathIndices,
-  });
+
+await t('V9 양성: 등록부에 내 슬롯(7)이 있으면 통과; 다른 슬롯 번호를 써도 그 슬롯에 같은 리프가 있으면 통과', async () => {
+  const fx = await buildValidInput({ registrySlot: 2 ** 20 - 1 });   // 마지막 슬롯
+  await witness(fx.input);
 });
-await t('V8 음성: 세션 폐기 후 사용자 증인을 세션 증인 자리에 넣어도 거부 (④ 는 통과, ④′ 가 잡는다)', async () => {
-  // 실제 공격은 세션이 폐기된 뒤다: 사용자 리프는 여전히 트리에 없으므로 ④ 용 증인은 새 root 에서도
-  // 멀쩡하게 다시 만들 수 있다. 그 멀쩡한 증인을 세션 자리에 그대로 밀어 넣어도 ④′ 가 거부해야 한다.
-  //
-  // 거부는 값 순서와 무관하다: sessionLeaf(Cf_s) 는 이제 트리의 **원소**고, 진짜 비멤버십 증인은
-  // 어느 것도 원소를 증명할 수 없다 — 실제 리프가 여는 구간 (low, next) 는 열린 구간이라 자기
-  // 경계값을 품지 못하고, 센티널 구간(lowNextValue == 0, 최대 리프)도 그 리프보다 큰 값만 품는다.
-  // 어떤 증인을 들이밀어도 ④′ 가 거부한다.
+await t('V9 음성: r_u 가 다르면 cm_u 가 달라 등록부 포함이 깨진다', async () => {
+  await assert.rejects(() => witness({ ...valid, r_u: (BigInt(valid.r_u) + 1n).toString() }), /Assert Failed/);
+});
+await t('V9 음성: 슬롯이 비어 있으면(리프 0) 거부 — 게시 전 자격증명', async () => {
+  const fx = await buildValidInput({ registryLeafOverride: 0n });
+  await assert.rejects(() => witness(fx.input), /Assert Failed/);
+});
+await t('V9 음성: 슬롯이 다른 자격증명(C′)으로 바뀌면 거부 — 관리자 바꿔치기 시연의 회로 쪽', async () => {
+  const fx = await buildValidInput({ registryLeafOverride: 424242n });
+  await assert.rejects(() => witness(fx.input), /Assert Failed/);
+});
+await t('V9 음성: 경로를 바꾸면 거부, regRoot 를 바꾸면 거부', async () => {
+  const els = [...valid.reg_pathElements]; els[0] = (BigInt(els[0]) + 1n).toString();
+  await assert.rejects(() => witness({ ...valid, reg_pathElements: els }), /Assert Failed/);
+  await assert.rejects(() => witness({ ...valid, regRoot: (BigInt(valid.regRoot) + 1n).toString() }), /Assert Failed/);
+});
+await t('V9 음성: salt(s_u) 를 바꾸면 PPID·C_u·등록부가 모두 어긋난다(지갑 시연 "prove" 경로)', async () => {
+  await assert.rejects(() => witness({ ...valid, s_u: (BigInt(valid.s_u) + 1n).toString() }), /Assert Failed/);
+});
+await t('V9: JS registryLeaf 와 회로의 리프 계산이 일치한다 (main.inc.leaf)', async () => {
+  // main.regLeaf.out 자체는 circom 최적화가 inc.leaf 와 같은 와이어로 합쳐 witness 색인을 -1(별도 저장 없음)로
+  // 지운다 — producer.out 을 <== 로 바로 다른 신호에 넘기는 자리는 전부 이 패턴이다(main.sLeaf.out·main.cfu.out 도 -1).
+  // 소비자 쪽 main.inc.leaf 가 실제 색인을 쥐고 있고 inc.leaf === regLeaf.out 제약으로 값이 같으므로 여기서 비교한다.
+  const sym = fs.readFileSync(path.join(OUT_DIR, `${NAME}.sym`), 'utf8');
+  const line = sym.split('\n').find((l) => l.split(',')[3] === 'main.inc.leaf');
+  assert.ok(line, 'pi_cred.sym 에서 main.inc.leaf 를 찾지 못했다');
+  const idx = Number(line.split(',')[1]);
+  const w = await witness(valid);
   const fx = await buildValidInput();
-  await fx.tree.insert(await sessionLeaf(fx.Cf_s));   // 내 세션만 폐기
-  const wu = await fx.tree.getNonMembershipWitness(await userLeaf(fx.Cf_u));
-  await assert.rejects(() => witness({
-    ...fx.input,
-    revRoot: fx.tree.getRoot().toString(),
-    lowValue: wu.lowValue.toString(), lowNextIndex: wu.lowNextIndex.toString(), lowNextValue: wu.lowNextValue.toString(),
-    pathElements: wu.pathElements.map(String), pathIndices: wu.pathIndices.map(String),
-    s_lowValue: wu.lowValue.toString(), s_lowNextIndex: wu.lowNextIndex.toString(), s_lowNextValue: wu.lowNextValue.toString(),
-    s_pathElements: wu.pathElements.map(String), s_pathIndices: wu.pathIndices.map(String),
-  }), /Assert Failed/);
+  assert.equal(BigInt(w[idx]), await registryLeaf(fx.cm_u, fx.Cf_u));
+});
+await t('V9 양성: 6번째 슬롯 범위·집합 — attrs[5] = 0 ∈ [0, 0], set_sel = 6', async () => {
+  const fx = await buildValidInput({ disclosure: { mask: 0b100000n, lo: [0n, 0n, 0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n, 0n, 0n] }, set: { slot: 5, members: [0, 1, 2] } });
+  assert.equal(fx.input.set_sel, '6');
+  await witness(fx.input);
 });
 
 console.log('');
 console.log(`## pi_cred 비선형 제약: ${constraints.toLocaleString()}`);
 console.log(`   (참고 — Mode 2 pi_pk_i_v3: 13,905)`);
 console.log('   (V3 2026-09-16: 25,505)');
+console.log('   (V8 2026-09-24: 37,130)');
 
 process.exit(failed === 0 ? 0 : 1);
