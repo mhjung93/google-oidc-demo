@@ -12,11 +12,11 @@ contract Mode3WalletFactory {
     uint256 public immutable pkCIAY;
     uint256 public immutable pkTraceX;
     uint256 public immutable pkTraceY;
-    address public immutable log;
+    address public immutable log;   // Mode3Log(V9) 주소. 타입은 두지 않고 그대로 넘긴다 — 대조는 Mode3Wallet 생성자(Mode3Log(_log))가 한다.
     uint64 public immutable maxRootAge;
     uint64 public immutable maxLifetime;
 
-    /// @notice 이 팩토리가 배포한 지갑. 대상 컨트랙트(AttrGate)가 msg.sender 를 확인하는 데 쓴다 — 꼬리 11워드는 π 를 검증한 지갑만 붙일 수 있다.
+    /// @notice 이 팩토리가 배포한 지갑. 대상 컨트랙트(AttrGate)가 msg.sender 를 확인하는 데 쓴다 — 꼬리 15워드는 π 를 검증한 지갑만 붙일 수 있다.
     mapping(address => bool) public isWallet;
 
     constructor(

@@ -13,7 +13,7 @@ describe('verifyReferenceCode', function () {
 
   before(async () => {
     [deployer] = await ethers.getSigners();
-    log = await (await ethers.getContractFactory('RevocationLog')).deploy(deployer.address, ethers.ZeroHash);
+    log = await (await ethers.getContractFactory('Mode3Log')).deploy(deployer.address, ethers.ZeroHash, ethers.ZeroHash);
   });
 
   it('진짜 PiCredVerifier 를 가리키는 진짜 팩토리는 ok', async () => {
