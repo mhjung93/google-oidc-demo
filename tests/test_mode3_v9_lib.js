@@ -34,4 +34,22 @@ await t('userCommit 은 슬롯 6개를 쓴다 — 5번째 슬롯이 다르면 �
   const c = await userCommit({ ...base, attrs: [1990n, 410n, 2n, 0n, 0n, 7n] });
   assert.notEqual(a.Cf, b.Cf); assert.notEqual(a.Cf, c.Cf); assert.notEqual(b.Cf, c.Cf);
 });
+await t('등록 메시지·서명: registerMessage = Poseidon(D_REG, uid, cm.x, cm.y), 지갑 키로 서명·검증', async () => {
+  const { registerMessage, DOMAIN_MODE3_REGISTER } = await import('../lib/mode3_issuance.js');
+  const { createRegistration, signRegistration, eddsaPubOf } = await import('../lib/mode3_wallet.js');
+  const { buildEddsa, buildPoseidon } = await import('circomlibjs');
+  assert.equal(DOMAIN_MODE3_REGISTER, BigInt('0x' + Buffer.from('MODE3REGISTER').toString('hex')));
+  const ps = await buildPoseidon();
+  assert.equal(await registerMessage(12345n, { x: 1n, y: 2n }), ps.F.toObject(ps([DOMAIN_MODE3_REGISTER, 12345n, 1n, 2n])));
+  const reg = await createRegistration();
+  assert.match(reg.sk_u, /^[0-9a-f]{64}$/); assert.equal(typeof reg.pk_u.x, 'bigint');
+  assert.deepEqual(await eddsaPubOf(reg.sk_u), reg.pk_u);
+  const sig = await signRegistration(reg.sk_u, 12345n, reg.cm_u);
+  const eddsa = await buildEddsa(); const F = eddsa.F;
+  const m = F.e(await registerMessage(12345n, reg.cm_u));
+  const ok = eddsa.verifyPoseidon(m, { R8: [F.e(BigInt(sig.R8x)), F.e(BigInt(sig.R8y))], S: BigInt(sig.S) }, [F.e(reg.pk_u.x), F.e(reg.pk_u.y)]);
+  assert.equal(ok, true);
+  const other = await createRegistration();
+  assert.equal(eddsa.verifyPoseidon(m, { R8: [F.e(BigInt(sig.R8x)), F.e(BigInt(sig.R8y))], S: BigInt(sig.S) }, [F.e(other.pk_u.x), F.e(other.pk_u.y)]), false);
+});
 process.exit(fails ? 1 : 0);
