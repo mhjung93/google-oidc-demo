@@ -20,7 +20,7 @@ include "lib/mode3_trace_tag.circom";
 // V8(2026-09-24): 세션 리프 Poseidon(5, Cf_s) 비멤버십 추가 — 설계 2026-09-24-mode3-session-revocation-design.md §3
 // V9(2026-10-01): 등록부 — 사용자 리프 비멤버십(④)을 빼고 조건 ⑨ "cm_u = s_u·G_SU + r_u·H 를 다시 만들어 리프 Poseidon(cm.x, cm.y, Cf_u) 가
 //   깊이 20 등록부(regRoot)에 있다" 를 넣는다. 속성 6슬롯, 공개 입력 30. 설계 docs/superpowers/specs/2026-10-01-mode3-v9-registry-design.md §5
-// 다섯 가지를 함께 증명한다. 하나라도 빠지면 뚫린다:
+// 여섯 가지를 함께 증명한다. 하나라도 빠지면 뚫린다:
 //   ① CIA가 (Cf_u, Cf_s, max_height, chainid, allowAgent)에 서명했다 — 없으면 아무나 credential을 만든다
 //   ② C_s 안에 이 pk_i·arid 가 있다                — 없으면 남의 π를 주워 자기 키로 서명해 완전 사칭
 //   ③ PPID = Poseidon(uid, s_u, chainid, arid) — 없으면 지갑 주소를 특정할 수 없다
@@ -97,6 +97,8 @@ template PiCred(depth, regDepth) {
     var DOMAIN_MODE3_CRED_V5 = 93461614427473393731524149;  // ASCII "MODE3CREDV5" — 서명 도메인은 V9 에서도 그대로(메시지 모양 불변)
     var TAG_MODE3_SESSION = 5;
 
+    // pk_i는 세션키의 이더리움 주소다. 160비트를 넘을 수 없다.
+    // (Mode 2 pi_pk_i.circom과 같은 제약 — 형제 크레덴셜 구멍을 막는다.)
     component pkIRange = Num2Bits(160);
     pkIRange.in <== pk_i;
 
@@ -136,6 +138,8 @@ template PiCred(depth, regDepth) {
     sigVerifier.M <== msgHasher.out;
 
     // ---- ③ PPID ----
+    // chainid 는 서명 메시지에도 들어가는 같은 공개 입력이라, 서명이 보증하는 체인과 가명의 체인이
+    // 어긋날 수 없다. 같은 사용자·같은 RP 라도 체인이 다르면 가명이 달라진다(2026-09-15).
     component ppidHasher = Poseidon(4);
     ppidHasher.inputs[0] <== uid;
     ppidHasher.inputs[1] <== s_u;
@@ -173,6 +177,7 @@ template PiCred(depth, regDepth) {
     inc.root === regRoot;
 
     // ---- ⑤ 트레이스 태그 ----
+    // r ≠ 0 (2026-09-21 결정): c1 = r·B8 가 항등원이면 c2 가 평문을 그대로 드러낸다. 컨트랙트·서비스의 c1 ≠ O 검사와 중복 방어.
     component rNZ = IsZero();
     rNZ.in <== r;
     rNZ.out === 0;
@@ -187,6 +192,7 @@ template PiCred(depth, regDepth) {
     tag_c2 === tag.c2;
 
     // ---- ⑥ 선택 공개 (슬롯 6) ----
+    // 속성은 CommitUser 에서 Num2Bits(64) 로 잘려 있다. lo·hi 도 64비트로 묶어야 LessEqThan(64) 이 성립한다.
     component maskBits = Num2Bits(6);
     maskBits.in <== disc_mask;
     component loBits[6]; component hiBits[6]; component ge[6]; component le[6];
@@ -201,6 +207,7 @@ template PiCred(depth, regDepth) {
     }
 
     // ---- ⑦ 집합 소속 (set_sel ∈ {0..6}) ----
+    // sel 을 원핫 7개로 풀고 합이 1 이어야 한다 — sel ∉ {0..6} 는 여기서 죽는다.
     component selIs[7];
     var selSum = 0;
     for (var j = 0; j < 7; j++) {
@@ -226,6 +233,9 @@ template PiCred(depth, regDepth) {
     selIs[0].out * set_root === 0;
 }
 
+// 공개 입력의 순서는 lib/mode3_wallet.js·lib/mode3_rp.js·cia.js(개봉)·contracts/Mode3Wallet.sol 가 의존한다. 바꾸지 말 것.
+// pk_CIA_x/y 와 pk_trace_x/y 는 공개 입력이다. 검증자는 반드시 전자를 고정된 CIA 키와, 후자를 자기 등록 파일의
+// 조합 키와 비교해야 한다 (설계 §5, 2026-09-16 §4.2).
 // [0] PPID [1] arid [2] pk_i [3] max_height [4] chainid [5] allowAgent [6] revRoot [7] regRoot [8,9] pk_CIA [10,11] pk_trace
 // [12..14] tag [15] disc_mask [16..21] disc_lo [22..27] disc_hi [28] set_sel [29] set_root
 component main {public [

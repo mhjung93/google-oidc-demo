@@ -1,4 +1,4 @@
-// pi_cred 회로(V5)의 witness 계산. 양성·음성 20건 — 정상 witness, JS/회로 리프 일치, 태그 개봉, 잘못된 입력 거부.
+// pi_cred 회로(V9)의 witness 계산. 양성·음성 45건 — 정상 witness, JS/회로 리프 일치, 태그 개봉, 잘못된 입력 거부.
 //   node tests/test_pi_cred_witness.mjs
 //
 // zkey는 만들지 않는다 (Task 4에서 별도 승인 후). 여기서는 회로가 올바른 입력을
@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { sessionLeaf, createRevocationTree, MODE3_TREE_DEPTH } from '../lib/mode3_revocation.js';
+import { sessionLeaf, MODE3_TREE_DEPTH } from '../lib/mode3_revocation.js';
 import { registryLeaf } from '../lib/mode3_registry.js';
 import { buildValidInput } from './helpers/mode3_fixture.mjs';
 import { ppid } from '../lib/mode3_credential.js';
@@ -63,7 +63,7 @@ async function t(name, fn) {
 }
 
 const constraints = compile();
-const { input: valid, Cf_u: validCfU, shares, tag, arid: validArid } = await buildValidInput();
+const { input: valid, shares, tag, arid: validArid } = await buildValidInput();
 
 await t('양성: 정상 credential의 witness가 계산된다', async () => {
   const w = await witness(valid);
@@ -242,7 +242,7 @@ await t('V8 음성: 내 세션 리프 Poseidon(5, Cf_s) 가 트리에 있으면 
   await assert.rejects(() => witness({ ...fx.input, revRoot: fx.tree.getRoot().toString() }), /Assert Failed/);
 });
 
-await t('V9 양성: 등록부에 내 슬롯(7)이 있으면 통과; 다른 슬롯 번호를 써도 그 슬롯에 같은 리프가 있으면 통과', async () => {
+await t('V9 양성: 등록부 슬롯 번호는 임의 — 마지막 슬롯(2^20 - 1)에 내 리프가 있어도 통과', async () => {
   const fx = await buildValidInput({ registrySlot: 2 ** 20 - 1 });   // 마지막 슬롯
   await witness(fx.input);
 });
@@ -253,6 +253,11 @@ await t('V9 음성: 슬롯이 비어 있으면(리프 0) 거부 — 게시 전 �
   const fx = await buildValidInput({ registryLeafOverride: 0n });
   await assert.rejects(() => witness(fx.input), /Assert Failed/);
 });
+await t('V9 음성: 은퇴(슬롯을 0으로 되돌림) 뒤의 실제 root 에 옛 경로를 내밀면 거부', async () => {
+  const fx = await buildValidInput();
+  fx.registry.set(fx.slot, 0n);
+  await assert.rejects(() => witness({ ...fx.input, regRoot: fx.registry.root().toString() }), /Assert Failed/);
+});
 await t('V9 음성: 슬롯이 다른 자격증명(C′)으로 바뀌면 거부 — 관리자 바꿔치기 시연의 회로 쪽', async () => {
   const fx = await buildValidInput({ registryLeafOverride: 424242n });
   await assert.rejects(() => witness(fx.input), /Assert Failed/);
@@ -261,6 +266,12 @@ await t('V9 음성: 경로를 바꾸면 거부, regRoot 를 바꾸면 거부', a
   const els = [...valid.reg_pathElements]; els[0] = (BigInt(els[0]) + 1n).toString();
   await assert.rejects(() => witness({ ...valid, reg_pathElements: els }), /Assert Failed/);
   await assert.rejects(() => witness({ ...valid, regRoot: (BigInt(valid.regRoot) + 1n).toString() }), /Assert Failed/);
+});
+await t('V9 음성: reg_pathIndices 가 불리언이 아니면(2) 거부, 비트를 뒤집어도(0↔1) 거부', async () => {
+  const nonBool = [...valid.reg_pathIndices]; nonBool[0] = '2';
+  await assert.rejects(() => witness({ ...valid, reg_pathIndices: nonBool }), /Assert Failed/);
+  const flipped = [...valid.reg_pathIndices]; flipped[0] = flipped[0] === '0' ? '1' : '0';
+  await assert.rejects(() => witness({ ...valid, reg_pathIndices: flipped }), /Assert Failed/);
 });
 await t('V9 음성: salt(s_u) 를 바꾸면 PPID·C_u·등록부가 모두 어긋난다(지갑 시연 "prove" 경로)', async () => {
   await assert.rejects(() => witness({ ...valid, s_u: (BigInt(valid.s_u) + 1n).toString() }), /Assert Failed/);

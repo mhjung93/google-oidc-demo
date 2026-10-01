@@ -94,14 +94,14 @@ function publicSignalNames(symFile, nPublic) {
   return Array.from({ length: nPublic }, (_, i) => byIndex.get(i + 1) ?? null);
 }
 
-// 회로가 정한 공개 입력 순서. contracts/Mode3Wallet.sol(pub[3]·pub[5]·pub[11..13]·pub[14..24]),
+// 회로가 정한 공개 입력 순서. contracts/Mode3Wallet.sol(pub[3]·pub[5]·pub[12..14]·pub[15..29]),
 // lib/mode3_rp.js(구조분해), lib/mode3_onchain.js(statementDigestFields), cia.js(개봉)가 이 자리를 번호로 읽는다.
 const CANONICAL_PUBLIC_INPUTS = [
-  'PPID', 'arid', 'pk_i', 'max_height', 'chainid', 'allowAgent', 'revRoot',
+  'PPID', 'arid', 'pk_i', 'max_height', 'chainid', 'allowAgent', 'revRoot', 'regRoot',
   'pk_CIA_x', 'pk_CIA_y', 'pk_trace_x', 'pk_trace_y',
   'tag_c1_x', 'tag_c1_y', 'tag_c2',
-  'disc_mask', 'disc_lo[0]', 'disc_lo[1]', 'disc_lo[2]', 'disc_lo[3]',
-  'disc_hi[0]', 'disc_hi[1]', 'disc_hi[2]', 'disc_hi[3]',
+  'disc_mask', 'disc_lo[0]', 'disc_lo[1]', 'disc_lo[2]', 'disc_lo[3]', 'disc_lo[4]', 'disc_lo[5]',
+  'disc_hi[0]', 'disc_hi[1]', 'disc_hi[2]', 'disc_hi[3]', 'disc_hi[4]', 'disc_hi[5]',
   'set_sel', 'set_root',
 ];
 

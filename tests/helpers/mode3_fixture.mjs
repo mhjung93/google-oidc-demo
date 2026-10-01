@@ -53,6 +53,7 @@ export async function buildValidInput({ pk_i: pkIOpt, maxHeight = 1789000000n, a
   // 등록부: 남의 슬롯 둘 + 내 슬롯(registrySlot). 리프 = Poseidon(cm_u.x, cm_u.y, Cf_u).
   const cm_u = await registrationCommit(s_u, r_u);
   const registry = await createRegistryTree();
+  if (registrySlot === 0 || registrySlot === 3) throw new Error('registrySlot 은 남의 슬롯(0, 3)과 겹칠 수 없다');
   registry.set(0, 12345n);
   registry.set(3, 67890n);
   const myLeaf = registryLeafOverride ?? await registryLeaf(cm_u, Cf_u);
