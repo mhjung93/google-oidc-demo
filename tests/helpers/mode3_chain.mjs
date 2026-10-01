@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
 import { createRevocationTree } from '../../lib/mode3_revocation.js';
+import { createRegistryTree } from '../../lib/mode3_registry.js';
 // digest·bytes32 변환은 lib/mode3_log.js 하나다 — 여기는 이름만 다시 내보낸다(이 파일 안에서도 쓴다).
 import { DOMAIN_ROOT, rootToBytes32, signRootPublication } from '../../lib/mode3_log.js';
 export { DOMAIN_ROOT as DOMAIN, rootToBytes32, signRootPublication };
@@ -13,6 +14,7 @@ export { DOMAIN_ROOT as DOMAIN, rootToBytes32, signRootPublication };
 const ROOT_DIR = fileURLToPath(new URL('../..', import.meta.url));
 const RPC_URL = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
 const ARTIFACT = path.join(ROOT_DIR, 'artifacts', 'contracts', 'RevocationLog.sol', 'RevocationLog.json');
+const ARTIFACT_V2 = path.join(ROOT_DIR, 'artifacts', 'contracts', 'Mode3Log.sol', 'Mode3Log.json');
 
 function artifact() {
   if (!fs.existsSync(ARTIFACT)) {
@@ -21,6 +23,11 @@ function artifact() {
   return JSON.parse(fs.readFileSync(ARTIFACT, 'utf8'));
 }
 export const logAbi = () => artifact().abi;
+
+function artifactV2() {
+  if (!fs.existsSync(ARTIFACT_V2)) execFileSync('npx', ['hardhat', 'compile', '--quiet'], { cwd: ROOT_DIR, stdio: 'inherit' });
+  return JSON.parse(fs.readFileSync(ARTIFACT_V2, 'utf8'));
+}
 
 // 테스트는 게시 직후 수 ms 안에 동기화하므로 provider 레벨 250ms 캐시를 끈다.
 export function getProvider() { return new ethers.JsonRpcProvider(RPC_URL, undefined, { cacheTimeout: -1 }); }
@@ -36,6 +43,17 @@ export async function deployRevocationLog(ciaAddress, provider = getProvider()) 
   const emptyRoot = rootToBytes32((await createRevocationTree()).getRoot());
   const factory = new ethers.ContractFactory(abi, bytecode, await getFunder(provider));
   const contract = await factory.deploy(ciaAddress, emptyRoot);
+  await contract.waitForDeployment();
+  return { address: await contract.getAddress(), contract };
+}
+
+/** V9: Mode3Log 배포 — 빈 폐기 root + 빈 등록부 root. */
+export async function deployMode3Log(ciaAddress, provider = getProvider()) {
+  const { abi, bytecode } = artifactV2();
+  const emptyRev = rootToBytes32((await createRevocationTree()).getRoot());
+  const emptyReg = rootToBytes32((await createRegistryTree()).root());
+  const factory = new ethers.ContractFactory(abi, bytecode, await getFunder(provider));
+  const contract = await factory.deploy(ciaAddress, emptyRev, emptyReg);
   await contract.waitForDeployment();
   return { address: await contract.getAddress(), contract };
 }
