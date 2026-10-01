@@ -275,7 +275,7 @@
       if (req.reauth === true) return [tt('wallet_auth_reauth')];
       const out = [];
       const d = Array.isArray(req.disclose) ? req.disclose : [];
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < 6; i++) {
         const s = d[i];
         if (!s) continue;
         const attr = Demo.term(`attr${i}`);
@@ -862,15 +862,27 @@
     // ---- 시연 카드(V9 §8.3, 전문가 보기 전용): 다음 발급/증명의 salt·uid 를 메모리에서만 덮어쓴다 ----
     $('demoNewSalt').addEventListener('click', () => { const b = new Uint8Array(32); crypto.getRandomValues(b); b[0] &= 0x03; $('demoSalt').value = BigInt('0x' + [...b].map((x) => x.toString(16).padStart(2, '0')).join('')).toString(); });   // 2^250 미만
     $('demoApplyBtn').addEventListener('click', async () => {
-      const body = { scope: $('demoScope').value };
-      if ($('demoSalt').value.trim()) body.s_u = $('demoSalt').value.trim();
-      if ($('demoUid').value.trim()) body.uid = $('demoUid').value.trim();
-      const { status, body: b } = await postJson('/wallet/demo/override', body);
-      if (status !== 200) { setVerdict($('demoVerdict'), false, 'wallet_demo_failed', { reason: b.error ?? `HTTP ${status}` }); return; }
-      setVerdict($('demoVerdict'), true, 'wallet_demo_set', () => ({ summary: tt('wallet_demo_set_summary', { scope: b.override.scope, fields: b.override.fields.join(', ') }) || `적용: ${b.override.scope} (${b.override.fields.join(', ')})` }));
+      try {
+        const body = { scope: $('demoScope').value };
+        if ($('demoSalt').value.trim()) body.s_u = $('demoSalt').value.trim();
+        if ($('demoUid').value.trim()) body.uid = $('demoUid').value.trim();
+        const { status, body: b } = await postJson('/wallet/demo/override', body);
+        if (status !== 200) { setVerdict($('demoVerdict'), false, 'wallet_demo_failed', { reason: b.error ?? `HTTP ${status}` }); return; }
+        setVerdict($('demoVerdict'), true, 'wallet_demo_set', () => ({ summary: tt('wallet_demo_set_summary', { scope: b.override.scope, fields: b.override.fields.join(', ') }) || `적용: ${b.override.scope} (${b.override.fields.join(', ')})` }));
+      } catch (e) {
+        setVerdict($('demoVerdict'), false, 'wallet_demo_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
+      }
       refresh();
     });
-    $('demoClearBtn').addEventListener('click', async () => { await postJson('/wallet/demo/override', { clear: true }); setVerdict($('demoVerdict'), true, 'wallet_demo_cleared', () => ({ summary: tt('wallet_demo_cleared') || '원래대로' })); refresh(); });
+    $('demoClearBtn').addEventListener('click', async () => {
+      try {
+        await postJson('/wallet/demo/override', { clear: true });
+        setVerdict($('demoVerdict'), true, 'wallet_demo_cleared', () => ({ summary: tt('wallet_demo_cleared') || '원래대로' }));
+      } catch (e) {
+        setVerdict($('demoVerdict'), false, 'wallet_demo_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
+      }
+      refresh();
+    });
 
     // ---- snap 모드 전용 버튼 ----
     $('connectBtn').addEventListener('click', async () => {

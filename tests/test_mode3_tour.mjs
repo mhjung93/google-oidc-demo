@@ -104,6 +104,13 @@ try {
   await t('V9 등록부 줄: 로그인 뒤 ✓, 관리자 바꿔치기 뒤 다음 폴링에 ✗, 되돌리기 뒤 ✓', async () => {
     await walletPage.waitForFunction(() => document.querySelector('#registryBadge')?.classList.contains('ok'), undefined, { timeout: 30_000 });
     assert.equal((await stack.cia.adminPost('/cia/admin/registry/tamper', { uid: '12345' })).status, 200);
+    // 2026-10-01 리뷰 Important 1 회귀 확인: 바꿔치기 뒤 로그인은 403 registry_mismatch 로 거절되고, 서비스 페이지의
+    // 판정 제목 줄(.summary, demo.js 의 renderVerdict 가 쓰는 클래스)이 빈 줄이 아니라 사유 사전의 제목을 그대로
+    // 보여야 한다 — summary 를 섣불리 ''로 채우면 demo.js 의 `summary ?? r.title` 폴백이 깨져 이 줄이 비어 버린다.
+    await rpPage.click('#loginBtn');
+    const mismatchTitle = await rpPage.evaluate(() => window.DemoStrings?.reasons?.registry_mismatch?.ko?.title ?? '');
+    await rpPage.waitForFunction((needle) => (document.querySelector('#verdict .summary')?.textContent ?? '').includes(needle), mismatchTitle, { timeout: 60_000 });
+    assert.equal(await rpPage.$eval('#verdict .summary', (el) => el.textContent), mismatchTitle, '회귀: 제목 줄이 비면 안 된다');
     await walletPage.click('#refreshBtn');
     await walletPage.waitForFunction(() => document.querySelector('#registryBadge')?.classList.contains('bad'), undefined, { timeout: 30_000 });
     assert.ok((await text(walletPage, '#registryInfo')).includes('바뀌'), '✗ 문구');
@@ -119,6 +126,12 @@ try {
     await waitText(walletPage, '#demoVerdict', '적용', 10_000);
     await rpPage.click('#loginBtn');
     await waitText(rpPage, '#verdict', 'bad user credential proof', 120_000);
+    // 2026-10-01 리뷰 Important 1: 시연 모드 실패는 제목 줄 앞에 "[시연 모드] " 를 붙이고, 사전에 있다면 그 뒤에
+    // 평소처럼 사유 제목이 온다(이 사유 — user_cred_failed — 는 사전에 없을 수 있다. 그래도 접두는 반드시 있어야 한다).
+    const ucFailedTitle = await rpPage.evaluate(() => window.DemoStrings?.reasons?.user_cred_failed?.ko?.title ?? '');
+    const demoSummary = await rpPage.$eval('#verdict .summary', (el) => el.textContent);
+    assert.ok(demoSummary.startsWith('[시연 모드] '), `시연 접두가 없다: ${demoSummary}`);
+    assert.ok(demoSummary.includes(ucFailedTitle), `사유 제목이 없다: ${demoSummary}`);
     await rpPage.click('#loginBtn');
     await waitText(rpPage, '#verdict', '로그인 성공', 180_000);   // 덮어쓰기는 한 번만 — 그다음은 정상
     await walletPage.evaluate(() => Demo.setExpert(false));

@@ -390,7 +390,13 @@
           if (w.status !== 200) {
             log(`2. 지갑 ${w.status} ${ms(t0)}: ${wb.reason ?? wb.error ?? ''} ${wb.detail ?? ''}`);
             // 지갑의 시연 덮어쓰기(demoOverride)가 걸려 있다가 거절된 경우 — 에이전트 응답의 demo 필드로 알 수 있다.
-            setVerdict($('verdict'), false, 'login_failed', { summary: wb.demo ? '[시연 모드] ' : '', reason: wb.reason ?? `HTTP ${w.status}`, detail: wb });
+            // summary 를 안 건드리면(undefined) demo.js 의 renderVerdict 가 사유 사전의 제목(r.title)으로 채운다(기존
+            // 동작, mode3/common/demo.js 의 `summary ?? r.title`) — 그 자리에 빈 문자열을 넣으면 ?? 를 통과하지 못해
+            // 모든(시연 아닌) 로그인 실패의 제목 줄이 통째로 비어 버렸다(2026-10-01 리뷰 Important 1, 회귀).
+            // 시연 모드에서만 Demo.reason() 으로 같은 제목을 직접 찾아 접두어를 붙인다(사전 조회 로직 중복 금지).
+            const reasonCode = wb.reason ?? `HTTP ${w.status}`;
+            const summary = wb.demo ? `[시연 모드] ${Demo.reason(reasonCode)?.title ?? ''}` : undefined;
+            setVerdict($('verdict'), false, 'login_failed', { summary, reason: reasonCode, detail: wb });
             return;
           }
         }
