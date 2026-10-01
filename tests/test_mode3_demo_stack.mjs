@@ -3,8 +3,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
-import { VKEY_PATH, createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, normalizeDisclosure, normalizeSet } from '../lib/mode3_wallet.js';
-import { pointToStrings } from '../lib/mode3_issuance.js';
+import { VKEY_PATH, createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree, syncRegistryTree, buildCredentialProof, signChallenge, normalizeDisclosure, normalizeSet } from '../lib/mode3_wallet.js';
 import { signPayload, statementDigestFields, proofToCalldata, parseExecuteReceipt, factoryAt, walletAt } from '../lib/mode3_onchain.js';
 import { getProvider } from './helpers/mode3_chain.mjs';
 
@@ -43,13 +42,11 @@ async function revalidateViaRp(r_s, { skipSync = false } = {}) {
 // ---- alice(uid 67890, 2005/840/1/0) — 지갑 에이전트는 testuser 하나만 들고 있으므로(§4.1) 선택 공개 시나리오 11 은
 // 라이브러리로 alice 의 등록·자격증명·세션을 직접 만들고 signPayload/walletAt 으로 execute() 를 직접 보낸다
 // (Ruling 2 — /wallet/tx 를 흉내낸다. mode3_wallet_agent.js 의 같은 이름 로직과 순서를 맞춘다).
-let aliceReg = null;   // { reg, sk_u, attrs(bigint[]) } — uid 67890 등록은 한 번뿐이라 캐시한다
+let aliceReg = null;   // { reg, sk_u, attrs(bigint[]) } — uid 67890 등록은 한 번뿐이라 캐시한다. reg 에는 slot·cm_u·r_u 도 있다(V9 §7.1 등록 헬퍼).
 async function ensureAlice() {
   if (aliceReg) return aliceReg;
-  const reg = await createRegistration();
-  const r = await cia.post('/cia/register', { uid: '67890', pwd: 'alicepw', cm_u: pointToStrings(reg.cm_u) });
-  assert.equal(r.status, 201, j(r.body));
-  aliceReg = { reg, sk_u: r.body.sk_u, attrs: r.body.attrs.map(BigInt) };
+  const reg = await cia.registerUser('67890', 'alicepw');
+  aliceReg = { reg, sk_u: reg.sk_u, attrs: reg.attrs.map(BigInt) };
   return aliceReg;
 }
 /** alice 의 사용자 자격증명 + 세션 자격증명을 한 번 받아 execute() 를 직접 서명·제출하는 tx(to, data, disclose) 를 돌려준다. */
@@ -74,7 +71,8 @@ async function makeAliceAgent() {
     try { disclosure = { ...normalizeDisclosure(disclose, attrs), ...(await normalizeSet(set, attrs)) }; }
     catch (e) { if (e.reason) return { status: 400, body: { reason: e.reason, detail: e.message } }; throw e; }
     const { tree } = await syncRevocationTree(provider, cia.logAddress);
-    const built = await buildCredentialProof({ uid: 67890n, arid, s_u: reg.s_u, blind_u: ucReq.secrets.blind_u, blind_s: issueReq.secrets.blind_s, pk_i: session.pk_i, attrs, credential: issued.body, pk_CIA, pk_trace, tree, disclosure });
+    const { tree: registry } = await syncRegistryTree(provider, cia.logAddress);
+    const built = await buildCredentialProof({ uid: 67890n, arid, s_u: reg.s_u, r_u: reg.r_u, blind_u: ucReq.secrets.blind_u, blind_s: issueReq.secrets.blind_s, pk_i: session.pk_i, attrs, credential: issued.body, pk_CIA, pk_trace, tree, registry, slot: reg.slot, cm_u: reg.cm_u, disclosure });
     const PPID = BigInt(built.publicSignals[0]);
     const walletAddr = await factoryAt(factoryAddress, provider).computeAddress(PPID);
     const relayer = await provider.getSigner(0);
@@ -91,7 +89,8 @@ async function makeAliceAgent() {
   /** RP 챌린지 r_s 위의 로그인 성명(π+σ)만 만든다 — 온체인 실행은 하지 않는다. disclosure 는 { mask, lo, hi }(bigint). */
   async function login(rs, disclosure) {
     const { tree } = await syncRevocationTree(provider, cia.logAddress);
-    const built = await buildCredentialProof({ uid: 67890n, arid, s_u: reg.s_u, blind_u: ucReq.secrets.blind_u, blind_s: issueReq.secrets.blind_s, pk_i: session.pk_i, attrs, credential: issued.body, pk_CIA, pk_trace, tree, disclosure });
+    const { tree: registry } = await syncRegistryTree(provider, cia.logAddress);
+    const built = await buildCredentialProof({ uid: 67890n, arid, s_u: reg.s_u, r_u: reg.r_u, blind_u: ucReq.secrets.blind_u, blind_s: issueReq.secrets.blind_s, pk_i: session.pk_i, attrs, credential: issued.body, pk_CIA, pk_trace, tree, registry, slot: reg.slot, cm_u: reg.cm_u, disclosure });
     const sig = await signChallenge(session.wallet, rs.toString());
     return { proof: built.proof, publicSignals: built.publicSignals, sig };
   }
@@ -120,7 +119,7 @@ try {
   });
 
   await t('1. 등록', async () => {
-    assert.equal((await wallet.post('/wallet/register', { uid, pwd: 'password123', attrs: ['19', '410', '0', '0'] })).status, 201);
+    assert.equal((await wallet.post('/wallet/register', { uid, pwd: 'password123', attrs: ['19', '410', '0', '0', '0', '0'] })).status, 201);
   });
 
   let PPID1, S1;
@@ -207,8 +206,9 @@ try {
     const provider = getProvider();
     try {
       const { tree } = await syncRevocationTree(provider, cia.logAddress);
+      const { tree: registry } = await syncRegistryTree(provider, cia.logAddress);
       const keys = (await cia.get('/cia/public_keys')).body;
-      const { proof, publicSignals } = await buildCredentialProof({ uid: 67890n, arid: BigInt(info.arid), s_u: reg.s_u, blind_u: ucReq.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs, credential: issued.body, pk_CIA: { x: BigInt(keys.pk_CIA.x), y: BigInt(keys.pk_CIA.y) }, pk_trace: { x: BigInt(info.pk_trace.x), y: BigInt(info.pk_trace.y) }, tree });
+      const { proof, publicSignals } = await buildCredentialProof({ uid: 67890n, arid: BigInt(info.arid), s_u: reg.s_u, r_u: reg.r_u, blind_u: ucReq.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs, credential: issued.body, pk_CIA: { x: BigInt(keys.pk_CIA.x), y: BigInt(keys.pk_CIA.y) }, pk_trace: { x: BigInt(info.pk_trace.x), y: BigInt(info.pk_trace.y) }, tree, registry, slot: reg.slot, cm_u: reg.cm_u });
       const sig = await signChallenge(session.wallet, mine.r_s);
       const rv = await rp.post('/api/mode3/revalidate', { proof, publicSignals, sig, r_s: mine.r_s });
       assert.equal(rv.status, 401, j(rv.body));
@@ -233,14 +233,28 @@ try {
   });
 
   await t('4. 계정 폐기 + 게시', async () => {
-    assert.equal((await cia.adminPost('/cia/revoke', { uid, scope: 'account' })).status, 200);
-    assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
+    // session_mismatch 에서 alice 의 /cia/user_cred(즉시 게시, V9)가 등록부 root 를 한 번 바꿔 놓았고, 그 뒤
+    // "같은 r_s 로 /wallet/login 두 번" 로그인이 지갑의 lastSync 를 그 새 root 로 갱신해 뒀다 — 그런데 S1 의 캐시 π 는
+    // 아직 더 옛 root 것이다. 아래 5 의 skipSync 전제("폐기 직전까지는 유효했다")가 성립하려면 S1 을 지금 root 로
+    // 한 번 다시 증명해 캐시를 채워 둬야 한다(그래야 폐기 뒤에야 비로소 낡아진다).
+    const warm = await revalidateViaRp(S1);
+    assert.equal(warm.walletStatus, 200, j(warm));
+    const rv = await cia.adminPost('/cia/revoke', { uid, scope: 'account' });
+    assert.equal(rv.status, 200, j(rv.body));
+    // V9: 계정 폐기가 활성 자격증명을 물려 슬롯을 0 으로 비우고 그 자리에서 즉시 게시한다(cia.js revokeAccount) —
+    // 뒤이은 수동 게시는 더 낼 것이 없어 published:false 다.
+    assert.equal(rv.body.published, true, j(rv.body));
+    assert.equal((await cia.adminPost('/cia/publish')).body.published, false);
   });
 
-  await t('5. 동기화 생략 재검증 → RP stale_root; 세션 요청은 revalidate_required', async () => {
+  await t('5. 동기화 생략 재검증 → RP stale_registry_root; 세션 요청은 revalidate_required', async () => {
     const r = await revalidateViaRp(S1, { skipSync: true });
     assert.equal(r.walletStatus, 200, j(r));
-    assert.equal(r.rp.ok, false); assert.equal(r.rp.reason, 'stale_root');
+    // V9: 계정 폐기는 등록부(슬롯)만 바꾼다 — 폐기 트리(revRoot)는 그대로라 RP 의 첫 검사(b, stale_root)는 통과하고
+    // 등록부 검사(b‴)에서 걸린다(lib/mode3_rp.js).
+    assert.equal(r.rp.ok, false); assert.equal(r.rp.reason, 'stale_registry_root', j(r.rp));
+    // 세션 "요청"(서명만, 새 증명 없음)도 두 root 가 함께 신선해야 한다 — regRoot 만 바뀐 폐기(위 단언)도 막아야 하므로
+    // mode3_rp.js 의 세션 신선도 검사는 root(revRoot)·regRoot 를 둘 다 본다(2026-10-01).
     const w = await wallet.post('/wallet/request', { r_s: S1, body: 'x' }, { Origin: rp.origin });
     const q = await rp.post('/api/mode3/request', { r_s: S1, body: 'x', sig: w.body.sig });
     assert.equal(q.status, 401); assert.equal(q.body.reason, 'revalidate_required');
@@ -365,12 +379,16 @@ try {
   await t('12. 선택 공개: 관리자가 testuser a₂ 를 3 으로 → 게시 → 다음 로그인이 재동기화·새 C_u, PPID 동일', async () => {
     const before = await loginViaRp();
     assert.equal(before.rp.ok, true, j(before));
-    assert.equal((await cia.adminPost(`/cia/accounts/${uid}/attrs`, { attrs: ['1990', '410', '3', '0'] })).status, 200);
-    assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
+    const chg = await cia.adminPost(`/cia/accounts/${uid}/attrs`, { attrs: ['1990', '410', '3', '0', '0', '0'] });
+    assert.equal(chg.status, 200, j(chg.body));
+    // V9: 속성 변경이 활성 자격증명을 물려(옛 속성이라) 슬롯을 0 으로 비우고 즉시 게시한다(cia.js /cia/accounts/:uid/attrs) —
+    // 뒤이은 수동 게시는 더 낼 것이 없어 published:false 다.
+    assert.equal(chg.body.published, true, j(chg.body));
+    assert.equal((await cia.adminPost('/cia/publish')).body.published, false);
     const after = await loginViaRp();
     assert.equal(after.rp.ok, true, j(after));
     assert.equal(after.rp.PPID, before.rp.PPID);
-    assert.deepEqual((await wallet.get('/wallet/status')).body.attrs, ['1990', '410', '3', '0']);
+    assert.deepEqual((await wallet.get('/wallet/status')).body.attrs, ['1990', '410', '3', '0', '0', '0']);
   });
 
   // 리뷰 반영(2026-09-22): 위의 disclosure 기록은 지금까지 인프로세스 rp.verifyLogin() 이나 execute() 경로로만 봤다 —
@@ -378,7 +396,7 @@ try {
   await t('13. 선택 공개(HTTP): /api/mode3/login 이 disclosure 를 세션·logins 에 기록한다; mask ≥ 16 은 bad_disclosure', async () => {
     const alice = await makeAliceAgent();
     try {
-      const disclosure = { mask: 3n, lo: [0n, 840n, 0n, 0n], hi: [2007n, 840n, 0n, 0n] };   // alice[2005,840,1,0] 에 맞는 구간
+      const disclosure = { mask: 3n, lo: [0n, 840n, 0n, 0n, 0n, 0n], hi: [2007n, 840n, 0n, 0n, 0n, 0n] };   // alice[2005,840,1,0,0,0] 에 맞는 구간(V9 6슬롯)
       const { r_s } = (await rp.post('/api/mode3/challenge')).body;
       const good = await alice.login(r_s, disclosure);
       const login = await rp.post('/api/mode3/login', { proof: good.proof, publicSignals: good.publicSignals, sig: good.sig, r_s });
@@ -389,15 +407,16 @@ try {
       const rsShortForm = r_s.slice(0, 8) + '…';   // mode3_rp.js 의 rsShort() 와 같은 규칙
       const mine = (await rp.get('/api/mode3/sessions')).body.sessions.find((s) => s.r_s === rsShortForm);
       assert.ok(mine, '방금 로그인한 세션이 목록에 있어야 한다');
-      assert.deepEqual(mine.disclosure, { mask: '3', lo: ['0', '840', '0', '0'], hi: ['2007', '840', '0', '0'], set: null });
+      assert.deepEqual(mine.disclosure, { mask: '3', lo: ['0', '840', '0', '0', '0', '0'], hi: ['2007', '840', '0', '0', '0', '0'], set: null });
 
       const logins = (await rp.get('/api/mode3/logins')).body.logins;
       assert.equal(logins[logins.length - 1].disclosure.mask, '3');
 
-      // mask ≥ 16 은 Groth16 검증 전에 걸리므로 증명 자체는 손대지 않고 publicSignals[14] 만 바꿔도 충분하다.
+      // mask ≥ 64(V9 6슬롯, PUB_INDEX.DISC_MASK=15) 는 Groth16 검증 전에 걸리므로 증명 자체는 손대지 않고
+      // publicSignals[15] 만 바꿔도 충분하다(lib/mode3_onchain.js 의 PUB_INDEX, lib/mode3_rp.js 의 공개 입력 30개 분해와 같은 색인).
       const { r_s: r_s2 } = (await rp.post('/api/mode3/challenge')).body;
       const bad = await alice.login(r_s2, disclosure);
-      const badPs = [...bad.publicSignals]; badPs[14] = '16';
+      const badPs = [...bad.publicSignals]; badPs[15] = '64';
       const r2 = await rp.post('/api/mode3/login', { proof: bad.proof, publicSignals: badPs, sig: bad.sig, r_s: r_s2 });
       assert.equal(r2.status, 200, j(r2.body));
       assert.equal(r2.body.ok, false);
@@ -431,7 +450,8 @@ try {
       };
       const prove = async (c, rs) => {
         const { tree } = await syncRevocationTree(provider, cia.logAddress);
-        const built = await buildCredentialProof({ uid: 67890n, arid, s_u: reg.s_u, blind_u: ucReq.secrets.blind_u, blind_s: c.blind_s, pk_i: session.pk_i, attrs, credential: c.cred, pk_CIA, pk_trace, tree });
+        const { tree: registry } = await syncRegistryTree(provider, cia.logAddress);
+        const built = await buildCredentialProof({ uid: 67890n, arid, s_u: reg.s_u, r_u: reg.r_u, blind_u: ucReq.secrets.blind_u, blind_s: c.blind_s, pk_i: session.pk_i, attrs, credential: c.cred, pk_CIA, pk_trace, tree, registry, slot: reg.slot, cm_u: reg.cm_u });
         return { proof: built.proof, publicSignals: built.publicSignals, sig: await signChallenge(session.wallet, rs.toString()), r_s: rs };
       };
       const agentCred = await issue(1n, 300n);
@@ -455,14 +475,17 @@ try {
     } finally { provider.destroy(); }
   });
 
-  await t("4'. 사용자 자기 폐기(비밀번호) → 게시 → 재검증 stale_root → 지갑 revoked → 관리자 복구 → PPID 동일", async () => {
+  await t("4'. 사용자 자기 폐기(비밀번호) → 게시 → 재검증 stale_registry_root → 지갑 revoked → 관리자 복구 → PPID 동일", async () => {
     const before = await loginViaRp();
     assert.equal(before.rp.ok, true, j(before));
     const r = await cia.post('/cia/account/self_revoke', { uid, pwd: 'password123' });
     assert.equal(r.status, 200, j(r.body)); assert.equal(r.body.disabled, true);
-    assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
+    // V9: 자기 폐기도 revokeAccount 를 그대로 타 슬롯을 0 으로 비우고 즉시 게시한다 — 수동 게시는 더 낼 것이 없다.
+    assert.equal(r.body.published, true, j(r.body));
+    assert.equal((await cia.adminPost('/cia/publish')).body.published, false);
     const stale = await revalidateViaRp(before.r_s, { skipSync: true });
-    assert.equal(stale.rp.ok, false); assert.equal(stale.rp.reason, 'stale_root');
+    // V9: 자기 폐기도 등록부(슬롯)만 바꾼다 — revRoot 는 그대로라 stale_root 가 아니라 stale_registry_root 다(위 5 와 같은 이유).
+    assert.equal(stale.rp.ok, false); assert.equal(stale.rp.reason, 'stale_registry_root', j(stale.rp));
     const denied = await revalidateViaRp(before.r_s);
     assert.equal(denied.walletStatus, 403, j(denied)); assert.equal(denied.wallet.reason, 'revoked');
     assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid, disabled: false })).status, 200);
@@ -485,7 +508,9 @@ try {
     // 양성 대조: stdout 캡처가 깨져 log() 가 늘 빈 문자열이면 위 "비밀번호가 없다" 단언이 조용히 무장해제된다.
     assert.ok(wallet.log().includes('Mode 3 wallet agent at'), '로그 캡처 양성 대조');
     assert.ok(!wallet.log().includes('password123'), '비밀번호가 지갑 로그에 남았다');
-    assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
+    // V9: 이 프록시도 CIA 의 revokeAccount 결과를 그대로 중계한다 — 즉시 게시됐으니 수동 게시는 더 낼 것이 없다.
+    assert.equal(r.body.published, true, j(r.body));
+    assert.equal((await cia.adminPost('/cia/publish')).body.published, false);
     // 뒤 시나리오들이 로그인을 이어 가므로 복구해 둔다 — 4′ 과 같이 PPID 는 그대로여야 한다.
     assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid, disabled: false })).status, 200);
     const again = await loginViaRp();
@@ -537,6 +562,75 @@ try {
     assert.equal(s3.rp?.ok, true, j(s3)); assert.equal(s3.rp.PPID, PPID1);
   });
 
+  await t('각본 10(V9): 관리자 바꿔치기 → 지갑 로그인 403 registry_mismatch → 되돌리기 → 로그인 ok', async () => {
+    assert.equal((await cia.adminPost('/cia/admin/registry/tamper', { uid })).status, 200);
+    const bad = await loginViaRp();
+    assert.equal(bad.walletStatus, 403, j(bad.wallet)); assert.equal(bad.wallet.reason, 'registry_mismatch');
+    assert.equal((await cia.adminPost('/cia/admin/registry/restore', { uid })).status, 200);
+    const ok = await loginViaRp();
+    assert.equal(ok.walletStatus, 200, j(ok.wallet)); assert.equal(ok.rp.ok, true, j(ok.rp));
+    assert.equal(ok.rp.PPID, PPID1);
+  });
+
+  // 시연 카드(설계 §8.3, mode3/wallet.html): 전문가 보기에서 다음 발급·증명의 s_u·uid 를 한 번만 덮어써 오류 경로를 보여준다.
+  await t('각본 11(V9): 시연 카드 — salt·uid 덮어쓰기(발급) → user_cred_failed(bad user credential proof), 다음 증명 덮어쓰기 → demo_proof_failed', async () => {
+    // 발급 덮어쓰기(scope='issue')를 보려면 먼저 활성 자격증명을 물려야(슬롯 0) ensureUserCred 가 새로 받는 경로를 탄다.
+    const rv = await cia.adminPost('/cia/revoke', { uid, scope: 'credential' });
+    assert.equal(rv.status, 200, j(rv.body)); assert.equal(rv.body.retired, 1, j(rv.body));
+
+    // salt(s_u) 바꾸기 — 다시 받는 C_u 가 등록 커밋(cm_u)과 어긋나 CIA 가 bad user credential proof 로 거절한다.
+    assert.equal((await wallet.post('/wallet/demo/override', { scope: 'issue', s_u: '999999999999999999' })).body.ok, true);
+    const badSalt = await loginViaRp();
+    assert.equal(badSalt.walletStatus, 502, j(badSalt.wallet));
+    assert.equal(badSalt.wallet.reason, 'user_cred_failed', j(badSalt.wallet));
+    assert.equal(badSalt.wallet.cia?.error, 'bad user credential proof', j(badSalt.wallet));
+    assert.equal(badSalt.wallet.demo, 'override:issue');
+
+    // uid 바꾸기 — 요청 본문의 uid 는 진짜로 되돌려 보내지만(스펙 §8.3) C_u 안의 uid 만 바뀌어 같은 사유로 거절된다.
+    assert.equal((await wallet.post('/wallet/demo/override', { scope: 'issue', uid: '99999' })).body.ok, true);
+    const badUid = await loginViaRp();
+    assert.equal(badUid.walletStatus, 502, j(badUid.wallet));
+    assert.equal(badUid.wallet.reason, 'user_cred_failed', j(badUid.wallet));
+    assert.equal(badUid.wallet.cia?.error, 'bad user credential proof', j(badUid.wallet));
+    assert.equal(badUid.wallet.demo, 'override:issue');
+
+    // 덮어쓰기 없이 다시 로그인하면 진짜 비밀로 새 사용자 자격증명을 받아 복구된다 — PPID 는 그대로.
+    const recovered = await loginViaRp();
+    assert.equal(recovered.walletStatus, 200, j(recovered.wallet));
+    assert.equal(recovered.rp.ok, true, j(recovered.rp));
+    assert.equal(recovered.rp.PPID, PPID1);
+
+    // 증명 덮어쓰기(scope='prove')는 다음 로그인(= 새 세션이라 캐시가 비어 반드시 새로 증명한다)에서 걸려
+    // 등록부 포함 증명(V9 조건 9)이 안 만들어진다 — 발급 단계와 구분된 사유(409 demo_proof_failed)로 보인다.
+    assert.equal((await wallet.post('/wallet/demo/override', { scope: 'prove', s_u: '999999999999999999' })).body.ok, true);
+    const badProve = await loginViaRp();
+    assert.equal(badProve.walletStatus, 409, j(badProve.wallet));
+    assert.equal(badProve.wallet.reason, 'demo_proof_failed', j(badProve.wallet));
+    assert.equal(badProve.wallet.demo, 'override:prove');
+
+    // 덮어쓰기는 한 번 쓰면 사라진다 — 다시 로그인하면 정상이고, /wallet/status 의 demoOverride 도 비어 있다.
+    const after = await loginViaRp();
+    assert.equal(after.walletStatus, 200, j(after.wallet));
+    assert.equal(after.rp.ok, true, j(after.rp));
+    assert.equal(after.rp.PPID, PPID1);
+    assert.equal((await wallet.get('/wallet/status')).body.demoOverride, null);
+  });
+
+  await t('각본 12(V9): 두 사용자의 슬롯은 다르고(0·1) 각자 PPID 로 로그인된다', async () => {
+    const accts = (await cia.adminGet('/cia/accounts')).body.accounts;
+    assert.deepEqual(accts.map((a) => [a.uid, a.slot]).sort(), [['12345', 0], ['67890', 1]]);
+    const t1 = await loginViaRp();
+    assert.equal(t1.rp?.ok, true, j(t1)); assert.equal(t1.rp.PPID, PPID1);
+    const alice = await makeAliceAgent();
+    try {
+      const { r_s } = (await rp.post('/api/mode3/challenge')).body;
+      const al = await alice.login(r_s);
+      const r = await rp.post('/api/mode3/login', { proof: al.proof, publicSignals: al.publicSignals, sig: al.sig, r_s });
+      assert.equal(r.status, 200, j(r.body)); assert.equal(r.body.ok, true, j(r.body));
+      assert.notEqual(r.body.PPID, t1.rp.PPID, 'alice 의 PPID 는 testuser 와 달라야 한다');
+    } finally { alice.stop(); }
+  });
+
   await t('bad_rp_cert: cert_s 의 origin 과 다른 origin 을 주장하면 지갑이 403', async () => {
     const info = (await rp.get('/api/mode3/rp_info')).body;
     const { r_s } = (await rp.post('/api/mode3/challenge')).body;
@@ -575,8 +669,11 @@ try {
   // 블록을 상한 너머로 진행시키므로(앞 케이스들의 세션이 만료된다) 끝부분에 둔다.
   await t('Ruling 1: 세션 요청도 root 나이로 fail-closed — 게시 없이 상한을 넘기면 root_too_old, 새 게시 뒤 새 세션은 통과', async () => {
     // 나이를 스스로 0 으로 만든다(속성 변경 → 게시). 앞 케이스의 게시 시점에 기대지 않는다.
-    assert.equal((await cia.adminPost(`/cia/accounts/${uid}/attrs`, { attrs: ['1991', '410', '3', '0'] })).status, 200);
-    assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
+    const a1 = await cia.adminPost(`/cia/accounts/${uid}/attrs`, { attrs: ['1991', '410', '3', '0', '0', '0'] });
+    assert.equal(a1.status, 200, j(a1.body));
+    // V9: 속성 변경이 즉시 게시한다 — 수동 게시는 더 낼 것이 없다.
+    assert.equal(a1.body.published, true, j(a1.body));
+    assert.equal((await cia.adminPost('/cia/publish')).body.published, false);
     const l = await loginViaRp();
     assert.equal(l.rp?.ok, true, j(l.rp));
     const w = await wallet.post('/wallet/request', { r_s: l.r_s, body: 'hello' }, { Origin: rp.origin });
@@ -589,8 +686,10 @@ try {
     const stale = await rp.post('/api/mode3/request', { r_s: l.r_s, body: 'hello', sig: w.body.sig });
     assert.equal(stale.status, 503, j(stale.body)); assert.equal(stale.body.reason, 'root_too_old', j(stale.body));
     // 새 게시가 나이를 0 으로 되돌린다. 게시로 root 가 바뀌므로 옛 세션이 아니라 새 로그인으로 확인한다.
-    assert.equal((await cia.adminPost(`/cia/accounts/${uid}/attrs`, { attrs: ['1992', '410', '3', '0'] })).status, 200);
-    assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
+    const a2 = await cia.adminPost(`/cia/accounts/${uid}/attrs`, { attrs: ['1992', '410', '3', '0', '0', '0'] });
+    assert.equal(a2.status, 200, j(a2.body));
+    assert.equal(a2.body.published, true, j(a2.body));   // V9: 즉시 게시 — 수동 게시는 더 낼 것이 없다.
+    assert.equal((await cia.adminPost('/cia/publish')).body.published, false);
     const l2 = await loginViaRp();
     assert.equal(l2.rp?.ok, true, j(l2.rp));
     const w2 = await wallet.post('/wallet/request', { r_s: l2.r_s, body: 'hi' }, { Origin: rp.origin });
