@@ -1,6 +1,7 @@
 // Mode 3 온체인 실행 모델 성능 실측 (2026-09-18 max_height 지갑 결정 판, 2026-09-21 자격증명 이중 구조 V5,
 // 2026-09-22 선택 공개 V6, 2026-09-23 집합 소속 술어 V7 — 회로 공개 입력 25개(V6 은 23개; V7 에서 set_sel·set_root
-// 추가), AttrGate v2).
+// 추가), AttrGate v2, 2026-10-01 등록부 소속 조건 V9 — 공개 입력 30개(REG_ROOT 추가, attrs 6슬롯), Mode3Log 가
+// revRoot·regRoot 를 한 tx 로 같이 게시(Revoked + SlotUpdated 이벤트)).
 //   node scripts/bench_mode3_onchain.mjs [N]        (기본 N=10, :8545 hardhat 노드 필요)
 //
 // 격리 스택(CIA + 지갑 에이전트, 각자 빈 포트)을 띄우고 실제 HTTP 경로로 측정한다 — 개발 서버(:4100/:5100/:3100)는
@@ -26,7 +27,7 @@ import { VKEY_PATH, ZKEY_PATH } from '../lib/mode3_wallet.js';
 import { createRpVerifier } from '../lib/mode3_rp.js';
 import { randomScalar } from '../lib/mode3_credential.js';
 import { deployVerifier, deployFactory, FACTORY_ABI, deployAttrGate, ATTR_GATE_ABI } from '../lib/mode3_onchain.js';
-import { LOG_ABI } from '../lib/mode3_log.js';
+import { MODE3_LOG_ABI } from '../lib/mode3_log.js';
 
 const N = Number(process.argv[2] || 10);
 const med = (a) => [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)];
@@ -45,7 +46,8 @@ try {
   const pk_CIA = { x: BigInt(keys.pk_CIA.x), y: BigInt(keys.pk_CIA.y) };
   const { arid, cert_s, origin, pk_trace } = await cia.registerRp(stack.rpOriginForWallet);
   const rp = createRpVerifier({ provider, logAddress: cia.logAddress, vkey, pkCIA: pk_CIA, arid: BigInt(arid), chainId: 31337n, pkTrace: pk_trace });
-  const reg = await wallet.post('/wallet/register', { uid, pwd: 'password123', attrs: ['19', '410', '0', '0'] });
+  // V9: /wallet/register 는 uid·pwd 만 받는다 — attrs 는 CIA 의 DEMO_ACCOUNTS(['1990','410','2','0','0','0'])가 정한다(설계 2026-10-01 §7.1).
+  const reg = await wallet.post('/wallet/register', { uid, pwd: 'password123' });
   if (reg.status !== 201) throw new Error(`register ${reg.status} ${j(reg.body)}`);
 
   // 가스: 배포
@@ -109,7 +111,7 @@ try {
   const G = { total: [], gas: [] };
   for (let i = 0; i < N; i++) {
     const gateAddress = await deployAttrGate(signer, { factoryAddress });
-    const disclose = [{ lo: '0', hi: String(1990 + i) }, null, null, null];
+    const disclose = [{ lo: '0', hi: String(1990 + i) }, null, null, null, null, null];
     const set = { slot: 1, members: [410, 392, 840, 276, 250] };
     const t0 = performance.now();
     const r = await wallet.post('/wallet/tx', { r_s: lastRs, to: gateAddress, data: claimSelector, disclose, set }, { Origin: stack.rpOriginForWallet });
@@ -126,7 +128,7 @@ try {
   // hi[0] 를 반복마다 늘려 discKey 를 바꾸고 캐시를 피한다(lo=0 은 항상 만족 — 하한 없음).
   const RA = { gas: [] };
   for (let i = 0; i < N; i++) {
-    const disclose = [{ lo: '0', hi: String(2000 + i) }, null, null, null];
+    const disclose = [{ lo: '0', hi: String(2000 + i) }, null, null, null, null, null];
     const r = await wallet.post('/wallet/tx', { r_s: lastRs, to: deadAddress, disclose }, { Origin: stack.rpOriginForWallet });
     if (r.status !== 200 || !r.body.ok) throw new Error(`range-only tx ${r.status} ${j(r.body)}`);
     RA.gas.push(Number(r.body.gasUsed));
@@ -142,34 +144,50 @@ try {
     S.gas.push(Number(r.body.gasUsed));
   }
 
-  // RevocationLog: 게시(리프 있음)와 하트비트(리프 없음) 가스 — 폐기 한 건을 만들어 정식 게시를 한 번 일으키고, 그 뒤 하트비트를 기다린다
-  const logIface = new ethers.Interface(LOG_ABI);
-  const collectPublishes = async () => {
-    const logs = await provider.getLogs({ address: cia.logAddress, fromBlock: startBlock, toBlock: 'latest' });
+  // Mode3Log(V9, 설계 2026-10-01 §4): revRoot·regRoot 를 한 tx 로 같이 게시한다. publish() 는 항상 Revoked(epoch,root,leaves)
+  // 하나를 내고, 슬롯이 바뀐 만큼(0개 이상) SlotUpdated(epoch,index,leaf) 를 더 낸다(contracts/Mode3Log.sol). 같은 tx 해시에
+  // SlotUpdated 가 있는지로 세 가지를 가른다 — 슬롯 게시(로그인 루프의 /cia/user_cred 가 등록부에 슬롯을 쓴 것) / 리프 게시
+  // (지금부터 세션 하나를 폐기해 만든다) / 하트비트(pending 없이 타이머가 낸다).
+  const log = new ethers.Contract(cia.logAddress, MODE3_LOG_ABI, provider);
+  const classifyPublishes = async () => {
+    const [revokedEvents, slotEvents] = await Promise.all([
+      log.queryFilter(log.filters.Revoked(), startBlock, 'latest'),
+      log.queryFilter(log.filters.SlotUpdated(), startBlock, 'latest'),
+    ]);
+    const slotTxSet = new Set(slotEvents.map((e) => e.transactionHash));
     const out = [];
-    for (const lg of logs) {
-      const rc = await provider.getTransactionReceipt(lg.transactionHash);
-      const tx = await provider.getTransaction(lg.transactionHash);
-      const { args } = logIface.parseTransaction({ data: tx.data });
-      out.push({ leaves: args[2].length, gas: Number(rc.gasUsed) });
+    for (const ev of revokedEvents) {
+      const rc = await provider.getTransactionReceipt(ev.transactionHash);
+      out.push({ leaves: ev.args.leaves.length, hasSlot: slotTxSet.has(ev.transactionHash), gas: Number(rc.gasUsed), blockNumber: ev.blockNumber });
     }
     return out;
   };
-  const rv = await cia.adminPost('/cia/revoke', { uid, scope: 'account' });
-  if (rv.status !== 200) throw new Error(`revoke ${rv.status} ${j(rv.body)}`);
+
+  // 리프 1개 게시: 세션 하나를 폐기한다(scope:'account'/'credential' 은 등록부 슬롯도 같이 바꿔 "리프 1개"가 아니게 된다).
+  // /cia/publish 응답이 txHash 를 직접 주므로(V9 publishNow()) 그 영수증에서 바로 gas 를 읽는다 — 이벤트 스캔이 필요 없다.
+  const sessRevoke = await wallet.post('/wallet/session/revoke', { r_s: lastRs });
+  if (sessRevoke.status !== 200 || !sessRevoke.body.revoked || !sessRevoke.body.inserted) throw new Error(`session revoke ${sessRevoke.status} ${j(sessRevoke.body)}`);
   const pub = await cia.adminPost('/cia/publish');
   if (!pub.body.published) throw new Error(`publish ${j(pub.body)}`);
-  // 하트비트: 5 블록 진행 뒤 CIA 타이머가 빈 게시를 낸다
+  if (pub.body.leaves.length !== 1 || pub.body.slots !== 0) throw new Error(`게시 1건에 리프 1개·슬롯 0개를 기대했다: ${j(pub.body)}`);
+  const leafPublishReceipt = await provider.getTransactionReceipt(pub.body.txHash);
+  const leafPublishGas = Number(leafPublishReceipt.gasUsed);
+
+  // 하트비트: pending 없이 5 블록(CIA_HEARTBEAT_BLOCKS) 더 지나면 CIA 타이머가 빈 게시를 낸다. 방금 리프를 게시한 블록
+  // 이후만 본다 — 로그인 루프 중 자동으로 났을 수 있는 하트비트와 섞이지 않게.
   await provider.send('hardhat_mine', ['0x6']);
-  const deadline = Date.now() + 15_000;
-  let pubs;
-  while (Date.now() < deadline) {
-    pubs = await collectPublishes();
-    if (pubs.some((p) => p.leaves === 0)) break;
+  const heartbeatDeadline = Date.now() + 15_000;
+  let sawHeartbeat = false;
+  while (Date.now() < heartbeatDeadline) {
+    const evs = await log.queryFilter(log.filters.Revoked(), leafPublishReceipt.blockNumber + 1, 'latest');
+    if (evs.some((e) => e.args.leaves.length === 0)) { sawHeartbeat = true; break; }
     await new Promise((r) => setTimeout(r, 300));
   }
-  const publishGas = pubs.filter((p) => p.leaves > 0).map((p) => p.gas);
-  const heartbeatGas = pubs.filter((p) => p.leaves === 0).map((p) => p.gas);
+  if (!sawHeartbeat) console.warn('[bench] 하트비트 게시를 15000ms 안에 못 봤다 — CIA_HEARTBEAT_BLOCKS/POLL_MS 설정을 확인할 것');
+
+  const pubs = await classifyPublishes();
+  const slotPublishGas = pubs.filter((p) => p.hasSlot).map((p) => p.gas);
+  const heartbeatGas = pubs.filter((p) => !p.hasSlot && p.leaves === 0 && p.blockNumber > leafPublishReceipt.blockNumber).map((p) => p.gas);
 
   const zkeyBytes = fs.statSync(ZKEY_PATH).size;
   console.log('');
@@ -178,10 +196,11 @@ try {
   console.log('| 항목 | 값 |');
   console.log('|---|--:|');
   console.log(`| 로그인 전체 왕복(발급+증명, 지갑 HTTP) | ${fmt(L.total)} |`);
+  console.log(`| ├ 첫 로그인(사용자 자격증명 신규 발급 + 등록부 게시 대기 포함) | ${L.total[0].toFixed(0)} ms |`);
   console.log(`| ├ 체인 동기화 syncMs | ${fmt(L.sync)} |`);
   console.log(`| ├ 사용자 자격증명 발급 userCredMs (π_u; 첫 로그인 ${L.userCred[0]} ms, 이후 재사용) | ${fmt(L.userCred)} |`);
   console.log(`| ├ CIA 세션 발급 issueMs (ZKP 없음, sig_u 검증 + 서명) | ${fmt(L.issue)} |`);
-  console.log(`| ├ 증명 proveMs (pi_cred V7) | ${fmt(L.prove)} |`);
+  console.log(`| ├ 증명 proveMs (pi_cred V9) | ${fmt(L.prove)} |`);
   console.log(`| 서비스 verifyLogin (Groth16 + σ + root) | ${fmt(L.verify)} |`);
   console.log(`| 재검증 왕복(캐시 π) | ${fmt(R.total)} |`);
   console.log(`| 재검증 verifyLogin | ${fmt(R.verify)} |`);
@@ -195,10 +214,11 @@ try {
   console.log(`| 계정 배포 gas (factory.deploy, CREATE2) | ${walletDeployGas} |`);
   console.log(`| PiCredVerifier 배포 gas | ${verifierGas} |`);
   console.log(`| Mode3WalletFactory 배포 gas | ${factoryGas} |`);
-  console.log(`| RevocationLog 게시 gas (리프 ${pubs.filter((p) => p.leaves > 0).map((p) => p.leaves).join('/')}) | ${publishGas.join(', ') || '-'} |`);
-  console.log(`| RevocationLog 하트비트 gas (리프 0) | ${heartbeatGas.join(', ') || '-'} |`);
+  console.log(`| Mode3Log 등록부 슬롯 게시 gas (슬롯 1개, SlotUpdated 1건) | ${slotPublishGas.join(', ') || '미측정'} |`);
+  console.log(`| Mode3Log 폐기 리프 게시 gas (리프 1개) | ${leafPublishGas} |`);
+  console.log(`| Mode3Log 하트비트 게시 gas (리프 0, 슬롯 0) | ${heartbeatGas.join(', ') || '미측정(15s 내 관측 안 됨)'} |`);
   console.log(`| zkey 크기 | ${zkeyBytes} bytes |`);
-  console.log(`| 공개 입력 수 | 25 |`);
+  console.log(`| 공개 입력 수 | 30 |`);
 } finally {
   await stack.stop();
 }
