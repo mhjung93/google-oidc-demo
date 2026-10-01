@@ -101,6 +101,29 @@ try {
       .catch(async () => { throw new Error(`초록 점이 셋 미만이다: ${j(await dotClasses(rpPage))}`); });
   });
 
+  await t('V9 등록부 줄: 로그인 뒤 ✓, 관리자 바꿔치기 뒤 다음 폴링에 ✗, 되돌리기 뒤 ✓', async () => {
+    await walletPage.waitForFunction(() => document.querySelector('#registryBadge')?.classList.contains('ok'), undefined, { timeout: 30_000 });
+    assert.equal((await stack.cia.adminPost('/cia/admin/registry/tamper', { uid: '12345' })).status, 200);
+    await walletPage.click('#refreshBtn');
+    await walletPage.waitForFunction(() => document.querySelector('#registryBadge')?.classList.contains('bad'), undefined, { timeout: 30_000 });
+    assert.ok((await text(walletPage, '#registryInfo')).includes('바뀌'), '✗ 문구');
+    assert.equal((await stack.cia.adminPost('/cia/admin/registry/restore', { uid: '12345' })).status, 200);
+    await walletPage.click('#refreshBtn');
+    await walletPage.waitForFunction(() => document.querySelector('#registryBadge')?.classList.contains('ok'), undefined, { timeout: 30_000 });
+  });
+  await t('V9 시연 카드(전문가 보기): salt 를 바꾸고 다음 발급 → 서비스 로그인 결과에 bad user credential proof', async () => {
+    await walletPage.evaluate(() => Demo.setExpert(true));
+    await walletPage.waitForSelector('#demoCard', { state: 'visible' });
+    assert.equal((await stack.cia.adminPost('/cia/revoke', { uid: '12345', scope: 'credential' })).status, 200);   // 다음 로그인이 새로 받게
+    await walletPage.click('#demoNewSalt'); await walletPage.selectOption('#demoScope', 'issue'); await walletPage.click('#demoApplyBtn');
+    await waitText(walletPage, '#demoVerdict', '적용', 10_000);
+    await rpPage.click('#loginBtn');
+    await waitText(rpPage, '#verdict', 'bad user credential proof', 120_000);
+    await rpPage.click('#loginBtn');
+    await waitText(rpPage, '#verdict', '로그인 성공', 180_000);   // 덮어쓰기는 한 번만 — 그다음은 정상
+    await walletPage.evaluate(() => Demo.setExpert(false));
+  });
+
   await t('신원 기관을 내리면 신원 기관 점이 빨강·지갑 점이 노랑이 된다', async () => {
     await stack.cia.stop();          // 격리 CIA 프로세스만 내린다(스택 전체 stop 은 마지막에)
     ciaStopped = true;

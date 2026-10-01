@@ -206,6 +206,24 @@ window.DemoStrings = {
     wallet_cond_range: { ko: '{attr} {lo}–{hi}', en: '{attr} {lo}–{hi}' },
     wallet_cond_set: { ko: '{attr} ∈ 허용 집합', en: '{attr} ∈ allowed set' },
     wallet_cond_agent: { ko: 'AI 에이전트 허용', en: 'Allow AI agent' },
+    // 등록부 확인 줄(V9 §8.2) — 신원 카드의 registryBadge/registryInfo.
+    wallet_registry_ok: { ko: '등록부에서 확인됨', en: 'Confirmed in the registry' },
+    wallet_registry_empty: { ko: '등록부 게시 대기', en: 'Awaiting registry publication' },
+    wallet_registry_mismatch: { ko: '등록부의 내 자격증명이 바뀌었습니다', en: 'My credential in the registry has changed' },
+    wallet_registry_unknown: { ko: '아직 확인 안 됨', en: 'Not checked yet' },
+    wallet_registry_info: { ko: '슬롯 {slot} · epoch {epoch}', en: 'Slot {slot} · epoch {epoch}' },
+    // 시연 카드(V9 §8.3, 전문가 보기 전용) — salt·uid 덮어쓰기.
+    wallet_demo_title: { ko: '시연: 비밀 바꾸기', en: 'Demo: swap the secret' },
+    wallet_demo_desc: { ko: '다음 발급(또는 다음 증명)에 쓸 salt·uid 를 메모리에서만 바꿉니다. 지갑 자체 검사를 건너뛰고 프로토콜이 거절하는 장면을 보입니다. 한 번 쓰면 풀립니다.', en: 'Changes the salt/uid used for the next issuance (or next proof) in memory only. It skips the wallet’s own checks so you can see the protocol itself reject it. It clears itself after one use.' },
+    wallet_demo_apply: { ko: '적용', en: 'Apply' },
+    wallet_demo_clear: { ko: '원래대로', en: 'Restore' },
+    wallet_demo_new_salt: { ko: '새 난수', en: 'New random value' },
+    wallet_demo_scope_issue: { ko: '다음 발급', en: 'Next issuance' },
+    wallet_demo_scope_prove: { ko: '다음 증명', en: 'Next proof' },
+    wallet_demo_set: { ko: '적용됨', en: 'Applied' },
+    wallet_demo_set_summary: { ko: '적용: {scope} ({fields})', en: 'Applied: {scope} ({fields})' },
+    wallet_demo_cleared: { ko: '원래대로', en: 'Restored' },
+    wallet_demo_failed: { ko: '시연 덮어쓰기 실패', en: 'Demo override failed' },
     // 관리자 페이지(cia_admin.html) — 시크릿은 어떤 문구·결과·로그에도 들어가지 않는다.
     admin_auth_title: { ko: '인증 · 최근 결과', en: 'Authentication · last result' },
     admin_auth_desc: { ko: '시크릿은 요청 헤더로만 쓰입니다. 화면·결과 카드·원문 로그 어디에도 남기지 않습니다.', en: 'The secret is only used as a request header. It never appears on screen, in a result card or in the raw log.' },
@@ -357,6 +375,7 @@ window.DemoStrings = {
     attr3: { ko: '예비', en: 'Spare', expert: 'attrs[3] (a₄)' },
     attr4: { ko: '속성 5', en: 'Attribute 5', expert: 'attrs[4] (a₅), 64-bit' },
     attr5: { ko: '속성 6', en: 'Attribute 6', expert: 'attrs[5] (a₆), 64-bit' },
+    registry: { ko: '등록부', en: 'Registry', expert: 'regRoot · 슬롯 리프 Poseidon(cm_u, Cf_u)' },
   },
   // target 은 체험 모드 말풍선이 가리킬 요소 id(페이지별). tour 는 그 말풍선의 제목·한 줄 설명이다(설계 2026-09-25 §3.4).
   steps: [
@@ -393,6 +412,7 @@ window.DemoStrings = {
     // where: 'rp' | 'wallet' | 'page' | 'aa'. 각 항목의 cause·action 은 그 코드를 내는 소스의 실제 조건을 보고 썼다
     // (lib/mode3_rp.js verifyLogin, mode3_rp.js 세션 라우트, mode3_wallet_agent.js, lib/mode3_onchain.js, cia.js, mode3/wallet.html).
     stale_root: { where: 'rp', ko: { title: '폐기 목록이 오래됐습니다', cause: '지갑이 최신 폐기 목록으로 증명하지 않았습니다.', action: '"동기화 생략"을 끄고 다시 재검증하세요.' }, en: { title: 'Revocation list is stale', cause: 'The wallet did not prove against the latest revocation list.', action: 'Turn off "skip sync" and revalidate again.' } },
+    stale_registry_root: { where: 'rp', ko: { title: '등록부 버전이 오래됐습니다', cause: '지갑이 최신 등록부 root 가 아니라 오래된 root 로 증명을 만들었습니다 — 그 사이 등록부가 바뀌었습니다.', action: '지갑에서 다시 로그인하세요.' }, en: { title: 'The registry version is stale', cause: 'The wallet produced the proof against an old registry root — the registry changed in the meantime.', action: 'Log in again from the wallet.' } },
     root_too_old: { where: 'rp', ko: { title: '폐기 목록이 너무 오래 게시되지 않았습니다', cause: '마지막 게시 이후 지난 블록 수가 허용 한도(maxRootAge)를 넘었습니다 — 신원 기관의 게시가 멈춘 것입니다.', action: '신원 기관을 살리고 관리자 페이지에서 폐기 목록을 게시한 뒤 다시 시도하세요.' }, en: { title: 'Revocation list has not been published recently enough', cause: 'More blocks have passed since the last publication than the limit (maxRootAge) allows — the authority stopped publishing.', action: 'Bring the authority back up, publish the revocation list from the admin page, then try again.' } },
     revalidate_required: { where: 'rp', ko: { title: '세션을 다시 검증해야 합니다', cause: '이 세션을 만든 뒤 폐기 목록이 새로 게시돼 버전이 달라졌습니다.', action: '"세션 재검증"을 먼저 누른 뒤 요청을 다시 보내세요.' }, en: { title: 'The session must be revalidated', cause: 'A new revocation list was published after this session was created, so the versions differ.', action: 'Press "revalidate session" first, then send the request again.' } },
     predicate_unmet: { where: 'rp', ko: { title: '요구한 조건을 만족하지 못했습니다', cause: '로그인 자체는 유효하지만 서비스가 요구한 조건(허용 국가 집합 소속 또는 최소 나이)이 공개된 값으로 충족되지 않았습니다.', action: '그 조건을 공개하도록 지갑에서 다시 로그인하거나, 로그인 화면에서 요구 조건을 끄세요.' }, en: { title: 'The required condition was not met', cause: 'The login itself is valid, but the disclosed values do not satisfy the condition the service required (membership in the allowed country set, or a minimum age).', action: 'Log in again disclosing that condition, or turn the requirement off on the login form.' } },
@@ -423,6 +443,12 @@ window.DemoStrings = {
     unknown_session: { where: 'aa', ko: { title: '신원 기관에 그 세션 기록이 없습니다', cause: '폐기하려는 세션이 이 계정의 기록에 없습니다 — 세션 기록을 남기기 전에 발급됐거나 만료 정리로 사라졌습니다.', action: '그 세션은 만료로만 끝납니다 — 새로 로그인한 세션에서 다시 시도하세요.' }, en: { title: 'The authority has no record of that session', cause: 'The session you are revoking is not in this account’s records — it was issued before session records existed, or was cleaned up after expiry.', action: 'That session can only end by expiry — try again with a freshly created session.' } },
     no_user_cred: { where: 'aa', ko: { title: '이 자격증명은 더 이상 유효하지 않습니다', cause: '지갑이 들고 있는 자격증명이 신원 기관에서 이미 물려(retire) 활성 자격증명이 아닙니다 — 발급을 처리하는 사이에 계정이 폐기되거나 자격증명이 바뀐 경우에도 같습니다.', action: '지갑에서 다시 로그인하면 새 자격증명을 받습니다.' }, en: { title: 'This credential is no longer active', cause: 'The credential the wallet holds has been retired at the authority and is not the active one — this also covers the account being disabled or the credential changing while issuance was in flight.', action: 'Log in again from the wallet to receive a fresh credential.' } },
     user_cred_retired: { where: 'wallet', ko: { title: '새 자격증명을 받지 못했습니다', cause: '신원 기관에서 자격증명이 이미 물렸고 지갑이 새로 받는 것도 실패했습니다(연속 폐기·경합).', action: '잠시 뒤 다시 로그인하세요.' }, en: { title: 'Could not obtain a fresh credential', cause: 'The credential was already retired at the authority and the wallet’s retry to obtain a new one also failed (back-to-back revocation or a race).', action: 'Log in again in a moment.' } },
+    // 등록부 확인(V9 §8.2)·시연 덮어쓰기(V9 §8.3)가 내는 사유.
+    registry_mismatch: { where: 'wallet', ko: { title: '등록부의 내 자격증명이 바뀌었습니다', cause: '체인에 게시된 내 슬롯의 자격증명이 지갑이 든 것과 다릅니다. 내가 요청한 재발급이 아니라면 신원 기관의 부정입니다.', action: '관리자 페이지에서 되돌리거나 신원 기관에 문의하세요. 지갑은 로그인을 시도하지 않습니다.' }, en: { title: 'The registry holds a different credential for me', cause: 'The credential published in my registry slot differs from the one this wallet holds. Unless I requested a re-issuance, the authority misbehaved.', action: 'Restore it from the admin page or contact the authority. The wallet will not attempt a login.' } },
+    registry_unpublished: { where: 'wallet', ko: { title: '등록부 게시 대기', cause: '새 자격증명이 아직 체인 등록부에 오르지 않았습니다(30초 기다렸습니다).', action: '신원 기관의 게시(하트비트)를 확인하고 다시 로그인하세요.' }, en: { title: 'Waiting for registry publication', cause: 'The new credential has not appeared in the on-chain registry (waited 30 s).', action: 'Check the authority’s publication and log in again.' } },
+    registry_slot_unknown: { where: 'wallet', ko: { title: '슬롯 번호를 몰라 등록부를 확인할 수 없습니다', cause: '옛 등록에 슬롯 번호가 없습니다 — 신원 기관에 슬롯을 묻는 절차는 로그인 때만 실행됩니다.', action: '서비스에서 다시 로그인하세요.' }, en: { title: 'The registry cannot be checked without a slot number', cause: 'This older registration has no slot number — asking the authority for one only happens during login.', action: 'Log in again at the service.' } },
+    demo_proof_failed: { where: 'wallet', ko: { title: '증명 생성 실패(시연)', cause: '서명된 자격증명과 증인이 다릅니다 — C_u 재계산·등록부 리프가 어긋나 회로가 거절했습니다.', action: '"원래대로" 로 덮어쓰기를 풀고 다시 시도하세요.' }, en: { title: 'Proof generation failed (demo)', cause: 'The witness no longer matches the signed credential — the recomputed C_u and registry leaf disagree, so the circuit rejected it.', action: 'Clear the override and try again.' } },
+    slot_failed: { where: 'wallet', ko: { title: '슬롯 번호를 받지 못했습니다', cause: '옛 등록에 슬롯이 없어 신원 기관에 물었지만 실패했습니다.', action: '신원 기관 상태를 확인하세요.' }, en: { title: 'Could not fetch the slot number', cause: 'This older registration has no slot and the authority did not answer.', action: 'Check the authority.' } },
     // 관리자·계정 페이지가 HTTP 상태에서 붙이는 코드(cia.js 는 이 경로들에 reason 을 싣지 않고 error 문자열만 낸다).
     admin_secret_required: { where: 'aa', ko: { title: '관리자 기능이 꺼져 있습니다', cause: '신원 기관에 CIA_ADMIN_SECRET 이 설정돼 있지 않아 관리자 엔드포인트가 전부 비활성입니다(503).', action: '신원 기관 서버에 CIA_ADMIN_SECRET 을 설정하고 다시 띄우세요.' }, en: { title: 'Admin functions are disabled', cause: 'The authority has no CIA_ADMIN_SECRET configured, so every admin endpoint is off (503).', action: 'Set CIA_ADMIN_SECRET on the authority server and restart it.' } },
     admin_unauthorized: { where: 'aa', ko: { title: '관리자 시크릿이 맞지 않습니다', cause: '요청 헤더에 실린 시크릿이 신원 기관에 설정된 값과 다릅니다(401).', action: '인증 카드에 올바른 시크릿을 다시 넣으세요.' }, en: { title: 'The admin secret does not match', cause: 'The secret sent in the request header differs from the one configured at the authority (401).', action: 'Enter the correct secret again in the authentication card.' } },

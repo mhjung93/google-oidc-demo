@@ -33,6 +33,7 @@
       <dl class="kv">
         <dt data-term="AA">신원 기관</dt><dd id="aaInfo">-</dd>
         <dt data-term="cred">내 자격증명</dt><dd id="credInfo">-</dd>
+        <dt data-term="registry">등록부</dt><dd><span id="registryBadge" class="badge muted">-</span> <span id="registryInfo"></span></dd>
       </dl>
       <span id="fileRegFields"><label>uid <input id="uid" value="12345" size="8" /></label> <label>pwd <input id="pwd" type="password" value="password123" size="12" /></label><br /></span>
       <dl class="kv" id="attrsView">
@@ -40,6 +41,8 @@
         <dt data-term="attr1">국가</dt><dd><input id="attr1" size="6" readonly /></dd>
         <dt data-term="attr2">등급</dt><dd><input id="attr2" size="6" readonly /></dd>
         <dt data-term="attr3">예비</dt><dd><input id="attr3" size="6" readonly /></dd>
+        <dt data-term="attr4">속성 5</dt><dd><input id="attr4" size="6" readonly /></dd>
+        <dt data-term="attr5">속성 6</dt><dd><input id="attr5" size="6" readonly /></dd>
       </dl>
       <p>
         <button id="registerBtn" data-i18n="wallet_register_btn">등록</button>
@@ -89,6 +92,12 @@
           <div><label><input type="checkbox" id="dk3" /> <span data-term="attr3">예비</span></label>
             <label><span data-i18n="wallet_lo">최소</span> <input id="discLo3" size="10" /></label>
             <label><span data-i18n="wallet_hi">최대</span> <input id="discHi3" size="10" /></label></div>
+          <div><label><input type="checkbox" id="dk4" /> <span data-term="attr4">속성 5</span></label>
+            <label><span data-i18n="wallet_lo">최소</span> <input id="discLo4" size="10" /></label>
+            <label><span data-i18n="wallet_hi">최대</span> <input id="discHi4" size="10" /></label></div>
+          <div><label><input type="checkbox" id="dk5" /> <span data-term="attr5">속성 6</span></label>
+            <label><span data-i18n="wallet_lo">최소</span> <input id="discLo5" size="10" /></label>
+            <label><span data-i18n="wallet_hi">최대</span> <input id="discHi5" size="10" /></label></div>
         </div>
         <p><button id="discExactBtn" type="button" class="btn-ghost" data-i18n="wallet_disc_exact_btn">내 실제 값으로 채우기(체크한 조건)</button></p>
         <div id="setRow">
@@ -99,6 +108,8 @@
               <option value="1" data-term="attr1">국가</option>
               <option value="2" data-term="attr2">등급</option>
               <option value="3" data-term="attr3">예비</option>
+              <option value="4" data-term="attr4">속성 5</option>
+              <option value="5" data-term="attr5">속성 6</option>
             </select></label>
           <label><span data-i18n="wallet_set_members">허용 원소</span> <input id="setMembers" value="410,392,840,276,250" size="28" /></label>
         </div>
@@ -112,6 +123,16 @@
       <p class="muted expert"><span data-term="proof">영지식 증명</span> — <span id="txProofInfo"></span></p>
       <pre id="txLog" class="expert"></pre>
       <p class="muted" data-i18n="wallet_tx_hash_hint">이 해시를 서비스 페이지의 "해시로 요청"에 붙여 넣으면 승인 개봉을 시연할 수 있습니다.</p>
+    </section>
+
+    <section class="card expert" id="demoCard">
+      <h3 data-i18n="wallet_demo_title">시연: 비밀 바꾸기</h3>
+      <p class="desc" data-i18n="wallet_demo_desc">다음 발급(또는 다음 증명)에 쓸 salt·uid 를 메모리에서만 바꿉니다. 지갑 자체 검사를 건너뛰고 프로토콜이 거절하는 장면을 보입니다. 한 번 쓰면 풀립니다.</p>
+      <p><label>salt <input id="demoSalt" size="24" /></label> <button id="demoNewSalt" type="button" class="btn-ghost" data-i18n="wallet_demo_new_salt">새 난수</button>
+         <label>uid <input id="demoUid" size="8" /></label>
+         <select id="demoScope"><option value="issue" data-i18n="wallet_demo_scope_issue">다음 발급</option><option value="prove" data-i18n="wallet_demo_scope_prove">다음 증명</option></select>
+         <button id="demoApplyBtn" class="danger" data-i18n="wallet_demo_apply">적용</button> <button id="demoClearBtn" class="btn-ghost" data-i18n="wallet_demo_clear">원래대로</button></p>
+      <div id="demoVerdict"></div>
     </section>
 
     <!-- snap 모드 전용(스펙 §3.2). file 모드에서는 숨긴 채로 둔다. -->
@@ -186,7 +207,8 @@
     const pendingVerdict = (el, key) => setVerdict(el, null, key, { pending: true });
     /**
      * '자세히'에 실을 응답 본문. 에이전트 응답에는 지갑 밖으로 내면 안 되는 값이 섞여 있다 —
-     * /wallet/register 의 sk_u(snap 모드), 로그인·재동기화의 userCredIssued(blind_u)·attrsChanged.
+     * 로그인·재동기화의 userCredIssued(blind_u)·attrsChanged. 요청의 sk_u 는 Snap 이 준 값으로 한 번만 지나간다
+     * (응답에는 없다 — 혹시 몰라 아래서 함께 거른다).
      * 이 페이지는 그 값들을 Snap 에 넘길 뿐 화면·DOM 에 남기지 않는다(browser 테스트의 "비밀은 Snap 에만" 계약).
      */
     const safeDetail = (b) => { const { sk_u, pwd, witness, userCredIssued, attrsChanged, ...rest } = b ?? {}; return rest; };
@@ -432,7 +454,7 @@
     function renderIdentity() {
       const s = lastStatus;
       lastAttrs = s?.attrs ?? null;
-      for (let k = 0; k < 4; k++) $('attr' + k).value = lastAttrs ? lastAttrs[k] : '';
+      for (let k = 0; k < 6; k++) $('attr' + k).value = lastAttrs ? lastAttrs[k] : '';
       const badge = $('regBadge');
       badge.className = `badge ${s?.registered ? 'ok' : 'muted'}`;
       tte(badge, s?.registered ? 'wallet_reg_yes' : 'wallet_reg_no');
@@ -443,6 +465,16 @@
       $('aaInfo').textContent = s?.ciaUrl || tt('wallet_aa_none') || '-';
       // 등록 폼은 미등록일 때만 펼친다(설계 §4.1). snap 모드는 Snap 이 묻는다 — 항상 접힌 채다.
       if (cfg.secrets !== 'snap') $('fileRegFields').hidden = Boolean(s?.registered);
+
+      // 등록부 확인 줄(V9 §8.2) — regBadge/regInfo 와 같은 badge+디테일 모양이되, 상태 문구(key)를 디테일 쪽에도 겹쳐
+      // 보인다: 짧은 badge 만으로는 "바뀜" 류의 판정 이유가 한눈에 읽히지 않아서다(브리프 위치는 그대로, 문구만 합친다).
+      const rg = s?.registry ?? null;
+      const rb = $('registryBadge');
+      const key = !rg ? 'wallet_registry_unknown' : rg.match === true ? 'wallet_registry_ok' : rg.leaf === '0' ? 'wallet_registry_empty' : 'wallet_registry_mismatch';
+      rb.className = `badge ${!rg ? 'muted' : rg.match === true ? 'ok' : rg.leaf === '0' ? 'warn' : 'bad'}`;
+      tte(rb, key);
+      const slotInfo = rg ? (tt('wallet_registry_info', { slot: rg.slot, epoch: rg.epoch }) || `슬롯 ${rg.slot} · epoch ${rg.epoch}`) : '';
+      $('registryInfo').textContent = rg ? [tt(key), slotInfo].filter(Boolean).join(' · ') : '';
     }
 
     // ---- 로그인 세션 카드 + 트랜잭션 세션 선택 ----
@@ -532,9 +564,9 @@
       if (snap) $('registerBtn').title = tt('wallet_register_title_snap');
     }
 
-    async function refresh() {
+    async function refresh(sync = false) {
       try {
-        const r = await fetch('/wallet/status');
+        const r = await fetch(sync ? '/wallet/status?sync=1' : '/wallet/status');
         lastStatus = await r.json();
         statusError = null;
       } catch (e) {
@@ -610,7 +642,7 @@
       } finally { btn.disabled = false; refresh(); }
     }
     $('txSession').addEventListener('change', applyTxDefaults);
-    $('refreshBtn').addEventListener('click', refresh);
+    $('refreshBtn').addEventListener('click', () => refresh(true));
 
     // 등록: file 모드는 지금처럼 폼의 uid·pwd, snap 모드는 Snap 이 묻고(§4.1) 페이지는 cm_u 만 나른다.
     // 비밀번호는 Snap → 페이지 → 에이전트 → CIA 를 한 번 지날 뿐이다 — 화면·로그 어디에도 남기지 않는다.
@@ -701,7 +733,7 @@
     // "정확히 공개": 체크된 슬롯의 lo=hi=내 현재 속성값으로 채운다.
     $('discExactBtn').addEventListener('click', () => {
       if (!lastAttrs) return;
-      for (let k = 0; k < 4; k++) {
+      for (let k = 0; k < 6; k++) {
         if ($('dk' + k).checked) { $('discLo' + k).value = lastAttrs[k]; $('discHi' + k).value = lastAttrs[k]; }
       }
     });
@@ -712,7 +744,7 @@
     });
 
     // 체크된 슬롯만 {lo, hi}, 나머지는 null — normalizeDisclosure(lib/mode3_wallet.js) 가 회로 입력(mask/lo/hi)으로 바꾼다.
-    const readDisclose = () => [0, 1, 2, 3].map((k) => ($('dk' + k).checked ? { lo: $('discLo' + k).value.trim(), hi: $('discHi' + k).value.trim() } : null));
+    const readDisclose = () => [0, 1, 2, 3, 4, 5].map((k) => ($('dk' + k).checked ? { lo: $('discLo' + k).value.trim(), hi: $('discHi' + k).value.trim() } : null));
     // 집합 소속(V7): 슬롯이 "없음" 이면 null — 지갑이 members 로 root 를 계산해 증명에 넣는다(normalizeSet, lib/mode3_wallet.js).
     const readSet = () => { const s = $('setSlot').value; if (s === '') return null; return { slot: Number(s), members: $('setMembers').value.split(',').map((x) => x.trim()).filter(Boolean) }; };
     const txForm = () => ({ r_s: $('txSession').value, to: $('txTo').value.trim(), value: $('txValue').value.trim() || '0', data: $('txData').value.trim() || '0x', disclose: readDisclose(), set: readSet() });
@@ -827,6 +859,19 @@
       } finally { $('txBtn').disabled = false; refresh(); }
     });
 
+    // ---- 시연 카드(V9 §8.3, 전문가 보기 전용): 다음 발급/증명의 salt·uid 를 메모리에서만 덮어쓴다 ----
+    $('demoNewSalt').addEventListener('click', () => { const b = new Uint8Array(32); crypto.getRandomValues(b); b[0] &= 0x03; $('demoSalt').value = BigInt('0x' + [...b].map((x) => x.toString(16).padStart(2, '0')).join('')).toString(); });   // 2^250 미만
+    $('demoApplyBtn').addEventListener('click', async () => {
+      const body = { scope: $('demoScope').value };
+      if ($('demoSalt').value.trim()) body.s_u = $('demoSalt').value.trim();
+      if ($('demoUid').value.trim()) body.uid = $('demoUid').value.trim();
+      const { status, body: b } = await postJson('/wallet/demo/override', body);
+      if (status !== 200) { setVerdict($('demoVerdict'), false, 'wallet_demo_failed', { reason: b.error ?? `HTTP ${status}` }); return; }
+      setVerdict($('demoVerdict'), true, 'wallet_demo_set', () => ({ summary: tt('wallet_demo_set_summary', { scope: b.override.scope, fields: b.override.fields.join(', ') }) || `적용: ${b.override.scope} (${b.override.fields.join(', ')})` }));
+      refresh();
+    });
+    $('demoClearBtn').addEventListener('click', async () => { await postJson('/wallet/demo/override', { clear: true }); setVerdict($('demoVerdict'), true, 'wallet_demo_cleared', () => ({ summary: tt('wallet_demo_cleared') || '원래대로' })); refresh(); });
+
     // ---- snap 모드 전용 버튼 ----
     $('connectBtn').addEventListener('click', async () => {
       try { await connectMetaMask(); }
@@ -909,6 +954,10 @@
         return;
       }
       refresh();
+      // 등록부 확인 줄(V9 §8.2)은 다른 창(서비스 페이지의 로그인, 관리자의 바꿔치기)이 바꾼 서버 상태를 반영해야 한다 —
+      // 이 페이지 혼자서는 그 일을 모르므로 가볍게(강제 재동기화 없이) 주기적으로 다시 읽는다. 탭이 숨겨지면 쉰다
+      // (Demo.stack 의 상태 폴링과 같은 주기). 강제 재동기화는 새로고침 버튼(?sync=1)만 한다.
+      setInterval(() => { if (!document.hidden) refresh(); }, 5000);
     }
     init();
   </script>

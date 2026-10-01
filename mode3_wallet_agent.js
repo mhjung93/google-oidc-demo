@@ -356,6 +356,11 @@ app.get('/mode3/health', async (req, res) => {
 app.get('/wallet/status', async (req, res) => {
   let head = null;
   try { head = (await provider.getBlockNumber()).toString(); } catch { /* 체인 없음 */ }
+  // 새로고침 버튼(?sync=1, V9 §8.2): 관리자가 등록부를 바꿔치기한 뒤처럼, 이 페이지가 강제로 다시 동기화해
+  // 등록부 확인 줄(lastRegistry)을 갱신하고 싶을 때 쓴다. 실패해도(체인 없음 등) 응답은 지금까지의 값으로 낸다.
+  if (req.query.sync === '1' && rcl && state.registration) {
+    try { const synced = await syncAll(); await registryCheck(synced, state.registration, state.registration.userCred); } catch { /* 체인 없음 */ }
+  }
   const sessions = {};
   for (const [r_s, e] of Object.entries(state.sessions)) {
     sessions[r_s] = { arid: e.arid, PPID: e.PPID, max_height: e.credential.max_height, chainid: e.credential.chainid, allowAgent: e.allowAgent, factoryAddress: e.factoryAddress, attrGateAddress: e.attrGateAddress ?? null, sessionAddress: new ethers.Wallet(e.sessionPrivKey).address, issuedAt: e.issuedAt, pk_trace: e.pk_trace };

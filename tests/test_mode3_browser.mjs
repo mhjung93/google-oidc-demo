@@ -159,7 +159,7 @@ try {
     assert.ok((await text(walletPage, '#registerResult')).includes('1990'), 'AA 속성이 화면에 온다');
     assert.equal(dialogs.length, 2, '대화상자 두 번(uid·비밀번호)');
     assert.ok(snapState?.registration?.s_u, '등록 비밀 s_u 는 Snap 상태에 있다');
-    assert.ok(snapState.registration.sk_u, 'storeRegistration 이 sk_u 를 넣었다');
+    assert.ok(snapState.registration.sk_u, 'register 가 sk_u 를 만들었다');
     assert.equal(snapState.registration.uid, '12345');
     assert.equal('pwd' in snapState.registration, false, '비밀번호는 Snap 에 저장되지 않는다');
     const s = (await wallet.get('/wallet/status')).body;
@@ -398,14 +398,15 @@ try {
   await t('AA 속성 변경 뒤 로그인: Snap 의 속성이 갱신되고 새 C_u 가 남는다(syncAttrs → updateUserCred 순서)', async () => {
     const beforeCf = snapState.userCred?.Cf_u ?? null;
     assert.ok(beforeCf, '시작 시 Snap 에 C_u 가 있다');
-    assert.deepEqual(snapState.registration.attrs, ['1990', '410', '2', '0']);
-    assert.equal((await stack.cia.adminPost('/cia/accounts/12345/attrs', { attrs: ['1990', '410', '3', '0'] })).status, 200);
-    assert.equal((await stack.cia.adminPost('/cia/publish')).body.published, true);
+    assert.deepEqual(snapState.registration.attrs, ['1990', '410', '2', '0', '0', '0']);
+    // V9: 속성 변경은 활성 자격증명의 슬롯을 즉시 비우고 게시한다(cia.js) — 별도로 /cia/publish 를 부를 필요가 없다
+    // (tests/test_mode3_wallet_agent.mjs 의 같은 흐름과 동일한 근거).
+    assert.equal((await stack.cia.adminPost('/cia/accounts/12345/attrs', { attrs: ['1990', '410', '3', '0', '0', '0'] })).status, 200);
     answers.push(true);                        // 로그인 동의
     const [popup] = await Promise.all([context.waitForEvent('page'), rpPage.click('#loginBtn')]);
     await waitText(rpPage, '#verdict', '로그인 성공', 240_000);
     await awaitPopupClosed(popup);
-    assert.deepEqual(snapState.registration.attrs, ['1990', '410', '3', '0'], 'syncAttrs 가 Snap 의 속성을 갱신했다');
+    assert.deepEqual(snapState.registration.attrs, ['1990', '410', '3', '0', '0', '0'], 'syncAttrs 가 Snap 의 속성을 갱신했다');
     assert.ok(snapState.userCred, '새 C_u 가 Snap 에 남아 있어야 한다(syncAttrs 를 나중에 하면 지워진다)');
     assert.notEqual(snapState.userCred.Cf_u, beforeCf, '옛 C_u 가 아니라 새로 받은 것이다');
     assert.equal((await wallet.get('/wallet/status')).body.userCred.Cf_u, snapState.userCred.Cf_u, '에이전트의 공개 Cf_u 와 같다');
