@@ -126,12 +126,16 @@ try {
     await waitText(walletPage, '#demoVerdict', '적용', 10_000);
     await rpPage.click('#loginBtn');
     await waitText(rpPage, '#verdict', 'bad user credential proof', 120_000);
-    // 2026-10-01 리뷰 Important 1: 시연 모드 실패는 제목 줄 앞에 "[시연 모드] " 를 붙이고, 사전에 있다면 그 뒤에
-    // 평소처럼 사유 제목이 온다(이 사유 — user_cred_failed — 는 사전에 없을 수 있다. 그래도 접두는 반드시 있어야 한다).
+    // 2026-10-01 리뷰 Important 1 + round 2: 시연 모드 실패는 제목 줄 앞에 "[시연 모드] " 를 붙이고, 그 뒤에
+    // 사유 사전의 제목(이 시나리오의 사유는 user_cred_failed)이 **비지 않고** 그대로 와야 한다. round 1 때는
+    // 이 사유가 사전에 없어 "포함" 검사가 빈 문자열을 상대로 공허하게 통과했다 — round 2 가 사전에 그 코드를
+    // 추가했으므로, 접두 뒤 나머지가 비어 있지 않은지까지 확인해야 실제로 변별력이 있다.
     const ucFailedTitle = await rpPage.evaluate(() => window.DemoStrings?.reasons?.user_cred_failed?.ko?.title ?? '');
     const demoSummary = await rpPage.$eval('#verdict .summary', (el) => el.textContent);
     assert.ok(demoSummary.startsWith('[시연 모드] '), `시연 접두가 없다: ${demoSummary}`);
-    assert.ok(demoSummary.includes(ucFailedTitle), `사유 제목이 없다: ${demoSummary}`);
+    const demoRemainder = demoSummary.slice('[시연 모드] '.length);
+    assert.notEqual(demoRemainder, '', `사유 제목이 비어 있다(공허한 통과를 막는 검사): ${demoSummary}`);
+    assert.equal(demoRemainder, ucFailedTitle, `사유 제목이 사전과 다르다: ${demoSummary}`);
     await rpPage.click('#loginBtn');
     await waitText(rpPage, '#verdict', '로그인 성공', 180_000);   // 덮어쓰기는 한 번만 — 그다음은 정상
     await walletPage.evaluate(() => Demo.setExpert(false));

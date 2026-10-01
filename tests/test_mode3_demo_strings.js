@@ -19,7 +19,7 @@ const NEEDLES = { login_ok: '로그인 성공', registered: '등록됨', tx_ok: 
 const REASONS = ['stale_root', 'stale_registry_root', 'root_too_old', 'revalidate_required', 'predicate_unmet', 'factory_constants_unavailable', 'registration_pending', 'bad_signature', 'bad_rp_cert', 'bad_proof', 'expired', 'malformed',
   'revoked', 'revoked_session', 'account_disabled', 'needs_consent', 'bad_factory', 'no_code', 'factory_code_mismatch', 'verifier_code_mismatch', 'allow_agent_mismatch', 'no_session', 'not_registered', 'cia_unavailable', 'witness_required', 'internal',
   'user_denied', 'snap_unavailable', 'wallet_error', 'unknown_session', 'no_user_cred', 'user_cred_retired',
-  'registry_mismatch', 'registry_unpublished', 'registry_slot_unknown', 'demo_proof_failed', 'slot_failed',
+  'registry_mismatch', 'registry_unpublished', 'registry_slot_unknown', 'user_cred_failed', 'demo_proof_failed', 'slot_failed',
   'admin_secret_required', 'admin_unauthorized', 'unknown_account', 'invalid_credentials'];
 
 t('langs 는 ko, en', () => assert.deepEqual(S.langs, ['ko', 'en']));
