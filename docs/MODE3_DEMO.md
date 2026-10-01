@@ -165,8 +165,9 @@ RP 페이지는 반드시 `127.0.0.1`로 연다 — 지갑 에이전트의 CORS 
   "로그인 세션 (r_s, pk_i, max_height)", "공개할 속성 조건 (disc_mask, lo[4], hi[4], set_sel, set_root)" 등.
 - RP 의 서비스 상태 카드에 `arid`·`cert_s`·`pk_trace`·`RevocationLog`·팩토리·`AttrGate` 주소 한 줄, 로그인 기록 표에
   `세션 r_s`·`폐기 목록 root` 열, 관리자 서비스 표에 `서비스 식별자`(arid) 열이 더 나온다.
-- RP (내 세션) 카드의 **"skipSync (stale_root 시연)" 체크박스** — 각본 5 의 `stale_root` 시연은 이제 **전문가 보기를
-  먼저 켜야** 보인다.
+- RP (내 세션) 카드의 **"skipSync (stale_root 시연)" 체크박스**(UI 라벨은 그대로다) — 각본 5 시연은 이제 **전문가 보기를
+  먼저 켜야** 보인다. 체크박스 이름은 `stale_root` 지만 V9 에서 각본 5(계정 폐기 뒤)의 실제 결과는 등록부만 바뀐
+  `stale_registry_root` 다 — 폐기 목록(revocation list) 쪽이 낡았을 때라면 이름 그대로 `stale_root` 가 나온다.
 
 ## 페이지 구성 (2026-09-24 UX 개선)
 
@@ -331,7 +332,7 @@ CIA 는 지갑 오리진을 알 방법이 없으므로 **`MODE3_WALLET_AGENT_ORI
 | 4 | 관리자 | (계정) uid 를 넣고 "계정 폐기" → (폐기 목록) "게시(체인에 올리기)" | V9: 계정 폐기 자체가 **등록부 슬롯을 0 으로 즉시 게시**한다(`published:true`, epoch +1) — 뒤이은 "게시" 는 더 낼 것이 없어 `published:false` |
 | 4′ | 사용자 페이지 → 관리자 | (4 대신) 내 계정 페이지의 "내 계정 폐기" → 관리자 "게시(체인에 올리기)" | `disabled:true`, 이후 5~8 동일 |
 | 4″ | 지갑 → 관리자 → RP | (4 대신, V8) 세션 둘을 만든 뒤 지갑 (로그인 세션) 목록에서 한 세션의 "이 세션 끝내기(폐기)" → 관리자 "게시(체인에 올리기)" → RP 에서 두 세션을 각각 재검증 | **세션 하나만 죽는다** — 폐기한 세션은 지갑에서 이미 사라져 재검증이 404 `no_session`(지갑 밖에서 관리자가 폐기했으면 403 `revoked_session`), 다른 세션은 그대로 ok, 새 로그인도 ok(같은 PPID). 계정 폐기(4)와 달리 `account_disabled` 가 아니다 |
-| 5 | RP | **전문가 보기를 켜고** (내 세션) "skipSync (stale_root 시연)" 체크 → "세션 재검증" | 거절 `stale_root`. "세션 요청 보내기" 는 `revalidate_required` |
+| 5 | RP | **전문가 보기를 켜고** (내 세션) "skipSync (stale_root 시연)" 체크 → "세션 재검증" | 거절 `stale_registry_root`(체크박스 이름은 `stale_root` 지만, V9 의 계정 폐기(4)는 등록부만 바꾸므로 실제 결과는 이것이다 — 아래 "RP 거절 사유" 참고). "세션 요청 보내기" 는 `revalidate_required` |
 | 5a | 지갑 | (폐기·게시 뒤) "트랜잭션 보내기" | `revoked` |
 | 6 | RP | 체크 해제 → "세션 재검증" → "로그인" | 지갑 `revoked` → 새 로그인은 `account_disabled` |
 | 7 | 관리자 | (계정) "복구(다시 쓰게)" | `disabled:false` |
@@ -635,7 +636,7 @@ MetaMask/Snap 경로(2026-09-22 metamask-snap)로 새로 생긴 지갑 라우트
 | `factory_constants_unavailable` | 서비스가 체인 설정을 읽지 못했습니다 | 검증기가 없는 동안 RP API 전부(`inactiveReason`) — `/api/mode3/challenge`·`/login`·`/revalidate`·`/request`·`/open` | 503 | 팩토리 `maxRootAge`·`maxLifetime` 조회 실패 — 등록 대기(`registration_pending`)와 구분한다. 아래 "하지 말 것" 의 함정 참고 |
 | `predicate_unmet` | 요구한 조건을 만족하지 못했습니다 | `POST /api/mode3/login` (V7, `require` 필드가 있을 때만) | 200 `{ok:false, reason}` | 로그인 성명은 유효하지만 요구한 술어(국가 집합 소속·최소 나이)를 만족하지 못한다 — 컨트랙트 호출 없이 오프체인에서 판정한다. `RP 거절 사유` 절 위쪽 "로그인 경로 술어(V7)" 참고. **요구는 페이지가 `require` 로 싣는다 — 서버 정책 게이트가 아니다(데모 의미). 운영이라면 서버가 강제해야 한다.** **재검증(`revalidate`)은 술어를 다시 증명하지 않는다** — 로그인 때의 술어는 세션 기록에만 남고, 재검증 뒤 `disclosure` 는 갱신된다(후속: 세션에 `require` 를 기억하고 지갑이 같은 술어로 재증명) |
 | `stale_registry_root` | 등록부 버전이 오래됐습니다 | `POST /api/mode3/login`, `POST /api/mode3/revalidate` | 200 `{ok:false, reason}` | V9 — 지갑이 낸 증명의 등록부 root(`regRoot`)가 서비스가 보는 최신 등록부 root 와 다르다. `stale_root`(b, 폐기 트리 쪽)와 같은 자리의 등록부 판(b‴, `lib/mode3_rp.js`) — 등록부가 바뀐 뒤(슬롯 바꿔치기·은퇴·재발급) 지갑이 옛 등록부로 만든 증명을 들고 온 경우다 |
-| `registry_mismatch` | 등록부의 내 자격증명이 바뀌었습니다 | 지갑 `POST /wallet/login`·`/wallet/revalidate`·`/wallet/tx`(`/tx/prepare`) | 403 | V9 — 체인에 게시된 내 슬롯의 리프가 지갑이 든 자격증명과 다르다. 내가 요청한 재발급이 아니라면 신원 기관의 부정(각본 10 의 "슬롯 바꿔치기") — 지갑은 로그인을 시도하지 않는다 |
+| `registry_mismatch` | 등록부의 내 자격증명이 바뀌었습니다 | 지갑 `POST /wallet/login`(`ensureUserCred`, 아직 세션이 없을 때만) | 403 | V9 — 체인에 게시된 내 슬롯의 리프가 지갑이 든 자격증명과 다르다. 내가 요청한 재발급이 아니라면 신원 기관의 부정(각본 10 의 "슬롯 바꿔치기") — 지갑은 로그인을 시도하지 않는다. **이미 세션이 있는 상태의 재검증·트랜잭션**(`/wallet/revalidate`·`/wallet/tx`(`/tx/prepare`))이 같은 등록부 불일치를 만나면 `proveSession` 은 둘을 구분하지 않고 `revoked` 로 보고한다(위 "세션 폐기(V8)" 절의 `revoked_session` 행, "계정/자격증명 폐기는 지금까지처럼 `revoked`" 참고) |
 | `registry_unpublished` | 등록부 게시 대기 | 지갑 `POST /wallet/login` | 503 | V9 — 방금 받은 새 사용자 자격증명의 슬롯이 30초 안에 체인 등록부에 오르지 않았다. 신원 기관의 게시(하트비트)를 기다렸다가 다시 로그인한다 |
 | `registry_slot_unknown` | 슬롯 번호를 몰라 등록부를 확인할 수 없습니다 | 지갑 `POST /wallet/login`·`/wallet/revalidate`·`/wallet/tx`(`/tx/prepare`) | 403 | V9 — 등록에 슬롯 번호가 없다(옛 v8 이하 지갑 상태 파일). 로그인이 `/cia/slot` 으로 슬롯을 되찾기 전까지만 뜬다 |
 | `user_cred_failed` | 자격증명 발급이 거절되었습니다 | 지갑 `POST /wallet/login` | 502 | V9 — CIA 의 `/cia/user_cred` 가 `bad user credential proof` 로 거절했다. 시연 카드(설계 §8.3)로 salt·uid 를 바꾼 경우(각본 11)가 흔한 원인 — "원래대로" 로 덮어쓰기를 풀고 다시 로그인한다 |
