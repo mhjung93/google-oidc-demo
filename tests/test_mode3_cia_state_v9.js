@@ -26,4 +26,8 @@ t('v9 는 그대로 통과하고 slot 이 있는 계정은 다시 배정하지 �
   const { state: s2, notes } = migrateCiaState(JSON.parse(JSON.stringify(s1)));
   assert.deepEqual(notes, []); assert.equal(s2.accounts['67890'].slot, 1); assert.equal(s2.registry.next, 2);
 });
+t('손으로 적은 v9 파일의 registry 가 부분적이어도(빈 객체) 하위 필드가 채워진다', () => {
+  const { state } = migrateCiaState({ version: 9, accounts: {}, rps: {}, openings: [], revoked: [], pending: [], epoch: 0, registry: {} });
+  assert.deepEqual(state.registry, { depth: 20, next: 0, leaves: {}, pendingSlots: [] });
+});
 process.exit(fails ? 1 : 0);

@@ -98,7 +98,7 @@ function loadOrCreateKeys() {
 
 // ---- 상태 ----
 // accounts:  uid → { pk_u:{x,y}, cm_u:{x,y}, disabled, slot(등록부 인덱스), tampered(관리자 시연용 바꿔치기 표시, Task 9),
-//                     creds: [ { Cf_u(10진), C_u_pt:{x,y}, leaf(10진), issuedAt, revoked } ] }
+//                     creds: [ { Cf_u(10진), C_u_pt:{x,y}, issuedAt, revoked } ] }   (V9: leaf 없음 — 등록부 슬롯이 대신한다)
 //            creds 중 revoked:false 는 하나뿐(사용자당 활성 자격증명 하나, 2026-09-21 §3.1). 세션 발급은 기록하지 않는다.
 // rps:       arid → { name, origin, pk_service, X_svc, x_AA, pk_trace, status, requestedAt, decidedAt }   (2026-09-16 §3)
 // openings:  [ { id, arid, PPID, tagKey, c1:{x,y}, c2, D_svc:{x,y}, allowAgent, max_height, chainid, status, requestedAt, decidedAt,
@@ -138,7 +138,19 @@ async function readChain() {
 //     publishedTree 는 걷다 만 상태라 호출자가 다시 만들거나 종료해야 한다.
 // 기동 시와 게시 직전 둘 다 이 함수를 쓴다 — 기동 때 RPC 가 죽어 대조를 건너뛰었거나 CIA 가 켜진
 // 채로 로그가 재배포된 경우를 게시 직전 대조가 잡는다(2026-09-12 리뷰 반영).
-async function reconcileWithChain({ onchainRoot, onchainRegRoot, onchainEpoch }) {
+//
+// 등록부(V9) 쪽 대조는 두 호출 자리가 다르게 군다(fullRegistryRebuild). registry.root() 는 — 폐기 쪽의
+// publishedTree 와 달리 — "아직 게시 안 된 pendingSlots 까지 포함한" 전체 현재 상태라서, 이번에 막 올릴
+// 참이면 onchainRegRoot 와 다른 것이 **정상**이다(게시 직전 호출, publishNow 안). 그 경우 지금 pendingSlots
+// 에 없는 칸까지 전부 다시 올리면(설계 §3.4 식) 아무 일도 없었던 다른 사용자 슬롯까지 매 게시마다 덩달아
+// 재게시된다 — 2026-10-01 리뷰 Important 3 수정 1차 시도에서 이렇게 했다가 발급·교체 테스트가 깨져 드러났다.
+// 그래서 게시 직전 호출은 기존 그대로 "pendingSlots ∪ 지금 non-zero 인 칸"만 좁게 다시 모은다 — 정상 동작에서
+// 이 둘은 이미 같은 칸을 가리킨다. fullRegistryRebuild 는 **기동 시**(loadState)에만 켠다: 상태 파일이 옛
+// 백업으로 복원됐거나 손으로 편집된 경우가 유일한 대상이고, 그때는 "지금까지 배정된 모든 칸(0..next-1,
+// 비어 있어 0 인 칸 포함)" 을 다시 내보내야 한다 — 그러지 않으면 로컬에서 0 으로 보이는데 체인 이벤트 역사에는
+// 0 이 아닌 값이 남은 칸을 영영 못 고친다(설계 §3.4: "활성 자격증명이 없으면 0 을 둔다. 전부 pendingSlots 에
+// 넣고"). 지갑은 SlotUpdated 를 순서대로 재생해 root 를 맞추므로 기동 시의 넓은 재게시도 중복만 될 뿐 무해하다.
+async function reconcileWithChain({ onchainRoot, onchainRegRoot, onchainEpoch }, { fullRegistryRebuild = false } = {}) {
   let k = 0;
   while (publishedTree.getRoot() !== onchainRoot && k < state.pending.length) { await publishedTree.insert(BigInt(state.pending[k])); k++; }
   if (publishedTree.getRoot() !== onchainRoot) return false;
@@ -153,10 +165,11 @@ async function reconcileWithChain({ onchainRoot, onchainRegRoot, onchainEpoch })
     state.epoch = onchainEpoch;
     changed = true;
   }
-  // 등록부(V9): 갱신형이라 접두사 대조가 없다. 체인과 같으면 미게시 갱신이 없는 것이고, 다르면 지금 트리의 모든 칸(미게시 0 포함)을
-  // 다음 게시에 전부 다시 내보낸다 — 지갑은 SlotUpdated 를 순서대로 재생해 root 를 맞추므로 중복 이벤트는 무해하다.
   if (registry.root() === onchainRegRoot) {
     if (state.registry.pendingSlots.length) { state.registry.pendingSlots = []; changed = true; }
+  } else if (fullRegistryRebuild) {
+    state.registry.pendingSlots = Array.from({ length: state.registry.next }, (_, i) => ({ index: i, leaf: registry.leafAt(i).toString() }));
+    changed = true;
   } else {
     const idx = new Set([...state.registry.pendingSlots.map((p) => p.index), ...registry.entries().map(([i]) => i)]);
     state.registry.pendingSlots = [...idx].sort((a, b) => a - b).map((i) => ({ index: i, leaf: registry.leafAt(i).toString() }));
@@ -198,7 +211,7 @@ async function loadState() {
     let chain = null;
     try { chain = await readChain(); }
     catch (e) { console.warn(`[cia] 기동 시 체인 확인 실패, root 대조 없이 계속 진행: ${e.message}`); }
-    if (chain && !(await reconcileWithChain(chain))) {
+    if (chain && !(await reconcileWithChain(chain, { fullRegistryRebuild: true }))) {
       console.error(`[cia] 기동 거부: 로컬 폐기 트리와 온체인 root 불일치 (로그 ${LOG_ADDRESS}, 온체인 epoch ${chain.onchainEpoch}, ` +
         `로컬 revoked ${state.revoked.length}개 / pending ${state.pending.length}개). 로그를 재배포했거나 상태 파일이 ` +
         `유실·복원됐다. 이대로 게시하면 지갑의 이벤트 재구성이 전부 실패한다 — CIA_STATE_FILE 과 CIA_LOG_ADDRESS 를 확인할 것.`);
@@ -208,10 +221,12 @@ async function loadState() {
   try { selfChainId = (await ethWallet.provider.getNetwork()).chainId.toString(); }
   catch (e) { console.warn(`[cia] 기동 시 chainId 를 읽지 못했다 — health 의 chain.id 가 비고, CIA_CHAIN_RPCS 가 없으면 발급은 503: ${e.message}`); }
   if (CHAIN_RPCS.size === 0 && selfChainId) CHAIN_RPCS.set(selfChainId, RPC_URL);
-  // 이행(v6→v7 등)이 pending 리프를 남겼거나 등록부 슬롯을 채웠으면 게시를 한 번 자동으로 시도한다 — 그러지 않으면 다음 하트비트까지
-  // 옛(보증되지 않은) C_u 로도 여전히 π 가 만들어져 세션 발급이 통과한다(2026-09-22 최종 리뷰 Important, Ruling 8).
+  // 백로그(폐기 pending 또는 등록부 pendingSlots)가 남아 있으면 게시를 한 번 자동으로 시도한다 — 이행이나 리프 채움이
+  // 없었어도 마찬가지다: setSlot+persist() 뒤 게시가 성공하기 전에 죽으면 리프는 이미 저장돼 있어 migrated.notes·filled
+  // 가 둘 다 0 이지만 pendingSlots 는 남는다(2026-10-01 리뷰 Important 1) — 이행만 조건으로 두면 그 백로그가 다음
+  // 하트비트까지(꺼져 있으면 영영) 게시되지 않아, 폐기된 자격증명이 체인에서는 계속 유효한 것으로 보인다.
   // RPC 가 아직 없으면(또는 다른 이유로 게시가 실패하면) 경고만 남긴다 — 기동 자체는 막지 않는다.
-  if ((migrated.notes.length || filled) && (state.pending.length > 0 || state.registry.pendingSlots.length > 0)) {
+  if (state.registry.pendingSlots.length > 0 || state.pending.length > 0 || migrated.notes.length || filled) {
     try {
       const r = await publishNow();
       console.log(`[cia] 이행 뒤 자동 게시: epoch ${r.epoch}, 리프 ${r.leaves?.length ?? 0}개, 슬롯 ${r.slots ?? 0}개`);
@@ -443,6 +458,10 @@ app.post('/cia/user_cred', async (req, res) => {
     catch { proofOk = false; }
     if (!proofOk) return res.status(400).json({ error: 'bad user credential proof' });
     const Cf_u = (await compressPoint(cpt)).toString();
+    // 이 await 를 끝으로 아래 물리기→push→setSlot→persist 구간은 전부 동기다 — 그 안에서 또 await 하면(2026-10-01 리뷰
+    // Important 2) 끼어든 동시 요청이 먼저 물리거나 push 한 뒤 이 요청이 새 리프 대신 먼저 계산해 둔 값을 심어
+    // 슬롯이 물린 자격증명의 것으로 남을 수 있다.
+    const newLeaf = await registryLeaf(acct.cm_u, BigInt(Cf_u));
     if (acct.disabled) return res.status(403).json({ error: 'account disabled' });   // await 사이에 폐기가 끼어들 수 있다
     acct.creds ??= [];
     if (acct.creds.some((c) => c.Cf_u === Cf_u && c.revoked)) return res.status(409).json({ error: 'this user credential was revoked; make a new one' });
@@ -452,7 +471,7 @@ app.post('/cia/user_cred', async (req, res) => {
     if (acct.disabled) { if (retired) { setSlot(uid, 0n); persist(); await publishSafely(); } return res.status(403).json({ error: 'account disabled' }); }
     if (acct.creds.some((c) => c.Cf_u === Cf_u)) return res.status(409).json({ error: 'this user credential was revoked; make a new one' });
     acct.creds.push({ Cf_u, C_u_pt: { x: cpt.x.toString(), y: cpt.y.toString() }, issuedAt: new Date().toISOString(), revoked: false });
-    setSlot(uid, await registryLeaf(acct.cm_u, BigInt(Cf_u)));
+    setSlot(uid, newLeaf);
     persist();
     const pub = await publishSafely();
     res.status(201).json({ Cf_u, slot: acct.slot, regRoot: registry.root().toString(), epoch: state.epoch, published: Boolean(pub.published) });
@@ -483,19 +502,21 @@ app.post('/cia/accounts/:uid/attrs', requireAdmin, async (req, res) => {
     const acct = state.accounts[uid];
     if (!isDec(uid) || !acct) return res.status(404).json({ error: 'unknown account' });
     // 관리자 변경은 길이 4 배열만 받는다 — normalizeAttrs 의 0 패딩(발급 경로엔 필요)이 여기서는 "본문 없는 호출 한 번에
-    // 속성 4칸이 0" 이 되고 옛 C_u 리프가 append-only 트리에 들어가 되돌릴 수 없다(2026-09-23 점검 A-I2).
+    // 속성 4칸이 0" 이 되고 활성 자격증명이 통째로 물려 슬롯이 0 으로 즉시 게시된다(2026-09-23 점검 A-I2; V9: 리프가
+    // 아니라 슬롯 — append-only 트리는 더 이상 관련 없다).
     const raw = req.body?.attrs;
     if (!Array.isArray(raw) || raw.length !== ATTR_SLOTS) return res.status(400).json({ error: `attrs 는 길이 ${ATTR_SLOTS} 배열이어야 한다` });
     // 길이만 보면 빈 칸이 통과한다 — BigInt('') === 0n 이라 관리자 UI(mode3/cia_admin.html 의 `i.value.trim()`)가 보낸
-    // 빈 슬롯이 조용히 0 이 되고, 바로 아래 retireActiveCred 가 옛 C_u 리프를 append-only 트리에 게시해 되돌릴 수 없다
-    // (2026-09-23 최종 리뷰 M2 — 점검 A-I2 의 현실적 트리거).
+    // 빈 슬롯이 조용히 0 이 되고, 바로 아래에서 활성 자격증명을 물리고 슬롯을 0 으로 즉시 게시한다 — 사용자는 당장
+    // 로그인이 끊기고 새 user_cred 를 받아야 한다(2026-09-23 최종 리뷰 M2 — 점검 A-I2 의 현실적 트리거).
     if (!raw.every((v) => /^[0-9]+$/.test(String(v)))) return res.status(400).json({ error: 'attrs 원소는 10진 문자열' });
     let attrs;
     try { attrs = normalizeAttrs(raw).map(String); } catch (e) { return res.status(400).json({ error: `attrs: ${e.message}` }); }
     acct.attrs = attrs;
     const retired = retireActiveCred(uid);
-    setSlot(uid, 0n); persist();
-    const pub = await publishSafely();
+    if (retired) setSlot(uid, 0n);   // 물린 게 없으면(활성 자격증명이 없었다) 슬롯은 건드리지 않는다
+    persist();   // attrs·(물렸다면) 슬롯 변경을 게시 시도 전에 먼저 저장한다 — 게시 중 죽어도 다음 기동이 백로그를 본다
+    const pub = retired ? await publishSafely() : { published: false };
     res.json({ uid, attrs, retired, published: Boolean(pub.published) });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -547,22 +568,22 @@ app.post('/cia/issue', async (req, res) => {
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
-// §6.5 계정 전체 폐기: 활성 사용자 자격증명의 리프 삽입 + disabled. 관리자 폐기(/cia/revoke scope=account)와
+// §6.5 계정 전체 폐기: 활성 사용자 자격증명의 슬롯을 0 으로 비우고 즉시 게시 + disabled. 관리자 폐기(/cia/revoke scope=account)와
 // 사용자 자기 폐기(/cia/account/self_revoke, §6.5.1)가 같은 처리를 탄다 — 다른 것은 "누가 개시하느냐"뿐이다.
-// 리프는 Cf_u 하나에서 나오므로(2026-09-21 §3.6) 체인 헤드를 읽지 않고, tree.insert 의 멱등성으로 두 번 불러도 새 리프가 없다.
+// 슬롯은 Cf_u 하나에서 나오므로(2026-09-21 §3.6) 체인 헤드를 읽지 않고, setSlot(uid, 0n) 은 멱등(이미 0 이면 값이 그대로)이다.
 async function revokeAccount(uid) {
   const acct = state.accounts[uid];
   if (!acct) throw Object.assign(new Error('unknown account'), { status: 404 });
   acct.disabled = true;
   const retired = retireActiveCred(uid);
-  setSlot(uid, 0n);
-  persist();
-  const pub = await publishSafely();
+  if (retired) setSlot(uid, 0n);   // 물린 게 없으면 슬롯은 건드리지 않는다 — disabled 는 그대로 건다
+  persist();   // disabled·(물렸다면) 슬롯 변경을 게시 시도 전에 먼저 저장한다 — 게시 중 죽어도 다음 기동이 백로그를 본다
+  const pub = retired ? await publishSafely() : { published: false };
   return { retired, disabled: true, slot: acct.slot, regRoot: registry.root().toString(), published: Boolean(pub.published), pending: state.pending.length };
 }
 
-// §4.3(2026-09-21) 폐기. account = 활성 사용자 자격증명 리프 + disabled. credential = 리프만(계정은 살아 있어 새 user_cred 를 받아야 한다).
-// 리프는 사용자당 하나라 leaf/C 인자를 받지 않는다(있어도 무시). 트리 삽입은 멱등(이미 있으면 false).
+// §4.3(2026-09-21) 폐기. account = 활성 사용자 자격증명의 슬롯을 0 으로 비움 + disabled. credential = 슬롯만 비움(계정은 살아 있어 새 user_cred 를 받아야 한다).
+// 슬롯은 사용자당 하나라 leaf/C 인자를 받지 않는다(있어도 무시). setSlot(uid, 0n) 은 멱등(이미 0 이면 값이 그대로)이다.
 // V8(2026-09-24 §2.2) session = 세션 하나만 — 사용자는 sk_u 서명으로, 운영자는 관리자 시크릿으로. 그래서 requireAdmin 을 미들웨어로
 // 걸지 않고 안에서 분기한다. 관리자 헤더가 틀리게 오면 isAdmin=false 라 scope=session 은 서명 경로로 흐르고 account/credential 은 401 이다.
 app.post('/cia/revoke', async (req, res) => {
@@ -578,8 +599,8 @@ app.post('/cia/revoke', async (req, res) => {
     if (scope === 'account') return res.json(await revokeAccount(uid));
     if (scope === 'credential') {
       const retired = retireActiveCred(uid);
-      setSlot(uid, 0n); persist();
-      const pub = await publishSafely();
+      if (retired) { setSlot(uid, 0n); persist(); }   // 물린 게 없으면 슬롯·게시·persist 모두 건드리지 않는다
+      const pub = retired ? await publishSafely() : { published: false };
       return res.json({ retired, slot: state.accounts[uid].slot, regRoot: registry.root().toString(), published: Boolean(pub.published), pending: state.pending.length });
     }
     if (scope !== 'session') return res.status(400).json({ error: "scope must be 'account', 'credential' or 'session'" });

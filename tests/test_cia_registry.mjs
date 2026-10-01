@@ -7,7 +7,7 @@ import { ethers } from 'ethers';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { getProvider } from './helpers/mode3_chain.mjs';
 import { createRegistration, signRegistration, buildUserCredRequest, buildIssueRequest, createSessionKey, signRevokeSession } from '../lib/mode3_wallet.js';
-import { pointToStrings, registrationCommit } from '../lib/mode3_issuance.js';
+import { pointToStrings } from '../lib/mode3_issuance.js';
 import { userCommit, randomScalar } from '../lib/mode3_credential.js';
 import { registryLeaf, createRegistryTree } from '../lib/mode3_registry.js';
 import { MODE3_LOG_ABI } from '../lib/mode3_log.js';
@@ -113,5 +113,67 @@ await t('v8 상태 파일 → 기동 시 등록부 생성·게시', async () => 
     assert.equal(a.registryLeaf, expected.toString());
   } finally { await cia2.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+// ---- 재기동 백로그(리뷰 Important 1): setSlot+persist 뒤 게시 전에 죽으면 migrated.notes·filled 둘 다 0 이라
+// 옛 게이트가 pendingSlots 를 영영 못 봤다. 상태 파일을 그 시점 그대로 손으로 적어 기동만으로 재현한다. ----
+await t('재기동 백로그 자동 게시: 리프는 이미 저장됐지만 게시 전에 죽은 상태 — 기동이 pendingSlots 를 비운다', async () => {
+  const reg = await createRegistration();
+  const blind_u = randomScalar();
+  const { Cx, Cy, Cf } = await userCommit({ uid: 12345n, s_u: reg.s_u, blind_u, attrs: ATTRS });
+  const expected = await registryLeaf(reg.cm_u, Cf);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-backlog-'));
+  const stateFile = path.join(dir, 'cia_state.json');
+  fs.writeFileSync(stateFile, JSON.stringify({
+    version: 9,
+    accounts: { '12345': { pk_u: { x: reg.pk_u.x.toString(), y: reg.pk_u.y.toString() }, cm_u: pointToStrings(reg.cm_u), disabled: false, slot: 0, tampered: false,
+      creds: [{ Cf_u: Cf.toString(), C_u_pt: { x: Cx.toString(), y: Cy.toString() }, issuedAt: 'x', revoked: false }], attrs: ATTRS.map(String), sessions: [] } },
+    rps: {}, openings: [], revoked: [], pending: [], epoch: 0,
+    registry: { depth: 20, next: 1, leaves: { '0': expected.toString() }, pendingSlots: [{ index: 0, leaf: expected.toString() }] },
+  }));
+  const cia3 = await startIsolatedCia({ env: { CIA_STATE_FILE: stateFile } });
+  try {
+    const log3 = new ethers.Contract(cia3.logAddress, MODE3_LOG_ABI, provider);
+    const s = (await cia3.get('/cia/state')).body;
+    assert.equal(s.pendingSlots, 0, '기동이 리프가 이미 채워진 백로그를 자동 게시했어야 한다 — migrated.notes·filled 가 둘 다 0 이어도');
+    assert.equal(await log3.regRoot(), b32(s.regRoot));
+    const ev = await log3.queryFilter(log3.filters.SlotUpdated(), 0, 'latest');
+    assert.ok(ev.some((e) => Number(e.args.index) === 0 && BigInt(e.args.leaf) === expected), '슬롯 0 을 새 리프로 올리는 SlotUpdated 가 없다');
+  } finally { await cia3.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ---- 대조 때 체인이 앞섬(리뷰 Important 3): 옛 백업으로 되돌아가 로컬 슬롯 0 이 0 인데 체인 이벤트 역사에는
+// 0 이 아닌 값이 남아 있으면, 지금 비어 있는 칸도 다시 게시해야 지갑이 수렴한다. ciaEthWallet(= CIA_ETH_PRIVATE_KEY)
+// 을 그대로 재사용해 같은 로그 컨트랙트에 이어서 게시할 수 있게 한다 — 그래야 재기동한 CIA 의 서명이 컨트랙트의
+// 불변 cia 주소와 맞는다. ----
+await t('대조(체인이 앞섬): 로컬에서 비워진 칸도 다시 게시해야 지갑이 수렴한다', async () => {
+  const cia4 = await startIsolatedCia();
+  let savedState, ciaKey, logAddr;
+  try {
+    const u1 = await cia4.registerUser('12345', 'password123');
+    await cia4.registerUser('67890', 'alicepw');
+    const cred1 = await buildUserCredRequest({ uid: 12345n, s_u: u1.s_u, r_u: u1.r_u, sk_u: u1.sk_u, attrs: ATTRS });
+    assert.equal((await cia4.post('/cia/user_cred', cred1.body)).status, 201);
+    savedState = JSON.parse(fs.readFileSync(path.join(cia4.dir, 'cia_state.json'), 'utf8'));
+    ciaKey = cia4.ciaEthWallet.privateKey;
+    logAddr = cia4.logAddress;
+  } finally { await cia4.stop(); }
+  // 체인은 그대로 둔다(슬롯 0 = 방금 게시한 리프). 로컬만 옛 백업으로 되돌린 것처럼 슬롯 0 을 지운다.
+  delete savedState.registry.leaves['0'];
+  savedState.accounts['12345'].creds = [];
+  savedState.registry.pendingSlots = [];
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-ahead-'));
+  const stateFile = path.join(dir, 'cia_state.json');
+  fs.writeFileSync(stateFile, JSON.stringify(savedState));
+  const cia5 = await startIsolatedCia({ env: { CIA_STATE_FILE: stateFile, CIA_LOG_ADDRESS: logAddr, CIA_ETH_PRIVATE_KEY: ciaKey } });
+  try {
+    const log5 = new ethers.Contract(logAddr, MODE3_LOG_ABI, provider);
+    const s = (await cia5.get('/cia/state')).body;
+    assert.equal(s.pendingSlots, 0, '대조가 로컬에서 비워진 칸(슬롯 0)도 다시 게시했어야 한다');
+    assert.equal(await log5.regRoot(), b32(s.regRoot));
+    const ev = await log5.queryFilter(log5.filters.SlotUpdated(), 0, 'latest');
+    assert.ok(ev.some((e) => Number(e.args.index) === 0 && BigInt(e.args.leaf) === 0n), '슬롯 0 을 0 으로 되돌리는 SlotUpdated 가 없다');
+  } finally { await cia5.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 provider.destroy();
 process.exit(failed === 0 ? 0 : 1);
