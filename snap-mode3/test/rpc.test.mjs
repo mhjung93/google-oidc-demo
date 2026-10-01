@@ -123,6 +123,15 @@ await t('storeRegistration: attrs 는 6개(짧으면 bad_attrs)·slot 저장, sk
   assert.equal(store.state.registration.sk_u, registered.sk_u, 'storeRegistration 은 sk_u 를 건드리지 않는다');
 });
 
+await t('storeRegistration: slot 은 음이 아닌 정수여야 한다 — 음수·문자열은 bad_slot, 정상 값은 저장된다', async () => {
+  await assert.rejects(() => call('storeRegistration', { attrs: ATTRS, slot: -1 }), /bad_slot/);
+  await assert.rejects(() => call('storeRegistration', { attrs: ATTRS, slot: '1' }), /bad_slot/);
+  assert.deepEqual(await call('storeRegistration', { attrs: ATTRS, slot: 1 }), { ok: true });
+  assert.equal((await call('getPublicInfo', {})).slot, 1);
+  // 뒤따르는 테스트가 기대하는 slot=SLOT 으로 되돌려 둔다 — 이 케이스가 이후 상태에 흔적을 남기지 않게 한다.
+  assert.deepEqual(await call('storeRegistration', { attrs: ATTRS, slot: SLOT }), { ok: true });
+});
+
 await t('getPublicInfo 에는 비밀이 없다', async () => {
   const info = await call('getPublicInfo', {});
   assert.deepEqual(Object.keys(info).sort(), ['attrs', 'cm_u', 'consents', 'hasUserCred', 'registered', 'slot', 'uid']);

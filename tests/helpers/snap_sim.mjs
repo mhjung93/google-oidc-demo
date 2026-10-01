@@ -52,7 +52,7 @@ export function createSnapSim() {
     /** 에이전트가 새 C_u 를 발급받았을 때(응답 userCredIssued). */
     updateUserCred(uc) {
       requireRegistered();
-      state.userCred = uc ? { C_u_pt: clone(uc.C_u_pt), Cf_u: uc.Cf_u, blind_u: uc.blind_u, leaf: uc.leaf, issuedAt: uc.issuedAt ?? new Date().toISOString() } : null;
+      state.userCred = uc ? { C_u_pt: clone(uc.C_u_pt), Cf_u: uc.Cf_u, blind_u: uc.blind_u, issuedAt: uc.issuedAt ?? new Date().toISOString() } : null;
       return { ok: true };
     },
 
