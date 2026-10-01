@@ -8,7 +8,7 @@ import { ethers } from 'ethers';
 import { createRevocationTree } from '../../lib/mode3_revocation.js';
 import { createRegistryTree } from '../../lib/mode3_registry.js';
 // digest·bytes32 변환은 lib/mode3_log.js 하나다 — 여기는 이름만 다시 내보낸다(이 파일 안에서도 쓴다).
-import { DOMAIN_ROOT, rootToBytes32, signRootPublication } from '../../lib/mode3_log.js';
+import { DOMAIN_ROOT, rootToBytes32, signRootPublication, signPublicationV2 } from '../../lib/mode3_log.js';
 export { DOMAIN_ROOT as DOMAIN, rootToBytes32, signRootPublication };
 
 const ROOT_DIR = fileURLToPath(new URL('../..', import.meta.url));
@@ -60,4 +60,12 @@ export async function deployMode3Log(ciaAddress, provider = getProvider()) {
 
 export async function mineBlocks(n, provider = getProvider()) {
   await provider.send('hardhat_mine', ['0x' + n.toString(16)]);
+}
+
+/** V9 게시 헬퍼 — 테스트가 CIA 없이 Mode3Log 에 두 root 를 올린다. 인자는 bigint, 서명은 ciaWallet. */
+export async function publishV2(log, ciaWallet, { revRoot, regRoot, epoch, revLeaves = [], slotIdx = [], slotLeaves = [] }) {
+  const b = rootToBytes32;
+  const p = { logAddress: await log.getAddress(), revRoot: b(revRoot), regRoot: b(regRoot), epoch, revLeaves: revLeaves.map(b), slotIdx, slotLeaves: slotLeaves.map(b) };
+  const sig = await signPublicationV2(ciaWallet, p);
+  await (await log.connect(ciaWallet).publish(p.revRoot, p.regRoot, epoch, p.revLeaves, slotIdx, p.slotLeaves, sig)).wait();
 }

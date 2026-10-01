@@ -5,8 +5,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { ethers } from 'ethers';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
-import { getProvider, fundAddress, deployRevocationLog, signRootPublication, rootToBytes32, mineBlocks } from './helpers/mode3_chain.mjs';
-import { userLeaf } from '../lib/mode3_revocation.js';
+import { getProvider, fundAddress, deployMode3Log, rootToBytes32, mineBlocks, publishV2 } from './helpers/mode3_chain.mjs';
+import { createRegistryTree, registryLeaf } from '../lib/mode3_registry.js';
 import { credMessageV5, compressPoint, randomScalar } from '../lib/mode3_credential.js';
 import { createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, normalizeSet, VKEY_PATH } from '../lib/mode3_wallet.js';
 import { createRpVerifier, maskDisclosure } from '../lib/mode3_rp.js';
@@ -22,7 +22,7 @@ async function t(name, fn) {
 const provider = getProvider();
 const ciaEth = ethers.Wallet.createRandom().connect(provider);
 await fundAddress(ciaEth.address, '1', provider);
-const { address: logAddress, contract: log } = await deployRevocationLog(ciaEth.address, provider);
+const { address: logAddress, contract: log } = await deployMode3Log(ciaEth.address, provider);
 const eddsa = await buildEddsa();
 const ps = await buildPoseidon();
 const F = ps.F;
@@ -35,6 +35,8 @@ const uid = 12345n, arid = 22222222222222222222n, otherArid = 333333333333333333
 const svcShare = await createShare(), aaShare = await createShare();
 const pk_trace = await combinePublicKey(svcShare.X, aaShare.X);
 const other_trace = await combinePublicKey((await createShare()).X, (await createShare()).X);
+const registry = await createRegistryTree();   // V9: 등록부(조건 9) — makeLogin 이 매번 이 슬롯을 채우고 게시한다
+const SLOT = 0;
 
 // 서버 없이 CIA 서명만 흉내낸다. V5: Sign(D_V5, Cf_u, Cf_s, max_height, chainid, allowAgent).
 async function issueWith(key, Cf_u, C_s_pt, { max_height, chainid = 31337n, allowAgent = 0n } = {}) {
@@ -42,26 +44,37 @@ async function issueWith(key, Cf_u, C_s_pt, { max_height, chainid = 31337n, allo
   const s = eddsa.signPoseidon(key.prv, F.e(await credMessageV5(Cf_u, Cf_s, max_height, chainid, allowAgent)));
   return { Cf_u: Cf_u.toString(), Cf_s: Cf_s.toString(), max_height: max_height.toString(), chainid: chainid.toString(), allowAgent: allowAgent.toString(), sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() } };
 }
+// V9: 폐기 리프를 넣고 두 root(폐기·등록부)를 같이 올린다 — Mode3Log 는 root 를 하나씩 받지 않는다.
 async function publish(leavesBig) {
   const { tree } = await syncRevocationTree(provider, logAddress);
   for (const l of leavesBig) await tree.insert(l);
-  const root = rootToBytes32(tree.getRoot()), epoch = (await log.epoch()) + 1n, leaves = leavesBig.map(rootToBytes32);
-  await (await log.connect(ciaEth).publishRoot(root, epoch, leaves, await signRootPublication(ciaEth, { logAddress, root, epoch, leaves }))).wait();
+  const epoch = (await log.epoch()) + 1n;
+  await publishV2(log, ciaEth, { revRoot: tree.getRoot(), regRoot: registry.root(), epoch, revLeaves: leavesBig });
 }
+/**
+ * V9 조건 9: 증명을 만들기 전에 내 등록부 슬롯(SLOT=0)을 내 자격증명으로 채우고 게시해야 한다 — 그러지
+ * 않으면 buildCredentialProof 가 registry_empty 로 던진다. 등록부 root 는 N=1 규칙(RP 의 stale_registry_root)
+ * 이라 매 호출이 같은 슬롯을 다시 채워 게시한다 — 바로 뒤이어 그 결과를 검증하는 한, 이 파일의 테스트는 모두
+ * makeLogin() 한 번 → 즉시 검증 패턴이라 안전하다(다른 테스트의 게시가 끼어들 일이 없다).
+ * 슬롯 게시는 트랜잭션 1개라 hardhat 이 블록을 하나 전진시킨다 — 그래서 사용자 자격증명(등록·π_u·슬롯 게시)을
+ * 세션 발급보다 먼저 끝내고, max_height 는 그 뒤의 head 를 기준으로 잰다. 순서를 반대로 하면(게시가 나중)
+ * 지갑이 쓰는 ttlBlocks 의 head+L 경계(아래 "음성 c''"·E-6)가 makeLogin 자신의 게시로 한 블록 밀린다.
+ */
 async function makeLogin({ key = CIA, useArid = arid, ttlBlocks = 300n, chainid = 31337n, useTrace = pk_trace, allowAgent = 0n, disclosure = null } = {}) {
   const reg = await createRegistration();
-  const session = createSessionKey();
-  const attrs = [19n, 410n, 0n, 0n];
-  const r_s = randomScalar();   // 서비스 챌린지 — σ 에만 쓴다(공개 입력엔 없다)
-  const max_height = BigInt(await provider.getBlockNumber()) + ttlBlocks;   // 지갑이 정한다(2026-09-18 §3.2 갱신)
-  const sk_u = Buffer.alloc(32, 3).toString('hex');
-  const uc = await buildUserCredRequest({ uid, s_u: reg.s_u, r_u: reg.r_u, sk_u, attrs });   // 사용자 자격증명(π_u) — CIA 검증은 test_mode3_wallet 에서
-  const req = await buildIssueRequest({ uid, Cf_u: uc.Cf_u, arid: useArid, sk_u, session, chainid, allowAgent, max_height });
-  const cred = await issueWith(key, uc.Cf_u, req.C_s_pt, { max_height, chainid, allowAgent });
+  const attrs = [19n, 410n, 0n, 0n, 0n, 0n];
+  const uc = await buildUserCredRequest({ uid, s_u: reg.s_u, r_u: reg.r_u, sk_u: reg.sk_u, attrs });   // 사용자 자격증명(π_u) — CIA 검증은 test_mode3_wallet 에서
   const { tree } = await syncRevocationTree(provider, logAddress);
+  registry.set(SLOT, await registryLeaf(reg.cm_u, uc.Cf_u));
+  await publishV2(log, ciaEth, { revRoot: tree.getRoot(), regRoot: registry.root(), epoch: (await log.epoch()) + 1n, slotIdx: [SLOT], slotLeaves: [registry.leafAt(SLOT)] });
+  const session = createSessionKey();
+  const r_s = randomScalar();   // 서비스 챌린지 — σ 에만 쓴다(공개 입력엔 없다)
+  const max_height = BigInt(await provider.getBlockNumber()) + ttlBlocks;   // 지갑이 정한다(2026-09-18 §3.2 갱신) — 슬롯 게시 뒤의 head 기준
+  const req = await buildIssueRequest({ uid, Cf_u: uc.Cf_u, arid: useArid, sk_u: reg.sk_u, session, chainid, allowAgent, max_height });
+  const cred = await issueWith(key, uc.Cf_u, req.C_s_pt, { max_height, chainid, allowAgent });
   // disclosure 는 정규화 없이 그대로 회로로 간다(lib/mode3_wallet.js 의 buildCredentialProof) — 지갑의 normalizeDisclosure 를
   // 거치지 않는 경로라, 마스크 밖 슬롯이 0 이 아닌 유효한 π 를 일부러 만들 수 있다(아래 C-2 E2E 케이스).
-  const { proof, publicSignals } = await buildCredentialProof({ uid, arid: useArid, s_u: reg.s_u, blind_u: uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs, credential: cred, pk_CIA: key.pub, pk_trace: useTrace, tree, disclosure });
+  const { proof, publicSignals } = await buildCredentialProof({ uid, arid: useArid, s_u: reg.s_u, r_u: reg.r_u, blind_u: uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs, credential: cred, pk_CIA: key.pub, pk_trace: useTrace, tree, registry, slot: SLOT, cm_u: reg.cm_u, disclosure });
   return { proof, publicSignals, r_s, sig: await signChallenge(session.wallet, r_s.toString()), session, cred, reg };
 }
 
@@ -75,32 +88,32 @@ await t('양성: 7단계 전부 통과, PPID 와 pk_i 를 돌려준다', async (
   assert.equal(r.pk_i, L.session.pk_i);
 });
 
-await t('V7: publicSignals 가 14개면 malformed, 25개면 통과하고 disclosure 를 돌려준다, [14] ≥ 16 은 bad_disclosure', async () => {
+await t('V9: publicSignals 가 14개면 malformed, 30개면 통과하고 disclosure 를 돌려준다, [15] ≥ 64 는 bad_disclosure', async () => {
   const good = await makeLogin();
-  assert.equal(good.publicSignals.length, 25);
+  assert.equal(good.publicSignals.length, 30);
   const v = await rp.verifyLogin(good);
   assert.equal(v.ok, true, JSON.stringify(v, (k, vv) => (typeof vv === 'bigint' ? vv.toString() : vv)));
   assert.equal(v.disclosure.mask, 0n);
   assert.equal((await rp.verifyLogin({ ...good, publicSignals: good.publicSignals.slice(0, 14) })).reason, 'malformed');
-  const ps = [...good.publicSignals]; ps[14] = '16';
+  const ps = [...good.publicSignals]; ps[15] = '64';
   assert.equal((await rp.verifyLogin({ ...good, publicSignals: ps })).reason, 'bad_disclosure');
 });
 
-await t('V7: set_sel/set_root 가 disclosure 에 실린다; sel 5·(sel 0, root ≠ 0) 은 bad_disclosure; maskDisclosure 는 sel 0 이면 root 를 지운다', async () => {
+await t('V9: set_sel/set_root 가 disclosure 에 실린다; sel 7·(sel 0, root ≠ 0) 은 bad_disclosure; maskDisclosure 는 sel 0 이면 root 를 지운다', async () => {
   const members = [410, 392, 840, 276, 250];
-  const attrs = [19n, 410n, 0n, 0n];   // makeLogin 이 쓰는 attrs 와 같다(위 함수 정의)
+  const attrs = [19n, 410n, 0n, 0n, 0n, 0n];   // makeLogin 이 쓰는 attrs 와 같다(위 함수 정의)
   const st = await normalizeSet({ slot: 1, members }, attrs);
-  const good = await makeLogin({ disclosure: { mask: 0n, lo: [0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n], ...st } });
+  const good = await makeLogin({ disclosure: { mask: 0n, lo: [0n, 0n, 0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n, 0n, 0n], ...st } });
   const v = await rp.verifyLogin(good);
   assert.equal(v.ok, true, v.reason);
   assert.equal(v.disclosure.sel, 2n); assert.equal(v.disclosure.root, await setRoot(members));
-  const ps = [...good.publicSignals]; ps[23] = '5';
+  const ps = [...good.publicSignals]; ps[28] = '7';
   assert.equal((await rp.verifyLogin({ ...good, publicSignals: ps })).reason, 'bad_disclosure');
   const plain = await makeLogin();
-  const ps2 = [...plain.publicSignals]; ps2[24] = '7';
+  const ps2 = [...plain.publicSignals]; ps2[29] = '7';
   assert.equal((await rp.verifyLogin({ ...plain, publicSignals: ps2 })).reason, 'bad_disclosure');
-  assert.deepEqual(maskDisclosure({ mask: 0n, lo: [0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n], sel: 0n, root: 9n }).root, 0n);
-  assert.deepEqual(maskDisclosure({ mask: 0n, lo: [0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n] }), { mask: 0n, lo: [0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n], sel: 0n, root: 0n });
+  assert.deepEqual(maskDisclosure({ mask: 0n, lo: [0n, 0n, 0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n, 0n, 0n], sel: 0n, root: 9n }).root, 0n);
+  assert.deepEqual(maskDisclosure({ mask: 0n, lo: [0n, 0n, 0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n, 0n, 0n] }), { mask: 0n, lo: [0n, 0n, 0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n, 0n, 0n], sel: 0n, root: 0n });
 });
 
 // I-2(2026-09-25 전체 코드 리뷰): 회로 ⑦ 은 "선택한 속성이 set_root 의 트리에 들어 있다" 만 증명한다 —
@@ -109,18 +122,23 @@ await t('V7: set_sel/set_root 가 disclosure 에 실린다; sel 5·(sel 0, root 
 // 온체인 AttrGate 는 이미 setRoot == allowedCountriesRoot 를 요구하므로 오프체인도 같은 선을 그어야 한다.
 await t('I-2: policySetRoot 를 준 검증기는 정책 집합이 아닌 set_root 를 bad_disclosure 로 거절한다', async () => {
   const members = [410, 392, 840, 276, 250];
-  const attrs = [19n, 410n, 0n, 0n];   // makeLogin 이 쓰는 attrs 와 같다(위 함수 정의)
+  const attrs = [19n, 410n, 0n, 0n, 0n, 0n];   // makeLogin 이 쓰는 attrs 와 같다(위 함수 정의)
   const policyRoot = await setRoot(members);
   const rpPolicy = createRpVerifier({ provider, logAddress, vkey, pkCIA: CIA.pub, arid, chainId: 31337n, pkTrace: pk_trace, policySetRoot: policyRoot });
-  const zeros = { mask: 0n, lo: [0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n] };
+  const zeros = { mask: 0n, lo: [0n, 0n, 0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n, 0n, 0n] };
 
   // 자기 국가만 든 집합([410])으로 "소속" 을 주장하는 **유효한** π — 회로도 서명도 정상이다.
   const mineSet = await normalizeSet({ slot: 1, members: [410] }, attrs);
   const bad = await makeLogin({ disclosure: { ...zeros, ...mineSet } });
-  assert.equal(BigInt(bad.publicSignals[23]), 2n, '전제: set_sel = 2(슬롯 1)');
-  assert.notEqual(BigInt(bad.publicSignals[24]), policyRoot, '전제: 정책 집합이 아닌 트리의 root 다');
+  assert.equal(BigInt(bad.publicSignals[28]), 2n, '전제: set_sel = 2(슬롯 1)');
+  assert.notEqual(BigInt(bad.publicSignals[29]), policyRoot, '전제: 정책 집합이 아닌 트리의 root 다');
   const r = await rpPolicy.verifyLogin(bad);
   assert.equal(r.ok, false); assert.equal(r.reason, 'bad_disclosure');
+  // policySetRoot 를 안 주면 예전처럼 검사하지 않는다(일반 검증기 계약 유지). V9: 등록부 root 는 N=1 규칙(RP 의
+  // stale_registry_root)이라 아래 good·plain 의 makeLogin() 이 슬롯을 다시 게시하면 bad 의 regRoot 는 더 이상
+  // 최신이 아니게 된다 — 그래서 이 대조는 bad 검증 직후, 다른 makeLogin() 이 더 게시하기 전에 한다(여기서 보는
+  // 것은 등록부 신선도가 아니라 policySetRoot 유무에 따른 차이다).
+  assert.equal((await rp.verifyLogin(bad)).ok, true);
 
   // 정책 집합이면 통과한다.
   const good = await makeLogin({ disclosure: { ...zeros, ...(await normalizeSet({ slot: 1, members }, attrs)) } });
@@ -131,9 +149,6 @@ await t('I-2: policySetRoot 를 준 검증기는 정책 집합이 아닌 set_roo
   // 집합 술어가 없는 로그인(sel = 0)은 정책과 무관하게 그대로 통과한다.
   const plain = await makeLogin();
   assert.equal((await rpPolicy.verifyLogin(plain)).ok, true, 'sel = 0 은 집합을 주장하지 않는다');
-
-  // policySetRoot 를 안 주면 예전처럼 검사하지 않는다(일반 검증기 계약 유지).
-  assert.equal((await rp.verifyLogin(bad)).ok, true);
 
   // 타입 검사: 실수로 문자열·숫자를 넘기면 비교가 늘 false 가 되어 모든 집합 로그인이 막힌다 — 기동 때 막는다.
   for (const v of [policyRoot.toString(), 1, {}]) {
@@ -188,7 +203,7 @@ await t('음성 d″: 다른 조합 키로 만든 태그는 wrong_trace_key (서
 await t('음성 태그: c1 이 항등원(0,1)이면 bad_tag (r=0 이 평문을 드러내는 것을 막는다)', async () => {
   const L = await makeLogin();
   const bad = [...L.publicSignals];
-  bad[11] = '0'; bad[12] = '1';
+  bad[12] = '0'; bad[13] = '1';
   assert.deepEqual(await rp.verifyLogin({ ...L, publicSignals: bad }), { ok: false, reason: 'bad_tag' });
 });
 
@@ -196,7 +211,7 @@ await t('양성: verifyLogin 이 태그를 돌려준다 (서비스가 로그에 
   const L = await makeLogin();
   const r = await rp.verifyLogin(L);
   assert.equal(r.ok, true);
-  assert.equal(r.tag.c1x, BigInt(L.publicSignals[11])); assert.equal(r.tag.c2, BigInt(L.publicSignals[13]));
+  assert.equal(r.tag.c1x, BigInt(L.publicSignals[12])); assert.equal(r.tag.c2, BigInt(L.publicSignals[14]));
 });
 
 await t('createRpVerifier 는 pkTrace 없이는 throw', () => {
@@ -238,7 +253,7 @@ await t('E-6 만료 경계: head == max_height 는 통과, 한 블록 더 가면
 
 await t('앞자리 0 이 붙은 10진 공개 입력도 통과하지만, 돌려주는 publicSignals 는 정규형이다 (개봉 재료 — 2026-09-18 점검 1)', async () => {
   const L = await makeLogin();
-  const ps = [...L.publicSignals]; ps[1] = '0' + ps[1]; ps[11] = '00' + ps[11];
+  const ps = [...L.publicSignals]; ps[1] = '0' + ps[1]; ps[12] = '00' + ps[12];
   const r = await rp.verifyLogin({ proof: L.proof, publicSignals: ps, sig: L.sig, r_s: L.r_s });
   assert.equal(r.ok, true, JSON.stringify(r, (k, v) => (typeof v === 'bigint' ? v.toString() : v)));
   assert.deepEqual(r.publicSignals, L.publicSignals, '기록·개봉에는 정규 문자열을 써야 CIA 의 문자열 비교·서명 재구성과 맞는다');
@@ -256,11 +271,15 @@ await t("음성 c': 다른 chainid 로 발급된 credential 은 wrong_chain", as
   assert.deepEqual(await rp.verifyLogin(L), { ok: false, reason: 'wrong_chain' });
 });
 
-await t('음성 b: 폐기 게시 후 옛 root 의 π 는 stale_root', async () => {
+// V9: 사용자 자격증명의 활성 여부는 더 이상 폐기 트리(userLeaf)가 아니라 등록부 슬롯이 가진다 — 은퇴는
+// 슬롯을 0 으로 게시하는 것이고(브리프 규칙 5), RP 는 옛 π 를 stale_registry_root 로 거절한다.
+await t('V9: 등록부 슬롯 은퇴(0 으로 게시) 후 옛 π 는 stale_registry_root', async () => {
   const L = await makeLogin();
   assert.equal((await rp.verifyLogin(L)).ok, true);
-  await publish([await userLeaf(BigInt(L.cred.Cf_u))]);
-  assert.deepEqual(await rp.verifyLogin(L), { ok: false, reason: 'stale_root' });
+  registry.set(SLOT, 0n);
+  const { root: revRootNow } = await syncRevocationTree(provider, logAddress);
+  await publishV2(log, ciaEth, { revRoot: revRootNow, regRoot: registry.root(), epoch: (await log.epoch()) + 1n, slotIdx: [SLOT], slotLeaves: [0n] });
+  assert.deepEqual(await rp.verifyLogin(L), { ok: false, reason: 'stale_registry_root' });
 });
 
 await t('음성 b′(C-1): 마지막 게시가 maxRootAge 블록보다 오래되면 root_too_old (온체인 RootTooOld 와 같은 상한, fail-closed)', async () => {
@@ -317,40 +336,42 @@ await t('같은 사용자·같은 RP 라도 chainid 가 다르면 PPID 가 다�
   // 여기서 보는 것은 공개 입력의 PPID 자체가 다르다는 사실이다 — 체인 1 의 RP 가 본 가명으로 체인 31337 의
   // 사용자를 특정할 수 없다.
   const reg = await createRegistration();
-  const sk_u = Buffer.alloc(32, 3).toString('hex');
-  const attrs = [0n, 0n, 0n, 0n];
-  const uc = await buildUserCredRequest({ uid, s_u: reg.s_u, r_u: reg.r_u, sk_u, attrs });   // 사용자 자격증명은 체인과 무관 — 하나를 두 체인에 쓴다
+  const attrs = [0n, 0n, 0n, 0n, 0n, 0n];
+  const uc = await buildUserCredRequest({ uid, s_u: reg.s_u, r_u: reg.r_u, sk_u: reg.sk_u, attrs });   // 사용자 자격증명은 체인과 무관 — 하나를 두 체인에 쓴다
+  // 이 테스트는 PPID 값만 비교한다(verifyLogin 을 부르지 않는다) — 등록부는 체인에 올릴 필요 없다(브리프 규칙 4).
+  const localRegistry = await createRegistryTree();
+  localRegistry.set(SLOT, await registryLeaf(reg.cm_u, uc.Cf_u));
   const ppids = [];
   for (const chainid of [31337n, 1n]) {
     const session = createSessionKey();
     const max_height = BigInt(await provider.getBlockNumber()) + 300n;
-    const req = await buildIssueRequest({ uid, Cf_u: uc.Cf_u, arid, sk_u, session, chainid, max_height });
+    const req = await buildIssueRequest({ uid, Cf_u: uc.Cf_u, arid, sk_u: reg.sk_u, session, chainid, max_height });
     const cred = await issueWith(CIA, uc.Cf_u, req.C_s_pt, { max_height, chainid });
     const { tree } = await syncRevocationTree(provider, logAddress);
-    const { publicSignals } = await buildCredentialProof({ uid, arid, s_u: reg.s_u, blind_u: uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs, credential: cred, pk_CIA: CIA.pub, pk_trace, tree });
+    const { publicSignals } = await buildCredentialProof({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, blind_u: uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs, credential: cred, pk_CIA: CIA.pub, pk_trace, tree, registry: localRegistry, slot: SLOT, cm_u: reg.cm_u });
     ppids.push(BigInt(publicSignals[0]));
   }
   assert.notEqual(ppids[0], ppids[1]);
 });
 
 await t('C-2: maskDisclosure 는 mask 비트가 0 인 슬롯의 lo/hi 를 0 으로 지운다 (회로가 그 슬롯을 검증하지 않으므로 기록·표시하면 안 된다)', () => {
-  const d = maskDisclosure({ mask: 1n, lo: [0n, 410n, 7n, 0n], hi: [2007n, 410n, 9n, 0n] });
-  assert.deepEqual(d.lo, [0n, 0n, 0n, 0n]); assert.deepEqual(d.hi, [2007n, 0n, 0n, 0n]); assert.equal(d.mask, 1n);
-  const e = maskDisclosure({ mask: 10n, lo: [1n, 2n, 3n, 4n], hi: [5n, 6n, 7n, 8n] });   // 비트 1·3
-  assert.deepEqual(e.lo, [0n, 2n, 0n, 4n]); assert.deepEqual(e.hi, [0n, 6n, 0n, 8n]);
-  // 길이 4 가 아니면 mask 비트와 슬롯이 어긋난다 — 공개 함수이므로 오용을 막는다(2026-09-23 리뷰 M-4)
-  assert.throws(() => maskDisclosure({ mask: 1n, lo: [0n, 0n, 0n], hi: [0n, 0n, 0n, 0n] }), /길이 4/);
+  const d = maskDisclosure({ mask: 1n, lo: [0n, 410n, 7n, 0n, 0n, 0n], hi: [2007n, 410n, 9n, 0n, 0n, 0n] });
+  assert.deepEqual(d.lo, [0n, 0n, 0n, 0n, 0n, 0n]); assert.deepEqual(d.hi, [2007n, 0n, 0n, 0n, 0n, 0n]); assert.equal(d.mask, 1n);
+  const e = maskDisclosure({ mask: 10n, lo: [1n, 2n, 3n, 4n, 5n, 6n], hi: [5n, 6n, 7n, 8n, 9n, 10n] });   // 비트 1·3
+  assert.deepEqual(e.lo, [0n, 2n, 0n, 4n, 0n, 0n]); assert.deepEqual(e.hi, [0n, 6n, 0n, 8n, 0n, 0n]);
+  // V9: 슬롯이 6개라 길이 6 이 아니면 mask 비트와 슬롯이 어긋난다 — 공개 함수이므로 오용을 막는다(2026-09-23 리뷰 M-4)
+  assert.throws(() => maskDisclosure({ mask: 1n, lo: [0n, 0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n, 0n, 0n] }), /길이 6/);
 });
 
 await t('C-2 E2E: 마스크 밖 슬롯이 0 이 아닌 **유효한** π 여도 verifyLogin 은 그 슬롯을 지워 돌려준다 (maskDisclosure 호출 고정)', async () => {
   // 회로는 mask 비트가 0 인 슬롯의 disc_lo/hi 에 64비트 범위 말고 아무 제약도 걸지 않는다(2026-09-22 §4.3). 지갑의
   // normalizeDisclosure 를 거치지 않고 buildCredentialProof 에 직접 넘기면 그런 π 가 실제로 만들어진다 — 즉 "실제 증명으로는
   // 재현 불가" 가 아니다(2026-09-23 최종 리뷰 M5). lib/mode3_rp.js 의 maskDisclosure 래핑을 벗기면 이 케이스가 빨개진다.
-  const L = await makeLogin({ disclosure: { mask: 1n, lo: [0n, 410n, 0n, 0n], hi: [2007n, 410n, 0n, 0n] } });
-  // 전제: 공개 입력에는 마스크 밖 슬롯(1)의 값이 그대로 실려 있다. [14]=mask, [15..18]=lo, [19..22]=hi
-  assert.equal(BigInt(L.publicSignals[14]), 1n, 'mask 는 슬롯 0 만');
-  assert.equal(BigInt(L.publicSignals[16]), 410n, 'lo[1] 이 0 이 아닌 π 여야 이 케이스가 의미가 있다');
-  assert.equal(BigInt(L.publicSignals[20]), 410n, 'hi[1] 도 마찬가지');
+  const L = await makeLogin({ disclosure: { mask: 1n, lo: [0n, 410n, 0n, 0n, 0n, 0n], hi: [2007n, 410n, 0n, 0n, 0n, 0n] } });
+  // 전제: 공개 입력에는 마스크 밖 슬롯(1)의 값이 그대로 실려 있다. V9: [15]=mask, [16..21]=lo, [22..27]=hi
+  assert.equal(BigInt(L.publicSignals[15]), 1n, 'mask 는 슬롯 0 만');
+  assert.equal(BigInt(L.publicSignals[17]), 410n, 'lo[1] 이 0 이 아닌 π 여야 이 케이스가 의미가 있다');
+  assert.equal(BigInt(L.publicSignals[23]), 410n, 'hi[1] 도 마찬가지');
   const r = await rp.verifyLogin(L);
   assert.equal(r.ok, true, JSON.stringify(r, (k, v) => (typeof v === 'bigint' ? v.toString() : v)));
   assert.equal(r.disclosure.mask, 1n);
@@ -366,21 +387,21 @@ await t('C-2 E2E: 마스크 밖 슬롯이 0 이 아닌 **유효한** π 여도 v
 // 서비스는 BigInt 로 1·2000 을 읽어 "출생연도 ≤ 2000 을 공개했다" 고 믿는다 — 나이·집합·allowAgent 술어가 통째로 위조된다.
 await t('C-1: 정규 10진 문자열이 아닌 공개 입력은 malformed — 증명과 정책이 다른 값을 보지 못한다', async () => {
   const good = await makeLogin();
-  assert.equal(good.publicSignals[14], '0', '전제: 로그인 π 의 disc_mask 는 0');
-  assert.equal(good.publicSignals[19], '0', '전제: 로그인 π 의 disc_hi[0] 은 0');
+  assert.equal(good.publicSignals[15], '0', '전제: 로그인 π 의 disc_mask 는 0');
+  assert.equal(good.publicSignals[22], '0', '전제: 로그인 π 의 disc_hi[0] 은 0');
 
   // 공격: 증명은 그대로 두고 공개 입력에 공백만 넣는다.
   const forged = [...good.publicSignals];
-  forged[14] = ' 1';      // 서비스가 보면 mask = 1, 증명이 보증하는 값은 0
-  forged[19] = ' 2000';   // 서비스가 보면 disc_hi[0] = 2000, 증명이 보증하는 값은 0
-  assert.equal(BigInt(forged[14]), 1n); assert.equal(BigInt(forged[19]), 2000n);   // 서비스 쪽 파싱을 못 박는다
+  forged[15] = ' 1';      // 서비스가 보면 mask = 1, 증명이 보증하는 값은 0
+  forged[22] = ' 2000';   // 서비스가 보면 disc_hi[0] = 2000, 증명이 보증하는 값은 0
+  assert.equal(BigInt(forged[15]), 1n); assert.equal(BigInt(forged[22]), 2000n);   // 서비스 쪽 파싱을 못 박는다
   const r = await rp.verifyLogin({ ...good, publicSignals: forged });
   assert.equal(r.ok, false, '공백 섞인 공개 입력이 통과하면 술어 위조가 된다');
   assert.equal(r.reason, 'malformed');
 
   // 같은 이유로 막아야 하는 다른 표기들(전부 BigInt 는 받아 주지만 snarkjs 와 어긋나거나 비정규형이다)
   for (const bad of [' 410', '410 ', '0x10', '', ' ', 0, 1n, null]) {
-    const ps2 = [...good.publicSignals]; ps2[14] = bad;
+    const ps2 = [...good.publicSignals]; ps2[15] = bad;
     const v = await rp.verifyLogin({ ...good, publicSignals: ps2 });
     assert.equal(v.reason, 'malformed', `${JSON.stringify(String(bad))} 는 malformed 여야 한다`);
   }

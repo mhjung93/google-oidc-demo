@@ -5,8 +5,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ethers } from 'ethers';
-import { getProvider, fundAddress, deployRevocationLog, signRootPublication, rootToBytes32, mineBlocks } from './helpers/mode3_chain.mjs';
+import { getProvider, fundAddress, deployMode3Log, rootToBytes32, mineBlocks, publishV2 } from './helpers/mode3_chain.mjs';
 import { createRevocationTree } from '../lib/mode3_revocation.js';
+import { createRegistryTree } from '../lib/mode3_registry.js';
 import { syncRevocationTree } from '../lib/mode3_wallet.js';
 import { createRevocationSync, RCL_CACHE_VERSION } from '../lib/mode3_rcl_sync.js';
 
@@ -19,7 +20,9 @@ async function t(name, fn) {
 const provider = getProvider();
 const ciaEth = ethers.Wallet.createRandom().connect(provider);
 await fundAddress(ciaEth.address, '1', provider);
-const { address: logAddress, contract: log } = await deployRevocationLog(ciaEth.address, provider);
+const { address: logAddress, contract: log } = await deployMode3Log(ciaEth.address, provider);
+// V9: 이 테스트는 폐기 트리 동기화만 본다(브리프 규칙 7) — 등록부는 항상 빈 트리로 둔다.
+const registry = await createRegistryTree();
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-rcl-'));
 const cacheFile = path.join(dir, 'mode3_wallet_rcl.json');
 const warnings = [];
@@ -31,11 +34,8 @@ async function publish(leavesBig) {
   const ev = await log.queryFilter(log.filters.Revoked());
   for (const e of ev) for (const l of e.args.leaves) await tree.insert(BigInt(l));
   for (const l of leavesBig) await tree.insert(l);
-  const root = rootToBytes32(tree.getRoot());
   const epoch = (await log.epoch()) + 1n;
-  const leaves = leavesBig.map(rootToBytes32);
-  const sig = await signRootPublication(ciaEth, { logAddress, root, epoch, leaves });
-  await (await log.connect(ciaEth).publishRoot(root, epoch, leaves, sig)).wait();
+  await publishV2(log, ciaEth, { revRoot: tree.getRoot(), regRoot: registry.root(), epoch, revLeaves: leavesBig });
 }
 
 // eth_getLogs 호출을 기록하는 provider. ethers v6 의 _perform 은 this.send 를 부르므로 인스턴스의 send 를 감싸면 된다.
@@ -50,15 +50,16 @@ function spyProvider() {
   return { p, calls };
 }
 
-// root() 의 eth_call 만 가로채 다른 값을 돌려주는 provider(fail-closed 시험용). root() 셀렉터 0xebf0c717.
-// lieCount: 처음 그만큼의 root() 호출만 거짓말하고 그 뒤는 정직해진다(기본 Infinity — 항상 거짓말).
+// revRoot() 의 eth_call 만 가로채 다른 값을 돌려주는 provider(fail-closed 시험용). revRoot() 셀렉터 0xda0daef2
+// (V9: Mode3Log 는 root() 대신 revRoot() 를 쓴다 — 옛 root() 셀렉터는 0xebf0c717).
+// lieCount: 처음 그만큼의 revRoot() 호출만 거짓말하고 그 뒤는 정직해진다(기본 Infinity — 항상 거짓말).
 // 같은 provider 인스턴스를 계속 쓰는 rcl 을 "거짓말이 끝난 뒤 정직해진 노드에 재동기화"하는 시험에 쓴다(I2).
 function lyingRootProvider(fakeRootBig, lieCount = Infinity) {
   const p = getProvider();
   let told = 0;
   const orig = p.send.bind(p);
   p.send = async (method, params) => {
-    if (method === 'eth_call' && String(params[0]?.data ?? '').startsWith('0xebf0c717') && told < lieCount) {
+    if (method === 'eth_call' && String(params[0]?.data ?? '').startsWith('0xda0daef2') && told < lieCount) {
       told++;
       return rootToBytes32(fakeRootBig);
     }
@@ -247,7 +248,7 @@ await t('한 번에 게시된 리프 4개를 델타로 적용하는 동안 게�
   const a = await rcl.sync();
   watched = a.tree;                                   // 델타는 같은 트리 객체를 그대로 갱신한다
   observed.length = 0;
-  await publish([21n, 22n, 23n, 24n]);                // 한 번의 publishRoot → 리프 4개가 실린 Revoked 이벤트 하나
+  await publish([21n, 22n, 23n, 24n]);                // 한 번의 publish → 리프 4개가 실린 Revoked 이벤트 하나
   const b = await rcl.sync();
   p.destroy();
   assert.equal(b.mode, 'delta');

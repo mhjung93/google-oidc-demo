@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { ethers } from 'ethers';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { getProvider } from './helpers/mode3_chain.mjs';
-import { createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree, buildCredentialProof, signRegistration, VKEY_PATH } from '../lib/mode3_wallet.js';
+import { createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree, syncRegistryTree, buildCredentialProof, signRegistration, VKEY_PATH } from '../lib/mode3_wallet.js';
 import { pointToStrings } from '../lib/mode3_issuance.js';
 import { createShare, combinePublicKey, partialDecrypt } from '../lib/mode3_trace.js';
 import { signOpenRequest, signOpenResult } from '../lib/mode3_opening.js';
@@ -44,7 +44,8 @@ try {
     const issued = await cia.post('/cia/issue', req.body);
     assert.equal(issued.status, 200, j(issued.body));
     const { tree } = await syncRevocationTree(provider, cia.logAddress);
-    const { proof, publicSignals, tag } = await buildCredentialProof({ uid, arid: BigInt(svc.arid), s_u: reg.s_u, blind_u: uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs: [1990n, 410n, 2n, 0n, 0n, 0n], credential: issued.body, pk_CIA, pk_trace, tree });
+    const { tree: registry } = await syncRegistryTree(provider, cia.logAddress);
+    const { proof, publicSignals, tag } = await buildCredentialProof({ uid, arid: BigInt(svc.arid), s_u: reg.s_u, r_u: reg.r_u, blind_u: uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs: [1990n, 410n, 2n, 0n, 0n, 0n], credential: issued.body, pk_CIA, pk_trace, tree, registry, slot: reg.slot, cm_u: reg.cm_u });
     return { proof, publicSignals, tag, PPID: publicSignals[0] };
   }
   async function openRequest(svc, T, { share = svc.share, wallet = svc.serviceWallet, ts = nowTs(), arid = svc.arid } = {}) {
@@ -104,7 +105,8 @@ try {
     const issued = await cia.post('/cia/issue', req.body);
     assert.equal(issued.status, 200, j(issued.body));
     const { tree } = await syncRevocationTree(provider, cia.logAddress);
-    const { proof, publicSignals, tag } = await buildCredentialProof({ uid: who.uid, arid: BigInt(svc.arid), s_u: who.reg.s_u, blind_u: who.uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs: who.attrs, credential: issued.body, pk_CIA, pk_trace: svc.pk_trace, tree, tagR });
+    const { tree: registry } = await syncRegistryTree(provider, cia.logAddress);
+    const { proof, publicSignals, tag } = await buildCredentialProof({ uid: who.uid, arid: BigInt(svc.arid), s_u: who.reg.s_u, r_u: who.reg.r_u, blind_u: who.uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs: who.attrs, credential: issued.body, pk_CIA, pk_trace: svc.pk_trace, tree, registry, slot: who.reg.slot, cm_u: who.reg.cm_u, tagR });
     return { proof, publicSignals, tag, PPID: publicSignals[0] };
   }
 
@@ -259,9 +261,10 @@ try {
       const issued = await cia2.post('/cia/issue', req.body);
       assert.equal(issued.status, 200, j(issued.body));
       const { tree } = await syncRevocationTree(provider, cia2.logAddress);
+      const { tree: registry } = await syncRegistryTree(provider, cia2.logAddress);
       const keys2 = (await cia2.get('/cia/public_keys')).body;
       const pk_CIA2 = { x: BigInt(keys2.pk_CIA.x), y: BigInt(keys2.pk_CIA.y) };
-      const { proof, publicSignals, tag } = await buildCredentialProof({ uid, arid: BigInt(S.arid), s_u: reg.s_u, blind_u: uc2.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs: [1990n, 410n, 2n, 0n, 0n, 0n], credential: issued.body, pk_CIA: pk_CIA2, pk_trace: S.pk_trace, tree });
+      const { proof, publicSignals, tag } = await buildCredentialProof({ uid, arid: BigInt(S.arid), s_u: reg.s_u, r_u: reg.r_u, blind_u: uc2.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs: [1990n, 410n, 2n, 0n, 0n, 0n], credential: issued.body, pk_CIA: pk_CIA2, pk_trace: S.pk_trace, tree, registry, slot: r0.body.slot, cm_u: reg.cm_u });
       const D = await partialDecrypt(S.share.x, tag.c1);
       const D_svc = { x: D.x.toString(), y: D.y.toString() };
       const ts = nowTs();
