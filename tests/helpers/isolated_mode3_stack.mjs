@@ -92,7 +92,8 @@ export async function startIsolatedMode3Stack(opts = {}) {
           MODE3_RP_PORT: String(rpPort),
           MODE3_CIA_URL: cia.base,
           MODE3_WALLET_AGENT_ORIGIN: walletOrigin,
-          CIA_LOG_ADDRESS: cia.logAddress,
+          CIA_LOG_ADDRESS: cia.logAddress,   // RP 가 /api/mode3/rp_info 에 캐노니컬로 보여줄 뿐, 검증기는 아래 거울만 읽는다(V10)
+          MODE3_MIRROR_ADDRESS: cia.mirrorAddress,
           MODE3_RP_REGISTRATION_FILE: path.join(dir, 'mode3_rp_registration.json'),
           MODE3_RP_PUBLIC_ORIGIN: rpOrigin,
           MODE3_RP_LOGIN_LOG: path.join(dir, 'mode3_rp_logins.jsonl'),

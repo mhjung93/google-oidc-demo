@@ -25,11 +25,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.MODE3_RP_PORT) || 3100;
 const CIA_URL = process.env.MODE3_CIA_URL || 'http://127.0.0.1:4100';
 const WALLET_ORIGIN = process.env.MODE3_WALLET_AGENT_ORIGIN || 'http://127.0.0.1:5100';
-const LOG_ADDRESS = process.env.CIA_LOG_ADDRESS || null;
+const LOG_ADDRESS = process.env.CIA_LOG_ADDRESS || null;   // 캐노니컬 표시용(/api/mode3/rp_info) — 검증기는 이 주소를 읽지 않는다(V10)
+const MIRROR_ADDRESS = process.env.MODE3_MIRROR_ADDRESS || null;
 const RPC_URL = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
 const CHALLENGE_TTL_MS = Number(process.env.MODE3_CHALLENGE_TTL_MS) || 120_000;
 
 if (!LOG_ADDRESS) { console.error('[rp] CIA_LOG_ADDRESS 가 없다'); process.exit(1); }
+// V10: RP 는 폐기 체인의 캐노니컬 Mode3Log 를 직접 읽지 않고 자기 체인의 거울(Mode3Mirror)만 읽는다(설계 §2·§5).
+if (!MIRROR_ADDRESS) { console.error('[rp] MODE3_MIRROR_ADDRESS 가 없다 — 이 체인의 Mode3Mirror 주소(V10)'); process.exit(1); }
 
 // pk_CIA 고정(설계 §5 — 유일한 위조 방어선). env 가 있으면 그것, 없으면 기동 시 CIA 에서 한 번 받아
 // 프로세스 수명 동안 고정한다(TOFU, 데모 단축). 기동 후에는 CIA 에 다시 묻지 않는다(설계 §9.9).
@@ -135,7 +138,8 @@ async function ensureFactory() {
   if (reg.factoryAddress) return;
   const signer = await provider.getSigner(RELAYER_INDEX);
   const verifierAddress = process.env.MODE3_VERIFIER_ADDRESS || reg.verifierAddress || await deployVerifier(signer);
-  const factoryAddress = await deployFactory(signer, { verifierAddress, arid: reg.arid, pkCIA, pkTrace: { x: BigInt(reg.pk_trace.x), y: BigInt(reg.pk_trace.y) }, logAddress: LOG_ADDRESS, maxRootAge: MAX_ROOT_AGE, maxLifetime: MAX_LIFETIME });
+  // V10: 팩토리가 온체인 지갑에 물려주는 root 소스도 거울이다 — 온체인·오프체인 검증기가 같은 체인을 본다.
+  const factoryAddress = await deployFactory(signer, { verifierAddress, arid: reg.arid, pkCIA, pkTrace: { x: BigInt(reg.pk_trace.x), y: BigInt(reg.pk_trace.y) }, logAddress: MIRROR_ADDRESS, maxRootAge: MAX_ROOT_AGE, maxLifetime: MAX_LIFETIME });
   reg = { ...reg, verifierAddress, factoryAddress };
   writeJsonAtomic(REG_FILE, reg, 0o600);
   console.log(`[rp] 팩토리 배포: ${factoryAddress} (verifier ${verifierAddress}, maxRootAge ${MAX_ROOT_AGE}, maxLifetime ${MAX_LIFETIME}) → ${REG_FILE}`);
@@ -180,7 +184,8 @@ async function syncFactoryConstantsAndVerifier() {
     // policySetRoot: 집합 술어를 실은 성명은 **이 서비스의 정책 집합**이어야 한다(2026-09-25 리뷰 I-2).
     // 회로는 "어떤 트리에 속한다" 만 증명하므로, 대조하지 않으면 자기 국가만 든 집합의 root 로 "허용 집합 소속" 을
     // 주장할 수 있다. AttrGate(온체인)는 이미 같은 대조를 한다 — 로그인·재검증에도 같은 선을 긋는다.
-    verifier = createRpVerifier({ provider, logAddress: LOG_ADDRESS, vkey, pkCIA, arid: BigInt(reg.arid), chainId, pkTrace: { x: BigInt(reg.pk_trace.x), y: BigInt(reg.pk_trace.y) }, maxLifetimeBlocks: EFFECTIVE_MAX_LIFETIME, maxRootAge: EFFECTIVE_MAX_ROOT_AGE, policySetRoot: ALLOWED_COUNTRIES_ROOT });
+    // V10: 검증기는 캐노니컬(LOG_ADDRESS)이 아니라 이 체인의 거울(MIRROR_ADDRESS)을 읽는다(설계 §2·§5).
+    verifier = createRpVerifier({ provider, logAddress: MIRROR_ADDRESS, vkey, pkCIA, arid: BigInt(reg.arid), chainId, pkTrace: { x: BigInt(reg.pk_trace.x), y: BigInt(reg.pk_trace.y) }, maxLifetimeBlocks: EFFECTIVE_MAX_LIFETIME, maxRootAge: EFFECTIVE_MAX_ROOT_AGE, policySetRoot: ALLOWED_COUNTRIES_ROOT });
     // 하트비트 주기가 상한 이상이면 폐기가 없어도 root 나이가 상한을 넘는 창이 생겨 **전원**이 root_too_old(온체인 RootTooOld)로
     // 막힌다. 두 값은 서로 다른 프로세스의 env 라 아무도 대조하지 않는다(2026-09-23 최종 리뷰 M4).
     if (ciaHeartbeatBlocks !== null && ciaHeartbeatBlocks > 0n && ciaHeartbeatBlocks >= EFFECTIVE_MAX_ROOT_AGE) {
@@ -300,7 +305,7 @@ app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'rp.html')
 const currentPredicates = () => ({ allowedCountries: ALLOWED_COUNTRIES_EFFECTIVE.map(String), allowedCountriesRoot: ALLOWED_COUNTRIES_ROOT.toString(), minAge: MIN_AGE.toString() });
 
 app.get('/api/mode3/rp_info', (req, res) => {
-  res.json({ status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, ciaUrl: CIA_URL, pkCiaSource: pkCIA.source, chainId: chainId.toString(), active: Boolean(verifier), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null, predicates: currentPredicates() });
+  res.json({ status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, mirrorAddress: MIRROR_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, ciaUrl: CIA_URL, pkCiaSource: pkCIA.source, chainId: chainId.toString(), active: Boolean(verifier), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null, predicates: currentPredicates() });
 });
 
 // 상태 엔드포인트(설계 2026-09-25 §1) — 민감정보 없음, 지갑·AA 오리진에만 CORS.

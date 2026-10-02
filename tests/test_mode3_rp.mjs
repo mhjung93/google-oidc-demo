@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { ethers } from 'ethers';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
-import { getProvider, fundAddress, deployMode3Log, rootToBytes32, mineBlocks, publishV3 } from './helpers/mode3_chain.mjs';
+import { getProvider, fundAddress, deployMode3Log, deployMode3Mirror, relayToMirror, rootToBytes32, mineBlocks, publishV3 } from './helpers/mode3_chain.mjs';
 import { createRegistryTree, registryLeaf } from '../lib/mode3_registry.js';
 import { credMessageV5, compressPoint, randomScalar } from '../lib/mode3_credential.js';
 import { createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, normalizeSet, VKEY_PATH } from '../lib/mode3_wallet.js';
@@ -408,6 +408,73 @@ await t('C-1: 정규 10진 문자열이 아닌 공개 입력은 malformed — �
 
   // 정상 입력은 그대로 통과한다(회귀 방지).
   assert.equal((await rp.verifyLogin(good)).ok, true);
+});
+
+// ---- V10 Task 8: RP 는 자기 체인 거울(Mode3Mirror)만 읽는다 — 거울 지연 시나리오 ----
+// createRpVerifier 는 이제 MODE3_ROOTS_ABI 만 쓰므로 logAddress 자리에 거울 주소를 줘도 같은 getter 로 동작한다.
+// 이 레포의 이 테스트 파일은 실제 CIA 서버(cia.js)를 띄우지 않고 ciaEth 서명으로 직접 게시한다(위 publish() 와 같은 관례) —
+// 그래서 브리프의 cia.adminPost('/cia/admin/relay') 는 relayToMirror(캐노니컬 게시의 서명을 거울에 그대로 재생)로 대신한다.
+const { address: mirrorAddress, contract: mirror } = await deployMode3Mirror(ciaEth.address, logAddress, provider);
+const rpOnMirror = createRpVerifier({ provider, logAddress: mirrorAddress, vkey, pkCIA: CIA.pub, arid, chainId: 31337n, pkTrace: pk_trace });
+const MIRROR_SLOT = 1;   // SLOT(0)은 다른 테스트가 공유한다 — 별도 슬롯으로 격리
+let mirrorScenario = null;   // 두 테스트가 공유하는 상태(릴레이 전/후)
+
+await t('거울이 뒤처지면 캐노니컬 root 의 π 는 stale_root, 거울 root 의 π 는 통과', async () => {
+  const reg2 = await createRegistration();
+  const attrs2 = [19n, 410n, 0n, 0n, 0n, 0n];
+  const uid2 = uid + 1n;
+  const uc2 = await buildUserCredRequest({ uid: uid2, s_u: reg2.s_u, r_u: reg2.r_u, sk_u: reg2.sk_u, attrs: attrs2 });
+  const { tree } = await syncRevocationTree(provider, logAddress);
+  registry.set(MIRROR_SLOT, await registryLeaf(reg2.cm_u, uc2.Cf_u));
+  const pub1 = await publishV3(log, ciaEth, { revRoot: tree.getRoot(), regRoot: registry.root(), epoch: (await log.epoch()) + 1n, slotIdx: [MIRROR_SLOT], slotLeaves: [registry.leafAt(MIRROR_SLOT)] });
+  // 선행 조건(판정 2): 첫 증명 전에 거울이 이미 이 사용자의 등록부 리프를 담고 있어야 한다.
+  await relayToMirror(mirror, ciaEth, pub1);
+
+  const session2 = createSessionKey();
+  const max_height2 = BigInt(await provider.getBlockNumber()) + 300n;
+  const req2 = await buildIssueRequest({ uid: uid2, Cf_u: uc2.Cf_u, arid, sk_u: reg2.sk_u, session: session2, chainid: 31337n, allowAgent: 0n, max_height: max_height2 });
+  const cred2 = await issueWith(CIA, uc2.Cf_u, req2.C_s_pt, { max_height: max_height2, chainid: 31337n, allowAgent: 0n });
+
+  // 캐노니컬 epoch +1 (다른 사용자 세션 폐기 흉내) — 거울에는 릴레이하지 않는다.
+  await tree.insert(888888n);
+  const lagPub = await publishV3(log, ciaEth, { revRoot: tree.getRoot(), regRoot: registry.root(), epoch: (await log.epoch()) + 1n, revLeaves: [888888n] });
+  assert.ok((await mirror.epoch()) < (await log.epoch()), '전제: 거울이 뒤처졌다');
+
+  const buildArgs = { uid: uid2, arid, s_u: reg2.s_u, r_u: reg2.r_u, blind_u: uc2.secrets.blind_u, blind_s: req2.secrets.blind_s, pk_i: session2.pk_i, attrs: attrs2, credential: cred2, pk_CIA: CIA.pub, pk_trace, registry, slot: MIRROR_SLOT, cm_u: reg2.cm_u };
+
+  // 캐노니컬 root 의 π — 거울 검증기에 들이밀면 stale_root.
+  const canonProof = await buildCredentialProof({ ...buildArgs, tree });
+  const r_sC = randomScalar();
+  const piCanon = { proof: canonProof.proof, publicSignals: canonProof.publicSignals, r_s: r_sC, sig: await signChallenge(session2.wallet, r_sC.toString()) };
+  const atCanon = await rpOnMirror.verifyLogin(piCanon);
+  assert.equal(atCanon.reason, 'stale_root', JSON.stringify(atCanon, (k, v) => (typeof v === 'bigint' ? v.toString() : v)));
+
+  // 거울 root 의 π — Task 7 의 untilEpoch/expectRoot 로 거울 epoch 시점의 트리를 재구성해 만든다.
+  const mEpoch = await mirror.epoch();
+  const { tree: mirrorTree } = await syncRevocationTree(provider, logAddress, { untilEpoch: mEpoch, expectRoot: BigInt(await mirror.revRoot()) });
+  const mirrorProof = await buildCredentialProof({ ...buildArgs, tree: mirrorTree });
+  const r_sM = randomScalar();
+  const piMirror = { proof: mirrorProof.proof, publicSignals: mirrorProof.publicSignals, r_s: r_sM, sig: await signChallenge(session2.wallet, r_sM.toString()) };
+  const atMirror = await rpOnMirror.verifyLogin(piMirror);
+  assert.equal(atMirror.ok, true, JSON.stringify(atMirror, (k, v) => (typeof v === 'bigint' ? v.toString() : v)));
+
+  mirrorScenario = { reg2, uc2, session2, cred2, req2, attrs2, uid2, lagPub };
+});
+
+await t('릴레이 뒤에는 캐노니컬 root 의 π 가 통과한다', async () => {
+  assert.ok(mirrorScenario, '전제: 이전 테스트가 시나리오를 준비했다');
+  // CIA 의 POST /cia/admin/relay 흉내 — 앞 테스트가 캐노니컬에만 올리고 거울에는 올리지 않은 게시(lagPub)를
+  // 같은 서명 그대로 거울에 재생한다(Mode3Mirror.publish 는 캐노니컬 Mode3Log.digestFor 와 바이트 단위로 같은 서명을 받는다).
+  await relayToMirror(mirror, ciaEth, mirrorScenario.lagPub);
+  assert.equal(await mirror.epoch(), await log.epoch(), '전제: 릴레이 후 거울이 캐노니컬을 따라잡았다');
+
+  const { reg2, uc2, session2, cred2, req2, attrs2, uid2 } = mirrorScenario;
+  const { tree: freshTree } = await syncRevocationTree(provider, logAddress);
+  const proof = await buildCredentialProof({ uid: uid2, arid, s_u: reg2.s_u, r_u: reg2.r_u, blind_u: uc2.secrets.blind_u, blind_s: req2.secrets.blind_s, pk_i: session2.pk_i, attrs: attrs2, credential: cred2, pk_CIA: CIA.pub, pk_trace, tree: freshTree, registry, slot: MIRROR_SLOT, cm_u: reg2.cm_u });
+  const r_s = randomScalar();
+  const pi = { proof: proof.proof, publicSignals: proof.publicSignals, r_s, sig: await signChallenge(session2.wallet, r_s.toString()) };
+  const r = await rpOnMirror.verifyLogin(pi);
+  assert.equal(r.ok, true, JSON.stringify(r, (k, v) => (typeof v === 'bigint' ? v.toString() : v)));
 });
 
 provider.destroy();
