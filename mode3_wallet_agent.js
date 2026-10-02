@@ -760,11 +760,17 @@ async function proveSession(rsKey, synced, timings, disclosure = null, src) {
     // 그래도 다르면 sync_unstable 로 끝낸다. V9 의 "새 쌍으로 캐시하고 이번 sync 키로도 별칭" 규칙은 두 root 가 다 게시돼
     // 있어야 성립하므로 V10 에서는 버렸다 — 캐시는 π 가 실은 쌍(= 거울 쌍) 하나로만 한다.
     if (cached.revRoot !== synced.root || cached.regRoot !== synced.regRoot) {
-      const [rev, regT] = await Promise.all([
-        rcl.syncAt({ untilEpoch: synced.epoch, expectRoot: synced.root }),
-        syncRegistryTree(canonProvider, LOG_ADDRESS, { untilEpoch: synced.epoch, expectRoot: synced.regRoot }),
-      ]);
-      cached = await prove(rev.tree, regT.tree);
+      try {
+        const [rev, regT] = await Promise.all([
+          rcl.syncAt({ untilEpoch: synced.epoch, expectRoot: synced.root }),
+          syncRegistryTree(canonProvider, LOG_ADDRESS, { untilEpoch: synced.epoch, expectRoot: synced.regRoot }),
+        ]);
+        cached = await prove(rev.tree, regT.tree);
+      } catch (e) {
+        // 재생 root 불일치는 미태그 Error 라 그대로 두면 호출자의 503 매핑을 빠져나가 500 이 된다 — 사유가 없는 오류만 sync_unstable 로 태그한다.
+        if (e.reason) throw e;
+        throw Object.assign(new Error('sync_unstable'), { reason: 'sync_unstable', detail: e.message });
+      }
       if (cached.revRoot !== synced.root || cached.regRoot !== synced.regRoot) throw Object.assign(new Error('sync_unstable'), { reason: 'sync_unstable' });
     }
     timings.proveMs = Date.now() - t;
