@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ethers } from 'ethers';
-import { getProvider, fundAddress, deployMode3Log, rootToBytes32, mineBlocks, publishV2 } from './helpers/mode3_chain.mjs';
+import { getProvider, fundAddress, deployMode3Log, rootToBytes32, mineBlocks, publishV3 } from './helpers/mode3_chain.mjs';
 import { createRevocationTree } from '../lib/mode3_revocation.js';
 import { createRegistryTree } from '../lib/mode3_registry.js';
 import { syncRevocationTree } from '../lib/mode3_wallet.js';
@@ -35,7 +35,7 @@ async function publish(leavesBig) {
   for (const e of ev) for (const l of e.args.leaves) await tree.insert(BigInt(l));
   for (const l of leavesBig) await tree.insert(l);
   const epoch = (await log.epoch()) + 1n;
-  await publishV2(log, ciaEth, { revRoot: tree.getRoot(), regRoot: registry.root(), epoch, revLeaves: leavesBig });
+  await publishV3(log, ciaEth, { revRoot: tree.getRoot(), regRoot: registry.root(), epoch, revLeaves: leavesBig });
 }
 
 // eth_getLogs 호출을 기록하는 provider. ethers v6 의 _perform 은 this.send 를 부르므로 인스턴스의 send 를 감싸면 된다.

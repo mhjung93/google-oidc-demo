@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { buildBabyjub, buildEddsa, buildPoseidon } from 'circomlibjs';
 import { ethers } from 'ethers';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
-import { getProvider } from './helpers/mode3_chain.mjs';
+import { getProvider, canonOf } from './helpers/mode3_chain.mjs';
 import { randomScalar, sessionCommit, compressPoint, credMessageV5, SCALAR_MAX } from '../lib/mode3_credential.js';
 import { sessionLeaf } from '../lib/mode3_revocation.js';
 import { registrationCommit, proveUserCred, serializeUserCredProof, userCredRequestMessage, issueRequestMessageV4, pointToStrings } from '../lib/mode3_issuance.js';
@@ -12,7 +12,7 @@ import { buildUserCredRequest, signAttrsRequest } from '../lib/mode3_wallet.js';
 import { verifyRpCert } from '../lib/mode3_rp_cert.js';
 import { verifyShare, combinePublicKey } from '../lib/mode3_trace.js';
 import { createShare } from '../lib/mode3_trace.js';
-import { MODE3_LOG_ABI, signPublicationV2 } from '../lib/mode3_log.js';
+import { MODE3_LOG_ABI, signPublicationV3 } from '../lib/mode3_log.js';
 
 let failed = 0;
 async function t(name, fn) {
@@ -434,7 +434,7 @@ try {
     const b32 = (n) => ethers.zeroPadValue(ethers.toBeHex(BigInt(n)), 32);
     const revRoot = b32(before.body.root), regRoot = b32(before.body.regRoot);
     const directEpoch = current + 1;
-    const sig = await signPublicationV2(cia.ciaEthWallet, { logAddress: cia.logAddress, revRoot, regRoot, epoch: directEpoch, revLeaves: [b32(leaf)], slotIdx: [], slotLeaves: [] });
+    const sig = await signPublicationV3(cia.ciaEthWallet, { ...(await canonOf(log, provider)), revRoot, regRoot, epoch: directEpoch, revLeaves: [b32(leaf)], slotIdx: [], slotLeaves: [] });
     const tx = await log.connect(cia.ciaEthWallet).publish(revRoot, regRoot, directEpoch, [b32(leaf)], [], [], sig);
     await tx.wait();
     assert.equal(await log.epoch(), BigInt(directEpoch));
@@ -531,7 +531,7 @@ try {
     const b32 = (n) => ethers.zeroPadValue(ethers.toBeHex(BigInt(n)), 32);
     const sameRegRoot = b32((await cia.get('/cia/state')).body.regRoot);
     const bogus = b32(12345n);
-    const sig = await signPublicationV2(cia.ciaEthWallet, { logAddress: cia.logAddress, revRoot: bogus, regRoot: sameRegRoot, epoch: current + 1, revLeaves: [], slotIdx: [], slotLeaves: [] });
+    const sig = await signPublicationV3(cia.ciaEthWallet, { ...(await canonOf(log, provider)), revRoot: bogus, regRoot: sameRegRoot, epoch: current + 1, revLeaves: [], slotIdx: [], slotLeaves: [] });
     await (await log.connect(cia.ciaEthWallet).publish(bogus, sameRegRoot, current + 1, [], [], [], sig)).wait();
     await revokedLeaf();
     const r = await cia.adminPost('/cia/publish');

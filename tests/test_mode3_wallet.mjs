@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { ethers } from 'ethers';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import * as snarkjs from 'snarkjs';
-import { getProvider, fundAddress, deployMode3Log, rootToBytes32, publishV2 } from './helpers/mode3_chain.mjs';
+import { getProvider, fundAddress, deployMode3Log, rootToBytes32, publishV3 } from './helpers/mode3_chain.mjs';
 import { createRevocationTree } from '../lib/mode3_revocation.js';
 import { createRegistryTree, registryLeaf } from '../lib/mode3_registry.js';
 import { credMessageV5, compressPoint, randomScalar } from '../lib/mode3_credential.js';
@@ -55,7 +55,7 @@ async function publish(leavesBig) {
   for (const e of ev) for (const l of e.args.leaves) await tree.insert(BigInt(l));
   for (const l of leavesBig) await tree.insert(l);
   const epoch = (await log.epoch()) + 1n;
-  await publishV2(log, ciaEth, { revRoot: tree.getRoot(), regRoot: registry.root(), epoch, revLeaves: leavesBig });
+  await publishV3(log, ciaEth, { revRoot: tree.getRoot(), regRoot: registry.root(), epoch, revLeaves: leavesBig });
 }
 
 await t('빈 로그를 동기화하면 빈 트리 root 와 같다', async () => {
@@ -91,7 +91,7 @@ async function proveWith(disclosure) {
   cred = await localIssue(uc.Cf_u, req.C_s_pt, 31337n, { max_height: BigInt(req.body.max_height) });
   ({ tree: tree0 } = await syncRevocationTree(provider, logAddress));
   registry.set(SLOT, await registryLeaf(reg.cm_u, uc.Cf_u));
-  await publishV2(log, ciaEth, { revRoot: tree0.getRoot(), regRoot: registry.root(), epoch: (await log.epoch()) + 1n, slotIdx: [SLOT], slotLeaves: [registry.leafAt(SLOT)] });
+  await publishV3(log, ciaEth, { revRoot: tree0.getRoot(), regRoot: registry.root(), epoch: (await log.epoch()) + 1n, slotIdx: [SLOT], slotLeaves: [registry.leafAt(SLOT)] });
   return buildCredentialProof({
     uid, arid, s_u: reg.s_u, r_u: reg.r_u, blind_u: uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs: [19n, 410n, 0n, 0n, 0n, 0n],
     credential: cred, pk_CIA, pk_trace, tree: tree0, registry, slot: SLOT, cm_u: reg.cm_u, disclosure,
@@ -145,7 +145,7 @@ await t('ProofCache 는 같은 root·세션이면 재사용, root 가 바뀌면 
 // 슬롯을 0 으로 게시하는 것이다(브리프 규칙 5). 동기화한 등록부로 대조하면 registry_empty 로 던진다.
 await t('내 등록부 슬롯이 은퇴(0 으로 게시)되면 동기화된 등록부로는 증명을 만들 수 없다 (registry_empty)', async () => {
   registry.set(SLOT, 0n);
-  await publishV2(log, ciaEth, { revRoot: tree0.getRoot(), regRoot: registry.root(), epoch: (await log.epoch()) + 1n, slotIdx: [SLOT], slotLeaves: [0n] });
+  await publishV3(log, ciaEth, { revRoot: tree0.getRoot(), regRoot: registry.root(), epoch: (await log.epoch()) + 1n, slotIdx: [SLOT], slotLeaves: [0n] });
   const { tree: registrySynced } = await syncRegistryTree(provider, logAddress);
   await assert.rejects(
     () => buildCredentialProof({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, blind_u: uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs: [19n, 410n, 0n, 0n, 0n, 0n], credential: cred, pk_CIA, pk_trace, tree: tree0, registry: registrySynced, slot: SLOT, cm_u: reg.cm_u }),

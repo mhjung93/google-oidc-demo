@@ -12,8 +12,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { ethers } from 'ethers';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
-import { getProvider, rootToBytes32 } from './helpers/mode3_chain.mjs';
-import { MODE3_LOG_ABI, signPublicationV2 } from '../lib/mode3_log.js';
+import { getProvider, rootToBytes32, canonOf } from './helpers/mode3_chain.mjs';
+import { MODE3_LOG_ABI, signPublicationV3 } from '../lib/mode3_log.js';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import { randomScalar, sessionCommit, compressPoint } from '../lib/mode3_credential.js';
 import { createRevocationTree } from '../lib/mode3_revocation.js';
@@ -99,7 +99,7 @@ try {
   const regRootNow = rootToBytes32(BigInt((await first.get('/cia/state')).body.regRoot));
   const log = new ethers.Contract(firstLog, MODE3_LOG_ABI, first.ciaEthWallet);
   const directEpoch = epoch1 + 1;
-  const sig = await signPublicationV2(first.ciaEthWallet, { logAddress: firstLog, revRoot: root12, regRoot: regRootNow, epoch: directEpoch, revLeaves: [b32(L2)], slotIdx: [], slotLeaves: [] });
+  const sig = await signPublicationV3(first.ciaEthWallet, { ...(await canonOf(log, provider)), revRoot: root12, regRoot: regRootNow, epoch: directEpoch, revLeaves: [b32(L2)], slotIdx: [], slotLeaves: [] });
   await (await log.publish(root12, regRootNow, directEpoch, [b32(L2)], [], [], sig)).wait();
   assert.equal(await log.epoch(), BigInt(directEpoch));
 

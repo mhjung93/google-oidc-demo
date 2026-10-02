@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { ethers } from 'ethers';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
-import { getProvider, fundAddress, deployMode3Log, rootToBytes32, mineBlocks, publishV2 } from './helpers/mode3_chain.mjs';
+import { getProvider, fundAddress, deployMode3Log, rootToBytes32, mineBlocks, publishV3 } from './helpers/mode3_chain.mjs';
 import { createRegistryTree, registryLeaf } from '../lib/mode3_registry.js';
 import { credMessageV5, compressPoint, randomScalar } from '../lib/mode3_credential.js';
 import { createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, normalizeSet, VKEY_PATH } from '../lib/mode3_wallet.js';
@@ -49,7 +49,7 @@ async function publish(leavesBig) {
   const { tree } = await syncRevocationTree(provider, logAddress);
   for (const l of leavesBig) await tree.insert(l);
   const epoch = (await log.epoch()) + 1n;
-  await publishV2(log, ciaEth, { revRoot: tree.getRoot(), regRoot: registry.root(), epoch, revLeaves: leavesBig });
+  await publishV3(log, ciaEth, { revRoot: tree.getRoot(), regRoot: registry.root(), epoch, revLeaves: leavesBig });
 }
 /**
  * V9 조건 9: 증명을 만들기 전에 내 등록부 슬롯(SLOT=0)을 내 자격증명으로 채우고 게시해야 한다 — 그러지
@@ -66,7 +66,7 @@ async function makeLogin({ key = CIA, useArid = arid, ttlBlocks = 300n, chainid 
   const uc = await buildUserCredRequest({ uid, s_u: reg.s_u, r_u: reg.r_u, sk_u: reg.sk_u, attrs });   // 사용자 자격증명(π_u) — CIA 검증은 test_mode3_wallet 에서
   const { tree } = await syncRevocationTree(provider, logAddress);
   registry.set(SLOT, await registryLeaf(reg.cm_u, uc.Cf_u));
-  await publishV2(log, ciaEth, { revRoot: tree.getRoot(), regRoot: registry.root(), epoch: (await log.epoch()) + 1n, slotIdx: [SLOT], slotLeaves: [registry.leafAt(SLOT)] });
+  await publishV3(log, ciaEth, { revRoot: tree.getRoot(), regRoot: registry.root(), epoch: (await log.epoch()) + 1n, slotIdx: [SLOT], slotLeaves: [registry.leafAt(SLOT)] });
   const session = createSessionKey();
   const r_s = randomScalar();   // 서비스 챌린지 — σ 에만 쓴다(공개 입력엔 없다)
   const max_height = BigInt(await provider.getBlockNumber()) + ttlBlocks;   // 지갑이 정한다(2026-09-18 §3.2 갱신) — 슬롯 게시 뒤의 head 기준
@@ -278,7 +278,7 @@ await t('V9: 등록부 슬롯 은퇴(0 으로 게시) 후 옛 π 는 stale_regis
   assert.equal((await rp.verifyLogin(L)).ok, true);
   registry.set(SLOT, 0n);
   const { root: revRootNow } = await syncRevocationTree(provider, logAddress);
-  await publishV2(log, ciaEth, { revRoot: revRootNow, regRoot: registry.root(), epoch: (await log.epoch()) + 1n, slotIdx: [SLOT], slotLeaves: [0n] });
+  await publishV3(log, ciaEth, { revRoot: revRootNow, regRoot: registry.root(), epoch: (await log.epoch()) + 1n, slotIdx: [SLOT], slotLeaves: [0n] });
   assert.deepEqual(await rp.verifyLogin(L), { ok: false, reason: 'stale_registry_root' });
 });
 
