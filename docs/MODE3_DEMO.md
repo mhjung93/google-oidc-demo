@@ -197,6 +197,8 @@ curl -s -X POST -H "X-CIA-Admin-Secret: $CIA_ADMIN_SECRET" http://127.0.0.1:4100
 
 ### 폐기 체인을 별도 노드로 (선택, V10)
 
+> 이 절은 코드 읽기로 작성했고 전체 실행은 하지 않았다(2026-10-02).
+
 설계의 원래 그림(폐기 전용 체인 + 응용 체인의 거울)을 그대로 보이려면 노드를 둘 띄운다. 기본 데모·테스트는 체인 하나로
 충분하다(테스트는 :8545 하나에 로그와 거울을 함께 둔다). chainid 가 같으면 서명이 두 체인을 구분하지 못하므로
 `hardhat.config.cjs` 가 `HARDHAT_CHAIN_ID` 로 두 번째 노드의 chainid 를 바꾼다(기본 31337).
@@ -844,8 +846,9 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
 - **옛 상태 파일(version 2 이하)을 새 CIA 에 물리지 않는다.** CIA 가 기동을 거부한다 — 재시연 세트로 새로 시작한다.
 - **`cia_state.json`을 지우지 않는다.** 체인의 `RevocationLog.root`와 어긋나 지갑의 `syncRevocationTree`가 root 불일치로 전원을 막는다(Mode 2의 `idp_state.json`과 같은 이유). CIA 는 기동 시 로컬 트리를 온체인 root 와 대조해 어긋나면 `root 불일치`로 기동을 거부하므로, 지웠다면 아래 재시연 세트를 통째로 다시 한다.
 - 재시연은 **한 세트로만**: hardhat 노드 재시작 → 위 "처음 한 번" 2~3(재배포, `.env`의 `CIA_LOG_ADDRESS`·`MODE3_MIRROR_ADDRESS`·`CIA_MIRRORS` 갱신) →
-  `mode3_rp_registration.json` 의 `factoryAddress` 삭제(로그 주소가 바뀌면 팩토리도 새로 배포해야 한다 — 삭제하면 RP 가 다시
-  배포한다) → `cia_state.json`·`mode3_wallet_state.json`·`mode3_rp_registration.json`·`mode3_rp_logins.jsonl` 삭제 → 세 서버 재시작.
+  `mode3_rp_registration.json` 의 `factoryAddress`·`verifierAddress`·`attrGateAddress` 삭제(로그 주소가 바뀌면 팩토리도 새로 배포해야
+  한다 — 셋을 지우면 RP 가 다시 배포한다. `factoryAddress` 만 지우면 옛 검증기를 다시 물린다) → `cia_state.json`·`mode3_wallet_state.json`·
+  `mode3_wallet_rcl.json`·`mode3_rp_registration.json`·`mode3_rp_logins.jsonl` 삭제 → 세 서버 재시작.
   `cia_keys.json`은 그대로 둬도 된다 — 게시 서명이 로그 주소를 덮으므로 같은 키로 재배포해도 옛 로그의 게시를 새 로그에 재생할 수 없다.
   **`snap` 모드로 시연 중이었다면 지갑 페이지의 "Snap 초기화"(`reset`)도 함께 누른다** — 등록 비밀은 상태 파일이 아니라 MetaMask 안에
   있어서 파일만 지우면 Snap 쪽에 옛 등록이 남고 다음 "등록" 이 `already_registered` 로 막힌다.

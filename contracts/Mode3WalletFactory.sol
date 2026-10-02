@@ -12,7 +12,7 @@ contract Mode3WalletFactory {
     uint256 public immutable pkCIAY;
     uint256 public immutable pkTraceX;
     uint256 public immutable pkTraceY;
-    address public immutable log;   // Mode3Log(V9) 주소. 타입은 두지 않고 그대로 넘긴다 — 대조는 Mode3Wallet 생성자(Mode3Log(_log))가 한다.
+    address public immutable log;   // IMode3Roots 주소 — 응용 체인의 Mode3Mirror(V10) 또는 같은 체인이면 캐노니컬 Mode3Log. 타입은 두지 않고 그대로 넘긴다 — 대조는 Mode3Wallet 생성자(IMode3Roots(_log))가 한다.
     uint64 public immutable maxRootAge;
     uint64 public immutable maxLifetime;
 
