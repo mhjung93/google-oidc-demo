@@ -9,7 +9,7 @@ function t(name, fn) { try { fn(); console.log(`ok   ${name}`); } catch (e) { fa
 t('기본 상태는 v10 이고 issued 가 없다', () => {
   const s = defaultCiaState();
   assert.equal(s.version, 10); assert.equal(CIA_STATE_VERSION, 10);
-  assert.deepEqual(s, { version: 10, accounts: {}, rps: {}, openings: [], revoked: [], pending: [], epoch: 0, registry: { depth: 20, next: 0, leaves: {}, pendingSlots: [] }, lastPublication: null });
+  assert.deepEqual(s, { version: 10, accounts: {}, rps: {}, openings: [], revoked: [], pending: [], epoch: 0, registry: { depth: 20, next: 0, leaves: {}, pendingSlots: [] }, lastPublication: null, signedEpochMax: 0 });
 });
 
 t('v5 → v9(v6·v7·v8 을 거쳐): issued 를 버리고 각 계정에 creds:[]·sessions:[] 를 넣는다', () => {
@@ -114,6 +114,15 @@ t('v9 → v10: 계정마다 receipt=null·slotRetired=false, lastPublication=nul
   assert.equal(state.lastPublication, null);
   assert.equal(state.epoch, 4);
   assert.ok(notes.some((n) => n.startsWith('v9→v10')), notes.join('|'));
+});
+
+// 2026-10-02 V10 최종 리뷰 I-2(a): signedEpochMax 는 버전을 올리지 않고 v10 안에서 기본 0 으로 채운다.
+t('v10 파일에 signedEpochMax 가 없으면 0, 있으면 그대로(버전 10 유지·notes 없음)', () => {
+  const old = defaultCiaState(); delete old.signedEpochMax;
+  const a = migrateCiaState(old);
+  assert.equal(a.state.version, 10); assert.equal(a.state.signedEpochMax, 0); assert.deepEqual(a.notes, []);
+  const b = migrateCiaState({ ...defaultCiaState(), epoch: 3, signedEpochMax: 5 });
+  assert.equal(b.state.signedEpochMax, 5);
 });
 
 process.exit(failed === 0 ? 0 : 1);

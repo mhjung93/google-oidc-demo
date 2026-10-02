@@ -169,6 +169,29 @@ try {
     assert.equal(BigInt(acct.registryLeaf), await registryLeaf(alice.cm_u, c6.Cf_u), '새 슬롯의 리프는 그대로');
     assert.equal(b32((await cia.get('/cia/state')).body.regRoot), await log.regRoot());
   });
+  // 2026-10-02 V10 최종 리뷰 I-3: 복구 직후(재발급 전)에는 acct.slot 이 아직 옛(은퇴) 슬롯이라, 그때 옛 접수증이 올라오면
+  // 게시의 대기열 따르기가 a.slot === slot 으로 이 계정을 찾아 disabled 를 다시 걸었다 — 관리자 복구가 조용히 뒤집힌다.
+  await t('계정 폐기 → 관리자 복구(재발급 전) → 옛 접수증 제출 → 게시: 복구된 계정은 다시 막히지 않고, 재발급은 새 슬롯', async () => {
+    const rv = await cia.post('/cia/account/self_revoke', { uid: '67890', pwd: 'alicepw' });
+    assert.equal(rv.status, 200, j(rv.body));
+    const rc = rv.body.receipt, s0 = await slotOf('67890');
+    assert.ok(rc && rc.slot === s0, j(rc));
+    assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid: '67890', disabled: false })).status, 200);
+    const logW = new ethers.Contract(cia.logAddress, MODE3_LOG_ABI, await provider.getSigner(0));
+    await (await logW.requestRevocation(rc.slot, rc.epochAtRequest, rc.requestedAt, rc.sig)).wait();
+    assert.deepEqual((await log.pendingSlots()).map(Number), [s0]);
+    const pub = await cia.adminPost('/cia/publish', {});
+    assert.equal(pub.status, 200, j(pub.body)); assert.equal(pub.body.published, true);
+    assert.deepEqual((await log.pendingSlots()).map(Number), []);
+    assert.equal(await log.isRetired(s0), true);
+    const acct = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === '67890');
+    assert.equal(acct.disabled, false, '이미 은퇴한 슬롯의 접수증이 복구된 계정을 다시 막았다');
+    const c7 = await buildUserCredRequest({ uid: 67890n, s_u: alice.s_u, r_u: alice.r_u, sk_u: alice.sk_u, attrs: [2005n, 840n, 1n, 0n, 0n, 0n] });
+    const uc = await cia.post('/cia/user_cred', c7.body);
+    assert.equal(uc.status, 201, j(uc.body)); assert.equal(uc.body.published, true);
+    assert.notEqual(uc.body.slot, s0, '재발급은 새 슬롯');
+    assert.equal(b32(uc.body.regRoot), await log.regRoot());
+  });
 } finally { await cia.stop(); }
 
 // ---- 마이그레이션: v8 상태 파일로 기동하면 슬롯을 배정하고 활성 자격증명 리프를 채워 게시한다 ----

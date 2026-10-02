@@ -24,11 +24,11 @@ t('AA health: mirrors — 기본 [], 거울 항목은 문자열 epoch·숫자 ro
   const base = { now, chain, root: '1', epoch: 5, lastPublishedBlock: '800', heartbeatBlocks: 50, pendingLeaves: 0, pendingRps: 0, pendingOpenings: 0, accounts: 1, walletOrigin: '', rpOrigins: [] };
   assert.deepEqual(buildAaHealth(base).mirrors, []);
   const h = buildAaHealth({ ...base, mirrors: [
-    { chainId: '31337', address: '0xabc', epoch: '4', lastPublishedBlock: '790', rootAge: 22, behind: 1 },
+    { chainId: '31337', address: '0xabc', epoch: '4', lastPublishedBlock: '790', rootAge: 22, behind: 1, mismatch: false },
     { chainId: '10', address: '0xdef', epoch: null, lastPublishedBlock: null, rootAge: null, behind: null },
   ] });
-  assert.deepEqual(h.mirrors[0], { chainId: '31337', address: '0xabc', epoch: '4', lastPublishedBlock: '790', rootAge: 22, behind: 1 });
-  assert.deepEqual(h.mirrors[1], { chainId: '10', address: '0xdef', epoch: null, lastPublishedBlock: null, rootAge: null, behind: null });
+  assert.deepEqual(h.mirrors[0], { chainId: '31337', address: '0xabc', epoch: '4', lastPublishedBlock: '790', rootAge: 22, behind: 1, mismatch: false });
+  assert.deepEqual(h.mirrors[1], { chainId: '10', address: '0xdef', epoch: null, lastPublishedBlock: null, rootAge: null, behind: null, mismatch: null });
   for (const k of SENSITIVE_KEYS) assert.ok(!deepKeys(h).includes(k), k);
 });
 t('AA health: 체인 없음 → chain null, rootAge null', () => { const h = buildAaHealth({ now, chain: null, root: '1', epoch: 0, lastPublishedBlock: '0', heartbeatBlocks: 0, pendingLeaves: 0, pendingRps: 0, pendingOpenings: 0, accounts: 0, walletOrigin: '', rpOrigins: [] }); assert.equal(h.chain, null); assert.equal(h.rootAge, null); });

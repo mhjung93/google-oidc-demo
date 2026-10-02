@@ -125,6 +125,7 @@ function loadOrCreateKeys() {
 // registry:  { depth, next, leaves: {"<index>": "<leaf>"(10진)}, pendingSlots: [{index, leaf}] }   사용자 자격증명 등록부(V9, 2026-10-01 §3)
 // V10(2026-10-02): accounts[uid].receipt(마지막 폐기 접수증 또는 null)·slotRetired(대기열로 영구 은퇴된 슬롯이면 true),
 //            lastPublication = { revRoot, regRoot, epoch, hLeaves, hIdx, hSlots, sig, txHash } (마지막 성공 게시 — 거울 릴레이용)
+//            signedEpochMax = 서명한 가장 큰 epoch(게시 성공 여부 무관, 2026-10-02 최종 리뷰 I-2) — 다음 게시는 이보다 큰 epoch 를 쓴다
 // revoked / pending / epoch
 // 버전·이행은 lib/mode3_cia_state.js (v6, 2026-09-21).
 const STATE_VERSION = CIA_STATE_VERSION;
@@ -796,7 +797,10 @@ async function publishNow({ heartbeat = false, wait = false } = {}) {
     const pendingOnChain = (await log.pendingSlots()).map(Number);
     for (const slot of pendingOnChain) {
       const entry = Object.entries(state.accounts).find(([, a]) => a.slot === slot);
-      if (entry) {
+      // 2026-10-02 V10 최종 리뷰 I-3: 계정이 이미 slotRetired 면 이 접수증은 지난 계정 폐기의 것이다 — 그 뒤 관리자가 되살렸어도
+      // 재발급 전이라 acct.slot 이 아직 옛 슬롯이어서 여기서 찾힌다. 계정은 건드리지 않는다(복구를 조용히 뒤집지 않는다).
+      // 로컬 트리 0·(slot, 0) 싣기는 아래에서 그대로 한다 — 체인이 요구하는 것은 그것뿐이고, 재발급은 어차피 새 슬롯이다.
+      if (entry && !entry[1].slotRetired) {
         const [uid, a] = entry;
         a.disabled = true; retireActiveCred(uid); a.slotRetired = true;
       }
@@ -828,7 +832,13 @@ async function publishNow({ heartbeat = false, wait = false } = {}) {
     const slots = state.registry.pendingSlots.slice();   // 이번 tx 에 실을 갱신(순서 유지 — 같은 칸의 set→0 도 순서대로 재생돼야 한다)
     const slotIdx = slots.map((s) => s.index), slotLeaves = slots.map((s) => rootToBytes32(s.leaf));
     const revRoot = rootToBytes32(tree.getRoot()), regRoot = rootToBytes32(registry.root());
-    const epoch = state.epoch + 1;
+    // 2026-10-02 V10 최종 리뷰 I-2(a): 서명한 epoch 는 다시 쓰지 않는다. 서명 뒤 게시가 실패하면(채굴 전에 접수증이 끼어
+    // PendingRevocationNotApplied 로 revert 등) 그 calldata 의 epoch E 서명이 이미 공개돼 있다 — state.epoch 가 안 올랐다고 E 를
+    // 다른 내용으로 다시 서명하면, 누군가 revert 된 쪽을 거울에 먼저 올려 같은 epoch 다른 root 가 된다. 그래서 서명 **전에**
+    // signedEpochMax 를 저장하고 그보다 큰 epoch 를 고른다. 컨트랙트는 epoch 증가만 보므로 건너뜀은 허용된다.
+    const epoch = Math.max(state.epoch, state.signedEpochMax ?? 0) + 1;
+    state.signedEpochMax = epoch;
+    persist();
     const sig = await signPublicationV3(ethWallet, { ...(await canonicalParams()), revRoot, regRoot, epoch, revLeaves: leaves, slotIdx, slotLeaves });
     const tx = await log.publish(revRoot, regRoot, epoch, leaves, slotIdx, slotLeaves, sig);
     await tx.wait();
@@ -898,22 +908,58 @@ async function sendMirrorTx(m, lp) {
   // 같은 체인·같은 키: 동시에 나간 게시 tx 와 같은 nonce 를 집지 않게 게시 잠금을 잠깐 빌린다(원자 획득·소유자 해제는 withPublishLock).
   return withPublishLock(send, { wait: true });
 }
+/** 2026-10-02 V10 최종 리뷰 I-2(b): 거울의 (epoch, revRoot, regRoot) 가 IdP 의 게시 기록과 어긋나는가. 거울은 캐노니컬을 앞설 수
+ *  없고(IdP 는 서명한 epoch 를 재사용하지 않는다), 같은 epoch 면 root 둘이 같아야 한다. 캐노니컬(체인에서 직접 읽은 값)과
+ *  state.lastPublication 둘 다와 대조한다. 거울이 캐노니컬보다 **뒤**인데 root 가 다른 경우(건너뛴 epoch 의 서명)는 기록이 없어
+ *  여기서 잡지 못한다 — 그 경우는 '뒤처짐'으로 behindSince 트리거가 H 안에 덮는다. */
+function mirrorMismatch(mv, canon) {
+  if (mv.epoch > canon.epoch) return true;
+  if (mv.epoch === canon.epoch && (mv.revRoot !== canon.revRoot || mv.regRoot !== canon.regRoot)) return true;
+  const lp = state.lastPublication;
+  return Boolean(lp && BigInt(lp.epoch) === mv.epoch && (BigInt(lp.revRoot) !== mv.revRoot || BigInt(lp.regRoot) !== mv.regRoot));
+}
+/** 거울 하나와 캐노니컬을 같이 읽는다(릴레이·건강 정보 공용). 값은 전부 bigint. 캐노니컬을 못 읽으면(LOG_ADDRESS 없음·RPC 실패)
+ *  canon·mismatch 가 null 이다 — 건강 정보는 거울 값만이라도 내고, 릴레이는 그때 던진다. */
+async function readMirrorView(m) {
+  const [head, epoch, last, revRoot, regRoot, chain] = await Promise.all([m.provider.getBlockNumber(), m.contract.epoch(), m.contract.lastPublishedBlock(),
+    m.contract.revRoot(), m.contract.regRoot(), LOG_ADDRESS ? readChain().catch(() => null) : null]);
+  const mv = { head: BigInt(head), epoch: BigInt(epoch), last: BigInt(last), revRoot: BigInt(revRoot), regRoot: BigInt(regRoot) };
+  const canon = chain && { epoch: BigInt(chain.onchainEpoch), revRoot: chain.onchainRoot, regRoot: chain.onchainRegRoot };
+  return { mv, canon, mismatch: canon ? mirrorMismatch(mv, canon) : null };
+}
 async function relayMirror(m, { force = false } = {}) {
-  const [head, mEpoch, mLast] = await Promise.all([m.provider.getBlockNumber(), m.contract.epoch(), m.contract.lastPublishedBlock()]);
+  const { mv, canon, mismatch } = await readMirrorView(m);
+  if (!canon) throw new Error('캐노니컬 로그를 읽지 못했다 — 거울 대조 없이 릴레이하지 않는다');
   const out = (epoch, txHash, skipped) => ({ chainId: m.chainStr, epoch: String(epoch), txHash, skipped });
-  if (!force && BigInt(head) - BigInt(mLast) < MIRROR_HEARTBEAT_BLOCKS) return out(mEpoch, null, true);
+  // 2026-10-02 V10 최종 리뷰 I-1: mv.last(lastPublishedBlock)는 누구나 캐노니컬에 공개된 중간 epoch 서명을 올려 갱신할 수 있다 —
+  // 그것만 보면 IdP 릴레이 직전마다 중간 epoch 를 하나씩 올려 폐기 반영을 (중간 epoch 수 + 1)·H 로 늘릴 수 있었다. 그래서 거울마다
+  // behindSince(거울이 캐노니컬보다 뒤처진 것을 처음 관측한 거울 체인 블록, 메모리)를 두고, 뒤처져 있으면 그 블록부터 H 가 지나면
+  // 갱신한다. 따라잡으면 null. 뒤처지지 않았으면 기존대로 head − last ≥ H 일 때 하트비트(§5 '변화 없어도 주기마다'). 기동 직후처럼
+  // 오래 뒤처져 있던 거울은 head − last 쪽이 먼저 걸린다(OR — 그쪽을 리셋해도 behindSince 쪽 상한은 그대로다).
+  // I-2(b): 어긋남(mismatch)이면 주기와 무관하게 즉시 덮는다.
+  const behind = mv.epoch < canon.epoch;
+  if (!behind) m.behindSince = null;
+  else m.behindSince ??= mv.head;
+  const due = force || mismatch || mv.head - mv.last >= MIRROR_HEARTBEAT_BLOCKS || (behind && mv.head - m.behindSince >= MIRROR_HEARTBEAT_BLOCKS);
+  if (!due) return out(mv.epoch, null, true);
+  // 거울 epoch 는 IdP 키 서명으로만 오른다 — 거울이 앞서 있으면 그 epoch 는 이미 서명된(소비된) 것이다. 다음 하트비트가 그보다 커야
+  // 거울이 받으므로 signedEpochMax 를 끌어올린다(상태 파일이 옛 백업이라 그 서명을 기억하지 못하는 경우까지 덮는다).
+  if (mismatch && mv.epoch > BigInt(state.signedEpochMax ?? 0)) { state.signedEpochMax = Number(mv.epoch); persist(); }
   // 올릴 새 epoch 가 없으면(첫 기동·크래시로 lastPublication 이 없음, 거울이 이미 따라잡음, 옛 백업이라 마지막 게시 기록이
-  // 체인 epoch 보다 뒤처짐) 캐노니컬 하트비트를 먼저 올린다. 진행 중인 게시가 끝나면 다시 판단한다 — 그 게시가 새 epoch 를 줬을 수 있다.
-  const stale = () => !state.lastPublication || BigInt(state.lastPublication.epoch) <= BigInt(mEpoch) || Number(state.lastPublication.epoch) !== state.epoch;
+  // 체인 epoch 보다 뒤처짐, 거울이 어긋난 서명으로 같거나 앞선 epoch 에 있음) 캐노니컬 하트비트를 먼저 올린다. 진행 중인 게시가
+  // 끝나면 다시 판단한다 — 그 게시가 새 epoch 를 줬을 수 있다.
+  const stale = () => !state.lastPublication || BigInt(state.lastPublication.epoch) <= mv.epoch || Number(state.lastPublication.epoch) !== state.epoch;
   if (stale()) {
     await waitPublishing();   // 최적화: 진행 중인 게시가 새 epoch 를 줬으면 하트비트를 건너뛴다(획득은 아래 wait:true 가 원자적으로)
     if (stale()) await publishNow({ heartbeat: true, wait: true });
   }
   const lp = state.lastPublication;
   try {
-    return out(lp.epoch, await sendMirrorTx(m, lp), false);
+    const txHash = await sendMirrorTx(m, lp);
+    m.behindSince = null;
+    return out(lp.epoch, txHash, false);
   } catch (e) {
-    if (isEpochNotIncreasing(m, e)) return out(lp.epoch, null, true);   // 다른 릴레이어가 먼저 올렸다 — 이미 갱신됨(§5)
+    if (isEpochNotIncreasing(m, e)) return out(lp.epoch, null, true);   // 다른 릴레이어가 먼저 올렸다 — 이미 갱신됨(§5). 어긋났다면 다음 틱이 다시 본다
     throw e;
   }
 }
@@ -953,10 +999,10 @@ app.post('/cia/admin/relay', requireAdmin, async (req, res) => {
 async function readMirrorsHealth() {
   return Promise.all(MIRRORS.map(async (m) => {
     try {
-      const [head, epoch, last] = await bounded(Promise.all([m.provider.getBlockNumber(), m.contract.epoch(), m.contract.lastPublishedBlock()]), 1200);
-      return { chainId: m.chainStr, address: m.address, epoch: epoch.toString(), lastPublishedBlock: last.toString(), rootAge: Number(BigInt(head) - BigInt(last)), behind: state.epoch - Number(epoch) };
+      const { mv, mismatch } = await bounded(readMirrorView(m), 1200);   // mismatch: 2026-10-02 V10 최종 리뷰 I-2(b)
+      return { chainId: m.chainStr, address: m.address, epoch: mv.epoch.toString(), lastPublishedBlock: mv.last.toString(), rootAge: Number(mv.head - mv.last), behind: state.epoch - Number(mv.epoch), mismatch };
     } catch {
-      return { chainId: m.chainStr, address: m.address, epoch: null, lastPublishedBlock: null, rootAge: null, behind: null };
+      return { chainId: m.chainStr, address: m.address, epoch: null, lastPublishedBlock: null, rootAge: null, behind: null, mismatch: null };
     }
   }));
 }
