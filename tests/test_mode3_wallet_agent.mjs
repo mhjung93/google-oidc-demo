@@ -649,16 +649,36 @@ try {
     await relayIfBehind();
     assert.equal((await cia.adminPost('/cia/revoke', { uid, scope: 'credential' })).status, 200);
     const rs = newRs();
-    let settled = false;
+    let doneAt = null;
     const p = loginNoRelay(rs);                                 // 폴링 시작
-    p.then(() => { settled = true; }, () => { settled = true; });
+    p.then(() => { doneAt = Date.now(); }, () => { doneAt = Date.now(); });
     await sleep(1500);
-    assert.equal(settled, false, '릴레이 전에는 끝나지 않는다(거울에 새 리프가 없다)');
+    assert.equal(doneAt, null, '릴레이 전에는 끝나지 않는다(거울에 새 리프가 없다)');
+    const relayStart = Date.now();
     await relay();
     const r = await p;
+    // 판별력(Task 9 수정 Minor): 로그인은 릴레이를 누른 뒤에야 끝났어야 한다 — 거울 반영을 기다리지 않았다면 그 전에 끝났다.
+    assert.ok(doneAt >= relayStart, `로그인 완료(${doneAt})가 릴레이 시작(${relayStart}) 뒤여야 한다`);
     assert.equal(r.status, 200, j(r.body)); assert.ok(r.body.timings.userCredMs > 0);
     assert.equal(r.body.regRoot, BigInt(await mirrorC.regRoot()).toString());
     assert.equal((await verify(r.body, rs)).ok, true);
+  });
+  await t('fresh 가 아닌 경로: 거울의 내 슬롯이 캐노니컬과 다르면(거울 지연) 재검증은 503 registry_unpublished(세션 유지), 릴레이 뒤 200', async () => {
+    // 기존 세션 하나를 잡고, 거울에만 "내 슬롯 ≠ 내 자격증명" 상태를 만든다: 바꿔치기 → 릴레이 → 되돌리기(릴레이 안 함).
+    // 캐노니컬은 내 자격증명으로 돌아왔으므로 지갑은 폐기로 보지 않고, 거울 뷰로는 증인이 없어 증명하지 않는다.
+    const rs = newRs();
+    assert.equal((await login(rs)).status, 200);
+    assert.equal((await cia.adminPost('/cia/admin/registry/tamper', { uid })).status, 200);
+    await relay();
+    assert.equal((await cia.adminPost('/cia/admin/registry/restore', { uid })).status, 200);
+    const lag = await revalidate(rs);
+    assert.equal(lag.status, 503, j(lag.body)); assert.equal(lag.body.reason, 'registry_unpublished');
+    assert.ok((await wallet.get('/wallet/status')).body.sessions[rs], '세션은 지우지 않는다');
+    await relay();
+    const ok = await revalidate(rs);
+    assert.equal(ok.status, 200, j(ok.body));
+    assert.equal(ok.body.regRoot, BigInt(await mirrorC.regRoot()).toString());
+    assert.equal((await verify(ok.body, rs)).ok, true);
   });
   await t('/wallet/status 에 mirror·canonical 이 있다', async () => {
     const s = (await wallet.get('/wallet/status')).body;

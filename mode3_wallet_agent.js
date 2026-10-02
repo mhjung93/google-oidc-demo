@@ -162,6 +162,8 @@ async function syncAll() {
   // 거울이 캐노니컬보다 앞설 수는 없다(거울은 캐노니컬에 게시된 서명만 받는다) — 그렇게 보이면 두 RPC 가 서로 다른 캐노니컬
   // 로그를 보고 있다는 뜻이므로 증명하지 않는다.
   if (mv.epoch > canonical.epoch) throw Object.assign(new Error(`sync_unstable: 거울 epoch(${mv.epoch}) 가 캐노니컬 epoch(${canonical.epoch}) 보다 앞서 있다`), { reason: 'sync_unstable' });
+  // 같으면 rcl 의 공유 메모리 트리를 그대로 넘긴다 — 다른 요청의 sync() 가 그 사이 델타를 붙일 수 있으므로 proveSession 이
+  // 증명의 root 를 거울 쌍과 대조하고, 어긋나면 격리 트리(syncAt)로 다시 증명한다(Task 9 수정).
   let tree = rev.tree, registry = reg.tree;
   if (rev.root !== mv.root || reg.root !== mv.regRoot) {
     // 거울이 뒤처져 있다 — 거울 epoch 시점의 트리로 되감는다. syncAt 은 rcl 의 체크포인트(메모리 트리·캐시 파일)를 건드리지 않는다.
@@ -647,6 +649,7 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
       if (e.reason === 'demo_proof_failed') return res.status(409).json({ reason: e.reason, detail: e.detail, demo: 'override:prove', timings });
       if (e.reason === 'registry_slot_unknown') return res.status(403).json({ reason: 'registry_slot_unknown', timings });
       if (e.reason === 'registry_unpublished') return res.status(503).json({ reason: 'registry_unpublished', timings });
+      if (e.reason === 'sync_unstable') return res.status(503).json({ reason: 'chain_unavailable', detail: e.message, timings });
       throw e;
     }
     if (SECRETS === 'snap') setSessionWitness(rs.toString(), src);
@@ -729,29 +732,43 @@ async function proveSession(rsKey, synced, timings, disclosure = null, src) {
     if (!(await mirrorLeafMatches(synced, reg, uc))) throw Object.assign(new Error('registry_unpublished'), { reason: 'registry_unpublished' });
     const t = Date.now();
     const ov = takeOverride('prove');   // 시연(설계 §8.3): 다음 증명의 s_u·uid 를 한 번만 바꿔치기
-    try {
-      cached = await buildCredentialProof({
-        uid: BigInt(ov?.uid ?? reg.uid), arid: BigInt(s.arid), s_u: BigInt(ov?.s_u ?? reg.s_u), r_u: BigInt(reg.r_u), blind_u: BigInt(uc.blind_u), blind_s: BigInt(s.blind_s), pk_i: BigInt(s.pk_i),
-        attrs: (reg.attrs ?? []).map(BigInt),
-        credential: s.credential, pk_CIA: { x: BigInt(s.credential.pk_CIA.x), y: BigInt(s.credential.pk_CIA.y) },
-        pk_trace: { x: BigInt(s.pk_trace.x), y: BigInt(s.pk_trace.y) }, tree: synced.tree,
-        registry: synced.registry, slot: reg.slot, cm_u: { x: BigInt(reg.cm_u.x), y: BigInt(reg.cm_u.y) }, disclosure,
-      });
-    } catch (e) {
-      // 시연 덮어쓰기가 걸려 있었다면 원인은 거의 항상 그것이다(가짜 s_u·uid 로는 witness 가 안 만들어진다) — 500 대신
-      // 호출자가 409 로 보여줄 수 있게 구분한다.
-      if (ov) throw Object.assign(new Error('demo_proof_failed'), { reason: 'demo_proof_failed', detail: e.message });
-      // 위 사전 검사와 증인 생성 사이에 다른 요청의 sync() 가 내 세션 리프를 붙이면 getNonMembershipWitness 가
-      // "… is a member …" 로 던진다(lib/imt_v2.js). 테스트가 못 박은 계약은 이 부분 문구다. V9: 폐기 트리에는 세션
-      // 리프만 남으므로(사용자 쪽은 등록부로 옮겨갔다) 이 문구는 늘 revoked_session 이다.
-      if (/is a member/.test(e.message ?? '')) throw Object.assign(new Error('revoked_session'), { reason: 'revoked_session' });
-      throw e;
+    const prove = async (tree, registry) => {
+      try {
+        return await buildCredentialProof({
+          uid: BigInt(ov?.uid ?? reg.uid), arid: BigInt(s.arid), s_u: BigInt(ov?.s_u ?? reg.s_u), r_u: BigInt(reg.r_u), blind_u: BigInt(uc.blind_u), blind_s: BigInt(s.blind_s), pk_i: BigInt(s.pk_i),
+          attrs: (reg.attrs ?? []).map(BigInt),
+          credential: s.credential, pk_CIA: { x: BigInt(s.credential.pk_CIA.x), y: BigInt(s.credential.pk_CIA.y) },
+          pk_trace: { x: BigInt(s.pk_trace.x), y: BigInt(s.pk_trace.y) }, tree,
+          registry, slot: reg.slot, cm_u: { x: BigInt(reg.cm_u.x), y: BigInt(reg.cm_u.y) }, disclosure,
+        });
+      } catch (e) {
+        // 시연 덮어쓰기가 걸려 있었다면 원인은 거의 항상 그것이다(가짜 s_u·uid 로는 witness 가 안 만들어진다) — 500 대신
+        // 호출자가 409 로 보여줄 수 있게 구분한다.
+        if (ov) throw Object.assign(new Error('demo_proof_failed'), { reason: 'demo_proof_failed', detail: e.message });
+        // 위 사전 검사와 증인 생성 사이에 다른 요청의 sync() 가 내 세션 리프를 붙이면 getNonMembershipWitness 가
+        // "… is a member …" 로 던진다(lib/imt_v2.js). 테스트가 못 박은 계약은 이 부분 문구다. V9: 폐기 트리에는 세션
+        // 리프만 남으므로(사용자 쪽은 등록부로 옮겨갔다) 이 문구는 늘 revoked_session 이다.
+        if (/is a member/.test(e.message ?? '')) throw Object.assign(new Error('revoked_session'), { reason: 'revoked_session' });
+        throw e;
+      }
+    };
+    cached = await prove(synced.tree, synced.registry);
+    // V10(2026-10-02 Task 9 수정): π 는 반드시 거울의 (revRoot, regRoot) 를 실어야 한다 — 서비스·계정 컨트랙트는 거울만 읽는다.
+    // 거울과 캐노니컬 root 가 같으면 syncAll 은 rcl 의 **공유** 메모리 트리를 그대로 넘기므로, 동기화와 증인 생성 사이에 다른
+    // 요청의 rcl.sync() 가 델타를 붙이면 거울에 아직 없는 캐노니컬 root 로 증명된다(RP stale_root / StaleRevocationRoot).
+    // 그때는 거울 epoch 시점의 격리 트리(syncAt·untilEpoch 재생 — 공유 상태를 건드리지 않는다)로 한 번만 다시 증명하고,
+    // 그래도 다르면 sync_unstable 로 끝낸다. V9 의 "새 쌍으로 캐시하고 이번 sync 키로도 별칭" 규칙은 두 root 가 다 게시돼
+    // 있어야 성립하므로 V10 에서는 버렸다 — 캐시는 π 가 실은 쌍(= 거울 쌍) 하나로만 한다.
+    if (cached.revRoot !== synced.root || cached.regRoot !== synced.regRoot) {
+      const [rev, regT] = await Promise.all([
+        rcl.syncAt({ untilEpoch: synced.epoch, expectRoot: synced.root }),
+        syncRegistryTree(canonProvider, LOG_ADDRESS, { untilEpoch: synced.epoch, expectRoot: synced.regRoot }),
+      ]);
+      cached = await prove(rev.tree, regT.tree);
+      if (cached.revRoot !== synced.root || cached.regRoot !== synced.regRoot) throw Object.assign(new Error('sync_unstable'), { reason: 'sync_unstable' });
     }
     timings.proveMs = Date.now() - t;
-    // 증명은 증인이 계산된 (revRoot, regRoot) 쌍에 대한 것이다. 동기화와 증인 생성 사이에 다른 요청이 리프·슬롯을 바꿨다면
-    // synced 의 값보다 새 쌍이고, 그 쌍으로 캐시해야 다음 재검증이 맞는 π 를 찾는다(스펙 §5, V9 §8.4).
     cache.set(ProofCache.rootKey(synced.chainId, cached.revRoot, cached.regRoot), rsKey, cached, discKey);
-    if (cached.revRoot !== synced.root || cached.regRoot !== synced.regRoot) cache.set(ProofCache.rootKey(synced.chainId, synced.root, synced.regRoot), rsKey, cached, discKey);   // 이번 sync 의 (root, regRoot) 로 찾는 호출도 맞춰 준다
   }
   const root = (cached.revRoot ?? synced.root).toString();
   const regRoot = (cached.regRoot ?? synced.regRoot).toString();
@@ -798,6 +815,7 @@ app.post('/wallet/revalidate', loginCors, async (req, res) => {
       if (e.reason === 'demo_proof_failed') return res.status(409).json({ reason: e.reason, detail: e.detail, demo: 'override:prove', timings });
       if (e.reason === 'registry_slot_unknown') return res.status(403).json({ reason: 'registry_slot_unknown', timings });
       if (e.reason === 'registry_unpublished') return res.status(503).json({ reason: 'registry_unpublished', timings });
+      if (e.reason === 'sync_unstable') return res.status(503).json({ reason: 'chain_unavailable', detail: e.message, timings });
       if (e.reason === 'no_session') return res.status(404).json({ reason: 'no_session', timings });
       throw e;
     }
@@ -941,6 +959,7 @@ async function buildExecute(req) {
     if (e.reason === 'demo_proof_failed') return fail(409, { reason: e.reason, detail: e.detail, demo: 'override:prove', timings });
     if (e.reason === 'registry_slot_unknown') return fail(403, { reason: 'registry_slot_unknown', timings });
     if (e.reason === 'registry_unpublished') return fail(503, { reason: 'registry_unpublished', timings });
+    if (e.reason === 'sync_unstable') return fail(503, { reason: 'chain_unavailable', detail: e.message, timings });
     if (e.reason === 'no_session') return fail(404, { reason: 'no_session', timings });
     throw e;
   }
