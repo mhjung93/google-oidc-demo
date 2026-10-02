@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+# 테스트 실행 진입점.
+#
+# 이 저장소의 테스트는 개별 node 스크립트라, 지금까지 "무엇을 돌려야 하는지"를 사람이
+# 기억해야 했다. 그래서 실제로 관련 있는 테스트가 조용히 누락되는 일이 생겼다.
+# 여기서 의존성별로 묶어 한 번에 돌린다.
+#
+#   bash scripts/run_tests.sh            # unit + circuit (자체 완결, 기본값)
+#   bash scripts/run_tests.sh unit       # 외부 의존 없음, 빠름
+#   bash scripts/run_tests.sh circuit    # circom/snarkjs 필요. 느리다(회로 컴파일).
+#                                        # test_mode3_artifacts.mjs 만 build/mode3 의 배포용 산출물(vkey·zkey·wasm)도 본다
+#   bash scripts/run_tests.sh chain      # hardhat 노드(:8545) 필요. IdP/CIA는 스스로 격리 기동.
+#                                        # Mode 3 테스트는 build/mode3/pi_cred_*.zkey·vkey 도 필요
+#   bash scripts/run_tests.sh contract   # 컨트랙트(test/*.test.mjs). hardhat 인프로세스 체인
+#                                        # build/mode3 zkey·wasm 필요(Mode3Wallet.test.mjs 가 실제 π 를 만든다)
+#   bash scripts/run_tests.sh browser    # chain 의 조건 + Chrome(또는 Chromium) 필요. Playwright 로 페이지를 띄운다
+#   bash scripts/run_tests.sh snap       # snap-mode3/node_modules 필요(cd snap-mode3 && npm install)
+#   bash scripts/run_tests.sh live       # 데모 스택(:3000/:4000/:5001) + 관리자 시크릿 필요
+#   bash scripts/run_tests.sh all
+#
+# live 그룹은 실행 중인 IdP의 폐기 트리를 실제로 바꾸고(되돌릴 수 없음) 체인 블록을
+# 진행시킨다. CI에서 돌릴 수 있는 것은 unit·circuit·chain·contract이고,
+# browser는 Chrome/Chromium이 있는 러너에서만, snap은 snap-mode3 패키지를 install한
+# 러너에서만 된다.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+UNIT=(
+  tests/test_ps.js
+  tests/test_uid_wallet_boundary.js
+  tests/test_idp_state_persistence.js
+  tests/test_idp_publish_invariants.js
+  tests/test_wallet_revocation_cache.js
+  tests/test_imt_v3_lib.js
+  tests/test_mode3_revocation_tree.js
+  tests/test_mode3_issuance.js
+  tests/test_mode3_credential_v5.js
+  tests/test_mode3_rp_cert.js
+  tests/test_mode3_trace.js
+  tests/test_mode3_opening.js
+  tests/test_mode3_cia_state.js
+  tests/test_mode3_secret_source.js
+  tests/test_mode3_set_tree.mjs
+  tests/test_mode3_demo_strings.js
+  tests/test_mode3_health_shape.js
+  tests/test_mode3_stack_judge.js
+  tests/test_mode3_v9_lib.js
+  tests/test_mode3_registry.js
+  tests/test_mode3_cia_state_v9.js
+)
+
+CIRCUIT=(
+  tests/test_eddsa.js
+  tests/test_auid_salt_binding.js
+  tests/test_pi_arid_i_no_rid.js
+  tests/test_pi_ppid_poseidon.js
+  tests/test_ppid_cross_rp_unlinkability.js
+  tests/test_imt_v2_lib.js
+  tests/test_imt_v2_nonmembership_circuit.mjs
+  tests/test_pi_pk_i_v2_witness.mjs
+  tests/test_pi_pk_i_revocation.mjs
+  tests/test_pi_pk_i_v3_shard.mjs
+  tests/test_insert_transition_circuit.mjs
+  tests/test_mode3_commit_scheme.mjs
+  tests/test_pi_cred_witness.mjs
+  # 배포용 build/mode3 산출물이 지금의 회로 소스에서 나온 것인지(2026-09-25 리뷰 E-3).
+  # 바로 위 test_pi_cred_witness.mjs 가 witness_test/ 에 해 둔 컴파일을 재사용하므로 그 뒤에 둔다.
+  tests/test_mode3_artifacts.mjs
+)
+
+# hardhat 노드만 있으면 되는 것들. IdP/CIA가 필요하면 테스트가 스스로 격리 인스턴스를 띄운다
+# (tests/helpers/isolated_idp.mjs, isolated_cia.mjs). test_mode3_{wallet,rp,e2e,wallet_agent} 는
+# build/mode3/ 의 pi_cred zkey·vkey 산출물도 전제한다(없으면 vkey 존재 검사에서 바로 멈춘다).
+CHAIN=(
+  tests/test_idp_publish_behavior.mjs
+  tests/test_idp_revocation_v3.mjs
+  tests/test_wallet_revocation_v3.mjs
+  tests/test_publish_v4_cycle.mjs
+  tests/test_cia_register_issue.mjs
+  tests/test_cia_startup.mjs
+  tests/test_cia_issue_race.mjs
+  tests/test_cia_registry.mjs
+  tests/test_cia_mirror_relay.mjs
+  tests/test_cia_opening.mjs
+  tests/test_mode3_session_revoke.mjs
+  tests/test_mode3_wallet.mjs
+  tests/test_mode3_rcl_sync.mjs
+  tests/test_mode3_rp.mjs
+  tests/test_mode3_e2e.mjs
+  tests/test_mode3_wallet_agent.mjs
+  tests/test_mode3_wallet_snap.mjs
+  tests/test_mode3_demo_stack.mjs
+  tests/test_mode3_health.mjs
+)
+
+# 브라우저가 필요한 것들 — chain 과 나누는 이유는 의존성이 하나 더 있기 때문이다.
+# Playwright 가 설치된 Chrome 또는 Chromium 을 띄운다(channel:'chrome' → 없으면 번들 chromium). 둘 다 없으면 이 그룹만 실패한다.
+# hardhat 노드(:8545)와 build/mode3 산출물은 chain 과 똑같이 필요하다.
+BROWSER=(
+  tests/test_mode3_browser.mjs
+  tests/test_mode3_tour.mjs
+)
+
+# Snap 패키지(snap-mode3)의 지역 테스트. 전역 snap 객체를 스텁해 RPC 9종을 검사한다 —
+# 체인도 브라우저도 필요 없지만 snap-mode3/node_modules(@metamask/snaps-sdk)를 전제하므로
+# unit 의 "외부 의존 없음" 계약을 깨지 않도록 그룹을 따로 둔다(2026-09-22 Ruling 9).
+SNAP=(
+  snap-mode3/test/rpc.test.mjs
+)
+
+# 살아있는 데모 스택과 IDP_ADMIN_SECRET이 필요하다.
+LIVE=(
+  # RP 백엔드(:3000)의 노출면 — 민감 파일 비공개, 추적 권한 분리, 열린 릴레이 부재.
+  tests/test_rp_server_exposure.js
+  # IdP가 크레덴셜 유효기간 상한을 강제하는가(폐기 무력화 방지).
+  tests/test_max_height_bound.js
+  # localhost:4000/register_rp를 부른다(127.0.0.1이 아니라 localhost라 분류에서 놓쳤었다).
+  tests/test_rid_not_leaked.js
+  tests/test_idp_revoke_endpoint.js
+  tests/test_revocation_e2e.js
+  tests/test_idp_account_admin.js
+  tests/test_par_endpoint.js
+  tests/test_authorize_endpoint.js
+  tests/test_token_endpoint.js
+  tests/test_token_legacy_idptoken.js
+  tests/test_verify_statement_endpoint.js
+  tests/test_par_authorize_token_e2e.js
+  tests/test_wallet_login_job.js
+  tests/test_wallet_login_loopback.js
+  tests/test_mode2_e2e_onchain.js
+)
+
+# 은퇴한 v1 폐기 트리를 테스트한다. Stage B에서 프로덕션 경로가 v2로 넘어갔고
+# test_imt_nonmembership_circuit.mjs는 /tmp 하드코딩 탓에 clean checkout에서 돌지 않는다.
+# 참고용으로 남겨 두되 어느 그룹에도 넣지 않는다:
+#   tests/test_imt_lib.js, tests/test_imt_nonmembership_circuit.mjs
+
+GROUP="${1:-default}"
+case "$GROUP" in
+  unit)    FILES=("${UNIT[@]}") ;;
+  circuit) FILES=("${CIRCUIT[@]}") ;;
+  chain)   FILES=("${CHAIN[@]}") ;;
+  browser) FILES=("${BROWSER[@]}") ;;
+  snap)    FILES=("${SNAP[@]}") ;;
+  contract)
+    # 컨트랙트 테스트는 hardhat이 자기 인프로세스 체인에서 돌린다(:8545가 필요 없다).
+    # 파일 단위로 node를 부르는 아래 루프와 실행 방식이 달라 여기서 끝낸다.
+    #
+    # 그전까지 test/*.test.mjs는 어느 그룹에도 없어서 `npx hardhat test`를 사람이
+    # 기억해야 했다 — 이 파일이 없애려던 바로 그 상황이다(2026-09-07).
+    echo "== 그룹 'contract' — npx hardhat test =="
+    npx hardhat test
+    exit $?
+    ;;
+  live)
+    # live 그룹은 실행 중인 IdP의 폐기 트리를 **되돌릴 수 없게** 바꾸고(append-only)
+    # 체인 블록을 수백 개 진행시킨다. 격리 하네스(tests/helpers/isolated_idp.mjs)가
+    # 있는데도 이 16개는 아직 개발 인스턴스를 직접 쓴다 — 실수로 돌리는 일이 없도록
+    # 명시적 동의를 요구한다(2026-09-04 리뷰).
+    if [ "${RUN_LIVE_TESTS:-}" != "yes" ]; then
+      echo "live 그룹은 실행 중인 IdP의 폐기 트리를 되돌릴 수 없게 바꾸고 체인 블록을 진행시킵니다."
+      echo "  - 폐기 리프가 쌓이고(append-only), 재기준화로 epoch가 오를 수 있습니다."
+      echo "  - E2E는 매 실행마다 새 세션을 폐기합니다."
+      echo "진행하려면 RUN_LIVE_TESTS=yes 를 설정하십시오."
+      exit 2
+    fi
+    FILES=("${LIVE[@]}")
+    ;;
+  all)
+    if [ "${RUN_LIVE_TESTS:-}" != "yes" ]; then
+      echo "all 그룹은 live를 포함합니다. RUN_LIVE_TESTS=yes 를 설정하십시오(위 live 설명 참고)."
+      exit 2
+    fi
+    # contract는 실행 방식이 달라 여기서 먼저 돌리고, 실패하면 거기서 멈춘다.
+    npx hardhat test || exit 1
+    # browser·snap 도 넣는다 — "all"이 실제로 전부여야 한다. 다만 Chrome/Chromium 이 없거나
+    # snap-mode3 의 패키지 install 이 안 돼 있는 머신에서는 이 두 줄 때문에 all 이 실패한다.
+    FILES=("${UNIT[@]}" "${CIRCUIT[@]}" "${CHAIN[@]}" "${BROWSER[@]}" "${SNAP[@]}" "${LIVE[@]}")
+    ;;
+  default) FILES=("${UNIT[@]}" "${CIRCUIT[@]}") ;;
+  *) echo "알 수 없는 그룹: $GROUP (unit|circuit|chain|browser|snap|contract|live|all)" >&2; exit 2 ;;
+esac
+
+echo "== 그룹 '$GROUP' — ${#FILES[@]}개 실행 =="
+PASSED=(); FAILED=()
+for f in "${FILES[@]}"; do
+  printf '  %-52s ' "$f"
+  if out=$(node "$f" 2>&1); then
+    echo "PASS"
+    PASSED+=("$f")
+  else
+    echo "FAIL"
+    FAILED+=("$f")
+    echo "$out" | tail -15 | sed 's/^/      /'
+  fi
+done
+
+echo
+echo "== 통과 ${#PASSED[@]} / 실패 ${#FAILED[@]} =="
+if [ ${#FAILED[@]} -gt 0 ]; then
+  printf '실패: %s\n' "${FAILED[@]}"
+  exit 1
+fi

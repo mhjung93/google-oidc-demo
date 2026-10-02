@@ -1,0 +1,7 @@
+# 계정 층 샤드 수 스윕. DAU=100000000 revokeRate=0.00001 live=46
+# gas/level=1141 (실측), execute=332272 (실측)
+shards,shard_bits,invalidation_prob,mean_reproofs,tx_miss_2min,peak_leaves,capacity_pct,top_depth,added_gas,active_shards,response_bytes,sibling_only_bytes
+256,8,0.1648,0.18,0.0054,2,0.2,8,0,40,3641,783
+1024,10,0.0439,0.04,0.0014,2,0.2,10,2282,45,4087,922
+4096,12,0.0112,0.01,0.0003,1,0.1,12,4564,46,4213,1060
+16384,14,0.0028,0.00,0.0001,1,0.1,14,6846,46,4235,1199

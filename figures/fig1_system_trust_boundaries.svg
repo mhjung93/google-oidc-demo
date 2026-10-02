@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#30363d"/>
+    </marker>
+    <style>
+      .title{font-family:Arial,Helvetica,sans-serif;font-size:30px;font-weight:700;fill:#111827}
+      .label{font-family:Arial,Helvetica,sans-serif;font-size:21px;font-weight:700;fill:#111827}
+      .body{font-family:Arial,Helvetica,sans-serif;font-size:18px;fill:#1f2937}
+      .small{font-family:Arial,Helvetica,sans-serif;font-size:16px;fill:#374151}
+      .box{fill:#ffffff;stroke:#111827;stroke-width:2.2;rx:10;ry:10}
+      .trust{fill:#f3f4f6;stroke:#6b7280;stroke-width:2;stroke-dasharray:10 7;rx:18;ry:18}
+      .accent{fill:#eef6ff;stroke:#1f77b4;stroke-width:2.2;rx:10;ry:10}
+      .muted{fill:#f8fafc;stroke:#94a3b8;stroke-width:2;rx:10;ry:10}
+      .line{stroke:#30363d;stroke-width:2.4;fill:none;marker-end:url(#arrow)}
+      .dashed{stroke:#64748b;stroke-width:2.2;fill:none;stroke-dasharray:8 7;marker-end:url(#arrow)}
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1200" height="760" fill="#ffffff"/>
+  <text x="60" y="62" class="title">System and Trust Boundaries</text>
+
+  <rect x="45" y="100" width="1110" height="470" class="trust"/>
+  <text x="70" y="132" class="small">PairCT authentication boundary: transcripts are retained by RP/IdP and are not normal public on-chain artifacts</text>
+
+  <rect x="80" y="190" width="190" height="130" class="box"/>
+  <text x="120" y="225" class="label">User</text>
+  <text x="105" y="258" class="body">Controls wallet</text>
+  <text x="105" y="284" class="body">and IdP account</text>
+
+  <rect x="350" y="160" width="230" height="190" class="accent"/>
+  <text x="420" y="196" class="label">Wallet</text>
+  <text x="375" y="232" class="body">Sees:</text>
+  <text x="375" y="258" class="small">uid, rid, salt_u</text>
+  <text x="375" y="282" class="small">rho_i, eta_i</text>
+  <text x="375" y="316" class="body">Validates RP origin</text>
+
+  <rect x="690" y="145" width="220" height="220" class="box"/>
+  <text x="775" y="181" class="label">IdP</text>
+  <text x="715" y="217" class="body">Sees:</text>
+  <text x="715" y="243" class="small">uid_auth, C_u</text>
+  <text x="715" y="267" class="small">arid_i, auid_i</text>
+  <text x="715" y="291" class="small">nonce_i</text>
+  <text x="715" y="315" class="small">auth_digest_i</text>
+  <text x="715" y="339" class="small">Does not learn rid</text>
+
+  <rect x="690" y="415" width="220" height="135" class="box"/>
+  <text x="780" y="451" class="label">RP</text>
+  <text x="715" y="487" class="body">Sees:</text>
+  <text x="715" y="513" class="small">rid, auid, pk_i</text>
+  <text x="715" y="537" class="small">sid_i, ctx_i, assertion</text>
+
+  <rect x="965" y="305" width="155" height="130" class="muted"/>
+  <text x="985" y="342" class="label">Observer</text>
+  <text x="985" y="379" class="small">May see chain</text>
+  <text x="985" y="403" class="small">artifacts, not</text>
+  <text x="985" y="427" class="small">PairCT transcript</text>
+
+  <path d="M270 255 L350 255" class="line"/>
+  <text x="285" y="239" class="small">uses</text>
+
+  <path d="M580 240 C620 215 645 205 690 205" class="line"/>
+  <text x="600" y="196" class="small">blinded IdP view</text>
+
+  <path d="M580 320 C635 395 650 455 690 480" class="line"/>
+  <text x="585" y="455" class="small">RP-facing proof</text>
+
+  <path d="M910 255 C950 270 965 305 985 335" class="dashed"/>
+  <path d="M910 485 C950 455 965 420 985 395" class="dashed"/>
+
+  <rect x="80" y="610" width="1040" height="90" class="muted"/>
+  <text x="105" y="644" class="body">Privacy boundary:</text>
+  <text x="245" y="644" class="small">IdP-side RP hiding relies on non-collusion, wallet origin validation, hidden randomness, and non-public transcripts.</text>
+  <text x="105" y="676" class="body">Accountability boundary:</text>
+  <text x="300" y="676" class="small">Opening requires transcript-scoped authorization and retained integrity-protected RP/IdP records.</text>
+</svg>

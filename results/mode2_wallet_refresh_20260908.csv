@@ -1,0 +1,16 @@
+# 지갑 폐기 갱신 로컬 계산분 (076d882 이후 경로). warm 10회. HTTP 왕복 제외.
+# session 4096샤드 깊이8 / account 4096샤드 깊이10
+# 기준 시나리오 갱신 1회 = 2.53 ms
+layer,neighbour_leaves,subtree_depth,top_depth,cold_ms,warm_mean_ms,warm_sd_ms
+session,0,8,12,282.73,1.60,0.66
+session,1,8,12,1.41,1.12,0.07
+session,2,8,12,1.21,1.22,0.06
+session,8,8,12,1.95,1.98,0.19
+session,32,8,12,5.84,4.76,0.43
+session,128,8,12,14.07,14.69,0.48
+account,0,10,12,2.17,1.24,0.11
+account,1,10,12,1.50,1.31,0.31
+account,2,10,12,1.74,1.53,0.37
+account,8,10,12,2.14,2.16,0.27
+account,32,10,12,4.50,4.35,0.05
+account,103,10,12,12.01,11.98,0.50
