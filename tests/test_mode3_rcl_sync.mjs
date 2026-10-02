@@ -325,6 +325,23 @@ await t('reset() 은 캐시 파일을 지우고 다음 sync 는 부트스트랩'
   assert.equal((await rcl.sync()).mode, 'bootstrap');
 });
 
+// V10 7/N — 거울 epoch 시점의 트리(untilEpoch·expectRoot). 거울은 캐노니컬보다 뒤처질 수 있어(설계 §7/§9),
+// 지갑이 거울의 (revRoot, epoch) 로 검증하려면 "그 epoch 까지만" 재생할 수 있어야 한다.
+await t('untilEpoch: 캐노니컬이 두 번 더 게시돼도 epoch E 시점의 root 를 재구성한다', async () => {
+  const e1 = await log.epoch(); const rootAtE1 = BigInt(await log.revRoot());
+  await publish([111n]); await publish([222n]);
+  const r = await syncRevocationTree(provider, logAddress, { untilEpoch: e1, expectRoot: rootAtE1 });
+  assert.equal(r.root, rootAtE1); assert.equal(r.epoch, e1);
+  await assert.rejects(syncRevocationTree(provider, logAddress, { untilEpoch: e1, expectRoot: 12345n }), /거울 revRoot/);
+});
+await t('createRevocationSync.syncAt 은 캐시를 건드리지 않는다', async () => {
+  const rcl = createRevocationSync({ provider, logAddress, cacheFile, log: warn });
+  await rcl.sync(); const before = fs.readFileSync(cacheFile, 'utf8');
+  const e1 = (await log.epoch()) - 1n;
+  await rcl.syncAt({ untilEpoch: e1, expectRoot: null });
+  assert.equal(fs.readFileSync(cacheFile, 'utf8'), before);
+});
+
 provider.destroy();
 fs.rmSync(dir, { recursive: true, force: true });
 process.exit(failed === 0 ? 0 : 1);

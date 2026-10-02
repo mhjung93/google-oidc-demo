@@ -311,5 +311,21 @@ await t('V9: 비멤버십 증인은 세션 리프 하나만 요청한다 (사용
   assert.equal(BigInt(out.publicSignals[6]), tree.getRoot());
 });
 
+// V10 7/N — 거울 epoch 시점의 등록부(untilEpoch·expectRoot). 이 테스트만 쓰는 빈 슬롯(SLOT_V10)을 두 번 바꿔
+// 첫 게시 epoch 로 재구성하면 첫 값의 root 가 나오는지 본다(두 번째 게시는 재생에서 보이면 안 된다).
+await t('V10 syncRegistryTree: untilEpoch·expectRoot 로 첫 게시 epoch 시점의 등록부를 재구성한다', async () => {
+  const SLOT_V10 = 9;
+  const leafA = 1111n, leafB = 2222n;
+  registry.set(SLOT_V10, leafA);
+  await publishV3(log, ciaEth, { revRoot: tree0.getRoot(), regRoot: registry.root(), epoch: (await log.epoch()) + 1n, slotIdx: [SLOT_V10], slotLeaves: [leafA] });
+  const e1 = await log.epoch(); const regRootAtE1 = BigInt(await log.regRoot());
+  registry.set(SLOT_V10, leafB);
+  await publishV3(log, ciaEth, { revRoot: tree0.getRoot(), regRoot: registry.root(), epoch: (await log.epoch()) + 1n, slotIdx: [SLOT_V10], slotLeaves: [leafB] });
+  const r = await syncRegistryTree(provider, logAddress, { untilEpoch: e1, expectRoot: regRootAtE1 });
+  assert.equal(r.root, regRootAtE1); assert.equal(r.epoch, e1);
+  assert.equal(r.tree.leafAt(SLOT_V10), leafA, '두 번째 게시(leafB)는 재생에서 보이면 안 된다');
+  await assert.rejects(syncRegistryTree(provider, logAddress, { untilEpoch: e1, expectRoot: 12345n }), /거울 regRoot/);
+});
+
 provider.destroy();
 process.exit(failed === 0 ? 0 : 1);
