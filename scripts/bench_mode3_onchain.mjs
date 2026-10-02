@@ -1,7 +1,8 @@
 // Mode 3 온체인 실행 모델 성능 실측 (2026-09-18 max_height 지갑 결정 판, 2026-09-21 자격증명 이중 구조 V5,
 // 2026-09-22 선택 공개 V6, 2026-09-23 집합 소속 술어 V7 — 회로 공개 입력 25개(V6 은 23개; V7 에서 set_sel·set_root
 // 추가), AttrGate v2, 2026-10-01 등록부 소속 조건 V9 — 공개 입력 30개(REG_ROOT 추가, attrs 6슬롯), Mode3Log 가
-// revRoot·regRoot 를 한 tx 로 같이 게시(Revoked + SlotUpdated 이벤트)).
+// revRoot·regRoot 를 한 tx 로 같이 게시(Revoked + SlotUpdated 이벤트), 2026-10-02 V10 폐기 전용 체인 — 응용 체인
+// 거울(Mode3Mirror)과 접수증 대기열(requestRevocation/강제 publish)의 gas 를 더한다.
 //   node scripts/bench_mode3_onchain.mjs [N]        (기본 N=10, :8545 hardhat 노드 필요)
 //
 // 격리 스택(CIA + 지갑 에이전트, 각자 빈 포트)을 띄우고 실제 HTTP 경로로 측정한다 — 개발 서버(:4100/:5100/:3100)는
@@ -10,8 +11,8 @@
 // 측정 항목:
 //   1. 로그인(첫 발급): 지갑의 timings(sync/userCred/issue/prove) + 전체 왕복 + 서비스 verifyLogin (mask=0 고정)
 //   2. 재검증(캐시 π): 왕복 + verifyLogin
-//   3. 가스: PiCredVerifier·Mode3WalletFactory·Mode3Log 배포, 계정 배포(CREATE2), execute(첫/캐시),
-//      Mode3Log 게시(등록부 슬롯 1개 / 폐기 리프 1개 / 하트비트)
+//   3. 가스: PiCredVerifier·Mode3WalletFactory·Mode3Log·Mode3Mirror 배포, 계정 배포(CREATE2), execute(첫/캐시),
+//      Mode3Log 게시(등록부 슬롯 1개 / 폐기 리프 1개 / 하트비트), 거울 갱신(강제 릴레이), 접수증 제출·강제 게시
 //   4. /wallet/tx 왕복(mask=0, 캐시 π, 채굴 포함) — "공개 0" 변형
 //   5. /wallet/tx 왕복(mask=1 + set, 매번 새 π) + AttrGate.claim — "범위+집합" 변형. claimed 매핑이 지갑 주소당 한 번뿐이라
 //      (지갑 주소는 PPID 로 정해지고 세션과 무관하다) 반복마다 AttrGate 를 새로 배포한다. discKey 도 반복마다 바꿔(hi[0] 를
@@ -19,11 +20,13 @@
 //   6. /wallet/tx(mask=1, set 없음, to=dEaD) — "범위만" 변형. hi[0] 를 반복마다 늘려 캐시를 피한다.
 //   7. /wallet/tx(mask=0, set 만, to=dEaD) — "집합만" 변형. members 에 더미 원소를 반복마다 추가해 캐시를 피한다
 //      (국가는 항상 포함해 membership 은 유지).
+//   8. V10: Mode3Mirror 배포(더미, N=1 결정적) · 거울 갱신 gas(관리자 강제 릴레이, N 회) · requestRevocation gas ·
+//      pending 슬롯 1개를 실은 강제 publish gas(접수증 강제 사이클, 데모 계정이 하나뿐이라 자기 폐기→재발급을 돌려 N≥3).
 // 결과는 Markdown 표로 stdout 에 낸다. 스펙 §8·논문 Table 3 에 옮겨 적는다.
 import fs from 'node:fs';
 import { ethers } from 'ethers';
 import { startIsolatedMode3Stack } from '../tests/helpers/isolated_mode3_stack.mjs';
-import { getProvider } from '../tests/helpers/mode3_chain.mjs';
+import { getProvider, deployMode3Mirror } from '../tests/helpers/mode3_chain.mjs';
 import { VKEY_PATH, ZKEY_PATH } from '../lib/mode3_wallet.js';
 import { createRpVerifier } from '../lib/mode3_rp.js';
 import { randomScalar } from '../lib/mode3_credential.js';
@@ -48,7 +51,11 @@ try {
   const keys = (await cia.get('/cia/public_keys')).body;
   const pk_CIA = { x: BigInt(keys.pk_CIA.x), y: BigInt(keys.pk_CIA.y) };
   const { arid, cert_s, origin, pk_trace } = await cia.registerRp(stack.rpOriginForWallet);
-  const rp = createRpVerifier({ provider, logAddress: cia.logAddress, vkey, pkCIA: pk_CIA, arid: BigInt(arid), chainId: 31337n, pkTrace: pk_trace });
+  // V10(설계 §2·§5): 검증기도 계정 컨트랙트도 캐노니컬(cia.logAddress)이 아니라 이 체인의 거울(cia.mirrorAddress)을
+  // 읽는다 — mode3_rp.js·Mode3WalletFactory 생성자와 같다. logAddress 는 거울이든 캐노니컬이든 같은 4개 getter
+  // (MODE3_ROOTS_ABI)를 구현해 타입은 맞지만, 둘을 바꿔 쓰면 지갑이 증명한 뷰(거울)와 검증기가 보는 뷰(캐노니컬)가
+  // 갈라져 괜찮았다가도 거울 릴레이가 늦어지는 순간 틀어진다.
+  const rp = createRpVerifier({ provider, logAddress: cia.mirrorAddress, vkey, pkCIA: pk_CIA, arid: BigInt(arid), chainId: 31337n, pkTrace: pk_trace });
   // V9: /wallet/register 는 uid·pwd 만 받는다 — attrs 는 CIA 의 DEMO_ACCOUNTS(['1990','410','2','0','0','0'])가 정한다(설계 2026-10-01 §7.1).
   const reg = await wallet.post('/wallet/register', { uid, pwd: 'password123' });
   if (reg.status !== 201) throw new Error(`register ${reg.status} ${j(reg.body)}`);
@@ -57,7 +64,8 @@ try {
   const signer = await provider.getSigner(0);
   const verifierAddress = await deployVerifier(signer);
   const verifierGas = (await provider.getTransactionReceipt((await provider.getBlock('latest', true)).transactions[0])).gasUsed;
-  const factoryAddress = await deployFactory(signer, { verifierAddress, arid, pkCIA: pk_CIA, pkTrace: pk_trace, logAddress: cia.logAddress, maxRootAge: 100n });
+  // V10: 계정 컨트랙트도 거울을 읽는다(위 rp 와 같은 이유) — 팩토리 생성자의 logAddress 는 cia.mirrorAddress 다.
+  const factoryAddress = await deployFactory(signer, { verifierAddress, arid, pkCIA: pk_CIA, pkTrace: pk_trace, logAddress: cia.mirrorAddress, maxRootAge: 100n });
   const factoryGas = (await provider.getTransactionReceipt((await provider.getBlock('latest', true)).transactions[0])).gasUsed;
   const factory = new ethers.Contract(factoryAddress, FACTORY_ABI, signer);
   const walletDeployGas = (await (await factory.deploy(randomScalar() % (1n << 250n))).wait()).gasUsed;   // 임의 PPID — 계정 배포 가스만
@@ -66,19 +74,29 @@ try {
   // 생성자 인자 값은 gas 에 영향이 없다(Mode3Log 생성자는 분기 없이 그대로 저장만 한다) — 결정적이라 N=1 로도 충분하다.
   const emptyRevRoot = rootToBytes32((await createRevocationTree()).getRoot());
   const emptyRegRoot = rootToBytes32((await createRegistryTree()).root());
-  await deployLog(signer, { ciaAddress: cia.ethAddress, emptyRevRoot, emptyRegRoot });
+  const dummyLogAddress = await deployLog(signer, { ciaAddress: cia.ethAddress, emptyRevRoot, emptyRegRoot });
   const logDeployGas = (await provider.getTransactionReceipt((await provider.getBlock('latest', true)).transactions[0])).gasUsed;
+  // V10: Mode3Mirror 배포 가스 — 위 더미 Mode3Log 를 캐노니컬로 가리키는 더미 거울을 하나 배포한다(이 역시 스택에
+  // 연결하지 않는다 — cia.mirrorAddress 가 이미 따로 떠 있다). 생성자는 분기 없이 그대로 저장만 해 결정적이다(Mode3Log
+  // 배포 가스와 같은 이유로 N=1 로 충분하다).
+  await deployMode3Mirror(cia.ethAddress, dummyLogAddress, provider);
+  const mirrorDeployGas = (await provider.getTransactionReceipt((await provider.getBlock('latest', true)).transactions[0])).gasUsed;
 
   const login = (r_s, extra = {}) => wallet.post('/wallet/login', { arid, origin, cert_s, pk_trace: { x: pk_trace.x.toString(), y: pk_trace.y.toString() }, r_s, factoryAddress, ...extra }, { Origin: stack.rpOriginForWallet });
   const verify = (body, r_s) => rp.verifyLogin({ proof: body.proof, publicSignals: body.publicSignals, sig: body.sig, r_s: BigInt(r_s) });
 
   // 1. 로그인 N회 — 매번 새 r_s = 새 세션 = 새 발급 + 새 증명
+  // V10: 첫 로그인은 새 사용자 자격증명을 발급받아 등록부 슬롯이 바뀌므로, 지갑이 "거울 regRoot 가 내 리프를 담을 때까지"
+  // 최대 30초 폴링한다(mode3_wallet_agent.js). 격리 CIA 는 거울 하트비트를 꺼 두므로(CIA_MIRROR_HEARTBEAT_BLOCKS=0)
+  // 누군가 릴레이를 눌러주지 않으면 그 30초를 다 채우고 실패한다 — stack.withRelay 로 감싸 폴링 중 0.4초마다 릴레이를
+  // 대신 눌러 준다(운영의 거울 하트비트 자리를 대신하는 펌프, isolated_mode3_stack.mjs 참고). 이후 로그인(i>0)은 같은
+  // 사용자 자격증명을 재사용해(userCredMs 0) 새 등록부 게시를 기다리지 않는다.
   const L = { total: [], sync: [], userCred: [], issue: [], prove: [], verify: [] };
   let lastRs;
   for (let i = 0; i < N; i++) {
     const rs = randomScalar().toString();
     const t0 = performance.now();
-    const r = await login(rs);
+    const r = i === 0 ? await stack.withRelay(() => login(rs)) : await login(rs);
     L.total.push(performance.now() - t0);
     if (r.status !== 200 || !r.body.issued) throw new Error(`login ${r.status} ${j(r.body)}`);
     L.sync.push(r.body.timings.syncMs); L.userCred.push(r.body.timings.userCredMs ?? 0); L.issue.push(r.body.timings.issueMs); L.prove.push(r.body.timings.proveMs);
@@ -199,6 +217,48 @@ try {
   const slotPublishGas = pubs.filter((p) => p.hasSlot).map((p) => p.gas);
   const heartbeatGas = pubs.filter((p) => !p.hasSlot && p.leaves === 0 && p.blockNumber > leafPublishReceipt.blockNumber).map((p) => p.gas);
 
+  // 8a. V10 거울 갱신 gas(N 회, 관리자 강제 릴레이). 거울이 이미 캐노니컬을 따라잡았으면 CIA 가 캐노니컬 하트비트를
+  // 먼저 올려(epoch 증가) 그 새 epoch 를 거울에 올리므로, 매 호출이 실제 Mode3Mirror.publish() tx 를 하나씩 낸다(설계 §5).
+  // Mirror.publish() 는 배열이 아니라 해시 세 개(hLeaves·hIdx·hSlots)만 받아 그 안에 담긴 슬롯·리프 개수와 무관하게
+  // gas 가 일정하다 — Mode3Log 배포처럼 사실상 결정적인 값에 가깝더라도, 캐노니컬 하트비트 유무에 따라 흔들릴 수 있어
+  // N 회 중앙값으로 잰다.
+  const MR = { gas: [] };
+  for (let i = 0; i < N; i++) {
+    const r = await cia.adminPost('/cia/admin/relay', {});
+    if (r.status !== 200) throw new Error(`relay ${r.status} ${j(r.body)}`);
+    const txHash = r.body.mirrors?.[0]?.txHash;
+    if (!txHash) throw new Error(`relay 가 거울 tx 를 내지 않았다: ${j(r.body)}`);
+    MR.gas.push(Number((await provider.getTransactionReceipt(txHash)).gasUsed));
+  }
+
+  // 8b. V10 접수증 강제: requestRevocation gas · pending 슬롯 1개를 실은 강제 publish gas. 데모 계정이 testuser
+  // 하나뿐이라(cia.js DEMO_ACCOUNTS) 여러 사용자로 N 을 채울 수 없다 — 자기 폐기(이미 슬롯을 0 으로 정상 게시한다) →
+  // 그 접수증을 캐노니컬 로그에 requestRevocation 으로 올림(온체인 대기열에 등재 — RevocationRequested) → 관리자
+  // /cia/publish(접수증 대기열을 보고 (slot,0) 을 강제로 실어야 통과 — 안 그러면 PendingRevocationNotApplied) →
+  // 슬롯 영구 은퇴(isRetired) → 관리자가 계정을 되살리고 재로그인(새 슬롯 재발급, 거울 반영은 withRelay 로 기다림)하는
+  // 사이클을 N_REQ 번 돌려 N≥3 을 채운다(브리프 §Step 1). 사이클마다 실제 로그인(증명 포함)이 끼어 비싸므로 전체 벤치
+  // N 과 별도로 작게(최대 5) 잡는다.
+  const N_REQ = Math.min(N, 5);
+  const logW = new ethers.Contract(cia.logAddress, MODE3_LOG_ABI, signer);
+  const REQ = { gas: [] };
+  const FPUB = { gas: [] };
+  for (let i = 0; i < N_REQ; i++) {
+    const sr = await cia.post('/cia/account/self_revoke', { uid, pwd: 'password123' });
+    if (sr.status !== 200 || !sr.body.receipt) throw new Error(`self_revoke ${sr.status} ${j(sr.body)}`);
+    const rc = sr.body.receipt;
+    const reqReceipt = await (await logW.requestRevocation(rc.slot, rc.epochAtRequest, rc.requestedAt, rc.sig)).wait();
+    REQ.gas.push(Number(reqReceipt.gasUsed));
+    const pub2 = await cia.adminPost('/cia/publish', {});
+    if (!pub2.body.published) throw new Error(`접수증 강제 publish 실패: ${j(pub2.body)}`);
+    FPUB.gas.push(Number((await provider.getTransactionReceipt(pub2.body.txHash)).gasUsed));
+    // 다음 사이클을 위해 계정을 되살리고 재로그인으로 새 슬롯을 받는다 — 새 등록부 게시가 거울에 반영될 때까지
+    // withRelay 로 감싼다(위 "1. 로그인" 첫 회와 같은 이유).
+    const reEnable = await cia.adminPost('/cia/account/set_disabled', { uid, disabled: false });
+    if (reEnable.status !== 200) throw new Error(`계정 재활성 실패: ${j(reEnable.body)}`);
+    const relog = await stack.withRelay(() => login(randomScalar().toString()));
+    if (relog.status !== 200 || !relog.body.issued) throw new Error(`재발급 로그인 실패: ${relog.status} ${j(relog.body)}`);
+  }
+
   const zkeyBytes = fs.statSync(ZKEY_PATH).size;
   console.log('');
   console.log(`## Mode 3 온체인 실행 실측 (N=${N}, 중앙값 (최소–최대), ms)`);
@@ -228,6 +288,10 @@ try {
   console.log(`| Mode3Log 등록부 슬롯 게시 gas (슬롯 1개, SlotUpdated 1건) | ${slotPublishGas.join(', ') || '미측정'} |`);
   console.log(`| Mode3Log 폐기 리프 게시 gas (리프 1개) | ${leafPublishGas} |`);
   console.log(`| Mode3Log 하트비트 게시 gas (리프 0, 슬롯 0) | ${heartbeatGas.join(', ') || '미측정(15s 내 관측 안 됨)'} |`);
+  console.log(`| Mode3Mirror 배포 gas | ${mirrorDeployGas} |`);
+  console.log(`| Mode3Mirror 갱신 gas (강제 릴레이, N회) | ${fmt(MR.gas)} |`);
+  console.log(`| Mode3Log requestRevocation gas (접수증 제출, N=${N_REQ}) | ${fmt(REQ.gas)} |`);
+  console.log(`| Mode3Log 강제 publish gas (pending 슬롯 1개, N=${N_REQ}) | ${fmt(FPUB.gas)} |`);
   console.log(`| zkey 크기 | ${zkeyBytes} bytes |`);
   console.log(`| 공개 입력 수 | 30 |`);
 } finally {
