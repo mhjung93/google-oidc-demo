@@ -315,8 +315,7 @@ function setSlot(uid, leaf) {
  *  하트비트 — 꺼져 있으면 사실상 다음 변경 — 까지 게시되지 않는다. 기다렸다 다시 부르면 그 백로그를 이 호출이
  *  그대로 집어간다. */
 async function publishSafely() {
-  await waitPublishing();
-  try { return await publishNow(); }
+  try { return await publishNow({ wait: true }); }
   catch (e) { console.warn(`[cia] 즉시 게시 실패(다음 하트비트가 재시도): ${e.message}`); return { published: false, error: e.message }; }
 }
 /** 활성 자격증명을 revoked 로 돌린다(V9: 폐기 트리에 넣지 않는다 — 슬롯을 0 으로 두는 것이 호출자의 몫). 돌려주는 값은 물린 개수. */
@@ -747,22 +746,36 @@ app.get('/cia/admin/sessions', requireAdmin, async (req, res) => {
 // { published: false } 를 돌려줘, 그 사이 들어온 슬롯·폐기 변경이 다음 하트비트(또는 그 다음 변경)까지, 하트비트가
 // 꺼져 있으면 사실상 영영 게시되지 않을 수 있었다(조용한 로컬 체인에서 폐기된 자격증명이 계속 유효하게 남는다).
 let publishing = null;
-/** 진행 중인 게시(또는 같은 체인 거울 tx, relayMirror)가 **없어질 때까지** 기다린다. 한 번만 기다리면(옛 `if`) 깨어난 순간
- *  같은 promise 를 기다리던 다른 대기자(V10 거울 릴레이)가 먼저 잠금을 잡아 내 publishNow 가 409 를 맞을 수 있다(2026-10-02,
- *  릴레이가 잠금을 빌리면서 생긴 경합). 반환 직후 같은 동기 구간에서 publishNow 를 부르면 그 사이 끼어들 틈이 없다.
- *  먼저 가던 쪽의 실패는 그쪽 책임 — 여기서는 삼킨다. */
-async function waitPublishing() {
+/** 게시 잠금 획득(2026-10-02 Task 6 리뷰 C1). 잠금을 잡는 곳은 여기 하나다 — publishNow 와 같은 체인 거울 tx(sendMirrorTx).
+ *  - 원자성: 마지막 `publishing === null` 확인과 `publishing = mine` 대입 사이에 await 가 없다(같은 동기 구간). 예전처럼
+ *    `await waitPublishing()` 뒤 호출자가 대입하면, 같은 promise 를 기다리던 대기자들이 같은 마이크로태스크 회차에 깨어나
+ *    둘 다 null 을 보고 둘 다 잡았다 — 게시 tx 와 거울 tx 가 같은 키로 동시에 나가(nonce 경합) 게시 둘이 겹칠 수 있었다.
+ *  - 소유자 해제: 내 promise 일 때만 null 로 되돌린다. 무조건 null 로 두면 내가 끝난 뒤 이미 잡은 남의 잠금을 풀어 버린다.
+ *  - wait=false 는 진행 중이면 즉시 409(관리자 /cia/publish 이중 클릭), wait=true 는 끝날 때까지 기다려 잡는다
+ *    (publishSafely·heartbeatTick·릴레이 — 409 를 맞고 { published:false } 로 끝나면 A2 리뷰의 유실이 되살아난다).
+ *  - factory 는 동기 구간 안에서 불려 promise 를 돌려줘야 한다(async 함수 호출이면 된다). 먼저 가던 쪽의 실패는 그쪽 책임 — 삼킨다. */
+async function withPublishLock(factory, { wait }) {
+  if (publishing && !wait) throw Object.assign(new Error('publish already in progress'), { status: 409 });
   while (publishing) { try { await publishing; } catch { /* 그쪽 catch 가 이미 경고를 냈다 */ } }
+  const mine = factory();
+  publishing = mine;
+  try { return await mine; } finally { if (publishing === mine) publishing = null; }
+}
+/** 진행 중인 잠금이 풀릴 때까지 기다리기만 한다(잡지 않는다). **최적화 용도로만** 쓴다 — 기다린 뒤 "아직 필요한지" 다시 재서
+ *  불필요한 하트비트를 줄이는 것. 이 뒤의 실제 게시는 반드시 publishNow({ wait: true }) 로 잡으므로 여기서 다른 대기자가 먼저
+ *  잡아도 안전하다(겹치지 않고 그 뒤에 줄을 선다 — 최악은 하트비트 한 번 더). */
+async function waitPublishing() {
+  while (publishing) { try { await publishing; } catch { /* */ } }
 }
 /**
  * root 게시. heartbeat=true 면 pending 이 비어 있어도 같은 root 를 새 epoch 로 올린다(설계 §4.5) — 컨트랙트 조건은 epoch
  * 증가뿐이라 그대로다. 한 번에 하나만 돈다: 둘이 겹치면 각자 pending 을 자기 개수만큼 앞에서 잘라 그 사이 들어온 revoke 의
  * 리프가 pending 에서만 사라진다(트리·서명 root 에는 남아 지갑 재구성이 영구히 실패). 진짜 동시 호출(수동 게시 버튼 이중
- * 클릭 등)은 여전히 409 — 대기·재시도는 호출자(publishSafely·heartbeatTick) 의 몫이다.
+ * 클릭 등)은 여전히 409(wait=false 기본). 내부 호출자(publishSafely·heartbeatTick·릴레이)는 wait=true 로 불러 끝날 때까지
+ * 기다렸다 잠금을 원자적으로 잡는다(withPublishLock, 2026-10-02 Task 6 리뷰 C1).
  */
-async function publishNow({ heartbeat = false } = {}) {
-  if (publishing) throw Object.assign(new Error('publish already in progress'), { status: 409 });
-  publishing = (async () => {
+async function publishNow({ heartbeat = false, wait = false } = {}) {
+  return withPublishLock(async () => {
     if (!LOG_ADDRESS) throw Object.assign(new Error('CIA_LOG_ADDRESS not configured'), { status: 503 });
     // 게시 직전 대조(기동 시와 같은 규칙). 온체인 root 가 우리가 아는 어느 접두사와도 다르면 올리지 않는다.
     let chain;
@@ -827,8 +840,7 @@ async function publishNow({ heartbeat = false } = {}) {
     state.registry.pendingSlots = state.registry.pendingSlots.slice(slots.length);
     persist();
     return { published: true, heartbeat: leaves.length === 0 && slots.length === 0, epoch, root: tree.getRoot().toString(), regRoot: registry.root().toString(), txHash: tx.hash, leaves, slots: slots.length };
-  })();
-  try { return await publishing; } finally { publishing = null; }
+  }, { wait });
 }
 app.post('/cia/publish', requireAdmin, async (req, res) => {
   try { res.json(await publishNow()); }
@@ -849,7 +861,7 @@ async function heartbeatTick() {
     const log = new ethers.Contract(LOG_ADDRESS, MODE3_LOG_ABI, ethWallet);
     const [head, last] = await Promise.all([ethWallet.provider.getBlockNumber(), log.lastPublishedBlock()]);
     if (BigInt(head) - BigInt(last) < HEARTBEAT_BLOCKS) return;
-    const r = await publishNow({ heartbeat: true });
+    const r = await publishNow({ heartbeat: true, wait: true });
     console.log(`[cia] 하트비트 게시: epoch ${r.epoch}, 리프 ${r.leaves.length}개, head ${head}`);
   } catch (e) { console.warn(`[cia] 하트비트 실패: ${e.message}`); }
 }
@@ -883,10 +895,8 @@ async function sendMirrorTx(m, lp) {
     return tx.hash;
   };
   if (!m.sameChain) return send();
-  // 같은 체인·같은 키: 동시에 나간 게시 tx 와 같은 nonce 를 집지 않게 게시 잠금을 잠깐 빌린다(대기자는 waitPublishing 으로 재시도).
-  await waitPublishing();
-  publishing = send();
-  try { return await publishing; } finally { publishing = null; }
+  // 같은 체인·같은 키: 동시에 나간 게시 tx 와 같은 nonce 를 집지 않게 게시 잠금을 잠깐 빌린다(원자 획득·소유자 해제는 withPublishLock).
+  return withPublishLock(send, { wait: true });
 }
 async function relayMirror(m, { force = false } = {}) {
   const [head, mEpoch, mLast] = await Promise.all([m.provider.getBlockNumber(), m.contract.epoch(), m.contract.lastPublishedBlock()]);
@@ -896,8 +906,8 @@ async function relayMirror(m, { force = false } = {}) {
   // 체인 epoch 보다 뒤처짐) 캐노니컬 하트비트를 먼저 올린다. 진행 중인 게시가 끝나면 다시 판단한다 — 그 게시가 새 epoch 를 줬을 수 있다.
   const stale = () => !state.lastPublication || BigInt(state.lastPublication.epoch) <= BigInt(mEpoch) || Number(state.lastPublication.epoch) !== state.epoch;
   if (stale()) {
-    await waitPublishing();
-    if (stale()) await publishNow({ heartbeat: true });
+    await waitPublishing();   // 최적화: 진행 중인 게시가 새 epoch 를 줬으면 하트비트를 건너뛴다(획득은 아래 wait:true 가 원자적으로)
+    if (stale()) await publishNow({ heartbeat: true, wait: true });
   }
   const lp = state.lastPublication;
   try {
@@ -917,7 +927,7 @@ async function relayAll({ force = false } = {}) {
       try { res.push(await relayMirror(m, { force })); }
       catch (e) {
         console.warn(`[cia] 거울 ${m.chainStr}(${m.address}) 릴레이 실패: ${e.message}`);
-        res.push({ chainId: m.chainStr, epoch: null, txHash: null, skipped: true, error: e.message });
+        res.push({ chainId: m.chainStr, epoch: null, txHash: null, skipped: false, error: e.message });
       }
     }
     return res;
@@ -930,6 +940,8 @@ async function relayTick() {
   try { await relayAll(); } catch (e) { console.warn(`[cia] 거울 릴레이 틱 실패: ${e.message}`); }
 }
 // 테스트·데모용: 주기를 무시하고 모든 거울을 지금 갱신한다. 거울 하나라도 실패하면 502(나머지 결과는 그대로 싣는다).
+// 주의: 거울이 이미 캐노니컬 epoch 를 따라잡았으면 force 는 캐노니컬 하트비트를 하나 더 올린다 — 캐노니컬 체인의 블록·epoch
+// 하나와 가스를 쓴다(거울은 같은 epoch 를 두 번 받지 않으므로). 운영 경로가 아니라 데모·관리자용이다.
 app.post('/cia/admin/relay', requireAdmin, async (req, res) => {
   if (!LOG_ADDRESS) return res.status(503).json({ error: 'CIA_LOG_ADDRESS not configured' });
   try {
