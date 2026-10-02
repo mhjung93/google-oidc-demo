@@ -145,19 +145,20 @@ V10 환경 변수(2026-10-02). **`CIA_RPC_URL` 의 뜻이 프로세스마다 다
 | `CIA_RPC_URL` | RP·지갑 | 자기 응용 체인 RPC(거울·팩토리·계정이 있는 곳, 기본 같음) |
 | `CIA_LOG_ADDRESS` | CIA·RP·지갑 | 캐노니컬 로그. RP 는 `rp_info` 에 **표시만** 하고 읽지 않는다 |
 | `MODE3_MIRROR_ADDRESS` | RP·지갑(필수) | 이 체인의 거울. RP 검증기·팩토리·지갑의 증명 root 가 전부 이것 기준 |
-| `MODE3_REV_CHAIN_RPC` | 지갑 | 캐노니컬을 읽을 RPC(기본 `CIA_RPC_URL`). 트리는 캐노니컬 이벤트를 **거울 epoch 까지만** 재생해 만든다 |
+| `MODE3_REV_CHAIN_RPC` | 지갑·`hardhat.config.cjs` | 지갑: 캐노니컬을 읽을 RPC(기본 `CIA_RPC_URL`). 트리는 캐노니컬 이벤트를 **거울 epoch 까지만** 재생해 만든다. hardhat: `--network revchain` 의 URL(기본 `http://127.0.0.1:8546`) |
+| `HARDHAT_CHAIN_ID` | `hardhat.config.cjs` | `npx hardhat node` 의 chainid(기본 31337). 두 번째 노드(폐기 체인)를 31338 로 띄울 때만 |
 | `CIA_MIRRORS` | CIA | `chainid=거울주소,…` — 중계 대상. 각 chainid 가 `CIA_CHAIN_RPCS` 에 있어야 한다 |
-| `CIA_CHAIN_RPCS` | CIA | 응용 체인 RPC 맵(세션 발급 + 거울 중계). V10 부터 `CIA_MIRRORS` 를 쓰면 **필수** |
+| `CIA_CHAIN_RPCS` | CIA | 응용 체인 RPC 맵(세션 발급 + 거울 중계). 비어 있으면 지금처럼 `CIA_RPC_URL` 의 체인 하나로 채워지지만, 그 기본값은 `CIA_MIRRORS` 검사보다 늦게 생기므로 **거울을 쓰면 응용 체인을 명시적으로 적어야 한다** |
 | `CIA_MIRROR_HEARTBEAT_BLOCKS` | CIA | 거울 릴레이 주기 H_X(그 거울 체인의 블록 수, 기본 50, `0` = 끔). 캐노니컬에 새 epoch 가 없으면 캐노니컬 하트비트를 먼저 올리고 중계한다 |
 | `CIA_MIRROR_POLL_MS` | CIA | 릴레이 틱 간격(기본 5000) |
-| `MODE3_CANONICAL_LOG_ADDRESS`·`MODE3_CANONICAL_CHAIN_ID` | 배포 스크립트 | 둘 다 주면 **거울만** 배포한다(남의 체인의 캐노니컬을 가리킴). 별도 노드 구성 전용 |
+| `MODE3_CANONICAL_LOG_ADDRESS`·`MODE3_CANONICAL_CHAIN_ID` | 배포 스크립트 | 둘 다 주면 **거울만** 배포한다(남의 체인의 캐노니컬을 가리킴). 별도 노드 구성 전용 — **`.env` 에 넣지 말 것**(배포 명령에만 붙인다. `.env` 에 있으면 단일 노드 재배포가 거울 전용으로 바뀐다) |
 
 `MODE3_MAX_ROOT_AGE`(서비스·계정이 받아들이는 root 나이)는 이제 **거울**의 `lastPublishedBlock` 기준이다 — 거울 릴레이 주기보다
 2~3배 크게 둔다(설계 §5, 기본 100 > 50).
 
 선택 env: 지갑의 `MODE3_TTL_BLOCKS`(credential 만료, 기본 300)·`MODE3_HEIGHT_GRID`(max_height 양자화 그리드, 기본 100 — 만료는 지갑이 정하고 CIA 는 그대로 서명), 서비스·컨트랙트의 `MODE3_MAX_LIFETIME_BLOCKS`(지갑이 정한 만료의 상한 L, 기본 400; TTL+GRID 이상이어야 로그인이 된다)·
 `CIA_HEARTBEAT_BLOCKS`(하트비트 재게시 주기, 기본 50, 0=끔)·`CIA_HEARTBEAT_POLL_MS`(기본 5000)·
-`CIA_CHAIN_RPCS`(발급을 허용할 체인의 RPC 맵, 기본 `"31337=http://127.0.0.1:8545"`, 비면 자기 RPC 하나)·
+`CIA_CHAIN_RPCS`(발급을 허용할 체인의 RPC 맵, 기본 `"31337=http://127.0.0.1:8545"`, 비면 자기 RPC 하나 — V10 에서 `CIA_MIRRORS` 를 쓰면 명시 필수, 위 표)·
 `MODE3_MAX_ROOT_AGE`(지갑과 **RP 오프체인 로그인·재검증·세션 요청도 같은 상한**으로 받아들이는 게시 root 의 최대 나이,
 블록, 기본 100 — 온체인 `RootTooOld` 와 같은 값, 하트비트 주기보다 커야 한다)·
 `MODE3_RELAYER_INDEX`(트랜잭션 릴레이어로 쓸 hardhat 계정 인덱스, 기본 0)·`MODE3_RP_FACTORY_ADDRESS`·`MODE3_VERIFIER_ADDRESS`,
@@ -200,13 +201,20 @@ curl -s -X POST -H "X-CIA-Admin-Secret: $CIA_ADMIN_SECRET" http://127.0.0.1:4100
 충분하다(테스트는 :8545 하나에 로그와 거울을 함께 둔다). chainid 가 같으면 서명이 두 체인을 구분하지 못하므로
 `hardhat.config.cjs` 가 `HARDHAT_CHAIN_ID` 로 두 번째 노드의 chainid 를 바꾼다(기본 31337).
 
+**전제 — 체인 하나 구성에서 옮겨 오면 재시연 세트를 탄다**(아래 "하지 말 것 / 재시연" 의 재시연 세트, 위 "처음 한 번" 0 의 V10
+(4)와 같은 이유). 로그를 새로 배포하므로 `cia_state.json` 과 지갑 상태·캐시 파일(`mode3_wallet_state.json`·`mode3_wallet_rcl.json`)을
+지우고, `mode3_rp_registration.json` 의 `factoryAddress`·`verifierAddress`·`attrGateAddress` 를 지운다. 이유: CIA 는 빈 새 로그와
+로컬 상태(epoch·root)가 어긋나면 기동을 거부하고, RP 는 등록 파일의 옛 팩토리(로그 주소 = 옛 거울)를 그대로 물고 떠서 지갑이 새
+거울과 맞지 않는 팩토리를 `bad_factory` 로 거절한다.
+
 1. 폐기 체인: `HARDHAT_CHAIN_ID=31338 npx hardhat node --port 8546` (다른 터미널에 상주).
 2. 로그를 폐기 체인에 배포: `CIA_ETH_ADDRESS=<ethAddress> npx hardhat run scripts/deploy_mode3_log.cjs --network revchain`
-   (`revchain` = `http://127.0.0.1:8546`, `MODE3_REV_CHAIN_RPC` 로 바꿀 수 있다). 출력의 `CIA_LOG_ADDRESS` 만 쓴다 — 같이 배포되는
-   폐기 체인 위의 거울은 쓰지 않아도 무해하다.
+   (`revchain` = `http://127.0.0.1:8546`, `MODE3_REV_CHAIN_RPC` 로 바꿀 수 있다). 이 단계에서는 `CIA_LOG_ADDRESS` 를 `.env` 에
+   넣는다. 스크립트는 한 흐름이라 폐기 체인 위에도 거울을 하나 배포하지만 무해하고, 거울 관련 `.env` 줄은 3단계의 출력으로 채운다.
 3. 거울을 응용 체인(:8545)에 배포: `CIA_ETH_ADDRESS=<ethAddress> MODE3_CANONICAL_LOG_ADDRESS=<2의 로그> MODE3_CANONICAL_CHAIN_ID=31338
    npx hardhat run scripts/deploy_mode3_log.cjs --network localhost` — 이 모드는 로그를 배포하지 않고 `canonicalChainId=31338`
-   을 가리키는 거울만 배포한다. 출력의 `MODE3_MIRROR_ADDRESS`·`CIA_MIRRORS=31337=…` 를 쓴다. (스크립트 없이 손으로 하려면
+   을 가리키는 거울만 배포한다. 이 모드의 출력은 두 노드 구성용이다 — `MODE3_MIRROR_ADDRESS`·`CIA_MIRRORS=31337=…` 와
+   "`CIA_CHAIN_RPCS` 에 `31337=http://127.0.0.1:8545` 가 있어야" 만 찍고 `CIA_LOG_ADDRESS` 줄은 찍지 않는다(캐노니컬은 2의 것). (스크립트 없이 손으로 하려면
    `Mode3Mirror(cia, 31338, <로그>, emptyRev, emptyReg)` 를 :8545 에 배포하면 같다 — 빈 root 두 값은 스크립트가 찍는다.)
 4. 기동 — `CIA_RPC_URL` 은 `.env` 에 두지 말고 프로세스마다 준다:
    ```
@@ -432,7 +440,7 @@ CIA 는 지갑 오리진을 알 방법이 없으므로 **`MODE3_WALLET_AGENT_ORI
 | 10 | 관리자 → 지갑 | (계정) 목록 행의 "슬롯 바꿔치기(시연)" → 지갑 "로그인" → 관리자 "되돌리기" → 지갑 "로그인" | 바꿔친 뒤 로그인은 `로그인 실패`(`registry_mismatch`) — 지갑이 로그인을 시도조차 하지 않는다. 되돌린 뒤 로그인은 다시 성공하고 PPID 는 그대로다 |
 | 11 | 관리자 → 지갑(전문가 보기) | (계정) 속성을 바꿔 "저장"(활성 자격증명을 물린다) → 지갑 (시연: 비밀 바꾸기) salt 를 바꾸고 범위 "다음 발급" → "적용" → "로그인"; uid 로 같은 절차 반복; "원래대로" → 정상 로그인으로 복구 → 범위 "다음 증명" 으로 salt 를 바꾸고 "적용" → "로그인" | salt·uid 덮어쓰기(발급)는 둘 다 `로그인 실패`(`user_cred_failed` — CIA 가 "bad user credential proof" 로 거절). 증명 덮어쓰기는 `demo_proof_failed` 로 구분된다. 둘 다 "원래대로" 로 덮어쓰기를 풀고 다시 로그인하면 복구된다 |
 | 12 | 관리자 | (계정) 목록의 "슬롯" 열 | testuser(`12345`)는 슬롯 0, alice(`67890`)는 슬롯 1 — 등록 순서대로 배정되고, 각자 로그인하면 서로 다른 PPID 를 받는다. V10: 계정 폐기(4·4′)를 거쳐 복구된 계정은 **새 슬롯**(다음 빈 번호)을 받고 지갑 (내 신원) 카드의 슬롯도 그것으로 바뀐다 — 은퇴한 슬롯은 다시 쓰지 않는다 |
-| 13 | 지갑 → 관리자 → RP → 관리자 → RP | (V10 거울 지연) 세션 둘을 만든 뒤 관리자 (계정) "세션" 에서 하나를 "폐기" → "게시(체인에 올리기)" → RP 에서 살아 있는 세션 "세션 재검증"·"세션 요청 보내기" → `POST /cia/admin/relay`(위 "매번: 기동 순서") → 다시 "세션 요청 보내기" → "세션 재검증" → 폐기한 세션 재검증 | 게시 직후 관리자 카드의 거울 줄이 "캐노니컬 대비 −1" — 이때 재검증은 `캐시 히트=true` 로 성공하고 옛 서명의 세션 요청도 통과한다(서비스는 거울만 본다 = **지연 창**). relay 뒤 거울 줄이 −0 이 되고, 옛 서명의 세션 요청은 `revalidate_required`, 재검증은 새 π(`캐시 히트=false`)로 성공, 폐기한 세션은 지갑 403 `revoked_session` |
+| 13 | 지갑 → 관리자 → RP → 관리자 → RP | (V10 거울 지연) 세션 둘을 만든 뒤 관리자 (계정) "세션" 에서 하나를 "폐기" → "게시(체인에 올리기)" → RP 에서 살아 있는 세션 "세션 재검증"·"세션 요청 보내기" → `POST /cia/admin/relay`(위 "매번: 기동 순서") → 다시 "세션 요청 보내기" → "세션 재검증" → 폐기한 세션 재검증 | 게시 직후 관리자 카드의 거울 줄이 "캐노니컬 대비 −1" — 이때 재검증은 `캐시 히트=true` 로 성공하고 세션 요청도 통과한다(서비스는 거울만 본다 = **지연 창**). relay 뒤 거울 줄이 −0 이 되고, 세션 요청은 `revalidate_required` — "세션 요청 보내기" 는 누를 때마다 새로 서명하므로 서명이 낡아서가 아니라 세션에 묶인 root 와 거울 root 의 비교가 실패한 것이다. 재검증은 새 π(`캐시 히트=false`)로 성공, 폐기한 세션은 지갑 403 `revoked_session` |
 | 14 | 사용자 페이지 → 체인 → 관리자 → 관리자 → RP | (V10 접수증 강제) 내 계정 페이지의 "내 계정 폐기" — 응답(전문가 보기 원문)의 `receipt` 를 복사 → 아래 "계정 폐기 접수증" 절의 콘솔 명령으로 `requestRevocation` → 관리자 "게시(체인에 올리기)" → (계정) "복구(다시 쓰게)" → RP "로그인" | `pendingSlots()` 가 `[slot]` → 게시가 그 슬롯을 0 으로 실어 통과(`published:true`) 뒤 `[]`, `isRetired(slot)=true`. 복구 뒤 로그인은 성공·**PPID 동일**, 슬롯은 새 번호 |
 
 온체인 실행은 트랜잭션마다 π 를 첨부하고 컨트랙트가 매번 검증한다(가스 실측, `Mode3Wallet.execute()` 정상 실행 — EOA 로 value 0
@@ -630,7 +638,7 @@ IdP(CIA)의 약속이다:
 ```
 
 `sig` 는 CIA 이더리움 키로 `keccak(D_RECEIPT, canonicalChainId, canonicalLogAddress, slot, epochAtRequest, requestedAt)` 에 한
-서명이다(`Mode3Log.receiptDigestFor` 와 같은 값, uid 는 넣지 않는다). 평소에는 쓰이지 않는다 — CIA 가 폐기와 함께 그 슬롯을 0 으로
+**EIP-191 personal-sign**(`"\x19Ethereum Signed Message:\n32"` 접두)이다(다이제스트는 `Mode3Log.receiptDigestFor` 와 같은 값, uid 는 넣지 않는다). 평소에는 쓰이지 않는다 — CIA 가 폐기와 함께 그 슬롯을 0 으로
 즉시 게시하기 때문이다. **CIA 가 미적댈 때** 사용자(또는 누구든)가 이것을 캐노니컬 로그에 올리면, 그 뒤 CIA 의 모든 게시(하트비트
 포함)는 그 슬롯을 0 으로 싣지 않으면 체인이 거절한다(`PendingRevocationNotApplied`) — 게시를 멈추면 root 가 늙어 전원이
 `root_too_old` 로 멈추므로 결국 따를 수밖에 없다.

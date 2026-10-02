@@ -697,6 +697,8 @@ try {
   // V10(2026-10-02 설계 §4) 접수증 강제: 계정 폐기 응답의 receipt 는 "이 슬롯은 비어 있어야 한다" 는 IdP 서명이다. 사용자가
   // 그것을 캐노니컬 로그의 requestRevocation 으로 올리면, 다음 게시는 그 슬롯을 0 으로 실어야만 통과하고 슬롯은 영구 은퇴한다.
   // 관리자가 계정을 되살리면 재발급은 새 슬롯을 받고 지갑이 따른다(각본 12 와 같은 규칙).
+  // 이 각본은 접수증 → 대기열 → 게시의 흐름을 보일 뿐 컨트랙트의 강제 자체는 아니다(정직한 CIA 는 어차피 슬롯을 0 으로 싣는다) —
+  // 0 으로 싣지 않은 게시의 거절(PendingRevocationNotApplied)은 test/Mode3Log.test.mjs 가 본다.
   await t('각본 14(V10): 접수증 강제 — 자기 폐기 receipt 를 requestRevocation 으로 올림 → /cia/publish 가 (slot,0) 을 실어 통과·isRetired → 복구 재발급은 새 슬롯', async () => {
     const pre = await loginViaRp();
     assert.equal(pre.rp?.ok, true, j(pre));

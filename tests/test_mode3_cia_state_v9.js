@@ -10,6 +10,7 @@ const v8 = () => ({ version: 8, accounts: {
 // 2026-10-02 V10: 상태가 v10 으로 올라가(접수증·은퇴 슬롯·lastPublication) v8 은 v9 를 거쳐 최종 버전까지 이행된다 — v9 단언은 그대로, 버전은 상수로 본다.
 t('CIA_STATE_VERSION ≥ 9, defaultCiaState 에 registry', () => {
   assert.ok(CIA_STATE_VERSION >= 9);
+  assert.equal(CIA_STATE_VERSION, 10);   // 버전이 바뀌면 이 숫자와 마이그레이션 단언을 함께 올린다
   assert.deepEqual(defaultCiaState().registry, { depth: 20, next: 0, leaves: {}, pendingSlots: [] });
 });
 t('v8 → v9: 슬롯은 uid 오름차순(12345 → 0, 67890 → 1), registry.next = 2, 속성은 6칸으로 0 패딩, tampered:false', () => {

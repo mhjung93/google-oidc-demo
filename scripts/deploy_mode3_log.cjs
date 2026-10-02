@@ -60,7 +60,8 @@ async function main() {
   if (!foreignLog) console.log(`  CIA_LOG_ADDRESS=${logAddress}`);
   console.log(`  MODE3_MIRROR_ADDRESS=${mirrorAddress}`);
   console.log(`  CIA_MIRRORS=${chainId}=${mirrorAddress}`);
-  console.log(`\n주의: CIA_CHAIN_RPCS 에 ${chainId}=<이 네트워크의 RPC URL> 항목이 있어야 cia.js 가 기동합니다(거울 중계·세션 발급용).`);
+  const rpcUrl = hre.network.config.url || "<이 네트워크의 RPC URL>";
+  console.log(`\n주의: CIA_CHAIN_RPCS 에 ${chainId}=${rpcUrl} 가 있어야 cia.js 가 기동합니다(거울 중계·세션 발급용).`);
   if (foreignLog) console.log(`      CIA_RPC_URL·CIA_LOG_ADDRESS 는 캐노니컬(chainId=${canonicalChainId}) 쪽 값 그대로 둡니다.`);
 }
 main().then(() => process.exit(0)).catch((e) => { console.error(e); process.exit(1); });
