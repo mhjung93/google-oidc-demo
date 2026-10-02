@@ -6,7 +6,7 @@ import hre from 'hardhat';
 import fs from 'node:fs';
 import * as snarkjs from 'snarkjs';
 import { buildValidInput } from '../tests/helpers/mode3_fixture.mjs';
-import { signPublicationV3, rootToBytes32 } from '../lib/mode3_log.js';
+import { signPublicationV3, rootToBytes32, entryHashes } from '../lib/mode3_log.js';
 import { signPayload, payloadDigest, statementDigestFields, proofToCalldata, decodeExecuteCalldata, parseExecuteReceipt, MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT } from '../lib/mode3_onchain.js';
 import { setRoot } from '../lib/mode3_set_tree.js';
 
@@ -212,6 +212,47 @@ describe('Mode3Wallet', function () {
     await (await log.publish(rev, newReg, 1n, [], [7], [rootToBytes32(424242n)], sig)).wait();
     const sp = await signedPayload(ST, wallet);
     await expect(wallet.execute(sp.payload, sp.sig, ST.a, ST.b, ST.c, ST.pub)).to.be.revertedWithCustomError(wallet, 'StaleRegistryRoot');
+  });
+
+  // V10 거울(Mode3Mirror, 설계 §2·§3·§5): 지갑의 IMode3Roots 는 캐노니컬 Mode3Log 대신 거울을 가리킬 수 있다.
+  // 지갑은 거울의 root 만 보므로, 캐노니컬이 앞서가도(거울이 뒤처져도) 영향이 없고, 거울 자체가 전진해야
+  // 거기 안 실린 옛 π 가 거절된다. 같은 CIA 서명이 캐노니컬 publish 와 거울 publish 양쪽에 유효한지도 같이 본다.
+  it('V10: 거울 위의 지갑 — 거울 root 와 같은 π 는 통과, 캐노니컬만 전진해도 거울이 그대로면 영향 없음, 거울이 전진하면 옛 π 는 StaleRevocationRoot', async () => {
+    const [deployer, cia] = await ethers.getSigners();
+    const initRev = rootToBytes32(BigInt(ST.input().revRoot));
+    const initReg = rootToBytes32(BigInt(ST.input().regRoot));
+    const log = await (await ethers.getContractFactory('Mode3Log')).deploy(cia.address, initRev, initReg);
+    const canonicalChainId = await chainId();
+    const canonicalLogAddress = await log.getAddress();
+    const mirror = await (await ethers.getContractFactory('Mode3Mirror')).deploy(cia.address, canonicalChainId, canonicalLogAddress, initRev, initReg);
+    const verifier = await (await ethers.getContractFactory('PiCredVerifier')).deploy();
+    const factory = await (await ethers.getContractFactory('Mode3WalletFactory')).deploy(
+      await verifier.getAddress(), ST.fx.arid, ST.fx.ciaPub.x, ST.fx.ciaPub.y, ST.fx.pk_trace.x, ST.fx.pk_trace.y,
+      await mirror.getAddress(), MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT);
+    const ppid = BigInt(ST.input().PPID);
+    const walletAddr = await factory.computeAddress(ppid);
+    await (await deployer.sendTransaction({ to: walletAddr, value: ethers.parseEther('1') })).wait();
+    await (await factory.deploy(ppid)).wait();
+    const wallet = await ethers.getContractAt('Mode3Wallet', walletAddr);
+
+    // (a) 거울의 초기 root 는 캐노니컬의 초기 root 와 같다(생성자에 같은 값을 넣었다) — 기존 π 가 통과한다.
+    const sp1 = await signedPayload(ST, wallet);
+    await expect(wallet.execute(sp1.payload, sp1.sig, ST.a, ST.b, ST.c, ST.pub)).to.not.be.reverted;
+
+    // 캐노니컬 로그만 새 epoch 로 전진시킨다(거울에는 아직 중계하지 않는다) — 거울은 여전히 옛 root 이므로
+    // 지갑은 영향받지 않는다(거울이 뒤처져도 검증에는 영향 없다, V10 §3).
+    const newRoot = rootToBytes32(12345n);
+    const sigCanon = await signPublicationV3(cia, { canonicalChainId, canonicalLogAddress, revRoot: newRoot, regRoot: initReg, epoch: 1n, revLeaves: [], slotIdx: [], slotLeaves: [] });
+    await (await log.publish(newRoot, initReg, 1n, [], [], [], sigCanon)).wait();
+    const sp2 = await signedPayload(ST, wallet);
+    await expect(wallet.execute(sp2.payload, sp2.sig, ST.a, ST.b, ST.c, ST.pub)).to.not.be.reverted;
+
+    // 그 캐노니컬 게시를 거울로 중계한다(같은 서명이 거울에도 유효하다) — 거울의 root 가 바뀌었으므로,
+    // 그 root 를 담지 않은 옛 π 는 이제 거절된다. 지갑은 캐노니컬이 아니라 거울만 본다는 확인.
+    const h = entryHashes({ revLeaves: [], slotIdx: [], slotLeaves: [] });
+    await (await mirror.publish(newRoot, initReg, 1n, h.hLeaves, h.hIdx, h.hSlots, sigCanon)).wait();
+    const sp3 = await signedPayload(ST, wallet);
+    await expect(wallet.execute(sp3.payload, sp3.sig, ST.a, ST.b, ST.c, ST.pub)).to.be.revertedWithCustomError(wallet, 'StaleRevocationRoot');
   });
 
   it('V9: 마스크 6비트·set_sel ≤ 6 — mask 64, set_sel 7 은 BadDisclosure', async () => {
