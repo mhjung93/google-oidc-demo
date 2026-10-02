@@ -3,7 +3,7 @@ import { expect } from 'chai';
 import hre from 'hardhat';
 import { createRevocationTree } from '../lib/mode3_revocation.js';
 import { createRegistryTree } from '../lib/mode3_registry.js';
-import { signPublicationV3, publicationDigestV3, rootToBytes32 } from '../lib/mode3_log.js';
+import { signPublicationV3, publicationDigestV3, rootToBytes32, signReceipt, receiptDigest } from '../lib/mode3_log.js';
 
 const { ethers } = hre;
 const b32 = (n) => ethers.zeroPadValue(ethers.toBeHex(n), 32);
@@ -62,5 +62,41 @@ describe('Mode3Log', () => {
     const p = { revRoot: b32(9n), regRoot: b32(8n), epoch: 3n, revLeaves: [b32(7n)], slotIdx: [4], slotLeaves: [b32(44n)] };
     expect(await log.digestFor(p.revRoot, p.regRoot, p.epoch, p.revLeaves, p.slotIdx, p.slotLeaves)).to.equal(publicationDigestV3({ ...(await canon()), ...p }));
     expect(await log.DOMAIN()).to.equal(ethers.keccak256(ethers.toUtf8Bytes('MODE3_LOG_V3')));
+  });
+
+  // 접수증 대기열 (V10 §4): IdP(cia)가 서명한 폐기 접수증을 누구나 올릴 수 있고, 다음 publish 는 그 슬롯을
+  // 0 으로 실어야 통과한다. 통과하면 슬롯은 영구 은퇴돼 다시는 0 이 아닌 값을 받지 않는다.
+  const receipt = async (wallet, slot, epochAtRequest, requestedAt) => signReceipt(wallet, { ...(await canon()), slot, epochAtRequest, requestedAt });
+  it('접수증: CIA 서명만 받고 pendingSlots 에 적는다, 중복은 무해', async () => {
+    const sig = await receipt(cia, 7, 0n, 1000n);
+    await expect(log.connect(stranger).requestRevocation(7, 0n, 1000n, sig)).to.emit(log, 'RevocationRequested').withArgs(7, 0n);
+    expect(await log.pendingSlots()).to.deep.equal([7n]);
+    await log.requestRevocation(7, 0n, 1000n, sig);   // 두 번째는 no-op
+    expect(await log.pendingSlots()).to.deep.equal([7n]);
+    await expect(log.requestRevocation(8, 0n, 1000n, await receipt(stranger, 8, 0n, 1000n))).to.be.revertedWithCustomError(log, 'BadSignature');
+    expect(await log.receiptDigestFor(7, 0n, 1000n)).to.equal(receiptDigest({ ...(await canon()), slot: 7, epochAtRequest: 0n, requestedAt: 1000n }));
+  });
+  it('강제: pending 슬롯이 0 으로 실리지 않은 publish 는 거절, 실리면 통과하고 슬롯은 은퇴', async () => {
+    await log.requestRevocation(7, 0n, 1000n, await receipt(cia, 7, 0n, 1000n));
+    const bad = { revRoot: b32(1n), regRoot: b32(2n), epoch: 1n, revLeaves: [], slotIdx: [], slotLeaves: [] };
+    await expect(log.publish(bad.revRoot, bad.regRoot, 1n, [], [], [], await sign(cia, bad))).to.be.revertedWithCustomError(log, 'PendingRevocationNotApplied').withArgs(7);
+    const bad2 = { ...bad, slotIdx: [7], slotLeaves: [b32(5n)] };   // 0 이 아닌 값으로는 안 된다
+    await expect(log.publish(bad2.revRoot, bad2.regRoot, 1n, [], [7], [b32(5n)], await sign(cia, bad2))).to.be.revertedWithCustomError(log, 'PendingRevocationNotApplied').withArgs(7);
+    const ok = { ...bad, slotIdx: [7], slotLeaves: [b32(0n)] };
+    await expect(log.publish(ok.revRoot, ok.regRoot, 1n, [], [7], [b32(0n)], await sign(cia, ok))).to.emit(log, 'SlotRetired').withArgs(7, 1n);
+    expect(await log.pendingSlots()).to.deep.equal([]);
+    expect(await log.isRetired(7)).to.equal(true);
+    const reuse = { ...bad, epoch: 2n, slotIdx: [7], slotLeaves: [b32(9n)] };
+    await expect(log.publish(reuse.revRoot, reuse.regRoot, 2n, [], [7], [b32(9n)], await sign(cia, reuse))).to.be.revertedWithCustomError(log, 'SlotIsRetired').withArgs(7);
+    const zeroAgain = { ...bad, epoch: 2n, slotIdx: [7], slotLeaves: [b32(0n)] };   // 0 으로 다시 쓰는 건 허용(멱등)
+    await log.publish(zeroAgain.revRoot, zeroAgain.regRoot, 2n, [], [7], [b32(0n)], await sign(cia, zeroAgain));
+  });
+  it('은퇴된 슬롯에 대한 접수증은 no-op', async () => {
+    await log.requestRevocation(7, 0n, 1000n, await receipt(cia, 7, 0n, 1000n));
+    const ok = { revRoot: b32(1n), regRoot: b32(2n), epoch: 1n, revLeaves: [], slotIdx: [7], slotLeaves: [b32(0n)] };
+    await log.publish(ok.revRoot, ok.regRoot, 1n, [], [7], [b32(0n)], await sign(cia, ok));
+    expect(await log.isRetired(7)).to.equal(true);
+    await expect(log.requestRevocation(7, 1n, 2000n, await receipt(cia, 7, 1n, 2000n))).to.not.emit(log, 'RevocationRequested');
+    expect(await log.pendingSlots()).to.deep.equal([]);
   });
 });
