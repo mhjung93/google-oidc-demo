@@ -307,5 +307,41 @@ await t('게시 경합: 두 사용자를 동시에 credential 폐기해도 두 �
   } finally { await cia7.stop(); }
 });
 
+// ---- 은퇴 슬롯 방어(V10 Task 6, Task 5 리뷰 이월): 옛 백업을 복원하면 체인에선 이미 은퇴한 슬롯(isRetired)의 0 아닌 리프가
+// 되살아나고, 기동 대조(epoch 어긋남)가 그것을 pendingSlots 로 다시 싣는다. 그대로 올리면 SlotIsRetired 로 매번 거절돼 root 가
+// 늙는다 — 게시 직전에 그 슬롯을 0 으로 바꿔 실어야 한다. 이 상태는 어느 관리자 엔드포인트로도 만들 수 없어(tamper 는 활성
+// 자격증명이 필요하고 계정 폐기 뒤 재발급은 새 슬롯을 받는다) 상태 파일을 은퇴 전 시점으로 되돌려 재현한다. ----
+await t('은퇴 슬롯 방어: 은퇴 전 백업으로 재기동해도 은퇴 슬롯은 0 으로 실려 게시가 통과하고 계정은 폐기 상태가 된다', async () => {
+  const cia8 = await startIsolatedCia();
+  let backup, ciaKey, logAddr, slot;
+  try {
+    const v = await cia8.registerUser('12345', 'password123');
+    const c = await buildUserCredRequest({ uid: 12345n, s_u: v.s_u, r_u: v.r_u, sk_u: v.sk_u, attrs: ATTRS });
+    assert.equal((await cia8.post('/cia/user_cred', c.body)).status, 201);
+    backup = JSON.parse(fs.readFileSync(path.join(cia8.dir, 'cia_state.json'), 'utf8'));   // 은퇴 전: 슬롯 0 = 0 아닌 리프
+    const rv = await cia8.post('/cia/account/self_revoke', { uid: '12345', pwd: 'password123' });
+    assert.equal(rv.status, 200, j(rv.body));
+    const rc = rv.body.receipt; slot = rc.slot;
+    const logW = new ethers.Contract(cia8.logAddress, MODE3_LOG_ABI, await provider.getSigner(0));
+    await (await logW.requestRevocation(rc.slot, rc.epochAtRequest, rc.requestedAt, rc.sig)).wait();
+    assert.equal((await cia8.adminPost('/cia/publish', {})).status, 200);
+    const log8 = new ethers.Contract(cia8.logAddress, MODE3_LOG_ABI, provider);
+    assert.equal(await log8.isRetired(slot), true);
+    ciaKey = cia8.ciaEthWallet.privateKey; logAddr = cia8.logAddress;
+  } finally { await cia8.stop(); }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-retired-'));
+  const stateFile = path.join(dir, 'cia_state.json');
+  fs.writeFileSync(stateFile, JSON.stringify(backup));
+  const cia9 = await startIsolatedCia({ env: { CIA_STATE_FILE: stateFile, CIA_LOG_ADDRESS: logAddr, CIA_ETH_PRIVATE_KEY: ciaKey } });
+  try {
+    const log9 = new ethers.Contract(logAddr, MODE3_LOG_ABI, provider);
+    const s = (await cia9.get('/cia/state')).body;
+    assert.equal(s.pendingSlots, 0, `기동 자동 게시가 SlotIsRetired 에 막혀 백로그가 남았다\n${cia9.log().split('\n').filter((l) => /cia\]/.test(l)).join('\n')}`);
+    assert.equal(await log9.regRoot(), b32(s.regRoot));
+    const acct = (await cia9.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === '12345');
+    assert.equal(acct.registryLeaf, '0'); assert.equal(acct.disabled, true); assert.equal(acct.activeCf_u, null);
+  } finally { await cia9.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 provider.destroy();
 process.exit(failed === 0 ? 0 : 1);

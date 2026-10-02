@@ -80,6 +80,7 @@ CHAIN=(
   tests/test_cia_startup.mjs
   tests/test_cia_issue_race.mjs
   tests/test_cia_registry.mjs
+  tests/test_cia_mirror_relay.mjs
   tests/test_cia_opening.mjs
   tests/test_mode3_session_revoke.mjs
   tests/test_mode3_wallet.mjs

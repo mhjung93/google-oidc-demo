@@ -40,8 +40,8 @@ export async function startIsolatedCia(opts = {}) {
   // 고정한다. dotenv 는 이미 있는 키(빈 문자열 포함)를 덮지 않으므로 빈 문자열이 "기본값 사용"이다(CIA_CHAIN_RPCS 가 비면
   // chainId 는 기동 시 RPC 에서 읽은 값 하나). 하트비트는 끈다 — 테스트가 기대하지 않은 epoch 증가·블록 소비를 막는다.
   // 하트비트 테스트는 extraEnv 로 다시 켠다. 옛 키(TTL·그리드·skew)는 CIA 가 경고만 내고 무시한다.
-  // CIA_MIRRORS·CIA_CHAIN_RPCS·CIA_MIRROR_HEARTBEAT_BLOCKS 는 V10 거울 중계용(설계 §5) — cia.js 가 아직 읽지
-  // 않는 동안은 무시된다(Task 6 에서 읽는다).
+  // CIA_MIRRORS·CIA_CHAIN_RPCS·CIA_MIRROR_HEARTBEAT_BLOCKS 는 V10 거울 중계용(설계 §5). 릴레이 주기는 기본 '0'(끔) —
+  // 거울 갱신을 보는 테스트(test_cia_mirror_relay.mjs)만 extraEnv 로 켠다(2026-10-02 Task 6).
   const env = {
     ...process.env,
     CIA_RPC_URL: rpcUrl,

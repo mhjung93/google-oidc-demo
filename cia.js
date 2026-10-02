@@ -25,7 +25,7 @@ import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { credMessageV5, compressPoint, randomScalar, normalizeAttrs, ATTR_SLOTS } from './lib/mode3_credential.js';
 import { sessionLeaf, createRevocationTree } from './lib/mode3_revocation.js';
 import { isValidPoint, pointFromStrings, verifyUserCred, parseUserCredProof, userCredRequestMessage, issueRequestMessageV4, attrsRequestMessage, revokeSessionMessage, registerMessage } from './lib/mode3_issuance.js';
-import { MODE3_LOG_ABI, rootToBytes32, signPublicationV3, entryHashes, signReceipt } from './lib/mode3_log.js';
+import { MODE3_LOG_ABI, MODE3_MIRROR_ABI, rootToBytes32, signPublicationV3, entryHashes, signReceipt } from './lib/mode3_log.js';
 import { createRegistryTree, registryLeaf } from './lib/mode3_registry.js';
 import { signRpCert } from './lib/mode3_rp_cert.js';
 import { isTracePoint, createShare, combinePublicKey, partialDecrypt, combineDecrypt, resolveTagPlaintext, proveShare } from './lib/mode3_trace.js';
@@ -67,6 +67,21 @@ for (const item of (process.env.CIA_CHAIN_RPCS || '').split(',').map((s) => s.tr
   CHAIN_RPCS.set(id, item.slice(i + 1).trim());
 }
 const chainProviders = new Map();   // chainid → JsonRpcProvider (재사용)
+// V10(2026-10-02 설계 §5 결정 3) 거울 릴레이. "chainid=mirrorAddress,…". 각 chainid 의 RPC 는 CIA_CHAIN_RPCS 에서 찾는다 —
+// 거울 주소만 있고 그 체인을 읽을 길이 없으면 거울이 늙어 그 체인이 전원 Stale 로 멈추므로 기동부터 막는다.
+// 주기 H_X(CIA_MIRROR_HEARTBEAT_BLOCKS)는 거울 체인 X 의 블록 기준이다(기본 50, '0' = 끔 — 격리 하네스 기본값).
+const MIRROR_HEARTBEAT_BLOCKS = envBig('CIA_MIRROR_HEARTBEAT_BLOCKS', 50);
+const MIRROR_POLL_MS = Number(process.env.CIA_MIRROR_POLL_MS) || 5000;
+const MIRROR_SPECS = [];   // [{ chainStr, address }] — provider·서명자는 키를 읽은 뒤 initMirrors() 가 붙인다
+for (const item of (process.env.CIA_MIRRORS || '').split(',').map((s) => s.trim()).filter(Boolean)) {
+  const i = item.indexOf('=');
+  if (i <= 0) throw new Error(`CIA_MIRRORS 항목 "${item}" 은 chainid=address 형식이어야 한다`);
+  let chainStr;
+  try { chainStr = BigInt(item.slice(0, i).trim()).toString(); } catch { throw new Error(`CIA_MIRRORS 의 chainid "${item.slice(0, i)}" 은 정수가 아니다`); }
+  const address = ethers.getAddress(item.slice(i + 1).trim());
+  if (!CHAIN_RPCS.has(chainStr)) throw new Error(`CIA_MIRRORS 의 chainid ${chainStr} 에 대한 RPC 가 CIA_CHAIN_RPCS 에 없다`);
+  MIRROR_SPECS.push({ chainStr, address });
+}
 // 자기 provider(RPC_URL)의 chainId — health 의 chain.id. head 를 읽는 provider 와 같은 체인이어야 하므로
 // CHAIN_RPCS 의 첫 키를 쓰지 않는다(여러 체인이 설정돼 있으면 어긋난다). 기동 시 한 번 읽는다.
 let selfChainId = null;
@@ -300,7 +315,7 @@ function setSlot(uid, leaf) {
  *  하트비트 — 꺼져 있으면 사실상 다음 변경 — 까지 게시되지 않는다. 기다렸다 다시 부르면 그 백로그를 이 호출이
  *  그대로 집어간다. */
 async function publishSafely() {
-  if (publishing) { try { await publishing; } catch { /* 먼저 가던 게시의 실패는 그쪽 책임 — 여기서는 내 몫만 새로 시도 */ } }
+  await waitPublishing();
   try { return await publishNow(); }
   catch (e) { console.warn(`[cia] 즉시 게시 실패(다음 하트비트가 재시도): ${e.message}`); return { published: false, error: e.message }; }
 }
@@ -349,9 +364,9 @@ app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_
 app.get('/account', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_account.html')));
 
 app.get('/cia/public_keys', (req, res) => {
-  // V10: canonicalChainId = 게시 로그가 있는 체인(selfChainId 와 같은 provider). mirrors 는 거울 릴레이(Task 6) 전까지 비어 있다.
+  // V10: canonicalChainId = 게시 로그가 있는 체인(selfChainId 와 같은 provider). mirrors = CIA_MIRRORS(릴레이 대상 거울, 2026-10-02 Task 6).
   res.json({ pk_CIA: S(ciaPub), ethAddress: ethWallet.address, heartbeatBlocks: Number(HEARTBEAT_BLOCKS), chainIds: [...CHAIN_RPCS.keys()], logAddress: LOG_ADDRESS,
-    canonicalChainId: selfChainId, mirrors: [] });
+    canonicalChainId: selfChainId, mirrors: MIRRORS.map(({ chainStr, address }) => ({ chainId: chainStr, address })) });
 });
 
 // 상태 엔드포인트(설계 2026-09-25 §1) — 민감정보 없음, 승인된 서비스·지갑 오리진에만 CORS.
@@ -368,9 +383,10 @@ app.get('/mode3/health', async (req, res) => {
     chain = { id: selfChainId ?? '', head: head.toString() };
     last = lastPub === null || lastPub === undefined ? null : lastPub.toString();
   } catch { /* 체인 없음·응답 없음 */ }
+  const mirrors = await readMirrorsHealth();   // 거울마다 따로 1.2초 예산(병렬) — 실패는 null 항목
   res.json(buildAaHealth({ now: new Date().toISOString(), chain, root: tree.getRoot().toString(), epoch: state.epoch, lastPublishedBlock: last, heartbeatBlocks: Number(HEARTBEAT_BLOCKS),
     pendingLeaves: state.pending.length, pendingRps: Object.values(state.rps).filter((r) => r.status === 'pending').length, pendingOpenings: state.openings.filter((o) => o.status === 'pending').length,
-    accounts: Object.keys(state.accounts).length, walletOrigin: WALLET_AGENT_ORIGIN, rpOrigins }));
+    accounts: Object.keys(state.accounts).length, walletOrigin: WALLET_AGENT_ORIGIN, rpOrigins, mirrors }));
 });
 
 // §3(2026-09-16) 서비스 등록 — pending 으로 받고 운영자가 승인하면 CIA 조각을 만들어 조합 키 pk_trace 와 cert_s(V2)를
@@ -731,6 +747,13 @@ app.get('/cia/admin/sessions', requireAdmin, async (req, res) => {
 // { published: false } 를 돌려줘, 그 사이 들어온 슬롯·폐기 변경이 다음 하트비트(또는 그 다음 변경)까지, 하트비트가
 // 꺼져 있으면 사실상 영영 게시되지 않을 수 있었다(조용한 로컬 체인에서 폐기된 자격증명이 계속 유효하게 남는다).
 let publishing = null;
+/** 진행 중인 게시(또는 같은 체인 거울 tx, relayMirror)가 **없어질 때까지** 기다린다. 한 번만 기다리면(옛 `if`) 깨어난 순간
+ *  같은 promise 를 기다리던 다른 대기자(V10 거울 릴레이)가 먼저 잠금을 잡아 내 publishNow 가 409 를 맞을 수 있다(2026-10-02,
+ *  릴레이가 잠금을 빌리면서 생긴 경합). 반환 직후 같은 동기 구간에서 publishNow 를 부르면 그 사이 끼어들 틈이 없다.
+ *  먼저 가던 쪽의 실패는 그쪽 책임 — 여기서는 삼킨다. */
+async function waitPublishing() {
+  while (publishing) { try { await publishing; } catch { /* 그쪽 catch 가 이미 경고를 냈다 */ } }
+}
 /**
  * root 게시. heartbeat=true 면 pending 이 비어 있어도 같은 root 를 새 epoch 로 올린다(설계 §4.5) — 컨트랙트 조건은 epoch
  * 증가뿐이라 그대로다. 한 번에 하나만 돈다: 둘이 겹치면 각자 pending 을 자기 개수만큼 앞에서 잘라 그 사이 들어온 revoke 의
@@ -769,6 +792,23 @@ async function publishNow({ heartbeat = false } = {}) {
       state.registry.pendingSlots.push({ index: slot, leaf: '0' });
     }
     if (pendingOnChain.length) { console.warn(`[cia] 접수증 대기열 슬롯 ${pendingOnChain.join(',')} 을 0 으로 싣고 은퇴시킨다`); persist(); }
+    // V10(2026-10-02 Task 6, Task 5 리뷰 이월) 은퇴 슬롯 방어. 로그는 isRetired 슬롯에 0 아닌 리프를 실으면 SlotIsRetired 로
+    // 거절한다 — 그 항목이 백로그에 남아 있는 한 하트비트까지 매번 막혀 root 가 늙는다. 정직한 런타임에선 은퇴 슬롯을 다시
+    // 쓰지 않지만(계정 폐기가 로컬에서도 슬롯을 은퇴시킨다) 옛 백업 복원은 은퇴 전의 0 아닌 리프를 되살리고, 기동 대조가 그것을
+    // pendingSlots 로 다시 싣는다. 그래서 이번 묶음의 0 아닌 슬롯만(묶음은 작다 — 슬롯당 한 번) isRetired 를 읽어, 은퇴했으면
+    // 대기열 따르기와 똑같이 처리한다: 계정 폐기·은퇴 표시, 로컬 트리 0, 그 슬롯 항목을 (slot, 0) 하나로. 은퇴는 접수증(계정
+    // 폐기)에서만 생기므로 계정을 폐기 상태로 돌리는 것이 체인과 맞는다.
+    const nonZeroSlots = [...new Set(state.registry.pendingSlots.filter((e) => BigInt(e.leaf) !== 0n).map((e) => e.index))];
+    const retiredOnChain = [];
+    for (const slot of nonZeroSlots) if (await log.isRetired(slot)) retiredOnChain.push(slot);
+    for (const slot of retiredOnChain) {
+      const entry = Object.entries(state.accounts).find(([, a]) => a.slot === slot);
+      if (entry) { const [uid, a] = entry; a.disabled = true; retireActiveCred(uid); a.slotRetired = true; }
+      registry.set(slot, 0n); delete state.registry.leaves[slot];
+      state.registry.pendingSlots = state.registry.pendingSlots.filter((e) => e.index !== slot);
+      state.registry.pendingSlots.push({ index: slot, leaf: '0' });
+    }
+    if (retiredOnChain.length) { console.warn(`[cia] 체인에서 이미 은퇴한 슬롯 ${retiredOnChain.join(',')} 에 0 아닌 리프가 실려 있어 0 으로 바꿔 싣는다(옛 백업 복원?)`); persist(); }
     const noRev = state.pending.length === 0, noSlots = state.registry.pendingSlots.length === 0;
     if (noRev && noSlots && !heartbeat) return { published: false, heartbeat: false, epoch: state.epoch, root: tree.getRoot().toString(), regRoot: registry.root().toString() };
     const leaves = state.pending.map(rootToBytes32);
@@ -804,7 +844,7 @@ async function heartbeatTick() {
   // head-last 를 다시 재서 하트비트가 여전히 필요한지 다시 판단한다. 예전에는 여기서 바로 돌아가, 그 사이 끝난
   // 게시가 이미 비운 pending 을 모르고 다음 HEARTBEAT_POLL_MS 를 통째로 날렸다(틱 자체가 막힌 건 아니지만, 한
   // 틱만큼 재게시가 늦어질 수 있었다 — publishSafely 쪽의 진짜 유실과는 결이 다르지만 같은 변수를 쓰므로 함께 고친다).
-  if (publishing) { try { await publishing; } catch { /* 그 게시의 실패는 그쪽 catch 가 이미 경고를 냈다 */ } }
+  await waitPublishing();
   try {
     const log = new ethers.Contract(LOG_ADDRESS, MODE3_LOG_ABI, ethWallet);
     const [head, last] = await Promise.all([ethWallet.provider.getBlockNumber(), log.lastPublishedBlock()]);
@@ -812,6 +852,101 @@ async function heartbeatTick() {
     const r = await publishNow({ heartbeat: true });
     console.log(`[cia] 하트비트 게시: epoch ${r.epoch}, 리프 ${r.leaves.length}개, head ${head}`);
   } catch (e) { console.warn(`[cia] 하트비트 실패: ${e.message}`); }
+}
+
+// ---- V10 거울 릴레이(2026-10-02 설계 §5 결정 3) ----
+// 거울은 캐노니컬의 마지막 게시(서명 포함)를 그대로 받는다 — 서명이 V3 다이제스트라 같은 서명이 거울에도 유효하다.
+// 주기 H_X 블록(거울 체인 X 기준)마다 올린다. 캐노니컬에 새 epoch 가 없으면 캐노니컬 하트비트를 먼저 올려 새 epoch 를
+// 만든다 — 거울은 epoch 단조 증가만 받으므로 같은 게시를 두 번 올릴 수 없다.
+let MIRRORS = [];   // [{ chainStr, address, provider, contract, sameChain }]
+/** 키를 읽고 loadState 가 selfChainId 를 정한 뒤에 부른다. 서명자는 ethWallet 과 같은 키를 거울 체인 provider 에 붙인 것이다.
+ *  거울 체인이 캐노니컬 체인과 같으면(데모·테스트의 :8545) provider·서명자를 그대로 쓰고 sameChain 으로 표시한다 —
+ *  같은 키·같은 체인이라 게시 tx 와 nonce 가 겹치지 않게 sendMirrorTx 가 publishing 잠금을 빌린다. */
+function initMirrors() {
+  MIRRORS = MIRROR_SPECS.map(({ chainStr, address }) => {
+    const sameChain = chainStr === selfChainId || CHAIN_RPCS.get(chainStr) === RPC_URL;
+    const signer = sameChain ? ethWallet : new ethers.Wallet(ethWallet.privateKey, providerFor(chainStr));
+    return { chainStr, address, provider: signer.provider, contract: new ethers.Contract(address, MODE3_MIRROR_ABI, signer), sameChain };
+  });
+}
+/** 거울 publish 의 revert 가 EpochNotIncreasing(누군가 이미 같은·더 새 epoch 를 올렸다)인지. ethers v6 가 붙이는 위치가 경우마다
+ *  달라(e.revert, e.data, 메시지) 셋 다 본다. */
+function isEpochNotIncreasing(m, e) {
+  if (e?.revert?.name === 'EpochNotIncreasing') return true;
+  try { if (e?.data && m.contract.interface.parseError(e.data)?.name === 'EpochNotIncreasing') return true; } catch { /* 다른 에러 데이터 */ }
+  return /EpochNotIncreasing/.test(String(e?.shortMessage ?? '') + ' ' + String(e?.message ?? e));
+}
+async function sendMirrorTx(m, lp) {
+  const send = async () => {
+    const tx = await m.contract.publish(lp.revRoot, lp.regRoot, lp.epoch, lp.hLeaves, lp.hIdx, lp.hSlots, lp.sig);
+    await tx.wait();
+    return tx.hash;
+  };
+  if (!m.sameChain) return send();
+  // 같은 체인·같은 키: 동시에 나간 게시 tx 와 같은 nonce 를 집지 않게 게시 잠금을 잠깐 빌린다(대기자는 waitPublishing 으로 재시도).
+  await waitPublishing();
+  publishing = send();
+  try { return await publishing; } finally { publishing = null; }
+}
+async function relayMirror(m, { force = false } = {}) {
+  const [head, mEpoch, mLast] = await Promise.all([m.provider.getBlockNumber(), m.contract.epoch(), m.contract.lastPublishedBlock()]);
+  const out = (epoch, txHash, skipped) => ({ chainId: m.chainStr, epoch: String(epoch), txHash, skipped });
+  if (!force && BigInt(head) - BigInt(mLast) < MIRROR_HEARTBEAT_BLOCKS) return out(mEpoch, null, true);
+  // 올릴 새 epoch 가 없으면(첫 기동·크래시로 lastPublication 이 없음, 거울이 이미 따라잡음, 옛 백업이라 마지막 게시 기록이
+  // 체인 epoch 보다 뒤처짐) 캐노니컬 하트비트를 먼저 올린다. 진행 중인 게시가 끝나면 다시 판단한다 — 그 게시가 새 epoch 를 줬을 수 있다.
+  const stale = () => !state.lastPublication || BigInt(state.lastPublication.epoch) <= BigInt(mEpoch) || Number(state.lastPublication.epoch) !== state.epoch;
+  if (stale()) {
+    await waitPublishing();
+    if (stale()) await publishNow({ heartbeat: true });
+  }
+  const lp = state.lastPublication;
+  try {
+    return out(lp.epoch, await sendMirrorTx(m, lp), false);
+  } catch (e) {
+    if (isEpochNotIncreasing(m, e)) return out(lp.epoch, null, true);   // 다른 릴레이어가 먼저 올렸다 — 이미 갱신됨(§5)
+    throw e;
+  }
+}
+// 릴레이는 한 번에 하나(틱끼리, 틱과 관리자 relay 사이) — 같은 거울에 같은 epoch 를 두 번 보내지 않게.
+let relaying = null;
+async function relayAll({ force = false } = {}) {
+  while (relaying) { try { await relaying; } catch { /* */ } }
+  relaying = (async () => {
+    const res = [];
+    for (const m of MIRRORS) {
+      try { res.push(await relayMirror(m, { force })); }
+      catch (e) {
+        console.warn(`[cia] 거울 ${m.chainStr}(${m.address}) 릴레이 실패: ${e.message}`);
+        res.push({ chainId: m.chainStr, epoch: null, txHash: null, skipped: true, error: e.message });
+      }
+    }
+    return res;
+  })();
+  try { return await relaying; } finally { relaying = null; }
+}
+/** 주기 틱 — setInterval 콜백이라 절대 던지지 않는다. 앞 틱(또는 관리자 relay)이 아직 돌면 이번 틱은 건너뛴다. */
+async function relayTick() {
+  if (!LOG_ADDRESS || MIRRORS.length === 0 || relaying) return;
+  try { await relayAll(); } catch (e) { console.warn(`[cia] 거울 릴레이 틱 실패: ${e.message}`); }
+}
+// 테스트·데모용: 주기를 무시하고 모든 거울을 지금 갱신한다. 거울 하나라도 실패하면 502(나머지 결과는 그대로 싣는다).
+app.post('/cia/admin/relay', requireAdmin, async (req, res) => {
+  if (!LOG_ADDRESS) return res.status(503).json({ error: 'CIA_LOG_ADDRESS not configured' });
+  try {
+    const mirrors = await relayAll({ force: true });
+    res.status(mirrors.some((m) => m.error) ? 502 : 200).json({ mirrors });
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+/** 건강 정보용 거울 읽기. 실패한 거울은 빼지 않고 null 로 낸다 — "거울이 안 보인다" 자체가 알려야 할 상태다. */
+async function readMirrorsHealth() {
+  return Promise.all(MIRRORS.map(async (m) => {
+    try {
+      const [head, epoch, last] = await bounded(Promise.all([m.provider.getBlockNumber(), m.contract.epoch(), m.contract.lastPublishedBlock()]), 1200);
+      return { chainId: m.chainStr, address: m.address, epoch: epoch.toString(), lastPublishedBlock: last.toString(), rootAge: Number(BigInt(head) - BigInt(last)), behind: state.epoch - Number(epoch) };
+    } catch {
+      return { chainId: m.chainStr, address: m.address, epoch: null, lastPublishedBlock: null, rootAge: null, behind: null };
+    }
+  }));
 }
 
 /** V8: 만료된 세션 기록 삭제(리프는 남는다 — 설계 §6). 체인별 head 는 한 번만 읽는다.
@@ -1020,11 +1155,13 @@ poseidon = await buildPoseidon();
 F = poseidon.F;
 loadOrCreateKeys();
 await loadState();
+initMirrors();
 if (HEARTBEAT_BLOCKS > 0n) {
   const hb = setInterval(heartbeatTick, HEARTBEAT_POLL_MS);
   hb.unref();
 }
+if (MIRRORS.length && MIRROR_HEARTBEAT_BLOCKS > 0n) setInterval(relayTick, MIRROR_POLL_MS).unref();
 // RP·지갑 에이전트와 같이 루프백에만 묶는다 — 관리자·사용자 페이지와 발급 경로를 LAN 에 노출하지 않는다.
 app.listen(PORT, '127.0.0.1', () => {
-  console.log(`Mode 3 CIA running at http://127.0.0.1:${PORT} (log=${LOG_ADDRESS ?? 'none'}, heartbeat=${HEARTBEAT_BLOCKS}, chains=${[...CHAIN_RPCS.keys()].join(',') || 'none'}, vkey=${fs.existsSync(VKEY_PATH) ? 'ok' : 'missing'}, registry=${registry.entries().length})`);
+  console.log(`Mode 3 CIA running at http://127.0.0.1:${PORT} (log=${LOG_ADDRESS ?? 'none'}, heartbeat=${HEARTBEAT_BLOCKS}, mirrors=${MIRRORS.map((m) => m.chainStr).join(',') || 'none'}(H=${MIRROR_HEARTBEAT_BLOCKS}), chains=${[...CHAIN_RPCS.keys()].join(',') || 'none'}, vkey=${fs.existsSync(VKEY_PATH) ? 'ok' : 'missing'}, registry=${registry.entries().length})`);
 });
