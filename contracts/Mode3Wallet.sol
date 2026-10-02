@@ -2,12 +2,13 @@
 pragma solidity ^0.8.24;
 
 import "./PiCredVerifier.sol";
-import "./Mode3Log.sol";
+import "./IMode3Roots.sol";
 
 /// @title Mode 3 PPID 계정 — 설계 2026-09-18 §5.3 (V9: 등록부 — 2026-10-01-mode3-v9-registry-design.md §6)
 /// @notice PPIDWallet(Mode 2)과 같은 구조다. 다른 점: 검증자가 pi_cred(공개 입력 30개), 폐기 근거가 Mode3Log(폐기 root·등록부 root + 게시 블록),
 ///   성명의 arid·pk_CIA·pk_trace 를 immutable 로 고정한다(서비스 검증기 lib/mode3_rp.js 의 d 단계와 같다), 트레이스 태그와
 ///   allowAgent 를 이벤트로 남긴다. 검사 순서는 싼 것부터다(§5.3).
+/// @dev 폐기 근거 = IMode3Roots(캐노니컬 로그 또는 거울) — V10 폐기 전용 체인 설계 §2.
 contract Mode3Wallet {
     uint256 public immutable ppid;
     uint256 public immutable arid;
@@ -16,7 +17,7 @@ contract Mode3Wallet {
     uint256 public immutable pkTraceX;
     uint256 public immutable pkTraceY;
     PiCredVerifier public immutable verifier;
-    Mode3Log public immutable log;
+    IMode3Roots public immutable log;
     uint64 public immutable maxRootAge;   // 블록. root 가 이보다 오래됐으면 CIA 가 죽었거나 withholding 이다 — fail-closed
     uint64 public immutable maxLifetime;  // 블록. 지갑이 정한 max_height 의 상한(설계 §3.2 갱신) — 없으면 만료 없는 성명이 된다
     uint256 public nonce;
@@ -58,7 +59,7 @@ contract Mode3Wallet {
         ppid = _ppid; arid = _arid;
         pkCIAX = _pkCIAX; pkCIAY = _pkCIAY; pkTraceX = _pkTraceX; pkTraceY = _pkTraceY;
         verifier = PiCredVerifier(_verifier);
-        log = Mode3Log(_log);
+        log = IMode3Roots(_log);
         maxRootAge = _maxRootAge;
         maxLifetime = _maxLifetime;
     }

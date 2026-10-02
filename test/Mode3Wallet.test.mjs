@@ -6,7 +6,7 @@ import hre from 'hardhat';
 import fs from 'node:fs';
 import * as snarkjs from 'snarkjs';
 import { buildValidInput } from '../tests/helpers/mode3_fixture.mjs';
-import { signPublicationV2, rootToBytes32 } from '../lib/mode3_log.js';
+import { signPublicationV3, rootToBytes32 } from '../lib/mode3_log.js';
 import { signPayload, payloadDigest, statementDigestFields, proofToCalldata, decodeExecuteCalldata, parseExecuteReceipt, MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT } from '../lib/mode3_onchain.js';
 import { setRoot } from '../lib/mode3_set_tree.js';
 
@@ -186,7 +186,7 @@ describe('Mode3Wallet', function () {
   it('root 가 게시로 바뀌면 옛 π 는 StaleRevocationRoot', async () => {
     const { wallet, log, cia } = await deployStack(ST);
     const newRoot = rootToBytes32(12345n);
-    const sig = await signPublicationV2(cia, { logAddress: await log.getAddress(), revRoot: newRoot, regRoot: await log.regRoot(), epoch: 1n, revLeaves: [], slotIdx: [], slotLeaves: [] });
+    const sig = await signPublicationV3(cia, { canonicalChainId: await chainId(), canonicalLogAddress: await log.getAddress(), revRoot: newRoot, regRoot: await log.regRoot(), epoch: 1n, revLeaves: [], slotIdx: [], slotLeaves: [] });
     await (await log.publish(newRoot, await log.regRoot(), 1n, [], [], [], sig)).wait();
     const sp = await signedPayload(ST, wallet);
     await expect(wallet.execute(sp.payload, sp.sig, ST.a, ST.b, ST.c, ST.pub)).to.be.revertedWithCustomError(wallet, 'StaleRevocationRoot');
@@ -199,7 +199,7 @@ describe('Mode3Wallet', function () {
     await expect(wallet.execute(sp.payload, sp.sig, ST.a, ST.b, ST.c, ST.pub)).to.be.revertedWithCustomError(wallet, 'RootTooOld');
     const revRoot = await log.revRoot();
     const regRoot = await log.regRoot();
-    const sig = await signPublicationV2(cia, { logAddress: await log.getAddress(), revRoot, regRoot, epoch: 1n, revLeaves: [], slotIdx: [], slotLeaves: [] });
+    const sig = await signPublicationV3(cia, { canonicalChainId: await chainId(), canonicalLogAddress: await log.getAddress(), revRoot, regRoot, epoch: 1n, revLeaves: [], slotIdx: [], slotLeaves: [] });
     await (await log.publish(revRoot, regRoot, 1n, [], [], [], sig)).wait();
     await expect(wallet.execute(sp.payload, sp.sig, ST.a, ST.b, ST.c, ST.pub)).to.not.be.reverted;
   });
@@ -208,7 +208,7 @@ describe('Mode3Wallet', function () {
     const { wallet, log, cia } = await deployStack(ST);
     const rev = await log.revRoot();
     const newReg = rootToBytes32(777n);
-    const sig = await signPublicationV2(cia, { logAddress: await log.getAddress(), revRoot: rev, regRoot: newReg, epoch: 1n, revLeaves: [], slotIdx: [7], slotLeaves: [rootToBytes32(424242n)] });
+    const sig = await signPublicationV3(cia, { canonicalChainId: await chainId(), canonicalLogAddress: await log.getAddress(), revRoot: rev, regRoot: newReg, epoch: 1n, revLeaves: [], slotIdx: [7], slotLeaves: [rootToBytes32(424242n)] });
     await (await log.publish(rev, newReg, 1n, [], [7], [rootToBytes32(424242n)], sig)).wait();
     const sp = await signedPayload(ST, wallet);
     await expect(wallet.execute(sp.payload, sp.sig, ST.a, ST.b, ST.c, ST.pub)).to.be.revertedWithCustomError(wallet, 'StaleRegistryRoot');

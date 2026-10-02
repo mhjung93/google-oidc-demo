@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/// @title Mode 3 로그 V2 — 폐기 트리 root 와 사용자 자격증명 등록부 root 를 한 트랜잭션에 게시한다(설계 2026-10-01 §4).
+import "./IMode3Roots.sol";
+
+/// @title Mode 3 로그 V3 — 폐기 트리 root 와 사용자 자격증명 등록부 root 를 한 트랜잭션에 게시한다(설계 2026-10-01 §4,
+///   V10 폐기 전용 체인 설계 §2 의 chainid 바인딩).
 /// @notice RevocationLog(V1)과 같은 서명 규칙(EIP-191, CIA 키, low-s)·epoch 증가 규칙. 두 root 가 같은 블록에 게시되므로
 ///   root 나이(lastPublishedBlock)는 하나다. 지갑은 Revoked 이벤트로 폐기 트리를, SlotUpdated 이벤트로 등록부를 복원한다.
-contract Mode3Log {
-    bytes32 public constant DOMAIN = keccak256("MODE3_LOG_V2");
+///   IMode3Roots 를 구현해 검증자(Mode3Wallet)가 캐노니컬 로그와 거울(Mode3Mirror)을 같은 타입으로 읽는다.
+contract Mode3Log is IMode3Roots {
+    bytes32 public constant DOMAIN = keccak256("MODE3_LOG_V3");
 
     address public immutable cia;
     bytes32 public revRoot;
@@ -27,12 +31,14 @@ contract Mode3Log {
         lastPublishedBlock = uint64(block.number);
     }
 
-    /// @dev EIP-191 을 적용하기 전의 내부 digest. lib/mode3_log.js publicationDigestV2 와 바이트 단위로 같다.
+    /// @dev EIP-191 을 적용하기 전의 내부 digest. lib/mode3_log.js publicationDigestV3 와 바이트 단위로 같다.
+    /// @dev V3: address(this) 앞에 block.chainid — 같은 서명이 거울(Mode3Mirror)에서도 유효해야 하므로 거울은 이 둘을
+    ///   생성자로 받아 같은 값을 넣는다.
     function digestFor(bytes32 newRev, bytes32 newReg, uint64 newEpoch, bytes32[] calldata revLeaves, uint32[] calldata slotIdx, bytes32[] calldata slotLeaves)
         public view returns (bytes32)
     {
         return keccak256(abi.encode(
-            DOMAIN, address(this), newRev, newReg, newEpoch,
+            DOMAIN, block.chainid, address(this), newRev, newReg, newEpoch,
             keccak256(abi.encodePacked(revLeaves)), keccak256(abi.encodePacked(slotIdx)), keccak256(abi.encodePacked(slotLeaves))
         ));
     }
