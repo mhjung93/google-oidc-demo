@@ -139,6 +139,36 @@ try {
     assert.notEqual(after, before); assert.equal(r.body.slot, after);
     assert.equal(b32(r.body.regRoot), await log.regRoot());
   });
+  await t('scope=credential 폐기는 접수증을 내지 않는다', async () => {
+    const r = await cia.adminPost('/cia/revoke', { uid: '12345', scope: 'credential' });
+    assert.equal(r.status, 200, j(r.body));
+    assert.equal(r.body.receipt, undefined, '자격증명 은퇴는 IdP 개시라 접수증 필드 자체가 없다');
+  });
+  await t('계정 폐기 → 관리자 복구 → 재발급은 새 슬롯, 옛 접수증을 나중에 올려도 다음 게시가 통과하고 옛 슬롯은 0 그대로', async () => {
+    const rv = await cia.post('/cia/account/self_revoke', { uid: '67890', pwd: 'alicepw' });   // alice 는 앞 케이스에서 새 슬롯의 활성 자격증명을 가진다
+    assert.equal(rv.status, 200, j(rv.body));
+    const rc = rv.body.receipt, s0 = await slotOf('67890');
+    assert.ok(rc && rc.slot === s0, j(rc));
+    assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid: '67890', disabled: false })).status, 200);
+    const c6 = await buildUserCredRequest({ uid: 67890n, s_u: alice.s_u, r_u: alice.r_u, sk_u: alice.sk_u, attrs: [2005n, 840n, 1n, 0n, 0n, 0n] });
+    const uc = await cia.post('/cia/user_cred', c6.body);
+    assert.equal(uc.status, 201, j(uc.body)); assert.equal(uc.body.published, true);
+    const s1 = await slotOf('67890');
+    assert.notEqual(s1, s0, '계정 폐기는 슬롯을 로컬에서 영구 은퇴시켜 재발급이 새 슬롯을 받는다');
+    const logW = new ethers.Contract(cia.logAddress, MODE3_LOG_ABI, await provider.getSigner(0));
+    await (await logW.requestRevocation(rc.slot, rc.epochAtRequest, rc.requestedAt, rc.sig)).wait();   // 옛 접수증을 뒤늦게 제출
+    assert.deepEqual((await log.pendingSlots()).map(Number), [s0]);
+    const pub = await cia.adminPost('/cia/publish', {});
+    assert.equal(pub.status, 200, j(pub.body)); assert.equal(pub.body.published, true);
+    assert.deepEqual((await log.pendingSlots()).map(Number), []);
+    assert.equal(await log.isRetired(s0), true);
+    const ev = await log.queryFilter(log.filters.SlotUpdated(), 0, 'latest');
+    assert.equal(BigInt(ev.filter((e) => Number(e.args.index) === s0).at(-1).args.leaf), 0n, '옛 슬롯은 0 그대로');
+    const acct = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === '67890');
+    assert.equal(acct.slot, s1); assert.equal(acct.disabled, false, '옛 슬롯의 접수증은 새 슬롯의 계정을 다시 막지 않는다');
+    assert.equal(BigInt(acct.registryLeaf), await registryLeaf(alice.cm_u, c6.Cf_u), '새 슬롯의 리프는 그대로');
+    assert.equal(b32((await cia.get('/cia/state')).body.regRoot), await log.regRoot());
+  });
 } finally { await cia.stop(); }
 
 // ---- 마이그레이션: v8 상태 파일로 기동하면 슬롯을 배정하고 활성 자격증명 리프를 채워 게시한다 ----

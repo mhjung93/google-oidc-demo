@@ -50,7 +50,9 @@ try {
     if (userCred) return;
     const uc = await buildUserCredRequest({ uid, s_u: u.s_u, r_u: u.r_u, sk_u: u.sk_u, attrs: ATTRS });
     const r = await cia.post('/cia/user_cred', uc.body);
-    assert.equal(r.status, 201, j(r.body)); assert.equal(r.body.slot, u.slot); assert.equal(r.body.published, true);
+    assert.equal(r.status, 201, j(r.body)); assert.equal(r.body.published, true);
+    // V10(2026-10-02): 계정 폐기 뒤 재발급은 새 슬롯을 받는다 — 지갑처럼 응답의 슬롯을 따른다.
+    u.slot = r.body.slot;
     userCred = uc; blind_u = uc.secrets.blind_u;
   }
   async function newSessionAndIssue() {
@@ -134,6 +136,7 @@ try {
     assert.equal(rUc.status, 403, j(rUc.body)); assert.equal(rUc.body.error, 'account disabled');
     assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid: '12345', disabled: false })).status, 200);
     const r2 = await newSessionAndIssue(); assert.equal(r2.status, 200, j(r2.body)); cred = r2.body;
+    assert.notEqual(u.slot, 0, 'V10: 계정 폐기로 슬롯 0 은 은퇴 — 복구 뒤 재발급은 새 슬롯');
     const v = await loginRound(); assert.equal(v.ok, true, j(v)); assert.equal(v.PPID, PPID1);
   });
 } finally { await cia.stop(); provider.destroy(); }

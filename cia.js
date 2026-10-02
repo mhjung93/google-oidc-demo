@@ -324,7 +324,7 @@ async function makeReceipt(slot) {
   const sig = await signReceipt(ethWallet, params);
   return { slot, epochAtRequest: params.epochAtRequest.toString(), requestedAt: params.requestedAt.toString(), sig, canonicalChainId: c.canonicalChainId.toString(), canonicalLogAddress: c.canonicalLogAddress };
 }
-/** 계정의 접수증. 같은 슬롯의 것이 이미 있으면 그대로(멱등 재요청), 슬롯이 바뀌었으면(은퇴 뒤 새 슬롯) 새로 낸다.
+/** 계정 폐기의 접수증. 같은 슬롯의 것이 이미 있으면 그대로(멱등 재요청), 슬롯이 바뀌었으면(은퇴 뒤 새 슬롯) 새로 낸다.
  *  만들지 못하면(로그 미설정·체인 chainId 를 못 읽음) null — 폐기 자체(disabled·슬롯 0)는 체인과 무관하게 이미 걸려 있어야
  *  하므로(§6.5.1) 접수증 실패로 폐기를 실패시키지 않는다. 저장하지 않으니 다음 재요청이 다시 시도한다. 호출자가 persist 한다. */
 async function receiptFor(uid) {
@@ -638,8 +638,11 @@ async function revokeAccount(uid) {
   acct.disabled = true;
   const retired = retireActiveCred(uid);
   if (retired) setSlot(uid, 0n);   // 물린 게 없으면 슬롯은 건드리지 않는다 — disabled 는 그대로 건다
+  // V10(2026-10-02 수정): 계정 폐기는 슬롯을 로컬에서도 영구 은퇴시킨다 — 관리자가 되살린 뒤의 재발급은 새 슬롯을 받는다.
+  // 그래야 이 폐기의 접수증이 가리키는 슬롯은 영원히 0 이고, 누가 나중에 올려도 다시 채운 슬롯을 강제 은퇴시키지 못한다.
+  acct.slotRetired = true;
   persist();   // disabled·(물렸다면) 슬롯 변경을 게시 시도 전에 먼저 저장한다 — 게시 중 죽어도 다음 기동이 백로그를 본다
-  // V10 접수증(§4.1): 물린 게 없어도(retired 0) 낸다 — 약속은 "이 슬롯은 비어 있어야 한다" 이다. 체인 조회가 끼므로 위 저장 뒤에 만든다.
+  // V10 접수증(§4.1): 계정 폐기에만 낸다. 물린 게 없어도(retired 0) 낸다 — 약속은 "이 슬롯은 비어 있어야 한다" 이다. 체인 조회가 끼므로 위 저장 뒤에 만든다.
   const receipt = await receiptFor(uid);
   if (receipt) persist();
   const pub = retired ? await publishSafely() : { published: false };
@@ -663,11 +666,11 @@ app.post('/cia/revoke', async (req, res) => {
     if (scope === 'account') return res.json(await revokeAccount(uid));
     if (scope === 'credential') {
       const retired = retireActiveCred(uid);
-      if (retired) { setSlot(uid, 0n); persist(); }   // 물린 게 없으면 슬롯·게시는 건드리지 않는다
-      const receipt = await receiptFor(uid);   // V10 접수증 — account 와 같은 규칙(물린 게 없어도 낸다)
-      if (receipt) persist();
+      if (retired) { setSlot(uid, 0n); persist(); }   // 물린 게 없으면 슬롯·게시·persist 모두 건드리지 않는다
+      // V10(2026-10-02 수정): 접수증을 내지 않는다(응답에 receipt 필드 없음). 자격증명 은퇴는 IdP 가 개시한 것이라(속성 변경 등)
+      // 사용자가 강제할 요청이 없고, 접수증이 있으면 같은 슬롯을 다시 채운 뒤에도 누구든 그 슬롯을 강제 은퇴시킬 수 있다.
       const pub = retired ? await publishSafely() : { published: false };
-      return res.json({ retired, slot: state.accounts[uid].slot, regRoot: registry.root().toString(), published: Boolean(pub.published), pending: state.pending.length, receipt });
+      return res.json({ retired, slot: state.accounts[uid].slot, regRoot: registry.root().toString(), published: Boolean(pub.published), pending: state.pending.length });
     }
     if (scope !== 'session') return res.status(400).json({ error: "scope must be 'account', 'credential' or 'session'" });
     if (!isDec(Cf_s)) return res.status(400).json({ error: 'Cf_s required' });

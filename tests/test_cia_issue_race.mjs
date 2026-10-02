@@ -56,7 +56,8 @@ const eddsa = await buildEddsa();
 const F = (await buildPoseidon()).F;
 const signMsg = (prvHex, m) => { const sg = eddsa.signPoseidon(Buffer.from(prvHex, 'hex'), F.e(m)); return { R8x: F.toObject(sg.R8[0]).toString(), R8y: F.toObject(sg.R8[1]).toString(), S: sg.S.toString() }; };
 
-const cia = await startIsolatedCia({ env: { CIA_RPC_URL: proxyUrl } });
+// isolated_cia 가 V10 Task 4 부터 CIA_CHAIN_RPCS 를 :8545 직결로 기본 설정하므로, /cia/issue 의 headOf() 도 게이트 프록시를 타게 덮어쓴다.
+const cia = await startIsolatedCia({ env: { CIA_RPC_URL: proxyUrl, CIA_CHAIN_RPCS: '31337=' + proxyUrl } });
 try {
   const { s_u, r_u, sk_u, cm_u } = await cia.registerUser(uid.toString(), 'password123');
 
