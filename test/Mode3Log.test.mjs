@@ -91,6 +91,14 @@ describe('Mode3Log', () => {
     const zeroAgain = { ...bad, epoch: 2n, slotIdx: [7], slotLeaves: [b32(0n)] };   // 0 으로 다시 쓰는 건 허용(멱등)
     await log.publish(zeroAgain.revRoot, zeroAgain.regRoot, 2n, [], [7], [b32(0n)], await sign(cia, zeroAgain));
   });
+  it('강제: pending 슬롯이 slotIdx 에 여러 번 실리면 전부 0 이어야 한다(중복 항목으로 우회 불가, 2026-10-02 수정)', async () => {
+    await log.requestRevocation(7, 0n, 1000n, await receipt(cia, 7, 0n, 1000n));
+    const decoy = { revRoot: b32(1n), regRoot: b32(2n), epoch: 1n, revLeaves: [], slotIdx: [7, 7], slotLeaves: [b32(0n), b32(42n)] };   // 0 짜리를 먼저 넣고 진짜 값을 뒤에 넣는 미끼
+    await expect(log.publish(decoy.revRoot, decoy.regRoot, 1n, [], [7, 7], [b32(0n), b32(42n)], await sign(cia, decoy))).to.be.revertedWithCustomError(log, 'PendingRevocationNotApplied').withArgs(7);
+    const dup = { ...decoy, slotLeaves: [b32(0n), b32(0n)] };   // 중복이라도 전부 0 이면 통과(멱등)
+    await expect(log.publish(dup.revRoot, dup.regRoot, 1n, [], [7, 7], [b32(0n), b32(0n)], await sign(cia, dup))).to.emit(log, 'SlotRetired').withArgs(7, 1n);
+    expect(await log.isRetired(7)).to.equal(true);
+  });
   it('은퇴된 슬롯에 대한 접수증은 no-op', async () => {
     await log.requestRevocation(7, 0n, 1000n, await receipt(cia, 7, 0n, 1000n));
     const ok = { revRoot: b32(1n), regRoot: b32(2n), epoch: 1n, revLeaves: [], slotIdx: [7], slotLeaves: [b32(0n)] };

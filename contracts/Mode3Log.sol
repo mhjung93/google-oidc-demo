@@ -81,6 +81,13 @@ contract Mode3Log is IMode3Roots {
     ///   이번 publish 가 0 으로 실어야 통과한다 — 아니면 거절해 IdP 가 접수증을 무시하고 지나가지 못하게 한다.
     ///   안쪽 루프는 pendingList.length × slotIdx.length 로 중첩되지만 두 배열 다 소규모(폐기 대기 슬롯 수)
     ///   범위라 프로토타입 단계에서는 허용한다(2026-10-02).
+    /// @dev 2026-10-02 수정(리뷰 1라운드): pending 슬롯 s 에 대해 slotIdx 안의 "s 와 일치하는 항목"이
+    ///   여러 개 있을 수 있는데(같은 슬롯을 두 번 이상 싣는 calldata), 그중 하나만 0 이고 나머지가 0 이
+    ///   아니어도 예전 코드는 "0 인 항목 하나를 찾으면" 통과시켰다. 지갑은 이벤트를 순서대로 재생해 마지막
+    ///   값이 이기므로, 0 짜리를 먼저 넣고 진짜 값을 뒤에 넣는 "미끼" 항목으로 강제 폐기를 우회할 수 있었다
+    ///   (리뷰에서 실증: slotIdx=[7,7], slotLeaves=[0,42] 가 통과해 isRetired(7)=true 이면서 사실상 7 번
+    ///   슬롯은 42 로 남음). 이제 s 와 일치하는 "모든" 항목이 0 이어야 하고(하나라도 0 이 아니면 즉시 거절),
+    ///   그런 항목이 하나도 없어도 거절한다. 같은 슬롯을 0 으로 여러 번 중복해서 싣는 건 멱등이라 허용한다.
     function _enforceRevocationQueue(uint32[] calldata slotIdx, bytes32[] calldata slotLeaves, uint64 newEpoch) internal {
         for (uint256 i = 0; i < slotIdx.length; i++) {
             if (isRetired[slotIdx[i]] && slotLeaves[i] != bytes32(0)) revert SlotIsRetired(slotIdx[i]);
@@ -88,11 +95,14 @@ contract Mode3Log is IMode3Roots {
         uint256 n = pendingList.length;
         for (uint256 p = 0; p < n; p++) {
             uint32 s = pendingList[p];
-            bool applied = false;
+            bool found = false;
             for (uint256 i = 0; i < slotIdx.length; i++) {
-                if (slotIdx[i] == s && slotLeaves[i] == bytes32(0)) { applied = true; break; }
+                if (slotIdx[i] == s) {
+                    if (slotLeaves[i] != bytes32(0)) revert PendingRevocationNotApplied(s);
+                    found = true;
+                }
             }
-            if (!applied) revert PendingRevocationNotApplied(s);
+            if (!found) revert PendingRevocationNotApplied(s);
             pending[s] = false;
             isRetired[s] = true;
             emit SlotRetired(s, newEpoch);
