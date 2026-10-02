@@ -142,14 +142,14 @@ try {
     await expectStartupRefused({ env: { CIA_LOG_ADDRESS: firstLog, CIA_ETH_PRIVATE_KEY: firstEthPrv } });
   });
 
-  await t('v3 상태 파일은 v9 로 마이그레이션된다 — used_rs 버림, rps 는 approved·조각 없음, openings 빈 배열', async () => {
+  await t('v3 상태 파일은 v10 으로 마이그레이션된다 — used_rs 버림, rps 는 approved·조각 없음, openings 빈 배열', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-v3-'));
     const stateFile = path.join(dir, 'cia_state.json');
     fs.writeFileSync(stateFile, JSON.stringify({ version: 3, accounts: {}, issued: {}, used_rs: { '12345': ['1', '2'] }, rps: { '777': { name: 'old', origin: 'http://127.0.0.1:3100', at: '2026-09-15T00:00:00.000Z' } }, revoked: [], pending: [], epoch: 0 }), { mode: 0o600 });
     const cia = await startIsolatedCia({ env: { CIA_STATE_FILE: stateFile } });
     try {
       const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-      assert.equal(saved.version, 9); assert.equal(saved.used_rs, undefined); assert.equal(saved.issued, undefined); assert.deepEqual(saved.openings, []);
+      assert.equal(saved.version, 10); assert.equal(saved.used_rs, undefined); assert.equal(saved.issued, undefined); assert.deepEqual(saved.openings, []);
       const e = (await cia.adminGet('/cia/rps')).body.rps.find((x) => x.arid === '777');
       assert.equal(e.status, 'approved'); assert.equal(e.pk_trace, null); assert.equal(e.pk_service, null);
       // 옛 등록이 키를 내며 재등록하면 무허가 바인딩을 막기 위해 pending 으로 돌아간다 — 운영자 승인이 다시 필요하다(§3)
@@ -163,14 +163,14 @@ try {
     } finally { await cia.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
-  await t('v4 상태 파일은 v9 로 이행된다 — 발급 기록은 버리고 계정에 creds:[]·attrs(uid 12345 는 DEMO_ACCOUNTS 값), 서비스·폐기·epoch 는 유지', async () => {
+  await t('v4 상태 파일은 v10 으로 이행된다 — 발급 기록은 버리고 계정에 creds:[]·attrs(uid 12345 는 DEMO_ACCOUNTS 값), 서비스·폐기·epoch 는 유지', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-v4-'));
     const stateFile = path.join(dir, 'cia_state.json');
     fs.writeFileSync(stateFile, JSON.stringify({ version: 4, accounts: { '12345': { pk_u: { x: '1', y: '2' }, cm_u: { x: '3', y: '4' }, disabled: false } }, issued: { '12345': [{ leaf: '9', C: '8', exptime: '1789000000' }] }, rps: {}, openings: [], revoked: [], pending: [], epoch: 0 }), { mode: 0o600 });
     const cia = await startIsolatedCia({ env: { CIA_STATE_FILE: stateFile } });
     try {
       const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-      assert.equal(saved.version, 9); assert.equal(saved.issued, undefined); assert.deepEqual(saved.accounts['12345'].creds, []);
+      assert.equal(saved.version, 10); assert.equal(saved.issued, undefined); assert.deepEqual(saved.accounts['12345'].creds, []);
       assert.deepEqual(saved.accounts['12345'].attrs, ['1990', '410', '2', '0', '0', '0'], 'uid 12345 는 cia.js DEMO_ACCOUNTS.testuser 라 demoAttrs 콜백이 채운다');
       assert.match(cia.log(), /v4→v5/); assert.match(cia.log(), /v5→v6/); assert.match(cia.log(), /v6→v7/);
     } finally { await cia.stop(); fs.rmSync(dir, { recursive: true, force: true }); }

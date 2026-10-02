@@ -10,7 +10,7 @@ import { createRegistration, signRegistration, buildUserCredRequest, buildIssueR
 import { pointToStrings } from '../lib/mode3_issuance.js';
 import { userCommit, randomScalar } from '../lib/mode3_credential.js';
 import { registryLeaf, createRegistryTree } from '../lib/mode3_registry.js';
-import { MODE3_LOG_ABI } from '../lib/mode3_log.js';
+import { MODE3_LOG_ABI, verifyReceipt } from '../lib/mode3_log.js';
 
 const j = (o) => JSON.stringify(o, (k, v) => (typeof v === 'bigint' ? v.toString() : v));
 let failed = 0;
@@ -106,6 +106,38 @@ try {
     assert.equal(rs.status, 200, j(rs.body)); assert.equal(BigInt(rs.body.leaf), real);
     assert.equal((await cia.adminGet('/cia/admin/registry')).body.slots.find((x) => x.index === 1).tampered, false);
     assert.equal((await cia.adminPost('/cia/admin/registry/tamper', { uid: '12345' })).status, 409, '활성 자격증명 없음(폐기된 계정)');
+  });
+  // V10(2026-10-02 §4) 폐기 접수증·대기열 강제. 브리프의 slotOf/issueUserCred 헬퍼는 이 파일에 없어 /cia/accounts 와
+  // buildUserCredRequest 로 대신한다. alice(67890, 슬롯 1)는 위 바꿔치기 케이스 뒤 활성 자격증명을 가진 채로 남아 있다.
+  const slotOf = async (uid) => (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === uid).slot;
+  await t('자기 폐기 응답에 IdP 서명 접수증이 실리고, 접수증은 캐노니컬 로그가 받아들인다', async () => {
+    const r = await cia.post('/cia/account/self_revoke', { uid: '67890', pwd: 'alicepw' });
+    assert.equal(r.status, 200, j(r.body));
+    const rc = r.body.receipt;
+    assert.ok(rc && typeof rc.sig === 'string' && rc.slot === await slotOf('67890'), j(rc));
+    assert.equal(verifyReceipt(cia.ethAddress, rc, rc.sig), true);
+    const again = await cia.post('/cia/account/self_revoke', { uid: '67890', pwd: 'alicepw' });   // 멱등 재요청은 같은 접수증
+    assert.deepEqual(again.body.receipt, rc);
+    const logW = new ethers.Contract(cia.logAddress, MODE3_LOG_ABI, await provider.getSigner(0));
+    // 이미 즉시 게시로 0 이 됐어도 접수증 제출은 유효하고, 다음 게시가 (slot, 0) 을 실어 통과한다
+    await (await logW.requestRevocation(rc.slot, rc.epochAtRequest, rc.requestedAt, rc.sig)).wait();
+    assert.deepEqual((await log.pendingSlots()).map(Number), [rc.slot]);
+    const pub = await cia.adminPost('/cia/publish', {});   // heartbeat 가 꺼져 있어 수동 게시
+    assert.equal(pub.status, 200, j(pub.body)); assert.equal(pub.body.published, true);
+    assert.deepEqual((await log.pendingSlots()).map(Number), []);
+    assert.equal(await log.isRetired(rc.slot), true);
+    assert.equal(b32((await cia.get('/cia/state')).body.regRoot), await log.regRoot());
+  });
+  await t('은퇴된 슬롯의 계정을 되살려 재발급하면 새 슬롯을 받는다', async () => {
+    const en = await cia.adminPost('/cia/account/set_disabled', { uid: '67890', disabled: false });
+    assert.equal(en.status, 200, j(en.body));
+    const before = await slotOf('67890');
+    const c5 = await buildUserCredRequest({ uid: 67890n, s_u: alice.s_u, r_u: alice.r_u, sk_u: alice.sk_u, attrs: [2005n, 840n, 1n, 0n, 0n, 0n] });
+    const r = await cia.post('/cia/user_cred', c5.body);
+    assert.equal(r.status, 201, j(r.body)); assert.equal(r.body.published, true, '새 슬롯 쓰기는 SlotIsRetired 에 걸리지 않는다');
+    const after = await slotOf('67890');
+    assert.notEqual(after, before); assert.equal(r.body.slot, after);
+    assert.equal(b32(r.body.regRoot), await log.regRoot());
   });
 } finally { await cia.stop(); }
 

@@ -9,6 +9,9 @@
 //   나오므로 세션 기록(issued)이 없다 — 설계 2026-09-21-mode3-two-tier-credential §3·§4.
 // V8(2026-09-24): 세션 단위 폐기 — 발급이 accounts[uid].sessions 에 기록을 남기고, /cia/revoke scope=session 이 sessionLeaf(Cf_s) 를
 //   트리에 넣는다. 만료된 기록은 하트비트에서 지운다(리프는 남는다) — 설계 2026-09-24-mode3-session-revocation §2.2·§6.
+// V10(2026-10-02): 게시 서명은 V3 다이제스트(캐노니컬 chainid·로그 주소). 계정·자격증명 폐기는 IdP 서명 접수증을 돌려주고,
+//   게시는 로그의 접수증 대기열(pendingSlots)을 먼저 따른다(슬롯 0·영구 은퇴 → 재발급은 새 슬롯) — 설계
+//   2026-10-02-mode3-revocation-chain-design §4.
 import 'dotenv/config';
 import express from 'express';
 import path from 'node:path';
@@ -22,7 +25,7 @@ import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { credMessageV5, compressPoint, randomScalar, normalizeAttrs, ATTR_SLOTS } from './lib/mode3_credential.js';
 import { sessionLeaf, createRevocationTree } from './lib/mode3_revocation.js';
 import { isValidPoint, pointFromStrings, verifyUserCred, parseUserCredProof, userCredRequestMessage, issueRequestMessageV4, attrsRequestMessage, revokeSessionMessage, registerMessage } from './lib/mode3_issuance.js';
-import { MODE3_LOG_ABI, rootToBytes32, signPublicationV2 } from './lib/mode3_log.js';
+import { MODE3_LOG_ABI, rootToBytes32, signPublicationV3, entryHashes, signReceipt } from './lib/mode3_log.js';
 import { createRegistryTree, registryLeaf } from './lib/mode3_registry.js';
 import { signRpCert } from './lib/mode3_rp_cert.js';
 import { isTracePoint, createShare, combinePublicKey, partialDecrypt, combineDecrypt, resolveTagPlaintext, proveShare } from './lib/mode3_trace.js';
@@ -105,6 +108,8 @@ function loadOrCreateKeys() {
 //                uid|null, resolved } ]   영구 감사 기록(§6). uid·resolved 는 approved 에만 의미 있다.
 //            결정(승인·거절)이 끝나면 복호 재료 c1·c2·D_svc 는 지운다(2026-09-25 리뷰 B-4) — 재요청 대조는 tagKey 가 맡는다
 // registry:  { depth, next, leaves: {"<index>": "<leaf>"(10진)}, pendingSlots: [{index, leaf}] }   사용자 자격증명 등록부(V9, 2026-10-01 §3)
+// V10(2026-10-02): accounts[uid].receipt(마지막 폐기 접수증 또는 null)·slotRetired(대기열로 영구 은퇴된 슬롯이면 true),
+//            lastPublication = { revRoot, regRoot, epoch, hLeaves, hIdx, hSlots, sig, txHash } (마지막 성공 게시 — 거울 릴레이용)
 // revoked / pending / epoch
 // 버전·이행은 lib/mode3_cia_state.js (v6, 2026-09-21).
 const STATE_VERSION = CIA_STATE_VERSION;
@@ -305,6 +310,30 @@ function retireActiveCred(uid) {
   for (const c of state.accounts[uid]?.creds ?? []) if (!c.revoked) { c.revoked = true; n++; }
   return n;
 }
+// V10(2026-10-02 §4) 캐노니컬 = 이 CIA 가 게시하는 로그(RPC_URL 의 체인, LOG_ADDRESS). 게시 서명·접수증 둘 다 이 값을 덮는다.
+// chainId 는 처음 필요할 때 한 번 읽어 둔다 — 읽기에 실패하면 캐시하지 않아 다음 호출이 다시 시도한다.
+let canonical = null;
+async function canonicalParams() {
+  if (!LOG_ADDRESS) throw Object.assign(new Error('CIA_LOG_ADDRESS not configured'), { status: 503 });
+  return (canonical ??= { canonicalChainId: (await ethWallet.provider.getNetwork()).chainId, canonicalLogAddress: LOG_ADDRESS });
+}
+/** 폐기 접수증(설계 §4.1) — "이 슬롯은 비어 있어야 한다" 는 IdP 의 약속. uid 는 넣지 않는다(슬롯은 SlotUpdated 로 어차피 공개). */
+async function makeReceipt(slot) {
+  const c = await canonicalParams();
+  const params = { ...c, slot, epochAtRequest: BigInt(state.epoch), requestedAt: BigInt(Math.floor(Date.now() / 1000)) };
+  const sig = await signReceipt(ethWallet, params);
+  return { slot, epochAtRequest: params.epochAtRequest.toString(), requestedAt: params.requestedAt.toString(), sig, canonicalChainId: c.canonicalChainId.toString(), canonicalLogAddress: c.canonicalLogAddress };
+}
+/** 계정의 접수증. 같은 슬롯의 것이 이미 있으면 그대로(멱등 재요청), 슬롯이 바뀌었으면(은퇴 뒤 새 슬롯) 새로 낸다.
+ *  만들지 못하면(로그 미설정·체인 chainId 를 못 읽음) null — 폐기 자체(disabled·슬롯 0)는 체인과 무관하게 이미 걸려 있어야
+ *  하므로(§6.5.1) 접수증 실패로 폐기를 실패시키지 않는다. 저장하지 않으니 다음 재요청이 다시 시도한다. 호출자가 persist 한다. */
+async function receiptFor(uid) {
+  const acct = state.accounts[uid];
+  if (acct.receipt && acct.receipt.slot === acct.slot) return acct.receipt;
+  try { acct.receipt = await makeReceipt(acct.slot); }
+  catch (e) { console.warn(`[cia] 폐기 접수증을 만들지 못했다(slot ${acct.slot}): ${e.message}`); return null; }
+  return acct.receipt;
+}
 
 // ---- 앱 ----
 const app = express();
@@ -320,7 +349,9 @@ app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_
 app.get('/account', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_account.html')));
 
 app.get('/cia/public_keys', (req, res) => {
-  res.json({ pk_CIA: S(ciaPub), ethAddress: ethWallet.address, heartbeatBlocks: Number(HEARTBEAT_BLOCKS), chainIds: [...CHAIN_RPCS.keys()], logAddress: LOG_ADDRESS });
+  // V10: canonicalChainId = 게시 로그가 있는 체인(selfChainId 와 같은 provider). mirrors 는 거울 릴레이(Task 6) 전까지 비어 있다.
+  res.json({ pk_CIA: S(ciaPub), ethAddress: ethWallet.address, heartbeatBlocks: Number(HEARTBEAT_BLOCKS), chainIds: [...CHAIN_RPCS.keys()], logAddress: LOG_ADDRESS,
+    canonicalChainId: selfChainId, mirrors: [] });
 });
 
 // 상태 엔드포인트(설계 2026-09-25 §1) — 민감정보 없음, 승인된 서비스·지갑 오리진에만 CORS.
@@ -480,6 +511,9 @@ app.post('/cia/user_cred', async (req, res) => {
     const retired = retireActiveCred(uid);
     if (acct.disabled) { if (retired) { setSlot(uid, 0n); persist(); await publishSafely(); } return res.status(403).json({ error: 'account disabled' }); }
     if (acct.creds.some((c) => c.Cf_u === Cf_u)) return res.status(409).json({ error: 'this user credential was revoked; make a new one' });
+    // V10(§4.5): 대기열로 영구 은퇴된 슬롯에는 0 아닌 리프를 쓸 수 없다(컨트랙트 SlotIsRetired) — 새 슬롯을 받는다.
+    // 위의 disabled 검사를 지났으므로 관리자가 되살린 뒤의 발급이다. PPID 는 uid·s_u 에만 걸려 있어 슬롯이 바뀌어도 그대로다.
+    if (acct.slotRetired) { acct.slot = state.registry.next++; acct.slotRetired = false; }
     acct.creds.push({ Cf_u, C_u_pt: { x: cpt.x.toString(), y: cpt.y.toString() }, issuedAt: new Date().toISOString(), revoked: false });
     setSlot(uid, newLeaf);
     persist();
@@ -605,8 +639,11 @@ async function revokeAccount(uid) {
   const retired = retireActiveCred(uid);
   if (retired) setSlot(uid, 0n);   // 물린 게 없으면 슬롯은 건드리지 않는다 — disabled 는 그대로 건다
   persist();   // disabled·(물렸다면) 슬롯 변경을 게시 시도 전에 먼저 저장한다 — 게시 중 죽어도 다음 기동이 백로그를 본다
+  // V10 접수증(§4.1): 물린 게 없어도(retired 0) 낸다 — 약속은 "이 슬롯은 비어 있어야 한다" 이다. 체인 조회가 끼므로 위 저장 뒤에 만든다.
+  const receipt = await receiptFor(uid);
+  if (receipt) persist();
   const pub = retired ? await publishSafely() : { published: false };
-  return { retired, disabled: true, slot: acct.slot, regRoot: registry.root().toString(), published: Boolean(pub.published), pending: state.pending.length };
+  return { retired, disabled: true, slot: acct.slot, regRoot: registry.root().toString(), published: Boolean(pub.published), pending: state.pending.length, receipt };
 }
 
 // §4.3(2026-09-21) 폐기. account = 활성 사용자 자격증명의 슬롯을 0 으로 비움 + disabled. credential = 슬롯만 비움(계정은 살아 있어 새 user_cred 를 받아야 한다).
@@ -626,9 +663,11 @@ app.post('/cia/revoke', async (req, res) => {
     if (scope === 'account') return res.json(await revokeAccount(uid));
     if (scope === 'credential') {
       const retired = retireActiveCred(uid);
-      if (retired) { setSlot(uid, 0n); persist(); }   // 물린 게 없으면 슬롯·게시·persist 모두 건드리지 않는다
+      if (retired) { setSlot(uid, 0n); persist(); }   // 물린 게 없으면 슬롯·게시는 건드리지 않는다
+      const receipt = await receiptFor(uid);   // V10 접수증 — account 와 같은 규칙(물린 게 없어도 낸다)
+      if (receipt) persist();
       const pub = retired ? await publishSafely() : { published: false };
-      return res.json({ retired, slot: state.accounts[uid].slot, regRoot: registry.root().toString(), published: Boolean(pub.published), pending: state.pending.length });
+      return res.json({ retired, slot: state.accounts[uid].slot, regRoot: registry.root().toString(), published: Boolean(pub.published), pending: state.pending.length, receipt });
     }
     if (scope !== 'session') return res.status(400).json({ error: "scope must be 'account', 'credential' or 'session'" });
     if (!isDec(Cf_s)) return res.status(400).json({ error: 'Cf_s required' });
@@ -708,18 +747,38 @@ async function publishNow({ heartbeat = false } = {}) {
       throw Object.assign(new Error(`onchain root ${chain.onchainRoot} 가 로컬 게시 기록의 어느 접두사와도 다르다 — ` +
         `로그를 재배포했거나 상태 파일이 유실·복원됐다. CIA_STATE_FILE 과 CIA_LOG_ADDRESS 를 확인할 것`), { status: 503 });
     }
+    const log = new ethers.Contract(LOG_ADDRESS, MODE3_LOG_ABI, ethWallet);
+    // V10(§4.3·§4.4) 접수증 대기열 따르기. 로그는 pending 슬롯마다 이번 slotIdx 의 그 슬롯 항목이 **전부** 0 이고 하나 이상
+    // 있어야 publish 를 받는다(아니면 PendingRevocationNotApplied — 하트비트까지 막혀 root 가 늙는다). 그래서 스냅샷 전에
+    // 읽어 (a) 그 슬롯의 계정을 폐기·은퇴로 돌리고(재발급은 새 슬롯) (b) 백로그에서 그 슬롯의 항목을 걷어 (slot, 0) 하나로
+    // 바꾼다 — 앞서 쌓인 0 아닌 항목이 섞여 있으면 거절되기 때문이다. 같은 칸의 중간값은 아직 게시 전이라 최종값 0 만
+    // 내도 지갑의 재생 결과가 같다. 계정이 없는 슬롯(정직한 IdP 에선 안 생기지만 체인이 강제한다)도 로컬 트리를 0 으로 맞춰
+    // 서명 regRoot 가 실린 항목과 어긋나지 않게 한다.
+    const pendingOnChain = (await log.pendingSlots()).map(Number);
+    for (const slot of pendingOnChain) {
+      const entry = Object.entries(state.accounts).find(([, a]) => a.slot === slot);
+      if (entry) {
+        const [uid, a] = entry;
+        a.disabled = true; retireActiveCred(uid); a.slotRetired = true;
+      }
+      registry.set(slot, 0n); delete state.registry.leaves[slot];
+      state.registry.pendingSlots = state.registry.pendingSlots.filter((e) => e.index !== slot);
+      state.registry.pendingSlots.push({ index: slot, leaf: '0' });
+    }
+    if (pendingOnChain.length) { console.warn(`[cia] 접수증 대기열 슬롯 ${pendingOnChain.join(',')} 을 0 으로 싣고 은퇴시킨다`); persist(); }
     const noRev = state.pending.length === 0, noSlots = state.registry.pendingSlots.length === 0;
     if (noRev && noSlots && !heartbeat) return { published: false, heartbeat: false, epoch: state.epoch, root: tree.getRoot().toString(), regRoot: registry.root().toString() };
-    const log = new ethers.Contract(LOG_ADDRESS, MODE3_LOG_ABI, ethWallet);
     const leaves = state.pending.map(rootToBytes32);
     const slots = state.registry.pendingSlots.slice();   // 이번 tx 에 실을 갱신(순서 유지 — 같은 칸의 set→0 도 순서대로 재생돼야 한다)
     const slotIdx = slots.map((s) => s.index), slotLeaves = slots.map((s) => rootToBytes32(s.leaf));
     const revRoot = rootToBytes32(tree.getRoot()), regRoot = rootToBytes32(registry.root());
     const epoch = state.epoch + 1;
-    const sig = await signPublicationV2(ethWallet, { logAddress: LOG_ADDRESS, revRoot, regRoot, epoch, revLeaves: leaves, slotIdx, slotLeaves });
+    const sig = await signPublicationV3(ethWallet, { ...(await canonicalParams()), revRoot, regRoot, epoch, revLeaves: leaves, slotIdx, slotLeaves });
     const tx = await log.publish(revRoot, regRoot, epoch, leaves, slotIdx, slotLeaves, sig);
     await tx.wait();
     state.epoch = epoch;
+    // V10: 거울 릴레이(Task 6)가 같은 서명을 그대로 올린다 — 거울은 배열 대신 해시 세 개를 받는다.
+    state.lastPublication = { revRoot, regRoot, epoch: String(epoch), ...entryHashes({ revLeaves: leaves, slotIdx, slotLeaves }), sig, txHash: tx.hash };
     for (const l of state.pending.slice(0, leaves.length)) await publishedTree.insert(BigInt(l));
     state.pending = state.pending.slice(leaves.length);
     state.registry.pendingSlots = state.registry.pendingSlots.slice(slots.length);
