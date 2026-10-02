@@ -61,6 +61,13 @@ module.exports = {
       },
     },
   },
+  // V10(2026-10-02): 폐기 체인을 별도 노드로 띄울 때(docs/MODE3_DEMO.md "폐기 체인을 별도 노드로") 두 노드의 chainId 가
+  // 달라야 캐노니컬 서명(chainid 포함)과 거울이 구분된다 — HARDHAT_CHAIN_ID=31338 npx hardhat node --port 8546. 기본은 31337 그대로.
+  networks: {
+    hardhat: { chainId: Number(process.env.HARDHAT_CHAIN_ID || 31337) },
+    // 그 두 번째 노드(폐기 체인)에 로그를 배포할 때 쓰는 이름 — --network revchain. 계정은 노드의 기본 계정(remote).
+    revchain: { url: process.env.MODE3_REV_CHAIN_RPC || "http://127.0.0.1:8546" },
+  },
   ethernal: {
     apiToken: process.env.ETHERNAL_API_TOKEN,
     workspace: process.env.ETHERNAL_WORKSPACE, // 선택

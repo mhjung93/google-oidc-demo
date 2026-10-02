@@ -5,7 +5,9 @@ import fs from 'node:fs';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
 import { VKEY_PATH, createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree, syncRegistryTree, buildCredentialProof, signChallenge, normalizeDisclosure, normalizeSet } from '../lib/mode3_wallet.js';
 import { signPayload, statementDigestFields, proofToCalldata, parseExecuteReceipt, factoryAt, walletAt } from '../lib/mode3_onchain.js';
-import { getProvider } from './helpers/mode3_chain.mjs';
+import { ethers } from 'ethers';
+import { getProvider, getFunder } from './helpers/mode3_chain.mjs';
+import { MODE3_LOG_ABI } from '../lib/mode3_log.js';
 
 const j = (o) => JSON.stringify(o);
 let failed = 0;
@@ -646,6 +648,81 @@ try {
       assert.equal(r.status, 200, j(r.body)); assert.equal(r.body.ok, true, j(r.body));
       assert.notEqual(r.body.PPID, t1.rp.PPID, 'alice 의 PPID 는 testuser 와 달라야 한다');
     } finally { alice.stop(); }
+  });
+
+  // V10(2026-10-02 설계 §5) 거울 지연: 서비스(RP)·계정 컨트랙트는 거울만 읽는다. 캐노니컬에 폐기가 게시돼도 릴레이 전에는
+  // 거울 기준으로 옛 π 가 그대로 통한다(지연 창 = 릴레이 주기). 릴레이가 거울을 올리는 순간 옛 서명은 revalidate_required 가
+  // 되고, 살아 있는 세션은 새 π 로 재검증되며, 폐기된 세션은 지갑이 revoked_session 으로 버린다.
+  // 주의: revalidateViaRp 는 거울을 먼저 맞추므로(relayIfBehind) 지연 창 안에서는 쓰지 않고 지갑·RP 를 직접 부른다.
+  await t('각본 13(V10): 거울 지연 — 세션 폐기 게시 후 릴레이 전엔 캐시 π 로 재승인 ok, POST /cia/admin/relay 뒤엔 revalidate_required → 새 π, 폐기된 세션은 revoked_session', async () => {
+    const sA = await loginViaRp();
+    const before = new Set((await cia.adminGet(`/cia/admin/sessions?uid=${uid}`)).body.sessions.map((x) => x.Cf_s));
+    const sB = await loginViaRp();
+    const cfB = (await cia.adminGet(`/cia/admin/sessions?uid=${uid}`)).body.sessions.map((x) => x.Cf_s).find((c) => !before.has(c));
+    assert.equal(sA.rp?.ok, true, j(sA)); assert.equal(sB.rp?.ok, true, j(sB)); assert.ok(cfB, 'sB 의 세션 기록이 있어야 한다');
+    await stack.relayIfBehind();
+    const w1 = await wallet.post('/wallet/request', { r_s: sA.r_s, body: 'lag' }, { Origin: rp.origin });
+    assert.equal(w1.status, 200, j(w1.body));
+    assert.equal((await rp.post('/api/mode3/request', { r_s: sA.r_s, body: 'lag', sig: w1.body.sig })).body.ok, true);
+
+    const mirrorEpoch0 = await cia.mirrorContract.epoch();
+    assert.equal((await cia.adminPost('/cia/revoke', { uid, scope: 'session', Cf_s: cfB })).status, 200);
+    assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
+    const health = (await cia.get('/mode3/health')).body;
+    assert.ok(health.mirrors[0].behind > 0, `캐노니컬은 올랐고 거울은 그대로여야 한다: ${j(health.mirrors)}`);
+    assert.equal(await cia.mirrorContract.epoch(), mirrorEpoch0, '릴레이 전 거울 epoch 는 그대로');
+
+    // 지연 창: 지갑은 거울 뷰로 증명하므로 캐시 π 를 그대로 내고, RP(거울 기준)는 받아들인다. 옛 세션 서명도 아직 통한다.
+    const lagW = await wallet.post('/wallet/revalidate', { r_s: sA.r_s }, { Origin: rp.origin });
+    assert.equal(lagW.status, 200, j(lagW.body)); assert.equal(lagW.body.cacheHit, true, j(lagW.body));
+    const lagR = await rp.post('/api/mode3/revalidate', { proof: lagW.body.proof, publicSignals: lagW.body.publicSignals, sig: lagW.body.sig, r_s: sA.r_s });
+    assert.equal(lagR.body.ok, true, j(lagR.body));
+    assert.equal((await rp.post('/api/mode3/request', { r_s: sA.r_s, body: 'lag', sig: w1.body.sig })).body.ok, true, '릴레이 전에는 서비스가 폐기를 아직 모른다');
+
+    // 릴레이 — 거울이 캐노니컬을 따라잡는다. RP 세션의 root 와 거울 root 가 달라져 옛 서명은 revalidate_required.
+    const rl = await stack.relay();
+    assert.equal(rl.mirrors[0].epoch, (await cia.mirrorContract.epoch()).toString()); assert.ok(await cia.mirrorContract.epoch() > mirrorEpoch0);
+    assert.equal((await cia.get('/mode3/health')).body.mirrors[0].behind, 0);
+    const q = await rp.post('/api/mode3/request', { r_s: sA.r_s, body: 'lag', sig: w1.body.sig });
+    assert.equal(q.status, 401, j(q.body)); assert.equal(q.body.reason, 'revalidate_required', j(q.body));
+    // 살아 있는 세션은 새 거울 root 로 새 π 를 만든다.
+    const fresh = await revalidateViaRp(sA.r_s);
+    assert.equal(fresh.walletStatus, 200, j(fresh)); assert.equal(fresh.wallet.cacheHit, false, j(fresh.wallet));
+    assert.equal(fresh.rp.ok, true, j(fresh.rp));
+    // 폐기된 세션은 지갑이 버린다.
+    const dead = await revalidateViaRp(sB.r_s);
+    assert.equal(dead.walletStatus, 403, j(dead)); assert.equal(dead.wallet.reason, 'revoked_session');
+  });
+
+  // V10(2026-10-02 설계 §4) 접수증 강제: 계정 폐기 응답의 receipt 는 "이 슬롯은 비어 있어야 한다" 는 IdP 서명이다. 사용자가
+  // 그것을 캐노니컬 로그의 requestRevocation 으로 올리면, 다음 게시는 그 슬롯을 0 으로 실어야만 통과하고 슬롯은 영구 은퇴한다.
+  // 관리자가 계정을 되살리면 재발급은 새 슬롯을 받고 지갑이 따른다(각본 12 와 같은 규칙).
+  await t('각본 14(V10): 접수증 강제 — 자기 폐기 receipt 를 requestRevocation 으로 올림 → /cia/publish 가 (slot,0) 을 실어 통과·isRetired → 복구 재발급은 새 슬롯', async () => {
+    const pre = await loginViaRp();
+    assert.equal(pre.rp?.ok, true, j(pre));
+    const r = await cia.post('/cia/account/self_revoke', { uid, pwd: 'password123' });
+    assert.equal(r.status, 200, j(r.body)); assert.equal(r.body.disabled, true);
+    const rc = r.body.receipt;
+    assert.ok(rc && rc.sig, `계정 폐기 응답에 receipt 가 있어야 한다: ${j(r.body)}`);
+    assert.equal(rc.canonicalLogAddress.toLowerCase(), cia.logAddress.toLowerCase()); assert.equal(rc.canonicalChainId, '31337');
+    const s0 = Number(rc.slot);
+    const provider = getProvider();
+    try {
+      const log = new ethers.Contract(cia.logAddress, MODE3_LOG_ABI, await getFunder(provider));
+      assert.equal(await log.isRetired(s0), false, '전제: 아직 은퇴하지 않았다');
+      await (await log.requestRevocation(s0, rc.epochAtRequest, rc.requestedAt, rc.sig)).wait();
+      assert.deepEqual((await log.pendingSlots()).map(Number), [s0]);
+      const pub = await cia.adminPost('/cia/publish', {});
+      assert.equal(pub.status, 200, j(pub.body)); assert.equal(pub.body.published, true, j(pub.body));
+      assert.deepEqual((await log.pendingSlots()).map(Number), [], '게시가 대기열을 비웠다');
+      assert.equal(await log.isRetired(s0), true, '슬롯이 영구 은퇴했다');
+    } finally { provider.destroy(); }
+    assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid, disabled: false })).status, 200);
+    const again = await loginViaRp();
+    assert.equal(again.rp?.ok, true, j(again)); assert.equal(again.rp.PPID, PPID1);
+    const slotNow = (await wallet.get('/wallet/status')).body.slot;
+    assert.notEqual(Number(slotNow), s0, '지갑은 재발급이 준 새 슬롯을 따른다');
+    assert.equal((await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === uid).slot, slotNow);
   });
 
   await t('bad_rp_cert: cert_s 의 origin 과 다른 origin 을 주장하면 지갑이 403', async () => {

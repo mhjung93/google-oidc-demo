@@ -65,6 +65,7 @@ window.DemoStrings = {
     rp_active_badge: { ko: '활성', en: 'Active' },
     rp_status_approved: { ko: '신원 기관의 승인을 받은 서비스입니다.', en: 'This service is approved by the identity authority.' },
     rp_status_pending: { ko: '신원 기관의 승인을 기다립니다. 관리자 페이지에서 승인하면 5초 안에 켜집니다.', en: 'Waiting for the identity authority to approve. Approve it on the admin page and this turns on within 5 s.' },
+    rp_mirror_line: { ko: '거울 주소 {mirror} / 캐노니컬 로그 {log}', en: 'Mirror {mirror} / canonical log {log}' },   // V10: 검증은 거울만 읽는다
     rp_policy: { ko: '정책: 국가 ∈ {{countries}}, 나이 ≥ {minAge}', en: 'Policy: country ∈ {{countries}}, age ≥ {minAge}' },
     rp_no_attrgate: { ko: '속성 조건 컨트랙트가 없습니다(팩토리 미배포) — 조건 요구 로그인을 쓸 수 없습니다.', en: 'No attribute-condition contract (the factory is not deployed) — predicate logins are unavailable.' },
     rp_require_pred: { ko: '조건 요구(국가·나이)', en: 'Require predicate (country·age)' },
@@ -144,6 +145,7 @@ window.DemoStrings = {
     wallet_session_revoked: { ko: '이 세션만 폐기를 요청했습니다 — 다음 게시부터 이 세션의 로그인·트랜잭션이 거부됩니다. 계정과 다른 세션은 그대로입니다.', en: 'Only this session was submitted for revocation — from the next publication its logins and transactions are refused. The account and the other sessions are untouched.' },
     wallet_session_revoke_failed: { ko: '세션 폐기 실패', en: 'Session revocation failed' },
     wallet_cancelled: { ko: '창에서 취소했습니다.', en: 'Cancelled in the dialog.' },
+    wallet_mirror_line: { ko: '거울 epoch {mirror} / 캐노니컬 epoch {canonical}', en: 'Mirror epoch {mirror} / canonical epoch {canonical}' },   // V10: 증명은 거울 epoch 기준
     wallet_chain_info: { ko: '체인 head {head} · Mode3Log {log} · 마지막 동기화 root {root} · 등록부 root {regRoot}', en: 'Chain head {head} · Mode3Log {log} · last synced root {root} · registry root {regRoot}' },
     wallet_tx_inner_failed: { ko: '트랜잭션은 보냈지만 내부 호출이 실패했습니다(예: 공개 조건 미충족). 해시 {hash}', en: 'The transaction was sent but the inner call failed (e.g. predicate not met). Hash {hash}' },
     wallet_aa_none: { ko: '(주소를 모릅니다)', en: '(address unknown)' },
@@ -289,6 +291,9 @@ window.DemoStrings = {
     admin_kv_creds: { ko: '활성 자격증명', en: 'Active credentials' },
     admin_kv_head: { ko: '체인 블록 높이', en: 'Chain block height' },
     admin_unknown: { ko: '(모름)', en: '(unknown)' },
+    // V10(2026-10-02) 거울 상태 한 줄 — 서비스·계정 컨트랙트는 거울만 읽으므로 캐노니컬 대비 뒤처짐이 곧 폐기 반영 지연이다.
+    admin_mirror_line: { ko: '거울 chain {chain}: epoch {epoch} (캐노니컬 대비 −{behind}), 마지막 게시 블록 {block}', en: 'Mirror chain {chain}: epoch {epoch} (−{behind} vs canonical), last published block {block}' },
+    admin_mirror_unreadable: { ko: '거울 chain {chain}: 읽을 수 없음', en: 'Mirror chain {chain}: unreadable' },
     admin_state_title: { ko: '폐기 목록 상태', en: 'Revocation list state' },
     admin_state_summary: { ko: '판 {epoch} · 폐기된 리프 {leaves} · 게시 대기 {pending}', en: 'Epoch {epoch} · {leaves} revoked leaves · {pending} awaiting publication' },
     admin_state_failed: { ko: '상태를 읽지 못했습니다', en: 'Could not read the state' },

@@ -64,6 +64,7 @@
         <button id="publishBtn" class="danger" data-i18n="admin_publish_btn">게시(체인에 올리기)</button>
       </p>
       <dl class="kv" id="stateKv"></dl>
+      <p class="muted" id="mirrorInfo"></p>
       <p class="muted" data-i18n="admin_rcl_heartbeat">하트비트(CIA_HEARTBEAT_BLOCKS)가 켜져 있으면 변화가 없어도 주기적으로 재게시됩니다.</p>
     </section>
   </main>
@@ -109,6 +110,7 @@
     let rps = null;                  // /cia/rps
     let openings = null;             // /cia/openings
     let ciaState = null;             // /cia/state
+    let ciaMirrors = null;           // /mode3/health 의 mirrors(V10 — 거울별 epoch·뒤처짐)
     const sessionsByUid = {};        // uid → 마지막으로 읽은 세션 목록(언어 전환 때 다시 그린다)
     const expandedUids = new Set();  // 세션 표를 펼친 계정
     let pendingRps = null;           // 배지 숫자. null = 아직 모름(시크릿 없음·조회 실패)
@@ -485,6 +487,14 @@
     function renderState() {
       const host = $('stateKv');
       host.textContent = '';
+      // V10(2026-10-02): 거울 한 줄씩 — 서비스는 거울만 읽으므로 "캐노니컬 대비 −n" 이 폐기 반영 지연이다.
+      const mi = $('mirrorInfo');
+      mi.textContent = '';
+      for (const m of ciaMirrors ?? []) {
+        const line = document.createElement('div');
+        tte(line, m.epoch === null ? 'admin_mirror_unreadable' : 'admin_mirror_line', { chain: m.chainId, epoch: m.epoch, behind: m.behind, block: m.lastPublishedBlock });
+        mi.appendChild(line);
+      }
       if (!ciaState) return;
       const rows = [
         [{ term: 'root' }, ciaState.root],
@@ -509,11 +519,17 @@
         const r = await adminJson('GET', '/cia/state');
         ciaState = r.status === 200 ? r.body : null;
       } catch { ciaState = null; }
+      await loadMirrors();
       renderState();
     }
+    /** /mode3/health 는 관리자 시크릿 없이 읽힌다 — 거울 줄만 쓴다. */
+    async function loadMirrors() {
+      try { ciaMirrors = (await (await fetch('/mode3/health')).json()).mirrors ?? null; } catch { ciaMirrors = null; }
+    }
     $('stateBtn').addEventListener('click', () => {
-      run('admin_state_failed', () => call('GET', '/cia/state'), ({ body }) => {
+      run('admin_state_failed', () => call('GET', '/cia/state'), async ({ body }) => {
         ciaState = body;
+        await loadMirrors();
         renderState();
         setVerdict($('adminVerdict'), true, 'admin_state_title', () => ({ summary: Demo.t('admin_state_summary', { epoch: body.epoch, leaves: body.leafCount, pending: body.pendingCount }), detail: safeDetail(body) }));
       });

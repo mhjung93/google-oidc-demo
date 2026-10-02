@@ -49,6 +49,10 @@ t('ui 에 안내 바·토글·공통 버튼 키가 있다', () => {
 t('ui 에 상태 패널 키가 있다', () => {
   for (const k of ['stack_aa', 'stack_rp', 'stack_wallet', 'stack_chain', 'stack_unknown', 'stack_no_response', 'stack_chain_none', 'stack_root_stale', 'stack_root_warn', 'stack_pending_leaves', 'stack_rp_pending', 'stack_rp_inactive', 'stack_wallet_unregistered', 'stack_wallet_cia_down', 'stack_ok', 'stack_panel_title', 'stack_head']) assert.ok(S.ui[k], k);
 });
+// V10(2026-10-02) 상태 카드의 거울 줄 — 관리자·서비스·지갑 페이지가 쓴다.
+t('ui 에 거울 상태 줄 키가 있다', () => {
+  for (const k of ['admin_mirror_line', 'admin_mirror_unreadable', 'rp_mirror_line', 'wallet_mirror_line']) assert.ok(S.ui[k], k);
+});
 // 체험 모드(설계 2026-09-25 §3) — 단계마다 말풍선 문구와 대상 요소 id, 그리고 스위치·잠금·완료 문구.
 const TOUR_PAGES = ['rp', 'wallet', 'admin', 'account'];
 t('steps 에 체험 모드 말풍선 문구(tour)와 대상 요소(target)가 있다', () => {

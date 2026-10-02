@@ -19,6 +19,7 @@
       <p id="rpInfo" class="muted">서비스 정보를 불러오는 중…</p>
       <p id="walletModeNote" class="muted"></p>
       <p id="attrGateInfo" class="muted">-</p>
+      <p id="rpMirrorInfo" class="muted"></p>
       <p id="rpInfoExpert" class="muted expert"></p>
     </section>
 
@@ -156,6 +157,7 @@
       tte($('rpInfo'), pending ? 'rp_status_pending' : 'rp_status_approved');
       if (info.attrGateAddress) tte($('attrGateInfo'), 'rp_policy', { countries: info.predicates.allowedCountries.join(', '), minAge: info.predicates.minAge });
       else tte($('attrGateInfo'), 'rp_no_attrgate');
+      tte($('rpMirrorInfo'), 'rp_mirror_line', { mirror: info.mirrorAddress ?? '-', log: info.logAddress ?? '-' });   // V10: 검증은 거울만 읽는다
       $('rpInfoExpert').textContent = `arid=${info.arid ?? '-'}   origin=${info.origin}   cert_s=있음   pk_trace=있음   Mode3Log=${info.logAddress}`
         + `   지갑 에이전트=${info.walletAgentOrigin}   pk_CIA=${info.pkCiaSource}   chainId=${info.chainId}   팩토리=${info.factoryAddress ?? '(없음)'}`
         + `   AttrGate=${info.attrGateAddress ?? '(없음)'}`;
