@@ -40,7 +40,7 @@ let stack = null;
 let ciaStopped = false;
 
 try {
-  stack = await startIsolatedMode3Stack();          // file 모드(MetaMask·Snap 없이 도는 데모 경로)
+  stack = await startIsolatedMode3Stack({ autoRelay: true });          // file 모드(MetaMask·Snap 없이 도는 데모 경로). V10: 거울 릴레이는 헬퍼가 대신 돈다
   const { wallet, rp } = stack;
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   // 파괴적 조작의 확인창(2026-09-24 UX §4.5) — 자동화는 모두 승인한다.

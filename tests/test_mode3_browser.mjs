@@ -36,7 +36,7 @@ async function launchBrowser() {
 
 const browser = await launchBrowser();
 const provider = getProvider();
-const stack = await startIsolatedMode3Stack({ walletEnv: { MODE3_WALLET_SECRETS: 'snap' } });
+const stack = await startIsolatedMode3Stack({ walletEnv: { MODE3_WALLET_SECRETS: 'snap' }, autoRelay: true });   // V10: 거울 릴레이는 헬퍼가 대신 돈다(페이지 안 로그인)
 const { wallet, rp } = stack;
 
 // ---- 하네스가 맡는 것: Snap 저장소, 대화상자, 체인 전송 ----

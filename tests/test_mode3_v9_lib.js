@@ -52,4 +52,17 @@ await t('등록 메시지·서명: registerMessage = Poseidon(D_REG, uid, cm.x, 
   const other = await createRegistration();
   assert.equal(eddsa.verifyPoseidon(m, { R8: [F.e(BigInt(sig.R8x)), F.e(BigInt(sig.R8y))], S: BigInt(sig.S) }, [F.e(other.pk_u.x), F.e(other.pk_u.y)]), false);
 });
+await t('V10 ProofCache.rootKey(chainId, rev, reg) = "chainId:rev:reg", 2인자 호출은 throw; 그 키로도 deleteSession 이 세션만 지운다', async () => {
+  const { ProofCache } = await import('../lib/mode3_wallet.js');
+  assert.equal(ProofCache.rootKey(31337n, 1n, 2n), '31337:1:2');
+  assert.throws(() => ProofCache.rootKey(1n, 2n));
+  // 같은 (rev, reg) 라도 체인이 다르면 다른 키 — 다른 체인 거울의 π 를 섞지 않는다(V10 §5)
+  assert.notEqual(ProofCache.rootKey(1n, 5n, 6n), ProofCache.rootKey(2n, 5n, 6n));
+  const c = new ProofCache();
+  c.set(ProofCache.rootKey(31337n, 1n, 2n), '77', 'a', '1:0,0:0,0:0:0');
+  c.set(ProofCache.rootKey(31337n, 1n, 2n), '88', 'b');
+  c.deleteSession('77');
+  assert.equal(c.get(ProofCache.rootKey(31337n, 1n, 2n), '77', '1:0,0:0,0:0:0'), null);
+  assert.equal(c.get(ProofCache.rootKey(31337n, 1n, 2n), '88'), 'b');
+});
 process.exit(fails ? 1 : 0);

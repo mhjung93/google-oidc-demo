@@ -5,7 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { ethers } from 'ethers';
 import { startIsolatedCia, freePort } from './isolated_cia.mjs';
+import { MODE3_ROOTS_ABI } from '../../lib/mode3_log.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 
@@ -18,6 +20,7 @@ const PINNED_ENV = {
   MODE3_RP_REGISTRATION_POLL_MS: '300', MODE3_RP_LOGIN_LOG: '',
   MODE3_RP_FACTORY_ADDRESS: '', MODE3_VERIFIER_ADDRESS: '', MODE3_RELAYER_INDEX: '', MODE3_MAX_ROOT_AGE: '', MODE3_MAX_LIFETIME_BLOCKS: '',
   MODE3_TTL_BLOCKS: '', MODE3_HEIGHT_GRID: '', MODE3_ALLOWED_COUNTRIES: '', MODE3_MIN_AGE: '',
+  MODE3_REV_CHAIN_RPC: '',   // V10: 지갑의 캐노니컬 RPC — 비우면 CIA_RPC_URL(격리 스택은 체인 하나)
 };
 
 /** node <script> 를 env 로 띄우고 readyUrl 이 200 을 줄 때까지 기다린다. */
@@ -62,7 +65,7 @@ function client(base, logFile) {
 }
 
 export async function startIsolatedMode3Stack(opts = {}) {
-  const { rp: withRp = true, rpEnv = {}, walletEnv = {}, ciaEnv = {}, extraRpOrigins = [] } = opts;   // extraRpOrigins: 지갑 CORS 허용 목록에 더할 서비스 오리진(두 번째 서비스 시험용)
+  const { rp: withRp = true, rpEnv = {}, walletEnv = {}, ciaEnv = {}, extraRpOrigins = [], autoRelay = false } = opts;   // autoRelay: 아래 relayIfBehind 를 뒤에서 계속 돌린다(브라우저 각본용, V10)   // extraRpOrigins: 지갑 CORS 허용 목록에 더할 서비스 오리진(두 번째 서비스 시험용)
   // 지갑 포트·오리진은 CIA 보다 **먼저** 잡는다 — CIA 의 /mode3/health CORS 허용 목록(설계 2026-09-25 §1.2)에
   // MODE3_WALLET_AGENT_ORIGIN 으로 넘겨야 한다. 호출자의 ciaEnv 가 우선한다.
   const walletPort = await freePort();
@@ -76,7 +79,7 @@ export async function startIsolatedMode3Stack(opts = {}) {
     const walletLog = path.join(dir, 'wallet.log');
     const walletStateFile = path.join(dir, 'mode3_wallet_state.json');
     // 지갑 자식은 restartWallet() 이 같은 상태 파일·env 로 다시 띄운다(snap 모드의 "재시작 뒤 needs_consent" 시험용).
-    const walletSpawn = { env: { MODE3_WALLET_PORT: String(walletPort), MODE3_WALLET_STATE_FILE: walletStateFile, MODE3_CIA_URL: cia.base, MODE3_RP_ORIGIN: [rpOrigin, ...extraRpOrigins].join(','), CIA_LOG_ADDRESS: cia.logAddress, ...walletEnv }, readyUrl: `${walletOrigin}/wallet/status`, logFile: walletLog };
+    const walletSpawn = { env: { MODE3_WALLET_PORT: String(walletPort), MODE3_WALLET_STATE_FILE: walletStateFile, MODE3_CIA_URL: cia.base, MODE3_RP_ORIGIN: [rpOrigin, ...extraRpOrigins].join(','), CIA_LOG_ADDRESS: cia.logAddress, MODE3_MIRROR_ADDRESS: cia.mirrorAddress, ...walletEnv }, readyUrl: `${walletOrigin}/wallet/status`, logFile: walletLog };
     let walletChild = await spawnServer('mode3_wallet_agent.js', walletSpawn);
     children.push(walletChild);
     const wallet = client(walletOrigin, walletLog);
@@ -122,8 +125,37 @@ export async function startIsolatedMode3Stack(opts = {}) {
       if (!approved) throw new Error(`RP 등록 승인·활성화 실패\n${rp.log()}`);
     }
 
+    // 거울 릴레이(V10 Task 9): 격리 CIA 는 릴레이 주기가 꺼져 있어(CIA_MIRROR_HEARTBEAT_BLOCKS=0) 거울은 /cia/admin/relay 로만
+    // 오른다. 지갑은 새 자격증명 뒤 거울이 내 리프를 실을 때까지 기다리므로(registry_unpublished 폴링), 그 사이 릴레이를 대신
+    // 눌러 주는 펌프가 필요하다 — 거울이 캐노니컬보다 뒤처졌을 때만 누른다(따라잡은 거울에 force 릴레이를 하면 캐노니컬
+    // 하트비트가 하나 더 오른다).
+    const canonC = new ethers.Contract(cia.logAddress, MODE3_ROOTS_ABI, cia.mirrorContract.runner);
+    const relay = async () => {
+      const r = await cia.adminPost('/cia/admin/relay', {});
+      if (r.status !== 200) throw new Error(`relay 실패(${r.status}): ${JSON.stringify(r.body)}`);
+      return r.body;
+    };
+    const relayIfBehind = async () => { if ((await canonC.epoch()) > (await cia.mirrorContract.epoch())) await relay(); };
+    /** p(진행 중인 요청의 promise)가 끝날 때까지 거울이 뒤처지면 릴레이한다. 시작 전에 한 번 맞춰 둔다. */
+    const withRelay = async (fn) => {
+      await relayIfBehind();
+      let done = false;
+      const pump = (async () => { while (!done) { try { await relayIfBehind(); } catch { /* 다음 바퀴 */ } await new Promise((r) => setTimeout(r, 400)); } })();
+      try { return await fn(); } finally { done = true; await pump; }
+    };
+    // 브라우저 각본(tour·browser)은 로그인이 페이지 안에서 일어나 withRelay 로 감쌀 수 없다 — 운영의 거울 하트비트 자리를 대신해
+    // 거울이 뒤처지면 0.5초 안에 릴레이한다. 뒤처졌을 때만 누르므로 블록을 스스로 계속 만들지는 않는다.
+    let autoTimer = null, autoBusy = false;
+    if (autoRelay) {
+      autoTimer = setInterval(async () => {
+        if (autoBusy) return;
+        autoBusy = true;
+        try { await relayIfBehind(); } catch { /* 다음 틱 */ } finally { autoBusy = false; }
+      }, 500);
+    }
+
     return {
-      cia, wallet, rp, dir, walletStateFile,
+      cia, wallet, rp, dir, walletStateFile, relay, relayIfBehind, withRelay,
       rpOriginForWallet: rpOrigin,   // rp:false 여도 지갑에는 이 값을 CORS 오리진으로 넘겼다
       /** 지갑 자식만 죽이고 같은 상태 파일·env 로 다시 띄운다. 메모리(세션 witness·증명 캐시)만 사라진다. */
       async restartWallet() {
@@ -158,6 +190,8 @@ export async function startIsolatedMode3Stack(opts = {}) {
         throw new Error(`restartRp: 재기동한 RP 가 활성화되지 않았다\n${rp.log()}`);
       },
       async stop() {
+        if (autoTimer) clearInterval(autoTimer);
+        while (autoBusy) await new Promise((r) => setTimeout(r, 50));
         for (const c of children.reverse()) await stopChild(c);
         await cia.stop();
         fs.rmSync(dir, { recursive: true, force: true });

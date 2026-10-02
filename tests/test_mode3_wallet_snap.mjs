@@ -35,7 +35,8 @@ try {
   // 팩토리·AttrGate 주소는 승인 뒤 RP 가 배포하면서 채워진다 — 필요한 곳에서 다시 읽는다(info 의 arid·pk_trace·cert_s 는 고정)
   const rpInfo = async () => (await rp.get('/api/mode3/rp_info')).body;
   const info = await rpInfo();
-  const verifier = createRpVerifier({ provider, logAddress: cia.logAddress, vkey, pkCIA: { x: BigInt(keys.pk_CIA.x), y: BigInt(keys.pk_CIA.y) }, arid: BigInt(info.arid), chainId: BigInt(info.chainId), pkTrace: { x: BigInt(info.pk_trace.x), y: BigInt(info.pk_trace.y) } });
+  // V10(2026-10-02 Task 9): 서비스는 대상 체인 거울만 읽는다(mode3_rp.js) — 지갑의 π 도 거울 기준이다.
+  const verifier = createRpVerifier({ provider, logAddress: cia.mirrorAddress, vkey, pkCIA: { x: BigInt(keys.pk_CIA.x), y: BigInt(keys.pk_CIA.y) }, arid: BigInt(info.arid), chainId: BigInt(info.chainId), pkTrace: { x: BigInt(info.pk_trace.x), y: BigInt(info.pk_trace.y) } });
   const verify = (body, r_s) => verifier.verifyLogin({ proof: body.proof, publicSignals: body.publicSignals, sig: body.sig, r_s: BigInt(r_s) });
   /** 지갑 페이지 팝업이 만드는 /wallet/login 본문(증인 제외). */
   const loginBase = async () => {
@@ -108,7 +109,8 @@ try {
     const badO = await wallet.post('/wallet/login', { ...base, witness: w, verifiedOrigin: 'http://evil:1' });
     assert.equal(badO.status, 403, j(badO.body)); assert.equal(badO.body.reason, 'bad_rp_cert');
     // Origin 헤더는 snap 모드에서 무시된다(같은 오리진 호출) — verifiedOrigin 만 본다
-    const ok = await wallet.post('/wallet/login', { ...base, witness: w }, { Origin: 'http://whatever.example' });
+    // 첫 로그인은 새 C_u 를 받고 거울이 그 리프를 실을 때까지 기다린다(V10) — 격리 CIA 는 릴레이 주기가 꺼져 있어 대신 눌러 준다.
+    const ok = await stack.withRelay(() => wallet.post('/wallet/login', { ...base, witness: w }, { Origin: 'http://whatever.example' }));
     assert.equal(ok.status, 200, j(ok.body));
     assert.equal(ok.body.issued, true);
     assert.ok(ok.body.userCredIssued, '첫 로그인은 새 C_u 를 응답에 실어 페이지가 Snap 에 저장한다');

@@ -37,7 +37,7 @@ try {
   }
   async function loginRound() {
     const { tree, revRoot, registry, regRoot } = await trees();
-    const key = ProofCache.rootKey(revRoot, regRoot);
+    const key = ProofCache.rootKey(31337n, revRoot, regRoot);
     let cached = cache.get(key, session.wallet.address);
     if (!cached) {
       cached = await buildCredentialProof({ uid, arid, s_u: u.s_u, r_u: u.r_u, blind_u, blind_s, pk_i: session.pk_i, attrs: ATTRS, credential: cred, pk_CIA, pk_trace, tree, registry, slot: u.slot, cm_u: u.cm_u });
@@ -73,13 +73,13 @@ try {
     const v = await loginRound();
     assert.equal(v.ok, true, j(v));
     const { regRoot } = await trees();
-    const cached = cache.get(ProofCache.rootKey(v.root, regRoot), session.wallet.address);
+    const cached = cache.get(ProofCache.rootKey(31337n, v.root, regRoot), session.wallet.address);
     assert.equal(cached.publicSignals.length, 30); assert.equal(BigInt(cached.publicSignals[7]), regRoot); assert.equal(v.regRoot, regRoot);
   });
   let PPID1, staleProof;
   await t('같은 root 둘이면 캐시 π 재사용', async () => {
     const tr = await trees();
-    const key = ProofCache.rootKey(tr.revRoot, tr.regRoot);
+    const key = ProofCache.rootKey(31337n, tr.revRoot, tr.regRoot);
     const before = cache.get(key, session.wallet.address);
     assert.ok(before, '첫 로그인 결과가 캐시에 있어야 한다');
     const v = await loginRound(); assert.equal(v.ok, true, j(v));

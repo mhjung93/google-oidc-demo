@@ -11,7 +11,7 @@ import { VKEY_PATH, createRegistration } from '../lib/mode3_wallet.js';
 import { createRpVerifier } from '../lib/mode3_rp.js';
 import { randomScalar } from '../lib/mode3_credential.js';
 import { deployVerifier, deployFactory, walletAt } from '../lib/mode3_onchain.js';
-import { LOG_ABI } from '../lib/mode3_log.js';
+import { LOG_ABI, MODE3_MIRROR_ABI, MODE3_ROOTS_ABI } from '../lib/mode3_log.js';
 import { setRoot } from '../lib/mode3_set_tree.js';
 import { pointToStrings } from '../lib/mode3_issuance.js';
 
@@ -37,10 +37,20 @@ try {
   // 실제 RP 프로세스는 안 띄우지만, 지갑의 CORS 오리진(rpOriginForWallet)으로 CIA 에 서비스를 등록해
   // (arid, cert_s) 를 얻는다 — /wallet/login 이 요구하는 서비스 인증 정보다.
   const { arid, cert_s, origin, pk_trace } = await cia.registerRp(stack.rpOriginForWallet);
-  const rp = createRpVerifier({ provider, logAddress: cia.logAddress, vkey, pkCIA: pk_CIA, arid: BigInt(arid), chainId: 31337n, pkTrace: pk_trace });
+  // V10(2026-10-02 Task 9): 서비스는 대상 체인 거울만 읽는다(mode3_rp.js 와 같이) — 지갑의 π 도 거울의 (revRoot, regRoot) 다.
+  const rp = createRpVerifier({ provider, logAddress: cia.mirrorAddress, vkey, pkCIA: pk_CIA, arid: BigInt(arid), chainId: 31337n, pkTrace: pk_trace });
+  const mirrorC = new ethers.Contract(cia.mirrorAddress, MODE3_MIRROR_ABI, provider);
+  const canonC = new ethers.Contract(cia.logAddress, MODE3_ROOTS_ABI, provider);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // 거울 릴레이(V10): 격리 CIA 는 릴레이 주기가 꺼져 있다 — 거울은 /cia/admin/relay 로만 오른다(stack.relay). 지갑은 새 자격증명
+  // 뒤 거울이 내 리프를 실을 때까지 기다리므로, 기존 시나리오의 로그인은 거울이 뒤처졌을 때만 릴레이를 대신 눌러 주는 펌프와
+  // 같이 돈다(login = stack.withRelay). 거울 지연 자체를 보는 케이스는 loginNoRelay 를 쓴다.
+  const { relay, relayIfBehind } = stack;
 
   const newRs = () => randomScalar().toString();
-  const login = (r_s = newRs(), extra = {}) => wallet.post('/wallet/login', { arid, origin, cert_s, pk_trace: { x: pk_trace.x.toString(), y: pk_trace.y.toString() }, r_s, ...extra }, { Origin: stack.rpOriginForWallet });
+  const loginNoRelay = (r_s = newRs(), extra = {}) => wallet.post('/wallet/login', { arid, origin, cert_s, pk_trace: { x: pk_trace.x.toString(), y: pk_trace.y.toString() }, r_s, ...extra }, { Origin: stack.rpOriginForWallet });
+  const login = (r_s = newRs(), extra = {}) => stack.withRelay(() => loginNoRelay(r_s, extra));
   const revalidate = (r_s, extra = {}) => wallet.post('/wallet/revalidate', { r_s, ...extra }, { Origin: stack.rpOriginForWallet });
   const verify = (body, r_s) => rp.verifyLogin({ proof: body.proof, publicSignals: body.publicSignals, sig: body.sig, r_s: BigInt(r_s) });
 
@@ -167,6 +177,7 @@ try {
     // 폐기 트리(revRoot)는 건드리지 않으므로(사용자 쪽은 더 이상 그 트리를 쓰지 않는다) stale_root 가 아니라 stale_registry_root 다.
     const rv = await cia.adminPost('/cia/revoke', { uid, scope: 'account' });
     assert.equal(rv.status, 200, j(rv.body)); assert.equal(rv.body.published, true, j(rv.body));
+    await relay();   // V10: 검증기는 거울을 읽는다 — 폐기가 거울에 실려야 옛 π 가 stale 이 된다
     const r = await revalidate(S1, { skipSync: true });
     assert.equal(r.status, 200, j(r.body));
     assert.deepEqual(r.body.publicSignals, first.publicSignals);
@@ -192,7 +203,8 @@ try {
 
   let S2;
   await t('복구 → 로그인: 사용자 자격증명 재발급(userCredMs>0, Cf_u 바뀜), issued=true, 검증 통과, PPID 동일', async () => {
-    const before = (await wallet.get('/wallet/status')).body.userCred.Cf_u;
+    const st0 = (await wallet.get('/wallet/status')).body;
+    const before = st0.userCred.Cf_u;
     assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid, disabled: false })).status, 200);
     const rs = newRs();
     const r = await login(rs);
@@ -205,6 +217,9 @@ try {
     const s = await wallet.get('/wallet/status');
     assert.notEqual(s.body.userCred.Cf_u, before, '새 사용자 자격증명은 Cf_u 가 다르다');
     assert.equal(s.body.userCred.revoked, false);
+    // V10(§4.5, 결정 3): 계정 폐기로 옛 슬롯은 영구 은퇴됐다 — 되살린 뒤의 재발급은 새 슬롯을 받고, 지갑이 그 슬롯을 따른다.
+    assert.notEqual(s.body.slot, st0.slot, `재발급 응답의 새 슬롯을 따라야 한다(옛 ${st0.slot})`);
+    assert.equal(s.body.registry.slot, s.body.slot); assert.equal(s.body.registry.match, true);
     S2 = rs;
   });
 
@@ -339,7 +354,7 @@ try {
   await t('login: 인증서와 다른 arid 로 배포된 팩토리, 또는 컨트랙트가 아닌 주소를 factoryAddress 로 주면 409 bad_factory (2026-09-18 점검 3)', async () => {
     const signer = await provider.getSigner(0);
     const v = await deployVerifier(signer);
-    const wrongArid = await deployFactory(signer, { verifierAddress: v, arid: BigInt(arid) + 1n, pkCIA: pk_CIA, pkTrace: pk_trace, logAddress: cia.logAddress, maxRootAge: 10n });
+    const wrongArid = await deployFactory(signer, { verifierAddress: v, arid: BigInt(arid) + 1n, pkCIA: pk_CIA, pkTrace: pk_trace, logAddress: cia.mirrorAddress, maxRootAge: 10n });
     const r1 = await login(newRs(), { factoryAddress: wrongArid });
     assert.equal(r1.status, 409, j(r1.body)); assert.equal(r1.body.reason, 'bad_factory');
     const r2 = await login(newRs(), { factoryAddress: ethers.Wallet.createRandom().address });
@@ -351,7 +366,7 @@ try {
     const { abi, bytecode } = JSON.parse(fs.readFileSync(new URL('../artifacts/contracts/test/AcceptAllPiCredVerifier.sol/AcceptAllPiCredVerifier.json', import.meta.url), 'utf8'));   // 테스트 전용 검증자(contracts/test)
     const fake = await new ethers.ContractFactory(abi, bytecode, signer).deploy();
     await fake.waitForDeployment();
-    const rogue = await deployFactory(signer, { verifierAddress: await fake.getAddress(), arid: BigInt(arid), pkCIA: pk_CIA, pkTrace: pk_trace, logAddress: cia.logAddress });
+    const rogue = await deployFactory(signer, { verifierAddress: await fake.getAddress(), arid: BigInt(arid), pkCIA: pk_CIA, pkTrace: pk_trace, logAddress: cia.mirrorAddress });
     const r = await login(newRs(), { factoryAddress: rogue });
     assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'bad_factory'); assert.equal(r.body.detail, 'verifier_code_mismatch');
   });
@@ -363,10 +378,11 @@ try {
   await t('I-3/E-2: 팩토리의 log·pk_CIA·pk_trace·maxRootAge·maxLifetime 이 기대와 다르면 409 bad_factory', async () => {
     const signer = await provider.getSigner(0);
     const v = await deployVerifier(signer);
-    const base = { verifierAddress: v, arid: BigInt(arid), pkCIA: pk_CIA, pkTrace: pk_trace, logAddress: cia.logAddress };
+    const base = { verifierAddress: v, arid: BigInt(arid), pkCIA: pk_CIA, pkTrace: pk_trace, logAddress: cia.mirrorAddress };   // V10: 계정은 거울을 읽는다
     const otherLog = (await deployRevocationLog(await signer.getAddress(), provider)).address;   // 서비스가 통제하는 로그
     const cases = [
       ['다른 폐기 로그', { ...base, logAddress: otherLog }],
+      ['캐노니컬 로그(V10: 대상 체인 거울이어야 한다)', { ...base, logAddress: cia.logAddress }],
       ['다른 pk_CIA', { ...base, pkCIA: { x: pk_CIA.x + 1n, y: pk_CIA.y } }],
       ['다른 pk_trace', { ...base, pkTrace: { x: BigInt(pk_trace.x) + 1n, y: BigInt(pk_trace.y) } }],
       ['maxRootAge 상한 밖', { ...base, maxRootAge: 2n ** 40n }],
@@ -390,7 +406,7 @@ try {
   await t('tx: 팩토리를 준 세션 — 첫 트랜잭션은 지갑 배포 + 실행 ok, 두 번째는 캐시 π 재사용·nonce 1', async () => {
     const signer = await provider.getSigner(0);
     const verifierAddress = await deployVerifier(signer);
-    factoryAddress = await deployFactory(signer, { verifierAddress, arid, pkCIA: pk_CIA, pkTrace: pk_trace, logAddress: cia.logAddress, maxRootAge: 10n });
+    factoryAddress = await deployFactory(signer, { verifierAddress, arid, pkCIA: pk_CIA, pkTrace: pk_trace, logAddress: cia.mirrorAddress, maxRootAge: 10n });
     S3 = newRs();
     const l = await login(S3, { factoryAddress });
     assert.equal(l.status, 200, j(l.body));
@@ -416,17 +432,17 @@ try {
     assert.equal(await provider.getBalance(to), ethers.parseEther('0.1'));
   });
 
-  await t('tx: root 게시가 maxRootAge(10) 보다 오래되면 execute_reverted RootTooOld, CIA 하트비트 뒤 다시 ok', async () => {
-    const log = new ethers.Contract(cia.logAddress, LOG_ABI, provider);
+  // V10: 계정 컨트랙트는 거울의 lastPublishedBlock 을 본다. 격리 CIA 는 거울 릴레이 주기가 꺼져 있어 캐노니컬 하트비트만으로는
+  // 거울이 오르지 않는다 — 하트비트 대신 /cia/admin/relay 로 거울을 올린다.
+  await t('tx: 거울 게시가 maxRootAge(10) 보다 오래되면 execute_reverted RootTooOld, 거울 릴레이 뒤 다시 ok', async () => {
+    const log = new ethers.Contract(cia.mirrorAddress, LOG_ABI, provider);
     const last0 = await log.lastPublishedBlock();
     await provider.send('hardhat_mine', ['0xb']);
-    // 하트비트가 먼저 돌아 버리면 revert 를 못 본다 — 게시 뒤 11 블록 안에 제출한다(하트비트는 5 블록마다 300ms 폴링).
     const r = await wallet.post('/wallet/tx', { r_s: S3, to: ethers.Wallet.createRandom().address }, { Origin: stack.rpOriginForWallet });
     if (r.status === 409) assert.match(r.body.detail, /RootTooOld/, j(r.body));
-    else assert.equal(r.status, 200, j(r.body));   // 하트비트가 이미 따라잡았으면 그대로 ok — 아래에서 lastPublishedBlock 전진만 확인
-    const deadline = Date.now() + 10_000;
-    while (Date.now() < deadline && (await log.lastPublishedBlock()) === last0) await new Promise((res) => setTimeout(res, 200));
-    assert.ok((await log.lastPublishedBlock()) > last0, `하트비트가 게시했어야 한다\n${cia.log()}`);
+    else assert.equal(r.status, 200, j(r.body));   // 공유 노드에서 그 사이 릴레이가 끼어들었으면 그대로 ok — 아래에서 lastPublishedBlock 전진만 확인
+    await relay();
+    assert.ok((await log.lastPublishedBlock()) > last0, `릴레이가 거울에 게시했어야 한다\n${cia.log()}`);
     // :8545 는 공유 노드다(CLAUDE.md) — 다른 프로세스가 그 사이 블록을 더 진행시키면 maxRootAge(10) 를 다시
     // 넘길 수 있다(관찰됨). 첫 시도가 또 RootTooOld 면 짧게 재시도한다 — 대상 자체는 여전히 "곧 성공" 이다.
     let ok;
@@ -566,6 +582,9 @@ try {
     // attrGateAddress 는 Task 6 가 RP 에 준다 — 그 전엔 dEaD 로 보내고 onchainDisclosure 만 본다(회로·컨트랙트 배선 확인이 목적).
     const to = '0x000000000000000000000000000000000000dEaD';
     const s = await loginOnce({ factoryAddress });
+    // V10: 계정은 거울의 lastPublishedBlock 으로 maxRootAge(10) 를 본다. 격리 CIA 는 거울 하트비트가 꺼져 있어(캐노니컬 하트비트만
+    // 돈다) 앞 케이스들 동안 거울이 늙었을 수 있다 — 실행 직전에 거울을 새로 올린다(운영에서는 CIA 의 거울 하트비트가 하는 일).
+    await relay();
     const ok = await wallet.post('/wallet/tx', { r_s: s.r_s, to, data: '0x4e71d92d', disclose: [{ lo: '0', hi: '2007' }, { lo: '410', hi: '410' }, null, null] }, { Origin: stack.rpOriginForWallet });
     assert.equal(ok.status, 200, j(ok.body));
     assert.equal(ok.body.disclosure.mask, '3'); assert.equal(ok.body.cacheHit, false);
@@ -588,6 +607,9 @@ try {
   await t('V7 /wallet/tx: set 으로 국가 ∈ 집합을 증명하면 onchainDisclosure.set 이 sel 2·root 로 남는다; 비소속 집합은 400 disclosure_unsatisfiable; slot 6 은 bad_disclosure(V9: 0..5)', async () => {
     const to = '0x000000000000000000000000000000000000dEaD';
     const s = await loginOnce({ factoryAddress });
+    // V10: 계정은 거울의 lastPublishedBlock 으로 maxRootAge(10) 를 본다. 격리 CIA 는 거울 하트비트가 꺼져 있어(캐노니컬 하트비트만
+    // 돈다) 앞 케이스들 동안 거울이 늙었을 수 있다 — 실행 직전에 거울을 새로 올린다(운영에서는 CIA 의 거울 하트비트가 하는 일).
+    await relay();
     const members = [410, 392, 840, 276, 250];
     const ok = await wallet.post('/wallet/tx', { r_s: s.r_s, to, disclose: [null, null, null, null], set: { slot: 1, members } }, { Origin: stack.rpOriginForWallet });
     assert.equal(ok.status, 200, j(ok.body));
@@ -598,6 +620,54 @@ try {
     assert.equal(miss.status, 400, j(miss.body)); assert.equal(miss.body.reason, 'disclosure_unsatisfiable');
     const bad = await wallet.post('/wallet/tx', { r_s: s.r_s, to, set: { slot: 6, members } }, { Origin: stack.rpOriginForWallet });
     assert.equal(bad.status, 400, j(bad.body)); assert.equal(bad.body.reason, 'bad_disclosure');
+  });
+
+  // ---- V10(2026-10-02 Task 9): 거울 뷰 기준 증명 ----
+  await t('로그인 π 는 거울의 (revRoot, regRoot) 를 쓴다 — 캐노니컬이 앞서 있어도', async () => {
+    await relay();                                              // 내 등록부 리프를 거울에 반영(첫 로그인 전제)
+    // 캐노니컬만 epoch +1: 내 세션 하나를 폐기하고 게시한다(새 로그인의 세션·자격증명과는 무관). 거울은 릴레이 전이라 그대로다.
+    const victim = newRs();
+    assert.equal((await login(victim)).status, 200);
+    assert.equal((await wallet.post('/wallet/session/revoke', { r_s: victim })).status, 200);
+    assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
+    assert.notEqual(BigInt(await canonC.revRoot()), BigInt(await mirrorC.revRoot()), '전제: 캐노니컬이 거울보다 앞서 있다');
+    const rs = newRs();
+    const r = await loginNoRelay(rs);
+    assert.equal(r.status, 200, j(r.body));
+    assert.equal(r.body.root, BigInt(await mirrorC.revRoot()).toString());
+    assert.equal(r.body.regRoot, BigInt(await mirrorC.regRoot()).toString());
+    assert.equal((await verify(r.body, rs)).ok, true, '거울을 읽는 검증기가 받아들인다');
+    // 거울이 따라오면 root 가 바뀐다 — 새 재검증은 새 거울 root 로 다시 증명한다(캐시 키가 (chainId, rev, reg)).
+    await relay();
+    const rv = await revalidate(rs);
+    assert.equal(rv.status, 200, j(rv.body)); assert.equal(rv.body.cacheHit, false);
+    assert.equal(rv.body.root, BigInt(await mirrorC.revRoot()).toString());
+    assert.equal((await verify(rv.body, rs)).ok, true);
+  });
+  await t('새 자격증명은 거울에 내 슬롯이 반영될 때까지 registry_unpublished 로 기다렸다가 릴레이 뒤 성공한다', async () => {
+    // 이 지갑은 등록이 하나뿐이다 — "첫 발급" 대신 자격증명 은퇴(캐노니컬 즉시 게시, 거울은 그대로) 뒤의 재발급으로 같은 경로를 탄다.
+    await relayIfBehind();
+    assert.equal((await cia.adminPost('/cia/revoke', { uid, scope: 'credential' })).status, 200);
+    const rs = newRs();
+    let settled = false;
+    const p = loginNoRelay(rs);                                 // 폴링 시작
+    p.then(() => { settled = true; }, () => { settled = true; });
+    await sleep(1500);
+    assert.equal(settled, false, '릴레이 전에는 끝나지 않는다(거울에 새 리프가 없다)');
+    await relay();
+    const r = await p;
+    assert.equal(r.status, 200, j(r.body)); assert.ok(r.body.timings.userCredMs > 0);
+    assert.equal(r.body.regRoot, BigInt(await mirrorC.regRoot()).toString());
+    assert.equal((await verify(r.body, rs)).ok, true);
+  });
+  await t('/wallet/status 에 mirror·canonical 이 있다', async () => {
+    const s = (await wallet.get('/wallet/status')).body;
+    assert.equal(s.mirror.address.toLowerCase(), cia.mirrorAddress.toLowerCase());
+    assert.equal(s.mirror.epoch, (await mirrorC.epoch()).toString());
+    assert.equal(s.mirror.lastPublishedBlock, (await mirrorC.lastPublishedBlock()).toString());
+    assert.equal(s.canonical.logAddress.toLowerCase(), cia.logAddress.toLowerCase());
+    assert.equal(s.canonical.epoch, (await canonC.epoch()).toString());
+    assert.match(s.canonical.rpc, /^http/);
   });
 
   // 마지막에 둔다 — CIA 를 끈다. stack.stop() 의 cia.stop() 은 이미 죽은 프로세스를 건너뛴다.
@@ -621,7 +691,7 @@ try {
 // 미분류 500 으로 죽었다). isolated_mode3_stack.mjs 의 walletEnv 는 자신의 MODE3_WALLET_STATE_FILE 뒤에
 // 스프레드되므로(헬퍼 수정 없이) 이 경로를 바로 덮어쓸 수 있다 — v7 모양 상태 파일을 그 경로에 미리 써 둔다.
 // uid 424242 는 CIA 에 등록돼 있지 않지만 /wallet/status 는 파일의 공개 부분만 읽고 CIA 를 부르지 않으므로 상관없다.
-await t('지갑 상태 파일 7→8 이행: v7 4칸 attrs 가 6칸으로 패딩되고 slot·pk_u 는 null', async () => {
+await t('지갑 상태 파일 7→8 이행: v7 4칸 attrs 가 6칸으로 패딩되고 slot·pk_u 는 null (+ V10: 거울 주소가 없으면 체인 라우트는 503 chain_unavailable)', async () => {
   const reg = await createRegistration();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-wallet-v7-'));
   const stateFile = path.join(dir, 'mode3_wallet_state.json');
@@ -630,7 +700,8 @@ await t('지갑 상태 파일 7→8 이행: v7 4칸 attrs 가 6칸으로 패딩�
     registration: { uid: '424242', s_u: reg.s_u.toString(), r_u: reg.r_u.toString(), cm_u: pointToStrings(reg.cm_u), sk_u: reg.sk_u, attrs: ['1990', '410', '2', '0'], userCred: null },
     sessions: {},
   }));
-  const stack2 = await startIsolatedMode3Stack({ rp: false, walletEnv: { MODE3_WALLET_STATE_FILE: stateFile } });
+  // MODE3_MIRROR_ADDRESS 를 비워 띄운다(V10 Task 9) — 상태 파일 이행 단언은 체인을 쓰지 않으므로 영향이 없다. 스택을 하나 더 띄우지 않으려고 같이 본다.
+  const stack2 = await startIsolatedMode3Stack({ rp: false, walletEnv: { MODE3_WALLET_STATE_FILE: stateFile, MODE3_MIRROR_ADDRESS: '' } });
   try {
     const s = (await stack2.wallet.get('/wallet/status')).body;
     assert.equal(s.registered, true);
@@ -640,6 +711,9 @@ await t('지갑 상태 파일 7→8 이행: v7 4칸 attrs 가 6칸으로 패딩�
     // 저장된 파일 자체도 패딩된 채로 영속화됐는지(persist) 확인 — 메모리에서만 고치고 안 쓰면 재시작마다 되풀이된다.
     const onDisk = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
     assert.deepEqual(onDisk.registration.attrs, ['1990', '410', '2', '0', '0', '0']);
+    const pre = await stack2.wallet.post('/wallet/authorize/precheck', { arid: '1', origin: 'http://x', cert_s: {}, pk_trace: { x: '1', y: '2' } });
+    assert.equal(pre.status, 503, j(pre.body)); assert.equal(pre.body.reason, 'chain_unavailable'); assert.equal(pre.body.detail, 'MODE3_MIRROR_ADDRESS not configured');
+    assert.equal(s.mirror.address, null);
   } finally { await stack2.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
