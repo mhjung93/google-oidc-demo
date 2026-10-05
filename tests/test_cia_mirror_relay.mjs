@@ -1,5 +1,6 @@
-// V10(2026-10-02 설계 §5 결정 3) CIA 거울 릴레이. 격리 CIA + :8545 의 캐노니컬 로그·거울. 릴레이가 하트비트 주기로만 거울을
-// 갱신하는지, 캐노니컬에 새 epoch 가 없으면 캐노니컬 하트비트를 먼저 올리는지, 수동 relay 가 즉시 갱신하는지. (chain)
+// V10(2026-10-02 설계 §5 결정 3) CIA 거울 릴레이. 격리 CIA + :8545 의 캐노니컬 로그·거울. (chain)
+// 2026-10-05(전체 코드 리뷰 3·9번): 게시 직후 뒤처진 거울에 즉시 중계하고(CIA_MIRROR_RELAY_ON_PUBLISH, 기본 켬), 따라잡은 거울을 위해
+// 캐노니컬 하트비트를 새로 만들지 않는다. 첫 인스턴스는 즉시 중계를 꺼(0) 주기 틱만의 동작을 보고, 마지막 인스턴스가 즉시 중계를 본다.
 //   node tests/test_cia_mirror_relay.mjs
 import assert from 'node:assert/strict';
 import { ethers } from 'ethers';
@@ -36,8 +37,9 @@ async function forgeToMirror(inst, mirrorC, { epoch, revRoot, regRoot }) {
 let u, alice;   // registerUser 결과 — 동시성 케이스가 다시 쓴다
 
 const provider = getProvider();
-// 캐노니컬 하트비트는 끈다(0) — "캐노니컬에 새 epoch 가 없을 때" 릴레이가 스스로 하트비트를 먼저 올리는 경로를 본다.
-const cia = await startIsolatedCia({ env: { CIA_MIRROR_HEARTBEAT_BLOCKS: '5', CIA_MIRROR_POLL_MS: '300', CIA_HEARTBEAT_BLOCKS: '0' } });
+// 캐노니컬 하트비트는 끈다(0) — 캐노니컬에 새 epoch 가 없을 때 릴레이가 하트비트를 스스로 만들지 **않는지** 본다(9번).
+// 게시 직후 즉시 중계도 끈다('0') — 이 인스턴스는 주기 틱(H=5)만의 동작(뒤처짐·behindSince·불일치 복구)을 본다.
+const cia = await startIsolatedCia({ env: { CIA_MIRROR_HEARTBEAT_BLOCKS: '5', CIA_MIRROR_POLL_MS: '300', CIA_HEARTBEAT_BLOCKS: '0', CIA_MIRROR_RELAY_ON_PUBLISH: '0' } });
 const mirror = new ethers.Contract(cia.mirrorAddress, MODE3_MIRROR_ABI, provider);
 const log = new ethers.Contract(cia.logAddress, MODE3_LOG_ABI, provider);
 try {
@@ -57,13 +59,14 @@ try {
     await waitFor(async () => (await mirror.epoch()) === (await log.epoch()), 5000);
     assert.equal(await mirror.revRoot(), await log.revRoot()); assert.equal(await mirror.regRoot(), await log.regRoot());
   });
-  await t('캐노니컬에 새 epoch 가 없어도 주기가 지나면 캐노니컬 하트비트를 먼저 올리고 거울을 갱신한다', async () => {
+  // 2026-10-05(9번): 예전에는 여기서 캐노니컬 하트비트를 새로 만들어 옮겼다 — 거울 수·짧은 H 에 비례해 캐노니컬 게시가 늘었다.
+  await t('따라잡은 거울은 주기가 지나도 건드리지 않는다 — 캐노니컬 하트비트를 새로 만들지 않는다(epoch 둘 다 그대로)', async () => {
     const e0 = await mirror.epoch(), c0 = await log.epoch();
     assert.equal(e0, c0, '앞 케이스 뒤 거울과 캐노니컬이 같은 epoch 여야 이 경로를 탄다');
-    await mineBlocks(6, provider);
-    await waitFor(async () => (await mirror.epoch()) > e0, 5000);
-    assert.ok((await log.epoch()) > c0, '캐노니컬 하트비트가 먼저 올라갔어야 한다');
-    assert.equal(await mirror.epoch(), await log.epoch());
+    await mineBlocks(12, provider);   // H=5 의 두 배 이상
+    await sleep(1500);                // 릴레이 틱(300ms) 다섯 번
+    assert.equal(await log.epoch(), c0, '캐노니컬에 하트비트가 새로 올라가면 안 된다');
+    assert.equal(await mirror.epoch(), e0);
   });
   await t('POST /cia/admin/relay 는 주기와 무관하게 즉시 갱신하고 /mode3/health 가 mirrors 를 낸다', async () => {
     const rv = await cia.post('/cia/account/self_revoke', { uid, pwd });
@@ -185,6 +188,32 @@ try {
     assert.equal(h2.mirrors[0].mismatch, false, j(h2.mirrors)); assert.equal(h2.mirrors[0].behind, 0);
   });
 } finally { await cia2.stop(); }
+
+// 2026-10-05(전체 코드 리뷰 3번): 게시 직후 즉시 중계(기본값). 주기(H=5)가 지나지 않게 블록을 캐지 않고, 캐노니컬 하트비트는 끈다 —
+// 거울이 따라오면 그것은 즉시 중계 덕이고, 캐노니컬 epoch 는 게시한 횟수만큼만 오른다(따라잡은 거울용 하트비트 없음).
+const cia3 = await startIsolatedCia({ env: { CIA_MIRROR_HEARTBEAT_BLOCKS: '5', CIA_MIRROR_POLL_MS: '300', CIA_HEARTBEAT_BLOCKS: '0' } });
+const log3 = new ethers.Contract(cia3.logAddress, MODE3_LOG_ABI, provider);
+const mirror3 = new ethers.Contract(cia3.mirrorAddress, MODE3_MIRROR_ABI, provider);
+try {
+  await t('게시 직후 즉시 중계: 발급·자기 폐기 게시가 블록을 캐지 않아도 곧바로 거울에 실리고, 캐노니컬 epoch 는 게시 횟수만큼만 오른다', async () => {
+    await waitFor(async () => (await mirror3.epoch()) === (await log3.epoch()), 4000);   // 기동 게시가 있었다면 기동 직후 중계가 따라잡게 한다
+    const c0 = await log3.epoch();
+    const u3 = await cia3.registerUser(uid, pwd);
+    const cred = await buildUserCredRequest({ uid: BigInt(uid), s_u: u3.s_u, r_u: u3.r_u, sk_u: u3.sk_u, attrs: ATTRS });
+    const iss = await cia3.post('/cia/user_cred', cred.body);
+    assert.equal(iss.status, 201, j(iss.body));
+    await waitFor(async () => (await mirror3.regRoot()) === (await log3.regRoot()) && (await mirror3.epoch()) === (await log3.epoch()), 4000);
+    assert.equal(await log3.epoch(), c0 + 1n, '발급 게시 한 번 — 중계를 위해 하트비트가 더 올라가면 안 된다');
+    const rv = await cia3.post('/cia/account/self_revoke', { uid, pwd });
+    assert.equal(rv.status, 200, j(rv.body)); assert.equal(rv.body.published, true);
+    await waitFor(async () => (await mirror3.regRoot()) === (await log3.regRoot()) && (await mirror3.epoch()) === (await log3.epoch()), 4000);
+    assert.equal(await log3.epoch(), c0 + 2n);
+    await mineBlocks(12, provider); await sleep(1500);   // 주기가 지나도 따라잡은 거울에는 아무 일도 없다
+    assert.equal(await log3.epoch(), c0 + 2n); assert.equal(await mirror3.epoch(), c0 + 2n);
+    const h = (await cia3.get('/mode3/health')).body;
+    assert.equal(h.mirrors[0].behind, 0, j(h.mirrors)); assert.equal(h.mirrors[0].mismatch, false);
+  });
+} finally { await cia3.stop(); }
 
 provider.destroy();
 process.exit(failed === 0 ? 0 : 1);

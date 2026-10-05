@@ -72,6 +72,11 @@ const chainProviders = new Map();   // chainid → JsonRpcProvider (재사용)
 // 주기 H_X(CIA_MIRROR_HEARTBEAT_BLOCKS)는 거울 체인 X 의 블록 기준이다(기본 50, '0' = 끔 — 격리 하네스 기본값).
 const MIRROR_HEARTBEAT_BLOCKS = envBig('CIA_MIRROR_HEARTBEAT_BLOCKS', 50);
 const MIRROR_POLL_MS = Number(process.env.CIA_MIRROR_POLL_MS) || 5000;
+// 2026-10-05(전체 코드 리뷰 3번): 캐노니컬 게시가 성공하면 곧바로 뒤처진 거울에 중계한다 — 등록부 변경이 다음 주기(H 블록)까지
+// 거울에 안 실려 첫 로그인이 지갑의 30초 대기(registry_unpublished)를 넘기고, 폐기 반영에도 시간 상한이 없던 문제. 주기 틱은 안전망
+// (실패 재시도·behindSince 상한·불일치 복구)으로 남는다. '0' 이면 예전처럼 주기 틱만 — 거울 지연을 눈으로 보이는 시연용.
+// 릴레이 자체가 꺼져 있으면(CIA_MIRROR_HEARTBEAT_BLOCKS=0, 격리 하네스 기본값) 이것도 꺼진다.
+const MIRROR_RELAY_ON_PUBLISH = (process.env.CIA_MIRROR_RELAY_ON_PUBLISH ?? '1').trim() !== '0';
 const MIRROR_SPECS = [];   // [{ chainStr, address }] — provider·서명자는 키를 읽은 뒤 initMirrors() 가 붙인다
 for (const item of (process.env.CIA_MIRRORS || '').split(',').map((s) => s.trim()).filter(Boolean)) {
   const i = item.indexOf('=');
@@ -776,7 +781,7 @@ async function waitPublishing() {
  * 기다렸다 잠금을 원자적으로 잡는다(withPublishLock, 2026-10-02 Task 6 리뷰 C1).
  */
 async function publishNow({ heartbeat = false, wait = false } = {}) {
-  return withPublishLock(async () => {
+  const r = await withPublishLock(async () => {
     if (!LOG_ADDRESS) throw Object.assign(new Error('CIA_LOG_ADDRESS not configured'), { status: 503 });
     // 게시 직전 대조(기동 시와 같은 규칙). 온체인 root 가 우리가 아는 어느 접두사와도 다르면 올리지 않는다.
     let chain;
@@ -851,6 +856,15 @@ async function publishNow({ heartbeat = false, wait = false } = {}) {
     persist();
     return { published: true, heartbeat: leaves.length === 0 && slots.length === 0, epoch, root: tree.getRoot().toString(), regRoot: registry.root().toString(), txHash: tx.hash, leaves, slots: slots.length };
   }, { wait });
+  if (r.published) scheduleRelayAfterPublish();
+  return r;
+}
+/** 2026-10-05 전체 코드 리뷰 3번: 게시 직후 거울 중계. 게시 잠금 **밖에서**(같은 체인 거울 tx 가 그 잠금을 빌리므로 안에서 부르면
+ *  교착) 다음 틱에 돌리고 기다리지 않는다 — 발급·폐기 응답을 거울 체인 tx 만큼 늦추지 않게. 뒤처진 거울만 보낸다(behindOnly —
+ *  따라잡은 거울을 위해 캐노니컬 하트비트를 새로 만들지 않는다, 9번). 실패는 경고만 — 주기 틱이 다시 본다. */
+function scheduleRelayAfterPublish() {
+  if (!MIRROR_RELAY_ON_PUBLISH || MIRROR_HEARTBEAT_BLOCKS === 0n || MIRRORS.length === 0) return;
+  setImmediate(() => { relayAll({ behindOnly: true }).catch((e) => console.warn(`[cia] 게시 직후 거울 중계 실패(주기 틱이 다시 본다): ${e.message}`)); });
 }
 app.post('/cia/publish', requireAdmin, async (req, res) => {
   try { res.json(await publishNow()); }
@@ -878,8 +892,11 @@ async function heartbeatTick() {
 
 // ---- V10 거울 릴레이(2026-10-02 설계 §5 결정 3) ----
 // 거울은 캐노니컬의 마지막 게시(서명 포함)를 그대로 받는다 — 서명이 V3 다이제스트라 같은 서명이 거울에도 유효하다.
-// 주기 H_X 블록(거울 체인 X 기준)마다 올린다. 캐노니컬에 새 epoch 가 없으면 캐노니컬 하트비트를 먼저 올려 새 epoch 를
-// 만든다 — 거울은 epoch 단조 증가만 받으므로 같은 게시를 두 번 올릴 수 없다.
+// 2026-10-05(전체 코드 리뷰 3·9번): 캐노니컬 게시 직후 뒤처진 거울에 바로 옮기고(scheduleRelayAfterPublish), 주기 틱(H_X 블록,
+// 거울 체인 X 기준)은 안전망이다. 거울이 따라잡은 상태면 아무것도 하지 않는다 — 예전에는 H 가 지나면 캐노니컬 하트비트를 새로
+// 만들어 옮겨, 캐노니컬 게시가 거울 수·짧은 H 에 비례해 늘었다(데모에서 15초마다 epoch +1). 거울의 신선도는 이제 캐노니컬 정규
+// 하트비트(CIA_HEARTBEAT_BLOCKS)가 정한다 — 그 주기(폐기 체인 시간)가 각 응용 체인 MAX_ROOT_AGE(시간)보다 짧아야 한다(스펙 §5).
+// 거울은 epoch 단조 증가만 받으므로 새 epoch 가 꼭 필요한 경우(불일치 복구·관리자 강제·게시 기록 없음)에만 하트비트를 만든다.
 let MIRRORS = [];   // [{ chainStr, address, provider, contract, sameChain }]
 /** 키를 읽고 loadState 가 selfChainId 를 정한 뒤에 부른다. 서명자는 ethWallet 과 같은 키를 거울 체인 provider 에 붙인 것이다.
  *  거울 체인이 캐노니컬 체인과 같으면(데모·테스트의 :8545) provider·서명자를 그대로 쓰고 sameChain 으로 표시한다 —
@@ -927,7 +944,7 @@ async function readMirrorView(m) {
   const canon = chain && { epoch: BigInt(chain.onchainEpoch), revRoot: chain.onchainRoot, regRoot: chain.onchainRegRoot };
   return { mv, canon, mismatch: canon ? mirrorMismatch(mv, canon) : null };
 }
-async function relayMirror(m, { force = false } = {}) {
+async function relayMirror(m, { force = false, behindOnly = false } = {}) {
   const { mv, canon, mismatch } = await readMirrorView(m);
   if (!canon) throw new Error('캐노니컬 로그를 읽지 못했다 — 거울 대조 없이 릴레이하지 않는다');
   const out = (epoch, txHash, skipped) => ({ chainId: m.chainStr, epoch: String(epoch), txHash, skipped });
@@ -940,7 +957,9 @@ async function relayMirror(m, { force = false } = {}) {
   const behind = mv.epoch < canon.epoch;
   if (!behind) m.behindSince = null;
   else m.behindSince ??= mv.head;
-  const due = force || mismatch || mv.head - mv.last >= MIRROR_HEARTBEAT_BLOCKS || (behind && mv.head - m.behindSince >= MIRROR_HEARTBEAT_BLOCKS);
+  // 2026-10-05(9번): 따라잡은 거울(behind=false)은 주기가 지나도 건드리지 않는다 — 옮길 새 epoch 가 없고, 그것을 만들려고 캐노니컬
+  // 하트비트를 올리는 것이 증폭의 원인이었다. 뒤처진 거울은 게시 직후 중계(behindOnly)면 즉시, 주기 틱이면 위 두 상한 중 먼저 오는 쪽.
+  const due = force || mismatch || (behind && (behindOnly || mv.head - mv.last >= MIRROR_HEARTBEAT_BLOCKS || mv.head - m.behindSince >= MIRROR_HEARTBEAT_BLOCKS));
   if (!due) return out(mv.epoch, null, true);
   // 거울 epoch 는 IdP 키 서명으로만 오른다 — 거울이 앞서 있으면 그 epoch 는 이미 서명된(소비된) 것이다. 다음 하트비트가 그보다 커야
   // 거울이 받으므로 signedEpochMax 를 끌어올린다(상태 파일이 옛 백업이라 그 서명을 기억하지 못하는 경우까지 덮는다).
@@ -965,12 +984,12 @@ async function relayMirror(m, { force = false } = {}) {
 }
 // 릴레이는 한 번에 하나(틱끼리, 틱과 관리자 relay 사이) — 같은 거울에 같은 epoch 를 두 번 보내지 않게.
 let relaying = null;
-async function relayAll({ force = false } = {}) {
+async function relayAll({ force = false, behindOnly = false } = {}) {
   while (relaying) { try { await relaying; } catch { /* */ } }
   relaying = (async () => {
     const res = [];
     for (const m of MIRRORS) {
-      try { res.push(await relayMirror(m, { force })); }
+      try { res.push(await relayMirror(m, { force, behindOnly })); }
       catch (e) {
         console.warn(`[cia] 거울 ${m.chainStr}(${m.address}) 릴레이 실패: ${e.message}`);
         res.push({ chainId: m.chainStr, epoch: null, txHash: null, skipped: false, error: e.message });
@@ -1219,7 +1238,8 @@ if (HEARTBEAT_BLOCKS > 0n) {
   hb.unref();
 }
 if (MIRRORS.length && MIRROR_HEARTBEAT_BLOCKS > 0n) setInterval(relayTick, MIRROR_POLL_MS).unref();
+scheduleRelayAfterPublish();   // 기동 게시(loadState 의 대조·자동 게시)는 initMirrors 전이라 중계되지 않았다 — 뒤처졌으면 지금 옮긴다
 // RP·지갑 에이전트와 같이 루프백에만 묶는다 — 관리자·사용자 페이지와 발급 경로를 LAN 에 노출하지 않는다.
 app.listen(PORT, '127.0.0.1', () => {
-  console.log(`Mode 3 CIA running at http://127.0.0.1:${PORT} (log=${LOG_ADDRESS ?? 'none'}, heartbeat=${HEARTBEAT_BLOCKS}, mirrors=${MIRRORS.map((m) => m.chainStr).join(',') || 'none'}(H=${MIRROR_HEARTBEAT_BLOCKS}), chains=${[...CHAIN_RPCS.keys()].join(',') || 'none'}, vkey=${fs.existsSync(VKEY_PATH) ? 'ok' : 'missing'}, registry=${registry.entries().length})`);
+  console.log(`Mode 3 CIA running at http://127.0.0.1:${PORT} (log=${LOG_ADDRESS ?? 'none'}, heartbeat=${HEARTBEAT_BLOCKS}, mirrors=${MIRRORS.map((m) => m.chainStr).join(',') || 'none'}(H=${MIRROR_HEARTBEAT_BLOCKS}, relayOnPublish=${MIRROR_RELAY_ON_PUBLISH && MIRROR_HEARTBEAT_BLOCKS > 0n}), chains=${[...CHAIN_RPCS.keys()].join(',') || 'none'}, vkey=${fs.existsSync(VKEY_PATH) ? 'ok' : 'missing'}, registry=${registry.entries().length})`);
 });
