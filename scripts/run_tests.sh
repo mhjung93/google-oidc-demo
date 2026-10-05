@@ -10,6 +10,8 @@
 #   bash scripts/run_tests.sh circuit    # circom/snarkjs 필요. 느리다(회로 컴파일).
 #                                        # test_mode3_artifacts.mjs 만 build/mode3 의 배포용 산출물(vkey·zkey·wasm)도 본다
 #   bash scripts/run_tests.sh chain      # hardhat 노드(:8545) 필요. IdP/CIA는 스스로 격리 기동.
+#                                        # :8546 은 비어 있거나 chainId 31338 노드여야 한다 — test_mode3_demo_full.mjs 가 비어 있으면
+#                                        # 폐기 체인 노드를 띄우고 끝나면 끈다. 이미 31338 노드가 있으면 끄지 않고 그 위에 배포·트랜잭션을 보낸다
 #                                        # Mode 3 테스트는 build/mode3/pi_cred_*.zkey·vkey 도 필요
 #   bash scripts/run_tests.sh contract   # 컨트랙트(test/*.test.mjs). hardhat 인프로세스 체인
 #                                        # build/mode3 zkey·wasm 필요(Mode3Wallet.test.mjs 가 실제 π 를 만든다)
@@ -90,6 +92,8 @@ CHAIN=(
   tests/test_mode3_wallet_agent.mjs
   tests/test_mode3_wallet_snap.mjs
   tests/test_mode3_demo_stack.mjs
+  # 두 체인(폐기 체인 + 응용 체인)·두 서비스 전 구간 각본(2026-10-03). 이 파일은 :8546 노드(chainId 31338)를 스스로 띄우고 끝나면 끈다.
+  tests/test_mode3_demo_full.mjs
   tests/test_mode3_health.mjs
 )
 

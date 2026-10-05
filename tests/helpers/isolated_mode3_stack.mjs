@@ -66,70 +66,101 @@ function client(base, logFile) {
 
 export async function startIsolatedMode3Stack(opts = {}) {
   const { rp: withRp = true, rpEnv = {}, walletEnv = {}, ciaEnv = {}, extraRpOrigins = [], autoRelay = false } = opts;   // autoRelay: 아래 relayIfBehind 를 뒤에서 계속 돌린다(브라우저 각본용, V10)   // extraRpOrigins: 지갑 CORS 허용 목록에 더할 서비스 오리진(두 번째 서비스 시험용)
+  // 2026-10-03 두 체인 각본(test_mode3_demo_full.mjs):
+  //   twoChains: true 면 캐노니컬 로그를 폐기 체인(revRpcUrl, 기본 :8546 — 호출자가 ensureRevChainNode 로 먼저 띄운다)에, 거울을
+  //     응용 체인(appRpcUrl, 기본 CIA_RPC_URL 또는 :8545)에 둔다. 지갑은 MODE3_REV_CHAIN_RPC 로 캐노니컬을 읽고 RP 는 응용 체인만 본다.
+  //   extraRps: [{ name, env }] — 두 번째 이후 서비스. 첫 RP 와 같은 방식으로 띄워 승인·활성화를 기다리고 rps[] 로 돌려준다.
+  //     릴레이어 계정 인덱스는 RP 마다 다르게 준다(첫 RP 0, 다음 1, …) — 팩토리 배포 nonce 가 겹치지 않게(MODE3_DEMO.md 두 번째 서비스 절).
+  const { twoChains = false, revRpcUrl = 'http://127.0.0.1:8546', appRpcUrl = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545', extraRps = [] } = opts;
   // 지갑 포트·오리진은 CIA 보다 **먼저** 잡는다 — CIA 의 /mode3/health CORS 허용 목록(설계 2026-09-25 §1.2)에
   // MODE3_WALLET_AGENT_ORIGIN 으로 넘겨야 한다. 호출자의 ciaEnv 가 우선한다.
   const walletPort = await freePort();
   const walletOrigin = `http://127.0.0.1:${walletPort}`;
-  const cia = await startIsolatedCia({ env: { MODE3_WALLET_AGENT_ORIGIN: walletOrigin, ...ciaEnv } });
+  const cia = await startIsolatedCia({ env: { MODE3_WALLET_AGENT_ORIGIN: walletOrigin, ...ciaEnv }, ...(twoChains ? { revRpcUrl, appRpcUrl } : {}) });
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-stack-'));
   const rpPort = await freePort();
   const rpOrigin = `http://127.0.0.1:${rpPort}`;
+  const extraRpSpecs = [];
+  for (const [i, spec] of extraRps.entries()) {
+    const port = await freePort();
+    extraRpSpecs.push({ ...spec, index: i + 1, port, origin: `http://127.0.0.1:${port}` });
+  }
+  // 두 체인이면 세 자식 모두 응용 체인 RPC 를 CIA_RPC_URL 로 받는다(PINNED_ENV 의 기본값을 덮는다). 지갑만 캐노니컬 RPC 를 더 받는다.
+  const chainEnv = twoChains ? { CIA_RPC_URL: appRpcUrl } : {};
+  const walletChainEnv = twoChains ? { ...chainEnv, MODE3_REV_CHAIN_RPC: revRpcUrl } : {};
   const children = [];
   try {
     const walletLog = path.join(dir, 'wallet.log');
     const walletStateFile = path.join(dir, 'mode3_wallet_state.json');
     // 지갑 자식은 restartWallet() 이 같은 상태 파일·env 로 다시 띄운다(snap 모드의 "재시작 뒤 needs_consent" 시험용).
-    const walletSpawn = { env: { MODE3_WALLET_PORT: String(walletPort), MODE3_WALLET_STATE_FILE: walletStateFile, MODE3_CIA_URL: cia.base, MODE3_RP_ORIGIN: [rpOrigin, ...extraRpOrigins].join(','), CIA_LOG_ADDRESS: cia.logAddress, MODE3_MIRROR_ADDRESS: cia.mirrorAddress, ...walletEnv }, readyUrl: `${walletOrigin}/wallet/status`, logFile: walletLog };
+    const walletSpawn = { env: { MODE3_WALLET_PORT: String(walletPort), MODE3_WALLET_STATE_FILE: walletStateFile, MODE3_CIA_URL: cia.base, MODE3_RP_ORIGIN: [rpOrigin, ...extraRpOrigins, ...extraRpSpecs.map((e) => e.origin)].join(','), CIA_LOG_ADDRESS: cia.logAddress, MODE3_MIRROR_ADDRESS: cia.mirrorAddress, ...walletChainEnv, ...walletEnv }, readyUrl: `${walletOrigin}/wallet/status`, logFile: walletLog };
     let walletChild = await spawnServer('mode3_wallet_agent.js', walletSpawn);
     children.push(walletChild);
     const wallet = client(walletOrigin, walletLog);
+
+    /** RP 하나의 spawn 설정. name·relayerIndex 는 extraRps 용(첫 RP 는 지금처럼 이름 기본값·인덱스 0 — PINNED_ENV). */
+    const rpSpawnFor = ({ port, origin, tag, env: e = {} }) => ({
+      env: {
+        MODE3_RP_PORT: String(port),
+        MODE3_CIA_URL: cia.base,
+        MODE3_WALLET_AGENT_ORIGIN: walletOrigin,
+        CIA_LOG_ADDRESS: cia.logAddress,   // RP 가 /api/mode3/rp_info 에 캐노니컬로 보여줄 뿐, 검증기는 아래 거울만 읽는다(V10)
+        MODE3_MIRROR_ADDRESS: cia.mirrorAddress,
+        MODE3_RP_REGISTRATION_FILE: path.join(dir, `mode3_${tag}_registration.json`),
+        MODE3_RP_PUBLIC_ORIGIN: origin,
+        MODE3_RP_LOGIN_LOG: path.join(dir, `mode3_${tag}_logins.jsonl`),
+        ...chainEnv,
+        ...e,
+      },
+      readyUrl: `${origin}/api/mode3/rp_info`, logFile: path.join(dir, `${tag}.log`),
+    });
+    // 등록 승인 대행(2026-09-16 §3): RP 는 pending 으로 떠 있다. 관리자 시크릿으로 승인하고 활성화를 기다린다.
+    // status==='approved' 만 보면 안 된다 — 그 값은 registerOnce() 가 세팅하고 activate() 는 그 뒤에 돌아,
+    // "approved 인데 verifier 는 아직 null" 창이 컨트랙트 2개 배포 시간만큼 열린다(2026-09-23 리뷰 I-2).
+    // rp_info.active(= verifier 가 생겼는가)까지 기다려야 첫 /challenge 가 503 을 맞지 않는다.
+    const approveAndWait = async (c, origin) => {
+      const deadline = Date.now() + 60_000;
+      while (Date.now() < deadline) {
+        const list = (await cia.adminGet('/cia/rps')).body?.rps ?? [];
+        const mine = list.find((e) => e.origin === origin);
+        if (mine?.status === 'pending') await cia.adminPost(`/cia/rps/${mine.arid}/approve`);
+        const info = (await c.get('/api/mode3/rp_info')).body;
+        if (info?.status === 'approved' && info?.active) return;
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      throw new Error(`RP 등록 승인·활성화 실패(${origin})\n${c.log()}`);
+    };
 
     let rp = null;
     let rpChild = null;
     // RP 자식은 restartRp() 가 같은 등록 파일·오리진으로 다시 띄운다(이미 배포된 팩토리를 물고 뜨는 경로 시험용).
     let rpSpawn = null;
     if (withRp) {
-      const rpLog = path.join(dir, 'rp.log');
-      rpSpawn = {
-        env: {
-          MODE3_RP_PORT: String(rpPort),
-          MODE3_CIA_URL: cia.base,
-          MODE3_WALLET_AGENT_ORIGIN: walletOrigin,
-          CIA_LOG_ADDRESS: cia.logAddress,   // RP 가 /api/mode3/rp_info 에 캐노니컬로 보여줄 뿐, 검증기는 아래 거울만 읽는다(V10)
-          MODE3_MIRROR_ADDRESS: cia.mirrorAddress,
-          MODE3_RP_REGISTRATION_FILE: path.join(dir, 'mode3_rp_registration.json'),
-          MODE3_RP_PUBLIC_ORIGIN: rpOrigin,
-          MODE3_RP_LOGIN_LOG: path.join(dir, 'mode3_rp_logins.jsonl'),
-          ...rpEnv,
-        },
-        readyUrl: `${rpOrigin}/api/mode3/rp_info`, logFile: rpLog,
-      };
+      // 첫 RP 의 파일 이름(mode3_rp_registration.json·mode3_rp_logins.jsonl·rp.log)은 지금과 같다(tag 'rp').
+      rpSpawn = rpSpawnFor({ port: rpPort, origin: rpOrigin, tag: 'rp', env: rpEnv });
       rpChild = await spawnServer('mode3_rp.js', rpSpawn);
       children.push(rpChild);
-      rp = client(rpOrigin, rpLog);
-
-      // 등록 승인 대행(2026-09-16 §3): RP 는 pending 으로 떠 있다. 관리자 시크릿으로 승인하고 활성화를 기다린다.
-      // status==='approved' 만 보면 안 된다 — 그 값은 registerOnce() 가 세팅하고 activate() 는 그 뒤에 돌아,
-      // "approved 인데 verifier 는 아직 null" 창이 컨트랙트 2개 배포 시간만큼 열린다(2026-09-23 리뷰 I-2).
-      // rp_info.active(= verifier 가 생겼는가)까지 기다려야 첫 /challenge 가 503 을 맞지 않는다.
-      const deadline = Date.now() + 60_000;
-      let approved = false;
-      while (Date.now() < deadline) {
-        const list = (await cia.adminGet('/cia/rps')).body?.rps ?? [];
-        const mine = list.find((e) => e.origin === rpOrigin);
-        if (mine?.status === 'pending') await cia.adminPost(`/cia/rps/${mine.arid}/approve`);
-        const info = (await rp.get('/api/mode3/rp_info')).body;
-        if (info?.status === 'approved' && info?.active) { approved = true; break; }
-        await new Promise((r) => setTimeout(r, 200));
-      }
-      if (!approved) throw new Error(`RP 등록 승인·활성화 실패\n${rp.log()}`);
+      rp = client(rpOrigin, rpSpawn.logFile);
+      await approveAndWait(rp, rpOrigin);
+    }
+    // extraRps: 첫 RP 다음에 하나씩(승인·팩토리 배포가 겹치지 않게) 띄운다.
+    const rps = rp ? [rp] : [];
+    for (const e of extraRpSpecs) {
+      const sp = rpSpawnFor({ port: e.port, origin: e.origin, tag: `rp${e.index + 1}`, env: { MODE3_RELAYER_INDEX: String(e.index), ...(e.name ? { MODE3_RP_NAME: e.name } : {}), ...(e.env ?? {}) } });
+      const ch = await spawnServer('mode3_rp.js', sp);
+      children.push(ch);
+      const c = client(e.origin, sp.logFile);
+      c.name = e.name ?? null;
+      await approveAndWait(c, e.origin);
+      rps.push(c);
     }
 
     // 거울 릴레이(V10 Task 9): 격리 CIA 는 릴레이 주기가 꺼져 있어(CIA_MIRROR_HEARTBEAT_BLOCKS=0) 거울은 /cia/admin/relay 로만
     // 오른다. 지갑은 새 자격증명 뒤 거울이 내 리프를 실을 때까지 기다리므로(registry_unpublished 폴링), 그 사이 릴레이를 대신
     // 눌러 주는 펌프가 필요하다 — 거울이 캐노니컬보다 뒤처졌을 때만 누른다(따라잡은 거울에 force 릴레이를 하면 캐노니컬
     // 하트비트가 하나 더 오른다).
-    const canonC = new ethers.Contract(cia.logAddress, MODE3_ROOTS_ABI, cia.mirrorContract.runner);
+    // 캐노니컬은 폐기 체인, 거울은 응용 체인에서 각자 읽는다(2026-10-03 — 전에는 거울 provider 하나로 둘 다 읽어 두 체인에서 틀렸다).
+    const canonC = new ethers.Contract(cia.logAddress, MODE3_ROOTS_ABI, cia.revProvider);
     const relay = async () => {
       const r = await cia.adminPost('/cia/admin/relay', {});
       if (r.status !== 200) throw new Error(`relay 실패(${r.status}): ${JSON.stringify(r.body)}`);
@@ -155,7 +186,7 @@ export async function startIsolatedMode3Stack(opts = {}) {
     }
 
     return {
-      cia, wallet, rp, dir, walletStateFile, relay, relayIfBehind, withRelay,
+      cia, wallet, rp, rps, dir, walletStateFile, relay, relayIfBehind, withRelay,
       rpOriginForWallet: rpOrigin,   // rp:false 여도 지갑에는 이 값을 CORS 오리진으로 넘겼다
       /** 지갑 자식만 죽이고 같은 상태 파일·env 로 다시 띄운다. 메모리(세션 witness·증명 캐시)만 사라진다. */
       async restartWallet() {

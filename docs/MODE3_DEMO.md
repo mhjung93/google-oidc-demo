@@ -197,10 +197,12 @@ curl -s -X POST -H "X-CIA-Admin-Secret: $CIA_ADMIN_SECRET" http://127.0.0.1:4100
 
 ### 폐기 체인을 별도 노드로 (선택, V10)
 
-> 이 절은 코드 읽기로 작성했고 전체 실행은 하지 않았다(2026-10-02).
+> 2026-10-03 실행 확인: `tests/test_mode3_demo_full.mjs` 가 이 구성(폐기 체인 :8546 chainId 31338 + 응용 체인 :8545, 서비스 둘)을
+> 격리 스택으로 처음부터 끝까지 돌린다 — 등록·로그인·거래소 술어·온체인 출금·개봉·세션 폐기·계정 폐기(거울 지연)·접수증·복구.
+> 4단계 기동 env 는 그 테스트가 자식에게 주는 값과 같다. 2·3단계 배포 스크립트도 같은 날 별도 :8546 노드에 돌려 출력대로 동작함을 확인했다.
 
 설계의 원래 그림(폐기 전용 체인 + 응용 체인의 거울)을 그대로 보이려면 노드를 둘 띄운다. 기본 데모·테스트는 체인 하나로
-충분하다(테스트는 :8545 하나에 로그와 거울을 함께 둔다). chainid 가 같으면 서명이 두 체인을 구분하지 못하므로
+충분하다(`tests/test_mode3_demo_full.mjs` 를 뺀 모든 테스트는 :8545 하나에 로그와 거울을 함께 둔다). chainid 가 같으면 서명이 두 체인을 구분하지 못하므로
 `hardhat.config.cjs` 가 `HARDHAT_CHAIN_ID` 로 두 번째 노드의 chainid 를 바꾼다(기본 31337).
 
 **전제 — 체인 하나 구성에서 옮겨 오면 재시연 세트를 탄다**(아래 "하지 말 것 / 재시연" 의 재시연 세트, 위 "처음 한 번" 0 의 V10
@@ -887,12 +889,14 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
   격리 CIA(`tests/helpers/isolated_cia.mjs`)는 하트비트를 끄고 뜬다(`CIA_HEARTBEAT_BLOCKS: '0'`) — 게시 없이 `MODE3_MAX_ROOT_AGE`
   (기본 100) 블록을 넘기는 시나리오는 오프체인 로그인·재검증·세션 요청도 `root_too_old` 로 막힌다(정상 fail-closed, 2026-09-23
   점검 C-1). 그런 블록 수를 진행시키는 테스트를 새로 짜면 `publish([])` 로 하트비트를 대신 넣는다.
-  **V10(2026-10-02)**: 격리 CIA 는 :8545 **하나에 로그와 거울을 함께** 배포하고(`cia.logAddress`·`cia.mirrorAddress`) 거울 릴레이
+  **V10(2026-10-02)**: 격리 CIA 는 기본으로(`test_mode3_demo_full.mjs` 를 뺀 모든 테스트) :8545 **하나에 로그와 거울을 함께** 배포하고(`cia.logAddress`·`cia.mirrorAddress`) 거울 릴레이
   주기를 끈다(`CIA_MIRROR_HEARTBEAT_BLOCKS: '0'`) — 두 번째 노드는 띄우지 않는다. 거울은 `POST /cia/admin/relay` 로만 오르므로
   격리 스택(`tests/helpers/isolated_mode3_stack.mjs`)이 `relay()`·`relayIfBehind()`·`withRelay(fn)`(요청 동안 뒤처지면 릴레이)과
   `autoRelay` 옵션(브라우저 각본용 0.5초 펌프)을 준다. `tests/test_cia_mirror_relay.mjs` 는 릴레이 주기·캐노니컬 하트비트 선행·
   수동 relay·`mirrors` 건강 정보·동시성을 본다(주기를 켜고 뜬다). `tests/test_mode3_demo_stack.mjs` 각본 13(거울 지연)·14(접수증
   강제)가 전 구간이다.
+  `tests/test_mode3_demo_full.mjs`(2026-10-03)는 **두 체인·두 서비스** 전 구간 각본이다 — :8546 에 폐기 체인 노드(chainId 31338)를
+  스스로 띄우고(이미 떠 있으면 chainId 만 확인하고 건드리지 않는다) 끝나면 끈다. 격리 헬퍼의 `twoChains`·`extraRps` 옵션을 쓴다.
 - `bash scripts/run_tests.sh browser` — 팝업 로그인·`needs_consent` 재승인·MetaMask 트랜잭션을 실제 페이지로 돌린다
   (`tests/test_mode3_browser.mjs`). `chain` 과 같은 조건에 더해 **설치된 Google Chrome(또는 Chromium)** 이 필요하다 —
   Playwright 가 `channel: 'chrome'` 으로 띄우고, `window.ethereum` 을 스텁해 진짜 `snap-mode3/src/index.js` 의 `onRpcRequest` 를

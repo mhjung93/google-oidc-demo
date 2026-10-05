@@ -25,16 +25,27 @@ export function freePort() {
 
 export async function startIsolatedCia(opts = {}) {
   const { env: extraEnv = {}, readyTimeoutMs = 30_000 } = opts;
+  // 두 체인(2026-10-03, test_mode3_demo_full.mjs): revRpcUrl 을 주면 캐노니컬 로그는 그 체인(폐기 체인)에, 거울은 appRpcUrl
+  // (기본 CIA_RPC_URL 또는 :8545)에 배포한다. 둘 다 없으면 지금처럼 한 체인에 로그와 거울을 함께 둔다.
+  const defaultRpc = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
+  const twoChains = Boolean(opts.revRpcUrl);
+  const appRpcUrl = opts.appRpcUrl || defaultRpc;
+  const revRpcUrl = opts.revRpcUrl || appRpcUrl;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-cia-'));
   const port = await freePort();
   const adminSecret = randomBytes(16).toString('hex');
   const ethWallet = ethers.Wallet.createRandom();
-  const provider = getProvider();
-  const ciaEthWallet = ethWallet.connect(provider);   // 테스트가 CIA 몰래 로그에 직접 게시할 때 씀(크래시 복구 테스트)
-  await fundAddress(ethWallet.address, '1', provider);
-  const { address: logAddress } = await deployMode3Log(ethWallet.address, provider);
-  const { address: mirrorAddress } = await deployMode3Mirror(ethWallet.address, logAddress, provider);
-  const rpcUrl = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
+  const provider = getProvider(appRpcUrl);                               // 응용 체인(거울·팩토리·계정). 단일 체인이면 유일한 체인
+  const revProvider = twoChains ? getProvider(revRpcUrl) : provider;     // 폐기 체인(캐노니컬 Mode3Log)
+  const ciaEthWallet = ethWallet.connect(revProvider);   // 테스트가 CIA 몰래 로그에 직접 게시할 때 씀(크래시 복구 테스트) — 로그가 있는 체인
+  // CIA 의 이더 키는 두 체인 모두에서 가스가 필요하다 — 캐노니컬 게시는 폐기 체인, 거울 중계는 응용 체인.
+  await fundAddress(ethWallet.address, '1', revProvider);
+  if (twoChains) await fundAddress(ethWallet.address, '1', provider);
+  const { address: logAddress } = await deployMode3Log(ethWallet.address, revProvider);
+  const canonicalChainId = (await revProvider.getNetwork()).chainId;
+  const appChainId = (await provider.getNetwork()).chainId;
+  const { address: mirrorAddress } = await deployMode3Mirror(ethWallet.address, logAddress, provider, canonicalChainId);
+  const rpcUrl = revRpcUrl;   // CIA_RPC_URL = 캐노니컬 로그가 있는 체인
 
   // 자식은 dotenv/config 로 .env 를 읽는다 — 개발용 값(체인 RPC·하트비트)이 새어 들어오지 않도록 테스트가 기대하는 값으로
   // 고정한다. dotenv 는 이미 있는 키(빈 문자열 포함)를 덮지 않으므로 빈 문자열이 "기본값 사용"이다(CIA_CHAIN_RPCS 가 비면
@@ -45,9 +56,9 @@ export async function startIsolatedCia(opts = {}) {
   const env = {
     ...process.env,
     CIA_RPC_URL: rpcUrl,
-    CIA_CHAIN_RPCS: '31337=' + rpcUrl,
+    CIA_CHAIN_RPCS: `${appChainId}=${appRpcUrl}`,   // 세션 발급·거울 중계 대상 = 응용 체인(단일 체인이면 31337=:8545 로 지금과 같다)
     CIA_HEARTBEAT_BLOCKS: '0',
-    CIA_MIRRORS: `31337=${mirrorAddress}`,
+    CIA_MIRRORS: `${appChainId}=${mirrorAddress}`,
     CIA_MIRROR_HEARTBEAT_BLOCKS: '0',
     CIA_TTL_SECONDS: '', CIA_CHAIN_IDS: '',   // 옛 키 — 경고만 나오게 비운다
     CIA_PORT: String(port),
@@ -80,6 +91,7 @@ export async function startIsolatedCia(opts = {}) {
     try { child.kill('SIGKILL'); } catch { /* */ }
     // 기동 거부가 정상 경로인 테스트(test_cia_startup.mjs)가 있다 — 실패해도 잔존물을 남기지 않는다.
     provider.destroy();
+    if (revProvider !== provider) revProvider.destroy();
     fs.rmSync(dir, { recursive: true, force: true });
     throw new Error(`격리 CIA 기동 실패(${port}).${spawnError ? ' spawn: ' + spawnError.message : ''}\n${log}`);
   }
@@ -89,6 +101,8 @@ export async function startIsolatedCia(opts = {}) {
   return {
     base, port, dir, adminSecret, adminHeaders, ethAddress: ethWallet.address, logAddress, ciaEthWallet,
     mirrorAddress, mirrorContract: new ethers.Contract(mirrorAddress, MODE3_MIRROR_ABI, provider),
+    // 두 체인(2026-10-03): 캐노니컬은 revProvider, 거울은 provider(appProvider) 로 읽는다. 단일 체인이면 둘이 같은 객체다.
+    twoChains, revRpcUrl, appRpcUrl, revProvider, appProvider: provider,
     log: () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : ''),
     post: (p, body) => fetch(`${base}${p}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) }).then(json),
     adminPost: (p, body) => fetch(`${base}${p}`, { method: 'POST', headers: adminHeaders, body: JSON.stringify(body ?? {}) }).then(json),
@@ -125,6 +139,7 @@ export async function startIsolatedCia(opts = {}) {
         });
       }
       provider.destroy();   // fundAddress/deployMode3Log/ciaEthWallet 가 같이 쓰던 provider
+      if (revProvider !== provider) revProvider.destroy();
       fs.rmSync(dir, { recursive: true, force: true });
     },
   };
