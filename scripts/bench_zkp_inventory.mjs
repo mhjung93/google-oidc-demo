@@ -54,7 +54,7 @@ const rows = [];
 // ---- Mode 3 π_u: 사용자 자격증명 시그마 프로토콜(회로·셋업 없음). 공개 (uid, C_u_pt, cm_u) ----
 {
   const uid = 12345n, s_u = randomScalar(), r_u = randomScalar();
-  const attrs = [1990n, 410n, 2n, 0n];   // 데모 testuser 와 같은 값(스펙 2026-09-22 §3.1)
+  const attrs = [1990n, 410n, 2n, 0n];   // 회로 입력 벡터(스키마와 무관 — 스펙 2 §9). 값 2 는 옛 데모 등급이지만 회로·벤치 입력은 바꾸지 않는다(재현성).
   const cm_u = await registrationCommit(s_u, r_u);
   const P = [], V = []; let out;
   for (let i = 0; i < N; i++) {

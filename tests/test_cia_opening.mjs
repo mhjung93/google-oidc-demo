@@ -34,7 +34,7 @@ try {
   const sk_u = reg.sk_u;
   // V5: 사용자 자격증명(π_u)은 사용자당 하나 — 한 번 받아 모든 트랜스크립트에 쓴다.
   // attrs 는 cia.js DEMO_ACCOUNTS.testuser(uid 12345) 의 AA 기록과 같아야 π_u 가 통과한다(2026-09-22 §3.4).
-  const uc = await buildUserCredRequest({ uid, s_u: reg.s_u, r_u: reg.r_u, sk_u, attrs: [1990n, 410n, 2n, 0n, 0n, 0n] });
+  const uc = await buildUserCredRequest({ uid, s_u: reg.s_u, r_u: reg.r_u, sk_u, attrs: [1990n, 410n, 0n, 0n, 0n, 0n] });
   const r1 = await cia.post('/cia/user_cred', uc.body);
   assert.equal(r1.status, 201, j(r1.body));
   async function loginTranscript(svc, pk_trace = svc.pk_trace, allowAgent = 0n) {
@@ -45,7 +45,7 @@ try {
     assert.equal(issued.status, 200, j(issued.body));
     const { tree } = await syncRevocationTree(provider, cia.logAddress);
     const { tree: registry } = await syncRegistryTree(provider, cia.logAddress);
-    const { proof, publicSignals, tag } = await buildCredentialProof({ uid, arid: BigInt(svc.arid), s_u: reg.s_u, r_u: reg.r_u, blind_u: uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs: [1990n, 410n, 2n, 0n, 0n, 0n], credential: issued.body, pk_CIA, pk_trace, tree, registry, slot: reg.slot, cm_u: reg.cm_u });
+    const { proof, publicSignals, tag } = await buildCredentialProof({ uid, arid: BigInt(svc.arid), s_u: reg.s_u, r_u: reg.r_u, blind_u: uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs: [1990n, 410n, 0n, 0n, 0n, 0n], credential: issued.body, pk_CIA, pk_trace, tree, registry, slot: reg.slot, cm_u: reg.cm_u });
     return { proof, publicSignals, tag, PPID: publicSignals[0] };
   }
   async function openRequest(svc, T, { share = svc.share, wallet = svc.serviceWallet, ts = nowTs(), arid = svc.arid } = {}) {
@@ -94,7 +94,7 @@ try {
   // alice(uid 67890)를 testuser 와 같은 방식으로 등록·발급한다 — attrs 는 cia.js DEMO_ACCOUNTS.alice 의 AA 기록과 같아야 π_u 가 통과한다.
   const regA = await cia.registerUser('67890', 'alicepw');
   const skA = regA.sk_u;
-  const attrsA = [2005n, 840n, 1n, 0n, 0n, 0n];
+  const attrsA = [2005n, 840n, 0n, 0n, 0n, 0n];
   const ucA = await buildUserCredRequest({ uid: 67890n, s_u: regA.s_u, r_u: regA.r_u, sk_u: skA, attrs: attrsA });
   assert.equal((await cia.post('/cia/user_cred', ucA.body)).status, 201);
   // loginTranscript 를 사용자별로 일반화한 것(기존 헬퍼는 그대로 둔다). tagR 은 태그 난수를 고정해 같은 c1 을 만드는 테스트 전용 옵션이다.
@@ -112,7 +112,7 @@ try {
 
   await t('A-I1: 같은 c1(같은 태그 난수)·다른 사용자의 개봉 요청은 앞 항목 id 를 받지 않는다', async () => {
     const r = 123456789n;
-    const Ta = await loginTranscriptFor(S1, { uid, reg, uc, attrs: [1990n, 410n, 2n, 0n, 0n, 0n], sk_u }, r);
+    const Ta = await loginTranscriptFor(S1, { uid, reg, uc, attrs: [1990n, 410n, 0n, 0n, 0n, 0n], sk_u }, r);
     const Tb = await loginTranscriptFor(S1, { uid: 67890n, reg: regA, uc: ucA, attrs: attrsA, sk_u: skA }, r);
     assert.equal(Ta.tag.c1.x, Tb.tag.c1.x, '같은 r → 같은 c1');
     assert.notEqual(Ta.PPID, Tb.PPID);
@@ -254,7 +254,7 @@ try {
       const r0 = await cia2.post('/cia/register', { uid: '12345', pwd: 'password123', cm_u: pointToStrings(reg.cm_u), pk_u: pointToStrings(reg.pk_u), sig_reg: await signRegistration(reg.sk_u, 12345n, reg.cm_u) });
       assert.equal(r0.status, 201, j(r0.body));
       const session = createSessionKey();
-      const uc2 = await buildUserCredRequest({ uid, s_u: reg.s_u, r_u: reg.r_u, sk_u: reg.sk_u, attrs: [1990n, 410n, 2n, 0n, 0n, 0n] });
+      const uc2 = await buildUserCredRequest({ uid, s_u: reg.s_u, r_u: reg.r_u, sk_u: reg.sk_u, attrs: [1990n, 410n, 0n, 0n, 0n, 0n] });
       const ru = await cia2.post('/cia/user_cred', uc2.body);
       assert.equal(ru.status, 201, j(ru.body));
       const req = await buildIssueRequest({ uid, Cf_u: uc2.Cf_u, arid: BigInt(S.arid), sk_u: reg.sk_u, session, chainid: 31337n, max_height: BigInt(await provider.getBlockNumber()) + 300n });
@@ -264,7 +264,7 @@ try {
       const { tree: registry } = await syncRegistryTree(provider, cia2.logAddress);
       const keys2 = (await cia2.get('/cia/public_keys')).body;
       const pk_CIA2 = { x: BigInt(keys2.pk_CIA.x), y: BigInt(keys2.pk_CIA.y) };
-      const { proof, publicSignals, tag } = await buildCredentialProof({ uid, arid: BigInt(S.arid), s_u: reg.s_u, r_u: reg.r_u, blind_u: uc2.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs: [1990n, 410n, 2n, 0n, 0n, 0n], credential: issued.body, pk_CIA: pk_CIA2, pk_trace: S.pk_trace, tree, registry, slot: r0.body.slot, cm_u: reg.cm_u });
+      const { proof, publicSignals, tag } = await buildCredentialProof({ uid, arid: BigInt(S.arid), s_u: reg.s_u, r_u: reg.r_u, blind_u: uc2.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs: [1990n, 410n, 0n, 0n, 0n, 0n], credential: issued.body, pk_CIA: pk_CIA2, pk_trace: S.pk_trace, tree, registry, slot: r0.body.slot, cm_u: reg.cm_u });
       const D = await partialDecrypt(S.share.x, tag.c1);
       const D_svc = { x: D.x.toString(), y: D.y.toString() };
       const ts = nowTs();

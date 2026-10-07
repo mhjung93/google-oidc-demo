@@ -36,7 +36,7 @@
         <button id="revokeBtn" class="danger" data-i18n="admin_revoke_btn">계정 폐기</button>
         <button id="recoverBtn" class="btn-ghost" data-i18n="admin_recover_btn">복구(다시 쓰게)</button>
       </p>
-      <p class="muted" data-i18n="admin_accounts_attrs_note">속성 6슬롯을 바꾸면 활성 자격증명이 물리고 등록부 슬롯이 0 으로 즉시 게시됩니다 — 지갑은 다음 발급에서 다시 받습니다.</p>
+      <p class="muted" data-i18n="admin_accounts_attrs_note">속성을 바꾸면(출생연도·국가·예비 문자열) 활성 자격증명이 물리고 등록부 슬롯이 0 으로 즉시 게시됩니다 — 지갑은 다음 발급에서 다시 받습니다.</p>
       <p class="muted" data-i18n="admin_sessions_note">"세션" 은 그 계정의 발급 세션 목록입니다. 활성 세션만 폐기할 수 있고, 폐기 리프도 되돌릴 수 없습니다.</p>
       <div id="accounts"><p class="muted" data-i18n="admin_need_secret">관리자 시크릿을 넣으면 목록과 대기 건수를 불러옵니다.</p></div>
     </section>
@@ -107,6 +107,7 @@
 
     // ---- 화면 상태(세션 중 메모리) ----
     let accounts = null;             // /cia/accounts 의 마지막 응답
+    let attrSchema = null;   // GET /cia/attr_schema 의 schema(인증 없음)
     let rps = null;                  // /cia/rps
     let openings = null;             // /cia/openings
     let ciaState = null;             // /cia/state
@@ -117,6 +118,12 @@
     let approvedRps = null;
     let pendingOpenings = null;
     const progress = { revoked: false, opened: false };   // 이 페이지가 아는 완료 신호(설계 §2.1)
+
+    async function loadAttrSchema() {
+      if (attrSchema) return attrSchema;
+      try { attrSchema = (await (await fetch('/cia/attr_schema')).json()).schema; } catch { attrSchema = null; }
+      return attrSchema;
+    }
 
     // ---- 요청 ----
     // 요청 형식은 예전 페이지와 글자 그대로 같다(메서드·경로·헤더·본문) — 결과를 돌려주는 것만 더했다.
@@ -273,16 +280,27 @@
         cell(row, badge(a.disabled ? 'admin_acct_disabled' : 'admin_acct_active', a.disabled ? 'bad' : 'ok'));
         const regCell = cell(row, badge(a.tampered ? 'admin_reg_tampered' : a.registryLeaf !== '0' ? 'admin_reg_active' : 'admin_reg_empty', a.tampered ? 'bad' : a.registryLeaf !== '0' ? 'ok' : 'muted'));
         regCell.insertBefore(document.createTextNode(`#${a.slot} `), regCell.firstChild);
-        const inputs = (a.attrs ?? []).map((v, i) => {
-          const input = document.createElement('input');
-          input.value = v; input.size = 4; input.dataset.attr = '1';
-          input.title = Demo.term(`attr${i}`);
-          return input;
+        // 스펙 2: 슬롯마다 스키마 타입대로 그린다 — int 숫자 입력, enum 선택 목록(이름), string 글자 입력, unused 는 숨김. 저장은 { profile }.
+        const fields = [];
+        (attrSchema?.slots ?? []).forEach((slot, i) => {
+          if (slot.type === 'unused') return;
+          let input;
+          if (slot.type === 'enum') {
+            input = document.createElement('select');
+            const none = document.createElement('option'); none.value = ''; none.textContent = '—'; input.appendChild(none);
+            for (const name of Object.keys(slot.values)) { const o = document.createElement('option'); o.value = name; o.textContent = name; input.appendChild(o); }
+          } else {
+            input = document.createElement('input'); input.size = slot.type === 'int' ? 6 : 10;
+          }
+          input.value = a.profile?.[slot.name] ?? '';
+          input.title = `${slot.label ?? slot.name} (${slot.name})`;
+          fields.push({ name: slot.name, input });
         });
         const attrCell = row.insertCell();
-        inputs.forEach((input, i) => { if (i > 0) attrCell.appendChild(document.createTextNode(' ')); attrCell.appendChild(input); });
+        if (!fields.length) attrCell.textContent = (a.attrs ?? []).join(' ');   // 스키마를 못 받았으면 인코딩값만 보인다(저장 불가)
+        fields.forEach(({ input }, i) => { if (i > 0) attrCell.appendChild(document.createTextNode(' ')); attrCell.appendChild(input); });
         const act = row.insertCell();
-        act.appendChild(button('admin_save_btn', 'btn-ghost', () => saveAttrs(a.uid, inputs.map((i) => i.value.trim()))));
+        act.appendChild(button('admin_save_btn', 'btn-ghost', () => saveAttrs(a.uid, Object.fromEntries(fields.map(({ name, input }) => [name, input.value.trim()])))));
         act.appendChild(document.createTextNode(' '));
         act.appendChild(button('admin_sessions_btn', 'btn-ghost', () => toggleSessions(a.uid)));
         act.appendChild(document.createTextNode(' '));
@@ -329,6 +347,7 @@
     }
     async function loadAccounts() {
       if (!hasSecret()) { placeholder($('accounts'), 'admin_need_secret'); return; }
+      await loadAttrSchema();
       try {
         const r = await adminJson('GET', '/cia/accounts');
         if (r.status !== 200) { accounts = null; placeholder($('accounts'), 'admin_load_failed'); setVerdict($('adminVerdict'), false, 'admin_load_failed', { reason: reasonFor(r), detail: safeDetail(r.body) }); return; }
@@ -350,9 +369,10 @@
       renderAccounts();
       loadSessions(uid);
     }
-    function saveAttrs(uid, attrs) {
-      run('admin_attrs_failed', () => call('POST', `/cia/accounts/${uid}/attrs`, { attrs }), ({ body }) => {
-        setVerdict($('adminVerdict'), true, 'admin_attrs_title', () => ({ summary: Demo.t('admin_attrs_summary', { uid, attrs: attrs.join(', ') }), detail: safeDetail(body) }));
+    function saveAttrs(uid, profile) {
+      run('admin_attrs_failed', () => call('POST', `/cia/accounts/${uid}/attrs`, { profile }), ({ body }) => {
+        const shown = Object.entries(profile).filter(([, v]) => v !== '').map(([k, v]) => `${k}=${v}`).join(', ') || '—';
+        setVerdict($('adminVerdict'), true, 'admin_attrs_title', () => ({ summary: Demo.t('admin_attrs_summary', { uid, attrs: shown }), detail: safeDetail(body) }));
         loadAccounts(); loadState();
       });
     }

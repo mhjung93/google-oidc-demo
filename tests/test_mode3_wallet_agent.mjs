@@ -14,6 +14,7 @@ import { deployVerifier, deployFactory, walletAt } from '../lib/mode3_onchain.js
 import { LOG_ABI, MODE3_MIRROR_ABI, MODE3_ROOTS_ABI } from '../lib/mode3_log.js';
 import { setRoot } from '../lib/mode3_set_tree.js';
 import { pointToStrings } from '../lib/mode3_issuance.js';
+import { DEFAULT_ATTR_SCHEMA, encodeSlotValue } from '../lib/mode3_attr_schema.js';
 
 const j = (o) => JSON.stringify(o, (k, v) => (typeof v === 'bigint' ? v.toString() : v));
 let failed = 0;
@@ -64,17 +65,23 @@ try {
   });
 
   await t('등록: AA 속성을 저장하고 본문의 attrs 는 무시한다(201, 슬롯 0); 두 번째는 409, 잘못된 pwd 는 CIA 의 401 을 그대로; /wallet/status 에 attrs·slot, registry 는 동기화 전이라 null', async () => {
-    // uid 12345 는 cia.js DEMO_ACCOUNTS.testuser — AA 기록 attrs = ['1990','410','2','0','0','0'](V9: 6슬롯). 본문의 attrs 는 무시된다.
+    // uid 12345 는 cia.js DEMO_ACCOUNTS.testuser — AA 기록 attrs = ['1990','410','0','0','0','0'](스펙 2: 등급 없음). 본문의 attrs 는 무시된다.
     const r = await wallet.post('/wallet/register', { uid, pwd: 'password123', attrs: ['1', '2', '3', '4'] });
     assert.equal(r.status, 201, j(r.body));
-    assert.deepEqual(r.body, { uid, slot: 0, attrs: ['1990', '410', '2', '0', '0', '0'] });
+    assert.deepEqual(r.body, { uid, slot: 0, attrs: ['1990', '410', '0', '0', '0', '0'], profile: { birthYear: '1990', country: 'KR' } });
     assert.equal((await wallet.post('/wallet/register', { uid, pwd: 'password123' })).status, 409);
     const s = await wallet.get('/wallet/status');
     assert.equal(s.body.registered, true);
     assert.equal(s.body.uid, uid);
     assert.equal(s.body.slot, 0);
-    assert.deepEqual(s.body.attrs, ['1990', '410', '2', '0', '0', '0']);
+    assert.deepEqual(s.body.attrs, ['1990', '410', '0', '0', '0', '0']);
     assert.equal(s.body.registry, null, '아직 동기화 전');
+    assert.deepEqual(s.body.profile, { birthYear: '1990', country: 'KR' });
+    const sch = (await cia.get('/cia/attr_schema')).body;
+    assert.deepEqual(s.body.attrSchema, { id: 'zkd-attrs', version: 1, hash: sch.hash });
+    assert.deepEqual(s.body.attrsView.map((v) => v.display), ['1990', 'KR', '', '', '', '']);
+    const ws = await wallet.get('/wallet/attr_schema');
+    assert.equal(ws.status, 200); assert.equal(ws.body.hash, sch.hash); assert.equal(ws.body.source, 'cia');
   });
 
   let first, PPID1, S1;
@@ -488,21 +495,27 @@ try {
     assert.equal(r.body.published, true, j(r.body));
   }
 
+  // 스펙 2(2026-10-07): 관리자 엔드포인트는 { profile } 만 받는다(옛 { attrs:[...] } 는 400 use_profile) — extra1(string, 슬롯 2)에
+  // 값을 넣어 string 슬롯의 인코딩(해시)도 같이 재동기화 경로로 거친다.
+  const tier3 = await encodeSlotValue(DEFAULT_ATTR_SCHEMA, 2, 'tier3');
+
   await t('관리자가 속성을 바꾸면 다음 로그인이 bad proof → /cia/attrs 재동기화 → 새 C_u 로 성공, PPID 동일', async () => {
     const first = await loginOnce();
     // V9: 속성 변경은 활성 자격증명의 슬롯을 즉시 비우고 게시한다(cia.js) — 별도로 publishOnce 를 부를 필요가 없다.
-    assert.equal((await cia.adminPost(`/cia/accounts/${uid}/attrs`, { attrs: ['1990', '410', '3', '0', '0', '0'] })).status, 200);
+    assert.equal((await cia.adminPost(`/cia/accounts/${uid}/attrs`, { profile: { birthYear: '1990', country: 'KR', extra1: 'tier3' } })).status, 200);
     const second = await loginOnce();
     assert.equal(second.PPID, first.PPID);
     assert.equal(second.timings.userCredMs > 0, true, '재동기화 뒤 새 C_u 를 받았다');
-    assert.deepEqual((await wallet.get('/wallet/status')).body.attrs, ['1990', '410', '3', '0', '0', '0']);
+    const status = (await wallet.get('/wallet/status')).body;
+    assert.deepEqual(status.attrs, ['1990', '410', tier3, '0', '0', '0']);
+    assert.deepEqual(status.profile, { birthYear: '1990', country: 'KR', extra1: 'tier3' });
   });
 
   await t('/wallet/attrs 는 사라졌고(404) /wallet/attrs/sync 는 값을 다시 받는다', async () => {
     assert.equal((await wallet.post('/wallet/attrs', { attrs: ['1', '0', '0', '0'] })).status, 404);
     const r = await wallet.post('/wallet/attrs/sync', {});
     assert.equal(r.status, 200, j(r.body)); assert.equal(Array.isArray(r.body.attrs), true);
-    assert.deepEqual(r.body.attrs, ['1990', '410', '3', '0', '0', '0']); assert.equal(r.body.changed, false, '이미 최신이라 바뀐 게 없다');
+    assert.deepEqual(r.body.attrs, ['1990', '410', tier3, '0', '0', '0']); assert.equal(r.body.changed, false, '이미 최신이라 바뀐 게 없다');
   });
 
   // V8 세션 폐기(설계 2026-09-24 §4). 계획서는 이 두 케이스를 앞쪽 '동기화: 재검증 → 폐기 감지 …' 앞에 두라고 했지만,
@@ -585,23 +598,23 @@ try {
     // V10: 계정은 거울의 lastPublishedBlock 으로 maxRootAge(10) 를 본다. 격리 CIA 는 거울 하트비트가 꺼져 있어(캐노니컬 하트비트만
     // 돈다) 앞 케이스들 동안 거울이 늙었을 수 있다 — 실행 직전에 거울을 새로 올린다(운영에서는 CIA 의 거울 하트비트가 하는 일).
     await relay();
-    const ok = await wallet.post('/wallet/tx', { r_s: s.r_s, to, data: '0x4e71d92d', disclose: [{ lo: '0', hi: '2007' }, { lo: '410', hi: '410' }, null, null] }, { Origin: stack.rpOriginForWallet });
+    const ok = await wallet.post('/wallet/tx', { r_s: s.r_s, to, data: '0x4e71d92d', disclose: [{ lo: '0', hi: '2007' }, null, null, null] }, { Origin: stack.rpOriginForWallet });
     assert.equal(ok.status, 200, j(ok.body));
-    assert.equal(ok.body.disclosure.mask, '3'); assert.equal(ok.body.cacheHit, false);
-    assert.equal(ok.body.onchainDisclosure.mask, '3');
-    assert.deepEqual(ok.body.onchainDisclosure.lo, ['0', '410', '0', '0', '0', '0']);
-    assert.deepEqual(ok.body.onchainDisclosure.hi, ['2007', '410', '0', '0', '0', '0']);
+    assert.equal(ok.body.disclosure.mask, '1'); assert.equal(ok.body.cacheHit, false);
+    assert.equal(ok.body.onchainDisclosure.mask, '1');
+    assert.deepEqual(ok.body.onchainDisclosure.lo, ['0', '0', '0', '0', '0', '0']);
+    assert.deepEqual(ok.body.onchainDisclosure.hi, ['2007', '0', '0', '0', '0', '0']);
     const bad = await wallet.post('/wallet/tx', { r_s: s.r_s, to, disclose: [{ lo: '0', hi: '1980' }, null, null, null] }, { Origin: stack.rpOriginForWallet });
     assert.equal(bad.status, 400, j(bad.body)); assert.equal(bad.body.reason, 'disclosure_unsatisfiable');
     const plain = await wallet.post('/wallet/tx', { r_s: s.r_s, to }, { Origin: stack.rpOriginForWallet });
     assert.equal(plain.status, 200, j(plain.body)); assert.equal(plain.body.disclosure, null); assert.equal(plain.body.onchainDisclosure, null);
-    // V9: disclose 는 길이 1..6 — 6칸을 다 채운 요청도 받는다(여기서는 슬롯 2, 등급 — 앞의 '관리자가 속성을 바꾸면' 테스트 뒤로 '3').
-    const six = await wallet.post('/wallet/tx', { r_s: s.r_s, to, disclose: [null, null, { lo: '3', hi: '3' }, null, null, null] }, { Origin: stack.rpOriginForWallet });
+    // V9: disclose 는 길이 1..6 — 6칸을 다 채운 요청도 받는다(범위는 int 슬롯만 — 슬롯 0 을 6칸 배열의 첫 칸에).
+    const six = await wallet.post('/wallet/tx', { r_s: s.r_s, to, disclose: [{ lo: '1990', hi: '1990' }, null, null, null, null, null] }, { Origin: stack.rpOriginForWallet });
     assert.equal(six.status, 200, j(six.body));
-    assert.equal(six.body.disclosure.mask, '4');
-    assert.equal(six.body.onchainDisclosure.mask, '4');
-    assert.deepEqual(six.body.onchainDisclosure.lo, ['0', '0', '3', '0', '0', '0']);
-    assert.deepEqual(six.body.onchainDisclosure.hi, ['0', '0', '3', '0', '0', '0']);
+    assert.equal(six.body.disclosure.mask, '1');
+    assert.equal(six.body.onchainDisclosure.mask, '1');
+    assert.deepEqual(six.body.onchainDisclosure.lo, ['1990', '0', '0', '0', '0', '0']);
+    assert.deepEqual(six.body.onchainDisclosure.hi, ['1990', '0', '0', '0', '0', '0']);
   });
 
   await t('V7 /wallet/tx: set 으로 국가 ∈ 집합을 증명하면 onchainDisclosure.set 이 sel 2·root 로 남는다; 비소속 집합은 400 disclosure_unsatisfiable; slot 6 은 bad_disclosure(V9: 0..5)', async () => {
@@ -620,6 +633,20 @@ try {
     assert.equal(miss.status, 400, j(miss.body)); assert.equal(miss.body.reason, 'disclosure_unsatisfiable');
     const bad = await wallet.post('/wallet/tx', { r_s: s.r_s, to, set: { slot: 6, members } }, { Origin: stack.rpOriginForWallet });
     assert.equal(bad.status, 400, j(bad.body)); assert.equal(bad.body.reason, 'bad_disclosure');
+  });
+
+  await t('스펙 2 predicate_type: 범위 술어를 enum 슬롯(1)에, 집합 술어를 unused 슬롯(4)에 걸면 /wallet/tx·/wallet/login 모두 400 predicate_type — 증명 전에 거른다', async () => {
+    const to = '0x000000000000000000000000000000000000dEaD';
+    const s = await loginOnce({ factoryAddress });
+    const r1 = await wallet.post('/wallet/tx', { r_s: s.r_s, to, disclose: [null, { lo: '410', hi: '410' }, null, null, null, null] }, { Origin: stack.rpOriginForWallet });
+    assert.equal(r1.status, 400, j(r1.body)); assert.equal(r1.body.reason, 'predicate_type'); assert.match(r1.body.detail, /슬롯 1/);
+    const r2 = await wallet.post('/wallet/tx', { r_s: s.r_s, to, set: { slot: 4, members: [0] } }, { Origin: stack.rpOriginForWallet });
+    assert.equal(r2.status, 400, j(r2.body)); assert.equal(r2.body.reason, 'predicate_type');
+    const r3 = await loginNoRelay(newRs(), { disclose: [null, { lo: '410', hi: '410' }] });
+    assert.equal(r3.status, 400, j(r3.body)); assert.equal(r3.body.reason, 'predicate_type');
+    // string 슬롯(2)의 집합 술어는 허용된다 — 내 값(0)이 집합에 없으면 그다음 단계의 disclosure_unsatisfiable
+    const r4 = await wallet.post('/wallet/tx', { r_s: s.r_s, to, set: { slot: 2, members: [7] } }, { Origin: stack.rpOriginForWallet });
+    assert.equal(r4.status, 400, j(r4.body)); assert.equal(r4.body.reason, 'disclosure_unsatisfiable');
   });
 
   // ---- V10(2026-10-02 Task 9): 거울 뷰 기준 증명 ----

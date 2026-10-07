@@ -15,10 +15,13 @@ t('allowOrigin: 정확 일치만, 빈 항목 무시', () => {
   assert.equal(allowOrigin('http://a:1', [undefined, null]), false);
 });
 t('AA health: 역할별 필드와 민감 필드 부재', () => {
-  const h = buildAaHealth({ now, chain, root: '9'.repeat(70), epoch: 3, lastPublishedBlock: '800', heartbeatBlocks: 50, pendingLeaves: 1, pendingRps: 0, pendingOpenings: 2, accounts: 4, walletOrigin: 'http://w', rpOrigins: ['http://r'] });
+  const base = { now, chain, root: '9'.repeat(70), epoch: 3, lastPublishedBlock: '800', heartbeatBlocks: 50, pendingLeaves: 1, pendingRps: 0, pendingOpenings: 2, accounts: 4, walletOrigin: 'http://w', rpOrigins: ['http://r'] };
+  const h = buildAaHealth(base);
   assert.equal(h.role, 'aa'); assert.equal(h.ok, true); assert.equal(h.root, '999999999999…'); assert.equal(h.rootAge, 12);
   assert.deepEqual(h.rpOrigins, ['http://r']); assert.equal(h.chain.head, '812');
   for (const k of SENSITIVE_KEYS) assert.ok(!deepKeys(h).includes(k), k);
+  assert.equal(h.attrSchema, null, 'attrSchema 를 안 주면 null');
+  assert.deepEqual(buildAaHealth({ ...base, attrSchema: { id: 'zkd-attrs', version: 1, hash: 'ab' } }).attrSchema, { id: 'zkd-attrs', version: 1, hash: 'ab' });
 });
 t('AA health: mirrors — 기본 [], 거울 항목은 문자열 epoch·숫자 rootAge/behind, 못 읽은 거울은 null 항목', () => {
   const base = { now, chain, root: '1', epoch: 5, lastPublishedBlock: '800', heartbeatBlocks: 50, pendingLeaves: 0, pendingRps: 0, pendingOpenings: 0, accounts: 1, walletOrigin: '', rpOrigins: [] };

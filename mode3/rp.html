@@ -155,7 +155,7 @@
       badge.className = `badge ${pending ? 'warn' : 'ok'}`;
       tte(badge, pending ? 'rp_pending_badge' : 'rp_active_badge');
       tte($('rpInfo'), pending ? 'rp_status_pending' : 'rp_status_approved');
-      if (info.attrGateAddress) tte($('attrGateInfo'), 'rp_policy', { countries: info.predicates.allowedCountries.join(', '), minAge: info.predicates.minAge });
+      if (info.attrGateAddress) tte($('attrGateInfo'), 'rp_policy', { countries: (info.predicates.allowedCountryNames ?? info.predicates.allowedCountries).join(', '), minAge: info.predicates.minAge });
       else tte($('attrGateInfo'), 'rp_no_attrgate');
       tte($('rpMirrorInfo'), 'rp_mirror_line', { mirror: info.mirrorAddress ?? '-', log: info.logAddress ?? '-' });   // V10: 검증은 거울만 읽는다
       $('rpInfoExpert').textContent = `arid=${info.arid ?? '-'}   origin=${info.origin}   cert_s=있음   pk_trace=있음   Mode3Log=${info.logAddress}`
@@ -346,7 +346,8 @@
       try {
         if (!info) await loadInfo();
         const pred = $('requirePred').checked ? {
-          disclose: [{ lo: '0', hi: String(new Date().getUTCFullYear() - Number(info.predicates.minAge)) }, null, null, null],
+          // lo 는 스키마의 출생연도 min — RP 는 lo ≥ min 도 요구한다(출생연도 0 = 값 없음을 배제, 최종 리뷰 I1).
+          disclose: [{ lo: info.predicates.birthYearMin ?? '0', hi: String(new Date().getUTCFullYear() - Number(info.predicates.minAge)) }, null, null, null],
           set: { slot: 1, members: info.predicates.allowedCountries },
           require: { countrySet: true, minAge: true },
         } : null;

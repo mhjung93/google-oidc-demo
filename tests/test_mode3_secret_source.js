@@ -35,9 +35,10 @@ await t('snap 모드: 비밀은 witness 에서만 오고 상태는 바꾸지 않
 
 await t('stripSecrets 는 s_u·r_u·sk_u·blind_u 를 지운다', () => {
   const s = stripSecrets(REG);
-  assert.deepEqual(Object.keys(s).sort(), ['attrs', 'cm_u', 'pk_u', 'slot', 'uid', 'userCred']);
+  assert.deepEqual(Object.keys(s).sort(), ['attrs', 'cm_u', 'pk_u', 'profile', 'slot', 'uid', 'userCred']);
   assert.deepEqual(s.userCred, { Cf_u: '5', issuedAt: 'now' });
   assert.equal(stripSecrets({ ...REG, userCred: null }).userCred, null);
+  assert.equal(stripSecrets(REG).profile, null, 'profile 이 없으면 null');
 });
 
 await t('validateWitness: uid 불일치·형식·범위 오류는 bad_witness', async () => {

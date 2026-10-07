@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { createSecretSource, stripSecrets, validateWitness } from './lib/mode3_secret_source.js';
+import { DEFAULT_ATTR_SCHEMA, loadSchema, assertPredicateTypes, decodeAttrs, schemaInfo } from './lib/mode3_attr_schema.js';
 import { createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, buildCredentialProof, signChallenge, signSessionRequest, signAttrsRequest, signRevokeSession, signRegistration, eddsaPubOf, normalizeDisclosure, normalizeSet, disclosureKey, hasPredicate, ProofCache, chooseMaxHeight, syncRegistryTree } from './lib/mode3_wallet.js';
 import { sessionLeaf } from './lib/mode3_revocation.js';
 import { createRevocationSync } from './lib/mode3_rcl_sync.js';
@@ -191,6 +192,56 @@ function pkCia() {
   })().catch((e) => { pkCiaP = null; throw e; }));
 }
 
+// 속성 스키마(스펙 2 §5.3): IdP 가 공개하는 것을 받아 둔다. 못 받으면(HTTP 오류·네트워크·2초 타임아웃) 공유 모듈의 기본 스키마로 간다(경고) —
+// 술어 타입 검사는 기본 스키마 기준이 되고, IdP 가 다른 스키마를 쓰면 응답의 schemaHash 불일치로 드러나 그때 다시 받는다.
+// 받았는데 검증에 실패하면(최종 리뷰 I4) 보관 스키마를 바꾸지 않고 기록만 한다 — 술어 요청은 503 schema_invalid(연결 실패와 구분).
+// 최종 리뷰 M4: 진행 중 요청은 하나로 합치고(pkCia() 와 같은 메모이즈), 기본 스키마인 동안의 재시도는 요청 경로가 아니라 백그라운드에서
+// 60초 간격으로 한다(받으면 멈춘다) — IdP 가 죽어 있을 때 로그인·tx 마다 IdP 를 부르지 않는다.
+const ATTR_SCHEMA_RETRY_MS = 60_000;
+const ATTR_SCHEMA_TIMEOUT_MS = 2000;
+let attrSchema = null;          // { schema, hash, source: 'cia' | 'default' }
+let attrSchemaInvalid = null;   // 마지막으로 받은 스키마의 검증 실패 메시지(받아서 통과하면 null)
+let attrSchemaP = null;         // 진행 중인 수신
+function fetchAttrSchema() {
+  return (attrSchemaP ??= (async () => {
+    const c = new AbortController();
+    const tm = setTimeout(() => c.abort(), ATTR_SCHEMA_TIMEOUT_MS);
+    let b;
+    try {
+      const r = await fetch(`${CIA_URL}/cia/attr_schema`, { signal: c.signal });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      b = await r.json();
+    } catch (e) {
+      if (!attrSchema && !attrSchemaInvalid) { attrSchema = { ...loadSchema(DEFAULT_ATTR_SCHEMA), source: 'default' }; console.warn(`[wallet] 속성 스키마를 IdP 에서 받지 못해 기본 스키마를 쓴다: ${e.message}`); }
+      return attrSchema;
+    } finally { clearTimeout(tm); }
+    let loaded;
+    try { loaded = loadSchema(b?.schema); }
+    catch (e) { attrSchemaInvalid = e.message; console.error(`[wallet] IdP 의 속성 스키마가 검증에 실패했다 — 보관 스키마를 바꾸지 않는다, 술어 요청은 schema_invalid: ${e.message}`); return attrSchema; }
+    if (b.hash && b.hash !== loaded.hash) console.warn(`[wallet] IdP 가 알린 스키마 해시(${b.hash})와 계산값(${loaded.hash})이 다르다 — 계산값을 쓴다`);
+    attrSchema = { schema: loaded.schema, hash: loaded.hash, source: 'cia' }; attrSchemaInvalid = null;
+    return attrSchema;
+  })().finally(() => { attrSchemaP = null; }));
+}
+/** 보관 스키마. 기동 수신이 아직 진행 중이면 그것을 기다린다. hashHint(IdP 응답의 schemaHash — IdP 를 새로 부르지 않고 얻은 값)가
+ *  보관 해시와 다를 때만 즉시 다시 받고, 그래도 다르면 경고만(스펙 §7 — 지갑은 IdP 를 바꿀 수 없다). 검증 실패 상태면
+ *  Error{ reason:'schema_invalid' } — 술어가 있는 요청만 부르므로 술어 없는 로그인·tx 는 막지 않는다. */
+async function schemaFor(hashHint = null) {
+  if (attrSchemaP && !attrSchema) await attrSchemaP;
+  if (hashHint && hashHint !== attrSchema?.hash) await fetchAttrSchema();
+  if (attrSchemaInvalid) throw Object.assign(new Error(`IdP 의 속성 스키마가 검증에 실패했다: ${attrSchemaInvalid}`), { reason: 'schema_invalid' });
+  if (hashHint && attrSchema.hash !== hashHint) console.warn(`[wallet] IdP 응답의 schemaHash(${hashHint})가 보관 스키마(${attrSchema.hash})와 다르다`);
+  return attrSchema;
+}
+/** 등록·재동기화 응답의 schemaHash 로 보관 스키마를 맞춰 본다. 검증 실패는 이미 기록됐고 등록·재동기화 자체는 막지 않는다. */
+const noteSchemaHint = (hashHint) => schemaFor(hashHint).catch((e) => { if (e.reason !== 'schema_invalid') throw e; });
+// 기동 때 한 번. 못 받았거나 검증에 실패했으면 백그라운드로 다시 받아 본다(받으면 멈춘다). 실패는 안에서 경고로 삼킨다 — 기동을 막지 않는다.
+fetchAttrSchema().then(() => {
+  if (attrSchema?.source === 'cia' && !attrSchemaInvalid) return;
+  const retry = setInterval(() => { fetchAttrSchema().then(() => { if (attrSchema?.source === 'cia' && !attrSchemaInvalid) clearInterval(retry); }); }, ATTR_SCHEMA_RETRY_MS);
+  retry.unref();
+});
+
 const isDec = (v) => typeof v === 'string' && /^[0-9]+$/.test(v);
 const isAddr = (v) => typeof v === 'string' && /^0x[0-9a-fA-F]{40}$/.test(v);
 const json = async (r) => ({ status: r.status, body: await r.json().catch(() => null) });
@@ -216,6 +267,8 @@ async function syncAttrsFromCia(src) {
   const r = await ciaPost('/cia/attrs', { uid: reg.uid, nonce: nonce.toString(), sig_u: await signAttrsRequest(reg.sk_u, BigInt(reg.uid), nonce) });
   if (r.status !== 200) return { changed: false, status: r.status, body: r.body };
   const attrs = normalizeAttrs(r.body.attrs).map(String);
+  if (r.body.profile && typeof r.body.profile === 'object') state.registration.profile = r.body.profile;   // 표시용(스펙 2) — 증명은 attrs 만 쓴다
+  await noteSchemaHint(r.body.schemaHash ?? null);
   const changed = JSON.stringify(attrs) !== JSON.stringify(reg.attrs);
   if (changed) { src.setAttrs(attrs); replaceUserCred(src, null); } else persist();
   return { changed, status: 200, attrs };
@@ -451,11 +504,19 @@ app.get('/wallet/status', async (req, res) => {
   const st = rcl ? rcl.stats() : null;
   res.json({
     registered: Boolean(reg), uid: reg?.uid ?? null, slot: reg?.slot ?? null, attrs: reg?.attrs ?? null, userCred, sessions,
+    profile: reg?.profile ?? null, attrSchema: attrSchema ? schemaInfo(attrSchema.schema, attrSchema.hash) : null,
+    attrsView: reg && attrSchema ? decodeAttrs(attrSchema.schema, reg.attrs, reg.profile ?? null) : null,
     registry: lastRegistry, demoOverride: demoOverride ? { scope: demoOverride.scope, fields: Object.keys(demoOverride).filter((k) => k !== 'scope') } : null,
     head, lastRoot: lastSync?.root ?? null, lastRegRoot: lastSync?.regRoot ?? null, logAddress: LOG_ADDRESS, ciaUrl: CIA_URL,
     mirror: mirrorStatus, canonical: { rpc: REV_RPC, logAddress: LOG_ADDRESS, epoch: canonicalEpoch },
     rcl: st ? { leaves: st.leaves, lastSyncedBlock: st.lastSyncedBlock === null ? null : st.lastSyncedBlock.toString(), lastMode: st.lastMode, cacheFile: st.cacheFile } : null,
   });
+});
+
+// 지갑 페이지(같은 오리진)가 이름 ↔ 코드를 바꾸는 데 쓰는 전체 스키마(스펙 2 §5.6). 에이전트가 IdP 에서 받아 보관한 것.
+app.get('/wallet/attr_schema', async (req, res) => {
+  try { const s = await schemaFor(); res.json({ schema: s.schema, hash: s.hash, source: s.source }); }
+  catch (e) { if (e.reason === 'schema_invalid') return res.status(503).json({ reason: 'schema_invalid', detail: e.message }); res.status(500).json({ error: e.message }); }
 });
 
 // 시연(설계 §8.3): 다음 발급/증명의 s_u·uid 를 메모리에서만 덮어쓴다. 한 번 쓰면 사라진다. 전문가 보기 전용 카드가 부른다.
@@ -490,15 +551,17 @@ app.post('/wallet/register', async (req, res) => {
       return res.status(status).json({ reason: 'register_failed', cia: r.body });
     }
     const attrs = normalizeAttrs(r.body.attrs).map(String);
+    await noteSchemaHint(r.body.schemaHash ?? null);
+    const profile = r.body.profile && typeof r.body.profile === 'object' ? r.body.profile : null;
     const pub = { x: pk_u.x.toString(), y: pk_u.y.toString() };
     if (SECRETS === 'snap') {
-      state.registration = stripSecrets({ uid, cm_u: pointToStrings(cm_u), pk_u: pub, slot: r.body.slot, attrs, userCred: null });
+      state.registration = stripSecrets({ uid, cm_u: pointToStrings(cm_u), pk_u: pub, slot: r.body.slot, attrs, profile, userCred: null });
       persist();
-      return res.status(201).json({ uid, slot: r.body.slot, attrs });
+      return res.status(201).json({ uid, slot: r.body.slot, attrs, profile });
     }
-    state.registration = { uid, s_u: reg.s_u.toString(), r_u: reg.r_u.toString(), cm_u: pointToStrings(cm_u), sk_u, pk_u: pub, slot: r.body.slot, attrs, userCred: null };
+    state.registration = { uid, s_u: reg.s_u.toString(), r_u: reg.r_u.toString(), cm_u: pointToStrings(cm_u), sk_u, pk_u: pub, slot: r.body.slot, attrs, profile, userCred: null };
     persist();
-    res.status(201).json({ uid, slot: r.body.slot, attrs });
+    res.status(201).json({ uid, slot: r.body.slot, attrs, profile });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -546,6 +609,12 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     // V7: 로그인 성명에도 술어를 실을 수 있다(스펙 §6). 형식·불만족은 체인 작업 전에 걸러낸다.
     let disclosure = null;
     if (disclose || set) {
+      try { assertPredicateTypes((await schemaFor()).schema, disclose, set); }
+      catch (e) {
+        if (e.reason === 'schema_invalid') return res.status(503).json({ reason: 'schema_invalid', detail: e.message });
+        if (e.reason === 'predicate_type') return res.status(400).json({ reason: 'predicate_type', detail: e.message });
+        throw e;
+      }
       try { const attrs = (state.registration.attrs ?? []).map(BigInt); disclosure = { ...normalizeDisclosure(disclose, attrs), ...(await normalizeSet(set, attrs)) }; }
       catch (e) { if (e.reason) return res.status(400).json({ reason: e.reason, detail: e.message }); throw e; }
     }
@@ -941,6 +1010,15 @@ async function buildExecute(req) {
   // 2026-09-22 §4.2 선택 공개: disclose 를 회로 입력으로. 형식·범위 오류·불만족은 체인·증명 작업 전에 걸러낸다(attrs 는 두 모드 모두 파일의 공개값).
   let disclosure;
   try {
+    // 스키마는 술어가 있을 때만 필요하다 — 술어 없는 tx 는 스키마 상태(schema_invalid)와 무관하게 간다(최종 리뷰 I4).
+    if (disclose || set) {
+      try { assertPredicateTypes((await schemaFor()).schema, disclose, set); }
+      catch (e) {
+        if (e.reason === 'schema_invalid') return fail(503, { reason: 'schema_invalid', detail: e.message });
+        if (e.reason === 'predicate_type') return fail(400, { reason: 'predicate_type', detail: e.message });
+        throw e;
+      }
+    }
     const attrs = (state.registration.attrs ?? []).map(BigInt);
     disclosure = { ...normalizeDisclosure(disclose, attrs), ...(await normalizeSet(set, attrs)) };   // V7: 범위 + 집합
   } catch (e) { if (e.reason) return fail(400, { reason: e.reason, detail: e.message }); throw e; }

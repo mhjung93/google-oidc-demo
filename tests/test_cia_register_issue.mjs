@@ -13,6 +13,7 @@ import { verifyRpCert } from '../lib/mode3_rp_cert.js';
 import { verifyShare, combinePublicKey } from '../lib/mode3_trace.js';
 import { createShare } from '../lib/mode3_trace.js';
 import { MODE3_LOG_ABI, signPublicationV3 } from '../lib/mode3_log.js';
+import { DEFAULT_ATTR_SCHEMA, encodeSlotValue } from '../lib/mode3_attr_schema.js';
 
 let failed = 0;
 async function t(name, fn) {
@@ -42,7 +43,7 @@ const signMsg = async (prvBuf, m) => { const s = eddsa.signPoseidon(prvBuf, F.e(
 const mhOf = async (ttl = 300n) => BigInt(await provider.getBlockNumber()) + ttl;
 
 // AA 가 보증하는 데모 계정 속성(cia.js DEMO_ACCOUNTS, 2026-09-22 §3.4) — user_cred 의 π_u 가 이 값과 다르면 400.
-const TESTUSER_ATTRS = [1990n, 410n, 2n, 0n, 0n, 0n];
+const TESTUSER_ATTRS = [1990n, 410n, 0n, 0n, 0n, 0n];
 
 /** 사용자 자격증명 요청 본문. u 는 { s_u, r_u, sk_u(Buffer), attrs }. 다른 계정이면 uidBig 을 준다. */
 async function userCredRequest(u, overrides = {}, uidBig = uid) {
@@ -171,7 +172,8 @@ try {
 
   await t('register: cm_u 등록, 장기키 발급, 응답에 AA 기록 attrs', async () => {
     const w = await freshWallet();
-    assert.deepEqual(w.registerBody.attrs, ['1990', '410', '2', '0', '0', '0']);
+    assert.deepEqual(w.registerBody.attrs, ['1990', '410', '0', '0', '0', '0']);
+    assert.deepEqual(w.registerBody.profile, { birthYear: '1990', country: 'KR' }); assert.match(w.registerBody.schemaHash, /^[0-9a-f]{64}$/);
     user = { s_u: w.s_u, r_u: w.r_u, cm_u: w.cm_u, sk_u: Buffer.from(w.sk_u, 'hex'), pk_u: w.pk_u };
   });
 
@@ -560,46 +562,79 @@ try {
   // (앞의 revokedLeaf()·userCredRequest(user) 는 모두 기본 attrs 를 가정한다) 파일의 맨 끝, publish 가 이미 깨진 뒤에 둔다.
   await t('register 응답에 AA 기록 attrs 가 실린다; /cia/attrs 는 sk_u 서명으로 같은 값을 돌려준다', async () => {
     const w = await freshWallet();                                           // 파일의 등록 헬퍼(uid 12345 testuser)
-    assert.deepEqual(w.registerBody.attrs, ['1990', '410', '2', '0', '0', '0']);
+    assert.deepEqual(w.registerBody.attrs, ['1990', '410', '0', '0', '0', '0']);
     const nonce = 99n;
     const sig_u = await signAttrsRequest(w.sk_u, 12345n, nonce);
     const r = await cia.post('/cia/attrs', { uid: '12345', nonce: nonce.toString(), sig_u });
-    assert.equal(r.status, 200); assert.deepEqual(r.body.attrs, ['1990', '410', '2', '0', '0', '0']);
+    assert.equal(r.status, 200); assert.deepEqual(r.body.attrs, ['1990', '410', '0', '0', '0', '0']);
+    assert.deepEqual(r.body.profile, { birthYear: '1990', country: 'KR' }); assert.equal(r.body.schemaHash, (await cia.get('/cia/attr_schema')).body.hash);
     assert.equal((await cia.post('/cia/attrs', { uid: '12345', nonce: '100', sig_u })).status, 400, '다른 nonce 의 서명은 거절');
   });
 
   await t('user_cred: 지갑이 AA 기록과 다른 attrs 로 만든 C_u 는 400 bad proof; 같은 값이면 201', async () => {
     const w = await freshWallet();
-    const bad = await buildUserCredRequest({ uid: 12345n, s_u: w.s_u, r_u: w.r_u, sk_u: w.sk_u, attrs: [1991n, 410n, 2n, 0n, 0n, 0n] });
+    const bad = await buildUserCredRequest({ uid: 12345n, s_u: w.s_u, r_u: w.r_u, sk_u: w.sk_u, attrs: [1991n, 410n, 0n, 0n, 0n, 0n] });
     assert.equal((await cia.post('/cia/user_cred', bad.body)).status, 400);
-    const good = await buildUserCredRequest({ uid: 12345n, s_u: w.s_u, r_u: w.r_u, sk_u: w.sk_u, attrs: [1990n, 410n, 2n, 0n, 0n, 0n] });
+    const good = await buildUserCredRequest({ uid: 12345n, s_u: w.s_u, r_u: w.r_u, sk_u: w.sk_u, attrs: [1990n, 410n, 0n, 0n, 0n, 0n] });
     assert.equal((await cia.post('/cia/user_cred', good.body)).status, 201);
   });
 
   await t('관리자 속성 변경: 활성 C_u 가 물리고(retired 1) 다음 user_cred 는 새 값으로만 통과', async () => {
     const w = await freshWallet();
-    const good = await buildUserCredRequest({ uid: 12345n, s_u: w.s_u, r_u: w.r_u, sk_u: w.sk_u, attrs: [1990n, 410n, 2n, 0n, 0n, 0n] });
+    const good = await buildUserCredRequest({ uid: 12345n, s_u: w.s_u, r_u: w.r_u, sk_u: w.sk_u, attrs: [1990n, 410n, 0n, 0n, 0n, 0n] });
     assert.equal((await cia.post('/cia/user_cred', good.body)).status, 201);
-    const r = await cia.adminPost('/cia/accounts/12345/attrs', { attrs: ['1990', '410', '3', '0', '0', '0'] });
-    assert.equal(r.status, 200); assert.equal(r.body.retired, 1);
+    const r = await cia.adminPost('/cia/accounts/12345/attrs', { profile: { birthYear: '1990', country: 'KR', extra1: 'vip' } });
+    assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.body.retired, 1);
+    const vip = await encodeSlotValue(DEFAULT_ATTR_SCHEMA, 2, 'vip');
+    assert.deepEqual(r.body.attrs, ['1990', '410', vip, '0', '0', '0']); assert.deepEqual(r.body.profile, { birthYear: '1990', country: 'KR', extra1: 'vip' });
     // published 는 false — 이 지점에서는 이미 "publish: 온체인 root가..." 케이스가 의도적으로 온체인 root 를
     // 로컬과 영영 어긋나게 해 뒀다(그 테스트 자체의 주석: "이 뒤로는 ... 게시가 전부 503"). V9 는 이 요청도
     // 즉시 게시를 시도하므로 그 503 을 그대로 맞고 조용히 삼켜진다 — retired(등록부 반영)는 그와 무관하게 맞다.
     assert.equal(r.body.published, false);
     assert.equal((await cia.post('/cia/user_cred', good.body)).status, 400, '옛 속성의 C_u 는 더 이상 통과하지 않는다');
-    const next = await buildUserCredRequest({ uid: 12345n, s_u: w.s_u, r_u: w.r_u, sk_u: w.sk_u, attrs: [1990n, 410n, 3n, 0n, 0n, 0n] });
+    const next = await buildUserCredRequest({ uid: 12345n, s_u: w.s_u, r_u: w.r_u, sk_u: w.sk_u, attrs: [1990n, 410n, BigInt(vip), 0n, 0n, 0n] });
     assert.equal((await cia.post('/cia/user_cred', next.body)).status, 201);
-    assert.equal((await cia.adminPost('/cia/accounts/12345/attrs', { attrs: [(1n << 64n).toString(), '0', '0', '0', '0', '0'] })).status, 400);
-    assert.equal((await cia.adminPost('/cia/accounts/424242/attrs', { attrs: ['1', '0', '0', '0', '0', '0'] })).status, 404);
-    // A-I2: 본문이 없거나 짧으면 0 패딩으로 속성이 지워지고 옛 C_u 리프가 되돌릴 수 없게 게시된다 → 길이 6 배열만 받는다
-    assert.equal((await cia.adminPost('/cia/accounts/12345/attrs', {})).status, 400);
-    assert.equal((await cia.adminPost('/cia/accounts/12345/attrs', { attrs: ['1990', '410'] })).status, 400);
-    assert.equal((await cia.adminPost('/cia/accounts/12345/attrs', { attrs: 'x' })).status, 400);
-    // M2(2026-09-23 최종 리뷰): 길이가 맞아도 빈 칸은 BigInt('') === 0n 으로 통과했다 — 관리자 UI 가 보내는 바로 그 모양
-    // (cia_admin.html 의 `i.value.trim()`). 슬롯이 조용히 0 이 되고 옛 C_u 리프가 되돌릴 수 없게 게시된다.
-    assert.equal((await cia.adminPost('/cia/accounts/12345/attrs', { attrs: ['1990', '', '2', '0', '0', '0'] })).status, 400, '빈 슬롯');
-    assert.equal((await cia.adminPost('/cia/accounts/12345/attrs', { attrs: ['1990', ' 410 ', '2', '0', '0', '0'] })).status, 400, '공백이 낀 값(BigInt 는 받아들인다)');
-    assert.deepEqual((await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === '12345').attrs, ['1990', '410', '3', '0', '0', '0'], '거절된 요청은 속성을 바꾸지 않았다');
+    // 스펙 2 §7: 인코딩 실패는 400 bad_attr(슬롯·이유), 예전 배열 형식은 400 use_profile, 모르는 계정은 404
+    const bad = await cia.adminPost('/cia/accounts/12345/attrs', { profile: { birthYear: '1990', country: 'XX' } });
+    assert.equal(bad.status, 400); assert.equal(bad.body.error, 'bad_attr'); assert.equal(bad.body.slot, 1); assert.equal(bad.body.reason, 'enum');
+    const range = await cia.adminPost('/cia/accounts/12345/attrs', { profile: { birthYear: '1800', country: 'KR' } });
+    assert.equal(range.status, 400); assert.equal(range.body.error, 'bad_attr'); assert.equal(range.body.slot, 0); assert.equal(range.body.reason, 'range');
+    assert.equal((await cia.adminPost('/cia/accounts/12345/attrs', { profile: { birthYear: '1990', country: 'KR', nope: '1' } })).body.error, 'bad_attr');
+    assert.equal((await cia.adminPost('/cia/accounts/12345/attrs', { profile: { country: 'KR' } })).body.reason, 'missing_field', 'int·enum 키는 있어야 한다(빈 객체로 속성이 통째로 지워지는 것을 막는다 — A-I2)');
+    assert.equal((await cia.adminPost('/cia/accounts/12345/attrs', { attrs: ['1990', '410', '0', '0', '0', '0'] })).body.error, 'use_profile');
+    assert.equal((await cia.adminPost('/cia/accounts/12345/attrs', {})).body.error, 'bad_attr', 'profile 이 없으면 bad_attr(profile_required)');
+    assert.equal((await cia.adminPost('/cia/accounts/12345/attrs', { profile: 'x' })).status, 400);
+    assert.equal((await cia.adminPost('/cia/accounts/424242/attrs', { profile: { birthYear: '1', country: 'KR' } })).status, 404);
+    const after = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === '12345');
+    assert.deepEqual(after.attrs, ['1990', '410', vip, '0', '0', '0'], '거절된 요청은 속성을 바꾸지 않았다');
+    assert.deepEqual(after.profile, { birthYear: '1990', country: 'KR', extra1: 'vip' });
+  });
+
+  // 최종 리뷰 I1·I3·M8(2026-10-07). 바로 앞 케이스에 이어 uid 12345 의 속성을 바꾼다(파일 끝 — 같은 이유).
+  await t('관리자 속성 변경: 출생연도 빈 값은 400 empty(I1), 코드 입력은 이름으로 정규화해 저장(I3), 같은 attrs 로 다시 저장하면 자격증명을 물리지 않는다(M8)', async () => {
+    const w = await freshWallet();
+    const empty = await cia.adminPost('/cia/accounts/12345/attrs', { profile: { birthYear: '', country: 'KR' } });
+    assert.equal(empty.status, 400); assert.equal(empty.body.error, 'bad_attr'); assert.equal(empty.body.slot, 0); assert.equal(empty.body.reason, 'empty', '출생연도 0 은 나이 술어의 hi 검사를 통과하므로 관리자 입력에서 받지 않는다');
+    assert.equal((await cia.adminPost('/cia/accounts/12345/attrs', { profile: { birthYear: '1990', country: '' } })).body.reason, 'empty', 'enum 도 빈 값을 받지 않는다');
+    const us = await cia.adminPost('/cia/accounts/12345/attrs', { profile: { birthYear: '1990', country: '840' } });
+    assert.equal(us.status, 200, JSON.stringify(us.body));
+    assert.deepEqual(us.body.attrs, ['1990', '840', '0', '0', '0', '0']);
+    assert.deepEqual(us.body.profile, { birthYear: '1990', country: 'US' }, '응답의 profile 은 정규형(코드 → 이름)');
+    let acct = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === '12345');
+    assert.deepEqual(acct.profile, { birthYear: '1990', country: 'US' }, '저장된 profile 도 정규형 — 관리자 화면 <select> 가 이름으로 그린다');
+    // M8: 같은 attrs(코드 '410' ↔ 이름 'KR')로 두 번 저장 — 두 번째는 활성 자격증명을 물리지 않는다.
+    const first = await cia.adminPost('/cia/accounts/12345/attrs', { profile: { birthYear: '1990', country: '410' } });
+    assert.equal(first.status, 200, JSON.stringify(first.body)); assert.deepEqual(first.body.profile, { birthYear: '1990', country: 'KR' });
+    const uc = await buildUserCredRequest({ uid: 12345n, s_u: w.s_u, r_u: w.r_u, sk_u: w.sk_u, attrs: [1990n, 410n, 0n, 0n, 0n, 0n] });
+    assert.equal((await cia.post('/cia/user_cred', uc.body)).status, 201);
+    const cfBefore = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === '12345').activeCf_u;
+    assert.ok(cfBefore, '활성 자격증명이 있다');
+    const second = await cia.adminPost('/cia/accounts/12345/attrs', { profile: { birthYear: '1990', country: 'KR' } });
+    assert.equal(second.status, 200, JSON.stringify(second.body));
+    assert.equal(second.body.retired, 0, 'attrs 가 같으면 물리지 않는다'); assert.equal(second.body.published, false);
+    assert.deepEqual(second.body.attrs, ['1990', '410', '0', '0', '0', '0']); assert.deepEqual(second.body.profile, { birthYear: '1990', country: 'KR' });
+    acct = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === '12345');
+    assert.equal(acct.activeCf_u, cfBefore, '자격증명이 그대로 활성');
   });
 } finally {
   await cia.stop();

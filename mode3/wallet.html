@@ -39,10 +39,10 @@
       <dl class="kv" id="attrsView">
         <dt data-term="attr0">출생연도</dt><dd><input id="attr0" size="6" readonly /></dd>
         <dt data-term="attr1">국가</dt><dd><input id="attr1" size="6" readonly /></dd>
-        <dt data-term="attr2">등급</dt><dd><input id="attr2" size="6" readonly /></dd>
-        <dt data-term="attr3">예비</dt><dd><input id="attr3" size="6" readonly /></dd>
-        <dt data-term="attr4">속성 5</dt><dd><input id="attr4" size="6" readonly /></dd>
-        <dt data-term="attr5">속성 6</dt><dd><input id="attr5" size="6" readonly /></dd>
+        <dt data-term="attr2">예비 1</dt><dd><input id="attr2" size="6" readonly /></dd>
+        <dt data-term="attr3">예비 2</dt><dd><input id="attr3" size="6" readonly /></dd>
+        <dt data-term="attr4">미사용</dt><dd><input id="attr4" size="6" readonly /></dd>
+        <dt data-term="attr5">미사용</dt><dd><input id="attr5" size="6" readonly /></dd>
       </dl>
       <p>
         <button id="registerBtn" data-i18n="wallet_register_btn">등록</button>
@@ -87,16 +87,16 @@
           <div><label><input type="checkbox" id="dk1" /> <span data-term="attr1">국가</span></label>
             <label><span data-i18n="wallet_lo">최소</span> <input id="discLo1" size="10" /></label>
             <label><span data-i18n="wallet_hi">최대</span> <input id="discHi1" size="10" /></label></div>
-          <div><label><input type="checkbox" id="dk2" /> <span data-term="attr2">등급</span></label>
+          <div><label><input type="checkbox" id="dk2" /> <span data-term="attr2">예비 1</span></label>
             <label><span data-i18n="wallet_lo">최소</span> <input id="discLo2" size="10" /></label>
             <label><span data-i18n="wallet_hi">최대</span> <input id="discHi2" size="10" /></label></div>
-          <div><label><input type="checkbox" id="dk3" /> <span data-term="attr3">예비</span></label>
+          <div><label><input type="checkbox" id="dk3" /> <span data-term="attr3">예비 2</span></label>
             <label><span data-i18n="wallet_lo">최소</span> <input id="discLo3" size="10" /></label>
             <label><span data-i18n="wallet_hi">최대</span> <input id="discHi3" size="10" /></label></div>
-          <div><label><input type="checkbox" id="dk4" /> <span data-term="attr4">속성 5</span></label>
+          <div><label><input type="checkbox" id="dk4" /> <span data-term="attr4">미사용</span></label>
             <label><span data-i18n="wallet_lo">최소</span> <input id="discLo4" size="10" /></label>
             <label><span data-i18n="wallet_hi">최대</span> <input id="discHi4" size="10" /></label></div>
-          <div><label><input type="checkbox" id="dk5" /> <span data-term="attr5">속성 6</span></label>
+          <div><label><input type="checkbox" id="dk5" /> <span data-term="attr5">미사용</span></label>
             <label><span data-i18n="wallet_lo">최소</span> <input id="discLo5" size="10" /></label>
             <label><span data-i18n="wallet_hi">최대</span> <input id="discHi5" size="10" /></label></div>
         </div>
@@ -107,12 +107,12 @@
               <option value="" selected data-i18n="wallet_set_none">쓰지 않음</option>
               <option value="0" data-term="attr0">출생연도</option>
               <option value="1" data-term="attr1">국가</option>
-              <option value="2" data-term="attr2">등급</option>
-              <option value="3" data-term="attr3">예비</option>
-              <option value="4" data-term="attr4">속성 5</option>
-              <option value="5" data-term="attr5">속성 6</option>
+              <option value="2" data-term="attr2">예비 1</option>
+              <option value="3" data-term="attr3">예비 2</option>
+              <option value="4" data-term="attr4">미사용</option>
+              <option value="5" data-term="attr5">미사용</option>
             </select></label>
-          <label><span data-i18n="wallet_set_members">허용 원소</span> <input id="setMembers" value="410,392,840,276,250" size="28" /></label>
+          <label><span data-i18n="wallet_set_members">허용 원소</span> <input id="setMembers" value="KR,JP,US,DE,FR" size="28" /></label>
         </div>
         <p>
           <label><span data-i18n="wallet_min_age_label">나이 ≥</span> <input id="minAgeIn" value="19" size="3" /></label>
@@ -186,6 +186,7 @@
     let lastProof = null;      // 마지막 트랜잭션 증명 시간·캐시 히트(전문가 줄)
     let statusError = null;    // 상태를 못 읽었을 때의 원문
     const progress = { txOk: false, disclosed: false, revoked: false };   // 이 페이지가 아는 완료 신호(세션 중 메모리)
+    let attrSchema = null;   // GET /wallet/attr_schema — 이름 ↔ 코드, 슬롯 타입(스펙 2)
 
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     async function postJson(url, body) {
@@ -214,6 +215,23 @@
      */
     const safeDetail = (b) => { const { sk_u, pwd, witness, userCredIssued, attrsChanged, ...rest } = b ?? {}; return rest; };
     const attrsText = (attrs) => (Array.isArray(attrs) ? attrs.map((v, i) => `${Demo.term(`attr${i}`)} ${v}`).join(', ') : String(attrs));
+    /** 에이전트가 IdP 에서 받아 둔 스키마. 슬롯 타입에 따라 폼을 맞춘다 — 범위 체크박스는 int 슬롯만, unused 행은 숨긴다. */
+    async function loadAttrSchema() {
+      try { attrSchema = (await (await fetch('/wallet/attr_schema')).json()).schema; } catch { attrSchema = null; }
+      if (!attrSchema) return;
+      attrSchema.slots.forEach((slot, k) => {
+        const row = $('dk' + k).closest('div');
+        if (slot.type === 'unused') { row.hidden = true; $('attr' + k).closest('dd').previousElementSibling.hidden = true; $('attr' + k).closest('dd').hidden = true; $('setSlot').querySelector(`option[value="${k}"]`).hidden = true; return; }
+        if (slot.type !== 'int') { $('dk' + k).disabled = true; $('dk' + k).title = '범위 조건은 정수 속성에만 쓸 수 있습니다'; }
+      });
+    }
+    /** 집합 원소를 이름으로 적었으면 코드로(enum 슬롯). 그 밖은 그대로 — 지갑 에이전트가 형식을 검사한다. */
+    function encodeMember(slot, token) {
+      const s = attrSchema?.slots?.[slot];
+      if (s?.type === 'enum' && Object.prototype.hasOwnProperty.call(s.values, token)) return String(s.values[token]);
+      return token;
+    }
+    const profileText = (profile) => Object.entries(profile ?? {}).filter(([, v]) => v !== '').map(([k, v]) => `${k}=${v}`).join(', ');
 
     // ---- MetaMask · Snap ----
     function requireEthereum() {
@@ -455,7 +473,7 @@
     function renderIdentity() {
       const s = lastStatus;
       lastAttrs = s?.attrs ?? null;
-      for (let k = 0; k < 6; k++) $('attr' + k).value = lastAttrs ? lastAttrs[k] : '';
+      for (let k = 0; k < 6; k++) $('attr' + k).value = s?.attrsView?.[k]?.display ?? (lastAttrs ? lastAttrs[k] : '');
       const badge = $('regBadge');
       badge.className = `badge ${s?.registered ? 'ok' : 'muted'}`;
       tte(badge, s?.registered ? 'wallet_reg_yes' : 'wallet_reg_no');
@@ -698,7 +716,7 @@
             return;
           }
         }
-        setVerdict($('registerResult'), true, 'registered', () => ({ summary: tt('wallet_registered_summary', { uid, attrs: attrsText(attrs) }) || `uid ${uid} · ${attrsText(attrs)}`, detail }));
+        setVerdict($('registerResult'), true, 'registered', () => ({ summary: tt('wallet_registered_summary', { uid, attrs: b.profile ? profileText(b.profile) : attrsText(attrs) }) || `uid ${uid} · ${b.profile ? profileText(b.profile) : attrsText(attrs)}`, detail }));
       } catch (e) {
         setVerdict($('registerResult'), false, 'wallet_register_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
       }
@@ -725,7 +743,7 @@
         const changed = Boolean(b.changed);
         const detail = safeDetail(b);
         setVerdict($('registerResult'), true, 'wallet_attrs_ok', () => ({
-          summary: tt(changed ? 'wallet_attrs_changed' : 'wallet_attrs_same', { attrs: attrsText(attrs) }) || attrsText(attrs), detail,
+          summary: tt(changed ? 'wallet_attrs_changed' : 'wallet_attrs_same', { attrs: b.profile ? profileText(b.profile) : attrsText(attrs) }) || (b.profile ? profileText(b.profile) : attrsText(attrs)), detail,
         }));
       } catch (e) {
         setVerdict($('registerResult'), false, 'wallet_attrs_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
@@ -741,15 +759,16 @@
       }
     });
 
-    // "나이 ≥ N": 슬롯0(출생연도)을 체크하고 hi = 올해 − N 으로 채운다(lo 는 0 그대로 — 하한 없음).
+    // "나이 ≥ N": 슬롯0(출생연도)을 체크하고 hi = 올해 − N 으로 채운다. lo 는 스키마의 min(기본 1900) — 서비스는 lo ≥ min 도 요구한다
+    // (출생연도 0 = 값 없음을 배제, 최종 리뷰 I1). 스키마를 못 받았으면 0.
     $('ageBtn').addEventListener('click', () => {
-      $('dk0').checked = true; $('discLo0').value = '0'; $('discHi0').value = String(new Date().getUTCFullYear() - Number($('minAgeIn').value || 19));
+      $('dk0').checked = true; $('discLo0').value = String(attrSchema?.slots?.[0]?.min ?? 0); $('discHi0').value = String(new Date().getUTCFullYear() - Number($('minAgeIn').value || 19));
     });
 
     // 체크된 슬롯만 {lo, hi}, 나머지는 null — normalizeDisclosure(lib/mode3_wallet.js) 가 회로 입력(mask/lo/hi)으로 바꾼다.
     const readDisclose = () => [0, 1, 2, 3, 4, 5].map((k) => ($('dk' + k).checked ? { lo: $('discLo' + k).value.trim(), hi: $('discHi' + k).value.trim() } : null));
     // 집합 소속(V7): 슬롯이 "없음" 이면 null — 지갑이 members 로 root 를 계산해 증명에 넣는다(normalizeSet, lib/mode3_wallet.js).
-    const readSet = () => { const s = $('setSlot').value; if (s === '') return null; return { slot: Number(s), members: $('setMembers').value.split(',').map((x) => x.trim()).filter(Boolean) }; };
+    const readSet = () => { const s = $('setSlot').value; if (s === '') return null; return { slot: Number(s), members: $('setMembers').value.split(',').map((x) => x.trim()).filter(Boolean).map((x) => encodeMember(Number(s), x)) }; };
     const txForm = () => ({ r_s: $('txSession').value, to: $('txTo').value.trim(), value: $('txValue').value.trim() || '0', data: $('txData').value.trim() || '0x', disclose: readDisclose(), set: readSet() });
     const txLog = (s) => { $('txLog').textContent += `${s}\n`; };
     const txFailed = (summaryKey, reason, detail) => setVerdict($('txVerdict'), false, 'tx_failed', () => ({ summary: summaryKey ? (tt(summaryKey) || undefined) : undefined, reason, detail }));
@@ -964,6 +983,7 @@
       renderModeTexts();
       renderMmStatus();
       renderProofInfo();
+      await loadAttrSchema();
       if (IS_AUTHORIZE) {
         runAuthorize();
         return;

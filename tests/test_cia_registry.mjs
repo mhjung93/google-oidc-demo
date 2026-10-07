@@ -18,7 +18,7 @@ async function t(name, fn) { try { await fn(); console.log(`ok   ${name}`); } ca
 const provider = getProvider();
 const cia = await startIsolatedCia();
 const log = new ethers.Contract(cia.logAddress, MODE3_LOG_ABI, provider);
-const ATTRS = [1990n, 410n, 2n, 0n, 0n, 0n];
+const ATTRS = [1990n, 410n, 0n, 0n, 0n, 0n];
 const b32 = (n) => ethers.zeroPadValue(ethers.toBeHex(BigInt(n)), 32);
 let u;   // registerUser 결과
 let alice;   // registerUser('67890', 'alicepw') 결과 — 관리자 바꿔치기 케이스(Task 9)가 쓴다
@@ -31,7 +31,7 @@ try {
     const bad = await cia.post('/cia/register', { ...base, sig_reg: await signRegistration(other.sk_u, 12345n, reg.cm_u) });
     assert.equal(bad.status, 400); assert.equal(bad.body.error, 'bad_registration_signature');
     u = await cia.registerUser('12345', 'password123');
-    assert.equal(u.slot, 0); assert.deepEqual(u.attrs, ['1990', '410', '2', '0', '0', '0']); assert.equal(u.body.sk_u, undefined);
+    assert.equal(u.slot, 0); assert.deepEqual(u.attrs, ['1990', '410', '0', '0', '0', '0']); assert.equal(u.body.sk_u, undefined);
     alice = await cia.registerUser('67890', 'alicepw');
     assert.equal(alice.slot, 1);
   });
@@ -92,7 +92,7 @@ try {
     assert.equal(a.slot, 0); assert.equal(a.tampered, false); assert.equal(a.registryLeaf, '0');
   });
   await t('관리자 바꿔치기: 슬롯에 가짜 리프를 게시하면 regRoot 가 바뀌고 tampered:true; 되돌리기로 진짜 리프·false', async () => {
-    const c4 = await buildUserCredRequest({ uid: 67890n, s_u: alice.s_u, r_u: alice.r_u, sk_u: alice.sk_u, attrs: [2005n, 840n, 1n, 0n, 0n, 0n] });
+    const c4 = await buildUserCredRequest({ uid: 67890n, s_u: alice.s_u, r_u: alice.r_u, sk_u: alice.sk_u, attrs: [2005n, 840n, 0n, 0n, 0n, 0n] });
     assert.equal((await cia.post('/cia/user_cred', c4.body)).status, 201);
     const real = await registryLeaf(alice.cm_u, c4.Cf_u);
     const before = await log.regRoot();
@@ -132,7 +132,7 @@ try {
     const en = await cia.adminPost('/cia/account/set_disabled', { uid: '67890', disabled: false });
     assert.equal(en.status, 200, j(en.body));
     const before = await slotOf('67890');
-    const c5 = await buildUserCredRequest({ uid: 67890n, s_u: alice.s_u, r_u: alice.r_u, sk_u: alice.sk_u, attrs: [2005n, 840n, 1n, 0n, 0n, 0n] });
+    const c5 = await buildUserCredRequest({ uid: 67890n, s_u: alice.s_u, r_u: alice.r_u, sk_u: alice.sk_u, attrs: [2005n, 840n, 0n, 0n, 0n, 0n] });
     const r = await cia.post('/cia/user_cred', c5.body);
     assert.equal(r.status, 201, j(r.body)); assert.equal(r.body.published, true, '새 슬롯 쓰기는 SlotIsRetired 에 걸리지 않는다');
     const after = await slotOf('67890');
@@ -150,7 +150,7 @@ try {
     const rc = rv.body.receipt, s0 = await slotOf('67890');
     assert.ok(rc && rc.slot === s0, j(rc));
     assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid: '67890', disabled: false })).status, 200);
-    const c6 = await buildUserCredRequest({ uid: 67890n, s_u: alice.s_u, r_u: alice.r_u, sk_u: alice.sk_u, attrs: [2005n, 840n, 1n, 0n, 0n, 0n] });
+    const c6 = await buildUserCredRequest({ uid: 67890n, s_u: alice.s_u, r_u: alice.r_u, sk_u: alice.sk_u, attrs: [2005n, 840n, 0n, 0n, 0n, 0n] });
     const uc = await cia.post('/cia/user_cred', c6.body);
     assert.equal(uc.status, 201, j(uc.body)); assert.equal(uc.body.published, true);
     const s1 = await slotOf('67890');
@@ -186,7 +186,7 @@ try {
     assert.equal(await log.isRetired(s0), true);
     const acct = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === '67890');
     assert.equal(acct.disabled, false, '이미 은퇴한 슬롯의 접수증이 복구된 계정을 다시 막았다');
-    const c7 = await buildUserCredRequest({ uid: 67890n, s_u: alice.s_u, r_u: alice.r_u, sk_u: alice.sk_u, attrs: [2005n, 840n, 1n, 0n, 0n, 0n] });
+    const c7 = await buildUserCredRequest({ uid: 67890n, s_u: alice.s_u, r_u: alice.r_u, sk_u: alice.sk_u, attrs: [2005n, 840n, 0n, 0n, 0n, 0n] });
     const uc = await cia.post('/cia/user_cred', c7.body);
     assert.equal(uc.status, 201, j(uc.body)); assert.equal(uc.body.published, true);
     assert.notEqual(uc.body.slot, s0, '재발급은 새 슬롯');
@@ -201,7 +201,12 @@ await t('v8 상태 파일 → 기동 시 등록부 생성·게시', async () => 
   const { Cx, Cy, Cf } = await userCommit({ uid: 12345n, s_u: reg.s_u, blind_u, attrs: ATTRS });
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-v8-'));
   const stateFile = path.join(dir, 'cia_state.json');
-  fs.writeFileSync(stateFile, JSON.stringify({ version: 8, accounts: { '12345': { pk_u: { x: reg.pk_u.x.toString(), y: reg.pk_u.y.toString() }, cm_u: pointToStrings(reg.cm_u), disabled: false, creds: [{ Cf_u: Cf.toString(), C_u_pt: { x: Cx.toString(), y: Cy.toString() }, leaf: '0', issuedAt: 'x', revoked: false }], attrs: ['1990', '410', '2', '0'], sessions: [] } }, rps: {}, openings: [], revoked: [], pending: [], epoch: 0 }));
+  // 등급 슬롯은 0 으로 둔다(스펙 2, 2026-10-07) — 0 이 아니면 v10→v11 이행이 그 값을 버려 attrsChanged 에 들어가고,
+  // cia.js 기동이 이 활성 자격증명을 먼저 물려(슬롯 0) 아래의 "리프 채우기(filled)" 경로가 전혀 실행되지 않는다
+  // (그 물림·슬롯 비움 경로는 test_cia_startup.mjs 의 "v10 상태 파일은 v11 로 이행된다" 케이스가 이미 본다). 이
+  // 테스트는 그와 다른, 이 파일만의 유일한 커버리지(v8→v9 마이그레이션이 살아남은 활성 자격증명의 리프를 계산해
+  // 채우고 처음으로 게시하는 경로, loadState() 의 `filled` 루프)를 보려는 것이므로 attrsChanged 를 유발하지 않아야 한다.
+  fs.writeFileSync(stateFile, JSON.stringify({ version: 8, accounts: { '12345': { pk_u: { x: reg.pk_u.x.toString(), y: reg.pk_u.y.toString() }, cm_u: pointToStrings(reg.cm_u), disabled: false, creds: [{ Cf_u: Cf.toString(), C_u_pt: { x: Cx.toString(), y: Cy.toString() }, leaf: '0', issuedAt: 'x', revoked: false }], attrs: ['1990', '410', '0', '0'], sessions: [] } }, rps: {}, openings: [], revoked: [], pending: [], epoch: 0 }));
   const cia2 = await startIsolatedCia({ env: { CIA_STATE_FILE: stateFile } });
   try {
     const log2 = new ethers.Contract(cia2.logAddress, MODE3_LOG_ABI, provider);
@@ -211,7 +216,7 @@ await t('v8 상태 파일 → 기동 시 등록부 생성·게시', async () => 
     const ev = await log2.queryFilter(log2.filters.SlotUpdated(), 0, 'latest');
     assert.equal(ev.length, 1); assert.equal(BigInt(ev[0].args.leaf), expected);
     const a = (await cia2.adminGet('/cia/accounts')).body.accounts[0];
-    assert.equal(a.slot, 0); assert.deepEqual(a.attrs, ['1990', '410', '2', '0', '0', '0']);
+    assert.equal(a.slot, 0); assert.deepEqual(a.attrs, ['1990', '410', '0', '0', '0', '0']);
     assert.equal(a.registryLeaf, expected.toString());
   } finally { await cia2.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
 });

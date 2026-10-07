@@ -20,6 +20,7 @@ import { signOpenRequest, signOpenResult } from './lib/mode3_opening.js';
 import { deployVerifier, deployFactory, deployAttrGate, decodeExecuteCalldata, parseExecuteReceipt, FACTORY_ABI, MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT, ALLOWED_COUNTRIES_DEFAULT, MIN_AGE_DEFAULT, PUB_INDEX } from './lib/mode3_onchain.js';
 import { setRoot } from './lib/mode3_set_tree.js';
 import { buildRpHealth, applyHealthHeaders, bounded, originList } from './lib/mode3_health.js';
+import { DEFAULT_ATTR_SCHEMA, loadSchema, slotIndexOf, encodeMembers, schemaInfo } from './lib/mode3_attr_schema.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.MODE3_RP_PORT) || 3100;
@@ -51,6 +52,25 @@ async function resolvePkCia() {
 }
 
 const pkCIA = await resolvePkCia();
+
+// 속성 스키마(스펙 2 §5.4): CIA 가 공개하는 것을 기동 때 한 번 받는다(pk_CIA 와 같은 TOFU 성격). 못 받으면(HTTP 오류·네트워크) 공유 모듈
+// 기본 스키마 + 경고 — 프로세스 수명 동안 그대로다. 받았는데 검증에 실패하면 기동 거부(스펙 §7 첫 행, 최종 리뷰 I4) — 연결 실패와 구분한다.
+async function resolveAttrSchema() {
+  let b;
+  try {
+    const r = await fetch(`${CIA_URL}/cia/attr_schema`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    b = await r.json();
+  } catch (e) {
+    console.warn(`[rp] 속성 스키마를 CIA 에서 받지 못해 기본 스키마를 쓴다: ${e.message}`);
+    return { ...loadSchema(DEFAULT_ATTR_SCHEMA), source: 'default' };
+  }
+  try { return { ...loadSchema(b?.schema), source: 'cia' }; }
+  catch (e) { console.error(`[rp] 기동 거부: CIA 의 속성 스키마가 검증에 실패했다 — ${e.message}`); process.exit(1); }
+}
+const ATTR_SCHEMA = await resolveAttrSchema();
+const COUNTRY_SLOT = slotIndexOf(ATTR_SCHEMA.schema, 'country');     // -1 이면 국가 술어를 요구할 수 없다(predicate_unavailable)
+const BIRTH_SLOT = slotIndexOf(ATTR_SCHEMA.schema, 'birthYear');
 
 // ---- 서비스 등록(설계 2026-09-16 §3) ----
 // 키 둘: secp256k1 서명키(pk_service, 개봉 요청)와 Baby Jubjub 조각(x_svc, 태그). 첫 기동에서 만들어 파일에 두고 CIA 에
@@ -129,8 +149,17 @@ const MAX_ROOT_AGE = BigInt(process.env.MODE3_MAX_ROOT_AGE || MAX_ROOT_AGE_DEFAU
 // 지갑이 정한 max_height 의 상한 L(설계 2026-09-18 §3.2 갱신): head ≤ max_height ≤ head + L. 서비스·컨트랙트가 같은 값을 쓴다.
 const MAX_LIFETIME = BigInt(process.env.MODE3_MAX_LIFETIME_BLOCKS || MAX_LIFETIME_DEFAULT);
 // V7 술어 정책(설계 2026-09-23 §4.3·§6): AttrGate 배포와 오프체인 로그인 정책이 같은 값을 쓴다.
-const ALLOWED_COUNTRIES = (process.env.MODE3_ALLOWED_COUNTRIES ?? '').split(',').map((s) => s.trim()).filter(Boolean).map(BigInt);
+// 스펙 2: MODE3_ALLOWED_COUNTRIES 는 이름(KR,JP)과 코드(410,392)를 모두 받아 country 슬롯의 인코더로 바꾼다. 표에 없으면 기동 실패.
+const ALLOWED_COUNTRY_TOKENS = (process.env.MODE3_ALLOWED_COUNTRIES ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+let ALLOWED_COUNTRIES = [];
+if (ALLOWED_COUNTRY_TOKENS.length) {
+  if (COUNTRY_SLOT < 0) { console.error('[rp] 속성 스키마에 country 슬롯이 없어 MODE3_ALLOWED_COUNTRIES 를 해석할 수 없다'); process.exit(1); }
+  try { ALLOWED_COUNTRIES = await encodeMembers(ATTR_SCHEMA.schema, COUNTRY_SLOT, ALLOWED_COUNTRY_TOKENS); }
+  catch (e) { console.error(`[rp] MODE3_ALLOWED_COUNTRIES 해석 실패: ${e.message}`); process.exit(1); }
+}
 const ALLOWED_COUNTRIES_EFFECTIVE = ALLOWED_COUNTRIES.length ? ALLOWED_COUNTRIES : [...ALLOWED_COUNTRIES_DEFAULT];
+const countryName = (code) => { const s = COUNTRY_SLOT >= 0 ? ATTR_SCHEMA.schema.slots[COUNTRY_SLOT] : null; const hit = s ? Object.entries(s.values).find(([, c]) => BigInt(c) === code) : null; return hit ? hit[0] : `#${code}`; };
+const ALLOWED_COUNTRY_NAMES = ALLOWED_COUNTRIES_EFFECTIVE.map(countryName);
 const MIN_AGE = BigInt(process.env.MODE3_MIN_AGE || MIN_AGE_DEFAULT);
 const ALLOWED_COUNTRIES_ROOT = await setRoot(ALLOWED_COUNTRIES_EFFECTIVE);
 async function ensureFactory() {
@@ -210,13 +239,15 @@ function startFactoryConstantsRetry() {
 // attrGateAddress 유무만으로 리셋하던 옛 방식(재기동마다 불필요하게 재배포)과 달리 실제로 팩토리가 바뀐 경우에만 걸린다.
 // 정책(root·minAge)이 바뀌어도 다시 배포한다 — AttrGate 는 immutable 이라 env 를 바꾼 뒤 재기동만으로는 온체인이 안 바뀐다.
 async function ensureAttrGate() {
+  // AttrGate(불변)는 "출생연도 = 슬롯 0, 국가 = set_sel 2(슬롯 1)" 을 코드에 박고 있다(스펙 2 §3.2) — 스키마가 다르면 배포하지 않는다.
+  if (BIRTH_SLOT !== 0 || COUNTRY_SLOT !== 1) { console.warn(`[rp] 속성 스키마의 birthYear(${BIRTH_SLOT})·country(${COUNTRY_SLOT}) 슬롯이 AttrGate 의 전제(0·1)와 달라 AttrGate 배포를 건너뛴다`); return; }
   if (!reg.factoryAddress) { console.warn('[rp] 팩토리가 없어 AttrGate 배포를 건너뛴다'); return; }
   if (reg.attrGateAddress && reg.attrGateFactory === reg.factoryAddress && reg.attrGatePolicy?.root === ALLOWED_COUNTRIES_ROOT.toString() && reg.attrGatePolicy?.minAge === MIN_AGE.toString()) return;
   const signer = await provider.getSigner(RELAYER_INDEX);
   const attrGateAddress = await deployAttrGate(signer, { factoryAddress: reg.factoryAddress, allowedCountries: ALLOWED_COUNTRIES_EFFECTIVE, minAge: MIN_AGE });
   reg = { ...reg, attrGateAddress, attrGateFactory: reg.factoryAddress, attrGatePolicy: { root: ALLOWED_COUNTRIES_ROOT.toString(), minAge: MIN_AGE.toString() } };
   writeJsonAtomic(REG_FILE, reg, 0o600);
-  console.log(`[rp] AttrGate 배포: ${attrGateAddress} (factory ${reg.factoryAddress}, 국가∈{${ALLOWED_COUNTRIES_EFFECTIVE.join(',')}}, minAge ${MIN_AGE}) → ${REG_FILE}`);
+  console.log(`[rp] AttrGate 배포: ${attrGateAddress} (factory ${reg.factoryAddress}, 국가∈{${ALLOWED_COUNTRY_NAMES.join(',')}}, minAge ${MIN_AGE}) → ${REG_FILE}`);
 }
 async function activate() {
   // 팩토리를 먼저 본다(2026-09-23 점검 D-I2): 이미 배포된 팩토리가 있으면 그 immutable 이 오프체인 검증기의 상한이 된다.
@@ -302,7 +333,9 @@ app.use('/common', express.static(path.join(__dirname, 'mode3', 'common')));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'rp.html')));
 
 // rp_info 와 health(§1.1)가 같은 정책 값을 쓴다 — 한 곳에서만 만든다.
-const currentPredicates = () => ({ allowedCountries: ALLOWED_COUNTRIES_EFFECTIVE.map(String), allowedCountriesRoot: ALLOWED_COUNTRIES_ROOT.toString(), minAge: MIN_AGE.toString() });
+// birthYearMin(최종 리뷰 I1): 나이 술어의 lo 하한 = 스키마의 출생연도 min. 페이지가 lo 로 보내고 로그인 검사가 lo ≥ 이 값을 요구한다.
+const BIRTH_MIN = BIRTH_SLOT >= 0 ? BigInt(ATTR_SCHEMA.schema.slots[BIRTH_SLOT].min ?? 0) : null;
+const currentPredicates = () => ({ allowedCountries: ALLOWED_COUNTRIES_EFFECTIVE.map(String), allowedCountryNames: ALLOWED_COUNTRY_NAMES, allowedCountriesRoot: ALLOWED_COUNTRIES_ROOT.toString(), minAge: MIN_AGE.toString(), birthYearMin: BIRTH_MIN === null ? null : BIRTH_MIN.toString(), attrSchema: schemaInfo(ATTR_SCHEMA.schema, ATTR_SCHEMA.hash) });
 
 app.get('/api/mode3/rp_info', (req, res) => {
   res.json({ status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, mirrorAddress: MIRROR_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, ciaUrl: CIA_URL, pkCiaSource: pkCIA.source, chainId: chainId.toString(), active: Boolean(verifier), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null, predicates: currentPredicates() });
@@ -348,8 +381,17 @@ app.post('/api/mode3/login', async (req, res) => {
     if (!v.ok) return res.json({ ok: false, reason: v.reason });
     if (requireP) {
       const d = v.disclosure;
-      if (requireP.countrySet && !(d.sel === 2n && d.root === ALLOWED_COUNTRIES_ROOT)) return res.json({ ok: false, reason: 'predicate_unmet' });
-      if (requireP.minAge && !(((d.mask & 1n) === 1n) && d.hi[0] + MIN_AGE <= BigInt(new Date().getUTCFullYear()))) return res.json({ ok: false, reason: 'predicate_unmet' });
+      // 슬롯 번호는 스키마에서 찾는다(스펙 2 §5.4). 슬롯이 없으면 그 조건은 요구할 수 없다 — predicate_unavailable.
+      if (requireP.countrySet) {
+        if (COUNTRY_SLOT < 0) return res.json({ ok: false, reason: 'predicate_unavailable' });
+        if (!(d.sel === BigInt(COUNTRY_SLOT) + 1n && d.root === ALLOWED_COUNTRIES_ROOT)) return res.json({ ok: false, reason: 'predicate_unmet' });
+      }
+      if (requireP.minAge) {
+        if (BIRTH_SLOT < 0) return res.json({ ok: false, reason: 'predicate_unavailable' });
+        // lo ≥ 스키마 min(최종 리뷰 I1): 출생연도 0 은 "값 없음"인데 hi 만 보면 [0, 올해 − minAge] 가 통과한다. 지갑이 lo ≤ a₀ 를
+        // 강제하므로 0 인 계정은 이 술어를 만들 수 없다. 온체인 AttrGate(불변)는 hi 만 본다 — 런북 "수용한 한계".
+        if (!(((d.mask >> BigInt(BIRTH_SLOT)) & 1n) === 1n && d.lo[BIRTH_SLOT] >= BIRTH_MIN && d.hi[BIRTH_SLOT] + MIN_AGE <= BigInt(new Date().getUTCFullYear()))) return res.json({ ok: false, reason: 'predicate_unmet' });
+      }
     }
     const at = new Date().toISOString();
     const disclosure = discOf(v.disclosure);

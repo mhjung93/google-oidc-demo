@@ -57,7 +57,8 @@ try {
     assert.equal(r.status, 201, j(r.body));
     assert.equal('sk_u' in r.body, false, '응답에는 sk_u 가 없다(요청에만 한 번 실린다)');
     assert.equal(typeof r.body.slot, 'number');
-    assert.deepEqual(r.body.attrs, ['1990', '410', '2', '0', '0', '0']);
+    assert.deepEqual(r.body.attrs, ['1990', '410', '0', '0', '0', '0']);
+    assert.deepEqual(r.body.profile, { birthYear: '1990', country: 'KR' });
     assert.equal(r.body.uid, '12345');
     sim.storeRegistration({ attrs: r.body.attrs, slot: r.body.slot });
     const file = stateFile();
@@ -65,7 +66,8 @@ try {
     assert.ok(file.includes('"cm_u"'), '공개 cm_u 는 파일에 있다');
     assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, pwd: r0.pwd, cm_u: r0.cm_u, sk_u: r0.sk_u })).status, 409);
     const s = (await wallet.get('/wallet/status')).body;
-    assert.equal(s.registered, true); assert.equal(s.uid, '12345'); assert.deepEqual(s.attrs, ['1990', '410', '2', '0', '0', '0']); assert.equal(s.userCred, null);
+    assert.equal(s.registered, true); assert.equal(s.uid, '12345'); assert.deepEqual(s.attrs, ['1990', '410', '0', '0', '0', '0']); assert.equal(s.userCred, null);
+    assert.deepEqual(s.profile, { birthYear: '1990', country: 'KR' });
     assert.equal(sim.getPublicInfo().registered, true); assert.equal(sim.getPublicInfo().hasUserCred, false);
   });
 
@@ -305,7 +307,7 @@ try {
 
   await t('시뮬레이터: selfRevoke 는 uid·pwd, syncAttrs 는 changed 와 C_u 폐기, reset 은 상태를 비운다', async () => {
     assert.deepEqual(sim.selfRevoke({ pwd: 'password123' }), { uid: '12345', pwd: 'password123' });
-    assert.deepEqual(sim.syncAttrs({ attrs: ['1990', '410', '2', '0', '0', '0'] }), { ok: true, changed: false });
+    assert.deepEqual(sim.syncAttrs({ attrs: ['1990', '410', '0', '0', '0', '0'] }), { ok: true, changed: false });
     assert.deepEqual(sim.syncAttrs({ attrs: ['1991', '410', '2', '0', '0', '0'] }), { ok: true, changed: true });
     assert.equal(sim.getPublicInfo().hasUserCred, false, '속성이 바뀌면 옛 C_u 는 물린다');
     assert.deepEqual(sim.reset(), { ok: true });

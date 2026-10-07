@@ -22,7 +22,7 @@ async function waitFor(pred, ms) {
     await new Promise((r) => setTimeout(r, 200));
   }
 }
-const ATTRS = [1990n, 410n, 2n, 0n, 0n, 0n];
+const ATTRS = [1990n, 410n, 0n, 0n, 0n, 0n];
 const uid = '12345', pwd = 'password123';
 const b32 = (n) => ethers.zeroPadValue(ethers.toBeHex(BigInt(n)), 32);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

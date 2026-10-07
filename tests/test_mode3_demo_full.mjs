@@ -3,7 +3,7 @@
 // 2026-10-03 추가. 앱 코드는 V10(2026-10-02)부터 두 체인을 지원하도록 짜여 있었지만 실제 두 노드로 돌려 본 적이 없었다 —
 // 이 각본이 처음이다. 폐기 체인 노드(:8546, chainId 31338)는 이 테스트가 스스로 띄우고 끝나면 끈다(이미 떠 있던 노드는 사용자
 // 것이므로 chainId 만 확인하고 건드리지 않는다 — tests/helpers/mode3_chain.mjs ensureRevChainNode). :8545 는 미리 떠 있어야 한다.
-// 사용자 = testuser(uid 12345, 속성 1990/410/2). 첫 서비스 = 일반 서비스(정책 기본값), 둘째 = 거래소(허용 국가 410·392, 최소 나이 19).
+// 사용자 = testuser(uid 12345, 속성 1990/410). 첫 서비스 = 일반 서비스(정책 기본값), 둘째 = 거래소(허용 국가 KR·JP(=410·392), 최소 나이 19).
 // 요청 모양(지갑 login·revalidate·request·tx, RP open)은 tests/test_mode3_demo_stack.mjs 와 같다.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -38,7 +38,7 @@ try {
   stack = await startIsolatedMode3Stack({
     twoChains: true, revRpcUrl: node.url,
     rpEnv: { MODE3_CHALLENGE_TTL_MS: '12000' },
-    extraRps: [{ name: 'demo-exchange', env: { MODE3_ALLOWED_COUNTRIES: '410,392', MODE3_MIN_AGE: '19', MODE3_CHALLENGE_TTL_MS: '12000' } }],
+    extraRps: [{ name: 'demo-exchange', env: { MODE3_ALLOWED_COUNTRIES: 'KR,JP', MODE3_MIN_AGE: '19', MODE3_CHALLENGE_TTL_MS: '12000' } }],
   });
   const { cia, wallet } = stack;
   const [general, exchange] = stack.rps;
@@ -51,7 +51,8 @@ try {
   async function loginViaRp(rp, { pred = false, require = undefined } = {}) {
     const info = (await rp.get('/api/mode3/rp_info')).body;
     const { r_s, factoryAddress, attrGateAddress } = (await rp.post('/api/mode3/challenge')).body;
-    const extra = pred ? { disclose: [{ lo: '0', hi: String(year - Number(info.predicates.minAge)) }, null, null, null], set: { slot: 1, members: info.predicates.allowedCountries } } : {};
+    // lo = 스키마의 출생연도 min — RP 는 lo ≥ min 도 요구한다(최종 리뷰 I1, 페이지와 같은 본문).
+    const extra = pred ? { disclose: [{ lo: info.predicates.birthYearMin, hi: String(year - Number(info.predicates.minAge)) }, null, null, null], set: { slot: 1, members: info.predicates.allowedCountries } } : {};
     const w = await stack.withRelay(() => wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s, allowAgent: '0', factoryAddress, attrGateAddress, ...extra }, { Origin: rp.origin }));
     if (w.status !== 200) return { walletStatus: w.status, wallet: w.body, r_s };
     const req = require ?? (pred ? { countrySet: true, minAge: true } : undefined);
@@ -106,6 +107,7 @@ try {
     const g = (await general.get('/api/mode3/rp_info')).body, x = (await exchange.get('/api/mode3/rp_info')).body;
     assert.notEqual(g.arid, x.arid); assert.notEqual(g.factoryAddress, x.factoryAddress);
     assert.deepEqual(x.predicates.allowedCountries, ['410', '392']); assert.equal(x.predicates.minAge, '19');
+    assert.deepEqual(x.predicates.allowedCountryNames, ['KR', 'JP'], 'MODE3_ALLOWED_COUNTRIES=KR,JP 가 410,392 와 같은 정책이 된다');
     const health = (await cia.get('/mode3/health')).body;
     assert.equal(health.mirrors?.[0]?.chainId, '31337', j(health.mirrors));
     assert.equal((await cia.get('/cia/public_keys')).body.canonicalChainId, '31338');

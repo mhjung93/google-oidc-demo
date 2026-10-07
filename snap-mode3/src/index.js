@@ -18,7 +18,7 @@ const WALLET_ORIGINS = [
   'http://localhost:5100',
 ];
 
-const SLOT_LABELS = ['출생연도', '국가', '등급', '예비', '속성 5', '속성 6'];      // a₀..a₅ (V9 §7.1, 스펙 2026-09-22 selective-disclosure §3)
+const SLOT_LABELS = ['출생연도', '국가', '예비 1', '예비 2', '미사용', '미사용'];      // a₀..a₅ — 기본 스키마 zkd-attrs v1(스펙 2, 2026-10-07). 스키마를 RPC 로 받는 것은 비범위(§10)
 const SLOT_NAMES = ['a₀', 'a₁', 'a₂', 'a₃', 'a₄', 'a₅'];
 
 /** 동의 창에 보이는 서비스 이름 위생(2026-09-25 리뷰 D-2). 인증서(cert_s)가 덮는 것은 `origin` 뿐이고 serviceName 은

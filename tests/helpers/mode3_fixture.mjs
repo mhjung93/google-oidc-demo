@@ -9,7 +9,7 @@ import { combinePublicKey, encryptTag } from '../../lib/mode3_trace.js';
 import { setPath, NO_SET } from '../../lib/mode3_set_tree.js';
 
 export const ZERO6 = Object.freeze([0n, 0n, 0n, 0n, 0n, 0n]);
-export const FIXTURE_ATTRS = Object.freeze([1990n, 410n, 2n, 0n, 0n, 0n]);   // 데모 testuser 와 같은 값(cia.js DEMO_ACCOUNTS)
+export const FIXTURE_ATTRS = Object.freeze([1990n, 410n, 2n, 0n, 0n, 0n]);   // 회로 입력 벡터(스키마와 무관 — 스펙 2 §9). 값 2 는 옛 데모 등급이지만 회로·벤치 입력은 바꾸지 않는다(재현성).
 
 /** 정상 입력 하나. 옵션: pk_i(실제 세션키 주소), maxHeight, allowAgent, chainid, disclosure{mask, lo[6], hi[6]}, set{slot 0..5, members},
  *  revokedSessions(남의 세션 리프), registrySlot(기본 7), registryLeafOverride(음성용 — 슬롯에 넣을 리프를 강제). */

@@ -11,7 +11,7 @@ import { randomScalar } from '../lib/mode3_credential.js';
 import { createShare, combinePublicKey } from '../lib/mode3_trace.js';
 
 const j = (o) => JSON.stringify(o, (k, v) => (typeof v === 'bigint' ? v.toString() : v));
-const ATTRS = [1990n, 410n, 2n, 0n, 0n, 0n];   // cia.js DEMO_ACCOUNTS.testuser
+const ATTRS = [1990n, 410n, 0n, 0n, 0n, 0n];   // cia.js DEMO_ACCOUNTS.testuser
 let failed = 0;
 async function t(name, fn) { try { await fn(); console.log(`ok   ${name}`); } catch (e) { failed++; console.error(`FAIL ${name}\n     ${e.message}`); } }
 

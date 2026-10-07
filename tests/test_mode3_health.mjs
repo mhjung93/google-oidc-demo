@@ -61,7 +61,7 @@ await t('민감 "값" 없음 — 등록 uid·s_u·r_u·sk_u, C_u 의 Cf_u, 세�
   const uidB = 67890n;
   const reg = await cia.registerUser('67890', 'alicepw');
   const sk_u = reg.sk_u;
-  const uc = await buildUserCredRequest({ uid: uidB, s_u: reg.s_u, r_u: reg.r_u, sk_u, attrs: [2005n, 840n, 1n, 0n, 0n, 0n] });
+  const uc = await buildUserCredRequest({ uid: uidB, s_u: reg.s_u, r_u: reg.r_u, sk_u, attrs: [2005n, 840n, 0n, 0n, 0n, 0n] });
   assert.equal((await cia.post('/cia/user_cred', uc.body)).status, 201);
   const chain = (await (await get(cia.base)).json()).chain;
   const iss = await buildIssueRequest({ uid: uidB, Cf_u: uc.Cf_u, arid: 22222222222222222222n, sk_u, session: createSessionKey(), chainid: BigInt(chain.id), max_height: BigInt(chain.head) + 300n });

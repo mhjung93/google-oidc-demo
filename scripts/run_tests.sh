@@ -49,6 +49,7 @@ UNIT=(
   tests/test_mode3_v9_lib.js
   tests/test_mode3_registry.js
   tests/test_mode3_cia_state_v9.js
+  tests/test_mode3_attr_schema.mjs
 )
 
 CIRCUIT=(
@@ -92,6 +93,8 @@ CHAIN=(
   tests/test_mode3_wallet_agent.mjs
   tests/test_mode3_wallet_snap.mjs
   tests/test_mode3_demo_stack.mjs
+  # 사용자 정의 속성 스키마(CIA_ATTR_SCHEMA_FILE)로 띄운 격리 스택 두 벌 — AttrGate 건너뜀·predicate_unavailable(2026-10-07 최종 리뷰 I2)
+  tests/test_mode3_custom_schema.mjs
   # 두 체인(폐기 체인 + 응용 체인)·두 서비스 전 구간 각본(2026-10-03). 이 파일은 :8546 노드(chainId 31338)를 스스로 띄우고 끝나면 끈다.
   tests/test_mode3_demo_full.mjs
   tests/test_mode3_health.mjs

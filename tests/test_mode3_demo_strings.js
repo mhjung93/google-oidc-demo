@@ -16,7 +16,7 @@ function t(name, fn) { try { fn(); console.log('ok   -', name); } catch (e) { fa
 // browser 테스트(tests/test_mode3_browser.mjs)가 잡는 한국어 판정 문구 — 사전의 ko 값이 이것과 글자 그대로 같아야 한다.
 const NEEDLES = { login_ok: '로그인 성공', registered: '등록됨', tx_ok: '전송 성공', reval_ok: '재검증 성공', reauth_denied: '재승인 불가', popup_blocked: '팝업이 차단됐다' };
 // 문서(docs/MODE3_DEMO.md)에 있는 사유 코드 — 전부 ko·en 세 줄(title·cause·action)이 있어야 한다.
-const REASONS = ['stale_root', 'stale_registry_root', 'root_too_old', 'revalidate_required', 'predicate_unmet', 'factory_constants_unavailable', 'registration_pending', 'bad_signature', 'bad_rp_cert', 'bad_proof', 'expired', 'malformed',
+const REASONS = ['stale_root', 'stale_registry_root', 'root_too_old', 'revalidate_required', 'predicate_unmet', 'predicate_unavailable', 'factory_constants_unavailable', 'registration_pending', 'bad_signature', 'bad_rp_cert', 'bad_proof', 'expired', 'malformed',
   'revoked', 'revoked_session', 'account_disabled', 'needs_consent', 'bad_factory', 'no_code', 'factory_code_mismatch', 'verifier_code_mismatch', 'allow_agent_mismatch', 'no_session', 'not_registered', 'cia_unavailable', 'witness_required', 'internal',
   'user_denied', 'snap_unavailable', 'wallet_error', 'unknown_session', 'no_user_cred', 'user_cred_retired',
   'registry_mismatch', 'registry_unpublished', 'registry_slot_unknown', 'user_cred_failed', 'demo_proof_failed', 'slot_failed',

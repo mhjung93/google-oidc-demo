@@ -22,7 +22,8 @@ import { ethers } from 'ethers';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import * as snarkjs from 'snarkjs';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
-import { credMessageV5, compressPoint, randomScalar, normalizeAttrs, ATTR_SLOTS } from './lib/mode3_credential.js';
+import { credMessageV5, compressPoint, randomScalar } from './lib/mode3_credential.js';
+import { DEFAULT_ATTR_SCHEMA, loadSchema, encodeProfile, normalizeProfile, schemaInfo } from './lib/mode3_attr_schema.js';
 import { sessionLeaf, createRevocationTree } from './lib/mode3_revocation.js';
 import { isValidPoint, pointFromStrings, verifyUserCred, parseUserCredProof, userCredRequestMessage, issueRequestMessageV4, attrsRequestMessage, revokeSessionMessage, registerMessage } from './lib/mode3_issuance.js';
 import { MODE3_LOG_ABI, MODE3_MIRROR_ABI, rootToBytes32, signPublicationV3, entryHashes, signReceipt } from './lib/mode3_log.js';
@@ -38,6 +39,15 @@ const PORT = Number(process.env.CIA_PORT) || 4100;
 const STATE_FILE = process.env.CIA_STATE_FILE || path.join(__dirname, 'cia_state.json');
 const KEYS_FILE = process.env.CIA_KEYS_FILE || path.join(__dirname, 'cia_keys.json');
 const VKEY_PATH = process.env.MODE3_VKEY_PATH || path.join(__dirname, 'build', 'mode3', 'pi_cred_vkey.json');
+// 속성 매핑 계층(스펙 2, 2026-10-07): 스키마는 공유 모듈의 기본값이고 CIA_ATTR_SCHEMA_FILE(JSON)로 바꿀 수 있다. 검증 실패는 기동 거부.
+const ATTR_SCHEMA_FILE = process.env.CIA_ATTR_SCHEMA_FILE || null;
+let ATTR_SCHEMA, ATTR_SCHEMA_HASH;
+try {
+  ({ schema: ATTR_SCHEMA, hash: ATTR_SCHEMA_HASH } = loadSchema(ATTR_SCHEMA_FILE ? JSON.parse(fs.readFileSync(ATTR_SCHEMA_FILE, 'utf8')) : DEFAULT_ATTR_SCHEMA));
+} catch (e) {
+  console.error(`[cia] 기동 거부: 속성 스키마 오류(${ATTR_SCHEMA_FILE ?? '기본 스키마'}) — ${e.message}`);
+  process.exit(1);
+}
 const ADMIN_SECRET = process.env.CIA_ADMIN_SECRET;
 const RPC_URL = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
 const LOG_ADDRESS = process.env.CIA_LOG_ADDRESS || null;
@@ -91,10 +101,10 @@ for (const item of (process.env.CIA_MIRRORS || '').split(',').map((s) => s.trim(
 // CHAIN_RPCS 의 첫 키를 쓰지 않는다(여러 체인이 설정돼 있으면 어긋난다). 기동 시 한 번 읽는다.
 let selfChainId = null;
 
-// 데모 계정. Mode 2 의 testuser 관례를 따른 프로토타입이다 — 실제 계정 체계가 아니다.
+// 데모 계정의 속성은 사람이 읽는 profile(스키마 이름 → 값)이고, attrs(인코딩)는 loadState 가 스키마로 만든다(스펙 2 §5.2). 등급은 없다(D4).
 const DEMO_ACCOUNTS = {
-  testuser: { password: 'password123', uid: '12345', attrs: ['1990', '410', '2', '0', '0', '0'] },   // a₀ 출생연도, a₁ 국가(ISO 3166 numeric), a₂ 등급, a₃·a₄·a₅ 예비
-  alice: { password: 'alicepw', uid: '67890', attrs: ['2005', '840', '1', '0', '0', '0'] },
+  testuser: { password: 'password123', uid: '12345', profile: { birthYear: '1990', country: 'KR' }, attrs: null },
+  alice: { password: 'alicepw', uid: '67890', profile: { birthYear: '2005', country: 'US' }, attrs: null },
 };
 
 // ---- 키 ----
@@ -209,21 +219,51 @@ async function reconcileWithChain({ onchainRoot, onchainRegRoot, onchainEpoch },
 }
 
 async function loadState() {
+  // 데모 계정 profile 은 기본 스키마의 이름으로 적혀 있다. 사용자 정의 스키마(CIA_ATTR_SCHEMA_FILE)에서도 뜨도록 관대하게 맞춘다 —
+  // 스키마에 없는 키는 버리고, 없는 int·enum 키는 빈 값으로 채운다(최종 리뷰 I2). 그래도 안 맞으면(범위 밖·표에 없는 이름) 기동 거부.
+  const named = ATTR_SCHEMA.slots.filter((s) => s.type !== 'unused');
+  for (const [name, a] of Object.entries(DEMO_ACCOUNTS)) {
+    const fitted = {};
+    for (const s of named) {
+      if (Object.hasOwn(a.profile, s.name)) fitted[s.name] = a.profile[s.name];
+      else if (s.type === 'int' || s.type === 'enum') fitted[s.name] = '';
+    }
+    try { a.attrs = await encodeProfile(ATTR_SCHEMA, fitted); }
+    catch (e) { console.error(`[cia] 기동 거부: 데모 계정 속성이 스키마와 맞지 않는다 — ${name}: ${e.message}`); process.exit(1); }
+    a.profile = fitted;
+  }
   state = readJson(STATE_FILE, defaultState());
   let migrated;
-  try { migrated = migrateCiaState(state, { demoAttrs: (uid) => Object.values(DEMO_ACCOUNTS).find((a) => a.uid === uid)?.attrs ?? null }); }
+  try { migrated = migrateCiaState(state, { demoAttrs: (uid) => Object.values(DEMO_ACCOUNTS).find((a) => a.uid === uid)?.attrs ?? null, attrSchema: ATTR_SCHEMA }); }
   catch (e) {
     console.error(`[cia] 기동 거부: ${e.message}. v2 이하는 옛 credential 형식이라 새 회로에서 검증되지 않으므로 마이그레이션하지 않는다 — ` +
       `재시연 세트(로그 재배포 → 상태 파일 삭제)로 새로 시작할 것.`);
     process.exit(1);
   }
   state = migrated.state;
-  if (migrated.notes.length) { for (const n of migrated.notes) console.warn(`[cia] 상태 파일 이행 ${n}`); persist(); }
+  for (const n of migrated.notes) console.warn(`[cia] 상태 파일 이행 ${n}`);
+  // 최종 리뷰 I4: 계정 attrs 는 저장 당시 스키마로 인코딩돼 있다. 스키마가 바뀌면 같은 숫자가 다른 뜻이 되므로 기동을 거부한다 —
+  // 다시 인코딩하는 경로는 비범위다. 해시가 없는 파일(이 필드 이전 또는 v10 이행)은 지금 스키마를 기록한다.
+  let schemaHashRecorded = false;
+  if (state.attrSchemaHash === null) { state.attrSchemaHash = ATTR_SCHEMA_HASH; schemaHashRecorded = true; }
+  else if (state.attrSchemaHash !== ATTR_SCHEMA_HASH) {
+    console.error(`[cia] 기동 거부: 속성 스키마가 바뀌었다(저장 ${state.attrSchemaHash} ≠ 현재 ${ATTR_SCHEMA_HASH}) — 계정 attrs 를 다시 인코딩하는 경로는 비범위다. ` +
+      `스키마를 되돌리거나(CIA_ATTR_SCHEMA_FILE) 상태 파일을 새로 시작할 것.`);
+    process.exit(1);
+  }
   publishedTree = await buildPublishedTree();
   tree = await createRevocationTree();
   for (const l of state.revoked) await tree.insert(BigInt(l));
   registry = await createRegistryTree(state.registry.depth);
   for (const [i, leaf] of Object.entries(state.registry.leaves)) registry.set(Number(i), BigInt(leaf));
+  // v10→v11(스펙 2 §6): 새 스키마로 표현할 수 없는 값을 버려 attrs 가 바뀐 계정은 관리자 속성 변경과 같은 경로를 탄다 —
+  // 활성 자격증명 은퇴 → 슬롯 0 → (아래 자동 게시). 지갑은 다음 로그인의 bad user credential proof → /cia/attrs 재동기화로 새 C_u 를 받는다.
+  let retiredByMigration = 0;
+  for (const uid of migrated.attrsChanged ?? []) { if (retireActiveCred(uid)) { setSlot(uid, 0n); retiredByMigration++; } }
+  if (retiredByMigration) console.warn(`[cia] 속성 스키마 이행으로 계정 ${retiredByMigration}개의 활성 자격증명을 물렸다(슬롯 0) — 아래 자동 게시`);
+  // 이행 결과와 물림을 한 번에 저장한다(최종 리뷰 M1) — 이행만 먼저 저장하고 물리기 전에 죽으면 다음 기동은 v11 파일을 읽어
+  // attrsChanged 가 비고, 옛 속성의 자격증명이 활성으로 남는다.
+  if (migrated.notes.length || retiredByMigration || schemaHashRecorded) persist();
   // v9 이행 뒤(또는 리프가 비어 있는 슬롯): 활성 자격증명의 리프를 채운다 — Poseidon 이 비동기라 이행 함수가 못 한다.
   let filled = 0;
   for (const [uid, acct] of Object.entries(state.accounts)) {
@@ -374,6 +414,9 @@ app.get('/cia/public_keys', (req, res) => {
     canonicalChainId: selfChainId, mirrors: MIRRORS.map(({ chainStr, address }) => ({ chainId: chainStr, address })) });
 });
 
+// 속성 스키마 공개(스펙 2 §5.2, 인증 없음). 지갑·RP 가 기동 때 받아 술어 타입·정책 이름을 해석하고, 화면이 이름값을 그린다.
+app.get('/cia/attr_schema', (req, res) => res.json({ schema: ATTR_SCHEMA, hash: ATTR_SCHEMA_HASH }));
+
 // 상태 엔드포인트(설계 2026-09-25 §1) — 민감정보 없음, 승인된 서비스·지갑 오리진에만 CORS.
 const WALLET_AGENT_ORIGIN = process.env.MODE3_WALLET_AGENT_ORIGIN || 'http://127.0.0.1:5100';
 app.get('/mode3/health', async (req, res) => {
@@ -391,7 +434,7 @@ app.get('/mode3/health', async (req, res) => {
   const mirrors = await readMirrorsHealth();   // 거울마다 따로 1.2초 예산(병렬) — 실패는 null 항목
   res.json(buildAaHealth({ now: new Date().toISOString(), chain, root: tree.getRoot().toString(), epoch: state.epoch, lastPublishedBlock: last, heartbeatBlocks: Number(HEARTBEAT_BLOCKS),
     pendingLeaves: state.pending.length, pendingRps: Object.values(state.rps).filter((r) => r.status === 'pending').length, pendingOpenings: state.openings.filter((o) => o.status === 'pending').length,
-    accounts: Object.keys(state.accounts).length, walletOrigin: WALLET_AGENT_ORIGIN, rpOrigins, mirrors }));
+    accounts: Object.keys(state.accounts).length, walletOrigin: WALLET_AGENT_ORIGIN, rpOrigins, mirrors, attrSchema: schemaInfo(ATTR_SCHEMA, ATTR_SCHEMA_HASH) }));
 });
 
 // §3(2026-09-16) 서비스 등록 — pending 으로 받고 운영자가 승인하면 CIA 조각을 만들어 조합 키 pk_trace 와 cert_s(V2)를
@@ -492,9 +535,9 @@ app.post('/cia/register', async (req, res) => {
   if (!ok) return res.status(400).json({ error: 'bad_registration_signature' });
   if (state.accounts[uid]) return res.status(409).json({ error: 'already registered' });   // await 사이 경합
   const slot = state.registry.next++;
-  state.accounts[uid] = { pk_u: { x: BigInt(pk_u.x).toString(), y: BigInt(pk_u.y).toString() }, cm_u: { x: BigInt(cm_u.x).toString(), y: BigInt(cm_u.y).toString() }, slot, tampered: false, disabled: false, creds: [], attrs: [...acct.attrs], sessions: [] };
+  state.accounts[uid] = { pk_u: { x: BigInt(pk_u.x).toString(), y: BigInt(pk_u.y).toString() }, cm_u: { x: BigInt(cm_u.x).toString(), y: BigInt(cm_u.y).toString() }, slot, tampered: false, disabled: false, creds: [], attrs: [...acct.attrs], profile: normalizeProfile(ATTR_SCHEMA, acct.profile), sessions: [] };
   persist();
-  res.status(201).json({ slot, attrs: state.accounts[uid].attrs });
+  res.status(201).json({ slot, attrs: state.accounts[uid].attrs, profile: state.accounts[uid].profile, schemaHash: ATTR_SCHEMA_HASH });
 });
 
 // §4.1(2026-09-21) 사용자 자격증명 발급. 세션과 무관 — 속성이 바뀔 때만 다시 온다. AA 서명은 없다(세션 서명이 Cf_u 를 덮는다).
@@ -556,7 +599,7 @@ app.post('/cia/attrs', async (req, res) => {
       ok = eddsa.verifyPoseidon(m, { R8: [F.e(BigInt(sig_u.R8x)), F.e(BigInt(sig_u.R8y))], S: BigInt(sig_u.S) }, [F.e(BigInt(acct.pk_u.x)), F.e(BigInt(acct.pk_u.y))]);
     } catch { ok = false; }
     if (!ok) return res.status(400).json({ error: 'bad user signature' });
-    res.json({ attrs: acct.attrs });
+    res.json({ attrs: acct.attrs, profile: acct.profile ?? {}, schemaHash: ATTR_SCHEMA_HASH });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -578,28 +621,29 @@ app.post('/cia/slot', async (req, res) => {
 });
 
 // 2026-09-22 §3.3 관리자가 속성을 바꾼다. 활성 자격증명은 옛 속성이라 물린다(슬롯 0 → 즉시 게시). 지갑은 다음 발급에서 재동기화한다.
+// 스펙 2(2026-10-07): 본문은 { profile } — 스키마 이름 → 사람이 읽는 값. 인코딩은 encodeProfile(int·enum 키 필수 — 빈 객체 한 번으로
+// 속성이 통째로 지워지던 A-I2 를 같은 선에서 막는다). 예전 { attrs:[…] } 는 400 use_profile.
+// 최종 리뷰(2026-10-07): min > 0 인 int·enum 의 빈 값은 400 empty(I1 — 출생연도 0 이 나이 술어를 통과), 저장하는 profile 은
+// normalizeProfile 의 정규형(I3 — 코드 '410' 은 이름 'KR'), attrs 가 그대로면 profile 만 바꾸고 자격증명은 물리지 않는다(M8).
 app.post('/cia/accounts/:uid/attrs', requireAdmin, async (req, res) => {
   try {
     const uid = req.params.uid;
     const acct = state.accounts[uid];
     if (!isDec(uid) || !acct) return res.status(404).json({ error: 'unknown account' });
-    // 관리자 변경은 길이 4 배열만 받는다 — normalizeAttrs 의 0 패딩(발급 경로엔 필요)이 여기서는 "본문 없는 호출 한 번에
-    // 속성 4칸이 0" 이 되고 활성 자격증명이 통째로 물려 슬롯이 0 으로 즉시 게시된다(2026-09-23 점검 A-I2; V9: 리프가
-    // 아니라 슬롯 — append-only 트리는 더 이상 관련 없다).
-    const raw = req.body?.attrs;
-    if (!Array.isArray(raw) || raw.length !== ATTR_SLOTS) return res.status(400).json({ error: `attrs 는 길이 ${ATTR_SLOTS} 배열이어야 한다` });
-    // 길이만 보면 빈 칸이 통과한다 — BigInt('') === 0n 이라 관리자 UI(mode3/cia_admin.html 의 `i.value.trim()`)가 보낸
-    // 빈 슬롯이 조용히 0 이 되고, 바로 아래에서 활성 자격증명을 물리고 슬롯을 0 으로 즉시 게시한다 — 사용자는 당장
-    // 로그인이 끊기고 새 user_cred 를 받아야 한다(2026-09-23 최종 리뷰 M2 — 점검 A-I2 의 현실적 트리거).
-    if (!raw.every((v) => /^[0-9]+$/.test(String(v)))) return res.status(400).json({ error: 'attrs 원소는 10진 문자열' });
+    if (req.body?.attrs !== undefined) return res.status(400).json({ error: 'use_profile', detail: '속성은 { profile: { 이름: 값 } } 로 보낸다(스펙 2)' });
+    const profile = req.body?.profile;
+    if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return res.status(400).json({ error: 'bad_attr', slot: null, field: null, reason: 'profile_required' });
     let attrs;
-    try { attrs = normalizeAttrs(raw).map(String); } catch (e) { return res.status(400).json({ error: `attrs: ${e.message}` }); }
+    try { attrs = await encodeProfile(ATTR_SCHEMA, profile, { allowEmptyRequired: false }); }
+    catch (e) { if (e.reason === 'bad_attr') return res.status(400).json({ error: 'bad_attr', slot: e.slot, field: e.field, reason: e.detail, detail: e.message }); throw e; }
+    acct.profile = normalizeProfile(ATTR_SCHEMA, profile);
+    if (JSON.stringify(attrs) === JSON.stringify(acct.attrs)) { persist(); return res.json({ uid, attrs, profile: acct.profile, retired: 0, published: false }); }
     acct.attrs = attrs;
     const retired = retireActiveCred(uid);
     if (retired) setSlot(uid, 0n);   // 물린 게 없으면(활성 자격증명이 없었다) 슬롯은 건드리지 않는다
     persist();   // attrs·(물렸다면) 슬롯 변경을 게시 시도 전에 먼저 저장한다 — 게시 중 죽어도 다음 기동이 백로그를 본다
     const pub = retired ? await publishSafely() : { published: false };
-    res.json({ uid, attrs, retired, published: Boolean(pub.published) });
+    res.json({ uid, attrs, profile: acct.profile, retired, published: Boolean(pub.published) });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -1061,7 +1105,7 @@ app.post('/cia/account/set_disabled', requireAdmin, (req, res) => {
 
 // 관리자 계정 목록(관리 페이지의 속성 편집용). activeCred 는 위의 기존 헬퍼(사용자당 활성 자격증명 하나).
 app.get('/cia/accounts', requireAdmin, (req, res) => res.json({
-  accounts: Object.entries(state.accounts).map(([uid, a]) => ({ uid, disabled: a.disabled, attrs: a.attrs, activeCf_u: activeCred(uid)?.Cf_u ?? null, slot: a.slot, tampered: Boolean(a.tampered), registryLeaf: state.registry.leaves[a.slot] ?? '0' })),
+  accounts: Object.entries(state.accounts).map(([uid, a]) => ({ uid, disabled: a.disabled, attrs: a.attrs, profile: a.profile ?? {}, activeCf_u: activeCred(uid)?.Cf_u ?? null, slot: a.slot, tampered: Boolean(a.tampered), registryLeaf: state.registry.leaves[a.slot] ?? '0' })),
 }));
 
 // ---- V9 등록부 관리(설계 2026-10-01 §9) ----

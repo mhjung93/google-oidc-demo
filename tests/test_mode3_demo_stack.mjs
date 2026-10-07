@@ -8,6 +8,7 @@ import { signPayload, statementDigestFields, proofToCalldata, parseExecuteReceip
 import { ethers } from 'ethers';
 import { getProvider, getFunder } from './helpers/mode3_chain.mjs';
 import { MODE3_LOG_ABI } from '../lib/mode3_log.js';
+import { DEFAULT_ATTR_SCHEMA, encodeSlotValue } from '../lib/mode3_attr_schema.js';
 
 const j = (o) => JSON.stringify(o);
 let failed = 0;
@@ -118,6 +119,10 @@ try {
     assert.equal(r.body.pkCiaSource, 'tofu');
     assert.equal(r.body.status, 'approved'); assert.ok(r.body.pk_trace?.x);
     assert.match(r.body.factoryAddress, /^0x[0-9a-fA-F]{40}$/); assert.match(r.body.verifierAddress, /^0x[0-9a-fA-F]{40}$/);
+    assert.deepEqual(r.body.predicates.allowedCountries, ['410', '392', '840', '276', '250']);
+    assert.deepEqual(r.body.predicates.allowedCountryNames, ['KR', 'JP', 'US', 'DE', 'FR'], '스펙 2: 기본 정책을 이름으로도 낸다');
+    assert.deepEqual(r.body.predicates.attrSchema, { id: 'zkd-attrs', version: 1, hash: (await cia.get('/cia/attr_schema')).body.hash });
+    assert.equal(r.body.predicates.birthYearMin, '1900', '최종 리뷰 I1: 페이지가 나이 술어의 lo 로 쓰는 스키마 min');
   });
 
   await t('0. 서비스 등록 승인: 관리자 목록에 approved 이고 조합 키가 있다 (헬퍼가 승인을 대행했다)', async () => {
@@ -366,10 +371,11 @@ try {
     } finally { alice.stop(); }
   });
 
-  await t('V7 로그인 술어: require.countrySet+minAge 를 만족하는 로그인은 ok·세션에 set; 술어 없이 보내면 predicate_unmet', async () => {
+  await t('V7 로그인 술어: require.countrySet+minAge 를 만족하는 로그인(lo = 스키마 min)은 ok·세션에 set; 술어 없이 보내면 predicate_unmet; lo 0 은 predicate_unmet', async () => {
     const info = (await rp.get('/api/mode3/rp_info')).body;
     const year = new Date().getUTCFullYear();
-    const disclose = [{ lo: '0', hi: String(year - Number(info.predicates.minAge)) }, null, null, null];
+    // 최종 리뷰 I1: RP 는 lo ≥ 스키마 min 도 요구한다 — "값 없음"(0) 출생연도는 그 술어를 만들 수 없다(지갑이 lo ≤ a₀ 를 강제).
+    const disclose = [{ lo: info.predicates.birthYearMin, hi: String(year - Number(info.predicates.minAge)) }, null, null, null];
     const set = { slot: 1, members: info.predicates.allowedCountries };
     const ch = (await rp.post('/api/mode3/challenge')).body;
     const w = await wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s: ch.r_s, allowAgent: '0', factoryAddress: ch.factoryAddress, attrGateAddress: ch.attrGateAddress, disclose, set }, { Origin: rp.origin });
@@ -384,12 +390,20 @@ try {
     assert.equal(w2.status, 200, j(w2.body));
     const r2 = await rp.post('/api/mode3/login', { r_s: ch2.r_s, proof: w2.body.proof, publicSignals: w2.body.publicSignals, sig: w2.body.sig, require: { countrySet: true } });
     assert.deepEqual(r2.body, { ok: false, reason: 'predicate_unmet' });
+    // lo 0 인 나이 구간([0, year − minAge])은 출생연도 0(값 없음)도 만족하므로 RP 가 거절한다(AttrGate 는 hi 만 본다 — 런북 한계).
+    const ch3 = (await rp.post('/api/mode3/challenge')).body;
+    const w3 = await wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s: ch3.r_s, allowAgent: '0', factoryAddress: ch3.factoryAddress, attrGateAddress: ch3.attrGateAddress, disclose: [{ lo: '0', hi: String(year - Number(info.predicates.minAge)) }, null, null, null], set }, { Origin: rp.origin });
+    assert.equal(w3.status, 200, j(w3.body));
+    const r3 = await rp.post('/api/mode3/login', { r_s: ch3.r_s, proof: w3.body.proof, publicSignals: w3.body.publicSignals, sig: w3.body.sig, require: { countrySet: true, minAge: true } });
+    assert.deepEqual(r3.body, { ok: false, reason: 'predicate_unmet' });
   });
 
   await t('12. 선택 공개: 관리자가 testuser a₂ 를 3 으로 → 게시 → 다음 로그인이 재동기화·새 C_u, PPID 동일', async () => {
     const before = await loginViaRp();
     assert.equal(before.rp.ok, true, j(before));
-    const chg = await cia.adminPost(`/cia/accounts/${uid}/attrs`, { attrs: ['1990', '410', '3', '0', '0', '0'] });
+    // 스펙 2: 관리자 속성 변경은 { profile } 로 보낸다 — attrs 배열은 cia.js 가 400 use_profile 로 거부한다.
+    // slot 2(extra1)는 이제 string 타입이라 인코딩이 Poseidon 해시다 — '3' 이 아니라 encodeSlotValue 로 기대값을 구한다.
+    const chg = await cia.adminPost(`/cia/accounts/${uid}/attrs`, { profile: { birthYear: '1990', country: 'KR', extra1: 'tier3' } });
     assert.equal(chg.status, 200, j(chg.body));
     // V9: 속성 변경이 활성 자격증명을 물려(옛 속성이라) 슬롯을 0 으로 비우고 즉시 게시한다(cia.js /cia/accounts/:uid/attrs) —
     // 뒤이은 수동 게시는 더 낼 것이 없어 published:false 다.
@@ -398,7 +412,8 @@ try {
     const after = await loginViaRp();
     assert.equal(after.rp.ok, true, j(after));
     assert.equal(after.rp.PPID, before.rp.PPID);
-    assert.deepEqual((await wallet.get('/wallet/status')).body.attrs, ['1990', '410', '3', '0', '0', '0']);
+    const extra1Encoded = await encodeSlotValue(DEFAULT_ATTR_SCHEMA, 2, 'tier3');
+    assert.deepEqual((await wallet.get('/wallet/status')).body.attrs, ['1990', '410', extra1Encoded, '0', '0', '0']);
   });
 
   // 리뷰 반영(2026-09-22): 위의 disclosure 기록은 지금까지 인프로세스 rp.verifyLogin() 이나 execute() 경로로만 봤다 —
@@ -765,7 +780,8 @@ try {
   // 블록을 상한 너머로 진행시키므로(앞 케이스들의 세션이 만료된다) 끝부분에 둔다.
   await t('Ruling 1: 세션 요청도 root 나이로 fail-closed — 게시 없이 상한을 넘기면 root_too_old, 새 게시 뒤 새 세션은 통과', async () => {
     // 나이를 스스로 0 으로 만든다(속성 변경 → 게시). 앞 케이스의 게시 시점에 기대지 않는다.
-    const a1 = await cia.adminPost(`/cia/accounts/${uid}/attrs`, { attrs: ['1991', '410', '3', '0', '0', '0'] });
+    // 스펙 2: { profile } 로 보낸다 — 여기서는 속성 변경이 자격증명을 물리는 트리거일 뿐 attrs 값 자체는 뒤에서 보지 않는다.
+    const a1 = await cia.adminPost(`/cia/accounts/${uid}/attrs`, { profile: { birthYear: '1991', country: 'KR', extra1: 'tier3' } });
     assert.equal(a1.status, 200, j(a1.body));
     // V9: 속성 변경이 즉시 게시한다 — 수동 게시는 더 낼 것이 없다.
     assert.equal(a1.body.published, true, j(a1.body));
@@ -782,7 +798,7 @@ try {
     const stale = await rp.post('/api/mode3/request', { r_s: l.r_s, body: 'hello', sig: w.body.sig });
     assert.equal(stale.status, 503, j(stale.body)); assert.equal(stale.body.reason, 'root_too_old', j(stale.body));
     // 새 게시가 나이를 0 으로 되돌린다. 게시로 root 가 바뀌므로 옛 세션이 아니라 새 로그인으로 확인한다.
-    const a2 = await cia.adminPost(`/cia/accounts/${uid}/attrs`, { attrs: ['1992', '410', '3', '0', '0', '0'] });
+    const a2 = await cia.adminPost(`/cia/accounts/${uid}/attrs`, { profile: { birthYear: '1992', country: 'KR', extra1: 'tier3' } });
     assert.equal(a2.status, 200, j(a2.body));
     assert.equal(a2.body.published, true, j(a2.body));   // V9: 즉시 게시 — 수동 게시는 더 낼 것이 없다.
     assert.equal((await cia.adminPost('/cia/publish')).body.published, false);

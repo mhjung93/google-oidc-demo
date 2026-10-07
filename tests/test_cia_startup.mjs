@@ -19,6 +19,7 @@ import { randomScalar, sessionCommit, compressPoint } from '../lib/mode3_credent
 import { createRevocationTree } from '../lib/mode3_revocation.js';
 import { proveUserCred, serializeUserCredProof, userCredRequestMessage, issueRequestMessageV4, pointToStrings } from '../lib/mode3_issuance.js';
 import { createShare } from '../lib/mode3_trace.js';
+import { DEFAULT_ATTR_SCHEMA, loadSchema } from '../lib/mode3_attr_schema.js';
 
 let failed = 0;
 async function t(name, fn) {
@@ -48,7 +49,7 @@ async function registerAndIssueLeaf(cia, user) {
     const u = await cia.registerUser(uid.toString(), 'password123');
     user.s_u = u.s_u; user.r_u = u.r_u; user.cm_u = u.cm_u; user.sk_u = u.sk_u;
     // uid 12345 는 cia.js DEMO_ACCOUNTS.testuser 이고 AA 가 attrs 를 보증한다(2026-09-22 §3.4) — 여기서 임의값을 쓰면 π_u 가 400.
-    const { C_u_pt, proof } = await proveUserCred({ uid, s_u: user.s_u, blind_u: randomScalar(), r_u: user.r_u, attrs: [1990n, 410n, 2n, 0n, 0n, 0n] });
+    const { C_u_pt, proof } = await proveUserCred({ uid, s_u: user.s_u, blind_u: randomScalar(), r_u: user.r_u, attrs: [1990n, 410n, 0n, 0n, 0n, 0n] });
     const uc = await cia.post('/cia/user_cred', { uid: uid.toString(), C_u_pt: pointToStrings(C_u_pt), proof: serializeUserCredProof(proof), sig_u: signMsg(user.sk_u, await userCredRequestMessage(C_u_pt)) });
     assert.equal(uc.status, 201, JSON.stringify(uc.body));
     user.Cf_u = uc.body.Cf_u;
@@ -65,11 +66,13 @@ async function registerAndIssueLeaf(cia, user) {
   return rv.body.leaf;
 }
 
-/** 기동이 거부돼야 한다. 거부되지 않고 떠 버리면 잔존 프로세스를 남기지 않도록 멈춘 뒤 실패시킨다. */
+/** 기동이 거부돼야 한다. 거부되지 않고 떠 버리면 잔존 프로세스를 남기지 않도록 멈춘 뒤 실패시킨다.
+ *  cia.js 의 기동 거부 로그는 모두 `[cia] 기동 거부:` 로 시작한다(root 불일치·속성 스키마 오류 등 — 2026-10-07 §3 추가분).
+ *  거부 메시지(기동 로그 포함)를 돌려준다 — 거부 사유가 여럿일 수 있는 케이스가 사유를 따로 대조한다. */
 async function expectStartupRefused(opts) {
   let cia;
   try { cia = await startIsolatedCia(opts); }
-  catch (e) { assert.match(e.message, /root 불일치/); return; }
+  catch (e) { assert.match(e.message, /기동 거부:/); return e.message; }
   await cia.stop();
   assert.fail('기동이 거부돼야 하는데 떠 버렸다');
 }
@@ -149,7 +152,7 @@ try {
     const cia = await startIsolatedCia({ env: { CIA_STATE_FILE: stateFile } });
     try {
       const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-      assert.equal(saved.version, 10); assert.equal(saved.used_rs, undefined); assert.equal(saved.issued, undefined); assert.deepEqual(saved.openings, []);
+      assert.equal(saved.version, 11); assert.equal(saved.used_rs, undefined); assert.equal(saved.issued, undefined); assert.deepEqual(saved.openings, []);
       const e = (await cia.adminGet('/cia/rps')).body.rps.find((x) => x.arid === '777');
       assert.equal(e.status, 'approved'); assert.equal(e.pk_trace, null); assert.equal(e.pk_service, null);
       // 옛 등록이 키를 내며 재등록하면 무허가 바인딩을 막기 위해 pending 으로 돌아간다 — 운영자 승인이 다시 필요하다(§3)
@@ -170,10 +173,114 @@ try {
     const cia = await startIsolatedCia({ env: { CIA_STATE_FILE: stateFile } });
     try {
       const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-      assert.equal(saved.version, 10); assert.equal(saved.issued, undefined); assert.deepEqual(saved.accounts['12345'].creds, []);
-      assert.deepEqual(saved.accounts['12345'].attrs, ['1990', '410', '2', '0', '0', '0'], 'uid 12345 는 cia.js DEMO_ACCOUNTS.testuser 라 demoAttrs 콜백이 채운다');
+      assert.equal(saved.version, 11); assert.equal(saved.issued, undefined); assert.deepEqual(saved.accounts['12345'].creds, []);
+      assert.deepEqual(saved.accounts['12345'].attrs, ['1990', '410', '0', '0', '0', '0'], 'uid 12345 는 cia.js DEMO_ACCOUNTS.testuser 라 demoAttrs 콜백이 채운다');
       assert.match(cia.log(), /v4→v5/); assert.match(cia.log(), /v5→v6/); assert.match(cia.log(), /v6→v7/);
     } finally { await cia.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  await t('v10 상태 파일은 v11 로 이행된다 — 등급 2 를 버려 attrs 가 바뀐 계정은 활성 자격증명이 물리고 슬롯 0 을 비운다(체인에 게시된 적 없어 재게시는 없다), profile 생성', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-v10-'));
+    const stateFile = path.join(dir, 'cia_state.json');
+    fs.writeFileSync(stateFile, JSON.stringify({
+      version: 10, accounts: { '12345': { pk_u: { x: '1', y: '2' }, cm_u: { x: '3', y: '4' }, slot: 0, tampered: false, disabled: false,
+        creds: [{ Cf_u: '111', C_u_pt: { x: '3', y: '4' }, leaf: '0', issuedAt: '2026-01-01T00:00:00.000Z', revoked: false }], attrs: ['1990', '410', '2', '0', '0', '0'], sessions: [], receipt: null, slotRetired: false } },
+      rps: {}, openings: [], revoked: [], pending: [], epoch: 0, registry: { depth: 20, next: 1, leaves: {}, pendingSlots: [] }, lastPublication: null, signedEpochMax: 0,
+    }), { mode: 0o600 });
+    const cia = await startIsolatedCia({ env: { CIA_STATE_FILE: stateFile } });
+    try {
+      assert.match(cia.log(), /v10→v11/); assert.match(cia.log(), /슬롯 2 값 2 버림/);
+      assert.match(cia.log(), /속성 스키마 이행으로 계정 1개의 활성 자격증명을 물렸다/);
+      const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      assert.equal(saved.version, 11);
+      assert.deepEqual(saved.accounts['12345'].profile, { birthYear: '1990', country: 'KR' });
+      assert.deepEqual(saved.accounts['12345'].attrs, ['1990', '410', '0', '0', '0', '0']);
+      assert.equal(saved.accounts['12345'].creds[0].revoked, true, '옛 속성의 자격증명은 물린다');
+      assert.equal(saved.registry.leaves['0'], undefined, '슬롯 0 은 비웠다');
+      assert.deepEqual(saved.registry.pendingSlots, [], '자동 게시가 pendingSlots 를 비웠다');
+      // 이 픽스처는 슬롯 0 이 애초에 한 번도 체인에 게시된 적이 없다(registry.leaves:{} — 격리 CIA 는 매번 빈
+      // 등록부 root 로 새 로그를 배포한다). 물린 뒤 slot 0 을 0 으로 비우면 로컬 등록부 root 가 그 빈 root 와
+      // 우연히 같아져(0 으로 set 하는 것은 안 set 한 것과 트리 표현이 같다 — lib/mode3_registry.js) 기동 대조가
+      // "이미 일치"로 보고 pendingSlots 를 비운다(위 단언) — publishNow() 는 보낼 것이 없어 epoch 를 올리지 않는다.
+      // 체인이 한 번도 몰랐던 자격증명을 물리는 것은 체인 쪽에 알릴 것이 없으므로 올바른 동작이다.
+      assert.equal((await cia.get('/cia/state')).body.epoch, 0, '체인은 이 슬롯을 애초에 몰랐으므로 물려도 새로 게시할 것이 없다');
+      const acct = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === '12345');
+      assert.deepEqual(acct.profile, { birthYear: '1990', country: 'KR' }); assert.equal(acct.activeCf_u, null);
+      const sch = await cia.get('/cia/attr_schema');
+      assert.equal(sch.status, 200); assert.equal(sch.body.schema.id, 'zkd-attrs'); assert.match(sch.body.hash, /^[0-9a-f]{64}$/);
+      const h = (await cia.get('/mode3/health')).body;
+      assert.deepEqual(h.attrSchema, { id: 'zkd-attrs', version: 1, hash: sch.body.hash });
+    } finally { await cia.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  await t('CIA_ATTR_SCHEMA_FILE 이 검증에 실패하면 기동하지 않는다', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-badschema-'));
+    const schemaFile = path.join(dir, 'schema.json');
+    fs.writeFileSync(schemaFile, JSON.stringify({ id: 'x', version: 1, slots: [{ type: 'unused' }] }));
+    await expectStartupRefused({ env: { CIA_ATTR_SCHEMA_FILE: schemaFile } });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // 최종 리뷰 I4(2026-10-07): 계정 attrs 는 저장 당시 스키마로 인코딩돼 있다 — 상태 파일이 해시를 기억하고, 다른 스키마로 뜨면 거부한다.
+  await t('스키마 해시: 해시가 없던 v11 상태 파일은 지금 스키마의 해시를 기록하고, 해시가 다른 v11 상태 파일은 기동 거부', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-schemahash-'));
+    const stateFile = path.join(dir, 'cia_state.json');
+    const schemaFile = path.join(dir, 'schema.json');
+    try {
+      fs.writeFileSync(stateFile, JSON.stringify({ version: 11, accounts: {}, rps: {}, openings: [], revoked: [], pending: [], epoch: 0, registry: { depth: 20, next: 0, leaves: {}, pendingSlots: [] }, lastPublication: null, signedEpochMax: 0 }), { mode: 0o600 });
+      const cia = await startIsolatedCia({ env: { CIA_STATE_FILE: stateFile } });
+      try {
+        const sch = (await cia.get('/cia/attr_schema')).body;
+        assert.equal(JSON.parse(fs.readFileSync(stateFile, 'utf8')).attrSchemaHash, sch.hash, '기동이 지금 스키마의 해시를 기록했다');
+      } finally { await cia.stop(); }
+      // 기본 스키마와 다르지만 유효한 스키마(데모 계정 profile 은 그대로 인코딩된다 — 거부 사유가 데모 계정이 아니라 해시여야 한다)
+      const other = { ...DEFAULT_ATTR_SCHEMA, id: 'zkd-attrs-alt', slots: DEFAULT_ATTR_SCHEMA.slots.map((sl, i) => (i === 3 ? { name: 'note', label: '메모', type: 'string' } : sl)) };
+      fs.writeFileSync(schemaFile, JSON.stringify(other));
+      assert.notEqual(loadSchema(other).hash, loadSchema(DEFAULT_ATTR_SCHEMA).hash);
+      const msg = await expectStartupRefused({ env: { CIA_STATE_FILE: stateFile, CIA_ATTR_SCHEMA_FILE: schemaFile } });
+      assert.match(msg, /속성 스키마가 바뀌었다/, msg);
+      assert.ok(msg.includes(loadSchema(DEFAULT_ATTR_SCHEMA).hash) && msg.includes(loadSchema(other).hash), '저장 해시와 현재 해시를 둘 다 보여 준다');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  // 최종 리뷰 I5(2026-10-07): v10→v11 이행이 attrs 를 바꾼 계정의 슬롯이 이미 체인에 게시돼 있으면, 기동이 활성 자격증명을 물리고
+  // 슬롯 0 을 실제로 게시한다(위 "게시된 적 없는 슬롯" 케이스와 짝). 재기동 패턴은 크래시 복구 케이스와 같다(로그 주소·키 재사용).
+  await t('v10→v11 이행의 온체인 효과: 게시된 슬롯의 활성 자격증명이 물리고 SlotUpdated(slot, 0)·regRoot 변경·epoch +1, profile 복구', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-v10-onchain-'));
+    const stateFile = path.join(dir, 'cia_state.json');
+    const keysFile = path.join(dir, 'cia_keys.json');
+    let cia = await startIsolatedCia();
+    const logAddr = cia.logAddress, ethPrv = cia.ciaEthWallet.privateKey;
+    let slot;
+    try {
+      const u = await cia.registerUser(uid.toString(), 'password123');
+      const { C_u_pt, proof } = await proveUserCred({ uid, s_u: u.s_u, blind_u: randomScalar(), r_u: u.r_u, attrs: [1990n, 410n, 0n, 0n, 0n, 0n] });
+      const uc = await cia.post('/cia/user_cred', { uid: uid.toString(), C_u_pt: pointToStrings(C_u_pt), proof: serializeUserCredProof(proof), sig_u: signMsg(u.sk_u, await userCredRequestMessage(C_u_pt)) });
+      assert.equal(uc.status, 201, JSON.stringify(uc.body)); assert.equal(uc.body.published, true, '슬롯 리프가 체인에 올라갔다');
+      slot = uc.body.slot;
+      fs.copyFileSync(path.join(cia.dir, 'cia_state.json'), stateFile);
+      fs.copyFileSync(path.join(cia.dir, 'cia_keys.json'), keysFile);
+    } finally { await cia.stop(); cia = null; }
+    try {
+      // 옛 v10 파일을 흉내낸다: 버전 10, 등급 슬롯(2)에 값, profile·attrSchemaHash 없음
+      const st = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      st.version = 10; st.accounts[uid.toString()].attrs[2] = '2'; delete st.accounts[uid.toString()].profile; delete st.attrSchemaHash;
+      fs.writeFileSync(stateFile, JSON.stringify(st), { mode: 0o600 });
+      const log = new ethers.Contract(logAddr, MODE3_LOG_ABI, provider);
+      const regRoot0 = await log.regRoot(), epoch0 = await log.epoch();
+      assert.notEqual(BigInt(regRoot0), 0n);
+      const fromBlock = await provider.getBlockNumber();
+      cia = await startIsolatedCia({ env: { CIA_STATE_FILE: stateFile, CIA_KEYS_FILE: keysFile, CIA_LOG_ADDRESS: logAddr, CIA_ETH_PRIVATE_KEY: ethPrv } });
+      assert.match(cia.log(), /v10→v11/); assert.match(cia.log(), /활성 자격증명을 물렸다/);
+      assert.equal(await log.epoch(), epoch0 + 1n, '기동 자동 게시가 epoch 를 하나 올렸다');
+      assert.notEqual(await log.regRoot(), regRoot0, '체인 regRoot 가 바뀌었다');
+      const ev = await log.queryFilter(log.filters.SlotUpdated(), fromBlock + 1, 'latest');
+      assert.ok(ev.some((e) => Number(e.args.index) === slot && BigInt(e.args.leaf) === 0n), `슬롯 ${slot} 의 SlotUpdated(…, 0) 가 없다: ${JSON.stringify(ev.map((e) => [String(e.args.index), e.args.leaf]))}`);
+      const acct = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === uid.toString());
+      assert.equal(acct.activeCf_u, null, '옛 속성의 자격증명은 물렸다');
+      assert.deepEqual(acct.profile, { birthYear: '1990', country: 'KR' }); assert.deepEqual(acct.attrs, ['1990', '410', '0', '0', '0', '0']);
+      assert.equal(JSON.parse(fs.readFileSync(stateFile, 'utf8')).version, 11);
+    } finally { if (cia) await cia.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
   // 최종 리뷰 Important(2026-09-22, Ruling 8): v6→v7 이행이 pending 리프를 남기면(보증되지 않은 활성 C_u 물림) CIA 기동이
