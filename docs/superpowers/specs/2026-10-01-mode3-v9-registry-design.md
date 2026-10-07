@@ -207,5 +207,5 @@ contract Mode3Log {
 `scripts/run_tests.sh` 의 해당 그룹에 새 파일을 넣는다.
 
 ## 13. 비범위·후속
-- 스펙 2: 속성 매핑 계층(스키마 `GET /cia/attr_schema`, 인코더 `lib/mode3_attr_schema.js`, 화면의 이름값, RP 정책의 디코드 표현).
+- 스펙 2: 속성 매핑 계층 — **`2026-10-07-mode3-attr-schema-design.md` 로 확정·구현**(스키마 `GET /cia/attr_schema`, 인코더 `lib/mode3_attr_schema.js`, 화면의 이름값, RP 정책의 이름 표현).
 - VRF 키 슬롯(두 번째 등록 탐지), 등록부 증분 동기화 캐시, 형식 문서 G12·(A10) 갱신, 논문 §V·§VII, 그림 Fig. 1 갱신, 폐기 트리의 옛 사용자 리프 정리.
