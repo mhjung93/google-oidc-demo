@@ -1,0 +1,23 @@
+# 폐기 트리 샤딩 설계의 회로 비용 실측 (2026-09-04).
+#
+# 측정 방법: circom 2.1.9로 --r1cs 단독 컴파일, 출력은 scratchpad로 보내 build/를 건드리지
+# 않았다. 기준선으로 IMTNonMembershipV2(20)=6,648과 현행 pi_pk_i=19,251을 함께 재컴파일해
+# 기록값과 일치함을 확인했다.
+#
+# 샤딩판 pi_pk_i는 현행 회로에서 다음만 바꾼 것이다:
+#   - IMTNonMembershipV2(20) -> IMTNonMembershipV3(10, 10)  (경로 배열 [20] -> [10])
+#   - revocationRoot 1개 -> sess_root/sess_shard/acct_root/acct_shard 4개
+#   V3는 V2에 shardIndex 출력(targetBits 하위 10비트의 선형 결합)만 더한 것이다.
+#
+# 주의: proof_time_ms는 실측이 아니라 constraint 비로 환산한 값이다. 실측하려면 새 회로의
+# zkey를 생성하고 샤드 구조를 아는 witness 생성기가 필요하다(미구현).
+circuit,depth,constraints,public_inputs,note
+IMTNonMembershipV2,20,6648,,"현행. 기록값 재현 확인"
+IMTNonMembershipV2,15,5433,,"샤드 64개 안"
+IMTNonMembershipV2,10,4218,,"샤드 1024개 안"
+IMTNonMembershipV3,10,4218,,"V2(10) + shardIndex 출력 — 샤드 제약은 0 constraint"
+pi_pk_i,20,19251,6,"현행 (build/mode2/pi_pk_i.r1cs와 동일)"
+pi_pk_i_sharded,10,14391,9,"-4860 (-25.2%). 세션 샤드를 max_height에서 유도하면 public은 8"
+IMTNonMembershipV3,8,3732,,"세션 층 안 — 2차원 샤딩(4096칸)이라 깊이 8로 충분"
+pi_pk_i_sharded_asym,8/10,13905,9,"세션 깊이 8 + 계정 깊이 10. -5346 (-27.8%). 채택안"
+pi_pk_i_uidshard,8/10,14420,9,"계정 샤드를 uid mod 256으로 바꾼 판. L_acct 하위비트 대비 +515 (uid Num2Bits_strict)"

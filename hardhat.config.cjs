@@ -2,9 +2,72 @@ require("dotenv").config();
 require("@nomicfoundation/hardhat-toolbox");
 require("hardhat-ethernal");
 
+// PPIDWallet.execute() exceeds the legacy codegen stack limit, so it needs the
+// IR pipeline. PPIDWalletFactory imports PPIDWallet, and Hardhat compiles a
+// dependency closure under one settings block, so the factory needs the very
+// same settings — otherwise PPIDWallet would produce different bytecode
+// depending on which compilation job built it, silently changing the CREATE2
+// address the factory predicts. Both override keys must reference this one
+// object so they cannot drift apart.
+const WALLET_IR_SETTINGS = {
+  viaIR: true,
+  optimizer: { enabled: true, runs: 200 },
+};
+
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
-  solidity: "0.8.24",
+  solidity: {
+    compilers: [{ version: "0.8.24" }],
+    // PPIDWallet.execute()가 revocationRoot 파라미터 추가로 EVM 스택 한도(16
+    // slot)를 넘어 "stack too deep"이 나서, 이 파일만 viaIR로 컴파일한다.
+    // PPIDWalletFactory.sol도 PPIDWallet.sol을 import하므로, 그쪽 진입점으로
+    // 만들어지는 컴파일 job에서도 PPIDWallet.sol이 기본 설정(비-viaIR)으로
+    // 다시 컴파일되지 않도록 같은 override를 걸어준다.
+    overrides: {
+      "contracts/PPIDWallet.sol": {
+        version: "0.8.24",
+        settings: WALLET_IR_SETTINGS,
+      },
+      "contracts/PPIDWalletFactory.sol": {
+        version: "0.8.24",
+        settings: WALLET_IR_SETTINGS,
+      },
+      // v3 판도 같은 이유로 IR이 필요하고, 팩토리는 지갑을 import하므로 같은 설정을
+      // 공유해야 CREATE2 주소가 컴파일 job에 따라 달라지지 않는다.
+      "contracts/PPIDWalletV3.sol": {
+        version: "0.8.24",
+        settings: WALLET_IR_SETTINGS,
+      },
+      "contracts/PPIDWalletFactoryV3.sol": {
+        version: "0.8.24",
+        settings: WALLET_IR_SETTINGS,
+      },
+      // Mode3Wallet 도 같은 이유로 IR이 필요하고(execute 가 스택 한도를 넘는다), 팩토리가
+      // 지갑을 import 하므로 같은 설정을 공유해야 CREATE2 주소가 컴파일 job 에 따라 달라지지 않는다.
+      "contracts/Mode3Wallet.sol": {
+        version: "0.8.24",
+        settings: WALLET_IR_SETTINGS,
+      },
+      "contracts/Mode3WalletFactory.sol": {
+        version: "0.8.24",
+        settings: WALLET_IR_SETTINGS,
+      },
+      // AttrGate.sol 도 Mode3WalletFactory.sol → Mode3Wallet.sol 을 import 하므로 같은 override 가 필요하다.
+      // 이 파일이 진입점인 컴파일 job 은 override 가 없으면 그 폐쇄(closure) 전체를 기본(비-viaIR) 설정으로
+      // 다시 컴파일하려다 execute() 의 stack too deep 에서 실패한다(V7 꼬리 11워드 확장 후 실제로 발생, 2026-09-23).
+      "contracts/AttrGate.sol": {
+        version: "0.8.24",
+        settings: WALLET_IR_SETTINGS,
+      },
+    },
+  },
+  // V10(2026-10-02): 폐기 체인을 별도 노드로 띄울 때(docs/MODE3_DEMO.md "폐기 체인을 별도 노드로") 두 노드의 chainId 가
+  // 달라야 캐노니컬 서명(chainid 포함)과 거울이 구분된다 — HARDHAT_CHAIN_ID=31338 npx hardhat node --port 8546. 기본은 31337 그대로.
+  networks: {
+    hardhat: { chainId: Number(process.env.HARDHAT_CHAIN_ID || 31337) },
+    // 그 두 번째 노드(폐기 체인)에 로그를 배포할 때 쓰는 이름 — --network revchain. 계정은 노드의 기본 계정(remote).
+    revchain: { url: process.env.MODE3_REV_CHAIN_RPC || "http://127.0.0.1:8546" },
+  },
   ethernal: {
     apiToken: process.env.ETHERNAL_API_TOKEN,
     workspace: process.env.ETHERNAL_WORKSPACE, // 선택

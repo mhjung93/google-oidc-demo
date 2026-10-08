@@ -1,0 +1,10 @@
+# 온체인 해시 가스 실측. circomlibjs poseidonContract(2)를 배포해 keccak과 나란히 쟀다.
+# net_gas는 트랜잭션 기준선(noop)을 뺀 값이다. 설계 문서 12절의 추정치를 대체한다.
+measurement,gas,note
+noop_baseline,23400,"트랜잭션 + warm SSTORE"
+poseidon2_total,77538,"프로브 -> Poseidon(2) 외부 호출 포함"
+poseidon2_net,54138,"기준선 제외"
+keccak256_total,28171,
+keccak256_net,4771,"기준선 제외"
+poseidon_over_keccak,11.3,"배수"
+imt_insert_estimate,2165520,"Poseidon 40회 환산 (깊이 20 삽입 1건)"

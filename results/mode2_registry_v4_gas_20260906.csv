@@ -1,0 +1,7 @@
+# RevocationRegistryV4 게시 가스 실측. V3는 검증이 전혀 없던 기준선이다.
+# 설계 문서 13.2절의 '배치당 약 25만 gas' 추정을 대체한다.
+operation,gas,note
+"V3 pushRoot(bytes32)",67715,"검증 없음 — 기준선"
+"V4 pushUpdates([Insert])",336503,"Groth16 1회 + 상위 경로(깊이 8) 2회 접기"
+"V4 pushUpdates([Insert x2])",545026,"증명 2회 — 선형 증가분 확인용"
+"V4 pushUpdates([SessionReset])",141362,"증명 없음 — block.number만으로 검증(깊이 12 경로)"
