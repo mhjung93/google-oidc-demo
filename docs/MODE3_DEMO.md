@@ -173,6 +173,44 @@ V10 환경 변수(2026-10-02). **`CIA_RPC_URL` 의 뜻이 프로세스마다 다
 선택: 운영이라면 RP의 `pk_CIA`를 TOFU가 아니라 env로 박는다 — `curl -s 127.0.0.1:4100/cia/public_keys`의 `pk_CIA.x/y`를 `MODE3_PK_CIA_X`/`MODE3_PK_CIA_Y`에. 단 env 로 박으면 RP 는 기동 때 CIA 에 묻지 않으므로 CIA 하트비트 주기와
 `MODE3_MAX_ROOT_AGE` 의 대조 경고(하트비트 ≥ maxRootAge 면 전원이 `root_too_old`)가 나오지 않는다 — 두 값은 사람이 맞춘다(2026-09-23 최종 리뷰 M4).
 
+## 다른 기계에 설치 — Windows 11 + WSL2 (2026-10-09)
+
+데모 스택은 전부 로컬(체인·CIA·지갑·RP 가 `127.0.0.1` 에 묶임)이라 **다른 기계에서도 그 기계 안에서 그대로 띄우면 된다.** 외부 주소로
+노출하는 길은 없다 — RP 오리진이 `cert_s` 에 서명돼 있고, Snap 의 허용 오리진(`snap-mode3/src/index.js` `WALLET_ORIGINS`)이
+`127.0.0.1:5100`/`localhost:5100` 상수이며, 세 서버가 `app.listen(PORT, '127.0.0.1')` 이기 때문이다. 다른 PC 에서 보기만
+하려면 SSH 포트 포워딩(`ssh -L 3100:127.0.0.1:3100 -L 4100:127.0.0.1:4100 -L 5100:127.0.0.1:5100 -L 8545:127.0.0.1:8545 …`)이
+코드 변경 없이 된다 — 그쪽 브라우저의 오리진도 `127.0.0.1` 이라 인증서·CORS·Snap 이 그대로 맞는다.
+
+**WSL2 에서.** WSL 안에서 리슨하는 포트는 Windows 의 `localhost`/`127.0.0.1` 로 자동 포워딩되므로(루프백 바인딩이어도) Windows 쪽
+브라우저·MetaMask 로 `http://127.0.0.1:3100`(RP)·`:5100`(지갑)·`:4100/admin`(관리자)·RPC `http://127.0.0.1:8545`·Snap `localhost:8082` 에
+그대로 닿는다. 주의 네 가지:
+1. 저장소는 **WSL 파일시스템**(`~/google-oidc-demo`)에 둔다 — `/mnt/c/...` 는 느리고, 상태 파일을 `0600` 으로 쓰는 코드·심링크가
+   NTFS 마운트에서 어긋난다.
+2. **clone 도 WSL 안에서** 한다 — Windows git 의 `autocrlf` 가 `scripts/*.sh` 를 CRLF 로 바꾸면 `bash scripts/run_tests.sh` 가 깨진다.
+3. Node 22 는 WSL 안에 nvm 으로(`nvm install 22`). circom 은 필요 없다(아래처럼 build 를 복사한다).
+4. 페이지는 `localhost` 가 아니라 **`127.0.0.1`** 로 연다(이 머신에서와 같은 규칙 — 지갑의 CORS 허용 목록이 `http://127.0.0.1:3100`).
+
+**git 에 없는 것을 챙긴다**(`.gitignore`: `build/`, `artifacts/`, `*.ptau`, `*.zkey`, `.env`, 상태 파일).
+- `build/mode3/` — 회로 재빌드는 circom 2.1.9 + `pot21_final.ptau`(2.3GB) 가 필요하니 **복사**한다. 이 머신에서
+  `bash scripts/pack_mode3_build.sh` 가 런타임이 읽는 셋(`pi_cred_final.zkey`·`pi_cred_vkey.json`·`pi_cred_js/`, 약 27MB)만 묶고
+  `MANIFEST.sha256` 을 넣는다. 받는 쪽은 저장소 루트에서 `tar -xzf … && sha256sum -c build/mode3/MANIFEST.sha256`.
+- `artifacts/` — 받는 쪽에서 `npx hardhat compile` 한 번(RP 의 팩토리 배포, 지갑의 참조 코드 대조가 읽는다).
+- `.env` — **복사하지 않는다**(비밀값·이 머신의 컨트랙트 주소). 위 "처음 한 번" 1~4 로 새로 만든다. Mode 1/2 키(Google OAuth, V4 주소)는
+  Mode 3 에 필요 없다.
+- 상태 파일(`cia_keys.json`·`cia_state.json`·`mode3_wallet_state.json`·`mode3_rp_registration.json`) — 가져가지 않는다. 새 체인이라
+  새로 시작하고, RP 는 첫 기동에서 등록 → 관리자 승인 → 팩토리 자동 배포 순서로 활성화된다(위 5·6).
+
+```bash
+# WSL Ubuntu
+nvm install 22
+git clone https://github.com/mhjung93/google-oidc-demo.git && cd google-oidc-demo && git checkout feat/mode3-cia && npm install
+tar -xzf ~/mode3_build_YYYYMMDD.tar.gz && sha256sum -c build/mode3/MANIFEST.sha256   # 이 머신의 pack_mode3_build.sh 산출물
+npx hardhat compile
+# 이어서 위 "처음 한 번: 배포와 .env" 1~6, 그다음 "매번: 기동 순서"
+```
+Snap 모드는 `cd snap-mode3 && npm install && npm run build` 와 MetaMask Flask(아래 "준비 (처음 한 번)")를 더 전제한다. WSL 안에
+Chrome 이 없으면 `browser` 테스트 그룹은 `BLOCKED` 로 끝나지만 데모와는 무관하다.
+
 ## 매번: 기동 순서
 
 ```
