@@ -20,7 +20,10 @@ const REASONS = ['stale_root', 'stale_registry_root', 'root_too_old', 'revalidat
   'revoked', 'revoked_session', 'account_disabled', 'needs_consent', 'bad_factory', 'no_code', 'factory_code_mismatch', 'verifier_code_mismatch', 'allow_agent_mismatch', 'no_session', 'not_registered', 'cia_unavailable', 'witness_required', 'internal',
   'user_denied', 'snap_unavailable', 'wallet_error', 'unknown_session', 'no_user_cred', 'user_cred_retired',
   'registry_mismatch', 'registry_unpublished', 'registry_slot_unknown', 'user_cred_failed', 'demo_proof_failed', 'slot_failed',
-  'admin_secret_required', 'admin_unauthorized', 'unknown_account', 'invalid_credentials'];
+  'admin_secret_required', 'admin_unauthorized', 'unknown_account', 'invalid_credentials',
+  // 2026-10-11 데모 UI 도달 코드(런북 "실패 각본")
+  'bad_disclosure', 'disclosure_unsatisfiable', 'predicate_type', 'duplicate_session', 'already_registered', 'register_failed', 'attrs_failed',
+  'chain_unavailable', 'no_factory', 'execute_reverted', 'schema_invalid', 'bad_attr', 'use_profile'];
 
 t('langs 는 ko, en', () => assert.deepEqual(S.langs, ['ko', 'en']));
 t('steps 는 7개, 키 고유, 순서 approve→register→login→use→disclose→revoke→open, 각 언어에 title·hint', () => {

@@ -1284,6 +1284,15 @@ if (HEARTBEAT_BLOCKS > 0n) {
 if (MIRRORS.length && MIRROR_HEARTBEAT_BLOCKS > 0n) setInterval(relayTick, MIRROR_POLL_MS).unref();
 scheduleRelayAfterPublish();   // 기동 게시(loadState 의 대조·자동 게시)는 initMirrors 전이라 중계되지 않았다 — 뒤처졌으면 지금 옮긴다
 // RP·지갑 에이전트와 같이 루프백에만 묶는다 — 관리자·사용자 페이지와 발급 경로를 LAN 에 노출하지 않는다.
+// 라우트 밖으로 샌 오류의 마지막 그물(2026-10-11): 본문 JSON 파싱 실패는 400, 그 밖은 500 — HTML 기본 페이지 대신 다른 라우트와 같은
+// { error } 봉투. 처리되지 않은 rejection(백그라운드 루프 등)은 기록만 하고 프로세스를 살려 둔다 — 하트비트·중계가 멈추는 쪽이 더 나쁘다.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  if (err?.type === 'entity.parse.failed') return res.status(400).json({ error: 'malformed' });
+  console.error(`[cia] 처리되지 않은 라우트 오류 ${req.method} ${req.path}: ${err?.stack ?? err}`);
+  res.status(500).json({ error: 'internal' });
+});
+process.on('unhandledRejection', (e) => console.error(`[cia] unhandledRejection: ${e?.stack ?? e}`));
 app.listen(PORT, '127.0.0.1', () => {
   console.log(`Mode 3 CIA running at http://127.0.0.1:${PORT} (log=${LOG_ADDRESS ?? 'none'}, heartbeat=${HEARTBEAT_BLOCKS}, mirrors=${MIRRORS.map((m) => m.chainStr).join(',') || 'none'}(H=${MIRROR_HEARTBEAT_BLOCKS}, relayOnPublish=${MIRROR_RELAY_ON_PUBLISH && MIRROR_HEARTBEAT_BLOCKS > 0n}), chains=${[...CHAIN_RPCS.keys()].join(',') || 'none'}, vkey=${fs.existsSync(VKEY_PATH) ? 'ok' : 'missing'}, registry=${registry.entries().length})`);
 });

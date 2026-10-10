@@ -554,6 +554,23 @@ credential 은 발급 시점 head 기준 300~400 블록(그리드 양자화)에 
 
 정확한 조작과 기대 결과는 위 표(0~9)가 정본이다. 체험 모드는 순서를 잡아 줄 뿐 새로운 조작을 만들지 않는다.
 
+### 실패 각본 (2026-10-11)
+
+위 0~14 는 의도된 실패(`revoked`·`account_disabled`·`stale_registry_root`·`registry_mismatch` 등 11가지)만 보여 준다. 다음 여섯은 테스트로는
+고정돼 있지만 각본에 없던 실패다 — 질문이 나오는 순서대로 적었다. 결과 카드의 문구는 `strings.js` 의 reasons 사전에 있다.
+
+| # | 실패 | 재현 | 기대 |
+|---|---|---|---|
+| F1 | 피싱 서비스 `bad_rp_cert` | 브라우저에서는 CORS 가 먼저 막으므로(지갑은 `MODE3_RP_ORIGIN` 오리진만 허용) 콘솔로: `I=$(curl -s 127.0.0.1:3100/api/mode3/rp_info)` 로 arid·cert_s·pk_trace 를 받은 뒤 `origin` 만 `http://evil.example` 로 바꿔 `curl -s -X POST 127.0.0.1:5100/wallet/login -H 'Origin: http://127.0.0.1:3100' -H 'Content-Type: application/json' -d '{"arid":…,"origin":"http://evil.example","cert_s":…,"pk_trace":…,"r_s":"1"}'` | 403 `bad_rp_cert` — 인증서는 (arid, origin, pk_trace) 위의 IdP 서명이라 오리진을 바꾸면 검증이 깨진다(G6). 증명은 만들지 않는다 |
+| F2 | 하트비트 중단 `root_too_old` | `cia.js` 를 끄고 블록을 `MODE3_MAX_ROOT_AGE`(100)보다 많이 민다: `curl -s -X POST 127.0.0.1:8545 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"hardhat_mine","params":["0x65"]}'` → RP (내 세션) "세션 재검증" | `root_too_old` — 폐기 목록이 100블록 넘게 게시되지 않으면 **오프체인 로그인·재검증도** 막힌다(fail-closed, 점검 C-1). `cia.js` 를 다시 띄우면 다음 하트비트(5초 폴링)가 게시해 재검증이 다시 통과한다 |
+| F3 | 세션 만료 `expired` | `cia.js` 를 켠 채 블록을 400 넘게 민다(`"params":["0x1a0"]`, 416블록) → 몇 초 뒤(하트비트가 root 를 새로 게시한 뒤) RP "세션 재검증" → "로그인" | 재검증 `expired`(`head > max_height`, 지갑이 정한 만료 300~400블록). 새 로그인은 성공하고 **PPID 는 같다** |
+| F4 | 잘못된 공개 조건 `bad_disclosure` / `disclosure_unsatisfiable` / `predicate_type` | 지갑 (트랜잭션 보내기) "공개할 속성 조건": 출생연도 최소 `2000`·최대 `1990` 으로 "트랜잭션 보내기"; 다음 최소 `0`·최대 `1980`; 국가 슬롯의 범위 체크박스는 비활성이라 콘솔로 `curl -s -X POST 127.0.0.1:5100/wallet/tx -H 'Content-Type: application/json' -d '{"r_s":"<세션>","to":"0x000000000000000000000000000000000000dEaD","disclose":[null,{"lo":"410","hi":"410"}]}'` | 차례로 400 `bad_disclosure`(최소 > 최대), 400 `disclosure_unsatisfiable`(1990 ∉ [0, 1980] — 체인에 보내기 전), 400 `predicate_type`(enum 슬롯에 범위 조건). 셋 다 증명을 만들지 않는다 |
+| F5 | 관리자의 잘못된 속성 `bad_attr` / `use_profile` | 관리자 (계정) 행에서 출생연도를 비우고 "저장"; 출생연도 `1800` 으로 "저장"; 콘솔로 옛 형식 `curl -s -X POST 127.0.0.1:4100/cia/accounts/12345/attrs -H "X-CIA-Admin-Secret: $CIA_ADMIN_SECRET" -H 'Content-Type: application/json' -d '{"attrs":["1990","410","0","0","0","0"]}'` | 400 `bad_attr`(reason `empty` — 빈 출생연도는 나이 조건을 통과시키므로 거절, 논의 2), 400 `bad_attr`(reason `range`), 400 `use_profile`. 어느 것도 자격증명을 물리지 않는다(거절된 요청은 속성을 바꾸지 않음) |
+| F6 | Snap 동의 거부 `user_denied` | `snap` 모드(아래 "MetaMask / Snap 경로")에서 RP "로그인" → 지갑 팝업의 Snap 동의 창에서 **거부** | 결과 카드 `user_denied`, 세션은 만들어지지 않고 서비스에는 아무것도 가지 않는다. 다시 "로그인" 하면 정상 |
+
+F2·F3 는 공유 :8545 의 블록을 밀어 올리므로 다른 데모 세션의 만료를 앞당긴다(테스트 그룹 `chain` 과 같은 성질). F1·F4 의 콘솔 경로는
+`tests/test_mode3_wallet_agent.mjs`, F5 는 `tests/test_cia_register_issue.mjs`, F2·F3 는 `tests/test_mode3_demo_stack.mjs` 가 고정한다.
+
 ## 속성과 선택 공개 (설계 2026-09-22)
 
 **속성 출처와 스키마(스펙 2, 2026-10-07).** 속성은 **AA(`cia.js`) 계정 기록**이고 관리자만 바꾼다. 정본은 사람이 읽는 `profile`(스키마 이름 → 값)이고,

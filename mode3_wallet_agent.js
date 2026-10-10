@@ -1140,6 +1140,14 @@ app.post('/wallet/tx/record', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// 라우트 밖으로 샌 오류의 마지막 그물(2026-10-11): JSON 파싱 실패 400 malformed, 그 밖 500 internal — 페이지는 reason 으로 사유를 읽는다.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  if (err?.type === 'entity.parse.failed') return res.status(400).json({ reason: 'malformed' });
+  console.error(`[wallet] 처리되지 않은 라우트 오류 ${req.method} ${req.path}: ${err?.stack ?? err}`);
+  res.status(500).json({ reason: 'internal', detail: err?.message });
+});
+process.on('unhandledRejection', (e) => console.error(`[wallet] unhandledRejection: ${e?.stack ?? e}`));
 app.listen(PORT, '127.0.0.1', () => {
   console.log(`Mode 3 wallet agent at http://127.0.0.1:${PORT} (cia=${CIA_URL}, rp=${RP_ORIGINS.join(',')}, log=${LOG_ADDRESS ?? 'none'}@${REV_RPC}, mirror=${MIRROR_ADDRESS ?? 'none'})`);
 });

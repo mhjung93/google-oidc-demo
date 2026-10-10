@@ -515,6 +515,14 @@ app.get('/api/mode3/open/:id', async (req, res) => {
 app.get('/api/mode3/logins', (req, res) => res.json({ logins }));
 app.get('/api/mode3/sessions', (req, res) => res.json({ sessions: [...sessions.entries()].map(([r_s, s]) => ({ r_s: rsShort(r_s), PPID: s.PPID, pk_i: s.pk_i, max_height: s.max_height, allowAgent: s.allowAgent, root: s.root, disclosure: s.disclosure, at: s.at })) }));
 
+// 라우트 밖으로 샌 오류의 마지막 그물(2026-10-11): JSON 파싱 실패 400 malformed, 그 밖 500 internal — 다른 라우트와 같은 { ok, reason } 봉투.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  if (err?.type === 'entity.parse.failed') return res.status(400).json({ ok: false, reason: 'malformed' });
+  console.error(`[rp] 처리되지 않은 라우트 오류 ${req.method} ${req.path}: ${err?.stack ?? err}`);
+  res.status(500).json({ ok: false, reason: 'internal', detail: err?.message });
+});
+process.on('unhandledRejection', (e) => console.error(`[rp] unhandledRejection: ${e?.stack ?? e}`));
 app.listen(PORT, '127.0.0.1', () => {
   console.log(`Mode 3 RP at http://127.0.0.1:${PORT} (arid=${reg.arid ?? '-'} status=${reg.status}, origin=${reg.origin}, log=${LOG_ADDRESS}, wallet=${WALLET_ORIGIN}, pk_CIA=${pkCIA.source}, chain=${chainId})`);
 });
