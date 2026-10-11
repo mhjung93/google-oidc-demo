@@ -101,6 +101,22 @@ export const onRpcRequest = async ({ origin, request }) => {
       });
     }
 
+    case 'confirmLogin': {
+      const confirmed = await snap.request({
+        method: 'snap_dialog',
+        params: {
+          type: 'confirmation',
+          content: panel([
+            heading('Wallet Login Approval'),
+            text(`Origin: **${origin}**`),
+            text('A PairCT-compatible identity provider login is about to start in your system browser.'),
+            text('Do you want to proceed?'),
+          ]),
+        },
+      });
+      return { approved: Boolean(confirmed) };
+    }
+
     case 'walletProcessSummary': {
       const params = request.params ?? {};
       const lines = Array.isArray(params.lines) ? params.lines : [];

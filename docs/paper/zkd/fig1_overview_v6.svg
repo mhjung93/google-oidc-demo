@@ -1,0 +1,181 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1010" viewBox="0 0 1600 1010" font-family="DejaVu Sans, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="mB" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#222"/></marker>
+    <marker id="mBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#0d5f96"/></marker>
+    <marker id="mGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#1b7a45"/></marker>
+    <marker id="mOr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#b8641a"/></marker>
+    <marker id="mRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#b3302f"/></marker>
+    <marker id="mGrey" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#777"/></marker>
+    <style>
+      .halo { paint-order: stroke; stroke: #fff; stroke-width: 7px; stroke-linejoin: round; }
+      .lbl  { font-size: 21px; }
+      .sm   { font-size: 17px; fill: #555; }
+      .chip { font-size: 16px; font-weight: 600; }
+      .actor { font-size: 24px; font-weight: 700; fill: #1d1d1d; }
+      .phase { font-size: 19px; font-weight: 700; fill: #fff; }
+      .pnum  { font-size: 30px; font-weight: 800; fill: #fff; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="1010" fill="#fff"/>
+
+  <!-- ===== actor cards ===== -->
+  <g id="actors">
+    <!-- AA -->
+    <rect x="70" y="30" width="260" height="120" rx="16" fill="#f2f4f8" stroke="#9aa3b2" stroke-width="2"/>
+    <g transform="translate(120 90)" fill="none" stroke="#1d1d1d" stroke-width="3.5" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M0-30 L26-19 V4 C26 20 0 32 0 32 C0 32 -26 20 -26 4 V-19 Z"/>
+      <path d="M-11 1 L-3 9 L12 -8"/>
+    </g>
+    <text x="165" y="82" class="actor">Authentication</text>
+    <text x="165" y="112" class="actor">Authority</text>
+
+    <!-- User / Wallet -->
+    <rect x="470" y="30" width="260" height="120" rx="16" fill="#f2f4f8" stroke="#9aa3b2" stroke-width="2"/>
+    <g transform="translate(520 90)" fill="none" stroke="#1d1d1d" stroke-width="3.5" stroke-linejoin="round" stroke-linecap="round">
+      <circle cx="-4" cy="-16" r="11"/>
+      <path d="M-24 22 C-24 4 -12 -2 -4 -2 C4 -2 16 4 16 22"/>
+      <rect x="6" y="6" width="28" height="20" rx="3"/>
+      <circle cx="28" cy="16" r="2.5" fill="#1d1d1d"/>
+    </g>
+    <text x="570" y="97" class="actor">User · Wallet</text>
+
+    <!-- Service -->
+    <rect x="870" y="30" width="260" height="120" rx="16" fill="#f2f4f8" stroke="#9aa3b2" stroke-width="2"/>
+    <g transform="translate(920 90)" fill="none" stroke="#1d1d1d" stroke-width="3.5" stroke-linejoin="round" stroke-linecap="round">
+      <rect x="-26" y="-30" width="52" height="16" rx="3"/><rect x="-26" y="-8" width="52" height="16" rx="3"/><rect x="-26" y="14" width="52" height="16" rx="3"/>
+      <circle cx="-17" cy="-22" r="2.5" fill="#1d1d1d"/><circle cx="-17" cy="0" r="2.5" fill="#1d1d1d"/><circle cx="-17" cy="22" r="2.5" fill="#1d1d1d"/>
+    </g>
+    <text x="970" y="97" class="actor">Service</text>
+
+    <!-- Chain -->
+    <rect x="1270" y="30" width="260" height="120" rx="16" fill="#f2f4f8" stroke="#9aa3b2" stroke-width="2"/>
+    <g transform="translate(1320 90)" fill="none" stroke="#1d1d1d" stroke-width="3.5" stroke-linejoin="round">
+      <rect x="-32" y="-12" width="22" height="22" rx="3"/><rect x="-11" y="-12" width="22" height="22" rx="3"/><rect x="10" y="-12" width="22" height="22" rx="3"/>
+      <path d="M-10 -1 H-11 M11 -1 H10" stroke-width="5"/>
+    </g>
+    <text x="1370" y="97" class="actor">Chain</text>
+  </g>
+
+  <!-- column guides (faint) -->
+  <g stroke="#d9dde5" stroke-width="2" stroke-dasharray="4 10">
+    <path d="M200 150 V985"/><path d="M600 150 V985"/><path d="M1000 150 V985"/><path d="M1400 150 V985"/>
+  </g>
+
+  <!-- ===== phase 1: once ===== -->
+  <g id="p1">
+    <rect x="0" y="180" width="1600" height="110" fill="#f7f7f7"/>
+    <rect x="0" y="180" width="84" height="110" fill="#7a7a7a"/>
+    <text x="42" y="223" text-anchor="middle" class="pnum">1</text>
+    <text x="42" y="258" text-anchor="middle" class="phase" font-size="15">once</text>
+
+    <path d="M600 218 H210" stroke="#222" stroke-width="4" marker-end="url(#mB)"/>
+    <text x="400" y="207" text-anchor="middle" class="lbl halo">credential  C_u + π_u</text>
+    <path d="M1000 262 H210" stroke="#777" stroke-width="3" marker-end="url(#mGrey)"/>
+    <text x="700" y="252" text-anchor="middle" class="lbl halo" fill="#555">service registers · deploys factory + verifier</text>
+  </g>
+
+  <!-- ===== phase 2: login ===== -->
+  <g id="p2">
+    <rect x="0" y="300" width="1600" height="270" fill="#eef4fa"/>
+    <rect x="0" y="300" width="84" height="270" fill="#0d5f96"/>
+    <text x="42" y="428" text-anchor="middle" class="pnum">2</text>
+    <text x="42" y="462" text-anchor="middle" class="phase" font-size="15">login</text>
+
+    <!-- 1 challenge -->
+    <path d="M1000 335 H610" stroke="#0d5f96" stroke-width="4" stroke-dasharray="14 9" marker-end="url(#mBlue)"/>
+    <text x="800" y="324" text-anchor="middle" class="lbl halo" fill="#0d5f96">arid · r_s</text>
+    <!-- wallet self-check chip -->
+    <rect x="440" y="352" width="320" height="30" rx="15" fill="#fff" stroke="#0d5f96" stroke-width="2"/>
+    <text x="600" y="373" text-anchor="middle" class="chip" fill="#0d5f96">checks factory code &amp; bounds</text>
+
+    <!-- 2 session ask -->
+    <path d="M600 415 H210" stroke="#222" stroke-width="4" marker-end="url(#mB)"/>
+    <text x="405" y="404" text-anchor="middle" class="lbl halo">C_s + sig_u   (no proof)</text>
+    <!-- 3 AA sign -->
+    <path d="M200 455 H590" stroke="#222" stroke-width="4" marker-end="url(#mB)"/>
+    <text x="405" y="444" text-anchor="middle" class="lbl halo">σ_AA</text>
+    <rect x="100" y="468" width="280" height="30" rx="15" fill="#fff" stroke="#555" stroke-width="2"/>
+    <text x="240" y="489" text-anchor="middle" class="chip" fill="#444">keeps a session record</text>
+
+    <!-- root sync -->
+    <path d="M610 528 H1390" stroke="#777" stroke-width="3" stroke-dasharray="3 8" marker-start="url(#mGrey)" marker-end="url(#mGrey)"/>
+    <text x="1200" y="518" text-anchor="middle" class="sm halo">root</text>
+    <!-- 4 proof -->
+    <path d="M600 500 H990" stroke="#0d5f96" stroke-width="4" stroke-dasharray="14 9" marker-end="url(#mBlue)"/>
+    <text x="795" y="489" text-anchor="middle" class="lbl halo" fill="#0d5f96">PPID + π + σ</text>
+    <!-- proof contents chips -->
+    <g class="chip">
+      <rect x="470" y="536" width="130" height="26" rx="13" fill="#0d5f96"/><text x="535" y="554" text-anchor="middle" fill="#fff">25 inputs</text>
+      <rect x="610" y="536" width="185" height="26" rx="13" fill="#0d5f96"/><text x="702" y="554" text-anchor="middle" fill="#fff">not revoked ×2</text>
+      <rect x="805" y="536" width="150" height="26" rx="13" fill="#0d5f96"/><text x="880" y="554" text-anchor="middle" fill="#fff">range · set</text>
+      <rect x="965" y="536" width="70" height="26" rx="13" fill="#0d5f96"/><text x="1000" y="554" text-anchor="middle" fill="#fff">tag</text>
+    </g>
+    <!-- service check chip -->
+    <rect x="855" y="352" width="290" height="30" rx="15" fill="#fff" stroke="#0d5f96" stroke-width="2"/>
+    <text x="1000" y="373" text-anchor="middle" class="chip" fill="#0d5f96">root fresh · set = policy</text>
+  </g>
+
+  <!-- ===== phase 3: transaction ===== -->
+  <g id="p3">
+    <rect x="0" y="580" width="1600" height="120" fill="#edf6f0"/>
+    <rect x="0" y="580" width="84" height="120" fill="#1b7a45"/>
+    <text x="42" y="628" text-anchor="middle" class="pnum">3</text>
+    <text x="42" y="662" text-anchor="middle" class="phase" font-size="15">tx</text>
+
+    <path d="M600 630 H1390" stroke="#1b7a45" stroke-width="4" marker-end="url(#mGreen)"/>
+    <text x="1000" y="619" text-anchor="middle" class="lbl halo" fill="#1b7a45">execute( σ_tx , π )   from the PPID account</text>
+    <g class="chip">
+      <rect x="633" y="648" width="245" height="26" rx="13" fill="#1b7a45"/><text x="755" y="666" text-anchor="middle" fill="#fff">σ_tx binds 16 words</text>
+      <rect x="890" y="648" width="185" height="26" rx="13" fill="#1b7a45"/><text x="982" y="666" text-anchor="middle" fill="#fff">same π, reused</text>
+      <rect x="1087" y="648" width="280" height="26" rx="13" fill="#fff" stroke="#1b7a45" stroke-width="2"/><text x="1227" y="666" text-anchor="middle" fill="#1b7a45">contract re-checks all</text>
+    </g>
+  </g>
+
+  <!-- ===== phase 4: revoke ===== -->
+  <g id="p4">
+    <rect x="0" y="710" width="1600" height="130" fill="#fbf2e8"/>
+    <rect x="0" y="710" width="84" height="130" fill="#b8641a"/>
+    <text x="42" y="763" text-anchor="middle" class="pnum">4</text>
+    <text x="42" y="797" text-anchor="middle" class="phase" font-size="15">revoke</text>
+
+    <path d="M600 748 H210" stroke="#b8641a" stroke-width="4" marker-end="url(#mOr)"/>
+    <text x="405" y="737" text-anchor="middle" class="lbl halo" fill="#b8641a">one session  ·  or the account</text>
+    <path d="M200 790 H1390" stroke="#b8641a" stroke-width="4" marker-end="url(#mOr)"/>
+    <text x="800" y="779" text-anchor="middle" class="lbl halo" fill="#b8641a">publish root   (append-only · heartbeat)</text>
+    <!-- leaf icons -->
+    <g transform="translate(1120 836)">
+      <path d="M0 0 C-14 -6 -18 -20 -8 -28 C2 -34 12 -26 8 -12 C6 -4 4 -2 0 0 Z" fill="#b8641a"/>
+      <path d="M22 0 C8 -6 4 -20 14 -28 C24 -34 34 -26 30 -12 C28 -4 26 -2 22 0 Z" fill="none" stroke="#b8641a" stroke-width="2.5"/>
+      <text x="44" y="-6" class="sm" fill="#b8641a">user leaf · session leaf — look alike</text>
+    </g>
+  </g>
+
+  <!-- ===== phase 5: open ===== -->
+  <g id="p5">
+    <rect x="0" y="850" width="1600" height="110" fill="#faeeee"/>
+    <rect x="0" y="850" width="84" height="110" fill="#b3302f"/>
+    <text x="42" y="893" text-anchor="middle" class="pnum">5</text>
+    <text x="42" y="927" text-anchor="middle" class="phase" font-size="15">open</text>
+
+    <path d="M1000 883 H210" stroke="#b3302f" stroke-width="4" marker-end="url(#mRed)"/>
+    <text x="600" y="872" text-anchor="middle" class="lbl halo" fill="#b3302f">disputed transcript + service share</text>
+    <path d="M200 928 H990" stroke="#b3302f" stroke-width="4" marker-end="url(#mRed)"/>
+    <text x="600" y="917" text-anchor="middle" class="lbl halo" fill="#b3302f">uid   — only with AA share + operator</text>
+    <!-- lock + key icons -->
+    <g transform="translate(1090 905)" fill="none" stroke="#b3302f" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="-14" y="-4" width="28" height="22" rx="4"/><path d="M-8 -4 V-12 A8 8 0 0 1 8 -12 V-4"/>
+      <g transform="translate(40 4)"><circle cx="0" cy="0" r="7"/><path d="M6 3 L22 14 M14 9 L11 14 M18 12 L15 17"/></g>
+      <g transform="translate(78 4)"><circle cx="0" cy="0" r="7"/><path d="M6 3 L22 14 M14 9 L11 14 M18 12 L15 17"/></g>
+    </g>
+    <text x="1200" y="912" class="sm" fill="#b3302f">2-of-2 shares</text>
+  </g>
+
+  <!-- ===== footer legend ===== -->
+  <g transform="translate(70 990)">
+    <path d="M0 -6 H40" stroke="#222" stroke-width="4"/><text x="50" y="0" class="sm">seen by the AA</text>
+    <path d="M230 -6 H270" stroke="#0d5f96" stroke-width="4" stroke-dasharray="14 9"/><text x="280" y="0" class="sm">never seen by the AA</text>
+    <path d="M500 -6 H540" stroke="#777" stroke-width="3" stroke-dasharray="3 8"/><text x="550" y="0" class="sm">read from the chain</text>
+    <text x="760" y="0" class="sm">AA never learns:  service · PPID · session key · tag · disclosed values</text>
+  </g>
+</svg>

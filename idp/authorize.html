@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>PairCT Sign In</title>
+</head>
+<body>
+  <div id="loginSection">
+    <h3>A PairCT-compatible wallet application is requesting to sign you in.</h3>
+    <input id="username" placeholder="username" /><br />
+    <input id="password" type="password" placeholder="password" /><br />
+    <button id="loginBtn">Log in</button>
+    <p id="status"></p>
+  </div>
+  <div id="consentSection" style="display:none;">
+    <p>Allow this sign-in?</p>
+    <button id="allowBtn">Allow</button>
+    <button id="denyBtn">Deny</button>
+  </div>
+  <script src="/idp/authorize.js"></script>
+</body>
+</html>

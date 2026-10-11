@@ -1,0 +1,22 @@
+{
+  "name": "mode3-snap",
+  "version": "0.1.0",
+  "description": "Mode 3 Snap — 등록 비밀 보관과 동의 대화상자(스펙 2026-09-22 metamask-snap §3.1).",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "mm-snap build",
+    "serve": "mm-snap serve",
+    "test": "node test/rpc.test.mjs"
+  },
+  "dependencies": {
+    "@metamask/snaps-sdk": "^1.4.0"
+  },
+  "devDependencies": {
+    "@metamask/snaps-cli": "^4.0.1"
+  },
+  "files": [
+    "dist/",
+    "snap.manifest.json"
+  ]
+}

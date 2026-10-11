@@ -462,6 +462,12 @@ These are implementation details that are useful for understanding the current p
 - Legacy EC and Light ZKP prototype paths were removed from the active client flow; old versions remain available through git history.
 - RP-side ZKP failure handling returns an error.
 - `verifyPS_Hybrid()` verifies the PS pairing equation over the signed Mode 2 token fields.
+- `wallet_agent.js`'s `X-Wallet-Agent-Token` is long-lived (persisted in `wallet_state.json`, survives restarts) and is handed to RP FE (`client.js`) via `GET /api/mode2/wallet_agent_token`; any JS running in the RP origin (an XSS payload, a malicious RP, or a compromised RP-side dependency) can obtain and reuse it to drive `wallet_agent.js`'s sensitive endpoints (`/generateStep8Proofs`, `/submitTransaction`).
+- Shortening the token's lifetime or binding it to a session/request nonce would not close this: RP FE is also what obtains those fresher values in the first place, so a malicious RP FE can mint its own valid-looking session state the same way the legitimate flow does. Closing it for real would require a wallet-side user-approval gate independent of what RP FE claims, which the prototype does not implement.
+- This is a prototype implementation gap, not a property of the formal model: the paper does not assume RP FE is trustworthy, but the prototype currently leaves RP FE holding this long-lived credential unconditionally rather than gating it behind wallet-side user approval as the formal model would require.
+- Neither `custom_idp.js`'s `/idp/lookup_uid_by_r_token` nor `server.js`'s `/api/mode2/trace_transaction` has an authorization gate: either endpoint answers any request unconditionally, given only `r_token` (for the former) or `pk_i`/`max_height` (for the latter). The paper's Definition 4 and Algorithm 2 (session-specific authorized opening) require an external "Authority: Approve opening only for that specific transcript" step before a disputed session may be deanonymized; the prototype does not implement that step.
+- Because `r_token` is part of every ordinary login's `idpToken` (visible to the RP by design) and `pk_i`/`max_height` are public inputs to the on-chain `pi_pk_i` proof used by `PPIDWallet.execute()` (observable by anyone watching the chain), any RP or any on-chain observer can deanonymize any session at will once they have that value, with no authorization step in between - bypassing conditional privacy entirely rather than only supporting it for an approved, disputed session.
+- This is a prototype implementation gap, not a property of the formal model: the paper's Definition 4/Algorithm 2 explicitly require an external authorization step before opening is performed; the prototype's opening endpoints do not implement or enforce one.
 
 ## Files Usually Not Needed for Mode 2
 
@@ -478,7 +484,7 @@ Unless the task explicitly requires them, these are not central to Mode 2:
 
 Potential Mode 2 focused improvements:
 
-- Align endpoint URLs to use one configurable IdP origin consistently.
+- Wallet/IdP/RP currently only work on the same machine (or with the wallet always on the user's own machine, which is by design - `wallet_agent.js` deliberately binds to `127.0.0.1` only). Moving the IdP and RP to genuinely different hosts would additionally require fixing hardcoded `http://127.0.0.1:4000` IdP-origin literals in `client.js:156` and `wallet/relay.js:7` (browser-served JS, no env var mechanism today), plus `server.js:51`'s `cors({ origin: 'http://127.0.0.1:4000' })`, which is hardcoded instead of reading the already-configurable `CUSTOM_IDP_BASE_URL`. `server.js`/`wallet_agent.js`'s own IdP/RP origin constants are already env-var configurable and would not need changes.
 - Split Mode 2 client logic from Snap and Google OIDC client logic.
 - Add a dedicated Mode 2 smoke test.
 - Normalize the naming of `signature`, `signature_prime`, `zkpProof`, and `zkpPublicSignals`.

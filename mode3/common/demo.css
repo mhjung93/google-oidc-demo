@@ -1,0 +1,54 @@
+/* Mode 3 데모 공통 스타일 — 설계 2026-09-24-mode3-demo-ux-design.md §1. 빌드 없음, 토큰 + 구성요소만. */
+:root { --bg:#f7f8fa; --card:#fff; --ink:#1d2433; --muted:#5f6b7a; --line:#e3e7ee; --ok:#1b7f3b; --bad:#b3261e; --warn:#b26a00; --accent:#2455c3; --danger:#b3261e; --radius:12px; --gap:16px; }
+* { box-sizing:border-box } body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans KR",sans-serif }
+main.cards { display:grid; grid-template-columns:1fr; gap:var(--gap); max-width:1100px; margin:0 auto; padding:var(--gap) }
+@media (min-width:901px) { main.cards { grid-template-columns:1fr 1fr } .card.span2 { grid-column:1 / -1 } }
+.card { background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:18px 20px }
+.card h3 { margin:0 0 4px; font-size:17px } .card .desc { margin:0 0 12px; color:var(--muted); font-size:14px }
+.badge { display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px; font-weight:600; background:#e9edf5; color:var(--ink) }
+.badge.ok { background:#e3f4e8; color:var(--ok) } .badge.bad { background:#fbe6e4; color:var(--bad) } .badge.warn { background:#fff1dc; color:var(--warn) } .badge.muted { background:#eef1f6; color:var(--muted) }
+button, .btn { font:inherit; padding:8px 14px; border-radius:8px; border:1px solid var(--accent); background:var(--accent); color:#fff; cursor:pointer; text-decoration:none; display:inline-block }
+button:disabled { opacity:.5; cursor:not-allowed } .btn-ghost { background:transparent; color:var(--accent) } .danger { background:transparent; color:var(--danger); border-color:var(--danger) }
+input[type=text], input:not([type]), input[type=password], input[type=number], select, textarea { font:inherit; padding:6px 8px; border:1px solid var(--line); border-radius:8px }
+#demoBar { position:sticky; top:0; z-index:5; background:var(--card); border-bottom:1px solid var(--line); padding:10px var(--gap); display:grid; grid-template-columns:1fr auto; gap:6px 16px; align-items:center }
+.bar-steps { display:flex; flex-wrap:wrap; gap:6px } .step { display:flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px; border:1px solid var(--line); font-size:13px; color:var(--muted) }
+.step .n { width:20px; height:20px; border-radius:50%; background:#e9edf5; display:grid; place-items:center; font-size:12px; font-weight:700 }
+.step.done { color:var(--ok); border-color:#bfe3c9 } .step.done .n { background:#e3f4e8 } .step.current { color:var(--accent); border-color:var(--accent); font-weight:600 } .step.current .n { background:var(--accent); color:#fff } .step.elsewhere { opacity:.6 }
+.bar-next { grid-column:1; display:flex; flex-wrap:wrap; gap:10px; align-items:center; font-size:14px } .bar-next .hint { margin:0; color:var(--muted) } .bar-next .next { margin:0; font-weight:600 }
+.bar-tools { grid-column:2; grid-row:1 / span 2; display:flex; gap:12px; align-items:center } .switch { display:flex; gap:6px; align-items:center; font-size:13px; color:var(--muted) }
+.verdict { margin-top:10px; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:#fafbfd } .verdict .badge { margin-right:8px }
+.verdict.ok { border-color:#bfe3c9 } .verdict.bad { border-color:#f1c2be } .verdict.pending strong::after { content:''; display:inline-block; width:12px; height:12px; margin-left:8px; border:2px solid var(--accent); border-right-color:transparent; border-radius:50%; animation:spin .8s linear infinite; vertical-align:middle }
+@keyframes spin { to { transform:rotate(360deg) } } .verdict p { margin:6px 0 0; overflow-wrap:anywhere }   /* 요약에 트랜잭션 해시 같은 긴 값이 들어온다 — 좁은 창에서 가로로 삐져나오지 않게 끊는다 */ .verdict .summary { font-weight:500 } .verdict .cause { color:var(--muted) } .verdict .action { font-weight:600 } .verdict details { margin-top:6px } .verdict pre, pre { background:#f2f4f8; padding:8px 10px; border-radius:8px; white-space:pre-wrap; font-size:12.5px; margin:6px 0 0 }
+table.list { width:100%; border-collapse:collapse; font-size:14px } table.list th, table.list td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top }
+.kv { display:grid; grid-template-columns:auto 1fr; gap:4px 12px; font-size:14px } .kv dt { color:var(--muted) } .kv dd { margin:0; overflow-wrap:anywhere; min-width:0 }   /* min-width:0 이 없으면 1fr 칸이 안에 든 select·input 의 고유 너비만큼 벌어져 좁은 창에서 페이지가 가로로 넘친다 */
+.muted { color:var(--muted); font-size:13px } .expert { display:none } html[data-expert] .expert { display:revert } [hidden] { display:none !important }
+/* 전문가 보기의 원문 로그는 공백 없는 긴 JSON 한 덩어리다 — 격자 칸(min-width:auto)이 그만큼 늘어나 페이지가 가로로
+   커진다. 칸이 줄 수 있게 하고, 긴 토큰과 넓은 입력칸(tx hash size=66 등)을 칸 안에서 끊는다. */
+.card { min-width:0 } pre { overflow-wrap:anywhere } .card input, .card select { max-width:100% }
+/* 사유 코드는 제목·원인·조치 뒤에 원문 그대로 붙는다 — 붙어 읽히지 않게 띄우고 작게 죽인다. */
+.verdict > code { margin-left:6px } .verdict > code.reason { font-size:12px; color:var(--muted) }
+/* 좁은 창(휴대폰 폭)에서 표는 칸마다 한 글자씩 세로로 접혀 읽을 수 없게 된다 — 칸을 접지 말고 표 자체를
+   가로로 넘겨 읽게 한다(2026-09-25 스크린샷 점검). 넓은 창의 표 레이아웃은 그대로다. */
+@media (max-width:640px) { table.list { display:block; overflow-x:auto; white-space:nowrap } }
+/* 상태 패널(설계 2026-09-25 §2) — 안내 바 오른쪽의 점 4개와 바 아래로 펼쳐지는 패널. 점은 색 + 텍스트 라벨이다. */
+.stack-dots { display:flex; gap:6px; flex-wrap:wrap }
+.dot { display:inline-flex; align-items:center; gap:4px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); font-size:12px; background:transparent; color:var(--ink); cursor:pointer }
+.dot::before { content:''; width:8px; height:8px; border-radius:50%; background:#9aa4b2 }
+.dot.ok::before { background:var(--ok) } .dot.warn::before { background:var(--warn) } .dot.bad::before { background:var(--bad) }
+.dot[aria-expanded="true"] { border-color:var(--accent) }
+.stack-panel { grid-column:1 / -1; border-top:1px solid var(--line); padding-top:8px; display:grid; gap:6px }
+.stack-panel .panel-title { font-size:13px; color:var(--muted) }
+.stack-panel .row { display:grid; grid-template-columns:auto 1fr; gap:10px; font-size:13px }
+.stack-panel .row .name { color:var(--muted); min-width:84px } .stack-panel .row > div { min-width:0 }
+.stack-panel p { margin:0 } .stack-panel .cause { color:var(--muted) } .stack-panel .action { font-weight:600 }
+.stack-panel code.reason { font-size:12px; color:var(--muted) } .stack-panel pre { margin:4px 0 0; max-height:140px; overflow:auto }   /* 전문가 보기의 원문 셋이 화면을 다 먹지 않게 */
+.stack-panel .row.warn .msg { color:var(--warn) } .stack-panel .row.bad .msg { color:var(--bad) } .stack-panel .row.unknown .msg { color:var(--muted) }
+/* 체험 모드(설계 2026-09-25 §3.3·§3.4) — 잠금 배지, 대상 요소 아래의 말풍선 하나, 다른 창에서 할 차례일 때의 카드. */
+.tour-lock { margin-left:6px }
+.tour-bubble { position:absolute; z-index:20; max-width:360px; background:#1d2433; color:#fff; border-radius:10px; padding:10px 12px; font-size:14px; box-shadow:0 6px 24px rgba(0,0,0,.25) }
+.tour-bubble::before { content:''; position:absolute; top:-6px; left:16px; border:6px solid transparent; border-bottom-color:#1d2433; border-top:0 }
+.tour-bubble strong { display:block } .tour-bubble p { margin:4px 0 0; color:#dbe3f0 } .tour-bubble a { color:#cfe0ff }
+.tour-elsewhere { grid-column:1 / -1; display:flex; flex-wrap:wrap; gap:6px 12px; align-items:center; border-top:1px solid var(--line); padding-top:8px; font-size:13px }
+.tour-elsewhere p { margin:0; color:var(--muted) } .tour-elsewhere .btn { padding:4px 10px; font-size:13px }
+@media (max-width:900px) { .tour-bubble { left:16px !important; right:16px; max-width:none } }
+.tour-bubble.side::before { top:16px; left:-6px; border:6px solid transparent; border-right-color:#1d2433; border-left:0; border-bottom-color:transparent }

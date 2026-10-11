@@ -1,0 +1,280 @@
+// 승인된 개봉 — 격리 CIA + :8545 + build/mode3 (설계 2026-09-16 §6). (chain 그룹)
+//   node tests/test_cia_opening.mjs
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { ethers } from 'ethers';
+import { startIsolatedCia } from './helpers/isolated_cia.mjs';
+import { getProvider } from './helpers/mode3_chain.mjs';
+import { createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree, syncRegistryTree, buildCredentialProof, signRegistration, VKEY_PATH } from '../lib/mode3_wallet.js';
+import { pointToStrings } from '../lib/mode3_issuance.js';
+import { createShare, combinePublicKey, partialDecrypt } from '../lib/mode3_trace.js';
+import { signOpenRequest, signOpenResult } from '../lib/mode3_opening.js';
+
+const j = (o) => JSON.stringify(o, (_, v) => (typeof v === 'bigint' ? v.toString() : v));
+let failed = 0;
+async function t(name, fn) {
+  try { await fn(); console.log(`ok   ${name}`); }
+  catch (e) { failed++; console.error(`FAIL ${name}\n     ${e.message}`); }
+}
+
+assert.ok(fs.existsSync(VKEY_PATH), `pi_cred vkey 없음: ${VKEY_PATH}`);
+const provider = getProvider();
+const cia = await startIsolatedCia();
+const uid = 12345n;
+const nowTs = () => Math.floor(Date.now() / 1000).toString();
+
+try {
+  const keys = (await cia.get('/cia/public_keys')).body;
+  const pk_CIA = { x: BigInt(keys.pk_CIA.x), y: BigInt(keys.pk_CIA.y) };
+  const S1 = await cia.registerRp('http://127.0.0.1:3101', 's1');
+  const S2 = await cia.registerRp('http://127.0.0.1:3102', 's2');
+
+  // 사용자 등록·발급·증명(지갑 lib 그대로)
+  const reg = await cia.registerUser('12345', 'password123');
+  const sk_u = reg.sk_u;
+  // V5: 사용자 자격증명(π_u)은 사용자당 하나 — 한 번 받아 모든 트랜스크립트에 쓴다.
+  // attrs 는 cia.js DEMO_ACCOUNTS.testuser(uid 12345) 의 AA 기록과 같아야 π_u 가 통과한다(2026-09-22 §3.4).
+  const uc = await buildUserCredRequest({ uid, s_u: reg.s_u, r_u: reg.r_u, sk_u, attrs: [1990n, 410n, 0n, 0n, 0n, 0n] });
+  const r1 = await cia.post('/cia/user_cred', uc.body);
+  assert.equal(r1.status, 201, j(r1.body));
+  async function loginTranscript(svc, pk_trace = svc.pk_trace, allowAgent = 0n) {
+    const session = createSessionKey();
+    const max_height = BigInt(await provider.getBlockNumber()) + 300n;
+    const req = await buildIssueRequest({ uid, Cf_u: uc.Cf_u, arid: BigInt(svc.arid), sk_u, session, chainid: 31337n, allowAgent, max_height });
+    const issued = await cia.post('/cia/issue', req.body);
+    assert.equal(issued.status, 200, j(issued.body));
+    const { tree } = await syncRevocationTree(provider, cia.logAddress);
+    const { tree: registry } = await syncRegistryTree(provider, cia.logAddress);
+    const { proof, publicSignals, tag } = await buildCredentialProof({ uid, arid: BigInt(svc.arid), s_u: reg.s_u, r_u: reg.r_u, blind_u: uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs: [1990n, 410n, 0n, 0n, 0n, 0n], credential: issued.body, pk_CIA, pk_trace, tree, registry, slot: reg.slot, cm_u: reg.cm_u });
+    return { proof, publicSignals, tag, PPID: publicSignals[0] };
+  }
+  async function openRequest(svc, T, { share = svc.share, wallet = svc.serviceWallet, ts = nowTs(), arid = svc.arid } = {}) {
+    const D = await partialDecrypt(share.x, T.tag.c1);
+    const D_svc = { x: D.x.toString(), y: D.y.toString() };
+    const sig = await signOpenRequest(wallet, { arid, PPID: T.PPID, c1: { x: T.tag.c1.x.toString(), y: T.tag.c1.y.toString() }, D_svc, ts });
+    return cia.post('/cia/open/request', { arid, publicSignals: T.publicSignals, proof: T.proof, D_svc, ts, sig });
+  }
+  async function fetchResult(svc, id, { wallet = svc.serviceWallet, ts = nowTs() } = {}) {
+    const sig = await signOpenResult(wallet, id, ts);
+    return cia.get(`/cia/open/${id}?ts=${ts}&sig=${encodeURIComponent(sig)}`);
+  }
+
+  let T1, id1;
+  await t('정상 경로: 요청 202 pending(uid 없음) → 승인 → 결과 200 에 uid', async () => {
+    T1 = await loginTranscript(S1);
+    const r = await openRequest(S1, T1);
+    assert.equal(r.status, 202, j(r.body)); assert.equal(r.body.status, 'pending'); id1 = r.body.id;
+    const list = (await cia.adminGet('/cia/openings')).body.openings;
+    const mine = list.find((o) => o.id === id1);
+    assert.equal(mine.status, 'pending'); assert.equal(mine.uid, null, '승인 전에는 uid 가 계산되지 않는다');
+    assert.equal((await fetchResult(S1, id1)).status, 202);
+    const a = await cia.adminPost(`/cia/openings/${id1}/approve`);
+    assert.equal(a.status, 200, j(a.body)); assert.equal(a.body.status, 'approved');
+    const res = await fetchResult(S1, id1);
+    assert.equal(res.status, 200, j(res.body)); assert.equal(res.body.uid, '12345'); assert.equal(res.body.resolved, true);
+    assert.equal(res.body.PPID, T1.PPID); assert.equal(res.body.r_s, undefined);
+    assert.equal(res.body.allowAgent, '0'); assert.equal(res.body.max_height, T1.publicSignals[3]); assert.equal(res.body.chainid, '31337');
+    assert.equal((await cia.adminGet('/cia/openings')).body.openings.find((o) => o.id === id1).uid, '12345', '감사 기록에 uid');
+  });
+
+  await t('allowAgent = 1 로 로그인한 세션의 개봉 결과에는 allowAgent 1 이 남는다 (덱 22장의 용도)', async () => {
+    const T = await loginTranscript(S1, S1.pk_trace, 1n);
+    const { body: { id } } = await openRequest(S1, T);
+    assert.equal((await cia.adminPost(`/cia/openings/${id}/approve`)).status, 200);
+    const res = await fetchResult(S1, id);
+    assert.equal(res.status, 200, j(res.body)); assert.equal(res.body.allowAgent, '1'); assert.equal(res.body.uid, '12345');
+  });
+
+  await t('같은 (arid, c1) 재요청은 새 id 를 만들지 않는다 (200, 같은 id)', async () => {
+    const r = await openRequest(S1, T1);
+    assert.equal(r.status, 200); assert.equal(r.body.id, id1);
+  });
+
+  // A-I1 회귀: dup 키가 (arid, c1) 뿐이면 같은 태그 난수 r 로 만든 **다른 사용자**의 트랜스크립트가 앞 항목 id 를 받는다.
+  // alice(uid 67890)를 testuser 와 같은 방식으로 등록·발급한다 — attrs 는 cia.js DEMO_ACCOUNTS.alice 의 AA 기록과 같아야 π_u 가 통과한다.
+  const regA = await cia.registerUser('67890', 'alicepw');
+  const skA = regA.sk_u;
+  const attrsA = [2005n, 840n, 0n, 0n, 0n, 0n];
+  const ucA = await buildUserCredRequest({ uid: 67890n, s_u: regA.s_u, r_u: regA.r_u, sk_u: skA, attrs: attrsA });
+  assert.equal((await cia.post('/cia/user_cred', ucA.body)).status, 201);
+  // loginTranscript 를 사용자별로 일반화한 것(기존 헬퍼는 그대로 둔다). tagR 은 태그 난수를 고정해 같은 c1 을 만드는 테스트 전용 옵션이다.
+  async function loginTranscriptFor(svc, who, tagR) {   // who = { uid, reg, uc, attrs, sk_u }
+    const session = createSessionKey();
+    const max_height = BigInt(await provider.getBlockNumber()) + 300n;
+    const req = await buildIssueRequest({ uid: who.uid, Cf_u: who.uc.Cf_u, arid: BigInt(svc.arid), sk_u: who.sk_u, session, chainid: 31337n, allowAgent: 0n, max_height });
+    const issued = await cia.post('/cia/issue', req.body);
+    assert.equal(issued.status, 200, j(issued.body));
+    const { tree } = await syncRevocationTree(provider, cia.logAddress);
+    const { tree: registry } = await syncRegistryTree(provider, cia.logAddress);
+    const { proof, publicSignals, tag } = await buildCredentialProof({ uid: who.uid, arid: BigInt(svc.arid), s_u: who.reg.s_u, r_u: who.reg.r_u, blind_u: who.uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs: who.attrs, credential: issued.body, pk_CIA, pk_trace: svc.pk_trace, tree, registry, slot: who.reg.slot, cm_u: who.reg.cm_u, tagR });
+    return { proof, publicSignals, tag, PPID: publicSignals[0] };
+  }
+
+  await t('A-I1: 같은 c1(같은 태그 난수)·다른 사용자의 개봉 요청은 앞 항목 id 를 받지 않는다', async () => {
+    const r = 123456789n;
+    const Ta = await loginTranscriptFor(S1, { uid, reg, uc, attrs: [1990n, 410n, 0n, 0n, 0n, 0n], sk_u }, r);
+    const Tb = await loginTranscriptFor(S1, { uid: 67890n, reg: regA, uc: ucA, attrs: attrsA, sk_u: skA }, r);
+    assert.equal(Ta.tag.c1.x, Tb.tag.c1.x, '같은 r → 같은 c1');
+    assert.notEqual(Ta.PPID, Tb.PPID);
+    const o1 = await openRequest(S1, Ta); assert.equal(o1.status, 202, j(o1.body));
+    const o2 = await openRequest(S1, Tb); assert.equal(o2.status, 202, j(o2.body));
+    assert.notEqual(o1.body.id, o2.body.id, '다른 사용자의 트랜스크립트는 새 항목이어야 한다');
+  });
+
+  await t('앞자리 0 이 붙은 공개 입력으로 요청해도 CIA 는 정규형으로 맞춰 받는다 (2026-09-18 점검 1)', async () => {
+    const T = await loginTranscript(S1);
+    const ps = [...T.publicSignals]; ps[1] = '0' + ps[1]; ps[12] = '0' + ps[12];
+    const r = await openRequest(S1, { ...T, publicSignals: ps });   // 서명은 정규 c1 위(openRequest 가 T.tag 로 만든다)
+    assert.ok([200, 202].includes(r.status), j(r.body));
+  });
+
+  await t('c1 이 항등원인 트랜스크립트는 bad_tag (증명 검증 전, 서비스·컨트랙트와 같은 규칙)', async () => {
+    const T = await loginTranscript(S1);
+    const ps = [...T.publicSignals]; ps[12] = '0'; ps[13] = '1';
+    // D_svc 는 부분군 검사를 지나야 하므로 진짜 c1 의 부분 복호를 그대로 쓴다 — bad_tag 가 그보다 뒤, 증명 검증보다 앞에서 난다.
+    const D = await partialDecrypt(S1.share.x, T.tag.c1);
+    const D_svc = { x: D.x.toString(), y: D.y.toString() };
+    const ts = nowTs();
+    const sig = await signOpenRequest(S1.serviceWallet, { arid: S1.arid, PPID: T.PPID, c1: { x: '0', y: '1' }, D_svc, ts });
+    const r = await cia.post('/cia/open/request', { arid: S1.arid, publicSignals: ps, proof: T.proof, D_svc, ts, sig });
+    assert.equal(r.status, 403, j(r.body)); assert.equal(r.body.error, 'bad_tag');
+  });
+
+  await t('D_svc 가 부분군 밖이면 400 — 서명·신선도보다 먼저 걸린다', async () => {
+    const T = await loginTranscript(S1);
+    const D_svc = { x: '1', y: '1' };
+    const ts = nowTs();
+    const sig = await signOpenRequest(S1.serviceWallet, { arid: S1.arid, PPID: T.PPID, c1: { x: T.tag.c1.x.toString(), y: T.tag.c1.y.toString() }, D_svc, ts });
+    const r = await cia.post('/cia/open/request', { arid: S1.arid, publicSignals: T.publicSignals, proof: T.proof, D_svc, ts, sig });
+    assert.equal(r.status, 400, j(r.body));
+  });
+
+  await t('거절 → 결과 403 denied', async () => {
+    const T = await loginTranscript(S1);
+    const { body: { id } } = await openRequest(S1, T);
+    assert.equal((await cia.adminPost(`/cia/openings/${id}/deny`)).status, 200);
+    const res = await fetchResult(S1, id);
+    assert.equal(res.status, 403); assert.equal(res.body.status, 'denied');
+    assert.equal((await cia.adminPost(`/cia/openings/${id}/approve`)).status, 409, '결정된 항목은 다시 결정할 수 없다');
+    // denied 는 재요청을 막지 않는다 — 새 id 로 다시 심사에 올릴 수 있다.
+    const r2 = await openRequest(S1, T);
+    assert.equal(r2.status, 202, JSON.stringify(r2.body)); assert.notEqual(r2.body.id, id);
+    assert.equal((await cia.adminPost(`/cia/openings/${r2.body.id}/deny`)).status, 200);
+  });
+
+  // 2026-09-25 리뷰 B-4: 결정이 끝난 항목의 복호 재료(D_svc·c1·c2)는 쓸 일이 없는데 x_AA 와 같은 파일에 남는다 —
+  // 거절한 요청까지 나중에 열 수 있는 재료다. 감사 기록(arid·PPID·uid·resolved·시각)은 남기고 그 셋만 지운다.
+  await t('결정 뒤에는 복호 재료(D_svc·c1·c2)가 남지 않는다 — 감사 기록과 재요청 대조는 그대로 (2026-09-25 리뷰 B-4)', async () => {
+    const Ta = await loginTranscript(S1);
+    const { body: { id: okId } } = await openRequest(S1, Ta);
+    assert.equal((await cia.adminPost(`/cia/openings/${okId}/approve`)).status, 200);
+    const Tb = await loginTranscript(S1);
+    const { body: { id: noId } } = await openRequest(S1, Tb);
+    assert.equal((await cia.adminPost(`/cia/openings/${noId}/deny`)).status, 200);
+    const list = (await cia.adminGet('/cia/openings')).body.openings;
+    for (const id of [okId, noId]) {
+      const o = list.find((x) => x.id === id);
+      assert.ok(o, `${id} 는 감사 기록으로 남아야 한다`);
+      assert.equal(o.D_svc, undefined, `${o.status}: D_svc 가 남았다`);
+      assert.equal(o.c1, undefined, `${o.status}: c1 이 남았다`);
+      assert.equal(o.c2, undefined, `${o.status}: c2 가 남았다`);
+      assert.ok(o.arid && o.PPID && o.decidedAt, `${o.status}: 감사 기록(arid·PPID·시각)은 남아야 한다`);
+    }
+    assert.equal(list.find((x) => x.id === okId).uid, '12345', '승인 항목의 uid 는 그대로');
+    // 재료를 지워도 같은 트랜스크립트의 재요청은 여전히 같은 항목을 가리킨다(심사 중복 방지).
+    const again = await openRequest(S1, Ta);
+    assert.equal(again.status, 200, j(again.body));
+    assert.equal(again.body.id, okId);
+  });
+
+  await t('틀린 D_svc(다른 조각) → 승인해도 uid 를 못 찾아 approved+resolved:false, 같은 트랜스크립트로 재요청 가능', async () => {
+    const T = await loginTranscript(S1);
+    const { body: { id } } = await openRequest(S1, T, { share: await createShare() });
+    const a = await cia.adminPost(`/cia/openings/${id}/approve`);
+    assert.equal(a.status, 200); assert.equal(a.body.status, 'approved'); assert.equal(a.body.resolved, false);
+    const res = await fetchResult(S1, id);
+    assert.equal(res.status, 200, JSON.stringify(res.body)); assert.equal(res.body.uid, null); assert.equal(res.body.resolved, false);
+    // resolved:false 는 denied 처럼 재요청을 막지 않는다 — 서비스가 D_svc 를 고쳐 같은 트랜스크립트로 다시 내면 새 id 로
+    // 승인·개봉된다(§6.2).
+    const r2 = await openRequest(S1, T);
+    assert.equal(r2.status, 202, JSON.stringify(r2.body)); assert.notEqual(r2.body.id, id);
+    const a2 = await cia.adminPost(`/cia/openings/${r2.body.id}/approve`);
+    assert.equal(a2.status, 200, JSON.stringify(a2.body)); assert.equal(a2.body.status, 'approved'); assert.equal(a2.body.resolved, true);
+    const res2 = await fetchResult(S1, r2.body.id);
+    assert.equal(res2.status, 200, JSON.stringify(res2.body)); assert.equal(res2.body.uid, '12345');
+  });
+
+  await t('남의 트랜스크립트: S2 가 S1 의 세션을 열려 하면 wrong_arid 403 (유출된 로그로는 못 연다)', async () => {
+    const r = await openRequest(S2, T1, { share: S2.share, wallet: S2.serviceWallet, arid: S2.arid });
+    assert.equal(r.status, 403); assert.equal(r.body.error, 'wrong_arid');
+  });
+
+  await t('자기 arid 로 남의 조합 키 태그: wrong_trace_key 403', async () => {
+    const fake = await combinePublicKey((await createShare()).X, (await createShare()).X);
+    const T = await loginTranscript(S1, fake);
+    const r = await openRequest(S1, T);
+    assert.equal(r.status, 403); assert.equal(r.body.error, 'wrong_trace_key');
+  });
+
+  await t('서명·신선도·형식: 다른 키 서명 401, 오래된 ts 401, 손댄 증명 403, 승인 안 된 서비스 403, 미등록 arid 404', async () => {
+    const T = await loginTranscript(S1);
+    assert.equal((await openRequest(S1, T, { wallet: ethers.Wallet.createRandom() })).body.error, 'bad_signature');
+    const stale = await openRequest(S1, T, { ts: (Number(nowTs()) - 600).toString() });
+    assert.equal(stale.status, 401); assert.equal(stale.body.error, 'stale');
+    const bad = JSON.parse(JSON.stringify(T.proof)); bad.pi_a[0] = (BigInt(bad.pi_a[0]) + 1n).toString();
+    const r = await openRequest(S1, { ...T, proof: bad });
+    assert.equal(r.status, 403); assert.equal(r.body.error, 'bad_proof');
+    // 승인 안 된 서비스: 직접 pending 으로 등록만
+    const w = ethers.Wallet.createRandom(); const share = await createShare();
+    const p = await cia.post('/cia/register_rp', { name: 's3', origin: 'http://127.0.0.1:3103', pk_service: w.address, X_svc: { x: share.X.x.toString(), y: share.X.y.toString() } });
+    assert.equal(p.status, 202);
+    const na = await openRequest(S1, T, { wallet: w, share, arid: p.body.arid });
+    assert.equal(na.status, 403); assert.equal(na.body.error, 'not_approved');
+    assert.equal((await openRequest(S1, T, { arid: '999' })).status, 404);
+  });
+
+  await t('결과 수령: 다른 서비스의 서명이면 401, 오래된 ts 401, 없는 id 404', async () => {
+    assert.equal((await fetchResult(S1, id1, { wallet: S2.serviceWallet })).status, 401);
+    assert.equal((await fetchResult(S1, id1, { ts: (Number(nowTs()) - 600).toString() })).status, 401);
+    assert.equal((await fetchResult(S1, 'deadbeef')).status, 404);
+  });
+
+  await t('admin 엔드포인트는 시크릿 없이 401', async () => {
+    assert.equal((await cia.get('/cia/openings')).status, 401);
+    assert.equal((await cia.post(`/cia/openings/${id1}/approve`)).status, 401);
+    assert.equal((await cia.get('/cia/rps')).status, 401);
+  });
+
+  await t('MODE3_VKEY_PATH 가 없으면 개봉 요청은 503', async () => {
+    const cia2 = await startIsolatedCia({ env: { MODE3_VKEY_PATH: '/nonexistent/vkey.json' } });
+    try {
+      const S = await cia2.registerRp('http://127.0.0.1:3199', 's-vkey-missing');
+      // cia2 는 별도 격리 인스턴스라 다시 등록해야 한다 — 같은 지갑 정체성(reg)을 재사용하므로 cia.registerUser 를
+      // 쓸 수 없고(그건 매번 새 createRegistration 을 만든다) reg.sk_u 로 직접 서명해 등록한다.
+      const r0 = await cia2.post('/cia/register', { uid: '12345', pwd: 'password123', cm_u: pointToStrings(reg.cm_u), pk_u: pointToStrings(reg.pk_u), sig_reg: await signRegistration(reg.sk_u, 12345n, reg.cm_u) });
+      assert.equal(r0.status, 201, j(r0.body));
+      const session = createSessionKey();
+      const uc2 = await buildUserCredRequest({ uid, s_u: reg.s_u, r_u: reg.r_u, sk_u: reg.sk_u, attrs: [1990n, 410n, 0n, 0n, 0n, 0n] });
+      const ru = await cia2.post('/cia/user_cred', uc2.body);
+      assert.equal(ru.status, 201, j(ru.body));
+      const req = await buildIssueRequest({ uid, Cf_u: uc2.Cf_u, arid: BigInt(S.arid), sk_u: reg.sk_u, session, chainid: 31337n, max_height: BigInt(await provider.getBlockNumber()) + 300n });
+      const issued = await cia2.post('/cia/issue', req.body);
+      assert.equal(issued.status, 200, j(issued.body));
+      const { tree } = await syncRevocationTree(provider, cia2.logAddress);
+      const { tree: registry } = await syncRegistryTree(provider, cia2.logAddress);
+      const keys2 = (await cia2.get('/cia/public_keys')).body;
+      const pk_CIA2 = { x: BigInt(keys2.pk_CIA.x), y: BigInt(keys2.pk_CIA.y) };
+      const { proof, publicSignals, tag } = await buildCredentialProof({ uid, arid: BigInt(S.arid), s_u: reg.s_u, r_u: reg.r_u, blind_u: uc2.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs: [1990n, 410n, 0n, 0n, 0n, 0n], credential: issued.body, pk_CIA: pk_CIA2, pk_trace: S.pk_trace, tree, registry, slot: r0.body.slot, cm_u: reg.cm_u });
+      const D = await partialDecrypt(S.share.x, tag.c1);
+      const D_svc = { x: D.x.toString(), y: D.y.toString() };
+      const ts = nowTs();
+      const sig = await signOpenRequest(S.serviceWallet, { arid: S.arid, PPID: publicSignals[0], c1: { x: tag.c1.x.toString(), y: tag.c1.y.toString() }, D_svc, ts });
+      const r = await cia2.post('/cia/open/request', { arid: S.arid, publicSignals, proof, D_svc, ts, sig });
+      assert.equal(r.status, 503, j(r.body));
+    } finally { await cia2.stop(); }
+  });
+} finally {
+  await cia.stop();
+  provider.destroy();
+}
+process.exit(failed === 0 ? 0 : 1);
