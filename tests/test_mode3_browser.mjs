@@ -204,9 +204,9 @@ try {
     assert.match(String(sessionRs), /^[0-9]+$/, 'RP 페이지가 세션 r_s 를 들고 있다');
   });
 
-  await t('비밀은 Snap 에만: 에이전트 응답·양쪽 페이지 DOM·브라우저 저장소 어디에도 s_u·r_u·sk_u·blind_u 가 없다', async () => {
+  await t('비밀은 Snap 에만: 에이전트 응답·양쪽 페이지 DOM·브라우저 저장소 어디에도 s_u·sk_u·blind_u 가 없다', async () => {
     const secrets = {
-      s_u: snapState.registration.s_u, r_u: snapState.registration.r_u,
+      s_u: snapState.registration.s_u,
       sk_u: snapState.registration.sk_u, blind_u: snapState.userCred.blind_u,
     };
     for (const [k, v] of Object.entries(secrets)) assert.ok(typeof v === 'string' && v.length >= 16, `${k} 가 Snap 상태에 있어야 한다: ${v}`);
@@ -393,22 +393,51 @@ try {
     await awaitPopupClosed(popup);
     assert.equal((await rp.get('/api/mode3/logins')).body.logins.length, before, '거절은 로그인을 남기지 않는다');
   });
-  // 최종 리뷰 Important 2: AA 가 속성을 바꾸면 다음 로그인 응답에 attrsChanged 와 **새** userCredIssued 가 함께 실린다.
-  // 지갑 페이지의 applyPendingToSnap 은 syncAttrs 를 먼저 하고(속성이 바뀌면 Snap 이 옛 C_u 를 함께 버린다) 새 C_u 를
-  // 그 뒤에 저장해야 한다 — 순서를 뒤집으면 갓 저장한 C_u 가 지워져 아래 "C_u 가 남아 있다" 단언이 깨진다.
-  await t('AA 속성 변경 뒤 로그인: Snap 의 속성이 갱신되고 새 C_u 가 남는다(syncAttrs → updateUserCred 순서)', async () => {
+  // V11(D15): 속성은 사용자가 지갑에 넣는다 — 관리자 페이지가 아니라 지갑 페이지의 "속성 저장"(PUT /wallet/profile)이 바꾼다.
+  // 바뀌면 에이전트가 옛 C_u·세션을 지우고, 페이지는 응답의 attrsChanged 를 Snap 의 syncAttrs 로 전달해 Snap 도 옛 C_u 를 버린다
+  // (Snap 의 syncAttrs 는 changed 면 attrs 와 함께 저장된 C_u 도 지운다). 다음 로그인이 새 C_u 를 받는다.
+  await t('지갑에서 속성 저장(extra1) → Snap 의 속성 갱신·C_u 폐기 → 다음 로그인이 새 C_u', async () => {
     const beforeCf = snapState.userCred?.Cf_u ?? null;
     assert.ok(beforeCf, '시작 시 Snap 에 C_u 가 있다');
     assert.deepEqual(snapState.registration.attrs, ['1990', '410', '0', '0', '0', '0']);
-    // V9: 속성 변경은 활성 자격증명의 슬롯을 즉시 비우고 게시한다(cia.js) — 별도로 /cia/publish 를 부를 필요가 없다
-    // (tests/test_mode3_wallet_agent.mjs 의 같은 흐름과 동일한 근거).
-    assert.equal((await stack.cia.adminPost('/cia/accounts/12345/attrs', { profile: { birthYear: '1990', country: 'KR', extra1: 'tier3' } })).status, 200);
+    await walletPage.fill('#attr2', 'tier3');
+    await walletPage.click('#profileSaveBtn');
+    // '속성 저장 완료'(성공)까지 — 실패 문구('속성 저장 실패'·'속성 값이 스키마에 맞지 않습니다')에도 '속성'이 들어가
+    // 그냥 '속성'만 찾으면 실패도 통과해 버린다.
+    await waitText(walletPage, '#registerResult', '속성 저장 완료', 15_000);
+    assert.deepEqual(snapState.registration.attrs, ['1990', '410', await encodeSlotValue(DEFAULT_ATTR_SCHEMA, 2, 'tier3'), '0', '0', '0'], 'syncAttrs 가 Snap 의 속성을 갱신했다');
+    assert.equal(snapState.userCred, null, '속성이 바뀌면 Snap 의 syncAttrs 가 옛 C_u 를 함께 버린다');
     answers.push(true);                        // 로그인 동의
     const [popup] = await Promise.all([context.waitForEvent('page'), rpPage.click('#loginBtn')]);
     await waitText(rpPage, '#verdict', '로그인 성공', 240_000);
     await awaitPopupClosed(popup);
-    assert.deepEqual(snapState.registration.attrs, ['1990', '410', await encodeSlotValue(DEFAULT_ATTR_SCHEMA, 2, 'tier3'), '0', '0', '0'], 'syncAttrs 가 Snap 의 속성을 갱신했다');
-    assert.ok(snapState.userCred, '새 C_u 가 Snap 에 남아 있어야 한다(syncAttrs 를 나중에 하면 지워진다)');
+    assert.ok(snapState.userCred, '새 C_u 가 Snap 에 남아 있다');
+    assert.notEqual(snapState.userCred.Cf_u, beforeCf, '옛 C_u 가 아니라 새로 받은 것이다');
+    assert.equal((await wallet.get('/wallet/status')).body.userCred.Cf_u, snapState.userCred.Cf_u, '에이전트의 공개 Cf_u 와 같다');
+  });
+
+  // 리뷰 round 1 Minor 7 — 지난 삭제된 테스트가 지키던 "syncAttrs → updateUserCred" 순서 회귀 가드를 다시 둔다.
+  // 이번에는 바로 위 테스트(페이지를 거쳐 속성을 바꾼 경우)와 다르게, **에이전트 API 를 페이지 없이 직접 불러**
+  // Snap 을 일부러 못 따라오게 만든다 — 그래야 다음 로그인이 자가 치유(attrsChanged + userCredIssued 동시 응답)를
+  // 실제로 타고, 팝업의 applyPendingToSnap 이 그 둘을 올바른 순서로 반영하는지(새 C_u 가 살아남는지)를 본다.
+  await t('에이전트에서 직접 속성을 바꾸면(Snap 모름) 다음 로그인이 attrsChanged·새 C_u 를 함께 반영한다', async () => {
+    const beforeCf = snapState.userCred?.Cf_u ?? null;
+    assert.ok(beforeCf, '시작 시 Snap 에 C_u 가 있다');
+    const beforeAttrs = [...snapState.registration.attrs];
+    const status0 = (await wallet.get('/wallet/status')).body;
+    const newProfile = { ...status0.profile, extra2: 'round2' };
+    const chg = await wallet.put('/wallet/profile', { profile: newProfile });
+    assert.equal(chg.status, 200, j(chg.body));
+    assert.equal(chg.body.changed, true, '페이지를 거치지 않은 PUT 도 에이전트 파일의 attrs 를 바꾼다');
+    // Snap 은 이 변경을 전혀 모른다 — syncAttrs 를 부른 적이 없으니 그대로 옛 attrs·C_u 를 들고 있다.
+    assert.deepEqual(snapState.registration.attrs, beforeAttrs, 'Snap 은 아직 옛 속성을 들고 있다(일부러 어긋낸 상태)');
+    assert.ok(snapState.userCred, 'Snap 은 아직 옛 C_u 도 그대로 들고 있다');
+    answers.push(true);                        // 로그인 동의
+    const [popup] = await Promise.all([context.waitForEvent('page'), rpPage.click('#loginBtn')]);
+    await waitText(rpPage, '#verdict', '로그인 성공', 240_000);
+    await awaitPopupClosed(popup);
+    assert.deepEqual(snapState.registration.attrs, chg.body.attrs, '팝업이 attrsChanged 를 Snap 의 syncAttrs 로 반영해 파일과 같아졌다');
+    assert.ok(snapState.userCred, '새 C_u 가 Snap 에 남아 있다(syncAttrs 를 updateUserCred 보다 나중에 하면 지워진다)');
     assert.notEqual(snapState.userCred.Cf_u, beforeCf, '옛 C_u 가 아니라 새로 받은 것이다');
     assert.equal((await wallet.get('/wallet/status')).body.userCred.Cf_u, snapState.userCred.Cf_u, '에이전트의 공개 Cf_u 와 같다');
   });

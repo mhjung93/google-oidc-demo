@@ -2,9 +2,9 @@
 // Task 3 의 snap-mode3/src/index.js 는 이 시뮬레이터와 같은 입출력을 구현한다(스펙 §3.1 표가 정본). 여기서는
 // 대화상자를 decision('allow'|'deny') 인자로 대신하고, 오리진 검사는 하지 않는다(테스트 프로세스가 곧 지갑 페이지다).
 import { createRegistration } from '../../lib/mode3_wallet.js';
-import { pointToStrings } from '../../lib/mode3_issuance.js';
 
 const clone = (v) => (v === null || v === undefined ? null : JSON.parse(JSON.stringify(v)));
+const isDec = (v) => typeof v === 'string' && /^[0-9]+$/.test(v);
 
 export function createSnapSim() {
   const state = { registration: null, userCred: null, consents: {} };
@@ -12,27 +12,31 @@ export function createSnapSim() {
   return {
     state,   // 검사용 — 테스트가 상태 파일과 대조한다
 
-    /** prompt(uid)·prompt(pwd) 대신 인자로 받는다. s_u·r_u·sk_u 를 만들어 상태에 두고(sk_u 는 register 응답에 한 번만 싣는다 —
-     *  V9 §7.1, index.js 의 register 와 같은 모양) 공개 cm_u 와 함께 돌려준다. */
+    /** prompt(uid)·prompt(pwd) 대신 인자로 받는다. s_u·sk_u 를 만들어 상태에 두고(sk_u 는 register 응답에 한 번만 싣는다 —
+     *  V9 §7.1, index.js 의 register 와 같은 모양) s_u 와 함께 돌려준다. auid 는 등록이 아직 끝나지 않아 null(storeRegistration 이 채운다). */
     async register({ uid, pwd }) {
       if (state.registration) throw new Error('snap_sim: 이미 등록돼 있다');
-      const reg = await createRegistration();
-      state.registration = { uid, pwdHash: null, s_u: reg.s_u.toString(), r_u: reg.r_u.toString(), cm_u: pointToStrings(reg.cm_u), sk_u: reg.sk_u, slot: null, attrs: null, registeredAt: new Date().toISOString() };
-      return { uid, pwd, cm_u: clone(state.registration.cm_u), sk_u: reg.sk_u };
+      const reg = await createRegistration(BigInt(uid));
+      state.registration = { uid, pwdHash: null, s_u: reg.s_u.toString(), auid: null, sk_u: reg.sk_u, slot: null, attrs: null, registeredAt: new Date().toISOString() };
+      return { uid, pwd, s_u: state.registration.s_u, sk_u: reg.sk_u };
     },
 
-    /** 에이전트 /wallet/register 응답의 slot·attrs 를 저장한다(sk_u 는 register 때 이미 저장했으므로 받지 않는다). */
-    storeRegistration({ attrs, slot }) {
+    /** 에이전트 /wallet/register 응답의 slot·attrs·auid 를 저장한다(sk_u·s_u 는 register 때 이미 저장했으므로 받지 않는다). */
+    storeRegistration({ attrs, slot, auid }) {
       requireRegistered();
+      // 실제 Snap(index.js storeRegistration)과 같은 검사 — auid 가 10진 문자열이 아니면 거절한다. 이 검사가 없으면
+      // String(undefined) === 'undefined' 가 그대로 저장돼 시뮬레이터와 실제 Snap 의 입출력이 어긋난다.
+      if (!isDec(String(auid ?? ''))) throw new Error('bad_auid: auid 는 10진 문자열');
       state.registration.attrs = clone(attrs);
       state.registration.slot = slot;
+      state.registration.auid = String(auid);
       return { ok: true };
     },
 
     /** 비밀 없음. */
     getPublicInfo() {
       const r = state.registration;
-      return { registered: Boolean(r), uid: r?.uid ?? null, cm_u: clone(r?.cm_u), attrs: clone(r?.attrs), slot: r?.slot ?? null, hasUserCred: Boolean(state.userCred), consents: clone(state.consents) };
+      return { registered: Boolean(r), uid: r?.uid ?? null, auid: r?.auid ?? null, attrs: clone(r?.attrs), slot: r?.slot ?? null, hasUserCred: Boolean(state.userCred), consents: clone(state.consents) };
     },
 
     /** 로그인 동의 창. 승인이면 증인 묶음(validateWitness 형식), 거절이면 { denied:true }. */
@@ -41,7 +45,7 @@ export function createSnapSim() {
       if (decision !== 'allow') return { denied: true };
       state.consents[origin] = { arid, allowAgent, grantedAt: new Date().toISOString() };
       const r = state.registration;
-      return { uid: r.uid, s_u: r.s_u, r_u: r.r_u, sk_u: r.sk_u, attrs: clone(r.attrs), userCred: clone(state.userCred) };
+      return { uid: r.uid, s_u: r.s_u, sk_u: r.sk_u, attrs: clone(r.attrs), userCred: clone(state.userCred) };
     },
 
     /** 속성 공개 동의 창. 슬롯 목록·대상·금액은 표시용이라 시뮬레이터는 보지 않는다. */

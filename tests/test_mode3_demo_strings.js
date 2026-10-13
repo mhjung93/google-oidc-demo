@@ -17,13 +17,14 @@ function t(name, fn) { try { fn(); console.log('ok   -', name); } catch (e) { fa
 const NEEDLES = { login_ok: '로그인 성공', registered: '등록됨', tx_ok: '전송 성공', reval_ok: '재검증 성공', reauth_denied: '재승인 불가', popup_blocked: '팝업이 차단됐다' };
 // 문서(docs/MODE3_DEMO.md)에 있는 사유 코드 — 전부 ko·en 세 줄(title·cause·action)이 있어야 한다.
 const REASONS = ['stale_root', 'stale_registry_root', 'root_too_old', 'revalidate_required', 'predicate_unmet', 'predicate_unavailable', 'factory_constants_unavailable', 'registration_pending', 'bad_signature', 'bad_rp_cert', 'bad_proof', 'expired', 'malformed',
+  'bad_r_s', 'bad_arid_s',
   'revoked', 'revoked_session', 'account_disabled', 'needs_consent', 'bad_factory', 'no_code', 'factory_code_mismatch', 'verifier_code_mismatch', 'allow_agent_mismatch', 'no_session', 'not_registered', 'cia_unavailable', 'witness_required', 'internal',
-  'user_denied', 'snap_unavailable', 'wallet_error', 'unknown_session', 'no_user_cred', 'user_cred_retired',
-  'registry_mismatch', 'registry_unpublished', 'registry_slot_unknown', 'user_cred_failed', 'demo_proof_failed', 'slot_failed',
+  'user_denied', 'snap_unavailable', 'wallet_error', 'unknown_session',
+  'registry_mismatch', 'registry_unpublished', 'registry_slot_unknown', 'user_cred_failed', 'issue_failed', 'bad_idp_proof', 'cred_revoked', 'demo_proof_failed', 'slot_failed',
   'admin_secret_required', 'admin_unauthorized', 'unknown_account', 'invalid_credentials',
   // 2026-10-11 데모 UI 도달 코드(런북 "실패 각본")
-  'bad_disclosure', 'disclosure_unsatisfiable', 'predicate_type', 'duplicate_session', 'already_registered', 'register_failed', 'attrs_failed',
-  'chain_unavailable', 'no_factory', 'execute_reverted', 'schema_invalid', 'bad_attr', 'use_profile'];
+  'bad_disclosure', 'disclosure_unsatisfiable', 'predicate_type', 'duplicate_session', 'already_registered', 'register_failed',
+  'chain_unavailable', 'no_factory', 'execute_reverted', 'schema_invalid', 'bad_attr'];
 
 t('langs 는 ko, en', () => assert.deepEqual(S.langs, ['ko', 'en']));
 t('steps 는 7개, 키 고유, 순서 approve→register→login→use→disclose→revoke→open, 각 언어에 title·hint', () => {
@@ -43,10 +44,10 @@ t('사유 사전은 문서의 코드를 전부 덮고 ko·en 에 title·cause·a
 t('ui·terms 항목은 전부 ko·en 이 있고 빈 문자열이 없다', () => {
   for (const [k, v] of Object.entries(S.ui)) for (const l of S.langs) assert.ok(typeof v[l] === 'string' && v[l].length, `ui.${k}.${l}`);
   for (const [k, v] of Object.entries(S.terms)) { for (const l of S.langs) assert.ok(v[l], `terms.${k}.${l}`); assert.ok(v.expert, `terms.${k}.expert`); }
-  for (const n of ['PPID', 'AA', 'session', 'root', 'proof', 'disclosure', 'cred', 'tag', 'allowAgent', 'attr0', 'attr1', 'attr2', 'attr3']) assert.ok(S.terms[n], `terms.${n}`);
+  for (const n of ['PPID', 'AA', 'session', 'root', 'proof', 'disclosure', 'cred', 'tag', 'allowAgent', 'attr0', 'attr1', 'attr2', 'attr3', 'auid', 'auid_s', 'r_rp']) assert.ok(S.terms[n], `terms.${n}`);
 });
 t('ui 에 안내 바·토글·공통 버튼 키가 있다', () => {
-  for (const k of ['bar_next', 'bar_other_window', 'toggle_lang', 'toggle_expert', 'details', 'working', 'proving', 'confirm_revoke', 'confirm_publish', 'confirm_reset', 'go_wallet', 'go_rp', 'go_admin', 'go_account']) assert.ok(S.ui[k], k);
+  for (const k of ['bar_next', 'bar_other_window', 'toggle_lang', 'toggle_expert', 'details', 'working', 'proving', 'confirm_revoke', 'confirm_publish', 'confirm_reset', 'go_wallet', 'go_rp', 'go_admin', 'go_account', 'wallet_profile_save_btn', 'wallet_profile_saved', 'wallet_profile_failed', 'wallet_profile_saved_snap_pending']) assert.ok(S.ui[k], k);
 });
 // 상태 패널(설계 2026-09-25 §2) — 점 라벨·판정 문구. Demo.stack.judge 가 돌려주는 key 는 전부 여기 있어야 한다.
 t('ui 에 상태 패널 키가 있다', () => {

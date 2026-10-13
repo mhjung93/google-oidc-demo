@@ -1,4 +1,4 @@
-// pi_cred 회로(V9)의 witness 계산. 양성·음성 45건 — 정상 witness, JS/회로 리프 일치, 태그 개봉, 잘못된 입력 거부.
+// pi_cred 회로(V11)의 witness 계산. 양성·음성 48건 — 정상 witness, JS/회로 리프 일치, 태그 개봉, 잘못된 입력 거부.
 //   node tests/test_pi_cred_witness.mjs
 //
 // zkey는 만들지 않는다 (Task 4에서 별도 승인 후). 여기서는 회로가 올바른 입력을
@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { sessionLeaf, MODE3_TREE_DEPTH } from '../lib/mode3_revocation.js';
 import { registryLeaf } from '../lib/mode3_registry.js';
 import { buildValidInput } from './helpers/mode3_fixture.mjs';
-import { ppid } from '../lib/mode3_credential.js';
+import { ppid, auidSOf } from '../lib/mode3_credential.js';
 import { partialDecrypt, combineDecrypt, resolveTagPlaintext } from '../lib/mode3_trace.js';
 
 const ROOT_DIR = fileURLToPath(new URL('..', import.meta.url));
@@ -76,8 +76,8 @@ await t('PPID 는 chainid 를 덮는다 — 같은 uid·s_u·arid 라도 체인�
   // 체인 간 unlinkability(발표 자료 6장의 H(ID, salt, chain, rid)). chainid 는 서명 메시지에도 들어가므로
   // 서명을 다시 만들지 않고는 chainid 만 바꿔 통과시킬 수 없다 — 여기서는 JS 유도값이 체인마다 다름과,
   // 다른 체인용 PPID 를 그대로 내면 회로가 거부함을 본다.
-  const a = await ppid({ uid: BigInt(valid.uid), arid: BigInt(valid.arid), s_u: BigInt(valid.s_u), chainid: BigInt(valid.chainid) });
-  const b = await ppid({ uid: BigInt(valid.uid), arid: BigInt(valid.arid), s_u: BigInt(valid.s_u), chainid: BigInt(valid.chainid) + 1n });
+  const a = await ppid({ uid: BigInt(valid.uid), s_u: BigInt(valid.s_u), arid: BigInt(valid.arid), chainid: BigInt(valid.chainid) });
+  const b = await ppid({ uid: BigInt(valid.uid), s_u: BigInt(valid.s_u), arid: BigInt(valid.arid), chainid: BigInt(valid.chainid) + 1n });
   assert.equal(a.toString(), valid.PPID, 'JS ppid 가 픽스처의 PPID 와 같아야 한다');
   assert.notEqual(a, b);
   await assert.rejects(() => witness({ ...valid, PPID: b.toString() }), /Assert Failed/);
@@ -90,7 +90,7 @@ await t('음성: PPID가 다르면 거부된다', async () => {
   );
 });
 
-await t('음성: max_height 를 바꾸면 거부된다 (서명이 max_height 를 덮는다)', async () => {
+await t('음성: max_height 를 바꾸면 거부된다 (V11: C_s 가 달라져 토큰 서명이 안 맞는다)', async () => {
   await assert.rejects(() => witness({ ...valid, max_height: (BigInt(valid.max_height) + 1n).toString() }), /Assert Failed/);
 });
 
@@ -124,11 +124,31 @@ await t('음성: pk_i를 바꾸면 거부된다 (C_s 바인딩이 깨진다 — 
 await t('V5 음성: blind_u 를 바꾸면 거부된다 (C_u 가 달라져 서명·리프가 안 맞는다)', async () => {
   await assert.rejects(() => witness({ ...valid, blind_u: (BigInt(valid.blind_u) + 1n).toString() }), /Assert Failed/);
 });
-await t('V5 음성: blind_s 를 바꾸면 거부된다 (C_s 가 달라져 서명이 안 맞는다)', async () => {
-  await assert.rejects(() => witness({ ...valid, blind_s: (BigInt(valid.blind_s) + 1n).toString() }), /Assert Failed/);
-});
 await t('V5 음성: r = 0 은 회로가 거부한다 (2026-09-21 결정 — IsZero 제약)', async () => {
   await assert.rejects(() => witness({ ...valid, r: '0' }), /Assert Failed/);
+});
+await t('V11 음성: r_rp 를 바꾸면 거부 (auid_s·arid_s·C_s 가 모두 어긋난다 — ⑤ 같은 r_rp)', async () => {
+  await assert.rejects(() => witness({ ...valid, r_rp: (BigInt(valid.r_rp) + 1n).toString() }), /Assert Failed/);
+});
+await t('V11 음성: 공개 입력 auid_s·arid_s·r_s 를 하나씩 바꾸면 거부', async () => {
+  await assert.rejects(() => witness({ ...valid, auid_s: (BigInt(valid.auid_s) + 1n).toString() }), /Assert Failed/);
+  await assert.rejects(() => witness({ ...valid, arid_s: (BigInt(valid.arid_s) + 1n).toString() }), /Assert Failed/);
+  await assert.rejects(() => witness({ ...valid, r_s: (BigInt(valid.r_s) + 1n).toString() }), /Assert Failed/);
+});
+await t('V11 양성: 다른 r_s·r_rp 로 만든 세션(픽스처 재생성)은 통과 — 같은 r_rp 로 다른 arid 의 auid_s 는 다르다(D7)', async () => {
+  const fx2 = await buildValidInput({ r_s: 1n, r_rp: 2n });
+  await witness(fx2.input);
+  assert.notEqual(await auidSOf({ auid: fx2.auid, arid: fx2.arid, r_rp: 2n }), await auidSOf({ auid: fx2.auid, arid: fx2.arid + 1n, r_rp: 2n }));
+});
+await t('V11 음성: PPID 를 옛 순서 Poseidon(uid, s_u, chainid, arid) 로 내면 거부(D13)', async () => {
+  const { buildPoseidon } = await import('circomlibjs');
+  const ps = await buildPoseidon();
+  const old = ps.F.toObject(ps([BigInt(valid.uid), BigInt(valid.s_u), BigInt(valid.chainid), BigInt(valid.arid)])).toString();
+  assert.notEqual(old, valid.PPID);
+  await assert.rejects(() => witness({ ...valid, PPID: old }), /Assert Failed/);
+});
+await t('V11 음성: pk_i ≥ 2^160 은 CommitSessionV11 의 Num2Bits(160) 이 거부한다', async () => {
+  await assert.rejects(() => witness({ ...valid, pk_i: (1n << 160n).toString() }), /Assert Failed/);
 });
 
 await t('⑤ 양성: 회로가 받아들인 태그는 두 조각으로 uid 로 열린다 (JS encryptTag 와 회로 계산이 일치)', async () => {
@@ -246,9 +266,6 @@ await t('V9 양성: 등록부 슬롯 번호는 임의 — 마지막 슬롯(2^20 
   const fx = await buildValidInput({ registrySlot: 2 ** 20 - 1 });   // 마지막 슬롯
   await witness(fx.input);
 });
-await t('V9 음성: r_u 가 다르면 cm_u 가 달라 등록부 포함이 깨진다', async () => {
-  await assert.rejects(() => witness({ ...valid, r_u: (BigInt(valid.r_u) + 1n).toString() }), /Assert Failed/);
-});
 await t('V9 음성: 슬롯이 비어 있으면(리프 0) 거부 — 게시 전 자격증명', async () => {
   const fx = await buildValidInput({ registryLeafOverride: 0n });
   await assert.rejects(() => witness(fx.input), /Assert Failed/);
@@ -276,7 +293,7 @@ await t('V9 음성: reg_pathIndices 가 불리언이 아니면(2) 거부, 비트
 await t('V9 음성: salt(s_u) 를 바꾸면 PPID·C_u·등록부가 모두 어긋난다(지갑 시연 "prove" 경로)', async () => {
   await assert.rejects(() => witness({ ...valid, s_u: (BigInt(valid.s_u) + 1n).toString() }), /Assert Failed/);
 });
-await t('V9: JS registryLeaf 와 회로의 리프 계산이 일치한다 (main.inc.leaf)', async () => {
+await t('V11: JS registryLeaf 와 회로의 리프 계산이 일치한다 (main.inc.leaf)', async () => {
   // main.regLeaf.out 자체는 circom 최적화가 inc.leaf 와 같은 와이어로 합쳐 witness 색인을 -1(별도 저장 없음)로
   // 지운다 — producer.out 을 <== 로 바로 다른 신호에 넘기는 자리는 전부 이 패턴이다(main.sLeaf.out·main.cfu.out 도 -1).
   // 소비자 쪽 main.inc.leaf 가 실제 색인을 쥐고 있고 inc.leaf === regLeaf.out 제약으로 값이 같으므로 여기서 비교한다.
@@ -286,7 +303,7 @@ await t('V9: JS registryLeaf 와 회로의 리프 계산이 일치한다 (main.i
   const idx = Number(line.split(',')[1]);
   const w = await witness(valid);
   const fx = await buildValidInput();
-  assert.equal(BigInt(w[idx]), await registryLeaf(fx.cm_u, fx.Cf_u));
+  assert.equal(BigInt(w[idx]), await registryLeaf(fx.auid, fx.Cf_u));
 });
 await t('V9 양성: 6번째 슬롯 범위·집합 — attrs[5] = 0 ∈ [0, 0], set_sel = 6', async () => {
   const fx = await buildValidInput({ disclosure: { mask: 0b100000n, lo: [0n, 0n, 0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n, 0n, 0n] }, set: { slot: 5, members: [0, 1, 2] } });
@@ -299,5 +316,6 @@ console.log(`## pi_cred 비선형 제약: ${constraints.toLocaleString()}`);
 console.log(`   (참고 — Mode 2 pi_pk_i_v3: 13,905)`);
 console.log('   (V3 2026-09-16: 25,505)');
 console.log('   (V8 2026-09-24: 37,130)');
+console.log('   (V10 2026-10-02: 34,934)');
 
 process.exit(failed === 0 ? 0 : 1);

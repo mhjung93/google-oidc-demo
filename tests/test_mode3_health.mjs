@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { ethers } from 'ethers';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
 import { createShare } from '../lib/mode3_trace.js';
-import { createSessionKey, buildUserCredRequest, buildIssueRequest } from '../lib/mode3_wallet.js';
+import { issueV11, userOf, ALICE_ATTRS } from './helpers/mode3_flow.mjs';
 const stack = await startIsolatedMode3Stack();
 const { cia, rp, wallet } = stack;
 let fails = 0; async function t(n, f) { try { await f(); console.log('ok   -', n); } catch (e) { fails++; console.log('FAIL -', n, '\n      ', e.message); } }
@@ -53,26 +53,24 @@ await t('Vary: Origin 은 허용·거절 모두에 붙는다(중간 캐시가 �
 // 2026-09-25 리뷰: 위 '민감 키 없음' 은 **키 이름**만 본다 — uid 를 'account' 같은 다른 이름으로 싣는 순간
 // 통째로 무력해진다. 여기서는 테스트가 값을 직접 만든 뒤(등록·자격증명·세션) 그 **값**이 세 응답 어디에도
 // 문자열로 없는지 본다. 맨 뒤에 둔다 — 계정·세션을 만들어 앞 케이스들의 카운터를 흔들지 않게.
-await t('민감 "값" 없음 — 등록 uid·s_u·r_u·sk_u, C_u 의 Cf_u, 세션의 Cf_s 가 응답에 안 실린다', async () => {
+await t('민감 "값" 없음 — 등록 uid·s_u·sk_u, C_u 의 Cf_u, 세션의 Cf_s 가 응답에 안 실린다', async () => {
   // 지갑에도 계정을 하나 만든다(testuser) — 지갑 health 가 registered 상태에서 uid 를 흘리지 않는지 보려면 필요하다.
   const wreg = await wallet.post('/wallet/register', { uid: '12345', pwd: 'password123' });
   assert.equal(wreg.status, 201, JSON.stringify(wreg.body));
-  // AA 에는 alice(67890) 로 등록 → 사용자 자격증명 → 세션. 비밀을 테스트가 직접 뽑으므로 값을 전부 안다.
-  const uidB = 67890n;
+  // AA 에는 alice(67890) 로 등록 → C_u 발급(세션 포함, V11 은 한 요청). 비밀을 테스트가 직접 뽑으므로 값을 전부 안다.
+  const arid = 22222222222222222222n;
   const reg = await cia.registerUser('67890', 'alicepw');
-  const sk_u = reg.sk_u;
-  const uc = await buildUserCredRequest({ uid: uidB, s_u: reg.s_u, r_u: reg.r_u, sk_u, attrs: [2005n, 840n, 0n, 0n, 0n, 0n] });
-  assert.equal((await cia.post('/cia/user_cred', uc.body)).status, 201);
+  // 이 파일은 ethers provider 를 따로 만들지 않고 /mode3/health 의 chain.head 로 max_height 를 정한다 — issueV11 은
+  // provider 대신 max_height 를 직접 받을 수 있다(그 쪽 기본값은 provider.getBlockNumber()+300 과 같은 식).
   const chain = (await (await get(cia.base)).json()).chain;
-  const iss = await buildIssueRequest({ uid: uidB, Cf_u: uc.Cf_u, arid: 22222222222222222222n, sk_u, session: createSessionKey(), chainid: BigInt(chain.id), max_height: BigInt(chain.head) + 300n });
-  const issued = await cia.post('/cia/issue', iss.body);
-  assert.equal(issued.status, 200, JSON.stringify(issued.body));
+  const iss = await issueV11(cia, userOf(reg, '67890', ALICE_ATTRS), { arid, chainid: BigInt(chain.id), max_height: BigInt(chain.head) + 300n });
+  assert.equal(iss.r.status, 200, JSON.stringify(iss.r.body));
 
   const secrets = {
-    s_u: reg.s_u.toString(), r_u: reg.r_u.toString(), sk_u, cm_u_x: reg.cm_u.x.toString(),
-    Cf_u: uc.Cf_u.toString(), blind_u: uc.secrets.blind_u.toString(),
-    Cf_s: issued.body.Cf_s, blind_s: iss.secrets.blind_s.toString(),
-    arid: '22222222222222222222',
+    s_u: reg.s_u.toString(), sk_u: reg.sk_u,
+    Cf_u: iss.req.Cf_u.toString(), blind_u: iss.blind_u.toString(),
+    Cf_s: iss.cred.Cf_s, r_s: iss.r_s.toString(), r_rp: iss.r_rp.toString(),
+    arid: arid.toString(),
   };
   // uid 는 다섯 자리라 단순 부분 문자열로 보면 공개 블록 번호·root 앞자리와 우연히 겹칠 수 있다. 그 셋은
   // 계정과 무관한 공개값이므로 uid 검사에서만 지우고, 숫자 경계까지 맞을 때만 유출로 본다.
@@ -89,4 +87,5 @@ await t('민감 "값" 없음 — 등록 uid·s_u·r_u·sk_u, C_u 의 Cf_u, 세�
 });
 
 await stack.stop();
-if (fails) { console.log(`\n${fails} FAIL`); process.exit(1); } console.log('\nall ok');
+console.log(fails ? `\n${fails} FAIL` : '\nall ok');
+process.exit(fails ? 1 : 0);   // issueV11 의 snarkjs worker 스레드가 이벤트 루프를 붙잡는다 — 다른 chain 테스트와 같이 명시적으로 끝낸다

@@ -13,11 +13,12 @@ await t('빈 트리 root = 영해시 체인, 깊이 20', async () => {
   assert.equal(tree.depth, REG_DEPTH); assert.equal(REG_DEPTH, 20);
   assert.equal(tree.root(), z);
 });
-await t('registryLeaf = Poseidon(cm.x, cm.y, Cf_u); 문자열 입력도 같다', async () => {
+await t('registryLeaf = Poseidon(auid, Cf_u) (V11); 문자열 입력도 같다; 옛 cm_u 3인자 식과 다르다', async () => {
   const ps = await buildPoseidon();
-  const a = await registryLeaf({ x: 11n, y: 22n }, 33n);
-  assert.equal(a, ps.F.toObject(ps([11n, 22n, 33n])));
-  assert.equal(await registryLeaf({ x: '11', y: '22' }, '33'), a);
+  const a = await registryLeaf(11n, 33n);
+  assert.equal(a, ps.F.toObject(ps([11n, 33n])));
+  assert.equal(await registryLeaf('11', '33'), a);
+  assert.notEqual(a, ps.F.toObject(ps([11n, 22n, 33n])));
 });
 await t('set/leafAt/path: 경로로 root 가 재계산되고, 덮어쓰기·0 으로 비우기가 된다', async () => {
   const tree = await createRegistryTree();

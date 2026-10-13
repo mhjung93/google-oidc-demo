@@ -12,34 +12,37 @@ include "babyjub.circom";
 // 스킴 선택(Pedersen vs Poseidon) 근거: docs/superpowers/specs/2026-09-09-mode3-cia-revocation-design.md §4.1, §11
 //
 //   C_u = uid·G_UID + s_u·G_SU + attr₀·G_ATTR0 + … + attr₅·G_ATTR5 + blind_u·H   (사용자당 하나)
-//   C_s = arid·G_ARID + pk_i·G_PKI + blind_s·H                                    (세션마다)
+//   C_s = pk_i·G_PKI + max_height·G_EXP + r_s·G_RS + r_rp·H (세션마다, V11)
 //
 //   uid     — 계정 식별자. PPID 유도에 쓰인다
 //   s_u     — 사용자 비밀. CIA가 PPID를 열거하지 못하게 막는다 (Mode 2의 salt)
 //   attrs   — 속성 6슬롯. CIA 는 값을 모른다
 //   blind_u — C_u 블라인딩. CIA 가 자기가 아는 uid 로 C_u 를 재계산해 대조하는 것을 막는다
-//   arid    — RP 식별자. 세션 자격증명을 RP에 묶는다 (Mode 2의 rid)
-//   pk_i    — 세션키. 이 π가 이 서명자의 것임을 묶는다
-//   blind_s — C_s 블라인딩. CIA 가 공개된 (arid, pk_i)로 C_s 를 재계산해 대조하는 것을 막는다
+//   pk_i       — 세션키. 이 π가 이 서명자의 것임을 묶는다
+//   max_height — 세션 만료(블록 높이). V11 에서 토큰 메시지 대신 C_s 에 묶인다(D5)
+//   r_s        — 세션 nonce(RP 챌린지, 250비트). RP 가 1회 소비해 재전송을 막는다
+//   r_rp       — C_s 블라인딩. IdP 가 공개된 (pk_i, max_height, r_s)로 C_s 를 재계산해 대조하는 것을 막고, auid_s·arid_s 와도 같은 값을 묶는다(D7)
 //
 // 왜 교과서 형태인가. circomlib 의 Pedersen(n) 은 비트를 4비트 창으로 잘라 부호 반전을 섞는
-// 인코딩이라, 그 위에서 발급 시 시그마 프로토콜(π_u, §3.5)을 짜면 이웃 스칼라와 세그먼트를
-// 공유하는 문제가 생긴다. 스칼라마다 생성원을 따로 두면 PoK 가 교과서 그대로다.
+// 인코딩이라, 그 위에서 발급 시 시그마 프로토콜(π_u, §3.5 — V5~V10. V11 부터는 Groth16 회로 π_IdP 로 대체됐다)을 짜면
+// 이웃 스칼라와 세그먼트를 공유하는 문제가 생긴다. 스칼라마다 생성원을 따로 두면 PoK 가 교과서 그대로다.
 //
 // 스칼라 상한 2^250. baby jubjub 소수 부분군 위수 r 은 251비트(≈2^250.6)라 2^250 < r.
 // 이 검사가 없으면 e 와 e+r 이 같은 점을 만들어 binding 이 깨진다 — 한 C_u 를 두 s_u 로
 // 열어 PPID 두 개를 얻는 Sybil 이 가능해진다. lib/mode3_credential.js 도 같은 상한을 지킨다.
 //
-// 생성원은 circomlib pedersen.circom 의 NUMS 점 BASE[0..10]. 서로의 이산로그를 아무도 모른다.
+// 생성원은 circomlib pedersen.circom 의 NUMS 점 BASE[0..12]. 서로의 이산로그를 아무도 모른다.
 // circomlib 표는 index 0..9 까지라, index 10(attr5) 은 표에는 없고 circomlibjs getBasePoint('blake', 10) 으로 계산한 값이다(lib/mode3_credential.js 와 같다).
 // 2026-09-10 circomlibjs 로 (그때는 9개였던) 생성원 전부의 inCurve·inSubgroup 을 확인했다. V9 에서 속성이
-// 6슬롯으로 늘며 추가된 attr4·attr5(index 9·10) 두 점도 tests/test_mode3_v9_lib.js 가 circomlibjs
-// getBasePoint('blake', 9)·(10) 과 글자 일치로 검증한다 — 지금은 11개 모두 확인됨. 두 커밋이 생성원을 나눠 쓴다
-// (H 만 공유) — 각 커밋의 binding 은 자기 항의 생성원만으로 성립한다.
+// 6슬롯으로 늘며 추가된 attr4·attr5(index 9·10), V11(2026-10-12)에서 C_s 에 추가된 exp·rs(index 11·12) 까지
+// 지금은 13개 생성원 전부를 tests/test_mode3_commit_scheme.mjs 가 곡선·부분군(inCurve·inSubgroup)으로 확인한다
+// (circomlibjs getBasePoint 와의 문자열 대조는 생성원을 만들 때 수기로 했다 — 자동 테스트로 고정돼 있지 않다). 두
+// 커밋이 생성원을 나눠 쓴다(H 만 공유) — 각 커밋의 binding 은 자기 항의 생성원만으로 성립한다.
 
 // 2026-09-21 자격증명 이중 구조(설계 §3.1). 사용자 자격증명 커밋 — 사용자당 하나.
 //   C_u = uid·G_UID + s_u·G_SU + attr₀·G_ATTR0 + … + attr₅·G_ATTR5 + blind_u·H
-// arid·pk_i 항이 없다(세션 커밋에). 생성원·순서는 lib/mode3_credential.js userCommit 과 같다.
+// pk_i 항이 없다(세션 커밋에). arid 는 V11 부터 C_s 에도 없다 — 토큰의 arid_s(별도 해시)로 옮겨갔다(D5). 생성원·순서는
+// lib/mode3_credential.js userCommit 과 같다.
 template CommitUser() {
     signal input uid;
     signal input s_u;
@@ -105,68 +108,52 @@ template CommitUser() {
     Cy <== a2.yout;
 }
 
-// 세션 커밋(설계 §3.2) — 로그인마다.  C_s = arid·G_ARID + pk_i·G_PKI + blind_s·H
-// pk_i 를 여기 두는 이유: AA 가 평문 pk_i 를 보면 온체인 pk_i 로 트랜잭션 ↔ uid 가 이어진다(§2).
-// arid 를 두는 이유: 같은 세션키를 두 서비스에 쓰지 못하게 세션 자격증명을 서비스에 묶는다.
-template CommitSession() {
-    signal input arid;
+// V11(2026-10-12 §3.2·D5): 세션 커밋 — 로그인마다.  C_s = pk_i·G_PKI + max_height·G_EXP + r_s·G_RS + r_rp·H
+//   pk_i 160비트(세션키 주소), max_height 64비트(만료 블록), r_s·r_rp 250비트(RP 챌린지·RP 난수). lib/mode3_credential.js sessionCommit 과 같다.
+//   arid 는 빠졌다 — 서비스 바인딩은 토큰의 arid_s·auid_s(둘 다 r_rp 로 묶인다)가 맡는다. 블라인딩은 RP 가 준 r_rp:
+//   RP 는 C_s 의 열림값을 모두 알고(심층 방어), IdP 는 r_rp 를 몰라 C_s 를 열지 못한다.
+//   G_EXP·G_RS 는 circomlibjs getBasePoint('blake', 11)·(12) — 2026-10-12 inCurve·inSubgroup 확인(tests/test_mode3_credential_v11.js 가 글자 일치를 검사).
+template CommitSessionV11() {
     signal input pk_i;
-    signal input blind_s;
+    signal input max_height;
+    signal input r_s;
+    signal input r_rp;
     signal output Cx;
     signal output Cy;
 
     var N = 250;
-    var G_ARID[2]  = [2671756056509184035029146175565761955751135805354291559563293617232983272177,
-                      2663205510731142763556352975002641716101654201788071096152948830924149045094];
+    var NP = 160;   // pk_i 는 이더리움 주소 — pi_cred 의 옛 Num2Bits(160) 을 여기로 옮겼다
+    var NH = 64;    // max_height — 토큰 메시지에서 빠진 대신 여기서 범위가 잡힌다
     var G_PKI[2]   = [7107336197374528537877327281242680114152313102022415488494307685842428166594,
                       2857869773864086953506483169737724679646433914307247183624878062391496185654];
+    var G_EXP[2]   = [15213743939064641260146023541489016041952046087348720940641996397552589095764,
+                      12626463709848357735089296069583194130598330177778437327210365765201604869873];
+    var G_RS[2]    = [3794846596710804728427490183747125272829051653079153052879417268450674798099,
+                      21842435477255044883863745269531290629657425422620774125328061317110773122799];
     var H_BLIND[2] = [20265828622013100949498132415626198973119240347465898028410217039057588424236,
                       1160461593266035632937973507065134938065359936056410650153315956301179689506];
 
-    component bArid  = Num2Bits(N);  bArid.in  <== arid;
-    component bPki   = Num2Bits(N);  bPki.in   <== pk_i;
-    component bBlind = Num2Bits(N);  bBlind.in <== blind_s;
-    component mArid  = EscalarMulFix(N, G_ARID);
-    component mPki   = EscalarMulFix(N, G_PKI);
-    component mBlind = EscalarMulFix(N, H_BLIND);
-    for (var i = 0; i < N; i++) {
-        mArid.e[i]  <== bArid.out[i];
-        mPki.e[i]   <== bPki.out[i];
-        mBlind.e[i] <== bBlind.out[i];
-    }
-    // 덧셈 순서: arid + pk_i + blind_s (JS sessionCommit 과 같다).
+    component bPki = Num2Bits(NP);  bPki.in <== pk_i;
+    component bMh  = Num2Bits(NH);  bMh.in  <== max_height;
+    component bRs  = Num2Bits(N);   bRs.in  <== r_s;
+    component bRrp = Num2Bits(N);   bRrp.in <== r_rp;
+    component mPki = EscalarMulFix(NP, G_PKI);
+    component mMh  = EscalarMulFix(NH, G_EXP);
+    component mRs  = EscalarMulFix(N, G_RS);
+    component mRrp = EscalarMulFix(N, H_BLIND);
+    for (var i = 0; i < NP; i++) mPki.e[i] <== bPki.out[i];
+    for (var i = 0; i < NH; i++) mMh.e[i]  <== bMh.out[i];
+    for (var i = 0; i < N; i++) { mRs.e[i] <== bRs.out[i]; mRrp.e[i] <== bRrp.out[i]; }
+    // 덧셈 순서: pk_i + max_height + r_s + r_rp (JS sessionCommit 과 같다).
     component a1 = BabyAdd();
-    a1.x1 <== mArid.out[0]; a1.y1 <== mArid.out[1];
-    a1.x2 <== mPki.out[0];  a1.y2 <== mPki.out[1];
+    a1.x1 <== mPki.out[0]; a1.y1 <== mPki.out[1];
+    a1.x2 <== mMh.out[0];  a1.y2 <== mMh.out[1];
     component a2 = BabyAdd();
-    a2.x1 <== a1.xout;       a2.y1 <== a1.yout;
-    a2.x2 <== mBlind.out[0]; a2.y2 <== mBlind.out[1];
-    Cx <== a2.xout;
-    Cy <== a2.yout;
-}
-
-// V9(2026-10-01 등록부 §5.2 조건 9): 등록 커밋 cm_u = s_u·G_SU + r_u·H — lib/mode3_issuance.js registrationCommit 과 같은 생성원·순서.
-// π_RP 가 "C_u 의 s_u 가 등록 때 낸 cm_u 의 s_u 와 같다" 를 보이려고 회로 안에서 다시 계산한다.
-template RegistrationCommit() {
-    signal input s_u;
-    signal input r_u;
-    signal output Cx;
-    signal output Cy;
-
-    var N = 250;
-    var G_SU[2]    = [5802099305472655231388284418920769829666717045250560929368476121199858275951,
-                      5980429700218124965372158798884772646841287887664001482443826541541529227896];
-    var H_BLIND[2] = [20265828622013100949498132415626198973119240347465898028410217039057588424236,
-                      1160461593266035632937973507065134938065359936056410650153315956301179689506];
-
-    component bSu = Num2Bits(N);  bSu.in <== s_u;
-    component bRu = Num2Bits(N);  bRu.in <== r_u;
-    component mSu = EscalarMulFix(N, G_SU);
-    component mRu = EscalarMulFix(N, H_BLIND);
-    for (var i = 0; i < N; i++) { mSu.e[i] <== bSu.out[i]; mRu.e[i] <== bRu.out[i]; }
-    component a = BabyAdd();
-    a.x1 <== mSu.out[0]; a.y1 <== mSu.out[1];
-    a.x2 <== mRu.out[0]; a.y2 <== mRu.out[1];
-    Cx <== a.xout;
-    Cy <== a.yout;
+    a2.x1 <== a1.xout;     a2.y1 <== a1.yout;
+    a2.x2 <== mRs.out[0];  a2.y2 <== mRs.out[1];
+    component a3 = BabyAdd();
+    a3.x1 <== a2.xout;     a3.y1 <== a2.yout;
+    a3.x2 <== mRrp.out[0]; a3.y2 <== mRrp.out[1];
+    Cx <== a3.xout;
+    Cy <== a3.yout;
 }

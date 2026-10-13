@@ -4,16 +4,20 @@
 #   bash scripts/pack_mode3_build.sh [out.tar.gz]      # 기본 ~/mode3_build_YYYYMMDD.tar.gz
 #   (받는 쪽, 저장소 루트에서)  tar -xzf mode3_build_YYYYMMDD.tar.gz && sha256sum -c build/mode3/MANIFEST.sha256
 #
-# 묶는 것(런타임이 읽는 셋, 약 27MB — lib/mode3_wallet.js 의 WASM_PATH·ZKEY_PATH·VKEY_PATH, cia.js 의 VKEY_PATH):
+# 묶는 것(런타임이 읽는 셋, 약 34MB — lib/mode3_wallet.js 의 WASM_PATH·ZKEY_PATH·VKEY_PATH, lib/mode3_idp_proof.js 의 IDP_WASM_PATH·IDP_ZKEY_PATH·IDP_VKEY_PATH):
 #   build/mode3/pi_cred_final.zkey   증명 키(지갑)
 #   build/mode3/pi_cred_vkey.json    검증 키(CIA·RP·지갑)
 #   build/mode3/pi_cred_js/          pi_cred.wasm + witness 생성기
+#   build/mode3/pi_idp_final.zkey    증명 키(지갑, π_IdP)
+#   build/mode3/pi_idp_vkey.json     검증 키(CIA)
+#   build/mode3/pi_idp_js/           pi_idp.wasm + witness 생성기
 # 묶지 않는 것: pi_cred.r1cs·pi_cred.sym·pi_cred_0000.zkey·witness_test/·commit/ (회로 개발·테스트용), *.ptau(키 생성용 2.3GB).
 # 셋이 어긋나면 로그인이 전부 bad_proof 가 되므로 **항상 한 세트로** 옮긴다(docs/MODE3_DEMO.md "처음 한 번" 0 의 경고와 같다).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${1:-$HOME/mode3_build_$(date +%Y%m%d).tar.gz}"
-FILES=(build/mode3/pi_cred_final.zkey build/mode3/pi_cred_vkey.json build/mode3/pi_cred_js/pi_cred.wasm build/mode3/pi_cred_js/generate_witness.js build/mode3/pi_cred_js/witness_calculator.js)
+FILES=(build/mode3/pi_cred_final.zkey build/mode3/pi_cred_vkey.json build/mode3/pi_cred_js/pi_cred.wasm build/mode3/pi_cred_js/generate_witness.js build/mode3/pi_cred_js/witness_calculator.js
+       build/mode3/pi_idp_final.zkey build/mode3/pi_idp_vkey.json build/mode3/pi_idp_js/pi_idp.wasm build/mode3/pi_idp_js/generate_witness.js build/mode3/pi_idp_js/witness_calculator.js)
 
 cd "$ROOT"
 for f in "${FILES[@]}"; do

@@ -332,11 +332,11 @@ describe('Mode3Wallet', function () {
     expect(await factory.isWallet(walletAddr)).to.equal(true);
   });
 
-  it('V9: pub 은 30개이고 mask = 0 이고 set_sel = 0 이면 꼬리는 항상 붙지만 Disclosure 이벤트는 없음', async () => {
+  it('V11: pub 은 33개이고 mask = 0 이고 set_sel = 0 이면 꼬리는 항상 붙지만 Disclosure 이벤트는 없음', async () => {
     const { wallet } = await deployStack(ST);
     const { payload, sig } = await signedPayload(ST, wallet);
     const rc = await (await wallet.execute(payload, sig, ST.a, ST.b, ST.c, ST.pub)).wait();
-    assert.equal(ST.pub.length, 30);
+    assert.equal(ST.pub.length, 33);
     const { disclosure } = parseExecuteReceipt(rc, wallet.target);
     assert.equal(disclosure, null);
   });

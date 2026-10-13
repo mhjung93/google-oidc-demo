@@ -1,4 +1,4 @@
-// Mode 3 Snap — 등록 비밀(s_u·r_u·sk_u)을 MetaMask 암호화 저장소에 보관하고 동의 대화상자를 띄운다.
+// Mode 3 Snap — 등록 비밀(s_u·sk_u)을 MetaMask 암호화 저장소에 보관하고 동의 대화상자를 띄운다.
 // 정본은 스펙 2026-09-22 metamask-snap §3.1(RPC 표·상태 모양). tests/helpers/snap_sim.mjs(시뮬레이터)와 입출력이 같아야 한다.
 // 시뮬레이터와 다른 점은 둘: 대화상자를 실제로 띄운다는 것과, 호출 오리진을 검사한다는 것이다.
 //
@@ -73,10 +73,10 @@ const requireRegistered = (state) => state.registration ?? fail('not_registered:
 /** 증인 묶음 — lib/mode3_secret_source.js 의 validateWitness 형식(스펙 §3.1). consentLogin 응답으로만 나간다. */
 function buildWitness(state) {
   const r = state.registration;
-  if (!isDec(r.uid) || !isDec(r.s_u) || !isDec(r.r_u) || typeof r.sk_u !== 'string' || !Array.isArray(r.attrs)) {
+  if (!isDec(r.uid) || !isDec(r.s_u) || typeof r.sk_u !== 'string' || !Array.isArray(r.attrs)) {
     fail('registration_incomplete: storeRegistration 이 아직 끝나지 않았다');
   }
-  return { uid: r.uid, s_u: r.s_u, r_u: r.r_u, sk_u: r.sk_u, attrs: clone(r.attrs), userCred: clone(state.userCred) };
+  return { uid: r.uid, s_u: r.s_u, sk_u: r.sk_u, attrs: clone(r.attrs), userCred: clone(state.userCred) };
 }
 
 /** 페이지가 { userCred } 로 감싸 보내도 받는다 — JSON-RPC 의 params 는 null 을 못 싣는 경우가 있다. */
@@ -97,32 +97,34 @@ export const onRpcRequest = async ({ origin, request }) => {
   const state = await getState();
 
   switch (request.method) {
-    // 등록(스펙 §4.1): uid·비밀번호를 대화상자로 받고 s_u·r_u 를 만들어 저장한다. 비밀번호는 저장하지 않고 그대로 돌려준다.
+    // 등록(스펙 §4.1): uid·비밀번호를 대화상자로 받고 s_u·sk_u 를 만들어 저장한다. 비밀번호는 저장하지 않고 그대로 돌려준다.
     case 'register': {
       if (state.registration) fail('already_registered: 이미 등록돼 있다 (초기화하려면 reset)');
       const uid = await prompt('Mode 3 등록', ['사용자 uid(숫자)를 입력하세요.'], '12345');
       if (uid === null || uid === '') return { denied: true };
       if (!isDec(String(uid).trim())) fail('bad_uid: uid 는 10진 숫자 문자열이어야 한다');
-      const pwd = await prompt('Mode 3 등록', [`uid: ${uid}`, '속성 기관(AA) 계정 비밀번호를 입력하세요. 비밀번호는 Snap 에 저장하지 않습니다.'], '비밀번호');
+      const pwd = await prompt('Mode 3 등록', [`uid: ${uid}`, '신원 기관 계정 비밀번호를 입력하세요. 비밀번호는 Snap 에 저장하지 않습니다.'], '비밀번호');
       if (pwd === null || pwd === '') return { denied: true };
       const secrets = createRegistrationSecrets();
       state.registration = {
-        uid: String(uid).trim(), s_u: secrets.s_u, r_u: secrets.r_u, cm_u: secrets.cm_u,
+        uid: String(uid).trim(), s_u: secrets.s_u, auid: null,
         sk_u: secrets.sk_u, slot: null, attrs: null, registeredAt: new Date().toISOString(),
       };
       state.userCred = null;
       await setState(state);
-      return { uid: state.registration.uid, pwd, cm_u: clone(secrets.cm_u), sk_u: secrets.sk_u };
+      return { uid: state.registration.uid, pwd, s_u: secrets.s_u, sk_u: secrets.sk_u };
     }
 
-    // 에이전트 POST /wallet/register 응답(slot·attrs)을 저장한다. sk_u 는 register 때 이미 만들어 저장했으므로 받지 않는다(V9 §7.1).
+    // 에이전트 POST /wallet/register 응답(slot·attrs·auid)을 저장한다. sk_u·s_u 는 register 때 이미 만들어 저장했으므로 받지 않는다(V9 §7.1).
     case 'storeRegistration': {
       const reg = requireRegistered(state);
-      const { attrs, slot } = params;
+      const { attrs, slot, auid } = params;
       if (!Array.isArray(attrs) || attrs.length !== 6 || !attrs.every((a) => isDec(String(a)))) fail('bad_attrs: attrs 는 10진 문자열 6개');
       if (!Number.isInteger(slot) || slot < 0) fail('bad_slot');
+      if (!isDec(String(auid ?? ''))) fail('bad_auid: auid 는 10진 문자열');
       reg.attrs = attrs.map(String);
       reg.slot = slot;
+      reg.auid = String(auid);
       await setState(state);
       return { ok: true };
     }
@@ -131,7 +133,7 @@ export const onRpcRequest = async ({ origin, request }) => {
     case 'getPublicInfo': {
       const r = state.registration;
       return {
-        registered: Boolean(r), uid: r?.uid ?? null, cm_u: clone(r?.cm_u), attrs: clone(r?.attrs), slot: r?.slot ?? null,
+        registered: Boolean(r), uid: r?.uid ?? null, auid: r?.auid ?? null, attrs: clone(r?.attrs), slot: r?.slot ?? null,
         hasUserCred: Boolean(state.userCred), consents: clone(state.consents) ?? {},
       };
     }
@@ -226,7 +228,7 @@ export const onRpcRequest = async ({ origin, request }) => {
     // 데모 초기화 — 등록 비밀·동의 기록을 모두 지운다.
     case 'reset': {
       const ok = await confirm('등록 초기화', [
-        '이 Snap 의 등록을 지웁니다. 등록 비밀(s_u·r_u·sk_u)과 동의 기록이 사라집니다.',
+        '이 Snap 의 등록을 지웁니다. 등록 비밀(s_u·sk_u)과 동의 기록이 사라집니다.',
         '체인·AA 쪽 상태는 지워지지 않습니다.',
       ]);
       if (!ok) return { denied: true };

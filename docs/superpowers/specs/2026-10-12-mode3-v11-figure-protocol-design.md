@@ -1,6 +1,6 @@
 # Mode 3 V11 — 그림(2026-10-12 Overall Flow · 덱 3~8장)에 코드를 맞추는 프로토콜 판 올리기
 
-작성 2026-10-12. 상태: **초안(사용자 검토 대기)**. 브랜치 `feat/mode3-v11`(태그 `mode3-v10` = 78b2a1f 에서 분기). 근거: `documents/261012.pptx`(Overall Flow·Properties), `documents/261010_now.pptx` 3~8장(ID 변환·π_IdP·π_RP·π_s·토큰), 2026-10-12 대화의 결정 D1~D3·D7·D10·D15, 현행 코드 사실(`circuits/pi_cred.circom` `PiCred(32, 20)` 공개 입력 30개, `lib/mode3_credential.js`, `lib/mode3_issuance.js`, `cia.js`, `mode3_wallet_agent.js`, `mode3_rp.js`, `contracts/Mode3Wallet.sol`).
+작성 2026-10-12. 상태: **구현 완료(결과 `results/mode3_v11_figure_protocol_20261013.md`)**. 브랜치 `feat/mode3-v11`(태그 `mode3-v10` = 78b2a1f 에서 분기). 근거: `documents/261012.pptx`(Overall Flow·Properties), `documents/261010_now.pptx` 3~8장(ID 변환·π_IdP·π_RP·π_s·토큰), 2026-10-12 대화의 결정 D1~D3·D7·D10·D15, 현행 코드 사실(`circuits/pi_cred.circom` `PiCred(32, 20)` 공개 입력 30개, `lib/mode3_credential.js`, `lib/mode3_issuance.js`, `cia.js`, `mode3_wallet_agent.js`, `mode3_rp.js`, `contracts/Mode3Wallet.sol`).
 
 ## 0. 한 줄 요약
 
@@ -95,7 +95,7 @@ RP → 지갑: `{ arid, origin, cert_s, pk_trace, r_s, r_rp, allowAgent, factory
 ### 5.2 3·4 — DA request / 토큰 (`POST /cia/issue` V11)
 본문 `{ uid, auid_s, arid_s, C_u_pt, C_s_pt, chainid, allowAgent, max_height, proof_idp, sig_u }`,
 `sig_u = EdDSA_{sk_u}(Poseidon(D_ISSUEREQ_V11, auid_s, arid_s, Cf_u, Cf_s, chainid, allowAgent, max_height))`.
-IdP 검사 순서: 형식 → `max_height < 2^64` → 계정·disabled → chainid 허용 → sig_u → **π_IdP 검증**(공개 입력: uid, 계정의 auid, auid_s, C_u_pt, C_s_pt, max_height) → C_s 부분군 → 체인 생존 → disabled 재확인 →
+IdP 검사 순서(코드 순서, `cia.js`): 형식 → `max_height < 2^64` → 계정·disabled → chainid 허용 → C_u·C_s 부분군 → sig_u → **π_IdP 검증**(공개 입력: uid, 계정의 auid, auid_s, C_u_pt, C_s_pt, max_height) → 체인 생존 → disabled 재확인 →
 - `Cf_u = Poseidon(C_u_pt)` 가 활성 자격증명과 같으면 그대로; 다르면(첫 로그인·사용자의 속성 변경 뒤) **활성 자격증명 은퇴 → `creds` 에 추가 → `setSlot(uid, Poseidon(auid, Cf_u))` → persist → 즉시 게시**(지금 `/cia/user_cred` 가 하던 일) →
 - 서명 `sigma = EdDSA_IdP(Poseidon(D_V11, auid_s, arid_s, Cf_u, Cf_s, chainid, allowAgent))` →
 - 세션 기록 `{ Cf_s, max_height, chainid, allowAgent, issuedAt }`(auid_s·arid_s 는 **기록하지 않음**, D1) →
@@ -136,24 +136,35 @@ RP `verifyLogin` 추가 검사(기존 a~g 사이, d 뒤): `pub[32] === 소비한
 
 ## 8. 비용
 
-| 항목 | V10 | V11(추정) | 근거 |
-|---|---|---|---|
-| π_RP 제약 | 34,934 | ≈ 35,000 ± 1,500 | −RegistrationCommit(스칼라곱 2) +C_s 스칼라곱 2(64·250비트) +Poseidon 4 |
-| π_RP 공개 입력 | 30 | 33 | D12 |
-| π_RP 증명 / 검증 | 1,271 / 11.3 ms | ≈ 1,300 / 12 ms | 제약 비례 |
-| π_IdP 증명 / 검증 | 80 / 99 ms(시그마 π_u) | **≈ 450 / 10 ms** | §4 |
-| 세션 발급(IdP 왕복) | 134 ms | ≈ 150 ms + π_IdP 검증 | — |
-| 로그인 왕복 | 1,626 ms | **≈ 2,100 ms** | π_IdP 생성이 더해짐 |
-| execute gas | 455,947 | ≈ 470,000 | 공개 입력 +3(검증기 약 +4,500/입력) |
-| zkey | 22.3 MB | ≈ 22.5 MB + ≈ 8 MB(pi_idp) | — |
+| 항목 | V10 | V11(추정) | V11 실측 | 근거 |
+|---|---|---|---|---|
+| π_RP 제약 | 34,934 | ≈ 35,000 ± 1,500 | **33,909** | −RegistrationCommit(스칼라곱 2) +C_s 스칼라곱 2(64·250비트) +Poseidon 4. 실측은 추정 범위 하단(−1,025) |
+| π_RP 공개 입력 | 30 | 33 | **33** | D12 |
+| π_RP 증명 / 검증 | 1,271 / 11.3 ms | ≈ 1,300 / 12 ms | **1,168.2 / 9.3 ms** | 제약 비례(`scripts/bench_pi_cred.mjs`, 10회 중앙값) |
+| π_IdP 제약 | (없음 — V10 은 π_u) | ≈ 13,000(§4) | **6,325** | CommitUser 3,537 + CommitSessionV11 2,236 + Poseidon(auid·auid_s) — 추정의 절반 |
+| π_IdP 공개 입력 | — | 8 | **8** | §4 |
+| π_IdP 증명 / 검증 | 80 / 99 ms(시그마 π_u) | **≈ 450 / 10 ms** | **292.0 / 13.2 ms** | §4(`scripts/bench_pi_idp.mjs`, 10회 중앙값) |
+| 세션 발급(IdP 왕복) | 134 ms | ≈ 150 ms + π_IdP 검증 | **467 ms**(중앙값, 448–1582) | `scripts/bench_mode3_onchain.mjs` 의 `issueMs` — `issueSession` 전체(지갑 쪽 π_IdP 생성 ≈292ms 포함) + `/cia/issue` 왕복(sig_u·π_IdP 검증·서명). V10 기준 134ms + π_IdP 증명 292ms + π_IdP 검증 13ms ≈ 440ms 로 467ms 가 거의 설명된다 |
+| 로그인 왕복 | 1,626 ms | **≈ 2,100 ms** | **1,837 ms**(중앙값, 1808–7087) | `scripts/bench_mode3_onchain.mjs` 의 로그인 전체 왕복 — π_IdP 생성이 더해짐. 첫 로그인(신규 발급 + 등록부 게시 대기 포함)은 7,087 ms |
+| execute gas | 455,947 | ≈ 470,000 | **477,220** | 같은 스크립트·같은 조건(`scripts/bench_mode3_onchain.mjs`, mask=0·캐시 π·value=0)으로 비교한 값. +21,273(+4.67%) — 공개 입력 +3(검증기 ≈20,000 + calldata ≈1,500)로 거의 전부 설명된다. `test/Mode3Wallet.test.mjs` 자체 측정(525,655)은 **다른 조건**(갓 배포된 지갑의 첫 execute + 한 번도 안 건드린 주소로 value 0.1 ETH 전송 — EVM 새 계정 생성 비용 ≈25,000 포함)이라 이 행과 직접 비교하지 않는다 — 결과 파일의 "execute gas 증가 분석" 절 참고 |
+| zkey | 22.3 MB | ≈ 22.5 MB + ≈ 8 MB(pi_idp) | **22.1 MB + 4.0 MB(pi_idp)** | pi_idp 는 제약 수가 추정의 절반이라 zkey 도 추정의 절반 수준 |
 
-실측은 구현 뒤 `results/mode3_v11_*.md` 로 남긴다.
+실측: `results/mode3_v11_figure_protocol_20261013.md`(위 표에 반영).
 
 ## 9. 보안·프라이버시 메모
 
 - **G5 복원(D15)**: IdP 는 속성 값을 모른다(C_u 는 Pedersen 은닉, π_IdP 의 공개 입력에 속성 없음). RP 는 공개한 술어만 안다(G5a). AA 측 "익명 집합 축소"(V6 §7 G4′ 약화 — AA 가 모든 값을 알아 술어 만족 집합을 셈)는 **사라진다**.
 - **대가**: 속성 값에 보증이 없다. 거래소가 "나이 ≥ 19" 를 받아들이는 근거는 "이 사용자가 그렇게 주장했고 그 주장이 그 자격증명에 고정돼 있다" 까지다. 논문·덱에 한계로 적고, 보증은 §10 의 속성 발급자로.
 - **IdP 가 보는 것**: uid, auid(고정), auid_s·arid_s(세션마다, 저장 안 함 — D1), H(C_u), H(C_s), max_height, chain_id, allowAgent. r_rp 를 모르므로 arid_s 로 서비스를 못 알아보고(G4), auid_s 로 세션을 사용자와 묶는 것은 uid 를 이미 알므로 새 정보가 아니다.
+- **설계 노출 — IdP 단독으로도 연결 가능(후퇴, 컨트롤러 판정: 설계는 바꾸지 않는다).** π_RP 공개 입력 `[30] auid_s`·`[31] arid_s`
+  는 `/wallet/tx` → `Mode3Wallet.execute(..., uint[33] pub)` 의 calldata 에 그대로 올라가 체인을 읽는 누구나 본다. IdP 는
+  `/cia/issue` 에서 같은 `auid_s`·`arid_s` 를 요청 본문으로 받는다(D3). **요청 본문을 남기는 honest-but-curious IdP 라면**, RP
+  협력이나 trace_tag 개봉 없이도 그 `auid_s` 를 자기 로그와 체인의 calldata 에서 맞춰 uid ↔ PPID 계정(`pub[0]`) ↔ 서비스
+  (`pub[1]` arid) ↔ 트랜잭션을 이을 수 있다. "IdP 는 auid_s·arid_s 를 기록하지 않는다"(D1)는 **암호학적 보장이 아니라 신뢰
+  가정**이다. **V10 대비 후퇴**다 — V10 에서 IdP 가 보는 값(Cf_s 등)은 공개 입력에 그대로 없어 이런 결정적 연결이 없었다.
+  완화 후보(둘 다 미적용, **사용자 결정 대기**): ① 운영으로 IdP 의 요청 본문 비보존(D1)을 정책·감사로 강제한다. ② 설계 대안으로
+  auid_s·arid_s 를 비공개 입력으로 돌리고 RP 대조값은 `Poseidon(r_rp)` 류의 IdP 가 재계산할 수 없는 값만 공개한다 — 회로·산출물·
+  컨트랙트 재생성이 필요하다.
 - **RP 가 보는 것**: 지금과 같음 + auid_s·arid_s(세션 바인딩). RP 간 연결은 D7 로 막힘.
 - **담합(IdP + RP)**: RP 가 r_rp 를 주면 IdP 가 `H(auid, arid, r_rp)` 로 auid_s 를 맞춰 uid ↔ PPID 를 잇는다 — trace_tag 개봉과 같은 권한(의도된 추적성, D1 은 "경로를 그걸로 두지 않는다" 는 뜻).
 - **r_rp 재사용(한 RP 안)**: 새는 것 없음(§3.2). **r_rp 를 IdP 가 알게 되면** arid_s 로 RP 를 알아본다 — RP 가 IdP 에 r_rp 를 넘기지 않는 것이 G4 의 전제(지금의 "C_s 안의 arid" 와 같은 수준).

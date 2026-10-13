@@ -12,7 +12,7 @@
 #   bash scripts/run_tests.sh chain      # hardhat 노드(:8545) 필요. IdP/CIA는 스스로 격리 기동.
 #                                        # :8546 은 비어 있거나 chainId 31338 노드여야 한다 — test_mode3_demo_full.mjs 가 비어 있으면
 #                                        # 폐기 체인 노드를 띄우고 끝나면 끈다. 이미 31338 노드가 있으면 끄지 않고 그 위에 배포·트랜잭션을 보낸다
-#                                        # Mode 3 테스트는 build/mode3/pi_cred_*.zkey·vkey 도 필요
+#                                        # Mode 3 테스트는 build/mode3/pi_cred_*.zkey·vkey 와 (V11) pi_idp_*.zkey·vkey·wasm 도 필요
 #   bash scripts/run_tests.sh contract   # 컨트랙트(test/*.test.mjs). hardhat 인프로세스 체인
 #                                        # build/mode3 zkey·wasm 필요(Mode3Wallet.test.mjs 가 실제 π 를 만든다)
 #   bash scripts/run_tests.sh browser    # chain 의 조건 + Chrome(또는 Chromium) 필요. Playwright 로 페이지를 띄운다
@@ -36,19 +36,18 @@ UNIT=(
   tests/test_imt_v3_lib.js
   tests/test_mode3_revocation_tree.js
   tests/test_mode3_issuance.js
-  tests/test_mode3_credential_v5.js
+  tests/test_mode3_credential_v11.js
   tests/test_mode3_rp_cert.js
   tests/test_mode3_trace.js
   tests/test_mode3_opening.js
   tests/test_mode3_cia_state.js
   tests/test_mode3_secret_source.js
+  tests/test_mode3_wallet_lib.js
   tests/test_mode3_set_tree.mjs
   tests/test_mode3_demo_strings.js
   tests/test_mode3_health_shape.js
   tests/test_mode3_stack_judge.js
-  tests/test_mode3_v9_lib.js
   tests/test_mode3_registry.js
-  tests/test_mode3_cia_state_v9.js
   tests/test_mode3_attr_schema.mjs
 )
 
@@ -65,6 +64,7 @@ CIRCUIT=(
   tests/test_pi_pk_i_v3_shard.mjs
   tests/test_insert_transition_circuit.mjs
   tests/test_mode3_commit_scheme.mjs
+  tests/test_pi_idp_witness.mjs
   tests/test_pi_cred_witness.mjs
   # 배포용 build/mode3 산출물이 지금의 회로 소스에서 나온 것인지(2026-09-25 리뷰 E-3).
   # 바로 위 test_pi_cred_witness.mjs 가 witness_test/ 에 해 둔 컴파일을 재사용하므로 그 뒤에 둔다.

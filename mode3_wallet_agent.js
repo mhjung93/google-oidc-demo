@@ -5,11 +5,9 @@
 // 로그인마다 발급된다(설계 2026-09-15 §5) — 성명은 세션(r_s) 단위이고 세션 안에서만 재사용한다.
 // V4(2026-09-18): 자격증명은 max_height·allowAgent, 세션은 서비스 팩토리 주소를 들고 /wallet/tx 로 온체인 실행(설계 §6.3).
 // V5(2026-09-21): 자격증명 이중 구조 — 사용자 자격증명(C_u, 사용자당 하나, 폐기 리프)과 세션 자격증명(C_s, 로그인마다).
-//   사용자 자격증명은 첫 로그인 때 받고, 폐기되면 다음 로그인이 알아채(트리의 리프, 또는 게시 전이면
-//   세션 발급의 no_user_cred 거절) 새로 받는다.
-// V6(2026-09-22): 속성은 AA(cia.js DEMO_ACCOUNTS)가 관리한다 — 지갑은 등록·로그인 때 받아 캐싱만 한다. AA 가 속성을
-//   바꾸면 π_u(사용자 자격증명)가 깨지므로(/cia/user_cred 의 bad proof), ensureUserCred 가 /cia/attrs 로 재동기화하고
-//   한 번 재시도한다(/wallet/attrs/sync 로 수동 재동기화도 가능 — 옛 /wallet/attrs 는 없앴다).
+//   사용자 자격증명은 첫 로그인 때 받고, 폐기되면 다음 로그인이 등록부로 알아채 새로 받는다 — 경합으로 CIA 가 그 자리에서
+//   "이미 물렸다"(409 cred_revoked)고 거절하면 한 번만 다시 시도한다(/wallet/login 의 cred_revoked 재시도).
+// V11(2026-10-12): 속성은 사용자가 지갑에 넣는다(profile → attrs, D15, PUT /wallet/profile), 발급마다 π_IdP, RP 챌린지 r_rp, 상태 v9.
 // Snap(2026-09-22 metamask-snap §3.3): MODE3_WALLET_SECRETS=snap 이면 등록 비밀은 Snap 이 들고, 요청마다 첨부된 witness 로
 //   요청 범위 SecretSource 를 만든다. 파일에는 공개 부분만 남고, 로그인한 세션의 증인은 메모리(sessions[r_s].witness)에만 둔다.
 //   트랜잭션은 /wallet/tx/prepare(calldata) → MetaMask 가 전송 → /wallet/tx/record(영수증) 로 나눈다.
@@ -21,14 +19,13 @@ import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { createSecretSource, stripSecrets, validateWitness } from './lib/mode3_secret_source.js';
-import { DEFAULT_ATTR_SCHEMA, loadSchema, assertPredicateTypes, decodeAttrs, schemaInfo } from './lib/mode3_attr_schema.js';
-import { createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, buildCredentialProof, signChallenge, signSessionRequest, signAttrsRequest, signRevokeSession, signRegistration, eddsaPubOf, normalizeDisclosure, normalizeSet, disclosureKey, hasPredicate, ProofCache, chooseMaxHeight, syncRegistryTree } from './lib/mode3_wallet.js';
+import { DEFAULT_ATTR_SCHEMA, loadSchema, assertPredicateTypes, decodeAttrs, schemaInfo, encodeProfile, normalizeProfile } from './lib/mode3_attr_schema.js';
+import { createRegistration, createSessionKey, buildIssueRequest, buildCredentialProof, signChallenge, signSessionRequest, signSlotRequest, signRevokeSession, signRegistration, eddsaPubOf, normalizeDisclosure, normalizeSet, disclosureKey, hasPredicate, ProofCache, chooseMaxHeight, syncRegistryTree } from './lib/mode3_wallet.js';
 import { sessionLeaf } from './lib/mode3_revocation.js';
 import { createRevocationSync } from './lib/mode3_rcl_sync.js';
 import { registryLeaf } from './lib/mode3_registry.js';
 import { signPayload, statementDigestFields, proofToCalldata, parseExecuteReceipt, decodeExecuteCalldata, factoryAt, walletAt, walletInterface, FACTORY_ABI, verifyReferenceCode, FACTORY_MAX_ROOT_AGE_BAND, FACTORY_MAX_LIFETIME_BAND, PUB_INDEX } from './lib/mode3_onchain.js';
-import { pointToStrings } from './lib/mode3_issuance.js';
-import { normalizeAttrs, SCALAR_MAX, ppid, randomScalar } from './lib/mode3_credential.js';
+import { SCALAR_MAX, ppid, randomScalar, auidOf } from './lib/mode3_credential.js';
 import { verifyRpCert } from './lib/mode3_rp_cert.js';
 import { MODE3_ROOTS_ABI } from './lib/mode3_log.js';
 import { buildWalletHealth, applyHealthHeaders, bounded, originList, allowOrigin } from './lib/mode3_health.js';
@@ -72,40 +69,28 @@ const mirror = MIRROR_ADDRESS ? new ethers.Contract(MIRROR_ADDRESS, MODE3_ROOTS_
 const chainConfigMissing = () => (!LOG_ADDRESS ? 'CIA_LOG_ADDRESS not configured' : !MIRROR_ADDRESS ? 'MODE3_MIRROR_ADDRESS not configured' : null);
 
 // ---- 상태 ----
-// registration: { uid, s_u, r_u, cm_u:{x,y}, sk_u, pk_u:{x,y}, slot, attrs:[6개 10진],
-//                 userCred: { C_u_pt:{x,y}, Cf_u, blind_u, issuedAt } | null }   §6.1. 등록은 한 번, userCred 는 사용자당 하나
-// sessions:     r_s → { arid, origin, PPID, pk_trace:{x,y}, factoryAddress|null, attrGateAddress|null, allowAgent("0"|"1"), C_s_pt:{x,y}, blind_s,
-//                       credential:{Cf_u,Cf_s,max_height,chainid,allowAgent,sigma,pk_CIA}, sessionPrivKey, pk_i, issuedAt,
+// registration: { uid, s_u, sk_u, pk_u:{x,y}, auid(10진), slot, profile:{스키마 이름→값}, attrs:[6개 10진], userCred: { C_u_pt:{x,y}, Cf_u, blind_u, issuedAt } | null }
+// sessions:     r_s → { arid, origin, PPID, pk_trace:{x,y}, factoryAddress|null, attrGateAddress|null, allowAgent("0"|"1"), r_rp, auid_s, arid_s,
+//                       credential:{Cf_u,Cf_s,max_height,chainid,allowAgent,sigma,pk_CIA,slot,regRoot,epoch,published}, sessionPrivKey, pk_i, issuedAt,
 //                       witness?: { s_u, blind_u, attrs, sk_u } }   ← snap 모드 전용, 메모리에만(persist 가 뺀다)
-// snap 모드의 registration 은 stripSecrets 결과({ uid, cm_u, pk_u, slot, attrs, userCred:{Cf_u,issuedAt} }) 다.
-// version 6 (2026-09-21): 자격증명 이중 구조(userCred·blind_u / C_s·blind_s). 옛 파일은 등록만 살리고 세션은 비운다 —
-// 옛 등록에는 userCred 가 없으므로 다음 로그인이 새로 받는다.
-// version 7 (2026-09-22): 속성은 AA 기록 — registration.attrs 는 지갑이 고르는 값이 아니라 AA 가 준 값이다. 옛 C_u 는
-// 사용자가 고른 속성 위에서 만들어졌으므로 물리고(userCred = null) 다음 로그인이 AA 속성으로 새로 받는다.
-// version 8 (2026-10-01 §7.1·§3): 등록 키(sk_u/pk_u)는 지갑이 만들고 CIA 는 슬롯만 배정한다 — 옛 등록에는 slot·pk_u 가
-// 없으므로 null 로 채우고 다음 로그인이 CIA 의 /cia/slot 으로 되찾는다(§5). userCred 의 활성 여부는 폐기 리프 대신 등록부
-// 슬롯으로 보므로 leaf 필드가 없다 — 옛 userCred 도 물려(null) 다음 로그인이 새로 받게 한다.
-const WALLET_STATE_VERSION = 8;
+// snap 모드의 registration 은 stripSecrets 결과({ uid, auid, pk_u, slot, profile, attrs, userCred:{Cf_u,issuedAt} }) 다.
+// version 9 (2026-10-12, V11): r_u·cm_u 삭제, auid(= Poseidon(T_AUID, uid, s_u))·profile(사용자 입력, D15) 추가; 세션에 r_rp·auid_s·arid_s.
+//   옛 파일은 등록만 유지하고(file 모드 — auid 를 s_u 로 재계산; snap 모드는 비밀이 없어 재계산할 수 없으므로 등록을 비운다) 세션·userCred 를 비운다.
+const WALLET_STATE_VERSION = 9;
+const DEFAULT_PROFILE = Object.freeze({ birthYear: '1990', country: 'KR' });   // 데모 testuser 기본값(스펙 §7). 사용자가 등록 폼에서 바꿀 수 있다.
 let state = readJson(STATE_FILE, { version: WALLET_STATE_VERSION, registration: null, sessions: {} });
 // 세션의 witness 는 메모리에만(스펙 §3.3) — 재시작하면 사라지고 /wallet/revalidate 가 needs_consent 로 다시 동의를 받는다.
 function persist() { writeJsonAtomic(STATE_FILE, JSON.parse(JSON.stringify(state, (k, v) => (k === 'witness' ? undefined : v))), 0o600); }
-/** registration.attrs 를 정확히 6칸(10진 문자열)으로 맞춘다 — 모자라면 '0' 으로 채우고 넘치면 자른다. CIA 쪽
- *  (lib/mode3_cia_state.js 의 v8→v9 이행)과 같은 규칙이다. 7→8 이행 분기에서만이 아니라 매 기동 로드 시에도 걸어
- *  둔다 — 그래야 손으로 고친(또는 옛 버전에서 그대로 복사해 온) 상태 파일이 길이 4짜리 attrs 를 다시 들여보내도
- *  6칸으로 복구된다(2026-10-01 최종 리뷰 A1: 패딩이 없으면 지갑 페이지가 5·6번째 속성 행에 "undefined"를 보여주고,
- *  그 빈 슬롯을 공개하면 normalizeDisclosure 는 통과하지만 회로가 미분류 500 으로 죽었다). */
-function padAttrs6(attrs) {
-  return [...(Array.isArray(attrs) ? attrs : []), '0', '0', '0', '0', '0', '0'].slice(0, 6).map(String);
-}
+// 2026-10-01 최종 리뷰 A1: 길이 4 짜리 옛 attrs 가 들어오면 화면이 undefined 를 보이고 회로가 500 으로 죽는다 — 매 기동 6칸으로 맞춘다.
+function padAttrs6(attrs) { return [...(Array.isArray(attrs) ? attrs : []), '0', '0', '0', '0', '0', '0'].slice(0, 6).map(String); }
 if (state.version !== WALLET_STATE_VERSION) {
-  console.warn(`[wallet] 상태 파일 버전 ${state.version} → ${WALLET_STATE_VERSION}: 세션·credential 을 비운다(옛 형식). 등록은 유지.`);
-  state = { version: WALLET_STATE_VERSION, registration: state.registration ?? null, sessions: {} };
-  if (state.registration) {
-    state.registration.userCred = null;
-    state.registration.slot ??= null;
-    state.registration.pk_u ??= null;
-    state.registration.attrs = padAttrs6(state.registration.attrs);   // v7 이하는 4칸 — padAttrs6 로 6칸으로
-  }
+  console.warn(`[wallet] 상태 파일 버전 ${state.version} → ${WALLET_STATE_VERSION}: 세션·credential 을 비운다(옛 형식). 등록은 file 모드에서만 유지(auid 재계산).`);
+  const reg = state.registration ?? null;
+  let kept = null;
+  if (reg && typeof reg.s_u === 'string' && /^[0-9]+$/.test(reg.s_u) && typeof reg.uid === 'string') {
+    kept = { uid: reg.uid, s_u: reg.s_u, sk_u: reg.sk_u, pk_u: reg.pk_u ?? null, auid: (await auidOf({ uid: BigInt(reg.uid), s_u: BigInt(reg.s_u) })).toString(), slot: reg.slot ?? null, profile: reg.profile ?? { ...DEFAULT_PROFILE }, attrs: padAttrs6(reg.attrs), userCred: null };
+  } else if (reg) console.warn('[wallet] snap 모드 등록(파일에 비밀 없음)은 auid 를 재계산할 수 없어 등록을 비운다 — 다시 등록한다(Snap 쪽 "초기화" 도 함께)');
+  state = { version: WALLET_STATE_VERSION, registration: kept, sessions: {} };
   persist();
 }
 state.sessions ??= {};
@@ -260,26 +245,12 @@ function replaceUserCred(src, userCred) {
   persist();
 }
 
-/** /cia/attrs 로 속성을 다시 받는다(2026-09-22 §3.3). 바뀌었으면 옛 C_u·세션을 버린다(재발급은 다음 로그인에서). */
-async function syncAttrsFromCia(src) {
-  const reg = src.registration();
-  const nonce = randomScalar();
-  const r = await ciaPost('/cia/attrs', { uid: reg.uid, nonce: nonce.toString(), sig_u: await signAttrsRequest(reg.sk_u, BigInt(reg.uid), nonce) });
-  if (r.status !== 200) return { changed: false, status: r.status, body: r.body };
-  const attrs = normalizeAttrs(r.body.attrs).map(String);
-  if (r.body.profile && typeof r.body.profile === 'object') state.registration.profile = r.body.profile;   // 표시용(스펙 2) — 증명은 attrs 만 쓴다
-  await noteSchemaHint(r.body.schemaHash ?? null);
-  const changed = JSON.stringify(attrs) !== JSON.stringify(reg.attrs);
-  if (changed) { src.setAttrs(attrs); replaceUserCred(src, null); } else persist();
-  return { changed, status: 200, attrs };
-}
-
-/** 등록부 확인(설계 §8.2): 내 슬롯의 리프 == Poseidon(cm_u, Cf_u). 자격증명이 없으면 null.
+/** 등록부 확인(설계 §8.2): 내 슬롯의 리프 == Poseidon(auid, Cf_u). 자격증명이 없으면 null.
  *  view 는 { registry, regRoot, regEpoch } — V10 부터 호출자는 캐노니컬 최신(canonicalView(synced))을 넘긴다. */
 async function registryCheck(view, reg, uc) {
   if (!reg || !Number.isInteger(reg.slot)) return null;
   const leaf = view.registry.leafAt(reg.slot);
-  const expected = uc ? await registryLeaf({ x: BigInt(reg.cm_u.x), y: BigInt(reg.cm_u.y) }, BigInt(uc.Cf_u)) : 0n;
+  const expected = uc ? await registryLeaf(BigInt(reg.auid), BigInt(uc.Cf_u)) : 0n;
   const r = { slot: reg.slot, leaf: leaf.toString(), expected: expected.toString(), match: uc ? leaf === expected : null, regRoot: view.regRoot.toString(), epoch: view.regEpoch.toString(), checkedAt: new Date().toISOString() };
   lastRegistry = r;
   return r;
@@ -289,81 +260,65 @@ let lastRegistry = null;
  *  그 상태로는 거울 뷰 트리에서 등록부 증인이 안 만들어진다(회로 실패 → 분류 안 된 500). 자격증명·슬롯이 없으면 판정 대상이 아니다(true). */
 async function mirrorLeafMatches(synced, reg, uc) {
   if (!uc || !reg || !Number.isInteger(reg.slot)) return true;
-  return synced.registry.leafAt(reg.slot) === await registryLeaf({ x: BigInt(reg.cm_u.x), y: BigInt(reg.cm_u.y) }, BigInt(uc.Cf_u));
+  return synced.registry.leafAt(reg.slot) === await registryLeaf(BigInt(reg.auid), BigInt(uc.Cf_u));
 }
 
-/** 사용자 자격증명 확보(설계 2026-09-21 §6.2 3단계). 없거나 폐기됐으면 새로 받는다. 돌려주는 값은 { status, body, fresh }. */
-async function ensureUserCred(synced, src, { resynced = false } = {}) {
+/** 사용자 자격증명 선택(V11 — 옛 ensureUserCred). 들고 있는 C_u 가 등록부에서 내 슬롯에 살아 있으면 재사용(blind_u 그대로), 없거나 은퇴(슬롯 0)면 새 blind_u.
+ *  남의 리프면 registry_mismatch — 신원 기관의 부정(또는 내가 모르는 재발급). 돌려주는 값: { blind_u, fresh } 또는 { status:403, reason, registry? }. */
+async function chooseUserCred(synced, src) {
   const reg = src.registration();
   const uc = src.userCred();
-  if (uc) {
-    const chk = await registryCheck(canonicalView(synced), reg, uc);   // V10: 캐노니컬 최신 — 은퇴·바꿔치기를 거울보다 먼저 안다
-    // reg.slot 이 정수가 아니면(/cia/slot 이 망가진 값을 준 경우 등) registryCheck 가 null 을 돌려준다 — match/leaf 를
-    // 그대로 읽으면 TypeError 로 500 이 난다(리뷰 Minor 1). 등록부를 판정할 수 없다는 뜻이므로 403 으로 분명히 끊는다.
-    if (!chk) return { status: 403, reason: 'registry_slot_unknown' };
-    if (chk.match) return { status: 200, fresh: false };
-    if (chk.leaf !== '0') return { status: 403, reason: 'registry_mismatch', registry: chk };   // 내 슬롯에 남의 자격증명 — 신원 기관의 부정(또는 내가 모르는 재발급)
-    // 슬롯 0: 은퇴됐다 — 새로 받는다
-  }
-  const ov = takeOverride('issue');
-  const req = await buildUserCredRequest({ uid: BigInt(ov?.uid ?? reg.uid), s_u: BigInt(ov?.s_u ?? reg.s_u), r_u: BigInt(reg.r_u), sk_u: reg.sk_u, attrs: (reg.attrs ?? []).map(BigInt) });
-  if (ov?.uid) req.body.uid = reg.uid;   // 요청 본문의 uid 는 진짜 — C_u 안의 uid 만 바뀐다(스펙 §8.3)
-  const r = await ciaPost('/cia/user_cred', req.body);
-  if (r.status === 201 || r.status === 200) {
-    // V10(2026-10-02 §4.5): 계정 폐기로 슬롯이 영구 은퇴된 뒤 관리자가 되살려 재발급하면 CIA 가 새 슬롯을 준다 — 그것을 따른다.
-    // 안 따르면 옛(은퇴된, 리프 0) 슬롯을 계속 보고 등록부 확인이 영원히 실패한다. snap 모드도 슬롯은 파일의 공개 부분이다.
-    if (Number.isInteger(r.body?.slot) && r.body.slot >= 0 && r.body.slot !== state.registration.slot) state.registration.slot = r.body.slot;
-    replaceUserCred(src, { C_u_pt: { x: req.C_u_pt.x.toString(), y: req.C_u_pt.y.toString() }, Cf_u: req.Cf_u.toString(), blind_u: req.secrets.blind_u.toString(), issuedAt: new Date().toISOString() });
-    return { status: 200, body: r.body, fresh: true, published: r.body.published };
-  }
-  // AA 기록이 바뀌어 π_u 가 깨진 경우(2026-09-22 §3.3): 속성을 다시 받아 한 번만 재시도한다. 시연 덮어쓰기 중에는 재시도하지 않는다 —
-  // 바뀌는 건 속성이 아니라 지갑이 보낸 s_u·uid 이므로 재동기화해도 같은 거절이 되풀이된다.
-  if (r.status === 400 && !resynced && !ov && r.body?.error === 'bad user credential proof') {
-    const s = await syncAttrsFromCia(src);
-    if (s.status === 200) return ensureUserCred(synced, src, { resynced: true });
-  }
-  return { status: r.status, body: r.body, fresh: false, demo: ov ? 'override:issue' : undefined };
+  if (!uc) return { blind_u: randomScalar(), fresh: true };
+  const chk = await registryCheck(canonicalView(synced), reg, uc);   // V10: 캐노니컬 최신 — 은퇴·바꿔치기를 거울보다 먼저 안다
+  if (!chk) return { status: 403, reason: 'registry_slot_unknown' };
+  if (chk.match) return { blind_u: BigInt(uc.blind_u), fresh: false };
+  if (chk.leaf !== '0') return { status: 403, reason: 'registry_mismatch', registry: chk };
+  return { blind_u: randomScalar(), fresh: true };   // 슬롯 0: 은퇴됐다 — 새로 받는다
 }
 
-async function issueSession(arid, r_s, pk_trace, allowAgent, factoryAddress, attrGateAddress, head, src) {
+/** 세션 발급(V11 §5.2): C_u(blind_u)·C_s·π_IdP 를 한 요청으로. 200 이면 세션을 저장하고, 새 C_u 였으면 사용자 자격증명도 바꿔 앉힌다(옛 세션은 함께 버린다). */
+async function issueSession({ arid, r_s, r_rp, pk_trace, allowAgent, factoryAddress, attrGateAddress, head, src, blind_u }) {
   const reg = src.registration();
-  const uc = src.userCred();
   const session = createSessionKey();
   const chainid = await chainId();
+  const ov = takeOverride('issue');   // 시연(설계 §8.3): 이번 발급의 s_u·uid 를 한 번만 덮어쓴다 — 가짜 auid 로 증명돼 CIA 가 bad_idp_proof 를 낸다
   const req = await buildIssueRequest({
-    uid: BigInt(reg.uid), Cf_u: BigInt(uc.Cf_u), arid: BigInt(arid), sk_u: reg.sk_u, session, chainid, allowAgent: BigInt(allowAgent),
-    max_height: chooseMaxHeight(head, { ttlBlocks: TTL_BLOCKS, grid: HEIGHT_GRID }),
+    uid: BigInt(ov?.uid ?? reg.uid), s_u: BigInt(ov?.s_u ?? reg.s_u), blind_u, attrs: (reg.attrs ?? []).map(BigInt), arid: BigInt(arid), r_rp, r_s,
+    sk_u: reg.sk_u, session, chainid, allowAgent: BigInt(allowAgent), max_height: chooseMaxHeight(head, { ttlBlocks: TTL_BLOCKS, grid: HEIGHT_GRID }),
   });
+  if (ov?.uid) req.body.uid = reg.uid;   // 요청 본문의 uid 는 진짜 — C_u·π_IdP 안의 uid 만 바뀐다(스펙 §8.3)
   const r = await ciaPost('/cia/issue', req.body);
-  if (r.status === 200) {
-    const PPID = await ppid({ uid: BigInt(reg.uid), arid: BigInt(arid), s_u: BigInt(reg.s_u), chainid });
-    state.sessions[r_s.toString()] = {
-      arid, PPID: PPID.toString(), pk_trace: { x: pk_trace.x.toString(), y: pk_trace.y.toString() }, factoryAddress, attrGateAddress, allowAgent,
-      C_s_pt: { x: req.C_s_pt.x.toString(), y: req.C_s_pt.y.toString() }, blind_s: req.secrets.blind_s.toString(),
-      credential: r.body, sessionPrivKey: session.wallet.privateKey, pk_i: session.pk_i.toString(), issuedAt: new Date().toISOString(),
-    };
-    persist();
-  }
-  return r;
+  if (r.status !== 200) return { r, demo: ov ? 'override:issue' : undefined };
+  // V10(§4.5): 계정 폐기로 슬롯이 은퇴된 뒤 되살아난 계정의 재발급은 새 슬롯을 받는다 — 응답의 슬롯을 따른다.
+  if (Number.isInteger(r.body?.slot) && r.body.slot >= 0 && r.body.slot !== state.registration.slot) state.registration.slot = r.body.slot;
+  const uc = src.userCred();
+  if (!uc || uc.Cf_u !== req.Cf_u.toString()) replaceUserCred(src, { C_u_pt: { x: req.C_u_pt.x.toString(), y: req.C_u_pt.y.toString() }, Cf_u: req.Cf_u.toString(), blind_u: blind_u.toString(), issuedAt: new Date().toISOString() });
+  const PPID = await ppid({ uid: BigInt(reg.uid), s_u: BigInt(reg.s_u), arid: BigInt(arid), chainid });
+  state.sessions[r_s.toString()] = {
+    arid, PPID: PPID.toString(), pk_trace: { x: pk_trace.x.toString(), y: pk_trace.y.toString() }, factoryAddress, attrGateAddress, allowAgent,
+    r_rp: r_rp.toString(), auid_s: req.auid_s.toString(), arid_s: req.arid_s.toString(),
+    credential: r.body, sessionPrivKey: session.wallet.privateKey, pk_i: session.pk_i.toString(), issuedAt: new Date().toISOString(),
+  };
+  persist();
+  return { r, demo: ov ? 'override:issue' : undefined };
 }
 
 /** 요청 범위 비밀 공급원. file 은 상태 파일. snap 은 증인이 어디서 오는지가 경로마다 다르다.
  *  - 세션 경로(rsKey 있음 — 재검증·tx/prepare): **세션의 메모리 증인만** 쓴다. 본문 witness 는 보지 않는다 —
  *    /wallet/revalidate 는 RP 오리진에 CORS 로 열려 있어 서비스 페이지가 엉뚱한 증인을 실어 보내면 proveSession 이
  *    revoked 로 던져 세션이 지워진다(리뷰 Ruling 4). 없으면 needs_consent(409) — 팝업이 동의를 다시 받아 채운다.
- *  - 그 밖(rsKey 없음 — 로그인·재승인·속성 동기화): 본문 witness. 호출자가 validateWitness 를 먼저 거친다. 없으면 witness_required(400). */
+ *  - 그 밖(rsKey 없음 — 로그인): 본문 witness. 호출자가 validateWitness 를 먼저 거친다. 없으면 witness_required(400). */
 function secretSourceFor(req, rsKey = null) {
   if (SECRETS === 'file') return createSecretSource({ mode: 'file', state });
   let w = null;
   if (rsKey) {
-    // 세션 증인은 { s_u, r_u, blind_u, attrs, sk_u } 를 든다 — 공개 부분(uid, userCred 의 Cf_u)은 파일에서 채운다.
-    // r_u 는 V9 조건 9(등록부 증명, buildCredentialProof) 가 재증명마다 요구한다 — 발급 뒤엔 필요 없다는 옛 가정은 더는 맞지 않는다.
+    // 세션 증인은 { s_u, blind_u, attrs, sk_u } 를 든다 — 공개 부분(uid, userCred 의 Cf_u)은 파일에서 채운다.
     const sw = state.sessions[rsKey]?.witness;
     const pub = state.registration?.userCred;
     // pub 이 없으면(상태 파일 버전을 올려 userCred 를 비운 경우 등) 증인을 재조립할 수 없다. 그대로 두면 userCred:null 로
     // 조립돼 proveSession 이 revoked 로 던지고 **세션이 지워진다** — 복구할 수 없는 손실이다. 대신 needs_consent 로 떨어뜨려
     // 팝업이 Snap 의 C_u 로 /wallet/session/witness 를 다시 채우게 한다(그 라우트가 파일의 공개 부분도 되살린다).
-    if (sw && pub) w = { uid: state.registration?.uid, s_u: sw.s_u, r_u: sw.r_u, sk_u: sw.sk_u, attrs: sw.attrs, userCred: { ...pub, blind_u: sw.blind_u } };
+    if (sw && pub) w = { uid: state.registration?.uid, s_u: sw.s_u, sk_u: sw.sk_u, attrs: sw.attrs, userCred: { ...pub, blind_u: sw.blind_u } };
   } else w = req.body?.witness ?? null;
   if (!w) throw Object.assign(new Error(rsKey ? 'needs_consent' : 'witness_required'), { reason: rsKey ? 'needs_consent' : 'witness_required' });
   return createSecretSource({ mode: 'snap', state, witness: w });
@@ -503,7 +458,7 @@ app.get('/wallet/status', async (req, res) => {
   const userCred = uc ? { Cf_u: uc.Cf_u, issuedAt: uc.issuedAt, revoked: lastRegistry ? !lastRegistry.match : null } : null;
   const st = rcl ? rcl.stats() : null;
   res.json({
-    registered: Boolean(reg), uid: reg?.uid ?? null, slot: reg?.slot ?? null, attrs: reg?.attrs ?? null, userCred, sessions,
+    registered: Boolean(reg), uid: reg?.uid ?? null, auid: reg?.auid ?? null, slot: reg?.slot ?? null, attrs: reg?.attrs ?? null, userCred, sessions,
     profile: reg?.profile ?? null, attrSchema: attrSchema ? schemaInfo(attrSchema.schema, attrSchema.hash) : null,
     attrsView: reg && attrSchema ? decodeAttrs(attrSchema.schema, reg.attrs, reg.profile ?? null) : null,
     registry: lastRegistry, demoOverride: demoOverride ? { scope: demoOverride.scope, fields: Object.keys(demoOverride).filter((k) => k !== 'scope') } : null,
@@ -532,36 +487,60 @@ app.post('/wallet/demo/override', (req, res) => {
   res.json({ ok: true, override: { scope, fields: Object.keys(demoOverride).filter((k) => k !== 'scope') } });
 });
 
-// V9 §7.1 — 등록 키(sk_u/pk_u)는 지갑이 만든다. 속성은 AA(cia.js DEMO_ACCOUNTS)가 관리한다 — 본문의 attrs 는 받지 않는다(있어도 무시).
-// snap 모드(metamask-snap §4.1): s_u·r_u·sk_u 는 Snap 이 만들고 페이지가 cm_u·sk_u 를 준다(로그인 증인과 같은 모델 — 한 번 넘긴다).
-// 파일에는 stripSecrets 결과(uid·cm_u·pk_u·slot·attrs)만 남는다. file 모드 응답에는 sk_u 가 없다(파일에 있다).
+// V11 §3.1·§3.3 — 등록 키(sk_u/pk_u)·salt(s_u) 는 지갑이 만들고 auid = Poseidon(T_AUID, uid, s_u) 를 CIA 에 낸다. 속성은 **사용자가 넣는다**(D15):
+// 본문 profile(스키마 이름→값, 기본 DEFAULT_PROFILE)을 공개 스키마로 인코딩해 attrs 를 만든다 — IdP 는 받지 않는다.
+// snap 모드(metamask-snap §4.1): s_u·sk_u 는 Snap 이 만들고 페이지가 한 번 넘긴다(로그인 증인과 같은 모델). 파일에는 stripSecrets 결과만 남는다.
 app.post('/wallet/register', async (req, res) => {
   try {
-    const { uid, pwd, cm_u: cmIn, sk_u: skIn } = req.body ?? {};
+    const { uid, pwd, profile: profileIn = null, s_u: suIn, sk_u: skIn } = req.body ?? {};
     if (!isDec(uid) || typeof pwd !== 'string') return res.status(400).json({ error: 'uid(10진 문자열), pwd 필요' });
-    if (SECRETS === 'snap' && !(cmIn && isDec(cmIn.x) && isDec(cmIn.y) && typeof skIn === 'string' && /^[0-9a-fA-F]{64}$/.test(skIn))) return res.status(400).json({ error: 'snap 모드는 cm_u{x,y}(10진 문자열)·sk_u(hex) 필요' });
+    if (BigInt(uid) >= SCALAR_MAX) return res.status(400).json({ error: 'uid 는 2^250 미만' });
+    if (SECRETS === 'snap' && !(isDec(suIn) && BigInt(suIn) < SCALAR_MAX && typeof skIn === 'string' && /^[0-9a-fA-F]{64}$/.test(skIn))) return res.status(400).json({ error: 'snap 모드는 s_u(10진, 2^250 미만)·sk_u(hex) 필요' });
+    if (profileIn !== null && (typeof profileIn !== 'object' || Array.isArray(profileIn))) return res.status(400).json({ reason: 'bad_attr', detail: 'profile_required' });
     if (state.registration) return res.status(409).json({ reason: 'already_registered', uid: state.registration.uid });
-    const reg = SECRETS === 'snap' ? null : await createRegistration();
-    const cm_u = SECRETS === 'snap' ? { x: BigInt(cmIn.x), y: BigInt(cmIn.y) } : reg.cm_u;
-    const sk_u = SECRETS === 'snap' ? skIn : reg.sk_u;
-    const pk_u = await eddsaPubOf(sk_u);
-    const r = await ciaPost('/cia/register', { uid, pwd, cm_u: pointToStrings(cm_u), pk_u: { x: pk_u.x.toString(), y: pk_u.y.toString() }, sig_reg: await signRegistration(sk_u, BigInt(uid), cm_u) });
+    let schema;
+    try { schema = (await schemaFor()).schema; } catch (e) { if (e.reason === 'schema_invalid') return res.status(503).json({ reason: 'schema_invalid', detail: e.message }); throw e; }
+    // profile 을 안 보냈을 때만 DEFAULT_PROFILE 을 스키마의 슬롯 이름으로 거른다 — IdP 가 country 같은 이름을 빼면
+    // encodeProfile 이 그 키를 unknown_field 로 거절하므로(스펙 2), 기본값은 "그 스키마가 아는 이름"만 남긴다.
+    // 사용자가 직접 보낸 profile 은 그대로 둔다(모르는 필드는 여전히 400 bad_attr).
+    const profile = profileIn ?? Object.fromEntries(Object.entries(DEFAULT_PROFILE).filter(([k]) => schema.slots.some((s) => s.type !== 'unused' && s.name === k)));
+    let attrs;
+    try { attrs = await encodeProfile(schema, profile, { allowEmptyRequired: false }); }
+    catch (e) { if (e.reason === 'bad_attr') return res.status(400).json({ reason: 'bad_attr', slot: e.slot, field: e.field, detail: e.detail, message: e.message }); throw e; }
+    const normalized = normalizeProfile(schema, profile);
+    const reg = SECRETS === 'snap' ? { s_u: BigInt(suIn), sk_u: skIn, auid: await auidOf({ uid: BigInt(uid), s_u: BigInt(suIn) }), pk_u: await eddsaPubOf(skIn) } : await createRegistration(BigInt(uid));
+    const pub = { x: reg.pk_u.x.toString(), y: reg.pk_u.y.toString() };
+    const r = await ciaPost('/cia/register', { uid, pwd, auid: reg.auid.toString(), pk_u: pub, sig_reg: await signRegistration(reg.sk_u, BigInt(uid), reg.auid) });
     if (r.status !== 201) {
       const status = r.status === 401 || r.status === 409 ? r.status : 502;
       return res.status(status).json({ reason: 'register_failed', cia: r.body });
     }
-    const attrs = normalizeAttrs(r.body.attrs).map(String);
     await noteSchemaHint(r.body.schemaHash ?? null);
-    const profile = r.body.profile && typeof r.body.profile === 'object' ? r.body.profile : null;
-    const pub = { x: pk_u.x.toString(), y: pk_u.y.toString() };
-    if (SECRETS === 'snap') {
-      state.registration = stripSecrets({ uid, cm_u: pointToStrings(cm_u), pk_u: pub, slot: r.body.slot, attrs, profile, userCred: null });
-      persist();
-      return res.status(201).json({ uid, slot: r.body.slot, attrs, profile });
-    }
-    state.registration = { uid, s_u: reg.s_u.toString(), r_u: reg.r_u.toString(), cm_u: pointToStrings(cm_u), sk_u, pk_u: pub, slot: r.body.slot, attrs, profile, userCred: null };
+    const full = { uid, s_u: reg.s_u.toString(), sk_u: reg.sk_u, pk_u: pub, auid: reg.auid.toString(), slot: r.body.slot, profile: normalized, attrs, userCred: null };
+    state.registration = SECRETS === 'snap' ? stripSecrets(full) : full;
     persist();
-    res.status(201).json({ uid, slot: r.body.slot, attrs, profile });
+    res.status(201).json({ uid, slot: r.body.slot, auid: reg.auid.toString(), attrs, profile: normalized });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// V11 §3.3 — 사용자가 속성을 바꾼다. 스키마 검증 → attrs 재인코딩 → 바뀌었으면 옛 C_u·세션·π 캐시를 버린다(다음 로그인이 새 C_u 를 발급받는다 — PPID 는 그대로).
+// snap 모드는 응답의 attrsChanged 를 페이지가 Snap 의 syncAttrs 에 전달한다(Snap 이 자기 userCred 를 버린다). 비밀이 필요 없어 증인은 받지 않는다.
+app.put('/wallet/profile', async (req, res) => {
+  try {
+    if (!state.registration) return res.status(409).json({ reason: 'not_registered' });
+    const profile = req.body?.profile;
+    if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return res.status(400).json({ reason: 'bad_attr', detail: 'profile_required' });
+    let schema;
+    try { schema = (await schemaFor()).schema; } catch (e) { if (e.reason === 'schema_invalid') return res.status(503).json({ reason: 'schema_invalid', detail: e.message }); throw e; }
+    let attrs;
+    try { attrs = await encodeProfile(schema, profile, { allowEmptyRequired: false }); }
+    catch (e) { if (e.reason === 'bad_attr') return res.status(400).json({ reason: 'bad_attr', slot: e.slot, field: e.field, detail: e.detail, message: e.message }); throw e; }
+    const normalized = normalizeProfile(schema, profile);
+    const changed = JSON.stringify(attrs) !== JSON.stringify(state.registration.attrs ?? []);
+    state.registration.profile = normalized;
+    if (changed) { state.registration.attrs = attrs; state.registration.userCred = null; state.sessions = {}; cache.clear(); }
+    persist();
+    res.json({ attrs, profile: normalized, changed, ...(SECRETS === 'snap' && changed ? { attrsChanged: attrs } : {}) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -591,19 +570,20 @@ app.post('/wallet/authorize/precheck', async (req, res) => {
 
 // snap 모드(metamask-snap §3.3): 본문 witness 필수(400 witness_required / bad_witness). 오리진은 Origin 헤더 대신 본문 verifiedOrigin
 // (팝업이 postMessage 의 event.origin 으로 확인한 값)을 인증서 오리진과 대조한다. 성공하면 세션에 증인을 메모리로 남기고,
-// 새 C_u·속성 변경은 응답의 userCredIssued·attrsChanged 로 페이지가 Snap 에 저장한다.
+// 새 C_u 는 응답의 userCredIssued 로 페이지가 Snap 에 저장한다. attrsChanged 는 보통은 안 실린다 — 증인의 attrs 가 지갑 파일과
+// 다를 때만(V11(D15) 자가 치유, 아래) 실려 페이지가 Snap 의 attrs 를 파일 값으로 맞추게 한다.
 app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
   try {
-    const { arid, origin, cert_s, pk_trace, r_s, allowAgent = '0', factoryAddress = null, attrGateAddress = null, witness = null, verifiedOrigin = null, disclose = null, set = null } = req.body ?? {};
-    if (!isDec(arid) || typeof origin !== 'string' || !cert_s || !pk_trace || !isDec(pk_trace.x) || !isDec(pk_trace.y) || !isDec(r_s)) return res.status(400).json({ error: 'arid, origin, cert_s, pk_trace{x,y}, r_s 필요' });
+    const { arid, origin, cert_s, pk_trace, r_s, r_rp, allowAgent = '0', factoryAddress = null, attrGateAddress = null, witness = null, verifiedOrigin = null, disclose = null, set = null } = req.body ?? {};
+    if (!isDec(arid) || typeof origin !== 'string' || !cert_s || !pk_trace || !isDec(pk_trace.x) || !isDec(pk_trace.y) || !isDec(r_s) || !isDec(r_rp)) return res.status(400).json({ error: 'arid, origin, cert_s, pk_trace{x,y}, r_s, r_rp 필요' });
     if (allowAgent !== '0' && allowAgent !== '1') return res.status(400).json({ error: 'allowAgent 는 "0" 또는 "1"' });
     if (factoryAddress !== null && !isAddr(factoryAddress)) return res.status(400).json({ error: 'factoryAddress 는 주소' });
     // attrGateAddress 는 서비스가 알려주는 값을 세션에 실어 나를 뿐 지갑이 검증하지 않는다(스펙 §6.1) — 지갑 폼 기본값(to)으로만 쓰인다.
     if (attrGateAddress !== null && !isAddr(attrGateAddress)) return res.status(400).json({ error: 'attrGateAddress 는 주소' });
     if (!state.registration) return res.status(409).json({ reason: 'not_registered' });
     if (chainConfigMissing()) return res.status(503).json({ reason: 'chain_unavailable', detail: chainConfigMissing() });
-    const rs = BigInt(r_s);
-    if (rs >= SCALAR_MAX) return res.status(400).json({ error: 'r_s 는 2^250 미만' });
+    const rs = BigInt(r_s), rrp = BigInt(r_rp);
+    if (rs >= SCALAR_MAX || rrp >= SCALAR_MAX) return res.status(400).json({ error: 'r_s·r_rp 는 2^250 미만' });
     // r_s 는 세션 식별자다 — 같은 값으로 두 번 로그인할 정당한 경로가 없고, 덮어쓰면 캐시의 옛 π 와 새 세션키가 어긋난다.
     if (state.sessions[rs.toString()]) return res.status(409).json({ reason: 'duplicate_session' });
     // V7: 로그인 성명에도 술어를 실을 수 있다(스펙 §6). 형식·불만족은 체인 작업 전에 걸러낸다.
@@ -620,7 +600,7 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     }
     if (SECRETS === 'snap') {
       if (!witness) return res.status(400).json({ reason: 'witness_required' });
-      try { await validateWitness(witness, state.registration.uid, state.registration.cm_u); }
+      try { await validateWitness(witness, state.registration.uid, state.registration.auid); }
       catch (e) { if (e.reason === 'bad_witness') return res.status(400).json({ reason: 'bad_witness', detail: e.message }); throw e; }
     } else if (witness) console.warn('[wallet] file 모드에 witness 가 왔다 — 무시한다');
 
@@ -635,11 +615,19 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     if (bad) return res.status(bad.status).json(bad.body);
 
     const src = secretSourceFor(req);
+    // V11(D15): 지갑 파일의 attrs 가 정본이다. PUT /wallet/profile 뒤 페이지가 Snap 의 syncAttrs 전달에 실패했으면 증인의 attrs 가 옛 값이다 —
+    // 그대로 두면 옛 C_u 를 재사용하면서 술어는 새 attrs 로 판정한다. 파일 값으로 맞추고(pending.attrsChanged → 페이지가 Snap 에 반영) 증인의
+    // C_u 는 버려 새 C_u 를 받게 한다(응답의 userCredIssued 도 함께 간다 — applyPendingToSnap 이 syncAttrs → updateUserCred 순으로 저장한다).
+    if (SECRETS === 'snap' && JSON.stringify(witness.attrs.map(String)) !== JSON.stringify((state.registration.attrs ?? []).map(String))) {
+      src.setAttrs([...state.registration.attrs]);
+      if (witness.userCred) witness.userCred = null;
+      console.warn('[wallet] snap 증인의 attrs 가 지갑 파일과 다르다 — 파일 값으로 맞추고 새 C_u 를 받는다(페이지가 attrsChanged 를 Snap 에 반영해야 한다)');
+    }
     // V9: 옛 상태 파일(슬롯 없음)은 CIA 의 /cia/slot 으로 되찾는다 — 상태 파일 버전을 올릴 때는 아직 네트워크를 쓸 수 없어 미뤄 둔 일이다.
     const reg = src.registration();
     if (reg.slot === null || reg.slot === undefined) {
       const nonce = randomScalar();
-      const r0 = await ciaPost('/cia/slot', { uid: reg.uid, nonce: nonce.toString(), sig_u: await signAttrsRequest(reg.sk_u, BigInt(reg.uid), nonce) });
+      const r0 = await ciaPost('/cia/slot', { uid: reg.uid, nonce: nonce.toString(), sig_u: await signSlotRequest(reg.sk_u, BigInt(reg.uid), nonce) });
       // 슬롯은 음이 아닌 정수여야 한다(리뷰 Minor 1) — CIA 가 망가진 값을 주면 state.registration.slot 에 그대로 박혀
       // registryCheck 가 영구히 null 을 돌려주게 된다. 여기서 막으면 그 상태로 persist() 되는 일이 없다.
       if (r0.status !== 200 || !Number.isInteger(r0.body?.slot) || r0.body.slot < 0) return res.status(502).json({ reason: 'slot_failed', cia: r0.body });
@@ -655,38 +643,27 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     lastSync = syncSnapshot(synced);
 
     pruneSessions(synced.head);
-    // 사용자 자격증명은 사용자당 하나 — 없거나 폐기됐을 때만 새로 받는다(userCredMs 는 재사용이면 0)
+    // V11: 사용자 자격증명은 발급 요청에 함께 실려 간다 — 들고 있는 C_u 를 재사용할지(등록부에 살아 있음) 새로 만들지(없음·은퇴)를 먼저 정한다.
+    const pick = await chooseUserCred(synced, src);
+    if (pick.status === 403) return res.status(403).json({ reason: pick.reason, ...(pick.registry ? { registry: pick.registry } : {}), timings });
     t = Date.now();
-    let uc = await ensureUserCred(synced, src);
-    timings.userCredMs = uc.fresh ? Date.now() - t : 0;
-    if (uc.status === 403 && uc.reason === 'registry_mismatch') return res.status(403).json({ reason: 'registry_mismatch', registry: uc.registry, timings });
-    if (uc.status === 403 && uc.reason === 'registry_slot_unknown') return res.status(403).json({ reason: 'registry_slot_unknown', timings });
-    if (uc.status === 403) return res.status(403).json({ reason: 'account_disabled', timings });
-    if (uc.status !== 200) return res.status(502).json({ reason: 'user_cred_failed', cia: uc.body, demo: uc.demo, timings });
-    // 세션 자격증명은 로그인마다(설계 §5), 만료는 방금 읽은 head 기준
-    const issue = () => issueSession(arid, rs, { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress ? ethers.getAddress(attrGateAddress) : null, synced.head, src);
-    t = Date.now();
-    let r = await issue();
+    const issued = await issueSession({ arid, r_s: rs, r_rp: rrp, pk_trace: { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress: factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress: attrGateAddress ? ethers.getAddress(attrGateAddress) : null, head: synced.head, src, blind_u: pick.blind_u });
     timings.issueMs = Date.now() - t;
-    // no_user_cred: 지갑이 든 C_u 가 CIA 에서는 이미 물렸는데 리프가 아직 게시되지 않았다(/cia/revoke scope=credential 직후, 또는
-    // 동시 로그인 경합으로 지갑이 활성이 아닌 Cf_u 를 들고 남은 경우). 트리에는 없어 ensureUserCred 가 알아채지 못하므로 여기서
-    // 그 자격증명을 버리고 새로 받아 한 번만 다시 시도한다 — 게시·하트비트를 기다리지 않는다. s_u 는 같으니 PPID 는 그대로다.
-    if (r.status === 403 && r.body?.reason === 'no_user_cred') {
+    timings.userCredMs = pick.fresh ? timings.issueMs : 0;   // 새 C_u 를 받은 로그인만 0 이 아니다(옛 의미 유지 — 테스트·화면이 본다)
+    let r = issued.r, demo = issued.demo;
+    // V10 no_user_cred 재시도의 V11 등가물: CIA 가 "이미 물린 C_u" 라며 거절하면(경합 등) 버리고 새 C_u 로 한 번만 다시 시도한다.
+    if (r.status === 409 && r.body?.reason === 'cred_revoked') {
       replaceUserCred(src, null);
       t = Date.now();
-      uc = await ensureUserCred(synced, src);
-      timings.userCredMs += Date.now() - t;
-      if (uc.status === 403 && uc.reason === 'registry_mismatch') return res.status(403).json({ reason: 'registry_mismatch', registry: uc.registry, timings });
-      if (uc.status === 403 && uc.reason === 'registry_slot_unknown') return res.status(403).json({ reason: 'registry_slot_unknown', timings });
-      if (uc.status === 403) return res.status(403).json({ reason: 'account_disabled', timings });
-      if (uc.status !== 200) return res.status(502).json({ reason: 'user_cred_failed', cia: uc.body, demo: uc.demo, timings });
-      t = Date.now();
-      r = await issue();
-      timings.issueMs += Date.now() - t;
+      const retried = await issueSession({ arid, r_s: rs, r_rp: rrp, pk_trace: { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress: factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress: attrGateAddress ? ethers.getAddress(attrGateAddress) : null, head: synced.head, src, blind_u: randomScalar() });
+      const retryMs = Date.now() - t;
+      timings.issueMs += retryMs;
+      timings.userCredMs = retryMs;
+      r = retried.r; demo = retried.demo;
     }
-    // 재시도까지 no_user_cred 면 CIA 쪽에서 방금 받은 C_u 도 물린 것이다(연속 폐기·경합) — 다음 로그인이 다시 시도한다
-    if (r.status === 403) return res.status(403).json({ reason: r.body?.reason === 'no_user_cred' ? 'user_cred_retired' : 'account_disabled', timings });
-    if (r.status !== 200) return res.status(502).json({ reason: 'issue_failed', cia: r.body, timings });
+    if (r.status === 403) return res.status(403).json({ reason: 'account_disabled', timings });
+    if (r.status === 400 && r.body?.reason === 'bad_idp_proof') return res.status(502).json({ reason: 'user_cred_failed', cia: r.body, demo, timings });
+    if (r.status !== 200) return res.status(502).json({ reason: 'issue_failed', cia: r.body, demo, timings });
     // 이 세션이 어느 서비스 오리진의 것인지 남긴다(2026-09-25 리뷰 D-4) — 세션 라우트가 요청 오리진과 대조한다.
     // origin 은 바로 위에서 인증서(cert_s)와 대조를 마친 값이다.
     state.sessions[rs.toString()].origin = origin;
@@ -696,7 +673,7 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     // V10(2026-10-02 §5): 캐노니컬 게시만으로는 부족하다 — π 는 거울 뷰로 만들고 서비스도 거울을 읽으므로, **거울의 regRoot 가
     // 내 리프를 담을 때까지**(CIA 의 릴레이가 거울을 올릴 때까지) 기다린다. 마감·폴링 간격은 그대로다. fresh 가 아니어도
     // 거울 뷰에 내 리프가 없으면(관리자 바꿔치기를 되돌린 직후 등 — 캐노니컬만 고쳐졌다) 같은 이유로 기다린다.
-    if (uc.fresh || !(await mirrorLeafMatches(synced, src.registration(), src.userCred()))) {
+    if (pick.fresh || !(await mirrorLeafMatches(synced, src.registration(), src.userCred()))) {
       const deadline = Date.now() + 30_000;
       for (;;) {
         // 다른 세 syncAll() 호출부(로그인 첫 동기화·재검증·buildExecute)와 같은 모양으로 감싼다(리뷰 Important) — 안 그러면
@@ -722,19 +699,18 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
       throw e;
     }
     if (SECRETS === 'snap') setSessionWitness(rs.toString(), src);
-    // src.pending: snap 모드에서 이 로그인이 새로 받은 C_u(userCredIssued)·바뀐 속성(attrsChanged) — 페이지가 Snap 에 저장한다. file 모드는 {}.
+    // src.pending: snap 모드에서 이 로그인이 새로 받은 C_u(userCredIssued) — 페이지가 Snap 에 저장한다. attrsChanged 는 증인의 attrs 가
+    // 지갑 파일과 달라 자가 치유(위 V11(D15))가 걸렸을 때만 실린다 — 평소 로그인은 attrs 를 바꾸지 않는다. file 모드는 {}.
     res.json({ ...out, issued: true, allowAgent, timings, disclosure: hasPredicate(disclosure) ? discStrings(disclosure) : null, ...src.pending });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-/** snap 모드: 로그인·재승인한 세션의 증인을 메모리에만 둔다(스펙 §3.3, persist 가 뺀다). blind_u 는 지금 C_u 의 것(로그인 중 새로 받았으면 그것).
- *  r_u 도 담는다(V9 조건 9 수정) — buildCredentialProof 가 등록부 증명마다 등록 커밋 cm_u 의 블라인딩으로 r_u 를 요구해서,
- *  발급 이후엔 필요 없다고 가정했던 옛 설계(secretSourceFor 참고)가 더는 맞지 않는다. */
+/** snap 모드: 로그인·재승인한 세션의 증인을 메모리에만 둔다(스펙 §3.3, persist 가 뺀다). blind_u 는 지금 C_u 의 것(로그인 중 새로 받았으면 그것). */
 function setSessionWitness(rsKey, src) {
   const s = state.sessions[rsKey];
   if (!s) return;
   const reg = src.registration(), uc = src.userCred();
-  s.witness = { s_u: reg.s_u, r_u: reg.r_u, blind_u: uc?.blind_u ?? null, attrs: reg.attrs, sk_u: reg.sk_u };
+  s.witness = { s_u: reg.s_u, blind_u: uc?.blind_u ?? null, attrs: reg.attrs, sk_u: reg.sk_u };
 }
 
 // 재시작 등으로 세션 증인이 없을 때(revalidate·tx/prepare 의 needs_consent) 팝업이 consentLogin 을 다시 받아 채운다(metamask-snap §4.3).
@@ -746,7 +722,7 @@ app.post('/wallet/session/witness', async (req, res) => {
     // allowAgent 는 팝업이 동의 창에 실제로 쓴 값이다 — 필수로 받아야 "문구와 세션이 어긋났는지" 를 판정할 수 있다(리뷰 Ruling 5).
     if (allowAgent !== '0' && allowAgent !== '1') return res.status(400).json({ error: 'allowAgent 필요' });
     if (!state.registration) return res.status(409).json({ reason: 'not_registered' });
-    try { await validateWitness(witness, state.registration.uid, state.registration.cm_u); }
+    try { await validateWitness(witness, state.registration.uid, state.registration.auid); }
     catch (e) { if (e.reason === 'bad_witness') return res.status(400).json({ reason: 'bad_witness', detail: e.message }); throw e; }
     const rsKey = BigInt(r_s).toString();
     const s = state.sessions[rsKey];
@@ -783,7 +759,7 @@ async function proveSession(rsKey, synced, timings, disclosure = null, src) {
   // V10(2026-10-02): 폐기 사전 확인은 캐시 히트여도 한다. 캐시 키는 거울 뷰 (root, regRoot) 인데, 거울이 뒤처진 동안 캐노니컬에서
   // 폐기·은퇴가 일어나면 키가 그대로라 히트가 나고, 예전처럼 미스일 때만 보면 지갑이 이미 아는 폐기를 놓친 채 옛 π 를 계속 낸다.
   // 확인은 해시 두어 번이라 싸다.
-  // 세션이 물린 사용자 자격증명 위에 발급된 경우(동시 로그인 경합으로 ensureUserCred 가 그 사이 새 C_u 를 받았다) — 지금 C_u 의
+  // 세션이 물린 사용자 자격증명 위에 발급된 경우(동시 로그인 경합으로 issueSession 이 그 사이 새 C_u 를 받았다) — 지금 C_u 의
   // blind_u 로는 증명이 안 만들어진다(witness 실패 → 500). 그 세션은 다음 게시에 어차피 죽으므로 revoked 로 정리한다.
   if (s.credential.Cf_u !== uc?.Cf_u) throw Object.assign(new Error('revoked'), { reason: 'revoked' });
   // V9: 폐기 리프 대신 등록부 — 내 슬롯의 리프가 내 자격증명이 아니면(은퇴돼 0 이거나 바꿔치기) 죽는다(설계 §8.2).
@@ -804,11 +780,10 @@ async function proveSession(rsKey, synced, timings, disclosure = null, src) {
     const prove = async (tree, registry) => {
       try {
         return await buildCredentialProof({
-          uid: BigInt(ov?.uid ?? reg.uid), arid: BigInt(s.arid), s_u: BigInt(ov?.s_u ?? reg.s_u), r_u: BigInt(reg.r_u), blind_u: BigInt(uc.blind_u), blind_s: BigInt(s.blind_s), pk_i: BigInt(s.pk_i),
-          attrs: (reg.attrs ?? []).map(BigInt),
+          uid: BigInt(ov?.uid ?? reg.uid), arid: BigInt(s.arid), s_u: BigInt(ov?.s_u ?? reg.s_u), auid: BigInt(reg.auid), blind_u: BigInt(uc.blind_u),
+          r_rp: BigInt(s.r_rp), r_s: BigInt(rsKey), pk_i: BigInt(s.pk_i), attrs: (reg.attrs ?? []).map(BigInt),
           credential: s.credential, pk_CIA: { x: BigInt(s.credential.pk_CIA.x), y: BigInt(s.credential.pk_CIA.y) },
-          pk_trace: { x: BigInt(s.pk_trace.x), y: BigInt(s.pk_trace.y) }, tree,
-          registry, slot: reg.slot, cm_u: { x: BigInt(reg.cm_u.x), y: BigInt(reg.cm_u.y) }, disclosure,
+          pk_trace: { x: BigInt(s.pk_trace.x), y: BigInt(s.pk_trace.y) }, tree, registry, slot: reg.slot, disclosure,
         });
       } catch (e) {
         // 시연 덮어쓰기가 걸려 있었다면 원인은 거의 항상 그것이다(가짜 s_u·uid 로는 witness 가 안 만들어진다) — 500 대신
@@ -883,7 +858,7 @@ app.post('/wallet/revalidate', loginCors, async (req, res) => {
       res.json({ ...out, timings });
     } catch (e) {
       if (e.reason === 'needs_consent') return res.status(409).json({ reason: 'needs_consent', timings });
-      // 그 세션만 지운다. reg.userCred 는 그대로 둔다 — 다음 로그인의 ensureUserCred 가 등록부로 알아채 새로 받는다.
+      // 그 세션만 지운다. reg.userCred 는 그대로 둔다 — 다음 로그인의 chooseUserCred 가 등록부로 알아채 새로 받는다.
       if (e.reason === 'revoked') { delete state.sessions[rsKey]; cache.deleteSession(rsKey); persist(); return res.status(403).json({ reason: 'revoked', registry: e.registry, timings }); }
       // V8: 이 세션 하나만 폐기됐다 — 지우는 범위는 같지만(그 세션) 사유가 다르다. 다른 세션·자격증명은 그대로 쓴다.
       if (e.reason === 'revoked_session') { delete state.sessions[rsKey]; cache.deleteSession(rsKey); persist(); return res.status(403).json({ reason: 'revoked_session', timings }); }
@@ -894,21 +869,6 @@ app.post('/wallet/revalidate', loginCors, async (req, res) => {
       if (e.reason === 'no_session') return res.status(404).json({ reason: 'no_session', timings });
       throw e;
     }
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// 2026-09-22 §3.3 — 속성은 AA 가 관리한다. 여기서는 값을 다시 받아 저장만 하고, 바뀌었으면 옛 C_u·세션을 버린다(재발급은 다음 로그인).
-app.post('/wallet/attrs/sync', async (req, res) => {
-  try {
-    if (!state.registration) return res.status(409).json({ reason: 'not_registered' });
-    // sk_u 로 요청에 서명한다 — snap 모드는 본문 witness 가 필요하다(없으면 400 witness_required)
-    let src;
-    try { src = secretSourceFor(req); }
-    catch (e) { if (e.reason) return res.status(400).json({ reason: e.reason }); throw e; }
-    if (SECRETS === 'snap') { try { await validateWitness(req.body.witness, state.registration.uid, state.registration.cm_u); } catch (e) { if (e.reason === 'bad_witness') return res.status(400).json({ reason: 'bad_witness', detail: e.message }); throw e; } }
-    const s = await syncAttrsFromCia(src);
-    if (s.status !== 200) return res.status(502).json({ reason: 'attrs_failed', cia: s.body });
-    res.json({ attrs: src.registration()?.attrs ?? null, changed: s.changed, ...src.pending });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

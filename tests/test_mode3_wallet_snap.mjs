@@ -37,11 +37,12 @@ try {
   const info = await rpInfo();
   // V10(2026-10-02 Task 9): 서비스는 대상 체인 거울만 읽는다(mode3_rp.js) — 지갑의 π 도 거울 기준이다.
   const verifier = createRpVerifier({ provider, logAddress: cia.mirrorAddress, vkey, pkCIA: { x: BigInt(keys.pk_CIA.x), y: BigInt(keys.pk_CIA.y) }, arid: BigInt(info.arid), chainId: BigInt(info.chainId), pkTrace: { x: BigInt(info.pk_trace.x), y: BigInt(info.pk_trace.y) } });
-  const verify = (body, r_s) => verifier.verifyLogin({ proof: body.proof, publicSignals: body.publicSignals, sig: body.sig, r_s: BigInt(r_s) });
+  /** ch 는 loginBase() 가 돌려주는 { r_s, r_rp, ... } — V11 verifyLogin 은 세션 바인딩(d′)에 r_rp 도 본다. */
+  const verify = (body, ch) => verifier.verifyLogin({ proof: body.proof, publicSignals: body.publicSignals, sig: body.sig, r_s: BigInt(ch.r_s), r_rp: BigInt(ch.r_rp) });
   /** 지갑 페이지 팝업이 만드는 /wallet/login 본문(증인 제외). */
   const loginBase = async () => {
     const ch = (await rp.post('/api/mode3/challenge')).body;
-    return { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s: ch.r_s, allowAgent: '0', factoryAddress: ch.factoryAddress, attrGateAddress: ch.attrGateAddress, verifiedOrigin: info.origin };
+    return { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s: ch.r_s, r_rp: ch.r_rp, allowAgent: '0', factoryAddress: ch.factoryAddress, attrGateAddress: ch.attrGateAddress, verifiedOrigin: info.origin };
   };
 
   await t('config: secrets=snap', async () => {
@@ -49,22 +50,24 @@ try {
     assert.equal(r.status, 200); assert.equal(r.body.secrets, 'snap');
   });
 
-  await t('register: cm_u·sk_u 없으면 400; 응답에 slot·attrs(sk_u 없음); 상태 파일에는 비밀 없음; status 는 공개 uid·attrs 를 보인다', async () => {
+  await t('register: s_u·sk_u 없으면 400; 응답 { uid, slot, auid, attrs, profile }(sk_u·s_u 없음); 파일에 비밀 없음·auid 있음', async () => {
     const r0 = await sim.register({ uid: '12345', pwd: 'password123' });
-    assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, pwd: r0.pwd })).status, 400, 'snap 모드는 cm_u·sk_u 필수');
-    assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, pwd: r0.pwd, cm_u: { x: 'zz', y: '1' }, sk_u: r0.sk_u })).status, 400);
-    const r = await wallet.post('/wallet/register', { uid: r0.uid, pwd: r0.pwd, cm_u: r0.cm_u, sk_u: r0.sk_u });
+    assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, pwd: r0.pwd })).status, 400, 'snap 모드는 s_u·sk_u 필수');
+    assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, pwd: r0.pwd, s_u: 'zz', sk_u: r0.sk_u })).status, 400);
+    const r = await wallet.post('/wallet/register', { uid: r0.uid, pwd: r0.pwd, s_u: r0.s_u, sk_u: r0.sk_u });
     assert.equal(r.status, 201, j(r.body));
     assert.equal('sk_u' in r.body, false, '응답에는 sk_u 가 없다(요청에만 한 번 실린다)');
+    assert.equal('s_u' in r.body, false, '응답에는 s_u 가 없다(요청에만 한 번 실린다)');
     assert.equal(typeof r.body.slot, 'number');
     assert.deepEqual(r.body.attrs, ['1990', '410', '0', '0', '0', '0']);
     assert.deepEqual(r.body.profile, { birthYear: '1990', country: 'KR' });
     assert.equal(r.body.uid, '12345');
-    sim.storeRegistration({ attrs: r.body.attrs, slot: r.body.slot });
+    assert.match(r.body.auid, /^[0-9]+$/);
+    sim.storeRegistration({ attrs: r.body.attrs, slot: r.body.slot, auid: r.body.auid });
     const file = stateFile();
-    for (const k of ['"s_u"', '"r_u"', '"sk_u"', '"blind_u"']) assert.equal(file.includes(k), false, `${k} 가 파일에 있다`);
-    assert.ok(file.includes('"cm_u"'), '공개 cm_u 는 파일에 있다');
-    assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, pwd: r0.pwd, cm_u: r0.cm_u, sk_u: r0.sk_u })).status, 409);
+    for (const k of ['"s_u"', '"sk_u"', '"blind_u"']) assert.equal(file.includes(k), false, `${k} 가 파일에 있다`);
+    assert.ok(file.includes('"auid"'), '공개 auid 는 파일에 있다');
+    assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, pwd: r0.pwd, s_u: r0.s_u, sk_u: r0.sk_u })).status, 409);
     const s = (await wallet.get('/wallet/status')).body;
     assert.equal(s.registered, true); assert.equal(s.uid, '12345'); assert.deepEqual(s.attrs, ['1990', '410', '0', '0', '0', '0']); assert.equal(s.userCred, null);
     assert.deepEqual(s.profile, { birthYear: '1990', country: 'KR' });
@@ -94,20 +97,20 @@ try {
     assert.equal((await opt('/wallet/tx/prepare')).headers.get('access-control-allow-origin'), null);
   });
 
-  let S1 = null, W1 = null, S2 = null;   // S2 는 allowAgent='1' 로 만든 세션(B-I1 검사용)
+  let S1 = null, W1 = null, S2 = null, B1 = null;   // S2 는 allowAgent='1' 로 만든 세션(B-I1 검사용); B1 은 S1 의 loginBase()(verify 가 r_rp 도 본다)
   await t('login: witness 없으면 400 witness_required; uid 다르면 400 bad_witness; verifiedOrigin 불일치 403; 정상은 세션·userCredIssued', async () => {
     const base = await loginBase();
     const noW = await wallet.post('/wallet/login', base);
     assert.equal(noW.status, 400, j(noW.body)); assert.equal(noW.body.reason, 'witness_required');
     const w = sim.consentLogin({ origin: info.origin, arid: info.arid, allowAgent: '0' });
-    await validateWitness(w, '12345', sim.state.registration.cm_u);   // 시뮬레이터의 증인은 에이전트의 형식·cm_u 검사를 통과해야 한다
+    await validateWitness(w, '12345', sim.state.registration.auid);   // 시뮬레이터의 증인은 에이전트의 형식·auid 검사를 통과해야 한다
     assert.equal(w.userCred, null, '첫 로그인 전에는 C_u 가 없다');
     const badW = await wallet.post('/wallet/login', { ...base, witness: { ...w, uid: '1' } });
     assert.equal(badW.status, 400, j(badW.body)); assert.equal(badW.body.reason, 'bad_witness');
-    // cm_u 바인딩(최종 리뷰 Minor 1): 형식은 맞지만 등록의 s_u 가 아닌 증인은 거절된다.
+    // auid 바인딩(최종 리뷰 Minor 1 의 V11 판): 형식은 맞지만 등록의 s_u 가 아닌 증인은 거절된다.
     const badCm = await wallet.post('/wallet/login', { ...base, witness: { ...w, s_u: '12345' } });
     assert.equal(badCm.status, 400, j(badCm.body)); assert.equal(badCm.body.reason, 'bad_witness');
-    assert.match(badCm.body.detail ?? '', /cm_u/);
+    assert.match(badCm.body.detail ?? '', /auid/);
     const badO = await wallet.post('/wallet/login', { ...base, witness: w, verifiedOrigin: 'http://evil:1' });
     assert.equal(badO.status, 403, j(badO.body)); assert.equal(badO.body.reason, 'bad_rp_cert');
     // Origin 헤더는 snap 모드에서 무시된다(같은 오리진 호출) — verifiedOrigin 만 본다
@@ -121,10 +124,10 @@ try {
     assert.ok(!('uid' in ok.body) && !('s_u' in ok.body), '비밀·uid 는 응답에 없다');
     sim.updateUserCred(ok.body.userCredIssued);
     assert.equal(sim.getPublicInfo().hasUserCred, true);
-    const v = await verify(ok.body, base.r_s); assert.equal(v.ok, true, j(v));
-    S1 = base.r_s; W1 = ok.body;
+    const v = await verify(ok.body, base); assert.equal(v.ok, true, j(v));
+    S1 = base.r_s; W1 = ok.body; B1 = base;
     const file = stateFile();
-    for (const k of ['"s_u"', '"r_u"', '"sk_u"', '"blind_u"', '"witness"']) assert.equal(file.includes(k), false, `${k} 가 파일에 있다`);
+    for (const k of ['"s_u"', '"sk_u"', '"blind_u"', '"witness"']) assert.equal(file.includes(k), false, `${k} 가 파일에 있다`);
     assert.ok(file.includes('"Cf_u"'), 'C_u 의 공개 부분(Cf_u)은 파일에 있다');
     const s = (await wallet.get('/wallet/status')).body;
     assert.ok(s.sessions[S1]); assert.equal(s.userCred?.Cf_u, ok.body.userCredIssued.Cf_u); assert.equal(s.userCred.revoked, false);
@@ -139,7 +142,7 @@ try {
     assert.equal(r.status, 200, j(r.body));
     assert.equal(r.body.timings.userCredMs, 0); assert.equal('userCredIssued' in r.body, false);
     assert.equal(r.body.allowAgent, '1');
-    assert.equal((await verify(r.body, base.r_s)).ok, true);
+    assert.equal((await verify(r.body, base)).ok, true);
     S2 = base.r_s;
   });
 
@@ -148,13 +151,13 @@ try {
     assert.ok(attrGateAddress);
     const rv = await wallet.post('/wallet/revalidate', { r_s: S1 }, { Origin: rp.origin });
     assert.equal(rv.status, 200, j(rv.body)); assert.equal(rv.body.cacheHit, true);
-    assert.equal((await verify(rv.body, S1)).ok, true);
+    assert.equal((await verify(rv.body, B1)).ok, true);
     // 세션 경로는 동의 때 검증된 메모리 증인만 쓴다 — RP 오리진이 CORS 로 부를 수 있으므로 본문 증인은 무시한다(리뷰 Ruling 4).
     // 엉뚱한 증인(userCred:null)을 실어도 세션이 지워지지 않고 정상 200 이어야 한다.
     const evil = { ...sim.consentLogin({ origin: info.origin, arid: info.arid, allowAgent: '0' }), userCred: null };
     const rvEvil = await wallet.post('/wallet/revalidate', { r_s: S1, witness: evil }, { Origin: rp.origin });
     assert.equal(rvEvil.status, 200, j(rvEvil.body));
-    assert.equal((await verify(rvEvil.body, S1)).ok, true);
+    assert.equal((await verify(rvEvil.body, B1)).ok, true);
     assert.ok((await wallet.get('/wallet/status')).body.sessions[S1], '본문 증인으로 세션을 지울 수 없다');
     await stack.restartWallet();
     assert.equal((await wallet.get('/wallet/config')).body.secrets, 'snap');
@@ -177,7 +180,7 @@ try {
     assert.equal(sw.status, 200, j(sw.body)); assert.equal(sw.body.ok, true);
     const rv2 = await wallet.post('/wallet/revalidate', { r_s: S1 }, { Origin: rp.origin });
     assert.equal(rv2.status, 200, j(rv2.body)); assert.equal(rv2.body.cacheHit, false, '재시작으로 캐시가 비어 재증명');
-    assert.equal((await verify(rv2.body, S1)).ok, true);
+    assert.equal((await verify(rv2.body, B1)).ok, true);
     assert.equal(stateFile().includes('"witness"'), false, '증인은 파일에 쓰지 않는다');
   });
 
@@ -305,9 +308,47 @@ try {
     assert.equal(Object.keys((await wallet.get('/wallet/status')).body.sessions).length, before);
   });
 
+  // Task 11 보충(task-11-addendum.md) — Task 9 리뷰 Important 1 판정의 자가 치유 경로. 세션·C_u·sim 의 attrs 를 바꾸므로
+  // S1/W1/S2/B1 을 쓰는 케이스들(위의 revalidate·B-I1·tx/prepare) 보다 뒤, 시뮬레이터 케이스보다 앞에 둔다(addendum 지시).
+  // 이 케이스가 sim.state.registration.attrs 를 바꿔 남기므로, 바로 아래 시뮬레이터 케이스의 첫 syncAttrs 호출은
+  // 고정 리터럴이 아니라 이 케이스가 남긴 현재 값을 그대로 돌려 넣어 "같으면 changed:false" 를 확인한다(기존 단언의 뜻은 그대로다).
+  await t('snap attrs 불일치 자가 치유(Task 9 판정): PUT /wallet/profile 뒤 페이지가 syncAttrs 를 빠뜨려도 다음 로그인이 파일 attrs 로 맞추고 새 C_u 를 낸다', async () => {
+    // 1) 속성 변경 — 응답의 attrsChanged 를 **의도적으로** Snap(sim)에 전달하지 않는다(페이지 실패 재현).
+    const chg = await wallet.put('/wallet/profile', { profile: { birthYear: '1990', country: 'KR', extra1: 'tier3' } });
+    assert.equal(chg.status, 200, j(chg.body)); assert.equal(chg.body.changed, true);
+    assert.ok(Array.isArray(chg.body.attrsChanged), 'snap 모드는 attrsChanged 를 싣는다');
+    const fileAttrs = chg.body.attrs;
+    const snapAttrsBefore = [...sim.state.registration.attrs];
+    assert.notDeepEqual(snapAttrsBefore, fileAttrs, 'Snap(옛)·파일(새) 속성이 어긋난 상태다');
+    // 2) 옛 속성·옛 userCred 를 든 증인으로 로그인 → 200, attrsChanged == 파일 attrs, userCredIssued(새 C_u), userCredMs > 0
+    const base = await loginBase();
+    const w = sim.consentLogin({ origin: info.origin, arid: info.arid, allowAgent: '0' });
+    assert.deepEqual(w.attrs, snapAttrsBefore); assert.ok(w.userCred?.blind_u, '증인은 옛 C_u 를 들고 있다');
+    const r = await stack.withRelay(() => wallet.post('/wallet/login', { ...base, witness: w }));
+    assert.equal(r.status, 200, j(r.body));
+    assert.deepEqual(r.body.attrsChanged, fileAttrs, '자가 치유: 파일 attrs 를 응답에 실어 Snap 이 따라오게 한다');
+    assert.ok(r.body.userCredIssued, '옛 C_u 를 버리고 새 C_u 를 받았다');
+    assert.notEqual(r.body.userCredIssued.Cf_u, w.userCred.Cf_u);
+    assert.ok(r.body.timings.userCredMs > 0);
+    assert.equal((await verify(r.body, base)).ok, true, '새 C_u 로 만든 π 가 RP 검증을 통과한다');
+    // 3) 페이지가 하듯 Snap 에 반영 → 다음 로그인은 재사용(attrsChanged 없음, userCredIssued 없음)
+    sim.syncAttrs({ attrs: r.body.attrsChanged }); sim.updateUserCred(r.body.userCredIssued);
+    assert.deepEqual(sim.state.registration.attrs, fileAttrs);
+    const base2 = await loginBase();
+    const w2 = sim.consentLogin({ origin: info.origin, arid: info.arid, allowAgent: '0' });
+    const r2 = await wallet.post('/wallet/login', { ...base2, witness: w2 });
+    assert.equal(r2.status, 200, j(r2.body));
+    assert.equal('attrsChanged' in r2.body, false); assert.equal('userCredIssued' in r2.body, false);
+    assert.equal(r2.body.timings.userCredMs, 0);
+    const s = (await wallet.get('/wallet/status')).body;
+    assert.deepEqual(s.attrs, fileAttrs);
+  });
+
   await t('시뮬레이터: selfRevoke 는 uid·pwd, syncAttrs 는 changed 와 C_u 폐기, reset 은 상태를 비운다', async () => {
     assert.deepEqual(sim.selfRevoke({ pwd: 'password123' }), { uid: '12345', pwd: 'password123' });
-    assert.deepEqual(sim.syncAttrs({ attrs: ['1990', '410', '0', '0', '0', '0'] }), { ok: true, changed: false });
+    // 바로 위 자가 치유 케이스가 attrs 를 바꿔 놓았다 — 고정 리터럴이 아니라 그 결과값을 그대로 돌려 넣어
+    // "같은 값이면 changed:false" 를 확인한다(단언의 뜻은 기존과 같다).
+    assert.deepEqual(sim.syncAttrs({ attrs: [...sim.state.registration.attrs] }), { ok: true, changed: false });
     assert.deepEqual(sim.syncAttrs({ attrs: ['1991', '410', '2', '0', '0', '0'] }), { ok: true, changed: true });
     assert.equal(sim.getPublicInfo().hasUserCred, false, '속성이 바뀌면 옛 C_u 는 물린다');
     assert.deepEqual(sim.reset(), { ok: true });

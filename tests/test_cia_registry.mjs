@@ -6,11 +6,12 @@ import path from 'node:path';
 import { ethers } from 'ethers';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { getProvider } from './helpers/mode3_chain.mjs';
-import { createRegistration, signRegistration, buildUserCredRequest, buildIssueRequest, createSessionKey, signRevokeSession } from '../lib/mode3_wallet.js';
+import { createRegistration, signRegistration, signRevokeSession } from '../lib/mode3_wallet.js';
 import { pointToStrings } from '../lib/mode3_issuance.js';
 import { userCommit, randomScalar } from '../lib/mode3_credential.js';
 import { registryLeaf, createRegistryTree } from '../lib/mode3_registry.js';
 import { MODE3_LOG_ABI, verifyReceipt } from '../lib/mode3_log.js';
+import { issueV11, userOf, TESTUSER_ATTRS, ALICE_ATTRS } from './helpers/mode3_flow.mjs';
 
 const j = (o) => JSON.stringify(o, (k, v) => (typeof v === 'bigint' ? v.toString() : v));
 let failed = 0;
@@ -18,46 +19,43 @@ async function t(name, fn) { try { await fn(); console.log(`ok   ${name}`); } ca
 const provider = getProvider();
 const cia = await startIsolatedCia();
 const log = new ethers.Contract(cia.logAddress, MODE3_LOG_ABI, provider);
-const ATTRS = [1990n, 410n, 0n, 0n, 0n, 0n];
+const arid = 22222222222222222222n;
 const b32 = (n) => ethers.zeroPadValue(ethers.toBeHex(BigInt(n)), 32);
-let u;   // registerUser 결과
-let alice;   // registerUser('67890', 'alicepw') 결과 — 관리자 바꿔치기 케이스(Task 9)가 쓴다
+let u;       // userOf(registerUser('12345')) 결과
+let alice;   // userOf(registerUser('67890')) 결과 — 관리자 바꿔치기 케이스(Task 9)가 쓴다
+let iss;     // u 의 최근 발급 결과(issueV11) — 다음 케이스가 blind_u·Cf_s 를 이어 쓴다
 try {
-  await t('등록: pk_u·sig_reg 필수, 틀린 서명 400, 정상 201 { slot 0, attrs 6 }, sk_u 없음, 두 번째 계정은 슬롯 1', async () => {
-    const reg = await createRegistration();
-    const base = { uid: '12345', pwd: 'password123', cm_u: pointToStrings(reg.cm_u), pk_u: { x: reg.pk_u.x.toString(), y: reg.pk_u.y.toString() } };
-    assert.equal((await cia.post('/cia/register', { ...base, pk_u: undefined, sig_reg: await signRegistration(reg.sk_u, 12345n, reg.cm_u) })).status, 400);
-    const other = await createRegistration();
-    const bad = await cia.post('/cia/register', { ...base, sig_reg: await signRegistration(other.sk_u, 12345n, reg.cm_u) });
+  await t('등록: pk_u·sig_reg 필수, 틀린 서명 400, 정상 201 { slot, schemaHash }, 두 번째 계정은 슬롯 1', async () => {
+    const reg = await createRegistration(12345n);
+    const base = { uid: '12345', pwd: 'password123', auid: reg.auid.toString(), pk_u: pointToStrings(reg.pk_u) };
+    assert.equal((await cia.post('/cia/register', { ...base, pk_u: undefined, sig_reg: await signRegistration(reg.sk_u, 12345n, reg.auid) })).status, 400);
+    const other = await createRegistration(12345n);
+    const bad = await cia.post('/cia/register', { ...base, sig_reg: await signRegistration(other.sk_u, 12345n, reg.auid) });
     assert.equal(bad.status, 400); assert.equal(bad.body.error, 'bad_registration_signature');
-    u = await cia.registerUser('12345', 'password123');
-    assert.equal(u.slot, 0); assert.deepEqual(u.attrs, ['1990', '410', '0', '0', '0', '0']); assert.equal(u.body.sk_u, undefined);
-    alice = await cia.registerUser('67890', 'alicepw');
+    u = userOf(await cia.registerUser('12345', 'password123'), '12345', TESTUSER_ATTRS);
+    assert.equal(u.slot, 0);
+    alice = userOf(await cia.registerUser('67890', 'alicepw'), '67890', ALICE_ATTRS);
     assert.equal(alice.slot, 1);
   });
-  let cred;
-  await t('발급: 201 { Cf_u, slot, regRoot, epoch, published:true } — 체인 regRoot·SlotUpdated(0, L_reg) 가 같이 간다', async () => {
-    cred = await buildUserCredRequest({ uid: 12345n, s_u: u.s_u, r_u: u.r_u, sk_u: u.sk_u, attrs: ATTRS });
-    const r = await cia.post('/cia/user_cred', cred.body);
-    assert.equal(r.status, 201, j(r.body));
-    assert.equal(r.body.slot, 0); assert.equal(r.body.published, true); assert.equal(r.body.leaf, undefined, 'V9: 사용자 리프는 없다');
-    assert.equal(b32(r.body.regRoot), await log.regRoot());
+  await t('발급: 200 { Cf_u, slot, regRoot, epoch, published:true } — 체인 regRoot·SlotUpdated(0, L_reg) 가 같이 간다', async () => {
+    iss = await issueV11(cia, u, { arid, provider });
+    assert.equal(iss.r.status, 200, j(iss.r.body));
+    assert.equal(iss.cred.slot, 0); assert.equal(iss.cred.published, true);
+    assert.equal(b32(iss.cred.regRoot), await log.regRoot());
     const ev = await log.queryFilter(log.filters.SlotUpdated(), 0, 'latest');
     assert.equal(ev.length, 1); assert.equal(Number(ev[0].args.index), 0);
-    assert.equal(BigInt(ev[0].args.leaf), await registryLeaf(u.cm_u, cred.Cf_u));
-    const same = await cia.post('/cia/user_cred', cred.body);   // 멱등
-    assert.equal(same.status, 200); assert.equal(same.body.published, false);
+    assert.equal(BigInt(ev[0].args.leaf), await registryLeaf(u.auid, iss.req.Cf_u));
+    const same = await issueV11(cia, u, { arid, provider, blind_u: iss.blind_u });   // 같은 C_u(멱등) — 새 세션일 뿐
+    assert.equal(same.r.status, 200); assert.equal(same.cred.published, false);
   });
-  await t('교체: 새 C_u 를 받으면 슬롯 리프가 바뀌고 게시된다; 옛 Cf_u 로 세션 발급은 403 no_user_cred', async () => {
-    const cred2 = await buildUserCredRequest({ uid: 12345n, s_u: u.s_u, r_u: u.r_u, sk_u: u.sk_u, attrs: ATTRS });
-    const r = await cia.post('/cia/user_cred', cred2.body);
-    assert.equal(r.status, 201); assert.equal(r.body.published, true);
+  await t('교체: 새 C_u 를 받으면 슬롯 리프가 바뀌고 게시된다; 옛 blind_u(C_u)로 다시 발급하면 409 cred_revoked', async () => {
+    const iss2 = await issueV11(cia, u, { arid, provider, blind_u: randomScalar() });
+    assert.equal(iss2.r.status, 200, j(iss2.r.body)); assert.equal(iss2.cred.published, true);
     const ev = await log.queryFilter(log.filters.SlotUpdated(), 0, 'latest');
-    assert.equal(BigInt(ev.at(-1).args.leaf), await registryLeaf(u.cm_u, cred2.Cf_u));
-    const iss = await buildIssueRequest({ uid: 12345n, Cf_u: cred.Cf_u, arid: 22222222222222222222n, sk_u: u.sk_u, session: createSessionKey(), chainid: 31337n, max_height: BigInt(await provider.getBlockNumber()) + 300n });
-    const rs = await cia.post('/cia/issue', iss.body);
-    assert.equal(rs.status, 403); assert.equal(rs.body.reason, 'no_user_cred');
-    cred = cred2;
+    assert.equal(BigInt(ev.at(-1).args.leaf), await registryLeaf(u.auid, iss2.req.Cf_u));
+    const rs = await issueV11(cia, u, { arid, provider, blind_u: iss.blind_u });
+    assert.equal(rs.r.status, 409); assert.equal(rs.r.body.reason, 'cred_revoked');
+    iss = iss2;
   });
   await t('은퇴(scope=credential): 슬롯 0 게시, 폐기 트리 리프 수는 불변', async () => {
     const before = (await cia.get('/cia/state')).body.leafCount;
@@ -70,13 +68,10 @@ try {
     assert.equal(again.body.retired, 0);
   });
   await t('계정 폐기(scope=account): disabled + 슬롯 0; 세션 폐기는 여전히 폐기 트리 리프(pending → publish 로 Revoked)', async () => {
-    const c3 = await buildUserCredRequest({ uid: 12345n, s_u: u.s_u, r_u: u.r_u, sk_u: u.sk_u, attrs: ATTRS });
-    assert.equal((await cia.post('/cia/user_cred', c3.body)).status, 201);
-    const iss = await buildIssueRequest({ uid: 12345n, Cf_u: c3.Cf_u, arid: 22222222222222222222n, sk_u: u.sk_u, session: createSessionKey(), chainid: 31337n, max_height: BigInt(await provider.getBlockNumber()) + 300n });
-    const issued = await cia.post('/cia/issue', iss.body);
-    assert.equal(issued.status, 200, j(issued.body));
+    iss = await issueV11(cia, u, { arid, provider, blind_u: randomScalar() });   // 새 C_u — 은퇴한 계정은 활성 자격증명이 없어야 하므로
+    assert.equal(iss.r.status, 200, j(iss.r.body));
     const nonce = randomScalar();
-    const rv = await cia.post('/cia/revoke', { uid: '12345', scope: 'session', Cf_s: issued.body.Cf_s, sig_u: await signRevokeSession(u.sk_u, 12345n, BigInt(issued.body.Cf_s), nonce), nonce: nonce.toString() });
+    const rv = await cia.post('/cia/revoke', { uid: '12345', scope: 'session', Cf_s: iss.cred.Cf_s, sig_u: await signRevokeSession(u.sk_u, u.uid, BigInt(iss.cred.Cf_s), nonce), nonce: nonce.toString() });
     assert.equal(rv.status, 200, j(rv.body)); assert.equal(rv.body.inserted, true);
     assert.equal((await cia.get('/cia/state')).body.pendingCount, 1);
     const ra = await cia.adminPost('/cia/revoke', { uid: '12345', scope: 'account' });
@@ -92,9 +87,9 @@ try {
     assert.equal(a.slot, 0); assert.equal(a.tampered, false); assert.equal(a.registryLeaf, '0');
   });
   await t('관리자 바꿔치기: 슬롯에 가짜 리프를 게시하면 regRoot 가 바뀌고 tampered:true; 되돌리기로 진짜 리프·false', async () => {
-    const c4 = await buildUserCredRequest({ uid: 67890n, s_u: alice.s_u, r_u: alice.r_u, sk_u: alice.sk_u, attrs: [2005n, 840n, 0n, 0n, 0n, 0n] });
-    assert.equal((await cia.post('/cia/user_cred', c4.body)).status, 201);
-    const real = await registryLeaf(alice.cm_u, c4.Cf_u);
+    const issA = await issueV11(cia, alice, { arid, provider, blind_u: randomScalar() });
+    assert.equal(issA.r.status, 200, j(issA.r.body));
+    const real = await registryLeaf(alice.auid, issA.req.Cf_u);
     const before = await log.regRoot();
     const tp = await cia.adminPost('/cia/admin/registry/tamper', { uid: '67890' });
     assert.equal(tp.status, 200, j(tp.body)); assert.equal(tp.body.slot, 1); assert.notEqual(BigInt(tp.body.leaf), real); assert.equal(tp.body.published, true);
@@ -107,8 +102,7 @@ try {
     assert.equal((await cia.adminGet('/cia/admin/registry')).body.slots.find((x) => x.index === 1).tampered, false);
     assert.equal((await cia.adminPost('/cia/admin/registry/tamper', { uid: '12345' })).status, 409, '활성 자격증명 없음(폐기된 계정)');
   });
-  // V10(2026-10-02 §4) 폐기 접수증·대기열 강제. 브리프의 slotOf/issueUserCred 헬퍼는 이 파일에 없어 /cia/accounts 와
-  // buildUserCredRequest 로 대신한다. alice(67890, 슬롯 1)는 위 바꿔치기 케이스 뒤 활성 자격증명을 가진 채로 남아 있다.
+  // V10(2026-10-02 §4) 폐기 접수증·대기열 강제. alice(67890, 슬롯 1)는 위 바꿔치기 케이스 뒤 활성 자격증명을 가진 채로 남아 있다.
   const slotOf = async (uid) => (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === uid).slot;
   await t('자기 폐기 응답에 IdP 서명 접수증이 실리고, 접수증은 캐노니컬 로그가 받아들인다', async () => {
     const r = await cia.post('/cia/account/self_revoke', { uid: '67890', pwd: 'alicepw' });
@@ -132,12 +126,11 @@ try {
     const en = await cia.adminPost('/cia/account/set_disabled', { uid: '67890', disabled: false });
     assert.equal(en.status, 200, j(en.body));
     const before = await slotOf('67890');
-    const c5 = await buildUserCredRequest({ uid: 67890n, s_u: alice.s_u, r_u: alice.r_u, sk_u: alice.sk_u, attrs: [2005n, 840n, 0n, 0n, 0n, 0n] });
-    const r = await cia.post('/cia/user_cred', c5.body);
-    assert.equal(r.status, 201, j(r.body)); assert.equal(r.body.published, true, '새 슬롯 쓰기는 SlotIsRetired 에 걸리지 않는다');
+    const issA2 = await issueV11(cia, alice, { arid, provider, blind_u: randomScalar() });
+    assert.equal(issA2.r.status, 200, j(issA2.r.body)); assert.equal(issA2.cred.published, true, '새 슬롯 쓰기는 SlotIsRetired 에 걸리지 않는다');
     const after = await slotOf('67890');
-    assert.notEqual(after, before); assert.equal(r.body.slot, after);
-    assert.equal(b32(r.body.regRoot), await log.regRoot());
+    assert.notEqual(after, before); assert.equal(issA2.cred.slot, after);
+    assert.equal(b32(issA2.cred.regRoot), await log.regRoot());
   });
   await t('scope=credential 폐기는 접수증을 내지 않는다', async () => {
     const r = await cia.adminPost('/cia/revoke', { uid: '12345', scope: 'credential' });
@@ -150,9 +143,8 @@ try {
     const rc = rv.body.receipt, s0 = await slotOf('67890');
     assert.ok(rc && rc.slot === s0, j(rc));
     assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid: '67890', disabled: false })).status, 200);
-    const c6 = await buildUserCredRequest({ uid: 67890n, s_u: alice.s_u, r_u: alice.r_u, sk_u: alice.sk_u, attrs: [2005n, 840n, 0n, 0n, 0n, 0n] });
-    const uc = await cia.post('/cia/user_cred', c6.body);
-    assert.equal(uc.status, 201, j(uc.body)); assert.equal(uc.body.published, true);
+    const issA3 = await issueV11(cia, alice, { arid, provider, blind_u: randomScalar() });
+    assert.equal(issA3.r.status, 200, j(issA3.r.body)); assert.equal(issA3.cred.published, true);
     const s1 = await slotOf('67890');
     assert.notEqual(s1, s0, '계정 폐기는 슬롯을 로컬에서 영구 은퇴시켜 재발급이 새 슬롯을 받는다');
     const logW = new ethers.Contract(cia.logAddress, MODE3_LOG_ABI, await provider.getSigner(0));
@@ -166,7 +158,7 @@ try {
     assert.equal(BigInt(ev.filter((e) => Number(e.args.index) === s0).at(-1).args.leaf), 0n, '옛 슬롯은 0 그대로');
     const acct = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === '67890');
     assert.equal(acct.slot, s1); assert.equal(acct.disabled, false, '옛 슬롯의 접수증은 새 슬롯의 계정을 다시 막지 않는다');
-    assert.equal(BigInt(acct.registryLeaf), await registryLeaf(alice.cm_u, c6.Cf_u), '새 슬롯의 리프는 그대로');
+    assert.equal(BigInt(acct.registryLeaf), await registryLeaf(alice.auid, issA3.req.Cf_u), '새 슬롯의 리프는 그대로');
     assert.equal(b32((await cia.get('/cia/state')).body.regRoot), await log.regRoot());
   });
   // 2026-10-02 V10 최종 리뷰 I-3: 복구 직후(재발급 전)에는 acct.slot 이 아직 옛(은퇴) 슬롯이라, 그때 옛 접수증이 올라오면
@@ -186,37 +178,38 @@ try {
     assert.equal(await log.isRetired(s0), true);
     const acct = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === '67890');
     assert.equal(acct.disabled, false, '이미 은퇴한 슬롯의 접수증이 복구된 계정을 다시 막았다');
-    const c7 = await buildUserCredRequest({ uid: 67890n, s_u: alice.s_u, r_u: alice.r_u, sk_u: alice.sk_u, attrs: [2005n, 840n, 0n, 0n, 0n, 0n] });
-    const uc = await cia.post('/cia/user_cred', c7.body);
-    assert.equal(uc.status, 201, j(uc.body)); assert.equal(uc.body.published, true);
-    assert.notEqual(uc.body.slot, s0, '재발급은 새 슬롯');
-    assert.equal(b32(uc.body.regRoot), await log.regRoot());
+    const issA4 = await issueV11(cia, alice, { arid, provider, blind_u: randomScalar() });
+    assert.equal(issA4.r.status, 200, j(issA4.r.body)); assert.equal(issA4.cred.published, true);
+    assert.notEqual(issA4.cred.slot, s0, '재발급은 새 슬롯');
+    assert.equal(b32(issA4.cred.regRoot), await log.regRoot());
   });
 } finally { await cia.stop(); }
 
-// ---- 마이그레이션: v8 상태 파일로 기동하면 슬롯을 배정하고 활성 자격증명 리프를 채워 게시한다 ----
-await t('v8 상태 파일 → 기동 시 등록부 생성·게시', async () => {
-  const reg = await createRegistration();
+// ---- 마이그레이션: v12 상태 파일(리프가 비어 있는 슬롯)로 기동하면 활성 자격증명 리프를 채워 게시한다 ----
+// V11(2026-10-12)은 v11 이하 상태를 이행하지 않는다(lib/mode3_cia_state.js) — "마이그레이션"은 이제 손으로 적은(또는 크래시로
+// 리프가 비어 있는) v12 상태 파일을 기동이 채워 게시하는 경로만 남는다.
+await t('v12 상태 파일(리프가 비어 있는 슬롯) → 기동이 활성 자격증명의 리프를 채워 게시', async () => {
+  const reg = await createRegistration(12345n);
   const blind_u = randomScalar();
-  const { Cx, Cy, Cf } = await userCommit({ uid: 12345n, s_u: reg.s_u, blind_u, attrs: ATTRS });
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-v8-'));
+  const { Cx, Cy, Cf } = await userCommit({ uid: 12345n, s_u: reg.s_u, blind_u, attrs: TESTUSER_ATTRS });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-v12-empty-'));
   const stateFile = path.join(dir, 'cia_state.json');
-  // 등급 슬롯은 0 으로 둔다(스펙 2, 2026-10-07) — 0 이 아니면 v10→v11 이행이 그 값을 버려 attrsChanged 에 들어가고,
-  // cia.js 기동이 이 활성 자격증명을 먼저 물려(슬롯 0) 아래의 "리프 채우기(filled)" 경로가 전혀 실행되지 않는다
-  // (그 물림·슬롯 비움 경로는 test_cia_startup.mjs 의 "v10 상태 파일은 v11 로 이행된다" 케이스가 이미 본다). 이
-  // 테스트는 그와 다른, 이 파일만의 유일한 커버리지(v8→v9 마이그레이션이 살아남은 활성 자격증명의 리프를 계산해
-  // 채우고 처음으로 게시하는 경로, loadState() 의 `filled` 루프)를 보려는 것이므로 attrsChanged 를 유발하지 않아야 한다.
-  fs.writeFileSync(stateFile, JSON.stringify({ version: 8, accounts: { '12345': { pk_u: { x: reg.pk_u.x.toString(), y: reg.pk_u.y.toString() }, cm_u: pointToStrings(reg.cm_u), disabled: false, creds: [{ Cf_u: Cf.toString(), C_u_pt: { x: Cx.toString(), y: Cy.toString() }, leaf: '0', issuedAt: 'x', revoked: false }], attrs: ['1990', '410', '0', '0'], sessions: [] } }, rps: {}, openings: [], revoked: [], pending: [], epoch: 0 }));
+  fs.writeFileSync(stateFile, JSON.stringify({
+    version: 12,
+    accounts: { '12345': { pk_u: { x: reg.pk_u.x.toString(), y: reg.pk_u.y.toString() }, auid: reg.auid.toString(), slot: 0, tampered: false, disabled: false,
+      creds: [{ Cf_u: Cf.toString(), C_u_pt: { x: Cx.toString(), y: Cy.toString() }, issuedAt: 'x', revoked: false }], sessions: [], receipt: null, slotRetired: false } },
+    rps: {}, openings: [], revoked: [], pending: [], epoch: 0, registry: { depth: 20, next: 1, leaves: {}, pendingSlots: [] }, lastPublication: null, signedEpochMax: 0, attrSchemaHash: null,
+  }));
   const cia2 = await startIsolatedCia({ env: { CIA_STATE_FILE: stateFile } });
   try {
     const log2 = new ethers.Contract(cia2.logAddress, MODE3_LOG_ABI, provider);
-    const expected = await registryLeaf(reg.cm_u, Cf);
+    const expected = await registryLeaf(reg.auid, Cf);
     const tree = await createRegistryTree(); tree.set(0, expected);
     assert.equal(await log2.regRoot(), b32(tree.root()), '기동 자동 게시로 체인 regRoot 가 슬롯 0 하나짜리 트리');
     const ev = await log2.queryFilter(log2.filters.SlotUpdated(), 0, 'latest');
     assert.equal(ev.length, 1); assert.equal(BigInt(ev[0].args.leaf), expected);
     const a = (await cia2.adminGet('/cia/accounts')).body.accounts[0];
-    assert.equal(a.slot, 0); assert.deepEqual(a.attrs, ['1990', '410', '0', '0', '0', '0']);
+    assert.equal(a.slot, 0);
     assert.equal(a.registryLeaf, expected.toString());
   } finally { await cia2.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
@@ -224,18 +217,19 @@ await t('v8 상태 파일 → 기동 시 등록부 생성·게시', async () => 
 // ---- 재기동 백로그(리뷰 Important 1): setSlot+persist 뒤 게시 전에 죽으면 migrated.notes·filled 둘 다 0 이라
 // 옛 게이트가 pendingSlots 를 영영 못 봤다. 상태 파일을 그 시점 그대로 손으로 적어 기동만으로 재현한다. ----
 await t('재기동 백로그 자동 게시: 리프는 이미 저장됐지만 게시 전에 죽은 상태 — 기동이 pendingSlots 를 비운다', async () => {
-  const reg = await createRegistration();
+  const reg = await createRegistration(12345n);
   const blind_u = randomScalar();
-  const { Cx, Cy, Cf } = await userCommit({ uid: 12345n, s_u: reg.s_u, blind_u, attrs: ATTRS });
-  const expected = await registryLeaf(reg.cm_u, Cf);
+  const { Cx, Cy, Cf } = await userCommit({ uid: 12345n, s_u: reg.s_u, blind_u, attrs: TESTUSER_ATTRS });
+  const expected = await registryLeaf(reg.auid, Cf);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-backlog-'));
   const stateFile = path.join(dir, 'cia_state.json');
   fs.writeFileSync(stateFile, JSON.stringify({
-    version: 9,
-    accounts: { '12345': { pk_u: { x: reg.pk_u.x.toString(), y: reg.pk_u.y.toString() }, cm_u: pointToStrings(reg.cm_u), disabled: false, slot: 0, tampered: false,
-      creds: [{ Cf_u: Cf.toString(), C_u_pt: { x: Cx.toString(), y: Cy.toString() }, issuedAt: 'x', revoked: false }], attrs: ATTRS.map(String), sessions: [] } },
+    version: 12,
+    accounts: { '12345': { pk_u: { x: reg.pk_u.x.toString(), y: reg.pk_u.y.toString() }, auid: reg.auid.toString(), disabled: false, slot: 0, tampered: false,
+      creds: [{ Cf_u: Cf.toString(), C_u_pt: { x: Cx.toString(), y: Cy.toString() }, issuedAt: 'x', revoked: false }], sessions: [], receipt: null, slotRetired: false } },
     rps: {}, openings: [], revoked: [], pending: [], epoch: 0,
     registry: { depth: 20, next: 1, leaves: { '0': expected.toString() }, pendingSlots: [{ index: 0, leaf: expected.toString() }] },
+    lastPublication: null, signedEpochMax: 0, attrSchemaHash: null,
   }));
   const cia3 = await startIsolatedCia({ env: { CIA_STATE_FILE: stateFile } });
   try {
@@ -256,10 +250,10 @@ await t('대조(체인이 앞섬): 로컬에서 비워진 칸도 다시 게시�
   const cia4 = await startIsolatedCia();
   let savedState, ciaKey, logAddr;
   try {
-    const u1 = await cia4.registerUser('12345', 'password123');
-    await cia4.registerUser('67890', 'alicepw');
-    const cred1 = await buildUserCredRequest({ uid: 12345n, s_u: u1.s_u, r_u: u1.r_u, sk_u: u1.sk_u, attrs: ATTRS });
-    assert.equal((await cia4.post('/cia/user_cred', cred1.body)).status, 201);
+    const u1 = userOf(await cia4.registerUser('12345', 'password123'), '12345', TESTUSER_ATTRS);
+    userOf(await cia4.registerUser('67890', 'alicepw'), '67890', ALICE_ATTRS);
+    const iss1 = await issueV11(cia4, u1, { arid, provider, blind_u: randomScalar() });
+    assert.equal(iss1.r.status, 200, j(iss1.r.body));
     savedState = JSON.parse(fs.readFileSync(path.join(cia4.dir, 'cia_state.json'), 'utf8'));
     ciaKey = cia4.ciaEthWallet.privateKey;
     logAddr = cia4.logAddress;
@@ -287,21 +281,20 @@ await t('대조(체인이 앞섬): 로컬에서 비워진 칸도 다시 게시�
 await t('게시 직전 대조: 두 사용자가 있어도 교체 게시는 바뀐 슬롯 하나만 싣는다(N 명분 전체 재발행 금지)', async () => {
   const cia6 = await startIsolatedCia();
   try {
-    const v1 = await cia6.registerUser('12345', 'password123');
-    const v2 = await cia6.registerUser('67890', 'alicepw');
-    const c1a = await buildUserCredRequest({ uid: 12345n, s_u: v1.s_u, r_u: v1.r_u, sk_u: v1.sk_u, attrs: ATTRS });
-    assert.equal((await cia6.post('/cia/user_cred', c1a.body)).status, 201);   // 첫 게시 — 슬롯 0
-    const c2 = await buildUserCredRequest({ uid: 67890n, s_u: v2.s_u, r_u: v2.r_u, sk_u: v2.sk_u, attrs: v2.attrs.map(BigInt) });   // alice 는 자기 attrs 를 써야 한다
-    assert.equal((await cia6.post('/cia/user_cred', c2.body)).status, 201);   // 둘째 게시 — 슬롯 1
-    const c1b = await buildUserCredRequest({ uid: 12345n, s_u: v1.s_u, r_u: v1.r_u, sk_u: v1.sk_u, attrs: ATTRS });   // 교체 — 슬롯 0 만 바뀐다
-    const r3 = await cia6.post('/cia/user_cred', c1b.body);   // 셋째 게시
-    assert.equal(r3.status, 201, j(r3.body)); assert.equal(r3.body.published, true);
+    const v1 = userOf(await cia6.registerUser('12345', 'password123'), '12345', TESTUSER_ATTRS);
+    const v2 = userOf(await cia6.registerUser('67890', 'alicepw'), '67890', ALICE_ATTRS);
+    const first = await issueV11(cia6, v1, { arid, provider, blind_u: randomScalar() });   // 첫 게시 — 슬롯 0
+    assert.equal(first.r.status, 200, j(first.r.body));
+    const second = await issueV11(cia6, v2, { arid, provider, blind_u: randomScalar() });   // 둘째 게시 — 슬롯 1
+    assert.equal(second.r.status, 200, j(second.r.body));
+    const third = await issueV11(cia6, v1, { arid, provider, blind_u: randomScalar() });   // 교체 — 슬롯 0 만 바뀐다
+    assert.equal(third.r.status, 200, j(third.r.body)); assert.equal(third.cred.published, true);
     const log6 = new ethers.Contract(cia6.logAddress, MODE3_LOG_ABI, provider);
-    const ev = await log6.queryFilter(log6.filters.SlotUpdated(BigInt(r3.body.epoch)), 0, 'latest');
+    const ev = await log6.queryFilter(log6.filters.SlotUpdated(BigInt(third.cred.epoch)), 0, 'latest');
     assert.equal(ev.length, 1, `세 번째 게시가 SlotUpdated 를 ${ev.length}개 냈다 — pendingSlots 대신 non-zero 인 칸 전부를 실었는지 의심`);
     assert.equal(Number(ev[0].args.index), 0);
-    assert.equal(BigInt(ev[0].args.leaf), await registryLeaf(v1.cm_u, c1b.Cf_u));
-    assert.equal(b32(r3.body.regRoot), await log6.regRoot());
+    assert.equal(BigInt(ev[0].args.leaf), await registryLeaf(v1.auid, third.req.Cf_u));
+    assert.equal(b32(third.cred.regRoot), await log6.regRoot());
   } finally { await cia6.stop(); }
 });
 
@@ -313,12 +306,12 @@ await t('게시 직전 대조: 두 사용자가 있어도 교체 게시는 바�
 await t('게시 경합: 두 사용자를 동시에 credential 폐기해도 두 슬롯 모두 결국 게시된다(pendingSlots 0, regRoot 일치)', async () => {
   const cia7 = await startIsolatedCia();
   try {
-    const v1 = await cia7.registerUser('12345', 'password123');
-    const v2 = await cia7.registerUser('67890', 'alicepw');
-    const c1 = await buildUserCredRequest({ uid: 12345n, s_u: v1.s_u, r_u: v1.r_u, sk_u: v1.sk_u, attrs: ATTRS });
-    assert.equal((await cia7.post('/cia/user_cred', c1.body)).status, 201, j(c1));
-    const c2 = await buildUserCredRequest({ uid: 67890n, s_u: v2.s_u, r_u: v2.r_u, sk_u: v2.sk_u, attrs: v2.attrs.map(BigInt) });   // alice 는 자기 attrs 를 써야 한다
-    assert.equal((await cia7.post('/cia/user_cred', c2.body)).status, 201, j(c2));
+    const v1 = userOf(await cia7.registerUser('12345', 'password123'), '12345', TESTUSER_ATTRS);
+    const v2 = userOf(await cia7.registerUser('67890', 'alicepw'), '67890', ALICE_ATTRS);
+    const i1 = await issueV11(cia7, v1, { arid, provider, blind_u: randomScalar() });
+    assert.equal(i1.r.status, 200, j(i1.r.body));
+    const i2 = await issueV11(cia7, v2, { arid, provider, blind_u: randomScalar() });
+    assert.equal(i2.r.status, 200, j(i2.r.body));
     const log7 = new ethers.Contract(cia7.logAddress, MODE3_LOG_ABI, provider);
     const [r1, r2] = await Promise.all([
       cia7.adminPost('/cia/revoke', { uid: '12345', scope: 'credential' }),
@@ -343,9 +336,9 @@ await t('은퇴 슬롯 방어: 은퇴 전 백업으로 재기동해도 은퇴 �
   const cia8 = await startIsolatedCia();
   let backup, ciaKey, logAddr, slot;
   try {
-    const v = await cia8.registerUser('12345', 'password123');
-    const c = await buildUserCredRequest({ uid: 12345n, s_u: v.s_u, r_u: v.r_u, sk_u: v.sk_u, attrs: ATTRS });
-    assert.equal((await cia8.post('/cia/user_cred', c.body)).status, 201);
+    const v = userOf(await cia8.registerUser('12345', 'password123'), '12345', TESTUSER_ATTRS);
+    const iss8 = await issueV11(cia8, v, { arid, provider, blind_u: randomScalar() });
+    assert.equal(iss8.r.status, 200, j(iss8.r.body));
     backup = JSON.parse(fs.readFileSync(path.join(cia8.dir, 'cia_state.json'), 'utf8'));   // 은퇴 전: 슬롯 0 = 0 아닌 리프
     const rv = await cia8.post('/cia/account/self_revoke', { uid: '12345', pwd: 'password123' });
     assert.equal(rv.status, 200, j(rv.body));

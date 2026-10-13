@@ -118,14 +118,17 @@ try {
     await walletPage.click('#refreshBtn');
     await walletPage.waitForFunction(() => document.querySelector('#registryBadge')?.classList.contains('ok'), undefined, { timeout: 30_000 });
   });
-  await t('V9 시연 카드(전문가 보기): salt 를 바꾸고 다음 발급 → 서비스 로그인 결과에 bad user credential proof', async () => {
+  // 2026-10-12 V11: CIA 는 /cia/user_cred 가 아니라 /cia/issue 를 쓰고 거절 사유도 바뀌었다(bad_idp_proof) — 아래 waitText 는
+  // 그 raw 문구("bad user credential proof")가 아니라 모든 시연 실패가 공통으로 붙이는 "[시연 모드] " 접두사를 기다린다
+  // (제목 자체는 바로 뒤 동적 비교가 strings.js 의 user_cred_failed.ko.title 과 대조한다).
+  await t('V9 시연 카드(전문가 보기): salt 를 바꾸고 다음 발급 → 서비스 로그인 결과에 [시연 모드] 접두의 π_IdP 거절', async () => {
     await walletPage.evaluate(() => Demo.setExpert(true));
     await walletPage.waitForSelector('#demoCard', { state: 'visible' });
     assert.equal((await stack.cia.adminPost('/cia/revoke', { uid: '12345', scope: 'credential' })).status, 200);   // 다음 로그인이 새로 받게
     await walletPage.click('#demoNewSalt'); await walletPage.selectOption('#demoScope', 'issue'); await walletPage.click('#demoApplyBtn');
     await waitText(walletPage, '#demoVerdict', '적용', 10_000);
     await rpPage.click('#loginBtn');
-    await waitText(rpPage, '#verdict', 'bad user credential proof', 120_000);
+    await waitText(rpPage, '#verdict', '[시연 모드]', 120_000);
     // 2026-10-01 리뷰 Important 1 + round 2: 시연 모드 실패는 제목 줄 앞에 "[시연 모드] " 를 붙이고, 그 뒤에
     // 사유 사전의 제목(이 시나리오의 사유는 user_cred_failed)이 **비지 않고** 그대로 와야 한다. round 1 때는
     // 이 사유가 사전에 없어 "포함" 검사가 빈 문자열을 상대로 공허하게 통과했다 — round 2 가 사전에 그 코드를

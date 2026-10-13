@@ -9,11 +9,10 @@ import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
 import { getProvider, deployRevocationLog } from './helpers/mode3_chain.mjs';
 import { VKEY_PATH, createRegistration } from '../lib/mode3_wallet.js';
 import { createRpVerifier } from '../lib/mode3_rp.js';
-import { randomScalar } from '../lib/mode3_credential.js';
+import { randomScalar, SCALAR_MAX } from '../lib/mode3_credential.js';
 import { deployVerifier, deployFactory, walletAt } from '../lib/mode3_onchain.js';
 import { LOG_ABI, MODE3_MIRROR_ABI, MODE3_ROOTS_ABI } from '../lib/mode3_log.js';
 import { setRoot } from '../lib/mode3_set_tree.js';
-import { pointToStrings } from '../lib/mode3_issuance.js';
 import { DEFAULT_ATTR_SCHEMA, encodeSlotValue } from '../lib/mode3_attr_schema.js';
 
 const j = (o) => JSON.stringify(o, (k, v) => (typeof v === 'bigint' ? v.toString() : v));
@@ -50,10 +49,11 @@ try {
   const { relay, relayIfBehind } = stack;
 
   const newRs = () => randomScalar().toString();
-  const loginNoRelay = (r_s = newRs(), extra = {}) => wallet.post('/wallet/login', { arid, origin, cert_s, pk_trace: { x: pk_trace.x.toString(), y: pk_trace.y.toString() }, r_s, ...extra }, { Origin: stack.rpOriginForWallet });
-  const login = (r_s = newRs(), extra = {}) => stack.withRelay(() => loginNoRelay(r_s, extra));
+  const newCh = () => ({ r_s: randomScalar().toString(), r_rp: randomScalar().toString() });
+  const loginNoRelay = (ch = newCh(), extra = {}) => wallet.post('/wallet/login', { arid, origin, cert_s, pk_trace: { x: pk_trace.x.toString(), y: pk_trace.y.toString() }, r_s: ch.r_s, r_rp: ch.r_rp, ...extra }, { Origin: stack.rpOriginForWallet });
+  const login = (ch = newCh(), extra = {}) => stack.withRelay(() => loginNoRelay(ch, extra));
   const revalidate = (r_s, extra = {}) => wallet.post('/wallet/revalidate', { r_s, ...extra }, { Origin: stack.rpOriginForWallet });
-  const verify = (body, r_s) => rp.verifyLogin({ proof: body.proof, publicSignals: body.publicSignals, sig: body.sig, r_s: BigInt(r_s) });
+  const verify = (body, ch) => rp.verifyLogin({ proof: body.proof, publicSignals: body.publicSignals, sig: body.sig, r_s: BigInt(ch.r_s), r_rp: BigInt(ch.r_rp) });
 
   await t('미등록 상태: status.registered=false, login 은 409 not_registered', async () => {
     const s = await wallet.get('/wallet/status');
@@ -62,47 +62,52 @@ try {
     const r = await login();
     assert.equal(r.status, 409);
     assert.equal(r.body.reason, 'not_registered');
+    assert.equal((await wallet.post('/wallet/register', { uid, pwd: 'wrong' })).status, 401, 'CIA 의 401 을 그대로');
+    const badAttr = await wallet.post('/wallet/register', { uid, pwd: 'password123', profile: { birthYear: '1800', country: 'KR' } });
+    assert.equal(badAttr.status, 400); assert.equal(badAttr.body.reason, 'bad_attr');
+    assert.equal((await wallet.get('/wallet/status')).body.registered, false, '인코딩 실패는 CIA 에 등록하지 않는다');
   });
 
-  await t('등록: AA 속성을 저장하고 본문의 attrs 는 무시한다(201, 슬롯 0); 두 번째는 409, 잘못된 pwd 는 CIA 의 401 을 그대로; /wallet/status 에 attrs·slot, registry 는 동기화 전이라 null', async () => {
-    // uid 12345 는 cia.js DEMO_ACCOUNTS.testuser — AA 기록 attrs = ['1990','410','0','0','0','0'](스펙 2: 등급 없음). 본문의 attrs 는 무시된다.
-    const r = await wallet.post('/wallet/register', { uid, pwd: 'password123', attrs: ['1', '2', '3', '4'] });
+  await t('등록: profile 없이 → 기본 { 1990, KR }(201, 슬롯 0, auid); 두 번째는 409; 잘못된 pwd 는 CIA 의 401; /wallet/status 에 auid·attrs·profile·slot', async () => {
+    const r = await wallet.post('/wallet/register', { uid, pwd: 'password123' });
     assert.equal(r.status, 201, j(r.body));
-    assert.deepEqual(r.body, { uid, slot: 0, attrs: ['1990', '410', '0', '0', '0', '0'], profile: { birthYear: '1990', country: 'KR' } });
+    assert.deepEqual(Object.keys(r.body).sort(), ['attrs', 'auid', 'profile', 'slot', 'uid']);
+    assert.equal(r.body.uid, uid); assert.equal(r.body.slot, 0); assert.match(r.body.auid, /^[0-9]+$/);
+    assert.deepEqual(r.body.attrs, ['1990', '410', '0', '0', '0', '0']); assert.deepEqual(r.body.profile, { birthYear: '1990', country: 'KR' });
     assert.equal((await wallet.post('/wallet/register', { uid, pwd: 'password123' })).status, 409);
+    assert.equal((await wallet.post('/wallet/register', { uid: '67890', pwd: 'wrong' })).status, 409, '지갑은 한 계정만 — 등록된 뒤에는 CIA 를 부르지 않는다');
     const s = await wallet.get('/wallet/status');
-    assert.equal(s.body.registered, true);
-    assert.equal(s.body.uid, uid);
-    assert.equal(s.body.slot, 0);
-    assert.deepEqual(s.body.attrs, ['1990', '410', '0', '0', '0', '0']);
+    assert.equal(s.body.registered, true); assert.equal(s.body.uid, uid); assert.equal(s.body.slot, 0); assert.equal(s.body.auid, r.body.auid);
+    assert.deepEqual(s.body.attrs, ['1990', '410', '0', '0', '0', '0']); assert.deepEqual(s.body.profile, { birthYear: '1990', country: 'KR' });
     assert.equal(s.body.registry, null, '아직 동기화 전');
-    assert.deepEqual(s.body.profile, { birthYear: '1990', country: 'KR' });
     const sch = (await cia.get('/cia/attr_schema')).body;
     assert.deepEqual(s.body.attrSchema, { id: 'zkd-attrs', version: 1, hash: sch.hash });
     assert.deepEqual(s.body.attrsView.map((v) => v.display), ['1990', 'KR', '', '', '', '']);
-    const ws = await wallet.get('/wallet/attr_schema');
-    assert.equal(ws.status, 200); assert.equal(ws.body.hash, sch.hash); assert.equal(ws.body.source, 'cia');
+    const acct = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === uid);
+    assert.equal(acct.attrs, undefined, 'D15: IdP 는 속성을 받지 않는다'); assert.equal(acct.auid, undefined, '/cia/accounts 는 auid 를 내지 않아도 된다(계획: 공개 필드 아님)');
   });
 
   let first, PPID1, S1;
   await t('첫 로그인: 자동 발급(issued=true) + 검증 통과, 응답에 uid 없음', async () => {
-    const rs = newRs();
-    const r = await login(rs);
+    const ch = newCh();
+    const r = await login(ch);
     assert.equal(r.status, 200, j(r.body));
     assert.equal(r.body.issued, true);
     assert.equal(r.body.cacheHit, false);
-    assert.equal(r.body.r_s, rs);
+    assert.equal(r.body.r_s, ch.r_s);
     assert.ok(!('uid' in r.body), 'uid 는 RP 로 나가면 안 된다');
     assert.equal(typeof r.body.timings.proveMs, 'number');
-    assert.equal(r.body.publicSignals.length, 30, 'V9: 기존 15 + 선택 공개 6+6 + 집합 2');
+    assert.equal(r.body.publicSignals.length, 33, 'V11: 30 + auid_s·arid_s·r_s');
+    assert.equal(r.body.publicSignals[32], ch.r_s);
     assert.equal(r.body.publicSignals[4], '31337');
     assert.equal(r.body.allowAgent, '0'); assert.equal(r.body.publicSignals[5], '0');
-    const v = await verify(r.body, rs);
+    const v = await verify(r.body, ch);
     assert.equal(v.ok, true, j(v));
-    first = r.body; PPID1 = v.PPID; S1 = rs;
+    first = r.body; PPID1 = v.PPID; S1 = ch;
     assert.ok(r.body.timings.userCredMs > 0, '첫 로그인은 사용자 자격증명을 새로 받는다');
+    assert.equal((await wallet.post('/wallet/login', { arid, origin, cert_s, pk_trace: { x: pk_trace.x.toString(), y: pk_trace.y.toString() }, r_s: newCh().r_s }, { Origin: stack.rpOriginForWallet })).status, 400, 'r_rp 없으면 400');
     const s = await wallet.get('/wallet/status');
-    assert.ok(s.body.sessions[rs], 'r_s 별 세션이 상태에 있어야 한다');
+    assert.ok(s.body.sessions[ch.r_s], 'r_s 별 세션이 상태에 있어야 한다');
     assert.ok(s.body.userCred?.Cf_u, '사용자 자격증명이 상태에 있어야 한다');
     assert.equal(s.body.userCred.revoked, false);
     // V9 §8.2: 등록부 확인 — 내 슬롯(0)의 리프가 내 자격증명과 같아야 한다.
@@ -117,26 +122,28 @@ try {
 
   let S1b;
   await t('두 번째 로그인(새 r_s): 사용자 자격증명 재사용 → userCredMs=0, 세션만 새로 발급', async () => {
-    S1b = newRs();
-    const r = await login(S1b);
+    const ch = newCh();
+    const r = await login(ch);
     assert.equal(r.status, 200, j(r.body));
     assert.equal(r.body.issued, true);
     assert.equal(r.body.timings.userCredMs, 0);
-    assert.equal((await verify(r.body, S1b)).ok, true);
+    assert.equal((await verify(r.body, ch)).ok, true);
+    S1b = ch.r_s;
   });
 
   // 2026-09-23 점검 B-I1: precheck 의 r_s 분기(재승인 동의 창이 쓸 세션의 실제 allowAgent). 라우트에 모드 분기가 없어
   // snap 테스트와 같은 코드를 타지만, file 모드에서도 돈다는 것을 여기서 못 박는다(리뷰 Minor 7).
   await t('precheck: r_s 를 주면 그 세션의 allowAgent 를 돌려주고, 모르는 r_s 는 404 no_session', async () => {
     const pkt = { x: pk_trace.x.toString(), y: pk_trace.y.toString() };
-    const S1c = newRs();
-    assert.equal((await login(S1c, { allowAgent: '1' })).status, 200);
+    const chC = newCh();
+    assert.equal((await login(chC, { allowAgent: '1' })).status, 200);
+    const S1c = chC.r_s;
     const base = { arid, origin, cert_s, pk_trace: pkt };
     const noRs = await wallet.post('/wallet/authorize/precheck', base);
     assert.equal(noRs.status, 200, j(noRs.body)); assert.equal('sessionAllowAgent' in noRs.body, false, 'r_s 가 없으면 세션 값을 싣지 않는다');
     const one = await wallet.post('/wallet/authorize/precheck', { ...base, r_s: S1c });
     assert.equal(one.status, 200, j(one.body)); assert.equal(one.body.sessionAllowAgent, '1');
-    const zero = await wallet.post('/wallet/authorize/precheck', { ...base, r_s: S1 });
+    const zero = await wallet.post('/wallet/authorize/precheck', { ...base, r_s: S1.r_s });
     assert.equal(zero.status, 200, j(zero.body)); assert.equal(zero.body.sessionAllowAgent, '0');
     const none = await wallet.post('/wallet/authorize/precheck', { ...base, r_s: '424242' });
     assert.equal(none.status, 404, j(none.body)); assert.equal(none.body.reason, 'no_session');
@@ -144,7 +151,7 @@ try {
   });
 
   await t('재검증: 캐시 히트(cacheHit=true), publicSignals 동일, σ 는 r_s 위 서명(ECDSA 결정적이라 매번 같다)', async () => {
-    const r = await revalidate(S1);
+    const r = await revalidate(S1.r_s);
     assert.equal(r.status, 200, j(r.body));
     assert.equal(r.body.cacheHit, true);
     assert.deepEqual(r.body.publicSignals, first.publicSignals);
@@ -185,7 +192,7 @@ try {
     const rv = await cia.adminPost('/cia/revoke', { uid, scope: 'account' });
     assert.equal(rv.status, 200, j(rv.body)); assert.equal(rv.body.published, true, j(rv.body));
     await relay();   // V10: 검증기는 거울을 읽는다 — 폐기가 거울에 실려야 옛 π 가 stale 이 된다
-    const r = await revalidate(S1, { skipSync: true });
+    const r = await revalidate(S1.r_s, { skipSync: true });
     assert.equal(r.status, 200, j(r.body));
     assert.deepEqual(r.body.publicSignals, first.publicSignals);
     const v = await verify(r.body, S1);
@@ -194,7 +201,7 @@ try {
   });
 
   await t('동기화: 재검증 → 폐기 감지 → 두 세션 모두 403 revoked(리프 하나); status userCred.revoked=true; 새 로그인 → CIA 403 → account_disabled', async () => {
-    const r = await revalidate(S1);
+    const r = await revalidate(S1.r_s);
     assert.equal(r.status, 403, j(r.body));
     assert.equal(r.body.reason, 'revoked');
     // 폐기 리프는 사용자 자격증명 하나 — 같은 자격증명 위의 다른 세션도 함께 죽는다(설계 2026-09-21 §3.6)
@@ -213,12 +220,12 @@ try {
     const st0 = (await wallet.get('/wallet/status')).body;
     const before = st0.userCred.Cf_u;
     assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid, disabled: false })).status, 200);
-    const rs = newRs();
-    const r = await login(rs);
+    const ch = newCh();
+    const r = await login(ch);
     assert.equal(r.status, 200, j(r.body));
     assert.equal(r.body.issued, true);
     assert.ok(r.body.timings.userCredMs > 0, '폐기된 사용자 자격증명은 새로 받는다');
-    const v = await verify(r.body, rs);
+    const v = await verify(r.body, ch);
     assert.equal(v.ok, true, j(v));
     assert.equal(v.PPID, PPID1, 'PPID 는 폐기·복구로 바뀌지 않는다');
     const s = await wallet.get('/wallet/status');
@@ -227,7 +234,7 @@ try {
     // V10(§4.5, 결정 3): 계정 폐기로 옛 슬롯은 영구 은퇴됐다 — 되살린 뒤의 재발급은 새 슬롯을 받고, 지갑이 그 슬롯을 따른다.
     assert.notEqual(s.body.slot, st0.slot, `재발급 응답의 새 슬롯을 따라야 한다(옛 ${st0.slot})`);
     assert.equal(s.body.registry.slot, s.body.slot); assert.equal(s.body.registry.match, true);
-    S2 = rs;
+    S2 = ch.r_s;
   });
 
   // 이 지점부터는 first(첫 로그인의 π)를 더는 참조하지 않는다 — 재시작으로 증명 캐시가 비면 새로 만든 π 의 tag(재무작위화)가
@@ -273,31 +280,37 @@ try {
     const rv = await cia.adminPost('/cia/revoke', { uid, scope: 'credential' });
     assert.equal(rv.status, 200, j(rv.body)); assert.equal(rv.body.retired, 1, j(rv.body)); assert.equal(rv.body.published, true, j(rv.body));
     // V9: 즉시 게시된다 — 지갑은 다음 syncAll() 에서 바로 슬롯 0(등록부에 내 자격증명 없음)을 보고 새로 받는다(옛 no_user_cred 재시도 경로를 타지 않는다).
-    const rs = newRs();
-    const r = await login(rs);
+    const ch = newCh();
+    const r = await login(ch);
     assert.equal(r.status, 200, j(r.body));
     assert.equal(r.body.issued, true);
     assert.ok(r.body.timings.userCredMs > 0, '등록부에서 슬롯 0 을 보고 사용자 자격증명을 새로 받았어야 한다');
-    const v = await verify(r.body, rs);
+    const v = await verify(r.body, ch);
     assert.equal(v.ok, true, j(v));
     assert.equal(v.PPID, PPID1, 'PPID 는 s_u 에서 나오므로 C_u 재발급으로 바뀌지 않는다');
     const s = await wallet.get('/wallet/status');
     assert.notEqual(s.body.userCred.Cf_u, before.Cf_u, '새 사용자 자격증명은 Cf_u 가 다르다');
     assert.equal(s.body.userCred.revoked, false);
     assert.equal(s.body.sessions[S2], undefined, '물린 자격증명 위의 옛 세션은 지워진다');
-    assert.equal(s.body.sessions[rs].PPID, PPID1.toString());
-    S2 = rs;   // 이후 테스트는 이 세션을 쓴다
+    assert.equal(s.body.sessions[ch.r_s].PPID, PPID1.toString());
+    S2 = ch.r_s;   // 이후 테스트는 이 세션을 쓴다
   });
 
   await t('입력 검증: r_s 없음 / cert_s 없음 / pk_trace 없음 → 400', async () => {
     assert.equal((await wallet.post('/wallet/login', { arid, origin, cert_s }, { Origin: stack.rpOriginForWallet })).status, 400);
     assert.equal((await wallet.post('/wallet/login', { arid, origin, r_s: newRs() }, { Origin: stack.rpOriginForWallet })).status, 400);
     assert.equal((await wallet.post('/wallet/login', { arid, origin, cert_s, r_s: newRs() }, { Origin: stack.rpOriginForWallet })).status, 400);
-    assert.equal((await login(newRs(), { allowAgent: '2' })).status, 400);
+    assert.equal((await login(newCh(), { allowAgent: '2' })).status, 400);
+  });
+
+  await t('입력 검증: r_s·r_rp 가 2^250 이상이면 400', async () => {
+    const tooBig = SCALAR_MAX.toString();
+    assert.equal((await login(newCh(), { r_s: tooBig })).status, 400);
+    assert.equal((await login(newCh(), { r_rp: tooBig })).status, 400);
   });
 
   await t('bad_rp_cert: 인증서와 다른 pk_trace 를 주면 403 (서비스 혼자 아는 키로 바꿔치기)', async () => {
-    const r = await login(newRs(), { pk_trace: { x: '1', y: '2' } });
+    const r = await login(newCh(), { pk_trace: { x: '1', y: '2' } });
     assert.equal(r.status, 403); assert.equal(r.body.reason, 'bad_rp_cert');
   });
 
@@ -351,20 +364,20 @@ try {
   });
 
   await t('allowAgent=1 로그인: 공개 입력 [5] 가 1', async () => {
-    const rs = newRs();
-    const r = await login(rs, { allowAgent: '1' });
+    const ch = newCh();
+    const r = await login(ch, { allowAgent: '1' });
     assert.equal(r.status, 200, j(r.body));
     assert.equal(r.body.publicSignals[5], '1'); assert.equal(r.body.allowAgent, '1');
-    assert.equal((await verify(r.body, rs)).ok, true);
+    assert.equal((await verify(r.body, ch)).ok, true);
   });
 
   await t('login: 인증서와 다른 arid 로 배포된 팩토리, 또는 컨트랙트가 아닌 주소를 factoryAddress 로 주면 409 bad_factory (2026-09-18 점검 3)', async () => {
     const signer = await provider.getSigner(0);
     const v = await deployVerifier(signer);
     const wrongArid = await deployFactory(signer, { verifierAddress: v, arid: BigInt(arid) + 1n, pkCIA: pk_CIA, pkTrace: pk_trace, logAddress: cia.mirrorAddress, maxRootAge: 10n });
-    const r1 = await login(newRs(), { factoryAddress: wrongArid });
+    const r1 = await login(newCh(), { factoryAddress: wrongArid });
     assert.equal(r1.status, 409, j(r1.body)); assert.equal(r1.body.reason, 'bad_factory');
-    const r2 = await login(newRs(), { factoryAddress: ethers.Wallet.createRandom().address });
+    const r2 = await login(newCh(), { factoryAddress: ethers.Wallet.createRandom().address });
     assert.equal(r2.status, 409, j(r2.body)); assert.equal(r2.body.reason, 'bad_factory');
   });
 
@@ -374,7 +387,7 @@ try {
     const fake = await new ethers.ContractFactory(abi, bytecode, signer).deploy();
     await fake.waitForDeployment();
     const rogue = await deployFactory(signer, { verifierAddress: await fake.getAddress(), arid: BigInt(arid), pkCIA: pk_CIA, pkTrace: pk_trace, logAddress: cia.mirrorAddress });
-    const r = await login(newRs(), { factoryAddress: rogue });
+    const r = await login(newCh(), { factoryAddress: rogue });
     assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'bad_factory'); assert.equal(r.body.detail, 'verifier_code_mismatch');
   });
 
@@ -398,7 +411,7 @@ try {
     ];
     for (const [name, opts] of cases) {
       const f = await deployFactory(signer, opts);
-      const r = await login(newRs(), { factoryAddress: f });
+      const r = await login(newCh(), { factoryAddress: f });
       assert.equal(r.status, 409, `${name}: ${j(r.body)}`);
       assert.equal(r.body.reason, 'bad_factory', name);
     }
@@ -414,8 +427,9 @@ try {
     const signer = await provider.getSigner(0);
     const verifierAddress = await deployVerifier(signer);
     factoryAddress = await deployFactory(signer, { verifierAddress, arid, pkCIA: pk_CIA, pkTrace: pk_trace, logAddress: cia.mirrorAddress, maxRootAge: 10n });
-    S3 = newRs();
-    const l = await login(S3, { factoryAddress });
+    const ch3 = newCh();
+    S3 = ch3.r_s;
+    const l = await login(ch3, { factoryAddress });
     assert.equal(l.status, 200, j(l.body));
     const to = ethers.Wallet.createRandom().address;
     const r1 = await wallet.post('/wallet/tx', { r_s: S3, to, value: '0' }, { Origin: stack.rpOriginForWallet });
@@ -475,7 +489,7 @@ try {
     assert.equal((await wallet.post('/wallet/tx', { r_s: newRs(), to: walletAddr }, { Origin: stack.rpOriginForWallet })).status, 404);
   });
 
-  await t('register: 이미 등록된 계정에는 attrs 내용과 무관하게 409(2026-09-22 §3.3 — attrs 본문은 이제 형식도 검사하지 않고 무시한다)', async () => {
+  await t('register: 이미 등록된 계정에는 본문과 무관하게 409', async () => {
     assert.equal((await wallet.post('/wallet/register', { uid, pwd: 'password123', attrs: ['1', '2', '3', '4', '5'] })).status, 409);
     assert.equal((await wallet.post('/wallet/register', { uid, pwd: 'password123', attrs: ['x'] })).status, 409);
   });
@@ -483,39 +497,48 @@ try {
   // 지갑이 로그인용으로 쓰는 헬퍼 — 등록은 이미 위에서 됐으므로 새 r_s 로 로그인만 한다. PPID 는 다른 케이스와 같이
   // verify(RP 검증기)를 거쳐 검증된 로그인에서 읽는다(Task 6 이후 publicSignals.length===25 을 받아들인다).
   async function loginOnce(extra = {}) {
-    const rs = newRs();
-    const r = await login(rs, extra);
+    const ch = newCh();
+    const r = await login(ch, extra);
     assert.equal(r.status, 200, j(r.body));
-    const v = await verify(r.body, rs);
+    const v = await verify(r.body, ch);
     assert.equal(v.ok, true, j(v));
-    return { ...r.body, r_s: rs, PPID: v.PPID.toString() };
+    return { ...r.body, r_s: ch.r_s, PPID: v.PPID.toString() };
   }
   async function publishOnce() {
     const r = await cia.adminPost('/cia/publish');
     assert.equal(r.body.published, true, j(r.body));
   }
 
-  // 스펙 2(2026-10-07): 관리자 엔드포인트는 { profile } 만 받는다(옛 { attrs:[...] } 는 400 use_profile) — extra1(string, 슬롯 2)에
+  // 스펙 2(2026-10-07): 지갑의 PUT /wallet/profile 은 { profile } 만 받는다(스키마에 안 맞으면 400 bad_attr) — extra1(string, 슬롯 2)에
   // 값을 넣어 string 슬롯의 인코딩(해시)도 같이 재동기화 경로로 거친다.
   const tier3 = await encodeSlotValue(DEFAULT_ATTR_SCHEMA, 2, 'tier3');
 
-  await t('관리자가 속성을 바꾸면 다음 로그인이 bad proof → /cia/attrs 재동기화 → 새 C_u 로 성공, PPID 동일', async () => {
+  await t('D15: 지갑에서 속성을 바꾸면(PUT /wallet/profile) 옛 C_u·세션이 버려지고 다음 로그인이 새 C_u 로 성공, PPID 동일, IdP 상태에는 속성이 없다', async () => {
     const first = await loginOnce();
-    // V9: 속성 변경은 활성 자격증명의 슬롯을 즉시 비우고 게시한다(cia.js) — 별도로 publishOnce 를 부를 필요가 없다.
-    assert.equal((await cia.adminPost(`/cia/accounts/${uid}/attrs`, { profile: { birthYear: '1990', country: 'KR', extra1: 'tier3' } })).status, 200);
+    const same = await wallet.put('/wallet/profile', { profile: { birthYear: '1990', country: '410' } });   // 코드 표기 → 정규형 KR, attrs 불변
+    assert.equal(same.status, 200, j(same.body)); assert.equal(same.body.changed, false); assert.deepEqual(same.body.profile, { birthYear: '1990', country: 'KR' });
+    assert.ok(Object.keys((await wallet.get('/wallet/status')).body.sessions).length > 0, '속성이 그대로면 세션을 버리지 않는다');
+    const chg = await wallet.put('/wallet/profile', { profile: { birthYear: '1990', country: 'KR', extra1: 'tier3' } });
+    assert.equal(chg.status, 200, j(chg.body)); assert.equal(chg.body.changed, true);
+    assert.deepEqual(chg.body.attrs, ['1990', '410', tier3, '0', '0', '0']);
+    assert.equal('attrsChanged' in chg.body, false, 'file 모드는 attrsChanged 를 내지 않는다(snap 전용)');
+    const st = (await wallet.get('/wallet/status')).body;
+    assert.deepEqual(st.sessions, {}, '옛 C_u 위의 세션은 버린다'); assert.equal(st.userCred, null);
+    assert.deepEqual(st.profile, { birthYear: '1990', country: 'KR', extra1: 'tier3' });
     const second = await loginOnce();
-    assert.equal(second.PPID, first.PPID);
-    assert.equal(second.timings.userCredMs > 0, true, '재동기화 뒤 새 C_u 를 받았다');
-    const status = (await wallet.get('/wallet/status')).body;
-    assert.deepEqual(status.attrs, ['1990', '410', tier3, '0', '0', '0']);
-    assert.deepEqual(status.profile, { birthYear: '1990', country: 'KR', extra1: 'tier3' });
+    assert.equal(second.PPID, first.PPID, 'PPID 는 (uid, s_u, arid, chainid) — 속성과 무관');
+    assert.equal(second.timings.userCredMs > 0, true, '새 C_u');
+    const bad = await wallet.put('/wallet/profile', { profile: { birthYear: '1800', country: 'KR' } });
+    assert.equal(bad.status, 400); assert.equal(bad.body.reason, 'bad_attr');
+    assert.equal((await wallet.put('/wallet/profile', { profile: { country: 'KR' } })).body.detail, 'missing_field');
+    assert.equal((await wallet.put('/wallet/profile', {})).status, 400);
+    const acct = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === uid);
+    assert.equal(acct.attrs, undefined); assert.equal(acct.profile, undefined);
   });
 
-  await t('/wallet/attrs 는 사라졌고(404) /wallet/attrs/sync 는 값을 다시 받는다', async () => {
+  await t('V11: /wallet/attrs·/wallet/attrs/sync 는 404', async () => {
     assert.equal((await wallet.post('/wallet/attrs', { attrs: ['1', '0', '0', '0'] })).status, 404);
-    const r = await wallet.post('/wallet/attrs/sync', {});
-    assert.equal(r.status, 200, j(r.body)); assert.equal(Array.isArray(r.body.attrs), true);
-    assert.deepEqual(r.body.attrs, ['1990', '410', tier3, '0', '0', '0']); assert.equal(r.body.changed, false, '이미 최신이라 바뀐 게 없다');
+    assert.equal((await wallet.post('/wallet/attrs/sync', {})).status, 404);
   });
 
   // V8 세션 폐기(설계 2026-09-24 §4). 계획서는 이 두 케이스를 앞쪽 '동기화: 재검증 → 폐기 감지 …' 앞에 두라고 했지만,
@@ -567,20 +590,21 @@ try {
   await t('V9 은퇴(scope=credential): 다음 로그인이 슬롯 0 을 보고 새 자격증명을 받아(userCredMs>0) 성공, PPID 유지', async () => {
     const before = (await wallet.get('/wallet/status')).body;
     assert.equal((await cia.adminPost('/cia/revoke', { uid, scope: 'credential' })).status, 200);
-    const r = await login(); assert.equal(r.status, 200, j(r.body)); assert.ok(r.body.timings.userCredMs > 0);
-    const v = await verify(r.body, r.body.r_s); assert.equal(v.ok, true, j(v));
+    const ch = newCh();
+    const r = await login(ch); assert.equal(r.status, 200, j(r.body)); assert.ok(r.body.timings.userCredMs > 0);
+    const v = await verify(r.body, ch); assert.equal(v.ok, true, j(v));
     assert.equal(v.PPID.toString(), Object.values(before.sessions)[0].PPID);
   });
-  await t('시연 덮어쓰기(issue): salt 를 바꾸면 AA 가 bad user credential proof 로 거절; uid 를 바꿔도 같다; 자동 해제', async () => {
+  await t('시연 덮어쓰기(issue): salt 를 바꾸면 AA 가 bad idp proof 로 거절; uid 를 바꿔도 같다; 자동 해제', async () => {
     assert.equal((await cia.adminPost('/cia/revoke', { uid, scope: 'credential' })).status, 200);   // 다음 로그인이 user_cred 를 새로 받게
     assert.equal((await wallet.post('/wallet/demo/override', { s_u: randomScalar().toString(), scope: 'issue' })).status, 200);
     assert.deepEqual((await wallet.get('/wallet/status')).body.demoOverride, { scope: 'issue', fields: ['s_u'] });
     const r = await login();
-    assert.equal(r.status, 502, j(r.body)); assert.equal(r.body.reason, 'user_cred_failed'); assert.equal(r.body.cia.error, 'bad user credential proof'); assert.equal(r.body.demo, 'override:issue');
+    assert.equal(r.status, 502, j(r.body)); assert.equal(r.body.reason, 'user_cred_failed'); assert.equal(r.body.cia.error, 'bad idp proof'); assert.equal(r.body.cia.reason, 'bad_idp_proof'); assert.equal(r.body.demo, 'override:issue');
     assert.equal((await wallet.get('/wallet/status')).body.demoOverride, null, '한 번 쓰면 해제');
     assert.equal((await wallet.post('/wallet/demo/override', { uid: '99999', scope: 'issue' })).status, 200);
     const r2 = await login();
-    assert.equal(r2.status, 502, j(r2.body)); assert.equal(r2.body.cia.error, 'bad user credential proof');
+    assert.equal(r2.status, 502, j(r2.body)); assert.equal(r2.body.cia.error, 'bad idp proof'); assert.equal(r2.body.reason, 'user_cred_failed'); assert.equal(r2.body.demo, 'override:issue');
     const ok = await login(); assert.equal(ok.status, 200, j(ok.body));   // 덮어쓰기 없이 다시 — 새 자격증명 발급 성공
   });
   await t('시연 덮어쓰기(prove): salt 를 바꾸면 증명 생성이 실패한다(500 아님 — 409 demo_proof_failed)', async () => {
@@ -642,7 +666,7 @@ try {
     assert.equal(r1.status, 400, j(r1.body)); assert.equal(r1.body.reason, 'predicate_type'); assert.match(r1.body.detail, /슬롯 1/);
     const r2 = await wallet.post('/wallet/tx', { r_s: s.r_s, to, set: { slot: 4, members: [0] } }, { Origin: stack.rpOriginForWallet });
     assert.equal(r2.status, 400, j(r2.body)); assert.equal(r2.body.reason, 'predicate_type');
-    const r3 = await loginNoRelay(newRs(), { disclose: [null, { lo: '410', hi: '410' }] });
+    const r3 = await loginNoRelay(newCh(), { disclose: [null, { lo: '410', hi: '410' }] });
     assert.equal(r3.status, 400, j(r3.body)); assert.equal(r3.body.reason, 'predicate_type');
     // string 슬롯(2)의 집합 술어는 허용된다 — 내 값(0)이 집합에 없으면 그다음 단계의 disclosure_unsatisfiable
     const r4 = await wallet.post('/wallet/tx', { r_s: s.r_s, to, set: { slot: 2, members: [7] } }, { Origin: stack.rpOriginForWallet });
@@ -653,31 +677,31 @@ try {
   await t('로그인 π 는 거울의 (revRoot, regRoot) 를 쓴다 — 캐노니컬이 앞서 있어도', async () => {
     await relay();                                              // 내 등록부 리프를 거울에 반영(첫 로그인 전제)
     // 캐노니컬만 epoch +1: 내 세션 하나를 폐기하고 게시한다(새 로그인의 세션·자격증명과는 무관). 거울은 릴레이 전이라 그대로다.
-    const victim = newRs();
+    const victim = newCh();
     assert.equal((await login(victim)).status, 200);
-    assert.equal((await wallet.post('/wallet/session/revoke', { r_s: victim })).status, 200);
+    assert.equal((await wallet.post('/wallet/session/revoke', { r_s: victim.r_s })).status, 200);
     assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
     assert.notEqual(BigInt(await canonC.revRoot()), BigInt(await mirrorC.revRoot()), '전제: 캐노니컬이 거울보다 앞서 있다');
-    const rs = newRs();
-    const r = await loginNoRelay(rs);
+    const ch = newCh();
+    const r = await loginNoRelay(ch);
     assert.equal(r.status, 200, j(r.body));
     assert.equal(r.body.root, BigInt(await mirrorC.revRoot()).toString());
     assert.equal(r.body.regRoot, BigInt(await mirrorC.regRoot()).toString());
-    assert.equal((await verify(r.body, rs)).ok, true, '거울을 읽는 검증기가 받아들인다');
+    assert.equal((await verify(r.body, ch)).ok, true, '거울을 읽는 검증기가 받아들인다');
     // 거울이 따라오면 root 가 바뀐다 — 새 재검증은 새 거울 root 로 다시 증명한다(캐시 키가 (chainId, rev, reg)).
     await relay();
-    const rv = await revalidate(rs);
+    const rv = await revalidate(ch.r_s);
     assert.equal(rv.status, 200, j(rv.body)); assert.equal(rv.body.cacheHit, false);
     assert.equal(rv.body.root, BigInt(await mirrorC.revRoot()).toString());
-    assert.equal((await verify(rv.body, rs)).ok, true);
+    assert.equal((await verify(rv.body, ch)).ok, true);
   });
   await t('새 자격증명은 거울에 내 슬롯이 반영될 때까지 registry_unpublished 로 기다렸다가 릴레이 뒤 성공한다', async () => {
     // 이 지갑은 등록이 하나뿐이다 — "첫 발급" 대신 자격증명 은퇴(캐노니컬 즉시 게시, 거울은 그대로) 뒤의 재발급으로 같은 경로를 탄다.
     await relayIfBehind();
     assert.equal((await cia.adminPost('/cia/revoke', { uid, scope: 'credential' })).status, 200);
-    const rs = newRs();
+    const ch = newCh();
     let doneAt = null;
-    const p = loginNoRelay(rs);                                 // 폴링 시작
+    const p = loginNoRelay(ch);                                 // 폴링 시작
     p.then(() => { doneAt = Date.now(); }, () => { doneAt = Date.now(); });
     await sleep(1500);
     assert.equal(doneAt, null, '릴레이 전에는 끝나지 않는다(거울에 새 리프가 없다)');
@@ -688,24 +712,24 @@ try {
     assert.ok(doneAt >= relayStart, `로그인 완료(${doneAt})가 릴레이 시작(${relayStart}) 뒤여야 한다`);
     assert.equal(r.status, 200, j(r.body)); assert.ok(r.body.timings.userCredMs > 0);
     assert.equal(r.body.regRoot, BigInt(await mirrorC.regRoot()).toString());
-    assert.equal((await verify(r.body, rs)).ok, true);
+    assert.equal((await verify(r.body, ch)).ok, true);
   });
   await t('fresh 가 아닌 경로: 거울의 내 슬롯이 캐노니컬과 다르면(거울 지연) 재검증은 503 registry_unpublished(세션 유지), 릴레이 뒤 200', async () => {
     // 기존 세션 하나를 잡고, 거울에만 "내 슬롯 ≠ 내 자격증명" 상태를 만든다: 바꿔치기 → 릴레이 → 되돌리기(릴레이 안 함).
     // 캐노니컬은 내 자격증명으로 돌아왔으므로 지갑은 폐기로 보지 않고, 거울 뷰로는 증인이 없어 증명하지 않는다.
-    const rs = newRs();
-    assert.equal((await login(rs)).status, 200);
+    const ch = newCh();
+    assert.equal((await login(ch)).status, 200);
     assert.equal((await cia.adminPost('/cia/admin/registry/tamper', { uid })).status, 200);
     await relay();
     assert.equal((await cia.adminPost('/cia/admin/registry/restore', { uid })).status, 200);
-    const lag = await revalidate(rs);
+    const lag = await revalidate(ch.r_s);
     assert.equal(lag.status, 503, j(lag.body)); assert.equal(lag.body.reason, 'registry_unpublished');
-    assert.ok((await wallet.get('/wallet/status')).body.sessions[rs], '세션은 지우지 않는다');
+    assert.ok((await wallet.get('/wallet/status')).body.sessions[ch.r_s], '세션은 지우지 않는다');
     await relay();
-    const ok = await revalidate(rs);
+    const ok = await revalidate(ch.r_s);
     assert.equal(ok.status, 200, j(ok.body));
     assert.equal(ok.body.regRoot, BigInt(await mirrorC.regRoot()).toString());
-    assert.equal((await verify(ok.body, rs)).ok, true);
+    assert.equal((await verify(ok.body, ch)).ok, true);
   });
   await t('/wallet/status 에 mirror·canonical 이 있다', async () => {
     const s = (await wallet.get('/wallet/status')).body;
@@ -717,51 +741,38 @@ try {
     assert.match(s.canonical.rpc, /^http/);
   });
 
-  // 마지막에 둔다 — CIA 를 끈다. stack.stop() 의 cia.stop() 은 이미 죽은 프로세스를 건너뛴다.
-  await t('attrs/sync: CIA 가 죽어 요청 자체가 실패해도(500) 옛 자격증명·속성·세션이 그대로 남고 재검증은 계속 된다', async () => {
-    const before = (await wallet.get('/wallet/status')).body;
-    await cia.stop();
-    const r = await wallet.post('/wallet/attrs/sync', {});
-    assert.equal(r.status, 500, j(r.body));
-    const after = (await wallet.get('/wallet/status')).body;
-    assert.equal(after.userCred.Cf_u, before.userCred.Cf_u, 'CIA 다운이어도 옛 자격증명이 남는다');
-    assert.deepEqual(Object.keys(after.sessions), Object.keys(before.sessions), 'CIA 다운이어도 세션은 그대로');
-    assert.equal((await revalidate(Object.keys(after.sessions)[0])).status, 200, '재검증은 CIA 없이 된다');
-  });
 } finally {
   await stack.stop();
   provider.destroy();
 }
 
-// ---- 독립 시험(공유 stack 과 무관한 자기 CIA·지갑): 지갑 상태 파일 7→8 이행이 attrs 를 6칸으로 패딩하는지
-// (2026-10-01 최종 리뷰 A1 — 패딩이 없으면 지갑 페이지가 "undefined" 를 보여주고 비어 있는 슬롯 공개가 회로에서
-// 미분류 500 으로 죽었다). isolated_mode3_stack.mjs 의 walletEnv 는 자신의 MODE3_WALLET_STATE_FILE 뒤에
-// 스프레드되므로(헬퍼 수정 없이) 이 경로를 바로 덮어쓸 수 있다 — v7 모양 상태 파일을 그 경로에 미리 써 둔다.
+// ---- 독립 시험(공유 stack 과 무관한 자기 CIA·지갑): 지갑 상태 파일 8→9 이행이 auid 를 재계산하는지(file 모드)와
+// snap 모드(파일에 비밀 없음)는 등록을 비우는지. isolated_mode3_stack.mjs 의 walletEnv 는 자신의 MODE3_WALLET_STATE_FILE 뒤에
+// 스프레드되므로(헬퍼 수정 없이) 이 경로를 바로 덮어쓸 수 있다 — v8 모양 상태 파일을 그 경로에 미리 써 둔다.
 // uid 424242 는 CIA 에 등록돼 있지 않지만 /wallet/status 는 파일의 공개 부분만 읽고 CIA 를 부르지 않으므로 상관없다.
-await t('지갑 상태 파일 7→8 이행: v7 4칸 attrs 가 6칸으로 패딩되고 slot·pk_u 는 null (+ V10: 거울 주소가 없으면 체인 라우트는 503 chain_unavailable)', async () => {
-  const reg = await createRegistration();
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-wallet-v7-'));
+await t('지갑 상태 파일 8→9 이행: file 모드 등록은 auid 를 s_u 로 재계산해 유지(r_u·cm_u 삭제, 세션 비움), snap 모드(비밀 없음) 등록은 비운다 (+ V10: 거울 주소가 없으면 체인 라우트는 503)', async () => {
+  const { auidOf } = await import('../lib/mode3_credential.js');
+  const reg = await createRegistration(424242n);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-wallet-v8-'));
   const stateFile = path.join(dir, 'mode3_wallet_state.json');
-  fs.writeFileSync(stateFile, JSON.stringify({
-    version: 7,
-    registration: { uid: '424242', s_u: reg.s_u.toString(), r_u: reg.r_u.toString(), cm_u: pointToStrings(reg.cm_u), sk_u: reg.sk_u, attrs: ['1990', '410', '2', '0'], userCred: null },
-    sessions: {},
-  }));
-  // MODE3_MIRROR_ADDRESS 를 비워 띄운다(V10 Task 9) — 상태 파일 이행 단언은 체인을 쓰지 않으므로 영향이 없다. 스택을 하나 더 띄우지 않으려고 같이 본다.
-  const stack2 = await startIsolatedMode3Stack({ rp: false, walletEnv: { MODE3_WALLET_STATE_FILE: stateFile, MODE3_MIRROR_ADDRESS: '' } });
   try {
-    const s = (await stack2.wallet.get('/wallet/status')).body;
-    assert.equal(s.registered, true);
-    assert.equal(s.uid, '424242');
-    assert.equal(s.slot, null, '7→8 이행은 슬롯을 모르므로 null(다음 로그인이 /cia/slot 으로 되찾는다)');
-    assert.deepEqual(s.attrs, ['1990', '410', '2', '0', '0', '0'], '4칸 attrs 가 6칸으로 패딩돼야 한다');
-    // 저장된 파일 자체도 패딩된 채로 영속화됐는지(persist) 확인 — 메모리에서만 고치고 안 쓰면 재시작마다 되풀이된다.
-    const onDisk = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-    assert.deepEqual(onDisk.registration.attrs, ['1990', '410', '2', '0', '0', '0']);
-    const pre = await stack2.wallet.post('/wallet/authorize/precheck', { arid: '1', origin: 'http://x', cert_s: {}, pk_trace: { x: '1', y: '2' } });
-    assert.equal(pre.status, 503, j(pre.body)); assert.equal(pre.body.reason, 'chain_unavailable'); assert.equal(pre.body.detail, 'MODE3_MIRROR_ADDRESS not configured');
-    assert.equal(s.mirror.address, null);
-  } finally { await stack2.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
+    fs.writeFileSync(stateFile, JSON.stringify({ version: 8, registration: { uid: '424242', s_u: reg.s_u.toString(), r_u: '1', cm_u: { x: '1', y: '2' }, sk_u: reg.sk_u, pk_u: { x: reg.pk_u.x.toString(), y: reg.pk_u.y.toString() }, slot: 3, attrs: ['1990', '410', '2', '0', '0', '0'], profile: { birthYear: '1990', country: 'KR' }, userCred: { Cf_u: '9' } }, sessions: { '5': {} } }));
+    const stack2 = await startIsolatedMode3Stack({ rp: false, walletEnv: { MODE3_WALLET_STATE_FILE: stateFile, MODE3_MIRROR_ADDRESS: '' } });
+    try {
+      const s = (await stack2.wallet.get('/wallet/status')).body;
+      assert.equal(s.registered, true); assert.equal(s.uid, '424242'); assert.equal(s.slot, 3);
+      assert.equal(s.auid, (await auidOf({ uid: 424242n, s_u: reg.s_u })).toString(), 'auid 는 s_u 로 재계산');
+      assert.deepEqual(s.attrs, ['1990', '410', '2', '0', '0', '0']); assert.deepEqual(s.sessions, {}); assert.equal(s.userCred, null);
+      const onDisk = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      assert.equal(onDisk.version, 9); assert.equal(onDisk.registration.r_u, undefined); assert.equal(onDisk.registration.cm_u, undefined); assert.ok(onDisk.registration.auid);
+      const pre = await stack2.wallet.post('/wallet/authorize/precheck', { arid: '1', origin: 'http://x', cert_s: {}, pk_trace: { x: '1', y: '2' } });
+      assert.equal(pre.status, 503, j(pre.body)); assert.equal(pre.body.detail, 'MODE3_MIRROR_ADDRESS not configured');
+    } finally { await stack2.stop(); }
+    fs.writeFileSync(stateFile, JSON.stringify({ version: 8, registration: { uid: '424242', cm_u: { x: '1', y: '2' }, pk_u: { x: '1', y: '2' }, slot: 0, attrs: ['1990', '410', '0', '0', '0', '0'], userCred: null }, sessions: {} }));
+    const stack3 = await startIsolatedMode3Stack({ rp: false, walletEnv: { MODE3_WALLET_STATE_FILE: stateFile, MODE3_WALLET_SECRETS: 'snap', MODE3_MIRROR_ADDRESS: '' } });
+    try { assert.equal((await stack3.wallet.get('/wallet/status')).body.registered, false, 'snap 모드 옛 등록은 auid 를 재계산할 수 없어 비운다'); }
+    finally { await stack3.stop(); }
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 process.exit(failed === 0 ? 0 : 1);

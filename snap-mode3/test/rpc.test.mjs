@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { validateWitness } from '../../lib/mode3_secret_source.js';
-import { registrationCommit } from '../../lib/mode3_issuance.js';
+import { auidOf } from '../../lib/mode3_credential.js';
 
 const WALLET_ORIGIN = 'http://127.0.0.1:5100';
 const WALLET_ORIGIN_ALT = 'http://localhost:5100';
@@ -81,67 +81,69 @@ await t('지갑 오리진 두 철자(127.0.0.1·localhost)는 모두 허용된�
 });
 
 let registered = null;
-await t('register: prompt 두 번 → { uid, pwd, cm_u, sk_u }, 상태에 s_u·r_u·sk_u, 비밀번호는 저장 안 함', async () => {
+let auid = null;
+await t('register: prompt 두 번 → { uid, pwd, s_u, sk_u }, 상태에 s_u·sk_u, 비밀번호는 저장 안 함', async () => {
   answers.push('12345', 'password123');
   registered = await call('register', {});
   assert.equal(registered.uid, '12345');
   assert.equal(registered.pwd, 'password123');
-  assert.match(registered.cm_u.x, /^[0-9]+$/);
-  assert.match(registered.cm_u.y, /^[0-9]+$/);
+  assert.match(registered.s_u, /^[0-9]+$/);
   assert.match(registered.sk_u, /^[0-9a-fA-F]{64}$/);
   assert.equal(dialogs.length, 2, '대화상자 두 번(uid, 비밀번호)');
   assert.equal(dialogs[0].type, 'prompt');
   assert.equal(dialogs[1].type, 'prompt');
   const reg = store.state.registration;
   assert.equal(store.state.version, 1);
-  assert.match(reg.s_u, /^[0-9]+$/);
-  assert.match(reg.r_u, /^[0-9]+$/);
-  assert.ok(BigInt(reg.s_u) < (1n << 250n) && BigInt(reg.r_u) < (1n << 250n), '스칼라는 2^250 미만');
-  assert.deepEqual(reg.cm_u, registered.cm_u);
+  assert.equal(reg.s_u, registered.s_u);
+  assert.ok(BigInt(reg.s_u) < (1n << 250n), '스칼라는 2^250 미만');
   assert.equal(reg.sk_u, registered.sk_u);
   assert.equal(reg.attrs, null);
+  assert.equal('r_u' in reg, false, 'r_u 는 없어졌다');
+  assert.equal('cm_u' in reg, false, 'cm_u 는 없어졌다');
   assert.ok(reg.registeredAt, 'registeredAt 기록');
   assert.ok(!stateJson().includes('password123'), '비밀번호는 상태에 남지 않는다');
 });
 
-await t('cm_u 는 루트 lib 의 registrationCommit(s_u, r_u) 과 같은 점이다', async () => {
-  const reg = store.state.registration;
-  const expected = await registrationCommit(BigInt(reg.s_u), BigInt(reg.r_u));
-  assert.equal(registered.cm_u.x, expected.x.toString());
-  assert.equal(registered.cm_u.y, expected.y.toString());
+await t('auid 는 에이전트가 계산한다 — storeRegistration 이 받은 auid 가 getPublicInfo 에 보인다', async () => {
+  auid = (await auidOf({ uid: 12345n, s_u: BigInt(registered.s_u) })).toString();
+  await call('storeRegistration', { attrs: ATTRS, slot: SLOT, auid });
+  assert.equal((await call('getPublicInfo', {})).auid, auid);
 });
 
 await t('register 두 번째는 거절된다', async () => {
   await assert.rejects(() => call('register', {}), /already_registered|이미/);
 });
 
-await t('storeRegistration: attrs 는 6개(짧으면 bad_attrs)·slot 저장, sk_u 는 받지 않는다', async () => {
-  await assert.rejects(() => call('storeRegistration', { attrs: ATTRS.slice(0, 4), slot: SLOT }), /bad_attrs/);
-  assert.deepEqual(await call('storeRegistration', { attrs: ATTRS, slot: SLOT }), { ok: true });
+await t('storeRegistration: attrs 는 6개(짧으면 bad_attrs)·slot 저장, auid 없으면 bad_auid, sk_u 는 받지 않는다', async () => {
+  await assert.rejects(() => call('storeRegistration', { attrs: ATTRS.slice(0, 4), slot: SLOT, auid }), /bad_attrs/);
+  await assert.rejects(() => call('storeRegistration', { attrs: ATTRS, slot: SLOT }), /bad_auid/);
+  assert.deepEqual(await call('storeRegistration', { attrs: ATTRS, slot: SLOT, auid }), { ok: true });
   assert.deepEqual(store.state.registration.attrs, ATTRS);
   assert.equal(store.state.registration.slot, SLOT);
+  assert.equal(store.state.registration.auid, auid);
   assert.equal(store.state.registration.sk_u, registered.sk_u, 'storeRegistration 은 sk_u 를 건드리지 않는다');
 });
 
 await t('storeRegistration: slot 은 음이 아닌 정수여야 한다 — 음수·문자열은 bad_slot, 정상 값은 저장된다', async () => {
-  await assert.rejects(() => call('storeRegistration', { attrs: ATTRS, slot: -1 }), /bad_slot/);
-  await assert.rejects(() => call('storeRegistration', { attrs: ATTRS, slot: '1' }), /bad_slot/);
-  assert.deepEqual(await call('storeRegistration', { attrs: ATTRS, slot: 1 }), { ok: true });
+  await assert.rejects(() => call('storeRegistration', { attrs: ATTRS, slot: -1, auid }), /bad_slot/);
+  await assert.rejects(() => call('storeRegistration', { attrs: ATTRS, slot: '1', auid }), /bad_slot/);
+  assert.deepEqual(await call('storeRegistration', { attrs: ATTRS, slot: 1, auid }), { ok: true });
   assert.equal((await call('getPublicInfo', {})).slot, 1);
   // 뒤따르는 테스트가 기대하는 slot=SLOT 으로 되돌려 둔다 — 이 케이스가 이후 상태에 흔적을 남기지 않게 한다.
-  assert.deepEqual(await call('storeRegistration', { attrs: ATTRS, slot: SLOT }), { ok: true });
+  assert.deepEqual(await call('storeRegistration', { attrs: ATTRS, slot: SLOT, auid }), { ok: true });
 });
 
 await t('getPublicInfo 에는 비밀이 없다', async () => {
   const info = await call('getPublicInfo', {});
-  assert.deepEqual(Object.keys(info).sort(), ['attrs', 'cm_u', 'consents', 'hasUserCred', 'registered', 'slot', 'uid']);
+  assert.deepEqual(Object.keys(info).sort(), ['attrs', 'auid', 'consents', 'hasUserCred', 'registered', 'slot', 'uid']);
   assert.equal(info.registered, true);
   assert.equal(info.uid, '12345');
+  assert.equal(info.auid, auid);
   assert.deepEqual(info.attrs, ATTRS);
   assert.equal(info.slot, SLOT);
   assert.equal(info.hasUserCred, false);
   const s = JSON.stringify(info);
-  for (const secret of [store.state.registration.s_u, store.state.registration.r_u, registered.sk_u]) {
+  for (const secret of [store.state.registration.s_u, registered.sk_u]) {
     assert.ok(!s.includes(secret), `공개 정보에 비밀이 실렸다: ${secret.slice(0, 8)}…`);
   }
 });
@@ -149,8 +151,8 @@ await t('getPublicInfo 에는 비밀이 없다', async () => {
 await t('consentLogin 승인 → validateWitness 를 통과하는 증인, consents 기록', async () => {
   answers.push(true);
   const w = await call('consentLogin', { origin: RP_ORIGIN, arid: '777', allowAgent: '1', serviceName: '데모 RP' });
-  // cm_u 까지 준다 — 증인의 s_u·r_u 가 register 가 낸 cm_u 와 실제로 묶였는지 본다(최종 리뷰 Minor 1).
-  await validateWitness(w, '12345', registered.cm_u);
+  // auid 까지 준다 — 증인의 s_u 가 register 가 낸 auid 와 실제로 묶였는지 본다(최종 리뷰 Minor 1 의 V11 판).
+  await validateWitness(w, '12345', auid);
   assert.equal(w.uid, '12345');
   assert.equal(w.sk_u, registered.sk_u, 'buildWitness 의 sk_u 는 register 때 만든 것과 같다');
   assert.deepEqual(w.attrs, ATTRS);
@@ -228,7 +230,7 @@ await t('updateUserCred(obj) 저장 → 증인에 실리고 getPublicInfo 는 ha
   assert.ok(!JSON.stringify(info).includes(USER_CRED.blind_u), 'blind_u 는 공개 정보에 없다');
   answers.push(true);
   const w = await call('consentLogin', { origin: RP_ORIGIN, arid: '777', allowAgent: '1', serviceName: '데모 RP' });
-  await validateWitness(w, '12345', registered.cm_u);
+  await validateWitness(w, '12345', auid);
   assert.deepEqual(w.userCred.C_u_pt, USER_CRED.C_u_pt);
   assert.equal(w.userCred.blind_u, USER_CRED.blind_u);
 });

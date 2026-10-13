@@ -5,13 +5,15 @@
 // 하는 일 넷: 등록(§6.1), 발급(§6.2), 폐기(§6.5), root 게시(§6.5). 로그인 검증은 하지 않는다 —
 // 그것은 RP 의 일이고(§6.3) CIA 는 조회 경로에 있어서는 안 된다(§9.9).
 // V4(2026-09-18): 만료는 블록 높이(max_height), allowAgent, 체인 헤드 조회, 하트비트 게시, 개봉 평문 역조회 — 설계 2026-09-18-mode3-onchain-execution-design.md §4·§6.
-// V5(2026-09-21): 자격증명 이중 구조 — 사용자 자격증명(/cia/user_cred, π_u)과 세션 발급(/cia/issue, ZKP 없음)을 나눈다. 폐기 리프는 Cf_u 에서
+// V5(2026-09-21): 자격증명 이중 구조 — 사용자 자격증명(/cia/user_cred, π_u — V11 에서 삭제)과 세션 발급(/cia/issue, ZKP 없음)을 나눈다. 폐기 리프는 Cf_u 에서
 //   나오므로 세션 기록(issued)이 없다 — 설계 2026-09-21-mode3-two-tier-credential §3·§4.
 // V8(2026-09-24): 세션 단위 폐기 — 발급이 accounts[uid].sessions 에 기록을 남기고, /cia/revoke scope=session 이 sessionLeaf(Cf_s) 를
 //   트리에 넣는다. 만료된 기록은 하트비트에서 지운다(리프는 남는다) — 설계 2026-09-24-mode3-session-revocation §2.2·§6.
 // V10(2026-10-02): 게시 서명은 V3 다이제스트(캐노니컬 chainid·로그 주소). 계정·자격증명 폐기는 IdP 서명 접수증을 돌려주고,
 //   게시는 로그의 접수증 대기열(pendingSlots)을 먼저 따른다(슬롯 0·영구 은퇴 → 재발급은 새 슬롯) — 설계
 //   2026-10-02-mode3-revocation-chain-design §4.
+// V11(2026-10-12): auid·π_IdP 도입 — /cia/issue 가 /cia/user_cred 를 흡수해(세션마다 π_IdP 검증) 사용자·세션 자격증명을 한 요청으로
+//   낸다. 상태는 v12(cm_u·attrs 삭제, auid 필수) — 설계 2026-10-12-mode3-v11-figure-protocol-design.md §5.2·§7.
 import 'dotenv/config';
 import express from 'express';
 import path from 'node:path';
@@ -22,10 +24,11 @@ import { ethers } from 'ethers';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import * as snarkjs from 'snarkjs';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
-import { credMessageV5, compressPoint, randomScalar } from './lib/mode3_credential.js';
-import { DEFAULT_ATTR_SCHEMA, loadSchema, encodeProfile, normalizeProfile, schemaInfo } from './lib/mode3_attr_schema.js';
+import { credMessageV11, compressPoint, randomScalar } from './lib/mode3_credential.js';
+import { DEFAULT_ATTR_SCHEMA, loadSchema, schemaInfo } from './lib/mode3_attr_schema.js';
 import { sessionLeaf, createRevocationTree } from './lib/mode3_revocation.js';
-import { isValidPoint, pointFromStrings, verifyUserCred, parseUserCredProof, userCredRequestMessage, issueRequestMessageV4, attrsRequestMessage, revokeSessionMessage, registerMessage } from './lib/mode3_issuance.js';
+import { isValidPoint, pointFromStrings, issueRequestMessageV11, slotRequestMessage, revokeSessionMessage, registerMessage } from './lib/mode3_issuance.js';
+import { loadIdpVkey, idpPublicSignals, verifyIdp, IDP_VKEY_PATH } from './lib/mode3_idp_proof.js';
 import { MODE3_LOG_ABI, MODE3_MIRROR_ABI, rootToBytes32, signPublicationV3, entryHashes, signReceipt } from './lib/mode3_log.js';
 import { createRegistryTree, registryLeaf } from './lib/mode3_registry.js';
 import { signRpCert } from './lib/mode3_rp_cert.js';
@@ -38,6 +41,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.CIA_PORT) || 4100;
 const STATE_FILE = process.env.CIA_STATE_FILE || path.join(__dirname, 'cia_state.json');
 const KEYS_FILE = process.env.CIA_KEYS_FILE || path.join(__dirname, 'cia_keys.json');
+const IDP_VKEY = process.env.MODE3_IDP_VKEY_PATH || IDP_VKEY_PATH;
 const VKEY_PATH = process.env.MODE3_VKEY_PATH || path.join(__dirname, 'build', 'mode3', 'pi_cred_vkey.json');
 // 속성 매핑 계층(스펙 2, 2026-10-07): 스키마는 공유 모듈의 기본값이고 CIA_ATTR_SCHEMA_FILE(JSON)로 바꿀 수 있다. 검증 실패는 기동 거부.
 const ATTR_SCHEMA_FILE = process.env.CIA_ATTR_SCHEMA_FILE || null;
@@ -101,10 +105,10 @@ for (const item of (process.env.CIA_MIRRORS || '').split(',').map((s) => s.trim(
 // CHAIN_RPCS 의 첫 키를 쓰지 않는다(여러 체인이 설정돼 있으면 어긋난다). 기동 시 한 번 읽는다.
 let selfChainId = null;
 
-// 데모 계정의 속성은 사람이 읽는 profile(스키마 이름 → 값)이고, attrs(인코딩)는 loadState 가 스키마로 만든다(스펙 2 §5.2). 등급은 없다(D4).
+// 데모 계정 — 비밀번호·uid 만(D15: 속성은 지갑이 들고 IdP 는 모른다. 옛 profile·attrs 필드는 2026-10-12 에 지웠다).
 const DEMO_ACCOUNTS = {
-  testuser: { password: 'password123', uid: '12345', profile: { birthYear: '1990', country: 'KR' }, attrs: null },
-  alice: { password: 'alicepw', uid: '67890', profile: { birthYear: '2005', country: 'US' }, attrs: null },
+  testuser: { password: 'password123', uid: '12345' },
+  alice: { password: 'alicepw', uid: '67890' },
 };
 
 // ---- 키 ----
@@ -130,9 +134,8 @@ function loadOrCreateKeys() {
 }
 
 // ---- 상태 ----
-// accounts:  uid → { pk_u:{x,y}, cm_u:{x,y}, disabled, slot(등록부 인덱스), tampered(관리자 시연용 바꿔치기 표시, Task 9),
-//                     creds: [ { Cf_u(10진), C_u_pt:{x,y}, issuedAt, revoked } ] }   (V9: leaf 없음 — 등록부 슬롯이 대신한다)
-//            creds 중 revoked:false 는 하나뿐(사용자당 활성 자격증명 하나, 2026-09-21 §3.1). 세션 발급은 기록하지 않는다.
+// accounts:  uid → { pk_u:{x,y}, auid(10진 — Poseidon(T_AUID, uid, s_u), V11 D4), disabled, slot, tampered, creds, sessions, receipt, slotRetired }   (attrs·profile 없음 — D15)
+//            creds 중 revoked:false 는 하나뿐(사용자당 활성 자격증명 하나, 2026-09-21 §3.1).
 // rps:       arid → { name, origin, pk_service, X_svc, x_AA, pk_trace, status, requestedAt, decidedAt }   (2026-09-16 §3)
 // openings:  [ { id, arid, PPID, tagKey, c1:{x,y}, c2, D_svc:{x,y}, allowAgent, max_height, chainid, status, requestedAt, decidedAt,
 //                uid|null, resolved } ]   영구 감사 기록(§6). uid·resolved 는 approved 에만 의미 있다.
@@ -219,35 +222,22 @@ async function reconcileWithChain({ onchainRoot, onchainRegRoot, onchainEpoch },
 }
 
 async function loadState() {
-  // 데모 계정 profile 은 기본 스키마의 이름으로 적혀 있다. 사용자 정의 스키마(CIA_ATTR_SCHEMA_FILE)에서도 뜨도록 관대하게 맞춘다 —
-  // 스키마에 없는 키는 버리고, 없는 int·enum 키는 빈 값으로 채운다(최종 리뷰 I2). 그래도 안 맞으면(범위 밖·표에 없는 이름) 기동 거부.
-  const named = ATTR_SCHEMA.slots.filter((s) => s.type !== 'unused');
-  for (const [name, a] of Object.entries(DEMO_ACCOUNTS)) {
-    const fitted = {};
-    for (const s of named) {
-      if (Object.hasOwn(a.profile, s.name)) fitted[s.name] = a.profile[s.name];
-      else if (s.type === 'int' || s.type === 'enum') fitted[s.name] = '';
-    }
-    try { a.attrs = await encodeProfile(ATTR_SCHEMA, fitted); }
-    catch (e) { console.error(`[cia] 기동 거부: 데모 계정 속성이 스키마와 맞지 않는다 — ${name}: ${e.message}`); process.exit(1); }
-    a.profile = fitted;
-  }
   state = readJson(STATE_FILE, defaultState());
   let migrated;
-  try { migrated = migrateCiaState(state, { demoAttrs: (uid) => Object.values(DEMO_ACCOUNTS).find((a) => a.uid === uid)?.attrs ?? null, attrSchema: ATTR_SCHEMA }); }
+  try { migrated = migrateCiaState(state); }
   catch (e) {
-    console.error(`[cia] 기동 거부: ${e.message}. v2 이하는 옛 credential 형식이라 새 회로에서 검증되지 않으므로 마이그레이션하지 않는다 — ` +
-      `재시연 세트(로그 재배포 → 상태 파일 삭제)로 새로 시작할 것.`);
+    console.error(`[cia] 기동 거부: ${e.message}. V11(2026-10-12)은 옛 상태를 이행하지 않는다 — 재시연 세트(로그·거울 재배포 → 상태 파일 새로)로 새로 시작할 것.`);
     process.exit(1);
   }
   state = migrated.state;
   for (const n of migrated.notes) console.warn(`[cia] 상태 파일 이행 ${n}`);
-  // 최종 리뷰 I4: 계정 attrs 는 저장 당시 스키마로 인코딩돼 있다. 스키마가 바뀌면 같은 숫자가 다른 뜻이 되므로 기동을 거부한다 —
-  // 다시 인코딩하는 경로는 비범위다. 해시가 없는 파일(이 필드 이전 또는 v10 이행)은 지금 스키마를 기록한다.
+  // 최종 리뷰 I4: 스키마는 지갑이 C_u 에 넣는 속성의 공통 인코딩 규칙이라, 바뀌면 이미 발급된 C_u 의 의미가 달라진다 —
+  // 그래서 바뀐 스키마로는 뜨지 않는다(다시 인코딩할 길이 없다 — 지갑 쪽 상태). 해시가 없는 파일(이 필드 이전 또는
+  // v10 이행)은 지금 스키마를 기록한다.
   let schemaHashRecorded = false;
   if (state.attrSchemaHash === null) { state.attrSchemaHash = ATTR_SCHEMA_HASH; schemaHashRecorded = true; }
   else if (state.attrSchemaHash !== ATTR_SCHEMA_HASH) {
-    console.error(`[cia] 기동 거부: 속성 스키마가 바뀌었다(저장 ${state.attrSchemaHash} ≠ 현재 ${ATTR_SCHEMA_HASH}) — 계정 attrs 를 다시 인코딩하는 경로는 비범위다. ` +
+    console.error(`[cia] 기동 거부: 속성 스키마가 바뀌었다(저장 ${state.attrSchemaHash} ≠ 현재 ${ATTR_SCHEMA_HASH}) — 다시 인코딩할 길이 없다(지갑 쪽 상태). ` +
       `스키마를 되돌리거나(CIA_ATTR_SCHEMA_FILE) 상태 파일을 새로 시작할 것.`);
     process.exit(1);
   }
@@ -256,20 +246,13 @@ async function loadState() {
   for (const l of state.revoked) await tree.insert(BigInt(l));
   registry = await createRegistryTree(state.registry.depth);
   for (const [i, leaf] of Object.entries(state.registry.leaves)) registry.set(Number(i), BigInt(leaf));
-  // v10→v11(스펙 2 §6): 새 스키마로 표현할 수 없는 값을 버려 attrs 가 바뀐 계정은 관리자 속성 변경과 같은 경로를 탄다 —
-  // 활성 자격증명 은퇴 → 슬롯 0 → (아래 자동 게시). 지갑은 다음 로그인의 bad user credential proof → /cia/attrs 재동기화로 새 C_u 를 받는다.
-  let retiredByMigration = 0;
-  for (const uid of migrated.attrsChanged ?? []) { if (retireActiveCred(uid)) { setSlot(uid, 0n); retiredByMigration++; } }
-  if (retiredByMigration) console.warn(`[cia] 속성 스키마 이행으로 계정 ${retiredByMigration}개의 활성 자격증명을 물렸다(슬롯 0) — 아래 자동 게시`);
-  // 이행 결과와 물림을 한 번에 저장한다(최종 리뷰 M1) — 이행만 먼저 저장하고 물리기 전에 죽으면 다음 기동은 v11 파일을 읽어
-  // attrsChanged 가 비고, 옛 속성의 자격증명이 활성으로 남는다.
-  if (migrated.notes.length || retiredByMigration || schemaHashRecorded) persist();
-  // v9 이행 뒤(또는 리프가 비어 있는 슬롯): 활성 자격증명의 리프를 채운다 — Poseidon 이 비동기라 이행 함수가 못 한다.
+  if (migrated.notes.length || schemaHashRecorded) persist();
+  // 손으로 만든 상태 파일 방어(리프 비어 있는 슬롯 채움): 활성 자격증명의 리프를 채운다 — Poseidon 이 비동기라 이행 함수가 못 한다.
   let filled = 0;
   for (const [uid, acct] of Object.entries(state.accounts)) {
     const cur = activeCred(uid);
     if (!cur || !Number.isInteger(acct.slot) || state.registry.leaves[acct.slot] !== undefined) continue;
-    const leaf = await registryLeaf(acct.cm_u, cur.Cf_u);
+    const leaf = await registryLeaf(BigInt(acct.auid), BigInt(cur.Cf_u));
     setSlot(uid, leaf); filled++;
   }
   if (filled) { console.warn(`[cia] 등록부: 활성 자격증명 ${filled}개의 슬롯을 채웠다 — 다음 게시에 나간다`); persist(); }
@@ -518,92 +501,29 @@ app.post('/cia/rps/:arid/deny', requireAdmin, (req, res) => {
   res.json({ arid: req.params.arid, status: e.status });
 });
 
-// §6.1 + V9 §7.1 등록. 키는 지갑이 만든다 — CIA 는 pk_u 와 소유 증명 서명만 받고 슬롯 번호를 배정한다.
+// V11 §3.1 등록. 지갑이 auid = Poseidon(T_AUID, uid, s_u) 와 등록 키 pk_u 를 낸다 — CIA 는 소유 증명 서명만 보고 슬롯 번호를 배정한다. 속성은 받지 않는다(D15).
 app.post('/cia/register', async (req, res) => {
-  const { uid, pwd, cm_u, pk_u, sig_reg } = req.body ?? {};
-  if (!isDec(uid) || typeof pwd !== 'string' || !isPt(cm_u) || !isPt(pk_u) || !sig_reg) return res.status(400).json({ error: 'uid, pwd, cm_u{x,y}, pk_u{x,y}, sig_reg required' });
+  const { uid, pwd, auid, pk_u, sig_reg } = req.body ?? {};
+  if (!isDec(uid) || typeof pwd !== 'string' || !isDec(auid) || !isPt(pk_u) || !sig_reg) return res.status(400).json({ error: 'uid, pwd, auid, pk_u{x,y}, sig_reg required' });
   const acct = Object.values(DEMO_ACCOUNTS).find((a) => a.uid === uid);
   if (!acct || acct.password !== pwd) return res.status(401).json({ error: 'invalid credentials' });
   if (state.accounts[uid]) return res.status(409).json({ error: 'already registered' });
-  if (!(await isValidPoint(pointFromStrings(cm_u)))) return res.status(400).json({ error: 'cm_u is not a valid subgroup point' });
+  if (BigInt(auid) >= F.p) return res.status(400).json({ error: 'auid is not a field element' });   // Poseidon 출력 범위 — 비정규 값은 등록부 리프·π 와 어긋난다
   if (!(await isValidPoint(pointFromStrings(pk_u)))) return res.status(400).json({ error: 'pk_u is not a valid subgroup point' });
   let ok = false;
   try {
-    const m = F.e(await registerMessage(BigInt(uid), pointFromStrings(cm_u)));
+    const m = F.e(await registerMessage(BigInt(uid), BigInt(auid)));
     ok = eddsa.verifyPoseidon(m, { R8: [F.e(BigInt(sig_reg.R8x)), F.e(BigInt(sig_reg.R8y))], S: BigInt(sig_reg.S) }, [F.e(BigInt(pk_u.x)), F.e(BigInt(pk_u.y))]);
   } catch { ok = false; }
   if (!ok) return res.status(400).json({ error: 'bad_registration_signature' });
   if (state.accounts[uid]) return res.status(409).json({ error: 'already registered' });   // await 사이 경합
   const slot = state.registry.next++;
-  state.accounts[uid] = { pk_u: { x: BigInt(pk_u.x).toString(), y: BigInt(pk_u.y).toString() }, cm_u: { x: BigInt(cm_u.x).toString(), y: BigInt(cm_u.y).toString() }, slot, tampered: false, disabled: false, creds: [], attrs: [...acct.attrs], profile: normalizeProfile(ATTR_SCHEMA, acct.profile), sessions: [] };
+  state.accounts[uid] = { pk_u: { x: BigInt(pk_u.x).toString(), y: BigInt(pk_u.y).toString() }, auid: BigInt(auid).toString(), slot, tampered: false, disabled: false, creds: [], sessions: [], receipt: null, slotRetired: false };
   persist();
-  res.status(201).json({ slot, attrs: state.accounts[uid].attrs, profile: state.accounts[uid].profile, schemaHash: ATTR_SCHEMA_HASH });
+  res.status(201).json({ slot, schemaHash: ATTR_SCHEMA_HASH });
 });
 
-// §4.1(2026-09-21) 사용자 자격증명 발급. 세션과 무관 — 속성이 바뀔 때만 다시 온다. AA 서명은 없다(세션 서명이 Cf_u 를 덮는다).
-// 검사 순서: 형식 → 계정·disabled → C_u_pt 부분군 → sig_u → π_u → 기록. 이미 활성 자격증명이 있으면 그것을 물리고(리프 → pending) 새 것을 활성으로.
-app.post('/cia/user_cred', async (req, res) => {
-  try {
-    const { uid, C_u_pt, proof, sig_u } = req.body ?? {};
-    if (!isDec(uid) || !isPt(C_u_pt) || !proof || !sig_u) return res.status(400).json({ error: 'uid, C_u_pt, proof, sig_u required' });
-    const acct = state.accounts[uid];
-    if (!acct) return res.status(404).json({ error: 'unknown account' });
-    if (acct.disabled) return res.status(403).json({ error: 'account disabled' });
-    const cpt = pointFromStrings(C_u_pt);
-    if (!(await isValidPoint(cpt))) return res.status(400).json({ error: 'C_u_pt is not a valid subgroup point' });
-    let sigOk = false;
-    try {
-      const m = F.e(await userCredRequestMessage(cpt));
-      sigOk = eddsa.verifyPoseidon(m, { R8: [F.e(BigInt(sig_u.R8x)), F.e(BigInt(sig_u.R8y))], S: BigInt(sig_u.S) }, [F.e(BigInt(acct.pk_u.x)), F.e(BigInt(acct.pk_u.y))]);
-    } catch { sigOk = false; }
-    if (!sigOk) return res.status(400).json({ error: 'bad user signature' });
-    let proofOk = false;
-    // 속성은 AA 기록(acct.attrs) — 요청의 값은 받지 않는다(2026-09-22 §3.4).
-    try { proofOk = await verifyUserCred({ uid: BigInt(uid), attrs: acct.attrs.map(BigInt), C_u_pt: cpt, cm_u: pointFromStrings(acct.cm_u), proof: parseUserCredProof(proof) }); }
-    catch { proofOk = false; }
-    if (!proofOk) return res.status(400).json({ error: 'bad user credential proof' });
-    const Cf_u = (await compressPoint(cpt)).toString();
-    // 이 await 를 끝으로 아래 물리기→push→setSlot→persist 구간은 전부 동기다 — 그 안에서 또 await 하면(2026-10-01 리뷰
-    // Important 2) 끼어든 동시 요청이 먼저 물리거나 push 한 뒤 이 요청이 새 리프 대신 먼저 계산해 둔 값을 심어
-    // 슬롯이 물린 자격증명의 것으로 남을 수 있다.
-    const newLeaf = await registryLeaf(acct.cm_u, BigInt(Cf_u));
-    if (acct.disabled) return res.status(403).json({ error: 'account disabled' });   // await 사이에 폐기가 끼어들 수 있다
-    acct.creds ??= [];
-    if (acct.creds.some((c) => c.Cf_u === Cf_u && c.revoked)) return res.status(409).json({ error: 'this user credential was revoked; make a new one' });
-    const cur = activeCred(uid);
-    if (cur && cur.Cf_u === Cf_u) return res.json({ Cf_u, slot: acct.slot, regRoot: registry.root().toString(), epoch: state.epoch, published: false });   // 멱등 — 동시에 온 같은 Cf_u 가 먼저 기록된 경우 포함
-    const retired = retireActiveCred(uid);
-    if (acct.disabled) { if (retired) { setSlot(uid, 0n); persist(); await publishSafely(); } return res.status(403).json({ error: 'account disabled' }); }
-    if (acct.creds.some((c) => c.Cf_u === Cf_u)) return res.status(409).json({ error: 'this user credential was revoked; make a new one' });
-    // V10(§4.5): 대기열로 영구 은퇴된 슬롯에는 0 아닌 리프를 쓸 수 없다(컨트랙트 SlotIsRetired) — 새 슬롯을 받는다.
-    // 위의 disabled 검사를 지났으므로 관리자가 되살린 뒤의 발급이다. PPID 는 uid·s_u 에만 걸려 있어 슬롯이 바뀌어도 그대로다.
-    if (acct.slotRetired) { acct.slot = state.registry.next++; acct.slotRetired = false; }
-    acct.creds.push({ Cf_u, C_u_pt: { x: cpt.x.toString(), y: cpt.y.toString() }, issuedAt: new Date().toISOString(), revoked: false });
-    setSlot(uid, newLeaf);
-    persist();
-    const pub = await publishSafely();
-    res.status(201).json({ Cf_u, slot: acct.slot, regRoot: registry.root().toString(), epoch: state.epoch, published: Boolean(pub.published) });
-  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
-});
-
-// 2026-09-22 §3.3 지갑이 자기 속성을 다시 받는다 — user_cred 가 bad proof 로 거절됐을 때(AA 기록이 바뀜). sk_u 서명으로 인증.
-app.post('/cia/attrs', async (req, res) => {
-  try {
-    const { uid, nonce, sig_u } = req.body ?? {};
-    if (!isDec(uid) || !isDec(nonce) || !sig_u) return res.status(400).json({ error: 'uid, nonce, sig_u required' });
-    const acct = state.accounts[uid];
-    if (!acct) return res.status(404).json({ error: 'unknown account' });
-    let ok = false;
-    try {
-      const m = F.e(await attrsRequestMessage(BigInt(uid), BigInt(nonce)));
-      ok = eddsa.verifyPoseidon(m, { R8: [F.e(BigInt(sig_u.R8x)), F.e(BigInt(sig_u.R8y))], S: BigInt(sig_u.S) }, [F.e(BigInt(acct.pk_u.x)), F.e(BigInt(acct.pk_u.y))]);
-    } catch { ok = false; }
-    if (!ok) return res.status(400).json({ error: 'bad user signature' });
-    res.json({ attrs: acct.attrs, profile: acct.profile ?? {}, schemaHash: ATTR_SCHEMA_HASH });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// V9: 옛 지갑 상태 파일(슬롯 없음)이 자기 슬롯 번호를 되찾는다. sk_u 서명 인증, 메시지는 /cia/attrs 와 같은 Poseidon(D_ATTRSREQ, uid, nonce).
+// V9: 옛 지갑 상태 파일(슬롯 없음)이 자기 슬롯 번호를 되찾는다. sk_u 서명 인증, 메시지는 Poseidon(D_SLOTREQ, uid, nonce).
 app.post('/cia/slot', async (req, res) => {
   try {
     const { uid, nonce, sig_u } = req.body ?? {};
@@ -612,7 +532,7 @@ app.post('/cia/slot', async (req, res) => {
     if (!acct) return res.status(404).json({ error: 'unknown account' });
     let ok = false;
     try {
-      const m = F.e(await attrsRequestMessage(BigInt(uid), BigInt(nonce)));
+      const m = F.e(await slotRequestMessage(BigInt(uid), BigInt(nonce)));
       ok = eddsa.verifyPoseidon(m, { R8: [F.e(BigInt(sig_u.R8x)), F.e(BigInt(sig_u.R8y))], S: BigInt(sig_u.S) }, [F.e(BigInt(acct.pk_u.x)), F.e(BigInt(acct.pk_u.y))]);
     } catch { ok = false; }
     if (!ok) return res.status(400).json({ error: 'bad user signature' });
@@ -620,41 +540,15 @@ app.post('/cia/slot', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// 2026-09-22 §3.3 관리자가 속성을 바꾼다. 활성 자격증명은 옛 속성이라 물린다(슬롯 0 → 즉시 게시). 지갑은 다음 발급에서 재동기화한다.
-// 스펙 2(2026-10-07): 본문은 { profile } — 스키마 이름 → 사람이 읽는 값. 인코딩은 encodeProfile(int·enum 키 필수 — 빈 객체 한 번으로
-// 속성이 통째로 지워지던 A-I2 를 같은 선에서 막는다). 예전 { attrs:[…] } 는 400 use_profile.
-// 최종 리뷰(2026-10-07): min > 0 인 int·enum 의 빈 값은 400 empty(I1 — 출생연도 0 이 나이 술어를 통과), 저장하는 profile 은
-// normalizeProfile 의 정규형(I3 — 코드 '410' 은 이름 'KR'), attrs 가 그대로면 profile 만 바꾸고 자격증명은 물리지 않는다(M8).
-app.post('/cia/accounts/:uid/attrs', requireAdmin, async (req, res) => {
-  try {
-    const uid = req.params.uid;
-    const acct = state.accounts[uid];
-    if (!isDec(uid) || !acct) return res.status(404).json({ error: 'unknown account' });
-    if (req.body?.attrs !== undefined) return res.status(400).json({ error: 'use_profile', detail: '속성은 { profile: { 이름: 값 } } 로 보낸다(스펙 2)' });
-    const profile = req.body?.profile;
-    if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return res.status(400).json({ error: 'bad_attr', slot: null, field: null, reason: 'profile_required' });
-    let attrs;
-    try { attrs = await encodeProfile(ATTR_SCHEMA, profile, { allowEmptyRequired: false }); }
-    catch (e) { if (e.reason === 'bad_attr') return res.status(400).json({ error: 'bad_attr', slot: e.slot, field: e.field, reason: e.detail, detail: e.message }); throw e; }
-    acct.profile = normalizeProfile(ATTR_SCHEMA, profile);
-    if (JSON.stringify(attrs) === JSON.stringify(acct.attrs)) { persist(); return res.json({ uid, attrs, profile: acct.profile, retired: 0, published: false }); }
-    acct.attrs = attrs;
-    const retired = retireActiveCred(uid);
-    if (retired) setSlot(uid, 0n);   // 물린 게 없으면(활성 자격증명이 없었다) 슬롯은 건드리지 않는다
-    persist();   // attrs·(물렸다면) 슬롯 변경을 게시 시도 전에 먼저 저장한다 — 게시 중 죽어도 다음 기동이 백로그를 본다
-    const pub = retired ? await publishSafely() : { published: false };
-    res.json({ uid, attrs, profile: acct.profile, retired, published: Boolean(pub.published) });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// §4.2(2026-09-21) 세션 발급 V5. ZKP 없음 — uid·s_u 는 사용자 자격증명 발급 때 π_u 로 이미 증명됐다.
-// 검사 순서: 형식 → max_height 범위 → 계정·disabled → chainid 허용 → sig_u → 활성 Cf_u 조회 → C_s_pt 부분군 → 체인 생존(fail-closed) →
-// disabled·활성 재확인 → 서명. 기록하지 않는다.
+// V11(스펙 2026-10-12 §5.2, 그림 3 "DA request") 세션 발급 = (C_u, C_s, π_IdP, sig_u) 한 요청. 옛 /cia/user_cred 를 흡수했다 — 요청의 C_u 가
+// 활성 자격증명과 다르면(첫 로그인·사용자의 속성 변경) 등록부 슬롯을 갱신·게시한 뒤 토큰을 낸다. 속성 값은 받지 않는다(D15).
+// 검사 순서: 형식 → max_height 범위 → 계정·disabled → chainid 허용 → C_u·C_s 부분군 → sig_u → π_IdP → 체인 생존(fail-closed) → disabled 재확인 →
+// (C_u 교체: 은퇴 → creds 추가 → setSlot → persist → 즉시 게시) → 토큰 서명 → 세션 기록. auid_s·arid_s 는 서명·토큰에만 쓰고 저장하지 않는다(D1).
 app.post('/cia/issue', async (req, res) => {
   try {
-    const { uid, Cf_u, C_s_pt, sig_u, chainid, allowAgent, max_height } = req.body ?? {};
-    if (!isDec(uid) || !isDec(Cf_u) || !isPt(C_s_pt) || !sig_u || !isDec(chainid) || (allowAgent !== '0' && allowAgent !== '1') || !isDec(max_height)) {
-      return res.status(400).json({ error: 'uid, Cf_u, C_s_pt, sig_u, chainid, allowAgent("0"|"1"), max_height required' });
+    const { uid, auid_s, arid_s, C_u_pt, C_s_pt, chainid, allowAgent, max_height, proof_idp, sig_u } = req.body ?? {};
+    if (!isDec(uid) || !isDec(auid_s) || !isDec(arid_s) || !isPt(C_u_pt) || !isPt(C_s_pt) || !isDec(chainid) || (allowAgent !== '0' && allowAgent !== '1') || !isDec(max_height) || !proof_idp || typeof proof_idp !== 'object' || !sig_u) {
+      return res.status(400).json({ error: 'uid, auid_s, arid_s, C_u_pt{x,y}, C_s_pt{x,y}, chainid, allowAgent("0"|"1"), max_height, proof_idp, sig_u required' });
     }
     const mh = BigInt(max_height);
     if (mh >= (1n << 64n)) return res.status(400).json({ error: 'max_height must be < 2^64' });
@@ -665,31 +559,52 @@ app.post('/cia/issue', async (req, res) => {
     if (CHAIN_RPCS.size === 0) return res.status(503).json({ error: 'chain id unknown: CIA_CHAIN_RPCS not configured and RPC unreachable at startup' });
     if (!CHAIN_RPCS.has(chainStr)) return res.status(400).json({ error: `bad chainid ${chainStr}: allowed ${[...CHAIN_RPCS.keys()].join(',')}` });
     const agent = BigInt(allowAgent);
-    const cfu = BigInt(Cf_u);
-    const cspt = pointFromStrings(C_s_pt);
+    const cupt = pointFromStrings(C_u_pt), cspt = pointFromStrings(C_s_pt);
+    if (!(await isValidPoint(cupt))) return res.status(400).json({ error: 'C_u_pt is not a valid subgroup point' });
+    if (!(await isValidPoint(cspt))) return res.status(400).json({ error: 'C_s_pt is not a valid subgroup point' });
+    // Cf_u·Cf_s 는 CIA 가 점에서 스스로 유도한다(설계 §6.2) — 사용자가 보낸 Cf 를 서명하면 증명된 점과 무관한 값에 서명이 붙는다.
+    const Cf_u = await compressPoint(cupt), Cf_s = await compressPoint(cspt);
+    const auidS = BigInt(auid_s), aridS = BigInt(arid_s);
     let sigOk = false;
     try {
-      const m = F.e(await issueRequestMessageV4(cfu, cspt, BigInt(chainStr), agent, mh));
+      const m = F.e(await issueRequestMessageV11(auidS, aridS, Cf_u, Cf_s, BigInt(chainStr), agent, mh));
       sigOk = eddsa.verifyPoseidon(m, { R8: [F.e(BigInt(sig_u.R8x)), F.e(BigInt(sig_u.R8y))], S: BigInt(sig_u.S) }, [F.e(BigInt(acct.pk_u.x)), F.e(BigInt(acct.pk_u.y))]);
     } catch { sigOk = false; }
     if (!sigOk) return res.status(400).json({ error: 'bad user signature' });
-    const cred = activeCred(uid);
-    if (!cred || cred.Cf_u !== cfu.toString()) return res.status(403).json({ error: 'no active user credential for this Cf_u', reason: 'no_user_cred' });
-    if (!(await isValidPoint(cspt))) return res.status(400).json({ error: 'C_s_pt is not a valid subgroup point' });
-    const Cf_s = await compressPoint(cspt);
+    // π_IdP — 공개 입력은 CIA 가 스스로 조립한다(uid 는 요청·계정, auid 는 DB 값): 지갑이 보낸 값을 그대로 넣으면 아무 auid 에 대한 증명이 통과한다.
+    let vkIdp;
+    try { vkIdp = await loadIdpVkey(IDP_VKEY); } catch (e) { return res.status(503).json({ error: `idp vkey unavailable: ${e.message}` }); }
+    const pubIdp = idpPublicSignals({ uid: BigInt(uid), auid: BigInt(acct.auid), auid_s: auidS, C_u_pt: cupt, C_s_pt: cspt, max_height: mh });
+    if (!(await verifyIdp(vkIdp, pubIdp, proof_idp))) return res.status(400).json({ error: 'bad idp proof', reason: 'bad_idp_proof' });
     const head = await headOf(chainStr);   // fail-closed: 체인이 죽어 있으면 발급하지 않는다(게시도 불가하므로 폐기가 닿지 않는 세션이 된다)
-    if (acct.disabled || activeCred(uid)?.Cf_u !== cfu.toString()) return res.status(403).json({ error: 'account disabled or credential retired', reason: 'no_user_cred' });   // await 사이의 폐기
-    const s = eddsa.signPoseidon(ciaPrv, F.e(await credMessageV5(cfu, Cf_s, mh, BigInt(chainStr), agent)));
-    // V8(2026-09-24 §2.1): 세션 단위 폐기를 하려면 CIA 가 Cf_s 를 알아야 한다.
-    // 기록 정리는 하트비트뿐 아니라 여기서도 한다(최종 리뷰 F2) — 하트비트가 꺼져 있으면(CIA_HEARTBEAT_BLOCKS=0) 그것만으로는
-    // 영영 안 돌기 때문이다. 방금 읽은 head 를 쓰므로 RPC 를 더 부르지 않고, 같은 체인의 이 계정 기록만 본다. 리프는 남는다(§6).
+    const cfu = Cf_u.toString();
+    // 이 await 를 끝으로 아래 물리기→push→setSlot→persist 구간은 동기다(2026-10-01 리뷰 Important 2 와 같은 이유).
+    const newLeaf = await registryLeaf(BigInt(acct.auid), Cf_u);
+    if (acct.disabled) return res.status(403).json({ error: 'account disabled', reason: 'account_disabled' });   // await 사이의 폐기
+    acct.creds ??= [];
+    const cur = activeCred(uid);
+    let published = false;
+    if (!cur || cur.Cf_u !== cfu) {
+      // 물린 적 있는 C_u 는 다시 받지 않는다 — 은퇴·폐기의 되감기를 막는다.
+      if (acct.creds.some((c) => c.Cf_u === cfu)) return res.status(409).json({ error: 'this user credential was revoked; make a new one', reason: 'cred_revoked' });
+      retireActiveCred(uid);
+      // V10(§4.5): 대기열로 영구 은퇴된 슬롯에는 0 아닌 리프를 쓸 수 없다(컨트랙트 SlotIsRetired) — 새 슬롯을 받는다. PPID 는 (uid, s_u, arid, chainid) 에만 걸려 있어 슬롯이 바뀌어도 그대로다.
+      if (acct.slotRetired) { acct.slot = state.registry.next++; acct.slotRetired = false; }
+      acct.creds.push({ Cf_u: cfu, C_u_pt: { x: cupt.x.toString(), y: cupt.y.toString() }, issuedAt: new Date().toISOString(), revoked: false });
+      setSlot(uid, newLeaf);
+      persist();
+      published = Boolean((await publishSafely()).published);
+      if (acct.disabled) return res.status(403).json({ error: 'account disabled', reason: 'account_disabled' });   // 게시 await 사이의 폐기
+    }
+    const s = eddsa.signPoseidon(ciaPrv, F.e(await credMessageV11(auidS, aridS, Cf_u, Cf_s, BigInt(chainStr), agent)));
+    // V8(2026-09-24 §2.1): 세션 단위 폐기를 하려면 CIA 가 Cf_s 를 알아야 한다. 정리는 하트비트뿐 아니라 여기서도(최종 리뷰 F2). auid_s·arid_s 는 적지 않는다(D1).
     acct.sessions = (acct.sessions ?? []).filter((r) => r.chainid !== chainStr || BigInt(r.max_height) >= head);
     acct.sessions.push({ Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString(), issuedAt: new Date().toISOString(), revokedAt: null });
     persist();
     res.json({
-      Cf_u: cfu.toString(), Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString(),
+      Cf_u: cfu, Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString(),
       sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() },
-      pk_CIA: S(ciaPub),
+      pk_CIA: S(ciaPub), slot: acct.slot, regRoot: registry.root().toString(), epoch: state.epoch, published,
     });
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
@@ -714,7 +629,7 @@ async function revokeAccount(uid) {
   return { retired, disabled: true, slot: acct.slot, regRoot: registry.root().toString(), published: Boolean(pub.published), pending: state.pending.length, receipt };
 }
 
-// §4.3(2026-09-21) 폐기. account = 활성 사용자 자격증명의 슬롯을 0 으로 비움 + disabled. credential = 슬롯만 비움(계정은 살아 있어 새 user_cred 를 받아야 한다).
+// §4.3(2026-09-21) 폐기. account = 활성 사용자 자격증명의 슬롯을 0 으로 비움 + disabled. credential = 슬롯만 비움(계정은 살아 있어 새 C_u 로 /cia/issue 를 다시 받아야 한다).
 // 슬롯은 사용자당 하나라 leaf/C 인자를 받지 않는다(있어도 무시). setSlot(uid, 0n) 은 멱등(이미 0 이면 값이 그대로)이다.
 // V8(2026-09-24 §2.2) session = 세션 하나만 — 사용자는 sk_u 서명으로, 운영자는 관리자 시크릿으로. 그래서 requireAdmin 을 미들웨어로
 // 걸지 않고 안에서 분기한다. 관리자 헤더가 틀리게 오면 isAdmin=false 라 scope=session 은 서명 경로로 흐르고 account/credential 은 401 이다.
@@ -1103,9 +1018,9 @@ app.post('/cia/account/set_disabled', requireAdmin, (req, res) => {
   res.json({ uid, disabled: state.accounts[uid].disabled });
 });
 
-// 관리자 계정 목록(관리 페이지의 속성 편집용). activeCred 는 위의 기존 헬퍼(사용자당 활성 자격증명 하나).
+// 관리자 계정 목록(관리 페이지의 계정 목록용). activeCred 는 위의 기존 헬퍼(사용자당 활성 자격증명 하나).
 app.get('/cia/accounts', requireAdmin, (req, res) => res.json({
-  accounts: Object.entries(state.accounts).map(([uid, a]) => ({ uid, disabled: a.disabled, attrs: a.attrs, profile: a.profile ?? {}, activeCf_u: activeCred(uid)?.Cf_u ?? null, slot: a.slot, tampered: Boolean(a.tampered), registryLeaf: state.registry.leaves[a.slot] ?? '0' })),
+  accounts: Object.entries(state.accounts).map(([uid, a]) => ({ uid, disabled: a.disabled, activeCf_u: activeCred(uid)?.Cf_u ?? null, slot: a.slot, tampered: Boolean(a.tampered), registryLeaf: state.registry.leaves[a.slot] ?? '0' })),
 }));
 
 // ---- V9 등록부 관리(설계 2026-10-01 §9) ----
@@ -1124,7 +1039,7 @@ app.post('/cia/admin/registry/tamper', requireAdmin, async (req, res) => {
     const acct = state.accounts[uid];
     if (!isDec(uid) || !acct) return res.status(404).json({ error: 'unknown account' });
     if (!activeCred(uid)) return res.status(409).json({ error: 'no_active_credential' });
-    const fake = (await registryLeaf(acct.cm_u, randomScalar())).toString();
+    const fake = (await registryLeaf(BigInt(acct.auid), randomScalar())).toString();
     setSlot(uid, fake); acct.tampered = true; persist();
     const pub = await publishSafely();
     res.json({ slot: acct.slot, leaf: fake, regRoot: registry.root().toString(), published: Boolean(pub.published) });
@@ -1136,7 +1051,7 @@ app.post('/cia/admin/registry/restore', requireAdmin, async (req, res) => {
     const acct = state.accounts[uid];
     if (!isDec(uid) || !acct) return res.status(404).json({ error: 'unknown account' });
     const cur = activeCred(uid);
-    const leaf = cur ? (await registryLeaf(acct.cm_u, BigInt(cur.Cf_u))).toString() : '0';
+    const leaf = cur ? (await registryLeaf(BigInt(acct.auid), BigInt(cur.Cf_u))).toString() : '0';
     setSlot(uid, leaf); acct.tampered = false; persist();
     const pub = await publishSafely();
     res.json({ slot: acct.slot, leaf, regRoot: registry.root().toString(), published: Boolean(pub.published) });
@@ -1178,9 +1093,9 @@ function forgetOpeningShards(o) { delete o.D_svc; delete o.c1; delete o.c2; }
 app.post('/cia/open/request', async (req, res) => {
   try {
     const { arid, publicSignals, proof, D_svc, ts, sig } = req.body ?? {};
-    // V9: 공개 입력 30 — [7] regRoot 가 끼어 태그는 [12..14]
-    if (!isDec(arid) || !Array.isArray(publicSignals) || publicSignals.length !== 30 || !publicSignals.every(isDec) || !proof || !isPt(D_svc) || !isDec(ts) || typeof sig !== 'string') {
-      return res.status(400).json({ error: 'arid, publicSignals[30], proof, D_svc{x,y}, ts, sig required' });
+    // V11: 공개 입력 33 — 태그는 [12..14] 그대로
+    if (!isDec(arid) || !Array.isArray(publicSignals) || publicSignals.length !== 33 || !publicSignals.every(isDec) || !proof || !isPt(D_svc) || !isDec(ts) || typeof sig !== 'string') {
+      return res.status(400).json({ error: 'arid, publicSignals[33], proof, D_svc{x,y}, ts, sig required' });
     }
     if (!(await isTracePoint(pointFromStrings(D_svc)))) return res.status(400).json({ error: 'D_svc is not a valid subgroup point' });
     const e = state.rps[arid];
@@ -1294,5 +1209,5 @@ app.use((err, req, res, next) => {
 });
 process.on('unhandledRejection', (e) => console.error(`[cia] unhandledRejection: ${e?.stack ?? e}`));
 app.listen(PORT, '127.0.0.1', () => {
-  console.log(`Mode 3 CIA running at http://127.0.0.1:${PORT} (log=${LOG_ADDRESS ?? 'none'}, heartbeat=${HEARTBEAT_BLOCKS}, mirrors=${MIRRORS.map((m) => m.chainStr).join(',') || 'none'}(H=${MIRROR_HEARTBEAT_BLOCKS}, relayOnPublish=${MIRROR_RELAY_ON_PUBLISH && MIRROR_HEARTBEAT_BLOCKS > 0n}), chains=${[...CHAIN_RPCS.keys()].join(',') || 'none'}, vkey=${fs.existsSync(VKEY_PATH) ? 'ok' : 'missing'}, registry=${registry.entries().length})`);
+  console.log(`Mode 3 CIA running at http://127.0.0.1:${PORT} (log=${LOG_ADDRESS ?? 'none'}, heartbeat=${HEARTBEAT_BLOCKS}, mirrors=${MIRRORS.map((m) => m.chainStr).join(',') || 'none'}(H=${MIRROR_HEARTBEAT_BLOCKS}, relayOnPublish=${MIRROR_RELAY_ON_PUBLISH && MIRROR_HEARTBEAT_BLOCKS > 0n}), chains=${[...CHAIN_RPCS.keys()].join(',') || 'none'}, vkey=${fs.existsSync(VKEY_PATH) ? 'ok' : 'missing'}, idpVkey=${fs.existsSync(IDP_VKEY) ? 'ok' : 'missing'}, registry=${registry.entries().length})`);
 });

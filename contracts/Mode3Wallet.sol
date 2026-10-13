@@ -5,7 +5,7 @@ import "./PiCredVerifier.sol";
 import "./IMode3Roots.sol";
 
 /// @title Mode 3 PPID 계정 — 설계 2026-09-18 §5.3 (V9: 등록부 — 2026-10-01-mode3-v9-registry-design.md §6)
-/// @notice PPIDWallet(Mode 2)과 같은 구조다. 다른 점: 검증자가 pi_cred(공개 입력 30개), 폐기 근거가 Mode3Log(폐기 root·등록부 root + 게시 블록),
+/// @notice PPIDWallet(Mode 2)과 같은 구조다. 다른 점: 검증자가 pi_cred(공개 입력 33개 — V11 2026-10-12, [30..32] auid_s·arid_s·r_s 는 오프체인 검증기만 본다), 폐기 근거가 Mode3Log(폐기 root·등록부 root + 게시 블록),
 ///   성명의 arid·pk_CIA·pk_trace 를 immutable 로 고정한다(서비스 검증기 lib/mode3_rp.js 의 d 단계와 같다), 트레이스 태그와
 ///   allowAgent 를 이벤트로 남긴다. 검사 순서는 싼 것부터다(§5.3).
 /// @dev 폐기 근거 = IMode3Roots(캐노니컬 로그 또는 거울) — V10 폐기 전용 체인 설계 §2.
@@ -64,17 +64,18 @@ contract Mode3Wallet {
         maxLifetime = _maxLifetime;
     }
 
-    /// @param pub 공개 입력 30개(circuits/pi_cred.circom 의 순서, 설계 2026-10-01-mode3-v9-registry-design.md §5.1 Global Constraints):
+    /// @param pub 공개 입력 33개(circuits/pi_cred.circom 의 순서, 설계 2026-10-01-mode3-v9-registry-design.md §5.1 Global Constraints):
     ///   [0] PPID [1] arid [2] pk_i [3] max_height [4] chainid [5] allowAgent [6] revRoot [7] regRoot
     ///   [8] pk_CIA_x [9] pk_CIA_y [10] pk_trace_x [11] pk_trace_y [12] tag_c1_x [13] tag_c1_y [14] tag_c2
     ///   [15] disc_mask [16..21] disc_lo [22..27] disc_hi [28] set_sel [29] set_root
+    ///   [30] auid_s [31] arid_s [32] r_s (온체인에서는 보지 않는다 — RP 의 세션 바인딩 검사용, 설계 2026-10-12 §5.3)
     function execute(
         Payload calldata payload,
         bytes calldata sig,
         uint[2] calldata a,
         uint[2][2] calldata b,
         uint[2] calldata c,
-        uint[30] calldata pub
+        uint[33] calldata pub
     ) external returns (bool ok) {
         if (payload.nonce != nonce) revert NonceMismatch(nonce, payload.nonce);
 
@@ -128,7 +129,8 @@ contract Mode3Wallet {
     }
 
     /// @dev 성명의 공개 입력을 이 지갑의 고정값·체인 상태와 대조한다. 순서는 설계 §5.3 의 3~8(V9: regRoot 추가, 2026-10-01-mode3-v9-registry-design.md §6).
-    function _checkStatement(uint[30] calldata pub) internal view {
+    ///   V11: 색인 30~32 는 검사하지 않는다(서비스가 r_s·arid_s 를 본다).
+    function _checkStatement(uint[33] calldata pub) internal view {
         if (pub[0] != ppid || pub[1] != arid || pub[4] != block.chainid) revert WrongWallet();
         if (pub[8] != pkCIAX || pub[9] != pkCIAY || pub[10] != pkTraceX || pub[11] != pkTraceY) revert UntrustedKeys();
         if (pub[5] > 1) revert BadAllowAgent();

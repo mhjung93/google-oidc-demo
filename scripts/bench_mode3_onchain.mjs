@@ -3,6 +3,8 @@
 // 추가), AttrGate v2, 2026-10-01 등록부 소속 조건 V9 — 공개 입력 30개(REG_ROOT 추가, attrs 6슬롯), Mode3Log 가
 // revRoot·regRoot 를 한 tx 로 같이 게시(Revoked + SlotUpdated 이벤트), 2026-10-02 V10 폐기 전용 체인 — 응용 체인
 // 거울(Mode3Mirror)과 접수증 대기열(requestRevocation/강제 publish)의 gas 를 더한다.
+// 2026-10-12 V11(그림 프로토콜) — 공개 입력 30 → 33(끝에 auid_s·arid_s·r_s, D12), 세션마다 pi_idp(IdP 만 검증, 온체인에
+// 가지 않음)가 추가된다. 로그인 요청에 RP 챌린지 r_rp 가 더해져 아래 login()·verify() 헬퍼도 r_rp 를 받는다.
 //   node scripts/bench_mode3_onchain.mjs [N]        (기본 N=10, :8545 hardhat 노드 필요)
 //
 // 격리 스택(CIA + 지갑 에이전트, 각자 빈 포트)을 띄우고 실제 HTTP 경로로 측정한다 — 개발 서버(:4100/:5100/:3100)는
@@ -82,29 +84,31 @@ try {
   await deployMode3Mirror(cia.ethAddress, dummyLogAddress, provider);
   const mirrorDeployGas = (await provider.getTransactionReceipt((await provider.getBlock('latest', true)).transactions[0])).gasUsed;
 
-  const login = (r_s, extra = {}) => wallet.post('/wallet/login', { arid, origin, cert_s, pk_trace: { x: pk_trace.x.toString(), y: pk_trace.y.toString() }, r_s, factoryAddress, ...extra }, { Origin: stack.rpOriginForWallet });
-  const verify = (body, r_s) => rp.verifyLogin({ proof: body.proof, publicSignals: body.publicSignals, sig: body.sig, r_s: BigInt(r_s) });
+  // V11: RP 챌린지는 r_s·r_rp 둘(D6) — r_rp 는 세션 가명·C_s blind 의 재료라 로그인 본문에도, 검증에도 같이 넣어야 한다.
+  const login = (r_s, r_rp, extra = {}) => wallet.post('/wallet/login', { arid, origin, cert_s, pk_trace: { x: pk_trace.x.toString(), y: pk_trace.y.toString() }, r_s, r_rp, factoryAddress, ...extra }, { Origin: stack.rpOriginForWallet });
+  const verify = (body, r_s, r_rp) => rp.verifyLogin({ proof: body.proof, publicSignals: body.publicSignals, sig: body.sig, r_s: BigInt(r_s), r_rp: BigInt(r_rp) });
 
-  // 1. 로그인 N회 — 매번 새 r_s = 새 세션 = 새 발급 + 새 증명
+  // 1. 로그인 N회 — 매번 새 r_s·r_rp = 새 세션 = 새 발급 + 새 증명
   // V10: 첫 로그인은 새 사용자 자격증명을 발급받아 등록부 슬롯이 바뀌므로, 지갑이 "거울 regRoot 가 내 리프를 담을 때까지"
   // 최대 30초 폴링한다(mode3_wallet_agent.js). 격리 CIA 는 거울 하트비트를 꺼 두므로(CIA_MIRROR_HEARTBEAT_BLOCKS=0)
   // 누군가 릴레이를 눌러주지 않으면 그 30초를 다 채우고 실패한다 — stack.withRelay 로 감싸 폴링 중 0.4초마다 릴레이를
   // 대신 눌러 준다(운영의 거울 하트비트 자리를 대신하는 펌프, isolated_mode3_stack.mjs 참고). 이후 로그인(i>0)은 같은
   // 사용자 자격증명을 재사용해(userCredMs 0) 새 등록부 게시를 기다리지 않는다.
   const L = { total: [], sync: [], userCred: [], issue: [], prove: [], verify: [] };
-  let lastRs;
+  let lastRs, lastRrp;
   for (let i = 0; i < N; i++) {
     const rs = randomScalar().toString();
+    const rrp = randomScalar().toString();
     const t0 = performance.now();
-    const r = i === 0 ? await stack.withRelay(() => login(rs)) : await login(rs);
+    const r = i === 0 ? await stack.withRelay(() => login(rs, rrp)) : await login(rs, rrp);
     L.total.push(performance.now() - t0);
     if (r.status !== 200 || !r.body.issued) throw new Error(`login ${r.status} ${j(r.body)}`);
     L.sync.push(r.body.timings.syncMs); L.userCred.push(r.body.timings.userCredMs ?? 0); L.issue.push(r.body.timings.issueMs); L.prove.push(r.body.timings.proveMs);
     const t1 = performance.now();
-    const v = await verify(r.body, rs);
+    const v = await verify(r.body, rs, rrp);
     L.verify.push(performance.now() - t1);
     if (!v.ok) throw new Error(`verify ${j(v)}`);
-    lastRs = rs;
+    lastRs = rs; lastRrp = rrp;
   }
 
   // 2. 재검증 N회 (캐시 π)
@@ -115,7 +119,7 @@ try {
     R.total.push(performance.now() - t0);
     if (r.status !== 200 || !r.body.cacheHit) throw new Error(`revalidate ${r.status} ${j(r.body)}`);
     const t1 = performance.now();
-    const v = await verify(r.body, lastRs);
+    const v = await verify(r.body, lastRs, lastRrp);
     R.verify.push(performance.now() - t1);
     if (!v.ok) throw new Error(`verify ${j(v)}`);
   }
@@ -174,7 +178,7 @@ try {
 
   // Mode3Log(V9, 설계 2026-10-01 §4): revRoot·regRoot 를 한 tx 로 같이 게시한다. publish() 는 항상 Revoked(epoch,root,leaves)
   // 하나를 내고, 슬롯이 바뀐 만큼(0개 이상) SlotUpdated(epoch,index,leaf) 를 더 낸다(contracts/Mode3Log.sol). 같은 tx 해시에
-  // SlotUpdated 가 있는지로 세 가지를 가른다 — 슬롯 게시(로그인 루프의 /cia/user_cred 가 등록부에 슬롯을 쓴 것) / 리프 게시
+  // SlotUpdated 가 있는지로 세 가지를 가른다 — 슬롯 게시(로그인 루프의 /cia/issue 가 등록부에 슬롯을 쓴 것) / 리프 게시
   // (지금부터 세션 하나를 폐기해 만든다) / 하트비트(pending 없이 타이머가 낸다).
   const log = new ethers.Contract(cia.logAddress, MODE3_LOG_ABI, provider);
   const classifyPublishes = async () => {
@@ -255,7 +259,7 @@ try {
     // withRelay 로 감싼다(위 "1. 로그인" 첫 회와 같은 이유).
     const reEnable = await cia.adminPost('/cia/account/set_disabled', { uid, disabled: false });
     if (reEnable.status !== 200) throw new Error(`계정 재활성 실패: ${j(reEnable.body)}`);
-    const relog = await stack.withRelay(() => login(randomScalar().toString()));
+    const relog = await stack.withRelay(() => login(randomScalar().toString(), randomScalar().toString()));
     if (relog.status !== 200 || !relog.body.issued) throw new Error(`재발급 로그인 실패: ${relog.status} ${j(relog.body)}`);
   }
 
@@ -268,8 +272,8 @@ try {
   console.log(`| 로그인 전체 왕복(발급+증명, 지갑 HTTP) | ${fmt(L.total)} |`);
   console.log(`| ├ 첫 로그인(사용자 자격증명 신규 발급 + 등록부 게시 대기 포함) | ${L.total[0].toFixed(0)} ms |`);
   console.log(`| ├ 체인 동기화 syncMs | ${fmt(L.sync)} |`);
-  console.log(`| ├ 사용자 자격증명 발급 userCredMs (π_u; 첫 로그인 ${L.userCred[0]} ms, 이후 재사용) | ${fmt(L.userCred)} |`);
-  console.log(`| ├ CIA 세션 발급 issueMs (ZKP 없음, sig_u 검증 + 서명) | ${fmt(L.issue)} |`);
+  console.log(`| ├ 사용자 자격증명 발급 userCredMs (issueMs 의 별칭; 첫 로그인 ${L.userCred[0]} ms, 이후 재사용 시 0) | ${fmt(L.userCred)} |`);
+  console.log(`| ├ CIA 세션 발급 issueMs (지갑 쪽 π_IdP 생성 포함, sig_u·π_IdP 검증 + 서명) | ${fmt(L.issue)} |`);
   console.log(`| ├ 증명 proveMs (pi_cred V9) | ${fmt(L.prove)} |`);
   console.log(`| 서비스 verifyLogin (Groth16 + σ + root) | ${fmt(L.verify)} |`);
   console.log(`| 재검증 왕복(캐시 π) | ${fmt(R.total)} |`);
@@ -293,7 +297,7 @@ try {
   console.log(`| Mode3Log requestRevocation gas (접수증 제출, N=${N_REQ}) | ${fmt(REQ.gas)} |`);
   console.log(`| Mode3Log 강제 publish gas (pending 슬롯 1개, N=${N_REQ}) | ${fmt(FPUB.gas)} |`);
   console.log(`| zkey 크기 | ${zkeyBytes} bytes |`);
-  console.log(`| 공개 입력 수 | 30 |`);
+  console.log(`| 공개 입력 수 | 33 |`);
 } finally {
   await stack.stop();
 }

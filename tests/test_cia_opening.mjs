@@ -5,10 +5,11 @@ import fs from 'node:fs';
 import { ethers } from 'ethers';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { getProvider } from './helpers/mode3_chain.mjs';
-import { createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree, syncRegistryTree, buildCredentialProof, signRegistration, VKEY_PATH } from '../lib/mode3_wallet.js';
+import { signRegistration, VKEY_PATH } from '../lib/mode3_wallet.js';
 import { pointToStrings } from '../lib/mode3_issuance.js';
 import { createShare, combinePublicKey, partialDecrypt } from '../lib/mode3_trace.js';
 import { signOpenRequest, signOpenResult } from '../lib/mode3_opening.js';
+import { issueV11, proveV11, userOf, TESTUSER_ATTRS, ALICE_ATTRS } from './helpers/mode3_flow.mjs';
 
 const j = (o) => JSON.stringify(o, (_, v) => (typeof v === 'bigint' ? v.toString() : v));
 let failed = 0;
@@ -20,7 +21,6 @@ async function t(name, fn) {
 assert.ok(fs.existsSync(VKEY_PATH), `pi_cred vkey 없음: ${VKEY_PATH}`);
 const provider = getProvider();
 const cia = await startIsolatedCia();
-const uid = 12345n;
 const nowTs = () => Math.floor(Date.now() / 1000).toString();
 
 try {
@@ -29,23 +29,15 @@ try {
   const S1 = await cia.registerRp('http://127.0.0.1:3101', 's1');
   const S2 = await cia.registerRp('http://127.0.0.1:3102', 's2');
 
-  // 사용자 등록·발급·증명(지갑 lib 그대로)
+  // 사용자 등록(지갑 lib 그대로). V11: C_u(사용자 자격증명)는 사용자당 하나 — user.blind_u 가 처음 발급에서 정해져
+  // 모든 트랜스크립트가 재사용한다(새로 뽑지 않으면 CIA 가 매번 슬롯을 다시 게시하지 않는다). 속성은 지갑이 정한다(D15).
   const reg = await cia.registerUser('12345', 'password123');
-  const sk_u = reg.sk_u;
-  // V5: 사용자 자격증명(π_u)은 사용자당 하나 — 한 번 받아 모든 트랜스크립트에 쓴다.
-  // attrs 는 cia.js DEMO_ACCOUNTS.testuser(uid 12345) 의 AA 기록과 같아야 π_u 가 통과한다(2026-09-22 §3.4).
-  const uc = await buildUserCredRequest({ uid, s_u: reg.s_u, r_u: reg.r_u, sk_u, attrs: [1990n, 410n, 0n, 0n, 0n, 0n] });
-  const r1 = await cia.post('/cia/user_cred', uc.body);
-  assert.equal(r1.status, 201, j(r1.body));
+  const user = userOf(reg, '12345', TESTUSER_ATTRS);
   async function loginTranscript(svc, pk_trace = svc.pk_trace, allowAgent = 0n) {
-    const session = createSessionKey();
-    const max_height = BigInt(await provider.getBlockNumber()) + 300n;
-    const req = await buildIssueRequest({ uid, Cf_u: uc.Cf_u, arid: BigInt(svc.arid), sk_u, session, chainid: 31337n, allowAgent, max_height });
-    const issued = await cia.post('/cia/issue', req.body);
-    assert.equal(issued.status, 200, j(issued.body));
-    const { tree } = await syncRevocationTree(provider, cia.logAddress);
-    const { tree: registry } = await syncRegistryTree(provider, cia.logAddress);
-    const { proof, publicSignals, tag } = await buildCredentialProof({ uid, arid: BigInt(svc.arid), s_u: reg.s_u, r_u: reg.r_u, blind_u: uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs: [1990n, 410n, 0n, 0n, 0n, 0n], credential: issued.body, pk_CIA, pk_trace, tree, registry, slot: reg.slot, cm_u: reg.cm_u });
+    const iss = await issueV11(cia, user, { arid: svc.arid, provider, allowAgent, blind_u: user.blind_u });
+    assert.equal(iss.r.status, 200, j(iss.r.body));
+    user.blind_u = iss.blind_u;   // 처음 호출이면 새로 받은 blind_u 를 저장해 이후 호출이 같은 C_u 를 재사용한다
+    const { proof, publicSignals, tag } = await proveV11(iss, { arid: svc.arid, pk_CIA, pk_trace, provider, logAddress: cia.logAddress });
     return { proof, publicSignals, tag, PPID: publicSignals[0] };
   }
   async function openRequest(svc, T, { share = svc.share, wallet = svc.serviceWallet, ts = nowTs(), arid = svc.arid } = {}) {
@@ -91,29 +83,22 @@ try {
   });
 
   // A-I1 회귀: dup 키가 (arid, c1) 뿐이면 같은 태그 난수 r 로 만든 **다른 사용자**의 트랜스크립트가 앞 항목 id 를 받는다.
-  // alice(uid 67890)를 testuser 와 같은 방식으로 등록·발급한다 — attrs 는 cia.js DEMO_ACCOUNTS.alice 의 AA 기록과 같아야 π_u 가 통과한다.
+  // alice(uid 67890)를 testuser 와 같은 방식으로 등록한다 — attrs 는 지갑이 정한다(D15).
   const regA = await cia.registerUser('67890', 'alicepw');
-  const skA = regA.sk_u;
-  const attrsA = [2005n, 840n, 0n, 0n, 0n, 0n];
-  const ucA = await buildUserCredRequest({ uid: 67890n, s_u: regA.s_u, r_u: regA.r_u, sk_u: skA, attrs: attrsA });
-  assert.equal((await cia.post('/cia/user_cred', ucA.body)).status, 201);
+  const userB = userOf(regA, '67890', ALICE_ATTRS);
   // loginTranscript 를 사용자별로 일반화한 것(기존 헬퍼는 그대로 둔다). tagR 은 태그 난수를 고정해 같은 c1 을 만드는 테스트 전용 옵션이다.
-  async function loginTranscriptFor(svc, who, tagR) {   // who = { uid, reg, uc, attrs, sk_u }
-    const session = createSessionKey();
-    const max_height = BigInt(await provider.getBlockNumber()) + 300n;
-    const req = await buildIssueRequest({ uid: who.uid, Cf_u: who.uc.Cf_u, arid: BigInt(svc.arid), sk_u: who.sk_u, session, chainid: 31337n, allowAgent: 0n, max_height });
-    const issued = await cia.post('/cia/issue', req.body);
-    assert.equal(issued.status, 200, j(issued.body));
-    const { tree } = await syncRevocationTree(provider, cia.logAddress);
-    const { tree: registry } = await syncRegistryTree(provider, cia.logAddress);
-    const { proof, publicSignals, tag } = await buildCredentialProof({ uid: who.uid, arid: BigInt(svc.arid), s_u: who.reg.s_u, r_u: who.reg.r_u, blind_u: who.uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs: who.attrs, credential: issued.body, pk_CIA, pk_trace: svc.pk_trace, tree, registry, slot: who.reg.slot, cm_u: who.reg.cm_u, tagR });
+  async function loginTranscriptFor(svc, who, tagR) {
+    const iss = await issueV11(cia, who, { arid: svc.arid, provider, blind_u: who.blind_u });
+    assert.equal(iss.r.status, 200, j(iss.r.body));
+    who.blind_u = iss.blind_u;
+    const { proof, publicSignals, tag } = await proveV11(iss, { arid: svc.arid, pk_CIA, pk_trace: svc.pk_trace, provider, logAddress: cia.logAddress, tagR });
     return { proof, publicSignals, tag, PPID: publicSignals[0] };
   }
 
   await t('A-I1: 같은 c1(같은 태그 난수)·다른 사용자의 개봉 요청은 앞 항목 id 를 받지 않는다', async () => {
     const r = 123456789n;
-    const Ta = await loginTranscriptFor(S1, { uid, reg, uc, attrs: [1990n, 410n, 0n, 0n, 0n, 0n], sk_u }, r);
-    const Tb = await loginTranscriptFor(S1, { uid: 67890n, reg: regA, uc: ucA, attrs: attrsA, sk_u: skA }, r);
+    const Ta = await loginTranscriptFor(S1, user, r);
+    const Tb = await loginTranscriptFor(S1, userB, r);
     assert.equal(Ta.tag.c1.x, Tb.tag.c1.x, '같은 r → 같은 c1');
     assert.notEqual(Ta.PPID, Tb.PPID);
     const o1 = await openRequest(S1, Ta); assert.equal(o1.status, 202, j(o1.body));
@@ -194,7 +179,7 @@ try {
     assert.equal(a.status, 200); assert.equal(a.body.status, 'approved'); assert.equal(a.body.resolved, false);
     const res = await fetchResult(S1, id);
     assert.equal(res.status, 200, JSON.stringify(res.body)); assert.equal(res.body.uid, null); assert.equal(res.body.resolved, false);
-    // resolved:false 는 denied 처럼 재요청을 막지 않는다 — 서비스가 D_svc 를 고쳐 같은 트랜스크립트로 다시 내면 새 id 로
+    // resolved:false 는 denied 처럼 재요청을 막지 않는다 — 서비스가 D_svc 를 고쳐 다시 내면 새 id 로
     // 승인·개봉된다(§6.2).
     const r2 = await openRequest(S1, T);
     assert.equal(r2.status, 202, JSON.stringify(r2.body)); assert.notEqual(r2.body.id, id);
@@ -251,20 +236,14 @@ try {
       const S = await cia2.registerRp('http://127.0.0.1:3199', 's-vkey-missing');
       // cia2 는 별도 격리 인스턴스라 다시 등록해야 한다 — 같은 지갑 정체성(reg)을 재사용하므로 cia.registerUser 를
       // 쓸 수 없고(그건 매번 새 createRegistration 을 만든다) reg.sk_u 로 직접 서명해 등록한다.
-      const r0 = await cia2.post('/cia/register', { uid: '12345', pwd: 'password123', cm_u: pointToStrings(reg.cm_u), pk_u: pointToStrings(reg.pk_u), sig_reg: await signRegistration(reg.sk_u, 12345n, reg.cm_u) });
+      const r0 = await cia2.post('/cia/register', { uid: '12345', pwd: 'password123', auid: reg.auid.toString(), pk_u: pointToStrings(reg.pk_u), sig_reg: await signRegistration(reg.sk_u, 12345n, reg.auid) });
       assert.equal(r0.status, 201, j(r0.body));
-      const session = createSessionKey();
-      const uc2 = await buildUserCredRequest({ uid, s_u: reg.s_u, r_u: reg.r_u, sk_u: reg.sk_u, attrs: [1990n, 410n, 0n, 0n, 0n, 0n] });
-      const ru = await cia2.post('/cia/user_cred', uc2.body);
-      assert.equal(ru.status, 201, j(ru.body));
-      const req = await buildIssueRequest({ uid, Cf_u: uc2.Cf_u, arid: BigInt(S.arid), sk_u: reg.sk_u, session, chainid: 31337n, max_height: BigInt(await provider.getBlockNumber()) + 300n });
-      const issued = await cia2.post('/cia/issue', req.body);
-      assert.equal(issued.status, 200, j(issued.body));
-      const { tree } = await syncRevocationTree(provider, cia2.logAddress);
-      const { tree: registry } = await syncRegistryTree(provider, cia2.logAddress);
+      const user2 = userOf(reg, '12345', TESTUSER_ATTRS);
+      const iss2 = await issueV11(cia2, user2, { arid: S.arid, provider });
+      assert.equal(iss2.r.status, 200, j(iss2.r.body));
       const keys2 = (await cia2.get('/cia/public_keys')).body;
       const pk_CIA2 = { x: BigInt(keys2.pk_CIA.x), y: BigInt(keys2.pk_CIA.y) };
-      const { proof, publicSignals, tag } = await buildCredentialProof({ uid, arid: BigInt(S.arid), s_u: reg.s_u, r_u: reg.r_u, blind_u: uc2.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs: [1990n, 410n, 0n, 0n, 0n, 0n], credential: issued.body, pk_CIA: pk_CIA2, pk_trace: S.pk_trace, tree, registry, slot: r0.body.slot, cm_u: reg.cm_u });
+      const { proof, publicSignals, tag } = await proveV11(iss2, { arid: S.arid, pk_CIA: pk_CIA2, pk_trace: S.pk_trace, provider, logAddress: cia2.logAddress });
       const D = await partialDecrypt(S.share.x, tag.c1);
       const D_svc = { x: D.x.toString(), y: D.y.toString() };
       const ts = nowTs();

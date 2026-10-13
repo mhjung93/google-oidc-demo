@@ -2,7 +2,7 @@
 //
 // server.js(:3000, Mode 1/2)와 나란히 두는 별도 프로세스다. 그쪽 코드를 import 하지 않는다.
 // 검증(설계 §6.3 7단계)은 전부 lib/mode3_rp.js 에 있고 여기는 등록·challenge 관리 + HTTP 만이다.
-// 세션은 메모리 Map(r_s → PPID·pk_i·max_height·allowAgent·root) 뿐이고 쿠키는 없다 — 데모의 요점은 검증 결과다(스펙 §4.2).
+// 세션은 메모리 Map(r_s → PPID·pk_i·max_height·allowAgent·root·auid_s·arid_s·r_rp) 뿐이고 쿠키는 없다 — 데모의 요점은 검증 결과다(스펙 §4.2).
 // V4(2026-09-18): 팩토리 배포(§6.1), 로그인 V4(max_height·allowAgent, σ 는 서버 챌린지 위), 트랜잭션 해시 개봉(§6.2).
 import 'dotenv/config';
 import express from 'express';
@@ -291,22 +291,23 @@ if (reg.status === 'approved' && reg.cert_s) {
   }
 }
 
-// ---- r_s: 메모리, TTL, 로그인 때 1회 소비. 소비된 r_s 는 세션 식별자가 된다(설계 §7) ----
-const challenges = new Map();   // r_s(10진) → expiresAt(ms)
-const sessions = new Map();     // r_s(10진) → { PPID, pk_i, max_height, allowAgent, root, at }
-function sweepChallenges() { const now = Date.now(); for (const [c, exp] of challenges) if (exp < now) challenges.delete(c); }
+// ---- r_s·r_rp: 메모리, TTL, 로그인 때 1회 소비. 소비된 r_s 는 세션 식별자가 된다(설계 §7). r_rp 는 세션 가명·C_s 블라인딩의 재료(V11 §3.2) — IdP 에 보내지 않는다 ----
+const challenges = new Map();   // r_s(10진) → { expiresAt(ms), r_rp(10진) }
+const sessions = new Map();     // r_s(10진) → { PPID, pk_i, max_height, allowAgent, root, regRoot, disclosure, auid_s, arid_s, r_rp, at }
+function sweepChallenges() { const now = Date.now(); for (const [c, e] of challenges) if (e.expiresAt < now) challenges.delete(c); }
 function issueChallenge() {
   sweepChallenges();
-  const r_s = randomScalar().toString();
+  const r_s = randomScalar().toString(), r_rp = randomScalar().toString();
   const expiresAt = Date.now() + CHALLENGE_TTL_MS;
-  challenges.set(r_s, expiresAt);
-  return { r_s, expiresAt };
+  challenges.set(r_s, { expiresAt, r_rp });
+  return { r_s, r_rp, expiresAt };
 }
+/** 소비. 모르거나 만료면 null, 아니면 그 챌린지의 r_rp(10진). */
 function consumeChallenge(r_s) {
-  const exp = challenges.get(r_s);
-  if (exp === undefined) return false;
+  const e = challenges.get(r_s);
+  if (e === undefined) return null;
   challenges.delete(r_s);
-  return Date.now() <= exp;
+  return Date.now() <= e.expiresAt ? e.r_rp : null;
 }
 
 // 마지막으로 본 head − lastPublishedBlock(health 표시용, 설계 2026-09-25 §1.1 "서비스가 마지막으로 본 값").
@@ -360,10 +361,10 @@ app.post('/api/mode3/challenge', (req, res) => {
   res.json({ ok: true, ...issueChallenge(), factoryAddress: reg.factoryAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null });
 });
 
-async function verifyBody(req, res, r_s) {
+async function verifyBody(req, res, r_s, r_rp) {
   const { proof, publicSignals, sig } = req.body ?? {};
   if (!proof || !Array.isArray(publicSignals) || typeof sig !== 'string') { res.status(400).json({ ok: false, reason: 'malformed' }); return null; }
-  return verifier.verifyLogin({ proof, publicSignals, sig, r_s });
+  return verifier.verifyLogin({ proof, publicSignals, sig, r_s, r_rp });
 }
 
 app.post('/api/mode3/login', async (req, res) => {
@@ -376,8 +377,9 @@ app.post('/api/mode3/login', async (req, res) => {
     const requireP = req.body.require ?? null;
     if (requireP !== null && (typeof requireP !== 'object' || Array.isArray(requireP))) return res.status(400).json({ ok: false, reason: 'malformed' });
     const rsStr = BigInt(r_s).toString();
-    if (!consumeChallenge(rsStr)) return res.status(401).json({ ok: false, reason: 'bad_challenge' });   // 검증 전에 소비
-    const v = await verifyBody(req, res, BigInt(rsStr)); if (v === null) return;
+    const r_rp = consumeChallenge(rsStr);   // 검증 전에 소비
+    if (r_rp === null) return res.status(401).json({ ok: false, reason: 'bad_challenge' });
+    const v = await verifyBody(req, res, BigInt(rsStr), BigInt(r_rp)); if (v === null) return;
     if (!v.ok) return res.json({ ok: false, reason: v.reason });
     if (requireP) {
       const d = v.disclosure;
@@ -395,11 +397,11 @@ app.post('/api/mode3/login', async (req, res) => {
     }
     const at = new Date().toISOString();
     const disclosure = discOf(v.disclosure);
-    sessions.set(rsStr, { PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), regRoot: v.regRoot.toString(), disclosure, at });
+    sessions.set(rsStr, { PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), regRoot: v.regRoot.toString(), disclosure, auid_s: v.auid_s.toString(), arid_s: v.arid_s.toString(), r_rp, at });
     if (disclosure.mask !== '0' || disclosure.set) disclosedLoginCount++;
     logins.push({ PPID: v.PPID.toString(), at, root: v.root.toString(), r_s: rsShort(rsStr), allowAgent: v.allowAgent.toString(), disclosure });
     // §5 로그인 로그 — 전체 r_s 와 트랜스크립트(태그 포함). 개봉 요청의 재료다. 조회 API 로는 내지 않는다.
-    fs.appendFileSync(LOGIN_LOG, JSON.stringify({ at, PPID: v.PPID.toString(), r_s: rsStr, pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), disclosure, publicSignals: v.publicSignals, proof: req.body.proof }) + '\n', { mode: 0o600 });
+    fs.appendFileSync(LOGIN_LOG, JSON.stringify({ at, PPID: v.PPID.toString(), r_s: rsStr, pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), disclosure, auid_s: v.auid_s.toString(), arid_s: v.arid_s.toString(), publicSignals: v.publicSignals, proof: req.body.proof }) + '\n', { mode: 0o600 });
     res.json({ ok: true, PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), r_s: rsStr, root: v.root.toString(), allowAgent: v.allowAgent.toString(), disclosure });
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });
@@ -412,7 +414,7 @@ app.post('/api/mode3/revalidate', async (req, res) => {
     const rsStr = BigInt(r_s).toString();
     const s = sessions.get(rsStr);
     if (!s) return res.status(401).json({ ok: false, reason: 'no_session' });
-    const v = await verifyBody(req, res, BigInt(rsStr)); if (v === null) return;
+    const v = await verifyBody(req, res, BigInt(rsStr), BigInt(s.r_rp)); if (v === null) return;
     if (!v.ok) return res.json({ ok: false, reason: v.reason });
     if (v.PPID.toString() !== s.PPID || v.pk_i.toString() !== s.pk_i) return res.status(401).json({ ok: false, reason: 'session_mismatch' });
     // 재검증은 세션을 **마지막 증명에 다시 묶는다**(2026-09-25 리뷰 C-4). root·disclosure 만 갱신하면
@@ -513,7 +515,7 @@ app.get('/api/mode3/open/:id', async (req, res) => {
 });
 
 app.get('/api/mode3/logins', (req, res) => res.json({ logins }));
-app.get('/api/mode3/sessions', (req, res) => res.json({ sessions: [...sessions.entries()].map(([r_s, s]) => ({ r_s: rsShort(r_s), PPID: s.PPID, pk_i: s.pk_i, max_height: s.max_height, allowAgent: s.allowAgent, root: s.root, disclosure: s.disclosure, at: s.at })) }));
+app.get('/api/mode3/sessions', (req, res) => res.json({ sessions: [...sessions.entries()].map(([r_s, s]) => ({ r_s: rsShort(r_s), PPID: s.PPID, pk_i: s.pk_i, max_height: s.max_height, allowAgent: s.allowAgent, root: s.root, disclosure: s.disclosure, auid_s: rsShort(s.auid_s), arid_s: rsShort(s.arid_s), at: s.at })) }));
 
 // 라우트 밖으로 샌 오류의 마지막 그물(2026-10-11): JSON 파싱 실패 400 malformed, 그 밖 500 internal — 다른 라우트와 같은 { ok, reason } 봉투.
 app.use((err, req, res, next) => {

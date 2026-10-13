@@ -59,6 +59,7 @@ function client(base, logFile) {
     base, origin: base,
     get: (p, headers = {}) => fetch(`${base}${p}`, { headers }).then(json),
     post: (p, body, headers = {}) => fetch(`${base}${p}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body ?? {}) }).then(json),
+    put: (p, body, headers = {}) => fetch(`${base}${p}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body ?? {}) }).then(json),
     raw: (p, init) => fetch(`${base}${p}`, init),
     log: () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : ''),
   };

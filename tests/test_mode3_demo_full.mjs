@@ -50,14 +50,14 @@ try {
    *  pred 를 주면 거래소 술어(나이 ≥ minAge, 국가 ∈ 허용 집합)를 공개하고 RP 에 require 로 요구한다. */
   async function loginViaRp(rp, { pred = false, require = undefined } = {}) {
     const info = (await rp.get('/api/mode3/rp_info')).body;
-    const { r_s, factoryAddress, attrGateAddress } = (await rp.post('/api/mode3/challenge')).body;
+    const { r_s, r_rp, factoryAddress, attrGateAddress } = (await rp.post('/api/mode3/challenge')).body;
     // lo = 스키마의 출생연도 min — RP 는 lo ≥ min 도 요구한다(최종 리뷰 I1, 페이지와 같은 본문).
     const extra = pred ? { disclose: [{ lo: info.predicates.birthYearMin, hi: String(year - Number(info.predicates.minAge)) }, null, null, null], set: { slot: 1, members: info.predicates.allowedCountries } } : {};
-    const w = await stack.withRelay(() => wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s, allowAgent: '0', factoryAddress, attrGateAddress, ...extra }, { Origin: rp.origin }));
-    if (w.status !== 200) return { walletStatus: w.status, wallet: w.body, r_s };
+    const w = await stack.withRelay(() => wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s, r_rp, allowAgent: '0', factoryAddress, attrGateAddress, ...extra }, { Origin: rp.origin }));
+    if (w.status !== 200) return { walletStatus: w.status, wallet: w.body, r_s, r_rp };
     const req = require ?? (pred ? { countrySet: true, minAge: true } : undefined);
     const r = await rp.post('/api/mode3/login', { proof: w.body.proof, publicSignals: w.body.publicSignals, sig: w.body.sig, r_s, ...(req ? { require: req } : {}) });
-    return { walletStatus: 200, wallet: w.body, rpStatus: r.status, rp: r.body, r_s, info };
+    return { walletStatus: 200, wallet: w.body, rpStatus: r.status, rp: r.body, r_s, r_rp, info };
   }
   /** 세션 재검증: 거울을 먼저 맞추고(relayIfBehind) 지갑이 만든 π 를 RP 에 낸다. 거울 지연 창을 보일 때는 쓰지 않는다. */
   async function revalidateViaRp(rp, r_s) {
@@ -338,6 +338,7 @@ try {
     assert.equal((await wallet.post('/wallet/demo/override', { scope: 'issue', s_u: '999999999999999999' })).body.ok, true);
     const badSalt = await loginViaRp(general);
     assert.equal(badSalt.walletStatus, 502, j(badSalt.wallet)); assert.equal(badSalt.wallet.reason, 'user_cred_failed', j(badSalt.wallet));
+    assert.equal(badSalt.wallet.cia?.reason, 'bad_idp_proof', j(badSalt.wallet));
     assert.equal(badSalt.wallet.demo, 'override:issue');
     const t0 = Date.now();
     const g = await loginViaRp(general);

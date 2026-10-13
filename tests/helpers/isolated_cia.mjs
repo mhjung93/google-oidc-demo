@@ -11,7 +11,6 @@ import { getProvider, fundAddress, deployMode3Log, deployMode3Mirror } from './m
 import { MODE3_MIRROR_ABI } from '../../lib/mode3_log.js';
 import { createShare } from '../../lib/mode3_trace.js';
 import { createRegistration, signRegistration } from '../../lib/mode3_wallet.js';
-import { pointToStrings } from '../../lib/mode3_issuance.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 
@@ -108,12 +107,12 @@ export async function startIsolatedCia(opts = {}) {
     adminPost: (p, body) => fetch(`${base}${p}`, { method: 'POST', headers: adminHeaders, body: JSON.stringify(body ?? {}) }).then(json),
     get: (p) => fetch(`${base}${p}`).then(json),
     adminGet: (p) => fetch(`${base}${p}`, { headers: adminHeaders }).then(json),
-    /** V9 등록(설계 2026-10-01 §7.1): 지갑 키·등록 커밋을 만들어 /cia/register 를 부른다. { s_u, r_u, cm_u, sk_u, pk_u, slot, attrs, body } */
+    /** V11 등록(스펙 2026-10-12 §3.1): 지갑 키·auid 를 만들어 /cia/register 를 부른다. { s_u, auid, sk_u, pk_u, slot, body } */
     async registerUser(uid, pwd) {
-      const reg = await createRegistration();
-      const r = await this.post('/cia/register', { uid, pwd, cm_u: pointToStrings(reg.cm_u), pk_u: { x: reg.pk_u.x.toString(), y: reg.pk_u.y.toString() }, sig_reg: await signRegistration(reg.sk_u, BigInt(uid), reg.cm_u) });
+      const reg = await createRegistration(BigInt(uid));
+      const r = await this.post('/cia/register', { uid, pwd, auid: reg.auid.toString(), pk_u: { x: reg.pk_u.x.toString(), y: reg.pk_u.y.toString() }, sig_reg: await signRegistration(reg.sk_u, BigInt(uid), reg.auid) });
       if (r.status !== 201) throw new Error(`register 실패(${r.status}): ${JSON.stringify(r.body)}`);
-      return { ...reg, slot: r.body.slot, attrs: r.body.attrs, body: r.body };
+      return { ...reg, slot: r.body.slot, body: r.body };
     },
     // 서비스 등록 + 운영자 승인 대행(설계 2026-09-16 §3). keys 를 주면 그 키로(재등록·불일치 테스트용).
     async registerRp(origin, name = 'test-rp', keys = null) {

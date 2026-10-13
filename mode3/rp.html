@@ -362,7 +362,7 @@
           setVerdict($('verdict'), false, 'login_failed', { reason: ch.reason ?? 'challenge_failed', detail: ch });
           return;
         }
-        const { r_s, factoryAddress, attrGateAddress } = ch;
+        const { r_s, r_rp, factoryAddress, attrGateAddress } = ch;
         log(`1. r_s 발급 ${ms(t0)}: ${r_s.slice(0, 16)}…`);
 
         const allowAgent = $('allowAgent').checked ? '1' : '0';
@@ -373,7 +373,7 @@
           log('2. 지갑 승인 팝업 — 지갑 창에서 MetaMask·Snap 동의를 확인하세요.');
           let result;
           try {
-            result = await authorizeViaPopup(authorizeRequest({ r_s, allowAgent, factoryAddress, attrGateAddress, disclose: pred?.disclose ?? null, set: pred?.set ?? null }));
+            result = await authorizeViaPopup(authorizeRequest({ r_s, r_rp, allowAgent, factoryAddress, attrGateAddress, disclose: pred?.disclose ?? null, set: pred?.set ?? null }));
           } catch (e) {
             log(`2. 팝업 ${ms(t0)}: ${e.reason ?? ''} ${e.message}`);
             setVerdict($('verdict'), false, e.reason === 'popup_blocked' ? 'popup_blocked' : 'login_failed',
@@ -388,7 +388,7 @@
           }
           wb = result;
         } else {
-          const w = await post(`${info.walletAgentOrigin}/wallet/login`, { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s, allowAgent, factoryAddress, attrGateAddress, disclose: pred?.disclose ?? null, set: pred?.set ?? null });
+          const w = await post(`${info.walletAgentOrigin}/wallet/login`, { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s, r_rp, allowAgent, factoryAddress, attrGateAddress, disclose: pred?.disclose ?? null, set: pred?.set ?? null });
           wb = await w.json().catch(() => ({}));
           if (w.status !== 200) {
             log(`2. 지갑 ${w.status} ${ms(t0)}: ${wb.reason ?? wb.error ?? ''} ${wb.detail ?? ''}`);

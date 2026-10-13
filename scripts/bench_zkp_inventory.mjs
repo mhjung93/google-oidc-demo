@@ -1,5 +1,5 @@
-// 저장소의 ZKP 전체 목록 실측 — Mode 2 v4 삽입 전이 회로, (레거시) pi_uid, Mode 3 π_u(시그마, 사용자 자격증명)·pi_cred(Groth16 V5).
-// 2026-09-21 부터 세션 발급(/cia/issue)에는 ZKP 가 없다 — π_u 는 사용자 자격증명 발급(/cia/user_cred) 때만 한 번.
+// 저장소의 ZKP 전체 목록 실측 — Mode 2 v4 삽입 전이 회로, (레거시) pi_uid, Mode 3 pi_idp(Groth16, V11)·pi_cred(Groth16 V11).
+// 2026-10-12 V11 부터 pi_idp 가 π_u(시그마)를 대체한다 — 세션(토큰 발급)마다 /cia/issue 에서 한 번 검증한다(D2).
 //   node scripts/bench_zkp_inventory.mjs [N]        (기본 N=10; build/ 는 읽기만 한다)
 //
 // Mode 2 의 pi_ppid·pi_arid_i·pi_pk_i(v3) 는 scripts/bench_mode2_zkp_all.mjs 가 잰다(같은 크레덴셜을 세 회로에 먹여야
@@ -16,7 +16,8 @@ import { buildPoseidon } from 'circomlibjs';
 import { createSessionForest, createAccountForest, leafValue, TAG_SESSION, TAG_ACCOUNT } from '../lib/imt_v3.js';
 import { buildInsertInput, circuitFor } from '../lib/transition_proof.js';
 import { randomScalar } from '../lib/mode3_credential.js';
-import { registrationCommit, proveUserCred, verifyUserCred, serializeUserCredProof } from '../lib/mode3_issuance.js';
+import { proveIdp, verifyIdp, IDP_ZKEY_PATH, IDP_VKEY_PATH, IDP_WASM_PATH } from '../lib/mode3_idp_proof.js';
+import { buildIdpInput, IDP_FIXTURE } from '../tests/helpers/mode3_idp_fixture.mjs';
 import { buildValidInput } from '../tests/helpers/mode3_fixture.mjs';
 
 const N = Number(process.argv[2] || 10);
@@ -51,24 +52,25 @@ async function benchGroth16(name, input, wasm, zkey, vkeyPath) {
 
 const rows = [];
 
-// ---- Mode 3 π_u: 사용자 자격증명 시그마 프로토콜(회로·셋업 없음). 공개 (uid, C_u_pt, cm_u) ----
+// ---- Mode 3 pi_idp (Groth16, V11 — 세션(토큰 발급)마다 IdP 에 제출. arid·attrs·r_rp 는 IdP 에 비공개, D10) ----
 {
-  const uid = 12345n, s_u = randomScalar(), r_u = randomScalar();
-  const attrs = [1990n, 410n, 2n, 0n];   // 회로 입력 벡터(스키마와 무관 — 스펙 2 §9). 값 2 는 옛 데모 등급이지만 회로·벤치 입력은 바꾸지 않는다(재현성).
-  const cm_u = await registrationCommit(s_u, r_u);
-  const P = [], V = []; let out;
+  const { auid, auid_s, arid, r_rp, r_s, pk_i, uid, attrs, max_height, C_u, C_s } = await buildIdpInput();
+  const { s_u, blind_u } = IDP_FIXTURE;
+  const vkey = JSON.parse(fs.readFileSync(IDP_VKEY_PATH, 'utf8'));
+  const P = [], V = []; let out, publicSignals;
   for (let i = 0; i < N; i++) {
-    const blind_u = randomScalar();
     const t0 = now();
-    out = await proveUserCred({ uid, s_u, blind_u, r_u, attrs });
+    out = await proveIdp({ uid, s_u, blind_u, attrs, arid, r_rp, pk_i, r_s, auid, auid_s, C_u_pt: { x: C_u.x, y: C_u.y }, C_s_pt: { x: C_s.x, y: C_s.y }, max_height });
     const t1 = now();
-    const ok = await verifyUserCred({ uid, attrs, C_u_pt: out.C_u_pt, cm_u, proof: out.proof });
+    const ok = await verifyIdp(vkey, out.publicSignals, out.proof);
     const t2 = now();
-    if (!ok) throw new Error('π_u 검증 실패');
+    if (!ok) throw new Error('π_IdP 검증 실패');
+    publicSignals = out.publicSignals;
     P.push(t1 - t0); V.push(t2 - t1);
   }
-  rows.push({ name: 'π_u V2 (Σ, Mode 3 사용자 자격증명, 속성 공개)', witnessMs: '-', proveMs: fmt(P), fullMs: fmt(P), verifyMs: fmt(V),
-    proofBytes: JSON.stringify(serializeUserCredProof(out.proof)).length, publics: 7, zkeyBytes: 0, vkeyBytes: 0, wasmBytes: 0, wtnsBytes: 0 });
+  rows.push({ name: 'π_IdP (Groth16, V11, 세션마다 IdP 제출)', witnessMs: '-', proveMs: fmt(P), fullMs: fmt(P), verifyMs: fmt(V),
+    proofBytes: JSON.stringify(out.proof).length, publics: publicSignals.length,
+    zkeyBytes: fs.statSync(IDP_ZKEY_PATH).size, vkeyBytes: fs.statSync(IDP_VKEY_PATH).size, wasmBytes: fs.statSync(IDP_WASM_PATH).size, wtnsBytes: 0 });
 }
 
 // ---- Mode 3 pi_cred (Groth16, V6 — 선택 공개, disc_mask=0) ----

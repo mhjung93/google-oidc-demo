@@ -28,7 +28,7 @@
   <main class="cards" id="mainView">
     <section class="card" id="identityCard">
       <h3 data-i18n="wallet_identity_title">내 신원</h3>
-      <p class="desc" data-i18n="wallet_identity_desc">신원 기관에 한 번 등록합니다. 속성은 기관이 관리하고 지갑은 읽기만 합니다.</p>
+      <p class="desc" data-i18n="wallet_identity_desc">신원 기관에 한 번 등록합니다. 속성은 내가 지갑에 넣고 기관은 모릅니다.</p>
       <p><span id="regBadge" class="badge">미등록</span> <span id="regInfo" class="muted"></span></p>
       <dl class="kv">
         <dt data-term="AA">신원 기관</dt><dd id="aaInfo">-</dd>
@@ -37,16 +37,16 @@
       </dl>
       <span id="fileRegFields"><label>uid <input id="uid" value="12345" size="8" /></label> <label>pwd <input id="pwd" type="password" value="password123" size="12" /></label><br /></span>
       <dl class="kv" id="attrsView">
-        <dt data-term="attr0">출생연도</dt><dd><input id="attr0" size="6" readonly /></dd>
-        <dt data-term="attr1">국가</dt><dd><input id="attr1" size="6" readonly /></dd>
-        <dt data-term="attr2">예비 1</dt><dd><input id="attr2" size="6" readonly /></dd>
-        <dt data-term="attr3">예비 2</dt><dd><input id="attr3" size="6" readonly /></dd>
-        <dt data-term="attr4">미사용</dt><dd><input id="attr4" size="6" readonly /></dd>
-        <dt data-term="attr5">미사용</dt><dd><input id="attr5" size="6" readonly /></dd>
+        <dt data-term="attr0">출생연도</dt><dd><input id="attr0" size="6" /></dd>
+        <dt data-term="attr1">국가</dt><dd><input id="attr1" size="6" /></dd>
+        <dt data-term="attr2">예비 1</dt><dd><input id="attr2" size="6" /></dd>
+        <dt data-term="attr3">예비 2</dt><dd><input id="attr3" size="6" /></dd>
+        <dt data-term="attr4">미사용</dt><dd><input id="attr4" size="6" /></dd>
+        <dt data-term="attr5">미사용</dt><dd><input id="attr5" size="6" /></dd>
       </dl>
       <p>
         <button id="registerBtn" data-i18n="wallet_register_btn">등록</button>
-        <button id="attrsBtn" class="btn-ghost" data-i18n="wallet_attrs_btn">신원 기관에서 다시 받기</button>
+        <button id="profileSaveBtn" class="btn-ghost" data-i18n="wallet_profile_save_btn">속성 저장</button>
       </p>
       <div id="registerResult"></div>
       <p id="intro" class="muted expert"></p>
@@ -187,10 +187,17 @@
     let statusError = null;    // 상태를 못 읽었을 때의 원문
     const progress = { txOk: false, disclosed: false, revoked: false };   // 이 페이지가 아는 완료 신호(세션 중 메모리)
     let attrSchema = null;   // GET /wallet/attr_schema — 이름 ↔ 코드, 슬롯 타입(스펙 2)
+    // 등록 전·"속성 저장" 전에 사용자가 attrN 칸에 입력 중인 값을 5초 주기 refresh() 가 지워 버리지 않게 막는 플래그.
+    // true 면 renderIdentity() 가 attrN 의 value 를 다시 쓰지 않는다 — 저장이 끝나면(등록·PUT 성공) false 로 되돌린다.
+    let profileDirty = false;
 
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     async function postJson(url, body) {
       const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      return { status: r.status, body: await r.json().catch(() => ({})) };
+    }
+    async function putJson(url, body) {
+      const r = await fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       return { status: r.status, body: await r.json().catch(() => ({})) };
     }
     const errText = (status, b) => `${status}: ${b.reason ?? b.error ?? ''}${b.detail ? ` (${b.detail})` : ''}${b.cia ? ` ${JSON.stringify(b.cia)}` : ''}`;
@@ -213,8 +220,33 @@
      * (응답에는 없다 — 혹시 몰라 아래서 함께 거른다).
      * 이 페이지는 그 값들을 Snap 에 넘길 뿐 화면·DOM 에 남기지 않는다(browser 테스트의 "비밀은 Snap 에만" 계약).
      */
-    const safeDetail = (b) => { const { sk_u, pwd, witness, userCredIssued, attrsChanged, ...rest } = b ?? {}; return rest; };
-    const attrsText = (attrs) => (Array.isArray(attrs) ? attrs.map((v, i) => `${Demo.term(`attr${i}`)} ${v}`).join(', ') : String(attrs));
+    const safeDetail = (b) => { const { sk_u, s_u, pwd, witness, userCredIssued, attrsChanged, ...rest } = b ?? {}; return rest; };
+    /** 내 신원 카드의 속성 입력을 스키마 타입대로 그린다(스펙 2, cia_admin.html 의 renderAccounts 와 같은 규칙) —
+     *  int 는 숫자 입력, enum 은 선택 목록(이름), string 은 글자 입력. unused 슬롯은 loadAttrSchema 가 이미 행을 숨긴다. */
+    function renderAttrsForm() {
+      attrSchema.slots.forEach((slot, k) => {
+        if (slot.type === 'unused') return;
+        const dd = $('attr' + k).closest('dd');
+        let input;
+        if (slot.type === 'enum') {
+          input = document.createElement('select');
+          const none = document.createElement('option'); none.value = ''; none.textContent = '—'; input.appendChild(none);
+          for (const name of Object.keys(slot.values)) { const o = document.createElement('option'); o.value = name; o.textContent = name; input.appendChild(o); }
+        } else {
+          input = document.createElement('input');
+          input.size = slot.type === 'int' ? 6 : 10;
+        }
+        input.id = 'attr' + k;
+        input.addEventListener(slot.type === 'enum' ? 'change' : 'input', () => { profileDirty = true; });
+        dd.replaceChildren(input);
+      });
+    }
+    /** 내 신원 카드의 { slot.name: 입력값 } — unused 아닌 슬롯만. PUT /wallet/profile·등록 본문의 profile 이 된다. */
+    function readProfileForm() {
+      const out = {};
+      (attrSchema?.slots ?? []).forEach((slot, k) => { if (slot.type !== 'unused') out[slot.name] = $('attr' + k).value.trim(); });
+      return out;
+    }
     /** 에이전트가 IdP 에서 받아 둔 스키마. 슬롯 타입에 따라 폼을 맞춘다 — 범위 체크박스는 int 슬롯만, unused 행은 숨긴다. */
     async function loadAttrSchema() {
       try { attrSchema = (await (await fetch('/wallet/attr_schema')).json()).schema; } catch { attrSchema = null; }
@@ -224,6 +256,7 @@
         if (slot.type === 'unused') { row.hidden = true; $('attr' + k).closest('dd').previousElementSibling.hidden = true; $('attr' + k).closest('dd').hidden = true; $('setSlot').querySelector(`option[value="${k}"]`).hidden = true; return; }
         if (slot.type !== 'int') { $('dk' + k).disabled = true; $('dk' + k).title = '범위 조건은 정수 속성에만 쓸 수 있습니다'; }
       });
+      renderAttrsForm();
     }
     /** 집합 원소를 이름으로 적었으면 코드로(enum 슬롯). 그 밖은 그대로 — 지갑 에이전트가 형식을 검사한다. */
     function encodeMember(slot, token) {
@@ -269,9 +302,10 @@
     }
     /** 로그인·재동기화 응답의 pending(userCredIssued·attrsChanged)을 Snap 에 반영한다. 에이전트는 Snap 을 못 부른다(스펙 §3.3). */
     async function applyPendingToSnap(result) {
-      // 순서가 중요하다: Snap 의 syncAttrs 는 속성이 바뀌면 저장된 userCred 를 함께 버린다. 에이전트는 AA 속성 변경 경로에서
-      // attrsChanged 와 (재시도로 받은) 새 userCredIssued 를 함께 실으므로, syncAttrs 를 먼저 하고 새 C_u 는 그 뒤에 저장한다 —
-      // 반대로 하면 갓 저장한 C_u 가 지워져 재시작 뒤 /wallet/session/witness 가 409 user_cred_mismatch 로 막힌다.
+      // 순서가 중요하다: Snap 의 syncAttrs 는 속성이 바뀌면 저장된 userCred 를 함께 버린다. V11 에서는 에이전트의
+      // 자가 치유 경로(/wallet/login 이 증인의 attrs 가 파일과 다름을 보고 attrsChanged 를 다시 실어 보내는 경로, Task 9 판정)
+      // 가 attrsChanged 와 (그 자리에서 새로 발급받은) userCredIssued 를 함께 실으므로, syncAttrs 를 먼저 하고 새 C_u 는
+      // 그 뒤에 저장한다 — 반대로 하면 갓 저장한 C_u 가 지워져 재시작 뒤 /wallet/session/witness 가 409 user_cred_mismatch 로 막힌다.
       if (result.attrsChanged) await invokeSnap('syncAttrs', { attrs: result.attrsChanged });
       // null 은 "저장된 C_u 를 버려라"는 뜻이다 — 값이 없는 것(필드 자체가 없음)과 구분해야 한다.
       if (result.userCredIssued !== undefined) await invokeSnap('updateUserCred', { userCred: result.userCredIssued });
@@ -399,7 +433,7 @@
 
           step('로그인·증명 생성 중… (수 초 걸린다)');
           const lg = await postJson('/wallet/login', {
-            arid: req.arid, origin: req.origin, cert_s: req.cert_s, pk_trace: req.pk_trace, r_s: req.r_s,
+            arid: req.arid, origin: req.origin, cert_s: req.cert_s, pk_trace: req.pk_trace, r_s: req.r_s, r_rp: req.r_rp,
             allowAgent: req.allowAgent === '1' || req.allowAgent === true ? '1' : '0',
             factoryAddress: req.factoryAddress ?? null, attrGateAddress: req.attrGateAddress ?? null,
             disclose: req.disclose ?? null, set: req.set ?? null,
@@ -473,7 +507,12 @@
     function renderIdentity() {
       const s = lastStatus;
       lastAttrs = s?.attrs ?? null;
-      for (let k = 0; k < 6; k++) $('attr' + k).value = s?.attrsView?.[k]?.display ?? (lastAttrs ? lastAttrs[k] : '');
+      // 속성은 내가 지갑에 넣는다(D15) — 값은 profile(이름→입력값)에서 읽는다. 스키마를 아직 못 받았으면 옛 표시값으로 대신한다.
+      // profileDirty(= 저장하지 않은 입력이 있다) 동안은 건드리지 않는다 — 안 그러면 5초 주기 refresh() 가 타이핑 중인 값을 지운다.
+      if (!profileDirty) {
+        if (attrSchema) attrSchema.slots.forEach((slot, k) => { if (slot.type !== 'unused') $('attr' + k).value = s?.profile?.[slot.name] ?? ''; });
+        else for (let k = 0; k < 6; k++) $('attr' + k).value = s?.attrsView?.[k]?.display ?? (lastAttrs ? lastAttrs[k] : '');
+      }
       const badge = $('regBadge');
       badge.className = `badge ${s?.registered ? 'ok' : 'muted'}`;
       tte(badge, s?.registered ? 'wallet_reg_yes' : 'wallet_reg_no');
@@ -586,6 +625,9 @@
     }
 
     async function refresh(sync = false) {
+      // "새로고침" 버튼(sync=1)은 명시적인 "내 편집 버리고 서버 값으로" 동작이다 — profileDirty 를 풀어 renderIdentity() 가
+      // attrN 을 다시 채우게 한다. 주기적(5초) refresh(false) 는 건드리지 않는다(타이핑 중인 값을 지우면 안 된다).
+      if (sync) profileDirty = false;
       try {
         const r = await fetch(sync ? '/wallet/status?sync=1' : '/wallet/status');
         lastStatus = await r.json();
@@ -665,29 +707,33 @@
     $('txSession').addEventListener('change', applyTxDefaults);
     $('refreshBtn').addEventListener('click', () => refresh(true));
 
-    // 등록: file 모드는 지금처럼 폼의 uid·pwd, snap 모드는 Snap 이 묻고(§4.1) 페이지는 cm_u 만 나른다.
+    // 등록: file 모드는 지금처럼 폼의 uid·pwd, snap 모드는 Snap 이 묻고(§4.1) 페이지는 s_u·sk_u 만 나른다.
     // 비밀번호는 Snap → 페이지 → 에이전트 → CIA 를 한 번 지날 뿐이다 — 화면·로그 어디에도 남기지 않는다.
+    // 속성은 내가 지갑에 넣는다(V11 D15) — 등록 폼에 적은 profile 을 그대로 본문에 싣는다.
     $('registerBtn').addEventListener('click', async () => {
       pendingVerdict($('registerResult'), 'working');
       try {
         let body;
+        // 폼을 하나도 안 건드렸으면(전부 빈 값) profile 자체를 보내지 않는다 — 그래야 에이전트의 DEFAULT_PROFILE(데모 기본값)
+        // 이 적용된다. 하나라도 적었으면 그 profile 을 그대로 싣는다(비운 슬롯이 있으면 에이전트가 bad_attr 로 막는다).
+        const profileForm = readProfileForm();
+        const typedProfile = Object.values(profileForm).some((v) => v !== '') ? profileForm : undefined;
         if (cfg.secrets === 'snap') {
           await ensureConnected();
           const reg = await invokeSnap('register');
           if (!reg || reg.denied) { setVerdict($('registerResult'), false, 'wallet_register_failed', () => ({ summary: tt('wallet_register_cancel') || 'Snap 대화상자에서 등록을 취소했습니다.' })); return; }
-          body = { uid: reg.uid, pwd: reg.pwd, cm_u: reg.cm_u, sk_u: reg.sk_u };
+          body = { uid: reg.uid, pwd: reg.pwd, s_u: reg.s_u, sk_u: reg.sk_u, profile: typedProfile };
         } else {
-          // attrs 는 AA(CIA) 기록이다(2026-09-22 §3.3) — 본문에 실어도 무시되므로 uid·pwd 만 보낸다.
-          body = { uid: $('uid').value.trim(), pwd: $('pwd').value };
+          body = { uid: $('uid').value.trim(), pwd: $('pwd').value, profile: typedProfile };
         }
         const { status, body: b } = await postJson('/wallet/register', body);
         body = null;
         if (status !== 201) {
-          // Snap 의 register 가 이미 s_u·r_u 를 저장한 뒤라 그냥 다시 누르면 Snap 이 already_registered 로 막는다.
+          // Snap 의 register 가 이미 s_u 를 저장한 뒤라 그냥 다시 누르면 Snap 이 already_registered 로 막는다.
           // 빠져나오는 길은 실패 원인에 따라 다르다(2026-09-22 최종 리뷰 Minor 3):
           //  - 에이전트가 409 already_registered: 에이전트 상태 파일에 옛 등록이 있다. "Snap 초기화" + 상태 파일 삭제만으로는
-          //    풀리지 않는다 — 새 s_u·r_u 로 만든 cm_u 는 CIA 에 이미 있는 uid 등록과 달라 /cia/register 가 다시 409 를 낸다
-          //    (CIA 는 uid 존재만 본다). CIA·에이전트·Snap 세 보관소를 함께 비우는 재시연 세트가 유일한 출구다
+          //    풀리지 않는다 — CIA 는 uid 존재만 보므로 새 s_u 로 다시 등록해도 그 uid 가 이미 있어 /cia/register 가 다시
+          //    409 를 낸다. CIA·에이전트·Snap 세 보관소를 함께 비우는 재시연 세트가 유일한 출구다
           //    (2026-09-23 최종 리뷰 M1 — 아래 storeRegistration 실패 안내와 같은 문구로 맞춘다).
           //  - 그 밖(비밀번호 오류·CIA 오류): Snap 만 초기화하고 다시 등록하면 된다.
           const stuckOnAgent = status === 409 && b.reason === 'already_registered';
@@ -700,54 +746,49 @@
         // 에이전트는 이미 201 로 등록을 마쳤다 — 여기서 Snap 저장이 실패하면(탭 닫힘·MetaMask 거절) 양쪽이 어긋난 채 굳는다.
         // Snap 의 등록은 sk_u·attrs 가 빈 registration_incomplete 로 남아 증인 생성이 영구히 막히고, 다시 등록하려 해도
         // 에이전트가 409 already_registered 로 거절한다. "Snap 초기화" + 상태 파일 삭제만으로도 풀리지 않는다 — CIA 에
-        // 그 uid 가 이미 등록돼 있어(cm_u 와 무관) /cia/register 가 409 를 내고 같은 골목에 다시 도달한다. 세 보관소(CIA·에이전트·Snap)를
+        // 그 uid 가 이미 등록돼 있어(CIA 는 uid 존재만 본다) /cia/register 가 409 를 내고 같은 골목에 다시 도달한다. 세 보관소(CIA·에이전트·Snap)를
         // 함께 비우는 재시연 세트가 유일한 출구라, 일반 오류 문구 대신 그 길을 알려 준다(2026-09-23 점검 B).
         // 요청의 sk_u 는 Snap 이 준 값으로 한 번만 지나간다 — '자세히'에도, 카드가 들고 있는 인자에도 남기지 않는다.
         // 그래서 카드에 쓸 값은 성공·반쪽 실패 양쪽 모두 여기서 먼저 꺼내 둔다(인자 생성기가 b 를 붙잡으면
         // Demo 가 그 생성기를 #registerResult 에 페이지 수명 내내 들고 있어 sk_u 가 함께 남는다).
         const uid = b.uid;
-        const attrs = b.attrs;
         const detail = safeDetail(b);
         if (cfg.secrets === 'snap') {
-          try { await invokeSnap('storeRegistration', { attrs: b.attrs, slot: b.slot }); }
+          try { await invokeSnap('storeRegistration', { attrs: b.attrs, slot: b.slot, auid: b.auid }); }
           catch (e) {
             const err = e.message;
             setVerdict($('registerResult'), false, 'wallet_register_failed', () => ({ summary: tt('wallet_register_half', { uid, err }) || `등록이 반만 됐습니다(uid=${uid}): ${err}` }));
             return;
           }
         }
-        setVerdict($('registerResult'), true, 'registered', () => ({ summary: tt('wallet_registered_summary', { uid, attrs: b.profile ? profileText(b.profile) : attrsText(attrs) }) || `uid ${uid} · ${b.profile ? profileText(b.profile) : attrsText(attrs)}`, detail }));
+        profileDirty = false;   // 등록이 끝났다 — 이제 refresh() 가 서버의 profile 로 다시 그려도 된다
+        setVerdict($('registerResult'), true, 'registered', () => ({ summary: tt('wallet_registered_summary', { uid, attrs: profileText(b.profile) }) || `uid ${uid} · ${profileText(b.profile)}`, detail }));
       } catch (e) {
         setVerdict($('registerResult'), false, 'wallet_register_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
       }
       refresh();
     });
 
-    // 속성 재동기화(2026-09-22 §3.3): AA 기록을 다시 받는다. 값이 바뀌었으면 옛 사용자 자격증명·세션이 지워진다(다음 로그인이 새로 받는다).
-    // snap 모드는 sk_u 서명이 필요해 본문 증인을 실어야 하므로 동의 창을 한 번 거친다(에이전트는 Snap 을 못 부른다).
-    $('attrsBtn').addEventListener('click', async () => {
+    // V11 §3.3 — 속성은 사용자가 넣는다. 저장 → PUT /wallet/profile → 바뀌었으면 옛 자격증명·세션이 지워지고 다음 로그인이 새 C_u 를 받는다. snap 모드는 attrsChanged 를 Snap 에 전달한다.
+    $('profileSaveBtn').addEventListener('click', async () => {
       pendingVerdict($('registerResult'), 'working');
       try {
-        let payload = {};
-        if (cfg.secrets === 'snap') {
-          await ensureConnected();
-          const witness = await consentLogin({ origin: cfg.walletOrigin || location.origin, arid: null, allowAgent: '0', serviceName: '지갑 페이지(속성 재동기화)' });
-          if (!witness) { setVerdict($('registerResult'), false, 'wallet_attrs_failed', () => ({ summary: tt('wallet_cancelled') || '창에서 취소했습니다.' })); return; }
-          payload = { witness };
+        if (cfg.secrets === 'snap') await ensureConnected();
+        const profile = readProfileForm();   // attrSchema.slots 의 unused 아닌 슬롯마다 { [slot.name]: 입력값.trim() }
+        const { status, body: b } = await putJson('/wallet/profile', { profile });
+        if (status !== 200) { setVerdict($('registerResult'), false, 'wallet_profile_failed', { reason: b.reason ?? `HTTP ${status}`, detail: safeDetail(b) }); return; }
+        profileDirty = false;   // 에이전트 파일에는 이미 저장됐다 — 이제 refresh() 가 서버의 profile 로 다시 그려도 된다
+        // 파일 저장은 끝났다(200) — Snap 반영(syncAttrs)이 따로 실패해도 저장 자체를 실패로 보이면 안 된다(리뷰 Minor 1).
+        // 다음 로그인의 자가 치유(/wallet/login 이 attrsChanged 를 다시 실어 보내는 경로, Task 9 판정)가 Snap 을 결국 따라오게 한다.
+        let snapSyncErr = null;
+        if (cfg.secrets === 'snap' && b.attrsChanged) {
+          try { await invokeSnap('syncAttrs', { attrs: b.attrsChanged }); }
+          catch (e) { snapSyncErr = e.message; }
         }
-        const { status, body: b } = await postJson('/wallet/attrs/sync', payload);
-        if (status !== 200) { setVerdict($('registerResult'), false, 'wallet_attrs_failed', { reason: b.reason ?? `HTTP ${status}`, detail: safeDetail(b) }); return; }
-        if (cfg.secrets === 'snap') await applyPendingToSnap(b);
-        // userCredIssued(blind_u)·attrsChanged 는 Snap 에만 간다 — 카드가 붙잡지 않게 여기서 떼어 둔다.
-        const attrs = b.attrs;
-        const changed = Boolean(b.changed);
-        const detail = safeDetail(b);
-        setVerdict($('registerResult'), true, 'wallet_attrs_ok', () => ({
-          summary: tt(changed ? 'wallet_attrs_changed' : 'wallet_attrs_same', { attrs: b.profile ? profileText(b.profile) : attrsText(attrs) }) || (b.profile ? profileText(b.profile) : attrsText(attrs)), detail,
-        }));
-      } catch (e) {
-        setVerdict($('registerResult'), false, 'wallet_attrs_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
-      }
+        setVerdict($('registerResult'), true, 'wallet_profile_saved', () => (snapSyncErr
+          ? { summary: tt('wallet_profile_saved_snap_pending', { err: snapSyncErr }) || `저장됨 — Snap 반영 실패(${snapSyncErr}), 다음 로그인이 맞춘다`, detail: safeDetail(b) }
+          : { summary: tt(b.changed ? 'wallet_profile_changed' : 'wallet_profile_same', { attrs: profileText(b.profile) }) || profileText(b.profile), detail: safeDetail(b) }));
+      } catch (e) { setVerdict($('registerResult'), false, 'wallet_profile_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message }); }
       refresh();
     });
 
@@ -916,7 +957,7 @@
       try {
         await ensureConnected();
         const i = await invokeSnap('getPublicInfo', {});
-        $('snapInfo').textContent = `등록: ${i.registered ? `예 (uid=${i.uid})` : '아니오'}\n속성: ${JSON.stringify(i.attrs)}\n사용자 자격증명 보관: ${i.hasUserCred}\n동의 기록: ${JSON.stringify(i.consents)}`;
+        $('snapInfo').textContent = `등록: ${i.registered ? `예 (uid=${i.uid})` : '아니오'}\n속성: ${JSON.stringify(i.attrs)}\nauid: ${i.auid}\n사용자 자격증명 보관: ${i.hasUserCred}\n동의 기록: ${JSON.stringify(i.consents)}`;
         const reg = Boolean(i.registered);
         const cred = Boolean(i.hasUserCred);
         const consents = Array.isArray(i.consents) ? i.consents.length : Object.keys(i.consents ?? {}).length;

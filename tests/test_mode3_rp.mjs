@@ -7,8 +7,8 @@ import { ethers } from 'ethers';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import { getProvider, fundAddress, deployMode3Log, deployMode3Mirror, relayToMirror, rootToBytes32, mineBlocks, publishV3 } from './helpers/mode3_chain.mjs';
 import { createRegistryTree, registryLeaf } from '../lib/mode3_registry.js';
-import { credMessageV5, compressPoint, randomScalar } from '../lib/mode3_credential.js';
-import { createRegistration, createSessionKey, buildUserCredRequest, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, normalizeSet, VKEY_PATH } from '../lib/mode3_wallet.js';
+import { credMessageV11, aridSOf, randomScalar } from '../lib/mode3_credential.js';
+import { createRegistration, createSessionKey, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, normalizeSet, VKEY_PATH } from '../lib/mode3_wallet.js';
 import { createRpVerifier, maskDisclosure } from '../lib/mode3_rp.js';
 import { createShare, combinePublicKey } from '../lib/mode3_trace.js';
 import { setRoot } from '../lib/mode3_set_tree.js';
@@ -38,11 +38,10 @@ const other_trace = await combinePublicKey((await createShare()).X, (await creat
 const registry = await createRegistryTree();   // V9: 등록부(조건 9) — makeLogin 이 매번 이 슬롯을 채우고 게시한다
 const SLOT = 0;
 
-// 서버 없이 CIA 서명만 흉내낸다. V5: Sign(D_V5, Cf_u, Cf_s, max_height, chainid, allowAgent).
-async function issueWith(key, Cf_u, C_s_pt, { max_height, chainid = 31337n, allowAgent = 0n } = {}) {
-  const Cf_s = await compressPoint(C_s_pt);
-  const s = eddsa.signPoseidon(key.prv, F.e(await credMessageV5(Cf_u, Cf_s, max_height, chainid, allowAgent)));
-  return { Cf_u: Cf_u.toString(), Cf_s: Cf_s.toString(), max_height: max_height.toString(), chainid: chainid.toString(), allowAgent: allowAgent.toString(), sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() } };
+// 서버 없이 CIA 서명만 흉내낸다. V11: Sign(D_V11, auid_s, arid_s, Cf_u, Cf_s, chainid, allowAgent). 요청 객체(buildIssueRequest 결과)를 받는다.
+async function issueWith(key, req, { chainid = 31337n, allowAgent = 0n } = {}) {
+  const s = eddsa.signPoseidon(key.prv, F.e(await credMessageV11(req.auid_s, req.arid_s, req.Cf_u, req.Cf_s, chainid, allowAgent)));
+  return { Cf_u: req.Cf_u.toString(), Cf_s: req.Cf_s.toString(), max_height: req.body.max_height, chainid: chainid.toString(), allowAgent: allowAgent.toString(), sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() } };
 }
 // V9: 폐기 리프를 넣고 두 root(폐기·등록부)를 같이 올린다 — Mode3Log 는 root 를 하나씩 받지 않는다.
 async function publish(leavesBig) {
@@ -52,30 +51,23 @@ async function publish(leavesBig) {
   await publishV3(log, ciaEth, { revRoot: tree.getRoot(), regRoot: registry.root(), epoch, revLeaves: leavesBig });
 }
 /**
- * V9 조건 9: 증명을 만들기 전에 내 등록부 슬롯(SLOT=0)을 내 자격증명으로 채우고 게시해야 한다 — 그러지
- * 않으면 buildCredentialProof 가 registry_empty 로 던진다. 등록부 root 는 N=1 규칙(RP 의 stale_registry_root)
- * 이라 매 호출이 같은 슬롯을 다시 채워 게시한다 — 바로 뒤이어 그 결과를 검증하는 한, 이 파일의 테스트는 모두
- * makeLogin() 한 번 → 즉시 검증 패턴이라 안전하다(다른 테스트의 게시가 끼어들 일이 없다).
- * 슬롯 게시는 트랜잭션 1개라 hardhat 이 블록을 하나 전진시킨다 — 그래서 사용자 자격증명(등록·π_u·슬롯 게시)을
- * 세션 발급보다 먼저 끝내고, max_height 는 그 뒤의 head 를 기준으로 잰다. 순서를 반대로 하면(게시가 나중)
- * 지갑이 쓰는 ttlBlocks 의 head+L 경계(아래 "음성 c''"·E-6)가 makeLogin 자신의 게시로 한 블록 밀린다.
+ * V9 조건 9: 증명을 만들기 전에 내 등록부 슬롯(SLOT=0)을 내 자격증명으로 채우고 게시해야 한다 … (기존 설명 유지)
+ * V11: r_s·r_rp 는 RP 챌린지다 — 둘을 함께 돌려주고 verifyLogin 에 같이 넣는다. 토큰이 발급된 뒤에 슬롯을 게시하므로(C_u 는 발급 요청에 실려 간다)
+ * max_height 는 게시 전 head 로 잰다 — 슬롯 게시 1블록을 ttl 에 더해 둔다(ttl 300 → head+301 이 상한 400 안이다).
  */
 async function makeLogin({ key = CIA, useArid = arid, ttlBlocks = 300n, chainid = 31337n, useTrace = pk_trace, allowAgent = 0n, disclosure = null } = {}) {
-  const reg = await createRegistration();
+  const reg = await createRegistration(uid);
   const attrs = [19n, 410n, 0n, 0n, 0n, 0n];
-  const uc = await buildUserCredRequest({ uid, s_u: reg.s_u, r_u: reg.r_u, sk_u: reg.sk_u, attrs });   // 사용자 자격증명(π_u) — CIA 검증은 test_mode3_wallet 에서
-  const { tree } = await syncRevocationTree(provider, logAddress);
-  registry.set(SLOT, await registryLeaf(reg.cm_u, uc.Cf_u));
-  await publishV3(log, ciaEth, { revRoot: tree.getRoot(), regRoot: registry.root(), epoch: (await log.epoch()) + 1n, slotIdx: [SLOT], slotLeaves: [registry.leafAt(SLOT)] });
   const session = createSessionKey();
-  const r_s = randomScalar();   // 서비스 챌린지 — σ 에만 쓴다(공개 입력엔 없다)
-  const max_height = BigInt(await provider.getBlockNumber()) + ttlBlocks;   // 지갑이 정한다(2026-09-18 §3.2 갱신) — 슬롯 게시 뒤의 head 기준
-  const req = await buildIssueRequest({ uid, Cf_u: uc.Cf_u, arid: useArid, sk_u: reg.sk_u, session, chainid, allowAgent, max_height });
-  const cred = await issueWith(key, uc.Cf_u, req.C_s_pt, { max_height, chainid, allowAgent });
-  // disclosure 는 정규화 없이 그대로 회로로 간다(lib/mode3_wallet.js 의 buildCredentialProof) — 지갑의 normalizeDisclosure 를
-  // 거치지 않는 경로라, 마스크 밖 슬롯이 0 이 아닌 유효한 π 를 일부러 만들 수 있다(아래 C-2 E2E 케이스).
-  const { proof, publicSignals } = await buildCredentialProof({ uid, arid: useArid, s_u: reg.s_u, r_u: reg.r_u, blind_u: uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs, credential: cred, pk_CIA: key.pub, pk_trace: useTrace, tree, registry, slot: SLOT, cm_u: reg.cm_u, disclosure });
-  return { proof, publicSignals, r_s, sig: await signChallenge(session.wallet, r_s.toString()), session, cred, reg };
+  const r_s = randomScalar(), r_rp = randomScalar(), blind_u = randomScalar();
+  const max_height = BigInt(await provider.getBlockNumber()) + 1n + ttlBlocks;   // 아래 슬롯 게시가 블록 하나를 전진시킨다
+  const req = await buildIssueRequest({ uid, s_u: reg.s_u, blind_u, attrs, arid: useArid, r_rp, r_s, sk_u: reg.sk_u, session, chainid, allowAgent, max_height });
+  const cred = await issueWith(key, req, { chainid, allowAgent });
+  const { tree } = await syncRevocationTree(provider, logAddress);
+  registry.set(SLOT, await registryLeaf(reg.auid, req.Cf_u));
+  await publishV3(log, ciaEth, { revRoot: tree.getRoot(), regRoot: registry.root(), epoch: (await log.epoch()) + 1n, slotIdx: [SLOT], slotLeaves: [registry.leafAt(SLOT)] });
+  const { proof, publicSignals } = await buildCredentialProof({ uid, arid: useArid, s_u: reg.s_u, auid: reg.auid, blind_u, r_rp, r_s, pk_i: session.pk_i, attrs, credential: cred, pk_CIA: key.pub, pk_trace: useTrace, tree, registry, slot: SLOT, disclosure });
+  return { proof, publicSignals, r_s, r_rp, sig: await signChallenge(session.wallet, r_s.toString()), session, cred, reg };
 }
 
 const rp = createRpVerifier({ provider, logAddress, vkey, pkCIA: CIA.pub, arid, chainId: 31337n, pkTrace: pk_trace });
@@ -88,9 +80,9 @@ await t('양성: 7단계 전부 통과, PPID 와 pk_i 를 돌려준다', async (
   assert.equal(r.pk_i, L.session.pk_i);
 });
 
-await t('V9: publicSignals 가 14개면 malformed, 30개면 통과하고 disclosure 를 돌려준다, [15] ≥ 64 는 bad_disclosure', async () => {
+await t('V9: publicSignals 가 14개면 malformed, 33개면 통과하고 disclosure 를 돌려준다, [15] ≥ 64 는 bad_disclosure', async () => {
   const good = await makeLogin();
-  assert.equal(good.publicSignals.length, 30);
+  assert.equal(good.publicSignals.length, 33);
   const v = await rp.verifyLogin(good);
   assert.equal(v.ok, true, JSON.stringify(v, (k, vv) => (typeof vv === 'bigint' ? vv.toString() : vv)));
   assert.equal(v.disclosure.mask, 0n);
@@ -171,23 +163,44 @@ await t('음성 f: 챌린지 서명이 다른 키면 bad_signature', async () =>
 await t('음성 f: 다른 r_s 위의 서명을 붙이면 bad_signature', async () => {
   const L = await makeLogin();
   const sig = await signChallenge(L.session.wallet, (L.r_s + 1n).toString());
-  assert.deepEqual(await rp.verifyLogin({ proof: L.proof, publicSignals: L.publicSignals, sig, r_s: L.r_s }), { ok: false, reason: 'bad_signature' });
+  assert.deepEqual(await rp.verifyLogin({ proof: L.proof, publicSignals: L.publicSignals, sig, r_s: L.r_s, r_rp: L.r_rp }), { ok: false, reason: 'bad_signature' });
 });
 
-await t('음성 f: 서버가 다른 r_s 를 넘기면 bad_signature (σ 는 서버가 준 챌린지 위여야 한다)', async () => {
+await t('음성 f→V11: 서버가 다른 r_s 를 넘기면 bad_r_s (pub[32] 검사가 σ 보다 앞)', async () => {
   const L = await makeLogin();
-  const r = await rp.verifyLogin({ proof: L.proof, publicSignals: L.publicSignals, sig: L.sig, r_s: L.r_s + 1n });
-  assert.equal(r.ok, false); assert.equal(r.reason, 'bad_signature');
+  const r = await rp.verifyLogin({ proof: L.proof, publicSignals: L.publicSignals, sig: L.sig, r_s: L.r_s + 1n, r_rp: L.r_rp });
+  assert.equal(r.ok, false); assert.equal(r.reason, 'bad_r_s');
 });
 
 await t('양성: verifyLogin 이 max_height·allowAgent·root 를 돌려준다 (서버가 세션을 만들 재료)', async () => {
   const L = await makeLogin({ allowAgent: 1n });
-  const r = await rp.verifyLogin({ proof: L.proof, publicSignals: L.publicSignals, sig: L.sig, r_s: L.r_s });
+  const r = await rp.verifyLogin({ proof: L.proof, publicSignals: L.publicSignals, sig: L.sig, r_s: L.r_s, r_rp: L.r_rp });
   assert.equal(r.ok, true, JSON.stringify(r, (k, v) => (typeof v === 'bigint' ? v.toString() : v)));
   assert.equal(r.max_height, BigInt(L.cred.max_height));
   assert.equal(r.allowAgent, 1n);
   assert.equal(r.root, BigInt(L.publicSignals[6]));
   assert.equal(r.r_s, undefined, 'r_s 는 검증기가 돌려주지 않는다 — 서버가 이미 안다');
+});
+
+await t('V11: verifyLogin 은 auid_s·arid_s 를 돌려주고 arid_s = Poseidon(T_ARIDS, arid, r_rp) 다; r_rp 가 다르면 bad_arid_s; r_rp 없으면 malformed', async () => {
+  const L = await makeLogin();
+  const r = await rp.verifyLogin(L);
+  assert.equal(r.ok, true, r.reason);
+  assert.equal(r.arid_s, await aridSOf({ arid, r_rp: L.r_rp })); assert.equal(r.auid_s, BigInt(L.publicSignals[30]));
+  assert.deepEqual(await rp.verifyLogin({ ...L, r_rp: L.r_rp + 1n }), { ok: false, reason: 'bad_arid_s' });
+  assert.deepEqual(await rp.verifyLogin({ proof: L.proof, publicSignals: L.publicSignals, sig: L.sig, r_s: L.r_s }), { ok: false, reason: 'malformed' });
+  const ps = [...L.publicSignals]; ps[32] = (BigInt(ps[32]) + 1n).toString();
+  assert.deepEqual(await rp.verifyLogin({ ...L, publicSignals: ps }), { ok: false, reason: 'bad_r_s' }, '공개 입력의 r_s 를 손대면(증명은 어차피 깨진다) 정책 검사가 먼저 잡는다');
+});
+await t('V11 D7: 같은 r_rp 를 두 서비스가 쓰면 auid_s 가 서비스마다 다르다(RP 간 연결 불가), arid_s 도 다르다', async () => {
+  const r_rp = randomScalar();
+  const a = await makeLogin(); const b = await makeLogin({ useArid: otherArid });
+  // 같은 사용자(uid·s_u 고정은 makeLogin 이 매번 새 등록을 만들므로 여기서는 라이브러리 수준으로 본다)
+  const { auidOf, auidSOf } = await import('../lib/mode3_credential.js');
+  const auid = await auidOf({ uid, s_u: a.reg.s_u });
+  assert.notEqual(await auidSOf({ auid, arid, r_rp }), await auidSOf({ auid, arid: otherArid, r_rp }));
+  assert.notEqual(await aridSOf({ arid, r_rp }), await aridSOf({ arid: otherArid, r_rp }));
+  assert.equal((await rp.verifyLogin(b)).reason, 'wrong_arid', '다른 서비스의 π 는 arid 에서 걸린다(변함 없음)');
 });
 
 await t('음성 arid: 다른 RP 용 credential 은 wrong_arid', async () => {
@@ -220,16 +233,16 @@ await t('createRpVerifier 는 pkTrace 없이는 throw', () => {
 
 await t('음성 c\'\': max_height 가 head + L(400) 을 넘으면 bad_expiry — 지갑이 정한 만료의 상한 (2026-09-18 §3.2 갱신)', async () => {
   const L = await makeLogin({ ttlBlocks: 401n });
-  const r = await rp.verifyLogin({ proof: L.proof, publicSignals: L.publicSignals, sig: L.sig, r_s: L.r_s });
+  const r = await rp.verifyLogin({ proof: L.proof, publicSignals: L.publicSignals, sig: L.sig, r_s: L.r_s, r_rp: L.r_rp });
   assert.equal(r.ok, false); assert.equal(r.reason, 'bad_expiry');
   const ok = await makeLogin({ ttlBlocks: 400n });
-  assert.equal((await rp.verifyLogin({ proof: ok.proof, publicSignals: ok.publicSignals, sig: ok.sig, r_s: ok.r_s })).ok, true, '경계 head + L 은 통과');
+  assert.equal((await rp.verifyLogin({ proof: ok.proof, publicSignals: ok.publicSignals, sig: ok.sig, r_s: ok.r_s, r_rp: ok.r_rp })).ok, true, '경계 head + L 은 통과');
 });
 
 await t('음성 c: head 가 max_height 를 넘으면 expired (블록 높이)', async () => {
   const L = await makeLogin({ ttlBlocks: 2n });
   await provider.send('hardhat_mine', ['0x3']);
-  const r = await rp.verifyLogin({ proof: L.proof, publicSignals: L.publicSignals, sig: L.sig, r_s: L.r_s });
+  const r = await rp.verifyLogin({ proof: L.proof, publicSignals: L.publicSignals, sig: L.sig, r_s: L.r_s, r_rp: L.r_rp });
   assert.equal(r.ok, false); assert.equal(r.reason, 'expired');
 });
 
@@ -254,7 +267,7 @@ await t('E-6 만료 경계: head == max_height 는 통과, 한 블록 더 가면
 await t('앞자리 0 이 붙은 10진 공개 입력도 통과하지만, 돌려주는 publicSignals 는 정규형이다 (개봉 재료 — 2026-09-18 점검 1)', async () => {
   const L = await makeLogin();
   const ps = [...L.publicSignals]; ps[1] = '0' + ps[1]; ps[12] = '00' + ps[12];
-  const r = await rp.verifyLogin({ proof: L.proof, publicSignals: ps, sig: L.sig, r_s: L.r_s });
+  const r = await rp.verifyLogin({ proof: L.proof, publicSignals: ps, sig: L.sig, r_s: L.r_s, r_rp: L.r_rp });
   assert.equal(r.ok, true, JSON.stringify(r, (k, v) => (typeof v === 'bigint' ? v.toString() : v)));
   assert.deepEqual(r.publicSignals, L.publicSignals, '기록·개봉에는 정규 문자열을 써야 CIA 의 문자열 비교·서명 재구성과 맞는다');
 });
@@ -262,7 +275,7 @@ await t('앞자리 0 이 붙은 10진 공개 입력도 통과하지만, 돌려�
 await t('음성: allowAgent 가 1 을 넘는 공개 입력은 bad_allow_agent (증명 검증 전에 걸린다)', async () => {
   const L = await makeLogin();
   const ps = [...L.publicSignals]; ps[5] = '2';
-  const r = await rp.verifyLogin({ proof: L.proof, publicSignals: ps, sig: L.sig, r_s: L.r_s });
+  const r = await rp.verifyLogin({ proof: L.proof, publicSignals: ps, sig: L.sig, r_s: L.r_s, r_rp: L.r_rp });
   assert.equal(r.ok, false); assert.equal(r.reason, 'bad_allow_agent');
 });
 
@@ -335,20 +348,21 @@ await t('같은 사용자·같은 RP 라도 chainid 가 다르면 PPID 가 다�
   // 등록값(s_u)을 공유하는 두 로그인을 체인 31337 과 1 로 만든다. 두 번째는 이 RP(31337)에서 wrong_chain 이지만,
   // 여기서 보는 것은 공개 입력의 PPID 자체가 다르다는 사실이다 — 체인 1 의 RP 가 본 가명으로 체인 31337 의
   // 사용자를 특정할 수 없다.
-  const reg = await createRegistration();
+  const reg = await createRegistration(uid);
   const attrs = [0n, 0n, 0n, 0n, 0n, 0n];
-  const uc = await buildUserCredRequest({ uid, s_u: reg.s_u, r_u: reg.r_u, sk_u: reg.sk_u, attrs });   // 사용자 자격증명은 체인과 무관 — 하나를 두 체인에 쓴다
+  const blind_u = randomScalar();   // 사용자 자격증명은 체인과 무관 — 하나를 두 체인에 쓴다
   // 이 테스트는 PPID 값만 비교한다(verifyLogin 을 부르지 않는다) — 등록부는 체인에 올릴 필요 없다(브리프 규칙 4).
   const localRegistry = await createRegistryTree();
-  localRegistry.set(SLOT, await registryLeaf(reg.cm_u, uc.Cf_u));
   const ppids = [];
   for (const chainid of [31337n, 1n]) {
     const session = createSessionKey();
+    const r_s = randomScalar(), r_rp = randomScalar();
     const max_height = BigInt(await provider.getBlockNumber()) + 300n;
-    const req = await buildIssueRequest({ uid, Cf_u: uc.Cf_u, arid, sk_u: reg.sk_u, session, chainid, max_height });
-    const cred = await issueWith(CIA, uc.Cf_u, req.C_s_pt, { max_height, chainid });
+    const req = await buildIssueRequest({ uid, s_u: reg.s_u, blind_u, attrs, arid, r_rp, r_s, sk_u: reg.sk_u, session, chainid, max_height });
+    const cred = await issueWith(CIA, req, { chainid });
+    localRegistry.set(SLOT, await registryLeaf(reg.auid, req.Cf_u));
     const { tree } = await syncRevocationTree(provider, logAddress);
-    const { publicSignals } = await buildCredentialProof({ uid, arid, s_u: reg.s_u, r_u: reg.r_u, blind_u: uc.secrets.blind_u, blind_s: req.secrets.blind_s, pk_i: session.pk_i, attrs, credential: cred, pk_CIA: CIA.pub, pk_trace, tree, registry: localRegistry, slot: SLOT, cm_u: reg.cm_u });
+    const { publicSignals } = await buildCredentialProof({ uid, arid, s_u: reg.s_u, auid: reg.auid, blind_u, r_rp, r_s, pk_i: session.pk_i, attrs, credential: cred, pk_CIA: CIA.pub, pk_trace, tree, registry: localRegistry, slot: SLOT });
     ppids.push(BigInt(publicSignals[0]));
   }
   assert.notEqual(ppids[0], ppids[1]);
@@ -420,32 +434,32 @@ const MIRROR_SLOT = 1;   // SLOT(0)은 다른 테스트가 공유한다 — 별�
 let mirrorScenario = null;   // 두 테스트가 공유하는 상태(릴레이 전/후)
 
 await t('거울이 뒤처지면 캐노니컬 root 의 π 는 stale_root, 거울 root 의 π 는 통과', async () => {
-  const reg2 = await createRegistration();
-  const attrs2 = [19n, 410n, 0n, 0n, 0n, 0n];
   const uid2 = uid + 1n;
-  const uc2 = await buildUserCredRequest({ uid: uid2, s_u: reg2.s_u, r_u: reg2.r_u, sk_u: reg2.sk_u, attrs: attrs2 });
+  const reg2 = await createRegistration(uid2);
+  const attrs2 = [19n, 410n, 0n, 0n, 0n, 0n];
+  const blind_u2 = randomScalar();
+  const session2 = createSessionKey();
+  const r_s2 = randomScalar(), r_rp2 = randomScalar();
+  const max_height2 = BigInt(await provider.getBlockNumber()) + 300n;
+  const req2 = await buildIssueRequest({ uid: uid2, s_u: reg2.s_u, blind_u: blind_u2, attrs: attrs2, arid, r_rp: r_rp2, r_s: r_s2, sk_u: reg2.sk_u, session: session2, chainid: 31337n, allowAgent: 0n, max_height: max_height2 });
+  const cred2 = await issueWith(CIA, req2, { chainid: 31337n, allowAgent: 0n });
+
   const { tree } = await syncRevocationTree(provider, logAddress);
-  registry.set(MIRROR_SLOT, await registryLeaf(reg2.cm_u, uc2.Cf_u));
+  registry.set(MIRROR_SLOT, await registryLeaf(reg2.auid, req2.Cf_u));
   const pub1 = await publishV3(log, ciaEth, { revRoot: tree.getRoot(), regRoot: registry.root(), epoch: (await log.epoch()) + 1n, slotIdx: [MIRROR_SLOT], slotLeaves: [registry.leafAt(MIRROR_SLOT)] });
   // 선행 조건(판정 2): 첫 증명 전에 거울이 이미 이 사용자의 등록부 리프를 담고 있어야 한다.
   await relayToMirror(mirror, ciaEth, pub1);
-
-  const session2 = createSessionKey();
-  const max_height2 = BigInt(await provider.getBlockNumber()) + 300n;
-  const req2 = await buildIssueRequest({ uid: uid2, Cf_u: uc2.Cf_u, arid, sk_u: reg2.sk_u, session: session2, chainid: 31337n, allowAgent: 0n, max_height: max_height2 });
-  const cred2 = await issueWith(CIA, uc2.Cf_u, req2.C_s_pt, { max_height: max_height2, chainid: 31337n, allowAgent: 0n });
 
   // 캐노니컬 epoch +1 (다른 사용자 세션 폐기 흉내) — 거울에는 릴레이하지 않는다.
   await tree.insert(888888n);
   const lagPub = await publishV3(log, ciaEth, { revRoot: tree.getRoot(), regRoot: registry.root(), epoch: (await log.epoch()) + 1n, revLeaves: [888888n] });
   assert.ok((await mirror.epoch()) < (await log.epoch()), '전제: 거울이 뒤처졌다');
 
-  const buildArgs = { uid: uid2, arid, s_u: reg2.s_u, r_u: reg2.r_u, blind_u: uc2.secrets.blind_u, blind_s: req2.secrets.blind_s, pk_i: session2.pk_i, attrs: attrs2, credential: cred2, pk_CIA: CIA.pub, pk_trace, registry, slot: MIRROR_SLOT, cm_u: reg2.cm_u };
+  const buildArgs = { uid: uid2, arid, s_u: reg2.s_u, auid: reg2.auid, blind_u: blind_u2, r_rp: r_rp2, r_s: r_s2, pk_i: session2.pk_i, attrs: attrs2, credential: cred2, pk_CIA: CIA.pub, pk_trace, registry, slot: MIRROR_SLOT };
 
-  // 캐노니컬 root 의 π — 거울 검증기에 들이밀면 stale_root.
+  // 캐노니컬 root 의 π — 거울 검증기에 들이밀면 stale_root. (r_s·r_rp 는 C_s 에 묶여 있어 발급 때와 같은 값을 그대로 써야 한다)
   const canonProof = await buildCredentialProof({ ...buildArgs, tree });
-  const r_sC = randomScalar();
-  const piCanon = { proof: canonProof.proof, publicSignals: canonProof.publicSignals, r_s: r_sC, sig: await signChallenge(session2.wallet, r_sC.toString()) };
+  const piCanon = { proof: canonProof.proof, publicSignals: canonProof.publicSignals, r_s: r_s2, r_rp: r_rp2, sig: await signChallenge(session2.wallet, r_s2.toString()) };
   const atCanon = await rpOnMirror.verifyLogin(piCanon);
   assert.equal(atCanon.reason, 'stale_root', JSON.stringify(atCanon, (k, v) => (typeof v === 'bigint' ? v.toString() : v)));
 
@@ -453,12 +467,11 @@ await t('거울이 뒤처지면 캐노니컬 root 의 π 는 stale_root, 거울 
   const mEpoch = await mirror.epoch();
   const { tree: mirrorTree } = await syncRevocationTree(provider, logAddress, { untilEpoch: mEpoch, expectRoot: BigInt(await mirror.revRoot()) });
   const mirrorProof = await buildCredentialProof({ ...buildArgs, tree: mirrorTree });
-  const r_sM = randomScalar();
-  const piMirror = { proof: mirrorProof.proof, publicSignals: mirrorProof.publicSignals, r_s: r_sM, sig: await signChallenge(session2.wallet, r_sM.toString()) };
+  const piMirror = { proof: mirrorProof.proof, publicSignals: mirrorProof.publicSignals, r_s: r_s2, r_rp: r_rp2, sig: await signChallenge(session2.wallet, r_s2.toString()) };
   const atMirror = await rpOnMirror.verifyLogin(piMirror);
   assert.equal(atMirror.ok, true, JSON.stringify(atMirror, (k, v) => (typeof v === 'bigint' ? v.toString() : v)));
 
-  mirrorScenario = { reg2, uc2, session2, cred2, req2, attrs2, uid2, lagPub };
+  mirrorScenario = { reg2, session2, cred2, attrs2, uid2, blind_u2, r_s2, r_rp2, lagPub };
 });
 
 await t('릴레이 뒤에는 캐노니컬 root 의 π 가 통과한다', async () => {
@@ -468,11 +481,10 @@ await t('릴레이 뒤에는 캐노니컬 root 의 π 가 통과한다', async (
   await relayToMirror(mirror, ciaEth, mirrorScenario.lagPub);
   assert.equal(await mirror.epoch(), await log.epoch(), '전제: 릴레이 후 거울이 캐노니컬을 따라잡았다');
 
-  const { reg2, uc2, session2, cred2, req2, attrs2, uid2 } = mirrorScenario;
+  const { reg2, session2, cred2, attrs2, uid2, blind_u2, r_s2, r_rp2 } = mirrorScenario;
   const { tree: freshTree } = await syncRevocationTree(provider, logAddress);
-  const proof = await buildCredentialProof({ uid: uid2, arid, s_u: reg2.s_u, r_u: reg2.r_u, blind_u: uc2.secrets.blind_u, blind_s: req2.secrets.blind_s, pk_i: session2.pk_i, attrs: attrs2, credential: cred2, pk_CIA: CIA.pub, pk_trace, tree: freshTree, registry, slot: MIRROR_SLOT, cm_u: reg2.cm_u });
-  const r_s = randomScalar();
-  const pi = { proof: proof.proof, publicSignals: proof.publicSignals, r_s, sig: await signChallenge(session2.wallet, r_s.toString()) };
+  const proof = await buildCredentialProof({ uid: uid2, arid, s_u: reg2.s_u, auid: reg2.auid, blind_u: blind_u2, r_rp: r_rp2, r_s: r_s2, pk_i: session2.pk_i, attrs: attrs2, credential: cred2, pk_CIA: CIA.pub, pk_trace, tree: freshTree, registry, slot: MIRROR_SLOT });
+  const pi = { proof: proof.proof, publicSignals: proof.publicSignals, r_s: r_s2, r_rp: r_rp2, sig: await signChallenge(session2.wallet, r_s2.toString()) };
   const r = await rpOnMirror.verifyLogin(pi);
   assert.equal(r.ok, true, JSON.stringify(r, (k, v) => (typeof v === 'bigint' ? v.toString() : v)));
 });

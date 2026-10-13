@@ -6,12 +6,12 @@
 // 경로가 실제로는 도달 불가였다. 여기서는 두 스키마로 스택을 띄워 그 경로를 끝까지 돌린다.
 //   (가) country 를 슬롯 2 로 옮긴 스키마 — AttrGate 건너뜀, 집합 술어는 set.slot 2(d.sel 3)로 통과
 //   (나) country 가 없는 스키마 — require.countrySet 은 predicate_unavailable
+//   (다) KR 이 없는 스키마 — V11(D15)은 속성을 지갑이 들고 있어 CIA 는 기동하고, 지갑의 기본 profile 인코딩이 400 bad_attr 로 거절된다
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
-import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { VKEY_PATH } from '../lib/mode3_wallet.js';
 import { loadSchema } from '../lib/mode3_attr_schema.js';
 
@@ -39,6 +39,8 @@ const SCHEMA_B = { id: 'zkd-attrs-nocountry', version: 1, slots: [
   UNUSED, UNUSED, UNUSED,
 ] };
 const SCHEMA_C = { ...SCHEMA_A, id: 'zkd-attrs-nous', slots: SCHEMA_A.slots.map((s, i) => (i === 2 ? { ...s, values: { KR: 410, JP: 392 } } : s)) };
+// KR 을 빼는 변형(SCHEMA_C 의 반대) — 지갑 기본 profile(country: 'KR')을 그 스키마로 인코딩할 수 없는 경로를 본다.
+const SCHEMA_D = { ...SCHEMA_A, id: 'zkd-attrs-nokr', slots: SCHEMA_A.slots.map((s, i) => (i === 2 ? { ...s, values: { JP: 392, US: 840 } } : s)) };
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-custom-schema-'));
 const fileOf = (name, schema) => { const f = path.join(dir, `${name}.json`); fs.writeFileSync(f, JSON.stringify(schema)); return f; };
@@ -49,7 +51,7 @@ async function loginWithRequire(stack, { disclose = null, set = null, require })
   const info = (await rp.get('/api/mode3/rp_info')).body;
   const ch = (await rp.post('/api/mode3/challenge')).body;
   assert.ok(ch.r_s, j(ch));
-  const w = await stack.withRelay(() => wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s: ch.r_s, allowAgent: '0', factoryAddress: ch.factoryAddress, attrGateAddress: ch.attrGateAddress, ...(disclose ? { disclose } : {}), ...(set ? { set } : {}) }, { Origin: rp.origin }));
+  const w = await stack.withRelay(() => wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s: ch.r_s, r_rp: ch.r_rp, allowAgent: '0', factoryAddress: ch.factoryAddress, attrGateAddress: ch.attrGateAddress, ...(disclose ? { disclose } : {}), ...(set ? { set } : {}) }, { Origin: rp.origin }));
   assert.equal(w.status, 200, j(w.body));
   const r = await rp.post('/api/mode3/login', { r_s: ch.r_s, proof: w.body.proof, publicSignals: w.body.publicSignals, sig: w.body.sig, require });
   return { wallet: w.body, rp: r.body, info };
@@ -105,12 +107,19 @@ try {
     } finally { await stack.stop(); }
   });
 
-  await t('데모 계정 profile 을 인코딩할 수 없는 스키마(US 없음 — alice)는 CIA 가 기동 거부(스택 트레이스가 아니라 사유 한 줄)', async () => {
-    let cia;
-    try { cia = await startIsolatedCia({ env: { CIA_ATTR_SCHEMA_FILE: fileOf('c', SCHEMA_C) } }); }
-    catch (e) { assert.match(e.message, /기동 거부: 데모 계정 속성이 스키마와 맞지 않는다 — alice/, e.message); return; }
-    await cia.stop();
-    assert.fail('기동이 거부돼야 하는데 떠 버렸다');
+  await t('(다) 데모 기본 profile 을 인코딩할 수 없는 스키마(KR 없음): CIA 는 뜨고, 지갑 등록이 400 bad_attr(지갑이 거절), profile 을 그 스키마에 맞게 주면 201', async () => {
+    // V11(D15): CIA 는 데모 계정 속성을 인코딩하지 않는다 — 스키마에 KR 이 없어도 기동한다(V9 의 기동 거부는 없어졌다).
+    const stack = await startIsolatedMode3Stack({ ciaEnv: { CIA_ATTR_SCHEMA_FILE: fileOf('d', SCHEMA_D) } });
+    try {
+      const { cia, wallet } = stack;
+      assert.equal((await cia.get('/cia/attr_schema')).body.schema.id, 'zkd-attrs-nokr');
+      // 지갑의 기본 profile(country: 'KR')은 이 스키마의 country 표에 없다 — 지갑이 자기 DEFAULT_PROFILE 인코딩에서 거절한다.
+      const bad = await wallet.post('/wallet/register', { uid: '12345', pwd: 'password123' });
+      assert.equal(bad.status, 400, j(bad.body)); assert.equal(bad.body.reason, 'bad_attr', j(bad.body));
+      // 그 스키마에 맞는 profile 을 직접 주면 등록이 통과한다.
+      const ok = await wallet.post('/wallet/register', { uid: '12345', pwd: 'password123', profile: { birthYear: '1990', country: 'US' } });
+      assert.equal(ok.status, 201, j(ok.body));
+    } finally { await stack.stop(); }
   });
 } finally {
   fs.rmSync(dir, { recursive: true, force: true });
