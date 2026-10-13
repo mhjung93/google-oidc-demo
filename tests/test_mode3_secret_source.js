@@ -37,7 +37,7 @@ await t('stripSecrets 는 s_u·sk_u·blind_u 를 지우고 auid·profile 을 남
 await t('validateWitness: uid 불일치·형식·범위 오류는 bad_witness; r_u 는 더 요구하지 않는다', async () => {
   const w = { uid: '12345', s_u: '11', sk_u: 'ab'.repeat(32), attrs: ['1', '2', '3', '4', '5', '6'], userCred: null };
   await validateWitness(w, '12345');
-  for (const bad of [{ ...w, uid: '1' }, { ...w, s_u: 'x' }, { ...w, s_u: (1n << 250n).toString() }, { ...w, sk_u: 'zz' }, { ...w, attrs: ['1'] }, { ...w, attrs: [(1n << 64n).toString(), '0', '0', '0', '0', '0'] }, { ...w, userCred: { Cf_u: '1' } }, null]) {
+  for (const bad of [{ ...w, uid: '1' }, { ...w, s_u: 'x' }, { ...w, s_u: (1n << 250n).toString() }, { ...w, sk_u: 'zz' }, { ...w, attrs: ['1'] }, { ...w, attrs: [(1n << 64n).toString(), '0', '0', '0', '0', '0'] }, { ...w, attrs: ['', '2', '3', '4', '5', '6'] }, { ...w, attrs: [true, '2', '3', '4', '5', '6'] }, { ...w, userCred: { Cf_u: '1' } }, null]) {
     await assert.rejects(() => validateWitness(bad, '12345'), (e) => e.reason === 'bad_witness', JSON.stringify(bad));
   }
 });

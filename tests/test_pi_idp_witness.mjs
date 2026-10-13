@@ -56,6 +56,7 @@ await t('D15: 속성 값은 자유 — 다른 attrs 로 만든 C_u 도 통과한
   assert.ok((await witness(other.input)).length > 0);
 });
 await t('음성: s_u 를 바꾸면 거부 (C_u·auid 둘 다 어긋난다)', async () => { await assert.rejects(() => witness({ ...valid, s_u: bump(valid.s_u) }), /Assert Failed/); });
+await t('음성: blind_u 를 바꾸면 거부 (C_u 구성 입력 — auid 는 그대로지만 공개 입력 C_u_x·C_u_y 와 안 맞는다)', async () => { await assert.rejects(() => witness({ ...valid, blind_u: bump(valid.blind_u) }), /Assert Failed/); });
 await t('음성: auid 를 바꾸면 거부 — IdP 가 DB 값을 넣으므로 다른 salt 의 지갑은 통과하지 못한다', async () => { await assert.rejects(() => witness({ ...valid, auid: bump(valid.auid) }), /Assert Failed/); });
 await t('음성: auid_s 를 바꾸면 거부; arid 를 바꾸면 auid_s 가 어긋나 거부', async () => {
   await assert.rejects(() => witness({ ...valid, auid_s: bump(valid.auid_s) }), /Assert Failed/);

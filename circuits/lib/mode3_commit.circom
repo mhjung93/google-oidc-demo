@@ -35,8 +35,9 @@ include "babyjub.circom";
 // circomlib 표는 index 0..9 까지라, index 10(attr5) 은 표에는 없고 circomlibjs getBasePoint('blake', 10) 으로 계산한 값이다(lib/mode3_credential.js 와 같다).
 // 2026-09-10 circomlibjs 로 (그때는 9개였던) 생성원 전부의 inCurve·inSubgroup 을 확인했다. V9 에서 속성이
 // 6슬롯으로 늘며 추가된 attr4·attr5(index 9·10), V11(2026-10-12)에서 C_s 에 추가된 exp·rs(index 11·12) 까지
-// 지금은 13개 생성원 전부를 tests/test_mode3_commit_scheme.mjs 가 곡선·부분군(inCurve·inSubgroup)으로 확인한다
-// (circomlibjs getBasePoint 와의 문자열 대조는 생성원을 만들 때 수기로 했다 — 자동 테스트로 고정돼 있지 않다). 두
+// 지금은 13개 생성원 전부를 tests/test_mode3_commit_scheme.mjs 가 곡선·부분군(inCurve·inSubgroup)으로 확인하고,
+// circomlibjs getBasePoint 와의 문자열 대조(생성원이 바로 그 값인지)는 tests/test_mode3_credential_v11.js(32~42행)가
+// 13개 전부 deepEqual 로 자동 확인한다 — 더 이상 수기 대조에만 의존하지 않는다. 두
 // 커밋이 생성원을 나눠 쓴다(H 만 공유) — 각 커밋의 binding 은 자기 항의 생성원만으로 성립한다.
 
 // 2026-09-21 자격증명 이중 구조(설계 §3.1). 사용자 자격증명 커밋 — 사용자당 하나.

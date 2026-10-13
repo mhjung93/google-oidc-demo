@@ -60,10 +60,12 @@ await t('JS 가 상한을 거부한다 (s_u·r_s 2^250, pk_i 2^160)', async () =
   await assert.rejects(() => sessionCommit({ pk_i: 5n, max_height: 1n, r_s: SCALAR_MAX, r_rp: 2n }), /2\^250/);
   await assert.rejects(() => sessionCommit({ pk_i: PK_I_MAX, max_height: 1n, r_s: 1n, r_rp: 2n }), /2\^160/);
 });
-await t('회로도 상한을 거부한다 (s_u 2^250, pk_i 2^160, max_height 2^64)', async () => {
+await t('회로도 상한을 거부한다 (s_u 2^250, pk_i 2^160, max_height 2^64, r_s·r_rp 2^250)', async () => {
   await assert.rejects(() => witness('user', { ...USER_INPUT, s_u: SCALAR_MAX.toString() }), /Assert Failed/);
   await assert.rejects(() => witness('session', { ...SESSION_INPUT, pk_i: PK_I_MAX.toString() }), /Assert Failed/);
   await assert.rejects(() => witness('session', { ...SESSION_INPUT, max_height: (1n << 64n).toString() }), /Assert Failed/);
+  await assert.rejects(() => witness('session', { ...SESSION_INPUT, r_s: SCALAR_MAX.toString() }), /Assert Failed/);
+  await assert.rejects(() => witness('session', { ...SESSION_INPUT, r_rp: SCALAR_MAX.toString() }), /Assert Failed/);
 });
 await t('attr·blind 하나만 바꿔도 C_u 가 바뀐다; max_height·r_s·r_rp 하나만 바꿔도 C_s 가 바뀐다', async () => {
   const a = await witness('user', USER_INPUT);

@@ -2,6 +2,7 @@
 //   node tests/test_mode3_wallet_agent.mjs
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { ethers } from 'ethers';
@@ -773,6 +774,98 @@ await t('지갑 상태 파일 8→9 이행: file 모드 등록은 auid 를 s_u �
     try { assert.equal((await stack3.wallet.get('/wallet/status')).body.registered, false, 'snap 모드 옛 등록은 auid 를 재계산할 수 없어 비운다'); }
     finally { await stack3.stop(); }
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ---- 독립 시험(리뷰 T2·S2, 2026-10-13): /wallet/login 의 cred_revoked 1회 재시도. 재시도 경로는 "지갑은 캐노니컬 등록부에서 자기 C_u 가
+// 살아 있다고 보는데 CIA 는 이미 물렸다" 일 때만 탄다(평소엔 등록부가 먼저 알려 처음부터 새 C_u 를 만든다). 그 순간을 결정적으로 만들려고
+// 자기 스택의 CIA_RPC_URL(캐노니컬 게시) 앞에 eth_sendRawTransaction 을 붙잡는 게이트 프록시를 둔다 — 관리자 scope=credential 의 은퇴(동기)는
+// 끝났지만 그 게시 tx 는 프록시에 붙잡혀 체인에는 옛 리프가 남아 있다. 세션 헤드 조회(CIA_CHAIN_RPCS)·지갑·거울 릴레이는 :8545 직결이다.
+// 재시도가 실제로 일어났는지는 timings 로 가른다: 재시도 경로만 issueMs(첫 시도 + 재시도) > userCredMs(재시도분)다(처음부터 새 C_u 면 둘이 같다).
+await t('리뷰 T2: CIA 가 먼저 물린 C_u(체인엔 아직 살아 있음) → 409 cred_revoked → 새 C_u 로 한 번 재시도해 200(userCredMs>0, Cf_u 바뀜); 재시도도 409 면 무한 재시도 없이 502 issue_failed', async () => {
+  const UPSTREAM = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
+  const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  let hold = null;   // { seen, released } — 다음 eth_sendRawTransaction 하나를 붙잡는다
+  const proxy = http.createServer(async (req, res) => {
+    let body = '';
+    for await (const c of req) body += c;
+    let gate = null;
+    try { const jj = JSON.parse(body); if (hold && (Array.isArray(jj) ? jj : [jj]).some((x) => x.method === 'eth_sendRawTransaction')) gate = hold; } catch { /* 그대로 전달 */ }
+    if (gate) { gate.seen.resolve(); await gate.released.promise; }
+    try {
+      const up = await fetch(UPSTREAM, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
+      res.writeHead(up.status, { 'content-type': 'application/json' }); res.end(await up.text());
+    } catch { res.writeHead(502); res.end(); }
+  });
+  await new Promise((r) => proxy.listen(0, '127.0.0.1', r));
+  const st = await startIsolatedMode3Stack({ rp: false, ciaEnv: { CIA_RPC_URL: `http://127.0.0.1:${proxy.address().port}` } });
+  try {
+    const { cia: c2, wallet: w2 } = st;
+    const svc = await c2.registerRp(st.rpOriginForWallet);
+    const canon = new ethers.Contract(c2.logAddress, MODE3_ROOTS_ABI, c2.revProvider);   // 공유 provider 는 위 finally 에서 이미 닫혔다
+    const post = () => w2.post('/wallet/login', { arid: svc.arid, origin: svc.origin, cert_s: svc.cert_s, pk_trace: { x: svc.pk_trace.x.toString(), y: svc.pk_trace.y.toString() }, r_s: randomScalar().toString(), r_rp: randomScalar().toString() }, { Origin: st.rpOriginForWallet });
+    const active = async () => (await c2.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === uid)?.activeCf_u ?? null;
+    const walletCf = async () => (await w2.get('/wallet/status')).body.userCred?.Cf_u ?? null;
+    const until = async (pred, label, ms = 15_000) => { const end = Date.now() + ms; while (!(await pred())) { assert.ok(Date.now() < end, label); await sleep(100); } };
+    assert.equal((await w2.post('/wallet/register', { uid, pwd: 'password123' })).status, 201);
+    const l0 = await st.withRelay(post);
+    assert.equal(l0.status, 200, j(l0.body));
+    const cf0 = await walletCf();
+    assert.equal(await active(), cf0);
+    await st.relayIfBehind();   // 게이트를 거는 동안 withRelay 의 첫 릴레이가 게시 잠금에 묶이지 않게 거울을 미리 맞춘다
+
+    // (i) 재시도 성공
+    const reg0 = await canon.regRoot();
+    hold = { seen: deferred(), released: deferred() };
+    const rv1 = c2.adminPost('/cia/revoke', { uid, scope: 'credential' });   // 은퇴(동기) → 즉시 게시 tx 가 게이트에 붙잡힌다
+    await hold.seen.promise;
+    let gate = hold;
+    hold = null;
+    assert.equal(await active(), null, '관리자 폐기의 은퇴는 게시 전에 끝난다');
+    assert.equal(await canon.regRoot(), reg0, '체인에는 아직 옛 리프 — 지갑은 자기 C_u 가 살아 있다고 본다');
+    const p1 = post();   // 재사용 → 409 cred_revoked → 새 C_u 로 재시도 → 그 게시는 잠금(붙잡힌 폐기 게시) 뒤에 줄 선다
+    await until(async () => { const a = await active(); return a !== null && a !== cf0; }, '재시도의 새 C_u 가 CIA 에 앉지 않았다');
+    gate.released.resolve();
+    const r1 = await st.withRelay(() => p1);   // 지갑이 거울 반영을 기다리므로 릴레이를 대신 눌러 준다
+    assert.equal(r1.status, 200, j(r1.body));
+    assert.ok(r1.body.timings.userCredMs > 0, '재시도로 새 C_u 를 받았다');
+    assert.ok(r1.body.timings.issueMs > r1.body.timings.userCredMs, `재시도 경로여야 한다(첫 시도 409 + 재시도): ${j(r1.body.timings)}`);
+    const cf1 = await walletCf();
+    assert.ok(cf1 && cf1 !== cf0, '지갑의 사용자 자격증명이 새 Cf_u 로 바뀐다');
+    assert.equal(await active(), cf1, 'CIA 의 활성 자격증명 = 지갑의 새 Cf_u');
+    assert.equal((await rv1).status, 200);
+
+    // (ii) 재시도도 409 — 재시도의 새 C_u 도 게시 대기 중에 관리자가 물린다(리뷰 S2 → 409 cred_revoked). 지갑은 한 번만 다시 시도한다.
+    await st.relayIfBehind();
+    const reg1 = await canon.regRoot();
+    hold = { seen: deferred(), released: deferred() };
+    const rv2 = c2.adminPost('/cia/revoke', { uid, scope: 'credential' });
+    await hold.seen.promise;
+    gate = hold;
+    hold = null;
+    assert.equal(await canon.regRoot(), reg1, '체인에는 아직 cf1 의 리프 — 지갑의 첫 시도는 재사용(→ 409)');
+    const p2 = post();
+    await until(async () => { const a = await active(); return a !== null && a !== cf1; }, '재시도의 새 C_u 가 CIA 에 앉지 않았다');
+    const rv3 = c2.adminPost('/cia/revoke', { uid, scope: 'credential' });
+    await until(async () => (await active()) === null, '두 번째 관리자 폐기의 은퇴가 돌지 않았다');
+    const releasedAt = Date.now();
+    gate.released.resolve();
+    const r2 = await st.withRelay(() => p2);
+    const tookMs = Date.now() - releasedAt;
+    assert.ok(tookMs < 15_000, `재시도가 끝나지 않는다(${tookMs}ms)`);
+    assert.equal(r2.status, 502, j(r2.body)); assert.equal(r2.body.reason, 'issue_failed'); assert.equal(r2.body.cia?.reason, 'cred_revoked');
+    assert.ok(r2.body.timings.issueMs > r2.body.timings.userCredMs, `두 번 시도했어야 한다: ${j(r2.body.timings)}`);
+    assert.equal(await active(), null, '세 번째 시도는 없다(있었다면 새 C_u 가 앉았다)');
+    assert.equal(await walletCf(), null, '지갑은 물린 C_u 를 보관하지 않는다');
+    assert.equal((await rv2).status, 200); assert.equal((await rv3).status, 200);
+    // 회복: 다음 로그인은 처음부터 새 C_u 로 성공한다
+    const r3 = await st.withRelay(post);
+    assert.equal(r3.status, 200, j(r3.body)); assert.ok(r3.body.timings.userCredMs > 0);
+    assert.equal(await active(), await walletCf());
+  } finally {
+    await st.stop();
+    proxy.close();
+  }
 });
 
 process.exit(failed === 0 ? 0 : 1);

@@ -49,6 +49,17 @@ let _testuser = null;
 async function freshWallet() { return (_testuser ??= await freshRegistered('12345', 'password123')); }
 /** 발급 한 번(기본값: 새 C_u, head+300). issueV11 의 얇은 포장 — 이 파일의 케이스가 자주 쓰는 모양. */
 const issue = (u, opts = {}) => issueV11(cia, u, { arid, provider, ...opts });
+/** 리뷰 S1(2026-10-13): 응답 시간 상한을 건 POST. 서명 S 가 음수면 예전 CIA 는 verifyPoseidon 안(mulPointEscalar)에서 끝나지 않아
+ *  프로세스 전체가 멈췄다 — 그 회귀는 여기서 ms 뒤 TimeoutError 로 드러난다(상한이 없으면 테스트가 같이 멈출 뿐 실패하지 않는다). */
+const postWithin = (inst, p, body, ms = 2000) => fetch(`${inst.base}${p}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}), signal: AbortSignal.timeout(ms) })
+  .then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
+/** 서명 { R8x, R8y, S } 의 비정규·범위 밖 변형. 앞의 셋(음수)이 예전 CIA 를 멈추던 값이고 나머지는 같은 파서가 함께 거르는 값이다. */
+const badSigVariants = (g) => [
+  ['S=-1', { ...g, S: '-1' }], ['S=-7', { ...g, S: '-7' }], ['R8x=-1', { ...g, R8x: '-1' }],
+  ['S=subOrder', { ...g, S: eddsa.babyJub.subOrder.toString() }], ['S=subOrder+S', { ...g, S: (eddsa.babyJub.subOrder + BigInt(g.S)).toString() }], ['R8y=R8y+p', { ...g, R8y: (BigInt(g.R8y) + F.p).toString() }],
+  ['S 숫자형', { ...g, S: Number(1) }], ['S=0x', { ...g, S: '0x1' }], ['S 공백', { ...g, S: ` ${g.S}` }], ['R8x 없음', { R8y: g.R8y, S: g.S }], ['문자열', 'sig'],
+];
+
 /** 세션 하나 발급 → 그 자격증명 은퇴(scope=credential, 즉시 게시) → 그 세션 폐기(scope=session, pending 에만 쌓는다). 리프(10진)를 돌려준다. (설명은 V10 과 같다) */
 async function revokedLeaf() {
   const iss = await issue(user);
@@ -227,6 +238,18 @@ try {
     assert.equal(missing.r.status, 400);
     const far = await issue(user, { blind_u: g.blind_u, max_height: 10_000_000n });
     assert.equal(far.r.status, 200, JSON.stringify(far.r.body)); assert.equal(far.cred.max_height, '10000000');
+  });
+
+  // 리뷰 L5/A8(2026-10-13): arid_s(·auid_s) = 유효값 + p 는 Poseidon 안에서 유효값과 같아져 서명은 그대로 맞는다 — 예전에는 200 이었다.
+  // 본문만 바꿔 보내는 post 훅을 쓴다(서명·π_IdP 는 원래 값으로 만들었다). /cia/register 의 auid 와 같이 필드 밖은 400.
+  await t('issue V11: arid_s·auid_s 가 필드 밖(유효값 + p)이면 400 — 서명이 맞아도 정규형만 받는다', async () => {
+    const lift = (k) => (p, b) => cia.post(p, { ...b, [k]: (BigInt(b[k]) + F.p).toString() });
+    for (const k of ['arid_s', 'auid_s']) {
+      const r = await issue(user, { max_height: 999999n, post: lift(k) });
+      assert.equal(r.r.status, 400, `${k}: ${JSON.stringify(r.r.body)}`); assert.match(r.r.body.error, /field elements/, k);
+    }
+    const ok = await issue(user, { max_height: 999999n });   // 대조군: 같은 경로를 본문 그대로 보내면 발급된다
+    assert.equal(ok.r.status, 200, JSON.stringify(ok.r.body));
   });
 
   await t('issue V11: allowAgent 는 서명이 덮는다 — 2 는 400, 없으면 400, 허용 목록 밖 chainid 는 400; allowAgent=1 로 서명하면 200 이고 응답도 1', async () => {
@@ -511,6 +534,57 @@ try {
     const r = await cia.post('/cia/slot', { uid: '12345', nonce: nonce.toString(), sig_u: await signSlotRequest(user.sk_u, uid, nonce) });
     assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(typeof r.body.slot, 'number');
     assert.equal((await cia.post('/cia/slot', { uid: '12345', nonce: '100', sig_u: await signSlotRequest(user.sk_u, uid, nonce) })).status, 400, '다른 nonce 의 서명은 거절');
+  });
+
+  // 리뷰 S1(2026-10-13): 서명 필드를 BigInt() 로 그대로 파싱하던 때는 S='-1' 하나로 CIA 가 영구히 멈췄다(verifyPoseidon 의 mulPointEscalar(-1n)).
+  // 회귀하면 그 인스턴스가 멈추므로 별도 격리 인스턴스에서 돌린다 — 공유 인스턴스(위 케이스들)를 끌고 들어가지 않게. 요청마다 2초 상한.
+  // /cia/revoke scope=session 의 같은 검사는 tests/test_mode3_session_revoke.mjs 에 있다.
+  await t('리뷰 S1: 서명 필드가 음수·비10진·범위 밖이면 register·slot·issue 모두 2초 안에 400 — 프로세스는 계속 응답하고 정상 서명은 통한다', async () => {
+    const sc = await startIsolatedCia();
+    try {
+      const reg = await createRegistration(uid);
+      const regBody = (sig_reg) => ({ uid: '12345', pwd: 'password123', auid: reg.auid.toString(), pk_u: pointToStrings(reg.pk_u), sig_reg });
+      const goodReg = await signRegistration(reg.sk_u, uid, reg.auid);
+      for (const [label, bad] of badSigVariants(goodReg)) {
+        const r = await postWithin(sc, '/cia/register', regBody(bad));
+        assert.equal(r.status, 400, `register ${label}: ${JSON.stringify(r.body)}`); assert.equal(r.body.error, 'bad_registration_signature', `register ${label}`);
+      }
+      const okReg = await postWithin(sc, '/cia/register', regBody(goodReg));   // 거절된 시도는 uid 를 잠그지 않았다
+      assert.equal(okReg.status, 201, JSON.stringify(okReg.body));
+      const u = userOf({ ...reg, slot: okReg.body.slot }, '12345');
+
+      const nonce = randomScalar();
+      const goodSlot = await signSlotRequest(reg.sk_u, uid, nonce);
+      for (const [label, bad] of badSigVariants(goodSlot)) {
+        const r = await postWithin(sc, '/cia/slot', { uid: '12345', nonce: nonce.toString(), sig_u: bad });
+        assert.equal(r.status, 400, `slot ${label}: ${JSON.stringify(r.body)}`); assert.equal(r.body.error, 'bad user signature', `slot ${label}`);
+      }
+      assert.equal((await postWithin(sc, '/cia/slot', { uid: '12345', nonce: nonce.toString(), sig_u: goodSlot })).status, 200);
+
+      // /cia/issue: 요청 하나를 만들어 두고(보내지 않는다) sig_u 만 바꿔 보낸다 — 서명 검사는 π_IdP 검증·체인 조회보다 앞이다.
+      let body = null;
+      await issueV11(sc, u, { arid, max_height: 999999n, post: async (p, b) => { body = b; return { status: 0, body: null }; } });
+      for (const [label, bad] of badSigVariants(body.sig_u)) {
+        const r = await postWithin(sc, '/cia/issue', { ...body, sig_u: bad });
+        assert.equal(r.status, 400, `issue ${label}: ${JSON.stringify(r.body)}`); assert.equal(r.body.error, 'bad user signature', `issue ${label}`);
+      }
+      assert.equal((await postWithin(sc, '/cia/issue', body, 10_000)).status, 200, '대조군: 같은 요청을 원래 서명으로 보내면 발급된다');
+      const alive = await fetch(`${sc.base}/cia/public_keys`, { signal: AbortSignal.timeout(2000) });
+      assert.equal(alive.status, 200, '프로세스가 계속 응답한다');
+    } finally { await sc.stop(); }
+  });
+
+  // 리뷰 S4(2026-10-13): π_IdP vkey 를 못 읽으면 503 이되 응답은 고정 사유뿐 — 절대경로·ENOENT 는 지갑을 거쳐 페이지까지 가므로 서버 로그에만.
+  await t('리뷰 S4: π_IdP vkey 가 없으면 /cia/issue 는 503 idp_vkey_unavailable — 응답에 경로·ENOENT 없음(서버 로그에만)', async () => {
+    const missing = path.join(cia.dir, 'no-such-pi_idp_vkey.json');
+    const vc = await startIsolatedCia({ env: { MODE3_IDP_VKEY_PATH: missing } });
+    try {
+      const u = userOf(await vc.registerUser('12345', 'password123'), '12345');
+      const r = await issueV11(vc, u, { arid, max_height: 999999n });
+      assert.equal(r.r.status, 503, JSON.stringify(r.r.body));
+      assert.deepEqual(r.r.body, { error: 'idp_vkey_unavailable', reason: 'idp_vkey_unavailable' });
+      assert.ok(vc.log().includes('ENOENT'), '원인은 서버 로그에 남는다');
+    } finally { await vc.stop(); }
   });
 } finally {
   await cia.stop();

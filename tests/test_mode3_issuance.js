@@ -37,6 +37,10 @@ await t('registerMessage = Poseidon(D_REGISTER_V2, uid, auid); uid ≥ 2^250 은
   await assert.rejects(() => registerMessage(SCALAR_MAX, 99n), /2\^250/);
   await assert.rejects(() => registerMessage(12345n, '99'), /auid/);
 });
+await t('registerMessage: auid ≥ p(BN254 스칼라 필드 소수)는 throw — isField 상한(모듈러로 다시 줄어든 값이 조용히 통과하면 안 된다)', async () => {
+  const bj = await buildBabyjub();
+  await assert.rejects(() => registerMessage(12345n, bj.F.p), /auid/);
+});
 await t('slotRequestMessage = Poseidon(D_SLOTREQ, uid, nonce); revokeSessionMessage = Poseidon(D_REVOKESESS, uid, Cf_s, nonce)', async () => {
   assert.equal(await slotRequestMessage(12345n, 7n), H([DOMAIN_MODE3_SLOTREQ, 12345n, 7n]));
   await assert.rejects(() => slotRequestMessage(12345n, SCALAR_MAX), /nonce/);

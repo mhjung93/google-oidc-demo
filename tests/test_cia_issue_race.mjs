@@ -28,7 +28,8 @@ function deferred() {
 }
 
 // ---- eth_blockNumber 응답을 게이트로 붙잡는 JSON-RPC 프록시 (이 프로세스 안, 변수로 제어) ----
-// hold = { seen, released }: eth_blockNumber 가 오면 seen 을 resolve 하고 released 가 풀릴 때까지 기다린다.
+// hold = { seen, released, method?, need? }: method(기본 eth_blockNumber) 호출이 오면 붙잡고, 누적 need(기본 1)개가 붙잡히면 seen 을
+// resolve 한다. 붙잡힌 요청은 released 가 풀릴 때까지 기다린다. 배치 요청이면 그 안의 method 개수만큼 센다(ethers 가 묶어 보낼 수 있다).
 const UPSTREAM = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
 const provider = new ethers.JsonRpcProvider(UPSTREAM);   // 테스트의 헤드 조회는 프록시(게이트)를 거치지 않는다
 let hold = null;
@@ -39,9 +40,10 @@ const proxy = http.createServer(async (req, res) => {
   try {
     const j = JSON.parse(body);
     const methods = (Array.isArray(j) ? j : [j]).map((x) => x.method);
-    if (methods.includes('eth_blockNumber') && hold) gate = hold;
+    const n = hold ? methods.filter((m) => m === (hold.method ?? 'eth_blockNumber')).length : 0;
+    if (n > 0) { gate = hold; gate.arrived = (gate.arrived ?? 0) + n; }
   } catch { /* 형식 무관 — 그대로 전달 */ }
-  if (gate) { gate.seen.resolve(); await gate.released.promise; }
+  if (gate) { if (gate.arrived >= (gate.need ?? 1)) gate.seen.resolve(); await gate.released.promise; }
   const up = await fetch(UPSTREAM, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
   res.writeHead(up.status, { 'content-type': 'application/json' });
   res.end(await up.text());
@@ -59,23 +61,36 @@ try {
   /** issueV11 의 얇은 포장 — 이 파일의 케이스가 자주 쓰는 모양(이 CIA·이 서비스·이 사용자, 기본값은 새 C_u). */
   const issue = (opts = {}) => issueV11(cia, u, { arid, provider, ...opts });
 
-  await t('issue 동시 요청 둘(같은 uid, 다른 blind_u): 둘 다 200, 활성 자격증명은 하나, 슬롯은 승자의 리프로 수렴; 패자의 blind_u 로 다시 발급하면 409 cred_revoked', async () => {
+  // 리뷰 S2(2026-10-13): 예전에는 "둘 다 200" 이었다 — 먼저 앉은 C_u 가 즉시 게시를 기다리는 사이 다른 요청이 그것을 물리고 자기 것을 앉혀도
+  // 먼저 쪽이 은퇴된 Cf_u 위에 토큰을 받아 갔다(지갑이 그것을 보관하면 다음 로그인이 registry_mismatch 에서 못 빠져나온다). 지금은 게시 뒤
+  // 활성 자격증명을 다시 보고 409 cred_revoked 로 거절한다. 두 요청의 headOf() eth_blockNumber 를 게이트에 함께 붙잡았다가 같이 풀어 겹침을
+  // 결정적으로 만든다 — 먼저 깨어난 쪽이 교체 → 즉시 게시(I/O)에 들어간 사이 다른 쪽이 교체를 마치고 게시 잠금 뒤에 줄 선다.
+  await t('issue 동시 요청 둘(같은 uid, 다른 새 C_u): 하나는 200, 다른 하나는 409 cred_revoked(게시 대기 중 물림, 리뷰 S2); 활성 자격증명·슬롯은 200 쪽, 진 쪽은 세션 기록도 없다', async () => {
     const first = await issue();
     assert.equal(first.r.status, 200, JSON.stringify(first.r.body));
     const before = (await cia.get('/cia/state')).body;
     assert.equal(before.credCount, 1);
-    const [a, b] = await Promise.all([issue({ blind_u: undefined }), issue({ blind_u: undefined })]);
-    assert.equal(a.r.status, 200, JSON.stringify(a.r.body)); assert.equal(b.r.status, 200, JSON.stringify(b.r.body));
+    hold = { seen: deferred(), released: deferred(), need: 2 };
+    const both = Promise.all([issue({ blind_u: undefined }), issue({ blind_u: undefined })]);
+    await hold.seen.promise;   // 두 요청이 모두 검증을 지나 headOf() 에 붙잡혔다
+    const gate = hold;
+    hold = null;
+    gate.released.resolve();
+    const [a, b] = await both;
+    const won = [a, b].filter((x) => x.r.status === 200), lost = [a, b].filter((x) => x.r.status !== 200);
+    assert.equal(won.length, 1, `정확히 하나만 200 이어야 한다: ${JSON.stringify([a.r.status, a.r.body?.reason, b.r.status, b.r.body?.reason])}`);
+    assert.equal(lost[0].r.status, 409, JSON.stringify(lost[0].r.body)); assert.equal(lost[0].r.body.reason, 'cred_revoked');
     const after = (await cia.get('/cia/state')).body;
     assert.equal(after.credCount, 1, '활성 자격증명은 하나여야 한다');
-    // V9: 교체는 등록부 슬롯만 바꾸고(폐기 트리는 건드리지 않는다) — 두 승자 후보(a·b) 중 나중에 물린 쪽의
-    // Cf_u 로 등록부 슬롯·activeCf_u 가 함께 수렴해야 한다.
+    // V9: 교체는 등록부 슬롯만 바꾼다(폐기 트리는 그대로) — 토큰을 받은 쪽의 Cf_u 로 등록부 슬롯·activeCf_u 가 함께 수렴해야 한다.
     const acct = (await cia.adminGet('/cia/accounts')).body.accounts.find((x) => x.uid === '12345');
-    assert.ok([a.cred.Cf_u, b.cred.Cf_u].includes(acct.activeCf_u), `activeCf_u(${acct.activeCf_u}) 는 a·b 중 하나여야 한다`);
+    assert.equal(acct.activeCf_u, won[0].cred.Cf_u, '토큰의 Cf_u = 활성 자격증명');
     assert.equal(acct.registryLeaf, String(await registryLeaf(u.auid, BigInt(acct.activeCf_u))));
-    // 패자(활성이 아닌 쪽)의 blind_u 로 다시 발급하면 그 C_u 는 이미 물린 적이 있어 409 cred_revoked
-    const loser = a.cred.Cf_u === acct.activeCf_u ? b : a;
-    const again = await issue({ blind_u: loser.blind_u });
+    const sessions = (await cia.adminGet('/cia/admin/sessions?uid=12345')).body.sessions;
+    assert.ok(sessions.some((x) => x.Cf_s === won[0].cred.Cf_s), '이긴 쪽은 세션 기록이 있다');
+    assert.ok(!sessions.some((x) => x.Cf_s === lost[0].req.Cf_s.toString()), '진 쪽은 서명·세션 기록 전에 거절됐다');
+    // 진 쪽의 blind_u 로 다시 발급하면 그 C_u 는 이미 물린 적이 있어 409 cred_revoked
+    const again = await issue({ blind_u: lost[0].blind_u });
     assert.equal(again.r.status, 409, JSON.stringify(again.r.body)); assert.equal(again.r.body.reason, 'cred_revoked');
   });
 
@@ -125,6 +140,38 @@ try {
   await t('프록시 경유 정상 발급 (게이트 없음)', async () => {
     const r = await issue();
     assert.equal(r.r.status, 200, JSON.stringify(r.r.body));
+  });
+
+  // 리뷰 S2(2026-10-13): 새 C_u 발급이 즉시 게시를 기다리는 동안 관리자가 그 자격증명을 물리면(scope=credential) 토큰을 내지 않는다.
+  // 게이트를 eth_sendRawTransaction 에 걸어 발급의 게시 tx 를 붙잡는다(발급은 publishSafely await 중). 관리자 폐기의 응답은 같은 게시 잠금
+  // 뒤에 줄 서므로 게이트가 풀려야 오지만, 은퇴(동기 구간)는 바로 돈다 — 그것을 상태(credCount 0)로 확인하고 게이트를 푼다. 결정적이다.
+  await t('리뷰 S2: 새 C_u 발급이 게시를 기다리는 중 관리자 scope=credential → 발급은 409 cred_revoked(토큰·세션 기록 없음), 활성 자격증명 0·슬롯 0; 새 C_u 로 다시 하면 200', async () => {
+    assert.equal((await cia.get('/cia/state')).body.credCount, 1, '앞 케이스가 활성 자격증명 하나를 남겨 둔다');
+    hold = { seen: deferred(), released: deferred(), method: 'eth_sendRawTransaction' };
+    const inflight = issue();   // 새 C_u → 교체 → 즉시 게시 → 게시 tx 가 게이트에 붙잡힌다
+    await hold.seen.promise;
+    const gate = hold;
+    hold = null;
+    const rvP = cia.adminPost('/cia/revoke', { uid: '12345', scope: 'credential' });
+    const deadline = Date.now() + 10_000;
+    while ((await cia.get('/cia/state')).body.credCount !== 0) {
+      assert.ok(Date.now() < deadline, '관리자 폐기의 은퇴(동기 구간)가 돌지 않았다');
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    gate.released.resolve();
+    const [r, rv] = await Promise.all([inflight, rvP]);
+    assert.equal(r.r.status, 409, `게시 대기 중 물린 C_u 에 토큰이 나갔다: ${JSON.stringify(r.r.body)}`);
+    assert.equal(r.r.body.reason, 'cred_revoked'); assert.equal(r.r.body.sigma, undefined);
+    assert.equal(rv.status, 200, JSON.stringify(rv.body)); assert.equal(rv.body.retired, 1, '발급이 앉힌 새 C_u 가 물렸다');
+    assert.equal((await cia.get('/cia/state')).body.credCount, 0);
+    const acct = (await cia.adminGet('/cia/accounts')).body.accounts.find((x) => x.uid === '12345');
+    assert.equal(acct.activeCf_u, null); assert.equal(acct.registryLeaf, '0', '슬롯은 관리자 폐기의 0 으로 끝난다');
+    const sessions = (await cia.adminGet('/cia/admin/sessions?uid=12345')).body.sessions;
+    assert.ok(!sessions.some((x) => x.Cf_s === r.req.Cf_s.toString()), '거절된 발급의 세션은 기록되지 않는다');
+    // 지갑의 1회 재시도와 같은 모양 — 새 C_u 로 다시 하면 발급된다
+    const retry = await issue();
+    assert.equal(retry.r.status, 200, JSON.stringify(retry.r.body));
+    assert.equal((await cia.adminGet('/cia/accounts')).body.accounts.find((x) => x.uid === '12345').activeCf_u, retry.cred.Cf_u);
   });
 
   // 2026-09-25 리뷰 I-1: pruneExpiredSessions() 가 계정 순회 **안**에서 head 를 읽으면, 그 await 동안 /cia/issue 가

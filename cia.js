@@ -294,6 +294,16 @@ async function loadState() {
 const S = (o) => ({ x: F.toObject(o[0]).toString(), y: F.toObject(o[1]).toString() });
 const isDec = (v) => typeof v === 'string' && /^[0-9]+$/.test(v);
 const isPt = (p) => p && isDec(p.x) && isDec(p.y);
+// 서명 필드 파서(2026-10-13 리뷰 S1). BigInt(sig.S) 를 그대로 쓰면 '-1' 같은 값이 통과하는데, circomlibjs verifyPoseidon 은 S ≥ subOrder 만
+// 거르므로 mulPointEscalar(-1n) 가 끝나지 않는다(-1n >> 1n === -1n) — CIA 프로세스 전체(하트비트·릴레이·전 라우트)가 멈춘다.
+// 세 필드가 10진이고 R8x·R8y < p, S < 부분군 차수일 때만 verifyPoseidon 이 받는 { R8, S } 를, 아니면 null 을 돌려준다 — 호출자는 null 을
+// 서명 불일치(400)로 다룬다. 네 라우트(/cia/register·/cia/slot·/cia/issue·/cia/revoke scope=session)가 함께 쓴다. 값은 로그에 남기지 않는다.
+function parseEddsaSig(sig) {
+  if (!sig || typeof sig !== 'object' || !isDec(sig.R8x) || !isDec(sig.R8y) || !isDec(sig.S)) return null;
+  const r8x = BigInt(sig.R8x), r8y = BigInt(sig.R8y), sc = BigInt(sig.S);
+  if (r8x >= F.p || r8y >= F.p || sc >= eddsa.babyJub.subOrder) return null;
+  return { R8: [F.e(r8x), F.e(r8y)], S: sc };
+}
 function secretMatches(a, b) {
   const A = Buffer.from(a), B = Buffer.from(b);
   return A.length === B.length && timingSafeEqual(A, B);
@@ -511,9 +521,10 @@ app.post('/cia/register', async (req, res) => {
   if (BigInt(auid) >= F.p) return res.status(400).json({ error: 'auid is not a field element' });   // Poseidon 출력 범위 — 비정규 값은 등록부 리프·π 와 어긋난다
   if (!(await isValidPoint(pointFromStrings(pk_u)))) return res.status(400).json({ error: 'pk_u is not a valid subgroup point' });
   let ok = false;
+  const sigReg = parseEddsaSig(sig_reg);   // 리뷰 S1: 비정규·범위 밖 서명은 verifyPoseidon 에 넣지 않는다
   try {
     const m = F.e(await registerMessage(BigInt(uid), BigInt(auid)));
-    ok = eddsa.verifyPoseidon(m, { R8: [F.e(BigInt(sig_reg.R8x)), F.e(BigInt(sig_reg.R8y))], S: BigInt(sig_reg.S) }, [F.e(BigInt(pk_u.x)), F.e(BigInt(pk_u.y))]);
+    ok = sigReg !== null && eddsa.verifyPoseidon(m, sigReg, [F.e(BigInt(pk_u.x)), F.e(BigInt(pk_u.y))]);
   } catch { ok = false; }
   if (!ok) return res.status(400).json({ error: 'bad_registration_signature' });
   if (state.accounts[uid]) return res.status(409).json({ error: 'already registered' });   // await 사이 경합
@@ -531,9 +542,10 @@ app.post('/cia/slot', async (req, res) => {
     const acct = state.accounts[uid];
     if (!acct) return res.status(404).json({ error: 'unknown account' });
     let ok = false;
+    const sigU = parseEddsaSig(sig_u);   // 리뷰 S1
     try {
       const m = F.e(await slotRequestMessage(BigInt(uid), BigInt(nonce)));
-      ok = eddsa.verifyPoseidon(m, { R8: [F.e(BigInt(sig_u.R8x)), F.e(BigInt(sig_u.R8y))], S: BigInt(sig_u.S) }, [F.e(BigInt(acct.pk_u.x)), F.e(BigInt(acct.pk_u.y))]);
+      ok = sigU !== null && eddsa.verifyPoseidon(m, sigU, [F.e(BigInt(acct.pk_u.x)), F.e(BigInt(acct.pk_u.y))]);
     } catch { ok = false; }
     if (!ok) return res.status(400).json({ error: 'bad user signature' });
     res.json({ slot: acct.slot });
@@ -552,6 +564,9 @@ app.post('/cia/issue', async (req, res) => {
     }
     const mh = BigInt(max_height);
     if (mh >= (1n << 64n)) return res.status(400).json({ error: 'max_height must be < 2^64' });
+    // 리뷰 L5(2026-10-13): auid_s·arid_s 도 /cia/register 의 auid 처럼 필드 원소(< p)여야 한다 — arid_s = A + p 는 Poseidon 안에서 A 와 같아져
+    // 서명·토큰은 그대로 통과하지만 정규형이 아닌 별칭이다(auid_s 는 snarkjs 가 거절하지만 같은 자리에서 먼저 막는다).
+    if (BigInt(auid_s) >= F.p || BigInt(arid_s) >= F.p) return res.status(400).json({ error: 'auid_s and arid_s must be field elements (< p)' });
     const acct = state.accounts[uid];
     if (!acct) return res.status(404).json({ error: 'unknown account' });
     if (acct.disabled) return res.status(403).json({ error: 'account disabled', reason: 'account_disabled' });
@@ -566,14 +581,16 @@ app.post('/cia/issue', async (req, res) => {
     const Cf_u = await compressPoint(cupt), Cf_s = await compressPoint(cspt);
     const auidS = BigInt(auid_s), aridS = BigInt(arid_s);
     let sigOk = false;
+    const sigU = parseEddsaSig(sig_u);   // 리뷰 S1
     try {
       const m = F.e(await issueRequestMessageV11(auidS, aridS, Cf_u, Cf_s, BigInt(chainStr), agent, mh));
-      sigOk = eddsa.verifyPoseidon(m, { R8: [F.e(BigInt(sig_u.R8x)), F.e(BigInt(sig_u.R8y))], S: BigInt(sig_u.S) }, [F.e(BigInt(acct.pk_u.x)), F.e(BigInt(acct.pk_u.y))]);
+      sigOk = sigU !== null && eddsa.verifyPoseidon(m, sigU, [F.e(BigInt(acct.pk_u.x)), F.e(BigInt(acct.pk_u.y))]);
     } catch { sigOk = false; }
     if (!sigOk) return res.status(400).json({ error: 'bad user signature' });
     // π_IdP — 공개 입력은 CIA 가 스스로 조립한다(uid 는 요청·계정, auid 는 DB 값): 지갑이 보낸 값을 그대로 넣으면 아무 auid 에 대한 증명이 통과한다.
     let vkIdp;
-    try { vkIdp = await loadIdpVkey(IDP_VKEY); } catch (e) { return res.status(503).json({ error: `idp vkey unavailable: ${e.message}` }); }
+    // 리뷰 S4: 응답에는 고정 사유만 — 절대경로·ENOENT 는 지갑을 거쳐 페이지까지 가므로 서버 로그에만 남긴다.
+    try { vkIdp = await loadIdpVkey(IDP_VKEY); } catch (e) { console.error(`[cia] π_IdP vkey 를 읽지 못했다: ${e.message}`); return res.status(503).json({ error: 'idp_vkey_unavailable', reason: 'idp_vkey_unavailable' }); }
     const pubIdp = idpPublicSignals({ uid: BigInt(uid), auid: BigInt(acct.auid), auid_s: auidS, C_u_pt: cupt, C_s_pt: cspt, max_height: mh });
     if (!(await verifyIdp(vkIdp, pubIdp, proof_idp))) return res.status(400).json({ error: 'bad idp proof', reason: 'bad_idp_proof' });
     const head = await headOf(chainStr);   // fail-closed: 체인이 죽어 있으면 발급하지 않는다(게시도 불가하므로 폐기가 닿지 않는 세션이 된다)
@@ -595,6 +612,10 @@ app.post('/cia/issue', async (req, res) => {
       persist();
       published = Boolean((await publishSafely()).published);
       if (acct.disabled) return res.status(403).json({ error: 'account disabled', reason: 'account_disabled' });   // 게시 await 사이의 폐기
+      // 리뷰 S2(2026-10-13): 게시 await 사이에 이 C_u 가 물렸으면(같은 uid 의 다른 새 C_u 발급, 관리자 scope=credential) 토큰을 내지 않는다 —
+      // 은퇴된 Cf_u 위의 토큰은 등록부에 없어 쓸 수 없고, 지갑이 그 C_u 를 보관하면 다음 로그인이 registry_mismatch 에서 못 빠져나온다.
+      // 지갑은 cred_revoked 에 새 C_u 로 한 번만 다시 시도한다(mode3_wallet_agent.js /wallet/login).
+      if (activeCred(uid)?.Cf_u !== cfu) return res.status(409).json({ error: 'this user credential was retired while publishing; make a new one', reason: 'cred_revoked' });
     }
     const s = eddsa.signPoseidon(ciaPrv, F.e(await credMessageV11(auidS, aridS, Cf_u, Cf_s, BigInt(chainStr), agent)));
     // V8(2026-09-24 §2.1): 세션 단위 폐기를 하려면 CIA 가 Cf_s 를 알아야 한다. 정리는 하트비트뿐 아니라 여기서도(최종 리뷰 F2). auid_s·arid_s 는 적지 않는다(D1).
@@ -660,9 +681,10 @@ app.post('/cia/revoke', async (req, res) => {
     if (!isAdmin) {
       if (!sig_u || !isDec(nonce)) return res.status(401).json({ error: 'sig_u and nonce required without admin secret' });
       let ok = false;
+      const sigU = parseEddsaSig(sig_u);   // 리뷰 S1
       try {
         const m = F.e(await revokeSessionMessage(BigInt(uid), BigInt(Cf_s), BigInt(nonce)));
-        ok = eddsa.verifyPoseidon(m, { R8: [F.e(BigInt(sig_u.R8x)), F.e(BigInt(sig_u.R8y))], S: BigInt(sig_u.S) }, [F.e(BigInt(acct.pk_u.x)), F.e(BigInt(acct.pk_u.y))]);
+        ok = sigU !== null && eddsa.verifyPoseidon(m, sigU, [F.e(BigInt(acct.pk_u.x)), F.e(BigInt(acct.pk_u.y))]);
       } catch { ok = false; }
       if (!ok) return res.status(400).json({ error: 'bad user signature' });
     }
@@ -1114,7 +1136,7 @@ app.post('/cia/open/request', async (req, res) => {
     if (BigInt(allowAgent) > 1n) return res.status(403).json({ error: 'bad_allow_agent' });
     if (c1x === '0' && c1y === '1') return res.status(403).json({ error: 'bad_tag' });   // r = 0 — 서비스·컨트랙트와 같은 규칙(심층 방어)
     let vkey;
-    try { vkey = await loadVkey(); } catch (err) { return res.status(503).json({ error: `vkey unavailable: ${err.message}` }); }
+    try { vkey = await loadVkey(); } catch (err) { console.error(`[cia] pi_cred vkey 를 읽지 못했다: ${err.message}`); return res.status(503).json({ error: 'vkey unavailable', reason: 'vkey_unavailable' }); }   // 경로·errno 는 로그에만(리뷰 S4 와 같은 원칙)
     let ok = false;
     try { ok = await snarkjs.groth16.verify(vkey, ps, proof); }
     catch (err) { console.warn('[cia] 개봉 요청의 증명 검증 예외 — vkey/회로 불일치일 수 있다: ' + err.message); ok = false; }

@@ -133,6 +133,14 @@ await t('storeRegistration: slot 은 음이 아닌 정수여야 한다 — 음�
   assert.deepEqual(await call('storeRegistration', { attrs: ATTRS, slot: SLOT, auid }), { ok: true });
 });
 
+// 리뷰 2026-10-13 U2: attrs 는 10진 문자열이면 받아 줬을 뿐 상한(2^64) 검사가 없었다(회로는 끝내 거절하지만, 오리진 제한을 뚫을 가치가 없다).
+await t('storeRegistration: attrs 원소는 2^64 미만이어야 한다(ATTR_MAX, bad_attrs)', async () => {
+  const tooBig = (1n << 64n).toString();
+  await assert.rejects(() => call('storeRegistration', { attrs: [tooBig, '0', '0', '0', '0', '0'], slot: SLOT, auid }), /bad_attrs/);
+  // 뒤따르는 테스트가 기대하는 attrs=ATTRS 로 되돌려 둔다.
+  assert.deepEqual(await call('storeRegistration', { attrs: ATTRS, slot: SLOT, auid }), { ok: true });
+});
+
 await t('getPublicInfo 에는 비밀이 없다', async () => {
   const info = await call('getPublicInfo', {});
   assert.deepEqual(Object.keys(info).sort(), ['attrs', 'auid', 'consents', 'hasUserCred', 'registered', 'slot', 'uid']);
@@ -146,6 +154,16 @@ await t('getPublicInfo 에는 비밀이 없다', async () => {
   for (const secret of [store.state.registration.s_u, registered.sk_u]) {
     assert.ok(!s.includes(secret), `공개 정보에 비밀이 실렸다: ${secret.slice(0, 8)}…`);
   }
+});
+
+// 리뷰 2026-10-13 U3: buildWitness 가 sk_u 를 문자열이면 그대로 받아 줬다(64자 16진 검사 없음) — 손상된 상태라도
+// 형식 검사를 통과해 그대로 지갑 페이지로 나갔다. 기존 사유(registration_incomplete)는 그대로 두고 검사만 좁힌다.
+await t('buildWitness: sk_u 가 64자 16진이 아니면 registration_incomplete(상태는 건드리지 않는다)', async () => {
+  const savedSkU = store.state.registration.sk_u;
+  store.state.registration.sk_u = 'zz'.repeat(32);   // 길이는 64지만 16진이 아니다
+  answers.push(true);
+  await assert.rejects(() => call('consentLogin', { origin: RP_ORIGIN, arid: '777', allowAgent: '0' }), /registration_incomplete/);
+  store.state.registration.sk_u = savedSkU;
 });
 
 await t('consentLogin 승인 → validateWitness 를 통과하는 증인, consents 기록', async () => {

@@ -344,6 +344,61 @@ try {
     assert.deepEqual(s.attrs, fileAttrs);
   });
 
+  // 리뷰 S3(2026-10-13): 발급(새 C_u)이 성공한 뒤 같은 로그인이 실패하면(여기서는 시연 덮어쓰기로 증명을 깨뜨린다) 파일에는 새 Cf_u, Snap 에는
+  // 옛 C_u 가 남을 수 있다. 에이전트는 실패 응답에도 userCredIssued 를 싣고(페이지가 실패 경로에서도 applyPendingToSnap), 페이지가 그것을 놓쳤어도
+  // 다음 로그인은 "증인의 Cf_u ≠ 파일 Cf_u" 를 보고 새 C_u 를 받는다(예전에는 등록부에 새 리프가 있어 403 registry_mismatch 로 막혔다).
+  await t('리뷰 S3: 발급 뒤 실패(증명 덮어쓰기)에도 userCredIssued 가 실린다 — Snap 에 반영하면 다음 로그인이 재사용, 반영을 놓쳐도 새 C_u 로 성공', async () => {
+    const loginWith = async (opts = {}) => {
+      const base = await loginBase();
+      const w = sim.consentLogin({ origin: info.origin, arid: info.arid, allowAgent: '0' });
+      const r = await stack.withRelay(() => wallet.post('/wallet/login', { ...base, witness: w }));
+      return { r, base, w };
+    };
+    const failAfterIssue = async () => {
+      // 다음 로그인이 새 C_u 를 받게(슬롯 0) 하고, 그 로그인의 증명만 한 번 깨뜨린다
+      assert.equal((await cia.adminPost('/cia/revoke', { uid: '12345', scope: 'credential' })).status, 200);
+      assert.equal((await wallet.post('/wallet/demo/override', { s_u: '7', scope: 'prove' })).status, 200);
+      const { r, w } = await loginWith();
+      assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'demo_proof_failed');
+      assert.ok(r.body.userCredIssued?.blind_u, '발급 뒤 실패에도 새 C_u 가 응답에 실린다');
+      assert.notEqual(r.body.userCredIssued.Cf_u, w.userCred?.Cf_u);
+      assert.equal('attrsChanged' in r.body, false);
+      assert.equal((await wallet.get('/wallet/status')).body.userCred?.Cf_u, r.body.userCredIssued.Cf_u, '파일은 이미 새 Cf_u 다');
+      return { failed: r.body, oldCf: w.userCred?.Cf_u };
+    };
+    // (a) 페이지가 반영을 놓쳤다 — sim 은 옛 C_u 그대로. 다음 로그인은 파일 Cf_u 를 정본으로 보고 새 C_u 를 받는다(registry_mismatch 아님).
+    const a = await failAfterIssue();
+    const next = await loginWith();
+    assert.equal(next.w.userCred?.Cf_u, a.oldCf, 'Snap 은 옛 C_u 를 든 채다');
+    assert.equal(next.r.status, 200, j(next.r.body));
+    assert.ok(next.r.body.userCredIssued, '새 C_u 를 받았다'); assert.ok(next.r.body.timings.userCredMs > 0);
+    assert.equal((await verify(next.r.body, next.base)).ok, true);
+    sim.updateUserCred(next.r.body.userCredIssued);
+    // (b) 페이지가 실패 경로에서도 반영한다(wallet.html 의 로그인 실패 처리) → 다음 로그인은 그 C_u 를 재사용
+    const b = await failAfterIssue();
+    sim.updateUserCred(b.failed.userCredIssued);
+    const reuse = await loginWith();
+    assert.equal(reuse.w.userCred?.Cf_u, b.failed.userCredIssued.Cf_u);
+    assert.equal(reuse.r.status, 200, j(reuse.r.body));
+    assert.equal(reuse.r.body.timings.userCredMs, 0, '실패한 로그인이 받은 C_u 를 재사용한다');
+    assert.equal('userCredIssued' in reuse.r.body, false);
+    assert.equal((await verify(reuse.r.body, reuse.base)).ok, true);
+  });
+
+  // 리뷰 2026-10-13 U1: 시뮬레이터(snap_sim.mjs)가 실제 Snap(index.js)과 같은 입력 검증을 하는지 — 실제 Snap 의
+  // rpc.test.mjs 가 기대하는 것과 같은 사유(bad_attrs·bad_slot·bad_params)로 거절되고 상태는 건드리지 않는다.
+  await t('시뮬레이터: storeRegistration·consentLogin 입력 검증이 실제 Snap 과 같다(bad_attrs·bad_slot·bad_params)', async () => {
+    const attrsNow = [...sim.state.registration.attrs];
+    const slotNow = sim.state.registration.slot;
+    const auidNow = sim.state.registration.auid;
+    assert.throws(() => sim.storeRegistration({ attrs: attrsNow.slice(0, 4), slot: slotNow, auid: auidNow }), /bad_attrs/);
+    assert.throws(() => sim.storeRegistration({ attrs: attrsNow, slot: -1, auid: auidNow }), /bad_slot/);
+    assert.throws(() => sim.consentLogin({ origin: '', arid: '777', allowAgent: '0' }), /bad_params/);
+    // 거절된 호출은 상태를 바꾸지 않는다
+    assert.deepEqual(sim.state.registration.attrs, attrsNow);
+    assert.equal(sim.state.registration.slot, slotNow);
+  });
+
   await t('시뮬레이터: selfRevoke 는 uid·pwd, syncAttrs 는 changed 와 C_u 폐기, reset 은 상태를 비운다', async () => {
     assert.deepEqual(sim.selfRevoke({ pwd: 'password123' }), { uid: '12345', pwd: 'password123' });
     // 바로 위 자가 치유 케이스가 attrs 를 바꿔 놓았다 — 고정 리터럴이 아니라 그 결과값을 그대로 돌려 넣어

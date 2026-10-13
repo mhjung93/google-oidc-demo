@@ -2,9 +2,11 @@
 // Task 3 의 snap-mode3/src/index.js 는 이 시뮬레이터와 같은 입출력을 구현한다(스펙 §3.1 표가 정본). 여기서는
 // 대화상자를 decision('allow'|'deny') 인자로 대신하고, 오리진 검사는 하지 않는다(테스트 프로세스가 곧 지갑 페이지다).
 import { createRegistration } from '../../lib/mode3_wallet.js';
+import { ATTR_MAX } from '../../lib/mode3_credential.js';
 
 const clone = (v) => (v === null || v === undefined ? null : JSON.parse(JSON.stringify(v)));
 const isDec = (v) => typeof v === 'string' && /^[0-9]+$/.test(v);
+const fail = (msg) => { throw new Error(msg); };   // index.js 의 fail() 과 같은 모양 — 사유 문자열을 그대로 맞춘다
 
 export function createSnapSim() {
   const state = { registration: null, userCred: null, consents: {} };
@@ -21,13 +23,16 @@ export function createSnapSim() {
       return { uid, pwd, s_u: state.registration.s_u, sk_u: reg.sk_u };
     },
 
-    /** 에이전트 /wallet/register 응답의 slot·attrs·auid 를 저장한다(sk_u·s_u 는 register 때 이미 저장했으므로 받지 않는다). */
+    /** 에이전트 /wallet/register 응답의 slot·attrs·auid 를 저장한다(sk_u·s_u 는 register 때 이미 저장했으므로 받지 않는다).
+     *  실제 Snap(index.js storeRegistration:119-130)과 같은 검사를 같은 사유 문자열로 한다(리뷰 2026-10-13 U1·U2) — 이 검사가
+     *  없으면 시뮬레이터가 실제 Snap 보다 느슨하게 통과시켜 둘의 입출력이 어긋난다. */
     storeRegistration({ attrs, slot, auid }) {
       requireRegistered();
-      // 실제 Snap(index.js storeRegistration)과 같은 검사 — auid 가 10진 문자열이 아니면 거절한다. 이 검사가 없으면
-      // String(undefined) === 'undefined' 가 그대로 저장돼 시뮬레이터와 실제 Snap 의 입출력이 어긋난다.
-      if (!isDec(String(auid ?? ''))) throw new Error('bad_auid: auid 는 10진 문자열');
-      state.registration.attrs = clone(attrs);
+      if (!Array.isArray(attrs) || attrs.length !== 6 || !attrs.every((a) => isDec(String(a)))) fail('bad_attrs: attrs 는 10진 문자열 6개');
+      if (!attrs.every((a) => BigInt(a) < ATTR_MAX)) fail('bad_attrs: attrs 원소는 2^64 미만');
+      if (!Number.isInteger(slot) || slot < 0) fail('bad_slot');
+      if (!isDec(String(auid ?? ''))) fail('bad_auid: auid 는 10진 문자열');
+      state.registration.attrs = attrs.map(String);   // index.js 와 같이 문자열로 정규화
       state.registration.slot = slot;
       state.registration.auid = String(auid);
       return { ok: true };
@@ -39,12 +44,16 @@ export function createSnapSim() {
       return { registered: Boolean(r), uid: r?.uid ?? null, auid: r?.auid ?? null, attrs: clone(r?.attrs), slot: r?.slot ?? null, hasUserCred: Boolean(state.userCred), consents: clone(state.consents) };
     },
 
-    /** 로그인 동의 창. 승인이면 증인 묶음(validateWitness 형식), 거절이면 { denied:true }. */
+    /** 로그인 동의 창. 승인이면 증인 묶음(validateWitness 형식), 거절이면 { denied:true }.
+     *  실제 Snap(index.js consentLogin:144-145)과 같다 — origin 이 없으면 대화상자도 띄우지 않고 거절한다(리뷰 2026-10-13 U1). */
     consentLogin({ origin, arid, allowAgent }, decision = 'allow') {
       requireRegistered();
+      if (typeof origin !== 'string' || !origin) fail('bad_params: origin 필요');
       if (decision !== 'allow') return { denied: true };
-      state.consents[origin] = { arid, allowAgent, grantedAt: new Date().toISOString() };
       const r = state.registration;
+      // 실제 Snap 의 buildWitness(index.js:74-77)와 같은 완결성 검사 — sk_u 64자 16진, uid·s_u 10진, attrs 배열(재리뷰 N4)
+      if (!isDec(String(r.uid)) || !isDec(String(r.s_u)) || !/^[0-9a-fA-F]{64}$/.test(r.sk_u ?? '') || !Array.isArray(r.attrs)) fail('registration_incomplete: storeRegistration 이 아직 끝나지 않았다');
+      state.consents[origin] = { arid, allowAgent, grantedAt: new Date().toISOString() };
       return { uid: r.uid, s_u: r.s_u, sk_u: r.sk_u, attrs: clone(r.attrs), userCred: clone(state.userCred) };
     },
 
@@ -63,8 +72,11 @@ export function createSnapSim() {
     /** 에이전트가 AA 속성 변경을 알렸을 때(응답 attrsChanged). */
     syncAttrs({ attrs }) {
       requireRegistered();
-      const changed = JSON.stringify(attrs) !== JSON.stringify(state.registration.attrs);
-      if (changed) { state.registration.attrs = clone(attrs); state.userCred = null; }
+      // 실제 Snap(index.js syncAttrs)과 같은 검사·정규화(리뷰 2026-10-13 재리뷰 N4)
+      if (!Array.isArray(attrs) || attrs.length !== 6 || !attrs.every((a) => isDec(String(a)))) fail('bad_attrs: attrs 는 10진 문자열 6개');
+      const next = attrs.map(String);
+      const changed = JSON.stringify(next) !== JSON.stringify(state.registration.attrs);
+      if (changed) { state.registration.attrs = next; state.userCred = null; }
       return { ok: true, changed };
     },
 

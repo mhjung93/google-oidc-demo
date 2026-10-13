@@ -269,6 +269,10 @@ async function chooseUserCred(synced, src) {
   const reg = src.registration();
   const uc = src.userCred();
   if (!uc) return { blind_u: randomScalar(), fresh: true };
+  // 리뷰 S3(2026-10-13): snap 모드에서는 파일의 공개 Cf_u 가 정본이다(Task 9 판정과 같은 원칙). Snap 이 든 C_u 가 그것과 다르면 — 발급 뒤 실패한
+  // 로그인의 새 C_u 를 페이지가 Snap 에 반영하지 못한 경우 등 — Snap 쪽이 낡았다. 등록부로 판정하면 내 슬롯에 새 리프가 있어 registry_mismatch 로
+  // 막히므로(Snap 을 초기화하기 전까지) 새 C_u 를 받는다.
+  if (SECRETS === 'snap' && uc.Cf_u !== state.registration?.userCred?.Cf_u) return { blind_u: randomScalar(), fresh: true };
   const chk = await registryCheck(canonicalView(synced), reg, uc);   // V10: 캐노니컬 최신 — 은퇴·바꿔치기를 거울보다 먼저 안다
   if (!chk) return { status: 403, reason: 'registry_slot_unknown' };
   if (chk.match) return { blind_u: BigInt(uc.blind_u), fresh: false };
@@ -573,6 +577,7 @@ app.post('/wallet/authorize/precheck', async (req, res) => {
 // 새 C_u 는 응답의 userCredIssued 로 페이지가 Snap 에 저장한다. attrsChanged 는 보통은 안 실린다 — 증인의 attrs 가 지갑 파일과
 // 다를 때만(V11(D15) 자가 치유, 아래) 실려 페이지가 Snap 의 attrs 를 파일 값으로 맞추게 한다.
 app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
+  let src = null;   // 바깥 catch 도 src.pending 을 싣도록 try 밖에 둔다(리뷰 S3)
   try {
     const { arid, origin, cert_s, pk_trace, r_s, r_rp, allowAgent = '0', factoryAddress = null, attrGateAddress = null, witness = null, verifiedOrigin = null, disclose = null, set = null } = req.body ?? {};
     if (!isDec(arid) || typeof origin !== 'string' || !cert_s || !pk_trace || !isDec(pk_trace.x) || !isDec(pk_trace.y) || !isDec(r_s) || !isDec(r_rp)) return res.status(400).json({ error: 'arid, origin, cert_s, pk_trace{x,y}, r_s, r_rp 필요' });
@@ -614,7 +619,7 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     const bad = await checkService({ arid, origin, cert_s, pk_trace, factoryAddress });
     if (bad) return res.status(bad.status).json(bad.body);
 
-    const src = secretSourceFor(req);
+    src = secretSourceFor(req);
     // V11(D15): 지갑 파일의 attrs 가 정본이다. PUT /wallet/profile 뒤 페이지가 Snap 의 syncAttrs 전달에 실패했으면 증인의 attrs 가 옛 값이다 —
     // 그대로 두면 옛 C_u 를 재사용하면서 술어는 새 attrs 로 판정한다. 파일 값으로 맞추고(pending.attrsChanged → 페이지가 Snap 에 반영) 증인의
     // C_u 는 버려 새 C_u 를 받게 한다(응답의 userCredIssued 도 함께 간다 — applyPendingToSnap 이 syncAttrs → updateUserCred 순으로 저장한다).
@@ -661,9 +666,12 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
       timings.userCredMs = retryMs;
       r = retried.r; demo = retried.demo;
     }
-    if (r.status === 403) return res.status(403).json({ reason: 'account_disabled', timings });
-    if (r.status === 400 && r.body?.reason === 'bad_idp_proof') return res.status(502).json({ reason: 'user_cred_failed', cia: r.body, demo, timings });
-    if (r.status !== 200) return res.status(502).json({ reason: 'issue_failed', cia: r.body, demo, timings });
+    // 리뷰 S3(2026-10-13): 여기부터의 오류 응답에는 src.pending 을 싣는다 — snap 모드에서 발급이 성공한 뒤(게시 대기·증명) 실패해도 새 C_u
+    // (userCredIssued)가 페이지를 거쳐 Snap 에 저장돼야 한다. 안 실으면 파일엔 새 Cf_u·Snap 엔 옛 C_u 가 남는다. cred_revoked 재시도로 C_u 를
+    // 버린 경우는 userCredIssued:null(= Snap 도 버려라)이 실린다. file 모드는 {}.
+    if (r.status === 403) return res.status(403).json({ reason: 'account_disabled', timings, ...src.pending });
+    if (r.status === 400 && r.body?.reason === 'bad_idp_proof') return res.status(502).json({ reason: 'user_cred_failed', cia: r.body, demo, timings, ...src.pending });
+    if (r.status !== 200) return res.status(502).json({ reason: 'issue_failed', cia: r.body, demo, timings, ...src.pending });
     // 이 세션이 어느 서비스 오리진의 것인지 남긴다(2026-09-25 리뷰 D-4) — 세션 라우트가 요청 오리진과 대조한다.
     // origin 은 바로 위에서 인증서(cert_s)와 대조를 마친 값이다.
     state.sessions[rs.toString()].origin = origin;
@@ -679,30 +687,30 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
         // 다른 세 syncAll() 호출부(로그인 첫 동기화·재검증·buildExecute)와 같은 모양으로 감싼다(리뷰 Important) — 안 그러면
         // 일시적 RPC 오류나 sync_unstable 이 바깥 catch 로 새어나가 이미 세션이 저장된 뒤에 분류 안 된 500 이 된다.
         try { synced = await syncAll(); }
-        catch (e) { return res.status(503).json({ reason: 'chain_unavailable', detail: e.message }); }
+        catch (e) { return res.status(503).json({ reason: 'chain_unavailable', detail: e.message, ...src.pending }); }
         lastSync = syncSnapshot(synced);
         const chk = await registryCheck(canonicalView(synced), src.registration(), src.userCred());
-        if (!chk) return res.status(403).json({ reason: 'registry_slot_unknown', timings });   // 리뷰 Minor 1 — null 을 그대로 읽으면 TypeError
+        if (!chk) return res.status(403).json({ reason: 'registry_slot_unknown', timings, ...src.pending });   // 리뷰 Minor 1 — null 을 그대로 읽으면 TypeError
         if (chk.match && synced.registry.leafAt(chk.slot).toString() === chk.expected) break;   // 캐노니컬에 있고 거울 뷰에도 반영됐다
-        if (Date.now() > deadline) return res.status(503).json({ reason: 'registry_unpublished', registry: chk, timings });
+        if (Date.now() > deadline) return res.status(503).json({ reason: 'registry_unpublished', registry: chk, timings, ...src.pending });
         await new Promise((r) => setTimeout(r, 2000));
       }
     }
     let out;
     try { out = await proveSession(rs.toString(), synced, timings, disclosure, src); }
     catch (e) {
-      if (e.reason === 'no_session') return res.status(409).json({ reason: 'no_session', timings });
-      if (e.reason === 'demo_proof_failed') return res.status(409).json({ reason: e.reason, detail: e.detail, demo: 'override:prove', timings });
-      if (e.reason === 'registry_slot_unknown') return res.status(403).json({ reason: 'registry_slot_unknown', timings });
-      if (e.reason === 'registry_unpublished') return res.status(503).json({ reason: 'registry_unpublished', timings });
-      if (e.reason === 'sync_unstable') return res.status(503).json({ reason: 'chain_unavailable', detail: e.message, timings });
+      if (e.reason === 'no_session') return res.status(409).json({ reason: 'no_session', timings, ...src.pending });
+      if (e.reason === 'demo_proof_failed') return res.status(409).json({ reason: e.reason, detail: e.detail, demo: 'override:prove', timings, ...src.pending });
+      if (e.reason === 'registry_slot_unknown') return res.status(403).json({ reason: 'registry_slot_unknown', timings, ...src.pending });
+      if (e.reason === 'registry_unpublished') return res.status(503).json({ reason: 'registry_unpublished', timings, ...src.pending });
+      if (e.reason === 'sync_unstable') return res.status(503).json({ reason: 'chain_unavailable', detail: e.message, timings, ...src.pending });
       throw e;
     }
     if (SECRETS === 'snap') setSessionWitness(rs.toString(), src);
     // src.pending: snap 모드에서 이 로그인이 새로 받은 C_u(userCredIssued) — 페이지가 Snap 에 저장한다. attrsChanged 는 증인의 attrs 가
     // 지갑 파일과 달라 자가 치유(위 V11(D15))가 걸렸을 때만 실린다 — 평소 로그인은 attrs 를 바꾸지 않는다. file 모드는 {}.
     res.json({ ...out, issued: true, allowAgent, timings, disclosure: hasPredicate(disclosure) ? discStrings(disclosure) : null, ...src.pending });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(500).json({ error: e.message, ...(src?.pending ?? {}) }); }
 });
 
 /** snap 모드: 로그인·재승인한 세션의 증인을 메모리에만 둔다(스펙 §3.3, persist 가 뺀다). blind_u 는 지금 C_u 의 것(로그인 중 새로 받았으면 그것). */

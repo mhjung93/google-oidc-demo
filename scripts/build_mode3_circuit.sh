@@ -8,7 +8,7 @@
 # V11(2026-10-12): pi_idp(세션마다 IdP 에 내는 π_IdP)가 추가됐다. 온체인에 가지 않으므로 solidity 검증기는 pi_cred 만 만든다.
 #
 # == 신뢰 설정에 관한 경고 ==
-# contribute 는 고정 엔트로피 문자열을 쓴다(재현 가능한 데모 설정). 운영이라면 ceremony 가 필요하다.
+# snarkjs contribute 는 난수를 섞으므로 빌드마다 키가 바뀐다(재현 불가). 운영이라면 ceremony 가 필요하다.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -20,6 +20,7 @@ fi
 
 OUT=build/mode3
 mkdir -p "$OUT"
+rm -f "$OUT/MANIFEST.sha256"   # pack_mode3_build.sh 가 다시 만든다 — 묵은 매니페스트를 새 빌드와 섞어 두지 않는다
 
 for NAME in pi_cred pi_idp; do
   rm -f "$OUT/${NAME}_0000.zkey" "$OUT/${NAME}_final.zkey" "$OUT/${NAME}_vkey.json"
@@ -30,14 +31,20 @@ for NAME in pi_cred pi_idp; do
   npx snarkjs groth16 setup "$OUT/${NAME}.r1cs" "$PTAU" "$OUT/${NAME}_0000.zkey"
   npx snarkjs zkey contribute "$OUT/${NAME}_0000.zkey" "$OUT/${NAME}_final.zkey" --name=mode3 -v -e=mode3-bench
   npx snarkjs zkey export verificationkey "$OUT/${NAME}_final.zkey" "$OUT/${NAME}_vkey.json"
-done
 
-echo "=== solidity verifier (pi_cred) ==="
-# snarkjs 0.7 템플릿의 컨트랙트 이름은 Groth16Verifier 다 — 저장소 관례(PiPkIVerifier)대로 회로 이름으로 바꾼다.
-npx snarkjs zkey export solidityverifier "$OUT/pi_cred_final.zkey" contracts/PiCredVerifier.sol
-sed -i -E 's/contract (Groth16Verifier|Verifier) /contract PiCredVerifier /' contracts/PiCredVerifier.sol
-grep -q 'contract PiCredVerifier' contracts/PiCredVerifier.sol || { echo "PiCredVerifier 이름 치환 실패" >&2; exit 1; }
-grep -q 'uint\[33\] calldata _pubSignals' contracts/PiCredVerifier.sol || { echo "PiCredVerifier 의 공개 입력이 33개가 아니다 — circuits/pi_cred.circom 을 확인" >&2; exit 1; }
+  # pi_cred 의 zkey 가 막 나온 직후, 같은 반복 안에서 솔리디티 검증기를 뽑는다(부분 실패 보호). pi_idp 가 이어서
+  # 실패해도 PiCredVerifier.sol 은 이미 이 pi_cred_final.zkey 와 짝이 맞은 채로 남는다 — 전에는 루프 밖(둘 다
+  # 끝난 뒤)에서 export 해서, pi_idp 단계가 실패하면 디스크의 새 pi_cred_final.zkey 와 옛 PiCredVerifier.sol(이전
+  # 빌드의 delta)이 어긋난 채로 남았다.
+  if [ "$NAME" = "pi_cred" ]; then
+    echo "=== solidity verifier (pi_cred) ==="
+    # snarkjs 0.7 템플릿의 컨트랙트 이름은 Groth16Verifier 다 — 저장소 관례(PiPkIVerifier)대로 회로 이름으로 바꾼다.
+    npx snarkjs zkey export solidityverifier "$OUT/pi_cred_final.zkey" contracts/PiCredVerifier.sol
+    sed -i -E 's/contract (Groth16Verifier|Verifier) /contract PiCredVerifier /' contracts/PiCredVerifier.sol
+    grep -q 'contract PiCredVerifier' contracts/PiCredVerifier.sol || { echo "PiCredVerifier 이름 치환 실패" >&2; exit 1; }
+    grep -q 'uint\[33\] calldata _pubSignals' contracts/PiCredVerifier.sol || { echo "PiCredVerifier 의 공개 입력이 33개가 아니다 — circuits/pi_cred.circom 을 확인" >&2; exit 1; }
+  fi
+done
 
 echo "완료: $OUT/pi_cred_final.zkey, $OUT/pi_cred_vkey.json, $OUT/pi_cred_js/pi_cred.wasm, contracts/PiCredVerifier.sol"
 echo "      $OUT/pi_idp_final.zkey, $OUT/pi_idp_vkey.json, $OUT/pi_idp_js/pi_idp.wasm"

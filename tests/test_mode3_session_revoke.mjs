@@ -1,6 +1,7 @@
 // CIA 세션 폐기(설계 2026-09-24 V8) — 발급 세션 기록, /cia/revoke scope=session, 관리자 세션 목록. 격리 CIA + :8545. (chain 그룹)
 //   node tests/test_mode3_session_revoke.mjs
 import assert from 'node:assert/strict';
+import { buildEddsa } from 'circomlibjs';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { getProvider } from './helpers/mode3_chain.mjs';
 import { signRevokeSession } from '../lib/mode3_wallet.js';
@@ -164,6 +165,27 @@ try {
     assert.equal(own.status, 200, JSON.stringify(own.body));
     assert.equal(own.body.inserted, true, '주인의 폐기는 리프를 넣는다');
     assert.equal(BigInt(own.body.leaf), await sessionLeaf(BigInt(issuedB.cred.Cf_s)));
+  });
+
+  // 리뷰 S1(2026-10-13): 사용자 서명 경로의 서명 필드를 BigInt() 로 그대로 파싱하던 때는 S='-1' 하나로 CIA 가 영구히 멈췄다
+  // (verifyPoseidon 의 mulPointEscalar(-1n)). 요청마다 2초 상한 — 회귀하면 여기서 TimeoutError 로 실패한다. 마지막 케이스로 둔다(회귀 시
+  // 인스턴스가 멈추므로 뒤 케이스를 끌고 들어가지 않게). register·slot·issue 의 같은 검사는 tests/test_cia_register_issue.mjs 에 있다.
+  await t('리뷰 S1: scope=session 사용자 서명 필드가 음수·비10진·범위 밖이면 2초 안에 400 — 세션은 그대로, 정상 서명은 통한다', async () => {
+    const subOrder = (await buildEddsa()).babyJub.subOrder;
+    const live = await issueWith();
+    const nonce = 4242n;
+    const good = await signRevokeSession(user.sk_u, uid, BigInt(live.cred.Cf_s), nonce);
+    const postWithin = (body) => fetch(`${cia.base}/cia/revoke`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(2000) })
+      .then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
+    const variants = [['S=-1', { ...good, S: '-1' }], ['R8y=-1', { ...good, R8y: '-1' }], ['S=subOrder', { ...good, S: subOrder.toString() }], ['S=1e3', { ...good, S: '1e3' }], ['S 숫자형', { ...good, S: 5 }]];
+    for (const [label, bad] of variants) {
+      const r = await postWithin({ uid: UID, scope: 'session', Cf_s: live.cred.Cf_s, sig_u: bad, nonce: nonce.toString() });
+      assert.equal(r.status, 400, `${label}: ${JSON.stringify(r.body)}`); assert.equal(r.body.error, 'bad user signature', label);
+    }
+    const rec = (await cia.adminGet(`/cia/admin/sessions?uid=${UID}`)).body.sessions.find((x) => x.Cf_s === live.cred.Cf_s);
+    assert.equal(rec.revokedAt, null, '거절된 요청은 세션을 건드리지 않는다');
+    const ok = await postWithin({ uid: UID, scope: 'session', Cf_s: live.cred.Cf_s, sig_u: good, nonce: nonce.toString() });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body)); assert.equal(ok.body.inserted, true, '대조군: 정상 서명은 통한다');
   });
 } finally {
   await cia.stop();

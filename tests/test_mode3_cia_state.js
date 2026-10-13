@@ -21,10 +21,19 @@ t('v11 이하(v2·v4·v8·v10·v11)와 미래 버전(13), 버전 없음은 전�
   assert.throws(() => migrateCiaState({ version: 11, accounts: {} }), /재시연 세트/);
 });
 t('v12 인데 auid 가 없거나 V10 필드(attrs·profile·cm_u)가 남은 계정은 throw', () => {
-  const base = () => ({ ...defaultCiaState(), accounts: { '1': { pk_u: {}, auid: '5', slot: 0, disabled: false } } });
+  const base = () => ({ ...defaultCiaState(), accounts: { '1': { pk_u: { x: '1', y: '2' }, auid: '5', slot: 0, disabled: false } } });
   migrateCiaState(base());
   const noAuid = base(); delete noAuid.accounts['1'].auid;
   assert.throws(() => migrateCiaState(noAuid), /auid/);
   for (const k of ['attrs', 'profile', 'cm_u']) { const s = base(); s.accounts['1'][k] = {}; assert.throws(() => migrateCiaState(s), /V10 fields/, k); }
+});
+t('리뷰 S5: v12 계정의 slot 이 음이 아닌 정수가 아니면 throw(기동 거부)', () => {
+  const mk = (slot) => ({ ...defaultCiaState(), accounts: { '1': { pk_u: { x: '1', y: '2' }, auid: '5', slot, disabled: false } } });
+  migrateCiaState(mk(0)); migrateCiaState(mk(7));
+  for (const slot of [undefined, null, -1, 1.5, '0', NaN]) assert.throws(() => migrateCiaState(mk(slot)), /valid slot/, String(slot));
+});
+t('리뷰 S5: v12 계정의 pk_u 가 {x, y} 10진 문자열이 아니면 throw(기동 거부)', () => {
+  const mk = (pk_u) => ({ ...defaultCiaState(), accounts: { '1': { pk_u, auid: '5', slot: 0, disabled: false } } });
+  for (const pk_u of [undefined, null, {}, { x: '1' }, { x: 1, y: 2 }, { x: '-1', y: '2' }, { x: '0x1', y: '2' }, '1,2']) assert.throws(() => migrateCiaState(mk(pk_u)), /valid pk_u/, JSON.stringify(pk_u));
 });
 process.exit(failed === 0 ? 0 : 1);

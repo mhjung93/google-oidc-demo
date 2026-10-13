@@ -2,6 +2,9 @@
 // V11(2026-10-12): 등록 비밀은 { s_u, sk_u } 둘이다. 등록 커밋 cm_u(Baby Jubjub 스칼라곱)는 없어졌고, 등록 가명 auid = Poseidon(T_AUID, uid, s_u) 는
 // Snap 에 Poseidon 이 없어(WASM 권한 없음) 에이전트가 계산한다 — 그래서 register 는 s_u 를 sk_u 와 함께 **한 번** 페이지로 넘긴다(로그인 증인과 같은 모델).
 export const SCALAR_MAX = 1n << 250n;   // 회로 Num2Bits(250) 과 같은 상한
+// 속성 상한 — lib/mode3_credential.js 의 ATTR_MAX 와 같다(회로 Num2Bits(64)). Snap 번들에는 lib import 가 없어 여기 상수가 정본이다
+// (리뷰 2026-10-13 U2: storeRegistration 이 attrs 원소의 상한을 검사하지 않고 있었다).
+export const ATTR_MAX = 1n << 64n;
 
 /** lib/mode3_credential.js 의 randomScalar — 32바이트를 250비트로 자른다. */
 export function randomScalar() {

@@ -32,7 +32,9 @@ function snapModuleSource() {
   const crypto = stripExports(fs.readFileSync(`${SRC_DIR}crypto.js`, 'utf8'));
   let index = fs.readFileSync(`${SRC_DIR}index.js`, 'utf8');
   const sdkImport = /^import \* as sdkNamespace from '@metamask\/snaps-sdk';$/m;
-  const cryptoImport = /^import \{ createRegistrationSecrets \} from '\.\/crypto\.js';$/m;
+  // 리뷰 2026-10-13 U2: index.js 가 crypto.js 에서 ATTR_MAX 도 가져오게 되면서 import 목록이 늘었다 — 이름 목록은
+  // 가리지 않고 crypto.js 에서 가져오는 import 문 한 줄이라는 구조만 본다.
+  const cryptoImport = /^import \{ [\w, ]+ \} from '\.\/crypto\.js';$/m;
   if (!sdkImport.test(index)) throw new Error('ethereum_stub: snap-mode3/src/index.js 의 snaps-sdk import 를 못 찾았다');
   if (!cryptoImport.test(index)) throw new Error('ethereum_stub: snap-mode3/src/index.js 의 crypto.js import 를 못 찾았다');
   index = index.replace(sdkImport, 'const sdkNamespace = __SDK_SHIM__;').replace(cryptoImport, '');

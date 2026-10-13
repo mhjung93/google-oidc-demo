@@ -749,9 +749,19 @@ try {
     assert.equal(w.status, 200, j(w.body));   // 지갑은 r_s 의 출처를 모른다 — RP 가 거절한다
     const r = await rp.post('/api/mode3/login', { proof: w.body.proof, publicSignals: w.body.publicSignals, sig: w.body.sig, r_s: bogus });
     assert.equal(r.status, 401); assert.equal(r.body.reason, 'bad_challenge');
-    const { r_s, r_rp } = (await rp.post('/api/mode3/challenge')).body;
+    const { r_s, r_rp, expiresAt } = (await rp.post('/api/mode3/challenge')).body;
+    assert.ok(Number.isFinite(expiresAt), '챌린지 응답에 expiresAt(ms) 이 있다');
     const w2 = await wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s, r_rp }, { Origin: rp.origin });
-    await new Promise((res) => setTimeout(res, 12500));
+    // RP 의 챌린지는 성공이든 실패든 첫 접촉에서 곧바로 소비된다(mode3_rp.js consumeChallenge) — 그래서 /api/mode3/login 을
+    // 다시 불러 "만료됐는지" 를 물어볼 수 없다(두 번째 호출부터는 이미 소비됐다는 이유만으로 bad_challenge 가 나와, TTL 자체가
+    // 지켜지는지는 확인하지 못한다). 실제로 TTL(위 startIsolatedMode3Stack 의 MODE3_CHALLENGE_TTL_MS = 12 s; 응답의 expiresAt 이
+    // 그 값이다)이 지난 뒤 단 한 번만 불러야 진짜 만료를 확인하는 셈이 된다. 고정 12.5s sleep 대신 챌린지 응답의 expiresAt(ms)
+    // 을 0.5s 간격으로 로컬 시계와 비교해 기다리고(데드라인 20s; TTL 상수를 테스트에 중복으로 박지 않는다 — 재리뷰 N5), 호출은 한 번만 낸다.
+    const waitDeadline = Date.now() + 20_000;
+    while (Date.now() <= expiresAt + 50) {
+      assert.ok(Date.now() < waitDeadline, '챌린지 만료 대기가 20초 데드라인을 넘었다');
+      await new Promise((res) => setTimeout(res, 500));
+    }
     const r2 = await rp.post('/api/mode3/login', { proof: w2.body.proof, publicSignals: w2.body.publicSignals, sig: w2.body.sig, r_s });
     assert.equal(r2.status, 401); assert.equal(r2.body.reason, 'bad_challenge');
   });

@@ -439,7 +439,12 @@
             disclose: req.disclose ?? null, set: req.set ?? null,
             witness, verifiedOrigin: ev.origin,          // Origin 헤더 대신 팝업이 확인한 값(스펙 §3.3)
           });
-          if (lg.status !== 200) { step('로그인 실패'); log(errText(lg.status, lg.body)); return reply({ ok: false, reason: lg.body.reason ?? 'login_failed', detail: lg.body.detail ?? null, status: lg.status }); }
+          if (lg.status !== 200) {
+            step('로그인 실패'); log(errText(lg.status, lg.body));
+            // 리뷰 S3: 발급 뒤(게시 대기·증명)에 실패해도 에이전트가 새 C_u·속성을 실어 보낸다 — Snap 에 반영해야 파일과 어긋나지 않는다.
+            if (lg.body?.userCredIssued !== undefined || lg.body?.attrsChanged) { try { await applyPendingToSnap(lg.body); } catch (e) { log(e.message); } }
+            return reply({ ok: false, reason: lg.body.reason ?? 'login_failed', detail: lg.body.detail ?? null, status: lg.status });
+          }
 
           step('Snap 에 새 자격증명·속성 반영 중…');
           await applyPendingToSnap(lg.body);

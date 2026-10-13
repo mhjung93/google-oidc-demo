@@ -5,7 +5,7 @@
 // @metamask/snaps-sdk 1.4.0 은 CommonJS·ESM 두 빌드를 함께 낸다. webpack 은 ESM 빌드를 집어 명명 export 가 보이고,
 // Node 는 CommonJS 빌드를 집어 default 하나만 보인다(단위 테스트가 이 경로다). 두 경우를 모두 받는다.
 import * as sdkNamespace from '@metamask/snaps-sdk';
-import { createRegistrationSecrets } from './crypto.js';
+import { createRegistrationSecrets, ATTR_MAX } from './crypto.js';
 
 const sdk = typeof sdkNamespace.panel === 'function' ? sdkNamespace : sdkNamespace.default;
 const { panel, text, heading, divider } = sdk;
@@ -73,7 +73,7 @@ const requireRegistered = (state) => state.registration ?? fail('not_registered:
 /** 증인 묶음 — lib/mode3_secret_source.js 의 validateWitness 형식(스펙 §3.1). consentLogin 응답으로만 나간다. */
 function buildWitness(state) {
   const r = state.registration;
-  if (!isDec(r.uid) || !isDec(r.s_u) || typeof r.sk_u !== 'string' || !Array.isArray(r.attrs)) {
+  if (!isDec(r.uid) || !isDec(r.s_u) || !/^[0-9a-fA-F]{64}$/.test(r.sk_u ?? '') || !Array.isArray(r.attrs)) {
     fail('registration_incomplete: storeRegistration 이 아직 끝나지 않았다');
   }
   return { uid: r.uid, s_u: r.s_u, sk_u: r.sk_u, attrs: clone(r.attrs), userCred: clone(state.userCred) };
@@ -120,6 +120,7 @@ export const onRpcRequest = async ({ origin, request }) => {
       const reg = requireRegistered(state);
       const { attrs, slot, auid } = params;
       if (!Array.isArray(attrs) || attrs.length !== 6 || !attrs.every((a) => isDec(String(a)))) fail('bad_attrs: attrs 는 10진 문자열 6개');
+      if (!attrs.every((a) => BigInt(a) < ATTR_MAX)) fail('bad_attrs: attrs 원소는 2^64 미만');
       if (!Number.isInteger(slot) || slot < 0) fail('bad_slot');
       if (!isDec(String(auid ?? ''))) fail('bad_auid: auid 는 10진 문자열');
       reg.attrs = attrs.map(String);

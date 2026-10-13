@@ -305,6 +305,16 @@ describe('Mode3Wallet', function () {
     await expect(wallet.execute(payload, sig, a, ST.b, ST.c, ST.pub)).to.be.revertedWithCustomError(wallet, 'InvalidProof');
   });
 
+  it('pub[30]/[31]/[32](auid_s·arid_s·r_s) 를 하나씩 바꾸면 InvalidProof — 다이제스트가 덮지 않아 σ 는 그대로지만 증명이 그 공개 입력과 안 맞는다', async () => {
+    const { wallet } = await deployStack(ST);
+    const { payload, sig } = await signedPayload(ST, wallet);
+    for (const i of [30, 31, 32]) {
+      const p = [...ST.pub];
+      p[i] = '0x' + (BigInt(ST.pub[i]) + 1n).toString(16);
+      await expect(wallet.execute(payload, sig, ST.a, ST.b, ST.c, p)).to.be.revertedWithCustomError(wallet, 'InvalidProof');
+    }
+  });
+
   it('내부 호출이 실패해도 revert 하지 않고 nonce 를 소모하며 Executed(success=false)', async () => {
     const { wallet } = await deployStack(ST);
     const { payload, sig } = await signedPayload(ST, wallet, { value: ethers.parseEther('1000') });
