@@ -1,9 +1,9 @@
-// Mode 3 전 구간 데모 각본 — **두 체인**(폐기 체인 :8546 + 응용 체인 :8545), **두 서비스**(일반 + 가상자산거래소). (chain 그룹)
+// Mode 3 전 구간 데모 각본 — **두 체인**(폐기 체인 :8546 + 응용 체인 :8545), **두 RP**(일반 + 가상자산거래소). (chain 그룹)
 //   node tests/test_mode3_demo_full.mjs
 // 2026-10-03 추가. 앱 코드는 V10(2026-10-02)부터 두 체인을 지원하도록 짜여 있었지만 실제 두 노드로 돌려 본 적이 없었다 —
 // 이 각본이 처음이다. 폐기 체인 노드(:8546, chainId 31338)는 이 테스트가 스스로 띄우고 끝나면 끈다(이미 떠 있던 노드는 사용자
 // 것이므로 chainId 만 확인하고 건드리지 않는다 — tests/helpers/mode3_chain.mjs ensureRevChainNode). :8545 는 미리 떠 있어야 한다.
-// 사용자 = testuser(uid 12345, 속성 1990/410). 첫 서비스 = 일반 서비스(정책 기본값), 둘째 = 거래소(허용 국가 KR·JP(=410·392), 최소 나이 19).
+// 사용자 = testuser(uid 12345, 속성 1990/410). 첫 RP = 일반 RP(정책 기본값), 둘째 = 거래소(허용 국가 KR·JP(=410·392), 최소 나이 19).
 // 요청 모양(지갑 login·revalidate·request·tx, RP open)은 tests/test_mode3_demo_stack.mjs 와 같다.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -46,7 +46,7 @@ try {
   const canon = new ethers.Contract(cia.logAddress, MODE3_LOG_ABI, revP);
   const mirror = new ethers.Contract(cia.mirrorAddress, MODE3_MIRROR_ABI, appP);
 
-  /** 브라우저의 RP 페이지가 하는 일: rp_info → r_s → 지갑 login(그 서비스 오리진) → RP login. 거울이 뒤처지면 릴레이(withRelay).
+  /** 브라우저의 RP 페이지가 하는 일: rp_info → r_s → 지갑 login(그 RP 오리진) → RP login. 거울이 뒤처지면 릴레이(withRelay).
    *  pred 를 주면 거래소 술어(나이 ≥ minAge, 국가 ∈ 허용 집합)를 공개하고 RP 에 require 로 요구한다. */
   async function loginViaRp(rp, { pred = false, require = undefined } = {}) {
     const info = (await rp.get('/api/mode3/rp_info')).body;
@@ -74,7 +74,7 @@ try {
     return { r_s, body, sig: w.body.sig };
   }
   const sendRequest = (rp, q) => rp.post('/api/mode3/request', q);
-  /** 이 사용자의 CIA 세션 기록에서 Cf_s 집합(새 세션의 Cf_s 를 집어내는 용도 — test_mode3_demo_stack.mjs V8 과 같은 방식). */
+  /** 이 사용자의 IdP 세션 기록에서 Cf_s 집합(새 세션의 Cf_s 를 집어내는 용도 — test_mode3_demo_stack.mjs V8 과 같은 방식). */
   const sessionCfs = async () => new Set((await cia.adminGet(`/cia/admin/sessions?uid=${uid}`)).body.sessions.map((x) => x.Cf_s));
   const newCf = async (before) => [...(await sessionCfs())].find((c) => !before.has(c));
   const rootHex = (v) => ethers.zeroPadValue(ethers.toBeHex(v), 32);
@@ -90,7 +90,7 @@ try {
 
   let PPID_G, PPID_X, X1, X1_pk_i, slot1;
 
-  await t('막 0. 무대 확인 — 캐노니컬 로그는 폐기 체인(31338), 거울은 응용 체인(31337)에 있고, 두 서비스·CIA 가 그 구성을 가리킨다', async () => {
+  await t('막 0. 무대 확인 — 캐노니컬 로그는 폐기 체인(31338), 거울은 응용 체인(31337)에 있고, 두 RP·IdP 가 그 구성을 가리킨다', async () => {
     assert.equal((await revP.getNetwork()).chainId, REV_CHAIN_ID);
     assert.equal((await appP.getNetwork()).chainId, APP_CHAIN_ID);
     assert.notEqual(await revP.getCode(cia.logAddress), '0x', '캐노니컬 로그는 폐기 체인에 배포돼 있다');
@@ -113,7 +113,7 @@ try {
     assert.equal((await cia.get('/cia/public_keys')).body.canonicalChainId, '31338');
   });
 
-  await t('막 1. 등록·첫 로그인(일반 서비스) — 내 슬롯이 캐노니컬(:8546)에 게시되고, RP 가 거울(:8545) regRoot 로 검증에 성공했다 = 거울이 내 리프를 실은 뒤 로그인이 끝났다', async () => {
+  await t('막 1. 등록·첫 로그인(일반 RP) — 내 슬롯이 캐노니컬(:8546)에 게시되고, RP 가 거울(:8545) regRoot 로 검증에 성공했다 = 거울이 내 리프를 실은 뒤 로그인이 끝났다', async () => {
     assert.equal((await wallet.post('/wallet/register', { uid, pwd })).status, 201);
     const t0 = Date.now();
     const r = await loginViaRp(general);
@@ -137,7 +137,7 @@ try {
     await assertLeafOnlyOnCanonical(ups[ups.length - 1].transactionHash, ups[ups.length - 1].args.leaf);
   });
 
-  await t('막 2. 여러 서비스 — 거래소 로그인(술어) ok, 두 PPID·계정 주소가 다르고, CIA 세션 기록에는 서비스를 가리키는 필드가 없다', async () => {
+  await t('막 2. 여러 RP — 거래소 로그인(술어) ok, 두 PPID·계정 주소가 다르고, IdP 세션 기록에는 RP 를 가리키는 필드가 없다', async () => {
     const t0 = Date.now();
     const r = await loginViaRp(exchange, { pred: true });
     console.log(`     거래소 로그인(사용자 자격증명 재사용, 술어 공개) ${ms(t0)}`);
@@ -148,7 +148,7 @@ try {
     const addrG = await factoryAt(g.factoryAddress, appP).computeAddress(BigInt(PPID_G));
     const addrX = await factoryAt(x.factoryAddress, appP).computeAddress(BigInt(PPID_X));
     assert.notEqual(addrG, addrX, '서비스마다 계정 주소가 다르다');
-    // CIA(AA) 의 세션 기록: 둘 이상 있지만 어느 서비스의 것인지 모른다 — 키 집합이 고정돼 있고, 값 어디에도 arid·origin·PPID·계정 주소가 없다.
+    // IdP 의 세션 기록: 둘 이상 있지만 어느 RP 의 것인지 모른다 — 키 집합이 고정돼 있고, 값 어디에도 arid·origin·PPID·계정 주소가 없다.
     const { sessions } = (await cia.adminGet(`/cia/admin/sessions?uid=${uid}`)).body;
     assert.ok(sessions.length >= 2, j(sessions));
     const allowed = new Set(['Cf_s', 'max_height', 'chainid', 'allowAgent', 'issuedAt', 'revokedAt', 'expired']);
@@ -200,7 +200,7 @@ try {
     assert.equal(await revP.getTransactionReceipt(TX_X), null, '폐기 체인에는 이 트랜잭션이 없다');
   });
 
-  await t('막 3c. 의심 거래 개봉 — 거래소가 txHash 로 요청 → 관리자 승인 → uid 12345·거래소 PPID; 일반 서비스는 아무것도 알지 못한다', async () => {
+  await t('막 3c. 의심 거래 개봉 — 거래소가 txHash 로 요청 → 관리자 승인 → uid 12345·거래소 PPID; 일반 RP 는 아무것도 알지 못한다', async () => {
     const g = (await general.get('/api/mode3/rp_info')).body, x = (await exchange.get('/api/mode3/rp_info')).body;
     const r = await exchange.post('/api/mode3/open', { txHash: TX_X });
     assert.ok([200, 202].includes(r.status), j(r.body));
@@ -209,7 +209,7 @@ try {
     const res = await exchange.get(`/api/mode3/open/${id}`);
     assert.equal(res.status, 200, j(res.body));
     assert.equal(res.body.uid, uid); assert.equal(res.body.PPID, PPID_X);
-    // 일반 서비스: 같은 개봉 id 로 조회해도 결과를 받지 못하고, 개봉 기록에 일반 서비스 것은 하나도 없다.
+    // 일반 RP: 같은 개봉 id 로 조회해도 결과를 받지 못하고, 개봉 기록에 일반 RP 것은 하나도 없다.
     const peek = await general.get(`/api/mode3/open/${id}`);
     assert.notEqual(peek.status, 200, j(peek.body)); assert.equal(peek.body?.uid, undefined, j(peek.body));
     const openings = (await cia.adminGet('/cia/openings')).body.openings;
@@ -227,7 +227,7 @@ try {
     assert.equal((await wallet.get('/wallet/status')).body.demoOverride, null);
   });
 
-  await t('막 5. 세션 폐기(세션 트리) — 거래소 세션 둘(지갑 버튼·관리자) 폐기 → 게시 전엔 대기(pending) → 게시·중계 뒤 두 세션은 revalidate_required, 일반 서비스 세션은 재검증 후 계속', async () => {
+  await t('막 5. 세션 폐기(세션 트리) — 거래소 세션 둘(지갑 버튼·관리자) 폐기 → 게시 전엔 대기(pending) → 게시·중계 뒤 두 세션은 revalidate_required, 일반 RP 세션은 재검증 후 계속', async () => {
     await stack.relayIfBehind();
     const G = await loginViaRp(general);
     let before = await sessionCfs();
@@ -274,14 +274,14 @@ try {
     assert.equal(wa.status, 404, j(wa.body)); assert.equal(wa.body.reason, 'no_session');   // 지갑 버튼 경로는 지갑이 이미 버렸다
     const wb = await revalidateViaRp(exchange, XB.r_s);
     assert.equal(wb.walletStatus, 403, j(wb)); assert.equal(wb.wallet.reason, 'revoked_session');
-    // 일반 서비스 세션: 옛 서명은 root 가 바뀌어 재검증을 요구하지만, 재검증하면 그대로 산다(사용자 자격증명은 살아 있다).
+    // 일반 RP 세션: 옛 서명은 root 가 바뀌어 재검증을 요구하지만, 재검증하면 그대로 산다(사용자 자격증명은 살아 있다).
     const rG = await revalidateViaRp(general, G.r_s);
     assert.equal(rG.walletStatus, 200, j(rG)); assert.equal(rG.rp?.ok, true, j(rG.rp));
     assert.equal((await sendRequest(general, await signRequest(general, G.r_s, 'g2'))).body.ok, true);
   });
 
   let receipt6;
-  await t('막 6. 계정 폐기(등록부) — 지갑 self_revoke → 즉시 게시·접수증; 거울 지연 동안 일반 서비스 요청은 통과 → 중계 → 두 서비스 revalidate_required → 지갑 revoked, 새 로그인 account_disabled', async () => {
+  await t('막 6. 계정 폐기(등록부) — 지갑 self_revoke → 즉시 게시·접수증; 거울 지연 동안 일반 RP 요청은 통과 → 중계 → 두 RP revalidate_required → 지갑 revoked, 새 로그인 account_disabled', async () => {
     const G = await loginViaRp(general);
     const X = await loginViaRp(exchange, { pred: true });
     assert.equal(G.rp?.ok, true, j(G)); assert.equal(X.rp?.ok, true, j(X));
@@ -317,7 +317,7 @@ try {
     assert.ok(receipt6, '막 6 의 접수증');
     const s0 = Number(receipt6.slot);
     assert.equal(s0, slot1, '접수증 슬롯 = 막 1 에서 받은 슬롯');
-    // 제3자 = 폐기 체인의 다른 계정(CIA 도 사용자 지갑도 아니다). 이 슬롯은 막 6 의 게시로 이미 0 이다 — 강제의 효과 자체
+    // 제3자 = 폐기 체인의 다른 계정(IdP 도 사용자 지갑도 아니다). 이 슬롯은 막 6 의 게시로 이미 0 이다 — 강제의 효과 자체
     // (0 으로 싣지 않은 게시의 거절)는 test/Mode3Log.test.mjs 가 본다. 여기서는 접수증 → 대기열 → 게시의 흐름이 폐기 체인에서 돈다는 것만.
     const third = await revP.getSigner(7);
     const logW = canon.connect(third);

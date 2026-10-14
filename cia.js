@@ -1,9 +1,9 @@
-// Mode 3 CIA (Credential Issuing Authority).
+// Mode 3 IdP (Credential Issuing Authority).
 // 설계: docs/superpowers/specs/2026-09-09-mode3-cia-revocation-design.md §3, §6
 //
 // Mode 2 의 custom_idp.js 와 나란히 두는 별도 서버다(:4100). 그쪽 코드를 import 하지 않는다.
 // 하는 일 넷: 등록(§6.1), 발급(§6.2), 폐기(§6.5), root 게시(§6.5). 로그인 검증은 하지 않는다 —
-// 그것은 RP 의 일이고(§6.3) CIA 는 조회 경로에 있어서는 안 된다(§9.9).
+// 그것은 RP 의 일이고(§6.3) IdP 는 조회 경로에 있어서는 안 된다(§9.9).
 // V4(2026-09-18): 만료는 블록 높이(max_height), allowAgent, 체인 헤드 조회, 하트비트 게시, 개봉 평문 역조회 — 설계 2026-09-18-mode3-onchain-execution-design.md §4·§6.
 // V5(2026-09-21): 자격증명 이중 구조 — 사용자 자격증명(/cia/user_cred, π_u — V11 에서 삭제)과 세션 발급(/cia/issue, ZKP 없음)을 나눈다. 폐기 리프는 Cf_u 에서
 //   나오므로 세션 기록(issued)이 없다 — 설계 2026-09-21-mode3-two-tier-credential §3·§4.
@@ -60,8 +60,8 @@ const LOG_ADDRESS = process.env.CIA_LOG_ADDRESS || null;
 // 버린다 — 하트비트가 경고 없이 꺼지는 등 조용한 오설정으로 이어진다. 미설정·빈 문자열만 "기본값"으로 다룬다:
 // 하트비트를 끄려면 명시적으로 '0' 이어야 한다.
 const envBig = (k, d) => { const v = process.env[k]; return v === undefined || v === '' ? BigInt(d) : BigInt(v); };
-// 만료 max_height 는 지갑이 정하고 CIA 는 그대로 서명한다(설계 2026-09-18 §3.2 갱신, zkLogin 의 max_epoch 와 같은 구조).
-// 상한은 검증자(서비스·컨트랙트)가 head + L 로 강제한다. CIA 는 발급 때 헤드를 읽지 않는다 — 체인 가용성만 확인한다.
+// 만료 max_height 는 지갑이 정하고 IdP 는 그대로 서명한다(설계 2026-09-18 §3.2 갱신, zkLogin 의 max_epoch 와 같은 구조).
+// 상한은 검증자(RP·컨트랙트)가 head + L 로 강제한다. IdP 는 발급 때 헤드를 읽지 않는다 — 체인 가용성만 확인한다.
 // 하트비트(설계 §4.5): 마지막 게시에서 이만큼 블록이 지나면 같은 root 를 새 epoch 로 재게시한다. 지갑 컨트랙트의
 // MAX_ROOT_AGE(기본 100) 보다 작아야 한다. 0 이면 끈다(테스트) — envBig 은 빈 문자열을 기본값으로 보므로 끄려면
 // 명시적으로 '0' 을 줘야 한다(격리 하네스가 그렇게 한다).
@@ -175,17 +175,17 @@ async function readChain() {
 //     걷어내는 쪽이 정확하다). epoch 도 컨트랙트를 진실로 삼아 따라잡는다.
 //   - 어느 접두사도 맞지 않으면 false(로그 재배포, 상태 파일 유실·옛 백업 복원). 이때
 //     publishedTree 는 걷다 만 상태라 호출자가 다시 만들거나 종료해야 한다.
-// 기동 시와 게시 직전 둘 다 이 함수를 쓴다 — 기동 때 RPC 가 죽어 대조를 건너뛰었거나 CIA 가 켜진
+// 기동 시와 게시 직전 둘 다 이 함수를 쓴다 — 기동 때 RPC 가 죽어 대조를 건너뛰었거나 IdP 가 켜진
 // 채로 로그가 재배포된 경우를 게시 직전 대조가 잡는다(2026-09-12 리뷰 반영).
 //
 // 등록부(V9) 쪽 대조(fullRegistryRebuild). registry.root() 는 폐기 쪽 publishedTree 와 달리 "아직 게시 안 된
 // pendingSlots 까지 포함한" 전체 현재 상태라서, 게시 직전(publishNow 안)에는 onchainRegRoot 와 다른 것이
 // **정상**이다 — 로컬이 pendingSlots 만큼만 앞서 있을 뿐이다. 그때는 손대지 않는다: pendingSlots 가 이미
 // 정확히 그 칸들이다(2026-10-01 리뷰 2차) — 여기서 "지금 non-zero 인 칸 전부" 를 섞으면(1차 수정의 실수)
-// 사용자가 N 명이면 매 게시마다 N 칸이 전부 실려 가스·SlotUpdated 양이 가입자 수에 비례해 버린다. CIA 키만
+// 사용자가 N 명이면 매 게시마다 N 칸이 전부 실려 가스·SlotUpdated 양이 가입자 수에 비례해 버린다. IdP 키만
 // 게시할 수 있으므로 런타임에 "로컬 − pendingSlots" 와 체인이 달라지는 경우는 보통 기동 호출
 // (fullRegistryRebuild: true)이 잡지만, RPC 가 안 떠 기동 대조 자체를 건너뛰었거나(아래 loadState 의
-// chain === null 분기) CIA 가 켜진 채로 로그가 같은 주소로 재배포된 경우는 기동 호출을 거치지 않으므로
+// chain === null 분기) IdP 가 켜진 채로 로그가 같은 주소로 재배포된 경우는 기동 호출을 거치지 않으므로
 // pendingSlots 가 그 순간 비어 있지 않으면 놓칠 수 있다 — epochDiverged 를 추가 신호로 쓰는 이유다(2026-10-01
 // 리뷰 3차, 아래). pendingSlots 가 비어 있는데도 불일치하면(기동이든 런타임이든) 설명할 길이 없는 진짜
 // 어긋남이므로 마찬가지로 0..next-1 전부(설계 §3.4, 비어 있어 0 인 칸 포함)를 다시 내보낸다 — 지갑은
@@ -295,7 +295,7 @@ const S = (o) => ({ x: F.toObject(o[0]).toString(), y: F.toObject(o[1]).toString
 const isDec = (v) => typeof v === 'string' && /^[0-9]+$/.test(v);
 const isPt = (p) => p && isDec(p.x) && isDec(p.y);
 // 서명 필드 파서(2026-10-13 리뷰 S1). BigInt(sig.S) 를 그대로 쓰면 '-1' 같은 값이 통과하는데, circomlibjs verifyPoseidon 은 S ≥ subOrder 만
-// 거르므로 mulPointEscalar(-1n) 가 끝나지 않는다(-1n >> 1n === -1n) — CIA 프로세스 전체(하트비트·릴레이·전 라우트)가 멈춘다.
+// 거르므로 mulPointEscalar(-1n) 가 끝나지 않는다(-1n >> 1n === -1n) — IdP 프로세스 전체(하트비트·릴레이·전 라우트)가 멈춘다.
 // 세 필드가 10진이고 R8x·R8y < p, S < 부분군 차수일 때만 verifyPoseidon 이 받는 { R8, S } 를, 아니면 null 을 돌려준다 — 호출자는 null 을
 // 서명 불일치(400)로 다룬다. 네 라우트(/cia/register·/cia/slot·/cia/issue·/cia/revoke scope=session)가 함께 쓴다. 값은 로그에 남기지 않는다.
 function parseEddsaSig(sig) {
@@ -363,7 +363,7 @@ function retireActiveCred(uid) {
   for (const c of state.accounts[uid]?.creds ?? []) if (!c.revoked) { c.revoked = true; n++; }
   return n;
 }
-// V10(2026-10-02 §4) 캐노니컬 = 이 CIA 가 게시하는 로그(RPC_URL 의 체인, LOG_ADDRESS). 게시 서명·접수증 둘 다 이 값을 덮는다.
+// V10(2026-10-02 §4) 캐노니컬 = 이 IdP 가 게시하는 로그(RPC_URL 의 체인, LOG_ADDRESS). 게시 서명·접수증 둘 다 이 값을 덮는다.
 // chainId 는 처음 필요할 때 한 번 읽어 둔다 — 읽기에 실패하면 캐시하지 않아 다음 호출이 다시 시도한다.
 let canonical = null;
 async function canonicalParams() {
@@ -398,7 +398,7 @@ app.use('/common', express.static(path.join(__dirname, 'mode3', 'common')));
 // 관리자 패널(스펙 §5). 페이지 하나만 허용 목록으로 내보낸다 — express.static 은 쓰지 않는다.
 app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_admin.html')));
 
-// 사용자 페이지(§6.5.1). 잃어버린 지갑이 아니라 어느 장치에서든 열 수 있어야 하므로 CIA 가 직접 낸다.
+// 사용자 페이지(§6.5.1). 잃어버린 지갑이 아니라 어느 장치에서든 열 수 있어야 하므로 IdP 가 직접 낸다.
 app.get('/account', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_account.html')));
 
 app.get('/cia/public_keys', (req, res) => {
@@ -410,7 +410,7 @@ app.get('/cia/public_keys', (req, res) => {
 // 속성 스키마 공개(스펙 2 §5.2, 인증 없음). 지갑·RP 가 기동 때 받아 술어 타입·정책 이름을 해석하고, 화면이 이름값을 그린다.
 app.get('/cia/attr_schema', (req, res) => res.json({ schema: ATTR_SCHEMA, hash: ATTR_SCHEMA_HASH }));
 
-// 상태 엔드포인트(설계 2026-09-25 §1) — 민감정보 없음, 승인된 서비스·지갑 오리진에만 CORS.
+// 상태 엔드포인트(설계 2026-09-25 §1) — 민감정보 없음, 승인된 RP·지갑 오리진에만 CORS.
 const WALLET_AGENT_ORIGIN = process.env.MODE3_WALLET_AGENT_ORIGIN || 'http://127.0.0.1:5100';
 app.get('/mode3/health', async (req, res) => {
   const rpOrigins = Object.values(state.rps).filter((r) => r.status === 'approved').map((r) => r.origin);
@@ -430,7 +430,7 @@ app.get('/mode3/health', async (req, res) => {
     accounts: Object.keys(state.accounts).length, walletOrigin: WALLET_AGENT_ORIGIN, rpOrigins, mirrors, attrSchema: schemaInfo(ATTR_SCHEMA, ATTR_SCHEMA_HASH) }));
 });
 
-// §3(2026-09-16) 서비스 등록 — pending 으로 받고 운영자가 승인하면 CIA 조각을 만들어 조합 키 pk_trace 와 cert_s(V2)를
+// §3(2026-09-16) RP 등록 — pending 으로 받고 운영자가 승인하면 IdP 조각을 만들어 조합 키 pk_trace 와 cert_s(V2)를
 // 낸다. 같은 origin·같은 키의 재호출은 현재 상태를 돌려준다(상태 조회를 겸한다). arid 는 요청 시점에 배정한다.
 const isAddr = (v) => typeof v === 'string' && /^0x[0-9a-fA-F]{40}$/.test(v);
 app.post('/cia/register_rp', async (req, res) => {
@@ -441,14 +441,14 @@ app.post('/cia/register_rp', async (req, res) => {
     }
     const addr = ethers.getAddress(pk_service);
     const Xs = pointFromStrings(X_svc);
-    // 항등원·부분군 밖은 거절 — 항등원 X_svc 면 pk_trace 가 CIA 조각만으로 열린다(§2).
+    // 항등원·부분군 밖은 거절 — 항등원 X_svc 면 pk_trace 가 IdP 조각만으로 열린다(§2).
     if (!(await isTracePoint(Xs))) return res.status(400).json({ error: 'X_svc is not a valid subgroup point' });
     const Xn = { x: Xs.x.toString(), y: Xs.y.toString() };   // 정규 인코딩으로 저장·대조 — 비정규 입력이 다른 값으로 오인되지 않게
     let arid = Object.keys(state.rps).find((a) => state.rps[a].origin === origin);
     let e = arid ? state.rps[arid] : null;
     if (e && e.pk_service === null) {
       // v3 에서 넘어온 등록(키 없음): 키를 처음 내면 pending 으로 돌려 운영자 승인을 다시 받게 한다 —
-      // 그러지 않으면 첫 호출자가 승인 없이 조합 키를 얻어 진짜 서비스가 잠긴다(§3).
+      // 그러지 않으면 첫 호출자가 승인 없이 조합 키를 얻어 진짜 RP 가 잠긴다(§3).
       e.pk_service = addr; e.X_svc = Xn;
       e.status = 'pending'; e.requestedAt = new Date().toISOString(); e.decidedAt = null;
       e.x_AA = null; e.pk_trace = null;
@@ -465,15 +465,15 @@ app.post('/cia/register_rp', async (req, res) => {
     if (e.status === 'denied') return res.status(403).json({ arid, status: 'denied' });
     if (e.status === 'pending') return res.status(202).json({ arid, status: 'pending' });
     const cert_s = await signRpCert(ciaPrv, { arid: BigInt(arid), origin, pk_trace: e.pk_trace });
-    // CIA 조각 X_AA 와 그 지식 증명(2026-09-21, rogue key 방지). 저장하지 않고 x_AA 로 매번 새로 낸다 — 옛 상태 파일의 승인 항목에도 그대로 나간다.
-    // 서비스는 pk_trace = X_svc + X_AA 와 PoK 를 확인한다(mode3_rp.js). 지갑은 cert_s 만 본다 — 인증서 형식은 그대로다.
+    // IdP 조각 X_AA 와 그 지식 증명(2026-09-21, rogue key 방지). 저장하지 않고 x_AA 로 매번 새로 낸다 — 옛 상태 파일의 승인 항목에도 그대로 나간다.
+    // RP 는 pk_trace = X_svc + X_AA 와 PoK 를 확인한다(mode3_rp.js). 지갑은 cert_s 만 본다 — 인증서 형식은 그대로다.
     const pok = await proveShare(BigInt(e.x_AA), { arid: BigInt(arid), X_svc: pointFromStrings(e.X_svc) });
     const S = (o) => ({ x: o.x.toString(), y: o.y.toString() });
     res.json({ arid, name: e.name, origin, pk_trace: e.pk_trace, cert_s, X_AA: S(pok.X), share_pok: { T: S(pok.T), c: pok.c.toString(), z: pok.z.toString() } });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-/** CIA 조각을 만들어 조합 키를 채운다. 승인 때 한 번 — await 사이 다른 요청이 먼저 채웠으면 덮어쓰지 않는다. */
+/** IdP 조각을 만들어 조합 키를 채운다. 승인 때 한 번 — await 사이 다른 요청이 먼저 채웠으면 덮어쓰지 않는다. */
 async function makeShare(arid) {
   const e = state.rps[arid];
   if (e.pk_trace) return;
@@ -496,7 +496,7 @@ app.post('/cia/rps/:arid/approve', requireAdmin, async (req, res) => {
     if (!e.X_svc) return res.status(409).json({ error: 'no service key registered' });
     // 조각을 먼저 만들고, 성공한 **뒤에** status 를 바꾼다(2026-09-25 리뷰 B-6). 순서가 반대면 makeShare 가 던졌을 때
     // pk_trace = null 인 approved 로 굳는다 — 재승인은 409(already approved)고, 재등록도 status 가 pending 이 아니라
-    // 조각을 다시 만들지 않는다. 그 서비스는 영영 조합 키를 못 받는다.
+    // 조각을 다시 만들지 않는다. 그 RP 는 영영 조합 키를 못 받는다.
     await makeShare(req.params.arid);
     e.status = 'approved'; e.decidedAt = new Date().toISOString();
     persist();   // makeShare 의 persist 는 status 변경 전이다(이미 조각이 있어 일찍 반환한 경우 아예 안 쓴다)
@@ -511,7 +511,7 @@ app.post('/cia/rps/:arid/deny', requireAdmin, (req, res) => {
   res.json({ arid: req.params.arid, status: e.status });
 });
 
-// V11 §3.1 등록. 지갑이 auid = Poseidon(T_AUID, uid, s_u) 와 등록 키 pk_u 를 낸다 — CIA 는 소유 증명 서명만 보고 슬롯 번호를 배정한다. 속성은 받지 않는다(D15).
+// V11 §3.1 등록. 지갑이 auid = Poseidon(T_AUID, uid, s_u) 와 등록 키 pk_u 를 낸다 — IdP 는 소유 증명 서명만 보고 슬롯 번호를 배정한다. 속성은 받지 않는다(D15).
 app.post('/cia/register', async (req, res) => {
   const { uid, pwd, auid, pk_u, sig_reg } = req.body ?? {};
   if (!isDec(uid) || typeof pwd !== 'string' || !isDec(auid) || !isPt(pk_u) || !sig_reg) return res.status(400).json({ error: 'uid, pwd, auid, pk_u{x,y}, sig_reg required' });
@@ -577,7 +577,7 @@ app.post('/cia/issue', async (req, res) => {
     const cupt = pointFromStrings(C_u_pt), cspt = pointFromStrings(C_s_pt);
     if (!(await isValidPoint(cupt))) return res.status(400).json({ error: 'C_u_pt is not a valid subgroup point' });
     if (!(await isValidPoint(cspt))) return res.status(400).json({ error: 'C_s_pt is not a valid subgroup point' });
-    // Cf_u·Cf_s 는 CIA 가 점에서 스스로 유도한다(설계 §6.2) — 사용자가 보낸 Cf 를 서명하면 증명된 점과 무관한 값에 서명이 붙는다.
+    // Cf_u·Cf_s 는 IdP 가 점에서 스스로 유도한다(설계 §6.2) — 사용자가 보낸 Cf 를 서명하면 증명된 점과 무관한 값에 서명이 붙는다.
     const Cf_u = await compressPoint(cupt), Cf_s = await compressPoint(cspt);
     const auidS = BigInt(auid_s), aridS = BigInt(arid_s);
     let sigOk = false;
@@ -587,7 +587,7 @@ app.post('/cia/issue', async (req, res) => {
       sigOk = sigU !== null && eddsa.verifyPoseidon(m, sigU, [F.e(BigInt(acct.pk_u.x)), F.e(BigInt(acct.pk_u.y))]);
     } catch { sigOk = false; }
     if (!sigOk) return res.status(400).json({ error: 'bad user signature' });
-    // π_IdP — 공개 입력은 CIA 가 스스로 조립한다(uid 는 요청·계정, auid 는 DB 값): 지갑이 보낸 값을 그대로 넣으면 아무 auid 에 대한 증명이 통과한다.
+    // π_IdP — 공개 입력은 IdP 가 스스로 조립한다(uid 는 요청·계정, auid 는 DB 값): 지갑이 보낸 값을 그대로 넣으면 아무 auid 에 대한 증명이 통과한다.
     let vkIdp;
     // 리뷰 S4: 응답에는 고정 사유만 — 절대경로·ENOENT 는 지갑을 거쳐 페이지까지 가므로 서버 로그에만 남긴다.
     try { vkIdp = await loadIdpVkey(IDP_VKEY); } catch (e) { console.error(`[cia] π_IdP vkey 를 읽지 못했다: ${e.message}`); return res.status(503).json({ error: 'idp_vkey_unavailable', reason: 'idp_vkey_unavailable' }); }
@@ -618,7 +618,7 @@ app.post('/cia/issue', async (req, res) => {
       if (activeCred(uid)?.Cf_u !== cfu) return res.status(409).json({ error: 'this user credential was retired while publishing; make a new one', reason: 'cred_revoked' });
     }
     const s = eddsa.signPoseidon(ciaPrv, F.e(await credMessageV11(auidS, aridS, Cf_u, Cf_s, BigInt(chainStr), agent)));
-    // V8(2026-09-24 §2.1): 세션 단위 폐기를 하려면 CIA 가 Cf_s 를 알아야 한다. 정리는 하트비트뿐 아니라 여기서도(최종 리뷰 F2). auid_s·arid_s 는 적지 않는다(D1).
+    // V8(2026-09-24 §2.1): 세션 단위 폐기를 하려면 IdP 가 Cf_s 를 알아야 한다. 정리는 하트비트뿐 아니라 여기서도(최종 리뷰 F2). auid_s·arid_s 는 적지 않는다(D1).
     acct.sessions = (acct.sessions ?? []).filter((r) => r.chainid !== chainStr || BigInt(r.max_height) >= head);
     acct.sessions.push({ Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString(), issuedAt: new Date().toISOString(), revokedAt: null });
     persist();
@@ -691,7 +691,7 @@ app.post('/cia/revoke', async (req, res) => {
     if (!rec) return res.status(404).json({ error: 'unknown session', reason: 'unknown_session' });
     if (rec.revokedAt) return res.json({ inserted: false, root: tree.getRoot().toString(), pending: state.pending.length });
     // 만료된 세션은 리프를 넣지 않는다 — append-only 트리를 이미 죽은 세션으로 불리는 일이다(설계 §6).
-    // 만료 기준은 head > max_height 다 — 컨트랙트(Mode3Wallet.sol `block.number > pub[3]`)·서비스(lib/mode3_rp.js)와 같은 부등호를
+    // 만료 기준은 head > max_height 다 — 컨트랙트(Mode3Wallet.sol `block.number > pub[3]`)·RP(lib/mode3_rp.js)와 같은 부등호를
     // 쓴다. head == max_height 는 아직 살아 있는 세션이라 폐기할 수 있어야 한다(최종 리뷰 F1).
     if ((await headOf(rec.chainid)) > BigInt(rec.max_height)) return res.status(409).json({ error: 'session expired', reason: 'expired' });
     const leaf = (await sessionLeaf(BigInt(Cf_s))).toString();
@@ -721,7 +721,7 @@ app.get('/cia/admin/sessions', requireAdmin, async (req, res) => {
 });
 
 // §6.5 게시. 서명이 리프 배열까지 덮는다 — 릴레이어의 calldata 오염 방지. 로그 주소도 덮는다 —
-// 같은 CIA 키로 재배포한 다른 로그에 옛 게시를 재생하지 못하게(재생되면 root 가 옛 트리로 바뀐다).
+// 같은 IdP 키로 재배포한 다른 로그에 옛 게시를 재생하지 못하게(재생되면 root 가 옛 트리로 바뀐다).
 // digest 계산은 lib/mode3_log.js 하나다(컨트랙트의 digestFor 와 바이트 단위로 같다).
 //
 // 게시는 한 번에 하나만 돈다. 둘이 겹치면 각자 pending 을 자기 개수만큼 앞에서 잘라, 그 사이 들어온
@@ -1048,11 +1048,30 @@ app.get('/cia/accounts', requireAdmin, (req, res) => res.json({
 // ---- V9 등록부 관리(설계 2026-10-01 §9) ----
 app.get('/cia/admin/registry', requireAdmin, (req, res) => {
   const byIndex = new Map(Object.entries(state.accounts).map(([uid, a]) => [a.slot, { uid, a }]));
+  const pendingIdx = new Set(state.registry.pendingSlots.map((e) => e.index));
   const slots = registry.entries().map(([index, leaf]) => {
     const e = byIndex.get(index);
-    return { index, uid: e?.uid ?? null, leaf: leaf.toString(), tampered: Boolean(e?.a.tampered), active: e ? Boolean(activeCred(e.uid)) : false };
+    const cred = e ? activeCred(e.uid) : null;
+    // 관리자 화면 "사용자 자격증명 활성 목록"(2026-10-14): 활성 C_u 의 Cf_u·발급 시각·disabled·게시 대기 여부를 함께 준다. 값은 모두 공개 부분이다.
+    return { index, uid: e?.uid ?? null, leaf: leaf.toString(), tampered: Boolean(e?.a.tampered), active: Boolean(cred),
+      Cf_u: cred?.Cf_u ?? null, issuedAt: cred?.issuedAt ?? null, disabled: Boolean(e?.a.disabled), pending: pendingIdx.has(index) };
   });
   res.json({ depth: registry.depth, next: state.registry.next, regRoot: registry.root().toString(), epoch: state.epoch, pendingSlots: state.registry.pendingSlots.length, slots });
+});
+/** 관리자 화면 "세션 폐기 목록"(2026-10-14): 폐기된(revokedAt 있는) 세션만 계정 전체에서 모은다. 세션 리프 Poseidon(5, Cf_s) 와
+ *  게시 여부(pending = 아직 체인에 안 올라감)를 함께 준다. auid_s·arid_s 는 기록에 없으므로(D1) 여기에도 없다. */
+app.get('/cia/admin/revoked_sessions', requireAdmin, async (req, res) => {
+  const pendingLeaves = new Set(state.pending);
+  const out = [];
+  for (const [uid, a] of Object.entries(state.accounts)) {
+    for (const s of a.sessions ?? []) {
+      if (!s.revokedAt) continue;
+      const leaf = (await sessionLeaf(BigInt(s.Cf_s))).toString();
+      out.push({ uid, Cf_s: s.Cf_s, chainid: s.chainid, max_height: s.max_height, allowAgent: s.allowAgent, issuedAt: s.issuedAt, revokedAt: s.revokedAt, leaf, pending: pendingLeaves.has(leaf) });
+    }
+  }
+  out.sort((x, y) => String(y.revokedAt).localeCompare(String(x.revokedAt)));
+  res.json({ sessions: out, pendingCount: state.pending.length, leafCount: state.revoked.length });
 });
 /** 시연: "장부를 속이는 AA" — 활성 자격증명은 그대로 두고 슬롯에 가짜 리프를 게시한다. 지갑의 등록부 확인이 ✗ 가 되고 로그인이 막힌다. */
 app.post('/cia/admin/registry/tamper', requireAdmin, async (req, res) => {
@@ -1098,9 +1117,9 @@ app.post('/cia/account/self_revoke', async (req, res) => {
 });
 
 // ---- §6(2026-09-16) 승인된 개봉 ----
-// 요청: 서비스가 트랜스크립트(공개 입력 14개 + π)와 자기 부분 복호 D_svc 를 서비스 서명키로 서명해 낸다. CIA 는 서명·신선도·
-// arid·pk_trace·Groth16 을 검증하고 pending 으로 둔다 — 트랜스크립트 검증이 없으면 서비스가 임의 암호문을 내 CIA 를 복호
-// 오라클로 쓸 수 있고, arid 대조가 없으면 유출된 남의 로그로 연다. 승인 시점에야 CIA 조각을 더해 uid 를 계산한다.
+// 요청: RP 가 트랜스크립트(공개 입력 14개 + π)와 자기 부분 복호 D_svc 를 RP 서명키로 서명해 낸다. IdP 는 서명·신선도·
+// arid·pk_trace·Groth16 을 검증하고 pending 으로 둔다 — 트랜스크립트 검증이 없으면 RP 가 임의 암호문을 내 IdP 를 복호
+// 오라클로 쓸 수 있고, arid 대조가 없으면 유출된 남의 로그로 연다. 승인 시점에야 IdP 조각을 더해 uid 를 계산한다.
 let vkeyP = null;
 function loadVkey() {
   return (vkeyP ??= (async () => JSON.parse(fs.readFileSync(VKEY_PATH, 'utf8')))().catch((e) => { vkeyP = null; throw e; }));
@@ -1134,7 +1153,7 @@ app.post('/cia/open/request', async (req, res) => {
     if (traceX !== e.pk_trace.x || traceY !== e.pk_trace.y) return res.status(403).json({ error: 'wrong_trace_key' });
     if (!CHAIN_RPCS.has(BigInt(chainIn).toString())) return res.status(403).json({ error: 'wrong_chain' });
     if (BigInt(allowAgent) > 1n) return res.status(403).json({ error: 'bad_allow_agent' });
-    if (c1x === '0' && c1y === '1') return res.status(403).json({ error: 'bad_tag' });   // r = 0 — 서비스·컨트랙트와 같은 규칙(심층 방어)
+    if (c1x === '0' && c1y === '1') return res.status(403).json({ error: 'bad_tag' });   // r = 0 — RP·컨트랙트와 같은 규칙(심층 방어)
     let vkey;
     try { vkey = await loadVkey(); } catch (err) { console.error(`[cia] pi_cred vkey 를 읽지 못했다: ${err.message}`); return res.status(503).json({ error: 'vkey unavailable', reason: 'vkey_unavailable' }); }   // 경로·errno 는 로그에만(리뷰 S4 와 같은 원칙)
     let ok = false;
@@ -1142,8 +1161,8 @@ app.post('/cia/open/request', async (req, res) => {
     catch (err) { console.warn('[cia] 개봉 요청의 증명 검증 예외 — vkey/회로 불일치일 수 있다: ' + err.message); ok = false; }
     if (!ok) return res.status(403).json({ error: 'bad_proof' });
     // pending 이거나, approved 지만 uid 를 찾은(resolved:true) 경우는 같은 (arid, c1) 의 결정이 이미 있거나
-    // 진행 중이라 그 id 를 돌려준다. denied 와 approved+resolved:false(틀린 D_svc — 서비스 자신의 요청만 망친다,
-    // §6.2)는 새 요청을 허용한다 — 거절된 세션을 다시 심사에 올리거나 서비스가 D_svc 를 고쳐 다시 낼 길이
+    // 진행 중이라 그 id 를 돌려준다. denied 와 approved+resolved:false(틀린 D_svc — RP 자신의 요청만 망친다,
+    // §6.2)는 새 요청을 허용한다 — 거절된 세션을 다시 심사에 올리거나 RP 가 D_svc 를 고쳐 다시 낼 길이
     // 있어야 한다. arid 대조가 없으면 유출된 남의 로그로 연다.
     // dup 키는 (arid, c1, c2, PPID) — c1 = r·B8 은 사용자와 무관해 두 사용자가 같은 r 을 쓰면 겹친다(2026-09-23 점검 A-I1).
     // c2·PPID 까지 같아야 "같은 트랜스크립트"다. 아니면 뒤 요청이 앞 사용자의 승인 항목을 받아 uid 가 오귀속된다.
@@ -1169,7 +1188,7 @@ app.post('/cia/openings/:id/approve', requireAdmin, async (req, res) => {
     const e = state.rps[o.arid];
     const D_aa = await partialDecrypt(BigInt(e.x_AA), pointFromStrings(o.c1));
     const h = await combineDecrypt(BigInt(o.c2), pointFromStrings(o.D_svc), D_aa);
-    // 평문은 Poseidon(uid, arid)(2026-09-18 §3.4) — 등록부의 uid 마다 계산해 되찾는다. 못 찾으면 D_svc 가 틀렸거나(서비스 자신의
+    // 평문은 Poseidon(uid, arid)(2026-09-18 §3.4) — 등록부의 uid 마다 계산해 되찾는다. 못 찾으면 D_svc 가 틀렸거나(RP 자신의
     // 요청만 망친다) 계정이 등록부에 없는 것이다. 어느 쪽이든 approved 로 기록하되 resolved=false 로 남긴다(§6.2).
     const uid = await resolveTagPlaintext(h, BigInt(o.arid), Object.keys(state.accounts));
     o.decidedAt = new Date().toISOString();
@@ -1231,5 +1250,5 @@ app.use((err, req, res, next) => {
 });
 process.on('unhandledRejection', (e) => console.error(`[cia] unhandledRejection: ${e?.stack ?? e}`));
 app.listen(PORT, '127.0.0.1', () => {
-  console.log(`Mode 3 CIA running at http://127.0.0.1:${PORT} (log=${LOG_ADDRESS ?? 'none'}, heartbeat=${HEARTBEAT_BLOCKS}, mirrors=${MIRRORS.map((m) => m.chainStr).join(',') || 'none'}(H=${MIRROR_HEARTBEAT_BLOCKS}, relayOnPublish=${MIRROR_RELAY_ON_PUBLISH && MIRROR_HEARTBEAT_BLOCKS > 0n}), chains=${[...CHAIN_RPCS.keys()].join(',') || 'none'}, vkey=${fs.existsSync(VKEY_PATH) ? 'ok' : 'missing'}, idpVkey=${fs.existsSync(IDP_VKEY) ? 'ok' : 'missing'}, registry=${registry.entries().length})`);
+  console.log(`Mode 3 IdP running at http://127.0.0.1:${PORT} (log=${LOG_ADDRESS ?? 'none'}, heartbeat=${HEARTBEAT_BLOCKS}, mirrors=${MIRRORS.map((m) => m.chainStr).join(',') || 'none'}(H=${MIRROR_HEARTBEAT_BLOCKS}, relayOnPublish=${MIRROR_RELAY_ON_PUBLISH && MIRROR_HEARTBEAT_BLOCKS > 0n}), chains=${[...CHAIN_RPCS.keys()].join(',') || 'none'}, vkey=${fs.existsSync(VKEY_PATH) ? 'ok' : 'missing'}, idpVkey=${fs.existsSync(IDP_VKEY) ? 'ok' : 'missing'}, registry=${registry.entries().length})`);
 });

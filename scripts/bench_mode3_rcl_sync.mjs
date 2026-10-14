@@ -27,7 +27,7 @@ const { address: logAddress, contract: log } = await deployRevocationLog(ciaEth.
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-rcl-bench-'));
 const cacheFile = path.join(dir, 'mode3_wallet_rcl.json');
 
-// CIA 흉내: 로컬 트리를 유지하며 리프를 게시한다(매번 이벤트를 다시 읽지 않는다 — 벤치 자체가 느려지지 않게)
+// IdP 흉내: 로컬 트리를 유지하며 리프를 게시한다(매번 이벤트를 다시 읽지 않는다 — 벤치 자체가 느려지지 않게)
 const ciaTree = await createRevocationTree();
 let nextLeaf = 1_000_001n;
 async function publish(count) {

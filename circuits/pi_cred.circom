@@ -171,7 +171,7 @@ template PiCred(depth, regDepth) {
     inc.root === regRoot;
 
     // ---- ⑧ 트레이스 태그 ----
-    // r ≠ 0 (2026-09-21 결정): c1 = r·B8 가 항등원이면 c2 가 평문을 그대로 드러낸다. 컨트랙트·서비스의 c1 ≠ O 검사와 중복 방어.
+    // r ≠ 0 (2026-09-21 결정): c1 = r·B8 가 항등원이면 c2 가 평문을 그대로 드러낸다. 컨트랙트·RP 의 c1 ≠ O 검사와 중복 방어.
     component rNZ = IsZero();
     rNZ.in <== r;
     rNZ.out === 0;
@@ -227,7 +227,7 @@ template PiCred(depth, regDepth) {
 }
 
 // 공개 입력의 순서는 lib/mode3_wallet.js·lib/mode3_rp.js·lib/mode3_onchain.js(PUB_INDEX)·cia.js(개봉)·contracts/Mode3Wallet.sol 가 의존한다. 바꾸지 말 것.
-// pk_CIA_x/y 와 pk_trace_x/y 는 공개 입력이다. 검증자는 반드시 전자를 고정된 CIA 키와, 후자를 자기 등록 파일의 조합 키와 비교해야 한다.
+// pk_CIA_x/y 와 pk_trace_x/y 는 공개 입력이다. 검증자는 반드시 전자를 고정된 IdP 키와, 후자를 자기 등록 파일의 조합 키와 비교해야 한다.
 // [0] PPID [1] arid [2] pk_i [3] max_height [4] chainid [5] allowAgent [6] revRoot [7] regRoot [8,9] pk_CIA [10,11] pk_trace
 // [12..14] tag [15] disc_mask [16..21] disc_lo [22..27] disc_hi [28] set_sel [29] set_root [30] auid_s [31] arid_s [32] r_s
 component main {public [

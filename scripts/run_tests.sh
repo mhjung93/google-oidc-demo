@@ -9,7 +9,7 @@
 #   bash scripts/run_tests.sh unit       # 외부 의존 없음, 빠름
 #   bash scripts/run_tests.sh circuit    # circom/snarkjs 필요. 느리다(회로 컴파일).
 #                                        # test_mode3_artifacts.mjs 만 build/mode3 의 배포용 산출물(vkey·zkey·wasm)도 본다
-#   bash scripts/run_tests.sh chain      # hardhat 노드(:8545) 필요. IdP/CIA는 스스로 격리 기동.
+#   bash scripts/run_tests.sh chain      # hardhat 노드(:8545) 필요. IdP는 스스로 격리 기동.
 #                                        # :8546 은 비어 있거나 chainId 31338 노드여야 한다 — test_mode3_demo_full.mjs 가 비어 있으면
 #                                        # 폐기 체인 노드를 띄우고 끝나면 끈다. 이미 31338 노드가 있으면 끄지 않고 그 위에 배포·트랜잭션을 보낸다
 #                                        # Mode 3 테스트는 build/mode3/pi_cred_*.zkey·vkey 와 (V11) pi_idp_*.zkey·vkey·wasm 도 필요
@@ -71,7 +71,7 @@ CIRCUIT=(
   tests/test_mode3_artifacts.mjs
 )
 
-# hardhat 노드만 있으면 되는 것들. IdP/CIA가 필요하면 테스트가 스스로 격리 인스턴스를 띄운다
+# hardhat 노드만 있으면 되는 것들. IdP가 필요하면 테스트가 스스로 격리 인스턴스를 띄운다
 # (tests/helpers/isolated_idp.mjs, isolated_cia.mjs). test_mode3_{wallet,rp,e2e,wallet_agent} 는
 # build/mode3/ 의 pi_cred zkey·vkey 산출물도 전제한다(없으면 vkey 존재 검사에서 바로 멈춘다).
 CHAIN=(
@@ -95,7 +95,7 @@ CHAIN=(
   tests/test_mode3_demo_stack.mjs
   # 사용자 정의 속성 스키마(CIA_ATTR_SCHEMA_FILE)로 띄운 격리 스택 두 벌 — AttrGate 건너뜀·predicate_unavailable(2026-10-07 최종 리뷰 I2)
   tests/test_mode3_custom_schema.mjs
-  # 두 체인(폐기 체인 + 응용 체인)·두 서비스 전 구간 각본(2026-10-03). 이 파일은 :8546 노드(chainId 31338)를 스스로 띄우고 끝나면 끈다.
+  # 두 체인(폐기 체인 + 응용 체인)·두 RP 전 구간 각본(2026-10-03). 이 파일은 :8546 노드(chainId 31338)를 스스로 띄우고 끝나면 끈다.
   tests/test_mode3_demo_full.mjs
   tests/test_mode3_health.mjs
 )

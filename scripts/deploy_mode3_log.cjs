@@ -1,7 +1,7 @@
 // Mode 3 캐노니컬 로그(Mode3Log) + 거울(Mode3Mirror) 배포.
 //   CIA_ETH_ADDRESS=0x... npx hardhat run scripts/deploy_mode3_log.cjs --network localhost
 //
-// V10(2026-10-02 설계 §5): 서비스(RP)·지갑·계정 컨트랙트는 자기 체인의 거울만 읽고, CIA 가 캐노니컬 로그의 게시를 거울로
+// V10(2026-10-02 설계 §5): RP·지갑·계정 컨트랙트는 자기 체인의 거울만 읽고, IdP 가 캐노니컬 로그의 게시를 거울로
 // 중계한다. 기본 흐름은 한 네트워크에 로그와 그 로그를 가리키는 거울을 함께 배포한다(체인 하나 데모).
 // 폐기 체인을 별도 노드로 둘 때(docs/MODE3_DEMO.md "폐기 체인을 별도 노드로")는 두 번 돌린다 — 폐기 체인에서 한 번(로그 +
 // 같은 체인 거울, 거울은 안 써도 무해), 앱 체인에서 MODE3_CANONICAL_LOG_ADDRESS·MODE3_CANONICAL_CHAIN_ID 를 주어 한 번
@@ -27,7 +27,7 @@ async function main() {
   const { createRegistryTree } = await import("../lib/mode3_registry.js");
   const emptyRoot = hre.ethers.zeroPadValue(hre.ethers.toBeHex((await createRevocationTree()).getRoot()), 32);
   const emptyReg = hre.ethers.zeroPadValue(hre.ethers.toBeHex((await createRegistryTree()).root()), 32);
-  // CIA 는 게시·거울 중계 tx 를 자기 키로 보낸다 — hardhat 기본 계정에서 가스비를 채워 준다(이 네트워크 몫).
+  // IdP 는 게시·거울 중계 tx 를 자기 키로 보낸다 — hardhat 기본 계정에서 가스비를 채워 준다(이 네트워크 몫).
   const [funder] = await hre.ethers.getSigners();
   const bal = await hre.ethers.provider.getBalance(cia);
   if (bal < hre.ethers.parseEther("0.5")) {

@@ -55,7 +55,7 @@ t('AA pendingLeaves > 0 이면 노랑(건수 표시)', () => {
   assert.deepEqual(lv(j.aa), ['warn', 'stack_pending_leaves']);
   assert.equal(j.aa.vars.n, 2);
 });
-t('서비스: 승인 대기는 노랑, 비활성은 빨강, approved+active 는 초록', () => {
+t('RP: 승인 대기는 노랑, 비활성은 빨강, approved+active 는 초록', () => {
   assert.deepEqual(lv(judge(last({ rp: { ...rpOk, status: 'pending' } })).rp), ['warn', 'stack_rp_pending']);
   assert.deepEqual(lv(judge(last({ rp: { ...rpOk, active: false, inactiveReason: 'registration_pending' } })).rp), ['bad', 'stack_rp_inactive']);
   assert.deepEqual(lv(judge(last()).rp), ['ok', 'stack_ok']);
@@ -72,17 +72,17 @@ t('정상이면 넷 다 초록', () => {
   assert.deepEqual(lv(j.wallet), ['ok', 'stack_ok']);
   assert.equal(j.chain.level, 'ok');
 });
-t('서비스의 rootAge 가 null 이어도(세션 요청 전) AA 판정은 자기 rootAge 로 한다', () => {
+t('RP 의 rootAge 가 null 이어도(세션 요청 전) IdP 판정은 자기 rootAge 로 한다', () => {
   assert.deepEqual(lv(judge(last({ rp: { ...rpOk, rootAge: null } })).aa), ['ok', 'stack_ok']);
   assert.deepEqual(lv(judge(last({ aa: { ...aaOk, rootAge: 60 }, rp: { ...rpOk, rootAge: null } })).aa), ['bad', 'stack_root_stale']);
 });
-t('서비스가 없으면 상한은 AA 의 heartbeatBlocks·2', () => {
+t('RP 가 없으면 상한은 IdP 의 heartbeatBlocks·2', () => {
   const noRp = (aa) => judge({ at: 1000, aa, rp: null, wallet: { ...walletOk }, errors: {} }).aa;
   assert.deepEqual(lv(noRp({ ...aaOk, heartbeatBlocks: 5, rootAge: 10 })), ['bad', 'stack_root_stale']);
   assert.deepEqual(lv(noRp({ ...aaOk, heartbeatBlocks: 5, rootAge: 5 })), ['warn', 'stack_root_warn']);
   assert.deepEqual(lv(noRp({ ...aaOk, heartbeatBlocks: 5, rootAge: 4 })), ['ok', 'stack_ok']);
 });
-t('heartbeatBlocks 가 0(하트비트 없음)이고 서비스도 없으면 root 판정을 하지 않는다', () => {
+t('heartbeatBlocks 가 0(하트비트 없음)이고 RP 도 없으면 root 판정을 하지 않는다', () => {
   const j = judge({ at: 1000, aa: { ...aaOk, heartbeatBlocks: 0, rootAge: 9999 }, rp: null, wallet: { ...walletOk }, errors: {} });
   assert.deepEqual(lv(j.aa), ['ok', 'stack_ok']);
   assert.deepEqual(lv(j.rp), ['unknown', 'stack_unknown']);   // 주소를 모르면 오류가 아니라 회색이다

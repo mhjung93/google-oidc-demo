@@ -7,7 +7,7 @@ import { signRootPublication, publicationDigest } from '../lib/mode3_log.js';
 const { ethers } = hre;
 const b32 = (n) => ethers.zeroPadValue(ethers.toBeHex(n), 32);
 
-// digest 계산은 lib/mode3_log.js 하나만 쓴다(CIA 가 실제로 쓰는 코드) — 여기 사본을 두면 lib 이
+// digest 계산은 lib/mode3_log.js 하나만 쓴다(IdP 가 실제로 쓰는 코드) — 여기 사본을 두면 lib 이
 // 드리프트해도 이 테스트가 잡지 못한다.
 const signPubFor = async (target, wallet, root, epoch, leaves) =>
   signRootPublication(wallet, { logAddress: await target.getAddress(), root, epoch, leaves });
@@ -40,7 +40,7 @@ describe('RevocationLog', () => {
     expect(await log.root()).to.equal(emptyRoot);
   });
 
-  it('CIA 서명 게시: root·epoch 갱신, 리프 이벤트', async () => {
+  it('IdP 서명 게시: root·epoch 갱신, 리프 이벤트', async () => {
     const leaves = [b32(111n), b32(222n)];
     const newRoot = b32(999n);
     const sig = await signPub(cia, newRoot, 1n, leaves);
@@ -56,7 +56,7 @@ describe('RevocationLog', () => {
     expect(await log.epoch()).to.equal(1n);
   });
 
-  it('CIA 가 아닌 키의 서명은 거절된다', async () => {
+  it('IdP 가 아닌 키의 서명은 거절된다', async () => {
     const sig = await signPub(stranger, b32(1n), 1n, []);
     await expect(log.publishRoot(b32(1n), 1n, [], sig)).to.be.revertedWithCustomError(log, 'BadSignature');
   });
@@ -75,8 +75,8 @@ describe('RevocationLog', () => {
     await expect(log.publishRoot(b32(5n), 1n, [], sig)).to.be.revertedWithCustomError(log, 'BadSignature');
   });
 
-  it('같은 CIA 키로 배포한 다른 로그의 게시를 재생하면 거절된다 (digest 가 로그 주소를 덮는다)', async () => {
-    // CIA 이더 키를 유지한 채 로그를 재배포하면 옛 로그의 공개 calldata (root, epoch, leaves, sig) 를
+  it('같은 IdP 키로 배포한 다른 로그의 게시를 재생하면 거절된다 (digest 가 로그 주소를 덮는다)', async () => {
+    // IdP 이더 키를 유지한 채 로그를 재배포하면 옛 로그의 공개 calldata (root, epoch, leaves, sig) 를
     // 새 로그에 그대로 제출할 수 있었다. 그러면 새 로그의 root 가 옛 트리로 바뀌어 지갑 재구성이 전부 막힌다.
     const F = await ethers.getContractFactory('RevocationLog');
     const other = await F.deploy(cia.address, emptyRoot);

@@ -53,7 +53,7 @@ t('ui 에 안내 바·토글·공통 버튼 키가 있다', () => {
 t('ui 에 상태 패널 키가 있다', () => {
   for (const k of ['stack_aa', 'stack_rp', 'stack_wallet', 'stack_chain', 'stack_unknown', 'stack_no_response', 'stack_chain_none', 'stack_root_stale', 'stack_root_warn', 'stack_pending_leaves', 'stack_rp_pending', 'stack_rp_inactive', 'stack_wallet_unregistered', 'stack_wallet_cia_down', 'stack_ok', 'stack_panel_title', 'stack_head']) assert.ok(S.ui[k], k);
 });
-// V10(2026-10-02) 상태 카드의 거울 줄 — 관리자·서비스·지갑 페이지가 쓴다.
+// V10(2026-10-02) 상태 카드의 거울 줄 — 관리자·RP·지갑 페이지가 쓴다.
 t('ui 에 거울 상태 줄 키가 있다', () => {
   for (const k of ['admin_mirror_line', 'admin_mirror_unreadable', 'rp_mirror_line', 'wallet_mirror_line']) assert.ok(S.ui[k], k);
 });
@@ -76,4 +76,30 @@ t('steps 에 체험 모드 말풍선 문구(tour)와 대상 요소(target)가 �
 t('ui 에 체험 모드 키가 있다', () => {
   for (const k of ['tour_on', 'tour_off', 'tour_lock_login', 'tour_lock_register', 'tour_elsewhere', 'tour_done_title', 'tour_done_body', 'tour_next']) assert.ok(S.ui[k], k);
 });
+// 관리자 "사용자 자격증명 — 활성 목록"·"세션 — 폐기 목록" 두 표(2026-10-14 U1).
+t('ui 에 관리자 자격증명·세션 폐기 목록 키가 있다', () => {
+  for (const k of ['admin_creds_title', 'admin_creds_desc', 'admin_creds_empty',
+    'admin_revoked_sessions_title', 'admin_revoked_sessions_desc', 'admin_revoked_sessions_empty',
+    'admin_col_uid', 'admin_col_slot', 'admin_col_cfu', 'admin_col_issued', 'admin_col_state', 'admin_col_published',
+    'admin_col_cfs', 'admin_col_chain', 'admin_col_maxh', 'admin_col_revoked_at',
+    'admin_state_active', 'admin_state_retired', 'admin_state_disabled', 'admin_state_tampered',
+    'admin_pub_yes', 'admin_pub_pending']) assert.ok(S.ui[k], k);
+});
+// 지갑 "공개할 속성 조건" 새 폼(국가 선택·예비 체크박스) + AttrGate claim 버튼(2026-10-14 U2~U4).
+t('ui 에 지갑 공개 조건 폼·claim 버튼 키가 있다', () => {
+  for (const k of ['wallet_disc_country_none', 'wallet_disc_no_value', 'wallet_disc_excluded',
+    'wallet_tx_claim_btn', 'wallet_tx_claim_hint']) assert.ok(S.ui[k], k);
+});
+// RP 데모(zkONE 거래소 꾸밈, 2026-10-14 U5) — 상단 내비·KRW 시세표·내 자산 패널·컴플라이언스 묶음 문구.
+t('ui 에 RP 거래소 꾸밈(내비·시세표·내 자산·컴플라이언스) 키가 있다', () => {
+  for (const k of ['nav_market', 'nav_assets', 'nav_withdraw', 'rp_logout_btn', 'rp_pending_banner',
+    'market_title', 'market_demo_note', 'market_col_coin', 'market_col_price', 'market_col_change', 'market_col_volume',
+    'assets_title', 'rp_login_policy', 'rp_login_nav_hint', 'rp_session_expiry_label',
+    'rp_withdraw_title', 'rp_withdraw_desc', 'rp_withdraw_amount_label', 'compliance_title']) assert.ok(S.ui[k], k);
+});
+// 가짜 증명·가짜 서명 시연 버튼(2026-10-14) — mode3_wallet_agent.js 의 fake_proof·fake_sig 스코프, mode3/wallet.html 의 #demoFakeProofBtn·#demoFakeSigBtn.
+t('ui 에 가짜 증명·가짜 서명 시연 버튼 키가 있다', () => {
+  for (const k of ['wallet_demo_fake_proof_btn', 'wallet_demo_fake_sig_btn', 'wallet_demo_fake_armed', 'wallet_demo_fake_proof', 'wallet_demo_fake_sig']) assert.ok(S.ui[k], k);
+});
+
 if (fails) { console.log(`\n${fails} FAIL`); process.exit(1); } else console.log('\nall ok');

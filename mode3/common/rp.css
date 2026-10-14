@@ -1,0 +1,98 @@
+/* RP 데모 전용 스킨(zkONE, 2026-10-14 U5) — mode3/rp.html 만 불러온다. demo.css 를 바꾸지 않고, 같은 :root 토큰을
+   이 페이지에서만 덮어써 흰 배경 + 남색/파랑 억양의 거래소 느낌을 낸다(로그인·세션 로직은 그대로, 외형만 새 옷이다). */
+:root {
+  --bg: #ffffff;
+  --card: #ffffff;
+  --navy: #0b1f3d;
+  --navy-ink: #10294d;
+  --accent: #155ce0;
+  --line: #e6e9f0;
+  --surface: #f6f8fb;
+  --rise: #d8333f;   /* 국내 거래소 관례: 상승 = 적색 */
+  --fall: #1d4fd8;   /*                  하락 = 청색 */
+}
+body { background: var(--bg); }
+
+/* ---- 준비 중 배너 ---- */
+.pending-banner {
+  background: #fff4e5; border-bottom: 1px solid #ffd9a0; color: #8a5200;
+  text-align: center; padding: 8px 16px; font-size: 13.5px; font-weight: 700;
+}
+
+/* ---- 상단 거래소 내비 ---- */
+.exchange-nav { background: var(--navy); color: #fff; }
+.nav-inner { max-width: 1200px; margin: 0 auto; padding: 0 20px; min-height: 56px; display: flex; align-items: center; gap: 28px; }
+.brand { color: #fff; font-size: 19px; font-weight: 800; letter-spacing: .01em; text-decoration: none; white-space: nowrap; }
+.nav-menu { display: flex; gap: 20px; flex: 1; flex-wrap: wrap; }
+.nav-link { color: rgba(255,255,255,.72); text-decoration: none; font-size: 14px; font-weight: 600; padding: 17px 0; border-bottom: 2px solid transparent; }
+.nav-link:hover, .nav-link:focus-visible { color: #fff; }
+.nav-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 0; }
+.nav-actions .nav-cta { background: #fff; color: var(--navy-ink); border-color: #fff; font-weight: 700; }
+.nav-actions .nav-cta:hover { background: #dfe8fb; }
+.account-pill { display: flex; align-items: center; gap: 8px; background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.22); border-radius: 999px; padding: 5px 6px 5px 12px; }
+.account-pill .pill-dot { width: 7px; height: 7px; border-radius: 50%; background: #36d399; flex: none; }
+.account-pill code { color: #fff; font-size: 12.5px; }
+.account-pill .pill-logout { background: transparent; border: 1px solid rgba(255,255,255,.35); color: #fff; padding: 4px 10px; font-size: 12.5px; border-radius: 999px; }
+.account-pill .pill-logout:hover { background: rgba(255,255,255,.12); }
+
+/* ---- 본문 레이아웃 ---- */
+.exchange-main { display: grid; grid-template-columns: 1fr; gap: 20px; max-width: 1200px; margin: 0 auto; padding: 20px 20px 56px; }
+@media (min-width: 901px) {
+  .exchange-main { grid-template-columns: 2fr 1fr; align-items: start; }
+  .compliance-panel { grid-column: 1 / -1; }
+}
+.card.market-panel, .card.assets-panel, .card.compliance-panel { min-width: 0; }
+.card h2 { margin: 0 0 14px; font-size: 18px; color: var(--navy-ink); font-weight: 800; }
+.compliance-panel > h2 { margin-bottom: 6px; }
+.compliance-block { padding-top: 16px; margin-top: 16px; border-top: 1px solid var(--line); }
+.compliance-block:first-of-type { padding-top: 0; margin-top: 0; border-top: none; }
+
+/* ---- KRW 마켓 표 ---- */
+.market-note { margin: -8px 0 14px; color: var(--muted); font-size: 12.5px; }
+.table-wrap { overflow-x: auto; }
+.market-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.market-table th { text-align: left; color: var(--muted); font-weight: 600; font-size: 12px; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.market-table td { padding: 11px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.market-table tbody tr:hover { background: var(--surface); }
+.coin-name { display: block; font-weight: 700; }
+.coin-sym { display: block; color: var(--muted); font-size: 12px; }
+.price, .chg, .vol { font-variant-numeric: tabular-nums; transition: background-color .5s ease; }
+.price { font-weight: 700; }
+.chg { font-weight: 700; }
+.chg.up { color: var(--rise); }
+.chg.down { color: var(--fall); }
+.vol { color: var(--muted); }
+@keyframes flashUp { 0% { background: rgba(216,51,63,.14); } 100% { background: transparent; } }
+@keyframes flashDown { 0% { background: rgba(29,79,216,.14); } 100% { background: transparent; } }
+td.price.flash-up { animation: flashUp .7s ease; }
+td.price.flash-down { animation: flashDown .7s ease; }
+
+/* ---- 로그인 카드 / 내 자산 ---- */
+.login-card .desc { color: var(--muted); font-size: 13.5px; margin: 0 0 12px; }
+.login-policy { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 13px; color: var(--ink); margin: 0 0 12px; }
+/* display:flex 는 .expert 와 따로 준다 — 같은 명시도의 .expert{display:none}(demo.css)를 이 파일이 뒤에 실려
+   이겨 버리면, 전문가 보기가 꺼져 있어도 조건 요구·skipSync 체크박스가 그대로 보인다(실측 버그, 2026-10-14). */
+.opt-row { align-items: center; gap: 8px; font-size: 13.5px; color: var(--muted); margin: 0 0 8px; }
+.opt-row:not(.expert) { display: flex; }
+html[data-expert] .opt-row.expert { display: flex; }
+.login-hint { font-size: 13px; color: var(--muted); margin: 14px 0 0; }
+
+.account-kv { margin: 0 0 16px; }
+.balance-list { list-style: none; margin: 0 0 18px; padding: 0; display: grid; gap: 8px; }
+.balance-list li { display: flex; justify-content: space-between; align-items: baseline; padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+.bal-label { color: var(--muted); font-weight: 700; font-size: 13px; }
+.bal-amt { font-weight: 700; font-variant-numeric: tabular-nums; }
+
+.assets-panel h3 { margin: 0 0 4px; font-size: 15px; color: var(--navy-ink); }
+
+.withdraw-box { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+.withdraw-amount { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); margin: 10px 0 12px; max-width: 220px; }
+.withdraw-amount input { width: 100%; }
+
+/* ---- 좁은 화면 ---- */
+@media (max-width: 640px) {
+  .nav-inner { flex-wrap: wrap; min-height: auto; padding: 10px 16px; gap: 8px 16px; }
+  .nav-menu { order: 3; width: 100%; gap: 16px; }
+  .nav-link { padding: 4px 0; }
+  .exchange-main { padding: 16px 16px 40px; }
+}

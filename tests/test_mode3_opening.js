@@ -18,7 +18,7 @@ await t('메시지 형식은 스펙(2026-09-18 §6.2) 그대로 — r_s 가 아�
   assert.equal(openResultMessage('abcd', '1789000001'), 'mode3-open-result:abcd:1789000001');
 });
 
-await t('서명한 요청은 서비스 주소로 복원되고, 필드 하나가 바뀌면 다른 주소가 나온다', async () => {
+await t('서명한 요청은 RP 주소로 복원되고, 필드 하나가 바뀌면 다른 주소가 나온다', async () => {
   const sig = await signOpenRequest(svc, fields);
   assert.equal(recoverSigner(openRequestMessage(fields), sig), svc.address);
   assert.notEqual(recoverSigner(openRequestMessage({ ...fields, ts: '1789000001' }), sig), svc.address);

@@ -20,15 +20,15 @@ await t('CORS: 허용 오리진에만 헤더', async () => {
   assert.equal((await get(rp.base, 'http://evil.example')).headers.get('access-control-allow-origin'), null);
   assert.equal((await get(wallet.base, rp.origin)).headers.get('access-control-allow-origin'), rp.origin);
   assert.equal((await get(cia.base, wallet.origin)).headers.get('access-control-allow-origin'), wallet.origin);   // MODE3_WALLET_AGENT_ORIGIN
-  assert.equal((await get(cia.base, rp.origin)).headers.get('access-control-allow-origin'), rp.origin);           // 승인된 서비스
+  assert.equal((await get(cia.base, rp.origin)).headers.get('access-control-allow-origin'), rp.origin);           // 승인된 RP
   assert.equal((await get(cia.base, 'http://evil.example')).headers.get('access-control-allow-origin'), null);
 });
 await t('RP: approved·active, 지갑: 미등록·ciaReachable', async () => {
   const r = await (await get(rp.base)).json(); assert.equal(r.status, 'approved'); assert.equal(r.active, true); assert.equal(typeof r.maxRootAge, 'number');
   const w = await (await get(wallet.base)).json(); assert.equal(w.registered, false); assert.equal(w.ciaReachable, true);
 });
-// 헬퍼는 자기 RP 를 승인해 둔다 — 승인 전 상태는 CIA 에 직접 등록한 두 번째 서비스로 본다(승인 전에는 허용 목록에 없다).
-await t('AA CORS: 승인 전 서비스 오리진은 거부, 승인 뒤 허용', async () => {
+// 헬퍼는 자기 RP 를 승인해 둔다 — 승인 전 상태는 IdP 에 직접 등록한 두 번째 RP 로 본다(승인 전에는 허용 목록에 없다).
+await t('IdP CORS: 승인 전 RP 오리진은 거부, 승인 뒤 허용', async () => {
   const pendingOrigin = 'http://127.0.0.1:59999';
   const share = await createShare();
   const reg = await cia.post('/cia/register_rp', { name: 'pending-rp', origin: pendingOrigin, pk_service: ethers.Wallet.createRandom().address, X_svc: { x: share.X.x.toString(), y: share.X.y.toString() } });

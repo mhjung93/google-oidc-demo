@@ -1,4 +1,4 @@
-// CIA 기동 시 로컬 폐기 트리와 온체인 root 대조 — 격리 인스턴스 + :8545. (chain 그룹)
+// IdP 기동 시 로컬 폐기 트리와 온체인 root 대조 — 격리 인스턴스 + :8545. (chain 그룹)
 //   node tests/test_cia_startup.mjs
 //
 // 배경: /cia/publish 가 tx 를 보낸 뒤 persist() 전에 죽으면 상태 파일이 체인보다 뒤처진다(크래시 복구).
@@ -66,7 +66,7 @@ const b32 = (leaf) => rootToBytes32(BigInt(leaf));
 
 try {
   const user = { sk_u: null };
-  // 상황 만들기: L1 은 정상 게시, L2·L3 는 pending. 그 다음 "L2 만 실은 게시 tx 는 성공했는데 CIA 가 persist() 전에
+  // 상황 만들기: L1 은 정상 게시, L2·L3 는 pending. 그 다음 "L2 만 실은 게시 tx 는 성공했는데 IdP 가 persist() 전에
   // 죽었다" 를 흉내낸다 — 체인에 직접 게시하고 상태 파일은 그대로 둔다. V9: registerAndIssueLeaf 안의 사용자
   // 자격증명 발급(최초 1회)이 등록부를 즉시 게시하므로(세션 폐기 pending 과는 별개 epoch 증가) 아래는 전부
   // 상대값으로 잰다 — "L1 은 epoch 1" 같은 V8 식 절대값은 더 이상 맞지 않는다.
@@ -112,7 +112,7 @@ try {
       // 명시적 publish 를 또 불러도 더 실을 것이 없다
       const pub = await cia.adminPost('/cia/publish');
       assert.equal(pub.body.published, false, JSON.stringify(pub.body));
-      // 지갑이 이벤트만으로 재구성한 root 가 CIA 의 root 와 같아야 한다(L2 가 두 번 나가지 않았다) — syncRevocationTree
+      // 지갑이 이벤트만으로 재구성한 root 가 IdP 의 root 와 같아야 한다(L2 가 두 번 나가지 않았다) — syncRevocationTree
       // (lib/mode3_wallet.js) 는 아직 V1 LOG_ABI 라(Task 10 전) 여기서는 Mode3Log 의 revRoot() 로 직접 대조한다.
       assert.equal(BigInt(await log2.revRoot()).toString(), st.root);
     } finally { await cia.stop(); }
@@ -133,7 +133,7 @@ try {
       const stateFile = path.join(dir, 'cia_state.json');
       fs.writeFileSync(stateFile, JSON.stringify({ version: v, accounts: {}, rps: {}, openings: [], revoked: [], pending: [], epoch: 0 }), { mode: 0o600 });
       const msg = await expectStartupRefused({ env: { CIA_STATE_FILE: stateFile } });
-      assert.match(msg, /unsupported CIA state version/); assert.match(msg, /재시연 세트/);
+      assert.match(msg, /unsupported IdP state version/); assert.match(msg, /재시연 세트/);
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });

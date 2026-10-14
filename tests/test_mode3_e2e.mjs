@@ -1,5 +1,5 @@
 // Mode 3 전 구간(V11): 등록(auid) → 세션 발급(C_u·C_s·π_IdP, 한 요청) → 로그인 → 은퇴(슬롯 0) → 거절 → 재발급 → 로그인
-//  → 관리자 바꿔치기 → registry_mismatch → 되돌리기. 격리 CIA + :8545 Mode3Log + 지갑 라이브러리 + RP 검증기. (chain 그룹)
+//  → 관리자 바꿔치기 → registry_mismatch → 되돌리기. 격리 IdP + :8545 Mode3Log + 지갑 라이브러리 + RP 검증기. (chain 그룹)
 //   node tests/test_mode3_e2e.mjs
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

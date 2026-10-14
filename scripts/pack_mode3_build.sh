@@ -6,10 +6,10 @@
 #
 # 묶는 것(런타임이 읽는 셋, 약 34MB — lib/mode3_wallet.js 의 WASM_PATH·ZKEY_PATH·VKEY_PATH, lib/mode3_idp_proof.js 의 IDP_WASM_PATH·IDP_ZKEY_PATH·IDP_VKEY_PATH):
 #   build/mode3/pi_cred_final.zkey   증명 키(지갑)
-#   build/mode3/pi_cred_vkey.json    검증 키(CIA·RP·지갑)
+#   build/mode3/pi_cred_vkey.json    검증 키(IdP·RP·지갑)
 #   build/mode3/pi_cred_js/          pi_cred.wasm + witness 생성기
 #   build/mode3/pi_idp_final.zkey    증명 키(지갑, π_IdP)
-#   build/mode3/pi_idp_vkey.json     검증 키(CIA)
+#   build/mode3/pi_idp_vkey.json     검증 키(IdP)
 #   build/mode3/pi_idp_js/           pi_idp.wasm + witness 생성기
 # 묶지 않는 것: pi_cred.r1cs·pi_cred.sym·pi_cred_0000.zkey·witness_test/·commit/ (회로 개발·테스트용), *.ptau(키 생성용 2.3GB).
 # 셋이 어긋나면 로그인이 전부 bad_proof 가 되므로 **항상 한 세트로** 옮긴다(docs/MODE3_DEMO.md "처음 한 번" 0 의 경고와 같다).

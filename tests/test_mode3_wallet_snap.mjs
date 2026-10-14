@@ -35,7 +35,7 @@ try {
   // 팩토리·AttrGate 주소는 승인 뒤 RP 가 배포하면서 채워진다 — 필요한 곳에서 다시 읽는다(info 의 arid·pk_trace·cert_s 는 고정)
   const rpInfo = async () => (await rp.get('/api/mode3/rp_info')).body;
   const info = await rpInfo();
-  // V10(2026-10-02 Task 9): 서비스는 대상 체인 거울만 읽는다(mode3_rp.js) — 지갑의 π 도 거울 기준이다.
+  // V10(2026-10-02 Task 9): RP 는 대상 체인 거울만 읽는다(mode3_rp.js) — 지갑의 π 도 거울 기준이다.
   const verifier = createRpVerifier({ provider, logAddress: cia.mirrorAddress, vkey, pkCIA: { x: BigInt(keys.pk_CIA.x), y: BigInt(keys.pk_CIA.y) }, arid: BigInt(info.arid), chainId: BigInt(info.chainId), pkTrace: { x: BigInt(info.pk_trace.x), y: BigInt(info.pk_trace.y) } });
   /** ch 는 loginBase() 가 돌려주는 { r_s, r_rp, ... } — V11 verifyLogin 은 세션 바인딩(d′)에 r_rp 도 본다. */
   const verify = (body, ch) => verifier.verifyLogin({ proof: body.proof, publicSignals: body.publicSignals, sig: body.sig, r_s: BigInt(ch.r_s), r_rp: BigInt(ch.r_rp) });
@@ -114,7 +114,7 @@ try {
     const badO = await wallet.post('/wallet/login', { ...base, witness: w, verifiedOrigin: 'http://evil:1' });
     assert.equal(badO.status, 403, j(badO.body)); assert.equal(badO.body.reason, 'bad_rp_cert');
     // Origin 헤더는 snap 모드에서 무시된다(같은 오리진 호출) — verifiedOrigin 만 본다
-    // 첫 로그인은 새 C_u 를 받고 거울이 그 리프를 실을 때까지 기다린다(V10) — 격리 CIA 는 릴레이 주기가 꺼져 있어 대신 눌러 준다.
+    // 첫 로그인은 새 C_u 를 받고 거울이 그 리프를 실을 때까지 기다린다(V10) — 격리 IdP 는 릴레이 주기가 꺼져 있어 대신 눌러 준다.
     const ok = await stack.withRelay(() => wallet.post('/wallet/login', { ...base, witness: w }, { Origin: 'http://whatever.example' }));
     assert.equal(ok.status, 200, j(ok.body));
     assert.equal(ok.body.issued, true);
@@ -184,7 +184,7 @@ try {
     assert.equal(stateFile().includes('"witness"'), false, '증인은 파일에 쓰지 않는다');
   });
 
-  // 2026-09-23 점검 B-I1: 재승인 동의 창의 "AI 에이전트 허용" 은 서비스가 보낸 값이 아니라 그 세션의 실제 값이어야 한다.
+  // 2026-09-23 점검 B-I1: 재승인 동의 창의 "AI 에이전트 허용" 은 RP 가 보낸 값이 아니라 그 세션의 실제 값이어야 한다.
   // 팝업은 precheck 으로 세션 값을 받아 동의 창에 쓰고, /wallet/session/witness 가 어긋난 값을 409 로 막는다.
   await t('B-I1: precheck(r_s) 가 세션의 allowAgent 를 돌려주고, session/witness 는 다른 allowAgent 를 409 로 거절한다', async () => {
     const base = { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace };
@@ -202,7 +202,7 @@ try {
     // 세션을 보는 precheck 도 인증서 검사를 먼저 거친다 — 남의 오리진이 세션의 allowAgent 를 물어볼 수 없다.
     const badCert = await wallet.post('/wallet/authorize/precheck', { ...base, origin: 'http://evil.example', r_s: S2 });
     assert.equal(badCert.status, 403, j(badCert.body)); assert.equal(badCert.body.reason, 'bad_rp_cert');
-    // 제 인증서를 가진 **다른** 서비스도 남의 세션은 못 본다 — 세션의 arid 와 다르면 없는 것과 같이 404(리뷰 Minor 3).
+    // 제 인증서를 가진 **다른** RP 도 남의 세션은 못 본다 — 세션의 arid 와 다르면 없는 것과 같이 404(리뷰 Minor 3).
     const other = await cia.registerRp('http://other-rp.example', 'other-rp');
     const otherArid = await wallet.post('/wallet/authorize/precheck', {
       arid: other.arid, origin: other.origin, cert_s: other.cert_s,

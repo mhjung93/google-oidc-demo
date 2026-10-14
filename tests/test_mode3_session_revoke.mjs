@@ -1,4 +1,4 @@
-// CIA 세션 폐기(설계 2026-09-24 V8) — 발급 세션 기록, /cia/revoke scope=session, 관리자 세션 목록. 격리 CIA + :8545. (chain 그룹)
+// IdP 세션 폐기(설계 2026-09-24 V8) — 발급 세션 기록, /cia/revoke scope=session, 관리자 세션 목록. 격리 IdP + :8545. (chain 그룹)
 //   node tests/test_mode3_session_revoke.mjs
 import assert from 'node:assert/strict';
 import { buildEddsa } from 'circomlibjs';
@@ -73,6 +73,27 @@ try {
     assert.equal(list.find((s) => s.Cf_s === issued2.cred.Cf_s).revokedAt, null);
   });
 
+  await t('관리자 폐기 세션 목록(/cia/admin/revoked_sessions): 폐기된 세션만, 리프·pending 포함; 게시 뒤 pending=false; 등록부 목록에 Cf_u·pending', async () => {
+    const r = await cia.adminGet('/cia/admin/revoked_sessions');
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const mine = r.body.sessions.filter((s) => s.uid === UID);
+    assert.equal(mine.length, 1, '폐기한 세션 하나만 나온다(다른 세션은 revokedAt 없음)');
+    assert.equal(mine[0].Cf_s, issued1.cred.Cf_s);
+    assert.ok(mine[0].revokedAt && /^[0-9]+$/.test(mine[0].leaf));
+    assert.equal(mine[0].pending, true, '게시 전이라 pending');
+    assert.ok(!('auid_s' in mine[0]) && !('arid_s' in mine[0]), 'D1: 세션 가명은 없다');
+    assert.equal((await cia.get('/cia/admin/revoked_sessions')).status, 401, '관리자 전용');
+    const reg = await cia.adminGet('/cia/admin/registry');
+    assert.equal(reg.status, 200, JSON.stringify(reg.body));
+    const slot = reg.body.slots.find((x) => x.uid === UID);
+    assert.ok(slot && slot.active && /^[0-9]+$/.test(slot.Cf_u) && slot.issuedAt, '등록부 목록에 활성 Cf_u·발급 시각');
+    assert.equal(slot.disabled, false); assert.equal(typeof slot.pending, 'boolean');
+    const pub = await cia.adminPost('/cia/publish', {});
+    assert.equal(pub.status, 200, JSON.stringify(pub.body));
+    const after = (await cia.adminGet('/cia/admin/revoked_sessions')).body.sessions.find((s) => s.uid === UID);
+    assert.equal(after.pending, false, '게시 뒤에는 pending 이 풀린다');
+  });
+
   await t('서명이 다른 세션 것이면 400, 관리자 헤더 없이 서명도 없으면 401, 모르는 Cf_s 는 관리자에게만 404', async () => {
     const bad = await signRevokeSession(user.sk_u, uid, BigInt(issued2.cred.Cf_s), 1n);
     assert.equal((await cia.post('/cia/revoke', { uid: UID, scope: 'session', Cf_s: issued1.cred.Cf_s, sig_u: bad, nonce: '1' })).status, 400);
@@ -103,7 +124,7 @@ try {
     assert.equal(rec.revokedAt, null, '만료된 세션은 폐기 기록이 남지 않는다');
   });
 
-  // 경계는 컨트랙트(Mode3Wallet.sol `block.number > pub[3]`)·서비스(lib/mode3_rp.js)와 같아야 한다 — head == max_height 는 아직 산 세션이다.
+  // 경계는 컨트랙트(Mode3Wallet.sol `block.number > pub[3]`)·RP(lib/mode3_rp.js)와 같아야 한다 — head == max_height 는 아직 산 세션이다.
   await t('경계: head == max_height 면 아직 살아 있어 폐기 200, head > max_height 라야 409 expired', async () => {
     const mhA = BigInt(await provider.getBlockNumber()) + 1n;
     const a = await issueWith({ max_height: mhA });
@@ -122,7 +143,7 @@ try {
     assert.equal(e.body.reason, 'expired');
   });
 
-  // 하트비트가 꺼져 있으면(격리 CIA 의 기본) 정리가 하트비트에서는 영영 안 돈다 — 발급 경로가 같은 일을 한다(최종 리뷰 F2).
+  // 하트비트가 꺼져 있으면(격리 IdP 의 기본) 정리가 하트비트에서는 영영 안 돈다 — 발급 경로가 같은 일을 한다(최종 리뷰 F2).
   await t('하트비트가 꺼져 있어도 발급이 이 계정의 만료 기록을 지운다 — 리프·pending 은 그대로', async () => {
     const short = await issueWith({ max_height: BigInt(await provider.getBlockNumber()) + 2n });
     const rv = await cia.adminPost('/cia/revoke', { uid: UID, scope: 'session', Cf_s: short.cred.Cf_s });
@@ -167,7 +188,7 @@ try {
     assert.equal(BigInt(own.body.leaf), await sessionLeaf(BigInt(issuedB.cred.Cf_s)));
   });
 
-  // 리뷰 S1(2026-10-13): 사용자 서명 경로의 서명 필드를 BigInt() 로 그대로 파싱하던 때는 S='-1' 하나로 CIA 가 영구히 멈췄다
+  // 리뷰 S1(2026-10-13): 사용자 서명 경로의 서명 필드를 BigInt() 로 그대로 파싱하던 때는 S='-1' 하나로 IdP 가 영구히 멈췄다
   // (verifyPoseidon 의 mulPointEscalar(-1n)). 요청마다 2초 상한 — 회귀하면 여기서 TimeoutError 로 실패한다. 마지막 케이스로 둔다(회귀 시
   // 인스턴스가 멈추므로 뒤 케이스를 끌고 들어가지 않게). register·slot·issue 의 같은 검사는 tests/test_cia_register_issue.mjs 에 있다.
   await t('리뷰 S1: scope=session 사용자 서명 필드가 음수·비10진·범위 밖이면 2초 안에 400 — 세션은 그대로, 정상 서명은 통한다', async () => {

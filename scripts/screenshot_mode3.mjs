@@ -1,11 +1,11 @@
 // Mode 3 데모 페이지 스크린샷 — 설계 2026-09-24-mode3-demo-ux-design.md §6.
 //
 // 격리 스택(tests/helpers/isolated_mode3_stack.mjs, file 모드)을 임시 포트로 띄우고 실제 Chrome 으로
-// 네 페이지(서비스·지갑·관리자·내 계정)를 ko·en·전문가 세 상태로 fullPage 캡처한다. 서비스·지갑은
+// 네 페이지(RP·지갑·관리자·내 계정)를 ko·en·전문가 세 상태로 fullPage 캡처한다. RP·지갑은
 // 좁은 창(400px) 한 장을 더 찍는다. 개발용 :3100/:4100/:5100 은 건드리지 않는다.
 //
-// --tour 를 주면 대신 **체험 모드**(설계 2026-09-25 §3)의 네 장면을 찍는다 — 서비스 잠김·지갑 말풍선·
-// 잠금이 풀린 서비스 말풍선·상태 패널 펼침. 기본 저장 위치도 results/mode3_ux_20260925/ 로 바뀐다.
+// --tour 를 주면 대신 **체험 모드**(설계 2026-09-25 §3)의 네 장면을 찍는다 — RP 잠김·지갑 말풍선·
+// 잠금이 풀린 RP 말풍선·상태 패널 펼침. 기본 저장 위치도 results/mode3_ux_20260925/ 로 바뀐다.
 //
 //   node scripts/screenshot_mode3.mjs                       # results/mode3_ux_20260924/ 에 저장
 //   node scripts/screenshot_mode3.mjs --out results/foo      # 다른 디렉터리에 저장
@@ -114,7 +114,7 @@ async function captureAll(context, stack) {
   await walletPage.click('#registerBtn');
   await waitText(walletPage, '#registerResult', '등록됨', 60_000);
 
-  // ---- 서비스: 로그인 한 번 + 재검증 한 번 ----
+  // ---- RP: 로그인 한 번 + 재검증 한 번 ----
   const rpPage = await context.newPage();
   await rpPage.goto(rp.base);
   await waitText(rpPage, '#rpStatusBadge', '활성', 60_000);
@@ -165,7 +165,7 @@ async function captureAll(context, stack) {
 async function captureTour(context, stack) {
   const { wallet, rp } = stack;
 
-  // ---- 서비스: 지갑 등록 전이라 로그인 버튼이 잠긴 화면 ----
+  // ---- RP: 지갑 등록 전이라 로그인 버튼이 잠긴 화면 ----
   const rpPage = await context.newPage();
   await rpPage.goto(`${rp.base}/?tour=1`);
   await rpPage.waitForFunction(() => document.querySelector('#loginBtn')?.disabled === true, undefined, { timeout: 30_000 });
@@ -181,7 +181,7 @@ async function captureTour(context, stack) {
   await walletPage.waitForTimeout(300);
   await shot(walletPage, 'wallet-tour');
 
-  // ---- 등록 → 다음 폴링에 서비스 잠금이 풀리고 말풍선이 로그인 버튼으로 ----
+  // ---- 등록 → 다음 폴링에 RP 잠금이 풀리고 말풍선이 로그인 버튼으로 ----
   console.log('지갑 등록…');
   await walletPage.click('#registerBtn');
   await waitText(walletPage, '#registerResult', '등록됨', 60_000);
@@ -206,7 +206,7 @@ try {
   console.log('격리 스택 기동(file 모드)…');
   stack = await startIsolatedMode3Stack();          // 헬퍼가 RP 등록 승인·활성화까지 기다린다
   const { cia, wallet, rp } = stack;
-  console.log(`  CIA ${cia.base} · 지갑 ${wallet.base} · 서비스 ${rp.base}`);
+  console.log(`  IdP ${cia.base} · 지갑 ${wallet.base} · RP ${rp.base}`);
 
   const context = await browser.newContext({ viewport: WIDE });
   // 파괴적 조작의 확인창(설계 §4.5) — 자동화는 모두 승인한다.

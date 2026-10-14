@@ -233,18 +233,31 @@ try {
     assert.equal(dialogs.length, before, '세션 안 재검증은 동의를 다시 묻지 않는다');
   });
 
-  // ---- 공개 트랜잭션: MetaMask(스텁)가 배포·execute 를 보낸다 ----
+  // ---- 평범한 트랜잭션 + 공개 트랜잭션: MetaMask(스텁)가 배포·execute 를 보낸다 ----
   const info = (await rp.get('/api/mode3/rp_info')).body;
-  await t('공개 트랜잭션: 슬롯 0 범위 + 집합(V7) 으로 AttrGate.claim 이 성공한다', async () => {
-    assert.ok(info.attrGateAddress, 'AttrGate 가 배포돼 있어야 한다');
+
+  // U4(2026-10-14): 세션을 골라도 더는 AttrGate 로 자동 재배선하지 않는다 — 기본 대상(사망 주소)·조건 없음인
+  // 평범한 트랜잭션은 늘 성공해야 한다(사용자가 실제로 겪은 문제: 예전에는 모든 기본 tx 가 AttrGate.claim 으로
+  // 가 조건 미공개로 늘 revert 됐다).
+  await t('평범한 트랜잭션: 기본 대상·조건 없이 보내도 늘 성공한다(U4)', async () => {
     await walletPage.click('#refreshBtn');
     await walletPage.waitForFunction(() => !document.querySelector('#txBtn').disabled, undefined, { timeout: 15_000 });
-    await walletPage.fill('#txTo', info.attrGateAddress);
-    await walletPage.fill('#txData', '0x4e71d92d');
-    const year = new Date().getUTCFullYear();
-    await walletPage.check('#dk0'); await walletPage.fill('#discLo0', '0'); await walletPage.fill('#discHi0', String(year - Number(info.predicates.minAge)));
-    // V7: AttrGate 는 국가를 범위 공개가 아니라 집합 소속(슬롯 1)으로 요구한다 — 폼 기본값은 "없음"(리뷰 Important 3)이라 명시로 선택한다.
-    await walletPage.selectOption('#setSlot', '1');
+    assert.equal(await walletPage.inputValue('#txTo'), '0x000000000000000000000000000000000000dEaD', '기본 대상을 AttrGate 로 재배선하지 않는다');
+    assert.equal(await walletPage.inputValue('#txData'), '0x');
+    answers.push(true);                        // consentDisclosure 확인 — snap 모드는 조건이 없어도 매번 동의를 묻는다
+    await walletPage.click('#txBtn');
+    await waitText(walletPage, '#txVerdict', '전송 성공', 180_000);
+    const log = await text(walletPage, '#txLog');
+    assert.match(log, /ok\(실행 성공\)=true/, `평범한 트랜잭션은 ok=true 여야 한다: ${log}`);
+  });
+
+  await t('공개 트랜잭션: "AttrGate 에 자격 증명(claim)" 버튼이 조건을 자동으로 채우고 claim 이 성공한다', async () => {
+    assert.ok(info.attrGateAddress, 'AttrGate 가 배포돼 있어야 한다');
+    await walletPage.click('#claimBtn');
+    assert.equal(await walletPage.inputValue('#txTo'), info.attrGateAddress, 'claim 버튼이 받는 주소를 AttrGate 로 채운다');
+    assert.equal(await walletPage.inputValue('#txData'), '0x4e71d92d', 'claim 버튼이 데이터를 claim() 셀렉터로 채운다');
+    assert.equal(await walletPage.isChecked('#dk0'), true, 'claim 버튼이 출생연도 조건을 자동으로 채운다');
+    assert.equal(await walletPage.inputValue('#setSlot'), '1', 'claim 버튼이 국가 집합 조건(슬롯 1)을 채운다');
     answers.push(true);                        // consentDisclosure 확인
     const before = dialogs.length;
     await walletPage.click('#txBtn');
@@ -252,9 +265,7 @@ try {
     assert.equal(dialogs.length, before + 1, '공개 동의 대화상자 한 번');
     assert.ok(lastDialog().includes('∈ {'), `동의 창이 집합 소속 줄을 보여 준다: ${lastDialog().slice(0, 300)}`);
     const log = await text(walletPage, '#txLog');
-    assert.ok(log.includes('배포 txHash='), '첫 트랜잭션은 CREATE2 배포를 먼저 보낸다');
     assert.ok(log.includes('온체인 공개(Disclosure 이벤트)'), '영수증 파싱 결과가 표시된다');
-    assert.equal(sentTxs.length, 2, `스텁이 배포+execute 두 건을 보냈다: ${j(sentTxs)}`);
     const walletAddr = /지갑 주소=(0x[0-9a-fA-F]{40})/.exec(log)?.[1];
     assert.ok(walletAddr, `지갑 주소를 로그에서 못 찾았다:\n${log}`);
     assert.equal(await attrGateAt(info.attrGateAddress, provider).claimed(walletAddr), true, '온체인에서 claim 됐다');

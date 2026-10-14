@@ -153,7 +153,7 @@ try {
     // 그래서 CIA 를 내리면 ciaReachable 은 10초 안팎 뒤의 폴링부터 false 가 된다(아래 30초 여유 안에 든다).
     await rpPage.waitForFunction(() => document.querySelector('.stack-dots .dot.wallet')?.classList.contains('warn'), undefined, { timeout: 30_000 })
       .catch(async () => { throw new Error(`지갑 점이 노랑이 되지 않았다: ${j(await dotClasses(rpPage))}`); });
-    assert.ok((await rpPage.$eval('.stack-dots .dot.wallet', (d) => d.getAttribute('aria-label'))).includes('신원 기관'), '지갑 점의 사유가 신원 기관 쪽임을 말한다');
+    assert.ok((await rpPage.$eval('.stack-dots .dot.wallet', (d) => d.getAttribute('aria-label'))).includes('IdP'), '지갑 점의 사유가 IdP 쪽임을 말한다');
   });
 } finally {
   await browser.close().catch(() => {});

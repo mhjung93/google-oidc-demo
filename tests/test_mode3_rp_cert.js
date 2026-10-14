@@ -1,4 +1,4 @@
-// 서비스 인증서 cert_s V2 (설계 2026-09-16 §3) — (arid, origin, pk_trace) 를 덮는다. 외부 의존 없음.
+// RP 인증서 cert_s V2 (설계 2026-09-16 §3) — (arid, origin, pk_trace) 를 덮는다. 외부 의존 없음.
 //   node tests/test_mode3_rp_cert.js
 import assert from 'node:assert/strict';
 import { buildEddsa } from 'circomlibjs';
@@ -45,7 +45,7 @@ await t('양성: 서명한 (arid, origin, pk_trace) 가 검증된다', async () 
   assert.equal(await verifyRpCert(pkCIA, { arid, origin, pk_trace, cert }), true);
 });
 
-await t('음성: pk_trace 가 다르면 거절 (서비스가 자기만 아는 키를 지갑에 주는 공격)', async () => {
+await t('음성: pk_trace 가 다르면 거절 (RP 가 자기만 아는 키를 지갑에 주는 공격)', async () => {
   const cert = await signRpCert(prv, { arid, origin, pk_trace });
   assert.equal(await verifyRpCert(pkCIA, { arid, origin, pk_trace: other_trace, cert }), false);
 });

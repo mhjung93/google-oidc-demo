@@ -1,4 +1,4 @@
-// V10(2026-10-02 설계 §5 결정 3) CIA 거울 릴레이. 격리 CIA + :8545 의 캐노니컬 로그·거울. (chain)
+// V10(2026-10-02 설계 §5 결정 3) IdP 거울 릴레이. 격리 IdP + :8545 의 캐노니컬 로그·거울. (chain)
 // 2026-10-05(전체 코드 리뷰 3·9번): 게시 직후 뒤처진 거울에 즉시 중계하고(CIA_MIRROR_RELAY_ON_PUBLISH, 기본 켬), 따라잡은 거울을 위해
 // 캐노니컬 하트비트를 새로 만들지 않는다. 첫 인스턴스는 즉시 중계를 꺼(0) 주기 틱만의 동작을 보고, 마지막 인스턴스가 즉시 중계를 본다.
 //   node tests/test_cia_mirror_relay.mjs
@@ -27,8 +27,8 @@ const arid = 22222222222222222222n;
 const uid = '12345', pwd = 'password123';
 const b32 = (n) => ethers.zeroPadValue(ethers.toBeHex(BigInt(n)), 32);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-/** 2026-10-02 V10 최종 리뷰 I-2: 캐노니컬에 올라가지 않은(revert 된 게시를 흉내 낸) CIA 서명 게시를 만들어 거울에 먼저 올린다.
- *  격리 CIA 의 키(ciaEthWallet)로 서명한다 — 실제 경합에서 공개되는 것도 IdP 가 서명한 calldata 다. */
+/** 2026-10-02 V10 최종 리뷰 I-2: 캐노니컬에 올라가지 않은(revert 된 게시를 흉내 낸) IdP 서명 게시를 만들어 거울에 먼저 올린다.
+ *  격리 IdP 의 키(ciaEthWallet)로 서명한다 — 실제 경합에서 공개되는 것도 IdP 가 서명한 calldata 다. */
 async function forgeToMirror(inst, mirrorC, { epoch, revRoot, regRoot }) {
   const logC = new ethers.Contract(inst.logAddress, MODE3_LOG_ABI, provider);
   const p = { revRoot: b32(revRoot), regRoot: b32(regRoot), epoch, revLeaves: [], slotIdx: [], slotLeaves: [] };

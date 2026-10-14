@@ -1,4 +1,4 @@
-// CIA 엔드포인트 — 격리 인스턴스 + :8545. (chain 그룹)
+// IdP 엔드포인트 — 격리 인스턴스 + :8545. (chain 그룹)
 //   node tests/test_cia_register_issue.mjs
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -37,7 +37,7 @@ const arid = 22222222222222222222n;
 let user;   // userOf(registerUser('12345'))
 
 // V11(2026-10-12): /cia/issue 한 요청으로 (C_u, C_s, π_IdP, sig_u) 를 받아 발급한다 — 사용자 자격증명과 세션 발급이
-// 더 이상 나뉘어 있지 않다. 서명은 auid_s·arid_s·Cf_u·Cf_s·chainid·allowAgent·max_height 를 덮는다. CIA 는 세션
+// 더 이상 나뉘어 있지 않다. 서명은 auid_s·arid_s·Cf_u·Cf_s·chainid·allowAgent·max_height 를 덮는다. IdP 는 세션
 // 기록을 남긴다(V8) — 개별 폐기(/cia/revoke scope=session)가 그 기록을 찾는다.
 const CHAIN_ID = 31337n;
 
@@ -49,11 +49,11 @@ let _testuser = null;
 async function freshWallet() { return (_testuser ??= await freshRegistered('12345', 'password123')); }
 /** 발급 한 번(기본값: 새 C_u, head+300). issueV11 의 얇은 포장 — 이 파일의 케이스가 자주 쓰는 모양. */
 const issue = (u, opts = {}) => issueV11(cia, u, { arid, provider, ...opts });
-/** 리뷰 S1(2026-10-13): 응답 시간 상한을 건 POST. 서명 S 가 음수면 예전 CIA 는 verifyPoseidon 안(mulPointEscalar)에서 끝나지 않아
+/** 리뷰 S1(2026-10-13): 응답 시간 상한을 건 POST. 서명 S 가 음수면 예전 IdP 는 verifyPoseidon 안(mulPointEscalar)에서 끝나지 않아
  *  프로세스 전체가 멈췄다 — 그 회귀는 여기서 ms 뒤 TimeoutError 로 드러난다(상한이 없으면 테스트가 같이 멈출 뿐 실패하지 않는다). */
 const postWithin = (inst, p, body, ms = 2000) => fetch(`${inst.base}${p}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}), signal: AbortSignal.timeout(ms) })
   .then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
-/** 서명 { R8x, R8y, S } 의 비정규·범위 밖 변형. 앞의 셋(음수)이 예전 CIA 를 멈추던 값이고 나머지는 같은 파서가 함께 거르는 값이다. */
+/** 서명 { R8x, R8y, S } 의 비정규·범위 밖 변형. 앞의 셋(음수)이 예전 IdP 를 멈추던 값이고 나머지는 같은 파서가 함께 거르는 값이다. */
 const badSigVariants = (g) => [
   ['S=-1', { ...g, S: '-1' }], ['S=-7', { ...g, S: '-7' }], ['R8x=-1', { ...g, R8x: '-1' }],
   ['S=subOrder', { ...g, S: eddsa.babyJub.subOrder.toString() }], ['S=subOrder+S', { ...g, S: (eddsa.babyJub.subOrder + BigInt(g.S)).toString() }], ['R8y=R8y+p', { ...g, R8y: (BigInt(g.R8y) + F.p).toString() }],
@@ -72,7 +72,7 @@ async function revokedLeaf() {
 }
 
 try {
-  await t('public_keys 가 CIA EdDSA 키·ETH 주소·TTL·로그 주소를 준다', async () => {
+  await t('public_keys 가 IdP EdDSA 키·ETH 주소·TTL·로그 주소를 준다', async () => {
     const r = await cia.get('/cia/public_keys');
     assert.equal(r.status, 200);
     assert.equal(r.body.ethAddress.toLowerCase(), cia.ethAddress.toLowerCase());
@@ -115,9 +115,9 @@ try {
     const keys = (await cia.get('/cia/public_keys')).body;
     const pk_trace = { x: BigInt(ok.body.pk_trace.x), y: BigInt(ok.body.pk_trace.y) };
     assert.equal(await verifyRpCert({ x: BigInt(keys.pk_CIA.x), y: BigInt(keys.pk_CIA.y) }, { arid: BigInt(ok.body.arid), origin: body.origin, pk_trace, cert: ok.body.cert_s }), true);
-    // pk_trace = X_svc + x_AA·B8 — 서비스 조각이 들어 있어야 한다(같은 점이면 CIA 혼자 아는 키)
+    // pk_trace = X_svc + x_AA·B8 — RP 조각이 들어 있어야 한다(같은 점이면 IdP 혼자 아는 키)
     assert.notEqual(ok.body.pk_trace.x, body.X_svc.x);
-    // CIA 조각 X_AA 와 Schnorr PoK(2026-09-21, rogue key 방지): pk_trace == X_svc + X_AA 이고 PoK 가 (arid, X_svc) 에 대해 검증된다
+    // IdP 조각 X_AA 와 Schnorr PoK(2026-09-21, rogue key 방지): pk_trace == X_svc + X_AA 이고 PoK 가 (arid, X_svc) 에 대해 검증된다
     const P = (o) => ({ x: BigInt(o.x), y: BigInt(o.y) });
     const X_AA = P(ok.body.X_AA);
     const pok = { T: P(ok.body.share_pok.T), c: BigInt(ok.body.share_pok.c), z: BigInt(ok.body.share_pok.z) };
@@ -225,7 +225,7 @@ try {
     assert.equal((await issue(user, { overrides: { sig_u: other.req.body.sig_u } })).r.status, 400);
   });
 
-  await t('issue V11: max_height 는 서명이 덮는다 — 값만 바꾸면 400, 2^64 이상 400, 없으면 400; 먼 미래 값도 CIA 는 그대로 서명(상한은 검증자)', async () => {
+  await t('issue V11: max_height 는 서명이 덮는다 — 값만 바꾸면 400, 2^64 이상 400, 없으면 400; 먼 미래 값도 IdP 는 그대로 서명(상한은 검증자)', async () => {
     // g 와 뒤이은 호출 모두 max_height 를 고정한다(999999n) — 바로 위 케이스와 같은 이유(기본값이면 g 자신의 즉시
     // 게시 tx 가 블록을 전진시켜 "+1" 패치가 뒤 호출의 기본값과 우연히 같아진다, 2026-10-12 관찰).
     const g = await issue(user, { max_height: 999999n }); assert.equal(g.r.status, 200, JSON.stringify(g.r.body));
@@ -388,17 +388,17 @@ try {
     }
   });
 
-  await t('publish: 체인의 epoch 가 앞서 있어도 CIA 가 따라잡는다 (크래시 복구)', async () => {
+  await t('publish: 체인의 epoch 가 앞서 있어도 IdP 가 따라잡는다 (크래시 복구)', async () => {
     // 앞 케이스들이 남긴 활성 자격증명을 물리고(등록부는 즉시 게시되므로 여기서는 영향 없음) 폐기 트리 pending 을 먼저
-    // 비워 둔다 — 아래의 직접 게시는 "CIA 가 올렸을 것"과 똑같이 pending 전부를 실어야 하는데, 여기서는 이 케이스가
+    // 비워 둔다 — 아래의 직접 게시는 "IdP 가 올렸을 것"과 똑같이 pending 전부를 실어야 하는데, 여기서는 이 케이스가
     // 세션으로 폐기한 리프 하나만 싣기 때문이다.
     assert.equal((await cia.adminPost('/cia/revoke', { uid: '12345', scope: 'credential' })).status, 200);
     assert.equal((await cia.adminPost('/cia/publish')).status, 200);
     // 세션 하나를 발급해 폐기한다 (계정은 앞의 self_revoke 멱등 케이스 끝에서 재활성화됨)
     const leaf = await revokedLeaf();
 
-    // CIA 가 아직 게시하기 전에, 체인에 직접 다음 epoch 를 (이 리프를 실어) 게시한다 — tx 는 성공해
-    // 이벤트까지 나갔는데 CIA 가 persist() 전에 죽어버린 크래시 시나리오를 흉내낸다.
+    // IdP 가 아직 게시하기 전에, 체인에 직접 다음 epoch 를 (이 리프를 실어) 게시한다 — tx 는 성공해
+    // 이벤트까지 나갔는데 IdP 가 persist() 전에 죽어버린 크래시 시나리오를 흉내낸다.
     const before = await cia.get('/cia/state');
     const current = before.body.epoch;
     const log = new ethers.Contract(cia.logAddress, MODE3_LOG_ABI, provider);
@@ -411,7 +411,7 @@ try {
     await tx.wait();
     assert.equal(await log.epoch(), BigInt(directEpoch));
 
-    // CIA 가 로컬 기록만 보고 게시하면 온체인과 같은 epoch 를 또 보내 영원히 막힌다. 게시 직전 대조가
+    // IdP 가 로컬 기록만 보고 게시하면 온체인과 같은 epoch 를 또 보내 영원히 막힌다. 게시 직전 대조가
     // 이미 체인에 있는 리프를 pending 에서 걷어내고 epoch 를 따라잡아야 한다 — 남은 pending 이 없으니 이번엔
     // 게시하지 않고(published:false) epoch 만 current+1 로 맞춘다.
     const r = await cia.adminPost('/cia/publish');
@@ -457,7 +457,7 @@ try {
     await provider.send('evm_setAutomine', [false]);
     try {
       const publishing = cia.adminPost('/cia/publish');
-      // CIA 가 tx 를 mempool 에 넣고 tx.wait() 에 들어갈 때까지 기다린다
+      // IdP 가 tx 를 mempool 에 넣고 tx.wait() 에 들어갈 때까지 기다린다
       const deadline = Date.now() + 15_000;
       while ((await provider.send('eth_pendingTransactions', [])).length === 0) {
         assert.ok(Date.now() < deadline, 'publish tx 가 mempool 에 오지 않았다');
@@ -494,8 +494,8 @@ try {
 
   // 마지막에 둔다 — 이 뒤로는 온체인 root 가 로컬과 어긋난 채 남아 게시가 전부 503 이다.
   await t('publish: 온체인 root 가 로컬 기록의 어느 접두사와도 다르면 503 이고 올리지 않는다', async () => {
-    // CIA 가 켜진 채로 로그가 (같은 CIA 키로) 다른 root 로 갈라졌다고 치자 — 직접 엉뚱한 root 를 올린다.
-    // 게시 직전 대조가 없으면 CIA 는 이벤트로 나간 적 없는 리프를 품은 root 를 서명해 올려 전원의 재구성이 깨진다.
+    // IdP 가 켜진 채로 로그가 (같은 IdP 키로) 다른 root 로 갈라졌다고 치자 — 직접 엉뚱한 root 를 올린다.
+    // 게시 직전 대조가 없으면 IdP 는 이벤트로 나간 적 없는 리프를 품은 root 를 서명해 올려 전원의 재구성이 깨진다.
     const log = new ethers.Contract(cia.logAddress, MODE3_LOG_ABI, provider);
     const current = Number(await log.epoch());
     const b32 = (n) => ethers.zeroPadValue(ethers.toBeHex(BigInt(n)), 32);
@@ -536,7 +536,7 @@ try {
     assert.equal((await cia.post('/cia/slot', { uid: '12345', nonce: '100', sig_u: await signSlotRequest(user.sk_u, uid, nonce) })).status, 400, '다른 nonce 의 서명은 거절');
   });
 
-  // 리뷰 S1(2026-10-13): 서명 필드를 BigInt() 로 그대로 파싱하던 때는 S='-1' 하나로 CIA 가 영구히 멈췄다(verifyPoseidon 의 mulPointEscalar(-1n)).
+  // 리뷰 S1(2026-10-13): 서명 필드를 BigInt() 로 그대로 파싱하던 때는 S='-1' 하나로 IdP 가 영구히 멈췄다(verifyPoseidon 의 mulPointEscalar(-1n)).
   // 회귀하면 그 인스턴스가 멈추므로 별도 격리 인스턴스에서 돌린다 — 공유 인스턴스(위 케이스들)를 끌고 들어가지 않게. 요청마다 2초 상한.
   // /cia/revoke scope=session 의 같은 검사는 tests/test_mode3_session_revoke.mjs 에 있다.
   await t('리뷰 S1: 서명 필드가 음수·비10진·범위 밖이면 register·slot·issue 모두 2초 안에 400 — 프로세스는 계속 응답하고 정상 서명은 통한다', async () => {

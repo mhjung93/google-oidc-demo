@@ -9,7 +9,7 @@ include "lib/mode3_commit.circom";
 //   ② auid   = Poseidon(T_AUID, uid, s_u)                        — IdP DB 의 auid 와 같은가
 //   ③ auid_s = Poseidon(T_AUIDS, auid, arid, r_rp)               — 토큰에 들어갈 세션 가명이 정형인가(D3·D7)
 //   ④ C_s = pk_i·G_PK + max_height·G_EXP + r_s·G_RS + r_rp·H      — ③ 과 **같은 r_rp**(세션 가명과 세션 커밋의 결합)
-// 비공개: s_u, blind_u, attrs[6], arid, r_rp, pk_i, r_s — arid·r_rp 가 비공개라 IdP 는 서비스를 알아보지 못한다(G4).
+// 비공개: s_u, blind_u, attrs[6], arid, r_rp, pk_i, r_s — arid·r_rp 가 비공개라 IdP 는 RP 를 알아보지 못한다(G4).
 // 공개 입력 순서는 lib/mode3_idp_proof.js IDP_PUB_INDEX 와 cia.js 의 조립 순서가 의존한다. 바꾸지 말 것:
 //   [0] uid [1] auid [2] auid_s [3] C_u_x [4] C_u_y [5] C_s_x [6] C_s_y [7] max_height
 // 온체인에 가지 않는다(IdP 만 검증, §6).

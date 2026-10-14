@@ -40,7 +40,7 @@ const registry = await createRegistryTree();   // V9: 등록부(조건 9) — �
 const SLOT = 0;
 
 const mh = async (ttl = 300n) => chooseMaxHeight(BigInt(await provider.getBlockNumber()), { ttlBlocks: ttl });
-// 서버 없이 CIA 역할을 로컬에서 흉내낸다 (서명만). V11: Sign(D_V11, auid_s, arid_s, Cf_u, Cf_s, chainid, allowAgent). max_height 는 C_s 안.
+// 서버 없이 IdP 역할을 로컬에서 흉내낸다 (서명만). V11: Sign(D_V11, auid_s, arid_s, Cf_u, Cf_s, chainid, allowAgent). max_height 는 C_s 안.
 async function localIssue(req, chainid, { allowAgent = 0n } = {}) {
   const s = eddsa.signPoseidon(ciaPrv, F.e(await credMessageV11(req.auid_s, req.arid_s, req.Cf_u, req.Cf_s, chainid, allowAgent)));
   return { Cf_u: req.Cf_u.toString(), Cf_s: req.Cf_s.toString(), max_height: req.body.max_height, chainid: chainid.toString(), allowAgent: allowAgent.toString(), sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() } };
@@ -74,7 +74,7 @@ const pk_trace = await combinePublicKey(svcShare.X, aaShare.X);
 
 let reg, session, req, cred, tree0; const ATTRS = [19n, 410n, 0n, 0n, 0n, 0n]; let blind_u, r_rp, r_s;
 /**
- * 등록 → 발급 요청(C_u·C_s·π_IdP) → 슬롯 게시(등록부) → 로컬 CIA 서명 → buildCredentialProof 까지의
+ * 등록 → 발급 요청(C_u·C_s·π_IdP) → 슬롯 게시(등록부) → 로컬 IdP 서명 → buildCredentialProof 까지의
  * 픽스처 준비를 묶는다. disclosure 를 그대로 buildCredentialProof 에 넘긴다(null 이면 선택 공개 없음).
  * reg·session·req·cred·tree0·blind_u·r_rp·r_s 는 이 파일의 이후 테스트가 그대로 참조하는 전역이라 여기서도 채운다.
  * V9 조건 9: 첫 로그인(증명) 전에 내 슬롯(SLOT=0)을 내 자격증명 리프로 채우고 게시해 둬야 한다 — 그러지
@@ -92,7 +92,7 @@ async function proveWith(disclosure) {
   return buildCredentialProof({ uid, arid, s_u: reg.s_u, auid: reg.auid, blind_u, r_rp, r_s, pk_i: session.pk_i, attrs: ATTRS, credential: cred, pk_CIA, pk_trace, tree: tree0, registry, slot: SLOT, disclosure });
 }
 
-await t('V11: 발급 요청(C_u·C_s·π_IdP·sig_u) → 로컬 CIA 서명 → 증명 생성 → vkey 로 검증; 공개 입력 33, [30..32] = auid_s·arid_s·r_s', async () => {
+await t('V11: 발급 요청(C_u·C_s·π_IdP·sig_u) → 로컬 IdP 서명 → 증명 생성 → vkey 로 검증; 공개 입력 33, [30..32] = auid_s·arid_s·r_s', async () => {
   const { proof, publicSignals, revRoot, tag } = await proveWith(null);
   assert.deepEqual(Object.keys(req.body).sort(), ['C_s_pt', 'C_u_pt', 'allowAgent', 'arid_s', 'auid_s', 'chainid', 'max_height', 'proof_idp', 'sig_u', 'uid']);
   const vkIdp = await loadIdpVkey(IDP_VKEY_PATH);

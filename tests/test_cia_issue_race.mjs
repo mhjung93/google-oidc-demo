@@ -3,10 +3,10 @@
 //
 // /cia/issue(V11) 는 disabled·chainid 허용·부분군·서명·π_IdP 를 검사한 뒤 서명 직전에 chainAlive() 로 eth_blockNumber 를
 // 한 번 불러 체인 가용성만 본다(값은 쓰지 않는다). 그 await 동안 관리자가 계정을 폐기하면 폐기 직후의
-// 발급이 살아남아, 물린 자격증명 위에 새 세션이 max_height 까지 유효하다. 결정적으로 재현하기 위해 CIA 의 RPC
+// 발급이 살아남아, 물린 자격증명 위에 새 세션이 max_height 까지 유효하다. 결정적으로 재현하기 위해 IdP 의 RPC
 // 앞에 eth_blockNumber 응답을 붙잡는 게이트 프록시를 둔다 — 요청이 게이트에 닿은 것을 Promise 로 알고,
 // 게이트를 내린 뒤 revoke 를 끝까지 보내고 나서 응답을 풀어 준다. 벽시계 대기가 없다.
-// (CIA 의 provider 는 cacheTimeout:-1 이라 revoke 의 headHeight() 조회가 붙잡힌 issue 의 chainAlive() 조회에
+// (IdP 의 provider 는 cacheTimeout:-1 이라 revoke 의 headHeight() 조회가 붙잡힌 issue 의 chainAlive() 조회에
 // 합류하지 않는다 — 게이트가 내려간 뒤의 조회이므로 그대로 통과한다.)
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -58,7 +58,7 @@ const cia = await startIsolatedCia({ env: { CIA_RPC_URL: proxyUrl, CIA_CHAIN_RPC
 try {
   const u = userOf(await cia.registerUser('12345', 'password123'), '12345', TESTUSER_ATTRS);
 
-  /** issueV11 의 얇은 포장 — 이 파일의 케이스가 자주 쓰는 모양(이 CIA·이 서비스·이 사용자, 기본값은 새 C_u). */
+  /** issueV11 의 얇은 포장 — 이 파일의 케이스가 자주 쓰는 모양(이 IdP·이 RP·이 사용자, 기본값은 새 C_u). */
   const issue = (opts = {}) => issueV11(cia, u, { arid, provider, ...opts });
 
   // 리뷰 S2(2026-10-13): 예전에는 "둘 다 200" 이었다 — 먼저 앉은 C_u 가 즉시 게시를 기다리는 사이 다른 요청이 그것을 물리고 자기 것을 앉혀도
@@ -177,7 +177,7 @@ try {
   // 2026-09-25 리뷰 I-1: pruneExpiredSessions() 가 계정 순회 **안**에서 head 를 읽으면, 그 await 동안 /cia/issue 가
   // acct.sessions 를 새 배열로 갈아끼운다 — 재개한 정리는 옛 배열로 만든 keep 을 대입해 방금 발급된 기록을 덮어쓴다.
   // 그 세션은 이후 /cia/revoke scope=session 에서 404 unknown_session 이라 만료될 때까지 개별 폐기가 안 된다.
-  // 결정적으로 재현하려고 하트비트를 켠 두 번째 격리 CIA 를 띄우되, **세션 헤드 조회(headOf)만** 게이트 프록시를
+  // 결정적으로 재현하려고 하트비트를 켠 두 번째 격리 IdP 를 띄우되, **세션 헤드 조회(headOf)만** 게이트 프록시를
   // 거치게 하고(CIA_CHAIN_RPCS) 로그·하트비트 게시용 provider 는 업스트림에 직접 물린다(CIA_RPC_URL).
   // 그래야 게이트에 걸리는 eth_blockNumber 가 정리의 것 하나뿐이라 "정리가 head 를 기다리는 순간"을 골라 발급을 끼워 넣을 수 있다.
   await t('경합: 하트비트 정리가 head 를 기다리는 동안 발급해도 세션 기록이 사라지지 않는다 (2026-09-25 리뷰 I-1)', async () => {

@@ -1,4 +1,4 @@
-// CIA 상태 v12(V11 2026-10-12) — 기본 상태·검사·옛 버전 거부. 외부 의존 없음(unit).  node tests/test_mode3_cia_state.js
+// IdP 상태 v12(V11 2026-10-12) — 기본 상태·검사·옛 버전 거부. 외부 의존 없음(unit).  node tests/test_mode3_cia_state.js
 import assert from 'node:assert/strict';
 import { CIA_STATE_VERSION, defaultCiaState, migrateCiaState } from '../lib/mode3_cia_state.js';
 let failed = 0;
@@ -17,7 +17,7 @@ t('v12 는 그대로(notes 없음), 빠진 하위 필드는 채운다, 계정 �
   assert.equal(state.signedEpochMax, 0); assert.equal(state.attrSchemaHash, null, '스키마 해시는 cia.js 기동이 기록한다');
 });
 t('v11 이하(v2·v4·v8·v10·v11)와 미래 버전(13), 버전 없음은 전부 throw — 이행하지 않는다', () => {
-  for (const v of [2, 4, 8, 10, 11, 13, undefined]) assert.throws(() => migrateCiaState({ version: v, accounts: {} }), /unsupported CIA state version/, String(v));
+  for (const v of [2, 4, 8, 10, 11, 13, undefined]) assert.throws(() => migrateCiaState({ version: v, accounts: {} }), /unsupported IdP state version/, String(v));
   assert.throws(() => migrateCiaState({ version: 11, accounts: {} }), /재시연 세트/);
 });
 t('v12 인데 auid 가 없거나 V10 필드(attrs·profile·cm_u)가 남은 계정은 throw', () => {

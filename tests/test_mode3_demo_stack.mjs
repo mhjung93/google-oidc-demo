@@ -1,4 +1,4 @@
-// Mode 3 데모 스택 전 구간(HTTP): 격리 CIA + 지갑 에이전트 + RP. 스펙 §6 시연 각본 8단계 + r_s 음성. (chain 그룹)
+// Mode 3 데모 스택 전 구간(HTTP): 격리 IdP + 지갑 에이전트 + RP. 스펙 §6 시연 각본 8단계 + r_s 음성. (chain 그룹)
 //   node tests/test_mode3_demo_stack.mjs
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -30,7 +30,7 @@ const { cia, wallet, rp } = stack;
 const uid = '12345';
 
 /** 브라우저의 RP 페이지가 하는 일을 그대로: rp_info → r_s → 지갑 login → RP login. 세션 r_s 를 돌려준다.
- *  V10(2026-10-02 Task 9): RP·지갑 모두 거울을 기준으로 한다. 격리 CIA 는 거울 릴레이 주기가 꺼져 있으므로, 지갑 로그인 동안
+ *  V10(2026-10-02 Task 9): RP·지갑 모두 거울을 기준으로 한다. 격리 IdP 는 거울 릴레이 주기가 꺼져 있으므로, 지갑 로그인 동안
  *  (새 자격증명이면 거울이 내 리프를 실을 때까지 기다린다) 거울이 뒤처지면 릴레이를 대신 눌러 준다(stack.withRelay). */
 async function loginViaRp(allowAgent = '0') {
   const info = (await rp.get('/api/mode3/rp_info')).body;
@@ -42,7 +42,7 @@ async function loginViaRp(allowAgent = '0') {
 }
 /** 세션 재검증: 지갑이 같은 성명으로 (root 가 바뀌었으면 새) π 를 만들어 RP 에 낸다. */
 async function revalidateViaRp(r_s, { skipSync = false } = {}) {
-  await stack.relayIfBehind();   // V10: 앞선 폐기·게시를 거울(RP 가 읽는 곳)에 실어 둔다 — 기존 각본은 "게시 = 서비스가 본다" 를 전제한다
+  await stack.relayIfBehind();   // V10: 앞선 폐기·게시를 거울(RP 가 읽는 곳)에 실어 둔다 — 기존 각본은 "게시 = RP 가 본다" 를 전제한다
   const w = await wallet.post('/wallet/revalidate', { r_s, skipSync }, { Origin: rp.origin });
   if (w.status !== 200) return { walletStatus: w.status, wallet: w.body };
   const r = await rp.post('/api/mode3/revalidate', { proof: w.body.proof, publicSignals: w.body.publicSignals, sig: w.body.sig, r_s });
@@ -125,7 +125,7 @@ try {
     assert.equal(r.body.predicates.birthYearMin, '1900', '최종 리뷰 I1: 페이지가 나이 술어의 lo 로 쓰는 스키마 min');
   });
 
-  await t('0. 서비스 등록 승인: 관리자 목록에 approved 이고 조합 키가 있다 (헬퍼가 승인을 대행했다)', async () => {
+  await t('0. RP 등록 승인: 관리자 목록에 approved 이고 조합 키가 있다 (헬퍼가 승인을 대행했다)', async () => {
     const list = (await cia.adminGet('/cia/rps')).body.rps;
     const mine = list.find((e) => e.origin === rp.origin);
     assert.equal(mine.status, 'approved'); assert.ok(mine.pk_trace?.x);
@@ -191,7 +191,7 @@ try {
     TX1 = r2.body.txHash;
   });
 
-  await t('2b. 해시 기반 개봉: 서비스가 txHash 로 요청 → 승인 → uid·allowAgent(0)', async () => {
+  await t('2b. 해시 기반 개봉: RP 가 txHash 로 요청 → 승인 → uid·allowAgent(0)', async () => {
     const r = await rp.post('/api/mode3/open', { txHash: TX1 });
     assert.ok([200, 202].includes(r.status), j(r.body));   // 같은 세션(같은 c1)의 개봉이 9 보다 먼저 여기서 생긴다 → 202. 이미 있으면 200
     const id = r.body.id;
@@ -203,7 +203,7 @@ try {
 
   await t("session_mismatch: 다른 사용자가 같은 r_s 로 받은 성명으로 남의 세션을 재검증할 수 없다", async () => {
     // alice(uid 67890) 를 라이브러리로 등록·발급한다 — 지갑 에이전트는 한 계정만 등록하므로 서버 없이 만든다.
-    // CIA 의 used_rs 는 uid 별이라 같은 r_s 로 두 번째 발급이 성공한다. RP 의 session_mismatch 가 이것을 막아야 한다.
+    // IdP 의 used_rs 는 uid 별이라 같은 r_s 로 두 번째 발급이 성공한다. RP 의 session_mismatch 가 이것을 막아야 한다.
     const info = (await rp.get('/api/mode3/rp_info')).body;
     const mine = await loginViaRp();
     assert.equal(mine.rp.ok, true, j(mine));
@@ -299,11 +299,11 @@ try {
     assert.equal(r.status, 202, j(r.body)); const id = r.body.id;
     assert.equal((await rp.get(`/api/mode3/open/${id}`)).status, 202);
     const pend = (await cia.adminGet('/cia/openings')).body.openings.find((o) => o.id === id);
-    assert.equal(pend.status, 'pending'); assert.equal(pend.uid, null);   // CIA V4(Task 5) 는 pending 항목에 uid:null 을 명시적으로 둔다
+    assert.equal(pend.status, 'pending'); assert.equal(pend.uid, null);   // IdP V4(Task 5) 는 pending 항목에 uid:null 을 명시적으로 둔다
     assert.equal((await cia.adminPost(`/cia/openings/${id}/approve`)).body.status, 'approved');
     const res = await rp.get(`/api/mode3/open/${id}`);
     assert.equal(res.status, 200, j(res.body)); assert.equal(res.body.uid, uid); assert.equal(res.body.PPID, PPID1);
-    const r2 = await rp.post('/api/mode3/open', { PPID: PPID1 });   // 같은 (arid, c1) — CIA 가 같은 id 로 dedup 한다
+    const r2 = await rp.post('/api/mode3/open', { PPID: PPID1 });   // 같은 (arid, c1) — IdP 가 같은 id 로 dedup 한다
     assert.equal(r2.status, 200); assert.equal(r2.body.id, id);
     assert.equal((await rp.post('/api/mode3/open', { PPID: '1' })).status, 404);
   });
@@ -404,7 +404,7 @@ try {
     const after = await loginViaRp();
     assert.equal(after.rp.ok, true, j(after));
     assert.equal(after.rp.PPID, before.rp.PPID);
-    // 게시는 지갑이 하지 않는다 — 다음 로그인의 새 C_u 발급이 CIA 에서 슬롯을 갱신·게시한다(userCredMs > 0 이 그 증거다).
+    // 게시는 지갑이 하지 않는다 — 다음 로그인의 새 C_u 발급이 IdP 에서 슬롯을 갱신·게시한다(userCredMs > 0 이 그 증거다).
     assert.ok(after.wallet.timings.userCredMs > 0, j(after.wallet));
     const extra1Encoded = await encodeSlotValue(DEFAULT_ATTR_SCHEMA, 2, 'tier3');
     assert.deepEqual((await wallet.get('/wallet/status')).body.attrs, ['1990', '410', extra1Encoded, '0', '0', '0']);
@@ -510,9 +510,9 @@ try {
 
   // 자기 폐기 프록시(metamask-snap §4.5, Ruling 7). snap 모드의 지갑 페이지는 cia.js 에 CORS 가 없어 :4100 을 직접 부를 수
   // 없다 — 에이전트가 중계한다. 여기서는 file 모드 스택으로 그 중계 경로만 본다(Snap 은 비밀번호를 묻는 역할일 뿐이다).
-  await t("4″. 자기 폐기 프록시: 지갑 POST /wallet/self_revoke 가 CIA 로 중계한다(형식 400, 남의 uid 403, 잘못된 비밀번호 401)", async () => {
+  await t("4″. 자기 폐기 프록시: 지갑 POST /wallet/self_revoke 가 IdP 로 중계한다(형식 400, 남의 uid 403, 잘못된 비밀번호 401)", async () => {
     assert.equal((await wallet.post('/wallet/self_revoke', { uid })).status, 400);
-    // 이 지갑이 들고 있지 않은 계정(alice)은 CIA 에 닿기 전에 막힌다 — 임의 uid·pwd 를 던져 보는 통로가 되지 않는다.
+    // 이 지갑이 들고 있지 않은 계정(alice)은 IdP 에 닿기 전에 막힌다 — 임의 uid·pwd 를 던져 보는 통로가 되지 않는다.
     const other = await wallet.post('/wallet/self_revoke', { uid: '67890', pwd: 'alicepw' });
     assert.equal(other.status, 403, j(other.body)); assert.equal(other.body.reason, 'uid_mismatch');
     assert.equal((await wallet.post('/wallet/self_revoke', { uid, pwd: 'wrong-password' })).status, 401);
@@ -523,7 +523,7 @@ try {
     // 양성 대조: stdout 캡처가 깨져 log() 가 늘 빈 문자열이면 위 "비밀번호가 없다" 단언이 조용히 무장해제된다.
     assert.ok(wallet.log().includes('Mode 3 wallet agent at'), '로그 캡처 양성 대조');
     assert.ok(!wallet.log().includes('password123'), '비밀번호가 지갑 로그에 남았다');
-    // V9: 이 프록시도 CIA 의 revokeAccount 결과를 그대로 중계한다 — 즉시 게시됐으니 수동 게시는 더 낼 것이 없다.
+    // V9: 이 프록시도 IdP 의 revokeAccount 결과를 그대로 중계한다 — 즉시 게시됐으니 수동 게시는 더 낼 것이 없다.
     assert.equal(r.body.published, true, j(r.body));
     assert.equal((await cia.adminPost('/cia/publish')).body.published, false);
     // 뒤 시나리오들이 로그인을 이어 가므로 복구해 둔다 — 4′ 과 같이 PPID 는 그대로여야 한다.
@@ -553,9 +553,9 @@ try {
     // AA 가 받아들인 순간 지갑은 그 세션을 버린다 — 게시 전이라도 두 번째 요청은 404 no_session 이다.
     assert.equal((await wallet.post('/wallet/session/revoke', { r_s: s1.r_s })).status, 404);
     assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
-    await stack.relay();   // V10: 서비스는 거울을 읽는다 — 게시가 거울에 실려야 옛 서명이 revalidate_required 가 된다
+    await stack.relay();   // V10: RP 는 거울을 읽는다 — 게시가 거울에 실려야 옛 서명이 revalidate_required 가 된다
 
-    // s1: 서비스 관점 — 게시로 root 가 바뀌어 옛 서명은 revalidate_required 이고, 재검증할 지갑 세션은 이미 없다.
+    // s1: RP 관점 — 게시로 root 가 바뀌어 옛 서명은 revalidate_required 이고, 재검증할 지갑 세션은 이미 없다.
     const q1 = await rp.post('/api/mode3/request', { r_s: s1.r_s, body: 'x', sig: w1.body.sig });
     assert.notEqual(q1.body.ok, true, j(q1.body));
     assert.equal(q1.body.reason, 'revalidate_required', j(q1.body));
@@ -594,7 +594,7 @@ try {
     const rv = await cia.adminPost('/cia/revoke', { uid, scope: 'credential' });
     assert.equal(rv.status, 200, j(rv.body)); assert.equal(rv.body.retired, 1, j(rv.body));
 
-    // salt(s_u) 바꾸기 — 가짜 s_u 로 계산한 auid 가 CIA DB 의 auid 와 달라 π_IdP 검증이 bad_idp_proof 로 거절한다(V11).
+    // salt(s_u) 바꾸기 — 가짜 s_u 로 계산한 auid 가 IdP DB 의 auid 와 달라 π_IdP 검증이 bad_idp_proof 로 거절한다(V11).
     assert.equal((await wallet.post('/wallet/demo/override', { scope: 'issue', s_u: '999999999999999999' })).body.ok, true);
     const badSalt = await loginViaRp();
     assert.equal(badSalt.walletStatus, 502, j(badSalt.wallet));
@@ -635,7 +635,7 @@ try {
   });
 
   // V10(2026-10-02 §4.5): 계정 폐기는 슬롯을 영구 은퇴시키고, 관리자가 되살린 뒤의 재발급은 새 슬롯을 받는다 — 앞의 4·4'
-  // (계정 폐기·자기 폐기 → 복구)를 지난 testuser 는 더 이상 슬롯 0 이 아니다. 슬롯이 서로 다르고, 지갑이 CIA 가 준 새 슬롯을
+  // (계정 폐기·자기 폐기 → 복구)를 지난 testuser 는 더 이상 슬롯 0 이 아니다. 슬롯이 서로 다르고, 지갑이 IdP 가 준 새 슬롯을
   // 따랐는지(결정 3)를 본다.
   await t('각본 12(V9): 두 사용자의 슬롯은 다르고 각자 PPID 로 로그인된다(V10: testuser 는 복구 재발급으로 새 슬롯, 지갑이 따른다)', async () => {
     const accts = (await cia.adminGet('/cia/accounts')).body.accounts;
@@ -656,7 +656,7 @@ try {
     } finally { alice.stop(); }
   });
 
-  // V10(2026-10-02 설계 §5) 거울 지연: 서비스(RP)·계정 컨트랙트는 거울만 읽는다. 캐노니컬에 폐기가 게시돼도 릴레이 전에는
+  // V10(2026-10-02 설계 §5) 거울 지연: RP·계정 컨트랙트는 거울만 읽는다. 캐노니컬에 폐기가 게시돼도 릴레이 전에는
   // 거울 기준으로 옛 π 가 그대로 통한다(지연 창 = 릴레이 주기). 릴레이가 거울을 올리는 순간 옛 서명은 revalidate_required 가
   // 되고, 살아 있는 세션은 새 π 로 재검증되며, 폐기된 세션은 지갑이 revoked_session 으로 버린다.
   // 주의: revalidateViaRp 는 거울을 먼저 맞추므로(relayIfBehind) 지연 창 안에서는 쓰지 않고 지갑·RP 를 직접 부른다.
@@ -703,7 +703,7 @@ try {
   // V10(2026-10-02 설계 §4) 접수증 강제: 계정 폐기 응답의 receipt 는 "이 슬롯은 비어 있어야 한다" 는 IdP 서명이다. 사용자가
   // 그것을 캐노니컬 로그의 requestRevocation 으로 올리면, 다음 게시는 그 슬롯을 0 으로 실어야만 통과하고 슬롯은 영구 은퇴한다.
   // 관리자가 계정을 되살리면 재발급은 새 슬롯을 받고 지갑이 따른다(각본 12 와 같은 규칙).
-  // 이 각본은 접수증 → 대기열 → 게시의 흐름을 보일 뿐 컨트랙트의 강제 자체는 아니다(정직한 CIA 는 어차피 슬롯을 0 으로 싣는다) —
+  // 이 각본은 접수증 → 대기열 → 게시의 흐름을 보일 뿐 컨트랙트의 강제 자체는 아니다(정직한 IdP 는 어차피 슬롯을 0 으로 싣는다) —
   // 0 으로 싣지 않은 게시의 거절(PendingRevocationNotApplied)은 test/Mode3Log.test.mjs 가 본다.
   await t('각본 14(V10): 접수증 강제 — 자기 폐기 receipt 를 requestRevocation 으로 올림 → /cia/publish 가 (slot,0) 을 실어 통과·isRetired → 복구 재발급은 새 슬롯', async () => {
     const pre = await loginViaRp();
@@ -770,8 +770,8 @@ try {
     assert.equal((await rp.post('/api/mode3/login', { proof: {} })).status, 400);
   });
 
-  await t('페이지 서빙: 지갑 /, RP /, CIA /admin 이 text/html', async () => {
-    for (const [c, p, marker] of [[wallet, '/', 'Mode 3 지갑'], [rp, '/', 'Mode 3 로그인'], [cia, '/admin', 'CIA 관리자'], [cia, '/account', 'CIA 사용자']]) {
+  await t('페이지 서빙: 지갑 /, RP /, IdP /admin 이 text/html', async () => {
+    for (const [c, p, marker] of [[wallet, '/', 'Mode 3 지갑'], [rp, '/', 'Mode 3 로그인'], [cia, '/admin', 'IdP 관리자'], [cia, '/account', 'IdP 사용자']]) {
       const r = await fetch(`${c.base}${p}`);
       assert.equal(r.status, 200, `${p}`);
       assert.match(r.headers.get('content-type') ?? '', /text\/html/);
@@ -832,7 +832,7 @@ try {
     assert.match(rp.log(), /검증기를 만들지 않는다\(fail-closed\)/);
   });
   // C-5(2026-09-25 리뷰): 개봉 **조회**만 fail-closed 가 빠져 있었다 — 검증기가 없는(등록 대기·팩토리 상수 조회 실패)
-  // RP 가 CIA 로 서명한 조회를 계속 중계했다. 다른 라우트와 같은 503 이어야 한다. 위 I-1 과 같은 이유로 맨 끝에 둔다.
+  // RP 가 IdP 로 서명한 조회를 계속 중계했다. 다른 라우트와 같은 503 이어야 한다. 위 I-1 과 같은 이유로 맨 끝에 둔다.
   await t('C-5: 검증기가 없으면 GET /api/mode3/open/:id 도 503 (개봉 조회 fail-closed)', async () => {
     await stack.restartRp({ MODE3_RP_FACTORY_ADDRESS: cia.logAddress }, { waitActive: false });
     assert.equal((await rp.get('/api/mode3/rp_info')).body.active, false, '전제: 검증기가 없는 상태');

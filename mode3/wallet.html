@@ -17,21 +17,21 @@
   <main class="cards" id="authorizeView" hidden>
     <section class="card span2">
       <h3 data-i18n="wallet_auth_title">로그인 승인</h3>
-      <p id="authTitle">서비스 페이지의 요청을 기다리는 중…</p>
+      <p id="authTitle">RP 페이지의 요청을 기다리는 중…</p>
       <dl class="kv" id="authSummary"></dl>
       <p id="authStep" class="muted expert"></p>
       <pre id="authLog" class="expert"></pre>
-      <p class="muted" data-i18n="wallet_auth_note">요청은 주소창이 아니라 postMessage 로 받습니다. 메시지를 보낸 오리진이 서비스 인증서의 오리진과 같을 때만 진행합니다.</p>
+      <p class="muted" data-i18n="wallet_auth_note">요청은 주소창이 아니라 postMessage 로 받습니다. 메시지를 보낸 오리진이 RP 인증서의 오리진과 같을 때만 진행합니다.</p>
     </section>
   </main>
 
   <main class="cards" id="mainView">
     <section class="card" id="identityCard">
       <h3 data-i18n="wallet_identity_title">내 신원</h3>
-      <p class="desc" data-i18n="wallet_identity_desc">신원 기관에 한 번 등록합니다. 속성은 내가 지갑에 넣고 기관은 모릅니다.</p>
+      <p class="desc" data-i18n="wallet_identity_desc">IdP 에 한 번 등록합니다. 속성은 내가 지갑에 넣고 IdP 는 모릅니다.</p>
       <p><span id="regBadge" class="badge">미등록</span> <span id="regInfo" class="muted"></span></p>
       <dl class="kv">
-        <dt data-term="AA">신원 기관</dt><dd id="aaInfo">-</dd>
+        <dt data-term="AA">IdP</dt><dd id="aaInfo">-</dd>
         <dt data-term="cred">내 자격증명</dt><dd id="credInfo">-</dd>
         <dt data-term="registry">등록부</dt><dd><span id="registryBadge" class="badge muted">-</span> <span id="registryInfo"></span></dd>
       </dl>
@@ -54,11 +54,11 @@
 
     <section class="card" id="sessionsCard">
       <h3 data-i18n="wallet_sessions_title">로그인 세션</h3>
-      <p class="desc" data-i18n="wallet_sessions_desc">서비스마다 다른 주소로 로그인합니다. 세션 하나만 끝낼 수도 있습니다.</p>
+      <p class="desc" data-i18n="wallet_sessions_desc">RP 마다 다른 주소로 로그인합니다. 세션 하나만 끝낼 수도 있습니다.</p>
       <p><button id="refreshBtn" class="btn-ghost" data-i18n="refresh">새로고침</button></p>
       <div id="sessionActions"></div>
       <div id="sessionVerdict"></div>
-      <p class="muted" data-i18n="wallet_sessions_note">로그인은 서비스 페이지에서 시작합니다 — 자격증명 발급은 로그인 안에서 필요할 때 자동으로 일어납니다.</p>
+      <p class="muted" data-i18n="wallet_sessions_note">로그인은 RP 페이지에서 시작합니다 — 자격증명 발급은 로그인 안에서 필요할 때 자동으로 일어납니다.</p>
       <p id="mirrorInfo" class="muted"></p>
       <p id="chainInfo" class="muted expert"></p>
       <pre id="status" class="expert">불러오는 중…</pre>
@@ -67,7 +67,7 @@
 
     <section class="card span2" id="txCard">
       <h3 data-i18n="wallet_tx_title">트랜잭션 보내기</h3>
-      <p class="desc" data-i18n="wallet_tx_desc">이 서비스 전용 주소에서 보냅니다. 필요하면 속성 조건만 골라 공개합니다.</p>
+      <p class="desc" data-i18n="wallet_tx_desc">이 RP 전용 주소에서 보냅니다. 필요하면 속성 조건만 골라 공개합니다.</p>
       <p id="txNote" class="muted"></p>
       <dl class="kv">
         <dt data-i18n="wallet_tx_session">보낼 세션</dt><dd><select id="txSession"></select></dd>
@@ -83,24 +83,19 @@
         <div id="discloseRows">
           <div><label><input type="checkbox" id="dk0" /> <span data-term="attr0">출생연도</span></label>
             <label><span data-i18n="wallet_lo">최소</span> <input id="discLo0" size="10" /></label>
-            <label><span data-i18n="wallet_hi">최대</span> <input id="discHi0" size="10" /></label></div>
+            <label><span data-i18n="wallet_hi">최대</span> <input id="discHi0" size="10" /></label>
+            <span id="discNote0" class="muted"></span></div>
           <div><label><input type="checkbox" id="dk1" /> <span data-term="attr1">국가</span></label>
-            <label><span data-i18n="wallet_lo">최소</span> <input id="discLo1" size="10" /></label>
-            <label><span data-i18n="wallet_hi">최대</span> <input id="discHi1" size="10" /></label></div>
+            <label><select id="discCountry"><option value="" selected data-i18n="wallet_disc_country_none">공개 안 함</option></select></label>
+            <span id="discNote1" class="muted"></span></div>
           <div><label><input type="checkbox" id="dk2" /> <span data-term="attr2">예비 1</span></label>
-            <label><span data-i18n="wallet_lo">최소</span> <input id="discLo2" size="10" /></label>
-            <label><span data-i18n="wallet_hi">최대</span> <input id="discHi2" size="10" /></label></div>
+            <span id="discNoValue2" class="muted" data-i18n="wallet_disc_no_value" hidden>값 없음</span></div>
           <div><label><input type="checkbox" id="dk3" /> <span data-term="attr3">예비 2</span></label>
-            <label><span data-i18n="wallet_lo">최소</span> <input id="discLo3" size="10" /></label>
-            <label><span data-i18n="wallet_hi">최대</span> <input id="discHi3" size="10" /></label></div>
-          <div><label><input type="checkbox" id="dk4" /> <span data-term="attr4">미사용</span></label>
-            <label><span data-i18n="wallet_lo">최소</span> <input id="discLo4" size="10" /></label>
-            <label><span data-i18n="wallet_hi">최대</span> <input id="discHi4" size="10" /></label></div>
-          <div><label><input type="checkbox" id="dk5" /> <span data-term="attr5">미사용</span></label>
-            <label><span data-i18n="wallet_lo">최소</span> <input id="discLo5" size="10" /></label>
-            <label><span data-i18n="wallet_hi">최대</span> <input id="discHi5" size="10" /></label></div>
+            <span id="discNoValue3" class="muted" data-i18n="wallet_disc_no_value" hidden>값 없음</span></div>
+          <div><label><input type="checkbox" id="dk4" /> <span data-term="attr4">미사용</span></label></div>
+          <div><label><input type="checkbox" id="dk5" /> <span data-term="attr5">미사용</span></label></div>
         </div>
-        <p><button id="discExactBtn" type="button" class="btn-ghost" data-i18n="wallet_disc_exact_btn">내 실제 값으로 채우기(체크한 조건)</button></p>
+        <p><button id="discExactBtn" type="button" class="btn-ghost" data-i18n="wallet_disc_exact_btn">출생연도를 내 값으로</button></p>
         <div id="setRow">
           <label><span data-i18n="wallet_set_label">집합 소속 조건</span>
             <select id="setSlot">
@@ -119,11 +114,15 @@
           <button id="ageBtn" type="button" class="btn-ghost" data-i18n="wallet_age_btn">이 나이 조건으로 채우기</button>
         </p>
       </details>
-      <p><button id="txBtn" disabled data-i18n="wallet_tx_btn">트랜잭션 보내기</button></p>
+      <p>
+        <button id="claimBtn" type="button" class="btn-ghost" data-i18n="wallet_tx_claim_btn">AttrGate 에 자격 증명(claim)</button>
+        <button id="txBtn" disabled data-i18n="wallet_tx_btn">트랜잭션 보내기</button>
+      </p>
+      <p class="muted" data-i18n="wallet_tx_claim_hint"></p>
       <div id="txVerdict"></div>
       <p class="muted expert"><span data-term="proof">영지식 증명</span> — <span id="txProofInfo"></span></p>
       <pre id="txLog" class="expert"></pre>
-      <p class="muted" data-i18n="wallet_tx_hash_hint">이 해시를 서비스 페이지의 "해시로 요청"에 붙여 넣으면 승인 개봉을 시연할 수 있습니다.</p>
+      <p class="muted" data-i18n="wallet_tx_hash_hint">이 해시를 RP 페이지의 "해시로 요청"에 붙여 넣으면 승인 개봉을 시연할 수 있습니다.</p>
     </section>
 
     <section class="card expert" id="demoCard">
@@ -133,6 +132,9 @@
          <label>uid <input id="demoUid" size="8" /></label>
          <select id="demoScope"><option value="issue" data-i18n="wallet_demo_scope_issue">다음 발급</option><option value="prove" data-i18n="wallet_demo_scope_prove">다음 증명</option></select>
          <button id="demoApplyBtn" class="danger" data-i18n="wallet_demo_apply">적용</button> <button id="demoClearBtn" class="btn-ghost" data-i18n="wallet_demo_clear">원래대로</button></p>
+      <!-- 가짜 증명·가짜 서명(2026-10-14): 발급·증명은 정상으로 끝내고 보내는 복사본만 바꿔쳐 RP·체인이 거절하는 장면을 보인다. -->
+      <p><button id="demoFakeProofBtn" class="danger" data-i18n="wallet_demo_fake_proof_btn">가짜 증명으로 보내기(다음 로그인·트랜잭션)</button>
+         <button id="demoFakeSigBtn" class="danger" data-i18n="wallet_demo_fake_sig_btn">가짜 서명으로 보내기(다음 로그인·트랜잭션)</button></p>
       <div id="demoVerdict"></div>
     </section>
 
@@ -187,6 +189,9 @@
     let statusError = null;    // 상태를 못 읽었을 때의 원문
     const progress = { txOk: false, disclosed: false, revoked: false };   // 이 페이지가 아는 완료 신호(세션 중 메모리)
     let attrSchema = null;   // GET /wallet/attr_schema — 이름 ↔ 코드, 슬롯 타입(스펙 2)
+    // U2: #discCountry 의 기본값은 내 국가다. 한 번이라도 사용자가 손대면(countryTouched) 5초 주기 refresh() 가
+    // 다시 내 국가로 되돌리지 않는다 — profileDirty 와 같은 패턴.
+    let countryTouched = false;
     // 등록 전·"속성 저장" 전에 사용자가 attrN 칸에 입력 중인 값을 5초 주기 refresh() 가 지워 버리지 않게 막는 플래그.
     // true 면 renderIdentity() 가 attrN 의 value 를 다시 쓰지 않는다 — 저장이 끝나면(등록·PUT 성공) false 로 되돌린다.
     let profileDirty = false;
@@ -247,15 +252,31 @@
       (attrSchema?.slots ?? []).forEach((slot, k) => { if (slot.type !== 'unused') out[slot.name] = $('attr' + k).value.trim(); });
       return out;
     }
-    /** 에이전트가 IdP 에서 받아 둔 스키마. 슬롯 타입에 따라 폼을 맞춘다 — 범위 체크박스는 int 슬롯만, unused 행은 숨긴다. */
+    /** 국가 선택(#discCountry)의 옵션을 스키마의 이름→코드로 채운다(U2). 스키마를 못 받았으면 "공개 안 함" 뿐이다. */
+    function populateCountrySelect() {
+      const sel = $('discCountry');
+      sel.textContent = '';
+      const none = document.createElement('option'); none.value = '';
+      tte(none, 'wallet_disc_country_none'); if (!none.textContent) none.textContent = '공개 안 함';
+      sel.appendChild(none);
+      const slot1 = attrSchema?.slots?.[1];
+      if (slot1?.type === 'enum') {
+        for (const [name, code] of Object.entries(slot1.values)) {
+          const o = document.createElement('option'); o.value = String(code); o.textContent = name; sel.appendChild(o);
+        }
+      }
+    }
+    /** 에이전트가 IdP 에서 받아 둔 스키마. 슬롯 타입에 따라 폼을 맞춘다 — unused 행은 숨긴다(U2: 슬롯 1~3 은 더는
+     *  범위 입력이 아니라 선택·체크박스라 int 가 아니라고 dk 를 막을 필요가 없다). */
     async function loadAttrSchema() {
       try { attrSchema = (await (await fetch('/wallet/attr_schema')).json()).schema; } catch { attrSchema = null; }
       if (!attrSchema) return;
       attrSchema.slots.forEach((slot, k) => {
+        if (slot.type !== 'unused') return;
         const row = $('dk' + k).closest('div');
-        if (slot.type === 'unused') { row.hidden = true; $('attr' + k).closest('dd').previousElementSibling.hidden = true; $('attr' + k).closest('dd').hidden = true; $('setSlot').querySelector(`option[value="${k}"]`).hidden = true; return; }
-        if (slot.type !== 'int') { $('dk' + k).disabled = true; $('dk' + k).title = '범위 조건은 정수 속성에만 쓸 수 있습니다'; }
+        row.hidden = true; $('attr' + k).closest('dd').previousElementSibling.hidden = true; $('attr' + k).closest('dd').hidden = true; $('setSlot').querySelector(`option[value="${k}"]`).hidden = true;
       });
+      populateCountrySelect();
       renderAttrsForm();
     }
     /** 집합 원소를 이름으로 적었으면 코드로(enum 슬롯). 그 밖은 그대로 — 지갑 에이전트가 형식을 검사한다. */
@@ -365,7 +386,7 @@
     function runAuthorize() {
       const step = (s) => { $('authStep').textContent = s; };
       const log = (s) => { $('authLog').textContent += `${s}\n`; };
-      if (!window.opener) { renderAuthTitle(); step('이 창은 서비스 페이지가 열어야 한다(window.opener 가 없다).'); return; }
+      if (!window.opener) { renderAuthTitle(); step('이 창은 RP 페이지가 열어야 한다(window.opener 가 없다).'); return; }
       let handled = false;
       const onMessage = async (ev) => {
         const req = ev.data;
@@ -402,13 +423,13 @@
           // 인증서·팩토리 검사는 **로그인과 재승인이 함께** 거친다(스펙 §4.2·§4.3). 오리진 자기일치만 보고 동의 창을 띄우면
           // 임의 페이지가 자기 오리진·자기가 쓴 서비스 이름으로 Snap 로그인 동의 창을 띄울 수 있다(2026-09-22 최종 리뷰 Important 1).
           // 재승인 요청에도 arid·cert_s·pk_trace 가 실려 오므로 같은 precheck 을 통과해야만 동의 창으로 간다.
-          step('서비스 인증서·팩토리 검사 중…');
+          step('RP 인증서·팩토리 검사 중…');
           // 재승인이면 r_s 도 보낸다 — 동의 창에 쓸 allowAgent 를 서비스 말이 아니라 에이전트가 든 세션 값에서 받는다(2026-09-23 점검 B-I1).
           const pre = await postJson('/wallet/authorize/precheck', {
             arid: req.arid, origin: req.origin, cert_s: req.cert_s, pk_trace: req.pk_trace, factoryAddress: req.factoryAddress ?? null,
             r_s: req.reauth === true ? req.r_s : undefined,
           });
-          if (pre.status !== 200) { step('서비스 검증 실패'); log(errText(pre.status, pre.body)); return reply({ ok: false, reason: pre.body.reason ?? 'precheck_failed', detail: pre.body.detail ?? null, status: pre.status }); }
+          if (pre.status !== 200) { step('RP 검증 실패'); log(errText(pre.status, pre.body)); return reply({ ok: false, reason: pre.body.reason ?? 'precheck_failed', detail: pre.body.detail ?? null, status: pre.status }); }
 
           // 재승인(스펙 §4.3): 이미 있는 세션에 증인만 다시 채운다 — 증명·발급은 하지 않는다.
           if (req.reauth === true) {
@@ -462,18 +483,12 @@
       renderAuthTitle();
       // 준비 신호는 오리진을 모르는 상태에서 보낸다('*'). 비밀은 실리지 않는다 — 요청을 받고 나서야 오리진을 대조한다.
       window.opener.postMessage({ type: 'mode3-authorize-ready' }, '*');
-      step('서비스 페이지의 요청을 기다리는 중…');
+      step('RP 페이지의 요청을 기다리는 중…');
     }
 
     // ---- 지갑 화면 ----
-    // 세션을 고르면(또는 새로 목록에 들어오면) to=attrGateAddress, data=claim() 셀렉터로 채운다. 사용자가 이미 값을
-    // 바꿔 놨으면 덮어쓰지 않는다 — 기본값(사망 주소·"0x")일 때만 채운다.
-    function applyTxDefaults() {
-      const c = lastSessions[$('txSession').value];
-      if (!c || !c.attrGateAddress) return;
-      if ($('txTo').value.trim() === '0x000000000000000000000000000000000000dEaD') $('txTo').value = c.attrGateAddress;
-      if ($('txData').value.trim() === '0x') $('txData').value = '0x4e71d92d';
-    }
+    // U4(2026-10-14): 세션을 고를 때 자동으로 AttrGate 로 재배선하지 않는다 — 기본값(사망 주소·0 wei·데이터 "0x")인
+    // 평범한 트랜잭션은 조건 없이 늘 성공해야 한다. AttrGate 로 보내려면 아래 "AttrGate 에 자격 증명(claim)" 버튼을 누른다.
     /** 안내 바(설계 §2). 다른 당사자에서 끝나는 단계는 링크가 있으면 링크로, 없으면 "다른 창에서" 로 표시된다. */
     function renderGuide() {
       const s = lastStatus;
@@ -509,9 +524,26 @@
     const termEl = (name) => { const s = document.createElement('span'); s.dataset.term = name; s.textContent = Demo.term(name); return s; };
 
     // ---- 내 신원 카드 ----
+    /** 국가 선택 기본값(내 국가) + 슬롯 2·3 체크박스의 "값 없음" 비활성화(U2). lastAttrs 가 바뀔 때마다 부른다. */
+    function updateDiscloseForAttrs() {
+      if (!countryTouched) {
+        const sel = $('discCountry');
+        const mine = lastAttrs ? String(lastAttrs[1]) : '';
+        sel.value = mine !== '' && mine !== '0' && sel.querySelector(`option[value="${mine}"]`) ? mine : '';
+      }
+      for (const k of [2, 3]) {
+        if (attrSchema?.slots?.[k]?.type === 'unused') continue;
+        const noValue = !lastAttrs || String(lastAttrs[k]) === '0';
+        $('dk' + k).disabled = noValue;
+        if (noValue) $('dk' + k).checked = false;
+        const note = $('discNoValue' + k);
+        if (note) note.hidden = !noValue;
+      }
+    }
     function renderIdentity() {
       const s = lastStatus;
       lastAttrs = s?.attrs ?? null;
+      updateDiscloseForAttrs();
       // 속성은 내가 지갑에 넣는다(D15) — 값은 profile(이름→입력값)에서 읽는다. 스키마를 아직 못 받았으면 옛 표시값으로 대신한다.
       // profileDirty(= 저장하지 않은 입력이 있다) 동안은 건드리지 않는다 — 안 그러면 5초 주기 refresh() 가 타이핑 중인 값을 지운다.
       if (!profileDirty) {
@@ -561,14 +593,16 @@
         const opt = document.createElement('option');
         opt.value = r_s;
         const factory = tt(c.factoryAddress ? 'wallet_factory_yes' : 'wallet_factory_no');
-        opt.textContent = tt('wallet_tx_session_opt', { arid: String(c.arid).slice(0, 10), ppid: String(c.PPID).slice(0, 12), factory })
-          || `${String(c.arid).slice(0, 10)}… / ${String(c.PPID).slice(0, 12)}…`;
+        // 계정 주소는 0x 앞 6·뒤 4 자리로 줄여 보이고 전체는 title 에 둔다(2026-10-14). 팩토리가 아직 없으면 PPID 앞자리로 대신한다.
+        const acct = c.account ? `${c.account.slice(0, 6)}…${c.account.slice(-4)}` : `PPID ${String(c.PPID).slice(0, 8)}…`;
+        opt.textContent = tt('wallet_tx_session_opt', { account: acct, arid: String(c.arid).slice(0, 10), factory })
+          || `${acct} / ${String(c.arid).slice(0, 10)}…`;
+        opt.title = c.account ? `${c.account}  (PPID ${c.PPID})` : `PPID ${c.PPID}`;
         if (c.factoryAddress) anyFactory = true;
         sel.appendChild(opt);
       }
       if (entries.some(([r_s]) => r_s === prev)) sel.value = prev;
       $('txBtn').disabled = !anyFactory;
-      applyTxDefaults();
 
       // 세션마다 요약 + 폐기 버튼. 목록은 새로고침마다 다시 만든다 — 지워진 세션의 버튼이 남지 않게.
       const acts = $('sessionActions');
@@ -576,7 +610,7 @@
       if (!entries.length) {
         const p = document.createElement('p');
         p.className = 'muted';
-        p.textContent = '로그인 세션이 없습니다. 서비스에서 로그인하세요.';
+        p.textContent = '로그인 세션이 없습니다. RP 에서 로그인하세요.';
         tte(p, 'wallet_no_sessions');
         acts.appendChild(p);
         return;
@@ -585,7 +619,7 @@
         const box = document.createElement('div');
         const dl = document.createElement('dl');
         dl.className = 'kv';
-        kvRow(dl, tt('wallet_session_service') || '서비스', shortCode(c.arid, 8));
+        kvRow(dl, tt('wallet_session_service') || 'RP', shortCode(c.arid, 8));
         kvRow(dl, termEl('PPID'), shortCode(c.PPID, 12));
         kvRow(dl, tt('wallet_session_expiry') || '만료', tt('wallet_session_expires', { h: c.max_height }) || String(c.max_height));
         const agent = document.createElement('span');
@@ -709,7 +743,6 @@
         setVerdict($('sessionVerdict'), false, 'wallet_session_revoke_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
       } finally { btn.disabled = false; refresh(); }
     }
-    $('txSession').addEventListener('change', applyTxDefaults);
     $('refreshBtn').addEventListener('click', () => refresh(true));
 
     // 등록: file 모드는 지금처럼 폼의 uid·pwd, snap 모드는 Snap 이 묻고(§4.1) 페이지는 s_u·sk_u 만 나른다.
@@ -797,12 +830,11 @@
       refresh();
     });
 
-    // "정확히 공개": 체크된 슬롯의 lo=hi=내 현재 속성값으로 채운다.
+    // "출생연도를 내 값으로"(U2): 슬롯0 이 체크돼 있으면 lo=hi=내 출생연도로 채운다. 국가(선택)·예비(체크박스
+    // 뿐)는 이미 내 값으로만 공개하므로 이 버튼이 손댈 것이 없다.
     $('discExactBtn').addEventListener('click', () => {
-      if (!lastAttrs) return;
-      for (let k = 0; k < 6; k++) {
-        if ($('dk' + k).checked) { $('discLo' + k).value = lastAttrs[k]; $('discHi' + k).value = lastAttrs[k]; }
-      }
+      if (!lastAttrs || !$('dk0').checked) return;
+      $('discLo0').value = lastAttrs[0]; $('discHi0').value = lastAttrs[0];
     });
 
     // "나이 ≥ N": 슬롯0(출생연도)을 체크하고 hi = 올해 − N 으로 채운다. lo 는 스키마의 min(기본 1900) — 서비스는 lo ≥ min 도 요구한다
@@ -810,14 +842,45 @@
     $('ageBtn').addEventListener('click', () => {
       $('dk0').checked = true; $('discLo0').value = String(attrSchema?.slots?.[0]?.min ?? 0); $('discHi0').value = String(new Date().getUTCFullYear() - Number($('minAgeIn').value || 19));
     });
+    $('discCountry').addEventListener('change', () => { countryTouched = true; });
 
+    // U3: 보내기 전에 체크된 조건을 lastAttrs 와 다시 대조한다 — 안 맞으면 체크 해제 + 행 옆에 안내를 남기고(지갑
+    // 에이전트의 disclosure_unsatisfiable 이 페이지 경로에서는 나오지 않게), 트랜잭션은 그대로 보낸다.
+    function sanitizeDisclose() {
+      $('discNote0').textContent = ''; $('discNote1').textContent = '';
+      if ($('dk0').checked && lastAttrs) {
+        try {
+          const lo = BigInt($('discLo0').value.trim() || '0'), hi = BigInt($('discHi0').value.trim() || '0'), mine = BigInt(lastAttrs[0] ?? 0);
+          if (mine < lo || mine > hi) {
+            $('dk0').checked = false;
+            $('discNote0').textContent = tt('wallet_disc_excluded', { v: lastAttrs[0] }) || `내 값 ${lastAttrs[0]} 은 범위 밖이라 제외했습니다.`;
+          }
+        } catch { /* 형식이 틀렸으면 그대로 보낸다 — agent 의 bad_disclosure 가 걸러낸다 */ }
+      }
+      if ($('dk1').checked && lastAttrs) {
+        const v = $('discCountry').value;
+        if (v !== '' && v !== String(lastAttrs[1])) {
+          $('dk1').checked = false;
+          $('discNote1').textContent = tt('wallet_disc_excluded', { v: lastAttrs[1] }) || `내 값 ${lastAttrs[1]} 은 범위 밖이라 제외했습니다.`;
+        }
+      }
+    }
     // 체크된 슬롯만 {lo, hi}, 나머지는 null — normalizeDisclosure(lib/mode3_wallet.js) 가 회로 입력(mask/lo/hi)으로 바꾼다.
-    const readDisclose = () => [0, 1, 2, 3, 4, 5].map((k) => ($('dk' + k).checked ? { lo: $('discLo' + k).value.trim(), hi: $('discHi' + k).value.trim() } : null));
+    // 슬롯0 은 범위 입력, 슬롯1(국가)은 선택값 하나(lo=hi), 슬롯2·3(예비)은 체크되면 내 값 그대로(lo=hi) 공개한다(U2).
+    const readDisclose = () => [0, 1, 2, 3, 4, 5].map((k) => {
+      if (!$('dk' + k).checked) return null;
+      if (k === 0) return { lo: $('discLo0').value.trim(), hi: $('discHi0').value.trim() };
+      if (k === 1) { const v = $('discCountry').value; return v === '' ? null : { lo: v, hi: v }; }
+      if (k === 2 || k === 3) { const v = lastAttrs ? String(lastAttrs[k]) : '0'; return v === '0' ? null : { lo: v, hi: v }; }
+      return null;   // 슬롯 4·5 는 미사용 — dk4/dk5 행 자체가 숨겨져 있다
+    });
     // 집합 소속(V7): 슬롯이 "없음" 이면 null — 지갑이 members 로 root 를 계산해 증명에 넣는다(normalizeSet, lib/mode3_wallet.js).
     const readSet = () => { const s = $('setSlot').value; if (s === '') return null; return { slot: Number(s), members: $('setMembers').value.split(',').map((x) => x.trim()).filter(Boolean).map((x) => encodeMember(Number(s), x)) }; };
-    const txForm = () => ({ r_s: $('txSession').value, to: $('txTo').value.trim(), value: $('txValue').value.trim() || '0', data: $('txData').value.trim() || '0x', disclose: readDisclose(), set: readSet() });
+    const txForm = () => { sanitizeDisclose(); return { r_s: $('txSession').value, to: $('txTo').value.trim(), value: $('txValue').value.trim() || '0', data: $('txData').value.trim() || '0x', disclose: readDisclose(), set: readSet() }; };
     const txLog = (s) => { $('txLog').textContent += `${s}\n`; };
-    const txFailed = (summaryKey, reason, detail) => setVerdict($('txVerdict'), false, 'tx_failed', () => ({ summary: summaryKey ? (tt(summaryKey) || undefined) : undefined, reason, detail }));
+    // demo(override:issue·prove·fake_proof·fake_sig)가 실린 실패는 rp.html 의 로그인 실패 표시와 같은 모양으로 "[시연 모드]" 를
+    // 앞에 붙인다(2026-10-14) — summaryKey 가 없어 reasons 사전의 제목만 뜨던 자리에 사전 조회를 한 번 더해 접두어만 더한다.
+    const txFailed = (summaryKey, reason, detail) => setVerdict($('txVerdict'), false, 'tx_failed', () => ({ summary: detail?.demo ? `[시연 모드] ${Demo.reason(reason)?.title ?? ''}` : (summaryKey ? (tt(summaryKey) || undefined) : undefined), reason, detail }));
     function showTxResult(b, extra, deployed) {
       txLog(`${extra}지갑=${b.wallet}  nonce=${b.nonce}  ok(실행 성공)=${b.ok}  gasUsed=${b.gasUsed}\n공개=${JSON.stringify(b.disclosure)}\n온체인 공개(Disclosure 이벤트)=${JSON.stringify(b.onchainDisclosure)}\n실행=${JSON.stringify(b.executed)}`);
       // 영수증은 받았지만 계정 안의 호출이 revert 된 경우(예: 공개 조건 미충족)에는 성공으로 보이면 안 된다 —
@@ -883,7 +946,7 @@
       txLog('POST /wallet/tx/prepare — 증명 생성 중…');
       const p = await postJson('/wallet/tx/prepare', f);
       if (p.status !== 200) {
-        txLog(errText(p.status, p.body) + (p.body.reason === 'needs_consent' ? ' — 서비스 페이지에서 다시 로그인(재승인)해야 한다' : ''));
+        txLog(errText(p.status, p.body) + (p.body.reason === 'needs_consent' ? ' — RP 페이지에서 다시 로그인(재승인)해야 한다' : ''));
         txFailed('wallet_tx_prepare_failed', p.body.reason ?? `HTTP ${p.status}`, safeDetail(p.body));
         return;
       }
@@ -914,6 +977,31 @@
       }
       showTxResult(rec.body, `txHash=${rec.body.txHash}${deployHash ? `\n배포 txHash=${deployHash}` : ''}\n캐시 히트=${b.cacheHit}  root=${b.root}\n`, Boolean(deployHash));
     }
+
+    // "AttrGate 에 자격 증명(claim)"(U4): to/data 를 이 세션의 AttrGate 로 채우고, 출생연도·국가 조건이 비어 있으면
+    // 내 속성으로 항상 만족되는 값을 자동으로 채운다 — 평범한 트랜잭션과 달리 이 버튼을 눌러야만 AttrGate 로 간다.
+    $('claimBtn').addEventListener('click', () => {
+      const c = lastSessions[$('txSession').value];
+      if (!c || !c.attrGateAddress) return;
+      $('txTo').value = c.attrGateAddress;
+      $('txData').value = '0x4e71d92d';
+      if (!$('dk0').checked) {
+        const minAge = Number(c.minAge ?? cfg.minAge ?? 19);
+        $('dk0').checked = true;
+        $('discLo0').value = String(attrSchema?.slots?.[0]?.min ?? 0);
+        $('discHi0').value = String(new Date().getUTCFullYear() - minAge);
+      }
+      $('setSlot').value = '1';
+      // RP 가 알려 준 허용 집합(세션·설정)이 있으면 그 값, 없으면 setMembers 가 이미 채워져 있으면 그대로 두고
+      // (기본값이 이 RP 의 실제 정책일 수 있다), 비어 있을 때만 내 국가 하나로 채운다.
+      const known = Array.isArray(c.allowedCountries) && c.allowedCountries.length ? c.allowedCountries
+        : Array.isArray(cfg.allowedCountries) && cfg.allowedCountries.length ? cfg.allowedCountries : null;
+      if (known) $('setMembers').value = known.join(',');
+      else if (!$('setMembers').value.trim()) {
+        const mine = lastAttrs && String(lastAttrs[1]) !== '0' ? String(lastAttrs[1]) : '';
+        if (mine) $('setMembers').value = mine;
+      }
+    });
 
     $('txBtn').addEventListener('click', async () => {
       $('txBtn').disabled = true; $('txLog').textContent = '';
@@ -951,6 +1039,21 @@
       }
       refresh();
     });
+    // 가짜 증명·가짜 서명(2026-10-14): s_u·uid 는 그대로다 — scope 만 보낸다. 다음 1회 로그인(또는 트랜잭션)의 보내는
+    // 복사본만 지갑 에이전트가 바꿔친다(mode3_wallet_agent.js proveSession·buildExecute). 배지는 demoApplyBtn 과 같은 카드에 뜬다.
+    async function armFakeDemo(scope, whatKey, whatFallback) {
+      try {
+        const { status, body: b } = await postJson('/wallet/demo/override', { scope });
+        if (status !== 200) { setVerdict($('demoVerdict'), false, 'wallet_demo_failed', { reason: b.error ?? `HTTP ${status}` }); return; }
+        const what = tt(whatKey) || whatFallback;
+        setVerdict($('demoVerdict'), true, 'wallet_demo_set', () => ({ summary: tt('wallet_demo_fake_armed', { what }) || `다음 1회: ${what}` }));
+      } catch (e) {
+        setVerdict($('demoVerdict'), false, 'wallet_demo_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
+      }
+      refresh();
+    }
+    $('demoFakeProofBtn').addEventListener('click', () => armFakeDemo('fake_proof', 'wallet_demo_fake_proof', '가짜 증명'));
+    $('demoFakeSigBtn').addEventListener('click', () => armFakeDemo('fake_sig', 'wallet_demo_fake_sig', '가짜 서명'));
 
     // ---- snap 모드 전용 버튼 ----
     $('connectBtn').addEventListener('click', async () => {

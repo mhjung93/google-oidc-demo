@@ -41,7 +41,7 @@ describe('Mode3Log', () => {
     await log.publish(p.revRoot, p.regRoot, p.epoch, [], [], [], await sign(cia, p));
     expect(await log.lastPublishedBlock()).to.equal(BigInt(await ethers.provider.getBlockNumber()));
   });
-  it('CIA 가 아닌 서명·epoch 미증가·길이 불일치·서명과 다른 인자는 거절', async () => {
+  it('IdP 가 아닌 서명·epoch 미증가·길이 불일치·서명과 다른 인자는 거절', async () => {
     const p = { revRoot: b32(1n), regRoot: b32(2n), epoch: 1n, revLeaves: [], slotIdx: [1], slotLeaves: [b32(5n)] };
     await expect(log.publish(p.revRoot, p.regRoot, 1n, [], [1], [b32(5n)], await sign(stranger, p))).to.be.revertedWithCustomError(log, 'BadSignature');
     await expect(log.publish(p.revRoot, p.regRoot, 0n, [], [1], [b32(5n)], await sign(cia, { ...p, epoch: 0n }))).to.be.revertedWithCustomError(log, 'EpochNotIncreasing');
@@ -67,7 +67,7 @@ describe('Mode3Log', () => {
   // 접수증 대기열 (V10 §4): IdP(cia)가 서명한 폐기 접수증을 누구나 올릴 수 있고, 다음 publish 는 그 슬롯을
   // 0 으로 실어야 통과한다. 통과하면 슬롯은 영구 은퇴돼 다시는 0 이 아닌 값을 받지 않는다.
   const receipt = async (wallet, slot, epochAtRequest, requestedAt) => signReceipt(wallet, { ...(await canon()), slot, epochAtRequest, requestedAt });
-  it('접수증: CIA 서명만 받고 pendingSlots 에 적는다, 중복은 무해', async () => {
+  it('접수증: IdP 서명만 받고 pendingSlots 에 적는다, 중복은 무해', async () => {
     const sig = await receipt(cia, 7, 0n, 1000n);
     await expect(log.connect(stranger).requestRevocation(7, 0n, 1000n, sig)).to.emit(log, 'RevocationRequested').withArgs(7, 0n);
     expect(await log.pendingSlots()).to.deep.equal([7n]);

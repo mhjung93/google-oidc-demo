@@ -21,8 +21,8 @@ const WALLET_ORIGINS = [
 const SLOT_LABELS = ['출생연도', '국가', '예비 1', '예비 2', '미사용', '미사용'];      // a₀..a₅ — 기본 스키마 zkd-attrs v1(스펙 2, 2026-10-07). 스키마를 RPC 로 받는 것은 비범위(§10)
 const SLOT_NAMES = ['a₀', 'a₁', 'a₂', 'a₃', 'a₄', 'a₅'];
 
-/** 동의 창에 보이는 서비스 이름 위생(2026-09-25 리뷰 D-2). 인증서(cert_s)가 덮는 것은 `origin` 뿐이고 serviceName 은
- *  서비스가 고른 임의의 문자열이다 — 개행·제어문자로 창에 가짜 줄("오리진: …" 같은)을 끼워 넣거나 긴 이름으로 아래
+/** 동의 창에 보이는 RP 이름 위생(2026-09-25 리뷰 D-2). 인증서(cert_s)가 덮는 것은 `origin` 뿐이고 serviceName 은
+ *  RP 가 고른 임의의 문자열이다 — 개행·제어문자로 창에 가짜 줄("오리진: …" 같은)을 끼워 넣거나 긴 이름으로 아래
  *  줄을 밀어내지 못하도록 한 줄·48자로 자른다. 잘라서 빈 문자열이 되면 호출자가 오리진으로 대체한다. */
 const MAX_SERVICE_NAME = 48;
 function cleanServiceName(v) {
@@ -103,7 +103,7 @@ export const onRpcRequest = async ({ origin, request }) => {
       const uid = await prompt('Mode 3 등록', ['사용자 uid(숫자)를 입력하세요.'], '12345');
       if (uid === null || uid === '') return { denied: true };
       if (!isDec(String(uid).trim())) fail('bad_uid: uid 는 10진 숫자 문자열이어야 한다');
-      const pwd = await prompt('Mode 3 등록', [`uid: ${uid}`, '신원 기관 계정 비밀번호를 입력하세요. 비밀번호는 Snap 에 저장하지 않습니다.'], '비밀번호');
+      const pwd = await prompt('Mode 3 등록', [`uid: ${uid}`, 'IdP 계정 비밀번호를 입력하세요. 비밀번호는 Snap 에 저장하지 않습니다.'], '비밀번호');
       if (pwd === null || pwd === '') return { denied: true };
       const secrets = createRegistrationSecrets();
       state.registration = {
@@ -147,7 +147,7 @@ export const onRpcRequest = async ({ origin, request }) => {
       const agentOk = allowAgent === true || allowAgent === 1 || allowAgent === '1';
       const pred = predicateLines(disclose, set);
       const ok = await confirm('로그인 동의', [
-        `서비스: ${cleanServiceName(serviceName) || rpOrigin}`,   // 이름은 서비스가 고른 값이다 — 인증서가 덮는 것은 아래 오리진 뿐
+        `RP: ${cleanServiceName(serviceName) || rpOrigin}`,   // 이름은 RP 가 고른 값이다 — 인증서가 덮는 것은 아래 오리진 뿐
         `오리진: ${rpOrigin}`,
         `요청 식별자(arid): ${arid}`,
         null,
@@ -170,7 +170,7 @@ export const onRpcRequest = async ({ origin, request }) => {
       const lines = predicateLines(disclose, set);
       if (lines.length === 0) lines.push('공개하는 속성 없음');
       const ok = await confirm('속성 공개 동의', [
-        rpOrigin ? `서비스: ${rpOrigin}` : '서비스: (지갑 페이지)',
+        rpOrigin ? `RP: ${rpOrigin}` : 'RP: (지갑 페이지)',
         arid === undefined || arid === null ? undefined : `요청 식별자(arid): ${arid}`,   // 없으면 줄 자체를 뺀다(null 은 구분선)
         null,
         '공개할 속성:',
@@ -217,7 +217,7 @@ export const onRpcRequest = async ({ origin, request }) => {
       requireRegistered(state);
       const { arid, issuedAt, maxHeight } = params;
       const ok = await confirm('세션 폐기', [
-        `서비스 arid: ${arid}`,
+        `RP arid: ${arid}`,
         `발급 시각: ${issuedAt}`,
         `만료 블록: ${maxHeight}`,
         null,

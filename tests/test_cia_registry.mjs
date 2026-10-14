@@ -1,4 +1,4 @@
-// CIA 등록부(V9) — 등록 키·슬롯·즉시 게시·은퇴·마이그레이션. 격리 CIA + :8545 Mode3Log. (chain)  node tests/test_cia_registry.mjs
+// IdP 등록부(V9) — 등록 키·슬롯·즉시 게시·은퇴·마이그레이션. 격리 IdP + :8545 Mode3Log. (chain)  node tests/test_cia_registry.mjs
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -244,7 +244,7 @@ await t('재기동 백로그 자동 게시: 리프는 이미 저장됐지만 게
 
 // ---- 대조 때 체인이 앞섬(리뷰 Important 3): 옛 백업으로 되돌아가 로컬 슬롯 0 이 0 인데 체인 이벤트 역사에는
 // 0 이 아닌 값이 남아 있으면, 지금 비어 있는 칸도 다시 게시해야 지갑이 수렴한다. ciaEthWallet(= CIA_ETH_PRIVATE_KEY)
-// 을 그대로 재사용해 같은 로그 컨트랙트에 이어서 게시할 수 있게 한다 — 그래야 재기동한 CIA 의 서명이 컨트랙트의
+// 을 그대로 재사용해 같은 로그 컨트랙트에 이어서 게시할 수 있게 한다 — 그래야 재기동한 IdP 의 서명이 컨트랙트의
 // 불변 cia 주소와 맞는다. ----
 await t('대조(체인이 앞섬): 로컬에서 비워진 칸도 다시 게시해야 지갑이 수렴한다', async () => {
   const cia4 = await startIsolatedCia();

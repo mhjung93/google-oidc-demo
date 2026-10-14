@@ -4,7 +4,7 @@
 
 **Goal:** Mode 3 의 코드를 2026-10-12 그림(`documents/261012.pptx` Overall Flow, 덱 3~8장)에 맞춘다 — `auid`·`auid_s`·`arid_s` 도입, 세션마다 π_IdP(새 Groth16 회로 `pi_idp`), `pi_cred` V11(공개 입력 33), 토큰 재정의, `/cia/issue` 가 `/cia/user_cred` 를 흡수, 속성은 사용자가 지갑에 넣음(D15), RP 챌린지 `r_rp`.
 
-**Architecture:** 라이브러리(`lib/mode3_credential.js`·`mode3_issuance.js`·`mode3_registry.js`)가 새 유도식을 정하고, 회로 둘(`circuits/pi_idp.circom` 신규, `circuits/pi_cred.circom` V11)이 그 식을 제약으로 옮긴다. 그 위에 지갑 라이브러리(`lib/mode3_wallet.js` + 새 `lib/mode3_idp_proof.js`), RP 검증기(`lib/mode3_rp.js`), 세 서버(`cia.js`·`mode3_rp.js`·`mode3_wallet_agent.js`), 컨트랙트(`Mode3Wallet.execute(uint[33])`), Snap·페이지·런북이 순서대로 바뀐다. CIA 상태는 v12 로 **새로 시작**(이행 없음), 지갑 상태는 v9.
+**Architecture:** 라이브러리(`lib/mode3_credential.js`·`mode3_issuance.js`·`mode3_registry.js`)가 새 유도식을 정하고, 회로 둘(`circuits/pi_idp.circom` 신규, `circuits/pi_cred.circom` V11)이 그 식을 제약으로 옮긴다. 그 위에 지갑 라이브러리(`lib/mode3_wallet.js` + 새 `lib/mode3_idp_proof.js`), RP 검증기(`lib/mode3_rp.js`), 세 서버(`cia.js`·`mode3_rp.js`·`mode3_wallet_agent.js`), 컨트랙트(`Mode3Wallet.execute(uint[33])`), Snap·페이지·런북이 순서대로 바뀐다. IdP 상태는 v12 로 **새로 시작**(이행 없음), 지갑 상태는 v9.
 
 **Tech Stack:** Node 20 ESM, circom 2.1.9 + snarkjs(Groth16, `pot21_final.ptau`), circomlibjs(Poseidon·Baby Jubjub·EdDSA), ethers v6 + hardhat, express, MetaMask Snap(`snap-mode3`).
 
@@ -24,7 +24,7 @@
 - **등록(§3.1)**: `/cia/register` 본문 `{ uid, pwd, auid, pk_u, sig_reg }`, `sig_reg = EdDSA_{sk_u}(Poseidon(D_REGISTER_V2, uid, auid))`. 계정에 **attrs·profile 필드 없음**(D15). `DEMO_ACCOUNTS` 는 `{ password, uid }` 만.
 - **속성(D15)**: 지갑이 `profile` 을 들고 스펙 2 의 `encodeProfile` 로 `attrs[6]` 을 만든다. IdP 는 값을 받지도 저장하지도 않는다. 스키마 공개(`GET /cia/attr_schema`)·RP 정책·AttrGate 는 그대로.
 - **RP(§3.2·§5.3)**: `/api/mode3/challenge → { r_s, r_rp, expiresAt, factoryAddress, attrGateAddress }`(둘 다 250비트, r_s 1회 소비). `verifyLogin` 은 d 뒤에 `pub[32] === r_s`, `pub[31] === Poseidon(T_ARIDS, arid, r_rp)` 를 더한다(사유 `bad_r_s`·`bad_arid_s` — 계획이 정한 이름). 세션 기록에 `auid_s`·`arid_s`.
-- **상태**: CIA 상태 **v12 — v11 이하는 이행하지 않고 기동 거부**("V11 은 새로 시작"). 지갑 상태 **v9**(등록만 유지, auid 는 s_u 로 재계산, 세션 비움). Snap `registration { uid, s_u, sk_u, attrs }`, 증인 `{ uid, s_u, sk_u, attrs, userCred }`.
+- **상태**: IdP 상태 **v12 — v11 이하는 이행하지 않고 기동 거부**("V11 은 새로 시작"). 지갑 상태 **v9**(등록만 유지, auid 는 s_u 로 재계산, 세션 비움). Snap `registration { uid, s_u, sk_u, attrs }`, 증인 `{ uid, s_u, sk_u, attrs, userCred }`.
 - **컨트랙트(§6)**: `Mode3Wallet.execute(..., uint[33] pub)`, `_checkStatement` 는 0~29 만 본다. 꼬리 15워드·다이제스트 불변. `PiCredVerifier` 재생성. 팩토리·AttrGate 소스 불변(재배포는 런북).
 - **작업 규칙(CLAUDE.md)**: 구현자는 커밋하지 않는다(커밋은 사용자 승인 뒤 컨트롤러만). `bash scripts/build_mode3_circuit.sh …`(zkey·vkey·wasm 재생성)은 **사용자의 명시적 승인이 있어야** 실행한다 — Task 4 Step 4 가 그 지점이고, 컨트롤러가 실행 전에 사용자에게 묻는다. 그 전 작업(1~3)은 `build/mode3/witness_test/`·`build/mode3/commit/` 에만 컴파일한다(배포용 산출물 불변). `:8545` hardhat 노드가 없으면 작업자가 `npx hardhat node` 를 백그라운드로 띄우고 끝나면 내린다(이미 떠 있던 노드는 건드리지 않는다). `.env`·키 파일은 읽지 않는다.
 - **중간 상태에 관한 주의**: Task 1 이 `registrationCommit`·π_u 를 지우므로 `lib/mode3_wallet.js`·`lib/mode3_secret_source.js`·`cia.js`·픽스처는 **Task 5·7 전까지 import 가 깨진다**. 각 작업은 자기 테스트만 초록이면 된다(각 작업 끝의 "실행" 단계가 그 범위다). 전체 그룹은 Task 12 에서 돈다.
@@ -46,7 +46,7 @@
 | `lib/mode3_wallet.js` · `lib/mode3_secret_source.js` | 지갑 라이브러리 V11·증인 검사(auid 바인딩) | 5 |
 | `lib/mode3_rp.js` · `mode3_rp.js` | RP 검증기·서버(r_rp) | 6 |
 | `cia.js` · `lib/mode3_cia_state.js` · `tests/helpers/isolated_cia.mjs` · `tests/helpers/mode3_flow.mjs` (신규) | IdP V11·상태 v12·테스트 헬퍼 | 7 |
-| CIA 쪽 chain 테스트 6개 | 헬퍼로 이행 | 8 |
+| IdP 쪽 chain 테스트 6개 | 헬퍼로 이행 | 8 |
 | `mode3_wallet_agent.js` · `mode3/rp.html`(r_rp 전달) · `mode3/wallet.html`(팝업 r_rp) | 지갑 에이전트 V11 | 9 |
 | 데모 HTTP 테스트 4개 | V11 각본 | 10 |
 | `snap-mode3/src/*` · `tests/helpers/snap_sim.mjs` · `mode3/wallet.html` · `mode3/cia_admin.html` · `mode3/common/strings.js` | Snap·화면·문구 | 11 |
@@ -1877,7 +1877,7 @@ process.exit(failed === 0 ? 0 : 1);
 
 (a) import 를 바꾼다: `credMessageV5` → `credMessageV11, auidSOf, aridSOf`; `buildUserCredRequest, signAttrsRequest` 삭제; `attrsRequestMessage, verifyUserCred, parseUserCredProof` import 삭제; `import { IDP_VKEY_PATH, loadIdpVkey, verifyIdp, idpPublicSignals } from '../lib/mode3_idp_proof.js';` 추가. `const { registryLeaf }` 는 그대로.
 
-(b) `localIssue` 를 교체 — 요청(`req = buildIssueRequest(...)` 결과)을 받아 CIA 처럼 서명한다:
+(b) `localIssue` 를 교체 — 요청(`req = buildIssueRequest(...)` 결과)을 받아 IdP 처럼 서명한다:
 
 ```js
 // 서버 없이 CIA 역할을 로컬에서 흉내낸다 (서명만). V11: Sign(D_V11, auid_s, arid_s, Cf_u, Cf_s, chainid, allowAgent). max_height 는 C_s 안.
@@ -2573,7 +2573,7 @@ Run: `node tests/test_cia_startup.mjs` → 전부 `ok`(epoch 기대값은 Step 6
 
 ---
 
-### Task 8: 나머지 CIA 쪽 chain 테스트를 V11 흐름으로
+### Task 8: 나머지 IdP 쪽 chain 테스트를 V11 흐름으로
 
 **Files:**
 - Modify: `tests/test_cia_registry.mjs`, `tests/test_cia_issue_race.mjs`, `tests/test_cia_opening.mjs`, `tests/test_cia_mirror_relay.mjs`, `tests/test_mode3_session_revoke.mjs`, `tests/test_mode3_e2e.mjs`, `tests/test_mode3_health.mjs`
@@ -2591,7 +2591,7 @@ Run: `node tests/test_cia_startup.mjs` → 전부 `ok`(epoch 기대값은 Step 6
 | `registryLeaf(u.cm_u, Cf_u)` | `registryLeaf(u.auid, Cf_u)` |
 | `/cia/issue` 가 403 `no_user_cred` 를 내던 단언 | V11 에는 그 경로가 없다(물린 C_u 재사용은 409 `cred_revoked`, 옛 C_u 와 다른 새 C_u 는 200 + 게시). 단언을 그에 맞게 바꾼다 |
 | `/cia/user_cred` 가 201/200/403/409 를 내던 단언 | `issueV11(...).r` 의 200(새 C_u 는 `published:true`, 같은 C_u 는 `false`)/403 `account_disabled`/409 `cred_revoked` |
-| `/cia/accounts/:uid/attrs` 로 속성을 바꿔 자격증명을 물리던 트리거 | `issueV11(cia, { ...u, attrs: 다른값 })` 또는 새 `blind_u` 로 발급 — 사용자가 C_u 를 바꾸면 CIA 가 슬롯을 갱신·게시한다 |
+| `/cia/accounts/:uid/attrs` 로 속성을 바꿔 자격증명을 물리던 트리거 | `issueV11(cia, { ...u, attrs: 다른값 })` 또는 새 `blind_u` 로 발급 — 사용자가 C_u 를 바꾸면 IdP 가 슬롯을 갱신·게시한다 |
 
 파일별 주의:
 - `tests/test_cia_registry.mjs`: 첫 케이스의 `base` 본문은 `{ uid, pwd, auid: reg.auid.toString(), pk_u }`, `signRegistration(reg.sk_u, 12345n, reg.auid)`; `'발급: 201 {…published:true} …'` → `issueV11` 200 + `cred.published === true`, 이벤트 리프 `registryLeaf(u.auid, iss.req.Cf_u)`; `'교체: …403 no_user_cred'` → 새 blind_u 발급 뒤 옛 blind_u 로 다시 발급하면 **409 `cred_revoked`**; `'v8 상태 파일 → 기동 시 등록부 생성·게시'` 는 **v12 파일**로 바꿔 "리프가 비어 있는 슬롯을 기동이 채워 게시" 를 본다(`accounts['12345'] = { pk_u, auid: reg.auid, slot: 0, tampered:false, disabled:false, creds:[{Cf_u, C_u_pt, issuedAt, revoked:false}], sessions:[], receipt:null, slotRetired:false }`, `registry.leaves: {}`); `'재기동 백로그 자동 게시'`·`'대조(체인이 앞섬)'`·`'게시 직전 대조'`·`'게시 경합'`·`'은퇴 슬롯 방어'` 는 v12 모양(`auid`, `attrs` 없음)으로 픽스처만 고친다.
@@ -2620,7 +2620,7 @@ Expected: 일곱 파일 모두 `ok` 만, `FAIL` 줄 없음.
 
 **Interfaces:**
 - Consumes: Task 5 (`createRegistration(uid)`, `signRegistration`, `signSlotRequest`, `buildIssueRequest`, `buildCredentialProof`, `stripSecrets`, `validateWitness(w, uid, auid)`, `createSecretSource`), Task 7 (`/cia/register`·`/cia/issue` V11), Task 6 (`/api/mode3/challenge` 의 `r_rp`).
-- Produces (HTTP): `POST /wallet/register { uid, pwd, profile?, s_u?(snap), sk_u?(snap) } → 201 { uid, slot, auid, attrs, profile }` — `profile` 생략 시 `DEFAULT_PROFILE = { birthYear: '1990', country: 'KR' }`; 인코딩 실패 400 `{ reason:'bad_attr', slot, field, detail }`; `PUT /wallet/profile { profile } → 200 { attrs, profile, changed, attrsChanged?(snap·changed) }`; `POST /wallet/login` 본문에 **`r_rp`(10진, 2^250 미만) 필수** — 없으면 400; 응답은 V10 과 같은 모양(`publicSignals` 33); `GET /wallet/status` 에 `auid` 추가; `POST /wallet/attrs/sync` → 404(삭제). 거절 사유: `user_cred_failed`(502, CIA 가 `bad_idp_proof` — 시연 덮어쓰기), `issue_failed`(502, 그 밖 CIA 오류), `account_disabled`(403), `registry_mismatch`·`registry_slot_unknown`(403), `registry_unpublished`(503).
+- Produces (HTTP): `POST /wallet/register { uid, pwd, profile?, s_u?(snap), sk_u?(snap) } → 201 { uid, slot, auid, attrs, profile }` — `profile` 생략 시 `DEFAULT_PROFILE = { birthYear: '1990', country: 'KR' }`; 인코딩 실패 400 `{ reason:'bad_attr', slot, field, detail }`; `PUT /wallet/profile { profile } → 200 { attrs, profile, changed, attrsChanged?(snap·changed) }`; `POST /wallet/login` 본문에 **`r_rp`(10진, 2^250 미만) 필수** — 없으면 400; 응답은 V10 과 같은 모양(`publicSignals` 33); `GET /wallet/status` 에 `auid` 추가; `POST /wallet/attrs/sync` → 404(삭제). 거절 사유: `user_cred_failed`(502, IdP 가 `bad_idp_proof` — 시연 덮어쓰기), `issue_failed`(502, 그 밖 IdP 오류), `account_disabled`(403), `registry_mismatch`·`registry_slot_unknown`(403), `registry_unpublished`(503).
 - Produces (state): `WALLET_STATE_VERSION = 9`; `registration = { uid, s_u, sk_u, pk_u, auid, slot, profile, attrs, userCred }`(snap: `stripSecrets` 결과 — `s_u`·`sk_u` 없음); `sessions[r_s] = { arid, origin, PPID, pk_trace, factoryAddress, attrGateAddress, allowAgent, r_rp, auid_s, arid_s, credential, sessionPrivKey, pk_i, issuedAt, witness? }`; 세션 증인 `{ s_u, blind_u, attrs, sk_u }`.
 
 - [ ] **Step 1: 실패하는 테스트 — `tests/test_mode3_wallet_agent.mjs` V11 이행**
@@ -2932,7 +2932,7 @@ Expected: 전부 `ok`.
 
 - `(가)`: `reg.body.attrs` 기대 `['1990', '0', '410', '0', '0', '0']` 는 **지갑이** 인코딩한 값이므로 그대로 성립(지갑이 IdP 스키마를 받아 `DEFAULT_PROFILE` 을 인코딩). `reg.body.profile` 기대도 그대로. `loginWithRequire(stack, …)` 헬퍼가 챌린지의 `r_rp` 를 지갑에 싣도록 고친다.
 - `(나)`: `reg.body.profile` 기대 `{ birthYear: '1990' }` — 지갑의 `normalizeProfile` 이 스키마에 없는 `country` 를 버리는지 확인; 버리지 않고 400 `bad_attr`(unknown field) 를 내면 **지갑 `/wallet/register` 가 `DEFAULT_PROFILE` 을 스키마에 맞게 걸러 쓰도록**(`Object.fromEntries(Object.entries(profile).filter(([k]) => schema.slots.some((s) => s.type !== 'unused' && s.name === k)))` — 기본값일 때만) Task 9 의 코드를 보강한다(이 보강은 cia.js V10 의 "관대하게 맞춘다" 와 같은 뜻).
-- 세 번째 케이스 `'데모 계정 profile 을 인코딩할 수 없는 스키마(US 없음 — alice)는 CIA 가 기동 거부'` → V11 에서 CIA 는 데모 계정 속성을 인코딩하지 않으므로 **기동한다**. 케이스를 `'(다) 데모 기본 profile 을 인코딩할 수 없는 스키마(KR 없음): CIA 는 뜨고, 지갑 등록이 400 bad_attr(지갑이 거절), profile 을 그 스키마에 맞게 주면 201'` 로 바꾼다 — `SCHEMA_C` 가 country 표에서 US 만 빼는 것이라면 KR 도 빼는 변형 `SCHEMA_D` 를 만들어 쓴다.
+- 세 번째 케이스 `'데모 계정 profile 을 인코딩할 수 없는 스키마(US 없음 — alice)는 CIA 가 기동 거부'` → V11 에서 IdP 는 데모 계정 속성을 인코딩하지 않으므로 **기동한다**. 케이스를 `'(다) 데모 기본 profile 을 인코딩할 수 없는 스키마(KR 없음): CIA 는 뜨고, 지갑 등록이 400 bad_attr(지갑이 거절), profile 을 그 스키마에 맞게 주면 201'` 로 바꾼다 — `SCHEMA_C` 가 country 표에서 US 만 빼는 것이라면 KR 도 빼는 변형 `SCHEMA_D` 를 만들어 쓴다.
 
 - [ ] **Step 5: 실행**
 

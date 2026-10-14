@@ -80,7 +80,7 @@ await t('encryptTag 는 r = 0, r ≥ 2^250, 상한 밖 uid 를 거절한다', as
   assert.ok(randomTraceScalar() > 0n);
 });
 
-// ---- CIA 조각의 Schnorr PoK — rogue key 방지(2026-09-21) ----
+// ---- IdP 조각의 Schnorr PoK — rogue key 방지(2026-09-21) ----
 await t('proveShare/verifyShare: 정직한 조각은 통과하고, 다른 arid·다른 X_svc·다른 X·변조된 z 는 실패한다', async () => {
   const svc = await createShare(), aa = await createShare();
   const ctx = { arid: 77n, X_svc: svc.X };
@@ -98,14 +98,14 @@ await t('proveShare/verifyShare: 정직한 조각은 통과하고, 다른 arid·
   assert.equal(await verifyShare(pok.X, { T: { x: '1', y: 1n }, c: pok.c, z: pok.z }, ctx), false);
 });
 
-await t('rogue key: CIA 가 X_AA = X′ − X_svc 로 고르면 pk_trace = X′ 의 비밀을 혼자 알지만, x_AA 를 몰라 PoK 를 낼 수 없다', async () => {
+await t('rogue key: IdP 가 X_AA = X′ − X_svc 로 고르면 pk_trace = X′ 의 비밀을 혼자 알지만, x_AA 를 몰라 PoK 를 낼 수 없다', async () => {
   const svc = await createShare();
-  const rogue = await createShare();               // X′ = x′·B8 — CIA 가 이산로그를 아는 점
+  const rogue = await createShare();               // X′ = x′·B8 — IdP 가 이산로그를 아는 점
   const negSvc = { x: (F.p - svc.X.x) % F.p, y: svc.X.y };
   const X_AA = await combinePublicKey(rogue.X, negSvc);   // X′ − X_svc
   const pk_trace = await combinePublicKey(svc.X, X_AA);
   assert.deepEqual(pk_trace, rogue.X, '조합 키가 CIA 혼자 아는 X′ 가 된다');
-  // CIA 가 손에 쥔 것은 x′ 뿐 — 그것으로 낸 증명은 X_AA 에 대해 검증되지 않는다
+  // IdP 가 손에 쥔 것은 x′ 뿐 — 그것으로 낸 증명은 X_AA 에 대해 검증되지 않는다
   const ctx = { arid: 77n, X_svc: svc.X };
   const forged = await proveShare(rogue.x, ctx);
   assert.equal(await verifyShare(X_AA, forged, ctx), false);

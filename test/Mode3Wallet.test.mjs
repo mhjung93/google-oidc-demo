@@ -142,7 +142,7 @@ describe('Mode3Wallet', function () {
     await expect(wallet.execute(payload, sig, ST.a, ST.b, ST.c, ST.pub)).to.be.revertedWithCustomError(wallet, 'BadSignature');
   });
 
-  it('공개 입력의 PPID·arid·chainid 가 지갑과 다르면 WrongWallet (다른 계정·다른 서비스·다른 체인의 성명 재생)', async () => {
+  it('공개 입력의 PPID·arid·chainid 가 지갑과 다르면 WrongWallet (다른 계정·다른 RP·다른 체인의 성명 재생)', async () => {
     const { wallet } = await deployStack(ST);
     const { payload, sig } = await signedPayload(ST, wallet);
     const otherPpid = [...ST.pub]; otherPpid[0] = '0x1';
@@ -216,7 +216,7 @@ describe('Mode3Wallet', function () {
 
   // V10 거울(Mode3Mirror, 설계 §2·§3·§5): 지갑의 IMode3Roots 는 캐노니컬 Mode3Log 대신 거울을 가리킬 수 있다.
   // 지갑은 거울의 root 만 보므로, 캐노니컬이 앞서가도(거울이 뒤처져도) 영향이 없고, 거울 자체가 전진해야
-  // 거기 안 실린 옛 π 가 거절된다. 같은 CIA 서명이 캐노니컬 publish 와 거울 publish 양쪽에 유효한지도 같이 본다.
+  // 거기 안 실린 옛 π 가 거절된다. 같은 IdP 서명이 캐노니컬 publish 와 거울 publish 양쪽에 유효한지도 같이 본다.
   it('V10: 거울 위의 지갑 — 거울 root 와 같은 π 는 통과, 캐노니컬만 전진해도 거울이 그대로면 영향 없음, 거울이 전진하면 옛 π 는 StaleRevocationRoot', async () => {
     const [deployer, cia] = await ethers.getSigners();
     const initRev = rootToBytes32(BigInt(ST.input().revRoot));
@@ -280,7 +280,7 @@ describe('Mode3Wallet', function () {
   });
 
   // 2026-09-25 리뷰 E-6: 위 케이스는 "한참 지난" 만료만 본다. 부등호가 `>=` 로 바뀌어도(= 마지막 한 블록을
-  // 잃어도) 빨개지지 않는다. 경계 두 칸을 같은 지갑·같은 π 로 붙여서 본다 — AA(cia.js)·서비스(lib/mode3_rp.js)가
+  // 잃어도) 빨개지지 않는다. 경계 두 칸을 같은 지갑·같은 π 로 붙여서 본다 — IdP(cia.js)·RP(lib/mode3_rp.js)가
   // 쓰는 부등호와 같아야 한다: head == max_height 는 아직 산 성명이다.
   it('E-6 만료 경계: block.number == max_height 는 유효, 그 다음 블록부터 Expired', async () => {
     const st = withInput(await statement({ maxHeight: BigInt(await ethers.provider.getBlockNumber()) + 30n }));
@@ -323,7 +323,7 @@ describe('Mode3Wallet', function () {
     expect(await wallet.nonce()).to.equal(1n);
   });
 
-  it('decodeExecuteCalldata 가 제출한 인자를 그대로 되돌린다 (서비스의 해시 기반 개봉 재료)', async () => {
+  it('decodeExecuteCalldata 가 제출한 인자를 그대로 되돌린다 (RP 의 해시 기반 개봉 재료)', async () => {
     const { wallet } = await deployStack(ST);
     const { payload, sig } = await signedPayload(ST, wallet);
     const tx = await wallet.execute(payload, sig, ST.a, ST.b, ST.c, ST.pub);

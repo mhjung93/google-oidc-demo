@@ -28,7 +28,7 @@ const cacheFile = path.join(dir, 'mode3_wallet_rcl.json');
 const warnings = [];
 const warn = (m) => warnings.push(String(m));
 
-// CIA 흉내: 지금까지의 리프 + 새 리프로 root 를 만들어 게시한다(test_mode3_wallet.mjs 와 같은 방식)
+// IdP 흉내: 지금까지의 리프 + 새 리프로 root 를 만들어 게시한다(test_mode3_wallet.mjs 와 같은 방식)
 async function publish(leavesBig) {
   const tree = await createRevocationTree();
   const ev = await log.queryFilter(log.filters.Revoked());

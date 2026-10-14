@@ -38,7 +38,7 @@ const other_trace = await combinePublicKey((await createShare()).X, (await creat
 const registry = await createRegistryTree();   // V9: 등록부(조건 9) — makeLogin 이 매번 이 슬롯을 채우고 게시한다
 const SLOT = 0;
 
-// 서버 없이 CIA 서명만 흉내낸다. V11: Sign(D_V11, auid_s, arid_s, Cf_u, Cf_s, chainid, allowAgent). 요청 객체(buildIssueRequest 결과)를 받는다.
+// 서버 없이 IdP 서명만 흉내낸다. V11: Sign(D_V11, auid_s, arid_s, Cf_u, Cf_s, chainid, allowAgent). 요청 객체(buildIssueRequest 결과)를 받는다.
 async function issueWith(key, req, { chainid = 31337n, allowAgent = 0n } = {}) {
   const s = eddsa.signPoseidon(key.prv, F.e(await credMessageV11(req.auid_s, req.arid_s, req.Cf_u, req.Cf_s, chainid, allowAgent)));
   return { Cf_u: req.Cf_u.toString(), Cf_s: req.Cf_s.toString(), max_height: req.body.max_height, chainid: chainid.toString(), allowAgent: allowAgent.toString(), sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() } };
@@ -109,7 +109,7 @@ await t('V9: set_sel/set_root 가 disclosure 에 실린다; sel 7·(sel 0, root 
 });
 
 // I-2(2026-09-25 전체 코드 리뷰): 회로 ⑦ 은 "선택한 속성이 set_root 의 트리에 들어 있다" 만 증명한다 —
-// **누구의 트리인지는 모른다.** 정책 집합을 아는 서비스가 대조하지 않으면, 자기 국가 하나만 든 집합의 root 로
+// **누구의 트리인지는 모른다.** 정책 집합을 아는 RP 가 대조하지 않으면, 자기 국가 하나만 든 집합의 root 로
 // "허용 집합 소속" 을 주장하는 유효한 π 가 만들어지고 세션·로그인 기록·화면이 그것을 보증처럼 싣는다.
 // 온체인 AttrGate 는 이미 setRoot == allowedCountriesRoot 를 요구하므로 오프체인도 같은 선을 그어야 한다.
 await t('I-2: policySetRoot 를 준 검증기는 정책 집합이 아닌 set_root 를 bad_disclosure 로 거절한다', async () => {
@@ -148,7 +148,7 @@ await t('I-2: policySetRoot 를 준 검증기는 정책 집합이 아닌 set_roo
   }
 });
 
-await t('음성 d: 공격자가 자기 CIA 키로 서명한 credential 은 untrusted_cia (유일한 위조 방어선)', async () => {
+await t('음성 d: 공격자가 자기 IdP 키로 서명한 credential 은 untrusted_cia (유일한 위조 방어선)', async () => {
   const L = await makeLogin({ key: ATTACKER });
   const r = await rp.verifyLogin(L);
   assert.deepEqual(r, { ok: false, reason: 'untrusted_cia' });
@@ -192,7 +192,7 @@ await t('V11: verifyLogin 은 auid_s·arid_s 를 돌려주고 arid_s = Poseidon(
   const ps = [...L.publicSignals]; ps[32] = (BigInt(ps[32]) + 1n).toString();
   assert.deepEqual(await rp.verifyLogin({ ...L, publicSignals: ps }), { ok: false, reason: 'bad_r_s' }, '공개 입력의 r_s 를 손대면(증명은 어차피 깨진다) 정책 검사가 먼저 잡는다');
 });
-await t('V11 D7: 같은 r_rp 를 두 서비스가 쓰면 auid_s 가 서비스마다 다르다(RP 간 연결 불가), arid_s 도 다르다', async () => {
+await t('V11 D7: 같은 r_rp 를 두 RP 가 쓰면 auid_s 가 RP 마다 다르다(RP 간 연결 불가), arid_s 도 다르다', async () => {
   const r_rp = randomScalar();
   const a = await makeLogin(); const b = await makeLogin({ useArid: otherArid });
   // 같은 사용자(uid·s_u 고정은 makeLogin 이 매번 새 등록을 만들므로 여기서는 라이브러리 수준으로 본다)
@@ -208,7 +208,7 @@ await t('음성 arid: 다른 RP 용 credential 은 wrong_arid', async () => {
   assert.deepEqual(await rp.verifyLogin(L), { ok: false, reason: 'wrong_arid' });
 });
 
-await t('음성 d″: 다른 조합 키로 만든 태그는 wrong_trace_key (서비스가 자기 키와 대조한다)', async () => {
+await t('음성 d″: 다른 조합 키로 만든 태그는 wrong_trace_key (RP 가 자기 키와 대조한다)', async () => {
   const L = await makeLogin({ useTrace: other_trace });
   assert.deepEqual(await rp.verifyLogin(L), { ok: false, reason: 'wrong_trace_key' });
 });
@@ -220,7 +220,7 @@ await t('음성 태그: c1 이 항등원(0,1)이면 bad_tag (r=0 이 평문을 �
   assert.deepEqual(await rp.verifyLogin({ ...L, publicSignals: bad }), { ok: false, reason: 'bad_tag' });
 });
 
-await t('양성: verifyLogin 이 태그를 돌려준다 (서비스가 로그에 남길 재료)', async () => {
+await t('양성: verifyLogin 이 태그를 돌려준다 (RP 가 로그에 남길 재료)', async () => {
   const L = await makeLogin();
   const r = await rp.verifyLogin(L);
   assert.equal(r.ok, true);
@@ -398,7 +398,7 @@ await t('C-2 E2E: 마스크 밖 슬롯이 0 이 아닌 **유효한** π 여도 v
 // snarkjs 의 unstringifyBigInts 는 /^[0-9]+$/ 가 아닌 문자열을 BigInt 로 바꾸지 않고 그대로 두고,
 // Scalar.toRprLE 가 그 문자열에 .toString(16) 을 불러 16진으로 파싱한다(실측: " 1"→0, " 2000"→0, "2007 "→8199).
 // 그래서 정상 로그인 π(mask=0, lo=hi=0)에 " 1"·" 2000" 을 실으면 증명 검증은 원래 값 0 으로 통과하는데
-// 서비스는 BigInt 로 1·2000 을 읽어 "출생연도 ≤ 2000 을 공개했다" 고 믿는다 — 나이·집합·allowAgent 술어가 통째로 위조된다.
+// RP 는 BigInt 로 1·2000 을 읽어 "출생연도 ≤ 2000 을 공개했다" 고 믿는다 — 나이·집합·allowAgent 술어가 통째로 위조된다.
 await t('C-1: 정규 10진 문자열이 아닌 공개 입력은 malformed — 증명과 정책이 다른 값을 보지 못한다', async () => {
   const good = await makeLogin();
   assert.equal(good.publicSignals[15], '0', '전제: 로그인 π 의 disc_mask 는 0');
@@ -406,9 +406,9 @@ await t('C-1: 정규 10진 문자열이 아닌 공개 입력은 malformed — �
 
   // 공격: 증명은 그대로 두고 공개 입력에 공백만 넣는다.
   const forged = [...good.publicSignals];
-  forged[15] = ' 1';      // 서비스가 보면 mask = 1, 증명이 보증하는 값은 0
-  forged[22] = ' 2000';   // 서비스가 보면 disc_hi[0] = 2000, 증명이 보증하는 값은 0
-  assert.equal(BigInt(forged[15]), 1n); assert.equal(BigInt(forged[22]), 2000n);   // 서비스 쪽 파싱을 못 박는다
+  forged[15] = ' 1';      // RP 가 보면 mask = 1, 증명이 보증하는 값은 0
+  forged[22] = ' 2000';   // RP 가 보면 disc_hi[0] = 2000, 증명이 보증하는 값은 0
+  assert.equal(BigInt(forged[15]), 1n); assert.equal(BigInt(forged[22]), 2000n);   // RP 쪽 파싱을 못 박는다
   const r = await rp.verifyLogin({ ...good, publicSignals: forged });
   assert.equal(r.ok, false, '공백 섞인 공개 입력이 통과하면 술어 위조가 된다');
   assert.equal(r.reason, 'malformed');
@@ -426,7 +426,7 @@ await t('C-1: 정규 10진 문자열이 아닌 공개 입력은 malformed — �
 
 // ---- V10 Task 8: RP 는 자기 체인 거울(Mode3Mirror)만 읽는다 — 거울 지연 시나리오 ----
 // createRpVerifier 는 이제 MODE3_ROOTS_ABI 만 쓰므로 logAddress 자리에 거울 주소를 줘도 같은 getter 로 동작한다.
-// 이 레포의 이 테스트 파일은 실제 CIA 서버(cia.js)를 띄우지 않고 ciaEth 서명으로 직접 게시한다(위 publish() 와 같은 관례) —
+// 이 레포의 이 테스트 파일은 실제 IdP 서버(cia.js)를 띄우지 않고 ciaEth 서명으로 직접 게시한다(위 publish() 와 같은 관례) —
 // 그래서 브리프의 cia.adminPost('/cia/admin/relay') 는 relayToMirror(캐노니컬 게시의 서명을 거울에 그대로 재생)로 대신한다.
 const { address: mirrorAddress, contract: mirror } = await deployMode3Mirror(ciaEth.address, logAddress, provider);
 const rpOnMirror = createRpVerifier({ provider, logAddress: mirrorAddress, vkey, pkCIA: CIA.pub, arid, chainId: 31337n, pkTrace: pk_trace });
@@ -476,7 +476,7 @@ await t('거울이 뒤처지면 캐노니컬 root 의 π 는 stale_root, 거울 
 
 await t('릴레이 뒤에는 캐노니컬 root 의 π 가 통과한다', async () => {
   assert.ok(mirrorScenario, '전제: 이전 테스트가 시나리오를 준비했다');
-  // CIA 의 POST /cia/admin/relay 흉내 — 앞 테스트가 캐노니컬에만 올리고 거울에는 올리지 않은 게시(lagPub)를
+  // IdP 의 POST /cia/admin/relay 흉내 — 앞 테스트가 캐노니컬에만 올리고 거울에는 올리지 않은 게시(lagPub)를
   // 같은 서명 그대로 거울에 재생한다(Mode3Mirror.publish 는 캐노니컬 Mode3Log.digestFor 와 바이트 단위로 같은 서명을 받는다).
   await relayToMirror(mirror, ciaEth, mirrorScenario.lagPub);
   assert.equal(await mirror.epoch(), await log.epoch(), '전제: 릴레이 후 거울이 캐노니컬을 따라잡았다');

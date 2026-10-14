@@ -15,9 +15,9 @@ include "babyjub.circom";
 //   C_s = pk_i·G_PKI + max_height·G_EXP + r_s·G_RS + r_rp·H (세션마다, V11)
 //
 //   uid     — 계정 식별자. PPID 유도에 쓰인다
-//   s_u     — 사용자 비밀. CIA가 PPID를 열거하지 못하게 막는다 (Mode 2의 salt)
-//   attrs   — 속성 6슬롯. CIA 는 값을 모른다
-//   blind_u — C_u 블라인딩. CIA 가 자기가 아는 uid 로 C_u 를 재계산해 대조하는 것을 막는다
+//   s_u     — 사용자 비밀. IdP 가 PPID를 열거하지 못하게 막는다 (Mode 2의 salt)
+//   attrs   — 속성 6슬롯. IdP 는 값을 모른다
+//   blind_u — C_u 블라인딩. IdP 가 자기가 아는 uid 로 C_u 를 재계산해 대조하는 것을 막는다
 //   pk_i       — 세션키. 이 π가 이 서명자의 것임을 묶는다
 //   max_height — 세션 만료(블록 높이). V11 에서 토큰 메시지 대신 C_s 에 묶인다(D5)
 //   r_s        — 세션 nonce(RP 챌린지, 250비트). RP 가 1회 소비해 재전송을 막는다
@@ -111,7 +111,7 @@ template CommitUser() {
 
 // V11(2026-10-12 §3.2·D5): 세션 커밋 — 로그인마다.  C_s = pk_i·G_PKI + max_height·G_EXP + r_s·G_RS + r_rp·H
 //   pk_i 160비트(세션키 주소), max_height 64비트(만료 블록), r_s·r_rp 250비트(RP 챌린지·RP 난수). lib/mode3_credential.js sessionCommit 과 같다.
-//   arid 는 빠졌다 — 서비스 바인딩은 토큰의 arid_s·auid_s(둘 다 r_rp 로 묶인다)가 맡는다. 블라인딩은 RP 가 준 r_rp:
+//   arid 는 빠졌다 — RP 바인딩은 토큰의 arid_s·auid_s(둘 다 r_rp 로 묶인다)가 맡는다. 블라인딩은 RP 가 준 r_rp:
 //   RP 는 C_s 의 열림값을 모두 알고(심층 방어), IdP 는 r_rp 를 몰라 C_s 를 열지 못한다.
 //   G_EXP·G_RS 는 circomlibjs getBasePoint('blake', 11)·(12) — 2026-10-12 inCurve·inSubgroup 확인(tests/test_mode3_credential_v11.js 가 글자 일치를 검사).
 template CommitSessionV11() {

@@ -1,12 +1,12 @@
 // 사용자 정의 속성 스키마(CIA_ATTR_SCHEMA_FILE)로 띄운 격리 Mode 3 스택 — 최종 리뷰 I2(2026-10-07). (chain 그룹)
 //   node tests/test_mode3_custom_schema.mjs
 //
-// 배경: 데모 계정 profile 은 기본 스키마의 이름(birthYear·country)으로 적혀 있어, 그 이름이 없거나 다른 스키마로 띄우면 CIA 가
+// 배경: 데모 계정 profile 은 기본 스키마의 이름(birthYear·country)으로 적혀 있어, 그 이름이 없거나 다른 스키마로 띄우면 IdP 가
 // 처리되지 않은 rejection 으로 죽었다. 그래서 RP 의 AttrGate 가드(birthYear≠0 또는 country≠1 이면 배포 건너뜀)와 predicate_unavailable
 // 경로가 실제로는 도달 불가였다. 여기서는 두 스키마로 스택을 띄워 그 경로를 끝까지 돌린다.
 //   (가) country 를 슬롯 2 로 옮긴 스키마 — AttrGate 건너뜀, 집합 술어는 set.slot 2(d.sel 3)로 통과
 //   (나) country 가 없는 스키마 — require.countrySet 은 predicate_unavailable
-//   (다) KR 이 없는 스키마 — V11(D15)은 속성을 지갑이 들고 있어 CIA 는 기동하고, 지갑의 기본 profile 인코딩이 400 bad_attr 로 거절된다
+//   (다) KR 이 없는 스키마 — V11(D15)은 속성을 지갑이 들고 있어 IdP 는 기동하고, 지갑의 기본 profile 인코딩이 400 bad_attr 로 거절된다
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -25,7 +25,7 @@ async function t(name, fn) {
 assert.ok(fs.existsSync(VKEY_PATH), `pi_cred vkey 없음: ${VKEY_PATH} (build/mode3 산출물 필요)`);
 
 const UNUSED = { type: 'unused' };
-// 데모 계정(testuser KR·alice US)이 인코딩되도록 US 를 넣는다 — 없으면 CIA 가 기동을 거부한다(아래 마지막 케이스).
+// 데모 계정(testuser KR·alice US)이 인코딩되도록 US 를 넣는다 — 없으면 IdP 가 기동을 거부한다(아래 마지막 케이스).
 const SCHEMA_A = { id: 'zkd-attrs-country2', version: 1, slots: [
   { name: 'birthYear', label: '출생연도', type: 'int', min: 1900, max: 2100 },
   { name: 'extra1', label: '예비 1', type: 'string' },
@@ -58,7 +58,7 @@ async function loginWithRequire(stack, { disclose = null, set = null, require })
 }
 
 try {
-  await t('(가) country 를 슬롯 2 로 옮긴 스키마: CIA·지갑이 그 스키마를 공개, RP 는 AttrGate 를 건너뛰고(attrGateAddress null), set.slot 2 로그인은 require 를 통과', async () => {
+  await t('(가) country 를 슬롯 2 로 옮긴 스키마: IdP·지갑이 그 스키마를 공개, RP 는 AttrGate 를 건너뛰고(attrGateAddress null), set.slot 2 로그인은 require 를 통과', async () => {
     const want = loadSchema(SCHEMA_A).hash;
     const stack = await startIsolatedMode3Stack({ ciaEnv: { CIA_ATTR_SCHEMA_FILE: fileOf('a', SCHEMA_A) }, rpEnv: { MODE3_ALLOWED_COUNTRIES: 'KR,JP', MODE3_CHALLENGE_TTL_MS: '12000' } });
     try {
@@ -107,8 +107,8 @@ try {
     } finally { await stack.stop(); }
   });
 
-  await t('(다) 데모 기본 profile 을 인코딩할 수 없는 스키마(KR 없음): CIA 는 뜨고, 지갑 등록이 400 bad_attr(지갑이 거절), profile 을 그 스키마에 맞게 주면 201', async () => {
-    // V11(D15): CIA 는 데모 계정 속성을 인코딩하지 않는다 — 스키마에 KR 이 없어도 기동한다(V9 의 기동 거부는 없어졌다).
+  await t('(다) 데모 기본 profile 을 인코딩할 수 없는 스키마(KR 없음): IdP 는 뜨고, 지갑 등록이 400 bad_attr(지갑이 거절), profile 을 그 스키마에 맞게 주면 201', async () => {
+    // V11(D15): IdP 는 데모 계정 속성을 인코딩하지 않는다 — 스키마에 KR 이 없어도 기동한다(V9 의 기동 거부는 없어졌다).
     const stack = await startIsolatedMode3Stack({ ciaEnv: { CIA_ATTR_SCHEMA_FILE: fileOf('d', SCHEMA_D) } });
     try {
       const { cia, wallet } = stack;

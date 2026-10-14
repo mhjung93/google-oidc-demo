@@ -1,4 +1,4 @@
-// 승인된 개봉 — 격리 CIA + :8545 + build/mode3 (설계 2026-09-16 §6). (chain 그룹)
+// 승인된 개봉 — 격리 IdP + :8545 + build/mode3 (설계 2026-09-16 §6). (chain 그룹)
 //   node tests/test_cia_opening.mjs
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -30,7 +30,7 @@ try {
   const S2 = await cia.registerRp('http://127.0.0.1:3102', 's2');
 
   // 사용자 등록(지갑 lib 그대로). V11: C_u(사용자 자격증명)는 사용자당 하나 — user.blind_u 가 처음 발급에서 정해져
-  // 모든 트랜스크립트가 재사용한다(새로 뽑지 않으면 CIA 가 매번 슬롯을 다시 게시하지 않는다). 속성은 지갑이 정한다(D15).
+  // 모든 트랜스크립트가 재사용한다(새로 뽑지 않으면 IdP 가 매번 슬롯을 다시 게시하지 않는다). 속성은 지갑이 정한다(D15).
   const reg = await cia.registerUser('12345', 'password123');
   const user = userOf(reg, '12345', TESTUSER_ATTRS);
   async function loginTranscript(svc, pk_trace = svc.pk_trace, allowAgent = 0n) {
@@ -106,14 +106,14 @@ try {
     assert.notEqual(o1.body.id, o2.body.id, '다른 사용자의 트랜스크립트는 새 항목이어야 한다');
   });
 
-  await t('앞자리 0 이 붙은 공개 입력으로 요청해도 CIA 는 정규형으로 맞춰 받는다 (2026-09-18 점검 1)', async () => {
+  await t('앞자리 0 이 붙은 공개 입력으로 요청해도 IdP 는 정규형으로 맞춰 받는다 (2026-09-18 점검 1)', async () => {
     const T = await loginTranscript(S1);
     const ps = [...T.publicSignals]; ps[1] = '0' + ps[1]; ps[12] = '0' + ps[12];
     const r = await openRequest(S1, { ...T, publicSignals: ps });   // 서명은 정규 c1 위(openRequest 가 T.tag 로 만든다)
     assert.ok([200, 202].includes(r.status), j(r.body));
   });
 
-  await t('c1 이 항등원인 트랜스크립트는 bad_tag (증명 검증 전, 서비스·컨트랙트와 같은 규칙)', async () => {
+  await t('c1 이 항등원인 트랜스크립트는 bad_tag (증명 검증 전, RP·컨트랙트와 같은 규칙)', async () => {
     const T = await loginTranscript(S1);
     const ps = [...T.publicSignals]; ps[12] = '0'; ps[13] = '1';
     // D_svc 는 부분군 검사를 지나야 하므로 진짜 c1 의 부분 복호를 그대로 쓴다 — bad_tag 가 그보다 뒤, 증명 검증보다 앞에서 난다.
@@ -179,7 +179,7 @@ try {
     assert.equal(a.status, 200); assert.equal(a.body.status, 'approved'); assert.equal(a.body.resolved, false);
     const res = await fetchResult(S1, id);
     assert.equal(res.status, 200, JSON.stringify(res.body)); assert.equal(res.body.uid, null); assert.equal(res.body.resolved, false);
-    // resolved:false 는 denied 처럼 재요청을 막지 않는다 — 서비스가 D_svc 를 고쳐 다시 내면 새 id 로
+    // resolved:false 는 denied 처럼 재요청을 막지 않는다 — RP 가 D_svc 를 고쳐 다시 내면 새 id 로
     // 승인·개봉된다(§6.2).
     const r2 = await openRequest(S1, T);
     assert.equal(r2.status, 202, JSON.stringify(r2.body)); assert.notEqual(r2.body.id, id);
@@ -201,7 +201,7 @@ try {
     assert.equal(r.status, 403); assert.equal(r.body.error, 'wrong_trace_key');
   });
 
-  await t('서명·신선도·형식: 다른 키 서명 401, 오래된 ts 401, 손댄 증명 403, 승인 안 된 서비스 403, 미등록 arid 404', async () => {
+  await t('서명·신선도·형식: 다른 키 서명 401, 오래된 ts 401, 손댄 증명 403, 승인 안 된 RP 403, 미등록 arid 404', async () => {
     const T = await loginTranscript(S1);
     assert.equal((await openRequest(S1, T, { wallet: ethers.Wallet.createRandom() })).body.error, 'bad_signature');
     const stale = await openRequest(S1, T, { ts: (Number(nowTs()) - 600).toString() });
@@ -209,7 +209,7 @@ try {
     const bad = JSON.parse(JSON.stringify(T.proof)); bad.pi_a[0] = (BigInt(bad.pi_a[0]) + 1n).toString();
     const r = await openRequest(S1, { ...T, proof: bad });
     assert.equal(r.status, 403); assert.equal(r.body.error, 'bad_proof');
-    // 승인 안 된 서비스: 직접 pending 으로 등록만
+    // 승인 안 된 RP: 직접 pending 으로 등록만
     const w = ethers.Wallet.createRandom(); const share = await createShare();
     const p = await cia.post('/cia/register_rp', { name: 's3', origin: 'http://127.0.0.1:3103', pk_service: w.address, X_svc: { x: share.X.x.toString(), y: share.X.y.toString() } });
     assert.equal(p.status, 202);
@@ -218,7 +218,7 @@ try {
     assert.equal((await openRequest(S1, T, { arid: '999' })).status, 404);
   });
 
-  await t('결과 수령: 다른 서비스의 서명이면 401, 오래된 ts 401, 없는 id 404', async () => {
+  await t('결과 수령: 다른 RP 의 서명이면 401, 오래된 ts 401, 없는 id 404', async () => {
     assert.equal((await fetchResult(S1, id1, { wallet: S2.serviceWallet })).status, 401);
     assert.equal((await fetchResult(S1, id1, { ts: (Number(nowTs()) - 600).toString() })).status, 401);
     assert.equal((await fetchResult(S1, 'deadbeef')).status, 404);

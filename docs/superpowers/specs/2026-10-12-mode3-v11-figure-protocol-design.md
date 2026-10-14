@@ -24,7 +24,7 @@
 | D12 | 공개 입력 30 → 33, 끝에 추가 | `[30] auid_s [31] arid_s [32] r_s` — 기존 0~29 색인 유지(`PUB_INDEX`·AttrGate 꼬리 15워드·다이제스트 불변) | 기본값 |
 | D13 | PPID = `Poseidon(uid, s_u, arid, chain_id)` | 덱 순서 H(uid, salt, rid, chain_id). 지금 `(uid, s_u, chainid, arid)` 에서 순서만 바뀜 — 계정 주소 전부 바뀜(어차피 팩토리 재배포) | 덱 3장 |
 | D14 | 모드 4 로 분리하지 않음 | 같은 프로토콜의 판 올리기. V10 은 태그 `mode3-v10` 으로 보존 | 사용자 2026-10-12 |
-| **D15** | **속성 값은 사용자가 넣고 IdP 는 모른다** | V6(2026-09-22 "속성 출처 = AA 기록")을 되돌린다. 지갑이 `profile` 을 들고 스펙 2 의 공개 스키마로 인코딩해 C_u 에 넣는다. IdP 는 C_u(커밋먼트)만 보고 속성 값·`profile` 을 받지도 저장하지도 않는다. π_IdP 는 uid·salt 관계만 증명(덱 6장 그대로). 관리자 속성 변경 라우트·UI 는 없어진다. **결과: 술어(나이·국가)는 "사용자가 주장한 값" 위의 증명**이다 — 값의 보증은 범위 밖(§10 후속: 속성 발급자). G5 는 원래 뜻("IdP 가 속성 값을 모른다")으로 돌아온다 | 사용자 2026-10-12 |
+| **D15** | **속성 값은 사용자가 넣고 IdP 는 모른다** | V6(2026-09-22 "속성 출처 = IdP 기록")을 되돌린다. 지갑이 `profile` 을 들고 스펙 2 의 공개 스키마로 인코딩해 C_u 에 넣는다. IdP 는 C_u(커밋먼트)만 보고 속성 값·`profile` 을 받지도 저장하지도 않는다. π_IdP 는 uid·salt 관계만 증명(덱 6장 그대로). 관리자 속성 변경 라우트·UI 는 없어진다. **결과: 술어(나이·국가)는 "사용자가 주장한 값" 위의 증명**이다 — 값의 보증은 범위 밖(§10 후속: 속성 발급자). G5 는 원래 뜻("IdP 가 속성 값을 모른다")으로 돌아온다 | 사용자 2026-10-12 |
 | D16 | IdP 는 max_height 를 π_IdP 공개 입력으로 본다 | 세션 기록(만료 정리·세션 폐기 거절)에 필요. RP·체인도 보는 값이라 비밀이 아님 | 기본값(Q4) |
 
 ## 2. 표기 (H = Poseidon, 덱 표기 ↔ 코드)
@@ -32,7 +32,7 @@
 | 덱 | 코드 | 정의 |
 |---|---|---|
 | salt | `s_u` | 사용자만 아는 250비트 난수 |
-| rid | `arid` | IdP 가 서비스 등록 때 배정한 서비스 식별자(cert_s 에 서명됨) |
+| rid | `arid` | IdP 가 RP 등록 때 배정한 RP 식별자(cert_s 에 서명됨) |
 | auid | `auid` | `Poseidon(T_AUID, uid, s_u)` — IdP DB `(uid, auid)`, 사용자마다 고정 |
 | r_RP | `r_rp` | RP 가 세션마다 뽑는 250비트 난수(챌린지와 함께 전달), IdP 에 비공개 — auid_s·arid_s·C_s blind 에 쓴다 |
 | auid_s | `auid_s` | `Poseidon(T_AUIDS, auid, arid, r_rp)` (D7) |
@@ -128,7 +128,7 @@ RP `verifyLogin` 추가 검사(기존 a~g 사이, d 뒤): `pub[32] === 소비한
 
 ## 7. 상태·이행·화면
 
-- **CIA 상태 v12**: `accounts[uid].auid`(필수), `cm_u`·`attrs`·`profile` 삭제, 등록부 리프 식 변경. `attrSchemaHash`(스펙 2)는 유지(스키마 공개는 계속). **v11 이하 상태 파일은 이행하지 않고 기동 거부**("V11 은 새로 시작 — 재시연 세트"). 이유: 옛 계정의 auid 를 IdP 가 알 수 없고(지갑만 계산 가능), 리프 식·PPID 식이 바뀌어 체인도 새로 배포해야 한다. V5·V9 때와 같은 "로그 재배포 → 상태 파일 새로" 절차. `DEMO_ACCOUNTS` 는 `{ password, uid }` 만.
+- **IdP 상태 v12**: `accounts[uid].auid`(필수), `cm_u`·`attrs`·`profile` 삭제, 등록부 리프 식 변경. `attrSchemaHash`(스펙 2)는 유지(스키마 공개는 계속). **v11 이하 상태 파일은 이행하지 않고 기동 거부**("V11 은 새로 시작 — 재시연 세트"). 이유: 옛 계정의 auid 를 IdP 가 알 수 없고(지갑만 계산 가능), 리프 식·PPID 식이 바뀌어 체인도 새로 배포해야 한다. V5·V9 때와 같은 "로그 재배포 → 상태 파일 새로" 절차. `DEMO_ACCOUNTS` 는 `{ password, uid }` 만.
 - **지갑 상태 v9**: `registration` 에서 `r_u`·`cm_u` 삭제, `auid`·`profile`(사용자 입력, 기본값은 데모 testuser `{birthYear:'1990', country:'KR'}`)·`attrs`(인코딩) 추가; `sessions[r_s]` 에 `r_rp`, `auid_s`, `arid_s`; `credential` 에 `sigma`·`auid_s`·`arid_s`. 옛 파일은 등록만 유지하고(auid 는 s_u 로 재계산, attrs 는 그대로) 세션은 비운다(기존 관례). `/wallet/attrs/sync` 삭제, **`PUT /wallet/profile { profile }`**(스키마 검증 → attrs 재인코딩 → 다음 로그인에 새 C_u) 추가.
 - **Snap**: `registration { uid, s_u, sk_u, attrs }`(r_u 삭제), 증인 `{ uid, s_u, sk_u, attrs, userCred }`. 등록 대화상자에 속성 입력 단계(또는 지갑 페이지에서 입력 후 `storeRegistration` 으로 전달 — 구현 계획에서 결정). `syncAttrs` RPC 는 "사용자 변경 반영" 뜻으로 유지.
 - **화면**: 지갑 (내 신원) 카드의 속성 칸이 **편집 가능**(스키마 타입별: 숫자·국가 선택·문자열)해지고 "저장 → 다음 로그인에 반영"; 관리자 페이지의 속성 열·저장 버튼 삭제; RP 페이지 그대로. `strings.js` 에서 "AA 기록"·"관리자가 바꾼다" 문구 제거.
@@ -153,13 +153,13 @@ RP `verifyLogin` 추가 검사(기존 a~g 사이, d 뒤): `pub[32] === 소비한
 
 ## 9. 보안·프라이버시 메모
 
-- **G5 복원(D15)**: IdP 는 속성 값을 모른다(C_u 는 Pedersen 은닉, π_IdP 의 공개 입력에 속성 없음). RP 는 공개한 술어만 안다(G5a). AA 측 "익명 집합 축소"(V6 §7 G4′ 약화 — AA 가 모든 값을 알아 술어 만족 집합을 셈)는 **사라진다**.
+- **G5 복원(D15)**: IdP 는 속성 값을 모른다(C_u 는 Pedersen 은닉, π_IdP 의 공개 입력에 속성 없음). RP 는 공개한 술어만 안다(G5a). IdP 측 "익명 집합 축소"(V6 §7 G4′ 약화 — IdP 가 모든 값을 알아 술어 만족 집합을 셈)는 **사라진다**.
 - **대가**: 속성 값에 보증이 없다. 거래소가 "나이 ≥ 19" 를 받아들이는 근거는 "이 사용자가 그렇게 주장했고 그 주장이 그 자격증명에 고정돼 있다" 까지다. 논문·덱에 한계로 적고, 보증은 §10 의 속성 발급자로.
-- **IdP 가 보는 것**: uid, auid(고정), auid_s·arid_s(세션마다, 저장 안 함 — D1), H(C_u), H(C_s), max_height, chain_id, allowAgent. r_rp 를 모르므로 arid_s 로 서비스를 못 알아보고(G4), auid_s 로 세션을 사용자와 묶는 것은 uid 를 이미 알므로 새 정보가 아니다.
+- **IdP 가 보는 것**: uid, auid(고정), auid_s·arid_s(세션마다, 저장 안 함 — D1), H(C_u), H(C_s), max_height, chain_id, allowAgent. r_rp 를 모르므로 arid_s 로 RP 를 못 알아보고(G4), auid_s 로 세션을 사용자와 묶는 것은 uid 를 이미 알므로 새 정보가 아니다.
 - **설계 노출 — IdP 단독으로도 연결 가능(후퇴, 컨트롤러 판정: 설계는 바꾸지 않는다).** π_RP 공개 입력 `[30] auid_s`·`[31] arid_s`
   는 `/wallet/tx` → `Mode3Wallet.execute(..., uint[33] pub)` 의 calldata 에 그대로 올라가 체인을 읽는 누구나 본다. IdP 는
   `/cia/issue` 에서 같은 `auid_s`·`arid_s` 를 요청 본문으로 받는다(D3). **요청 본문을 남기는 honest-but-curious IdP 라면**, RP
-  협력이나 trace_tag 개봉 없이도 그 `auid_s` 를 자기 로그와 체인의 calldata 에서 맞춰 uid ↔ PPID 계정(`pub[0]`) ↔ 서비스
+  협력이나 trace_tag 개봉 없이도 그 `auid_s` 를 자기 로그와 체인의 calldata 에서 맞춰 uid ↔ PPID 계정(`pub[0]`) ↔ RP
   (`pub[1]` arid) ↔ 트랜잭션을 이을 수 있다. "IdP 는 auid_s·arid_s 를 기록하지 않는다"(D1)는 **암호학적 보장이 아니라 신뢰
   가정**이다. **V10 대비 후퇴**다 — V10 에서 IdP 가 보는 값(Cf_s 등)은 공개 입력에 그대로 없어 이런 결정적 연결이 없었다.
   완화 후보(둘 다 미적용, **사용자 결정 대기**): ① 운영으로 IdP 의 요청 본문 비보존(D1)을 정책·감사로 강제한다. ② 설계 대안으로
