@@ -16,6 +16,7 @@
 //   낸다. 상태는 v12(cm_u·attrs 삭제, auid 필수) — 설계 2026-10-12-mode3-v11-figure-protocol-design.md §5.2·§7.
 import 'dotenv/config';
 import express from 'express';
+import cors from 'cors';
 import path from 'node:path';
 import fs from 'node:fs';
 import { randomBytes, timingSafeEqual, createHash } from 'node:crypto';
@@ -53,6 +54,12 @@ try {
   process.exit(1);
 }
 const ADMIN_SECRET = process.env.CIA_ADMIN_SECRET;
+// 사용자 오리진(web 모드 사용자 페이지 또는 에이전트, 스펙 2026-10-15 §5.3). health 의 허용 목록과 아래 userCors 가 같은 값을 쓴다.
+const WALLET_AGENT_ORIGIN = process.env.MODE3_WALLET_AGENT_ORIGIN || 'http://127.0.0.1:5100';
+// 사용자 페이지가 브라우저에서 직접 부르는 라우트에만 연다(계획 2026-10-15 Task 6). 관리자 헤더는 허용 목록에 없다 —
+// 교차 오리진에서 관리자 경로를 부를 수 없다(관리자 페이지는 같은 오리진 /admin 이다). 문자열이 아니라 함수형 origin 이어야
+// 일치할 때만 헤더가 붙는다(에이전트의 loginCors 와 같은 이유).
+const userCors = cors({ origin: (origin, cb) => cb(null, origin === WALLET_AGENT_ORIGIN), methods: ['GET', 'POST'], allowedHeaders: ['Content-Type'] });
 const RPC_URL = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
 const LOG_ADDRESS = process.env.CIA_LOG_ADDRESS || null;
 // dotenv 는 이미 있는 키를 덮지 않으므로 격리 테스트 하네스는 "기본값 사용"을 빈 문자열로 표시한다(isolated_cia.mjs).
@@ -392,6 +399,9 @@ async function receiptFor(uid) {
 const app = express();
 app.use(express.json({ limit: '256kb' }));
 
+// 사용자 오리진이 브라우저에서 직접 부르는 5 개 POST 라우트의 프리플라이트(계획 2026-10-15 Task 6).
+for (const p of ['/cia/register', '/cia/issue', '/cia/slot', '/cia/revoke', '/cia/account/self_revoke']) app.options(p, userCors);
+
 // 데모 공통 레이어(설계 2026-09-24-mode3-demo-ux §1.2) — mode3/common 만 정적으로 낸다.
 app.use('/common', express.static(path.join(__dirname, 'mode3', 'common')));
 
@@ -401,17 +411,16 @@ app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_
 // 사용자 페이지(§6.5.1). 잃어버린 지갑이 아니라 어느 장치에서든 열 수 있어야 하므로 IdP 가 직접 낸다.
 app.get('/account', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_account.html')));
 
-app.get('/cia/public_keys', (req, res) => {
+app.get('/cia/public_keys', userCors, (req, res) => {
   // V10: canonicalChainId = 게시 로그가 있는 체인(selfChainId 와 같은 provider). mirrors = CIA_MIRRORS(릴레이 대상 거울, 2026-10-02 Task 6).
   res.json({ pk_CIA: S(ciaPub), ethAddress: ethWallet.address, heartbeatBlocks: Number(HEARTBEAT_BLOCKS), chainIds: [...CHAIN_RPCS.keys()], logAddress: LOG_ADDRESS,
     canonicalChainId: selfChainId, mirrors: MIRRORS.map(({ chainStr, address }) => ({ chainId: chainStr, address })) });
 });
 
 // 속성 스키마 공개(스펙 2 §5.2, 인증 없음). 지갑·RP 가 기동 때 받아 술어 타입·정책 이름을 해석하고, 화면이 이름값을 그린다.
-app.get('/cia/attr_schema', (req, res) => res.json({ schema: ATTR_SCHEMA, hash: ATTR_SCHEMA_HASH }));
+app.get('/cia/attr_schema', userCors, (req, res) => res.json({ schema: ATTR_SCHEMA, hash: ATTR_SCHEMA_HASH }));
 
 // 상태 엔드포인트(설계 2026-09-25 §1) — 민감정보 없음, 승인된 RP·지갑 오리진에만 CORS.
-const WALLET_AGENT_ORIGIN = process.env.MODE3_WALLET_AGENT_ORIGIN || 'http://127.0.0.1:5100';
 app.get('/mode3/health', async (req, res) => {
   const rpOrigins = Object.values(state.rps).filter((r) => r.status === 'approved').map((r) => r.origin);
   // 허용 오리진은 origin 으로 정규화한다 — 설정값 끝의 '/' 같은 것이 CORS 를 조용히 깨뜨리지 않게.
@@ -512,7 +521,7 @@ app.post('/cia/rps/:arid/deny', requireAdmin, (req, res) => {
 });
 
 // V11 §3.1 등록. 지갑이 auid = Poseidon(T_AUID, uid, s_u) 와 등록 키 pk_u 를 낸다 — IdP 는 소유 증명 서명만 보고 슬롯 번호를 배정한다. 속성은 받지 않는다(D15).
-app.post('/cia/register', async (req, res) => {
+app.post('/cia/register', userCors, async (req, res) => {
   const { uid, pwd, auid, pk_u, sig_reg } = req.body ?? {};
   if (!isDec(uid) || typeof pwd !== 'string' || !isDec(auid) || !isPt(pk_u) || !sig_reg) return res.status(400).json({ error: 'uid, pwd, auid, pk_u{x,y}, sig_reg required' });
   const acct = Object.values(DEMO_ACCOUNTS).find((a) => a.uid === uid);
@@ -535,7 +544,7 @@ app.post('/cia/register', async (req, res) => {
 });
 
 // V9: 옛 지갑 상태 파일(슬롯 없음)이 자기 슬롯 번호를 되찾는다. sk_u 서명 인증, 메시지는 Poseidon(D_SLOTREQ, uid, nonce).
-app.post('/cia/slot', async (req, res) => {
+app.post('/cia/slot', userCors, async (req, res) => {
   try {
     const { uid, nonce, sig_u } = req.body ?? {};
     if (!isDec(uid) || !isDec(nonce) || !sig_u) return res.status(400).json({ error: 'uid, nonce, sig_u required' });
@@ -556,7 +565,7 @@ app.post('/cia/slot', async (req, res) => {
 // 활성 자격증명과 다르면(첫 로그인·사용자의 속성 변경) 등록부 슬롯을 갱신·게시한 뒤 토큰을 낸다. 속성 값은 받지 않는다(D15).
 // 검사 순서: 형식 → max_height 범위 → 계정·disabled → chainid 허용 → C_u·C_s 부분군 → sig_u → π_IdP → 체인 생존(fail-closed) → disabled 재확인 →
 // (C_u 교체: 은퇴 → creds 추가 → setSlot → persist → 즉시 게시) → 토큰 서명 → 세션 기록. auid_s·arid_s 는 서명·토큰에만 쓰고 저장하지 않는다(D1).
-app.post('/cia/issue', async (req, res) => {
+app.post('/cia/issue', userCors, async (req, res) => {
   try {
     const { uid, auid_s, arid_s, C_u_pt, C_s_pt, chainid, allowAgent, max_height, proof_idp, sig_u } = req.body ?? {};
     if (!isDec(uid) || !isDec(auid_s) || !isDec(arid_s) || !isPt(C_u_pt) || !isPt(C_s_pt) || !isDec(chainid) || (allowAgent !== '0' && allowAgent !== '1') || !isDec(max_height) || !proof_idp || typeof proof_idp !== 'object' || !sig_u) {
@@ -654,7 +663,7 @@ async function revokeAccount(uid) {
 // 슬롯은 사용자당 하나라 leaf/C 인자를 받지 않는다(있어도 무시). setSlot(uid, 0n) 은 멱등(이미 0 이면 값이 그대로)이다.
 // V8(2026-09-24 §2.2) session = 세션 하나만 — 사용자는 sk_u 서명으로, 운영자는 관리자 시크릿으로. 그래서 requireAdmin 을 미들웨어로
 // 걸지 않고 안에서 분기한다. 관리자 헤더가 틀리게 오면 isAdmin=false 라 scope=session 은 서명 경로로 흐르고 account/credential 은 401 이다.
-app.post('/cia/revoke', async (req, res) => {
+app.post('/cia/revoke', userCors, async (req, res) => {
   try {
     const { uid, scope, Cf_s, sig_u, nonce } = req.body ?? {};
     const hdr = req.get('X-CIA-Admin-Secret');
@@ -1102,7 +1111,7 @@ app.post('/cia/admin/registry/restore', requireAdmin, async (req, res) => {
 // §6.5.1 사용자 개시 폐기. 인증은 계정 비밀번호다 — 지갑 키가 아니다. 장치를 잃은 사용자에게 sk_u 는 없고
 // 공격자에게는 있으므로, 인증 수단은 장치 밖에 있어야 한다. 처리는 관리자의 계정 폐기와 같다.
 // 형식 → 비밀번호 → 등록 상태 순으로 검사한다. 비밀번호가 틀리면 등록 여부를 알려주지 않는다.
-app.post('/cia/account/self_revoke', async (req, res) => {
+app.post('/cia/account/self_revoke', userCors, async (req, res) => {
   try {
     const { uid, pwd } = req.body ?? {};
     if (!isDec(uid) || typeof pwd !== 'string') return res.status(400).json({ error: 'uid, pwd required' });
