@@ -37,7 +37,7 @@ try {
     await expectReason(v.verify(await stub.mint({ sub: 's', nonce: 'reg:n', expSeconds: -120 }), { noncePrefix: 'reg:' }), 'oidc_invalid', /ERR_JWT_EXPIRED/);
     const { privateKey } = await generateKeyPair('RS256');
     const forged = await new SignJWT({ sub: 's', nonce: 'reg:n' }).setProtectedHeader({ alg: 'RS256', kid: 'other' }).setIssuer(stub.issuer).setAudience('cid-1').setIssuedAt().setExpirationTime('5m').sign(privateKey);
-    await expectReason(v.verify(forged, { noncePrefix: 'reg:' }), 'oidc_unavailable');   // JWKS 에 그 kid 가 없다 — JWKSNoMatchingKey
+    await expectReason(v.verify(forged, { noncePrefix: 'reg:' }), 'oidc_invalid');   // JWKS 에 그 kid 가 없다 — JWKSNoMatchingKey(jose 가 JWKS 를 다시 받아본 뒤) = 발급자가 공개하지 않은 키 → 무효(R2)
     await expectReason(v.verify('not-a-jwt', { noncePrefix: 'reg:' }), 'oidc_invalid', /format/);
     await expectReason(v.verify(12, { noncePrefix: 'reg:' }), 'oidc_invalid', /format/);
     await expectReason(v.verify(await stub.mint({ sub: 's', nonce: 'revoke:' + 'd'.repeat(64) }), { noncePrefix: 'reg:' }), 'oidc_nonce_mismatch');
@@ -51,7 +51,7 @@ try {
     const token = await new SignJWT({ sub: 'g-1', nonce: 'reg:' + 'e'.repeat(64) }).setProtectedHeader({ alg: 'RS256', kid: 'k1' }).setIssuer('accounts.google.com').setAudience('cid-1').setIssuedAt().setExpirationTime('5m').sign(privateKey);
     assert.equal((await v.verify(token, { noncePrefix: 'reg:' })).sub, 'g-1');
     const down = createOidcVerifier({ issuer: stub.issuer, jwksUrl: 'http://127.0.0.1:1/jwks', clientId: 'cid-1' });
-    await expectReason(down.verify(await stub.mint({ sub: 's', nonce: 'reg:n' }), { noncePrefix: 'reg:' }), 'oidc_unavailable');
+    await expectReason(down.verify(await stub.mint({ sub: 's', nonce: 'reg:n' }), { noncePrefix: 'reg:' }), 'oidc_unavailable', /^[A-Za-z_]+$/);   // detail 은 코드명/클래스명만(e.message 금지)
   });
 } finally { await stub.stop(); }
 process.exit(fails ? 1 : 0);
