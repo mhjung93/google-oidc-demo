@@ -5,9 +5,11 @@ export function createProver({ workerUrl = '/dist/prover_worker.js', onProgress 
   worker.onmessage = ({ data }) => {
     if (data?.kind === 'progress') return onProgress(data);
     const p = pending.get(data?.id); if (!p) return; pending.delete(data.id);
-    if (data.error) p.reject(Object.assign(new Error(data.error), { reason: data.reason ?? 'zk_assets_unavailable' }));
+    // 워커가 직접 태그한 사유(자산 로딩·vkey 불일치)만 따른다 — 그냥 witness 생성 실패는 사유 없이 와서 guard() 의 500 internal 로 남는다.
+    if (data.error) p.reject(Object.assign(new Error(data.error), { reason: data.reason ?? null }));
     else p.resolve(data);
   };
+  // 이건 메시지가 아니라 워커 자체가 뜨지 못한 경우(스크립트 로드 실패 등)다 — 그 자체가 자산 문제이므로 항상 zk_assets_unavailable.
   worker.onerror = (e) => { for (const p of pending.values()) p.reject(Object.assign(new Error(e.message ?? 'worker error'), { reason: 'zk_assets_unavailable' })); pending.clear(); };
   const call = (msg) => new Promise((resolve, reject) => { const id = ++seq; pending.set(id, { resolve, reject }); worker.postMessage({ id, ...msg }); });
   const prove = (kind) => async (input) => { const { proof, publicSignals } = await call({ kind, input }); return { proof, publicSignals }; };

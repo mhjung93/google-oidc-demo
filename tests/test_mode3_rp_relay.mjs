@@ -75,7 +75,7 @@ try {
     const p = (await prepare()).body;
     const r = await relay({ to: p.walletAddr, data: p.calldata }); assert.equal(r.status, 400); assert.equal(r.body.reason, 'relay_gas'); assert.match(String(r.body.detail), /cap/);
   });
-  await t('음성: 속도 제한(MODE3_RELAY_RATE=1) — 같은 계정의 두 번째 호출은 429, 실패한 호출도 센다', async () => {
+  await t('음성: 속도 제한(MODE3_RELAY_RATE=1) — 같은 계정의 두 번째 호출은 429(1~4단계를 통과한 호출을 체인 작업 전에 센다)', async () => {
     await stack.restartRp({ MODE3_RELAY_GAS_CAP: '', MODE3_RELAY_RATE: '1' });
     const p = (await prepare()).body;
     const first = await relay({ to: p.walletAddr, data: p.calldata }); assert.equal(first.status, 200, JSON.stringify(first.body)); await waitReceipt(first.body.txHash);

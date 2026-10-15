@@ -755,6 +755,8 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     try { return await fn(...args); }
     catch (e) {
       if (e?.reason === 'locked') return LOCKED();
+      // 워커·자산 로더가 태그한 사유는 보존한다(페이지가 "증명 키를 받을 수 없습니다" 로 안내).
+      if (e?.reason === 'zk_assets_unavailable') return R(503, { reason: 'zk_assets_unavailable', detail: e.message });
       log(`[user-core] ${name} 처리되지 않은 오류: ${e?.stack ?? e}`);
       return R(500, { reason: 'internal', detail: e?.message ?? String(e) });
     }

@@ -122,7 +122,7 @@ try {
     await viaPopup(async () => { await rpPage.click('#loginBtn'); await rpPage.click('#idpLoginBtn'); }, approve);
     await waitText(rpPage, '#verdict', 'bad_proof', 120_000);
     assert.ok((await text(rpPage, '#verdict')).includes('[시연 모드]'));
-    await userPage.click('#demoFakeSigBtn'); await waitText(userPage, '#demoVerdict', '적용', 10_000);
+    await userPage.click('#demoFakeSigBtn'); await waitText(userPage, '#demoVerdict', '가짜 서명', 10_000);
     await userPage.click('#refreshBtn'); await userPage.click('#txBtn');
     await waitText(userPage, '#txVerdict', 'relay_gas', 120_000);
     assert.match(await text(userPage, '#txVerdict'), /\[시연 모드\]|BadSignature/);

@@ -939,7 +939,8 @@ CORS 는 사용자 오리진만 연다.
 위 "다른 기계에 설치" 절의 `build/mode3/` 묶음(`scripts/pack_mode3_build.sh`)과 `npm install` 에 더해 `npm run user:build`
 한 번이 필요하다(esbuild devDependency). 브라우저는 최신 Chrome·Edge·Firefox 면 된다 — Snap·MetaMask 는 필요 없다.
 회로 산출물은 Cache API(`mode3-zk-v1`)에 캐시되므로, `build/mode3` 를 다시 만들었다면 사용자 페이지의 "모두 지우기" 버튼이나
-브라우저의 이 사이트 데이터 삭제로 캐시를 비운 뒤 새로고침한다.
+브라우저의 이 사이트 데이터 삭제로 캐시를 비운 뒤 새로고침한다. (페이지는 `/zk/*` 를 `cache: 'no-store'` 로 받아 브라우저 HTTP
+캐시를 우회하므로, Cache API 만 비우면 된다)
 
 ## 엔드포인트 (2026-09-22 선택 공개, 2026-09-23 집합 소속 술어 V7 로 바뀌거나 추가된 것)
 

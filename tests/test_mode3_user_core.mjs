@@ -1,6 +1,7 @@
 // tests/test_mode3_user_core.mjs — 브라우저 사용자 코어를 Node 에서(메모리 kv·진짜 snarkjs) 격리 IdP·RP 에 대고 돌린다. 등록 → 로그인(RP 검증) → 재검증 →
 // 세션 요청 → 트랜잭션(RP 릴레이) → Selective disclosure proof(AttrGate) → 세션 폐기 → 잠금·해제 → 시연 가짜 증명·서명. :8545·build/mode3 필요. (chain)
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
 import { getProvider } from './helpers/mode3_chain.mjs';
 import { createMemKv } from '../mode3/user/core/kv_mem.js';
@@ -8,6 +9,8 @@ import { createUserCore } from '../mode3/user/core/user_core.js';
 import { attrGateAt } from '../lib/mode3_onchain.js';
 import * as snarkjs from 'snarkjs';
 
+// 정적 서버는 dist 가 없으면 기동을 거부한다 — 단독 실행도 되게 여기서 만든다.
+execFileSync('node', ['scripts/build_user_app.mjs'], { stdio: 'inherit' });
 const stack = await startIsolatedMode3Stack({ userMode: 'web', autoRelay: true });
 const { wallet, rp, cia } = stack;
 const provider = getProvider();
