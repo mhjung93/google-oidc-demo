@@ -52,6 +52,7 @@ UNIT=(
   tests/test_browser_sha256.js
   tests/test_secret_box.mjs
   tests/test_browser_node_shims.js
+  tests/test_mode3_oidc_nonce.js
 )
 
 CIRCUIT=(
