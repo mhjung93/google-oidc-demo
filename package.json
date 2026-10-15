@@ -22,7 +22,9 @@
     "zk:input": "node scripts/make_proof.js",
     "zk:witness": "node ./build/bind_key_to_idtoken_js/generate_witness.js ./build/bind_key_to_idtoken_js/bind_key_to_idtoken.wasm ./build/input.json ./build/witness.wtns",
     "zk:prove": "npx snarkjs groth16 prove ./build/bind_key_to_idtoken_final.zkey ./build/witness.wtns ./build/proof.json ./build/public.json",
-    "zk:verify": "npx snarkjs groth16 verify ./build/verification_key.json ./build/public.json ./build/proof.json"
+    "zk:verify": "npx snarkjs groth16 verify ./build/verification_key.json ./build/public.json ./build/proof.json",
+    "user:build": "node scripts/build_user_app.mjs",
+    "user:static": "node mode3_user_static.js"
   },
   "keywords": [],
   "author": "",
@@ -50,6 +52,7 @@
     "circomlib": "^2.0.5",
     "circomlibjs": "^0.1.7",
     "dotenv": "^17.2.3",
+    "esbuild": "^0.28.2",
     "hardhat": "^2.22.5",
     "hardhat-ethernal": "^3.4.0",
     "http-server": "^14.1.1",

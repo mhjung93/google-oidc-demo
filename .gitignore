@@ -9,6 +9,7 @@ cache/
 *.r1cs
 *.sym
 *.wtns
+mode3/user/dist/
 
 # sensitive files
 .env
