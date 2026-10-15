@@ -72,4 +72,23 @@ await t('V10 ProofCache.rootKey(chainId, rev, reg) = "chainId:rev:reg", 2인자�
   assert.equal(c.get(ProofCache.rootKey(31337n, 1n, 2n), '77', '1:0,0:0,0:0:0'), null); assert.equal(c.get(ProofCache.rootKey(31337n, 1n, 2n), '88'), 'b');
 });
 await t('chooseMaxHeight 그리드', () => { assert.equal(chooseMaxHeight(1234n), 1600n); assert.equal(chooseMaxHeight(10n, { ttlBlocks: 5n, grid: 1n }), 15n); });
+await t('R7: proveIdp 는 fullProve 를 주입받는다 — 회로 입력 전부를 넘기고 결과를 그대로 돌려준다', async () => {
+  const { proveIdp } = await import('../lib/mode3_idp_proof.js');
+  const calls = [];
+  const stub = async (input, wasmPath, zkeyPath) => { calls.push({ input, wasmPath, zkeyPath }); return { proof: { pi_a: ['stub'] }, publicSignals: ['1', '2'] }; };
+  const out = await proveIdp({ uid: 12345n, s_u: 7n, blind_u: 8n, attrs: [1990n, 410n], arid: 3n, r_rp: 4n, pk_i: 5n, r_s: 6n, auid: 9n, auid_s: 10n, C_u_pt: { x: 1n, y: 2n }, C_s_pt: { x: 3n, y: 4n }, max_height: 100n, wasmPath: 'W', zkeyPath: 'Z', fullProve: stub });
+  assert.deepEqual(out, { proof: { pi_a: ['stub'] }, publicSignals: ['1', '2'] });
+  assert.equal(calls.length, 1); assert.equal(calls[0].wasmPath, 'W'); assert.equal(calls[0].zkeyPath, 'Z');
+  assert.deepEqual(Object.keys(calls[0].input).sort(), ['C_s_x', 'C_s_y', 'C_u_x', 'C_u_y', 'arid', 'attrs', 'auid', 'auid_s', 'blind_u', 'max_height', 'pk_i', 'r_rp', 'r_s', 's_u', 'uid']);
+  assert.deepEqual(calls[0].input.attrs, ['1990', '410', '0', '0', '0', '0']);
+});
+await t('R7: buildIssueRequest 는 fullProve 를 proveIdp 에 넘긴다(기본값이면 snarkjs 를 부른다 — 여기서는 스텁으로 호출만 확인)', async () => {
+  const { buildIssueRequest, createSessionKey } = await import('../lib/mode3_wallet.js');
+  const reg = await createRegistration(12345n);
+  let seen = null;
+  const req = await buildIssueRequest({ uid: 12345n, s_u: reg.s_u, blind_u: 11n, attrs: [1990n, 410n], arid: 3n, r_rp: 4n, r_s: 6n, sk_u: reg.sk_u, session: createSessionKey(), chainid: 31337n, max_height: 100n, fullProve: async (input) => { seen = input; return { proof: { stub: true }, publicSignals: [] }; } });
+  assert.ok(seen && seen.uid === '12345', 'proveIdp 가 주입된 fullProve 로 돌았다');
+  assert.deepEqual(req.body.proof_idp, { stub: true });
+  assert.equal(req.body.auid_s, req.auid_s.toString());
+});
 process.exit(fails ? 1 : 0);
