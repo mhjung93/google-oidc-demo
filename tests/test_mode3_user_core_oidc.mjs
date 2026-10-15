@@ -21,6 +21,7 @@ try {
   const core = createUserCore({ kv, config, provider, canonProvider: provider, fullProve });
   let info = (await rp.get('/api/mode3/rp_info')).body;
   for (let i = 0; i < 50 && !info.attrGateAddress; i++) { await new Promise((r) => setTimeout(r, 200)); info = (await rp.get('/api/mode3/rp_info')).body; }   // RP 등록 승인·팩토리 배포를 기다린다(test_mode3_user_core.mjs 와 같다)
+  assert.ok(info.attrGateAddress, 'RP 의 AttrGate 가 배포되지 않았다');
   const PW = 'vault-oidc';
   const SUB = 'google-user-77';
   await t('prepareRegistration: nonce 가 "reg:"+hex64 이고 pk_u 를 돌려준다; 다시 부르면 새 재료', async () => {
@@ -32,7 +33,7 @@ try {
     const idToken = await stub.mint({ sub: SUB, nonce: p.nonce });
     const r = await core.completeRegistration({ idToken, profile: { birthYear: '1990', country: 'KR' }, vaultPassword: PW });
     assert.equal(r.status, 201, j(r.body)); assert.equal(r.body.uid, uidOf(stub.provider, SUB)); assert.equal(r.body.provider, stub.provider);
-    const reg = await kv.get('registration'); assert.equal(reg.provider, stub.provider); assert.equal(reg.uid, r.body.uid); assert.ok(!('s_u' in reg));
+    const reg = await kv.get('registration'); assert.equal(reg.provider, stub.provider); assert.equal(reg.uid, r.body.uid); assert.ok(!('s_u' in reg) && !('sk_u' in reg));
     assert.equal((await core.status()).body.provider, stub.provider);
   });
   await t('nonce 가 다른 토큰·pending 없음·토큰 형식 오류의 사유', async () => {
@@ -41,10 +42,16 @@ try {
     assert.equal((await core.completeRegistration({ idToken: 'a.b.c', vaultPassword: PW })).body.reason, 'no_pending_registration');
     const p = await core.prepareRegistration();
     assert.equal((await core.completeRegistration({ idToken: await stub.mint({ sub: 'x', nonce: 'reg:' + 'f'.repeat(64) }), vaultPassword: PW })).body.reason, 'oidc_nonce_mismatch');
-    assert.equal((await core.completeRegistration({ idToken: 'not-a-jwt', vaultPassword: PW })).status, 400);
-    // 같은 sub 로 다시 등록(새 재료): IdP 가 409 → register_failed 가 아니라 IdP 의 409 그대로
+    const bad = await core.completeRegistration({ idToken: 'not-a-jwt', vaultPassword: PW });
+    assert.equal(bad.status, 400); assert.equal(bad.body.reason, 'oidc_invalid');
+    // 서명을 변조한 토큰(payload·nonce 는 그대로): IdP 가 401 oidc_invalid → 사유·상태가 그대로 온다(IdP 발 oidc_* 통과 분기).
+    // 서명 조각의 끝 글자는 패딩 비트만 바뀌어 같은 바이트로 디코드될 수 있어 첫 글자를 바꾼다.
+    const [h, pl, sg] = (await stub.mint({ sub: SUB, nonce: p.nonce })).split('.');
+    const forged = await core.completeRegistration({ idToken: `${h}.${pl}.${sg[0] === 'A' ? 'B' : 'A'}${sg.slice(1)}`, vaultPassword: PW });
+    assert.equal(forged.status, 401, j(forged.body)); assert.equal(forged.body.reason, 'oidc_invalid');
+    // 같은 sub 로 다시 등록(새 재료): IdP 의 409 는 register_failed 로 감싸져 상태 409 로 온다
     const again = await core.completeRegistration({ idToken: await stub.mint({ sub: SUB, nonce: p.nonce }), vaultPassword: PW });
-    assert.equal(again.status, 409, j(again.body));
+    assert.equal(again.status, 409, j(again.body)); assert.equal(again.body.reason, 'register_failed');
   });
   await t('Google 로 등록한 계정으로 RP 로그인이 된다(증명 경로 불변)', async () => {
     await core.wipe();
@@ -55,6 +62,17 @@ try {
     const lg = await core.login({ arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s: ch.r_s, r_rp: ch.r_rp, allowAgent: '0', factoryAddress: info.factoryAddress, attrGateAddress: info.attrGateAddress }, { verifiedOrigin: info.origin });
     assert.equal(lg.status, 200, j(lg.body));
     assert.equal((await rp.post('/api/mode3/login', { proof: lg.body.proof, publicSignals: lg.body.publicSignals, sig: lg.body.sig, r_s: ch.r_s })).body.ok, true);
+  });
+  await t('selfRevokeWithIdToken: 다른 Google 계정(sub)의 revoke 토큰 → 403 uid_mismatch(IdP 를 부르지 않는다) — 그 계정·이 지갑의 계정 모두 살아 있다', async () => {
+    assert.equal((await core.selfRevokeWithIdToken({ idToken: 'not-a-jwt' })).body.reason, 'oidc_invalid');
+    // SUB 는 앞 케이스에서 IdP 에 등록된 계정이다 — 지갑이 막지 않으면 IdP 가 200 으로 폐기한다(되돌릴 수 없다).
+    const r = await core.selfRevokeWithIdToken({ idToken: await stub.mint({ sub: SUB, nonce: newRevokeNonce() }) });
+    assert.equal(r.status, 403, j(r.body)); assert.equal(r.body.reason, 'uid_mismatch');
+    const accounts = (await stack.cia.adminGet('/cia/accounts')).body.accounts;
+    for (const sub of [SUB, 'google-user-78']) {
+      const a = accounts.find((x) => x.uid === uidOf(stub.provider, sub));
+      assert.ok(a, sub); assert.equal(a.disabled, false, sub);
+    }
   });
   await t('selfRevokeWithIdToken: revoke 토큰 → 200, 그 뒤 로그인은 403 account_disabled; 등록 토큰으로는 400', async () => {
     const regTok = await stub.mint({ sub: 'google-user-78', nonce: (await core.prepareRegistration()).nonce });

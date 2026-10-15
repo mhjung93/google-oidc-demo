@@ -309,8 +309,9 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
    *  를 IdP 에 낸다. 속성은 사용자가 넣는다(D15): profile(기본 DEFAULT_PROFILE)을 공개 스키마로 인코딩해 attrs 를 만든다 — IdP 는 받지 않는다.
    *  금고가 없으면 vaultPassword 로 만들고(IdP 호출 직전), 있으면 잠금 해제 상태여야 한다. kv 에는 공개 부분(registration)만 평문으로,
    *  s_u·sk_u 는 금고(secrets)에만 둔다. auth 는 IdP 인증({ uid, pwd } 또는 { id_token }) — 요청 본문에 그대로 펼친다.
-   *  provider 는 IdP 응답에 provider 가 없을 때 registration 에 남길 값이다. */
-  async function registerWith({ uid, auth, reg, profileIn, vaultPassword, provider }) {
+   *  makeReg 는 등록 재료 { s_u, sk_u, pk_u, auid } 를 만드는 썽크다 — 검사를 모두 통과한 뒤(금고 설정 직전)에 부른다.
+   *  providerName 은 IdP 응답에 provider 가 없을 때 registration 에 남길 값이다. */
+  async function registerWith({ uid, auth, makeReg, profileIn, vaultPassword, providerName }) {
     if (profileIn !== null && (typeof profileIn !== 'object' || Array.isArray(profileIn))) return R(400, { reason: 'bad_attr', detail: 'profile_required' });
     const existing = await getReg();
     if (existing) return R(409, { reason: 'already_registered', uid: existing.uid });
@@ -335,6 +336,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     try { attrs = await encodeProfile(schema, profile, { allowEmptyRequired: false }); }
     catch (e) { if (e.reason === 'bad_attr') return R(400, { reason: 'bad_attr', slot: e.slot, field: e.field, detail: e.detail, message: e.message }); throw e; }
     const normalized = normalizeProfile(schema, profile);
+    const reg = await makeReg();
     // 금고는 IdP 에 등록하기 **전에** 만든다 — 등록이 끝났는데 비밀을 둘 곳이 없는 상태(재로그인 불가)를 만들지 않는다.
     if (needSetup) await vault.setup(vaultPassword);
     const pub = { x: reg.pk_u.x.toString(), y: reg.pk_u.y.toString() };
@@ -345,11 +347,13 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       const status = r.status === 401 || r.status === 409 ? r.status : 502;
       return R(status, { reason: 'register_failed', cia: r.body });
     }
+    // uid 는 지갑이 auid 에 넣은 값이다 — 201 이면 IdP 가 sig_reg 를 자기 uid 로 검증했으므로 응답의 uid 와 같아야 한다. 다르면 IdP 의 오동작이라
+    // 이 재료로는 증명이 안 만들어진다 — 비밀·registration 을 쓰기 전에 실패로 끝낸다.
+    if (r.body.uid !== undefined && r.body.uid !== uid) return R(502, { reason: 'register_failed', detail: 'uid 불일치', cia: r.body });
     await noteSchemaHint(r.body.schemaHash ?? null);
     // 비밀을 먼저 금고에 쓰고 공개 부분을 쓴다 — registration 이 있으면 비밀도 있다.
     await vault.writeSecrets({ s_u: reg.s_u.toString(), sk_u: reg.sk_u, blind_u: null, sessionKeys: {} });
-    // uid 는 지갑이 auid 에 넣은 값이다 — 201 이면 IdP 가 sig_reg 를 자기 uid 로 검증했으므로 응답의 uid 와 같다.
-    const savedProvider = r.body.provider ?? provider;
+    const savedProvider = r.body.provider ?? providerName;
     await kv.set('registration', { uid, auid: reg.auid.toString(), pk_u: pub, slot: r.body.slot, provider: savedProvider, profile: normalized, attrs, userCred: null });
     await putSessions({});
     const body = { uid, slot: r.body.slot, auid: reg.auid.toString(), attrs, profile: normalized };
@@ -406,7 +410,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     async register({ uid, pwd, profile: profileIn = null, vaultPassword = null } = {}) {
       if (!isDec(uid) || typeof pwd !== 'string') return R(400, { error: 'uid(10진 문자열), pwd 필요' });
       if (BigInt(uid) >= SCALAR_MAX) return R(400, { error: 'uid 는 2^250 미만' });
-      return registerWith({ uid, auth: { uid, pwd }, reg: await createRegistration(BigInt(uid)), profileIn, vaultPassword, provider: 'demo' });
+      return registerWith({ uid, auth: { uid, pwd }, makeReg: () => createRegistration(BigInt(uid)), profileIn, vaultPassword, providerName: 'demo' });
     },
     /** Google(OIDC) 등록 2단계(스펙 2026-10-16 §3.1): 토큰의 sub 로 uid = uidOf(provider, sub) 를 선계산하고(서명은 IdP 가 검증한다)
      *  보류 재료로 auid 를 만들어 registerWith 로 낸다 — IdP 에는 { id_token, auid, pk_u, sig_reg }. 보류 재료는 성공해야 비운다(실패하면
@@ -427,8 +431,8 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       const oidc = keys.body?.oidc;
       if (!oidc?.enabled || typeof oidc.provider !== 'string' || !oidc.provider) return R(503, { reason: 'oidc_disabled' });
       const uid = uidOf(oidc.provider, claims.sub);
-      const reg = { s_u: pend.s_u, sk_u: pend.sk_u, pk_u: pend.pk_u, auid: await auidOf({ uid: BigInt(uid), s_u: pend.s_u }) };
-      const r = await registerWith({ uid, auth: { id_token: idToken }, reg, profileIn, vaultPassword, provider: oidc.provider });
+      const makeReg = async () => ({ s_u: pend.s_u, sk_u: pend.sk_u, pk_u: pend.pk_u, auid: await auidOf({ uid: BigInt(uid), s_u: pend.s_u }) });
+      const r = await registerWith({ uid, auth: { id_token: idToken }, makeReg, profileIn, vaultPassword, providerName: oidc.provider });
       if (r.status === 201 && pendingReg === pend) pendingReg = null;   // 그 사이 다시 prepare 했으면 새 재료는 남긴다
       return r;
     },
@@ -773,12 +777,18 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       try { const r = await idp.post('/cia/account/self_revoke', { uid, pwd }); return R(r.status, r.body ?? {}); }
       catch (e) { return R(502, { reason: 'cia_unavailable', detail: e.message }); }
     },
-    /** Google(OIDC) 계정의 자기 폐기(스펙 2026-10-16 §3.3) — 폐기용 nonce("revoke:…")로 받은 id_token 을 IdP 에 넘긴다. 토큰이 가리키는 계정·
-     *  provider·nonce 목적은 IdP 가 검증한다(등록 토큰은 400 oidc_nonce_mismatch). 토큰은 넘길 뿐 어디에도 남기지 않는다. */
+    /** Google(OIDC) 계정의 자기 폐기(스펙 2026-10-16 §3.3) — 폐기용 nonce("revoke:…")로 받은 id_token 을 IdP 에 넘긴다. 토큰의 서명·provider·
+     *  nonce 목적은 IdP 가 검증한다(등록 토큰은 400 oidc_nonce_mismatch). 토큰은 넘길 뿐 어디에도 남기지 않는다. */
     async selfRevokeWithIdToken({ idToken } = {}) {
       if (typeof idToken !== 'string' || !idToken) return R(400, { error: 'idToken(문자열) 필요' });
+      let claims;
+      try { claims = jwtPayload(idToken); } catch { return R(400, { reason: 'oidc_invalid', detail: 'id_token 형식이 아니다' }); }
+      if (typeof claims?.sub !== 'string' || !claims.sub) return R(400, { reason: 'oidc_invalid', detail: 'sub 가 없다' });
       const reg = await getReg();
       if (!reg) return R(409, { reason: 'not_registered' });
+      // 폐기는 되돌릴 수 없고 "이 지갑이 가진 계정인가"는 지갑만 판단할 수 있다 — Google 창에서 다른 계정을 고른 토큰이면 IdP 를 부르지 않는다
+      // (selfRevoke 의 uid_mismatch 와 같은 불변식).
+      if (!reg.provider || reg.provider === 'demo' || uidOf(reg.provider, claims.sub) !== reg.uid) return R(403, { reason: 'uid_mismatch' });
       try { const r = await idp.post('/cia/account/self_revoke', { id_token: idToken }); return R(r.status, r.body ?? {}); }
       catch (e) { return R(502, { reason: 'cia_unavailable', detail: e.message }); }
     },
