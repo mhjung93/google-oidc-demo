@@ -115,6 +115,8 @@ CHAIN=(
 BROWSER=(
   tests/test_mode3_browser.mjs
   tests/test_mode3_tour.mjs
+  # web 모드 — 정적 서버 + 팝업 프로토콜 + 릴레이; 번들을 스스로 만든다
+  tests/test_mode3_user_web.mjs
 )
 
 # Snap 패키지(snap-mode3)의 지역 테스트. 전역 snap 객체를 스텁해 RPC 9종을 검사한다 —

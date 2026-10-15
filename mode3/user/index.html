@@ -1,1 +1,209 @@
-<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>사용자 페이지</title></head><body data-page="wallet"><script type="module" src="/dist/user.js"></script></body></html>
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="same-origin" />
+  <!-- 브라우저 전용 사용자 페이지(web 모드, 스펙 2026-10-15 §4.2). mode3/wallet.html(에이전트 페이지)의 마크업을 옮겼다 —
+       id 는 그대로다(체험 모드 대상·테스트 셀렉터). 비밀은 이 문서 어디에도(DOM·입력값·localStorage) 남지 않고 IndexedDB 의 암호문에만 있다.
+       제목의 "사용자 페이지" 는 tests/test_mode3_user_static.mjs·test_mode3_demo_stack.mjs 의 페이지 서빙 검사 marker 다. -->
+  <title>사용자 페이지</title>
+  <link rel="stylesheet" href="/common/demo.css" />
+  <script src="/common/strings.js"></script>
+  <script src="/common/demo.js"></script>
+  <style>
+    /* 금고 잠금 해제·비밀번호 창(이 페이지 전용 — demo.css 는 바꾸지 않는다). 승인 팝업에서도 같은 창을 쓴다. */
+    .modal-backdrop { position:fixed; inset:0; z-index:20; background:rgba(29,36,51,.45); display:flex; align-items:center; justify-content:center; padding:16px }
+    .modal-box { background:var(--card); border-radius:var(--radius); width:100%; max-width:380px; padding:18px 20px; box-shadow:0 16px 48px rgba(29,36,51,.3) }
+    .modal-box h3 { margin:0 0 6px } .modal-box label { display:block; margin:8px 0 } .modal-box input { width:100%; padding:6px 8px }
+    .modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:12px }
+    .auth-actions { display:flex; gap:8px; margin:12px 0 }
+  </style>
+</head>
+<body data-page="wallet">
+  <header id="demoBar"></header>
+
+  <!-- 팝업 모드(?authorize=1, 스펙 2026-09-22 metamask-snap §3.2·2026-10-15 §4.2): 폼 대신 승인 진행 화면만 보인다.
+       web 모드에서는 RP 페이지의 로그인·재검증·세션 요청을 모두 이 창이 postMessage 로 받는다(popup.js). -->
+  <main class="cards" id="authorizeView" hidden>
+    <section class="card span2">
+      <h3 data-i18n="wallet_auth_title">로그인 승인</h3>
+      <p id="authTitle">RP 페이지의 요청을 기다리는 중…</p>
+      <dl class="kv" id="authSummary"></dl>
+      <!-- 승인·거절은 요청 요약과 RP 인증서 검사 뒤에만 보인다(로그인·세션 요청). 재검증은 동의 화면이 없다. -->
+      <p class="auth-actions"><button id="authApproveBtn" type="button" data-i18n="user_auth_approve" hidden>승인</button> <button id="authDenyBtn" type="button" class="btn-ghost" data-i18n="user_auth_deny" hidden>거절</button></p>
+      <p id="authStep" class="muted expert"></p>
+      <pre id="authLog" class="expert"></pre>
+      <p class="muted" data-i18n="wallet_auth_note">요청은 주소창이 아니라 postMessage 로 받습니다. 메시지를 보낸 오리진이 RP 인증서의 오리진과 같을 때만 진행합니다.</p>
+    </section>
+  </main>
+
+  <main class="cards" id="mainView">
+    <section class="card" id="identityCard">
+      <h3 data-i18n="wallet_identity_title">사용자 속성 등록</h3>
+      <p class="desc" data-i18n="wallet_identity_desc">IdP 에 한 번 등록합니다. 속성은 내가 넣고 IdP 는 값을 모릅니다.</p>
+      <p><span id="regBadge" class="badge">미등록</span> <span id="regInfo" class="muted"></span></p>
+      <dl class="kv">
+        <dt data-term="AA">IdP</dt><dd id="aaInfo">-</dd>
+        <dt data-term="cred">내 자격증명</dt><dd id="credInfo">-</dd>
+        <dt data-term="registry">등록부</dt><dd><span id="registryBadge" class="badge muted">-</span> <span id="registryInfo"></span></dd>
+      </dl>
+      <span id="fileRegFields"><label>uid <input id="uid" value="12345" size="8" /></label> <label>pwd <input id="pwd" type="password" value="password123" size="12" /></label><br />
+        <span id="vaultFields"><label><span data-i18n="user_vault_pw_label">금고 비밀번호</span> <input id="vaultPw" type="password" autocomplete="new-password" size="14" /></label> <label><span data-i18n="user_vault_pw2_label">확인</span> <input id="vaultPw2" type="password" autocomplete="new-password" size="14" /></label><br /></span></span>
+      <dl class="kv" id="attrsView">
+        <dt data-term="attr0">출생연도</dt><dd><input id="attr0" size="6" /></dd>
+        <dt data-term="attr1">국가</dt><dd><input id="attr1" size="6" /></dd>
+        <dt data-term="attr2">예비 1</dt><dd><input id="attr2" size="6" /></dd>
+        <dt data-term="attr3">예비 2</dt><dd><input id="attr3" size="6" /></dd>
+        <dt data-term="attr4">미사용</dt><dd><input id="attr4" size="6" /></dd>
+        <dt data-term="attr5">미사용</dt><dd><input id="attr5" size="6" /></dd>
+      </dl>
+      <p>
+        <button id="registerBtn" data-i18n="wallet_register_btn">등록</button>
+        <button id="profileSaveBtn" class="btn-ghost" data-i18n="wallet_profile_save_btn">속성 저장</button>
+      </p>
+      <div id="registerResult"></div>
+      <p id="intro" class="muted expert"></p>
+    </section>
+
+    <section class="card" id="sessionsCard">
+      <h3 data-i18n="wallet_sessions_title">로그인 세션</h3>
+      <p class="desc" data-i18n="wallet_sessions_desc">RP 마다 다른 주소로 로그인합니다. 세션 하나만 끝낼 수도 있습니다.</p>
+      <p><button id="refreshBtn" class="btn-ghost" data-i18n="refresh">새로고침</button></p>
+      <div id="sessionActions"></div>
+      <div id="sessionVerdict"></div>
+      <p class="muted" data-i18n="wallet_sessions_note">로그인은 RP 페이지에서 시작합니다 — 자격증명 발급은 로그인 안에서 필요할 때 자동으로 일어납니다.</p>
+      <p id="mirrorInfo" class="muted"></p>
+      <p id="chainInfo" class="muted expert"></p>
+      <pre id="status" class="expert">불러오는 중…</pre>
+      <pre id="sessionLog" class="expert"></pre>
+    </section>
+
+    <section class="card span2" id="txCard">
+      <h3 data-i18n="wallet_tx_title">트랜잭션 보내기</h3>
+      <p class="desc" data-i18n="wallet_tx_desc">이 RP 전용 주소에서 보냅니다. 필요하면 속성 조건만 골라 공개합니다.</p>
+      <p id="txNote" class="muted"></p>
+      <dl class="kv">
+        <dt data-i18n="wallet_tx_session">보낼 세션</dt><dd><select id="txSession"></select></dd>
+        <dt data-i18n="wallet_tx_to">받는 주소</dt><dd><input id="txTo" value="0x000000000000000000000000000000000000dEaD" size="44" /></dd>
+        <dt data-i18n="wallet_tx_value">보낼 금액(wei)</dt><dd><input id="txValue" value="0" size="10" /></dd>
+        <dt data-i18n="wallet_tx_data">데이터</dt><dd><input id="txData" value="0x" size="20" /></dd>
+      </dl>
+      <!-- open: 접어 두면 안에 든 입력칸이 보이지 않아 tests/test_mode3_browser.mjs 의 fill·check·selectOption 이
+           실패한다(Playwright 는 숨은 요소를 다루지 않는다). 사용자는 직접 접을 수 있다. -->
+      <details id="discloseBox" open>
+        <summary data-term="disclosure">공개할 속성 조건</summary>
+        <p class="muted" data-i18n="wallet_disclose_desc">체크한 조건만 증명에 실립니다. 최소=최대 면 그 값 하나를 공개합니다. 집합 소속은 슬롯 하나만 고를 수 있고, 지갑이 허용 원소 목록으로 계산해 증명에 넣습니다. 나이는 연 단위(올해 − 출생연도)입니다.</p>
+        <div id="discloseRows">
+          <div><label><input type="checkbox" id="dk0" /> <span data-term="attr0">출생연도</span></label>
+            <label><span data-i18n="wallet_lo">최소</span> <input id="discLo0" size="10" /></label>
+            <label><span data-i18n="wallet_hi">최대</span> <input id="discHi0" size="10" /></label>
+            <span id="discNote0" class="muted"></span></div>
+          <div><label><input type="checkbox" id="dk1" /> <span data-term="attr1">국가</span></label>
+            <label><select id="discCountry"><option value="" selected data-i18n="wallet_disc_country_none">공개 안 함</option></select></label>
+            <span id="discNote1" class="muted"></span></div>
+          <div><label><input type="checkbox" id="dk2" /> <span data-term="attr2">예비 1</span></label>
+            <span id="discNoValue2" class="muted" data-i18n="wallet_disc_no_value" hidden>값 없음</span></div>
+          <div><label><input type="checkbox" id="dk3" /> <span data-term="attr3">예비 2</span></label>
+            <span id="discNoValue3" class="muted" data-i18n="wallet_disc_no_value" hidden>값 없음</span></div>
+          <div><label><input type="checkbox" id="dk4" /> <span data-term="attr4">미사용</span></label></div>
+          <div><label><input type="checkbox" id="dk5" /> <span data-term="attr5">미사용</span></label></div>
+        </div>
+        <p><button id="discExactBtn" type="button" class="btn-ghost" data-i18n="wallet_disc_exact_btn">출생연도를 내 값으로</button></p>
+        <div id="setRow">
+          <label><span data-i18n="wallet_set_label">집합 소속 조건</span>
+            <select id="setSlot">
+              <option value="" selected data-i18n="wallet_set_none">쓰지 않음</option>
+              <option value="0" data-term="attr0">출생연도</option>
+              <option value="1" data-term="attr1">국가</option>
+              <option value="2" data-term="attr2">예비 1</option>
+              <option value="3" data-term="attr3">예비 2</option>
+              <option value="4" data-term="attr4">미사용</option>
+              <option value="5" data-term="attr5">미사용</option>
+            </select></label>
+          <label><span data-i18n="wallet_set_members">허용 원소</span> <input id="setMembers" value="KR,JP,US,DE,FR" size="28" /></label>
+        </div>
+        <p>
+          <label><span data-i18n="wallet_min_age_label">나이 ≥</span> <input id="minAgeIn" value="19" size="3" /></label>
+          <button id="ageBtn" type="button" class="btn-ghost" data-i18n="wallet_age_btn">이 나이 조건으로 채우기</button>
+        </p>
+      </details>
+      <p>
+        <button id="claimBtn" type="button" class="btn-ghost" data-i18n="wallet_tx_claim_btn">Selective disclosure proof 보내기</button>
+        <button id="txBtn" disabled data-i18n="wallet_tx_btn">트랜잭션 보내기</button>
+      </p>
+      <p class="muted" data-i18n="wallet_tx_claim_hint"></p>
+      <div id="txVerdict"></div>
+      <p class="muted expert"><span data-term="proof">영지식 증명</span> — <span id="txProofInfo"></span></p>
+      <pre id="txLog" class="expert"></pre>
+      <p class="muted" data-i18n="wallet_tx_hash_hint">이 해시를 RP 페이지의 "해시로 요청"에 붙여 넣으면 승인 개봉을 시연할 수 있습니다.</p>
+    </section>
+
+    <section class="card expert" id="demoCard">
+      <h3 data-i18n="wallet_demo_title">시연: 비밀 바꾸기</h3>
+      <p class="desc" data-i18n="wallet_demo_desc">다음 발급(또는 다음 증명)에 쓸 salt·uid 를 메모리에서만 바꿉니다. 지갑 자체 검사를 건너뛰고 프로토콜이 거절하는 장면을 보입니다. 한 번 쓰면 풀립니다.</p>
+      <p><label>salt <input id="demoSalt" size="24" /></label> <button id="demoNewSalt" type="button" class="btn-ghost" data-i18n="wallet_demo_new_salt">새 난수</button>
+         <label>uid <input id="demoUid" size="8" /></label>
+         <select id="demoScope"><option value="issue" data-i18n="wallet_demo_scope_issue">다음 발급</option><option value="prove" data-i18n="wallet_demo_scope_prove">다음 증명</option></select>
+         <button id="demoApplyBtn" class="danger" data-i18n="wallet_demo_apply">적용</button> <button id="demoClearBtn" class="btn-ghost" data-i18n="wallet_demo_clear">원래대로</button></p>
+      <!-- 가짜 증명·가짜 서명(2026-10-14): 발급·증명은 정상으로 끝내고 보내는 복사본만 바꿔쳐 RP·체인이 거절하는 장면을 보인다. -->
+      <p><button id="demoFakeProofBtn" class="danger" data-i18n="wallet_demo_fake_proof_btn">가짜 증명으로 보내기(다음 로그인·트랜잭션)</button>
+         <button id="demoFakeSigBtn" class="danger" data-i18n="wallet_demo_fake_sig_btn">가짜 서명으로 보내기(다음 로그인·트랜잭션)</button></p>
+      <div id="demoVerdict"></div>
+    </section>
+
+    <!-- 보관 상태(스펙 2026-10-15 §4.2): 금고(IndexedDB 의 암호문 + 30분 잠금 해제)와 증명 키 내려받기. 에이전트 페이지의 #snapPanel 자리. -->
+    <section class="card" id="storagePanel">
+      <h3 data-i18n="user_storage_title">보관 상태</h3>
+      <p class="desc" data-i18n="user_storage_desc">등록 비밀과 세션키는 이 브라우저(IndexedDB)에 금고 비밀번호로 암호화해 둡니다. 서버로는 보내지 않습니다.</p>
+      <p><span id="vaultBadge" class="badge muted">-</span> <span id="vaultInfo" class="muted"></span></p>
+      <p>
+        <button id="lockBtn" type="button" class="btn-ghost" data-i18n="user_lock_btn" disabled>잠그기</button>
+        <button id="unlockBtn" type="button" data-i18n="user_unlock_btn" disabled>잠금 해제</button>
+        <button id="changePwBtn" type="button" class="btn-ghost" data-i18n="user_change_pw_btn" disabled>비밀번호 변경</button>
+      </p>
+      <p>
+        <button id="selfRevokeBtn" type="button" class="danger" data-i18n="wallet_self_revoke_btn" disabled>계정 자기 폐기</button>
+        <button id="wipeBtn" type="button" class="danger" data-i18n="user_wipe_btn">모두 지우기</button>
+      </p>
+      <p id="zkProgress" class="muted"></p>
+      <div id="storageVerdict"></div>
+    </section>
+  </main>
+
+  <!-- 잠금 해제 창 — 비밀이 필요한 동작이 423(locked)을 받으면 뜬다(ui.js·popup.js 의 withUnlock). 비밀번호는 읽자마자 입력칸에서 지운다. -->
+  <div id="unlockModal" class="modal-backdrop" hidden>
+    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="unlockTitle">
+      <h3 id="unlockTitle" data-i18n="user_unlock_title">잠금 해제</h3>
+      <p class="muted" data-i18n="user_unlock_hint">금고 비밀번호를 넣으면 30분 동안 이 브라우저의 모든 탭과 승인 창에서 열려 있습니다.</p>
+      <label><span data-i18n="user_vault_pw_label">금고 비밀번호</span> <input id="unlockPw" type="password" autocomplete="current-password" /></label>
+      <div id="unlockVerdict"></div>
+      <p class="modal-actions"><button id="unlockCancel" type="button" class="btn-ghost" data-i18n="user_unlock_cancel">취소</button> <button id="unlockGo" type="button" data-i18n="user_unlock_btn">잠금 해제</button></p>
+    </div>
+  </div>
+
+  <!-- 계정 자기 폐기 — 에이전트 페이지의 Snap 대화상자 자리. IdP 계정 비밀번호는 IdP 로 한 번 보낼 뿐 어디에도 남기지 않는다. -->
+  <div id="selfRevokeModal" class="modal-backdrop" hidden>
+    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="selfRevokeTitle">
+      <h3 id="selfRevokeTitle" data-i18n="wallet_self_revoke_btn">계정 자기 폐기</h3>
+      <label><span data-i18n="user_self_revoke_pw">IdP 계정 비밀번호</span> <input id="selfRevokePw" type="password" autocomplete="current-password" /></label>
+      <p class="modal-actions"><button id="selfRevokeCancel" type="button" class="btn-ghost" data-i18n="user_unlock_cancel">취소</button> <button id="selfRevokeGo" type="button" class="danger" data-i18n="wallet_self_revoke_btn">계정 자기 폐기</button></p>
+    </div>
+  </div>
+
+  <!-- 금고 비밀번호 변경 — 비밀은 새 키로 다시 암호화된다(vault.changePassword). -->
+  <div id="changePwModal" class="modal-backdrop" hidden>
+    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="changePwTitle">
+      <h3 id="changePwTitle" data-i18n="user_change_pw_btn">비밀번호 변경</h3>
+      <label><span data-i18n="user_change_pw_old">지금 비밀번호</span> <input id="changePwOld" type="password" autocomplete="current-password" /></label>
+      <label><span data-i18n="user_change_pw_new">새 비밀번호</span> <input id="changePwNew" type="password" autocomplete="new-password" /></label>
+      <label><span data-i18n="user_vault_pw2_label">확인</span> <input id="changePwNew2" type="password" autocomplete="new-password" /></label>
+      <div id="changePwVerdict"></div>
+      <p class="modal-actions"><button id="changePwCancel" type="button" class="btn-ghost" data-i18n="user_unlock_cancel">취소</button> <button id="changePwGo" type="button" data-i18n="user_change_pw_btn">비밀번호 변경</button></p>
+    </div>
+  </div>
+
+  <!-- 스크립트는 번들 하나다(mode3/user/user.js → /dist/user.js). 팝업 모드(?authorize=1)의 화면 전환도 그 첫 줄이 한다. -->
+  <script type="module" src="/dist/user.js"></script>
+</body>
+</html>
