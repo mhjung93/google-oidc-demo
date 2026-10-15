@@ -146,10 +146,11 @@ try {
     assert.equal((await cia.adminGet('/cia/rps')).body.rps.find((e) => e.arid === r.body.arid).status, 'denied');
   });
 
-  await t('register: auid 등록 → 201 { slot, schemaHash }, 속성·profile 은 없다(D15), 계정 상태에도 attrs 없음', async () => {
+  await t('register: auid 등록 → 201 { slot, schemaHash, uid, provider }, 속성·profile 은 없다(D15), 계정 상태에도 attrs 없음', async () => {
     user = await freshWallet();
     assert.equal(user.slot, 0); assert.equal(user.auid, await auidOf({ uid, s_u: user.s_u }));
-    assert.deepEqual(Object.keys(user.body).sort(), ['schemaHash', 'slot'], '등록 응답은 slot·schemaHash 뿐이다');
+    assert.deepEqual(Object.keys(user.body).sort(), ['provider', 'schemaHash', 'slot', 'uid'], '등록 응답은 slot·schemaHash + uid·provider(OIDC 래퍼 2026-10-16)');
+    assert.equal(user.body.uid, '12345'); assert.equal(user.body.provider, 'demo');
     const acct = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === '12345');
     assert.equal(acct.attrs, undefined); assert.equal(acct.profile, undefined); assert.equal(acct.activeCf_u, null); assert.equal(acct.slot, 0);
   });
