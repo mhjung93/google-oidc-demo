@@ -15,7 +15,7 @@
 - 응답·문서·주석·커밋 메시지는 한글. 기존 파일의 문체·용어(IdP·RP·사용자)를 지킨다.
 - **회로·토큰·컨트랙트·RP 검증기·증명 경로 불변.** `lib/mode3_wallet.js`·`lib/mode3_idp_proof.js`·`lib/mode3_credential.js`·`mode3_wallet_agent.js`·Snap 은 고치지 않는다.
 - **uid 유도는 `uid = SHA-256(provider ‖ "|" ‖ sub) mod 2^250`(10진 문자열) — 토큰의 `iss` 를 쓰지 않는다**(Google `iss` 두 형태). 검증은 `iss ∈ { issuer, issuer 에서 "https://" 를 뗀 것 }` 를 허용한다.
-- **등록 토큰 nonce = `"reg:" + SHA-256(auid ‖ "|" ‖ pk_u.x ‖ "|" ‖ pk_u.y)`(소문자 hex 64자, 각 값은 10진 문자열 정규형)**; 폐기 토큰 nonce = `"revoke:" + 32바이트 임의 hex`. IdP 는 등록에서 nonce 를 다시 계산해 **정확 일치**를 요구하고, 폐기에서는 접두어 `revoke:` 와 hex 64자 형식만 본다. 접두어가 다른 토큰은 거절(400 `oidc_nonce_mismatch`).
+- **등록 토큰 nonce = `"reg:" + SHA-256(pk_u.x ‖ "|" ‖ pk_u.y)`(소문자 hex 64자, 각 값은 10진 문자열 정규형; auid 는 넣지 않는다 — Task 1 R-A, 스펙 D4 수정)**; 폐기 토큰 nonce = `"revoke:" + 32바이트 임의 hex`. IdP 는 등록에서 nonce 를 다시 계산해 **정확 일치**를 요구하고, 폐기에서는 접두어 `revoke:` 와 hex 64자 형식만 본다. 접두어가 다른 토큰은 거절(400 `oidc_nonce_mismatch`).
 - IdP 는 `sub`·이메일을 저장하지 않는다. `accounts[uid].provider` 만(`'google'` | `'demo'`). 데모 계정 경로(`{ uid, pwd }`)는 바뀌지 않는다.
 - IdP env: `MODE3_OIDC_ISSUER`(기본 `https://accounts.google.com`), `MODE3_OIDC_JWKS_URL`(기본 `https://www.googleapis.com/oauth2/v3/certs`), `MODE3_OIDC_CLIENT_ID`(기본 `process.env.GOOGLE_CLIENT_ID`), `MODE3_OIDC_PROVIDER`(기본 `google`). 클라이언트 ID 가 없으면 `oidc.enabled=false` 이고 `id_token` 요청은 503 `oidc_disabled`.
 - 새 사유(`strings.js` reasons + `tests/test_mode3_demo_strings.js` REASONS): `oidc_disabled`(503, where aa), `oidc_invalid`(401, aa), `oidc_nonce_mismatch`(400, aa), `oidc_unavailable`(502, aa), `gsi_unavailable`(wallet), `gsi_origin`(wallet). 새 ui 키는 `user_google_*`·`rp_google_*`·`account_google_*`.
@@ -105,7 +105,7 @@ process.exit(fails ? 1 : 0);
 // lib/mode3_oidc_nonce.js — OIDC 래퍼의 순수 유도 함수(스펙 2026-10-16 D3·D4). IdP(cia.js)와 브라우저 사용자 페이지가 같이 쓴다(jose 를 import 하지 않는다 —
 // 브라우저 번들은 node:crypto 를 lib/browser/node_crypto.js shim 으로 받는다).
 //   uid        = SHA-256(provider|sub) mod 2^250 — 토큰의 iss 는 쓰지 않는다(Google 은 iss 를 두 형태로 낸다).
-//   등록 nonce = "reg:" + SHA-256(auid|pk_u.x|pk_u.y) — 토큰을 이 키 재료에 묶는다(가로챈 토큰으로 다른 키를 등록하지 못하게).
+//   등록 nonce = "reg:" + SHA-256(pk_u.x|pk_u.y) — 토큰을 이 공개키에 묶는다(가로챈 토큰으로 다른 키를 등록하지 못하게; auid 는 sig_reg 가 결속).
 //   폐기 nonce = "revoke:" + 32바이트 임의 hex — 등록 토큰과 목적이 섞이지 않게 접두어만 다르다(재사용 = 같은 계정 재폐기, 멱등).
 import { createHash, randomBytes } from 'node:crypto';
 import { SCALAR_MAX } from './mode3_credential.js';
