@@ -14,6 +14,7 @@ Mode 2 데모(:3000/:4000/:5001)와 **공존**한다. 포트·상태 파일이 �
 | 폐기 체인 노드 (선택, V10) | :8546 | `HARDHAT_CHAIN_ID=31338 npx hardhat node --port 8546` | — — 아래 "폐기 체인을 별도 노드로" 절. 기본 데모는 :8545 하나에 로그와 거울을 함께 둔다 |
 | IdP | :4100 | `node cia.js` | `cia_state.json`, `cia_keys.json` |
 | 지갑 에이전트 | :5100 | `node mode3_wallet_agent.js` | `mode3_wallet_state.json` |
+| 사용자 페이지(web 모드, 선택) | :5100 | `npm run user:build && node mode3_user_static.js` | — (비밀은 브라우저 IndexedDB 에 암호문) — 에이전트 대신 띄운다 |
 | RP | :3100 | `node mode3_rp.js` | `mode3_rp_registration.json`, `mode3_rp_logins.jsonl` |
 | RP #2 (선택) | :3101 | `bash scripts/run_mode3_rp2.sh` | `mode3_rp2_registration.json`, `mode3_rp2_logins.jsonl` — 아래 "두 번째 RP" 절 |
 | Snap serve (`snap` 모드에만) | :8082 | `cd snap-mode3 && npm run serve` | — (비밀은 MetaMask 안에) |
@@ -821,6 +822,125 @@ IdP 의 약속이다:
 - 로컬 Snap 이라 **Flask 전용**이고 npm 게시·감사는 범위 밖이다.
 - 지갑 페이지 오리진이 `WALLET_ORIGINS` 두 값으로 고정이다(위 준비 5).
 
+## 브라우저 전용 사용자 페이지 (web 모드, 2026-10-15)
+
+설계 `docs/superpowers/specs/2026-10-15-mode3-browser-user-page-design.md`, 구현 계획
+`docs/superpowers/plans/2026-10-15-mode3-browser-user-page.md`(스펙과 다른 결정은 그 계획의 "스펙 대비 결정 R1~R12" 가 우선한다).
+Snap·Node 에이전트 설치 없이 **브라우저만**으로 사용자 쪽(등록·로그인 팝업·재검증·세션 요청·트랜잭션·선택 공개·세션 폐기)을 돌리는
+세 번째 경로다 — 비밀은 이 브라우저의 IndexedDB 에 비밀번호로 암호화해 두고, 가스는 RP 의 릴레이가 댄다. 회로·토큰·컨트랙트·IdP
+라우트의 의미는 `file`·`snap` 모드와 같다.
+
+### 구성
+
+지갑 자리에 에이전트(`mode3_wallet_agent.js`) 대신 정적 서버 `node mode3_user_static.js` 를 같은 포트(:5100)에 띄운다 — 포트가
+같아 둘을 동시에 띄울 수 없다. env 이름은 에이전트와 같다: `MODE3_CIA_URL`, `MODE3_RP_ORIGIN`, `CIA_RPC_URL`,
+`MODE3_REV_CHAIN_RPC`, `CIA_LOG_ADDRESS`, `MODE3_MIRROR_ADDRESS`, `MODE3_TTL_BLOCKS`, `MODE3_HEIGHT_GRID`, 선택
+`MODE3_PK_CIA_X`/`MODE3_PK_CIA_Y`, `MODE3_RELAY_PATH`.
+
+정적 서버의 라우트:
+
+| 경로 | CORS | 설명 |
+|---|---|---|
+| `GET /` | — | `mode3/user/index.html` |
+| `GET /dist/*` | — | `npm run user:build` 산출물(esbuild 번들, 커밋하지 않음) |
+| `GET /common/*` | — | `mode3/common/`(strings.js 등) |
+| `GET /zk/:name` | — | 회로 산출물 6개(`pi_cred`·`pi_idp` 의 wasm·zkey·vkey) — `Cache-Control: immutable` |
+| `GET /user/config` | 같은 오리진만 | 페이지 부팅 설정(walletOrigin·ciaUrl·rpcUrl·chainId·logAddress·mirrorAddress·rpOrigins 등) |
+| `GET /wallet/config` | RP 오리진 | `{ secrets: 'web', snapId: null, walletOrigin, rpcUrl, chainId }` — 비밀 없음 |
+| `GET /mode3/health` | RP·IdP 오리진 | 존재 신호(등록·자격증명·세션 수 등 6개) — 위 "상태 패널" 절과 같은 형식 |
+| `POST /wallet/presence` | 같은 오리진만 | 사용자 페이지가 `health` 에 실릴 불리언 2개·정수 4개를 알린다(재시작하면 초깃값) |
+
+**COOP/COEP 헤더를 내지 않는다**(R1) — `same-origin`/`require-corp` 는 RP 가 연 팝업의 `window.opener` 를 끊어 아래 팝업
+프로토콜이 깨진다. snarkjs·ffjavascript 의 브라우저 빌드는 `SharedArrayBuffer` 없이도 워커로 멀티스레드가 된다.
+
+IdP(`cia.js`)는 사용자 오리진(`MODE3_WALLET_AGENT_ORIGIN`, 기본 `http://127.0.0.1:5100`)에만 CORS 를 연다 —
+`POST`+`OPTIONS` `/cia/register`·`/cia/issue`·`/cia/slot`·`/cia/revoke`·`/cia/account/self_revoke`, `GET`
+`/cia/public_keys`·`/cia/attr_schema`. 관리자 헤더가 필요한 라우트·관리자 전용 라우트는 CORS 가 없다(그대로).
+
+RP(`mode3_rp.js`)는 사용자 오리진에만 `POST /api/mode3/relay`·`GET /api/mode3/relay/:txHash` 를 연다 — 아래 "릴레이" 절.
+
+### 기동 순서
+
+```
+npx hardhat node                       # 이미 떠 있으면 생략
+node cia.js                            # :4100
+npm run user:build                     # mode3/user/dist 번들(esbuild) — 소스를 바꿀 때마다 다시
+node mode3_user_static.js              # :5100 (npm run user:static 도 같다) — 에이전트 대신
+node mode3_rp.js                       # :3100
+```
+
+### 금고(비밀 보관)
+
+등록할 때 **이 브라우저용 금고 비밀번호**를 정한다(8자 이상 권장). 비밀번호 → PBKDF2(SHA-256, 310,000회, salt 16바이트) →
+AES-GCM-256 키이고, 이 키로 비밀(`s_u`·`sk_u`·`blind_u`·세션 개인키)만 암호문으로 묶는다 — 그 밖의 등록·속성·세션 정보는
+평문으로 IndexedDB(`mode3-user`)에 있다. 잠금 해제 키는 추출 불가(`extractable:false`) `CryptoKey` 로 IndexedDB 에 두고
+30분(`UNLOCK_TTL_MS`) 뒤 자동으로 잠기며, "잠그기" 버튼으로 바로 잠글 수도 있다. 팝업과 메인 탭이 이 잠금 상태를 공유한다(R3).
+
+- **비밀번호를 잊으면 복구할 수 없다.** IdP 에는 uid 가 그대로 남아 있어 재등록이 409 로 막힌다 — "하지 말 것 / 재시연" 의
+  재시연 세트가 유일한 출구다.
+- 기존 금고가 있는 상태에서 등록을 다시 시도하면, 넣은 비밀번호가 기존 금고 비밀번호와 다르면 `bad_password` 로 막힌다.
+- **보안 메모(R3)**: 비밀 보관의 경계가 Snap(확장 샌드박스)에서 페이지(IndexedDB)로 내려온다 — XSS 한 건이면 비밀이
+  유출되고, 이 사이트의 데이터를 지우면 비밀도 함께 사라지며, 해제돼 있는 동안의 키는 같은 오리진의 어떤 스크립트도 쓸 수
+  있다. 아래 "한계" 절 참고.
+
+### 팝업 프로토콜 (`?authorize=1`)
+
+사용자 페이지를 `?authorize=1` 로 열면 준비되는 즉시 `window.opener` 에 `{ type: 'mode3-authorize-ready' }` 를 보낸다(스펙
+§4.2). RP 페이지는 이 신호를 받은 뒤 아래 5종 중 하나를 `postMessage` 로 보내고, 팝업은 `${요청 type}-result` 로 답한다.
+팝업은 **`window.opener` 가 보낸 메시지만** 받는다.
+
+| 요청 `type` | 화면 | 응답 요지 |
+|---|---|---|
+| `mode3-config` | 없음 | RP 오리진만 실린 공개 설정 — **`uid` 를 싣지 않는다**(R5) |
+| `mode3-precheck` | 없음 | 인증서·팩토리 검증(동의 창 전) |
+| `mode3-authorize` | 승인·거절 버튼 | `reauth:true` 가 오면 승인 창 없이 세션·인증서만 확인하고 `{ ok:true, reauth:true }`(R12) |
+| `mode3-revalidate` | 캐시 히트면 화면 없음 | `skipSync:true` 면 저장된 증명 캐시를 그대로 재제출 |
+| `mode3-request` | 승인 버튼 | 세션 서명 |
+
+`ev.origin` 이 요청에 적힌(인증서의) 오리진과 다르면 `origin_mismatch`, 내 세션이 아닌 RP 가 요청하면 `no_session` 으로
+거절한다.
+
+### 릴레이 (`POST /api/mode3/relay`)
+
+사용자 페이지는 `Mode3Wallet.execute` calldata 를 만들기만 하고, RP 의 릴레이어 계정이 가스를 내고 대신 보낸다
+(`{ to, data }`, `value` 는 0 으로 고정). 검사 순서:
+
+1. 활성 — IdP 승인·팩토리 배포 전이면 503 `relay_inactive`
+2. 본문 형식 — `value≠0`·주소/hex 형식 아님 → 400 `relay_bad_calldata`(`detail: 'value'|'format'`)
+3. `execute` 선택자·공개 입력 33개·`pub[1]`(`arid`)이 이 RP 인지 → 400 `relay_bad_calldata`(`detail: 'selector'|'arid'`)
+4. `to === factory.computeAddress(pub[0])`(`pub[0]` 이 PPID) 가 아니면 400 `relay_bad_target`
+5. 같은 `to` 로 분당 `MODE3_RELAY_RATE`(기본 10) 초과면 429 `relay_rate_limited`
+6. 그 주소에 코드가 없으면 릴레이어가 `factory.deploy(ppid)` 를 먼저 보낸다
+7. `estimateGas` 가 되돌려지거나(`detail` 에 컨트랙트 오류 이름 — `NonceMismatch`·`InvalidProof`·`BadSignature` 등) 추정 가스가
+   `MODE3_RELAY_GAS_CAP`(기본 1,200,000)을 넘으면 400 `relay_gas`
+8. 전송 → `{ txHash, deployed, deployTxHash }`. 진행 상태는 `GET /api/mode3/relay/:txHash` 로 본다.
+
+CORS 는 사용자 오리진만 연다.
+
+### 한계
+
+- **비밀 격리가 Snap(확장 샌드박스)에서 페이지(IndexedDB)로 내려간다.** XSS 한 건이면 비밀이 유출되고, 이 사이트의 데이터를
+  지우면(사용자가 지우든, 브라우저가 지우든) 비밀도 함께 사라지며, 해제 중인 키는 같은 오리진 스크립트가 쓸 수 있다.
+- **릴레이가 검열할 수 있다.** RP 가 `/api/mode3/relay` 요청을 거부하거나 지연시킬 수 있고, 사용자 페이지로서는 그것을
+  강제할 방법이 없다.
+- **릴레이가 증명을 검증하기 전에 계정을 배포한다.** 위 6번(배포)이 7번(가스 추정 — 여기서 컨트랙트가 증명·서명을 본다)보다
+  앞이라, PPID 를 바꿔 보내면 매번 다른 `to` 가 나와 5번의 속도 제한을 우회하면서 릴레이어에게 배포 가스를 떠안길 수 있다.
+  데모에서는 세 서버가 `127.0.0.1` 에 묶여 있고 hardhat 가스라 무해하지만, 실제 네트워크라면 치명적이다. 후속: 배포 전
+  오프체인 Groth16 검증, 또는 배포 자체에 전역 한도.
+- **web 모드는 팩토리·검증자 참조 코드 대조(`verifyReferenceCode`)를 생략한다** — `file`/`snap` 모드의 `bad_factory`
+  (`detail: factory_code_mismatch`/`verifier_code_mismatch`)에 해당하는 검사가 없다.
+- `auid_s`·`arid_s` 의 calldata 노출은 그대로다(위 "수용한 한계"의 "설계 노출" 항목과 같은 결정 — web 모드가 새로 만들지도,
+  고치지도 않는다).
+- **두 탭을 동시에 열면** read-modify-write 경쟁으로 한쪽의 쓰기가 유실될 수 있다.
+- **증명 캐시는 세션당 1개**다 — 선택 공개 조건이 있는 트랜잭션을 보낸 뒤 재검증은 기본 π(조건 없는 증명)로 되돌아간다.
+
+### 다른 기계에서 web 모드로
+
+위 "다른 기계에 설치" 절의 `build/mode3/` 묶음(`scripts/pack_mode3_build.sh`)과 `npm install` 에 더해 `npm run user:build`
+한 번이 필요하다(esbuild devDependency). 브라우저는 최신 Chrome·Edge·Firefox 면 된다 — Snap·MetaMask 는 필요 없다.
+회로 산출물은 Cache API(`mode3-zk-v1`)에 캐시되므로, `build/mode3` 를 다시 만들었다면 사용자 페이지의 "모두 지우기" 버튼이나
+브라우저의 이 사이트 데이터 삭제로 캐시를 비운 뒤 새로고침한다.
+
 ## 엔드포인트 (2026-09-22 선택 공개, 2026-09-23 집합 소속 술어 V7 로 바뀌거나 추가된 것)
 
 | 메서드/경로 | 프로세스 | 설명 |
@@ -871,6 +991,15 @@ V11(그림 프로토콜, 2026-10-12)로 바뀌거나 추가된 것:
 | `POST /cia/issue` | IdP | 본문 `{ uid, auid_s, arid_s, C_u_pt, C_s_pt, chainid, allowAgent, max_height, proof_idp, sig_u }` — `(C_u, C_s, π_IdP, sig_u)`. `C_u` 가 바뀌면(첫 로그인·속성 변경 뒤) 등록부 슬롯을 갱신·게시한 뒤 토큰을 낸다 — 옛 `/cia/user_cred` 를 흡수했다(D11) |
 | `POST /api/mode3/challenge` | RP | 응답에 `r_rp`(250비트 난수, D6) 가 더해진다 — 세션 가명·`C_s` blind 의 재료, IdP 에는 보내지 않는다 |
 
+web 모드(브라우저 전용 사용자 페이지, 2026-10-15)로 새로 생긴 것:
+
+| 메서드/경로 | 프로세스 | 설명 |
+|---|---|---|
+| `POST /api/mode3/relay` | RP | `{ to, data }`(value 0 고정) — 사용자 페이지가 만든 `execute` calldata 를 릴레이어가 대신 보낸다. 위 "릴레이" 절의 검사 8단계, 응답 `{ txHash, deployed, deployTxHash }`. CORS 는 사용자 오리진만 |
+| `GET /api/mode3/relay/:txHash` | RP | 영수증 조회 — 아직이면 `{ ok:true, pending:true }`, 끝나면 `{ ok:true, pending:false, status, blockNumber, gasUsed, to }` |
+| `GET /user/config` | 사용자 정적 서버 | 같은 오리진만 — 페이지 부팅 설정(비밀 없음) |
+| `POST /wallet/presence` | 사용자 정적 서버 | 같은 오리진만 — `GET /mode3/health` 에 실릴 불리언 2개·정수 4개(`registered`·`hasCred`·`sessions`·`rpCount`·`txs`·`disclosedTxs`) |
+
 ## RP 거절 사유 (2026-09-23 점검 C-1)
 
 "화면 문구" 는 `mode3/common/strings.js` 의 `reasons[코드].ko.title`(결과 카드 제목)이다 — 원인·조치가 그 아래 두 줄로
@@ -893,6 +1022,26 @@ V11(그림 프로토콜, 2026-10-12)로 바뀌거나 추가된 것:
 | `user_cred_failed` | IdP 가 π_IdP 를 거절했습니다 | 지갑 `POST /wallet/login` | 502 | V11 — IdP 의 `/cia/issue` 가 π_IdP 를 거절했다(`bad_idp_proof`). 시연 카드(설계 §8.3)로 salt·uid 를 바꾼 경우(각본 11)가 흔한 원인 — "원래대로" 로 덮어쓰기를 풀고 다시 로그인한다 |
 | `demo_proof_failed` | 증명 생성 실패(시연) | 지갑 `POST /wallet/login`·`/wallet/revalidate`·`/wallet/tx`(`/tx/prepare`) | 409 | V9 — 시연 카드의 증명 덮어쓰기(범위 `prove`)가 걸린 채 새로 증명해야 했다 — 서명된 자격증명·등록부 리프와 어긋난 witness 라 회로가 거절했다(각본 11). 덮어쓰기를 풀고 다시 시도한다 |
 | `slot_failed` | 슬롯 번호를 받지 못했습니다 | 지갑 `POST /wallet/login` | 502 | V9 — 슬롯 없는 옛 등록이 IdP 의 `/cia/slot` 조회에 실패했다 |
+
+web 모드(브라우저 전용 사용자 페이지, 2026-10-15)로 새로 생긴 사유 — RP 의 릴레이:
+
+| `reason` | 화면 문구 | 어디서 | 상태 코드 | 뜻 |
+|---|---|---|---|---|
+| `relay_inactive` | RP 의 릴레이가 아직 동작하지 않습니다 | `POST /api/mode3/relay` | 503 | RP 가 IdP 의 승인·활성화 전이라 검증기나 계정 팩토리가 없다 |
+| `relay_bad_calldata` | 릴레이가 트랜잭션 데이터를 거절했습니다 | `POST /api/mode3/relay` | 400 `{detail}` | `value≠0`(`detail:'value'`), `execute` 형식·공개 입력 33개가 아님(`'selector'`), 또는 공개 입력의 `arid` 가 이 RP 가 아님(`'arid'`), 주소/hex 형식이 아님(`'format'`) |
+| `relay_bad_target` | 릴레이가 받는 주소를 거절했습니다 | `POST /api/mode3/relay` | 400 | `to` 가 calldata 의 PPID(`pub[0]`)로 이 RP 팩토리가 계산한 주소와 다르다 — 다른 RP 세션이거나 calldata 조작 |
+| `relay_rate_limited` | 릴레이 요청이 너무 잦습니다 | `POST /api/mode3/relay` | 429 | 같은 계정 주소(`to`)로 분당 `MODE3_RELAY_RATE`(기본 10) 초과 |
+| `relay_gas` | 릴레이의 가스 추정이 실패했습니다 | `POST /api/mode3/relay` | 400 `{detail}` | (필요하면 계정 배포 뒤) `estimateGas` 가 되돌려졌다(`detail` 이 컨트랙트 오류 이름 — `NonceMismatch`·`InvalidProof`·`BadSignature` 등) 또는 추정 가스가 `MODE3_RELAY_GAS_CAP`(기본 1,200,000)을 넘었다 |
+
+같은 web 모드로 새로 생긴 사유 — 사용자 페이지(`mode3/user`)와 승인 팝업(postMessage 결과, HTTP 상태 코드 없음):
+
+| `reason` | 화면 문구 | 어디서 | 뜻 |
+|---|---|---|---|
+| `locked` | 사용자 금고가 잠겨 있습니다 | 사용자 페이지 — 등록 비밀·세션키가 필요한 동작 | 해제 뒤 30분이 지났거나 "잠그기" 를 눌렀거나 잠금 해제 창을 취소했다 |
+| `bad_password` | 금고 비밀번호가 맞지 않습니다 | 사용자 페이지 — 금고 등록·잠금 해제 | 넣은 비밀번호로 금고가 열리지 않는다(확인값 복호화 실패) — 기존 금고가 있는 상태의 재등록도 같은 검사를 거친다 |
+| `zk_assets_unavailable` | 증명 키를 쓸 수 없습니다 | 사용자 페이지 — 증명 생성 | `/zk/*` 에서 회로 파일(wasm·zkey·vkey)을 못 받았거나 받은 zkey·vkey 가 짝이 아니다 |
+| `storage_unavailable` | 이 브라우저의 저장소를 쓸 수 없습니다 | 사용자 페이지 — 기동 | IndexedDB 를 열지 못했다(사이트 데이터 차단·시크릿 창 제한·미지원 브라우저) |
+| `origin_mismatch` | 요청을 보낸 오리진이 맞지 않습니다 | 승인 팝업 — `mode3-config`·`mode3-precheck`·`mode3-authorize`·`mode3-revalidate`·`mode3-request` | 메시지 오리진이 요청에 적힌(인증서의) RP 오리진과 다르거나, 모르는 RP 가 설정을 물었다 |
 
 RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는데(`headMaxAgeMs`), 그 창 동안은 root 나이(b′) 판정도 **캐시 시점 값에 얼어붙는다** — 실시간 게시 지연을 그동안은 못 본다.
 
@@ -988,6 +1137,8 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
   `cia_keys.json`은 그대로 둬도 된다 — 게시 서명이 로그 주소를 덮으므로 같은 키로 재배포해도 옛 로그의 게시를 새 로그에 재생할 수 없다.
   **`snap` 모드로 시연 중이었다면 지갑 페이지의 "Snap 초기화"(`reset`)도 함께 누른다** — 등록 비밀은 상태 파일이 아니라 MetaMask 안에
   있어서 파일만 지우면 Snap 쪽에 옛 등록이 남고 다음 "등록" 이 `already_registered` 로 막힌다.
+  **web 모드로 시연 중이었다면 사용자 페이지의 "모두 지우기"(또는 127.0.0.1:5100 의 사이트 데이터 삭제)도 함께 한다** —
+  Snap 초기화에 해당한다.
 - **등록 직후 Snap 저장 실패 복구 절차(2026-09-23 점검 주목 Minor)**: `snap` 모드에서 `POST /wallet/register` 가 201 로 이미
   끝난 뒤(에이전트 상태 파일에는 등록이 남았다) 탭이 닫히거나 MetaMask 를 거절해 Snap 쪽 `storeRegistration` 이 실패하면
   Snap 은 `sk_u`·`attrs` 가 빈 `registration_incomplete` 로 굳는다. **부분 복구는 안 된다** — "Snap 초기화" 만 하거나 상태
@@ -1031,13 +1182,20 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
   강제)가 전 구간이다.
   `tests/test_mode3_demo_full.mjs`(2026-10-03)는 **두 체인·두 RP** 전 구간 각본이다 — :8546 에 폐기 체인 노드(chainId 31338)를
   스스로 띄우고(이미 떠 있으면 chainId 만 확인하고 건드리지 않는다) 끝나면 끈다. 격리 헬퍼의 `twoChains`·`extraRps` 옵션을 쓴다.
+  **web 모드(2026-10-15)** 의 `chain` 테스트 넷은 `tests/test_mode3_user_static.mjs`(정적 서버 라우트 — `/user/config`·
+  `/wallet/config`·`/mode3/health`·`/wallet/presence`·`/zk/*`), `tests/test_cia_cors.mjs`(IdP 가 사용자 오리진에 연 CORS 7
+  라우트), `tests/test_mode3_rp_relay.mjs`(`POST /api/mode3/relay` 검사 8단계와 `relay_*` 사유), `tests/test_mode3_user_core.mjs`
+  (`mode3/user/core` — 메모리 kv·진짜 snarkjs 로 등록·로그인·재검증·세션 요청·트랜잭션을 Node 에서)다. 정적 서버·코어 테스트는
+  esbuild 번들을 스스로 만든다.
 - `bash scripts/run_tests.sh browser` — 팝업 로그인·`needs_consent` 재승인·MetaMask 트랜잭션을 실제 페이지로 돌린다
   (`tests/test_mode3_browser.mjs`). `chain` 과 같은 조건에 더해 **설치된 Google Chrome(또는 Chromium)** 이 필요하다 —
   Playwright 가 `channel: 'chrome'` 으로 띄우고, `window.ethereum` 을 스텁해 진짜 `snap-mode3/src/index.js` 의 `onRpcRequest` 를
   물린다. 그래서 `chain` 과 그룹을 나눴다. **Snap 경로(`snap-mode3/`, `mode3/wallet.html`, `mode3/rp.html`, 에이전트의 snap 분기)를
   건드렸으면 이 그룹도 돌린다.** 같은 그룹의 `tests/test_mode3_tour.mjs` 는 **체험 모드와 상태 점**을 본다 —
   RP 를 `?tour=1` 로 열면 로그인이 잠기고, 지갑에서 등록하면 다음 폴링에 풀리며 말풍선이 3→4단계로 옮겨 가고,
-  격리 IdP 를 내리면 IdP 점이 빨강·지갑 점이 노랑이 되는 것까지(file 모드, MetaMask 없이).
+  격리 IdP 를 내리면 IdP 점이 빨강·지갑 점이 노랑이 되는 것까지(file 모드, MetaMask 없이). **web 모드**는 같은 그룹의
+  `tests/test_mode3_user_web.mjs` — 각본 A(등록·로그인 팝업·재검증·세션 요청·트랜잭션·selective disclosure proof·세션 폐기, 7개)와
+  각본 B(잠금·시연 거절·오리진 위조·두 번째 RP·증명 키 캐시·모두 지우기, 7개)를 실제 Chrome 에서 돈다. 번들을 스스로 만든다.
 - `node scripts/screenshot_mode3.mjs` — 테스트는 아니고 **화면 캡처**다. `browser` 그룹과 같은 전제(:8545,
   `build/mode3`, Chrome)로 격리 스택을 file 모드로 띄워 네 페이지를 ko·en·전문가(+좁은 창)로 찍는다. 기본 출력은
   `results/mode3_ux_20260924/`(`--out` 으로 바꾼다). **`--tour`** 를 주면 대신 체험 모드 네 장면(RP 잠김·지갑
@@ -1053,6 +1211,10 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
   동의, `chain`), `tests/test_mode3_demo_stack.mjs` 각본 4″(전 구간), `tests/test_pi_cred_witness.mjs`(회로 ④′, `circuit`)로
   고정돼 있다.
 - `bash scripts/run_tests.sh unit` 의 `tests/test_mode3_cia_state.js` — 상태 v12 기동 거부(v11 이하 상태 파일은 이행하지 않는다)를 커버한다.
+- `bash scripts/run_tests.sh unit` 의 web 모드(2026-10-15) 셋 — 외부 의존 없이 브라우저 공통 코드를 Node 에서 본다:
+  `tests/test_browser_sha256.js`(순수 JS SHA-256·`node:crypto` shim, 오라클은 진짜 `node:crypto`), `tests/test_secret_box.mjs`
+  (금고 암복호 — PBKDF2 310,000회 + AES-GCM-256, WebCrypto), `tests/test_browser_node_shims.js`(번들용 `node:fs`·`node:path`·
+  `node:url` shim).
 - 개봉은 `tests/test_cia_opening.mjs`(IdP 단독)와 `test_mode3_demo_stack.mjs` 시나리오 9(전 구간)로 고정돼 있다.
 - 등록부(V9, 2026-10-01)는 단위 셋 `tests/test_mode3_registry.js`(슬롯 트리 라이브러리)·`tests/test_mode3_credential_v11.js`·
   `tests/test_pi_idp_witness.mjs`·`tests/test_mode3_wallet_lib.js`(등록 서명·auid·π_IdP 등)·`tests/test_mode3_cia_state.js`
