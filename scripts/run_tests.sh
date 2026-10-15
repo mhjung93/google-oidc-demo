@@ -49,6 +49,7 @@ UNIT=(
   tests/test_mode3_stack_judge.js
   tests/test_mode3_registry.js
   tests/test_mode3_attr_schema.mjs
+  tests/test_browser_sha256.js
 )
 
 CIRCUIT=(
