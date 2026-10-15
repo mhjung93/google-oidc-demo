@@ -38,7 +38,7 @@
 | `cia.js` | `/cia/register`·`/cia/account/self_revoke` 의 `id_token` 분기, `/cia/public_keys.oidc`, env 4개 | 3 |
 | `tests/helpers/isolated_mode3_stack.mjs` | 옵션 `oidc`(격리 IdP 로 전달), `walletHost`(`'127.0.0.1'` 기본, `'localhost'` 가능 — 사용자 오리진을 세 서버에 일관되게) | 4 |
 | `mode3/user/core/user_core.js` | `prepareRegistration()`, `completeRegistration()`, `selfRevokeWithIdToken()`, `status().provider`, 내부 `registerWith()` 공통화 | 4 |
-| `mode3/user/gsi.js` | GIS 로드·버튼 렌더·토큰 콜백(스텁 감지) | 5 |
+| `mode3/common/gsi.js` | GIS 로드·버튼 렌더·토큰 콜백(스텁 감지) — `/common` 으로 두 서버(정적·IdP)가 함께 낸다 | 5 |
 | `mode3/user/index.html`·`ui.js`·`user.js`·`popup.js` | Google 등록·Google 자기 폐기·팝업 신원 줄·미등록 안내 | 5 |
 | `mode3_rp.js`·`mode3/rp.html` | `rp_info.oidc` 중계, 모달 Google 버튼 → `startIdpLogin({ provider:'google' })` | 5 |
 | `mode3/cia_account.html` | Google 로 자기 폐기 | 5 |
