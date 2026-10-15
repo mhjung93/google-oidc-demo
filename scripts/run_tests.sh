@@ -50,6 +50,7 @@ UNIT=(
   tests/test_mode3_registry.js
   tests/test_mode3_attr_schema.mjs
   tests/test_browser_sha256.js
+  tests/test_secret_box.mjs
 )
 
 CIRCUIT=(
