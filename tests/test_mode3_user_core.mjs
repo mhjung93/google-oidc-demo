@@ -38,6 +38,14 @@ try {
     assert.equal((await core.login(loginBody(await challenge()), { verifiedOrigin: info.origin })).body.reason, 'not_registered');
     assert.deepEqual(await core.health(), { registered: false, hasCred: false, sessions: 0, rpCount: 0, txs: 0, disclosedTxs: 0 });
   });
+  await t('등록 재시도: 첫 시도가 IdP 401 로 실패해도 금고는 남는다 — 다른 금고 비밀번호로 재시도하면 400 bad_password, 같은 비밀번호면 다음 케이스가 201', async () => {
+    const r1 = await core.register({ uid: '12345', pwd: 'wrong-idp-pw', profile: { birthYear: '1990', country: 'KR' }, vaultPassword: PW });
+    assert.ok(r1.status === 401 || r1.status === 502, j(r1)); assert.equal(r1.body.reason, 'register_failed');
+    await core.vault.refresh(); assert.equal(core.vault.hasVault(), true);
+    const r2 = await core.register({ uid: '12345', pwd: 'password123', profile: { birthYear: '1990', country: 'KR' }, vaultPassword: 'other-pw' });
+    assert.equal(r2.status, 400, j(r2.body)); assert.equal(r2.body.reason, 'bad_password');
+    assert.equal((await core.status()).body.registered, false);
+  });
   await t('등록: 금고를 만들고 IdP 에 등록 — registration 은 평문(공개 부분), secrets 는 암호문, 비밀은 kv 어디에도 평문으로 없다', async () => {
     const r = await core.register({ uid: '12345', pwd: 'password123', profile: { birthYear: '1990', country: 'KR' }, vaultPassword: PW });
     assert.equal(r.status, 201, j(r.body)); assert.equal(r.body.uid, '12345'); assert.deepEqual(r.body.attrs, ['1990', '410', '0', '0', '0', '0']);
@@ -75,6 +83,17 @@ try {
     assert.equal((await rp.post('/api/mode3/revalidate', { proof: r.body.proof, publicSignals: r.body.publicSignals, sig: r.body.sig, r_s: rs1 })).body.ok, true);
     assert.equal((await core.revalidate({ r_s: rs1, origin: 'http://other.example' })).status, 404);
     assert.equal((await core.revalidate({ r_s: rs1, origin: info.origin, arid: String(BigInt(info.arid) + 1n) })).status, 404);
+  });
+  await t('skipSync 재검증: 새로 연 페이지(팝업 — lastSync 없음)도 저장된 proofCache 의 π 를 동기화 없이 그대로 → RP ok; proofCache 가 없으면 409 no_cached_proof', async () => {
+    const fresh = await core.revalidate({ r_s: rs1, origin: info.origin }); assert.equal(fresh.status, 200, j(fresh.body));
+    const popup = createUserCore({ kv, config, provider, canonProvider: provider, fullProve });   // 같은 kv 위의 새 코어 = 새 페이지
+    const r = await popup.revalidate({ r_s: rs1, origin: info.origin, skipSync: true });
+    assert.equal(r.status, 200, j(r.body)); assert.equal(r.body.cacheHit, true); assert.equal(r.body.root, fresh.body.root); assert.equal(r.body.regRoot, fresh.body.regRoot);
+    assert.equal((await rp.post('/api/mode3/revalidate', { proof: r.body.proof, publicSignals: r.body.publicSignals, sig: r.body.sig, r_s: rs1 })).body.ok, true);
+    const sessions = await kv.get('sessions'); const s = sessions[rs1];
+    await kv.set('sessions', { ...sessions, [rs1]: { ...s, proofCache: null } });
+    try { const n = await popup.revalidate({ r_s: rs1, origin: info.origin, skipSync: true }); assert.equal(n.status, 409, j(n.body)); assert.equal(n.body.reason, 'no_cached_proof'); }
+    finally { await kv.set('sessions', { ...(await kv.get('sessions')), [rs1]: s }); }   // 뒤 케이스를 위해 그대로 되돌린다
   });
   await t('세션 요청: 세션키 서명 → RP /api/mode3/request ok', async () => {
     const r = await core.request({ r_s: rs1, body: 'hello', origin: info.origin }); assert.equal(r.status, 200);

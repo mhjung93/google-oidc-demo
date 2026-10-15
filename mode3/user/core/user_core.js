@@ -86,7 +86,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
   }
   /** 사용자 자격증명을 바꿔 앉힌다(null 이면 버린다). 옛 자격증명의 세션은 다음 게시에 죽으므로 지금 지우고 증명 캐시도 비운다. */
   async function replaceUserCred(src, userCred) { await src.setUserCred(userCred); await dropSessions(); }
-  /** lastSync(재검증의 skipSync 시연·status)에 남길 거울 뷰. 트리는 남기지 않는다(쓰는 곳이 없다). */
+  /** lastSync(status 의 lastRoot·lastRegRoot)에 남길 거울 뷰. 트리는 남기지 않는다(쓰는 곳이 없다). skipSync 는 세션의 proofCache 를 쓴다. */
   const syncSnapshot = (synced) => ({ root: synced.root.toString(), regRoot: synced.regRoot.toString(), epoch: synced.epoch.toString(), head: synced.head.toString(), chainId: synced.chainId.toString(), lastPublishedBlock: synced.mirror.lastPublishedBlock.toString(), canonicalEpoch: synced.canonical.epoch.toString() });
   /** registryCheck 에 넘길 캐노니컬 최신 뷰(V10 — 내 슬롯 확인은 캐노니컬 최신으로). */
   const canonicalView = (synced) => ({ registry: synced.canonical.registry, regRoot: synced.canonical.regRoot, regEpoch: synced.canonical.epoch });
@@ -348,8 +348,16 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       if (existing) return R(409, { reason: 'already_registered', uid: existing.uid });
       await vault.refresh();
       const needSetup = !vault.hasVault();
-      if (needSetup && (typeof vaultPassword !== 'string' || vaultPassword.length === 0)) return R(400, { error: 'vaultPassword 필요(금고가 아직 없다)' });
-      if (!needSetup && !(await vault.key())) return LOCKED();
+      const hasVaultPw = typeof vaultPassword === 'string' && vaultPassword.length > 0;
+      if (needSetup && !hasVaultPw) return R(400, { error: 'vaultPassword 필요(금고가 아직 없다)' });
+      // 금고가 이미 있으면 절대 다시 만들지 않고, 비밀번호가 함께 왔으면 **그 비밀번호로 연다**(맞지 않으면 IdP 호출 전에 400 bad_password).
+      // 복구 시나리오: 첫 등록이 IdP 401(IdP 비밀번호 오타) 등으로 실패하면 금고(비밀번호 A)만 남고 30분 동안 해제돼 있다. 재시도에서 사용자가
+      // 금고 비밀번호를 B 로 넣었는데 조용히 무시하고 A 의 키로 s_u·sk_u 를 암호화하면, 30분 뒤 B 로는 열리지 않고(A 가 오타였다면 영구히)
+      // IdP 쪽은 이미 등록돼 있어 wipe 후 재등록도 409 다. 잠긴 금고에 비밀번호를 함께 보낸 경우도 같은 규칙으로 연다. 비밀번호 없이 잠겨 있으면 423.
+      if (!needSetup) {
+        if (hasVaultPw) { if (!(await vault.unlock(vaultPassword))) return R(400, { reason: 'bad_password' }); }
+        else if (!(await vault.key())) return LOCKED();
+      }
       let schema;
       try { schema = (await schemaFor()).schema; } catch (e) { if (e.reason === 'schema_invalid') return R(503, { reason: 'schema_invalid', detail: e.message }); throw e; }
       // profile 을 안 보냈을 때만 DEFAULT_PROFILE 을 스키마의 슬롯 이름으로 거른다 — IdP 가 country 같은 이름을 빼면 encodeProfile 이
@@ -537,15 +545,16 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       if (src === null) return R(409, { reason: 'not_registered' });
       if (src === 'locked') return LOCKED();
       const timings = { syncMs: 0, issueMs: 0, proveMs: 0 };
-      // 시연용: 동기화를 건너뛰고 마지막 (root, regRoot) 의 π 를 그대로 재제출한다(RP 의 stale_root/stale_registry_root 거절을 보이기 위해).
+      // 시연용: 동기화를 건너뛰고 이 세션의 마지막 π 를 그 (revRoot, regRoot) 그대로 재제출한다(RP 의 stale_root/stale_registry_root 거절을 보이기 위해).
+      // 에이전트는 프로세스 메모리의 lastSync 로 캐시 항목을 찾았지만, web 모드에서는 RP 동작마다 새 팝업 페이지가 열려 lastSync 가 늘 비어 있다 —
+      // 그래서 kv(IndexedDB)에 남은 세션의 proofCache 를 쓴다. 세션마다 항목이 하나라 마지막 π 가 술어 π(tx 의 선택 공개)일 수도 있다.
       if (skipSync) {
-        if (!lastSync) return R(409, { reason: 'no_cached_proof' });
         const pc = s.proofCache;
-        if (!pc || pc.key !== proofCacheKey(BigInt(lastSync.chainId), BigInt(lastSync.root), BigInt(lastSync.regRoot), '0')) return R(409, { reason: 'no_cached_proof' });
+        if (!pc) return R(409, { reason: 'no_cached_proof' });
         const priv = await sessionKeyOf(rsKey);
         if (!priv) return R(404, { reason: 'no_session' });
         const sig = await signChallenge(new ethers.Wallet(priv), rsKey);
-        return R(200, { proof: pc.proof, publicSignals: pc.publicSignals, sig, pk_i: s.pk_i, r_s: rsKey, root: lastSync.root, regRoot: lastSync.regRoot, cacheHit: true, timings });
+        return R(200, { proof: pc.proof, publicSignals: pc.publicSignals, sig, pk_i: s.pk_i, r_s: rsKey, root: pc.revRoot, regRoot: pc.regRoot, cacheHit: true, timings });
       }
       const t = now();
       let synced;
