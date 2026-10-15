@@ -73,5 +73,12 @@ app.post('/wallet/presence', (req, res) => {
   presence = { ...req.body };
   res.json({ ok: true });
 });
-app.use((err, req, res, next) => { if (res.headersSent) return next(err); if (err?.type === 'entity.parse.failed') return res.status(400).json({ reason: 'malformed' }); res.status(500).json({ reason: 'internal' }); });
+// 라우트 밖으로 샌 오류의 마지막 그물(에이전트·RP 와 같은 패턴): JSON 파싱 실패 400 malformed, 그 밖 500 internal — stack 은 서버 로그에만 남긴다.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  if (err?.type === 'entity.parse.failed') return res.status(400).json({ reason: 'malformed' });
+  console.error(`[user-static] 처리되지 않은 라우트 오류 ${req.method} ${req.path}: ${err?.stack ?? err}`);
+  res.status(500).json({ reason: 'internal' });
+});
+process.on('unhandledRejection', (e) => console.error(`[user-static] unhandledRejection: ${e?.stack ?? e}`));
 app.listen(PORT, '127.0.0.1', () => console.log(`Mode 3 user static at http://127.0.0.1:${PORT} (cia=${CIA_URL}, rp=${RP_ORIGINS.join(',')}, log=${LOG_ADDRESS ?? 'none'}, mirror=${MIRROR_ADDRESS ?? 'none'})`));
