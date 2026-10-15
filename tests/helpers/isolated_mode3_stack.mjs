@@ -1,6 +1,8 @@
 // 격리 Mode 3 스택: 격리 CIA(isolated_cia.mjs) + 지갑 에이전트 + RP 를 임시 포트·임시 상태 파일로.
 // :4100/:5100/:3100 개발용 프로세스를 건드리지 않는다. stop() 이 세 프로세스와 임시 디렉터리를 정리한다.
 // userMode:'web'(기본 'agent') 이면 지갑 자리에 mode3_wallet_agent.js 대신 mode3_user_static.js 를 띄운다(태스크 5).
+// oidc(스펙 2026-10-16): 주면 startIsolatedCia({ oidc }) 로 넘겨 발급자 스텁을 띄우고 stack.oidc 로 돌려준다. walletHost(기본 '127.0.0.1'):
+// 지갑 오리진의 호스트 — IdP·RP·지갑 자식에 같은 오리진을 넣는다(서버는 127.0.0.1 에 listen 하므로 'localhost' 로도 닿는다).
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -74,11 +76,12 @@ export async function startIsolatedMode3Stack(opts = {}) {
   //   extraRps: [{ name, env }] — 두 번째 이후 서비스. 첫 RP 와 같은 방식으로 띄워 승인·활성화를 기다리고 rps[] 로 돌려준다.
   //     릴레이어 계정 인덱스는 RP 마다 다르게 준다(첫 RP 0, 다음 1, …) — 팩토리 배포 nonce 가 겹치지 않게(MODE3_DEMO.md 두 번째 서비스 절).
   const { twoChains = false, revRpcUrl = 'http://127.0.0.1:8546', appRpcUrl = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545', extraRps = [] } = opts;
+  const { oidc = null, walletHost = '127.0.0.1' } = opts;
   // 지갑 포트·오리진은 CIA 보다 **먼저** 잡는다 — CIA 의 /mode3/health CORS 허용 목록(설계 2026-09-25 §1.2)에
   // MODE3_WALLET_AGENT_ORIGIN 으로 넘겨야 한다. 호출자의 ciaEnv 가 우선한다.
   const walletPort = await freePort();
-  const walletOrigin = `http://127.0.0.1:${walletPort}`;
-  const cia = await startIsolatedCia({ env: { MODE3_WALLET_AGENT_ORIGIN: walletOrigin, ...ciaEnv }, ...(twoChains ? { revRpcUrl, appRpcUrl } : {}) });
+  const walletOrigin = `http://${walletHost}:${walletPort}`;
+  const cia = await startIsolatedCia({ env: { MODE3_WALLET_AGENT_ORIGIN: walletOrigin, ...ciaEnv }, oidc, ...(twoChains ? { revRpcUrl, appRpcUrl } : {}) });
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-stack-'));
   const rpPort = await freePort();
   const rpOrigin = `http://127.0.0.1:${rpPort}`;
@@ -97,7 +100,7 @@ export async function startIsolatedMode3Stack(opts = {}) {
     // 지갑 자식은 restartWallet() 이 같은 상태 파일·env 로 다시 띄운다(snap 모드의 "재시작 뒤 needs_consent" 시험용).
     const walletScript = userMode === 'web' ? 'mode3_user_static.js' : 'mode3_wallet_agent.js';
     const walletReady = userMode === 'web' ? `${walletOrigin}/wallet/config` : `${walletOrigin}/wallet/status`;
-    const walletSpawn = { env: { MODE3_WALLET_PORT: String(walletPort), MODE3_WALLET_STATE_FILE: walletStateFile, MODE3_CIA_URL: cia.base, MODE3_RP_ORIGIN: [rpOrigin, ...extraRpOrigins, ...extraRpSpecs.map((e) => e.origin)].join(','), CIA_LOG_ADDRESS: cia.logAddress, MODE3_MIRROR_ADDRESS: cia.mirrorAddress, ...walletChainEnv, ...walletEnv }, readyUrl: walletReady, logFile: walletLog };
+    const walletSpawn = { env: { MODE3_WALLET_PORT: String(walletPort), MODE3_WALLET_STATE_FILE: walletStateFile, MODE3_CIA_URL: cia.base, MODE3_RP_ORIGIN: [rpOrigin, ...extraRpOrigins, ...extraRpSpecs.map((e) => e.origin)].join(','), CIA_LOG_ADDRESS: cia.logAddress, MODE3_MIRROR_ADDRESS: cia.mirrorAddress, MODE3_WALLET_PUBLIC_ORIGIN: walletOrigin, ...walletChainEnv, ...walletEnv }, readyUrl: walletReady, logFile: walletLog };
     let walletChild = await spawnServer(walletScript, walletSpawn);
     children.push(walletChild);
     const wallet = client(walletOrigin, walletLog);
@@ -191,6 +194,7 @@ export async function startIsolatedMode3Stack(opts = {}) {
 
     return {
       cia, wallet, rp, rps, dir, walletStateFile, userMode, relay, relayIfBehind, withRelay,
+      oidc: cia.oidc,   // oidc 옵션으로 띄웠으면 발급자 스텁(mint·stop), 아니면 null
       rpOriginForWallet: rpOrigin,   // rp:false 여도 지갑에는 이 값을 CORS 오리진으로 넘겼다
       /** 지갑 자식만 죽이고 같은 상태 파일·env 로 다시 띄운다. 메모리(세션 witness·증명 캐시)만 사라진다. */
       async restartWallet() {

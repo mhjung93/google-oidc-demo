@@ -1,0 +1,74 @@
+// tests/test_mode3_user_core_oidc.mjs — 사용자 코어의 Google(OIDC 래퍼) 등록·자기 폐기(스펙 2026-10-16 §3.1·§3.3). 격리 web 스택 + 발급자 스텁, Node 에서 메모리 kv. (chain)
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
+import { getProvider } from './helpers/mode3_chain.mjs';
+import { createMemKv } from '../mode3/user/core/kv_mem.js';
+import { createUserCore } from '../mode3/user/core/user_core.js';
+import { uidOf, newRevokeNonce } from '../lib/mode3_oidc_nonce.js';
+import * as snarkjs from 'snarkjs';
+
+execFileSync('node', ['scripts/build_user_app.mjs'], { stdio: 'inherit' });
+const stack = await startIsolatedMode3Stack({ userMode: 'web', autoRelay: true, oidc: true });
+const { wallet, rp, oidc: stub } = stack;
+const provider = getProvider();
+let fails = 0; async function t(n, f) { try { await f(); console.log('ok   -', n); } catch (e) { fails++; console.log('FAIL -', n, '\n      ', e.stack ?? e.message); } }
+const j = (o) => JSON.stringify(o, (k, v) => (typeof v === 'bigint' ? v.toString() : v));
+try {
+  const config = (await wallet.get('/user/config')).body;
+  const kv = createMemKv();
+  const fullProve = { idp: (i, w, z) => snarkjs.groth16.fullProve(i, w, z), cred: (i, w, z) => snarkjs.groth16.fullProve(i, w, z) };
+  const core = createUserCore({ kv, config, provider, canonProvider: provider, fullProve });
+  let info = (await rp.get('/api/mode3/rp_info')).body;
+  for (let i = 0; i < 50 && !info.attrGateAddress; i++) { await new Promise((r) => setTimeout(r, 200)); info = (await rp.get('/api/mode3/rp_info')).body; }   // RP 등록 승인·팩토리 배포를 기다린다(test_mode3_user_core.mjs 와 같다)
+  const PW = 'vault-oidc';
+  const SUB = 'google-user-77';
+  await t('prepareRegistration: nonce 가 "reg:"+hex64 이고 pk_u 를 돌려준다; 다시 부르면 새 재료', async () => {
+    const a = await core.prepareRegistration(); assert.match(a.nonce, /^reg:[0-9a-f]{64}$/); assert.match(a.pk_u.x, /^[0-9]+$/);
+    const b = await core.prepareRegistration(); assert.notEqual(a.nonce, b.nonce);
+  });
+  await t('completeRegistration: 스텁 토큰(nonce = prepare 의 것) → 201, uid = uidOf(provider, sub), registration.provider = 스텁 provider, 비밀은 금고에만', async () => {
+    const p = await core.prepareRegistration();
+    const idToken = await stub.mint({ sub: SUB, nonce: p.nonce });
+    const r = await core.completeRegistration({ idToken, profile: { birthYear: '1990', country: 'KR' }, vaultPassword: PW });
+    assert.equal(r.status, 201, j(r.body)); assert.equal(r.body.uid, uidOf(stub.provider, SUB)); assert.equal(r.body.provider, stub.provider);
+    const reg = await kv.get('registration'); assert.equal(reg.provider, stub.provider); assert.equal(reg.uid, r.body.uid); assert.ok(!('s_u' in reg));
+    assert.equal((await core.status()).body.provider, stub.provider);
+  });
+  await t('nonce 가 다른 토큰·pending 없음·토큰 형식 오류의 사유', async () => {
+    assert.equal((await core.completeRegistration({ idToken: await stub.mint({ sub: 'x', nonce: 'reg:' + 'f'.repeat(64) }) })).body.reason, 'already_registered');   // 이미 등록됨이 먼저
+    await core.wipe();
+    assert.equal((await core.completeRegistration({ idToken: 'a.b.c', vaultPassword: PW })).body.reason, 'no_pending_registration');
+    const p = await core.prepareRegistration();
+    assert.equal((await core.completeRegistration({ idToken: await stub.mint({ sub: 'x', nonce: 'reg:' + 'f'.repeat(64) }), vaultPassword: PW })).body.reason, 'oidc_nonce_mismatch');
+    assert.equal((await core.completeRegistration({ idToken: 'not-a-jwt', vaultPassword: PW })).status, 400);
+    // 같은 sub 로 다시 등록(새 재료): IdP 가 409 → register_failed 가 아니라 IdP 의 409 그대로
+    const again = await core.completeRegistration({ idToken: await stub.mint({ sub: SUB, nonce: p.nonce }), vaultPassword: PW });
+    assert.equal(again.status, 409, j(again.body));
+  });
+  await t('Google 로 등록한 계정으로 RP 로그인이 된다(증명 경로 불변)', async () => {
+    await core.wipe();
+    const p = await core.prepareRegistration();
+    const r = await core.completeRegistration({ idToken: await stub.mint({ sub: 'google-user-78', nonce: p.nonce }), profile: { birthYear: '1991', country: 'KR' }, vaultPassword: PW });
+    assert.equal(r.status, 201, j(r.body));
+    const ch = (await rp.post('/api/mode3/challenge')).body;
+    const lg = await core.login({ arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s: ch.r_s, r_rp: ch.r_rp, allowAgent: '0', factoryAddress: info.factoryAddress, attrGateAddress: info.attrGateAddress }, { verifiedOrigin: info.origin });
+    assert.equal(lg.status, 200, j(lg.body));
+    assert.equal((await rp.post('/api/mode3/login', { proof: lg.body.proof, publicSignals: lg.body.publicSignals, sig: lg.body.sig, r_s: ch.r_s })).body.ok, true);
+  });
+  await t('selfRevokeWithIdToken: revoke 토큰 → 200, 그 뒤 로그인은 403 account_disabled; 등록 토큰으로는 400', async () => {
+    const regTok = await stub.mint({ sub: 'google-user-78', nonce: (await core.prepareRegistration()).nonce });
+    assert.equal((await core.selfRevokeWithIdToken({ idToken: regTok })).status, 400);
+    const r = await core.selfRevokeWithIdToken({ idToken: await stub.mint({ sub: 'google-user-78', nonce: newRevokeNonce() }) });
+    assert.equal(r.status, 200, j(r.body));
+    const ch = (await rp.post('/api/mode3/challenge')).body;
+    const lg = await core.login({ arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s: ch.r_s, r_rp: ch.r_rp, allowAgent: '0', factoryAddress: info.factoryAddress, attrGateAddress: info.attrGateAddress }, { verifiedOrigin: info.origin });
+    assert.equal(lg.status, 403, j(lg.body)); assert.equal(lg.body.reason, 'account_disabled');
+  });
+  await t('데모 계정 register 는 그대로이고 provider demo 를 저장한다', async () => {
+    await core.wipe();
+    const r = await core.register({ uid: '12345', pwd: 'password123', vaultPassword: PW }); assert.equal(r.status, 201, j(r.body));
+    assert.equal((await kv.get('registration')).provider, 'demo'); assert.equal((await core.status()).body.provider, 'demo');
+  });
+} finally { await stack.stop(); }
+process.exit(fails ? 1 : 0);

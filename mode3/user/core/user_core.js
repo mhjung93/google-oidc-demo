@@ -2,23 +2,26 @@
 // 함수이고 같은 { status, body } 를 돌려준다 — 화면(ui.js·popup.js)이 에이전트 응답을 다루던 코드를 그대로 쓰기 위해서다.
 // DOM·fetch 전역에 의존하지 않아 Node 에서도 돈다(tests/test_mode3_user_core.mjs). 비밀은 vault 로만 드나든다.
 //
-// 저장(kv): registration = 공개 부분만({ uid, auid, pk_u, slot, profile, attrs, userCred:{C_u_pt,Cf_u,issuedAt}|null } — 에이전트 snap 모드의
+// 저장(kv): registration = 공개 부분만({ uid, auid, pk_u, slot, provider, profile, attrs, userCred:{C_u_pt,Cf_u,issuedAt}|null } — 에이전트 snap 모드의
 // stripSecrets 와 같은 경계), secrets = 금고 암호문({ s_u, sk_u, blind_u, sessionKeys: r_s → 세션 개인키 hex }),
 // sessions = r_s → 에이전트 세션 레코드에서 sessionPrivKey·witness 를 뺀 것 + origin·account·sessionAddress·proofCache, txs = 기록한 tx 배열,
 // demo = 시연 덮어쓰기 1회분. 에이전트와 달리 상태는 kv 가 정본이다 — 읽고 바꾼 뒤 곧바로 다시 쓴다(팝업·다른 탭이 같은 kv 를 본다).
+// provider = 'demo'(데모 계정) 또는 IdP 의 OIDC provider(Google 등록, 스펙 2026-10-16). 이 필드가 생기기 전의 registration 에는 없다.
 import { ethers } from 'ethers';
+import { randomBytes } from 'node:crypto';
 import { createVault } from './vault.js';
 import { createChain } from './chain.js';
 import { createIdp } from './idp.js';
 import { encodeProfile, normalizeProfile, assertPredicateTypes, decodeAttrs, schemaInfo } from '../../../lib/mode3_attr_schema.js';
-import { createRegistration, createSessionKey, buildIssueRequest, buildCredentialProof, signChallenge, signSessionRequest, signSlotRequest, signRevokeSession, signRegistration, normalizeDisclosure, normalizeSet, disclosureKey, hasPredicate, chooseMaxHeight, ProofCache } from '../../../lib/mode3_wallet.js';
+import { createRegistration, eddsaPubOf, createSessionKey, buildIssueRequest, buildCredentialProof, signChallenge, signSessionRequest, signSlotRequest, signRevokeSession, signRegistration, normalizeDisclosure, normalizeSet, disclosureKey, hasPredicate, chooseMaxHeight, ProofCache } from '../../../lib/mode3_wallet.js';
 import { sessionLeaf } from '../../../lib/mode3_revocation.js';
 import { registryLeaf } from '../../../lib/mode3_registry.js';
 import { signPayload, statementDigestFields, proofToCalldata, parseExecuteReceipt, decodeExecuteCalldata, walletAt, walletInterface, FACTORY_ABI, FACTORY_MAX_ROOT_AGE_BAND, FACTORY_MAX_LIFETIME_BAND, PUB_INDEX } from '../../../lib/mode3_onchain.js';
-import { SCALAR_MAX, ppid, randomScalar } from '../../../lib/mode3_credential.js';
+import { SCALAR_MAX, ppid, randomScalar, auidOf } from '../../../lib/mode3_credential.js';
 import { verifyRpCert } from '../../../lib/mode3_rp_cert.js';
 import { MODE3_ROOTS_ABI } from '../../../lib/mode3_log.js';
 import { bounded } from '../../../lib/mode3_health.js';
+import { uidOf, regNonce } from '../../../lib/mode3_oidc_nonce.js';
 
 export const USER_STATE_VERSION = 1;
 export const DEFAULT_PROFILE = Object.freeze({ birthYear: '1990', country: 'KR' });   // 데모 testuser 기본값(에이전트와 같다). 사용자가 등록 폼에서 바꿀 수 있다.
@@ -28,6 +31,14 @@ const R = (status, body) => ({ status, body });
 const LOCKED = () => R(423, { reason: 'locked' });
 const tag = (reason, extra = {}) => Object.assign(new Error(reason), { reason, ...extra });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** id_token(JWT)의 payload 를 서명 검증 없이 읽는다 — uid 선계산용(서명·iss·aud·exp 는 IdP 가 검증한다). 형식이 아니면 던진다. */
+const jwtPayload = (t) => {
+  const parts = String(t).split('.');
+  if (parts.length !== 3) throw tag('oidc_invalid');
+  const b = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+  const pad = b + '='.repeat((4 - (b.length % 4)) % 4);
+  return JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(pad), (c) => c.charCodeAt(0))));
+};
 
 export function createUserCore({ kv, config, provider, canonProvider = provider, fetch = globalThis.fetch, fullProve, now = Date.now, log = () => {} }) {
   if (!fullProve?.idp || !fullProve?.cred) throw new Error('createUserCore: fullProve.idp·fullProve.cred 가 필요하다');
@@ -38,6 +49,8 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
   if (TTL <= 0n || GRID <= 0n) throw new Error(`ttlBlocks(${TTL})·heightGrid(${GRID}) 는 양수여야 한다`);
   const factoryInterface = new ethers.Interface(FACTORY_ABI);
   let lastSync = null, lastRegistry = null;   // 페이지 수명 메모리(에이전트와 같다)
+  // Google 등록의 보류 재료 { s_u, sk_u, pk_u, nonce }(prepareRegistration). 메모리에만 둔다 — 금고 비밀번호 전이라 금고가 없을 수 있다.
+  let pendingReg = null;
   /** 세 체인 경로(login·revalidate·tx)의 설정 검사 — 에이전트 chainConfigMissing 의 등가. */
   const chainMissing = () => chain.missing();
 
@@ -291,6 +304,59 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     return null;
   }
 
+  /** 등록 공통부 — 에이전트 POST /wallet/register(file 모드 규칙)의 등가 + 금고, + OIDC 분기(스펙 2026-10-16 §3.1). register(데모 계정)와
+   *  completeRegistration(Google)이 같이 쓴다. V11 §3.1·§3.3 — 등록 키(sk_u/pk_u)·salt(s_u) 는 지갑이 만들고(reg) auid = Poseidon(T_AUID, uid, s_u)
+   *  를 IdP 에 낸다. 속성은 사용자가 넣는다(D15): profile(기본 DEFAULT_PROFILE)을 공개 스키마로 인코딩해 attrs 를 만든다 — IdP 는 받지 않는다.
+   *  금고가 없으면 vaultPassword 로 만들고(IdP 호출 직전), 있으면 잠금 해제 상태여야 한다. kv 에는 공개 부분(registration)만 평문으로,
+   *  s_u·sk_u 는 금고(secrets)에만 둔다. auth 는 IdP 인증({ uid, pwd } 또는 { id_token }) — 요청 본문에 그대로 펼친다.
+   *  provider 는 IdP 응답에 provider 가 없을 때 registration 에 남길 값이다. */
+  async function registerWith({ uid, auth, reg, profileIn, vaultPassword, provider }) {
+    if (profileIn !== null && (typeof profileIn !== 'object' || Array.isArray(profileIn))) return R(400, { reason: 'bad_attr', detail: 'profile_required' });
+    const existing = await getReg();
+    if (existing) return R(409, { reason: 'already_registered', uid: existing.uid });
+    await vault.refresh();
+    const needSetup = !vault.hasVault();
+    const hasVaultPw = typeof vaultPassword === 'string' && vaultPassword.length > 0;
+    if (needSetup && !hasVaultPw) return R(400, { error: 'vaultPassword 필요(금고가 아직 없다)' });
+    // 금고가 이미 있으면 절대 다시 만들지 않고, 비밀번호가 함께 왔으면 **그 비밀번호로 연다**(맞지 않으면 IdP 호출 전에 400 bad_password).
+    // 복구 시나리오: 첫 등록이 IdP 401(IdP 비밀번호 오타) 등으로 실패하면 금고(비밀번호 A)만 남고 30분 동안 해제돼 있다. 재시도에서 사용자가
+    // 금고 비밀번호를 B 로 넣었는데 조용히 무시하고 A 의 키로 s_u·sk_u 를 암호화하면, 30분 뒤 B 로는 열리지 않고(A 가 오타였다면 영구히)
+    // IdP 쪽은 이미 등록돼 있어 wipe 후 재등록도 409 다. 잠긴 금고에 비밀번호를 함께 보낸 경우도 같은 규칙으로 연다. 비밀번호 없이 잠겨 있으면 423.
+    if (!needSetup) {
+      if (hasVaultPw) { if (!(await vault.unlock(vaultPassword))) return R(400, { reason: 'bad_password' }); }
+      else if (!(await vault.key())) return LOCKED();
+    }
+    let schema;
+    try { schema = (await schemaFor()).schema; } catch (e) { if (e.reason === 'schema_invalid') return R(503, { reason: 'schema_invalid', detail: e.message }); throw e; }
+    // profile 을 안 보냈을 때만 DEFAULT_PROFILE 을 스키마의 슬롯 이름으로 거른다 — IdP 가 country 같은 이름을 빼면 encodeProfile 이
+    // 그 키를 unknown_field 로 거절하므로, 기본값은 "그 스키마가 아는 이름"만 남긴다. 사용자가 직접 보낸 profile 은 그대로 둔다.
+    const profile = profileIn ?? Object.fromEntries(Object.entries(DEFAULT_PROFILE).filter(([k]) => schema.slots.some((s) => s.type !== 'unused' && s.name === k)));
+    let attrs;
+    try { attrs = await encodeProfile(schema, profile, { allowEmptyRequired: false }); }
+    catch (e) { if (e.reason === 'bad_attr') return R(400, { reason: 'bad_attr', slot: e.slot, field: e.field, detail: e.detail, message: e.message }); throw e; }
+    const normalized = normalizeProfile(schema, profile);
+    // 금고는 IdP 에 등록하기 **전에** 만든다 — 등록이 끝났는데 비밀을 둘 곳이 없는 상태(재로그인 불가)를 만들지 않는다.
+    if (needSetup) await vault.setup(vaultPassword);
+    const pub = { x: reg.pk_u.x.toString(), y: reg.pk_u.y.toString() };
+    const r = await idp.post('/cia/register', { ...auth, auid: reg.auid.toString(), pk_u: pub, sig_reg: await signRegistration(reg.sk_u, BigInt(uid), reg.auid) });
+    if (r.status !== 201) {
+      // OIDC 사유(oidc_disabled·oidc_invalid·oidc_nonce_mismatch·oidc_unavailable)는 그 사유·상태 그대로 — 화면이 원인을 나눠 보여준다.
+      if (typeof r.body?.reason === 'string' && r.body.reason.startsWith('oidc_')) return R(r.status, { reason: r.body.reason, cia: r.body });
+      const status = r.status === 401 || r.status === 409 ? r.status : 502;
+      return R(status, { reason: 'register_failed', cia: r.body });
+    }
+    await noteSchemaHint(r.body.schemaHash ?? null);
+    // 비밀을 먼저 금고에 쓰고 공개 부분을 쓴다 — registration 이 있으면 비밀도 있다.
+    await vault.writeSecrets({ s_u: reg.s_u.toString(), sk_u: reg.sk_u, blind_u: null, sessionKeys: {} });
+    // uid 는 지갑이 auid 에 넣은 값이다 — 201 이면 IdP 가 sig_reg 를 자기 uid 로 검증했으므로 응답의 uid 와 같다.
+    const savedProvider = r.body.provider ?? provider;
+    await kv.set('registration', { uid, auid: reg.auid.toString(), pk_u: pub, slot: r.body.slot, provider: savedProvider, profile: normalized, attrs, userCred: null });
+    await putSessions({});
+    const body = { uid, slot: r.body.slot, auid: reg.auid.toString(), attrs, profile: normalized };
+    // provider 는 OIDC 경로의 응답에만 싣는다 — 데모 register 의 응답 키는 그대로 둔다(데모 쪽은 status().provider 로 본다).
+    return R(201, 'id_token' in auth ? { ...body, provider: savedProvider } : body);
+  }
+
   // ---- 동작(에이전트 라우트의 등가) ----
   const ops = {
     /** 에이전트 GET /wallet/status 의 등가(sync:true = ?sync=1). 비밀 없음 — 세션의 sessionAddress 는 레코드에 저장해 둔 값이다. rcl 은 null(R2). */
@@ -322,7 +388,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       const sch = await idp.schema();
       const ov = await kv.get('demo');
       return R(200, {
-        registered: Boolean(reg), uid: reg?.uid ?? null, auid: reg?.auid ?? null, slot: reg?.slot ?? null, attrs: reg?.attrs ?? null, userCred, sessions,
+        registered: Boolean(reg), uid: reg?.uid ?? null, provider: reg?.provider ?? null, auid: reg?.auid ?? null, slot: reg?.slot ?? null, attrs: reg?.attrs ?? null, userCred, sessions,
         profile: reg?.profile ?? null, attrSchema: sch ? schemaInfo(sch.schema, sch.hash) : null,
         attrsView: reg && sch ? decodeAttrs(sch.schema, reg.attrs, reg.profile ?? null) : null,
         registry: lastRegistry, demoOverride: ov ? { scope: ov.scope, fields: Object.keys(ov).filter((k) => k !== 'scope') } : null,
@@ -336,52 +402,35 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       try { const s = await schemaFor(); return R(200, { schema: s.schema, hash: s.hash, source: s.source }); }
       catch (e) { if (e.reason === 'schema_invalid') return R(503, { reason: 'schema_invalid', detail: e.message }); throw e; }
     },
-    /** 에이전트 POST /wallet/register(file 모드 규칙)의 등가 + 금고. V11 §3.1·§3.3 — 등록 키(sk_u/pk_u)·salt(s_u) 는 여기서 만들고
-     *  auid = Poseidon(T_AUID, uid, s_u) 를 IdP 에 낸다. 속성은 사용자가 넣는다(D15): profile(기본 DEFAULT_PROFILE)을 공개 스키마로
-     *  인코딩해 attrs 를 만든다 — IdP 는 받지 않는다. 금고가 없으면 vaultPassword 로 만들고(IdP 호출 직전), 있으면 잠금 해제 상태여야 한다.
-     *  kv 에는 공개 부분(registration)만 평문으로, s_u·sk_u 는 금고(secrets)에만 둔다. */
+    /** 에이전트 POST /wallet/register(file 모드 규칙)의 등가 + 금고 — 데모 계정(uid·pwd) 경로. 규칙은 registerWith 에 있다. */
     async register({ uid, pwd, profile: profileIn = null, vaultPassword = null } = {}) {
       if (!isDec(uid) || typeof pwd !== 'string') return R(400, { error: 'uid(10진 문자열), pwd 필요' });
       if (BigInt(uid) >= SCALAR_MAX) return R(400, { error: 'uid 는 2^250 미만' });
-      if (profileIn !== null && (typeof profileIn !== 'object' || Array.isArray(profileIn))) return R(400, { reason: 'bad_attr', detail: 'profile_required' });
+      return registerWith({ uid, auth: { uid, pwd }, reg: await createRegistration(BigInt(uid)), profileIn, vaultPassword, provider: 'demo' });
+    },
+    /** Google(OIDC) 등록 2단계(스펙 2026-10-16 §3.1): 토큰의 sub 로 uid = uidOf(provider, sub) 를 선계산하고(서명은 IdP 가 검증한다)
+     *  보류 재료로 auid 를 만들어 registerWith 로 낸다 — IdP 에는 { id_token, auid, pk_u, sig_reg }. 보류 재료는 성공해야 비운다(실패하면
+     *  같은 재료·nonce 로 다시 시도할 수 있다). 토큰은 IdP 요청 본문에만 싣고 저장·기록하지 않는다. */
+    async completeRegistration({ idToken, profile: profileIn = null, vaultPassword = null } = {}) {
       const existing = await getReg();
-      if (existing) return R(409, { reason: 'already_registered', uid: existing.uid });
-      await vault.refresh();
-      const needSetup = !vault.hasVault();
-      const hasVaultPw = typeof vaultPassword === 'string' && vaultPassword.length > 0;
-      if (needSetup && !hasVaultPw) return R(400, { error: 'vaultPassword 필요(금고가 아직 없다)' });
-      // 금고가 이미 있으면 절대 다시 만들지 않고, 비밀번호가 함께 왔으면 **그 비밀번호로 연다**(맞지 않으면 IdP 호출 전에 400 bad_password).
-      // 복구 시나리오: 첫 등록이 IdP 401(IdP 비밀번호 오타) 등으로 실패하면 금고(비밀번호 A)만 남고 30분 동안 해제돼 있다. 재시도에서 사용자가
-      // 금고 비밀번호를 B 로 넣었는데 조용히 무시하고 A 의 키로 s_u·sk_u 를 암호화하면, 30분 뒤 B 로는 열리지 않고(A 가 오타였다면 영구히)
-      // IdP 쪽은 이미 등록돼 있어 wipe 후 재등록도 409 다. 잠긴 금고에 비밀번호를 함께 보낸 경우도 같은 규칙으로 연다. 비밀번호 없이 잠겨 있으면 423.
-      if (!needSetup) {
-        if (hasVaultPw) { if (!(await vault.unlock(vaultPassword))) return R(400, { reason: 'bad_password' }); }
-        else if (!(await vault.key())) return LOCKED();
-      }
-      let schema;
-      try { schema = (await schemaFor()).schema; } catch (e) { if (e.reason === 'schema_invalid') return R(503, { reason: 'schema_invalid', detail: e.message }); throw e; }
-      // profile 을 안 보냈을 때만 DEFAULT_PROFILE 을 스키마의 슬롯 이름으로 거른다 — IdP 가 country 같은 이름을 빼면 encodeProfile 이
-      // 그 키를 unknown_field 로 거절하므로, 기본값은 "그 스키마가 아는 이름"만 남긴다. 사용자가 직접 보낸 profile 은 그대로 둔다.
-      const profile = profileIn ?? Object.fromEntries(Object.entries(DEFAULT_PROFILE).filter(([k]) => schema.slots.some((s) => s.type !== 'unused' && s.name === k)));
-      let attrs;
-      try { attrs = await encodeProfile(schema, profile, { allowEmptyRequired: false }); }
-      catch (e) { if (e.reason === 'bad_attr') return R(400, { reason: 'bad_attr', slot: e.slot, field: e.field, detail: e.detail, message: e.message }); throw e; }
-      const normalized = normalizeProfile(schema, profile);
-      const reg = await createRegistration(BigInt(uid));
-      // 금고는 IdP 에 등록하기 **전에** 만든다 — 등록이 끝났는데 비밀을 둘 곳이 없는 상태(재로그인 불가)를 만들지 않는다.
-      if (needSetup) await vault.setup(vaultPassword);
-      const pub = { x: reg.pk_u.x.toString(), y: reg.pk_u.y.toString() };
-      const r = await idp.post('/cia/register', { uid, pwd, auid: reg.auid.toString(), pk_u: pub, sig_reg: await signRegistration(reg.sk_u, BigInt(uid), reg.auid) });
-      if (r.status !== 201) {
-        const status = r.status === 401 || r.status === 409 ? r.status : 502;
-        return R(status, { reason: 'register_failed', cia: r.body });
-      }
-      await noteSchemaHint(r.body.schemaHash ?? null);
-      // 비밀을 먼저 금고에 쓰고 공개 부분을 쓴다 — registration 이 있으면 비밀도 있다.
-      await vault.writeSecrets({ s_u: reg.s_u.toString(), sk_u: reg.sk_u, blind_u: null, sessionKeys: {} });
-      await kv.set('registration', { uid, auid: reg.auid.toString(), pk_u: pub, slot: r.body.slot, profile: normalized, attrs, userCred: null });
-      await putSessions({});
-      return R(201, { uid, slot: r.body.slot, auid: reg.auid.toString(), attrs, profile: normalized });
+      if (existing) return R(409, { reason: 'already_registered', uid: existing.uid });   // 토큰·보류 재료보다 먼저(registerWith 도 다시 본다)
+      const pend = pendingReg;
+      if (!pend) return R(409, { reason: 'no_pending_registration' });
+      if (typeof idToken !== 'string' || !idToken) return R(400, { error: 'idToken(문자열) 필요' });
+      let claims;
+      try { claims = jwtPayload(idToken); } catch { return R(400, { reason: 'oidc_invalid', detail: 'id_token 형식이 아니다' }); }
+      if (typeof claims?.sub !== 'string' || !claims.sub || typeof claims.nonce !== 'string') return R(400, { reason: 'oidc_invalid', detail: 'sub·nonce 가 없다' });
+      if (claims.nonce !== pend.nonce) return R(400, { reason: 'oidc_nonce_mismatch' });
+      let keys;
+      try { keys = await idp.publicKeys(); } catch (e) { return R(502, { reason: 'cia_unavailable', detail: e.message }); }
+      if (keys.status !== 200) return R(502, { reason: 'cia_unavailable', detail: `public_keys HTTP ${keys.status}` });
+      const oidc = keys.body?.oidc;
+      if (!oidc?.enabled || typeof oidc.provider !== 'string' || !oidc.provider) return R(503, { reason: 'oidc_disabled' });
+      const uid = uidOf(oidc.provider, claims.sub);
+      const reg = { s_u: pend.s_u, sk_u: pend.sk_u, pk_u: pend.pk_u, auid: await auidOf({ uid: BigInt(uid), s_u: pend.s_u }) };
+      const r = await registerWith({ uid, auth: { id_token: idToken }, reg, profileIn, vaultPassword, provider: oidc.provider });
+      if (r.status === 201 && pendingReg === pend) pendingReg = null;   // 그 사이 다시 prepare 했으면 새 재료는 남긴다
+      return r;
     },
     /** 에이전트 PUT /wallet/profile 의 등가. V11 §3.3 — 스키마 검증 → attrs 재인코딩 → 바뀌었으면 옛 C_u·세션·π 캐시를 버린다(다음 로그인이
      *  새 C_u 를 발급받는다 — PPID 는 그대로). 바뀌면 금고의 blind_u·세션키도 지우므로 잠겨 있으면 423(아무것도 바꾸기 전에). */
@@ -724,6 +773,15 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       try { const r = await idp.post('/cia/account/self_revoke', { uid, pwd }); return R(r.status, r.body ?? {}); }
       catch (e) { return R(502, { reason: 'cia_unavailable', detail: e.message }); }
     },
+    /** Google(OIDC) 계정의 자기 폐기(스펙 2026-10-16 §3.3) — 폐기용 nonce("revoke:…")로 받은 id_token 을 IdP 에 넘긴다. 토큰이 가리키는 계정·
+     *  provider·nonce 목적은 IdP 가 검증한다(등록 토큰은 400 oidc_nonce_mismatch). 토큰은 넘길 뿐 어디에도 남기지 않는다. */
+    async selfRevokeWithIdToken({ idToken } = {}) {
+      if (typeof idToken !== 'string' || !idToken) return R(400, { error: 'idToken(문자열) 필요' });
+      const reg = await getReg();
+      if (!reg) return R(409, { reason: 'not_registered' });
+      try { const r = await idp.post('/cia/account/self_revoke', { id_token: idToken }); return R(r.status, r.body ?? {}); }
+      catch (e) { return R(502, { reason: 'cia_unavailable', detail: e.message }); }
+    },
     /** 에이전트 POST /wallet/demo/override 의 등가(설계 §8.3, 2026-10-14 확장): 다음 발급/증명/서명을 한 번만 덮어쓴다(kv `demo`).
      *  issue·prove: s_u·uid 를 바꿔친다. fake_proof·fake_sig: 발급·증명은 정상으로 끝내고 **보내는 복사본**만 바꿔친다. */
     async demoOverride({ scope = null, s_u = null, uid: uidIn = null, clear = false } = {}) {
@@ -737,7 +795,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       return R(200, { ok: true, override: { scope, fields: Object.keys(ov).filter((k) => k !== 'scope') } });
     },
     /** 이 브라우저의 등록·비밀·세션을 모두 지운다(되돌릴 수 없다 — IdP 쪽 계정은 그대로). */
-    async wipe() { await kv.clear(); vault.reset(); lastSync = null; lastRegistry = null; return R(200, { ok: true }); },
+    async wipe() { await kv.clear(); vault.reset(); lastSync = null; lastRegistry = null; pendingReg = null; return R(200, { ok: true }); },
   };
   /** execute 영수증 → 응답 공통부(에이전트 receiptResult 의 등가). disclosure = 요청값, onchainDisclosure = Disclosure 이벤트에서 읽은 값. */
   function receiptResult(receipt, walletAddr, disclosure) {
@@ -763,6 +821,18 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
   };
   const core = { vault, chain, idp };
   for (const [name, fn] of Object.entries(ops)) core[name] = guard(name, fn);
+  /** Google(OIDC) 등록 1단계(스펙 2026-10-16 §3.1): 등록 재료(s_u·sk_u·pk_u)를 먼저 만들고 토큰을 그 공개키에 묶을 nonce = regNonce(pk_u) 를
+   *  낸다 — uid 는 토큰의 sub 로 정해지므로 auid 는 completeRegistration 에서 만든다. 재료는 이 페이지의 메모리(pendingReg)에만 두고,
+   *  부를 때마다 새로 만든다(토큰은 1회용). { status, body } 가 아니라 { nonce, pk_u:{x,y}(10진 문자열), pending:true } 를 돌려준다. */
+  core.prepareRegistration = async () => {
+    const s_u = randomScalar();
+    const sk_u = randomBytes(32).toString('hex');
+    const pk = await eddsaPubOf(sk_u);
+    const pk_u = { x: pk.x.toString(), y: pk.y.toString() };
+    const nonce = regNonce(pk_u);
+    pendingReg = { s_u, sk_u, pk_u, nonce };
+    return { nonce, pk_u, pending: true };
+  };
   /** 존재 신호 6개(정적 서버 POST /wallet/presence 의 본문). 세션 수·rpCount 는 저장 세션에서, txs·disclosedTxs 는 txs 배열에서 센다 —
    *  다시 읽기를 넘긴다. rpCount 는 "지금 몇 RP 에 로그인 상태인가"다(세션이 지워지면 함께 준다). 던지지 않는다. */
   core.health = async () => {

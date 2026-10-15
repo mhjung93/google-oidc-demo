@@ -110,6 +110,7 @@ CHAIN=(
   tests/test_mode3_user_static.mjs
   # 브라우저 사용자 코어(mode3/user/core)를 Node 에서 — 메모리 kv·진짜 snarkjs, 격리 IdP·RP(릴레이 포함)
   tests/test_mode3_user_core.mjs
+  tests/test_mode3_user_core_oidc.mjs
 )
 
 # 브라우저가 필요한 것들 — chain 과 나누는 이유는 의존성이 하나 더 있기 때문이다.
