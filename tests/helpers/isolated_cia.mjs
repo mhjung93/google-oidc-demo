@@ -23,7 +23,14 @@ export function freePort() {
 }
 
 export async function startIsolatedCia(opts = {}) {
-  const { env: extraEnv = {}, readyTimeoutMs = 30_000 } = opts;
+  const { env: extraEnv = {}, readyTimeoutMs = 30_000, oidc = null } = opts;
+  // OIDC 래퍼(스펙 2026-10-16 Task 3): oidc 를 주면 발급자 스텁을 먼저 띄우고 그 설정을 env 로 넣는다. 옵션이 없으면
+  // 빈 문자열로 고정한다 — 개발용 .env 의 GOOGLE_CLIENT_ID 가 새어 들어와 테스트 IdP 가 Google 을 켜지 않게 막는다.
+  let oidcStub = null;
+  if (oidc) {
+    const { startOidcIssuerStub } = await import('./oidc_issuer_stub.mjs');
+    oidcStub = await startOidcIssuerStub(typeof oidc === 'object' ? oidc : {});
+  }
   // 두 체인(2026-10-03, test_mode3_demo_full.mjs): revRpcUrl 을 주면 캐노니컬 로그는 그 체인(폐기 체인)에, 거울은 appRpcUrl
   // (기본 CIA_RPC_URL 또는 :8545)에 배포한다. 둘 다 없으면 지금처럼 한 체인에 로그와 거울을 함께 둔다.
   const defaultRpc = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
@@ -66,6 +73,13 @@ export async function startIsolatedCia(opts = {}) {
     CIA_ADMIN_SECRET: adminSecret,
     CIA_LOG_ADDRESS: logAddress,
     CIA_ETH_PRIVATE_KEY: ethWallet.privateKey,
+    MODE3_OIDC_ISSUER: oidcStub?.issuer ?? '',
+    MODE3_OIDC_JWKS_URL: oidcStub?.jwksUrl ?? '',
+    MODE3_OIDC_CLIENT_ID: oidcStub?.clientId ?? '',
+    MODE3_OIDC_PROVIDER: oidcStub?.provider ?? '',
+    // cia.js 는 MODE3_OIDC_CLIENT_ID 가 비면 GOOGLE_CLIENT_ID(Mode 1 용, .env 에 있을 수 있다)로 떨어진다 — 그 값까지
+    // 빈 문자열로 막아야 oidc 옵션 없는 격리 IdP 가 뜻하지 않게 Google 을 켜지 않는다.
+    GOOGLE_CLIENT_ID: '',
     ...extraEnv,
   };
   const logFile = path.join(dir, 'cia.log');
@@ -91,6 +105,7 @@ export async function startIsolatedCia(opts = {}) {
     // 기동 거부가 정상 경로인 테스트(test_cia_startup.mjs)가 있다 — 실패해도 잔존물을 남기지 않는다.
     provider.destroy();
     if (revProvider !== provider) revProvider.destroy();
+    if (oidcStub) await oidcStub.stop();
     fs.rmSync(dir, { recursive: true, force: true });
     throw new Error(`격리 CIA 기동 실패(${port}).${spawnError ? ' spawn: ' + spawnError.message : ''}\n${log}`);
   }
@@ -100,6 +115,7 @@ export async function startIsolatedCia(opts = {}) {
   return {
     base, port, dir, adminSecret, adminHeaders, ethAddress: ethWallet.address, logAddress, ciaEthWallet,
     mirrorAddress, mirrorContract: new ethers.Contract(mirrorAddress, MODE3_MIRROR_ABI, provider),
+    oidc: oidcStub,   // Task 3: oidc:true 로 띄우면 발급자 스텁(mint·stop 포함), 아니면 null
     // 두 체인(2026-10-03): 캐노니컬은 revProvider, 거울은 provider(appProvider) 로 읽는다. 단일 체인이면 둘이 같은 객체다.
     twoChains, revRpcUrl, appRpcUrl, revProvider, appProvider: provider,
     log: () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : ''),
@@ -139,6 +155,7 @@ export async function startIsolatedCia(opts = {}) {
       }
       provider.destroy();   // fundAddress/deployMode3Log/ciaEthWallet 가 같이 쓰던 provider
       if (revProvider !== provider) revProvider.destroy();
+      if (oidcStub) await oidcStub.stop();
       fs.rmSync(dir, { recursive: true, force: true });
     },
   };

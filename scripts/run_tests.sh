@@ -87,6 +87,7 @@ CHAIN=(
   tests/test_cia_register_issue.mjs
   tests/test_cia_startup.mjs
   tests/test_cia_cors.mjs
+  tests/test_cia_oidc_register.mjs
   tests/test_cia_issue_race.mjs
   tests/test_cia_registry.mjs
   tests/test_cia_mirror_relay.mjs

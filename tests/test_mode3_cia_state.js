@@ -9,12 +9,20 @@ t('기본 상태는 v12 이고 attrs·profile·issued 가 없다', () => {
   assert.equal(s.version, 12); assert.equal(CIA_STATE_VERSION, 12);
   assert.deepEqual(s, { version: 12, accounts: {}, rps: {}, openings: [], revoked: [], pending: [], epoch: 0, registry: { depth: 20, next: 0, leaves: {}, pendingSlots: [] }, lastPublication: null, signedEpochMax: 0, attrSchemaHash: null });
 });
-t('v12 는 그대로(notes 없음), 빠진 하위 필드는 채운다, 계정 기본값(creds·sessions·tampered·receipt·slotRetired)', () => {
+t('v12 는 그대로(notes 없음), 빠진 하위 필드는 채운다, 계정 기본값(creds·sessions·tampered·receipt·slotRetired·provider)', () => {
   const { state, notes } = migrateCiaState({ version: 12, accounts: { '12345': { pk_u: { x: '1', y: '2' }, auid: '99', slot: 0, disabled: false } }, rps: {}, openings: [], revoked: [], pending: [], epoch: 3, registry: {} });
   assert.deepEqual(notes, []); assert.equal(state.epoch, 3);
   assert.deepEqual(state.registry, { depth: 20, next: 0, leaves: {}, pendingSlots: [] });
-  assert.deepEqual(state.accounts['12345'], { pk_u: { x: '1', y: '2' }, auid: '99', slot: 0, disabled: false, creds: [], sessions: [], tampered: false, receipt: null, slotRetired: false });
+  assert.deepEqual(state.accounts['12345'], { pk_u: { x: '1', y: '2' }, auid: '99', slot: 0, disabled: false, creds: [], sessions: [], tampered: false, receipt: null, slotRetired: false, provider: 'demo' });
   assert.equal(state.signedEpochMax, 0); assert.equal(state.attrSchemaHash, null, '스키마 해시는 cia.js 기동이 기록한다');
+});
+t('OIDC 래퍼(2026-10-16): provider 없는 v12 계정은 migrateCiaState 뒤 demo 가 되고, 이미 있는 provider(google)는 유지된다', () => {
+  const { state } = migrateCiaState({ version: 12, accounts: {
+    noProvider: { pk_u: { x: '1', y: '2' }, auid: '99', slot: 0, disabled: false },
+    google: { pk_u: { x: '3', y: '4' }, auid: '77', slot: 1, disabled: false, provider: 'google' },
+  }, rps: {}, openings: [], revoked: [], pending: [], epoch: 0, registry: {} });
+  assert.equal(state.accounts.noProvider.provider, 'demo');
+  assert.equal(state.accounts.google.provider, 'google');
 });
 t('v11 이하(v2·v4·v8·v10·v11)와 미래 버전(13), 버전 없음은 전부 throw — 이행하지 않는다', () => {
   for (const v of [2, 4, 8, 10, 11, 13, undefined]) assert.throws(() => migrateCiaState({ version: v, accounts: {} }), /unsupported IdP state version/, String(v));

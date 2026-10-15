@@ -37,6 +37,8 @@ import { isTracePoint, createShare, combinePublicKey, partialDecrypt, combineDec
 import { openRequestMessage, openResultMessage, recoverSigner, isFreshTs } from './lib/mode3_opening.js';
 import { CIA_STATE_VERSION, defaultCiaState, migrateCiaState } from './lib/mode3_cia_state.js';
 import { buildAaHealth, applyHealthHeaders, bounded, originList } from './lib/mode3_health.js';
+import { createOidcVerifier, GOOGLE_DEFAULTS } from './lib/mode3_oidc.js';
+import { uidOf, regNonce, isRevokeNonce, REG_PREFIX, REVOKE_PREFIX } from './lib/mode3_oidc_nonce.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.CIA_PORT) || 4100;
@@ -56,6 +58,17 @@ try {
 const ADMIN_SECRET = process.env.CIA_ADMIN_SECRET;
 // 사용자 오리진(web 모드 사용자 페이지 또는 에이전트, 스펙 2026-10-15 §5.3). health 의 허용 목록과 아래 userCors 가 같은 값을 쓴다.
 const WALLET_AGENT_ORIGIN = process.env.MODE3_WALLET_AGENT_ORIGIN || 'http://127.0.0.1:5100';
+// OIDC 래퍼(스펙 2026-10-16): Google ID 토큰을 체인 밖에서 검증해 계정을 만든다. 클라이언트 ID 가 없으면 꺼진다(데모 계정만).
+const envStr = (k, d) => (process.env[k] === undefined || process.env[k] === '' ? d : process.env[k]);
+const OIDC_PROVIDER = envStr('MODE3_OIDC_PROVIDER', GOOGLE_DEFAULTS.provider), OIDC_ISSUER = envStr('MODE3_OIDC_ISSUER', GOOGLE_DEFAULTS.issuer), OIDC_JWKS_URL = envStr('MODE3_OIDC_JWKS_URL', GOOGLE_DEFAULTS.jwksUrl), OIDC_CLIENT_ID = envStr('MODE3_OIDC_CLIENT_ID', envStr('GOOGLE_CLIENT_ID', null));
+const OIDC = { enabled: Boolean(OIDC_CLIENT_ID), provider: OIDC_PROVIDER, issuer: OIDC_ISSUER, jwksUrl: OIDC_JWKS_URL, clientId: OIDC_CLIENT_ID ?? null, verifier: OIDC_CLIENT_ID ? createOidcVerifier({ issuer: OIDC_ISSUER, jwksUrl: OIDC_JWKS_URL, clientId: OIDC_CLIENT_ID }) : null };
+const OIDC_STATUS = { oidc_invalid: 401, oidc_nonce_mismatch: 400, oidc_unavailable: 502 };
+/** id_token 을 검증해 { uid, sub, nonce } 를 돌려준다. 실패는 { status, body } 로(라우트가 그대로 낸다). */
+async function oidcUid(idToken, noncePrefix) {
+  if (!OIDC.enabled) return { error: { status: 503, body: { error: 'oidc_disabled', reason: 'oidc_disabled' } } };
+  try { const v = await OIDC.verifier.verify(idToken, { noncePrefix }); return { uid: uidOf(OIDC.provider, v.sub), sub: v.sub, nonce: v.nonce }; }
+  catch (e) { const status = OIDC_STATUS[e.reason]; if (!status) throw e; return { error: { status, body: { error: e.reason, reason: e.reason, detail: e.detail } } }; }
+}
 // 사용자 페이지가 브라우저에서 직접 부르는 라우트에만 연다(계획 2026-10-15 Task 6). 관리자 헤더는 허용 목록에 없다 —
 // 교차 오리진에서 관리자 경로를 부를 수 없다(관리자 페이지는 같은 오리진 /admin 이다). 문자열이 아니라 함수형 origin 이어야
 // 일치할 때만 헤더가 붙는다(에이전트의 loginCors 와 같은 이유).
@@ -414,7 +427,8 @@ app.get('/account', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'ci
 app.get('/cia/public_keys', userCors, (req, res) => {
   // V10: canonicalChainId = 게시 로그가 있는 체인(selfChainId 와 같은 provider). mirrors = CIA_MIRRORS(릴레이 대상 거울, 2026-10-02 Task 6).
   res.json({ pk_CIA: S(ciaPub), ethAddress: ethWallet.address, heartbeatBlocks: Number(HEARTBEAT_BLOCKS), chainIds: [...CHAIN_RPCS.keys()], logAddress: LOG_ADDRESS,
-    canonicalChainId: selfChainId, mirrors: MIRRORS.map(({ chainStr, address }) => ({ chainId: chainStr, address })) });
+    canonicalChainId: selfChainId, mirrors: MIRRORS.map(({ chainStr, address }) => ({ chainId: chainStr, address })),
+    oidc: { enabled: OIDC.enabled, provider: OIDC.provider, clientId: OIDC.clientId, issuer: OIDC.issuer } });
 });
 
 // 속성 스키마 공개(스펙 2 §5.2, 인증 없음). 지갑·RP 가 기동 때 받아 술어 타입·정책 이름을 해석하고, 화면이 이름값을 그린다.
@@ -522,10 +536,23 @@ app.post('/cia/rps/:arid/deny', requireAdmin, (req, res) => {
 
 // V11 §3.1 등록. 지갑이 auid = Poseidon(T_AUID, uid, s_u) 와 등록 키 pk_u 를 낸다 — IdP 는 소유 증명 서명만 보고 슬롯 번호를 배정한다. 속성은 받지 않는다(D15).
 app.post('/cia/register', userCors, async (req, res) => {
-  const { uid, pwd, auid, pk_u, sig_reg } = req.body ?? {};
-  if (!isDec(uid) || typeof pwd !== 'string' || !isDec(auid) || !isPt(pk_u) || !sig_reg) return res.status(400).json({ error: 'uid, pwd, auid, pk_u{x,y}, sig_reg required' });
-  const acct = Object.values(DEMO_ACCOUNTS).find((a) => a.uid === uid);
-  if (!acct || acct.password !== pwd) return res.status(401).json({ error: 'invalid credentials' });
+  const { uid: uidIn, pwd, id_token, auid, pk_u, sig_reg } = req.body ?? {};
+  if (!isDec(auid) || !isPt(pk_u) || !sig_reg) return res.status(400).json({ error: 'auid, pk_u{x,y}, sig_reg required' });
+  const demoPath = uidIn !== undefined || pwd !== undefined, oidcPath = id_token !== undefined;
+  if (demoPath === oidcPath) return res.status(400).json({ error: '{uid, pwd} 또는 {id_token} 중 하나만' });   // 둘 다 없거나 둘 다 있음
+  let uid, provider;
+  if (oidcPath) {
+    if (typeof id_token !== 'string') return res.status(400).json({ error: 'id_token 은 문자열' });
+    const o = await oidcUid(id_token, REG_PREFIX); if (o.error) return res.status(o.error.status).json(o.error.body);
+    // 토큰은 이 pk_u 에 묶여 있어야 한다(D4) — 가로챈 토큰으로 다른 키를 등록하지 못하게. auid 는 sig_reg 가 결속한다.
+    if (o.nonce !== regNonce(pk_u)) return res.status(400).json({ error: 'oidc_nonce_mismatch', reason: 'oidc_nonce_mismatch', detail: 'nonce 가 요청의 pk_u 와 다르다' });
+    uid = o.uid; provider = OIDC.provider;
+  } else {
+    if (!isDec(uidIn) || typeof pwd !== 'string') return res.status(400).json({ error: 'uid, pwd, auid, pk_u{x,y}, sig_reg required' });
+    const acct = Object.values(DEMO_ACCOUNTS).find((a) => a.uid === uidIn);
+    if (!acct || acct.password !== pwd) return res.status(401).json({ error: 'invalid credentials' });
+    uid = uidIn; provider = 'demo';
+  }
   if (state.accounts[uid]) return res.status(409).json({ error: 'already registered' });
   if (BigInt(auid) >= F.p) return res.status(400).json({ error: 'auid is not a field element' });   // Poseidon 출력 범위 — 비정규 값은 등록부 리프·π 와 어긋난다
   if (!(await isValidPoint(pointFromStrings(pk_u)))) return res.status(400).json({ error: 'pk_u is not a valid subgroup point' });
@@ -538,9 +565,9 @@ app.post('/cia/register', userCors, async (req, res) => {
   if (!ok) return res.status(400).json({ error: 'bad_registration_signature' });
   if (state.accounts[uid]) return res.status(409).json({ error: 'already registered' });   // await 사이 경합
   const slot = state.registry.next++;
-  state.accounts[uid] = { pk_u: { x: BigInt(pk_u.x).toString(), y: BigInt(pk_u.y).toString() }, auid: BigInt(auid).toString(), slot, tampered: false, disabled: false, creds: [], sessions: [], receipt: null, slotRetired: false };
+  state.accounts[uid] = { pk_u: { x: BigInt(pk_u.x).toString(), y: BigInt(pk_u.y).toString() }, auid: BigInt(auid).toString(), slot, provider, tampered: false, disabled: false, creds: [], sessions: [], receipt: null, slotRetired: false };
   persist();
-  res.status(201).json({ slot, schemaHash: ATTR_SCHEMA_HASH });
+  res.status(201).json({ slot, schemaHash: ATTR_SCHEMA_HASH, uid, provider });
 });
 
 // V9: 옛 지갑 상태 파일(슬롯 없음)이 자기 슬롯 번호를 되찾는다. sk_u 서명 인증, 메시지는 Poseidon(D_SLOTREQ, uid, nonce).
@@ -1051,7 +1078,7 @@ app.post('/cia/account/set_disabled', requireAdmin, (req, res) => {
 
 // 관리자 계정 목록(관리 페이지의 계정 목록용). activeCred 는 위의 기존 헬퍼(사용자당 활성 자격증명 하나).
 app.get('/cia/accounts', requireAdmin, (req, res) => res.json({
-  accounts: Object.entries(state.accounts).map(([uid, a]) => ({ uid, disabled: a.disabled, activeCf_u: activeCred(uid)?.Cf_u ?? null, slot: a.slot, tampered: Boolean(a.tampered), registryLeaf: state.registry.leaves[a.slot] ?? '0' })),
+  accounts: Object.entries(state.accounts).map(([uid, a]) => ({ uid, disabled: a.disabled, activeCf_u: activeCred(uid)?.Cf_u ?? null, slot: a.slot, tampered: Boolean(a.tampered), registryLeaf: state.registry.leaves[a.slot] ?? '0', provider: a.provider ?? 'demo' })),
 }));
 
 // ---- V9 등록부 관리(설계 2026-10-01 §9) ----
@@ -1113,10 +1140,19 @@ app.post('/cia/admin/registry/restore', requireAdmin, async (req, res) => {
 // 형식 → 비밀번호 → 등록 상태 순으로 검사한다. 비밀번호가 틀리면 등록 여부를 알려주지 않는다.
 app.post('/cia/account/self_revoke', userCors, async (req, res) => {
   try {
-    const { uid, pwd } = req.body ?? {};
-    if (!isDec(uid) || typeof pwd !== 'string') return res.status(400).json({ error: 'uid, pwd required' });
-    const acct = Object.values(DEMO_ACCOUNTS).find((a) => a.uid === uid);
-    if (!acct || !secretMatches(pwd, acct.password)) return res.status(401).json({ error: 'invalid credentials' });
+    const { uid: uidIn, pwd, id_token } = req.body ?? {};
+    let uid;
+    if (id_token !== undefined) {
+      if (typeof id_token !== 'string') return res.status(400).json({ error: 'id_token 은 문자열' });
+      const o = await oidcUid(id_token, REVOKE_PREFIX); if (o.error) return res.status(o.error.status).json(o.error.body);
+      if (!isRevokeNonce(o.nonce)) return res.status(400).json({ error: 'oidc_nonce_mismatch', reason: 'oidc_nonce_mismatch', detail: 'nonce 가 폐기용이 아니다' });
+      uid = o.uid;
+    } else {
+      if (!isDec(uidIn) || typeof pwd !== 'string') return res.status(400).json({ error: 'uid, pwd required' });
+      const acct = Object.values(DEMO_ACCOUNTS).find((a) => a.uid === uidIn);
+      if (!acct || !secretMatches(pwd, acct.password)) return res.status(401).json({ error: 'invalid credentials' });
+      uid = uidIn;
+    }
     if (!state.accounts[uid]) return res.status(404).json({ error: 'unknown account' });
     // revokeAccount 안에서 disabled 가 동기적으로(await 전에) 걸린다(설계 §6.5.1) — 재발급 차단은 트리·게시와 분리된
     // 별개의 효력이다. 슬롯은 체인을 읽지 않고 활성 사용자 자격증명 하나에서 나오므로(2026-09-21 §3.6) 체인이 죽어 있어도 걸린다.
