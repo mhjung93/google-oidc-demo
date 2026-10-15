@@ -16,7 +16,7 @@ async function launchBrowser() { const tried = []; for (const opts of [{ channel
 execFileSync('node', ['scripts/build_user_app.mjs'], { stdio: 'inherit' });
 const browser = await launchBrowser();
 const provider = getProvider();
-const stack = await startIsolatedMode3Stack({ userMode: 'web', autoRelay: true });
+const stack = await startIsolatedMode3Stack({ userMode: 'web', autoRelay: true, extraRps: [{ name: 'zkTWO', env: { MODE3_ALLOWED_COUNTRIES: 'KR,JP' } }] });
 const { wallet, rp } = stack;
 const PW = 'demo-vault-pw';
 try {
@@ -87,6 +87,104 @@ try {
     await userPage.click('#sessionActions button.danger');
     await waitText(userPage, '#sessionVerdict', '폐기 요청 접수');
     await waitText(userPage, '#sessionActions', '로그인 세션이 없습니다', 15_000);
+  });
+  // ---- 각본 B ----
+  const rp2 = stack.rps[1];
+  await t('B1 잠금: 잠그기 뒤 트랜잭션은 모달을 띄운다 — 틀린 비밀번호는 bad_password, 맞으면 진행해 전송 성공', async () => {
+    // 새 세션이 필요하다(A7 에서 폐기했다)
+    await viaPopup(async () => { await rpPage.click('#loginBtn'); await rpPage.click('#idpLoginBtn'); }, approve);
+    await waitText(rpPage, '#verdict', '로그인 성공', 120_000);
+    await userPage.click('#lockBtn'); await waitText(userPage, '#vaultBadge', '잠김');
+    assert.equal((await idbDump(userPage)).unlock, undefined, 'unlock 레코드가 지워졌다');
+    await userPage.click('#refreshBtn'); await userPage.waitForFunction(() => document.querySelector('#txSession')?.options.length > 0);
+    // 전제: A6 의 claim 버튼이 채운 AttrGate claim() 폼이 그대로 남아 있다. 이 RP 의 계정(PPID 는 RP 마다 하나)은 A6 에서 이미 claim 했으므로
+    // 그대로 보내면 계정 안의 호출이 "already claimed" 로 실패한다 — 잠금 각본은 기본 송금(HTML 기본값)으로 되돌려 보낸다.
+    await userPage.fill('#txTo', '0x000000000000000000000000000000000000dEaD'); await userPage.fill('#txData', '0x');
+    await userPage.click('#txBtn');
+    await userPage.waitForSelector('#unlockModal:not([hidden])');
+    await userPage.fill('#unlockPw', 'wrong'); await userPage.click('#unlockGo');
+    await waitText(userPage, '#unlockVerdict', '비밀번호', 10_000);
+    await userPage.fill('#unlockPw', PW); await userPage.click('#unlockGo');
+    await waitText(userPage, '#txVerdict', '전송 성공', 120_000);
+    await waitText(userPage, '#vaultBadge', '해제');
+  });
+  await t('B2 잠긴 상태의 팝업: 재검증 팝업이 비밀번호를 묻고, 취소하면 RP 에 user_denied', async () => {
+    await userPage.click('#lockBtn'); await waitText(userPage, '#vaultBadge', '잠김');
+    await viaPopup(() => rpPage.click('#revalidateBtn'), async (popup) => { await popup.waitForSelector('#unlockModal:not([hidden])'); await popup.click('#unlockCancel'); });
+    await waitText(rpPage, '#sessionVerdict', 'user_denied');
+    await viaPopup(() => rpPage.click('#revalidateBtn'), async (popup) => { await popup.waitForSelector('#unlockModal:not([hidden])'); await popup.fill('#unlockPw', PW); await popup.click('#unlockGo'); });
+    await waitText(rpPage, '#sessionVerdict', '재검증 성공');
+    await waitText(userPage, '#vaultBadge', '해제', 10_000);   // 팝업의 해제가 IndexedDB 를 거쳐 메인 탭에도 보인다(R3)
+  });
+  await t('B3 시연 가짜 증명: 다음 로그인이 RP 에서 bad_proof 로 거절되고 [시연 모드] 표기; 가짜 서명: 다음 트랜잭션이 relay_gas(BadSignature)', async () => {
+    await userPage.evaluate(() => Demo.setExpert(true)); await userPage.waitForSelector('#demoCard', { state: 'visible' });
+    await userPage.click('#demoFakeProofBtn'); await waitText(userPage, '#demoVerdict', '적용', 10_000);
+    await viaPopup(async () => { await rpPage.click('#loginBtn'); await rpPage.click('#idpLoginBtn'); }, approve);
+    await waitText(rpPage, '#verdict', 'bad_proof', 120_000);
+    assert.ok((await text(rpPage, '#verdict')).includes('[시연 모드]'));
+    await userPage.click('#demoFakeSigBtn'); await waitText(userPage, '#demoVerdict', '적용', 10_000);
+    await userPage.click('#refreshBtn'); await userPage.click('#txBtn');
+    await waitText(userPage, '#txVerdict', 'relay_gas', 120_000);
+    assert.match(await text(userPage, '#txVerdict'), /\[시연 모드\]|BadSignature/);
+    await userPage.evaluate(() => Demo.setExpert(false));
+  });
+  await t('B4 오리진 위조: 다른 오리진에서 보낸 mode3-authorize 는 origin_mismatch; 세션 주인이 아닌 RP 의 mode3-revalidate 는 no_session; mode3-config 는 RP 오리진에만', async () => {
+    const info = (await rp.get('/api/mode3/rp_info')).body;
+    const sessionsBefore = Object.keys((await idbDump(userPage)).sessions);
+    const forged = async (fromPage, type, request) => {
+      await fromPage.evaluate(({ walletOrigin, type: ty, request: req }) => {
+        document.getElementById('forgedBtn')?.remove();
+        window.__forged = new Promise((resolve) => { window.__forgedResolve = resolve; });
+        const btn = document.createElement('button'); btn.id = 'forgedBtn';
+        btn.addEventListener('click', () => {
+          const popup = window.open(`${walletOrigin}/?authorize=1`, `forged-${ty}-${Math.random()}`, 'width=480,height=680');
+          window.addEventListener('message', (ev) => { if (ev.origin !== walletOrigin || ev.source !== popup || !ev.data) return; if (ev.data.type === 'mode3-authorize-ready') { popup.postMessage({ type: ty, ...req }, walletOrigin); return; } if (ev.data.type === `${ty}-result`) window.__forgedResolve(ev.data.result); });
+        });
+        document.body.appendChild(btn);
+      }, { walletOrigin: wallet.base, type, request });
+      const [popup] = await Promise.all([context.waitForEvent('page'), fromPage.click('#forgedBtn')]);
+      const result = await fromPage.evaluate(() => Promise.race([window.__forged, new Promise((r) => setTimeout(() => r({ timeout: true }), 60_000))]));
+      if (!popup.isClosed()) await popup.waitForEvent('close', { timeout: 15_000 }).catch(() => {});
+      return result;
+    };
+    // (a) rp2 페이지가 rp1 의 인증서를 들고 로그인 요청 — 메시지 오리진(rp2) ≠ 인증서 오리진(rp1)
+    const rp2Page = await context.newPage(); await rp2Page.goto(`${rp2.base}/`); await waitText(rp2Page, '#walletMode', '사용자 비밀=브라우저');
+    const a = await forged(rp2Page, 'mode3-authorize', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s: '11', r_rp: '12', serviceName: 'x' });
+    assert.equal(a.reason, 'origin_mismatch', j(a));
+    // (b) rp2 가 rp1 세션의 r_s 로 재검증 — 세션 오리진이 다르다
+    const info2 = (await rp2.get('/api/mode3/rp_info')).body;
+    const b = await forged(rp2Page, 'mode3-revalidate', { arid: info2.arid, origin: info2.origin, r_s: sessionsBefore[0] });
+    assert.equal(b.reason, 'no_session', j(b));
+    // (c) mode3-config 는 RP 오리진이면 registered·rpCount·sessions 만(uid 없음)
+    const c = await forged(rp2Page, 'mode3-config', { origin: info2.origin });
+    assert.equal(c.ok, true); assert.equal(c.registered, true); assert.equal(typeof c.rpCount, 'number'); assert.ok(!('uid' in c), j(c));
+    await rp2Page.close();
+  });
+  await t('B5 두 번째 RP(zkTWO) 로그인: 다른 계정 주소, health.rpCount=2, RP 페이지 브랜드 zkTWO', async () => {
+    const rp2Page = await context.newPage(); await rp2Page.goto(`${rp2.base}/`); await waitText(rp2Page, '#walletMode', '사용자 비밀=브라우저');
+    assert.equal(await rp2Page.evaluate(() => document.body.dataset.brand), 'zkTWO');
+    await viaPopup(async () => { await rp2Page.click('#loginBtn'); await rp2Page.click('#idpLoginBtn'); }, approve);
+    await waitText(rp2Page, '#verdict', '로그인 성공', 120_000);
+    const sessions = Object.values((await idbDump(userPage)).sessions);
+    const accounts = new Set(sessions.map((s) => s.account)); assert.ok(accounts.size >= 2, 'RP 마다 다른 계정 주소');
+    await userPage.click('#refreshBtn');
+    await userPage.waitForFunction(async () => (await (await fetch('/mode3/health')).json()).rpCount >= 2, undefined, { timeout: 15_000 });
+    await rp2Page.close();
+  });
+  await t('B6 증명 키 캐시: 새 탭에서 페이지를 열면 /zk/*.zkey 를 다시 받지 않는다(Cache API 히트)', async () => {
+    const p2 = await context.newPage(); const zkFetches = [];
+    p2.on('request', (r) => { if (r.url().includes('/zk/') && r.url().endsWith('.zkey')) zkFetches.push(r.url()); });
+    await p2.goto(`${wallet.base}/`); await p2.waitForSelector('#mainView:not([hidden])'); await waitText(p2, '#zkProgress', '준비', 60_000);
+    assert.equal(zkFetches.length, 0, `네트워크로 다시 받았다: ${j(zkFetches)}`);
+    await p2.close();
+  });
+  await t('B7 모두 지우기: 확인 → IndexedDB 가 비고 미등록·금고 없음으로 돌아간다, 재등록은 IdP 가 409(already registered) 로 막는다(재시연 세트 필요)', async () => {
+    userPage.once('dialog', (d) => d.accept());
+    await userPage.click('#wipeBtn');
+    await waitText(userPage, '#vaultBadge', '없음', 10_000);
+    assert.deepEqual(await idbDump(userPage), {});
+    await userPage.fill('#vaultPw', PW); await userPage.fill('#vaultPw2', PW); await userPage.click('#registerBtn');
+    await waitText(userPage, '#registerResult', 'register_failed', 60_000);
   });
 } finally { await browser.close(); await stack.stop(); }
 process.exit(failed ? 1 : 0);
