@@ -55,12 +55,13 @@ Google ID 토큰(RS256)은 회로에 들어가지 않는다. **IdP 가 래퍼**�
 - 결속: 등록 토큰은 nonce 로 pk_u 에 묶이고, auid 는 sig_reg(sk_u 서명)가 묶는다. 토큰이 새어도 sk_u 없이는 쓸 수 없고, 같은 재료로 다시 쓰면 409 다. 폐기 토큰 재사용은 멱등.
 - IdP 는 `sub`·이메일을 저장하지 않는다(uid 는 단방향 유도). 단 IdP 는 토큰을 받는 순간 Google 신원을 안다 — 데모 계정의 uid·비밀번호와 같은 위치의 지식이다.
 - `aud` 는 반드시 이 데모의 클라이언트 ID 와 같아야 한다(다른 앱에 발급된 Google 토큰 재사용 차단). JWKS 는 `jose` 의 원격 집합(캐시·키 회전 처리)으로 받는다.
+- **클라이언트 ID 공유 위험**(2026-10-16 최종 리뷰 I2). 위 `aud` 차단과 D4 의 결속은 클라이언트 ID 가 Mode 3 전용일 때만 성립한다. `MODE3_OIDC_CLIENT_ID` 가 없으면 IdP 는 Mode 1 의 `GOOGLE_CLIENT_ID` 로 떨어지는데, Mode 1 `server.js` 의 `/login?custom_nonce=` 는 호출자가 고른 nonce 로 같은 `aud` 의 토큰을 받게 해 주고 그 토큰을 `/me` 에 보이며 `.id_token.txt` 에 저장한다. 그러면 그 토큰을 얻을 수 있는 사람(Mode 1 서버 운영자, 그 출력을 읽을 수 있는 누구나, 또는 피해자를 nonce 를 고른 Mode 1 로그인 링크로 보낸 사람)은 nonce 를 `"reg:" + H(자기 pk_u)` 로 골라 아직 등록하지 않은 피해자의 Google 신원을 자기 키로 등록하거나(신원 탈취 — 피해자는 이후 409), `"revoke:…"` 로 골라 등록된 계정을 되돌릴 수 없게 폐기할 수 있다. 이 데모는 운영자 한 사람·localhost 라 원격 경로는 없지만, **Mode 3 전용 OAuth 클라이언트를 만들어 `MODE3_OIDC_CLIENT_ID` 로 지정하기를 권한다.** 폴백은 남겨 두고(D3·§6 의 원래 선택), 폴백으로 켜지면 IdP 가 기동 때 경고를 남긴다. 근본 해결(IdP 가 1회용 nonce 를 발급·기억하는 서버 측 챌린지)은 공유와 무관하게 막지만 범위 밖이다.
 - 오리진: localhost 통일(D6)은 Google 제약 때문이다. 127.0.0.1 로 연 사용자 페이지에서는 Google 버튼이 숨고 안내만 나온다.
 
 ## 6. 런북·운영
 
-- Google 콘솔: Mode 1 의 OAuth 클라이언트에 승인된 JavaScript 원본 `http://localhost:5100`·`http://localhost:4100` 추가. 리다이렉트 URI 는 필요 없다.
-- env: IdP `MODE3_OIDC_CLIENT_ID`(또는 기존 `GOOGLE_CLIENT_ID`), 사용자 오리진 셋을 `http://localhost:5100` 으로. Google 없이 띄우면 버튼이 숨고 데모 계정만 된다.
+- Google 콘솔: Mode 1 의 OAuth 클라이언트에 승인된 JavaScript 원본 `http://localhost:5100`·`http://localhost:4100` 추가. 리다이렉트 URI 는 필요 없다. *2026-10-16 최종 리뷰 뒤: Mode 3 전용 클라이언트를 따로 만들어 같은 원본을 넣기를 권한다(§5 클라이언트 ID 공유 위험).*
+- env: IdP `MODE3_OIDC_CLIENT_ID`(또는 기존 `GOOGLE_CLIENT_ID`), 사용자 오리진 셋을 `http://localhost:5100` 으로. Google 없이 띄우면 버튼이 숨고 데모 계정만 된다. 권장은 `MODE3_OIDC_CLIENT_ID` 에 Mode 3 전용 클라이언트 ID 다 — `GOOGLE_CLIENT_ID` 폴백으로 켜지면 IdP 가 기동 때 경고한다.
 - 재시연 세트는 그대로 + Google 로 등록한 브라우저의 "모두 지우기".
 - 수동 체크리스트: Google 로 등록 → zkONE 로그인 → zkTWO 로그인 → 계정 페이지에서 Google 로 자기 폐기 → 재검증이 `revoked`.
 

@@ -8,10 +8,14 @@ export async function startOidcIssuerStub({ clientId = 'mode3-test-client', prov
   const kid = 'stub-' + Date.now().toString(36);
   const jwk = { ...(await exportJWK(publicKey)), kid, alg: 'RS256', use: 'sig' };
   let base = null;
-  async function mint({ sub, nonce, aud = clientId, iss = base, expSeconds = 300, extra = {} }) {
+  // omitClaims: 'iat'·'exp' 를 빼고 서명한다(검증기의 requiredClaims 테스트용). 기본은 둘 다 넣는다.
+  async function mint({ sub, nonce, aud = clientId, iss = base, expSeconds = 300, extra = {}, omitClaims = [] }) {
     const now = Math.floor(Date.now() / 1000);
     const claims = { sub, ...(nonce === undefined ? {} : { nonce }), ...extra };
-    return new SignJWT(claims).setProtectedHeader({ alg: 'RS256', kid }).setIssuer(iss).setAudience(aud).setIssuedAt(now).setExpirationTime(now + expSeconds).sign(privateKey);
+    const jwt = new SignJWT(claims).setProtectedHeader({ alg: 'RS256', kid }).setIssuer(iss).setAudience(aud);
+    if (!omitClaims.includes('iat')) jwt.setIssuedAt(now);
+    if (!omitClaims.includes('exp')) jwt.setExpirationTime(now + expSeconds);
+    return jwt.sign(privateKey);
   }
   const server = http.createServer(async (req, res) => {
     const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS' };

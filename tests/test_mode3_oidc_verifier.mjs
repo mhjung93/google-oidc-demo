@@ -1,5 +1,6 @@
 // tests/test_mode3_oidc_verifier.mjs — OIDC 검증기(스펙 2026-10-16 §2 lib/mode3_oidc.js) + RS256 발급자 스텁. localhost HTTP 만 쓴다. (unit)
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import { SignJWT, generateKeyPair, exportJWK, createLocalJWKSet } from 'jose';
 import { createOidcVerifier, GOOGLE_DEFAULTS } from '../lib/mode3_oidc.js';
 import { startOidcIssuerStub } from './helpers/oidc_issuer_stub.mjs';
@@ -52,6 +53,30 @@ try {
     assert.equal((await v.verify(token, { noncePrefix: 'reg:' })).sub, 'g-1');
     const down = createOidcVerifier({ issuer: stub.issuer, jwksUrl: 'http://127.0.0.1:1/jwks', clientId: 'cid-1' });
     await expectReason(down.verify(await stub.mint({ sub: 's', nonce: 'reg:n' }), { noncePrefix: 'reg:' }), 'oidc_unavailable', /^[A-Za-z_]+$/);   // detail 은 코드명/클래스명만(e.message 금지)
+  });
+  // 2026-10-16 최종 리뷰 I3·M1 — 토큰을 확인하지 못한 경우(JWKS 획득 실패)는 "무효"가 아니라 oidc_unavailable 이다.
+  await t('JWKS 서버가 500 → oidc_unavailable(detail 은 코드명)', async () => {
+    const srv = http.createServer((req, res) => { res.writeHead(req.url === '/.well-known/jwks.json' ? 500 : 404); res.end(); });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    try {
+      const v = createOidcVerifier({ issuer: stub.issuer, jwksUrl: `http://127.0.0.1:${srv.address().port}/.well-known/jwks.json`, clientId: 'cid-1' });
+      await expectReason(v.verify(await stub.mint({ sub: 's', nonce: 'reg:n' }), { noncePrefix: 'reg:' }), 'oidc_unavailable', /^[A-Za-z_]+$/);
+    } finally { await new Promise((r) => srv.close(() => r())); }
+  });
+  await t('DNS 가 풀리지 않는 호스트 → oidc_unavailable', async () => {
+    const v = createOidcVerifier({ issuer: stub.issuer, jwksUrl: 'http://nonexistent.invalid/jwks', clientId: 'cid-1' });   // .invalid 는 절대 풀리지 않는다(RFC 6761)
+    await expectReason(v.verify(await stub.mint({ sub: 's', nonce: 'reg:n' }), { noncePrefix: 'reg:' }), 'oidc_unavailable', /^E[A-Z_]+$/);   // EAI_AGAIN·ENOTFOUND
+  });
+  await t('exp·iat 없는 토큰 → oidc_invalid(requiredClaims)', async () => {
+    const v = createOidcVerifier({ issuer: stub.issuer, jwksUrl: stub.jwksUrl, clientId: 'cid-1' });
+    await expectReason(v.verify(await stub.mint({ sub: 's', nonce: 'reg:n', omitClaims: ['exp'] }), { noncePrefix: 'reg:' }), 'oidc_invalid', /ERR_JWT_CLAIM_VALIDATION_FAILED/);
+    await expectReason(v.verify(await stub.mint({ sub: 's', nonce: 'reg:n', omitClaims: ['iat'] }), { noncePrefix: 'reg:' }), 'oidc_invalid', /ERR_JWT_CLAIM_VALIDATION_FAILED/);
+  });
+  await t('alg HS256 토큰 → oidc_invalid(alg 혼동 차단)', async () => {
+    const v = createOidcVerifier({ issuer: stub.issuer, jwksUrl: stub.jwksUrl, clientId: 'cid-1' });
+    const hmac = crypto.getRandomValues(new Uint8Array(32));
+    const hs = await new SignJWT({ sub: 's', nonce: 'reg:n' }).setProtectedHeader({ alg: 'HS256' }).setIssuer(stub.issuer).setAudience('cid-1').setIssuedAt().setExpirationTime('5m').sign(hmac);
+    await expectReason(v.verify(hs, { noncePrefix: 'reg:' }), 'oidc_invalid', /ERR_JOSE_ALG_NOT_ALLOWED/);
   });
 } finally { await stub.stop(); }
 process.exit(fails ? 1 : 0);

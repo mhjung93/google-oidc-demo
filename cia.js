@@ -63,6 +63,12 @@ const envStr = (k, d) => (process.env[k] === undefined || process.env[k] === '' 
 const OIDC_PROVIDER = envStr('MODE3_OIDC_PROVIDER', GOOGLE_DEFAULTS.provider), OIDC_ISSUER = envStr('MODE3_OIDC_ISSUER', GOOGLE_DEFAULTS.issuer), OIDC_JWKS_URL = envStr('MODE3_OIDC_JWKS_URL', GOOGLE_DEFAULTS.jwksUrl), OIDC_CLIENT_ID = envStr('MODE3_OIDC_CLIENT_ID', envStr('GOOGLE_CLIENT_ID', null));
 const OIDC = { enabled: Boolean(OIDC_CLIENT_ID), provider: OIDC_PROVIDER, issuer: OIDC_ISSUER, jwksUrl: OIDC_JWKS_URL, clientId: OIDC_CLIENT_ID ?? null, verifier: OIDC_CLIENT_ID ? createOidcVerifier({ issuer: OIDC_ISSUER, jwksUrl: OIDC_JWKS_URL, clientId: OIDC_CLIENT_ID }) : null };
 const OIDC_STATUS = { oidc_invalid: 401, oidc_nonce_mismatch: 400, oidc_unavailable: 502 };
+// 공유 클라이언트 ID 경고(2026-10-16 최종 리뷰 I2): GOOGLE_CLIENT_ID 폴백으로 켜지면 Mode 1 과 aud 가 같다. Mode 1 server.js 의
+// /login?custom_nonce= 는 고른 nonce 로 같은 aud 의 토큰을 받게 해 주므로 reg:·revoke: nonce 의 결속(D4)이 무력해진다. 폴백은 두고(스펙 D3·§6) 알리기만 한다.
+if (OIDC.enabled) {
+  console.log(`[cia] OIDC 래퍼 켜짐: provider=${OIDC.provider}, issuer=${OIDC.issuer}`);
+  if (envStr('MODE3_OIDC_CLIENT_ID', null) === null) console.warn('[cia] 경고: OIDC 래퍼가 Mode 1 의 클라이언트 ID(GOOGLE_CLIENT_ID)를 함께 쓴다 — 같은 aud 로 토큰을 받는 흐름(Mode 1 의 /login?custom_nonce=)이 등록·폐기 nonce(reg:·revoke:)를 고른 토큰을 만들 수 있다. MODE3_OIDC_CLIENT_ID 로 Mode 3 전용 클라이언트를 쓰기를 권한다.');
+}
 /** id_token 을 검증해 { uid, sub, nonce } 를 돌려준다. 실패는 { status, body } 로(라우트가 그대로 낸다). */
 async function oidcUid(idToken, noncePrefix) {
   if (!OIDC.enabled) return { error: { status: 503, body: { error: 'oidc_disabled', reason: 'oidc_disabled' } } };
@@ -535,6 +541,7 @@ app.post('/cia/rps/:arid/deny', requireAdmin, (req, res) => {
 });
 
 // V11 §3.1 등록. 지갑이 auid = Poseidon(T_AUID, uid, s_u) 와 등록 키 pk_u 를 낸다 — IdP 는 소유 증명 서명만 보고 슬롯 번호를 배정한다. 속성은 받지 않는다(D15).
+// 신원은 데모 계정 {uid, pwd} 또는 Google ID 토큰 {id_token}(OIDC 래퍼 2026-10-16 — uid 는 IdP 가 검증한 sub 로 유도, nonce 는 pk_u 에 묶임) 중 하나로 확인한다.
 app.post('/cia/register', userCors, async (req, res) => {
   const { uid: uidIn, pwd, id_token, auid, pk_u, sig_reg } = req.body ?? {};
   if (!isDec(auid) || !isPt(pk_u) || !sig_reg) return res.status(400).json({ error: 'auid, pk_u{x,y}, sig_reg required' });
@@ -1138,6 +1145,7 @@ app.post('/cia/admin/registry/restore', requireAdmin, async (req, res) => {
 // §6.5.1 사용자 개시 폐기. 인증은 계정 비밀번호다 — 지갑 키가 아니다. 장치를 잃은 사용자에게 sk_u 는 없고
 // 공격자에게는 있으므로, 인증 수단은 장치 밖에 있어야 한다. 처리는 관리자의 계정 폐기와 같다.
 // 형식 → 비밀번호 → 등록 상태 순으로 검사한다. 비밀번호가 틀리면 등록 여부를 알려주지 않는다.
+// Google 계정은 비밀번호 대신 폐기용 nonce("revoke:…")의 id_token 으로 인증한다(OIDC 래퍼 2026-10-16) — 검증된 토큰 보유자에게는 미등록이면 404 로 알린다.
 app.post('/cia/account/self_revoke', userCors, async (req, res) => {
   try {
     const { uid: uidIn, pwd, id_token } = req.body ?? {};

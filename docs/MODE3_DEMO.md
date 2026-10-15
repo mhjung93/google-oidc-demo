@@ -958,13 +958,23 @@ IdP(`cia.js`)가 Google ID 토큰을 **체인 밖에서** `jose` 로 검증해(R
 을 추가한다(리다이렉트 URI 는 필요 없다 — Google 은 `127.0.0.1` 원본을 받지 않는다). env: IdP `MODE3_OIDC_CLIENT_ID`(없으면
 `GOOGLE_CLIENT_ID`; 둘 다 없거나 빈 문자열이면 꺼짐 — Google 행이 숨고 데모 계정만 된다), 선택 `MODE3_OIDC_ISSUER`(기본
 `https://accounts.google.com`)·`MODE3_OIDC_JWKS_URL`(기본 `https://www.googleapis.com/oauth2/v3/certs`)·
-`MODE3_OIDC_PROVIDER`(기본 `google`). **사용자 오리진을 localhost 로 통일**한다: 정적 서버
+`MODE3_OIDC_PROVIDER`(기본 `google`). **Mode 3 전용 OAuth 클라이언트를 따로 만들어(같은 두 원본) `MODE3_OIDC_CLIENT_ID` 로
+지정하기를 권한다** — `GOOGLE_CLIENT_ID` 폴백으로 Mode 1 클라이언트를 함께 쓰면 Mode 1 `server.js` 의 `/login?custom_nonce=` 가
+고른 nonce 로 같은 `aud` 의 토큰을 받게 해 주므로, 그 토큰을 얻은 사람이 남의 Google 신원을 자기 키로 등록(`reg:`)하거나 되돌릴
+수 없게 폐기(`revoke:`)할 수 있다(스펙 §5 "클라이언트 ID 공유 위험"). 폴백으로 켜지면 IdP 가 기동 때
+`[cia] 경고: OIDC 래퍼가 Mode 1 의 클라이언트 ID(GOOGLE_CLIENT_ID)를 함께 쓴다 …` 를 남긴다. **사용자 오리진을 localhost 로 통일**한다: 정적 서버
 `MODE3_WALLET_PUBLIC_ORIGIN=http://localhost:5100`, IdP·RP 의 `MODE3_WALLET_AGENT_ORIGIN=http://localhost:5100`; 브라우저도
 사용자 페이지를 `http://localhost:5100/`, 계정 페이지를 `http://localhost:4100/account` 로 연다. IdP 의
 `public_keys.oidc.enabled` 이고 hostname 이 `localhost` 일 때만 사용자 페이지에 "또는 Google 계정으로 등록:" 행(GIS 버튼)이
 보인다. `127.0.0.1` 로 열면 IdP CORS 가 설정된 오리진에만 열려 있어 `oidc` 설정을 읽지 못하고, `walletOrigin` 이 localhost 로
 설정돼 있으면 "Google 로그인은 http://localhost 주소에서만 됩니다 — http://localhost:5100/ 로 여세요" 안내만 보인다(Google
 등록 행은 뜨지 않는다).
+
+**켜고 끄기**: (1) RP(`mode3_rp.js`)는 IdP `/cia/public_keys` 의 `oidc` 를 기동 때 한 번만 읽는다(pk_CIA TOFU 와 같은 응답) —
+IdP 에서 Google 을 켜거나 끈 뒤에는 RP 도 재시작해야 모달의 Google 버튼이 따라온다. (2) RP 에 `MODE3_PK_CIA_X/Y` 를 env 로
+고정하면 그 조회를 건너뛰므로 `rp_info.oidc.enabled=false` 다 — Google 버튼은 꺼진 채로 남는다. (3) `.env` 에 (Mode 1 용)
+`GOOGLE_CLIENT_ID` 가 있으면 라이브 IdP 는 **다음 재시작 때 Google 을 자동으로 켠다**(위 경고도 찍힌다). 켜지 않으려면 기동 env
+에 `GOOGLE_CLIENT_ID=`(빈 값)을 준다 — dotenv 는 이미 있는 키를 덮지 않는다(격리 테스트 하네스가 쓰는 방법).
 
 **수동 체크리스트**(스펙 §6): 사용자 페이지에서 "또는 Google 계정으로 등록:" 행으로 Google 로 등록 → zkONE 로그인(RP 모달의
 Google 버튼) → zkTWO 로그인 → 계정 페이지(`:4100/account`)의 "Google 로 등록한 계정은 Google 로 폐기:" 행으로 자기 폐기 →
@@ -978,7 +988,7 @@ Google 버튼) → zkTWO 로그인 → 계정 페이지(`:4100/account`)의 "Goo
 | `oidc_disabled` | 503 | IdP 에 클라이언트 ID 없음(Google 등록이 꺼짐) |
 | `oidc_invalid` | 401 | 서명·`iss`·`aud`·`exp`·형식 오류, 모르는 `kid` 포함 |
 | `oidc_nonce_mismatch` | 400 | 토큰의 nonce 가 이 요청에 묶여 있지 않음 |
-| `oidc_unavailable` | 502 | 발급자·JWKS 에 닿지 못함(타임아웃·연결 거부) |
+| `oidc_unavailable` | 502 | JWKS 를 받지 못함 — 타임아웃·연결 거부·DNS·HTTP 오류(토큰을 확인하지 못한 경우는 무효로 보지 않는다) |
 | `gsi_unavailable` | 페이지 전용 | GIS 스크립트 로드 실패 |
 | `gsi_origin` | 페이지 전용 | hostname 이 `localhost` 가 아님 — 안내 문구로 대체 |
 

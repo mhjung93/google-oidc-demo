@@ -30,7 +30,9 @@ const REASONS = ['stale_root', 'stale_registry_root', 'root_too_old', 'revalidat
   'locked', 'bad_password', 'zk_assets_unavailable', 'storage_unavailable', 'relay_inactive', 'relay_bad_target', 'relay_bad_calldata', 'relay_gas', 'relay_rate_limited', 'origin_mismatch',
   'chain_unavailable', 'no_factory', 'execute_reverted', 'schema_invalid', 'bad_attr',
   // 2026-10-16 Google(OIDC 래퍼) — IdP 의 토큰 검증 코드와 페이지의 GIS 코드
-  'oidc_disabled', 'oidc_invalid', 'oidc_nonce_mismatch', 'oidc_unavailable', 'gsi_unavailable', 'gsi_origin'];
+  'oidc_disabled', 'oidc_invalid', 'oidc_nonce_mismatch', 'oidc_unavailable', 'gsi_unavailable', 'gsi_origin',
+  // 2026-10-16 최종 리뷰 M5 — 사용자 코어가 IdP 를 부르기 전에 내는 코드
+  'uid_mismatch', 'no_pending_registration'];
 
 t('langs 는 ko, en', () => assert.deepEqual(S.langs, ['ko', 'en']));
 // U6(2026-10-14): login2(두 번째 RP 로그인, unlinkability 시연) 추가 — login 과 use 사이, 7단계→8단계.
