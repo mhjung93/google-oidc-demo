@@ -23,7 +23,7 @@ const browser = await launchBrowser();
 const stack = await startIsolatedMode3Stack({ userMode: 'web', autoRelay: true, oidc: true, walletHost: 'localhost' });
 const { wallet, rp, cia, oidc: stub } = stack;
 const PW = 'oidc-vault-pw';
-const SUB1 = 'g-user-1', SUB2 = 'g-user-2';
+const SUB1 = 'g-user-1', SUB2 = 'g-user-2', SUB3 = 'g-user-3';
 try {
   const context = await browser.newContext();
   await context.addInitScript(GSI_STUB(`${stub.base}/mint`));
@@ -125,6 +125,27 @@ try {
   await t('G9 사전: 새 사유 6개와 ui 키가 ko·en 으로 있다(strings.js 를 페이지가 아니라 파일로)', async () => {
     const src = readFileSync('mode3/common/strings.js', 'utf8');
     for (const k of ['oidc_disabled', 'oidc_invalid', 'oidc_nonce_mismatch', 'oidc_unavailable', 'gsi_unavailable', 'gsi_origin', 'user_register_hint_google', 'user_auth_identity', 'account_google_revoke_label', 'rp_google_login_note']) assert.ok(src.includes(`${k}:`), k);
+  });
+  // 수정 라운드 1(Important 1): wipe 는 코어의 보류 등록 재료를 지운다 — 미등록 상태에서 지운 뒤에도 Google 버튼이 새 nonce 로 다시 걸려야 한다
+  // (G6 은 폐기 버튼이 걸린 뒤에 지워서 이 경로를 피해 갔다). 새 컨텍스트 = 빈 IndexedDB, 처음 보는 sub.
+  await t('G10 미등록 상태에서 모두 지우기 → 바로 Google 등록이 된다(버려진 nonce 의 버튼이 남지 않는다)', async () => {
+    const ctx3 = await browser.newContext();
+    await ctx3.addInitScript(GSI_STUB(`${stub.base}/mint`));
+    try {
+      const p = await ctx3.newPage();
+      await p.goto(`${wallet.base}/`); await p.waitForSelector('#mainView:not([hidden])');
+      await p.waitForSelector('#googleRegSlot .gsi-stub', { timeout: 30_000 });
+      p.once('dialog', (d) => d.accept());
+      await p.click('#wipeBtn');
+      await waitText(p, '#storageVerdict', '지웠습니다', 30_000);
+      await p.waitForSelector('#googleRegSlot .gsi-stub', { timeout: 30_000 });
+      await setSub(p, SUB3);
+      await p.fill('#vaultPw', PW); await p.fill('#vaultPw2', PW);
+      await p.click('#googleRegSlot .gsi-stub');
+      await waitText(p, '#registerResult', '등록됨', 90_000);
+      const d = await idbDump(p);
+      assert.equal(d.registration.provider, stub.provider); assert.equal(d.registration.uid, uidOf(stub.provider, SUB3));
+    } finally { await ctx3.close(); }
   });
 } finally { await browser.close(); await stack.stop(); }
 process.exit(failed ? 1 : 0);

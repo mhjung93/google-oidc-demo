@@ -160,7 +160,7 @@
       if (!k?.oidc?.enabled) return;
       googleOidc = k.oidc;
       if (!window.Mode3Gsi) googleNote = { kind: 'unavailable', detail: '/common/gsi.js' };
-      else if (!Mode3Gsi.originOk()) googleNote = { kind: 'origin', url: `http://localhost:${location.port}/account` };
+      else if (!Mode3Gsi.originOk()) googleNote = { kind: 'origin', url: `http://localhost${location.port ? `:${location.port}` : ''}/account` };
       if (googleNote) { renderGoogleNote(); return; }
       $('googleRevokeRow').hidden = false;
       armGoogleRevoke();

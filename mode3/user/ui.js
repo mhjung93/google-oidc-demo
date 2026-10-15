@@ -355,11 +355,19 @@ export function mountUi({ core, prover, config, Demo, meta, oidc = { enabled: fa
     $('unlockBtn').disabled = !(has && !open);
     $('changePwBtn').disabled = !has;
     $('selfRevokeBtn').disabled = !lastStatus?.registered;
-    // Google(OIDC)으로 등록한 계정은 비밀번호가 없다 — 폐기 버튼 대신 Google 재로그인 버튼(스펙 2026-10-16 §3.3).
-    const g = Boolean(oidc?.enabled && lastStatus?.registered && lastStatus.provider && lastStatus.provider !== 'demo' && gsi?.originOk());
-    $('selfRevokeBtn').hidden = g;
-    $('googleRevokeRow').hidden = !g;
-    if (g && gsiArmed !== 'revoke') armGoogleRevoke();
+    // Google(OIDC)으로 등록한 계정은 비밀번호가 없다 — 비밀번호 폐기 버튼은 늘 숨기고 그 자리에 Google 재로그인 버튼(스펙 2026-10-16 §3.3).
+    // Google 버튼을 걸 수 없으면(IdP 설정을 못 읽음·localhost 아님) 같은 자리에 왜 안 되는지 한 줄.
+    const googleAcct = Boolean(lastStatus?.registered && lastStatus.provider && lastStatus.provider !== 'demo');
+    const g = googleAcct && Boolean(oidc?.enabled && gsi?.originOk());
+    $('selfRevokeBtn').hidden = googleAcct;
+    $('googleRevokeRow').hidden = !googleAcct;
+    if (g) { if (gsiArmed !== 'revoke') armGoogleRevoke(); }
+    else if (googleAcct) {
+      if (gsiArmed === 'revoke') gsiArmed = null;
+      const n = document.createElement('span'); n.className = 'muted';
+      n.textContent = tt('user_google_revoke_unavailable') || 'Google 로 폐기하려면 localhost 주소에서 열고 IdP 가 Google 설정을 켜야 합니다';
+      $('googleRevokeSlot').replaceChildren(n);
+    }
     // 금고가 이미 있으면 등록 폼에서 금고 비밀번호를 묻지 않는다(잠겨 있으면 잠금 해제 창이 대신 묻는다).
     $('vaultFields').hidden = has;
   }
@@ -481,14 +489,15 @@ export function mountUi({ core, prover, config, Demo, meta, oidc = { enabled: fa
   let googleOn = false;       // 등록 줄(버튼 또는 안내)을 다루는가 — mountGoogleRegister 가 정한다
   /** 설정된 사용자 오리진이 localhost(D6 — Google 을 켠 데모)인데 다른 주소(127.0.0.1)로 열렸는가. 그 오리진은 IdP 의 CORS 가 거절해
    *  user.js 가 oidc 설정조차 읽지 못한다(꺼진 것으로 보인다) — 그래도 Google 자리에 localhost 안내는 보여야 한다. */
-  const offLocalhost = () => { try { return location.origin !== cfg.walletOrigin && new URL(cfg.walletOrigin).hostname === 'localhost'; } catch { return false; } };
+  // 설정값은 끝 '/'·대문자가 섞일 수 있어 URL 로 정규화해 비교한다. 파싱이 안 되면 비교할 수 없으니 안내하지 않는다.
+  const offLocalhost = () => { try { const w = new URL(cfg.walletOrigin); return location.origin !== w.origin && w.hostname === 'localhost'; } catch { return false; } };
   /** 한 번만 보는 조건(스크립트·오리진). 버튼은 등록 여부에 따라 renderGoogleRegister·renderVault 가 건다. */
   function mountGoogleRegister() {
     if (oidc?.enabled) {
       googleOn = true;
       if (!gsi) gsiBlocked = { kind: 'unavailable', detail: '/common/gsi.js' };
       // Google 은 127.0.0.1 오리진을 받지 않는다(D6) — 같은 포트의 localhost 주소로 안내한다.
-      else if (!gsi.originOk()) gsiBlocked = { kind: 'origin', url: `http://localhost:${location.port}/` };
+      else if (!gsi.originOk()) gsiBlocked = { kind: 'origin', url: `http://localhost${location.port ? `:${location.port}` : ''}/` };
     } else if (offLocalhost()) {
       googleOn = true;
       gsiBlocked = { kind: 'origin', url: `${new URL(cfg.walletOrigin).origin}/` };
@@ -499,6 +508,8 @@ export function mountUi({ core, prover, config, Demo, meta, oidc = { enabled: fa
   function renderGoogleRegister() {
     if (!googleOn) return;
     const open = Boolean(lastStatus) && !lastStatus.registered;
+    // 등록됐으면(데모 계정 등록 포함) 걸려 있던 등록 버튼을 내린다 — 다음에 미등록이 되면(모두 지우기) 새 재료·nonce 로 다시 건다.
+    if (lastStatus?.registered && gsiArmed === 'register') { gsiArmed = null; $('googleRegSlot').replaceChildren(); }
     const note = $('googleRegNote');
     if (gsiBlocked) {
       $('googleRegRow').hidden = true;
@@ -518,9 +529,12 @@ export function mountUi({ core, prover, config, Demo, meta, oidc = { enabled: fa
     $('googleRegRow').hidden = !open;
     if (open && gsiArmed !== 'register') armGoogleRegister();
   }
-  /** 새 등록 재료·nonce 로 버튼을 다시 그린다(토큰은 1회용 — 실패 뒤에도 늘 새로). */
+  /** 걸린 Google 버튼을 내린다(두 슬롯 비움) — 다음 refresh() 가 지금 상태에 맞는 새 nonce 로 다시 건다. */
+  function disarmGoogle() { gsiArmed = null; $('googleRegSlot').replaceChildren(); $('googleRevokeSlot').replaceChildren(); }
+  /** 새 등록 재료·nonce 로 버튼을 다시 그린다(토큰은 1회용 — 실패 뒤에도 늘 새로). 지난 버튼(다른 nonce)은 먼저 치운다. */
   async function armGoogleRegister() {
     gsiArmed = 'register';
+    $('googleRegSlot').replaceChildren();
     try {
       const { nonce } = await core.prepareRegistration();
       if (gsiArmed !== 'register') return;   // 그 사이 등록돼 폐기 버튼이 걸렸다 — 전역 initialize 를 덮어쓰지 않는다
@@ -550,6 +564,7 @@ export function mountUi({ core, prover, config, Demo, meta, oidc = { enabled: fa
   /** 폐기 버튼 — nonce 는 "revoke:" + 임의 hex(등록 토큰과 목적이 섞이지 않는다). renderVault 가 부른다. */
   async function armGoogleRevoke() {
     gsiArmed = 'revoke';
+    $('googleRevokeSlot').replaceChildren();
     if (gsiBlocked) { $('googleRevokeSlot').textContent = Demo.reason('gsi_unavailable')?.title ?? 'gsi_unavailable'; return; }
     try {
       await gsi.render({ el: $('googleRevokeSlot'), clientId: oidc.clientId, nonce: newRevokeNonce(), text: 'continue_with', onToken: onGoogleRevokeToken });
@@ -827,13 +842,15 @@ export function mountUi({ core, prover, config, Demo, meta, oidc = { enabled: fa
     pendingVerdict(storageVerdict(), 'working');
     try {
       const r = await core.wipe();
+      // wipe 는 코어의 보류 등록 재료(pendingReg)도 지운다 — 지금 걸린 Google 버튼의 nonce 는 버려졌다. 결과 카드보다 먼저 내린다.
+      disarmGoogle();
       if (r.status === 200) {
         // 스펙 §10 — "모두 지우기" 는 Snap 초기화의 등가물이라 증명 키 캐시까지 비운다(산출물 재생성 뒤 옛 zkey 가 남지 않게).
         if (typeof caches !== 'undefined') { try { await caches.delete(ZK_CACHE_NAME); } catch { /* 캐시 삭제 실패는 무시 — 다음 로드가 다시 받는다 */ } }
         Object.assign(progress, { txOk: false, disclosed: false, revoked: false });
         setVerdict(storageVerdict(), true, 'user_wipe_btn', () => ({ summary: tt('user_wipe_done') || '이 브라우저의 등록·비밀·세션을 지웠습니다.' }));
       } else setVerdict(storageVerdict(), false, 'error_title', { reason: r.body.reason ?? `HTTP ${r.status}`, detail: safeDetail(r.body) });
-    } catch (e) { setVerdict(storageVerdict(), false, 'error_title', { reason: 'storage_unavailable', detail: e.message }); }
+    } catch (e) { disarmGoogle(); setVerdict(storageVerdict(), false, 'error_title', { reason: 'storage_unavailable', detail: e.message }); }
     refresh(true);
   });
 

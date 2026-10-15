@@ -329,6 +329,7 @@ window.DemoStrings = {
     user_google_register_or: { ko: '또는 Google 계정으로 등록:', en: 'Or register with a Google account:' },
     user_gsi_origin_note: { ko: 'Google 로그인은 http://localhost 주소에서만 됩니다 — {url} 로 여세요', en: 'Google sign-in only works on an http://localhost address — open {url}' },
     user_google_revoke_label: { ko: 'Google 로 계정 자기 폐기:', en: 'Self-revoke the account with Google:' },
+    user_google_revoke_unavailable: { ko: 'Google 로 폐기하려면 localhost 주소에서 열고 IdP 가 Google 설정을 켜야 합니다', en: 'To revoke with Google, open this page on a localhost address with Google enabled at the IdP' },
     user_register_hint_google: { ko: 'Google 계정이 아직 zk-Delegation 에 등록되지 않았습니다. 사용자 페이지에서 Google 로 먼저 등록하세요:', en: 'Your Google account is not registered with zk-Delegation yet. Register with Google on the user page first:' },
     user_register_hint: { ko: '이 브라우저에 등록이 없습니다. 사용자 페이지에서 먼저 등록하세요:', en: 'This browser has no registration. Register on the user page first:' },
     user_auth_identity: { ko: '신원', en: 'Identity' },
