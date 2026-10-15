@@ -3,6 +3,7 @@
 // MetaMask·Snap 코드는 없다. 비밀(s_u·sk_u·blind_u·세션 개인키·금고 비밀번호·secrets 암호문)은 DOM·localStorage·로그·postMessage 에
 // 넣지 않는다 — 코어 응답은 에이전트와 같은 모양이라 비밀이 실리지 않고, safeDetail 이 한 번 더 거른다. 비밀번호 입력칸은 읽자마자 비운다.
 import { ZK_CACHE_NAME } from '../../lib/browser/zk_assets.js';
+import { newRevokeNonce } from '../../lib/mode3_oidc_nonce.js';
 export const $ = (id) => document.getElementById(id);
 
 /** 사전 도우미(wallet.html 의 tte·tt·setVerdict·pendingVerdict 와 같다). */
@@ -105,7 +106,8 @@ function askSecret({ modalId, inputId, goId, cancelId }) {
   });
 }
 
-export function mountUi({ core, prover, config, Demo, meta }) {
+/** oidc: IdP 의 public_keys.oidc({ enabled, provider, clientId, issuer }) — user.js 가 읽어 넘긴다. 못 읽으면 기본값(꺼짐)이라 Google 버튼만 숨는다. */
+export function mountUi({ core, prover, config, Demo, meta, oidc = { enabled: false } }) {
   const { tte, tt, setVerdict, pendingVerdict } = textKit(Demo);
   const { withUnlock, ask: askUnlock } = createUnlocker({ core, Demo });
   // /wallet/config 대신 /user/config(같은 오리진). minAge·allowedCountries 는 없다 — claim 버튼이 기본값으로 대신한다(에이전트와 같다).
@@ -246,11 +248,14 @@ export function mountUi({ core, prover, config, Demo, meta }) {
     tte(badge, s?.registered ? 'wallet_reg_yes' : 'wallet_reg_no');
     const uc = s?.userCred ?? null;
     const credKey = !uc ? 'wallet_cred_none' : uc.revoked === true ? 'wallet_cred_revoked' : uc.revoked === false ? 'wallet_cred_yes' : 'wallet_cred_unknown';
-    $('regInfo').textContent = s?.registered ? tt('wallet_uid', { uid: s.uid }) : '';
+    // Google 등으로 등록한 계정이면 어느 발급자의 계정인지 덧붙인다(데모 계정·provider 없는 옛 등록은 uid 만).
+    const providerNote = s?.registered && s.provider && s.provider !== 'demo' ? tt('user_identity_provider', { provider: s.provider }) : '';
+    $('regInfo').textContent = s?.registered ? [tt('wallet_uid', { uid: s.uid }), providerNote].filter(Boolean).join(' · ') : '';
     $('credInfo').textContent = tt(credKey) || '-';
     $('aaInfo').textContent = s?.ciaUrl || tt('wallet_aa_none') || '-';
     // 등록 폼은 미등록일 때만 펼친다(설계 §4.1).
     $('fileRegFields').hidden = Boolean(s?.registered);
+    renderGoogleRegister();
     // 등록부 확인 줄(V9 §8.2).
     const rg = s?.registry ?? null;
     const rb = $('registryBadge');
@@ -350,6 +355,11 @@ export function mountUi({ core, prover, config, Demo, meta }) {
     $('unlockBtn').disabled = !(has && !open);
     $('changePwBtn').disabled = !has;
     $('selfRevokeBtn').disabled = !lastStatus?.registered;
+    // Google(OIDC)으로 등록한 계정은 비밀번호가 없다 — 폐기 버튼 대신 Google 재로그인 버튼(스펙 2026-10-16 §3.3).
+    const g = Boolean(oidc?.enabled && lastStatus?.registered && lastStatus.provider && lastStatus.provider !== 'demo' && gsi?.originOk());
+    $('selfRevokeBtn').hidden = g;
+    $('googleRevokeRow').hidden = !g;
+    if (g && gsiArmed !== 'revoke') armGoogleRevoke();
     // 금고가 이미 있으면 등록 폼에서 금고 비밀번호를 묻지 않는다(잠겨 있으면 잠금 해제 창이 대신 묻는다).
     $('vaultFields').hidden = has;
   }
@@ -417,39 +427,156 @@ export function mountUi({ core, prover, config, Demo, meta }) {
   }
   $('refreshBtn').addEventListener('click', () => refresh(true));
 
-  // 등록: 폼의 uid·pwd(IdP 계정) + 금고 비밀번호(금고가 없을 때만). s_u·sk_u 는 코어가 만들어 금고에만 넣는다.
-  // IdP 비밀번호는 IdP 로 한 번 지날 뿐이고, 금고 비밀번호는 읽자마자 입력칸에서 지운다(DOM 에 남기지 않는다).
-  $('registerBtn').addEventListener('click', async () => {
-    pendingVerdict($('registerResult'), 'working');
+  // 금고 비밀번호 칸 — 두 등록 경로(데모 계정·Google)가 같이 쓴다. 읽자마자 입력칸에서 지운다(DOM 에 남기지 않는다).
+  // 금고가 이미 있으면 묻지 않는다(잠겨 있으면 잠금 해제 창이 대신 묻는다). 실패는 { error: 사전 키 }, 성공은 { vaultPassword }(금고가 있으면 null).
+  const VAULT_PW_FALLBACK = { user_vault_pw_mismatch: '두 비밀번호가 다릅니다', user_vault_pw_short: '금고 비밀번호는 8자 이상이어야 합니다' };
+  async function readVaultPassword() {
     const vp = $('vaultPw').value, vp2 = $('vaultPw2').value;
     $('vaultPw').value = ''; $('vaultPw2').value = '';
+    await core.vault.refresh();
+    if (core.vault.hasVault()) return { vaultPassword: null };
+    if (vp !== vp2) return { error: 'user_vault_pw_mismatch' };
+    if (vp.length < 8) return { error: 'user_vault_pw_short' };
+    return { vaultPassword: vp };
+  }
+  const vaultPasswordFailed = (key) => setVerdict($('registerResult'), false, 'wallet_register_failed', () => ({ summary: tt(key) || VAULT_PW_FALLBACK[key] }));
+  // 폼을 하나도 안 건드렸으면(전부 빈 값) profile 을 보내지 않는다 — 코어의 DEFAULT_PROFILE(데모 기본값)이 적용된다.
+  const typedProfile = () => { const f = readProfileForm(); return Object.values(f).some((v) => v !== '') ? f : null; };
+  /** 등록 결과 카드(두 경로 공통). 성공(201)이면 true. */
+  function showRegisterResult({ status, body: b }) {
+    if (status !== 201) {
+      setVerdict($('registerResult'), false, 'wallet_register_failed', () => ({ reason: b.reason ?? `HTTP ${status}`, detail: safeDetail(b) }));
+      return false;
+    }
+    // 카드에 쓸 값은 여기서 먼저 꺼내 둔다 — 인자 생성기가 응답 본문을 붙잡지 않게(wallet.html 과 같은 규칙).
+    const uid = b.uid;
+    const detail = safeDetail(b);
+    profileDirty = false;
+    setVerdict($('registerResult'), true, 'registered', () => ({ summary: tt('wallet_registered_summary', { uid, attrs: profileText(b.profile) }) || `uid ${uid} · ${profileText(b.profile)}`, detail }));
+    return true;
+  }
+
+  // 등록: 폼의 uid·pwd(IdP 계정) + 금고 비밀번호(금고가 없을 때만). s_u·sk_u 는 코어가 만들어 금고에만 넣는다.
+  // IdP 비밀번호는 IdP 로 한 번 지날 뿐이다.
+  $('registerBtn').addEventListener('click', async () => {
+    pendingVerdict($('registerResult'), 'working');
     try {
-      await core.vault.refresh();
-      let vaultPassword = null;
-      if (!core.vault.hasVault()) {
-        if (vp !== vp2) { setVerdict($('registerResult'), false, 'wallet_register_failed', () => ({ summary: tt('user_vault_pw_mismatch') || '두 비밀번호가 다릅니다' })); return; }
-        if (vp.length < 8) { setVerdict($('registerResult'), false, 'wallet_register_failed', () => ({ summary: tt('user_vault_pw_short') || '금고 비밀번호는 8자 이상이어야 합니다' })); return; }
-        vaultPassword = vp;
-      }
-      // 폼을 하나도 안 건드렸으면(전부 빈 값) profile 을 보내지 않는다 — 코어의 DEFAULT_PROFILE(데모 기본값)이 적용된다.
-      const profileForm = readProfileForm();
-      const typedProfile = Object.values(profileForm).some((v) => v !== '') ? profileForm : null;
-      const req = { uid: $('uid').value.trim(), pwd: $('pwd').value, profile: typedProfile, vaultPassword };
-      const { status, body: b } = await withUnlock(() => core.register(req));
+      const vp = await readVaultPassword();
+      if (vp.error) { vaultPasswordFailed(vp.error); return; }
+      const req = { uid: $('uid').value.trim(), pwd: $('pwd').value, profile: typedProfile(), vaultPassword: vp.vaultPassword };
+      const res = await withUnlock(() => core.register(req));
       req.pwd = null; req.vaultPassword = null;
-      if (status !== 201) {
-        setVerdict($('registerResult'), false, 'wallet_register_failed', () => ({ reason: b.reason ?? `HTTP ${status}`, detail: safeDetail(b) }));
-        return;
-      }
-      // 카드에 쓸 값은 여기서 먼저 꺼내 둔다 — 인자 생성기가 응답 본문을 붙잡지 않게(wallet.html 과 같은 규칙).
-      const uid = b.uid;
-      const detail = safeDetail(b);
-      profileDirty = false;
-      setVerdict($('registerResult'), true, 'registered', () => ({ summary: tt('wallet_registered_summary', { uid, attrs: profileText(b.profile) }) || `uid ${uid} · ${profileText(b.profile)}`, detail }));
+      showRegisterResult(res);
     } catch (e) {
       setVerdict($('registerResult'), false, 'wallet_register_failed', { reason: 'internal', detail: e.message });
     } finally { refresh(); }
   });
+
+  // ---- Google(OIDC 래퍼) 등록·자기 폐기(스펙 2026-10-16 §3.1·§3.3) ----
+  // GIS 의 initialize 는 전역이라 마지막 호출이 이긴다 — 등록 버튼(미등록)과 폐기 버튼(Google 계정으로 등록됨)은 한 번에 하나만 보이고,
+  // gsiArmed 가 지금 GIS 에 걸린 nonce 의 목적을 기억한다. 토큰은 콜백에서 코어로 바로 넘기고 변수·DOM·로그·저장소에 남기지 않는다(1회용).
+  const gsi = window.Mode3Gsi ?? null;
+  let gsiArmed = null;        // null | 'register' | 'revoke'
+  let gsiBlocked = null;      // Google 버튼을 못 그리는 이유 { kind:'origin', url } | { kind:'unavailable', detail } — 이 페이지에서는 다시 시도하지 않는다
+  let googleOn = false;       // 등록 줄(버튼 또는 안내)을 다루는가 — mountGoogleRegister 가 정한다
+  /** 설정된 사용자 오리진이 localhost(D6 — Google 을 켠 데모)인데 다른 주소(127.0.0.1)로 열렸는가. 그 오리진은 IdP 의 CORS 가 거절해
+   *  user.js 가 oidc 설정조차 읽지 못한다(꺼진 것으로 보인다) — 그래도 Google 자리에 localhost 안내는 보여야 한다. */
+  const offLocalhost = () => { try { return location.origin !== cfg.walletOrigin && new URL(cfg.walletOrigin).hostname === 'localhost'; } catch { return false; } };
+  /** 한 번만 보는 조건(스크립트·오리진). 버튼은 등록 여부에 따라 renderGoogleRegister·renderVault 가 건다. */
+  function mountGoogleRegister() {
+    if (oidc?.enabled) {
+      googleOn = true;
+      if (!gsi) gsiBlocked = { kind: 'unavailable', detail: '/common/gsi.js' };
+      // Google 은 127.0.0.1 오리진을 받지 않는다(D6) — 같은 포트의 localhost 주소로 안내한다.
+      else if (!gsi.originOk()) gsiBlocked = { kind: 'origin', url: `http://localhost:${location.port}/` };
+    } else if (offLocalhost()) {
+      googleOn = true;
+      gsiBlocked = { kind: 'origin', url: `${new URL(cfg.walletOrigin).origin}/` };
+    }
+    // 그 밖(Google 꺼짐)은 두 요소가 hidden 그대로다.
+  }
+  /** 등록 줄: 미등록이면 버튼(없으면 걸고), 못 그리면 안내 한 줄. refresh() 와 언어 전환 때 부른다. */
+  function renderGoogleRegister() {
+    if (!googleOn) return;
+    const open = Boolean(lastStatus) && !lastStatus.registered;
+    const note = $('googleRegNote');
+    if (gsiBlocked) {
+      $('googleRegRow').hidden = true;
+      note.hidden = Boolean(lastStatus?.registered);   // 상태를 못 읽어도(그 오리진에서는 IdP 가 막혀 있을 수 있다) 안내는 보인다
+      if (gsiBlocked.kind === 'origin') {
+        // 문구의 {url} 자리에 링크를 끼운다(링크는 createElement 로만 — innerHTML 금지).
+        const { url } = gsiBlocked;
+        const a = document.createElement('a'); a.href = url; a.textContent = url;
+        const [before, after = ''] = (tt('user_gsi_origin_note', { url: '\u0000' }) || 'Google 로그인은 http://localhost 주소에서만 됩니다 — \u0000 로 여세요').split('\u0000');
+        note.replaceChildren(before, a, after);
+      } else {
+        note.textContent = [Demo.reason('gsi_unavailable')?.title ?? 'gsi_unavailable', gsiBlocked.detail].filter(Boolean).join(' — ');
+      }
+      return;
+    }
+    note.hidden = true;
+    $('googleRegRow').hidden = !open;
+    if (open && gsiArmed !== 'register') armGoogleRegister();
+  }
+  /** 새 등록 재료·nonce 로 버튼을 다시 그린다(토큰은 1회용 — 실패 뒤에도 늘 새로). */
+  async function armGoogleRegister() {
+    gsiArmed = 'register';
+    try {
+      const { nonce } = await core.prepareRegistration();
+      if (gsiArmed !== 'register') return;   // 그 사이 등록돼 폐기 버튼이 걸렸다 — 전역 initialize 를 덮어쓰지 않는다
+      await gsi.render({ el: $('googleRegSlot'), clientId: oidc.clientId, nonce, text: 'signup_with', onToken: onGoogleRegToken });
+    } catch (e) {
+      gsiArmed = null;
+      gsiBlocked = { kind: 'unavailable', detail: e?.message ?? String(e) };
+      renderGoogleRegister();
+    }
+  }
+  async function onGoogleRegToken(idToken) {
+    pendingVerdict($('registerResult'), 'working');
+    let ok = false;
+    try {
+      if (!idToken) { setVerdict($('registerResult'), false, 'wallet_register_failed', { reason: 'oidc_invalid' }); return; }
+      const vp = await readVaultPassword();
+      if (vp.error) { vaultPasswordFailed(vp.error); return; }
+      ok = showRegisterResult(await withUnlock(() => core.completeRegistration({ idToken, profile: typedProfile(), vaultPassword: vp.vaultPassword })));
+    } catch (e) {
+      setVerdict($('registerResult'), false, 'wallet_register_failed', { reason: 'internal', detail: e.message });
+    } finally {
+      // 성공이면 등록 줄을 접는다(이미 등록) — 다음 refresh() 의 renderVault 가 폐기 버튼을 건다. 실패면 새 nonce 로 다시.
+      if (ok) { $('googleRegRow').hidden = true; gsiArmed = null; } else armGoogleRegister();
+      refresh();
+    }
+  }
+  /** 폐기 버튼 — nonce 는 "revoke:" + 임의 hex(등록 토큰과 목적이 섞이지 않는다). renderVault 가 부른다. */
+  async function armGoogleRevoke() {
+    gsiArmed = 'revoke';
+    if (gsiBlocked) { $('googleRevokeSlot').textContent = Demo.reason('gsi_unavailable')?.title ?? 'gsi_unavailable'; return; }
+    try {
+      await gsi.render({ el: $('googleRevokeSlot'), clientId: oidc.clientId, nonce: newRevokeNonce(), text: 'continue_with', onToken: onGoogleRevokeToken });
+    } catch (e) {
+      gsiBlocked = { kind: 'unavailable', detail: e?.message ?? String(e) };
+      $('googleRevokeSlot').textContent = Demo.reason('gsi_unavailable')?.title ?? 'gsi_unavailable';
+    }
+  }
+  async function onGoogleRevokeToken(idToken) {
+    try {
+      if (!Demo.confirmDanger('confirm_revoke')) { setVerdict(storageVerdict(), false, 'wallet_self_revoke_failed', () => ({ summary: tt('wallet_cancelled') || '창에서 취소했습니다.' })); return; }
+      if (!idToken) { setVerdict(storageVerdict(), false, 'wallet_self_revoke_failed', { reason: 'oidc_invalid' }); return; }
+      const uid = lastStatus?.uid ?? null;
+      pendingVerdict(storageVerdict(), 'working');
+      const res = await core.selfRevokeWithIdToken({ idToken });
+      if (res.status === 200) {
+        progress.revoked = true;
+        setVerdict(storageVerdict(), true, 'revoked_ok', () => ({ summary: tt('wallet_self_revoke_ok', { uid }) || `uid ${uid} 계정의 폐기를 요청했습니다.`, detail: safeDetail(res.body) }));
+      } else setVerdict(storageVerdict(), false, 'wallet_self_revoke_failed', { reason: res.body.reason ?? `HTTP ${res.status}`, detail: safeDetail(res.body) });
+    } catch (e) {
+      setVerdict(storageVerdict(), false, 'wallet_self_revoke_failed', { reason: 'internal', detail: e.message });
+    } finally {
+      // 토큰은 1회용이다 — 결과와 무관하게 새 nonce 로 다시 건다(등록이 남아 있으면 refresh() 의 renderVault 가).
+      if (gsiArmed === 'revoke') gsiArmed = null;
+      refresh();
+    }
+  }
 
   // V11 §3.3 — 속성은 사용자가 넣는다. 바뀌면 옛 자격증명·세션이 지워지고 다음 로그인이 새 C_u 를 받는다(금고의 blind_u·세션키도 지우므로 잠겨 있으면 잠금 해제).
   $('profileSaveBtn').addEventListener('click', async () => {
@@ -717,6 +844,7 @@ export function mountUi({ core, prover, config, Demo, meta }) {
     renderModeTexts();
     renderProofInfo();
     renderZk();
+    mountGoogleRegister();
     await loadAttrSchema();
     await refresh();
     // 등록부 확인 줄(V9 §8.2)은 다른 창(RP 로그인·승인 창·관리자)이 바꾼 상태를 반영해야 한다 — 탭이 보일 때 5초마다 다시 읽는다.

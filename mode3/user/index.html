@@ -11,6 +11,8 @@
   <link rel="stylesheet" href="/common/demo.css" />
   <script src="/common/strings.js"></script>
   <script src="/common/demo.js"></script>
+  <!-- Google Identity Services 로더(스펙 2026-10-16) — window.Mode3Gsi. Google 이 켜져 있고 localhost 로 열었을 때만 버튼을 그린다. -->
+  <script src="/common/gsi.js"></script>
   <style>
     /* 금고 잠금 해제·비밀번호 창(이 페이지 전용 — demo.css 는 바꾸지 않는다). 승인 팝업에서도 같은 창을 쓴다. */
     .modal-backdrop { position:fixed; inset:0; z-index:20; background:rgba(29,36,51,.45); display:flex; align-items:center; justify-content:center; padding:16px }
@@ -18,6 +20,9 @@
     .modal-box h3 { margin:0 0 6px } .modal-box label { display:block; margin:8px 0 } .modal-box input { width:100%; padding:6px 8px }
     .modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:12px }
     .auth-actions { display:flex; gap:8px; margin:12px 0 }
+    /* Google 버튼 자리(GIS 가 iframe 버튼을 그린다)와 승인 창의 미등록 안내. */
+    .gsi-slot { display:inline-block; vertical-align:middle; min-height:40px }
+    .auth-hint { margin:10px 0; padding:10px 12px; border-radius:10px; border:1px solid #f0d9b5; background:#fff1dc; overflow-wrap:anywhere }
   </style>
 </head>
 <body data-page="wallet">
@@ -30,6 +35,8 @@
       <h3 data-i18n="wallet_auth_title">로그인 승인</h3>
       <p id="authTitle">RP 페이지의 요청을 기다리는 중…</p>
       <dl class="kv" id="authSummary"></dl>
+      <!-- 미등록 안내(스펙 2026-10-16 §3.2) — 사용자 페이지 링크와 함께. 팝업은 안내를 읽을 수 있게 15초 뒤 닫힌다. -->
+      <p id="authHint" class="auth-hint" hidden></p>
       <!-- 승인·거절은 요청 요약과 RP 인증서 검사 뒤에만 보인다(로그인·세션 요청). 재검증은 동의 화면이 없다. -->
       <p class="auth-actions"><button id="authApproveBtn" type="button" data-i18n="user_auth_approve" hidden>승인</button> <button id="authDenyBtn" type="button" class="btn-ghost" data-i18n="user_auth_deny" hidden>거절</button></p>
       <p id="authStep" class="muted expert"></p>
@@ -50,6 +57,9 @@
       </dl>
       <span id="fileRegFields"><label>uid <input id="uid" value="12345" size="8" /></label> <label>pwd <input id="pwd" type="password" value="password123" size="12" /></label><br />
         <span id="vaultFields"><label><span data-i18n="user_vault_pw_label">금고 비밀번호</span> <input id="vaultPw" type="password" autocomplete="new-password" size="14" /></label> <label><span data-i18n="user_vault_pw2_label">확인</span> <input id="vaultPw2" type="password" autocomplete="new-password" size="14" /></label><br /></span></span>
+      <!-- Google(OIDC 래퍼) 등록 — 금고 비밀번호 칸은 위의 것을 같이 쓴다. Google 이 꺼져 있으면 둘 다 숨어 있다. -->
+      <p id="googleRegRow" hidden><span data-i18n="user_google_register_or">또는 Google 계정으로 등록:</span> <span id="googleRegSlot" class="gsi-slot"></span></p>
+      <p id="googleRegNote" class="muted" hidden></p>
       <dl class="kv" id="attrsView">
         <dt data-term="attr0">출생연도</dt><dd><input id="attr0" size="6" /></dd>
         <dt data-term="attr1">국가</dt><dd><input id="attr1" size="6" /></dd>
@@ -164,6 +174,7 @@
       </p>
       <p>
         <button id="selfRevokeBtn" type="button" class="danger" data-i18n="wallet_self_revoke_btn" disabled>계정 자기 폐기</button>
+        <span id="googleRevokeRow" hidden><span data-i18n="user_google_revoke_label">Google 로 계정 자기 폐기:</span> <span id="googleRevokeSlot" class="gsi-slot"></span></span>
         <button id="wipeBtn" type="button" class="danger" data-i18n="user_wipe_btn">모두 지우기</button>
       </p>
       <p id="zkProgress" class="muted"></p>

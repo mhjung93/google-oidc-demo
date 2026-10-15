@@ -9,6 +9,7 @@ import { $, mountUi, publicMeta, textKit } from './ui.js';
 import { runPopup, failPopup } from './popup.js';
 
 const IS_AUTHORIZE = new URLSearchParams(location.search).get('authorize') === '1';
+const OIDC_CONFIG_TIMEOUT_MS = 3000;   // IdP 의 public_keys.oidc 를 기다리는 한도
 // 뷰 전환은 설정을 기다리지 않는다 — 쿼리만 보면 알 수 있다(팝업에 사용자 화면이 비치지 않게 가장 먼저).
 if (IS_AUTHORIZE) { $('mainView').hidden = true; $('authorizeView').hidden = false; }
 
@@ -62,9 +63,16 @@ async function main() {
   // 코어의 로그는 처리되지 않은 오류의 stack 뿐이다(비밀은 실리지 않는다 — 같은 메시지가 응답의 detail 로도 나간다).
   const core = createUserCore({ kv, config, provider, canonProvider, fullProve: prover.fullProve, log: (m) => console.warn(m) });
   const meta = publicMeta(kv);
-  if (IS_AUTHORIZE) return runPopup({ core, config, Demo, meta });
+  // Google(OIDC 래퍼, 스펙 2026-10-16 §2) 설정은 IdP 의 공개 키 응답에서 직접 읽는다 — 정적 서버가 중계하면 IdP 가 늦게 뜰 때 꺼진 채로 굳는다.
+  // 응답이 늦어도 승인 창·화면이 묶이지 않게 짧게 기다린다(못 받으면 꺼진 것으로 본다).
+  let oidc = { enabled: false };
+  try {
+    const k = await Promise.race([core.idp.publicKeys(), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), OIDC_CONFIG_TIMEOUT_MS))]);
+    if (k?.status === 200 && k.body?.oidc) oidc = k.body.oidc;
+  } catch { /* IdP 가 죽어 있으면 Google 버튼만 숨는다 — 나머지 화면은 그대로 */ }
+  if (IS_AUTHORIZE) return runPopup({ core, config, Demo, meta, oidc });
   // 상태 패널(설계 2026-09-25 §2) — 에이전트 페이지의 syncStack 자리. 신원 기관·첫 RP 주소는 설정이 안다.
   Demo.stack?.({ self: 'wallet', urls: { aa: config.ciaUrl, rp: config.rpOrigins?.[0] } });
-  return mountUi({ core, prover, config, Demo, meta });
+  return mountUi({ core, prover, config, Demo, meta, oidc });
 }
 main().catch((e) => { console.error(e); fatal('internal', e?.message ?? String(e)); });

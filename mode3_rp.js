@@ -41,15 +41,17 @@ if (!MIRROR_ADDRESS) { console.error('[rp] MODE3_MIRROR_ADDRESS 가 없다 — �
 // IdP 가 알려 준 하트비트 주기(블록). 아래 TOFU 경로에서만 받는다 — pk_CIA 를 env 로 박으면 IdP 에 묻지 않으므로 null 이고,
 // 그때는 maxRootAge 와 대조할 수 없다(경고를 위해 새 RPC·HTTP 호출을 만들지는 않는다. 2026-09-23 최종 리뷰 M4).
 let ciaHeartbeatBlocks = null;
+// oidc(스펙 2026-10-16 §2): IdP 가 Google 등록을 켰는지 — 같은 응답에서 함께 받아 rp_info 로 페이지에 중계한다(모달의 Google 버튼 활성).
+// env 경로는 IdP 를 부르지 않으므로 알 수 없다 — 꺼진 것으로 본다(버튼은 지금처럼 "데모 미지원" 안내).
 async function resolvePkCia() {
   const { MODE3_PK_CIA_X: x, MODE3_PK_CIA_Y: y } = process.env;
-  if (x && y) return { x: BigInt(x), y: BigInt(y), source: 'env' };
+  if (x && y) return { x: BigInt(x), y: BigInt(y), source: 'env', oidc: { enabled: false } };
   const r = await fetch(`${CIA_URL}/cia/public_keys`);
   if (!r.ok) throw new Error(`IdP ${CIA_URL} 에서 pk_CIA 를 받지 못했다 (${r.status})`);
   const k = await r.json();
   if (Number.isFinite(k.heartbeatBlocks)) ciaHeartbeatBlocks = BigInt(k.heartbeatBlocks);
   console.warn(`[rp] pk_CIA 를 IdP 에서 받아 고정한다(TOFU). 운영이라면 env 로 박는다:\n  MODE3_PK_CIA_X=${k.pk_CIA.x}\n  MODE3_PK_CIA_Y=${k.pk_CIA.y}`);
-  return { x: BigInt(k.pk_CIA.x), y: BigInt(k.pk_CIA.y), source: 'tofu' };
+  return { x: BigInt(k.pk_CIA.x), y: BigInt(k.pk_CIA.y), source: 'tofu', oidc: k.oidc ?? { enabled: false } };
 }
 
 const pkCIA = await resolvePkCia();
@@ -341,7 +343,8 @@ const currentPredicates = () => ({ allowedCountries: ALLOWED_COUNTRIES_EFFECTIVE
 
 app.get('/api/mode3/rp_info', (req, res) => {
   res.json({ name: RP_NAME,   // 2026-10-15: 페이지 브랜드(zkONE/zkTWO) 표기용
-       status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, mirrorAddress: MIRROR_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, ciaUrl: CIA_URL, pkCiaSource: pkCIA.source, chainId: chainId.toString(), active: Boolean(verifier), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null, predicates: currentPredicates() });
+       status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, mirrorAddress: MIRROR_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, ciaUrl: CIA_URL, pkCiaSource: pkCIA.source, chainId: chainId.toString(), active: Boolean(verifier), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null, predicates: currentPredicates(),
+       oidc: pkCIA.oidc });   // 2026-10-16: IdP 의 public_keys.oidc 중계 — 페이지는 enabled·provider 만 본다
 });
 
 // 상태 엔드포인트(설계 2026-09-25 §1) — 민감정보 없음, 지갑·AA 오리진에만 CORS.

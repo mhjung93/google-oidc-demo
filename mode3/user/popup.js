@@ -28,10 +28,12 @@ export function failPopup({ reason, detail }) {
   window.opener.postMessage({ type: 'mode3-authorize-ready' }, '*');
 }
 
-export function runPopup({ core, config, Demo, meta }) {
+/** oidc: IdP 의 public_keys.oidc(user.js 가 읽어 넘긴다) — 미등록 안내를 Google 용으로 고를지에만 쓴다. */
+export function runPopup({ core, config, Demo, meta, oidc = { enabled: false } }) {
   const { tte, tt } = textKit(Demo);
   const { withUnlock } = createUnlocker({ core, Demo });
   let lastReq = null;        // 받은 요청(언어 전환 때 제목·요약을 다시 그린다)
+  let lastIdentity = null;   // 신원 줄의 provider(언어 전환 때 요약과 함께 다시 그린다)
   const step = (s) => { $('authStep').textContent = s; };
   const log = (s) => { $('authLog').textContent += `${s}\n`; };
 
@@ -50,17 +52,17 @@ export function runPopup({ core, config, Demo, meta }) {
     if (req.allowAgent === '1' || req.allowAgent === true) out.push(tt('wallet_cond_agent'));
     return out.filter(Boolean);
   }
+  /** 요약 표(#authSummary)에 한 줄을 더한다. 값은 서비스가 보낸 것일 수 있어 textContent 로만 들어간다. */
+  function row(labelKey, value) {
+    const dt = document.createElement('dt');
+    dt.textContent = tt(labelKey) || labelKey;
+    const dd = document.createElement('dd');
+    dd.textContent = value;
+    $('authSummary').append(dt, dd);
+  }
   /** 승인 요청을 문장으로 — 서비스·주소, 로그인이면 요청한 조건, 세션 요청이면 서명할 본문. */
   function renderAuthSummary(req) {
-    const dl = $('authSummary');
-    dl.textContent = '';
-    const row = (labelKey, value) => {
-      const dt = document.createElement('dt');
-      dt.textContent = tt(labelKey) || labelKey;
-      const dd = document.createElement('dd');
-      dd.textContent = value;
-      dl.append(dt, dd);
-    };
+    $('authSummary').textContent = '';
     row('wallet_auth_service', cleanServiceName(req.serviceName) || req.origin);
     row('wallet_auth_origin', req.origin);
     if (req.type === 'mode3-authorize') {
@@ -68,6 +70,11 @@ export function runPopup({ core, config, Demo, meta }) {
       row('wallet_auth_conditions', conds.length ? conds.join(' · ') : tt('wallet_cond_none'));
     }
     if (req.type === 'mode3-request') row('user_auth_request_title', tt('user_auth_sign_body', { body: String(req.body) }) || String(req.body));
+  }
+  /** 신원 줄(스펙 2026-10-16 §3.2): 어느 계정으로 로그인하는지 — provider 만, 이메일·이름은 없다(범위 밖). */
+  function renderAuthIdentity(provider) {
+    lastIdentity = provider;
+    row('user_auth_identity', provider === 'demo' ? (tt('user_auth_identity_demo') || '데모 계정') : (tt('user_auth_identity_provider', { provider }) || provider));
   }
   /** 팝업 제목 — 아직 요청이 없으면 대기 문구, 있으면 어느 서비스의 무슨 요청인지. */
   function renderAuthTitle() {
@@ -80,7 +87,7 @@ export function runPopup({ core, config, Demo, meta }) {
   // 언어·전문가 전환 — 제목·요약은 스크립트가 만든 텍스트라 여기서 다시 그린다.
   for (const k of ['setLang', 'setExpert']) {
     const orig = Demo[k];
-    Demo[k] = (v) => { orig(v); renderAuthTitle(); if (lastReq && lastReq.origin && lastReq.type !== 'mode3-config') renderAuthSummary(lastReq); };
+    Demo[k] = (v) => { orig(v); renderAuthTitle(); if (lastReq && lastReq.origin && lastReq.type !== 'mode3-config') { renderAuthSummary(lastReq); if (lastIdentity) renderAuthIdentity(lastIdentity); } };
   }
   /** 승인·거절 버튼(요약 뒤에 보인다). 창을 닫으면 RP 쪽이 popup_closed 로 끝낸다. */
   function waitDecision() {
@@ -104,10 +111,11 @@ export function runPopup({ core, config, Demo, meta }) {
     window.removeEventListener('message', onMessage);
     // 결과는 요청을 보낸 창에만 돌려준다. 오리진이 어긋나면 진행하지 않고 실제로 말을 건 오리진에 실패만 알린다.
     const target = ev.origin === req.origin ? req.origin : ev.origin;
-    const reply = (result) => {
+    // closeMs: 창을 닫기까지의 지연 — 기본은 성공 200ms·실패 3초(이유를 잠시 보이게), 미등록 안내처럼 읽을 것이 있으면 호출부가 늘린다.
+    const reply = (result, { closeMs } = {}) => {
       try { window.opener.postMessage({ type: `${req.type}-result`, r_s: req.r_s ?? null, result }, target); }
       catch (e) { log(`결과 전송 실패: ${e.message}`); }
-      setTimeout(() => window.close(), result.ok ? 200 : 3000);   // 실패는 이유를 잠시 보이게 둔다
+      setTimeout(() => window.close(), closeMs ?? (result.ok ? 200 : 3000));
     };
     lastReq = req;
     renderAuthTitle();
@@ -174,6 +182,20 @@ export function runPopup({ core, config, Demo, meta }) {
         step('재승인 완료 — 창을 닫는다.');
         return reply({ ok: true, reauth: true });
       }
+      const st = await core.status();
+      if (st.status === 200 && !st.body?.registered) {
+        // 미등록(스펙 §3.2): Google 로 들어온 요청이면 Google 등록 안내 + 사용자 페이지 링크(이 창에서는 등록하지 않는다). 회신은 지금과 같은
+        // not_registered(RP 쪽 표기는 불변). 안내를 읽을 수 있게 창은 15초 뒤에 닫는다(실패 기본 3초).
+        const google = req.provider === 'google' && oidc?.enabled;
+        const hint = $('authHint');
+        hint.textContent = tt(google ? 'user_register_hint_google' : 'user_register_hint') || '먼저 사용자 페이지에서 등록하세요.';
+        const a = document.createElement('a'); a.href = `${location.origin}/`; a.target = '_blank'; a.rel = 'noopener'; a.textContent = `${location.origin}/`;
+        hint.append(' ', a); hint.hidden = false;
+        step('등록 없음');
+        return reply({ ok: false, reason: 'not_registered' }, { closeMs: 15_000 });
+      }
+      // 신원 줄(스펙 §3.2) — provider 가 없는 옛 등록은 데모 계정이다. 상태를 못 읽었으면 줄 없이 진행한다(로그인이 제 사유로 끝난다).
+      if (st.status === 200) renderAuthIdentity(st.body.provider ?? 'demo');
       step('요청을 확인하고 승인하세요.');
       if (!(await waitDecision())) { step('동의 거절'); return reply({ ok: false, reason: 'user_denied' }); }
       step('로그인·증명 생성 중… (수 초 걸린다)');

@@ -4,8 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="same-origin" />
-  <!-- 제목의 "Mode 3 로그인" 은 tests/test_mode3_demo_stack.mjs 의 페이지 서빙 검사 marker 다. -->
-  <title>Mode 3 로그인 (RP)</title>
+  <!-- 제목의 "zkONE — 로그인" 은 tests/test_mode3_demo_stack.mjs 의 페이지 서빙 검사 marker 다(브랜드가 아직
+       없을 때의 기본값 — renderBrand() 가 info.name 에 맞춰 zkONE/zkTWO 로 다시 쓴다). -->
+  <title>zkONE — 로그인</title>
   <link rel="stylesheet" href="/common/demo.css" />
   <!-- zkONE 꾸밈(가상의 이름, 실제 거래소가 아니다) — 이 페이지에서만 흰 배경 + 남색/파랑 억양을 입힌다. demo.css 는 바꾸지 않는다. -->
   <link rel="stylesheet" href="/common/rp.css" />
@@ -27,7 +28,9 @@
         <a href="#withdraw" class="nav-link" data-i18n="nav_withdraw">입출금</a>
       </div>
       <div class="nav-actions">
+        <button type="button" id="connectWalletBtn" class="nav-cta nav-cta-secondary" data-i18n="rp_connect_wallet_btn">지갑 연결</button>
         <button type="button" id="loginBtn" class="nav-cta" data-i18n="rp_login_btn">로그인</button>
+        <span id="walletPill" class="account-pill wallet-pill" hidden><span class="pill-dot" aria-hidden="true"></span><span id="walletPillText">-</span> <a id="walletPillLink" href="#" target="_blank" rel="noopener" data-i18n="go_wallet">사용자 페이지 열기</a></span>
         <div id="accountPill" class="account-pill" hidden>
           <span class="pill-dot" aria-hidden="true"></span>
           <code id="accountAddr">-</code>
@@ -60,7 +63,7 @@
       <!-- 로그아웃 상태: 로그인 카드(조건 문구·체크박스·결과) — 실제 로그인 버튼은 상단 내비의 #loginBtn 이다. -->
       <div id="assetsLoggedOut" class="login-card">
         <h2 data-i18n="rp_login_title">로그인</h2>
-        <p class="desc" data-i18n="rp_login_desc">지갑이 IdP 의 서명과 영지식 증명으로 이 RP 전용 주소를 만듭니다. IdP 는 어느 RP 인지 모릅니다.</p>
+        <p class="desc" data-i18n="rp_login_desc">사용자가 IdP 의 서명과 영지식 증명으로 이 RP 전용 주소를 만듭니다. IdP 는 어느 RP 인지 모릅니다.</p>
         <p class="login-policy" id="loginPolicy">만 19세 이상, 허용 국가(KR·JP·US·DE·FR)만 이용할 수 있습니다</p>
         <label class="opt-row"><input type="checkbox" id="allowAgent" /> <span data-term="allowAgent">AI 에이전트 허용</span></label>
         <label class="opt-row expert"><input type="checkbox" id="requirePred" /> <span id="requirePredLabel" data-i18n="rp_require_pred">조건 요구(국가·나이)</span></label>
@@ -103,7 +106,8 @@
       </div>
     </aside>
 
-    <!-- 전문가 보기에서만: RP 상태·로그인 기록·승인 개봉(운영 성격의 정보라 "컴플라이언스"로 묶는다). -->
+    <!-- 전문가 보기에서만: RP 상태·로그인 기록(운영 성격의 정보라 "컴플라이언스"로 묶는다). 승인 개봉은 아래 별도 카드(U5
+         데모 개편으로 이 묶음이 전문가 전용이 되며 체험 모드 8단계 말풍선 대상(#openBtn)이 갇혔었다 — 늘 보이게 뺐다). -->
     <section class="card compliance-panel expert" id="compliance">
       <h2 data-i18n="compliance_title">컴플라이언스</h2>
 
@@ -123,26 +127,61 @@
         <p><button id="refreshLogins" class="btn-ghost" data-i18n="refresh">새로고침</button></p>
         <div id="logins"></div>
       </div>
+    </section>
 
-      <div class="compliance-block">
-        <h3 data-i18n="rp_open_title">승인 개봉</h3>
-        <p class="desc" data-i18n="rp_open_desc">RP 와 IdP 가 함께, 운영자 승인 아래에서만 사용자를 알아냅니다.</p>
-        <p>
-          <label><span data-term="PPID">이 RP 에서의 내 주소</span> <input id="openPpid" size="24" /></label>
-          <button id="openBtn" data-i18n="rp_open_req">개봉 요청</button>
-          <button id="openPollBtn" class="btn-ghost" disabled data-i18n="rp_open_poll">결과 확인</button>
-        </p>
-        <p>
-          <label><span data-i18n="rp_open_tx_label">트랜잭션 해시</span> <input id="openTx" size="66" placeholder="0x…" /></label>
-          <button id="openTxBtn" data-i18n="rp_open_tx">해시로 요청</button>
-        </p>
-        <p class="muted"><span data-term="tag">추적용 봉인</span> — <span data-i18n="rp_open_tag_note">로그인마다 함께 실린 추적용 봉인을 RP 와 IdP 가 함께 열어야 uid 가 나옵니다 — 어느 한쪽만으로는 열리지 않습니다.</span></p>
-        <p class="muted expert" data-i18n="rp_open_tx_note">트랜잭션은 지갑 페이지에서 보냅니다(설계 2026-09-16 §6).</p>
-        <div id="openVerdict"></div>
-        <pre id="openLog" class="expert">-</pre>
-      </div>
+    <!-- 승인 개봉 — 전문가 보기와 무관하게 늘 보인다(체험 모드 8단계 대상). 내부의 원문 로그·트랜잭션 안내만 전문가 보기 전용. -->
+    <section class="card compliance-panel" id="openCompliance">
+      <h2 data-i18n="rp_open_card_title">컴플라이언스 — 승인 개봉</h2>
+      <p class="desc" data-i18n="rp_open_desc">RP 와 IdP 가 함께, 운영자 승인 아래에서만 사용자를 알아냅니다.</p>
+      <p>
+        <label><span data-term="PPID">이 RP 에서의 내 주소</span> <input id="openPpid" size="24" /></label>
+        <button id="openBtn" data-i18n="rp_open_req">개봉 요청</button>
+        <button id="openPollBtn" class="btn-ghost" disabled data-i18n="rp_open_poll">결과 확인</button>
+      </p>
+      <p>
+        <label><span data-i18n="rp_open_tx_label">트랜잭션 해시</span> <input id="openTx" size="66" placeholder="0x…" /></label>
+        <button id="openTxBtn" data-i18n="rp_open_tx">해시로 요청</button>
+      </p>
+      <p class="muted"><span data-term="tag">추적용 봉인</span> — <span data-i18n="rp_open_tag_note">로그인마다 함께 실린 추적용 봉인을 RP 와 IdP 가 함께 열어야 uid 가 나옵니다 — 어느 한쪽만으로는 열리지 않습니다.</span></p>
+      <p class="muted expert" data-i18n="rp_open_tx_note">트랜잭션은 사용자 페이지에서 보냅니다(설계 2026-09-16 §6).</p>
+      <div id="openVerdict"></div>
+      <pre id="openLog" class="expert">-</pre>
     </section>
   </main>
+
+  <!-- 로그인 모달(2026-10-15) — 상단 #loginBtn 은 이 창을 열기만 한다. 직접 로그인(아이디/비밀번호)은 장식이고,
+       Google·Naver 는 이 데모에서 동작하지 않는다(안내문만 보인다). 실제 zk-Delegation 로그인은 #idpLoginBtn 이 한다.
+       예외(2026-10-16 OIDC 래퍼): IdP 가 Google 을 켰고 브라우저 모드면 Google 버튼도 같은 zk 로그인을 연다(data-oidc="1"). -->
+  <div id="loginModal" class="modal-backdrop" hidden>
+    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="loginModalTitle">
+      <div class="modal-head">
+        <h2 id="loginModalTitle" data-i18n="rp_login_modal_title">로그인</h2>
+        <button type="button" id="loginModalClose" class="modal-close" aria-label="닫기">×</button>
+      </div>
+      <!-- #loginPolicy 와 같은 문구(rp_login_policy) — renderStatus() 가 둘 다 채운다. 사전이 없으면 이 기본 문구가 남는다. -->
+      <p class="login-policy" id="loginPolicyModal">만 19세 이상, 허용 국가(KR·JP·US·DE·FR)만 이용할 수 있습니다</p>
+      <div class="direct-login">
+        <input type="text" id="directId" autocomplete="username" />
+        <input type="password" id="directPw" autocomplete="current-password" />
+        <button type="button" id="directLoginBtn" data-i18n="rp_direct_login_btn">로그인</button>
+      </div>
+      <p id="loginModalNote" class="modal-note" hidden></p>
+      <div class="modal-divider"><span data-i18n="rp_or_social">또는 다음으로 로그인</span></div>
+      <div class="social-row">
+        <button type="button" id="googleLoginBtn" class="social-btn">
+          <span class="social-badge badge-google" aria-hidden="true">G</span>
+          <span data-i18n="rp_google_btn">Google 로 로그인</span>
+        </button>
+        <button type="button" id="naverLoginBtn" class="social-btn">
+          <span class="social-badge badge-naver" aria-hidden="true">N</span>
+          <span data-i18n="rp_naver_btn">네이버로 로그인</span>
+        </button>
+        <button type="button" id="idpLoginBtn" class="social-btn social-btn-idp">
+          <span data-i18n="rp_idp_btn">IdP 로 로그인(zk-Delegation)</span>
+        </button>
+      </div>
+    </div>
+  </div>
 
   <script>
     const $ = (id) => document.getElementById(id);
@@ -181,8 +220,16 @@
     let walletCfgError = null;              // 못 읽었을 때의 원문(화면·언어 전환에서 다시 쓴다)
     let lastLogins = [];                    // 마지막으로 받아온 로그인 기록(언어·전문가 전환 때 다시 그린다)
     let lastPPID = null;                    // 직전 로그인의 PPID — 같은 주소가 다시 나오는지 한 줄 요약에 쓴다
-    const progress = { used: false, disclosed: false, opened: false };   // 이 페이지가 아는 완료 신호(세션 중 메모리)
-    const SERVICE_NAME = 'Mode 3 데모 RP';
+    const progress = { used: false, disclosed: false, opened: false, login2: false };   // 이 페이지가 아는 완료 신호(세션 중 메모리)
+    // U6(2026-10-14): 지갑 health 의 rpOrigins(/mode3/health, Demo.stack 가 이미 폴링 중)에서 내 오리진이 첫 번째가
+    // 아니면 "두 번째 RP"다 — login2 단계(두 번째 RP 로그인) 말풍선·"다른 창에서" 카드 판정에 쓴다.
+    function isSecondRp() {
+      const rpOrigins = Demo.stack?.last?.wallet?.rpOrigins ?? [];
+      return rpOrigins.length >= 2 && !!info && rpOrigins[0] !== info.origin;
+    }
+    // 2026-10-15 W2·W4: "Mode 3 데모 RP" 대신 이 페이지의 브랜드(zkONE/zkTWO)를 그대로 쓴다 — renderBrand() 가 info 를
+    // 읽고 나서 갈아 끼운다(그 전까지는 기본값 'zkONE').
+    let SERVICE_NAME = 'zkONE';
     const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) });
     const ms = (t0) => `${Date.now() - t0} ms`;
     /** 사전 텍스트를 요소에 쓴다. 사전에 없는 키(= /common 미로딩)면 아무것도 쓰지 않아 HTML 의 기본 텍스트가 남는다. */
@@ -203,9 +250,10 @@
 
     // ---- 안내 바 ----
     function renderGuide() {
-      const links = { wallet: info?.walletAgentOrigin, admin: info?.ciaUrl ? `${info.ciaUrl}/admin` : null, account: info?.ciaUrl ? `${info.ciaUrl}/account` : null };
-      // 체험 모드일 때만 공통 레이어가 7단계를 통째로 판정한다(설계 2026-09-25 §3.2) — 이 페이지는 자기가 아는 완료 신호만 넘긴다.
-      if (Demo.tour?.enabled) { Demo.tour.evaluate({ progress: { approved: info?.status === 'approved', login: !!currentSession, used: progress.used, disclosed: progress.disclosed, opened: progress.opened }, links }); return; }
+      // rp2: 지갑이 아는 RP 목록의 두 번째 오리진 — login2 단계(두 번째 RP 로그인)가 첫 RP 창에서 쓰는 "다른 창" 링크다.
+      const links = { wallet: info?.walletAgentOrigin, admin: info?.ciaUrl ? `${info.ciaUrl}/admin` : null, account: info?.ciaUrl ? `${info.ciaUrl}/account` : null, rp2: (Demo.stack?.last?.wallet?.rpOrigins ?? [])[1] ?? null };
+      // 체험 모드일 때만 공통 레이어가 8단계를 통째로 판정한다(설계 2026-09-25 §3.2, U6 로 login2 추가) — 이 페이지는 자기가 아는 완료 신호만 넘긴다.
+      if (Demo.tour?.enabled) { Demo.tour.evaluate({ progress: { approved: info?.status === 'approved', login: !!currentSession, login2: progress.login2, used: progress.used, disclosed: progress.disclosed, opened: progress.opened }, links, secondRp: isSecondRp() }); return; }
       // 체험 모드가 꺼져 있을 때(그리고 demo.js 가 아예 없을 때)의 1차 계산 — 이 페이지가 아는 사실만으로 그린다.
       const done = [];
       if (info?.status === 'approved') done.push('approve');
@@ -219,7 +267,7 @@
     // 언어·전문가 전환은 사전이 채우는 요소와 결과 카드만 바꾼다(Demo) — 스크립트가 만든 텍스트(상태·표·세션)는 여기서 다시 그린다.
     for (const k of ['setLang', 'setExpert']) {
       const orig = Demo[k];
-      Demo[k] = (v) => { orig(v); renderStatus(); renderSession(); renderLogins(); };
+      Demo[k] = (v) => { orig(v); renderStatus(); renderSession(); renderLogins(); renderModalTexts(); };
     }
 
     // ---- 서비스 상태 카드 ----
@@ -237,6 +285,7 @@
       tte($('rpMirrorInfo'), 'rp_mirror_line', { mirror: info.mirrorAddress ?? '-', log: info.logAddress ?? '-' });   // V10: 검증은 거울만 읽는다
       // 로그인 카드의 국가·나이 조건 문구 — 사전이 없으면(tte 가 아무것도 안 쓴다) #loginPolicy 의 HTML 기본 문구가 남는다.
       tte($('loginPolicy'), 'rp_login_policy', { minAge: info.predicates.minAge, countries: (info.predicates.allowedCountryNames ?? info.predicates.allowedCountries ?? []).join('·') });
+      tte($('loginPolicyModal'), 'rp_login_policy', { minAge: info.predicates.minAge, countries: (info.predicates.allowedCountryNames ?? info.predicates.allowedCountries ?? []).join('·') });
       $('rpInfoExpert').textContent = `arid=${info.arid ?? '-'}   origin=${info.origin}   cert_s=있음   pk_trace=있음   Mode3Log=${info.logAddress}`
         + `   지갑 에이전트=${info.walletAgentOrigin}   pk_CIA=${info.pkCiaSource}   chainId=${info.chainId}   팩토리=${info.factoryAddress ?? '(없음)'}`
         + `   AttrGate=${info.attrGateAddress ?? '(없음)'}`;
@@ -300,11 +349,21 @@
       renderGuide();
     }
 
+    /** 브랜드(zkONE/zkTWO, 2026-10-15 W2) — rp_info.name 이 zk 로 시작하면 그 값을, 아니면 기본 'zkONE' 을 쓴다.
+     *  워드마크(.brand)·<title>·body[data-brand](rp.css 의 zkTWO 포인트 색·배지)를 함께 맞춘다. */
+    function renderBrand() {
+      const brand = /^zk/i.test(info?.name ?? '') ? info.name : 'zkONE';
+      document.querySelector('.brand').textContent = brand;
+      document.body.dataset.brand = brand;
+      document.title = `${brand} — 로그인`;
+      SERVICE_NAME = brand;
+    }
     async function loadInfo() {
       info = await (await fetch('/api/mode3/rp_info')).json();
+      renderBrand();
       const pending = info.status !== 'approved';
       renderStatus();
-      $('loginBtn').disabled = pending;
+      // 2026-10-15: 로그인 버튼은 항상 활성(사용자 요청) — 승인 전이면 눌렀을 때 RP 가 사유(inactiveReason)로 거절하는 것을 보여 준다.
       await loadWalletConfig();
       renderGuide();
       // 상태 패널(설계 2026-09-25 §2) — 상대 주소를 rp_info 에서 알고 난 뒤 건다. 같은 인자로 다시 불러도 폴링은 하나다.
@@ -448,10 +507,79 @@
       serviceName: SERVICE_NAME, ...extra,
     });
 
-    $('loginBtn').addEventListener('click', async () => {
+    // 2026-10-15: "지갑 연결" — 지갑 에이전트(/wallet/config·/mode3/health)에 닿는지 확인하고 모드·등록 상태를 상단 배지로 보여 준다. 늘 활성.
+    async function connectWallet() {
+      const pill = $('walletPill'), txt = $('walletPillText'), link = $('walletPillLink');
+      const origin = info?.walletAgentOrigin ?? 'http://127.0.0.1:5100';
+      link.href = `${origin}/`;
+      pill.hidden = false; pill.classList.remove('ok', 'bad'); txt.textContent = '…';
+      try {
+        const [cfg, h] = await Promise.all([fetch(`${origin}/wallet/config`).then((r) => r.json()), fetch(`${origin}/mode3/health`).then((r) => r.json())]);
+        walletCfg = cfg; walletCfgLoaded = true; walletCfgError = null;
+        const mode = cfg.secrets === 'snap' ? 'Snap' : cfg.secrets === 'web' ? (tt('rp_wallet_mode_web') || '브라우저') : 'file';
+        const reg = h.registered ? (tt('rp_wallet_reg_yes', { uid: h.uid ?? '' }) || `등록됨 uid ${h.uid ?? ''}`) : (tt('rp_wallet_reg_no') || '미등록');
+        txt.textContent = tt('rp_wallet_pill_ok', { mode, reg }) || `지갑 연결됨 · ${mode} · ${reg}`;
+        pill.classList.add('ok');
+      } catch (e) {
+        txt.textContent = tt('rp_wallet_pill_fail') || '지갑에 연결할 수 없음';
+        pill.classList.add('bad');
+      }
+      renderWalletMode?.();
+    }
+    $('connectWalletBtn').addEventListener('click', connectWallet);
+
+    // ---- 로그인 모달(2026-10-15) ----
+    // 상단 #loginBtn 은 모달을 열기만 하고, 실제 zk-Delegation 로그인은 모달의 #idpLoginBtn 이 startIdpLogin() 을 부른다.
+    // 직접 로그인·Google·Naver 는 장식이다(네트워크 호출 없음) — 눌러도 안내문만 뜬다. 단 Google 은 googleLoginOn() 이면 실제 로그인이다(아래).
+    function renderModalTexts() {
+      $('directId').placeholder = tt('rp_direct_id_ph') || '아이디/이메일';
+      $('directPw').placeholder = tt('rp_direct_pw_ph') || '비밀번호';
+      const closeLabel = tt('rp_modal_close') || '닫기';
+      $('loginModalClose').setAttribute('aria-label', closeLabel);
+      $('loginModalClose').title = closeLabel;
+    }
+    function showModalNote(key, fallback) {
+      const note = $('loginModalNote');
+      note.textContent = tt(key) || fallback;
+      note.hidden = false;
+    }
+    function onLoginModalKeydown(ev) { if (ev.key === 'Escape') closeLoginModal(); }
+    /** Google 버튼이 실제 로그인을 여는가(스펙 2026-10-16 §3.2·§8) — IdP 가 Google 을 켰고(rp_info.oidc) 사용자가 브라우저 모드일 때만.
+     *  Snap·에이전트 모드에는 Google 등록이 없다. */
+    const googleLoginOn = () => Boolean(info?.oidc?.enabled && WEB());
+    function openLoginModal() {
+      $('loginModal').hidden = false;
+      $('loginModalNote').hidden = true;
+      // data-oidc: Google 버튼의 활성 표시(테스트가 본다). 켜져 있으면 버튼 설명을 붙인다.
+      const g = googleLoginOn();
+      if (g) $('googleLoginBtn').dataset.oidc = '1'; else delete $('googleLoginBtn').dataset.oidc;
+      $('googleLoginBtn').title = g ? (tt('rp_google_login_note') || '') : '';
+      document.addEventListener('keydown', onLoginModalKeydown);
+      Demo.tour?.refresh();      // 체험 모드가 켜져 있으면 말풍선을 바로 #idpLoginBtn 으로 옮긴다(아래 anchorOverride).
+    }
+    function closeLoginModal() {
+      $('loginModal').hidden = true;
+      document.removeEventListener('keydown', onLoginModalKeydown);
+      Demo.tour?.refresh();      // 닫히면 말풍선은 다시 #loginBtn 을 가리킨다.
+    }
+    $('loginModalClose').addEventListener('click', closeLoginModal);
+    $('loginModal').addEventListener('click', (ev) => { if (ev.target === $('loginModal')) closeLoginModal(); });
+    $('directLoginBtn').addEventListener('click', () => showModalNote('rp_direct_login_note', '데모에서는 IdP 로그인만 동작합니다'));
+    // Google: IdP 가 Google 을 켰고 브라우저 모드면 같은 zk 로그인을 provider:'google' 표시와 함께 연다(미등록이면 팝업이 등록 안내).
+    $('googleLoginBtn').addEventListener('click', async () => {
+      if (!info) { try { await loadInfo(); } catch { /* 아래에서 꺼진 것으로 본다 */ } }
+      if (googleLoginOn()) { closeLoginModal(); startIdpLogin({ provider: 'google' }); return; }
+      showModalNote('rp_social_not_in_demo', '이 데모에서는 준비되지 않았습니다');
+    });
+    $('naverLoginBtn').addEventListener('click', () => showModalNote('rp_social_not_in_demo', '이 데모에서는 준비되지 않았습니다'));
+    renderModalTexts();
+
+    /** opts.provider: 어느 버튼으로 들어왔는지('google' | 없음) — 승인 팝업이 미등록 안내를 고르는 데만 쓴다(증명·검증에는 쓰지 않는다). */
+    async function startIdpLogin(opts = {}) {
       // tourBusy: 처리 중에는 체험 모드의 잠금 적용이 이 버튼을 건드리지 않는다(폴링이 요청 도중에 다시 열지 않게).
+      if ($('loginBtn').dataset.tourBusy === '1') return;   // 처리 중 재클릭 무시(버튼은 항상 활성 상태로 둔다 — 2026-10-15)
       $('loginBtn').dataset.tourBusy = '1';
-      $('loginBtn').disabled = true; $('log').textContent = '';
+      $('log').textContent = '';
       pendingVerdict($('verdict'), 'working');
       const log = (s) => { $('log').textContent += s + '\n'; };
       try {
@@ -484,7 +612,7 @@
           log(WEB() ? '2. 사용자 승인 팝업 — 사용자 창에서 승인하세요.' : '2. 지갑 승인 팝업 — 지갑 창에서 MetaMask·Snap 동의를 확인하세요.');
           let result;
           try {
-            result = await authorizeViaPopup(authorizeRequest({ r_s, r_rp, allowAgent, factoryAddress, attrGateAddress, disclose: pred?.disclose ?? null, set: pred?.set ?? null }));
+            result = await authorizeViaPopup(authorizeRequest({ r_s, r_rp, allowAgent, factoryAddress, attrGateAddress, disclose: pred?.disclose ?? null, set: pred?.set ?? null, provider: opts.provider ?? null }));
           } catch (e) {
             log(`2. 팝업 ${ms(t0)}: ${e.reason ?? ''} ${e.message}`);
             setVerdict($('verdict'), false, e.reason === 'popup_blocked' ? 'popup_blocked' : 'login_failed',
@@ -531,6 +659,8 @@
             detail: rb,
           }));
           if (pred?.require) progress.disclosed = true;
+          // U6: 서버 사실(two_rps 판정)이 아직 안 닿아도 이 페이지가 "방금 두 번째 RP 에서 로그인했다"를 직접 안다.
+          if (isSecondRp()) progress.login2 = true;
         } else {
           // 지갑이 시연 덮어쓰기(가짜 증명·가짜 서명)로 보낸 경우 — 지갑 응답의 demo 필드로 안다. RP 가 거절한 사유 제목에 접두어만 붙인다(위 지갑 거절 분기와 같은 규칙).
           const reasonCode = rb.reason ?? 'internal';
@@ -546,8 +676,10 @@
           summary: walletCfgLoaded ? e.message : (tt('rp_error_wallet_cfg', { origin: info?.walletAgentOrigin ?? '?' }) || e.message),
           detail: e.message,
         }));
-      } finally { delete $('loginBtn').dataset.tourBusy; $('loginBtn').disabled = false; Demo.tour?.applyLocks(); }
-    });
+      } finally { delete $('loginBtn').dataset.tourBusy; Demo.tour?.applyLocks(); }
+    }
+    $('loginBtn').addEventListener('click', openLoginModal);
+    $('idpLoginBtn').addEventListener('click', () => { closeLoginModal(); startIdpLogin(); });
 
     $('revalidateBtn').addEventListener('click', async () => {
       $('revalidateBtn').disabled = true; $('sessionLog').textContent = '';
@@ -706,6 +838,8 @@
     Demo.tour?.lock({ id: 'loginBtn', cond: 'wallet_registered', otherwise: () => !info || info.status === 'approved' });
     // 스위치를 켜고 끌 때 이 페이지의 규칙으로 안내를 다시 그린다(설계 §3.1).
     Demo.tour?.onToggle(renderGuide);
+    // 2026-10-15: 로그인 모달이 열려 있는 동안은 말풍선이 #loginBtn 대신 모달 안의 #idpLoginBtn 을 가리킨다(demo.js 의 작은 훅).
+    if (Demo.tour) Demo.tour.anchorOverride = (id) => (id === 'loginBtn' && !$('loginModal').hidden) ? 'idpLoginBtn' : id;
     loadInfo().then(refreshLogins);
   </script>
 

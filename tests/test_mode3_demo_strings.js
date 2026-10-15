@@ -28,11 +28,14 @@ const REASONS = ['stale_root', 'stale_registry_root', 'root_too_old', 'revalidat
   'bad_disclosure', 'disclosure_unsatisfiable', 'predicate_type', 'duplicate_session', 'already_registered', 'register_failed',
   // 2026-10-15 브라우저 전용 사용자 페이지(web 모드) — 금고·증명 워커·RP 릴레이·승인 창
   'locked', 'bad_password', 'zk_assets_unavailable', 'storage_unavailable', 'relay_inactive', 'relay_bad_target', 'relay_bad_calldata', 'relay_gas', 'relay_rate_limited', 'origin_mismatch',
-  'chain_unavailable', 'no_factory', 'execute_reverted', 'schema_invalid', 'bad_attr'];
+  'chain_unavailable', 'no_factory', 'execute_reverted', 'schema_invalid', 'bad_attr',
+  // 2026-10-16 Google(OIDC 래퍼) — IdP 의 토큰 검증 코드와 페이지의 GIS 코드
+  'oidc_disabled', 'oidc_invalid', 'oidc_nonce_mismatch', 'oidc_unavailable', 'gsi_unavailable', 'gsi_origin'];
 
 t('langs 는 ko, en', () => assert.deepEqual(S.langs, ['ko', 'en']));
-t('steps 는 7개, 키 고유, 순서 approve→register→login→use→disclose→revoke→open, 각 언어에 title·hint', () => {
-  assert.deepEqual(S.steps.map((s) => s.key), ['approve', 'register', 'login', 'use', 'disclose', 'revoke', 'open']);
+// U6(2026-10-14): login2(두 번째 RP 로그인, unlinkability 시연) 추가 — login 과 use 사이, 7단계→8단계.
+t('steps 는 8개, 키 고유, 순서 approve→register→login→login2→use→disclose→revoke→open, 각 언어에 title·hint', () => {
+  assert.deepEqual(S.steps.map((s) => s.key), ['approve', 'register', 'login', 'login2', 'use', 'disclose', 'revoke', 'open']);
   for (const s of S.steps) for (const l of S.langs) { assert.ok(s[l]?.title, `${s.key}.${l}.title`); assert.ok(s[l]?.hint, `${s.key}.${l}.hint`); }
   for (const s of S.steps) assert.ok(Array.isArray(s.where) && s.where.length > 0, `${s.key}.where`);
 });
@@ -51,7 +54,7 @@ t('ui·terms 항목은 전부 ko·en 이 있고 빈 문자열이 없다', () => 
   for (const n of ['PPID', 'AA', 'session', 'root', 'proof', 'disclosure', 'cred', 'tag', 'allowAgent', 'attr0', 'attr1', 'attr2', 'attr3', 'auid', 'auid_s', 'r_rp']) assert.ok(S.terms[n], `terms.${n}`);
 });
 t('ui 에 안내 바·토글·공통 버튼 키가 있다', () => {
-  for (const k of ['bar_next', 'bar_other_window', 'toggle_lang', 'toggle_expert', 'details', 'working', 'proving', 'confirm_revoke', 'confirm_publish', 'confirm_reset', 'go_wallet', 'go_rp', 'go_admin', 'go_account', 'wallet_profile_save_btn', 'wallet_profile_saved', 'wallet_profile_failed', 'wallet_profile_saved_snap_pending']) assert.ok(S.ui[k], k);
+  for (const k of ['bar_next', 'bar_other_window', 'toggle_lang', 'toggle_expert', 'details', 'working', 'proving', 'confirm_revoke', 'confirm_publish', 'confirm_reset', 'go_wallet', 'go_rp', 'go_rp2', 'go_admin', 'go_account', 'wallet_profile_save_btn', 'wallet_profile_saved', 'wallet_profile_failed', 'wallet_profile_saved_snap_pending']) assert.ok(S.ui[k], k);
 });
 // 상태 패널(설계 2026-09-25 §2) — 점 라벨·판정 문구. Demo.stack.judge 가 돌려주는 key 는 전부 여기 있어야 한다.
 t('ui 에 상태 패널 키가 있다', () => {
@@ -96,10 +99,15 @@ t('ui 에 지갑 공개 조건 폼·claim 버튼 키가 있다', () => {
 });
 // RP 데모(zkONE 거래소 꾸밈, 2026-10-14 U5) — 상단 내비·KRW 시세표·내 자산 패널·컴플라이언스 묶음 문구.
 t('ui 에 RP 거래소 꾸밈(내비·시세표·내 자산·컴플라이언스) 키가 있다', () => {
-  for (const k of ['nav_market', 'nav_assets', 'nav_withdraw', 'rp_logout_btn', 'rp_pending_banner',
+  for (const k of ['nav_market', 'nav_assets', 'nav_withdraw', 'rp_logout_btn', 'rp_pending_banner', 'rp_connect_wallet_btn', 'rp_wallet_pill_ok', 'rp_wallet_pill_fail', 'rp_wallet_reg_yes', 'rp_wallet_reg_no',
     'market_title', 'market_demo_note', 'market_col_coin', 'market_col_price', 'market_col_change', 'market_col_volume',
     'assets_title', 'rp_login_policy', 'rp_login_nav_hint', 'rp_session_expiry_label',
     'rp_withdraw_title', 'rp_withdraw_desc', 'rp_withdraw_amount_label', 'compliance_title']) assert.ok(S.ui[k], k);
+});
+// 로그인 모달(2026-10-15) — mode3/rp.html 의 #loginModal(직접 로그인 장식·Google·Naver 미지원 안내·#idpLoginBtn 이 실제 zk 로그인).
+t('ui 에 로그인 모달 키가 있다', () => {
+  for (const k of ['rp_login_modal_title', 'rp_direct_id_ph', 'rp_direct_pw_ph', 'rp_direct_login_btn', 'rp_direct_login_note',
+    'rp_or_social', 'rp_google_btn', 'rp_naver_btn', 'rp_idp_btn', 'rp_social_not_in_demo', 'rp_modal_close']) assert.ok(S.ui[k], k);
 });
 // 가짜 증명·가짜 서명 시연 버튼(2026-10-14) — mode3_wallet_agent.js 의 fake_proof·fake_sig 스코프, mode3/wallet.html 의 #demoFakeProofBtn·#demoFakeSigBtn.
 t('ui 에 가짜 증명·가짜 서명 시연 버튼 키가 있다', () => {

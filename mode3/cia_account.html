@@ -4,11 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="same-origin" />
-  <!-- 제목의 "IdP 사용자" 는 tests/test_mode3_demo_stack.mjs 의 페이지 서빙 검사 marker 다. -->
-  <title>Mode 3 IdP 사용자</title>
+  <!-- 제목의 "IdP 내 계정" 은 tests/test_mode3_demo_stack.mjs 의 페이지 서빙 검사 marker 다. -->
+  <title>IdP 내 계정</title>
   <link rel="stylesheet" href="/common/demo.css" />
   <script src="/common/strings.js"></script>
   <script src="/common/demo.js"></script>
+  <!-- Google Identity Services 로더(스펙 2026-10-16) — window.Mode3Gsi. 사용자 페이지와 같은 사본이다. -->
+  <script src="/common/gsi.js"></script>
 </head>
 <body data-page="account">
   <header id="demoBar"></header>
@@ -21,6 +23,9 @@
         <label><span data-i18n="account_pwd_label">계정 비밀번호</span> <input id="pwd" type="password" size="24" autocomplete="off" /></label>
         <button id="revokeBtn" class="danger" data-i18n="account_revoke_btn">내 계정 폐기</button>
       </p>
+      <!-- Google(OIDC 래퍼, 스펙 2026-10-16 §3.3) — IdP 가 Google 을 켰을 때만 보인다. 데모 계정은 위의 uid·비밀번호 그대로. -->
+      <p id="googleRevokeRow" hidden><span data-i18n="account_google_revoke_label">Google 로 등록한 계정은 Google 로 폐기:</span> <span id="googleRevokeSlot" class="gsi-slot"></span></p>
+      <p id="googleRevokeNote" class="muted" hidden></p>
       <p class="muted" data-i18n="account_note">폐기하면 재발급이 즉시 막히고, 이미 발급된 자격증명은 관리자가 폐기 목록을 게시한 뒤부터 거절됩니다. 복구는 관리자만 할 수 있습니다.</p>
       <p class="muted" data-i18n="account_pwd_note">비밀번호는 이 요청에만 쓰이고 화면·결과 어디에도 남지 않습니다.</p>
       <div id="accountVerdict"></div>
@@ -77,25 +82,25 @@
       });
     }
 
-    $('revokeBtn').addEventListener('click', async () => {
-      const uid = $('uid').value.trim();
-      if (!Demo.confirmDanger('confirm_revoke')) return;
+    /** 폐기 요청 하나를 보내고 결과를 그린다 — 데모 계정({ uid, pwd })과 Google({ id_token }) 경로가 같이 쓴다. uidLabel 은 결과 문구의 uid 자리. */
+    async function submitRevoke(body, uidLabel) {
       Demo.verdict($('accountVerdict'), { pending: true, title: Demo.t('working') });
       try {
-        // 요청 형식은 예전 페이지와 글자 그대로 같다(POST /cia/account/self_revoke, 헤더 없음).
+        // 데모 경로의 요청 형식은 예전 페이지와 글자 그대로 같다(POST /cia/account/self_revoke, 헤더 없음).
         const r = await fetch('/cia/account/self_revoke', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ uid, pwd: $('pwd').value }),
+          body: JSON.stringify(body),
         });
         const b = await r.json().catch(() => null);
         $('out').textContent = `POST /cia/account/self_revoke → ${r.status}\n${JSON.stringify(b, null, 2)}`;
         if (r.ok) {
           revoked = true;
-          setVerdict($('accountVerdict'), true, 'revoked_ok', () => ({ summary: Demo.t('account_revoked_summary', { uid }), detail: safeDetail(b) }));
+          setVerdict($('accountVerdict'), true, 'revoked_ok', () => ({ summary: Demo.t('account_revoked_summary', { uid: uidLabel }), detail: safeDetail(b) }));
         } else {
-          // cia.js 는 이 경로에 reason 을 싣지 않는다 — 상태로 사유 코드를 붙인다(401 은 uid·비밀번호를 가르지 않는다).
-          const reason = r.status === 401 ? 'invalid_credentials' : r.status === 404 ? 'unknown_account' : b?.error ?? `HTTP ${r.status}`;
+          // cia.js 는 데모 경로에 reason 을 싣지 않는다 — 상태로 사유 코드를 붙인다(401 은 uid·비밀번호를 가르지 않는다).
+          // Google 경로의 토큰 오류는 reason(oidc_*)을 싣는다 — 있으면 그것을 쓴다.
+          const reason = b?.reason ?? (r.status === 401 ? 'invalid_credentials' : r.status === 404 ? 'unknown_account' : b?.error ?? `HTTP ${r.status}`);
           setVerdict($('accountVerdict'), false, 'account_revoke_failed', { reason, detail: safeDetail(b) });
         }
       } catch (e) {
@@ -106,12 +111,68 @@
         $('pwd').value = '';
         renderGuide();
       }
+    }
+
+    $('revokeBtn').addEventListener('click', async () => {
+      const uid = $('uid').value.trim();
+      if (!Demo.confirmDanger('confirm_revoke')) return;
+      await submitRevoke({ uid, pwd: $('pwd').value }, uid);
     });
+
+    // ---- Google(OIDC 래퍼, 스펙 2026-10-16 §3.3) — Google 로 등록한 계정은 비밀번호가 없어 Google 재로그인 토큰으로 폐기한다 ----
+    // 폐기 nonce = "revoke:" + 32바이트 임의 hex(lib/mode3_oidc_nonce.js 의 newRevokeNonce 와 같은 형식 — 인라인 페이지라 import 할 수 없어 한 줄 중복).
+    // 토큰은 콜백에서 IdP 로 바로 넘기고 변수·화면·저장소에 남기지 않는다. 1회용이라 끝나면(취소·실패 포함) 새 nonce 로 다시 그린다.
+    const hex64 = () => Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, '0')).join('');
+    let googleOidc = null;    // IdP 의 public_keys.oidc(켜져 있을 때만)
+    let googleNote = null;    // { kind:'origin', url } | { kind:'unavailable', detail } — 언어 전환 때 다시 그린다
+    function renderGoogleNote() {
+      const note = $('googleRevokeNote');
+      if (!googleNote) { note.hidden = true; return; }
+      if (googleNote.kind === 'origin') {
+        // 문구의 {url} 자리에 링크를 끼운다(createElement — innerHTML 금지). Google 은 127.0.0.1 오리진을 받지 않는다(D6).
+        const a = document.createElement('a'); a.href = googleNote.url; a.textContent = googleNote.url;
+        const s = Demo.t('account_gsi_origin_note', { url: '\u0000' });
+        const [before, after = ''] = (s === 'account_gsi_origin_note' ? 'Google 로 폐기하려면 http://localhost 주소로 여세요 — \u0000' : s).split('\u0000');
+        note.replaceChildren(before, a, after);
+      } else {
+        note.textContent = [Demo.reason('gsi_unavailable')?.title ?? 'gsi_unavailable', googleNote.detail].filter(Boolean).join(' — ');
+      }
+      note.hidden = false;
+    }
+    async function armGoogleRevoke() {
+      try {
+        await Mode3Gsi.render({ el: $('googleRevokeSlot'), clientId: googleOidc.clientId, nonce: 'revoke:' + hex64(), text: 'continue_with', onToken: onGoogleToken });
+      } catch (e) {
+        $('googleRevokeRow').hidden = true;
+        googleNote = { kind: 'unavailable', detail: e?.message ?? String(e) };
+        renderGoogleNote();
+      }
+    }
+    async function onGoogleToken(t) {
+      if (!t) setVerdict($('accountVerdict'), false, 'account_revoke_failed', { reason: 'oidc_invalid' });
+      else if (Demo.confirmDanger('confirm_revoke')) await submitRevoke({ id_token: t }, '(Google)');
+      armGoogleRevoke();
+    }
+    async function mountGoogleRevoke() {
+      let k;
+      try { const r = await fetch('/cia/public_keys'); if (!r.ok) return; k = await r.json(); }
+      catch { return; }   // IdP 의 공개 키를 못 읽으면 Google 줄 없이 둔다(데모 폼은 그대로)
+      if (!k?.oidc?.enabled) return;
+      googleOidc = k.oidc;
+      if (!window.Mode3Gsi) googleNote = { kind: 'unavailable', detail: '/common/gsi.js' };
+      else if (!Mode3Gsi.originOk()) googleNote = { kind: 'origin', url: `http://localhost:${location.port}/account` };
+      if (googleNote) { renderGoogleNote(); return; }
+      $('googleRevokeRow').hidden = false;
+      armGoogleRevoke();
+    }
+    // 언어 전환 — 스크립트가 만든 안내 줄만 다시 그린다(나머지는 사전이 채운다).
+    { const orig = Demo.setLang; Demo.setLang = (v) => { orig(v); renderGoogleNote(); }; }
 
     Demo.init({ page: 'account' });
     Demo.tour?.onToggle(renderGuide);   // 스위치를 켜고 끌 때 이 페이지의 규칙으로 안내를 다시 그린다
     initStack();
     renderGuide();
+    mountGoogleRevoke();
   </script>
 </body>
 </html>
