@@ -14,7 +14,9 @@ let fails = 0;
 function t(name, fn) { try { fn(); console.log('ok   -', name); } catch (e) { fails++; console.log('FAIL -', name, '\n      ', e.message); } }
 
 // browser 테스트(tests/test_mode3_browser.mjs)가 잡는 한국어 판정 문구 — 사전의 ko 값이 이것과 글자 그대로 같아야 한다.
-const NEEDLES = { login_ok: '로그인 성공', registered: '등록됨', tx_ok: '전송 성공', reval_ok: '재검증 성공', reauth_denied: '재승인 불가', popup_blocked: '팝업이 차단됐다' };
+const NEEDLES = { login_ok: '로그인 성공', registered: '등록됨', tx_ok: '전송 성공', reval_ok: '재검증 성공', reauth_denied: '재승인 불가', popup_blocked: '팝업이 차단됐다',
+  // tests/test_mode3_user_web.mjs(web 모드 각본)가 더 잡는 문구.
+  request_ok: '세션 요청 성공', revoked_ok: '폐기 요청 접수' };
 // 문서(docs/MODE3_DEMO.md)에 있는 사유 코드 — 전부 ko·en 세 줄(title·cause·action)이 있어야 한다.
 const REASONS = ['stale_root', 'stale_registry_root', 'root_too_old', 'revalidate_required', 'predicate_unmet', 'predicate_unavailable', 'factory_constants_unavailable', 'registration_pending', 'bad_signature', 'bad_rp_cert', 'bad_proof', 'expired', 'malformed',
   'bad_r_s', 'bad_arid_s',
@@ -24,6 +26,8 @@ const REASONS = ['stale_root', 'stale_registry_root', 'root_too_old', 'revalidat
   'admin_secret_required', 'admin_unauthorized', 'unknown_account', 'invalid_credentials',
   // 2026-10-11 데모 UI 도달 코드(런북 "실패 각본")
   'bad_disclosure', 'disclosure_unsatisfiable', 'predicate_type', 'duplicate_session', 'already_registered', 'register_failed',
+  // 2026-10-15 브라우저 전용 사용자 페이지(web 모드) — 금고·증명 워커·RP 릴레이·승인 창
+  'locked', 'bad_password', 'zk_assets_unavailable', 'storage_unavailable', 'relay_inactive', 'relay_bad_target', 'relay_bad_calldata', 'relay_gas', 'relay_rate_limited', 'origin_mismatch',
   'chain_unavailable', 'no_factory', 'execute_reverted', 'schema_invalid', 'bad_attr'];
 
 t('langs 는 ko, en', () => assert.deepEqual(S.langs, ['ko', 'en']));
@@ -100,6 +104,19 @@ t('ui 에 RP 거래소 꾸밈(내비·시세표·내 자산·컴플라이언스)
 // 가짜 증명·가짜 서명 시연 버튼(2026-10-14) — mode3_wallet_agent.js 의 fake_proof·fake_sig 스코프, mode3/wallet.html 의 #demoFakeProofBtn·#demoFakeSigBtn.
 t('ui 에 가짜 증명·가짜 서명 시연 버튼 키가 있다', () => {
   for (const k of ['wallet_demo_fake_proof_btn', 'wallet_demo_fake_sig_btn', 'wallet_demo_fake_armed', 'wallet_demo_fake_proof', 'wallet_demo_fake_sig']) assert.ok(S.ui[k], k);
+});
+
+// 브라우저 전용 사용자 페이지(web 모드, 2026-10-15) — mode3/user/index.html·ui.js·popup.js 와 mode3/rp.html 의 web 분기.
+t('ui 에 사용자 페이지(web 모드) 키가 있다', () => {
+  for (const k of ['user_storage_title', 'user_storage_desc', 'user_vault_none', 'user_vault_locked', 'user_vault_unlocked', 'user_lock_btn', 'user_unlock_btn', 'user_change_pw_btn', 'user_wipe_btn', 'user_wipe_done',
+    'user_vault_pw_label', 'user_vault_pw2_label', 'user_vault_pw_mismatch', 'user_vault_pw_short', 'user_unlock_title', 'user_unlock_hint', 'user_unlock_cancel', 'user_zk_loading', 'user_zk_ready',
+    'user_auth_approve', 'user_auth_deny', 'user_auth_request_title', 'user_auth_sign_body', 'user_intro_web', 'user_tx_note_web', 'user_self_revoke_pw', 'confirm_wipe',
+    'rp_wallet_web', 'rp_wallet_web_note', 'rp_wallet_mode_web']) assert.ok(S.ui[k], k);
+  // web 각본이 잡는 한국어 조각(사전 값이 바뀌면 그 테스트가 조용히 시간 초과로 실패한다).
+  assert.ok(S.ui.rp_wallet_web.ko.includes('사용자 비밀=브라우저')); assert.ok(S.ui.rp_wallet_mode_web.ko.includes('브라우저'));
+  assert.ok(S.ui.user_vault_unlocked.ko.includes('해제')); assert.ok(S.ui.user_vault_locked.ko.includes('잠김'));
+  assert.ok(S.ui.user_vault_none.ko.includes('없음')); assert.ok(S.ui.user_zk_ready.ko.includes('준비'));
+  assert.ok(S.ui.wallet_no_sessions.ko.includes('로그인 세션이 없습니다'));
 });
 
 if (fails) { console.log(`\n${fails} FAIL`); process.exit(1); } else console.log('\nall ok');
