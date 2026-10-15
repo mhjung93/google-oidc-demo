@@ -193,7 +193,7 @@ try {
     await expectReason(v.verify(await stub.mint({ sub: 's', nonce: 'reg:n', expSeconds: -120 }), { noncePrefix: 'reg:' }), 'oidc_invalid', /ERR_JWT_EXPIRED/);
     const { privateKey } = await generateKeyPair('RS256');
     const forged = await new SignJWT({ sub: 's', nonce: 'reg:n' }).setProtectedHeader({ alg: 'RS256', kid: 'other' }).setIssuer(stub.issuer).setAudience('cid-1').setIssuedAt().setExpirationTime('5m').sign(privateKey);
-    await expectReason(v.verify(forged, { noncePrefix: 'reg:' }), 'oidc_unavailable');   // JWKS 에 그 kid 가 없다 — JWKSNoMatchingKey
+    await expectReason(v.verify(forged, { noncePrefix: 'reg:' }), 'oidc_invalid');   // JWKS 에 그 kid 가 없다 — JWKSNoMatchingKey(jose 가 JWKS 를 한 번 다시 받아본 뒤다) = 발급자가 공개하지 않은 키로 서명된 토큰 → 무효(R2)
     await expectReason(v.verify('not-a-jwt', { noncePrefix: 'reg:' }), 'oidc_invalid', /format/);
     await expectReason(v.verify(12, { noncePrefix: 'reg:' }), 'oidc_invalid', /format/);
     await expectReason(v.verify(await stub.mint({ sub: 's', nonce: 'revoke:' + 'd'.repeat(64) }), { noncePrefix: 'reg:' }), 'oidc_nonce_mismatch');
@@ -242,8 +242,10 @@ export function createOidcVerifier({ issuer, jwksUrl, clientId, jwks = null, clo
       try {
         ({ payload } = await jwtVerify(idToken, keySet, { algorithms: ['RS256'], issuer: issuers, audience: clientId, clockTolerance: clockToleranceSec }));
       } catch (e) {
-        if (e instanceof joseErrors.JWKSNoMatchingKey || e instanceof joseErrors.JWKSTimeout || e instanceof joseErrors.JWKSMultipleMatchingKeys || e instanceof TypeError || e?.code === 'ERR_JWKS_NO_MATCHING_KEY' || e?.code === 'ERR_JWKS_TIMEOUT' || e?.code === 'ECONNREFUSED' || e?.cause?.code === 'ECONNREFUSED') {
-          throw tagged('oidc_unavailable', e.code ?? e.message);
+        // 발급자에 닿지 못한 것(타임아웃·연결 거부·fetch TypeError)과 키 집합이 모호한 것만 '불가'. 모르는 kid 는 jose 가 JWKS 를 다시 받아본 뒤에도
+        // 없는 것이므로 '무효'(R2 — 위조 토큰을 502 로 보고하면 재시도만 부른다). detail 은 코드명/클래스명만(e.message 는 쓰지 않는다).
+        if (e instanceof joseErrors.JWKSTimeout || e instanceof joseErrors.JWKSMultipleMatchingKeys || e instanceof TypeError || e?.code === 'ECONNREFUSED' || e?.cause?.code === 'ECONNREFUSED') {
+          throw tagged('oidc_unavailable', e.code ?? e.name ?? 'fetch_failed');
         }
         throw tagged('oidc_invalid', e.code ?? e.name);   // 만료·서명·aud·iss·alg·형식
       }
