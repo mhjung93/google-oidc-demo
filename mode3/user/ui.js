@@ -2,6 +2,7 @@
 // 치환 규칙(계획 Task 9): 에이전트 HTTP 호출 → user_core 의 같은 이름 함수(같은 { status, body }), 트랜잭션은 RP 의 릴레이로(sendTxViaRelay),
 // MetaMask·Snap 코드는 없다. 비밀(s_u·sk_u·blind_u·세션 개인키·금고 비밀번호·secrets 암호문)은 DOM·localStorage·로그·postMessage 에
 // 넣지 않는다 — 코어 응답은 에이전트와 같은 모양이라 비밀이 실리지 않고, safeDetail 이 한 번 더 거른다. 비밀번호 입력칸은 읽자마자 비운다.
+import { ZK_CACHE_NAME } from '../../lib/browser/zk_assets.js';
 export const $ = (id) => document.getElementById(id);
 
 /** 사전 도우미(wallet.html 의 tte·tt·setVerdict·pendingVerdict 와 같다). */
@@ -700,6 +701,8 @@ export function mountUi({ core, prover, config, Demo, meta }) {
     try {
       const r = await core.wipe();
       if (r.status === 200) {
+        // 스펙 §10 — "모두 지우기" 는 Snap 초기화의 등가물이라 증명 키 캐시까지 비운다(산출물 재생성 뒤 옛 zkey 가 남지 않게).
+        if (typeof caches !== 'undefined') { try { await caches.delete(ZK_CACHE_NAME); } catch { /* 캐시 삭제 실패는 무시 — 다음 로드가 다시 받는다 */ } }
         Object.assign(progress, { txOk: false, disclosed: false, revoked: false });
         setVerdict(storageVerdict(), true, 'user_wipe_btn', () => ({ summary: tt('user_wipe_done') || '이 브라우저의 등록·비밀·세션을 지웠습니다.' }));
       } else setVerdict(storageVerdict(), false, 'error_title', { reason: r.body.reason ?? `HTTP ${r.status}`, detail: safeDetail(r.body) });

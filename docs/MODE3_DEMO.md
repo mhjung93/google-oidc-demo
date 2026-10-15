@@ -835,7 +835,7 @@ Snap·Node 에이전트 설치 없이 **브라우저만**으로 사용자 쪽(�
 지갑 자리에 에이전트(`mode3_wallet_agent.js`) 대신 정적 서버 `node mode3_user_static.js` 를 같은 포트(:5100)에 띄운다 — 포트가
 같아 둘을 동시에 띄울 수 없다. env 이름은 에이전트와 같다: `MODE3_CIA_URL`, `MODE3_RP_ORIGIN`, `CIA_RPC_URL`,
 `MODE3_REV_CHAIN_RPC`, `CIA_LOG_ADDRESS`, `MODE3_MIRROR_ADDRESS`, `MODE3_TTL_BLOCKS`, `MODE3_HEIGHT_GRID`, 선택
-`MODE3_PK_CIA_X`/`MODE3_PK_CIA_Y`, `MODE3_RELAY_PATH`.
+`MODE3_PK_CIA_X`/`MODE3_PK_CIA_Y`, `MODE3_RELAY_PATH`(web 모드 전용 — 에이전트는 읽지 않는다).
 
 정적 서버의 라우트:
 
@@ -1195,7 +1195,7 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
   RP 를 `?tour=1` 로 열면 로그인이 잠기고, 지갑에서 등록하면 다음 폴링에 풀리며 말풍선이 3→4단계로 옮겨 가고,
   격리 IdP 를 내리면 IdP 점이 빨강·지갑 점이 노랑이 되는 것까지(file 모드, MetaMask 없이). **web 모드**는 같은 그룹의
   `tests/test_mode3_user_web.mjs` — 각본 A(등록·로그인 팝업·재검증·세션 요청·트랜잭션·selective disclosure proof·세션 폐기, 7개)와
-  각본 B(잠금·시연 거절·오리진 위조·두 번째 RP·증명 키 캐시·모두 지우기, 7개)를 실제 Chrome 에서 돈다. 번들을 스스로 만든다.
+  각본 B(잠금·잠긴 상태의 팝업·시연 거절·오리진 위조·두 번째 RP·증명 키 캐시·모두 지우기, 7개)를 실제 Chrome 에서 돈다. 번들을 스스로 만든다.
 - `node scripts/screenshot_mode3.mjs` — 테스트는 아니고 **화면 캡처**다. `browser` 그룹과 같은 전제(:8545,
   `build/mode3`, Chrome)로 격리 스택을 file 모드로 띄워 네 페이지를 ko·en·전문가(+좁은 창)로 찍는다. 기본 출력은
   `results/mode3_ux_20260924/`(`--out` 으로 바꾼다). **`--tour`** 를 주면 대신 체험 모드 네 장면(RP 잠김·지갑
