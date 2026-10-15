@@ -93,6 +93,7 @@ CHAIN=(
   tests/test_mode3_wallet.mjs
   tests/test_mode3_rcl_sync.mjs
   tests/test_mode3_rp.mjs
+  tests/test_mode3_rp_relay.mjs
   tests/test_mode3_e2e.mjs
   tests/test_mode3_wallet_agent.mjs
   tests/test_mode3_wallet_snap.mjs

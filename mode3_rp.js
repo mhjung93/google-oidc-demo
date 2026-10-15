@@ -6,6 +6,7 @@
 // V4(2026-09-18): 팩토리 배포(§6.1), 로그인 V4(max_height·allowAgent, σ 는 서버 챌린지 위), 트랜잭션 해시 개봉(§6.2).
 import 'dotenv/config';
 import express from 'express';
+import cors from 'cors';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,7 +18,7 @@ import { verifyRpCert } from './lib/mode3_rp_cert.js';
 import { randomScalar } from './lib/mode3_credential.js';
 import { createShare, partialDecrypt, combinePublicKey, verifyShare } from './lib/mode3_trace.js';
 import { signOpenRequest, signOpenResult } from './lib/mode3_opening.js';
-import { deployVerifier, deployFactory, deployAttrGate, decodeExecuteCalldata, parseExecuteReceipt, FACTORY_ABI, MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT, ALLOWED_COUNTRIES_DEFAULT, MIN_AGE_DEFAULT, PUB_INDEX } from './lib/mode3_onchain.js';
+import { deployVerifier, deployFactory, deployAttrGate, decodeExecuteCalldata, parseExecuteReceipt, walletInterface, FACTORY_ABI, MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT, ALLOWED_COUNTRIES_DEFAULT, MIN_AGE_DEFAULT, PUB_INDEX } from './lib/mode3_onchain.js';
 import { setRoot } from './lib/mode3_set_tree.js';
 import { buildRpHealth, applyHealthHeaders, bounded, originList } from './lib/mode3_health.js';
 import { DEFAULT_ATTR_SCHEMA, loadSchema, slotIndexOf, encodeMembers, schemaInfo } from './lib/mode3_attr_schema.js';
@@ -339,7 +340,8 @@ const BIRTH_MIN = BIRTH_SLOT >= 0 ? BigInt(ATTR_SCHEMA.schema.slots[BIRTH_SLOT].
 const currentPredicates = () => ({ allowedCountries: ALLOWED_COUNTRIES_EFFECTIVE.map(String), allowedCountryNames: ALLOWED_COUNTRY_NAMES, allowedCountriesRoot: ALLOWED_COUNTRIES_ROOT.toString(), minAge: MIN_AGE.toString(), birthYearMin: BIRTH_MIN === null ? null : BIRTH_MIN.toString(), attrSchema: schemaInfo(ATTR_SCHEMA.schema, ATTR_SCHEMA.hash) });
 
 app.get('/api/mode3/rp_info', (req, res) => {
-  res.json({ status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, mirrorAddress: MIRROR_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, ciaUrl: CIA_URL, pkCiaSource: pkCIA.source, chainId: chainId.toString(), active: Boolean(verifier), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null, predicates: currentPredicates() });
+  res.json({ name: RP_NAME,   // 2026-10-15: 페이지 브랜드(zkONE/zkTWO) 표기용
+       status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, mirrorAddress: MIRROR_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, ciaUrl: CIA_URL, pkCiaSource: pkCIA.source, chainId: chainId.toString(), active: Boolean(verifier), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null, predicates: currentPredicates() });
 });
 
 // 상태 엔드포인트(설계 2026-09-25 §1) — 민감정보 없음, 지갑·AA 오리진에만 CORS.
@@ -451,6 +453,55 @@ app.post('/api/mode3/request', async (req, res) => {
     if (!verifySessionRequest({ pk_i: s.pk_i, r_s: rsKey, body, sig })) return res.status(401).json({ ok: false, reason: 'bad_signature' });
     requestCount++;
     res.json({ ok: true, echo: body, PPID: s.PPID });
+  } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
+});
+
+// ---- 릴레이(설계 2026-10-15 §5.1, 계획 R6): 브라우저 사용자 페이지의 execute 를 RP 의 릴레이어 계정이 대신 보낸다 ----
+// 릴레이어는 서명만 한다 — 사용자 비밀을 보지 않는다. 검열(거부·지연) 가능성은 런북의 한계에 적는다.
+// 검사 순서: 활성 → 본문 형식(value 0 고정) → execute 셀렉터·pub 33·pub[1]=arid → to = computeAddress(pub[0]) → 속도 제한 → (코드 없으면 deploy) → estimateGas ≤ cap → 전송.
+const RELAY_GAS_CAP = BigInt(process.env.MODE3_RELAY_GAS_CAP || 1_200_000);
+const RELAY_RATE = Number(process.env.MODE3_RELAY_RATE || 10);     // 계정당 분당
+const relayCors = cors({ origin: (origin, cb) => cb(null, origin === WALLET_ORIGIN), methods: ['POST', 'GET'], allowedHeaders: ['Content-Type'] });
+app.options('/api/mode3/relay', relayCors);
+const relayHits = new Map();   // to(소문자) → [ms, …] 지난 60초
+const isAddr = (v) => typeof v === 'string' && /^0x[0-9a-fA-F]{40}$/.test(v);
+const revertName = (e) => { try { const n = e?.data ? walletInterface.parseError(e.data)?.name : null; if (n) return n; } catch { /* 모르는 에러 */ } return e?.revert?.name ?? e?.shortMessage ?? e?.message ?? 'revert'; };
+app.post('/api/mode3/relay', relayCors, async (req, res) => {
+  try {
+    if (!verifier || !reg.factoryAddress) return res.status(503).json({ ok: false, reason: 'relay_inactive', detail: verifier ? 'no_factory' : inactiveReason() });
+    const { to, data, value } = req.body ?? {};
+    if (value !== undefined && String(value) !== '0') return res.status(400).json({ ok: false, reason: 'relay_bad_calldata', detail: 'value' });
+    if (!isAddr(to) || typeof data !== 'string' || !/^0x([0-9a-fA-F]{2})*$/.test(data)) return res.status(400).json({ ok: false, reason: 'relay_bad_calldata', detail: 'format' });
+    const dec = decodeExecuteCalldata(data);
+    if (!dec || dec.pub.length !== PUB_INDEX.COUNT) return res.status(400).json({ ok: false, reason: 'relay_bad_calldata', detail: 'selector' });
+    if (dec.pub[PUB_INDEX.ARID] !== String(reg.arid)) return res.status(400).json({ ok: false, reason: 'relay_bad_calldata', detail: 'arid' });
+    const factory = new ethers.Contract(reg.factoryAddress, FACTORY_ABI, provider);
+    const ppid = BigInt(dec.pub[PUB_INDEX.PPID]);
+    const expected = await factory.computeAddress(ppid);
+    if (expected.toLowerCase() !== to.toLowerCase()) return res.status(400).json({ ok: false, reason: 'relay_bad_target' });
+    const key = to.toLowerCase(), now = Date.now();
+    const hits = (relayHits.get(key) ?? []).filter((t) => now - t < 60_000);
+    if (hits.length >= RELAY_RATE) { relayHits.set(key, hits); return res.status(429).json({ ok: false, reason: 'relay_rate_limited' }); }
+    hits.push(now); relayHits.set(key, hits);
+    const relayer = await provider.getSigner(RELAYER_INDEX);
+    let deployTxHash = null;
+    if ((await provider.getCode(to)) === '0x') { const dtx = await factory.connect(relayer).deploy(ppid); await dtx.wait(); deployTxHash = dtx.hash; }
+    let gas;
+    try { gas = await provider.estimateGas({ from: await relayer.getAddress(), to, data }); }
+    catch (e) { return res.status(400).json({ ok: false, reason: 'relay_gas', detail: revertName(e) }); }
+    if (gas > RELAY_GAS_CAP) return res.status(400).json({ ok: false, reason: 'relay_gas', detail: `gas ${gas} > cap ${RELAY_GAS_CAP}` });
+    const gasLimit = (gas * 12n) / 10n > RELAY_GAS_CAP ? RELAY_GAS_CAP : (gas * 12n) / 10n;
+    const tx = await relayer.sendTransaction({ to, data, gasLimit });
+    res.json({ ok: true, txHash: tx.hash, deployed: Boolean(deployTxHash), deployTxHash });
+  } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
+});
+app.get('/api/mode3/relay/:txHash', relayCors, async (req, res) => {
+  try {
+    const { txHash } = req.params;
+    if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) return res.status(400).json({ ok: false, reason: 'malformed' });
+    const rc = await provider.getTransactionReceipt(txHash);
+    if (!rc) return res.json({ ok: true, pending: true });
+    res.json({ ok: true, pending: false, status: rc.status, blockNumber: rc.blockNumber, gasUsed: rc.gasUsed.toString(), to: rc.to });
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });
 
