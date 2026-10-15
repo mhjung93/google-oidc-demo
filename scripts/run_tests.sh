@@ -53,6 +53,7 @@ UNIT=(
   tests/test_secret_box.mjs
   tests/test_browser_node_shims.js
   tests/test_mode3_oidc_nonce.js
+  tests/test_mode3_oidc_verifier.mjs
 )
 
 CIRCUIT=(
