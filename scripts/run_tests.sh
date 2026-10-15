@@ -101,6 +101,8 @@ CHAIN=(
   # 두 체인(폐기 체인 + 응용 체인)·두 RP 전 구간 각본(2026-10-03). 이 파일은 :8546 노드(chainId 31338)를 스스로 띄우고 끝나면 끈다.
   tests/test_mode3_demo_full.mjs
   tests/test_mode3_health.mjs
+  # web 모드 정적 서버 — 번들을 스스로 만든다(esbuild devDependency)
+  tests/test_mode3_user_static.mjs
 )
 
 # 브라우저가 필요한 것들 — chain 과 나누는 이유는 의존성이 하나 더 있기 때문이다.

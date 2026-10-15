@@ -1,5 +1,6 @@
 // 격리 Mode 3 스택: 격리 CIA(isolated_cia.mjs) + 지갑 에이전트 + RP 를 임시 포트·임시 상태 파일로.
 // :4100/:5100/:3100 개발용 프로세스를 건드리지 않는다. stop() 이 세 프로세스와 임시 디렉터리를 정리한다.
+// userMode:'web'(기본 'agent') 이면 지갑 자리에 mode3_wallet_agent.js 대신 mode3_user_static.js 를 띄운다(태스크 5).
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -66,7 +67,7 @@ function client(base, logFile) {
 }
 
 export async function startIsolatedMode3Stack(opts = {}) {
-  const { rp: withRp = true, rpEnv = {}, walletEnv = {}, ciaEnv = {}, extraRpOrigins = [], autoRelay = false } = opts;   // autoRelay: 아래 relayIfBehind 를 뒤에서 계속 돌린다(브라우저 각본용, V10)   // extraRpOrigins: 지갑 CORS 허용 목록에 더할 서비스 오리진(두 번째 서비스 시험용)
+  const { rp: withRp = true, rpEnv = {}, walletEnv = {}, ciaEnv = {}, extraRpOrigins = [], autoRelay = false, userMode = 'agent' } = opts;   // autoRelay: 아래 relayIfBehind 를 뒤에서 계속 돌린다(브라우저 각본용, V10)   // extraRpOrigins: 지갑 CORS 허용 목록에 더할 서비스 오리진(두 번째 서비스 시험용)   // userMode: 'web' 이면 지갑 자리에 mode3_user_static.js(태스크 5)
   // 2026-10-03 두 체인 각본(test_mode3_demo_full.mjs):
   //   twoChains: true 면 캐노니컬 로그를 폐기 체인(revRpcUrl, 기본 :8546 — 호출자가 ensureRevChainNode 로 먼저 띄운다)에, 거울을
   //     응용 체인(appRpcUrl, 기본 CIA_RPC_URL 또는 :8545)에 둔다. 지갑은 MODE3_REV_CHAIN_RPC 로 캐노니컬을 읽고 RP 는 응용 체인만 본다.
@@ -94,8 +95,10 @@ export async function startIsolatedMode3Stack(opts = {}) {
     const walletLog = path.join(dir, 'wallet.log');
     const walletStateFile = path.join(dir, 'mode3_wallet_state.json');
     // 지갑 자식은 restartWallet() 이 같은 상태 파일·env 로 다시 띄운다(snap 모드의 "재시작 뒤 needs_consent" 시험용).
-    const walletSpawn = { env: { MODE3_WALLET_PORT: String(walletPort), MODE3_WALLET_STATE_FILE: walletStateFile, MODE3_CIA_URL: cia.base, MODE3_RP_ORIGIN: [rpOrigin, ...extraRpOrigins, ...extraRpSpecs.map((e) => e.origin)].join(','), CIA_LOG_ADDRESS: cia.logAddress, MODE3_MIRROR_ADDRESS: cia.mirrorAddress, ...walletChainEnv, ...walletEnv }, readyUrl: `${walletOrigin}/wallet/status`, logFile: walletLog };
-    let walletChild = await spawnServer('mode3_wallet_agent.js', walletSpawn);
+    const walletScript = userMode === 'web' ? 'mode3_user_static.js' : 'mode3_wallet_agent.js';
+    const walletReady = userMode === 'web' ? `${walletOrigin}/wallet/config` : `${walletOrigin}/wallet/status`;
+    const walletSpawn = { env: { MODE3_WALLET_PORT: String(walletPort), MODE3_WALLET_STATE_FILE: walletStateFile, MODE3_CIA_URL: cia.base, MODE3_RP_ORIGIN: [rpOrigin, ...extraRpOrigins, ...extraRpSpecs.map((e) => e.origin)].join(','), CIA_LOG_ADDRESS: cia.logAddress, MODE3_MIRROR_ADDRESS: cia.mirrorAddress, ...walletChainEnv, ...walletEnv }, readyUrl: walletReady, logFile: walletLog };
+    let walletChild = await spawnServer(walletScript, walletSpawn);
     children.push(walletChild);
     const wallet = client(walletOrigin, walletLog);
 
@@ -187,13 +190,13 @@ export async function startIsolatedMode3Stack(opts = {}) {
     }
 
     return {
-      cia, wallet, rp, rps, dir, walletStateFile, relay, relayIfBehind, withRelay,
+      cia, wallet, rp, rps, dir, walletStateFile, userMode, relay, relayIfBehind, withRelay,
       rpOriginForWallet: rpOrigin,   // rp:false 여도 지갑에는 이 값을 CORS 오리진으로 넘겼다
       /** 지갑 자식만 죽이고 같은 상태 파일·env 로 다시 띄운다. 메모리(세션 witness·증명 캐시)만 사라진다. */
       async restartWallet() {
         await stopChild(walletChild);
         children.splice(children.indexOf(walletChild), 1);
-        walletChild = await spawnServer('mode3_wallet_agent.js', walletSpawn);
+        walletChild = await spawnServer(walletScript, walletSpawn);
         children.push(walletChild);
       },
       /**
