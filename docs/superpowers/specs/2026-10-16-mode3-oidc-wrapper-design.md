@@ -1,6 +1,6 @@
 # Mode 3 — OIDC 래퍼: Google 로그인으로 등록·자기 폐기
 
-작성 2026-10-16. 상태: **초안(사용자 검토 대기)**. 브랜치 `feat/mode3-v11`(web 모드 `2026-10-15-mode3-browser-user-page-design.md` 위). 근거: 2026-10-15 논의 "OIDC wrapper 로 Google OIDC 를 세션 토큰 서명으로 감쌀 수 있나 → 래퍼는 신뢰해야 한다", 2026-10-16 질문 네 개의 답(진입점 둘 다 · 브라우저 직접 + 로컬 가짜 발급자 · 자기 폐기도 Google 재로그인 · 미등록이면 안내 후 사용자 페이지로).
+작성 2026-10-16. 상태: **구현 완료 2026-10-16 — 계획 docs/superpowers/plans/2026-10-16-mode3-oidc-wrapper.md; D4 는 계획 중 pk_u 결속으로 수정(본문 참조)**. 브랜치 `feat/mode3-v11`(web 모드 `2026-10-15-mode3-browser-user-page-design.md` 위). 근거: 2026-10-15 논의 "OIDC wrapper 로 Google OIDC 를 세션 토큰 서명으로 감쌀 수 있나 → 래퍼는 신뢰해야 한다", 2026-10-16 질문 네 개의 답(진입점 둘 다 · 브라우저 직접 + 로컬 가짜 발급자 · 자기 폐기도 Google 재로그인 · 미등록이면 안내 후 사용자 페이지로).
 
 ## 0. 한 줄 요약
 

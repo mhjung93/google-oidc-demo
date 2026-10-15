@@ -467,7 +467,7 @@ IdP 는 지갑 오리진을 알 방법이 없으므로 **`MODE3_WALLET_AGENT_ORI
 **단계 판정** — 체험 모드가 **켜져 있을 때만** 7단계를 한 곳(`Demo.tour.evaluate`)에서 판정한다. 꺼져 있으면 각
 페이지가 1차(2026-09-24)의 자기 규칙으로 안내 바를 그린다.
 
-1~3 단계는 서버 사실(health: RP 승인·지갑 등록·세션 수)과 페이지가 자기 눈으로 본 사실을 OR 한다. 4·5 단계도
+1~3 단계는 서버 사실(health: RP 승인·사용자 속성 등록·세션 수)과 페이지가 자기 눈으로 본 사실을 OR 한다. 4·5 단계도
 마찬가지로 페이지 메모리와 서버 카운터(`rp.requests`/`wallet.txs`, `rp.disclosures`/`wallet.disclosedTxs`)를 OR 한다 —
 관리자·계정 페이지에는 이용·공개의 페이지 메모리가 없기 때문이다. 6 은 `aa.pendingLeaves > 0` 또는 **이 창이 열려 있는
 동안** 관측한 epoch 상승, 7 은 RP 의 개봉 결과(페이지 메모리) 또는 관리자의 `pendingOpenings` 가 1 이상에서 0 으로
@@ -942,6 +942,52 @@ CORS 는 사용자 오리진만 연다.
 브라우저의 이 사이트 데이터 삭제로 캐시를 비운 뒤 새로고침한다. (페이지는 `/zk/*` 를 `cache: 'no-store'` 로 받아 브라우저 HTTP
 캐시를 우회하므로, Cache API 만 비우면 된다)
 
+### Google 로 등록·자기 폐기 (OIDC 래퍼, 2026-10-16)
+
+설계 `docs/superpowers/specs/2026-10-16-mode3-oidc-wrapper-design.md`. web 모드(사용자 페이지) 전용이다 — Snap·에이전트(file)
+모드에는 없다.
+
+IdP(`cia.js`)가 Google ID 토큰을 **체인 밖에서** `jose` 로 검증해(RS256, `iss`·`aud`·`exp` — 모르는 `kid` 는 JWKS 를 다시 받아본
+뒤에도 없으면 무효로 본다) `uid = SHA-256("<provider>|<sub>") mod 2^250`(`provider` 는 설정값, 기본 `google`)으로 계정을
+만든다. 회로·PS 토큰·로그인·폐기 트리는 바뀌지 않는다. 등록 nonce 는 `"reg:" + SHA-256(pk_u.x|pk_u.y)`(auid 는 넣지 않는다 —
+토큰 발급 전에는 알 수 없고, `sig_reg` 가 uid·auid 를 결속한다), 자기 폐기 nonce 는 `"revoke:" + 32바이트 hex` 다. Google
+토큰은 등록·자기 폐기 요청에만 쓰고 저장·로그하지 않는다. IdP 는 토큰을 받는 순간 Google 계정과 uid 를 연결할 수 있다 —
+데모 계정의 uid·비밀번호와 같은 신뢰 수준이다.
+
+**준비**: Google 콘솔의 Mode 1 OAuth 클라이언트에 승인된 JavaScript 원본으로 `http://localhost:5100`·`http://localhost:4100`
+을 추가한다(리다이렉트 URI 는 필요 없다 — Google 은 `127.0.0.1` 원본을 받지 않는다). env: IdP `MODE3_OIDC_CLIENT_ID`(없으면
+`GOOGLE_CLIENT_ID`; 둘 다 없거나 빈 문자열이면 꺼짐 — Google 행이 숨고 데모 계정만 된다), 선택 `MODE3_OIDC_ISSUER`(기본
+`https://accounts.google.com`)·`MODE3_OIDC_JWKS_URL`(기본 `https://www.googleapis.com/oauth2/v3/certs`)·
+`MODE3_OIDC_PROVIDER`(기본 `google`). **사용자 오리진을 localhost 로 통일**한다: 정적 서버
+`MODE3_WALLET_PUBLIC_ORIGIN=http://localhost:5100`, IdP·RP 의 `MODE3_WALLET_AGENT_ORIGIN=http://localhost:5100`; 브라우저도
+사용자 페이지를 `http://localhost:5100/`, 계정 페이지를 `http://localhost:4100/account` 로 연다. IdP 의
+`public_keys.oidc.enabled` 이고 hostname 이 `localhost` 일 때만 사용자 페이지에 "또는 Google 계정으로 등록:" 행(GIS 버튼)이
+보인다. `127.0.0.1` 로 열면 IdP CORS 가 설정된 오리진에만 열려 있어 `oidc` 설정을 읽지 못하고, `walletOrigin` 이 localhost 로
+설정돼 있으면 "Google 로그인은 http://localhost 주소에서만 됩니다 — http://localhost:5100/ 로 여세요" 안내만 보인다(Google
+등록 행은 뜨지 않는다).
+
+**수동 체크리스트**(스펙 §6): 사용자 페이지에서 "또는 Google 계정으로 등록:" 행으로 Google 로 등록 → zkONE 로그인(RP 모달의
+Google 버튼) → zkTWO 로그인 → 계정 페이지(`:4100/account`)의 "Google 로 등록한 계정은 Google 로 폐기:" 행으로 자기 폐기 →
+재검증이 `revoked`, 다음 로그인이 `account_disabled` 인지 본다. 재시연 세트에 "Google 로 등록한 브라우저의 모두 지우기" 를
+추가한다.
+
+**사유**(짧게):
+
+| 사유 | HTTP | 설명 |
+|---|---|---|
+| `oidc_disabled` | 503 | IdP 에 클라이언트 ID 없음(Google 등록이 꺼짐) |
+| `oidc_invalid` | 401 | 서명·`iss`·`aud`·`exp`·형식 오류, 모르는 `kid` 포함 |
+| `oidc_nonce_mismatch` | 400 | 토큰의 nonce 가 이 요청에 묶여 있지 않음 |
+| `oidc_unavailable` | 502 | 발급자·JWKS 에 닿지 못함(타임아웃·연결 거부) |
+| `gsi_unavailable` | 페이지 전용 | GIS 스크립트 로드 실패 |
+| `gsi_origin` | 페이지 전용 | hostname 이 `localhost` 가 아님 — 안내 문구로 대체 |
+
+`completeRegistration` 의 로컬 형식 오류도 400 `oidc_invalid` 로 합친다. 다른 Google 계정의 토큰으로 자기 폐기를 시도하면
+사용자 코어가 IdP 를 부르지 않고 403 `uid_mismatch` 로 막는다(이 지갑의 계정만 폐기할 수 있다).
+
+**한계**(스펙 §8): Google 외 발급자는 확인하지 않았다(같은 env 로 OIDC 호환 발급자가 동작할 수는 있다). 이메일·이름은
+표시하지 않는다. Snap·에이전트(file) 모드에는 Google 등록이 없다. 계정 연결은 없다(한 uid 에 여러 발급자를 묶지 않는다).
+
 ## 엔드포인트 (2026-09-22 선택 공개, 2026-09-23 집합 소속 술어 V7 로 바뀌거나 추가된 것)
 
 | 메서드/경로 | 프로세스 | 설명 |
@@ -1187,7 +1233,10 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
   `/wallet/config`·`/mode3/health`·`/wallet/presence`·`/zk/*`), `tests/test_cia_cors.mjs`(IdP 가 사용자 오리진에 연 CORS 7
   라우트), `tests/test_mode3_rp_relay.mjs`(`POST /api/mode3/relay` 검사 8단계와 `relay_*` 사유), `tests/test_mode3_user_core.mjs`
   (`mode3/user/core` — 메모리 kv·진짜 snarkjs 로 등록·로그인·재검증·세션 요청·트랜잭션을 Node 에서)다. 정적 서버·코어 테스트는
-  esbuild 번들을 스스로 만든다.
+  esbuild 번들을 스스로 만든다. Google(OIDC 래퍼, 2026-10-16) 의 `chain` 테스트 둘은 `tests/test_cia_oidc_register.mjs`
+  (IdP 의 id_token 등록·폐기 10케이스 — 격리 IdP 를 두 번 띄운다, `startIsolatedCia({ oidc: true })`)·
+  `tests/test_mode3_user_core_oidc.mjs`(사용자 코어의 prepare/complete·id_token 자기 폐기·uid_mismatch, 7케이스 — 격리
+  스택의 `oidc`·`walletHost` 옵션)다.
 - `bash scripts/run_tests.sh browser` — 팝업 로그인·`needs_consent` 재승인·MetaMask 트랜잭션을 실제 페이지로 돌린다
   (`tests/test_mode3_browser.mjs`). `chain` 과 같은 조건에 더해 **설치된 Google Chrome(또는 Chromium)** 이 필요하다 —
   Playwright 가 `channel: 'chrome'` 으로 띄우고, `window.ethereum` 을 스텁해 진짜 `snap-mode3/src/index.js` 의 `onRpcRequest` 를
@@ -1197,6 +1246,8 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
   격리 IdP 를 내리면 IdP 점이 빨강·지갑 점이 노랑이 되는 것까지(file 모드, MetaMask 없이). **web 모드**는 같은 그룹의
   `tests/test_mode3_user_web.mjs` — 각본 A(등록·로그인 팝업·재검증·세션 요청·트랜잭션·selective disclosure proof·세션 폐기, 7개)와
   각본 B(잠금·잠긴 상태의 팝업·시연 거절·오리진 위조·두 번째 RP·증명 키 캐시·모두 지우기, 7개)를 실제 Chrome 에서 돈다. 번들을 스스로 만든다.
+  Google(OIDC 래퍼, 2026-10-16) 은 `tests/test_mode3_user_web_oidc.mjs` — 각본 G1~G10, GIS 를 `addInitScript` 스텁으로
+  대체해 localhost 오리진의 사용자 페이지에서 돈다.
 - `node scripts/screenshot_mode3.mjs` — 테스트는 아니고 **화면 캡처**다. `browser` 그룹과 같은 전제(:8545,
   `build/mode3`, Chrome)로 격리 스택을 file 모드로 띄워 네 페이지를 ko·en·전문가(+좁은 창)로 찍는다. 기본 출력은
   `results/mode3_ux_20260924/`(`--out` 으로 바꾼다). **`--tour`** 를 주면 대신 체험 모드 네 장면(RP 잠김·지갑
@@ -1215,7 +1266,9 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
 - `bash scripts/run_tests.sh unit` 의 web 모드(2026-10-15) 셋 — 외부 의존 없이 브라우저 공통 코드를 Node 에서 본다:
   `tests/test_browser_sha256.js`(순수 JS SHA-256·`node:crypto` shim, 오라클은 진짜 `node:crypto`), `tests/test_secret_box.mjs`
   (금고 암복호 — PBKDF2 310,000회 + AES-GCM-256, WebCrypto), `tests/test_browser_node_shims.js`(번들용 `node:fs`·`node:path`·
-  `node:url` shim).
+  `node:url` shim). Google(OIDC 래퍼, 2026-10-16) 유닛 둘도 외부 의존이 없다 — `tests/test_mode3_oidc_nonce.js`(uid·nonce
+  유도 — `uidOf`·`regNonce`·`newRevokeNonce`, 3)·`tests/test_mode3_oidc_verifier.mjs`(jose 검증기 — 발급자 스텁
+  `tests/helpers/oidc_issuer_stub.mjs`, 5).
 - 개봉은 `tests/test_cia_opening.mjs`(IdP 단독)와 `test_mode3_demo_stack.mjs` 시나리오 9(전 구간)로 고정돼 있다.
 - 등록부(V9, 2026-10-01)는 단위 셋 `tests/test_mode3_registry.js`(슬롯 트리 라이브러리)·`tests/test_mode3_credential_v11.js`·
   `tests/test_pi_idp_witness.mjs`·`tests/test_mode3_wallet_lib.js`(등록 서명·auid·π_IdP 등)·`tests/test_mode3_cia_state.js`
