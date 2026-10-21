@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="same-origin" />
   <!-- 제목의 "IdP 관리자" 는 tests/test_mode3_demo_stack.mjs 의 페이지 서빙 검사 marker 다. -->
-  <title>Mode 3 IdP 관리자</title>
+  <title>IdP 관리자</title>
   <link rel="stylesheet" href="/common/demo.css" />
   <script src="/common/strings.js"></script>
   <script src="/common/demo.js"></script>
@@ -17,11 +17,12 @@
       <h3 data-i18n="admin_auth_title">인증 · 최근 결과</h3>
       <p class="desc" data-i18n="admin_auth_desc">시크릿은 요청 헤더로만 쓰입니다. 화면·결과 카드·원문 로그 어디에도 남기지 않습니다.</p>
       <p>
-        <label><span data-i18n="admin_secret_label">관리자 시크릿</span> <input id="secret" type="password" size="36" autocomplete="off" /></label>
-        <label><input type="checkbox" id="rememberSecret" /> <span data-i18n="admin_remember">이 창에서 기억</span></label>
+        <label class="secret-field"><span data-i18n="admin_secret_label">관리자 시크릿</span> <input id="secret" type="password" size="36" autocomplete="off" /></label>
+        <label class="secret-field"><input type="checkbox" id="rememberSecret" /> <span data-i18n="admin_remember">이 창에서 기억</span></label>
         <button id="reloadBtn" class="btn-ghost" data-i18n="admin_reload">모두 새로고침</button>
       </p>
-      <p class="muted" data-i18n="admin_remember_note">이 탭을 닫으면 지워집니다(sessionStorage). 기본은 꺼짐입니다.</p>
+      <p class="muted secret-field" data-i18n="admin_remember_note">이 탭을 닫으면 지워집니다(sessionStorage). 기본은 꺼짐입니다.</p>
+      <p class="muted" id="adminOpenNote" data-i18n="admin_open_note" hidden>데모 설정(CIA_ADMIN_OPEN=1)으로 관리자 인증이 꺼져 있어 시크릿 없이 쓸 수 있습니다. 이 IdP 에 닿는 누구나 관리자 기능을 쓸 수 있으니 데모에서만 켜세요.</p>
       <p id="pendingBadges"></p>
       <div id="adminVerdict"></div>
       <pre id="out" class="expert">-</pre>
@@ -113,7 +114,11 @@
     const SECRET_KEY = 'mode3.adminSecret';
     const readKept = () => { try { return sessionStorage.getItem(SECRET_KEY); } catch { return null; } };
     const writeKept = (v) => { try { if (v === null) sessionStorage.removeItem(SECRET_KEY); else sessionStorage.setItem(SECRET_KEY, v); } catch { /* 사생활 모드 등 */ } };
-    const hasSecret = () => $('secret').value.length > 0;
+    // 데모 설정(CIA_ADMIN_OPEN=1, 2026-10-21): 시크릿 없이 관리자 목록이 열리면 true — 기동 때 한 번 알아낸다. 그때는 헤더에 자리표시 값을 싣는다
+    // (IdP 는 이 모드에서 헤더가 있는 폐기 요청만 관리자로 본다 — 헤더 없는 사용자 본인 서명 요청과 가르기 위해서다).
+    let adminOpen = false;
+    const hasSecret = () => adminOpen || $('secret').value.length > 0;
+    const secretHeader = () => $('secret').value || (adminOpen ? 'open' : '');
 
     // ---- 화면 상태(세션 중 메모리) ----
     let accounts = null;             // /cia/accounts 의 마지막 응답
@@ -133,14 +138,14 @@
     // ---- 요청 ----
     // 요청 형식은 예전 페이지와 글자 그대로 같다(메서드·경로·헤더·본문) — 결과를 돌려주는 것만 더했다.
     async function call(method, path, body) {
-      const headers = { 'Content-Type': 'application/json', 'X-CIA-Admin-Secret': $('secret').value };
+      const headers = { 'Content-Type': 'application/json', 'X-CIA-Admin-Secret': secretHeader() };
       const r = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
       const b = await r.json().catch(() => null);
       $('out').textContent = `${method} ${path} → ${r.status}\n${JSON.stringify(b, null, 2)}`;
       return { status: r.status, body: b };
     }
     async function adminJson(method, path) {
-      const r = await fetch(path, { method, headers: { 'X-CIA-Admin-Secret': $('secret').value } });
+      const r = await fetch(path, { method, headers: { 'X-CIA-Admin-Secret': secretHeader() } });
       return { status: r.status, body: await r.json().catch(() => null) };
     }
     // 시크릿·비밀번호·서명이 실수로 '자세히'에 실리지 않게 응답에서 덜어낸다(관리자 응답에는 원래 없다 — 심층 방어).
@@ -633,7 +638,12 @@
     const kept = readKept();
     if (kept) { $('secret').value = kept; $('rememberSecret').checked = true; }
     renderBadges();
-    if (hasSecret()) reloadAll(); else renderGuide();
+    // 시크릿 없이 /cia/rps 가 열리면(데모 설정) 입력칸을 숨기고 바로 불러온다. 아니면 예전과 같다(401·503 — 시크릿을 넣어야 불러온다).
+    (async () => {
+      try { adminOpen = (await fetch('/cia/rps')).status === 200; } catch { adminOpen = false; }
+      if (adminOpen) { for (const el of document.querySelectorAll('.secret-field')) el.hidden = true; $('adminOpenNote').hidden = false; }
+      if (hasSecret()) reloadAll(); else renderGuide();
+    })();
   </script>
 </body>
 </html>

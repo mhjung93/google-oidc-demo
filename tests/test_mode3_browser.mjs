@@ -86,6 +86,9 @@ try {
   }
 
   const text = (page, sel) => page.$eval(sel, (el) => el.textContent ?? '');
+  // 로그인 모달(2026-10-15): #loginBtn 은 모달을 열기만 하고, 실제 zk 로그인은 모달의 #idpLoginBtn 이 한다.
+  // 2026-10-21: 로그인 상태에서는 로그인 버튼이 숨으므로, 이미 로그인돼 있으면 먼저 로그아웃한다.
+  const idpLogin = async (page) => { if (await page.$eval('#loginBtn', (b) => b.hidden)) { await page.click('#logoutBtn'); await page.waitForSelector('#loginBtn:not([hidden])'); } await page.click('#loginBtn'); await page.click('#idpLoginBtn'); };
   /** sel 의 텍스트가 needle 을 담을 때까지 기다린다. 실패하면 지금 보이는 텍스트를 붙여 던진다. */
   async function waitText(page, sel, needle, timeout = 30_000) {
     try {
@@ -186,7 +189,7 @@ try {
     await rpPage.check('#allowAgent');          // allowAgent='1' — 재승인 동의 창이 같은 값을 보여야 한다(§4.3)
     answers.push(true);                        // consentLogin 확인
     const before = dialogs.length;
-    const [popup] = await Promise.all([context.waitForEvent('page'), rpPage.click('#loginBtn')]);
+    const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
     assert.ok(popup.url().includes('authorize=1'), `팝업 URL: ${popup.url()}`);
     await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
     assert.equal(dialogs.length, before + 1, '로그인 동의 대화상자 한 번');
@@ -355,7 +358,7 @@ try {
   await t('팝업 차단: window.open 이 null 이면 안내만 하고 로그인 버튼이 다시 살아난다', async () => {
     await rpPage.evaluate(() => { window.__realOpen = window.open; window.open = () => null; });
     try {
-      await rpPage.click('#loginBtn');
+      await idpLogin(rpPage);
       await waitText(rpPage, '#verdict', '팝업이 차단됐다', 30_000);
       await rpPage.waitForFunction(() => !document.querySelector('#loginBtn').disabled, undefined, { timeout: 10_000 });
     } finally {
@@ -377,7 +380,7 @@ try {
     const before = dialogs.length;
     let popup = null;
     try {
-      [popup] = await Promise.all([context.waitForEvent('page'), rpPage.click('#loginBtn')]);
+      [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
       await waitFor(() => dialogs.length > before, '팝업이 동의 창까지 오는 것');
       assert.ok(challengeRs, '챌린지 r_s 를 가로챘다');
       // (1) r_s 는 맞지만 지갑 오리진이 아닌 창(RP 페이지 자신)이 보낸 결과
@@ -399,7 +402,7 @@ try {
   await t('동의 거절: Snap 이 denied 를 주면 RP 에 user_denied 가 돌아오고 새 세션은 생기지 않는다', async () => {
     const before = (await rp.get('/api/mode3/logins')).body.logins.length;
     answers.push(false);                       // consentLogin 거절
-    const [popup] = await Promise.all([context.waitForEvent('page'), rpPage.click('#loginBtn')]);
+    const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
     await waitText(rpPage, '#verdict', 'user_denied', 120_000);
     await awaitPopupClosed(popup);
     assert.equal((await rp.get('/api/mode3/logins')).body.logins.length, before, '거절은 로그인을 남기지 않는다');
@@ -407,19 +410,21 @@ try {
   // V11(D15): 속성은 사용자가 지갑에 넣는다 — 관리자 페이지가 아니라 지갑 페이지의 "속성 저장"(PUT /wallet/profile)이 바꾼다.
   // 바뀌면 에이전트가 옛 C_u·세션을 지우고, 페이지는 응답의 attrsChanged 를 Snap 의 syncAttrs 로 전달해 Snap 도 옛 C_u 를 버린다
   // (Snap 의 syncAttrs 는 changed 면 attrs 와 함께 저장된 C_u 도 지운다). 다음 로그인이 새 C_u 를 받는다.
-  await t('지갑에서 속성 저장(extra1) → Snap 의 속성 갱신·C_u 폐기 → 다음 로그인이 새 C_u', async () => {
+  // 2026-10-15 W5: extra1(#attr2)은 화면에서 숨긴 예비 슬롯이라 더는 채울 수 없다 — 출생연도(#attr0)로 같은 의도(속성
+  // 변경 → 새 C_u)를 보인다.
+  await t('지갑에서 속성 저장(출생연도) → Snap 의 속성 갱신·C_u 폐기 → 다음 로그인이 새 C_u', async () => {
     const beforeCf = snapState.userCred?.Cf_u ?? null;
     assert.ok(beforeCf, '시작 시 Snap 에 C_u 가 있다');
     assert.deepEqual(snapState.registration.attrs, ['1990', '410', '0', '0', '0', '0']);
-    await walletPage.fill('#attr2', 'tier3');
+    await walletPage.fill('#attr0', '1991');
     await walletPage.click('#profileSaveBtn');
     // '속성 저장 완료'(성공)까지 — 실패 문구('속성 저장 실패'·'속성 값이 스키마에 맞지 않습니다')에도 '속성'이 들어가
     // 그냥 '속성'만 찾으면 실패도 통과해 버린다.
     await waitText(walletPage, '#registerResult', '속성 저장 완료', 15_000);
-    assert.deepEqual(snapState.registration.attrs, ['1990', '410', await encodeSlotValue(DEFAULT_ATTR_SCHEMA, 2, 'tier3'), '0', '0', '0'], 'syncAttrs 가 Snap 의 속성을 갱신했다');
+    assert.deepEqual(snapState.registration.attrs, [await encodeSlotValue(DEFAULT_ATTR_SCHEMA, 0, '1991'), '410', '0', '0', '0', '0'], 'syncAttrs 가 Snap 의 속성을 갱신했다');
     assert.equal(snapState.userCred, null, '속성이 바뀌면 Snap 의 syncAttrs 가 옛 C_u 를 함께 버린다');
     answers.push(true);                        // 로그인 동의
-    const [popup] = await Promise.all([context.waitForEvent('page'), rpPage.click('#loginBtn')]);
+    const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
     await waitText(rpPage, '#verdict', '로그인 성공', 240_000);
     await awaitPopupClosed(popup);
     assert.ok(snapState.userCred, '새 C_u 가 Snap 에 남아 있다');
@@ -436,7 +441,8 @@ try {
     assert.ok(beforeCf, '시작 시 Snap 에 C_u 가 있다');
     const beforeAttrs = [...snapState.registration.attrs];
     const status0 = (await wallet.get('/wallet/status')).body;
-    const newProfile = { ...status0.profile, extra2: 'round2' };
+    // 2026-10-15 W5: extra2 대신 출생연도를 바꿔 같은 의도(페이지 없이 바로 바꿔 Snap 이 모르게 만든다)를 유지한다.
+    const newProfile = { ...status0.profile, birthYear: String(Number(status0.profile.birthYear) + 1) };
     const chg = await wallet.put('/wallet/profile', { profile: newProfile });
     assert.equal(chg.status, 200, j(chg.body));
     assert.equal(chg.body.changed, true, '페이지를 거치지 않은 PUT 도 에이전트 파일의 attrs 를 바꾼다');
@@ -444,7 +450,7 @@ try {
     assert.deepEqual(snapState.registration.attrs, beforeAttrs, 'Snap 은 아직 옛 속성을 들고 있다(일부러 어긋낸 상태)');
     assert.ok(snapState.userCred, 'Snap 은 아직 옛 C_u 도 그대로 들고 있다');
     answers.push(true);                        // 로그인 동의
-    const [popup] = await Promise.all([context.waitForEvent('page'), rpPage.click('#loginBtn')]);
+    const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
     await waitText(rpPage, '#verdict', '로그인 성공', 240_000);
     await awaitPopupClosed(popup);
     assert.deepEqual(snapState.registration.attrs, chg.body.attrs, '팝업이 attrsChanged 를 Snap 의 syncAttrs 로 반영해 파일과 같아졌다');
@@ -461,7 +467,7 @@ try {
       status: 503, contentType: 'application/json', body: j({ ok: false, reason: 'factory_constants_unavailable' }),
     }));
     try {
-      await rpPage.click('#loginBtn');
+      await idpLogin(rpPage);
       await waitText(rpPage, '#verdict', 'factory_constants_unavailable', 30_000);
       assert.equal((await text(rpPage, '#verdict')).includes('Cannot read'), false, `TypeError 가 아니라 사유가 보여야 한다: ${await text(rpPage, '#verdict')}`);
       await rpPage.waitForFunction(() => !document.querySelector('#loginBtn').disabled, undefined, { timeout: 10_000 });

@@ -38,10 +38,12 @@ import { openRequestMessage, openResultMessage, recoverSigner, isFreshTs } from 
 import { CIA_STATE_VERSION, defaultCiaState, migrateCiaState } from './lib/mode3_cia_state.js';
 import { buildAaHealth, applyHealthHeaders, bounded, originList } from './lib/mode3_health.js';
 import { createOidcVerifier, GOOGLE_DEFAULTS } from './lib/mode3_oidc.js';
-import { uidOf, regNonce, isRevokeNonce, REG_PREFIX, REVOKE_PREFIX } from './lib/mode3_oidc_nonce.js';
+import { uidOf, regNonce, issueNonce, isRevokeNonce, REG_PREFIX, REVOKE_PREFIX, ISSUE_PREFIX } from './lib/mode3_oidc_nonce.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.CIA_PORT) || 4100;
+// 수신 주소(2026-10-20, VM 분리 데모): 기본은 지금처럼 127.0.0.1. 다른 기계에서 붙게 하려면 MODE3_BIND_HOST=0.0.0.0.
+const BIND_HOST = process.env.MODE3_BIND_HOST || '127.0.0.1';
 const STATE_FILE = process.env.CIA_STATE_FILE || path.join(__dirname, 'cia_state.json');
 const KEYS_FILE = process.env.CIA_KEYS_FILE || path.join(__dirname, 'cia_keys.json');
 const IDP_VKEY = process.env.MODE3_IDP_VKEY_PATH || IDP_VKEY_PATH;
@@ -56,6 +58,9 @@ try {
   process.exit(1);
 }
 const ADMIN_SECRET = process.env.CIA_ADMIN_SECRET;
+// 데모 설정(2026-10-21, 사용자 요청): CIA_ADMIN_OPEN=1 이면 관리자 경로가 시크릿을 묻지 않는다(관리자 페이지는 입력칸을 숨긴다).
+// 이 IdP 에 닿는 누구나 RP 승인·폐기·개봉 승인을 할 수 있으므로 데모 전용이다. 기본은 꺼짐(지금처럼 시크릿 필요).
+const ADMIN_OPEN = process.env.CIA_ADMIN_OPEN === '1';
 // 사용자 오리진(web 모드 사용자 페이지 또는 에이전트, 스펙 2026-10-15 §5.3). health 의 허용 목록과 아래 userCors 가 같은 값을 쓴다.
 const WALLET_AGENT_ORIGIN = process.env.MODE3_WALLET_AGENT_ORIGIN || 'http://127.0.0.1:5100';
 // OIDC 래퍼(스펙 2026-10-16): Google ID 토큰을 체인 밖에서 검증해 계정을 만든다. 클라이언트 ID 가 없으면 꺼진다(데모 계정만).
@@ -335,6 +340,7 @@ function secretMatches(a, b) {
   return A.length === B.length && timingSafeEqual(A, B);
 }
 function requireAdmin(req, res, next) {
+  if (ADMIN_OPEN) return next();
   if (!ADMIN_SECRET) return res.status(503).json({ error: 'admin endpoints disabled: CIA_ADMIN_SECRET is not configured' });
   const p = req.get('X-CIA-Admin-Secret');
   if (typeof p !== 'string' || !secretMatches(p, ADMIN_SECRET)) return res.status(401).json({ error: 'unauthorized' });
@@ -560,22 +566,31 @@ app.post('/cia/register', userCors, async (req, res) => {
     if (!acct || acct.password !== pwd) return res.status(401).json({ error: 'invalid credentials' });
     uid = uidIn; provider = 'demo';
   }
-  if (state.accounts[uid]) return res.status(409).json({ error: 'already registered' });
-  if (BigInt(auid) >= F.p) return res.status(400).json({ error: 'auid is not a field element' });   // Poseidon 출력 범위 — 비정규 값은 등록부 리프·π 와 어긋난다
-  if (!(await isValidPoint(pointFromStrings(pk_u)))) return res.status(400).json({ error: 'pk_u is not a valid subgroup point' });
+  const made = await registerAccount({ uid, provider, auid, pk_u, sig_reg });
+  if (made.error) return res.status(made.error.status).json(made.error.body);
+  res.status(201).json({ slot: made.slot, schemaHash: ATTR_SCHEMA_HASH, uid, provider });
+});
+/** 계정 등록의 공통 부분(/cia/register 와 /cia/issue 의 id_token 암묵 등록이 같이 쓴다, 2026-10-16): 409·auid 범위·pk_u 점·sig_reg 검증·슬롯 배정.
+ *  성공 { slot }, 실패 { error: { status, body } }. */
+async function registerAccount({ uid, provider, auid, pk_u, sig_reg }) {
+  const fail = (status, body) => ({ error: { status, body } });
+  if (!isDec(auid) || !isPt(pk_u) || !sig_reg) return fail(400, { error: 'auid, pk_u{x,y}, sig_reg required' });
+  if (state.accounts[uid]) return fail(409, { error: 'already registered' });
+  if (BigInt(auid) >= F.p) return fail(400, { error: 'auid is not a field element' });   // Poseidon 출력 범위 — 비정규 값은 등록부 리프·π 와 어긋난다
+  if (!(await isValidPoint(pointFromStrings(pk_u)))) return fail(400, { error: 'pk_u is not a valid subgroup point' });
   let ok = false;
   const sigReg = parseEddsaSig(sig_reg);   // 리뷰 S1: 비정규·범위 밖 서명은 verifyPoseidon 에 넣지 않는다
   try {
     const m = F.e(await registerMessage(BigInt(uid), BigInt(auid)));
     ok = sigReg !== null && eddsa.verifyPoseidon(m, sigReg, [F.e(BigInt(pk_u.x)), F.e(BigInt(pk_u.y))]);
   } catch { ok = false; }
-  if (!ok) return res.status(400).json({ error: 'bad_registration_signature' });
-  if (state.accounts[uid]) return res.status(409).json({ error: 'already registered' });   // await 사이 경합
+  if (!ok) return fail(400, { error: 'bad_registration_signature' });
+  if (state.accounts[uid]) return fail(409, { error: 'already registered' });   // await 사이 경합
   const slot = state.registry.next++;
   state.accounts[uid] = { pk_u: { x: BigInt(pk_u.x).toString(), y: BigInt(pk_u.y).toString() }, auid: BigInt(auid).toString(), slot, provider, tampered: false, disabled: false, creds: [], sessions: [], receipt: null, slotRetired: false };
   persist();
-  res.status(201).json({ slot, schemaHash: ATTR_SCHEMA_HASH, uid, provider });
-});
+  return { slot };
+}
 
 // V9: 옛 지갑 상태 파일(슬롯 없음)이 자기 슬롯 번호를 되찾는다. sk_u 서명 인증, 메시지는 Poseidon(D_SLOTREQ, uid, nonce).
 app.post('/cia/slot', userCors, async (req, res) => {
@@ -599,9 +614,10 @@ app.post('/cia/slot', userCors, async (req, res) => {
 // 활성 자격증명과 다르면(첫 로그인·사용자의 속성 변경) 등록부 슬롯을 갱신·게시한 뒤 토큰을 낸다. 속성 값은 받지 않는다(D15).
 // 검사 순서: 형식 → max_height 범위 → 계정·disabled → chainid 허용 → C_u·C_s 부분군 → sig_u → π_IdP → 체인 생존(fail-closed) → disabled 재확인 →
 // (C_u 교체: 은퇴 → creds 추가 → setSlot → persist → 즉시 게시) → 토큰 서명 → 세션 기록. auid_s·arid_s 는 서명·토큰에만 쓰고 저장하지 않는다(D1).
+// /cia/issue — 데모 계정은 sig_u 만, 래퍼(Google) 계정은 sig_u + id_token(+첫 로그인이면 registration). 2026-10-16.
 app.post('/cia/issue', userCors, async (req, res) => {
   try {
-    const { uid, auid_s, arid_s, C_u_pt, C_s_pt, chainid, allowAgent, max_height, proof_idp, sig_u } = req.body ?? {};
+    const { uid, auid_s, arid_s, C_u_pt, C_s_pt, chainid, allowAgent, max_height, proof_idp, sig_u, id_token, registration } = req.body ?? {};
     if (!isDec(uid) || !isDec(auid_s) || !isDec(arid_s) || !isPt(C_u_pt) || !isPt(C_s_pt) || !isDec(chainid) || (allowAgent !== '0' && allowAgent !== '1') || !isDec(max_height) || !proof_idp || typeof proof_idp !== 'object' || !sig_u) {
       return res.status(400).json({ error: 'uid, auid_s, arid_s, C_u_pt{x,y}, C_s_pt{x,y}, chainid, allowAgent("0"|"1"), max_height, proof_idp, sig_u required' });
     }
@@ -610,9 +626,27 @@ app.post('/cia/issue', userCors, async (req, res) => {
     // 리뷰 L5(2026-10-13): auid_s·arid_s 도 /cia/register 의 auid 처럼 필드 원소(< p)여야 한다 — arid_s = A + p 는 Poseidon 안에서 A 와 같아져
     // 서명·토큰은 그대로 통과하지만 정규형이 아닌 별칭이다(auid_s 는 snarkjs 가 거절하지만 같은 자리에서 먼저 막는다).
     if (BigInt(auid_s) >= F.p || BigInt(arid_s) >= F.p) return res.status(400).json({ error: 'auid_s and arid_s must be field elements (< p)' });
+    // OIDC 래퍼 — RP 로그인 흐름(2026-10-16): Google 로 로그인한 사용자는 발급마다 ID 토큰을 함께 낸다. 래퍼가 토큰을 검증해 계정(uid=H(provider|sub))을
+    // 정하고, 계정이 아직 없으면 요청에 실린 등록 재료(auid·pk_u·sig_reg)로 그 자리에서 등록한 뒤 발급한다 — 사용자에게 보이는 등록 단계가 없다.
+    // 토큰은 이 지갑의 공개키와 이 로그인(arid_s)에 nonce 로 묶여 있어 가로채도 다른 키·다른 로그인에 못 쓴다. 데모 계정(uid/pwd 등록)은 id_token 없이 지금처럼.
+    let oidcClaims = null;
+    if (id_token !== undefined) {
+      if (typeof id_token !== 'string') return res.status(400).json({ error: 'id_token 은 문자열' });
+      const o = await oidcUid(id_token, ISSUE_PREFIX); if (o.error) return res.status(o.error.status).json(o.error.body);
+      if (o.uid !== uid) return res.status(403).json({ error: 'uid_mismatch', reason: 'uid_mismatch', detail: '토큰의 계정이 요청의 uid 와 다르다' });
+      oidcClaims = o;
+      if (!state.accounts[uid]) {
+        if (!registration || typeof registration !== 'object') return res.status(404).json({ error: 'unknown account', reason: 'not_registered', detail: '첫 로그인이면 registration{auid,pk_u,sig_reg} 을 함께 보낸다' });
+        const made = await registerAccount({ uid, provider: OIDC.provider, auid: registration.auid, pk_u: registration.pk_u, sig_reg: registration.sig_reg });
+        if (made.error) return res.status(made.error.status).json(made.error.body);
+      }
+    }
     const acct = state.accounts[uid];
     if (!acct) return res.status(404).json({ error: 'unknown account' });
     if (acct.disabled) return res.status(403).json({ error: 'account disabled', reason: 'account_disabled' });
+    // 래퍼 계정(provider 가 demo 가 아님)은 발급마다 토큰이 있어야 한다 — Google 이 매 로그인을 확인한다는 의미다.
+    if (acct.provider && acct.provider !== 'demo' && !oidcClaims) return res.status(401).json({ error: 'oidc_required', reason: 'oidc_required' });
+    if (oidcClaims && oidcClaims.nonce !== issueNonce(acct.pk_u, arid_s)) return res.status(400).json({ error: 'oidc_nonce_mismatch', reason: 'oidc_nonce_mismatch', detail: 'nonce 가 이 지갑·이 로그인(arid_s)과 다르다' });
     const chainStr = BigInt(chainid).toString();
     if (CHAIN_RPCS.size === 0) return res.status(503).json({ error: 'chain id unknown: CIA_CHAIN_RPCS not configured and RPC unreachable at startup' });
     if (!CHAIN_RPCS.has(chainStr)) return res.status(400).json({ error: `bad chainid ${chainStr}: allowed ${[...CHAIN_RPCS.keys()].join(',')}` });
@@ -701,9 +735,10 @@ app.post('/cia/revoke', userCors, async (req, res) => {
   try {
     const { uid, scope, Cf_s, sig_u, nonce } = req.body ?? {};
     const hdr = req.get('X-CIA-Admin-Secret');
-    const isAdmin = Boolean(ADMIN_SECRET) && typeof hdr === 'string' && secretMatches(hdr, ADMIN_SECRET);
+    // CIA_ADMIN_OPEN 이면 헤더가 있는 요청(관리자 페이지)만 관리자로 본다 — 헤더 없는 사용자 본인 서명 요청은 그대로 서명 경로로 간다.
+    const isAdmin = ADMIN_OPEN ? typeof hdr === 'string' : Boolean(ADMIN_SECRET) && typeof hdr === 'string' && secretMatches(hdr, ADMIN_SECRET);
     if (scope !== 'session') {   // requireAdmin 과 같은 응답을 그대로 유지한다(시크릿 미설정 503, 틀린 시크릿 401)
-      if (!ADMIN_SECRET) return res.status(503).json({ error: 'admin endpoints disabled: CIA_ADMIN_SECRET is not configured' });
+      if (!ADMIN_OPEN && !ADMIN_SECRET) return res.status(503).json({ error: 'admin endpoints disabled: CIA_ADMIN_SECRET is not configured' });
       if (!isAdmin) return res.status(401).json({ error: 'unauthorized' });
     }
     if (!isDec(uid) || !state.accounts[uid]) return res.status(404).json({ error: 'unknown account' });
@@ -1302,6 +1337,7 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'internal' });
 });
 process.on('unhandledRejection', (e) => console.error(`[cia] unhandledRejection: ${e?.stack ?? e}`));
-app.listen(PORT, '127.0.0.1', () => {
-  console.log(`Mode 3 IdP running at http://127.0.0.1:${PORT} (log=${LOG_ADDRESS ?? 'none'}, heartbeat=${HEARTBEAT_BLOCKS}, mirrors=${MIRRORS.map((m) => m.chainStr).join(',') || 'none'}(H=${MIRROR_HEARTBEAT_BLOCKS}, relayOnPublish=${MIRROR_RELAY_ON_PUBLISH && MIRROR_HEARTBEAT_BLOCKS > 0n}), chains=${[...CHAIN_RPCS.keys()].join(',') || 'none'}, vkey=${fs.existsSync(VKEY_PATH) ? 'ok' : 'missing'}, idpVkey=${fs.existsSync(IDP_VKEY) ? 'ok' : 'missing'}, registry=${registry.entries().length})`);
+app.listen(PORT, BIND_HOST, () => {
+  if (ADMIN_OPEN) console.warn('[cia] CIA_ADMIN_OPEN=1 — 관리자 인증이 꺼져 있다(데모 전용). 이 IdP 에 닿는 누구나 RP 승인·폐기·개봉 승인을 할 수 있다.');
+  console.log(`Mode 3 IdP running at http://${BIND_HOST}:${PORT} (log=${LOG_ADDRESS ?? 'none'}, heartbeat=${HEARTBEAT_BLOCKS}, mirrors=${MIRRORS.map((m) => m.chainStr).join(',') || 'none'}(H=${MIRROR_HEARTBEAT_BLOCKS}, relayOnPublish=${MIRROR_RELAY_ON_PUBLISH && MIRROR_HEARTBEAT_BLOCKS > 0n}), chains=${[...CHAIN_RPCS.keys()].join(',') || 'none'}, vkey=${fs.existsSync(VKEY_PATH) ? 'ok' : 'missing'}, idpVkey=${fs.existsSync(IDP_VKEY) ? 'ok' : 'missing'}, registry=${registry.entries().length})`);
 });

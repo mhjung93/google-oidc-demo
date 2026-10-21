@@ -25,6 +25,8 @@ import { DEFAULT_ATTR_SCHEMA, loadSchema, slotIndexOf, encodeMembers, schemaInfo
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.MODE3_RP_PORT) || 3100;
+// 수신 주소(2026-10-20, VM 분리 데모): 기본은 지금처럼 127.0.0.1. 다른 기계에서 붙게 하려면 MODE3_BIND_HOST=0.0.0.0.
+const BIND_HOST = process.env.MODE3_BIND_HOST || '127.0.0.1';
 const CIA_URL = process.env.MODE3_CIA_URL || 'http://127.0.0.1:4100';
 const WALLET_ORIGIN = process.env.MODE3_WALLET_AGENT_ORIGIN || 'http://127.0.0.1:5100';
 const LOG_ADDRESS = process.env.CIA_LOG_ADDRESS || null;   // 캐노니컬 표시용(/api/mode3/rp_info) — 검증기는 이 주소를 읽지 않는다(V10)
@@ -296,6 +298,11 @@ if (reg.status === 'approved' && reg.cert_s) {
 
 // ---- r_s·r_rp: 메모리, TTL, 로그인 때 1회 소비. 소비된 r_s 는 세션 식별자가 된다(설계 §7). r_rp 는 세션 가명·C_s 블라인딩의 재료(V11 §3.2) — IdP 에 보내지 않는다 ----
 const challenges = new Map();   // r_s(10진) → { expiresAt(ms), r_rp(10진) }
+// 2026-10-16: 이 RP 가 지운 세션의 묘비(r_s). 사용자 페이지의 세션 확인(/api/mode3/sessions/check)이 "지운 것"과 "아직 모르는 것"(로그인 결과가
+// 제출되기 전)을 가르는 데 쓴다 — 모르는 것은 null 로 답해 지갑이 방금 만든 세션을 지우지 않게 한다. 최근 1000개만 남긴다.
+const removedSessions = new Set();
+// 2026-10-21: 모르는 세션(RP 재시작 뒤 등)의 로그아웃도 묘비를 남긴다 — 그 세션은 어차피 이 RP 에서 못 쓰므로, 사용자 페이지가 목록에서 지우게 둔다.
+const forgetSession = (k) => { const had = sessions.delete(k); removedSessions.add(k); if (removedSessions.size > 1000) removedSessions.delete(removedSessions.values().next().value); return had; };
 const sessions = new Map();     // r_s(10진) → { PPID, pk_i, max_height, allowAgent, root, regRoot, disclosure, auid_s, arid_s, r_rp, at }
 function sweepChallenges() { const now = Date.now(); for (const [c, e] of challenges) if (e.expiresAt < now) challenges.delete(c); }
 function issueChallenge() {
@@ -322,6 +329,8 @@ let requestCount = 0;          // 받아들인 세션 요청(/api/mode3/request)
 let disclosedLoginCount = 0;   // 공개 조건을 실은 로그인(mask ≠ 0 이거나 집합 공개)
 
 const logins = [];   // { PPID, at, root, r_s }. 메모리만
+// 릴레이가 보낸 트랜잭션 기록(2026-10-21, RP 관리자 페이지) — 로그인 기록과 같이 메모리만. RP 가 원래 아는 것(계정·PPID·calldata 의 받는 주소·금액)만 담는다.
+const relayedTxs = [];   // { at, txHash, account, PPID, kind, target, value, deployTxHash, status, blockNumber }
 // r_s 전문은 내지 않는다 — (PPID, 시각) 과 함께 RP 의 사용자 활동 기록이다(설계 2026-09-16 §5).
 const rsShort = (r) => r.slice(0, 8) + '…';
 // 선택 공개(2026-09-22 §6.2) — verifyLogin 이 돌려주는 bigint 조각을 세션·로그인 로그·조회 API 에 쓸 문자열로.
@@ -335,14 +344,18 @@ app.use(express.json({ limit: '1mb' }));
 app.use('/common', express.static(path.join(__dirname, 'mode3', 'common')));
 
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'rp.html')));
+// 2026-10-16: 운영자 화면(로그인 기록·승인 개봉) — 고객 페이지에서 떼어냈다. 같은 서버·같은 API, 페이지만 다르다.
+app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'rp_admin.html')));
 
 // rp_info 와 health(§1.1)가 같은 정책 값을 쓴다 — 한 곳에서만 만든다.
 // birthYearMin(최종 리뷰 I1): 나이 술어의 lo 하한 = 스키마의 출생연도 min. 페이지가 lo 로 보내고 로그인 검사가 lo ≥ 이 값을 요구한다.
 const BIRTH_MIN = BIRTH_SLOT >= 0 ? BigInt(ATTR_SCHEMA.schema.slots[BIRTH_SLOT].min ?? 0) : null;
 const currentPredicates = () => ({ allowedCountries: ALLOWED_COUNTRIES_EFFECTIVE.map(String), allowedCountryNames: ALLOWED_COUNTRY_NAMES, allowedCountriesRoot: ALLOWED_COUNTRIES_ROOT.toString(), minAge: MIN_AGE.toString(), birthYearMin: BIRTH_MIN === null ? null : BIRTH_MIN.toString(), attrSchema: schemaInfo(ATTR_SCHEMA.schema, ATTR_SCHEMA.hash) });
 
+// 2026-10-21: MODE3_REQUIRE_DISCLOSURE=1(데모의 zkTWO)이면 로그인 때 국가 집합·나이 술어를 **서버가** 요구한다 — 페이지의 체크박스와 무관. 기본은 끔(zkONE: 누구나).
+const REQUIRE_DISCLOSURE = process.env.MODE3_REQUIRE_DISCLOSURE === '1';
 app.get('/api/mode3/rp_info', (req, res) => {
-  res.json({ name: RP_NAME,   // 2026-10-15: 페이지 브랜드(zkONE/zkTWO) 표기용
+  res.json({ name: RP_NAME, requireDisclosure: REQUIRE_DISCLOSURE,   // 2026-10-15: 페이지 브랜드(zkONE/zkTWO) 표기용
        status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, mirrorAddress: MIRROR_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, ciaUrl: CIA_URL, pkCiaSource: pkCIA.source, chainId: chainId.toString(), active: Boolean(verifier), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null, predicates: currentPredicates(),
        oidc: pkCIA.oidc });   // 2026-10-16: IdP 의 public_keys.oidc 중계 — 페이지는 enabled·provider 만 본다
 });
@@ -379,8 +392,10 @@ app.post('/api/mode3/login', async (req, res) => {
     if (typeof r_s !== 'string' || !/^[0-9]+$/.test(r_s)) return res.status(400).json({ ok: false, reason: 'malformed' });
     // V7 술어 요구(스펙 §6, Ruling 항목 5): 요구는 페이지가 `require` 로 싣는다 — 서버 정책 게이트가 아니다(데모 의미).
     // 운영이라면 서버가 강제해야 한다. 여기서는 형식만 검사한다 — plain object 가 아니면(배열 등) 조용히 무시하지 않고 막는다.
-    const requireP = req.body.require ?? null;
+    let requireP = req.body.require ?? null;
     if (requireP !== null && (typeof requireP !== 'object' || Array.isArray(requireP))) return res.status(400).json({ ok: false, reason: 'malformed' });
+    // 2026-10-21: 서버 정책 게이트 — MODE3_REQUIRE_DISCLOSURE=1 이면 페이지가 뭘 보내든 국가 집합·나이 술어를 요구한다(없으면 아래서 predicate_unmet).
+    if (REQUIRE_DISCLOSURE) requireP = { ...(requireP ?? {}), countrySet: true, minAge: true };
     const rsStr = BigInt(r_s).toString();
     const r_rp = consumeChallenge(rsStr);   // 검증 전에 소비
     if (r_rp === null) return res.status(401).json({ ok: false, reason: 'bad_challenge' });
@@ -403,6 +418,8 @@ app.post('/api/mode3/login', async (req, res) => {
     const at = new Date().toISOString();
     const disclosure = discOf(v.disclosure);
     sessions.set(rsStr, { PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), regRoot: v.regRoot.toString(), disclosure, auid_s: v.auid_s.toString(), arid_s: v.arid_s.toString(), r_rp, at });
+    // 2026-10-16: 같은 계정(PPID)의 이전 세션은 새 로그인이 대체한다 — "RP 당 활성 세션 하나". IdP 폐기 트리는 건드리지 않는다(강한 무효화는 V8 세션 폐기).
+    for (const [k, s] of sessions) if (k !== rsStr && s.PPID === v.PPID.toString()) forgetSession(k);
     if (disclosure.mask !== '0' || disclosure.set) disclosedLoginCount++;
     logins.push({ PPID: v.PPID.toString(), at, root: v.root.toString(), r_s: rsShort(rsStr), allowAgent: v.allowAgent.toString(), disclosure });
     // §5 로그인 로그 — 전체 r_s 와 트랜스크립트(태그 포함). 개봉 요청의 재료다. 조회 API 로는 내지 않는다.
@@ -434,6 +451,8 @@ app.post('/api/mode3/revalidate', async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });
 
+// 2026-10-21: RP 페이지의 "현재 잔액 확인" — 세션 서명 검증 뒤 돌려주는 거래소 꾸밈의 시연용 잔액(실제 장부 없음, rp.html 의 내 자산 목록과 같은 값).
+const DEMO_LEDGER = { KRW: '1,000,000', BTC: '0.02', ETH: '0.5' };
 app.post('/api/mode3/request', async (req, res) => {
   try {
     if (!verifier) return res.status(503).json({ ok: false, reason: inactiveReason() });
@@ -447,7 +466,7 @@ app.post('/api/mode3/request', async (req, res) => {
     const view = await verifier.refreshChainView().catch(() => null);
     if (view) lastRootAge = Number(view.head - view.lastPublishedBlock);   // health 표시용(§1.1)
     if (!view) return res.status(503).json({ ok: false, reason: 'chain_unavailable' });
-    if (view.head > BigInt(s.max_height)) { sessions.delete(rsKey); return res.status(401).json({ ok: false, reason: 'expired' }); }
+    if (view.head > BigInt(s.max_height)) { forgetSession(rsKey); return res.status(401).json({ ok: false, reason: 'expired' }); }
     if (view.root.toString() !== s.root || view.regRoot.toString() !== s.regRoot) return res.status(401).json({ ok: false, reason: 'revalidate_required' });
     // b′ — root 게시 나이(2026-09-23 점검 C-1, 리뷰 Ruling 1). verifyLogin 의 b′ 와 같은 상한·같은 위치(root 일치 뒤).
     // IdP 게시가 멈추면 새 로그인뿐 아니라 이미 있는 세션의 요청도 함께 멈춘다. 세션 상태가 아니라 게시 생존의
@@ -455,6 +474,8 @@ app.post('/api/mode3/request', async (req, res) => {
     if (view.head - view.lastPublishedBlock > EFFECTIVE_MAX_ROOT_AGE) return res.status(503).json({ ok: false, reason: 'root_too_old' });
     if (!verifySessionRequest({ pk_i: s.pk_i, r_s: rsKey, body, sig })) return res.status(401).json({ ok: false, reason: 'bad_signature' });
     requestCount++;
+    // 'balance'(2026-10-21): 거래 없이 세션으로 RP 와 상호작용하는 예 — 시연용 장부를 돌려준다.
+    if (body === 'balance') return res.json({ ok: true, echo: body, PPID: s.PPID, balance: { ledger: DEMO_LEDGER } });   // 온체인 계정 잔액은 내지 않는다(사용자 요청 2026-10-21)
     res.json({ ok: true, echo: body, PPID: s.PPID });
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });
@@ -495,6 +516,13 @@ app.post('/api/mode3/relay', relayCors, async (req, res) => {
     if (gas > RELAY_GAS_CAP) return res.status(400).json({ ok: false, reason: 'relay_gas', detail: `gas ${gas} > cap ${RELAY_GAS_CAP}` });
     const gasLimit = (gas * 12n) / 10n > RELAY_GAS_CAP ? RELAY_GAS_CAP : (gas * 12n) / 10n;
     const tx = await relayer.sendTransaction({ to, data, gasLimit });
+    const gate = reg.attrGateAddress ? String(reg.attrGateAddress).toLowerCase() : null;
+    const rec = { at: new Date().toISOString(), txHash: tx.hash, account: to, PPID: ppid.toString(), kind: gate && String(dec.payload.to).toLowerCase() === gate ? 'claim' : 'transfer',
+      target: dec.payload.to, value: dec.payload.value.toString(), deployTxHash, status: 'pending', blockNumber: null };
+    relayedTxs.push(rec);
+    // 영수증이 오면 상태를 채운다. 계정 안 호출이 실패했으면(Executed.success=false) 트랜잭션이 들어갔어도 실패로 본다.
+    tx.wait().then((rc) => { rec.blockNumber = rc?.blockNumber ?? null; rec.status = rc?.status === 1 && parseExecuteReceipt(rc, to).executed?.success !== false ? 'success' : 'failed'; },
+      () => { rec.status = 'failed'; });
     res.json({ ok: true, txHash: tx.hash, deployed: Boolean(deployTxHash), deployTxHash });
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });
@@ -569,6 +597,27 @@ app.get('/api/mode3/open/:id', async (req, res) => {
 });
 
 app.get('/api/mode3/logins', (req, res) => res.json({ logins }));
+app.get('/api/mode3/txs', (req, res) => res.json({ txs: relayedTxs }));   // 개봉 경로와 같이 데모용, 인증 없음(관리자 페이지가 읽는다)
+// 2026-10-16 로그아웃: 이 RP 가 세션을 잊는다(세션키 서명은 요구하지 않는다 — 피해가 없는 동작). 그 r_s 는 이후 unknown_session.
+// 2026-10-21: 사용자 페이지(지갑 오리진)도 부른다 — 세션 폐기 뒤 이 RP 에 알려 RP 페이지가 바로 로그아웃 상태가 되게(최선 노력, 폐기 자체는 체인 root 로 효력).
+app.options('/api/mode3/logout', relayCors);
+app.post('/api/mode3/logout', relayCors, (req, res) => {
+  const { r_s } = req.body ?? {};
+  if (typeof r_s !== 'string' || !/^[0-9]+$/.test(r_s)) return res.status(400).json({ ok: false, reason: 'malformed' });
+  const key = BigInt(r_s).toString();
+  const removed = forgetSession(key);
+  res.json({ ok: true, removed });
+});
+// 2026-10-16 세션 확인(사용자 페이지용, 지갑 오리진 CORS): 지갑이 자기 세션들이 이 RP 에 아직 있는지 묻고 없는 것을 목록에서 정리한다.
+// RP 가 이미 아는 r_s 만 오간다(새로 새는 정보 없음). 최대 50개.
+app.options('/api/mode3/sessions/check', relayCors);
+app.post('/api/mode3/sessions/check', relayCors, (req, res) => {
+  const list = Array.isArray(req.body?.r_s) ? req.body.r_s.filter((x) => typeof x === 'string' && /^[0-9]+$/.test(x)).slice(0, 50) : null;
+  if (!list) return res.status(400).json({ reason: 'malformed' });
+  // true=있다, false=이 RP 가 지웠다(로그아웃·대체·만료), null=모른다(아직 제출 전이거나 RP 재시작) — 지갑은 false 만 정리한다.
+  const alive = {}; for (const x of list) { const k = BigInt(x).toString(); alive[x] = sessions.has(k) ? true : (removedSessions.has(k) ? false : null); }
+  res.json({ alive });
+});
 app.get('/api/mode3/sessions', (req, res) => res.json({ sessions: [...sessions.entries()].map(([r_s, s]) => ({ r_s: rsShort(r_s), PPID: s.PPID, pk_i: s.pk_i, max_height: s.max_height, allowAgent: s.allowAgent, root: s.root, disclosure: s.disclosure, auid_s: rsShort(s.auid_s), arid_s: rsShort(s.arid_s), at: s.at })) }));
 
 // 라우트 밖으로 샌 오류의 마지막 그물(2026-10-11): JSON 파싱 실패 400 malformed, 그 밖 500 internal — 다른 라우트와 같은 { ok, reason } 봉투.
@@ -579,6 +628,6 @@ app.use((err, req, res, next) => {
   res.status(500).json({ ok: false, reason: 'internal', detail: err?.message });
 });
 process.on('unhandledRejection', (e) => console.error(`[rp] unhandledRejection: ${e?.stack ?? e}`));
-app.listen(PORT, '127.0.0.1', () => {
-  console.log(`Mode 3 RP at http://127.0.0.1:${PORT} (arid=${reg.arid ?? '-'} status=${reg.status}, origin=${reg.origin}, log=${LOG_ADDRESS}, wallet=${WALLET_ORIGIN}, pk_CIA=${pkCIA.source}, chain=${chainId})`);
+app.listen(PORT, BIND_HOST, () => {
+  console.log(`Mode 3 RP at http://${BIND_HOST}:${PORT} (arid=${reg.arid ?? '-'} status=${reg.status}, origin=${reg.origin}, log=${LOG_ADDRESS}, wallet=${WALLET_ORIGIN}, pk_CIA=${pkCIA.source}, chain=${chainId})`);
 });

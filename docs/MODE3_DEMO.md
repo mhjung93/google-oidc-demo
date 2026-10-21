@@ -169,7 +169,7 @@ V10 환경 변수(2026-10-02). **`CIA_RPC_URL` 의 뜻이 프로세스마다 다
 `MODE3_MAX_ROOT_AGE`(RP·계정이 받아들이는 root 나이)는 이제 **거울**의 `lastPublishedBlock` 기준이다 — 거울 릴레이 주기보다
 2~3배 크게 둔다(설계 §5, 기본 100 > 50).
 
-선택 env: 지갑의 `MODE3_TTL_BLOCKS`(credential 만료, 기본 300)·`MODE3_HEIGHT_GRID`(max_height 양자화 그리드, 기본 100 — 만료는 지갑이 정하고 IdP 는 그대로 서명), RP·컨트랙트의 `MODE3_MAX_LIFETIME_BLOCKS`(지갑이 정한 만료의 상한 L, 기본 400; TTL+GRID 이상이어야 로그인이 된다)·
+선택 env: 지갑의 `MODE3_TTL_BLOCKS`(credential 만료, 기본 300)·`MODE3_HEIGHT_GRID`(max_height 양자화 그리드 — 두 데모 스크립트는 5 로 띄운다: hardhat 은 거래가 있을 때만 블록을 만들어 100 이면 데모 내내 같은 값이 보인다. 5 는 IdP 가 발급 시각을 5블록 창까지 좁힐 수 있어 데모 전용이다, 2026-10-21; 기본 100 — 만료는 지갑이 정하고 IdP 는 그대로 서명), RP·컨트랙트의 `MODE3_MAX_LIFETIME_BLOCKS`(지갑이 정한 만료의 상한 L, 기본 400; TTL+GRID 이상이어야 로그인이 된다)·
 `CIA_HEARTBEAT_BLOCKS`(하트비트 재게시 주기, 기본 50, 0=끔)·`CIA_HEARTBEAT_POLL_MS`(기본 5000)·
 `CIA_CHAIN_RPCS`(발급을 허용할 체인의 RPC 맵, 기본 `"31337=http://127.0.0.1:8545"`, 비면 자기 RPC 하나 — V10 에서 `CIA_MIRRORS` 를 쓰면 명시 필수, 위 표)·
 `MODE3_MAX_ROOT_AGE`(지갑과 **RP 오프체인 로그인·재검증·세션 요청도 같은 상한**으로 받아들이는 게시 root 의 최대 나이,
@@ -256,6 +256,8 @@ curl -s -X POST -H "X-CIA-Admin-Secret: $CIA_ADMIN_SECRET" http://127.0.0.1:4100
 받다가, 다음 주기 틱이나 위 relay 뒤에 `revalidate_required` 로 바뀌는 장면을 볼 수 있다(자동 각본 13 과 같다).
 
 ### 폐기 체인을 별도 노드로 (선택, V10)
+
+> 한 번에(2026-10-16): `TWO_CHAINS=1 bash scripts/demo_web_reset.sh` — 아래 1~4단계를 web 모드(localhost 오리진)로 돈다.
 
 > 2026-10-03 실행 확인: `tests/test_mode3_demo_full.mjs` 가 이 구성(폐기 체인 :8546 chainId 31338 + 응용 체인 :8545, RP 둘)을
 > 격리 스택으로 처음부터 끝까지 돌린다 — 등록·로그인·거래소 술어·온체인 출금·개봉·세션 폐기·계정 폐기(거울 지연)·접수증·복구.
@@ -860,6 +862,9 @@ IdP(`cia.js`)는 사용자 오리진(`MODE3_WALLET_AGENT_ORIGIN`, 기본 `http:/
 RP(`mode3_rp.js`)는 사용자 오리진에만 `POST /api/mode3/relay`·`GET /api/mode3/relay/:txHash` 를 연다 — 아래 "릴레이" 절.
 
 ### 기동 순서
+
+> **한 번에(2026-10-16):** `bash scripts/demo_web_reset.sh` — 전부 내림 → Mode 3 상태 파일 백업 → hardhat 새로 → 로그·거울 배포 → 번들 빌드 → IdP·사용자 페이지·zkONE·zkTWO 를 **localhost 오리진**으로 기동. RP 는 승인 대기로 두고(`AUTO_APPROVE=1` 이면 자동 승인), 로그는 `/tmp/mode3-demo/`. `TWO_CHAINS=1` 이면 아래 "폐기 체인을 별도 노드로" 구성(캐노니컬 로그 :8546 chainId 31338, 거울 :8545)으로 띄운다. 브라우저도 localhost 주소로 열고, IdP 를 초기화했으면 사용자 페이지의 "모두 지우기"로 등록을 맞춘다.
+> **데모 설정(2026-10-21):** 두 스크립트(`demo_web_reset.sh`·`demo_split_start.sh`)는 데모 편의로 다음을 기본으로 켠다 — 모두 **데모 전용**이며 코드 기본값은 꺼짐이다. ① `CIA_ADMIN_OPEN=1`: IdP 관리자 경로가 시크릿을 묻지 않는다(`ADMIN_OPEN=0` 으로 끔). ② `MODE3_HEIGHT_GRID=5`: 만료(max_height) 올림 단위(`HEIGHT_GRID=100` 으로 원래대로). ③ `MODE3_DEMO_GENERATION=<실행 시각>`: 사용자 페이지가 기억한 세대와 다르면 브라우저의 옛 등록·세션을 스스로 지운다(리셋마다 "모두 지우기"를 누르지 않게; 이 설정 이전에 등록한 브라우저만 처음 한 번 수동). ④ zkTWO 에 `MODE3_REQUIRE_DISCLOSURE=1`: 로그인 때 국가 집합·나이 술어를 서버가 요구한다(없으면 `predicate_unmet`) — zkONE 은 누구나. 그 밖에 RP 관리자 페이지의 거래 기록(`GET /api/mode3/txs`, 메모리만)·거래 해시 복사 버튼, RP 페이지의 "현재 잔액 확인"(옛 "출금 신청" 자리 — `body:'balance'` 세션 요청에 시연용 장부와 온체인 계정 잔액을 돌려준다), 사용자 페이지 세션 폐기 → RP 로그아웃 알림, RP 가 모르는 세션의 로그아웃도 묘비(사용자 페이지가 지운다).
 
 ```
 npx hardhat node                       # 이미 떠 있으면 생략

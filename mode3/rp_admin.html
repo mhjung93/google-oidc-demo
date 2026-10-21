@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="same-origin" />
+  <!-- RP 관리자 페이지(2026-10-16): 고객 페이지(rp.html)에 있던 운영 성격의 두 묶음 — 로그인 기록, 컴플라이언스 승인 개봉 — 을 여기로 옮겼다.
+       API 는 그대로다(/api/mode3/logins, /api/mode3/open). ?ppid= 로 열면 개봉 칸을 채운다. 제목은 renderBrand() 가 rp_info.name 으로 다시 쓴다. -->
+  <title>zkONE — 관리자</title>
+  <link rel="stylesheet" href="/common/demo.css" />
+  <link rel="stylesheet" href="/common/rp.css" />
+  <script src="/common/strings.js"></script>
+  <script src="/common/demo.js"></script>
+</head>
+<body data-page="rp_admin">
+  <header id="demoBar"></header>
+  <main class="cards">
+    <section class="card compliance-panel" id="adminHead">
+      <h2><span id="brandName">zkONE</span> — <span data-i18n="rp_admin_title">관리자</span></h2>
+      <p class="desc" data-i18n="rp_admin_desc">거래소 운영자용 화면입니다. 고객 페이지에는 보이지 않는 로그인 기록과 승인 개봉이 여기에 있습니다.</p>
+      <p><a id="customerLink" class="btn-ghost" href="/" data-i18n="rp_admin_customer_link">고객 페이지로</a></p>
+    </section>
+
+    <section class="card compliance-panel" id="loginsCard">
+      <div class="compliance-block">
+        <h3 data-i18n="rp_logins_title">로그인 기록</h3>
+        <p class="desc" data-i18n="rp_logins_desc">이 RP 에 남은 기록입니다. RP 는 누구인지 모르고 이 주소만 압니다.</p>
+        <p><button id="refreshLogins" class="btn-ghost" data-i18n="refresh">새로고침</button></p>
+        <div id="logins"></div>
+      </div>
+    </section>
+
+    <!-- 트랜잭션 기록(2026-10-21) — 이 RP 의 릴레이가 보낸 것(GET /api/mode3/txs, 메모리만). 해시 옆 ⧉ 로 복사해 아래 "해시로 요청" 에 쓸 수 있다. -->
+    <section class="card compliance-panel" id="txsCard">
+      <div class="compliance-block">
+        <h3 data-i18n="rp_txs_title">트랜잭션 기록</h3>
+        <p class="desc" data-i18n="rp_txs_desc">이 RP 의 릴레이가 사용자 대신 보낸 트랜잭션입니다. RP 는 계정 주소와 이 RP 에서의 주소만 압니다.</p>
+        <p><button id="refreshTxs" class="btn-ghost" data-i18n="refresh">새로고침</button></p>
+        <div id="txs"></div>
+      </div>
+    </section>
+
+    <!-- 승인 개봉 — 전문가 보기와 무관하게 늘 보인다(체험 모드 8단계 대상). 내부의 원문 로그·트랜잭션 안내만 전문가 보기 전용. -->
+    <section class="card compliance-panel" id="openCompliance">
+      <h2 data-i18n="rp_open_card_title">컴플라이언스 — 승인 개봉</h2>
+      <p class="desc" data-i18n="rp_open_desc">RP 와 IdP 가 함께, 운영자 승인 아래에서만 사용자를 알아냅니다.</p>
+      <p>
+        <label><span data-term="PPID">이 RP 에서의 내 주소</span> <input id="openPpid" size="24" /></label>
+        <button id="openBtn" data-i18n="rp_open_req">개봉 요청</button>
+        <button id="openPollBtn" class="btn-ghost" data-i18n="rp_open_poll">결과 확인</button>
+      </p>
+      <p>
+        <label><span data-i18n="rp_open_tx_label">트랜잭션 해시</span> <input id="openTx" size="66" placeholder="0x…" /></label>
+        <button id="openTxBtn" data-i18n="rp_open_tx">해시로 요청</button>
+      </p>
+      <p class="muted"><span data-term="tag">추적용 봉인</span> — <span data-i18n="rp_open_tag_note">로그인마다 함께 실린 추적용 봉인을 RP 와 IdP 가 함께 열어야 uid 가 나옵니다 — 어느 한쪽만으로는 열리지 않습니다.</span></p>
+      <p class="muted expert" data-i18n="rp_open_tx_note">트랜잭션은 사용자 페이지에서 보냅니다(설계 2026-09-16 §6).</p>
+      <div id="openVerdict"></div>
+      <pre id="openLog" class="expert">-</pre>
+    </section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    // /common 이 뜨지 않아도(404) 페이지는 HTML 의 한국어 기본 텍스트로 돈다(설계 §5) — rp.html 과 같은 대체물.
+    const Demo = window.Demo ?? {
+      lang: 'ko', expert: false,
+      t(k, vars = {}) { const e = window.DemoStrings?.ui?.[k]; let s = e ? e.ko : k; for (const [n, v] of Object.entries(vars)) s = s.split(`{${n}}`).join(String(v)); return s; },
+      term: (n) => window.DemoStrings?.terms?.[n]?.ko ?? n,
+      reason: () => null,
+      init() {}, guide() {}, setLang() {}, setExpert() {},
+      verdict(el, args) {
+        const { ok, title, summary, reason, detail, pending } = typeof args === 'function' ? args() : args;
+        el.className = `verdict ${pending ? 'pending' : ok ? 'ok' : 'bad'}`;
+        const d = detail === undefined ? null : (typeof detail === 'string' ? detail : JSON.stringify(detail));
+        el.textContent = [window.DemoStrings?.verdicts?.[title]?.ko ?? title, summary, reason, d].filter(Boolean).join(' — ');
+      },
+    };
+    const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) });
+    const tte = (el, k, vars) => { const s = Demo.t(k, vars); if (s !== k) el.textContent = s; };
+    const tt = (k, vars) => { const s = Demo.t(k, vars); return s === k ? '' : s; };
+    const termEl = (name) => { const e = document.createElement('span'); e.dataset.term = name; e.textContent = Demo.term(name); return e; };
+    function setVerdict(el, ok, title, extra = {}) {
+      Demo.verdict(el, () => ({ ok, title: window.DemoStrings?.verdicts?.[title] ? title : Demo.t(title), ...(typeof extra === 'function' ? extra() : extra) }));
+    }
+    const pendingVerdict = (el, key) => setVerdict(el, null, key, { pending: true });
+    const progress = { opened: false };
+    let info = null;   // rp_info(renderBrand 가 채운다) — 안내 바 링크·승인 상태에 쓴다
+    // 안내 바·체험 모드(2026-10-16): 이 페이지는 승인 개봉 단계의 당사자다. 다른 단계의 완료 신호는 상태 패널(지갑·IdP health)이 공통 레이어에 준다.
+    function renderGuide() {
+      const links = { rp: '/', wallet: info?.walletAgentOrigin ?? null, admin: info?.ciaUrl ? `${info.ciaUrl}/admin` : null, account: info?.ciaUrl ? `${info.ciaUrl}/account` : null };
+      if (Demo.tour?.enabled) { Demo.tour.evaluate({ progress: { approved: info?.status === 'approved', opened: progress.opened }, links }); return; }
+      const done = []; if (info?.status === 'approved') done.push('approve'); if (progress.opened) done.push('open');
+      Demo.guide({ done, current: progress.opened ? null : 'open', links });
+    }
+    let lastLogins = [];
+    const fmtAt = (at) => { const t = new Date(at); return Number.isNaN(t.getTime()) ? at : t.toLocaleString(Demo.lang === 'en' ? 'en-US' : 'ko-KR'); };
+    function discSummary(d) {
+      if (!d || (d.mask === '0' && !d.set)) return tt('rp_disc_none') || '공개 없음';
+      const parts = [];
+      const mask = Number(d.mask);
+      for (let i = 0; i < d.lo.length; i++) {
+        if (!(mask & (1 << i))) continue;
+        const attr = Demo.term(`attr${i}`);
+        parts.push(tt('rp_disc_range', { attr, lo: d.lo[i], hi: d.hi[i] }) || `${attr} ${d.lo[i]}–${d.hi[i]}`);
+      }
+      if (d.set) { const attr = Demo.term(`attr${Number(d.set.sel) - 1}`); parts.push(tt('rp_disc_set', { attr }) || `${attr} ∈ 허용 집합`); }
+      return parts.join(', ');
+    }
+    function renderLogins() {
+      const host = $('logins');
+      host.textContent = '';
+      if (!lastLogins.length) {
+        const p = document.createElement('p'); p.className = 'muted'; tte(p, 'rp_no_logins'); host.appendChild(p);
+        return;
+      }
+      const table = document.createElement('table');
+      table.className = 'list';
+      const head = table.createTHead().insertRow();
+      // r_s·root 는 예전 <pre> 목록에 있던 값이다 — 전문가 보기에서만 보이는 칸으로 남긴다(열 전체가 숨는다).
+      for (const c of [{ key: 'rp_col_time' }, { term: 'PPID' }, { key: 'rp_col_rs', expert: true }, { term: 'root', expert: true }, { key: 'rp_col_disclosure' }, { key: 'rp_col_agent' }, { key: 'rp_col_action' }]) {
+        const th = document.createElement('th');
+        if (c.expert) th.className = 'expert';
+        if (c.term) th.appendChild(termEl(c.term)); else tte(th, c.key);
+        head.appendChild(th);
+      }
+      const body = table.createTBody();
+      for (const l of lastLogins) {
+        const row = body.insertRow();
+        const at = row.insertCell(); at.textContent = fmtAt(l.at); at.title = l.at;
+        const addr = row.insertCell();
+        const code = document.createElement('code');
+        code.textContent = `${l.PPID.slice(0, 10)}…`;
+        if (Demo.expert) code.title = l.PPID;          // 전문가 보기에서만 전체 값을 붙인다
+        addr.appendChild(code);
+        const rs = row.insertCell(); rs.className = 'expert'; rs.textContent = l.r_s ?? '';
+        const root = row.insertCell(); root.className = 'expert'; root.textContent = `${l.root.slice(0, 18)}…`; root.title = l.root;
+        row.insertCell().textContent = discSummary(l.disclosure);
+        const agent = row.insertCell();
+        const b = document.createElement('span');
+        b.className = `badge ${l.allowAgent === '1' ? 'ok' : 'muted'}`;
+        tte(b, l.allowAgent === '1' ? 'rp_agent_yes' : 'rp_agent_no');
+        agent.appendChild(b);
+        const act = row.insertCell();
+        const btn = document.createElement('button');
+        btn.type = 'button'; btn.className = 'btn-ghost'; tte(btn, 'rp_open_req');
+        btn.addEventListener('click', () => { $('openPpid').value = l.PPID; $('openBtn').click(); });
+        act.appendChild(btn);
+      }
+      host.appendChild(table);
+    }
+    async function refreshLogins() {
+      const { logins } = await (await fetch('/api/mode3/logins')).json();
+      lastLogins = logins ?? [];
+      renderLogins();
+    }
+    // ---- 트랜잭션 기록(2026-10-21) ----
+    // 클립보드 API 는 보안 컨텍스트(https·localhost)에서만 있다 — VM 분리 데모처럼 http LAN 주소면 선택 복사로 대신한다(rp.html 과 같다).
+    async function copyText(text, btn) {
+      try { await navigator.clipboard.writeText(text); }
+      catch { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); } finally { ta.remove(); } }
+      const prev = btn.textContent; btn.textContent = tt('rp_copied') || '복사됨'; btn.classList.add('copied');
+      setTimeout(() => { btn.textContent = prev; btn.classList.remove('copied'); }, 1200);
+    }
+    let lastTxs = null;          // null = 이 RP 서버가 기록을 모른다(옛 서버 — 404)
+    let lastTxsKey = '';
+    const shortAddr = (a) => (typeof a === 'string' && a.length > 12 ? `${a.slice(0, 6)}…${a.slice(-4)}` : String(a ?? '-'));
+    function renderTxs() {
+      const host = $('txs');
+      host.textContent = '';
+      if (lastTxs === null || !lastTxs.length) {
+        const p = document.createElement('p'); p.className = 'muted'; tte(p, lastTxs === null ? 'rp_txs_unavailable' : 'rp_no_txs'); host.appendChild(p);
+        return;
+      }
+      const table = document.createElement('table');
+      table.className = 'list';
+      const head = table.createTHead().insertRow();
+      for (const c of [{ key: 'rp_col_time' }, { term: 'PPID' }, { key: 'rp_col_account' }, { key: 'rp_col_tx_content' }, { key: 'rp_col_status' }, { key: 'rp_col_txhash' }]) {
+        const th = document.createElement('th');
+        if (c.term) th.appendChild(termEl(c.term)); else tte(th, c.key);
+        head.appendChild(th);
+      }
+      const body = table.createTBody();
+      for (const x of [...lastTxs].reverse()) {   // 최근 것이 위
+        const row = body.insertRow();
+        const at = row.insertCell(); at.textContent = fmtAt(x.at); at.title = x.at;
+        const pp = row.insertCell(); const pc = document.createElement('code'); pc.textContent = `${String(x.PPID).slice(0, 10)}…`; if (Demo.expert) pc.title = x.PPID; pp.appendChild(pc);
+        const ac = row.insertCell(); const acc = document.createElement('code'); acc.textContent = shortAddr(x.account); acc.title = x.account ?? ''; ac.appendChild(acc);
+        row.insertCell().textContent = x.kind === 'claim' ? (tt('rp_tx_content_claim') || '조건 확인(AttrGate)') : (tt('rp_tx_content_transfer', { to: shortAddr(x.target), value: x.value }) || `${shortAddr(x.target)} 로 ${x.value} wei`);
+        const st = row.insertCell(); const b = document.createElement('span');
+        b.className = `badge ${x.status === 'success' ? 'ok' : x.status === 'failed' ? 'bad' : 'muted'}`; tte(b, `rp_tx_status_${x.status}`); if (!b.textContent) b.textContent = x.status; st.appendChild(b);
+        const hx = row.insertCell(); const hc = document.createElement('code'); hc.textContent = `${String(x.txHash).slice(0, 12)}…`; hc.title = x.txHash; hx.appendChild(hc);
+        const cb = document.createElement('button'); cb.type = 'button'; cb.className = 'copy-btn'; cb.textContent = '⧉'; cb.title = tt('copy_txhash_title') || '트랜잭션 해시 복사'; cb.setAttribute('aria-label', cb.title);
+        cb.addEventListener('click', () => copyText(x.txHash, cb)); hx.append(' ', cb);
+      }
+      host.appendChild(table);
+    }
+    /** 바뀐 게 있을 때만 다시 그린다 — 주기 새로고침이 복사 버튼의 "복사됨" 표시를 지우지 않게. */
+    async function refreshTxs({ force = false } = {}) {
+      let next = null;
+      try { const r = await fetch('/api/mode3/txs'); next = r.ok ? ((await r.json()).txs ?? []) : null; } catch { next = null; }
+      const key = JSON.stringify(next);
+      if (!force && key === lastTxsKey) return;
+      lastTxs = next; lastTxsKey = key; renderTxs();
+    }
+    let openingId = null;
+    /** 개봉 요청(PPID 또는 tx hash). 원문 로그는 지금처럼 #openLog 에 그대로 남긴다. */
+    async function requestOpening(body) {
+      pendingVerdict($('openVerdict'), 'working');
+      try {
+        const r = await post('/api/mode3/open', body);
+        const b = await r.json().catch(() => ({}));
+        $('openLog').textContent = `요청 → ${r.status} ${JSON.stringify(b)}`;
+        openingId = b.id ?? null;   // 결과 확인 버튼은 늘 활성(2026-10-16) — id 가 없으면 눌렀을 때 사유를 보인다
+        if (r.ok && openingId) setVerdict($('openVerdict'), true, 'rp_open_requested_title', () => ({ summary: tt('rp_open_requested') || '개봉 요청을 보냈습니다. IdP 관리자가 승인하면 "결과 확인"에서 볼 수 있습니다.', detail: b }));
+        else setVerdict($('openVerdict'), false, 'rp_open_failed', { reason: b.reason ?? b.error ?? `HTTP ${r.status}`, detail: b });
+      } catch (e) {
+        $('openLog').textContent = `요청 오류: ${e.message}`;
+        setVerdict($('openVerdict'), false, 'rp_open_failed', { summary: e.message, detail: e.message });
+      }
+    }
+    $('openBtn').addEventListener('click', () => requestOpening({ PPID: $('openPpid').value.trim() }));
+    $('openTxBtn').addEventListener('click', () => requestOpening({ txHash: $('openTx').value.trim() }));
+    $('openPollBtn').addEventListener('click', async () => {
+      // 버튼은 늘 활성(2026-10-16) — 아직 개봉을 요청하지 않았으면 그 사실을 말한다.
+      if (!openingId) { setVerdict($('openVerdict'), false, 'rp_open_failed', () => ({ summary: tt('rp_open_no_request') || '먼저 개봉을 요청하세요(PPID 또는 해시로)' })); return; }
+      pendingVerdict($('openVerdict'), 'working');
+      try {
+        const r = await fetch(`/api/mode3/open/${openingId}`);
+        const b = await r.json().catch(() => ({}));
+        $('openLog').textContent += `\n결과 → ${r.status} ${JSON.stringify(b)}`;
+        if (b.allowAgent != null) $('openLog').textContent += `\nAI agent ${b.allowAgent === '1' ? '허용됨' : '허용 안 됨'}`;
+        if (r.status === 202) { setVerdict($('openVerdict'), null, 'rp_open_awaiting', { pending: true, detail: b }); return; }
+        if (r.ok && b.uid) {
+          setVerdict($('openVerdict'), true, 'rp_open_result_title', () => ({
+            summary: tt('rp_open_result', { uid: b.uid, agent: tt(b.allowAgent === '1' ? 'rp_agent_yes' : 'rp_agent_no') || b.allowAgent }) || `uid=${b.uid}`, detail: b,
+          }));
+          progress.opened = true;
+          renderGuide();
+        } else setVerdict($('openVerdict'), false, 'rp_open_failed', { reason: b.reason ?? b.error ?? b.status ?? `HTTP ${r.status}`, detail: b });
+      } catch (e) {
+        $('openLog').textContent += `\n결과 오류: ${e.message}`;
+        setVerdict($('openVerdict'), false, 'rp_open_failed', { summary: e.message, detail: e.message });
+      }
+    });
+
+    $('refreshLogins').addEventListener('click', refreshLogins);
+    $('refreshTxs').addEventListener('click', () => refreshTxs({ force: true }));
+    // 상태(대기 → 성공)가 곧 바뀌므로 탭이 보일 때 3초마다 다시 읽는다(바뀐 게 없으면 다시 그리지 않는다).
+    setInterval(() => { if (!document.hidden) refreshTxs(); }, 3000);
+    async function renderBrand() {
+      try {
+        info = await (await fetch('/api/mode3/rp_info')).json();
+        const name = typeof info.name === 'string' && /^zk/i.test(info.name) ? info.name : 'zkONE';
+        $('brandName').textContent = name; document.title = `${name} — ${tt('rp_admin_title') || '관리자'}`;
+        // 상태 패널(설계 2026-09-25 §2) — 고객 페이지와 같은 상대(지갑·IdP)를 본다. 체험 모드의 단계 판정도 이 health 를 쓴다.
+        Demo.stack?.({ self: 'rp', urls: { wallet: info.walletAgentOrigin, aa: info.ciaUrl } });
+      } catch { /* 이름을 못 읽어도 기본값으로 둔다 */ }
+      renderGuide();
+    }
+    // ?ppid= 로 열렸으면(고객 페이지 로그인 기록 → 개봉) 칸을 채운다. 요청은 운영자가 버튼으로 낸다.
+    const pre = new URLSearchParams(location.search).get('ppid'); if (pre && /^[0-9]+$/.test(pre)) $('openPpid').value = pre;
+    for (const k of ['setLang', 'setExpert']) { const orig = Demo[k]; Demo[k] = (v) => { orig?.(v); renderLogins(); renderTxs(); }; }
+    Demo.init({ page: 'rp_admin' });   // 체험 모드 스위치·?tour=1 도 고객 페이지와 같게 동작한다(2026-10-16)
+    Demo.tour?.onToggle(renderGuide);
+    renderBrand(); refreshLogins(); refreshTxs({ force: true });
+  </script>
+</body>
+</html>

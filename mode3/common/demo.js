@@ -45,7 +45,9 @@
       const cur = S.steps.find((s) => s.key === g.current);
       if (cur) {
         const p = document.createElement('p'); p.className = 'hint'; p.textContent = cur[D.lang].hint; next.appendChild(p);
-        const whereKey = cur.where.includes(D.page) ? D.page : cur.where[0];
+        // login2(U6): where 가 'rp' 하나뿐이라 일반 규칙(cur.where.includes(D.page))은 첫 RP 도 "내 차례"로 오판한다 —
+        // 두 번째 RP 가 아니면 'rp2'(다른 창) 취급한다(D.tour.secondRp, RP 페이지가 evaluate() 로 알려 준 값).
+        const whereKey = (cur.key === 'login2' && D.page === 'rp' && !D.tour.secondRp) ? 'rp2' : (cur.where.includes(D.page) ? D.page : cur.where[0]);
         const q = document.createElement('p'); q.className = 'next';
         q.textContent = D.t('bar_next', { where: D.t(`where_${whereKey}`), what: D.t(g.hint || `hint_${cur.key}`) }); next.appendChild(q);
         // 이 페이지에서 끝나는 단계가 아니면 "다른 창에서 진행"을 함께 보인다(설계 §2.1).
@@ -103,7 +105,13 @@
      * 단계 판정은 서버 사실(Demo.stack 의 health)과 페이지 메모리(progress)를 합쳐 여기 한 곳에서 한다.
      */
     tour: {
-      enabled: false, locks: [], lastEval: null, lastRender: null, anchor: null, mode: 'below', epochRose: false, openingsDrained: false, started: false,
+      // secondRp: login2 단계(두 번째 RP 로그인, U6) 전용 — RP 페이지가 evaluate() 호출마다 "나는 지갑이 아는
+      // rpOrigins 의 두 번째 RP 인가"를 넘겨준다. where 가 'rp' 하나뿐이라 일반 규칙(cur.where.includes(D.page))만으로는
+      // 첫 RP 와 두 번째 RP 를 가르지 못해, 이 값만 따로 기억해 둔다(설계: 아래 guide/renderOverlay/renderCard).
+      enabled: false, locks: [], lastEval: null, lastRender: null, anchor: null, mode: 'below', epochRose: false, openingsDrained: false, started: false, secondRp: false,
+      // 2026-10-15: 페이지가 앵커 id 를 바꿔치기할 수 있는 작은 훅(예: 로그인 모달이 열려 있으면 loginBtn 대신
+      // 모달 안의 idpLoginBtn 을 가리킨다). 기본은 아무것도 바꾸지 않는다(null).
+      anchorOverride: null,
       init() {
         if (D.tour.started) return;
         D.tour.started = true;
@@ -172,6 +180,8 @@
         const l = D.stack.last; if (!l || l.at === 0) return null;
         if (cond === 'rp_approved') return l.rp ? l.rp.status === 'approved' : null;
         if (cond === 'wallet_registered') return l.wallet ? !!l.wallet.registered : null;
+        // login2(U6): 지갑 health 의 rpCount(서로 다른 arid 의 세션 수) ≥ 2 — 두 RP 에 로그인했다는 서버 사실.
+        if (cond === 'two_rps') return l.wallet ? Number(l.wallet.rpCount ?? 0) >= 2 : null;
         if (!l.rp && !l.wallet) return null;
         if (cond === 'has_session') return (l.wallet?.sessions ?? 0) > 0 || (l.rp?.sessions ?? 0) > 0;
         // 4·5단계는 서버의 프로세스 안 카운터로도 본다 — 관리자·계정 페이지에는 이용·공개의 페이지 메모리가 없다.
@@ -180,14 +190,16 @@
         return null;
       },
       /** 페이지의 renderGuide 가 부른다 — done/current 를 여기서 계산해 안내 바·잠금·말풍선을 한꺼번에 맞춘다. */
-      evaluate({ progress = {}, links } = {}) {
-        D.tour.lastEval = { progress, links };
+      evaluate({ progress = {}, links, secondRp } = {}) {
+        D.tour.lastEval = { progress, links, secondRp };
+        D.tour.secondRp = !!secondRp;    // login2(U6) 전용 — 호출 페이지가 "나는 두 번째 RP 인가"를 알려 온 값
         const l = D.stack.last, done = [];
         // 상대 서버에 닿지 못하면 health 판정은 null 이다 — 그때도 페이지가 자기 눈으로 본 사실(progress)이 있으면
         // 그 단계는 done 이다(1차의 판정 근거). 잠금은 이 값을 쓰지 않는다(설계 §3.2 "모르면 잠그지 않는다").
         if (D.tour.condMet('rp_approved') || progress.approved) done.push('approve');
         if (D.tour.condMet('wallet_registered') || progress.registered) done.push('register');
         if (D.tour.condMet('has_session') || progress.login) done.push('login');
+        if (progress.login2 || D.tour.condMet('two_rps')) done.push('login2');
         if (progress.used || D.tour.condMet('used')) done.push('use');
         if (progress.disclosed || D.tour.condMet('disclosed')) done.push('disclose');
         if (progress.revoked || (l?.aa?.pendingLeaves ?? 0) > 0 || D.tour.epochRose) done.push('revoke');
@@ -200,7 +212,8 @@
         D.tour.renderOverlay(current, done.length === order.length, lk);
         return true;
       },
-      /** 잠긴 버튼은 disabled + 사유 배지. 체험 모드가 꺼져 있거나 조건을 모르면 페이지의 원래 규칙으로 돌린다. */
+      /** 잠긴 단계는 사유 배지만 보인다 — 버튼은 **비활성화하지 않는다**(2026-10-16: 이전 단계가 안 됐어도 모든 버튼은 눌릴 수 있고,
+       *  안 되는 이유는 결과 카드가 말한다). 체험 모드가 꺼져 있거나 조건을 모르면 배지도 없다. otherwise 는 호환용으로 받기만 한다. */
       applyLocks() {
         for (const { id, cond, otherwise } of D.tour.locks) {
           const el = document.getElementById(id); if (!el) continue;
@@ -208,7 +221,7 @@
           if (el.dataset.tourBusy === '1') continue;
           const met = D.tour.enabled ? D.tour.condMet(cond) : true;
           const locked = D.tour.enabled && met === false;
-          el.disabled = locked ? true : !(otherwise ? otherwise() : true);
+          el.disabled = false;
           let badge = el.parentElement?.querySelector(`:scope > .tour-lock[data-for="${id}"]`) ?? null;
           if (locked) {
             if (!badge) { badge = document.createElement('span'); badge.className = 'tour-lock badge warn'; badge.dataset.for = id; el.after(badge); }
@@ -224,7 +237,11 @@
         const bubble = document.getElementById('tourBubble'), card = document.getElementById('tourCard');
         if (!D.tour.enabled) { bubble?.remove(); card?.remove(); D.tour.anchor = null; return; }
         const step = S.steps.find((s) => s.key === current) ?? null;
-        const targetId = allDone ? null : (step?.target?.[D.page] ?? null);
+        // login2(U6): 두 번째 RP 가 아니면 이 페이지에 대상이 없는 것으로 다룬다 — 아래 renderCard 가 "다른 창에서" 카드를 그린다.
+        const hereTarget = (step?.key === 'login2' && D.page === 'rp' && !D.tour.secondRp) ? null : (step?.target?.[D.page] ?? null);
+        const target0 = allDone ? null : hereTarget;
+        // anchorOverride(2026-10-15): 페이지가 열어 둔 것(예: 로그인 모달)이 있으면 그 안의 요소를 대신 가리킨다.
+        const targetId = (target0 && typeof D.tour.anchorOverride === 'function') ? (D.tour.anchorOverride(target0) || target0) : target0;
         let el = targetId ? document.getElementById(targetId) : null;
         if (el && el.offsetParent === null) el = null;             // 숨겨진 대상(다른 모드의 카드 등)에는 붙이지 않는다 — 화면 구석에 뜬다
         if (!el) { bubble?.remove(); D.tour.anchor = null; D.tour.renderCard(allDone, step, links); return; }
@@ -237,7 +254,7 @@
         D.tour.anchor = el;
         D.tour.place(true);
       },
-      /** 안내 바 아래 카드 — 지금 할 일이 다른 창에 있거나(링크 포함) 7단계를 다 마쳤을 때. */
+      /** 안내 바 아래 카드 — 지금 할 일이 다른 창에 있거나(링크 포함) 8단계를 다 마쳤을 때. */
       renderCard(allDone, step, links) {
         const bar = document.getElementById('demoBar');
         if (!bar || (!allDone && !step)) { document.getElementById('tourCard')?.remove(); return; }
@@ -248,8 +265,9 @@
         const body = document.createElement('p');
         if (allDone) { title.textContent = D.t('tour_done_title'); body.textContent = D.t('tour_done_body'); c.append(title, body); return; }
         const txt = step.tour[D.lang] ?? step.tour.ko;
-        // 대상이 정해진 당사자 중 이 페이지가 아닌 첫 번째. 링크를 모르면 문구만 남는다.
-        const whereKey = step.where.find((w) => w !== D.page && step.target?.[w]) ?? step.where.find((w) => w !== D.page) ?? step.where[0];
+        // login2(U6): where 가 'rp' 하나뿐이라 일반 규칙(자기 페이지가 아닌 첫 당사자)으로는 "두 번째 RP"를 못 고른다 — 고정값 'rp2'.
+        // 그 밖에는 대상이 정해진 당사자 중 이 페이지가 아닌 첫 번째다. 링크를 모르면 문구만 남는다.
+        const whereKey = step.key === 'login2' ? 'rp2' : (step.where.find((w) => w !== D.page && step.target?.[w]) ?? step.where.find((w) => w !== D.page) ?? step.where[0]);
         title.textContent = txt.title;
         body.textContent = D.t('tour_elsewhere', { where: D.t(`where_${whereKey}`) });
         c.append(title, body);

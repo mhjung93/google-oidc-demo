@@ -23,6 +23,8 @@ const envBig = (k, d) => { const v = process.env[k]; return v === undefined || v
 const TTL_BLOCKS = envBig('MODE3_TTL_BLOCKS', 300), HEIGHT_GRID = envBig('MODE3_HEIGHT_GRID', 100);
 const PK_CIA = process.env.MODE3_PK_CIA_X && process.env.MODE3_PK_CIA_Y ? { x: process.env.MODE3_PK_CIA_X, y: process.env.MODE3_PK_CIA_Y } : null;
 const RELAY_PATH = process.env.MODE3_RELAY_PATH || '/api/mode3/relay';
+// 데모 세대(2026-10-21): 리셋 스크립트가 올리는 값. 사용자 페이지는 기억한 값과 다르면 이 브라우저의 옛 등록·세션을 스스로 지운다 — **데모 전용**(없으면 아무 일도 없다).
+const DEMO_GENERATION = process.env.MODE3_DEMO_GENERATION || null;
 const DIST = path.join(__dirname, 'mode3', 'user', 'dist');
 if (!fs.existsSync(path.join(DIST, 'user.js'))) { console.error('mode3/user/dist/user.js 가 없다 — npm run user:build 먼저'); process.exit(1); }
 const ZK = {
@@ -58,7 +60,7 @@ app.get('/zk/:name', (req, res) => {
   res.set('Cache-Control', 'public, max-age=31536000, immutable');
   res.sendFile(path.join(__dirname, rel), (err) => { if (err && !res.headersSent) res.status(err.statusCode === 404 ? 404 : 500).json({ reason: err.statusCode === 404 ? 'zk_assets_unavailable' : 'internal' }); });
 });
-app.get('/user/config', (req, res) => res.json({ secrets: 'web', walletOrigin: WALLET_ORIGIN, ciaUrl: CIA_URL, rpcUrl: RPC_URL, revRpcUrl: REV_RPC, chainId, logAddress: LOG_ADDRESS, mirrorAddress: MIRROR_ADDRESS, ttlBlocks: TTL_BLOCKS, heightGrid: HEIGHT_GRID, rpOrigins: RP_ORIGINS, pkCia: PK_CIA, relayPath: RELAY_PATH }));
+app.get('/user/config', (req, res) => res.json({ secrets: 'web', walletOrigin: WALLET_ORIGIN, ciaUrl: CIA_URL, rpcUrl: RPC_URL, revRpcUrl: REV_RPC, chainId, logAddress: LOG_ADDRESS, mirrorAddress: MIRROR_ADDRESS, ttlBlocks: TTL_BLOCKS, heightGrid: HEIGHT_GRID, rpOrigins: RP_ORIGINS, pkCia: PK_CIA, relayPath: RELAY_PATH, demoGeneration: DEMO_GENERATION }));
 app.get('/wallet/config', configCors, (req, res) => res.json({ secrets: 'web', snapId: null, walletOrigin: WALLET_ORIGIN, rpcUrl: RPC_URL, chainId }));
 const HEALTH_ALLOW = originList(RP_ORIGINS, CIA_URL);
 app.get('/mode3/health', async (req, res) => {

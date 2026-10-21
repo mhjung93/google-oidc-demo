@@ -9,7 +9,6 @@ import { $, mountUi, publicMeta, textKit } from './ui.js';
 import { runPopup, failPopup } from './popup.js';
 
 const IS_AUTHORIZE = new URLSearchParams(location.search).get('authorize') === '1';
-const OIDC_CONFIG_TIMEOUT_MS = 3000;   // IdP 의 public_keys.oidc 를 기다리는 한도
 // 뷰 전환은 설정을 기다리지 않는다 — 쿼리만 보면 알 수 있다(팝업에 사용자 화면이 비치지 않게 가장 먼저).
 if (IS_AUTHORIZE) { $('mainView').hidden = true; $('authorizeView').hidden = false; }
 
@@ -38,8 +37,7 @@ function fatal(reason, detail) {
     failPopup({ reason, detail });
     return;
   }
-  setVerdict($('registerResult'), false, 'error_title', { reason, detail });
-  $('registerBtn').disabled = true;
+  setVerdict($('registerResult'), false, 'error_title', { reason, detail });   // 버튼은 그대로 활성(2026-10-16) — 다시 눌러 재시도할 수 있다
 }
 
 async function main() {
@@ -63,16 +61,20 @@ async function main() {
   // 코어의 로그는 처리되지 않은 오류의 stack 뿐이다(비밀은 실리지 않는다 — 같은 메시지가 응답의 detail 로도 나간다).
   const core = createUserCore({ kv, config, provider, canonProvider, fullProve: prover.fullProve, log: (m) => console.warn(m) });
   const meta = publicMeta(kv);
-  // Google(OIDC 래퍼, 스펙 2026-10-16 §2) 설정은 IdP 의 공개 키 응답에서 직접 읽는다 — 정적 서버가 중계하면 IdP 가 늦게 뜰 때 꺼진 채로 굳는다.
-  // 응답이 늦어도 승인 창·화면이 묶이지 않게 짧게 기다린다(못 받으면 꺼진 것으로 본다).
-  let oidc = { enabled: false };
-  try {
-    const k = await Promise.race([core.idp.publicKeys(), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), OIDC_CONFIG_TIMEOUT_MS))]);
-    if (k?.status === 200 && k.body?.oidc) oidc = k.body.oidc;
-  } catch { /* IdP 가 죽어 있으면 Google 버튼만 숨는다 — 나머지 화면은 그대로 */ }
-  if (IS_AUTHORIZE) return runPopup({ core, config, Demo, meta, oidc });
+  // 데모 세대(2026-10-21, 사용자 결정 "3번"): 리셋 스크립트가 /user/config.demoGeneration 을 올린다. 기억한 번호와 다르면 이 브라우저의 옛 등록·세션을
+  // 스스로 지운다 — 리셋마다 "모두 지우기"를 누르지 않게. **데모 전용**: 서버 설정값 하나로 브라우저의 비밀이 지워지는 셈이라 실제 배포에서는 켜면 안 된다
+  // (설정이 없으면 아무것도 하지 않는다). 번호를 처음 보는 브라우저는 지우지 않고 기억만 한다(옛 등록은 사람이 한 번 지운다).
+  let demoReset = false;
+  if (config.demoGeneration) {
+    try {
+      const seen = await kv.get('demoGeneration');
+      if (seen && seen !== config.demoGeneration) { await core.wipe(); demoReset = true; }
+      await kv.set('demoGeneration', config.demoGeneration);
+    } catch { /* 저장소 오류면 그대로 진행 — 수동 "모두 지우기"가 남아 있다 */ }
+  }
+  if (IS_AUTHORIZE) return runPopup({ core, config, Demo, meta });
   // 상태 패널(설계 2026-09-25 §2) — 에이전트 페이지의 syncStack 자리. 신원 기관·첫 RP 주소는 설정이 안다.
   Demo.stack?.({ self: 'wallet', urls: { aa: config.ciaUrl, rp: config.rpOrigins?.[0] } });
-  return mountUi({ core, prover, config, Demo, meta, oidc });
+  return mountUi({ core, prover, config, Demo, meta, demoReset });
 }
 main().catch((e) => { console.error(e); fatal('internal', e?.message ?? String(e)); });

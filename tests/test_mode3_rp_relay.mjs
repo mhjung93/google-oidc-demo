@@ -41,6 +41,16 @@ try {
     assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.body.deployed, false);
     assert.equal((await waitReceipt(r.body.txHash)).status, 1);
   });
+  await t('기록(2026-10-21): GET /api/mode3/txs 가 릴레이한 두 건을 보낸 순서대로 담고, 영수증 뒤 상태가 success 다', async () => {
+    let txs = []; const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) { txs = (await rp.get('/api/mode3/txs')).body.txs; if (txs.length >= 2 && txs.slice(0, 2).every((x) => x.status !== 'pending')) break; await new Promise((r) => setTimeout(r, 200)); }
+    assert.ok(txs.length >= 2, JSON.stringify(txs));
+    for (const x of txs.slice(0, 2)) {
+      assert.match(x.txHash, /^0x[0-9a-f]{64}$/); assert.match(x.account, /^0x[0-9a-fA-F]{40}$/); assert.match(x.PPID, /^[0-9]+$/);
+      assert.equal(x.status, 'success', JSON.stringify(x)); assert.ok(['transfer', 'claim'].includes(x.kind)); assert.equal(typeof x.blockNumber, 'number');
+    }
+    assert.match(txs[0].deployTxHash, /^0x[0-9a-f]{64}$/, '첫 건은 계정 배포가 함께 있었다'); assert.equal(txs[1].deployTxHash, null);
+  });
   await t('음성: value 가 0 이 아니면·to 가 주소가 아니면·data 가 hex 가 아니면 400 relay_bad_calldata', async () => {
     const p = (await prepare()).body;
     for (const b of [{ to: p.walletAddr, data: p.calldata, value: '1' }, { to: 'nope', data: p.calldata }, { to: p.walletAddr, data: 'zz' }]) { const r = await relay(b); assert.equal(r.status, 400, JSON.stringify(b).slice(0, 60)); assert.equal(r.body.reason, 'relay_bad_calldata'); }

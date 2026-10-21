@@ -124,7 +124,7 @@ async function captureAll(context, stack) {
   console.log('재검증…');
   await rpPage.click('#revalidateBtn');
   await waitText(rpPage, '#sessionVerdict', '재검증 성공');
-  await rpPage.click('#refreshLogins');
+  // 2026-10-16: 로그인 기록은 RP 관리자 페이지(/admin)로 옮겨 갔다 — 고객 페이지 캡처에는 없다.
   await rpPage.waitForTimeout(500);
 
   // ---- 지갑: 트랜잭션 한 건 — 폼 기본값은 AttrGate.claim() 이라 공개 조건(나이·국가 집합)을 채워야 내부 호출이
@@ -168,8 +168,7 @@ async function captureTour(context, stack) {
   // ---- RP: 지갑 등록 전이라 로그인 버튼이 잠긴 화면 ----
   const rpPage = await context.newPage();
   await rpPage.goto(`${rp.base}/?tour=1`);
-  await rpPage.waitForFunction(() => document.querySelector('#loginBtn')?.disabled === true, undefined, { timeout: 30_000 });
-  await rpPage.waitForSelector('.tour-lock', { timeout: 30_000 });
+  await rpPage.waitForSelector('.tour-lock', { timeout: 30_000 });   // 2026-10-16: 잠금은 배지만, 버튼은 활성
   await rpPage.waitForTimeout(300);
   await shot(rpPage, 'rp-tour-locked');
 

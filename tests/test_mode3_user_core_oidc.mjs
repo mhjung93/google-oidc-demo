@@ -59,7 +59,9 @@ try {
     const r = await core.completeRegistration({ idToken: await stub.mint({ sub: 'google-user-78', nonce: p.nonce }), profile: { birthYear: '1991', country: 'KR' }, vaultPassword: PW });
     assert.equal(r.status, 201, j(r.body));
     const ch = (await rp.post('/api/mode3/challenge')).body;
-    const lg = await core.login({ arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s: ch.r_s, r_rp: ch.r_rp, allowAgent: '0', factoryAddress: info.factoryAddress, attrGateAddress: info.attrGateAddress }, { verifiedOrigin: info.origin });
+    // 2026-10-16: Google 로 만든 계정은 로그인(발급)마다 그 로그인에 묶인 토큰이 필요하다 — loginPrepare 의 nonce 로 받는다.
+    const prep = await core.loginPrepare({ arid: info.arid, r_rp: ch.r_rp });
+    const lg = await core.login({ arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s: ch.r_s, r_rp: ch.r_rp, allowAgent: '0', factoryAddress: info.factoryAddress, attrGateAddress: info.attrGateAddress }, { verifiedOrigin: info.origin, idToken: await stub.mint({ sub: 'google-user-78', nonce: prep.body.nonce }) });
     assert.equal(lg.status, 200, j(lg.body));
     assert.equal((await rp.post('/api/mode3/login', { proof: lg.body.proof, publicSignals: lg.body.publicSignals, sig: lg.body.sig, r_s: ch.r_s })).body.ok, true);
   });
@@ -87,6 +89,35 @@ try {
     await core.wipe();
     const r = await core.register({ uid: '12345', pwd: 'password123', vaultPassword: PW }); assert.equal(r.status, 201, j(r.body));
     assert.equal((await kv.get('registration')).provider, 'demo'); assert.equal((await core.status()).body.provider, 'demo');
+  });
+  await t('RP 로그인 흐름의 Google(2026-10-16): 미등록 브라우저 → loginPrepare(nonce) → 토큰 → login({ idToken }) 이 IdP 에 암묵 등록 + 발급 → RP 로그인 ok; 토큰 없는 재로그인은 oidc_required; nonce 가 다른 토큰은 oidc_nonce_mismatch', async () => {
+    await core.wipe();
+    const SUBG = 'g-login-77';
+    const ch1 = (await rp.post('/api/mode3/challenge')).body;
+    const body1 = { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s: ch1.r_s, r_rp: ch1.r_rp, allowAgent: '0', factoryAddress: info.factoryAddress, attrGateAddress: info.attrGateAddress };
+    const prep = await core.loginPrepare({ arid: info.arid, r_rp: ch1.r_rp });
+    assert.equal(prep.status, 200, j(prep.body)); assert.equal(prep.body.registered, false); assert.match(prep.body.nonce, /^issue:[0-9a-f]{64}$/);
+    const tok = await stub.mint({ sub: SUBG, nonce: prep.body.nonce });
+    const lg = await core.login(body1, { verifiedOrigin: info.origin, serviceName: 'zkONE', idToken: tok });
+    assert.equal(lg.status, 200, j(lg.body));
+    assert.equal((await rp.post('/api/mode3/login', { proof: lg.body.proof, publicSignals: lg.body.publicSignals, sig: lg.body.sig, r_s: ch1.r_s })).body.ok, true);
+    const st = (await core.status()).body;
+    assert.equal(st.registered, true); assert.equal(st.provider, stub.provider); assert.equal(st.uid, uidOf(stub.provider, SUBG)); assert.ok(Number.isInteger(st.slot) && st.slot >= 0, j(st.slot));
+    const reg = await kv.get('registration'); assert.equal(reg.pendingIdp, false); assert.ok(!('s_u' in reg) && !('sk_u' in reg));
+    // 토큰 없이 다시 로그인 → 래퍼가 거절(oidc_required)
+    const ch2 = (await rp.post('/api/mode3/challenge')).body;
+    const body2 = { ...body1, r_s: ch2.r_s, r_rp: ch2.r_rp };
+    const noTok = await core.login(body2, { verifiedOrigin: info.origin });
+    assert.equal(noTok.status, 401, j(noTok.body)); assert.equal(noTok.body.reason, 'oidc_required');
+    // nonce 가 다른 토큰(다른 로그인의 것) → oidc_nonce_mismatch
+    const bad = await core.login(body2, { verifiedOrigin: info.origin, idToken: tok });
+    assert.equal(bad.status, 400, j(bad.body)); assert.equal(bad.body.reason, 'oidc_nonce_mismatch');
+    // 이 로그인의 nonce 로 받은 토큰 → ok(같은 PPID)
+    const prep2 = await core.loginPrepare({ arid: info.arid, r_rp: ch2.r_rp }); assert.equal(prep2.body.registered, true);
+    const ok2 = await core.login(body2, { verifiedOrigin: info.origin, idToken: await stub.mint({ sub: SUBG, nonce: prep2.body.nonce }) });
+    assert.equal(ok2.status, 200, j(ok2.body));
+    const v2 = await rp.post('/api/mode3/login', { proof: ok2.body.proof, publicSignals: ok2.body.publicSignals, sig: ok2.body.sig, r_s: ch2.r_s }); assert.equal(v2.body.ok, true, j(v2.body));
+    const sessions = (await core.status()).body.sessions; const ppids = new Set(Object.values(sessions).map((s) => s.PPID)); assert.equal(ppids.size, 1, 'Google 계정의 PPID 는 로그인마다 같다');
   });
 } finally { await stack.stop(); }
 process.exit(fails ? 1 : 0);

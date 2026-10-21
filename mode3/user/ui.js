@@ -3,7 +3,6 @@
 // MetaMask·Snap 코드는 없다. 비밀(s_u·sk_u·blind_u·세션 개인키·금고 비밀번호·secrets 암호문)은 DOM·localStorage·로그·postMessage 에
 // 넣지 않는다 — 코어 응답은 에이전트와 같은 모양이라 비밀이 실리지 않고, safeDetail 이 한 번 더 거른다. 비밀번호 입력칸은 읽자마자 비운다.
 import { ZK_CACHE_NAME } from '../../lib/browser/zk_assets.js';
-import { newRevokeNonce } from '../../lib/mode3_oidc_nonce.js';
 export const $ = (id) => document.getElementById(id);
 
 /** 사전 도우미(wallet.html 의 tte·tt·setVerdict·pendingVerdict 와 같다). */
@@ -50,43 +49,10 @@ export function publicMeta(kv) {
  * 취소하면 423 결과에 cancelled:true 를 붙여 돌려준다 — 화면은 그 동작의 결과 카드에 locked 로, 승인 창은 user_denied 로 보인다.
  * 비밀번호는 읽자마자 입력칸에서 지운다. 해제 상태는 IndexedDB 로 공유된다(계획 R3) — 다른 탭은 다음 status() 에서 본다.
  */
-export function createUnlocker({ core, Demo }) {
-  const { setVerdict } = textKit(Demo);
-  let pending = null;
-  function ask() {
-    if (pending) return pending;
-    pending = new Promise((resolve) => {
-      const modal = $('unlockModal'), pw = $('unlockPw'), go = $('unlockGo'), cancel = $('unlockCancel'), verdict = $('unlockVerdict');
-      verdict.textContent = ''; verdict.className = '';
-      pw.value = ''; modal.hidden = false; pw.focus();
-      const done = (ok) => {
-        modal.hidden = true; pw.value = '';
-        go.removeEventListener('click', onGo); cancel.removeEventListener('click', onCancel); pw.removeEventListener('keydown', onKey);
-        pending = null; resolve(ok);
-      };
-      async function onGo() {
-        const v = pw.value; pw.value = '';
-        if (!v || go.disabled) return;
-        go.disabled = true;
-        try {
-          if (await core.vault.unlock(v)) { done(true); return; }
-          setVerdict(verdict, false, 'user_unlock_failed', { reason: 'bad_password' });
-        } catch (e) { setVerdict(verdict, false, 'user_unlock_failed', { reason: 'storage_unavailable', detail: e.message }); }
-        finally { go.disabled = false; }
-      }
-      const onCancel = () => done(false);
-      const onKey = (ev) => { if (ev.key === 'Enter') onGo(); else if (ev.key === 'Escape') onCancel(); };
-      go.addEventListener('click', onGo); cancel.addEventListener('click', onCancel); pw.addEventListener('keydown', onKey);
-    });
-    return pending;
-  }
-  async function withUnlock(fn) {
-    const r = await fn();
-    if (r?.status !== 423) return r;
-    if (!(await ask())) return { ...r, cancelled: true };
-    return fn();
-  }
-  return { withUnlock, ask };
+/** 2026-10-16: 금고 비밀번호·잠금 해제 창을 없앴다(자동 금고). 호환을 위해 같은 모양을 돌려준다 — withUnlock 은 그냥 fn 을 부른다.
+ *  옛 비밀번호 금고가 잠겨 있으면(423) 그 결과가 그대로 화면에 간다("모두 지우기" 뒤 다시 등록하면 자동 금고가 된다). */
+export function createUnlocker() {
+  return { withUnlock: (fn) => fn(), ask: async () => false };
 }
 
 /** 입력칸 하나짜리 비밀번호 창(자기 폐기). 값을 돌려주고 입력칸은 비운다. 취소면 null. */
@@ -107,7 +73,7 @@ function askSecret({ modalId, inputId, goId, cancelId }) {
 }
 
 /** oidc: IdP 의 public_keys.oidc({ enabled, provider, clientId, issuer }) — user.js 가 읽어 넘긴다. 못 읽으면 기본값(꺼짐)이라 Google 버튼만 숨는다. */
-export function mountUi({ core, prover, config, Demo, meta, oidc = { enabled: false } }) {
+export function mountUi({ core, prover, config, Demo, meta, demoReset = false }) {
   const { tte, tt, setVerdict, pendingVerdict } = textKit(Demo);
   const { withUnlock, ask: askUnlock } = createUnlocker({ core, Demo });
   // /wallet/config 대신 /user/config(같은 오리진). minAge·allowedCountries 는 없다 — claim 버튼이 기본값으로 대신한다(에이전트와 같다).
@@ -189,7 +155,8 @@ export function mountUi({ core, prover, config, Demo, meta, oidc = { enabled: fa
   function renderGuide() {
     const s = lastStatus;
     const sessions = s ? Object.keys(s.sessions ?? {}).length : 0;
-    const links = { admin: s?.ciaUrl ? `${s.ciaUrl}/admin` : null, account: s?.ciaUrl ? `${s.ciaUrl}/account` : null };
+    // 안내 바 링크(2026-10-16 복원): 에이전트 페이지처럼 RP1·RP2 도 넣는다 — 설정의 rpOrigins(첫 RP, 두 번째 RP).
+    const links = { rp: cfg.rpOrigins?.[0] ?? null, rp2: cfg.rpOrigins?.[1] ?? null, admin: s?.ciaUrl ? `${s.ciaUrl}/admin` : null, account: s?.ciaUrl ? `${s.ciaUrl}/account` : null };
     if (Demo.tour?.enabled) { Demo.tour.evaluate({ progress: { registered: !!s?.registered, login: sessions > 0, used: progress.txOk, disclosed: progress.disclosed, revoked: progress.revoked }, links }); return; }
     const done = [];
     if (s?.registered) done.push('register');
@@ -255,7 +222,6 @@ export function mountUi({ core, prover, config, Demo, meta, oidc = { enabled: fa
     $('aaInfo').textContent = s?.ciaUrl || tt('wallet_aa_none') || '-';
     // 등록 폼은 미등록일 때만 펼친다(설계 §4.1).
     $('fileRegFields').hidden = Boolean(s?.registered);
-    renderGoogleRegister();
     // 등록부 확인 줄(V9 §8.2).
     const rg = s?.registry ?? null;
     const rb = $('registryBadge');
@@ -267,6 +233,53 @@ export function mountUi({ core, prover, config, Demo, meta, oidc = { enabled: fa
   }
 
   // ---- 로그인 세션 카드 + 트랜잭션 세션 선택 ----
+  /** 세션의 서비스 표기 — "zkONE(8674…)"(2026-10-16): 로그인 때 RP 가 보낸 이름(팝업이 오리진 대조 뒤 저장) + arid 앞 4자리. 이름이 없으면 오리진 host, 그것도 없으면 arid. */
+  function rpLabel(c) {
+    const a4 = `${String(c.arid ?? '').slice(0, 4)}…`;
+    if (c.serviceName) return `${c.serviceName}(${a4})`;
+    try { if (c.origin) return `${new URL(c.origin).host}(${a4})`; } catch { /* 오리진이 이상하면 arid 로 */ }
+    return shortCode(c.arid, 8);
+  }
+  /** 보낸 트랜잭션 목록(2026-10-16) — 코어 status().txs(최신순). 해시는 앞부분만 보이고 title 에 전체. */
+  // 거래 해시 복사(2026-10-21). 이 페이지는 localhost(보안 컨텍스트)라 보통 클립보드 API 가 되지만, 막히면 선택 복사로 대신한다.
+  async function copyText(text, btn) {
+    try { await navigator.clipboard.writeText(text); }
+    catch { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); } finally { ta.remove(); } }
+    const prev = btn.textContent; btn.textContent = tt('rp_copied') || '복사됨'; btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = prev; btn.classList.remove('copied'); }, 1200);
+  }
+  let lastTxsKey = null;
+  function renderTxs() {
+    const host = $('txsList'); if (!host) return;
+    const txs = lastStatus?.txs ?? [];
+    // 2초 새로고침마다 같은 표를 다시 그리면 복사 버튼의 "복사됨" 표시가 바로 지워진다 — 바뀐 게 있을 때만 그린다.
+    const key = JSON.stringify([txs, Demo.lang, Demo.expert]);
+    if (key === lastTxsKey) return;
+    lastTxsKey = key;
+    host.textContent = '';
+    if (!txs.length) { const p = document.createElement('p'); p.className = 'muted'; p.textContent = tt('wallet_txs_none') || '보낸 트랜잭션이 없습니다.'; host.appendChild(p); return; }
+    const table = document.createElement('table'); table.className = 'list';
+    const head = table.createTHead().insertRow();
+    for (const [k, fb] of [['wallet_col_time', '시각'], ['wallet_col_rp', '서비스'], ['wallet_col_account', '내 주소'], ['wallet_col_to', '받는 주소'], ['wallet_col_value', '금액(wei)'], ['wallet_col_tx', '트랜잭션'], ['wallet_col_result', '결과']]) {
+      const th = document.createElement('th'); th.textContent = tt(k) || fb; head.appendChild(th);
+    }
+    const body = table.createTBody();
+    for (const x of txs) {
+      const row = body.insertRow();
+      const t = new Date(x.at); row.insertCell().textContent = Number.isNaN(t.getTime()) ? String(x.at ?? '') : t.toLocaleString(Demo.lang === 'en' ? 'en-US' : 'ko-KR');
+      row.insertCell().textContent = rpLabel({ arid: x.arid, serviceName: x.serviceName, origin: x.origin });
+      const acct = row.insertCell(); acct.textContent = x.wallet ? `${x.wallet.slice(0, 6)}…${x.wallet.slice(-4)}` : '-'; acct.title = x.wallet ?? '';
+      const to = row.insertCell(); to.textContent = x.to ? `${x.to.slice(0, 6)}…${x.to.slice(-4)}` : '-'; to.title = x.to ?? '';
+      row.insertCell().textContent = x.value ?? '-';
+      const hx = row.insertCell(); const code = document.createElement('code'); code.textContent = `${String(x.txHash).slice(0, 12)}…`; code.title = x.txHash; hx.appendChild(code);
+      const cb = document.createElement('button'); cb.type = 'button'; cb.className = 'copy-btn'; cb.textContent = '⧉'; cb.title = tt('copy_txhash_title') || '트랜잭션 해시 복사'; cb.setAttribute('aria-label', cb.title);
+      cb.addEventListener('click', () => copyText(x.txHash, cb)); hx.append(' ', cb);
+      const res = row.insertCell(); const b = document.createElement('span'); b.className = `badge ${x.ok === false ? 'bad' : 'ok'}`; b.textContent = x.ok === false ? (tt('wallet_tx_result_fail') || '실패(revert)') : (tt('wallet_tx_result_ok') || '성공');
+      res.appendChild(b);
+      if (x.disclosed) { const d = document.createElement('span'); d.className = 'badge muted'; d.textContent = tt('wallet_tx_disclosed') || '조건 공개'; res.append(' ', d); }
+    }
+    host.appendChild(table);
+  }
   function renderSessions() {
     const s = lastStatus;
     const entries = s ? Object.entries(s.sessions ?? {}) : [];
@@ -285,13 +298,13 @@ export function mountUi({ core, prover, config, Demo, meta, oidc = { enabled: fa
       opt.value = r_s;
       const factory = tt(c.factoryAddress ? 'wallet_factory_yes' : 'wallet_factory_no');
       const acct = c.account ? `${c.account.slice(0, 6)}…${c.account.slice(-4)}` : `PPID ${String(c.PPID).slice(0, 8)}…`;
-      opt.textContent = tt('wallet_tx_session_opt', { account: acct, arid: String(c.arid).slice(0, 10), factory }) || `${acct} / ${String(c.arid).slice(0, 10)}…`;
+      opt.textContent = `${rpLabel(c)} · ${acct}${factory ? ` · ${factory}` : ''}`;   // 2026-10-16: 서비스 이름(zkONE(8674…))으로
       opt.title = c.account ? `${c.account}  (PPID ${c.PPID})` : `PPID ${c.PPID}`;
       if (c.factoryAddress) anyFactory = true;
       sel.appendChild(opt);
     }
     if (entries.some(([r_s]) => r_s === prev)) sel.value = prev;
-    $('txBtn').disabled = !anyFactory;
+    // txBtn 은 늘 활성(2026-10-16) — 팩토리가 없으면 눌렀을 때 결과 카드가 사유를 말한다.
 
     const acts = $('sessionActions');
     acts.textContent = '';
@@ -307,7 +320,7 @@ export function mountUi({ core, prover, config, Demo, meta, oidc = { enabled: fa
       const box = document.createElement('div');
       const dl = document.createElement('dl');
       dl.className = 'kv';
-      kvRow(dl, tt('wallet_session_service') || 'RP', shortCode(c.arid, 8));
+      kvRow(dl, tt('wallet_session_service') || 'RP', rpLabel(c));   // 2026-10-16: zkONE(8674…) 꼴
       kvRow(dl, termEl('PPID'), shortCode(c.PPID, 12));
       kvRow(dl, tt('wallet_session_expiry') || '만료', tt('wallet_session_expires', { h: c.max_height }) || String(c.max_height));
       const agent = document.createElement('span');
@@ -339,38 +352,8 @@ export function mountUi({ core, prover, config, Demo, meta, oidc = { enabled: fa
     tte($('txNote'), 'user_tx_note_web');
   }
   /** 보관 상태 카드 — 금고 없음/잠김/해제(만료 시각) 배지와 버튼 활성. 동기 getter 는 core.status()·vault.refresh() 뒤에만 읽는다. */
-  async function renderVault() {
-    const has = core.vault.hasVault(), open = core.vault.isUnlocked();
-    const badge = $('vaultBadge');
-    if (!has) { badge.className = 'badge muted'; tte(badge, 'user_vault_none'); }
-    else if (!open) { badge.className = 'badge warn'; tte(badge, 'user_vault_locked'); }
-    else {
-      const until = await meta.unlockedUntil();
-      const when = until ? new Date(until).toLocaleTimeString(Demo.lang === 'en' ? 'en-US' : 'ko-KR') : '-';
-      badge.className = 'badge ok';
-      badge.textContent = tt('user_vault_unlocked', { until: when }) || `해제됨 · ${when} 까지`;
-    }
-    $('vaultInfo').textContent = has && !open ? tt('user_unlock_hint') : '';
-    $('lockBtn').disabled = !(has && open);
-    $('unlockBtn').disabled = !(has && !open);
-    $('changePwBtn').disabled = !has;
-    $('selfRevokeBtn').disabled = !lastStatus?.registered;
-    // Google(OIDC)으로 등록한 계정은 비밀번호가 없다 — 비밀번호 폐기 버튼은 늘 숨기고 그 자리에 Google 재로그인 버튼(스펙 2026-10-16 §3.3).
-    // Google 버튼을 걸 수 없으면(IdP 설정을 못 읽음·localhost 아님) 같은 자리에 왜 안 되는지 한 줄.
-    const googleAcct = Boolean(lastStatus?.registered && lastStatus.provider && lastStatus.provider !== 'demo');
-    const g = googleAcct && Boolean(oidc?.enabled && gsi?.originOk());
-    $('selfRevokeBtn').hidden = googleAcct;
-    $('googleRevokeRow').hidden = !googleAcct;
-    if (g) { if (gsiArmed !== 'revoke') armGoogleRevoke(); }
-    else if (googleAcct) {
-      if (gsiArmed === 'revoke') gsiArmed = null;
-      const n = document.createElement('span'); n.className = 'muted';
-      n.textContent = tt('user_google_revoke_unavailable') || 'Google 로 폐기하려면 localhost 주소에서 열고 IdP 가 Google 설정을 켜야 합니다';
-      $('googleRevokeSlot').replaceChildren(n);
-    }
-    // 금고가 이미 있으면 등록 폼에서 금고 비밀번호를 묻지 않는다(잠겨 있으면 잠금 해제 창이 대신 묻는다).
-    $('vaultFields').hidden = has;
-  }
+  /** 보관 상태 — 2026-10-16: 금고 비밀번호·잠금 UI 를 뺐다(자동 금고). 옛 비밀번호 금고가 잠겨 있으면 비밀이 필요한 동작이 잠금 해제 창을 띄운다. */
+  async function renderVault() { /* 보여 줄 금고 상태가 없다 — 자리만 남긴다(언어 전환·refresh 호출 호환) */ }
   /** 증명 키 내려받기(#zkProgress). 워커의 진행률은 user.js 가 'mode3-zk-progress' 이벤트로 넘긴다. */
   function renderZk() {
     const el = $('zkProgress');
@@ -402,6 +385,7 @@ export function mountUi({ core, prover, config, Demo, meta, oidc = { enabled: fa
     }
     renderIdentity();
     renderSessions();
+    renderTxs();
     renderGuide();
     await renderVault();
     await postPresence(core);
@@ -409,14 +393,15 @@ export function mountUi({ core, prover, config, Demo, meta, oidc = { enabled: fa
   // 언어·전문가 전환은 사전이 채우는 요소와 결과 카드만 바꾼다(Demo) — 스크립트가 만든 텍스트는 여기서 다시 그린다.
   for (const k of ['setLang', 'setExpert']) {
     const orig = Demo[k];
-    Demo[k] = (v) => { orig(v); renderModeTexts(); renderProofInfo(); renderZk(); renderIdentity(); renderSessions(); renderVault(); };
+    Demo[k] = (v) => { orig(v); renderModeTexts(); renderProofInfo(); renderZk(); renderIdentity(); renderSessions(); renderTxs(); renderVault(); };
   }
 
   // V8 세션 폐기(설계 2026-09-24 §4): 서명은 코어가 금고의 sk_u 로 한다(잠겨 있으면 잠금 해제 창).
   async function revokeSession(r_s, c, btn) {
+    if (btn.dataset.busy === '1') return;   // 처리 중 재클릭만 무시(버튼은 비활성화하지 않는다, 2026-10-16)
     if (!Demo.confirmDanger('confirm_revoke')) return;
     const out = (m) => { $('sessionLog').textContent = m; };
-    btn.disabled = true;
+    btn.dataset.busy = '1';
     pendingVerdict($('sessionVerdict'), 'working');
     try {
       const { status, body: b } = await withUnlock(() => core.revokeSession({ r_s }));
@@ -431,23 +416,10 @@ export function mountUi({ core, prover, config, Demo, meta, oidc = { enabled: fa
     } catch (e) {
       out(`세션 폐기 실패: ${e.message}`);
       setVerdict($('sessionVerdict'), false, 'wallet_session_revoke_failed', { reason: 'internal', detail: e.message });
-    } finally { btn.disabled = false; refresh(); }
+    } finally { delete btn.dataset.busy; refresh(); }
   }
   $('refreshBtn').addEventListener('click', () => refresh(true));
 
-  // 금고 비밀번호 칸 — 두 등록 경로(데모 계정·Google)가 같이 쓴다. 읽자마자 입력칸에서 지운다(DOM 에 남기지 않는다).
-  // 금고가 이미 있으면 묻지 않는다(잠겨 있으면 잠금 해제 창이 대신 묻는다). 실패는 { error: 사전 키 }, 성공은 { vaultPassword }(금고가 있으면 null).
-  const VAULT_PW_FALLBACK = { user_vault_pw_mismatch: '두 비밀번호가 다릅니다', user_vault_pw_short: '금고 비밀번호는 8자 이상이어야 합니다' };
-  async function readVaultPassword() {
-    const vp = $('vaultPw').value, vp2 = $('vaultPw2').value;
-    $('vaultPw').value = ''; $('vaultPw2').value = '';
-    await core.vault.refresh();
-    if (core.vault.hasVault()) return { vaultPassword: null };
-    if (vp !== vp2) return { error: 'user_vault_pw_mismatch' };
-    if (vp.length < 8) return { error: 'user_vault_pw_short' };
-    return { vaultPassword: vp };
-  }
-  const vaultPasswordFailed = (key) => setVerdict($('registerResult'), false, 'wallet_register_failed', () => ({ summary: tt(key) || VAULT_PW_FALLBACK[key] }));
   // 폼을 하나도 안 건드렸으면(전부 빈 값) profile 을 보내지 않는다 — 코어의 DEFAULT_PROFILE(데모 기본값)이 적용된다.
   const typedProfile = () => { const f = readProfileForm(); return Object.values(f).some((v) => v !== '') ? f : null; };
   /** 등록 결과 카드(두 경로 공통). 성공(201)이면 true. */
@@ -464,134 +436,19 @@ export function mountUi({ core, prover, config, Demo, meta, oidc = { enabled: fa
     return true;
   }
 
-  // 등록: 폼의 uid·pwd(IdP 계정) + 금고 비밀번호(금고가 없을 때만). s_u·sk_u 는 코어가 만들어 금고에만 넣는다.
+  // 등록: 폼의 uid·pwd(IdP 계정). s_u·sk_u 는 코어가 만들어 금고에만 넣는다 — 금고 비밀번호는 없다(자동 금고, 2026-10-16).
   // IdP 비밀번호는 IdP 로 한 번 지날 뿐이다.
   $('registerBtn').addEventListener('click', async () => {
     pendingVerdict($('registerResult'), 'working');
     try {
-      const vp = await readVaultPassword();
-      if (vp.error) { vaultPasswordFailed(vp.error); return; }
-      const req = { uid: $('uid').value.trim(), pwd: $('pwd').value, profile: typedProfile(), vaultPassword: vp.vaultPassword };
+      const req = { uid: $('uid').value.trim(), pwd: $('pwd').value, profile: typedProfile(), vaultPassword: null };
       const res = await withUnlock(() => core.register(req));
-      req.pwd = null; req.vaultPassword = null;
+      req.pwd = null;
       showRegisterResult(res);
     } catch (e) {
       setVerdict($('registerResult'), false, 'wallet_register_failed', { reason: 'internal', detail: e.message });
     } finally { refresh(); }
   });
-
-  // ---- Google(OIDC 래퍼) 등록·자기 폐기(스펙 2026-10-16 §3.1·§3.3) ----
-  // GIS 의 initialize 는 전역이라 마지막 호출이 이긴다 — 등록 버튼(미등록)과 폐기 버튼(Google 계정으로 등록됨)은 한 번에 하나만 보이고,
-  // gsiArmed 가 지금 GIS 에 걸린 nonce 의 목적을 기억한다. 토큰은 콜백에서 코어로 바로 넘기고 변수·DOM·로그·저장소에 남기지 않는다(1회용).
-  const gsi = window.Mode3Gsi ?? null;
-  let gsiArmed = null;        // null | 'register' | 'revoke'
-  let gsiBlocked = null;      // Google 버튼을 못 그리는 이유 { kind:'origin', url } | { kind:'unavailable', detail } — 이 페이지에서는 다시 시도하지 않는다
-  let googleOn = false;       // 등록 줄(버튼 또는 안내)을 다루는가 — mountGoogleRegister 가 정한다
-  /** 설정된 사용자 오리진이 localhost(D6 — Google 을 켠 데모)인데 다른 주소(127.0.0.1)로 열렸는가. 그 오리진은 IdP 의 CORS 가 거절해
-   *  user.js 가 oidc 설정조차 읽지 못한다(꺼진 것으로 보인다) — 그래도 Google 자리에 localhost 안내는 보여야 한다. */
-  // 설정값은 끝 '/'·대문자가 섞일 수 있어 URL 로 정규화해 비교한다. 파싱이 안 되면 비교할 수 없으니 안내하지 않는다.
-  const offLocalhost = () => { try { const w = new URL(cfg.walletOrigin); return location.origin !== w.origin && w.hostname === 'localhost'; } catch { return false; } };
-  /** 한 번만 보는 조건(스크립트·오리진). 버튼은 등록 여부에 따라 renderGoogleRegister·renderVault 가 건다. */
-  function mountGoogleRegister() {
-    if (oidc?.enabled) {
-      googleOn = true;
-      if (!gsi) gsiBlocked = { kind: 'unavailable', detail: '/common/gsi.js' };
-      // Google 은 127.0.0.1 오리진을 받지 않는다(D6) — 같은 포트의 localhost 주소로 안내한다.
-      else if (!gsi.originOk()) gsiBlocked = { kind: 'origin', url: `http://localhost${location.port ? `:${location.port}` : ''}/` };
-    } else if (offLocalhost()) {
-      googleOn = true;
-      gsiBlocked = { kind: 'origin', url: `${new URL(cfg.walletOrigin).origin}/` };
-    }
-    // 그 밖(Google 꺼짐)은 두 요소가 hidden 그대로다.
-  }
-  /** 등록 줄: 미등록이면 버튼(없으면 걸고), 못 그리면 안내 한 줄. refresh() 와 언어 전환 때 부른다. */
-  function renderGoogleRegister() {
-    if (!googleOn) return;
-    const open = Boolean(lastStatus) && !lastStatus.registered;
-    // 등록됐으면(데모 계정 등록 포함) 걸려 있던 등록 버튼을 내린다 — 다음에 미등록이 되면(모두 지우기) 새 재료·nonce 로 다시 건다.
-    if (lastStatus?.registered && gsiArmed === 'register') { gsiArmed = null; $('googleRegSlot').replaceChildren(); }
-    const note = $('googleRegNote');
-    if (gsiBlocked) {
-      $('googleRegRow').hidden = true;
-      note.hidden = Boolean(lastStatus?.registered);   // 상태를 못 읽어도(그 오리진에서는 IdP 가 막혀 있을 수 있다) 안내는 보인다
-      if (gsiBlocked.kind === 'origin') {
-        // 문구의 {url} 자리에 링크를 끼운다(링크는 createElement 로만 — innerHTML 금지).
-        const { url } = gsiBlocked;
-        const a = document.createElement('a'); a.href = url; a.textContent = url;
-        const [before, after = ''] = (tt('user_gsi_origin_note', { url: '\u0000' }) || 'Google 로그인은 http://localhost 주소에서만 됩니다 — \u0000 로 여세요').split('\u0000');
-        note.replaceChildren(before, a, after);
-      } else {
-        note.textContent = [Demo.reason('gsi_unavailable')?.title ?? 'gsi_unavailable', gsiBlocked.detail].filter(Boolean).join(' — ');
-      }
-      return;
-    }
-    note.hidden = true;
-    $('googleRegRow').hidden = !open;
-    if (open && gsiArmed !== 'register') armGoogleRegister();
-  }
-  /** 걸린 Google 버튼을 내린다(두 슬롯 비움) — 다음 refresh() 가 지금 상태에 맞는 새 nonce 로 다시 건다. */
-  function disarmGoogle() { gsiArmed = null; $('googleRegSlot').replaceChildren(); $('googleRevokeSlot').replaceChildren(); }
-  /** 새 등록 재료·nonce 로 버튼을 다시 그린다(토큰은 1회용 — 실패 뒤에도 늘 새로). 지난 버튼(다른 nonce)은 먼저 치운다. */
-  async function armGoogleRegister() {
-    gsiArmed = 'register';
-    $('googleRegSlot').replaceChildren();
-    try {
-      const { nonce } = await core.prepareRegistration();
-      if (gsiArmed !== 'register') return;   // 그 사이 등록돼 폐기 버튼이 걸렸다 — 전역 initialize 를 덮어쓰지 않는다
-      await gsi.render({ el: $('googleRegSlot'), clientId: oidc.clientId, nonce, text: 'signup_with', onToken: onGoogleRegToken });
-    } catch (e) {
-      gsiArmed = null;
-      gsiBlocked = { kind: 'unavailable', detail: e?.message ?? String(e) };
-      renderGoogleRegister();
-    }
-  }
-  async function onGoogleRegToken(idToken) {
-    pendingVerdict($('registerResult'), 'working');
-    let ok = false;
-    try {
-      if (!idToken) { setVerdict($('registerResult'), false, 'wallet_register_failed', { reason: 'oidc_invalid' }); return; }
-      const vp = await readVaultPassword();
-      if (vp.error) { vaultPasswordFailed(vp.error); return; }
-      ok = showRegisterResult(await withUnlock(() => core.completeRegistration({ idToken, profile: typedProfile(), vaultPassword: vp.vaultPassword })));
-    } catch (e) {
-      setVerdict($('registerResult'), false, 'wallet_register_failed', { reason: 'internal', detail: e.message });
-    } finally {
-      // 성공이면 등록 줄을 접는다(이미 등록) — 다음 refresh() 의 renderVault 가 폐기 버튼을 건다. 실패면 새 nonce 로 다시.
-      if (ok) { $('googleRegRow').hidden = true; gsiArmed = null; } else armGoogleRegister();
-      refresh();
-    }
-  }
-  /** 폐기 버튼 — nonce 는 "revoke:" + 임의 hex(등록 토큰과 목적이 섞이지 않는다). renderVault 가 부른다. */
-  async function armGoogleRevoke() {
-    gsiArmed = 'revoke';
-    $('googleRevokeSlot').replaceChildren();
-    if (gsiBlocked) { $('googleRevokeSlot').textContent = Demo.reason('gsi_unavailable')?.title ?? 'gsi_unavailable'; return; }
-    try {
-      await gsi.render({ el: $('googleRevokeSlot'), clientId: oidc.clientId, nonce: newRevokeNonce(), text: 'continue_with', onToken: onGoogleRevokeToken });
-    } catch (e) {
-      gsiBlocked = { kind: 'unavailable', detail: e?.message ?? String(e) };
-      $('googleRevokeSlot').textContent = Demo.reason('gsi_unavailable')?.title ?? 'gsi_unavailable';
-    }
-  }
-  async function onGoogleRevokeToken(idToken) {
-    try {
-      if (!Demo.confirmDanger('confirm_revoke')) { setVerdict(storageVerdict(), false, 'wallet_self_revoke_failed', () => ({ summary: tt('wallet_cancelled') || '창에서 취소했습니다.' })); return; }
-      if (!idToken) { setVerdict(storageVerdict(), false, 'wallet_self_revoke_failed', { reason: 'oidc_invalid' }); return; }
-      const uid = lastStatus?.uid ?? null;
-      pendingVerdict(storageVerdict(), 'working');
-      const res = await core.selfRevokeWithIdToken({ idToken });
-      if (res.status === 200) {
-        progress.revoked = true;
-        setVerdict(storageVerdict(), true, 'revoked_ok', () => ({ summary: tt('wallet_self_revoke_ok', { uid }) || `uid ${uid} 계정의 폐기를 요청했습니다.`, detail: safeDetail(res.body) }));
-      } else setVerdict(storageVerdict(), false, 'wallet_self_revoke_failed', { reason: res.body.reason ?? `HTTP ${res.status}`, detail: safeDetail(res.body) });
-    } catch (e) {
-      setVerdict(storageVerdict(), false, 'wallet_self_revoke_failed', { reason: 'internal', detail: e.message });
-    } finally {
-      // 토큰은 1회용이다 — 결과와 무관하게 새 nonce 로 다시 건다(등록이 남아 있으면 refresh() 의 renderVault 가).
-      if (gsiArmed === 'revoke') gsiArmed = null;
-      refresh();
-    }
-  }
 
   // V11 §3.3 — 속성은 사용자가 넣는다. 바뀌면 옛 자격증명·세션이 지워지고 다음 로그인이 새 C_u 를 받는다(금고의 blind_u·세션키도 지우므로 잠겨 있으면 잠금 해제).
   $('profileSaveBtn').addEventListener('click', async () => {
@@ -745,13 +602,14 @@ export function mountUi({ core, prover, config, Demo, meta, oidc = { enabled: fa
   });
 
   $('txBtn').addEventListener('click', async () => {
-    $('txBtn').disabled = true; $('txLog').textContent = '';
+    if ($('txBtn').dataset.busy === '1') return;   // 처리 중 재클릭만 무시(2026-10-16)
+    $('txBtn').dataset.busy = '1'; $('txLog').textContent = '';
     pendingVerdict($('txVerdict'), 'proving');
     try { await sendTxViaRelay(); }
     catch (e) {
       txLog(`오류: ${e.message}`);
       txFailed(null, e?.reason ?? 'internal', e.message);
-    } finally { $('txBtn').disabled = false; refresh(); }
+    } finally { delete $('txBtn').dataset.busy; refresh(); }
   });
 
   // ---- 시연 카드(V9 §8.3, 전문가 보기 전용): 다음 발급/증명의 salt·uid 를 한 번만 덮어쓴다(코어의 kv `demo`) ----
@@ -795,29 +653,6 @@ export function mountUi({ core, prover, config, Demo, meta, oidc = { enabled: fa
 
   // ---- 보관 상태 카드 ----
   const storageVerdict = () => $('storageVerdict');
-  $('lockBtn').addEventListener('click', async () => { await core.vault.lock(); await renderVault(); });
-  $('unlockBtn').addEventListener('click', async () => { await askUnlock(); await core.vault.refresh(); await renderVault(); });
-  $('changePwBtn').addEventListener('click', () => {
-    const modal = $('changePwModal'), oldEl = $('changePwOld'), newEl = $('changePwNew'), new2El = $('changePwNew2'), go = $('changePwGo'), cancel = $('changePwCancel'), v = $('changePwVerdict');
-    const clear = () => { oldEl.value = ''; newEl.value = ''; new2El.value = ''; };
-    clear(); v.textContent = ''; v.className = ''; modal.hidden = false; oldEl.focus();
-    const close = () => { clear(); modal.hidden = true; go.removeEventListener('click', onGo); cancel.removeEventListener('click', onCancel); };
-    async function onGo() {
-      const o = oldEl.value, n = newEl.value, n2 = new2El.value;
-      clear();
-      if (n !== n2) { setVerdict(v, false, 'user_change_pw_failed', () => ({ summary: tt('user_vault_pw_mismatch') || '두 비밀번호가 다릅니다' })); return; }
-      if (n.length < 8) { setVerdict(v, false, 'user_change_pw_failed', () => ({ summary: tt('user_vault_pw_short') || '금고 비밀번호는 8자 이상이어야 합니다' })); return; }
-      go.disabled = true;
-      try {
-        if (!(await core.vault.changePassword(o, n))) { setVerdict(v, false, 'user_change_pw_failed', { reason: 'bad_password' }); return; }
-        close();
-        setVerdict(storageVerdict(), true, 'user_change_pw_done', {});
-      } catch (e) { setVerdict(v, false, 'user_change_pw_failed', { reason: 'storage_unavailable', detail: e.message }); }
-      finally { go.disabled = false; await core.vault.refresh(); await renderVault(); }
-    }
-    const onCancel = () => close();
-    go.addEventListener('click', onGo); cancel.addEventListener('click', onCancel);
-  });
   // 자기 폐기(스펙 §4.5): IdP 계정 비밀번호를 창에서 받아 코어가 IdP 로 바로 보낸다(cia.js CORS). 비밀번호는 보관하지 않는다.
   $('selfRevokeBtn').addEventListener('click', async () => {
     if (!Demo.confirmDanger('confirm_revoke')) return;
@@ -842,15 +677,13 @@ export function mountUi({ core, prover, config, Demo, meta, oidc = { enabled: fa
     pendingVerdict(storageVerdict(), 'working');
     try {
       const r = await core.wipe();
-      // wipe 는 코어의 보류 등록 재료(pendingReg)도 지운다 — 지금 걸린 Google 버튼의 nonce 는 버려졌다. 결과 카드보다 먼저 내린다.
-      disarmGoogle();
       if (r.status === 200) {
         // 스펙 §10 — "모두 지우기" 는 Snap 초기화의 등가물이라 증명 키 캐시까지 비운다(산출물 재생성 뒤 옛 zkey 가 남지 않게).
         if (typeof caches !== 'undefined') { try { await caches.delete(ZK_CACHE_NAME); } catch { /* 캐시 삭제 실패는 무시 — 다음 로드가 다시 받는다 */ } }
         Object.assign(progress, { txOk: false, disclosed: false, revoked: false });
         setVerdict(storageVerdict(), true, 'user_wipe_btn', () => ({ summary: tt('user_wipe_done') || '이 브라우저의 등록·비밀·세션을 지웠습니다.' }));
       } else setVerdict(storageVerdict(), false, 'error_title', { reason: r.body.reason ?? `HTTP ${r.status}`, detail: safeDetail(r.body) });
-    } catch (e) { disarmGoogle(); setVerdict(storageVerdict(), false, 'error_title', { reason: 'storage_unavailable', detail: e.message }); }
+    } catch (e) { setVerdict(storageVerdict(), false, 'error_title', { reason: 'storage_unavailable', detail: e.message }); }
     refresh(true);
   });
 
@@ -861,11 +694,14 @@ export function mountUi({ core, prover, config, Demo, meta, oidc = { enabled: fa
     renderModeTexts();
     renderProofInfo();
     renderZk();
-    mountGoogleRegister();
     await loadAttrSchema();
     await refresh();
+    // 데모 세대가 바뀌어 user.js 가 옛 등록·세션을 지웠으면(2026-10-21) 그 사실을 저장소 카드에 알린다.
+    if (demoReset) setVerdict(storageVerdict(), true, 'user_demo_reset_title', () => ({ summary: tt('user_demo_reset') || '데모 스택이 새로 시작되어 이 브라우저의 이전 등록·세션을 지웠습니다. 다시 등록하세요.' }));
     // 등록부 확인 줄(V9 §8.2)은 다른 창(RP 로그인·승인 창·관리자)이 바꾼 상태를 반영해야 한다 — 탭이 보일 때 5초마다 다시 읽는다.
-    setInterval(() => { if (!document.hidden) refresh(); }, 5000);
+    // 2026-10-16: 5초 → 2초(사용자 요청). 앞 새로고침이 끝나기 전에는 다시 시작하지 않는다(체인·RP 응답이 느릴 때 겹치지 않게).
+    let refreshing = false;
+    setInterval(() => { if (document.hidden || refreshing) return; refreshing = true; refresh().finally(() => { refreshing = false; }); }, 2000);
     // 증명 키는 등록 전에도 받아 둔다(첫 로그인이 빨라진다). Cache API 에 있으면 진행률 없이 바로 준비된다.
     prover.warm().then(() => { zk = { kind: 'ready' }; renderZk(); }, (e) => { zk = { kind: 'fail', detail: e.message }; renderZk(); });
   }

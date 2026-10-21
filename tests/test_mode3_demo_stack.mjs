@@ -771,7 +771,7 @@ try {
   });
 
   await t('페이지 서빙: 지갑 /, RP /, IdP /admin 이 text/html', async () => {
-    for (const [c, p, marker] of [[wallet, '/', 'Mode 3 지갑'], [rp, '/', 'Mode 3 로그인'], [cia, '/admin', 'IdP 관리자'], [cia, '/account', 'IdP 사용자']]) {
+    for (const [c, p, marker] of [[wallet, '/', '사용자 페이지'], [rp, '/', 'zkONE — 로그인'], [cia, '/admin', 'IdP 관리자'], [cia, '/account', 'IdP 내 계정']]) {
       const r = await fetch(`${c.base}${p}`);
       assert.equal(r.status, 200, `${p}`);
       assert.match(r.headers.get('content-type') ?? '', /text\/html/);

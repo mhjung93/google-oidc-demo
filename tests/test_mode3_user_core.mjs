@@ -67,7 +67,7 @@ try {
   });
   await t('로그인: π_IdP 발급 → π_RP → RP /api/mode3/login ok; 응답에 비밀·uid 없음; 세션 저장·proofCache 저장·세션키는 secrets 에만', async () => {
     const ch = await challenge(); rs1 = ch.r_s;
-    const r = await core.login(loginBody(ch), { verifiedOrigin: info.origin });
+    const r = await core.login(loginBody(ch), { verifiedOrigin: info.origin, serviceName: 'zkONE', policy: { minAge: 19, allowedCountries: ['KR', 'JP'] } });   // serviceName·policy 는 표기용(2026-10-16)
     assert.equal(r.status, 200, j(r.body)); assert.equal(r.body.issued, true); assert.ok(r.body.timings.proveMs > 0);
     for (const k of ['s_u', 'sk_u', 'blind_u', 'uid', 'sessionPrivKey', 'witness']) assert.ok(!j(r.body).includes(`"${k}"`), k);
     const v = await rp.post('/api/mode3/login', { proof: r.body.proof, publicSignals: r.body.publicSignals, sig: r.body.sig, r_s: ch.r_s });
@@ -75,7 +75,27 @@ try {
     const sessions = await kv.get('sessions'); const s = sessions[ch.r_s];
     assert.equal(s.origin, info.origin); assert.ok(s.proofCache?.proof); assert.ok(!('sessionPrivKey' in s)); assert.match(s.account, /^0x[0-9a-fA-F]{40}$/);
     assert.ok((await core.vault.readSecrets()).sessionKeys[ch.r_s]);
+    assert.equal((await core.status()).body.sessions[ch.r_s].serviceName, 'zkONE'); assert.deepEqual((await core.status()).body.sessions[ch.r_s].allowedCountries, ['KR', 'JP']); assert.equal((await core.status()).body.sessions[ch.r_s].minAge, 19); assert.equal((await core.status()).body.sessions[ch.r_s].origin, info.origin);
     assert.deepEqual(await core.health(), { registered: true, hasCred: true, sessions: 1, rpCount: 1, txs: 0, disclosedTxs: 0 });
+  });
+  await t('로그아웃·대체(2026-10-16): RP /api/mode3/logout 뒤 status() 가 세션을 정리한다; 다시 로그인하면 같은 PPID 의 이전 세션을 RP 가 대체하고 지갑 목록도 하나만 남는다', async () => {
+    const before = Object.keys((await core.status()).body.sessions); assert.equal(before.length, 1);
+    assert.equal((await rp.post('/api/mode3/logout', { r_s: rs1 })).body.removed, true);
+    assert.deepEqual((await rp.post('/api/mode3/sessions/check', { r_s: [rs1] }, { Origin: wallet.origin })).body.alive, { [rs1]: false });
+    assert.equal(Object.keys((await core.status()).body.sessions).length, 0, '로그아웃된 세션은 목록에서 빠진다');
+    // 2026-10-21: RP 가 모르는 세션(재시작 뒤 등)의 로그아웃도 묘비를 남긴다 — removed:false 지만 check 는 false
+    const unknown = '123456789012345678901234567890';
+    assert.equal((await rp.post('/api/mode3/logout', { r_s: unknown })).body.removed, false);
+    assert.deepEqual((await rp.post('/api/mode3/sessions/check', { r_s: [unknown] }, { Origin: wallet.origin })).body.alive, { [unknown]: false });
+    // 다시 로그인 두 번 → RP 에는 최신 하나만(같은 PPID 대체), 지갑도 정리 뒤 하나만
+    const chA = await challenge(); const a = await core.login(loginBody(chA), { verifiedOrigin: info.origin, serviceName: 'zkONE' }); assert.equal(a.status, 200, j(a.body));
+    assert.equal((await rp.post('/api/mode3/login', { proof: a.body.proof, publicSignals: a.body.publicSignals, sig: a.body.sig, r_s: chA.r_s })).body.ok, true);
+    const chB = await challenge(); const b = await core.login(loginBody(chB), { verifiedOrigin: info.origin, serviceName: 'zkONE' }); assert.equal(b.status, 200, j(b.body));
+    assert.equal((await rp.post('/api/mode3/login', { proof: b.body.proof, publicSignals: b.body.publicSignals, sig: b.body.sig, r_s: chB.r_s })).body.ok, true);
+    const alive = (await rp.post('/api/mode3/sessions/check', { r_s: [chA.r_s, chB.r_s] }, { Origin: wallet.origin })).body.alive;
+    assert.deepEqual(alive, { [chA.r_s]: false, [chB.r_s]: true });
+    const after = Object.keys((await core.status()).body.sessions); assert.deepEqual(after, [BigInt(chB.r_s).toString()]);
+    rs1 = chB.r_s;   // 이후 케이스는 이 세션으로
   });
   await t('로그인 거절: verifiedOrigin 이 인증서 오리진과 다르면 403 bad_rp_cert, 같은 r_s 재사용은 409 duplicate_session', async () => {
     assert.equal((await core.login(loginBody(await challenge()), { verifiedOrigin: 'http://evil.example' })).body.reason, 'bad_rp_cert');
@@ -101,13 +121,20 @@ try {
   await t('세션 요청: 세션키 서명 → RP /api/mode3/request ok', async () => {
     const r = await core.request({ r_s: rs1, body: 'hello', origin: info.origin }); assert.equal(r.status, 200);
     assert.equal((await rp.post('/api/mode3/request', { r_s: rs1, body: 'hello', sig: r.body.sig })).body.ok, true);
+    // 2026-10-21: 'balance' 는 시연용 장부와 온체인 계정(PPID 주소) 잔액을 함께 돌려준다 — 거래 없는 RP 상호작용
+    const b = await core.request({ r_s: rs1, body: 'balance', origin: info.origin }); assert.equal(b.status, 200);
+    const q = (await rp.post('/api/mode3/request', { r_s: rs1, body: 'balance', sig: b.body.sig })).body; assert.equal(q.ok, true, j(q));
+    assert.equal(q.balance.ledger.KRW, '1,000,000'); assert.equal(q.balance.onchain, undefined, '온체인 계정 잔액은 내지 않는다(2026-10-21)');
   });
   await t('트랜잭션: prepareTx → RP 릴레이(배포 포함) → recordTx 영수증 파싱 ok, txs 기록·health 카운터', async () => {
+    // 체크섬(EIP-55)이 틀린 대소문자 입력도 받는다(2026-10-16) — 바이트가 같은 주소다
+    const bad = await core.prepareTx({ r_s: rs1, to: '0x000000000000000000000000000000000000DEAD', value: '0', data: '0x' }); assert.equal(bad.status, 200, j(bad.body));
     const p = await core.prepareTx({ r_s: rs1, to: '0x000000000000000000000000000000000000dEaD', value: '0', data: '0x' });
     assert.equal(p.status, 200, j(p.body)); assert.equal(p.body.deployNeeded, true);
     const { relay, rec } = await relayAndRecord(rs1, p.body);
     assert.equal(relay.deployed, true); assert.equal(rec.status, 200, j(rec.body)); assert.equal(rec.body.ok, true); assert.equal(rec.body.executed.success, true);
     assert.equal((await kv.get('txs')).length, 1); assert.equal((await core.health()).txs, 1);
+    const tx = (await core.status()).body.txs[0]; assert.equal(tx.txHash, relay.txHash); assert.equal(tx.to.toLowerCase(), '0x000000000000000000000000000000000000dead'); assert.equal(tx.value, '0'); assert.equal(tx.serviceName, 'zkONE'); assert.equal(tx.ok, true);   // 보낸 트랜잭션 목록(2026-10-16)
   });
   await t('Selective disclosure proof: 나이·국가 집합 조건을 실어 AttrGate.claim → claimed(account) true, disclosedTxs 1', async () => {
     const year = new Date().getUTCFullYear();
@@ -137,6 +164,7 @@ try {
   });
   await t('세션 폐기: IdP 에 서명 요청 → 세션·세션키·캐시 삭제, 다음 게시 뒤 재검증은 세션 없음', async () => {
     const r = await core.revokeSession({ r_s: rs1 }); assert.equal(r.status, 200, j(r.body)); assert.equal(r.body.revoked, true);
+    assert.equal(r.body.rpNotified, true, '2026-10-21: RP 에 로그아웃을 알린다'); assert.ok(!(await rp.get('/api/mode3/sessions')).body.sessions.some((x) => x.r_s === `${rs1.slice(0, 8)}…`), 'RP 세션 목록에서 빠진다');
     assert.equal((await kv.get('sessions'))[rs1], undefined); assert.equal((await core.vault.readSecrets()).sessionKeys[rs1], undefined);
     assert.equal((await core.revalidate({ r_s: rs1, origin: info.origin })).status, 404);
   });
@@ -153,5 +181,28 @@ try {
     assert.equal(await core.vault.key(), null); assert.equal(await kv.get('unlock'), undefined);
   });
   await t('wipe(): 전부 지운다 — 금고 없음·미등록', async () => { await core.wipe(); assert.equal(core.vault.hasVault(), false); assert.equal((await core.status()).body.registered, false); });
+  await t('자동 금고(2026-10-16): vaultPassword 없이 등록하면 비밀번호 없는 금고가 생기고 늘 열려 있다 — lock() 은 거절, changePassword 는 false, 로그인은 된다', async () => {
+    // IdP 쪽 12345 는 위에서 이미 등록됐다 → 다른 데모 계정(alice/67890)으로.
+    const r = await core.register({ uid: '67890', pwd: 'alicepw', profile: { birthYear: '1992', country: 'KR' } });
+    assert.equal(r.status, 201, j(r.body));
+    assert.equal(core.vault.hasVault(), true); assert.equal(core.vault.isAuto(), true); assert.equal(core.vault.isUnlocked(), true);
+    assert.equal(await core.vault.lock(), false); assert.ok(await core.vault.key(), '잠그기 뒤에도 키가 있다');
+    assert.equal(await core.vault.changePassword('x', 'yyyyyyyy'), false);
+    const u = await kv.get('unlock'); assert.equal(u.expiresAt, null); assert.equal((await kv.get('meta')).mode, 'auto');
+    const lg = await core.login(loginBody(await challenge()), { verifiedOrigin: info.origin }); assert.equal(lg.status, 200, j(lg.body));
+  });
+  await t('로그인 조건 강제(2026-10-21): MODE3_REQUIRE_DISCLOSURE=1 로 재기동한 RP 는 술어 없는 로그인을 predicate_unmet 으로 거절하고, 국가·나이 술어가 있는 로그인은 받는다', async () => {
+    await stack.restartRp({ MODE3_REQUIRE_DISCLOSURE: '1' });
+    const info2 = (await rp.get('/api/mode3/rp_info')).body; assert.equal(info2.requireDisclosure, true);
+    const ch = await challenge(); const a = await core.login(loginBody(ch), { verifiedOrigin: info.origin }); assert.equal(a.status, 200, j(a.body));
+    const bad = (await rp.post('/api/mode3/login', { proof: a.body.proof, publicSignals: a.body.publicSignals, sig: a.body.sig, r_s: ch.r_s })).body;
+    assert.equal(bad.ok, false); assert.equal(bad.reason, 'predicate_unmet');
+    const year = new Date().getUTCFullYear();
+    const ch2 = await challenge();
+    const b = await core.login(loginBody(ch2, { disclose: [{ lo: String(info2.predicates.birthYearMin ?? '1900'), hi: String(year - Number(info2.predicates.minAge)) }, null, null, null], set: { slot: 1, members: info2.predicates.allowedCountries } }), { verifiedOrigin: info.origin });
+    assert.equal(b.status, 200, j(b.body));
+    const ok = (await rp.post('/api/mode3/login', { proof: b.body.proof, publicSignals: b.body.publicSignals, sig: b.body.sig, r_s: ch2.r_s })).body;
+    assert.equal(ok.ok, true, j(ok)); assert.ok(ok.disclosure?.set, '세션에 국가 집합 공개가 실린다');
+  });
 } finally { await stack.stop(); }
 process.exit(fails ? 1 : 0);

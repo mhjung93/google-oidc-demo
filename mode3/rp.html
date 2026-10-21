@@ -25,7 +25,7 @@
       <div class="nav-menu">
         <a href="#market" class="nav-link" data-i18n="nav_market">거래소</a>
         <a href="#assets" class="nav-link" data-i18n="nav_assets">자산</a>
-        <a href="#withdraw" class="nav-link" data-i18n="nav_withdraw">입출금</a>
+        <a href="#balance" class="nav-link" data-i18n="nav_balance">잔액·출금</a>
       </div>
       <div class="nav-actions">
         <button type="button" id="connectWalletBtn" class="nav-cta nav-cta-secondary" data-i18n="rp_connect_wallet_btn">지갑 연결</button>
@@ -34,6 +34,7 @@
         <div id="accountPill" class="account-pill" hidden>
           <span class="pill-dot" aria-hidden="true"></span>
           <code id="accountAddr">-</code>
+          <button type="button" id="copyPpidNavBtn" class="copy-btn pill-copy" title="복사" aria-label="복사" data-i18n-title="rp_copy_btn_title">⧉</button>
           <button type="button" id="logoutBtn" class="pill-logout" data-i18n="rp_logout_btn">로그아웃</button>
         </div>
       </div>
@@ -76,12 +77,12 @@
       <div id="assetsLoggedIn" hidden>
         <h2 data-i18n="assets_title">내 자산</h2>
         <dl class="kv account-kv">
-          <dt data-term="PPID">이 RP 에서의 내 주소</dt><dd><code id="accountPPID">-</code></dd>
+          <dt data-term="PPID">이 RP 에서의 내 주소</dt><dd><code id="accountPPID">-</code> <button type="button" id="copyPpidBtn" class="copy-btn" title="복사" aria-label="복사" data-i18n-title="rp_copy_btn_title">⧉</button></dd>
         </dl>
         <ul class="balance-list">
-          <li><span class="bal-label">KRW</span><strong class="bal-amt">1,000,000</strong></li>
-          <li><span class="bal-label">BTC</span><strong class="bal-amt">0.02</strong></li>
-          <li><span class="bal-label">ETH</span><strong class="bal-amt">0.5</strong></li>
+          <li data-asset="KRW"><span class="bal-label">KRW</span><strong class="bal-amt">1,000,000</strong></li>
+          <li data-asset="BTC"><span class="bal-label">BTC</span><strong class="bal-amt">0.02</strong></li>
+          <li data-asset="ETH"><span class="bal-label">ETH</span><strong class="bal-amt">0.5</strong></li>
         </ul>
 
         <h3 data-i18n="rp_session_title">내 세션</h3>
@@ -91,17 +92,29 @@
           <dt data-i18n="rp_session_expiry_label">세션 만료</dt><dd id="sessionExpiry">-</dd>
         </dl>
         <p>
-          <button id="revalidateBtn" disabled data-i18n="rp_reval_btn">세션 재검증</button>
+          <button id="revalidateBtn" data-i18n="rp_reval_btn">세션 재검증</button>
         </p>
         <label class="opt-row expert"><input type="checkbox" id="skipSync" /> skipSync (stale_root 시연)</label>
         <div id="sessionVerdict"></div>
         <pre id="sessionLog" class="expert"></pre>
 
-        <div class="withdraw-box" id="withdraw">
-          <h3 data-i18n="rp_withdraw_title">출금 신청</h3>
-          <p class="desc" data-i18n="rp_withdraw_desc">세션 서명을 RP 가 검증합니다 — 금액은 시연용이며 실제로 이동하지 않습니다.</p>
-          <label class="withdraw-amount"><span data-i18n="rp_withdraw_amount_label">금액(KRW)</span> <input id="withdrawAmount" type="number" min="0" step="1000" placeholder="100000" /></label>
-          <button id="requestBtn" disabled data-i18n="rp_request_btn">출금 신청</button>
+        <!-- 2026-10-21: "출금 신청"(세션 서명만 검증하는 시연용 출금)을 "현재 잔액 확인"으로 — 거래 없이 세션으로 RP 와 상호작용하는 예. 출금과 헷갈리지 않게. -->
+        <div class="withdraw-box" id="balance">
+          <h3 data-i18n="rp_balance_title">현재 잔액 확인</h3>
+          <p class="desc" data-i18n="rp_balance_desc">세션키 서명으로 RP 에 잔액을 묻습니다 — 거래 없이 RP 와 상호작용하는 예입니다. 잔액은 시연용입니다.</p>
+          <button id="balanceBtn" data-i18n="rp_balance_btn">현재 잔액 확인</button>
+        </div>
+        <!-- 2026-10-16: 온체인 출금 — 이 세션의 내 주소(계정)에서 체인으로 보낸다. 사용자 승인 창(mode3-tx)이 받는 주소·금액을 보여 주고,
+             승인 뒤 사용자 페이지의 코어가 증명·세션키 서명으로 calldata 를 만들어 이 RP 의 릴레이가 보낸다. web 모드 전용. -->
+        <div class="withdraw-box" id="onchain">
+          <h3 data-i18n="rp_tx_title">온체인 출금</h3>
+          <p class="desc" data-i18n="rp_tx_desc">이 세션의 내 주소(계정)에서 체인으로 보냅니다. 사용자 승인 창에서 확인한 뒤 RP 릴레이가 보냅니다.</p>
+          <label class="withdraw-amount"><span data-i18n="rp_tx_to_label">받는 주소</span> <input id="txTo" value="0x000000000000000000000000000000000000dEaD" size="44" /></label>
+          <label class="withdraw-amount"><span data-i18n="rp_tx_value_label">금액(wei)</span> <input id="txValue" value="0" size="12" /></label>
+          <button id="txBtn" data-i18n="rp_tx_btn">온체인 출금 실행</button>
+          <div id="txVerdict"></div>
+          <p id="txHashRow" hidden><span data-i18n="rp_col_txhash">트랜잭션 해시</span> <code id="txHashCode"></code> <button type="button" id="copyTxHashBtn" class="copy-btn" title="트랜잭션 해시 복사" aria-label="트랜잭션 해시 복사" data-i18n-title="copy_txhash_title">⧉</button></p>
+          <pre id="txLog" class="expert"></pre>
         </div>
       </div>
     </aside>
@@ -119,34 +132,12 @@
         <p id="attrGateInfo" class="muted">-</p>
         <p id="rpMirrorInfo" class="muted"></p>
         <p id="rpInfoExpert" class="muted expert"></p>
+        <!-- 2026-10-16: 로그인 기록·승인 개봉은 고객 페이지가 아니라 RP 관리자 페이지(/admin)에 있다. -->
+        <p><a id="rpAdminLink" class="btn-ghost" href="/admin" target="_blank" rel="noopener" data-i18n="rp_admin_link">관리자 페이지 — 로그인 기록·승인 개봉</a></p>
       </div>
 
-      <div class="compliance-block">
-        <h3 data-i18n="rp_logins_title">로그인 기록</h3>
-        <p class="desc" data-i18n="rp_logins_desc">이 RP 에 남은 기록입니다. RP 는 누구인지 모르고 이 주소만 압니다.</p>
-        <p><button id="refreshLogins" class="btn-ghost" data-i18n="refresh">새로고침</button></p>
-        <div id="logins"></div>
-      </div>
     </section>
 
-    <!-- 승인 개봉 — 전문가 보기와 무관하게 늘 보인다(체험 모드 8단계 대상). 내부의 원문 로그·트랜잭션 안내만 전문가 보기 전용. -->
-    <section class="card compliance-panel" id="openCompliance">
-      <h2 data-i18n="rp_open_card_title">컴플라이언스 — 승인 개봉</h2>
-      <p class="desc" data-i18n="rp_open_desc">RP 와 IdP 가 함께, 운영자 승인 아래에서만 사용자를 알아냅니다.</p>
-      <p>
-        <label><span data-term="PPID">이 RP 에서의 내 주소</span> <input id="openPpid" size="24" /></label>
-        <button id="openBtn" data-i18n="rp_open_req">개봉 요청</button>
-        <button id="openPollBtn" class="btn-ghost" disabled data-i18n="rp_open_poll">결과 확인</button>
-      </p>
-      <p>
-        <label><span data-i18n="rp_open_tx_label">트랜잭션 해시</span> <input id="openTx" size="66" placeholder="0x…" /></label>
-        <button id="openTxBtn" data-i18n="rp_open_tx">해시로 요청</button>
-      </p>
-      <p class="muted"><span data-term="tag">추적용 봉인</span> — <span data-i18n="rp_open_tag_note">로그인마다 함께 실린 추적용 봉인을 RP 와 IdP 가 함께 열어야 uid 가 나옵니다 — 어느 한쪽만으로는 열리지 않습니다.</span></p>
-      <p class="muted expert" data-i18n="rp_open_tx_note">트랜잭션은 사용자 페이지에서 보냅니다(설계 2026-09-16 §6).</p>
-      <div id="openVerdict"></div>
-      <pre id="openLog" class="expert">-</pre>
-    </section>
   </main>
 
   <!-- 로그인 모달(2026-10-15) — 상단 #loginBtn 은 이 창을 열기만 한다. 직접 로그인(아이디/비밀번호)은 장식이고,
@@ -217,8 +208,7 @@
     // 그 기본값이 실제로 확인된 것인지 — 못 읽었다면 지갑이 snap 모드인데 file 모드로 잘못 보고 /wallet/login 을 직접 부를 수
     // 있다(그 경로에는 CORS 가 없어 브라우저가 막는다). 실패 문구가 원인을 짚도록 이 값을 본다.
     let walletCfgLoaded = false;
-    let walletCfgError = null;              // 못 읽었을 때의 원문(화면·언어 전환에서 다시 쓴다)
-    let lastLogins = [];                    // 마지막으로 받아온 로그인 기록(언어·전문가 전환 때 다시 그린다)
+    let walletCfgError = null;              // 못 읽었을 때의 원문(화면·언어 전환에서 다시 쓴다)                    // 마지막으로 받아온 로그인 기록(언어·전문가 전환 때 다시 그린다)
     let lastPPID = null;                    // 직전 로그인의 PPID — 같은 주소가 다시 나오는지 한 줄 요약에 쓴다
     const progress = { used: false, disclosed: false, opened: false, login2: false };   // 이 페이지가 아는 완료 신호(세션 중 메모리)
     // U6(2026-10-14): 지갑 health 의 rpOrigins(/mode3/health, Demo.stack 가 이미 폴링 중)에서 내 오리진이 첫 번째가
@@ -251,7 +241,7 @@
     // ---- 안내 바 ----
     function renderGuide() {
       // rp2: 지갑이 아는 RP 목록의 두 번째 오리진 — login2 단계(두 번째 RP 로그인)가 첫 RP 창에서 쓰는 "다른 창" 링크다.
-      const links = { wallet: info?.walletAgentOrigin, admin: info?.ciaUrl ? `${info.ciaUrl}/admin` : null, account: info?.ciaUrl ? `${info.ciaUrl}/account` : null, rp2: (Demo.stack?.last?.wallet?.rpOrigins ?? [])[1] ?? null };
+      const links = { rp_admin: '/admin', wallet: info?.walletAgentOrigin, admin: info?.ciaUrl ? `${info.ciaUrl}/admin` : null, account: info?.ciaUrl ? `${info.ciaUrl}/account` : null, rp2: (Demo.stack?.last?.wallet?.rpOrigins ?? [])[1] ?? null };
       // 체험 모드일 때만 공통 레이어가 8단계를 통째로 판정한다(설계 2026-09-25 §3.2, U6 로 login2 추가) — 이 페이지는 자기가 아는 완료 신호만 넘긴다.
       if (Demo.tour?.enabled) { Demo.tour.evaluate({ progress: { approved: info?.status === 'approved', login: !!currentSession, login2: progress.login2, used: progress.used, disclosed: progress.disclosed, opened: progress.opened }, links, secondRp: isSecondRp() }); return; }
       // 체험 모드가 꺼져 있을 때(그리고 demo.js 가 아예 없을 때)의 1차 계산 — 이 페이지가 아는 사실만으로 그린다.
@@ -267,7 +257,7 @@
     // 언어·전문가 전환은 사전이 채우는 요소와 결과 카드만 바꾼다(Demo) — 스크립트가 만든 텍스트(상태·표·세션)는 여기서 다시 그린다.
     for (const k of ['setLang', 'setExpert']) {
       const orig = Demo[k];
-      Demo[k] = (v) => { orig(v); renderStatus(); renderSession(); renderLogins(); renderModalTexts(); };
+      Demo[k] = (v) => { orig(v); renderStatus(); renderSession(); renderModalTexts(); };
     }
 
     // ---- 서비스 상태 카드 ----
@@ -284,8 +274,10 @@
       else tte($('attrGateInfo'), 'rp_no_attrgate');
       tte($('rpMirrorInfo'), 'rp_mirror_line', { mirror: info.mirrorAddress ?? '-', log: info.logAddress ?? '-' });   // V10: 검증은 거울만 읽는다
       // 로그인 카드의 국가·나이 조건 문구 — 사전이 없으면(tte 가 아무것도 안 쓴다) #loginPolicy 의 HTML 기본 문구가 남는다.
-      tte($('loginPolicy'), 'rp_login_policy', { minAge: info.predicates.minAge, countries: (info.predicates.allowedCountryNames ?? info.predicates.allowedCountries ?? []).join('·') });
-      tte($('loginPolicyModal'), 'rp_login_policy', { minAge: info.predicates.minAge, countries: (info.predicates.allowedCountryNames ?? info.predicates.allowedCountries ?? []).join('·') });
+      // 2026-10-21: 로그인 조건을 요구하는 RP(zkTWO)만 조건 문구 + 체크박스 숨김(강제라 고를 게 없다). 아니면(zkONE) "누구나" — 체크박스는 전문가 보기의 선택 사항으로 남는다.
+      const polVars = { minAge: info.predicates.minAge, countries: (info.predicates.allowedCountryNames ?? info.predicates.allowedCountries ?? []).join('·') };
+      for (const id of ['loginPolicy', 'loginPolicyModal']) tte($(id), info.requireDisclosure ? 'rp_login_policy_enforced' : 'rp_login_open', polVars);
+      $('requirePred').closest('label').style.display = info.requireDisclosure ? 'none' : '';
       $('rpInfoExpert').textContent = `arid=${info.arid ?? '-'}   origin=${info.origin}   cert_s=있음   pk_trace=있음   Mode3Log=${info.logAddress}`
         + `   지갑 에이전트=${info.walletAgentOrigin}   pk_CIA=${info.pkCiaSource}   chainId=${info.chainId}   팩토리=${info.factoryAddress ?? '(없음)'}`
         + `   AttrGate=${info.attrGateAddress ?? '(없음)'}`;
@@ -316,15 +308,31 @@
       else tte($('sessionId'), 'none');
     }
     // U5(거래소 꾸밈): 로그인 전/후로 "로그인" 카드와 "내 자산" 카드를 맞바꾸고, 계정 pill·주소를 채운다.
-    // #loginBtn 은 숨기지 않는다 — 이미 로그인된 상태에서도 다시 눌러 새 세션을 만드는 경로가 있다(브라우저 테스트가 그렇게 쓴다).
+    // #loginBtn·#connectWalletBtn 은 로그인 상태에서 숨긴다(2026-10-21, 사용자 요청) — 그전에는 로그인 중에도 다시 눌러 새 세션을 만들 수 있었다(테스트는 먼저 로그아웃한다).
+    // 내 주소(PPID) 복사(2026-10-16): 계정 pill 과 "이 RP 에서의 내 주소" 옆의 ⧉. 클립보드가 막혀 있으면 선택 복사로 대신한다.
+    // 2026-10-21: 거래 해시(온체인 출금 결과)도 같은 함수로 복사한다.
+    async function copyText(text, btn) {
+      if (!text) return;
+      try { await navigator.clipboard.writeText(text); }
+      catch { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); } finally { ta.remove(); } }
+      const prev = btn.textContent; btn.textContent = tt('rp_copied') || '복사됨'; btn.classList.add('copied');
+      setTimeout(() => { btn.textContent = prev; btn.classList.remove('copied'); }, 1200);
+    }
+    for (const id of ['copyPpidBtn', 'copyPpidNavBtn']) $(id).addEventListener('click', () => copyText(lastPPID, $(id)));
+    let lastTxHash = null;   // 마지막 온체인 출금의 txHash — 결과 아래 ⧉ 가 복사한다
+    $('copyTxHashBtn').addEventListener('click', () => copyText(lastTxHash, $('copyTxHashBtn')));
     function renderAccountView() {
       const loggedIn = !!currentSession;
       $('accountPill').hidden = !loggedIn;
+      // 2026-10-21: 로그인 상태에서는 상단의 지갑 연결·로그인 버튼을 숨긴다(로그아웃 상태에서만 보인다). 다시 로그인하려면 먼저 로그아웃.
+      $('loginBtn').hidden = loggedIn; $('connectWalletBtn').hidden = loggedIn;
       $('assetsLoggedOut').hidden = loggedIn;
       $('assetsLoggedIn').hidden = !loggedIn;
       const shortPPID = lastPPID ? `${lastPPID.slice(0, 10)}…` : '-';
       $('accountAddr').textContent = shortPPID;
       $('accountPPID').textContent = shortPPID;
+      $('accountPPID').title = lastPPID ?? ''; $('accountAddr').title = lastPPID ?? '';
+      $('copyPpidBtn').hidden = !lastPPID;   // 주소가 있을 때만(복사할 값이 있을 때만) 보인다
     }
     /** 세션의 만료 블록(max_height) — /api/mode3/login 응답에는 안 실리므로 /api/mode3/sessions 에서 다시 찾는다.
      *  서버의 rsShort(앞 8자 + …)와 같은 규칙으로 잘라 맞춘다(mode3_rp.js). 못 찾아도(막 만든 세션이 아직 안 보여도)
@@ -338,12 +346,58 @@
         $('sessionExpiry').textContent = mine ? (tt('wallet_session_expires', { h: mine.max_height }) || `만료 블록 ${mine.max_height}`) : '-';
       } catch { $('sessionExpiry').textContent = '-'; }
     }
+    // 로그인 상태 영속(2026-10-16): 관리자 페이지로 갔다 오거나 새로고침해도 로그인이 풀리지 않게 이 오리진의 localStorage 에 둔다.
+    // 서버가 재시작돼 세션이 사라졐으면 복원 뒤 /api/mode3/sessions 대조에서 걸러 다시 로그아웃 상태가 된다. 비밀은 없다(r_s·PPID·allowAgent 만).
+    const SESSION_KEY = 'mode3.rp.session';
+    function saveSession(r_s, allowAgent) {
+      try { if (r_s) localStorage.setItem(SESSION_KEY, JSON.stringify({ r_s, allowAgent, PPID: lastPPID })); else localStorage.removeItem(SESSION_KEY); } catch { /* 저장소가 막혀 있으면 탭 안에서만 유지 */ }
+    }
+    async function restoreSession() {
+      let saved = null;
+      try { saved = JSON.parse(localStorage.getItem(SESSION_KEY) ?? 'null'); } catch { saved = null; }
+      if (!saved?.r_s) return;
+      try {
+        const { sessions } = await (await fetch('/api/mode3/sessions')).json();
+        if (!(sessions ?? []).some((x) => x.r_s === `${String(saved.r_s).slice(0, 8)}…`)) { try { localStorage.removeItem(SESSION_KEY); } catch { /* */ } return; }   // 서버에 없는 세션(재시작·폐기)
+      } catch { return; }   // RP 서버를 못 읽으면 복원하지 않는다(다음 로드에 다시 시도)
+      lastPPID = saved.PPID ?? null;
+      setSession(saved.r_s, saved.allowAgent ?? null);
+      refreshSessionMeta();
+    }
+    // 세션 생존 확인(2026-10-21): 사용자 페이지에서 이 세션을 폐기·로그아웃하면 RP 가 세션을 잊는다 — 탭이 보일 때 2초마다 서버 목록과 대조해
+    // 없어졌으면 로그아웃 상태로 바꾸고 사유를 보인다(restoreSession 과 같은 대조). 로그인 직후는 서버가 먼저 알므로 경쟁이 없다.
+    let aliveChecking = false;
+    async function checkSessionAlive() {
+      if (!currentSession || aliveChecking || document.hidden) return;
+      aliveChecking = true;
+      try {
+        const r = await fetch('/api/mode3/sessions'); if (!r.ok) return;
+        const { sessions } = await r.json();
+        if (!currentSession) return;
+        if (!(sessions ?? []).some((x) => x.r_s === `${String(currentSession).slice(0, 8)}…`)) {
+          setSession(null);
+          setVerdict($('verdict'), false, 'rp_session_ended_title', () => ({ summary: tt('rp_session_ended') || '이 세션이 끝났습니다 — 사용자 페이지에서 폐기하거나 로그아웃했습니다. 다시 로그인하세요.' }));
+        }
+      } catch { /* RP 서버를 못 읽으면 그대로 둔다 */ } finally { aliveChecking = false; }
+    }
+    setInterval(checkSessionAlive, 2000);
+    /** 세션 범위의 결과 표시(재검증·잔액·출금 결과)를 초기 화면으로. 로그아웃이면 로그인 카드의 결과·로그도 비운다(2026-10-21 — 재로그인 때 옛 메시지가 남지 않게). */
+    function resetSessionViews(includeLogin) {
+      const clear = (el) => { el.__verdictArgs = null; el.className = ''; el.textContent = ''; };   // demo.js 의 언어 전환 재렌더(__verdictArgs)도 풀어 준다
+      for (const id of ['sessionVerdict', 'txVerdict']) clear($(id));
+      for (const id of ['sessionLog', 'txLog']) $(id).textContent = '';
+      $('txHashRow').hidden = true; lastTxHash = null;
+      for (const li of document.querySelectorAll('.balance-list li[data-asset]')) { const v = li.querySelector('.bal-amt'); if (v.dataset.init === undefined) v.dataset.init = v.textContent; v.textContent = v.dataset.init; }
+      if (includeLogin) { clear($('verdict')); $('log').textContent = ''; }
+    }
     function setSession(r_s, allowAgent = null) {
+      const changed = r_s !== currentSession;
       currentSession = r_s;
       currentSessionAllowAgent = r_s ? allowAgent : null;
+      saveSession(r_s, currentSessionAllowAgent);
+      if (changed) resetSessionViews(!r_s);
       renderSession();
-      $('revalidateBtn').disabled = !r_s;
-      $('requestBtn').disabled = !r_s;
+      // 재검증·요청 버튼은 세션이 없어도 활성(2026-10-16) — 누르면 no_session 사유를 보인다.
       renderAccountView();
       if (!r_s) $('sessionExpiry').textContent = '-';
       renderGuide();
@@ -401,53 +455,6 @@
       return parts.join(', ');
     }
     const fmtAt = (at) => { const t = new Date(at); return Number.isNaN(t.getTime()) ? at : t.toLocaleString(Demo.lang === 'en' ? 'en-US' : 'ko-KR'); };
-    function renderLogins() {
-      const host = $('logins');
-      host.textContent = '';
-      if (!lastLogins.length) {
-        const p = document.createElement('p'); p.className = 'muted'; tte(p, 'rp_no_logins'); host.appendChild(p);
-        return;
-      }
-      const table = document.createElement('table');
-      table.className = 'list';
-      const head = table.createTHead().insertRow();
-      // r_s·root 는 예전 <pre> 목록에 있던 값이다 — 전문가 보기에서만 보이는 칸으로 남긴다(열 전체가 숨는다).
-      for (const c of [{ key: 'rp_col_time' }, { term: 'PPID' }, { key: 'rp_col_rs', expert: true }, { term: 'root', expert: true }, { key: 'rp_col_disclosure' }, { key: 'rp_col_agent' }, { key: 'rp_col_action' }]) {
-        const th = document.createElement('th');
-        if (c.expert) th.className = 'expert';
-        if (c.term) th.appendChild(termEl(c.term)); else tte(th, c.key);
-        head.appendChild(th);
-      }
-      const body = table.createTBody();
-      for (const l of lastLogins) {
-        const row = body.insertRow();
-        const at = row.insertCell(); at.textContent = fmtAt(l.at); at.title = l.at;
-        const addr = row.insertCell();
-        const code = document.createElement('code');
-        code.textContent = `${l.PPID.slice(0, 10)}…`;
-        if (Demo.expert) code.title = l.PPID;          // 전문가 보기에서만 전체 값을 붙인다
-        addr.appendChild(code);
-        const rs = row.insertCell(); rs.className = 'expert'; rs.textContent = l.r_s ?? '';
-        const root = row.insertCell(); root.className = 'expert'; root.textContent = `${l.root.slice(0, 18)}…`; root.title = l.root;
-        row.insertCell().textContent = discSummary(l.disclosure);
-        const agent = row.insertCell();
-        const b = document.createElement('span');
-        b.className = `badge ${l.allowAgent === '1' ? 'ok' : 'muted'}`;
-        tte(b, l.allowAgent === '1' ? 'rp_agent_yes' : 'rp_agent_no');
-        agent.appendChild(b);
-        const act = row.insertCell();
-        const btn = document.createElement('button');
-        btn.type = 'button'; btn.className = 'btn-ghost'; tte(btn, 'rp_open_req');
-        btn.addEventListener('click', () => { $('openPpid').value = l.PPID; $('openBtn').click(); });
-        act.appendChild(btn);
-      }
-      host.appendChild(table);
-    }
-    async function refreshLogins() {
-      const { logins } = await (await fetch('/api/mode3/logins')).json();
-      lastLogins = logins ?? [];
-      renderLogins();
-    }
     // ---- 지갑 승인 팝업(스펙 2026-09-22 metamask-snap §3.4·§4.2·§4.3) ----
     // snap 모드에서는 /wallet/login 에 CORS 가 없다. RP 페이지가 지갑 오리진의 팝업을 열고, 팝업이 Snap 동의를 받아
     // 에이전트를 같은 오리진에서 부른 뒤 결과를 postMessage 로 돌려준다. 최종 제출(POST /api/mode3/login)은 지금처럼
@@ -504,33 +511,49 @@
     /** 팝업 요청 본문 — 로그인·재승인이 함께 쓴다(재승인은 r_s 만 있으면 된다). */
     const authorizeRequest = (extra) => ({
       arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace,
-      serviceName: SERVICE_NAME, ...extra,
+      serviceName: SERVICE_NAME,
+      // RP 정책(2026-10-16): 지갑이 이 RP 의 AttrGate 조건(허용 국가·최소 나이)을 알아야 선택 공개 트랜잭션을 맞게 채운다 — 두 번째 RP 는 정책이 다르다.
+      policy: info.predicates ? { minAge: info.predicates.minAge ?? null, allowedCountries: info.predicates.allowedCountryNames ?? info.predicates.allowedCountries ?? null, birthYearMin: info.predicates.birthYearMin ?? null } : null,
+      ...extra,
     });
 
-    // 2026-10-15: "지갑 연결" — 지갑 에이전트(/wallet/config·/mode3/health)에 닿는지 확인하고 모드·등록 상태를 상단 배지로 보여 준다. 늘 활성.
+    // 2026-10-16: "지갑 연결" — 보통 dApp 처럼 MetaMask(window.ethereum)에 계정 연결을 요청하고 주소·체인을 상단 배지로 보여 준다.
+    // (2026-10-15 의 지갑 에이전트 상태 확인은 뺐다 — 지갑 비밀 모드는 시작 때 loadWalletConfig 가 따로 읽어 #walletMode 에 보인다.) 늘 활성.
+    const shortAddr = (a) => (typeof a === 'string' && a.length > 12 ? `${a.slice(0, 6)}…${a.slice(-4)}` : String(a ?? ''));
+    function showMetaMaskPill(accounts, chainIdHex) {
+      const pill = $('walletPill'), txt = $('walletPillText'), link = $('walletPillLink');
+      pill.hidden = false; pill.classList.remove('ok', 'bad'); link.hidden = true;
+      const addr = accounts?.[0];
+      if (!addr) { txt.textContent = tt('rp_wallet_pill_mm_none') || 'MetaMask 계정이 연결되지 않았습니다'; pill.classList.add('bad'); return; }
+      const chain = chainIdHex ? String(parseInt(chainIdHex, 16)) : '?';
+      txt.textContent = tt('rp_wallet_pill_mm_ok', { addr: shortAddr(addr), chain }) || `MetaMask 연결됨 · ${shortAddr(addr)} · chain ${chain}`;
+      txt.title = addr;
+      pill.classList.add('ok');
+    }
     async function connectWallet() {
       const pill = $('walletPill'), txt = $('walletPillText'), link = $('walletPillLink');
-      const origin = info?.walletAgentOrigin ?? 'http://127.0.0.1:5100';
-      link.href = `${origin}/`;
-      pill.hidden = false; pill.classList.remove('ok', 'bad'); txt.textContent = '…';
+      pill.hidden = false; pill.classList.remove('ok', 'bad'); link.hidden = true; txt.textContent = '…';
+      const eth = window.ethereum;
+      if (!eth) { txt.textContent = tt('rp_wallet_pill_no_mm') || 'MetaMask 확장이 없습니다 — 설치한 뒤 다시 시도하세요'; pill.classList.add('bad'); return; }
       try {
-        const [cfg, h] = await Promise.all([fetch(`${origin}/wallet/config`).then((r) => r.json()), fetch(`${origin}/mode3/health`).then((r) => r.json())]);
-        walletCfg = cfg; walletCfgLoaded = true; walletCfgError = null;
-        const mode = cfg.secrets === 'snap' ? 'Snap' : cfg.secrets === 'web' ? (tt('rp_wallet_mode_web') || '브라우저') : 'file';
-        const reg = h.registered ? (tt('rp_wallet_reg_yes', { uid: h.uid ?? '' }) || `등록됨 uid ${h.uid ?? ''}`) : (tt('rp_wallet_reg_no') || '미등록');
-        txt.textContent = tt('rp_wallet_pill_ok', { mode, reg }) || `지갑 연결됨 · ${mode} · ${reg}`;
-        pill.classList.add('ok');
+        const accounts = await eth.request({ method: 'eth_requestAccounts' });
+        const chainId = await eth.request({ method: 'eth_chainId' }).catch(() => null);
+        showMetaMaskPill(accounts, chainId);
+        if (!connectWallet.listening) {
+          connectWallet.listening = true;
+          eth.on?.('accountsChanged', (accs) => showMetaMaskPill(accs, null));
+          eth.on?.('chainChanged', () => connectWallet());
+        }
       } catch (e) {
-        txt.textContent = tt('rp_wallet_pill_fail') || '지갑에 연결할 수 없음';
+        // 4001 = 사용자가 MetaMask 창에서 거절. 그 밖은 원문을 그대로 보인다.
+        txt.textContent = e?.code === 4001 ? (tt('rp_wallet_pill_mm_rejected') || 'MetaMask 연결을 거절했습니다') : `${tt('rp_wallet_pill_mm_error') || 'MetaMask 연결 실패'}: ${e?.message ?? e}`;
         pill.classList.add('bad');
       }
-      renderWalletMode?.();
     }
     $('connectWalletBtn').addEventListener('click', connectWallet);
 
     // ---- 로그인 모달(2026-10-15) ----
     // 상단 #loginBtn 은 모달을 열기만 하고, 실제 zk-Delegation 로그인은 모달의 #idpLoginBtn 이 startIdpLogin() 을 부른다.
-    // 직접 로그인·Google·Naver 는 장식이다(네트워크 호출 없음) — 눌러도 안내문만 뜬다. 단 Google 은 googleLoginOn() 이면 실제 로그인이다(아래).
     function renderModalTexts() {
       $('directId').placeholder = tt('rp_direct_id_ph') || '아이디/이메일';
       $('directPw').placeholder = tt('rp_direct_pw_ph') || '비밀번호';
@@ -546,14 +569,10 @@
     function onLoginModalKeydown(ev) { if (ev.key === 'Escape') closeLoginModal(); }
     /** Google 버튼이 실제 로그인을 여는가(스펙 2026-10-16 §3.2·§8) — IdP 가 Google 을 켰고(rp_info.oidc) 사용자가 브라우저 모드일 때만.
      *  Snap·에이전트 모드에는 Google 등록이 없다. */
-    const googleLoginOn = () => Boolean(info?.oidc?.enabled && WEB());
     function openLoginModal() {
       $('loginModal').hidden = false;
       $('loginModalNote').hidden = true;
       // data-oidc: Google 버튼의 활성 표시(테스트가 본다). 켜져 있으면 버튼 설명을 붙인다.
-      const g = googleLoginOn();
-      if (g) $('googleLoginBtn').dataset.oidc = '1'; else delete $('googleLoginBtn').dataset.oidc;
-      $('googleLoginBtn').title = g ? (tt('rp_google_login_note') || '') : '';
       document.addEventListener('keydown', onLoginModalKeydown);
       Demo.tour?.refresh();      // 체험 모드가 켜져 있으면 말풍선을 바로 #idpLoginBtn 으로 옮긴다(아래 anchorOverride).
     }
@@ -566,10 +585,12 @@
     $('loginModal').addEventListener('click', (ev) => { if (ev.target === $('loginModal')) closeLoginModal(); });
     $('directLoginBtn').addEventListener('click', () => showModalNote('rp_direct_login_note', '데모에서는 IdP 로그인만 동작합니다'));
     // Google: IdP 가 Google 을 켰고 브라우저 모드면 같은 zk 로그인을 provider:'google' 표시와 함께 연다(미등록이면 팝업이 등록 안내).
+    // Google 로 로그인(OIDC 래퍼, RP 로그인 흐름 2026-10-16): IdP 가 Google 을 켰고 web 모드면 같은 zk 로그인을 provider:'google' 로 시작한다 —
+    // 승인 창이 Google 본인 확인을 끼워 넣고, 지갑이 토큰을 발급 요청에 실어 래퍼(IdP)가 자격증명을 낸다. RP 는 토큰·Google 신원을 보지 않는다. 아니면 안내만.
     $('googleLoginBtn').addEventListener('click', async () => {
       if (!info) { try { await loadInfo(); } catch { /* 아래에서 꺼진 것으로 본다 */ } }
-      if (googleLoginOn()) { closeLoginModal(); startIdpLogin({ provider: 'google' }); return; }
-      showModalNote('rp_social_not_in_demo', '이 데모에서는 준비되지 않았습니다');
+      if (info?.oidc?.enabled && WEB()) { closeLoginModal(); startIdpLogin({ provider: 'google' }); return; }
+      showModalNote('rp_social_not_in_demo', '이 데모에서는 아직 준비되지 않았습니다');
     });
     $('naverLoginBtn').addEventListener('click', () => showModalNote('rp_social_not_in_demo', '이 데모에서는 준비되지 않았습니다'));
     renderModalTexts();
@@ -584,7 +605,8 @@
       const log = (s) => { $('log').textContent += s + '\n'; };
       try {
         if (!info) await loadInfo();
-        const pred = $('requirePred').checked ? {
+        // 2026-10-21: RP 가 로그인 조건을 요구하면(rp_info.requireDisclosure, 데모의 zkTWO) 체크박스와 무관하게 술어를 싣는다 — 서버도 강제한다.
+        const pred = (info.requireDisclosure || $('requirePred').checked) ? {
           // lo 는 스키마의 출생연도 min — RP 는 lo ≥ min 도 요구한다(출생연도 0 = 값 없음을 배제, 최종 리뷰 I1).
           disclose: [{ lo: info.predicates.birthYearMin ?? '0', hi: String(new Date().getUTCFullYear() - Number(info.predicates.minAge)) }, null, null, null],
           set: { slot: 1, members: info.predicates.allowedCountries },
@@ -668,8 +690,7 @@
           setVerdict($('verdict'), false, 'login_failed', { summary, reason: reasonCode, detail: rb });
         }
         setSession(rb.ok ? rb.r_s : null, rb.ok ? rb.allowAgent : null);
-        if (rb.ok) { $('openPpid').value = rb.PPID; refreshSessionMeta(); }
-        refreshLogins();
+        if (rb.ok) refreshSessionMeta();
       } catch (e) {
         log(`오류: ${e.message}`);
         setVerdict($('verdict'), false, 'login_failed', () => ({
@@ -682,7 +703,9 @@
     $('idpLoginBtn').addEventListener('click', () => { closeLoginModal(); startIdpLogin(); });
 
     $('revalidateBtn').addEventListener('click', async () => {
-      $('revalidateBtn').disabled = true; $('sessionLog').textContent = '';
+      if ($('revalidateBtn').dataset.tourBusy === '1') return;   // 처리 중 재클릭만 무시(버튼은 비활성화하지 않는다, 2026-10-16)
+      if (!currentSession) { setVerdict($('sessionVerdict'), false, 'revalidate_failed', { reason: 'no_session' }); return; }
+      $('revalidateBtn').dataset.tourBusy = '1'; $('sessionLog').textContent = '';
       pendingVerdict($('sessionVerdict'), 'proving');
       const log = (s) => { $('sessionLog').textContent += s + '\n'; };
       try {
@@ -746,15 +769,19 @@
       } catch (e) {
         log(`오류: ${e.message}`);
         setVerdict($('sessionVerdict'), false, 'reval_failed', { summary: e.message, detail: e.message });
-      } finally { $('revalidateBtn').disabled = !currentSession; }
+      } finally { delete $('revalidateBtn').dataset.tourBusy; }
     });
 
-    $('requestBtn').addEventListener('click', async () => {
-      $('requestBtn').disabled = true; $('sessionLog').textContent = '';
+    // 현재 잔액 확인(2026-10-21): 'balance' 본문을 세션키로 서명해 RP 에 보낸다(옛 "출금 신청"과 같은 왕복 — 본문만 다르다). RP 는 서명·root 를 검증하고
+    // 시연용 장부를 돌려준다. 거래는 없다.
+    $('balanceBtn').addEventListener('click', async () => {
+      if ($('balanceBtn').dataset.tourBusy === '1') return;   // 처리 중 재클릭만 무시(2026-10-16)
+      if (!currentSession) { setVerdict($('sessionVerdict'), false, 'request_failed', { reason: 'no_session' }); return; }
+      $('balanceBtn').dataset.tourBusy = '1'; $('sessionLog').textContent = '';
       pendingVerdict($('sessionVerdict'), 'working');
       const log = (s) => { $('sessionLog').textContent += s + '\n'; };
       try {
-        const body = 'hello';
+        const body = 'balance';
         let t0 = Date.now();
         let w, wb;
         if (WEB()) {
@@ -775,63 +802,50 @@
         const r = await post('/api/mode3/request', { r_s: currentSession, body, sig: wb.sig });
         const rb = await r.json();
         log(`RP 요청 ${ms(t0)}: ${JSON.stringify(rb)}`);
-        // echo 는 서버가 되돌린 요청 본문(자유 문자열)이고, 결과 카드 자체는 거래소 꾸밈의 "출금 접수" 문구를 쓴다
-        // (rp_request_echo, mode3/common/strings.js) — 왕복 메커니즘은 바뀌지 않았다.
         if (rb.ok) {
-          setVerdict($('sessionVerdict'), true, 'request_ok', () => ({ summary: tt('rp_request_echo', { echo: rb.echo }) || `RP 가 세션 서명을 확인하고 “${rb.echo}” 를 돌려줬습니다.`, detail: rb }));
+          const led = rb.balance?.ledger ?? {};
+          for (const li of document.querySelectorAll('.balance-list li[data-asset]')) { const v = led[li.dataset.asset]; if (v != null) li.querySelector('.bal-amt').textContent = v; }
+          setVerdict($('sessionVerdict'), true, 'request_ok', () => ({ summary: tt('rp_balance_ok', { krw: led.KRW ?? '-', btc: led.BTC ?? '-', eth: led.ETH ?? '-' }) || `잔액 확인 완료(세션 서명 검증 ok) — KRW ${led.KRW ?? '-'}, BTC ${led.BTC ?? '-'}, ETH ${led.ETH ?? '-'}`, detail: rb }));
           progress.used = true;
           renderGuide();
         } else setVerdict($('sessionVerdict'), false, 'request_failed', { reason: rb.reason ?? 'internal', detail: rb });
       } catch (e) {
         log(`오류: ${e.message}`);
         setVerdict($('sessionVerdict'), false, 'request_failed', { summary: e.message, detail: e.message });
-      } finally { $('requestBtn').disabled = !currentSession; }
+      } finally { delete $('balanceBtn').dataset.tourBusy; }
     });
 
-    // U5: 로그아웃은 이 페이지의 화면 상태만 지운다 — 새 서버 경로가 없다(세션 자체는 RP·지갑에 그대로 남는다).
-    $('logoutBtn').addEventListener('click', () => { setSession(null); });
-
-    let openingId = null;
-    /** 개봉 요청(PPID 또는 tx hash). 원문 로그는 지금처럼 #openLog 에 그대로 남긴다. */
-    async function requestOpening(body) {
-      pendingVerdict($('openVerdict'), 'working');
+    // 온체인 출금(2026-10-16): 사용자 승인 창에 mode3-tx 요청 — 팝업이 증명·서명·릴레이·영수증까지 끝내고 txHash 를 돌려준다.
+    $('txBtn').addEventListener('click', async () => {
+      if ($('txBtn').dataset.tourBusy === '1') return;   // 처리 중 재클릭만 무시(버튼은 늘 활성)
+      if (!currentSession) { setVerdict($('txVerdict'), false, 'tx_failed', { reason: 'no_session' }); return; }
+      if (!WEB()) { setVerdict($('txVerdict'), false, 'tx_failed', () => ({ summary: tt('rp_tx_web_only') || '온체인 출금은 web 모드(브라우저 사용자 페이지)에서만 됩니다' })); return; }
+      $('txBtn').dataset.tourBusy = '1'; $('txLog').textContent = ''; $('txHashRow').hidden = true;
+      pendingVerdict($('txVerdict'), 'proving');
+      const log = (s) => { $('txLog').textContent += s + '\n'; };
       try {
-        const r = await post('/api/mode3/open', body);
-        const b = await r.json().catch(() => ({}));
-        $('openLog').textContent = `요청 → ${r.status} ${JSON.stringify(b)}`;
-        openingId = b.id ?? null;
-        $('openPollBtn').disabled = !openingId;
-        if (r.ok && openingId) setVerdict($('openVerdict'), true, 'rp_open_requested_title', () => ({ summary: tt('rp_open_requested') || '개봉 요청을 보냈습니다. IdP 관리자가 승인하면 "결과 확인"에서 볼 수 있습니다.', detail: b }));
-        else setVerdict($('openVerdict'), false, 'rp_open_failed', { reason: b.reason ?? b.error ?? `HTTP ${r.status}`, detail: b });
-      } catch (e) {
-        $('openLog').textContent = `요청 오류: ${e.message}`;
-        setVerdict($('openVerdict'), false, 'rp_open_failed', { summary: e.message, detail: e.message });
-      }
-    }
-    $('openBtn').addEventListener('click', () => requestOpening({ PPID: $('openPpid').value.trim() }));
-    $('openTxBtn').addEventListener('click', () => requestOpening({ txHash: $('openTx').value.trim() }));
-    $('openPollBtn').addEventListener('click', async () => {
-      pendingVerdict($('openVerdict'), 'working');
-      try {
-        const r = await fetch(`/api/mode3/open/${openingId}`);
-        const b = await r.json().catch(() => ({}));
-        $('openLog').textContent += `\n결과 → ${r.status} ${JSON.stringify(b)}`;
-        if (b.allowAgent != null) $('openLog').textContent += `\nAI agent ${b.allowAgent === '1' ? '허용됨' : '허용 안 됨'}`;
-        if (r.status === 202) { setVerdict($('openVerdict'), null, 'rp_open_awaiting', { pending: true, detail: b }); return; }
-        if (r.ok && b.uid) {
-          setVerdict($('openVerdict'), true, 'rp_open_result_title', () => ({
-            summary: tt('rp_open_result', { uid: b.uid, agent: tt(b.allowAgent === '1' ? 'rp_agent_yes' : 'rp_agent_no') || b.allowAgent }) || `uid=${b.uid}`, detail: b,
-          }));
-          progress.opened = true;
-          renderGuide();
-        } else setVerdict($('openVerdict'), false, 'rp_open_failed', { reason: b.reason ?? b.error ?? b.status ?? `HTTP ${r.status}`, detail: b });
-      } catch (e) {
-        $('openLog').textContent += `\n결과 오류: ${e.message}`;
-        setVerdict($('openVerdict'), false, 'rp_open_failed', { summary: e.message, detail: e.message });
-      }
+        const to = $('txTo').value.trim(), value = ($('txValue').value.trim() || '0');
+        const t0 = Date.now();
+        log('1. 사용자 승인 창 — 받는 주소·금액을 확인하고 승인하세요.');
+        let result;
+        try { result = await popupCall('mode3-tx', authorizeRequest({ r_s: currentSession, to, value, data: '0x' })); }
+        catch (e) {
+          log(`팝업 ${ms(t0)}: ${e.reason ?? ''} ${e.message}`);
+          setVerdict($('txVerdict'), false, e.reason === 'popup_blocked' ? 'popup_blocked' : 'tx_failed', () => ({ summary: tt(POPUP_HINT[e.reason] ?? '') || e.message, reason: e.reason, detail: e.message }));
+          return;
+        }
+        if (!result.ok) { log(`팝업 ${ms(t0)}: ${result.reason ?? ''} ${result.detail ?? ''}`); setVerdict($('txVerdict'), false, 'tx_failed', { reason: result.reason ?? 'internal', detail: result }); return; }
+        log(`2. 전송 ${ms(t0)}: txHash=${result.txHash}${result.deployTxHash ? `  배포 txHash=${result.deployTxHash}` : ''}  지갑=${result.wallet ?? ''}`);
+        setVerdict($('txVerdict'), true, 'tx_ok', () => ({ summary: tt('rp_tx_ok', { hash: `${String(result.txHash).slice(0, 14)}…` }) || `전송 성공 — ${result.txHash}`, detail: result }));
+        lastTxHash = result.txHash; $('txHashCode').textContent = `${String(result.txHash).slice(0, 18)}…`; $('txHashCode').title = result.txHash; $('txHashRow').hidden = false;
+        progress.used = true; renderGuide();
+      } finally { delete $('txBtn').dataset.tourBusy; }
     });
 
-    $('refreshLogins').addEventListener('click', refreshLogins);
+    // 로그아웃(2026-10-16): RP 서버의 세션을 지우고(POST /api/mode3/logout) 화면 상태를 비운다. 지갑은 다음 상태 새로고침(2초)에 이 RP 에 물어 그 세션을 목록에서 뺀다.
+    // (U5 때는 화면만 지웠다 — 세션이 RP·지갑에 남아 혼란스러웠다.) IdP 폐기 트리는 건드리지 않는다.
+    $('logoutBtn').addEventListener('click', async () => { const r_s = currentSession; setSession(null); if (r_s) { try { await post('/api/mode3/logout', { r_s }); } catch { /* 서버가 죽어 있어도 화면은 로그아웃 */ } } });
+
     Demo.init({ page: 'rp' });
     // 체험 모드의 잠금(설계 2026-09-25 §3.3). otherwise 는 이 버튼의 원래 활성 규칙 — 서비스가 승인된 뒤에만 로그인할 수 있다.
     // (rp_info 를 아직 못 읽었으면 지금까지처럼 열어 둔다 — 눌리면 핸들러가 먼저 loadInfo 를 한다.)
@@ -840,7 +854,8 @@
     Demo.tour?.onToggle(renderGuide);
     // 2026-10-15: 로그인 모달이 열려 있는 동안은 말풍선이 #loginBtn 대신 모달 안의 #idpLoginBtn 을 가리킨다(demo.js 의 작은 훅).
     if (Demo.tour) Demo.tour.anchorOverride = (id) => (id === 'loginBtn' && !$('loginModal').hidden) ? 'idpLoginBtn' : id;
-    loadInfo().then(refreshLogins);
+    loadInfo();
+    restoreSession();   // 로그인 상태 복원(2026-10-16) — rp_info 와 무관하게 이 서버의 세션 목록만 본다
   </script>
 
   <script>

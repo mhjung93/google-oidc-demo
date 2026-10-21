@@ -80,6 +80,8 @@ export async function startIsolatedCia(opts = {}) {
     // cia.js 는 MODE3_OIDC_CLIENT_ID 가 비면 GOOGLE_CLIENT_ID(Mode 1 용, .env 에 있을 수 있다)로 떨어진다 — 그 값까지
     // 빈 문자열로 막아야 oidc 옵션 없는 격리 IdP 가 뜻하지 않게 Google 을 켜지 않는다.
     GOOGLE_CLIENT_ID: '',
+    // 데모 설정(2026-10-21)은 기본으로 끈다 — 데모 스크립트가 내보낸 값이 셸에 남아 있어도 테스트 IdP 는 시크릿을 묻는다. 켜는 테스트만 extraEnv 로.
+    CIA_ADMIN_OPEN: '',
     ...extraEnv,
   };
   const logFile = path.join(dir, 'cia.log');

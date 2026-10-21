@@ -30,7 +30,7 @@ const REASONS = ['stale_root', 'stale_registry_root', 'root_too_old', 'revalidat
   'locked', 'bad_password', 'zk_assets_unavailable', 'storage_unavailable', 'relay_inactive', 'relay_bad_target', 'relay_bad_calldata', 'relay_gas', 'relay_rate_limited', 'origin_mismatch',
   'chain_unavailable', 'no_factory', 'execute_reverted', 'schema_invalid', 'bad_attr',
   // 2026-10-16 Google(OIDC 래퍼) — IdP 의 토큰 검증 코드와 페이지의 GIS 코드
-  'oidc_disabled', 'oidc_invalid', 'oidc_nonce_mismatch', 'oidc_unavailable', 'gsi_unavailable', 'gsi_origin',
+  'oidc_disabled', 'oidc_invalid', 'oidc_nonce_mismatch', 'oidc_unavailable', 'oidc_required', 'gsi_unavailable', 'gsi_origin',
   // 2026-10-16 최종 리뷰 M5 — 사용자 코어가 IdP 를 부르기 전에 내는 코드
   'uid_mismatch', 'no_pending_registration'];
 
@@ -67,7 +67,7 @@ t('ui 에 거울 상태 줄 키가 있다', () => {
   for (const k of ['admin_mirror_line', 'admin_mirror_unreadable', 'rp_mirror_line', 'wallet_mirror_line']) assert.ok(S.ui[k], k);
 });
 // 체험 모드(설계 2026-09-25 §3) — 단계마다 말풍선 문구와 대상 요소 id, 그리고 스위치·잠금·완료 문구.
-const TOUR_PAGES = ['rp', 'wallet', 'admin', 'account'];
+const TOUR_PAGES = ['rp', 'rp_admin', 'wallet', 'admin', 'account'];   // rp_admin: RP 관리자 페이지(2026-10-16, 승인 개봉 이동)
 t('steps 에 체험 모드 말풍선 문구(tour)와 대상 요소(target)가 있다', () => {
   for (const s of S.steps) {
     for (const l of S.langs) { assert.ok(s.tour?.[l]?.title, `${s.key}.tour.${l}.title`); assert.ok(s.tour?.[l]?.body, `${s.key}.tour.${l}.body`); }
@@ -101,10 +101,10 @@ t('ui 에 지갑 공개 조건 폼·claim 버튼 키가 있다', () => {
 });
 // RP 데모(zkONE 거래소 꾸밈, 2026-10-14 U5) — 상단 내비·KRW 시세표·내 자산 패널·컴플라이언스 묶음 문구.
 t('ui 에 RP 거래소 꾸밈(내비·시세표·내 자산·컴플라이언스) 키가 있다', () => {
-  for (const k of ['nav_market', 'nav_assets', 'nav_withdraw', 'rp_logout_btn', 'rp_pending_banner', 'rp_connect_wallet_btn', 'rp_wallet_pill_ok', 'rp_wallet_pill_fail', 'rp_wallet_reg_yes', 'rp_wallet_reg_no',
+  for (const k of ['nav_market', 'nav_assets', 'nav_balance', 'rp_logout_btn', 'rp_pending_banner', 'rp_connect_wallet_btn', 'rp_wallet_pill_ok', 'rp_wallet_pill_fail', 'rp_wallet_reg_yes', 'rp_wallet_reg_no',
     'market_title', 'market_demo_note', 'market_col_coin', 'market_col_price', 'market_col_change', 'market_col_volume',
     'assets_title', 'rp_login_policy', 'rp_login_nav_hint', 'rp_session_expiry_label',
-    'rp_withdraw_title', 'rp_withdraw_desc', 'rp_withdraw_amount_label', 'compliance_title']) assert.ok(S.ui[k], k);
+    'rp_balance_title', 'rp_balance_desc', 'rp_balance_btn', 'compliance_title']) assert.ok(S.ui[k], k);
 });
 // 로그인 모달(2026-10-15) — mode3/rp.html 의 #loginModal(직접 로그인 장식·Google·Naver 미지원 안내·#idpLoginBtn 이 실제 zk 로그인).
 t('ui 에 로그인 모달 키가 있다', () => {

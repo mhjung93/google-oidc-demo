@@ -434,8 +434,11 @@ app.get('/mode3/health', async (req, res) => {
   if (Date.now() - ciaSeenAt > CIA_FRESH_MS) pingCia();
   let chain = null;
   try { const [id, head] = await bounded(Promise.all([chainId(), provider.getBlockNumber()]), 1200); chain = { id: id.toString(), head: head.toString() }; } catch { /* 체인 없음·응답 없음 */ }
+  // rpCount(U6, 체험 모드 login2 단계 — 두 번째 RP 로그인): 세션에 남은 서로 다른 arid 수. 세션이 지워지면(만료·폐기)
+  // 함께 준다 — "지금 몇 RP 에 로그인 상태인가"다(누적이 아니다).
+  const rpCount = new Set(Object.values(state.sessions).map((s) => String(s.arid))).size;
   res.json(buildWalletHealth({ now: new Date().toISOString(), chain, secrets: SECRETS, registered: !!state.registration, hasCred: !!state.registration?.userCred, sessions: Object.keys(state.sessions).length,
-    txs: txCount, disclosedTxs: disclosedTxCount, ciaReachable: Date.now() - ciaSeenAt <= CIA_FRESH_MS, rpOrigin: RP_ORIGIN, rpOrigins: RP_ORIGINS, ciaUrl: CIA_URL }));
+    txs: txCount, disclosedTxs: disclosedTxCount, rpCount, ciaReachable: Date.now() - ciaSeenAt <= CIA_FRESH_MS, rpOrigin: RP_ORIGIN, rpOrigins: RP_ORIGINS, ciaUrl: CIA_URL }));
 });
 
 /** PPID 계정 주소(팩토리 computeAddress) — 상태 조회마다 RPC 를 치지 않게 (factory, PPID) 별로 캐시한다. RPC 실패면 null(표기만 비운다). */
@@ -1049,7 +1052,8 @@ async function buildExecute(req) {
   // 아직 배포 전이면 nonce 는 0(uint256 기본값) — 배포 트랜잭션을 먼저 보낸 뒤 execute 가 이 nonce 로 들어간다
   const deployNeeded = (await provider.getCode(walletAddr)) === '0x';
   const nonce = deployNeeded ? 0n : await walletAt(walletAddr, provider).nonce();
-  const payload = { to: ethers.getAddress(to), value: BigInt(value), data, nonce };
+  // 받는 주소(2026-10-16): 대소문자 체크섬이 안 맞는 입력도 받는다(소문자로 내려 정규형) — 사용자 페이지 코어와 같은 규칙.
+  const payload = { to: (() => { try { return ethers.getAddress(to); } catch { return ethers.getAddress(String(to).toLowerCase()); } })(), value: BigInt(value), data, nonce };
   // 시연(가짜 서명, 사용자 요청 2026-10-14): 세션키 대신 매번 새로 뽑는 임의 키로 서명한다 — 컨트랙트의 _recover 가 복원한 주소가
   // pub[2](pk_i)와 달라 BadSignature 로 거절한다. proveSession 의 signChallenge 가 아니라 여기서 따로 take 하는 이유는
   // proveSession 이 /wallet/login·revalidate 와 공유되는데 그쪽 sig(세션 챌린지 서명)는 이 경로에서 쓰지 않기 때문이다 —

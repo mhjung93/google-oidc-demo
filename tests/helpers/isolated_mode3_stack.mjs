@@ -23,6 +23,7 @@ const PINNED_ENV = {
   MODE3_RP_REGISTRATION_POLL_MS: '300', MODE3_RP_LOGIN_LOG: '',
   MODE3_RP_FACTORY_ADDRESS: '', MODE3_VERIFIER_ADDRESS: '', MODE3_RELAYER_INDEX: '', MODE3_MAX_ROOT_AGE: '', MODE3_MAX_LIFETIME_BLOCKS: '',
   MODE3_TTL_BLOCKS: '', MODE3_HEIGHT_GRID: '', MODE3_ALLOWED_COUNTRIES: '', MODE3_MIN_AGE: '',
+  MODE3_REQUIRE_DISCLOSURE: '', MODE3_DEMO_GENERATION: '',   // 2026-10-21 데모 설정 — 데모 스크립트가 내보낸 값이 셸에 남아 있어도 테스트는 끈다
   MODE3_REV_CHAIN_RPC: '',   // V10: 지갑의 캐노니컬 RPC — 비우면 CIA_RPC_URL(격리 스택은 체인 하나)
 };
 
@@ -100,7 +101,7 @@ export async function startIsolatedMode3Stack(opts = {}) {
     // 지갑 자식은 restartWallet() 이 같은 상태 파일·env 로 다시 띄운다(snap 모드의 "재시작 뒤 needs_consent" 시험용).
     const walletScript = userMode === 'web' ? 'mode3_user_static.js' : 'mode3_wallet_agent.js';
     const walletReady = userMode === 'web' ? `${walletOrigin}/wallet/config` : `${walletOrigin}/wallet/status`;
-    const walletSpawn = { env: { MODE3_WALLET_PORT: String(walletPort), MODE3_WALLET_STATE_FILE: walletStateFile, MODE3_CIA_URL: cia.base, MODE3_RP_ORIGIN: [rpOrigin, ...extraRpOrigins, ...extraRpSpecs.map((e) => e.origin)].join(','), CIA_LOG_ADDRESS: cia.logAddress, MODE3_MIRROR_ADDRESS: cia.mirrorAddress, MODE3_WALLET_PUBLIC_ORIGIN: walletOrigin, ...walletChainEnv, ...walletEnv }, readyUrl: walletReady, logFile: walletLog };
+    let walletSpawn = { env: { MODE3_WALLET_PORT: String(walletPort), MODE3_WALLET_STATE_FILE: walletStateFile, MODE3_CIA_URL: cia.base, MODE3_RP_ORIGIN: [rpOrigin, ...extraRpOrigins, ...extraRpSpecs.map((e) => e.origin)].join(','), CIA_LOG_ADDRESS: cia.logAddress, MODE3_MIRROR_ADDRESS: cia.mirrorAddress, MODE3_WALLET_PUBLIC_ORIGIN: walletOrigin, ...walletChainEnv, ...walletEnv }, readyUrl: walletReady, logFile: walletLog };
     let walletChild = await spawnServer(walletScript, walletSpawn);
     children.push(walletChild);
     const wallet = client(walletOrigin, walletLog);
@@ -197,9 +198,10 @@ export async function startIsolatedMode3Stack(opts = {}) {
       oidc: cia.oidc,   // oidc 옵션으로 띄웠으면 발급자 스텁(mint·stop), 아니면 null
       rpOriginForWallet: rpOrigin,   // rp:false 여도 지갑에는 이 값을 CORS 오리진으로 넘겼다
       /** 지갑 자식만 죽이고 같은 상태 파일·env 로 다시 띄운다. 메모리(세션 witness·증명 캐시)만 사라진다. */
-      async restartWallet() {
+      async restartWallet(extraEnv = {}) {   // extraEnv 는 restartRp 처럼 누적된다(2026-10-21)
         await stopChild(walletChild);
         children.splice(children.indexOf(walletChild), 1);
+        walletSpawn = { ...walletSpawn, env: { ...walletSpawn.env, ...extraEnv } };
         walletChild = await spawnServer(walletScript, walletSpawn);
         children.push(walletChild);
       },

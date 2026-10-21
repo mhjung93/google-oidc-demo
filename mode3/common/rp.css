@@ -96,3 +96,56 @@ html[data-expert] .opt-row.expert { display: flex; }
   .nav-link { padding: 4px 0; }
   .exchange-main { padding: 16px 16px 40px; }
 }
+
+/* 2026-10-15: 상단 "지갑 연결" 보조 버튼과 지갑 상태 배지 */
+.nav-cta-secondary { background: transparent; color: #0b1f3a; border: 1px solid #0b1f3a; margin-right: 8px; }
+.nav-cta-secondary:hover { background: #eef3fb; }
+.wallet-pill { margin-left: 8px; }
+.wallet-pill.ok .pill-dot { background: #1a9c4a; }
+.wallet-pill.bad .pill-dot { background: #c62828; }
+.wallet-pill a { margin-left: 6px; color: #0b1f3a; text-decoration: underline; font-size: 12px; }
+
+/* ---- 로그인 모달(2026-10-15) ---- */
+/* z-index:15 는 demo.css 의 #demoBar(5) 보다 위, .tour-bubble(20) 보다는 아래로 둔다 — 체험 모드 말풍선이
+   모달 안의 #idpLoginBtn 을 가리킬 때 이 배경막에 가려지면 안 된다. */
+.modal-backdrop { position: fixed; inset: 0; z-index: 15; background: rgba(11,31,61,.55); display: flex; align-items: center; justify-content: center; padding: 20px; }
+.modal-backdrop[hidden] { display: none; }
+.modal-box { background: var(--card); border-radius: 14px; width: 100%; max-width: 380px; max-height: 90vh; overflow-y: auto; padding: 24px; box-shadow: 0 20px 60px rgba(11,31,61,.35); }
+.modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.modal-head h2 { margin: 0; font-size: 19px; color: var(--navy-ink); font-weight: 800; }
+.modal-close { background: transparent; border: none; font-size: 22px; line-height: 1; color: var(--muted); cursor: pointer; padding: 2px 6px; }
+.modal-close:hover { color: var(--navy-ink); }
+.direct-login { display: flex; flex-direction: column; gap: 8px; margin-bottom: 4px; }
+.direct-login input { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; font-size: 14px; }
+.direct-login button { margin-top: 2px; background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 10px; font-weight: 700; font-size: 14px; cursor: pointer; }
+.direct-login button:hover { background: #0f49bd; }
+.modal-note { font-size: 12.5px; color: #8a5200; background: #fff4e5; border: 1px solid #ffd9a0; border-radius: 8px; padding: 8px 10px; margin: 10px 0 0; }
+.modal-divider { display: flex; align-items: center; gap: 10px; margin: 18px 0 14px; color: var(--muted); font-size: 12.5px; }
+.modal-divider::before, .modal-divider::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+.social-row { display: flex; flex-direction: column; gap: 8px; }
+.social-btn { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; font-size: 14px; font-weight: 600; cursor: pointer; color: var(--ink); }
+.social-btn:hover { background: var(--surface); }
+.social-badge { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; font-size: 11px; font-weight: 800; color: #fff; flex: none; }
+.badge-google { background: linear-gradient(135deg, #4285f4, #34a853); }
+.badge-naver { background: #03c75a; }
+.social-btn-idp { background: var(--navy); border-color: var(--navy); color: #fff; }
+.social-btn-idp:hover { background: var(--navy-ink); }
+
+/* ---- zkTWO 브랜드(2026-10-15 W2) ---- */
+/* rp.html 의 renderBrand() 가 info.name 에 맞춰 body[data-brand] 를 단다. 포인트 색만 남색 계열에서
+   청록(#0f766e)으로 바꾸고 상단 바 배경을 더 짙은 청록으로, 워드마크 옆에 작은 "2" 배지를 붙인다 —
+   마켓 표·레이아웃은 zkONE 과 같다. */
+body[data-brand="zkTWO"] {
+  --navy: #0a3a35;
+  --navy-ink: #0f766e;
+  --accent: #0f766e;
+}
+body[data-brand="zkTWO"] .brand::after {
+  content: '2';
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; margin-left: 6px;
+  border-radius: 50%; background: #0f766e; color: #fff;
+  font-size: 11px; font-weight: 800; vertical-align: middle;
+}
+/* 내 주소 복사 버튼(2026-10-16) — 계정 pill(흰 글자 위)과 카드 안(검은 글자) 양쪽에서 쓴다. */
+.account-pill .pill-copy { color: #fff; }

@@ -53,6 +53,9 @@ try {
   }
 
   const text = (page, sel) => page.$eval(sel, (el) => el.textContent ?? '');
+  // 로그인 모달(2026-10-15): #loginBtn 은 모달을 열기만 하고, 실제 zk 로그인은 모달의 #idpLoginBtn 이 한다.
+  // 2026-10-21: 로그인 상태에서는 로그인 버튼이 숨으므로, 이미 로그인돼 있으면 먼저 로그아웃한다.
+  const idpLogin = async (page) => { if (await page.$eval('#loginBtn', (b) => b.hidden)) { await page.click('#logoutBtn'); await page.waitForSelector('#loginBtn:not([hidden])'); } await page.click('#loginBtn'); await page.click('#idpLoginBtn'); };
   /** sel 의 텍스트가 needle 을 담을 때까지 기다린다. 실패하면 지금 보이는 텍스트를 붙여 던진다. */
   async function waitText(page, sel, needle, timeout = 30_000) {
     try {
@@ -69,11 +72,13 @@ try {
 
   await t('체험 모드: 서비스 로그인은 지갑 등록 전 잠긴다(?tour=1 은 저장되고 주소창에서 지워진다)', async () => {
     await rpPage.goto(`${rp.base}/?tour=1`);
-    await rpPage.waitForFunction(() => document.querySelector('#loginBtn')?.disabled === true, undefined, { timeout: 30_000 });
+    // 2026-10-16: 잠금은 사유 배지만 — 버튼은 비활성화되지 않는다(모든 버튼 늘 활성).
+    await rpPage.waitForSelector('.tour-lock', { timeout: 30_000 });
+    assert.equal(await rpPage.$eval('#loginBtn', (b) => b.disabled), false, '잠겨도 버튼은 활성이다');
     const badge = await rpPage.$('.tour-lock');
     assert.ok(badge, '잠금 사유 배지(.tour-lock)가 있어야 한다');
     assert.equal(await badge.getAttribute('data-for'), 'loginBtn');
-    assert.ok((await badge.textContent()).includes('지갑'), `배지 문구: ${j(await badge.textContent())}`);
+    assert.ok((await badge.textContent()).includes('사용자'), `배지 문구: ${j(await badge.textContent())}`);
     assert.equal(new URL(rpPage.url()).search, '', `주소창에 ?tour 가 남았다: ${rpPage.url()}`);
     assert.equal(await rpPage.evaluate(() => localStorage.getItem('mode3.tour')), '1');
     assert.equal(await rpPage.evaluate(() => document.querySelector('#tourToggle')?.checked), true, '스위치가 켜진 채로 보인다');
@@ -84,19 +89,24 @@ try {
     await walletPage.waitForSelector('#mainView:not([hidden])', { timeout: 30_000 });
     // 서비스는 격리 헬퍼가 이미 승인해 두었으므로 2단계(등록)는 잠기지 않는다.
     await walletPage.waitForFunction(() => document.querySelector('#registerBtn') && !document.querySelector('#registerBtn').disabled, undefined, { timeout: 30_000 });
-    assert.equal(await walletPage.$('.tour-lock'), null, '승인된 서비스가 있으면 등록 버튼은 잠기지 않는다');
+    assert.equal((await walletPage.$('.tour-lock')) === null, true, '승인된 서비스가 있으면 등록 버튼은 잠기지 않는다');
     await walletPage.click('#registerBtn');
     await waitText(walletPage, '#registerResult', '등록됨', 60_000);
     // 서비스 페이지는 5초마다 지갑 health 를 읽는다 — 다음 폴링에 잠금이 풀려야 한다.
-    await rpPage.waitForFunction(() => document.querySelector('#loginBtn')?.disabled === false, undefined, { timeout: 30_000 });
-    assert.equal(await rpPage.$('.tour-lock'), null, '잠금이 풀리면 배지도 사라진다');
+    // 2026-10-16: 버튼은 늘 활성이라 disabled 로는 풀림을 알 수 없다 — 배지가 사라지기를 기다린다(RP 가 다음 폴링에 지갑 등록을 본다).
+    await rpPage.waitForSelector('.tour-lock', { state: 'detached', timeout: 30_000 });
+    assert.equal(await rpPage.$eval('#loginBtn', (b) => b.disabled), false, '잠금이 풀린 뒤에도 버튼은 활성');
     await rpPage.waitForFunction(() => (document.querySelector('.tour-bubble')?.textContent ?? '').includes('로그인'), undefined, { timeout: 30_000 });
   });
 
-  await t('로그인 뒤 말풍선이 4단계(이용)로 옮겨 가고 상태 점 셋 이상이 초록', async () => {
-    await rpPage.click('#loginBtn');
+  // U6(2026-10-14): login2(두 번째 RP 로그인, unlinkability 시연)가 3단계(로그인) 뒤에 끼었다. 이 격리 스택은 RP 가
+  // 하나뿐이라(startIsolatedMode3Stack 기본값) login2 는 절대 끝낼 수 없다 — 말풍선 대신 "다른 창에서" 카드로 뜨고
+  // (두 번째 RP 를 모르니 링크 없이 문구만), 그 뒤 단계(이용 등)의 완료 여부 자체는 막지 않는다(상태 점은 독립 판정).
+  await t('로그인 뒤 카드가 4단계(두 번째 RP 로그인)로 옮겨 가 "다른 창에서"로 뜨고 상태 점 셋 이상이 초록', async () => {
+    await idpLogin(rpPage);
     await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
-    await rpPage.waitForFunction(() => (document.querySelector('.tour-bubble')?.textContent ?? '').includes('재검증'), undefined, { timeout: 30_000 });
+    await rpPage.waitForFunction(() => (document.querySelector('#tourCard')?.textContent ?? '').includes('두 번째'), undefined, { timeout: 30_000 });
+    assert.equal((await rpPage.$('.tour-bubble')) === null, true, 'RP 가 하나뿐이면 두 번째 RP 를 가리킬 수 없다 — 말풍선이 아니라 카드만 남는다');
     await rpPage.waitForFunction(() => [...document.querySelectorAll('.stack-dots .dot')].filter((d) => d.classList.contains('ok')).length >= 3, undefined, { timeout: 30_000 })
       .catch(async () => { throw new Error(`초록 점이 셋 미만이다: ${j(await dotClasses(rpPage))}`); });
   });
@@ -107,7 +117,7 @@ try {
     // 2026-10-01 리뷰 Important 1 회귀 확인: 바꿔치기 뒤 로그인은 403 registry_mismatch 로 거절되고, 서비스 페이지의
     // 판정 제목 줄(.summary, demo.js 의 renderVerdict 가 쓰는 클래스)이 빈 줄이 아니라 사유 사전의 제목을 그대로
     // 보여야 한다 — summary 를 섣불리 ''로 채우면 demo.js 의 `summary ?? r.title` 폴백이 깨져 이 줄이 비어 버린다.
-    await rpPage.click('#loginBtn');
+    await idpLogin(rpPage);
     const mismatchTitle = await rpPage.evaluate(() => window.DemoStrings?.reasons?.registry_mismatch?.ko?.title ?? '');
     await rpPage.waitForFunction((needle) => (document.querySelector('#verdict .summary')?.textContent ?? '').includes(needle), mismatchTitle, { timeout: 60_000 });
     assert.equal(await rpPage.$eval('#verdict .summary', (el) => el.textContent), mismatchTitle, '회귀: 제목 줄이 비면 안 된다');
@@ -127,7 +137,7 @@ try {
     assert.equal((await stack.cia.adminPost('/cia/revoke', { uid: '12345', scope: 'credential' })).status, 200);   // 다음 로그인이 새로 받게
     await walletPage.click('#demoNewSalt'); await walletPage.selectOption('#demoScope', 'issue'); await walletPage.click('#demoApplyBtn');
     await waitText(walletPage, '#demoVerdict', '적용', 10_000);
-    await rpPage.click('#loginBtn');
+    await idpLogin(rpPage);
     await waitText(rpPage, '#verdict', '[시연 모드]', 120_000);
     // 2026-10-01 리뷰 Important 1 + round 2: 시연 모드 실패는 제목 줄 앞에 "[시연 모드] " 를 붙이고, 그 뒤에
     // 사유 사전의 제목(이 시나리오의 사유는 user_cred_failed)이 **비지 않고** 그대로 와야 한다. round 1 때는
@@ -139,7 +149,7 @@ try {
     const demoRemainder = demoSummary.slice('[시연 모드] '.length);
     assert.notEqual(demoRemainder, '', `사유 제목이 비어 있다(공허한 통과를 막는 검사): ${demoSummary}`);
     assert.equal(demoRemainder, ucFailedTitle, `사유 제목이 사전과 다르다: ${demoSummary}`);
-    await rpPage.click('#loginBtn');
+    await idpLogin(rpPage);
     await waitText(rpPage, '#verdict', '로그인 성공', 180_000);   // 덮어쓰기는 한 번만 — 그다음은 정상
     await walletPage.evaluate(() => Demo.setExpert(false));
   });

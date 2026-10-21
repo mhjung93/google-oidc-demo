@@ -52,3 +52,7 @@ table.list { width:100%; border-collapse:collapse; font-size:14px } table.list t
 .tour-elsewhere p { margin:0; color:var(--muted) } .tour-elsewhere .btn { padding:4px 10px; font-size:13px }
 @media (max-width:900px) { .tour-bubble { left:16px !important; right:16px; max-width:none } }
 .tour-bubble.side::before { top:16px; left:-6px; border:6px solid transparent; border-right-color:#1d2433; border-left:0; border-bottom-color:transparent }
+/* 복사 버튼(⧉) — RP 페이지의 내 주소, 거래 해시(RP·RP 관리자·사용자 페이지) 옆. 2026-10-21 rp.css 에서 옮겼다(사용자 페이지도 쓴다). */
+.copy-btn { background: transparent; border: 1px solid transparent; color: inherit; cursor: pointer; font-size: 14px; line-height: 1; padding: 2px 6px; border-radius: 6px; vertical-align: middle; }
+.copy-btn:hover { border-color: currentColor; }
+.copy-btn.copied { font-size: 11.5px; }
