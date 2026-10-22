@@ -1,6 +1,8 @@
 // Mode 3 브라우저 경로 — 실제 Chrome 에서 지갑 페이지·승인 팝업·RP 페이지를 돌린다(스펙 2026-09-22 metamask-snap §7).
 // MetaMask 는 tests/helpers/ethereum_stub.js 가 대신하고, Snap 은 **진짜 snap-mode3/src/index.js 의 onRpcRequest** 가 답한다
 // (Task 5 Ruling 5 — 시뮬레이터가 아니다). 대화상자 답과 체인 전송만 이 하네스가 맡는다.
+// '폐기 상한(2026-10-22): …' 케이스(Task 9)는 Snap 의 consentRevokeSession 이 아직 bound 를 보여 주지 않아
+// "동의 창에 상한" 단언에서 일부러 실패한다 — Task 15 뒤 통과(그 태스크가 Snap 쪽을 고친다).
 // hardhat :8545 와 build/mode3 의 pi_cred zkey·vkey, 그리고 Chrome(또는 Chromium)이 필요하다. (browser 그룹)
 //   node tests/test_mode3_browser.mjs
 //   MODE3_BROWSER_DEBUG=1 로 브라우저 콘솔·페이지 오류를 그대로 흘려 본다.
@@ -457,6 +459,22 @@ try {
     assert.ok(snapState.userCred, '새 C_u 가 Snap 에 남아 있다(syncAttrs 를 updateUserCred 보다 나중에 하면 지워진다)');
     assert.notEqual(snapState.userCred.Cf_u, beforeCf, '옛 C_u 가 아니라 새로 받은 것이다');
     assert.equal((await wallet.get('/wallet/status')).body.userCred.Cf_u, snapState.userCred.Cf_u, '에이전트의 공개 Cf_u 와 같다');
+  });
+
+  await t('폐기 상한(2026-10-22): 세션 카드에 nonce, 폐기 때 허용 수 입력 → Snap 동의 창에 "허용 거래 수" → 체인 반영 대기 행 → 재로그인 뒤 "지금 반영" → 행 사라짐', async () => {
+    await walletPage.click('#refreshBtn');
+    await walletPage.waitForFunction(() => /nonce\s*\d+/.test(document.querySelector('#sessionActions')?.textContent ?? ''), undefined, { timeout: 15_000 });
+    await walletPage.fill('#sessionActions input.bound', '1');
+    answers.push(true);                                                   // consentRevokeSession
+    walletPage.once('dialog', (d) => d.accept());                         // confirm_revoke
+    await walletPage.click('#sessionActions button.danger');
+    await waitText(walletPage, '#sessionVerdict', '폐기 요청 접수');
+    assert.ok(dialogs.at(-1).content.children.some((c) => /허용 거래 수: 1/.test(c.value ?? '')), '동의 창에 상한');
+    await waitText(walletPage, '#boundsList', '반영 대기', 10_000);
+    // 다시 로그인(같은 RP) → 지금 반영 → MetaMask 스텁이 보낸다 → 행 사라짐
+    const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]); answers.push(true); await popup.waitForEvent('close');
+    await walletPage.click('#boundsList button.apply');
+    await walletPage.waitForFunction(() => !/반영 대기/.test(document.querySelector('#boundsList')?.textContent ?? ''), undefined, { timeout: 60_000 });
   });
 
   // 2026-09-23 최종 리뷰 M3: 검증기가 없는 동안 /challenge 는 503 { ok:false, reason } 이다. 예전 페이지는 본문을 바로

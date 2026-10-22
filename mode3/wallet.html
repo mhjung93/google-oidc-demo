@@ -65,6 +65,13 @@
       <pre id="sessionLog" class="expert"></pre>
     </section>
 
+    <section class="card" id="boundsCard">
+      <h3 data-i18n="wallet_bounds_title">체인 반영 대기</h3>
+      <p class="desc" data-i18n="wallet_bounds_desc">폐기한 세션의 허용 거래 수를 응용 체인의 계정에도 올립니다(즉시 차단). 같은 RP 에 다시 로그인하면 반영할 수 있습니다.</p>
+      <div id="boundsList"></div>
+      <div id="boundsVerdict"></div>
+    </section>
+
     <section class="card span2" id="txCard">
       <h3 data-i18n="wallet_tx_title">트랜잭션 보내기</h3>
       <p class="desc" data-i18n="wallet_tx_desc">이 RP 전용 주소에서 보냅니다. 필요하면 속성 조건만 골라 공개합니다.</p>
@@ -192,6 +199,9 @@
     // U2: #discCountry 의 기본값은 내 국가다. 한 번이라도 사용자가 손대면(countryTouched) 5초 주기 refresh() 가
     // 다시 내 국가로 되돌리지 않는다 — profileDirty 와 같은 패턴.
     let countryTouched = false;
+    // 2026-10-23(Task 9): 세션마다 "허용 거래 수" 입력에 사용자가 적은 값 — r_s → 입력값. 5초 주기 refresh() 가
+    // renderSessions() 를 통째로 다시 그려도(countryTouched·profileDirty 와 같은 이유로) 타이핑한 값이 사라지지 않는다.
+    let boundEdits = {};
     // 등록 전·"속성 저장" 전에 사용자가 attrN 칸에 입력 중인 값을 5초 주기 refresh() 가 지워 버리지 않게 막는 플래그.
     // true 면 renderIdentity() 가 attrN 의 value 를 다시 쓰지 않는다 — 저장이 끝나면(등록·PUT 성공) false 로 되돌린다.
     let profileDirty = false;
@@ -582,6 +592,7 @@
       const s = lastStatus;
       const entries = s ? Object.entries(s.sessions ?? {}) : [];
       lastSessions = s?.sessions ?? {};
+      for (const k of Object.keys(boundEdits)) if (!(k in lastSessions)) delete boundEdits[k];
       // 원문 상태는 전문가 보기에 그대로 남긴다(설계 §3.2). 아직 한 번도 읽지 않았으면(팝업에서 언어를 바꿀 때 등)
       // 건드리지 않는다 — 실패하지도 않았는데 "상태 조회 실패: null" 이 남지 않게.
       if (s) $('status').textContent = JSON.stringify(s, null, 2);
@@ -631,17 +642,75 @@
         agent.className = `badge ${c.allowAgent === '1' ? 'ok' : 'muted'}`;
         agent.textContent = tt(c.allowAgent === '1' ? 'rp_agent_yes' : 'rp_agent_no') || c.allowAgent;
         kvRow(dl, termEl('allowAgent'), agent);
+        kvRow(dl, tt('wallet_session_nonce') || 'nonce', String(c.nonce ?? '-'));
         kvRow(dl, termEl('session'), shortCode(r_s, 16), true);
         kvRow(dl, tt('wallet_session_addr') || '세션 주소', shortCode(c.sessionAddress, 20), true);
         kvRow(dl, tt('wallet_session_factory') || '팩토리', shortCode(c.factoryAddress ?? '-', 20), true);
         kvRow(dl, tt('wallet_session_issued') || '발급 시각', String(c.issuedAt), true);
+        // 2026-10-23(Task 9): 폐기할 때 체인 계정에 올릴 허용 거래 수 — 기본값은 지금의 nonce(지금까지의 거래는 살린다).
+        const boundLabel = document.createElement('label');
+        boundLabel.textContent = '허용 거래 수 ';
+        tte(boundLabel, 'wallet_bound_label');
+        if (!/\s$/.test(boundLabel.textContent)) boundLabel.textContent += ' ';
+        const boundInput = document.createElement('input');
+        boundInput.type = 'number';
+        boundInput.className = 'bound';
+        boundInput.min = '0';
+        boundInput.value = boundEdits[r_s] ?? String(c.nonce ?? 0);
+        boundInput.addEventListener('input', () => { boundEdits[r_s] = boundInput.value; });
+        boundLabel.appendChild(boundInput);
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'danger';
         btn.textContent = tt('wallet_end_session') || '이 세션 끝내기(폐기)';
-        btn.addEventListener('click', () => revokeSession(r_s, c, btn));
-        box.append(dl, btn);
+        btn.addEventListener('click', () => revokeSession(r_s, c, btn, box));
+        box.append(dl, boundLabel, btn);
         acts.appendChild(box);
+      }
+    }
+    // ---- 체인 반영 대기(설계 2026-10-22 §3·§7, Task 9) ----
+    /** /wallet/status 의 pendingBounds 하나당 한 줄: 계정 앞자리 · pk_i 앞자리 · 허용 수 + "반영 대기" 배지.
+     *  같은 account 로 살아 있는 세션(applicableSession)이 있으면 "지금 반영" 버튼, 없으면 다시 로그인하라는 안내만. */
+    function renderBounds() {
+      const items = lastStatus?.pendingBounds ?? [];
+      const list = $('boundsList');
+      list.textContent = '';
+      if (!items.length) {
+        const p = document.createElement('p');
+        p.className = 'muted';
+        p.textContent = '대기 중인 반영이 없습니다.';
+        tte(p, 'wallet_bounds_none');
+        list.appendChild(p);
+        return;
+      }
+      for (const p of items) {
+        const box = document.createElement('div');
+        const line = document.createElement('span');
+        line.appendChild(shortCode(p.account, 12));
+        line.append(' · ');
+        line.appendChild(shortCode(p.pk_i, 10));
+        line.append(` · ${tt('wallet_bound_label') || '허용 거래 수'} ${p.bound}`);
+        const badge = document.createElement('span');
+        badge.className = 'badge warn';
+        badge.textContent = '반영 대기';
+        tte(badge, 'wallet_bounds_pending');
+        box.append(line, ' ', badge, ' ');
+        if (p.applicableSession) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'apply btn-ghost';
+          btn.textContent = '지금 반영';
+          tte(btn, 'wallet_bounds_apply');
+          btn.addEventListener('click', () => applyBound(p, btn));
+          box.appendChild(btn);
+        } else {
+          const note = document.createElement('span');
+          note.className = 'muted';
+          note.textContent = '같은 RP 에 다시 로그인하면 반영할 수 있습니다.';
+          tte(note, 'wallet_bounds_need_login');
+          box.appendChild(note);
+        }
+        list.appendChild(box);
       }
     }
     /**
@@ -683,6 +752,7 @@
       }
       renderIdentity();
       renderSessions();
+      renderBounds();
       renderGuide();
       syncStack();
     }
@@ -713,31 +783,34 @@
         renderModeTexts(); renderMmStatus(); renderProofInfo();
         // 팝업에는 신원·세션 카드가 없다 — 대신 승인 요청 문구를 다시 그린다.
         if (IS_AUTHORIZE) { renderAuthTitle(); if (lastAuthReq) renderAuthSummary(lastAuthReq); return; }
-        renderIdentity(); renderSessions();
+        renderIdentity(); renderSessions(); renderBounds();
       };
     }
 
     // V8 세션 폐기(설계 2026-09-24 §4). snap 모드는 Snap 동의 창을 먼저 받는다 — Snap 에는 Poseidon 이 없어 서명 자체는
     // 에이전트가 세션의 메모리 증인에 든 sk_u 로 한다. 거절하면 에이전트를 부르지 않는다.
-    async function revokeSession(r_s, c, btn) {
+    async function revokeSession(r_s, c, btn, box) {
       if (btn.dataset.busy === '1') return;   // 처리 중 재클릭만 무시(버튼은 비활성화하지 않는다, 2026-10-16)
       if (!Demo.confirmDanger('confirm_revoke')) return;
       const out = (m) => { $('sessionLog').textContent = m; };
+      // 2026-10-23(Task 9): 체인 계정에 올릴 허용 거래 수 — 세션 카드의 입력칸(비우면 "0"). AA·에이전트가 체인에
+      // 반영할 때까지는 /wallet/bounds/apply 로 대기한다(아래 renderBounds).
+      const bound = box.querySelector('input.bound').value.trim() || '0';
       btn.dataset.busy = '1';
       pendingVerdict($('sessionVerdict'), 'working');
       try {
         if (cfg.secrets === 'snap') {
           await ensureConnected();
-          const consent = await invokeSnap('consentRevokeSession', { arid: String(c.arid), issuedAt: c.issuedAt, maxHeight: String(c.max_height) });
+          const consent = await invokeSnap('consentRevokeSession', { arid: String(c.arid), issuedAt: c.issuedAt, maxHeight: String(c.max_height), bound });
           if (!consent || consent.denied) {
             out('세션 폐기 취소됨');
             setVerdict($('sessionVerdict'), false, 'wallet_session_revoke_failed', () => ({ summary: tt('wallet_cancelled') || '창에서 취소했습니다.' }));
             return;
           }
         }
-        const { status, body: b } = await postJson('/wallet/session/revoke', { r_s });
+        const { status, body: b } = await postJson('/wallet/session/revoke', { r_s, bound });
         if (status === 200) {
-          out(`세션 폐기 요청 완료 (r_s=${r_s.slice(0, 12)}…): inserted=${b.inserted}, pending=${b.pending} — 다음 게시부터 효력`);
+          out(`세션 폐기 요청 완료 (r_s=${r_s.slice(0, 12)}…): inserted=${b.inserted}, pending=${b.pending}, bound=${b.bound} — 다음 게시부터 효력`);
           progress.revoked = true;
           setVerdict($('sessionVerdict'), true, 'revoked_ok', () => ({ summary: tt('wallet_session_revoked') || '이 세션만 폐기를 요청했습니다 — 다음 게시부터 효력이 있습니다.', detail: safeDetail(b) }));
         } else {
@@ -941,7 +1014,37 @@
       return { status: 202, body: { pending: true, txHash } };
     }
 
-    /** snap 모드(스펙 §4.4): 동의 → prepare → (배포) → execute 를 MetaMask 로 → record. 가스는 MetaMask 가 추정한다. */
+    /**
+     * MetaMask 전송 공통부(2026-10-23 Task 9) — /wallet/tx/prepare 응답과 /wallet/bounds/apply(snap 모드) 응답은 같은
+     * 모양이다(walletAddr·factoryAddress·deployNeeded·deployCalldata·calldata). 배포가 필요하면 먼저 배포해 영수증을
+     * 확인한 뒤 execute 를 보내고 /wallet/tx/record 로 받는다. 실패는 stage 로 구분해 돌려준다 — 결과 카드는 호출자가 그린다.
+     */
+    async function submitPrepared(prep, rsKey) {
+      const eth = requireEthereum();
+      let deployHash = null;
+      if (prep.deployNeeded) {
+        txLog('배포 트랜잭션 — MetaMask 확인 창을 확인하세요.');
+        deployHash = await eth.request({ method: 'eth_sendTransaction', params: [{ from: account, to: prep.factoryAddress, data: prep.deployCalldata }] });
+        txLog(`배포 txHash=${deployHash} — 영수증 대기…`);
+        const dr = await waitReceipt(deployHash);      // execute 는 배포된 계정으로 가야 한다
+        // 배포가 revert 되면 execute 는 코드 없는 주소로 간다 — 여기서 멈춘다.
+        if (dr.status !== 1 && dr.status !== '0x1') {
+          txLog(`배포 실패 (status=${dr.status})`);
+          return { ok: false, stage: 'deploy', detail: dr };
+        }
+      }
+      txLog('execute 트랜잭션 — MetaMask 확인 창을 확인하세요.');
+      const txHash = await eth.request({ method: 'eth_sendTransaction', params: [{ from: account, to: prep.walletAddr, data: prep.calldata }] });
+      txLog(`txHash=${txHash} — 영수증 대기…`);
+      const rec = await recordTx(rsKey, txHash);
+      if (rec.status !== 200) {
+        txLog(errText(rec.status, rec.body));
+        return { ok: false, stage: 'record', status: rec.status, body: rec.body };
+      }
+      return { ok: true, body: rec.body, deployHash };
+    }
+
+    /** snap 모드(스펙 §4.4): 동의 → prepare → submitPrepared(배포·execute·record). 가스는 MetaMask 가 추정한다. */
     async function sendTxViaMetaMask() {
       const f = txForm();
       await ensureConnected();
@@ -957,31 +1060,48 @@
         return;
       }
       const b = p.body;
-      const eth = requireEthereum();
       txLog(`지갑 주소=${b.walletAddr}  nonce=${b.nonce}  배포 필요=${b.deployNeeded}  캐시 히트=${b.cacheHit}  root=${b.root}\ntimings=${JSON.stringify(b.timings)}`);
-      let deployHash = null;
-      if (b.deployNeeded) {
-        txLog('배포 트랜잭션 — MetaMask 확인 창을 확인하세요.');
-        deployHash = await eth.request({ method: 'eth_sendTransaction', params: [{ from: account, to: b.factoryAddress, data: b.deployCalldata }] });
-        txLog(`배포 txHash=${deployHash} — 영수증 대기…`);
-        const dr = await waitReceipt(deployHash);      // execute 는 배포된 계정으로 가야 한다
-        // 배포가 revert 되면 execute 는 코드 없는 주소로 간다 — 여기서 멈춘다.
-        if (dr.status !== 1 && dr.status !== '0x1') {
-          txLog(`배포 실패 (status=${dr.status})`);
-          txFailed('wallet_tx_deploy_failed', null, dr);
-          return;
-        }
-      }
-      txLog('execute 트랜잭션 — MetaMask 확인 창을 확인하세요.');
-      const txHash = await eth.request({ method: 'eth_sendTransaction', params: [{ from: account, to: b.walletAddr, data: b.calldata }] });
-      txLog(`txHash=${txHash} — 영수증 대기…`);
-      const rec = await recordTx(f.r_s, txHash);
-      if (rec.status !== 200) {
-        txLog(errText(rec.status, rec.body));
-        txFailed('wallet_tx_record_failed', rec.body.reason ?? `HTTP ${rec.status}`, safeDetail(rec.body));
+      const r = await submitPrepared(b, f.r_s);
+      if (!r.ok) {
+        if (r.stage === 'deploy') { txFailed('wallet_tx_deploy_failed', null, r.detail); return; }
+        txFailed('wallet_tx_record_failed', r.body.reason ?? `HTTP ${r.status}`, safeDetail(r.body));
         return;
       }
-      showTxResult(rec.body, `txHash=${rec.body.txHash}${deployHash ? `\n배포 txHash=${deployHash}` : ''}\n캐시 히트=${b.cacheHit}  root=${b.root}\n`, Boolean(deployHash));
+      showTxResult(r.body, `txHash=${r.body.txHash}${r.deployHash ? `\n배포 txHash=${r.deployHash}` : ''}\n캐시 히트=${b.cacheHit}  root=${b.root}\n`, Boolean(r.deployHash));
+    }
+
+    /**
+     * "지금 반영"(설계 2026-10-22 §3·§7, Task 9) — /wallet/bounds/apply 로 세션 하나의 상한을 체인에 올린다. file 모드는
+     * 에이전트가 이미 보냈고 응답이 곧 결과다. snap 모드는 prepare 모양 응답(+pendingBoundId)을 submitPrepared 로
+     * MetaMask 에 보낸다 — 영수증은 /wallet/tx/record 가 받아 pendingBounds 항목을 지운다(에이전트 쪽, clearAppliedBounds).
+     */
+    async function applyBound(p, btn) {
+      if (btn.dataset.busy === '1') return;
+      btn.dataset.busy = '1';
+      pendingVerdict($('boundsVerdict'), 'working');
+      try {
+        const { status, body: b } = await postJson('/wallet/bounds/apply', { id: p.id, r_s: p.applicableSession });
+        if (status !== 200) {
+          setVerdict($('boundsVerdict'), false, 'wallet_bounds_apply_failed', { reason: b.reason ?? `HTTP ${status}`, detail: safeDetail(b) });
+          return;
+        }
+        if (cfg.secrets === 'snap') {
+          await ensureConnected();
+          const r = await submitPrepared(b, p.applicableSession);
+          if (!r.ok) {
+            if (r.stage === 'deploy') { setVerdict($('boundsVerdict'), false, 'wallet_bounds_apply_failed', () => ({ summary: tt('wallet_tx_deploy_failed') || undefined, detail: r.detail })); return; }
+            setVerdict($('boundsVerdict'), false, 'wallet_bounds_apply_failed', () => ({ summary: tt('wallet_tx_record_failed') || undefined, reason: r.body.reason ?? `HTTP ${r.status}`, detail: safeDetail(r.body) }));
+            return;
+          }
+          setVerdict($('boundsVerdict'), true, 'wallet_bounds_applied', () => ({ detail: safeDetail(r.body) }));
+        } else if (b.applied) {
+          setVerdict($('boundsVerdict'), true, 'wallet_bounds_applied', () => ({ detail: safeDetail(b) }));
+        } else {
+          setVerdict($('boundsVerdict'), false, 'wallet_bounds_apply_failed', { reason: b.reason ?? 'bound_not_applied', detail: safeDetail(b) });
+        }
+      } catch (e) {
+        setVerdict($('boundsVerdict'), false, 'wallet_bounds_apply_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
+      } finally { delete btn.dataset.busy; refresh(); }
     }
 
     // "AttrGate 에 자격 증명(claim)"(U4): to/data 를 이 세션의 AttrGate 로 채우고, 출생연도·국가 조건이 비어 있으면
