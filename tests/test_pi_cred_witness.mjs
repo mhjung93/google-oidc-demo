@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { sessionLeaf, MODE3_TREE_DEPTH } from '../lib/mode3_revocation.js';
+import { sessionLeaf, sessionLeafRange, MODE3_TREE_DEPTH } from '../lib/mode3_revocation.js';
 import { registryLeaf } from '../lib/mode3_registry.js';
 import { buildValidInput } from './helpers/mode3_fixture.mjs';
 import { ppid, auidSOf } from '../lib/mode3_credential.js';
@@ -253,13 +253,35 @@ await t('V7: 패딩 리프(2^64)는 어떤 속성으로도 못 맞춘다 — 속
 });
 
 await t('V8 양성: 남의 세션 폐기 리프가 있어도 내 세션 비멤버십은 성립', async () => {
-  const fx = await buildValidInput({ revokedSessions: [777n, 778n] });
+  const fx = await buildValidInput({ revokedSessions: [{ Cf_s: 777n, bound: 0n }, { Cf_s: 778n, bound: 0n }] });
   await witness(fx.input);
 });
-await t('V8 음성: 내 세션 리프 Poseidon(5, Cf_s) 가 트리에 있으면 거부 — 사용자 리프는 그대로', async () => {
+await t('V8 음성: 내 세션 리프 H\'·2^32+bound 가 트리에 있으면 거부 — 사용자 리프는 그대로', async () => {
   const fx = await buildValidInput();
-  await fx.tree.insert(await sessionLeaf(fx.Cf_s));
+  await fx.tree.insert(await sessionLeaf(fx.Cf_s, 0n));
   await assert.rejects(() => witness({ ...fx.input, revRoot: fx.tree.getRoot().toString() }), /Assert Failed/);
+});
+await t('2026-10-22 §6.5 양성: 상한 c 리프가 있어도 counter < c 면 통과', async () => {
+  const fx = await buildValidInput();
+  await fx.tree.insert(await sessionLeaf(fx.Cf_s, 5n));
+  const range4 = await sessionLeafRange(fx.Cf_s, 4n);
+  const ws = await fx.tree.getRangeNonMembershipWitness(range4.lo, range4.hi);
+  await witness({
+    ...fx.input, counter: '4', revRoot: fx.tree.getRoot().toString(),
+    s_lowValue: ws.lowValue, s_lowNextIndex: ws.lowNextIndex, s_lowNextValue: ws.lowNextValue,
+    s_pathElements: ws.pathElements, s_pathIndices: ws.pathIndices,
+  });
+});
+await t('2026-10-22 §6.5 음성: 같은 트리에서 counter = 5(= c) 는 거부', async () => {
+  const fx = await buildValidInput();
+  await fx.tree.insert(await sessionLeaf(fx.Cf_s, 5n));
+  const range4 = await sessionLeafRange(fx.Cf_s, 4n);
+  const ws = await fx.tree.getRangeNonMembershipWitness(range4.lo, range4.hi);
+  await assert.rejects(() => witness({
+    ...fx.input, counter: '5', revRoot: fx.tree.getRoot().toString(),
+    s_lowValue: ws.lowValue, s_lowNextIndex: ws.lowNextIndex, s_lowNextValue: ws.lowNextValue,
+    s_pathElements: ws.pathElements, s_pathIndices: ws.pathIndices,
+  }), /Assert Failed/);
 });
 
 await t('V9 양성: 등록부 슬롯 번호는 임의 — 마지막 슬롯(2^20 - 1)에 내 리프가 있어도 통과', async () => {

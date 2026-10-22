@@ -5,7 +5,7 @@ import "./PiCredVerifier.sol";
 import "./IMode3Roots.sol";
 
 /// @title Mode 3 PPID 계정 — 설계 2026-09-18 §5.3 (V9: 등록부 — 2026-10-01-mode3-v9-registry-design.md §6)
-/// @notice PPIDWallet(Mode 2)과 같은 구조다. 다른 점: 검증자가 pi_cred(공개 입력 33개 — V11 2026-10-12, [30..32] auid_s·arid_s·r_s 는 오프체인 검증기만 본다), 폐기 근거가 Mode3Log(폐기 root·등록부 root + 게시 블록),
+/// @notice PPIDWallet(Mode 2)과 같은 구조다. 다른 점: 검증자가 pi_cred(공개 입력 34개 — V11 2026-10-12 + 2026-10-22 §6.5 counter, [30..32] auid_s·arid_s·r_s 는 오프체인 검증기만 본다), 폐기 근거가 Mode3Log(폐기 root·등록부 root + 게시 블록),
 ///   성명의 arid·pk_CIA·pk_trace 를 immutable 로 고정한다(서비스 검증기 lib/mode3_rp.js 의 d 단계와 같다), 트레이스 태그와
 ///   allowAgent 를 이벤트로 남긴다. 검사 순서는 싼 것부터다(§5.3).
 /// @dev 폐기 근거 = IMode3Roots(캐노니컬 로그 또는 거울) — V10 폐기 전용 체인 설계 §2.
@@ -43,6 +43,23 @@ contract Mode3Wallet {
     error InvalidProof();
     error BadDisclosure();
 
+    /// @notice 세션키별 온체인 상한(2026-10-22 설계 §6.5): 저장값 = 허용 거래 수 c + 1 (0 = 없음). nonce < c 만 통과.
+    mapping(uint256 => uint256) public sessionBound;
+    event SessionBound(uint256 indexed pk_i, uint256 bound);
+    error CounterMismatch(uint256 expected, uint256 got);
+    error SessionBounded(uint256 pk_i, uint256 bound);
+    error BoundNotLowered(uint256 current, uint256 proposed);
+    error OnlySelf();
+
+    /// @notice 자기 호출(execute 의 payload.to == address(this))로만 — 다른 세션(S2)의 π 가 계정 소유를 증명한다. 낮추기만 된다.
+    function setSessionBound(uint256 pk_i, uint32 bound) external {
+        if (msg.sender != address(this)) revert OnlySelf();
+        uint256 cur = sessionBound[pk_i];
+        if (cur != 0 && uint256(bound) + 1 >= cur) revert BoundNotLowered(cur - 1, bound);
+        sessionBound[pk_i] = uint256(bound) + 1;
+        emit SessionBound(pk_i, bound);
+    }
+
     /// @dev 내부 호출의 성공 여부는 영수증에 남지 않으므로 이벤트로 낸다(PPIDWallet 과 같은 이유).
     event Executed(uint256 indexed nonceUsed, address indexed to, uint256 value, bool success);
     /// @dev 서비스가 개봉 재료를 체인에서 바로 읽을 수 있게 태그·플래그를 남긴다. calldata 에도 있지만 이벤트가 조회하기 쉽다.
@@ -64,20 +81,29 @@ contract Mode3Wallet {
         maxLifetime = _maxLifetime;
     }
 
-    /// @param pub 공개 입력 33개(circuits/pi_cred.circom 의 순서, 설계 2026-10-01-mode3-v9-registry-design.md §5.1 Global Constraints):
+    /// @param pub 공개 입력 34개(circuits/pi_cred.circom 의 순서, 설계 2026-10-01-mode3-v9-registry-design.md §5.1 Global Constraints):
     ///   [0] PPID [1] arid [2] pk_i [3] max_height [4] chainid [5] allowAgent [6] revRoot [7] regRoot
     ///   [8] pk_CIA_x [9] pk_CIA_y [10] pk_trace_x [11] pk_trace_y [12] tag_c1_x [13] tag_c1_y [14] tag_c2
     ///   [15] disc_mask [16..21] disc_lo [22..27] disc_hi [28] set_sel [29] set_root
     ///   [30] auid_s [31] arid_s [32] r_s (온체인에서는 보지 않는다 — RP 의 세션 바인딩 검사용, 설계 2026-10-12 §5.3)
+    ///   [33] counter (= payload.nonce 여야 한다 — 아래에서 검사, 2026-10-22 설계 §6.5)
     function execute(
         Payload calldata payload,
         bytes calldata sig,
         uint[2] calldata a,
         uint[2][2] calldata b,
         uint[2] calldata c,
-        uint[33] calldata pub
+        uint[34] calldata pub
     ) external returns (bool ok) {
         if (payload.nonce != nonce) revert NonceMismatch(nonce, payload.nonce);
+
+        // 2026-10-22 설계 §6.5: π 의 구간 비멤버십 [H'·2^32, H'·2^32 + counter] 이 이 nonce 의 것이어야 한다 —
+        // 증명자가 counter 를 실제보다 낮춰 골라(더 짧은 구간) 최근 폐기를 피해가지 못하게 체인이 고정한다.
+        if (pub[33] != payload.nonce) revert CounterMismatch(payload.nonce, pub[33]);
+        // 세션키별 온체인 상한(즉시 차단) — nonce < c 만 통과. setSessionBound 가 저장한 값은 c + 1.
+        // (지역 변수명은 execute() 의 proof 인자 b 와 겹쳐 bnd 로 둔다 — 로직은 브리프와 동일.)
+        uint256 bnd = sessionBound[pub[2]];
+        if (bnd != 0 && payload.nonce + 1 >= bnd) revert SessionBounded(pub[2], bnd - 1);
 
         // 서명은 이 체인과 이 지갑에 묶인다(PPIDWallet 과 같은 도메인 분리). 같은 팩토리를 두 체인에 배포해도
         // PPID 가 chainid 를 포함해 주소가 다르지만, 서명까지 묶어 두는 편이 싸고 안전하다.
@@ -130,7 +156,7 @@ contract Mode3Wallet {
 
     /// @dev 성명의 공개 입력을 이 지갑의 고정값·체인 상태와 대조한다. 순서는 설계 §5.3 의 3~8(V9: regRoot 추가, 2026-10-01-mode3-v9-registry-design.md §6).
     ///   V11: 색인 30~32 는 검사하지 않는다(서비스가 r_s·arid_s 를 본다).
-    function _checkStatement(uint[33] calldata pub) internal view {
+    function _checkStatement(uint[34] calldata pub) internal view {
         if (pub[0] != ppid || pub[1] != arid || pub[4] != block.chainid) revert WrongWallet();
         if (pub[8] != pkCIAX || pub[9] != pkCIAY || pub[10] != pkTraceX || pub[11] != pkTraceY) revert UntrustedKeys();
         if (pub[5] > 1) revert BadAllowAgent();
