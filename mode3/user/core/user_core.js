@@ -14,9 +14,9 @@ import { createChain } from './chain.js';
 import { createIdp } from './idp.js';
 import { encodeProfile, normalizeProfile, assertPredicateTypes, decodeAttrs, schemaInfo } from '../../../lib/mode3_attr_schema.js';
 import { createRegistration, registrationSecretsFromSeed, eddsaPubOf, createSessionKey, buildIssueRequest, buildCredentialProof, signChallenge, signSessionRequest, signSlotRequest, signRevokeSession, signRegistration, normalizeDisclosure, normalizeSet, disclosureKey, hasPredicate, chooseMaxHeight, ProofCache } from '../../../lib/mode3_wallet.js';
-import { sessionLeaf } from '../../../lib/mode3_revocation.js';
+import { sessionLeafRange } from '../../../lib/mode3_revocation.js';
 import { registryLeaf } from '../../../lib/mode3_registry.js';
-import { signPayload, statementDigestFields, proofToCalldata, parseExecuteReceipt, decodeExecuteCalldata, walletAt, walletInterface, FACTORY_ABI, FACTORY_MAX_ROOT_AGE_BAND, FACTORY_MAX_LIFETIME_BAND, PUB_INDEX } from '../../../lib/mode3_onchain.js';
+import { signPayload, statementDigestFields, proofToCalldata, parseExecuteReceipt, decodeExecuteCalldata, walletAt, walletInterface, FACTORY_ABI, FACTORY_MAX_ROOT_AGE_BAND, FACTORY_MAX_LIFETIME_BAND, PUB_INDEX, LOGIN_COUNTER } from '../../../lib/mode3_onchain.js';
 import { SCALAR_MAX, ppid, randomScalar, auidOf, aridSOf } from '../../../lib/mode3_credential.js';
 import { verifyRpCert } from '../../../lib/mode3_rp_cert.js';
 import { MODE3_ROOTS_ABI } from '../../../lib/mode3_log.js';
@@ -283,7 +283,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
    *  V9: 사용자 자격증명의 활성 여부는 등록부로 본다 — 내 슬롯이 내 자격증명이 아니면 throw('revoked'). V8: 세션 리프가 폐기 트리에 있으면
    *  throw('revoked_session'). 세션이 없으면 throw('no_session'). 시연 덮어쓰기(scope='prove')가 걸려 있으면 증명 실패를
    *  throw('demo_proof_failed') 로. disclosure 가 없으면(mask 0) 기본 π. 증명은 주입된 fullProve.cred 로 만든다. */
-  async function proveSession(rsKey, synced, timings, disclosure = null, src) {
+  async function proveSession(rsKey, synced, timings, disclosure = null, src, counter = LOGIN_COUNTER) {
     const s = (await getSessions())[rsKey];
     if (!s) throw tag('no_session');
     const priv = await sessionKeyOf(rsKey);
@@ -291,7 +291,10 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     const reg = src.registration();
     const uc = src.userCred();
     const sessionWallet = new ethers.Wallet(priv);
-    const discKey = hasPredicate(disclosure) ? disclosureKey(disclosure) : '0';
+    // counter(2026-10-22 §6.5): 거래마다 새 π 가 필요하다(counter = 그 거래의 nonce) — 캐시가 로그인·재검증(LOGIN_COUNTER)과
+    // 거래(counter=nonce)를 같은 (root, regRoot) 아래 섞지 않도록 counter 를 discKey 뒤에 덧붙인다(에이전트 proveSession 과 같다).
+    const baseDiscKey = hasPredicate(disclosure) ? disclosureKey(disclosure) : '0';
+    const discKey = counter === LOGIN_COUNTER ? baseDiscKey : `${baseDiscKey}#n${counter}`;
     // V10(2026-10-02): 폐기 사전 확인은 캐시 히트여도 한다. 캐시 키는 거울 뷰 (root, regRoot) 인데, 거울이 뒤처진 동안 캐노니컬에서
     // 폐기·은퇴가 일어나면 키가 그대로라 히트가 나고, 미스일 때만 보면 이미 아는 폐기를 놓친 채 옛 π 를 계속 낸다. 확인은 해시 두어 번이라 싸다.
     // 세션이 물린 사용자 자격증명 위에 발급된 경우(동시 로그인 경합으로 그 사이 새 C_u 를 받았다) — 지금 C_u 의 blind_u 로는 증명이
@@ -301,7 +304,13 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     if (!chk) throw tag('registry_slot_unknown');
     if (!chk.match) throw tag('revoked', { registry: chk });
     // V8: 세션 리프. V10: 캐노니컬 최신 트리로 본다 — 거울이 아직 그 폐기를 싣지 않았어도 폐기된 세션을 더 쓰지 않는다.
-    if (synced.canonical.tree.has(await sessionLeaf(BigInt(s.credential.Cf_s)))) throw tag('revoked_session');
+    // 2026-10-22 §6.5: 리프 하나가 아니라 구간([lo, lo+counter])에 폐기 리프가 있는지를 본다 — 상한(bound) 이 counter 이하인
+    // 폐기가 하나라도 있으면 이 거래(또는 로그인·재검증, counter=LOGIN_COUNTER)는 더 쓸 수 없다(에이전트 proveSession 과 같다).
+    {
+      const { lo, hi } = await sessionLeafRange(BigInt(s.credential.Cf_s), counter);
+      try { await synced.canonical.tree.getRangeNonMembershipWitness(lo, hi); }
+      catch (e) { if (/is a member/.test(e.message ?? '')) throw tag('revoked_session'); throw e; }
+    }
     const key = proofCacheKey(synced.chainId, synced.root, synced.regRoot, discKey);
     const pc = s.proofCache;
     let cached = pc && pc.key === key ? { proof: pc.proof, publicSignals: pc.publicSignals, revRoot: BigInt(pc.revRoot), regRoot: BigInt(pc.regRoot) } : null;
@@ -317,7 +326,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
             uid: BigInt(ov?.uid ?? reg.uid), arid: BigInt(s.arid), s_u: BigInt(ov?.s_u ?? reg.s_u), auid: BigInt(reg.auid), blind_u: BigInt(uc.blind_u),
             r_rp: BigInt(s.r_rp), r_s: BigInt(rsKey), pk_i: BigInt(s.pk_i), attrs: (reg.attrs ?? []).map(BigInt),
             credential: s.credential, pk_CIA: { x: BigInt(s.credential.pk_CIA.x), y: BigInt(s.credential.pk_CIA.y) },
-            pk_trace: { x: BigInt(s.pk_trace.x), y: BigInt(s.pk_trace.y) }, tree, registry, slot: reg.slot, disclosure, fullProve: fullProve.cred,
+            pk_trace: { x: BigInt(s.pk_trace.x), y: BigInt(s.pk_trace.y) }, tree, registry, slot: reg.slot, disclosure, counter, fullProve: fullProve.cred,
           });
         } catch (e) {
           // 시연 덮어쓰기가 걸려 있었다면 원인은 거의 항상 그것이다(가짜 s_u·uid 로는 witness 가 안 만들어진다) — 500 대신 호출자가 409 로 보여준다.
@@ -799,18 +808,20 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       lastSync = syncSnapshot(synced);
       await pruneSessions(synced.head);
       if (!(await getSessions())[rsKey]) return R(409, { reason: 'session_expired', timings });   // π 캐시는 바로 위 pruneSessions 가 레코드와 함께 지웠다
+      // 2026-10-22: 거래 π 는 counter = nonce 를 공개 입력으로 싣는다(컨트랙트가 pub[33]==payload.nonce 를 검사한다) — proveSession
+      // 보다 먼저 지갑 주소·nonce 를 읽어야 한다(에이전트 buildExecute 와 같은 순서).
+      const walletAddr = await chain.factory(s.factoryAddress).computeAddress(BigInt(s.PPID));
+      // 아직 배포 전이면 nonce 는 0(uint256 기본값) — 릴레이가 배포 트랜잭션을 먼저 보낸 뒤 execute 가 이 nonce 로 들어간다
+      const deployNeeded = (await provider.getCode(walletAddr)) === '0x';
+      const nonce = deployNeeded ? 0n : await walletAt(walletAddr, provider).nonce();
       let proved;
-      try { proved = await proveSession(rsKey, synced, timings, disclosure, src); }   // root·disclosure 가 같으면 캐시 π, 아니면 재증명
+      try { proved = await proveSession(rsKey, synced, timings, disclosure, src, nonce); }   // root·disclosure·counter(=nonce) 가 같으면 캐시 π, 아니면 재증명
       catch (e) {
         const mapped = await sessionProofFailure(e, rsKey, timings);
         if (mapped) return mapped;
         if (e.reason === 'no_session') return R(404, { reason: 'no_session', timings });
         throw e;
       }
-      const walletAddr = await chain.factory(s.factoryAddress).computeAddress(BigInt(s.PPID));
-      // 아직 배포 전이면 nonce 는 0(uint256 기본값) — 릴레이가 배포 트랜잭션을 먼저 보낸 뒤 execute 가 이 nonce 로 들어간다
-      const deployNeeded = (await provider.getCode(walletAddr)) === '0x';
-      const nonce = deployNeeded ? 0n : await walletAt(walletAddr, provider).nonce();
       // 받는 주소(2026-10-16): 대소문자 체크섬(EIP-55)이 안 맞는 입력도 받는다 — 같은 바이트이므로 소문자로 내려 정규형으로 만든다(틀린 글자는 isAddr 가 먼저 걸러낸다).
       const payload = { to: normalizeAddr(to), value: BigInt(value), data, nonce };
       // 시연(가짜 서명, 사용자 요청 2026-10-14): 세션키 대신 임의 키로 서명한다 — 컨트랙트의 _recover 가 복원한 주소가 pub[2](pk_i)와 달라
@@ -873,11 +884,19 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       if (!(await vault.key())) return LOCKED();
       const sk_u = (await vault.readSecrets()).sk_u;
       if (!sk_u) return R(500, { reason: 'internal', detail: '금고에 sk_u 가 없다' });
+      // bound(2026-10-22 §3): 지금까지의 거래는 살리고 그 뒤를 막는다 — 계정의 현재 nonce(팩토리가 없거나 미배포면 0).
+      // web 코어는 UI 가 없으므로 사용자가 고르게 하지 않고 늘 이 기본값을 쓴다(에이전트의 bound 생략 분기와 같다).
+      let bound = 0n;
+      if (s.factoryAddress) {
+        const account = await chain.factory(s.factoryAddress).computeAddress(BigInt(s.PPID));
+        try { bound = await bounded((async () => ((await provider.getCode(account)) === '0x' ? 0n : walletAt(account, provider).nonce()))(), 1200); }
+        catch (e) { return R(503, { reason: 'chain_unavailable', detail: e.message }); }
+      }
       const nonce = randomScalar();   // 신선도는 IdP 가 보지 않는다(재생 = 같은 세션 재폐기, 멱등)
-      const sig_u = await signRevokeSession(sk_u, BigInt(reg.uid), BigInt(s.credential.Cf_s), nonce);
+      const sig_u = await signRevokeSession(sk_u, BigInt(reg.uid), BigInt(s.credential.Cf_s), bound, nonce);
       // 502 cia_unavailable 은 **IdP 호출 실패만** 가리킨다(최종 리뷰 F3). 서명·BigInt 같은 지역 오류는 500 internal 로 간다.
       let r;
-      try { r = await idp.post('/cia/revoke', { uid: reg.uid, scope: 'session', Cf_s: s.credential.Cf_s, sig_u, nonce: nonce.toString() }); }
+      try { r = await idp.post('/cia/revoke', { uid: reg.uid, scope: 'session', Cf_s: s.credential.Cf_s, bound: bound.toString(), sig_u, nonce: nonce.toString() }); }
       catch (e) { return R(502, { reason: 'cia_unavailable', detail: e.message }); }
       if (r.status !== 200) return R(r.status, r.body ?? {});
       // AA 가 받아들인 순간부터 이 지갑은 그 세션을 더 쓰지 않는다 — 게시 전이라도(게시 뒤에는 어차피 π 가 안 만들어진다).
