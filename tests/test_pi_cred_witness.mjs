@@ -1,4 +1,4 @@
-// pi_cred 회로(V11)의 witness 계산. 양성·음성 48건 — 정상 witness, JS/회로 리프 일치, 태그 개봉, 잘못된 입력 거부.
+// pi_cred 회로(V11)의 witness 계산. 양성·음성 50건 — 정상 witness, JS/회로 리프 일치, 태그 개봉, 잘못된 입력 거부.
 //   node tests/test_pi_cred_witness.mjs
 //
 // zkey는 만들지 않는다 (Task 4에서 별도 승인 후). 여기서는 회로가 올바른 입력을
@@ -256,6 +256,7 @@ await t('V8 양성: 남의 세션 폐기 리프가 있어도 내 세션 비멤�
   const fx = await buildValidInput({ revokedSessions: [{ Cf_s: 777n, bound: 0n }, { Cf_s: 778n, bound: 0n }] });
   await witness(fx.input);
 });
+// 거부 원인은 증인이 insert 전 것이라 경로·root 불일치 — 구간 검사 자체의 핀은 아래 counter=5 케이스.
 await t('V8 음성: 내 세션 리프 H\'·2^32+bound 가 트리에 있으면 거부 — 사용자 리프는 그대로', async () => {
   const fx = await buildValidInput();
   await fx.tree.insert(await sessionLeaf(fx.Cf_s, 0n));

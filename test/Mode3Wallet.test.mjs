@@ -65,7 +65,13 @@ describe('Mode3Wallet', function () {
   let ST;   // 공통 성명 — 증명 생성이 1초쯤이라 케이스 간 공유한다(체인은 케이스마다 새로 배포)
   // counter: 0n — 이 성명을 쓰는 케이스는 모두 각자 새로 배포한 지갑에서 "첫 실행"(nonce 0)으로만 쓴다
   // (2026-10-22 설계 §6.5: π 의 counter 가 그 실행의 nonce 와 같아야 한다, 기본값은 로그인용 LOGIN_COUNTER).
-  before(async () => { ST = withInput(await statement({ counter: 0n })); });
+  // maxHeight 여유는 기본(head + 300)보다 넉넉히 둔다(head + 395, TooFarExpiry 상한인 head + maxLifetime(400)
+  // 안) — 2026-10-22 수정 라운드 1 로 ST 를 쓰는 케이스 앞에 트랜잭션(블록)이 더 늘어, 300 여유로는 스위트
+  // 뒤쪽(E-1 등)에서 전체 블록 소비가 누적돼 ST 의 π 가 먼저 Expired 로 꺼지는 일이 있었다.
+  before(async () => {
+    const head = BigInt(await ethers.provider.getBlockNumber());
+    ST = withInput(await statement({ counter: 0n, maxHeight: head + 395n }));
+  });
 
   it('정상 실행: 값 전송, nonce 증가, Executed·Mode3Auth 이벤트, gas 기록', async () => {
     const { wallet } = await deployStack(ST);
@@ -99,15 +105,36 @@ describe('Mode3Wallet', function () {
     expect(parseExecuteReceipt(receipt).auth.allowAgent).to.equal(1n);
   });
 
-  it('같은 세션키의 다른 nonce 성명 두 개 — 같은 π 는 재사용할 수 없다(counter 가 nonce 와 같아야 한다, 2026-10-22 §6.5)', async () => {
+  it('같은 세션키의 다른 nonce 성명 두 개 — 같은 π 는 재사용할 수 없다(counter 가 nonce 와 같아야 한다, 2026-10-22 §6.5) — 증명자가 counter 를 낮춰 고르는 것을 막는다', async () => {
     const s0 = withInput(await statement({ counter: 0n }));
     const { wallet } = await deployStack(s0);
     const p0 = await signedPayload(s0, wallet);
     await (await wallet.execute(p0.payload, p0.sig, s0.a, s0.b, s0.c, s0.pub)).wait();
+    // nonce 는 이제 1. 같은 π(counter 0 그대로)를 재사용하면 — counter 가 nonce 보다 **작은** 방향도
+    // CounterMismatch 여야 한다(그냥 `!=` 가 아니라 `>` 로 바뀌어도 통과해버리는 변이를 여기서 잡는다).
+    const reused = await signedPayload(s0, wallet);
+    await expect(wallet.execute(reused.payload, reused.sig, s0.a, s0.b, s0.c, s0.pub))
+      .to.be.revertedWithCustomError(wallet, 'CounterMismatch').withArgs(1n, 0n);
     const s1 = withInput(await statement({ session: s0.session, counter: 1n }));
     const p1 = await signedPayload(s1, wallet);
     await (await wallet.execute(p1.payload, p1.sig, s1.a, s1.b, s1.c, s1.pub)).wait();
     expect(await wallet.nonce()).to.equal(2n);
+  });
+
+  it('pub[33](counter) 를 바꿔 신선한 nonce 에 맞춰도 InvalidProof — counter 는 π 가 묶는다(다이제스트가 아니라)', async () => {
+    const s0 = withInput(await statement({ counter: 0n }));
+    const { wallet } = await deployStack(s0);
+    const p0 = await signedPayload(s0, wallet);
+    await (await wallet.execute(p0.payload, p0.sig, s0.a, s0.b, s0.c, s0.pub)).wait();   // nonce: 0 → 1
+    // 다이제스트는 pub[33](counter)를 덮지 않으므로(payloadDigest 의 15워드 + A-2 다섯에 counter 는 없다),
+    // nonce=1 로 다시 서명한 σ 는 여전히 유효하다. 그 σ 에 π0(counter=0)의 pub 을 pub[33]=1 로만 바꿔 붙이면
+    // NonceMismatch·CounterMismatch·BadSignature 는 전부 통과하지만(바뀐 자리는 다이제스트 밖), 그 pub 전체가
+    // 실제로 검증받은 증명(π0)이 만든 값과 더 이상 같지 않아 verifyProof 가 거부한다 — counter 를 체인에
+    // 묶어 두는 것은 결국 Groth16 바인딩이고, 서명이 그걸 대신하지 않는다는 뜻이다.
+    const reused = await signedPayload(s0, wallet);
+    const tamperedPub = [...s0.pub]; tamperedPub[33] = '0x1';
+    await expect(wallet.execute(reused.payload, reused.sig, s0.a, s0.b, s0.c, tamperedPub))
+      .to.be.revertedWithCustomError(wallet, 'InvalidProof');
   });
 
   it('nonce 재사용은 NonceMismatch', async () => {
@@ -288,8 +315,8 @@ describe('Mode3Wallet', function () {
   });
 
   // 2026-09-25 리뷰 E-6: 위 케이스는 "한참 지난" 만료만 본다. 부등호가 `>=` 로 바뀌어도(= 마지막 한 블록을
-  // 잃어도) 빨개지지 않는다. 경계 두 칸을 같은 지갑·같은 π 로 붙여서 본다 — IdP(cia.js)·RP(lib/mode3_rp.js)가
-  // 쓰는 부등호와 같아야 한다: head == max_height 는 아직 산 성명이다.
+  // 잃어도) 빨개지지 않는다. 경계 두 칸을 같은 지갑·같은 max_height 의 새 π 로 붙여서 본다 — IdP(cia.js)·
+  // RP(lib/mode3_rp.js)가 쓰는 부등호와 같아야 한다: head == max_height 는 아직 산 성명이다.
   it('E-6 만료 경계: block.number == max_height 는 유효, 그 다음 블록부터 Expired', async () => {
     const st = withInput(await statement({ maxHeight: BigInt(await ethers.provider.getBlockNumber()) + 30n, counter: 0n }));
     const { wallet } = await deployStack(st);
@@ -301,7 +328,7 @@ describe('Mode3Wallet', function () {
     const a = await signedPayload(st, wallet);
     const receipt = await (await wallet.execute(a.payload, a.sig, st.a, st.b, st.c, st.pub)).wait();
     expect(BigInt(receipt.blockNumber)).to.equal(maxHeight, '경계 블록에서 실행돼야 이 케이스가 의미가 있다');
-    // 한 블록만 더 가면(= head == max_height 인 상태에서 보낸 다음 트랜잭션) 같은 π 가 만료된다.
+    // 한 블록만 더 가면(= head == max_height 인 상태에서 보낸 다음 트랜잭션) 같은 max_height 의 새 π 가 만료된다.
     // nonce 가 이미 1 이므로 새 π 는 counter: 1n(같은 max_height) — 아니면 Expired 전에 CounterMismatch 로 막힌다.
     const st2 = withInput(await statement({ maxHeight, session: st.session, counter: 1n }));
     const b = await signedPayload(st2, wallet);
@@ -406,7 +433,7 @@ describe('Mode3Wallet', function () {
     assert.equal(await deployer.provider.getBalance(other) - before, ethers.parseEther('0.1'));
     // 같은 대상에 data 가 비어 있지 않으면(꼬리가 붙어) receive() 가 실행되지 않아 실패한다 — 예외의 경계 확인
     // 첫 execute 로 nonce 가 이미 1 이므로 새 π 가 필요하다(counter: 1n).
-    const stNext = withInput(await statement({ counter: 1n }));
+    const stNext = withInput(await statement({ session: ST.session, counter: 1n }));
     const withData = await signedPayload(stNext, wallet, { to: other, value: 0n, data: '0x01' });
     const rc2 = await (await wallet.execute(withData.payload, withData.sig, stNext.a, stNext.b, stNext.c, stNext.pub)).wait();
     assert.equal(parseExecuteReceipt(rc2, wallet.target).executed.success, false);
@@ -428,7 +455,7 @@ describe('Mode3Wallet', function () {
     assert.equal(disclosure.setSel, 2n); assert.equal(disclosure.setRoot, DS.fx.set.root);
     assert.equal(await gate.claimed(wallet.target), true);
     // 첫 claim 으로 nonce 가 이미 1 이므로 두 번째 시도는 새 π(counter: 1n, 같은 disclosure/set)가 필요하다.
-    const DS2 = withInput(await statement({ disclosure: discOpts, set: setOpts, counter: 1n }));
+    const DS2 = withInput(await statement({ disclosure: discOpts, set: setOpts, session: DS.session, counter: 1n }));
     const again = await signedPayload(DS2, wallet, { to: await gate.getAddress(), data, discMask: 1n, discLo: DS2.fx.disclosure.lo, discHi: DS2.fx.disclosure.hi, setSel: 2n, setRoot: DS2.fx.set.root });
     const rc2 = await (await wallet.execute(again.payload, again.sig, DS2.a, DS2.b, DS2.c, DS2.pub)).wait();
     assert.equal(parseExecuteReceipt(rc2, wallet.target).executed.success, false, 'already claimed → 내부 호출 실패, nonce 는 소모');
@@ -607,5 +634,34 @@ describe('Mode3Wallet', function () {
     const rc2 = await (await wallet.execute(p.payload, p.sig, B2.a, B2.b, B2.c, B2.pub)).wait();   // execute 자체는 성공, 내부 호출이 실패(Executed.success=false)
     expect(parseExecuteReceipt(rc2, walletAddr).executed.success).to.equal(false);
     expect(await wallet.sessionBound(BigInt(s1.address))).to.equal(2n);
+
+    // "낮추기(0) 는 된다" 를 실제로 실행: 새 세션키 s3 에 counter 3 성명(authorizer s2)으로 bound 3 을
+    // 설정한 뒤(처음 설정이라 cur == 0 이라 통과) 0 으로 낮추고, sessionBound == 1n(= 0 + 1) 과
+    // SessionBound 이벤트 인자 (pk_i, 0) 을 확인한다.
+    const s3 = ethers.Wallet.createRandom();
+    const B3 = withInput(await statement({ session: s2, counter: 3n }));
+    p = await signedPayload(B3, wallet, { to: walletAddr, data: wallet.interface.encodeFunctionData('setSessionBound', [BigInt(s3.address), 3]) });
+    const rc3 = await (await wallet.execute(p.payload, p.sig, B3.a, B3.b, B3.c, B3.pub)).wait();
+    expect(parseExecuteReceipt(rc3, walletAddr).executed.success).to.equal(true);
+    expect(await wallet.sessionBound(BigInt(s3.address))).to.equal(4n);   // bound 3 + 1
+    const B4 = withInput(await statement({ session: s2, counter: 4n }));
+    p = await signedPayload(B4, wallet, { to: walletAddr, data: wallet.interface.encodeFunctionData('setSessionBound', [BigInt(s3.address), 0]) });
+    const rc4 = await (await wallet.execute(p.payload, p.sig, B4.a, B4.b, B4.c, B4.pub)).wait();
+    expect(parseExecuteReceipt(rc4, walletAddr).executed.success).to.equal(true);
+    const lowered = rc4.logs.map((l) => { try { return wallet.interface.parseLog(l); } catch { return null; } }).find((l) => l?.name === 'SessionBound');
+    expect(lowered?.args.pk_i).to.equal(BigInt(s3.address));
+    expect(lowered?.args.bound).to.equal(0n);
+    expect(await wallet.sessionBound(BigInt(s3.address))).to.equal(1n);   // 저장값 = 0 + 1
+
+    // BoundNotLowered·OnlySelf 를 이름으로 직접 단언 — π 없이 setSessionBound 자체 로직만 본다.
+    // 지갑 주소를 가장(impersonate)해 msg.sender == address(this) 를 만들어 OnlySelf 를 지나간다
+    // (deployStack 이 이미 walletAddr 에 1 ETH 를 보냈으므로 가스는 충분해 hardhat_setBalance 는 필요 없다).
+    await ethers.provider.send('hardhat_impersonateAccount', [walletAddr]);
+    const asWallet = wallet.connect(await ethers.getSigner(walletAddr));
+    await expect(asWallet.setSessionBound(BigInt(s3.address), 5)).to.be.revertedWithCustomError(wallet, 'BoundNotLowered');   // (a) 더 큰 값(올리기)
+    await expect(asWallet.setSessionBound(BigInt(s3.address), 0)).to.be.revertedWithCustomError(wallet, 'BoundNotLowered');   // (b) 같은 값(현재도 bound 0)
+    await ethers.provider.send('hardhat_stopImpersonatingAccount', [walletAddr]);
+    // 가장을 풀어도 외부 EOA 의 직접 호출은 여전히 OnlySelf.
+    await expect(wallet.setSessionBound(BigInt(s3.address), 0)).to.be.revertedWithCustomError(wallet, 'OnlySelf');
   });
 });
