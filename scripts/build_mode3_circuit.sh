@@ -42,7 +42,7 @@ for NAME in pi_cred pi_idp; do
     npx snarkjs zkey export solidityverifier "$OUT/pi_cred_final.zkey" contracts/PiCredVerifier.sol
     sed -i -E 's/contract (Groth16Verifier|Verifier) /contract PiCredVerifier /' contracts/PiCredVerifier.sol
     grep -q 'contract PiCredVerifier' contracts/PiCredVerifier.sol || { echo "PiCredVerifier 이름 치환 실패" >&2; exit 1; }
-    grep -q 'uint\[33\] calldata _pubSignals' contracts/PiCredVerifier.sol || { echo "PiCredVerifier 의 공개 입력이 33개가 아니다 — circuits/pi_cred.circom 을 확인" >&2; exit 1; }
+    grep -q 'uint\[34\] calldata _pubSignals' contracts/PiCredVerifier.sol || { echo "PiCredVerifier 의 공개 입력이 34개가 아니다 — circuits/pi_cred.circom 을 확인" >&2; exit 1; }
   fi
 done
 
