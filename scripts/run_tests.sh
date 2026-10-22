@@ -64,6 +64,7 @@ CIRCUIT=(
   tests/test_ppid_cross_rp_unlinkability.js
   tests/test_imt_v2_lib.js
   tests/test_imt_v2_nonmembership_circuit.mjs
+  tests/test_imt_v2_range_circuit.mjs
   tests/test_pi_pk_i_v2_witness.mjs
   tests/test_pi_pk_i_revocation.mjs
   tests/test_pi_pk_i_v3_shard.mjs

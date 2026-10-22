@@ -7,6 +7,7 @@ include "bitify.circom";
 // 구간 비멤버십(2026-10-22 세션 폐기 상한): [lo, hi] 안에 리프가 없다 ⇔ lowValue < lo 이고 (lowNextValue > hi 또는 lowNextValue == 0).
 // 리프 해시·Merkle 경로·252비트 정규화는 imt_nonmembership_v2.circom 과 같다. lo·hi 는 호출자(pi_cred)가 H'·2^32 + counter 로
 // 만들어 2^252 미만이 보장되지만 여기서도 범위를 검사한다. lib/imt_v2.js getRangeNonMembershipWitness 와 짝.
+// 전제: 호출자가 lo ≤ hi 를 보장한다(pi_cred 는 hi = lo + counter 라 구조적으로 성립). lo > hi 이면 빈 구간이라 통과한다.
 template IMTRangeNonMembershipV2(depth) {
     signal input lo;
     signal input hi;

@@ -2,7 +2,6 @@ pragma circom 2.0.0;
 
 include "lib/eddsaposeidon.circom";
 include "lib/poseidon.circom";
-include "lib/imt_nonmembership_v2.circom";
 include "lib/imt_range_nonmembership_v2.circom";
 include "lib/merkle_inclusion.circom";
 include "lib/bitify.circom";
@@ -13,6 +12,7 @@ include "lib/mode3_trace_tag.circom";
 
 // Mode 3 credential 증명 π_RP — V11(2026-10-12, 그림 261012 · 덱 7장). 설계 docs/superpowers/specs/2026-10-12-mode3-v11-figure-protocol-design.md §5.3
 // 이력: V5 커밋 둘(09-21) · V6 선택 공개(09-22) · V7 집합 소속(09-23) · V8 세션 비멤버십(09-24) · V9 등록부 멤버십(10-01) · V11 가명·세션 바인딩(10-12).
+// 2026-10-22: counter(34번째 공개 입력) · 세션 구간 비멤버십.
 // 여덟 가지를 함께 증명한다. 하나라도 빠지면 뚫린다:
 //   ① 토큰: IdP 가 (auid_s, arid_s, Cf_u, Cf_s, chainid, allowAgent) 에 서명했다 — 없으면 아무나 credential 을 만든다
 //   ② ID 정확성: auid = Poseidon(T_AUID, uid, s_u), auid_s = Poseidon(T_AUIDS, auid, arid, r_rp), arid_s = Poseidon(T_ARIDS, arid, r_rp)
@@ -20,13 +20,13 @@ include "lib/mode3_trace_tag.circom";
 //   ③ PPID = Poseidon(uid, s_u, arid, chainid) — 없으면 지갑 주소를 특정할 수 없다(D13 순서)
 //   ④ 선택 공개·집합 소속(불변) — 사용자가 넣은 attrs 위에서(D15)
 //   ⑤ 같은 r_rp: ② 의 두 해시와 ⑦ 의 C_s 블라인딩이 하나의 비공개 r_rp — 없으면 토큰(C_s)과 가명이 다른 세션 것일 수 있다
-//   ⑥ 등록부: Poseidon(auid, Cf_u) ∈ Tree(regRoot)(깊이 20) · 폐기: Poseidon(5, Cf_s) ∉ Tree(revRoot)(IMT 32)
+//   ⑥ 등록부: Poseidon(auid, Cf_u) ∈ Tree(regRoot)(깊이 20) · 폐기: [H'·2^32, H'·2^32 + counter] ∩ Tree(revRoot) = ∅(IMT 32), H' = Poseidon(5, Cf_s) mod 2^220
 //      — 없으면 미등록·관리자 바꿔치기·은퇴한 자격증명, 폐기된 세션이 통과한다
 //   ⑦ C_s = pk_i·G_PK + max_height·G_EXP + r_s·G_RS + r_rp·H — r_s(공개)·max_height(공개)·pk_i(공개) 가 토큰의 Cf_s 에 묶인다(재전송 방지: RP 가 r_s 를 1회 소비)
 //   ⑧ tag = Enc(pk_trace, Poseidon(uid, arid); ρ), ρ ≠ 0 — 없으면 개봉이 엉뚱한 값을 연다
 //
 //   attrs[6] 는 C_u 에만 실린다 — IdP 는 값을 모른다(D15). 공개 입력은 AA(IdP)·RP·체인이 모두 보므로 uid·s_u·r_rp 는 어디에도 평문으로 없다.
-//   auid_s·arid_s·r_s 는 공개 입력 끝(30·31·32)에 붙었다 — 색인 0~29 는 V9 와 같아 contracts/Mode3Wallet.sol 의 꼬리 15워드·다이제스트가 불변이다(D12).
+//   auid_s·arid_s·r_s·counter 는 공개 입력 끝(30·31·32·33)에 붙었다 — 색인 0~29 는 V9 와 같아 contracts/Mode3Wallet.sol 의 꼬리 15워드·다이제스트가 불변이다(D12).
 template PiCred(depth, regDepth) {
     // ---- Private ----
     signal input uid;
