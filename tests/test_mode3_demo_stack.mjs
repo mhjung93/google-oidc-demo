@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
 import { VKEY_PATH, createSessionKey, syncRevocationTree, syncRegistryTree, signChallenge, normalizeDisclosure, normalizeSet } from '../lib/mode3_wallet.js';
 import { userOf, issueV11, proveV11, ALICE_ATTRS } from './helpers/mode3_flow.mjs';
-import { randomScalar } from '../lib/mode3_credential.js';
+import { randomScalar, ppid } from '../lib/mode3_credential.js';
 import { signPayload, statementDigestFields, proofToCalldata, parseExecuteReceipt, factoryAt, walletAt } from '../lib/mode3_onchain.js';
 import { ethers } from 'ethers';
 import { getProvider, getFunder } from './helpers/mode3_chain.mjs';
@@ -79,15 +79,18 @@ async function makeAliceAgent() {
     try { disclosure = { ...normalizeDisclosure(disclose, user.attrs), ...(await normalizeSet(set, user.attrs)) }; }
     catch (e) { if (e.reason) return { status: 400, body: { reason: e.reason, detail: e.message } }; throw e; }
     await stack.relayIfBehind();   // V10: 계정 컨트랙트는 거울을 읽는다 — 캐노니컬 최신으로 증명하므로 거울을 먼저 맞춘다
-    const { tree } = await syncRevocationTree(provider, cia.logAddress);
-    const { tree: registry } = await syncRegistryTree(provider, cia.logAddress);
-    const built = await proveV11(iss, { arid, pk_CIA, pk_trace, tree, registry, disclosure });
-    const PPID = BigInt(built.publicSignals[0]);
+    // 2026-10-22: 거래 π 는 counter=nonce 를 공개 입력으로 싣는다(컨트랙트가 pub[33]==payload.nonce 를 검사한다) — 증명보다
+    // 먼저 계정 주소·nonce 를 읽는다(mode3_wallet_agent.js buildExecute 와 같은 순서, Task 7).
+    const PPID = await ppid({ uid: user.uid, s_u: user.s_u, arid, chainid: chainId });
     const walletAddr = await factoryAt(factoryAddress, provider).computeAddress(PPID);
     const relayer = await provider.getSigner(0);
     if ((await provider.getCode(walletAddr)) === '0x') await (await factoryAt(factoryAddress, relayer).deploy(PPID)).wait();
     const walletC = walletAt(walletAddr, relayer);
     const nonce = await walletC.nonce();
+    const { tree } = await syncRevocationTree(provider, cia.logAddress);
+    const { tree: registry } = await syncRegistryTree(provider, cia.logAddress);
+    const built = await proveV11(iss, { arid, pk_CIA, pk_trace, tree, registry, disclosure, counter: nonce });
+    assert.equal(BigInt(built.publicSignals[0]), PPID, 'PPID 는 (uid, s_u, arid, chainid) 에서만 나온다 — 먼저 계산한 값과 같아야 한다');
     const payload = { to, value: 0n, data, nonce };
     const sig = signPayload(iss.session.wallet, { chainId, wallet: walletAddr, ...payload, discMask: disclosure.mask, discLo: disclosure.lo, discHi: disclosure.hi, setSel: disclosure.sel, setRoot: disclosure.root, ...statementDigestFields(built.publicSignals) });
     const { a, b, c, pub } = await proofToCalldata(built.proof, built.publicSignals);
@@ -182,12 +185,13 @@ try {
   });
 
   let TX1;
-  await t('2a. 온체인 트랜잭션: 지갑 배포 + execute ok, 두 번째는 같은 π 재사용(cacheHit)', async () => {
+  await t('2a. 온체인 트랜잭션: 지갑 배포 + execute ok, 두 번째는 새 π(counter=nonce 1 이라 캐시 미스)', async () => {
     const to = '0x000000000000000000000000000000000000dEaD';
     const r1 = await wallet.post('/wallet/tx', { r_s: S1, to }, { Origin: rp.origin });
     assert.equal(r1.status, 200, j(r1.body)); assert.equal(r1.body.ok, true); assert.equal(r1.body.deployed, true);
     const r2 = await wallet.post('/wallet/tx', { r_s: S1, to }, { Origin: rp.origin });
-    assert.equal(r2.status, 200, j(r2.body)); assert.equal(r2.body.cacheHit, true); assert.equal(r2.body.nonce, '1');
+    // 2026-10-22: 거래 π 는 counter=nonce — nonce 가 0→1 로 바뀌면 캐시 키도 바뀌어 새로 증명한다(브리프 §6.5).
+    assert.equal(r2.status, 200, j(r2.body)); assert.equal(r2.body.cacheHit, false); assert.equal(r2.body.nonce, '1');
     TX1 = r2.body.txHash;
   });
 

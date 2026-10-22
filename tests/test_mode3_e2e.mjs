@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { getProvider } from './helpers/mode3_chain.mjs';
 import { syncRevocationTree, syncRegistryTree, signChallenge, signRevokeSession, ProofCache, VKEY_PATH } from '../lib/mode3_wallet.js';
+import { LOGIN_COUNTER } from '../lib/mode3_onchain.js';
 import { createRpVerifier } from '../lib/mode3_rp.js';
 import { randomScalar } from '../lib/mode3_credential.js';
 import { createShare, combinePublicKey } from '../lib/mode3_trace.js';
@@ -65,8 +66,9 @@ try {
     assert.equal(v.ok, true, j(v));
     const { regRoot } = await trees();
     const cached = cache.get(ProofCache.rootKey(31337n, v.root, regRoot), session.wallet.address);
-    assert.equal(cached.publicSignals.length, 33); assert.equal(BigInt(cached.publicSignals[7]), regRoot); assert.equal(v.regRoot, regRoot);
+    assert.equal(cached.publicSignals.length, 34); assert.equal(BigInt(cached.publicSignals[7]), regRoot); assert.equal(v.regRoot, regRoot);
     assert.equal(BigInt(cached.publicSignals[30]), v.auid_s); assert.equal(BigInt(cached.publicSignals[31]), v.arid_s); assert.equal(BigInt(cached.publicSignals[32]), sessionRs);
+    assert.equal(cached.publicSignals[33], LOGIN_COUNTER.toString(), '로그인은 counter=LOGIN_COUNTER');
   });
   let PPID1, staleProof;
   await t('같은 root 둘이면 캐시 π 재사용', async () => {
@@ -105,7 +107,8 @@ try {
   });
   await t('세션 폐기(폐기 트리)는 그대로: 리프 게시 뒤 옛 π 는 stale_root, 새 π 는 is a member', async () => {
     const nonce = randomScalar();
-    const rv = await cia.post('/cia/revoke', { uid: '12345', scope: 'session', Cf_s: cred.Cf_s, sig_u: await signRevokeSession(u.sk_u, u.uid, BigInt(cred.Cf_s), nonce), nonce: nonce.toString() });
+    const bound = 0n;
+    const rv = await cia.post('/cia/revoke', { uid: '12345', scope: 'session', Cf_s: cred.Cf_s, bound: bound.toString(), sig_u: await signRevokeSession(u.sk_u, u.uid, BigInt(cred.Cf_s), bound, nonce), nonce: nonce.toString() });
     assert.equal(rv.status, 200, j(rv.body));
     assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
     const { tree, registry } = await trees();

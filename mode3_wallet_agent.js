@@ -21,10 +21,10 @@ import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { createSecretSource, stripSecrets, validateWitness } from './lib/mode3_secret_source.js';
 import { DEFAULT_ATTR_SCHEMA, loadSchema, assertPredicateTypes, decodeAttrs, schemaInfo, encodeProfile, normalizeProfile } from './lib/mode3_attr_schema.js';
 import { createRegistration, createSessionKey, buildIssueRequest, buildCredentialProof, signChallenge, signSessionRequest, signSlotRequest, signRevokeSession, signRegistration, eddsaPubOf, normalizeDisclosure, normalizeSet, disclosureKey, hasPredicate, ProofCache, chooseMaxHeight, syncRegistryTree } from './lib/mode3_wallet.js';
-import { sessionLeaf } from './lib/mode3_revocation.js';
+import { sessionLeafRange, SESSION_BOUND_MAX } from './lib/mode3_revocation.js';
 import { createRevocationSync } from './lib/mode3_rcl_sync.js';
 import { registryLeaf } from './lib/mode3_registry.js';
-import { signPayload, statementDigestFields, proofToCalldata, parseExecuteReceipt, decodeExecuteCalldata, factoryAt, walletAt, walletInterface, FACTORY_ABI, verifyReferenceCode, FACTORY_MAX_ROOT_AGE_BAND, FACTORY_MAX_LIFETIME_BAND, PUB_INDEX } from './lib/mode3_onchain.js';
+import { signPayload, statementDigestFields, proofToCalldata, parseExecuteReceipt, decodeExecuteCalldata, factoryAt, walletAt, walletInterface, FACTORY_ABI, verifyReferenceCode, FACTORY_MAX_ROOT_AGE_BAND, FACTORY_MAX_LIFETIME_BAND, PUB_INDEX, LOGIN_COUNTER } from './lib/mode3_onchain.js';
 import { SCALAR_MAX, ppid, randomScalar, auidOf } from './lib/mode3_credential.js';
 import { verifyRpCert } from './lib/mode3_rp_cert.js';
 import { MODE3_ROOTS_ABI } from './lib/mode3_log.js';
@@ -76,9 +76,10 @@ const chainConfigMissing = () => (!LOG_ADDRESS ? 'CIA_LOG_ADDRESS not configured
 // snap 모드의 registration 은 stripSecrets 결과({ uid, auid, pk_u, slot, profile, attrs, userCred:{Cf_u,issuedAt} }) 다.
 // version 9 (2026-10-12, V11): r_u·cm_u 삭제, auid(= Poseidon(T_AUID, uid, s_u))·profile(사용자 입력, D15) 추가; 세션에 r_rp·auid_s·arid_s.
 //   옛 파일은 등록만 유지하고(file 모드 — auid 를 s_u 로 재계산; snap 모드는 비밀이 없어 재계산할 수 없으므로 등록을 비운다) 세션·userCred 를 비운다.
-const WALLET_STATE_VERSION = 9;
+// version 10 (2026-10-22): pendingBounds(세션키별 체인 반영 대기 중인 setSessionBound 요청) 추가 — 옛 파일은 빈 배열로 시작한다.
+const WALLET_STATE_VERSION = 10;
 const DEFAULT_PROFILE = Object.freeze({ birthYear: '1990', country: 'KR' });   // 데모 testuser 기본값(스펙 §7). 사용자가 등록 폼에서 바꿀 수 있다.
-let state = readJson(STATE_FILE, { version: WALLET_STATE_VERSION, registration: null, sessions: {} });
+let state = readJson(STATE_FILE, { version: WALLET_STATE_VERSION, registration: null, sessions: {}, pendingBounds: [] });
 // 세션의 witness 는 메모리에만(스펙 §3.3) — 재시작하면 사라지고 /wallet/revalidate 가 needs_consent 로 다시 동의를 받는다.
 function persist() { writeJsonAtomic(STATE_FILE, JSON.parse(JSON.stringify(state, (k, v) => (k === 'witness' ? undefined : v))), 0o600); }
 // 2026-10-01 최종 리뷰 A1: 길이 4 짜리 옛 attrs 가 들어오면 화면이 undefined 를 보이고 회로가 500 으로 죽는다 — 매 기동 6칸으로 맞춘다.
@@ -90,10 +91,11 @@ if (state.version !== WALLET_STATE_VERSION) {
   if (reg && typeof reg.s_u === 'string' && /^[0-9]+$/.test(reg.s_u) && typeof reg.uid === 'string') {
     kept = { uid: reg.uid, s_u: reg.s_u, sk_u: reg.sk_u, pk_u: reg.pk_u ?? null, auid: (await auidOf({ uid: BigInt(reg.uid), s_u: BigInt(reg.s_u) })).toString(), slot: reg.slot ?? null, profile: reg.profile ?? { ...DEFAULT_PROFILE }, attrs: padAttrs6(reg.attrs), userCred: null };
   } else if (reg) console.warn('[wallet] snap 모드 등록(파일에 비밀 없음)은 auid 를 재계산할 수 없어 등록을 비운다 — 다시 등록한다(Snap 쪽 "초기화" 도 함께)');
-  state = { version: WALLET_STATE_VERSION, registration: kept, sessions: {} };
+  state = { version: WALLET_STATE_VERSION, registration: kept, sessions: {}, pendingBounds: [] };
   persist();
 }
 state.sessions ??= {};
+state.pendingBounds ??= [];
 if (state.registration) {
   state.registration.userCred ??= null;
   // 버전은 이미 8이지만 attrs 길이가 6이 아닌 경우(손으로 고친 상태 파일 등) 방어 — 위 이행 분기와 별개로 매번 건다.
@@ -466,8 +468,20 @@ app.get('/wallet/status', async (req, res) => {
   for (const [r_s, e] of Object.entries(state.sessions)) {
     // 2026-10-14: 세션의 PPID 계정 주소(팩토리 computeAddress(PPID), CREATE2 라 배포 전에도 정해진다)를 화면 표기용으로 싣는다. 결과는 캐시한다.
     const account = e.factoryAddress ? await accountAddressOf(e.factoryAddress, e.PPID) : null;
-    sessions[r_s] = { account, arid: e.arid, PPID: e.PPID, max_height: e.credential.max_height, chainid: e.credential.chainid, allowAgent: e.allowAgent, factoryAddress: e.factoryAddress, attrGateAddress: e.attrGateAddress ?? null, sessionAddress: new ethers.Wallet(e.sessionPrivKey).address, issuedAt: e.issuedAt, pk_trace: e.pk_trace };
+    // 2026-10-22: 이 계정의 체인 nonce — 거래 π 의 counter 가 된다(브리프 §6.5). 미배포면 '0', 못 읽으면 null(화면 표기용, 실패해도 상태 응답 자체는 낸다).
+    let nonce = null;
+    if (account) {
+      try { nonce = (await provider.getCode(account)) === '0x' ? '0' : (await walletAt(account, provider).nonce()).toString(); }
+      catch { nonce = null; }
+    }
+    sessions[r_s] = { account, nonce, arid: e.arid, PPID: e.PPID, max_height: e.credential.max_height, chainid: e.credential.chainid, allowAgent: e.allowAgent, factoryAddress: e.factoryAddress, attrGateAddress: e.attrGateAddress ?? null, sessionAddress: new ethers.Wallet(e.sessionPrivKey).address, issuedAt: e.issuedAt, pk_trace: e.pk_trace };
   }
+  // 2026-10-22: 체인에 아직 반영되지 않은 setSessionBound 대기 항목. applicableSession 은 같은 account(= 같은 PPID·팩토리) 를 가진
+  // 살아 있는 세션의 r_s — 그 세션으로 /wallet/bounds/apply 를 바로 부를 수 있다. 없으면 null(새로 로그인해야 반영할 수 있다).
+  const pendingBounds = (state.pendingBounds ?? []).map((p) => ({
+    ...p,
+    applicableSession: Object.entries(sessions).find(([, e]) => e.account && e.account.toLowerCase() === p.account.toLowerCase())?.[0] ?? null,
+  }));
   // userCred.revoked 는 마지막 등록부 확인(lastRegistry)으로 판정한다(여기서 다시 확인하지 않는다, V9 §8.2). 아직 확인이 없으면 null.
   // 여기 쓰는 값(uid·attrs·userCred 의 Cf_u·issuedAt)은 두 모드 모두 파일의 공개 부분이다 — 비밀 공급원이 필요 없다.
   const reg = state.registration;
@@ -475,7 +489,7 @@ app.get('/wallet/status', async (req, res) => {
   const userCred = uc ? { Cf_u: uc.Cf_u, issuedAt: uc.issuedAt, revoked: lastRegistry ? !lastRegistry.match : null } : null;
   const st = rcl ? rcl.stats() : null;
   res.json({
-    registered: Boolean(reg), uid: reg?.uid ?? null, auid: reg?.auid ?? null, slot: reg?.slot ?? null, attrs: reg?.attrs ?? null, userCred, sessions,
+    registered: Boolean(reg), uid: reg?.uid ?? null, auid: reg?.auid ?? null, slot: reg?.slot ?? null, attrs: reg?.attrs ?? null, userCred, sessions, pendingBounds,
     profile: reg?.profile ?? null, attrSchema: attrSchema ? schemaInfo(attrSchema.schema, attrSchema.hash) : null,
     attrsView: reg && attrSchema ? decodeAttrs(attrSchema.schema, reg.attrs, reg.profile ?? null) : null,
     registry: lastRegistry, demoOverride: demoOverride ? { scope: demoOverride.scope, fields: Object.keys(demoOverride).filter((k) => k !== 'scope') } : null,
@@ -780,13 +794,16 @@ app.post('/wallet/session/witness', async (req, res) => {
  *  자격증명은 그대로다. 세션이 없으면 throw('no_session') — 호출자가 404/409 로 옮긴다(500 이 아니다).
  *  시연 덮어쓰기(scope='prove')가 걸려 있으면 증명이 실패할 때 throw('demo_proof_failed') — 500 이 아니라 호출자가 409 로 보여준다.
  *  disclosure 가 없으면(mask 0) 기본 π. */
-async function proveSession(rsKey, synced, timings, disclosure = null, src) {
+async function proveSession(rsKey, synced, timings, disclosure = null, src, counter = LOGIN_COUNTER) {
   const s = state.sessions[rsKey];
   if (!s) throw Object.assign(new Error('no_session'), { reason: 'no_session' });
   const reg = src.registration();
   const uc = src.userCred();
   const sessionWallet = new ethers.Wallet(s.sessionPrivKey);
-  const discKey = hasPredicate(disclosure) ? disclosureKey(disclosure) : '0';
+  // counter(2026-10-22 §6.5): 거래마다 새 π 가 필요하다(counter = 그 거래의 nonce) — 캐시는 로그인·재검증(LOGIN_COUNTER)과
+  // 거래(counter=nonce)를 같은 (root, r_s) 아래 섞지 않도록 counter 를 discKey 뒤에 덧붙인다.
+  const baseDiscKey = hasPredicate(disclosure) ? disclosureKey(disclosure) : '0';
+  const discKey = counter === LOGIN_COUNTER ? baseDiscKey : `${baseDiscKey}#n${counter}`;
   // V10(2026-10-02): 폐기 사전 확인은 캐시 히트여도 한다. 캐시 키는 거울 뷰 (root, regRoot) 인데, 거울이 뒤처진 동안 캐노니컬에서
   // 폐기·은퇴가 일어나면 키가 그대로라 히트가 나고, 예전처럼 미스일 때만 보면 지갑이 이미 아는 폐기를 놓친 채 옛 π 를 계속 낸다.
   // 확인은 해시 두어 번이라 싸다.
@@ -800,7 +817,13 @@ async function proveSession(rsKey, synced, timings, disclosure = null, src) {
   if (!chk.match) throw Object.assign(new Error('revoked'), { reason: 'revoked', registry: chk });
   // V8: 세션 리프(설계 2026-09-24 §4). 사용자 쪽을 먼저 본다 — 둘 다 폐기됐으면 자격증명 쪽이 더 넓은 사유다.
   // V10: 캐노니컬 최신 트리로 본다 — 거울이 아직 그 폐기를 싣지 않았어도 폐기된 세션을 더 쓰지 않는다(registryCheck 와 같은 규칙).
-  if (synced.canonical.tree.has(await sessionLeaf(BigInt(s.credential.Cf_s)))) throw Object.assign(new Error('revoked_session'), { reason: 'revoked_session' });
+  // 2026-10-22 §6.5: 리프 하나가 아니라 구간([lo, lo+counter])에 폐기 리프가 있는지를 본다 — 상한(bound) 이 counter 이하인
+  // 폐기가 하나라도 있으면 이 거래(또는 로그인·재검증, counter=LOGIN_COUNTER)는 더 쓸 수 없다.
+  {
+    const { lo, hi } = await sessionLeafRange(BigInt(s.credential.Cf_s), counter);
+    try { await synced.canonical.tree.getRangeNonMembershipWitness(lo, hi); }
+    catch { throw Object.assign(new Error('revoked_session'), { reason: 'revoked_session' }); }
+  }
   let cached = cache.get(ProofCache.rootKey(synced.chainId, synced.root, synced.regRoot), rsKey, discKey);
   const cacheHit = Boolean(cached);
   if (!cached) {
@@ -814,7 +837,7 @@ async function proveSession(rsKey, synced, timings, disclosure = null, src) {
           uid: BigInt(ov?.uid ?? reg.uid), arid: BigInt(s.arid), s_u: BigInt(ov?.s_u ?? reg.s_u), auid: BigInt(reg.auid), blind_u: BigInt(uc.blind_u),
           r_rp: BigInt(s.r_rp), r_s: BigInt(rsKey), pk_i: BigInt(s.pk_i), attrs: (reg.attrs ?? []).map(BigInt),
           credential: s.credential, pk_CIA: { x: BigInt(s.credential.pk_CIA.x), y: BigInt(s.credential.pk_CIA.y) },
-          pk_trace: { x: BigInt(s.pk_trace.x), y: BigInt(s.pk_trace.y) }, tree, registry, slot: reg.slot, disclosure,
+          pk_trace: { x: BigInt(s.pk_trace.x), y: BigInt(s.pk_trace.y) }, tree, registry, slot: reg.slot, disclosure, counter,
         });
       } catch (e) {
         // 시연 덮어쓰기가 걸려 있었다면 원인은 거의 항상 그것이다(가짜 s_u·uid 로는 witness 가 안 만들어진다) — 500 대신
@@ -935,12 +958,14 @@ app.post('/wallet/self_revoke', async (req, res) => {
   } catch (e) { res.status(502).json({ reason: 'cia_unavailable', detail: e.message }); }
 });
 
-// V8 세션 폐기(설계 2026-09-24 §4): 이 지갑의 세션 하나를 AA 에 폐기 요청한다. 서명은 sk_u — file 모드는 상태 파일,
+// V8 세션 폐기(설계 2026-09-24 §4, 2026-10-22 §3 bound 추가): 이 지갑의 세션 하나를 AA 에 폐기 요청한다. 서명은 sk_u — file 모드는 상태 파일,
 // snap 모드는 세션의 메모리 증인(로그인·재승인 때 채워진다). 증인이 없으면 409 needs_consent 로 떨어뜨려 페이지가
 // 팝업으로 동의를 다시 받게 한다. self_revoke 와 같이 CORS 를 열지 않는다(지갑 페이지, 같은 오리진 전용).
+// bound(본문, 선택) — 생략하면 계정의 현재 체인 nonce(팩토리 없으면 0). AA 가 받아들이면 account 가 있는 한 pendingBounds 에
+// "체인에 아직 반영되지 않은 setSessionBound" 항목을 남긴다 — /wallet/bounds/apply 가 나중에 그 반영을 보낸다.
 app.post('/wallet/session/revoke', async (req, res) => {
   try {
-    const { r_s } = req.body ?? {};
+    const { r_s, bound: boundIn } = req.body ?? {};
     if (!isDec(r_s)) return res.status(400).json({ error: 'r_s 필요' });
     const rsKey = BigInt(r_s).toString();
     const s = state.sessions[rsKey];
@@ -949,17 +974,34 @@ app.post('/wallet/session/revoke', async (req, res) => {
     if (!state.registration) return res.status(409).json({ reason: 'not_registered' });
     const sk_u = SECRETS === 'snap' ? s.witness?.sk_u : state.registration.sk_u;
     if (!sk_u) return res.status(409).json({ reason: 'needs_consent' });
+    // bound 기본값: 팩토리가 있는 세션이면 계정의 현재 nonce(미배포면 0) — 지금까지의 거래는 살리고 그 뒤를 막는다.
+    // 팩토리가 없으면 체인 상한을 올릴 계정이 없으므로 0(전부 차단).
+    let account = null, chainNonce = 0n;
+    if (s.factoryAddress) {
+      account = await factoryAt(s.factoryAddress, provider).computeAddress(BigInt(s.PPID));
+      if ((await provider.getCode(account)) !== '0x') chainNonce = await walletAt(account, provider).nonce();
+    }
+    if (boundIn !== undefined && boundIn !== null && !isDec(boundIn)) return res.status(400).json({ error: 'bound 는 10진 문자열' });
+    const bound = boundIn !== undefined && boundIn !== null ? BigInt(boundIn) : chainNonce;
+    if (bound < 0n || bound >= SESSION_BOUND_MAX) return res.status(400).json({ error: 'bound 는 [0, 2^32)' });
     const nonce = randomScalar();   // lib/mode3_credential.js — 다른 요청과 같은 난수원. 신선도는 IdP 가 보지 않는다(재생 = 같은 세션 재폐기, 멱등)
-    const sig_u = await signRevokeSession(sk_u, BigInt(state.registration.uid), BigInt(s.credential.Cf_s), nonce);
+    const sig_u = await signRevokeSession(sk_u, BigInt(state.registration.uid), BigInt(s.credential.Cf_s), bound, nonce);
     // 502 cia_unavailable 은 **IdP 호출 실패만** 가리킨다(최종 리뷰 F3). 서명·BigInt 같은 지역 오류는 아래 500 internal 로 간다 —
     // 둘을 뭉치면 운영자가 "AA 가 죽었나" 를 잘못 쫓는다.
     let r;
-    try { r = await ciaPost('/cia/revoke', { uid: state.registration.uid, scope: 'session', Cf_s: s.credential.Cf_s, sig_u, nonce: nonce.toString() }); }
+    try { r = await ciaPost('/cia/revoke', { uid: state.registration.uid, scope: 'session', Cf_s: s.credential.Cf_s, bound: bound.toString(), sig_u, nonce: nonce.toString() }); }
     catch (e) { return res.status(502).json({ reason: 'cia_unavailable', detail: e.message }); }
     if (r.status !== 200) return res.status(r.status).json(r.body ?? {});
     // AA 가 받아들인 순간부터 이 지갑은 그 세션을 더 쓰지 않는다 — 게시 전이라도(게시 뒤에는 어차피 π 가 안 만들어진다).
-    delete state.sessions[rsKey]; cache.deleteSession(rsKey); persist();
-    res.json({ revoked: true, inserted: r.body.inserted, pending: r.body.pending });
+    delete state.sessions[rsKey]; cache.deleteSession(rsKey);
+    // account 가 없으면(팩토리 없는 세션) 체인 상한을 올릴 곳이 없다 — 대기 항목을 넣지 않는다.
+    let pendingBoundId = null;
+    if (account) {
+      pendingBoundId = randomScalar().toString().slice(0, 16);
+      state.pendingBounds.push({ id: pendingBoundId, account, chainid: s.credential.chainid, arid: s.arid, pk_i: s.pk_i, bound: bound.toString(), revokedAt: new Date().toISOString() });
+    }
+    persist();
+    res.json({ revoked: true, inserted: r.body.inserted, pending: r.body.pending, bound: bound.toString(), pendingBoundId });
   } catch (e) { res.status(500).json({ reason: 'internal', detail: e.message }); }
 });
 
@@ -1035,8 +1077,14 @@ async function buildExecute(req) {
   let src;
   try { src = secretSourceFor(req, rsKey); }
   catch (e) { if (e.reason === 'needs_consent') return fail(409, { reason: 'needs_consent', timings }); throw e; }
+  // 2026-10-22: 거래 π 는 counter = nonce 를 공개 입력으로 싣는다(컨트랙트가 pub[33]==payload.nonce 를 검사한다) — proveSession
+  // 보다 먼저 nonce 를 읽어야 한다(브리프 Step 3-3).
+  const walletAddr = await factoryAt(s.factoryAddress, provider).computeAddress(BigInt(s.PPID));
+  // 아직 배포 전이면 nonce 는 0(uint256 기본값) — 배포 트랜잭션을 먼저 보낸 뒤 execute 가 이 nonce 로 들어간다
+  const deployNeeded = (await provider.getCode(walletAddr)) === '0x';
+  const nonce = deployNeeded ? 0n : await walletAt(walletAddr, provider).nonce();
   let proved;
-  try { proved = await proveSession(rsKey, synced, timings, disclosure, src); }   // root·disclosure 가 같으면 캐시 π, 아니면 재증명
+  try { proved = await proveSession(rsKey, synced, timings, disclosure, src, nonce); }   // root·disclosure·counter(=nonce) 가 같으면 캐시 π, 아니면 재증명
   catch (e) {
     if (e.reason === 'revoked') { delete state.sessions[rsKey]; cache.deleteSession(rsKey); persist(); return fail(403, { reason: 'revoked', registry: e.registry, timings }); }
     // V8: 이 세션만 폐기됐다(/wallet/tx 와 /wallet/tx/prepare 가 함께 탄다).
@@ -1048,10 +1096,6 @@ async function buildExecute(req) {
     if (e.reason === 'no_session') return fail(404, { reason: 'no_session', timings });
     throw e;
   }
-  const walletAddr = await factoryAt(s.factoryAddress, provider).computeAddress(BigInt(s.PPID));
-  // 아직 배포 전이면 nonce 는 0(uint256 기본값) — 배포 트랜잭션을 먼저 보낸 뒤 execute 가 이 nonce 로 들어간다
-  const deployNeeded = (await provider.getCode(walletAddr)) === '0x';
-  const nonce = deployNeeded ? 0n : await walletAt(walletAddr, provider).nonce();
   // 받는 주소(2026-10-16): 대소문자 체크섬이 안 맞는 입력도 받는다(소문자로 내려 정규형) — 사용자 페이지 코어와 같은 규칙.
   const payload = { to: (() => { try { return ethers.getAddress(to); } catch { return ethers.getAddress(String(to).toLowerCase()); } })(), value: BigInt(value), data, nonce };
   // 시연(가짜 서명, 사용자 요청 2026-10-14): 세션키 대신 매번 새로 뽑는 임의 키로 서명한다 — 컨트랙트의 _recover 가 복원한 주소가
@@ -1130,6 +1174,60 @@ app.post('/wallet/tx/prepare', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// 체인 반영 대기(설계 2026-10-22 §3·§7): /wallet/session/revoke 가 남긴 pendingBounds 항목 하나를 지금 세션(r_s, 같은 account)으로
+// setSessionBound 거래로 보낸다. file 모드는 여기서 바로 전송·영수증까지 받는다(/wallet/tx 와 같은 전송부). snap 모드는
+// calldata 만 만들어 돌려준다(/wallet/tx/prepare 와 같은 모양) — 페이지가 MetaMask 로 보낸 뒤 /wallet/tx/record 가 받는다.
+app.post('/wallet/bounds/apply', async (req, res) => {
+  try {
+    const { id, r_s } = req.body ?? {};
+    if (typeof id !== 'string' || !id || !isDec(r_s)) return res.status(400).json({ error: 'id, r_s 필요' });
+    const p = (state.pendingBounds ?? []).find((x) => x.id === id);
+    if (!p) return res.status(404).json({ reason: 'no_pending_bound' });
+    const rsKey = BigInt(r_s).toString();
+    const s = state.sessions[rsKey];
+    if (!s) return res.status(404).json({ reason: 'no_session' });
+    if (!s.factoryAddress) return res.status(409).json({ reason: 'no_factory' });
+    // 세션의 account 가 대기 항목의 account 와 같아야 한다 — 다른 계정으로 보내면 setSessionBound 가 남의 pk_i 상한을 건드리게 된다.
+    const account = await factoryAt(s.factoryAddress, provider).computeAddress(BigInt(s.PPID));
+    if (account.toLowerCase() !== p.account.toLowerCase()) return res.status(409).json({ reason: 'bound_wrong_account' });
+    const data = walletInterface.encodeFunctionData('setSessionBound', [BigInt(p.pk_i), Number(p.bound)]);
+    const b = await buildExecute({ body: { r_s, to: p.account, value: '0', data } });
+    if (b.error) return res.status(b.error.status).json(b.error.body);
+    const { walletAddr, deployNeeded, nonce, args, timings, disclosure, proved, demo } = b;
+    if (SECRETS === 'snap') {
+      return res.json({
+        walletAddr, factoryAddress: s.factoryAddress, deployNeeded,
+        deployCalldata: deployNeeded ? factoryInterface.encodeFunctionData('deploy', [BigInt(s.PPID)]) : null,
+        calldata: walletInterface.encodeFunctionData('execute', args),
+        nonce: nonce.toString(), disclosure: hasPredicate(disclosure) ? discStrings(disclosure) : null,
+        cacheHit: proved.cacheHit, root: proved.root, regRoot: proved.regRoot, timings, ...(demo ? { demo } : {}),
+        pendingBoundId: p.id,
+      });
+    }
+    const relayer = await provider.getSigner(RELAYER_INDEX);
+    let deployed = false;
+    if (deployNeeded) { await (await factoryAt(s.factoryAddress, relayer).deploy(BigInt(s.PPID))).wait(); deployed = true; }
+    const walletC = walletAt(walletAddr, relayer);
+    const t = Date.now();
+    let receipt;
+    try { receipt = await (await walletC.execute(...args)).wait(); }
+    catch (e) {
+      // /wallet/tx 와 같은 revert 이름 파싱 — BoundNotLowered(이미 더 낮은 상한이 걸려 있다)·OnlySelf 등을 그대로 돌려준다.
+      let name = e?.revert?.name ?? e?.reason ?? e?.shortMessage ?? e.message;
+      if (e?.data) { try { name = walletC.interface.parseError(e.data)?.name ?? name; } catch { /* 알려진 커스텀 에러가 아니면 원래 메시지를 쓴다 */ } }
+      return res.status(409).json({ reason: 'execute_reverted', detail: String(name), wallet: walletAddr, nonce: nonce.toString(), timings, ...(demo ? { demo } : {}) });
+    }
+    timings.txMs = Date.now() - t;
+    // 영수증에 SessionBound 이벤트가 있으면 이 대기 항목은 체인에 반영됐다 — 지운다.
+    for (const l of receipt.logs ?? []) {
+      let parsed = null;
+      try { parsed = walletInterface.parseLog({ topics: [...l.topics], data: l.data }); } catch { continue; }
+      if (parsed?.name === 'SessionBound') { state.pendingBounds = (state.pendingBounds ?? []).filter((x) => x.id !== p.id); persist(); break; }
+    }
+    res.json({ ...receiptResult(receipt, walletAddr, disclosure), nonce: nonce.toString(), deployed, cacheHit: proved.cacheHit, root: proved.root, regRoot: proved.regRoot, timings, applied: true, wallet: walletAddr, ...(demo ? { demo } : {}) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // MetaMask 가 보낸 execute 의 영수증을 파싱해 /wallet/tx 와 같은 형식으로 돌려준다. 영수증이 아직 없으면 202 { pending:true } —
 // 에이전트는 기다리지 않는다(페이지가 다시 부른다). 요청값 disclosure 는 트랜잭션 calldata 의 pub(PUB_INDEX.DISC_MASK..SET_ROOT)에서 되돌린다(상태 없음).
 app.post('/wallet/tx/record', async (req, res) => {
@@ -1148,6 +1246,18 @@ app.post('/wallet/tx/record', async (req, res) => {
     let disclosure = null;
     const dec = tx ? decodeExecuteCalldata(tx.data) : null;
     if (dec) { const pub = dec.pub.map(BigInt); disclosure = { mask: pub[PUB_INDEX.DISC_MASK], lo: pub.slice(PUB_INDEX.DISC_LO, PUB_INDEX.DISC_HI), hi: pub.slice(PUB_INDEX.DISC_HI, PUB_INDEX.SET_SEL), sel: pub[PUB_INDEX.SET_SEL], root: pub[PUB_INDEX.SET_ROOT] }; }
+    // 대기 중인 setSessionBound 거래가 영수증에 반영되면 그 항목을 지운다(snap 모드: /wallet/bounds/apply 는 calldata 만 돌려주고,
+    // 실제 전송·영수증은 MetaMask 를 거쳐 이 라우트로 들어온다).
+    for (const l of receipt.logs ?? []) {
+      let parsed = null;
+      try { parsed = walletInterface.parseLog({ topics: [...l.topics], data: l.data }); } catch { continue; }
+      if (parsed?.name === 'SessionBound') {
+        const pk_i = parsed.args.pk_i.toString(), bound = parsed.args.bound.toString();
+        const before = state.pendingBounds?.length ?? 0;
+        state.pendingBounds = (state.pendingBounds ?? []).filter((x) => !(x.pk_i === pk_i && x.bound === bound));
+        if (state.pendingBounds.length !== before) persist();
+      }
+    }
     if (!countedTxHashes.has(txHash)) { countedTxHashes.add(txHash); countTx(disclosure); }
     res.json(receiptResult(receipt, walletAddr, disclosure));
   } catch (e) { res.status(500).json({ error: e.message }); }

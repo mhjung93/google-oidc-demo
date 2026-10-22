@@ -259,12 +259,13 @@ try {
     const evs = await canon.queryFilter(canon.filters.Revoked(), 0);
     const last = evs[evs.length - 1];
     const leaves = last.args.leaves.map((l) => BigInt(l));
-    for (const cf of [cfA, cfB]) assert.ok(leaves.includes(await sessionLeaf(BigInt(cf))), `세션 리프(${cf.slice(0, 8)}…)가 캐노니컬 Revoked 에 있다`);
+    // bound 는 각 응답에서 읽는다: XA(지갑 버튼)는 rv.body.bound(생략 시 기본값), XB(관리자)는 ra.body.bound(관리자 생략 시 '0').
+    for (const [cf, bound] of [[cfA, rv.body.bound], [cfB, ra.body.bound]]) assert.ok(leaves.includes(await sessionLeaf(BigInt(cf), BigInt(bound))), `세션 리프(${cf.slice(0, 8)}…)가 캐노니컬 Revoked 에 있다`);
     assert.equal((await sendRequest(exchange, qA)).body.ok, true, '중계 전(거울 지연)에는 거래소가 아직 모른다');
     await stack.relay();
     assert.equal(await mirror.revRoot(), last.args.root, '중계 뒤 거울 revRoot == 캐노니컬 Revoked 의 root');
     // 거울은 항목 해시만 받는다 — 세션 리프 값은 캐노니컬 게시 calldata(양성 대조)에만 있고 거울 게시 calldata 에는 없다.
-    for (const cf of [cfA, cfB]) await assertLeafOnlyOnCanonical(last.transactionHash, rootHex(await sessionLeaf(BigInt(cf))));
+    for (const [cf, bound] of [[cfA, rv.body.bound], [cfB, ra.body.bound]]) await assertLeafOnlyOnCanonical(last.transactionHash, rootHex(await sessionLeaf(BigInt(cf), BigInt(bound))));
 
     for (const q of [qA, qB]) {
       const r = await sendRequest(exchange, q);

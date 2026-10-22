@@ -11,7 +11,7 @@ import { getProvider, deployRevocationLog } from './helpers/mode3_chain.mjs';
 import { VKEY_PATH, createRegistration } from '../lib/mode3_wallet.js';
 import { createRpVerifier } from '../lib/mode3_rp.js';
 import { randomScalar, SCALAR_MAX } from '../lib/mode3_credential.js';
-import { deployVerifier, deployFactory, walletAt } from '../lib/mode3_onchain.js';
+import { deployVerifier, deployFactory, walletAt, LOGIN_COUNTER } from '../lib/mode3_onchain.js';
 import { LOG_ABI, MODE3_MIRROR_ABI, MODE3_ROOTS_ABI } from '../lib/mode3_log.js';
 import { setRoot } from '../lib/mode3_set_tree.js';
 import { DEFAULT_ATTR_SCHEMA, encodeSlotValue } from '../lib/mode3_attr_schema.js';
@@ -98,8 +98,9 @@ try {
     assert.equal(r.body.r_s, ch.r_s);
     assert.ok(!('uid' in r.body), 'uid 는 RP 로 나가면 안 된다');
     assert.equal(typeof r.body.timings.proveMs, 'number');
-    assert.equal(r.body.publicSignals.length, 33, 'V11: 30 + auid_s·arid_s·r_s');
+    assert.equal(r.body.publicSignals.length, 34, 'V11: 30 + auid_s·arid_s·r_s·counter');
     assert.equal(r.body.publicSignals[32], ch.r_s);
+    assert.equal(r.body.publicSignals[33], LOGIN_COUNTER.toString(), '로그인은 counter=LOGIN_COUNTER');
     assert.equal(r.body.publicSignals[4], '31337');
     assert.equal(r.body.allowAgent, '0'); assert.equal(r.body.publicSignals[5], '0');
     const v = await verify(r.body, ch);
@@ -424,7 +425,7 @@ try {
     assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'no_factory');
   });
 
-  await t('tx: 팩토리를 준 세션 — 첫 트랜잭션은 지갑 배포 + 실행 ok, 두 번째는 캐시 π 재사용·nonce 1', async () => {
+  await t('tx: 팩토리를 준 세션 — 첫 트랜잭션은 지갑 배포 + 실행 ok, 두 번째는 새 π(counter=nonce 1 이라 캐시 미스)·nonce 1', async () => {
     const signer = await provider.getSigner(0);
     const verifierAddress = await deployVerifier(signer);
     factoryAddress = await deployFactory(signer, { verifierAddress, arid, pkCIA: pk_CIA, pkTrace: pk_trace, logAddress: cia.mirrorAddress, maxRootAge: 10n });
@@ -440,7 +441,8 @@ try {
     assert.notEqual(await provider.getCode(walletAddr), '0x');
     const r2 = await wallet.post('/wallet/tx', { r_s: S3, to }, { Origin: stack.rpOriginForWallet });
     assert.equal(r2.status, 200, j(r2.body));
-    assert.equal(r2.body.deployed, false); assert.equal(r2.body.cacheHit, true); assert.equal(r2.body.nonce, '1');
+    // 2026-10-22: 거래 π 는 counter=nonce 를 공개 입력으로 싣는다 — nonce 가 0→1 로 바뀌면 캐시 키도 바뀌어 새로 증명한다(브리프 §6.5).
+    assert.equal(r2.body.deployed, false); assert.equal(r2.body.cacheHit, false); assert.equal(r2.body.nonce, '1');
     assert.equal(await walletAt(walletAddr, provider).nonce(), 2n);
     console.log(`     execute gas ${r1.body.gasUsed} (배포 포함 tx 아님 — execute 만)`);
   });
@@ -558,6 +560,29 @@ try {
     assert.ok(c.r_s);
     const missing = await wallet.post('/wallet/session/revoke', { r_s: '999' });
     assert.equal(missing.status, 404); assert.equal(missing.body.reason, 'no_session');
+  });
+
+  await t('폐기 상한(2026-10-22): nonce 0·1 실행 → bound 3 폐기·게시 → nonce 2 성공, nonce 3 은 revoked_session, 재검증은 revoked_session', async () => {
+    const a = await loginOnce({ factoryAddress });                           // 팩토리 있는 세션(기존 tx 케이스와 같은 loginOnce 옵션)
+    // Ruling(addendum 사전 점검표): 세션키 주소는 loginOnce 반환값이 아니라 /wallet/status 의 sessions[r_s].sessionAddress 로 읽는다 —
+    // 세션 a 는 폐기되면 지갑이 버리므로, 그 전에 미리 읽어 둔다.
+    const aSessionAddress = (await wallet.get('/wallet/status')).body.sessions[a.r_s].sessionAddress;
+    await relay();
+    for (const _ of [0, 1]) assert.equal((await wallet.post('/wallet/tx', { r_s: a.r_s, to: ethers.ZeroAddress, value: '0' })).status, 200);
+    const r = await wallet.post('/wallet/session/revoke', { r_s: a.r_s, bound: '3' });
+    assert.equal(r.status, 200, j(r.body)); assert.equal(r.body.bound, '3'); assert.ok(r.body.pendingBoundId);
+    await publishOnce();
+    // 지갑은 폐기한 세션을 버렸으므로, 같은 세션키로 "공격자" 가 보내는 상황은 리프 기준으로 직접 확인한다:
+    const st = (await wallet.get('/wallet/status')).body;
+    assert.ok(st.pendingBounds.some((p) => p.id === r.body.pendingBoundId && p.bound === '3' && p.applicableSession === null));
+    // 같은 계정의 새 세션으로 "지금 반영" → setSessionBound 거래 → 영수증 SessionBound 이벤트
+    const b = await loginOnce({ factoryAddress });
+    await relay();
+    const ap = await wallet.post('/wallet/bounds/apply', { id: r.body.pendingBoundId, r_s: b.r_s });
+    assert.equal(ap.status, 200, j(ap.body)); assert.equal(ap.body.applied, true);
+    assert.equal((await wallet.get('/wallet/status')).body.pendingBounds.length, 0);
+    const acct = walletAt(ap.body.wallet, provider);
+    assert.equal(await acct.sessionBound(BigInt(aSessionAddress)), 4n);   // 저장값 = 3 + 1 (aSessionAddress 는 세션 a 의 세션키 주소)
   });
 
   await t('V8: 세션 하나가 지갑 밖에서(관리자) 폐기되면 재검증이 403 revoked_session 으로 그 세션만 지운다 — 사용자 자격증명은 그대로', async () => {
@@ -800,11 +825,11 @@ try {
   provider.destroy();
 }
 
-// ---- 독립 시험(공유 stack 과 무관한 자기 IdP·지갑): 지갑 상태 파일 8→9 이행이 auid 를 재계산하는지(file 모드)와
+// ---- 독립 시험(공유 stack 과 무관한 자기 IdP·지갑): 지갑 상태 파일 8→10 이행이 auid 를 재계산하는지(file 모드)와
 // snap 모드(파일에 비밀 없음)는 등록을 비우는지. isolated_mode3_stack.mjs 의 walletEnv 는 자신의 MODE3_WALLET_STATE_FILE 뒤에
 // 스프레드되므로(헬퍼 수정 없이) 이 경로를 바로 덮어쓸 수 있다 — v8 모양 상태 파일을 그 경로에 미리 써 둔다.
 // uid 424242 는 IdP 에 등록돼 있지 않지만 /wallet/status 는 파일의 공개 부분만 읽고 IdP 를 부르지 않으므로 상관없다.
-await t('지갑 상태 파일 8→9 이행: file 모드 등록은 auid 를 s_u 로 재계산해 유지(r_u·cm_u 삭제, 세션 비움), snap 모드(비밀 없음) 등록은 비운다 (+ V10: 거울 주소가 없으면 체인 라우트는 503)', async () => {
+await t('지갑 상태 파일 8→10 이행: file 모드 등록은 auid 를 s_u 로 재계산해 유지(r_u·cm_u 삭제, 세션 비움), snap 모드(비밀 없음) 등록은 비운다; pendingBounds 는 빈 배열 (+ V10: 거울 주소가 없으면 체인 라우트는 503)', async () => {
   const { auidOf } = await import('../lib/mode3_credential.js');
   const reg = await createRegistration(424242n);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-wallet-v8-'));
@@ -817,8 +842,10 @@ await t('지갑 상태 파일 8→9 이행: file 모드 등록은 auid 를 s_u �
       assert.equal(s.registered, true); assert.equal(s.uid, '424242'); assert.equal(s.slot, 3);
       assert.equal(s.auid, (await auidOf({ uid: 424242n, s_u: reg.s_u })).toString(), 'auid 는 s_u 로 재계산');
       assert.deepEqual(s.attrs, ['1990', '410', '2', '0', '0', '0']); assert.deepEqual(s.sessions, {}); assert.equal(s.userCred, null);
+      assert.deepEqual(s.pendingBounds, [], '2026-10-22: 이행 뒤 pendingBounds 는 빈 배열');
       const onDisk = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-      assert.equal(onDisk.version, 9); assert.equal(onDisk.registration.r_u, undefined); assert.equal(onDisk.registration.cm_u, undefined); assert.ok(onDisk.registration.auid);
+      assert.equal(onDisk.version, 10); assert.equal(onDisk.registration.r_u, undefined); assert.equal(onDisk.registration.cm_u, undefined); assert.ok(onDisk.registration.auid);
+      assert.deepEqual(onDisk.pendingBounds, []);
       const pre = await stack2.wallet.post('/wallet/authorize/precheck', { arid: '1', origin: 'http://x', cert_s: {}, pk_trace: { x: '1', y: '2' } });
       assert.equal(pre.status, 503, j(pre.body)); assert.equal(pre.body.detail, 'MODE3_MIRROR_ADDRESS not configured');
     } finally { await stack2.stop(); }

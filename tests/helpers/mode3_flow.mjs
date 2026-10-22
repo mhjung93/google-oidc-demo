@@ -27,10 +27,12 @@ export async function issueV11(cia, user, { arid, chainid = 31337n, allowAgent =
   return { r, req, session, r_s, r_rp, blind_u, cred: r.body, user };
 }
 
-/** 발급 결과로 π_RP 를 만든다. tree·registry 를 안 주면 (provider, logAddress) 에서 동기화한다. slot 은 CIA 응답의 슬롯(재발급으로 바뀔 수 있다). */
-export async function proveV11(issued, { arid, pk_CIA, pk_trace, provider, logAddress, tree, registry, slot = issued.cred?.slot ?? issued.user.slot, disclosure = null, tagR } = {}) {
+/** 발급 결과로 π_RP 를 만든다. tree·registry 를 안 주면 (provider, logAddress) 에서 동기화한다. slot 은 CIA 응답의 슬롯(재발급으로 바뀔 수 있다).
+ *  counter(2026-10-22, Task 7): 온체인 execute() 로 직접 보낼 π 는 호출자가 그 거래의 nonce 를 넘겨야 한다(컨트랙트의 pub[33]==nonce 검사) —
+ *  안 주면 buildCredentialProof 의 기본값(LOGIN_COUNTER, 로그인·재검증 전용)이 그대로 쓰인다. */
+export async function proveV11(issued, { arid, pk_CIA, pk_trace, provider, logAddress, tree, registry, slot = issued.cred?.slot ?? issued.user.slot, disclosure = null, tagR, counter } = {}) {
   const u = issued.user;
   if (!tree) ({ tree } = await syncRevocationTree(provider, logAddress));
   if (!registry) ({ tree: registry } = await syncRegistryTree(provider, logAddress));
-  return buildCredentialProof({ uid: u.uid, arid: BigInt(arid), s_u: u.s_u, auid: u.auid, blind_u: issued.blind_u, r_rp: issued.r_rp, r_s: issued.r_s, pk_i: issued.session.pk_i, attrs: u.attrs, credential: issued.cred, pk_CIA, pk_trace, tree, registry, slot, disclosure, ...(tagR !== undefined ? { tagR } : {}) });
+  return buildCredentialProof({ uid: u.uid, arid: BigInt(arid), s_u: u.s_u, auid: u.auid, blind_u: issued.blind_u, r_rp: issued.r_rp, r_s: issued.r_s, pk_i: issued.session.pk_i, attrs: u.attrs, credential: issued.cred, pk_CIA, pk_trace, tree, registry, slot, disclosure, ...(tagR !== undefined ? { tagR } : {}), ...(counter !== undefined ? { counter } : {}) });
 }

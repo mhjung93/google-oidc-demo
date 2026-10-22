@@ -103,7 +103,7 @@ await t('V11: 발급 요청(C_u·C_s·π_IdP·sig_u) → 로컬 IdP 서명 → �
   assert.equal(req.auid_s, await auidSOf({ auid: reg.auid, arid, r_rp })); assert.equal(req.arid_s, await aridSOf({ arid, r_rp }));
   assert.equal(cred.Cf_s, req.Cf_s.toString());
   assert.equal(revRoot, tree0.getRoot());
-  assert.equal(publicSignals.length, 33, 'V11: V9 30 + auid_s·arid_s·r_s');
+  assert.equal(publicSignals.length, 34, 'V11: V9 30 + auid_s·arid_s·r_s·counter');
   assert.equal(BigInt(publicSignals[2]), session.pk_i);
   assert.equal(BigInt(publicSignals[3]), BigInt(cred.max_height));
   assert.equal(BigInt(publicSignals[4]), 31337n);
@@ -123,7 +123,7 @@ await t('V9 buildCredentialProof: set 을 주면 publicSignals[28] = sel, [29] =
   const attrs = [1990n, 410n, 2n, 0n, 0n, 0n];
   const st = await normalizeSet({ slot: 1, members: [410, 392] }, attrs);
   const built = await proveWith({ mask: 0n, lo: [0n, 0n, 0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n, 0n, 0n], ...st });
-  assert.equal(built.publicSignals.length, 33);
+  assert.equal(built.publicSignals.length, 34);
   assert.equal(built.publicSignals[28], '2'); assert.equal(built.publicSignals[29], st.root.toString());
   const plain = await proveWith(null);
   assert.equal(plain.publicSignals[28], '0'); assert.equal(plain.publicSignals[29], '0');
@@ -246,10 +246,11 @@ await t('증인을 만든 뒤 트리가 바뀌어도 증명의 revRoot 는 증�
 
   const { tree } = await syncRevocationTree(provider, logAddress);
   const rootBefore = tree.getRoot();
-  const orig = tree.getNonMembershipWitness.bind(tree);
+  // 2026-10-22: buildCredentialProof 는 이제 세션 구간 비멤버십(getRangeNonMembershipWitness)을 쓴다 — 점 증인(getNonMembershipWitness)은 더 이상 안 부른다.
+  const orig = tree.getRangeNonMembershipWitness.bind(tree);
   let witnessRoot = null;
-  tree.getNonMembershipWitness = async (target) => {
-    const w = await orig(target);
+  tree.getRangeNonMembershipWitness = async (lo, hi) => {
+    const w = await orig(lo, hi);
     witnessRoot = BigInt(w.root);
     await tree.insert(999_999_999n);            // 다른 요청의 sync() 가 끼어든 상황을 흉내
     return w;
@@ -266,8 +267,8 @@ await t('증인을 만든 뒤 트리가 바뀌어도 증명의 revRoot 는 증�
 
 // 2026-09-25 리뷰 E-7 가드("두 비멤버십 증인의 root 가 다르면 던진다")는 V9 에서 사라졌다 — lib/mode3_wallet.js
 // buildCredentialProof 의 조건 9 주석대로 "사용자 리프 비멤버십 증인은 없다"; 세션 리프 증인 하나만 남아
-// getNonMembershipWitness 를 한 번만 부르므로 "두 증인이 어긋난다" 는 경우 자체가 구조적으로 불가능해졌다
-// (grep 으로 확인: lib/mode3_wallet.js 에 그 가드·에러 문구가 더 이상 없다). 이 테스트가 지키던 성질의 V9
+// (2026-10-22 부터는 getRangeNonMembershipWitness) 한 번만 부르므로 "두 증인이 어긋난다" 는 경우 자체가 구조적으로
+// 불가능해졌다(grep 으로 확인: lib/mode3_wallet.js 에 그 가드·에러 문구가 더 이상 없다). 이 테스트가 지키던 성질의 V9
 // 쪽 등가물은 "증인을 정확히 한 번만 요청하고 그 root 를 그대로 쓴다" 이므로 그렇게 바꾼다 — 사용자 리프
 // 비멤버십 증인이 되살아나는 회귀가 생기면(두 번째 호출) n 이 1 을 넘어 이 테스트가 잡는다.
 await t('V9: 비멤버십 증인은 세션 리프 하나만 요청한다 (사용자 리프 증인이 되살아나는 회귀를 잡는다)', async () => {
@@ -280,9 +281,9 @@ await t('V9: 비멤버십 증인은 세션 리프 하나만 요청한다 (사용
   registry3.set(SLOT, await registryLeaf(reg3.auid, req3.Cf_u));
 
   const { tree } = await syncRevocationTree(provider, logAddress);
-  const orig = tree.getNonMembershipWitness.bind(tree);
+  const orig = tree.getRangeNonMembershipWitness.bind(tree);
   let n = 0;
-  tree.getNonMembershipWitness = async (target) => { n++; return orig(target); };
+  tree.getRangeNonMembershipWitness = async (lo, hi) => { n++; return orig(lo, hi); };
   const out = await buildCredentialProof({
     uid, arid, s_u: reg3.s_u, auid: reg3.auid, blind_u: b3, r_rp: rp3, r_s: rs3, pk_i: session3.pk_i,
     attrs: ATTRS, credential: cred3, pk_CIA, pk_trace, tree, registry: registry3, slot: SLOT,
