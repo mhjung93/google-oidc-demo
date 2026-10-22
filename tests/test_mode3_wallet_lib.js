@@ -1,7 +1,7 @@
 // 지갑 라이브러리의 체인·zkey 없는 부분(V11) — 등록값·서명 메시지·ProofCache. (unit)  node tests/test_mode3_wallet_lib.js
 import assert from 'node:assert/strict';
 import { buildEddsa } from 'circomlibjs';
-import { createRegistration, signRegistration, signSlotRequest, signRevokeSession, eddsaPubOf, ProofCache, chooseMaxHeight } from '../lib/mode3_wallet.js';
+import { createRegistration, signRegistration, signSlotRequest, signRevokeSession, buildCredentialProof, eddsaPubOf, ProofCache, chooseMaxHeight } from '../lib/mode3_wallet.js';
 import { registerMessage, slotRequestMessage, revokeSessionMessage } from '../lib/mode3_issuance.js';
 import { auidOf, SCALAR_MAX } from '../lib/mode3_credential.js';
 import { IDP_PUB_INDEX, idpPublicSignals, verifyIdp } from '../lib/mode3_idp_proof.js';
@@ -39,6 +39,13 @@ await t('signRevokeSession(sk, uid, Cf_s, bound, nonce) 는 revokeSessionMessage
   assert.equal(verify(await revokeSessionMessage(12345n, Cf_s, 3n, nonce), sig, reg.pk_u), true);
   assert.equal(verify(await revokeSessionMessage(12345n, Cf_s, 2n, nonce), sig, reg.pk_u), false);
   assert.equal(verify(await revokeSessionMessage(12345n, Cf_s, 3n, nonce + 1n), sig, reg.pk_u), false);
+});
+// 리뷰 지적: counter 경계 가드(lib/mode3_wallet.js:243 부근)는 함수 초입이라 다른 무거운 일(증명·트리 조회) 전에 던져야 한다 —
+// 다른 인자는 전부 트리비얼한 자리표시(bigint 1n·{x:1n,y:1n}·빈 registry·slot 0)만 채워 counter 검사까지만 도달시킨다.
+await t('buildCredentialProof: counter 가 [0, 2^32) bigint 가 아니면(2^32·숫자형) 다른 무거운 일 전에 /counter/ 로 reject', async () => {
+  const base = { uid: 1n, arid: 1n, s_u: 1n, auid: 1n, blind_u: 1n, r_rp: 1n, r_s: 1n, pk_i: 1n, pk_trace: { x: 1n, y: 1n }, registry: {}, slot: 0 };
+  await assert.rejects(() => buildCredentialProof({ ...base, counter: 1n << 32n }), /counter/, '상한');
+  await assert.rejects(() => buildCredentialProof({ ...base, counter: 5 }), /counter/, 'bigint 가 아닌 number');
 });
 await t('idpPublicSignals: 8개 10진 문자열, 순서 = IDP_PUB_INDEX; 범위 밖은 throw', () => {
   const pub = idpPublicSignals({ uid: 1n, auid: 2n, auid_s: 3n, C_u_pt: { x: 4n, y: 5n }, C_s_pt: { x: 6n, y: 7n }, max_height: 8n });
