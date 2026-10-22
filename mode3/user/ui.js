@@ -672,6 +672,30 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false })
     }
     refresh();
   });
+  // 복구 코드(2026-10-21): 보기(모달에 코드·복사 버튼)와 복구(uid + 코드 → core.recover). 코드는 모달을 닫으면 화면에서 지운다.
+  $('recoveryCodeBtn').addEventListener('click', async () => {
+    try {
+      const r = await core.recoveryCode();
+      if (r.status !== 200) { setVerdict(storageVerdict(), false, 'user_recovery_code_title', { reason: r.body.reason ?? `HTTP ${r.status}`, detail: safeDetail(r.body) }); return; }
+      $('recoveryCodeText').textContent = r.body.code; $('recoveryCodeModal').hidden = false;
+    } catch (e) { setVerdict(storageVerdict(), false, 'user_recovery_code_title', { reason: 'internal', detail: e.message }); }
+  });
+  $('recoveryCodeClose').addEventListener('click', () => { $('recoveryCodeModal').hidden = true; $('recoveryCodeText').textContent = ''; });
+  $('recoveryCodeCopy').addEventListener('click', () => copyText($('recoveryCodeText').textContent, $('recoveryCodeCopy')));
+  $('recoverBtn').addEventListener('click', () => { $('recoverUid').value = ''; $('recoverCode').value = ''; $('recoverModal').hidden = false; $('recoverUid').focus(); });
+  $('recoverCancel').addEventListener('click', () => { $('recoverModal').hidden = true; });
+  $('recoverGo').addEventListener('click', async () => {
+    const uid = $('recoverUid').value.trim(), code = $('recoverCode').value.trim();
+    if (!uid || !code) return;
+    $('recoverModal').hidden = true; $('recoverCode').value = '';
+    pendingVerdict(storageVerdict(), 'working');
+    try {
+      const r = await core.recover({ uid, code });
+      if (r.status === 200) setVerdict(storageVerdict(), true, 'user_recover_ok_title', () => ({ summary: tt('user_recover_ok', { uid: r.body.uid, slot: r.body.slot }) || `복구됨 — uid ${r.body.uid}, 등록부 슬롯 #${r.body.slot}. 같은 주소로 로그인할 수 있습니다.` }));
+      else setVerdict(storageVerdict(), false, 'user_recover_failed', { reason: r.body.reason ?? `HTTP ${r.status}`, detail: safeDetail(r.body) });
+    } catch (e) { setVerdict(storageVerdict(), false, 'user_recover_failed', { reason: 'internal', detail: e.message }); }
+    refresh(true);
+  });
   $('wipeBtn').addEventListener('click', async () => {
     if (!Demo.confirmDanger('confirm_wipe')) return;
     pendingVerdict(storageVerdict(), 'working');

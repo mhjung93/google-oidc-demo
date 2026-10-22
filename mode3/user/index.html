@@ -172,8 +172,11 @@
     <!-- 보관 상태(스펙 2026-10-15 §4.2, 2026-10-16 단순화): 비밀은 IndexedDB 에 자동 금고(비밀번호 없음)로 암호화해 둔다. 증명 키 내려받기·자기 폐기·모두 지우기. -->
     <section class="card" id="storagePanel">
       <h3 data-i18n="user_storage_title">보관 상태</h3>
-      <p class="desc" data-i18n="user_storage_desc">등록 비밀과 세션키는 이 브라우저(IndexedDB)에 암호화해 둡니다. 서버로는 보내지 않습니다.</p>
+      <p class="desc" data-i18n="user_storage_desc">등록 비밀과 세션키는 이 브라우저(IndexedDB)에 암호화해 둡니다. 서버로는 보내지 않습니다. 복구 코드로 백업하면 저장소가 지워져도 같은 주소로 돌아옵니다.</p>
       <p>
+        <!-- 복구 코드(2026-10-21): 시드 백업·복구. 코드는 화면에 보여 줄 뿐 어디에도 보내지 않는다. -->
+        <button id="recoveryCodeBtn" type="button" class="btn-ghost" data-i18n="user_recovery_code_btn">복구 코드 보기</button>
+        <button id="recoverBtn" type="button" class="btn-ghost" data-i18n="user_recover_btn">복구 코드로 복구</button>
         <button id="selfRevokeBtn" type="button" class="danger" data-i18n="wallet_self_revoke_btn">계정 자기 폐기</button>
         <button id="wipeBtn" type="button" class="danger" data-i18n="user_wipe_btn">모두 지우기</button>
       </p>
@@ -191,6 +194,24 @@
     </div>
   </div>
 
+  <!-- 복구 코드(2026-10-21) — 시드의 base64url. 보여 주기만 하고 어디에도 보내지 않는다. -->
+  <div id="recoveryCodeModal" class="modal-backdrop" hidden>
+    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="recoveryCodeTitle">
+      <h3 id="recoveryCodeTitle" data-i18n="user_recovery_code_title">복구 코드</h3>
+      <p class="desc" data-i18n="user_recovery_code_note">이 코드와 uid 만 있으면 다른 브라우저에서도, 저장소가 지워진 뒤에도 같은 주소(PPID)로 복구됩니다. 안전한 곳에 보관하고 IdP·RP 에 보내지 마세요.</p>
+      <p><code id="recoveryCodeText" style="word-break:break-all;user-select:all"></code> <button type="button" id="recoveryCodeCopy" class="copy-btn" title="복사" aria-label="복사" data-i18n-title="user_copy">⧉</button></p>
+      <p class="modal-actions"><button id="recoveryCodeClose" type="button" class="btn-ghost" data-i18n="user_close">닫기</button></p>
+    </div>
+  </div>
+  <div id="recoverModal" class="modal-backdrop" hidden>
+    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="recoverTitle">
+      <h3 id="recoverTitle" data-i18n="user_recover_btn">복구 코드로 복구</h3>
+      <p class="desc" data-i18n="user_recover_desc">등록 때 받은 uid 와 복구 코드를 넣으세요. 이 브라우저에 등록이 남아 있으면 먼저 "모두 지우기"를 해야 합니다.</p>
+      <label><span data-i18n="user_recover_uid">uid</span> <input id="recoverUid" autocomplete="off" size="12" /></label>
+      <label><span data-i18n="user_recover_code">복구 코드</span> <input id="recoverCode" autocomplete="off" size="52" /></label>
+      <p class="modal-actions"><button id="recoverCancel" type="button" class="btn-ghost" data-i18n="user_unlock_cancel">취소</button> <button id="recoverGo" type="button" data-i18n="user_recover_go">복구</button></p>
+    </div>
+  </div>
   <!-- 금고 비밀번호 변경 — 비밀은 새 키로 다시 암호화된다(vault.changePassword). -->
 
   <!-- 스크립트는 번들 하나다(mode3/user/user.js → /dist/user.js). 팝업 모드(?authorize=1)의 화면 전환도 그 첫 줄이 한다. -->

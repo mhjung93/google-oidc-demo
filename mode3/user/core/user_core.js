@@ -13,7 +13,7 @@ import { createVault } from './vault.js';
 import { createChain } from './chain.js';
 import { createIdp } from './idp.js';
 import { encodeProfile, normalizeProfile, assertPredicateTypes, decodeAttrs, schemaInfo } from '../../../lib/mode3_attr_schema.js';
-import { createRegistration, eddsaPubOf, createSessionKey, buildIssueRequest, buildCredentialProof, signChallenge, signSessionRequest, signSlotRequest, signRevokeSession, signRegistration, normalizeDisclosure, normalizeSet, disclosureKey, hasPredicate, chooseMaxHeight, ProofCache } from '../../../lib/mode3_wallet.js';
+import { createRegistration, registrationSecretsFromSeed, eddsaPubOf, createSessionKey, buildIssueRequest, buildCredentialProof, signChallenge, signSessionRequest, signSlotRequest, signRevokeSession, signRegistration, normalizeDisclosure, normalizeSet, disclosureKey, hasPredicate, chooseMaxHeight, ProofCache } from '../../../lib/mode3_wallet.js';
 import { sessionLeaf } from '../../../lib/mode3_revocation.js';
 import { registryLeaf } from '../../../lib/mode3_registry.js';
 import { signPayload, statementDigestFields, proofToCalldata, parseExecuteReceipt, decodeExecuteCalldata, walletAt, walletInterface, FACTORY_ABI, FACTORY_MAX_ROOT_AGE_BAND, FACTORY_MAX_LIFETIME_BAND, PUB_INDEX } from '../../../lib/mode3_onchain.js';
@@ -41,6 +41,12 @@ const R = (status, body) => ({ status, body });
 const LOCKED = () => R(423, { reason: 'locked' });
 const tag = (reason, extra = {}) => Object.assign(new Error(reason), { reason, ...extra });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// 복구 코드(2026-10-21): 'zkd1.' + base64url(시드 32B). 시드 없는 옛 등록은 'zkd0.' + base64url(s_u 32B ‖ sk_u 32B). atob/btoa 는 브라우저·Node 22 둘 다 있다.
+const b64u = (u8) => btoa(String.fromCharCode(...u8)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const unb64u = (t) => Uint8Array.from(atob(t.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(t.length / 4) * 4, '=')), (c) => c.charCodeAt(0));
+const bytesHex = (u8) => [...u8].map((b) => b.toString(16).padStart(2, '0')).join('');
+const hexBytesOf = (h) => Uint8Array.from(h.match(/../g) ?? [], (x) => parseInt(x, 16));
+const scalarBytes = (v) => { const out = new Uint8Array(32); for (let i = 31; i >= 0; i--) { out[i] = Number(v & 255n); v >>= 8n; } return out; };
 /** id_token(JWT)의 payload 를 서명 검증 없이 읽는다 — uid 선계산용(서명·iss·aud·exp 는 IdP 가 검증한다). 형식이 아니면 던진다. */
 const jwtPayload = (t) => {
   const parts = String(t).split('.');
@@ -113,7 +119,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     else if (!(await vault.key())) return LOCKED();
     const auid = await auidOf({ uid: BigInt(uid), s_u: pend.s_u });
     const pub = { x: pend.pk_u.x.toString(), y: pend.pk_u.y.toString() };
-    await vault.writeSecrets({ s_u: pend.s_u.toString(), sk_u: pend.sk_u, blind_u: null, sessionKeys: {} });
+    await vault.writeSecrets({ s_u: pend.s_u.toString(), sk_u: pend.sk_u, seed: pend.seed ?? null, blind_u: null, sessionKeys: {} });
     await kv.set('registration', { uid, auid: auid.toString(), pk_u: pub, slot: null, profile: normalized, attrs, userCred: null, provider, pendingIdp: true });
     await putSessions({});
     return null;
@@ -414,7 +420,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     if (r.body.uid !== undefined && r.body.uid !== uid) return R(502, { reason: 'register_failed', detail: 'uid 불일치', cia: r.body });
     await noteSchemaHint(r.body.schemaHash ?? null);
     // 비밀을 먼저 금고에 쓰고 공개 부분을 쓴다 — registration 이 있으면 비밀도 있다.
-    await vault.writeSecrets({ s_u: reg.s_u.toString(), sk_u: reg.sk_u, blind_u: null, sessionKeys: {} });
+    await vault.writeSecrets({ s_u: reg.s_u.toString(), sk_u: reg.sk_u, seed: reg.seed ?? null, blind_u: null, sessionKeys: {} });
     const savedProvider = r.body.provider ?? providerName;
     await kv.set('registration', { uid, auid: reg.auid.toString(), pk_u: pub, slot: r.body.slot, provider: savedProvider, profile: normalized, attrs, userCred: null });
     await putSessions({});
@@ -496,7 +502,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       const oidc = keys.body?.oidc;
       if (!oidc?.enabled || typeof oidc.provider !== 'string' || !oidc.provider) return R(503, { reason: 'oidc_disabled' });
       const uid = uidOf(oidc.provider, claims.sub);
-      const makeReg = async () => ({ s_u: pend.s_u, sk_u: pend.sk_u, pk_u: pend.pk_u, auid: await auidOf({ uid: BigInt(uid), s_u: pend.s_u }) });
+      const makeReg = async () => ({ s_u: pend.s_u, sk_u: pend.sk_u, pk_u: pend.pk_u, seed: pend.seed ?? null, auid: await auidOf({ uid: BigInt(uid), s_u: pend.s_u }) });
       const r = await registerWith({ uid, auth: { id_token: idToken }, makeReg, profileIn, vaultPassword, providerName: oidc.provider });
       if (r.status === 201 && pendingReg === pend) pendingReg = null;   // 그 사이 다시 prepare 했으면 새 재료는 남긴다
       return r;
@@ -924,6 +930,51 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       return R(200, { ok: true, override: { scope, fields: Object.keys(ov).filter((k) => k !== 'scope') } });
     },
     /** 이 브라우저의 등록·비밀·세션을 모두 지운다(되돌릴 수 없다 — IdP 쪽 계정은 그대로). */
+    /** 복구 코드(2026-10-21, 설계 선택 1번): 시드가 있으면 'zkd1.'+base64url(시드), 옛 등록(시드 없음)은 'zkd0.'+base64url(s_u‖sk_u). 어디에도 보내지 않는다 — 화면이 보여 줄 뿐. */
+    async recoveryCode() {
+      const src = await source();
+      if (src === null) return R(409, { reason: 'not_registered' });
+      if (src === 'locked') return LOCKED();
+      const sec = await vault.readSecrets();
+      if (sec.seed) return R(200, { code: `zkd1.${b64u(hexBytesOf(sec.seed))}`, format: 'seed' });
+      const raw = new Uint8Array(64); raw.set(scalarBytes(BigInt(sec.s_u)), 0); raw.set(hexBytesOf(sec.sk_u), 32);
+      return R(200, { code: `zkd0.${b64u(raw)}`, format: 'raw' });
+    },
+    /** 복구(2026-10-21): uid + 복구 코드로 s_u·sk_u 를 되살리고, IdP 의 슬롯 되찾기(/cia/slot, sk_u 서명)로 계정·키가 맞는지 확인한 뒤 등록 상태를 다시 만든다.
+     *  속성은 등록 때처럼 profile(기본 DEFAULT_PROFILE)로 — 다음 로그인이 새 C_u 를 받는다. 같은 uid·s_u 라 모든 RP 의 PPID 가 그대로다. 이미 등록돼 있으면 409(먼저 모두 지우기). */
+    async recover({ uid, code, profile: profileIn = null } = {}) {
+      if (!isDec(uid) || typeof code !== 'string') return R(400, { error: 'uid, code(string) 필요' });
+      if (await kv.get('registration')) return R(409, { reason: 'already_registered' });
+      let s_u, sk_u, seedHex = null;
+      try {
+        const m = /^zkd([01])\.([A-Za-z0-9_-]+)$/.exec(code.trim()); if (!m) throw new Error('format');
+        const bytes = unb64u(m[2]);
+        if (m[1] === '1') { if (bytes.length !== 32) throw new Error('len'); ({ s_u, sk_u } = registrationSecretsFromSeed(bytes)); seedHex = bytesHex(bytes); }
+        else { if (bytes.length !== 64) throw new Error('len'); let v = 0n; for (const b of bytes.subarray(0, 32)) v = (v << 8n) | BigInt(b); s_u = v; sk_u = bytesHex(bytes.subarray(32)); }
+      } catch { return R(400, { reason: 'bad_recovery_code' }); }
+      const nonce = randomScalar();
+      let r0;
+      try { r0 = await idp.post('/cia/slot', { uid, nonce: nonce.toString(), sig_u: await signSlotRequest(sk_u, BigInt(uid), nonce) }); }
+      catch (e) { return R(502, { reason: 'cia_unavailable', detail: e.message }); }
+      if (r0.status === 404) return R(404, { reason: 'unknown_account' });
+      if (r0.status !== 200 || !Number.isInteger(r0.body?.slot) || r0.body.slot < 0) return R(401, { reason: 'recover_bad_code', cia: r0.body });
+      let schema;
+      try { schema = (await schemaFor()).schema; } catch (e) { if (e.reason === 'schema_invalid') return R(503, { reason: 'schema_invalid', detail: e.message }); throw e; }
+      const profile = profileIn ?? Object.fromEntries(Object.entries(DEFAULT_PROFILE).filter(([k]) => schema.slots.some((x) => x.type !== 'unused' && x.name === k)));
+      let attrs;
+      try { attrs = await encodeProfile(schema, profile, { allowEmptyRequired: false }); }
+      catch (e) { if (e.reason === 'bad_attr') return R(400, { reason: 'bad_attr', slot: e.slot, field: e.field, detail: e.detail, message: e.message }); throw e; }
+      const normalized = normalizeProfile(schema, profile);
+      await vault.refresh();
+      if (!vault.hasVault()) await vault.setup(null);
+      else if (!(await vault.key())) return LOCKED();
+      const auid = await auidOf({ uid: BigInt(uid), s_u });
+      const pk = await eddsaPubOf(sk_u);
+      await vault.writeSecrets({ s_u: s_u.toString(), sk_u, seed: seedHex, blind_u: null, sessionKeys: {} });
+      await kv.set('registration', { uid, auid: auid.toString(), pk_u: { x: pk.x.toString(), y: pk.y.toString() }, slot: r0.body.slot, provider: 'demo', profile: normalized, attrs, userCred: null });
+      await putSessions({}); lastSync = null; lastRegistry = null;
+      return R(200, { uid, slot: r0.body.slot, auid: auid.toString(), format: seedHex ? 'seed' : 'raw' });
+    },
     async wipe() { await kv.clear(); vault.reset(); lastSync = null; lastRegistry = null; pendingReg = null; return R(200, { ok: true }); },
   };
   /** execute 영수증 → 응답 공통부(에이전트 receiptResult 의 등가). disclosure = 요청값, onchainDisclosure = Disclosure 이벤트에서 읽은 값. */
@@ -954,12 +1005,12 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
    *  낸다 — uid 는 토큰의 sub 로 정해지므로 auid 는 completeRegistration 에서 만든다. 재료는 이 페이지의 메모리(pendingReg)에만 두고,
    *  부를 때마다 새로 만든다(토큰은 1회용). { status, body } 가 아니라 { nonce, pk_u:{x,y}(10진 문자열), pending:true } 를 돌려준다. */
   core.prepareRegistration = async () => {
-    const s_u = randomScalar();
-    const sk_u = randomBytes(32).toString('hex');
+    const seedBytes = new Uint8Array(randomBytes(32));
+    const { s_u, sk_u } = registrationSecretsFromSeed(seedBytes);   // 2026-10-21: 복구 코드용 시드에서 유도
     const pk = await eddsaPubOf(sk_u);
     const pk_u = { x: pk.x.toString(), y: pk.y.toString() };
     const nonce = regNonce(pk_u);
-    pendingReg = { s_u, sk_u, pk_u, nonce };
+    pendingReg = { s_u, sk_u, pk_u, nonce, seed: bytesHex(seedBytes) };
     return { nonce, pk_u, pending: true };
   };
   /** 존재 신호 6개(정적 서버 POST /wallet/presence 의 본문). 세션 수·rpCount 는 저장 세션에서, txs·disclosedTxs 는 txs 배열에서 센다 —

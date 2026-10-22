@@ -191,6 +191,20 @@ try {
     const u = await kv.get('unlock'); assert.equal(u.expiresAt, null); assert.equal((await kv.get('meta')).mode, 'auto');
     const lg = await core.login(loginBody(await challenge()), { verifiedOrigin: info.origin }); assert.equal(lg.status, 200, j(lg.body));
   });
+  await t('복구 코드(2026-10-21): recoveryCode() 는 zkd1.시드; wipe 뒤 recover(uid, code) 로 같은 auid·pk_u·슬롯이 돌아오고 로그인 PPID 가 같다; 틀린 코드 401, 모르는 uid 404, 형식 오류 400, 등록된 채로는 409', async () => {
+    const before = await kv.get('registration'); const uid = before.uid;
+    const c = await core.recoveryCode(); assert.equal(c.status, 200, j(c.body)); assert.match(c.body.code, /^zkd1\.[A-Za-z0-9_-]{43}$/); assert.equal(c.body.format, 'seed');
+    const l0 = await core.login(loginBody(await challenge()), { verifiedOrigin: info.origin }); assert.equal(l0.status, 200, j(l0.body)); const ppid0 = l0.body.publicSignals[0];
+    assert.equal((await core.recover({ uid, code: c.body.code })).status, 409, '등록된 채로는 복구 불가');
+    await core.wipe();
+    assert.equal((await core.recover({ uid, code: 'nope' })).body.reason, 'bad_recovery_code');
+    assert.equal((await core.recover({ uid, code: 'zkd1.' + 'A'.repeat(43) })).body.reason, 'recover_bad_code');
+    assert.equal((await core.recover({ uid: '999999999', code: c.body.code })).body.reason, 'unknown_account');
+    const r = await core.recover({ uid, code: c.body.code }); assert.equal(r.status, 200, j(r.body));
+    const after = await kv.get('registration'); assert.equal(after.auid, before.auid); assert.deepEqual(after.pk_u, before.pk_u); assert.equal(after.slot, before.slot);
+    assert.equal((await core.recoveryCode()).body.code, c.body.code, '복구 뒤 같은 코드');
+    const l1 = await core.login(loginBody(await challenge()), { verifiedOrigin: info.origin }); assert.equal(l1.status, 200, j(l1.body)); assert.equal(l1.body.publicSignals[0], ppid0, '같은 PPID');
+  });
   await t('로그인 조건 강제(2026-10-21): MODE3_REQUIRE_DISCLOSURE=1 로 재기동한 RP 는 술어 없는 로그인을 predicate_unmet 으로 거절하고, 국가·나이 술어가 있는 로그인은 받는다', async () => {
     await stack.restartRp({ MODE3_REQUIRE_DISCLOSURE: '1' });
     const info2 = (await rp.get('/api/mode3/rp_info')).body; assert.equal(info2.requireDisclosure, true);

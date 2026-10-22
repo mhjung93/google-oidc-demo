@@ -7,6 +7,8 @@
 #        SYNC=1 bash scripts/demo_split_start.sh           # 먼저 코드·의존성·Node 를 세 VM 에 다시 보냄
 #        bash scripts/demo_split_start.sh stop             # 분리 데모만 전부 내림
 #        HEIGHT_GRID=100 bash scripts/demo_split_start.sh  # 만료(max_height) 올림 단위(기본 5 — 데모용. 코드 기본은 100, 2026-10-21)
+#        WALLET_MODE=snap bash scripts/demo_split_start.sh  # Snap 모드(2026-10-22): 이 VM 의 지갑 자리에 에이전트(:5100, MODE3_WALLET_SECRETS=snap)+Snap 서버(:8082). 포트 5100 은 Snap 이 허용하는
+#                                                          # 지갑 오리진(snap-mode3/src/index.js)이라 바꿀 수 없다 — 한 머신 데모(:5100)와 동시에 못 띄운다. scripts/demo_split_snap_reset.sh 가 이 값을 넣어 부른다(web 모드 리셋은 scripts/demo_split_reset.sh).
 #        ADMIN_OPEN=0 bash scripts/demo_split_start.sh     # IdP 관리자 인증을 켠 채로(기본은 끔 — CIA_ADMIN_OPEN=1, 데모 전용, 2026-10-21)
 # 주소는 SPLIT_HOST_IP·SPLIT_IDP_IP·SPLIT_RP1_IP·SPLIT_RP2_IP·SPLIT_SSH_USER 로 바꿀 수 있다. 로그는 DEMO_LOG_DIR(기본 /tmp/mode3-split).
 # 새 체인은 Ethernal 플러그인을 싣지 않는 최소 hardhat 설정으로 띄운다 — 프로젝트 설정은 노드 기동 때 .env 의 Ethernal 워크스페이스를 초기화한다.
@@ -17,7 +19,10 @@ set -u
 cd "$(dirname "$0")/.."
 U="${SPLIT_SSH_USER:-zkd}"; HOST="${SPLIT_HOST_IP:-192.168.226.128}"
 IDP="${SPLIT_IDP_IP:-192.168.226.10}"; RP1="${SPLIT_RP1_IP:-192.168.226.11}"; RP2="${SPLIT_RP2_IP:-192.168.226.12}"
-APP_PORT=8547 APP_CHAIN=31339 REV_PORT=8548 REV_CHAIN=31340 USER_PORT=5200 IDP_PORT=4100 RP1_PORT=3100 RP2_PORT=3101
+WALLET_MODE="${WALLET_MODE:-web}"
+case "$WALLET_MODE" in web) USER_PORT=5200 ;; snap) USER_PORT=5100 ;; *) echo "WALLET_MODE 는 web 또는 snap: $WALLET_MODE"; exit 1 ;; esac
+if [ "$WALLET_MODE" = "snap" ]; then [ -d snap-mode3/node_modules ] && [ -f snap-mode3/dist/bundle.js ] || { echo "BLOCKED: snap-mode3/node_modules 또는 dist/bundle.js 가 없다 — cd snap-mode3 && npm install && npm run build"; exit 1; }; fi
+APP_PORT=8547 APP_CHAIN=31339 REV_PORT=8548 REV_CHAIN=31340 IDP_PORT=4100 RP1_PORT=3100 RP2_PORT=3101 SNAP_PORT=8082
 LOGS="${DEMO_LOG_DIR:-/tmp/mode3-split}"; mkdir -p "$LOGS"
 TS=$(date '+%Y%m%d-%H%M')
 ADMIN="${CIA_ADMIN_SECRET:-admin123}"
@@ -26,7 +31,7 @@ on() { local h="$1"; shift; ssh -o BatchMode=yes -o ConnectTimeout=5 "$U@$h" "$@
 
 # 이 VM 쪽은 포트 주인 중 명령줄이 우리 것과 맞는 것만 내린다(라이브 데모와 명령줄이 같은 사용자 페이지는 포트로 가른다).
 stop_local() {
-  for spec in "$APP_PORT:chain.config.cjs" "$REV_PORT:chain.config.cjs" "$USER_PORT:mode3_user_static.js"; do
+  for spec in "$APP_PORT:chain.config.cjs" "$REV_PORT:chain.config.cjs" "5200:mode3_user_static.js" "5100:mode3_wallet_agent.js" "$SNAP_PORT:mm-snap serve"; do
     port="${spec%%:*}"; want="${spec#*:}"
     for pid in $(ss -ltnp 2>/dev/null | grep ":$port " | grep -oE "pid=[0-9]+" | cut -d= -f2 | sort -u); do
       tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q "$want" && kill "$pid" && echo "stop :$port (pid $pid)"
@@ -62,6 +67,8 @@ for h in "$RP1" "$RP2"; do
   on "$h" "cd ~/zkd-demo && for f in mode3_rp_registration.json mode3_rp_logins.jsonl; do [ -e \$f ] && mv \$f \$f.bak-$TS && echo \"backup $h \$f\"; done; true"
 done
 
+# 2b. Snap 모드: 이 VM 의 에이전트 상태 파일도 새 체인과 맞지 않는다 — .bak-시각 으로 옮긴다(MetaMask 안의 Snap 상태는 못 지운다 — 지갑 페이지 'Snap 초기화').
+if [ "$WALLET_MODE" = "snap" ]; then for f in mode3_wallet_state.json mode3_wallet_rcl.json; do [ -e "$f" ] && mv "$f" "$f.bak-$TS" && echo "backup $f"; done; fi
 # 3. 체인 두 개(Ethernal 없는 최소 설정, NAT 망에 연다)
 cat > "$LOGS/chain.config.cjs" <<'EOF'
 // 분리 데모 체인 전용 최소 설정(demo_split_start.sh 가 만든다) — Ethernal 플러그인·dotenv 를 싣지 않는다.
@@ -116,11 +123,21 @@ start_remote() { # $1 호스트 $2 스크립트 $3 포트
 }
 start_remote "$IDP" cia.js $IDP_PORT
 : > "$LOGS/empty.env"
+if [ "$WALLET_MODE" = "snap" ]; then
+  # Snap 모드(2026-10-22): 에이전트는 증명·동기화만, 비밀은 MetaMask 의 Snap 안. 릴레이어 계정은 RP 둘(0·1)과 겹치지 않게 2. .env 는 읽지 않는다(DOTENV_CONFIG_PATH).
+  DOTENV_CONFIG_PATH="$LOGS/empty.env" MODE3_WALLET_SECRETS=snap MODE3_SNAP_ID="local:http://localhost:$SNAP_PORT" MODE3_WALLET_PORT=$USER_PORT MODE3_WALLET_PUBLIC_ORIGIN="$WALLET_ORIGIN" \
+    MODE3_CIA_URL="http://$IDP:$IDP_PORT" MODE3_RP_ORIGIN="http://$RP1:$RP1_PORT,http://$RP2:$RP2_PORT" MODE3_RELAYER_INDEX=2 MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}" \
+    CIA_RPC_URL="http://127.0.0.1:$APP_PORT" MODE3_REV_CHAIN_RPC="http://127.0.0.1:$REV_PORT" CIA_LOG_ADDRESS="$LOGADDR" MODE3_MIRROR_ADDRESS="$MIRROR" \
+    setsid nohup node mode3_wallet_agent.js > "$LOGS/wallet_agent.log" 2>&1 < /dev/null &
+  (cd snap-mode3 && setsid nohup npm run serve > "$LOGS/snap_serve.log" 2>&1 < /dev/null &)
+  timeout 40 bash -c "until ss -ltn | grep -q ':$SNAP_PORT '; do sleep 1; done" && echo "snap serve :$SNAP_PORT up" || { echo "snap serve failed — $LOGS/snap_serve.log"; exit 1; }
+else
 DOTENV_CONFIG_PATH="$LOGS/empty.env" MODE3_PK_CIA_X="" MODE3_PK_CIA_Y="" MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}" MODE3_DEMO_GENERATION="$(date +%s)" MODE3_WALLET_PORT=$USER_PORT MODE3_WALLET_PUBLIC_ORIGIN="$WALLET_ORIGIN" \
   MODE3_CIA_URL="http://$IDP:$IDP_PORT" MODE3_RP_ORIGIN="http://$RP1:$RP1_PORT,http://$RP2:$RP2_PORT" \
   CIA_RPC_URL="http://127.0.0.1:$APP_PORT" MODE3_REV_CHAIN_RPC="http://127.0.0.1:$REV_PORT" CIA_LOG_ADDRESS="$LOGADDR" MODE3_MIRROR_ADDRESS="$MIRROR" \
   setsid nohup node mode3_user_static.js > "$LOGS/user_static.log" 2>&1 < /dev/null &
-timeout 30 bash -c "until ss -ltn | grep -q ':$USER_PORT '; do sleep 1; done" && echo "user page up at $WALLET_ORIGIN" || { echo "user page failed — $LOGS/user_static.log"; exit 1; }
+fi
+timeout 30 bash -c "until ss -ltn | grep -q ':$USER_PORT '; do sleep 1; done" && echo "지갑($WALLET_MODE) up at $WALLET_ORIGIN" || { echo "지갑($WALLET_MODE) failed — $LOGS/$([ "$WALLET_MODE" = snap ] && echo wallet_agent || echo user_static).log"; exit 1; }
 start_remote "$RP1" mode3_rp.js $RP1_PORT
 start_remote "$RP2" mode3_rp.js $RP2_PORT
 
@@ -151,3 +168,7 @@ for u in "$IDP:$IDP_PORT" "127.0.0.1:$USER_PORT" "$RP1:$RP1_PORT" "$RP2:$RP2_POR
 printf -- "--- 체인 구성: "; curl -s -m 5 "http://$IDP:$IDP_PORT/cia/public_keys" | python3 -c "import sys,json;d=json.load(sys.stdin);print('캐노니컬 chainId', d.get('canonicalChainId'), '· 거울', [m.get('chainId') for m in d.get('mirrors',[])])"
 echo "SPLIT_DONE $(date '+%H:%M:%S')"
 echo "페이지: 사용자 $WALLET_ORIGIN/  zkONE http://$RP1:$RP1_PORT/ (관리자 /admin)  zkTWO http://$RP2:$RP2_PORT/  IdP 관리자 http://$IDP:$IDP_PORT/admin  계정 http://$IDP:$IDP_PORT/account"
+if [ "$WALLET_MODE" = "snap" ]; then
+  echo "Snap 모드: 브라우저에 MetaMask Flask 가 있어야 한다. 지갑 페이지 $WALLET_ORIGIN/ 에서 MetaMask 연결 → Snap(local:http://localhost:$SNAP_PORT) 설치/재연결."
+  echo "         체인·IdP 가 새로 시작됐으므로 MetaMask 안의 옛 등록은 지갑 페이지의 'Snap 초기화' 로 지운 뒤 다시 등록할 것."
+fi

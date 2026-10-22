@@ -9,12 +9,19 @@
 #        DEMO_LOG_DIR=~/mode3-logs bash scripts/demo_web_reset.sh   # 로그 위치(기본 /tmp/mode3-demo)
 #        HEIGHT_GRID=100 bash scripts/demo_web_reset.sh  # 만료(max_height) 올림 단위(기본 5 — 데모에서 로그인마다 값이 달라지는 걸 보이려고. 코드 기본은 100, 2026-10-21)
 #        ADMIN_OPEN=0 bash scripts/demo_web_reset.sh  # IdP 관리자 인증을 켠 채로 띄운다(기본은 끔 — CIA_ADMIN_OPEN=1, 데모 전용, 2026-10-21)
+#        WALLET_MODE=snap bash scripts/demo_web_reset.sh   # Snap 모드(2026-10-22): 지갑 자리에 mode3_user_static.js 대신 에이전트(mode3_wallet_agent.js, MODE3_WALLET_SECRETS=snap)와
+#                                                          Snap 서버(snap-mode3, :8082)를 띄운다. 브라우저에는 MetaMask Flask 가 필요하다. scripts/demo_snap_reset.sh 가 이 값을 넣어 부른다.
 #        TWO_CHAINS=1 bash scripts/demo_web_reset.sh   # 폐기 체인 분리(V10): 캐노니컬 로그는 :8546(chainId 31338), 거울·팩토리·계정은 :8545
 #                                                       (런북 "폐기 체인을 별도 노드로" 절과 같은 순서 — IdP 가 :8546 에 게시하고 :8545 거울로 중계한다)
 # 주의: 이 스크립트가 내리는 것은 자기가 띄우는 종류의 프로세스(node cia.js 등, 명령줄이 정확히 일치하는 것)와 hardhat node 뿐이다.
 #       .env 는 건드리지 않는다. idp_state.json(Mode 2)도 건드리지 않는다. cia_state.json 등 Mode 3 상태 파일은 .bak-시각 으로 옮긴다.
 set -u
 cd "$(dirname "$0")/.."
+WALLET_MODE="${WALLET_MODE:-web}"
+case "$WALLET_MODE" in web|snap) ;; *) echo "WALLET_MODE 는 web 또는 snap: $WALLET_MODE"; exit 1;; esac
+if [ "$WALLET_MODE" = "snap" ]; then
+  [ -d snap-mode3/node_modules ] && [ -f snap-mode3/dist/bundle.js ] || { echo "BLOCKED: snap-mode3/node_modules 또는 dist/bundle.js 가 없다 — cd snap-mode3 && npm install && npm run build"; exit 1; }
+fi
 LOGS="${DEMO_LOG_DIR:-/tmp/mode3-demo}"; mkdir -p "$LOGS"
 TS=$(date '+%Y%m%d-%H%M')
 echo "RESET_START $(date '+%H:%M:%S')  (logs: $LOGS)"
@@ -24,8 +31,9 @@ pkill -f '^node (cia|mode3_rp|mode3_wallet_agent|mode3_user_static)\.js$' 2>/dev
 pkill -f '^bash scripts/run_mode3_rp2.sh' 2>/dev/null
 pkill -f '[.]bin/hardhat node$' 2>/dev/null
 pkill -f '[.]bin/hardhat node --port 8546$' 2>/dev/null   # TWO_CHAINS 의 폐기 체인 노드(지난 실행이 띄운 것)
+pkill -f '[.]bin/mm-snap serve$' 2>/dev/null               # Snap 서버(:8082, 지난 snap 모드 실행이 띄운 것)
 sleep 2
-for port in 4100 5100 3100 3101 8545 8546; do ss -ltn | grep -q ":$port " && echo "WARN :$port 가 아직 쓰이고 있다(다른 프로세스?) — 계속 진행"; done
+for port in 4100 5100 3100 3101 8545 8546 8082; do ss -ltn | grep -q ":$port " && echo "WARN :$port 가 아직 쓰이고 있다(다른 프로세스?) — 계속 진행"; done
 
 # 1. 상태 파일 백업(새 체인과 맞지 않는 옛 상태)
 for f in cia_state.json mode3_wallet_state.json mode3_wallet_rcl.json mode3_rp_logins.jsonl mode3_rp_registration.json mode3_rp2_registration.json mode3_rp2_logins.jsonl; do
@@ -33,7 +41,7 @@ for f in cia_state.json mode3_wallet_state.json mode3_wallet_rcl.json mode3_rp_l
 done
 
 # 2. 사용자 페이지 번들
-if [ "${SKIP_BUILD:-0}" != "1" ]; then npm run user:build 2>&1 | grep -E "built|error" || { echo "build failed"; exit 1; }; fi
+if [ "$WALLET_MODE" = "web" ] && [ "${SKIP_BUILD:-0}" != "1" ]; then npm run user:build 2>&1 | grep -E "built|error" || { echo "build failed"; exit 1; }; fi
 
 # 3. 체인(응용 체인 :8545, TWO_CHAINS 면 폐기 체인 :8546 도 — chainId 가 같으면 서명이 두 체인을 못 가르므로 31338)
 TWO="${TWO_CHAINS:-0}"
@@ -73,10 +81,17 @@ export MODE3_WALLET_AGENT_ORIGIN="http://localhost:5100" MODE3_WALLET_PUBLIC_ORI
 if [ "$TWO" = "1" ]; then IDP_RPC="http://127.0.0.1:8546"; REV_RPC="http://127.0.0.1:8546"; else IDP_RPC="http://127.0.0.1:8545"; REV_RPC="http://127.0.0.1:8545"; fi
 CIA_RPC_URL="$IDP_RPC" setsid nohup node cia.js > "$LOGS/cia.log" 2>&1 < /dev/null &
 timeout 40 bash -c 'until ss -ltn | grep -q ":4100 "; do sleep 1; done' && echo "IdP :4100 up" || { echo "IdP failed — $LOGS/cia.log"; exit 1; }
-CIA_RPC_URL="http://127.0.0.1:8545" MODE3_REV_CHAIN_RPC="$REV_RPC" MODE3_DEMO_GENERATION="$(date +%s)" setsid nohup node mode3_user_static.js > "$LOGS/user_static.log" 2>&1 < /dev/null &
+if [ "$WALLET_MODE" = "snap" ]; then
+  # Snap 모드(2026-10-22): 등록 비밀은 MetaMask 의 Snap 안에, 에이전트는 증명·체인 동기화만. Snap 서버는 manifest·번들을 :8082 로 낸다(Snap ID local:http://localhost:8082).
+  MODE3_WALLET_SECRETS=snap CIA_RPC_URL="http://127.0.0.1:8545" MODE3_REV_CHAIN_RPC="$REV_RPC" setsid nohup node mode3_wallet_agent.js > "$LOGS/wallet_agent.log" 2>&1 < /dev/null &
+  (cd snap-mode3 && setsid nohup npm run serve > "$LOGS/snap_serve.log" 2>&1 < /dev/null &)
+  timeout 40 bash -c 'until ss -ltn | grep -q ":8082 "; do sleep 1; done' && echo "snap serve :8082 up" || { echo "snap serve failed — $LOGS/snap_serve.log"; exit 1; }
+else
+  CIA_RPC_URL="http://127.0.0.1:8545" MODE3_REV_CHAIN_RPC="$REV_RPC" MODE3_DEMO_GENERATION="$(date +%s)" setsid nohup node mode3_user_static.js > "$LOGS/user_static.log" 2>&1 < /dev/null &
+fi
 CIA_RPC_URL="http://127.0.0.1:8545" MODE3_RP_NAME="zkONE" MODE3_RP_PUBLIC_ORIGIN="http://localhost:3100" setsid nohup node mode3_rp.js > "$LOGS/rp1.log" 2>&1 < /dev/null &
 CIA_RPC_URL="http://127.0.0.1:8545" MODE3_RP_NAME="zkTWO" MODE3_RP_PUBLIC_ORIGIN="http://localhost:3101" MODE3_REQUIRE_DISCLOSURE=1 setsid nohup bash scripts/run_mode3_rp2.sh > "$LOGS/rp2.log" 2>&1 < /dev/null &
-timeout 60 bash -c 'until ss -ltn | grep -q ":5100 " && ss -ltn | grep -q ":3100 " && ss -ltn | grep -q ":3101 "; do sleep 1; done' && echo "user-static :5100 + zkONE :3100 + zkTWO :3101 up" || { echo "some server failed"; ss -ltn | grep -E ":(5100|3100|3101) "; exit 1; }
+timeout 60 bash -c 'until ss -ltn | grep -q ":5100 " && ss -ltn | grep -q ":3100 " && ss -ltn | grep -q ":3101 "; do sleep 1; done' && echo "지갑($WALLET_MODE) :5100 + zkONE :3100 + zkTWO :3101 up" || { echo "some server failed"; ss -ltn | grep -E ":(5100|3100|3101) "; exit 1; }
 
 # 7. RP 등록 대기(승인은 기본 수동)
 HDR="X-CIA-Admin-Secret: $CIA_ADMIN_SECRET"
@@ -104,3 +119,7 @@ for p in 4100 5100 3100 3101; do printf -- "--- :%s " "$p"; curl -s -m 10 "http:
 printf -- "--- 체인 구성: "; curl -s -m 5 http://127.0.0.1:4100/cia/public_keys | python3 -c "import sys,json;d=json.load(sys.stdin);print('캐노니컬 chainId', d.get('canonicalChainId'), '· 거울', [m.get('chainId') for m in d.get('mirrors',[])])"
 echo "RESET_DONE $(date '+%H:%M:%S')"
 echo "페이지: 사용자 http://localhost:5100/  zkONE http://localhost:3100/ (관리자 /admin)  zkTWO http://localhost:3101/  IdP 관리자 http://localhost:4100/admin  계정 http://localhost:4100/account"
+if [ "$WALLET_MODE" = "snap" ]; then
+  echo "Snap 모드: 브라우저에 MetaMask Flask 가 있어야 한다. 지갑 페이지 http://localhost:5100/ 에서 MetaMask 연결 → Snap(local:http://localhost:8082) 설치/재연결."
+  echo "         체인·IdP 가 새로 시작됐으므로 MetaMask 안의 옛 등록은 지갑 페이지의 'Snap 초기화' 로 지운 뒤 다시 등록할 것(Snap 상태는 이 스크립트가 못 지운다)."
+fi

@@ -19,6 +19,7 @@ const provider = getProvider();
 const stack = await startIsolatedMode3Stack({ userMode: 'web', autoRelay: true, extraRps: [{ name: 'zkTWO', env: { MODE3_ALLOWED_COUNTRIES: 'KR,JP', MODE3_REQUIRE_DISCLOSURE: '1' } }] });   // 2026-10-21: zkTWO 는 로그인 때 조건 증명 강제
 const { wallet, rp } = stack;
 const PW = 'demo-vault-pw';
+let recoveryCode = null;   // A1 에서 받아 B9 복구에 쓴다(2026-10-21)
 try {
   const context = await browser.newContext();
   if (DEBUG) context.on('page', (p) => { p.on('console', (m) => console.log(`    [${new URL(p.url()).port}] ${m.type()}: ${m.text()}`)); p.on('pageerror', (e) => console.log(`    [page error] ${e.message}`)); });
@@ -44,6 +45,10 @@ try {
   await t('A1 등록: 비밀번호 없이 IdP 에 등록(자동 금고, 2026-10-16) — 등록됨, IndexedDB 에 registration(공개)·secrets(암호문)·meta·unlock(CryptoKey) 만, 비밀 평문 없음', async () => {
     await userPage.click('#registerBtn');
     await waitText(userPage, '#registerResult', '등록됨', 90_000);
+    // 2026-10-21: 복구 코드 보기 — 모달에 zkd1.코드, 닫으면 화면에서 지워진다
+    await userPage.click('#recoveryCodeBtn'); await userPage.waitForSelector('#recoveryCodeModal:not([hidden])');
+    recoveryCode = await text(userPage, '#recoveryCodeText'); assert.match(recoveryCode, /^zkd1\.[A-Za-z0-9_-]{43}$/);
+    await userPage.click('#recoveryCodeClose'); assert.equal(await text(userPage, '#recoveryCodeText'), '');
     const d = await idbDump(userPage);
     assert.deepEqual(Object.keys(d).sort(), ['meta', 'registration', 'secrets', 'sessions', 'unlock'].filter((k) => k in d).sort());
     assert.equal(d.registration.uid, '12345'); assert.ok(!('s_u' in d.registration) && !('sk_u' in d.registration));
@@ -232,6 +237,16 @@ try {
     await userPage.reload(); await userPage.waitForSelector('#mainView:not([hidden])');
     await waitText(userPage, '#storagePanel', '데모가 초기화됨', 15_000);
     assert.deepEqual(await idbDump(userPage), { demoGeneration: 'gen-2' }, '옛 상태는 지우고 새 번호만 남는다');
+  });
+  await t('B9 복구(2026-10-21): 지워진 브라우저에서 uid + 복구 코드 → 복구됨(등록·비밀 복원, IdP 슬롯 그대로) → 같은 계정 주소로 다시 로그인', async () => {
+    await userPage.click('#recoverBtn'); await userPage.waitForSelector('#recoverModal:not([hidden])');
+    await userPage.fill('#recoverUid', '12345'); await userPage.fill('#recoverCode', recoveryCode); await userPage.click('#recoverGo');
+    await waitText(userPage, '#storagePanel', '복구됨', 30_000);
+    const d = await idbDump(userPage); assert.ok(d.registration && d.secrets, '등록·비밀이 다시 생겼다'); assert.ok(Number.isInteger(d.registration.slot));
+    if (await rpPage.$eval('#loginBtn', (b) => b.hidden)) { await rpPage.click('#logoutBtn'); await rpPage.waitForSelector('#loginBtn:not([hidden])'); }
+    await viaPopup(async () => { await rpPage.click('#loginBtn'); await rpPage.click('#idpLoginBtn'); }, approve);
+    await waitText(rpPage, '#verdict', '로그인 성공', 120_000);
+    assert.equal(Object.values((await idbDump(userPage)).sessions)[0].account, account, '복구 뒤에도 같은 계정 주소(PPID)');
   });
 } finally { await browser.close(); await stack.stop(); }
 process.exit(failed ? 1 : 0);

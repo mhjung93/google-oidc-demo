@@ -50,6 +50,8 @@ async function main() {
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     config = await r.json();
   } catch (e) { return fatal('internal', `/user/config: ${e.message}`); }
+  // 2026-10-21: 브라우저에 저장소 영속을 요청한다 — iOS 의 7일 삭제·Chrome 의 용량 정리 대상에서 빠진다(새 기기 이전은 복구 코드로). 거절·미지원은 무시.
+  if (!IS_AUTHORIZE) { try { navigator.storage?.persist?.()?.catch?.(() => {}); } catch { /* 미지원 */ } }
   let kv;
   try { kv = await openIdbKv(); }
   catch (e) { return fatal(e?.reason ?? 'storage_unavailable', e?.message ?? String(e)); }
