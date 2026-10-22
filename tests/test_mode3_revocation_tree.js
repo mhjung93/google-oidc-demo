@@ -11,9 +11,11 @@ import {
   TAG_MODE3_SESSION,
   userLeaf,
   sessionLeaf,
+  sessionLeafRange,
+  SESSION_BOUND_MAX,
   createRevocationTree,
 } from '../lib/mode3_revocation.js';
-import { TAG_SESSION, TAG_ACCOUNT } from '../lib/imt_v2.js';
+import { TAG_SESSION, TAG_ACCOUNT, leafValue } from '../lib/imt_v2.js';
 
 const TWO_252 = 1n << 252n;
 let failed = 0;
@@ -84,10 +86,10 @@ await t('제거 기능이 없다 (append-only)', async () => {
 
 await t('세션 리프 태그는 5 — 같은 Cf 라도 userLeaf 와 sessionLeaf 는 다르다', async () => {
   assert.equal(TAG_MODE3_SESSION, 5n);
-  const a = await userLeaf(123n), b = await sessionLeaf(123n);
+  const a = await userLeaf(123n), b = await sessionLeaf(123n, 0n);
   assert.notEqual(a, b);
   assert.ok(b < (1n << 252n));
-  assert.equal(b, await sessionLeaf(123n));
+  assert.equal(b, await sessionLeaf(123n, 0n));
 });
 
 await t('revokeSessionMessage: 도메인은 ASCII MODE3REVOKESESS, 입력이 하나라도 다르면 값이 다르다', async () => {
@@ -96,6 +98,32 @@ await t('revokeSessionMessage: 도메인은 ASCII MODE3REVOKESESS, 입력이 하
   const m = await revokeSessionMessage(1n, 2n, 3n);
   assert.notEqual(m, await revokeSessionMessage(1n, 2n, 4n));
   assert.notEqual(m, await revokeSessionMessage(1n, 5n, 3n));
+});
+
+await t('sessionLeaf(Cf_s, bound) = (Poseidon(5,Cf_s) mod 2^220)·2^32 + bound, 2^252 미만', async () => {
+  const Cf_s = 123456789n;
+  const hp = (await leafValue(TAG_MODE3_SESSION, Cf_s)) & ((1n << 220n) - 1n);
+  assert.equal(await sessionLeaf(Cf_s, 0n), hp << 32n);
+  assert.equal(await sessionLeaf(Cf_s, 7n), (hp << 32n) + 7n);
+  assert.ok((await sessionLeaf(Cf_s, SESSION_BOUND_MAX - 1n)) < (1n << 252n));
+  await assert.rejects(() => sessionLeaf(Cf_s, SESSION_BOUND_MAX), /bound/);
+  await assert.rejects(() => sessionLeaf(Cf_s, -1n), /bound/);
+});
+await t('sessionLeafRange(Cf_s, counter) = [H′·2^32, H′·2^32 + counter]', async () => {
+  const Cf_s = 42n;
+  const base = await sessionLeaf(Cf_s, 0n);
+  assert.deepEqual(await sessionLeafRange(Cf_s, 0n), { lo: base, hi: base });
+  assert.deepEqual(await sessionLeafRange(Cf_s, 5n), { lo: base, hi: base + 5n });
+  assert.deepEqual(await sessionLeafRange(Cf_s, SESSION_BOUND_MAX - 1n), { lo: base, hi: base + SESSION_BOUND_MAX - 1n });
+});
+await t('구간 비멤버십 증인: 상한 c 리프가 있을 때 counter < c 는 증인, counter ≥ c 는 "is a member"', async () => {
+  const tree = await createRevocationTree(8);
+  const Cf_s = 777n;
+  await tree.insert(await sessionLeaf(Cf_s, 3n));            // 허용 거래 수 3 → nonce 0,1,2 만
+  for (const k of [0n, 1n, 2n]) { const { lo, hi } = await sessionLeafRange(Cf_s, k); const w = await tree.getRangeNonMembershipWitness(lo, hi); assert.ok(w.pathElements.length === 8); }
+  for (const k of [3n, 4n, SESSION_BOUND_MAX - 1n]) { const { lo, hi } = await sessionLeafRange(Cf_s, k); await assert.rejects(() => tree.getRangeNonMembershipWitness(lo, hi), /is a member/); }
+  const other = await sessionLeafRange(778n, SESSION_BOUND_MAX - 1n);   // 다른 세션은 영향 없음
+  assert.ok(await tree.getRangeNonMembershipWitness(other.lo, other.hi));
 });
 
 process.exit(failed === 0 ? 0 : 1);
