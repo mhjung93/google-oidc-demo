@@ -1,8 +1,8 @@
 // 지갑 라이브러리의 체인·zkey 없는 부분(V11) — 등록값·서명 메시지·ProofCache. (unit)  node tests/test_mode3_wallet_lib.js
 import assert from 'node:assert/strict';
 import { buildEddsa } from 'circomlibjs';
-import { createRegistration, signRegistration, signSlotRequest, eddsaPubOf, ProofCache, chooseMaxHeight } from '../lib/mode3_wallet.js';
-import { registerMessage, slotRequestMessage } from '../lib/mode3_issuance.js';
+import { createRegistration, signRegistration, signSlotRequest, signRevokeSession, eddsaPubOf, ProofCache, chooseMaxHeight } from '../lib/mode3_wallet.js';
+import { registerMessage, slotRequestMessage, revokeSessionMessage } from '../lib/mode3_issuance.js';
 import { auidOf, SCALAR_MAX } from '../lib/mode3_credential.js';
 import { IDP_PUB_INDEX, idpPublicSignals, verifyIdp } from '../lib/mode3_idp_proof.js';
 
@@ -31,6 +31,14 @@ await t('signSlotRequest 는 slotRequestMessage(uid, nonce) 위 서명', async (
   const sig = await signSlotRequest(reg.sk_u, 12345n, 7n);
   assert.equal(verify(await slotRequestMessage(12345n, 7n), sig, reg.pk_u), true);
   assert.equal(verify(await slotRequestMessage(12345n, 8n), sig, reg.pk_u), false);
+});
+await t('signRevokeSession(sk, uid, Cf_s, bound, nonce) 는 revokeSessionMessage(uid, Cf_s, bound, nonce) 위 서명 — bound·nonce 가 다르면 검증 실패', async () => {
+  const reg = await createRegistration(12345n);
+  const Cf_s = 999n, nonce = 7n;
+  const sig = await signRevokeSession(reg.sk_u, 12345n, Cf_s, 3n, nonce);
+  assert.equal(verify(await revokeSessionMessage(12345n, Cf_s, 3n, nonce), sig, reg.pk_u), true);
+  assert.equal(verify(await revokeSessionMessage(12345n, Cf_s, 2n, nonce), sig, reg.pk_u), false);
+  assert.equal(verify(await revokeSessionMessage(12345n, Cf_s, 3n, nonce + 1n), sig, reg.pk_u), false);
 });
 await t('idpPublicSignals: 8개 10진 문자열, 순서 = IDP_PUB_INDEX; 범위 밖은 throw', () => {
   const pub = idpPublicSignals({ uid: 1n, auid: 2n, auid_s: 3n, C_u_pt: { x: 4n, y: 5n }, C_s_pt: { x: 6n, y: 7n }, max_height: 8n });

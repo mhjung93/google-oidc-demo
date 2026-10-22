@@ -55,7 +55,7 @@ async function publish(leavesBig) {
  * V11: r_s·r_rp 는 RP 챌린지다 — 둘을 함께 돌려주고 verifyLogin 에 같이 넣는다. 토큰이 발급된 뒤에 슬롯을 게시하므로(C_u 는 발급 요청에 실려 간다)
  * max_height 는 게시 전 head 로 잰다 — 슬롯 게시 1블록을 ttl 에 더해 둔다(ttl 300 → head+301 이 상한 400 안이다).
  */
-async function makeLogin({ key = CIA, useArid = arid, ttlBlocks = 300n, chainid = 31337n, useTrace = pk_trace, allowAgent = 0n, disclosure = null } = {}) {
+async function makeLogin({ key = CIA, useArid = arid, ttlBlocks = 300n, chainid = 31337n, useTrace = pk_trace, allowAgent = 0n, disclosure = null, counter = undefined } = {}) {
   const reg = await createRegistration(uid);
   const attrs = [19n, 410n, 0n, 0n, 0n, 0n];
   const session = createSessionKey();
@@ -66,7 +66,7 @@ async function makeLogin({ key = CIA, useArid = arid, ttlBlocks = 300n, chainid 
   const { tree } = await syncRevocationTree(provider, logAddress);
   registry.set(SLOT, await registryLeaf(reg.auid, req.Cf_u));
   await publishV3(log, ciaEth, { revRoot: tree.getRoot(), regRoot: registry.root(), epoch: (await log.epoch()) + 1n, slotIdx: [SLOT], slotLeaves: [registry.leafAt(SLOT)] });
-  const { proof, publicSignals } = await buildCredentialProof({ uid, arid: useArid, s_u: reg.s_u, auid: reg.auid, blind_u, r_rp, r_s, pk_i: session.pk_i, attrs, credential: cred, pk_CIA: key.pub, pk_trace: useTrace, tree, registry, slot: SLOT, disclosure });
+  const { proof, publicSignals } = await buildCredentialProof({ uid, arid: useArid, s_u: reg.s_u, auid: reg.auid, blind_u, r_rp, r_s, pk_i: session.pk_i, attrs, credential: cred, pk_CIA: key.pub, pk_trace: useTrace, tree, registry, slot: SLOT, disclosure, ...(counter === undefined ? {} : { counter }) });
   return { proof, publicSignals, r_s, r_rp, sig: await signChallenge(session.wallet, r_s.toString()), session, cred, reg };
 }
 
@@ -80,15 +80,25 @@ await t('양성: 7단계 전부 통과, PPID 와 pk_i 를 돌려준다', async (
   assert.equal(r.pk_i, L.session.pk_i);
 });
 
-await t('V9: publicSignals 가 14개면 malformed, 33개면 통과하고 disclosure 를 돌려준다, [15] ≥ 64 는 bad_disclosure', async () => {
+await t('V9: publicSignals 가 14개면 malformed, 34개면 통과하고 disclosure 를 돌려준다, [15] ≥ 64 는 bad_disclosure', async () => {
   const good = await makeLogin();
-  assert.equal(good.publicSignals.length, 33);
+  assert.equal(good.publicSignals.length, 34);
   const v = await rp.verifyLogin(good);
   assert.equal(v.ok, true, JSON.stringify(v, (k, vv) => (typeof vv === 'bigint' ? vv.toString() : vv)));
   assert.equal(v.disclosure.mask, 0n);
   assert.equal((await rp.verifyLogin({ ...good, publicSignals: good.publicSignals.slice(0, 14) })).reason, 'malformed');
   const ps = [...good.publicSignals]; ps[15] = '64';
   assert.equal((await rp.verifyLogin({ ...good, publicSignals: ps })).reason, 'bad_disclosure');
+});
+
+await t('음성(2026-10-22): counter 가 LOGIN_COUNTER 가 아닌 π(거래용 counter=0)는 bad_counter', async () => {
+  const L = await makeLogin({ counter: 0n });
+  const r = await rp.verifyLogin(L);
+  assert.equal(r.ok, false); assert.equal(r.reason, 'bad_counter');
+});
+await t('공개 입력이 34개가 아니면 malformed', async () => {
+  const L = await makeLogin(); L.publicSignals = L.publicSignals.slice(0, 33);
+  assert.equal((await rp.verifyLogin(L)).reason, 'malformed');
 });
 
 await t('V9: set_sel/set_root 가 disclosure 에 실린다; sel 7·(sel 0, root ≠ 0) 은 bad_disclosure; maskDisclosure 는 sel 0 이면 root 를 지운다', async () => {
