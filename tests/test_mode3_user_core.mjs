@@ -163,6 +163,14 @@ try {
     assert.equal(r.status, 400); assert.equal(r.body.reason, 'relay_gas'); assert.match(String(r.body.detail), /BadSignature/);
   });
   await t('세션 폐기: IdP 에 서명 요청 → 세션·세션키·캐시 삭제, 다음 게시 뒤 재검증은 세션 없음', async () => {
+    // 2026-10-23 리뷰 수정 1: bound 계산의 체인 읽기(provider.getCode)가 실패하면 503 chain_unavailable — 세션은 지워지지 않는다.
+    const realGetCode = provider.getCode.bind(provider);
+    provider.getCode = async () => { throw new Error('rpc down(test)'); };
+    try {
+      const bad = await core.revokeSession({ r_s: rs1 });
+      assert.equal(bad.status, 503, j(bad.body)); assert.equal(bad.body.reason, 'chain_unavailable');
+      assert.ok((await kv.get('sessions'))[rs1], '503 이면 세션이 지워지지 않는다');
+    } finally { provider.getCode = realGetCode; }
     const r = await core.revokeSession({ r_s: rs1 }); assert.equal(r.status, 200, j(r.body)); assert.equal(r.body.revoked, true);
     assert.equal(r.body.rpNotified, true, '2026-10-21: RP 에 로그아웃을 알린다'); assert.ok(!(await rp.get('/api/mode3/sessions')).body.sessions.some((x) => x.r_s === `${rs1.slice(0, 8)}…`), 'RP 세션 목록에서 빠진다');
     assert.equal((await kv.get('sessions'))[rs1], undefined); assert.equal((await core.vault.readSecrets()).sessionKeys[rs1], undefined);

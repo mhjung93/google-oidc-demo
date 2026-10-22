@@ -886,10 +886,12 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       if (!sk_u) return R(500, { reason: 'internal', detail: '금고에 sk_u 가 없다' });
       // bound(2026-10-22 §3): 지금까지의 거래는 살리고 그 뒤를 막는다 — 계정의 현재 nonce(팩토리가 없거나 미배포면 0).
       // web 코어는 UI 가 없으므로 사용자가 고르게 하지 않고 늘 이 기본값을 쓴다(에이전트의 bound 생략 분기와 같다).
+      // 계정 조회는 chain.accountAddressOf 로 가드한다(실패 시 null — status()·issueSession 과 같은 헬퍼) — 타임아웃 없이 try/catch 밖에서
+      // computeAddress 를 직접 부르면 RPC 가 멈추거나 reject 할 때 폐기 전체가 막히거나 503 이 아닌 날 예외가 된다(2026-10-23 리뷰).
+      const account = s.factoryAddress ? await chain.accountAddressOf(s.factoryAddress, s.PPID) : null;
       let bound = 0n;
-      if (s.factoryAddress) {
-        const account = await chain.factory(s.factoryAddress).computeAddress(BigInt(s.PPID));
-        try { bound = await bounded((async () => ((await provider.getCode(account)) === '0x' ? 0n : walletAt(account, provider).nonce()))(), 1200); }
+      if (account) {
+        try { bound = await bounded((async () => ((await provider.getCode(account)) === '0x' ? 0n : await walletAt(account, provider).nonce()))(), 1200); }
         catch (e) { return R(503, { reason: 'chain_unavailable', detail: e.message }); }
       }
       const nonce = randomScalar();   // 신선도는 IdP 가 보지 않는다(재생 = 같은 세션 재폐기, 멱등)
