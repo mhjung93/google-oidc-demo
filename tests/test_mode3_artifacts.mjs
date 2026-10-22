@@ -72,7 +72,7 @@ const CIRCUITS = {
       'pk_CIA_x', 'pk_CIA_y', 'pk_trace_x', 'pk_trace_y', 'tag_c1_x', 'tag_c1_y', 'tag_c2',
       'disc_mask', 'disc_lo[0]', 'disc_lo[1]', 'disc_lo[2]', 'disc_lo[3]', 'disc_lo[4]', 'disc_lo[5]',
       'disc_hi[0]', 'disc_hi[1]', 'disc_hi[2]', 'disc_hi[3]', 'disc_hi[4]', 'disc_hi[5]',
-      'set_sel', 'set_root', 'auid_s', 'arid_s', 'r_s',
+      'set_sel', 'set_root', 'auid_s', 'arid_s', 'r_s', 'counter',
     ],
     indexNote: 'contracts/Mode3Wallet.sol·lib/mode3_rp.js·lib/mode3_onchain.js·cia.js',
   },

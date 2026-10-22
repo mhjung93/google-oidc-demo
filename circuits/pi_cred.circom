@@ -3,6 +3,7 @@ pragma circom 2.0.0;
 include "lib/eddsaposeidon.circom";
 include "lib/poseidon.circom";
 include "lib/imt_nonmembership_v2.circom";
+include "lib/imt_range_nonmembership_v2.circom";
 include "lib/merkle_inclusion.circom";
 include "lib/bitify.circom";
 include "lib/comparators.circom";
@@ -78,6 +79,7 @@ template PiCred(depth, regDepth) {
     signal input auid_s;     // V11 [30]
     signal input arid_s;     // V11 [31]
     signal input r_s;        // V11 [32]
+    signal input counter;    // 2026-10-22 [33] — 거래는 payload.nonce, 로그인·재검증은 2^32 − 1. 32비트.
 
     var DOMAIN_MODE3_CRED_V11 = 23926173293433188795270181169;   // ASCII "MODE3CREDV11" — lib/mode3_credential.js DOMAIN_MODE3_CRED_V11
     var DOMAIN_MODE3_AUID  = 1426111059989489862980;             // "MODE3AUID"
@@ -142,12 +144,26 @@ template PiCred(depth, regDepth) {
     ppidHasher.inputs[3] <== chainid;
     PPID === ppidHasher.out;
 
-    // ---- ⑥ 세션 비멤버십 (폐기 트리) ----
+    // ---- ⑥ 세션 구간 비멤버십 (폐기 트리, 2026-10-22 상한) ----
+    // 리프 V = H'·2^32 + c (H' = Poseidon(5, Cf_s) 하위 220비트, c = 허용 거래 수). [H'·2^32, H'·2^32 + counter] 에 리프가 없다
+    // ⇔ 상한 c ≤ counter 인 폐기가 없다 ⇔ 이 counter(=nonce) 의 거래가 허용된다. 로그인은 counter = 2^32−1 로 "리프 없음" 을 뜻한다.
+    component ctrBits = Num2Bits(32);
+    ctrBits.in <== counter;
     component sLeaf = Poseidon(2);
     sLeaf.inputs[0] <== TAG_MODE3_SESSION;
     sLeaf.inputs[1] <== Cf_s;
-    component nmS = IMTNonMembershipV2(depth);
-    nmS.target <== sLeaf.out;
+    component sBits = Num2Bits_strict();
+    sBits.in <== sLeaf.out;
+    var hp = 0;
+    var pow = 1;
+    for (var i = 0; i < 220; i++) { hp += sBits.out[i] * pow; pow = pow * 2; }
+    signal sLo;
+    sLo <== hp * 4294967296;          // H'·2^32
+    signal sHi;
+    sHi <== sLo + counter;
+    component nmS = IMTRangeNonMembershipV2(depth);
+    nmS.lo <== sLo;
+    nmS.hi <== sHi;
     nmS.lowValue <== s_lowValue;
     nmS.lowNextIndex <== s_lowNextIndex;
     nmS.lowNextValue <== s_lowNextValue;
@@ -229,10 +245,10 @@ template PiCred(depth, regDepth) {
 // 공개 입력의 순서는 lib/mode3_wallet.js·lib/mode3_rp.js·lib/mode3_onchain.js(PUB_INDEX)·cia.js(개봉)·contracts/Mode3Wallet.sol 가 의존한다. 바꾸지 말 것.
 // pk_CIA_x/y 와 pk_trace_x/y 는 공개 입력이다. 검증자는 반드시 전자를 고정된 IdP 키와, 후자를 자기 등록 파일의 조합 키와 비교해야 한다.
 // [0] PPID [1] arid [2] pk_i [3] max_height [4] chainid [5] allowAgent [6] revRoot [7] regRoot [8,9] pk_CIA [10,11] pk_trace
-// [12..14] tag [15] disc_mask [16..21] disc_lo [22..27] disc_hi [28] set_sel [29] set_root [30] auid_s [31] arid_s [32] r_s
+// [12..14] tag [15] disc_mask [16..21] disc_lo [22..27] disc_hi [28] set_sel [29] set_root [30] auid_s [31] arid_s [32] r_s [33] counter
 component main {public [
     PPID, arid, pk_i, max_height, chainid, allowAgent, revRoot, regRoot, pk_CIA_x, pk_CIA_y,
     pk_trace_x, pk_trace_y, tag_c1_x, tag_c1_y, tag_c2,
     disc_mask, disc_lo, disc_hi, set_sel, set_root,
-    auid_s, arid_s, r_s
+    auid_s, arid_s, r_s, counter
 ]} = PiCred(32, 20);
