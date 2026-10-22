@@ -119,7 +119,7 @@ await t('V11: 발급 요청(C_u·C_s·π_IdP·sig_u) → 로컬 IdP 서명 → �
   assert.ok(await snarkjs.groth16.verify(vkey, publicSignals, proof));
 });
 
-await t('V9 buildCredentialProof: set 을 주면 publicSignals[28] = sel, [29] = root; 안 주면 0·0 — 33개', async () => {
+await t('V9 buildCredentialProof: set 을 주면 publicSignals[28] = sel, [29] = root; 안 주면 0·0 — 34개', async () => {
   const attrs = [1990n, 410n, 2n, 0n, 0n, 0n];
   const st = await normalizeSet({ slot: 1, members: [410, 392] }, attrs);
   const built = await proveWith({ mask: 0n, lo: [0n, 0n, 0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n, 0n, 0n], ...st });

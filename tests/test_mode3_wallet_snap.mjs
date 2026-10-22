@@ -250,10 +250,11 @@ try {
     assert.equal(rec.body.onchainDisclosure.set.root, info.predicates.allowedCountriesRoot);
     assert.deepEqual(rec.body.onchainDisclosure.lo, ['0', '0', '0', '0', '0', '0']); assert.deepEqual(rec.body.onchainDisclosure.hi, [String(year - Number(info.predicates.minAge)), '0', '0', '0', '0', '0']);
     assert.equal(await attrGateAt(info.attrGateAddress, provider).claimed(pre.body.walletAddr), true);
-    // 두 번째 prepare: 배포 끝났으니 deployNeeded=false, nonce 1, 같은 root·disclosure 라 캐시 히트
+    // 두 번째 prepare: 배포 끝났으니 deployNeeded=false, nonce 1. 거래 π 는 counter=nonce 를 공개 입력으로 싣는다(2026-10-22) —
+    // nonce 가 0→1 로 바뀌면 캐시 키도 바뀌어 새로 증명한다(root·disclosure 가 같아도 캐시 미스).
     const pre2 = await wallet.post('/wallet/tx/prepare', { r_s: S1, to: info.attrGateAddress, data: '0x4e71d92d', disclose, set });
     assert.equal(pre2.status, 200, j(pre2.body)); assert.equal(pre2.body.deployNeeded, false); assert.equal(pre2.body.deployCalldata, null); assert.equal(pre2.body.nonce, '1');
-    assert.equal(pre2.body.cacheHit, true);
+    assert.equal(pre2.body.cacheHit, false);
     assert.equal((await wallet.post('/wallet/tx/prepare', { r_s: S1, to: info.attrGateAddress, disclose: [{ lo: '0', hi: '1980' }, null, null, null] })).body.reason, 'disclosure_unsatisfiable');
     assert.equal((await wallet.post('/wallet/tx/record', { r_s: S1, txHash: 'nope' })).status, 400);
     // 배포 tx 처럼 이 지갑으로 가지 않은 트랜잭션은 실행 결과로 받지 않는다(리뷰 Minor)

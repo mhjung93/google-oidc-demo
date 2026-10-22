@@ -11,7 +11,7 @@ import { getProvider, deployRevocationLog } from './helpers/mode3_chain.mjs';
 import { VKEY_PATH, createRegistration } from '../lib/mode3_wallet.js';
 import { createRpVerifier } from '../lib/mode3_rp.js';
 import { randomScalar, SCALAR_MAX } from '../lib/mode3_credential.js';
-import { deployVerifier, deployFactory, walletAt, LOGIN_COUNTER } from '../lib/mode3_onchain.js';
+import { deployVerifier, deployFactory, walletAt, walletInterface, LOGIN_COUNTER } from '../lib/mode3_onchain.js';
 import { LOG_ABI, MODE3_MIRROR_ABI, MODE3_ROOTS_ABI } from '../lib/mode3_log.js';
 import { setRoot } from '../lib/mode3_set_tree.js';
 import { DEFAULT_ATTR_SCHEMA, encodeSlotValue } from '../lib/mode3_attr_schema.js';
@@ -562,27 +562,99 @@ try {
     assert.equal(missing.status, 404); assert.equal(missing.body.reason, 'no_session');
   });
 
-  await t('폐기 상한(2026-10-22): nonce 0·1 실행 → bound 3 폐기·게시 → nonce 2 성공, nonce 3 은 revoked_session, 재검증은 revoked_session', async () => {
-    const a = await loginOnce({ factoryAddress });                           // 팩토리 있는 세션(기존 tx 케이스와 같은 loginOnce 옵션)
-    // Ruling(addendum 사전 점검표): 세션키 주소는 loginOnce 반환값이 아니라 /wallet/status 의 sessions[r_s].sessionAddress 로 읽는다 —
-    // 세션 a 는 폐기되면 지갑이 버리므로, 그 전에 미리 읽어 둔다.
-    const aSessionAddress = (await wallet.get('/wallet/status')).body.sessions[a.r_s].sessionAddress;
+  // 2026-10-23 리뷰 3-1: 제목이 약속하는 세 가지(nonce k 성공·nonce k+1 은 revoked_session·재검증도 revoked_session)를
+  // 실제로 집행해 확인한다 — 관리자 경로로 bound 를 걸고(V8 관리자 케이스와 같은 구도) /wallet/tx 두 번·/wallet/revalidate 로 본다.
+  // 재검증은 그 세션 하나가 revoked_session 이 되면 지갑이 즉시 버리므로(같은 r_s 로 두 번째 호출은 no_session), tx 쪽과
+  // 재검증 쪽을 각각 다른 세션으로 나눈다. 계정 nonce 는 이 파일의 다른 케이스들과 공유하는 값이라 절대값이 아니라
+  // "이 케이스가 시작할 때의 값 + k" 로 비교한다.
+  await t('폐기 상한(2026-10-22): 관리자 경로로 실제 집행 — nonce k 는 통과, nonce k+1 은 revoked_session, 재검증도 revoked_session, 기본 bound = 계정 nonce', async () => {
+    // (1) 거래 k(=2)회 → 관리자가 bound=시작nonce+k+1 로 폐기·게시·중계 → nonce(시작+k) 통과, nonce(시작+k+1) 차단.
+    const before1 = new Set((await cia.adminGet(`/cia/admin/sessions?uid=${uid}`)).body.sessions.map((x) => x.Cf_s));
+    const a = await loginOnce({ factoryAddress });
+    const cfA = (await cia.adminGet(`/cia/admin/sessions?uid=${uid}`)).body.sessions.map((x) => x.Cf_s).find((c) => !before1.has(c));
+    assert.ok(cfA, 'a 의 세션 기록이 있어야 한다');
     await relay();
-    for (const _ of [0, 1]) assert.equal((await wallet.post('/wallet/tx', { r_s: a.r_s, to: ethers.ZeroAddress, value: '0' })).status, 200);
-    const r = await wallet.post('/wallet/session/revoke', { r_s: a.r_s, bound: '3' });
+    const n0 = BigInt((await wallet.get('/wallet/status')).body.sessions[a.r_s].nonce);
+    const K = 2n;
+    for (let i = 0n; i < K; i++) assert.equal((await wallet.post('/wallet/tx', { r_s: a.r_s, to: ethers.ZeroAddress, value: '0' })).status, 200);
+    assert.equal((await wallet.get('/wallet/status')).body.sessions[a.r_s].nonce, (n0 + K).toString(), '거래 k 회 뒤 nonce 는 시작값 + k');
+    const boundAdmin = n0 + K + 1n;
+    const rvAdmin = await cia.adminPost('/cia/revoke', { uid, scope: 'session', Cf_s: cfA, bound: boundAdmin.toString() });
+    assert.equal(rvAdmin.status, 200, j(rvAdmin.body));
+    await publishOnce();
+    await relay();
+    const passOk = await wallet.post('/wallet/tx', { r_s: a.r_s, to: ethers.ZeroAddress, value: '0' });          // nonce(시작+k) < bound → 통과
+    assert.equal(passOk.status, 200, j(passOk.body));
+    const blocked = await wallet.post('/wallet/tx', { r_s: a.r_s, to: ethers.ZeroAddress, value: '0' });         // nonce(시작+k+1) == bound → 차단
+    assert.equal(blocked.status, 403, j(blocked.body)); assert.equal(blocked.body.reason, 'revoked_session');
+
+    // (2) 재검증도 같은 사유로 막힌다. 재검증은 거래가 없어 counter=LOGIN_COUNTER 를 쓰므로 bound 값과 무관하게
+    //     "이 세션이 폐기된 적 있는지" 만 본다 — 별도 세션으로 bound(아무 값)만 걸어서 바로 확인한다.
+    const before2 = new Set((await cia.adminGet(`/cia/admin/sessions?uid=${uid}`)).body.sessions.map((x) => x.Cf_s));
+    const a2 = await loginOnce({ factoryAddress });
+    const cfA2 = (await cia.adminGet(`/cia/admin/sessions?uid=${uid}`)).body.sessions.map((x) => x.Cf_s).find((c) => !before2.has(c));
+    assert.ok(cfA2, 'a2 의 세션 기록이 있어야 한다');
+    assert.equal((await cia.adminPost('/cia/revoke', { uid, scope: 'session', Cf_s: cfA2, bound: '0' })).status, 200);
+    await publishOnce();
+    await relay();
+    const rvA2 = await revalidate(a2.r_s);
+    assert.equal(rvA2.status, 403, j(rvA2.body)); assert.equal(rvA2.body.reason, 'revoked_session');
+
+    // (3) 기본 bound(지갑 버튼 경로, bound 생략) = 계정의 현재 nonce.
+    const a3 = await loginOnce({ factoryAddress });
+    await relay();
+    assert.equal((await wallet.post('/wallet/tx', { r_s: a3.r_s, to: ethers.ZeroAddress, value: '0' })).status, 200);
+    const nonce3 = (await wallet.get('/wallet/status')).body.sessions[a3.r_s].nonce;
+    const r3 = await wallet.post('/wallet/session/revoke', { r_s: a3.r_s });   // bound 생략
+    assert.equal(r3.status, 200, j(r3.body));
+    assert.equal(r3.body.bound, nonce3, '기본 bound = 계정 nonce');
+
+    // (4) pendingBounds/apply 생명주기(지갑 버튼 경로, 명시 bound) — 전역 길이 단언은 케이스 순서에 의존하므로
+    //     이 케이스가 늘리고 줄이는 수만 본다(리뷰 지적).
+    const beforeLen = (await wallet.get('/wallet/status')).body.pendingBounds.length;
+    const b1 = await loginOnce({ factoryAddress });
+    const bSessionAddress = (await wallet.get('/wallet/status')).body.sessions[b1.r_s].sessionAddress;
+    await relay();
+    for (const _ of [0, 1]) assert.equal((await wallet.post('/wallet/tx', { r_s: b1.r_s, to: ethers.ZeroAddress, value: '0' })).status, 200);
+    const r = await wallet.post('/wallet/session/revoke', { r_s: b1.r_s, bound: '3' });
     assert.equal(r.status, 200, j(r.body)); assert.equal(r.body.bound, '3'); assert.ok(r.body.pendingBoundId);
     await publishOnce();
-    // 지갑은 폐기한 세션을 버렸으므로, 같은 세션키로 "공격자" 가 보내는 상황은 리프 기준으로 직접 확인한다:
     const st = (await wallet.get('/wallet/status')).body;
+    assert.equal(st.pendingBounds.length, beforeLen + 1, '이 케이스가 만든 항목만큼만 늘어야 한다');
     assert.ok(st.pendingBounds.some((p) => p.id === r.body.pendingBoundId && p.bound === '3' && p.applicableSession === null));
-    // 같은 계정의 새 세션으로 "지금 반영" → setSessionBound 거래 → 영수증 SessionBound 이벤트
-    const b = await loginOnce({ factoryAddress });
+    // 같은 계정의 새 세션으로 "지금 반영" → setSessionBound 거래 → §1 수정: Executed.success·온체인 sessionBound 를 둘 다 확인해야 applied:true.
+    const b2 = await loginOnce({ factoryAddress });
     await relay();
-    const ap = await wallet.post('/wallet/bounds/apply', { id: r.body.pendingBoundId, r_s: b.r_s });
-    assert.equal(ap.status, 200, j(ap.body)); assert.equal(ap.body.applied, true);
-    assert.equal((await wallet.get('/wallet/status')).body.pendingBounds.length, 0);
+    const ap = await wallet.post('/wallet/bounds/apply', { id: r.body.pendingBoundId, r_s: b2.r_s });
+    assert.equal(ap.status, 200, j(ap.body)); assert.equal(ap.body.applied, true); assert.equal(ap.body.bound, '3');
+    assert.equal((await wallet.get('/wallet/status')).body.pendingBounds.length, beforeLen);
     const acct = walletAt(ap.body.wallet, provider);
-    assert.equal(await acct.sessionBound(BigInt(aSessionAddress)), 4n);   // 저장값 = 3 + 1 (aSessionAddress 는 세션 a 의 세션키 주소)
+    assert.equal(await acct.sessionBound(BigInt(bSessionAddress)), 4n);   // 저장값 = 3 + 1 (bSessionAddress 는 세션 b1 의 세션키 주소)
+
+    // (5) §1 (b)+(c): 대기 항목(bound=5, pk_i=c1 의 세션키)을 만든 뒤 **다른** 세션(c2)으로 같은 pk_i 에 더 낮은
+    //     bound(=2)를 /wallet/tx 로 직접 보낸다(setSessionBound 는 OnlySelf — 계정 자신만 호출, 어느 세션으로 보내도 된다;
+    //     pendingBounds 밖의 경로라 이 대기 항목은 그대로 남아 있다). 이 대기 항목(c1, 5)을 나중에 apply 하면 컨트랙트는
+    //     BoundNotLowered 로 revert 하지만(§1-c: 5+1 ≥ 2+1 이미 걸린 값), 온체인 값(2)이 요청(5)보다 이미 낮으므로
+    //     applied:true, alreadyLower:true 로 지워야 한다(§1-b).
+    const c1 = await loginOnce({ factoryAddress });
+    const c1Pk = BigInt((await wallet.get('/wallet/status')).body.sessions[c1.r_s].sessionAddress);
+    await relay();
+    const rc1 = await wallet.post('/wallet/session/revoke', { r_s: c1.r_s, bound: '5' });
+    assert.equal(rc1.status, 200, j(rc1.body)); assert.ok(rc1.body.pendingBoundId);
+    await publishOnce();
+    const c2 = await loginOnce({ factoryAddress });
+    await relay();
+    const acctAddr = (await wallet.get('/wallet/status')).body.sessions[c2.r_s].account;
+    const lowerData = walletInterface.encodeFunctionData('setSessionBound', [c1Pk, 2]);
+    const lowerTx = await wallet.post('/wallet/tx', { r_s: c2.r_s, to: acctAddr, value: '0', data: lowerData });
+    assert.equal(lowerTx.status, 200, j(lowerTx.body)); assert.equal(lowerTx.body.ok, true, j(lowerTx.body));
+    assert.equal(await acct.sessionBound(c1Pk), 3n, '직접 보낸 setSessionBound(2) 의 저장값 = 2+1');
+    const c3 = await loginOnce({ factoryAddress });
+    await relay();
+    const ap3 = await wallet.post('/wallet/bounds/apply', { id: rc1.body.pendingBoundId, r_s: c3.r_s });
+    assert.equal(ap3.status, 200, j(ap3.body));
+    assert.equal(ap3.body.applied, true, j(ap3.body)); assert.equal(ap3.body.alreadyLower, true, j(ap3.body));
+    assert.equal((await wallet.get('/wallet/status')).body.pendingBounds.length, beforeLen);
   });
 
   await t('V8: 세션 하나가 지갑 밖에서(관리자) 폐기되면 재검증이 403 revoked_session 으로 그 세션만 지운다 — 사용자 자격증명은 그대로', async () => {

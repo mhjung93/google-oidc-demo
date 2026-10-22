@@ -64,7 +64,10 @@ try {
     const r = await cia.post('/cia/revoke', { uid: UID, scope: 'session', Cf_s: issued1.cred.Cf_s, bound: bound.toString(), sig_u, nonce: nonce.toString() });
     assert.equal(r.status, 200, JSON.stringify(r.body));
     assert.equal(r.body.inserted, true);
-    assert.equal(BigInt(r.body.leaf), await sessionLeaf(BigInt(issued1.cred.Cf_s), BigInt(r.body.bound)));
+    // 2026-10-23 리뷰 3-7: 기대 리프는 응답의 bound(r.body.bound) 가 아니라 **요청에 쓴** 지역 변수 bound 로 계산한다 —
+    // 응답값으로 계산하면 서버가 엉뚱한 bound 를 돌려줘도(리프 계산과 자기 일관되면) 통과하는 순환 단언이 된다.
+    assert.equal(r.body.bound, bound.toString());
+    assert.equal(BigInt(r.body.leaf), await sessionLeaf(BigInt(issued1.cred.Cf_s), bound));
     assert.ok(r.body.pending >= 1, '리프가 게시 대기열에 들어간다');
     const again = await cia.post('/cia/revoke', { uid: UID, scope: 'session', Cf_s: issued1.cred.Cf_s, bound: bound.toString(), sig_u, nonce: nonce.toString() });
     assert.equal(again.status, 200);
