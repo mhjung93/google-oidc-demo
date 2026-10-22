@@ -107,9 +107,12 @@ await t('PPID = Poseidon(uid, s_u, arid, chainid) — 옛 순서(uid, s_u, chain
   await assert.rejects(() => ppid({ uid, s_u, arid }), /chainid/);
 });
 
-await t('세션 리프는 불변 — Poseidon(5, Cf_s)', async () => {
+await t('세션 리프 = (Poseidon(5, Cf_s) mod 2^220)·2^32 + bound — 태그 5 는 불변', async () => {
   assert.equal(TAG_MODE3_SESSION, 5n);
-  assert.equal(await sessionLeaf(77n), H([5n, 77n]));
+  const hPrime = H([5n, 77n]) & ((1n << 220n) - 1n);
+  assert.equal(await sessionLeaf(77n, 0n), hPrime << 32n);
+  assert.equal(await sessionLeaf(77n, 3n), (hPrime << 32n) + 3n);
+  await assert.rejects(() => sessionLeaf(77n), /bound/);   // 옛 한 인자 호출은 거부
 });
 
 process.exit(failed === 0 ? 0 : 1);
