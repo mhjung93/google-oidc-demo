@@ -86,6 +86,7 @@ CHAIN=(
   tests/test_wallet_revocation_v3.mjs
   tests/test_publish_v4_cycle.mjs
   tests/test_cia_register_issue.mjs
+  tests/test_cia_revoke_bound.mjs
   tests/test_cia_startup.mjs
   tests/test_cia_cors.mjs
   tests/test_cia_admin_open.mjs

@@ -71,7 +71,8 @@ try {
     iss = await issueV11(cia, u, { arid, provider, blind_u: randomScalar() });   // 새 C_u — 은퇴한 계정은 활성 자격증명이 없어야 하므로
     assert.equal(iss.r.status, 200, j(iss.r.body));
     const nonce = randomScalar();
-    const rv = await cia.post('/cia/revoke', { uid: '12345', scope: 'session', Cf_s: iss.cred.Cf_s, sig_u: await signRevokeSession(u.sk_u, u.uid, BigInt(iss.cred.Cf_s), nonce), nonce: nonce.toString() });
+    const bound = 0n;
+    const rv = await cia.post('/cia/revoke', { uid: '12345', scope: 'session', Cf_s: iss.cred.Cf_s, bound: bound.toString(), sig_u: await signRevokeSession(u.sk_u, u.uid, BigInt(iss.cred.Cf_s), bound, nonce), nonce: nonce.toString() });
     assert.equal(rv.status, 200, j(rv.body)); assert.equal(rv.body.inserted, true);
     assert.equal((await cia.get('/cia/state')).body.pendingCount, 1);
     const ra = await cia.adminPost('/cia/revoke', { uid: '12345', scope: 'account' });

@@ -453,7 +453,7 @@ try {
     const rv1 = await cia.adminPost('/cia/revoke', { uid: '12345', scope: 'session', Cf_s: issued1.cred.Cf_s });
     assert.equal(rv1.status, 200, JSON.stringify(rv1.body)); assert.equal(rv1.body.inserted, true);
     const L1 = rv1.body.leaf;
-    const L2 = (await sessionLeaf(BigInt(issued2.cred.Cf_s))).toString();
+    const L2 = (await sessionLeaf(BigInt(issued2.cred.Cf_s), 0n)).toString();   // 관리자 폐기는 bound 기본 0
 
     await provider.send('evm_setAutomine', [false]);
     try {

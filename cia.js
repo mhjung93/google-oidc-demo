@@ -27,8 +27,9 @@ import * as snarkjs from 'snarkjs';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { credMessageV11, compressPoint, randomScalar } from './lib/mode3_credential.js';
 import { DEFAULT_ATTR_SCHEMA, loadSchema, schemaInfo } from './lib/mode3_attr_schema.js';
-import { sessionLeaf, createRevocationTree } from './lib/mode3_revocation.js';
+import { sessionLeaf, createRevocationTree, SESSION_BOUND_MAX } from './lib/mode3_revocation.js';
 import { isValidPoint, pointFromStrings, issueRequestMessageV11, slotRequestMessage, revokeSessionMessage, registerMessage } from './lib/mode3_issuance.js';
+import { PUB_INDEX } from './lib/mode3_onchain.js';
 import { loadIdpVkey, idpPublicSignals, verifyIdp, IDP_VKEY_PATH } from './lib/mode3_idp_proof.js';
 import { MODE3_LOG_ABI, MODE3_MIRROR_ABI, rootToBytes32, signPublicationV3, entryHashes, signReceipt } from './lib/mode3_log.js';
 import { createRegistryTree, registryLeaf } from './lib/mode3_registry.js';
@@ -733,7 +734,7 @@ async function revokeAccount(uid) {
 // 걸지 않고 안에서 분기한다. 관리자 헤더가 틀리게 오면 isAdmin=false 라 scope=session 은 서명 경로로 흐르고 account/credential 은 401 이다.
 app.post('/cia/revoke', userCors, async (req, res) => {
   try {
-    const { uid, scope, Cf_s, sig_u, nonce } = req.body ?? {};
+    const { uid, scope, Cf_s, sig_u, nonce, bound: boundIn } = req.body ?? {};
     const hdr = req.get('X-CIA-Admin-Secret');
     // CIA_ADMIN_OPEN 이면 헤더가 있는 요청(관리자 페이지)만 관리자로 본다 — 헤더 없는 사용자 본인 서명 요청은 그대로 서명 경로로 간다.
     const isAdmin = ADMIN_OPEN ? typeof hdr === 'string' : Boolean(ADMIN_SECRET) && typeof hdr === 'string' && secretMatches(hdr, ADMIN_SECRET);
@@ -753,6 +754,10 @@ app.post('/cia/revoke', userCors, async (req, res) => {
     }
     if (scope !== 'session') return res.status(400).json({ error: "scope must be 'account', 'credential' or 'session'" });
     if (!isDec(Cf_s)) return res.status(400).json({ error: 'Cf_s required' });
+    // 허용 거래 수 bound ∈ [0, 2^32)(설계 2026-10-22 §3): nonce < bound 인 거래만 유효, 0 = 세션 전부 차단. 관리자 경로는
+    // 생략하면 0(전부 차단)이고, 사용자 서명 경로는 서명이 bound 를 덮으므로 생략할 수 없다(아래에서 isDec 이 걸러낸다).
+    const bound = isAdmin ? (boundIn ?? '0') : boundIn;
+    if (!isDec(bound) || BigInt(bound) >= SESSION_BOUND_MAX) return res.status(400).json({ error: 'bound 는 [0, 2^32)' });
     const acct = state.accounts[uid];
     const rec = (acct.sessions ?? []).find((s) => s.Cf_s === BigInt(Cf_s).toString());
     // 서명은 기록 조회보다 먼저 본다 — 서명 없이 "그 Cf_s 가 이 계정에 있는지" 를 알아내지 못하게.
@@ -761,18 +766,21 @@ app.post('/cia/revoke', userCors, async (req, res) => {
       let ok = false;
       const sigU = parseEddsaSig(sig_u);   // 리뷰 S1
       try {
-        const m = F.e(await revokeSessionMessage(BigInt(uid), BigInt(Cf_s), BigInt(nonce)));
+        const m = F.e(await revokeSessionMessage(BigInt(uid), BigInt(Cf_s), BigInt(bound), BigInt(nonce)));
         ok = sigU !== null && eddsa.verifyPoseidon(m, sigU, [F.e(BigInt(acct.pk_u.x)), F.e(BigInt(acct.pk_u.y))]);
       } catch { ok = false; }
       if (!ok) return res.status(400).json({ error: 'bad user signature' });
     }
     if (!rec) return res.status(404).json({ error: 'unknown session', reason: 'unknown_session' });
-    if (rec.revokedAt) return res.json({ inserted: false, root: tree.getRoot().toString(), pending: state.pending.length });
+    // 이미 폐기된 세션의 재폐기: bound 를 기존보다 낮추는 요청만 새 리프를 넣는다(낮추기, 설계 §3) — 같거나 올리는 요청은 멱등 응답.
+    if (rec.revokedAt && BigInt(bound) >= BigInt(rec.bound ?? '0')) {
+      return res.json({ inserted: false, bound: rec.bound ?? '0', root: tree.getRoot().toString(), pending: state.pending.length });
+    }
     // 만료된 세션은 리프를 넣지 않는다 — append-only 트리를 이미 죽은 세션으로 불리는 일이다(설계 §6).
     // 만료 기준은 head > max_height 다 — 컨트랙트(Mode3Wallet.sol `block.number > pub[3]`)·RP(lib/mode3_rp.js)와 같은 부등호를
     // 쓴다. head == max_height 는 아직 살아 있는 세션이라 폐기할 수 있어야 한다(최종 리뷰 F1).
     if ((await headOf(rec.chainid)) > BigInt(rec.max_height)) return res.status(409).json({ error: 'session expired', reason: 'expired' });
-    const leaf = (await sessionLeaf(BigInt(Cf_s))).toString();
+    const leaf = (await sessionLeaf(BigInt(Cf_s), BigInt(bound))).toString();
     // 위 await 들 사이에 하트비트의 pruneExpiredSessions() 가 acct.sessions 를 통째로 갈아끼울 수 있다 — 그러면 rec 은 버려진
     // 객체라 revokedAt 이 아무 데도 안 남고, 그 사이 만료된 세션에 리프만 들어간다. 삽입 직전에 다시 찾는다.
     const cur = (acct.sessions ?? []).find((s) => s.Cf_s === BigInt(Cf_s).toString());
@@ -780,8 +788,9 @@ app.post('/cia/revoke', userCors, async (req, res) => {
     const inserted = await tree.insert(BigInt(leaf));
     if (inserted) { state.revoked.push(leaf); state.pending.push(leaf); }
     cur.revokedAt = new Date().toISOString();
+    cur.bound = BigInt(bound).toString();
     persist();
-    res.json({ inserted, leaf, root: tree.getRoot().toString(), pending: state.pending.length });
+    res.json({ inserted, leaf, bound: cur.bound, root: tree.getRoot().toString(), pending: state.pending.length });
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
@@ -1144,8 +1153,9 @@ app.get('/cia/admin/revoked_sessions', requireAdmin, async (req, res) => {
   for (const [uid, a] of Object.entries(state.accounts)) {
     for (const s of a.sessions ?? []) {
       if (!s.revokedAt) continue;
-      const leaf = (await sessionLeaf(BigInt(s.Cf_s))).toString();
-      out.push({ uid, Cf_s: s.Cf_s, chainid: s.chainid, max_height: s.max_height, allowAgent: s.allowAgent, issuedAt: s.issuedAt, revokedAt: s.revokedAt, leaf, pending: pendingLeaves.has(leaf) });
+      const bound = s.bound ?? '0';   // 하위호환: bound 가 없는 옛 레코드는 0(전부 차단)으로 본다
+      const leaf = (await sessionLeaf(BigInt(s.Cf_s), BigInt(bound))).toString();
+      out.push({ uid, Cf_s: s.Cf_s, chainid: s.chainid, max_height: s.max_height, allowAgent: s.allowAgent, issuedAt: s.issuedAt, revokedAt: s.revokedAt, bound, leaf, pending: pendingLeaves.has(leaf) });
     }
   }
   out.sort((x, y) => String(y.revokedAt).localeCompare(String(x.revokedAt)));
@@ -1222,9 +1232,9 @@ function forgetOpeningShards(o) { delete o.D_svc; delete o.c1; delete o.c2; }
 app.post('/cia/open/request', async (req, res) => {
   try {
     const { arid, publicSignals, proof, D_svc, ts, sig } = req.body ?? {};
-    // V11: 공개 입력 33 — 태그는 [12..14] 그대로
-    if (!isDec(arid) || !Array.isArray(publicSignals) || publicSignals.length !== 33 || !publicSignals.every(isDec) || !proof || !isPt(D_svc) || !isDec(ts) || typeof sig !== 'string') {
-      return res.status(400).json({ error: 'arid, publicSignals[33], proof, D_svc{x,y}, ts, sig required' });
+    // V11: 공개 입력 34(COUNTER 포함, 2026-10-22) — 태그는 [12..14] 그대로
+    if (!isDec(arid) || !Array.isArray(publicSignals) || publicSignals.length !== PUB_INDEX.COUNT || !publicSignals.every(isDec) || !proof || !isPt(D_svc) || !isDec(ts) || typeof sig !== 'string') {
+      return res.status(400).json({ error: `arid, publicSignals[${PUB_INDEX.COUNT}], proof, D_svc{x,y}, ts, sig required` });
     }
     if (!(await isTracePoint(pointFromStrings(D_svc)))) return res.status(400).json({ error: 'D_svc is not a valid subgroup point' });
     const e = state.rps[arid];

@@ -316,7 +316,7 @@
       if (list === null) { const p = document.createElement('p'); p.className = 'muted'; tte(p, 'admin_load_failed'); host.replaceChildren(p); return; }
       if (!list.length) { const p = document.createElement('p'); p.className = 'muted'; tte(p, 'admin_no_sessions'); host.replaceChildren(p); return; }
       // 좁은 창에서 7칸은 카드를 넘는다 — 기술적인 칸(만료 블록·체인)은 전문가 보기에서만 펼친다.
-      const t = table([['admin_col_session'], ['admin_col_status'], ['rp_col_agent'], ['admin_col_issued'], ['admin_col_expiry', true], ['admin_col_chain', true], ['admin_col_action']]);
+      const t = table([['admin_col_session'], ['admin_col_status'], ['rp_col_agent'], ['admin_col_issued'], ['admin_col_expiry', true], ['admin_col_chain', true], ['admin_col_bound', true], ['admin_col_action']]);
       const body = t.tBodies[0];
       for (const s of list) {
         const row = body.insertRow();
@@ -329,6 +329,7 @@
         at.title = s.issuedAt ?? '';
         cell(row, String(s.max_height), 'expert');
         cell(row, String(s.chainid), 'expert');
+        cell(row, s.bound ?? '-', 'expert');
         const act = row.insertCell();
         if (active) act.appendChild(button('admin_revoke_session_btn', 'danger', () => revokeSession(uid, s.Cf_s)));
       }
@@ -358,8 +359,10 @@
       loadSessions(uid);
     }
     function revokeSession(uid, Cf_s) {
+      const bound = window.prompt(Demo.t('admin_revoke_bound_prompt'), '0');
+      if (bound === null) return;
       if (!Demo.confirmDanger('confirm_revoke')) return;
-      run('admin_revoke_failed', () => call('POST', '/cia/revoke', { uid, scope: 'session', Cf_s }), ({ body }) => {
+      run('admin_revoke_failed', () => call('POST', '/cia/revoke', { uid, scope: 'session', Cf_s, bound }), ({ body }) => {
         progress.revoked = true;
         setVerdict($('adminVerdict'), true, 'revoked_ok', () => ({ summary: Demo.t('admin_session_revoke_summary'), detail: safeDetail(body) }));
         loadSessions(uid); loadState();
