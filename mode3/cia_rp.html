@@ -51,13 +51,25 @@
   // 페이지를 새로 고치면 사라진다("다시 볼 수 없음" — HEAD a716a19).
   const justCreated = {};   // name -> { key, command }
   const statusBadgeClass = (status) => status === 'approved' ? 'ok' : status === 'denied' ? 'bad' : status === 'pending' ? 'warn' : 'muted';
+  let myRps = [];   // renderGuide() 가 읽는다 — 이 운영자의 RP 중 승인된 것이 있는지(마지막 /cia/rp/me 결과)
+
+  // 안내 바(Task 17b): 체험 모드일 때만 공통 레이어(Demo.tour.evaluate)가 9단계를 통째로 판정한다 — 이 페이지는
+  // 자기가 아는 완료 신호(승인된 RP 가 있는가)만 넘긴다. 승인된 RP 가 있으면 그 전에 반드시 만들어졌으므로
+  // demo.js 의 evaluate() 가 rp_create·approve 를 함께 done 처리한다(설계는 strings.js steps 의 Task 17 주석 참고).
+  function renderGuide() {
+    const links = { idp_user: '/user' };
+    const approved = myRps.some((s) => s.status === 'approved');
+    if (Demo.tour?.enabled) { Demo.tour.evaluate({ progress: { approved }, links }); return; }
+    const done = approved ? ['rp_create', 'approve'] : [];
+    Demo.guide({ done, current: approved ? null : 'rp_create', links });
+  }
 
   async function refreshRpList() {
     const r = await get('/cia/rp/me');
     const box = $('rpList');
-    if (r.status !== 200) { box.innerHTML = ''; box.appendChild(Object.assign(document.createElement('p'), { className: 'muted', textContent: tt('idp_rp_list_empty') || '아직 만든 RP 가 없습니다.' })); return; }
-    const rps = r.body.rps ?? [];
-    if (rps.length === 0) { box.innerHTML = ''; box.appendChild(Object.assign(document.createElement('p'), { className: 'muted', textContent: tt('idp_rp_list_empty') || '아직 만든 RP 가 없습니다.' })); return; }
+    if (r.status !== 200) { myRps = []; box.innerHTML = ''; box.appendChild(Object.assign(document.createElement('p'), { className: 'muted', textContent: tt('idp_rp_list_empty') || '아직 만든 RP 가 없습니다.' })); renderGuide(); return; }
+    const rps = myRps = r.body.rps ?? [];
+    if (rps.length === 0) { box.innerHTML = ''; box.appendChild(Object.assign(document.createElement('p'), { className: 'muted', textContent: tt('idp_rp_list_empty') || '아직 만든 RP 가 없습니다.' })); renderGuide(); return; }
     const table = document.createElement('table');
     table.className = 'list';
     const thead = document.createElement('tr');
@@ -83,6 +95,7 @@
       table.appendChild(tr);
     }
     box.innerHTML = ''; box.appendChild(table);
+    renderGuide();
   }
 
   $('opSignupBtn').addEventListener('click', async () => {

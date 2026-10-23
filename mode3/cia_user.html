@@ -46,6 +46,18 @@
   const tt = (k, v) => { const s = Demo.t(k, v); return s === k ? '' : s; };
   const verdict = (el, ok, title, extra) => Demo.verdict(el, () => ({ ok, title: window.DemoStrings?.verdicts?.[title] ? title : Demo.t(title), ...(typeof extra === 'function' ? extra() : extra) }));
   let walletOrigin = null, me = null;
+  const progress = { revoked: false };   // 이 페이지가 아는 완료 신호(설계 §2.1) — register 는 me.registered 로 바로 안다
+  // 안내 바(Task 17b): 체험 모드일 때만 공통 레이어(Demo.tour.evaluate)가 9단계를 통째로 판정한다 — 이 페이지는
+  // 자기가 아는 완료 신호(등록·폐기)만 넘긴다. 꺼져 있으면 그 신호만으로 직접 done/current 를 그린다.
+  function renderGuide() {
+    const links = { idp_rp: '/rp', wallet: walletOrigin };
+    if (Demo.tour?.enabled) { Demo.tour.evaluate({ progress: { registered: !!me?.registered, revoked: progress.revoked }, links }); return; }
+    const done = [];
+    if (me?.registered) done.push('register');
+    if (progress.revoked) done.push('revoke');
+    const current = !me?.registered ? 'register' : 'revoke';
+    Demo.guide({ done, current, links });
+  }
   // 상태 패널(cia_account.html·cia_admin.html 과 같은 패턴) — 자기 health 의 walletOrigin 으로 지갑 오리진을 알게
   // 된다. 예전의 단발 fetch 는 그 회차가 실패하면 등록 버튼이 조용히 막혔다; 5초마다 다시 읽어 재시도된다.
   function initStack() {
@@ -57,6 +69,7 @@
       walletOrigin = wallet;
       $('walletLink').href = walletOrigin ? `${walletOrigin}/` : '#';
       Demo.stack({ self: 'aa', urls: { wallet } });
+      renderGuide();
     });
   }
 
@@ -69,6 +82,7 @@
     $('meAuid').textContent = me?.auid ?? '-';
     $('copyAuidBtn').hidden = !me?.auid;
     $('meSlot').textContent = me?.slot ?? '-';
+    renderGuide();
   }
 
   $('signupBtn').addEventListener('click', async () => {
@@ -96,6 +110,7 @@
     if (!Demo.confirmDanger('confirm_account_revoke')) return;
     const r = await post('/cia/user/self_revoke', { pwd: $('revokePwd').value });
     $('revokePwd').value = '';
+    if (r.status === 200) progress.revoked = true;
     verdict($('revokeVerdict'), r.status === 200, r.status === 200 ? 'revoked_ok' : 'account_revoke_failed', { reason: r.body?.reason, detail: r.body });
     await refreshMe();
   });

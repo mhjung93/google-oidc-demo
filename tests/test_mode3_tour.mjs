@@ -4,6 +4,7 @@
 //   (b) 지갑에서 등록하면 다음 폴링에 서비스 잠금이 풀리고 말풍선이 4단계(로그인)를 가리킨다
 //   (c) 로그인에 성공하면 말풍선이 5단계(이용·재검증)로 옮겨 가고 상태 점이 초록이 된다
 //   (d) 신원 기관(CIA) 프로세스를 내리면 신원 기관 점이 빨강, 지갑 점이 노랑(신원 기관에 못 닿음)이 된다
+//   (e) IdP 의 /rp·/user(cia_rp.html·cia_user.html, Task 17b)도 Demo.tour.evaluate() 를 불러 말풍선·카드를 그린다
 // Task 17(B8, 2026-10-23): rp_create(1단계, idp_rp 의 #rpCreateBtn)·register(3단계, idp_user 의 #registerBtn 로 이동)는
 // 이 각본이 직접 누르지 않는다 — 격리 스택이 RP 생성·승인을 미리 해 두고(startIsolatedMode3Stack), 등록은 file 모드인
 // wallet.html 자신의 #registerBtn 으로 한다(둘 다 서버 사실로 done 판정되므로 어느 UI 로 했는지는 상관없다).
@@ -72,6 +73,28 @@ try {
 
   const rpPage = await context.newPage();
   const walletPage = await context.newPage();
+
+  // Task 17b(2026-10-23): cia_user.html·cia_rp.html(idp_user·idp_rp)이 Demo.tour.evaluate() 를 부르는지 — 전에는
+  // 안내 바·strings.js 의 steps/ui 는 갖춰져 있었지만 두 페이지가 evaluate() 를 한 번도 부르지 않아 말풍선·카드가
+  // 절대 뜨지 않았다(task-17-report.md §4). 운영자 로그인·RP 승인 없이도(이 스택은 아직 아무 RP 도 /cia/rp/create
+  // 로 만들지 않았다) 1단계(rp_create)가 바로 current 가 되는 성질을 그대로 쓴다.
+  const idpPage = await context.newPage();
+  await t('체험 모드: IdP RP 페이지(/rp)를 열면 말풍선이 "새 RP 만들기" 버튼을 가리킨다(Task 17b)', async () => {
+    await idpPage.goto(`${stack.cia.base}/rp?tour=1`);
+    await idpPage.waitForFunction(() => document.getElementById('tourBubble') !== null, undefined, { timeout: 30_000 });
+    assert.equal(await idpPage.evaluate(() => window.Demo?.tour?.anchor?.id), 'rpCreateBtn', '말풍선 대상은 rpCreateBtn 이어야 한다');
+    assert.ok((await idpPage.$eval('.tour-bubble .tour-title', (el) => el.textContent)).includes('RP'), '1단계(RP 만들기) 말풍선이어야 한다');
+  });
+  await t('체험 모드: IdP 사용자 페이지(/user)에서는 그 1단계가 "다른 창에서" 카드로 뜬다(Task 17b, where_idp_rp 번역)', async () => {
+    await idpPage.goto(`${stack.cia.base}/user?tour=1`);
+    await idpPage.waitForFunction(() => document.getElementById('tourCard') !== null, undefined, { timeout: 30_000 });
+    assert.equal(await idpPage.$('.tour-bubble'), null, '이 페이지에는 1단계 대상이 없다 — 카드만, 말풍선은 없어야 한다');
+    const cardText = await idpPage.$eval('#tourCard', (el) => el.textContent);
+    // where_idp_rp 가 strings.js 에 없으면 demo.js 의 D.t() 가 키 이름 문자열을 그대로 돌려준다 — 번역된 문구인지로 가린다.
+    assert.ok(cardText.includes('IdP RP 페이지'), `카드에 where_idp_rp 번역이 보여야 한다(키 이름이 그대로면 실패): ${j(cardText)}`);
+    assert.ok(!cardText.includes('where_idp_rp'), `카드에 키 이름이 그대로 보인다: ${j(cardText)}`);
+  });
+  await idpPage.close();
 
   await t('체험 모드: 서비스 로그인은 지갑 등록 전 잠긴다(?tour=1 은 저장되고 주소창에서 지워진다)', async () => {
     await rpPage.goto(`${rp.base}/?tour=1`);

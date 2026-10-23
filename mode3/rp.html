@@ -241,7 +241,7 @@
     // ---- 안내 바 ----
     function renderGuide() {
       // rp2: 지갑이 아는 RP 목록의 두 번째 오리진 — login2 단계(두 번째 RP 로그인)가 첫 RP 창에서 쓰는 "다른 창" 링크다.
-      const links = { rp_admin: '/admin', wallet: info?.walletAgentOrigin, admin: info?.ciaUrl ? `${info.ciaUrl}/admin` : null, account: info?.ciaUrl ? `${info.ciaUrl}/account` : null, rp2: (Demo.stack?.last?.wallet?.rpOrigins ?? [])[1] ?? null };
+      const links = { rp_admin: '/admin', wallet: info?.walletAgentOrigin, admin: info?.ciaUrl ? `${info.ciaUrl}/admin` : null, account: info?.ciaUrl ? `${info.ciaUrl}/account` : null, idp_user: info?.ciaUrl ? `${info.ciaUrl}/user` : null, idp_rp: info?.ciaUrl ? `${info.ciaUrl}/rp` : null, rp2: (Demo.stack?.last?.wallet?.rpOrigins ?? [])[1] ?? null };
       // 체험 모드일 때만 공통 레이어가 8단계를 통째로 판정한다(설계 2026-09-25 §3.2, U6 로 login2 추가) — 이 페이지는 자기가 아는 완료 신호만 넘긴다.
       if (Demo.tour?.enabled) { Demo.tour.evaluate({ progress: { approved: info?.status === 'approved', login: !!currentSession, login2: progress.login2, used: progress.used, disclosed: progress.disclosed, opened: progress.opened }, links, secondRp: isSecondRp() }); return; }
       // 체험 모드가 꺼져 있을 때(그리고 demo.js 가 아예 없을 때)의 1차 계산 — 이 페이지가 아는 사실만으로 그린다.

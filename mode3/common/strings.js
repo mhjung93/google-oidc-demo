@@ -17,8 +17,11 @@ window.DemoStrings = {
     go_admin: { ko: 'IdP 관리자 열기', en: 'Open IdP admin' }, go_account: { ko: '내 계정 페이지 열기', en: 'Open my account page' },
     // U6(2026-10-14) — login2 단계(두 번째 RP 로그인)가 첫 RP 창에서 쓰는 "다른 창" 링크·라벨.
     go_rp2: { ko: '두 번째 RP(zkTWO) 열기', en: 'Open the second RP (zkTWO)' },
+    // Task 17b(2026-10-23) — rp_create(idp_rp)·register(idp_user) 단계가 쓰는 "다른 창" 링크·라벨(demo.js 의 where_${whereKey}·go_${whereKey}).
+    go_idp_user: { ko: 'IdP 사용자 페이지 열기', en: 'Open the IdP user page' }, go_idp_rp: { ko: 'IdP RP 페이지 열기', en: 'Open the IdP RP page' },
     where_wallet: { ko: '사용자', en: 'the user' }, where_rp: { ko: 'RP', en: 'the RP' }, where_admin: { ko: 'IdP 관리자', en: 'the IdP admin' }, where_account: { ko: '내 계정 페이지', en: 'my account page' },
     where_rp2: { ko: '두 번째 RP', en: 'the second RP' },
+    where_idp_user: { ko: 'IdP 사용자 페이지', en: 'the IdP user page' }, where_idp_rp: { ko: 'IdP RP 페이지', en: 'the IdP RP page' },
     confirm_revoke: { ko: '되돌릴 수 없습니다. 폐기할까요?', en: 'This cannot be undone. Revoke?' },
     confirm_tamper: { ko: '시연용입니다 — 이 계정의 등록부 슬롯에 가짜 자격증명을 게시합니다. 계속할까요?', en: 'Demo only — publish a fake credential into this account’s registry slot. Continue?' },
     confirm_publish: { ko: '폐기 목록을 체인에 게시합니다. 계속할까요?', en: 'Publish the revocation list on-chain. Continue?' },
@@ -64,6 +67,7 @@ window.DemoStrings = {
     account_revoke_title: { ko: '내 계정 폐기', en: 'Revoke my account' },
     account_revoke_desc: { ko: '기기를 잃었을 때 비밀번호만으로 계정을 폐기합니다. 지갑 키는 필요 없습니다.', en: 'Revoke your account with just the password, e.g. after losing a device. No wallet key needed.' },
     // 단계 힌트(안내 바 "다음" 문장의 {what})
+    hint_rp_create: { ko: '새 RP 만들기', en: 'create a new RP' },
     hint_approve: { ko: '등록된 RP 를 승인', en: 'approve the registered RP' },
     hint_register: { ko: '사용자 속성 등록', en: 'register user attributes' },
     hint_login: { ko: '로그인', en: 'log in' },

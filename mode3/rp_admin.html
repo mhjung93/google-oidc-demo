@@ -88,7 +88,7 @@
     let info = null;   // rp_info(renderBrand 가 채운다) — 안내 바 링크·승인 상태에 쓴다
     // 안내 바·체험 모드(2026-10-16): 이 페이지는 승인 개봉 단계의 당사자다. 다른 단계의 완료 신호는 상태 패널(지갑·IdP health)이 공통 레이어에 준다.
     function renderGuide() {
-      const links = { rp: '/', wallet: info?.walletAgentOrigin ?? null, admin: info?.ciaUrl ? `${info.ciaUrl}/admin` : null, account: info?.ciaUrl ? `${info.ciaUrl}/account` : null };
+      const links = { rp: '/', wallet: info?.walletAgentOrigin ?? null, admin: info?.ciaUrl ? `${info.ciaUrl}/admin` : null, account: info?.ciaUrl ? `${info.ciaUrl}/account` : null, idp_user: info?.ciaUrl ? `${info.ciaUrl}/user` : null, idp_rp: info?.ciaUrl ? `${info.ciaUrl}/rp` : null };
       if (Demo.tour?.enabled) { Demo.tour.evaluate({ progress: { approved: info?.status === 'approved', opened: progress.opened }, links }); return; }
       const done = []; if (info?.status === 'approved') done.push('approve'); if (progress.opened) done.push('open');
       Demo.guide({ done, current: progress.opened ? null : 'open', links });
