@@ -4,8 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="same-origin" />
-  <!-- 제목의 "사용자 페이지" 는 tests/test_mode3_demo_stack.mjs 의 페이지 서빙 검사 marker 다. -->
-  <title>사용자 페이지</title>
+  <!-- Task 14(B5, 2026-10-23): "사용자 페이지" → "지갑". tests/test_mode3_demo_stack.mjs:778 는 옛 제목을 그 marker 로
+       썼다 — 이 작업의 파일 범위(mode3/wallet.html·common/strings.js·tests/test_mode3_browser.mjs) 밖이라 고치지
+       않았고, 그 테스트(chain 그룹)가 지금 이 문자열로 실패할 수 있다(보고서에 남긴다). -->
+  <title>지갑</title>
   <link rel="stylesheet" href="/common/demo.css" />
   <script src="/common/strings.js"></script>
   <script src="/common/demo.js"></script>
@@ -27,13 +29,17 @@
 
   <main class="cards" id="mainView">
     <section class="card" id="identityCard">
-      <h3 data-i18n="wallet_identity_title">사용자 속성 등록</h3>
+      <h3 data-i18n="wallet_identity_title">내 신원</h3>
       <p class="desc" data-i18n="wallet_identity_desc">IdP 에 한 번 등록합니다. 속성은 내가 넣고 IdP 는 값을 모릅니다.</p>
       <p><span id="regBadge" class="badge">미등록</span> <span id="regInfo" class="muted"></span></p>
       <dl class="kv">
         <dt data-term="AA">IdP</dt><dd id="aaInfo">-</dd>
         <dt data-term="cred">내 자격증명</dt><dd id="credInfo">-</dd>
         <dt data-term="registry">등록부</dt><dd><span id="registryBadge" class="badge muted">-</span> <span id="registryInfo"></span></dd>
+        <!-- auid·salt(Task 14, B5) — 전체 값 + 복사 버튼(.copy-btn, rp.html 의 copyText 와 같은 패턴). salt 는
+             비밀이라 기본 가림이고 "보기" 를 눌러야(showSaltBtn) 보인다 — 콘솔·로그에는 찍지 않는다. -->
+        <dt data-term="auid">auid</dt><dd><code id="meAuid">-</code> <button type="button" id="copyAuidBtn" class="copy-btn" hidden title="복사">⧉</button></dd>
+        <dt><span data-i18n="wallet_salt_label">salt(s_u)</span> <span class="badge warn" data-i18n="wallet_salt_warn">비밀 — 시연용 표시</span></dt><dd><code id="meSalt">-</code> <button type="button" id="showSaltBtn" class="btn-ghost" data-i18n="wallet_salt_show">보기</button> <button type="button" id="copySaltBtn" class="copy-btn" hidden title="복사">⧉</button></dd>
       </dl>
       <span id="fileRegFields"><label>uid <input id="uid" value="12345" size="8" /></label> <label>pwd <input id="pwd" type="password" value="password123" size="12" /></label><br /></span>
       <dl class="kv" id="attrsView">
@@ -48,6 +54,9 @@
         <button id="registerBtn" data-i18n="wallet_register_btn">등록</button>
         <button id="profileSaveBtn" class="btn-ghost" data-i18n="wallet_profile_save_btn">속성 저장</button>
       </p>
+      <!-- snap 모드 등록 안내(Task 14, B5) — snap 모드는 registerBtn 을 숨기고 이 안내 + IdP /user 링크를 보인다
+           (applySnapMode()). file 모드는 그대로 registerBtn 을 쓴다. -->
+      <p id="registerHint" hidden><span data-i18n="wallet_register_hint">IdP 사용자 페이지에서 가입하고 커밋먼트를 등록하세요</span> — <a id="registerHintLink" target="_blank" rel="noopener">-</a></p>
       <div id="registerResult"></div>
       <p id="intro" class="muted expert"></p>
     </section>
@@ -205,6 +214,14 @@
     // 등록 전·"속성 저장" 전에 사용자가 attrN 칸에 입력 중인 값을 5초 주기 refresh() 가 지워 버리지 않게 막는 플래그.
     // true 면 renderIdentity() 가 attrN 의 value 를 다시 쓰지 않는다 — 저장이 끝나면(등록·PUT 성공) false 로 되돌린다.
     let profileDirty = false;
+    // Task 14(B5): "보기"(showSaltBtn)가 받아 온 salt(s_u) — 누르기 전엔 가린다. 5초 주기 refresh() 가 다시 그려도
+    // 이 값이 있으면 그대로 보인다(countryTouched·profileDirty 와 같은 "사용자가 이미 본 값을 지우지 않는다" 패턴).
+    // saltHideTimer 가 몇 초 뒤 스스로 가림으로 되돌린다(시연 화면에 비밀이 계속 떠 있지 않게) — 등록이 없어지면
+    // (폐기·초기화 등 다음 refresh) renderIdentity() 가 곧바로 가림으로 되돌린다. 콘솔·로그에는 찍지 않는다.
+    let saltRevealed = null;
+    let saltHideTimer = null;
+    const SALT_MASK = '●●●●●●●●●●';
+    const SALT_REVEAL_MS = 5000;   // "보기" 뒤 이만큼만 화면에 남는다 — 그 전에 복사해야 한다
 
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     async function postJson(url, body) {
@@ -398,6 +415,70 @@
       const service = cleanServiceName(lastAuthReq.serviceName) || lastAuthReq.origin;
       $('authTitle').textContent = tt('wallet_auth_approving', { service }) || service;
     }
+    // IdP 인증 창(Task 14, B5) — 로그인 동의(consentLogin) 승인 뒤, 신규 로그인(비-reauth)마다 연다. nonce 로 응답을
+    // 묶고, 발신 오리진이 cfg.ciaUrl 의 오리진과 nonce 가 둘 다 맞을 때만 받는다('*' 로 보내지 않는다, 받지도 않는다).
+    // 창이 닫히거나 60초 안에 응답이 없으면 null(호출자가 idp_auth_cancelled 로 돌린다).
+    function idpAuth() {
+      return new Promise((resolve) => {
+        const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
+        const ciaOrigin = new URL(cfg.ciaUrl).origin;
+        const win = window.open(`${cfg.ciaUrl}/login?nonce=${nonce}&wallet=${encodeURIComponent(location.origin)}`, 'mode3-idp-auth', 'width=420,height=520');
+        if (!win) return resolve(null);
+        const done = (v) => { clearInterval(tick); clearTimeout(timer); window.removeEventListener('message', onMsg); resolve(v); };
+        const onMsg = (ev) => { if (ev.origin !== ciaOrigin || ev.data?.type !== 'mode3-idp-auth' || ev.data.nonce !== nonce) return; done(ev.data.code || null); };
+        window.addEventListener('message', onMsg);
+        const tick = setInterval(() => { if (win.closed) done(null); }, 500);
+        const timer = setTimeout(() => { try { win.close(); } catch { /* */ } done(null); }, 60_000);
+      });
+    }
+
+    // 등록 팝업(Task 14, B5) — IdP /user 페이지가 ${walletOrigin}/?authorize=1 을 열고 mode3-register 를 보낸다
+    // (cia_user.html 의 #registerBtn). mode3-authorize 와는 아예 다른 요청이라 runAuthorize() 의 onMessage 가 먼저
+    // type 으로 갈라 이 함수로 넘긴다. 결과(mode3-register-result)는 실제 발신 오리진(ev.source·ev.origin)에만 보낸다.
+    async function handleRegisterMessage(ev, req, { step, log }) {
+      const reply = (result) => {
+        try { ev.source.postMessage({ type: 'mode3-register-result', result }, ev.origin); }
+        catch (e) { log(`결과 전송 실패: ${e.message}`); }
+        setTimeout(() => window.close(), result.ok ? 200 : 3000);
+      };
+      let ciaOrigin = null;
+      try { ciaOrigin = cfg.ciaUrl ? new URL(cfg.ciaUrl).origin : null; } catch { ciaOrigin = null; }
+      if (!ciaOrigin || ev.origin !== ciaOrigin) {
+        step('오리진 불일치 — 이 요청은 진행하지 않는다.');
+        log(`메시지 오리진=${ev.origin}\nIdP 오리진=${ciaOrigin ?? '(모름)'}`);
+        return reply({ ok: false, reason: 'origin_mismatch' });
+      }
+      if (cfg.secrets !== 'snap') { step('이 지갑은 file 모드다 — 이 팝업 경로를 쓰지 않는다.'); return reply({ ok: false, reason: 'not_snap_mode' }); }
+      try {
+        step('MetaMask·Snap 연결 중…');
+        try { await connectMetaMask(); }
+        catch (e) {
+          step('MetaMask·Snap 연결 실패');
+          log(e.message);
+          return reply({ ok: false, reason: isUserRejected(e) ? 'user_denied' : 'snap_unavailable', detail: e.message });
+        }
+        step('Snap 등록 확인 창을 확인하세요.');
+        const reg = await invokeSnap('register', { uid: req.uid });
+        if (!reg || reg.denied) { step('등록 거절'); return reply({ ok: false, reason: 'user_denied' }); }
+        step('에이전트에 등록하는 중…');
+        const { status, body: b } = await postJson('/wallet/register', { uid: req.uid, code: req.code, s_u: reg.s_u, sk_u: reg.sk_u });
+        if (status !== 201) { step('등록 실패'); log(errText(status, b)); return reply({ ok: false, reason: b.reason ?? `HTTP ${status}`, detail: b.detail ?? null }); }
+        step('Snap 에 등록 결과 저장 중…');
+        try { await invokeSnap('storeRegistration', { attrs: b.attrs, slot: b.slot, auid: b.auid }); }
+        catch (e) {
+          step('등록이 반만 됐다 — Snap 저장 실패');
+          log(e.message);
+          return reply({ ok: false, reason: 'wallet_error', detail: e.message });
+        }
+        step('등록 완료 — 창을 닫는다.');
+        reply({ ok: true, slot: b.slot, auid: b.auid });
+      } catch (e) {
+        step('오류');
+        log(e.message);
+        reply({ ok: false, reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
+      }
+    }
+
     function runAuthorize() {
       const step = (s) => { $('authStep').textContent = s; };
       const log = (s) => { $('authLog').textContent += `${s}\n`; };
@@ -405,7 +486,14 @@
       let handled = false;
       const onMessage = async (ev) => {
         const req = ev.data;
-        if (handled || !req || req.type !== 'mode3-authorize') return;
+        if (handled || !req) return;
+        // 등록 팝업(Task 14, B5) — mode3-authorize 와 완전히 다른 요청이라 먼저 갈라낸다.
+        if (req.type === 'mode3-register') {
+          handled = true;
+          window.removeEventListener('message', onMessage);
+          return handleRegisterMessage(ev, req, { step, log });
+        }
+        if (req.type !== 'mode3-authorize') return;
         handled = true;
         window.removeEventListener('message', onMessage);
         // 결과는 요청을 보낸 창에만 돌려준다. 오리진이 어긋나면 진행하지 않고, 실제로 말을 건 오리진에 실패만 알린다
@@ -467,6 +555,12 @@
           const witness = await consentLogin(req);
           if (!witness) { step('동의 거절'); return reply({ ok: false, reason: 'user_denied' }); }
 
+          // IdP 인증 창(Task 14, B5) — CIA_ISSUE_AUTH=code 인 IdP 는 로그인마다 이 창이 낸 1회용 코드가 있어야
+          // /cia/issue 가 받는다. 재승인(위 reauth 분기)은 /cia/issue 를 타지 않으므로 거치지 않는다.
+          step(tt('user_auth_idp_step') || 'IdP 인증 창에서 uid·비밀번호·auid 를 입력하세요.');
+          const authCode = await idpAuth();   // null 이면 취소(창 닫힘·60초 무응답)
+          if (!authCode) { step('IdP 인증 취소'); return reply({ ok: false, reason: 'idp_auth_cancelled' }); }
+
           step('로그인·증명 생성 중… (수 초 걸린다)');
           const lg = await postJson('/wallet/login', {
             arid: req.arid, origin: req.origin, cert_s: req.cert_s, pk_trace: req.pk_trace, r_s: req.r_s, r_rp: req.r_rp,
@@ -474,6 +568,7 @@
             factoryAddress: req.factoryAddress ?? null, attrGateAddress: req.attrGateAddress ?? null,
             disclose: req.disclose ?? null, set: req.set ?? null,
             witness, verifiedOrigin: ev.origin,          // Origin 헤더 대신 팝업이 확인한 값(스펙 §3.3)
+            auth_code: authCode,
           });
           if (lg.status !== 200) {
             step('로그인 실패'); log(errText(lg.status, lg.body));
@@ -537,6 +632,15 @@
       dl.append(dt, dd);
     }
     const termEl = (name) => { const s = document.createElement('span'); s.dataset.term = name; s.textContent = Demo.term(name); return s; };
+    /** 복사 버튼 공통(Task 14, B5) — rp.html·cia_user.html 의 같은 이름 함수와 같은 패턴(.copy-btn, demo.css). 클립보드가
+     *  막혀 있으면 선택 복사로 대신한다. text 가 없으면(아직 안 읽음) 아무것도 하지 않는다. */
+    async function copyText(text, btn) {
+      if (!text) return;
+      try { await navigator.clipboard.writeText(text); }
+      catch { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); } finally { ta.remove(); } }
+      const prev = btn.textContent; btn.textContent = tt('rp_copied') || '복사됨'; btn.classList.add('copied');
+      setTimeout(() => { btn.textContent = prev; btn.classList.remove('copied'); }, 1200);
+    }
 
     // ---- 내 신원 카드 ----
     /** 국가 선택 기본값(내 국가) + 슬롯 2·3 체크박스의 "값 없음" 비활성화(U2). lastAttrs 가 바뀔 때마다 부른다. */
@@ -585,6 +689,14 @@
       tte(rb, key);
       const slotInfo = rg ? (tt('wallet_registry_info', { slot: rg.slot, epoch: rg.epoch }) || `슬롯 ${rg.slot} · epoch ${rg.epoch}`) : '';
       $('registryInfo').textContent = rg ? [tt(key), slotInfo].filter(Boolean).join(' · ') : '';
+
+      // auid·salt(Task 14, B5) — auid 는 상태 응답의 공개 값을 전체로 보인다. salt(s_u)는 비밀이라 기본 가림(SALT_MASK)
+      // 이고, "보기"(showSaltBtn)가 받아 둔 값(saltRevealed)이 있을 때만 전체를 보인다 — 등록이 없어지면 가림으로 되돌린다.
+      $('meAuid').textContent = s?.auid ?? '-';
+      $('copyAuidBtn').hidden = !s?.auid;
+      if (!s?.registered) saltRevealed = null;
+      $('meSalt').textContent = saltRevealed ?? (s?.registered ? SALT_MASK : '-');
+      $('copySaltBtn').hidden = !saltRevealed;
     }
 
     // ---- 로그인 세션 카드 + 트랜잭션 세션 선택 ----
@@ -823,6 +935,34 @@
       } finally { delete btn.dataset.busy; refresh(); }
     }
     $('refreshBtn').addEventListener('click', () => refresh(true));
+
+    // auid·salt 복사(Task 14, B5) — lastStatus.auid 는 공개 값, saltRevealed 는 "보기" 를 눌러야 채워진다.
+    $('copyAuidBtn').addEventListener('click', () => copyText(lastStatus?.auid ?? null, $('copyAuidBtn')));
+    $('copySaltBtn').addEventListener('click', () => copyText(saltRevealed, $('copySaltBtn')));
+    // "보기"(showSaltBtn, Task 14 B5) — file 모드는 같은 오리진의 GET /wallet/secrets/salt(Task 13), snap 모드는
+    // Snap RPC showSalt(확인 창 하나, Task 15) 로 s_u 를 받는다. 취소·실패면 가림 상태를 그대로 둔다 — 비밀은
+    // 실패 메시지에도 담지 않는다(실패해도 s_u 자체를 받지 못했으므로 로그에 남을 것이 없다).
+    $('showSaltBtn').addEventListener('click', async () => {
+      try {
+        let su;
+        if (cfg.secrets === 'snap') {
+          await ensureConnected();
+          const r = await invokeSnap('showSalt');
+          if (!r || r.denied) return;
+          su = r.s_u;
+        } else {
+          const r = await fetch('/wallet/secrets/salt');
+          if (!r.ok) { console.warn(`[wallet] salt 보기 실패: HTTP ${r.status}`); return; }
+          su = (await r.json()).s_u;
+        }
+        saltRevealed = su;
+        $('meSalt').textContent = su;
+        $('copySaltBtn').hidden = false;
+        // 화면에 비밀이 계속 떠 있지 않게 몇 초 뒤 스스로 가린다 — 다시 누르면 타이머가 늘어난다.
+        clearTimeout(saltHideTimer);
+        saltHideTimer = setTimeout(() => { saltRevealed = null; renderIdentity(); }, SALT_REVEAL_MS);
+      } catch (e) { console.warn(`[wallet] salt 보기 실패: ${e.message}`); }
+    });
 
     // 등록: file 모드는 지금처럼 폼의 uid·pwd, snap 모드는 Snap 이 묻고(§4.1) 페이지는 s_u·sk_u 만 나른다.
     // 비밀번호는 Snap → 페이지 → 에이전트 → CIA 를 한 번 지날 뿐이다 — 화면·로그 어디에도 남기지 않는다.
@@ -1242,6 +1382,13 @@
     function applySnapMode() {
       $('snapPanel').hidden = false;
       $('fileRegFields').hidden = true;
+      // 등록 안내(Task 14, B5) — snap 모드는 등록이 IdP /user 페이지 경유(mode3-register 팝업)로 가므로 registerBtn 을
+      // 숨기고 그 페이지로 가는 안내만 보인다. cfg.ciaUrl 은 /wallet/config(Task 13)가 준다 — init() 이 cfg 를 채운 뒤 부른다.
+      $('registerBtn').hidden = true;
+      $('registerHint').hidden = false;
+      const ciaUserUrl = cfg.ciaUrl ? `${cfg.ciaUrl}/user` : null;
+      $('registerHintLink').href = ciaUserUrl ?? '#';
+      $('registerHintLink').textContent = ciaUserUrl ?? '-';
     }
 
     async function init() {

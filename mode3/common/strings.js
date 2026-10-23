@@ -24,8 +24,15 @@ window.DemoStrings = {
     confirm_publish: { ko: '폐기 목록을 체인에 게시합니다. 계속할까요?', en: 'Publish the revocation list on-chain. Continue?' },
     confirm_reset: { ko: 'Snap 의 등록 비밀과 동의 기록을 지웁니다. 계속할까요?', en: 'Erase the Snap’s registration secrets and consents. Continue?' },
     // 페이지 제목·카드 제목·설명 — T2~T4 가 쓴다(키 이름 = 페이지_카드_역할)
-    wallet_identity_title: { ko: '사용자 속성 등록', en: 'Register user attributes' },
+    // Task 14(B5, 2026-10-23): "사용자 속성 등록" → "내 신원" — 이 카드가 이제 auid·salt 도 보이므로(아래 wallet_salt_*),
+    // reasons.auid_mismatch(아래)가 이미 "지갑 페이지의 '내 신원' 카드에서 복사" 라고 이 이름을 가리키고 있었다.
+    // mode3/user/index.html 도 같은 키를 쓴다(공유 사전) — 그 페이지의 같은 카드 제목도 함께 바뀐다.
+    wallet_identity_title: { ko: '내 신원', en: 'My identity' },
     wallet_identity_desc: { ko: 'IdP 에 한 번 등록합니다. 속성은 내가 넣고 IdP 는 값을 모릅니다.', en: 'Register once with the IdP. I enter the attributes myself; the IdP never learns the values.' },
+    // salt(s_u) 표시(Task 14, B5) — 비밀이라 기본 가림이고 "보기" 를 눌러야 나온다(지갑 에이전트 로그·콘솔에도 안 남긴다).
+    wallet_salt_label: { ko: 'salt(s_u)', en: 'salt (s_u)' },
+    wallet_salt_warn: { ko: '비밀 — 시연용 표시', en: 'secret — shown for the demo' },
+    wallet_salt_show: { ko: '보기', en: 'Show' },
     wallet_sessions_title: { ko: '로그인 세션', en: 'Login sessions' },
     wallet_sessions_desc: { ko: 'RP 마다 다른 주소로 로그인합니다. 세션 하나만 끝낼 수도 있습니다.', en: 'You log in with a different address per RP. A single session can be ended on its own.' },
     // 체인 반영 대기 카드(설계 2026-10-22 §3·§7, Task 9) — /wallet/session/revoke 가 남긴 pendingBounds 를 보인다.
@@ -223,6 +230,8 @@ window.DemoStrings = {
     compliance_title: { ko: '컴플라이언스', en: 'Compliance' },
     // 지갑 페이지(wallet.html) — 버튼·배지·한 줄 요약. 세션 표의 'AI 에이전트' 값은 위의 rp_agent_yes/no 를 함께 쓴다.
     wallet_register_btn: { ko: '등록', en: 'Register' },
+    // snap 모드 등록 안내(Task 14, B5) — snap 모드는 #registerBtn 을 숨기고 이 안내 + IdP /user 링크를 보인다.
+    wallet_register_hint: { ko: 'IdP 사용자 페이지에서 가입하고 커밋먼트를 등록하세요', en: 'Sign up and register a commitment on the IdP user page' },
     wallet_profile_save_btn: { ko: '속성 저장', en: 'Save attributes' },
     wallet_tx_btn: { ko: '트랜잭션 보내기', en: 'Send transaction' },
     wallet_connect_btn: { ko: 'MetaMask 연결', en: 'Connect MetaMask' },
@@ -326,6 +335,8 @@ window.DemoStrings = {
     wallet_auth_origin: { ko: 'RP 주소', en: 'RP address' },
     wallet_auth_conditions: { ko: '요청한 조건', en: 'Requested conditions' },
     wallet_auth_reauth: { ko: '이미 있는 세션의 재승인입니다 — 조건은 바뀌지 않습니다.', en: 'Re-approval of an existing session — the conditions do not change.' },
+    // IdP 인증 창(Task 14, B5) — consentLogin 승인 뒤, 신규 로그인마다 이 창에서 1회용 코드를 받아야 발급된다.
+    user_auth_idp_step: { ko: 'IdP 인증 창에서 uid·비밀번호·auid 를 입력하세요.', en: 'Enter your uid, password, and auid in the IdP authentication window.' },
     wallet_cond_none: { ko: '없음 — 조건을 공개하지 않고 로그인합니다.', en: 'None — logging in without revealing any condition.' },
     wallet_cond_le: { ko: '{attr} ≤ {hi}', en: '{attr} ≤ {hi}' },
     wallet_cond_range: { ko: '{attr} {lo}–{hi}', en: '{attr} {lo}–{hi}' },
