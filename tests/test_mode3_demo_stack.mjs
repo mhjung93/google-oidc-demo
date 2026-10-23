@@ -25,27 +25,32 @@ assert.ok(fs.existsSync(VKEY_PATH), `pi_cred vkey 없음: ${VKEY_PATH} (build/mo
 // 만료 테스트용 짧은 TTL. 단 첫 로그인(발급+증명, 1~3초)이 TTL 안에 끝나야 하므로 너무 짧게 잡지 않는다.
 // V10(2026-10-02 Task 9): 새 자격증명 로그인은 거울이 내 리프를 실을 때까지 한 번 더 기다린다(릴레이 + 지갑 폴링 2초) —
 // 6초로는 첫 로그인이 챌린지 만료(bad_challenge)에 걸려 12초로 늘렸다(만료 케이스의 대기도 같이).
-const stack = await startIsolatedMode3Stack({ rpEnv: { MODE3_CHALLENGE_TTL_MS: '12000' } });
+// extraRps 의 rp2: "V8 세션 폐기"·"각본 13(V10)" 전용 — RP(mode3_rp.js, 2026-10-21)가 같은 PPID 의 이전 세션을
+// 새 로그인으로 대체하는 정책이라, 같은 계정의 두 세션을 동시에 살려 두려면 RP(=PPID)가 달라야 한다. 세션 폐기(Cf_s)·
+// IdP 세션 기록은 RP 와 무관하게 uid 하나로 묶이므로(cia.js §2.1) "같은 계정의 두 세션" 의도는 그대로 유지된다.
+const stack = await startIsolatedMode3Stack({ rpEnv: { MODE3_CHALLENGE_TTL_MS: '12000' }, extraRps: [{ env: { MODE3_CHALLENGE_TTL_MS: '12000' } }] });
 const { cia, wallet, rp } = stack;
+const rp2 = stack.rps[1];
 const uid = '12345';
 
 /** 브라우저의 RP 페이지가 하는 일을 그대로: rp_info → r_s → 지갑 login → RP login. 세션 r_s 를 돌려준다.
  *  V10(2026-10-02 Task 9): RP·지갑 모두 거울을 기준으로 한다. 격리 IdP 는 거울 릴레이 주기가 꺼져 있으므로, 지갑 로그인 동안
- *  (새 자격증명이면 거울이 내 리프를 실을 때까지 기다린다) 거울이 뒤처지면 릴레이를 대신 눌러 준다(stack.withRelay). */
-async function loginViaRp(allowAgent = '0') {
-  const info = (await rp.get('/api/mode3/rp_info')).body;
-  const { r_s, r_rp, factoryAddress, attrGateAddress } = (await rp.post('/api/mode3/challenge')).body;
-  const w = await stack.withRelay(() => wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s, r_rp, allowAgent, factoryAddress, attrGateAddress }, { Origin: rp.origin }));
+ *  (새 자격증명이면 거울이 내 리프를 실을 때까지 기다린다) 거울이 뒤처지면 릴레이를 대신 눌러 준다(stack.withRelay).
+ *  targetRp(기본 rp): V8·각본13 이 같은 계정의 두 번째 세션을 rp2 로 받을 때만 넘긴다. */
+async function loginViaRp(allowAgent = '0', targetRp = rp) {
+  const info = (await targetRp.get('/api/mode3/rp_info')).body;
+  const { r_s, r_rp, factoryAddress, attrGateAddress } = (await targetRp.post('/api/mode3/challenge')).body;
+  const w = await stack.withRelay(() => wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s, r_rp, allowAgent, factoryAddress, attrGateAddress }, { Origin: targetRp.origin }));
   if (w.status !== 200) return { walletStatus: w.status, wallet: w.body, r_s, r_rp };
-  const r = await rp.post('/api/mode3/login', { proof: w.body.proof, publicSignals: w.body.publicSignals, sig: w.body.sig, r_s });
+  const r = await targetRp.post('/api/mode3/login', { proof: w.body.proof, publicSignals: w.body.publicSignals, sig: w.body.sig, r_s });
   return { walletStatus: 200, wallet: w.body, rpStatus: r.status, rp: r.body, r_s, r_rp, factoryAddress, attrGateAddress };
 }
-/** 세션 재검증: 지갑이 같은 성명으로 (root 가 바뀌었으면 새) π 를 만들어 RP 에 낸다. */
-async function revalidateViaRp(r_s, { skipSync = false } = {}) {
+/** 세션 재검증: 지갑이 같은 성명으로 (root 가 바뀌었으면 새) π 를 만들어 RP 에 낸다. targetRp: 위와 같은 이유. */
+async function revalidateViaRp(r_s, { skipSync = false } = {}, targetRp = rp) {
   await stack.relayIfBehind();   // V10: 앞선 폐기·게시를 거울(RP 가 읽는 곳)에 실어 둔다 — 기존 각본은 "게시 = RP 가 본다" 를 전제한다
-  const w = await wallet.post('/wallet/revalidate', { r_s, skipSync }, { Origin: rp.origin });
+  const w = await wallet.post('/wallet/revalidate', { r_s, skipSync }, { Origin: targetRp.origin });
   if (w.status !== 200) return { walletStatus: w.status, wallet: w.body };
-  const r = await rp.post('/api/mode3/revalidate', { proof: w.body.proof, publicSignals: w.body.publicSignals, sig: w.body.sig, r_s });
+  const r = await targetRp.post('/api/mode3/revalidate', { proof: w.body.proof, publicSignals: w.body.publicSignals, sig: w.body.sig, r_s });
   return { walletStatus: 200, wallet: w.body, rpStatus: r.status, rp: r.body };
 }
 
@@ -247,12 +252,16 @@ try {
   });
 
   await t('4. 계정 폐기 + 게시', async () => {
-    // session_mismatch 에서 alice 의 /cia/issue(새 C_u, 즉시 게시, V11)가 등록부 root 를 한 번 바꿔 놓았고, 그 뒤
-    // "같은 r_s 로 /wallet/login 두 번" 로그인이 지갑의 lastSync 를 그 새 root 로 갱신해 뒀다 — 그런데 S1 의 캐시 π 는
-    // 아직 더 옛 root 것이다. 아래 5 의 skipSync 전제("폐기 직전까지는 유효했다")가 성립하려면 S1 을 지금 root 로
-    // 한 번 다시 증명해 캐시를 채워 둬야 한다(그래야 폐기 뒤에야 비로소 낡아진다).
-    const warm = await revalidateViaRp(S1);
+    // 2026-10-21 "PPID 당 세션 1개" 정책(mode3_rp.js) 이후: 3''·session_mismatch 의 재로그인들이 이미 RP 세션맵에서
+    // S1 을 지웠다(여기서 그 사실을 먼저 확인한다) — 아래 5 의 skipSync 전제("폐기 직전까지는 유효했다")가 성립하려면
+    // 폐기 직전에 새로 로그인해 그 세션을 S1 으로 삼는다(지갑 캐시 π 도 이 로그인으로 지금 root 에 맞춰진다).
+    const stale = await revalidateViaRp(S1);
+    assert.equal(stale.walletStatus, 200, j(stale));
+    assert.equal(stale.rp.ok, false); assert.equal(stale.rp.reason, 'no_session', j(stale.rp));
+    const warm = await loginViaRp();
     assert.equal(warm.walletStatus, 200, j(warm));
+    assert.equal(warm.rp.ok, true, j(warm.rp)); assert.equal(warm.rp.PPID, PPID1, j(warm.rp));
+    S1 = warm.r_s;
     const rv = await cia.adminPost('/cia/revoke', { uid, scope: 'account' });
     assert.equal(rv.status, 200, j(rv.body));
     // V9: 계정 폐기가 활성 자격증명을 물려 슬롯을 0 으로 비우고 그 자리에서 즉시 게시한다(cia.js revokeAccount) —
@@ -538,11 +547,15 @@ try {
 
   // V8 세션 폐기(설계 2026-09-24). 계정이 살아 있고(바로 위 4″ 가 복구해 뒀다) 블록을 크게 진행시키는 케이스
   // (맨 끝의 Ruling 1)보다 앞인 이 자리에 둔다 — 앞 케이스들의 세션이 만료되면 폐기가 409 expired 로 막힌다.
-  await t('V8 세션 폐기: 세션 둘 → 하나만 폐기(지갑 버튼 경로) → 게시 → 그 세션은 더 못 쓰고 다른 세션·재로그인은 정상; 관리자 폐기는 revoked_session', async () => {
+  // 2026-10-21 "PPID 당 세션 1개" 정책(mode3_rp.js) 이후: s2 도 같은 RP(=같은 PPID)로 로그인하면 RP 가 s1 을 즉시
+  // 세션맵에서 지운다 — 그러면 아래 "폐기 전 양성 대조"가 폐기와 무관하게 no_session 으로 거짓 실패한다. s2 는 같은
+  // 계정의 두 번째 RP(rp2, 다른 PPID)로 로그인해 s1 을 살려 둔다(세션 폐기·IdP 세션 기록은 uid 로만 묶이므로 "같은
+  // 계정의 두 세션" 의도는 그대로다).
+  await t('V8 세션 폐기: 세션 둘(같은 계정, 두 RP) → 하나만 폐기(지갑 버튼 경로) → 게시 → 그 세션은 더 못 쓰고 다른 세션·재로그인은 정상; 관리자 폐기는 revoked_session', async () => {
     const s1 = await loginViaRp();
     // s2 의 Cf_s 를 뒤에서 직접 집으려고 로그인 직전 기록을 찍어 둔다 — 목록 순서·만료 정리에 기대지 않는다(최종 리뷰 F6).
     const before = new Set((await cia.adminGet(`/cia/admin/sessions?uid=${uid}`)).body.sessions.map((x) => x.Cf_s));
-    const s2 = await loginViaRp();
+    const s2 = await loginViaRp('0', rp2);
     const cf2 = (await cia.adminGet(`/cia/admin/sessions?uid=${uid}`)).body.sessions.map((x) => x.Cf_s).find((c) => !before.has(c));
     assert.ok(cf2, 's2 의 세션 기록이 있어야 한다');
     assert.equal(s1.rp?.ok, true, j(s1)); assert.equal(s2.rp?.ok, true, j(s2));
@@ -567,14 +580,14 @@ try {
     assert.equal(rv1.status, 404, j(rv1.body)); assert.equal(rv1.body.reason, 'no_session');
 
     // s2 는 그대로 산다 — 사용자 자격증명은 폐기되지 않았다.
-    const rv2 = await revalidateViaRp(s2.r_s);
+    const rv2 = await revalidateViaRp(s2.r_s, {}, rp2);
     assert.equal(rv2.walletStatus, 200, j(rv2));
     assert.equal(rv2.rp.ok, true, j(rv2.rp));
 
     // 관리자 경로: 지갑 밖에서 s2 를 폐기하면 지갑은 그 세션만 403 revoked_session 으로 버린다.
     assert.equal((await cia.adminPost('/cia/revoke', { uid, scope: 'session', Cf_s: cf2 })).status, 200);
     assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
-    const rv2b = await revalidateViaRp(s2.r_s);
+    const rv2b = await revalidateViaRp(s2.r_s, {}, rp2);
     assert.equal(rv2b.walletStatus, 403, j(rv2b)); assert.equal(rv2b.wallet.reason, 'revoked_session');
 
     // 계정은 살아 있다 — 새 로그인은 같은 PPID 로 정상이다(계정 폐기(4·6)와 달리 account_disabled 가 아니다).
@@ -664,10 +677,12 @@ try {
   // 거울 기준으로 옛 π 가 그대로 통한다(지연 창 = 릴레이 주기). 릴레이가 거울을 올리는 순간 옛 서명은 revalidate_required 가
   // 되고, 살아 있는 세션은 새 π 로 재검증되며, 폐기된 세션은 지갑이 revoked_session 으로 버린다.
   // 주의: revalidateViaRp 는 거울을 먼저 맞추므로(relayIfBehind) 지연 창 안에서는 쓰지 않고 지갑·RP 를 직접 부른다.
+  // 2026-10-21 "PPID 당 세션 1개" 정책 이후: sB 도 sA 와 같은 RP 로 로그인하면 RP 가 sA 를 즉시 지워, 뒤의 지연 창
+  // 단언(sA 가 아직 통한다)이 폐기와 무관하게 깨진다. sB 는 같은 계정의 두 번째 RP(rp2)로 로그인해 sA 를 살려 둔다.
   await t('각본 13(V10): 거울 지연 — 세션 폐기 게시 후 릴레이 전엔 캐시 π 로 재승인 ok, POST /cia/admin/relay 뒤엔 revalidate_required → 새 π, 폐기된 세션은 revoked_session', async () => {
     const sA = await loginViaRp();
     const before = new Set((await cia.adminGet(`/cia/admin/sessions?uid=${uid}`)).body.sessions.map((x) => x.Cf_s));
-    const sB = await loginViaRp();
+    const sB = await loginViaRp('0', rp2);
     const cfB = (await cia.adminGet(`/cia/admin/sessions?uid=${uid}`)).body.sessions.map((x) => x.Cf_s).find((c) => !before.has(c));
     assert.equal(sA.rp?.ok, true, j(sA)); assert.equal(sB.rp?.ok, true, j(sB)); assert.ok(cfB, 'sB 의 세션 기록이 있어야 한다');
     await stack.relayIfBehind();
@@ -700,7 +715,7 @@ try {
     assert.equal(fresh.walletStatus, 200, j(fresh)); assert.equal(fresh.wallet.cacheHit, false, j(fresh.wallet));
     assert.equal(fresh.rp.ok, true, j(fresh.rp));
     // 폐기된 세션은 지갑이 버린다.
-    const dead = await revalidateViaRp(sB.r_s);
+    const dead = await revalidateViaRp(sB.r_s, {}, rp2);
     assert.equal(dead.walletStatus, 403, j(dead)); assert.equal(dead.wallet.reason, 'revoked_session');
   });
 

@@ -35,13 +35,19 @@ console.log(`# 폐기 체인 ${node.url} (${node.started ? '이 테스트가 띄
 let stack = null;
 try {
   // 챌린지 TTL 12초 — 새 자격증명 로그인은 거울이 내 리프를 실을 때까지 기다리므로(test_mode3_demo_stack.mjs 와 같은 이유) 넉넉히.
+  // exchange2: "막 5. 세션 폐기" 전용 — RP(mode3_rp.js, 2026-10-21)가 같은 PPID 의 이전 세션을 새 로그인으로 대체하는
+  // 정책이라, 같은 계정의 두 세션(XA·XB)을 동시에 살려 두려면 RP(=PPID)가 달라야 한다. 세션 폐기(Cf_s)·IdP 세션 기록은
+  // RP 와 무관하게 uid 하나로 묶이므로(cia.js §2.1) "같은 계정의 두 세션" 의도는 그대로 유지된다. 정책 자체는 고치지 않는다.
   stack = await startIsolatedMode3Stack({
     twoChains: true, revRpcUrl: node.url,
     rpEnv: { MODE3_CHALLENGE_TTL_MS: '12000' },
-    extraRps: [{ name: 'demo-exchange', env: { MODE3_ALLOWED_COUNTRIES: 'KR,JP', MODE3_MIN_AGE: '19', MODE3_CHALLENGE_TTL_MS: '12000' } }],
+    extraRps: [
+      { name: 'demo-exchange', env: { MODE3_ALLOWED_COUNTRIES: 'KR,JP', MODE3_MIN_AGE: '19', MODE3_CHALLENGE_TTL_MS: '12000' } },
+      { name: 'demo-exchange-2', env: { MODE3_ALLOWED_COUNTRIES: 'KR,JP', MODE3_MIN_AGE: '19', MODE3_CHALLENGE_TTL_MS: '12000' } },
+    ],
   });
   const { cia, wallet } = stack;
-  const [general, exchange] = stack.rps;
+  const [general, exchange, exchange2] = stack.rps;
   const revP = cia.revProvider, appP = cia.appProvider;
   const canon = new ethers.Contract(cia.logAddress, MODE3_LOG_ABI, revP);
   const mirror = new ethers.Contract(cia.mirrorAddress, MODE3_MIRROR_ABI, appP);
@@ -227,20 +233,23 @@ try {
     assert.equal((await wallet.get('/wallet/status')).body.demoOverride, null);
   });
 
-  await t('막 5. 세션 폐기(세션 트리) — 거래소 세션 둘(지갑 버튼·관리자) 폐기 → 게시 전엔 대기(pending) → 게시·중계 뒤 두 세션은 revalidate_required, 일반 RP 세션은 재검증 후 계속', async () => {
+  // 2026-10-21 "PPID 당 세션 1개" 정책(mode3_rp.js) 이후: XB 를 XA 와 같은 거래소로 로그인시키면 RP 가 XA 를 즉시
+  // 지워, 아래 "폐기 전에는 통과" 양성 대조가 폐기와 무관하게 깨진다. XB 는 같은 계정의 두 번째 거래소 인스턴스
+  // (exchange2, 다른 PPID)로 로그인해 XA 를 살려 둔다.
+  await t('막 5. 세션 폐기(세션 트리) — 거래소 세션 둘(같은 계정, 두 거래소 인스턴스: 지갑 버튼·관리자) 폐기 → 게시 전엔 대기(pending) → 게시·중계 뒤 두 세션은 revalidate_required, 일반 RP 세션은 재검증 후 계속', async () => {
     await stack.relayIfBehind();
     const G = await loginViaRp(general);
     let before = await sessionCfs();
     const XA = await loginViaRp(exchange, { pred: true });
     const cfA = await newCf(before);
     before = await sessionCfs();
-    const XB = await loginViaRp(exchange, { pred: true });
+    const XB = await loginViaRp(exchange2, { pred: true });
     const cfB = await newCf(before);
     for (const s of [G, XA, XB]) assert.equal(s.rp?.ok, true, j(s));
     assert.ok(cfA && cfB, '두 거래소 세션의 Cf_s');
     await stack.relayIfBehind();
-    const qG = await signRequest(general, G.r_s, 'g'), qA = await signRequest(exchange, XA.r_s, 'withdraw'), qB = await signRequest(exchange, XB.r_s, 'withdraw');
-    for (const [rp, q] of [[general, qG], [exchange, qA], [exchange, qB]]) assert.equal((await sendRequest(rp, q)).body.ok, true, '폐기 전에는 통과');
+    const qG = await signRequest(general, G.r_s, 'g'), qA = await signRequest(exchange, XA.r_s, 'withdraw'), qB = await signRequest(exchange2, XB.r_s, 'withdraw');
+    for (const [rp, q] of [[general, qG], [exchange, qA], [exchange2, qB]]) assert.equal((await sendRequest(rp, q)).body.ok, true, '폐기 전에는 통과');
 
     const epoch0 = await canon.epoch();
     // XA: 지갑의 세션 폐기 버튼(사용자 서명). AA 가 받아들이면 다음 게시까지 대기열(pending)에 묶인다.
@@ -267,13 +276,13 @@ try {
     // 거울은 항목 해시만 받는다 — 세션 리프 값은 캐노니컬 게시 calldata(양성 대조)에만 있고 거울 게시 calldata 에는 없다.
     for (const [cf, bound] of [[cfA, rv.body.bound], [cfB, ra.body.bound]]) await assertLeafOnlyOnCanonical(last.transactionHash, rootHex(await sessionLeaf(BigInt(cf), BigInt(bound))));
 
-    for (const q of [qA, qB]) {
-      const r = await sendRequest(exchange, q);
+    for (const [rp, q] of [[exchange, qA], [exchange2, qB]]) {
+      const r = await sendRequest(rp, q);
       assert.equal(r.status, 401, j(r.body)); assert.equal(r.body.reason, 'revalidate_required', j(r.body));
     }
     const wa = await wallet.post('/wallet/revalidate', { r_s: XA.r_s }, { Origin: exchange.origin });
     assert.equal(wa.status, 404, j(wa.body)); assert.equal(wa.body.reason, 'no_session');   // 지갑 버튼 경로는 지갑이 이미 버렸다
-    const wb = await revalidateViaRp(exchange, XB.r_s);
+    const wb = await revalidateViaRp(exchange2, XB.r_s);
     assert.equal(wb.walletStatus, 403, j(wb)); assert.equal(wb.wallet.reason, 'revoked_session');
     // 일반 RP 세션: 옛 서명은 root 가 바뀌어 재검증을 요구하지만, 재검증하면 그대로 산다(사용자 자격증명은 살아 있다).
     const rG = await revalidateViaRp(general, G.r_s);
