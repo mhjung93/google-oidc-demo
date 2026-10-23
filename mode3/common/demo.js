@@ -196,7 +196,9 @@
         const l = D.stack.last, done = [];
         // 상대 서버에 닿지 못하면 health 판정은 null 이다 — 그때도 페이지가 자기 눈으로 본 사실(progress)이 있으면
         // 그 단계는 done 이다(1차의 판정 근거). 잠금은 이 값을 쓰지 않는다(설계 §3.2 "모르면 잠그지 않는다").
-        if (D.tour.condMet('rp_approved') || progress.approved) done.push('approve');
+        // rp_create(Task 17, 2026-10-23): 생성을 직접 보는 조건은 없다(체험 모드 조건은 그대로) — 승인된 RP 가
+        // 있으면 그 전에 반드시 만들어졌으므로 같은 신호로 둘 다 done 처리한다.
+        if (D.tour.condMet('rp_approved') || progress.approved) done.push('rp_create', 'approve');
         if (D.tour.condMet('wallet_registered') || progress.registered) done.push('register');
         if (D.tour.condMet('has_session') || progress.login) done.push('login');
         if (progress.login2 || D.tour.condMet('two_rps')) done.push('login2');

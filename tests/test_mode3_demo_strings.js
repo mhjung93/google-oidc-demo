@@ -38,8 +38,9 @@ const REASONS = ['stale_root', 'stale_registry_root', 'root_too_old', 'revalidat
 
 t('langs 는 ko, en', () => assert.deepEqual(S.langs, ['ko', 'en']));
 // U6(2026-10-14): login2(두 번째 RP 로그인, unlinkability 시연) 추가 — login 과 use 사이, 7단계→8단계.
-t('steps 는 8개, 키 고유, 순서 approve→register→login→login2→use→disclose→revoke→open, 각 언어에 title·hint', () => {
-  assert.deepEqual(S.steps.map((s) => s.key), ['approve', 'register', 'login', 'login2', 'use', 'disclose', 'revoke', 'open']);
+// Task 17(B8, 2026-10-23): rp_create(RP 운영자가 IdP 에서 RP 를 만드는 단계) 추가 — approve 앞, 8단계→9단계.
+t('steps 는 9개, 키 고유, 순서 rp_create→approve→register→login→login2→use→disclose→revoke→open, 각 언어에 title·hint', () => {
+  assert.deepEqual(S.steps.map((s) => s.key), ['rp_create', 'approve', 'register', 'login', 'login2', 'use', 'disclose', 'revoke', 'open']);
   for (const s of S.steps) for (const l of S.langs) { assert.ok(s[l]?.title, `${s.key}.${l}.title`); assert.ok(s[l]?.hint, `${s.key}.${l}.hint`); }
   for (const s of S.steps) assert.ok(Array.isArray(s.where) && s.where.length > 0, `${s.key}.where`);
 });
@@ -69,7 +70,9 @@ t('ui 에 거울 상태 줄 키가 있다', () => {
   for (const k of ['admin_mirror_line', 'admin_mirror_unreadable', 'rp_mirror_line', 'wallet_mirror_line']) assert.ok(S.ui[k], k);
 });
 // 체험 모드(설계 2026-09-25 §3) — 단계마다 말풍선 문구와 대상 요소 id, 그리고 스위치·잠금·완료 문구.
-const TOUR_PAGES = ['rp', 'rp_admin', 'wallet', 'admin', 'account'];   // rp_admin: RP 관리자 페이지(2026-10-16, 승인 개봉 이동)
+// Task 17(B8, 2026-10-23): account(/account, 302→/user) 제거, idp_user(/user)·idp_rp(/rp, IdP 의 RP 운영자 페이지) 추가.
+// rp_admin: RP 관리자 페이지(2026-10-16, 승인 개봉 이동).
+const TOUR_PAGES = ['rp', 'rp_admin', 'wallet', 'admin', 'idp_user', 'idp_rp'];
 t('steps 에 체험 모드 말풍선 문구(tour)와 대상 요소(target)가 있다', () => {
   for (const s of S.steps) {
     for (const l of S.langs) { assert.ok(s.tour?.[l]?.title, `${s.key}.tour.${l}.title`); assert.ok(s.tour?.[l]?.body, `${s.key}.tour.${l}.body`); }

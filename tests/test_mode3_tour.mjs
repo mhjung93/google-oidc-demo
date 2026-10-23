@@ -1,9 +1,12 @@
 // Mode 3 체험 모드(Demo.tour) + 상태 점(Demo.stack) 의 브라우저 경로 — 설계 2026-09-25-mode3-demo-ux-phase2 §4.
 // 격리 스택(file 모드)을 임시 포트로 띄우고 실제 Chrome 으로 서비스·지갑 페이지를 함께 연다. 보는 것은 네 가지다.
 //   (a) 서비스를 ?tour=1 로 열면 지갑이 등록 전이라 로그인 버튼이 잠기고 사유 배지가 붙는다(쿼리는 주소창에서 지워진다)
-//   (b) 지갑에서 등록하면 다음 폴링에 서비스 잠금이 풀리고 말풍선이 3단계(로그인)를 가리킨다
-//   (c) 로그인에 성공하면 말풍선이 4단계(이용·재검증)로 옮겨 가고 상태 점이 초록이 된다
+//   (b) 지갑에서 등록하면 다음 폴링에 서비스 잠금이 풀리고 말풍선이 4단계(로그인)를 가리킨다
+//   (c) 로그인에 성공하면 말풍선이 5단계(이용·재검증)로 옮겨 가고 상태 점이 초록이 된다
 //   (d) 신원 기관(CIA) 프로세스를 내리면 신원 기관 점이 빨강, 지갑 점이 노랑(신원 기관에 못 닿음)이 된다
+// Task 17(B8, 2026-10-23): rp_create(1단계, idp_rp 의 #rpCreateBtn)·register(3단계, idp_user 의 #registerBtn 로 이동)는
+// 이 각본이 직접 누르지 않는다 — 격리 스택이 RP 생성·승인을 미리 해 두고(startIsolatedMode3Stack), 등록은 file 모드인
+// wallet.html 자신의 #registerBtn 으로 한다(둘 다 서버 사실로 done 판정되므로 어느 UI 로 했는지는 상관없다).
 // hardhat :8545 와 build/mode3 의 pi_cred zkey·vkey, 그리고 Chrome(또는 Chromium)이 필요하다. (browser 그룹)
 //   node tests/test_mode3_tour.mjs
 //   MODE3_BROWSER_DEBUG=1 로 브라우저 콘솔·페이지 오류를 그대로 흘려 본다.
@@ -87,7 +90,7 @@ try {
   await t('지갑에서 등록하면 서비스 잠금이 풀리고 말풍선이 로그인 버튼을 가리킨다', async () => {
     await walletPage.goto(`${wallet.base}/?tour=1`);
     await walletPage.waitForSelector('#mainView:not([hidden])', { timeout: 30_000 });
-    // 서비스는 격리 헬퍼가 이미 승인해 두었으므로 2단계(등록)는 잠기지 않는다.
+    // 서비스는 격리 헬퍼가 이미 승인해 두었으므로 3단계(등록)는 잠기지 않는다.
     await walletPage.waitForFunction(() => document.querySelector('#registerBtn') && !document.querySelector('#registerBtn').disabled, undefined, { timeout: 30_000 });
     assert.equal((await walletPage.$('.tour-lock')) === null, true, '승인된 서비스가 있으면 등록 버튼은 잠기지 않는다');
     await walletPage.click('#registerBtn');
@@ -99,10 +102,10 @@ try {
     await rpPage.waitForFunction(() => (document.querySelector('.tour-bubble')?.textContent ?? '').includes('로그인'), undefined, { timeout: 30_000 });
   });
 
-  // U6(2026-10-14): login2(두 번째 RP 로그인, unlinkability 시연)가 3단계(로그인) 뒤에 끼었다. 이 격리 스택은 RP 가
+  // U6(2026-10-14): login2(두 번째 RP 로그인, unlinkability 시연)가 4단계(로그인) 뒤에 끼었다. 이 격리 스택은 RP 가
   // 하나뿐이라(startIsolatedMode3Stack 기본값) login2 는 절대 끝낼 수 없다 — 말풍선 대신 "다른 창에서" 카드로 뜨고
   // (두 번째 RP 를 모르니 링크 없이 문구만), 그 뒤 단계(이용 등)의 완료 여부 자체는 막지 않는다(상태 점은 독립 판정).
-  await t('로그인 뒤 카드가 4단계(두 번째 RP 로그인)로 옮겨 가 "다른 창에서"로 뜨고 상태 점 셋 이상이 초록', async () => {
+  await t('로그인 뒤 카드가 5단계(두 번째 RP 로그인)로 옮겨 가 "다른 창에서"로 뜨고 상태 점 셋 이상이 초록', async () => {
     await idpLogin(rpPage);
     await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
     await rpPage.waitForFunction(() => (document.querySelector('#tourCard')?.textContent ?? '').includes('두 번째'), undefined, { timeout: 30_000 });
