@@ -9,8 +9,9 @@
 #        DEMO_LOG_DIR=~/mode3-logs bash scripts/demo_web_reset.sh   # 로그 위치(기본 /tmp/mode3-demo)
 #        HEIGHT_GRID=100 bash scripts/demo_web_reset.sh  # 만료(max_height) 올림 단위(기본 5 — 데모에서 로그인마다 값이 달라지는 걸 보이려고. 코드 기본은 100, 2026-10-21)
 #        ADMIN_OPEN=0 bash scripts/demo_web_reset.sh  # IdP 관리자 인증을 켠 채로 띄운다(기본은 끔 — CIA_ADMIN_OPEN=1, 데모 전용, 2026-10-21)
-#        ISSUE_AUTH=key bash scripts/demo_web_reset.sh  # 발급 인증 정책(기본 CIA_ISSUE_AUTH=code — zkONE 등 로그인 때 지갑 팝업이 연 IdP 인증 창(uid·비밀번호·auid)의
-#                                                        # 1회용 코드가 있어야 발급한다, 2026-10-22). key 면 옛 방식(서명만, 인증 창 없이 발급) — CIA_DEMO_ACCOUNTS 는 그대로 미설정(가입(POST /cia/signup)만 쓴다)
+#        ISSUE_AUTH=code bash scripts/demo_web_reset.sh  # 발급 인증 정책(기본은 WALLET_MODE 에 따른다 — snap 은 CIA_ISSUE_AUTH=code, web 은 key, 2026-10-23: web 코어는
+#                                                         # auth_code 를 보내지 않으므로 code 로 켜면 로그인이 막힌다). code 면 zkONE 등 로그인 때 지갑 팝업이 연 IdP 인증 창(uid·비밀번호·auid)의
+#                                                         # 1회용 코드가 있어야 발급한다(2026-10-22). key 면 옛 방식(서명만, 인증 창 없이 발급) — CIA_DEMO_ACCOUNTS 는 그대로 미설정(가입(POST /cia/signup)만 쓴다)
 #        WALLET_MODE=snap bash scripts/demo_web_reset.sh   # Snap 모드(2026-10-22): 지갑 자리에 mode3_user_static.js 대신 에이전트(mode3_wallet_agent.js, MODE3_WALLET_SECRETS=snap)와
 #                                                          Snap 서버(snap-mode3, :8082)를 띄운다. 브라우저에는 MetaMask Flask 가 필요하다. scripts/demo_snap_reset.sh 가 이 값을 넣어 부른다.
 #        TWO_CHAINS=1 bash scripts/demo_web_reset.sh   # 폐기 체인 분리(V10): 캐노니컬 로그는 :8546(chainId 31338), 거울·팩토리·계정은 :8545
@@ -37,8 +38,9 @@ pkill -f '[.]bin/mm-snap serve$' 2>/dev/null               # Snap 서버(:8082, 
 sleep 2
 for port in 4100 5100 3100 3101 8545 8546 8082; do ss -ltn | grep -q ":$port " && echo "WARN :$port 가 아직 쓰이고 있다(다른 프로세스?) — 계속 진행"; done
 
-# 1. 상태 파일 백업(새 체인과 맞지 않는 옛 상태)
-for f in cia_state.json mode3_wallet_state.json mode3_wallet_rcl.json mode3_rp_logins.jsonl mode3_rp_registration.json mode3_rp2_registration.json mode3_rp2_logins.jsonl; do
+# 1. 상태 파일 백업(새 체인과 맞지 않는 옛 상태) — mode3_rp_*_registration.json/_logins.jsonl 은 scripts/new_rp.sh 가 만든 추가 RP 들의
+#    등록·로그인 로그다(없으면 글롭이 그대로 남지만 [ -e ] 가 걸러 조용히 건너뛴다, 2026-10-23)
+for f in cia_state.json mode3_wallet_state.json mode3_wallet_rcl.json mode3_rp_logins.jsonl mode3_rp_registration.json mode3_rp2_registration.json mode3_rp2_logins.jsonl mode3_rp_*_registration.json mode3_rp_*_logins.jsonl; do
   [ -e "$f" ] && mv "$f" "$f.bak-$TS" && echo "backup $f -> $f.bak-$TS"
 done
 
@@ -74,7 +76,7 @@ cat "$LOGS/demo_env.txt"
 set -a; . "$LOGS/demo_env.txt"; set +a
 
 # 5. 공통 env(오리진 localhost 통일)
-export CIA_ADMIN_SECRET="${CIA_ADMIN_SECRET:-admin123}" CIA_ADMIN_OPEN="${ADMIN_OPEN:-1}" CIA_ISSUE_AUTH="${ISSUE_AUTH:-code}" CIA_CHAIN_RPCS="31337=http://127.0.0.1:8545" MODE3_VERIFIER_ADDRESS="" MODE3_RP_FACTORY_ADDRESS=""
+export CIA_ADMIN_SECRET="${CIA_ADMIN_SECRET:-admin123}" CIA_ADMIN_OPEN="${ADMIN_OPEN:-1}" CIA_ISSUE_AUTH="${ISSUE_AUTH:-$([ "$WALLET_MODE" = snap ] && echo code || echo key)}" CIA_CHAIN_RPCS="31337=http://127.0.0.1:8545" MODE3_VERIFIER_ADDRESS="" MODE3_RP_FACTORY_ADDRESS=""
 export MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}"
 export MODE3_WALLET_AGENT_ORIGIN="http://localhost:5100" MODE3_WALLET_PUBLIC_ORIGIN="http://localhost:5100" MODE3_RP_ORIGIN="http://localhost:3100,http://localhost:3101" MODE3_CIA_URL="http://localhost:4100"
 

@@ -28,7 +28,9 @@ mode3_wallet_rcl.json
 mode3_rp_registration.json
 mode3_rp_logins.jsonl
 # scripts/new_rp.sh 가 만드는 추가 RP 들의 등록·로그인 로그(mode3_rp_<name>_registration.json 등, 2026-10-23)
-mode3_rp_*
+# mode3_rp_* 는 lib/mode3_rp_cert.js 같은 .js 소스까지 가려서 mode3_rp*_registration*.json / mode3_rp*_logins.jsonl 로 좁힌다(2026-10-23)
+mode3_rp*_registration*.json
+mode3_rp*_logins.jsonl
 # 데모 리셋 스크립트가 .bak-시각 으로 옮겨 두는 옛 상태 파일 백업
 *.bak-*
 

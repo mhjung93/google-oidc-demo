@@ -5,13 +5,13 @@
 #
 # 사용:
 #   bash scripts/new_rp.sh NAME PORT KEY [--host IP] [--relayer N] [--countries 410,392] [--min-age 19] [--require-disclosure]
-#   bash scripts/new_rp.sh NAME PORT KEY [--host IP] --stop
+#   bash scripts/new_rp.sh NAME PORT [KEY] [--host IP] --stop
 #   bash scripts/new_rp.sh --help
 #
 #   NAME   RP 이름, zk 로 시작하는 영숫자(최대 16자) — 예: zkTHREE
 #   PORT   RP 가 들을 포트(로컬) 또는 --host 쪽 RP VM 의 공개 포트
-#   KEY    IdP RP 페이지 "새 RP 만들기" 가 준 1회용 RP 키. MODE3_RP_KEY 로만 전달한다 — 이 스크립트가 만드는
-#          어떤 파일에도 쓰지 않고, 로그·표준출력에도 찍지 않는다.
+#   KEY    IdP RP 페이지 "새 RP 만들기" 가 준 1회용 RP 키(64자 16진수). MODE3_RP_KEY 로만 전달한다 — 이 스크립트가
+#          만드는 어떤 파일에도 쓰지 않고, 로그·표준출력에도 찍지 않는다. --stop 일 때는 생략할 수 있다.
 #
 # 옵션:
 #   --host IP              로컬이 아니라 이 IP 의 RP VM(SPLIT_SSH_USER, 기본 zkd)에 ssh 로 띄운다(분리 데모)
@@ -19,7 +19,10 @@
 #   --countries C1,C2,...   MODE3_ALLOWED_COUNTRIES(숫자 국가코드 CSV, 예: 410,392)
 #   --min-age N             MODE3_MIN_AGE
 #   --require-disclosure    MODE3_REQUIRE_DISCLOSURE=1(국가·나이 술어 공개 요구)
-#   --stop                  이 NAME/PORT 의 RP 서버만 내린다(다른 포트·프로세스는 건드리지 않음). KEY 는 그대로 받되 쓰지 않는다
+#   --stop                  이 NAME/PORT 의 RP 서버만 내린다(다른 포트·프로세스는 건드리지 않음). KEY 는 생략하거나
+#                           (주더라도) 쓰지 않는다
+#
+# 기동 전에는 그 PORT 가 이미 쓰이고 있는지 먼저 본다(로컬은 ss, --host 는 ssh 로 그 VM 의 ss) — 선점이면 바로 실패한다.
 #
 # 전제(로컬): demo_web_reset.sh 또는 demo_snap_reset.sh 로 데모가 떠 있어야 한다($DEMO_LOG_DIR/demo_env.txt 필요, 기본 /tmp/mode3-demo).
 # 전제(--host): 그 VM 의 ~/zkd-demo 에 role.env(rp1 의 것)와 코드·node_modules·Node 실행 파일이 있어야 한다(demo_split_start.sh SYNC=1 참고).
@@ -31,12 +34,13 @@ cd "$(dirname "$0")/.."
 usage() {
   cat <<'EOF'
 사용: bash scripts/new_rp.sh NAME PORT KEY [--host IP] [--relayer N] [--countries 410,392] [--min-age 19] [--require-disclosure]
-      bash scripts/new_rp.sh NAME PORT KEY [--host IP] --stop
+      bash scripts/new_rp.sh NAME PORT [KEY] [--host IP] --stop
       bash scripts/new_rp.sh --help
 
   NAME   RP 이름, zk 로 시작하는 영숫자(최대 16자) — 예: zkTHREE
   PORT   RP 가 들을 포트(로컬) 또는 --host 쪽 RP VM 의 공개 포트
-  KEY    IdP RP 페이지 "새 RP 만들기" 가 준 1회용 RP 키(MODE3_RP_KEY 로만 전달 — 파일에 쓰지 않고 출력하지 않는다)
+  KEY    IdP RP 페이지 "새 RP 만들기" 가 준 1회용 RP 키, 64자 16진수(MODE3_RP_KEY 로만 전달 — 파일에 쓰지 않고
+         출력하지 않는다). --stop 일 때는 생략할 수 있다
 
 옵션:
   --host IP              이 IP 의 RP VM(SPLIT_SSH_USER, 기본 zkd)에 ssh 로 띄운다(분리 데모). 없으면 로컬(한 머신 데모)
@@ -44,7 +48,9 @@ usage() {
   --countries C1,C2,...  MODE3_ALLOWED_COUNTRIES(숫자 국가코드 CSV)
   --min-age N            MODE3_MIN_AGE
   --require-disclosure   MODE3_REQUIRE_DISCLOSURE=1
-  --stop                 이 NAME/PORT 의 RP 서버만 내린다
+  --stop                 이 NAME/PORT 의 RP 서버만 내린다. KEY 는 생략하거나(주더라도) 쓰지 않는다
+
+기동 전에 그 PORT 가 이미 쓰이고 있으면(로컬은 ss, --host 는 ssh 로 그 VM 의 ss) 바로 실패한다.
 
 전제(로컬): demo_web_reset.sh / demo_snap_reset.sh 로 데모가 떠 있어야 한다($DEMO_LOG_DIR/demo_env.txt, 기본 /tmp/mode3-demo).
 전제(--host): 그 VM 의 ~/zkd-demo 에 role.env 와 코드·Node 실행 파일이 있어야 한다.
@@ -55,7 +61,9 @@ EOF
 
 if [ $# -eq 0 ] || [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then usage; exit 0; fi
 
-NAME="${1:?NAME}"; PORT="${2:?PORT}"; KEY="${3:?KEY}"; shift 3
+NAME="${1:?NAME}"; PORT="${2:?PORT}"; shift 2
+KEY=""
+if [ $# -gt 0 ] && [[ "$1" != --* ]]; then KEY="$1"; shift; fi
 HOST=""; RELAYER=""; COUNTRIES=""; MIN_AGE=""; REQ=""; STOP=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -75,6 +83,8 @@ done
 if [ -n "$RELAYER" ]; then [[ "$RELAYER" =~ ^[0-9]+$ ]] || { echo "--relayer 는 숫자여야 한다: $RELAYER" >&2; exit 1; }; fi
 if [ -n "$MIN_AGE" ]; then [[ "$MIN_AGE" =~ ^[0-9]+$ ]] || { echo "--min-age 는 숫자여야 한다: $MIN_AGE" >&2; exit 1; }; fi
 if [ -n "$COUNTRIES" ]; then [[ "$COUNTRIES" =~ ^[0-9]+(,[0-9]+)*$ ]] || { echo "--countries 는 숫자 CSV 여야 한다(예: 410,392): $COUNTRIES" >&2; exit 1; }; fi
+if [ "$STOP" != 1 ]; then [ -n "$KEY" ] || { echo "KEY 가 필요하다(--stop 이 아니면): bash scripts/new_rp.sh NAME PORT KEY ..." >&2; exit 1; }; fi
+if [ -n "$KEY" ]; then [[ "$KEY" =~ ^[0-9a-f]{64}$ ]] || { echo "KEY 형식이 올바르지 않다(64자 16진수 소문자여야 한다)" >&2; exit 1; }; fi
 
 LOGS="${DEMO_LOG_DIR:-/tmp/mode3-demo}"
 
@@ -90,6 +100,7 @@ if [ -z "$HOST" ]; then
     [ "$FOUND" = 1 ] || echo "$NAME :$PORT 에 떠 있는 mode3_rp.js 가 없다(이미 내려감)"
     exit 0
   fi
+  ss -ltn | grep -q ":$PORT " && { echo "PORT $PORT 가 이미 쓰이고 있다 — 다른 포트를 쓰거나 먼저 --stop 으로 내릴 것" >&2; exit 1; }
   N=$(pgrep -fc '^node mode3_rp\.js$' 2>/dev/null || true); RELAYER="${RELAYER:-$((3 + ${N:-0}))}"
   [ -s "$LOGS/demo_env.txt" ] || { echo "$LOGS/demo_env.txt 가 없다 — 먼저 demo_web_reset.sh / demo_snap_reset.sh 로 데모를 띄울 것" >&2; exit 1; }
   set -a; . "$LOGS/demo_env.txt"; set +a
@@ -112,6 +123,7 @@ else
     ssh -o BatchMode=yes "$U@$HOST" "pid=\$(ss -ltnp 2>/dev/null | grep ':$PORT ' | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u | head -1); if [ -n \"\$pid\" ] && tr '\\0' ' ' < \"/proc/\$pid/cmdline\" 2>/dev/null | grep -q 'mode3_rp\\.js'; then kill \"\$pid\" && echo \"stop $NAME :$PORT (pid \$pid)\"; else echo \"$NAME :$PORT 에 떠 있는 mode3_rp.js 가 없다(이미 내려감)\"; fi"
     exit 0
   fi
+  ssh -o BatchMode=yes "$U@$HOST" "ss -ltn | grep -q ':$PORT '" && { echo "$HOST:$PORT 가 이미 쓰이고 있다 — 다른 포트를 쓰거나 먼저 --stop 으로 내릴 것" >&2; exit 1; }
   RELAYER="${RELAYER:-3}"
   # MODE3_RP_KEY 는 role.env 파생 파일(rp_${NAME}.env)에 쓰지 않는다 — 기동 명령에 env 로 한 번만 얹는다(디스크에 남지 않게).
   KEY_Q=$(printf '%s' "$KEY" | sed "s/'/'\\\\''/g")
