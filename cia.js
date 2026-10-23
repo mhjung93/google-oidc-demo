@@ -511,8 +511,13 @@ app.use('/common', express.static(path.join(__dirname, 'mode3', 'common')));
 // 관리자 패널(스펙 §5). 페이지 하나만 허용 목록으로 내보낸다 — express.static 은 쓰지 않는다.
 app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_admin.html')));
 
-// 사용자 페이지(§6.5.1). 잃어버린 지갑이 아니라 어느 장치에서든 열 수 있어야 하므로 IdP 가 직접 낸다.
-app.get('/account', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_account.html')));
+// IdP 사용자·RP·인증 창 페이지(Task 12, 2026-10-22 B3 — 설계 §3.4). 사용자가 찾아가는 입구는 지갑이 아니라 IdP 자신이다.
+app.get('/user', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_user.html')));
+app.get('/rp', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_rp.html')));
+app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_login.html')));
+// 옛 "내 계정" 입구는 /user 로 옮겼다(기능은 거기 있다) — 기존 링크·북마크가 깨지지 않게 302 로만 돌린다.
+// mode3/cia_account.html 파일 자체는 지우지 않는다(컨트롤러 판정 2026-10-23 — 제거는 최종 정리 때 사용자 결정).
+app.get('/account', (req, res) => res.redirect(302, '/user'));
 
 app.get('/cia/public_keys', userCors, (req, res) => {
   // V10: canonicalChainId = 게시 로그가 있는 체인(selfChainId 와 같은 provider). mirrors = CIA_MIRRORS(릴레이 대상 거울, 2026-10-02 Task 6).
@@ -750,6 +755,20 @@ app.post('/cia/user/register_code', requireUser, (req, res) => {
   const a = state.accounts[req.session.uid];
   if (a.pk_u) return res.status(409).json({ error: 'already registered', reason: 'already_registered' });
   res.json(issueCode({ uid: req.session.uid, purpose: 'register' }));
+});
+// 세션 버전의 자기 폐기(Task 12, B3, `/user` 페이지). 비밀번호는 요청 본문에 받지만 uid 는 요청에 싣지 않는다 —
+// 세션이 이미 세운 uid 에 묶인다(다른 uid 를 적어 보내도 무시된다). 처리는 /cia/account/self_revoke(§6.5.1, 세션
+// 없이 {uid, pwd} 를 함께 받는 옛 경로 — web 모드가 그대로 쓴다)와 같은 revokeAccount 를 탄다.
+app.post('/cia/user/self_revoke', requireUser, async (req, res) => {
+  try {
+    const { pwd } = req.body ?? {};
+    const uid = req.session.uid;
+    if (!pwOk(state.accounts[uid], pwd)) return res.status(401).json({ error: 'invalid credentials', reason: 'invalid_credentials' });
+    // 가입만 하고 등록 전인 계정(pk_u:null)도 "미등록" — /cia/account/self_revoke 와 같은 기준(아래 §6.5.1 주석).
+    if (!state.accounts[uid]?.pk_u) return res.status(404).json({ error: 'unknown account' });
+    const r = await revokeAccount(uid);
+    res.json(r);
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 // 인증 창(§4)이 부른다 — 세션 없이도 된다. pwd 검사 → 등록 상태 → auid 일치 순으로 본다(틀린 비밀번호에는 등록 여부를 알려주지 않는다).
 app.post('/cia/auth/code', (req, res) => {

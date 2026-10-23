@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="same-origin" />
+  <!-- 제목의 "IdP RP" 는 페이지 서빙 검사 marker 다(mode3/cia_admin.html 의 관례). -->
+  <title>IdP RP</title>
+  <link rel="stylesheet" href="/common/demo.css" />
+  <script src="/common/strings.js"></script>
+  <script src="/common/demo.js"></script>
+</head>
+<body data-page="idp_rp">
+<header id="demoBar"></header>
+<main class="cards">
+  <section class="card" id="opAccountCard">
+    <h3 data-i18n="idp_rp_signup_title">운영자 계정 만들기</h3>
+    <p class="desc" data-i18n="idp_rp_signup_desc">RP 를 만들려면 운영자 계정이 필요합니다.</p>
+    <p>
+      <label><span data-i18n="idp_rp_id_label">id</span> <input id="opId" size="16" autocomplete="username" /></label>
+      <label><span data-i18n="idp_pwd_label">비밀번호</span> <input id="opPwd" type="password" size="16" autocomplete="current-password" /></label>
+      <button id="opSignupBtn" data-i18n="idp_rp_signup_btn">가입</button>
+      <button id="opLoginBtn" data-i18n="idp_rp_login_btn">로그인</button>
+      <button id="opLogoutBtn" class="btn-ghost" data-i18n="idp_rp_logout_btn">로그아웃</button>
+    </p>
+    <div id="rpVerdict"></div>
+  </section>
+  <section class="card span2" id="rpCreateCard">
+    <h3 data-i18n="idp_rp_create_title">새 RP 만들기</h3>
+    <p class="desc" data-i18n="idp_rp_create_desc">이름을 정하면 1회용 RP 키와 기동 명령을 드립니다 — 키는 지금만 보입니다.</p>
+    <p><label><span data-i18n="idp_rp_name_label">이름(zk 로 시작)</span> <input id="rpName" size="16" /></label> <button id="rpCreateBtn" data-i18n="idp_rp_create_btn">만들기</button></p>
+    <p class="muted" data-i18n="idp_rp_key_once">키는 지금만 보입니다 — 복사해 두세요. 다시 볼 수 없습니다.</p>
+    <h4 data-i18n="idp_rp_list_title">내 RP</h4>
+    <div id="rpList"><p class="muted" data-i18n="idp_rp_list_empty">아직 만든 RP 가 없습니다.</p></div>
+  </section>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(body ?? {}) }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
+  const get = (url) => fetch(url, { credentials: 'same-origin' }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
+  const tt = (k, v) => { const s = Demo.t(k, v); return s === k ? '' : s; };
+  const verdict = (el, ok, title, extra) => Demo.verdict(el, () => ({ ok, title: window.DemoStrings?.verdicts?.[title] ? title : Demo.t(title), ...(typeof extra === 'function' ? extra() : extra) }));
+  const copyBtn = (text) => {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'copy-btn'; b.textContent = '⧉';
+    b.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(text); } catch { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); } finally { ta.remove(); } }
+    });
+    return b;
+  };
+  // /cia/rp/me 는 key 를 내지 않는다(해시만 저장돼 있다) — 지금 세션에서 /cia/rp/create 가 준 값만 한 번 기억해 둔다.
+  // 페이지를 새로 고치면 사라진다("다시 볼 수 없음" — HEAD a716a19).
+  const justCreated = {};   // name -> { key, command }
+  const statusBadgeClass = (status) => status === 'approved' ? 'ok' : status === 'denied' ? 'bad' : status === 'pending' ? 'warn' : 'muted';
+
+  async function refreshRpList() {
+    const r = await get('/cia/rp/me');
+    const box = $('rpList');
+    if (r.status !== 200) { box.innerHTML = ''; box.appendChild(Object.assign(document.createElement('p'), { className: 'muted', textContent: tt('idp_rp_list_empty') || '아직 만든 RP 가 없습니다.' })); return; }
+    const rps = r.body.rps ?? [];
+    if (rps.length === 0) { box.innerHTML = ''; box.appendChild(Object.assign(document.createElement('p'), { className: 'muted', textContent: tt('idp_rp_list_empty') || '아직 만든 RP 가 없습니다.' })); return; }
+    const table = document.createElement('table');
+    table.className = 'list';
+    const thead = document.createElement('tr');
+    for (const k of ['idp_rp_col_name', 'idp_rp_col_status', 'idp_rp_col_origin', 'idp_rp_col_key', 'idp_rp_col_command']) {
+      const th = document.createElement('th'); th.dataset.i18n = k; th.textContent = Demo.t(k); thead.appendChild(th);
+    }
+    table.appendChild(thead);
+    for (const s of rps) {
+      const tr = document.createElement('tr');
+      const nameTd = document.createElement('td'); nameTd.textContent = s.name; tr.appendChild(nameTd);
+      const statusTd = document.createElement('td');
+      const badge = document.createElement('span'); badge.className = `badge ${statusBadgeClass(s.status)}`; badge.textContent = s.status; statusTd.appendChild(badge); tr.appendChild(statusTd);
+      const originTd = document.createElement('td'); originTd.textContent = s.origin ?? '-'; tr.appendChild(originTd);
+      const cached = s.status === 'created' ? justCreated[s.name] : null;
+      const keyTd = document.createElement('td');
+      if (cached) { const code = document.createElement('code'); code.textContent = cached.key; keyTd.append(code, ' ', copyBtn(cached.key)); }
+      else { keyTd.className = 'muted'; keyTd.textContent = tt('idp_rp_key_hidden') || '(다시 볼 수 없음)'; }
+      tr.appendChild(keyTd);
+      const cmdTd = document.createElement('td');
+      if (cached) { const code = document.createElement('code'); code.textContent = cached.command; cmdTd.append(code, ' ', copyBtn(cached.command)); }
+      else cmdTd.textContent = '-';
+      tr.appendChild(cmdTd);
+      table.appendChild(tr);
+    }
+    box.innerHTML = ''; box.appendChild(table);
+  }
+
+  $('opSignupBtn').addEventListener('click', async () => {
+    const r = await post('/cia/rp/signup', { id: $('opId').value.trim(), pwd: $('opPwd').value });
+    if (r.status === 201) verdict($('rpVerdict'), true, 'idp_rp_signup_ok_title', () => ({ summary: tt('idp_rp_signup_ok', { id: r.body.id }) || `가입됨 — id ${r.body.id}. 이 id 로 로그인하세요.` }));
+    else verdict($('rpVerdict'), false, 'idp_rp_signup_failed', { reason: r.body?.reason ?? `HTTP ${r.status}`, detail: r.body });
+  });
+  $('opLoginBtn').addEventListener('click', async () => {
+    const r = await post('/cia/rp/login', { id: $('opId').value.trim(), pwd: $('opPwd').value });
+    $('opPwd').value = '';
+    if (r.status !== 200) verdict($('rpVerdict'), false, 'login_failed', { reason: r.body?.reason ?? `HTTP ${r.status}` });
+    else verdict($('rpVerdict'), true, 'login_ok', () => ({ summary: tt('idp_rp_login_ok', { id: r.body.id }) || `로그인됨 — id ${r.body.id}.` }));
+    await refreshRpList();
+  });
+  $('opLogoutBtn').addEventListener('click', async () => { await post('/cia/rp/logout'); await refreshRpList(); });
+  $('rpCreateBtn').addEventListener('click', async () => {
+    const r = await post('/cia/rp/create', { name: $('rpName').value.trim() });
+    if (r.status === 201) {
+      justCreated[r.body.name] = { key: r.body.key, command: r.body.command };
+      verdict($('rpVerdict'), true, 'idp_rp_create_ok_title', () => ({ summary: tt('idp_rp_create_ok', { name: r.body.name }) || `만들어짐 — ${r.body.name}. 아래 명령으로 RP 서버를 띄우세요.` }));
+    } else {
+      verdict($('rpVerdict'), false, 'idp_rp_create_failed', { reason: r.body?.reason ?? `HTTP ${r.status}`, detail: r.body });
+    }
+    await refreshRpList();
+  });
+
+  Demo.init({ page: 'idp_rp' });
+  Demo.stack?.({ self: 'aa', urls: {} });
+  refreshRpList();
+</script>
+</body>
+</html>

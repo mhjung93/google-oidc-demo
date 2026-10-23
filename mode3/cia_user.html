@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="same-origin" />
+  <!-- 제목의 "IdP 사용자" 는 페이지 서빙 검사 marker 다(mode3/cia_admin.html 의 관례). -->
+  <title>IdP 사용자</title>
+  <link rel="stylesheet" href="/common/demo.css" />
+  <script src="/common/strings.js"></script>
+  <script src="/common/demo.js"></script>
+</head>
+<body data-page="idp_user">
+<header id="demoBar"></header>
+<main class="cards">
+  <section class="card" id="signupCard">
+    <h3 data-i18n="idp_signup_title">계정 만들기</h3>
+    <p class="desc" data-i18n="idp_signup_desc">비밀번호만 정하면 IdP 가 uid 를 배정합니다. 속성은 IdP 에 보내지 않습니다.</p>
+    <p><label><span data-i18n="idp_pwd_label">비밀번호</span> <input id="signupPwd" type="password" autocomplete="new-password" /></label> <button id="signupBtn" data-i18n="idp_signup_btn">가입</button></p>
+  </section>
+  <section class="card" id="loginCard">
+    <h3 data-i18n="idp_login_title">로그인</h3>
+    <p><label>uid <input id="loginUid" size="8" /></label> <label><span data-i18n="idp_pwd_label">비밀번호</span> <input id="loginPwd" type="password" autocomplete="current-password" /></label> <button id="loginBtn" data-i18n="idp_login_btn">로그인</button> <button id="logoutBtn" class="btn-ghost" data-i18n="idp_logout_btn">로그아웃</button></p>
+    <p><span id="meBadge" class="badge muted">로그아웃</span> <span id="meInfo" class="muted"></span></p>
+  </section>
+  <section class="card" id="registerCard">
+    <h3 data-i18n="idp_register_title">커밋먼트 등록</h3>
+    <p class="desc" data-i18n="idp_register_desc">지갑(MetaMask Snap)이 비밀을 만들고 커밋먼트와 공개키만 IdP 에 등록합니다. 속성은 지갑에만 남습니다.</p>
+    <p><button id="registerBtn" data-i18n="idp_register_btn">지갑으로 커밋먼트 등록</button> <a id="walletLink" class="btn-ghost" target="_blank" rel="noopener" data-i18n="idp_wallet_link">지갑 페이지 열기</a></p>
+    <dl class="kv">
+      <dt data-term="auid">auid</dt><dd><code id="meAuid">-</code> <button type="button" id="copyAuidBtn" class="copy-btn" hidden>⧉</button></dd>
+      <dt data-i18n="idp_slot_label">등록부 슬롯</dt><dd id="meSlot">-</dd>
+    </dl>
+    <div id="userVerdict"></div>
+  </section>
+  <section class="card" id="revokeCard">
+    <h3 data-i18n="account_revoke_btn">내 계정 폐기</h3>
+    <p><label><span data-i18n="idp_pwd_label">비밀번호</span> <input id="revokePwd" type="password" /></label> <button id="revokeBtn" class="danger" data-i18n="account_revoke_btn">내 계정 폐기</button></p>
+    <div id="revokeVerdict"></div>
+  </section>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(body ?? {}) }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
+  const get = (url) => fetch(url, { credentials: 'same-origin' }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
+  const tt = (k, v) => { const s = Demo.t(k, v); return s === k ? '' : s; };
+  const verdict = (el, ok, title, extra) => Demo.verdict(el, () => ({ ok, title: window.DemoStrings?.verdicts?.[title] ? title : Demo.t(title), ...(typeof extra === 'function' ? extra() : extra) }));
+  let walletOrigin = null, me = null;
+
+  async function refreshMe() {
+    const r = await get('/cia/user/me');
+    me = r.status === 200 ? r.body : null;
+    $('meBadge').className = `badge ${!me ? 'muted' : me.registered ? 'ok' : 'warn'}`;
+    $('meBadge').textContent = !me ? (tt('idp_me_out') || '로그아웃') : me.registered ? (tt('idp_me_registered') || '등록됨') : (tt('idp_me_unregistered') || '등록 전');
+    $('meInfo').textContent = me ? `uid ${me.uid}` : '';
+    $('meAuid').textContent = me?.auid ?? '-';
+    $('copyAuidBtn').hidden = !me?.auid;
+    $('meSlot').textContent = me?.slot ?? '-';
+  }
+
+  $('signupBtn').addEventListener('click', async () => {
+    const r = await post('/cia/signup', { pwd: $('signupPwd').value });
+    if (r.status === 201) {
+      $('loginUid').value = r.body.uid;
+      verdict($('userVerdict'), true, 'idp_signup_ok_title', () => ({ summary: tt('idp_signup_ok', { uid: r.body.uid }) || `가입됨 — uid ${r.body.uid}. 이 uid 로 로그인하세요.` }));
+    } else {
+      verdict($('userVerdict'), false, 'idp_signup_failed', { reason: r.body?.reason ?? `HTTP ${r.status}`, detail: r.body });
+    }
+  });
+  $('loginBtn').addEventListener('click', async () => {
+    const r = await post('/cia/user/login', { uid: $('loginUid').value.trim(), pwd: $('loginPwd').value });
+    $('loginPwd').value = '';
+    if (r.status !== 200) verdict($('userVerdict'), false, 'idp_login_failed', { reason: r.body?.reason ?? `HTTP ${r.status}` });
+    await refreshMe();
+  });
+  $('logoutBtn').addEventListener('click', async () => { await post('/cia/user/logout'); await refreshMe(); });
+  $('copyAuidBtn').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(me.auid); }
+    catch { const ta = document.createElement('textarea'); ta.value = me.auid; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); } finally { ta.remove(); } }
+  });
+  $('revokeBtn').addEventListener('click', async () => {
+    if (!me) return;
+    if (!Demo.confirmDanger('confirm_account_revoke')) return;
+    const r = await post('/cia/user/self_revoke', { pwd: $('revokePwd').value });
+    $('revokePwd').value = '';
+    verdict($('revokeVerdict'), r.status === 200, r.status === 200 ? 'revoked_ok' : 'account_revoke_failed', { reason: r.body?.reason, detail: r.body });
+    await refreshMe();
+  });
+  // 커밋먼트 등록(Task 14): 세션으로 등록 코드를 받아 지갑 팝업을 연다(?authorize=1). 허용 발신 오리진은 지갑 오리진뿐이다.
+  $('registerBtn').addEventListener('click', async () => {
+    if (!me) return verdict($('userVerdict'), false, 'idp_register_failed', { reason: 'login_required' });
+    const c = await post('/cia/user/register_code');
+    if (c.status !== 200) return verdict($('userVerdict'), false, 'idp_register_failed', { reason: c.body?.reason ?? `HTTP ${c.status}` });
+    const popup = window.open(`${walletOrigin}/?authorize=1`, 'mode3-register', 'width=460,height=640');
+    if (!popup) return verdict($('userVerdict'), false, 'idp_register_failed', { reason: 'popup_blocked' });
+    Demo.verdict($('userVerdict'), { pending: true, title: tt('working') || '처리 중' });
+    const onMsg = (ev) => {
+      if (ev.origin !== walletOrigin) return;
+      if (ev.data?.type === 'mode3-authorize-ready') popup.postMessage({ type: 'mode3-register', uid: me.uid, code: c.body.code, ciaUrl: location.origin }, walletOrigin);
+      if (ev.data?.type === 'mode3-register-result') {
+        window.removeEventListener('message', onMsg);
+        const r = ev.data.result;
+        verdict($('userVerdict'), Boolean(r.ok), r.ok ? 'idp_register_ok_title' : 'idp_register_failed', r.ok ? () => ({ summary: tt('idp_register_ok', { slot: r.slot }) || `등록됨 — 슬롯 #${r.slot}` }) : { reason: r.reason, detail: r.detail });
+        refreshMe();
+      }
+    };
+    window.addEventListener('message', onMsg);
+  });
+
+  (async () => {
+    try { const h = await (await fetch('/mode3/health')).json(); walletOrigin = h.walletOrigin; $('walletLink').href = `${walletOrigin}/`; } catch { /* IdP 의 지갑 오리진을 못 읽으면 등록 버튼은 눌러도 조용히 실패한다 */ }
+    Demo.init({ page: 'idp_user' });
+    Demo.stack?.({ self: 'aa', urls: { wallet: walletOrigin } });
+    await refreshMe();
+  })();
+</script>
+</body>
+</html>

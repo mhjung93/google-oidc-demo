@@ -40,7 +40,7 @@ async function launchBrowser() {
 const browser = await launchBrowser();
 const provider = getProvider();
 const stack = await startIsolatedMode3Stack({ walletEnv: { MODE3_WALLET_SECRETS: 'snap' }, autoRelay: true });   // V10: 거울 릴레이는 헬퍼가 대신 돈다(페이지 안 로그인)
-const { wallet, rp } = stack;
+const { cia, wallet, rp } = stack;
 
 // ---- 하네스가 맡는 것: Snap 저장소, 대화상자, 체인 전송 ----
 // MetaMask 의 암호화 저장소는 확장에 있다 — 지갑 페이지와 팝업(다른 JS 컨텍스트)이 같은 등록을 봐야 하므로 여기 둔다.
@@ -493,6 +493,39 @@ try {
     } finally {
       await rpPage.unroute('**/api/mode3/challenge');
     }
+  });
+
+  // ---- Task 12(B3, 2026-10-22): IdP 사용자·RP·인증 창 페이지(/user·/rp·/login) ----
+  // 가입·로그인·RP 만들기는 Snap 대화상자를 쓰지 않는다 — 새 계정(가입으로 받은 uid·새 운영자 id)을 써서 위의
+  // "등록: Snap 대화상자가…" 실패(Task 13 이후 Snap 이 register({uid})를 요구하는데 Task 14 전 지갑 페이지는 여전히
+  // 옛 방식으로 불러 생기는 실패)와 아래 "폐기 상한" 케이스에 영향받지 않는다(컨트롤러 판정 2026-10-23).
+  await t('IdP 사용자 페이지: 가입 → uid 배정 → 로그인 → 상태(등록 전) → 로그아웃', async () => {
+    const p = await context.newPage(); await p.goto(`${cia.base}/user`);
+    await p.fill('#signupPwd', 'demo-pass-1'); await p.click('#signupBtn');
+    await waitText(p, '#userVerdict', 'uid'); const uid = await p.$eval('#userVerdict', (e) => e.textContent.match(/uid\s*(\d+)/)[1]);
+    await p.fill('#loginUid', uid); await p.fill('#loginPwd', 'demo-pass-1'); await p.click('#loginBtn');
+    await waitText(p, '#meBadge', '등록 전'); await p.click('#logoutBtn'); await waitText(p, '#meBadge', '로그아웃'); await p.close();
+  });
+  await t('IdP RP 페이지: 운영자 가입·로그인 → zkTHREE 만들기 → 키·명령 표시', async () => {
+    const p = await context.newPage(); await p.goto(`${cia.base}/rp`);
+    await p.fill('#opId', 'op1'); await p.fill('#opPwd', 'operator-1'); await p.click('#opSignupBtn'); await waitText(p, '#rpVerdict', 'op1');
+    await p.click('#opLoginBtn'); await p.fill('#rpName', 'zkTHREE'); await p.click('#rpCreateBtn');
+    await waitText(p, '#rpList', 'zkTHREE'); assert.match(await text(p, '#rpList'), /new_rp\.sh zkTHREE <port> [0-9a-f]{64}/); await p.close();
+  });
+  await t('IdP 인증 창: wallet 쿼리가 지갑 오리진과 다르면 폼을 막는다; 맞으면 uid·pwd·auid 로 코드를 받아 opener 에 postMessage', async () => {
+    const bad = await context.newPage(); await bad.goto(`${cia.base}/login?nonce=abc&wallet=http://evil.example`); await waitText(bad, '#authVerdict', '지갑 오리진'); await bad.close();
+    // 등록된 계정(앞의 "등록: Snap 대화상자가…" 케이스가 만든 12345 — 시드)으로: opener 를 흉내 내는 페이지가 window.open 으로 연다.
+    // 그 케이스가 실패해 12345 가 미등록으로 남으면(위 주석) /cia/auth/code 가 not_registered 로 막아 아래가 시간 초과로
+    // 실패한다 — /login 페이지·/cia/auth/code 자체의 결함이 아니라 그 실패가 이어진 것이다(보고서에 기록).
+    const status = (await wallet.get('/wallet/status')).body;
+    const AUID_12345 = status?.registered ? status.auid : null;
+    const opener = await context.newPage(); await opener.goto(`${wallet.base}/`);
+    const [win] = await Promise.all([context.waitForEvent('page'), opener.evaluate((u) => { window.__got = null; window.addEventListener('message', (ev) => { window.__got = { origin: ev.origin, data: ev.data }; }); window.open(u); }, `${cia.base}/login?nonce=n1&wallet=${wallet.base}`)]);
+    await win.fill('#authUid', '12345'); await win.fill('#authPwd', 'password123'); await win.fill('#authAuid', String(AUID_12345)); await win.click('#authGo');
+    await opener.waitForFunction(() => window.__got !== null, undefined, { timeout: 10_000 });
+    const got = await opener.evaluate(() => window.__got);
+    assert.equal(got.origin, cia.base); assert.equal(got.data.type, 'mode3-idp-auth'); assert.equal(got.data.nonce, 'n1'); assert.match(got.data.code, /^[0-9a-f]{64}$/);
+    await opener.close();
   });
 
   await t('하네스: 준비한 대화상자 응답이 남지 않았다(기대한 동의 창이 다 떴다)', async () => {
