@@ -34,7 +34,10 @@ const REASONS = ['stale_root', 'stale_registry_root', 'root_too_old', 'revalidat
   // 2026-10-16 최종 리뷰 M5 — 사용자 코어가 IdP 를 부르기 전에 내는 코드
   'uid_mismatch', 'no_pending_registration',
   // Task 12(2026-10-22, 46445df) — IdP 사용자·RP·인증 창 페이지(cia.js 의 가입·세션·1회용 코드·RP 운영자 라우트).
-  'login_required', 'signup_failed', 'operator_login_failed', 'bad_code', 'auth_code_required', 'auid_mismatch', 'idp_auth_cancelled', 'idp_auth_bad_wallet', 'bad_rp_key'];
+  'login_required', 'signup_failed', 'operator_login_failed', 'bad_code', 'auth_code_required', 'auid_mismatch', 'idp_auth_cancelled', 'idp_auth_bad_wallet', 'bad_rp_key',
+  // F-9·M9(2026-10-23) — RP 운영자 라우트(id_taken·bad_name·name_taken), 등록 팝업 수명(timeout·popup_closed·popup_blocked),
+  // RP 의 counter 검사(bad_counter), 체인 반영 대기(bound_not_applied·no_pending_bound·bound_wrong_account).
+  'id_taken', 'bad_name', 'name_taken', 'timeout', 'popup_closed', 'popup_blocked', 'bad_counter', 'bound_not_applied', 'no_pending_bound', 'bound_wrong_account'];
 
 t('langs 는 ko, en', () => assert.deepEqual(S.langs, ['ko', 'en']));
 // U6(2026-10-14): login2(두 번째 RP 로그인, unlinkability 시연) 추가 — login 과 use 사이, 7단계→8단계.
@@ -132,6 +135,14 @@ t('ui 에 사용자 페이지(web 모드) 키가 있다', () => {
   assert.ok(S.ui.user_vault_unlocked.ko.includes('해제')); assert.ok(S.ui.user_vault_locked.ko.includes('잠김'));
   assert.ok(S.ui.user_vault_none.ko.includes('없음')); assert.ok(S.ui.user_zk_ready.ko.includes('준비'));
   assert.ok(S.ui.wallet_no_sessions.ko.includes('로그인 세션이 없습니다'));
+});
+
+// F-13(2026-10-22) — IdP 인증 창을 사용자 제스처로 여는 버튼(지갑 팝업, 클릭 처리기 안에서 동기로 window.open).
+t('ui 에 IdP 인증 창 열기 버튼 키가 있다', () => { assert.ok(S.ui.idp_auth_open_btn, 'idp_auth_open_btn'); });
+// F-0(2026-10-23) — /account(Google/OIDC 계정 관리) ↔ /user(비밀번호 계정)의 상호 링크 문구.
+t('ui 에 /account ↔ /user 상호 링크 키가 있다', () => {
+  assert.ok(S.ui.user_google_account_link, 'user_google_account_link');
+  assert.ok(S.ui.account_idp_user_link, 'account_idp_user_link');
 });
 
 if (fails) { console.log(`\n${fails} FAIL`); process.exit(1); } else console.log('\nall ok');

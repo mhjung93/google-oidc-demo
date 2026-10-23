@@ -14,6 +14,11 @@
 //   2026-10-02-mode3-revocation-chain-design §4.
 // V11(2026-10-12): auid·π_IdP 도입 — /cia/issue 가 /cia/user_cred 를 흡수해(세션마다 π_IdP 검증) 사용자·세션 자격증명을 한 요청으로
 //   낸다. 상태는 v12(cm_u·attrs 삭제, auid 필수) — 설계 2026-10-12-mode3-v11-figure-protocol-design.md §5.2·§7.
+// Task 10(B1, 2026-10-22): 계정 비밀번호 가입·로그인(/cia/signup, /cia/user/*)과 1회용 코드(등록·발급, CIA_ISSUE_AUTH=code)로
+//   IdP 사용자 페이지를 뒷받침한다 — 설계 2026-10-22-mode3-idp-pages-design.md §3.1~3.3.
+// Task 11(B2, 2026-10-22): 같은 스펙 §3.3 — RP 운영자 계정(/cia/rp/*)·RP 슬롯(rp_key)·공개 /cia/rp_origins 를 더한다.
+// bound(2026-10-22): 세션 폐기 리프가 Cf_s 하나가 아니라 (H'(Cf_s), 허용 거래 수 bound) 묶음이다 — 설계
+//   2026-10-22-mode3-revocation-counter-bound-design.md §3(lib/mode3_revocation.js sessionLeaf). 발급·폐기 모두 bound 를 함께 남긴다.
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
@@ -515,9 +520,9 @@ app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_
 app.get('/user', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_user.html')));
 app.get('/rp', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_rp.html')));
 app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_login.html')));
-// 옛 "내 계정" 입구는 /user 로 옮겼다(기능은 거기 있다) — 기존 링크·북마크가 깨지지 않게 302 로만 돌린다.
-// mode3/cia_account.html 파일 자체는 지우지 않는다(컨트롤러 판정 2026-10-23 — 제거는 최종 정리 때 사용자 결정).
-app.get('/account', (req, res) => res.redirect(302, '/user'));
+// "내 계정" 페이지 — Google/OIDC 계정 관리·Google 재로그인 폐기 UI. /user(일반 가입·발급)와는 다른 입구라
+// 되돌리지 않는다(F-0, 컨트롤러 판정 2026-10-23 — Task 12 의 302 리다이렉트는 회귀였다).
+app.get('/account', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_account.html')));
 
 app.get('/cia/public_keys', userCors, (req, res) => {
   // V10: canonicalChainId = 게시 로그가 있는 체인(selfChainId 와 같은 provider). mirrors = CIA_MIRRORS(릴레이 대상 거울, 2026-10-02 Task 6).
@@ -901,8 +906,9 @@ app.post('/cia/issue', userCors, async (req, res) => {
     if (acct.provider && acct.provider !== 'demo' && !oidcClaims) return res.status(401).json({ error: 'oidc_required', reason: 'oidc_required' });
     if (oidcClaims && oidcClaims.nonce !== issueNonce(acct.pk_u, arid_s)) return res.status(400).json({ error: 'oidc_nonce_mismatch', reason: 'oidc_nonce_mismatch', detail: 'nonce 가 이 지갑·이 로그인(arid_s)과 다르다' });
     // 발급 인증 정책(CIA_ISSUE_AUTH=code, Task 10 B1, 2026-10-22): demo 계정은 §4 의 인증 창이 낸 1회용 코드가 있어야 발급한다.
-    // 수정 라운드 1(스펙 "성공 시 소진"): 여기서는 조회만(peek) — sig_u·π_IdP 검증을 거쳐 비싼 연산(verifyIdp)까지 마친 뒤,
-    // 실제 상태 변경 바로 앞(아래, π_IdP 검증 통과 직후)에서만 consumeCode 로 태운다. 틀린 서명으로 실패해도 코드는 그대로 남는다.
+    // 수정 라운드 1(스펙 "성공 시 소진")·F-7: 여기서는 조회만(peek) — sig_u·π_IdP 검증과 headOf(503)·cred_revoked 사전 검사까지
+    // 모두 거친 뒤, 실제 상태 변경(발급 기록 또는 signPoseidon) 바로 앞에서만 consumeCode 로 태운다(아래 두 지점). 그 전에
+    // 실패하면(서명·증명·체인·폐기 충돌 무엇이든) 코드는 그대로 남는다.
     const needsAuthCode = ISSUE_AUTH === 'code' && acct.provider === 'demo';
     if (needsAuthCode) {
       if (typeof auth_code !== 'string') return res.status(401).json({ error: 'auth_code required', reason: 'auth_code_required' });
@@ -931,8 +937,6 @@ app.post('/cia/issue', userCors, async (req, res) => {
     try { vkIdp = await loadIdpVkey(IDP_VKEY); } catch (e) { console.error(`[cia] π_IdP vkey 를 읽지 못했다: ${e.message}`); return res.status(503).json({ error: 'idp_vkey_unavailable', reason: 'idp_vkey_unavailable' }); }
     const pubIdp = idpPublicSignals({ uid: BigInt(uid), auid: BigInt(acct.auid), auid_s: auidS, C_u_pt: cupt, C_s_pt: cspt, max_height: mh });
     if (!(await verifyIdp(vkIdp, pubIdp, proof_idp))) return res.status(400).json({ error: 'bad idp proof', reason: 'bad_idp_proof' });
-    // 코드 소비(수정 라운드 1): sig_u·π_IdP 를 모두 통과한 뒤, 상태 변경 바로 앞에서 동기로 소비한다 — 동시 요청도 하나만 통과한다.
-    if (needsAuthCode && !consumeCode(auth_code, { uid, purpose: 'issue', auid: acct.auid })) return res.status(401).json({ error: 'bad_code', reason: 'bad_code' });
     const head = await headOf(chainStr);   // fail-closed: 체인이 죽어 있으면 발급하지 않는다(게시도 불가하므로 폐기가 닿지 않는 세션이 된다)
     const cfu = Cf_u.toString();
     // 이 await 를 끝으로 아래 물리기→push→setSlot→persist 구간은 동기다(2026-10-01 리뷰 Important 2 와 같은 이유).
@@ -944,6 +948,9 @@ app.post('/cia/issue', userCors, async (req, res) => {
     if (!cur || cur.Cf_u !== cfu) {
       // 물린 적 있는 C_u 는 다시 받지 않는다 — 은퇴·폐기의 되감기를 막는다.
       if (acct.creds.some((c) => c.Cf_u === cfu)) return res.status(409).json({ error: 'this user credential was revoked; make a new one', reason: 'cred_revoked' });
+      // 코드 소비(F-7): sig_u·π_IdP 뿐 아니라 headOf(503)·위 cred_revoked 사전 검사까지 모두 지난 뒤, 상태 변경(발급 기록) 바로
+      // 앞에서 동기로 소비한다 — 동시 요청도 하나만 통과한다. 이보다 앞에서 태우면 체인 오류·폐기 충돌로 끝내 실패해도 코드가 사라진다.
+      if (needsAuthCode && !consumeCode(auth_code, { uid, purpose: 'issue', auid: acct.auid })) return res.status(401).json({ error: 'bad_code', reason: 'bad_code' });
       retireActiveCred(uid);
       // V10(§4.5): 대기열로 영구 은퇴된 슬롯에는 0 아닌 리프를 쓸 수 없다(컨트랙트 SlotIsRetired) — 새 슬롯을 받는다. PPID 는 (uid, s_u, arid, chainid) 에만 걸려 있어 슬롯이 바뀌어도 그대로다.
       if (acct.slotRetired) { acct.slot = state.registry.next++; acct.slotRetired = false; }
@@ -956,6 +963,9 @@ app.post('/cia/issue', userCors, async (req, res) => {
       // 은퇴된 Cf_u 위의 토큰은 등록부에 없어 쓸 수 없고, 지갑이 그 C_u 를 보관하면 다음 로그인이 registry_mismatch 에서 못 빠져나온다.
       // 지갑은 cred_revoked 에 새 C_u 로 한 번만 다시 시도한다(mode3_wallet_agent.js /wallet/login).
       if (activeCred(uid)?.Cf_u !== cfu) return res.status(409).json({ error: 'this user credential was retired while publishing; make a new one', reason: 'cred_revoked' });
+    } else if (needsAuthCode && !consumeCode(auth_code, { uid, purpose: 'issue', auid: acct.auid })) {
+      // 같은 C_u 로 재서명만 하는 경로(F-7) — 발급 기록이 없으므로 여기서는 signPoseidon 바로 앞이 "상태 변경 직전" 이다.
+      return res.status(401).json({ error: 'bad_code', reason: 'bad_code' });
     }
     const s = eddsa.signPoseidon(ciaPrv, F.e(await credMessageV11(auidS, aridS, Cf_u, Cf_s, BigInt(chainStr), agent)));
     // V8(2026-09-24 §2.1): 세션 단위 폐기를 하려면 IdP 가 Cf_s 를 알아야 한다. 정리는 하트비트뿐 아니라 여기서도(최종 리뷰 F2). auid_s·arid_s 는 적지 않는다(D1).
@@ -1413,7 +1423,7 @@ app.get('/cia/admin/registry', requireAdmin, (req, res) => {
   });
   res.json({ depth: registry.depth, next: state.registry.next, regRoot: registry.root().toString(), epoch: state.epoch, pendingSlots: state.registry.pendingSlots.length, slots });
 });
-/** 관리자 화면 "세션 폐기 목록"(2026-10-14): 폐기된(revokedAt 있는) 세션만 계정 전체에서 모은다. 세션 리프 Poseidon(5, Cf_s) 와
+/** 관리자 화면 "세션 폐기 목록"(2026-10-14): 폐기된(revokedAt 있는) 세션만 계정 전체에서 모은다. 세션 리프 H'(Cf_s)·2^32+bound(2026-10-22, sessionLeaf) 와
  *  게시 여부(pending = 아직 체인에 안 올라감)를 함께 준다. auid_s·arid_s 는 기록에 없으므로(D1) 여기에도 없다. */
 app.get('/cia/admin/revoked_sessions', requireAdmin, async (req, res) => {
   const pendingLeaves = new Set(state.pending);

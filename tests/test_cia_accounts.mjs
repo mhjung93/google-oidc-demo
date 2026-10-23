@@ -137,6 +137,19 @@ try {
     } finally { await cia3.stop(); }
   });
 
+  await t('F-7: 발급 코드 소비는 sig_u 검증 뒤 — 맞는 코드 + 틀린 sig_u 는 400 이고 코드는 타지 않아, 같은 코드로 재시도하면 200', async () => {
+    const cia6 = await startIsolatedCia({ env: { CIA_ISSUE_AUTH: 'code' } });
+    try {
+      const u = userOf(await cia6.registerUser('12345', 'password123'), '12345', TESTUSER_ATTRS);
+      const authResp = await cia6.post('/cia/auth/code', { uid: '12345', pwd: 'password123', auid: u.auid.toString() });
+      assert.equal(authResp.status, 200, j(authResp.body));
+      const bad = await issueV11(cia6, u, { arid, provider, overrides: { auth_code: authResp.body.code, sig_u: { R8x: '1', R8y: '1', S: '1' } } });
+      assert.equal(bad.r.status, 400, j(bad.r.body)); assert.equal(bad.r.body.error, 'bad user signature');
+      const ok = await issueV11(cia6, u, { arid, provider, overrides: { auth_code: authResp.body.code } });
+      assert.equal(ok.r.status, 200, j(ok.r.body), '틀린 서명 시도가 코드를 태우지 않았어야 한다');
+    } finally { await cia6.stop(); }
+  });
+
   await t('CIA_DEMO_ACCOUNTS 미설정이면 12345/67890 이 없고(/cia/register 401), 설정이면(기본 격리 IdP) 있다', async () => {
     const ciaOff = await startIsolatedCia({ env: { CIA_DEMO_ACCOUNTS: '' } });
     try {

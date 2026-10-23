@@ -13,13 +13,16 @@ window.DemoStrings = {
     working: { ko: '처리 중…', en: 'Working…' },
     error_title: { ko: '요청이 실패했습니다', en: 'The request failed' },
     proving: { ko: '영지식 증명 생성 중(약 1초)…', en: 'Generating zero-knowledge proof (~1 s)…' },
-    go_wallet: { ko: '사용자 페이지 열기', en: 'Open the user page' }, go_rp: { ko: 'RP 열기', en: 'Open RP' },
+    go_wallet: { ko: '지갑 페이지 열기', en: 'Open the wallet page' }, go_rp: { ko: 'RP 열기', en: 'Open RP' },
     go_admin: { ko: 'IdP 관리자 열기', en: 'Open IdP admin' }, go_account: { ko: '내 계정 페이지 열기', en: 'Open my account page' },
+    // F-0(2026-10-23): /account(Google/OIDC 계정 관리)와 /user(비밀번호 계정) 는 서로 다른 입구 — 각 페이지 상단에서 서로를 가리킨다.
+    user_google_account_link: { ko: 'Google 계정 관리', en: 'Manage Google account' },
+    account_idp_user_link: { ko: 'IdP 사용자 페이지로', en: 'To the IdP user page' },
     // U6(2026-10-14) — login2 단계(두 번째 RP 로그인)가 첫 RP 창에서 쓰는 "다른 창" 링크·라벨.
     go_rp2: { ko: '두 번째 RP(zkTWO) 열기', en: 'Open the second RP (zkTWO)' },
     // Task 17b(2026-10-23) — rp_create(idp_rp)·register(idp_user) 단계가 쓰는 "다른 창" 링크·라벨(demo.js 의 where_${whereKey}·go_${whereKey}).
     go_idp_user: { ko: 'IdP 사용자 페이지 열기', en: 'Open the IdP user page' }, go_idp_rp: { ko: 'IdP RP 페이지 열기', en: 'Open the IdP RP page' },
-    where_wallet: { ko: '사용자', en: 'the user' }, where_rp: { ko: 'RP', en: 'the RP' }, where_admin: { ko: 'IdP 관리자', en: 'the IdP admin' }, where_account: { ko: '내 계정 페이지', en: 'my account page' },
+    where_wallet: { ko: '지갑', en: 'the wallet' }, where_rp: { ko: 'RP', en: 'the RP' }, where_admin: { ko: 'IdP 관리자', en: 'the IdP admin' }, where_account: { ko: '내 계정 페이지', en: 'my account page' },
     where_rp2: { ko: '두 번째 RP', en: 'the second RP' },
     where_idp_user: { ko: 'IdP 사용자 페이지', en: 'the IdP user page' }, where_idp_rp: { ko: 'IdP RP 페이지', en: 'the IdP RP page' },
     confirm_revoke: { ko: '되돌릴 수 없습니다. 폐기할까요?', en: 'This cannot be undone. Revoke?' },
@@ -52,6 +55,8 @@ window.DemoStrings = {
     wallet_snap_title: { ko: 'MetaMask · Snap', en: 'MetaMask · Snap' },
     wallet_snap_desc: { ko: '비밀은 Snap 안에 있습니다. 이 페이지는 동의만 받습니다.', en: 'Secrets live inside the Snap. This page only collects consent.' },
     wallet_auth_title: { ko: '로그인 승인', en: 'Approve login' },
+    // F-13(2026-10-22): Snap 동의 뒤 이 버튼의 클릭 처리기 안에서 동기로 window.open 을 불러야 팝업 차단기를 피한다.
+    idp_auth_open_btn: { ko: 'IdP 인증 창 열기', en: 'Open IdP sign-in' },
     rp_status_title: { ko: 'RP 상태', en: 'RP status' },
     rp_login_title: { ko: '로그인', en: 'Log in' },
     rp_login_desc: { ko: '사용자가 IdP 의 서명과 영지식 증명으로 이 RP 전용 주소를 만듭니다. IdP 는 어느 RP 인지 모릅니다.', en: 'The user derives an RP-specific address from the IdP’s signature and a zero-knowledge proof. The IdP never learns which RP.' },
@@ -69,7 +74,7 @@ window.DemoStrings = {
     // 단계 힌트(안내 바 "다음" 문장의 {what})
     hint_rp_create: { ko: '새 RP 만들기', en: 'create a new RP' },
     hint_approve: { ko: '등록된 RP 를 승인', en: 'approve the registered RP' },
-    hint_register: { ko: '사용자 속성 등록', en: 'register user attributes' },
+    hint_register: { ko: '속성 커밋먼트를 등록', en: 'register an attribute commitment' },
     hint_login: { ko: '로그인', en: 'log in' },
     hint_login2: { ko: '두 번째 RP 에서도 로그인', en: 'log in at a second RP too' },
     hint_use: { ko: '재검증·세션 요청 또는 트랜잭션', en: 'revalidate, make a request, or send a transaction' },
@@ -602,7 +607,7 @@ window.DemoStrings = {
     idp_rp_signup_desc: { ko: 'RP 를 만들려면 운영자 계정이 필요합니다.', en: 'An operator account is required to create an RP.' },
     idp_rp_id_label: { ko: 'id', en: 'id' },
     idp_rp_signup_btn: { ko: '가입', en: 'Sign up' },
-    idp_rp_login_title: { ko: '운영자 로그인', en: 'Operator login' },
+    // idp_rp_login_title 은 2026-10-23 참조 0건 확인 뒤 제거(F-9) — cia_rp.html 의 로그인 카드는 opAccountCard 제목(idp_rp_signup_title)을 같이 쓴다.
     idp_rp_login_btn: { ko: '로그인', en: 'Log in' },
     idp_rp_logout_btn: { ko: '로그아웃', en: 'Log out' },
     idp_rp_create_title: { ko: '새 RP 만들기', en: 'Create a new RP' },
@@ -636,7 +641,7 @@ window.DemoStrings = {
     stack_panel_title: { ko: '스택 상태', en: 'Stack status' },
     stack_aa: { ko: 'IdP', en: 'IdP' },
     stack_rp: { ko: 'RP', en: 'RP' },
-    stack_wallet: { ko: '사용자', en: 'User' },
+    stack_wallet: { ko: '지갑', en: 'Wallet' },
     stack_chain: { ko: '체인', en: 'Chain' },
     stack_unknown: { ko: '아직 모름', en: 'Not read yet' },
     stack_no_response: { ko: '응답 없음 — 프로세스가 떠 있는지 확인하세요', en: 'No response — check that the process is running' },
@@ -693,7 +698,7 @@ window.DemoStrings = {
     // Task 17(B8): 등록은 이제 IdP 사용자 페이지(/user)에서 가입·로그인한 뒤 지갑 팝업으로 커밋먼트를 올린다
     // (cia_user.html #registerBtn) — Task 12 가 만든 흐름. wallet.html 의 옛 registerBtn(file 모드)은 그대로 있지만
     // 이 단계의 대상은 아니다.
-    { key: 'register', where: ['idp_user'], target: { idp_user: 'registerBtn' }, ko: { title: '사용자 속성 등록', hint: '사용자가 자기 속성을 IdP 에 등록하고 자격증명을 받습니다.' }, en: { title: 'Register user attributes', hint: 'The user registers their attributes with the IdP and receives a credential.' },
+    { key: 'register', where: ['idp_user'], target: { idp_user: 'registerBtn' }, ko: { title: '속성 커밋먼트 등록', hint: '사용자가 자기 속성의 커밋먼트와 공개키를 IdP 에 등록하고 자격증명을 받습니다(속성 값은 지갑에만 남습니다).' }, en: { title: 'Register an attribute commitment', hint: 'The user registers a commitment to their attributes and a public key with the IdP and receives a credential (the attribute values stay in the wallet).' },
       tour: { ko: { title: '3. 가입하고 커밋먼트를 등록하세요', body: 'IdP 사용자 페이지에서 비밀번호로 가입·로그인한 뒤 "지갑으로 커밋먼트 등록" 을 누르세요. 지갑 팝업이 비밀을 만들고 커밋먼트와 공개키만 IdP 에 등록합니다 — 속성은 지갑에만 남습니다.' }, en: { title: '3. Sign up and register a commitment', body: 'Sign up and log in with a password on the IdP user page, then press "Register a commitment with the wallet". The wallet popup creates the secrets and registers only the commitment and public key with the IdP — attributes stay in the wallet.' } } },
     { key: 'login', where: ['rp'], target: { rp: 'loginBtn' }, ko: { title: '로그인', hint: 'RP 전용 주소로 로그인합니다.' }, en: { title: 'Log in', hint: 'Log in with an RP-specific address.' },
       tour: { ko: { title: '4. RP 에 로그인하세요', body: '이 RP 에서만 쓰는 주소로 로그인합니다. IdP 는 어느 RP 인지 알지 못합니다.' }, en: { title: '4. Log in to the RP', body: 'Log in with an address used only at this RP. The IdP never learns which RP it is.' } } },
@@ -738,7 +743,8 @@ window.DemoStrings = {
     disclosure_unsatisfiable: { where: 'wallet', ko: { title: '내 속성이 그 조건을 만족하지 않습니다', cause: '지갑이 증명을 만들기 전에 확인했습니다 — 내 값이 범위 밖이거나 허용 집합에 없습니다. 체인에는 아무것도 보내지 않았습니다.', action: '조건을 내 속성에 맞게 바꾸거나, RP 의 정책이라면 그 RP 를 쓸 수 없습니다.' }, en: { title: 'My attribute does not satisfy that condition', cause: 'Checked by the wallet before proving — my value is outside the range or not in the allowed set. Nothing was sent on-chain.', action: 'Change the condition to match my attribute; if it is the RP policy, this RP cannot be used.' } },
     predicate_type: { where: 'wallet', ko: { title: '이 슬롯에는 그 조건을 쓸 수 없습니다', cause: '범위 조건은 정수 속성(출생연도)에만, 집합 조건은 정수·국가·문자열 속성에만 쓸 수 있습니다(공개 스키마).', action: '정수 슬롯에 범위 조건을, 국가·문자열에는 집합 조건을 쓰세요.' }, en: { title: 'That condition type is not allowed on this slot', cause: 'Range conditions apply only to integer attributes (birth year); set conditions to integer, country and string attributes (public schema).', action: 'Use a range on the integer slot, a set on country/string slots.' } },
     duplicate_session: { where: 'wallet', ko: { title: '같은 세션 식별자로 두 번 로그인할 수 없습니다', cause: 'RP 가 준 r_s 가 이미 지갑에 세션으로 있습니다.', action: 'RP 에서 "로그인"을 다시 눌러 새 챌린지를 받으세요.' }, en: { title: 'Cannot log in twice with the same session id', cause: 'The r_s the RP issued already exists as a session in the wallet.', action: 'Press "Log in" on the RP again to get a fresh challenge.' } },
-    already_registered: { where: 'wallet', ko: { title: '이 지갑은 이미 등록돼 있습니다', cause: '지갑 상태 파일(또는 Snap)에 등록이 있습니다 — 계정당 등록은 한 번입니다.', action: '다른 계정으로 시연하려면 재시연 세트(상태 파일 삭제)를 쓰세요.' }, en: { title: 'This wallet is already registered', cause: 'A registration exists in the wallet state file (or Snap) — one registration per account.', action: 'To demo another account, use the re-demo reset (delete the state files).' } },
+    // 지갑(상태 파일·Snap)과 IdP(cia.js /cia/user/register_code, pk_u 가 이미 있는 계정) 양쪽에서 나는 코드다 — 문구는 둘 다 맞게 쓴다.
+    already_registered: { where: 'wallet', ko: { title: '이미 등록돼 있습니다', cause: '그 지갑(상태 파일 또는 Snap)이나 그 uid 의 IdP 계정에는 이미 등록(커밋먼트와 공개키)이 있습니다 — 계정당 등록은 한 번입니다.', action: 'IdP 사용자 페이지에서는 그 uid 로 그대로 로그인하고, 다른 계정으로 지갑을 시연하려면 재시연 세트(상태 파일 삭제)를 쓰세요.' }, en: { title: 'Already registered', cause: 'That wallet (state file or Snap) or that uid’s IdP account already has a registration (commitment and public key) — one registration per account.', action: 'On the IdP user page, just log in with that uid; to demo the wallet with another account, use the re-demo reset (delete the state files).' } },
     recover_bad_code: { where: 'wallet', ko: { title: '복구 코드가 이 uid 의 계정과 맞지 않습니다', cause: '코드에서 유도한 등록 키의 서명을 IdP 가 거절했습니다 — 코드가 틀렸거나 다른 uid 의 코드입니다.', action: '등록 때 보관한 코드와 uid 를 다시 확인하세요.' }, en: { title: 'Recovery code does not match this uid', cause: 'The IdP rejected the signature from the key derived from the code — wrong code or another uid’s code.', action: 'Check the code you saved at registration and the uid.' } },
     bad_recovery_code: { where: 'wallet', ko: { title: '복구 코드 형식이 아닙니다', cause: '복구 코드는 zkd1. 또는 zkd0. 으로 시작하는 한 줄입니다.', action: '보관한 코드를 그대로 붙여 넣으세요.' }, en: { title: 'Not a recovery code', cause: 'A recovery code is one line starting with zkd1. or zkd0.', action: 'Paste the code exactly as saved.' } },
     register_failed: { where: 'wallet', ko: { title: 'IdP 등록에 실패했습니다', cause: 'IdP 가 등록을 거절했습니다 — uid·비밀번호가 틀렸거나(401) 이미 등록된 uid 입니다(409). 자세히에 IdP 응답이 있습니다.', action: '데모 계정(12345 / password123, 67890 / alicepw)으로 다시 시도하세요.' }, en: { title: 'Registration with the IdP failed', cause: 'The IdP rejected it — wrong uid/password (401) or a uid that is already registered (409). The detail carries the IdP response.', action: 'Retry with a demo account (12345 / password123, 67890 / alicepw).' } },
@@ -770,7 +776,8 @@ window.DemoStrings = {
     relay_unavailable: { where: 'wallet', ko: { title: 'RP 릴레이에 닿지 못했습니다', cause: '승인 창이 RP 의 릴레이(/api/mode3/relay)를 부르지 못했습니다.', action: 'RP 서버가 떠 있는지 확인하고 다시 시도하세요.' }, en: { title: 'Could not reach the RP relay', cause: 'The approval window could not call the RP relay (/api/mode3/relay).', action: 'Check that the RP server is running and retry.' } },
     tx_pending: { where: 'wallet', ko: { title: '영수증이 아직 없습니다', cause: '트랜잭션은 보냈지만 제한 시간 안에 영수증이 오지 않았습니다.', action: '잠시 뒤 사용자 페이지의 세션 목록에서 확인하세요.' }, en: { title: 'No receipt yet', cause: 'The transaction was sent but no receipt arrived in time.', action: 'Check the session list on the user page shortly.' } },
     oidc_required: { where: 'aa', ko: { title: 'Google 본인 확인이 필요합니다', cause: 'Google 로 등록된 계정은 로그인마다 Google ID 토큰을 함께 내야 합니다.', action: 'RP 의 "Google 로 로그인" 버튼으로 다시 로그인하세요.' }, en: { title: 'Google verification required', cause: 'Accounts registered through Google must present a Google ID token on every login.', action: 'Log in again with the RP\'s "Sign in with Google" button.' } },
-    not_registered: { where: 'wallet', ko: { title: '지갑이 등록되지 않았습니다', cause: '이 지갑 에이전트에 IdP 등록이 없습니다.', action: '지갑 페이지의 "내 신원"에서 먼저 등록하세요.' }, en: { title: 'The wallet is not registered', cause: 'This wallet agent has no registration with the IdP.', action: 'Register first under "My identity" on the wallet page.' } },
+    // 지갑(mode3_wallet_agent.js, state.registration 없음)과 IdP(cia.js /cia/auth/code, pk_u 없는 계정) 양쪽에서 나는 코드다.
+    not_registered: { where: 'wallet', ko: { title: '등록되지 않았습니다', cause: '이 지갑 에이전트 또는 그 uid 의 IdP 계정에 아직 등록(커밋먼트와 공개키)이 없습니다.', action: '지갑 페이지의 "내 신원"에서, 또는 IdP 사용자 페이지에서 가입 뒤 "지갑으로 커밋먼트 등록"으로 먼저 등록하세요.' }, en: { title: 'Not registered', cause: 'This wallet agent, or that uid’s IdP account, has no registration (commitment and public key) yet.', action: 'Register first — under "My identity" on the wallet page, or by signing up and pressing "Register a commitment via the wallet" on the IdP user page.' } },
     cia_unavailable: { where: 'wallet', ko: { title: 'IdP 에 연결하지 못했습니다', cause: '지갑이 IdP 서버를 부르지 못했습니다 — 꺼져 있거나 주소가 다릅니다.', action: 'IdP 서버(:4100)가 떠 있는지 확인하고 다시 시도하세요.' }, en: { title: 'Could not reach the IdP', cause: 'The wallet failed to call the IdP server — it is down or configured at a different address.', action: 'Check that the IdP server (:4100) is running and try again.' } },
     witness_required: { where: 'wallet', ko: { title: 'Snap 동의가 빠졌습니다', cause: 'Snap 모드에서는 요청에 Snap 이 만든 증인이 함께 와야 하는데 오지 않았습니다.', action: '지갑 승인 창에서 Snap 동의를 마친 뒤 다시 시도하세요.' }, en: { title: 'The Snap consent is missing', cause: 'In Snap mode the request must carry a witness produced by the Snap, and none arrived.', action: 'Complete the Snap consent in the wallet approval window, then try again.' } },
     internal: { where: 'wallet', ko: { title: '서버에서 예상치 못한 오류가 났습니다', cause: '요청을 처리하던 중 서버가 예상하지 못한 오류를 냈습니다 — 원문은 "자세히"에 있습니다.', action: '"자세히"의 내용과 서버 로그를 확인하세요.' }, en: { title: 'The server hit an unexpected error', cause: 'The server threw an error it did not expect while handling the request — the original message is under "Details".', action: 'Check the message under "Details" and the server log.' } },
@@ -828,5 +835,19 @@ window.DemoStrings = {
     idp_auth_cancelled: { where: 'aa', ko: { title: '인증 창이 취소됐습니다', cause: '인증 창을 닫았거나 60초 안에 응답이 오지 않았습니다.', action: '로그인을 다시 눌러 인증 창을 새로 여세요.' }, en: { title: 'The authentication window was cancelled', cause: 'The authentication window was closed, or no response arrived within 60 seconds.', action: 'Press login again to reopen the authentication window.' } },
     idp_auth_bad_wallet: { where: 'aa', ko: { title: '지갑 오리진이 일치하지 않습니다', cause: '주소의 wallet 쿼리가 이 IdP 가 아는 지갑 오리진과 다릅니다 — 가짜 창이거나 설정이 바뀌었을 수 있습니다.', action: '지갑 팝업에서 다시 로그인을 시작하세요. 이 창을 직접 열었다면 닫으세요.' }, en: { title: 'The wallet origin does not match', cause: 'The wallet query in the address differs from the wallet origin this IdP knows — this may be a forged window, or the configuration changed.', action: 'Start the login again from the wallet popup. If you opened this window directly, close it.' } },
     bad_rp_key: { where: 'aa', ko: { title: 'RP 키가 올바르지 않습니다', cause: 'RP 서버에 설정한 키가 그 이름으로 만든 슬롯과 맞지 않습니다 — 키를 잘못 복사했거나 이름이 다릅니다.', action: 'RP 페이지가 보여 준 명령을 그대로 다시 복사해 쓰세요.' }, en: { title: 'The RP key is not valid', cause: 'The key configured on the RP server does not match the slot created with that name — the key was copied wrong, or the name differs.', action: 'Copy the command shown on the RP page again, exactly as given.' } },
+    // Task 10·11(F-9, 2026-10-23) — IdP RP 운영자 라우트(cia.js /cia/rp/signup, /cia/rp/create)가 내는 사유.
+    id_taken: { where: 'aa', ko: { title: '그 운영자 id 는 이미 쓰고 있습니다', cause: '같은 id 로 이미 가입된 운영자 계정이 있습니다(409).', action: '다른 id 를 쓰거나 그 id 로 로그인하세요.' }, en: { title: 'That operator id is already taken', cause: 'An operator account already exists with that id (409).', action: 'Use a different id, or log in with that id.' } },
+    bad_name: { where: 'aa', ko: { title: 'RP 이름 형식이 아닙니다', cause: '이름은 zk 로 시작하는 영문·숫자 1~15자여야 합니다(400).', action: '이름을 그 형식으로 고쳐 다시 만드세요.' }, en: { title: 'The RP name is not in the right format', cause: 'A name must start with "zk" and be 1–15 letters or digits (400).', action: 'Fix the name to that format and try again.' } },
+    name_taken: { where: 'aa', ko: { title: '내 RP 중에 같은 이름이 있습니다', cause: '같은 운영자 안에서 이미 그 이름으로 RP 를 만들었습니다(409).', action: '다른 이름을 쓰거나 내 RP 목록에서 그 항목을 확인하세요.' }, en: { title: 'You already have an RP with that name', cause: 'An RP with that name already exists under this operator (409).', action: 'Use a different name, or check that entry in your RP list.' } },
+    // F-9 — 지갑으로 커밋먼트를 등록하는 팝업(mode3/cia_user.html)의 수명 코드. page 는 그 팝업 자체의 UI 상태다.
+    timeout: { where: 'page', ko: { title: '응답이 제한 시간을 넘었습니다', cause: '지갑 팝업이 제한 시간 안에 결과를 보내지 않았습니다.', action: '팝업을 닫고 버튼을 다시 눌러 새로 여세요.' }, en: { title: 'The response took too long', cause: 'The wallet popup did not send a result within the time limit.', action: 'Close the popup and press the button again to reopen it.' } },
+    popup_closed: { where: 'page', ko: { title: '팝업이 결과 없이 닫혔습니다', cause: '지갑 팝업이 결과를 보내기 전에 닫혔습니다 — 직접 닫았거나 팝업에서 오류가 났습니다.', action: '버튼을 다시 눌러 팝업을 새로 여세요.' }, en: { title: 'The popup closed without a result', cause: 'The wallet popup closed before sending a result — it was closed manually, or it hit an error.', action: 'Press the button again to reopen it.' } },
+    popup_blocked: { where: 'page', ko: { title: '팝업이 차단됐습니다', cause: '브라우저의 팝업 차단 기능이 창을 막았습니다.', action: '이 사이트의 팝업을 허용한 뒤 버튼을 다시 누르세요.' }, en: { title: 'The popup was blocked', cause: "The browser's popup blocker stopped the window from opening.", action: 'Allow popups for this site, then press the button again.' } },
+    // RP 의 오프체인 로그인·재검증은 "거래 없음"만 받는다(lib/mode3_rp.js verifyLogin) — counter(공개 입력 [33])가 로그인용 값이 아니면 이 사유다.
+    bad_counter: { where: 'rp', ko: { title: '이 증명은 거래용입니다', cause: '증명의 counter(공개 입력 [33])가 로그인용 값(LOGIN_COUNTER)이 아니라 어떤 거래의 nonce 가 실려 있습니다.', action: '지갑에서 로그인·재검증으로 새 증명을 만들어 보내세요.' }, en: { title: 'This proof is for a transaction', cause: "The proof's counter (public input [33]) is not the login value (LOGIN_COUNTER) — it carries a transaction's nonce instead.", action: 'Make a fresh login/revalidation proof from the wallet and send that.' } },
+    // 체인 반영 대기(설계 2026-10-22 §3·§7, mode3_wallet_agent.js /wallet/bounds/apply, /wallet/tx/record) — pendingBounds 항목 하나를 체인에 올리는 경로의 사유.
+    bound_not_applied: { where: 'wallet', ko: { title: '상한이 아직 체인에 반영되지 않았습니다', cause: '거래는 들어갔지만 setSessionBound 가 더 낮추지 못했습니다(예: 이미 더 낮은 값이 있거나 다른 실패) — 에러가 아니라 상태입니다.', action: '대기 목록에 그대로 남아 있습니다 — "지금 반영"을 다시 눌러 보세요.' }, en: { title: 'The bound has not reached the chain yet', cause: 'The transaction went through but setSessionBound did not lower it (e.g. an even lower value is already set, or another failure) — this is a status, not an error.', action: 'It stays on the pending list — press "Apply now" again.' } },
+    no_pending_bound: { where: 'wallet', ko: { title: '그 대기 항목이 없습니다', cause: '이미 반영됐거나 지워진 pendingBounds 항목입니다 — 그 id 가 더 이상 없습니다.', action: '세션 목록을 새로고침해 지금 남아 있는 항목만 다시 누르세요.' }, en: { title: 'That pending item does not exist', cause: 'The pendingBounds entry was already applied or removed — its id no longer exists.', action: 'Refresh the session list and press only the items still shown.' } },
+    bound_wrong_account: { where: 'wallet', ko: { title: '이 세션의 계정과 대기 항목이 다릅니다', cause: '대기 항목이 가리키는 계정이 지금 세션(r_s)의 계정과 다릅니다 — 다른 세션으로 보내려 한 것입니다.', action: '그 대기 항목이 속한 RP 에서 로그인한 세션으로 다시 누르세요.' }, en: { title: "The session's account does not match this item", cause: "The pending item's account differs from the current session's (r_s) account — it would send to the wrong session.", action: 'Press it again from a session logged in at the RP that item belongs to.' } },
   },
 };

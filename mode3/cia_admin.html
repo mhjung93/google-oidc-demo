@@ -317,8 +317,9 @@
       if (list === undefined) { const p = document.createElement('p'); p.className = 'muted'; tte(p, 'working'); host.replaceChildren(p); return; }
       if (list === null) { const p = document.createElement('p'); p.className = 'muted'; tte(p, 'admin_load_failed'); host.replaceChildren(p); return; }
       if (!list.length) { const p = document.createElement('p'); p.className = 'muted'; tte(p, 'admin_no_sessions'); host.replaceChildren(p); return; }
-      // 좁은 창에서 7칸은 카드를 넘는다 — 기술적인 칸(만료 블록·체인)은 전문가 보기에서만 펼친다.
-      const t = table([['admin_col_session'], ['admin_col_status'], ['rp_col_agent'], ['admin_col_issued'], ['admin_col_expiry', true], ['admin_col_chain', true], ['admin_col_bound', true], ['admin_col_action']]);
+      // 좁은 창에서 8칸은 카드를 넘는다 — 기술적인 칸(만료 블록·체인)은 전문가 보기에서만 펼친다. bound(허용 거래 수)는
+      // 폐기·반영 추적에 바로 쓰이는 값이라(F-8, 수용 기준 §10.3) 전문가 조건 없이 늘 보인다.
+      const t = table([['admin_col_session'], ['admin_col_status'], ['rp_col_agent'], ['admin_col_issued'], ['admin_col_expiry', true], ['admin_col_chain', true], ['admin_col_bound'], ['admin_col_action']]);
       const body = t.tBodies[0];
       for (const s of list) {
         const row = body.insertRow();
@@ -331,7 +332,7 @@
         at.title = s.issuedAt ?? '';
         cell(row, String(s.max_height), 'expert');
         cell(row, String(s.chainid), 'expert');
-        cell(row, s.bound ?? '-', 'expert');
+        cell(row, s.bound ?? '-');
         const act = row.insertCell();
         if (active) act.appendChild(button('admin_revoke_session_btn', 'danger', () => revokeSession(uid, s.Cf_s)));
       }
@@ -573,7 +574,8 @@
       const host = $('revokedSessions');
       if (!revokedSessions) { placeholder(host, 'admin_need_secret'); return; }
       if (!revokedSessions.length) { placeholder(host, 'admin_revoked_sessions_empty'); return; }
-      const t = table([['admin_col_uid'], ['admin_col_cfs'], ['admin_col_chain'], ['admin_col_maxh'], ['admin_col_revoked_at'], ['admin_col_published']]);
+      // F-8: bound(허용 거래 수, 서버가 이미 낸다 — cia.js /cia/admin/revoked_sessions)를 만료 블록 옆에 보인다.
+      const t = table([['admin_col_uid'], ['admin_col_cfs'], ['admin_col_chain'], ['admin_col_maxh'], ['admin_col_bound'], ['admin_col_revoked_at'], ['admin_col_published']]);
       const body = t.tBodies[0];
       for (const s of revokedSessions) {
         const row = body.insertRow();
@@ -581,6 +583,7 @@
         cell(row, short(s.Cf_s));
         cell(row, String(s.chainid));
         cell(row, String(s.max_height));
+        cell(row, s.bound ?? '-');
         const at = cell(row, fmtAt(s.revokedAt));
         at.title = s.revokedAt ?? '';
         cell(row, badge(s.pending ? 'admin_pub_pending' : 'admin_pub_yes', s.pending ? 'warn' : 'ok'));

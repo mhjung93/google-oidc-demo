@@ -57,7 +57,7 @@
   // 자기가 아는 완료 신호(승인된 RP 가 있는가)만 넘긴다. 승인된 RP 가 있으면 그 전에 반드시 만들어졌으므로
   // demo.js 의 evaluate() 가 rp_create·approve 를 함께 done 처리한다(설계는 strings.js steps 의 Task 17 주석 참고).
   function renderGuide() {
-    const links = { idp_user: '/user' };
+    const links = { admin: '/admin', idp_user: '/user' };
     const approved = myRps.some((s) => s.status === 'approved');
     if (Demo.tour?.enabled) { Demo.tour.evaluate({ progress: { approved }, links }); return; }
     const done = approved ? ['rp_create', 'approve'] : [];
@@ -100,6 +100,7 @@
 
   $('opSignupBtn').addEventListener('click', async () => {
     const r = await post('/cia/rp/signup', { id: $('opId').value.trim(), pwd: $('opPwd').value });
+    $('opPwd').value = '';
     if (r.status === 201) verdict($('rpVerdict'), true, 'idp_rp_signup_ok_title', () => ({ summary: tt('idp_rp_signup_ok', { id: r.body.id }) || `가입됨 — id ${r.body.id}. 이 id 로 로그인하세요.` }));
     else verdict($('rpVerdict'), false, 'idp_rp_signup_failed', { reason: r.body?.reason ?? `HTTP ${r.status}`, detail: r.body });
   });
@@ -110,7 +111,12 @@
     else verdict($('rpVerdict'), true, 'login_ok', () => ({ summary: tt('idp_rp_login_ok', { id: r.body.id }) || `로그인됨 — id ${r.body.id}.` }));
     await refreshRpList();
   });
-  $('opLogoutBtn').addEventListener('click', async () => { await post('/cia/rp/logout'); await refreshRpList(); });
+  $('opLogoutBtn').addEventListener('click', async () => {
+    await post('/cia/rp/logout');
+    // 로그아웃 뒤 다른 운영자가 로그인할 수 있다 — 이 세션에서 지금만 기억해 둔 키·명령(justCreated)은 그 운영자 것이 아니므로 비운다.
+    for (const k of Object.keys(justCreated)) delete justCreated[k];
+    await refreshRpList();
+  });
   $('rpCreateBtn').addEventListener('click', async () => {
     const r = await post('/cia/rp/create', { name: $('rpName').value.trim() });
     if (r.status === 201) {

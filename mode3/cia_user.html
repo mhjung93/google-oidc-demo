@@ -13,6 +13,8 @@
 <body data-page="idp_user">
 <header id="demoBar"></header>
 <main class="cards">
+  <!-- F-0: /account 는 Google/OIDC 계정 관리·재로그인 폐기 UI — 이 페이지(비밀번호 계정)와는 다른 입구라 서로 가리킨다. -->
+  <p><a href="/account" data-i18n="user_google_account_link">Google 계정 관리</a></p>
   <section class="card" id="signupCard">
     <h3 data-i18n="idp_signup_title">계정 만들기</h3>
     <p class="desc" data-i18n="idp_signup_desc">비밀번호만 정하면 IdP 가 uid 를 배정합니다. 속성은 IdP 에 보내지 않습니다.</p>
@@ -50,7 +52,7 @@
   // 안내 바(Task 17b): 체험 모드일 때만 공통 레이어(Demo.tour.evaluate)가 9단계를 통째로 판정한다 — 이 페이지는
   // 자기가 아는 완료 신호(등록·폐기)만 넘긴다. 꺼져 있으면 그 신호만으로 직접 done/current 를 그린다.
   function renderGuide() {
-    const links = { idp_rp: '/rp', wallet: walletOrigin };
+    const links = { admin: '/admin', idp_rp: '/rp', wallet: walletOrigin };
     if (Demo.tour?.enabled) { Demo.tour.evaluate({ progress: { registered: !!me?.registered, revoked: progress.revoked }, links }); return; }
     const done = [];
     if (me?.registered) done.push('register');
@@ -87,6 +89,7 @@
 
   $('signupBtn').addEventListener('click', async () => {
     const r = await post('/cia/signup', { pwd: $('signupPwd').value });
+    $('signupPwd').value = '';
     if (r.status === 201) {
       $('loginUid').value = r.body.uid;
       verdict($('userVerdict'), true, 'idp_signup_ok_title', () => ({ summary: tt('idp_signup_ok', { uid: r.body.uid }) || `가입됨 — uid ${r.body.uid}. 이 uid 로 로그인하세요.` }));
@@ -145,7 +148,7 @@
       // 지갑 오리진이, 그것도 우리가 연 그 창이 보낸 것만 본다(ev.source 는 심층 방어 — 같은 오리진의 다른 창이 끼어들지 못하게 한다).
       if (ev.origin !== walletOrigin0 || ev.source !== popup || !ev.data) return;
       if (ev.data.type === 'mode3-authorize-ready') { popup.postMessage({ type: 'mode3-register', uid: me.uid, code: c.body.code, ciaUrl: location.origin }, walletOrigin0); return; }
-      if (ev.data.type !== 'mode3-register-result') return;
+      if (ev.data.type !== 'mode3-register-result' || !ev.data.result) return;
       finish(() => {
         const r = ev.data.result;
         verdict($('userVerdict'), Boolean(r.ok), r.ok ? 'idp_register_ok_title' : 'idp_register_failed', r.ok ? () => ({ summary: tt('idp_register_ok', { slot: r.slot }) || `등록됨 — 슬롯 #${r.slot}` }) : { reason: r.reason, detail: r.detail });

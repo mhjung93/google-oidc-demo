@@ -60,6 +60,13 @@
     // 쿼리의 wallet 이 이 IdP 가 아는 지갑 오리진과 글자 그대로 같아야 한다 — 다르면 가짜 창일 수 있다(§4).
     if (!walletOrigin || walletQuery !== walletOrigin) { setVerdict($('authVerdict'), false, 'idp_auth_bad_wallet', { reason: 'idp_auth_bad_wallet' }); disableForm(); return; }
 
+    // M4: 로그인을 시도했지만 실패했고(예: auid_mismatch) 사용자가 재시도 없이 이 창을 닫으면, 지갑은 "응답 없음"으로만
+    // 본다 — 성공 메시지와 같은 대상 오리진(walletOrigin, 지금 검증한 값 하나)으로 실패 사유를 opener 에 알린다.
+    let lastReason = null;
+    window.addEventListener('pagehide', () => {
+      if (lastReason) window.opener?.postMessage({ type: 'mode3-idp-auth', nonce, error: lastReason }, walletOrigin);
+    });
+
     $('authGo').addEventListener('click', async () => {
       const body = { uid: $('authUid').value.trim(), pwd: $('authPwd').value, auid: $('authAuid').value.trim() };
       Demo.verdict($('authVerdict'), { pending: true, title: Demo.t('working') || '처리 중' });
@@ -70,12 +77,14 @@
       } catch (e) { clearPwd(); setVerdict($('authVerdict'), false, 'idp_login_failed', { detail: e.message }); return; }
       if (r.status === 200) {
         clearPwd();
+        lastReason = null;
         // nonce·code 만 건넨다 — 대상 오리진은 *가 아니라 지금 검증한 지갑 오리진 하나뿐이다(addendum "대상 오리진 은 지갑 오리진").
         window.opener?.postMessage({ type: 'mode3-idp-auth', nonce, code: r.body.code }, walletOrigin);
         setVerdict($('authVerdict'), true, 'idp_auth_sent_title', { summary: Demo.t('idp_auth_sent') });
         setTimeout(() => window.close(), 300);
       } else {
         clearPwd();
+        lastReason = r.body?.reason ?? `http_${r.status}`;
         setVerdict($('authVerdict'), false, 'idp_login_failed', { reason: r.body?.reason ?? `HTTP ${r.status}`, detail: r.body });
       }
     });
