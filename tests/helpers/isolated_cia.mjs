@@ -82,6 +82,10 @@ export async function startIsolatedCia(opts = {}) {
     GOOGLE_CLIENT_ID: '',
     // 데모 설정(2026-10-21)은 기본으로 끈다 — 데모 스크립트가 내보낸 값이 셸에 남아 있어도 테스트 IdP 는 시크릿을 묻는다. 켜는 테스트만 extraEnv 로.
     CIA_ADMIN_OPEN: '',
+    // 계정·발급 정책(Task 10, 2026-10-22): 기존 테스트는 시드 데모 계정(12345·67890)과 발급 인증 없음(key)을 전제한다 — 고정한다.
+    // CIA_DEMO_ACCOUNTS=''·CIA_ISSUE_AUTH='code' 를 보는 테스트는 extraEnv 로 덮는다.
+    CIA_DEMO_ACCOUNTS: '1',
+    CIA_ISSUE_AUTH: '',
     ...extraEnv,
   };
   const logFile = path.join(dir, 'cia.log');

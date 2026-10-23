@@ -87,6 +87,7 @@ CHAIN=(
   tests/test_publish_v4_cycle.mjs
   tests/test_cia_register_issue.mjs
   tests/test_cia_revoke_bound.mjs
+  tests/test_cia_accounts.mjs
   tests/test_cia_startup.mjs
   tests/test_cia_cors.mjs
   tests/test_cia_admin_open.mjs

@@ -17,9 +17,10 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import session from 'express-session';
 import path from 'node:path';
 import fs from 'node:fs';
-import { randomBytes, timingSafeEqual, createHash } from 'node:crypto';
+import { randomBytes, timingSafeEqual, createHash, scryptSync } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
@@ -142,6 +143,12 @@ const DEMO_ACCOUNTS = {
   testuser: { password: 'password123', uid: '12345' },
   alice: { password: 'alicepw', uid: '67890' },
 };
+// Task 10(B1, 2026-10-22 스펙 §3.1~3.3): 발급 인증 정책 — key(기본·테스트) = /cia/issue 는 sig_u 만. code(데모) = provider 'demo' 계정은
+// /cia/auth/code 로 받은 1회용 코드(auth_code)가 추가로 필요하다. DEMO_SEED 는 기동 때 DEMO_ACCOUNTS(testuser·alice)를 상태에 심는다 —
+// 옛 흐름·기존 테스트 호환용이고, 가입(POST /cia/signup)만 쓰는 데모에서는 꺼 둔다(CIA_DEMO_ACCOUNTS 미설정).
+const ISSUE_AUTH = process.env.CIA_ISSUE_AUTH === 'code' ? 'code' : 'key';
+const DEMO_SEED = process.env.CIA_DEMO_ACCOUNTS === '1';
+const CODE_TTL_MS = Number(process.env.CIA_CODE_TTL_MS) || 5 * 60_000;
 
 // ---- 키 ----
 // EdDSA-Poseidon(credential 서명)과 secp256k1(root 게시) 둘. 파일은 0600.
@@ -273,12 +280,22 @@ async function loadState() {
       `스키마를 되돌리거나(CIA_ATTR_SCHEMA_FILE) 상태 파일을 새로 시작할 것.`);
     process.exit(1);
   }
+  // 데모 시드(Task 10, 2026-10-22): CIA_DEMO_ACCOUNTS=1 일 때만 기동 때 DEMO_ACCOUNTS(testuser·alice)를 상태에 넣는다 — 가입 전용
+  // 데모(§8 리셋 스크립트)에서는 꺼 둔다. 이미 있으면(재시작) 건드리지 않는다 — pwHash 를 매번 새로 만들지 않는다.
+  let seeded = false;
+  if (DEMO_SEED) {
+    for (const a of Object.values(DEMO_ACCOUNTS)) {
+      if (state.accounts[a.uid]) continue;
+      state.accounts[a.uid] = { ...newPw(a.password), createdAt: new Date().toISOString(), pk_u: null, auid: null, slot: null, provider: 'demo', tampered: false, disabled: false, creds: [], sessions: [], receipt: null, slotRetired: false };
+      seeded = true;
+    }
+  }
   publishedTree = await buildPublishedTree();
   tree = await createRevocationTree();
   for (const l of state.revoked) await tree.insert(BigInt(l));
   registry = await createRegistryTree(state.registry.depth);
   for (const [i, leaf] of Object.entries(state.registry.leaves)) registry.set(Number(i), BigInt(leaf));
-  if (migrated.notes.length || schemaHashRecorded) persist();
+  if (migrated.notes.length || schemaHashRecorded || seeded) persist();
   // 손으로 만든 상태 파일 방어(리프 비어 있는 슬롯 채움): 활성 자격증명의 리프를 채운다 — Poseidon 이 비동기라 이행 함수가 못 한다.
   let filled = 0;
   for (const [uid, acct] of Object.entries(state.accounts)) {
@@ -340,6 +357,16 @@ function secretMatches(a, b) {
   const A = Buffer.from(a), B = Buffer.from(b);
   return A.length === B.length && timingSafeEqual(A, B);
 }
+// 계정 비밀번호(Task 10, 스펙 §3.1). scrypt(N=16384, r=8, p=1) — 보안 리뷰(2026-10-23)로 브리프·스펙의 sha256(salt‖pwd) 대신
+// Node 내장 KDF 로 바꿨다(별도 의존성 없음). pwAlgo 를 계정에 같이 적어 두어 나중에 다른 알고리즘으로 옮길 길을 남긴다.
+// 비밀번호·salt·해시는 로그에 남기지 않는다.
+const hashPw = (saltHex, pwd) => scryptSync(String(pwd), Buffer.from(saltHex, 'hex'), 32, { N: 16384, r: 8, p: 1 }).toString('hex');
+const newPw = (pwd) => { const pwSalt = randomBytes(16).toString('hex'); return { pwSalt, pwHash: hashPw(pwSalt, pwd), pwAlgo: 'scrypt' }; };
+const pwOk = (acct, pwd) => {
+  if (!acct?.pwHash || !acct?.pwSalt || typeof pwd !== 'string') return false;
+  const a = Buffer.from(acct.pwHash, 'hex'), b = Buffer.from(hashPw(acct.pwSalt, pwd), 'hex');
+  return a.length === b.length && timingSafeEqual(a, b);
+};
 function requireAdmin(req, res, next) {
   if (ADMIN_OPEN) return next();
   if (!ADMIN_SECRET) return res.status(503).json({ error: 'admin endpoints disabled: CIA_ADMIN_SECRET is not configured' });
@@ -421,9 +448,31 @@ async function receiptFor(uid) {
   return acct.receipt;
 }
 
+// ---- 1회용 코드(Task 10, 스펙 §3.3) ----
+// state.codes 에 저장한다(메모리가 아니다) — 재시작 뒤에도 expiresAt 검사로 일관되게 만료된다. 32B hex, uid·purpose·auid 에 묶여
+// 다른 계정·다른 목적(register vs issue)에는 못 쓴다. 발급마다 만료분을 함께 쓸어 상태 파일이 자라지 않게 한다.
+function issueCode({ uid, purpose, auid = null }) {
+  const code = randomBytes(32).toString('hex');
+  state.codes[code] = { uid, purpose, auid, expiresAt: Date.now() + CODE_TTL_MS };
+  for (const [k, v] of Object.entries(state.codes)) if (v.expiresAt < Date.now()) delete state.codes[k];
+  persist();
+  return { code, expiresAt: state.codes[code].expiresAt };
+}
+/** 1회용 코드 소비 — 있든 맞든 틀리든 조회된 코드는 지운다(브루트포스 재시도 방지). 맞으면 true. */
+function consumeCode(code, { uid, purpose, auid = null }) {
+  const c = typeof code === 'string' ? state.codes[code] : null;
+  if (!c) return false;
+  delete state.codes[code];
+  persist();
+  return c.expiresAt >= Date.now() && c.uid === uid && c.purpose === purpose && (auid === null || c.auid === auid);
+}
+
 // ---- 앱 ----
 const app = express();
 app.use(express.json({ limit: '256kb' }));
+// 사용자 세션(Task 10, 스펙 §3.2): 메모리 저장소, 쿠키 cia.sid. 재기동하면 로그인이 풀린다(데모 수용) —
+// CIA_SESSION_SECRET 이 없으면 기동마다 난수를 쓴다.
+app.use(session({ name: 'cia.sid', secret: process.env.CIA_SESSION_SECRET || randomBytes(32).toString('hex'), resave: false, saveUninitialized: false, cookie: { httpOnly: true, sameSite: 'lax' } }));
 
 // 사용자 오리진이 브라우저에서 직접 부르는 5 개 POST 라우트의 프리플라이트(계획 2026-10-15 Task 6).
 for (const p of ['/cia/register', '/cia/issue', '/cia/slot', '/cia/revoke', '/cia/account/self_revoke']) app.options(p, userCors);
@@ -547,13 +596,59 @@ app.post('/cia/rps/:arid/deny', requireAdmin, (req, res) => {
   res.json({ arid: req.params.arid, status: e.status });
 });
 
+// ---- Task 10(B1, 2026-10-22 스펙 §3.1~3.3): 사용자 계정·세션·1회용 코드 ----
+// 모두 같은 오리진(IdP 자신의 /user·/login 페이지)에서만 부른다 — CORS 를 열지 않는다(스펙 §3.3).
+const requireUser = (req, res, next) => { if (!req.session?.uid || !state.accounts[req.session.uid]) return res.status(401).json({ error: 'login required' }); next(); };
+/** 사용자당 활성 자격증명의 Cf_u(없으면 null) — /cia/user/me·/cia/accounts 가 같이 쓴다. */
+function activeCfU(a) { return (a.creds ?? []).find((c) => !c.revoked)?.Cf_u ?? null; }
+
+app.post('/cia/signup', (req, res) => {
+  const { pwd } = req.body ?? {};
+  if (typeof pwd !== 'string' || pwd.length < 8) return res.status(400).json({ error: 'pwd 는 8자 이상', reason: 'signup_failed' });
+  const uid = String(state.nextUid++);
+  state.accounts[uid] = { ...newPw(pwd), createdAt: new Date().toISOString(), pk_u: null, auid: null, slot: null, provider: 'demo', tampered: false, disabled: false, creds: [], sessions: [], receipt: null, slotRetired: false };
+  persist();
+  res.status(201).json({ uid });
+});
+app.post('/cia/user/login', (req, res) => {
+  const { uid, pwd } = req.body ?? {};
+  if (!isDec(uid) || !pwOk(state.accounts[uid], pwd)) return res.status(401).json({ error: 'invalid credentials' });
+  // 세션 고정 방지(보안 리뷰 2026-10-23): 로그인마다 세션 id 를 새로 받는다 — 로그인 전에 심어 둔 sid 로 로그인 뒤 들어오지 못하게.
+  req.session.regenerate((err) => {
+    if (err) return res.status(500).json({ error: 'session' });
+    req.session.uid = uid;
+    req.session.save((e2) => (e2 ? res.status(500).json({ error: 'session' }) : res.json({ uid })));
+  });
+});
+app.post('/cia/user/logout', (req, res) => {
+  req.session.destroy(() => { res.clearCookie('cia.sid'); res.json({ ok: true }); });
+});
+app.get('/cia/user/me', requireUser, (req, res) => {
+  const uid = req.session.uid, a = state.accounts[uid];
+  res.json({ uid, registered: Boolean(a.pk_u), auid: a.auid, slot: a.slot, provider: a.provider, disabled: a.disabled, activeCf_u: activeCfU(a), registryLeaf: a.slot === null ? null : registry.leafAt(a.slot).toString() });
+});
+app.post('/cia/user/register_code', requireUser, (req, res) => {
+  const a = state.accounts[req.session.uid];
+  if (a.pk_u) return res.status(409).json({ error: 'already registered', reason: 'already_registered' });
+  res.json(issueCode({ uid: req.session.uid, purpose: 'register' }));
+});
+// 인증 창(§4)이 부른다 — 세션 없이도 된다. pwd 검사 → 등록 상태 → auid 일치 순으로 본다(틀린 비밀번호에는 등록 여부를 알려주지 않는다).
+app.post('/cia/auth/code', (req, res) => {
+  const { uid, pwd, auid } = req.body ?? {};
+  const a = isDec(uid) ? state.accounts[uid] : null;
+  if (!pwOk(a, pwd)) return res.status(401).json({ error: 'invalid credentials', reason: 'invalid_credentials' });
+  if (!a.pk_u) return res.status(409).json({ error: 'not registered', reason: 'not_registered' });
+  if (!isDec(auid) || BigInt(auid).toString() !== a.auid) return res.status(403).json({ error: 'auid mismatch', reason: 'auid_mismatch' });
+  res.json(issueCode({ uid, purpose: 'issue', auid: a.auid }));
+});
+
 // V11 §3.1 등록. 지갑이 auid = Poseidon(T_AUID, uid, s_u) 와 등록 키 pk_u 를 낸다 — IdP 는 소유 증명 서명만 보고 슬롯 번호를 배정한다. 속성은 받지 않는다(D15).
 // 신원은 데모 계정 {uid, pwd} 또는 Google ID 토큰 {id_token}(OIDC 래퍼 2026-10-16 — uid 는 IdP 가 검증한 sub 로 유도, nonce 는 pk_u 에 묶임) 중 하나로 확인한다.
 app.post('/cia/register', userCors, async (req, res) => {
-  const { uid: uidIn, pwd, id_token, auid, pk_u, sig_reg } = req.body ?? {};
+  const { uid: uidIn, pwd, code, id_token, auid, pk_u, sig_reg } = req.body ?? {};
   if (!isDec(auid) || !isPt(pk_u) || !sig_reg) return res.status(400).json({ error: 'auid, pk_u{x,y}, sig_reg required' });
-  const demoPath = uidIn !== undefined || pwd !== undefined, oidcPath = id_token !== undefined;
-  if (demoPath === oidcPath) return res.status(400).json({ error: '{uid, pwd} 또는 {id_token} 중 하나만' });   // 둘 다 없거나 둘 다 있음
+  const demoPath = uidIn !== undefined, oidcPath = id_token !== undefined;
+  if (demoPath === oidcPath) return res.status(400).json({ error: '{uid, pwd 또는 code} 또는 {id_token} 중 하나만' });   // 둘 다 없거나 둘 다 있음
   let uid, provider;
   if (oidcPath) {
     if (typeof id_token !== 'string') return res.status(400).json({ error: 'id_token 은 문자열' });
@@ -562,9 +657,14 @@ app.post('/cia/register', userCors, async (req, res) => {
     if (o.nonce !== regNonce(pk_u)) return res.status(400).json({ error: 'oidc_nonce_mismatch', reason: 'oidc_nonce_mismatch', detail: 'nonce 가 요청의 pk_u 와 다르다' });
     uid = o.uid; provider = OIDC.provider;
   } else {
-    if (!isDec(uidIn) || typeof pwd !== 'string') return res.status(400).json({ error: 'uid, pwd, auid, pk_u{x,y}, sig_reg required' });
-    const acct = Object.values(DEMO_ACCOUNTS).find((a) => a.uid === uidIn);
-    if (!acct || acct.password !== pwd) return res.status(401).json({ error: 'invalid credentials' });
+    if (!isDec(uidIn)) return res.status(400).json({ error: 'uid, (pwd 또는 code), auid, pk_u{x,y}, sig_reg required' });
+    // 가입 계정(§3.1): POST /cia/user/register_code 로 받은 1회용 코드(purpose register), 또는(API·옛 흐름 호환) 가입 비밀번호.
+    if (code !== undefined) {
+      if (!consumeCode(code, { uid: uidIn, purpose: 'register' })) return res.status(401).json({ error: 'bad_code', reason: 'bad_code' });
+    } else {
+      if (typeof pwd !== 'string') return res.status(400).json({ error: 'uid, (pwd 또는 code), auid, pk_u{x,y}, sig_reg required' });
+      if (!pwOk(state.accounts[uidIn], pwd)) return res.status(401).json({ error: 'invalid credentials' });
+    }
     uid = uidIn; provider = 'demo';
   }
   const made = await registerAccount({ uid, provider, auid, pk_u, sig_reg });
@@ -576,7 +676,8 @@ app.post('/cia/register', userCors, async (req, res) => {
 async function registerAccount({ uid, provider, auid, pk_u, sig_reg }) {
   const fail = (status, body) => ({ error: { status, body } });
   if (!isDec(auid) || !isPt(pk_u) || !sig_reg) return fail(400, { error: 'auid, pk_u{x,y}, sig_reg required' });
-  if (state.accounts[uid]) return fail(409, { error: 'already registered' });
+  // Task 10(B1): 가입만 하고 등록 전인 계정(pk_u:null)은 막지 않는다 — "이미 등록됨" 은 pk_u 가 채워져 있을 때뿐이다.
+  if (state.accounts[uid]?.pk_u) return fail(409, { error: 'already registered' });
   if (BigInt(auid) >= F.p) return fail(400, { error: 'auid is not a field element' });   // Poseidon 출력 범위 — 비정규 값은 등록부 리프·π 와 어긋난다
   if (!(await isValidPoint(pointFromStrings(pk_u)))) return fail(400, { error: 'pk_u is not a valid subgroup point' });
   let ok = false;
@@ -586,9 +687,11 @@ async function registerAccount({ uid, provider, auid, pk_u, sig_reg }) {
     ok = sigReg !== null && eddsa.verifyPoseidon(m, sigReg, [F.e(BigInt(pk_u.x)), F.e(BigInt(pk_u.y))]);
   } catch { ok = false; }
   if (!ok) return fail(400, { error: 'bad_registration_signature' });
-  if (state.accounts[uid]) return fail(409, { error: 'already registered' });   // await 사이 경합
+  if (state.accounts[uid]?.pk_u) return fail(409, { error: 'already registered' });   // await 사이 경합
   const slot = state.registry.next++;
-  state.accounts[uid] = { pk_u: { x: BigInt(pk_u.x).toString(), y: BigInt(pk_u.y).toString() }, auid: BigInt(auid).toString(), slot, provider, tampered: false, disabled: false, creds: [], sessions: [], receipt: null, slotRetired: false };
+  // 가입 때 만든 레코드(pwSalt·pwHash·createdAt)가 있으면 그 자리를 채운다 — 새 객체로 덮어 비밀번호를 잃지 않는다(Task 10).
+  const acct = state.accounts[uid] ??= { pwSalt: null, pwHash: null, pwAlgo: null, createdAt: new Date().toISOString(), tampered: false, disabled: false, creds: [], sessions: [], receipt: null, slotRetired: false };
+  Object.assign(acct, { pk_u: { x: BigInt(pk_u.x).toString(), y: BigInt(pk_u.y).toString() }, auid: BigInt(auid).toString(), slot, provider });
   persist();
   return { slot };
 }
@@ -618,7 +721,7 @@ app.post('/cia/slot', userCors, async (req, res) => {
 // /cia/issue — 데모 계정은 sig_u 만, 래퍼(Google) 계정은 sig_u + id_token(+첫 로그인이면 registration). 2026-10-16.
 app.post('/cia/issue', userCors, async (req, res) => {
   try {
-    const { uid, auid_s, arid_s, C_u_pt, C_s_pt, chainid, allowAgent, max_height, proof_idp, sig_u, id_token, registration } = req.body ?? {};
+    const { uid, auid_s, arid_s, C_u_pt, C_s_pt, chainid, allowAgent, max_height, proof_idp, sig_u, id_token, registration, auth_code } = req.body ?? {};
     if (!isDec(uid) || !isDec(auid_s) || !isDec(arid_s) || !isPt(C_u_pt) || !isPt(C_s_pt) || !isDec(chainid) || (allowAgent !== '0' && allowAgent !== '1') || !isDec(max_height) || !proof_idp || typeof proof_idp !== 'object' || !sig_u) {
       return res.status(400).json({ error: 'uid, auid_s, arid_s, C_u_pt{x,y}, C_s_pt{x,y}, chainid, allowAgent("0"|"1"), max_height, proof_idp, sig_u required' });
     }
@@ -648,6 +751,11 @@ app.post('/cia/issue', userCors, async (req, res) => {
     // 래퍼 계정(provider 가 demo 가 아님)은 발급마다 토큰이 있어야 한다 — Google 이 매 로그인을 확인한다는 의미다.
     if (acct.provider && acct.provider !== 'demo' && !oidcClaims) return res.status(401).json({ error: 'oidc_required', reason: 'oidc_required' });
     if (oidcClaims && oidcClaims.nonce !== issueNonce(acct.pk_u, arid_s)) return res.status(400).json({ error: 'oidc_nonce_mismatch', reason: 'oidc_nonce_mismatch', detail: 'nonce 가 이 지갑·이 로그인(arid_s)과 다르다' });
+    // 발급 인증 정책(CIA_ISSUE_AUTH=code, Task 10 B1, 2026-10-22): demo 계정은 §4 의 인증 창이 낸 1회용 코드가 있어야 발급한다.
+    if (ISSUE_AUTH === 'code' && acct.provider === 'demo') {
+      if (typeof auth_code !== 'string') return res.status(401).json({ error: 'auth_code required', reason: 'auth_code_required' });
+      if (!consumeCode(auth_code, { uid, purpose: 'issue', auid: acct.auid })) return res.status(401).json({ error: 'bad_code', reason: 'bad_code' });
+    }
     const chainStr = BigInt(chainid).toString();
     if (CHAIN_RPCS.size === 0) return res.status(503).json({ error: 'chain id unknown: CIA_CHAIN_RPCS not configured and RPC unreachable at startup' });
     if (!CHAIN_RPCS.has(chainStr)) return res.status(400).json({ error: `bad chainid ${chainStr}: allowed ${[...CHAIN_RPCS.keys()].join(',')}` });
@@ -1129,7 +1237,7 @@ app.post('/cia/account/set_disabled', requireAdmin, (req, res) => {
 
 // 관리자 계정 목록(관리 페이지의 계정 목록용). activeCred 는 위의 기존 헬퍼(사용자당 활성 자격증명 하나).
 app.get('/cia/accounts', requireAdmin, (req, res) => res.json({
-  accounts: Object.entries(state.accounts).map(([uid, a]) => ({ uid, disabled: a.disabled, activeCf_u: activeCred(uid)?.Cf_u ?? null, slot: a.slot, tampered: Boolean(a.tampered), registryLeaf: state.registry.leaves[a.slot] ?? '0', provider: a.provider ?? 'demo' })),
+  accounts: Object.entries(state.accounts).map(([uid, a]) => ({ uid, disabled: a.disabled, activeCf_u: activeCfU(a), slot: a.slot, tampered: Boolean(a.tampered), registryLeaf: state.registry.leaves[a.slot] ?? '0', provider: a.provider ?? 'demo' })),
 }));
 
 // ---- V9 등록부 관리(설계 2026-10-01 §9) ----
@@ -1202,11 +1310,12 @@ app.post('/cia/account/self_revoke', userCors, async (req, res) => {
       uid = o.uid;
     } else {
       if (!isDec(uidIn) || typeof pwd !== 'string') return res.status(400).json({ error: 'uid, pwd required' });
-      const acct = Object.values(DEMO_ACCOUNTS).find((a) => a.uid === uidIn);
-      if (!acct || !secretMatches(pwd, acct.password)) return res.status(401).json({ error: 'invalid credentials' });
+      if (!pwOk(state.accounts[uidIn], pwd)) return res.status(401).json({ error: 'invalid credentials' });
       uid = uidIn;
     }
-    if (!state.accounts[uid]) return res.status(404).json({ error: 'unknown account' });
+    // Task 10(B1): 가입만 하고 등록 전인 계정(pk_u:null)도 "미등록" — self_revoke 는 등록된 자격증명이 있어야 뜻이 있다
+    // (registerAccount 의 "이미 등록됨" 판정과 같은 기준).
+    if (!state.accounts[uid]?.pk_u) return res.status(404).json({ error: 'unknown account' });
     // revokeAccount 안에서 disabled 가 동기적으로(await 전에) 걸린다(설계 §6.5.1) — 재발급 차단은 트리·게시와 분리된
     // 별개의 효력이다. 슬롯은 체인을 읽지 않고 활성 사용자 자격증명 하나에서 나오므로(2026-09-21 §3.6) 체인이 죽어 있어도 걸린다.
     const r = await revokeAccount(uid);
