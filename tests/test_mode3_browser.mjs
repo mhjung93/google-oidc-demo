@@ -541,7 +541,18 @@ try {
     const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]); answers.push(true);
     await completeIdpAuth(popup);
     await popup.waitForEvent('close');
+    // F-14 Z(2026-10-23): snap 모드 "지금 반영"은 record 요청에 pendingBoundId 를 실어야 하고, 응답은 applied:true 여야
+    // 행이 사라져야 한다(2xx 만으로는 부족하다 — boundApplyVerdict 가 실제 온체인 상한을 다시 읽어 판정한다).
+    const recordResp = walletPage.waitForResponse(async (r) => {
+      if (!r.url().endsWith('/wallet/tx/record') || r.request().method() !== 'POST') return false;
+      return r.status() !== 202;                                    // 202 pending 은 최종 응답이 아니다 — 계속 기다린다
+    });
     await walletPage.click('#boundsList button.apply');
+    const recordRes = await recordResp;
+    const recordReqBody = JSON.parse(recordRes.request().postData() ?? '{}');
+    const recordResBody = await recordRes.json();
+    assert.ok(typeof recordReqBody.pendingBoundId === 'string' && recordReqBody.pendingBoundId.length > 0, `record 요청에 pendingBoundId 가 있어야 한다: ${j(recordReqBody)}`);
+    assert.equal(recordResBody.applied, true, `record 응답이 applied:true 여야 한다: ${j(recordResBody)}`);
     await walletPage.waitForFunction(() => !/반영 대기/.test(document.querySelector('#boundsList')?.textContent ?? ''), undefined, { timeout: 60_000 });
   });
 

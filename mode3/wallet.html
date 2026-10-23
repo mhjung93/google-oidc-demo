@@ -1179,10 +1179,12 @@
       }
       throw new Error(`영수증을 못 받았다(txHash=${txHash})`);
     }
-    /** 202 pending 이면 몇 번 다시 묻는다 — 에이전트는 기다리지 않는다(스펙 §3.3). */
-    async function recordTx(r_s, txHash, tries = 30) {
+    /** 202 pending 이면 몇 번 다시 묻는다 — 에이전트는 기다리지 않는다(스펙 §3.3). pendingBoundId 가 있으면
+     *  "지금 반영"(snap 모드)의 record 요청에 함께 실어 보낸다 — 에이전트가 applied/alreadyLower/bound_not_applied
+     *  판정을 매겨 돌려준다(2026-10-23 Z). */
+    async function recordTx(r_s, txHash, pendingBoundId = null, tries = 30) {
       for (let i = 0; i < tries; i++) {
-        const r = await postJson('/wallet/tx/record', { r_s, txHash });
+        const r = await postJson('/wallet/tx/record', { r_s, txHash, ...(pendingBoundId ? { pendingBoundId } : {}) });
         if (r.status !== 202) return r;
         await sleep(700);
       }
@@ -1194,7 +1196,7 @@
      * 모양이다(walletAddr·factoryAddress·deployNeeded·deployCalldata·calldata). 배포가 필요하면 먼저 배포해 영수증을
      * 확인한 뒤 execute 를 보내고 /wallet/tx/record 로 받는다. 실패는 stage 로 구분해 돌려준다 — 결과 카드는 호출자가 그린다.
      */
-    async function submitPrepared(prep, rsKey) {
+    async function submitPrepared(prep, rsKey, { pendingBoundId = null } = {}) {
       const eth = requireEthereum();
       let deployHash = null;
       if (prep.deployNeeded) {
@@ -1211,7 +1213,7 @@
       txLog('execute 트랜잭션 — MetaMask 확인 창을 확인하세요.');
       const txHash = await eth.request({ method: 'eth_sendTransaction', params: [{ from: account, to: prep.walletAddr, data: prep.calldata }] });
       txLog(`txHash=${txHash} — 영수증 대기…`);
-      const rec = await recordTx(rsKey, txHash);
+      const rec = await recordTx(rsKey, txHash, pendingBoundId);
       if (rec.status !== 200) {
         txLog(errText(rec.status, rec.body));
         return { ok: false, stage: 'record', status: rec.status, body: rec.body };
@@ -1262,13 +1264,19 @@
         }
         if (cfg.secrets === 'snap') {
           await ensureConnected();
-          const r = await submitPrepared(b, p.applicableSession);
+          const r = await submitPrepared(b, p.applicableSession, { pendingBoundId: b.pendingBoundId });
           if (!r.ok) {
             if (r.stage === 'deploy') { setVerdict($('boundsVerdict'), false, 'wallet_bounds_apply_failed', () => ({ summary: tt('wallet_tx_deploy_failed') || undefined, detail: r.detail })); return; }
             setVerdict($('boundsVerdict'), false, 'wallet_bounds_apply_failed', () => ({ summary: tt('wallet_tx_record_failed') || undefined, reason: r.body.reason ?? `HTTP ${r.status}`, detail: safeDetail(r.body) }));
             return;
           }
-          setVerdict($('boundsVerdict'), true, 'wallet_bounds_applied', () => ({ detail: safeDetail(r.body) }));
+          // record 응답의 applied(alreadyLower 포함)로만 판정한다 — 영수증이 왔다(status 200)는 것과
+          // setSessionBound 가 실제로 반영됐다는 것은 다르다(boundApplyVerdict, 2026-10-23 Z).
+          if (r.body.applied === true) {
+            setVerdict($('boundsVerdict'), true, 'wallet_bounds_applied', () => ({ detail: safeDetail(r.body) }));
+          } else {
+            setVerdict($('boundsVerdict'), false, 'wallet_bounds_apply_failed', () => ({ reason: r.body.reason ?? 'bound_not_applied', detail: safeDetail(r.body) }));
+          }
         } else if (b.applied) {
           setVerdict($('boundsVerdict'), true, 'wallet_bounds_applied', () => ({ detail: safeDetail(b) }));
         } else {
