@@ -9,6 +9,8 @@
 #        DEMO_LOG_DIR=~/mode3-logs bash scripts/demo_web_reset.sh   # 로그 위치(기본 /tmp/mode3-demo)
 #        HEIGHT_GRID=100 bash scripts/demo_web_reset.sh  # 만료(max_height) 올림 단위(기본 5 — 데모에서 로그인마다 값이 달라지는 걸 보이려고. 코드 기본은 100, 2026-10-21)
 #        ADMIN_OPEN=0 bash scripts/demo_web_reset.sh  # IdP 관리자 인증을 켠 채로 띄운다(기본은 끔 — CIA_ADMIN_OPEN=1, 데모 전용, 2026-10-21)
+#        ISSUE_AUTH=key bash scripts/demo_web_reset.sh  # 발급 인증 정책(기본 CIA_ISSUE_AUTH=code — zkONE 등 로그인 때 지갑 팝업이 연 IdP 인증 창(uid·비밀번호·auid)의
+#                                                        # 1회용 코드가 있어야 발급한다, 2026-10-22). key 면 옛 방식(서명만, 인증 창 없이 발급) — CIA_DEMO_ACCOUNTS 는 그대로 미설정(가입(POST /cia/signup)만 쓴다)
 #        WALLET_MODE=snap bash scripts/demo_web_reset.sh   # Snap 모드(2026-10-22): 지갑 자리에 mode3_user_static.js 대신 에이전트(mode3_wallet_agent.js, MODE3_WALLET_SECRETS=snap)와
 #                                                          Snap 서버(snap-mode3, :8082)를 띄운다. 브라우저에는 MetaMask Flask 가 필요하다. scripts/demo_snap_reset.sh 가 이 값을 넣어 부른다.
 #        TWO_CHAINS=1 bash scripts/demo_web_reset.sh   # 폐기 체인 분리(V10): 캐노니컬 로그는 :8546(chainId 31338), 거울·팩토리·계정은 :8545
@@ -72,7 +74,7 @@ cat "$LOGS/demo_env.txt"
 set -a; . "$LOGS/demo_env.txt"; set +a
 
 # 5. 공통 env(오리진 localhost 통일)
-export CIA_ADMIN_SECRET="${CIA_ADMIN_SECRET:-admin123}" CIA_ADMIN_OPEN="${ADMIN_OPEN:-1}" CIA_CHAIN_RPCS="31337=http://127.0.0.1:8545" MODE3_VERIFIER_ADDRESS="" MODE3_RP_FACTORY_ADDRESS=""
+export CIA_ADMIN_SECRET="${CIA_ADMIN_SECRET:-admin123}" CIA_ADMIN_OPEN="${ADMIN_OPEN:-1}" CIA_ISSUE_AUTH="${ISSUE_AUTH:-code}" CIA_CHAIN_RPCS="31337=http://127.0.0.1:8545" MODE3_VERIFIER_ADDRESS="" MODE3_RP_FACTORY_ADDRESS=""
 export MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}"
 export MODE3_WALLET_AGENT_ORIGIN="http://localhost:5100" MODE3_WALLET_PUBLIC_ORIGIN="http://localhost:5100" MODE3_RP_ORIGIN="http://localhost:3100,http://localhost:3101" MODE3_CIA_URL="http://localhost:4100"
 
@@ -118,8 +120,10 @@ fi
 for p in 4100 5100 3100 3101; do printf -- "--- :%s " "$p"; curl -s -m 10 "http://127.0.0.1:$p/mode3/health" | python3 -c "import sys,json;d=json.load(sys.stdin);print({k:d.get(k) for k in ('role','ok','status','secrets','registered','accounts','pendingRps','active') if d.get(k) is not None})"; done
 printf -- "--- 체인 구성: "; curl -s -m 5 http://127.0.0.1:4100/cia/public_keys | python3 -c "import sys,json;d=json.load(sys.stdin);print('캐노니컬 chainId', d.get('canonicalChainId'), '· 거울', [m.get('chainId') for m in d.get('mirrors',[])])"
 echo "RESET_DONE $(date '+%H:%M:%S')"
-echo "페이지: 사용자 http://localhost:5100/  zkONE http://localhost:3100/ (관리자 /admin)  zkTWO http://localhost:3101/  IdP 관리자 http://localhost:4100/admin  계정 http://localhost:4100/account"
+echo "페이지: IdP 사용자 http://localhost:4100/user  IdP RP 운영자 http://localhost:4100/rp  지갑 http://localhost:5100/  zkONE http://localhost:3100/ (관리자 /admin)  zkTWO http://localhost:3101/  IdP 관리자 http://localhost:4100/admin"
+echo "새 RP: http://localhost:4100/rp 에서 운영자 가입 → '새 RP 만들기' → 받은 키로 bash scripts/new_rp.sh <name> <port> <key>"
 if [ "$WALLET_MODE" = "snap" ]; then
   echo "Snap 모드: 브라우저에 MetaMask Flask 가 있어야 한다. 지갑 페이지 http://localhost:5100/ 에서 MetaMask 연결 → Snap(local:http://localhost:8082) 설치/재연결."
+  echo "         Snap 번들이 바뀌었으면(등록 확인창 단순화·폐기 허용 수 등) MetaMask 의 기존 Snap 을 지우고 다시 설치할 것 — 체크섬이 다르면 자동으로 갱신되지 않는다."
   echo "         체인·IdP 가 새로 시작됐으므로 MetaMask 안의 옛 등록은 지갑 페이지의 'Snap 초기화' 로 지운 뒤 다시 등록할 것(Snap 상태는 이 스크립트가 못 지운다)."
 fi

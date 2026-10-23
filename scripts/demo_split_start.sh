@@ -10,6 +10,8 @@
 #        WALLET_MODE=snap bash scripts/demo_split_start.sh  # Snap 모드(2026-10-22): 이 VM 의 지갑 자리에 에이전트(:5100, MODE3_WALLET_SECRETS=snap)+Snap 서버(:8082). 포트 5100 은 Snap 이 허용하는
 #                                                          # 지갑 오리진(snap-mode3/src/index.js)이라 바꿀 수 없다 — 한 머신 데모(:5100)와 동시에 못 띄운다. scripts/demo_split_snap_reset.sh 가 이 값을 넣어 부른다(web 모드 리셋은 scripts/demo_split_reset.sh).
 #        ADMIN_OPEN=0 bash scripts/demo_split_start.sh     # IdP 관리자 인증을 켠 채로(기본은 끔 — CIA_ADMIN_OPEN=1, 데모 전용, 2026-10-21)
+#        ISSUE_AUTH=key bash scripts/demo_split_start.sh   # 발급 인증 정책(기본 CIA_ISSUE_AUTH=code — 로그인 때 지갑 팝업이 연 IdP 인증 창(uid·비밀번호·auid)의 1회용 코드가
+#                                                           # 있어야 발급한다, 2026-10-22). key 면 옛 방식(서명만) — CIA_DEMO_ACCOUNTS 는 그대로 미설정(가입(POST /cia/signup)만 쓴다)
 # 주소는 SPLIT_HOST_IP·SPLIT_IDP_IP·SPLIT_RP1_IP·SPLIT_RP2_IP·SPLIT_SSH_USER 로 바꿀 수 있다. 로그는 DEMO_LOG_DIR(기본 /tmp/mode3-split).
 # 새 체인은 Ethernal 플러그인을 싣지 않는 최소 hardhat 설정으로 띄운다 — 프로젝트 설정은 노드 기동 때 .env 의 Ethernal 워크스페이스를 초기화한다.
 # 사용자 페이지는 이 VM 의 .env 를 읽지 않는다(DOTENV_CONFIG_PATH) — 라이브 IdP 의 고정 공개키 같은 값이 섞이지 않게.
@@ -111,7 +113,7 @@ MODE3_VERIFIER_ADDRESS=
 MODE3_RP_FACTORY_ADDRESS=
 MODE3_BIND_HOST=0.0.0.0"
 put_env() { on "$1" "umask 077 && cat > ~/zkd-demo/role.env && chmod 600 ~/zkd-demo/role.env"; }
-printf '%s\n' "$COMMON" "CIA_PORT=$IDP_PORT" "CIA_RPC_URL=http://$HOST:$REV_PORT" "CIA_CHAIN_RPCS=$APP_CHAIN=http://$HOST:$APP_PORT" "CIA_ADMIN_SECRET=$ADMIN" "CIA_ADMIN_OPEN=${ADMIN_OPEN:-1}" | put_env "$IDP"
+printf '%s\n' "$COMMON" "CIA_PORT=$IDP_PORT" "CIA_RPC_URL=http://$HOST:$REV_PORT" "CIA_CHAIN_RPCS=$APP_CHAIN=http://$HOST:$APP_PORT" "CIA_ADMIN_SECRET=$ADMIN" "CIA_ADMIN_OPEN=${ADMIN_OPEN:-1}" "CIA_ISSUE_AUTH=${ISSUE_AUTH:-code}" | put_env "$IDP"
 printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP1_PORT" "MODE3_RP_NAME=zkONE" "MODE3_RP_PUBLIC_ORIGIN=http://$RP1:$RP1_PORT" "MODE3_CIA_URL=http://$IDP:$IDP_PORT" \
   "CIA_RPC_URL=http://$HOST:$APP_PORT" "MODE3_RELAYER_INDEX=0" | put_env "$RP1"
 printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP2_PORT" "MODE3_RP_NAME=zkTWO" "MODE3_RP_PUBLIC_ORIGIN=http://$RP2:$RP2_PORT" "MODE3_CIA_URL=http://$IDP:$IDP_PORT" \
@@ -167,8 +169,10 @@ fi
 for u in "$IDP:$IDP_PORT" "127.0.0.1:$USER_PORT" "$RP1:$RP1_PORT" "$RP2:$RP2_PORT"; do printf -- "--- %s " "$u"; curl -s -m 10 "http://$u/mode3/health" | python3 -c "import sys,json;d=json.load(sys.stdin);print({k:d.get(k) for k in ('role','ok','status','secrets','registered','accounts','pendingRps','active') if d.get(k) is not None})"; done
 printf -- "--- 체인 구성: "; curl -s -m 5 "http://$IDP:$IDP_PORT/cia/public_keys" | python3 -c "import sys,json;d=json.load(sys.stdin);print('캐노니컬 chainId', d.get('canonicalChainId'), '· 거울', [m.get('chainId') for m in d.get('mirrors',[])])"
 echo "SPLIT_DONE $(date '+%H:%M:%S')"
-echo "페이지: 사용자 $WALLET_ORIGIN/  zkONE http://$RP1:$RP1_PORT/ (관리자 /admin)  zkTWO http://$RP2:$RP2_PORT/  IdP 관리자 http://$IDP:$IDP_PORT/admin  계정 http://$IDP:$IDP_PORT/account"
+echo "페이지: IdP 사용자 http://$IDP:$IDP_PORT/user  IdP RP 운영자 http://$IDP:$IDP_PORT/rp  지갑 $WALLET_ORIGIN/  zkONE http://$RP1:$RP1_PORT/ (관리자 /admin)  zkTWO http://$RP2:$RP2_PORT/  IdP 관리자 http://$IDP:$IDP_PORT/admin"
+echo "새 RP: http://$IDP:$IDP_PORT/rp 에서 운영자 가입 → '새 RP 만들기' → 받은 키로 bash scripts/new_rp.sh <name> <port> <key> --host <RP VM IP>"
 if [ "$WALLET_MODE" = "snap" ]; then
   echo "Snap 모드: 브라우저에 MetaMask Flask 가 있어야 한다. 지갑 페이지 $WALLET_ORIGIN/ 에서 MetaMask 연결 → Snap(local:http://localhost:$SNAP_PORT) 설치/재연결."
+  echo "         Snap 번들이 바뀌었으면 MetaMask 의 기존 Snap 을 지우고 다시 설치할 것 — 체크섬이 다르면 자동으로 갱신되지 않는다."
   echo "         체인·IdP 가 새로 시작됐으므로 MetaMask 안의 옛 등록은 지갑 페이지의 'Snap 초기화' 로 지운 뒤 다시 등록할 것."
 fi
