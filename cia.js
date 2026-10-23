@@ -548,7 +548,7 @@ app.get('/mode3/health', async (req, res) => {
 const isAddr = (v) => typeof v === 'string' && /^0x[0-9a-fA-F]{40}$/.test(v);
 app.post('/cia/register_rp', async (req, res) => {
   try {
-    const { name, origin, pk_service, X_svc } = req.body ?? {};
+    const { name, origin, pk_service, X_svc, rp_key } = req.body ?? {};
     if (typeof name !== 'string' || name.length === 0 || typeof origin !== 'string' || !/^https?:\/\/[^/\s]+$/.test(origin) || !isAddr(pk_service) || !isPt(X_svc)) {
       return res.status(400).json({ error: 'name, origin(http(s)://host[:port], 경로 없음), pk_service(주소), X_svc{x,y} required' });
     }
@@ -571,8 +571,18 @@ app.post('/cia/register_rp', async (req, res) => {
       return res.status(409).json({ error: 'service_key_mismatch' });
     }
     if (!e) {
+      // Task 11(B2, 2026-10-22 스펙 §3.3): rp_key 가 있으면 운영자가 /cia/rp/create 로 만든 슬롯에 묶는다 — 처음 등록하는
+      // origin(이 분기)에서만 본다. rp_key 는 상태에 평문으로 있지 않다(newPw/pwOk 로 해시해 둔다) — 'created' 상태의 모든
+      // 슬롯을 돌며 비교한다(운영자 슬롯 수가 적은 데모 규모라 괜찮다). 키가 안 맞거나 이름이 다르면 둘 다 bad_rp_key.
+      let slot = null;
+      if (rp_key !== undefined) {
+        if (typeof rp_key !== 'string') return res.status(400).json({ error: 'rp_key must be a string', reason: 'bad_rp_key' });
+        slot = Object.values(state.rpSlots).find((s) => s.status === 'created' && pwOk(s, rp_key));
+        if (!slot || slot.name !== name) return res.status(400).json({ error: 'bad_rp_key', reason: 'bad_rp_key' });
+      }
       arid = randomScalar().toString();
-      e = state.rps[arid] = { name, origin, pk_service: addr, X_svc: Xn, x_AA: null, pk_trace: null, status: 'pending', requestedAt: new Date().toISOString(), decidedAt: null };
+      e = state.rps[arid] = { name, origin, pk_service: addr, X_svc: Xn, x_AA: null, pk_trace: null, status: 'pending', requestedAt: new Date().toISOString(), decidedAt: null, operator: slot ? slot.opId : null };
+      if (slot) { slot.status = 'pending'; slot.arid = arid; }
       persist();
     }
     if (e.status === 'denied') return res.status(403).json({ arid, status: 'denied' });
@@ -599,8 +609,13 @@ async function makeShare(arid) {
   persist();
 }
 
-const rpView = (arid, e) => ({ arid, name: e.name, origin: e.origin, pk_service: e.pk_service, X_svc: e.X_svc, pk_trace: e.pk_trace, status: e.status, requestedAt: e.requestedAt, decidedAt: e.decidedAt });
+const rpView = (arid, e) => ({ arid, name: e.name, origin: e.origin, pk_service: e.pk_service, X_svc: e.X_svc, pk_trace: e.pk_trace, status: e.status, requestedAt: e.requestedAt, decidedAt: e.decidedAt, operator: e.operator ?? null });
 app.get('/cia/rps', requireAdmin, (req, res) => res.json({ rps: Object.entries(state.rps).map(([a, e]) => rpView(a, e)) }));
+// 공개 RP 주소 목록(Task 11, 스펙 §3.3·§5.4) — 지갑 에이전트가 10초마다 폴링해 동적 CORS 허용 목록을 넓힌다.
+// 인증 없음. origin 만 낸다 — arid·운영자·키는 내지 않는다(IdP 가 어차피 공개하는 정보라 CORS 는 다른 공개 라우트와 같다).
+app.get('/cia/rp_origins', userCors, (req, res) => {
+  res.json({ origins: Object.values(state.rps).filter((e) => e.status === 'approved').map((e) => e.origin) });
+});
 app.post('/cia/rps/:arid/approve', requireAdmin, async (req, res) => {
   try {
     const e = state.rps[req.params.arid];
@@ -622,6 +637,65 @@ app.post('/cia/rps/:arid/deny', requireAdmin, (req, res) => {
   if (e.status !== 'pending') return res.status(409).json({ error: `already ${e.status}` });
   e.status = 'denied'; e.decidedAt = new Date().toISOString(); persist();
   res.json({ arid: req.params.arid, status: e.status });
+});
+
+// ---- Task 11(B2, 2026-10-22 스펙 §3.3): RP 운영자 계정·RP 슬롯(rp_key)·공개 RP 주소 목록 ----
+// 세션 가드는 requireUser(아래)와 같은 모양 — 운영자 세션은 req.session.operator. 로그인마다 regenerate 하므로(세션 고정
+// 방지) 사용자(uid)·운영자(operator)는 같은 쿠키라도 한 번에 한쪽만 로그인돼 있다(로그인이 세션 전체를 새로 만든다) —
+// 브리프가 둘의 공존을 침묵해 더 단순한 쪽을 택했다(컨트롤러 판정, task-11-addendum.md).
+const requireOperator = (req, res, next) => { if (!req.session?.operator || !state.operators[req.session.operator]) return res.status(401).json({ error: 'login required', reason: 'login_required' }); next(); };
+const OPERATOR_ID_RE = /^[a-z0-9_-]{3,32}$/;
+const RP_SLOT_NAME_RE = /^zk[A-Za-z0-9]{1,15}$/;
+/** newAccountRecord(위) 와 같은 스캐폴드 — 운영자는 등록 상태가 없어 그보다 작다. */
+function newOperatorRecord({ pwSalt, pwHash, pwAlgo }) {
+  return { pwSalt, pwHash, pwAlgo, createdAt: new Date().toISOString() };
+}
+
+app.post('/cia/rp/signup', (req, res) => {
+  const { id, pwd } = req.body ?? {};
+  if (typeof id !== 'string' || !OPERATOR_ID_RE.test(id)) return res.status(400).json({ error: 'id 는 소문자·숫자·_·- 3~32자', reason: 'signup_failed' });
+  if (typeof pwd !== 'string' || pwd.length < 8) return res.status(400).json({ error: 'pwd 는 8자 이상', reason: 'signup_failed' });
+  if (state.operators[id]) return res.status(409).json({ error: 'id_taken', reason: 'signup_failed' });
+  state.operators[id] = newOperatorRecord(newPw(pwd));
+  persist();
+  res.status(201).json({ id });
+});
+app.post('/cia/rp/login', (req, res) => {
+  const { id, pwd } = req.body ?? {};
+  if (typeof id !== 'string' || !pwOk(state.operators[id], pwd)) return res.status(401).json({ error: 'invalid credentials', reason: 'operator_login_failed' });
+  // 세션 고정 방지(사용자 로그인과 같은 이유) — 로그인마다 세션 id 를 새로 받는다.
+  req.session.regenerate((err) => {
+    if (err) return res.status(500).json({ error: 'session', reason: 'session' });
+    req.session.operator = id;
+    req.session.save((e2) => (e2 ? res.status(500).json({ error: 'session', reason: 'session' }) : res.json({ id })));
+  });
+});
+app.post('/cia/rp/logout', (req, res) => {
+  req.session.destroy(() => { res.clearCookie('cia.sid'); res.json({ ok: true }); });
+});
+/** 슬롯 하나의 공개 모양. arid 가 생기면(register_rp 로 묶이면) state.rps[arid] 의 status·origin 이 슬롯 자신의 것을 덮는다
+ *  (브리프 §3.3). rp_key 는 pwOk 와 같은 방식으로 해시해 두므로(평문 없음) 다시 보여줄 수 없다 — 'created' 상태라도
+ *  key 를 echo 하지 않는다(컨트롤러 판정: 평문은 /cia/rp/create 의 1회 응답에만). */
+function rpSlotView(slot) {
+  const e = slot.arid ? state.rps[slot.arid] : null;
+  return { name: slot.name, status: e ? e.status : slot.status, origin: e ? e.origin : null, arid: slot.arid, requestedAt: slot.createdAt };
+}
+app.get('/cia/rp/me', requireOperator, (req, res) => {
+  const opId = req.session.operator;
+  const rps = Object.values(state.rpSlots).filter((s) => s.opId === opId).map(rpSlotView);
+  res.json({ id: opId, rps });
+});
+app.post('/cia/rp/create', requireOperator, (req, res) => {
+  const { name } = req.body ?? {};
+  if (typeof name !== 'string' || !RP_SLOT_NAME_RE.test(name)) return res.status(400).json({ error: 'name 은 zk 로 시작하는 영문·숫자 1~15자', reason: 'signup_failed' });
+  const opId = req.session.operator;
+  if (Object.values(state.rpSlots).some((s) => s.opId === opId && s.name === name)) return res.status(409).json({ error: 'name_taken' });
+  const key = randomBytes(32).toString('hex');
+  const slotId = randomBytes(16).toString('hex');   // 상태의 object key — rp_key(비밀) 가 아니라 내부 식별자일 뿐이다
+  state.rpSlots[slotId] = { opId, name, ...newPw(key), status: 'created', createdAt: new Date().toISOString(), arid: null };
+  persist();
+  // §6 의 한 줄: IdP 는 호스트·포트를 모르므로 자리표시(<port>, [--host <rp-vm-ip>])를 남긴다.
+  res.status(201).json({ name, key, command: `bash scripts/new_rp.sh ${name} <port> ${key} [--host <rp-vm-ip>]` });
 });
 
 // ---- Task 10(B1, 2026-10-22 스펙 §3.1~3.3): 사용자 계정·세션·1회용 코드 ----

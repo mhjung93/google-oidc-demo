@@ -465,6 +465,7 @@ window.DemoStrings = {
     admin_no_rps: { ko: '(등록된 RP 없음)', en: '(no registered RPs)' },
     admin_col_service: { ko: 'RP', en: 'RP' },
     admin_col_origin: { ko: '주소(origin)', en: 'Origin' },
+    admin_col_operator: { ko: '운영자', en: 'Operator' },
     admin_col_arid: { ko: 'RP 식별자', en: 'RP id' },
     admin_col_decided: { ko: '처리 시각', en: 'Decided at' },
     admin_rp_pending: { ko: '승인 대기', en: 'Pending' },

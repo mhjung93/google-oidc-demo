@@ -84,6 +84,9 @@ const REG_FILE = process.env.MODE3_RP_REGISTRATION_FILE || path.join(__dirname, 
 const REG_VERSION = 3;
 const PUBLIC_ORIGIN = process.env.MODE3_RP_PUBLIC_ORIGIN || `http://127.0.0.1:${PORT}`;
 const RP_NAME = process.env.MODE3_RP_NAME || 'demo-rp';
+// 운영자가 IdP RP 페이지(Task 11, 스펙 §3.3·§6)에서 만든 RP 슬롯에 등록을 묶는 비밀. 없으면(zkONE·zkTWO 의 기동 자동
+// 등록처럼) 지금과 같은 키 없는 등록이다.
+const RP_KEY = process.env.MODE3_RP_KEY || null;
 const POLL_MS = Number(process.env.MODE3_RP_REGISTRATION_POLL_MS) || 5000;
 const LOGIN_LOG = process.env.MODE3_RP_LOGIN_LOG || path.join(__dirname, 'mode3_rp_logins.jsonl');
 if (fs.existsSync(LOGIN_LOG)) fs.chmodSync(LOGIN_LOG, 0o600);   // 옛 실행이 남긴 파일의 권한도 조인다
@@ -120,7 +123,7 @@ async function verifyCiaShare(arid, pk_trace, X_AA, share_pok) {
 
 /** IdP 에 등록/조회. 200 이면 파일을 채우고 true. 202 면 false. 403 이면 throw. */
 async function registerOnce() {
-  const r = await fetch(`${CIA_URL}/cia/register_rp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: RP_NAME, origin: PUBLIC_ORIGIN, pk_service: reg.pk_service, X_svc: reg.X_svc }) });
+  const r = await fetch(`${CIA_URL}/cia/register_rp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: RP_NAME, origin: PUBLIC_ORIGIN, pk_service: reg.pk_service, X_svc: reg.X_svc, ...(RP_KEY ? { rp_key: RP_KEY } : {}) }) });
   const b = await r.json().catch(() => ({}));
   if (r.status === 202) { reg.arid = b.arid; reg.status = 'pending'; writeJsonAtomic(REG_FILE, reg, 0o600); return false; }
   // 403(거절)은 영구 상태로 기록한다. 408·429 를 뺀 나머지 4xx(예: 409 service_key_mismatch, 400 형식 오류)도

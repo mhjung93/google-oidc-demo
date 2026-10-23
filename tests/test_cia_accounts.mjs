@@ -1,10 +1,13 @@
 // Task 10(B1, 스펙 2026-10-22-mode3-idp-pages-design.md §3.1~3.3): 가입·세션·1회용 코드(등록/발급)·발급 정책 CIA_ISSUE_AUTH,
 // 시드 계정(12345·67890) opt-in(CIA_DEMO_ACCOUNTS). 격리 IdP + :8545 Mode3Log. (chain)  node tests/test_cia_accounts.mjs
+// Task 11(B2, 같은 스펙 §3.3): RP 운영자 계정·RP 슬롯(rp_key)·공개 rp_origins 도 여기서 같이 본다.
 import assert from 'node:assert/strict';
+import { ethers } from 'ethers';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { getProvider } from './helpers/mode3_chain.mjs';
 import { createRegistration, signRegistration } from '../lib/mode3_wallet.js';
 import { pointToStrings } from '../lib/mode3_issuance.js';
+import { createShare } from '../lib/mode3_trace.js';
 import { issueV11, userOf, TESTUSER_ATTRS, ALICE_ATTRS } from './helpers/mode3_flow.mjs';
 
 const j = (o) => JSON.stringify(o, (k, v) => (typeof v === 'bigint' ? v.toString() : v));
@@ -235,6 +238,95 @@ try {
       const issueAttempt = await issueV11(cia5, u, { arid, provider, overrides: { auth_code: registerCodeResp.body.code } });
       assert.equal(issueAttempt.r.status, 401, j(issueAttempt.r.body)); assert.equal(issueAttempt.r.body.reason, 'bad_code', 'register 코드는 issue 에 못 쓴다');
     } finally { await cia5.stop(); }
+  });
+
+  // ---- Task 11(B2, 2026-10-22): RP 운영자·RP 슬롯(rp_key)·공개 rp_origins ----
+  /** register_rp 본문(서비스 키는 매번 새로 — 재등록 검사(service_key_mismatch)에 걸리지 않게). */
+  async function rpRegBody(name, origin) {
+    const serviceWallet = ethers.Wallet.createRandom();
+    const share = await createShare();
+    return { name, origin, pk_service: serviceWallet.address, X_svc: { x: share.X.x.toString(), y: share.X.y.toString() } };
+  }
+
+  await t('rp signup/login/create: 키·명령 발급, 이름 규칙, 같은 운영자 안 중복 409', async () => {
+    const withJar = makeJar(cia.base);
+    const su = await withJar('/cia/rp/signup', { method: 'POST', body: JSON.stringify({ id: 'op-eleven', pwd: 'operator-pw-1' }) });
+    assert.equal(su.status, 201, j(su.body)); assert.equal(su.body.id, 'op-eleven');
+    const dupId = await withJar('/cia/rp/signup', { method: 'POST', body: JSON.stringify({ id: 'op-eleven', pwd: 'another-pw' }) });
+    assert.equal(dupId.status, 409, j(dupId.body), '같은 id 로 재가입은 안 된다');
+    assert.equal((await withJar('/cia/rp/login', { method: 'POST', body: JSON.stringify({ id: 'op-eleven', pwd: 'wrong' }) })).status, 401);
+    const li = await withJar('/cia/rp/login', { method: 'POST', body: JSON.stringify({ id: 'op-eleven', pwd: 'operator-pw-1' }) });
+    assert.equal(li.status, 200, j(li.body)); assert.equal(li.body.id, 'op-eleven');
+    const bad = await withJar('/cia/rp/create', { method: 'POST', body: JSON.stringify({ name: 'bad name' }) });
+    assert.equal(bad.status, 400, j(bad.body));
+    const create = await withJar('/cia/rp/create', { method: 'POST', body: JSON.stringify({ name: 'zkTHREE' }) });
+    assert.equal(create.status, 201, j(create.body));
+    assert.equal(create.body.name, 'zkTHREE');
+    assert.ok(/^[0-9a-f]{64}$/.test(create.body.key), `키는 64자 hex: ${create.body.key}`);
+    assert.ok(create.body.command.includes(create.body.key) && create.body.command.includes('zkTHREE'), 'command 에 key·name 포함');
+    const dup = await withJar('/cia/rp/create', { method: 'POST', body: JSON.stringify({ name: 'zkTHREE' }) });
+    assert.equal(dup.status, 409, j(dup.body), '같은 운영자 안에서 같은 이름 중복');
+    const lo = await withJar('/cia/rp/logout', { method: 'POST', body: JSON.stringify({}) });
+    assert.equal(lo.status, 200, j(lo.body));
+    assert.equal((await withJar('/cia/rp/me')).status, 401, '로그아웃 뒤');
+  });
+
+  await t('register_rp with rp_key: 운영자에 연결(/cia/rp/me 에 arid·pending), 틀린 키 400 bad_rp_key, 이름 다르면 400; 키 없는 등록은 지금처럼 허용', async () => {
+    const withJar = makeJar(cia.base);
+    await withJar('/cia/rp/signup', { method: 'POST', body: JSON.stringify({ id: 'op-twelve', pwd: 'operator-pw-2' }) });
+    await withJar('/cia/rp/login', { method: 'POST', body: JSON.stringify({ id: 'op-twelve', pwd: 'operator-pw-2' }) });
+    const create = await withJar('/cia/rp/create', { method: 'POST', body: JSON.stringify({ name: 'zkFOUR' }) });
+    assert.equal(create.status, 201, j(create.body));
+    const { key } = create.body;
+    const origin = 'http://127.0.0.1:39991';
+
+    const badKey = await cia.post('/cia/register_rp', { ...(await rpRegBody('zkFOUR', origin)), rp_key: 'f'.repeat(64) });
+    assert.equal(badKey.status, 400, j(badKey.body)); assert.equal(badKey.body.error, 'bad_rp_key', '틀린 키');
+
+    const badName = await cia.post('/cia/register_rp', { ...(await rpRegBody('zkWRONGNAME', 'http://127.0.0.1:39992')), rp_key: key });
+    assert.equal(badName.status, 400, j(badName.body)); assert.equal(badName.body.error, 'bad_rp_key', '키는 맞지만 이름이 다르다');
+
+    // 실제 RP(mode3_rp.js)는 등록 파일에 자기 서비스 키를 고정해 두고 매 폴링마다 같은 본문을 다시 보낸다 — 여기서도
+    // 같은 본문을 재사용한다(새 pk_service 를 또 생성하면 같은 origin 에 다른 키라 service_key_mismatch(409)로 깨진다).
+    const okBody = { ...(await rpRegBody('zkFOUR', origin)), rp_key: key };
+    const ok = await cia.post('/cia/register_rp', okBody);
+    assert.equal(ok.status, 202, j(ok.body), '키가 맞으면 평소처럼 pending');
+
+    const me = await withJar('/cia/rp/me');
+    assert.equal(me.status, 200, j(me.body));
+    const mine = me.body.rps.find((r) => r.name === 'zkFOUR');
+    assert.ok(mine, 'rp/me 에 zkFOUR 가 보여야 한다');
+    assert.equal(mine.status, 'pending'); assert.equal(mine.arid, ok.body.arid);
+
+    const adminRps = await cia.adminGet('/cia/rps');
+    const adminEntry = adminRps.body.rps.find((r) => r.arid === ok.body.arid);
+    assert.equal(adminEntry.operator, 'op-twelve', '관리자 RP 목록에 운영자가 보인다');
+
+    // 재시도(같은 키·같은 본문으로 다시 register_rp) 는 지금처럼 같은 상태를 돌려준다(폴링 호환) — bad_rp_key 로 깨지지 않는다.
+    const retry = await cia.post('/cia/register_rp', okBody);
+    assert.equal(retry.status, 202, j(retry.body), '같은 origin 재호출은 이미 있는 arid 로 pending 상태 조회');
+
+    // 키 없는 등록(zkONE·zkTWO 의 기동 자동 등록과 같은 경로)은 지금처럼 허용하고 운영자 없음으로 남는다.
+    const keylessOrigin = 'http://127.0.0.1:39993';
+    const keyless = await cia.post('/cia/register_rp', await rpRegBody('zkLEGACY', keylessOrigin));
+    assert.equal(keyless.status, 202, j(keyless.body), '키 없는 등록은 여전히 허용');
+    const keylessEntry = (await cia.adminGet('/cia/rps')).body.rps.find((r) => r.arid === keyless.body.arid);
+    assert.equal(keylessEntry.operator, null, '키 없는 등록은 운영자 없음');
+  });
+
+  await t('rp_origins: 승인 전 빈 목록, 관리자 승인 뒤 origin 포함(공개, 세션 불필요)', async () => {
+    const origin = 'http://127.0.0.1:39994';
+    const r1 = await cia.post('/cia/register_rp', await rpRegBody('zkSIX', origin));
+    assert.equal(r1.status, 202, j(r1.body));
+    const before = await cia.get('/cia/rp_origins');
+    assert.equal(before.status, 200, j(before.body));
+    assert.ok(!before.body.origins.includes(origin), '승인 전에는 목록에 없다');
+    const approve = await cia.adminPost(`/cia/rps/${r1.body.arid}/approve`);
+    assert.equal(approve.status, 200, j(approve.body));
+    const after = await cia.get('/cia/rp_origins');
+    assert.equal(after.status, 200, j(after.body));
+    assert.ok(after.body.origins.includes(origin), '승인 뒤에는 목록에 있다');
+    assert.ok(!('arid' in after.body) && !('rps' in after.body), '공개 응답은 origin 외에 다른 필드를 내지 않는다');
   });
 } finally { await cia.stop(); }
 

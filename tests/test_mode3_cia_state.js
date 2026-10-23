@@ -7,7 +7,7 @@ function t(name, fn) { try { fn(); console.log(`ok   ${name}`); } catch (e) { fa
 t('기본 상태는 v12 이고 attrs·profile·issued 가 없다', () => {
   const s = defaultCiaState();
   assert.equal(s.version, 12); assert.equal(CIA_STATE_VERSION, 12);
-  assert.deepEqual(s, { version: 12, accounts: {}, rps: {}, openings: [], revoked: [], pending: [], epoch: 0, registry: { depth: 20, next: 0, leaves: {}, pendingSlots: [] }, lastPublication: null, signedEpochMax: 0, attrSchemaHash: null, nextUid: 100001, codes: {} });
+  assert.deepEqual(s, { version: 12, accounts: {}, rps: {}, operators: {}, rpSlots: {}, openings: [], revoked: [], pending: [], epoch: 0, registry: { depth: 20, next: 0, leaves: {}, pendingSlots: [] }, lastPublication: null, signedEpochMax: 0, attrSchemaHash: null, nextUid: 100001, codes: {} });
 });
 t('v12 는 그대로(notes 없음), 빠진 하위 필드는 채운다(nextUid·codes 포함), 계정 기본값(creds·sessions·tampered·receipt·slotRetired·provider·pwSalt·pwHash·pwAlgo·createdAt)', () => {
   const { state, notes } = migrateCiaState({ version: 12, accounts: { '12345': { pk_u: { x: '1', y: '2' }, auid: '99', slot: 0, disabled: false } }, rps: {}, openings: [], revoked: [], pending: [], epoch: 3, registry: {} });
@@ -16,6 +16,21 @@ t('v12 는 그대로(notes 없음), 빠진 하위 필드는 채운다(nextUid·c
   assert.equal(state.nextUid, 100001, '옛(이 필드 이전) 파일은 100001 부터'); assert.deepEqual(state.codes, {});
   assert.deepEqual(state.accounts['12345'], { pk_u: { x: '1', y: '2' }, auid: '99', slot: 0, disabled: false, creds: [], sessions: [], tampered: false, receipt: null, slotRetired: false, provider: 'demo', pwSalt: null, pwHash: null, pwAlgo: null, createdAt: null });
   assert.equal(state.signedEpochMax, 0); assert.equal(state.attrSchemaHash, null, '스키마 해시는 cia.js 기동이 기록한다');
+});
+t('Task 11(B2, 2026-10-22): 옛(이 필드 이전) 파일에 operators·rpSlots 가 빈 값으로 채워지고, 옛 rps 엔트리는 operator:null 인 레거시로 읽힌다', () => {
+  const { state, notes } = migrateCiaState({ version: 12, accounts: {}, rps: { '1': { name: 'n', origin: 'http://x', pk_service: '0x0', X_svc: null, x_AA: null, pk_trace: null, status: 'pending', requestedAt: 't', decidedAt: null } }, openings: [], revoked: [], pending: [], epoch: 0, registry: {} });
+  assert.deepEqual(notes, []);
+  assert.deepEqual(state.operators, {}); assert.deepEqual(state.rpSlots, {});
+  assert.equal(state.rps['1'].operator, null, '옛 RP 엔트리는 운영자 없음');
+});
+t('Task 11(B2): 이미 operators·rpSlots·rps[*].operator 가 있는 파일은 그대로(덮어쓰지 않음)', () => {
+  const input = { ...defaultCiaState(), operators: { op1: { pwSalt: 'a', pwHash: 'b', pwAlgo: 'scrypt', createdAt: 'c' } },
+    rpSlots: { s1: { opId: 'op1', name: 'zkX', pwSalt: 'd', pwHash: 'e', pwAlgo: 'scrypt', status: 'created', createdAt: 'f', arid: null } },
+    rps: { '1': { name: 'n', origin: 'http://x', status: 'approved', operator: 'op1' } } };
+  const { state } = migrateCiaState(input);
+  assert.deepEqual(state.operators, { op1: { pwSalt: 'a', pwHash: 'b', pwAlgo: 'scrypt', createdAt: 'c' } });
+  assert.deepEqual(state.rpSlots, { s1: { opId: 'op1', name: 'zkX', pwSalt: 'd', pwHash: 'e', pwAlgo: 'scrypt', status: 'created', createdAt: 'f', arid: null } });
+  assert.equal(state.rps['1'].operator, 'op1');
 });
 t('Task 10(B1, 2026-10-22): 가입만 하고 등록 전인 계정(pk_u·auid·slot 모두 null)은 그대로 통과하고 pwSalt·pwHash·createdAt 이 채워진다, pwHash 있는데 pwAlgo 없으면 scrypt로 본다', () => {
   const { state } = migrateCiaState({ ...defaultCiaState(), accounts: { '100001': { pk_u: null, auid: null, slot: null, disabled: false, pwSalt: 'a', pwHash: 'b', createdAt: 'c' } } });

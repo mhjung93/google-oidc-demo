@@ -392,7 +392,7 @@
       const host = $('rps');
       if (!rps) { placeholder(host, 'admin_need_secret'); return; }
       if (!rps.length) { placeholder(host, 'admin_no_rps'); return; }
-      const t = table([['admin_col_status'], ['admin_col_service'], ['admin_col_origin'], ['admin_col_arid', true], ['admin_col_decided'], ['admin_col_action']]);
+      const t = table([['admin_col_status'], ['admin_col_service'], ['admin_col_origin'], ['admin_col_operator'], ['admin_col_arid', true], ['admin_col_decided'], ['admin_col_action']]);
       const body = t.tBodies[0];
       for (const e of rps) {
         const row = body.insertRow();
@@ -401,6 +401,7 @@
         cell(row, e.name);
         // origin 은 공백 없는 한 덩어리라 좁은 창에서 칸을 밀어낸다 — 칸 안에서 끊는다(demo.css 의 pre·kv 와 같은 규칙).
         cell(row, e.origin).style.overflowWrap = 'anywhere';
+        cell(row, e.operator ?? '-');   // Task 11(B2): 운영자가 만든 RP 슬롯으로 등록됐으면 그 운영자 id, 아니면(키 없는 등록) '-'
         cell(row, short(e.arid), 'expert');
         const at = cell(row, fmtAt(e.decidedAt));
         at.title = e.decidedAt ?? '';
