@@ -331,7 +331,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
         } catch (e) {
           // 시연 덮어쓰기가 걸려 있었다면 원인은 거의 항상 그것이다(가짜 s_u·uid 로는 witness 가 안 만들어진다) — 500 대신 호출자가 409 로 보여준다.
           if (ov) throw tag('demo_proof_failed', { detail: e.message });
-          // 사전 검사와 증인 생성 사이에 내 세션 리프가 붙으면 getNonMembershipWitness 가 "… is a member …" 로 던진다(lib/imt_v2.js).
+          // 사전 검사와 증인 생성 사이에 내 세션 리프 구간이 붙으면 getRangeNonMembershipWitness 가 "… is a member …" 로 던진다(lib/imt_v2.js).
           if (/is a member/.test(e.message ?? '')) throw tag('revoked_session');
           throw e;
         }

@@ -92,7 +92,7 @@ async function proveWith(disclosure) {
   return buildCredentialProof({ uid, arid, s_u: reg.s_u, auid: reg.auid, blind_u, r_rp, r_s, pk_i: session.pk_i, attrs: ATTRS, credential: cred, pk_CIA, pk_trace, tree: tree0, registry, slot: SLOT, disclosure });
 }
 
-await t('V11: 발급 요청(C_u·C_s·π_IdP·sig_u) → 로컬 IdP 서명 → 증명 생성 → vkey 로 검증; 공개 입력 33, [30..32] = auid_s·arid_s·r_s', async () => {
+await t('V11: 발급 요청(C_u·C_s·π_IdP·sig_u) → 로컬 IdP 서명 → 증명 생성 → vkey 로 검증; 공개 입력 34, [30..33] = auid_s·arid_s·r_s·counter', async () => {
   const { proof, publicSignals, revRoot, tag } = await proveWith(null);
   assert.deepEqual(Object.keys(req.body).sort(), ['C_s_pt', 'C_u_pt', 'allowAgent', 'arid_s', 'auid_s', 'chainid', 'max_height', 'proof_idp', 'sig_u', 'uid']);
   const vkIdp = await loadIdpVkey(IDP_VKEY_PATH);

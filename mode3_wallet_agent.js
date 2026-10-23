@@ -46,9 +46,13 @@ const RP_ORIGIN = RP_ORIGINS_ENV[0];                   // 첫 RP — 로그·hea
 // (네트워크 오류·4xx/5xx) 마지막으로 받은 목록을 그대로 둔다 — 허용 목록을 비워 기존 RP 까지 막지 않는다.
 let rpOrigins = RP_ORIGINS_ENV;
 const isRpOrigin = (o) => allowOrigin(o, rpOrigins);
+let pollingRpOrigins = false;   // M7(2026-10-23): 느린 IdP 라도 겹쳐 돌지 않게 — 실행 중이면 이번 주기는 건너뛴다
 async function pollRpOrigins() {
+  if (pollingRpOrigins) return;
+  pollingRpOrigins = true;
   try {
-    const r = await fetch(`${CIA_URL}/cia/rp_origins`);
+    // M7: IdP 가 응답하지 않으면(네트워크 끊김 등) fetch 가 기본적으로 끝없이 기다릴 수 있다 — 3초로 끊는다.
+    const r = await fetch(`${CIA_URL}/cia/rp_origins`, { signal: AbortSignal.timeout(3000) });
     if (r.ok) {
       const { origins } = await r.json();
       // originList 는 중복을 거르지 않는다 — env 에 이미 있는 RP 가 IdP 에도 승인돼 있으면(흔한 경우) 그대로 합치면
@@ -56,7 +60,8 @@ async function pollRpOrigins() {
       // 정확한 목록으로 본다 — Set 으로 걷어낸다(순서는 env 먼저, 그 뒤 IdP 가 더한 새 origin 유지).
       rpOrigins = [...new Set(originList(RP_ORIGINS_ENV, origins))];
     }
-  } catch { /* IdP 미응답 — 마지막 목록 유지 */ }
+  } catch { /* IdP 미응답(네트워크 오류·타임아웃) — 마지막 목록 유지 */ }
+  finally { pollingRpOrigins = false; }
 }
 pollRpOrigins();                       // 기동 직후 1회 즉시(결과를 기다리지 않는다 — 서버 기동을 막지 않는다)
 setInterval(pollRpOrigins, 10_000).unref();
@@ -428,6 +433,10 @@ app.get('/wallet/config', configCors, async (req, res) => {
 // — 에이전트가 s_u 를 직접 들고 있는 유일한 모드다. snap 모드는 Snap 이 들고 있다(showSalt()) — 에이전트는 몰라 409 로
 // "Snap 이 보관"을 알린다. CORS 를 열지 않는다(RP 오리진에는 절대 노출하지 않는다) — s_u 는 로그에도 찍지 않는다.
 app.get('/wallet/secrets/salt', (req, res) => {
+  // M8(2026-10-23): 다른 사이트의 <img>·fetch 가 CORS 없이도 same-site 가 아닌 GET 을 이 라우트로 보낼 수 있다 —
+  // Sec-Fetch-Site 가 있으면 same-origin 만 받는다(헤더가 없는 구형 클라이언트는 거부하지 않고 그냥 통과시킨다).
+  const fetchSite = req.get('Sec-Fetch-Site');
+  if (fetchSite && fetchSite !== 'same-origin') return res.status(403).json({ reason: 'cross_site' });
   if (SECRETS !== 'file') return res.status(409).json({ reason: 'snap_mode' });
   if (!state.registration) return res.status(409).json({ reason: 'not_registered' });
   res.json({ s_u: state.registration.s_u });
@@ -895,9 +904,10 @@ async function proveSession(rsKey, synced, timings, disclosure = null, src, coun
         // 시연 덮어쓰기가 걸려 있었다면 원인은 거의 항상 그것이다(가짜 s_u·uid 로는 witness 가 안 만들어진다) — 500 대신
         // 호출자가 409 로 보여줄 수 있게 구분한다.
         if (ov) throw Object.assign(new Error('demo_proof_failed'), { reason: 'demo_proof_failed', detail: e.message });
-        // 위 사전 검사와 증인 생성 사이에 다른 요청의 sync() 가 내 세션 리프를 붙이면 getNonMembershipWitness 가
-        // "… is a member …" 로 던진다(lib/imt_v2.js). 테스트가 못 박은 계약은 이 부분 문구다. V9: 폐기 트리에는 세션
-        // 리프만 남으므로(사용자 쪽은 등록부로 옮겨갔다) 이 문구는 늘 revoked_session 이다.
+        // 위 사전 검사와 증인 생성 사이에 다른 요청의 sync() 가 내 세션 리프 구간([lo,hi])을 붙이면
+        // getRangeNonMembershipWitness 가 "… is a member …" 로 던진다(lib/imt_v2.js, 2026-10-22 §6.5 부터 구간
+        // 비멤버십). 테스트가 못 박은 계약은 이 부분 문구다. V9: 폐기 트리에는 세션 리프만 남으므로(사용자 쪽은
+        // 등록부로 옮겨갔다) 이 문구는 늘 revoked_session 이다.
         if (/is a member/.test(e.message ?? '')) throw Object.assign(new Error('revoked_session'), { reason: 'revoked_session' });
         throw e;
       }
@@ -1235,6 +1245,30 @@ function clearAppliedBounds(receipt, walletAddr) {
   return found;
 }
 
+/**
+ * "지금 반영" 판정 공통부(F-14, 2026-10-23) — 영수증 하나와 대기 항목(pendingBounds 의 한 원소 p)을 받아
+ * applied/alreadyLower/bound_not_applied 를 결정한다. Mode3Wallet.execute 는 내부 호출이 실패해도 트랜잭션 자체를
+ * revert 하지 않으므로(Executed.success 만 false, contracts/Mode3Wallet.sol) — 영수증이 성공(status=1)이어도
+ * setSessionBound 가 BoundNotLowered·OnlySelf 로 실패했을 수 있다. 로그 기반 정리(clearAppliedBounds)와 별개로
+ * Executed.success·온체인 sessionBound(pk_i) 를 둘 다 다시 읽어 확인해야 "반영됨" 이라 말할 수 있다(2026-10-23 리뷰 §1).
+ * /wallet/bounds/apply(file 모드, 보내고 바로 판정)와 /wallet/tx/record(snap 모드, pendingBoundId 로 나중에 판정)가
+ * 함께 쓴다 — state.pendingBounds 에서 p 를 지우는 것은 호출자가 한다(applied 일 때만, M6: 판정 "뒤"에 지운다).
+ */
+async function boundApplyVerdict(receipt, walletAddr, p) {
+  const success = parseExecuteReceipt(receipt, walletAddr).executed?.success ?? false;
+  let onchainBound = null;
+  try { const v = await walletAt(walletAddr, provider).sessionBound(BigInt(p.pk_i)); onchainBound = v === 0n ? null : v - 1n; }
+  catch { /* 못 읽으면 null — 아래 bound_not_applied 로 떨어진다(에러가 아니라 상태) */ }
+  const reqBound = BigInt(p.bound);
+  if (success && onchainBound === reqBound) return { applied: true, onchainBound: onchainBound.toString() };
+  if (onchainBound !== null && onchainBound <= reqBound) {
+    // 누가 먼저 더 낮거나 같게 반영해 둔 상태 — 이 tx 는 BoundNotLowered 로 실패했을 수 있지만 목적은 이미 달성됐다.
+    return { applied: true, alreadyLower: true, onchainBound: onchainBound.toString() };
+  }
+  // 반영되지 않았다 — 에러가 아니라 상태다. 호출자는 pending 항목을 그대로 남겨 다시 시도할 수 있게 한다.
+  return { applied: false, reason: 'bound_not_applied', onchainBound: onchainBound === null ? null : onchainBound.toString() };
+}
+
 // 자산 이동은 지갑 UI 에서만 시작한다(스펙 §6.3) — RP 오리진에는 열지 않는다. file 모드 전용(릴레이어가 보낸다).
 app.post('/wallet/tx', async (req, res) => {
   try {
@@ -1297,28 +1331,19 @@ app.post('/wallet/bounds/apply', async (req, res) => {
       return res.status(409).json({ reason: 'execute_reverted', detail: e.detail, wallet: walletAddr, nonce: nonce.toString(), timings, ...(demo ? { demo } : {}) });
     }
     timings.txMs = Date.now() - t;
-    // 2026-10-23 리뷰 §1: Mode3Wallet.execute 는 내부 호출이 실패해도 revert 하지 않는다(bool ok 를 반환하고
-    // Executed(nonceUsed, to, value, success) 만 낸다, contracts/Mode3Wallet.sol) — 영수증이 성공(status=1)이어도
-    // setSessionBound 가 BoundNotLowered/OnlySelf 로 실패했을 수 있다. 로그 기반 정리(clearAppliedBounds, 3-4 주소 필터
-    // 포함)와 별개로 Executed.success·온체인 sessionBound(pk_i) 를 **둘 다** 다시 읽어 확인해야 "반영됨" 이라 말할 수 있다.
+    // F-14(2026-10-23): 판정은 공통 헬퍼(boundApplyVerdict, /wallet/tx/record 의 pendingBoundId 경로와 같다)로 뽑았다.
+    // M6: 로그 기반 정리(clearAppliedBounds, 3-4 주소 필터 포함)는 그 판정 "뒤"에 돌린다 — 판정이 끝나기 전에는
+    // pending 상태를 건드리지 않는다는 불변식을 지킨다(clearAppliedBounds 는 이 receipt 의 SessionBound 이벤트 전체를
+    // 넓게 보므로, p 와 무관한 다른 pending 항목도 지울 수 있다 — 그 정리 자체는 이 판정과 순서가 바뀌어도 결과가
+    // 같지만, "판정 전에는 지우지 않는다"는 원칙을 고정해 둔다).
+    const verdict = await boundApplyVerdict(receipt, walletAddr, p);
     clearAppliedBounds(receipt, walletAddr);
-    const success = parseExecuteReceipt(receipt, walletAddr).executed?.success ?? false;
-    let onchainBound = null;
-    try { const v = await walletAt(walletAddr, provider).sessionBound(BigInt(p.pk_i)); onchainBound = v === 0n ? null : v - 1n; }
-    catch { /* 못 읽으면 null — 아래 bound_not_applied 로 떨어진다(에러가 아니라 상태) */ }
-    const reqBound = BigInt(p.bound);
-    const removeP = () => { if ((state.pendingBounds ?? []).some((x) => x.id === p.id)) { state.pendingBounds = state.pendingBounds.filter((x) => x.id !== p.id); persist(); } };
-    if (success && onchainBound === reqBound) {
-      removeP();
-      return res.json({ ...receiptResult(receipt, walletAddr, disclosure), nonce: nonce.toString(), deployed, cacheHit: proved.cacheHit, root: proved.root, regRoot: proved.regRoot, timings, applied: true, bound: p.bound, wallet: walletAddr, ...(demo ? { demo } : {}) });
-    }
-    if (onchainBound !== null && onchainBound <= reqBound) {
-      // 누가 먼저 더 낮거나 같게 반영해 둔 상태 — 이 tx 는 BoundNotLowered 로 실패했을 수 있지만 목적은 이미 달성됐다.
-      removeP();
-      return res.json({ ...receiptResult(receipt, walletAddr, disclosure), nonce: nonce.toString(), deployed, cacheHit: proved.cacheHit, root: proved.root, regRoot: proved.regRoot, timings, applied: true, alreadyLower: true, bound: p.bound, wallet: walletAddr, ...(demo ? { demo } : {}) });
+    if (verdict.applied) {
+      if ((state.pendingBounds ?? []).some((x) => x.id === p.id)) { state.pendingBounds = state.pendingBounds.filter((x) => x.id !== p.id); persist(); }
+      return res.json({ ...receiptResult(receipt, walletAddr, disclosure), nonce: nonce.toString(), deployed, cacheHit: proved.cacheHit, root: proved.root, regRoot: proved.regRoot, timings, applied: true, ...(verdict.alreadyLower ? { alreadyLower: true } : {}), bound: p.bound, wallet: walletAddr, ...(demo ? { demo } : {}) });
     }
     // 반영되지 않았다 — 에러가 아니라 상태로 200 을 낸다(브리프 §1). pending 항목은 그대로 남겨 다시 시도할 수 있게 한다.
-    return res.json({ applied: false, reason: 'bound_not_applied', txHash: receipt.hash, onchainBound: onchainBound === null ? null : onchainBound.toString(), wallet: walletAddr, nonce: nonce.toString(), timings, ...(demo ? { demo } : {}) });
+    return res.json({ applied: false, reason: verdict.reason, txHash: receipt.hash, onchainBound: verdict.onchainBound, wallet: walletAddr, nonce: nonce.toString(), timings, ...(demo ? { demo } : {}) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1326,7 +1351,7 @@ app.post('/wallet/bounds/apply', async (req, res) => {
 // 에이전트는 기다리지 않는다(페이지가 다시 부른다). 요청값 disclosure 는 트랜잭션 calldata 의 pub(PUB_INDEX.DISC_MASK..SET_ROOT)에서 되돌린다(상태 없음).
 app.post('/wallet/tx/record', async (req, res) => {
   try {
-    const { r_s, txHash } = req.body ?? {};
+    const { r_s, txHash, pendingBoundId } = req.body ?? {};
     if (!isDec(r_s) || typeof txHash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(txHash)) return res.status(400).json({ error: 'r_s, txHash(32바이트 hex) 필요' });
     const s = state.sessions[BigInt(r_s).toString()];
     if (!s) return res.status(404).json({ reason: 'no_session' });
@@ -1340,11 +1365,29 @@ app.post('/wallet/tx/record', async (req, res) => {
     let disclosure = null;
     const dec = tx ? decodeExecuteCalldata(tx.data) : null;
     if (dec) { const pub = dec.pub.map(BigInt); disclosure = { mask: pub[PUB_INDEX.DISC_MASK], lo: pub.slice(PUB_INDEX.DISC_LO, PUB_INDEX.DISC_HI), hi: pub.slice(PUB_INDEX.DISC_HI, PUB_INDEX.SET_SEL), sel: pub[PUB_INDEX.SET_SEL], root: pub[PUB_INDEX.SET_ROOT] }; }
-    // 대기 중인 setSessionBound 거래가 영수증에 반영되면 그 항목을 지운다(snap 모드: /wallet/bounds/apply 는 calldata 만 돌려주고,
-    // 실제 전송·영수증은 MetaMask 를 거쳐 이 라우트로 들어온다). 로그 자체가 나왔다는 것은 inner call 이 성공했다는 뜻이다.
+    // F-14(2026-10-23): snap 모드의 "지금 반영" — pendingBoundId 가 있으면 /wallet/bounds/apply(file 모드)와 같은
+    // 판정 헬퍼(boundApplyVerdict)로 applied/alreadyLower/bound_not_applied 를 매겨 응답에 싣는다. M6: 일반 로그
+    // 정리(clearAppliedBounds, 이 영수증의 SessionBound 이벤트 전체를 넓게 본다)는 이 판정 "뒤"에 돌린다.
+    let boundResult = {};
+    if (typeof pendingBoundId === 'string' && pendingBoundId) {
+      const p = (state.pendingBounds ?? []).find((x) => x.id === pendingBoundId);
+      if (!p) boundResult = { applied: false, reason: 'no_pending_bound' };
+      else {
+        const verdict = await boundApplyVerdict(receipt, walletAddr, p);
+        // pending 은 applied(alreadyLower 포함)일 때만 지운다 — bound_not_applied 면 다시 시도할 수 있게 남긴다.
+        if (verdict.applied && (state.pendingBounds ?? []).some((x) => x.id === p.id)) {
+          state.pendingBounds = state.pendingBounds.filter((x) => x.id !== p.id);
+          persist();
+        }
+        boundResult = verdict;
+      }
+    }
+    // 대기 중인 다른 setSessionBound 거래가 같은 영수증에 반영되면 그 항목도 지운다(snap 모드: /wallet/bounds/apply 는
+    // calldata 만 돌려주고, 실제 전송·영수증은 MetaMask 를 거쳐 이 라우트로 들어온다). 로그 자체가 나왔다는 것은
+    // inner call 이 성공했다는 뜻이다.
     clearAppliedBounds(receipt, walletAddr);
     if (!countedTxHashes.has(txHash)) { countedTxHashes.add(txHash); countTx(disclosure); }
-    res.json(receiptResult(receipt, walletAddr, disclosure));
+    res.json({ ...receiptResult(receipt, walletAddr, disclosure), ...boundResult });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

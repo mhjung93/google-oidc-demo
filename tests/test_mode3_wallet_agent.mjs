@@ -686,6 +686,66 @@ try {
     assert.equal((await wallet.get('/wallet/status')).body.pendingBounds.length, beforeLen);
   });
 
+  // F-14/F-2(2026-10-23): /wallet/tx/record 의 pendingBoundId 경로도 file 모드 /wallet/bounds/apply 와 같은 판정
+  // 헬퍼(boundApplyVerdict)를 쓴다 — snap 모드는 MetaMask 가 보낸 뒤 이 라우트로 들어오지만 판정 자체는 모드와
+  // 무관하다. 이 file 모드 스택에서 setSessionBound 거래를 직접 보내고(= snap 모드가 MetaMask 로 보내는 것과 같은
+  // 모양) 그 txHash 를 /wallet/tx/record 에 pendingBoundId 로 실어, /wallet/bounds/apply 와 같은 결과(applied·
+  // alreadyLower)가 나오는지 본다.
+  //   bound_not_applied 분기(브리프 F-2)는 이 경로로 못 만들었다 — contracts/Mode3Wallet.sol:55-58 의 두 revert 중
+  //   BoundNotLowered 는 cur != 0(이미 값이 있다) 일 때만 나고, 그 revert 조건(uint256(bound)+1 >= cur) 이 성립하면
+  //   수학적으로 cur-1 <= bound(= reqBound) 가 항상 같이 성립해 onchainBound 재조회가 늘 alreadyLower 로 떨어진다
+  //   (onchainBound 가 null 인 경우는 cur==0 이라 BoundNotLowered 자체가 안 난다). OnlySelf 는 이 코드가 늘
+  //   execute() 의 self-call(payload.to = 그 계정 자신)로만 보내 나지 않는다. 그래서 bound_not_applied 는 이
+  //   테스트들로 커버하지 못했다 — 보고서에 남긴다.
+  await t('F-14: /wallet/tx/record + pendingBoundId 가 /wallet/bounds/apply 와 같은 판정(applied, alreadyLower)을 낸다', async () => {
+    // applied: true — d1 을 bound=7 로 폐기해 대기 항목을 만들고, 같은 계정의 새 세션(d2)으로 직접 setSessionBound
+    // (d1Pk, 7) 을 보낸 뒤, 그 영수증을 /wallet/tx/record 에 pendingBoundId 로 넘긴다.
+    const d1 = await loginOnce({ factoryAddress });
+    const d1Pk = BigInt((await wallet.get('/wallet/status')).body.sessions[d1.r_s].sessionAddress);
+    await relay();
+    const rd1 = await wallet.post('/wallet/session/revoke', { r_s: d1.r_s, bound: '7' });
+    assert.equal(rd1.status, 200, j(rd1.body)); assert.ok(rd1.body.pendingBoundId);
+    await publishOnce();
+    const d2 = await loginOnce({ factoryAddress });
+    await relay();
+    const d2Acct = (await wallet.get('/wallet/status')).body.sessions[d2.r_s].account;
+    const setData = walletInterface.encodeFunctionData('setSessionBound', [d1Pk, 7]);
+    const sendTx = await wallet.post('/wallet/tx', { r_s: d2.r_s, to: d2Acct, value: '0', data: setData });
+    assert.equal(sendTx.status, 200, j(sendTx.body)); assert.equal(sendTx.body.ok, true, j(sendTx.body));
+    const rec = await wallet.post('/wallet/tx/record', { r_s: d2.r_s, txHash: sendTx.body.txHash, pendingBoundId: rd1.body.pendingBoundId });
+    assert.equal(rec.status, 200, j(rec.body)); assert.equal(rec.body.applied, true, j(rec.body));
+    assert.equal((await wallet.get('/wallet/status')).body.pendingBounds.some((p) => p.id === rd1.body.pendingBoundId), false, 'applied 뒤 pending 이 지워진다');
+
+    // alreadyLower: true — e1 을 bound=9 로 폐기해 대기 항목을 만들고, 다른 세션(e2)이 먼저 더 낮은 값(4)을 걸어 둔
+    // 뒤, 대기 항목(bound=9)과 같은 setSessionBound(e1Pk, 9) 를 직접 보내면 내부 호출은 BoundNotLowered 로 실패해도
+    // (ok:false) 트랜잭션 자체는 성공한다 — 그 영수증을 record 에 넘기면 온체인 값(4)이 요청(9)보다 이미 낮아
+    // applied:true, alreadyLower:true 가 나와야 한다(/wallet/bounds/apply 의 §1-b·c 와 같은 계약).
+    const e1 = await loginOnce({ factoryAddress });
+    const e1Pk = BigInt((await wallet.get('/wallet/status')).body.sessions[e1.r_s].sessionAddress);
+    await relay();
+    const re1 = await wallet.post('/wallet/session/revoke', { r_s: e1.r_s, bound: '9' });
+    assert.equal(re1.status, 200, j(re1.body)); assert.ok(re1.body.pendingBoundId);
+    await publishOnce();
+    const e2 = await loginOnce({ factoryAddress });
+    await relay();
+    const e2Acct = (await wallet.get('/wallet/status')).body.sessions[e2.r_s].account;
+    const lowerData = walletInterface.encodeFunctionData('setSessionBound', [e1Pk, 4]);
+    const lowerTx = await wallet.post('/wallet/tx', { r_s: e2.r_s, to: e2Acct, value: '0', data: lowerData });
+    assert.equal(lowerTx.status, 200, j(lowerTx.body)); assert.equal(lowerTx.body.ok, true, j(lowerTx.body));
+    assert.equal(await walletAt(e2Acct, provider).sessionBound(e1Pk), 5n, '직접 보낸 setSessionBound(4) 의 저장값 = 4 + 1');
+    const e3 = await loginOnce({ factoryAddress });
+    await relay();
+    const e3Acct = (await wallet.get('/wallet/status')).body.sessions[e3.r_s].account;
+    const raiseData = walletInterface.encodeFunctionData('setSessionBound', [e1Pk, 9]);
+    const raiseTx = await wallet.post('/wallet/tx', { r_s: e3.r_s, to: e3Acct, value: '0', data: raiseData });
+    assert.equal(raiseTx.status, 200, j(raiseTx.body));
+    assert.equal(raiseTx.body.ok, false, j(raiseTx.body), '내부 setSessionBound(9) 는 이미 4 라 BoundNotLowered 로 실패해야 한다');
+    const rec2 = await wallet.post('/wallet/tx/record', { r_s: e3.r_s, txHash: raiseTx.body.txHash, pendingBoundId: re1.body.pendingBoundId });
+    assert.equal(rec2.status, 200, j(rec2.body));
+    assert.equal(rec2.body.applied, true, j(rec2.body)); assert.equal(rec2.body.alreadyLower, true, j(rec2.body));
+    assert.equal((await wallet.get('/wallet/status')).body.pendingBounds.some((p) => p.id === re1.body.pendingBoundId), false, 'alreadyLower 뒤에도 pending 이 지워진다');
+  });
+
   await t('V8: 세션 하나가 지갑 밖에서(관리자) 폐기되면 재검증이 403 revoked_session 으로 그 세션만 지운다 — 사용자 자격증명은 그대로', async () => {
     const before = new Set((await cia.adminGet(`/cia/admin/sessions?uid=${uid}`)).body.sessions.map((x) => x.Cf_s));
     const a = await loginOnce();

@@ -485,7 +485,7 @@ app.post('/api/mode3/request', async (req, res) => {
 
 // ---- 릴레이(설계 2026-10-15 §5.1, 계획 R6): 브라우저 사용자 페이지의 execute 를 RP 의 릴레이어 계정이 대신 보낸다 ----
 // 릴레이어는 서명만 한다 — 사용자 비밀을 보지 않는다. 검열(거부·지연) 가능성은 런북의 한계에 적는다.
-// 검사 순서: 활성 → 본문 형식(value 0 고정) → execute 셀렉터·pub 33·pub[1]=arid → to = computeAddress(pub[0]) → 속도 제한 → (코드 없으면 deploy) → estimateGas ≤ cap → 전송.
+// 검사 순서: 활성 → 본문 형식(value 0 고정) → execute 셀렉터·pub 34(2026-10-22 §6.5 counter 추가)·pub[1]=arid → to = computeAddress(pub[0]) → 속도 제한 → (코드 없으면 deploy) → estimateGas ≤ cap → 전송.
 const RELAY_GAS_CAP = BigInt(process.env.MODE3_RELAY_GAS_CAP || 1_200_000);
 const RELAY_RATE = Number(process.env.MODE3_RELAY_RATE || 10);     // 계정당 분당
 const relayCors = cors({ origin: (origin, cb) => cb(null, origin === WALLET_ORIGIN), methods: ['POST', 'GET'], allowedHeaders: ['Content-Type'] });

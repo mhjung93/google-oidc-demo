@@ -1,4 +1,4 @@
-// pi_cred 회로(V11, 2026-10-12, 공개 입력 33)의 zkey 생성과 증명·검증 시간 실측.
+// pi_cred 회로(V11, 2026-10-12, 공개 입력 34 — 2026-10-22 §6.5 부터 counter 추가)의 zkey 생성과 증명·검증 시간 실측.
 //   node scripts/bench_pi_cred.mjs pot21_final.ptau
 //   (zkey 가 없으면 여기서 만들지만, 회로를 바꾼 뒤에는 scripts/build_mode3_circuit.sh 로 한 세트를 다시 만들 것)
 //

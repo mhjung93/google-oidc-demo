@@ -104,7 +104,10 @@ try {
    * 기다린다(cia_login.html 이 성공 시 300ms 뒤 닫는다) — 호출자는 이어서 원래 팝업·RP 의 성공 신호를 기다리면 된다.
    */
   async function completeIdpAuth(popup, { authUid = uid, pwd = DEMO_PWD, authAuid = AUID } = {}) {
-    const [auth] = await Promise.all([context.waitForEvent('page'), popup.waitForSelector('#authStep', { state: 'attached' })]);
+    // F-13(2026-10-23): window.open(IdP 창)은 더 이상 Snap 동의 직후 곧바로 불리지 않는다 — "IdP 인증 창 열기"
+    // 버튼(#idpAuthOpenBtn)의 click 처리기 안에서만 불린다(일반 팝업 차단기를 피하려고). 버튼을 눌러야 창이 뜬다.
+    await popup.waitForSelector('#idpAuthOpenBtn:not([hidden])', { state: 'visible' });
+    const [auth] = await Promise.all([context.waitForEvent('page'), popup.click('#idpAuthOpenBtn')]);
     await auth.fill('#authUid', String(authUid));
     await auth.fill('#authPwd', pwd);
     await auth.fill('#authAuid', String(authAuid));
@@ -163,6 +166,35 @@ try {
     const result = await rpPage.evaluate(() => Promise.race([
       window.__forged,
       new Promise((_, rej) => setTimeout(() => rej(new Error('위조 요청의 결과가 60초 안에 오지 않았다')), 60_000)),
+    ]));
+    return { popup, result };
+  }
+
+  /**
+   * F-1(2026-10-23): forgeAuthorize 와 같은 패턴으로 지갑 팝업(?authorize=1)을 열고, 준비 신호를 받은 뒤 **RP 오리진에서**
+   * mode3-register 를 보낸다(진짜 등록 흐름은 IdP 오리진의 /user 페이지가 연다 — mode3/wallet.html:446 의 수신 가드가
+   * 이 가짜 발신 오리진을 걸러내야 한다). 돌려주는 것은 { popup, result } — result 는 mode3-register-result 의 result.
+   */
+  async function forgeRegister(name, request) {
+    await rpPage.evaluate(({ walletOrigin, request: req, name: winName }) => {
+      document.getElementById('forgedRegBtn')?.remove();
+      window.__forgedReg = new Promise((resolve) => { window.__forgedRegResolve = resolve; });
+      const btn = document.createElement('button');
+      btn.id = 'forgedRegBtn';
+      btn.addEventListener('click', () => {
+        const popup = window.open(`${walletOrigin}/?authorize=1`, winName, 'width=480,height=680');
+        window.addEventListener('message', (ev) => {
+          if (ev.origin !== walletOrigin || ev.source !== popup || !ev.data) return;
+          if (ev.data.type === 'mode3-authorize-ready') { popup.postMessage({ type: 'mode3-register', ...req }, walletOrigin); return; }
+          if (ev.data.type === 'mode3-register-result') window.__forgedRegResolve(ev.data.result);
+        });
+      });
+      document.body.appendChild(btn);
+    }, { walletOrigin: wallet.base, request, name });
+    const [popup] = await Promise.all([context.waitForEvent('page'), rpPage.click('#forgedRegBtn')]);
+    const result = await rpPage.evaluate(() => Promise.race([
+      window.__forgedReg,
+      new Promise((_, rej) => setTimeout(() => rej(new Error('위조 등록 요청의 결과가 10초 안에 오지 않았다')), 10_000)),
     ]));
     return { popup, result };
   }
@@ -565,14 +597,46 @@ try {
   await t('로그인(2026-10-22): Snap 동의 뒤 IdP 인증 창이 뜨고 uid·비밀번호·auid 를 넣어야 발급된다; auid 가 틀리면 auid_mismatch', async () => {
     answers.push(true);                                                                     // consentLogin
     const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
-    // popup.waitForSelector 는 'attached' 로 본다 — #authStep 은 늘 DOM 에 있지만 전문가 보기가 아니면 CSS 로 숨어
-    // 있다(.expert{display:none}), 기본 상태(visible)로 기다리면 끝없이 멈춘다. 실제 게이트는 두 번째 page 이벤트다.
-    const [auth] = await Promise.all([context.waitForEvent('page'), popup.waitForSelector('#authStep', { state: 'attached' })]);   // 팝업이 연 IdP 창
+    // F-13(2026-10-23): IdP 창은 "IdP 인증 창 열기" 버튼(#idpAuthOpenBtn)을 눌러야 열린다(일반 팝업 차단기를 피하려고
+    // Snap 동의 직후 곧바로 열지 않는다).
+    await popup.waitForSelector('#idpAuthOpenBtn:not([hidden])', { state: 'visible' });
+    const [auth] = await Promise.all([context.waitForEvent('page'), popup.click('#idpAuthOpenBtn')]);   // 팝업이 연 IdP 창
     await auth.fill('#authUid', uid); await auth.fill('#authPwd', DEMO_PWD); await auth.fill('#authAuid', '123'); await auth.click('#authGo');
     await waitText(auth, '#authVerdict', 'auid');                                           // auid_mismatch 사유, 창은 열려 있다
     // cia_login.html 의 #authGo 핸들러는 성공·실패 모두에서 clearPwd() 로 비밀번호 칸을 비운다(§4) — 다시 채워야 한다.
     await auth.fill('#authPwd', DEMO_PWD); await auth.fill('#authAuid', AUID); await auth.click('#authGo');
     await waitText(rpPage, '#verdict', '로그인 성공', 120_000);
+    await awaitPopupClosed(popup);
+  });
+
+  // F-1(2026-10-23): 두 postMessage 채널(mode3-idp-auth, mode3-register)의 음성 테스트 — 지갑 팝업의 수신 가드가
+  // 깨지는 회귀를 잡는다("팝업 오리진 검사" 패턴 재사용). idpLogin(rpPage) 이 rpPage 의 currentSession 을 새 세션으로
+  // 덮어쓰므로, 그 값에 의존하는 앞쪽 테스트(sessionRs·지갑 재시작 재검증 등)를 건드리지 않게 파일 끝(하네스 점검 바로
+  // 앞)에 둔다.
+  await t('postMessage 음성(F-1): 지갑 팝업의 IdP 인증 창 수신은 발신 오리진·nonce 가 둘 다 맞아야 한다', async () => {
+    answers.push(true);                        // consentLogin
+    const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
+    await popup.waitForSelector('#idpAuthOpenBtn:not([hidden])', { state: 'visible' });
+    const [auth] = await Promise.all([context.waitForEvent('page'), popup.click('#idpAuthOpenBtn')]);
+    const fakeCode = '0'.repeat(64);
+    // (1) 가짜 발신 오리진 — 지갑 팝업 자신의 오리진(IdP 오리진이 아니다)에서 보낸 메시지는 무시된다.
+    await popup.evaluate((code) => window.postMessage({ type: 'mode3-idp-auth', nonce: 'anything', code }, '*'), fakeCode);
+    // (2) 올바른 오리진(실제 IdP 창)이지만 nonce 가 다른 메시지도 무시된다.
+    await auth.evaluate((code) => window.opener.postMessage({ type: 'mode3-idp-auth', nonce: 'wrong-nonce', code }, '*'), fakeCode);
+    await popup.waitForTimeout(300);           // 위조 두 개가 처리될 시간을 준다 — 반응이 없어야 한다(무응답)
+    assert.equal(popup.isClosed(), false, '위조 메시지 두 개로 팝업이 끝나면 안 된다');
+    assert.equal(auth.isClosed(), false, 'IdP 창도 그대로 열려 있어야 한다');
+    // (3) 올바른 메시지만 받아들인다 — 위조 두 번을 겪은 뒤에도 진짜 완료는 그대로 된다(리스너가 소비되지 않았다).
+    await auth.fill('#authUid', String(uid)); await auth.fill('#authPwd', DEMO_PWD); await auth.fill('#authAuid', String(AUID)); await auth.click('#authGo');
+    await auth.waitForEvent('close', { timeout: 15_000 });
+    await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
+    await awaitPopupClosed(popup);
+  });
+
+  await t('postMessage 음성(F-1): 지갑 팝업의 mode3-register 수신은 RP 오리진 같은 가짜 발신을 origin_mismatch 로 무시한다', async () => {
+    const { popup, result } = await forgeRegister('mode3-register-forged', { uid: '1', code: 'forged' });
+    assert.equal(result.ok, false, j(result));
+    assert.equal(result.reason, 'origin_mismatch', j(result));
     await awaitPopupClosed(popup);
   });
 

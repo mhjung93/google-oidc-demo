@@ -4,9 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="same-origin" />
-  <!-- Task 14(B5, 2026-10-23): "사용자 페이지" → "지갑". tests/test_mode3_demo_stack.mjs:778 는 옛 제목을 그 marker 로
-       썼다 — 이 작업의 파일 범위(mode3/wallet.html·common/strings.js·tests/test_mode3_browser.mjs) 밖이라 고치지
-       않았고, 그 테스트(chain 그룹)가 지금 이 문자열로 실패할 수 있다(보고서에 남긴다). -->
+  <!-- Task 14(B5, 2026-10-23): "사용자 페이지" → "지갑". tests/test_mode3_demo_stack.mjs:778 는 이 제목을 marker 로
+       쓴다 — 확인 결과(F-15, 2026-10-23) 그 테스트는 이미 "지갑"을 기대하도록 고쳐져 있어 더 이상 깨지지 않는다. -->
   <title>지갑</title>
   <link rel="stylesheet" href="/common/demo.css" />
   <script src="/common/strings.js"></script>
@@ -22,6 +21,9 @@
       <p id="authTitle">RP 페이지의 요청을 기다리는 중…</p>
       <dl class="kv" id="authSummary"></dl>
       <p id="authStep" class="muted expert"></p>
+      <!-- F-13(2026-10-23): Snap 동의 뒤 이 버튼의 click 처리기 "안에서" 동기적으로 window.open 을 불러야 일반 팝업
+           차단기를 피한다(await 뒤에 부르면 사용자 제스처가 끊긴다) — 승인 뒤에만 보인다(openIdpAuthOnClick). -->
+      <p><button type="button" id="idpAuthOpenBtn" data-i18n="idp_auth_open_btn" hidden>IdP 인증 창 열기</button></p>
       <pre id="authLog" class="expert"></pre>
       <p class="muted" data-i18n="wallet_auth_note">요청은 주소창이 아니라 postMessage 로 받습니다. 메시지를 보낸 오리진이 RP 인증서의 오리진과 같을 때만 진행합니다.</p>
     </section>
@@ -417,18 +419,45 @@
     }
     // IdP 인증 창(Task 14, B5) — 로그인 동의(consentLogin) 승인 뒤, 신규 로그인(비-reauth)마다 연다. nonce 로 응답을
     // 묶고, 발신 오리진이 cfg.ciaUrl 의 오리진과 nonce 가 둘 다 맞을 때만 받는다('*' 로 보내지 않는다, 받지도 않는다).
-    // 창이 닫히거나 60초 안에 응답이 없으면 null(호출자가 idp_auth_cancelled 로 돌린다).
+    // 창이 닫히거나 60초 안에 응답이 없으면 idp_auth_cancelled(호출자가 그 사유로 RP 에 돌린다).
+    // F-13(2026-10-23): window.open 은 이 함수가 "동기적으로" 불려야(= 사용자 click 처리기 안에서, 그 앞에 await 가
+    // 없어야) 일반 팝업 차단기를 피한다 — openIdpAuthOnClick 이 버튼의 click 처리기 안에서 이 함수를 그대로 부른다.
+    // win===null 이면 즉시 { code:null, reason:'popup_blocked' } 로 resolve 한다(호출자가 버튼을 되살린다).
     function idpAuth() {
       return new Promise((resolve) => {
         const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
         const ciaOrigin = new URL(cfg.ciaUrl).origin;
         const win = window.open(`${cfg.ciaUrl}/login?nonce=${nonce}&wallet=${encodeURIComponent(location.origin)}`, 'mode3-idp-auth', 'width=420,height=520');
-        if (!win) return resolve(null);
+        if (!win) return resolve({ code: null, reason: 'popup_blocked' });
         const done = (v) => { clearInterval(tick); clearTimeout(timer); window.removeEventListener('message', onMsg); resolve(v); };
-        const onMsg = (ev) => { if (ev.origin !== ciaOrigin || ev.data?.type !== 'mode3-idp-auth' || ev.data.nonce !== nonce) return; done(ev.data.code || null); };
+        // F-15 M4: IdP 창은 코드 대신 { error } 로 실패를 알릴 수 있다(사용자가 재시도 않고 닫을 때, cia_login.html 쪽
+        // — 그 창 쪽은 Y2 담당, 여기는 받는 쪽만). error 가 있으면 그 사유를 그대로 돌려 RP 에 넘긴다.
+        const onMsg = (ev) => {
+          if (ev.origin !== ciaOrigin || ev.data?.type !== 'mode3-idp-auth' || ev.data.nonce !== nonce) return;
+          done({ code: ev.data.code || null, reason: ev.data.code ? null : (ev.data.error || 'idp_auth_cancelled') });
+        };
         window.addEventListener('message', onMsg);
-        const tick = setInterval(() => { if (win.closed) done(null); }, 500);
-        const timer = setTimeout(() => { try { win.close(); } catch { /* */ } done(null); }, 60_000);
+        const tick = setInterval(() => { if (win.closed) done({ code: null, reason: 'idp_auth_cancelled' }); }, 500);
+        const timer = setTimeout(() => { try { win.close(); } catch { /* */ } done({ code: null, reason: 'idp_auth_cancelled' }); }, 60_000);
+      });
+    }
+    // F-13: Snap 동의 뒤 "IdP 인증 창 열기" 버튼(#idpAuthOpenBtn)을 보이고, 그 click 처리기 "안에서" idpAuth() 를
+    // 불러 window.open 이 사용자 제스처를 잃지 않게 한다. win===null(popup_blocked)이면 호출자(runAuthorize)가
+    // RP 에 그 사유를 돌려주지만, 이 버튼은 숨기지 않고 되살려 둔다(스펙 §4 "버튼을 되살린다") — 그 밖(성공·
+    // idp_auth_cancelled)에는 더 쓸 일이 없어 숨긴다.
+    function openIdpAuthOnClick(step) {
+      return new Promise((resolve) => {
+        const btn = $('idpAuthOpenBtn');
+        btn.hidden = false;
+        const onClick = () => {
+          btn.removeEventListener('click', onClick);
+          idpAuth().then((v) => {
+            if (v.reason === 'popup_blocked') step(tt('popup_blocked') || '팝업이 차단됐습니다.');
+            else btn.hidden = true;
+            resolve(v);
+          });
+        };
+        btn.addEventListener('click', onClick);
       });
     }
 
@@ -457,6 +486,12 @@
           log(e.message);
           return reply({ ok: false, reason: isUserRejected(e) ? 'user_denied' : 'snap_unavailable', detail: e.message });
         }
+        // M12(2026-10-23): Snap 의 등록 확인 창을 띄우기 전에 에이전트가 이미 등록돼 있는지 먼저 본다 — 이미
+        // 등록이면 Snap 을 부르지 않고 바로 already_registered 로 끝낸다(헛되이 확인 창을 띄우지 않는다). 상태를
+        // 못 읽으면(네트워크 등) 그냥 진행한다 — 어차피 /wallet/register 가 다시 걸러준다.
+        let already = false;
+        try { already = Boolean((await (await fetch('/wallet/status')).json()).registered); } catch { /* 진행 */ }
+        if (already) { step('이미 등록돼 있다.'); return reply({ ok: false, reason: 'already_registered' }); }
         step('Snap 등록 확인 창을 확인하세요.');
         const reg = await invokeSnap('register', { uid: req.uid });
         if (!reg || reg.denied) { step('등록 거절'); return reply({ ok: false, reason: 'user_denied' }); }
@@ -557,9 +592,12 @@
 
           // IdP 인증 창(Task 14, B5) — CIA_ISSUE_AUTH=code 인 IdP 는 로그인마다 이 창이 낸 1회용 코드가 있어야
           // /cia/issue 가 받는다. 재승인(위 reauth 분기)은 /cia/issue 를 타지 않으므로 거치지 않는다.
-          step(tt('user_auth_idp_step') || 'IdP 인증 창에서 uid·비밀번호·auid 를 입력하세요.');
-          const authCode = await idpAuth();   // null 이면 취소(창 닫힘·60초 무응답)
-          if (!authCode) { step('IdP 인증 취소'); return reply({ ok: false, reason: 'idp_auth_cancelled' }); }
+          // F-13(2026-10-23): window.open 은 버튼의 click 처리기 안에서만 부른다(openIdpAuthOnClick) — 여기서
+          // 곧바로 부르면 Snap 동의의 await 들을 지나며 사용자 제스처가 끊겨 일반 팝업 차단기에 막힌다.
+          step(tt('idp_auth_open_btn') || 'IdP 인증 창 열기 버튼을 누르세요.');
+          const authRes = await openIdpAuthOnClick(step);   // { code, reason } — code 없으면 취소·차단
+          if (!authRes.code) { step('IdP 인증 취소'); return reply({ ok: false, reason: authRes.reason ?? 'idp_auth_cancelled' }); }
+          const authCode = authRes.code;
 
           step('로그인·증명 생성 중… (수 초 걸린다)');
           const lg = await postJson('/wallet/login', {
@@ -975,14 +1013,11 @@
         // 이 적용된다. 하나라도 적었으면 그 profile 을 그대로 싣는다(비운 슬롯이 있으면 에이전트가 bad_attr 로 막는다).
         const profileForm = readProfileForm();
         const typedProfile = Object.values(profileForm).some((v) => v !== '') ? profileForm : undefined;
-        if (cfg.secrets === 'snap') {
-          await ensureConnected();
-          const reg = await invokeSnap('register');
-          if (!reg || reg.denied) { setVerdict($('registerResult'), false, 'wallet_register_failed', () => ({ summary: tt('wallet_register_cancel') || 'Snap 대화상자에서 등록을 취소했습니다.' })); return; }
-          body = { uid: reg.uid, pwd: reg.pwd, s_u: reg.s_u, sk_u: reg.sk_u, profile: typedProfile };
-        } else {
-          body = { uid: $('uid').value.trim(), pwd: $('pwd').value, profile: typedProfile };
-        }
+        // F-15 M1(2026-10-23): snap 모드는 registerBtn 자체를 숨기므로(applySnapMode, #registerHint 안내로
+        // 대신한다) 이 버튼은 file 모드에서만 눌린다 — uid 없이 invokeSnap('register') 를 불러 reg.pwd 를 쓰던
+        // 옛 분기(Snap 의 register RPC 가 비밀번호를 프롬프트하던 시절)는 등록이 IdP /user 페이지(mode3-register
+        // 팝업, handleRegisterMessage)로 옮겨가며 닿지 않게 됐다 — 제거한다.
+        body = { uid: $('uid').value.trim(), pwd: $('pwd').value, profile: typedProfile };
         const { status, body: b } = await postJson('/wallet/register', body);
         body = null;
         if (status !== 201) {
