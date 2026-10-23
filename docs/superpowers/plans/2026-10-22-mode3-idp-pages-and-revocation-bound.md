@@ -56,7 +56,7 @@
 
 # Part A — 세션 폐기 상한
 
-### Task A1: 폐기 리프 값·구간 증인 (라이브러리)
+### Task 1 (A1): 폐기 리프 값·구간 증인 (라이브러리)
 
 **Files:**
 - Modify: `lib/mode3_revocation.js:20-23` (`sessionLeaf`)
@@ -154,7 +154,7 @@ export async function sessionLeafRange(Cf_s, counter) {
 
 - [ ] **Step 5: 커밋 제안** — `feat(mode3): 세션 폐기 리프에 허용 거래 수(bound) — H'·2^32+c, 구간 비멤버십 증인`
 
-### Task A2: 회로 — 구간 비멤버십 가젯 + `counter` 공개 입력
+### Task 2 (A2): 회로 — 구간 비멤버십 가젯 + `counter` 공개 입력
 
 **Files:**
 - Create: `circuits/lib/imt_range_nonmembership_v2.circom`
@@ -296,7 +296,7 @@ template IMTRangeNonMembershipV2(depth) {
 
 - [ ] **Step 8: 커밋 제안** — `feat(circuit): pi_cred 공개 입력 counter(34번째)·세션 구간 비멤버십(IMTRangeNonMembershipV2)`
 
-### Task A3: 회로 빌드·검증기 재생성 (사용자 승인 C3 — 컨트롤러가 실행 직전 알린다)
+### Task 3 (A3): 회로 빌드·검증기 재생성 (사용자 승인 C3 — 컨트롤러가 실행 직전 알린다)
 
 **Files:**
 - Modify: `scripts/build_mode3_circuit.sh:45` (`uint\[33\]` → `uint\[34\]`)
@@ -309,7 +309,7 @@ template IMTRangeNonMembershipV2(depth) {
 - [ ] **Step 5:** `node scripts/bench_pi_cred.mjs pot21_final.ptau` 의 제약 수·증명 시간을 `results/pi_cred_counter_20261022.md` 에 적는다(이전: 33,909 제약 / 지난 측정값은 `results/baselines_20261013.md` 참조).
 - [ ] **Step 6: 커밋 제안** — `build(mode3): counter 포함 pi_cred 산출물·PiCredVerifier(34) 재생성`(zkey 등 build/ 는 .gitignore — 커밋은 PiCredVerifier.sol·스크립트·results 만)
 
-### Task A4: 계정 컨트랙트 — `counter == nonce`, 세션키별 온체인 상한
+### Task 4 (A4): 계정 컨트랙트 — `counter == nonce`, 세션키별 온체인 상한
 
 **Files:**
 - Modify: `lib/mode3_onchain.js:14-15`(PUB_INDEX), `:33-50`(WALLET_ABI)
@@ -415,7 +415,7 @@ template IMTRangeNonMembershipV2(depth) {
 
 - [ ] **Step 6: 커밋 제안** — `feat(contracts): Mode3Wallet counter==nonce 검사·세션키별 온체인 상한(setSessionBound)`
 
-### Task A5: 증명 입력 `counter`·폐기 서명 `bound`·RP `bad_counter`
+### Task 5 (A5): 증명 입력 `counter`·폐기 서명 `bound`·RP `bad_counter`
 
 **Files:**
 - Modify: `lib/mode3_wallet.js:85-89`(signRevokeSession), `buildCredentialProof`
@@ -467,7 +467,7 @@ export async function revokeSessionMessage(uid, Cf_s, bound, nonce) {
 
 - [ ] **Step 5: 커밋 제안** — `feat(lib): π_RP counter 입력·구간 증인, 폐기 서명에 bound, RP bad_counter`
 
-### Task A6: IdP — 폐기 요청에 `bound`, 관리자 표
+### Task 6 (A6): IdP — 폐기 요청에 `bound`, 관리자 표
 
 **Files:**
 - Modify: `cia.js`(`/cia/revoke` scope=session 블록: 서명·리프·레코드), `/cia/admin/sessions`(응답에 `bound`), `/cia/admin/revoked_sessions`
@@ -501,7 +501,7 @@ await t('관리자 폐기는 bound 기본 0(전부 차단), bound 를 주면 그
 
 - [ ] **Step 5: 커밋 제안** — `feat(cia): 세션 폐기 요청의 허용 거래 수(bound) — 서명·리프·관리자 표`
 
-### Task A7: 지갑 에이전트 — counter·체인 반영 대기·`/wallet/bounds`
+### Task 7 (A7): 지갑 에이전트 — counter·체인 반영 대기·`/wallet/bounds`
 
 **Files:**
 - Modify: `mode3_wallet_agent.js`: `proveSession`(783-), `buildExecute`(prepareTx 순서), `/wallet/login`·`/wallet/revalidate`·`/wallet/request`(LOGIN_COUNTER), `/wallet/session/revoke`(bound), `/wallet/status`(세션 `nonce`·`pendingBounds`), 새 `/wallet/bounds/apply`, `/wallet/tx/record`(대기 항목 정리), 상태 버전 10(`pendingBounds: []`)
@@ -552,7 +552,7 @@ await t('관리자 폐기는 bound 기본 0(전부 차단), bound 를 주면 그
 
 - [ ] **Step 5: 커밋 제안** — `feat(agent): 거래 π counter=nonce, 폐기 bound·체인 반영 대기(pendingBounds)·/wallet/bounds/apply`
 
-### Task A7b: web 모드 코어 — 거래 증명의 counter = nonce (호환 유지, 사용자 결정 2026-10-23)
+### Task 8 (A7b): web 모드 코어 — 거래 증명의 counter = nonce (호환 유지, 사용자 결정 2026-10-23)
 
 **Files:**
 - Modify: `mode3/user/core/user_core.js`(`proveSession`, `prepareTx`)
@@ -567,7 +567,7 @@ await t('관리자 폐기는 bound 기본 0(전부 차단), bound 를 주면 그
 - [ ] **Step 3: 통과 확인** — `node tests/test_mode3_user_core.mjs`, `node tests/test_mode3_user_web.mjs`, `node tests/test_mode3_rp_relay.mjs`.
 - [ ] **Step 4: 커밋 제안** — `fix(user-core): 거래 증명 counter=nonce·폐기 bound 자동(회로 변경 호환)`
 
-### Task A8: 지갑 페이지 — nonce 표시·상한 입력·체인 반영 대기 카드
+### Task 9 (A8): 지갑 페이지 — nonce 표시·상한 입력·체인 반영 대기 카드
 
 **Files:**
 - Modify: `mode3/wallet.html`(세션 카드 `renderSessions`, `revokeSession`, 새 카드 `#boundsCard`), `mode3/common/strings.js`
@@ -617,7 +617,7 @@ await t('관리자 폐기는 bound 기본 0(전부 차단), bound 를 주면 그
 
 # Part B — IdP 페이지
 
-### Task B1: IdP 계정·세션·1회용 코드·발급 정책
+### Task 10 (B1): IdP 계정·세션·1회용 코드·발급 정책
 
 **Files:**
 - Modify: `cia.js`(상수 블록 `:60-70` 근처, `/cia/register:555-580`, `/cia/issue` 데모 계정 분기, 상태 `defaultState()`·기동 시드, 새 라우트)
@@ -685,7 +685,7 @@ app.post('/cia/auth/code', (req, res) => { const { uid, pwd, auid } = req.body ?
 
 - [ ] **Step 5: 커밋 제안** — `feat(cia): 가입·세션·1회용 코드(등록/발급)·발급 정책 CIA_ISSUE_AUTH, 시드 계정 opt-in`
 
-### Task B2: IdP RP 운영자·RP 슬롯·`rp_key`·공개 RP 주소 목록
+### Task 11 (B2): IdP RP 운영자·RP 슬롯·`rp_key`·공개 RP 주소 목록
 
 **Files:**
 - Modify: `cia.js`(`/cia/register_rp:471-505`, 새 라우트), `mode3/cia_admin.html:388-420`(operator 열), `mode3/common/strings.js`(`admin_col_operator`)
@@ -709,7 +709,7 @@ await t('rp_origins: 승인 전 빈 목록, 관리자 승인 뒤 origin 포함(�
 - [ ] **Step 4: 통과 확인** — `node tests/test_cia_accounts.mjs`.
 - [ ] **Step 5: 커밋 제안** — `feat(cia): RP 운영자 계정·RP 슬롯 키(rp_key)·공개 rp_origins; rp 서버 MODE3_RP_KEY`
 
-### Task B3: IdP 페이지 셋 — `/user`, `/rp`, `/login`
+### Task 12 (B3): IdP 페이지 셋 — `/user`, `/rp`, `/login`
 
 **Files:**
 - Create: `mode3/cia_user.html`, `mode3/cia_rp.html`, `mode3/cia_login.html`
@@ -809,7 +809,7 @@ await t('rp_origins: 승인 전 빈 목록, 관리자 승인 뒤 origin 포함(�
 - [ ] **Step 4: 통과 확인** — `node tests/test_mode3_browser.mjs`(새 케이스 셋), `node tests/test_mode3_demo_strings.js`(새 키는 ko·en 둘 다).
 - [ ] **Step 5: 커밋 제안** — `feat(cia): IdP 사용자·RP·인증 창 페이지`
 
-### Task B4: 에이전트 — 동적 RP 허용 목록·`auth_code`·코드 등록
+### Task 13 (B4): 에이전트 — 동적 RP 허용 목록·`auth_code`·코드 등록
 
 **Files:**
 - Modify: `mode3_wallet_agent.js`(`RP_ORIGINS`·`isRpOrigin`·CORS, `/wallet/login`, `/wallet/register`, `/wallet/config`)
@@ -829,7 +829,7 @@ await t('rp_origins: 승인 전 빈 목록, 관리자 승인 뒤 origin 포함(�
 - [ ] **Step 4: 통과 확인** — `node tests/test_mode3_wallet_agent.mjs`.
 - [ ] **Step 5: 커밋 제안** — `feat(agent): IdP rp_origins 동적 허용 목록, auth_code 전달, 코드 등록`
 
-### Task B5: 지갑 페이지 — 제목·auid/salt 복사·`mode3-register` 팝업·IdP 인증 창
+### Task 14 (B5): 지갑 페이지 — 제목·auid/salt 복사·`mode3-register` 팝업·IdP 인증 창
 
 **Files:**
 - Modify: `mode3/wallet.html`(`<title>`, 신원 카드, 팝업 `onMessage`, 등록 버튼), `mode3/common/strings.js`
@@ -905,7 +905,7 @@ await t('rp_origins: 승인 전 빈 목록, 관리자 승인 뒤 origin 포함(�
 - [ ] **Step 4: 통과 확인** — B6 뒤 `node tests/test_mode3_browser.mjs`.
 - [ ] **Step 5: 커밋 제안** — `feat(wallet-page): 제목 "지갑", auid·salt 복사, IdP 페이지 등록 팝업(mode3-register), 발급 전 IdP 인증 창`
 
-### Task B6: Snap — `register({uid})`·`consentRevokeSession({bound})`·`showSalt`, 시뮬레이터, 재빌드
+### Task 15 (B6): Snap — `register({uid})`·`consentRevokeSession({bound})`·`showSalt`, 시뮬레이터, 재빌드
 
 **Files:**
 - Modify: `snap-mode3/src/index.js`(`register`, `consentRevokeSession`, 새 `showSalt`), `snap-mode3/test/rpc.test.mjs`, `tests/helpers/snap_sim.mjs`, `tests/helpers/ethereum_stub.js`(변경 없을 가능성 — `wallet_invokeSnap` 라우팅은 메서드 불문)
@@ -942,7 +942,7 @@ await t('rp_origins: 승인 전 빈 목록, 관리자 승인 뒤 origin 포함(�
 - [ ] **Step 4: 통과 확인** — `node snap-mode3/test/rpc.test.mjs`, 그리고 A8·B5 의 브라우저 케이스: `node tests/test_mode3_browser.mjs` 전체.
 - [ ] **Step 5: 커밋 제안** — `feat(snap): register(uid) 확인 창만, 폐기 동의에 허용 거래 수, showSalt; 번들 재빌드`
 
-### Task B7: 새 RP 기동 명령 `scripts/new_rp.sh`
+### Task 16 (B7): 새 RP 기동 명령 `scripts/new_rp.sh`
 
 **Files:**
 - Create: `scripts/new_rp.sh`
@@ -992,7 +992,7 @@ fi
 - [ ] **Step 3:** 수동 검증은 B9.
 - [ ] **Step 4: 커밋 제안** — `feat(scripts): new_rp.sh — RP 페이지 키로 새 RP 서버 한 줄 기동(로컬·VM)`
 
-### Task B8: 체험 모드 단계·페이지 id
+### Task 17 (B8): 체험 모드 단계·페이지 id
 
 **Files:**
 - Modify: `mode3/common/strings.js`(steps: `rp_create` 추가, `register` where/target 변경, `revoke` where `account`→`idp_user`), `mode3/common/demo.js`(페이지 집합에 `idp_user`·`idp_rp`; `account` 제거), `tests/test_mode3_demo_strings.js:70`(`TOUR_PAGES`), `tests/test_mode3_tour.mjs`
@@ -1006,7 +1006,7 @@ fi
 - [ ] **Step 2:** `node tests/test_mode3_demo_strings.js`, `node tests/test_mode3_tour.mjs`(단계 번호·페이지 기대값 갱신).
 - [ ] **Step 3: 커밋 제안** — `feat(tour): RP 만들기 단계, 등록 단계를 IdP 사용자 페이지로`
 
-### Task B9: 리셋 스크립트·런북·메모리·E2E
+### Task 18 (B9): 리셋 스크립트·런북·메모리·E2E
 
 **Files:**
 - Modify: `scripts/demo_web_reset.sh`, `scripts/demo_split_start.sh`(IdP env `CIA_ISSUE_AUTH=code`, `CIA_DEMO_ACCOUNTS` 미설정; 요약 출력에 `/user`·`/rp`·`new_rp.sh` 안내; Snap 재설치 안내), `docs/MODE3_DEMO.md`(시연 순서 §8, 복구 코드 절 아래에 "IdP 페이지·폐기 상한" 절), `results/`(A3)

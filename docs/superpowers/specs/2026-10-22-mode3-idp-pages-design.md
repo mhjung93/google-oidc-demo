@@ -33,7 +33,7 @@
 
 ### 3.1 계정
 
-- `state.accounts[uid]` 에 `pwSalt`(16B hex)·`pwHash`(= SHA-256(pwSalt ‖ pwd) hex)·`createdAt` 을 더한다. 가입만 하고 등록 전인 계정은 `pk_u: null, auid: null, slot: null`(등록은 `registerAccount` 가 채운다 — 지금은 계정 생성과 등록이 한 번에 일어나므로 "등록 전 계정"이 새로 생기는 상태다).
+- `state.accounts[uid]` 에 `pwSalt`(16B hex)·`pwHash`(= scrypt(pwd, pwSalt, 32B, N=16384/r=8/p=1) hex, `pwAlgo:'scrypt'`; 구현 판정 2026-10-23 — 원안 SHA-256 은 비밀번호 해시로 부적절)·`createdAt` 을 더한다. 가입만 하고 등록 전인 계정은 `pk_u: null, auid: null, slot: null`(등록은 `registerAccount` 가 채운다 — 지금은 계정 생성과 등록이 한 번에 일어나므로 "등록 전 계정"이 새로 생기는 상태다).
 - uid 배정: `POST /cia/signup` 이 `nextUid`(상태에 저장, 시작 100001)를 준다. 사용자가 고르지 않는다.
 - 데모 시드(`DEMO_ACCOUNTS` testuser/12345·alice/67890)는 `CIA_DEMO_ACCOUNTS=1` 일 때만 기동 때 상태에 넣는다(비밀번호는 해시로). 테스트 도우미(`tests/helpers/isolated_cia.mjs`)는 `'1'` 로 고정하고, 데모 리셋 스크립트 네 개는 넣지 않는다 → 데모에서는 가입으로만 계정이 생긴다.
 - `/cia/register` 의 데모 경로는 `{uid, pwd}` 또는 `{uid, code}`(§3.3 의 purpose `register` 코드)를 받는다. pwd 경로는 API·테스트 호환으로 남긴다. 상태의 `pwHash` 로 검사한다(시드도 같은 경로).
@@ -146,8 +146,8 @@ RP 페이지 ──mode3-authorize──▶ 지갑 팝업(localhost:5100/?author
 ## 10. 비목표·한계
 
 - web 모드(`mode3/user`, `mode3_user_static.js`)는 손대지 않는다 — web 모드로 돌아갈 때 §4·§5.3 을 옮겨야 한다(사용자 코어에 `auth_code`·`mode3-register`).
-- Snap 다중 계정 없음(D2). IdP 세션 단축 없음(§4). 비밀번호 해시는 데모 수준(SHA-256+salt, KDF 아님).
-- 인증 창은 지갑이 열지만, 악의적 페이지가 같은 URL 을 열어 사용자가 비밀번호를 넣게 할 수는 있다(피싱) — 코드만으로는 발급이 안 되므로 영향은 제한적이며 런북에 적는다.
+- Snap 다중 계정 없음(D2). IdP 세션 단축 없음(§4). 비밀번호·`rp_key` 해시는 Node 내장 scrypt(N=16384)·`timingSafeEqual`(2026-10-23 정정; 동기 호출이라 인증 없는 라우트에서 이벤트 루프를 잠깐 막는 점은 데모 수준에서 수용).
+- 인증 창은 지갑이 열지만, 악의적 페이지가 같은 URL 을 열어 사용자가 비밀번호를 넣게 할 수는 있다(피싱) — 코드만으로는 발급이 안 되지만 비밀번호가 새면 `self_revoke`(계정 폐기)·코드 재발급까지 가능하므로 영향은 '1회 발급 시도'에 그치지 않는다 — 런북에 적는다.
 - Google 인증은 IdP 가 `localhost` 로 열릴 때만(분리 구성에서는 비활성).
 - RP 서버 기동은 사람이 한다(D3). IdP 는 RP 의 호스트·포트를 모른다 — 등록 요청이 와야 origin 을 안다.
 

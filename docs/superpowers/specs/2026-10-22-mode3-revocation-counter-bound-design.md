@@ -69,9 +69,13 @@
 - 지갑(Snap 모드 에이전트·`wallet.html`): 세션 카드 아래 **"체인 반영 대기"** 목록 — 폐기한 세션마다 `account`·`pk_i` 앞자리·`c` 를 보이고, 같은 계정(같은 RP·같은 체인)의 **살아 있는 다른 세션**이 있으면 "지금 반영" 버튼이 활성이다(없으면 "이 RP 에 다시 로그인하면 반영할 수 있습니다"). 누르면 에이전트 `POST /wallet/apply_bound { pending_id, r_s(S2) }` → `prepareTx` 와 같은 경로로 `to = account, data = setSessionBound(pk_i_S1, c)` 인 execute 를 만들어 RP 릴레이로 보낸다(릴레이의 검사 — execute 셀렉터·`to == computeAddress(PPID)` — 를 그대로 통과한다). 영수증이 오면 대기 목록에서 지운다.
 - 폐기 흐름은 그대로 두 단계다: ① IdP 폐기(RCL 상한) ② 새 세션으로 체인 상한. ②는 선택이지만 데모의 폐기 단계는 ①②를 이어서 보인다(폐기 → 같은 RP 재로그인 → "지금 반영").
 - 에이전트 상태에 `pendingBounds: [{ id, account, chainid, arid, pk_i, bound, revokedAt, txHash? }]`. 지갑 재시작을 넘어 남는다(파일).
-- 릴레이·RP·IdP 는 변경 없음(RP 관리자 거래 기록에는 `kind: 'bound'` 로 보인다 — `payload.to == account` 이고 셀렉터가 `setSessionBound`).
+- 릴레이·RP·IdP 는 변경 없음(RP 관리자 거래 기록에는 (구현 정정 2026-10-23) 상한 거래는 RP 릴레이를 지나지 않는다 — file 모드는 에이전트 릴레이어, Snap 모드는 MetaMask 로 보내므로 RP 거래 기록에 `kind:'bound'` 는 없다 — `payload.to == account` 이고 셀렉터가 `setSessionBound`).
 
 ## 7. 보장과 한계
+
+- (구현 정정 2026-10-23) 반영 엔드포인트는 `POST /wallet/bounds/apply { id, r_s }`(r_s = `pendingBounds[].applicableSession`), Snap 모드는 `/wallet/tx/record { …, pendingBoundId }` 가 같은 판정 헬퍼(`Executed.success` + `sessionBound` 재조회 + alreadyLower)로 `applied` 를 돌려준다.
+- 한계(추가): 폐기됐지만 아직 전파되지 않은 세션 S1 도 그 창 동안 계정의 전권을 가지므로 `setSessionBound(pk_S2, 0)` 같은 "상한 다툼" 이 가능하다(새 권한은 아님). 상한은 계정 공용 nonce 기준이라 다른 세션의 거래도 S1 의 허용 구간을 소모한다.
+- 한계(추가, 2026-10-23 논의): 컨트랙트가 최신 root 만 받으므로 **무관한 사용자의 폐기·신규 등록으로 root 가 바뀌면 진행 중 거래가 `StaleRevocationRoot` 로 튕긴다**(안전이 아닌 liveness 문제; 재증명하면 통과). 후속 설계안: 미러가 root 별 블록 높이를 기록하고 계정 컨트랙트가 유효 창(G 블록 또는 T 초, 최근 K 개 저장) 안의 root 를 받는다 — 창 동안 폐기된 세션이 옛 root 로 내는 거래는 `nonce ≥ c` 만 문제이고 온체인 상한이 채굴되면 즉시 막힌다. 창은 "증명 생성→포함" 지연의 p99 보다 크게(데모 T≈120 s, 공개 체인 G≈10 블록), K≈16.
 
 - 보장(RCL): 체인 root 에 리프가 반영된 뒤에는 `nonce ≥ c` 인 거래는 어떤 π 로도 통과하지 못하고, `nonce < c` 인 거래는 영향을 받지 않는다. RP 로그인·재검증은 폐기 리프가 있으면 불가.
 - 보장(체인 상한): `setSessionBound` 거래가 채굴된 뒤에는 IdP 게시·중계와 무관하게 그 세션키의 `nonce ≥ c` 거래가 즉시 거절된다. 전파 지연 동안의 거래는 이 거래가 채굴되기 전까지만 가능하다.
