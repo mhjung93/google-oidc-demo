@@ -254,11 +254,12 @@ try {
     assert.equal(su.status, 201, j(su.body)); assert.equal(su.body.id, 'op-eleven');
     const dupId = await withJar('/cia/rp/signup', { method: 'POST', body: JSON.stringify({ id: 'op-eleven', pwd: 'another-pw' }) });
     assert.equal(dupId.status, 409, j(dupId.body), '같은 id 로 재가입은 안 된다');
+    assert.equal(dupId.body.error, 'id_taken'); assert.equal(dupId.body.reason, 'id_taken');
     assert.equal((await withJar('/cia/rp/login', { method: 'POST', body: JSON.stringify({ id: 'op-eleven', pwd: 'wrong' }) })).status, 401);
     const li = await withJar('/cia/rp/login', { method: 'POST', body: JSON.stringify({ id: 'op-eleven', pwd: 'operator-pw-1' }) });
     assert.equal(li.status, 200, j(li.body)); assert.equal(li.body.id, 'op-eleven');
     const bad = await withJar('/cia/rp/create', { method: 'POST', body: JSON.stringify({ name: 'bad name' }) });
-    assert.equal(bad.status, 400, j(bad.body));
+    assert.equal(bad.status, 400, j(bad.body)); assert.equal(bad.body.reason, 'bad_name', '수정 라운드 1: 형식 오류는 bad_name');
     const create = await withJar('/cia/rp/create', { method: 'POST', body: JSON.stringify({ name: 'zkTHREE' }) });
     assert.equal(create.status, 201, j(create.body));
     assert.equal(create.body.name, 'zkTHREE');
@@ -266,6 +267,7 @@ try {
     assert.ok(create.body.command.includes(create.body.key) && create.body.command.includes('zkTHREE'), 'command 에 key·name 포함');
     const dup = await withJar('/cia/rp/create', { method: 'POST', body: JSON.stringify({ name: 'zkTHREE' }) });
     assert.equal(dup.status, 409, j(dup.body), '같은 운영자 안에서 같은 이름 중복');
+    assert.equal(dup.body.error, 'name_taken'); assert.equal(dup.body.reason, 'name_taken');
     const lo = await withJar('/cia/rp/logout', { method: 'POST', body: JSON.stringify({}) });
     assert.equal(lo.status, 200, j(lo.body));
     assert.equal((await withJar('/cia/rp/me')).status, 401, '로그아웃 뒤');
@@ -297,6 +299,10 @@ try {
     const mine = me.body.rps.find((r) => r.name === 'zkFOUR');
     assert.ok(mine, 'rp/me 에 zkFOUR 가 보여야 한다');
     assert.equal(mine.status, 'pending'); assert.equal(mine.arid, ok.body.arid);
+    // 수정 라운드 1: 묶인 뒤의 requestedAt 은 등록 요청 시각(e.requestedAt) 이고, createdAt(슬롯 생성 시각)은 따로 남는다 —
+    // 슬롯은 register_rp 로 묶이기 전에 먼저 만들어지므로 requestedAt 은 createdAt 과 같거나 그 뒤다.
+    assert.ok(typeof mine.requestedAt === 'string' && typeof mine.createdAt === 'string');
+    assert.ok(new Date(mine.requestedAt) >= new Date(mine.createdAt), 'requestedAt(등록 요청) 은 createdAt(슬롯 생성) 과 같거나 그 뒤');
 
     const adminRps = await cia.adminGet('/cia/rps');
     const adminEntry = adminRps.body.rps.find((r) => r.arid === ok.body.arid);
@@ -327,6 +333,52 @@ try {
     assert.equal(after.status, 200, j(after.body));
     assert.ok(after.body.origins.includes(origin), '승인 뒤에는 목록에 있다');
     assert.ok(!('arid' in after.body) && !('rps' in after.body), '공개 응답은 origin 외에 다른 필드를 내지 않는다');
+  });
+
+  await t('수정 라운드 1(스펙 §3.2): 사용자·운영자 세션은 같은 쿠키에 공존 — 한쪽 로그아웃이 다른 쪽을 지우지 않는다', async () => {
+    const jar = {};
+    const call = async (p, body) => {
+      const r = await fetch(`${cia.base}${p}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(jar.cookie ? { Cookie: jar.cookie } : {}) }, body: JSON.stringify(body ?? {}) });
+      const sc = r.headers.get('set-cookie');
+      if (sc) jar.cookie = sc.split(';')[0];
+      return { status: r.status, body: await r.json().catch(() => null), setCookie: sc };
+    };
+    const get = async (p) => {
+      const r = await fetch(`${cia.base}${p}`, { headers: jar.cookie ? { Cookie: jar.cookie } : {} });
+      return { status: r.status, body: await r.json().catch(() => null) };
+    };
+
+    const su = await call('/cia/signup', { pwd: 'coexist-pw-1' });
+    assert.equal(su.status, 201, j(su.body));
+    const uid = su.body.uid;
+    const opSignup = await call('/cia/rp/signup', { id: 'op-coexist', pwd: 'coexist-pw-2' });
+    assert.equal(opSignup.status, 201, j(opSignup.body));
+
+    const userLogin = await call('/cia/user/login', { uid, pwd: 'coexist-pw-1' });
+    assert.equal(userLogin.status, 200, j(userLogin.body));
+    const sidAfterUser = jar.cookie;
+
+    const opLogin = await call('/cia/rp/login', { id: 'op-coexist', pwd: 'coexist-pw-2' });
+    assert.equal(opLogin.status, 200, j(opLogin.body));
+    const sidAfterOp = jar.cookie;
+    assert.notEqual(sidAfterOp, sidAfterUser, '운영자 로그인도 세션 고정 방지로 sid 를 회전한다');
+
+    assert.equal((await get('/cia/user/me')).status, 200, '운영자 로그인 뒤에도 사용자 세션이 살아있다(공존)');
+    assert.equal((await get('/cia/rp/me')).status, 200);
+
+    const opLogout = await call('/cia/rp/logout', {});
+    assert.equal(opLogout.status, 200, j(opLogout.body)); assert.equal(opLogout.body.ok, true);
+    const sidAfterOpLogout = jar.cookie;
+    assert.notEqual(sidAfterOpLogout, sidAfterOp, '운영자 로그아웃도(다른 역할이 남아 있어) sid 를 회전한다');
+    assert.equal((await get('/cia/rp/me')).status, 401, '운영자 로그아웃 뒤 운영자 세션만 지워진다');
+    assert.equal((await get('/cia/user/me')).status, 200, '사용자 세션은 그대로 보존된다');
+
+    const userLogout = await call('/cia/user/logout', {});
+    assert.equal(userLogout.status, 200, j(userLogout.body)); assert.equal(userLogout.body.ok, true);
+    assert.ok(userLogout.setCookie && /cia\.sid=;/.test(userLogout.setCookie) && /expires=/i.test(userLogout.setCookie),
+      '다른 역할이 남아 있지 않으면 지금처럼 clearCookie 로 쿠키를 만료시킨다');
+    assert.equal((await get('/cia/user/me')).status, 401);
+    assert.equal((await get('/cia/rp/me')).status, 401);
   });
 } finally { await cia.stop(); }
 

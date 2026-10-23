@@ -640,9 +640,10 @@ app.post('/cia/rps/:arid/deny', requireAdmin, (req, res) => {
 });
 
 // ---- Task 11(B2, 2026-10-22 스펙 §3.3): RP 운영자 계정·RP 슬롯(rp_key)·공개 RP 주소 목록 ----
-// 세션 가드는 requireUser(아래)와 같은 모양 — 운영자 세션은 req.session.operator. 로그인마다 regenerate 하므로(세션 고정
-// 방지) 사용자(uid)·운영자(operator)는 같은 쿠키라도 한 번에 한쪽만 로그인돼 있다(로그인이 세션 전체를 새로 만든다) —
-// 브리프가 둘의 공존을 침묵해 더 단순한 쪽을 택했다(컨트롤러 판정, task-11-addendum.md).
+// 세션 가드는 requireUser(아래)와 같은 모양 — 운영자 세션은 req.session.operator.
+// 수정 라운드 1(2026-10-23, 스펙 §3.2 "같은 브라우저에서 둘 다 가질 수 있다"): 사용자(uid)·운영자(operator) 세션은
+// 같은 쿠키에 공존할 수 있다 — 애덤덤의 "regenerate 가 둘 다 지우는 단순한 쪽" 판정은 스펙을 간과해 철회됐다.
+// 로그인·로그아웃 모두 세션 고정 방지(regenerate 로 sid 회전)는 유지하면서 다른 역할의 필드를 보존한다.
 const requireOperator = (req, res, next) => { if (!req.session?.operator || !state.operators[req.session.operator]) return res.status(401).json({ error: 'login required', reason: 'login_required' }); next(); };
 const OPERATOR_ID_RE = /^[a-z0-9_-]{3,32}$/;
 const RP_SLOT_NAME_RE = /^zk[A-Za-z0-9]{1,15}$/;
@@ -650,12 +651,35 @@ const RP_SLOT_NAME_RE = /^zk[A-Za-z0-9]{1,15}$/;
 function newOperatorRecord({ pwSalt, pwHash, pwAlgo }) {
   return { pwSalt, pwHash, pwAlgo, createdAt: new Date().toISOString() };
 }
+/** 로그인 공통(수정 라운드 1): sid 를 회전해(세션 고정 방지) role 필드(uid 또는 operator)에 value 를 쓴다. 로그인 전
+ *  세션에 other 역할 필드가 있으면 새 세션에도 그대로 옮긴다 — 두 역할이 같은 쿠키에 공존한다(스펙 §3.2). 저장에
+ *  성공하면 onSaved() 를 부른다(라우트마다 응답 모양이 달라 호출자가 res.json 을 쓴다). */
+function loginKeepingOtherRole(req, res, { role, value, other }, onSaved) {
+  const keep = req.session?.[other] ? { [other]: req.session[other] } : {};
+  req.session.regenerate((err) => {
+    if (err) return res.status(500).json({ error: 'session', reason: 'session' });
+    Object.assign(req.session, keep, { [role]: value });
+    req.session.save((e2) => (e2 ? res.status(500).json({ error: 'session', reason: 'session' }) : onSaved()));
+  });
+}
+/** 로그아웃 공통(수정 라운드 1): other 역할 필드가 없으면 지금처럼 세션 전체를 지운다(destroy+clearCookie). 있으면
+ *  이 역할(role)만 지우고 regenerate 로 sid 를 회전해 other 역할을 보존한다 — 둘 다 응답은 { ok:true }. */
+function logoutRole(req, res, role, other) {
+  const keep = req.session?.[other] ? { [other]: req.session[other] } : null;
+  if (!keep) return req.session.destroy(() => { res.clearCookie('cia.sid'); res.json({ ok: true }); });
+  delete req.session[role];
+  req.session.regenerate((err) => {
+    if (err) return res.status(500).json({ error: 'session', reason: 'session' });
+    Object.assign(req.session, keep);
+    req.session.save((e2) => (e2 ? res.status(500).json({ error: 'session', reason: 'session' }) : res.json({ ok: true })));
+  });
+}
 
 app.post('/cia/rp/signup', (req, res) => {
   const { id, pwd } = req.body ?? {};
   if (typeof id !== 'string' || !OPERATOR_ID_RE.test(id)) return res.status(400).json({ error: 'id 는 소문자·숫자·_·- 3~32자', reason: 'signup_failed' });
   if (typeof pwd !== 'string' || pwd.length < 8) return res.status(400).json({ error: 'pwd 는 8자 이상', reason: 'signup_failed' });
-  if (state.operators[id]) return res.status(409).json({ error: 'id_taken', reason: 'signup_failed' });
+  if (state.operators[id]) return res.status(409).json({ error: 'id_taken', reason: 'id_taken' });
   state.operators[id] = newOperatorRecord(newPw(pwd));
   persist();
   res.status(201).json({ id });
@@ -663,22 +687,17 @@ app.post('/cia/rp/signup', (req, res) => {
 app.post('/cia/rp/login', (req, res) => {
   const { id, pwd } = req.body ?? {};
   if (typeof id !== 'string' || !pwOk(state.operators[id], pwd)) return res.status(401).json({ error: 'invalid credentials', reason: 'operator_login_failed' });
-  // 세션 고정 방지(사용자 로그인과 같은 이유) — 로그인마다 세션 id 를 새로 받는다.
-  req.session.regenerate((err) => {
-    if (err) return res.status(500).json({ error: 'session', reason: 'session' });
-    req.session.operator = id;
-    req.session.save((e2) => (e2 ? res.status(500).json({ error: 'session', reason: 'session' }) : res.json({ id })));
-  });
+  loginKeepingOtherRole(req, res, { role: 'operator', value: id, other: 'uid' }, () => res.json({ id }));
 });
-app.post('/cia/rp/logout', (req, res) => {
-  req.session.destroy(() => { res.clearCookie('cia.sid'); res.json({ ok: true }); });
-});
-/** 슬롯 하나의 공개 모양. arid 가 생기면(register_rp 로 묶이면) state.rps[arid] 의 status·origin 이 슬롯 자신의 것을 덮는다
- *  (브리프 §3.3). rp_key 는 pwOk 와 같은 방식으로 해시해 두므로(평문 없음) 다시 보여줄 수 없다 — 'created' 상태라도
- *  key 를 echo 하지 않는다(컨트롤러 판정: 평문은 /cia/rp/create 의 1회 응답에만). */
+app.post('/cia/rp/logout', (req, res) => logoutRole(req, res, 'operator', 'uid'));
+/** 슬롯 하나의 공개 모양. arid 가 생기면(register_rp 로 묶이면) state.rps[arid] 의 status·origin 이 슬롯 자신의 것을 덮고,
+ *  requestedAt 도 그 등록 요청 시각(e.requestedAt)이 된다 — 아직 묶이지 않았으면 슬롯을 만든 시각(slot.createdAt)이
+ *  "요청"에 가장 가깝다(수정 라운드 1: 필드 의미대로). createdAt 은 슬롯 생성 시각을 묶임 여부와 상관없이 늘 낸다.
+ *  rp_key 는 pwOk 와 같은 방식으로 해시해 두므로(평문 없음) 다시 보여줄 수 없다 — 'created' 상태라도 key 를 echo
+ *  하지 않는다(컨트롤러 판정: 평문은 /cia/rp/create 의 1회 응답에만). */
 function rpSlotView(slot) {
   const e = slot.arid ? state.rps[slot.arid] : null;
-  return { name: slot.name, status: e ? e.status : slot.status, origin: e ? e.origin : null, arid: slot.arid, requestedAt: slot.createdAt };
+  return { name: slot.name, status: e ? e.status : slot.status, origin: e ? e.origin : null, arid: slot.arid, requestedAt: e ? e.requestedAt : slot.createdAt, createdAt: slot.createdAt };
 }
 app.get('/cia/rp/me', requireOperator, (req, res) => {
   const opId = req.session.operator;
@@ -687,9 +706,9 @@ app.get('/cia/rp/me', requireOperator, (req, res) => {
 });
 app.post('/cia/rp/create', requireOperator, (req, res) => {
   const { name } = req.body ?? {};
-  if (typeof name !== 'string' || !RP_SLOT_NAME_RE.test(name)) return res.status(400).json({ error: 'name 은 zk 로 시작하는 영문·숫자 1~15자', reason: 'signup_failed' });
+  if (typeof name !== 'string' || !RP_SLOT_NAME_RE.test(name)) return res.status(400).json({ error: 'name 은 zk 로 시작하는 영문·숫자 1~15자', reason: 'bad_name' });
   const opId = req.session.operator;
-  if (Object.values(state.rpSlots).some((s) => s.opId === opId && s.name === name)) return res.status(409).json({ error: 'name_taken' });
+  if (Object.values(state.rpSlots).some((s) => s.opId === opId && s.name === name)) return res.status(409).json({ error: 'name_taken', reason: 'name_taken' });
   const key = randomBytes(32).toString('hex');
   const slotId = randomBytes(16).toString('hex');   // 상태의 object key — rp_key(비밀) 가 아니라 내부 식별자일 뿐이다
   state.rpSlots[slotId] = { opId, name, ...newPw(key), status: 'created', createdAt: new Date().toISOString(), arid: null };
@@ -718,16 +737,11 @@ app.post('/cia/signup', (req, res) => {
 app.post('/cia/user/login', (req, res) => {
   const { uid, pwd } = req.body ?? {};
   if (!isDec(uid) || !pwOk(state.accounts[uid], pwd)) return res.status(401).json({ error: 'invalid credentials', reason: 'invalid_credentials' });
-  // 세션 고정 방지(보안 리뷰 2026-10-23): 로그인마다 세션 id 를 새로 받는다 — 로그인 전에 심어 둔 sid 로 로그인 뒤 들어오지 못하게.
-  req.session.regenerate((err) => {
-    if (err) return res.status(500).json({ error: 'session', reason: 'session' });
-    req.session.uid = uid;
-    req.session.save((e2) => (e2 ? res.status(500).json({ error: 'session', reason: 'session' }) : res.json({ uid })));
-  });
+  // 세션 고정 방지(보안 리뷰 2026-10-23) + 운영자 세션 공존(수정 라운드 1, loginKeepingOtherRole 위) — 로그인마다
+  // 세션 id 를 새로 받으면서(로그인 전에 심어 둔 sid 로 로그인 뒤 들어오지 못하게) 운영자 세션이 있으면 보존한다.
+  loginKeepingOtherRole(req, res, { role: 'uid', value: uid, other: 'operator' }, () => res.json({ uid }));
 });
-app.post('/cia/user/logout', (req, res) => {
-  req.session.destroy(() => { res.clearCookie('cia.sid'); res.json({ ok: true }); });
-});
+app.post('/cia/user/logout', (req, res) => logoutRole(req, res, 'uid', 'operator'));
 app.get('/cia/user/me', requireUser, (req, res) => {
   const uid = req.session.uid, a = state.accounts[uid];
   res.json({ uid, registered: Boolean(a.pk_u), auid: a.auid, slot: a.slot, provider: a.provider, disabled: a.disabled, activeCf_u: activeCfU(a), registryLeaf: a.slot === null ? null : registry.leafAt(a.slot).toString() });
