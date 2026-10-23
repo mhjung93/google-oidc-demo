@@ -19,6 +19,18 @@ async function t(name, fn) {
   catch (e) { failed++; console.error(`FAIL ${name}\n     ${e.stack ?? e.message}`); }
 }
 
+// 쿠키 세션(Task 13): fetch 가 쿠키를 자동으로 보내지 않으므로 Set-Cookie 를 Cookie 헤더로 되돌리는 jar 를 둔다
+// (tests/test_cia_accounts.mjs 와 같은 관례) — /cia/user/login → /cia/user/register_code 로 등록 코드를 받는 데 쓴다.
+function makeJar(base) {
+  const jar = {};
+  return async (p, init = {}) => {
+    const r = await fetch(`${base}${p}`, { ...init, headers: { 'Content-Type': 'application/json', ...(jar.cookie ? { Cookie: jar.cookie } : {}), ...(init.headers ?? {}) } });
+    const sc = r.headers.get('set-cookie');
+    if (sc) jar.cookie = sc.split(';')[0];
+    return { status: r.status, body: await r.json().catch(() => null) };
+  };
+}
+
 // vkey 는 스택을 띄우기 전에 확인한다 — 없으면 자식 프로세스를 고아로 남기지 않고 바로 죽는다.
 assert.ok(fs.existsSync(VKEY_PATH), `pi_cred vkey 없음: ${VKEY_PATH} (build/mode3 산출물 필요)`);
 const vkey = JSON.parse(fs.readFileSync(VKEY_PATH, 'utf8'));
@@ -50,11 +62,17 @@ try {
     assert.equal(r.status, 200); assert.equal(r.body.secrets, 'snap');
   });
 
-  await t('register: s_u·sk_u 없으면 400; 응답 { uid, slot, auid, attrs, profile }(sk_u·s_u 없음); 파일에 비밀 없음·auid 있음', async () => {
-    const r0 = await sim.register({ uid: '12345', pwd: 'password123' });
-    assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, pwd: r0.pwd })).status, 400, 'snap 모드는 s_u·sk_u 필수');
-    assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, pwd: r0.pwd, s_u: 'zz', sk_u: r0.sk_u })).status, 400);
-    const r = await wallet.post('/wallet/register', { uid: r0.uid, pwd: r0.pwd, s_u: r0.s_u, sk_u: r0.sk_u });
+  // Task 13/15: Snap 의 register(uid)는 더 이상 비밀번호를 받지 않는다 — 지갑 페이지는 IdP 세션의 1회용 코드
+  // (/cia/user/register_code)를 pwd 대신 /wallet/register 에 싣는다. 데모 시드 계정(12345/password123)으로 로그인해 코드를 받는다.
+  await t('register: s_u·sk_u 없으면 400; code(register_code)로 등록(pwd 없음); 응답 { uid, slot, auid, attrs, profile }(sk_u·s_u 없음); 파일에 비밀 없음·auid 있음', async () => {
+    const r0 = await sim.register({ uid: '12345' });
+    const withJar = makeJar(cia.base);
+    assert.equal((await withJar('/cia/user/login', { method: 'POST', body: JSON.stringify({ uid: '12345', pwd: 'password123' }) })).status, 200, '시드 계정 로그인');
+    const codeFor = async () => { const rc = await withJar('/cia/user/register_code', { method: 'POST', body: JSON.stringify({}) }); assert.equal(rc.status, 200, j(rc.body)); return rc.body.code; };
+    const code1 = await codeFor();
+    assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, code: code1 })).status, 400, 'snap 모드는 s_u·sk_u 필수');
+    assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, code: code1, s_u: 'zz', sk_u: r0.sk_u })).status, 400);
+    const r = await wallet.post('/wallet/register', { uid: r0.uid, code: code1, s_u: r0.s_u, sk_u: r0.sk_u });
     assert.equal(r.status, 201, j(r.body));
     assert.equal('sk_u' in r.body, false, '응답에는 sk_u 가 없다(요청에만 한 번 실린다)');
     assert.equal('s_u' in r.body, false, '응답에는 s_u 가 없다(요청에만 한 번 실린다)');
@@ -67,11 +85,19 @@ try {
     const file = stateFile();
     for (const k of ['"s_u"', '"sk_u"', '"blind_u"']) assert.equal(file.includes(k), false, `${k} 가 파일에 있다`);
     assert.ok(file.includes('"auid"'), '공개 auid 는 파일에 있다');
-    assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, pwd: r0.pwd, s_u: r0.s_u, sk_u: r0.sk_u })).status, 409);
+    // 위 두 400(필수값·형식 검사)은 ciaPost 전에 끝나 code1 을 소비하지 않았고, 이 중복 등록 시도는 지갑이 already_registered 로
+    // 로컬에서 막아 IdP 를 다시 부르지 않는다 — 이미 쓴 code1 을 그대로 재사용해도 된다.
+    assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, code: code1, s_u: r0.s_u, sk_u: r0.sk_u })).status, 409);
     const s = (await wallet.get('/wallet/status')).body;
     assert.equal(s.registered, true); assert.equal(s.uid, '12345'); assert.deepEqual(s.attrs, ['1990', '410', '0', '0', '0', '0']); assert.equal(s.userCred, null);
     assert.deepEqual(s.profile, { birthYear: '1990', country: 'KR' });
     assert.equal(sim.getPublicInfo().registered, true); assert.equal(sim.getPublicInfo().hasUserCred, false);
+  });
+
+  await t('secrets/salt: snap 모드는 409 snap_mode(에이전트는 s_u 를 모른다, Snap 의 showSalt() 가 대신한다)', async () => {
+    const r = await wallet.get('/wallet/secrets/salt');
+    assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'snap_mode');
+    assert.deepEqual(sim.showSalt(), { s_u: sim.state.registration.s_u }, '대신 Snap 이 보관한 s_u 를 보여준다');
   });
 
   // 아래 bad_factory 케이스는 팩토리가 **아닌** 컨트랙트를 줘서 게터가 revert 하는 경로만 탄다. 팩토리이긴 한데

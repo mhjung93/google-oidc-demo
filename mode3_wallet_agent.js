@@ -38,10 +38,28 @@ const RCL_CACHE_FILE = process.env.MODE3_WALLET_RCL_CACHE || path.join(path.dirn
 const CIA_URL = process.env.MODE3_CIA_URL || 'http://127.0.0.1:4100';
 // RP 오리진 허용 목록(2026-09-30): 쉼표로 여럿 — 지갑 하나가 RP 여럿에 로그인한다(같은 사용자, RP 마다 다른 PPID).
 // 끝의 '/' 나 경로가 붙어도 origin 만 남기고, 주소가 아닌 항목은 버린다(originList). 비교는 정확히 같은 origin 만(allowOrigin).
-const RP_ORIGINS = originList((process.env.MODE3_RP_ORIGIN || 'http://127.0.0.1:3100').split(',').map((s) => s.trim()));
-if (RP_ORIGINS.length === 0) throw new Error('MODE3_RP_ORIGIN 에 유효한 origin 이 하나도 없다');
-const RP_ORIGIN = RP_ORIGINS[0];                       // 첫 RP — 로그·health 의 기존 필드(rpOrigin) 표기용
-const isRpOrigin = (o) => allowOrigin(o, RP_ORIGINS);
+const RP_ORIGINS_ENV = originList((process.env.MODE3_RP_ORIGIN || 'http://127.0.0.1:3100').split(',').map((s) => s.trim()));
+if (RP_ORIGINS_ENV.length === 0) throw new Error('MODE3_RP_ORIGIN 에 유효한 origin 이 하나도 없다');
+const RP_ORIGIN = RP_ORIGINS_ENV[0];                   // 첫 RP — 로그·health 의 기존 필드(rpOrigin) 표기용(env 기준, 폴링 무관)
+// 동적 RP 허용 목록(Task 13, 설계 §5.4): env ∪ IdP GET /cia/rp_origins. isRpOrigin·CORS(loginCors·configCors)·health 의
+// 허용 목록이 모두 이 하나의 변수(rpOrigins)를 본다 — 계산은 pollRpOrigins() 한 곳뿐이다(addendum 판정). IdP 가 안 닿으면
+// (네트워크 오류·4xx/5xx) 마지막으로 받은 목록을 그대로 둔다 — 허용 목록을 비워 기존 RP 까지 막지 않는다.
+let rpOrigins = RP_ORIGINS_ENV;
+const isRpOrigin = (o) => allowOrigin(o, rpOrigins);
+async function pollRpOrigins() {
+  try {
+    const r = await fetch(`${CIA_URL}/cia/rp_origins`);
+    if (r.ok) {
+      const { origins } = await r.json();
+      // originList 는 중복을 거르지 않는다 — env 에 이미 있는 RP 가 IdP 에도 승인돼 있으면(흔한 경우) 그대로 합치면
+      // 같은 origin 이 두 번 남는다. isRpOrigin·CORS 는 중복이 있어도 맞게 동작하지만 health 의 rpOrigins 는 화면·테스트가
+      // 정확한 목록으로 본다 — Set 으로 걷어낸다(순서는 env 먼저, 그 뒤 IdP 가 더한 새 origin 유지).
+      rpOrigins = [...new Set(originList(RP_ORIGINS_ENV, origins))];
+    }
+  } catch { /* IdP 미응답 — 마지막 목록 유지 */ }
+}
+pollRpOrigins();                       // 기동 직후 1회 즉시(결과를 기다리지 않는다 — 서버 기동을 막지 않는다)
+setInterval(pollRpOrigins, 10_000).unref();
 // V10(2026-10-02 설계 §5 결정 3): 두 체인. 캐노니컬 Mode3Log(CIA_LOG_ADDRESS)는 폐기 전용 체인(MODE3_REV_CHAIN_RPC, 기본은
 // CIA_RPC_URL)에 있고, 지갑이 증명·실행하는 대상 체인(CIA_RPC_URL)에는 그 체인의 거울(MODE3_MIRROR_ADDRESS)이 있다. RP 와
 // 계정 컨트랙트는 거울만 읽으므로 π 는 거울의 (revRoot, regRoot) 로 만든다 — 트리는 캐노니컬 이벤트를 거울 epoch 까지 재생해 얻는다.
@@ -282,8 +300,9 @@ async function chooseUserCred(synced, src) {
   return { blind_u: randomScalar(), fresh: true };   // 슬롯 0: 은퇴됐다 — 새로 받는다
 }
 
-/** 세션 발급(V11 §5.2): C_u(blind_u)·C_s·π_IdP 를 한 요청으로. 200 이면 세션을 저장하고, 새 C_u 였으면 사용자 자격증명도 바꿔 앉힌다(옛 세션은 함께 버린다). */
-async function issueSession({ arid, r_s, r_rp, pk_trace, allowAgent, factoryAddress, attrGateAddress, head, src, blind_u }) {
+/** 세션 발급(V11 §5.2): C_u(blind_u)·C_s·π_IdP 를 한 요청으로. 200 이면 세션을 저장하고, 새 C_u 였으면 사용자 자격증명도 바꿔 앉힌다(옛 세션은 함께 버린다).
+ *  auth_code(Task 13): IdP 가 CIA_ISSUE_AUTH=code 로 떠 있을 때만 보는 1회용 코드 — 그대로 /cia/issue 본문에 얹는다(로그에 찍지 않는다). */
+async function issueSession({ arid, r_s, r_rp, pk_trace, allowAgent, factoryAddress, attrGateAddress, head, src, blind_u, auth_code = null }) {
   const reg = src.registration();
   const session = createSessionKey();
   const chainid = await chainId();
@@ -293,6 +312,7 @@ async function issueSession({ arid, r_s, r_rp, pk_trace, allowAgent, factoryAddr
     sk_u: reg.sk_u, session, chainid, allowAgent: BigInt(allowAgent), max_height: chooseMaxHeight(head, { ttlBlocks: TTL_BLOCKS, grid: HEIGHT_GRID }),
   });
   if (ov?.uid) req.body.uid = reg.uid;   // 요청 본문의 uid 는 진짜 — C_u·π_IdP 안의 uid 만 바뀐다(스펙 §8.3)
+  if (auth_code) req.body.auth_code = auth_code;
   const r = await ciaPost('/cia/issue', req.body);
   if (r.status !== 200) return { r, demo: ov ? 'override:issue' : undefined };
   // V10(§4.5): 계정 폐기로 슬롯이 은퇴된 뒤 되살아난 계정의 재발급은 새 슬롯을 받는다 — 응답의 슬롯을 따른다.
@@ -397,10 +417,20 @@ app.use('/common', express.static(path.join(__dirname, 'mode3', 'common')));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'wallet.html')));
 
 // 비밀 없음 — RP 페이지가 로그인 전에 지갑의 비밀 모드·체인 정보를 미리 읽는다(설계 2026-09-22 metamask-snap Ruling 1).
-// IdP 주소는 싣지 않는다 — 이 응답은 RP 오리진에도 나가고(configCors), 자기 폐기는 아래 프록시가 대신 낸다(Ruling 7).
+// ciaUrl(Task 13, 2026-10-23): 지갑 페이지(Task 14)가 IdP 쪽 페이지(인증 창·코드 등록)로 안내하려면 필요하다 — 당시 Ruling 7
+// 의 "IdP 주소는 싣지 않는다"를 번복한다(어차피 /mode3/health 가 RP 오리진에도 ciaUrl 을 낸다 — 공개 정보로 재분류).
 app.get('/wallet/config', configCors, async (req, res) => {
-  try { res.json({ secrets: SECRETS, snapId: SNAP_ID, walletOrigin: WALLET_ORIGIN, rpcUrl: RPC_URL, chainId: (await chainId()).toString() }); }
+  try { res.json({ secrets: SECRETS, snapId: SNAP_ID, walletOrigin: WALLET_ORIGIN, rpcUrl: RPC_URL, chainId: (await chainId()).toString(), ciaUrl: CIA_URL }); }
   catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 지갑 페이지(같은 오리진)가 사용자에게 salt(s_u)를 보여 주는 라우트(Task 13/14, 컨트롤러 addendum 2026-10-23): file 모드에서만
+// — 에이전트가 s_u 를 직접 들고 있는 유일한 모드다. snap 모드는 Snap 이 들고 있다(showSalt()) — 에이전트는 몰라 409 로
+// "Snap 이 보관"을 알린다. CORS 를 열지 않는다(RP 오리진에는 절대 노출하지 않는다) — s_u 는 로그에도 찍지 않는다.
+app.get('/wallet/secrets/salt', (req, res) => {
+  if (SECRETS !== 'file') return res.status(409).json({ reason: 'snap_mode' });
+  if (!state.registration) return res.status(409).json({ reason: 'not_registered' });
+  res.json({ s_u: state.registration.s_u });
 });
 
 // 상태 엔드포인트(설계 2026-09-25 §1) — 민감정보 없음, RP·IdP 오리진에만 CORS(cors 미들웨어가 아니라 같은 헤더 헬퍼).
@@ -427,10 +457,9 @@ function pingCia() {
   if (!pinging) pinging = doPingCia().finally(() => { pinging = null; });
   return pinging;
 }
-// 허용 오리진은 설정값에서 origin 만 남겨 만든다 — 끝의 '/' 같은 것이 CORS 를 조용히 깨뜨리지 않게.
-const HEALTH_ALLOW = originList(RP_ORIGINS, CIA_URL);
 app.get('/mode3/health', async (req, res) => {
-  applyHealthHeaders(req, res, HEALTH_ALLOW);
+  // 허용 오리진은 매 요청 rpOrigins(폴링으로 바뀐다) 에서 다시 만든다 — 끝의 '/' 같은 것이 CORS 를 조용히 깨뜨리지 않게.
+  applyHealthHeaders(req, res, originList(rpOrigins, CIA_URL));
   // ping 은 기다리지 않는다(설계 §1.3) — 이 응답은 캐시(ciaSeenAt)로만 답하고, 결과는 다음 폴링이 본다.
   // 그래서 IdP 가 느리거나 죽어 있어도 health 응답 시간은 체인 예산(1.2초)만큼만이다.
   if (Date.now() - ciaSeenAt > CIA_FRESH_MS) pingCia();
@@ -440,7 +469,7 @@ app.get('/mode3/health', async (req, res) => {
   // 함께 준다 — "지금 몇 RP 에 로그인 상태인가"다(누적이 아니다).
   const rpCount = new Set(Object.values(state.sessions).map((s) => String(s.arid))).size;
   res.json(buildWalletHealth({ now: new Date().toISOString(), chain, secrets: SECRETS, registered: !!state.registration, hasCred: !!state.registration?.userCred, sessions: Object.keys(state.sessions).length,
-    txs: txCount, disclosedTxs: disclosedTxCount, rpCount, ciaReachable: Date.now() - ciaSeenAt <= CIA_FRESH_MS, rpOrigin: RP_ORIGIN, rpOrigins: RP_ORIGINS, ciaUrl: CIA_URL }));
+    txs: txCount, disclosedTxs: disclosedTxCount, rpCount, ciaReachable: Date.now() - ciaSeenAt <= CIA_FRESH_MS, rpOrigin: RP_ORIGIN, rpOrigins, ciaUrl: CIA_URL }));
 });
 
 /** PPID 계정 주소(팩토리 computeAddress) — 상태 조회마다 RPC 를 치지 않게 (factory, PPID) 별로 캐시한다. RPC 실패면 null(표기만 비운다). */
@@ -533,10 +562,14 @@ app.post('/wallet/demo/override', (req, res) => {
 // V11 §3.1·§3.3 — 등록 키(sk_u/pk_u)·salt(s_u) 는 지갑이 만들고 auid = Poseidon(T_AUID, uid, s_u) 를 IdP 에 낸다. 속성은 **사용자가 넣는다**(D15):
 // 본문 profile(스키마 이름→값, 기본 DEFAULT_PROFILE)을 공개 스키마로 인코딩해 attrs 를 만든다 — IdP 는 받지 않는다.
 // snap 모드(metamask-snap §4.1): s_u·sk_u 는 Snap 이 만들고 페이지가 한 번 넘긴다(로그인 증인과 같은 모델). 파일에는 stripSecrets 결과만 남는다.
+// Task 13(2026-10-23): pwd 대신 code(가입 계정이 /cia/user/register_code 로 받은 1회용 코드, 세션 필요)도 받는다 —
+// snap 모드는 Snap 의 register(uid)가 더 이상 비밀번호를 받지 않으므로(Task 15) 지갑 페이지가 pwd 대신 code 를 싣는다.
+// 둘 다 왔으면 code 를 우선한다(IdP /cia/register 의 같은 우선순위와 맞춘다) — IdP 본문에는 받은 쪽 하나만 싣는다.
 app.post('/wallet/register', async (req, res) => {
   try {
-    const { uid, pwd, profile: profileIn = null, s_u: suIn, sk_u: skIn } = req.body ?? {};
-    if (!isDec(uid) || typeof pwd !== 'string') return res.status(400).json({ error: 'uid(10진 문자열), pwd 필요' });
+    const { uid, pwd, code, profile: profileIn = null, s_u: suIn, sk_u: skIn } = req.body ?? {};
+    if (!isDec(uid)) return res.status(400).json({ error: 'uid(10진 문자열) 필요' });
+    if (typeof pwd !== 'string' && typeof code !== 'string') return res.status(400).json({ error: 'pwd 또는 code 필요' });
     if (BigInt(uid) >= SCALAR_MAX) return res.status(400).json({ error: 'uid 는 2^250 미만' });
     if (SECRETS === 'snap' && !(isDec(suIn) && BigInt(suIn) < SCALAR_MAX && typeof skIn === 'string' && /^[0-9a-fA-F]{64}$/.test(skIn))) return res.status(400).json({ error: 'snap 모드는 s_u(10진, 2^250 미만)·sk_u(hex) 필요' });
     if (profileIn !== null && (typeof profileIn !== 'object' || Array.isArray(profileIn))) return res.status(400).json({ reason: 'bad_attr', detail: 'profile_required' });
@@ -553,7 +586,8 @@ app.post('/wallet/register', async (req, res) => {
     const normalized = normalizeProfile(schema, profile);
     const reg = SECRETS === 'snap' ? { s_u: BigInt(suIn), sk_u: skIn, auid: await auidOf({ uid: BigInt(uid), s_u: BigInt(suIn) }), pk_u: await eddsaPubOf(skIn) } : await createRegistration(BigInt(uid));
     const pub = { x: reg.pk_u.x.toString(), y: reg.pk_u.y.toString() };
-    const r = await ciaPost('/cia/register', { uid, pwd, auid: reg.auid.toString(), pk_u: pub, sig_reg: await signRegistration(reg.sk_u, BigInt(uid), reg.auid) });
+    const idBody = typeof code === 'string' ? { code } : { pwd };
+    const r = await ciaPost('/cia/register', { uid, ...idBody, auid: reg.auid.toString(), pk_u: pub, sig_reg: await signRegistration(reg.sk_u, BigInt(uid), reg.auid) });
     if (r.status !== 201) {
       const status = r.status === 401 || r.status === 409 ? r.status : 502;
       return res.status(status).json({ reason: 'register_failed', cia: r.body });
@@ -618,7 +652,7 @@ app.post('/wallet/authorize/precheck', async (req, res) => {
 app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
   let src = null;   // 바깥 catch 도 src.pending 을 싣도록 try 밖에 둔다(리뷰 S3)
   try {
-    const { arid, origin, cert_s, pk_trace, r_s, r_rp, allowAgent = '0', factoryAddress = null, attrGateAddress = null, witness = null, verifiedOrigin = null, disclose = null, set = null } = req.body ?? {};
+    const { arid, origin, cert_s, pk_trace, r_s, r_rp, allowAgent = '0', factoryAddress = null, attrGateAddress = null, witness = null, verifiedOrigin = null, disclose = null, set = null, auth_code = null } = req.body ?? {};
     if (!isDec(arid) || typeof origin !== 'string' || !cert_s || !pk_trace || !isDec(pk_trace.x) || !isDec(pk_trace.y) || !isDec(r_s) || !isDec(r_rp)) return res.status(400).json({ error: 'arid, origin, cert_s, pk_trace{x,y}, r_s, r_rp 필요' });
     if (allowAgent !== '0' && allowAgent !== '1') return res.status(400).json({ error: 'allowAgent 는 "0" 또는 "1"' });
     if (factoryAddress !== null && !isAddr(factoryAddress)) return res.status(400).json({ error: 'factoryAddress 는 주소' });
@@ -691,7 +725,7 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     const pick = await chooseUserCred(synced, src);
     if (pick.status === 403) return res.status(403).json({ reason: pick.reason, ...(pick.registry ? { registry: pick.registry } : {}), timings });
     t = Date.now();
-    const issued = await issueSession({ arid, r_s: rs, r_rp: rrp, pk_trace: { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress: factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress: attrGateAddress ? ethers.getAddress(attrGateAddress) : null, head: synced.head, src, blind_u: pick.blind_u });
+    const issued = await issueSession({ arid, r_s: rs, r_rp: rrp, pk_trace: { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress: factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress: attrGateAddress ? ethers.getAddress(attrGateAddress) : null, head: synced.head, src, blind_u: pick.blind_u, auth_code });
     timings.issueMs = Date.now() - t;
     timings.userCredMs = pick.fresh ? timings.issueMs : 0;   // 새 C_u 를 받은 로그인만 0 이 아니다(옛 의미 유지 — 테스트·화면이 본다)
     let r = issued.r, demo = issued.demo;
@@ -699,7 +733,10 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     if (r.status === 409 && r.body?.reason === 'cred_revoked') {
       replaceUserCred(src, null);
       t = Date.now();
-      const retried = await issueSession({ arid, r_s: rs, r_rp: rrp, pk_trace: { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress: factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress: attrGateAddress ? ethers.getAddress(attrGateAddress) : null, head: synced.head, src, blind_u: randomScalar() });
+      // auth_code 는 1회용이라 첫 시도에서 이미 소비됐을 수 있다(IdP 는 sig_u·π_IdP 검증 뒤에 소비한다 — cred_revoked 는 그 뒤에만
+      // 난다) — 재시도가 같은 코드를 다시 쓰면 bad_code 로 막힐 수 있다. 코드 재발급은 이 흐름 밖(인증 창)이라 여기서는
+      // 그대로 한 번 더 건네는 것 이상은 하지 않는다(알려진 한계 — 보고서에 남긴다).
+      const retried = await issueSession({ arid, r_s: rs, r_rp: rrp, pk_trace: { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress: factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress: attrGateAddress ? ethers.getAddress(attrGateAddress) : null, head: synced.head, src, blind_u: randomScalar(), auth_code });
       const retryMs = Date.now() - t;
       timings.issueMs += retryMs;
       timings.userCredMs = retryMs;
@@ -710,6 +747,9 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     // 버린 경우는 userCredIssued:null(= Snap 도 버려라)이 실린다. file 모드는 {}.
     if (r.status === 403) return res.status(403).json({ reason: 'account_disabled', timings, ...src.pending });
     if (r.status === 400 && r.body?.reason === 'bad_idp_proof') return res.status(502).json({ reason: 'user_cred_failed', cia: r.body, demo, timings, ...src.pending });
+    // Task 13: CIA_ISSUE_AUTH=code 일 때 IdP 의 401(auth_code_required·bad_code)을 그대로 넘긴다 — /wallet/register 가
+    // IdP 의 401·409 를 그대로 넘기는 것과 같은 모양이다. r.body.reason 은 IdP 의 모든 401 에 항상 실린다(cia.js).
+    if (r.status === 401) return res.status(401).json({ reason: r.body?.reason ?? 'unauthorized', cia: r.body, demo, timings, ...src.pending });
     if (r.status !== 200) return res.status(502).json({ reason: 'issue_failed', cia: r.body, demo, timings, ...src.pending });
     // 이 세션이 어느 RP 오리진의 것인지 남긴다(2026-09-25 리뷰 D-4) — 세션 라우트가 요청 오리진과 대조한다.
     // origin 은 바로 위에서 인증서(cert_s)와 대조를 마친 값이다.
@@ -1317,5 +1357,5 @@ app.use((err, req, res, next) => {
 });
 process.on('unhandledRejection', (e) => console.error(`[wallet] unhandledRejection: ${e?.stack ?? e}`));
 app.listen(PORT, '127.0.0.1', () => {
-  console.log(`Mode 3 wallet agent at http://127.0.0.1:${PORT} (cia=${CIA_URL}, rp=${RP_ORIGINS.join(',')}, log=${LOG_ADDRESS ?? 'none'}@${REV_RPC}, mirror=${MIRROR_ADDRESS ?? 'none'})`);
+  console.log(`Mode 3 wallet agent at http://127.0.0.1:${PORT} (cia=${CIA_URL}, rp=${rpOrigins.join(',')}, log=${LOG_ADDRESS ?? 'none'}@${REV_RPC}, mirror=${MIRROR_ADDRESS ?? 'none'})`);
 });

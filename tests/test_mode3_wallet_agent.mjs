@@ -67,6 +67,8 @@ try {
     const badAttr = await wallet.post('/wallet/register', { uid, pwd: 'password123', profile: { birthYear: '1800', country: 'KR' } });
     assert.equal(badAttr.status, 400); assert.equal(badAttr.body.reason, 'bad_attr');
     assert.equal((await wallet.get('/wallet/status')).body.registered, false, '인코딩 실패는 CIA 에 등록하지 않는다');
+    const salt = await wallet.get('/wallet/secrets/salt');
+    assert.equal(salt.status, 409, j(salt.body)); assert.equal(salt.body.reason, 'not_registered');
   });
 
   await t('등록: profile 없이 → 기본 { 1990, KR }(201, 슬롯 0, auid); 두 번째는 409; 잘못된 pwd 는 IdP 의 401; /wallet/status 에 auid·attrs·profile·slot', async () => {
@@ -86,6 +88,9 @@ try {
     assert.deepEqual(s.body.attrsView.map((v) => v.display), ['1990', 'KR', '', '', '', '']);
     const acct = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === uid);
     assert.equal(acct.attrs, undefined, 'D15: IdP 는 속성을 받지 않는다'); assert.equal(acct.auid, undefined, '/cia/accounts 는 auid 를 내지 않아도 된다(계획: 공개 필드 아님)');
+    // Task 13: file 모드는 등록 뒤 /wallet/secrets/salt 로 s_u(10진 문자열)를 본다 — 같은 오리진 전용이라 CORS 는 열지 않는다.
+    const salt = await wallet.get('/wallet/secrets/salt');
+    assert.equal(salt.status, 200, j(salt.body)); assert.match(salt.body.s_u, /^[0-9]+$/);
   });
 
   let first, PPID1, S1;
@@ -169,6 +174,9 @@ try {
     // /wallet/tx 는 지갑 페이지(같은 오리진)에서만 부른다 — RP 오리진이라도 CORS 를 열지 않는다.
     const txFromRp = await wallet.raw('/wallet/tx', { method: 'OPTIONS', headers: { Origin: stack.rpOriginForWallet, 'Access-Control-Request-Method': 'POST' } });
     assert.equal(txFromRp.headers.get('access-control-allow-origin'), null);
+    // Task 13: /wallet/secrets/salt 도 같은 오리진 전용 — RP 오리진에 CORS 를 열지 않는다(s_u 는 RP 에 내지 않는다).
+    const saltFromRp = await wallet.raw('/wallet/secrets/salt', { headers: { Origin: stack.rpOriginForWallet } });
+    assert.equal(saltFromRp.headers.get('access-control-allow-origin'), null);
   });
 
   // 2026-09-30: MODE3_RP_ORIGIN 은 쉼표 목록 — 지갑 하나가 RP 여럿에 로그인한다(같은 사용자, RP 마다 다른 PPID).
@@ -186,6 +194,27 @@ try {
     const h = (await wallet.get('/mode3/health')).body;
     assert.deepEqual(h.rpOrigins, [stack.rpOriginForWallet, SECOND_RP_ORIGIN], 'health 가 허용 목록을 그대로 낸다');
     assert.equal(h.rpOrigin, stack.rpOriginForWallet, '첫 오리진은 기존 필드로도');
+  });
+
+  // Task 13(B4): 동적 RP 허용 목록 — env 목록 밖의 오리진도 IdP 가 승인하면 폴링(10초 주기)으로 열린다.
+  // 테스트가 /cia/register_rp 를 직접 부른다(cia.registerRp 가 그 호출 + 관리자 승인을 대행한다).
+  await t('동적 RP 허용 목록: IdP 가 승인한 새 RP 오리진에 10초 안에 CORS 가 열린다', async () => {
+    const NEW_ORIGIN = 'http://127.0.0.1:3999';
+    await cia.registerRp(NEW_ORIGIN);
+    const deadline = Date.now() + 12_000;
+    let acao = null;
+    while (Date.now() < deadline) {
+      const r = await wallet.raw('/wallet/login', { method: 'OPTIONS', headers: { Origin: NEW_ORIGIN, 'Access-Control-Request-Method': 'POST' } });
+      acao = r.headers.get('access-control-allow-origin');
+      if (acao === NEW_ORIGIN) break;
+      await new Promise((res) => setTimeout(res, 500));
+    }
+    assert.equal(acao, NEW_ORIGIN, '12초 안에 폴링이 새 RP 오리진을 허용 목록에 넣어야 한다');
+    // env 로 준 오리진들은 폴링 뒤에도 그대로 — 폴링이 기존 목록을 지우지 않는다(env ∪ IdP 목록).
+    const stillFirst = await wallet.raw('/wallet/login', { method: 'OPTIONS', headers: { Origin: stack.rpOriginForWallet, 'Access-Control-Request-Method': 'POST' } });
+    assert.equal(stillFirst.headers.get('access-control-allow-origin'), stack.rpOriginForWallet);
+    const h = (await wallet.get('/mode3/health')).body;
+    assert.ok(h.rpOrigins.includes(NEW_ORIGIN), 'health 도 폴링된 목록을 낸다');
   });
 
   await t('계정 폐기 → 즉시 게시(V9: 등록부 슬롯) → skipSync 재검증은 옛 π 를 그대로 → 검증기 stale_registry_root', async () => {
@@ -1018,6 +1047,49 @@ await t('리뷰 T2: IdP 가 먼저 물린 C_u(체인엔 아직 살아 있음) �
     await st.stop();
     proxy.close();
   }
+});
+
+// ---- 독립 시험(Task 13 B4): auth_code 전달 — IdP 가 CIA_ISSUE_AUTH=code 로 떠 있을 때만 의미가 있어 자기 스택을 쓴다
+// (공유 stack 의 IdP 는 isolated_cia.mjs 가 CIA_ISSUE_AUTH='' 로 고정한다).
+await t('/wallet/login 의 auth_code 가 /cia/issue 로 전달된다(IdP 를 CIA_ISSUE_AUTH=code 로 띄운 스택): 코드 없으면 401 auth_code_required, 있으면 200', async () => {
+  const st = await startIsolatedMode3Stack({ rp: false, ciaEnv: { CIA_ISSUE_AUTH: 'code' } });
+  try {
+    const { cia: c3, wallet: w3 } = st;
+    const svc = await c3.registerRp(st.rpOriginForWallet);
+    const regR = await w3.post('/wallet/register', { uid, pwd: 'password123' });
+    assert.equal(regR.status, 201, j(regR.body));
+    const base = { arid: svc.arid, origin: svc.origin, cert_s: svc.cert_s, pk_trace: { x: svc.pk_trace.x.toString(), y: svc.pk_trace.y.toString() } };
+    const noCode = await st.withRelay(() => w3.post('/wallet/login', { ...base, r_s: randomScalar().toString(), r_rp: randomScalar().toString() }, { Origin: st.rpOriginForWallet }));
+    assert.equal(noCode.status, 401, j(noCode.body)); assert.equal(noCode.body.reason, 'auth_code_required');
+    const authResp = await c3.post('/cia/auth/code', { uid, pwd: 'password123', auid: regR.body.auid });
+    assert.equal(authResp.status, 200, j(authResp.body));
+    const withCode = await st.withRelay(() => w3.post('/wallet/login', { ...base, r_s: randomScalar().toString(), r_rp: randomScalar().toString(), auth_code: authResp.body.code }, { Origin: st.rpOriginForWallet }));
+    assert.equal(withCode.status, 200, j(withCode.body));
+  } finally { await st.stop(); }
+});
+
+// ---- 독립 시험(Task 13 B4): code 로 등록 — IdP 의 /cia/user/register_code(사용자 세션 필요)로 받은 1회용 코드를 pwd 대신 쓴다.
+// fetch 는 쿠키를 자동으로 보내지 않으므로(tests/test_cia_accounts.mjs 와 같은 관례) Set-Cookie 를 되돌리는 작은 jar 를 둔다.
+await t('/wallet/register { uid, code }: register_code 로 받은 코드로 등록된다(pwd 없이)', async () => {
+  const st = await startIsolatedMode3Stack({ rp: false });
+  try {
+    const { cia: c4, wallet: w4 } = st;
+    const jar = {};
+    const ciaFetch = async (p, init = {}) => {
+      const r = await fetch(`${c4.base}${p}`, { ...init, headers: { 'Content-Type': 'application/json', ...(jar.cookie ? { Cookie: jar.cookie } : {}), ...(init.headers ?? {}) } });
+      const sc = r.headers.get('set-cookie');
+      if (sc) jar.cookie = sc.split(';')[0];
+      return { status: r.status, body: await r.json().catch(() => null) };
+    };
+    assert.equal((await ciaFetch('/cia/user/login', { method: 'POST', body: JSON.stringify({ uid, pwd: 'password123' }) })).status, 200, '시드 계정(12345) 로그인');
+    const rc = await ciaFetch('/cia/user/register_code', { method: 'POST', body: JSON.stringify({}) });
+    assert.equal(rc.status, 200, j(rc.body));
+    assert.match(rc.body.code, /^[0-9a-f]+$/);
+    const r = await w4.post('/wallet/register', { uid, code: rc.body.code });
+    assert.equal(r.status, 201, j(r.body));
+    assert.equal(r.body.uid, uid);
+    assert.equal((await w4.get('/wallet/status')).body.registered, true);
+  } finally { await st.stop(); }
 });
 
 process.exit(failed === 0 ? 0 : 1);
