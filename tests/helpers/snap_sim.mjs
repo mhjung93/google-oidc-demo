@@ -14,13 +14,23 @@ export function createSnapSim() {
   return {
     state,   // 검사용 — 테스트가 상태 파일과 대조한다
 
-    /** prompt(uid)·prompt(pwd) 대신 인자로 받는다. s_u·sk_u 를 만들어 상태에 두고(sk_u 는 register 응답에 한 번만 싣는다 —
-     *  V9 §7.1, index.js 의 register 와 같은 모양) s_u 와 함께 돌려준다. auid 는 등록이 아직 끝나지 않아 null(storeRegistration 이 채운다). */
-    async register({ uid, pwd }) {
+    /** V11 갱신(2026-10-23): 비밀번호 프롬프트는 없어졌다 — confirm(decision) 하나만. 실제 Snap(index.js register:102-112)과
+     *  같은 순서로 검사한다: already_registered → bad_uid → 확인창. s_u·sk_u 를 만들어 상태에 두고(sk_u 는 register
+     *  응답에 한 번만 싣는다 — V9 §7.1) s_u 와 함께 돌려준다. auid 는 등록이 아직 끝나지 않아 null(storeRegistration 이 채운다). */
+    async register({ uid }, decision = 'allow') {
       if (state.registration) throw new Error('snap_sim: 이미 등록돼 있다');
-      const reg = await createRegistration(BigInt(uid));
-      state.registration = { uid, pwdHash: null, s_u: reg.s_u.toString(), auid: null, sk_u: reg.sk_u, slot: null, attrs: null, registeredAt: new Date().toISOString() };
-      return { uid, pwd, s_u: state.registration.s_u, sk_u: reg.sk_u };
+      const uidStr = String(uid ?? '').trim();
+      if (!isDec(uidStr)) fail('bad_uid: uid 는 10진 숫자 문자열이어야 한다');
+      if (decision !== 'allow') return { denied: true };
+      const reg = await createRegistration(BigInt(uidStr));
+      state.registration = { uid: uidStr, pwdHash: null, s_u: reg.s_u.toString(), auid: null, sk_u: reg.sk_u, slot: null, attrs: null, registeredAt: new Date().toISOString() };
+      return { uid: uidStr, s_u: state.registration.s_u, sk_u: reg.sk_u };
+    },
+
+    /** salt(s_u) 를 지갑 페이지에 보여 준다 — 실제 Snap(index.js showSalt:116-120)과 같은 입출력. */
+    showSalt(decision = 'allow') {
+      requireRegistered();
+      return decision === 'allow' ? { s_u: state.registration.s_u } : { denied: true };
     },
 
     /** 에이전트 /wallet/register 응답의 slot·attrs·auid 를 저장한다(sk_u·s_u 는 register 때 이미 저장했으므로 받지 않는다).
@@ -80,8 +90,8 @@ export function createSnapSim() {
       return { ok: true, changed };
     },
 
-    /** V8 세션 폐기 동의 창(설계 2026-09-24 §4). arid·발급 시각·만료 블록은 표시용이라 시뮬레이터는 보지 않는다.
-     *  Snap 은 서명하지 않는다 — 서명은 에이전트가 세션의 메모리 증인에 든 sk_u 로 한다. */
+    /** V8 세션 폐기 동의 창(설계 2026-09-24 §4). arid·발급 시각·만료 블록·허용 거래 수(bound, 2026-10-23 추가)는
+     *  표시용이라 시뮬레이터는 보지 않는다. Snap 은 서명하지 않는다 — 서명은 에이전트가 세션의 메모리 증인에 든 sk_u 로 한다. */
     consentRevokeSession(_args, decision = 'allow') {
       requireRegistered();
       return decision === 'allow' ? { ok: true } : { denied: true };

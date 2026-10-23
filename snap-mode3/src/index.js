@@ -97,22 +97,26 @@ export const onRpcRequest = async ({ origin, request }) => {
   const state = await getState();
 
   switch (request.method) {
-    // 등록(스펙 §4.1): uid·비밀번호를 대화상자로 받고 s_u·sk_u 를 만들어 저장한다. 비밀번호는 저장하지 않고 그대로 돌려준다.
+    // 등록(V11 갱신, 2026-10-23): 비밀번호 프롬프트는 없어졌다 — 지갑 페이지가 이미 받은 uid 를 params 로 넘기고,
+    // Snap 은 확인 창 하나만 띄워 s_u·sk_u 를 만들어 저장한다. IdP 에는 커밋먼트(auid)와 공개키만 간다(storeRegistration).
     case 'register': {
       if (state.registration) fail('already_registered: 이미 등록돼 있다 (초기화하려면 reset)');
-      const uid = await prompt('Mode 3 등록', ['사용자 uid(숫자)를 입력하세요.'], '12345');
-      if (uid === null || uid === '') return { denied: true };
-      if (!isDec(String(uid).trim())) fail('bad_uid: uid 는 10진 숫자 문자열이어야 한다');
-      const pwd = await prompt('Mode 3 등록', [`uid: ${uid}`, 'IdP 계정 비밀번호를 입력하세요. 비밀번호는 Snap 에 저장하지 않습니다.'], '비밀번호');
-      if (pwd === null || pwd === '') return { denied: true };
+      const uid = String(params.uid ?? '').trim();
+      if (!isDec(uid)) fail('bad_uid: uid 는 10진 숫자 문자열이어야 한다');
+      const ok = await confirm('IdP 등록', [`uid: ${uid}`, null, '등록 비밀(s_u·sk_u)을 만들어 이 Snap 에 보관합니다.', '속성은 지갑에만 남고 IdP 에는 커밋먼트와 공개키만 갑니다.']);
+      if (!ok) return { denied: true };
       const secrets = createRegistrationSecrets();
-      state.registration = {
-        uid: String(uid).trim(), s_u: secrets.s_u, auid: null,
-        sk_u: secrets.sk_u, slot: null, attrs: null, registeredAt: new Date().toISOString(),
-      };
-      state.userCred = null;
-      await setState(state);
-      return { uid: state.registration.uid, pwd, s_u: secrets.s_u, sk_u: secrets.sk_u };
+      state.registration = { uid, s_u: secrets.s_u, auid: null, sk_u: secrets.sk_u, slot: null, attrs: null, registeredAt: new Date().toISOString() };
+      state.userCred = null; await setState(state);
+      return { uid, s_u: secrets.s_u, sk_u: secrets.sk_u };
+    }
+
+    // salt(s_u) 를 지갑 페이지에 보여 준다 — 시연용(복구 코드 설계 2026-10-21 과 무관, 화면 표시만). 비밀 자체는
+    // 대화상자에 싣지 않는다(경고문뿐) — 싣는 순간 팝업 캡처로 유출될 수 있다.
+    case 'showSalt': {
+      const reg = requireRegistered(state);
+      const ok = await confirm('salt 표시', ['salt(s_u)를 지갑 페이지에 표시합니다 — 시연용입니다.', '화면 밖으로 보내지 마세요.']);
+      return ok ? { s_u: reg.s_u } : { denied: true };
     }
 
     // 에이전트 POST /wallet/register 응답(slot·attrs·auid)을 저장한다. sk_u·s_u 는 register 때 이미 만들어 저장했으므로 받지 않는다(V9 §7.1).
@@ -215,11 +219,12 @@ export const onRpcRequest = async ({ origin, request }) => {
     // 여기서는 동의만 받는다(스펙 §4 의 signRevokeSession RPC 를 이 이름으로 갱신).
     case 'consentRevokeSession': {
       requireRegistered(state);
-      const { arid, issuedAt, maxHeight } = params;
+      const { arid, issuedAt, maxHeight, bound } = params;
       const ok = await confirm('세션 폐기', [
         `RP arid: ${arid}`,
         `발급 시각: ${issuedAt}`,
         `만료 블록: ${maxHeight}`,
+        `허용 거래 수: ${String(bound ?? '0')} (nonce < ${String(bound ?? '0')} 만 유효)`,
         null,
         '이 세션을 폐기합니다. 다음 게시부터 이 세션의 로그인·트랜잭션이 거부됩니다.',
       ]);

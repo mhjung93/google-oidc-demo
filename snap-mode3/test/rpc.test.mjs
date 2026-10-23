@@ -82,16 +82,38 @@ await t('지갑 오리진 두 철자(127.0.0.1·localhost)는 모두 허용된�
 
 let registered = null;
 let auid = null;
-await t('register: prompt 두 번 → { uid, pwd, s_u, sk_u }, 상태에 s_u·sk_u, 비밀번호는 저장 안 함', async () => {
-  answers.push('12345', 'password123');
-  registered = await call('register', {});
+
+// V11 갱신(2026-10-23): register 는 더 이상 비밀번호를 프롬프트로 받지 않는다 — 지갑 페이지가 넘긴 uid 를 받아
+// 확인 창 하나만 띄운다. bad_uid 검사가 확인 창보다 먼저라 대화상자를 띄우지 않고 거절해야 한다.
+await t('register: uid 가 10진 문자열이 아니면 bad_uid, 확인창은 뜨지 않는다', async () => {
+  const before = dialogs.length;
+  await assert.rejects(() => call('register', { uid: 'abc' }), /bad_uid/);
+  assert.equal(store.state, null, '검증 실패는 상태를 만들지 않는다');
+  assert.equal(dialogs.length, before, 'bad_uid 는 확인창을 띄우기 전에 거절된다');
+});
+
+await t('register({ uid }): 거절하면 { denied: true }, 상태는 그대로 null', async () => {
+  const before = dialogs.length;
+  answers.push(false);
+  assert.deepEqual(await call('register', { uid: '12345' }), { denied: true });
+  assert.equal(dialogs.length, before + 1, '확인창 한 번');
+  assert.equal(dialogs[before].type, 'confirmation');
+  assert.equal(store.state, null, '거절은 등록을 만들지 않는다');
+});
+
+await t('register({ uid }): 확인창 한 번 → { uid, s_u, sk_u }(pwd 없음), 상태에 s_u·sk_u, 대화상자에 uid 있고 비밀번호 문구 없음', async () => {
+  const before = dialogs.length;
+  answers.push(true);
+  registered = await call('register', { uid: '12345' });
   assert.equal(registered.uid, '12345');
-  assert.equal(registered.pwd, 'password123');
+  assert.equal('pwd' in registered, false, 'pwd 는 더 이상 없다');
   assert.match(registered.s_u, /^[0-9]+$/);
   assert.match(registered.sk_u, /^[0-9a-fA-F]{64}$/);
-  assert.equal(dialogs.length, 2, '대화상자 두 번(uid, 비밀번호)');
-  assert.equal(dialogs[0].type, 'prompt');
-  assert.equal(dialogs[1].type, 'prompt');
+  assert.equal(dialogs.length, before + 1, '확인창 한 번');
+  assert.equal(dialogs[before].type, 'confirmation');
+  const d = lastDialogText();
+  assert.ok(d.includes('12345'), '대화상자에 uid 가 보인다');
+  assert.ok(!d.includes('비밀번호'), '대화상자에 비밀번호 문구가 없다');
   const reg = store.state.registration;
   assert.equal(store.state.version, 1);
   assert.equal(reg.s_u, registered.s_u);
@@ -101,7 +123,6 @@ await t('register: prompt 두 번 → { uid, pwd, s_u, sk_u }, 상태에 s_u·sk
   assert.equal('r_u' in reg, false, 'r_u 는 없어졌다');
   assert.equal('cm_u' in reg, false, 'cm_u 는 없어졌다');
   assert.ok(reg.registeredAt, 'registeredAt 기록');
-  assert.ok(!stateJson().includes('password123'), '비밀번호는 상태에 남지 않는다');
 });
 
 await t('auid 는 에이전트가 계산한다 — storeRegistration 이 받은 auid 가 getPublicInfo 에 보인다', async () => {
@@ -285,13 +306,34 @@ await t('selfRevoke: prompt(비밀번호) → { uid, pwd }, 거절은 denied', a
   assert.deepEqual(await call('selfRevoke', {}), { denied: true });
 });
 
-await t('consentRevokeSession: 대화상자에 arid·발급 시각이 보이고 승인/거절', async () => {
+await t('consentRevokeSession: 대화상자에 arid·발급 시각·허용 거래 수가 보이고 승인/거절', async () => {
+  answers.push(true);
+  assert.deepEqual(await call('consentRevokeSession', { arid: '777', issuedAt: '2026-09-24T00:00:00Z', maxHeight: '1000', bound: '3' }), { ok: true });
+  const d = lastDialogText();
+  for (const part of ['777', '2026-09-24', '폐기', '허용 거래 수: 3', 'nonce < 3']) assert.ok(d.includes(part), `대화상자에 ${part} 가 없다`);
+  answers.push(false);
+  assert.deepEqual(await call('consentRevokeSession', { arid: '777', issuedAt: 'x', maxHeight: '1', bound: '3' }), { denied: true });
+});
+
+// bound 는 Task 9 이전 호출(있다면)과의 하위호환 — 없으면 0 으로 동작하고 던지지 않는다.
+await t('consentRevokeSession: bound 가 없으면 0 으로 동작한다(하위호환)', async () => {
   answers.push(true);
   assert.deepEqual(await call('consentRevokeSession', { arid: '777', issuedAt: '2026-09-24T00:00:00Z', maxHeight: '1000' }), { ok: true });
   const d = lastDialogText();
-  for (const part of ['777', '2026-09-24', '폐기']) assert.ok(d.includes(part), `대화상자에 ${part} 가 없다`);
+  assert.ok(d.includes('허용 거래 수: 0'), `대화상자에 기본값이 없다: ${d}`);
+});
+
+await t('showSalt: 승인하면 { s_u }(저장된 값과 같다, 대화상자엔 실제 값이 없다), 거절하면 denied', async () => {
+  const savedSU = store.state.registration.s_u;
+  const before = dialogs.length;
+  answers.push(true);
+  const r = await call('showSalt', {});
+  assert.deepEqual(r, { s_u: savedSU });
+  assert.equal(dialogs.length, before + 1);
+  assert.equal(dialogs[before].type, 'confirmation');
+  assert.ok(!lastDialogText().includes(savedSU), '대화상자에 salt 값 자체는 보이지 않는다(경고문뿐)');
   answers.push(false);
-  assert.deepEqual(await call('consentRevokeSession', { arid: '777', issuedAt: 'x', maxHeight: '1' }), { denied: true });
+  assert.deepEqual(await call('showSalt', {}), { denied: true });
 });
 
 await t('모르는 method 는 거절', async () => {
@@ -312,7 +354,7 @@ await t('reset: 확인 뒤 상태를 비운다(거절하면 그대로)', async (
 });
 
 await t('등록 전에는 비밀이 필요한 RPC 가 거절된다', async () => {
-  for (const m of ['storeRegistration', 'consentLogin', 'updateUserCred', 'syncAttrs', 'selfRevoke', 'consentRevokeSession']) {
+  for (const m of ['storeRegistration', 'consentLogin', 'updateUserCred', 'syncAttrs', 'selfRevoke', 'consentRevokeSession', 'showSalt']) {
     await assert.rejects(() => call(m, {}), /not_registered|등록/, `${m} 은 등록을 요구한다`);
   }
 });
