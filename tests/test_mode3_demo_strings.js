@@ -32,7 +32,9 @@ const REASONS = ['stale_root', 'stale_registry_root', 'root_too_old', 'revalidat
   // 2026-10-16 Google(OIDC 래퍼) — IdP 의 토큰 검증 코드와 페이지의 GIS 코드
   'oidc_disabled', 'oidc_invalid', 'oidc_nonce_mismatch', 'oidc_unavailable', 'oidc_required', 'gsi_unavailable', 'gsi_origin',
   // 2026-10-16 최종 리뷰 M5 — 사용자 코어가 IdP 를 부르기 전에 내는 코드
-  'uid_mismatch', 'no_pending_registration'];
+  'uid_mismatch', 'no_pending_registration',
+  // Task 12(2026-10-22, 46445df) — IdP 사용자·RP·인증 창 페이지(cia.js 의 가입·세션·1회용 코드·RP 운영자 라우트).
+  'login_required', 'signup_failed', 'operator_login_failed', 'bad_code', 'auth_code_required', 'auid_mismatch', 'idp_auth_cancelled', 'idp_auth_bad_wallet', 'bad_rp_key'];
 
 t('langs 는 ko, en', () => assert.deepEqual(S.langs, ['ko', 'en']));
 // U6(2026-10-14): login2(두 번째 RP 로그인, unlinkability 시연) 추가 — login 과 use 사이, 7단계→8단계.

@@ -587,6 +587,11 @@ window.DemoStrings = {
     idp_register_ok_title: { ko: '등록됨', en: 'Registered' },
     idp_register_ok: { ko: '등록됨 — 슬롯 #{slot}', en: 'Registered — slot #{slot}' },
     idp_register_failed: { ko: '등록 실패', en: 'Registration failed' },
+    // Task 12 수정 라운드 1(2026-10-22) — 등록 팝업 수신 심층 방어·타임아웃·닫힘 감지(cia_user.html #registerBtn).
+    // rp.html 의 rp_popup_timeout·rp_popup_closed 와 같은 문구 결이다.
+    wallet_origin_unknown: { ko: '지갑 오리진을 아직 모릅니다 — 잠시 뒤 다시 시도하세요.', en: 'The wallet origin is not known yet — try again shortly.' },
+    register_timeout: { ko: '등록 창이 제한 시간 안에 끝나지 않았습니다.', en: 'The registration window did not finish in time.' },
+    register_popup_closed: { ko: '등록 창이 결과 없이 닫혔습니다.', en: 'The registration window closed without a result.' },
     confirm_account_revoke: { ko: '되돌릴 수 없습니다. 내 계정을 폐기할까요?', en: 'This cannot be undone. Revoke my account?' },
     // IdP RP 페이지(운영자 가입·로그인·RP 만들기) — cia_rp.html.
     idp_rp_signup_title: { ko: '운영자 계정 만들기', en: 'Create an operator account' },

@@ -28,7 +28,7 @@
     <p class="desc" data-i18n="idp_register_desc">지갑(MetaMask Snap)이 비밀을 만들고 커밋먼트와 공개키만 IdP 에 등록합니다. 속성은 지갑에만 남습니다.</p>
     <p><button id="registerBtn" data-i18n="idp_register_btn">지갑으로 커밋먼트 등록</button> <a id="walletLink" class="btn-ghost" target="_blank" rel="noopener" data-i18n="idp_wallet_link">지갑 페이지 열기</a></p>
     <dl class="kv">
-      <dt data-term="auid">auid</dt><dd><code id="meAuid">-</code> <button type="button" id="copyAuidBtn" class="copy-btn" hidden>⧉</button></dd>
+      <dt data-term="auid">auid</dt><dd><code id="meAuid">-</code> <button type="button" id="copyAuidBtn" class="copy-btn" hidden title="복사" aria-label="복사" data-i18n-title="rp_copy_btn_title">⧉</button></dd>
       <dt data-i18n="idp_slot_label">등록부 슬롯</dt><dd id="meSlot">-</dd>
     </dl>
     <div id="userVerdict"></div>
@@ -46,6 +46,19 @@
   const tt = (k, v) => { const s = Demo.t(k, v); return s === k ? '' : s; };
   const verdict = (el, ok, title, extra) => Demo.verdict(el, () => ({ ok, title: window.DemoStrings?.verdicts?.[title] ? title : Demo.t(title), ...(typeof extra === 'function' ? extra() : extra) }));
   let walletOrigin = null, me = null;
+  // 상태 패널(cia_account.html·cia_admin.html 과 같은 패턴) — 자기 health 의 walletOrigin 으로 지갑 오리진을 알게
+  // 된다. 예전의 단발 fetch 는 그 회차가 실패하면 등록 버튼이 조용히 막혔다; 5초마다 다시 읽어 재시도된다.
+  function initStack() {
+    if (!window.Demo?.stack) return;
+    Demo.stack({ self: 'aa', urls: {} });
+    Demo.stack.onChange((last) => {
+      const wallet = last.aa?.walletOrigin || null;
+      if (wallet === walletOrigin) return;
+      walletOrigin = wallet;
+      $('walletLink').href = walletOrigin ? `${walletOrigin}/` : '#';
+      Demo.stack({ self: 'aa', urls: { wallet } });
+    });
+  }
 
   async function refreshMe() {
     const r = await get('/cia/user/me');
@@ -87,30 +100,58 @@
     await refreshMe();
   });
   // 커밋먼트 등록(Task 14): 세션으로 등록 코드를 받아 지갑 팝업을 연다(?authorize=1). 허용 발신 오리진은 지갑 오리진뿐이다.
+  // 수신 심층 방어(ev.source)·타임아웃·닫힘 감지는 rp.html 의 popupCall(mode3/rp.html:480-508)과 같은 기준이다.
+  const REGISTER_POPUP_TIMEOUT_MS = 120_000;
+  const REGISTER_POPUP_CLOSED_POLL_MS = 300;
+  // 팝업은 결과를 보낸 뒤 스스로 닫는다(mode3/wallet.html 은 성공 200ms·실패 3000ms 뒤 close). 닫힘을 먼저 보더라도
+  // 이미 큐에 있는 결과 메시지를 받을 수 있게 이만큼 기다렸다가 "결과 없이 닫혔다"로 판정한다.
+  const REGISTER_POPUP_RESULT_GRACE_MS = 400;
   $('registerBtn').addEventListener('click', async () => {
     if (!me) return verdict($('userVerdict'), false, 'idp_register_failed', { reason: 'login_required' });
+    $('registerBtn').disabled = true;
+    const restore = () => { $('registerBtn').disabled = false; };
+    const walletOrigin0 = walletOrigin;   // 호출 시점에 고정 — 대기 중 Demo.stack 이 다시 바뀌어도 이 요청은 같은 오리진으로 끝낸다
+    if (!walletOrigin0) { restore(); return verdict($('userVerdict'), false, 'idp_register_failed', { reason: 'wallet_origin_unknown', summary: tt('wallet_origin_unknown') }); }
     const c = await post('/cia/user/register_code');
-    if (c.status !== 200) return verdict($('userVerdict'), false, 'idp_register_failed', { reason: c.body?.reason ?? `HTTP ${c.status}` });
-    const popup = window.open(`${walletOrigin}/?authorize=1`, 'mode3-register', 'width=460,height=640');
-    if (!popup) return verdict($('userVerdict'), false, 'idp_register_failed', { reason: 'popup_blocked' });
+    if (c.status !== 200) { restore(); return verdict($('userVerdict'), false, 'idp_register_failed', { reason: c.body?.reason ?? `HTTP ${c.status}` }); }
+    const popup = window.open(`${walletOrigin0}/?authorize=1`, 'mode3-register', 'width=460,height=640');
+    if (!popup) { restore(); return verdict($('userVerdict'), false, 'idp_register_failed', { reason: 'popup_blocked' }); }
     Demo.verdict($('userVerdict'), { pending: true, title: tt('working') || '처리 중' });
+    let done = false;
+    const finish = (fn) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer); clearInterval(closedPoll);
+      window.removeEventListener('message', onMsg);
+      restore();
+      fn();
+    };
     const onMsg = (ev) => {
-      if (ev.origin !== walletOrigin) return;
-      if (ev.data?.type === 'mode3-authorize-ready') popup.postMessage({ type: 'mode3-register', uid: me.uid, code: c.body.code, ciaUrl: location.origin }, walletOrigin);
-      if (ev.data?.type === 'mode3-register-result') {
-        window.removeEventListener('message', onMsg);
+      // 지갑 오리진이, 그것도 우리가 연 그 창이 보낸 것만 본다(ev.source 는 심층 방어 — 같은 오리진의 다른 창이 끼어들지 못하게 한다).
+      if (ev.origin !== walletOrigin0 || ev.source !== popup || !ev.data) return;
+      if (ev.data.type === 'mode3-authorize-ready') { popup.postMessage({ type: 'mode3-register', uid: me.uid, code: c.body.code, ciaUrl: location.origin }, walletOrigin0); return; }
+      if (ev.data.type !== 'mode3-register-result') return;
+      finish(() => {
         const r = ev.data.result;
         verdict($('userVerdict'), Boolean(r.ok), r.ok ? 'idp_register_ok_title' : 'idp_register_failed', r.ok ? () => ({ summary: tt('idp_register_ok', { slot: r.slot }) || `등록됨 — 슬롯 #${r.slot}` }) : { reason: r.reason, detail: r.detail });
         refreshMe();
-      }
+      });
     };
     window.addEventListener('message', onMsg);
+    const timer = setTimeout(() => {
+      try { popup.close(); } catch { /* 이미 닫혔을 수 있다 */ }
+      finish(() => verdict($('userVerdict'), false, 'idp_register_failed', { reason: 'timeout', summary: tt('register_timeout') }));
+    }, REGISTER_POPUP_TIMEOUT_MS);
+    const closedPoll = setInterval(() => {
+      if (!popup.closed) return;
+      clearInterval(closedPoll);
+      setTimeout(() => finish(() => verdict($('userVerdict'), false, 'idp_register_failed', { reason: 'popup_closed', summary: tt('register_popup_closed') })), REGISTER_POPUP_RESULT_GRACE_MS);
+    }, REGISTER_POPUP_CLOSED_POLL_MS);
   });
 
   (async () => {
-    try { const h = await (await fetch('/mode3/health')).json(); walletOrigin = h.walletOrigin; $('walletLink').href = `${walletOrigin}/`; } catch { /* IdP 의 지갑 오리진을 못 읽으면 등록 버튼은 눌러도 조용히 실패한다 */ }
     Demo.init({ page: 'idp_user' });
-    Demo.stack?.({ self: 'aa', urls: { wallet: walletOrigin } });
+    initStack();
     await refreshMe();
   })();
 </script>
