@@ -123,6 +123,7 @@ oidc_client_id() { [ -n "${MODE3_OIDC_CLIENT_ID:-}" ] && { printf '%s' "$MODE3_O
 OIDC_LINE=""
 if [ "${OIDC:-1}" != 0 ]; then OIDC_ID="$(oidc_client_id .env)"; [ -n "$OIDC_ID" ] && OIDC_LINE="MODE3_OIDC_CLIENT_ID=$OIDC_ID"; unset OIDC_ID; fi
 echo "  OIDC(Google): $([ -n "$OIDC_LINE" ] && echo on || echo off)"
+if [ -z "${MODE3_OIDC_CLIENT_ID:-}" ] && [ -n "$OIDC_LINE" ]; then echo "  경고: .env 의 GOOGLE_CLIENT_ID(Mode 1 공유 클라이언트 ID)를 IdP 에 넘긴다 — 같은 ID 의 다른 앱 토큰을 받을 수 있다(선행 스펙 §5)"; fi
 printf '%s\n' "$COMMON" "CIA_PORT=$IDP_PORT" "CIA_RPC_URL=http://$HOST:$REV_PORT" "CIA_CHAIN_RPCS=$APP_CHAIN=http://$HOST:$APP_PORT" "CIA_ADMIN_SECRET=$ADMIN" "CIA_ADMIN_OPEN=${ADMIN_OPEN:-1}" "CIA_ISSUE_AUTH=${ISSUE_AUTH:-$([ "$WALLET_MODE" = snap ] && echo code || echo key)}" ${OIDC_LINE:+"$OIDC_LINE"} | put_env "$IDP"
 printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP1_PORT" "MODE3_RP_NAME=zkONE" "MODE3_RP_PUBLIC_ORIGIN=http://$RP1:$RP1_PORT" "MODE3_CIA_URL=http://$IDP:$IDP_PORT" \
   "CIA_RPC_URL=http://$HOST:$APP_PORT" "MODE3_RELAYER_INDEX=0" | put_env "$RP1"

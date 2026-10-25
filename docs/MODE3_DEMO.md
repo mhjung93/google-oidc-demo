@@ -941,7 +941,7 @@ node mode3_rp.js                       # :3100
 
 #### Google 로 등록·로그인·자기 폐기(Snap 모드, 2026-10-26)
 
-- 켜짐이 기본이다: 스크립트가 IdP 에 `MODE3_OIDC_CLIENT_ID` 를 넘긴다(환경변수 → 없으면 이 VM `.env` 의 `GOOGLE_CLIENT_ID`, Mode 1 공유 ID — 값은 출력하지 않는다). 끄려면 `OIDC=0`. IdP 는 공유 ID 로 뜨면 기동 때 경고한다(선행 스펙 §5).
+- 켜짐이 기본이다: 스크립트가 IdP 에 `MODE3_OIDC_CLIENT_ID` 를 넘긴다(환경변수 → 없으면 이 VM `.env` 의 `GOOGLE_CLIENT_ID`, Mode 1 공유 ID — 값은 출력하지 않는다). 끄려면 `OIDC=0`. 환경변수가 미설정이고 `.env` 에서 `GOOGLE_CLIENT_ID` 를 얻은 경우(공유 ID 폴백)에는 스크립트가 값 없는 경고 줄을 출력한다(IdP 기동 경고는 이 경로에서 발동하지 않는다). 공유 ID 의 위험은 선행 스펙 §5 에서 다룬다.
 - Google 콘솔의 승인된 JavaScript 오리진에 `http://localhost:5100` 이 있어야 한다. Google 버튼은 지갑 페이지·팝업(localhost:5100)에만 뜬다 — IdP(사설 IP)의 `/account` 에서는 안 된다.
 - Snap 이 바뀌었다(보류 등록 `prepareRegister`). `cd snap-mode3 && npm run build` 뒤 MetaMask 에서 Snap 을 다시 설치하고 지갑 페이지 "Snap 초기화".
 - 수동 확인(실제 Google, 1회):
