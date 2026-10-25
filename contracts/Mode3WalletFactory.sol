@@ -15,6 +15,7 @@ contract Mode3WalletFactory {
     address public immutable log;   // IMode3Roots 주소 — 응용 체인의 Mode3Mirror(V10) 또는 같은 체인이면 캐노니컬 Mode3Log. 타입은 두지 않고 그대로 넘긴다 — 대조는 Mode3Wallet 생성자(IMode3Roots(_log))가 한다.
     uint64 public immutable maxRootAge;
     uint64 public immutable maxLifetime;
+    uint64 public immutable rootWindow;   // 2026-10-25 root 유효 창 §3 — 지갑 생성자 마지막 인자
 
     /// @notice 이 팩토리가 배포한 지갑. 대상 컨트랙트(AttrGate)가 msg.sender 를 확인하는 데 쓴다 — 꼬리 15워드는 π 를 검증한 지갑만 붙일 수 있다.
     mapping(address => bool) public isWallet;
@@ -22,17 +23,18 @@ contract Mode3WalletFactory {
     constructor(
         address _verifier, uint256 _arid,
         uint256 _pkCIAX, uint256 _pkCIAY, uint256 _pkTraceX, uint256 _pkTraceY,
-        address _log, uint64 _maxRootAge, uint64 _maxLifetime
+        address _log, uint64 _maxRootAge, uint64 _maxLifetime, uint64 _rootWindow
     ) {
         verifier = _verifier; arid = _arid;
         pkCIAX = _pkCIAX; pkCIAY = _pkCIAY; pkTraceX = _pkTraceX; pkTraceY = _pkTraceY;
         log = _log; maxRootAge = _maxRootAge; maxLifetime = _maxLifetime;
+        rootWindow = _rootWindow;
     }
 
     function _initCode(uint256 ppid) internal view returns (bytes memory) {
         return abi.encodePacked(
             type(Mode3Wallet).creationCode,
-            abi.encode(ppid, arid, pkCIAX, pkCIAY, pkTraceX, pkTraceY, verifier, log, maxRootAge, maxLifetime)
+            abi.encode(ppid, arid, pkCIAX, pkCIAY, pkTraceX, pkTraceY, verifier, log, maxRootAge, maxLifetime, rootWindow)
         );
     }
 
@@ -46,7 +48,7 @@ contract Mode3WalletFactory {
         wallet = computeAddress(ppid);
         if (wallet.code.length > 0) { isWallet[wallet] = true; return wallet; }   // 다른 경로로 이미 있어도 이 팩토리 코드로 만든 주소다
         Mode3Wallet deployed = new Mode3Wallet{salt: bytes32(ppid)}(
-            ppid, arid, pkCIAX, pkCIAY, pkTraceX, pkTraceY, verifier, log, maxRootAge, maxLifetime
+            ppid, arid, pkCIAX, pkCIAY, pkTraceX, pkTraceY, verifier, log, maxRootAge, maxLifetime, rootWindow
         );
         require(address(deployed) == wallet, "CREATE2 address mismatch");
         isWallet[wallet] = true;

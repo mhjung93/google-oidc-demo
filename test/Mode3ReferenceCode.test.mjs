@@ -9,7 +9,7 @@ const { ethers } = hre;
 describe('verifyReferenceCode', function () {
   this.timeout(60_000);
   let deployer, log;
-  const ARGS = (verifier, logAddr) => [verifier, 1n, 2n, 3n, 4n, 5n, logAddr, 100n, 400n];
+  const ARGS = (verifier, logAddr) => [verifier, 1n, 2n, 3n, 4n, 5n, logAddr, 100n, 400n, 20n];
 
   before(async () => {
     [deployer] = await ethers.getSigners();
@@ -24,7 +24,7 @@ describe('verifyReferenceCode', function () {
 
   it('immutable 값이 달라도(다른 arid·키·상한) 팩토리 코드 자체는 같으므로 ok — 값 대조는 checkService 의 몫', async () => {
     const verifier = await (await ethers.getContractFactory('PiCredVerifier')).deploy();
-    const factory = await (await ethers.getContractFactory('Mode3WalletFactory')).deploy(await verifier.getAddress(), 99n, 98n, 97n, 96n, 95n, await log.getAddress(), 7n, 8n);
+    const factory = await (await ethers.getContractFactory('Mode3WalletFactory')).deploy(await verifier.getAddress(), 99n, 98n, 97n, 96n, 95n, await log.getAddress(), 7n, 8n, 9n);
     assert.deepEqual(await verifyReferenceCode(ethers.provider, await factory.getAddress()), { ok: true });
   });
 

@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import * as snarkjs from 'snarkjs';
 import { buildValidInput } from '../tests/helpers/mode3_fixture.mjs';
 import { signPublicationV3, rootToBytes32, entryHashes } from '../lib/mode3_log.js';
-import { signPayload, payloadDigest, statementDigestFields, proofToCalldata, decodeExecuteCalldata, parseExecuteReceipt, MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT } from '../lib/mode3_onchain.js';
+import { signPayload, payloadDigest, statementDigestFields, proofToCalldata, decodeExecuteCalldata, parseExecuteReceipt, MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT, ROOT_WINDOW_DEFAULT } from '../lib/mode3_onchain.js';
 import { setRoot } from '../lib/mode3_set_tree.js';
 
 const { ethers } = hre;
@@ -31,14 +31,14 @@ describe('Mode3Wallet', function () {
   }
 
   /** 픽스처의 두 root 로 Mode3Log 를 배포하고(초기 root = 픽스처 트리), 검증자·팩토리·지갑까지. */
-  async function deployStack(st, { arid = st.fx.arid, maxRootAge = MAX_ROOT_AGE_DEFAULT, maxLifetime = MAX_LIFETIME_DEFAULT } = {}) {
+  async function deployStack(st, { arid = st.fx.arid, maxRootAge = MAX_ROOT_AGE_DEFAULT, maxLifetime = MAX_LIFETIME_DEFAULT, rootWindow = ROOT_WINDOW_DEFAULT } = {}) {
     const [deployer, cia] = await ethers.getSigners();
     const Log = await ethers.getContractFactory('Mode3Log');
     const log = await Log.deploy(cia.address, rootToBytes32(BigInt(st.input().revRoot)), rootToBytes32(BigInt(st.input().regRoot)));
     const Verifier = await ethers.getContractFactory('PiCredVerifier');
     const verifier = await Verifier.deploy();
     const Factory = await ethers.getContractFactory('Mode3WalletFactory');
-    const factory = await Factory.deploy(await verifier.getAddress(), arid, st.fx.ciaPub.x, st.fx.ciaPub.y, st.fx.pk_trace.x, st.fx.pk_trace.y, await log.getAddress(), maxRootAge, maxLifetime);
+    const factory = await Factory.deploy(await verifier.getAddress(), arid, st.fx.ciaPub.x, st.fx.ciaPub.y, st.fx.pk_trace.x, st.fx.pk_trace.y, await log.getAddress(), maxRootAge, maxLifetime, rootWindow);
     const ppid = BigInt(st.input().PPID);
     const walletAddr = await factory.computeAddress(ppid);
     await (await deployer.sendTransaction({ to: walletAddr, value: ethers.parseEther('1') })).wait();
@@ -47,6 +47,12 @@ describe('Mode3Wallet', function () {
     return { deployer, cia, log, verifier, factory, wallet, walletAddr, ppid };
   }
   const withInput = (st) => ({ ...st, input: () => st.fx.input });
+  /** 테스트용 게시 — 두 root 와 bound 배열을 cia 서명으로 올린다(2026-10-25: publish 에 boundKeys/boundValues 가 추가됐다). 리프·슬롯은 비운다. */
+  async function publishRoots(log, cia, { revRoot, regRoot, epoch, slotIdx = [], slotLeaves = [], boundKeys = [], boundValues = [] }) {
+    const p = { revRoot, regRoot, epoch, revLeaves: [], slotIdx, slotLeaves, boundKeys, boundValues };
+    const sig = await signPublicationV3(cia, { canonicalChainId: await chainId(), canonicalLogAddress: await log.getAddress(), ...p });
+    await (await log.publish(revRoot, regRoot, epoch, [], slotIdx, slotLeaves, boundKeys, boundValues, sig)).wait();
+  }
 
   /** 다이제스트의 성명 쪽 다섯 필드(2026-09-25 리뷰 A-2) 기본값 — π 의 공개 입력 그대로. 음성 테스트는 opts 로 덮어쓴다. */
   const stmtFields = (st) => statementDigestFields(st.publicSignals);
@@ -214,11 +220,20 @@ describe('Mode3Wallet', function () {
     await expect(wallet.execute(payload, sig, ST.a, ST.b, ST.c, p)).to.be.revertedWithCustomError(wallet, 'BadTag');
   });
 
-  it('root 가 게시로 바뀌면 옛 π 는 StaleRevocationRoot', async () => {
-    const { wallet, log, cia } = await deployStack(ST);
-    const newRoot = rootToBytes32(12345n);
-    const sig = await signPublicationV3(cia, { canonicalChainId: await chainId(), canonicalLogAddress: await log.getAddress(), revRoot: newRoot, regRoot: await log.regRoot(), epoch: 1n, revLeaves: [], slotIdx: [], slotLeaves: [] });
-    await (await log.publish(newRoot, await log.regRoot(), 1n, [], [], [], sig)).wait();
+  it('root 유효 창(2026-10-25 §3): 폐기 root 가 게시로 바뀌어도(타 사용자의 폐기) rootWindow 블록 안이면 옛 π 가 통과, 창이 닫히면 StaleRevocationRoot', async () => {
+    const { wallet, log, cia } = await deployStack(ST, { rootWindow: 5n });
+    await publishRoots(log, cia, { revRoot: rootToBytes32(12345n), regRoot: await log.regRoot(), epoch: 1n });   // ST 의 root 는 이제 "대체된 root"
+    const sp = await signedPayload(ST, wallet);
+    await expect(wallet.execute(sp.payload, sp.sig, ST.a, ST.b, ST.c, ST.pub)).to.not.be.reverted;   // 대체 다음 블록 — 창 안
+    // nonce 1 의 새 π — 픽스처 트리는 그대로라 revRoot 는 여전히 옛 root 다. 창(5블록)을 넘긴다.
+    const st1 = withInput(await statement({ session: ST.session, counter: 1n }));
+    await ethers.provider.send('hardhat_mine', ['0x6']);
+    const sp1 = await signedPayload(st1, wallet);
+    await expect(wallet.execute(sp1.payload, sp1.sig, st1.a, st1.b, st1.c, st1.pub)).to.be.revertedWithCustomError(wallet, 'StaleRevocationRoot');
+  });
+  it('rootWindow = 0 이면 예전처럼 최신 root 만 받는다(대체 다음 블록부터 StaleRevocationRoot)', async () => {
+    const { wallet, log, cia } = await deployStack(ST, { rootWindow: 0n });
+    await publishRoots(log, cia, { revRoot: rootToBytes32(12345n), regRoot: await log.regRoot(), epoch: 1n });
     const sp = await signedPayload(ST, wallet);
     await expect(wallet.execute(sp.payload, sp.sig, ST.a, ST.b, ST.c, ST.pub)).to.be.revertedWithCustomError(wallet, 'StaleRevocationRoot');
   });
@@ -230,25 +245,25 @@ describe('Mode3Wallet', function () {
     await expect(wallet.execute(sp.payload, sp.sig, ST.a, ST.b, ST.c, ST.pub)).to.be.revertedWithCustomError(wallet, 'RootTooOld');
     const revRoot = await log.revRoot();
     const regRoot = await log.regRoot();
-    const sig = await signPublicationV3(cia, { canonicalChainId: await chainId(), canonicalLogAddress: await log.getAddress(), revRoot, regRoot, epoch: 1n, revLeaves: [], slotIdx: [], slotLeaves: [] });
-    await (await log.publish(revRoot, regRoot, 1n, [], [], [], sig)).wait();
+    await publishRoots(log, cia, { revRoot, regRoot, epoch: 1n });
     await expect(wallet.execute(sp.payload, sp.sig, ST.a, ST.b, ST.c, ST.pub)).to.not.be.reverted;
   });
 
-  it('V9: 등록부 root 가 바뀌면(슬롯 바꿔치기·은퇴) 옛 π 는 StaleRegistryRoot — 폐기 root 검사 다음에 걸린다', async () => {
-    const { wallet, log, cia } = await deployStack(ST);
-    const rev = await log.revRoot();
-    const newReg = rootToBytes32(777n);
-    const sig = await signPublicationV3(cia, { canonicalChainId: await chainId(), canonicalLogAddress: await log.getAddress(), revRoot: rev, regRoot: newReg, epoch: 1n, revLeaves: [], slotIdx: [7], slotLeaves: [rootToBytes32(424242n)] });
-    await (await log.publish(rev, newReg, 1n, [], [7], [rootToBytes32(424242n)], sig)).wait();
+  it('V9 + 창: 등록부 root 가 바뀌어도(다른 사용자의 등록·은퇴) 창 안이면 통과, 창이 닫히면 StaleRegistryRoot', async () => {
+    const { wallet, log, cia } = await deployStack(ST, { rootWindow: 5n });
+    await publishRoots(log, cia, { revRoot: await log.revRoot(), regRoot: rootToBytes32(777n), epoch: 1n, slotIdx: [7], slotLeaves: [rootToBytes32(424242n)] });
     const sp = await signedPayload(ST, wallet);
-    await expect(wallet.execute(sp.payload, sp.sig, ST.a, ST.b, ST.c, ST.pub)).to.be.revertedWithCustomError(wallet, 'StaleRegistryRoot');
+    await expect(wallet.execute(sp.payload, sp.sig, ST.a, ST.b, ST.c, ST.pub)).to.not.be.reverted;
+    const st1 = withInput(await statement({ session: ST.session, counter: 1n }));
+    await ethers.provider.send('hardhat_mine', ['0x6']);
+    const sp1 = await signedPayload(st1, wallet);
+    await expect(wallet.execute(sp1.payload, sp1.sig, st1.a, st1.b, st1.c, st1.pub)).to.be.revertedWithCustomError(wallet, 'StaleRegistryRoot');
   });
 
   // V10 거울(Mode3Mirror, 설계 §2·§3·§5): 지갑의 IMode3Roots 는 캐노니컬 Mode3Log 대신 거울을 가리킬 수 있다.
   // 지갑은 거울의 root 만 보므로, 캐노니컬이 앞서가도(거울이 뒤처져도) 영향이 없고, 거울 자체가 전진해야
   // 거기 안 실린 옛 π 가 거절된다. 같은 IdP 서명이 캐노니컬 publish 와 거울 publish 양쪽에 유효한지도 같이 본다.
-  it('V10: 거울 위의 지갑 — 거울 root 와 같은 π 는 통과, 캐노니컬만 전진해도 거울이 그대로면 영향 없음, 거울이 전진하면 옛 π 는 StaleRevocationRoot', async () => {
+  it('V10: 거울 위의 지갑 — 거울 root 와 같은 π 는 통과, 캐노니컬만 전진해도 거울이 그대로면 영향 없음, 거울이 전진하면 옛 π 는 StaleRevocationRoot (rootWindow 0)', async () => {
     const [deployer, cia] = await ethers.getSigners();
     const initRev = rootToBytes32(BigInt(ST.input().revRoot));
     const initReg = rootToBytes32(BigInt(ST.input().regRoot));
@@ -259,7 +274,7 @@ describe('Mode3Wallet', function () {
     const verifier = await (await ethers.getContractFactory('PiCredVerifier')).deploy();
     const factory = await (await ethers.getContractFactory('Mode3WalletFactory')).deploy(
       await verifier.getAddress(), ST.fx.arid, ST.fx.ciaPub.x, ST.fx.ciaPub.y, ST.fx.pk_trace.x, ST.fx.pk_trace.y,
-      await mirror.getAddress(), MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT);
+      await mirror.getAddress(), MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT, 0n);
     const ppid = BigInt(ST.input().PPID);
     const walletAddr = await factory.computeAddress(ppid);
     await (await deployer.sendTransaction({ to: walletAddr, value: ethers.parseEther('1') })).wait();
@@ -274,8 +289,8 @@ describe('Mode3Wallet', function () {
     // 지갑은 영향받지 않는다(거울이 뒤처져도 검증에는 영향 없다, V10 §3).
     // nonce 가 이미 1 이므로 새 π 가 필요하다(counter: 1n) — revRoot 는 statement() 기본값이라 ST 와 같다(initRev).
     const newRoot = rootToBytes32(12345n);
-    const sigCanon = await signPublicationV3(cia, { canonicalChainId, canonicalLogAddress, revRoot: newRoot, regRoot: initReg, epoch: 1n, revLeaves: [], slotIdx: [], slotLeaves: [] });
-    await (await log.publish(newRoot, initReg, 1n, [], [], [], sigCanon)).wait();
+    const sigCanon = await signPublicationV3(cia, { canonicalChainId, canonicalLogAddress, revRoot: newRoot, regRoot: initReg, epoch: 1n, revLeaves: [], slotIdx: [], slotLeaves: [], boundKeys: [], boundValues: [] });
+    await (await log.publish(newRoot, initReg, 1n, [], [], [], [], [], sigCanon)).wait();
     const st2 = withInput(await statement({ session: ST.session, counter: 1n }));
     const sp2 = await signedPayload(st2, wallet);
     await expect(wallet.execute(sp2.payload, sp2.sig, st2.a, st2.b, st2.c, st2.pub)).to.not.be.reverted;
@@ -284,7 +299,7 @@ describe('Mode3Wallet', function () {
     // 그 root 를 담지 않은 옛 π 는 이제 거절된다. 지갑은 캐노니컬이 아니라 거울만 본다는 확인.
     // nonce 가 이미 2 이므로 또 새 π(counter: 2n) — 여전히 옛 revRoot(initRev) 를 담아야 거절 사유를 확인할 수 있다.
     const h = entryHashes({ revLeaves: [], slotIdx: [], slotLeaves: [] });
-    await (await mirror.publish(newRoot, initReg, 1n, h.hLeaves, h.hIdx, h.hSlots, sigCanon)).wait();
+    await (await mirror.publish(newRoot, initReg, 1n, h.hLeaves, h.hIdx, h.hSlots, [], [], sigCanon)).wait();
     const st3 = withInput(await statement({ session: ST.session, counter: 2n }));
     const sp3 = await signedPayload(st3, wallet);
     await expect(wallet.execute(sp3.payload, sp3.sig, st3.a, st3.b, st3.c, st3.pub)).to.be.revertedWithCustomError(wallet, 'StaleRevocationRoot');
@@ -663,5 +678,43 @@ describe('Mode3Wallet', function () {
     await ethers.provider.send('hardhat_stopImpersonatingAccount', [walletAddr]);
     // 가장을 풀어도 외부 EOA 의 직접 호출은 여전히 OnlySelf.
     await expect(wallet.setSessionBound(BigInt(s3.address), 0)).to.be.revertedWithCustomError(wallet, 'OnlySelf');
+  });
+
+  // ── 2026-10-25 root 유효 창 §3: 거울 공개 상한(sessionBoundOf) ──
+  it('거울 공개 상한: 게시 페이로드의 (pk_i, c) 만으로 nonce ≥ c 가 SessionBounded — 자기 호출 없이, root 창과 무관하게', async () => {
+    const { wallet, log, cia } = await deployStack(ST);
+    const pk = BigInt(ST.session.address);
+    await publishRoots(log, cia, { revRoot: await log.revRoot(), regRoot: await log.regRoot(), epoch: 1n, boundKeys: [pk], boundValues: [1] });   // c = 1: nonce 0 만 허용
+    expect(await log.sessionBoundOf(pk)).to.equal(2n);
+    expect(await wallet.effectiveSessionBound(pk)).to.equal(2n);
+    const p0 = await signedPayload(ST, wallet);
+    await (await wallet.execute(p0.payload, p0.sig, ST.a, ST.b, ST.c, ST.pub)).wait();   // nonce 0 < 1
+    const st1 = withInput(await statement({ session: ST.session, counter: 1n }));
+    const p1 = await signedPayload(st1, wallet);
+    await expect(wallet.execute(p1.payload, p1.sig, st1.a, st1.b, st1.c, st1.pub)).to.be.revertedWithCustomError(wallet, 'SessionBounded').withArgs(pk, 1n);
+  });
+  it('자기 호출 상한과 거울 상한 중 더 낮은 값이 적용된다(effectiveSessionBound)', async () => {
+    const s1 = ethers.Wallet.createRandom(), s2 = ethers.Wallet.createRandom();
+    const A0 = withInput(await statement({ session: s1, counter: 0n }));
+    const { wallet, walletAddr, log, cia } = await deployStack(A0);
+    const pk1 = BigInt(s1.address);
+    expect(await wallet.effectiveSessionBound(pk1)).to.equal(0n);
+    await publishRoots(log, cia, { revRoot: await log.revRoot(), regRoot: await log.regRoot(), epoch: 1n, boundKeys: [pk1], boundValues: [3] });   // 거울 3 → 4
+    expect(await wallet.effectiveSessionBound(pk1)).to.equal(4n);
+    const B0 = withInput(await statement({ session: s2, counter: 0n }));   // s2 가 자기 호출로 s1 의 상한 1 → min(2, 4) = 2
+    let p = await signedPayload(B0, wallet, { to: walletAddr, data: wallet.interface.encodeFunctionData('setSessionBound', [pk1, 1]) });
+    await (await wallet.execute(p.payload, p.sig, B0.a, B0.b, B0.c, B0.pub)).wait();
+    expect(await wallet.sessionBound(pk1)).to.equal(2n);
+    expect(await wallet.effectiveSessionBound(pk1)).to.equal(2n);
+    await publishRoots(log, cia, { revRoot: await log.revRoot(), regRoot: await log.regRoot(), epoch: 2n, boundKeys: [pk1], boundValues: [0] });   // 거울이 0 으로 더 낮추면 → 1
+    expect(await wallet.effectiveSessionBound(pk1)).to.equal(1n);
+    const A1 = withInput(await statement({ session: s1, counter: 1n }));
+    p = await signedPayload(A1, wallet);
+    await expect(wallet.execute(p.payload, p.sig, A1.a, A1.b, A1.c, A1.pub)).to.be.revertedWithCustomError(wallet, 'SessionBounded').withArgs(pk1, 0n);
+  });
+  it('rootWindow 는 팩토리 생성자 인자 그대로 팩토리·지갑에 박힌다', async () => {
+    const { wallet, factory } = await deployStack(ST, { rootWindow: 7n });
+    expect(await factory.rootWindow()).to.equal(7n);
+    expect(await wallet.rootWindow()).to.equal(7n);
   });
 });

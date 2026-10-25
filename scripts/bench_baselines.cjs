@@ -29,7 +29,7 @@ const WARMUP_EDDSA = 20;
 // Mode3ReferenceCode.test.mjs 의 ARGS 패턴과 같은 placeholder 값(실제 arid·pk_CIA·pk_trace 가 아니어도
 // _checkStatement 가 보는 것은 "지갑 생성자에 박힌 값 == pub[] 의 값" 뿐이라 숫자 자체는 임의로 고른다).
 const ARID = 1n, PK_CIA_X = 2n, PK_CIA_Y = 3n, PK_TRACE_X = 4n, PK_TRACE_Y = 5n;
-const MAX_ROOT_AGE = 100n, MAX_LIFETIME = 400n;
+const MAX_ROOT_AGE = 100n, MAX_LIFETIME = 400n, ROOT_WINDOW = 20n;
 const REV_ROOT = 111n, REG_ROOT = 222n;
 
 const med = (a) => [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)];
@@ -102,7 +102,7 @@ async function benchMode3Wallet() {
     deployer.address, hre.ethers.toBeHex(REV_ROOT, 32), hre.ethers.toBeHex(REG_ROOT, 32),
   );
   const factoryDeployed = await (await hre.ethers.getContractFactory("Mode3WalletFactory")).deploy(
-    await verifier.getAddress(), ARID, PK_CIA_X, PK_CIA_Y, PK_TRACE_X, PK_TRACE_Y, await log.getAddress(), MAX_ROOT_AGE, MAX_LIFETIME,
+    await verifier.getAddress(), ARID, PK_CIA_X, PK_CIA_Y, PK_TRACE_X, PK_TRACE_Y, await log.getAddress(), MAX_ROOT_AGE, MAX_LIFETIME, ROOT_WINDOW,
   );
   const factory = factoryAt(await factoryDeployed.getAddress(), deployer);
 

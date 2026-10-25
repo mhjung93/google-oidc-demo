@@ -20,6 +20,7 @@ contract Mode3Wallet {
     IMode3Roots public immutable log;
     uint64 public immutable maxRootAge;   // 블록. root 가 이보다 오래됐으면 CIA 가 죽었거나 withholding 이다 — fail-closed
     uint64 public immutable maxLifetime;  // 블록. 지갑이 정한 max_height 의 상한(설계 §3.2 갱신) — 없으면 만료 없는 성명이 된다
+    uint64 public immutable rootWindow;   // 블록. 대체된 root 를 이만큼 더 받는다(2026-10-25 root 유효 창 §3) — 타 사용자의 폐기·등록이 내 진행 중 거래를 튕기지 않게. 0 = 최신만
     uint256 public nonce;
 
     struct Payload {
@@ -60,6 +61,16 @@ contract Mode3Wallet {
         emit SessionBound(pk_i, bound);
     }
 
+    /// @notice 거래 경로에 적용되는 세션 상한(저장 인코딩 c + 1, 0 = 없음, 2026-10-25 root 유효 창 §3): 자기 호출 값(sessionBound)과
+    ///   거울이 공개한 값(log.sessionBoundOf) 중 0 이 아닌 더 낮은 쪽. 거울 값이 정본이고 자기 호출은 선택 기능이다(결정 1).
+    function effectiveSessionBound(uint256 pk_i) public view returns (uint256) {
+        uint256 self = sessionBound[pk_i];
+        uint256 mirror = log.sessionBoundOf(pk_i);
+        if (self == 0) return mirror;
+        if (mirror == 0) return self;
+        return self < mirror ? self : mirror;
+    }
+
     /// @dev 내부 호출의 성공 여부는 영수증에 남지 않으므로 이벤트로 낸다(PPIDWallet 과 같은 이유).
     event Executed(uint256 indexed nonceUsed, address indexed to, uint256 value, bool success);
     /// @dev 서비스가 개봉 재료를 체인에서 바로 읽을 수 있게 태그·플래그를 남긴다. calldata 에도 있지만 이벤트가 조회하기 쉽다.
@@ -71,7 +82,7 @@ contract Mode3Wallet {
     constructor(
         uint256 _ppid, uint256 _arid,
         uint256 _pkCIAX, uint256 _pkCIAY, uint256 _pkTraceX, uint256 _pkTraceY,
-        address _verifier, address _log, uint64 _maxRootAge, uint64 _maxLifetime
+        address _verifier, address _log, uint64 _maxRootAge, uint64 _maxLifetime, uint64 _rootWindow
     ) {
         ppid = _ppid; arid = _arid;
         pkCIAX = _pkCIAX; pkCIAY = _pkCIAY; pkTraceX = _pkTraceX; pkTraceY = _pkTraceY;
@@ -79,6 +90,7 @@ contract Mode3Wallet {
         log = IMode3Roots(_log);
         maxRootAge = _maxRootAge;
         maxLifetime = _maxLifetime;
+        rootWindow = _rootWindow;
     }
 
     /// @param pub 공개 입력 34개(circuits/pi_cred.circom 의 순서, 설계 2026-10-01-mode3-v9-registry-design.md §5.1 Global Constraints):
@@ -102,7 +114,8 @@ contract Mode3Wallet {
         if (pub[33] != payload.nonce) revert CounterMismatch(payload.nonce, pub[33]);
         // 세션키별 온체인 상한(즉시 차단) — nonce < c 만 통과. setSessionBound 가 저장한 값은 c + 1.
         // (지역 변수명은 execute() 의 proof 인자 b 와 겹쳐 bnd 로 둔다 — 로직은 브리프와 동일.)
-        uint256 bnd = sessionBound[pub[2]];
+        // 거울 공개 값(log.sessionBoundOf)과 자기 호출 값 중 낮은 쪽(2026-10-25 §3).
+        uint256 bnd = effectiveSessionBound(pub[2]);
         if (bnd != 0 && payload.nonce + 1 >= bnd) revert SessionBounded(pub[2], bnd - 1);
 
         // 서명은 이 체인과 이 지갑에 묶인다(PPIDWallet 과 같은 도메인 분리). 같은 팩토리를 두 체인에 배포해도
@@ -171,10 +184,12 @@ contract Mode3Wallet {
         for (uint256 k = 0; k < 6; k++) {
             if (((pub[15] >> k) & 1) == 0 && (pub[16 + k] != 0 || pub[22 + k] != 0)) revert BadDisclosure();
         }
+        // 2026-10-25 root 유효 창 §3: 최신 root 또는 대체된 지 rootWindow 블록 이내의 root. 폐기된 세션은 창 안에서도 거울의
+        // sessionBoundOf(위 execute 의 effectiveSessionBound)가 막고, 창이 닫힌 뒤에는 회로의 구간 비멤버십이 막는다.
         bytes32 root = bytes32(pub[6]);
-        if (root != log.revRoot()) revert StaleRevocationRoot(root);       // N=1: 최신 root 만
+        if (!log.isAcceptableRevRoot(root, rootWindow)) revert StaleRevocationRoot(root);
         bytes32 reg = bytes32(pub[7]);
-        if (reg != log.regRoot()) revert StaleRegistryRoot(reg);           // 등록부도 최신 root 만 — 슬롯 바꿔치기·은퇴 뒤의 옛 π 를 막는다
+        if (!log.isAcceptableRegRoot(reg, rootWindow)) revert StaleRegistryRoot(reg);
         uint256 last = log.lastPublishedBlock();
         if (block.number - last > maxRootAge) revert RootTooOld(last, block.number);
         if (block.number > pub[3]) revert Expired(block.number, pub[3]);

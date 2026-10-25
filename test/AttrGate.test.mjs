@@ -16,7 +16,7 @@ describe('AttrGate v2', function () {
     // isWallet(address) 를 실제로 구현한 컨트랙트가 필요하다. 이 팩토리는 실제로 지갑을 배포하지
     // 않으므로 verifier·log 는 아무 주소나 된다.
     const Factory = await ethers.getContractFactory('Mode3WalletFactory');
-    const factory = await Factory.deploy(ethers.ZeroAddress, 0n, 0n, 0n, 0n, 0n, ethers.ZeroAddress, 100n, 400n);
+    const factory = await Factory.deploy(ethers.ZeroAddress, 0n, 0n, 0n, 0n, 0n, ethers.ZeroAddress, 100n, 400n, 20n);
     const Gate = await ethers.getContractFactory('AttrGate');
     gate = await Gate.deploy(await factory.getAddress(), await setRoot([410, 392, 840, 276, 250]), 19n);
   });
