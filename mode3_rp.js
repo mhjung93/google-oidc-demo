@@ -18,7 +18,7 @@ import { verifyRpCert } from './lib/mode3_rp_cert.js';
 import { randomScalar } from './lib/mode3_credential.js';
 import { createShare, partialDecrypt, combinePublicKey, verifyShare } from './lib/mode3_trace.js';
 import { signOpenRequest, signOpenResult } from './lib/mode3_opening.js';
-import { deployVerifier, deployFactory, deployAttrGate, decodeExecuteCalldata, parseExecuteReceipt, walletInterface, FACTORY_ABI, MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT, ALLOWED_COUNTRIES_DEFAULT, MIN_AGE_DEFAULT, PUB_INDEX } from './lib/mode3_onchain.js';
+import { deployVerifier, deployFactory, deployAttrGate, decodeExecuteCalldata, parseExecuteReceipt, walletInterface, FACTORY_ABI, MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT, ROOT_WINDOW_DEFAULT, ALLOWED_COUNTRIES_DEFAULT, MIN_AGE_DEFAULT, PUB_INDEX } from './lib/mode3_onchain.js';
 import { setRoot } from './lib/mode3_set_tree.js';
 import { buildRpHealth, applyHealthHeaders, bounded, originList } from './lib/mode3_health.js';
 import { DEFAULT_ATTR_SCHEMA, loadSchema, slotIndexOf, encodeMembers, schemaInfo } from './lib/mode3_attr_schema.js';
@@ -156,6 +156,8 @@ const RELAYER_INDEX = Number(process.env.MODE3_RELAYER_INDEX ?? 0);
 const MAX_ROOT_AGE = BigInt(process.env.MODE3_MAX_ROOT_AGE || MAX_ROOT_AGE_DEFAULT);
 // 지갑이 정한 max_height 의 상한 L(설계 2026-09-18 §3.2 갱신): head ≤ max_height ≤ head + L. RP·컨트랙트가 같은 값을 쓴다.
 const MAX_LIFETIME = BigInt(process.env.MODE3_MAX_LIFETIME_BLOCKS || MAX_LIFETIME_DEFAULT);
+// 2026-10-25 root 유효 창 §6: 계정 컨트랙트가 대체된 root 를 더 받는 블록 수 G. 팩토리 immutable 이라 바꾸려면 팩토리를 재배포한다.
+const ROOT_WINDOW = BigInt(process.env.MODE3_ROOT_WINDOW || ROOT_WINDOW_DEFAULT);
 // V7 술어 정책(설계 2026-09-23 §4.3·§6): AttrGate 배포와 오프체인 로그인 정책이 같은 값을 쓴다.
 // 스펙 2: MODE3_ALLOWED_COUNTRIES 는 이름(KR,JP)과 코드(410,392)를 모두 받아 country 슬롯의 인코더로 바꾼다. 표에 없으면 기동 실패.
 const ALLOWED_COUNTRY_TOKENS = (process.env.MODE3_ALLOWED_COUNTRIES ?? '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -176,10 +178,10 @@ async function ensureFactory() {
   const signer = await provider.getSigner(RELAYER_INDEX);
   const verifierAddress = process.env.MODE3_VERIFIER_ADDRESS || reg.verifierAddress || await deployVerifier(signer);
   // V10: 팩토리가 온체인 지갑에 물려주는 root 소스도 거울이다 — 온체인·오프체인 검증기가 같은 체인을 본다.
-  const factoryAddress = await deployFactory(signer, { verifierAddress, arid: reg.arid, pkCIA, pkTrace: { x: BigInt(reg.pk_trace.x), y: BigInt(reg.pk_trace.y) }, logAddress: MIRROR_ADDRESS, maxRootAge: MAX_ROOT_AGE, maxLifetime: MAX_LIFETIME });
+  const factoryAddress = await deployFactory(signer, { verifierAddress, arid: reg.arid, pkCIA, pkTrace: { x: BigInt(reg.pk_trace.x), y: BigInt(reg.pk_trace.y) }, logAddress: MIRROR_ADDRESS, maxRootAge: MAX_ROOT_AGE, maxLifetime: MAX_LIFETIME, rootWindow: ROOT_WINDOW });
   reg = { ...reg, verifierAddress, factoryAddress };
   writeJsonAtomic(REG_FILE, reg, 0o600);
-  console.log(`[rp] 팩토리 배포: ${factoryAddress} (verifier ${verifierAddress}, maxRootAge ${MAX_ROOT_AGE}, maxLifetime ${MAX_LIFETIME}) → ${REG_FILE}`);
+  console.log(`[rp] 팩토리 배포: ${factoryAddress} (verifier ${verifierAddress}, maxRootAge ${MAX_ROOT_AGE}, maxLifetime ${MAX_LIFETIME}, rootWindow ${ROOT_WINDOW}) → ${REG_FILE}`);
 }
 // 팩토리가 이미 있으면 그 immutable(maxRootAge·maxLifetime)이 진실이다 — env 를 나중에 바꿔도 온체인은 안 바뀌므로
 // 오프체인 검증기는 온체인 값을 채택하고 경고한다(2026-09-23 점검 D-I2). 바꾸려면 팩토리를 재배포한다(문서 "처음 한 번" 6).

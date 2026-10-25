@@ -21,10 +21,10 @@ import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { createSecretSource, stripSecrets, validateWitness } from './lib/mode3_secret_source.js';
 import { DEFAULT_ATTR_SCHEMA, loadSchema, assertPredicateTypes, decodeAttrs, schemaInfo, encodeProfile, normalizeProfile } from './lib/mode3_attr_schema.js';
 import { createRegistration, createSessionKey, buildIssueRequest, buildCredentialProof, signChallenge, signSessionRequest, signSlotRequest, signRevokeSession, signRegistration, eddsaPubOf, normalizeDisclosure, normalizeSet, disclosureKey, hasPredicate, ProofCache, chooseMaxHeight, syncRegistryTree } from './lib/mode3_wallet.js';
-import { sessionLeafRange, SESSION_BOUND_MAX } from './lib/mode3_revocation.js';
+import { sessionLeafRange, SESSION_BOUND_MAX, signRevokeBind } from './lib/mode3_revocation.js';
 import { createRevocationSync } from './lib/mode3_rcl_sync.js';
 import { registryLeaf } from './lib/mode3_registry.js';
-import { signPayload, statementDigestFields, proofToCalldata, parseExecuteReceipt, decodeExecuteCalldata, factoryAt, walletAt, walletInterface, FACTORY_ABI, verifyReferenceCode, FACTORY_MAX_ROOT_AGE_BAND, FACTORY_MAX_LIFETIME_BAND, PUB_INDEX, LOGIN_COUNTER } from './lib/mode3_onchain.js';
+import { signPayload, statementDigestFields, proofToCalldata, parseExecuteReceipt, decodeExecuteCalldata, factoryAt, walletAt, walletInterface, FACTORY_ABI, verifyReferenceCode, FACTORY_MAX_ROOT_AGE_BAND, FACTORY_MAX_LIFETIME_BAND, FACTORY_ROOT_WINDOW_BAND, PUB_INDEX, LOGIN_COUNTER } from './lib/mode3_onchain.js';
 import { SCALAR_MAX, ppid, randomScalar, auidOf } from './lib/mode3_credential.js';
 import { verifyRpCert } from './lib/mode3_rp_cert.js';
 import { MODE3_ROOTS_ABI } from './lib/mode3_log.js';
@@ -366,7 +366,7 @@ async function checkService({ arid, origin, cert_s, pk_trace, factoryAddress }) 
   if (factoryAddress !== null) {
     try {
       const f = factoryAt(factoryAddress, provider);
-      const [fa, fl, fx, fy, tx, ty, fra, flt] = await Promise.all([f.arid(), f.log(), f.pkCIAX(), f.pkCIAY(), f.pkTraceX(), f.pkTraceY(), f.maxRootAge(), f.maxLifetime()]);
+      const [fa, fl, fx, fy, tx, ty, fra, flt, frw] = await Promise.all([f.arid(), f.log(), f.pkCIAX(), f.pkCIAY(), f.pkTraceX(), f.pkTraceY(), f.maxRootAge(), f.maxLifetime(), f.rootWindow()]);
       // V10(2026-10-02 §5): 계정 컨트랙트는 대상 체인의 거울을 읽는다 — 팩토리의 log() 는 캐노니컬이 아니라 거울이어야 한다.
       if (fa !== BigInt(arid) || fl.toLowerCase() !== MIRROR_ADDRESS.toLowerCase() || fx !== pk.x || fy !== pk.y || tx !== BigInt(pk_trace.x) || ty !== BigInt(pk_trace.y)) {
         return { status: 409, body: { reason: 'bad_factory' } };
@@ -376,6 +376,9 @@ async function checkService({ arid, origin, cert_s, pk_trace, factoryAddress }) 
       // 이미 넣은 자산이 영구 동결된다(주소가 이 인자들로 결정돼 다른 값으로 재배포할 수 없다).
       if (BigInt(fra) < FACTORY_MAX_ROOT_AGE_BAND.min || BigInt(fra) > FACTORY_MAX_ROOT_AGE_BAND.max) return { status: 409, body: { reason: 'bad_factory', detail: 'maxRootAge out of band' } };
       if (BigInt(flt) < FACTORY_MAX_LIFETIME_BAND.min || BigInt(flt) > FACTORY_MAX_LIFETIME_BAND.max) return { status: 409, body: { reason: 'bad_factory', detail: 'maxLifetime out of band' } };
+      // 2026-10-25 root 유효 창 §3: 창이 너무 크면 은퇴한 자격증명의 옛 π 가 그만큼 오래 통과한다(§7 한계 2). 0 은 옛 동작(최신만)이라 허용.
+      // rootWindow() 가 없는 옛 팩토리는 호출이 revert 해 아래 catch 의 bad_factory 로 떨어진다 — 재배포가 필요하다.
+      if (BigInt(frw) < FACTORY_ROOT_WINDOW_BAND.min || BigInt(frw) > FACTORY_ROOT_WINDOW_BAND.max) return { status: 409, body: { reason: 'bad_factory', detail: 'rootWindow out of band' } };
       // 값이 맞아도 코드가 가짜일 수 있다(2026-09-23): 무엇이든 통과시키는 검증자를 가리키는 팩토리면 공개 입력을 고르는 쪽이
       // pk_i 를 제 키로 넣어 계정을 비운다. 팩토리·검증자 코드를 지갑의 참조 빌드(artifacts/)와 대조한다 — lib/mode3_onchain.js.
       const code = await verifyReferenceCode(provider, factoryAddress);
@@ -1052,10 +1055,12 @@ app.post('/wallet/session/revoke', async (req, res) => {
     }
     const nonce = randomScalar();   // lib/mode3_credential.js — 다른 요청과 같은 난수원. 신선도는 IdP 가 보지 않는다(재생 = 같은 세션 재폐기, 멱등)
     const sig_u = await signRevokeSession(sk_u, BigInt(state.registration.uid), BigInt(s.credential.Cf_s), bound, nonce);
+    // 2026-10-25 root 유효 창 §4: 세션키 pk_i 를 세션키 서명으로 묶어 함께 낸다 — IdP 가 다음 게시에 (pk_i, bound) 를 실어 거울이 창 안에서도 즉시 막는다.
+    const sig_i = await signRevokeBind(s.sessionPrivKey, { uid: state.registration.uid, Cf_s: s.credential.Cf_s, bound, nonce });
     // 502 cia_unavailable 은 **IdP 호출 실패만** 가리킨다(최종 리뷰 F3). 서명·BigInt 같은 지역 오류는 아래 500 internal 로 간다 —
     // 둘을 뭉치면 운영자가 "AA 가 죽었나" 를 잘못 쫓는다.
     let r;
-    try { r = await ciaPost('/cia/revoke', { uid: state.registration.uid, scope: 'session', Cf_s: s.credential.Cf_s, bound: bound.toString(), sig_u, nonce: nonce.toString() }); }
+    try { r = await ciaPost('/cia/revoke', { uid: state.registration.uid, scope: 'session', Cf_s: s.credential.Cf_s, bound: bound.toString(), sig_u, nonce: nonce.toString(), pk_i: s.pk_i, sig_i }); }
     catch (e) { return res.status(502).json({ reason: 'cia_unavailable', detail: e.message }); }
     if (r.status !== 200) return res.status(r.status).json(r.body ?? {});
     // AA 가 받아들인 순간부터 이 지갑은 그 세션을 더 쓰지 않는다 — 게시 전이라도(게시 뒤에는 어차피 π 가 안 만들어진다).
@@ -1069,7 +1074,7 @@ app.post('/wallet/session/revoke', async (req, res) => {
       state.pendingBounds.push({ id: pendingBoundId, account, chainid: s.credential.chainid, arid: s.arid, pk_i: s.pk_i, bound: appliedBound, revokedAt: new Date().toISOString() });
     }
     persist();
-    res.json({ revoked: true, inserted: r.body.inserted, pending: r.body.pending, bound: appliedBound, pendingBoundId });
+    res.json({ revoked: true, inserted: r.body.inserted, pending: r.body.pending, bound: appliedBound, pendingBoundId, mirrorBound: r.body.mirrorBound === true });
   } catch (e) { res.status(500).json({ reason: 'internal', detail: e.message }); }
 });
 

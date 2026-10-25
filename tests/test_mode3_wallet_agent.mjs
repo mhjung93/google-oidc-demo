@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ethers } from 'ethers';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
-import { getProvider, deployRevocationLog } from './helpers/mode3_chain.mjs';
+import { getProvider, deployRevocationLog, mineBlocks } from './helpers/mode3_chain.mjs';
 import { VKEY_PATH, createRegistration } from '../lib/mode3_wallet.js';
 import { createRpVerifier } from '../lib/mode3_rp.js';
 import { randomScalar, SCALAR_MAX } from '../lib/mode3_credential.js';
@@ -15,6 +15,7 @@ import { deployVerifier, deployFactory, walletAt, walletInterface, LOGIN_COUNTER
 import { LOG_ABI, MODE3_MIRROR_ABI, MODE3_ROOTS_ABI } from '../lib/mode3_log.js';
 import { setRoot } from '../lib/mode3_set_tree.js';
 import { DEFAULT_ATTR_SCHEMA, encodeSlotValue } from '../lib/mode3_attr_schema.js';
+import { issueV11, userOf, TESTUSER_ATTRS } from './helpers/mode3_flow.mjs';
 
 const j = (o) => JSON.stringify(o, (k, v) => (typeof v === 'bigint' ? v.toString() : v));
 let failed = 0;
@@ -439,6 +440,7 @@ try {
       ['maxRootAge 상한 밖', { ...base, maxRootAge: 2n ** 40n }],
       ['maxRootAge 0 (계정 영구 동결)', { ...base, maxRootAge: 0n }],
       ['maxLifetime 상한 밖', { ...base, maxLifetime: 2n ** 40n }],
+      ['rootWindow 상한 밖(201)', { ...base, rootWindow: 201n }],
     ];
     for (const [name, opts] of cases) {
       const f = await deployFactory(signer, opts);
@@ -744,6 +746,53 @@ try {
     assert.equal(rec2.status, 200, j(rec2.body));
     assert.equal(rec2.body.applied, true, j(rec2.body)); assert.equal(rec2.body.alreadyLower, true, j(rec2.body));
     assert.equal((await wallet.get('/wallet/status')).body.pendingBounds.some((p) => p.id === re1.body.pendingBoundId), false, 'alreadyLower 뒤에도 pending 이 지워진다');
+  });
+
+  // ── 2026-10-25 root 유효 창 ──
+  await t('거울 counter: /wallet/session/revoke 가 pk_i·sig_i 를 실어(mirrorBound) IdP 게시 → 중계 뒤 거울 sessionBoundOf(pk_i) = bound+1', async () => {
+    const ch = newCh(); const l = await login(ch, { factoryAddress }); assert.equal(l.status, 200, j(l.body));
+    const req = await wallet.post('/wallet/request', { r_s: ch.r_s, body: 'x' }, { Origin: stack.rpOriginForWallet }); assert.equal(req.status, 200, j(req.body));
+    const pk_i = BigInt(req.body.pk_i);
+    const rv = await wallet.post('/wallet/session/revoke', { r_s: ch.r_s, bound: '4' });
+    assert.equal(rv.status, 200, j(rv.body)); assert.equal(rv.body.mirrorBound, true);
+    assert.equal((await cia.adminPost('/cia/publish', {})).body.published, true);
+    await relay();
+    assert.equal(await mirrorC.sessionBoundOf(pk_i), 5n);
+  });
+  await t('root 창(G=5): 다른 사용자의 등록·세션 폐기로 거울의 두 root 가 바뀌어도 창 안이면 옛 root 로 준비한 거래가 통과, 창이 닫히면 StaleRevocationRoot', async () => {
+    const signer = await provider.getSigner(0);
+    const f = await deployFactory(signer, { verifierAddress: await deployVerifier(signer), arid: BigInt(arid), pkCIA: pk_CIA, pkTrace: pk_trace, logAddress: cia.mirrorAddress, rootWindow: 5n });
+    const A = newCh(); assert.equal((await login(A, { factoryAddress: f })).status, 200);
+    assert.equal((await wallet.post('/wallet/tx', { r_s: A.r_s, to: ethers.ZeroAddress, value: '0' })).status, 200, '첫 거래로 지갑 배포');
+    // 다른 사용자(alice/67890): 발급 → 그 세션을 관리자 폐기 → 게시 → 중계 = 거울 revRoot 가 바뀐다
+    const alice = userOf(await cia.registerUser('67890', 'alicepw'), '67890', TESTUSER_ATTRS);
+    // alice 의 **첫** 발급은 등록부 슬롯도 채워 regRoot 까지 바꾼다(스펙 §8 "신규 등록 뒤 옛 등록부 root 증명 통과" 도 (1) 에서 함께 지나간다).
+    const bumpRoot = async ({ expectRegChange = false } = {}) => {
+      const before = await mirrorC.revRoot(), beforeReg = await mirrorC.regRoot();
+      const iss = await issueV11(cia, alice, { arid, provider }); assert.equal(iss.r.status, 200, j(iss.r.body));
+      assert.equal((await cia.adminPost('/cia/revoke', { uid: '67890', scope: 'session', Cf_s: iss.cred.Cf_s, bound: '0' })).status, 200);
+      assert.equal((await cia.adminPost('/cia/publish', {})).body.published, true);
+      await relay();
+      assert.notEqual(await mirrorC.revRoot(), before, '전제: 거울 revRoot 가 바뀌었다');
+      if (expectRegChange) assert.notEqual(await mirrorC.regRoot(), beforeReg, '전제: 첫 발급으로 거울 regRoot 도 바뀌었다');
+    };
+    const eoa = await provider.getSigner(1);
+    // (1) 옛 root 로 준비 → 타인 폐기 반영 → 바로 보내면 창 안이라 통과
+    const pre1 = await wallet.post('/wallet/tx/prepare', { r_s: A.r_s, to: ethers.ZeroAddress, value: '0' });
+    assert.equal(pre1.status, 200, j(pre1.body)); assert.equal(pre1.body.deployNeeded, false);
+    await bumpRoot({ expectRegChange: true });
+    const rc1 = await (await eoa.sendTransaction({ to: pre1.body.walletAddr, data: pre1.body.calldata })).wait();
+    assert.equal(rc1.status, 1);
+    assert.equal(await walletAt(pre1.body.walletAddr, provider).nonce(), 2n);
+    // (2) 다시 준비(새 root) → 타인 폐기 반영 → 6블록 뒤 보내면 창 밖 — StaleRevocationRoot
+    const pre2 = await wallet.post('/wallet/tx/prepare', { r_s: A.r_s, to: ethers.ZeroAddress, value: '0' });
+    assert.equal(pre2.status, 200, j(pre2.body)); assert.equal(pre2.body.nonce, '2');
+    await bumpRoot();
+    await mineBlocks(6, provider);
+    let err = null;
+    try { await provider.call({ to: pre2.body.walletAddr, data: pre2.body.calldata, from: await eoa.getAddress() }); } catch (e) { err = e; }
+    assert.ok(err, '창 밖이면 revert');
+    assert.equal(walletInterface.parseError(err.data)?.name, 'StaleRevocationRoot', String(err.message));
   });
 
   await t('V8: 세션 하나가 지갑 밖에서(관리자) 폐기되면 재검증이 403 revoked_session 으로 그 세션만 지운다 — 사용자 자격증명은 그대로', async () => {
