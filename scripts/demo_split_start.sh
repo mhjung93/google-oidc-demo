@@ -13,6 +13,8 @@
 #        ISSUE_AUTH=code bash scripts/demo_split_start.sh  # 발급 인증 정책(기본은 WALLET_MODE 에 따른다 — snap 은 CIA_ISSUE_AUTH=code, web 은 key, 2026-10-23: web 코어는
 #                                                           # auth_code 를 보내지 않으므로 code 로 켜면 로그인이 막힌다). code 면 로그인 때 지갑 팝업이 연 IdP 인증 창(uid·비밀번호·auid)의 1회용 코드가
 #                                                           # 있어야 발급한다(2026-10-22). key 면 옛 방식(서명만) — CIA_DEMO_ACCOUNTS 는 그대로 미설정(가입(POST /cia/signup)만 쓴다)
+#        OIDC=0 bash scripts/demo_split_start.sh          # Google(OIDC 래퍼) 끔. 기본은 켬(2026-10-26): IdP 에 MODE3_OIDC_CLIENT_ID 를 넘긴다 — 값은 환경변수 MODE3_OIDC_CLIENT_ID,
+#                                                          # 없으면 이 VM .env 의 GOOGLE_CLIENT_ID(Mode 1 공유 ID, 출력하지 않는다). Google 콘솔 승인 오리진에 http://localhost:5100 이 있어야 한다.
 # 주소는 SPLIT_HOST_IP·SPLIT_IDP_IP·SPLIT_RP1_IP·SPLIT_RP2_IP·SPLIT_SSH_USER 로 바꿀 수 있다. 로그는 DEMO_LOG_DIR(기본 /tmp/mode3-split).
 # 새 체인은 Ethernal 플러그인을 싣지 않는 최소 hardhat 설정으로 띄운다 — 프로젝트 설정은 노드 기동 때 .env 의 Ethernal 워크스페이스를 초기화한다.
 # 사용자 페이지는 이 VM 의 .env 를 읽지 않는다(DOTENV_CONFIG_PATH) — 라이브 IdP 의 고정 공개키 같은 값이 섞이지 않게.
@@ -116,7 +118,12 @@ MODE3_VERIFIER_ADDRESS=
 MODE3_RP_FACTORY_ADDRESS=
 MODE3_BIND_HOST=0.0.0.0"
 put_env() { on "$1" "umask 077 && cat > ~/zkd-demo/role.env && chmod 600 ~/zkd-demo/role.env"; }
-printf '%s\n' "$COMMON" "CIA_PORT=$IDP_PORT" "CIA_RPC_URL=http://$HOST:$REV_PORT" "CIA_CHAIN_RPCS=$APP_CHAIN=http://$HOST:$APP_PORT" "CIA_ADMIN_SECRET=$ADMIN" "CIA_ADMIN_OPEN=${ADMIN_OPEN:-1}" "CIA_ISSUE_AUTH=${ISSUE_AUTH:-$([ "$WALLET_MODE" = snap ] && echo code || echo key)}" | put_env "$IDP"
+# OIDC 래퍼 클라이언트 ID(2026-10-26 Snap OIDC 래퍼 §3) — 값은 어디에도 출력하지 않는다(진행 줄은 on/off 만).
+oidc_client_id() { [ -n "${MODE3_OIDC_CLIENT_ID:-}" ] && { printf '%s' "$MODE3_OIDC_CLIENT_ID"; return; }; [ -f "$1" ] && sed -n 's/^GOOGLE_CLIENT_ID=//p' "$1" | head -n1 | tr -d '\r"'"'"; }
+OIDC_LINE=""
+if [ "${OIDC:-1}" != 0 ]; then OIDC_ID="$(oidc_client_id .env)"; [ -n "$OIDC_ID" ] && OIDC_LINE="MODE3_OIDC_CLIENT_ID=$OIDC_ID"; unset OIDC_ID; fi
+echo "  OIDC(Google): $([ -n "$OIDC_LINE" ] && echo on || echo off)"
+printf '%s\n' "$COMMON" "CIA_PORT=$IDP_PORT" "CIA_RPC_URL=http://$HOST:$REV_PORT" "CIA_CHAIN_RPCS=$APP_CHAIN=http://$HOST:$APP_PORT" "CIA_ADMIN_SECRET=$ADMIN" "CIA_ADMIN_OPEN=${ADMIN_OPEN:-1}" "CIA_ISSUE_AUTH=${ISSUE_AUTH:-$([ "$WALLET_MODE" = snap ] && echo code || echo key)}" ${OIDC_LINE:+"$OIDC_LINE"} | put_env "$IDP"
 printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP1_PORT" "MODE3_RP_NAME=zkONE" "MODE3_RP_PUBLIC_ORIGIN=http://$RP1:$RP1_PORT" "MODE3_CIA_URL=http://$IDP:$IDP_PORT" \
   "CIA_RPC_URL=http://$HOST:$APP_PORT" "MODE3_RELAYER_INDEX=0" | put_env "$RP1"
 printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP2_PORT" "MODE3_RP_NAME=zkTWO" "MODE3_RP_PUBLIC_ORIGIN=http://$RP2:$RP2_PORT" "MODE3_CIA_URL=http://$IDP:$IDP_PORT" \

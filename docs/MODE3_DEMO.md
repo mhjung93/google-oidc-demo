@@ -939,6 +939,17 @@ node mode3_user_static.js              # :5100 (npm run user:static 도 같다) 
 node mode3_rp.js                       # :3100
 ```
 
+#### Google 로 등록·로그인·자기 폐기(Snap 모드, 2026-10-26)
+
+- 켜짐이 기본이다: 스크립트가 IdP 에 `MODE3_OIDC_CLIENT_ID` 를 넘긴다(환경변수 → 없으면 이 VM `.env` 의 `GOOGLE_CLIENT_ID`, Mode 1 공유 ID — 값은 출력하지 않는다). 끄려면 `OIDC=0`. IdP 는 공유 ID 로 뜨면 기동 때 경고한다(선행 스펙 §5).
+- Google 콘솔의 승인된 JavaScript 오리진에 `http://localhost:5100` 이 있어야 한다. Google 버튼은 지갑 페이지·팝업(localhost:5100)에만 뜬다 — IdP(사설 IP)의 `/account` 에서는 안 된다.
+- Snap 이 바뀌었다(보류 등록 `prepareRegister`). `cd snap-mode3 && npm run build` 뒤 MetaMask 에서 Snap 을 다시 설치하고 지갑 페이지 "Snap 초기화".
+- 수동 확인(실제 Google, 1회):
+  1. IdP `/user` → "Google 로 등록" → 팝업의 Snap 확인 → 팝업의 Google 버튼 → `/user` 에 "Google 계정 등록됨 — uid …".
+  2. RP 로그인 → Snap 동의 → 팝업의 Google 버튼(IdP 인증 창 없음) → 로그인 성공 → 거래.
+  3. 지갑 페이지 "계정 자기 폐기" → Google 버튼 → 폐기 요청됨 → 다음 RP 로그인 거절(account_disabled).
+- 등록이 Google 단계에서 끊기면 다시 "Google 로 등록" 하면 된다 — Snap 이 같은 보류 비밀을 다시 쓴다. 버리려면 "Snap 초기화".
+
 ### 금고(비밀 보관)
 
 등록할 때 **이 브라우저용 금고 비밀번호**를 정한다(8자 이상 권장). 비밀번호 → PBKDF2(SHA-256, 310,000회, salt 16바이트) →
