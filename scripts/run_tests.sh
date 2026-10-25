@@ -129,6 +129,8 @@ BROWSER=(
   tests/test_mode3_user_web.mjs
   # Google(OIDC 래퍼) — GIS 스텁 + 발급자 스텁, 사용자 오리진 localhost; 번들을 스스로 만든다
   tests/test_mode3_user_web_oidc.mjs
+  # snap 모드 + Google(OIDC 래퍼) — 진짜 Snap 코드 + GIS 스텁, 지갑 오리진 localhost
+  tests/test_mode3_wallet_snap_oidc_browser.mjs
 )
 
 # Snap 패키지(snap-mode3)의 지역 테스트. 전역 snap 객체를 스텁해 RPC 9종을 검사한다 —

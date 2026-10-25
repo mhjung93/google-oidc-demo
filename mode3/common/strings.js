@@ -246,6 +246,8 @@ window.DemoStrings = {
     wallet_connect_btn: { ko: 'MetaMask 연결', en: 'Connect MetaMask' },
     wallet_snap_info_btn: { ko: 'Snap 상태 보기', en: 'Show Snap status' },
     wallet_self_revoke_btn: { ko: '계정 자기 폐기', en: 'Self-revoke account' },
+    wallet_gsi_hint: { ko: 'Google 버튼을 눌러 로그인하세요.', en: 'Press the Google button to sign in.' },
+    wallet_gsi_origin: { ko: 'Google 로그인은 http://localhost:5100 에서만 됩니다.', en: 'Google sign-in works only at http://localhost:5100.' },
     wallet_snap_reset_btn: { ko: 'Snap 초기화', en: 'Reset the Snap' },
     wallet_end_session: { ko: '이 세션 끝내기(폐기)', en: 'End this session (revoke)' },
     wallet_reg_yes: { ko: '등록됨', en: 'Registered' },
@@ -595,6 +597,8 @@ window.DemoStrings = {
     idp_login_failed: { ko: '로그인 실패', en: 'Login failed' },
     idp_register_ok_title: { ko: '등록됨', en: 'Registered' },
     idp_register_ok: { ko: '등록됨 — 슬롯 #{slot}', en: 'Registered — slot #{slot}' },
+    idp_register_google_btn: { ko: 'Google 로 등록', en: 'Register with Google' },
+    idp_register_google_ok: { ko: 'Google 계정 등록됨 — uid {uid}, 슬롯 #{slot}', en: 'Google account registered — uid {uid}, slot #{slot}' },
     idp_register_failed: { ko: '등록 실패', en: 'Registration failed' },
     // Task 12 수정 라운드 1(2026-10-22) — 등록 팝업 수신 심층 방어·타임아웃·닫힘 감지(cia_user.html #registerBtn).
     // rp.html 의 rp_popup_timeout·rp_popup_closed 와 같은 문구 결이다.

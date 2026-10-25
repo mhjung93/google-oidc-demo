@@ -10,9 +10,12 @@
   <link rel="stylesheet" href="/common/demo.css" />
   <script src="/common/strings.js"></script>
   <script src="/common/demo.js"></script>
+  <script src="/common/gsi.js"></script>
 </head>
 <body data-page="wallet">
   <header id="demoBar"></header>
+  <!-- Google 로그인(OIDC 래퍼, 2026-10-26): 등록·RP 로그인·자기 폐기가 버튼이 필요할 때만 보인다. 버튼은 사용자가 눌러야 한다(GSI 정책). -->
+  <section class="card span2" id="gsiWrap" hidden><p id="gsiHint" class="muted"></p><div id="gsiBox"></div></section>
 
   <!-- 팝업 모드(?authorize=1, 스펙 2026-09-22 metamask-snap §3.2): 폼 대신 승인 진행 화면만 보인다. -->
   <main class="cards" id="authorizeView" hidden>
@@ -460,6 +463,28 @@
         btn.addEventListener('click', onClick);
       });
     }
+    // Google 토큰(OIDC 래퍼, 2026-10-26 Snap OIDC 래퍼 §2): #gsiWrap 에 버튼을 그리고 사용자가 누르기를 기다린다. nonce 는 에이전트
+    // /wallet/oidc/nonce 가 계산한 값. 2분 안에 토큰이 없으면 oidc_cancelled. 돌려주는 것은 { token, reason } — token 이 없으면 reason.
+    function googleToken(nonce) {
+      return new Promise((resolve) => {
+        if (!window.Mode3Gsi?.originOk()) return resolve({ token: null, reason: 'gsi_origin' });
+        if (!cfg.oidc?.enabled || !cfg.oidc.clientId) return resolve({ token: null, reason: 'oidc_disabled' });
+        const wrap = $('gsiWrap'), box = $('gsiBox');
+        tte($('gsiHint'), 'wallet_gsi_hint');
+        wrap.hidden = false;
+        let timer = null;
+        const done = (v) => { clearTimeout(timer); wrap.hidden = true; box.replaceChildren(); resolve(v); };
+        timer = setTimeout(() => done({ token: null, reason: 'oidc_cancelled' }), 120_000);
+        Mode3Gsi.render({ el: box, clientId: cfg.oidc.clientId, nonce, onToken: (tok) => done(tok ? { token: tok, reason: null } : { token: null, reason: 'oidc_cancelled' }) })
+          .catch((e) => done({ token: null, reason: e.reason ?? 'gsi_unavailable' }));
+      });
+    }
+    /** googleToken 실패 사유를 사람이 읽는 줄로. */
+    const gsiReasonText = (reason) => (reason === 'gsi_origin' ? (tt('wallet_gsi_origin') || 'Google 로그인은 http://localhost:5100 에서만 됩니다.') : `Google 로그인 실패: ${reason}`);
+    /** 에이전트의 등록 provider — 못 읽으면 demo 로 본다(지금까지의 경로). */
+    async function walletProvider() {
+      try { return (await (await fetch('/wallet/status')).json()).provider ?? 'demo'; } catch { return 'demo'; }
+    }
 
     // 등록 팝업(Task 14, B5) — IdP /user 페이지가 ${walletOrigin}/?authorize=1 을 열고 mode3-register 를 보낸다
     // (cia_user.html 의 #registerBtn). mode3-authorize 와는 아예 다른 요청이라 runAuthorize() 의 onMessage 가 먼저
@@ -492,6 +517,26 @@
         let already = false;
         try { already = Boolean((await (await fetch('/wallet/status')).json()).registered); } catch { /* 진행 */ }
         if (already) { step('이미 등록돼 있다.'); return reply({ ok: false, reason: 'already_registered' }); }
+        // Google 등록(2026-10-26 Snap OIDC 래퍼 §2.1): uid·code 없이 온다. Snap 이 비밀을 보류 등록으로 먼저 만들고(pk_u → reg: nonce),
+        // 팝업에서 Google 로그인 → 에이전트가 IdP 에 { id_token, auid, pk_u, sig_reg } 로 등록 → Snap 이 uid·provider 를 채운다.
+        if (req.provider === 'google') {
+          step('Snap 등록 확인 창을 확인하세요.');
+          const prep = await invokeSnap('prepareRegister', {});
+          if (!prep || prep.denied) { step('등록 거절'); return reply({ ok: false, reason: 'user_denied' }); }
+          const n = await postJson('/wallet/oidc/nonce', { purpose: 'register', sk_u: prep.sk_u });
+          if (n.status !== 200) { step('nonce 계산 실패'); log(errText(n.status, n.body)); return reply({ ok: false, reason: n.body.reason ?? `HTTP ${n.status}` }); }
+          step(tt('wallet_gsi_hint') || 'Google 버튼을 눌러 로그인하세요.');
+          const g = await googleToken(n.body.nonce);
+          if (!g.token) { step(gsiReasonText(g.reason)); return reply({ ok: false, reason: g.reason }); }
+          step('에이전트에 등록하는 중…');
+          const { status, body: b } = await postJson('/wallet/register', { id_token: g.token, s_u: prep.s_u, sk_u: prep.sk_u });
+          if (status !== 201) { step('등록 실패 — 다시 시도하면 같은 비밀로 이어진다'); log(errText(status, b)); return reply({ ok: false, reason: b.cia?.reason ?? b.reason ?? `HTTP ${status}`, detail: b.detail ?? null }); }
+          step('Snap 에 등록 결과 저장 중…');
+          try { await invokeSnap('storeRegistration', { attrs: b.attrs, slot: b.slot, auid: b.auid, uid: b.uid, provider: b.provider }); }
+          catch (e) { step('등록이 반만 됐다 — Snap 저장 실패'); log(e.message); return reply({ ok: false, reason: 'wallet_error', detail: e.message }); }
+          step('등록 완료 — 창을 닫는다.');
+          return reply({ ok: true, slot: b.slot, auid: b.auid, uid: b.uid });
+        }
         step('Snap 등록 확인 창을 확인하세요.');
         const reg = await invokeSnap('register', { uid: req.uid });
         if (!reg || reg.denied) { step('등록 거절'); return reply({ ok: false, reason: 'user_denied' }); }
@@ -590,14 +635,26 @@
           const witness = await consentLogin(req);
           if (!witness) { step('동의 거절'); return reply({ ok: false, reason: 'user_denied' }); }
 
-          // IdP 인증 창(Task 14, B5) — CIA_ISSUE_AUTH=code 인 IdP 는 로그인마다 이 창이 낸 1회용 코드가 있어야
-          // /cia/issue 가 받는다. 재승인(위 reauth 분기)은 /cia/issue 를 타지 않으므로 거치지 않는다.
-          // F-13(2026-10-23): window.open 은 버튼의 click 처리기 안에서만 부른다(openIdpAuthOnClick) — 여기서
-          // 곧바로 부르면 Snap 동의의 await 들을 지나며 사용자 제스처가 끊겨 일반 팝업 차단기에 막힌다.
-          step(tt('idp_auth_open_btn') || 'IdP 인증 창 열기 버튼을 누르세요.');
-          const authRes = await openIdpAuthOnClick(step);   // { code, reason } — code 없으면 취소·차단
-          if (!authRes.code) { step('IdP 인증 취소'); return reply({ ok: false, reason: authRes.reason ?? 'idp_auth_cancelled' }); }
-          const authCode = authRes.code;
+          // 발급 인증(2026-10-26 Snap OIDC 래퍼 §2.2): Google 계정은 IdP 인증 창 대신 이 팝업에서 Google 로그인 — nonce 는
+          // issue:H(pk_u|arid_s)(에이전트가 이 로그인의 arid·r_rp 로 계산). 데모 계정은 지금처럼 IdP 인증 창(CIA_ISSUE_AUTH=code)의 1회용 코드.
+          let authCode = null, idToken = null;
+          if ((await walletProvider()) !== 'demo') {
+            const n = await postJson('/wallet/oidc/nonce', { purpose: 'issue', arid: req.arid, r_rp: req.r_rp });
+            if (n.status !== 200) { step('nonce 계산 실패'); log(errText(n.status, n.body)); return reply({ ok: false, reason: n.body.reason ?? `HTTP ${n.status}` }); }
+            step(tt('wallet_gsi_hint') || 'Google 버튼을 눌러 로그인하세요.');
+            const g = await googleToken(n.body.nonce);
+            if (!g.token) { step(gsiReasonText(g.reason)); return reply({ ok: false, reason: g.reason }); }
+            idToken = g.token;
+          } else {
+            // IdP 인증 창(Task 14, B5) — CIA_ISSUE_AUTH=code 인 IdP 는 로그인마다 이 창이 낸 1회용 코드가 있어야
+            // /cia/issue 가 받는다. 재승인(위 reauth 분기)은 /cia/issue 를 타지 않으므로 거치지 않는다.
+            // F-13(2026-10-23): window.open 은 버튼의 click 처리기 안에서만 부른다(openIdpAuthOnClick) — 여기서
+            // 곧바로 부르면 Snap 동의의 await 들을 지나며 사용자 제스처가 끊겨 일반 팝업 차단기에 막힌다.
+            step(tt('idp_auth_open_btn') || 'IdP 인증 창 열기 버튼을 누르세요.');
+            const authRes = await openIdpAuthOnClick(step);   // { code, reason } — code 없으면 취소·차단
+            if (!authRes.code) { step('IdP 인증 취소'); return reply({ ok: false, reason: authRes.reason ?? 'idp_auth_cancelled' }); }
+            authCode = authRes.code;
+          }
 
           step('로그인·증명 생성 중… (수 초 걸린다)');
           const lg = await postJson('/wallet/login', {
@@ -607,6 +664,7 @@
             disclose: req.disclose ?? null, set: req.set ?? null,
             witness, verifiedOrigin: ev.origin,          // Origin 헤더 대신 팝업이 확인한 값(스펙 §3.3)
             auth_code: authCode,
+            id_token: idToken ?? undefined,
           });
           if (lg.status !== 200) {
             step('로그인 실패'); log(errText(lg.status, lg.body));
@@ -1395,6 +1453,22 @@
       pendingVerdict($('snapVerdict'), 'working');
       try {
         await ensureConnected();
+        // Google 계정(2026-10-26 Snap OIDC 래퍼 §2.3): 비밀번호 대신 revoke: nonce 의 Google 재로그인. Snap 프롬프트는 띄우지 않는다.
+        const st = await (await fetch('/wallet/status')).json().catch(() => ({}));
+        if (st.provider && st.provider !== 'demo') {
+          const n = await postJson('/wallet/oidc/nonce', { purpose: 'revoke' });
+          if (n.status !== 200) { setVerdict($('snapVerdict'), false, 'wallet_self_revoke_failed', { reason: n.body.reason ?? `HTTP ${n.status}` }); return; }
+          const g = await googleToken(n.body.nonce);
+          if (!g.token) { setVerdict($('snapVerdict'), false, 'wallet_self_revoke_failed', { reason: g.reason, detail: gsiReasonText(g.reason) }); return; }
+          const uid = st.uid;
+          const res = await postJson('/wallet/self_revoke', { id_token: g.token });
+          if (res.status === 200) {
+            progress.revoked = true;
+            setVerdict($('snapVerdict'), true, 'revoked_ok', () => ({ summary: tt('wallet_self_revoke_ok', { uid }) || `uid ${uid} 계정의 폐기를 요청했습니다.`, detail: safeDetail(res.body) }));
+          } else setVerdict($('snapVerdict'), false, 'wallet_self_revoke_failed', { reason: res.body.reason ?? `HTTP ${res.status}`, detail: safeDetail(res.body) });
+          refresh();
+          return;
+        }
         const r = await invokeSnap('selfRevoke');
         if (!r || r.denied) { setVerdict($('snapVerdict'), false, 'wallet_self_revoke_failed', () => ({ summary: tt('wallet_cancelled') || '창에서 취소했습니다.' })); return; }
         // uid 만 따로 꺼내 쓴다 — 결과 카드의 인자 생성기가 비밀번호가 든 응답을 붙잡고 있지 않게 한다.

@@ -28,7 +28,7 @@
   <section class="card" id="registerCard">
     <h3 data-i18n="idp_register_title">커밋먼트 등록</h3>
     <p class="desc" data-i18n="idp_register_desc">지갑(MetaMask Snap)이 비밀을 만들고 커밋먼트와 공개키만 IdP 에 등록합니다. 속성은 지갑에만 남습니다.</p>
-    <p><button id="registerBtn" data-i18n="idp_register_btn">지갑으로 커밋먼트 등록</button> <a id="walletLink" class="btn-ghost" target="_blank" rel="noopener" data-i18n="idp_wallet_link">지갑 페이지 열기</a></p>
+    <p><button id="registerBtn" data-i18n="idp_register_btn">지갑으로 커밋먼트 등록</button> <button id="registerGoogleBtn" hidden data-i18n="idp_register_google_btn">Google 로 등록</button> <a id="walletLink" class="btn-ghost" target="_blank" rel="noopener" data-i18n="idp_wallet_link">지갑 페이지 열기</a></p>
     <dl class="kv">
       <dt data-term="auid">auid</dt><dd><code id="meAuid">-</code> <button type="button" id="copyAuidBtn" class="copy-btn" hidden title="복사" aria-label="복사" data-i18n-title="rp_copy_btn_title">⧉</button></dd>
       <dt data-i18n="idp_slot_label">등록부 슬롯</dt><dd id="meSlot">-</dd>
@@ -124,14 +124,12 @@
   // 팝업은 결과를 보낸 뒤 스스로 닫는다(mode3/wallet.html 은 성공 200ms·실패 3000ms 뒤 close). 닫힘을 먼저 보더라도
   // 이미 큐에 있는 결과 메시지를 받을 수 있게 이만큼 기다렸다가 "결과 없이 닫혔다"로 판정한다.
   const REGISTER_POPUP_RESULT_GRACE_MS = 400;
-  $('registerBtn').addEventListener('click', async () => {
-    if (!me) return verdict($('userVerdict'), false, 'idp_register_failed', { reason: 'login_required' });
-    $('registerBtn').disabled = true;
-    const restore = () => { $('registerBtn').disabled = false; };
+  /** 지갑 등록 팝업을 열고 결과를 userVerdict 에 그린다. buildMsg() 는 mode3-authorize-ready 를 받았을 때 보낼 메시지. btn 은 대기 중 비활성. */
+  function openRegisterPopup(btn, buildMsg, okSummary) {
+    btn.disabled = true;
+    const restore = () => { btn.disabled = false; };
     const walletOrigin0 = walletOrigin;   // 호출 시점에 고정 — 대기 중 Demo.stack 이 다시 바뀌어도 이 요청은 같은 오리진으로 끝낸다
     if (!walletOrigin0) { restore(); return verdict($('userVerdict'), false, 'idp_register_failed', { reason: 'wallet_origin_unknown', summary: tt('wallet_origin_unknown') }); }
-    const c = await post('/cia/user/register_code');
-    if (c.status !== 200) { restore(); return verdict($('userVerdict'), false, 'idp_register_failed', { reason: c.body?.reason ?? `HTTP ${c.status}` }); }
     const popup = window.open(`${walletOrigin0}/?authorize=1`, 'mode3-register', 'width=460,height=640');
     if (!popup) { restore(); return verdict($('userVerdict'), false, 'idp_register_failed', { reason: 'popup_blocked' }); }
     Demo.verdict($('userVerdict'), { pending: true, title: tt('working') || '처리 중' });
@@ -147,11 +145,11 @@
     const onMsg = (ev) => {
       // 지갑 오리진이, 그것도 우리가 연 그 창이 보낸 것만 본다(ev.source 는 심층 방어 — 같은 오리진의 다른 창이 끼어들지 못하게 한다).
       if (ev.origin !== walletOrigin0 || ev.source !== popup || !ev.data) return;
-      if (ev.data.type === 'mode3-authorize-ready') { popup.postMessage({ type: 'mode3-register', uid: me.uid, code: c.body.code, ciaUrl: location.origin }, walletOrigin0); return; }
+      if (ev.data.type === 'mode3-authorize-ready') { popup.postMessage(buildMsg(), walletOrigin0); return; }
       if (ev.data.type !== 'mode3-register-result' || !ev.data.result) return;
       finish(() => {
         const r = ev.data.result;
-        verdict($('userVerdict'), Boolean(r.ok), r.ok ? 'idp_register_ok_title' : 'idp_register_failed', r.ok ? () => ({ summary: tt('idp_register_ok', { slot: r.slot }) || `등록됨 — 슬롯 #${r.slot}` }) : { reason: r.reason, detail: r.detail });
+        verdict($('userVerdict'), Boolean(r.ok), r.ok ? 'idp_register_ok_title' : 'idp_register_failed', r.ok ? () => ({ summary: okSummary(r) }) : { reason: r.reason, detail: r.detail });
         refreshMe();
       });
     };
@@ -165,11 +163,25 @@
       clearInterval(closedPoll);
       setTimeout(() => finish(() => verdict($('userVerdict'), false, 'idp_register_failed', { reason: 'popup_closed', summary: tt('register_popup_closed') })), REGISTER_POPUP_RESULT_GRACE_MS);
     }, REGISTER_POPUP_CLOSED_POLL_MS);
+  }
+  $('registerBtn').addEventListener('click', async () => {
+    if (!me) return verdict($('userVerdict'), false, 'idp_register_failed', { reason: 'login_required' });
+    $('registerBtn').disabled = true;
+    const c = await post('/cia/user/register_code');
+    $('registerBtn').disabled = false;
+    if (c.status !== 200) return verdict($('userVerdict'), false, 'idp_register_failed', { reason: c.body?.reason ?? `HTTP ${c.status}` });
+    openRegisterPopup($('registerBtn'), () => ({ type: 'mode3-register', uid: me.uid, code: c.body.code, ciaUrl: location.origin }),
+      (r) => tt('idp_register_ok', { slot: r.slot }) || `등록됨 — 슬롯 #${r.slot}`);
   });
+  // Google 로 등록(2026-10-26 Snap OIDC 래퍼 §2.1): IdP 로그인·등록 코드 없이 지갑 팝업에서 Google 로그인 — uid 는 IdP 가 토큰으로 정한다.
+  $('registerGoogleBtn').addEventListener('click', () => openRegisterPopup($('registerGoogleBtn'), () => ({ type: 'mode3-register', provider: 'google', ciaUrl: location.origin }),
+    (r) => tt('idp_register_google_ok', { uid: r.uid, slot: r.slot }) || `Google 계정 등록됨 — uid ${r.uid}, 슬롯 #${r.slot}`));
 
   (async () => {
     Demo.init({ page: 'idp_user' });
     initStack();
+    // Google 등록 버튼은 이 IdP 가 OIDC 래퍼를 켰을 때만 보인다(public_keys.oidc.enabled).
+    try { $('registerGoogleBtn').hidden = !(await (await fetch('/cia/public_keys')).json()).oidc?.enabled; } catch { /* 숨긴 채 */ }
     await refreshMe();
   })();
 </script>
