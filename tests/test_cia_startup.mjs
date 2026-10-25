@@ -85,7 +85,7 @@ try {
   const log = new ethers.Contract(firstLog, MODE3_LOG_ABI, first.ciaEthWallet);
   const directEpoch = epoch1 + 1;
   const sig = await signPublicationV3(first.ciaEthWallet, { ...(await canonOf(log, provider)), revRoot: root12, regRoot: regRootNow, epoch: directEpoch, revLeaves: [b32(L2)], slotIdx: [], slotLeaves: [] });
-  await (await log.publish(root12, regRootNow, directEpoch, [b32(L2)], [], [], sig)).wait();
+  await (await log.publish(root12, regRootNow, directEpoch, [b32(L2)], [], [], [], [], sig)).wait();
   assert.equal(await log.epoch(), BigInt(directEpoch));
 
   fs.copyFileSync(path.join(first.dir, 'cia_state.json'), keptState);

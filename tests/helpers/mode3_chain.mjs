@@ -89,19 +89,20 @@ export async function deployMode3Mirror(ciaAddress, canonicalLogAddress, provide
   return { address: await contract.getAddress(), contract };
 }
 
-/** V10 게시 헬퍼 — 테스트가 CIA 없이 캐노니컬 Mode3Log 에 두 root 를 올린다. 인자는 bigint, 서명은 ciaWallet. */
-export async function publishV3(log, ciaWallet, { revRoot, regRoot, epoch, revLeaves = [], slotIdx = [], slotLeaves = [] }) {
+/** V10 게시 헬퍼 — 테스트가 CIA 없이 캐노니컬 Mode3Log 에 두 root 를 올린다. 인자는 bigint, 서명은 ciaWallet.
+ *  2026-10-25: boundKeys(bigint[])·boundValues(number[]) — 거울 공개 세션 counter. 돌려주는 p 에 그대로 들어 relayToMirror 가 넘긴다. */
+export async function publishV3(log, ciaWallet, { revRoot, regRoot, epoch, revLeaves = [], slotIdx = [], slotLeaves = [], boundKeys = [], boundValues = [] }) {
   const b = rootToBytes32;
-  const p = { revRoot: b(revRoot), regRoot: b(regRoot), epoch, revLeaves: revLeaves.map(b), slotIdx, slotLeaves: slotLeaves.map(b) };
+  const p = { revRoot: b(revRoot), regRoot: b(regRoot), epoch, revLeaves: revLeaves.map(b), slotIdx, slotLeaves: slotLeaves.map(b), boundKeys: boundKeys.map(BigInt), boundValues: boundValues.map(Number) };
   const sig = await signPublicationV3(ciaWallet, { ...(await canonOf(log, ciaWallet.provider)), ...p });
-  await (await log.connect(ciaWallet).publish(p.revRoot, p.regRoot, epoch, p.revLeaves, slotIdx, p.slotLeaves, sig)).wait();
+  await (await log.connect(ciaWallet).publish(p.revRoot, p.regRoot, epoch, p.revLeaves, slotIdx, p.slotLeaves, p.boundKeys, p.boundValues, sig)).wait();
   return { sig, p };
 }
 
-/** V10: 캐노니컬에 이미 올라간 게시(p, sig)를 거울에 중계한다 — 같은 서명이 거울에도 그대로 유효하다. */
+/** V10: 캐노니컬에 이미 올라간 게시(p, sig)를 거울에 중계한다 — 같은 서명이 거울에도 그대로 유효하다. bound 배열은 그대로 넘긴다. */
 export async function relayToMirror(mirror, signer, { p, sig }) {
   const h = entryHashes(p);
-  await (await mirror.connect(signer).publish(p.revRoot, p.regRoot, p.epoch, h.hLeaves, h.hIdx, h.hSlots, sig)).wait();
+  await (await mirror.connect(signer).publish(p.revRoot, p.regRoot, p.epoch, h.hLeaves, h.hIdx, h.hSlots, p.boundKeys ?? [], p.boundValues ?? [], sig)).wait();
 }
 
 // ---- 폐기 체인 노드(2026-10-03, 두 체인 각본) ----

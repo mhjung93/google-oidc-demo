@@ -1,21 +1,17 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import "./IMode3Roots.sol";
+import "./Mode3RootHistory.sol";
 
 /// @title Mode 3 로그 V3 — 폐기 트리 root 와 사용자 자격증명 등록부 root 를 한 트랜잭션에 게시한다(설계 2026-10-01 §4,
 ///   V10 폐기 전용 체인 설계 §2 의 chainid 바인딩).
 /// @notice RevocationLog(V1)과 같은 서명 규칙(EIP-191, CIA 키, low-s)·epoch 증가 규칙. 두 root 가 같은 블록에 게시되므로
 ///   root 나이(lastPublishedBlock)는 하나다. 지갑은 Revoked 이벤트로 폐기 트리를, SlotUpdated 이벤트로 등록부를 복원한다.
 ///   IMode3Roots 를 구현해 검증자(Mode3Wallet)가 캐노니컬 로그와 거울(Mode3Mirror)을 같은 타입으로 읽는다.
-contract Mode3Log is IMode3Roots {
-    bytes32 public constant DOMAIN = keccak256("MODE3_LOG_V3");
+contract Mode3Log is Mode3RootHistory {
+    bytes32 public constant DOMAIN = keccak256("MODE3_LOG_V4");
 
     address public immutable cia;
-    bytes32 public revRoot;
-    bytes32 public regRoot;
-    uint64 public epoch;
-    uint64 public lastPublishedBlock;
 
     // 폐기 접수증 대기열 (V10 §4): 사용자(또는 누구든)가 IdP 서명 접수증을 올리면 pending 에 적히고, 다음
     // publish 는 그 슬롯을 0(폐기)으로 실어야만 통과한다. 통과한 슬롯은 isRetired 에 영구히 남아 다시는
@@ -32,46 +28,45 @@ contract Mode3Log is IMode3Roots {
 
     error EpochNotIncreasing(uint64 got, uint64 have);
     error BadSignature();
-    error LengthMismatch();
     error PendingRevocationNotApplied(uint32 slot);
     /// @dev 이벤트 SlotRetired 와 이름이 겹쳐 error SlotRetired 로 못 쓴다(같은 식별자를 이벤트·에러 둘 다로
     ///   선언 불가) — 이벤트 쪽을 기존 이름으로 두고 에러만 SlotIsRetired 로 구분한다(2026-10-02 결정).
     error SlotIsRetired(uint32 slot);
 
-    constructor(address cia_, bytes32 emptyRevRoot, bytes32 emptyRegRoot) {
+    constructor(address cia_, bytes32 emptyRevRoot, bytes32 emptyRegRoot) Mode3RootHistory(emptyRevRoot, emptyRegRoot) {
         cia = cia_;
-        revRoot = emptyRevRoot;
-        regRoot = emptyRegRoot;
-        lastPublishedBlock = uint64(block.number);
     }
 
     /// @dev EIP-191 을 적용하기 전의 내부 digest. lib/mode3_log.js publicationDigestV3 와 바이트 단위로 같다.
     /// @dev V3: address(this) 앞에 block.chainid — 같은 서명이 거울(Mode3Mirror)에서도 유효해야 하므로 거울은 이 둘을
     ///   생성자로 받아 같은 값을 넣는다.
-    function digestFor(bytes32 newRev, bytes32 newReg, uint64 newEpoch, bytes32[] calldata revLeaves, uint32[] calldata slotIdx, bytes32[] calldata slotLeaves)
-        public view returns (bytes32)
-    {
+    /// @dev 2026-10-25 root 유효 창 §2.2: bound 두 배열의 해시가 뒤에 붙는다(도메인 V4). lib/mode3_log.js publicationDigestV3 와 바이트 단위로 같다.
+    function digestFor(
+        bytes32 newRev, bytes32 newReg, uint64 newEpoch,
+        bytes32[] calldata revLeaves, uint32[] calldata slotIdx, bytes32[] calldata slotLeaves,
+        uint256[] calldata boundKeys, uint32[] calldata boundValues
+    ) public view returns (bytes32) {
         return keccak256(abi.encode(
             DOMAIN, block.chainid, address(this), newRev, newReg, newEpoch,
-            keccak256(abi.encodePacked(revLeaves)), keccak256(abi.encodePacked(slotIdx)), keccak256(abi.encodePacked(slotLeaves))
+            keccak256(abi.encodePacked(revLeaves)), keccak256(abi.encodePacked(slotIdx)), keccak256(abi.encodePacked(slotLeaves)),
+            keccak256(abi.encodePacked(boundKeys)), keccak256(abi.encodePacked(boundValues))
         ));
     }
 
-    function publish(bytes32 newRev, bytes32 newReg, uint64 newEpoch, bytes32[] calldata revLeaves, uint32[] calldata slotIdx, bytes32[] calldata slotLeaves, bytes calldata sig)
-        external
-    {
+    function publish(
+        bytes32 newRev, bytes32 newReg, uint64 newEpoch,
+        bytes32[] calldata revLeaves, uint32[] calldata slotIdx, bytes32[] calldata slotLeaves,
+        uint256[] calldata boundKeys, uint32[] calldata boundValues, bytes calldata sig
+    ) external {
         if (newEpoch <= epoch) revert EpochNotIncreasing(newEpoch, epoch);
         if (slotIdx.length != slotLeaves.length) revert LengthMismatch();
-        bytes32 inner = digestFor(newRev, newReg, newEpoch, revLeaves, slotIdx, slotLeaves);
+        bytes32 inner = digestFor(newRev, newReg, newEpoch, revLeaves, slotIdx, slotLeaves, boundKeys, boundValues);
         bytes32 ethDigest = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", inner));
         if (_recover(ethDigest, sig) != cia) revert BadSignature();
 
         _enforceRevocationQueue(slotIdx, slotLeaves, newEpoch);
-
-        revRoot = newRev;
-        regRoot = newReg;
-        epoch = newEpoch;
-        lastPublishedBlock = uint64(block.number);
+        _applyBounds(boundKeys, boundValues, newEpoch);   // 2026-10-25 §2.2: 세션별 counter(낮추기만)
+        _setRoots(newRev, newReg, newEpoch);              // 2026-10-25 §2.1: 바뀐 root 는 이력에
         emit Revoked(newEpoch, newRev, revLeaves);
         for (uint256 i = 0; i < slotIdx.length; i++) emit SlotUpdated(newEpoch, slotIdx[i], slotLeaves[i]);
     }

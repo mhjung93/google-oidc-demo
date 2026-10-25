@@ -59,6 +59,11 @@ module.exports = {
         version: "0.8.24",
         settings: WALLET_IR_SETTINGS,
       },
+      // 2026-10-25 root 유효 창: publish() 의 calldata 배열 인자가 5개(10 스택 슬롯)라 비-IR 로는 stack too deep. 세 파일 모두
+      // (베이스·캐노니컬·거울) 같은 설정으로 — 이 셋은 CREATE2 주소 계산과 무관하다.
+      "contracts/Mode3RootHistory.sol": { version: "0.8.24", settings: WALLET_IR_SETTINGS },
+      "contracts/Mode3Log.sol": { version: "0.8.24", settings: WALLET_IR_SETTINGS },
+      "contracts/Mode3Mirror.sol": { version: "0.8.24", settings: WALLET_IR_SETTINGS },
     },
   },
   // V10(2026-10-02): 폐기 체인을 별도 노드로 띄울 때(docs/MODE3_DEMO.md "폐기 체인을 별도 노드로") 두 노드의 chainId 가

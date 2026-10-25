@@ -408,7 +408,7 @@ try {
     const revRoot = b32(before.body.root), regRoot = b32(before.body.regRoot);
     const directEpoch = current + 1;
     const sig = await signPublicationV3(cia.ciaEthWallet, { ...(await canonOf(log, provider)), revRoot, regRoot, epoch: directEpoch, revLeaves: [b32(leaf)], slotIdx: [], slotLeaves: [] });
-    const tx = await log.connect(cia.ciaEthWallet).publish(revRoot, regRoot, directEpoch, [b32(leaf)], [], [], sig);
+    const tx = await log.connect(cia.ciaEthWallet).publish(revRoot, regRoot, directEpoch, [b32(leaf)], [], [], [], [], sig);
     await tx.wait();
     assert.equal(await log.epoch(), BigInt(directEpoch));
 
@@ -503,7 +503,7 @@ try {
     const sameRegRoot = b32((await cia.get('/cia/state')).body.regRoot);
     const bogus = b32(12345n);
     const sig = await signPublicationV3(cia.ciaEthWallet, { ...(await canonOf(log, provider)), revRoot: bogus, regRoot: sameRegRoot, epoch: current + 1, revLeaves: [], slotIdx: [], slotLeaves: [] });
-    await (await log.connect(cia.ciaEthWallet).publish(bogus, sameRegRoot, current + 1, [], [], [], sig)).wait();
+    await (await log.connect(cia.ciaEthWallet).publish(bogus, sameRegRoot, current + 1, [], [], [], [], [], sig)).wait();
     await revokedLeaf();
     const r = await cia.adminPost('/cia/publish');
     assert.equal(r.status, 503, JSON.stringify(r.body));
