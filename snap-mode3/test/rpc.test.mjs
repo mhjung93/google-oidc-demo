@@ -164,7 +164,7 @@ await t('storeRegistration: attrs 원소는 2^64 미만이어야 한다(ATTR_MAX
 
 await t('getPublicInfo 에는 비밀이 없다', async () => {
   const info = await call('getPublicInfo', {});
-  assert.deepEqual(Object.keys(info).sort(), ['attrs', 'auid', 'consents', 'hasUserCred', 'registered', 'slot', 'uid']);
+  assert.deepEqual(Object.keys(info).sort(), ['attrs', 'auid', 'consents', 'hasUserCred', 'pending', 'provider', 'registered', 'slot', 'uid']);
   assert.equal(info.registered, true);
   assert.equal(info.uid, '12345');
   assert.equal(info.auid, auid);
@@ -351,6 +351,57 @@ await t('reset: 확인 뒤 상태를 비운다(거절하면 그대로)', async (
   assert.equal(info.uid, null);
   assert.deepEqual(info.consents, {});
   assert.ok(!stateJson().includes(registered.sk_u), '초기화 뒤 비밀이 남지 않는다');
+});
+
+await t('prepareRegister: 거절이면 { denied } 이고 상태가 없다; 승인이면 uid 없는 보류 등록 — registered=false, pending=true', async () => {
+  answers.push(false);
+  assert.deepEqual(await call('prepareRegister', {}), { denied: true });
+  assert.equal(store.state, null, '거절은 상태를 만들지 않는다');
+  answers.push(true);
+  const p = await call('prepareRegister', {});
+  assert.match(p.s_u, /^[0-9]+$/); assert.match(p.sk_u, /^[0-9a-f]{64}$/);
+  assert.ok(/Google/.test(lastDialogText()), '확인 창 제목에 Google');
+  assert.ok(!lastDialogText().includes(p.sk_u) && !lastDialogText().includes(p.s_u), '확인 창에 비밀 값은 없다');
+  const info = await call('getPublicInfo', {});
+  assert.equal(info.registered, false); assert.equal(info.pending, true); assert.equal(info.uid, null); assert.equal(info.provider, null);
+  // 다시 시도(Google 단계 실패 뒤) — 같은 비밀(같은 pk_u → 같은 nonce)
+  answers.push(true);
+  assert.deepEqual(await call('prepareRegister', {}), p);
+});
+
+await t('보류 등록에서는 비밀이 필요한 RPC 가 not_registered 로 거절된다(uid 없는 증인·프롬프트 금지)', async () => {
+  for (const m of ['consentLogin', 'updateUserCred', 'syncAttrs', 'selfRevoke', 'consentRevokeSession', 'showSalt']) {
+    await assert.rejects(() => call(m, { origin: RP_ORIGIN }), /not_registered/, `${m}`);
+  }
+});
+
+await t('storeRegistration(보류): uid 가 없으면 bad_uid 이고 상태 그대로; uid·provider 를 주면 완성 등록', async () => {
+  const before = stateJson();
+  await assert.rejects(() => call('storeRegistration', { attrs: ATTRS, slot: SLOT, auid: '77' }), /bad_uid/);
+  assert.equal(stateJson(), before, '거절은 상태를 바꾸지 않는다');
+  await assert.rejects(() => call('storeRegistration', { attrs: ATTRS, slot: SLOT, auid: '77', uid: '5', provider: 'bad provider!' }), /bad_provider/);
+  assert.equal(stateJson(), before);
+  assert.deepEqual(await call('storeRegistration', { attrs: ATTRS, slot: SLOT, auid: '77', uid: '5', provider: 'google' }), { ok: true });
+  const info = await call('getPublicInfo', {});
+  assert.equal(info.registered, true); assert.equal(info.pending, false); assert.equal(info.uid, '5'); assert.equal(info.provider, 'google');
+  // 완성 등록: 다른 uid 는 uid_mismatch, 같은 uid·uid 생략은 받는다
+  await assert.rejects(() => call('storeRegistration', { attrs: ATTRS, slot: SLOT, auid: '77', uid: '6' }), /uid_mismatch/);
+  assert.deepEqual(await call('storeRegistration', { attrs: ATTRS, slot: SLOT, auid: '77' }), { ok: true });
+  // 완성 등록이면 prepareRegister 는 already_registered
+  await assert.rejects(() => call('prepareRegister', {}), /already_registered/);
+});
+
+await t('register 는 보류 등록을 덮어쓴다(완성 등록만 already_registered); reset 은 보류도 지운다', async () => {
+  answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
+  answers.push(true); const p = await call('prepareRegister', {});
+  answers.push(true); const r = await call('register', { uid: '42' });
+  assert.equal(r.uid, '42'); assert.notEqual(r.sk_u, p.sk_u, 'register 는 새 비밀을 만든다');
+  assert.equal((await call('getPublicInfo', {})).pending, false);
+  answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
+  answers.push(true); const p2 = await call('prepareRegister', {});
+  answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
+  assert.ok(!String(stateJson()).includes(p2.sk_u), 'reset 뒤 보류 비밀이 남지 않는다');
+  assert.equal(store.state, null);
 });
 
 await t('등록 전에는 비밀이 필요한 RPC 가 거절된다', async () => {

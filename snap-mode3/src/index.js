@@ -68,7 +68,8 @@ const prompt = (title, lines, placeholder) =>
 const confirm = (title, lines) =>
   dialog({ type: 'confirmation', content: panel([heading(title), ...lines.map((l) => (l === null ? divider() : text(l)))]) });
 
-const requireRegistered = (state) => state.registration ?? fail('not_registered: 이 Snap 에 등록이 없다');
+// 보류 등록(prepareRegister, uid 없음 — 2026-10-26 Snap OIDC 래퍼)은 "등록 없음" 으로 본다: uid 없는 증인·프롬프트가 나가면 안 된다.
+const requireRegistered = (state) => (state.registration?.uid ? state.registration : fail('not_registered: 이 Snap 에 등록이 없다'));
 
 /** 증인 묶음 — lib/mode3_secret_source.js 의 validateWitness 형식(스펙 §3.1). consentLogin 응답으로만 나간다. */
 function buildWitness(state) {
@@ -99,8 +100,9 @@ export const onRpcRequest = async ({ origin, request }) => {
   switch (request.method) {
     // 등록(V11 갱신, 2026-10-23): 비밀번호 프롬프트는 없어졌다 — 지갑 페이지가 이미 받은 uid 를 params 로 넘기고,
     // Snap 은 확인 창 하나만 띄워 s_u·sk_u 를 만들어 저장한다. IdP 에는 커밋먼트(auid)와 공개키만 간다(storeRegistration).
+    // 보류 등록(prepareRegister)이 있으면 덮어쓴다 — 완성 등록만 already_registered.
     case 'register': {
-      if (state.registration) fail('already_registered: 이미 등록돼 있다 (초기화하려면 reset)');
+      if (state.registration?.uid) fail('already_registered: 이미 등록돼 있다 (초기화하려면 reset)');
       const uid = String(params.uid ?? '').trim();
       if (!isDec(uid)) fail('bad_uid: uid 는 10진 숫자 문자열이어야 한다');
       const ok = await confirm('IdP 등록', [`uid: ${uid}`, null, '등록 비밀(s_u·sk_u)을 만들어 이 Snap 에 보관합니다.', '속성은 지갑에만 남고 IdP 에는 커밋먼트와 공개키만 갑니다.']);
@@ -111,6 +113,21 @@ export const onRpcRequest = async ({ origin, request }) => {
       return { uid, s_u: secrets.s_u, sk_u: secrets.sk_u };
     }
 
+    // Google 등록(2026-10-26 Snap OIDC 래퍼 §2.1): 등록 토큰의 nonce 는 pk_u 에 묶이는데(reg:H(pk_u)), uid 는 토큰을 받은 뒤에야
+    // IdP 가 정한다 — 그래서 uid 없이 비밀을 먼저 만들어 "보류 등록" 으로 둔다. uid 는 storeRegistration 이 채운다.
+    // 보류가 이미 있으면(Google·IdP 단계 실패 뒤 재시도) 같은 비밀을 돌려준다 — 같은 pk_u 라 nonce 도 같다.
+    case 'prepareRegister': {
+      if (state.registration?.uid) fail('already_registered: 이미 등록돼 있다 (초기화하려면 reset)');
+      const ok = await confirm('Google 계정 등록', ['등록 비밀(s_u·sk_u)을 만들어 이 Snap 에 보관합니다.', 'uid 는 Google 로그인 뒤 IdP 가 정합니다.', null, '속성은 지갑에만 남고 IdP 에는 커밋먼트와 공개키만 갑니다.']);
+      if (!ok) return { denied: true };
+      const pend = state.registration;
+      if (pend) return { s_u: pend.s_u, sk_u: pend.sk_u };
+      const secrets = createRegistrationSecrets();
+      state.registration = { uid: null, s_u: secrets.s_u, auid: null, sk_u: secrets.sk_u, slot: null, attrs: null, provider: null, registeredAt: new Date().toISOString() };
+      state.userCred = null; await setState(state);
+      return { s_u: secrets.s_u, sk_u: secrets.sk_u };
+    }
+
     // salt(s_u) 를 지갑 페이지에 보여 준다 — 시연용(복구 코드 설계 2026-10-21 과 무관, 화면 표시만). 비밀 자체는
     // 대화상자에 싣지 않는다(경고문뿐) — 싣는 순간 팝업 캡처로 유출될 수 있다.
     case 'showSalt': {
@@ -119,14 +136,20 @@ export const onRpcRequest = async ({ origin, request }) => {
       return ok ? { s_u: reg.s_u } : { denied: true };
     }
 
-    // 에이전트 POST /wallet/register 응답(slot·attrs·auid)을 저장한다. sk_u·s_u 는 register 때 이미 만들어 저장했으므로 받지 않는다(V9 §7.1).
+    // 에이전트 POST /wallet/register 응답(slot·attrs·auid)을 저장한다. sk_u·s_u 는 register/prepareRegister 때 이미 저장했으므로 받지 않는다(V9 §7.1).
+    // 2026-10-26: 보류 등록(prepareRegister)은 여기서 uid 를 받아 완성된다. provider 는 IdP 응답의 값(데모 등록은 생략 가능).
     case 'storeRegistration': {
-      const reg = requireRegistered(state);
-      const { attrs, slot, auid } = params;
+      const reg = state.registration ?? fail('not_registered: 이 Snap 에 등록이 없다');
+      const { attrs, slot, auid, uid, provider } = params;
       if (!Array.isArray(attrs) || attrs.length !== 6 || !attrs.every((a) => isDec(String(a)))) fail('bad_attrs: attrs 는 10진 문자열 6개');
       if (!attrs.every((a) => BigInt(a) < ATTR_MAX)) fail('bad_attrs: attrs 원소는 2^64 미만');
       if (!Number.isInteger(slot) || slot < 0) fail('bad_slot');
       if (!isDec(String(auid ?? ''))) fail('bad_auid: auid 는 10진 문자열');
+      if (reg.uid === null || reg.uid === undefined) { if (!isDec(String(uid ?? ''))) fail('bad_uid: 보류 등록에는 uid(10진 문자열)가 필요하다'); }
+      else if (uid !== undefined && String(uid) !== reg.uid) fail('uid_mismatch: 등록된 uid 와 다르다');
+      if (provider !== undefined && !(typeof provider === 'string' && /^[A-Za-z0-9_-]{1,32}$/.test(provider))) fail('bad_provider: provider 는 영숫자·_·- 1~32자');
+      if (reg.uid === null || reg.uid === undefined) reg.uid = String(uid);
+      if (provider !== undefined) reg.provider = provider;
       reg.attrs = attrs.map(String);
       reg.slot = slot;
       reg.auid = String(auid);
@@ -138,8 +161,8 @@ export const onRpcRequest = async ({ origin, request }) => {
     case 'getPublicInfo': {
       const r = state.registration;
       return {
-        registered: Boolean(r), uid: r?.uid ?? null, auid: r?.auid ?? null, attrs: clone(r?.attrs), slot: r?.slot ?? null,
-        hasUserCred: Boolean(state.userCred), consents: clone(state.consents) ?? {},
+        registered: Boolean(r?.uid), pending: Boolean(r && !r.uid), uid: r?.uid ?? null, auid: r?.auid ?? null, attrs: clone(r?.attrs), slot: r?.slot ?? null,
+        provider: r?.provider ?? null, hasUserCred: Boolean(state.userCred), consents: clone(state.consents) ?? {},
       };
     }
 

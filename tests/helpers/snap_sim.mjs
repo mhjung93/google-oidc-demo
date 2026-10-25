@@ -1,7 +1,8 @@
 // Snap 시뮬레이터 — 스펙 2026-09-22 metamask-snap §3.1 의 Snap 상태·RPC 를 Node 함수로 흉내 낸다.
 // Task 3 의 snap-mode3/src/index.js 는 이 시뮬레이터와 같은 입출력을 구현한다(스펙 §3.1 표가 정본). 여기서는
 // 대화상자를 decision('allow'|'deny') 인자로 대신하고, 오리진 검사는 하지 않는다(테스트 프로세스가 곧 지갑 페이지다).
-import { createRegistration } from '../../lib/mode3_wallet.js';
+import { createRegistration, registrationSecretsFromSeed } from '../../lib/mode3_wallet.js';
+import { randomBytes } from 'node:crypto';
 import { ATTR_MAX } from '../../lib/mode3_credential.js';
 
 const clone = (v) => (v === null || v === undefined ? null : JSON.parse(JSON.stringify(v)));
@@ -10,7 +11,7 @@ const fail = (msg) => { throw new Error(msg); };   // index.js 의 fail() 과 �
 
 export function createSnapSim() {
   const state = { registration: null, userCred: null, consents: {} };
-  const requireRegistered = () => { if (!state.registration) throw new Error('snap_sim: 등록이 없다'); };
+  const requireRegistered = () => { if (!state.registration?.uid) throw new Error('not_registered: snap_sim: 등록이 없다'); };
   return {
     state,   // 검사용 — 테스트가 상태 파일과 대조한다
 
@@ -18,13 +19,25 @@ export function createSnapSim() {
      *  같은 순서로 검사한다: already_registered → bad_uid → 확인창. s_u·sk_u 를 만들어 상태에 두고(sk_u 는 register
      *  응답에 한 번만 싣는다 — V9 §7.1) s_u 와 함께 돌려준다. auid 는 등록이 아직 끝나지 않아 null(storeRegistration 이 채운다). */
     async register({ uid }, decision = 'allow') {
-      if (state.registration) throw new Error('snap_sim: 이미 등록돼 있다');
+      if (state.registration?.uid) throw new Error('already_registered: snap_sim: 이미 등록돼 있다');
       const uidStr = String(uid ?? '').trim();
       if (!isDec(uidStr)) fail('bad_uid: uid 는 10진 숫자 문자열이어야 한다');
       if (decision !== 'allow') return { denied: true };
       const reg = await createRegistration(BigInt(uidStr));
       state.registration = { uid: uidStr, pwdHash: null, s_u: reg.s_u.toString(), auid: null, sk_u: reg.sk_u, slot: null, attrs: null, registeredAt: new Date().toISOString() };
       return { uid: uidStr, s_u: state.registration.s_u, sk_u: reg.sk_u };
+    },
+
+    /** Google 등록(2026-10-26): 실제 Snap(index.js prepareRegister)과 같은 입출력 — uid 없는 보류 등록, 보류가 있으면 같은 비밀. */
+    prepareRegister(decision = 'allow') {
+      if (state.registration?.uid) fail('already_registered: 이미 등록돼 있다 (초기화하려면 reset)');
+      if (decision !== 'allow') return { denied: true };
+      const pend = state.registration;
+      if (pend) return { s_u: pend.s_u, sk_u: pend.sk_u };
+      const { s_u, sk_u } = registrationSecretsFromSeed(new Uint8Array(randomBytes(32)));
+      state.registration = { uid: null, pwdHash: null, s_u: s_u.toString(), auid: null, sk_u, slot: null, attrs: null, provider: null, registeredAt: new Date().toISOString() };
+      state.userCred = null;
+      return { s_u: state.registration.s_u, sk_u };
     },
 
     /** salt(s_u) 를 지갑 페이지에 보여 준다 — 실제 Snap(index.js showSalt:116-120)과 같은 입출력. */
@@ -36,22 +49,28 @@ export function createSnapSim() {
     /** 에이전트 /wallet/register 응답의 slot·attrs·auid 를 저장한다(sk_u·s_u 는 register 때 이미 저장했으므로 받지 않는다).
      *  실제 Snap(index.js storeRegistration:119-130)과 같은 검사를 같은 사유 문자열로 한다(리뷰 2026-10-13 U1·U2) — 이 검사가
      *  없으면 시뮬레이터가 실제 Snap 보다 느슨하게 통과시켜 둘의 입출력이 어긋난다. */
-    storeRegistration({ attrs, slot, auid }) {
-      requireRegistered();
+    storeRegistration({ attrs, slot, auid, uid, provider }) {
+      if (!state.registration) fail('not_registered: snap_sim: 등록이 없다');
+      const reg = state.registration;
       if (!Array.isArray(attrs) || attrs.length !== 6 || !attrs.every((a) => isDec(String(a)))) fail('bad_attrs: attrs 는 10진 문자열 6개');
       if (!attrs.every((a) => BigInt(a) < ATTR_MAX)) fail('bad_attrs: attrs 원소는 2^64 미만');
       if (!Number.isInteger(slot) || slot < 0) fail('bad_slot');
       if (!isDec(String(auid ?? ''))) fail('bad_auid: auid 는 10진 문자열');
-      state.registration.attrs = attrs.map(String);   // index.js 와 같이 문자열로 정규화
-      state.registration.slot = slot;
-      state.registration.auid = String(auid);
+      if (reg.uid === null || reg.uid === undefined) { if (!isDec(String(uid ?? ''))) fail('bad_uid: 보류 등록에는 uid(10진 문자열)가 필요하다'); }
+      else if (uid !== undefined && String(uid) !== reg.uid) fail('uid_mismatch: 등록된 uid 와 다르다');
+      if (provider !== undefined && !(typeof provider === 'string' && /^[A-Za-z0-9_-]{1,32}$/.test(provider))) fail('bad_provider: provider 는 영숫자·_·- 1~32자');
+      if (reg.uid === null || reg.uid === undefined) reg.uid = String(uid);
+      if (provider !== undefined) reg.provider = provider;
+      reg.attrs = attrs.map(String);   // index.js 와 같이 문자열로 정규화
+      reg.slot = slot;
+      reg.auid = String(auid);
       return { ok: true };
     },
 
     /** 비밀 없음. */
     getPublicInfo() {
       const r = state.registration;
-      return { registered: Boolean(r), uid: r?.uid ?? null, auid: r?.auid ?? null, attrs: clone(r?.attrs), slot: r?.slot ?? null, hasUserCred: Boolean(state.userCred), consents: clone(state.consents) };
+      return { registered: Boolean(r?.uid), pending: Boolean(r && !r.uid), uid: r?.uid ?? null, auid: r?.auid ?? null, attrs: clone(r?.attrs), slot: r?.slot ?? null, provider: r?.provider ?? null, hasUserCred: Boolean(state.userCred), consents: clone(state.consents) };
     },
 
     /** 로그인 동의 창. 승인이면 증인 묶음(validateWitness 형식), 거절이면 { denied:true }.
