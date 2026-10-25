@@ -712,6 +712,20 @@ describe('Mode3Wallet', function () {
     p = await signedPayload(A1, wallet);
     await expect(wallet.execute(p.payload, p.sig, A1.a, A1.b, A1.c, A1.pub)).to.be.revertedWithCustomError(wallet, 'SessionBounded').withArgs(pk1, 0n);
   });
+  it('§1 안전: root 창 안(옛 root 로 만든 π)이라도 거울 counter (pk_i, c) 가 nonce ≥ c 를 SessionBounded 로 막고 nonce < c 는 통과', async () => {
+    // 스위트 뒤쪽이라 공유 ST 의 maxHeight 가 이미 지났을 수 있어 새 성명을 쓴다
+    const S0 = withInput(await statement({ counter: 0n }));
+    const { wallet, log, cia } = await deployStack(S0, { rootWindow: 5n });
+    const pk = BigInt(S0.session.address);
+    // 다른 사용자의 폐기로 revRoot 가 바뀌는 **같은 게시**에 내 세션의 (pk, c=1) 이 실린다 — ST 의 root 는 창 안의 옛 root
+    await publishRoots(log, cia, { revRoot: rootToBytes32(12345n), regRoot: await log.regRoot(), epoch: 1n, boundKeys: [pk], boundValues: [1] });
+    expect(await log.isAcceptableRevRoot(rootToBytes32(BigInt(S0.input().revRoot)), 5)).to.equal(true, '전제: 옛 root 가 창 안');
+    const p0 = await signedPayload(S0, wallet);
+    await expect(wallet.execute(p0.payload, p0.sig, S0.a, S0.b, S0.c, S0.pub)).to.not.be.reverted;   // nonce 0 < 1
+    const st1 = withInput(await statement({ session: S0.session, counter: 1n }));                    // 옛 root 그대로(픽스처 트리)
+    const p1 = await signedPayload(st1, wallet);
+    await expect(wallet.execute(p1.payload, p1.sig, st1.a, st1.b, st1.c, st1.pub)).to.be.revertedWithCustomError(wallet, 'SessionBounded').withArgs(pk, 1n);
+  });
   it('rootWindow 는 팩토리 생성자 인자 그대로 팩토리·지갑에 박힌다', async () => {
     const { wallet, factory } = await deployStack(ST, { rootWindow: 7n });
     expect(await factory.rootWindow()).to.equal(7n);

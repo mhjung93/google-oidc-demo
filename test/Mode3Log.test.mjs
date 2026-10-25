@@ -178,7 +178,7 @@ describe('Mode3Log', () => {
     await (await pub(P({ epoch: 1n, boundKeys: [1n], boundValues: [4294967295] }))).wait();
     expect(await log.sessionBoundOf(1n)).to.equal(4294967296n);
   });
-  it('bound 배열 길이 불일치는 LengthMismatch, 서명 뒤 bound 를 바꾸면 BadSignature, digestFor 가 JS 와 같다', async () => {
+  it('서명과 다른 bound 배열은 BadSignature(길이 불일치도 JS 쪽은 빈 배열로 서명돼 BadSignature 가 먼저), digestFor 가 JS 와 같다', async () => {
     const bad = P({ epoch: 1n, boundKeys: [1n], boundValues: [] });
     await expect(log.publish(bad.revRoot, bad.regRoot, 1n, [], [], [], [1n], [], await sign(cia, { ...bad, boundKeys: [], boundValues: [] }))).to.be.revertedWithCustomError(log, 'BadSignature');   // JS entryHashes 는 길이 불일치를 던지므로 빈 배열로 서명 → 서명 불일치가 먼저
     const p = P({ epoch: 1n, boundKeys: [1n, 2n], boundValues: [4, 5] });

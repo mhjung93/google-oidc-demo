@@ -1063,6 +1063,9 @@ app.post('/cia/revoke', userCors, async (req, res) => {
     if (!rec) return res.status(404).json({ error: 'unknown session', reason: 'unknown_session' });
     // 이미 폐기된 세션의 재폐기: bound 를 기존보다 낮추는 요청만 새 리프를 넣는다(낮추기, 설계 §3) — 같거나 올리는 요청은 멱등 응답.
     if (rec.revokedAt && BigInt(bound) >= BigInt(rec.bound ?? '0')) {
+      // 2026-10-25 최종 검토 I1: 관리자가 먼저 폐기한(pk_i 없음) 세션을 사용자가 pk_i 를 실어 재폐기하면 거울 counter 를 붙인다 —
+      // 게시되는 값은 이미 권한 있는 폐기로 정해진 기존 rec.bound(요청 bound 이하)다. 리프는 그대로(낮추기가 아니라 새 리프 없음).
+      if (boundKey && !rec.pk_i) { rec.pk_i = boundKey; queueBound(rec.pk_i, rec.bound ?? '0'); persist(); }
       return res.json({ inserted: false, bound: rec.bound ?? '0', root: tree.getRoot().toString(), pending: state.pending.length, mirrorBound: Boolean(rec.pk_i) });
     }
     // 만료된 세션은 리프를 넣지 않는다 — append-only 트리를 이미 죽은 세션으로 불리는 일이다(설계 §6).
@@ -1242,7 +1245,7 @@ async function publishNow({ heartbeat = false, wait = false } = {}) {
     state.registry.pendingSlots = state.registry.pendingSlots.slice(slots.length);
     persist();
     if (MIRRORS.length === 0) pruneMirroredBounds();
-    return { published: true, heartbeat: leaves.length === 0 && slots.length === 0, epoch, root: tree.getRoot().toString(), regRoot: registry.root().toString(), txHash: tx.hash, leaves, slots: slots.length, bounds: boundKeys.length };
+    return { published: true, heartbeat: leaves.length === 0 && slots.length === 0 && noNewBounds, epoch, root: tree.getRoot().toString(), regRoot: registry.root().toString(), txHash: tx.hash, leaves, slots: slots.length, bounds: boundKeys.length };
   }, { wait });
   if (r.published) scheduleRelayAfterPublish();
   return r;
@@ -1342,7 +1345,7 @@ async function relayMirror(m, { force = false, behindOnly = false } = {}) {
   // 갱신한다. 따라잡으면 null. 뒤처지지 않았으면 기존대로 head − last ≥ H 일 때 하트비트(§5 '변화 없어도 주기마다'). 기동 직후처럼
   // 오래 뒤처져 있던 거울은 head − last 쪽이 먼저 걸린다(OR — 그쪽을 리셋해도 behindSince 쪽 상한은 그대로다).
   // I-2(b): 어긋남(mismatch)이면 주기와 무관하게 즉시 덮는다.
-  m.mirroredEpoch = mv.epoch;   // 2026-10-25 §4: 거울이 지금 가진 epoch — pendingBounds 정리 기준
+  if (!mismatch) m.mirroredEpoch = mv.epoch;   // 2026-10-25 §4: 거울이 지금 가진 epoch — pendingBounds 정리 기준. 어긋난 거울(같은 epoch 다른 root)의 epoch 는 받은 것으로 치지 않는다(최종 검토 M2)
   const behind = mv.epoch < canon.epoch;
   if (!behind) m.behindSince = null;
   else m.behindSince ??= mv.head;

@@ -160,6 +160,19 @@ try {
     const pend = stateJson().pendingBounds.map((e) => e.pk_i);
     assert.equal(pend.includes(a.session.pk_i.toString()) || pend.includes(b.session.pk_i.toString()), false, '거울이 받았으니 비운다');
   });
+  await t('I1: 관리자가 먼저 폐기한(pk_i 없음) 세션을 사용자가 pk_i 를 실어 같은 bound 로 재폐기하면 pk_i 가 붙어 거울 counter 가 게시된다(멱등 응답, 리프는 그대로)', async () => {
+    const iss = await fresh(); const pk = BigInt(iss.session.pk_i);
+    const rA = await cia.adminPost('/cia/revoke', { uid: uid.toString(), scope: 'session', Cf_s: iss.cred.Cf_s, bound: '2' });
+    assert.equal(rA.status, 200, j(rA.body)); assert.equal(rA.body.mirrorBound, false);
+    const pendingBefore = stateJson().pending.length;
+    const r = await cia.post('/cia/revoke', await revokeBody(iss, 2n));
+    assert.equal(r.status, 200, j(r.body)); assert.equal(r.body.inserted, false); assert.equal(r.body.mirrorBound, true); assert.equal(r.body.bound, '2');
+    assert.equal(stateJson().pending.length, pendingBefore, '새 리프 없음');
+    assert.deepEqual(stateJson().pendingBounds.find((e) => e.pk_i === pk.toString()), { pk_i: pk.toString(), bound: '2', epoch: null });
+    assert.equal((await cia.adminPost('/cia/publish', {})).body.published, true);
+    await cia.adminPost('/cia/admin/relay', {});
+    assert.equal(await mirrorC.sessionBoundOf(pk), 3n);
+  });
 } finally {
   await cia.stop();
   provider.destroy();

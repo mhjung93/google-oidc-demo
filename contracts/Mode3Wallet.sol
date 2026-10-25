@@ -20,7 +20,7 @@ contract Mode3Wallet {
     IMode3Roots public immutable log;
     uint64 public immutable maxRootAge;   // 블록. root 가 이보다 오래됐으면 CIA 가 죽었거나 withholding 이다 — fail-closed
     uint64 public immutable maxLifetime;  // 블록. 지갑이 정한 max_height 의 상한(설계 §3.2 갱신) — 없으면 만료 없는 성명이 된다
-    uint64 public immutable rootWindow;   // 블록. 대체된 root 를 이만큼 더 받는다(2026-10-25 root 유효 창 §3) — 타 사용자의 폐기·등록이 내 진행 중 거래를 튕기지 않게. 0 = 최신만
+    uint64 public immutable rootWindow;   // 블록. 대체된 root 를 이만큼 더 받는다(2026-10-25 root 유효 창 §3) — 타 사용자의 폐기·등록이 내 진행 중 거래를 튕기지 않게. 0 = 최신 root 와, 같은 블록에서 대체된 직전 root 만
     uint256 public nonce;
 
     struct Payload {

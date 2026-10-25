@@ -795,6 +795,25 @@ try {
     assert.equal(walletInterface.parseError(err.data)?.name, 'StaleRevocationRoot', String(err.message));
   });
 
+  await t('§1 안전 종단: 옛 root 로 준비한 거래라도 그 세션을 지갑에서 폐기(pk_i 동봉) → 게시·중계 뒤에는 창 안에서도 SessionBounded', async () => {
+    const signer = await provider.getSigner(0);
+    const f = await deployFactory(signer, { verifierAddress: await deployVerifier(signer), arid: BigInt(arid), pkCIA: pk_CIA, pkTrace: pk_trace, logAddress: cia.mirrorAddress, rootWindow: 50n });
+    const S = newCh(); assert.equal((await login(S, { factoryAddress: f })).status, 200);
+    assert.equal((await wallet.post('/wallet/tx', { r_s: S.r_s, to: ethers.ZeroAddress, value: '0' })).status, 200, '첫 거래로 지갑 배포(nonce 0)');
+    const pre = await wallet.post('/wallet/tx/prepare', { r_s: S.r_s, to: ethers.ZeroAddress, value: '0' });   // nonce 1 의 거래를 미리 준비
+    assert.equal(pre.status, 200, j(pre.body)); assert.equal(pre.body.nonce, '1');
+    const rv = await wallet.post('/wallet/session/revoke', { r_s: S.r_s });   // 기본 bound = 현재 nonce(1): nonce ≥ 1 차단
+    assert.equal(rv.status, 200, j(rv.body)); assert.equal(rv.body.bound, '1'); assert.equal(rv.body.mirrorBound, true);
+    assert.equal((await cia.adminPost('/cia/publish', {})).body.published, true);
+    await relay();
+    const req = await walletInterface.decodeFunctionData('execute', pre.body.calldata);
+    assert.equal(await mirrorC.sessionBoundOf(req.pub[2]), 2n, '거울 counter = c + 1');
+    let err = null;
+    try { await provider.call({ to: pre.body.walletAddr, data: pre.body.calldata, from: await (await provider.getSigner(1)).getAddress() }); } catch (e) { err = e; }
+    assert.ok(err, '창 안(root 는 아직 수락)인데도 거절');
+    assert.equal(walletInterface.parseError(err.data)?.name, 'SessionBounded', String(err.message));
+  });
+
   await t('V8: 세션 하나가 지갑 밖에서(관리자) 폐기되면 재검증이 403 revoked_session 으로 그 세션만 지운다 — 사용자 자격증명은 그대로', async () => {
     const before = new Set((await cia.adminGet(`/cia/admin/sessions?uid=${uid}`)).body.sessions.map((x) => x.Cf_s));
     const a = await loginOnce();
