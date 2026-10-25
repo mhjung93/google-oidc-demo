@@ -75,7 +75,8 @@ try {
   await t('등록: profile 없이 → 기본 { 1990, KR }(201, 슬롯 0, auid); 두 번째는 409; 잘못된 pwd 는 IdP 의 401; /wallet/status 에 auid·attrs·profile·slot', async () => {
     const r = await wallet.post('/wallet/register', { uid, pwd: 'password123' });
     assert.equal(r.status, 201, j(r.body));
-    assert.deepEqual(Object.keys(r.body).sort(), ['attrs', 'auid', 'profile', 'slot', 'uid']);
+    assert.deepEqual(Object.keys(r.body).sort(), ['attrs', 'auid', 'profile', 'provider', 'slot', 'uid']);
+    assert.equal(r.body.provider, 'demo');
     assert.equal(r.body.uid, uid); assert.equal(r.body.slot, 0); assert.match(r.body.auid, /^[0-9]+$/);
     assert.deepEqual(r.body.attrs, ['1990', '410', '0', '0', '0', '0']); assert.deepEqual(r.body.profile, { birthYear: '1990', country: 'KR' });
     assert.equal((await wallet.post('/wallet/register', { uid, pwd: 'password123' })).status, 409);

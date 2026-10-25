@@ -74,6 +74,7 @@ try {
     assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, code: code1, s_u: 'zz', sk_u: r0.sk_u })).status, 400);
     const r = await wallet.post('/wallet/register', { uid: r0.uid, code: code1, s_u: r0.s_u, sk_u: r0.sk_u });
     assert.equal(r.status, 201, j(r.body));
+    assert.equal(r.body.provider, 'demo');
     assert.equal('sk_u' in r.body, false, '응답에는 sk_u 가 없다(요청에만 한 번 실린다)');
     assert.equal('s_u' in r.body, false, '응답에는 s_u 가 없다(요청에만 한 번 실린다)');
     assert.equal(typeof r.body.slot, 'number');
@@ -90,6 +91,7 @@ try {
     assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, code: code1, s_u: r0.s_u, sk_u: r0.sk_u })).status, 409);
     const s = (await wallet.get('/wallet/status')).body;
     assert.equal(s.registered, true); assert.equal(s.uid, '12345'); assert.deepEqual(s.attrs, ['1990', '410', '0', '0', '0', '0']); assert.equal(s.userCred, null);
+    assert.equal(s.provider, 'demo', '데모(code) 등록은 provider=demo — 로그인은 지금처럼 IdP 인증 창 경로');
     assert.deepEqual(s.profile, { birthYear: '1990', country: 'KR' });
     assert.equal(sim.getPublicInfo().registered, true); assert.equal(sim.getPublicInfo().hasUserCred, false);
   });

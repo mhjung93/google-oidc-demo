@@ -104,6 +104,8 @@ CHAIN=(
   tests/test_mode3_e2e.mjs
   tests/test_mode3_wallet_agent.mjs
   tests/test_mode3_wallet_snap.mjs
+  # snap 모드 OIDC 래퍼(Google) — 발급자 스텁, CIA_ISSUE_AUTH=code
+  tests/test_mode3_wallet_snap_oidc.mjs
   tests/test_mode3_demo_stack.mjs
   # 사용자 정의 속성 스키마(CIA_ATTR_SCHEMA_FILE)로 띄운 격리 스택 두 벌 — AttrGate 건너뜀·predicate_unavailable(2026-10-07 최종 리뷰 I2)
   tests/test_mode3_custom_schema.mjs

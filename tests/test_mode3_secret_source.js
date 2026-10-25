@@ -29,7 +29,7 @@ await t('snap 모드: 비밀은 증인에서, auid·slot 은 파일에서; setUs
 });
 await t('stripSecrets 는 s_u·sk_u·blind_u 를 지우고 auid·profile 을 남긴다', () => {
   const s = stripSecrets(REG);
-  assert.deepEqual(Object.keys(s).sort(), ['attrs', 'auid', 'pk_u', 'profile', 'slot', 'uid', 'userCred']);
+  assert.deepEqual(Object.keys(s).sort(), ['attrs', 'auid', 'pk_u', 'profile', 'provider', 'slot', 'uid', 'userCred']);
   assert.deepEqual(s.userCred, { Cf_u: '3', issuedAt: 't' }); assert.equal(s.auid, AUID);
   assert.equal(stripSecrets({ ...REG, profile: undefined }).profile, null, 'profile 이 없으면 null');
   assert.equal(stripSecrets(null), null);

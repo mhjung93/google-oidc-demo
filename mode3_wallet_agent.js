@@ -16,6 +16,7 @@ import express from 'express';
 import cors from 'cors';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { decodeJwt } from 'jose';
 import { ethers } from 'ethers';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { createSecretSource, stripSecrets, validateWitness } from './lib/mode3_secret_source.js';
@@ -25,7 +26,8 @@ import { sessionLeafRange, SESSION_BOUND_MAX, signRevokeBind } from './lib/mode3
 import { createRevocationSync } from './lib/mode3_rcl_sync.js';
 import { registryLeaf } from './lib/mode3_registry.js';
 import { signPayload, statementDigestFields, proofToCalldata, parseExecuteReceipt, decodeExecuteCalldata, factoryAt, walletAt, walletInterface, FACTORY_ABI, verifyReferenceCode, FACTORY_MAX_ROOT_AGE_BAND, FACTORY_MAX_LIFETIME_BAND, FACTORY_ROOT_WINDOW_BAND, PUB_INDEX, LOGIN_COUNTER } from './lib/mode3_onchain.js';
-import { SCALAR_MAX, ppid, randomScalar, auidOf } from './lib/mode3_credential.js';
+import { SCALAR_MAX, ppid, randomScalar, auidOf, aridSOf } from './lib/mode3_credential.js';
+import { uidOf, regNonce, issueNonce, newRevokeNonce } from './lib/mode3_oidc_nonce.js';
 import { verifyRpCert } from './lib/mode3_rp_cert.js';
 import { MODE3_ROOTS_ABI } from './lib/mode3_log.js';
 import { buildWalletHealth, applyHealthHeaders, bounded, originList, allowOrigin } from './lib/mode3_health.js';
@@ -96,7 +98,7 @@ const chainConfigMissing = () => (!LOG_ADDRESS ? 'CIA_LOG_ADDRESS not configured
 // sessions:     r_s → { arid, origin, PPID, pk_trace:{x,y}, factoryAddress|null, attrGateAddress|null, allowAgent("0"|"1"), r_rp, auid_s, arid_s,
 //                       credential:{Cf_u,Cf_s,max_height,chainid,allowAgent,sigma,pk_CIA,slot,regRoot,epoch,published}, sessionPrivKey, pk_i, issuedAt,
 //                       witness?: { s_u, blind_u, attrs, sk_u } }   ← snap 모드 전용, 메모리에만(persist 가 뺀다)
-// snap 모드의 registration 은 stripSecrets 결과({ uid, auid, pk_u, slot, profile, attrs, userCred:{Cf_u,issuedAt} }) 다.
+// snap 모드의 registration 은 stripSecrets 결과({ uid, auid, pk_u, slot, profile, attrs, provider, userCred:{Cf_u,issuedAt} }) 다.
 // version 9 (2026-10-12, V11): r_u·cm_u 삭제, auid(= Poseidon(T_AUID, uid, s_u))·profile(사용자 입력, D15) 추가; 세션에 r_rp·auid_s·arid_s.
 //   옛 파일은 등록만 유지하고(file 모드 — auid 를 s_u 로 재계산; snap 모드는 비밀이 없어 재계산할 수 없으므로 등록을 비운다) 세션·userCred 를 비운다.
 // version 10 (2026-10-22): pendingBounds(세션키별 체인 반영 대기 중인 setSessionBound 요청) 추가 — 옛 파일은 빈 배열로 시작한다.
@@ -200,6 +202,24 @@ function pkCia() {
     const k = await r.json();
     return { x: BigInt(k.pk_CIA.x), y: BigInt(k.pk_CIA.y) };
   })().catch((e) => { pkCiaP = null; throw e; }));
+}
+
+// OIDC 래퍼(2026-10-26 Snap OIDC 래퍼 §3): IdP 가 공개하는 oidc 설정(enabled·provider·clientId·issuer). 지갑 페이지가 Google 버튼을 그리고(clientId),
+// 에이전트가 토큰의 sub 로 uid 를 미리 계산하는 데(provider) 쓴다. 받으면 고정, 실패는 캐시하지 않는다(pkCia() 와 같은 메모이즈).
+const OIDC_OFF = { enabled: false, provider: null, clientId: null, issuer: null };
+let oidcCfgP = null;
+function oidcConfig() {
+  return (oidcCfgP ??= (async () => {
+    const r = await fetch(`${CIA_URL}/cia/public_keys`, { signal: AbortSignal.timeout(2000) });
+    if (!r.ok) throw new Error(`IdP 에서 oidc 설정을 받지 못했다 (${r.status})`);
+    const o = (await r.json()).oidc;
+    return o?.enabled ? { enabled: true, provider: o.provider, clientId: o.clientId, issuer: o.issuer } : OIDC_OFF;
+  })().catch((e) => { oidcCfgP = null; throw e; }));
+}
+/** 토큰의 sub 로 uid 를 계산한다 — 서명은 검증하지 않는다(판정은 IdP 몫, 스펙 §5). 못 읽으면 null. */
+function oidcUidOf(provider, idToken) {
+  try { const { sub } = decodeJwt(idToken); return typeof sub === 'string' && sub ? uidOf(provider, sub) : null; }
+  catch { return null; }
 }
 
 // 속성 스키마(스펙 2 §5.3): IdP 가 공개하는 것을 받아 둔다. 못 받으면(HTTP 오류·네트워크·2초 타임아웃) 공유 모듈의 기본 스키마로 간다(경고) —
@@ -306,8 +326,9 @@ async function chooseUserCred(synced, src) {
 }
 
 /** 세션 발급(V11 §5.2): C_u(blind_u)·C_s·π_IdP 를 한 요청으로. 200 이면 세션을 저장하고, 새 C_u 였으면 사용자 자격증명도 바꿔 앉힌다(옛 세션은 함께 버린다).
+ *  id_token: Google 계정의 발급 토큰(issue:H(pk_u|arid_s) nonce) — 그대로 /cia/issue 본문에 얹는다.
  *  auth_code(Task 13): IdP 가 CIA_ISSUE_AUTH=code 로 떠 있을 때만 보는 1회용 코드 — 그대로 /cia/issue 본문에 얹는다(로그에 찍지 않는다). */
-async function issueSession({ arid, r_s, r_rp, pk_trace, allowAgent, factoryAddress, attrGateAddress, head, src, blind_u, auth_code = null }) {
+async function issueSession({ arid, r_s, r_rp, pk_trace, allowAgent, factoryAddress, attrGateAddress, head, src, blind_u, auth_code = null, id_token = null }) {
   const reg = src.registration();
   const session = createSessionKey();
   const chainid = await chainId();
@@ -318,6 +339,7 @@ async function issueSession({ arid, r_s, r_rp, pk_trace, allowAgent, factoryAddr
   });
   if (ov?.uid) req.body.uid = reg.uid;   // 요청 본문의 uid 는 진짜 — C_u·π_IdP 안의 uid 만 바뀐다(스펙 §8.3)
   if (auth_code) req.body.auth_code = auth_code;
+  if (id_token) req.body.id_token = id_token;   // OIDC 래퍼(2026-10-26): Google 계정은 발급마다 토큰 — 로그에 찍지 않는다
   const r = await ciaPost('/cia/issue', req.body);
   if (r.status !== 200) return { r, demo: ov ? 'override:issue' : undefined };
   // V10(§4.5): 계정 폐기로 슬롯이 은퇴된 뒤 되살아난 계정의 재발급은 새 슬롯을 받는다 — 응답의 슬롯을 따른다.
@@ -428,8 +450,11 @@ app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'wallet.ht
 // ciaUrl(Task 13, 2026-10-23): 지갑 페이지(Task 14)가 IdP 쪽 페이지(인증 창·코드 등록)로 안내하려면 필요하다 — 당시 Ruling 7
 // 의 "IdP 주소는 싣지 않는다"를 번복한다(어차피 /mode3/health 가 RP 오리진에도 ciaUrl 을 낸다 — 공개 정보로 재분류).
 app.get('/wallet/config', configCors, async (req, res) => {
-  try { res.json({ secrets: SECRETS, snapId: SNAP_ID, walletOrigin: WALLET_ORIGIN, rpcUrl: RPC_URL, chainId: (await chainId()).toString(), ciaUrl: CIA_URL }); }
-  catch (e) { res.status(500).json({ error: e.message }); }
+  try {
+    let oidc = OIDC_OFF;
+    try { oidc = await oidcConfig(); } catch { /* IdP 를 못 읽으면 꺼진 것으로 보인다 — 다음 요청이 다시 읽는다 */ }
+    res.json({ secrets: SECRETS, snapId: SNAP_ID, walletOrigin: WALLET_ORIGIN, rpcUrl: RPC_URL, chainId: (await chainId()).toString(), ciaUrl: CIA_URL, oidc });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // 지갑 페이지(같은 오리진)가 사용자에게 salt(s_u)를 보여 주는 라우트(Task 13/14, 컨트롤러 addendum 2026-10-23): file 모드에서만
@@ -537,7 +562,7 @@ app.get('/wallet/status', async (req, res) => {
   const userCred = uc ? { Cf_u: uc.Cf_u, issuedAt: uc.issuedAt, revoked: lastRegistry ? !lastRegistry.match : null } : null;
   const st = rcl ? rcl.stats() : null;
   res.json({
-    registered: Boolean(reg), uid: reg?.uid ?? null, auid: reg?.auid ?? null, slot: reg?.slot ?? null, attrs: reg?.attrs ?? null, userCred, sessions, pendingBounds,
+    registered: Boolean(reg), uid: reg?.uid ?? null, provider: reg ? (reg.provider ?? 'demo') : null, auid: reg?.auid ?? null, slot: reg?.slot ?? null, attrs: reg?.attrs ?? null, userCred, sessions, pendingBounds,
     profile: reg?.profile ?? null, attrSchema: attrSchema ? schemaInfo(attrSchema.schema, attrSchema.hash) : null,
     attrsView: reg && attrSchema ? decodeAttrs(attrSchema.schema, reg.attrs, reg.profile ?? null) : null,
     registry: lastRegistry, demoOverride: demoOverride ? { scope: demoOverride.scope, fields: Object.keys(demoOverride).filter((k) => k !== 'scope') } : null,
@@ -571,17 +596,49 @@ app.post('/wallet/demo/override', (req, res) => {
   res.json({ ok: true, override: { scope, fields: Object.keys(demoOverride).filter((k) => k !== 'scope') } });
 });
 
+// OIDC 래퍼 nonce(2026-10-26 Snap OIDC 래퍼 §2): 지갑 페이지가 Google 버튼에 넣을 nonce 를 계산한다 — 비밀을 내지 않는다(pk_u·arid_s 의 해시).
+// register 는 sk_u 를 받지만 pk_u 계산에만 쓰고 저장·로그하지 않는다(바로 다음 /wallet/register 가 같은 sk_u 를 보낸다). CORS 없음(같은 오리진 전용).
+app.post('/wallet/oidc/nonce', async (req, res) => {
+  try {
+    const { purpose, sk_u, arid, r_rp } = req.body ?? {};
+    if (purpose === 'register') {
+      if (typeof sk_u !== 'string' || !/^[0-9a-fA-F]{64}$/.test(sk_u)) return res.status(400).json({ error: 'sk_u(hex 64자) 필요' });
+      return res.json({ nonce: regNonce(await eddsaPubOf(sk_u)) });
+    }
+    if (purpose === 'issue') {
+      if (!isDec(arid) || !isDec(r_rp)) return res.status(400).json({ error: 'arid, r_rp(10진 문자열) 필요' });
+      if (!state.registration?.pk_u) return res.status(409).json({ reason: 'not_registered' });
+      return res.json({ nonce: issueNonce(state.registration.pk_u, await aridSOf({ arid: BigInt(arid), r_rp: BigInt(r_rp) })) });
+    }
+    if (purpose === 'revoke') return res.json({ nonce: newRevokeNonce() });
+    res.status(400).json({ reason: 'bad_purpose', detail: 'purpose 는 register·issue·revoke' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // V11 §3.1·§3.3 — 등록 키(sk_u/pk_u)·salt(s_u) 는 지갑이 만들고 auid = Poseidon(T_AUID, uid, s_u) 를 IdP 에 낸다. 속성은 **사용자가 넣는다**(D15):
 // 본문 profile(스키마 이름→값, 기본 DEFAULT_PROFILE)을 공개 스키마로 인코딩해 attrs 를 만든다 — IdP 는 받지 않는다.
 // snap 모드(metamask-snap §4.1): s_u·sk_u 는 Snap 이 만들고 페이지가 한 번 넘긴다(로그인 증인과 같은 모델). 파일에는 stripSecrets 결과만 남는다.
 // Task 13(2026-10-23): pwd 대신 code(가입 계정이 /cia/user/register_code 로 받은 1회용 코드, 세션 필요)도 받는다 —
 // snap 모드는 Snap 의 register(uid)가 더 이상 비밀번호를 받지 않으므로(Task 15) 지갑 페이지가 pwd 대신 code 를 싣는다.
 // 둘 다 왔으면 code 를 우선한다(IdP /cia/register 의 같은 우선순위와 맞춘다) — IdP 본문에는 받은 쪽 하나만 싣는다.
+// 2026-10-26: id_token(Google 등록) — uid 는 토큰의 sub 로 계산하고 IdP 에는 uid 없이 { id_token, auid, pk_u, sig_reg } 를 낸다.
 app.post('/wallet/register', async (req, res) => {
   try {
-    const { uid, pwd, code, profile: profileIn = null, s_u: suIn, sk_u: skIn } = req.body ?? {};
-    if (!isDec(uid)) return res.status(400).json({ error: 'uid(10진 문자열) 필요' });
-    if (typeof pwd !== 'string' && typeof code !== 'string') return res.status(400).json({ error: 'pwd 또는 code 필요' });
+    const { uid: uidIn, pwd, code, id_token, profile: profileIn = null, s_u: suIn, sk_u: skIn } = req.body ?? {};
+    let uid = uidIn, oidcProvider = null;
+    if (id_token !== undefined) {
+      if (uidIn !== undefined || pwd !== undefined || code !== undefined) return res.status(400).json({ error: 'id_token 과 uid·pwd·code 는 함께 줄 수 없다' });
+      if (typeof id_token !== 'string') return res.status(400).json({ error: 'id_token 은 문자열' });
+      let oc;
+      try { oc = await oidcConfig(); } catch (e) { return res.status(502).json({ reason: 'cia_unavailable', detail: e.message }); }
+      if (!oc.enabled) return res.status(503).json({ reason: 'oidc_disabled' });
+      uid = oidcUidOf(oc.provider, id_token);
+      if (!uid) return res.status(400).json({ reason: 'bad_id_token', detail: '토큰의 sub 를 읽지 못했다' });
+      oidcProvider = oc.provider;
+    } else {
+      if (!isDec(uid)) return res.status(400).json({ error: 'uid(10진 문자열) 필요' });
+      if (typeof pwd !== 'string' && typeof code !== 'string') return res.status(400).json({ error: 'pwd 또는 code 필요' });
+    }
     if (BigInt(uid) >= SCALAR_MAX) return res.status(400).json({ error: 'uid 는 2^250 미만' });
     if (SECRETS === 'snap' && !(isDec(suIn) && BigInt(suIn) < SCALAR_MAX && typeof skIn === 'string' && /^[0-9a-fA-F]{64}$/.test(skIn))) return res.status(400).json({ error: 'snap 모드는 s_u(10진, 2^250 미만)·sk_u(hex) 필요' });
     if (profileIn !== null && (typeof profileIn !== 'object' || Array.isArray(profileIn))) return res.status(400).json({ reason: 'bad_attr', detail: 'profile_required' });
@@ -598,17 +655,19 @@ app.post('/wallet/register', async (req, res) => {
     const normalized = normalizeProfile(schema, profile);
     const reg = SECRETS === 'snap' ? { s_u: BigInt(suIn), sk_u: skIn, auid: await auidOf({ uid: BigInt(uid), s_u: BigInt(suIn) }), pk_u: await eddsaPubOf(skIn) } : await createRegistration(BigInt(uid));
     const pub = { x: reg.pk_u.x.toString(), y: reg.pk_u.y.toString() };
-    const idBody = typeof code === 'string' ? { code } : { pwd };
-    const r = await ciaPost('/cia/register', { uid, ...idBody, auid: reg.auid.toString(), pk_u: pub, sig_reg: await signRegistration(reg.sk_u, BigInt(uid), reg.auid) });
+    const idBody = oidcProvider ? { id_token } : typeof code === 'string' ? { code, uid } : { pwd, uid };
+    const r = await ciaPost('/cia/register', { ...idBody, auid: reg.auid.toString(), pk_u: pub, sig_reg: await signRegistration(reg.sk_u, BigInt(uid), reg.auid) });
     if (r.status !== 201) {
       const status = r.status === 401 || r.status === 409 ? r.status : 502;
       return res.status(status).json({ reason: 'register_failed', cia: r.body });
     }
+    if (oidcProvider && r.body.uid !== uid) return res.status(502).json({ reason: 'uid_mismatch', detail: 'IdP 가 정한 uid 가 토큰의 sub 로 계산한 값과 다르다' });
+    const provider = r.body.provider ?? oidcProvider ?? 'demo';
     await noteSchemaHint(r.body.schemaHash ?? null);
-    const full = { uid, s_u: reg.s_u.toString(), sk_u: reg.sk_u, pk_u: pub, auid: reg.auid.toString(), slot: r.body.slot, profile: normalized, attrs, userCred: null };
+    const full = { uid, s_u: reg.s_u.toString(), sk_u: reg.sk_u, pk_u: pub, auid: reg.auid.toString(), slot: r.body.slot, profile: normalized, attrs, provider, userCred: null };
     state.registration = SECRETS === 'snap' ? stripSecrets(full) : full;
     persist();
-    res.status(201).json({ uid, slot: r.body.slot, auid: reg.auid.toString(), attrs, profile: normalized });
+    res.status(201).json({ uid, slot: r.body.slot, auid: reg.auid.toString(), attrs, profile: normalized, provider });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -664,9 +723,10 @@ app.post('/wallet/authorize/precheck', async (req, res) => {
 app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
   let src = null;   // 바깥 catch 도 src.pending 을 싣도록 try 밖에 둔다(리뷰 S3)
   try {
-    const { arid, origin, cert_s, pk_trace, r_s, r_rp, allowAgent = '0', factoryAddress = null, attrGateAddress = null, witness = null, verifiedOrigin = null, disclose = null, set = null, auth_code = null } = req.body ?? {};
+    const { arid, origin, cert_s, pk_trace, r_s, r_rp, allowAgent = '0', factoryAddress = null, attrGateAddress = null, witness = null, verifiedOrigin = null, disclose = null, set = null, auth_code = null, id_token = null } = req.body ?? {};
     if (!isDec(arid) || typeof origin !== 'string' || !cert_s || !pk_trace || !isDec(pk_trace.x) || !isDec(pk_trace.y) || !isDec(r_s) || !isDec(r_rp)) return res.status(400).json({ error: 'arid, origin, cert_s, pk_trace{x,y}, r_s, r_rp 필요' });
     if (allowAgent !== '0' && allowAgent !== '1') return res.status(400).json({ error: 'allowAgent 는 "0" 또는 "1"' });
+    if (id_token !== null && typeof id_token !== 'string') return res.status(400).json({ error: 'id_token 은 문자열' });
     if (factoryAddress !== null && !isAddr(factoryAddress)) return res.status(400).json({ error: 'factoryAddress 는 주소' });
     // attrGateAddress 는 RP 가 알려주는 값을 세션에 실어 나를 뿐 지갑이 검증하지 않는다(스펙 §6.1) — 지갑 폼 기본값(to)으로만 쓰인다.
     if (attrGateAddress !== null && !isAddr(attrGateAddress)) return res.status(400).json({ error: 'attrGateAddress 는 주소' });
@@ -737,7 +797,7 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     const pick = await chooseUserCred(synced, src);
     if (pick.status === 403) return res.status(403).json({ reason: pick.reason, ...(pick.registry ? { registry: pick.registry } : {}), timings });
     t = Date.now();
-    const issued = await issueSession({ arid, r_s: rs, r_rp: rrp, pk_trace: { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress: factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress: attrGateAddress ? ethers.getAddress(attrGateAddress) : null, head: synced.head, src, blind_u: pick.blind_u, auth_code });
+    const issued = await issueSession({ arid, r_s: rs, r_rp: rrp, pk_trace: { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress: factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress: attrGateAddress ? ethers.getAddress(attrGateAddress) : null, head: synced.head, src, blind_u: pick.blind_u, auth_code, id_token });
     timings.issueMs = Date.now() - t;
     timings.userCredMs = pick.fresh ? timings.issueMs : 0;   // 새 C_u 를 받은 로그인만 0 이 아니다(옛 의미 유지 — 테스트·화면이 본다)
     let r = issued.r, demo = issued.demo;
@@ -748,7 +808,7 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
       // auth_code 는 1회용이라 첫 시도에서 이미 소비됐을 수 있다(IdP 는 sig_u·π_IdP 검증 뒤에 소비한다 — cred_revoked 는 그 뒤에만
       // 난다) — 재시도가 같은 코드를 다시 쓰면 bad_code 로 막힐 수 있다. 코드 재발급은 이 흐름 밖(인증 창)이라 여기서는
       // 그대로 한 번 더 건네는 것 이상은 하지 않는다(알려진 한계 — 보고서에 남긴다).
-      const retried = await issueSession({ arid, r_s: rs, r_rp: rrp, pk_trace: { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress: factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress: attrGateAddress ? ethers.getAddress(attrGateAddress) : null, head: synced.head, src, blind_u: randomScalar(), auth_code });
+      const retried = await issueSession({ arid, r_s: rs, r_rp: rrp, pk_trace: { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress: factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress: attrGateAddress ? ethers.getAddress(attrGateAddress) : null, head: synced.head, src, blind_u: randomScalar(), auth_code, id_token });
       const retryMs = Date.now() - t;
       timings.issueMs += retryMs;
       timings.userCredMs = retryMs;
@@ -1012,7 +1072,21 @@ app.post('/wallet/revalidate', loginCors, async (req, res) => {
 // 남의 페이지가 숨긴 폼으로 이 라우트(되돌릴 수 없는 자기 폐기)를 부를 수 있게 된다. 그때는 CSRF 토큰이나 Origin 검사를 함께 넣는다.
 app.post('/wallet/self_revoke', async (req, res) => {
   try {
-    const { uid, pwd } = req.body ?? {};
+    const { uid, pwd, id_token } = req.body ?? {};
+    // Google 계정(2026-10-26 Snap OIDC 래퍼 §2.3): 비밀번호 대신 revoke: nonce 의 id_token. 이 지갑이 든 계정의 토큰만 중계한다
+    // (토큰의 sub 로 계산한 uid 를 등록 uid 와 대조 — 서명 검증은 IdP 몫).
+    if (id_token !== undefined) {
+      if (typeof id_token !== 'string' || uid !== undefined || pwd !== undefined) return res.status(400).json({ error: 'id_token(문자열)만 — uid·pwd 와 함께 줄 수 없다' });
+      if (!state.registration) return res.status(409).json({ reason: 'not_registered' });
+      let oc;
+      try { oc = await oidcConfig(); } catch (e) { return res.status(502).json({ reason: 'cia_unavailable', detail: e.message }); }
+      if (!oc.enabled) return res.status(503).json({ reason: 'oidc_disabled' });
+      const tokUid = oidcUidOf(oc.provider, id_token);
+      if (!tokUid) return res.status(400).json({ reason: 'bad_id_token' });
+      if (tokUid !== state.registration.uid) return res.status(403).json({ reason: 'uid_mismatch' });
+      const r = await ciaPost('/cia/account/self_revoke', { id_token });
+      return res.status(r.status).json(r.body ?? {});
+    }
     if (!isDec(uid) || typeof pwd !== 'string') return res.status(400).json({ error: 'uid(10진 문자열), pwd 필요' });
     // 이 지갑이 들고 있는 계정만 중계한다 — 다른 경로가 validateWitness 로 등록 uid 를 대조하는 것과 같은 규칙이다.
     // 없으면 임의 uid·pwd 를 IdP 에 던져 보는 통로가 된다(Ruling 9 라운드, 리뷰 Minor 3).
