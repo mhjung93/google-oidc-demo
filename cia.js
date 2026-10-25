@@ -33,7 +33,7 @@ import * as snarkjs from 'snarkjs';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { credMessageV11, compressPoint, randomScalar } from './lib/mode3_credential.js';
 import { DEFAULT_ATTR_SCHEMA, loadSchema, schemaInfo } from './lib/mode3_attr_schema.js';
-import { sessionLeaf, createRevocationTree, SESSION_BOUND_MAX } from './lib/mode3_revocation.js';
+import { sessionLeaf, createRevocationTree, SESSION_BOUND_MAX, verifyRevokeBind } from './lib/mode3_revocation.js';
 import { isValidPoint, pointFromStrings, issueRequestMessageV11, slotRequestMessage, revokeSessionMessage, registerMessage } from './lib/mode3_issuance.js';
 import { PUB_INDEX } from './lib/mode3_onchain.js';
 import { loadIdpVkey, idpPublicSignals, verifyIdp, IDP_VKEY_PATH } from './lib/mode3_idp_proof.js';
@@ -193,7 +193,7 @@ function loadOrCreateKeys() {
 //            결정(승인·거절)이 끝나면 복호 재료 c1·c2·D_svc 는 지운다(2026-09-25 리뷰 B-4) — 재요청 대조는 tagKey 가 맡는다
 // registry:  { depth, next, leaves: {"<index>": "<leaf>"(10진)}, pendingSlots: [{index, leaf}] }   사용자 자격증명 등록부(V9, 2026-10-01 §3)
 // V10(2026-10-02): accounts[uid].receipt(마지막 폐기 접수증 또는 null)·slotRetired(대기열로 영구 은퇴된 슬롯이면 true),
-//            lastPublication = { revRoot, regRoot, epoch, hLeaves, hIdx, hSlots, sig, txHash } (마지막 성공 게시 — 거울 릴레이용)
+//            lastPublication = { revRoot, regRoot, epoch, hLeaves, hIdx, hSlots, sig, txHash, boundKeys, boundValues(10진 문자열 배열, 2026-10-25) } (마지막 성공 게시 — 거울 릴레이용)
 //            signedEpochMax = 서명한 가장 큰 epoch(게시 성공 여부 무관, 2026-10-02 최종 리뷰 I-2) — 다음 게시는 이보다 큰 epoch 를 쓴다
 // revoked / pending / epoch
 // 버전·이행은 lib/mode3_cia_state.js (v6, 2026-09-21).
@@ -1049,10 +1049,21 @@ app.post('/cia/revoke', userCors, async (req, res) => {
       } catch { ok = false; }
       if (!ok) return res.status(400).json({ error: 'bad user signature' });
     }
+    // 2026-10-25 root 유효 창 §4: 지갑이 세션키 pk_i 를 세션키 서명 sig_i 로 묶어 함께 내면 거울 공개 counter 게시 대기열에 넣는다.
+    // 둘 중 하나만 오거나 서명이 틀리면 400 — 묶지 않으면 sig_u 만 있는 사용자가 남의 pk_i 를 넣어 그 세션을 막을 수 있다(낮추기만이라 못 되돌린다).
+    const { pk_i: pkIn, sig_i } = req.body ?? {};
+    let boundKey = null;
+    if (pkIn !== undefined || sig_i !== undefined) {
+      if (!isDec(pkIn) || BigInt(pkIn) >= (1n << 160n) || typeof sig_i !== 'string' || !isDec(nonce)) {
+        return res.status(400).json({ error: 'pk_i(10진, < 2^160)·sig_i·nonce 가 함께 필요하다', reason: 'bad_session_signature' });
+      }
+      if (!verifyRevokeBind(pkIn, { uid, Cf_s, bound, nonce }, sig_i)) return res.status(400).json({ error: 'bad session key signature', reason: 'bad_session_signature' });
+      boundKey = BigInt(pkIn).toString();
+    }
     if (!rec) return res.status(404).json({ error: 'unknown session', reason: 'unknown_session' });
     // 이미 폐기된 세션의 재폐기: bound 를 기존보다 낮추는 요청만 새 리프를 넣는다(낮추기, 설계 §3) — 같거나 올리는 요청은 멱등 응답.
     if (rec.revokedAt && BigInt(bound) >= BigInt(rec.bound ?? '0')) {
-      return res.json({ inserted: false, bound: rec.bound ?? '0', root: tree.getRoot().toString(), pending: state.pending.length });
+      return res.json({ inserted: false, bound: rec.bound ?? '0', root: tree.getRoot().toString(), pending: state.pending.length, mirrorBound: Boolean(rec.pk_i) });
     }
     // 만료된 세션은 리프를 넣지 않는다 — append-only 트리를 이미 죽은 세션으로 불리는 일이다(설계 §6).
     // 만료 기준은 head > max_height 다 — 컨트랙트(Mode3Wallet.sol `block.number > pub[3]`)·RP(lib/mode3_rp.js)와 같은 부등호를
@@ -1067,8 +1078,10 @@ app.post('/cia/revoke', userCors, async (req, res) => {
     if (inserted) { state.revoked.push(leaf); state.pending.push(leaf); }
     cur.revokedAt = new Date().toISOString();
     cur.bound = BigInt(bound).toString();
+    if (boundKey) cur.pk_i = boundKey;            // 거울 공개용 — 발급 때는 모르는 값(D1)이라 폐기 때 지갑이 알려 준다
+    if (cur.pk_i) queueBound(cur.pk_i, cur.bound);   // 관리자 폐기도 레코드에 pk_i 가 있으면(앞선 사용자 폐기) 같이 게시한다
     persist();
-    res.json({ inserted, leaf, bound: cur.bound, root: tree.getRoot().toString(), pending: state.pending.length });
+    res.json({ inserted, leaf, bound: cur.bound, root: tree.getRoot().toString(), pending: state.pending.length, mirrorBound: Boolean(cur.pk_i) });
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
@@ -1126,6 +1139,30 @@ async function waitPublishing() {
  * 클릭 등)은 여전히 409(wait=false 기본). 내부 호출자(publishSafely·heartbeatTick·릴레이)는 wait=true 로 불러 끝날 때까지
  * 기다렸다 잠금을 원자적으로 잡는다(withPublishLock, 2026-10-02 Task 6 리뷰 C1).
  */
+// 2026-10-25 root 유효 창 §4: 거울 공개 세션 counter 대기열.
+/** 같은 pk_i 는 더 낮은 bound 로만 갈아끼운다(컨트랙트도 낮추기만 받는다). epoch:null = 아직 어느 게시에도 실리지 않음. 호출자가 persist 한다. */
+function queueBound(pk_i, bound) {
+  const cur = state.pendingBounds.find((e) => e.pk_i === pk_i);
+  if (!cur) { state.pendingBounds.push({ pk_i, bound, epoch: null }); return; }
+  if (BigInt(bound) < BigInt(cur.bound)) { cur.bound = bound; cur.epoch = null; }
+}
+/** 게시에 실을 (pk_i, bound) — 대기열 **전부**. 이미 실린 항목도 모든 거울이 그 epoch 를 받을 때까지 다시 싣는다: 거울 중계는 최신 epoch 만
+ *  옮기므로 건너뛴 epoch 의 bound 가 유실되지 않게. 컨트랙트는 같은 값·올리기를 무시한다. */
+function boundsPayload() {
+  return { boundKeys: state.pendingBounds.map((e) => BigInt(e.pk_i)), boundValues: state.pendingBounds.map((e) => Number(e.bound)) };
+}
+/** 모든 거울이 받은 epoch(거울이 없으면 캐노니컬 epoch) 이하에 실린 항목을 버린다. 아직 한 번도 읽지 못한 거울이 있으면 보수적으로 둔다. */
+function pruneMirroredBounds() {
+  let floor;
+  if (MIRRORS.length === 0) floor = BigInt(state.epoch);
+  else {
+    if (MIRRORS.some((m) => m.mirroredEpoch === undefined)) return;
+    floor = MIRRORS.reduce((acc, m) => (m.mirroredEpoch < acc ? m.mirroredEpoch : acc), MIRRORS[0].mirroredEpoch);
+  }
+  const before = state.pendingBounds.length;
+  state.pendingBounds = state.pendingBounds.filter((e) => e.epoch === null || BigInt(e.epoch) > floor);
+  if (state.pendingBounds.length !== before) persist();
+}
 async function publishNow({ heartbeat = false, wait = false } = {}) {
   const r = await withPublishLock(async () => {
     if (!LOG_ADDRESS) throw Object.assign(new Error('CIA_LOG_ADDRESS not configured'), { status: 503 });
@@ -1178,11 +1215,14 @@ async function publishNow({ heartbeat = false, wait = false } = {}) {
     }
     if (retiredOnChain.length) { console.warn(`[cia] 체인에서 이미 은퇴한 슬롯 ${retiredOnChain.join(',')} 에 0 아닌 리프가 실려 있어 0 으로 바꿔 싣는다(옛 백업 복원?)`); persist(); }
     const noRev = state.pending.length === 0, noSlots = state.registry.pendingSlots.length === 0;
-    if (noRev && noSlots && !heartbeat) return { published: false, heartbeat: false, epoch: state.epoch, root: tree.getRoot().toString(), regRoot: registry.root().toString() };
+    const noNewBounds = !state.pendingBounds.some((e) => e.epoch === null);   // 2026-10-25 §4: 아직 안 실린 거울 counter 가 있으면 게시한다
+    if (noRev && noSlots && noNewBounds && !heartbeat) return { published: false, heartbeat: false, epoch: state.epoch, root: tree.getRoot().toString(), regRoot: registry.root().toString() };
     const leaves = state.pending.map(rootToBytes32);
     const slots = state.registry.pendingSlots.slice();   // 이번 tx 에 실을 갱신(순서 유지 — 같은 칸의 set→0 도 순서대로 재생돼야 한다)
     const slotIdx = slots.map((s) => s.index), slotLeaves = slots.map((s) => rootToBytes32(s.leaf));
     const revRoot = rootToBytes32(tree.getRoot()), regRoot = rootToBytes32(registry.root());
+    const { boundKeys, boundValues } = boundsPayload();
+    const boundsSnapshot = state.pendingBounds.map((e) => ({ pk_i: e.pk_i, bound: e.bound }));   // 이번 게시에 실린 (pk_i, bound) — 게시 중 더 낮아진 항목은 epoch 를 받지 않는다
     // 2026-10-02 V10 최종 리뷰 I-2(a): 서명한 epoch 는 다시 쓰지 않는다. 서명 뒤 게시가 실패하면(채굴 전에 접수증이 끼어
     // PendingRevocationNotApplied 로 revert 등) 그 calldata 의 epoch E 서명이 이미 공개돼 있다 — state.epoch 가 안 올랐다고 E 를
     // 다른 내용으로 다시 서명하면, 누군가 revert 된 쪽을 거울에 먼저 올려 같은 epoch 다른 root 가 된다. 그래서 서명 **전에**
@@ -1190,17 +1230,19 @@ async function publishNow({ heartbeat = false, wait = false } = {}) {
     const epoch = Math.max(state.epoch, state.signedEpochMax ?? 0) + 1;
     state.signedEpochMax = epoch;
     persist();
-    const sig = await signPublicationV3(ethWallet, { ...(await canonicalParams()), revRoot, regRoot, epoch, revLeaves: leaves, slotIdx, slotLeaves });
-    const tx = await log.publish(revRoot, regRoot, epoch, leaves, slotIdx, slotLeaves, sig);
+    const sig = await signPublicationV3(ethWallet, { ...(await canonicalParams()), revRoot, regRoot, epoch, revLeaves: leaves, slotIdx, slotLeaves, boundKeys, boundValues });
+    const tx = await log.publish(revRoot, regRoot, epoch, leaves, slotIdx, slotLeaves, boundKeys, boundValues, sig);
     await tx.wait();
     state.epoch = epoch;
     // V10: 거울 릴레이(Task 6)가 같은 서명을 그대로 올린다 — 거울은 배열 대신 해시 세 개를 받는다.
-    state.lastPublication = { revRoot, regRoot, epoch: String(epoch), ...entryHashes({ revLeaves: leaves, slotIdx, slotLeaves }), sig, txHash: tx.hash };
+    state.lastPublication = { revRoot, regRoot, epoch: String(epoch), ...entryHashes({ revLeaves: leaves, slotIdx, slotLeaves, boundKeys, boundValues }), boundKeys: boundKeys.map(String), boundValues: boundValues.map(String), sig, txHash: tx.hash };
+    for (const e of state.pendingBounds) if (boundsSnapshot.some((s) => s.pk_i === e.pk_i && s.bound === e.bound)) e.epoch = String(epoch);
     for (const l of state.pending.slice(0, leaves.length)) await publishedTree.insert(BigInt(l));
     state.pending = state.pending.slice(leaves.length);
     state.registry.pendingSlots = state.registry.pendingSlots.slice(slots.length);
     persist();
-    return { published: true, heartbeat: leaves.length === 0 && slots.length === 0, epoch, root: tree.getRoot().toString(), regRoot: registry.root().toString(), txHash: tx.hash, leaves, slots: slots.length };
+    if (MIRRORS.length === 0) pruneMirroredBounds();
+    return { published: true, heartbeat: leaves.length === 0 && slots.length === 0, epoch, root: tree.getRoot().toString(), regRoot: registry.root().toString(), txHash: tx.hash, leaves, slots: slots.length, bounds: boundKeys.length };
   }, { wait });
   if (r.published) scheduleRelayAfterPublish();
   return r;
@@ -1263,7 +1305,7 @@ function isEpochNotIncreasing(m, e) {
 }
 async function sendMirrorTx(m, lp) {
   const send = async () => {
-    const tx = await m.contract.publish(lp.revRoot, lp.regRoot, lp.epoch, lp.hLeaves, lp.hIdx, lp.hSlots, lp.sig);
+    const tx = await m.contract.publish(lp.revRoot, lp.regRoot, lp.epoch, lp.hLeaves, lp.hIdx, lp.hSlots, (lp.boundKeys ?? []).map(BigInt), (lp.boundValues ?? []).map(Number), lp.sig);
     await tx.wait();
     return tx.hash;
   };
@@ -1300,6 +1342,7 @@ async function relayMirror(m, { force = false, behindOnly = false } = {}) {
   // 갱신한다. 따라잡으면 null. 뒤처지지 않았으면 기존대로 head − last ≥ H 일 때 하트비트(§5 '변화 없어도 주기마다'). 기동 직후처럼
   // 오래 뒤처져 있던 거울은 head − last 쪽이 먼저 걸린다(OR — 그쪽을 리셋해도 behindSince 쪽 상한은 그대로다).
   // I-2(b): 어긋남(mismatch)이면 주기와 무관하게 즉시 덮는다.
+  m.mirroredEpoch = mv.epoch;   // 2026-10-25 §4: 거울이 지금 가진 epoch — pendingBounds 정리 기준
   const behind = mv.epoch < canon.epoch;
   if (!behind) m.behindSince = null;
   else m.behindSince ??= mv.head;
@@ -1321,6 +1364,7 @@ async function relayMirror(m, { force = false, behindOnly = false } = {}) {
   const lp = state.lastPublication;
   try {
     const txHash = await sendMirrorTx(m, lp);
+    m.mirroredEpoch = BigInt(lp.epoch);
     m.behindSince = null;
     return out(lp.epoch, txHash, false);
   } catch (e) {
@@ -1341,6 +1385,7 @@ async function relayAll({ force = false, behindOnly = false } = {}) {
         res.push({ chainId: m.chainStr, epoch: null, txHash: null, skipped: false, error: e.message });
       }
     }
+    pruneMirroredBounds();
     return res;
   })();
   try { return await relaying; } finally { relaying = null; }
@@ -1433,7 +1478,7 @@ app.get('/cia/admin/revoked_sessions', requireAdmin, async (req, res) => {
       if (!s.revokedAt) continue;
       const bound = s.bound ?? '0';   // 하위호환: bound 가 없는 옛 레코드는 0(전부 차단)으로 본다
       const leaf = (await sessionLeaf(BigInt(s.Cf_s), BigInt(bound))).toString();
-      out.push({ uid, Cf_s: s.Cf_s, chainid: s.chainid, max_height: s.max_height, allowAgent: s.allowAgent, issuedAt: s.issuedAt, revokedAt: s.revokedAt, bound, leaf, pending: pendingLeaves.has(leaf) });
+      out.push({ uid, Cf_s: s.Cf_s, chainid: s.chainid, max_height: s.max_height, allowAgent: s.allowAgent, issuedAt: s.issuedAt, revokedAt: s.revokedAt, bound, pk_i: s.pk_i ?? null, leaf, pending: pendingLeaves.has(leaf) });
     }
   }
   out.sort((x, y) => String(y.revokedAt).localeCompare(String(x.revokedAt)));

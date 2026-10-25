@@ -14,7 +14,11 @@ import {
   sessionLeafRange,
   SESSION_BOUND_MAX,
   createRevocationTree,
+  revokeBindMessage,
+  signRevokeBind,
+  verifyRevokeBind,
 } from '../lib/mode3_revocation.js';
+import { ethers } from 'ethers';
 import { TAG_SESSION, TAG_ACCOUNT, leafValue } from '../lib/imt_v2.js';
 
 const TWO_252 = 1n << 252n;
@@ -126,5 +130,22 @@ await t('구간 비멤버십 증인: 상한 c 리프가 있을 때 counter < c �
   const other = await sessionLeafRange(778n, SESSION_BOUND_MAX - 1n);   // 다른 세션은 영향 없음
   assert.ok(await tree.getRangeNonMembershipWitness(other.lo, other.hi));
 });
+
+// 2026-10-25 root 유효 창 §4: 세션키 결속 서명 — 폐기 요청의 pk_i 가 그 요청(uid·Cf_s·bound·nonce)의 것임을 sk_i 로 묶는다.
+{
+  const w = ethers.Wallet.createRandom();
+  const f = { uid: 12345n, Cf_s: 777n, bound: 2n, nonce: 999n };
+  assert.equal(revokeBindMessage(f), 'MODE3_REVOKE_BIND_V1|12345|777|2|999');
+  assert.equal(revokeBindMessage({ uid: '12345', Cf_s: '777', bound: '2', nonce: '999' }), revokeBindMessage(f), '10진 문자열도 같은 메시지');
+  const sig = await signRevokeBind(w.privateKey, f);
+  const pk_i = BigInt(w.address).toString();
+  assert.equal(verifyRevokeBind(pk_i, f, sig), true);
+  assert.equal(verifyRevokeBind(BigInt(ethers.Wallet.createRandom().address).toString(), f, sig), false, '다른 pk_i');
+  assert.equal(verifyRevokeBind(pk_i, { ...f, bound: 3n }, sig), false, '다른 bound');
+  assert.equal(verifyRevokeBind(pk_i, { ...f, nonce: 1n }, sig), false, '다른 nonce');
+  assert.equal(verifyRevokeBind(pk_i, f, '0xdead'), false, '깨진 서명은 false(throw 아님)');
+  assert.equal(verifyRevokeBind('not-a-number', f, sig), false, '깨진 pk_i 도 false');
+  console.log('ok   revokeBind 결속 서명');
+}
 
 process.exit(failed === 0 ? 0 : 1);

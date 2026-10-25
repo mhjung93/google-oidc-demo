@@ -7,7 +7,7 @@ function t(name, fn) { try { fn(); console.log(`ok   ${name}`); } catch (e) { fa
 t('기본 상태는 v12 이고 attrs·profile·issued 가 없다', () => {
   const s = defaultCiaState();
   assert.equal(s.version, 12); assert.equal(CIA_STATE_VERSION, 12);
-  assert.deepEqual(s, { version: 12, accounts: {}, rps: {}, operators: {}, rpSlots: {}, openings: [], revoked: [], pending: [], epoch: 0, registry: { depth: 20, next: 0, leaves: {}, pendingSlots: [] }, lastPublication: null, signedEpochMax: 0, attrSchemaHash: null, nextUid: 100001, codes: {} });
+  assert.deepEqual(s, { version: 12, accounts: {}, rps: {}, operators: {}, rpSlots: {}, openings: [], revoked: [], pending: [], epoch: 0, registry: { depth: 20, next: 0, leaves: {}, pendingSlots: [] }, pendingBounds: [], lastPublication: null, signedEpochMax: 0, attrSchemaHash: null, nextUid: 100001, codes: {} });
 });
 t('v12 는 그대로(notes 없음), 빠진 하위 필드는 채운다(nextUid·codes 포함), 계정 기본값(creds·sessions·tampered·receipt·slotRetired·provider·pwSalt·pwHash·pwAlgo·createdAt)', () => {
   const { state, notes } = migrateCiaState({ version: 12, accounts: { '12345': { pk_u: { x: '1', y: '2' }, auid: '99', slot: 0, disabled: false } }, rps: {}, openings: [], revoked: [], pending: [], epoch: 3, registry: {} });
@@ -69,5 +69,15 @@ t('리뷰 S5: v12 계정의 slot 이 음이 아닌 정수가 아니면 throw(기
 t('리뷰 S5: v12 계정의 pk_u 가 {x, y} 10진 문자열이 아니면 throw(기동 거부) — pk_u:null 은 Task 10 의 "등록 전" sentinel 이라 제외(auid·slot 도 null 이어야 하므로 다른 테스트가 본다)', () => {
   const mk = (pk_u) => ({ ...defaultCiaState(), accounts: { '1': { pk_u, auid: '5', slot: 0, disabled: false } } });
   for (const pk_u of [undefined, {}, { x: '1' }, { x: 1, y: 2 }, { x: '-1', y: '2' }, { x: '0x1', y: '2' }, '1,2']) assert.throws(() => migrateCiaState(mk(pk_u)), /valid pk_u/, JSON.stringify(pk_u));
+});
+// 2026-10-25 root 유효 창 §4: pendingBounds 는 v12 확장 — 기본값 [] 이고 옛 파일에는 ??= 로 채운다.
+t('pendingBounds 기본값·보존', () => {
+  assert.deepEqual(defaultCiaState().pendingBounds, []);
+  const old = defaultCiaState(); delete old.pendingBounds;
+  migrateCiaState(old);
+  assert.deepEqual(old.pendingBounds, []);
+  const kept = { ...defaultCiaState(), pendingBounds: [{ pk_i: '1', bound: '2', epoch: null }] };
+  migrateCiaState(kept);
+  assert.deepEqual(kept.pendingBounds, [{ pk_i: '1', bound: '2', epoch: null }], '있는 대기열은 보존');
 });
 process.exit(failed === 0 ? 0 : 1);
