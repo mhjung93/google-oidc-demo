@@ -202,6 +202,66 @@ try {
     assert.equal(h.rpOrigin, stack.rpOriginForWallet, '첫 오리진은 기존 필드로도');
   });
 
+  // 리뷰 D2(2026-10-26): 루프백 에이전트라도 DNS 리바인딩 페이지(Host 가 공격자 이름)·교차 사이트 브라우저 요청은 막는다.
+  // fetch 는 Host 를 바꿀 수 없어 node:http 로 보낸다.
+  const rawHttp = (method, p, headers = {}, body = null) => new Promise((resolve, reject) => {
+    const u = new URL(wallet.base + p);
+    const rq = http.request({ host: u.hostname, port: u.port, path: u.pathname + u.search, method, headers: { ...(body !== null ? { 'Content-Type': 'application/json' } : {}), ...headers } }, (res) => {
+      let buf = ''; res.on('data', (c) => { buf += c; }); res.on('end', () => { let b = null; try { b = JSON.parse(buf); } catch { /* 본문이 JSON 이 아님 */ } resolve({ status: res.statusCode, body: b }); });
+    });
+    rq.on('error', reject); if (body !== null) rq.write(JSON.stringify(body)); rq.end();
+  });
+  await t('리뷰 D2: Host 허용 목록 — 공격자 이름(리바인딩)은 공개 라우트까지 421 bad_host, localhost·127.0.0.1 은 대소문자 무관 통과', async () => {
+    const port = new URL(wallet.base).port;
+    for (const p of ['/wallet/status', '/wallet/config', '/mode3/health', '/']) {
+      const r = await rawHttp('GET', p, { Host: `evil.example:${port}` });
+      assert.equal(r.status, 421, `${p} ${j(r.body)}`); if (p !== '/') assert.equal(r.body?.reason, 'bad_host', p);
+    }
+    const prep = await rawHttp('POST', '/wallet/tx/prepare', { Host: `evil.example:${port}` }, { r_s: '1' });
+    assert.equal(prep.status, 421, j(prep.body)); assert.equal(prep.body.reason, 'bad_host');
+    assert.equal((await rawHttp('GET', '/wallet/status', { Host: `127.0.0.1:${Number(port) + 1}` })).status, 421, '포트가 다르면 다른 호스트');
+    assert.equal((await rawHttp('GET', '/wallet/status', { Host: 'evil.example' })).status, 421);
+    for (const h of [`localhost:${port}`, `LOCALHOST:${port}`, `127.0.0.1:${port}`]) assert.equal((await rawHttp('GET', '/wallet/status', { Host: h })).status, 200, h);
+  });
+  await t('리뷰 D2: Origin 정책 — 남의 Origin·교차 사이트(Sec-Fetch-Site) 는 403 bad_origin; 같은 오리진·헤더 없음은 통과; RP CORS 라우트는 RP 오리진 허용', async () => {
+    const evil = { Origin: 'http://evil.example' };
+    for (const [m, p, body] of [['POST', '/wallet/tx/prepare', { r_s: '1' }], ['POST', '/wallet/session/revoke', { r_s: '1' }], ['POST', '/wallet/demo/override', { clear: true }], ['POST', '/wallet/revalidate', { r_s: '1' }], ['POST', '/wallet/request', { r_s: '1', body: 'x' }], ['PUT', '/wallet/profile', {}], ['GET', '/wallet/status', null], ['GET', '/wallet/secrets/salt', null]]) {
+      const r = await rawHttp(m, p, evil, body);
+      assert.equal(r.status, 403, `${m} ${p} ${j(r.body)}`); assert.equal(r.body.reason, 'bad_origin', `${m} ${p}`);
+    }
+    // RP 오리진은 RP CORS 가 있는 라우트에서만 — 지갑 전용 라우트(tx·status)는 RP 오리진도 막는다.
+    for (const [m, p, body] of [['POST', '/wallet/tx/prepare', { r_s: '1' }], ['GET', '/wallet/status', null]]) {
+      const r = await rawHttp(m, p, { Origin: stack.rpOriginForWallet }, body);
+      assert.equal(r.status, 403, `${p} ${j(r.body)}`); assert.equal(r.body.reason, 'bad_origin', p);
+    }
+    for (const rpO of [stack.rpOriginForWallet, SECOND_RP_ORIGIN]) {
+      const r = await rawHttp('POST', '/wallet/revalidate', { Origin: rpO }, { r_s: '1' });
+      assert.notEqual(r.body?.reason, 'bad_origin', `${rpO} ${j(r.body)}`); assert.equal(r.status, 404, j(r.body));   // 세션 없음 — 오리진 검사는 통과
+    }
+    // Origin 없이 Sec-Fetch-Site 만: 교차·같은 사이트는 거절, same-origin·none(주소창)은 통과.
+    for (const site of ['cross-site', 'same-site']) {
+      const r = await rawHttp('POST', '/wallet/tx/prepare', { 'Sec-Fetch-Site': site }, { r_s: '1' });
+      assert.equal(r.status, 403, `${site} ${j(r.body)}`); assert.equal(r.body.reason, 'bad_origin', site);
+      assert.equal((await rawHttp('GET', '/wallet/status', { 'Sec-Fetch-Site': site })).status, 403, `status ${site}`);
+    }
+    assert.equal((await rawHttp('GET', '/wallet/status', { 'Sec-Fetch-Site': 'same-origin' })).status, 200);
+    assert.equal((await rawHttp('GET', '/wallet/status', { 'Sec-Fetch-Site': 'none' })).status, 200);
+    // 같은 오리진(지갑 페이지)은 통과 — 404 no_session 은 라우트 본체까지 갔다는 뜻이다.
+    const same = await rawHttp('POST', '/wallet/tx/prepare', { Origin: wallet.base }, { r_s: '1', to: ethers.ZeroAddress, value: '0', data: '0x' });
+    assert.notEqual(same.body?.reason, 'bad_origin', j(same.body));
+    const port = new URL(wallet.base).port;
+    const sameLocal = await rawHttp('GET', '/wallet/status', { Host: `localhost:${port}`, Origin: `http://localhost:${port}` });
+    assert.equal(sameLocal.status, 200, 'localhost 로 연 지갑 페이지도 같은 오리진');
+    // 헤더가 없으면(curl·테스트 등 브라우저 밖 로컬 클라이언트) 통과.
+    assert.notEqual((await rawHttp('POST', '/wallet/tx/prepare', {}, { r_s: '1' })).body?.reason, 'bad_origin');
+    // 공개 GET 은 그대로 — 교차 사이트에서도 읽힌다.
+    for (const p of ['/wallet/config', '/mode3/health', '/wallet/attr_schema']) {
+      const r = await rawHttp('GET', p, { ...evil, 'Sec-Fetch-Site': 'cross-site' });
+      assert.equal(r.status, 200, `${p} ${j(r.body)}`);
+    }
+    assert.equal((await rawHttp('GET', '/', { 'Sec-Fetch-Site': 'cross-site' })).status, 200, 'RP 가 여는 /?authorize=1 팝업은 교차 사이트 탐색이다');
+  });
+
   // Task 13(B4): 동적 RP 허용 목록 — env 목록 밖의 오리진도 IdP 가 승인하면 폴링(10초 주기)으로 열린다.
   // 테스트가 /cia/register_rp 를 직접 부른다(cia.registerRp 가 그 호출 + 관리자 승인을 대행한다).
   await t('동적 RP 허용 목록: IdP 가 승인한 새 RP 오리진에 10초 안에 CORS 가 열린다', async () => {
@@ -380,7 +440,13 @@ try {
   // 열어 브라우저에서는 실현되지 않지만, CORS 는 브라우저에만 걸리므로 서버가 직접 거절해야 한다.
   await t('D-4: 세션 라우트는 남의 RP 요청을 세션 없는 것으로 다룬다 — 본문 arid·요청 오리진이 세션과 다르면 404 no_session (F-1: 맞는 arid 로도 Origin 대조를 끄지 못한다)', async () => {
     const otherArid = (BigInt(arid) + 1n).toString();
-    const evilOrigin = { Origin: 'http://evil.example' };
+    // 리뷰 D2(2026-10-26): 허용 목록 밖 오리진은 이제 미들웨어가 403 bad_origin 으로 먼저 막는다. 라우트 안의 세션 대조는
+    // 허용된 **다른** RP 오리진(SECOND_RP_ORIGIN)으로 시험한다 — 그 RP 의 페이지가 남의 세션 r_s 를 써 보는 경우다.
+    for (const p of ['/wallet/request', '/wallet/revalidate']) {
+      const ev = await wallet.post(p, { r_s: S2, body: 'ping', arid }, { Origin: 'http://evil.example' });
+      assert.equal(ev.status, 403, j(ev.body)); assert.equal(ev.body.reason, 'bad_origin', p);
+    }
+    const evilOrigin = { Origin: SECOND_RP_ORIGIN };
     const rq = (extra, headers) => wallet.post('/wallet/request', { r_s: S2, body: 'ping', ...extra }, headers);
     const badArid = await rq({ arid: otherArid }, { Origin: stack.rpOriginForWallet });
     assert.equal(badArid.status, 404, j(badArid.body)); assert.equal(badArid.body.reason, 'no_session');
@@ -457,7 +523,7 @@ try {
 
   let factoryAddress, S3, walletAddr;
   await t('tx: factoryAddress 없이 로그인한 세션은 409 no_factory', async () => {
-    const r = await wallet.post('/wallet/tx', { r_s: S2, to: ethers.Wallet.createRandom().address }, { Origin: stack.rpOriginForWallet });
+    const r = await wallet.post('/wallet/tx', { r_s: S2, to: ethers.Wallet.createRandom().address }, { Origin: wallet.base });
     assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'no_factory');
   });
 
@@ -470,12 +536,12 @@ try {
     const l = await login(ch3, { factoryAddress });
     assert.equal(l.status, 200, j(l.body));
     const to = ethers.Wallet.createRandom().address;
-    const r1 = await wallet.post('/wallet/tx', { r_s: S3, to, value: '0' }, { Origin: stack.rpOriginForWallet });
+    const r1 = await wallet.post('/wallet/tx', { r_s: S3, to, value: '0' }, { Origin: wallet.base });
     assert.equal(r1.status, 200, j(r1.body));
     assert.equal(r1.body.deployed, true); assert.equal(r1.body.ok, true); assert.equal(r1.body.nonce, '0'); assert.match(r1.body.txHash, /^0x[0-9a-f]{64}$/);
     walletAddr = r1.body.wallet;
     assert.notEqual(await provider.getCode(walletAddr), '0x');
-    const r2 = await wallet.post('/wallet/tx', { r_s: S3, to }, { Origin: stack.rpOriginForWallet });
+    const r2 = await wallet.post('/wallet/tx', { r_s: S3, to }, { Origin: wallet.base });
     assert.equal(r2.status, 200, j(r2.body));
     // 2026-10-22: 거래 π 는 counter=nonce 를 공개 입력으로 싣는다 — nonce 가 0→1 로 바뀌면 캐시 키도 바뀌어 새로 증명한다(브리프 §6.5).
     assert.equal(r2.body.deployed, false); assert.equal(r2.body.cacheHit, false); assert.equal(r2.body.nonce, '1');
@@ -487,7 +553,7 @@ try {
     const signer = await provider.getSigner(0);
     await (await signer.sendTransaction({ to: walletAddr, value: ethers.parseEther('0.5') })).wait();
     const to = ethers.Wallet.createRandom().address;
-    const r = await wallet.post('/wallet/tx', { r_s: S3, to, value: ethers.parseEther('0.1').toString() }, { Origin: stack.rpOriginForWallet });
+    const r = await wallet.post('/wallet/tx', { r_s: S3, to, value: ethers.parseEther('0.1').toString() }, { Origin: wallet.base });
     assert.equal(r.status, 200, j(r.body)); assert.equal(r.body.ok, true);
     assert.equal(await provider.getBalance(to), ethers.parseEther('0.1'));
   });
@@ -498,7 +564,7 @@ try {
     const log = new ethers.Contract(cia.mirrorAddress, LOG_ABI, provider);
     const last0 = await log.lastPublishedBlock();
     await provider.send('hardhat_mine', ['0xb']);
-    const r = await wallet.post('/wallet/tx', { r_s: S3, to: ethers.Wallet.createRandom().address }, { Origin: stack.rpOriginForWallet });
+    const r = await wallet.post('/wallet/tx', { r_s: S3, to: ethers.Wallet.createRandom().address }, { Origin: wallet.base });
     if (r.status === 409) assert.match(r.body.detail, /RootTooOld/, j(r.body));
     else assert.equal(r.status, 200, j(r.body));   // 공유 노드에서 그 사이 릴레이가 끼어들었으면 그대로 ok — 아래에서 lastPublishedBlock 전진만 확인
     await relay();
@@ -507,7 +573,7 @@ try {
     // 넘길 수 있다(관찰됨). 첫 시도가 또 RootTooOld 면 짧게 재시도한다 — 대상 자체는 여전히 "곧 성공" 이다.
     let ok;
     for (let attempt = 0; attempt < 5; attempt++) {
-      ok = await wallet.post('/wallet/tx', { r_s: S3, to: ethers.Wallet.createRandom().address }, { Origin: stack.rpOriginForWallet });
+      ok = await wallet.post('/wallet/tx', { r_s: S3, to: ethers.Wallet.createRandom().address }, { Origin: wallet.base });
       if (ok.status === 200) break;
       await new Promise((res) => setTimeout(res, 200));
     }
@@ -517,15 +583,15 @@ try {
   await t('tx: 계정 폐기 + 즉시 게시(V9) 뒤에는 403 revoked (재증명 불가)', async () => {
     const rv = await cia.adminPost('/cia/revoke', { uid, scope: 'account' });
     assert.equal(rv.status, 200, j(rv.body)); assert.equal(rv.body.published, true, j(rv.body));
-    const r = await wallet.post('/wallet/tx', { r_s: S3, to: ethers.Wallet.createRandom().address }, { Origin: stack.rpOriginForWallet });
+    const r = await wallet.post('/wallet/tx', { r_s: S3, to: ethers.Wallet.createRandom().address }, { Origin: wallet.base });
     assert.equal(r.status, 403, j(r.body)); assert.equal(r.body.reason, 'revoked');
     assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid, disabled: false })).status, 200);
   });
 
   await t('tx 입력 검증: r_s 없음·주소 아님·모르는 세션', async () => {
-    assert.equal((await wallet.post('/wallet/tx', { to: walletAddr }, { Origin: stack.rpOriginForWallet })).status, 400);
-    assert.equal((await wallet.post('/wallet/tx', { r_s: S3, to: 'nope' }, { Origin: stack.rpOriginForWallet })).status, 400);
-    assert.equal((await wallet.post('/wallet/tx', { r_s: newRs(), to: walletAddr }, { Origin: stack.rpOriginForWallet })).status, 404);
+    assert.equal((await wallet.post('/wallet/tx', { to: walletAddr }, { Origin: wallet.base })).status, 400);
+    assert.equal((await wallet.post('/wallet/tx', { r_s: S3, to: 'nope' }, { Origin: wallet.base })).status, 400);
+    assert.equal((await wallet.post('/wallet/tx', { r_s: newRs(), to: walletAddr }, { Origin: wallet.base })).status, 404);
   });
 
   await t('register: 이미 등록된 계정에는 본문과 무관하게 409', async () => {
@@ -913,7 +979,7 @@ try {
     const s = await loginOnce({ factoryAddress });
     await relay();
     assert.equal((await wallet.post('/wallet/demo/override', { scope: 'fake_proof' })).status, 200);
-    const r = await wallet.post('/wallet/tx', { r_s: s.r_s, to }, { Origin: stack.rpOriginForWallet });
+    const r = await wallet.post('/wallet/tx', { r_s: s.r_s, to }, { Origin: wallet.base });
     assert.equal(r.status, 409, j(r.body));
     assert.equal(r.body.reason, 'execute_reverted'); assert.equal(r.body.detail, 'InvalidProof'); assert.equal(r.body.demo, 'override:fake_proof');
     assert.equal((await wallet.get('/wallet/status')).body.demoOverride, null, '한 번 쓰면 해제');
@@ -923,7 +989,7 @@ try {
     const s = await loginOnce({ factoryAddress });
     await relay();
     assert.equal((await wallet.post('/wallet/demo/override', { scope: 'fake_sig' })).status, 200);
-    const r = await wallet.post('/wallet/tx', { r_s: s.r_s, to }, { Origin: stack.rpOriginForWallet });
+    const r = await wallet.post('/wallet/tx', { r_s: s.r_s, to }, { Origin: wallet.base });
     assert.equal(r.status, 409, j(r.body));
     assert.equal(r.body.reason, 'execute_reverted'); assert.equal(r.body.detail, 'BadSignature'); assert.equal(r.body.demo, 'override:fake_sig');
   });
@@ -935,18 +1001,18 @@ try {
     // V10: 계정은 거울의 lastPublishedBlock 으로 maxRootAge(10) 를 본다. 격리 IdP 는 거울 하트비트가 꺼져 있어(캐노니컬 하트비트만
     // 돈다) 앞 케이스들 동안 거울이 늙었을 수 있다 — 실행 직전에 거울을 새로 올린다(운영에서는 IdP 의 거울 하트비트가 하는 일).
     await relay();
-    const ok = await wallet.post('/wallet/tx', { r_s: s.r_s, to, data: '0x4e71d92d', disclose: [{ lo: '0', hi: '2007' }, null, null, null] }, { Origin: stack.rpOriginForWallet });
+    const ok = await wallet.post('/wallet/tx', { r_s: s.r_s, to, data: '0x4e71d92d', disclose: [{ lo: '0', hi: '2007' }, null, null, null] }, { Origin: wallet.base });
     assert.equal(ok.status, 200, j(ok.body));
     assert.equal(ok.body.disclosure.mask, '1'); assert.equal(ok.body.cacheHit, false);
     assert.equal(ok.body.onchainDisclosure.mask, '1');
     assert.deepEqual(ok.body.onchainDisclosure.lo, ['0', '0', '0', '0', '0', '0']);
     assert.deepEqual(ok.body.onchainDisclosure.hi, ['2007', '0', '0', '0', '0', '0']);
-    const bad = await wallet.post('/wallet/tx', { r_s: s.r_s, to, disclose: [{ lo: '0', hi: '1980' }, null, null, null] }, { Origin: stack.rpOriginForWallet });
+    const bad = await wallet.post('/wallet/tx', { r_s: s.r_s, to, disclose: [{ lo: '0', hi: '1980' }, null, null, null] }, { Origin: wallet.base });
     assert.equal(bad.status, 400, j(bad.body)); assert.equal(bad.body.reason, 'disclosure_unsatisfiable');
-    const plain = await wallet.post('/wallet/tx', { r_s: s.r_s, to }, { Origin: stack.rpOriginForWallet });
+    const plain = await wallet.post('/wallet/tx', { r_s: s.r_s, to }, { Origin: wallet.base });
     assert.equal(plain.status, 200, j(plain.body)); assert.equal(plain.body.disclosure, null); assert.equal(plain.body.onchainDisclosure, null);
     // V9: disclose 는 길이 1..6 — 6칸을 다 채운 요청도 받는다(범위는 int 슬롯만 — 슬롯 0 을 6칸 배열의 첫 칸에).
-    const six = await wallet.post('/wallet/tx', { r_s: s.r_s, to, disclose: [{ lo: '1990', hi: '1990' }, null, null, null, null, null] }, { Origin: stack.rpOriginForWallet });
+    const six = await wallet.post('/wallet/tx', { r_s: s.r_s, to, disclose: [{ lo: '1990', hi: '1990' }, null, null, null, null, null] }, { Origin: wallet.base });
     assert.equal(six.status, 200, j(six.body));
     assert.equal(six.body.disclosure.mask, '1');
     assert.equal(six.body.onchainDisclosure.mask, '1');
@@ -961,28 +1027,28 @@ try {
     // 돈다) 앞 케이스들 동안 거울이 늙었을 수 있다 — 실행 직전에 거울을 새로 올린다(운영에서는 IdP 의 거울 하트비트가 하는 일).
     await relay();
     const members = [410, 392, 840, 276, 250];
-    const ok = await wallet.post('/wallet/tx', { r_s: s.r_s, to, disclose: [null, null, null, null], set: { slot: 1, members } }, { Origin: stack.rpOriginForWallet });
+    const ok = await wallet.post('/wallet/tx', { r_s: s.r_s, to, disclose: [null, null, null, null], set: { slot: 1, members } }, { Origin: wallet.base });
     assert.equal(ok.status, 200, j(ok.body));
     assert.equal(ok.body.onchainDisclosure.mask, '0');
     assert.equal(ok.body.onchainDisclosure.set.sel, '2');
     assert.equal(ok.body.onchainDisclosure.set.root, (await setRoot(members)).toString());
-    const miss = await wallet.post('/wallet/tx', { r_s: s.r_s, to, set: { slot: 1, members: [392, 840] } }, { Origin: stack.rpOriginForWallet });
+    const miss = await wallet.post('/wallet/tx', { r_s: s.r_s, to, set: { slot: 1, members: [392, 840] } }, { Origin: wallet.base });
     assert.equal(miss.status, 400, j(miss.body)); assert.equal(miss.body.reason, 'disclosure_unsatisfiable');
-    const bad = await wallet.post('/wallet/tx', { r_s: s.r_s, to, set: { slot: 6, members } }, { Origin: stack.rpOriginForWallet });
+    const bad = await wallet.post('/wallet/tx', { r_s: s.r_s, to, set: { slot: 6, members } }, { Origin: wallet.base });
     assert.equal(bad.status, 400, j(bad.body)); assert.equal(bad.body.reason, 'bad_disclosure');
   });
 
   await t('스펙 2 predicate_type: 범위 술어를 enum 슬롯(1)에, 집합 술어를 unused 슬롯(4)에 걸면 /wallet/tx·/wallet/login 모두 400 predicate_type — 증명 전에 거른다', async () => {
     const to = '0x000000000000000000000000000000000000dEaD';
     const s = await loginOnce({ factoryAddress });
-    const r1 = await wallet.post('/wallet/tx', { r_s: s.r_s, to, disclose: [null, { lo: '410', hi: '410' }, null, null, null, null] }, { Origin: stack.rpOriginForWallet });
+    const r1 = await wallet.post('/wallet/tx', { r_s: s.r_s, to, disclose: [null, { lo: '410', hi: '410' }, null, null, null, null] }, { Origin: wallet.base });
     assert.equal(r1.status, 400, j(r1.body)); assert.equal(r1.body.reason, 'predicate_type'); assert.match(r1.body.detail, /슬롯 1/);
-    const r2 = await wallet.post('/wallet/tx', { r_s: s.r_s, to, set: { slot: 4, members: [0] } }, { Origin: stack.rpOriginForWallet });
+    const r2 = await wallet.post('/wallet/tx', { r_s: s.r_s, to, set: { slot: 4, members: [0] } }, { Origin: wallet.base });
     assert.equal(r2.status, 400, j(r2.body)); assert.equal(r2.body.reason, 'predicate_type');
     const r3 = await loginNoRelay(newCh(), { disclose: [null, { lo: '410', hi: '410' }] });
     assert.equal(r3.status, 400, j(r3.body)); assert.equal(r3.body.reason, 'predicate_type');
     // string 슬롯(2)의 집합 술어는 허용된다 — 내 값(0)이 집합에 없으면 그다음 단계의 disclosure_unsatisfiable
-    const r4 = await wallet.post('/wallet/tx', { r_s: s.r_s, to, set: { slot: 2, members: [7] } }, { Origin: stack.rpOriginForWallet });
+    const r4 = await wallet.post('/wallet/tx', { r_s: s.r_s, to, set: { slot: 2, members: [7] } }, { Origin: wallet.base });
     assert.equal(r4.status, 400, j(r4.body)); assert.equal(r4.body.reason, 'disclosure_unsatisfiable');
   });
 

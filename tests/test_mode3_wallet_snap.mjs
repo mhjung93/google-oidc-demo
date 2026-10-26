@@ -141,9 +141,14 @@ try {
     assert.match(badCm.body.detail ?? '', /auid/);
     const badO = await wallet.post('/wallet/login', { ...base, witness: w, verifiedOrigin: 'http://evil:1' });
     assert.equal(badO.status, 403, j(badO.body)); assert.equal(badO.body.reason, 'bad_rp_cert');
-    // Origin 헤더는 snap 모드에서 무시된다(같은 오리진 호출) — verifiedOrigin 만 본다
+    // RP 대조는 Origin 헤더가 아니라 verifiedOrigin 으로 한다(같은 오리진 팝업 호출). 리뷰 D2(2026-10-26): 남의 Origin 은 그 전에
+    // 미들웨어가 403 bad_origin 으로 막는다 — snap 모드 /wallet/login 에는 RP CORS 가 없어 RP 오리진도 마찬가지다.
+    for (const o of ['http://whatever.example', rp.origin]) {
+      const foreign = await wallet.post('/wallet/login', { ...base, witness: w }, { Origin: o });
+      assert.equal(foreign.status, 403, j(foreign.body)); assert.equal(foreign.body.reason, 'bad_origin', o);
+    }
     // 첫 로그인은 새 C_u 를 받고 거울이 그 리프를 실을 때까지 기다린다(V10) — 격리 IdP 는 릴레이 주기가 꺼져 있어 대신 눌러 준다.
-    const ok = await stack.withRelay(() => wallet.post('/wallet/login', { ...base, witness: w }, { Origin: 'http://whatever.example' }));
+    const ok = await stack.withRelay(() => wallet.post('/wallet/login', { ...base, witness: w }, { Origin: wallet.origin }));
     assert.equal(ok.status, 200, j(ok.body));
     assert.equal(ok.body.issued, true);
     assert.ok(ok.body.userCredIssued, '첫 로그인은 새 C_u 를 응답에 실어 페이지가 Snap 에 저장한다');

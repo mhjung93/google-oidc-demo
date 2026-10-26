@@ -192,9 +192,9 @@ try {
   let TX1;
   await t('2a. 온체인 트랜잭션: 지갑 배포 + execute ok, 두 번째는 새 π(counter=nonce 1 이라 캐시 미스)', async () => {
     const to = '0x000000000000000000000000000000000000dEaD';
-    const r1 = await wallet.post('/wallet/tx', { r_s: S1, to }, { Origin: rp.origin });
+    const r1 = await wallet.post('/wallet/tx', { r_s: S1, to }, { Origin: wallet.origin });
     assert.equal(r1.status, 200, j(r1.body)); assert.equal(r1.body.ok, true); assert.equal(r1.body.deployed, true);
-    const r2 = await wallet.post('/wallet/tx', { r_s: S1, to }, { Origin: rp.origin });
+    const r2 = await wallet.post('/wallet/tx', { r_s: S1, to }, { Origin: wallet.origin });
     // 2026-10-22: 거래 π 는 counter=nonce — nonce 가 0→1 로 바뀌면 캐시 키도 바뀌어 새로 증명한다(브리프 §6.5).
     assert.equal(r2.status, 200, j(r2.body)); assert.equal(r2.body.cacheHit, false); assert.equal(r2.body.nonce, '1');
     TX1 = r2.body.txHash;
@@ -291,7 +291,7 @@ try {
     // 위 재검증이 이미 S1 을 지웠다(/wallet/tx 도 revoked 를 보면 같은 규칙으로 지운다) — 그래서 여기 tx 는
     // revoked 를 다시 보지 못하고 no_session 이 된다. 순서(재검증이 먼저 revoked 를 관측)를 보존하기 위해
     // /wallet/tx 호출은 재검증 뒤로 옮겼다.
-    const tx = await wallet.post('/wallet/tx', { r_s: S1, to: '0x000000000000000000000000000000000000dEaD' }, { Origin: rp.origin });
+    const tx = await wallet.post('/wallet/tx', { r_s: S1, to: '0x000000000000000000000000000000000000dEaD' }, { Origin: wallet.origin });
     assert.equal(tx.status, 404, j(tx.body)); assert.equal(tx.body.reason, 'no_session');
   });
 
@@ -342,12 +342,12 @@ try {
     const year = new Date().getUTCFullYear();
     const disclose = [{ lo: '0', hi: String(year - Number(info.predicates.minAge)) }, null, null, null];
     const set = { slot: 1, members: info.predicates.allowedCountries };
-    const tx = await wallet.post('/wallet/tx', { r_s: s.r_s, to: info.attrGateAddress, data: '0x4e71d92d', disclose, set }, { Origin: rp.origin });
+    const tx = await wallet.post('/wallet/tx', { r_s: s.r_s, to: info.attrGateAddress, data: '0x4e71d92d', disclose, set }, { Origin: wallet.origin });
     assert.equal(tx.status, 200, j(tx.body));
     assert.equal(tx.body.ok, true, j(tx.body));
     assert.equal(tx.body.onchainDisclosure.mask, '1');
     assert.equal(tx.body.onchainDisclosure.set.root, info.predicates.allowedCountriesRoot);
-    const again = await wallet.post('/wallet/tx', { r_s: s.r_s, to: info.attrGateAddress, data: '0x4e71d92d', disclose, set }, { Origin: rp.origin });
+    const again = await wallet.post('/wallet/tx', { r_s: s.r_s, to: info.attrGateAddress, data: '0x4e71d92d', disclose, set }, { Origin: wallet.origin });
     assert.equal(again.status, 200, j(again.body));
     assert.equal(again.body.ok, false, j(again.body));   // already claimed — nonce 는 소비되지만 성공은 아니다
   });

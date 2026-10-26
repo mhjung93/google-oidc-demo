@@ -823,6 +823,13 @@ IdP 의 약속이다:
 - **에이전트 재시작 = 재승인.** 메모리 증인이 사라져 그 세션의 재검증이 `409 needs_consent` 가 된다(S8).
 - 로컬 Snap 이라 **Flask 전용**이고 npm 게시·감사는 범위 밖이다.
 - 지갑 페이지 오리진이 `WALLET_ORIGINS` 두 값으로 고정이다(위 준비 5).
+- **에이전트 HTTP 는 같은 기계의 사용자 하나를 가정한다**(2026-10-26 리뷰 D2, 두 모드 공통). 에이전트는 `Host` 가
+  `localhost:PORT`·`127.0.0.1:PORT`·`[::1]:PORT`·`MODE3_WALLET_PUBLIC_ORIGIN` 의 호스트·`MODE3_WALLET_ALLOWED_HOSTS`(쉼표 목록)
+  가 아니면 `421 bad_host`, 공개 GET(`/`·`/common/*`·`/wallet/config`·`/mode3/health`·`/wallet/attr_schema`) 밖의 요청에
+  남의 `Origin`(RP CORS 라우트 `/wallet/revalidate`·`/wallet/request`·file 모드 `/wallet/login` 은 허용 RP 오리진도 받는다)이나
+  교차 사이트 `Sec-Fetch-Site` 가 오면 `403 bad_origin` 으로 막는다. 이것으로 **DNS 리바인딩 페이지와 교차 사이트 브라우저 요청**은
+  `r_s`·`tx/prepare` 의 서명된 calldata·비밀에 닿지 못한다. 하지만 두 헤더가 없는 요청(curl·로컬 프로세스)은 그대로 통과하므로,
+  **같은 기계의 다른 OS 사용자·프로세스는 루프백으로 여전히 에이전트를 부를 수 있다** — 다중 사용자 기계에서는 돌리지 않는다.
 
 ## IdP 페이지·폐기 상한 (2026-10-22)
 

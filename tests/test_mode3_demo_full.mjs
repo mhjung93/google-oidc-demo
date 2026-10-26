@@ -190,7 +190,7 @@ try {
     const disclose = [{ lo: '0', hi: String(year - Number(x.predicates.minAge)) }, null, null, null];
     const set = { slot: 1, members: x.predicates.allowedCountries };
     const t0 = Date.now();
-    const tx = await stack.withRelay(() => wallet.post('/wallet/tx', { r_s: X1, to: recipient, value: amount.toString(), disclose, set }, { Origin: exchange.origin }));
+    const tx = await stack.withRelay(() => wallet.post('/wallet/tx', { r_s: X1, to: recipient, value: amount.toString(), disclose, set }, { Origin: wallet.origin }));
     console.log(`     출금 tx(계정 배포 + execute, π 캐시 ${tx.body?.cacheHit}) ${ms(t0)}`);
     assert.equal(tx.status, 200, j(tx.body)); assert.equal(tx.body.ok, true, j(tx.body)); assert.equal(tx.body.deployed, true);
     assert.equal(tx.body.wallet, acct);

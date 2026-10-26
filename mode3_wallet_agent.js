@@ -427,6 +427,36 @@ function sessionMatchesRequester(req, s, arid) {
 
 // ---- 앱 ----
 const app = express();
+// 리뷰 D2(2026-10-26): 127.0.0.1 바인딩만으로는 DNS 리바인딩(공격자 이름이 127.0.0.1 로 풀려 브라우저가 "같은 오리진"으로 부른다)과
+// 교차 사이트 브라우저 요청을 못 막는다 — /wallet/tx/prepare 가 서명된 execute calldata 를, /wallet/status 가 r_s 를 내준다.
+// (a) Host 허용 목록: 리바인딩 페이지의 Host 는 공격자 이름이다. 공개 라우트까지 전부 막는다(421).
+// (b) Origin 정책: 공개 GET 밖의 모든 요청에서 Origin 이 있으면 지갑 자신의 오리진(또는 RP CORS 라우트에 한해 허용 RP)이어야 하고,
+//     Origin 없이 Sec-Fetch-Site 만 있으면 same-origin·none 만 받는다. 둘 다 없으면(curl·테스트 같은 브라우저 밖 로컬 클라이언트) 통과 —
+//     같은 기계의 다른 프로세스는 막지 못한다(단일 사용자 기계를 가정한다 — docs/MODE3_DEMO.md).
+const WALLET_URL = new URL(WALLET_ORIGIN);   // MODE3_WALLET_PUBLIC_ORIGIN 이 주소가 아니면 기동 때 바로 죽는다(조용히 전부 막지 않게)
+const ALLOWED_HOSTS = new Set([`localhost:${PORT}`, `127.0.0.1:${PORT}`, `[::1]:${PORT}`, WALLET_URL.host,
+  ...(process.env.MODE3_WALLET_ALLOWED_HOSTS ?? '').split(',').map((h) => h.trim()).filter(Boolean)].map((h) => h.toLowerCase()));
+// 비밀·세션·서명 자료가 없는 GET — RP 페이지가 교차 오리진으로 읽거나(config·health), RP 가 팝업으로 연다('/' — 교차 사이트 탐색).
+const isPublicGet = (p) => p === '/' || p === '/wallet/config' || p === '/mode3/health' || p === '/wallet/attr_schema' || p === '/common' || p.startsWith('/common/');
+// RP CORS 가 붙은 라우트(loginCors) — 여기서만 허용 RP 오리진을 받는다. snap 모드 /wallet/login 은 같은 오리진 팝업만 부른다.
+const RP_CORS_PATHS = new Set(['/wallet/revalidate', '/wallet/request', ...(SECRETS === 'file' ? ['/wallet/login'] : [])]);
+app.use((req, res, next) => {
+  const host = (req.get('Host') ?? '').toLowerCase();
+  if (!ALLOWED_HOSTS.has(host)) return res.status(421).json({ reason: 'bad_host' });
+  // express 라우팅은 대소문자·끝의 '/' 를 가리지 않는다 — 같은 기준으로 비교한다.
+  const p = req.path.toLowerCase().replace(/\/+$/, '') || '/';
+  if (req.method === 'OPTIONS' || ((req.method === 'GET' || req.method === 'HEAD') && isPublicGet(p))) return next();
+  const origin = req.get('Origin');
+  if (origin !== undefined) {
+    const o = origin.toLowerCase();
+    const same = o === WALLET_URL.origin || o === `http://${host}`;
+    if (!same && !(RP_CORS_PATHS.has(p) && isRpOrigin(origin))) return res.status(403).json({ reason: 'bad_origin' });
+  } else {
+    const site = req.get('Sec-Fetch-Site');
+    if (site !== undefined && site !== 'same-origin' && site !== 'none') return res.status(403).json({ reason: 'bad_origin' });
+  }
+  next();
+});
 app.use(express.json({ limit: '1mb' }));
 
 // RP 페이지(다른 오리진)가 부르는 것은 /wallet/revalidate·/wallet/request·/wallet/config, 그리고 file 모드의 /wallet/login 뿐이다.
