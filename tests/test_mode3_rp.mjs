@@ -326,6 +326,15 @@ await t('음성 e: 증명을 손대면 bad_proof', async () => {
   assert.deepEqual(await rp.verifyLogin({ ...L, proof: bad }), { ok: false, reason: 'bad_proof' });
 });
 
+await t('E1(2026-10-26): verifyLogin 은 모르는 키를 버린 정규 proof 를 돌려주고, 앞자리 0 좌표·덧붙인 원소는 malformed', async () => {
+  const L = await makeLogin();
+  const r = await rp.verifyLogin({ ...L, proof: { ...L.proof, pad: 'x'.repeat(1000) } });
+  assert.equal(r.ok, true, r.reason);
+  assert.deepEqual(r.proof, { pi_a: L.proof.pi_a, pi_b: L.proof.pi_b, pi_c: L.proof.pi_c, protocol: 'groth16', curve: 'bn128' });
+  assert.deepEqual(await rp.verifyLogin({ ...L, proof: { ...L.proof, pi_a: ['0' + L.proof.pi_a[0], L.proof.pi_a[1], '1'] } }), { ok: false, reason: 'malformed' });
+  assert.deepEqual(await rp.verifyLogin({ ...L, proof: { ...L.proof, pi_a: [...L.proof.pi_a, '5'] } }), { ok: false, reason: 'malformed' });
+});
+
 await t('음성 a: 체인을 못 읽고 캐시가 10분보다 오래되면 chain_unavailable (fail-closed)', async () => {
   let now = Date.now();
   const broken = { getBlockNumber: async () => { throw new Error('rpc down'); } };

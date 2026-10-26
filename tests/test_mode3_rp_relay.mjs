@@ -1,6 +1,9 @@
 // tests/test_mode3_rp_relay.mjs — RP 릴레이(스펙 2026-10-15 §5.1, 계획 R6): 양성 1 + 음성 6(비활성·대상·셀렉터·arid·가스 상한·속도 제한)·CORS.
+// 2026-10-26 리뷰 E2: 증명이 틀린 calldata 는 배포 전에 relay_bad_proof. E1: 로그인 proof 정규화(로그 줄 크기 상한·비정규 숫자 400).
 // file 모드 에이전트의 /wallet/tx/prepare 가 만든 진짜 calldata 를 쓴다. :8545 와 build/mode3 필요. (chain)
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { ethers } from 'ethers';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
 import { getProvider } from './helpers/mode3_chain.mjs';
@@ -24,6 +27,23 @@ try {
   assert.equal((await rp.post('/api/mode3/login', { proof: lg.body.proof, publicSignals: lg.body.publicSignals, sig: lg.body.sig, r_s: ch.r_s })).body.ok, true);
   const prepare = (extra = {}) => wallet.post('/wallet/tx/prepare', { r_s: ch.r_s, to: '0x000000000000000000000000000000000000dEaD', value: '0', data: '0x', ...extra });
   const factory = factoryAt(info.factoryAddress, provider);
+  const reencode = (dec, { a = dec.a, pub = dec.pub } = {}) => walletInterface.encodeFunctionData('execute', [dec.payload, dec.sig, a.map(BigInt), dec.b.map((row) => row.map(BigInt)), dec.c.map(BigInt), pub.map(BigInt)]);
+
+  // 첫 양성보다 앞에 둔다 — 계정이 아직 배포되지 않은 상태에서만 "배포하지 않았다" 를 getCode 로 확인할 수 있다.
+  await t('E2(2026-10-26): 증명이 틀린 calldata 는 배포 전에 400 relay_bad_proof — 계정 코드는 그대로 0x', async () => {
+    const p = await prepare(); assert.equal(p.status, 200, JSON.stringify(p.body)); assert.equal(p.body.deployNeeded, true);
+    const dec = decodeExecuteCalldata(p.body.calldata);
+    const badA = [...dec.a]; badA[0] = (BigInt(badA[0]) + 1n).toString();
+    let r = await relay({ to: p.body.walletAddr, data: reencode(dec, { a: badA }) });
+    assert.equal(r.status, 400, JSON.stringify(r.body)); assert.equal(r.body.reason, 'relay_bad_proof');
+    assert.equal(await provider.getCode(p.body.walletAddr), '0x', '증명 확인 전에 배포하면 안 된다');
+    // 공격 각본: arid 는 공개(rp_info)이므로 PPID 만 바꾸고 to 를 그 PPID 의 주소로 맞추면 대상 검사·속도 제한(대상별)을 매번 통과한다.
+    const pub = [...dec.pub]; pub[0] = (BigInt(pub[0]) + 1n).toString();
+    const other = await factory.computeAddress(BigInt(pub[0]));
+    r = await relay({ to: other, data: reencode(dec, { pub }) });
+    assert.equal(r.status, 400, JSON.stringify(r.body)); assert.equal(r.body.reason, 'relay_bad_proof');
+    assert.equal(await provider.getCode(other), '0x', '임의 PPID 계정을 배포하면 안 된다(릴레이어 가스 소모)');
+  });
 
   await t('양성: 첫 execute — 릴레이어가 계정을 배포하고 보낸다, 영수증에 Executed·Mode3Auth', async () => {
     const p = await prepare(); assert.equal(p.status, 200, JSON.stringify(p.body)); assert.equal(p.body.deployNeeded, true);
@@ -90,6 +110,41 @@ try {
     const p = (await prepare()).body;
     const first = await relay({ to: p.walletAddr, data: p.calldata }); assert.equal(first.status, 200, JSON.stringify(first.body)); await waitReceipt(first.body.txHash);
     const second = await relay({ to: p.walletAddr, data: (await prepare()).body.calldata }); assert.equal(second.status, 429); assert.equal(second.body.reason, 'relay_rate_limited');
+  });
+  // E1(2026-10-26): 로그인 proof 는 정규형으로 다시 만들어 검증·기록한다 — 원문을 기록하면 패딩 proof 가 개봉 요청(IdP 256kb)을 413 으로 막는다.
+  const LOGIN_LOG = path.join(stack.dir, 'mode3_rp_logins.jsonl');
+  const freshLogin = async () => {
+    const c = (await rp.post('/api/mode3/challenge')).body;
+    const w = await wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s: c.r_s, r_rp: c.r_rp, factoryAddress: info.factoryAddress, attrGateAddress: info.attrGateAddress }, { Origin: rp.origin });
+    assert.equal(w.status, 200, JSON.stringify(w.body));
+    return { c, w: w.body };
+  };
+  await t('E1: 모르는 키로 200KB 를 덧댄 proof 도 정규 부분이 유효하면 로그인되고, 로그 줄에는 정규 proof 만 남는다; 개봉 요청은 413 이 아니다', async () => {
+    const { c, w } = await freshLogin();
+    const padded = { ...w.proof, pad: 'x'.repeat(200_000), pi_a: [...w.proof.pi_a] };
+    const r = await rp.post('/api/mode3/login', { proof: padded, publicSignals: w.publicSignals, sig: w.sig, r_s: c.r_s });
+    assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.body.ok, true, JSON.stringify(r.body));
+    const line = fs.readFileSync(LOGIN_LOG, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).reverse().find((l) => l.r_s === c.r_s);
+    assert.ok(line, '로그 줄이 있어야 한다');
+    assert.ok(JSON.stringify(line).length < 16_000, `로그 줄 크기 ${JSON.stringify(line).length}`);
+    assert.deepEqual(Object.keys(line.proof).sort(), ['curve', 'pi_a', 'pi_b', 'pi_c', 'protocol']);
+    assert.deepEqual(line.proof, { pi_a: w.proof.pi_a, pi_b: w.proof.pi_b, pi_c: w.proof.pi_c, protocol: 'groth16', curve: 'bn128' });
+    const o = await rp.post('/api/mode3/open', { PPID: r.body.PPID });
+    assert.notEqual(o.status, 413, JSON.stringify(o.body)); assert.ok(o.status < 300, JSON.stringify(o.body)); assert.ok(o.body.id, JSON.stringify(o.body));
+  });
+  await t('E1: 비정규 숫자 문자열(앞자리 0)·원소를 덧붙인 좌표·필드 밖 좌표가 든 proof 는 400 malformed', async () => {
+    const q = 21888242871839275222246405745257275088696311157297823662689037894645226208583n;
+    const variants = [
+      (pr) => ({ ...pr, pi_a: ['0' + pr.pi_a[0], pr.pi_a[1], pr.pi_a[2]] }),
+      (pr) => ({ ...pr, pi_c: [...pr.pi_c, '7'] }),
+      (pr) => ({ ...pr, pi_b: [pr.pi_b[0], [(BigInt(pr.pi_b[1][0]) + q).toString(), pr.pi_b[1][1]], pr.pi_b[2]] }),
+      (pr) => ({ ...pr, pi_a: [Number(1), pr.pi_a[1], pr.pi_a[2]] }),
+    ];
+    for (const [i, mk] of variants.entries()) {
+      const { c, w } = await freshLogin();
+      const r = await rp.post('/api/mode3/login', { proof: mk(w.proof), publicSignals: w.publicSignals, sig: w.sig, r_s: c.r_s });
+      assert.equal(r.status, 400, `#${i} ${JSON.stringify(r.body)}`); assert.equal(r.body.reason, 'malformed', `#${i}`);
+    }
   });
   await t('음성: 검증기가 없으면(팩토리 상수 조회 실패) 503 relay_inactive — 마지막 케이스(env 누적)', async () => {
     await stack.restartRp({ MODE3_RELAY_RATE: '', MODE3_RP_FACTORY_ADDRESS: cia.logAddress }, { waitActive: false });

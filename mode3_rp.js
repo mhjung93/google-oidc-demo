@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
-import { createRpVerifier, verifySessionRequest } from './lib/mode3_rp.js';
+import { createRpVerifier, verifySessionRequest, canonicalProof, proofFromCalldata, verifyCalldataProof } from './lib/mode3_rp.js';
 import { VKEY_PATH } from './lib/mode3_wallet.js';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { verifyRpCert } from './lib/mode3_rp_cert.js';
@@ -343,7 +343,9 @@ const discOf = (d) => ({ mask: d.mask.toString(), lo: d.lo.map(String), hi: d.hi
 
 // ---- 앱 ----
 const app = express();
-app.use(express.json({ limit: '1mb' }));
+// 본문 상한은 IdP(cia.js) 와 같은 256kb(2026-10-26 리뷰 E1). 정상 로그인 본문은 수 KB, 릴레이 calldata 도 수십 KB 안이다.
+// 더 크면 기록해 둔 트랜스크립트가 개봉 요청에서 IdP 상한에 걸리는 비대칭이 생긴다(기록은 정규 proof 로만 하지만 이중 방어).
+app.use(express.json({ limit: '256kb' }));
 
 // 데모 공통 레이어(설계 2026-09-24-mode3-demo-ux §1.2) — mode3/common 만 정적으로 낸다.
 app.use('/common', express.static(path.join(__dirname, 'mode3', 'common')));
@@ -387,7 +389,10 @@ app.post('/api/mode3/challenge', (req, res) => {
 async function verifyBody(req, res, r_s, r_rp) {
   const { proof, publicSignals, sig } = req.body ?? {};
   if (!proof || !Array.isArray(publicSignals) || typeof sig !== 'string') { res.status(400).json({ ok: false, reason: 'malformed' }); return null; }
-  return verifier.verifyLogin({ proof, publicSignals, sig, r_s, r_rp });
+  // proof 정규형(2026-10-26 리뷰 E1): 비정규 숫자·덧붙인 원소·필드 밖 좌표는 형식 오류(400)다. verifyLogin 도 같은 검사를 하고 정규형을 돌려준다.
+  const canon = canonicalProof(proof);
+  if (!canon) { res.status(400).json({ ok: false, reason: 'malformed', detail: 'proof' }); return null; }
+  return verifier.verifyLogin({ proof: canon, publicSignals, sig, r_s, r_rp });
 }
 
 app.post('/api/mode3/login', async (req, res) => {
@@ -428,7 +433,7 @@ app.post('/api/mode3/login', async (req, res) => {
     if (disclosure.mask !== '0' || disclosure.set) disclosedLoginCount++;
     logins.push({ PPID: v.PPID.toString(), at, root: v.root.toString(), r_s: rsShort(rsStr), allowAgent: v.allowAgent.toString(), disclosure });
     // §5 로그인 로그 — 전체 r_s 와 트랜스크립트(태그 포함). 개봉 요청의 재료다. 조회 API 로는 내지 않는다.
-    fs.appendFileSync(LOGIN_LOG, JSON.stringify({ at, PPID: v.PPID.toString(), r_s: rsStr, pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), disclosure, auid_s: v.auid_s.toString(), arid_s: v.arid_s.toString(), publicSignals: v.publicSignals, proof: req.body.proof }) + '\n', { mode: 0o600 });
+    fs.appendFileSync(LOGIN_LOG, JSON.stringify({ at, PPID: v.PPID.toString(), r_s: rsStr, pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), disclosure, auid_s: v.auid_s.toString(), arid_s: v.arid_s.toString(), publicSignals: v.publicSignals, proof: v.proof }) + '\n', { mode: 0o600 });
     res.json({ ok: true, PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), r_s: rsStr, root: v.root.toString(), allowAgent: v.allowAgent.toString(), disclosure });
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });
@@ -487,7 +492,10 @@ app.post('/api/mode3/request', async (req, res) => {
 
 // ---- 릴레이(설계 2026-10-15 §5.1, 계획 R6): 브라우저 사용자 페이지의 execute 를 RP 의 릴레이어 계정이 대신 보낸다 ----
 // 릴레이어는 서명만 한다 — 사용자 비밀을 보지 않는다. 검열(거부·지연) 가능성은 런북의 한계에 적는다.
-// 검사 순서: 활성 → 본문 형식(value 0 고정) → execute 셀렉터·pub 34(2026-10-22 §6.5 counter 추가)·pub[1]=arid → to = computeAddress(pub[0]) → 속도 제한 → (코드 없으면 deploy) → estimateGas ≤ cap → 전송.
+// 검사 순서: 활성 → 본문 형식(value 0 고정) → execute 셀렉터·pub 34(2026-10-22 §6.5 counter 추가)·pub[1]=arid → to = computeAddress(pub[0])
+//   → Groth16 오프체인 확인(2026-10-26 리뷰 E2) → 속도 제한 → (코드 없으면 deploy) → estimateGas ≤ cap → 전송.
+// 증명 확인이 배포보다 앞이어야 한다 — arid 는 공개이고 to 는 PPID 로 맞출 수 있어, 없으면 PPID 만 바꿔 가며 릴레이어 가스로
+// 빈 계정을 끝없이 배포시킬 수 있다(속도 제한은 대상별이라 매번 새 키). 속도 제한보다도 앞에 둬 틀린 증명이 남의 몫을 깎지 않게 한다.
 const RELAY_GAS_CAP = BigInt(process.env.MODE3_RELAY_GAS_CAP || 1_200_000);
 const RELAY_RATE = Number(process.env.MODE3_RELAY_RATE || 10);     // 계정당 분당
 const relayCors = cors({ origin: (origin, cb) => cb(null, origin === WALLET_ORIGIN), methods: ['POST', 'GET'], allowedHeaders: ['Content-Type'] });
@@ -508,6 +516,7 @@ app.post('/api/mode3/relay', relayCors, async (req, res) => {
     const ppid = BigInt(dec.pub[PUB_INDEX.PPID]);
     const expected = await factory.computeAddress(ppid);
     if (expected.toLowerCase() !== to.toLowerCase()) return res.status(400).json({ ok: false, reason: 'relay_bad_target' });
+    if (!(await verifyCalldataProof({ vkey, a: dec.a, b: dec.b, c: dec.c, pub: dec.pub }))) return res.status(400).json({ ok: false, reason: 'relay_bad_proof' });
     const key = to.toLowerCase(), now = Date.now();
     const hits = (relayHits.get(key) ?? []).filter((t) => now - t < 60_000);
     if (hits.length >= RELAY_RATE) { relayHits.set(key, hits); return res.status(429).json({ ok: false, reason: 'relay_rate_limited' }); }
@@ -559,14 +568,8 @@ async function transcriptFromTx(txHash) {
   if (!d) return { error: 'not_execute' };
   const receipt = await provider.getTransactionReceipt(txHash);
   if (!receipt || receipt.status !== 1 || !parseExecuteReceipt(receipt, tx.to).auth) return { error: 'tx_failed' };
-  // exportSolidityCallData 는 b 의 각 행을 (y, x) 로 뒤집는다 — 되돌린다.
-  const proof = {
-    pi_a: [d.a[0], d.a[1], '1'],
-    pi_b: [[d.b[0][1], d.b[0][0]], [d.b[1][1], d.b[1][0]], ['1', '0']],
-    pi_c: [d.c[0], d.c[1], '1'],
-    protocol: 'groth16', curve: 'bn128',
-  };
-  return { publicSignals: d.pub, proof, PPID: d.pub[0] };
+  // exportSolidityCallData 는 b 의 각 행을 (y, x) 로 뒤집는다 — proofFromCalldata 가 되돌린다(릴레이의 증명 확인과 같은 변환).
+  return { publicSignals: d.pub, proof: proofFromCalldata(d), PPID: d.pub[0] };
 }
 app.post('/api/mode3/open', async (req, res) => {
   try {
