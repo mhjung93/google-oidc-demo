@@ -481,6 +481,23 @@
     }
     /** googleToken 실패 사유를 사람이 읽는 줄로. */
     const gsiReasonText = (reason) => (reason === 'gsi_origin' ? (tt('wallet_gsi_origin') || 'Google 로그인은 http://localhost:5100 에서만 됩니다.') : `Google 로그인 실패: ${reason}`);
+    /**
+     * nonce 계산(/wallet/oidc/nonce) → Google 버튼 → id_token 을 한 번에(2026-10-26). nonceBody 는 purpose 별 본문.
+     * onNonce 는 nonce 를 받은 직후, 버튼을 그리기 전에 부르는 선택 콜백(안내 줄용). 성공이면 { token }, 실패면
+     * { token: null, stage: 'nonce'|'google', reason, detail } — stage 로 호출자가 안내 문구를 가른다.
+     */
+    async function oidcToken(nonceBody, onNonce) {
+      const n = await postJson('/wallet/oidc/nonce', nonceBody);
+      if (n.status !== 200) return { token: null, stage: 'nonce', reason: n.body.reason ?? `HTTP ${n.status}`, detail: errText(n.status, n.body) };
+      if (onNonce) onNonce();
+      const g = await googleToken(n.body.nonce);
+      return g.token ? { token: g.token } : { token: null, stage: 'google', reason: g.reason, detail: gsiReasonText(g.reason) };
+    }
+    /** oidcToken 실패를 팝업의 진행 줄·로그에 낸다(등록·RP 로그인 두 팝업 경로 공용). */
+    const oidcFailStep = (g, step, log) => {
+      if (g.stage === 'nonce') { step('nonce 계산 실패'); log(g.detail); }
+      else step(g.detail);
+    };
     /** 에이전트의 등록 provider — 못 읽으면 demo 로 본다(지금까지의 경로). */
     async function walletProvider() {
       try { return (await (await fetch('/wallet/status')).json()).provider ?? 'demo'; } catch { return 'demo'; }
@@ -523,11 +540,8 @@
           step('Snap 등록 확인 창을 확인하세요.');
           const prep = await invokeSnap('prepareRegister', {});
           if (!prep || prep.denied) { step('등록 거절'); return reply({ ok: false, reason: 'user_denied' }); }
-          const n = await postJson('/wallet/oidc/nonce', { purpose: 'register', sk_u: prep.sk_u });
-          if (n.status !== 200) { step('nonce 계산 실패'); log(errText(n.status, n.body)); return reply({ ok: false, reason: n.body.reason ?? `HTTP ${n.status}` }); }
-          step(tt('wallet_gsi_hint') || 'Google 버튼을 눌러 로그인하세요.');
-          const g = await googleToken(n.body.nonce);
-          if (!g.token) { step(gsiReasonText(g.reason)); return reply({ ok: false, reason: g.reason }); }
+          const g = await oidcToken({ purpose: 'register', sk_u: prep.sk_u }, () => step(tt('wallet_gsi_hint') || 'Google 버튼을 눌러 로그인하세요.'));
+          if (!g.token) { oidcFailStep(g, step, log); return reply({ ok: false, reason: g.reason }); }
           step('에이전트에 등록하는 중…');
           const { status, body: b } = await postJson('/wallet/register', { id_token: g.token, s_u: prep.s_u, sk_u: prep.sk_u });
           if (status !== 201) { step('등록 실패 — 다시 시도하면 같은 비밀로 이어진다'); log(errText(status, b)); return reply({ ok: false, reason: b.cia?.reason ?? b.reason ?? `HTTP ${status}`, detail: b.detail ?? null }); }
@@ -639,11 +653,8 @@
           // issue:H(pk_u|arid_s)(에이전트가 이 로그인의 arid·r_rp 로 계산). 데모 계정은 지금처럼 IdP 인증 창(CIA_ISSUE_AUTH=code)의 1회용 코드.
           let authCode = null, idToken = null;
           if ((await walletProvider()) !== 'demo') {
-            const n = await postJson('/wallet/oidc/nonce', { purpose: 'issue', arid: req.arid, r_rp: req.r_rp });
-            if (n.status !== 200) { step('nonce 계산 실패'); log(errText(n.status, n.body)); return reply({ ok: false, reason: n.body.reason ?? `HTTP ${n.status}` }); }
-            step(tt('wallet_gsi_hint') || 'Google 버튼을 눌러 로그인하세요.');
-            const g = await googleToken(n.body.nonce);
-            if (!g.token) { step(gsiReasonText(g.reason)); return reply({ ok: false, reason: g.reason }); }
+            const g = await oidcToken({ purpose: 'issue', arid: req.arid, r_rp: req.r_rp }, () => step(tt('wallet_gsi_hint') || 'Google 버튼을 눌러 로그인하세요.'));
+            if (!g.token) { oidcFailStep(g, step, log); return reply({ ok: false, reason: g.reason }); }
             idToken = g.token;
           } else {
             // IdP 인증 창(Task 14, B5) — CIA_ISSUE_AUTH=code 인 IdP 는 로그인마다 이 창이 낸 1회용 코드가 있어야
@@ -1448,6 +1459,13 @@
     });
     // 자기 폐기(스펙 §4.5): Snap 이 비밀번호를 묻고, 에이전트의 프록시가 CIA 로 중계한다(같은 오리진 — cia.js 에는
     // CORS 가 없어 이 페이지가 :4100 을 직접 부를 수 없다). 비밀번호는 이 페이지도 에이전트도 보관하지 않는다.
+    /** /wallet/self_revoke 응답을 결과 카드에 그린다(비밀번호·Google 두 경로 공용). uid 만 받아 인자 생성기가 응답 밖 값을 붙잡지 않게 한다. */
+    function showSelfRevokeResult(res, uid) {
+      if (res.status === 200) {
+        progress.revoked = true;
+        setVerdict($('snapVerdict'), true, 'revoked_ok', () => ({ summary: tt('wallet_self_revoke_ok', { uid }) || `uid ${uid} 계정의 폐기를 요청했습니다.`, detail: safeDetail(res.body) }));
+      } else setVerdict($('snapVerdict'), false, 'wallet_self_revoke_failed', { reason: res.body.reason ?? `HTTP ${res.status}`, detail: safeDetail(res.body) });
+    }
     $('selfRevokeBtn').addEventListener('click', async () => {
       if (!Demo.confirmDanger('confirm_revoke')) return;
       pendingVerdict($('snapVerdict'), 'working');
@@ -1456,16 +1474,9 @@
         // Google 계정(2026-10-26 Snap OIDC 래퍼 §2.3): 비밀번호 대신 revoke: nonce 의 Google 재로그인. Snap 프롬프트는 띄우지 않는다.
         const st = await (await fetch('/wallet/status')).json().catch(() => ({}));
         if (st.provider && st.provider !== 'demo') {
-          const n = await postJson('/wallet/oidc/nonce', { purpose: 'revoke' });
-          if (n.status !== 200) { setVerdict($('snapVerdict'), false, 'wallet_self_revoke_failed', { reason: n.body.reason ?? `HTTP ${n.status}` }); return; }
-          const g = await googleToken(n.body.nonce);
-          if (!g.token) { setVerdict($('snapVerdict'), false, 'wallet_self_revoke_failed', { reason: g.reason, detail: gsiReasonText(g.reason) }); return; }
-          const uid = st.uid;
-          const res = await postJson('/wallet/self_revoke', { id_token: g.token });
-          if (res.status === 200) {
-            progress.revoked = true;
-            setVerdict($('snapVerdict'), true, 'revoked_ok', () => ({ summary: tt('wallet_self_revoke_ok', { uid }) || `uid ${uid} 계정의 폐기를 요청했습니다.`, detail: safeDetail(res.body) }));
-          } else setVerdict($('snapVerdict'), false, 'wallet_self_revoke_failed', { reason: res.body.reason ?? `HTTP ${res.status}`, detail: safeDetail(res.body) });
+          const g = await oidcToken({ purpose: 'revoke' });
+          if (!g.token) { setVerdict($('snapVerdict'), false, 'wallet_self_revoke_failed', { reason: g.reason, detail: g.detail }); return; }
+          showSelfRevokeResult(await postJson('/wallet/self_revoke', { id_token: g.token }), st.uid);
           refresh();
           return;
         }
@@ -1473,11 +1484,7 @@
         if (!r || r.denied) { setVerdict($('snapVerdict'), false, 'wallet_self_revoke_failed', () => ({ summary: tt('wallet_cancelled') || '창에서 취소했습니다.' })); return; }
         // uid 만 따로 꺼내 쓴다 — 결과 카드의 인자 생성기가 비밀번호가 든 응답을 붙잡고 있지 않게 한다.
         const uid = r.uid;
-        const res = await postJson('/wallet/self_revoke', { uid: r.uid, pwd: r.pwd });
-        if (res.status === 200) {
-          progress.revoked = true;
-          setVerdict($('snapVerdict'), true, 'revoked_ok', () => ({ summary: tt('wallet_self_revoke_ok', { uid }) || `uid ${uid} 계정의 폐기를 요청했습니다.`, detail: safeDetail(res.body) }));
-        } else setVerdict($('snapVerdict'), false, 'wallet_self_revoke_failed', { reason: res.body.reason ?? `HTTP ${res.status}`, detail: safeDetail(res.body) });
+        showSelfRevokeResult(await postJson('/wallet/self_revoke', { uid: r.uid, pwd: r.pwd }), uid);
       } catch (e) {
         setVerdict($('snapVerdict'), false, 'wallet_self_revoke_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
       }

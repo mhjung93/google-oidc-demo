@@ -166,6 +166,8 @@
   }
   $('registerBtn').addEventListener('click', async () => {
     if (!me) return verdict($('userVerdict'), false, 'idp_register_failed', { reason: 'login_required' });
+    // 지갑 오리진을 모르면 일회용 등록 코드를 받기 전에 끝낸다(코드가 소비되지 않게) — openRegisterPopup 도 같은 검사를 한다.
+    if (!walletOrigin) return verdict($('userVerdict'), false, 'idp_register_failed', { reason: 'wallet_origin_unknown', summary: tt('wallet_origin_unknown') });
     $('registerBtn').disabled = true;
     const c = await post('/cia/user/register_code');
     $('registerBtn').disabled = false;
