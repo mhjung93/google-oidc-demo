@@ -9,7 +9,8 @@ import { getProvider, fundAddress, deployMode3Log, deployMode3Mirror, relayToMir
 import { createRegistryTree, registryLeaf } from '../lib/mode3_registry.js';
 import { credMessageV11, aridSOf, randomScalar } from '../lib/mode3_credential.js';
 import { createRegistration, createSessionKey, buildIssueRequest, syncRevocationTree, buildCredentialProof, signChallenge, normalizeSet, VKEY_PATH } from '../lib/mode3_wallet.js';
-import { createRpVerifier, maskDisclosure } from '../lib/mode3_rp.js';
+import { createRpVerifier, maskDisclosure, uniqueMembers } from '../lib/mode3_rp.js';
+import { DEFAULT_ATTR_SCHEMA, encodeMembers, slotIndexOf } from '../lib/mode3_attr_schema.js';
 import { createShare, combinePublicKey } from '../lib/mode3_trace.js';
 import { setRoot } from '../lib/mode3_set_tree.js';
 
@@ -418,6 +419,19 @@ await t('C-2 E2E: 마스크 밖 슬롯이 0 이 아닌 **유효한** π 여도 v
 // Scalar.toRprLE 가 그 문자열에 .toString(16) 을 불러 16진으로 파싱한다(실측: " 1"→0, " 2000"→0, "2007 "→8199).
 // 그래서 정상 로그인 π(mask=0, lo=hi=0)에 " 1"·" 2000" 을 실으면 증명 검증은 원래 값 0 으로 통과하는데
 // RP 는 BigInt 로 1·2000 을 읽어 "출생연도 ≤ 2000 을 공개했다" 고 믿는다 — 나이·집합·allowAgent 술어가 통째로 위조된다.
+await t('리뷰 수정 1: MODE3_ALLOWED_COUNTRIES="KR,410" 처럼 이름·코드가 겹치면 uniqueMembers 가 첫 순서로 하나만 남기고, 그 집합은 지갑 normalizeSet(중복 거절)을 통과한다', async () => {
+  const slot = slotIndexOf(DEFAULT_ATTR_SCHEMA, 'country');
+  const encoded = await encodeMembers(DEFAULT_ATTR_SCHEMA, slot, ['KR', '410']);
+  assert.deepEqual(encoded, [410n, 410n], '전제: 인코더는 중복을 걷어내지 않는다');
+  const members = uniqueMembers(encoded);
+  assert.deepEqual(members, [410n]);
+  assert.deepEqual(uniqueMembers([392n, 410n, 392n, 840n, 410n]), [392n, 410n, 840n], '첫 등장 순서 유지');
+  const attrs = [1990n, 410n, 0n, 0n, 0n, 0n];
+  const wire = members.map(String);   // mode3_rp.js currentPredicates 와 같은 직렬화
+  assert.equal((await normalizeSet({ slot, members: wire }, attrs)).sel, BigInt(slot) + 1n);
+  await assert.rejects(() => normalizeSet({ slot, members: encoded.map(String) }, attrs), (e) => e.reason === 'bad_disclosure', '중복을 걷어내지 않으면 지갑이 거절한다');
+  assert.equal(await setRoot(members), await setRoot(encoded), 'root 는 그대로(setRoot 는 원래 중복을 걷어낸다)');
+});
 await t('C-1: 정규 10진 문자열이 아닌 공개 입력은 malformed — 증명과 정책이 다른 값을 보지 못한다', async () => {
   const good = await makeLogin();
   assert.equal(good.publicSignals[15], '0', '전제: 로그인 π 의 disc_mask 는 0');

@@ -126,12 +126,12 @@ try {
 
   // 3·4. 트랜잭션: 첫 번째는 계정 배포 + execute, 이후 N회는 캐시 π 로 execute
   const to = ethers.Wallet.createRandom().address;
-  const r1 = await wallet.post('/wallet/tx', { r_s: lastRs, to, value: '0' }, { Origin: stack.rpOriginForWallet });
+  const r1 = await wallet.post('/wallet/tx', { r_s: lastRs, to, value: '0' }, { Origin: wallet.base });
   if (r1.status !== 200 || !r1.body.ok) throw new Error(`tx1 ${r1.status} ${j(r1.body)}`);
   const T = { total: [], gas: [] };
   for (let i = 0; i < N; i++) {
     const t0 = performance.now();
-    const r = await wallet.post('/wallet/tx', { r_s: lastRs, to }, { Origin: stack.rpOriginForWallet });
+    const r = await wallet.post('/wallet/tx', { r_s: lastRs, to }, { Origin: wallet.base });
     T.total.push(performance.now() - t0);
     if (r.status !== 200 || !r.body.ok || !r.body.cacheHit) throw new Error(`tx ${r.status} ${j(r.body)}`);
     T.gas.push(Number(r.body.gasUsed));
@@ -146,7 +146,7 @@ try {
     const disclose = [{ lo: '0', hi: String(1990 + i) }, null, null, null, null, null];
     const set = { slot: 1, members: [410, 392, 840, 276, 250] };
     const t0 = performance.now();
-    const r = await wallet.post('/wallet/tx', { r_s: lastRs, to: gateAddress, data: claimSelector, disclose, set }, { Origin: stack.rpOriginForWallet });
+    const r = await wallet.post('/wallet/tx', { r_s: lastRs, to: gateAddress, data: claimSelector, disclose, set }, { Origin: wallet.base });
     G.total.push(performance.now() - t0);
     if (r.status !== 200 || !r.body.ok) throw new Error(`claim tx ${r.status} ${j(r.body)}`);
     const gate = new ethers.Contract(gateAddress, ATTR_GATE_ABI, provider);
@@ -161,7 +161,7 @@ try {
   const RA = { gas: [] };
   for (let i = 0; i < N; i++) {
     const disclose = [{ lo: '0', hi: String(2000 + i) }, null, null, null, null, null];
-    const r = await wallet.post('/wallet/tx', { r_s: lastRs, to: deadAddress, disclose }, { Origin: stack.rpOriginForWallet });
+    const r = await wallet.post('/wallet/tx', { r_s: lastRs, to: deadAddress, disclose }, { Origin: wallet.base });
     if (r.status !== 200 || !r.body.ok) throw new Error(`range-only tx ${r.status} ${j(r.body)}`);
     RA.gas.push(Number(r.body.gasUsed));
   }
@@ -171,7 +171,7 @@ try {
   const S = { gas: [] };
   for (let i = 0; i < N; i++) {
     const set = { slot: 1, members: [410, 392, 840, 276, 250, 900 + i] };
-    const r = await wallet.post('/wallet/tx', { r_s: lastRs, to: deadAddress, set }, { Origin: stack.rpOriginForWallet });
+    const r = await wallet.post('/wallet/tx', { r_s: lastRs, to: deadAddress, set }, { Origin: wallet.base });
     if (r.status !== 200 || !r.body.ok) throw new Error(`set-only tx ${r.status} ${j(r.body)}`);
     S.gas.push(Number(r.body.gasUsed));
   }

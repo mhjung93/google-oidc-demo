@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
-import { createRpVerifier, verifySessionRequest, canonicalProof, proofFromCalldata, verifyCalldataProof } from './lib/mode3_rp.js';
+import { createRpVerifier, verifySessionRequest, canonicalProof, proofFromCalldata, verifyCalldataProof, uniqueMembers } from './lib/mode3_rp.js';
 import { VKEY_PATH } from './lib/mode3_wallet.js';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { verifyRpCert } from './lib/mode3_rp_cert.js';
@@ -164,7 +164,8 @@ const ALLOWED_COUNTRY_TOKENS = (process.env.MODE3_ALLOWED_COUNTRIES ?? '').split
 let ALLOWED_COUNTRIES = [];
 if (ALLOWED_COUNTRY_TOKENS.length) {
   if (COUNTRY_SLOT < 0) { console.error('[rp] 속성 스키마에 country 슬롯이 없어 MODE3_ALLOWED_COUNTRIES 를 해석할 수 없다'); process.exit(1); }
-  try { ALLOWED_COUNTRIES = await encodeMembers(ATTR_SCHEMA.schema, COUNTRY_SLOT, ALLOWED_COUNTRY_TOKENS); }
+  // 이름·코드가 겹치면("KR,410") 같은 값이 둘 — 지갑이 중복 원소를 거절하므로(리뷰 D1) 첫 순서로 하나만 남긴다.
+  try { ALLOWED_COUNTRIES = uniqueMembers(await encodeMembers(ATTR_SCHEMA.schema, COUNTRY_SLOT, ALLOWED_COUNTRY_TOKENS)); }
   catch (e) { console.error(`[rp] MODE3_ALLOWED_COUNTRIES 해석 실패: ${e.message}`); process.exit(1); }
 }
 const ALLOWED_COUNTRIES_EFFECTIVE = ALLOWED_COUNTRIES.length ? ALLOWED_COUNTRIES : [...ALLOWED_COUNTRIES_DEFAULT];
