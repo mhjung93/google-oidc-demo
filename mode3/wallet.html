@@ -537,6 +537,28 @@
         // 못 읽으면(네트워크 등) 그냥 진행한다 — 어차피 /wallet/register 가 다시 걸러준다.
         let already = false;
         try { already = Boolean((await (await fetch('/wallet/status')).json()).registered); } catch { /* 진행 */ }
+        if (already && req.provider === 'google') {
+          // 반쯤 된 Google 등록 복구(2026-10-26): IdP 등록·에이전트 저장은 끝났는데 Snap 이 보류로 남은 경우(Snap 저장 실패, /user 타이머가
+          // /wallet/register 도중 팝업을 닫음) 다시 누르면 Google 로그인 없이 Snap 저장만 마저 한다. GSI 를 쓰지 않으므로 gsiPrecheck 보다 앞에서 갈린다.
+          let info = null;
+          try { info = await invokeSnap('getPublicInfo', {}); } catch { /* 못 읽으면 아래에서 already_registered 로 끝낸다 */ }
+          if (info?.pending === true) {
+            step('반쯤 된 등록을 이어서 끝낸다 — Snap 확인 창을 확인하세요.');
+            const prep = await invokeSnap('prepareRegister', {});
+            if (!prep || prep.denied) { step('등록 거절'); return reply({ ok: false, reason: 'user_denied' }); }
+            const { status, body: b } = await postJson('/wallet/register/resume', { s_u: prep.s_u, sk_u: prep.sk_u });
+            if (status !== 200) { step('복구 실패 — 이 Snap 의 비밀이 에이전트 등록과 맞지 않거나 에이전트에 닿지 못했다'); log(errText(status, b)); return reply({ ok: false, reason: b.reason ?? `HTTP ${status}`, detail: b.detail ?? null }); }
+            step('Snap 에 등록 결과 저장 중…');
+            try { await invokeSnap('storeRegistration', { attrs: b.attrs, slot: b.slot, auid: b.auid, uid: b.uid, provider: b.provider }); }
+            catch (e) { step('등록이 반만 됐다 — Snap 저장 실패'); log(e.message); return reply({ ok: false, reason: 'wallet_error', detail: e.message }); }
+            step('등록을 마저 끝냈다 — 창을 닫는다.');
+            return reply({ ok: true, slot: b.slot, auid: b.auid, uid: b.uid, resumed: true });
+          }
+          if (info && !info.registered) {
+            step('에이전트에는 등록이 있지만 이 Snap 은 비어 있다 — 재시연 세트로 지갑·IdP 를 함께 비워야 한다.');
+            return reply({ ok: false, reason: 'already_registered', detail: 'snap_empty' });
+          }
+        }
         if (already) { step('이미 등록돼 있다.'); return reply({ ok: false, reason: 'already_registered' }); }
         // Google 등록(2026-10-26 Snap OIDC 래퍼 §2.1): uid·code 없이 온다. Snap 이 비밀을 보류 등록으로 먼저 만들고(pk_u → reg: nonce),
         // 팝업에서 Google 로그인 → 에이전트가 IdP 에 { id_token, auid, pk_u, sig_reg } 로 등록 → Snap 이 uid·provider 를 채운다.
@@ -697,6 +719,15 @@
           step('로그인 성공 — 창을 닫는다.');
           reply({ ok: true, ...toRp });
         } catch (e) {
+          // 반쯤 된 등록(2026-10-26): Snap 이 보류 등록이면 consentLogin 이 registration_incomplete(또는 보류를 등록 없음으로 보는 not_registered)로 던진다.
+          // not_registered 는 에이전트에 등록이 있을 때만 이 안내로 본다 — 정말 미등록이면 기존 동작 그대로.
+          let half = /registration_incomplete/.test(e.message ?? '');
+          if (!half && /not_registered/.test(e.message ?? '')) { try { half = Boolean((await (await fetch('/wallet/status')).json()).registered); } catch { /* 기존 동작 */ } }
+          if (half) {
+            step("등록이 반만 됐다 — IdP /user 에서 'Google 로 등록'을 다시 누르면 이어진다(데모 계정은 재시연 세트).");
+            log(e.message);
+            return reply({ ok: false, reason: 'registration_incomplete', detail: e.message });
+          }
           step('오류');
           log(e.message);
           reply({ ok: false, reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });

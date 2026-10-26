@@ -52,6 +52,12 @@ try {
     assert.equal((await wallet.post('/wallet/oidc/nonce', { purpose: 'register', sk_u: 'zz' })).status, 400);
   });
 
+  await t('register/resume: 에이전트에 등록이 없으면 409 not_registered(형식 검사가 먼저)', async () => {
+    const p = sim.prepareRegister();
+    const r = await wallet.post('/wallet/register/resume', { s_u: p.s_u, sk_u: p.sk_u });
+    assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'not_registered');
+  });
+
   await t('register(id_token): uid·pwd 와 함께면 400, 못 읽는 토큰 400 bad_id_token, nonce 가 다른 토큰은 IdP 가 거절(502, cia.reason=oidc_nonce_mismatch)', async () => {
     const good = await mint({ sub: SUB, nonce: regNonce(await eddsaPubOf(prep.sk_u)) });
     assert.equal((await wallet.post('/wallet/register', { id_token: good, uid: UID, s_u: prep.s_u, sk_u: prep.sk_u })).status, 400);
@@ -70,7 +76,26 @@ try {
     assert.equal(r.status, 201, j(r.body));
     assert.equal(r.body.uid, UID); assert.equal(r.body.provider, stub.provider);
     assert.ok(!('sk_u' in r.body) && !('s_u' in r.body));
-    sim.storeRegistration({ attrs: r.body.attrs, slot: r.body.slot, auid: r.body.auid, uid: r.body.uid, provider: r.body.provider });
+    // 반쯤 된 등록 복구: Snap 이 보류인 채로 resume — 같은 비밀이면 register 201 과 같은 필드, 다른 비밀·잘못된 형식은 거절, 상태는 그대로
+    const before = stateFile();
+    const rs = await wallet.post('/wallet/register/resume', { s_u: prep.s_u, sk_u: prep.sk_u });
+    assert.equal(rs.status, 200, j(rs.body));
+    for (const k of ['uid', 'slot', 'auid', 'attrs', 'provider']) assert.deepEqual(rs.body[k], r.body[k], `resume.${k}`);
+    assert.deepEqual(rs.body.profile, r.body.profile);
+    assert.ok(!('sk_u' in rs.body) && !('s_u' in rs.body));
+    const other = createSnapSim().prepareRegister();
+    const mm = await wallet.post('/wallet/register/resume', { s_u: other.s_u, sk_u: other.sk_u });
+    assert.equal(mm.status, 409, j(mm.body)); assert.equal(mm.body.reason, 'secrets_mismatch');
+    const mixed = await wallet.post('/wallet/register/resume', { s_u: prep.s_u, sk_u: other.sk_u });
+    assert.equal(mixed.status, 409, j(mixed.body)); assert.equal(mixed.body.reason, 'secrets_mismatch', 'sk_u 만 달라도');
+    const mixed2 = await wallet.post('/wallet/register/resume', { s_u: other.s_u, sk_u: prep.sk_u });
+    assert.equal(mixed2.status, 409, j(mixed2.body)); assert.equal(mixed2.body.reason, 'secrets_mismatch', 's_u 만 달라도');
+    for (const bad of [{}, { s_u: 'x', sk_u: prep.sk_u }, { s_u: prep.s_u, sk_u: 'zz' }, { s_u: '9'.repeat(80), sk_u: prep.sk_u }, { s_u: prep.s_u }]) {
+      assert.equal((await wallet.post('/wallet/register/resume', bad)).status, 400, j(bad));
+    }
+    assert.equal(stateFile(), before, 'resume 는 에이전트 상태를 바꾸지 않는다');
+    // resume 응답으로 저장한 Snap 이 이후 로그인에서 정상 증인을 낸다
+    sim.storeRegistration({ attrs: rs.body.attrs, slot: rs.body.slot, auid: rs.body.auid, uid: rs.body.uid, provider: rs.body.provider });
     assert.equal(sim.getPublicInfo().registered, true); assert.equal(sim.getPublicInfo().provider, stub.provider);
     const s = (await wallet.get('/wallet/status')).body;
     assert.equal(s.registered, true); assert.equal(s.uid, UID); assert.equal(s.provider, stub.provider);

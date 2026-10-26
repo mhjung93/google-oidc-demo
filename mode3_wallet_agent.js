@@ -672,6 +672,26 @@ app.post('/wallet/register', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// 반쯤 된 Google 등록 복구(2026-10-26): IdP 등록·에이전트 저장은 끝났는데 Snap 이 보류 등록으로 남은 경우(Snap storeRegistration 실패,
+// /user 타이머가 /wallet/register 도중 팝업을 닫음) 지갑 페이지가 Snap 의 보류 비밀(s_u·sk_u)을 보내 에이전트 등록과 맞는지 묻는다.
+// 판정을 에이전트가 하는 이유: 페이지에는 Poseidon(auid)·EdDSA(pk_u) 계산이 없다. IdP 를 부르지 않는 이유: 등록은 이미 끝났다 —
+// 맞으면 Snap 이 저장할 값(register 201 과 같은 필드)만 돌려주고 상태를 바꾸지 않는다. s_u·sk_u 는 비교에만 쓰고 저장·로그하지 않는다. CORS 없음(같은 오리진 전용).
+app.post('/wallet/register/resume', async (req, res) => {
+  try {
+    if (SECRETS !== 'snap') return res.status(400).json({ reason: 'not_snap_mode' });
+    const { s_u, sk_u } = req.body ?? {};
+    if (!(isDec(s_u) && BigInt(s_u) < SCALAR_MAX && typeof sk_u === 'string' && /^[0-9a-fA-F]{64}$/.test(sk_u))) return res.status(400).json({ error: 's_u(10진, 2^250 미만)·sk_u(hex 64자) 필요' });
+    const reg = state.registration;
+    if (!reg) return res.status(409).json({ reason: 'not_registered' });
+    const pk = await eddsaPubOf(sk_u);
+    const auid = await auidOf({ uid: BigInt(reg.uid), s_u: BigInt(s_u) });
+    if (pk.x.toString() !== String(reg.pk_u?.x) || pk.y.toString() !== String(reg.pk_u?.y) || auid.toString() !== String(reg.auid)) {
+      return res.status(409).json({ reason: 'secrets_mismatch', detail: '이 Snap 의 보류 비밀이 에이전트 등록과 다르다' });
+    }
+    res.json({ uid: reg.uid, slot: reg.slot, auid: reg.auid, attrs: reg.attrs, profile: reg.profile, provider: reg.provider ?? 'demo' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // V11 §3.3 — 사용자가 속성을 바꾼다. 스키마 검증 → attrs 재인코딩 → 바뀌었으면 옛 C_u·세션·π 캐시를 버린다(다음 로그인이 새 C_u 를 발급받는다 — PPID 는 그대로).
 // snap 모드는 응답의 attrsChanged 를 페이지가 Snap 의 syncAttrs 에 전달한다(Snap 이 자기 userCred 를 버린다). 비밀이 필요 없어 증인은 받지 않는다.
 app.put('/wallet/profile', async (req, res) => {

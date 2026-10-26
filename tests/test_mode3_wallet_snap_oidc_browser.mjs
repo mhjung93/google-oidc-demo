@@ -122,6 +122,35 @@ try {
     await u.close();
   });
 
+  await t('반쯤 된 등록 복구: Snap 을 보류로 되돌리고 "Google 로 등록" 다시 → Google 버튼 없이 Snap 저장을 마저 한다(uid 복원)', async () => {
+    const full = JSON.parse(JSON.stringify(snapState.registration));
+    assert.ok(full.uid && full.sk_u && full.s_u, 'Snap 에 완성된 등록이 있어야 한다');
+    // IdP 등록·에이전트 저장은 끝났는데 Snap storeRegistration 이 안 된 상태 — s_u·sk_u 만 남긴다
+    for (const k of ['uid', 'auid', 'slot', 'attrs', 'provider']) snapState.registration[k] = null;
+    const u = await context.newPage(); await u.goto(`${cia.base}/user`);
+    await u.waitForSelector('#registerGoogleBtn:not([hidden])', { timeout: 15_000 });
+    answers.push(true);                                                            // prepareRegister 확인 창(같은 비밀)
+    const [popup] = await Promise.all([context.waitForEvent('page'), u.click('#registerGoogleBtn')]);
+    await waitText(u, '#userVerdict', full.uid.slice(0, 8), 60_000);
+    assert.equal(await popup.$('#gsiBox .gsi-stub'), null, '복구는 Google 로그인을 다시 하지 않는다');
+    const back = JSON.parse(JSON.stringify(snapState.registration));
+    for (const k of ['uid', 'auid', 'slot', 'provider', 's_u', 'sk_u']) assert.equal(back[k], full[k], `복구된 Snap 등록.${k}`);
+    assert.deepEqual(back.attrs, full.attrs);
+    await u.close();
+  });
+
+  await t('반쯤 된 등록 + RP 로그인: 동의 창 없이 "등록이 반만 됐다" 안내(reason=registration_incomplete), Snap 복원 뒤에는 다시 정상', async () => {
+    const full = JSON.parse(JSON.stringify(snapState.registration));
+    for (const k of ['uid', 'auid', 'slot', 'attrs', 'provider']) snapState.registration[k] = null;
+    try {
+      const rpPage = await context.newPage(); await rpPage.goto(rp.base);
+      const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
+      await waitText(popup, '#authStep', '등록이 반만 됐다', 60_000);
+      assert.ok((await text(popup, '#authStep')).includes("'Google 로 등록'"), '다시 등록하라는 안내');
+      await rpPage.close();
+    } finally { snapState.registration = full; }
+  });
+
   await t('RP 로그인: Snap 동의 뒤 IdP 인증 창 대신 팝업의 Google 버튼 → 로그인 성공(CIA_ISSUE_AUTH=code 인데 코드 없음)', async () => {
     const rpPage = await context.newPage(); await rpPage.goto(rp.base);
     answers.push(true);                                                            // consentLogin
