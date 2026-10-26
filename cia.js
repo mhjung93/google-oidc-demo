@@ -42,7 +42,7 @@ import { createRegistryTree, registryLeaf } from './lib/mode3_registry.js';
 import { signRpCert } from './lib/mode3_rp_cert.js';
 import { isTracePoint, createShare, combinePublicKey, partialDecrypt, combineDecrypt, resolveTagPlaintext, proveShare } from './lib/mode3_trace.js';
 import { openRequestMessage, openResultMessage, recoverSigner, isFreshTs } from './lib/mode3_opening.js';
-import { CIA_STATE_VERSION, defaultCiaState, migrateCiaState } from './lib/mode3_cia_state.js';
+import { CIA_STATE_VERSION, defaultCiaState, migrateCiaState, rpKeyTag, findRpSlotByKey } from './lib/mode3_cia_state.js';
 import { buildAaHealth, applyHealthHeaders, bounded, originList } from './lib/mode3_health.js';
 import { createOidcVerifier, GOOGLE_DEFAULTS } from './lib/mode3_oidc.js';
 import { uidOf, regNonce, issueNonce, isRevokeNonce, REG_PREFIX, REVOKE_PREFIX, ISSUE_PREFIX } from './lib/mode3_oidc_nonce.js';
@@ -582,12 +582,13 @@ app.post('/cia/register_rp', async (req, res) => {
     }
     if (!e) {
       // Task 11(B2, 2026-10-22 스펙 §3.3): rp_key 가 있으면 운영자가 /cia/rp/create 로 만든 슬롯에 묶는다 — 처음 등록하는
-      // origin(이 분기)에서만 본다. rp_key 는 상태에 평문으로 있지 않다(newPw/pwOk 로 해시해 둔다) — 'created' 상태의 모든
-      // 슬롯을 돌며 비교한다(운영자 슬롯 수가 적은 데모 규모라 괜찮다). 키가 안 맞거나 이름이 다르면 둘 다 bad_rp_key.
+      // origin(이 분기)에서만 본다. rp_key 는 상태에 평문으로 있지 않다(newPw/pwOk 로 해시해 둔다). 리뷰 C2(2026-10-26): 예전처럼
+      // 'created' 슬롯 전부에 scrypt 를 돌지 않고 keyTag(SHA-256) 로 한 슬롯을 찾아 그 슬롯에만 pwOk — 무인증 증폭 DoS 차단
+      // (lib/mode3_cia_state.js findRpSlotByKey). 키가 안 맞거나 이름이 다르면 둘 다 bad_rp_key.
       let slot = null;
       if (rp_key !== undefined) {
         if (typeof rp_key !== 'string') return res.status(400).json({ error: 'rp_key must be a string', reason: 'bad_rp_key' });
-        slot = Object.values(state.rpSlots).find((s) => s.status === 'created' && pwOk(s, rp_key));
+        slot = findRpSlotByKey(state.rpSlots, rp_key, pwOk);
         if (!slot || slot.name !== name) return res.status(400).json({ error: 'bad_rp_key', reason: 'bad_rp_key' });
       }
       arid = randomScalar().toString();
@@ -721,7 +722,7 @@ app.post('/cia/rp/create', requireOperator, (req, res) => {
   if (Object.values(state.rpSlots).some((s) => s.opId === opId && s.name === name)) return res.status(409).json({ error: 'name_taken', reason: 'name_taken' });
   const key = randomBytes(32).toString('hex');
   const slotId = randomBytes(16).toString('hex');   // 상태의 object key — rp_key(비밀) 가 아니라 내부 식별자일 뿐이다
-  state.rpSlots[slotId] = { opId, name, ...newPw(key), status: 'created', createdAt: new Date().toISOString(), arid: null };
+  state.rpSlots[slotId] = { opId, name, ...newPw(key), keyTag: rpKeyTag(key), status: 'created', createdAt: new Date().toISOString(), arid: null };   // keyTag: 조회 인덱스(리뷰 C2)
   persist();
   // §6 의 한 줄: IdP 는 호스트·포트를 모르므로 자리표시(<port>, [--host <rp-vm-ip>])를 남긴다.
   res.status(201).json({ name, key, command: `bash scripts/new_rp.sh ${name} <port> ${key} [--host <rp-vm-ip>]` });

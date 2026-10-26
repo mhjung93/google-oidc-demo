@@ -1,6 +1,6 @@
 // IdP 상태 v12(V11 2026-10-12) — 기본 상태·검사·옛 버전 거부. 외부 의존 없음(unit).  node tests/test_mode3_cia_state.js
 import assert from 'node:assert/strict';
-import { CIA_STATE_VERSION, defaultCiaState, migrateCiaState } from '../lib/mode3_cia_state.js';
+import { CIA_STATE_VERSION, defaultCiaState, migrateCiaState, rpKeyTag, findRpSlotByKey } from '../lib/mode3_cia_state.js';
 let failed = 0;
 function t(name, fn) { try { fn(); console.log(`ok   ${name}`); } catch (e) { failed++; console.error(`FAIL ${name}\n     ${e.message}`); } }
 
@@ -79,5 +79,25 @@ t('pendingBounds 기본값·보존', () => {
   const kept = { ...defaultCiaState(), pendingBounds: [{ pk_i: '1', bound: '2', epoch: null }] };
   migrateCiaState(kept);
   assert.deepEqual(kept.pendingBounds, [{ pk_i: '1', bound: '2', epoch: null }], '있는 대기열은 보존');
+});
+// 리뷰 C2(2026-10-26): register_rp 의 rp_key 대조가 'created' 슬롯 전부에 scrypt 를 돌던 것(무인증 증폭 DoS) — keyTag(SHA-256) 로
+// 슬롯을 먼저 찾고 scrypt(verify) 는 그 한 슬롯에만. verify 는 호출 횟수를 세는 가짜(결정적 — 시간 측정이 아니다).
+t('findRpSlotByKey: 태그 슬롯 N개에서 맞는 키는 verify 1회, 틀린 키는 0회; keyTag 없는 레거시 슬롯만 폴백으로 훑는다', () => {
+  let calls = 0;
+  const verify = (slot, key) => { calls++; return slot.secret === key; };
+  const slots = {};
+  for (let i = 0; i < 50; i++) { const key = `k${i}`.padEnd(64, 'a'); slots[`s${i}`] = { name: `zk${i}`, status: 'created', keyTag: rpKeyTag(key), secret: key }; }
+  slots.bound = { name: 'zkB', status: 'pending', keyTag: rpKeyTag('kb'), secret: 'kb' };
+  assert.match(rpKeyTag('x'), /^[0-9a-f]{64}$/);
+  calls = 0; assert.equal(findRpSlotByKey(slots, 'k7'.padEnd(64, 'a'), verify), slots.s7); assert.equal(calls, 1, '맞는 키: verify 1회');
+  calls = 0; assert.equal(findRpSlotByKey(slots, 'f'.repeat(64), verify), null); assert.equal(calls, 0, '틀린 키: 레거시 슬롯이 없으면 verify 0회');
+  calls = 0; assert.equal(findRpSlotByKey(slots, 'kb', verify), null, "'created' 가 아닌 슬롯은 대상이 아니다"); assert.equal(calls, 0);
+  // 태그는 맞는데 verify(scrypt) 가 거절하면(손상) null — 다른 슬롯으로 넘어가지 않는다
+  calls = 0; assert.equal(findRpSlotByKey({ a: { status: 'created', keyTag: rpKeyTag('z'), secret: 'other' } }, 'z', verify), null); assert.equal(calls, 1);
+  // 레거시(keyTag 없음, 옛 상태 파일) 슬롯: 태그 일치가 없을 때만, 그 레거시 슬롯들만 verify
+  slots.legacy = { name: 'zkL', status: 'created', secret: 'legacy-key' };
+  calls = 0; assert.equal(findRpSlotByKey(slots, 'legacy-key', verify), slots.legacy); assert.equal(calls, 1, '레거시 1개만 verify');
+  calls = 0; assert.equal(findRpSlotByKey(slots, 'f'.repeat(64), verify), null); assert.equal(calls, 1, '틀린 키는 레거시 수만큼만');
+  assert.equal(findRpSlotByKey({}, 'x', verify), null);
 });
 process.exit(failed === 0 ? 0 : 1);
