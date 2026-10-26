@@ -76,7 +76,7 @@ try {
     assert.equal(s.registered, true); assert.equal(s.uid, UID); assert.equal(s.provider, stub.provider);
   });
 
-  await t('login: id_token 없으면 IdP 401 oidc_required 를 그대로; 다른 로그인(r_rp)의 nonce 토큰은 502 cia.reason=oidc_nonce_mismatch; 맞는 토큰은 200', async () => {
+  await t('login: id_token 없으면 IdP 401 oidc_required 를 그대로; 다른 로그인(r_rp)의 nonce 토큰은 502 cia.reason=oidc_nonce_mismatch; 다른 계정 토큰은 403 uid_mismatch·못 읽는 토큰은 400; 맞는 토큰은 200', async () => {
     const w = () => sim.consentLogin({ origin: info.origin, arid: info.arid, allowAgent: '0' });
     const b0 = await loginBase();
     const no = await wallet.post('/wallet/login', { ...b0, witness: w() });
@@ -86,6 +86,13 @@ try {
     const mm = await wallet.post('/wallet/login', { ...b1, witness: w(), id_token: await mint({ sub: SUB, nonce: nOther }) });
     assert.equal(mm.status, 502, j(mm.body)); assert.equal(mm.body.cia?.reason, 'oidc_nonce_mismatch');
     if (mm.body.userCredIssued !== undefined) sim.updateUserCred(mm.body.userCredIssued);
+    // 최종 리뷰 I1: 올바른 nonce 라도 다른 Google 계정의 토큰이면 account_disabled 가 아니라 403 uid_mismatch(체인 작업 전에 에이전트가 끝낸다)
+    const bx = await loginBase();
+    const nx = (await wallet.post('/wallet/oidc/nonce', { purpose: 'issue', arid: bx.arid, r_rp: bx.r_rp })).body.nonce;
+    const wrongAcct = await wallet.post('/wallet/login', { ...bx, witness: w(), id_token: await mint({ sub: 'someone-else', nonce: nx }) });
+    assert.equal(wrongAcct.status, 403, j(wrongAcct.body)); assert.equal(wrongAcct.body.reason, 'uid_mismatch');
+    const unreadable = await wallet.post('/wallet/login', { ...bx, witness: w(), id_token: 'not-a-jwt' });
+    assert.equal(unreadable.status, 400, j(unreadable.body)); assert.equal(unreadable.body.reason, 'bad_id_token');
     const b2 = await loginBase();
     const n = await wallet.post('/wallet/oidc/nonce', { purpose: 'issue', arid: b2.arid, r_rp: b2.r_rp });
     assert.equal(n.status, 200);

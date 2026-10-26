@@ -878,9 +878,21 @@ IdP 의 약속이다:
 
 Snap 번들이 다시 빌드됐다(등록 확인 창이 uid·비밀번호 프롬프트 없이 확인 하나로 줄었고, 세션 폐기 동의 창에 허용 거래 수가 추가됐다) — **체크섬이 바뀌었으므로** MetaMask에 이미 설치된 Snap은 자동으로 갱신되지 않는다. `cd snap-mode3 && npm install && npm run build` 뒤, MetaMask에서 기존 Snap을 지우고 지갑 페이지에서 다시 연결/설치한다(위 "MetaMask / Snap 경로" 준비 절과 같다). 리셋 스크립트의 요약 줄도 이 안내를 찍는다.
 
+### Google 로 등록·로그인·자기 폐기(Snap 모드, 2026-10-26)
+
+- 켜짐이 기본이다: 스크립트가 IdP 에 `MODE3_OIDC_CLIENT_ID` 를 넘긴다(환경변수 → 없으면 이 VM `.env` 의 `GOOGLE_CLIENT_ID`, Mode 1 공유 ID — 값은 출력하지 않는다). 끄려면 `OIDC=0`. 환경변수가 미설정이고 `.env` 에서 `GOOGLE_CLIENT_ID` 를 얻은 경우(공유 ID 폴백)에는 스크립트가 값 없는 경고 줄을 출력한다(IdP 기동 경고는 이 경로에서 발동하지 않는다). 공유 ID 의 위험은 선행 스펙 §5 에서 다룬다.
+- Google 콘솔의 승인된 JavaScript 오리진에 `http://localhost:5100` 이 있어야 한다. Google 버튼은 지갑 페이지·팝업(localhost:5100)에만 뜬다 — IdP(사설 IP)의 `/account` 에서는 안 된다.
+- Snap 이 바뀌었다(보류 등록 `prepareRegister`). `cd snap-mode3 && npm run build` 뒤 MetaMask 에서 Snap 을 다시 설치하고 지갑 페이지 "Snap 초기화".
+- 수동 확인(실제 Google, 1회):
+  1. IdP `/user` → "Google 로 등록" → 팝업의 Snap 확인 → 팝업의 Google 버튼 → `/user` 에 "Google 계정 등록됨 — uid …".
+  2. RP 로그인 → Snap 동의 → 팝업의 Google 버튼(IdP 인증 창 없음) → 로그인 성공 → 거래.
+  3. 지갑 페이지 "계정 자기 폐기" → Google 버튼 → 폐기 요청됨 → 다음 RP 로그인 거절(account_disabled).
+- 등록이 Google 단계에서 끊기면 다시 "Google 로 등록" 하면 된다 — Snap 이 같은 보류 비밀을 다시 쓴다. 버리려면 "Snap 초기화".
+- IdP 만 다시 띄워 래퍼를 켜거나 끈 경우 에이전트도 다시 띄운다 — 에이전트는 IdP 의 oidc 설정을 처음 받은 값으로 고정한다(받지 못한 경우만 다시 읽는다).
+
 ### 한계
 
-- **에이전트(`file`)·Snap 모드에는 Google(OIDC 래퍼) 등록이 없다** — 아래 "Google 로 등록·자기 폐기" 절과 같은 한계이고, web 모드 전용이다.
+- **에이전트(`file`) 모드에는 Google(OIDC 래퍼) 등록이 없다**(`/wallet/register` 가 `not_snap_mode` 로 거절) — Snap 모드는 위 절, web 모드는 아래 "Google 로 등록·자기 폐기" 절.
 - **전파 지연**: 거울이 `(pk_i, c)` 를 받기 전까지는 폐기한 세션키의 거래가 통과할 수 있다(Race (2), 채굴 순서) — 타 사용자의 폐기·등록이 내 거래를 튕기는 쪽(Race (1))은 root 유효 창으로 없앴다(위 절).
 - **인증 창은 지갑이 열지만 피싱될 수 있다** — 악의적 페이지가 같은 `/login` URL을 새 창으로 열어 비밀번호를 입력하게 유도할 수 있다. 코드만으로는 발급이 되지 않으므로(등록 비밀·서명이 따로 필요하다) 그 1회 발급 시도는 막히지만, 빼낸 **uid·비밀번호 자체**로는 계정 자기 폐기(`/cia/account/self_revoke`)나 코드 재발급까지 할 수 있어 영향이 1회 발급 시도에 그치지 않는다 — 검증되지 않은 우려이며 별도 완화는 아직 없다.
 - 분리 구성(IdP가 `192.168.226.10`처럼 사설 IP)에서는 Google 버튼이 뜨지 않는다(기존 한계, "Google로 등록" 절과 같다).
@@ -938,17 +950,6 @@ npm run user:build                     # mode3/user/dist 번들(esbuild) — 소
 node mode3_user_static.js              # :5100 (npm run user:static 도 같다) — 에이전트 대신
 node mode3_rp.js                       # :3100
 ```
-
-#### Google 로 등록·로그인·자기 폐기(Snap 모드, 2026-10-26)
-
-- 켜짐이 기본이다: 스크립트가 IdP 에 `MODE3_OIDC_CLIENT_ID` 를 넘긴다(환경변수 → 없으면 이 VM `.env` 의 `GOOGLE_CLIENT_ID`, Mode 1 공유 ID — 값은 출력하지 않는다). 끄려면 `OIDC=0`. 환경변수가 미설정이고 `.env` 에서 `GOOGLE_CLIENT_ID` 를 얻은 경우(공유 ID 폴백)에는 스크립트가 값 없는 경고 줄을 출력한다(IdP 기동 경고는 이 경로에서 발동하지 않는다). 공유 ID 의 위험은 선행 스펙 §5 에서 다룬다.
-- Google 콘솔의 승인된 JavaScript 오리진에 `http://localhost:5100` 이 있어야 한다. Google 버튼은 지갑 페이지·팝업(localhost:5100)에만 뜬다 — IdP(사설 IP)의 `/account` 에서는 안 된다.
-- Snap 이 바뀌었다(보류 등록 `prepareRegister`). `cd snap-mode3 && npm run build` 뒤 MetaMask 에서 Snap 을 다시 설치하고 지갑 페이지 "Snap 초기화".
-- 수동 확인(실제 Google, 1회):
-  1. IdP `/user` → "Google 로 등록" → 팝업의 Snap 확인 → 팝업의 Google 버튼 → `/user` 에 "Google 계정 등록됨 — uid …".
-  2. RP 로그인 → Snap 동의 → 팝업의 Google 버튼(IdP 인증 창 없음) → 로그인 성공 → 거래.
-  3. 지갑 페이지 "계정 자기 폐기" → Google 버튼 → 폐기 요청됨 → 다음 RP 로그인 거절(account_disabled).
-- 등록이 Google 단계에서 끊기면 다시 "Google 로 등록" 하면 된다 — Snap 이 같은 보류 비밀을 다시 쓴다. 버리려면 "Snap 초기화".
 
 ### 금고(비밀 보관)
 

@@ -629,6 +629,7 @@ app.post('/wallet/register', async (req, res) => {
     if (id_token !== undefined) {
       if (uidIn !== undefined || pwd !== undefined || code !== undefined) return res.status(400).json({ error: 'id_token 과 uid·pwd·code 는 함께 줄 수 없다' });
       if (typeof id_token !== 'string') return res.status(400).json({ error: 'id_token 은 문자열' });
+      if (SECRETS !== 'snap') return res.status(400).json({ reason: 'not_snap_mode', detail: 'id_token 등록은 snap 모드만(스펙 §7)' });
       let oc;
       try { oc = await oidcConfig(); } catch (e) { return res.status(502).json({ reason: 'cia_unavailable', detail: e.message }); }
       if (!oc.enabled) return res.status(503).json({ reason: 'oidc_disabled' });
@@ -731,6 +732,16 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     // attrGateAddress 는 RP 가 알려주는 값을 세션에 실어 나를 뿐 지갑이 검증하지 않는다(스펙 §6.1) — 지갑 폼 기본값(to)으로만 쓰인다.
     if (attrGateAddress !== null && !isAddr(attrGateAddress)) return res.status(400).json({ error: 'attrGateAddress 는 주소' });
     if (!state.registration) return res.status(409).json({ reason: 'not_registered' });
+    // Google 계정: 이 지갑이 든 계정의 토큰만 IdP 로 보낸다(/wallet/self_revoke 와 같은 규칙, 최종 리뷰 I1). IdP 의 403 uid_mismatch 를
+    // account_disabled 로 오진하지 않도록 체인 작업 전에 여기서 끝낸다. 서명 검증은 IdP 몫이다.
+    if (id_token !== null) {
+      let oc;
+      try { oc = await oidcConfig(); } catch (e) { return res.status(502).json({ reason: 'cia_unavailable', detail: e.message }); }
+      if (!oc.enabled) return res.status(503).json({ reason: 'oidc_disabled' });
+      const tokUid = oidcUidOf(oc.provider, id_token);
+      if (!tokUid) return res.status(400).json({ reason: 'bad_id_token' });
+      if (tokUid !== state.registration.uid) return res.status(403).json({ reason: 'uid_mismatch' });
+    }
     if (chainConfigMissing()) return res.status(503).json({ reason: 'chain_unavailable', detail: chainConfigMissing() });
     const rs = BigInt(r_s), rrp = BigInt(r_rp);
     if (rs >= SCALAR_MAX || rrp >= SCALAR_MAX) return res.status(400).json({ error: 'r_s·r_rp 는 2^250 미만' });
@@ -817,7 +828,12 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     // 리뷰 S3(2026-10-13): 여기부터의 오류 응답에는 src.pending 을 싣는다 — snap 모드에서 발급이 성공한 뒤(게시 대기·증명) 실패해도 새 C_u
     // (userCredIssued)가 페이지를 거쳐 Snap 에 저장돼야 한다. 안 실으면 파일엔 새 Cf_u·Snap 엔 옛 C_u 가 남는다. cred_revoked 재시도로 C_u 를
     // 버린 경우는 userCredIssued:null(= Snap 도 버려라)이 실린다. file 모드는 {}.
-    if (r.status === 403) return res.status(403).json({ reason: 'account_disabled', timings, ...src.pending });
+    // IdP 의 403 은 사유가 둘 이상이다(account_disabled · uid_mismatch · …) — 사유가 없거나 account_disabled 일 때만 계정 비활성으로 본다(최종 리뷰 I1).
+    if (r.status === 403) {
+      const why = r.body?.reason;
+      if (!why || why === 'account_disabled') return res.status(403).json({ reason: 'account_disabled', timings, ...src.pending });
+      return res.status(403).json({ reason: why, cia: r.body, timings, ...src.pending });
+    }
     if (r.status === 400 && r.body?.reason === 'bad_idp_proof') return res.status(502).json({ reason: 'user_cred_failed', cia: r.body, demo, timings, ...src.pending });
     // Task 13: CIA_ISSUE_AUTH=code 일 때 IdP 의 401(auth_code_required·bad_code)을 그대로 넘긴다 — /wallet/register 가
     // IdP 의 401·409 를 그대로 넘기는 것과 같은 모양이다. r.body.reason 은 IdP 의 모든 401 에 항상 실린다(cia.js).

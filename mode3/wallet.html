@@ -465,10 +465,12 @@
     }
     // Google 토큰(OIDC 래퍼, 2026-10-26 Snap OIDC 래퍼 §2): #gsiWrap 에 버튼을 그리고 사용자가 누르기를 기다린다. nonce 는 에이전트
     // /wallet/oidc/nonce 가 계산한 값. 2분 안에 토큰이 없으면 oidc_cancelled. 돌려주는 것은 { token, reason } — token 이 없으면 reason.
+    /** Google 로그인을 시작할 수 있는지 미리 본다 — 안 되면 사유(gsi_origin | oidc_disabled), 되면 null. Snap·에이전트를 부르기 전에 쓴다(최종 리뷰 M2). */
+    const gsiPrecheck = () => (!window.Mode3Gsi?.originOk() ? 'gsi_origin' : (!cfg.oidc?.enabled || !cfg.oidc.clientId) ? 'oidc_disabled' : null);
     function googleToken(nonce) {
       return new Promise((resolve) => {
-        if (!window.Mode3Gsi?.originOk()) return resolve({ token: null, reason: 'gsi_origin' });
-        if (!cfg.oidc?.enabled || !cfg.oidc.clientId) return resolve({ token: null, reason: 'oidc_disabled' });
+        const pre = gsiPrecheck();
+        if (pre) return resolve({ token: null, reason: pre });
         const wrap = $('gsiWrap'), box = $('gsiBox');
         tte($('gsiHint'), 'wallet_gsi_hint');
         wrap.hidden = false;
@@ -487,6 +489,8 @@
      * { token: null, stage: 'nonce'|'google', reason, detail } — stage 로 호출자가 안내 문구를 가른다.
      */
     async function oidcToken(nonceBody, onNonce) {
+      const pre = gsiPrecheck();
+      if (pre) return { token: null, stage: 'google', reason: pre, detail: gsiReasonText(pre) };
       const n = await postJson('/wallet/oidc/nonce', nonceBody);
       if (n.status !== 200) return { token: null, stage: 'nonce', reason: n.body.reason ?? `HTTP ${n.status}`, detail: errText(n.status, n.body) };
       if (onNonce) onNonce();
@@ -537,6 +541,8 @@
         // Google 등록(2026-10-26 Snap OIDC 래퍼 §2.1): uid·code 없이 온다. Snap 이 비밀을 보류 등록으로 먼저 만들고(pk_u → reg: nonce),
         // 팝업에서 Google 로그인 → 에이전트가 IdP 에 { id_token, auid, pk_u, sig_reg } 로 등록 → Snap 이 uid·provider 를 채운다.
         if (req.provider === 'google') {
+          const pre = gsiPrecheck();   // Snap 에 보류 등록을 만들게 하기 전에 — 어차피 못 끝낼 등록을 시작하지 않는다
+          if (pre) { step(gsiReasonText(pre)); return reply({ ok: false, reason: pre }); }
           step('Snap 등록 확인 창을 확인하세요.');
           const prep = await invokeSnap('prepareRegister', {});
           if (!prep || prep.denied) { step('등록 거절'); return reply({ ok: false, reason: 'user_denied' }); }
@@ -681,7 +687,7 @@
             step('로그인 실패'); log(errText(lg.status, lg.body));
             // 리뷰 S3: 발급 뒤(게시 대기·증명)에 실패해도 에이전트가 새 C_u·속성을 실어 보낸다 — Snap 에 반영해야 파일과 어긋나지 않는다.
             if (lg.body?.userCredIssued !== undefined || lg.body?.attrsChanged) { try { await applyPendingToSnap(lg.body); } catch (e) { log(e.message); } }
-            return reply({ ok: false, reason: lg.body.reason ?? 'login_failed', detail: lg.body.detail ?? null, status: lg.status });
+            return reply({ ok: false, reason: lg.body.reason ?? 'login_failed', detail: lg.body.detail ?? lg.body.cia?.reason ?? null, status: lg.status });
           }
 
           step('Snap 에 새 자격증명·속성 반영 중…');

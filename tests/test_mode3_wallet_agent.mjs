@@ -65,6 +65,8 @@ try {
     assert.equal(r.status, 409);
     assert.equal(r.body.reason, 'not_registered');
     assert.equal((await wallet.post('/wallet/register', { uid, pwd: 'wrong' })).status, 401, 'CIA 의 401 을 그대로');
+    const notSnap = await wallet.post('/wallet/register', { id_token: 'x.y.z' });
+    assert.equal(notSnap.status, 400, j(notSnap.body)); assert.equal(notSnap.body.reason, 'not_snap_mode', 'file 모드는 id_token 등록을 일찍 거절한다(스펙 §7)');
     const badAttr = await wallet.post('/wallet/register', { uid, pwd: 'password123', profile: { birthYear: '1800', country: 'KR' } });
     assert.equal(badAttr.status, 400); assert.equal(badAttr.body.reason, 'bad_attr');
     assert.equal((await wallet.get('/wallet/status')).body.registered, false, '인코딩 실패는 CIA 에 등록하지 않는다');
