@@ -208,6 +208,24 @@ await t('V9 normalizeSet: 없음 → NO_SET; 소속이면 sel = slot+1·root·�
     await assert.rejects(() => normalizeSet(bad, attrs), (e) => e.reason === 'bad_disclosure', `허용되면 안 됨: ${JSON.stringify(bad)}`);
   }
 });
+await t('리뷰 D1: 술어 수는 정규형 10진(문자열)·안전 정수만 — 별칭(0410·0x19a·공백·1e3)과 중복 원소는 bad_disclosure(Snap 창에 보인 그대로를 증명한다)', async () => {
+  const attrs = [1990n, 410n, 2n, 0n, 0n, 0n];
+  // 정규형은 그대로 통과(문자열·숫자 혼용, 0 도 정규형)
+  assert.deepEqual(normalizeDisclosure([{ lo: '0', hi: '2007' }, { lo: 410, hi: '410' }], attrs).lo.slice(0, 2), [0n, 410n]);
+  assert.equal((await normalizeSet({ slot: 1, members: ['410', '392', 840, '0'] }, attrs)).sel, 2n);
+  for (const alias of ['0410', '0x19a', '0X19A', '0b110011010', '0o632', ' 410', '410 ', '\n410', '+410', '-0', '410.0', '1e3', '', '00']) {
+    assert.throws(() => normalizeDisclosure([null, { lo: alias, hi: '410' }], attrs), (e) => e.reason === 'bad_disclosure', `lo 별칭이 허용되면 안 됨: ${JSON.stringify(alias)}`);
+    assert.throws(() => normalizeDisclosure([null, { lo: '410', hi: alias }], attrs), (e) => e.reason === 'bad_disclosure', `hi 별칭이 허용되면 안 됨: ${JSON.stringify(alias)}`);
+    await assert.rejects(() => normalizeSet({ slot: 1, members: ['392', alias] }, attrs), (e) => e.reason === 'bad_disclosure', `원소 별칭이 허용되면 안 됨: ${JSON.stringify(alias)}`);
+  }
+  for (const bad of [410.5, -1, Number.MAX_SAFE_INTEGER + 1, NaN, true, null, {}]) {
+    assert.throws(() => normalizeDisclosure([null, { lo: bad, hi: '410' }], attrs), (e) => e.reason === 'bad_disclosure', `lo ${String(bad)} 이 허용되면 안 됨`);
+    await assert.rejects(() => normalizeSet({ slot: 1, members: ['410', bad] }, attrs), (e) => e.reason === 'bad_disclosure', `원소 ${String(bad)} 이 허용되면 안 됨`);
+  }
+  // 중복 원소: 조용히 걷어내면 창에 보인 개수(37개)와 증명한 집합({410})이 달라진다 — 거절한다.
+  await assert.rejects(() => normalizeSet({ slot: 1, members: ['410', '392', '410'] }, attrs), (e) => e.reason === 'bad_disclosure' && /중복/.test(e.message));
+  await assert.rejects(() => normalizeSet({ slot: 1, members: ['410', 410] }, attrs), (e) => e.reason === 'bad_disclosure');
+});
 await t('V9 disclosureKey·hasPredicate: set 이 키에 들어가고, mask 0 이라도 sel ≠ 0 이면 술어가 있다', async () => {
   const attrs = [1990n, 410n, 2n, 0n, 0n, 0n];
   const base = normalizeDisclosure(null, attrs);
