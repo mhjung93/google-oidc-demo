@@ -893,6 +893,10 @@ app.post('/cia/issue', userCors, async (req, res) => {
       oidcClaims = o;
       if (!state.accounts[uid]) {
         if (!registration || typeof registration !== 'object') return res.status(404).json({ error: 'unknown account', reason: 'not_registered', detail: '첫 로그인이면 registration{auid,pk_u,sig_reg} 을 함께 보낸다' });
+        // 리뷰 C1(2026-10-26): nonce 결속은 등록 **전에** 등록할 키(registration.pk_u)로 본다 — 등록 뒤 acct.pk_u 로 보면 이미 공격자 키가
+        // 들어간 뒤라, 가로챈 issue 토큰 + 공격자 registration(자기 sk 로 만든 sig_reg) 으로 피해자 uid 가 영구 선점된다. 실패면 상태 변경 없음.
+        if (!isPt(registration.pk_u)) return res.status(400).json({ error: 'registration.pk_u{x,y} required' });
+        if (o.nonce !== issueNonce(registration.pk_u, arid_s)) return res.status(400).json({ error: 'oidc_nonce_mismatch', reason: 'oidc_nonce_mismatch', detail: 'nonce 가 등록할 지갑 키·이 로그인(arid_s)과 다르다' });
         const made = await registerAccount({ uid, provider: OIDC.provider, auid: registration.auid, pk_u: registration.pk_u, sig_reg: registration.sig_reg });
         if (made.error) return res.status(made.error.status).json(made.error.body);
       }

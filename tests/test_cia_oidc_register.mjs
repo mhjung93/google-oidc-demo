@@ -2,7 +2,10 @@
 import assert from 'node:assert/strict';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { createRegistration, signRegistration } from '../lib/mode3_wallet.js';
-import { uidOf, regNonce, newRevokeNonce } from '../lib/mode3_oidc_nonce.js';
+import { uidOf, regNonce, issueNonce, newRevokeNonce } from '../lib/mode3_oidc_nonce.js';
+import { aridSOf, randomScalar } from '../lib/mode3_credential.js';
+import { getProvider } from './helpers/mode3_chain.mjs';
+import { issueV11, TESTUSER_ATTRS } from './helpers/mode3_flow.mjs';
 
 const cia = await startIsolatedCia({ oidc: true });
 const stub = cia.oidc;
@@ -56,6 +59,47 @@ try {
     const wrongSig = await sr(w.sk_u, BigInt(w.uid) + 1n, BigInt(w.auid));
     const r = await cia.post('/cia/register', { id_token: w.id_token, auid: w.auid, pk_u: w.pk_u, sig_reg: wrongSig });
     assert.equal(r.status, 400); assert.equal(r.body.error, 'bad_registration_signature');
+  });
+  // 리뷰 C1(2026-10-26): /cia/issue 의 암묵 등록(계정 없는 Google 사용자의 첫 로그인)은 토큰 nonce 가 registration.pk_u 에 묶였는지
+  // 등록 **전에** 본다. 그러지 않으면 가로챈 issue 토큰 + 공격자 registration 으로 피해자 uid 가 공격자 키로 영구 등록된다.
+  const provider = getProvider();
+  const ISSUE_ARID = 33333333333333333333n;
+  /** 피해자 쪽 재료: 그 uid 의 등록 재료와, 그 pk_u·이 로그인(arid_s)에 묶인 issue 토큰. */
+  async function issueMaterial(sub) {
+    const uid = uidOf(stub.provider, sub);
+    const reg = await createRegistration(BigInt(uid));
+    const pk_u = { x: reg.pk_u.x.toString(), y: reg.pk_u.y.toString() };
+    const r_rp = randomScalar();
+    const arid_s = await aridSOf({ arid: ISSUE_ARID, r_rp });
+    const id_token = await stub.mint({ sub, nonce: issueNonce(pk_u, arid_s) });
+    const registration = { auid: reg.auid.toString(), pk_u, sig_reg: await signRegistration(reg.sk_u, BigInt(uid), reg.auid) };
+    const user = { uid: BigInt(uid), s_u: reg.s_u, auid: reg.auid, sk_u: reg.sk_u, attrs: [...TESTUSER_ATTRS] };
+    return { uid, reg, pk_u, r_rp, id_token, registration, user };
+  }
+  await t('암묵 등록(issue 토큰 + registration, pk 일치) → 200, 계정이 provider 로 생긴다', async () => {
+    const v = await issueMaterial('google-sub-implicit-ok');
+    const { r } = await issueV11(cia, v.user, { arid: ISSUE_ARID, r_rp: v.r_rp, provider, overrides: { id_token: v.id_token, registration: v.registration } });
+    assert.equal(r.status, 200, j(r.body));
+    const acc = (await cia.adminGet('/cia/accounts')).body;
+    const mine = (acc.accounts ?? acc).find((a) => String(a.uid) === v.uid); assert.ok(mine, '계정이 생겨야 한다'); assert.equal(mine.provider, stub.provider);
+  });
+  await t('가로챈 issue 토큰 + 공격자 registration(pk_A) → 400 oidc_nonce_mismatch, 계정이 생기지 않고 피해자는 reg: 토큰으로 201 등록', async () => {
+    const SUB = 'google-sub-squat';
+    const v = await issueMaterial(SUB);
+    const a = await createRegistration(BigInt(v.uid));   // 공격자: 피해자 uid 로 자기 키(sk_A) 서명 — sig_reg 는 자기 키라 통과한다
+    const regA = { auid: a.auid.toString(), pk_u: { x: a.pk_u.x.toString(), y: a.pk_u.y.toString() }, sig_reg: await signRegistration(a.sk_u, BigInt(v.uid), a.auid) };
+    const attacker = { uid: BigInt(v.uid), s_u: a.s_u, auid: a.auid, sk_u: a.sk_u, attrs: [...TESTUSER_ATTRS] };
+    const { r } = await issueV11(cia, attacker, { arid: ISSUE_ARID, r_rp: v.r_rp, provider, overrides: { id_token: v.id_token, registration: regA } });
+    assert.equal(r.status, 400, j(r.body)); assert.equal(r.body.reason, 'oidc_nonce_mismatch');
+    const acc = (await cia.adminGet('/cia/accounts')).body;
+    assert.equal((acc.accounts ?? acc).find((a2) => String(a2.uid) === v.uid), undefined, '공격자 키로 계정이 생기면 안 된다');
+    // 형식이 틀린 registration.pk_u 는 nonce 대조 전에 400(상태 변경 없음)
+    const bad = await issueV11(cia, attacker, { arid: ISSUE_ARID, r_rp: v.r_rp, provider, overrides: { id_token: v.id_token, registration: { ...regA, pk_u: { x: 'nope' } } } });
+    assert.equal(bad.r.status, 400, j(bad.r.body));
+    // 피해자는 여전히 자기 키로 등록할 수 있다(uid 선점 안 됨)
+    const regTok = await stub.mint({ sub: SUB, nonce: regNonce(v.pk_u) });
+    const ok = await cia.post('/cia/register', { id_token: regTok, ...v.registration });
+    assert.equal(ok.status, 201, j(ok.body)); assert.equal(ok.body.uid, v.uid);
   });
   await t('자기 폐기(id_token): revoke 토큰 → 200, 계정 disabled; 등록 토큰으로 폐기 → 400; 모르는 sub → 404', async () => {
     const tok = await stub.mint({ sub: 'google-sub-1', nonce: newRevokeNonce() });
