@@ -7,19 +7,20 @@
   <!-- 제목의 "IdP 인증" 은 페이지 서빙 검사 marker 다(mode3/cia_admin.html 의 관례). 데모 바 없음 — 지갑 팝업이 여는 좁은 창. -->
   <title>IdP 인증</title>
   <link rel="stylesheet" href="/common/demo.css" />
+  <link rel="stylesheet" href="/common/idp.css" />
   <script src="/common/strings.js"></script>
 </head>
 <body data-page="idp_login">
 <main class="cards">
   <section class="card" id="authCard">
     <h3 data-i18n="idp_auth_title">로그인 인증</h3>
-    <p class="desc" data-i18n="idp_auth_desc">uid·비밀번호·auid 를 넣으면 1회용 코드를 지갑에 전달합니다.</p>
-    <p>
-      <label>uid <input id="authUid" size="8" /></label><br />
-      <label><span data-i18n="idp_pwd_label">비밀번호</span> <input id="authPwd" type="password" autocomplete="current-password" /></label><br />
-      <label>auid <input id="authAuid" size="40" autocomplete="off" /></label><br />
-      <button id="authGo" data-i18n="idp_auth_go">확인</button>
-    </p>
+    <p class="desc" data-i18n="idp_auth_desc">아이디·비밀번호·auid 를 넣으면 1회용 코드를 지갑에 전달합니다.</p>
+    <form id="authForm" class="auth-form" autocomplete="on">
+      <label><span data-i18n="idp_id_label">아이디</span><input id="authUid" autocomplete="username" autocapitalize="off" spellcheck="false" /><small class="muted" data-i18n="idp_auth_id_hint">아이디 또는 uid</small></label>
+      <label><span data-i18n="idp_pwd_label">비밀번호</span><input id="authPwd" type="password" autocomplete="current-password" /></label>
+      <label>auid<input id="authAuid" autocomplete="off" /></label>
+      <button id="authGo" type="submit" data-i18n="idp_auth_go">확인</button>
+    </form>
     <div id="authVerdict"></div>
   </section>
 </main>
@@ -67,8 +68,10 @@
       if (lastReason) window.opener?.postMessage({ type: 'mode3-idp-auth', nonce, error: lastReason }, walletOrigin);
     });
 
-    $('authGo').addEventListener('click', async () => {
-      const body = { uid: $('authUid').value.trim(), pwd: $('authPwd').value, auid: $('authAuid').value.trim() };
+    $('authForm').addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      // 2026-11-03: 아이디로 로그인한다 — 서버(/cia/auth/code)가 아이디 색인에 없으면 10진 uid 로도 본다(옛 흐름·테스트 호환).
+      const body = { id: $('authUid').value.trim(), pwd: $('authPwd').value, auid: $('authAuid').value.trim() };
       Demo.verdict($('authVerdict'), { pending: true, title: Demo.t('working') || '처리 중' });
       let r;
       try {

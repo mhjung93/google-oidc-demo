@@ -606,8 +606,11 @@ try {
   });
   await t('IdP RP 페이지: 운영자 가입·로그인 → zkTHREE 만들기 → 키·명령 표시', async () => {
     const p = await context.newPage(); await p.goto(`${cia.base}/rp`);
-    await p.fill('#opId', 'op1'); await p.fill('#opPwd', 'operator-1'); await p.click('#opSignupBtn'); await waitText(p, '#rpVerdict', 'op1');
-    await p.click('#opLoginBtn'); await p.fill('#rpName', 'zkTHREE'); await p.click('#rpCreateBtn');
+    // 2026-11-03: /rp 도 /user 처럼 로그인 화면 → "운영자 계정 만들기"(아이디·비밀번호·확인) → 로그인 화면으로 돌아와 비밀번호 → 로그인 뒤에만 RP 만들기.
+    await p.click('#showOpSignupBtn'); await p.fill('#opSignupId', 'op1'); await p.fill('#opSignupPwd', 'operator-1'); await p.fill('#opSignupPwd2', 'operator-1'); await p.click('#opSignupBtn');
+    await waitText(p, '#opVerdict', 'op1'); assert.equal(await p.inputValue('#opId'), 'op1', '가입 뒤 로그인 화면에 아이디가 채워진다'); assert.equal(await p.isHidden('#rpCreateCard'), true, '로그인 전에는 RP 만들기가 없다');
+    await p.fill('#opPwd', 'operator-1'); await p.click('#opLoginBtn'); await p.waitForSelector('#rpCreateCard:not([hidden])');
+    await p.fill('#rpName', 'zkTHREE'); await p.click('#rpCreateBtn');
     await waitText(p, '#rpList', 'zkTHREE'); assert.match(await text(p, '#rpList'), /new_rp\.sh zkTHREE <port> [0-9a-f]{64}/); await p.close();
   });
   await t('IdP 인증 창: wallet 쿼리가 지갑 오리진과 다르면 폼을 막는다; 맞으면 uid·pwd·auid 로 코드를 받아 opener 에 postMessage', async () => {

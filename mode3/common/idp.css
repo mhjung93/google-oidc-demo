@@ -1,0 +1,34 @@
+/* IdP 페이지 공통 스킨(2026-11-03) — /user·/rp·/admin 이 demo.css 다음에 불러온다. 지갑(wallet.css)·거래소(rp.css)와
+   같은 남색 상단 바로 세 당사자가 한 벌로 보이게 하고, 로그인·가입 화면(한 장짜리 카드)의 모양을 /user 와 /rp 가 나눠 쓴다. */
+:root { --navy: #0b1f3d; }
+
+/* ---- 상단 바: 브랜드 + 페이지 링크 ---- */
+.idp-nav { background: var(--navy); color: #fff; }
+.idp-nav .nav-inner { max-width: 1100px; margin: 0 auto; padding: 0 20px; min-height: 56px; display: flex; align-items: center; gap: 28px; }
+.idp-nav .brand { color: #fff; font-size: 19px; font-weight: 800; letter-spacing: .01em; text-decoration: none; white-space: nowrap; }
+.idp-nav .nav-menu { display: flex; gap: 20px; flex: 1; flex-wrap: wrap; }
+.idp-nav .nav-menu a { color: rgba(255,255,255,.72); text-decoration: none; font-size: 14px; font-weight: 600; padding: 17px 0; border-bottom: 2px solid transparent; }
+.idp-nav .nav-menu a:hover, .idp-nav .nav-menu a:focus-visible { color: #fff; }
+.idp-nav .nav-menu a[aria-current="page"] { color: #fff; border-bottom-color: #fff; }
+@media (max-width: 640px) {
+  .idp-nav .nav-inner { flex-wrap: wrap; min-height: auto; padding: 10px 16px; gap: 8px 16px; }
+  .idp-nav .nav-menu { gap: 14px; } .idp-nav .nav-menu a { padding: 4px 0; }
+}
+
+/* ---- 관리자: 절 메뉴(고정) — 카드를 숨기지 않고 해당 절로 이동만 한다. ---- */
+.section-menu { position: sticky; top: 0; z-index: 4; background: var(--card); border-bottom: 1px solid var(--line); }
+.section-menu .menu-inner { max-width: 1100px; margin: 0 auto; padding: 0 var(--gap); display: flex; gap: 4px 18px; flex-wrap: wrap; align-items: center; }
+.section-menu a { color: var(--muted); text-decoration: none; font-size: 14px; font-weight: 600; padding: 11px 0; border-bottom: 2px solid transparent; }
+.section-menu a:hover { color: var(--ink); } .section-menu a.current { color: var(--accent); border-bottom-color: var(--accent); }
+main.cards > section[id] { scroll-margin-top: 110px; }   /* 메뉴·데모 바 아래에 제목이 가려지지 않게 */
+
+/* ---- 로그인·가입 화면(한 장짜리 카드) — /user·/rp 공통 ---- */
+.auth-card { max-width: 440px; margin: 24px auto 0; grid-column: 1 / -1; width: 100%; box-sizing: border-box }
+.auth-form { display: flex; flex-direction: column; gap: 10px; margin: 8px 0 12px }
+.auth-form label { display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: var(--muted) }
+.auth-form input { width: 100%; box-sizing: border-box; padding: 9px 10px }
+.auth-form button[type=submit] { margin-top: 4px; padding: 10px 14px }
+.auth-links { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; font-size: 14px; color: var(--muted); margin: 0 }
+.auth-links button { padding: 4px 8px }
+.me-head { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin: 0 }
+.me-head .who { font-weight: 600 }

@@ -7,23 +7,16 @@
   <!-- 제목의 "IdP 사용자" 는 페이지 서빙 검사 marker 다(mode3/cia_admin.html 의 관례). -->
   <title>IdP 사용자</title>
   <link rel="stylesheet" href="/common/demo.css" />
+  <link rel="stylesheet" href="/common/idp.css" />
   <script src="/common/strings.js"></script>
   <script src="/common/demo.js"></script>
-  <style>
-    /* 2026-11-03: 로그인·가입 화면은 가운데 한 장짜리 카드, 로그인 뒤에는 보통의 카드 격자. */
-    .auth-card { max-width: 440px; margin: 24px auto 0; grid-column: 1 / -1; width: 100%; box-sizing: border-box }
-    .auth-form { display: flex; flex-direction: column; gap: 10px; margin: 8px 0 12px }
-    .auth-form label { display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: var(--muted) }
-    .auth-form input { width: 100%; box-sizing: border-box; padding: 9px 10px }
-    .auth-form button[type=submit] { margin-top: 4px; padding: 10px 14px }
-    .auth-links { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; font-size: 14px; color: var(--muted); margin: 0 }
-    .auth-links button { padding: 4px 8px }
-    .me-head { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin: 0 }
-    .me-head .who { font-weight: 600 }
-  </style>
 </head>
 <body data-page="idp_user">
 <header id="demoBar"></header>
+<nav class="idp-nav"><div class="nav-inner">
+  <span class="brand" data-i18n="idp_brand">zkID</span>
+  <div class="nav-menu"><a href="/user" aria-current="page" data-i18n="idp_nav_user">사용자</a><a href="/rp" data-i18n="idp_nav_rp">RP 운영자</a><a href="/admin" data-i18n="idp_nav_admin">관리자</a></div>
+</div></nav>
 <main class="cards">
   <!-- ===== 로그인 전 ① 로그인 (2026-11-03 재구성: 로그인해야 등록·폐기 카드가 보인다) ===== -->
   <section class="card auth-card" id="loginView">

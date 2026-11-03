@@ -630,9 +630,19 @@ window.DemoStrings = {
     register_popup_closed: { ko: '등록 창이 결과 없이 닫혔습니다.', en: 'The registration window closed without a result.' },
     confirm_account_revoke: { ko: '되돌릴 수 없습니다. 내 계정을 폐기할까요?', en: 'This cannot be undone. Revoke my account?' },
     // IdP RP 페이지(운영자 가입·로그인·RP 만들기) — cia_rp.html.
+    // 2026-11-03: IdP 페이지 공통 상단 바(idp.css) + /rp 를 /user 와 같은 로그인·가입 화면으로.
+    idp_brand: { ko: 'zkID', en: 'zkID' },
+    idp_nav_user: { ko: '사용자', en: 'Users' },
+    idp_nav_rp: { ko: 'RP 운영자', en: 'RP operators' },
+    idp_nav_admin: { ko: '관리자', en: 'Admin' },
+    idp_rp_login_title: { ko: '운영자 로그인', en: 'Operator login' },
+    idp_rp_login_desc: { ko: 'RP(서비스)를 만들고 승인 상태를 보려면 운영자 계정으로 로그인합니다.', en: 'Log in with an operator account to create RPs (services) and see their approval status.' },
+    idp_rp_me_badge: { ko: '운영자', en: 'Operator' },
+    idp_rp_me_who: { ko: '운영자 {id}', en: 'Operator {id}' },
+    idp_auth_id_hint: { ko: '아이디 또는 uid', en: 'login id or uid' },
     idp_rp_signup_title: { ko: '운영자 계정 만들기', en: 'Create an operator account' },
     idp_rp_signup_desc: { ko: 'RP 를 만들려면 운영자 계정이 필요합니다.', en: 'An operator account is required to create an RP.' },
-    idp_rp_id_label: { ko: 'id', en: 'id' },
+    idp_rp_id_label: { ko: '아이디', en: 'Login id' },
     idp_rp_signup_btn: { ko: '가입', en: 'Sign up' },
     // idp_rp_login_title 은 2026-10-23 참조 0건 확인 뒤 제거(F-9) — cia_rp.html 의 로그인 카드는 opAccountCard 제목(idp_rp_signup_title)을 같이 쓴다.
     idp_rp_login_btn: { ko: '로그인', en: 'Log in' },
@@ -651,7 +661,7 @@ window.DemoStrings = {
     idp_rp_key_once: { ko: '키는 지금만 보입니다 — 복사해 두세요. 다시 볼 수 없습니다.', en: 'The key is shown only now — copy it. It cannot be shown again.' },
     idp_rp_key_hidden: { ko: '(다시 볼 수 없음)', en: '(cannot be shown again)' },
     idp_rp_signup_ok_title: { ko: '가입됨', en: 'Signed up' },
-    idp_rp_signup_ok: { ko: '가입됨 — id {id}. 이 id 로 로그인하세요.', en: 'Signed up — id {id}. Log in with this id.' },
+    idp_rp_signup_ok: { ko: '가입됨 — 아이디 {id}. 비밀번호를 넣고 로그인하세요.', en: 'Signed up — login id {id}. Enter your password to log in.' },
     idp_rp_signup_failed: { ko: '가입 실패', en: 'Sign-up failed' },
     idp_rp_login_ok: { ko: '로그인됨 — id {id}.', en: 'Logged in — id {id}.' },
     idp_rp_create_ok_title: { ko: '만들어짐', en: 'Created' },
@@ -659,7 +669,7 @@ window.DemoStrings = {
     idp_rp_create_failed: { ko: '만들기 실패', en: 'Creation failed' },
     // IdP 인증 창(cia_login.html, §4) — 지갑 팝업이 연다.
     idp_auth_title: { ko: '로그인 인증', en: 'Login authentication' },
-    idp_auth_desc: { ko: 'uid·비밀번호·auid 를 넣으면 1회용 코드를 지갑에 전달합니다.', en: 'Enter your uid, password and auid to hand a one-time code to the wallet.' },
+    idp_auth_desc: { ko: '아이디·비밀번호·auid 를 넣으면 1회용 코드를 지갑에 전달합니다.', en: 'Enter your login id, password and auid to hand a one-time code to the wallet.' },
     idp_auth_go: { ko: '확인', en: 'Confirm' },
     idp_auth_bad_wallet: { ko: '지갑 오리진이 일치하지 않습니다 — 이 창은 안전하지 않은 요청일 수 있습니다.', en: 'The wallet origin does not match — this window may be an unsafe request.' },
     idp_auth_sent_title: { ko: '전달됨', en: 'Sent' },

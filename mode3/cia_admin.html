@@ -7,13 +7,18 @@
   <!-- 제목의 "IdP 관리자" 는 tests/test_mode3_demo_stack.mjs 의 페이지 서빙 검사 marker 다. -->
   <title>IdP 관리자</title>
   <link rel="stylesheet" href="/common/demo.css" />
+  <link rel="stylesheet" href="/common/idp.css" />
   <script src="/common/strings.js"></script>
   <script src="/common/demo.js"></script>
 </head>
 <body data-page="admin">
   <header id="demoBar"></header>
-  <!-- 상단 바로가기(Task 12, 2026-10-22 B3) — 가입·커밋먼트 등록은 /user, RP 운영자 가입·만들기는 /rp 에서 한다. -->
-  <p class="top-links"><a href="/user" class="btn-ghost" data-i18n="admin_nav_user">IdP 사용자 페이지</a> <a href="/rp" class="btn-ghost" data-i18n="admin_nav_rp">IdP RP 페이지</a></p>
+  <!-- 2026-11-03: 공통 상단 바(idp.css) + 절 메뉴 — 카드를 숨기지 않고 해당 절로 이동만 한다(테스트 선택자 불변). -->
+  <nav class="idp-nav"><div class="nav-inner">
+    <span class="brand" data-i18n="idp_brand">zkID</span>
+    <div class="nav-menu"><a href="/user" data-i18n="idp_nav_user">사용자</a><a href="/rp" data-i18n="idp_nav_rp">RP 운영자</a><a href="/admin" aria-current="page" data-i18n="idp_nav_admin">관리자</a></div>
+  </div></nav>
+  <div class="section-menu"><div class="menu-inner"><a href="#secAccounts" data-i18n="admin_accounts_title">계정</a><a href="#secRps" data-i18n="admin_rps_title">RP</a><a href="#secOpenings" data-i18n="admin_openings_title">개봉 요청</a><a href="#secRcl" data-i18n="admin_rcl_title">폐기 목록</a><a href="#secCreds" data-i18n="admin_creds_title">사용자 자격증명</a><a href="#secRevoked" data-i18n="admin_revoked_sessions_title">세션 폐기 목록</a></div></div>
   <main class="cards">
     <section class="card span2">
       <h3 data-i18n="admin_auth_title">인증 · 최근 결과</h3>
@@ -30,7 +35,7 @@
       <pre id="out" class="expert">-</pre>
     </section>
 
-    <section class="card span2">
+    <section class="card span2" id="secAccounts">
       <h3 data-i18n="admin_accounts_title">계정</h3>
       <p class="desc" data-i18n="admin_accounts_desc">등록된 계정과 로그인 세션을 폐기합니다.</p>
       <p>
@@ -43,14 +48,14 @@
       <div id="accounts"><p class="muted" data-i18n="admin_need_secret">관리자 시크릿을 넣으면 목록과 대기 건수를 불러옵니다.</p></div>
     </section>
 
-    <section class="card span2">
+    <section class="card span2" id="secRps">
       <h3 data-i18n="admin_rps_title">RP</h3>
       <p class="desc" data-i18n="admin_rps_desc">승인하면 이 RP 전용 추적 조각을 만들어 인증서를 냅니다. 거절은 되돌릴 수 없습니다.</p>
       <p><button id="rpsBtn" data-i18n="admin_list_btn">목록 불러오기</button></p>
       <div id="rps"><p class="muted" data-i18n="admin_need_secret">관리자 시크릿을 넣으면 목록과 대기 건수를 불러옵니다.</p></div>
     </section>
 
-    <section class="card span2">
+    <section class="card span2" id="secOpenings">
       <h3 data-i18n="admin_openings_title">개봉 요청</h3>
       <p class="desc" data-i18n="admin_openings_desc">RP 가 올린 개봉 요청입니다. 승인하면 IdP 조각으로 봉인을 풀어 uid 를 기록합니다 — 대기 중인 항목에는 uid 가 없습니다.</p>
       <p><button id="openingsBtn" data-i18n="admin_list_btn">목록 불러오기</button></p>
@@ -58,7 +63,7 @@
       <div id="openings"><p class="muted" data-i18n="admin_need_secret">관리자 시크릿을 넣으면 목록과 대기 건수를 불러옵니다.</p></div>
     </section>
 
-    <section class="card span2">
+    <section class="card span2" id="secRcl">
       <h3 data-i18n="admin_rcl_title">폐기 목록</h3>
       <p class="desc" data-i18n="admin_rcl_desc">폐기는 덧붙이기만 됩니다 — 게시하면 되돌릴 수 없습니다(설계 §6.5).</p>
       <p>
@@ -69,13 +74,13 @@
       <p class="muted" id="mirrorInfo"></p>
     </section>
 
-    <section class="card span2">
+    <section class="card span2" id="secCreds">
       <h3 data-i18n="admin_creds_title">사용자 자격증명 — 활성 목록</h3>
       <p class="desc" data-i18n="admin_creds_desc">등록부 슬롯마다 지금 활성인 자격증명을 보여 줍니다. 은퇴한 슬롯도 함께 보입니다(폐기 효과를 보기 위함).</p>
       <div id="creds"><p class="muted" data-i18n="admin_need_secret">관리자 시크릿을 넣으면 목록과 대기 건수를 불러옵니다.</p></div>
     </section>
 
-    <section class="card span2">
+    <section class="card span2" id="secRevoked">
       <h3 data-i18n="admin_revoked_sessions_title">세션 — 폐기 목록</h3>
       <p class="desc" data-i18n="admin_revoked_sessions_desc">폐기된(revokedAt 있는) 세션만 최근 폐기 순으로 보여 줍니다.</p>
       <div id="revokedSessions"><p class="muted" data-i18n="admin_need_secret">관리자 시크릿을 넣으면 목록과 대기 건수를 불러옵니다.</p></div>
@@ -109,6 +114,9 @@
     function setVerdict(el, ok, title, extra = {}) {
       Demo.verdict(el, () => ({ ok, title: window.DemoStrings?.verdicts?.[title] ? title : Demo.t(title), ...(typeof extra === 'function' ? extra() : extra) }));
     }
+
+    // 절 메뉴(2026-11-03): 누른 항목을 표시만 한다 — 이동은 앵커가 한다.
+    for (const a of document.querySelectorAll('.section-menu a')) a.addEventListener('click', () => { for (const b of document.querySelectorAll('.section-menu a')) b.classList.toggle('current', b === a); });
 
     // ---- 관리자 시크릿 ----
     // 기본은 메모리(입력칸)뿐이다. "이 창에서 기억" 을 켠 동안만 sessionStorage 에 둔다 — 탭을 닫으면 사라진다.

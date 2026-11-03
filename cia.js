@@ -793,8 +793,10 @@ app.post('/cia/user/self_revoke', requireUser, async (req, res) => {
 });
 // 인증 창(§4)이 부른다 — 세션 없이도 된다. pwd 검사 → 등록 상태 → auid 일치 순으로 본다(틀린 비밀번호에는 등록 여부를 알려주지 않는다).
 app.post('/cia/auth/code', (req, res) => {
-  const { uid, pwd, auid } = req.body ?? {};
-  const a = isDec(uid) ? state.accounts[uid] : null;
+  const { uid: uidIn, id, pwd, auid } = req.body ?? {};
+  // 2026-11-03: 인증 창은 아이디를 보낸다(id). 아이디 색인에 없으면 10진 uid 로 본다(한 칸에 "아이디 또는 uid") — API 의 uid 는 그대로.
+  const uid = typeof id === 'string' ? (uidByLoginId(id) ?? (isDec(id) ? id : null)) : (isDec(uidIn) ? uidIn : null);
+  const a = uid ? state.accounts[uid] : null;
   if (!pwOk(a, pwd)) return res.status(401).json({ error: 'invalid credentials', reason: 'invalid_credentials' });
   if (!a.pk_u) return res.status(409).json({ error: 'not registered', reason: 'not_registered' });
   if (!isDec(auid) || BigInt(auid).toString() !== a.auid) return res.status(403).json({ error: 'auid mismatch', reason: 'auid_mismatch' });
