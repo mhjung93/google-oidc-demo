@@ -215,12 +215,18 @@ try {
   // 만 받는다(cia.js 의 /cia/register) — uid·비밀번호를 직접 프롬프트하던 옛 Snap RPC 는 이제 없다.
   await t('등록(2026-10-22): IdP 사용자 페이지 가입·로그인 → "지갑으로 커밋먼트 등록" → 지갑 팝업 → Snap 확인 창(uid·비밀번호 프롬프트 없음) → 등록됨; IdP 는 auid·pk_u·sig_reg 만 받았다', async () => {
     const u = await context.newPage(); await u.goto(`${cia.base}/user`);
-    await u.fill('#signupPwd', DEMO_PWD); await u.click('#signupBtn'); await waitText(u, '#userVerdict', 'uid');
+    // 2026-11-03 재구성: 로그인 화면 → "계정 만들기" → 아이디·비밀번호·확인 → 가입되면 로그인 화면으로 돌아오고 아이디가 채워져 있다.
+    assert.equal(await u.isHidden('#registerBtn'), true, '로그인 전에는 등록 카드가 없다');
+    await u.click('#showSignupBtn'); await u.fill('#signupId', 'demo-user'); await u.fill('#signupPwd', DEMO_PWD); await u.fill('#signupPwd2', DEMO_PWD); await u.click('#signupBtn');
+    await waitText(u, '#userVerdict', 'uid');
     uid = await u.$eval('#userVerdict', (e) => e.textContent.match(/uid\s*(\d+)/)[1]);
-    await u.fill('#loginUid', uid); await u.fill('#loginPwd', DEMO_PWD); await u.click('#loginBtn'); await waitText(u, '#meBadge', '등록 전');
+    assert.equal(await u.inputValue('#loginId'), 'demo-user', '가입한 아이디가 로그인 폼에 채워진다');
+    await u.fill('#loginPwd', DEMO_PWD); await u.click('#loginBtn'); await waitText(u, '#meBadge', '등록 전');
+    assert.equal(await u.isHidden('#revokeCard'), true, '등록 전에는 폐기 카드가 없다');
     answers.push(true);                                                                    // Snap 등록 확인 창
     const [popup] = await Promise.all([context.waitForEvent('page'), u.click('#registerBtn')]);
     await waitText(u, '#meBadge', '등록됨', 60_000);
+    assert.equal(await u.isVisible('#revokeCard'), true, '등록 뒤에는 폐기 카드가 보인다'); assert.equal(await u.isHidden('#registerBtn'), true, '등록 뒤에는 등록 버튼이 없다');
     // Snap 의 확인 창 문구는 "uid: ${uid}"(콜론, snap-mode3/src/index.js) — "비밀번호" 라는 말은 없다(비밀번호를 묻지 않는다).
     assert.ok(dialogs.at(-1).content.children.some((c) => new RegExp(`uid:\\s*${uid}`).test(c.value ?? '')), '확인 창에 uid');
     assert.ok(!dialogs.at(-1).content.children.some((c) => /비밀번호/.test(c.value ?? '')), '비밀번호를 묻지 않는다');
@@ -576,12 +582,24 @@ try {
 
   // ---- Task 12(B3, 2026-10-22): IdP 사용자·RP·인증 창 페이지(/user·/rp·/login) ----
   // 가입·로그인·RP 만들기는 Snap 대화상자를 쓰지 않는다 — 새 계정(가입으로 받은 uid·새 운영자 id)을 쓴다.
-  await t('IdP 사용자 페이지: 가입 → uid 배정 → 로그인 → 상태(등록 전) → 로그아웃', async () => {
+  await t('IdP 사용자 페이지(2026-11-03): 계정 만들기(아이디·비밀번호·확인, 불일치는 pwd_mismatch, 중복 아이디는 id_taken) → 아이디로 로그인 → 상태(등록 전) → 로그아웃하면 로그인 화면', async () => {
     const p = await context.newPage(); await p.goto(`${cia.base}/user`);
-    await p.fill('#signupPwd', 'demo-pass-1'); await p.click('#signupBtn');
-    await waitText(p, '#userVerdict', 'uid'); const uid = await p.$eval('#userVerdict', (e) => e.textContent.match(/uid\s*(\d+)/)[1]);
-    await p.fill('#loginUid', uid); await p.fill('#loginPwd', 'demo-pass-1'); await p.click('#loginBtn');
-    await waitText(p, '#meBadge', '등록 전'); await p.click('#logoutBtn'); await waitText(p, '#meBadge', '로그아웃'); await p.close();
+    // 같은 브라우저 컨텍스트라 앞의 등록 케이스가 로그인해 둔 세션 쿠키가 남아 있을 수 있다 — 내 계정 화면이면 먼저 로그아웃한다.
+    await p.waitForSelector('#loginView:not([hidden]), #meCard:not([hidden])');
+    if (await p.isVisible('#meCard')) { await p.click('#logoutBtn'); await p.waitForSelector('#loginView:not([hidden])'); }
+    assert.equal(await p.isHidden('#registerCard'), true); assert.equal(await p.isHidden('#revokeCard'), true);
+    await p.click('#showSignupBtn'); await p.waitForSelector('#signupView:not([hidden])');
+    await p.fill('#signupId', 'demo-user-2'); await p.fill('#signupPwd', 'demo-pass-1'); await p.fill('#signupPwd2', 'demo-pass-X'); await p.click('#signupBtn');
+    await waitText(p, '#signupVerdict', 'pwd_mismatch');
+    await p.fill('#signupPwd2', 'demo-pass-1'); await p.click('#signupBtn');
+    await waitText(p, '#userVerdict', 'uid'); assert.equal(await p.inputValue('#loginId'), 'demo-user-2');
+    // 같은 아이디(대소문자만 다른)로 다시 가입하면 409 id_taken.
+    await p.click('#showSignupBtn'); await p.fill('#signupId', 'DEMO-USER-2'); await p.fill('#signupPwd', 'demo-pass-1'); await p.fill('#signupPwd2', 'demo-pass-1'); await p.click('#signupBtn');
+    await waitText(p, '#signupVerdict', 'id_taken'); await p.click('#showLoginBtn');
+    await p.fill('#loginId', 'demo-user-2'); await p.fill('#loginPwd', 'wrong-pass-1'); await p.click('#loginBtn'); await waitText(p, '#userVerdict', 'invalid_credentials');
+    await p.fill('#loginPwd', 'demo-pass-1'); await p.click('#loginBtn');
+    await waitText(p, '#meBadge', '등록 전'); await waitText(p, '#meInfo', 'demo-user-2'); assert.equal(await p.isVisible('#registerBtn'), true);
+    await p.click('#logoutBtn'); await p.waitForSelector('#loginView:not([hidden])'); assert.equal(await p.isHidden('#meCard'), true); await p.close();
   });
   await t('IdP RP 페이지: 운영자 가입·로그인 → zkTHREE 만들기 → 키·명령 표시', async () => {
     const p = await context.newPage(); await p.goto(`${cia.base}/rp`);

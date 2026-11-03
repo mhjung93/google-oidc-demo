@@ -124,7 +124,7 @@ CHAIN=(
 # hardhat 노드(:8545)와 build/mode3 산출물은 chain 과 똑같이 필요하다.
 BROWSER=(
   tests/test_mode3_browser.mjs
-  tests/test_mode3_tour.mjs
+  # (test_mode3_tour.mjs 는 2026-11-03 체험 모드 제거와 함께 삭제)
   # web 모드 — 정적 서버 + 팝업 프로토콜 + 릴레이; 번들을 스스로 만든다
   tests/test_mode3_user_web.mjs
   # Google(OIDC 래퍼) — GIS 스텁 + 발급자 스텁, 사용자 오리진 localhost; 번들을 스스로 만든다

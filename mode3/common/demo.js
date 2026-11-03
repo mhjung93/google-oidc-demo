@@ -21,9 +21,12 @@
     /** tour:false 면 체험 모드를 아예 켜지 않는다(승인 팝업 — 설계 2026-09-25 §3.1). */
     init({ page, tour = true }) {
       D.page = page; document.documentElement.lang = D.lang; document.documentElement.toggleAttribute('data-expert', D.expert);
-      const bar = document.getElementById('demoBar'); if (bar) { bar.innerHTML = '<div class="bar-steps"></div><div class="bar-next"></div><div class="bar-tools"><button type="button" class="btn-ghost" id="langToggle"></button><label class="switch"><input type="checkbox" id="expertToggle"> <span data-i18n="toggle_expert"></span></label></div>'; bar.querySelector('#langToggle').addEventListener('click', () => D.setLang(D.lang === 'ko' ? 'en' : 'ko')); const ex = bar.querySelector('#expertToggle'); ex.checked = D.expert; ex.addEventListener('change', () => D.setExpert(ex.checked)); }
+      // 2026-11-03: 안내 바는 도구(언어·전문가 보기)만 남긴다 — 9단계 칩·"다음 할 일"·다른 창 링크·체험 모드 스위치는 화면을
+      // 어지럽혀 뺐다(사용자 요청). guide()·tour.evaluate() 는 페이지 코드가 그대로 부르므로 아무것도 그리지 않는 채로 둔다.
+      const bar = document.getElementById('demoBar'); if (bar) { bar.innerHTML = '<div class="bar-tools"><button type="button" class="btn-ghost" id="langToggle"></button><label class="switch"><input type="checkbox" id="expertToggle"> <span data-i18n="toggle_expert"></span></label></div>'; bar.querySelector('#langToggle').addEventListener('click', () => D.setLang(D.lang === 'ko' ? 'en' : 'ko')); const ex = bar.querySelector('#expertToggle'); ex.checked = D.expert; ex.addEventListener('change', () => D.setExpert(ex.checked)); }
       D.applyI18n(); D.guide({ done: [], current: null, hint: null, links: {} });
-      if (tour !== false) D.tour.init();
+      // 체험 모드(D.tour)는 2026-11-03 부터 켜지 않는다 — init() 을 부르지 않으면 enabled 가 false 로 남아 잠금·말풍선·카드가 모두 빈 동작이다.
+      void tour;
     },
     /** 다른 당사자 링크에 체험 모드를 나른다 — 오리진마다 저장소가 다르다(설계 §3.1). 쿼리·해시가 이미 있어도 망가지지 않게 붙인다. */
     withTour(url) {
@@ -34,7 +37,8 @@
     guide(g) {
       D.lastGuide = g; const bar = document.getElementById('demoBar'); if (!bar) return;
       const lt = bar.querySelector('#langToggle'); if (lt) lt.textContent = D.t('toggle_lang');
-      const stepsEl = bar.querySelector('.bar-steps'); stepsEl.innerHTML = '';
+      // 2026-11-03: 단계 칩·다음 할 일·링크는 그리지 않는다(위 init 주석). 아래 코드는 바에 .bar-steps 가 없으면 바로 끝난다.
+      const stepsEl = bar.querySelector('.bar-steps'); if (!stepsEl) return; stepsEl.innerHTML = '';
       S.steps.forEach((s, i) => {
         const el = document.createElement('div'); const mine = s.where.includes(D.page);
         el.className = 'step' + (g.done?.includes(s.key) ? ' done' : '') + (g.current === s.key ? ' current' : '') + (mine ? '' : ' elsewhere');

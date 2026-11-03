@@ -296,10 +296,13 @@ async function loadState() {
   // 데모(§8 리셋 스크립트)에서는 꺼 둔다. 이미 있으면(재시작) 건드리지 않는다 — pwHash 를 매번 새로 만들지 않는다.
   let seeded = false;
   if (DEMO_SEED) {
-    for (const a of Object.values(DEMO_ACCOUNTS)) {
+    for (const [name, a] of Object.entries(DEMO_ACCOUNTS)) {
       const existing = state.accounts[a.uid];
+      // 아이디 가입(2026-11-03): 시드 계정도 이름(testuser·alice)을 아이디로 받는다 — 이미 다른 계정이 그 아이디를 썼으면 uid 로만 로그인한다.
+      const loginId = state.loginIds[name] && state.loginIds[name] !== a.uid ? null : name;
       if (!existing) {
-        state.accounts[a.uid] = newAccountRecord({ ...newPw(a.password) });
+        state.accounts[a.uid] = newAccountRecord({ ...newPw(a.password), loginId });
+        if (loginId) state.loginIds[name] = a.uid;
         seeded = true;
       } else if (!existing.pwHash) {
         // 수정 라운드 1: 이 필드 이전에 만들어진(또는 손으로 적은) 시드 계정 — 등록 상태(pk_u·auid·slot·creds 등)는 그대로 두고 비밀번호만 채운다.
@@ -385,9 +388,14 @@ const newPw = (pwd) => { const pwSalt = randomBytes(16).toString('hex'); return 
 const pwOk = (acct, pwd) => Boolean(acct?.pwHash) && acct.pwAlgo === 'scrypt' && typeof pwd === 'string' && secretMatches(acct.pwHash, hashPw(acct.pwSalt, pwd));
 /** 계정 레코드 공통 스캐폴드(수정 라운드 1 — 가입/시드/등록 세 곳의 리터럴을 하나로). 비밀번호 없이 만들면(OIDC 선등록)
  *  pwSalt·pwHash·pwAlgo 가 전부 null — pwOk 는 pwAlgo 검사로 자연히 거절한다. */
-function newAccountRecord({ pwSalt = null, pwHash = null, pwAlgo = null, pk_u = null, auid = null, slot = null, provider = 'demo' } = {}) {
-  return { pwSalt, pwHash, pwAlgo, createdAt: new Date().toISOString(), pk_u, auid, slot, provider, tampered: false, disabled: false, creds: [], sessions: [], receipt: null, slotRetired: false };
+function newAccountRecord({ pwSalt = null, pwHash = null, pwAlgo = null, pk_u = null, auid = null, slot = null, provider = 'demo', loginId = null } = {}) {
+  return { pwSalt, pwHash, pwAlgo, createdAt: new Date().toISOString(), pk_u, auid, slot, provider, loginId, tampered: false, disabled: false, creds: [], sessions: [], receipt: null, slotRetired: false };
 }
+// 아이디 가입(2026-11-03, /user 페이지 재구성): 사용자가 정하는 로그인 아이디. 프로토콜의 uid 는 그대로 IdP 내부 번호(가입 때 배정)이고,
+// 아이디는 로그인 폼에서 uid 를 찾는 열쇠일 뿐이다 — 대소문자를 가리지 않고(색인 키는 소문자) 계정당 하나, 바꿀 수 없다.
+const LOGIN_ID_RE = /^[a-z0-9][a-z0-9._-]{2,31}$/i;
+const loginIdKey = (id) => id.toLowerCase();
+const uidByLoginId = (id) => (typeof id === 'string' && LOGIN_ID_RE.test(id) ? (state.loginIds[loginIdKey(id)] ?? null) : null);
 function requireAdmin(req, res, next) {
   if (ADMIN_OPEN) return next();
   if (!ADMIN_SECRET) return res.status(503).json({ error: 'admin endpoints disabled: CIA_ADMIN_SECRET is not configured' });
@@ -735,27 +743,34 @@ const requireUser = (req, res, next) => { if (!req.session?.uid || !state.accoun
 function activeCfU(a) { return (a.creds ?? []).find((c) => !c.revoked)?.Cf_u ?? null; }
 
 app.post('/cia/signup', (req, res) => {
-  const { pwd } = req.body ?? {};
+  const { id, pwd } = req.body ?? {};
+  // 아이디(2026-11-03): 영문·숫자로 시작하는 3~32자(영문·숫자·. _ -). 형식이 틀리면 400 bad_id, 이미 있으면 409 id_taken — 가입 폼은 두 사유를 따로 보인다.
+  if (typeof id !== 'string' || !LOGIN_ID_RE.test(id)) return res.status(400).json({ error: 'id 는 영문·숫자로 시작하는 3~32자(영문·숫자·. _ -)', reason: 'bad_id' });
   if (typeof pwd !== 'string' || pwd.length < 8) return res.status(400).json({ error: 'pwd 는 8자 이상', reason: 'signup_failed' });
+  if (uidByLoginId(id)) return res.status(409).json({ error: 'id already taken', reason: 'id_taken' });
   // 수정 라운드 1: nextUid 가 이미 쓰인 자리를 가리킬 수 있는 드문 경우(손으로 적은 상태 파일 등)에 500 대신 다음 uid 로 재시도한다 —
   // 가입은 사용자가 거의 실패를 겪지 않아야 하는 경로라 조용히 건너뛰는 쪽을 골랐다(대안인 409 는 사용자에게 "다시 눌러라" 를 요구한다).
   let uid;
   do { uid = String(state.nextUid++); } while (state.accounts[uid]);
-  state.accounts[uid] = newAccountRecord({ ...newPw(pwd) });
+  state.accounts[uid] = newAccountRecord({ ...newPw(pwd), loginId: id });
+  state.loginIds[loginIdKey(id)] = uid;
   persist();
-  res.status(201).json({ uid });
+  res.status(201).json({ uid, id });
 });
 app.post('/cia/user/login', (req, res) => {
-  const { uid, pwd } = req.body ?? {};
-  if (!isDec(uid) || !pwOk(state.accounts[uid], pwd)) return res.status(401).json({ error: 'invalid credentials', reason: 'invalid_credentials' });
+  const { id, uid: uidIn, pwd } = req.body ?? {};
+  // 아이디(2026-11-03)가 오면 색인으로 uid 를 찾고, 없으면 옛 경로대로 uid 를 받는다(시드 계정·Google 계정·기존 테스트). 모르는 아이디도 401 로 같게
+  // 답한다 — 아이디가 있는지 새지 않게.
+  const uid = typeof id === 'string' ? uidByLoginId(id) : (isDec(uidIn) ? uidIn : null);
+  if (!uid || !pwOk(state.accounts[uid], pwd)) return res.status(401).json({ error: 'invalid credentials', reason: 'invalid_credentials' });
   // 세션 고정 방지(보안 리뷰 2026-10-23) + 운영자 세션 공존(수정 라운드 1, loginKeepingOtherRole 위) — 로그인마다
   // 세션 id 를 새로 받으면서(로그인 전에 심어 둔 sid 로 로그인 뒤 들어오지 못하게) 운영자 세션이 있으면 보존한다.
-  loginKeepingOtherRole(req, res, { role: 'uid', value: uid, other: 'operator' }, () => res.json({ uid }));
+  loginKeepingOtherRole(req, res, { role: 'uid', value: uid, other: 'operator' }, () => res.json({ uid, id: state.accounts[uid].loginId ?? null }));
 });
 app.post('/cia/user/logout', (req, res) => logoutRole(req, res, 'uid', 'operator'));
 app.get('/cia/user/me', requireUser, (req, res) => {
   const uid = req.session.uid, a = state.accounts[uid];
-  res.json({ uid, registered: Boolean(a.pk_u), auid: a.auid, slot: a.slot, provider: a.provider, disabled: a.disabled, activeCf_u: activeCfU(a), registryLeaf: a.slot === null ? null : registry.leafAt(a.slot).toString() });
+  res.json({ uid, id: a.loginId ?? null, registered: Boolean(a.pk_u), auid: a.auid, slot: a.slot, provider: a.provider, disabled: a.disabled, activeCf_u: activeCfU(a), registryLeaf: a.slot === null ? null : registry.leafAt(a.slot).toString() });
 });
 app.post('/cia/user/register_code', requireUser, (req, res) => {
   const a = state.accounts[req.session.uid];
@@ -1460,7 +1475,7 @@ app.post('/cia/account/set_disabled', requireAdmin, (req, res) => {
 
 // 관리자 계정 목록(관리 페이지의 계정 목록용). activeCred 는 위의 기존 헬퍼(사용자당 활성 자격증명 하나).
 app.get('/cia/accounts', requireAdmin, (req, res) => res.json({
-  accounts: Object.entries(state.accounts).map(([uid, a]) => ({ uid, disabled: a.disabled, activeCf_u: activeCfU(a), slot: a.slot, tampered: Boolean(a.tampered), registryLeaf: state.registry.leaves[a.slot] ?? '0', provider: a.provider ?? 'demo' })),
+  accounts: Object.entries(state.accounts).map(([uid, a]) => ({ uid, id: a.loginId ?? null, disabled: a.disabled, activeCf_u: activeCfU(a), slot: a.slot, tampered: Boolean(a.tampered), registryLeaf: state.registry.leaves[a.slot] ?? '0', provider: a.provider ?? 'demo' })),
 }));
 
 // ---- V9 등록부 관리(설계 2026-10-01 §9) ----

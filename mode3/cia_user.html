@@ -9,35 +9,72 @@
   <link rel="stylesheet" href="/common/demo.css" />
   <script src="/common/strings.js"></script>
   <script src="/common/demo.js"></script>
+  <style>
+    /* 2026-11-03: 로그인·가입 화면은 가운데 한 장짜리 카드, 로그인 뒤에는 보통의 카드 격자. */
+    .auth-card { max-width: 440px; margin: 24px auto 0; grid-column: 1 / -1; width: 100%; box-sizing: border-box }
+    .auth-form { display: flex; flex-direction: column; gap: 10px; margin: 8px 0 12px }
+    .auth-form label { display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: var(--muted) }
+    .auth-form input { width: 100%; box-sizing: border-box; padding: 9px 10px }
+    .auth-form button[type=submit] { margin-top: 4px; padding: 10px 14px }
+    .auth-links { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; font-size: 14px; color: var(--muted); margin: 0 }
+    .auth-links button { padding: 4px 8px }
+    .me-head { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin: 0 }
+    .me-head .who { font-weight: 600 }
+  </style>
 </head>
 <body data-page="idp_user">
 <header id="demoBar"></header>
 <main class="cards">
-  <!-- F-0: /account 는 Google/OIDC 계정 관리·재로그인 폐기 UI — 이 페이지(비밀번호 계정)와는 다른 입구라 서로 가리킨다. -->
-  <p><a href="/account" data-i18n="user_google_account_link">Google 계정 관리</a></p>
-  <section class="card" id="signupCard">
-    <h3 data-i18n="idp_signup_title">계정 만들기</h3>
-    <p class="desc" data-i18n="idp_signup_desc">비밀번호만 정하면 IdP 가 uid 를 배정합니다. 속성은 IdP 에 보내지 않습니다.</p>
-    <p><label><span data-i18n="idp_pwd_label">비밀번호</span> <input id="signupPwd" type="password" autocomplete="new-password" /></label> <button id="signupBtn" data-i18n="idp_signup_btn">가입</button></p>
-  </section>
-  <section class="card" id="loginCard">
+  <!-- ===== 로그인 전 ① 로그인 (2026-11-03 재구성: 로그인해야 등록·폐기 카드가 보인다) ===== -->
+  <section class="card auth-card" id="loginView">
     <h3 data-i18n="idp_login_title">로그인</h3>
-    <p><label>uid <input id="loginUid" size="8" /></label> <label><span data-i18n="idp_pwd_label">비밀번호</span> <input id="loginPwd" type="password" autocomplete="current-password" /></label> <button id="loginBtn" data-i18n="idp_login_btn">로그인</button> <button id="logoutBtn" class="btn-ghost" data-i18n="idp_logout_btn">로그아웃</button></p>
-    <p><span id="meBadge" class="badge muted">로그아웃</span> <span id="meInfo" class="muted"></span></p>
+    <p class="desc" data-i18n="idp_login_desc">IdP 계정으로 로그인하면 커밋먼트 등록과 계정 관리를 할 수 있습니다.</p>
+    <form id="loginForm" class="auth-form" autocomplete="on">
+      <label><span data-i18n="idp_id_label">아이디</span><input id="loginId" autocomplete="username" autocapitalize="off" spellcheck="false" /></label>
+      <label><span data-i18n="idp_pwd_label">비밀번호</span><input id="loginPwd" type="password" autocomplete="current-password" /></label>
+      <button id="loginBtn" type="submit" data-i18n="idp_login_btn">로그인</button>
+    </form>
+    <p class="auth-links"><span data-i18n="idp_no_account">계정이 없으세요?</span> <button type="button" class="btn-ghost" id="showSignupBtn" data-i18n="idp_signup_title">계정 만들기</button></p>
+    <!-- Google(OIDC 래퍼, 2026-10-26 Snap OIDC 래퍼 §2.1): IdP 비밀번호 계정 없이 지갑 팝업에서 Google 로 등록 — IdP 가 래퍼를 켰을 때만 보인다. -->
+    <p class="auth-links" id="googleRow" hidden><button type="button" class="btn-ghost" id="registerGoogleBtn" data-i18n="idp_register_google_btn">Google 계정으로 등록</button> <a href="/account" data-i18n="user_google_account_link">Google 계정 관리</a></p>
+    <div id="userVerdict"></div>
   </section>
-  <section class="card" id="registerCard">
+  <!-- ===== 로그인 전 ② 계정 만들기 ===== -->
+  <section class="card auth-card" id="signupView" hidden>
+    <h3 data-i18n="idp_signup_title">계정 만들기</h3>
+    <p class="desc" data-i18n="idp_signup_desc">아이디와 비밀번호만 정합니다. uid 는 IdP 가 배정하고, 속성은 IdP 에 보내지 않습니다.</p>
+    <form id="signupForm" class="auth-form" autocomplete="on">
+      <label><span data-i18n="idp_id_label">아이디</span><input id="signupId" autocomplete="username" autocapitalize="off" spellcheck="false" minlength="3" maxlength="32" /><small class="muted" data-i18n="idp_id_hint">영문·숫자로 시작, 3~32자(영문·숫자·. _ -)</small></label>
+      <label><span data-i18n="idp_pwd_label">비밀번호</span><input id="signupPwd" type="password" autocomplete="new-password" minlength="8" /><small class="muted" data-i18n="idp_pwd_hint">8자 이상</small></label>
+      <label><span data-i18n="idp_pwd2_label">비밀번호 확인</span><input id="signupPwd2" type="password" autocomplete="new-password" /></label>
+      <button id="signupBtn" type="submit" data-i18n="idp_signup_btn">가입</button>
+    </form>
+    <p class="auth-links"><button type="button" class="btn-ghost" id="showLoginBtn" data-i18n="idp_back_to_login">로그인으로 돌아가기</button></p>
+    <div id="signupVerdict"></div>
+  </section>
+
+  <!-- ===== 로그인 뒤 ===== -->
+  <section class="card span2 me-view" id="meCard" hidden>
+    <p class="me-head"><span class="who" id="meInfo"></span> <span id="meBadge" class="badge muted">로그아웃</span> <button id="logoutBtn" class="btn-ghost" data-i18n="idp_logout_btn">로그아웃</button></p>
+  </section>
+  <section class="card me-view" id="registerCard" hidden>
     <h3 data-i18n="idp_register_title">커밋먼트 등록</h3>
     <p class="desc" data-i18n="idp_register_desc">지갑(MetaMask Snap)이 비밀을 만들고 커밋먼트와 공개키만 IdP 에 등록합니다. 속성은 지갑에만 남습니다.</p>
-    <p><button id="registerBtn" data-i18n="idp_register_btn">지갑으로 커밋먼트 등록</button> <button id="registerGoogleBtn" hidden data-i18n="idp_register_google_btn">Google 로 등록</button> <a id="walletLink" class="btn-ghost" target="_blank" rel="noopener" data-i18n="idp_wallet_link">지갑 페이지 열기</a></p>
+    <p><button id="registerBtn" data-i18n="idp_register_btn">지갑으로 커밋먼트 등록</button> <a id="walletLink" class="btn-ghost" target="_blank" rel="noopener" data-i18n="idp_wallet_link">지갑 페이지 열기</a></p>
+    <div id="registerVerdict"></div>
+  </section>
+  <section class="card me-view" id="infoCard" hidden>
+    <h3 data-i18n="idp_info_title">내 등록 정보</h3>
     <dl class="kv">
       <dt data-term="auid">auid</dt><dd><code id="meAuid">-</code> <button type="button" id="copyAuidBtn" class="copy-btn" hidden title="복사" aria-label="복사" data-i18n-title="rp_copy_btn_title">⧉</button></dd>
       <dt data-i18n="idp_slot_label">등록부 슬롯</dt><dd id="meSlot">-</dd>
     </dl>
-    <div id="userVerdict"></div>
+    <p><a id="walletLink2" class="btn-ghost" target="_blank" rel="noopener" data-i18n="idp_wallet_link">지갑 페이지 열기</a></p>
   </section>
-  <section class="card" id="revokeCard">
+  <section class="card me-view" id="revokeCard" hidden>
     <h3 data-i18n="account_revoke_btn">내 계정 폐기</h3>
-    <p><label><span data-i18n="idp_pwd_label">비밀번호</span> <input id="revokePwd" type="password" /></label> <button id="revokeBtn" class="danger" data-i18n="account_revoke_btn">내 계정 폐기</button></p>
+    <p class="desc" data-i18n="idp_revoke_desc">비밀번호를 다시 넣어 확인합니다. 되돌릴 수 없습니다.</p>
+    <p><label><span data-i18n="idp_pwd_label">비밀번호</span> <input id="revokePwd" type="password" autocomplete="current-password" /></label> <button id="revokeBtn" class="danger" data-i18n="account_revoke_btn">내 계정 폐기</button></p>
     <div id="revokeVerdict"></div>
   </section>
 </main>
@@ -47,10 +84,11 @@
   const get = (url) => fetch(url, { credentials: 'same-origin' }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
   const tt = (k, v) => { const s = Demo.t(k, v); return s === k ? '' : s; };
   const verdict = (el, ok, title, extra) => Demo.verdict(el, () => ({ ok, title: window.DemoStrings?.verdicts?.[title] ? title : Demo.t(title), ...(typeof extra === 'function' ? extra() : extra) }));
+  /** 결과 칸 비우기 — Demo.verdict 는 null 을 받지 않으므로 판정 클래스와 내용만 지운다(화면 전환·로그아웃 때). */
+  const clearVerdict = (el) => { el.__verdictArgs = null; el.innerHTML = ''; el.classList.remove('verdict', 'ok', 'bad', 'pending'); };
   let walletOrigin = null, me = null;
   const progress = { revoked: false };   // 이 페이지가 아는 완료 신호(설계 §2.1) — register 는 me.registered 로 바로 안다
-  // 안내 바(Task 17b): 체험 모드일 때만 공통 레이어(Demo.tour.evaluate)가 9단계를 통째로 판정한다 — 이 페이지는
-  // 자기가 아는 완료 신호(등록·폐기)만 넘긴다. 꺼져 있으면 그 신호만으로 직접 done/current 를 그린다.
+  // 안내(Task 17b): 공통 레이어가 2026-11-03 부터 바에 아무것도 그리지 않지만, 호출 모양은 다른 페이지와 같게 둔다.
   function renderGuide() {
     const links = { admin: '/admin', idp_rp: '/rp', wallet: walletOrigin };
     if (Demo.tour?.enabled) { Demo.tour.evaluate({ progress: { registered: !!me?.registered, revoked: progress.revoked }, links }); return; }
@@ -69,41 +107,68 @@
       const wallet = last.aa?.walletOrigin || null;
       if (wallet === walletOrigin) return;
       walletOrigin = wallet;
-      $('walletLink').href = walletOrigin ? `${walletOrigin}/` : '#';
+      for (const id of ['walletLink', 'walletLink2']) $(id).href = walletOrigin ? `${walletOrigin}/` : '#';
       Demo.stack({ self: 'aa', urls: { wallet } });
       renderGuide();
     });
   }
 
+  /** 세 화면 중 하나만 보인다: 로그인 전엔 login|signup, 로그인 뒤엔 me(등록 전 → 등록 카드, 등록 뒤 → 등록 정보·폐기 카드). */
+  function showView(v) {
+    $('loginView').hidden = v !== 'login';
+    $('signupView').hidden = v !== 'signup';
+    const loggedIn = v === 'me';
+    $('meCard').hidden = !loggedIn;
+    $('registerCard').hidden = !loggedIn || !!me?.registered;
+    $('infoCard').hidden = !loggedIn || !me?.registered;
+    $('revokeCard').hidden = !loggedIn || !me?.registered;
+    if (v === 'login') setTimeout(() => $($('loginId').value ? 'loginPwd' : 'loginId').focus(), 0);
+    if (v === 'signup') setTimeout(() => $('signupId').focus(), 0);
+  }
   async function refreshMe() {
     const r = await get('/cia/user/me');
     me = r.status === 200 ? r.body : null;
     $('meBadge').className = `badge ${!me ? 'muted' : me.registered ? 'ok' : 'warn'}`;
     $('meBadge').textContent = !me ? (tt('idp_me_out') || '로그아웃') : me.registered ? (tt('idp_me_registered') || '등록됨') : (tt('idp_me_unregistered') || '등록 전');
-    $('meInfo').textContent = me ? `uid ${me.uid}` : '';
+    $('meInfo').textContent = me ? (me.id ? `${me.id} · uid ${me.uid}` : `uid ${me.uid}`) : '';
     $('meAuid').textContent = me?.auid ?? '-';
     $('copyAuidBtn').hidden = !me?.auid;
     $('meSlot').textContent = me?.slot ?? '-';
+    // 로그인 뒤에만 등록·폐기가 보인다. 로그아웃 상태에서 가입 화면을 보고 있었다면 그대로 둔다.
+    if (me) showView('me'); else if ($('signupView').hidden) showView('login');
     renderGuide();
   }
 
-  $('signupBtn').addEventListener('click', async () => {
-    const r = await post('/cia/signup', { pwd: $('signupPwd').value });
-    $('signupPwd').value = '';
+  $('showSignupBtn').addEventListener('click', () => { clearVerdict($('userVerdict')); showView('signup'); });
+  $('showLoginBtn').addEventListener('click', () => { clearVerdict($('signupVerdict')); showView('login'); });
+  $('signupForm').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const id = $('signupId').value.trim(), pwd = $('signupPwd').value, pwd2 = $('signupPwd2').value;
+    // 비밀번호 확인은 화면에서만 본다 — 서버는 pwd 하나만 받는다.
+    if (pwd !== pwd2) return verdict($('signupVerdict'), false, 'idp_signup_failed', { reason: 'pwd_mismatch' });
+    $('signupBtn').disabled = true;
+    const r = await post('/cia/signup', { id, pwd });
+    $('signupBtn').disabled = false;
     if (r.status === 201) {
-      $('loginUid').value = r.body.uid;
-      verdict($('userVerdict'), true, 'idp_signup_ok_title', () => ({ summary: tt('idp_signup_ok', { uid: r.body.uid }) || `가입됨 — uid ${r.body.uid}. 이 uid 로 로그인하세요.` }));
+      $('signupPwd').value = ''; $('signupPwd2').value = ''; $('signupId').value = '';
+      $('loginId').value = r.body.id; $('loginPwd').value = '';
+      showView('login');
+      verdict($('userVerdict'), true, 'idp_signup_ok_title', () => ({ summary: tt('idp_signup_ok', { id: r.body.id, uid: r.body.uid }) || `가입됨 — 아이디 ${r.body.id} (uid ${r.body.uid}). 비밀번호를 넣고 로그인하세요.` }));
     } else {
-      verdict($('userVerdict'), false, 'idp_signup_failed', { reason: r.body?.reason ?? `HTTP ${r.status}`, detail: r.body });
+      verdict($('signupVerdict'), false, 'idp_signup_failed', { reason: r.body?.reason ?? `HTTP ${r.status}`, detail: r.body });
     }
   });
-  $('loginBtn').addEventListener('click', async () => {
-    const r = await post('/cia/user/login', { uid: $('loginUid').value.trim(), pwd: $('loginPwd').value });
+  $('loginForm').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    $('loginBtn').disabled = true;
+    const r = await post('/cia/user/login', { id: $('loginId').value.trim(), pwd: $('loginPwd').value });
+    $('loginBtn').disabled = false;
     $('loginPwd').value = '';
-    if (r.status !== 200) verdict($('userVerdict'), false, 'idp_login_failed', { reason: r.body?.reason ?? `HTTP ${r.status}` });
+    if (r.status !== 200) return verdict($('userVerdict'), false, 'idp_login_failed', { reason: r.body?.reason ?? `HTTP ${r.status}` });
+    clearVerdict($('userVerdict'));
     await refreshMe();
   });
-  $('logoutBtn').addEventListener('click', async () => { await post('/cia/user/logout'); await refreshMe(); });
+  $('logoutBtn').addEventListener('click', async () => { await post('/cia/user/logout'); clearVerdict($('registerVerdict')); clearVerdict($('revokeVerdict')); await refreshMe(); });
   $('copyAuidBtn').addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(me.auid); }
     catch { const ta = document.createElement('textarea'); ta.value = me.auid; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); } finally { ta.remove(); } }
@@ -124,15 +189,15 @@
   // 팝업은 결과를 보낸 뒤 스스로 닫는다(mode3/wallet.html 은 성공 200ms·실패 3000ms 뒤 close). 닫힘을 먼저 보더라도
   // 이미 큐에 있는 결과 메시지를 받을 수 있게 이만큼 기다렸다가 "결과 없이 닫혔다"로 판정한다.
   const REGISTER_POPUP_RESULT_GRACE_MS = 400;
-  /** 지갑 등록 팝업을 열고 결과를 userVerdict 에 그린다. buildMsg() 는 mode3-authorize-ready 를 받았을 때 보낼 메시지. btn 은 대기 중 비활성. */
-  function openRegisterPopup(btn, buildMsg, okSummary) {
+  /** 지갑 등록 팝업을 열고 결과를 out(결과 칸 요소)에 그린다. buildMsg() 는 mode3-authorize-ready 를 받았을 때 보낼 메시지. btn 은 대기 중 비활성. */
+  function openRegisterPopup(btn, out, buildMsg, okSummary) {
     btn.disabled = true;
     const restore = () => { btn.disabled = false; };
     const walletOrigin0 = walletOrigin;   // 호출 시점에 고정 — 대기 중 Demo.stack 이 다시 바뀌어도 이 요청은 같은 오리진으로 끝낸다
-    if (!walletOrigin0) { restore(); return verdict($('userVerdict'), false, 'idp_register_failed', { reason: 'wallet_origin_unknown', summary: tt('wallet_origin_unknown') }); }
+    if (!walletOrigin0) { restore(); return verdict(out, false, 'idp_register_failed', { reason: 'wallet_origin_unknown', summary: tt('wallet_origin_unknown') }); }
     const popup = window.open(`${walletOrigin0}/?authorize=1`, 'mode3-register', 'width=460,height=640');
-    if (!popup) { restore(); return verdict($('userVerdict'), false, 'idp_register_failed', { reason: 'popup_blocked' }); }
-    Demo.verdict($('userVerdict'), { pending: true, title: tt('working') || '처리 중' });
+    if (!popup) { restore(); return verdict(out, false, 'idp_register_failed', { reason: 'popup_blocked' }); }
+    Demo.verdict(out, { pending: true, title: tt('working') || '처리 중' });
     let done = false;
     const finish = (fn) => {
       if (done) return;
@@ -149,41 +214,42 @@
       if (ev.data.type !== 'mode3-register-result' || !ev.data.result) return;
       finish(() => {
         const r = ev.data.result;
-        verdict($('userVerdict'), Boolean(r.ok), r.ok ? 'idp_register_ok_title' : 'idp_register_failed', r.ok ? () => ({ summary: okSummary(r) }) : { reason: r.reason, detail: r.detail });
+        verdict(out, Boolean(r.ok), r.ok ? 'idp_register_ok_title' : 'idp_register_failed', r.ok ? () => ({ summary: okSummary(r) }) : { reason: r.reason, detail: r.detail });
         refreshMe();
       });
     };
     window.addEventListener('message', onMsg);
     const timer = setTimeout(() => {
       try { popup.close(); } catch { /* 이미 닫혔을 수 있다 */ }
-      finish(() => verdict($('userVerdict'), false, 'idp_register_failed', { reason: 'timeout', summary: tt('register_timeout') }));
+      finish(() => verdict(out, false, 'idp_register_failed', { reason: 'timeout', summary: tt('register_timeout') }));
     }, REGISTER_POPUP_TIMEOUT_MS);
     const closedPoll = setInterval(() => {
       if (!popup.closed) return;
       clearInterval(closedPoll);
-      setTimeout(() => finish(() => verdict($('userVerdict'), false, 'idp_register_failed', { reason: 'popup_closed', summary: tt('register_popup_closed') })), REGISTER_POPUP_RESULT_GRACE_MS);
+      setTimeout(() => finish(() => verdict(out, false, 'idp_register_failed', { reason: 'popup_closed', summary: tt('register_popup_closed') })), REGISTER_POPUP_RESULT_GRACE_MS);
     }, REGISTER_POPUP_CLOSED_POLL_MS);
   }
   $('registerBtn').addEventListener('click', async () => {
-    if (!me) return verdict($('userVerdict'), false, 'idp_register_failed', { reason: 'login_required' });
+    if (!me) return verdict($('registerVerdict'), false, 'idp_register_failed', { reason: 'login_required' });
     // 지갑 오리진을 모르면 일회용 등록 코드를 받기 전에 끝낸다(코드가 소비되지 않게) — openRegisterPopup 도 같은 검사를 한다.
-    if (!walletOrigin) return verdict($('userVerdict'), false, 'idp_register_failed', { reason: 'wallet_origin_unknown', summary: tt('wallet_origin_unknown') });
+    if (!walletOrigin) return verdict($('registerVerdict'), false, 'idp_register_failed', { reason: 'wallet_origin_unknown', summary: tt('wallet_origin_unknown') });
     $('registerBtn').disabled = true;
     const c = await post('/cia/user/register_code');
     $('registerBtn').disabled = false;
-    if (c.status !== 200) return verdict($('userVerdict'), false, 'idp_register_failed', { reason: c.body?.reason ?? `HTTP ${c.status}` });
-    openRegisterPopup($('registerBtn'), () => ({ type: 'mode3-register', uid: me.uid, code: c.body.code, ciaUrl: location.origin }),
+    if (c.status !== 200) return verdict($('registerVerdict'), false, 'idp_register_failed', { reason: c.body?.reason ?? `HTTP ${c.status}` });
+    openRegisterPopup($('registerBtn'), $('registerVerdict'), () => ({ type: 'mode3-register', uid: me.uid, code: c.body.code, ciaUrl: location.origin }),
       (r) => tt('idp_register_ok', { slot: r.slot }) || `등록됨 — 슬롯 #${r.slot}`);
   });
   // Google 로 등록(2026-10-26 Snap OIDC 래퍼 §2.1): IdP 로그인·등록 코드 없이 지갑 팝업에서 Google 로그인 — uid 는 IdP 가 토큰으로 정한다.
-  $('registerGoogleBtn').addEventListener('click', () => openRegisterPopup($('registerGoogleBtn'), () => ({ type: 'mode3-register', provider: 'google', ciaUrl: location.origin }),
+  // 로그인 화면의 보조 입구라 결과도 그 화면(#userVerdict)에 그린다.
+  $('registerGoogleBtn').addEventListener('click', () => openRegisterPopup($('registerGoogleBtn'), $('userVerdict'), () => ({ type: 'mode3-register', provider: 'google', ciaUrl: location.origin }),
     (r) => tt('idp_register_google_ok', { uid: r.uid, slot: r.slot }) || `Google 계정 등록됨 — uid ${r.uid}, 슬롯 #${r.slot}`));
 
   (async () => {
     Demo.init({ page: 'idp_user' });
     initStack();
     // Google 등록 버튼은 이 IdP 가 OIDC 래퍼를 켰을 때만 보인다(public_keys.oidc.enabled).
-    try { $('registerGoogleBtn').hidden = !(await (await fetch('/cia/public_keys')).json()).oidc?.enabled; } catch { /* 숨긴 채 */ }
+    try { $('googleRow').hidden = !(await (await fetch('/cia/public_keys')).json()).oidc?.enabled; } catch { /* 숨긴 채 */ }
     await refreshMe();
   })();
 </script>
