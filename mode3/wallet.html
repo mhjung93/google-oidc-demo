@@ -8,12 +8,30 @@
        쓴다 — 확인 결과(F-15, 2026-10-23) 그 테스트는 이미 "지갑"을 기대하도록 고쳐져 있어 더 이상 깨지지 않는다. -->
   <title>지갑</title>
   <link rel="stylesheet" href="/common/demo.css" />
+  <link rel="stylesheet" href="/common/wallet.css" />
   <script src="/common/strings.js"></script>
   <script src="/common/demo.js"></script>
   <script src="/common/gsi.js"></script>
 </head>
 <body data-page="wallet">
   <header id="demoBar"></header>
+  <!-- 2026-11-03: 실제 지갑 앱 모양 — 상단 바(브랜드·탭·연결 상태)와 탭 하나씩만 보이는 본문. 요소 id 는 그대로라
+       스크립트·테스트의 선택자는 바뀌지 않는다(탭에 가려진 요소는 테스트가 탭을 먼저 누른다). -->
+  <nav class="wallet-nav" id="walletNav">
+    <div class="nav-inner">
+      <span class="brand" data-i18n="wallet_brand">zk 지갑</span>
+      <div class="wallet-tabs" id="walletTabs" role="tablist" hidden>
+        <button type="button" role="tab" data-tab="account" aria-selected="true" data-i18n="wallet_tab_account">계정</button>
+        <button type="button" role="tab" data-tab="services" data-i18n="wallet_tab_services">연결된 서비스</button>
+        <button type="button" role="tab" data-tab="send" data-i18n="wallet_tab_send">보내기</button>
+        <button type="button" role="tab" data-tab="settings" data-i18n="wallet_tab_settings">설정</button>
+      </div>
+      <div class="nav-actions">
+        <span id="mmStatus" class="badge" hidden>연결 안 됨</span>
+        <button type="button" id="refreshBtn" class="btn-ghost" data-i18n="refresh">새로고침</button>
+      </div>
+    </div>
+  </nav>
   <!-- Google 로그인(OIDC 래퍼, 2026-10-26): 등록·RP 로그인·자기 폐기가 버튼이 필요할 때만 보인다. 버튼은 사용자가 눌러야 한다(GSI 정책). -->
   <section class="card span2" id="gsiWrap" hidden><p id="gsiHint" class="muted"></p><div id="gsiBox"></div></section>
 
@@ -32,20 +50,30 @@
     </section>
   </main>
 
-  <main class="cards" id="mainView">
-    <section class="card" id="identityCard">
+  <main class="wallet-main" id="mainView">
+    <!-- snap 모드: 연결 전에는 이 카드 하나만 보인다(applyGate). file 모드는 연결이 없어 바로 탭이 보인다. -->
+    <section class="card" id="connectCard" hidden>
+      <h3 data-i18n="wallet_connect_title">MetaMask 를 연결하세요</h3>
+      <p class="desc" data-i18n="wallet_connect_desc">등록 비밀은 MetaMask Snap 안에 있습니다. 연결하면 계정·연결된 서비스·보내기 화면이 열립니다.</p>
+      <p><button id="connectBtn" data-i18n="wallet_connect_btn">MetaMask 연결</button></p>
+      <p id="connectError" class="muted" hidden></p>
+    </section>
+
+    <!-- ===== 탭: 계정 ===== -->
+    <section class="card" id="identityCard" data-panel="account">
       <h3 data-i18n="wallet_identity_title">내 신원</h3>
       <p class="desc" data-i18n="wallet_identity_desc">IdP 에 한 번 등록합니다. 속성은 내가 넣고 IdP 는 값을 모릅니다.</p>
-      <p><span id="regBadge" class="badge">미등록</span> <span id="regInfo" class="muted"></span></p>
+      <p class="status-line"><span id="regBadge" class="badge">미등록</span> <span id="regInfo" class="muted"></span></p>
       <dl class="kv">
         <dt data-term="AA">IdP</dt><dd id="aaInfo">-</dd>
         <dt data-term="cred">내 자격증명</dt><dd id="credInfo">-</dd>
         <dt data-term="registry">등록부</dt><dd><span id="registryBadge" class="badge muted">-</span> <span id="registryInfo"></span></dd>
-        <!-- auid·salt(Task 14, B5) — 전체 값 + 복사 버튼(.copy-btn, rp.html 의 copyText 와 같은 패턴). salt 는
-             비밀이라 기본 가림이고 "보기" 를 눌러야(showSaltBtn) 보인다 — 콘솔·로그에는 찍지 않는다. -->
-        <dt data-term="auid">auid</dt><dd><code id="meAuid">-</code> <button type="button" id="copyAuidBtn" class="copy-btn" hidden title="복사">⧉</button></dd>
-        <dt><span data-i18n="wallet_salt_label">salt(s_u)</span> <span class="badge warn" data-i18n="wallet_salt_warn">비밀 — 시연용 표시</span></dt><dd><code id="meSalt">-</code> <button type="button" id="showSaltBtn" class="btn-ghost" data-i18n="wallet_salt_show">보기</button> <button type="button" id="copySaltBtn" class="copy-btn" hidden title="복사">⧉</button></dd>
       </dl>
+      <!-- snap 모드 등록 안내(Task 14, B5) — 등록이 IdP /user 페이지(mode3-register 팝업)에서 일어나므로 미등록일 때만 보인다
+           (renderIdentity). file 모드는 아래 registerBtn 을 쓴다. -->
+      <p id="registerHint" hidden><span data-i18n="wallet_register_hint">IdP 사용자 페이지에서 가입하고 커밋먼트를 등록하세요</span> — <a id="registerHintLink" class="btn btn-ghost" target="_blank" rel="noopener">-</a></p>
+
+      <h4 data-i18n="wallet_profile_title">내 속성</h4>
       <span id="fileRegFields"><label>uid <input id="uid" value="12345" size="8" /></label> <label>pwd <input id="pwd" type="password" value="password123" size="12" /></label><br /></span>
       <dl class="kv" id="attrsView">
         <dt data-term="attr0">출생연도</dt><dd><input id="attr0" size="6" /></dd>
@@ -55,56 +83,64 @@
         <dt data-term="attr4">미사용</dt><dd><input id="attr4" size="6" /></dd>
         <dt data-term="attr5">미사용</dt><dd><input id="attr5" size="6" /></dd>
       </dl>
-      <p>
+      <p class="row-actions">
         <button id="registerBtn" data-i18n="wallet_register_btn">등록</button>
         <button id="profileSaveBtn" class="btn-ghost" data-i18n="wallet_profile_save_btn">속성 저장</button>
       </p>
-      <!-- snap 모드 등록 안내(Task 14, B5) — snap 모드는 registerBtn 을 숨기고 이 안내 + IdP /user 링크를 보인다
-           (applySnapMode()). file 모드는 그대로 registerBtn 을 쓴다. -->
-      <p id="registerHint" hidden><span data-i18n="wallet_register_hint">IdP 사용자 페이지에서 가입하고 커밋먼트를 등록하세요</span> — <a id="registerHintLink" target="_blank" rel="noopener">-</a></p>
       <div id="registerResult"></div>
-      <p id="intro" class="muted expert"></p>
+
+      <!-- auid·salt(Task 14, B5) — 전체 값 + 복사 버튼(.copy-btn, rp.html 의 copyText 와 같은 패턴). salt 는 비밀이라 기본 가림이고
+           "보기" 를 눌러야(showSaltBtn) 보인다 — 콘솔·로그에는 찍지 않는다. 2026-11-03: 평소에는 접어 둔다(상세). -->
+      <details class="fold" id="identityDetails">
+        <summary data-i18n="wallet_details_summary">상세</summary>
+        <dl class="kv">
+          <dt data-term="auid">auid</dt><dd><code id="meAuid">-</code> <button type="button" id="copyAuidBtn" class="copy-btn" hidden title="복사">⧉</button></dd>
+          <dt><span data-i18n="wallet_salt_label">salt(s_u)</span> <span class="badge warn" data-i18n="wallet_salt_warn">비밀 — 시연용 표시</span></dt><dd><code id="meSalt">-</code> <button type="button" id="showSaltBtn" class="btn-ghost" data-i18n="wallet_salt_show">보기</button> <button type="button" id="copySaltBtn" class="copy-btn" hidden title="복사">⧉</button></dd>
+        </dl>
+        <p id="intro" class="muted expert"></p>
+      </details>
     </section>
 
-    <section class="card" id="sessionsCard">
-      <h3 data-i18n="wallet_sessions_title">로그인 세션</h3>
+    <!-- ===== 탭: 연결된 서비스 ===== -->
+    <section class="card" id="sessionsCard" data-panel="services" hidden>
+      <h3 data-i18n="wallet_sessions_title">연결된 서비스</h3>
       <p class="desc" data-i18n="wallet_sessions_desc">RP 마다 다른 주소로 로그인합니다. 세션 하나만 끝낼 수도 있습니다.</p>
-      <p><button id="refreshBtn" class="btn-ghost" data-i18n="refresh">새로고침</button></p>
       <div id="sessionActions"></div>
       <div id="sessionVerdict"></div>
       <p class="muted" data-i18n="wallet_sessions_note">로그인은 RP 페이지에서 시작합니다 — 자격증명 발급은 로그인 안에서 필요할 때 자동으로 일어납니다.</p>
-      <p id="mirrorInfo" class="muted"></p>
+      <!-- 체인 반영 대기(설계 2026-10-22 §3·§7, Task 9) — 2026-11-03: 따로 카드가 아니라 대기 건이 있을 때만 이 아래에 보인다(renderBounds). -->
+      <div id="boundsSection" hidden>
+        <h4 data-i18n="wallet_bounds_title">체인 반영 대기</h4>
+        <p class="muted" data-i18n="wallet_bounds_desc">폐기한 세션의 허용 거래 수를 응용 체인의 계정에도 올립니다(즉시 차단). 같은 RP 에 다시 로그인하면 반영할 수 있습니다.</p>
+        <div id="boundsList"></div>
+        <div id="boundsVerdict"></div>
+      </div>
+      <p id="mirrorInfo" class="muted expert"></p>
       <p id="chainInfo" class="muted expert"></p>
       <pre id="status" class="expert">불러오는 중…</pre>
       <pre id="sessionLog" class="expert"></pre>
     </section>
 
-    <section class="card" id="boundsCard">
-      <h3 data-i18n="wallet_bounds_title">체인 반영 대기</h3>
-      <p class="desc" data-i18n="wallet_bounds_desc">폐기한 세션의 허용 거래 수를 응용 체인의 계정에도 올립니다(즉시 차단). 같은 RP 에 다시 로그인하면 반영할 수 있습니다.</p>
-      <div id="boundsList"></div>
-      <div id="boundsVerdict"></div>
-    </section>
-
-    <section class="card span2" id="txCard">
+    <!-- ===== 탭: 보내기 ===== -->
+    <section class="card" id="txCard" data-panel="send" hidden>
       <h3 data-i18n="wallet_tx_title">트랜잭션 보내기</h3>
       <p class="desc" data-i18n="wallet_tx_desc">이 RP 전용 주소에서 보냅니다. 필요하면 속성 조건만 골라 공개합니다.</p>
-      <p id="txNote" class="muted"></p>
       <dl class="kv">
         <dt data-i18n="wallet_tx_session">보낼 세션</dt><dd><select id="txSession"></select></dd>
         <dt data-i18n="wallet_tx_to">받는 주소</dt><dd><input id="txTo" value="0x000000000000000000000000000000000000dEaD" size="44" /></dd>
         <dt data-i18n="wallet_tx_value">보낼 금액(wei)</dt><dd><input id="txValue" value="0" size="10" /></dd>
         <dt data-i18n="wallet_tx_data">데이터</dt><dd><input id="txData" value="0x" size="20" /></dd>
       </dl>
-      <!-- open: 접어 두면 안에 든 입력칸이 보이지 않아 tests/test_mode3_browser.mjs 의 fill·check·selectOption 이
-           실패한다(Playwright 는 숨은 요소를 다루지 않는다). 사용자는 직접 접을 수 있다. -->
-      <details id="discloseBox" open>
+      <!-- 2026-11-03: 평소에는 접어 둔다 — tests/test_mode3_browser.mjs 는 안의 입력칸을 만지기 전에 summary 를 눌러 연다.
+           claimBtn 은 채운 조건이 보이게 스스로 연다. -->
+      <details class="fold" id="discloseBox">
         <summary data-term="disclosure">공개할 속성 조건</summary>
         <p class="muted" data-i18n="wallet_disclose_desc">체크한 조건만 증명에 실립니다. 최소=최대 면 그 값 하나를 공개합니다. 집합 소속은 슬롯 하나만 고를 수 있고, 지갑이 허용 원소 목록으로 계산해 증명에 넣습니다. 나이는 연 단위(올해 − 출생연도)입니다.</p>
         <div id="discloseRows">
           <div><label><input type="checkbox" id="dk0" /> <span data-term="attr0">출생연도</span></label>
             <label><span data-i18n="wallet_lo">최소</span> <input id="discLo0" size="10" /></label>
             <label><span data-i18n="wallet_hi">최대</span> <input id="discHi0" size="10" /></label>
+            <button id="discExactBtn" type="button" class="btn-ghost" data-i18n="wallet_disc_exact_btn">출생연도를 내 값으로</button>
             <span id="discNote0" class="muted"></span></div>
           <div><label><input type="checkbox" id="dk1" /> <span data-term="attr1">국가</span></label>
             <label><select id="discCountry"><option value="" selected data-i18n="wallet_disc_country_none">공개 안 함</option></select></label>
@@ -115,9 +151,12 @@
             <span id="discNoValue3" class="muted" data-i18n="wallet_disc_no_value" hidden>값 없음</span></div>
           <div><label><input type="checkbox" id="dk4" /> <span data-term="attr4">미사용</span></label></div>
           <div><label><input type="checkbox" id="dk5" /> <span data-term="attr5">미사용</span></label></div>
+          <div>
+            <label><span data-i18n="wallet_min_age_label">나이 ≥</span> <input id="minAgeIn" value="19" size="3" /></label>
+            <button id="ageBtn" type="button" class="btn-ghost" data-i18n="wallet_age_btn">이 나이 조건으로 채우기</button>
+          </div>
         </div>
-        <p><button id="discExactBtn" type="button" class="btn-ghost" data-i18n="wallet_disc_exact_btn">출생연도를 내 값으로</button></p>
-        <div id="setRow">
+        <div id="setRow" class="expert">
           <label><span data-i18n="wallet_set_label">집합 소속 조건</span>
             <select id="setSlot">
               <option value="" selected data-i18n="wallet_set_none">쓰지 않음</option>
@@ -130,25 +169,40 @@
             </select></label>
           <label><span data-i18n="wallet_set_members">허용 원소</span> <input id="setMembers" value="KR,JP,US,DE,FR" size="28" /></label>
         </div>
-        <p>
-          <label><span data-i18n="wallet_min_age_label">나이 ≥</span> <input id="minAgeIn" value="19" size="3" /></label>
-          <button id="ageBtn" type="button" class="btn-ghost" data-i18n="wallet_age_btn">이 나이 조건으로 채우기</button>
-        </p>
       </details>
-      <p>
+      <p class="row-actions">
+        <button id="txBtn" data-i18n="wallet_tx_btn">보내기</button>
         <button id="claimBtn" type="button" class="btn-ghost" data-i18n="wallet_tx_claim_btn">Selective disclosure proof 보내기</button>
-        <button id="txBtn" data-i18n="wallet_tx_btn">트랜잭션 보내기</button>
       </p>
       <p class="muted" data-i18n="wallet_tx_claim_hint"></p>
       <div id="txVerdict"></div>
+      <p id="txNote" class="muted expert"></p>
       <p class="muted expert"><span data-term="proof">영지식 증명</span> — <span id="txProofInfo"></span></p>
       <pre id="txLog" class="expert"></pre>
-      <p class="muted" data-i18n="wallet_tx_hash_hint">이 해시를 RP 페이지의 "해시로 요청"에 붙여 넣으면 승인 개봉을 시연할 수 있습니다.</p>
+      <p class="muted expert" data-i18n="wallet_tx_hash_hint">이 해시를 RP 페이지의 "해시로 요청"에 붙여 넣으면 승인 개봉을 시연할 수 있습니다.</p>
     </section>
 
-    <section class="card expert" id="demoCard">
+    <!-- ===== 탭: 설정 ===== -->
+    <!-- snap 모드 전용(스펙 §3.2). file 모드에서는 숨긴 채로 둔다. -->
+    <section class="card" id="snapPanel" data-panel="settings" hidden>
+      <h3 data-i18n="wallet_snap_title">MetaMask · Snap</h3>
+      <p class="desc" data-i18n="wallet_snap_desc">비밀은 Snap 안에 있습니다. 이 페이지는 동의만 받습니다.</p>
+      <p class="row-actions"><button id="snapInfoBtn" class="btn-ghost" data-i18n="wallet_snap_info_btn">Snap 상태 보기</button></p>
+      <div id="snapVerdict"></div>
+      <pre id="snapInfo" class="expert"></pre>
+      <div class="danger-zone">
+        <h4 data-i18n="wallet_danger_title">위험 구역</h4>
+        <p class="desc muted" data-i18n="wallet_danger_desc">되돌릴 수 없습니다. 계정 폐기는 IdP 에 이 계정의 자격증명 은퇴를 요청하고, Snap 초기화는 이 브라우저의 등록 비밀과 동의 기록을 지웁니다.</p>
+        <p class="row-actions">
+          <button id="selfRevokeBtn" class="danger" data-i18n="wallet_self_revoke_btn">계정 자기 폐기</button>
+          <button id="snapResetBtn" class="danger" data-i18n="wallet_snap_reset_btn">Snap 초기화</button>
+        </p>
+      </div>
+    </section>
+
+    <section class="card expert" id="demoCard" data-panel="settings" hidden>
       <h3 data-i18n="wallet_demo_title">시연: 비밀 바꾸기</h3>
-      <p class="desc" data-i18n="wallet_demo_desc">다음 발급(또는 다음 증명)에 쓸 salt·uid 를 메모리에서만 바꿉니다. 지갑 자체 검사를 건너뛰고 프로토콜이 거절하는 장면을 보입니다. 한 번 쓰면 풀립니다.</p>
+      <p class="desc" data-i18n="wallet_demo_desc">다음 발급(또는 다음 증명)에 쓸 salt·uid 를 메모리에서만 바꿉니다. 지갑 자체 검사를 건너뛰고 프로토콜이 거절하는 장면을 보일 때 씁니다.</p>
       <p><label>salt <input id="demoSalt" size="24" /></label> <button id="demoNewSalt" type="button" class="btn-ghost" data-i18n="wallet_demo_new_salt">새 난수</button>
          <label>uid <input id="demoUid" size="8" /></label>
          <select id="demoScope"><option value="issue" data-i18n="wallet_demo_scope_issue">다음 발급</option><option value="prove" data-i18n="wallet_demo_scope_prove">다음 증명</option></select>
@@ -158,20 +212,6 @@
          <button id="demoFakeSigBtn" class="danger" data-i18n="wallet_demo_fake_sig_btn">가짜 서명으로 보내기(다음 로그인·트랜잭션)</button></p>
       <div id="demoVerdict"></div>
     </section>
-
-    <!-- snap 모드 전용(스펙 §3.2). file 모드에서는 숨긴 채로 둔다. -->
-    <section class="card" id="snapPanel" hidden>
-      <h3 data-i18n="wallet_snap_title">MetaMask · Snap</h3>
-      <p class="desc" data-i18n="wallet_snap_desc">비밀은 Snap 안에 있습니다. 이 페이지는 동의만 받습니다.</p>
-      <p><button id="connectBtn" data-i18n="wallet_connect_btn">MetaMask 연결</button> <span id="mmStatus" class="badge">연결 안 됨</span></p>
-      <p>
-        <button id="snapInfoBtn" class="btn-ghost" data-i18n="wallet_snap_info_btn">Snap 상태 보기</button>
-        <button id="selfRevokeBtn" class="danger" data-i18n="wallet_self_revoke_btn">계정 자기 폐기</button>
-        <button id="snapResetBtn" class="danger" data-i18n="wallet_snap_reset_btn">Snap 초기화</button>
-      </p>
-      <div id="snapVerdict"></div>
-      <pre id="snapInfo" class="expert"></pre>
-    </section>
   </main>
 
   <script>
@@ -180,7 +220,25 @@
     const IS_AUTHORIZE = new URLSearchParams(location.search).get('authorize') === '1';
     // 뷰 전환은 설정을 기다리지 않는다 — 쿼리만 보면 알 수 있고, config fetch 를 기다리면 팝업에 지갑 화면이 한 프레임 비친다.
     // ready 전송은 예정대로 config·리스너가 준비된 뒤다(init → runAuthorize).
-    if (IS_AUTHORIZE) { $('mainView').hidden = true; $('authorizeView').hidden = false; }
+    if (IS_AUTHORIZE) { $('mainView').hidden = true; $('walletNav').hidden = true; $('authorizeView').hidden = false; }
+    // 탭(2026-11-03): 본문은 한 번에 한 탭(data-panel)만 보인다. snap 모드는 MetaMask 연결 전에는 탭 대신 #connectCard 만
+    // 보인다(applyGate). file 모드는 연결이 없어 바로 탭이다. data-off="1" 인 패널(file 모드의 #snapPanel)은 그 탭에서도 숨긴다.
+    const TAB_KEY = 'mode3.wallet.tab';
+    let currentTab = (() => { try { return sessionStorage.getItem(TAB_KEY) || 'account'; } catch { return 'account'; } })();
+    function applyGate() {
+      if (IS_AUTHORIZE) return;
+      const gated = cfg.secrets === 'snap' && mmState.kind !== 'ok';
+      $('connectCard').hidden = !gated;
+      $('walletTabs').hidden = gated;
+      for (const el of document.querySelectorAll('[data-panel]')) el.hidden = gated || el.dataset.panel !== currentTab || el.dataset.off === '1';
+    }
+    function showTab(name) {
+      currentTab = name;
+      try { sessionStorage.setItem(TAB_KEY, name); } catch { /* 저장 못 해도 동작은 같다 */ }
+      for (const b of document.querySelectorAll('#walletTabs [data-tab]')) b.setAttribute('aria-selected', b.dataset.tab === name ? 'true' : 'false');
+      applyGate();
+    }
+    for (const b of document.querySelectorAll('#walletTabs [data-tab]')) b.addEventListener('click', () => showTab(b.dataset.tab));
     // /common 이 뜨지 않아도(404) 페이지는 HTML 의 한국어 기본 텍스트로 계속 돌아간다(설계 §5).
     // demo.js 만 빠졌다면 사전(strings.js)은 그대로 읽는다 — 둘 다 없을 때만 키가 그대로 남는다.
     const Demo = window.Demo ?? {
@@ -823,6 +881,8 @@
       $('aaInfo').textContent = s?.ciaUrl || tt('wallet_aa_none') || '-';
       // 등록 폼은 미등록일 때만 펼친다(설계 §4.1). snap 모드는 Snap 이 묻는다 — 항상 접힌 채다.
       if (cfg.secrets !== 'snap') $('fileRegFields').hidden = Boolean(s?.registered);
+      // 2026-11-03: snap 모드의 등록 안내(IdP /user 링크)는 미등록일 때만 — 등록 뒤에는 할 일이 없다.
+      $('registerHint').hidden = !(cfg.secrets === 'snap' && !s?.registered);
 
       // 등록부 확인 줄(V9 §8.2) — regBadge/regInfo 와 같은 badge+디테일 모양이되, 상태 문구(key)를 디테일 쪽에도 겹쳐
       // 보인다: 짧은 badge 만으로는 "바뀜" 류의 판정 이유가 한눈에 읽히지 않아서다(브리프 위치는 그대로, 문구만 합친다).
@@ -931,6 +991,7 @@
       const items = lastStatus?.pendingBounds ?? [];
       const list = $('boundsList');
       list.textContent = '';
+      $('boundsSection').hidden = !items.length;   // 2026-11-03: 연결된 서비스 탭 안의 절 — 대기 건이 있을 때만 보인다
       if (!items.length) {
         const p = document.createElement('p');
         p.className = 'muted';
@@ -974,6 +1035,8 @@
      */
     function renderMmStatus() {
       const el = $('mmStatus');
+      el.hidden = cfg.secrets !== 'snap';
+      applyGate();
       if (mmState.kind === 'ok') { el.className = 'badge ok'; el.textContent = tt('wallet_mm_connected', { account, snap: cfg.snapId }) || `${account} · ${cfg.snapId}`; return; }
       if (mmState.kind === 'fail') { el.className = 'badge bad'; el.textContent = tt('wallet_mm_failed', { err: mmState.err }) || mmState.err; return; }
       el.className = 'badge';
@@ -1400,6 +1463,7 @@
       if (!c || !c.attrGateAddress) return;
       $('txTo').value = c.attrGateAddress;
       $('txData').value = '0x4e71d92d';
+      $('discloseBox').open = true;   // 2026-11-03: 채운 조건이 보이게
       if (!$('dk0').checked) {
         const minAge = Number(c.minAge ?? cfg.minAge ?? 19);
         $('dk0').checked = true;
@@ -1473,8 +1537,9 @@
 
     // ---- snap 모드 전용 버튼 ----
     $('connectBtn').addEventListener('click', async () => {
+      $('connectError').hidden = true;
       try { await connectMetaMask(); }
-      catch (e) { mmState = { kind: 'fail', err: e.message }; renderMmStatus(); }
+      catch (e) { mmState = { kind: 'fail', err: e.message }; renderMmStatus(); $('connectError').textContent = e.message; $('connectError').hidden = false; }
     });
     $('snapInfoBtn').addEventListener('click', async () => {
       pendingVerdict($('snapVerdict'), 'working');
@@ -1541,7 +1606,7 @@
     });
 
     function applySnapMode() {
-      $('snapPanel').hidden = false;
+      delete $('snapPanel').dataset.off;   // 설정 탭에서 보인다(applyGate)
       $('fileRegFields').hidden = true;
       // 등록 안내(Task 14, B5) — snap 모드는 등록이 IdP /user 페이지 경유(mode3-register 팝업)로 가므로 registerBtn 을
       // 숨기고 그 페이지로 가는 안내만 보인다. cfg.ciaUrl 은 /wallet/config(Task 13)가 준다 — init() 이 cfg 를 채운 뒤 부른다.
@@ -1563,7 +1628,8 @@
         const r = await fetch('/wallet/config');
         if (r.ok) cfg = { ...cfg, ...(await r.json()) };
       } catch { /* 설정을 못 읽으면 file 모드로 본다 */ }
-      if (cfg.secrets === 'snap') applySnapMode();
+      if (cfg.secrets === 'snap') applySnapMode(); else $('snapPanel').dataset.off = '1';
+      if (!IS_AUTHORIZE) showTab(currentTab);
       renderModeTexts();
       renderMmStatus();
       renderProofInfo();

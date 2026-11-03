@@ -284,11 +284,12 @@
       const host = $('accounts');
       if (!accounts) { placeholder(host, 'admin_need_secret'); return; }
       if (!accounts.length) { placeholder(host, 'admin_no_accounts'); return; }
-      const t = table([['admin_col_uid'], ['admin_col_status'], ['admin_col_registry'], ['admin_col_action']]);
+      const t = table([['admin_col_uid'], ['admin_col_id'], ['admin_col_status'], ['admin_col_registry'], ['admin_col_action']]);
       const body = t.tBodies[0];
       for (const a of accounts) {
         const row = body.insertRow();
         cell(row, a.uid);
+        cell(row, a.id ?? '-');   // 2026-11-03: 아이디 가입(loginId). 아이디 없이 만든 옛 계정은 '-'
         cell(row, badge(a.disabled ? 'admin_acct_disabled' : 'admin_acct_active', a.disabled ? 'bad' : 'ok'));
         const regCell = cell(row, badge(a.tampered ? 'admin_reg_tampered' : a.registryLeaf !== '0' ? 'admin_reg_active' : 'admin_reg_empty', a.tampered ? 'bad' : a.registryLeaf !== '0' ? 'ok' : 'muted'));
         regCell.insertBefore(document.createTextNode(`#${a.slot} `), regCell.firstChild);
@@ -305,7 +306,7 @@
         if (expandedUids.has(a.uid)) {
           const sub = body.insertRow();
           const c = sub.insertCell();
-          c.colSpan = 4;
+          c.colSpan = 5;
           renderSessions(a.uid, c);
         }
       }

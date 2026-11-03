@@ -33,13 +33,25 @@ window.DemoStrings = {
     // Task 14(B5, 2026-10-23): "사용자 속성 등록" → "내 신원" — 이 카드가 이제 auid·salt 도 보이므로(아래 wallet_salt_*),
     // reasons.auid_mismatch(아래)가 이미 "지갑 페이지의 '내 신원' 카드에서 복사" 라고 이 이름을 가리키고 있었다.
     // mode3/user/index.html 도 같은 키를 쓴다(공유 사전) — 그 페이지의 같은 카드 제목도 함께 바뀐다.
+    // 2026-11-03: 지갑을 실제 지갑 앱 모양(상단 바 + 탭 4개 + 연결 안내)으로 — wallet.css·wallet.html.
+    wallet_brand: { ko: 'zk 지갑', en: 'zk Wallet' },
+    wallet_tab_account: { ko: '계정', en: 'Account' },
+    wallet_tab_services: { ko: '연결된 서비스', en: 'Connected services' },
+    wallet_tab_send: { ko: '보내기', en: 'Send' },
+    wallet_tab_settings: { ko: '설정', en: 'Settings' },
+    wallet_connect_title: { ko: 'MetaMask 를 연결하세요', en: 'Connect MetaMask' },
+    wallet_connect_desc: { ko: '등록 비밀은 MetaMask Snap 안에 있습니다. 연결하면 계정·연결된 서비스·보내기 화면이 열립니다.', en: 'Your registration secret lives inside the MetaMask Snap. Connect to open the account, services and send screens.' },
+    wallet_profile_title: { ko: '내 속성', en: 'My attributes' },
+    wallet_details_summary: { ko: '상세', en: 'Details' },
+    wallet_danger_title: { ko: '위험 구역', en: 'Danger zone' },
+    wallet_danger_desc: { ko: '되돌릴 수 없습니다. 계정 폐기는 IdP 에 이 계정의 자격증명 은퇴를 요청하고, Snap 초기화는 이 브라우저의 등록 비밀과 동의 기록을 지웁니다.', en: 'These cannot be undone. Revoking the account asks the IdP to retire this account’s credential; resetting the Snap erases this browser’s registration secret and consents.' },
     wallet_identity_title: { ko: '내 신원', en: 'My identity' },
     wallet_identity_desc: { ko: 'IdP 에 한 번 등록합니다. 속성은 내가 넣고 IdP 는 값을 모릅니다.', en: 'Register once with the IdP. I enter the attributes myself; the IdP never learns the values.' },
     // salt(s_u) 표시(Task 14, B5) — 비밀이라 기본 가림이고 "보기" 를 눌러야 나온다(지갑 에이전트 로그·콘솔에도 안 남긴다).
     wallet_salt_label: { ko: 'salt(s_u)', en: 'salt (s_u)' },
     wallet_salt_warn: { ko: '비밀 — 시연용 표시', en: 'secret — shown for the demo' },
     wallet_salt_show: { ko: '보기', en: 'Show' },
-    wallet_sessions_title: { ko: '로그인 세션', en: 'Login sessions' },
+    wallet_sessions_title: { ko: '연결된 서비스', en: 'Connected services' },
     wallet_sessions_desc: { ko: 'RP 마다 다른 주소로 로그인합니다. 세션 하나만 끝낼 수도 있습니다.', en: 'You log in with a different address per RP. A single session can be ended on its own.' },
     // 체인 반영 대기 카드(설계 2026-10-22 §3·§7, Task 9) — /wallet/session/revoke 가 남긴 pendingBounds 를 보인다.
     wallet_bounds_title: { ko: '체인 반영 대기', en: 'Pending on-chain updates' },
@@ -242,7 +254,7 @@ window.DemoStrings = {
     // snap 모드 등록 안내(Task 14, B5) — snap 모드는 #registerBtn 을 숨기고 이 안내 + IdP /user 링크를 보인다.
     wallet_register_hint: { ko: 'IdP 사용자 페이지에서 가입하고 커밋먼트를 등록하세요', en: 'Sign up and register a commitment on the IdP user page' },
     wallet_profile_save_btn: { ko: '속성 저장', en: 'Save attributes' },
-    wallet_tx_btn: { ko: '트랜잭션 보내기', en: 'Send transaction' },
+    wallet_tx_btn: { ko: '보내기', en: 'Send' },
     wallet_connect_btn: { ko: 'MetaMask 연결', en: 'Connect MetaMask' },
     wallet_snap_info_btn: { ko: 'Snap 상태 보기', en: 'Show Snap status' },
     wallet_self_revoke_btn: { ko: '계정 자기 폐기', en: 'Self-revoke account' },
@@ -473,6 +485,7 @@ window.DemoStrings = {
     admin_acct_active: { ko: '활성', en: 'Active' },
     admin_acct_disabled: { ko: '폐기됨', en: 'Revoked' },
     admin_col_uid: { ko: 'uid', en: 'uid' },
+    admin_col_id: { ko: '아이디', en: 'Login id' },
     admin_col_status: { ko: '상태', en: 'Status' },
     admin_col_registry: { ko: '등록부', en: 'Registry' },
     admin_reg_active: { ko: '활성', en: 'active' }, admin_reg_empty: { ko: '비어 있음', en: 'empty' }, admin_reg_tampered: { ko: '바꿔치기됨', en: 'tampered' },

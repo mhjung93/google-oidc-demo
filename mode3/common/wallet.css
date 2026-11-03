@@ -1,0 +1,77 @@
+/* 지갑 페이지 전용 스킨(2026-11-03) — mode3/wallet.html 만 불러온다. demo.css 의 토큰·카드·배지는 그대로 쓰고,
+   실제 지갑 앱처럼 상단 바(브랜드·탭·연결 상태) + 탭 하나씩 보이는 좁은 한 칸 레이아웃만 덧입힌다. rp.css 의 거래소
+   남색 바와 같은 색을 써서 데모의 세 화면(IdP·RP·지갑)이 한 벌로 보이게 한다. */
+:root { --navy: #0b1f3d; --navy-ink: #10294d; }
+
+/* ---- 상단 바 ---- */
+.wallet-nav { background: var(--navy); color: #fff; }
+.wallet-nav .nav-inner { max-width: 760px; margin: 0 auto; padding: 0 20px; min-height: 56px; display: flex; align-items: center; gap: 24px; }
+.wallet-nav .brand { color: #fff; font-size: 19px; font-weight: 800; letter-spacing: .01em; text-decoration: none; white-space: nowrap; }
+.wallet-tabs { display: flex; gap: 18px; flex: 1; flex-wrap: wrap; }
+.wallet-tabs button { background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: rgba(255,255,255,.72); font-size: 14px; font-weight: 600; padding: 17px 0; }
+.wallet-tabs button:hover, .wallet-tabs button:focus-visible { color: #fff; }
+.wallet-tabs button[aria-selected="true"] { color: #fff; border-bottom-color: #fff; }
+.wallet-nav .nav-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 0; }
+.wallet-nav .nav-actions .btn-ghost { color: #fff; border-color: rgba(255,255,255,.45); padding: 5px 12px; font-size: 13px; border-radius: 999px; }
+.wallet-nav .nav-actions .btn-ghost:hover { background: rgba(255,255,255,.12); }
+/* 연결 상태 알약 — #mmStatus 는 demo.css 의 .badge 지만 바 안에서는 알약으로 보인다. */
+.wallet-nav #mmStatus { display: inline-flex; align-items: center; gap: 8px; max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.22); color: #fff; font-weight: 500; font-size: 12.5px; padding: 5px 12px; }
+.wallet-nav #mmStatus::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: #9aa4b2; flex: none; }
+.wallet-nav #mmStatus.ok::before { background: #36d399; } .wallet-nav #mmStatus.bad::before { background: #ff6b6b; }
+.wallet-nav #mmStatus.ok { background: rgba(255,255,255,.1); color: #fff; } .wallet-nav #mmStatus.bad { background: rgba(255,107,107,.18); color: #fff; }
+@media (max-width: 640px) {
+  .wallet-nav .nav-inner { flex-wrap: wrap; min-height: auto; padding: 10px 16px; gap: 8px 16px; }
+  .wallet-tabs { order: 3; width: 100%; gap: 14px; } .wallet-tabs button { padding: 4px 0; }
+}
+
+/* ---- 본문: 좁은 한 칸 ---- */
+main.wallet-main { display: grid; grid-template-columns: 1fr; gap: var(--gap); max-width: 760px; margin: 0 auto; padding: 20px 20px 56px; }
+main.wallet-main .card { padding: 20px 22px; }
+.card h3 { font-size: 18px; }
+.card h4 { margin: 18px 0 6px; font-size: 14px; color: var(--muted); font-weight: 600; letter-spacing: .02em; }
+.card h4:first-child { margin-top: 0; }
+.row-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 12px 0 0; }
+.status-line { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 0 0 12px; }
+.status-line .badge { font-size: 13px; padding: 4px 12px; }
+.kv { row-gap: 6px; }
+.kv dt { padding-top: 2px; }
+details.fold { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 10px; }
+details.fold > summary { cursor: pointer; color: var(--muted); font-size: 14px; font-weight: 600; list-style: none; }
+details.fold > summary::before { content: '▸ '; } details.fold[open] > summary::before { content: '▾ '; }
+details.fold > summary::-webkit-details-marker { display: none; }
+details.fold > :not(summary) { margin-top: 8px; }
+
+/* 연결 전 안내 카드 — 지갑을 열면 제일 먼저 보이는 한 장. */
+#connectCard { text-align: center; padding: 40px 22px; }
+#connectCard h3 { font-size: 20px; }
+#connectCard .desc { margin: 0 auto 18px; max-width: 420px; }
+#connectCard button { font-size: 15px; padding: 10px 22px; }
+#connectCard .verdict { text-align: left; }
+
+/* 연결된 서비스 — 세션 하나가 한 줄 카드. */
+.session { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-top: 10px; display: grid; gap: 8px; }
+.session .kv { font-size: 13.5px; }
+.session .session-foot { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.session .session-foot label { font-size: 13px; color: var(--muted); }
+.session input.bound { width: 72px; margin-left: 6px; }
+.session .danger { padding: 6px 12px; font-size: 13.5px; }
+#boundsSection { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 10px; }
+#boundsList > div { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13.5px; padding: 6px 0; }
+
+/* 보내기 폼 */
+#txCard .kv input, #txCard .kv select { width: 100%; }
+#txCard .kv { grid-template-columns: 110px 1fr; }
+#discloseRows > div { display: flex; gap: 8px 12px; align-items: center; flex-wrap: wrap; padding: 6px 0; }
+#discloseRows input[type=text], #discloseRows input:not([type]) { width: 96px; }
+/* #setRow 는 전문가 보기 전용(.expert) — id 선택자가 .expert 의 display:none 을 이기지 않게 켜질 때만 flex 로. */
+#setRow { gap: 12px; flex-wrap: wrap; align-items: center; margin-top: 6px; } html[data-expert] #setRow { display: flex; }
+#txCard #txBtn { font-size: 15px; padding: 10px 22px; }
+
+/* 설정 탭 — 위험 구역 */
+.danger-zone { border: 1px solid #f1c2be; border-radius: 10px; padding: 14px 16px; margin-top: 16px; background: #fffafa; }
+.danger-zone h4 { color: var(--danger); margin-top: 0; }
+.danger-zone p.desc { margin-bottom: 10px; }
+
+/* 승인 팝업(?authorize=1) — 팝업 폭(약 480px)에 맞춘 한 장. */
+#authorizeView { max-width: 520px; padding: 16px; }
+#authorizeView .card { padding: 18px 20px; }

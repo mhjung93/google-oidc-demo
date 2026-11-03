@@ -94,6 +94,8 @@ try {
   }
 
   const text = (page, sel) => page.$eval(sel, (el) => el.textContent ?? '');
+  // 2026-11-03: 지갑 페이지는 탭(계정·연결된 서비스·보내기·설정) 하나씩만 보인다 — 가려진 요소를 만지기 전에 그 탭을 누른다.
+  const walletTab = (page, name) => page.click(`#walletTabs [data-tab="${name}"]`);
   // 로그인 모달(2026-10-15): #loginBtn 은 모달을 열기만 하고, 실제 zk 로그인은 모달의 #idpLoginBtn 이 한다.
   // 2026-10-21: 로그인 상태에서는 로그인 버튼이 숨으므로, 이미 로그인돼 있으면 먼저 로그아웃한다.
   const idpLogin = async (page) => { if (await page.$eval('#loginBtn', (b) => b.hidden)) { await page.click('#logoutBtn'); await page.waitForSelector('#loginBtn:not([hidden])'); } await page.click('#loginBtn'); await page.click('#idpLoginBtn'); };
@@ -203,7 +205,7 @@ try {
   await walletPage.goto(wallet.base);
 
   await t('지갑 페이지: snap 모드 화면이 켜지고 MetaMask 연결이 된다', async () => {
-    await walletPage.waitForSelector('#snapPanel:not([hidden])', { timeout: 15_000 });
+    await walletPage.waitForSelector('#connectCard:not([hidden])', { timeout: 15_000 });   // snap 모드는 연결 전에 연결 카드만 보인다(2026-11-03)
     assert.equal(await walletPage.isHidden('#fileRegFields'), true, 'snap 모드는 uid·pwd 폼을 숨긴다');
     await walletPage.click('#connectBtn');
     await waitText(walletPage, '#mmStatus', account);
@@ -235,6 +237,7 @@ try {
   });
   await t('지갑 페이지 제목은 "지갑", 신원 카드에 auid·salt 와 복사 버튼', async () => {
     assert.equal(await walletPage.title(), '지갑'); await walletPage.click('#refreshBtn');
+    await walletTab(walletPage, 'account'); await walletPage.click('#identityDetails summary');   // auid·salt 는 '상세' 접힘 안(2026-11-03)
     await waitText(walletPage, '#meAuid', AUID.slice(0, 10)); answers.push(true);        // showSalt 확인 창
     await walletPage.click('#showSaltBtn'); await walletPage.waitForFunction(() => /^[0-9]{10,}$/.test(document.querySelector('#meSalt')?.textContent ?? ''), undefined, { timeout: 10_000 });
     assert.ok(await walletPage.$('#copyAuidBtn')); assert.ok(await walletPage.$('#copySaltBtn'));
@@ -314,7 +317,7 @@ try {
   // 평범한 트랜잭션은 늘 성공해야 한다(사용자가 실제로 겪은 문제: 예전에는 모든 기본 tx 가 AttrGate.claim 으로
   // 가 조건 미공개로 늘 revert 됐다).
   await t('평범한 트랜잭션: 기본 대상·조건 없이 보내도 늘 성공한다(U4)', async () => {
-    await walletPage.click('#refreshBtn');
+    await walletPage.click('#refreshBtn'); await walletTab(walletPage, 'send');
     await walletPage.waitForFunction(() => !document.querySelector('#txBtn').disabled, undefined, { timeout: 15_000 });
     assert.equal(await walletPage.inputValue('#txTo'), '0x000000000000000000000000000000000000dEaD', '기본 대상을 AttrGate 로 재배선하지 않는다');
     assert.equal(await walletPage.inputValue('#txData'), '0x');
@@ -327,7 +330,7 @@ try {
 
   await t('공개 트랜잭션: "AttrGate 에 자격 증명(claim)" 버튼이 조건을 자동으로 채우고 claim 이 성공한다', async () => {
     assert.ok(info.attrGateAddress, 'AttrGate 가 배포돼 있어야 한다');
-    await walletPage.click('#claimBtn');
+    await walletTab(walletPage, 'send'); await walletPage.click('#claimBtn');
     assert.equal(await walletPage.inputValue('#txTo'), info.attrGateAddress, 'claim 버튼이 받는 주소를 AttrGate 로 채운다');
     assert.equal(await walletPage.inputValue('#txData'), '0x4e71d92d', 'claim 버튼이 데이터를 claim() 셀렉터로 채운다');
     assert.equal(await walletPage.isChecked('#dk0'), true, 'claim 버튼이 출생연도 조건을 자동으로 채운다');
@@ -488,7 +491,7 @@ try {
     const beforeCf = snapState.userCred?.Cf_u ?? null;
     assert.ok(beforeCf, '시작 시 Snap 에 C_u 가 있다');
     assert.deepEqual(snapState.registration.attrs, ['1990', '410', '0', '0', '0', '0']);
-    await walletPage.fill('#attr0', '1991');
+    await walletTab(walletPage, 'account'); await walletPage.fill('#attr0', '1991');
     await walletPage.click('#profileSaveBtn');
     // '속성 저장 완료'(성공)까지 — 실패 문구('속성 저장 실패'·'속성 값이 스키마에 맞지 않습니다')에도 '속성'이 들어가
     // 그냥 '속성'만 찾으면 실패도 통과해 버린다.
@@ -534,7 +537,7 @@ try {
   });
 
   await t('폐기 상한(2026-10-22): 세션 카드에 nonce, 폐기 때 허용 수 입력 → Snap 동의 창에 "허용 거래 수" → 체인 반영 대기 행 → 재로그인 뒤 "지금 반영" → 행 사라짐', async () => {
-    await walletPage.click('#refreshBtn');
+    await walletPage.click('#refreshBtn'); await walletTab(walletPage, 'services');
     await walletPage.waitForFunction(() => /nonce\s*\d+/.test(document.querySelector('#sessionActions')?.textContent ?? ''), undefined, { timeout: 15_000 });
     await walletPage.fill('#sessionActions input.bound', '1');
     answers.push(true);                                                   // consentRevokeSession

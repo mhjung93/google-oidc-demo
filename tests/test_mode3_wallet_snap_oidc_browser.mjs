@@ -164,6 +164,7 @@ try {
 
   await t('자기 폐기: 지갑 페이지의 Google 버튼(비밀번호 프롬프트 없음) → IdP 계정 disabled', async () => {
     const before = dialogs.length;
+    await walletPage.click('#walletTabs [data-tab="settings"]');   // 자기 폐기는 설정 탭(2026-11-03)
     await walletPage.click('#selfRevokeBtn');
     await walletPage.waitForSelector('#gsiBox .gsi-stub', { timeout: 15_000 });
     await walletPage.click('#gsiBox .gsi-stub');
