@@ -396,6 +396,21 @@ async function verifyBody(req, res, r_s, r_rp) {
   return verifier.verifyLogin({ proof: canon, publicSignals, sig, r_s, r_rp });
 }
 
+/** 요구 술어(countrySet·minAge) 검사 — 로그인과 재검증이 같은 함수를 쓴다(리뷰 C-I1, 2026-11-03). 어긋나면 사유, 맞으면 null.
+ *  슬롯 번호는 스키마에서 찾는다(스펙 2 §5.4). 슬롯이 없으면 그 조건은 요구할 수 없다 — predicate_unavailable. */
+function requiredPredicateReason(d, requireP) {
+  if (requireP.countrySet) {
+    if (COUNTRY_SLOT < 0) return 'predicate_unavailable';
+    if (!(d.sel === BigInt(COUNTRY_SLOT) + 1n && d.root === ALLOWED_COUNTRIES_ROOT)) return 'predicate_unmet';
+  }
+  if (requireP.minAge) {
+    if (BIRTH_SLOT < 0) return 'predicate_unavailable';
+    // lo ≥ 스키마 min(최종 리뷰 I1): 출생연도 0 은 "값 없음"인데 hi 만 보면 [0, 올해 − minAge] 가 통과한다. 지갑이 lo ≤ a₀ 를
+    // 강제하므로 0 인 계정은 이 술어를 만들 수 없다. 온체인 AttrGate(불변)는 hi 만 본다 — 런북 "수용한 한계".
+    if (!(((d.mask >> BigInt(BIRTH_SLOT)) & 1n) === 1n && d.lo[BIRTH_SLOT] >= BIRTH_MIN && d.hi[BIRTH_SLOT] + MIN_AGE <= BigInt(new Date().getUTCFullYear()))) return 'predicate_unmet';
+  }
+  return null;
+}
 app.post('/api/mode3/login', async (req, res) => {
   try {
     if (!verifier) return res.status(503).json({ ok: false, reason: inactiveReason() });
@@ -412,20 +427,7 @@ app.post('/api/mode3/login', async (req, res) => {
     if (r_rp === null) return res.status(401).json({ ok: false, reason: 'bad_challenge' });
     const v = await verifyBody(req, res, BigInt(rsStr), BigInt(r_rp)); if (v === null) return;
     if (!v.ok) return res.json({ ok: false, reason: v.reason });
-    if (requireP) {
-      const d = v.disclosure;
-      // 슬롯 번호는 스키마에서 찾는다(스펙 2 §5.4). 슬롯이 없으면 그 조건은 요구할 수 없다 — predicate_unavailable.
-      if (requireP.countrySet) {
-        if (COUNTRY_SLOT < 0) return res.json({ ok: false, reason: 'predicate_unavailable' });
-        if (!(d.sel === BigInt(COUNTRY_SLOT) + 1n && d.root === ALLOWED_COUNTRIES_ROOT)) return res.json({ ok: false, reason: 'predicate_unmet' });
-      }
-      if (requireP.minAge) {
-        if (BIRTH_SLOT < 0) return res.json({ ok: false, reason: 'predicate_unavailable' });
-        // lo ≥ 스키마 min(최종 리뷰 I1): 출생연도 0 은 "값 없음"인데 hi 만 보면 [0, 올해 − minAge] 가 통과한다. 지갑이 lo ≤ a₀ 를
-        // 강제하므로 0 인 계정은 이 술어를 만들 수 없다. 온체인 AttrGate(불변)는 hi 만 본다 — 런북 "수용한 한계".
-        if (!(((d.mask >> BigInt(BIRTH_SLOT)) & 1n) === 1n && d.lo[BIRTH_SLOT] >= BIRTH_MIN && d.hi[BIRTH_SLOT] + MIN_AGE <= BigInt(new Date().getUTCFullYear()))) return res.json({ ok: false, reason: 'predicate_unmet' });
-      }
-    }
+    if (requireP) { const why = requiredPredicateReason(v.disclosure, requireP); if (why) return res.json({ ok: false, reason: why }); }
     const at = new Date().toISOString();
     const disclosure = discOf(v.disclosure);
     sessions.set(rsStr, { PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), regRoot: v.regRoot.toString(), disclosure, auid_s: v.auid_s.toString(), arid_s: v.arid_s.toString(), r_rp, at });
@@ -450,6 +452,9 @@ app.post('/api/mode3/revalidate', async (req, res) => {
     const v = await verifyBody(req, res, BigInt(rsStr), BigInt(s.r_rp)); if (v === null) return;
     if (!v.ok) return res.json({ ok: false, reason: v.reason });
     if (v.PPID.toString() !== s.PPID || v.pk_i.toString() !== s.pk_i) return res.status(401).json({ ok: false, reason: 'session_mismatch' });
+    // 리뷰 C-I1(2026-11-03): 서버 정책 게이트는 재검증에도 적용한다 — 안 그러면 술어 없는 재검증 π 가 disclosure 를 비워 덮어써,
+    // 속성이 바뀐 뒤에도 재검증만 반복하면 세션이 무기한 유지된다. 지갑은 로그인 때의 술어를 재검증 π 에 다시 싣는다(mode3_wallet_agent.js).
+    if (REQUIRE_DISCLOSURE) { const why = requiredPredicateReason(v.disclosure, { countrySet: true, minAge: true }); if (why) return res.json({ ok: false, reason: why }); }
     // 재검증은 세션을 **마지막 증명에 다시 묶는다**(2026-09-25 리뷰 C-4). root·disclosure 만 갱신하면
     // allowAgent=1 로 만든 세션이 allowAgent=0 인 성명으로 재검증된 뒤에도 1 로 남아, 세션 상태가 실제로
     // 보증된 것보다 넓어진다(만료 max_height 도 같다 — /api/mode3/request 의 만료 판정이 그 값을 쓴다).

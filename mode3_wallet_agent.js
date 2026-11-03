@@ -929,6 +929,8 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     const fakeSig = takeOverride('fake_sig');
     if (fakeSig) out = { ...out, sig: await signChallenge(ethers.Wallet.createRandom(), rs.toString()), demo: 'override:fake_sig' };
     if (SECRETS === 'snap') setSessionWitness(rs.toString(), src);
+    // 리뷰 C-I1(2026-11-03): 로그인 때의 술어 입력을 세션에 남겨 재검증 π 에 다시 싣는다(RP 가 재검증에도 정책을 적용한다).
+    if (state.sessions[rs.toString()]) { state.sessions[rs.toString()].loginDisclose = disclose ?? null; state.sessions[rs.toString()].loginSet = set ?? null; persist(); }
     // src.pending: snap 모드에서 이 로그인이 새로 받은 C_u(userCredIssued) — 페이지가 Snap 에 저장한다. attrsChanged 는 증인의 attrs 가
     // 지갑 파일과 달라 자가 치유(위 V11(D15))가 걸렸을 때만 실린다 — 평소 로그인은 attrs 를 바꾸지 않는다. file 모드는 {}.
     res.json({ ...out, issued: true, allowAgent, timings, disclosure: hasPredicate(disclosure) ? discStrings(disclosure) : null, ...src.pending });
@@ -1106,7 +1108,14 @@ app.post('/wallet/revalidate', loginCors, async (req, res) => {
     try {
       // snap 모드에서 세션 증인이 없으면(재시작) needs_consent — RP 페이지가 팝업을 다시 열어 /wallet/session/witness 로 채운다(§4.3)
       const src = secretSourceFor(req, rsKey);
-      let out = await proveSession(rsKey, synced, timings, null, src);
+      // 리뷰 C-I1(2026-11-03): 재검증 π 도 로그인 때의 술어를 다시 싣는다 — 속성이 그대로면 RP 정책을 통과하고, 바뀌어 술어를 못 만들면
+      // 술어 없이 보내 RP 가 predicate_unmet 으로 세션을 끝내게 둔다(다시 로그인).
+      let disc = null;
+      if (s.loginDisclose || s.loginSet) {
+        try { const attrs = (state.registration.attrs ?? []).map(BigInt); disc = { ...normalizeDisclosure(s.loginDisclose ?? null, attrs), ...(await normalizeSet(s.loginSet ?? null, attrs)) }; }
+        catch { disc = null; }
+      }
+      let out = await proveSession(rsKey, synced, timings, disc, src);
       // 시연(가짜 서명): /wallet/login 과 같다 — 다음 1회만 임의 키로 서명한다.
       const fakeSig = takeOverride('fake_sig');
       if (fakeSig) out = { ...out, sig: await signChallenge(ethers.Wallet.createRandom(), rsKey), demo: 'override:fake_sig' };

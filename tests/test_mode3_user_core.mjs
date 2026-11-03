@@ -225,6 +225,10 @@ try {
     assert.equal(b.status, 200, j(b.body));
     const ok = (await rp.post('/api/mode3/login', { proof: b.body.proof, publicSignals: b.body.publicSignals, sig: b.body.sig, r_s: ch2.r_s })).body;
     assert.equal(ok.ok, true, j(ok)); assert.ok(ok.disclosure?.set, '세션에 국가 집합 공개가 실린다');
+    // 리뷰 C-I1(2026-11-03): 재검증에도 같은 정책 게이트 — web 코어의 재검증 π 는 술어가 없으므로 predicate_unmet(세션 유지 불가, 다시 로그인).
+    const rv = await core.revalidate({ r_s: ch2.r_s, origin: info.origin }); assert.equal(rv.status, 200, j(rv.body));
+    const gate = (await rp.post('/api/mode3/revalidate', { proof: rv.body.proof, publicSignals: rv.body.publicSignals, sig: rv.body.sig, r_s: ch2.r_s })).body;
+    assert.equal(gate.ok, false, j(gate)); assert.equal(gate.reason, 'predicate_unmet');
   });
 } finally { await stack.stop(); }
 process.exit(fails ? 1 : 0);

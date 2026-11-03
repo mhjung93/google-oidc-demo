@@ -21,6 +21,12 @@ try {
     assert.equal(await revoke(open, { uid: '1', scope: 'account' }), 401);
     assert.equal(await revoke(open, { uid: '1', scope: 'account' }, { 'X-CIA-Admin-Secret': 'open' }), 404);
   });
+  await t('CIA_ADMIN_OPEN=1: 상태를 바꾸는 관리자 POST 는 헤더(자리표시 값이라도)가 있어야 한다 — 없으면 401(CSRF, 리뷰 E-I1); 목록 GET 은 헤더 없이 200', async () => {
+    const post = (h) => fetch(`${open.base}/cia/rps/1/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...h }, body: '{}' }).then((r) => r.status);
+    assert.equal(await post({}), 401, '헤더 없는 POST');
+    assert.equal(await post({ 'X-CIA-Admin-Secret': 'open' }), 404, '헤더가 있으면 인증을 지나 모르는 arid 404');
+    assert.equal((await open.get('/cia/rps')).status, 200);
+  });
   await t('CIA_ADMIN_OPEN=1 이면 CIA_ADMIN_SECRET 이 비어도 503 이 아니라 200', async () => {
     assert.equal((await openNoSecret.get('/cia/rps')).status, 200);
   });

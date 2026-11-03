@@ -28,6 +28,9 @@ window.DemoStrings = {
     confirm_revoke: { ko: '되돌릴 수 없습니다. 폐기할까요?', en: 'This cannot be undone. Revoke?' },
     confirm_tamper: { ko: '시연용입니다 — 이 계정의 등록부 슬롯에 가짜 자격증명을 게시합니다. 계속할까요?', en: 'Demo only — publish a fake credential into this account’s registry slot. Continue?' },
     confirm_publish: { ko: '폐기 목록을 체인에 게시합니다. 계속할까요?', en: 'Publish the revocation list on-chain. Continue?' },
+    confirm_rp_deny: { ko: 'RP 를 거절합니다. 거절은 되돌릴 수 없고, 운영자가 키로 다시 등록해야 합니다. 계속할까요?', en: 'Deny this RP. This cannot be undone; the operator must re-register with the key. Continue?' },
+    confirm_open_approve: { ko: '개봉을 승인하면 이 세션의 uid 가 영구히 기록됩니다(조건부 프라이버시 해제). 계속할까요?', en: 'Approving records this session’s uid permanently (conditional privacy is lifted). Continue?' },
+    confirm_open_deny: { ko: '개봉 요청을 거절합니다. 되돌릴 수 없습니다. 계속할까요?', en: 'Deny this opening request. This cannot be undone. Continue?' },
     confirm_reset: { ko: 'Snap 의 등록 비밀과 동의 기록을 지웁니다. 계속할까요?', en: 'Erase the Snap’s registration secrets and consents. Continue?' },
     // 페이지 제목·카드 제목·설명 — T2~T4 가 쓴다(키 이름 = 페이지_카드_역할)
     // Task 14(B5, 2026-10-23): "사용자 속성 등록" → "내 신원" — 이 카드가 이제 auid·salt 도 보이므로(아래 wallet_salt_*),

@@ -68,6 +68,8 @@ const ADMIN_SECRET = process.env.CIA_ADMIN_SECRET;
 // 데모 설정(2026-10-21, 사용자 요청): CIA_ADMIN_OPEN=1 이면 관리자 경로가 시크릿을 묻지 않는다(관리자 페이지는 입력칸을 숨긴다).
 // 이 IdP 에 닿는 누구나 RP 승인·폐기·개봉 승인을 할 수 있으므로 데모 전용이다. 기본은 꺼짐(지금처럼 시크릿 필요).
 const ADMIN_OPEN = process.env.CIA_ADMIN_OPEN === '1';
+// 리뷰 A-I2(2026-11-03): 무인증 /cia/register_rp 가 만들 수 있는 미승인(pending·denied) 항목 수 상한 — 넘으면 새 origin 은 429.
+const MAX_UNAPPROVED_RPS = Number(process.env.CIA_MAX_UNAPPROVED_RPS || 200);
 // 사용자 오리진(web 모드 사용자 페이지 또는 에이전트, 스펙 2026-10-15 §5.3). health 의 허용 목록과 아래 userCors 가 같은 값을 쓴다.
 const WALLET_AGENT_ORIGIN = process.env.MODE3_WALLET_AGENT_ORIGIN || 'http://127.0.0.1:5100';
 // OIDC 래퍼(스펙 2026-10-16): Google ID 토큰을 체인 밖에서 검증해 계정을 만든다. 클라이언트 ID 가 없으면 꺼진다(데모 계정만).
@@ -402,7 +404,12 @@ const loginIdKey = (id) => id.toLowerCase();
 const resolveLogin = (id) => uidByLoginId(id) ?? (isDec(id) ? id : null);
 const uidByLoginId = (id) => (typeof id === 'string' && LOGIN_ID_RE.test(id) ? (state.loginIds[loginIdKey(id)] ?? null) : null);
 function requireAdmin(req, res, next) {
-  if (ADMIN_OPEN) return next();
+  // 리뷰 E-I1(2026-11-03): 데모(ADMIN_OPEN)에서도 상태를 바꾸는 요청은 헤더(자리표시 'open' 이라도)가 있어야 한다 — 교차 사이트 폼 POST 는
+  // 사용자 지정 헤더를 실을 수 없으므로 CSRF 로 승인·게시가 눌리지 않는다. 목록 GET 은 그대로 헤더 없이 연다(관리자 페이지·데모 스크립트 호환).
+  if (ADMIN_OPEN) {
+    if (req.method !== 'GET' && typeof req.get('X-CIA-Admin-Secret') !== 'string') return res.status(401).json({ error: 'unauthorized', reason: 'admin_header_required' });
+    return next();
+  }
   if (!ADMIN_SECRET) return res.status(503).json({ error: 'admin endpoints disabled: CIA_ADMIN_SECRET is not configured' });
   const p = req.get('X-CIA-Admin-Secret');
   if (typeof p !== 'string' || !secretMatches(p, ADMIN_SECRET)) return res.status(401).json({ error: 'unauthorized' });
@@ -591,9 +598,20 @@ app.post('/cia/register_rp', async (req, res) => {
       persist();
     }
     if (e && (e.pk_service !== addr || e.X_svc.x !== Xn.x || e.X_svc.y !== Xn.y)) {
-      return res.status(409).json({ error: 'service_key_mismatch' });
+      // 리뷰 A-I2(2026-11-03): 승인되지 않은 항목(pending·denied)은 운영자 키(rp_key, 이름 일치)로 다시 등록할 수 있다 — 무인증 선점이
+      // 진짜 RP 를 영구히 잠그지 않게. 승인된 항목은 그대로 409(승인된 키를 바꾸는 길은 없다). arid 는 그대로 두고 pending 으로 되돌린다.
+      if (e.status === 'approved' || typeof rp_key !== 'string') return res.status(409).json({ error: 'service_key_mismatch', reason: 'service_key_mismatch' });
+      // 이 항목에 이미 묶인 슬롯(status pending, findRpSlotByKey 는 'created' 만 본다)이면 그 슬롯의 키로, 아니면 다른 'created' 슬롯으로 본다.
+      const bound = Object.values(state.rpSlots).find((sl) => sl.arid === arid);
+      const slot = (bound && bound.keyTag === rpKeyTag(rp_key) && pwOk(bound, rp_key)) ? bound : findRpSlotByKey(state.rpSlots, rp_key, pwOk);
+      if (!slot || slot.name !== name) return res.status(400).json({ error: 'bad_rp_key', reason: 'bad_rp_key' });
+      for (const sl of Object.values(state.rpSlots)) if (sl !== slot && sl.arid === arid) { sl.status = 'created'; sl.arid = null; }   // 옛 선점 항목에 묶였던 슬롯은 푼다
+      Object.assign(e, { name, pk_service: addr, X_svc: Xn, x_AA: null, pk_trace: null, status: 'pending', requestedAt: new Date().toISOString(), decidedAt: null, operator: slot.opId });
+      slot.status = 'pending'; slot.arid = arid;
+      persist();
     }
     if (!e) {
+      if (Object.values(state.rps).filter((r) => r.status !== 'approved').length >= MAX_UNAPPROVED_RPS) return res.status(429).json({ error: 'too_many_pending_rps', reason: 'too_many_pending_rps' });
       // Task 11(B2, 2026-10-22 스펙 §3.3): rp_key 가 있으면 운영자가 /cia/rp/create 로 만든 슬롯에 묶는다 — 처음 등록하는
       // origin(이 분기)에서만 본다. rp_key 는 상태에 평문으로 있지 않다(newPw/pwOk 로 해시해 둔다). 리뷰 C2(2026-10-26): 예전처럼
       // 'created' 슬롯 전부에 scrypt 를 돌지 않고 keyTag(SHA-256) 로 한 슬롯을 찾아 그 슬롯에만 pwOk — 무인증 증폭 DoS 차단
@@ -1271,7 +1289,7 @@ async function publishNow({ heartbeat = false, wait = false } = {}) {
     state.pending = state.pending.slice(leaves.length);
     state.registry.pendingSlots = state.registry.pendingSlots.slice(slots.length);
     persist();
-    if (MIRRORS.length === 0) pruneMirroredBounds();
+    if (mirrorsReady && MIRRORS.length === 0) pruneMirroredBounds();
     return { published: true, heartbeat: leaves.length === 0 && slots.length === 0 && noNewBounds, epoch, root: tree.getRoot().toString(), regRoot: registry.root().toString(), txHash: tx.hash, leaves, slots: slots.length, bounds: boundKeys.length };
   }, { wait });
   if (r.published) scheduleRelayAfterPublish();
@@ -1316,6 +1334,9 @@ async function heartbeatTick() {
 // 하트비트(CIA_HEARTBEAT_BLOCKS)가 정한다 — 그 주기(폐기 체인 시간)가 각 응용 체인 MAX_ROOT_AGE(시간)보다 짧아야 한다(스펙 §5).
 // 거울은 epoch 단조 증가만 받으므로 새 epoch 가 꼭 필요한 경우(불일치 복구·관리자 강제·게시 기록 없음)에만 하트비트를 만든다.
 let MIRRORS = [];   // [{ chainStr, address, provider, contract, sameChain }]
+// 리뷰 A-I1(2026-11-03): initMirrors() 전(기동 자동 게시)에는 MIRRORS 가 비어 있어도 "거울 없음" 이 아니다 — 그때 pruneMirroredBounds 를
+// 돌리면 방금 실은 (pk_i, c) 가 거울에 닿기 전에 지워진다. 초기화가 끝난 뒤에만 "거울 없음 = 캐노니컬 epoch 기준 정리" 로 본다.
+let mirrorsReady = false;
 /** 키를 읽고 loadState 가 selfChainId 를 정한 뒤에 부른다. 서명자는 ethWallet 과 같은 키를 거울 체인 provider 에 붙인 것이다.
  *  거울 체인이 캐노니컬 체인과 같으면(데모·테스트의 :8545) provider·서명자를 그대로 쓰고 sameChain 으로 표시한다 —
  *  같은 키·같은 체인이라 게시 tx 와 nonce 가 겹치지 않게 sendMirrorTx 가 publishing 잠금을 빌린다. */
@@ -1325,6 +1346,8 @@ function initMirrors() {
     const signer = sameChain ? ethWallet : new ethers.Wallet(ethWallet.privateKey, providerFor(chainStr));
     return { chainStr, address, provider: signer.provider, contract: new ethers.Contract(address, MODE3_MIRROR_ABI, signer), sameChain };
   });
+  mirrorsReady = true;
+  if (MIRRORS.length === 0) pruneMirroredBounds();   // 거울이 정말 없으면 기동 게시에 실린 항목을 이제 정리한다(리뷰 A-I1)
 }
 /** 거울 publish 의 revert 가 EpochNotIncreasing(누군가 이미 같은·더 새 epoch 를 올렸다)인지. ethers v6 가 붙이는 위치가 경우마다
  *  달라(e.revert, e.data, 메시지) 셋 다 본다. */

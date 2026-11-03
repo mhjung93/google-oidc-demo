@@ -436,6 +436,7 @@
       renderRps();
     }
     function decideRp(e, act) {
+      if (act === 'deny' && !Demo.confirmDanger('confirm_rp_deny')) return;   // 거절은 되돌릴 수 없다(리뷰 E-I2)
       run('admin_rp_failed', () => call('POST', `/cia/rps/${e.arid}/${act}`), ({ body }) => {
         const key = act === 'approve' ? 'admin_rp_approve_summary' : 'admin_rp_deny_summary';
         setVerdict($('adminVerdict'), true, act === 'approve' ? 'admin_rp_approve_title' : 'admin_rp_deny_title', () => ({ summary: Demo.t(key, { name: e.name }), detail: safeDetail(body) }));
@@ -484,6 +485,7 @@
       renderOpenings();
     }
     function decideOpening(o, act) {
+      if (!Demo.confirmDanger(act === 'approve' ? 'confirm_open_approve' : 'confirm_open_deny')) return;   // 승인 = uid 영구 기록(조건부 프라이버시 해제), 거절도 되돌릴 수 없다(리뷰 E-I2)
       run('admin_open_failed', () => call('POST', `/cia/openings/${o.id}/${act}`), async ({ body }) => {
         // uid 는 승인 응답에 없다(resolved 만 온다) — 목록을 다시 읽어 그 기록에서 꺼낸다.
         await loadOpenings();

@@ -342,6 +342,19 @@ try {
     const retry = await cia.post('/cia/register_rp', okBody);
     assert.equal(retry.status, 202, j(retry.body), '같은 origin 재호출은 이미 있는 arid 로 pending 상태 조회');
 
+    // 리뷰 A-I2(2026-11-03): 승인 전(pending·denied) 항목은 운영자 키로 다시 등록해 선점을 되돌릴 수 있다 — 키 없이·다른 키는 여전히 409.
+    const denied = await cia.adminPost(`/cia/rps/${ok.body.arid}/deny`);
+    assert.equal(denied.status, 200, j(denied.body));
+    const squat = await cia.post('/cia/register_rp', await rpRegBody('zkFOUR', origin));
+    assert.equal(squat.status, 409, j(squat.body), '다른 키·rp_key 없음은 409');
+    const wrongName = await cia.post('/cia/register_rp', { ...(await rpRegBody('zkOTHER', origin)), rp_key: key });
+    assert.equal(wrongName.status, 400, j(wrongName.body), '키는 맞지만 이름이 다르면 bad_rp_key');
+    const reclaim = await cia.post('/cia/register_rp', { ...(await rpRegBody('zkFOUR', origin)), rp_key: key });
+    assert.equal(reclaim.status, 202, j(reclaim.body), '운영자 키로 다시 등록하면 pending');
+    assert.equal(reclaim.body.arid, ok.body.arid, '같은 arid 를 유지한다');
+    const after = (await cia.adminGet('/cia/rps')).body.rps.find((r) => r.arid === ok.body.arid);
+    assert.equal(after.status, 'pending'); assert.equal(after.operator, 'op-twelve');
+
     // 키 없는 등록(zkONE·zkTWO 의 기동 자동 등록과 같은 경로)은 지금처럼 허용하고 운영자 없음으로 남는다.
     const keylessOrigin = 'http://127.0.0.1:39993';
     const keyless = await cia.post('/cia/register_rp', await rpRegBody('zkLEGACY', keylessOrigin));
