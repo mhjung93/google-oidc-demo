@@ -28,7 +28,9 @@ const PORT = Number(process.env.MODE3_RP_PORT) || 3100;
 // 수신 주소(2026-10-20, VM 분리 데모): 기본은 지금처럼 127.0.0.1. 다른 기계에서 붙게 하려면 MODE3_BIND_HOST=0.0.0.0.
 const BIND_HOST = process.env.MODE3_BIND_HOST || '127.0.0.1';
 const CIA_URL = process.env.MODE3_CIA_URL || 'http://127.0.0.1:4100';
-const WALLET_ORIGIN = process.env.MODE3_WALLET_AGENT_ORIGIN || 'http://127.0.0.1:5100';
+/** 오리진 정규화(리뷰 C-M8, 2026-11-03): 끝의 '/'·경로가 섞여 들어와도 브라우저가 보내는 Origin 헤더와 같은 꼴로 맞춘다. */
+const normOrigin = (u) => { try { return new URL(u).origin; } catch { return u; } };
+const WALLET_ORIGIN = normOrigin(process.env.MODE3_WALLET_AGENT_ORIGIN || 'http://127.0.0.1:5100');
 const LOG_ADDRESS = process.env.CIA_LOG_ADDRESS || null;   // 캐노니컬 표시용(/api/mode3/rp_info) — 검증기는 이 주소를 읽지 않는다(V10)
 const MIRROR_ADDRESS = process.env.MODE3_MIRROR_ADDRESS || null;
 const RPC_URL = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
@@ -347,6 +349,8 @@ const app = express();
 // 본문 상한은 IdP(cia.js) 와 같은 256kb(2026-10-26 리뷰 E1). 정상 로그인 본문은 수 KB, 릴레이 calldata 도 수십 KB 안이다.
 // 더 크면 기록해 둔 트랜스크립트가 개봉 요청에서 IdP 상한에 걸리는 비대칭이 생긴다(기록은 정규 proof 로만 하지만 이중 방어).
 app.use(express.json({ limit: '256kb' }));
+// 리뷰(2026-11-03 E-M7): 이 페이지들을 남의 프레임에 넣지 못하게(클릭재킹) — 팝업·새 창으로만 쓰이고 프레임 임베드는 없다.
+app.use((req, res, next) => { res.setHeader('X-Frame-Options', 'DENY'); res.setHeader('Content-Security-Policy', "frame-ancestors 'none'"); next(); });
 
 // 데모 공통 레이어(설계 2026-09-24-mode3-demo-ux §1.2) — mode3/common 만 정적으로 낸다.
 app.use('/common', express.static(path.join(__dirname, 'mode3', 'common')));

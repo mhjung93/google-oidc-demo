@@ -41,5 +41,12 @@ try {
     // cors 패키지는 요청한 헤더를 그대로 돌려주지 않고 설정값(Content-Type)만 돌려준다 — 브라우저가 x-cia-admin-secret 을 거절한다.
     assert.ok(!(h(p, 'access-control-allow-headers') ?? '').toLowerCase().includes('x-cia-admin-secret'));
   });
+  await t('프레임 금지(리뷰 E-M7, 2026-11-03): 페이지·API 응답에 X-Frame-Options: DENY 와 frame-ancestors none 이 붙는다', async () => {
+    for (const p of ['/user', '/admin', '/mode3/health']) {
+      const r = await fetch(`${cia.base}${p}`);
+      assert.equal(h(r, 'x-frame-options'), 'DENY', p);
+      assert.equal(h(r, 'content-security-policy'), "frame-ancestors 'none'", p);
+    }
+  });
 } finally { await cia.stop(); }
 process.exit(fails ? 1 : 0);

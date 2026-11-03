@@ -37,6 +37,16 @@
 | 7 | `cia.js requireAdmin`: `CIA_ADMIN_OPEN=1` 에서도 GET 이외 요청은 `X-CIA-Admin-Secret` 헤더가 있어야 한다. 테스트 `test_cia_admin_open`. |
 | 8 | `cia_admin.html`: RP 거절·개봉 승인·개봉 거절에 `confirmDanger`(문구 3개 추가). |
 
+### Minor 조치(같은 날, 바로 고칠 수 있는 것만)
+
+- B-M1 `/wallet/tx/record`: 대기 항목의 account 가 세션 계정과 다르면 `bound_wrong_account`; `clearAppliedBounds` 도 같은 계정의 항목만 지운다.
+- E-M7 세 서버(IdP·RP·지갑 에이전트)에 `X-Frame-Options: DENY` + `Content-Security-Policy: frame-ancestors 'none'`.
+- E-M1·E-M2 지갑 승인 팝업: 여는 창(opener)의 메시지만 받고, 제목(서비스명)도 오리진 대조 뒤에 그린다. E-M3 popup_blocked 주석 정정.
+- A-Minor 프로토타입 키 아이디(`constructor`·`__proto__`): 아이디 색인·운영자 맵을 자기 속성으로만 본다.
+- C-M8 `MODE3_WALLET_AGENT_ORIGIN` 을 `new URL().origin` 으로 정규화(끝 '/' 함정).
+- E-M9 사유 사전에 코드 8개 추가(`not_snap_mode`·`precheck_failed`·`session_witness_failed`·`registration_incomplete`·`oidc_cancelled`·`snap_empty`·`login_failed`·`secrets_mismatch`), `wallet_gsi_origin` 문구를 코드(hostname 만 검사)와 맞춤, 지갑 페이지의 사유 리터럴 전수 대조 테스트.
+- 미조치 Minor: B-M2(RP 오리진의 `skipSync`)는 데모의 stale_root 시연이 RP 페이지에서 그 옵션을 쓰므로 유지. 나머지는 영역 보고서 참조.
+
 ## 권고 묶음
 
 - **지금 고칠 것(작고 명확)**: 1(기동 게시를 `initMirrors()` 뒤로, 또는 기동 시 `pruneMirroredBounds` 보류), 2(denied·pending 에서 같은 origin 재등록 허용 + rp_key 검사, `rps` 상한), 4(재검증에 로그인과 같은 정책 게이트 적용), 7(open 모드에도 헤더 존재 요구 — 관리자 페이지는 이미 `open` 을 보냄), 8(`confirmDanger` 3곳).

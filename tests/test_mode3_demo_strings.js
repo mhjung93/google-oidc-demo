@@ -56,6 +56,13 @@ t('사유 사전은 문서의 코드를 전부 덮고 ko·en 에 title·cause·a
     for (const l of S.langs) for (const f of ['title', 'cause', 'action']) assert.ok(r[l]?.[f], `${c}.${l}.${f}`);
   }
 });
+t('지갑 페이지가 RP 로 돌려보내는 사유 리터럴은 전부 reasons 에 있다(리뷰 E-M9, 2026-11-03)', () => {
+  const src = fs.readFileSync(new URL('../mode3/wallet.html', import.meta.url), 'utf8');
+  const codes = new Set();
+  for (const seg of src.matchAll(/reason:[^;\n]*/g)) for (const m of seg[0].matchAll(/'([a-z_]+)'/g)) codes.add(m[1]);
+  assert.ok(codes.size >= 10, `리터럴 ${codes.size}개`);
+  for (const c of codes) assert.ok(S.reasons[c], `reasons.${c} 없음`);
+});
 t('ui·terms 항목은 전부 ko·en 이 있고 빈 문자열이 없다', () => {
   for (const [k, v] of Object.entries(S.ui)) for (const l of S.langs) assert.ok(typeof v[l] === 'string' && v[l].length, `ui.${k}.${l}`);
   for (const [k, v] of Object.entries(S.terms)) { for (const l of S.langs) assert.ok(v[l], `terms.${k}.${l}`); assert.ok(v.expert, `terms.${k}.expert`); }

@@ -458,6 +458,8 @@ app.use((req, res, next) => {
   next();
 });
 app.use(express.json({ limit: '1mb' }));
+// 리뷰(2026-11-03 E-M7): 이 페이지들을 남의 프레임에 넣지 못하게(클릭재킹) — 팝업·새 창으로만 쓰이고 프레임 임베드는 없다.
+app.use((req, res, next) => { res.setHeader('X-Frame-Options', 'DENY'); res.setHeader('Content-Security-Policy', "frame-ancestors 'none'"); next(); });
 
 // RP 페이지(다른 오리진)가 부르는 것은 /wallet/revalidate·/wallet/request·/wallet/config, 그리고 file 모드의 /wallet/login 뿐이다.
 // snap 모드의 /wallet/login 은 같은 오리진(지갑 페이지 팝업)만 부른다 — CORS 를 열지 않는다(스펙 §3.3). 문자열 origin 은
@@ -1393,7 +1395,8 @@ function clearAppliedBounds(receipt, walletAddr) {
   }
   if (found.length) {
     const before = state.pendingBounds?.length ?? 0;
-    state.pendingBounds = (state.pendingBounds ?? []).filter((x) => !found.some((f) => f.pk_i === x.pk_i && f.bound === x.bound));
+    // 리뷰 B-M1: 같은 계정의 대기 항목만 지운다(pk_i·bound 가 같아도 다른 계정의 항목은 그대로).
+    state.pendingBounds = (state.pendingBounds ?? []).filter((x) => !(String(x.account ?? '').toLowerCase() === walletAddr.toLowerCase() && found.some((f) => f.pk_i === x.pk_i && f.bound === x.bound)));
     if (state.pendingBounds.length !== before) persist();
   }
   return found;
@@ -1526,6 +1529,8 @@ app.post('/wallet/tx/record', async (req, res) => {
     if (typeof pendingBoundId === 'string' && pendingBoundId) {
       const p = (state.pendingBounds ?? []).find((x) => x.id === pendingBoundId);
       if (!p) boundResult = { applied: false, reason: 'no_pending_bound' };
+      // 리뷰 B-M1(2026-11-03): /wallet/bounds/apply 와 같게 대기 항목의 account 가 이 세션의 계정이어야 한다 — 다른 계정의 영수증으로 남의 대기 항목을 지우지 못하게.
+      else if (String(p.account ?? '').toLowerCase() !== walletAddr.toLowerCase()) boundResult = { applied: false, reason: 'bound_wrong_account' };
       else {
         const verdict = await boundApplyVerdict(receipt, walletAddr, p);
         // pending 은 applied(alreadyLower 포함)일 때만 지운다 — bound_not_applied 면 다시 시도할 수 있게 남긴다.

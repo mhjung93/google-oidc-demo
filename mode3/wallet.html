@@ -489,7 +489,7 @@
     // 창이 닫히거나 60초 안에 응답이 없으면 idp_auth_cancelled(호출자가 그 사유로 RP 에 돌린다).
     // F-13(2026-10-23): window.open 은 이 함수가 "동기적으로" 불려야(= 사용자 click 처리기 안에서, 그 앞에 await 가
     // 없어야) 일반 팝업 차단기를 피한다 — openIdpAuthOnClick 이 버튼의 click 처리기 안에서 이 함수를 그대로 부른다.
-    // win===null 이면 즉시 { code:null, reason:'popup_blocked' } 로 resolve 한다(호출자가 버튼을 되살린다).
+    // win===null 이면 즉시 { code:null, reason:'popup_blocked' } 로 resolve 한다 — 호출자(runAuthorize)는 그 사유를 RP 에 돌려주고 창을 닫는다.
     function idpAuth() {
       return new Promise((resolve) => {
         const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
@@ -509,9 +509,9 @@
       });
     }
     // F-13: Snap 동의 뒤 "IdP 인증 창 열기" 버튼(#idpAuthOpenBtn)을 보이고, 그 click 처리기 "안에서" idpAuth() 를
-    // 불러 window.open 이 사용자 제스처를 잃지 않게 한다. win===null(popup_blocked)이면 호출자(runAuthorize)가
-    // RP 에 그 사유를 돌려주지만, 이 버튼은 숨기지 않고 되살려 둔다(스펙 §4 "버튼을 되살린다") — 그 밖(성공·
-    // idp_auth_cancelled)에는 더 쓸 일이 없어 숨긴다.
+    // 불러 window.open 이 사용자 제스처를 잃지 않게 한다. win===null(popup_blocked)이면 진행 줄에 사유를 적고 호출자(runAuthorize)가
+    // RP 에 popup_blocked 를 돌려준 뒤 3초 뒤 창을 닫는다(2026-11-03 주석 정정: 버튼을 되살려 재시도하는 경로는 없다 — RP 에서 다시
+    // 로그인한다). 그 밖(성공·idp_auth_cancelled)에는 더 쓸 일이 없어 숨긴다.
     function openIdpAuthOnClick(step) {
       return new Promise((resolve) => {
         const btn = $('idpAuthOpenBtn');
@@ -673,6 +673,7 @@
       const onMessage = async (ev) => {
         const req = ev.data;
         if (handled || !req) return;
+        if (ev.source !== window.opener) return;   // 리뷰 E-M1(2026-11-03): 이 창을 연 창의 메시지만 — 다른 창이 먼저 말을 걸어 선점하지 못하게
         // 등록 팝업(Task 14, B5) — mode3-authorize 와 완전히 다른 요청이라 먼저 갈라낸다.
         if (req.type === 'mode3-register') {
           handled = true;
@@ -690,14 +691,14 @@
           catch (e) { log(`결과 전송 실패: ${e.message}`); }
           setTimeout(() => window.close(), result.ok ? 200 : 3000);   // 실패는 이유를 잠시 보이게 둔다
         };
-        lastAuthReq = req;
-        renderAuthTitle();
         if (ev.origin !== req.origin) {
           step('오리진 불일치 — 이 요청은 진행하지 않는다.');
           log(`메시지 오리진=${ev.origin}\n인증서 오리진=${req.origin}`);
           return reply({ ok: false, reason: 'origin_mismatch' });
         }
-        // 요약은 오리진 대조를 통과한 뒤에만 그린다 — 남이 보낸 서비스 이름을 승인 화면에 먼저 띄우지 않는다.
+        // 제목·요약은 오리진 대조를 통과한 뒤에만 그린다 — 남이 보낸 서비스 이름을 승인 화면에 먼저 띄우지 않는다(리뷰 E-M2: 제목도 같이).
+        lastAuthReq = req;
+        renderAuthTitle();
         renderAuthSummary(req);
         if (cfg.secrets !== 'snap') { step('이 지갑은 file 모드다 — 팝업 경로를 쓰지 않는다.'); return reply({ ok: false, reason: 'not_snap_mode' }); }
         try {

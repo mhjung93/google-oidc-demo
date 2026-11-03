@@ -401,8 +401,10 @@ function newAccountRecord({ pwSalt = null, pwHash = null, pwAlgo = null, pk_u = 
 const LOGIN_ID_RE = /^(?!\d+$)[a-z0-9][a-z0-9._-]{2,31}$/i;
 const loginIdKey = (id) => id.toLowerCase();
 /** 로그인 입력 한 칸의 해석(리뷰 I-1·I-2 공통): 아이디 색인 → 없으면 10진 uid. /cia/user/login 과 /cia/auth/code 가 같은 규칙을 쓴다. 숫자만인 아이디는 가입이 막혀 두 이름공간이 겹치지 않는다. */
+/** 색인·계정 맵은 JSON 객체라 'constructor'·'__proto__' 같은 키가 프로토타입 속성에 걸린다(리뷰 A-Minor) — 자기 속성만 본다. */
+const own = (o, k) => Object.prototype.hasOwnProperty.call(o ?? {}, k);
 const resolveLogin = (id) => uidByLoginId(id) ?? (isDec(id) ? id : null);
-const uidByLoginId = (id) => (typeof id === 'string' && LOGIN_ID_RE.test(id) ? (state.loginIds[loginIdKey(id)] ?? null) : null);
+const uidByLoginId = (id) => (typeof id === 'string' && LOGIN_ID_RE.test(id) && own(state.loginIds, loginIdKey(id)) ? state.loginIds[loginIdKey(id)] : null);
 function requireAdmin(req, res, next) {
   // 리뷰 E-I1(2026-11-03): 데모(ADMIN_OPEN)에서도 상태를 바꾸는 요청은 헤더(자리표시 'open' 이라도)가 있어야 한다 — 교차 사이트 폼 POST 는
   // 사용자 지정 헤더를 실을 수 없으므로 CSRF 로 승인·게시가 눌리지 않는다. 목록 GET 은 그대로 헤더 없이 연다(관리자 페이지·데모 스크립트 호환).
@@ -523,6 +525,8 @@ function consumeCode(code, { uid, purpose, auid = null }) {
 // ---- 앱 ----
 const app = express();
 app.use(express.json({ limit: '256kb' }));
+// 리뷰(2026-11-03 E-M7): 이 페이지들을 남의 프레임에 넣지 못하게(클릭재킹) — 팝업·새 창으로만 쓰이고 프레임 임베드는 없다.
+app.use((req, res, next) => { res.setHeader('X-Frame-Options', 'DENY'); res.setHeader('Content-Security-Policy', "frame-ancestors 'none'"); next(); });
 // 사용자 세션(Task 10, 스펙 §3.2): 메모리 저장소, 쿠키 cia.sid. 재기동하면 로그인이 풀린다(데모 수용) —
 // CIA_SESSION_SECRET 이 없으면 기동마다 난수를 쓴다.
 app.use(session({ name: 'cia.sid', secret: process.env.CIA_SESSION_SECRET || randomBytes(32).toString('hex'), resave: false, saveUninitialized: false, cookie: { httpOnly: true, sameSite: 'lax' } }));
@@ -686,7 +690,7 @@ app.post('/cia/rps/:arid/deny', requireAdmin, (req, res) => {
 // 수정 라운드 1(2026-10-23, 스펙 §3.2 "같은 브라우저에서 둘 다 가질 수 있다"): 사용자(uid)·운영자(operator) 세션은
 // 같은 쿠키에 공존할 수 있다 — 애덤덤의 "regenerate 가 둘 다 지우는 단순한 쪽" 판정은 스펙을 간과해 철회됐다.
 // 로그인·로그아웃 모두 세션 고정 방지(regenerate 로 sid 회전)는 유지하면서 다른 역할의 필드를 보존한다.
-const requireOperator = (req, res, next) => { if (!req.session?.operator || !state.operators[req.session.operator]) return res.status(401).json({ error: 'login required', reason: 'login_required' }); next(); };
+const requireOperator = (req, res, next) => { if (!req.session?.operator || !own(state.operators, req.session.operator)) return res.status(401).json({ error: 'login required', reason: 'login_required' }); next(); };
 const OPERATOR_ID_RE = /^[a-z0-9_-]{3,32}$/;
 const RP_SLOT_NAME_RE = /^zk[A-Za-z0-9]{1,15}$/;
 /** newAccountRecord(위) 와 같은 스캐폴드 — 운영자는 등록 상태가 없어 그보다 작다. */
@@ -721,14 +725,14 @@ app.post('/cia/rp/signup', (req, res) => {
   const { id, pwd } = req.body ?? {};
   if (typeof id !== 'string' || !OPERATOR_ID_RE.test(id)) return res.status(400).json({ error: 'id 는 소문자·숫자·_·- 3~32자', reason: 'signup_failed' });
   if (typeof pwd !== 'string' || pwd.length < 8) return res.status(400).json({ error: 'pwd 는 8자 이상', reason: 'signup_failed' });
-  if (state.operators[id]) return res.status(409).json({ error: 'id_taken', reason: 'id_taken' });
+  if (own(state.operators, id)) return res.status(409).json({ error: 'id_taken', reason: 'id_taken' });
   state.operators[id] = newOperatorRecord(newPw(pwd));
   persist();
   res.status(201).json({ id });
 });
 app.post('/cia/rp/login', (req, res) => {
   const { id, pwd } = req.body ?? {};
-  if (typeof id !== 'string' || !pwOk(state.operators[id], pwd)) return res.status(401).json({ error: 'invalid credentials', reason: 'operator_login_failed' });
+  if (typeof id !== 'string' || !own(state.operators, id) || !pwOk(state.operators[id], pwd)) return res.status(401).json({ error: 'invalid credentials', reason: 'operator_login_failed' });
   loginKeepingOtherRole(req, res, { role: 'operator', value: id, other: 'uid' }, () => res.json({ id }));
 });
 app.post('/cia/rp/logout', (req, res) => logoutRole(req, res, 'operator', 'uid'));
