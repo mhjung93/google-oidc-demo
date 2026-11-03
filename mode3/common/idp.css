@@ -16,7 +16,8 @@
 }
 
 /* ---- 관리자: 절 메뉴(고정) — 카드를 숨기지 않고 해당 절로 이동만 한다. ---- */
-.section-menu { position: sticky; top: 0; z-index: 4; background: var(--card); border-bottom: 1px solid var(--line); }
+/* top 은 안내 바(#demoBar, sticky top:0, 높이 약 56px) 아래 — 같은 top:0 이면 안내 바가 메뉴를 덮는다(리뷰 2026-11-03 I-5). */
+.section-menu { position: sticky; top: 56px; z-index: 4; background: var(--card); border-bottom: 1px solid var(--line); }
 .section-menu .menu-inner { max-width: 1100px; margin: 0 auto; padding: 0 var(--gap); display: flex; gap: 4px 18px; flex-wrap: wrap; align-items: center; }
 .section-menu a { color: var(--muted); text-decoration: none; font-size: 14px; font-weight: 600; padding: 11px 0; border-bottom: 2px solid transparent; }
 .section-menu a:hover { color: var(--ink); } .section-menu a.current { color: var(--accent); border-bottom-color: var(--accent); }

@@ -100,4 +100,13 @@ t('findRpSlotByKey: 태그 슬롯 N개에서 맞는 키는 verify 1회, 틀린 �
   calls = 0; assert.equal(findRpSlotByKey(slots, 'f'.repeat(64), verify), null); assert.equal(calls, 1, '틀린 키는 레거시 수만큼만');
   assert.equal(findRpSlotByKey({}, 'x', verify), null);
 });
+t('아이디 색인(2026-11-03, 리뷰 M-4): loginIds 는 accounts 에서 다시 만든다 — 낡은 항목은 사라지고, 대소문자만 다른 중복은 뒤의 계정이 아이디를 잃으며 notes 에 남는다', () => {
+  const base = { pk_u: null, auid: null, slot: null, disabled: false, pwSalt: 'a', pwHash: 'b', pwAlgo: 'scrypt', createdAt: 'c' };
+  const { state, notes } = migrateCiaState({ ...defaultCiaState(), loginIds: { stale: '999', alice: '1' },
+    accounts: { '1': { ...base, loginId: 'Alice' }, '2': { ...base, loginId: 'ALICE' }, '3': { ...base } } });
+  assert.deepEqual(state.loginIds, { alice: '1' }, '낡은 stale 항목은 없고 소문자 키 하나');
+  assert.equal(state.accounts['2'].loginId, null, '중복은 아이디를 잃는다(uid 로만 로그인)');
+  assert.equal(state.accounts['3'].loginId, null);
+  assert.equal(notes.length, 1); assert.match(notes[0], /ALICE/);
+});
 process.exit(failed === 0 ? 0 : 1);

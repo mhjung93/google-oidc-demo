@@ -309,6 +309,8 @@ async function loadState() {
         Object.assign(existing, newPw(a.password));
         seeded = true;
       }
+      // 리뷰(2026-11-03) I-2: 이 필드 이전 상태 파일의 시드 계정에도 아이디(testuser·alice)를 채운다 — 없으면 /user 에서 이름으로 로그인할 수 없다.
+      if (existing && existing.loginId == null && loginId) { existing.loginId = loginId; state.loginIds[name] = a.uid; seeded = true; }
     }
   }
   publishedTree = await buildPublishedTree();
@@ -393,8 +395,11 @@ function newAccountRecord({ pwSalt = null, pwHash = null, pwAlgo = null, pk_u = 
 }
 // 아이디 가입(2026-11-03, /user 페이지 재구성): 사용자가 정하는 로그인 아이디. 프로토콜의 uid 는 그대로 IdP 내부 번호(가입 때 배정)이고,
 // 아이디는 로그인 폼에서 uid 를 찾는 열쇠일 뿐이다 — 대소문자를 가리지 않고(색인 키는 소문자) 계정당 하나, 바꿀 수 없다.
-const LOGIN_ID_RE = /^[a-z0-9][a-z0-9._-]{2,31}$/i;
+// 리뷰(2026-11-03) I-1: 숫자만으로 된 아이디는 금지한다 — 허용하면 남의 uid("12345")로 가입해 그 계정의 uid 로그인을 가릴 수 있다(색인이 먼저 이긴다).
+const LOGIN_ID_RE = /^(?!\d+$)[a-z0-9][a-z0-9._-]{2,31}$/i;
 const loginIdKey = (id) => id.toLowerCase();
+/** 로그인 입력 한 칸의 해석(리뷰 I-1·I-2 공통): 아이디 색인 → 없으면 10진 uid. /cia/user/login 과 /cia/auth/code 가 같은 규칙을 쓴다. 숫자만인 아이디는 가입이 막혀 두 이름공간이 겹치지 않는다. */
+const resolveLogin = (id) => uidByLoginId(id) ?? (isDec(id) ? id : null);
 const uidByLoginId = (id) => (typeof id === 'string' && LOGIN_ID_RE.test(id) ? (state.loginIds[loginIdKey(id)] ?? null) : null);
 function requireAdmin(req, res, next) {
   if (ADMIN_OPEN) return next();
@@ -759,9 +764,9 @@ app.post('/cia/signup', (req, res) => {
 });
 app.post('/cia/user/login', (req, res) => {
   const { id, uid: uidIn, pwd } = req.body ?? {};
-  // 아이디(2026-11-03)가 오면 색인으로 uid 를 찾고, 없으면 옛 경로대로 uid 를 받는다(시드 계정·Google 계정·기존 테스트). 모르는 아이디도 401 로 같게
-  // 답한다 — 아이디가 있는지 새지 않게.
-  const uid = typeof id === 'string' ? uidByLoginId(id) : (isDec(uidIn) ? uidIn : null);
+  // 아이디(2026-11-03)가 오면 색인 → 10진 uid 순으로 해석한다(resolveLogin — 아이디 없는 옛 계정·시드·Google 계정은 uid 를 아이디 칸에 넣는다).
+  // 옛 경로의 uid 필드도 그대로 받는다. 모르는 아이디도 401 로 같게 답한다(응답 시간·가입의 409 로는 존재가 드러날 수 있다 — 데모 범위).
+  const uid = typeof id === 'string' ? resolveLogin(id) : (isDec(uidIn) ? uidIn : null);
   if (!uid || !pwOk(state.accounts[uid], pwd)) return res.status(401).json({ error: 'invalid credentials', reason: 'invalid_credentials' });
   // 세션 고정 방지(보안 리뷰 2026-10-23) + 운영자 세션 공존(수정 라운드 1, loginKeepingOtherRole 위) — 로그인마다
   // 세션 id 를 새로 받으면서(로그인 전에 심어 둔 sid 로 로그인 뒤 들어오지 못하게) 운영자 세션이 있으면 보존한다.
@@ -795,7 +800,7 @@ app.post('/cia/user/self_revoke', requireUser, async (req, res) => {
 app.post('/cia/auth/code', (req, res) => {
   const { uid: uidIn, id, pwd, auid } = req.body ?? {};
   // 2026-11-03: 인증 창은 아이디를 보낸다(id). 아이디 색인에 없으면 10진 uid 로 본다(한 칸에 "아이디 또는 uid") — API 의 uid 는 그대로.
-  const uid = typeof id === 'string' ? (uidByLoginId(id) ?? (isDec(id) ? id : null)) : (isDec(uidIn) ? uidIn : null);
+  const uid = typeof id === 'string' ? resolveLogin(id) : (isDec(uidIn) ? uidIn : null);
   const a = uid ? state.accounts[uid] : null;
   if (!pwOk(a, pwd)) return res.status(401).json({ error: 'invalid credentials', reason: 'invalid_credentials' });
   if (!a.pk_u) return res.status(409).json({ error: 'not registered', reason: 'not_registered' });

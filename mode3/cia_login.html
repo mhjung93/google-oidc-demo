@@ -26,6 +26,8 @@
 </main>
 <script>
   const $ = (id) => document.getElementById(id);
+  // 리뷰(2026-11-03) M-3: 아래 비동기 초기화(health 조회)가 끝나기 전에 Enter 를 누르면 기본 GET 제출이 nonce·wallet 쿼리를 날린다 — 먼저 동기로 막는다.
+  $('authForm').addEventListener('submit', (ev) => ev.preventDefault());
   // Demo 가 없다(이 창은 데모 바를 쓰지 않는다) — strings.js 만으로 최소한의 t()·사유·판정 카드를 흉내 낸다
   // (mode3/cia_account.html 의 Demo 대체 사본과 같은 관례).
   const Demo = {

@@ -5,7 +5,7 @@
 
 /* ---- 상단 바 ---- */
 .wallet-nav { background: var(--navy); color: #fff; }
-.wallet-nav .nav-inner { max-width: 760px; margin: 0 auto; padding: 0 20px; min-height: 56px; display: flex; align-items: center; gap: 24px; }
+.wallet-nav .nav-inner { max-width: 960px; margin: 0 auto; padding: 0 20px; min-height: 56px; display: flex; align-items: center; gap: 24px; }
 .wallet-nav .brand { color: #fff; font-size: 19px; font-weight: 800; letter-spacing: .01em; text-decoration: none; white-space: nowrap; }
 .wallet-tabs { display: flex; gap: 18px; flex: 1; flex-wrap: wrap; }
 .wallet-tabs button { background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: rgba(255,255,255,.72); font-size: 14px; font-weight: 600; padding: 17px 0; }
@@ -15,8 +15,8 @@
 .wallet-nav .nav-actions .btn-ghost { color: #fff; border-color: rgba(255,255,255,.45); padding: 5px 12px; font-size: 13px; border-radius: 999px; }
 .wallet-nav .nav-actions .btn-ghost:hover { background: rgba(255,255,255,.12); }
 /* 연결 상태 알약 — #mmStatus 는 demo.css 의 .badge 지만 바 안에서는 알약으로 보인다. */
-.wallet-nav #mmStatus { display: inline-flex; align-items: center; gap: 8px; max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.22); color: #fff; font-weight: 500; font-size: 12.5px; padding: 5px 12px; }
-.wallet-nav #mmStatus::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: #9aa4b2; flex: none; }
+.wallet-nav #mmStatus { display: inline-block; vertical-align: middle; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.22); color: #fff; font-weight: 500; font-size: 12.5px; padding: 5px 12px; }
+.wallet-nav #mmStatus::before { content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 8px; border-radius: 50%; background: #9aa4b2; vertical-align: middle; }
 .wallet-nav #mmStatus.ok::before { background: #36d399; } .wallet-nav #mmStatus.bad::before { background: #ff6b6b; }
 .wallet-nav #mmStatus.ok { background: rgba(255,255,255,.1); color: #fff; } .wallet-nav #mmStatus.bad { background: rgba(255,107,107,.18); color: #fff; }
 @media (max-width: 640px) {

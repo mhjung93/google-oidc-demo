@@ -60,7 +60,7 @@
     </section>
 
     <!-- ===== 탭: 계정 ===== -->
-    <section class="card" id="identityCard" data-panel="account">
+    <section class="card" id="identityCard" data-panel="account" hidden>
       <h3 data-i18n="wallet_identity_title">내 신원</h3>
       <p class="desc" data-i18n="wallet_identity_desc">IdP 에 한 번 등록합니다. 속성은 내가 넣고 IdP 는 값을 모릅니다.</p>
       <p class="status-line"><span id="regBadge" class="badge">미등록</span> <span id="regInfo" class="muted"></span></p>
@@ -113,8 +113,9 @@
         <h4 data-i18n="wallet_bounds_title">체인 반영 대기</h4>
         <p class="muted" data-i18n="wallet_bounds_desc">폐기한 세션의 허용 거래 수를 응용 체인의 계정에도 올립니다(즉시 차단). 같은 RP 에 다시 로그인하면 반영할 수 있습니다.</p>
         <div id="boundsList"></div>
-        <div id="boundsVerdict"></div>
       </div>
+      <!-- 리뷰(2026-11-03) I-3: 결과 칸은 절 밖에 — 반영 성공으로 대기 건이 0 이 되어 절이 숨어도 판정 카드는 보여야 한다. -->
+      <div id="boundsVerdict"></div>
       <p id="mirrorInfo" class="muted expert"></p>
       <p id="chainInfo" class="muted expert"></p>
       <pre id="status" class="expert">불러오는 중…</pre>
@@ -131,8 +132,8 @@
         <dt data-i18n="wallet_tx_value">보낼 금액(wei)</dt><dd><input id="txValue" value="0" size="10" /></dd>
         <dt data-i18n="wallet_tx_data">데이터</dt><dd><input id="txData" value="0x" size="20" /></dd>
       </dl>
-      <!-- 2026-11-03: 평소에는 접어 둔다 — tests/test_mode3_browser.mjs 는 안의 입력칸을 만지기 전에 summary 를 눌러 연다.
-           claimBtn 은 채운 조건이 보이게 스스로 연다. -->
+      <!-- 2026-11-03: 평소에는 접어 둔다. claimBtn 이 채운 조건이 보이게 스스로 연다 — tests/test_mode3_browser.mjs 는 안의 값을
+           inputValue·isChecked 로만 읽어 접힘과 무관하다. -->
       <details class="fold" id="discloseBox">
         <summary data-term="disclosure">공개할 속성 조건</summary>
         <p class="muted" data-i18n="wallet_disclose_desc">체크한 조건만 증명에 실립니다. 최소=최대 면 그 값 하나를 공개합니다. 집합 소속은 슬롯 하나만 고를 수 있고, 지갑이 허용 원소 목록으로 계산해 증명에 넣습니다. 나이는 연 단위(올해 − 출생연도)입니다.</p>
@@ -184,7 +185,7 @@
 
     <!-- ===== 탭: 설정 ===== -->
     <!-- snap 모드 전용(스펙 §3.2). file 모드에서는 숨긴 채로 둔다. -->
-    <section class="card" id="snapPanel" data-panel="settings" hidden>
+    <section class="card" id="snapPanel" data-panel="settings" data-off="1" hidden>
       <h3 data-i18n="wallet_snap_title">MetaMask · Snap</h3>
       <p class="desc" data-i18n="wallet_snap_desc">비밀은 Snap 안에 있습니다. 이 페이지는 동의만 받습니다.</p>
       <p class="row-actions"><button id="snapInfoBtn" class="btn-ghost" data-i18n="wallet_snap_info_btn">Snap 상태 보기</button></p>
@@ -224,12 +225,17 @@
     // 탭(2026-11-03): 본문은 한 번에 한 탭(data-panel)만 보인다. snap 모드는 MetaMask 연결 전에는 탭 대신 #connectCard 만
     // 보인다(applyGate). file 모드는 연결이 없어 바로 탭이다. data-off="1" 인 패널(file 모드의 #snapPanel)은 그 탭에서도 숨긴다.
     const TAB_KEY = 'mode3.wallet.tab';
-    let currentTab = (() => { try { return sessionStorage.getItem(TAB_KEY) || 'account'; } catch { return 'account'; } })();
+    const TABS = ['account', 'services', 'send', 'settings'];
+    let currentTab = (() => { try { const v = sessionStorage.getItem(TAB_KEY); return TABS.includes(v) ? v : 'account'; } catch { return 'account'; } })();
     function applyGate() {
       if (IS_AUTHORIZE) return;
       const gated = cfg.secrets === 'snap' && mmState.kind !== 'ok';
       $('connectCard').hidden = !gated;
       $('walletTabs').hidden = gated;
+      // file 모드의 설정 탭은 전문가 보기(시연 카드)에서만 내용이 있다 — 비어 있는 탭은 숨기고, 거기 있었으면 계정 탭으로.
+      const settingsEmpty = cfg.secrets !== 'snap' && !document.documentElement.hasAttribute('data-expert');
+      document.querySelector('#walletTabs [data-tab="settings"]').hidden = settingsEmpty;
+      if (settingsEmpty && currentTab === 'settings') { currentTab = 'account'; for (const b of document.querySelectorAll('#walletTabs [data-tab]')) b.setAttribute('aria-selected', b.dataset.tab === 'account' ? 'true' : 'false'); }
       for (const el of document.querySelectorAll('[data-panel]')) el.hidden = gated || el.dataset.panel !== currentTab || el.dataset.off === '1';
     }
     function showTab(name) {
@@ -949,6 +955,7 @@
       }
       for (const [r_s, c] of entries) {
         const box = document.createElement('div');
+        box.className = 'session';   // wallet.css 의 한 줄 카드
         const dl = document.createElement('dl');
         dl.className = 'kv';
         kvRow(dl, tt('wallet_session_service') || 'RP', shortCode(c.arid, 8));
@@ -980,7 +987,10 @@
         btn.className = 'danger';
         btn.textContent = tt('wallet_end_session') || '이 세션 끝내기(폐기)';
         btn.addEventListener('click', () => revokeSession(r_s, c, btn, box));
-        box.append(dl, boundLabel, btn);
+        const foot = document.createElement('div');
+        foot.className = 'session-foot';
+        foot.append(boundLabel, btn);
+        box.append(dl, foot);
         acts.appendChild(box);
       }
     }
@@ -1538,7 +1548,7 @@
     // ---- snap 모드 전용 버튼 ----
     $('connectBtn').addEventListener('click', async () => {
       $('connectError').hidden = true;
-      try { await connectMetaMask(); }
+      try { await connectMetaMask(); document.querySelector('#walletTabs [aria-selected="true"]')?.focus(); }
       catch (e) { mmState = { kind: 'fail', err: e.message }; renderMmStatus(); $('connectError').textContent = e.message; $('connectError').hidden = false; }
     });
     $('snapInfoBtn').addEventListener('click', async () => {
@@ -1628,7 +1638,7 @@
         const r = await fetch('/wallet/config');
         if (r.ok) cfg = { ...cfg, ...(await r.json()) };
       } catch { /* 설정을 못 읽으면 file 모드로 본다 */ }
-      if (cfg.secrets === 'snap') applySnapMode(); else $('snapPanel').dataset.off = '1';
+      if (cfg.secrets === 'snap') applySnapMode();   // file 모드는 마크업의 data-off="1" 그대로(설정 응답 전에도 Snap 패널이 비치지 않는다)
       if (!IS_AUTHORIZE) showTab(currentTab);
       renderModeTexts();
       renderMmStatus();

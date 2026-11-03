@@ -11,7 +11,7 @@ button, .btn { font:inherit; padding:8px 14px; border-radius:8px; border:1px sol
 button:disabled { opacity:.5; cursor:not-allowed } .btn-ghost { background:transparent; color:var(--accent) } .danger { background:transparent; color:var(--danger); border-color:var(--danger) }
 input[type=text], input:not([type]), input[type=password], input[type=number], select, textarea { font:inherit; padding:6px 8px; border:1px solid var(--line); border-radius:8px }
 /* 2026-11-03: 안내 바에는 도구(언어·전문가 보기)만 남는다 — 단계 칩·다음 할 일(.bar-steps/.bar-next) 규칙은 옛 마크업 호환으로 둔다. */
-#demoBar { position:sticky; top:0; z-index:5; background:var(--card); border-bottom:1px solid var(--line); padding:8px var(--gap); display:flex; justify-content:flex-end; gap:6px 16px; align-items:center }
+#demoBar { position:sticky; top:0; z-index:5; background:var(--card); border-bottom:1px solid var(--line); padding:8px var(--gap); display:flex; flex-wrap:wrap; justify-content:flex-end; gap:6px 16px; align-items:center }   /* wrap: 상태 패널(.stack-panel)이 다음 줄 전체 폭으로 내려온다(리뷰 2026-11-03 I-4) */
 .bar-steps { display:flex; flex-wrap:wrap; gap:6px } .step { display:flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px; border:1px solid var(--line); font-size:13px; color:var(--muted) }
 .step .n { width:20px; height:20px; border-radius:50%; background:#e9edf5; display:grid; place-items:center; font-size:12px; font-weight:700 }
 .step.done { color:var(--ok); border-color:#bfe3c9 } .step.done .n { background:#e3f4e8 } .step.current { color:var(--accent); border-color:var(--accent); font-weight:600 } .step.current .n { background:var(--accent); color:#fff } .step.elsewhere { opacity:.6 }
@@ -37,7 +37,7 @@ table.list { width:100%; border-collapse:collapse; font-size:14px } table.list t
 .dot::before { content:''; width:8px; height:8px; border-radius:50%; background:#9aa4b2 }
 .dot.ok::before { background:var(--ok) } .dot.warn::before { background:var(--warn) } .dot.bad::before { background:var(--bad) }
 .dot[aria-expanded="true"] { border-color:var(--accent) }
-.stack-panel { grid-column:1 / -1; border-top:1px solid var(--line); padding-top:8px; display:grid; gap:6px }
+.stack-panel { grid-column:1 / -1; flex-basis:100%; border-top:1px solid var(--line); padding-top:8px; display:grid; gap:6px }
 .stack-panel .panel-title { font-size:13px; color:var(--muted) }
 .stack-panel .row { display:grid; grid-template-columns:auto 1fr; gap:10px; font-size:13px }
 .stack-panel .row .name { color:var(--muted); min-width:84px } .stack-panel .row > div { min-width:0 }

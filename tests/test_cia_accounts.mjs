@@ -37,6 +37,7 @@ try {
     assert.equal(noId.status, 400, 'id 없음'); assert.equal(noId.body.reason, 'bad_id');
     assert.equal((await withJar('/cia/signup', { method: 'POST', body: JSON.stringify({ id: 'ab', pwd: 'password-1' }) })).body.reason, 'bad_id', '2자');
     assert.equal((await withJar('/cia/signup', { method: 'POST', body: JSON.stringify({ id: 'bad id!', pwd: 'password-1' }) })).body.reason, 'bad_id', '허용 밖 문자');
+    assert.equal((await withJar('/cia/signup', { method: 'POST', body: JSON.stringify({ id: '12345', pwd: 'password-1' }) })).body.reason, 'bad_id', '숫자만인 아이디는 uid 와 겹쳐 금지(리뷰 I-1)');
     const a = await withJar('/cia/signup', { method: 'POST', body: JSON.stringify({ id: 'user-1', pwd: 'password-1' }) });
     assert.equal(a.status, 201, j(a.body)); assert.equal(a.body.uid, '100001'); assert.equal(a.body.id, 'user-1');
     const dup = await withJar('/cia/signup', { method: 'POST', body: JSON.stringify({ id: 'USER-1', pwd: 'password-9' }) });
@@ -56,6 +57,10 @@ try {
     assert.equal(li.status, 200, j(li.body)); assert.equal(li.body.uid, uid); assert.equal(li.body.id, 'User.3');
     const byUid = await makeJar(cia.base)('/cia/user/login', { method: 'POST', body: JSON.stringify({ uid, pwd: 'password-3' }) });
     assert.equal(byUid.status, 200, j(byUid.body), 'uid 로그인(옛 경로)도 그대로');
+    const byUidAsId = await makeJar(cia.base)('/cia/user/login', { method: 'POST', body: JSON.stringify({ id: uid, pwd: 'password-3' }) });
+    assert.equal(byUidAsId.status, 200, j(byUidAsId.body), '아이디 칸에 uid 를 넣어도 된다(리뷰 I-2: 아이디 없는 계정의 /user 로그인)');
+    const seedById = await makeJar(cia.base)('/cia/user/login', { method: 'POST', body: JSON.stringify({ id: 'TestUser', pwd: 'password123' }) });
+    assert.equal(seedById.status, 200, j(seedById.body)); assert.equal(seedById.body.uid, '12345', '시드 계정은 이름이 아이디(대소문자 무시)');
     const me = await withJar('/cia/user/me');
     assert.equal(me.status, 200, j(me.body));
     assert.equal(me.body.uid, uid); assert.equal(me.body.id, 'User.3'); assert.equal(me.body.registered, false);
@@ -107,6 +112,9 @@ try {
     assert.equal(mism.status, 403, j(mism.body)); assert.equal(mism.body.reason, 'auid_mismatch');
     const ok = await cia.post('/cia/auth/code', { uid: authUid, pwd: authPwd, auid: authReg.auid.toString() });
     assert.equal(ok.status, 200, j(ok.body));
+    assert.equal((await cia.post('/cia/auth/code', { id: 'USER-5', pwd: authPwd, auid: authReg.auid.toString() })).status, 200, '인증 창의 아이디 경로');
+    assert.equal((await cia.post('/cia/auth/code', { id: authUid, pwd: authPwd, auid: authReg.auid.toString() })).status, 200, '아이디 칸에 10진 uid 를 넣어도 된다');
+    assert.equal((await cia.post('/cia/auth/code', { id: 'nobody', pwd: authPwd, auid: authReg.auid.toString() })).status, 401, '모르는 아이디');
     assert.ok(typeof ok.body.code === 'string' && typeof ok.body.expiresAt === 'number');
   });
 

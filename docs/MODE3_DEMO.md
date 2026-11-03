@@ -1355,8 +1355,8 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
   대체해 localhost 오리진의 사용자 페이지에서 돈다.
 - `node scripts/screenshot_mode3.mjs` — 테스트는 아니고 **화면 캡처**다. `browser` 그룹과 같은 전제(:8545,
   `build/mode3`, Chrome)로 격리 스택을 file 모드로 띄워 네 페이지를 ko·en·전문가(+좁은 창)로 찍는다. 기본 출력은
-  `results/mode3_ux_20260924/`(`--out` 으로 바꾼다). **`--tour`** 를 주면 대신 체험 모드 네 장면(RP 잠김·지갑
-  말풍선·잠금 해제·상태 패널)을 `results/mode3_ux_20260925/` 에 찍는다. 끝나면 스택과 브라우저를 내린다.
+  `results/mode3_ux_20260924/`(`--out` 으로 바꾼다). 지갑은 탭 구조(2026-11-03)라 스크립트가 보내기 탭과 접힌 조건을 열어
+  찍는다. `--tour`(체험 모드 네 장면)는 체험 모드 제거와 함께 2026-11-03 에 삭제됐다. 끝나면 스택과 브라우저를 내린다.
 - `bash scripts/run_tests.sh snap` — Snap RPC 9종의 단위 테스트(`snap-mode3/test/rpc.test.mjs`, 전역 `snap` 객체를 스텁).
   체인도 브라우저도 필요 없지만 `snap-mode3/node_modules` 를 전제하므로(`cd snap-mode3 && npm install`) `unit` 이 아니라
   별도 그룹이다. `node snap-mode3/test/rpc.test.mjs` 로 직접 돌려도 같다.

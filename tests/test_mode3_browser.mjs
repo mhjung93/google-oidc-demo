@@ -206,7 +206,7 @@ try {
 
   await t('지갑 페이지: snap 모드 화면이 켜지고 MetaMask 연결이 된다', async () => {
     await walletPage.waitForSelector('#connectCard:not([hidden])', { timeout: 15_000 });   // snap 모드는 연결 전에 연결 카드만 보인다(2026-11-03)
-    assert.equal(await walletPage.isHidden('#fileRegFields'), true, 'snap 모드는 uid·pwd 폼을 숨긴다');
+    assert.equal(await walletPage.$eval('#fileRegFields', (el) => el.hidden), true, 'snap 모드는 uid·pwd 폼을 숨긴다(게이트와 무관하게 요소 자체의 hidden 으로 본다)');
     await walletPage.click('#connectBtn');
     await waitText(walletPage, '#mmStatus', account);
     assert.ok((await text(walletPage, '#mmStatus')).includes(cfg.snapId), 'Snap 연결 표시');
