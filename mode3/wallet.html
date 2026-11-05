@@ -65,9 +65,9 @@
       <p class="desc" data-i18n="wallet_identity_desc">IdP 에 한 번 등록합니다. 속성은 내가 넣고 IdP 는 값을 모릅니다.</p>
       <p class="status-line"><span id="regBadge" class="badge">미등록</span> <span id="regInfo" class="muted"></span></p>
       <dl class="kv">
-        <dt data-term="AA">IdP</dt><dd id="aaInfo">-</dd>
-        <dt data-term="cred">내 자격증명</dt><dd id="credInfo">-</dd>
-        <dt data-term="registry">등록부</dt><dd><span id="registryBadge" class="badge muted">-</span> <span id="registryInfo"></span></dd>
+        <dt data-i18n="wallet_idp_label">zkID</dt><dd id="aaInfo">-</dd>
+        <dt data-term="cred" hidden>내 자격증명</dt><dd id="credInfo" hidden>-</dd>   <!-- 2026-11-05: 사용자가 할 일이 없는 정보라 숨긴다(값은 채워 둔다) -->
+        <dt data-i18n="wallet_registry_label">등록 상태</dt><dd><span id="registryBadge" class="badge muted">-</span> <span id="registryInfo"></span></dd>
       </dl>
       <!-- snap 모드 등록 안내(Task 14, B5) — 등록이 IdP /user 페이지(mode3-register 팝업)에서 일어나므로 미등록일 때만 보인다
            (renderIdentity). file 모드는 아래 registerBtn 을 쓴다. -->
@@ -130,7 +130,7 @@
         <dt data-i18n="wallet_tx_session">보낼 세션</dt><dd><select id="txSession"></select></dd>
         <dt data-i18n="wallet_tx_to">받는 주소</dt><dd><input id="txTo" value="0x000000000000000000000000000000000000dEaD" size="44" /></dd>
         <dt data-i18n="wallet_tx_value">보낼 금액(ETH)</dt><dd><input id="txValue" value="0" size="10" inputmode="decimal" /></dd>
-        <dt data-i18n="wallet_tx_data">데이터</dt><dd><input id="txData" value="0x" size="20" /></dd>
+        <dt data-i18n="wallet_tx_data" id="txDataLabel" hidden>데이터</dt><dd id="txDataRow" hidden><input id="txData" value="0x" size="20" /></dd>   <!-- 2026-11-05: 조건 증명 버튼이 채울 때만 보인다 -->
       </dl>
       <!-- 2026-11-03: 평소에는 접어 둔다. claimBtn 이 채운 조건이 보이게 스스로 연다 — tests/test_mode3_browser.mjs 는 안의 값을
            inputValue·isChecked 로만 읽어 접힘과 무관하다. -->
@@ -951,7 +951,7 @@
       tte(badge, s?.registered ? 'wallet_reg_yes' : 'wallet_reg_no');
       const uc = s?.userCred ?? null;
       const credKey = !uc ? 'wallet_cred_none' : uc.revoked === true ? 'wallet_cred_revoked' : uc.revoked === false ? 'wallet_cred_yes' : 'wallet_cred_unknown';
-      $('regInfo').textContent = s?.registered ? tt('wallet_uid', { uid: s.uid }) : '';
+      $('regInfo').textContent = '';   // 2026-11-05: uid 는 사용자 화면에 보이지 않는다(배지 '등록됨' 만)
       $('credInfo').textContent = tt(credKey) || '-';
       $('aaInfo').textContent = s?.ciaUrl || tt('wallet_aa_none') || '-';
       // 등록 폼은 미등록일 때만 펼친다(설계 §4.1). snap 모드는 Snap 이 묻는다 — 항상 접힌 채다.
@@ -1086,10 +1086,8 @@
       for (const p of items) {
         const box = document.createElement('div');
         const line = document.createElement('span');
-        line.append(`${rpLabel(p)} · `);   // RP 이름(에이전트가 폐기 때 적어 둔 serviceName·origin, 없으면 arid 앞자리) — 2026-11-05
+        line.append(`${rpLabel(p)} · ${tt('wallet_tx_session_account') || '계정'} `);   // RP 이름(에이전트가 폐기 때 적어 둔 serviceName·origin) · 계정 · 허용 거래 수 — 세션키 번호는 뺐다(2026-11-05)
         line.appendChild(shortCode(p.account, 12));
-        line.append(' · ');
-        line.appendChild(shortCode(p.pk_i, 10));
         line.append(` · ${tt('wallet_bound_label') || '허용 거래 수'} ${p.bound}`);
         const badge = document.createElement('span');
         badge.className = 'badge warn';
@@ -1542,7 +1540,7 @@
       const c = lastSessions[$('txSession').value];
       if (!c || !c.attrGateAddress) return;
       $('txTo').value = c.attrGateAddress;
-      $('txData').value = '0x4e71d92d';
+      $('txData').value = '0x4e71d92d'; $('txDataLabel').hidden = false; $('txDataRow').hidden = false;
       $('discloseBox').open = true;   // 2026-11-03: 채운 조건이 보이게
       if (!$('dk0').checked) {
         const minAge = Number(c.minAge ?? cfg.minAge ?? 19);

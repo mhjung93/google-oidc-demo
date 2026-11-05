@@ -224,8 +224,7 @@ try {
     // 2026-11-03 재구성: 로그인 화면 → "계정 만들기" → 아이디·비밀번호·확인 → 가입되면 로그인 화면으로 돌아오고 아이디가 채워져 있다.
     assert.equal(await u.isHidden('#registerBtn'), true, '로그인 전에는 등록 카드가 없다');
     await u.click('#showSignupBtn'); await u.fill('#signupId', 'demo-user'); await u.fill('#signupPwd', DEMO_PWD); await u.fill('#signupPwd2', DEMO_PWD); await u.click('#signupBtn');
-    await waitText(u, '#userVerdict', 'uid');
-    uid = await u.$eval('#userVerdict', (e) => e.textContent.match(/uid\s*(\d+)/)[1]);
+    await waitText(u, '#userVerdict', '가입했습니다');   // 2026-11-05: 가입 문구에 uid 는 없다 — uid 는 등록 뒤 지갑 상태에서 받는다
     assert.equal(await u.inputValue('#loginId'), 'demo-user', '가입한 아이디가 로그인 폼에 채워진다');
     await u.fill('#loginPwd', DEMO_PWD); await u.click('#loginBtn'); await waitText(u, '#meBadge', '등록 전');
     assert.equal(await u.isHidden('#revokeCard'), true, '등록 전에는 폐기 카드가 없다');
@@ -234,7 +233,7 @@ try {
     await waitText(u, '#meBadge', '등록됨', 60_000);
     assert.equal(await u.isVisible('#revokeCard'), true, '등록 뒤에는 폐기 카드가 보인다'); assert.equal(await u.isHidden('#registerBtn'), true, '등록 뒤에는 등록 버튼이 없다');
     assert.equal(dialogs.length, dBefore, '등록에 Snap 확인 창이 뜨지 않는다');
-    const st = (await wallet.get('/wallet/status')).body; assert.equal(st.uid, uid); AUID = st.auid; await u.close();
+    const st = (await wallet.get('/wallet/status')).body; assert.match(String(st.uid), /^[0-9]+$/); uid = st.uid; AUID = st.auid; await u.close();
     await awaitPopupClosed(popup);
   });
   await t('지갑 페이지 제목은 "지갑", 신원 카드에 auid·salt 와 복사 버튼', async () => {
@@ -630,7 +629,7 @@ try {
     await p.fill('#signupId', 'demo-user-2'); await p.fill('#signupPwd', 'demo-pass-1'); await p.fill('#signupPwd2', 'demo-pass-X'); await p.click('#signupBtn');
     await waitText(p, '#signupVerdict', 'pwd_mismatch');
     await p.fill('#signupPwd2', 'demo-pass-1'); await p.click('#signupBtn');
-    await waitText(p, '#userVerdict', 'uid'); assert.equal(await p.inputValue('#loginId'), 'demo-user-2');
+    await waitText(p, '#userVerdict', '가입했습니다'); assert.equal(await p.inputValue('#loginId'), 'demo-user-2');
     // 같은 아이디(대소문자만 다른)로 다시 가입하면 409 id_taken.
     await p.click('#showSignupBtn'); await p.fill('#signupId', 'DEMO-USER-2'); await p.fill('#signupPwd', 'demo-pass-1'); await p.fill('#signupPwd2', 'demo-pass-1'); await p.click('#signupBtn');
     await waitText(p, '#signupVerdict', 'id_taken'); await p.click('#showLoginBtn');

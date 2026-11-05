@@ -115,7 +115,7 @@ try {
     await popup.waitForSelector('#gsiBox .gsi-stub', { timeout: 30_000 });
     assert.equal(dialogs.length, dBefore, 'Snap 등록 확인 창은 없다(2026-11-05 중복 확인 제거)');
     await popup.click('#gsiBox .gsi-stub');
-    await waitText(u, '#userVerdict', uidOf(stub.provider, SUB).slice(0, 8), 60_000);
+    await waitText(u, '#userVerdict', '등록됨', 60_000);   // 2026-11-05: uid 는 화면에 보이지 않는다 — 지갑 상태로 본다
     const st = (await wallet.get('/wallet/status')).body;
     assert.equal(st.provider, stub.provider); assert.equal(st.uid, uidOf(stub.provider, SUB));
     assert.equal(JSON.parse(JSON.stringify(snapState)).registration.uid, st.uid, 'Snap 보류 등록에 uid 가 채워졌다');
@@ -130,7 +130,7 @@ try {
     const u = await context.newPage(); await u.goto(`${cia.base}/user`);
     await u.waitForSelector('#registerGoogleBtn:not([hidden])', { timeout: 15_000 });
     const [popup] = await Promise.all([context.waitForEvent('page'), u.click('#registerGoogleBtn')]);   // prepareRegister 는 확인 창 없이 같은 비밀을 돌려준다
-    await waitText(u, '#userVerdict', full.uid.slice(0, 8), 60_000);
+    await waitText(u, '#userVerdict', '등록됨', 60_000);   // 2026-11-05: 결과 문구에 uid 는 없다 — 복원된 uid 는 아래 Snap 상태로 본다
     assert.equal(await popup.$('#gsiBox .gsi-stub'), null, '복구는 Google 로그인을 다시 하지 않는다');
     const back = JSON.parse(JSON.stringify(snapState.registration));
     for (const k of ['uid', 'auid', 'slot', 'provider', 's_u', 'sk_u']) assert.equal(back[k], full[k], `복구된 Snap 등록.${k}`);
@@ -168,7 +168,7 @@ try {
     await walletPage.click('#selfRevokeBtn');
     await walletPage.waitForSelector('#gsiBox .gsi-stub', { timeout: 15_000 });
     await walletPage.click('#gsiBox .gsi-stub');
-    await waitText(walletPage, '#snapVerdict', uidOf(stub.provider, SUB).slice(0, 8), 30_000);
+    await waitText(walletPage, '#snapVerdict', '폐기를 zkID 에 요청', 60_000);   // 2026-11-05: 결과 문구에 uid 는 없다
     assert.equal(dialogs.length, before, 'Snap 비밀번호 프롬프트를 띄우지 않는다');
     const a = (await cia.adminGet('/cia/accounts')).body.accounts.find((x) => String(x.uid) === uidOf(stub.provider, SUB));
     assert.equal(a?.disabled, true);

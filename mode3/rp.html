@@ -75,7 +75,7 @@
       <div id="assetsLoggedIn" hidden>
         <h2 data-i18n="assets_title">내 자산</h2>
         <dl class="kv account-kv">
-          <dt data-term="PPID">이 RP 에서의 내 주소</dt><dd><code id="accountPPID">-</code> <button type="button" id="copyPpidBtn" class="copy-btn" title="복사" aria-label="복사" data-i18n-title="rp_copy_btn_title">⧉</button></dd>
+          <dt data-i18n="rp_my_account_addr">내 계정 주소</dt><dd><code id="accountPPID">-</code> <button type="button" id="copyPpidBtn" class="copy-btn" title="복사" aria-label="복사" data-i18n-title="rp_copy_btn_title">⧉</button></dd>
         </dl>
         <!-- 2026-11-05(B안): 잔액은 0 에서 시작한다. KRW 는 RP 의 시연용 장부, ETH 는 세션 계정의 실제 체인 잔액(로그인·입금·구매·출금 뒤 RP 에 다시 묻는다). BTC 는 체인에 없어 뺐다. -->
         <ul class="balance-list">
@@ -218,6 +218,7 @@
     let walletCfgLoaded = false;
     let walletCfgError = null;              // 못 읽었을 때의 원문(화면·언어 전환에서 다시 쓴다)                    // 마지막으로 받아온 로그인 기록(언어·전문가 전환 때 다시 그린다)
     let lastPPID = null;                    // 직전 로그인의 PPID — 같은 주소가 다시 나오는지 한 줄 요약에 쓴다
+    let lastAccount = null;                 // 2026-11-05: 세션 계정의 0x 주소(잔액 조회 응답) — 배지·"내 계정 주소" 에 PPID 숫자 대신 보인다(사용자 결정)
     const progress = { used: false, disclosed: false, opened: false, login2: false };   // 이 페이지가 아는 완료 신호(세션 중 메모리)
     // U6(2026-10-14): 지갑 health 의 rpOrigins(/mode3/health, Demo.stack 가 이미 폴링 중)에서 내 오리진이 첫 번째가
     // 아니면 "두 번째 RP"다 — login2 단계(두 번째 RP 로그인) 말풍선·"다른 창에서" 카드 판정에 쓴다.
@@ -326,7 +327,7 @@
       const prev = btn.textContent; btn.textContent = tt('rp_copied') || '복사됨'; btn.classList.add('copied');
       setTimeout(() => { btn.textContent = prev; btn.classList.remove('copied'); }, 1200);
     }
-    for (const id of ['copyPpidBtn', 'copyPpidNavBtn']) $(id).addEventListener('click', () => copyText(lastPPID, $(id)));
+    for (const id of ['copyPpidBtn', 'copyPpidNavBtn']) $(id).addEventListener('click', () => copyText(lastAccount ?? lastPPID, $(id)));
     let lastTxHash = null;   // 마지막 온체인 출금의 txHash — 결과 아래 ⧉ 가 복사한다
     $('copyTxHashBtn').addEventListener('click', () => copyText(lastTxHash, $('copyTxHashBtn')));
     function renderAccountView() {
@@ -336,11 +337,12 @@
       $('loginBtn').hidden = loggedIn;   // 2026-11-05: "지갑 연결"(MetaMask 배지) 버튼은 로그인에 필요 없어 뺐다(사용자 결정)
       $('assetsLoggedOut').hidden = loggedIn;
       $('assetsLoggedIn').hidden = !loggedIn;
-      const shortPPID = lastPPID ? `${lastPPID.slice(0, 10)}…` : '-';
-      $('accountAddr').textContent = shortPPID;
-      $('accountPPID').textContent = shortPPID;
-      $('accountPPID').title = lastPPID ?? ''; $('accountAddr').title = lastPPID ?? '';
-      $('copyPpidBtn').hidden = !lastPPID;   // 주소가 있을 때만(복사할 값이 있을 때만) 보인다
+      // 0x 계정 주소(잔액 조회 뒤)를 우선 보이고, 아직 없으면 PPID 앞자리(2026-11-05).
+      const shown = lastAccount ? `${lastAccount.slice(0, 6)}…${lastAccount.slice(-4)}` : lastPPID ? `${lastPPID.slice(0, 10)}…` : '-';
+      $('accountAddr').textContent = shown;
+      $('accountPPID').textContent = shown;
+      $('accountPPID').title = lastAccount ?? lastPPID ?? ''; $('accountAddr').title = lastAccount ?? lastPPID ?? '';
+      $('copyPpidBtn').hidden = !(lastAccount || lastPPID);   // 복사할 값이 있을 때만 보인다
     }
     // 2026-11-05: 로그인 전에는 "자산"·"잔액·출금" 탭의 대상 절이 숨겨져 있어 눌러도 아무 반응이 없었다 — 로그인 카드로 안내한다.
     for (const a of document.querySelectorAll('.nav-link[href="#assets"], .nav-link[href="#balance"]')) a.addEventListener('click', (e) => {
@@ -365,7 +367,7 @@
     // 서버가 재시작돼 세션이 사라졐으면 복원 뒤 /api/mode3/sessions 대조에서 걸러 다시 로그아웃 상태가 된다. 비밀은 없다(r_s·PPID·allowAgent 만).
     const SESSION_KEY = 'mode3.rp.session';
     function saveSession(r_s, allowAgent) {
-      try { if (r_s) localStorage.setItem(SESSION_KEY, JSON.stringify({ r_s, allowAgent, PPID: lastPPID })); else localStorage.removeItem(SESSION_KEY); } catch { /* 저장소가 막혀 있으면 탭 안에서만 유지 */ }
+      try { if (r_s) localStorage.setItem(SESSION_KEY, JSON.stringify({ r_s, allowAgent, PPID: lastPPID, account: lastAccount })); else localStorage.removeItem(SESSION_KEY); } catch { /* 저장소가 막혀 있으면 탭 안에서만 유지 */ }
     }
     async function restoreSession() {
       let saved = null;
@@ -375,7 +377,7 @@
         const { sessions } = await (await fetch('/api/mode3/sessions')).json();
         if (!(sessions ?? []).some((x) => x.r_s === `${String(saved.r_s).slice(0, 8)}…`)) { try { localStorage.removeItem(SESSION_KEY); } catch { /* */ } return; }   // 서버에 없는 세션(재시작·폐기)
       } catch { return; }   // RP 서버를 못 읽으면 복원하지 않는다(다음 로드에 다시 시도)
-      lastPPID = saved.PPID ?? null;
+      lastPPID = saved.PPID ?? null; lastAccount = saved.account ?? null;
       setSession(saved.r_s, saved.allowAgent ?? null);
       refreshSessionMeta();
     }
@@ -408,6 +410,7 @@
     function setSession(r_s, allowAgent = null) {
       const changed = r_s !== currentSession;
       currentSession = r_s;
+      if (!r_s) lastAccount = null;
       currentSessionAllowAgent = r_s ? allowAgent : null;
       saveSession(r_s, currentSessionAllowAgent);
       if (changed) resetSessionViews(!r_s);
@@ -792,6 +795,7 @@
     // 성공이면 응답 본문, 실패면 null 을 돌려주고 판정 카드는 여기서 그린다(okTitle·okSummary 는 호출자가 준다).
     const ledgerEls = () => Object.fromEntries([...document.querySelectorAll('.balance-list li[data-asset]')].map((li) => [li.dataset.asset, li.querySelector('.bal-amt')]));
     function applyLedger(bal) {
+      if (bal?.account && bal.account !== lastAccount) { lastAccount = bal.account; renderAccountView(); saveSession(currentSession, currentSessionAllowAgent); }
       const els = ledgerEls(), led = bal?.ledger ?? {};
       for (const [k, el] of Object.entries(els)) if (led[k] != null) el.textContent = led[k];
       if (bal?.priceKrw) $('buyPrice').textContent = tt('rp_buy_price', { price: Number(bal.priceKrw).toLocaleString('ko-KR') }) || `시세 ${Number(bal.priceKrw).toLocaleString('ko-KR')}원/ETH`;
@@ -879,7 +883,7 @@
         }
         if (!result.ok) { log(`팝업 ${ms(t0)}: ${result.reason ?? ''} ${result.detail ?? ''}`); setVerdict($('txVerdict'), false, 'tx_failed', { reason: result.reason ?? 'internal', detail: result }); return; }
         log(`2. 전송 ${ms(t0)}: txHash=${result.txHash}${result.deployTxHash ? `  배포 txHash=${result.deployTxHash}` : ''}  지갑=${result.wallet ?? ''}`);
-        setVerdict($('txVerdict'), true, 'tx_ok', () => ({ summary: tt('rp_tx_ok') || '전송 성공', detail: result }));   // 해시는 아래 #txHashRow 한 곳에만(2026-11-05)
+        setVerdict($('txVerdict'), true, 'tx_ok', () => ({ summary: tt('rp_tx_ok', { eth: $('txValue').value.trim() || '0' }) || `${$('txValue').value.trim() || '0'} ETH 를 보냈습니다.`, detail: result }));   // 해시는 아래 #txHashRow 한 곳에만(2026-11-05)
         lastTxHash = result.txHash; $('txHashCode').textContent = `${String(result.txHash).slice(0, 18)}…`; $('txHashCode').title = result.txHash; $('txHashRow').hidden = false;
         progress.used = true; renderGuide();
         refreshLedger();   // 보낸 만큼 ETH 가 줄어든 것을 바로 보인다(2026-11-05)
