@@ -7,14 +7,14 @@ function t(name, fn) { try { fn(); console.log(`ok   ${name}`); } catch (e) { fa
 t('기본 상태는 v12 이고 attrs·profile·issued 가 없다', () => {
   const s = defaultCiaState();
   assert.equal(s.version, 12); assert.equal(CIA_STATE_VERSION, 12);
-  assert.deepEqual(s, { version: 12, accounts: {}, rps: {}, operators: {}, rpSlots: {}, openings: [], revoked: [], pending: [], epoch: 0, registry: { depth: 20, next: 0, leaves: {}, pendingSlots: [] }, pendingBounds: [], lastPublication: null, signedEpochMax: 0, attrSchemaHash: null, nextUid: 100001, codes: {} });
+  assert.deepEqual(s, { version: 12, accounts: {}, rps: {}, operators: {}, rpSlots: {}, openings: [], revoked: [], pending: [], epoch: 0, registry: { depth: 20, next: 0, leaves: {}, pendingSlots: [] }, pendingBounds: [], lastPublication: null, signedEpochMax: 0, attrSchemaHash: null, nextUid: 100001, codes: {}, loginIds: {} });   // loginIds: 2026-11-03 아이디 가입 색인
 });
 t('v12 는 그대로(notes 없음), 빠진 하위 필드는 채운다(nextUid·codes 포함), 계정 기본값(creds·sessions·tampered·receipt·slotRetired·provider·pwSalt·pwHash·pwAlgo·createdAt)', () => {
   const { state, notes } = migrateCiaState({ version: 12, accounts: { '12345': { pk_u: { x: '1', y: '2' }, auid: '99', slot: 0, disabled: false } }, rps: {}, openings: [], revoked: [], pending: [], epoch: 3, registry: {} });
   assert.deepEqual(notes, []); assert.equal(state.epoch, 3);
   assert.deepEqual(state.registry, { depth: 20, next: 0, leaves: {}, pendingSlots: [] });
   assert.equal(state.nextUid, 100001, '옛(이 필드 이전) 파일은 100001 부터'); assert.deepEqual(state.codes, {});
-  assert.deepEqual(state.accounts['12345'], { pk_u: { x: '1', y: '2' }, auid: '99', slot: 0, disabled: false, creds: [], sessions: [], tampered: false, receipt: null, slotRetired: false, provider: 'demo', pwSalt: null, pwHash: null, pwAlgo: null, createdAt: null });
+  assert.deepEqual(state.accounts['12345'], { pk_u: { x: '1', y: '2' }, auid: '99', slot: 0, disabled: false, creds: [], sessions: [], tampered: false, receipt: null, slotRetired: false, provider: 'demo', pwSalt: null, pwHash: null, pwAlgo: null, createdAt: null, loginId: null });   // loginId: 2026-11-03
   assert.equal(state.signedEpochMax, 0); assert.equal(state.attrSchemaHash, null, '스키마 해시는 cia.js 기동이 기록한다');
 });
 t('Task 11(B2, 2026-10-22): 옛(이 필드 이전) 파일에 operators·rpSlots 가 빈 값으로 채워지고, 옛 rps 엔트리는 operator:null 인 레거시로 읽힌다', () => {
@@ -34,7 +34,7 @@ t('Task 11(B2): 이미 operators·rpSlots·rps[*].operator 가 있는 파일은 
 });
 t('Task 10(B1, 2026-10-22): 가입만 하고 등록 전인 계정(pk_u·auid·slot 모두 null)은 그대로 통과하고 pwSalt·pwHash·createdAt 이 채워진다, pwHash 있는데 pwAlgo 없으면 scrypt로 본다', () => {
   const { state } = migrateCiaState({ ...defaultCiaState(), accounts: { '100001': { pk_u: null, auid: null, slot: null, disabled: false, pwSalt: 'a', pwHash: 'b', createdAt: 'c' } } });
-  assert.deepEqual(state.accounts['100001'], { pk_u: null, auid: null, slot: null, disabled: false, pwSalt: 'a', pwHash: 'b', pwAlgo: 'scrypt', createdAt: 'c', creds: [], sessions: [], tampered: false, receipt: null, slotRetired: false, provider: 'demo' });
+  assert.deepEqual(state.accounts['100001'], { pk_u: null, auid: null, slot: null, disabled: false, pwSalt: 'a', pwHash: 'b', pwAlgo: 'scrypt', createdAt: 'c', creds: [], sessions: [], tampered: false, receipt: null, slotRetired: false, provider: 'demo', loginId: null });
 });
 t('Task 10: pk_u:null 인데 auid 또는 slot 이 null 이 아니면(손상) throw', () => {
   const mk = (over) => ({ ...defaultCiaState(), accounts: { '1': { pk_u: null, auid: null, slot: null, disabled: false, ...over } } });
