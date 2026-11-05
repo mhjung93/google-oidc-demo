@@ -471,8 +471,37 @@ app.post('/api/mode3/revalidate', async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });
 
-// 2026-10-21: RP 페이지의 "현재 잔액 확인" — 세션 서명 검증 뒤 돌려주는 거래소 꾸밈의 시연용 잔액(실제 장부 없음, rp.html 의 내 자산 목록과 같은 값).
-const DEMO_LEDGER = { KRW: '1,000,000', BTC: '0.02', ETH: '0.5' };
+// 2026-11-05(B안): 거래소 꾸밈 장부 — KRW 는 RP 메모리 장부(PPID 별, 재시작하면 0), ETH 는 세션 계정(팩토리 computeAddress(PPID))의 **실제 체인 잔액**.
+// "입금(시연)" 은 KRW 를 더하고, "구매" 는 시세로 KRW 를 깎은 뒤 RP 릴레이어가 그 수량의 ETH 를 세션 계정으로 실제로 보낸다 — 그래야 "온체인 출금" 이
+// 그 계정에서 진짜 ETH 를 내보낼 수 있다(그전에는 넣어 주는 곳이 없어 0 wei 만 성공했고, 잔액은 고정 상수 KRW 1,000,000·BTC 0.02·ETH 0.5 였다).
+// 본문은 세션키로 서명되므로 금액은 위조할 수 없고, 같은 서명 본문의 재전송(입금·구매 되풀이)은 본문 끝의 클라이언트 시각(±5분)과 "쓴 본문" 집합으로 막는다.
+// 2026-10-21 의 "온체인 계정 잔액은 내지 않는다" 는 사용자 결정으로 되돌렸다(2026-11-05).
+const ETH_PRICE_KRW = 4_210_000n;            // rp.html 시세표의 ETH 가격과 같은 값(표는 장식으로 흔들리지만 체결은 이 고정값)
+const DEMO_DEPOSIT_KRW = 1_000_000n;
+const LEDGER_TS_WINDOW_MS = 5 * 60_000;
+const krwLedger = new Map();                  // PPID → bigint KRW
+const usedLedgerBodies = new Set();           // `${PPID}|${body}` — 입금·구매 재전송 방지(메모리)
+const fmtKrw = (n) => n.toLocaleString('ko-KR');
+/** '0.05' 같은 ETH 10진 문자열 → wei(bigint), 형식이 틀리면 null. 소수 18자리까지. */
+const parseEth = (str) => { const m = /^([0-9]+)(?:\.([0-9]{1,18}))?$/.exec(str); return m ? BigInt(m[1]) * 10n ** 18n + BigInt(((m[2] ?? '') + '0'.repeat(18)).slice(0, 18)) : null; };
+/** wei → 사람이 읽는 ETH('0.05', '1', '0') — 뒤따르는 0 과 점을 뗀다. */
+const fmtEth = (wei) => ethers.formatEther(wei).replace(/\.?0+$/, '') || '0';
+const accountOf = (PPID) => (reg.factoryAddress ? new ethers.Contract(reg.factoryAddress, FACTORY_ABI, provider).computeAddress(BigInt(PPID)) : Promise.resolve(null));
+async function ledgerView(PPID) {
+  const account = await accountOf(PPID);
+  let wei = null;
+  if (account) { try { wei = await provider.getBalance(account); } catch { wei = null; } }
+  return { ledger: { KRW: fmtKrw(krwLedger.get(PPID) ?? 0n), ETH: wei === null ? '-' : fmtEth(wei) }, account, ethWei: wei === null ? null : wei.toString(), priceKrw: ETH_PRICE_KRW.toString() };
+}
+/** 입금·구매 본문의 재전송 방지 — 클라이언트 시각이 ±5분 안이고 같은 (PPID, 본문) 을 아직 쓰지 않았을 때만 true(그리고 쓴 것으로 적는다). */
+function freshLedgerBody(PPID, body, tsMs) {
+  if (!Number.isFinite(tsMs) || Math.abs(Date.now() - tsMs) > LEDGER_TS_WINDOW_MS) return false;
+  const key = `${PPID}|${body}`;
+  if (usedLedgerBodies.has(key)) return false;
+  usedLedgerBodies.add(key);
+  if (usedLedgerBodies.size > 5000) usedLedgerBodies.delete(usedLedgerBodies.values().next().value);
+  return true;
+}
 app.post('/api/mode3/request', async (req, res) => {
   try {
     if (!verifier) return res.status(503).json({ ok: false, reason: inactiveReason() });
@@ -494,8 +523,34 @@ app.post('/api/mode3/request', async (req, res) => {
     if (view.head - view.lastPublishedBlock > EFFECTIVE_MAX_ROOT_AGE) return res.status(503).json({ ok: false, reason: 'root_too_old' });
     if (!verifySessionRequest({ pk_i: s.pk_i, r_s: rsKey, body, sig })) return res.status(401).json({ ok: false, reason: 'bad_signature' });
     requestCount++;
-    // 'balance'(2026-10-21): 거래 없이 세션으로 RP 와 상호작용하는 예 — 시연용 장부를 돌려준다.
-    if (body === 'balance') return res.json({ ok: true, echo: body, PPID: s.PPID, balance: { ledger: DEMO_LEDGER } });   // 온체인 계정 잔액은 내지 않는다(사용자 요청 2026-10-21)
+    // 'balance'(2026-10-21, B안 2026-11-05): KRW 장부 + 세션 계정의 실제 ETH 잔액.
+    if (body === 'balance') return res.json({ ok: true, echo: body, PPID: s.PPID, balance: await ledgerView(s.PPID) });
+    // 'deposit:<ms>'(2026-11-05): KRW 입금(시연) — 고정 금액을 장부에 더한다.
+    const dep = /^deposit:([0-9]{10,16})$/.exec(body);
+    if (dep) {
+      if (!freshLedgerBody(s.PPID, body, Number(dep[1]))) return res.status(409).json({ ok: false, reason: 'request_replayed' });
+      krwLedger.set(s.PPID, (krwLedger.get(s.PPID) ?? 0n) + DEMO_DEPOSIT_KRW);
+      return res.json({ ok: true, echo: body, PPID: s.PPID, depositedKrw: DEMO_DEPOSIT_KRW.toString(), balance: await ledgerView(s.PPID) });
+    }
+    // 'buy:<eth>:<ms>'(2026-11-05): 시세로 KRW 를 깎고 RP 릴레이어가 그 수량의 ETH 를 세션 계정으로 보낸다(거래소가 매수한 코인을 내 계정에 넣는 셈).
+    const buy = /^buy:([0-9]+(?:\.[0-9]{1,18})?):([0-9]{10,16})$/.exec(body);
+    if (buy) {
+      const wei = parseEth(buy[1]);
+      if (wei === null || wei <= 0n) return res.status(400).json({ ok: false, reason: 'bad_amount' });
+      if (!reg.factoryAddress) return res.status(503).json({ ok: false, reason: 'relay_inactive', detail: 'no_factory' });
+      const cost = (wei * ETH_PRICE_KRW + 10n ** 18n - 1n) / 10n ** 18n;   // KRW 올림
+      const have = krwLedger.get(s.PPID) ?? 0n;
+      if (have < cost) return res.status(400).json({ ok: false, reason: 'insufficient_krw', detail: { needKrw: fmtKrw(cost), haveKrw: fmtKrw(have) } });
+      if (!freshLedgerBody(s.PPID, body, Number(buy[2]))) return res.status(409).json({ ok: false, reason: 'request_replayed' });
+      const account = await accountOf(s.PPID);
+      let tx, rc;
+      try { tx = await (await provider.getSigner(RELAYER_INDEX)).sendTransaction({ to: account, value: wei }); rc = await tx.wait(); }
+      catch (e) { return res.status(502).json({ ok: false, reason: 'buy_transfer_failed', detail: e.shortMessage ?? e.message }); }
+      krwLedger.set(s.PPID, have - cost);
+      // 관리자 페이지 거래 기록에도 남긴다(kind 'buy': 릴레이어 → 세션 계정 입금). 미배포 계정이라도 CREATE2 주소로 받아 두면 배포 뒤 그 잔액이 그대로다.
+      relayedTxs.push({ at: new Date().toISOString(), txHash: tx.hash, account, PPID: s.PPID, kind: 'buy', target: account, value: wei.toString(), deployTxHash: null, status: rc?.status === 1 ? 'success' : 'failed', blockNumber: rc?.blockNumber ?? null });
+      return res.json({ ok: true, echo: body, PPID: s.PPID, txHash: tx.hash, boughtWei: wei.toString(), costKrw: fmtKrw(cost), balance: await ledgerView(s.PPID) });
+    }
     res.json({ ok: true, echo: body, PPID: s.PPID });
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });

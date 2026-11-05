@@ -302,7 +302,12 @@ RP 페이지는 반드시 `127.0.0.1`로 연다 — 지갑 에이전트의 CORS 
 
 ## 언어·전문가 보기 (2026-09-24 UX 개선)
 
-모든 페이지 맨 위 바 오른쪽에 토글 둘이 있다. **2026-11-03 부터 이 바에는 토글 둘만 남는다** — 9단계 칩·"다음 할 일"·다른 창 링크·체험 모드 스위치는 화면을 어지럽혀 뺐다(아래 "체험 모드" 절 참고).
+**2026-11-04 부터 맨 위 안내 바(`#demoBar`)는 모든 페이지에서 숨긴다**(`mode3/common/demo.js` `init()` — 마크업은 남아 있고 `hidden`).
+언어와 전문가 보기는 URL 매개변수로 바꾼다: `?lang=en`·`?lang=ko`, `?expert=1`·`?expert=0` (예: `http://192.168.226.11:3100/?expert=1`).
+한 번 주면 아래 `localStorage` 키에 남아 다음 열기에도 유지되므로, 끄려면 `?expert=0` 을 한 번 준다. 콘솔의 `Demo.setLang()`·`Demo.setExpert()` 도 그대로다.
+아래 "토글" 설명은 바가 있던 때의 기록이다.
+
+모든 페이지 맨 위 바 오른쪽에 토글 둘이 있었다. **2026-11-03 부터 이 바에는 토글 둘만 남았다** — 9단계 칩·"다음 할 일"·다른 창 링크·체험 모드 스위치는 화면을 어지럽혀 뺐다(아래 "체험 모드" 절 참고).
 
 | 토글 | 하는 일 | `localStorage` 키 | 기본값 |
 |---|---|---|---|
@@ -317,7 +322,7 @@ RP 페이지는 반드시 `127.0.0.1`로 연다 — 지갑 에이전트의 CORS 
 - 원문 로그 요소 — RP `#log`·`#sessionLog`·`#openLog`, 지갑 `#status`·`#sessionLog`·`#txLog`·`#authLog`,
   관리자·내 계정 `#out`. 이 요소들은 꺼져 있어도 DOM 에 그대로 있다(`textContent` 를 보는 테스트는 영향받지 않는다).
 - 결과 카드의 "자세히"(원본 JSON)가 접히지 않고 펼쳐진 채 뜬다.
-- 용어 라벨에 원래 기호가 붙는다 — "이 RP 에서의 내 주소 (PPID = Poseidon(uid, s_u, chainid, arid))",
+- 용어 라벨에 원래 기호가 붙는다 — "이 RP 에서의 내 주소 (PPID = Poseidon(uid, salt, chainid, arid))",
   "로그인 세션 (r_s, pk_i, max_height)", "공개할 속성 조건 (disc_mask, lo[6], hi[6], set_sel, set_root)" 등.
 - RP 의 RP 상태 카드에 `arid`·`cert_s`·`pk_trace`·`Mode3Log`·팩토리·`AttrGate` 주소 한 줄, 로그인 기록 표에
   `세션 r_s`·`폐기 목록 root` 열, 관리자 RP 표에 `RP 식별자`(arid) 열이 더 나온다.
@@ -494,6 +499,7 @@ IdP 는 지갑 오리진을 알 방법이 없으므로 **`MODE3_WALLET_AGENT_ORI
 | 1 | 지갑 | (내 신원) "등록" — uid `12345` / pwd `password123` | 결과 카드 `등록됨`, 속성은 내가 등록 폼에 넣은 값(기본 출생연도 1990·국가 KR → `[1990, 410, 0, 0, 0, 0]`) — IdP 는 받지 않는다(D15) — "속성과 선택 공개" 절 참고 |
 | 2 | RP | (로그인) "로그인" ("AI 에이전트 허용" 체크 여부) | 결과 카드 `로그인 성공` 과 한 줄 요약("새 세션 …") — PPID·r_s·allowAgent·`새 발급=true` 는 카드의 '자세히'(전문가 보기에서는 펼쳐진 채)와 (로그인 기록) 표에서 본다. 지갑 (내 신원) 카드의 등록부 확인 줄이 `등록부에서 확인됨`(슬롯 N)으로 바뀐다(V9 §8.2). 공개 입력 33(끝의 auid_s·arid_s·r_s 는 RP 만 본다) |
 | 2a | 지갑 | (트랜잭션 보내기) "보낼 세션" 선택 → "트랜잭션 보내기" | 첫 번째 `deployed=true`·`ok=true`, 두 번째 캐시 히트·`nonce=1` |
+| 2a′ | RP → 지갑 팝업 | (2a 대신, 2026-11-04) RP (온체인 출금) "온체인 출금 실행" → 지갑 팝업 → Snap 동의 → 승인 | snap 모드에서도 된다(그전에는 web 모드 전용). 가스는 RP 릴레이어가 내므로 지갑 EOA 가 체인에 남지 않는다. 결과는 RP 카드와 `/admin` 트랜잭션 기록에 |
 | 2b | 지갑 → RP → 관리자 → RP | 지갑 페이지의 txHash 를 RP (승인 개봉) "트랜잭션 해시" 에 붙여 넣고 "해시로 요청" → 관리자에서 승인 → RP "결과 확인" | `uid=12345`, AI 에이전트 허용 여부 |
 | 3 | RP | (내 세션) "세션 재검증" | `캐시 히트=true`, 증명 0 ms, 결과 카드 `재검증 성공` |
 | 3′ | RP | (내 세션) "세션 요청 보내기" | 세션키 서명 검증 ok |
@@ -586,7 +592,7 @@ credential 은 발급 시점 head 기준 300~400 블록(그리드 양자화)에 
 | F3 | 세션 만료 `expired` | `cia.js` 를 켠 채 블록을 400 넘게 민다(`"params":["0x1a0"]`, 416블록) → 몇 초 뒤(하트비트가 root 를 새로 게시한 뒤) RP "세션 재검증" → "로그인" | 재검증 `expired`(`head > max_height`, 지갑이 정한 만료 300~400블록). 새 로그인은 성공하고 **PPID 는 같다** |
 | F4 | 잘못된 공개 조건 `bad_disclosure` / `disclosure_unsatisfiable` / `predicate_type` | 지갑 (트랜잭션 보내기) "공개할 속성 조건": 출생연도 최소 `2000`·최대 `1990` 으로 "트랜잭션 보내기"; 다음 최소 `0`·최대 `1980`; 국가 슬롯의 범위 체크박스는 비활성이라 콘솔로 `curl -s -X POST 127.0.0.1:5100/wallet/tx -H 'Content-Type: application/json' -d '{"r_s":"<세션>","to":"0x000000000000000000000000000000000000dEaD","disclose":[null,{"lo":"410","hi":"410"}]}'` | 차례로 400 `bad_disclosure`(최소 > 최대), 400 `disclosure_unsatisfiable`(1990 ∉ [0, 1980] — 체인에 보내기 전), 400 `predicate_type`(enum 슬롯에 범위 조건). 셋 다 증명을 만들지 않는다 |
 | F5 | 지갑의 잘못된 속성 `bad_attr` | 지갑 (내 신원) 출생연도를 비우고 "속성 저장"; `1800` 으로 "속성 저장"; 콘솔로 `curl -X PUT 127.0.0.1:5100/wallet/profile -H 'Content-Type: application/json' -d '{"profile":{"birthYear":"1800","country":"KR"}}'` | 400 `bad_attr`(reason `empty` — 빈 출생연도는 나이 조건을 통과시키므로 거절, 논의 2 / `range`), IdP 는 부르지 않는다. 어느 것도 자격증명을 물리지 않는다(거절된 요청은 속성을 바꾸지 않음) |
-| F6 | Snap 동의 거부 `user_denied` | `snap` 모드(아래 "MetaMask / Snap 경로")에서 RP "로그인" → 지갑 팝업의 Snap 동의 창에서 **거부** | 결과 카드 `user_denied`, 세션은 만들어지지 않고 RP 에는 아무것도 가지 않는다. 다시 "로그인" 하면 정상 |
+| F6 | Snap 동의 거부 `user_denied` | `snap` 모드(아래 "MetaMask / Snap 경로")에서 RP "온체인 출금 실행" → 지갑 팝업의 Snap 동의 창(받는 주소·금액)에서 **거부** (2026-11-05: 로그인에는 더 이상 Snap 동의 창이 없다 — 중복 확인 제거) | 결과 카드 `user_denied`, 거래는 보내지 않는다. 다시 누르면 정상 |
 
 F2·F3 는 공유 :8545 의 블록을 밀어 올리므로 다른 데모 세션의 만료를 앞당긴다(테스트 그룹 `chain` 과 같은 성질). F1·F4·F5 의 콘솔 경로는
 `tests/test_mode3_wallet_agent.mjs`, F2·F3 는 `tests/test_mode3_demo_stack.mjs` 가 고정한다.
@@ -690,8 +696,8 @@ RP 는 `Cf_s` 를 모르므로 세션을 폐기할 수 없다.
 |---|---|---|
 | `POST /cia/revoke` `{uid, scope:'session', Cf_s, sig_u?, nonce?}` | IdP | 세션 하나 폐기. **관리자 시크릿** 또는 **사용자 서명**(`Poseidon(DOMAIN_MODE3_REVOKESESS, uid, Cf_s, nonce)` 위 `sk_u` EdDSA-Poseidon). 성공 `{inserted, leaf, root, pending}` |
 | `GET /cia/admin/sessions?uid=` | IdP(관리자) | 그 계정의 세션 기록 + `expired`(그 체인 head 기준, 못 읽으면 `null`) |
-| `POST /wallet/session/revoke` `{r_s}` | 지갑 | 같은 오리진 전용(CORS 없음). 서명 후 IdP 로 중계하고 성공하면 로컬 세션 삭제. 응답 `{revoked:true, inserted, pending}`. 인증은 `r_s` 를 아는 것뿐이다(`/wallet/revalidate` 와 같은 bearer) — **Snap 동의 창은 지갑 페이지가 거치는 절차이고 에이전트는 검증하지 않는다** |
-| Snap RPC `consentRevokeSession` `{arid, issuedAt, maxHeight}` | Snap | snap 모드의 **동의 창만**. Snap 에는 Poseidon 이 없어 서명은 에이전트가 세션의 메모리 증인 `sk_u` 로 한다 |
+| `POST /wallet/session/revoke` `{r_s}` | 지갑 | 같은 오리진 전용(CORS 없음). 서명 후 IdP 로 중계하고 성공하면 로컬 세션 삭제. 응답 `{revoked:true, inserted, pending}`. 인증은 `r_s` 를 아는 것뿐이다(`/wallet/revalidate` 와 같은 bearer) — 지갑 페이지의 확인(confirm)은 페이지가 거치는 절차이고 에이전트는 검증하지 않는다(2026-11-05: Snap 동의 창은 뺐다) |
+| Snap RPC `consentRevokeSession` `{arid, issuedAt, maxHeight}` | Snap | 2026-11-05 부터 동의 창 없이 등록 여부만 보고 `{ ok:true }`(지갑 페이지는 더 이상 부르지 않는다). Snap 에는 Poseidon 이 없어 서명은 에이전트가 세션의 메모리 증인 `sk_u` 로 한다 |
 
 **사유.** "화면 문구" 는 `mode3/common/strings.js` 의 `reasons[코드].ko.title` — 페이지가 결과 카드 제목으로 쓰는 말이다
 (원인·조치 두 줄이 그 아래 붙고, 코드 자체도 제목 옆에 작게 그대로 남는다).
@@ -772,7 +778,7 @@ IdP 의 약속이다:
 | | `file`(기본) | `snap` |
 |---|---|---|
 | 등록 비밀 보관 | `mode3_wallet_state.json` | MetaMask Snap 의 암호화 상태. 에이전트 파일에는 **공개 부분만**(uid·auid·attrs·profile·`Cf_u`) |
-| 사용자 동의 | 없음(자동 처리) | Snap 대화상자 — 등록 uid·비밀번호, 로그인 동의, 속성 공개 동의, 자기 폐기 비밀번호. 트랜잭션은 MetaMask 확인 창 |
+| 사용자 동의 | 없음(자동 처리) | Snap 대화상자는 RP 릴레이 출금의 받는 주소·금액 확인, 자기 폐기 비밀번호, 등록 초기화 확인만(2026-11-05: 등록·로그인·속성 공개·세션 폐기의 동의 창은 중복이라 뺐다). 지갑 "보내기" 트랜잭션은 MetaMask 확인 창 |
 | RP → 지갑 로그인 | RP 페이지가 `POST /wallet/login` 을 CORS 로 직접 부른다 | RP 페이지가 지갑 페이지 팝업(`/?authorize=1`)을 열고 `postMessage` 로 결과만 받는다(`/wallet/login` 의 CORS 는 닫힌다) |
 | 재검증·세션 요청 | RP 페이지가 CORS 로 직접 | 같다(비밀이 필요 없다). 증인이 없으면 `409 needs_consent` → RP 가 재승인 팝업을 연다 |
 | 세션 증인 | 상태 파일 | **에이전트 메모리만** — `persist()` 가 제외한다. 에이전트를 재시작하면 재승인이 필요하다 |
@@ -803,15 +809,17 @@ IdP 의 약속이다:
 | S0 | 지갑(:5100) | 페이지를 연다 | "Snap" 패널이 보이고 uid·비밀번호 폼은 숨는다(= 에이전트가 snap 모드) |
 | S1 | 지갑 | (MetaMask · Snap) "MetaMask 연결" | MetaMask 계정 선택 창 → Snap 설치·권한 창. 상태줄에 `계정 0x… · Snap local:http://localhost:8082` |
 | S2 | 지갑 | (내 신원) "등록" | **Snap 대화상자 2개**(uid → 비밀번호). 끝나면 상태에 `등록됨`, 속성은 폼 값(`[1990, 410, 0, 0, 0, 0]`, 지갑 화면에는 `출생연도 1990 · 국가 KR` 로 보인다). "Snap 상태 보기" 로 `등록: 예`, `사용자 자격증명 보관` 확인 |
-| S3 | RP(:3100) | (로그인) "로그인" | 지갑 오리진의 **팝업 창**이 뜨고 그 안에서 **Snap 로그인 동의 창**(RP 이름·origin·arid·AI agent 허용)이 뜬다. 승인하면 팝업이 스스로 닫히고 RP 결과 카드에 `로그인 성공`(PPID 는 "자세히" 또는 전문가 보기의 `#log`) |
+| S3 | RP(:3100) | (로그인) "로그인" | 지갑 오리진의 **팝업 창**이 뜨고, 그 창이 곧 **IdP 로그인 페이지**(`/login?return=1&auid=…`)로 바뀐다 — 아이디·비밀번호만 넣는다(auid 는 지갑이 넘겨 숨겨진다). 성공하면 창이 지갑으로 돌아와 Snap 동의 창 없이 증명·로그인을 끝내고 스스로 닫힌다(2026-11-05: Snap 로그인 동의 창·"IdP 인증 창 열기" 버튼·별도 인증 창을 모두 없앴다). RP 결과 카드에 `로그인 성공`(PPID 는 "자세히" 또는 전문가 보기의 `#log`) |
 | S4 | RP | (S3 에서 동의를 **거절**) | RP 결과 카드에 `로그인 실패` + "승인 창에서 거절했습니다" + 코드 `user_denied`. 세션이 생기지 않는다 |
 | S5 | RP | (내 세션) "세션 재검증" | 팝업 없이 성공(비밀이 필요 없다). `캐시 히트=true` |
-| S6 | 지갑 | (트랜잭션 보내기) "보낼 세션" 선택 → "공개할 속성 조건" 에서 슬롯 0 `[0, 2007]` 공개 + 집합 소속 조건=국가, 허용 원소 KR,JP,US,DE,FR(범위 술어는 정수 슬롯에만 — `predicate_type`) → "받는 주소"=AttrGate, "데이터"=`0x4e71d92d` → "트랜잭션 보내기" | **Snap 속성 공개 동의 창**(슬롯별 범위·대상 주소) → **MetaMask 트랜잭션 확인 창**(첫 번째는 계정 배포, 두 번째가 `claim()`) → 영수증에 `ok=true`, `Claimed` |
+| S6 | 지갑 | (트랜잭션 보내기) "보낼 세션" 선택 → "공개할 속성 조건" 에서 슬롯 0 `[0, 2007]` 공개 + 집합 소속 조건=국가, 허용 원소 KR,JP,US,DE,FR(범위 술어는 정수 슬롯에만 — `predicate_type`) → "받는 주소"=AttrGate, "데이터"=`0x4e71d92d` → "트랜잭션 보내기" | (2026-11-05: Snap 속성 공개 동의 창 없이) **MetaMask 트랜잭션 확인 창**(첫 번째는 계정 배포, 두 번째가 `claim()`) → 영수증에 `ok=true`, `Claimed` |
+| S3′ | RP(:3100) | (2026-11-05 B안) 로그인 뒤 "내 자산" 은 KRW 0 · ETH 0 → "KRW 1,000,000 입금(시연)" → 수량(기본 0.1) 넣고 "ETH 구매" | KRW 는 RP 메모리 장부(시연), ETH 는 세션 계정(PPID 의 CREATE2 주소)의 **실제 체인 잔액** — 구매하면 RP 릴레이어가 시세(4,210,000원/ETH 고정)로 KRW 를 깎고 그 수량의 ETH 를 세션 계정으로 보낸다(RP 관리자 거래 기록에 `구매` 한 줄). 요청은 모두 세션키 서명(`/api/mode3/request` 본문 `deposit:<ms>`·`buy:<eth>:<ms>`, 재전송은 `request_replayed`). BTC 는 잔액 목록에서 뺐다(시세표 장식에만) |
+| S6′ | RP(:3100) → 지갑 팝업 | (2026-11-04) (온체인 출금) 받는 주소·금액(**ETH 단위**, 기본 0.01 — 2026-11-05 전에는 wei) 입력 → "온체인 출금 실행" | 지갑 오리진의 **팝업 창**에 "{RP} — 트랜잭션 승인"과 받는 주소·금액 → **Snap 동의 창**(RP 오리진·대상 주소·금액) → 승인하면 팝업이 증명·서명을 만들어 **RP 릴레이**(`/api/mode3/relay`, 가스는 RP 릴레이어)로 보내고 영수증 뒤 닫힌다. RP 결과 카드 `전송 성공 — 0x…`, RP 관리자(`/admin`) 트랜잭션 기록에 한 줄 |
 | S7 | 지갑 | MetaMask 확인 창에서 **거절** | 페이지에 `user_rejected`. 에이전트 상태는 그대로(nonce 는 컨트랙트가 관리한다) |
-| S8 | 터미널 → RP | 지갑 에이전트를 재시작 → RP 에서 (내 세션) "세션 재검증" | 에이전트가 `409 needs_consent` → RP 가 **재승인 팝업**을 연다 → Snap 동의 창(이 세션의 AI agent 허용 값이 그대로 보여야 한다) → 승인하면 재검증이 이어져 성공 |
-| S8′ | 지갑 → RP → 지갑 | (내 신원) 예비 1(extra1) 에 문자열(예: `tier3`) 입력 → "속성 저장"(`PUT /wallet/profile` — `attrsChanged` 를 바로 Snap 에 반영, 옛 `C_u`·세션 삭제) → RP 에서 (로그인) "로그인" | 로그인 동의 창 한 번으로 성공한다(지갑이 새 `C_u` 를 발급받는다, PPID 동일). 끝난 뒤 "Snap 상태 보기" 로 **속성이 `[1990, 410, <64비트 해시>, 0, 0, 0]` 으로 바뀌었고 `사용자 자격증명 보관: true`** 인지 본다 — 로그인 응답의 자가 치유 경로가 `syncAttrs` 뒤에 `updateUserCred` 순서로 Snap 에 반영하므로 새 `C_u` 가 남아 있어야 한다(순서가 뒤집히면 여기서 `false` 가 되고 다음 재검증이 막힌다) |
+| S8 | 터미널 → RP | 지갑 에이전트를 재시작 → RP 에서 (내 세션) "세션 재검증" | 에이전트가 `409 needs_consent` → RP 가 **재승인 팝업**을 연다 → 팝업이 동의 창 없이 세션의 AI agent 허용 값으로 증인을 다시 채우고 닫힌다(2026-11-05) → 재검증이 이어져 성공 |
+| S8′ | 지갑 → RP → 지갑 | (내 신원) 예비 1(extra1) 에 문자열(예: `tier3`) 입력 → "속성 저장"(`PUT /wallet/profile` — `attrsChanged` 를 바로 Snap 에 반영, 옛 `C_u`·세션 삭제) → RP 에서 (로그인) "로그인" | IdP 로그인 한 번으로 성공한다(지갑이 새 `C_u` 를 발급받는다, PPID 동일). 끝난 뒤 "Snap 상태 보기" 로 **속성이 `[1990, 410, <64비트 해시>, 0, 0, 0]` 으로 바뀌었고 `사용자 자격증명 보관: true`** 인지 본다 — 로그인 응답의 자가 치유 경로가 `syncAttrs` 뒤에 `updateUserCred` 순서로 Snap 에 반영하므로 새 `C_u` 가 남아 있어야 한다(순서가 뒤집히면 여기서 `false` 가 되고 다음 재검증이 막힌다) |
 | S9 | 지갑 | (MetaMask · Snap) "계정 자기 폐기" | **Snap 비밀번호 대화상자** → 에이전트 `POST /wallet/self_revoke` 가 IdP 로 중계 → 결과 카드 `폐기 요청 접수`("uid … 계정의 폐기를 IdP 에 요청했습니다 — 되돌릴 수 없습니다"). 관리자 페이지에서 `/cia/publish` 뒤 재검증이 `revoked` 가 되는지 본다 |
-| S9′ | 지갑 → 관리자 → RP | (V8) (로그인 세션) 목록에서 한 세션의 "이 세션 끝내기(폐기)" | **Snap 동의 창**(그 세션의 RP arid·발급 시각·max_height — 서명은 에이전트가 한다) → 결과 카드 `폐기 요청 접수`("이 세션만 폐기를 요청했습니다 — 다음 게시부터 …"). 관리자 페이지에서 게시한 뒤 RP 에서 그 세션을 재검증하면 죽고(`revoked_session` 또는 세션이 이미 없어 `no_session`) 다른 세션은 산다. 에이전트를 재시작한 직후라면 메모리 증인이 없어 결과 카드 `세션 폐기 실패` + "다시 승인해야 합니다"(코드 `needs_consent`)가 뜬다 — 지갑 페이지는 팝업을 열지 않으므로 RP 에서 그 세션을 한 번 재검증(S8 의 재승인)한 뒤 다시 누른다 |
+| S9′ | 지갑 → 관리자 → RP | (V8) (로그인 세션) 목록에서 한 세션의 "이 세션 끝내기(폐기)" | 페이지의 확인 창(2026-11-05: Snap 동의 창은 뺐다 — 서명은 에이전트가 한다) → 결과 카드 `폐기 요청 접수`("이 세션만 폐기를 요청했습니다 — 다음 게시부터 …"). 관리자 페이지에서 게시한 뒤 RP 에서 그 세션을 재검증하면 죽고(`revoked_session` 또는 세션이 이미 없어 `no_session`) 다른 세션은 산다. 에이전트를 재시작한 직후라면 메모리 증인이 없어 결과 카드 `세션 폐기 실패` + "다시 승인해야 합니다"(코드 `needs_consent`)가 뜬다 — 지갑 페이지는 팝업을 열지 않으므로 RP 에서 그 세션을 한 번 재검증(S8 의 재승인)한 뒤 다시 누른다 |
 | S10 | 지갑 | (MetaMask · Snap) "Snap 초기화" | Snap 의 등록이 지워진다. 에이전트 파일의 **공개** 등록은 그대로다(재시연은 재시연 세트로) |
 
 `file` 모드에서 RP 페이지를 브라우저로 여는 경로(RP 페이지가 `/wallet/login` 을 CORS 로 직접 부르는 지금까지의 흐름)는
@@ -844,8 +852,8 @@ IdP 의 약속이다:
 - 사용자가 직접 찾아가는 입구가 지갑 페이지(`:5100`)가 아니라 **IdP 페이지**로 옮겼다. 지갑 페이지는 그대로 있지만 이제는 팝업·관리 창 쪽에 가깝다. `/account`는 `/user`로 가지 않는다 — `/account`는 Google/OIDC 계정 관리(Google 재로그인·Google 계정 자기 폐기), `/user`는 데모 계정(가입·로그인·커밋먼트 등록·계정 폐기)이다(서로 상단 링크로 오간다).
 - `/user`(새): 사용자 가입(2026-11-03 부터 아이디·비밀번호 — uid는 IdP가 순번으로 배정하고 아이디는 로그인 열쇠)·로그인·**커밋먼트 등록**(지갑 팝업을 열어 Snap 확인 하나로 끝낸다)·내 등록 상태·계정 폐기(옛 `/account` 기능). 2026-11-03 부터 로그인 화면으로 열리고 등록·폐기 카드는 로그인 뒤에만 보인다.
 - `/rp`(새): RP 운영자 가입·로그인·**새 RP 만들기**(이름 → 1회용 RP 키 + `scripts/new_rp.sh` 실행 명령). zkONE·zkTWO는 지금처럼 키 없이 자동 등록된다 — 요청받아 만드는 RP(zkTHREE 등)만 이 경로를 쓴다.
-- `/login`(새, 좁은 창): zkONE 등에 로그인할 때 **지갑 팝업이 여는** IdP 인증 창(RP가 직접 IdP로 리디렉션하지 않는다 — RP-hiding 전제를 지킨다). uid·비밀번호·**auid**(지갑 페이지에서 복사해 붙여 넣는다) 세 칸을 받아 1회용 인증 코드를 내고, 그 코드가 있어야 `/cia/issue`가 발급한다(`CIA_ISSUE_AUTH=code`, 아래).
-- 지갑 페이지의 "내 신원" 카드에 **auid·salt(s_u) 복사 버튼**이 생겼다 — 인증 창에 넣을 값이다.
+- `/login`: zkONE 등에 로그인할 때 **지갑 팝업 창이 갔다가 돌아오는** IdP 로그인 페이지(RP가 직접 IdP로 리디렉션하지 않는다 — RP-hiding 전제를 지킨다; 2026-11-05 전에는 지갑 팝업이 따로 여는 창이었고 그 postMessage 경로도 아직 받는다). 아이디·비밀번호 두 칸을 받는다 — **auid** 는 지갑이 쿼리(`auid=`)로 넘겨 칸이 숨겨진다(없으면 칸이 보인다). 1회용 인증 코드를 내어 `?return=1` 이면 지갑 `/?authorize=1&idp_nonce=…&idp_code=…` 로 돌려보내고, 그 코드가 있어야 `/cia/issue`가 발급한다(`CIA_ISSUE_AUTH=code`, 아래).
+- 지갑 페이지의 "내 신원" 카드에 **auid·salt 복사 버튼**(2026-11-04 부터 라벨은 `salt`)이 생겼다 — 인증 창에 넣을 값이다.
 - RP 허용 오리진이 **동적**이다 — 지갑 에이전트가 `GET /cia/rp_origins`를 10초마다 읽어 기동 env(`MODE3_RP_ORIGIN`)와 합친다. 새 RP가 승인되면 지갑을 재기동하지 않아도 그 RP에 로그인된다.
 
 ### 시연 순서(2026-10-22)
@@ -856,9 +864,9 @@ IdP 의 약속이다:
 2. 관리자 페이지(`/admin`)에서 그 RP를 승인.
 3. `/user`는 **로그인 화면**으로 열린다(2026-11-03 재구성). "계정 만들기"를 눌러 **아이디·비밀번호·비밀번호 확인**을 넣고 가입한다(uid는 IdP가 배정하고 아이디는 로그인 열쇠다. 영문·숫자로 시작하는 3~32자, 대소문자 무시, 중복이면 `id_taken`).
 4. 가입하면 로그인 화면으로 돌아오고 아이디가 채워져 있다 — 비밀번호를 넣고 로그인한다. **로그인한 뒤에만** 등록·폐기 카드가 보인다(등록 전엔 "커밋먼트 등록", 등록 뒤엔 "내 등록 정보"·"내 계정 폐기").
-5. "커밋먼트 등록" → 지갑 팝업이 열리고 Snap 확인 창 하나로 끝난다(등록됨).
-6. 지갑 페이지(`:5100`)의 "내 신원" 카드에서 **auid를 복사**해 둔다(salt도 여기서 보이지만 어디에도 보내지 않는다).
-7. zkONE(또는 zkTHREE)에서 "로그인" → 지갑 팝업이 뜨고 승인하면 **IdP 인증 창**이 열린다 → 아이디(또는 uid)·비밀번호·auid(⑥에서 복사한 값)를 넣고 제출 → 인증 창이 닫히고 발급이 끝나 로그인 성공.
+5. "커밋먼트 등록" → 지갑 팝업이 열리고 확인 창 없이 끝난다(등록됨; 2026-11-05 부터 Snap 등록 확인 창도 없다).
+6. (2026-11-05 부터 auid 를 복사해 둘 필요가 없다 — 지갑이 IdP 로그인 페이지에 자동으로 넘긴다. salt 는 지갑 "계정" 탭의 상세에서 보이지만 어디에도 보내지 않는다.)
+7. zkONE(또는 zkTHREE)에서 "로그인" → 지갑 팝업이 뜨고 곧 **IdP 로그인 페이지**로 바뀐다 → 아이디(또는 uid)·비밀번호를 넣고 제출 → 창이 지갑으로 돌아와 발급·증명을 끝내고 닫히며 로그인 성공(Snap 동의 창 없음).
 8. 거래 2건을 보낸 뒤 그 세션을 지갑 "로그인 세션" 카드에서 **허용 거래 수(기본값은 현재 nonce)**를 넣어 폐기 → 관리자 "게시" → 같은 RP에 **새 세션으로 재로그인**(⑦와 같다) → 지갑의 "체인 반영 대기" 카드에서 "지금 반영"을 눌러 옛 세션키의 체인 쪽 상한도 올린다(아래 "폐기 상한" 절). 거울 중계 뒤 거울의 `sessionBoundOf(pk_i)`(관리자 "폐기 세션 목록"의 pk_i 로 조회) 가 c+1 인지로도 확인할 수 있다.
 9. 이후 단계(세션 재검증·선택 공개·개봉 요청 등)는 위 "시연 각본" 0~14와 같다.
 
@@ -889,6 +897,8 @@ IdP 의 약속이다:
 
 Snap 번들이 다시 빌드됐다(등록 확인 창이 uid·비밀번호 프롬프트 없이 확인 하나로 줄었고, 세션 폐기 동의 창에 허용 거래 수가 추가됐다) — **체크섬이 바뀌었으므로** MetaMask에 이미 설치된 Snap은 자동으로 갱신되지 않는다. `cd snap-mode3 && npm install && npm run build` 뒤, MetaMask에서 기존 Snap을 지우고 지갑 페이지에서 다시 연결/설치한다(위 "MetaMask / Snap 경로" 준비 절과 같다). 리셋 스크립트의 요약 줄도 이 안내를 찍는다.
 
+**2026-11-05 — 중복 확인 제거.** Snap 번들이 다시 바뀌었다: 등록·Google 등록(`register`·`prepareRegister`)·로그인 동의(`consentLogin`)·세션 폐기(`consentRevokeSession`)·salt 표시(`showSalt`)의 확인 창을 뺐고, `consentDisclosure` 는 RP 릴레이 출금(`{ relay:true }`)만 묻는다(남은 대화상자: 릴레이 출금 확인, 자기 폐기 비밀번호, 등록 초기화 확인). 같은 이유로 `cd snap-mode3 && npm run build` 뒤 MetaMask 에서 Snap 을 지우고 다시 설치해야 한다. 함께 바뀐 로그인 흐름: 지갑 팝업 창이 IdP 로그인 페이지(`/login?return=1&auid=…`)로 갔다가 `/?authorize=1&idp_nonce=…&idp_code=…` 로 돌아온다 — 별도 인증 창·"IdP 인증 창 열기" 버튼·auid 손 입력이 없어졌다.
+
 ### Google 로 등록·로그인·자기 폐기(Snap 모드, 2026-10-26)
 
 - 켜짐이 기본이다: 스크립트가 IdP 에 `MODE3_OIDC_CLIENT_ID` 를 넘긴다(환경변수 → 없으면 이 VM `.env` 의 `GOOGLE_CLIENT_ID`, Mode 1 공유 ID — 값은 출력하지 않는다). 끄려면 `OIDC=0`. 환경변수가 미설정이고 `.env` 에서 `GOOGLE_CLIENT_ID` 를 얻은 경우(공유 ID 폴백)에는 스크립트가 값 없는 경고 줄을 출력한다(IdP 기동 경고는 이 경로에서 발동하지 않는다). 공유 ID 의 위험은 선행 스펙 §5 에서 다룬다.
@@ -896,7 +906,7 @@ Snap 번들이 다시 빌드됐다(등록 확인 창이 uid·비밀번호 프롬
 - Snap 이 바뀌었다(보류 등록 `prepareRegister`). `cd snap-mode3 && npm run build` 뒤 MetaMask 에서 Snap 을 다시 설치하고 지갑 페이지 "Snap 초기화".
 - 수동 확인(실제 Google, 1회):
   1. IdP `/user` → "Google 로 등록" → 팝업의 Snap 확인 → 팝업의 Google 버튼 → `/user` 에 "Google 계정 등록됨 — uid …".
-  2. RP 로그인 → Snap 동의 → 팝업의 Google 버튼(IdP 인증 창 없음) → 로그인 성공 → 거래.
+  2. RP 로그인 → 팝업의 Google 버튼(IdP 로그인 페이지 없음; 2026-11-05 부터 Snap 동의 창도 없음) → 로그인 성공 → 거래.
   3. 지갑 페이지 "계정 자기 폐기" → Google 버튼 → 폐기 요청됨 → 다음 RP 로그인 거절(account_disabled).
 - 등록이 Google 단계에서 끊기면 다시 "Google 로 등록" 하면 된다 — Snap 이 같은 보류 비밀을 다시 쓴다. 버리려면 "Snap 초기화".
   IdP 등록은 됐는데 Snap 저장 전에 끊겼으면(팝업이 닫힘 등) 'Google 로 등록'을 다시 누르면 Google 로그인 없이 Snap 저장을 마저 한다.
@@ -950,7 +960,7 @@ RP(`mode3_rp.js`)는 사용자 오리진에만 `POST /api/mode3/relay`·`GET /ap
 ### 기동 순서
 
 > **한 번에(2026-10-16):** `bash scripts/demo_web_reset.sh` — 전부 내림 → Mode 3 상태 파일 백업 → hardhat 새로 → 로그·거울 배포 → 번들 빌드 → IdP·사용자 페이지·zkONE·zkTWO 를 **localhost 오리진**으로 기동. RP 는 승인 대기로 두고(`AUTO_APPROVE=1` 이면 자동 승인), 로그는 `/tmp/mode3-demo/`. `TWO_CHAINS=1` 이면 아래 "폐기 체인을 별도 노드로" 구성(캐노니컬 로그 :8546 chainId 31338, 거울 :8545)으로 띄운다. 브라우저도 localhost 주소로 열고, IdP 를 초기화했으면 사용자 페이지의 "모두 지우기"로 등록을 맞춘다.
-> **데모 설정(2026-10-21):** 두 스크립트(`demo_web_reset.sh`·`demo_split_start.sh`)는 데모 편의로 다음을 기본으로 켠다 — 모두 **데모 전용**이며 코드 기본값은 꺼짐이다. ① `CIA_ADMIN_OPEN=1`: IdP 관리자 경로가 시크릿을 묻지 않는다(`ADMIN_OPEN=0` 으로 끔). 2026-11-03 리뷰 뒤: 목록 GET 은 그대로 열려 있지만 상태를 바꾸는 POST 는 `X-CIA-Admin-Secret` 헤더가(자리표시 `open` 이라도) 있어야 한다 — 교차 사이트 폼으로 승인·게시가 눌리지 않게(관리자 페이지·데모 스크립트는 이미 헤더를 보낸다). ② `MODE3_HEIGHT_GRID=5`: 만료(max_height) 올림 단위(`HEIGHT_GRID=100` 으로 원래대로). ③ `MODE3_DEMO_GENERATION=<실행 시각>`: 사용자 페이지가 기억한 세대와 다르면 브라우저의 옛 등록·세션을 스스로 지운다(리셋마다 "모두 지우기"를 누르지 않게; 이 설정 이전에 등록한 브라우저만 처음 한 번 수동). ④ zkTWO 에 `MODE3_REQUIRE_DISCLOSURE=1`: 로그인 때 국가 집합·나이 술어를 서버가 요구한다(없으면 `predicate_unmet`) — zkONE 은 누구나. 2026-11-03 리뷰 뒤: **재검증에도** 같은 요구를 적용한다. 지갑 에이전트는 로그인 때의 술어를 재검증 π 에 다시 싣으므로 속성이 그대로면 통과하고, 바뀌었으면 `predicate_unmet` 으로 세션이 끝나 다시 로그인해야 한다(web 모드 코어는 술어 없이 재검증하므로 zkTWO 재검증이 실패한다 — web 모드는 일시 중지 상태). 그 밖에 RP 관리자 페이지의 거래 기록(`GET /api/mode3/txs`, 메모리만)·거래 해시 복사 버튼, RP 페이지의 "현재 잔액 확인"(옛 "출금 신청" 자리 — `body:'balance'` 세션 요청에 시연용 장부와 온체인 계정 잔액을 돌려준다), 사용자 페이지 세션 폐기 → RP 로그아웃 알림, RP 가 모르는 세션의 로그아웃도 묘비(사용자 페이지가 지운다).
+> **데모 설정(2026-10-21):** 두 스크립트(`demo_web_reset.sh`·`demo_split_start.sh`)는 데모 편의로 다음을 기본으로 켠다 — 모두 **데모 전용**이며 코드 기본값은 꺼짐이다. ① `CIA_ADMIN_OPEN=1`: IdP 관리자 경로가 시크릿을 묻지 않는다(`ADMIN_OPEN=0` 으로 끔). 2026-11-03 리뷰 뒤: 목록 GET 은 그대로 열려 있지만 상태를 바꾸는 POST 는 `X-CIA-Admin-Secret` 헤더가(자리표시 `open` 이라도) 있어야 한다 — 교차 사이트 폼으로 승인·게시가 눌리지 않게(관리자 페이지·데모 스크립트는 이미 헤더를 보낸다). ② `MODE3_HEIGHT_GRID=5`: 만료(max_height) 올림 단위(`HEIGHT_GRID=100` 으로 원래대로). ③ `MODE3_DEMO_GENERATION=<실행 시각>`: 사용자 페이지가 기억한 세대와 다르면 브라우저의 옛 등록·세션을 스스로 지운다(리셋마다 "모두 지우기"를 누르지 않게; 이 설정 이전에 등록한 브라우저만 처음 한 번 수동). ④ zkTWO 에 `MODE3_REQUIRE_DISCLOSURE=1`: 로그인 때 국가 집합·나이 술어를 서버가 요구한다(없으면 `predicate_unmet`) — zkONE 은 누구나. 2026-11-03 리뷰 뒤: **재검증에도** 같은 요구를 적용한다. 지갑 에이전트는 로그인 때의 술어를 재검증 π 에 다시 싣으므로 속성이 그대로면 통과하고, 바뀌었으면 `predicate_unmet` 으로 세션이 끝나 다시 로그인해야 한다(web 모드 코어는 술어 없이 재검증하므로 zkTWO 재검증이 실패한다 — web 모드는 일시 중지 상태). 그 밖에 RP 관리자 페이지의 거래 기록(`GET /api/mode3/txs`, 메모리만)·거래 해시 복사 버튼, RP 페이지의 "입금·구매(시연)"(옛 "출금 신청"→"현재 잔액 확인" 자리 — `body:'balance'` 세션 요청에 KRW 장부와 세션 계정의 실제 ETH 잔액을 돌려준다; 2026-11-05 B안, 위 S3′), 사용자 페이지 세션 폐기 → RP 로그아웃 알림, RP 가 모르는 세션의 로그아웃도 묘비(사용자 페이지가 지운다).
 > **Snap 모드 한 번에(2026-10-22):** `bash scripts/demo_snap_reset.sh`(한 머신) / `bash scripts/demo_split_snap_reset.sh`(VM 분리 — 지갑 에이전트 :5100 은 Snap 이 허용하는 오리진이라 한 머신 Snap 데모와 동시에 못 띄운다; web 분리 리셋은 `demo_split_reset.sh`) — 같은 순서로 지갑 자리에 에이전트(`MODE3_WALLET_SECRETS=snap`)와 Snap 서버(:8082)를 띄운다(`WALLET_MODE=snap` 의 demo_web_reset.sh). 브라우저에는 MetaMask Flask 가 필요하고, 리셋 뒤 MetaMask 안의 옛 등록은 지갑 페이지의 "Snap 초기화" 로 지운다(데모 세대 자동 정리는 web 모드 전용).
 > **복구 코드(2026-10-21, web 모드):** 등록 비밀 s_u·sk_u 는 32바이트 시드에서 유도된다(`registrationSecretsFromSeed`, lib/mode3_wallet.js). 사용자 페이지 보관 상태 카드의 "복구 코드 보기"가 `zkd1.`+base64url(시드)를 보여 주고(어디에도 보내지 않는다), "복구 코드로 복구"는 uid + 코드로 비밀을 되살린 뒤 IdP 의 슬롯 되찾기(`POST /cia/slot`, sk_u 서명)로 계정·키를 확인하고 등록 상태를 다시 만든다 — 같은 uid·s_u 라 모든 RP 의 PPID 가 그대로다(다음 로그인이 새 C_u). 시드 없는 옛 등록은 `zkd0.`+base64url(s_u‖sk_u). Google(래퍼) 계정 복구는 아직 범위 밖(uid 를 토큰에서 얻어야 한다). 페이지는 기동 때 `navigator.storage.persist()` 도 요청한다(iOS 7일 삭제·Chrome 용량 정리 완화).
 > **참고(2026-10-22, `snap`·`file` 모드):** 사용자·RP 운영자의 입구가 IdP 페이지(`/user`·`/rp`)로 옮겨 가고 세션 폐기에 허용 거래 수(카운터)가 붙었다 — **web 모드(이 절)는 아직 그대로다.** 위 "MetaMask / Snap 경로" 절 뒤의 "IdP 페이지·폐기 상한" 절 참고.
@@ -1112,8 +1122,8 @@ MetaMask/Snap 경로(2026-09-22 metamask-snap)로 새로 생긴 지갑 라우트
 | 메서드/경로 | 프로세스 | 설명 |
 |---|---|---|
 | `GET /wallet/config` | 지갑 | `{ secrets, snapId, walletOrigin, rpcUrl, chainId }` — RP 페이지가 로그인 경로(직접 호출/팝업)를 고르려고 CORS 로 읽는다. 비밀 없음 |
-| `POST /wallet/authorize/precheck` | 지갑 | 승인 팝업이 Snap 동의 창 전에 부르는 인증서·팩토리 검증(`{ arid, origin, cert_s, pk_trace, factoryAddress }`). 로그인·재승인이 함께 쓴다. 선택 `r_s` 를 실으면 응답에 `sessionAllowAgent`('0'\|'1')를 얹는다 — 세션이 없거나 `arid` 가 다르면 404 `no_session`(2026-09-23 점검 B-I1) |
-| `POST /wallet/session/witness` | 지갑 | 재승인(§4.3) — 재시작으로 사라진 세션 메모리 증인을 `{ r_s, witness, allowAgent }` 로 다시 채운다. `allowAgent`('0'\|'1')는 **필수**이고 팝업이 동의 창에 실제로 쓴 값이다 — 세션의 실제 값과 다르면 409 `allow_agent_mismatch`(2026-09-23 점검 B-I1) |
+| `POST /wallet/authorize/precheck` | 지갑 | 승인 팝업이 Snap 을 부르기 전에(IdP 로그인 페이지로 가기 전에도) 부르는 인증서·팩토리 검증(`{ arid, origin, cert_s, pk_trace, factoryAddress }`). 로그인·재승인이 함께 쓴다. 선택 `r_s` 를 실으면 응답에 `sessionAllowAgent`('0'\|'1')를 얹는다 — 세션이 없거나 `arid` 가 다르면 404 `no_session`(2026-09-23 점검 B-I1) |
+| `POST /wallet/session/witness` | 지갑 | 재승인(§4.3) — 재시작으로 사라진 세션 메모리 증인을 `{ r_s, witness, allowAgent }` 로 다시 채운다. `allowAgent`('0'\|'1')는 **필수**이고 팝업이 precheck 에서 받은 세션 값이다 — 세션의 실제 값과 다르면 409 `allow_agent_mismatch`(2026-09-23 점검 B-I1) |
 | `POST /wallet/tx/prepare` | 지갑 | snap 모드의 트랜잭션 1단계 — 증명·서명·`calldata`(필요하면 `deployCalldata`)까지만 만든다 |
 | `POST /wallet/tx/record` | 지갑 | 2단계 — MetaMask 가 보낸 `txHash` 의 영수증을 파싱해 `/wallet/tx` 와 같은 형식으로 돌려준다(영수증 전이면 202) |
 | `POST /wallet/self_revoke` | 지갑 | 자기 폐기 프록시 — `{ uid, pwd }` 를 IdP `/cia/account/self_revoke` 로 중계한다(`cia.js` 에 CORS 가 없어서). 등록 uid 가 아니면 403 `uid_mismatch` |

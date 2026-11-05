@@ -121,10 +121,19 @@ try {
   await t('세션 요청: 세션키 서명 → RP /api/mode3/request ok', async () => {
     const r = await core.request({ r_s: rs1, body: 'hello', origin: info.origin }); assert.equal(r.status, 200);
     assert.equal((await rp.post('/api/mode3/request', { r_s: rs1, body: 'hello', sig: r.body.sig })).body.ok, true);
-    // 2026-10-21: 'balance' 는 시연용 장부와 온체인 계정(PPID 주소) 잔액을 함께 돌려준다 — 거래 없는 RP 상호작용
+    // 2026-11-05(B안): 'balance' 는 KRW 장부(처음 0)와 세션 계정의 실제 ETH 잔액(ethWei)을 돌려준다 — 거래 없는 RP 상호작용
     const b = await core.request({ r_s: rs1, body: 'balance', origin: info.origin }); assert.equal(b.status, 200);
     const q = (await rp.post('/api/mode3/request', { r_s: rs1, body: 'balance', sig: b.body.sig })).body; assert.equal(q.ok, true, j(q));
-    assert.equal(q.balance.ledger.KRW, '1,000,000'); assert.equal(q.balance.onchain, undefined, '온체인 계정 잔액은 내지 않는다(2026-10-21)');
+    assert.equal(q.balance.ledger.KRW, '0'); assert.equal(q.balance.ledger.ETH, '0'); assert.equal(q.balance.ethWei, '0'); assert.match(String(q.balance.account), /^0x[0-9a-fA-F]{40}$/);
+    // 입금(시연) → 구매: KRW 가 깎이고 세션 계정에 실제 ETH 가 들어온다. 같은 서명 본문 재전송은 request_replayed.
+    const dep = `deposit:${Date.now()}`; const ds = await core.request({ r_s: rs1, body: dep, origin: info.origin });
+    const d = (await rp.post('/api/mode3/request', { r_s: rs1, body: dep, sig: ds.body.sig })).body; assert.equal(d.ok, true, j(d)); assert.equal(d.balance.ledger.KRW, '1,000,000');
+    assert.equal((await rp.post('/api/mode3/request', { r_s: rs1, body: dep, sig: ds.body.sig })).body.reason, 'request_replayed');
+    const buy = `buy:0.2:${Date.now()}`; const bs = await core.request({ r_s: rs1, body: buy, origin: info.origin });   // 0.2 × 4,210,000 = 842,000 KRW
+    const y = (await rp.post('/api/mode3/request', { r_s: rs1, body: buy, sig: bs.body.sig })).body; assert.equal(y.ok, true, j(y));
+    assert.equal(y.balance.ledger.KRW, '158,000'); assert.equal(y.balance.ledger.ETH, '0.2'); assert.equal(y.balance.ethWei, '200000000000000000'); assert.match(y.txHash, /^0x[0-9a-f]{64}$/);
+    const over = `buy:0.1:${Date.now()}`; const os = await core.request({ r_s: rs1, body: over, origin: info.origin });
+    assert.equal((await rp.post('/api/mode3/request', { r_s: rs1, body: over, sig: os.body.sig })).body.reason, 'insufficient_krw');
   });
   await t('트랜잭션: prepareTx → RP 릴레이(배포 포함) → recordTx 영수증 파싱 ok, txs 기록·health 카운터', async () => {
     // 체크섬(EIP-55)이 틀린 대소문자 입력도 받는다(2026-10-16) — 바이트가 같은 주소다
