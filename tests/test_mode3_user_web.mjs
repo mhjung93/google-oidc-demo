@@ -58,12 +58,12 @@ try {
   });
   await t('A2 로그인: RP 로그인 → 사용자 팝업(승인 버튼) → 로그인 성공; 팝업 DOM 에 비밀 없음', async () => {
     let popupDump = null;
-    await rpPage.click('#connectWalletBtn'); await waitText(rpPage, '#walletPillText', 'MetaMask');   // 2026-10-16: 지갑 연결 = MetaMask 계정 연결(헤드리스엔 확장이 없어 '없습니다' 류 문구) — 2026-10-21: 로그인 전에(로그인 뒤엔 버튼이 숨는다)
+    // 2026-11-05: "지갑 연결" 버튼은 뺐다(로그인에 필요 없는 MetaMask 배지였다).   // 2026-10-16: 지갑 연결 = MetaMask 계정 연결(헤드리스엔 확장이 없어 '없습니다' 류 문구) — 2026-10-21: 로그인 전에(로그인 뒤엔 버튼이 숨는다)
     await viaPopup(async () => { await rpPage.click('#loginBtn'); await rpPage.click('#idpLoginBtn'); }, async (popup) => { await waitText(popup, '#authSummary', rp.origin); await approve(popup); popupDump = await pageDump(popup).catch(() => ''); });
     await waitText(rpPage, '#verdict', '로그인 성공', 120_000);
     const d = await idbDump(userPage); const s = Object.values(d.sessions)[0]; assert.ok(s?.proofCache?.proof, '증명 캐시가 저장됐다'); assert.ok(!('sessionPrivKey' in s)); account = s.account;
     assert.ok(popupDump !== null && !popupDump.includes('"s_u"') && !popupDump.includes('sessionPrivKey'));
-    assert.equal(await rpPage.$eval('#loginBtn', (b) => b.hidden), true, '로그인 뒤 로그인 버튼 숨김'); assert.equal(await rpPage.$eval('#connectWalletBtn', (b) => b.hidden), true, '로그인 뒤 지갑 연결 버튼 숨김');   // 2026-10-21
+    assert.equal(await rpPage.$eval('#loginBtn', (b) => b.hidden), true, '로그인 뒤 로그인 버튼 숨김');   // 2026-10-21
   });
   await t('A3 재검증: 팝업이 캐시 히트로 바로 끝난다(승인 버튼 없음) → 재검증 성공', async () => {
     await viaPopup(() => rpPage.click('#revalidateBtn'), async (popup) => { assert.equal(await popup.$('#authApproveBtn:not([hidden])'), null, '캐시 히트는 동의 화면이 없다'); });
@@ -71,8 +71,8 @@ try {
   });
   await t('A4 현재 잔액 확인(2026-10-21, 옛 세션 요청): 팝업 승인 → 세션 요청 성공, 온체인 계정 잔액 줄이 보인다', async () => {
     await viaPopup(() => rpPage.click('#balanceBtn'), async (popup) => { await waitText(popup, '#authSummary', '잔액 확인'); await approve(popup); });
-    await waitText(rpPage, '#sessionVerdict', '세션 요청 성공');
-    assert.match(await text(rpPage, '#sessionVerdict'), /KRW 1,000,000/);
+    await waitText(rpPage, '#ledgerVerdict', '세션 요청 성공');   // 2026-11-05: 잔액 결과는 입금·구매 절의 #ledgerVerdict, 장부는 0 에서 시작(B안)
+    assert.match(await text(rpPage, '#ledgerVerdict'), /KRW 0/);
   });
   await t('A4b 로그아웃(2026-10-16): RP 로그아웃 → 사용자 페이지 세션 목록이 곧 빈다(2초 새로고침) → 다시 로그인하면 세션 하나', async () => {
     await rpPage.click('#logoutBtn');

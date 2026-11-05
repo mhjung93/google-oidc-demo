@@ -1226,7 +1226,7 @@ app.post('/wallet/session/revoke', async (req, res) => {
     let pendingBoundId = null;
     if (account) {
       pendingBoundId = randomScalar().toString().slice(0, 16);
-      state.pendingBounds.push({ id: pendingBoundId, account, chainid: s.credential.chainid, arid: s.arid, pk_i: s.pk_i, bound: appliedBound, revokedAt: new Date().toISOString() });
+      state.pendingBounds.push({ id: pendingBoundId, account, chainid: s.credential.chainid, arid: s.arid, pk_i: s.pk_i, bound: appliedBound, revokedAt: new Date().toISOString(), serviceName: s.serviceName ?? null, origin: s.origin ?? null });   // 이름·주소는 지갑 화면 표기용(2026-11-05)
     }
     persist();
     res.json({ revoked: true, inserted: r.body.inserted, pending: r.body.pending, bound: appliedBound, pendingBoundId, mirrorBound: r.body.mirrorBound === true });

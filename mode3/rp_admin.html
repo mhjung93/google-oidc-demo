@@ -45,7 +45,7 @@
       <h2 data-i18n="rp_open_card_title">컴플라이언스 — 승인 개봉</h2>
       <p class="desc" data-i18n="rp_open_desc">RP 와 IdP 가 함께, 운영자 승인 아래에서만 사용자를 알아냅니다.</p>
       <p>
-        <label><span data-term="PPID">이 RP 에서의 내 주소</span> <input id="openPpid" size="24" /></label>
+        <label><span data-i18n="rp_admin_ppid_label">고객의 이 RP 주소</span> <input id="openPpid" size="24" /></label>   <!-- 운영자 화면이라 "내 주소" 가 아니다(2026-11-05) -->
         <button id="openBtn" data-i18n="rp_open_req">개봉 요청</button>
         <button id="openPollBtn" class="btn-ghost" data-i18n="rp_open_poll">결과 확인</button>
       </p>
@@ -118,7 +118,7 @@
       table.className = 'list';
       const head = table.createTHead().insertRow();
       // r_s·root 는 예전 <pre> 목록에 있던 값이다 — 전문가 보기에서만 보이는 칸으로 남긴다(열 전체가 숨는다).
-      for (const c of [{ key: 'rp_col_time' }, { term: 'PPID' }, { key: 'rp_col_rs', expert: true }, { term: 'root', expert: true }, { key: 'rp_col_disclosure' }, { key: 'rp_col_agent' }, { key: 'rp_col_action' }]) {
+      for (const c of [{ key: 'rp_col_time' }, { key: 'rp_admin_ppid_label' }, { key: 'rp_col_rs', expert: true }, { term: 'root', expert: true }, { key: 'rp_col_disclosure' }, { key: 'rp_col_agent' }, { key: 'rp_col_action' }]) {
         const th = document.createElement('th');
         if (c.expert) th.className = 'expert';
         if (c.term) th.appendChild(termEl(c.term)); else tte(th, c.key);

@@ -351,11 +351,11 @@ try {
   let sessionAccount = null;
   await t('RP 잔액(B안): 로그인 직후 KRW 0·ETH 0 → "입금(시연)" → "ETH 구매" 하면 KRW 가 깎이고 세션 계정에 실제 ETH 가 들어온다', async () => {
     assert.equal(await rpPage.$('.balance-list li[data-asset="BTC"]'), null, 'BTC 는 잔액 목록에서 뺐다');
-    await rpPage.click('#balanceBtn'); await waitText(rpPage, '#sessionVerdict', '세션 요청 성공', 60_000);
+    await rpPage.click('#balanceBtn'); await waitText(rpPage, '#ledgerVerdict', '세션 요청 성공', 60_000);
     assert.equal(await balText('KRW'), '0'); assert.equal(await balText('ETH'), '0');
-    await rpPage.click('#depositBtn'); await waitText(rpPage, '#sessionVerdict', '입금 완료', 60_000);
+    await rpPage.click('#depositBtn'); await waitText(rpPage, '#ledgerVerdict', '입금 완료', 60_000);
     assert.equal(await balText('KRW'), '1,000,000');
-    await rpPage.fill('#buyAmount', '0.05'); await rpPage.click('#buyBtn'); await waitText(rpPage, '#sessionVerdict', '구매 완료', 120_000);
+    await rpPage.fill('#buyAmount', '0.05'); await rpPage.click('#buyBtn'); await waitText(rpPage, '#ledgerVerdict', '구매 완료', 120_000);
     assert.equal(await balText('KRW'), '789,500', '1,000,000 − 0.05 × 4,210,000');
     assert.equal(await balText('ETH'), '0.05');
     const buyTx = (await rp.get('/api/mode3/txs')).body.txs.at(-1);

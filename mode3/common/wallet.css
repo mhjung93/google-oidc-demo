@@ -75,3 +75,4 @@ details.fold > :not(summary) { margin-top: 8px; }
 /* 승인 팝업(?authorize=1) — 팝업 폭(약 480px)에 맞춘 한 장. */
 #authorizeView { max-width: 520px; padding: 16px; }
 #authorizeView .card { padding: 18px 20px; }
+.auth-progress { margin: 10px 0 6px; font-weight: 600; color: var(--ink, #1a1a1a); min-height: 1.4em; }   /* 2026-11-05: 일반 보기용 진행 줄 */
