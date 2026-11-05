@@ -58,9 +58,12 @@ async function stopChild(child) {
 }
 
 const json = async (r) => ({ status: r.status, body: await r.json().catch(() => null) });
+// RP 관리자 비밀번호(2026-11-05): 격리 RP 는 늘 이 값으로 띄우고, 관리자 API(logins·txs·open)를 부르는 테스트는 rp.adminHeaders 를 싣는다.
+export const RP_ADMIN_SECRET = 'test-admin';
 function client(base, logFile) {
   return {
     base, origin: base,
+    adminHeaders: { 'X-RP-Admin-Secret': RP_ADMIN_SECRET },
     get: (p, headers = {}) => fetch(`${base}${p}`, { headers }).then(json),
     post: (p, body, headers = {}) => fetch(`${base}${p}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body ?? {}) }).then(json),
     put: (p, body, headers = {}) => fetch(`${base}${p}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body ?? {}) }).then(json),
@@ -117,6 +120,7 @@ export async function startIsolatedMode3Stack(opts = {}) {
         MODE3_RP_REGISTRATION_FILE: path.join(dir, `mode3_${tag}_registration.json`),
         MODE3_RP_PUBLIC_ORIGIN: origin,
         MODE3_RP_LOGIN_LOG: path.join(dir, `mode3_${tag}_logins.jsonl`),
+        MODE3_RP_ADMIN_SECRET: RP_ADMIN_SECRET,
         ...chainEnv,
         ...e,
       },

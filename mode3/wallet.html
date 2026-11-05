@@ -28,7 +28,6 @@
       </div>
       <div class="nav-actions">
         <span id="mmStatus" class="badge" hidden>연결 안 됨</span>
-        <button type="button" id="refreshBtn" class="btn-ghost" data-i18n="refresh">새로고침</button>
       </div>
     </div>
   </nav>
@@ -764,7 +763,12 @@
         // 발급 인증(2026-10-26 Snap OIDC 래퍼 §2.2): 데모 계정은 IdP 로그인 페이지(이 창이 갔다가 돌아온다, goIdpAuth — MetaMask 를 부르기
         // 전에 간다), Google 계정은 이 팝업의 Google 버튼 — nonce 는 issue:H(pk_u|arid_s)(에이전트가 이 로그인의 arid·r_rp 로 계산).
         const provider = await walletProvider();
-        if (authCode === null && provider === 'demo') { step(tt('wallet_auth_to_idp') || 'IdP 로그인 페이지로 이동합니다…'); say('wallet_auth_to_idp'); await goIdpAuth(req, evOrigin); return; }
+        if (authCode === null && provider === 'demo') {
+          // 2026-11-05: 등록이 없는 지갑은 IdP 로그인 페이지로 보내지 않는다 — 가입·지갑 등록 안내로 멈춘다. 상태를 못 읽으면 진행한다(IdP 가 다시 걸러준다).
+          let registered = true; try { registered = Boolean((await (await fetch('/wallet/status')).json()).registered); } catch { /* 진행 */ }
+          if (!registered) { step('등록된 지갑이 없다.'); reply({ ok: false, reason: 'not_registered' }); say('wallet_prog_not_registered'); return; }
+          step(tt('wallet_auth_to_idp') || 'IdP 로그인 페이지로 이동합니다…'); say('wallet_auth_to_idp'); await goIdpAuth(req, evOrigin); return;
+        }
 
         if (!(await connect())) return;
         step('로그인 증인 준비 중…');
@@ -1214,7 +1218,6 @@
         setVerdict($('sessionVerdict'), false, 'wallet_session_revoke_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
       } finally { delete btn.dataset.busy; refresh(); }
     }
-    $('refreshBtn').addEventListener('click', () => refresh(true));
 
     // auid·salt 복사(Task 14, B5) — lastStatus.auid 는 공개 값, saltRevealed 는 "보기" 를 눌러야 채워진다.
     $('copyAuidBtn').addEventListener('click', () => copyText(lastStatus?.auid ?? null, $('copyAuidBtn')));

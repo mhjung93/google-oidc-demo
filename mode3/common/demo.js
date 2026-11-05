@@ -83,9 +83,31 @@
       const r = reason ? D.reason(reason) : null;
       if (summary || r) { const p = document.createElement('p'); p.className = 'summary'; p.textContent = summary ?? r.title; el.appendChild(p); }
       if (r && !ok) { const c = document.createElement('p'); c.className = 'cause'; c.textContent = r.cause; el.appendChild(c); const a = document.createElement('p'); a.className = 'action'; a.textContent = r.action; el.appendChild(a); }
-      // 사유 코드는 번역 여부와 상관없이 원문 그대로 함께 남긴다 — 사전에 있는 코드도 화면·로그에서 코드로 짚을 수 있어야 한다.
-      if (reason) { const code = document.createElement('code'); code.className = 'reason'; code.textContent = reason; el.appendChild(code); }
-      if (detail !== undefined) { const d = document.createElement('details'); if (D.expert) d.open = true; const s = document.createElement('summary'); s.textContent = D.t('details'); d.appendChild(s); const pre = document.createElement('pre'); pre.textContent = typeof detail === 'string' ? detail : JSON.stringify(detail, null, 2); d.appendChild(pre); el.appendChild(d); }
+      // 2026-11-05: 사유 코드·원문(detail)은 화면에 싣지 않는다(전문가 보기가 없어졌다) — 디버깅용으로 콘솔에만 남긴다.
+      if (!ok && !pending && (reason || detail !== undefined)) { try { console.debug('[verdict]', title, reason ?? '', detail ?? ''); } catch { /* 콘솔 없음 */ } }
+    },
+    /** 관리자 비밀번호 화면(2026-11-05, 사용자 요청). el 은 게이트 카드(.gate-form·.gate-pwd·.gate-verdict 포함). body.admin-locked 가 켜진 동안
+     *  main 의 다른 카드는 CSS 로 숨는다. verify(pwd) 는 true 또는 실패 제목의 verdict 키(admin_gate_bad 등)를 돌려준다. 맞은 비밀번호는 sessionStorage(key)에만 두어
+     *  새로고침은 넘기고 탭을 닫으면 다시 묻는다. 돌려주는 lock() 은 로그아웃 버튼이 부른다. */
+    gate({ el, key, verify, onUnlock, onLock }) {
+      const q = (sel) => el.querySelector(sel);
+      const kept = () => { try { return sessionStorage.getItem(key); } catch { return null; } };
+      const keep = (v) => { try { if (v === null) sessionStorage.removeItem(key); else sessionStorage.setItem(key, v); } catch { /* 사생활 모드 등 */ } };
+      const lock = () => { keep(null); document.body.classList.add('admin-locked'); el.hidden = false; q('.gate-pwd').value = ''; q('.gate-verdict').innerHTML = ''; onLock?.(); q('.gate-pwd').focus(); };
+      const unlock = (pwd) => { keep(pwd); document.body.classList.remove('admin-locked'); el.hidden = true; onUnlock(pwd); };
+      async function attempt(pwd, { silent = false } = {}) {
+        const v = q('.gate-verdict');
+        if (!pwd) { if (!silent) D.verdict(v, { ok: false, title: 'admin_gate_bad' }); return; }
+        if (!silent) D.verdict(v, { pending: true, title: D.t('working') });
+        let r; try { r = await verify(pwd); } catch { r = 'admin_gate_unavailable'; }
+        if (r === true) { v.innerHTML = ''; unlock(pwd); return; }
+        if (silent) { keep(null); v.innerHTML = ''; return; }
+        D.verdict(v, { ok: false, title: typeof r === 'string' ? r : 'admin_gate_unavailable' });
+      }
+      q('.gate-form').addEventListener('submit', (e) => { e.preventDefault(); attempt(q('.gate-pwd').value); });
+      document.body.classList.add('admin-locked'); el.hidden = false;
+      const k = kept(); if (k) attempt(k, { silent: true }); else q('.gate-pwd').focus();
+      return { lock };
     },
     confirmDanger(key, vars) { return window.confirm(D.t(key, vars)); },
     /**

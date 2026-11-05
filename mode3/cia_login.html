@@ -22,7 +22,9 @@
       <!-- 2026-11-05: 지갑이 auid 를 쿼리로 넘기면(지갑 팝업에서 온 길) 이 칸은 숨기고 그 값을 쓴다 — 사용자가 77자리 수를 손으로 넣던 것을 없앴다. -->
       <label id="authAuidRow">auid<input id="authAuid" autocomplete="off" /></label>
       <button id="authGo" type="submit" data-i18n="idp_auth_go">로그인</button>
+      <button id="authCancel" type="button" class="btn-ghost" data-i18n="idp_auth_cancel">취소</button>   <!-- 2026-11-05: 실패했을 때 돌아갈 길 — 창을 닫는다(RP 쪽에는 "창이 닫혔습니다") -->
     </form>
+    <p class="muted"><span data-i18n="idp_auth_signup_hint">계정이 없으면 새 탭에서 가입하고 지갑을 등록한 뒤 다시 로그인하세요.</span> <a id="authSignup" href="/user" target="_blank" rel="noopener" data-i18n="idp_auth_signup">계정 만들기</a></p>
     <div id="authVerdict"></div>
   </section>
 </main>
@@ -76,6 +78,8 @@
       if (lastReason && !returnToWallet) window.opener?.postMessage({ type: 'mode3-idp-auth', nonce, error: lastReason }, walletOrigin);
     });
 
+    // 취소(2026-11-05): 팝업이면 닫는다(지갑 팝업이 온 길이면 RP 가 popup_closed 를 받는다). 스크립트가 열지 않은 창이라 못 닫히면 뒤로 간다.
+    $('authCancel').addEventListener('click', () => { window.close(); setTimeout(() => { if (!window.closed) history.back(); }, 100); });
     $('authForm').addEventListener('submit', async (ev) => {
       ev.preventDefault();
       // 2026-11-03: 아이디로 로그인한다 — 서버(/cia/auth/code)가 아이디 색인에 없으면 10진 uid 로도 본다(옛 흐름·테스트 호환).

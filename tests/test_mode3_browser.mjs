@@ -237,7 +237,7 @@ try {
     await awaitPopupClosed(popup);
   });
   await t('지갑 페이지 제목은 "지갑", 신원 카드에 auid·salt 와 복사 버튼', async () => {
-    assert.equal(await walletPage.title(), '지갑'); await walletPage.click('#refreshBtn');
+    assert.equal(await walletPage.title(), '지갑');   // 새로고침 버튼은 없다(2026-11-05) — 화면이 5초마다 스스로 갱신한다
     await walletTab(walletPage, 'account'); await walletPage.click('#identityDetails summary');   // auid·salt 는 '상세' 접힘 안(2026-11-03)
     await waitText(walletPage, '#meAuid', AUID.slice(0, 10));                           // showSalt 확인 창은 없다(2026-11-05)
     await walletPage.click('#showSaltBtn'); await walletPage.waitForFunction(() => /^[0-9]{10,}$/.test(document.querySelector('#meSalt')?.textContent ?? ''), undefined, { timeout: 10_000 });
@@ -272,7 +272,7 @@ try {
     assert.equal((await text(rpPage, '#sessionId')).includes('(없음)'), false, '세션이 잡혔다');
     // 팝업 결과에는 지갑 안 정보가 실리지 않는다(스펙 §3.2) — 그래도 Snap 에는 새 C_u 가 저장돼 있어야 한다.
     assert.ok(snapState.userCred?.blind_u, '팝업이 userCredIssued 를 Snap 에 저장했다');
-    assert.equal((await rp.get('/api/mode3/logins')).body.logins.length, 1);
+    assert.equal((await rp.get('/api/mode3/logins', rp.adminHeaders)).body.logins.length, 1);
     // 목록의 r_s 는 잘라 보여 주는 값이라, 전체 r_s 는 RP 페이지가 들고 있는 것을 그대로 읽는다(전역 스크립트라 이름이 보인다).
     sessionRs = await rpPage.evaluate(() => (typeof currentSession === 'undefined' ? null : currentSession));
     assert.match(String(sessionRs), /^[0-9]+$/, 'RP 페이지가 세션 r_s 를 들고 있다');
@@ -288,7 +288,7 @@ try {
     const surfaces = {
       'wallet/status': j((await wallet.get('/wallet/status')).body),
       'wallet/config': j((await wallet.get('/wallet/config')).body),
-      'rp/logins': j((await rp.get('/api/mode3/logins')).body),
+      'rp/logins': j((await rp.get('/api/mode3/logins', rp.adminHeaders)).body),
       'rp/sessions': j((await rp.get('/api/mode3/sessions')).body),
       'wallet page': await pageDump(walletPage),
       'rp page': await pageDump(rpPage),
@@ -314,7 +314,7 @@ try {
   // 평범한 트랜잭션은 늘 성공해야 한다(사용자가 실제로 겪은 문제: 예전에는 모든 기본 tx 가 AttrGate.claim 으로
   // 가 조건 미공개로 늘 revert 됐다).
   await t('평범한 트랜잭션: 기본 대상·조건 없이 보내도 늘 성공한다(U4)', async () => {
-    await walletPage.click('#refreshBtn'); await walletTab(walletPage, 'send');
+    await walletTab(walletPage, 'send');
     await walletPage.waitForFunction(() => !document.querySelector('#txBtn').disabled, undefined, { timeout: 15_000 });
     assert.equal(await walletPage.inputValue('#txTo'), '0x000000000000000000000000000000000000dEaD', '기본 대상을 AttrGate 로 재배선하지 않는다');
     assert.equal(await walletPage.inputValue('#txData'), '0x');
@@ -356,7 +356,7 @@ try {
     await rpPage.fill('#buyAmount', '0.05'); await rpPage.click('#buyBtn'); await waitText(rpPage, '#ledgerVerdict', '구매 완료', 120_000);
     assert.equal(await balText('KRW'), '789,500', '1,000,000 − 0.05 × 4,210,000');
     assert.equal(await balText('ETH'), '0.05');
-    const buyTx = (await rp.get('/api/mode3/txs')).body.txs.at(-1);
+    const buyTx = (await rp.get('/api/mode3/txs', rp.adminHeaders)).body.txs.at(-1);
     assert.equal(buyTx.kind, 'buy'); sessionAccount = buyTx.account;
     assert.equal((await provider.getBalance(sessionAccount)).toString(), '50000000000000000', '세션 계정(CREATE2 주소)에 실제로 0.05 ETH 가 있다');
     // 같은 서명 본문의 재전송은 막힌다(입금·구매 되풀이 방지)
@@ -370,7 +370,7 @@ try {
 
   // ---- RP 페이지의 "온체인 출금"(2026-11-04): snap 모드도 지갑 팝업(mode3-tx)이 받는다 — Snap 동의 창 → prepare → RP 릴레이 → 영수증 ----
   await t('RP "온체인 출금": 지갑 팝업(mode3-tx) → Snap 동의(RP 오리진·대상·금액) → RP 릴레이 전송 → RP 결과에 txHash, 잔액이 준다', async () => {
-    const txsBefore = (await rp.get('/api/mode3/txs')).body.txs.length;
+    const txsBefore = (await rp.get('/api/mode3/txs', rp.adminHeaders)).body.txs.length;
     assert.equal(await rpPage.inputValue('#txValue'), '0.01', '금액 단위는 ETH(기본 0.01)');
     answers.push(true);                        // consentDisclosure(relay) 확인 — 대상 주소·금액
     const before = dialogs.length;
@@ -386,7 +386,7 @@ try {
     assert.match(rpLog, /txHash=0x[0-9a-fA-F]{64}/, `RP 로그에 txHash: ${rpLog}`);
     assert.equal((await rpPage.$eval('#txVerdict', (el) => [...el.querySelectorAll('strong, p')].map((e) => e.textContent).join(' '))).match(/0x[0-9a-fA-F]{10,}/g), null, '결과 카드의 제목·요약에는 해시가 없다(접힌 상세 JSON 제외) — 아래 해시 줄 한 곳에만(2026-11-05)');
     assert.equal(await rpPage.isHidden('#txHashRow'), false);
-    const txs = (await rp.get('/api/mode3/txs')).body.txs;
+    const txs = (await rp.get('/api/mode3/txs', rp.adminHeaders)).body.txs;
     assert.equal(txs.length, txsBefore + 1, 'RP 릴레이가 보낸 거래가 RP 거래 기록에 남는다(= 지갑 EOA 가 아니라 릴레이어가 보냈다)');
     assert.equal(txs.at(-1).kind, 'transfer'); assert.equal(txs.at(-1).value, '10000000000000000');
     await rpPage.waitForFunction(() => document.querySelector('.balance-list li[data-asset="ETH"] .bal-amt')?.textContent.trim() === '0.04', undefined, { timeout: 30_000 });
@@ -511,12 +511,12 @@ try {
 
   // 2026-11-05: 로그인 동의 창은 없어졌다 — 남은 Snap 동의 창은 RP 릴레이 출금(받는 주소·금액)뿐이라 그 거절 경로를 본다.
   await t('동의 거절: RP "온체인 출금" 의 Snap 동의 창에서 거절하면 RP 에 user_denied 가 돌아오고 거래는 보내지 않는다', async () => {
-    const before = (await rp.get('/api/mode3/txs')).body.txs.length;
+    const before = (await rp.get('/api/mode3/txs', rp.adminHeaders)).body.txs.length;
     answers.push(false);                       // consentDisclosure(relay) 거절
     const [popup] = await Promise.all([context.waitForEvent('page'), rpPage.click('#txBtn')]);
-    await waitText(rpPage, '#txVerdict', 'user_denied', 120_000);
+    await waitText(rpPage, '#txVerdict', '요청을 거절했습니다', 120_000);   // user_denied 제목(코드는 화면에 없다, 2026-11-05)
     await awaitPopupClosed(popup);
-    assert.equal((await rp.get('/api/mode3/txs')).body.txs.length, before, '거절은 거래를 남기지 않는다');
+    assert.equal((await rp.get('/api/mode3/txs', rp.adminHeaders)).body.txs.length, before, '거절은 거래를 남기지 않는다');
   });
   // V11(D15): 속성은 사용자가 지갑에 넣는다 — 관리자 페이지가 아니라 지갑 페이지의 "속성 저장"(PUT /wallet/profile)이 바꾼다.
   // 바뀌면 에이전트가 옛 C_u·세션을 지우고, 페이지는 응답의 attrsChanged 를 Snap 의 syncAttrs 로 전달해 Snap 도 옛 C_u 를 버린다
@@ -571,7 +571,7 @@ try {
   });
 
   await t('폐기 상한(2026-10-22): 세션 카드에 nonce, 폐기 때 허용 수 입력(Snap 동의 창 없음) → 체인 반영 대기 행 → 재로그인 뒤 "지금 반영" → 행 사라짐', async () => {
-    await walletPage.click('#refreshBtn'); await walletTab(walletPage, 'services');
+    await walletTab(walletPage, 'services');
     await walletPage.waitForFunction(() => /nonce\s*\d+/.test(document.querySelector('#sessionActions')?.textContent ?? ''), undefined, { timeout: 15_000 });
     await walletPage.fill('#sessionActions input.bound', '1');
     const dBefore = dialogs.length;                                       // 2026-11-05: Snap 의 consentRevokeSession 동의 창은 없다 — 페이지의 confirm 만
@@ -608,7 +608,7 @@ try {
     }));
     try {
       await idpLogin(rpPage);
-      await waitText(rpPage, '#verdict', 'factory_constants_unavailable', 30_000);
+      await waitText(rpPage, '#verdict', 'RP 가 체인 설정을 읽지 못했습니다', 30_000);   // factory_constants_unavailable 제목
       assert.equal((await text(rpPage, '#verdict')).includes('Cannot read'), false, `TypeError 가 아니라 사유가 보여야 한다: ${await text(rpPage, '#verdict')}`);
       await rpPage.waitForFunction(() => !document.querySelector('#loginBtn').disabled, undefined, { timeout: 10_000 });
       assert.equal(dialogs.length, before, '챌린지 단계에서 멈추므로 지갑 팝업·동의 창까지 가지 않는다');
@@ -627,13 +627,13 @@ try {
     assert.equal(await p.isHidden('#registerCard'), true); assert.equal(await p.isHidden('#revokeCard'), true);
     await p.click('#showSignupBtn'); await p.waitForSelector('#signupView:not([hidden])');
     await p.fill('#signupId', 'demo-user-2'); await p.fill('#signupPwd', 'demo-pass-1'); await p.fill('#signupPwd2', 'demo-pass-X'); await p.click('#signupBtn');
-    await waitText(p, '#signupVerdict', 'pwd_mismatch');
+    await waitText(p, '#signupVerdict', '비밀번호 확인이 일치하지 않습니다');   // pwd_mismatch 제목
     await p.fill('#signupPwd2', 'demo-pass-1'); await p.click('#signupBtn');
     await waitText(p, '#userVerdict', '가입했습니다'); assert.equal(await p.inputValue('#loginId'), 'demo-user-2');
     // 같은 아이디(대소문자만 다른)로 다시 가입하면 409 id_taken.
     await p.click('#showSignupBtn'); await p.fill('#signupId', 'DEMO-USER-2'); await p.fill('#signupPwd', 'demo-pass-1'); await p.fill('#signupPwd2', 'demo-pass-1'); await p.click('#signupBtn');
-    await waitText(p, '#signupVerdict', 'id_taken'); await p.click('#showLoginBtn');
-    await p.fill('#loginId', 'demo-user-2'); await p.fill('#loginPwd', 'wrong-pass-1'); await p.click('#loginBtn'); await waitText(p, '#userVerdict', 'invalid_credentials');
+    await waitText(p, '#signupVerdict', '그 아이디는 이미 쓰고 있습니다'); await p.click('#showLoginBtn');   // id_taken 제목
+    await p.fill('#loginId', 'demo-user-2'); await p.fill('#loginPwd', 'wrong-pass-1'); await p.click('#loginBtn'); await waitText(p, '#userVerdict', '아이디 또는 비밀번호가 맞지 않습니다');   // invalid_credentials 제목
     await p.fill('#loginPwd', 'demo-pass-1'); await p.click('#loginBtn');
     await waitText(p, '#meBadge', '등록 전'); await waitText(p, '#meInfo', 'demo-user-2'); assert.equal(await p.isVisible('#registerBtn'), true);
     await p.click('#logoutBtn'); await p.waitForSelector('#loginView:not([hidden])'); assert.equal(await p.isHidden('#meCard'), true); await p.close();
@@ -669,7 +669,7 @@ try {
     assert.equal(await popup.isHidden('#authAuidRow'), true, 'auid 칸은 숨겨져 있다');
     await popup.fill('#authUid', uid); await popup.fill('#authPwd', DEMO_PWD);
     await popup.evaluate(() => { document.querySelector('#authAuid').value = '123'; }); await popup.click('#authGo');
-    await waitText(popup, '#authVerdict', 'auid');                                          // auid_mismatch 사유, 페이지에 머문다
+    await waitText(popup, '#authVerdict', '다른 zkID 계정');                                          // auid_mismatch 사유, 페이지에 머문다
     assert.ok(popup.url().includes('/login'), `실패하면 IdP 페이지에 머문다: ${popup.url()}`);
     // cia_login.html 의 #authGo 핸들러는 성공·실패 모두에서 clearPwd() 로 비밀번호 칸을 비운다(§4) — 다시 채워야 한다.
     await popup.fill('#authPwd', DEMO_PWD); await popup.evaluate((a) => { document.querySelector('#authAuid').value = a; }, String(AUID)); await popup.click('#authGo');
@@ -684,13 +684,13 @@ try {
   // 앞)에 둔다.
   // 2026-11-05: IdP 인증 결과는 postMessage 가 아니라 돌아오는 URL(idp_nonce·idp_code)로 온다 — 팝업은 저장해 둔 pending 의 nonce 와 맞을 때만 이어 간다.
   await t('돌아오는 길 음성: 저장된 요청(pending) 없이 idp_code 를 들고 온 창은 결과를 내지 않고 안내만 한다', async () => {
-    const before = (await rp.get('/api/mode3/logins')).body.logins.length;
+    const before = (await rp.get('/api/mode3/logins', rp.adminHeaders)).body.logins.length;
     const [popup] = await Promise.all([context.waitForEvent('page'), rpPage.evaluate((u) => { window.open(u, 'forged-return', 'width=400,height=400'); }, `${wallet.base}/?authorize=1&idp_nonce=deadbeef&idp_code=${'0'.repeat(64)}`)]);
     await waitText(popup, '#authStep', '이어받지 못했습니다', 15_000);
     await popup.waitForTimeout(500);
     assert.equal(popup.isClosed(), false, '결과를 내고 닫히면 안 된다');
     assert.equal(popup.url().includes('idp_code'), false, '1회용 코드는 주소창에서 지운다');
-    assert.equal((await rp.get('/api/mode3/logins')).body.logins.length, before, '로그인이 생기지 않는다');
+    assert.equal((await rp.get('/api/mode3/logins', rp.adminHeaders)).body.logins.length, before, '로그인이 생기지 않는다');
     await popup.close();
   });
 
@@ -699,6 +699,34 @@ try {
     assert.equal(result.ok, false, j(result));
     assert.equal(result.reason, 'origin_mismatch', j(result));
     await awaitPopupClosed(popup);
+  });
+
+  await t('관리자 비밀번호(2026-11-05): RP /admin 은 비밀번호 화면이 먼저 — 틀리면 "비밀번호가 맞지 않습니다", 맞으면 기록이 열리고 새로고침은 넘기며 로그아웃은 다시 잠근다; API 는 헤더 없이 401', async () => {
+    assert.equal((await rp.get('/api/mode3/logins')).status, 401, '헤더 없는 로그인 기록 GET');
+    assert.equal((await rp.post('/api/mode3/open', { PPID: '1' })).status, 401, '헤더 없는 개봉 요청');
+    const p = await context.newPage(); await p.goto(`${rp.base}/admin`);
+    await p.waitForSelector('#adminGate:not([hidden])');
+    assert.equal(await p.$eval('#loginsCard', (el) => getComputedStyle(el).display), 'none', '잠긴 동안 기록 카드는 숨는다');
+    await p.fill('#adminGate .gate-pwd', 'wrong'); await p.click('#adminGate .gate-form button[type=submit]');
+    await waitText(p, '#adminGate .gate-verdict', '비밀번호가 맞지 않습니다');
+    await p.fill('#adminGate .gate-pwd', rp.adminHeaders['X-RP-Admin-Secret']); await p.click('#adminGate .gate-form button[type=submit]');
+    await p.waitForFunction(() => document.querySelectorAll('#logins table tbody tr').length > 0, undefined, { timeout: 20_000 });
+    assert.equal(await p.$eval('#adminGate', (el) => el.hidden), true);
+    await p.reload({ waitUntil: 'load' });
+    await p.waitForFunction(() => document.querySelectorAll('#logins table tbody tr').length > 0, undefined, { timeout: 20_000 });   // sessionStorage 로 넘어간다
+    await p.click('#gateLogoutBtn'); await p.waitForSelector('#adminGate:not([hidden])');
+    assert.equal(await p.$eval('#loginsCard', (el) => getComputedStyle(el).display), 'none');
+    await p.close();
+  });
+  await t('관리자 비밀번호(2026-11-05): IdP /admin 도 비밀번호 화면 — 맞으면 계정 목록이 열린다', async () => {
+    const p = await context.newPage(); await p.goto(`${cia.base}/admin`);
+    await p.waitForSelector('#adminGate:not([hidden])');
+    await p.fill('#adminGate .gate-pwd', 'wrong'); await p.click('#adminGate .gate-form button[type=submit]');
+    await waitText(p, '#adminGate .gate-verdict', '비밀번호가 맞지 않습니다');
+    await p.fill('#adminGate .gate-pwd', cia.adminSecret); await p.click('#adminGate .gate-form button[type=submit]');
+    await p.waitForFunction(() => document.querySelectorAll('#accounts table tbody tr').length > 0, undefined, { timeout: 20_000 });
+    assert.equal(await p.$eval('#adminGate', (el) => el.hidden), true);
+    await p.close();
   });
 
   await t('하네스: 준비한 대화상자 응답이 남지 않았다(기대한 동의 창이 다 떴다)', async () => {

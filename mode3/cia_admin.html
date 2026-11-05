@@ -11,7 +11,7 @@
   <script src="/common/strings.js"></script>
   <script src="/common/demo.js"></script>
 </head>
-<body data-page="admin">
+<body data-page="admin" class="admin-locked">
   <header id="demoBar"></header>
   <!-- 2026-11-03: 공통 상단 바(idp.css) + 절 메뉴 — 카드를 숨기지 않고 해당 절로 이동만 한다(테스트 선택자 불변). -->
   <nav class="idp-nav"><div class="nav-inner">
@@ -20,15 +20,25 @@
   </div></nav>
   <div class="section-menu"><div class="menu-inner"><a href="#secAccounts" data-i18n="admin_accounts_title">계정</a><a href="#secRps" data-i18n="admin_rps_title">RP</a><a href="#secOpenings" data-i18n="admin_openings_title">개봉 요청</a><a href="#secRcl" data-i18n="admin_rcl_title">폐기 목록</a><a href="#secCreds" data-i18n="admin_creds_title">사용자 자격증명</a><a href="#secRevoked" data-i18n="admin_revoked_sessions_title">세션 폐기 목록</a></div></div>
   <main class="cards">
+    <!-- 관리자 비밀번호 화면(2026-11-05, 사용자 요청) — Demo.gate 가 맞는 비밀번호를 받을 때까지 다른 카드는 body.admin-locked 로 숨는다. -->
+    <section class="card gate-card" id="adminGate" hidden>
+      <h3 data-i18n="admin_gate_title">관리자 로그인</h3>
+      <p class="desc" data-i18n="admin_gate_desc">관리자 비밀번호를 넣으세요.</p>
+      <form class="gate-form" autocomplete="off">
+        <label><span data-i18n="admin_gate_pwd">비밀번호</span><input class="gate-pwd" type="password" autocomplete="current-password" /></label>
+        <button type="submit" data-i18n="admin_gate_go">로그인</button>
+      </form>
+      <div class="gate-verdict"></div>
+    </section>
     <section class="card span2">
-      <h3 data-i18n="admin_auth_title">인증 · 최근 결과</h3>
-      <p class="desc" data-i18n="admin_auth_desc">시크릿은 요청 헤더로만 쓰입니다. 화면·결과 카드·원문 로그 어디에도 남기지 않습니다.</p>
+      <h3 data-i18n="admin_auth_title">최근 결과</h3>
+      <p class="desc" data-i18n="admin_auth_desc">비밀번호는 요청 헤더로만 쓰입니다. 화면·결과 카드 어디에도 남기지 않습니다.</p>
+      <!-- 2026-11-05: 시크릿 입력칸·"이 창에서 기억" 은 위 비밀번호 화면(#adminGate)으로 옮겼다. #secret 은 기존 요청 코드가 읽는 숨은 값이다. -->
+      <input id="secret" type="hidden" autocomplete="off" />
       <p>
-        <label class="secret-field"><span data-i18n="admin_secret_label">관리자 시크릿</span> <input id="secret" type="password" size="36" autocomplete="off" /></label>
-        <label class="secret-field"><input type="checkbox" id="rememberSecret" /> <span data-i18n="admin_remember">이 창에서 기억</span></label>
         <button id="reloadBtn" class="btn-ghost" data-i18n="admin_reload">모두 새로고침</button>
+        <button id="gateLogoutBtn" class="btn-ghost" data-i18n="admin_gate_logout">관리자 로그아웃</button>
       </p>
-      <p class="muted secret-field" data-i18n="admin_remember_note">이 탭을 닫으면 지워집니다(sessionStorage). 기본은 꺼짐입니다.</p>
       <p class="muted" id="adminOpenNote" data-i18n="admin_open_note" hidden>데모 설정(CIA_ADMIN_OPEN=1)으로 관리자 인증이 꺼져 있어 시크릿 없이 쓸 수 있습니다. 이 IdP 에 닿는 누구나 관리자 기능을 쓸 수 있으니 데모에서만 켜세요.</p>
       <p id="pendingBadges"></p>
       <div id="adminVerdict"></div>
@@ -121,9 +131,7 @@
     // ---- 관리자 시크릿 ----
     // 기본은 메모리(입력칸)뿐이다. "이 창에서 기억" 을 켠 동안만 sessionStorage 에 둔다 — 탭을 닫으면 사라진다.
     // 시크릿은 요청 헤더로만 나가고 #out·결과 카드·안내 문구 어디에도 실리지 않는다.
-    const SECRET_KEY = 'mode3.adminSecret';
-    const readKept = () => { try { return sessionStorage.getItem(SECRET_KEY); } catch { return null; } };
-    const writeKept = (v) => { try { if (v === null) sessionStorage.removeItem(SECRET_KEY); else sessionStorage.setItem(SECRET_KEY, v); } catch { /* 사생활 모드 등 */ } };
+    const SECRET_KEY = 'mode3.adminSecret';   // 비밀번호 화면(Demo.gate)이 맞은 값을 sessionStorage 에 둔다(2026-11-05)
     // 데모 설정(CIA_ADMIN_OPEN=1, 2026-10-21): 시크릿 없이 관리자 목록이 열리면 true — 기동 때 한 번 알아낸다. 그때는 헤더에 자리표시 값을 싣는다
     // (IdP 는 이 모드에서 헤더가 있는 폐기 요청만 관리자로 본다 — 헤더 없는 사용자 본인 서명 요청과 가르기 위해서다).
     let adminOpen = false;
@@ -641,27 +649,24 @@
       loadAccounts(); loadRps(); loadOpenings(); loadState(); refreshBadges();
     }
     $('reloadBtn').addEventListener('click', reloadAll);
-    $('rememberSecret').addEventListener('change', () => writeKept($('rememberSecret').checked ? $('secret').value : null));
-    // 타이핑이 멎으면 한 번만 불러온다 — 키 입력마다 401 을 내지 않고, 사용자가 따로 버튼을 누를 필요도 없다.
-    let secretTimer = null;
-    $('secret').addEventListener('input', () => {
-      if ($('rememberSecret').checked) writeKept($('secret').value);
-      clearTimeout(secretTimer);
-      secretTimer = setTimeout(() => { if (hasSecret()) reloadAll(); }, 600);
-    });
-    $('secret').addEventListener('change', () => { clearTimeout(secretTimer); if (hasSecret()) reloadAll(); });
 
     Demo.init({ page: 'admin' });
     Demo.tour?.onToggle(renderGuide);   // 스위치를 켜고 끌 때 이 페이지의 규칙으로 안내를 다시 그린다
     initStack();
-    const kept = readKept();
-    if (kept) { $('secret').value = kept; $('rememberSecret').checked = true; }
     renderBadges();
-    // 시크릿 없이 /cia/rps 가 열리면(데모 설정) 입력칸을 숨기고 바로 불러온다. 아니면 예전과 같다(401·503 — 시크릿을 넣어야 불러온다).
+    // 시크릿 없이 /cia/rps 가 열리면(데모 설정 CIA_ADMIN_OPEN=1) 비밀번호 화면 없이 바로 불러온다. 아니면 비밀번호 화면(2026-11-05)이 먼저다 —
+    // 맞는 비밀번호(목록 GET 200)를 받으면 숨은 #secret 에 넣고 모두 불러온다. 로그아웃은 지우고 다시 잠근다.
     (async () => {
       try { adminOpen = (await fetch('/cia/rps')).status === 200; } catch { adminOpen = false; }
-      if (adminOpen) { for (const el of document.querySelectorAll('.secret-field')) el.hidden = true; $('adminOpenNote').hidden = false; }
-      if (hasSecret()) reloadAll(); else renderGuide();
+      if (adminOpen) { document.body.classList.remove('admin-locked'); $('adminGate').hidden = true; $('gateLogoutBtn').hidden = true; $('adminOpenNote').hidden = false; reloadAll(); return; }
+      renderGuide();
+      const gate = Demo.gate({
+        el: $('adminGate'), key: SECRET_KEY,
+        verify: async (pwd) => { const r = await fetch('/cia/rps', { headers: { 'X-CIA-Admin-Secret': pwd } }); return r.status === 200 ? true : r.status === 401 ? 'admin_gate_bad' : r.status === 503 ? 'admin_gate_disabled' : 'admin_gate_unavailable'; },
+        onUnlock: (pwd) => { $('secret').value = pwd; reloadAll(); },
+        onLock: () => { $('secret').value = ''; reloadAll(); },
+      });
+      $('gateLogoutBtn').addEventListener('click', () => gate.lock());
     })();
   </script>
 </body>

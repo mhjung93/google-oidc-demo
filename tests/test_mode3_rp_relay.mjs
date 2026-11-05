@@ -63,7 +63,7 @@ try {
   });
   await t('기록(2026-10-21): GET /api/mode3/txs 가 릴레이한 두 건을 보낸 순서대로 담고, 영수증 뒤 상태가 success 다', async () => {
     let txs = []; const deadline = Date.now() + 10_000;
-    while (Date.now() < deadline) { txs = (await rp.get('/api/mode3/txs')).body.txs; if (txs.length >= 2 && txs.slice(0, 2).every((x) => x.status !== 'pending')) break; await new Promise((r) => setTimeout(r, 200)); }
+    while (Date.now() < deadline) { txs = (await rp.get('/api/mode3/txs', rp.adminHeaders)).body.txs; if (txs.length >= 2 && txs.slice(0, 2).every((x) => x.status !== 'pending')) break; await new Promise((r) => setTimeout(r, 200)); }
     assert.ok(txs.length >= 2, JSON.stringify(txs));
     for (const x of txs.slice(0, 2)) {
       assert.match(x.txHash, /^0x[0-9a-f]{64}$/); assert.match(x.account, /^0x[0-9a-fA-F]{40}$/); assert.match(x.PPID, /^[0-9]+$/);
@@ -129,7 +129,7 @@ try {
     assert.ok(JSON.stringify(line).length < 16_000, `로그 줄 크기 ${JSON.stringify(line).length}`);
     assert.deepEqual(Object.keys(line.proof).sort(), ['curve', 'pi_a', 'pi_b', 'pi_c', 'protocol']);
     assert.deepEqual(line.proof, { pi_a: w.proof.pi_a, pi_b: w.proof.pi_b, pi_c: w.proof.pi_c, protocol: 'groth16', curve: 'bn128' });
-    const o = await rp.post('/api/mode3/open', { PPID: r.body.PPID });
+    const o = await rp.post('/api/mode3/open', { PPID: r.body.PPID }, rp.adminHeaders);
     assert.notEqual(o.status, 413, JSON.stringify(o.body)); assert.ok(o.status < 300, JSON.stringify(o.body)); assert.ok(o.body.id, JSON.stringify(o.body));
   });
   await t('E1: 비정규 숫자 문자열(앞자리 0)·원소를 덧붙인 좌표·필드 밖 좌표가 든 proof 는 400 malformed', async () => {

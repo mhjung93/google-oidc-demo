@@ -156,7 +156,7 @@ try {
     assert.equal(r.rp.allowAgent, '0');
     PPID1 = r.rp.PPID; S1 = r.r_s;
     // r_s 전문은 로그인 응답에만 낸다 — 조회 엔드포인트는 축약만(설계 §2, I1).
-    const { logins } = (await rp.get('/api/mode3/logins')).body;
+    const { logins } = (await rp.get('/api/mode3/logins', rp.adminHeaders)).body;
     const { sessions } = (await rp.get('/api/mode3/sessions')).body;
     assert.ok(logins.length > 0);
     for (const l of logins) assert.ok(l.r_s.length <= 9 && l.r_s.endsWith('…'), j(l));
@@ -201,13 +201,13 @@ try {
   });
 
   await t('2b. 해시 기반 개봉: RP 가 txHash 로 요청 → 승인 → uid·allowAgent(0)', async () => {
-    const r = await rp.post('/api/mode3/open', { txHash: TX1 });
+    const r = await rp.post('/api/mode3/open', { txHash: TX1 }, rp.adminHeaders);
     assert.ok([200, 202].includes(r.status), j(r.body));   // 같은 세션(같은 c1)의 개봉이 9 보다 먼저 여기서 생긴다 → 202. 이미 있으면 200
     const id = r.body.id;
     assert.equal((await cia.adminPost(`/cia/openings/${id}/approve`)).body.status, 'approved');
-    const res = await rp.get(`/api/mode3/open/${id}`);
+    const res = await rp.get(`/api/mode3/open/${id}`, rp.adminHeaders);
     assert.equal(res.status, 200, j(res.body)); assert.equal(res.body.uid, uid); assert.equal(res.body.allowAgent, '0'); assert.equal(res.body.PPID, PPID1);
-    assert.equal((await rp.post('/api/mode3/open', { txHash: '0x' + '11'.repeat(32) })).status, 404);
+    assert.equal((await rp.post('/api/mode3/open', { txHash: '0x' + '11'.repeat(32) }, rp.adminHeaders)).status, 404);
   });
 
   await t("session_mismatch: 다른 사용자가 같은 r_s 로 받은 성명으로 남의 세션을 재검증할 수 없다", async () => {
@@ -308,26 +308,26 @@ try {
   });
 
   await t('9. 개봉: RP 가 PPID 로 요청 → 관리자 승인 → RP 가 uid 를 받는다; 같은 세션 재요청은 같은 id', async () => {
-    const r = await rp.post('/api/mode3/open', { PPID: PPID1 });
+    const r = await rp.post('/api/mode3/open', { PPID: PPID1 }, rp.adminHeaders);
     assert.equal(r.status, 202, j(r.body)); const id = r.body.id;
-    assert.equal((await rp.get(`/api/mode3/open/${id}`)).status, 202);
+    assert.equal((await rp.get(`/api/mode3/open/${id}`, rp.adminHeaders)).status, 202);
     const pend = (await cia.adminGet('/cia/openings')).body.openings.find((o) => o.id === id);
     assert.equal(pend.status, 'pending'); assert.equal(pend.uid, null);   // IdP V4(Task 5) 는 pending 항목에 uid:null 을 명시적으로 둔다
     assert.equal((await cia.adminPost(`/cia/openings/${id}/approve`)).body.status, 'approved');
-    const res = await rp.get(`/api/mode3/open/${id}`);
+    const res = await rp.get(`/api/mode3/open/${id}`, rp.adminHeaders);
     assert.equal(res.status, 200, j(res.body)); assert.equal(res.body.uid, uid); assert.equal(res.body.PPID, PPID1);
-    const r2 = await rp.post('/api/mode3/open', { PPID: PPID1 });   // 같은 (arid, c1) — IdP 가 같은 id 로 dedup 한다
+    const r2 = await rp.post('/api/mode3/open', { PPID: PPID1 }, rp.adminHeaders);   // 같은 (arid, c1) — IdP 가 같은 id 로 dedup 한다
     assert.equal(r2.status, 200); assert.equal(r2.body.id, id);
-    assert.equal((await rp.post('/api/mode3/open', { PPID: '1' })).status, 404);
+    assert.equal((await rp.post('/api/mode3/open', { PPID: '1' }, rp.adminHeaders)).status, 404);
   });
 
   await t('9a. allowAgent=1 로그인 → PPID 개봉 결과에 allowAgent 1', async () => {
     const r = await loginViaRp('1');
     assert.equal(r.rp.ok, true, j(r)); assert.equal(r.rp.allowAgent, '1');
-    const o = await rp.post('/api/mode3/open', { PPID: PPID1 });
+    const o = await rp.post('/api/mode3/open', { PPID: PPID1 }, rp.adminHeaders);
     assert.equal(o.status, 202, j(o.body));
     assert.equal((await cia.adminPost(`/cia/openings/${o.body.id}/approve`)).status, 200);
-    const res = await rp.get(`/api/mode3/open/${o.body.id}`);
+    const res = await rp.get(`/api/mode3/open/${o.body.id}`, rp.adminHeaders);
     assert.equal(res.body.allowAgent, '1'); assert.equal(res.body.uid, uid);
   });
 
@@ -441,7 +441,7 @@ try {
       assert.ok(mine, '방금 로그인한 세션이 목록에 있어야 한다');
       assert.deepEqual(mine.disclosure, { mask: '3', lo: ['0', '840', '0', '0', '0', '0'], hi: ['2007', '840', '0', '0', '0', '0'], set: null });
 
-      const logins = (await rp.get('/api/mode3/logins')).body.logins;
+      const logins = (await rp.get('/api/mode3/logins', rp.adminHeaders)).body.logins;
       assert.equal(logins[logins.length - 1].disclosure.mask, '3');
 
       // mask ≥ 64(V9 6슬롯, PUB_INDEX.DISC_MASK=15) 는 Groth16 검증 전에 걸리므로 증명 자체는 손대지 않고
@@ -855,9 +855,9 @@ try {
   await t('C-5: 검증기가 없으면 GET /api/mode3/open/:id 도 503 (개봉 조회 fail-closed)', async () => {
     await stack.restartRp({ MODE3_RP_FACTORY_ADDRESS: cia.logAddress }, { waitActive: false });
     assert.equal((await rp.get('/api/mode3/rp_info')).body.active, false, '전제: 검증기가 없는 상태');
-    const post = await rp.post('/api/mode3/open', { PPID: '1' });   // 양성 대조 — 개봉 요청은 이미 막혀 있다
+    const post = await rp.post('/api/mode3/open', { PPID: '1' }, rp.adminHeaders);   // 양성 대조 — 개봉 요청은 이미 막혀 있다
     assert.equal(post.status, 503, j(post.body)); assert.equal(post.body.reason, 'factory_constants_unavailable');
-    const get = await rp.get('/api/mode3/open/abc');
+    const get = await rp.get('/api/mode3/open/abc', rp.adminHeaders);
     assert.equal(get.status, 503, j(get.body)); assert.equal(get.body.reason, 'factory_constants_unavailable', j(get.body));
   });
 } finally {

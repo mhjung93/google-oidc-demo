@@ -208,15 +208,15 @@ try {
 
   await t('막 3c. 의심 거래 개봉 — 거래소가 txHash 로 요청 → 관리자 승인 → uid 12345·거래소 PPID; 일반 RP 는 아무것도 알지 못한다', async () => {
     const g = (await general.get('/api/mode3/rp_info')).body, x = (await exchange.get('/api/mode3/rp_info')).body;
-    const r = await exchange.post('/api/mode3/open', { txHash: TX_X });
+    const r = await exchange.post('/api/mode3/open', { txHash: TX_X }, exchange.adminHeaders);
     assert.ok([200, 202].includes(r.status), j(r.body));
     const id = r.body.id;
     assert.equal((await cia.adminPost(`/cia/openings/${id}/approve`)).body.status, 'approved');
-    const res = await exchange.get(`/api/mode3/open/${id}`);
+    const res = await exchange.get(`/api/mode3/open/${id}`, exchange.adminHeaders);
     assert.equal(res.status, 200, j(res.body));
     assert.equal(res.body.uid, uid); assert.equal(res.body.PPID, PPID_X);
     // 일반 RP: 같은 개봉 id 로 조회해도 결과를 받지 못하고, 개봉 기록에 일반 RP 것은 하나도 없다.
-    const peek = await general.get(`/api/mode3/open/${id}`);
+    const peek = await general.get(`/api/mode3/open/${id}`, general.adminHeaders);
     assert.notEqual(peek.status, 200, j(peek.body)); assert.equal(peek.body?.uid, undefined, j(peek.body));
     const openings = (await cia.adminGet('/cia/openings')).body.openings;
     assert.ok(openings.length >= 1);

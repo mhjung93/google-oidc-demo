@@ -24,8 +24,7 @@
       <a class="brand" href="#market">zkONE</a>
       <div class="nav-menu">
         <a href="#market" class="nav-link" data-i18n="nav_market">거래소</a>
-        <a href="#assets" class="nav-link" data-i18n="nav_assets">자산</a>
-        <a href="#balance" class="nav-link" data-i18n="nav_balance">잔액·출금</a>
+        <a href="#assets" class="nav-link" data-i18n="nav_assets">내 자산</a>   <!-- 2026-11-05: "잔액·출금" 탭은 같은 패널로 가서 하나로 합쳤다 -->
       </div>
       <div class="nav-actions">
         <button type="button" id="loginBtn" class="nav-cta" data-i18n="rp_login_btn">로그인</button>
@@ -64,6 +63,8 @@
       <div id="assetsLoggedOut" class="login-card">
         <h2 data-i18n="rp_login_title">로그인</h2>
         <p class="desc" data-i18n="rp_login_desc">zkID 계정으로 로그인합니다. 이 거래소는 회원이 누구인지 모르고, zkID 는 회원이 어디에 로그인하는지 모릅니다.</p>
+        <!-- 2026-11-05: 처음 온 사람의 길 — zkID 가입·지갑 등록으로 가는 링크(주소는 rp_info.ciaUrl 로 채운다). -->
+        <p class="muted" id="signupHint"><span data-i18n="rp_signup_hint">zkID 계정이 없으면 먼저 zkID 에서 가입하고 지갑을 등록하세요: </span><a id="signupLink" href="#" target="_blank" rel="noopener" data-i18n="rp_signup_link">zkID 가입·지갑 등록</a></p>
         <p class="login-policy" id="loginPolicy">만 19세 이상, 허용 국가(KR·JP·US·DE·FR)만 이용할 수 있습니다</p>
         <label class="opt-row expert"><input type="checkbox" id="requirePred" /> <span id="requirePredLabel" data-i18n="rp_require_pred">조건 요구(국가·나이)</span></label>
         <p><button type="button" id="cardLoginBtn" class="nav-cta" data-i18n="rp_login_btn">로그인</button></p>   <!-- 2026-11-05: 카드 안에서 바로 시작 — 상단 버튼과 같은 모달 -->
@@ -433,6 +434,7 @@
     }
     async function loadInfo() {
       info = await (await fetch('/api/mode3/rp_info')).json();
+      $('signupLink').href = info?.ciaUrl ? `${info.ciaUrl}/user` : '#';   // 로그인 카드의 가입 링크(2026-11-05)
       renderBrand();
       const pending = info.status !== 'approved';
       renderStatus();

@@ -12,13 +12,23 @@
   <script src="/common/strings.js"></script>
   <script src="/common/demo.js"></script>
 </head>
-<body data-page="rp_admin">
+<body data-page="rp_admin" class="admin-locked">
   <header id="demoBar"></header>
   <main class="cards">
+    <!-- 관리자 비밀번호 화면(2026-11-05, 사용자 요청) — Demo.gate 가 맞는 비밀번호를 받을 때까지 다른 카드는 body.admin-locked 로 숨는다. -->
+    <section class="card gate-card" id="adminGate" hidden>
+      <h3 data-i18n="admin_gate_title">관리자 로그인</h3>
+      <p class="desc" data-i18n="admin_gate_desc">관리자 비밀번호를 넣으세요.</p>
+      <form class="gate-form" autocomplete="off">
+        <label><span data-i18n="admin_gate_pwd">비밀번호</span><input class="gate-pwd" type="password" autocomplete="current-password" /></label>
+        <button type="submit" data-i18n="admin_gate_go">로그인</button>
+      </form>
+      <div class="gate-verdict"></div>
+    </section>
     <section class="card compliance-panel" id="adminHead">
       <h2><span id="brandName">zkONE</span> — <span data-i18n="rp_admin_title">관리자</span></h2>
       <p class="desc" data-i18n="rp_admin_desc">거래소 운영자용 화면입니다. 고객 페이지에는 보이지 않는 로그인 기록과 승인 개봉이 여기에 있습니다.</p>
-      <p><a id="customerLink" class="btn-ghost" href="/" data-i18n="rp_admin_customer_link">고객 페이지로</a></p>
+      <p><a id="customerLink" class="btn-ghost" href="/" data-i18n="rp_admin_customer_link">고객 페이지로</a> <button type="button" id="gateLogoutBtn" class="btn-ghost" data-i18n="admin_gate_logout">관리자 로그아웃</button></p>
     </section>
 
     <section class="card compliance-panel" id="loginsCard">
@@ -76,7 +86,10 @@
         el.textContent = [window.DemoStrings?.verdicts?.[title]?.ko ?? title, summary, reason, d].filter(Boolean).join(' — ');
       },
     };
-    const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) });
+    // 관리자 비밀번호(2026-11-05, 사용자 요청): 로그인 기록·거래 기록·개봉 요청/조회는 X-RP-Admin-Secret 헤더가 있어야 한다(서버 requireRpAdmin).
+    const ADMIN_KEY = 'mode3.rpAdminSecret'; let adminSecret = '';
+    const adminHeaders = () => ({ 'X-RP-Admin-Secret': adminSecret });
+    const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...adminHeaders() }, body: JSON.stringify(body ?? {}) });
     const tte = (el, k, vars) => { const s = Demo.t(k, vars); if (s !== k) el.textContent = s; };
     const tt = (k, vars) => { const s = Demo.t(k, vars); return s === k ? '' : s; };
     const termEl = (name) => { const e = document.createElement('span'); e.dataset.term = name; e.textContent = Demo.term(name); return e; };
@@ -145,7 +158,7 @@
       host.appendChild(table);
     }
     async function refreshLogins() {
-      const { logins } = await (await fetch('/api/mode3/logins')).json();
+      const { logins } = await (await fetch('/api/mode3/logins', { headers: adminHeaders() })).json();
       lastLogins = logins ?? [];
       renderLogins();
     }
@@ -195,7 +208,7 @@
     /** 바뀐 게 있을 때만 다시 그린다 — 주기 새로고침이 복사 버튼의 "복사됨" 표시를 지우지 않게. */
     async function refreshTxs({ force = false } = {}) {
       let next = null;
-      try { const r = await fetch('/api/mode3/txs'); next = r.ok ? ((await r.json()).txs ?? []) : null; } catch { next = null; }
+      try { const r = await fetch('/api/mode3/txs', { headers: adminHeaders() }); next = r.ok ? ((await r.json()).txs ?? []) : null; } catch { next = null; }
       const key = JSON.stringify(next);
       if (!force && key === lastTxsKey) return;
       lastTxs = next; lastTxsKey = key; renderTxs();
@@ -223,7 +236,7 @@
       if (!openingId) { setVerdict($('openVerdict'), false, 'rp_open_failed', () => ({ summary: tt('rp_open_no_request') || '먼저 개봉을 요청하세요(PPID 또는 해시로)' })); return; }
       pendingVerdict($('openVerdict'), 'working');
       try {
-        const r = await fetch(`/api/mode3/open/${openingId}`);
+        const r = await fetch(`/api/mode3/open/${openingId}`, { headers: adminHeaders() });
         const b = await r.json().catch(() => ({}));
         $('openLog').textContent += `\n결과 → ${r.status} ${JSON.stringify(b)}`;
         if (r.status === 202) { setVerdict($('openVerdict'), null, 'rp_open_awaiting', { pending: true, detail: b }); return; }
@@ -243,7 +256,7 @@
     $('refreshLogins').addEventListener('click', refreshLogins);
     $('refreshTxs').addEventListener('click', () => refreshTxs({ force: true }));
     // 상태(대기 → 성공)가 곧 바뀌므로 탭이 보일 때 3초마다 다시 읽는다(바뀐 게 없으면 다시 그리지 않는다).
-    setInterval(() => { if (!document.hidden) refreshTxs(); }, 3000);
+    setInterval(() => { if (!document.hidden && adminSecret) refreshTxs(); }, 3000);
     async function renderBrand() {
       try {
         info = await (await fetch('/api/mode3/rp_info')).json();
@@ -259,7 +272,15 @@
     for (const k of ['setLang', 'setExpert']) { const orig = Demo[k]; Demo[k] = (v) => { orig?.(v); renderLogins(); renderTxs(); }; }
     Demo.init({ page: 'rp_admin' });   // 체험 모드 스위치·?tour=1 도 고객 페이지와 같게 동작한다(2026-10-16)
     Demo.tour?.onToggle(renderGuide);
-    renderBrand(); refreshLogins(); refreshTxs({ force: true });
+    renderBrand();
+    // 비밀번호 화면(2026-11-05): 맞는 비밀번호(로그인 기록 GET 200)를 받은 뒤에만 기록을 불러온다. 탭을 닫으면 다시 묻는다.
+    const gate = Demo.gate({
+      el: $('adminGate'), key: ADMIN_KEY,
+      verify: async (pwd) => { const r = await fetch('/api/mode3/logins', { headers: { 'X-RP-Admin-Secret': pwd } }); return r.status === 200 ? true : r.status === 401 ? 'admin_gate_bad' : 'admin_gate_unavailable'; },
+      onUnlock: (pwd) => { adminSecret = pwd; refreshLogins(); refreshTxs({ force: true }); },
+      onLock: () => { adminSecret = ''; },
+    });
+    $('gateLogoutBtn').addEventListener('click', () => gate.lock());
   </script>
 </body>
 </html>

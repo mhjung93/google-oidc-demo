@@ -57,3 +57,10 @@ table.list { width:100%; border-collapse:collapse; font-size:14px } table.list t
 .copy-btn { background: transparent; border: 1px solid transparent; color: inherit; cursor: pointer; font-size: 14px; line-height: 1; padding: 2px 6px; border-radius: 6px; vertical-align: middle; }
 .copy-btn:hover { border-color: currentColor; }
 .copy-btn.copied { font-size: 11.5px; }
+/* 관리자 비밀번호 화면(2026-11-05) — body.admin-locked 동안 main 의 다른 카드와 절 메뉴를 숨긴다. IdP 관리자·RP 관리자 공용. */
+body.admin-locked main > :not(#adminGate), body.admin-locked .section-menu { display: none !important; }
+.gate-card { max-width: 420px; margin: 32px auto; }
+.gate-form { display: flex; flex-direction: column; gap: 10px; margin: 8px 0 12px; }
+.gate-form label { display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: var(--muted); }
+.gate-form input { width: 100%; box-sizing: border-box; padding: 9px 10px; }
+.gate-form button[type=submit] { margin-top: 4px; padding: 10px 14px; }

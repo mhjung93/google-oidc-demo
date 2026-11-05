@@ -8,7 +8,7 @@
 #        SKIP_BUILD=1 bash scripts/demo_web_reset.sh  # 번들(mode3/user/dist)을 다시 만들지 않는다
 #        DEMO_LOG_DIR=~/mode3-logs bash scripts/demo_web_reset.sh   # 로그 위치(기본 /tmp/mode3-demo)
 #        HEIGHT_GRID=100 bash scripts/demo_web_reset.sh  # 만료(max_height) 올림 단위(기본 5 — 데모에서 로그인마다 값이 달라지는 걸 보이려고. 코드 기본은 100, 2026-10-21)
-#        ADMIN_OPEN=0 bash scripts/demo_web_reset.sh  # IdP 관리자 인증을 켠 채로 띄운다(기본은 끔 — CIA_ADMIN_OPEN=1, 데모 전용, 2026-10-21)
+#        ADMIN_OPEN=1 bash scripts/demo_web_reset.sh  # IdP 관리자 인증을 끈 채로 띄운다(2026-11-05 부터 기본은 켬 — 관리자 페이지 비밀번호 idp)
 #        ISSUE_AUTH=code bash scripts/demo_web_reset.sh  # 발급 인증 정책(기본은 WALLET_MODE 에 따른다 — snap 은 CIA_ISSUE_AUTH=code, web 은 key, 2026-10-23: web 코어는
 #                                                         # auth_code 를 보내지 않으므로 code 로 켜면 로그인이 막힌다). code 면 zkONE 등 로그인 때 지갑 팝업이 연 IdP 인증 창(uid·비밀번호·auid)의
 #                                                         # 1회용 코드가 있어야 발급한다(2026-10-22). key 면 옛 방식(서명만, 인증 창 없이 발급) — CIA_DEMO_ACCOUNTS 는 그대로 미설정(가입(POST /cia/signup)만 쓴다)
@@ -76,7 +76,7 @@ cat "$LOGS/demo_env.txt"
 set -a; . "$LOGS/demo_env.txt"; set +a
 
 # 5. 공통 env(오리진 localhost 통일)
-export CIA_ADMIN_SECRET="${CIA_ADMIN_SECRET:-admin123}" CIA_ADMIN_OPEN="${ADMIN_OPEN:-1}" CIA_ISSUE_AUTH="${ISSUE_AUTH:-$([ "$WALLET_MODE" = snap ] && echo code || echo key)}" CIA_CHAIN_RPCS="31337=http://127.0.0.1:8545" MODE3_VERIFIER_ADDRESS="" MODE3_RP_FACTORY_ADDRESS=""
+export CIA_ADMIN_SECRET="${CIA_ADMIN_SECRET:-idp}" CIA_ADMIN_OPEN="${ADMIN_OPEN:-0}" CIA_ISSUE_AUTH="${ISSUE_AUTH:-$([ "$WALLET_MODE" = snap ] && echo code || echo key)}" CIA_CHAIN_RPCS="31337=http://127.0.0.1:8545" MODE3_VERIFIER_ADDRESS="" MODE3_RP_FACTORY_ADDRESS=""
 export MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}"
 export MODE3_WALLET_AGENT_ORIGIN="http://localhost:5100" MODE3_WALLET_PUBLIC_ORIGIN="http://localhost:5100" MODE3_RP_ORIGIN="http://localhost:3100,http://localhost:3101" MODE3_CIA_URL="http://localhost:4100"
 

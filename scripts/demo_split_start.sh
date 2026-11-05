@@ -9,7 +9,7 @@
 #        HEIGHT_GRID=100 bash scripts/demo_split_start.sh  # 만료(max_height) 올림 단위(기본 5 — 데모용. 코드 기본은 100, 2026-10-21)
 #        WALLET_MODE=snap bash scripts/demo_split_start.sh  # Snap 모드(2026-10-22): 이 VM 의 지갑 자리에 에이전트(:5100, MODE3_WALLET_SECRETS=snap)+Snap 서버(:8082). 포트 5100 은 Snap 이 허용하는
 #                                                          # 지갑 오리진(snap-mode3/src/index.js)이라 바꿀 수 없다 — 한 머신 데모(:5100)와 동시에 못 띄운다. scripts/demo_split_snap_reset.sh 가 이 값을 넣어 부른다(web 모드 리셋은 scripts/demo_split_reset.sh).
-#        ADMIN_OPEN=0 bash scripts/demo_split_start.sh     # IdP 관리자 인증을 켠 채로(기본은 끔 — CIA_ADMIN_OPEN=1, 데모 전용, 2026-10-21)
+#        ADMIN_OPEN=1 bash scripts/demo_split_start.sh     # IdP 관리자 인증을 끈 채로(2026-11-05 부터 기본은 켬 — 관리자 페이지 비밀번호 idp; RP 관리자는 zkone·zktwo)
 #        ISSUE_AUTH=code bash scripts/demo_split_start.sh  # 발급 인증 정책(기본은 WALLET_MODE 에 따른다 — snap 은 CIA_ISSUE_AUTH=code, web 은 key, 2026-10-23: web 코어는
 #                                                           # auth_code 를 보내지 않으므로 code 로 켜면 로그인이 막힌다). code 면 로그인 때 지갑 팝업이 연 IdP 인증 창(uid·비밀번호·auid)의 1회용 코드가
 #                                                           # 있어야 발급한다(2026-10-22). key 면 옛 방식(서명만) — CIA_DEMO_ACCOUNTS 는 그대로 미설정(가입(POST /cia/signup)만 쓴다)
@@ -30,7 +30,7 @@ if [ "$WALLET_MODE" = "snap" ]; then [ -d snap-mode3/node_modules ] && [ -f snap
 APP_PORT=8547 APP_CHAIN=31339 REV_PORT=8548 REV_CHAIN=31340 IDP_PORT=4100 RP1_PORT=3100 RP2_PORT=3101 SNAP_PORT=8082
 LOGS="${DEMO_LOG_DIR:-/tmp/mode3-split}"; mkdir -p "$LOGS"
 TS=$(date '+%Y%m%d-%H%M')
-ADMIN="${CIA_ADMIN_SECRET:-admin123}"
+ADMIN="${CIA_ADMIN_SECRET:-idp}"   # IdP 관리자 페이지 비밀번호(2026-11-05, 사용자 요청: 쉽게 idp)
 WALLET_ORIGIN="http://localhost:$USER_PORT"
 on() { local h="$1"; shift; ssh -o BatchMode=yes -o ConnectTimeout=5 "$U@$h" "$@"; }
 
@@ -124,7 +124,7 @@ OIDC_LINE=""
 if [ "${OIDC:-1}" != 0 ]; then OIDC_ID="$(oidc_client_id .env)"; [ -n "$OIDC_ID" ] && OIDC_LINE="MODE3_OIDC_CLIENT_ID=$OIDC_ID"; unset OIDC_ID; fi
 echo "  OIDC(Google): $([ -n "$OIDC_LINE" ] && echo on || echo off)"
 if [ -z "${MODE3_OIDC_CLIENT_ID:-}" ] && [ -n "$OIDC_LINE" ]; then echo "  경고: .env 의 GOOGLE_CLIENT_ID(Mode 1 공유 클라이언트 ID)를 IdP 에 넘긴다 — 같은 ID 의 다른 앱 토큰을 받을 수 있다(선행 스펙 §5)"; fi
-printf '%s\n' "$COMMON" "CIA_PORT=$IDP_PORT" "CIA_RPC_URL=http://$HOST:$REV_PORT" "CIA_CHAIN_RPCS=$APP_CHAIN=http://$HOST:$APP_PORT" "CIA_ADMIN_SECRET=$ADMIN" "CIA_ADMIN_OPEN=${ADMIN_OPEN:-1}" "CIA_ISSUE_AUTH=${ISSUE_AUTH:-$([ "$WALLET_MODE" = snap ] && echo code || echo key)}" ${OIDC_LINE:+"$OIDC_LINE"} | put_env "$IDP"
+printf '%s\n' "$COMMON" "CIA_PORT=$IDP_PORT" "CIA_RPC_URL=http://$HOST:$REV_PORT" "CIA_CHAIN_RPCS=$APP_CHAIN=http://$HOST:$APP_PORT" "CIA_ADMIN_SECRET=$ADMIN" "CIA_ADMIN_OPEN=${ADMIN_OPEN:-0}" "CIA_ISSUE_AUTH=${ISSUE_AUTH:-$([ "$WALLET_MODE" = snap ] && echo code || echo key)}" ${OIDC_LINE:+"$OIDC_LINE"} | put_env "$IDP"
 printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP1_PORT" "MODE3_RP_NAME=zkONE" "MODE3_RP_PUBLIC_ORIGIN=http://$RP1:$RP1_PORT" "MODE3_CIA_URL=http://$IDP:$IDP_PORT" \
   "CIA_RPC_URL=http://$HOST:$APP_PORT" "MODE3_RELAYER_INDEX=0" | put_env "$RP1"
 printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP2_PORT" "MODE3_RP_NAME=zkTWO" "MODE3_RP_PUBLIC_ORIGIN=http://$RP2:$RP2_PORT" "MODE3_CIA_URL=http://$IDP:$IDP_PORT" \

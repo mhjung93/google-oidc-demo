@@ -116,7 +116,7 @@ t('ui 에 지갑 공개 조건 폼·claim 버튼 키가 있다', () => {
 });
 // RP 데모(zkONE 거래소 꾸밈, 2026-10-14 U5) — 상단 내비·KRW 시세표·내 자산 패널·컴플라이언스 묶음 문구.
 t('ui 에 RP 거래소 꾸밈(내비·시세표·내 자산·컴플라이언스) 키가 있다', () => {
-  for (const k of ['nav_market', 'nav_assets', 'nav_balance', 'rp_logout_btn', 'rp_pending_banner', 'rp_wallet_pill_ok', 'rp_wallet_pill_fail', 'rp_wallet_reg_yes', 'rp_wallet_reg_no',
+  for (const k of ['nav_market', 'nav_assets', 'rp_logout_btn', 'rp_pending_banner', 'rp_wallet_pill_ok', 'rp_wallet_pill_fail', 'rp_wallet_reg_yes', 'rp_wallet_reg_no',
     'market_title', 'market_demo_note', 'market_col_coin', 'market_col_price', 'market_col_change', 'market_col_volume',
     'assets_title', 'rp_login_policy', 'rp_session_expiry_label',
     'rp_balance_title', 'rp_balance_desc', 'rp_balance_btn', 'compliance_title']) assert.ok(S.ui[k], k);

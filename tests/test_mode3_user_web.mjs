@@ -102,6 +102,7 @@ try {
   });
   await t('A5c RP 관리자 페이지(/admin): 로그인 기록 표와 승인 개봉 카드가 있고, 고객 페이지에는 둘 다 없다', async () => {
     const adminPage = await context.newPage(); await adminPage.goto(`${rp.base}/admin`);
+    await adminPage.waitForSelector('#adminGate:not([hidden])'); await adminPage.fill('#adminGate .gate-pwd', rp.adminHeaders['X-RP-Admin-Secret']); await adminPage.click('#adminGate .gate-form button[type=submit]');   // 관리자 비밀번호(2026-11-05)
     await adminPage.waitForSelector('#openBtn'); await adminPage.waitForFunction(() => document.querySelectorAll('#logins table tbody tr').length > 0, undefined, { timeout: 20_000 });
     assert.ok(await adminPage.$('#openPollBtn'));
     // 2026-10-21: 트랜잭션 기록 — A5(사용자 페이지)·A5b(RP 페이지) 두 건이 이 RP 의 릴레이로 나갔다. 해시 옆 ⧉ 가 실제로 클립보드에 복사한다.
@@ -147,11 +148,11 @@ try {
     await userPage.evaluate(() => Demo.setExpert(true)); await userPage.waitForSelector('#demoCard', { state: 'visible' });
     await userPage.click('#demoFakeProofBtn'); await waitText(userPage, '#demoVerdict', '적용', 10_000);
     await viaPopup(async () => { await rpPage.click('#loginBtn'); await rpPage.click('#idpLoginBtn'); }, approve);
-    await waitText(rpPage, '#verdict', 'bad_proof', 120_000);
+    await waitText(rpPage, '#verdict', '영지식 증명이 검증되지 않았습니다', 120_000);   // bad_proof 제목(코드는 화면에 없다, 2026-11-05)
     assert.ok((await text(rpPage, '#verdict')).includes('[시연 모드]'));
     await userPage.click('#demoFakeSigBtn'); await waitText(userPage, '#demoVerdict', '가짜 서명', 10_000);
     await userPage.click('#refreshBtn'); await userPage.click('#txBtn');
-    await waitText(userPage, '#txVerdict', 'relay_gas', 120_000);
+    await waitText(userPage, '#txVerdict', '릴레이의 가스 추정이 실패했습니다', 120_000);   // relay_gas 제목
     assert.match(await text(userPage, '#txVerdict'), /\[시연 모드\]|BadSignature/);
     await userPage.evaluate(() => Demo.setExpert(false));
   });
@@ -225,7 +226,7 @@ try {
     await userPage.waitForFunction(() => (document.querySelector('#regBadge')?.textContent ?? '').includes('미등록'), undefined, { timeout: 10_000 });
     assert.deepEqual(await idbDump(userPage), {});
     await userPage.click('#registerBtn');
-    await waitText(userPage, '#registerResult', 'register_failed', 60_000);
+    await waitText(userPage, '#registerResult', 'IdP 등록에 실패했습니다', 60_000);   // register_failed 제목
   });
   await t('B8 데모 세대(2026-10-21): 사용자 페이지 서버를 새 MODE3_DEMO_GENERATION 으로 다시 띄우면 처음 본 번호는 기억만 하고, 다음 번호에서 옛 등록·세션을 스스로 지우고 알린다', async () => {
     await stack.restartWallet({ MODE3_DEMO_GENERATION: 'gen-1' });

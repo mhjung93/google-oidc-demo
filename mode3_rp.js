@@ -10,6 +10,7 @@ import cors from 'cors';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { ethers } from 'ethers';
 import { createRpVerifier, verifySessionRequest, canonicalProof, proofFromCalldata, verifyCalldataProof, uniqueMembers } from './lib/mode3_rp.js';
 import { VKEY_PATH } from './lib/mode3_wallet.js';
@@ -86,6 +87,19 @@ const REG_FILE = process.env.MODE3_RP_REGISTRATION_FILE || path.join(__dirname, 
 const REG_VERSION = 3;
 const PUBLIC_ORIGIN = process.env.MODE3_RP_PUBLIC_ORIGIN || `http://127.0.0.1:${PORT}`;
 const RP_NAME = process.env.MODE3_RP_NAME || 'demo-rp';
+// 관리자 페이지 비밀번호(2026-11-05, 사용자 요청): 로그인 기록·거래 기록·개봉 요청/조회는 이 값을 X-RP-Admin-Secret 헤더로 받아야 한다.
+// 데모 편의로 기본값은 RP 이름 소문자(zkONE → zkone, zkTWO → zktwo). 세션 목록(/api/mode3/sessions)은 고객 페이지가 자기 세션 만료 블록을
+// 찾는 데 쓰므로 그대로 둔다. 관리자 페이지는 세션 목록을 읽지 않는다.
+const RP_ADMIN_SECRET = process.env.MODE3_RP_ADMIN_SECRET || RP_NAME.toLowerCase();
+function secretMatches(a, b) {
+  const A = createHash('sha256').update(String(a)).digest(), B = createHash('sha256').update(String(b)).digest();
+  return timingSafeEqual(A, B);
+}
+function requireRpAdmin(req, res, next) {
+  const p = req.get('X-RP-Admin-Secret');
+  if (typeof p !== 'string' || !secretMatches(p, RP_ADMIN_SECRET)) return res.status(401).json({ ok: false, reason: 'admin_unauthorized' });
+  next();
+}
 // 운영자가 IdP RP 페이지(Task 11, 스펙 §3.3·§6)에서 만든 RP 슬롯에 등록을 묶는 비밀. 없으면(zkONE·zkTWO 의 기동 자동
 // 등록처럼) 지금과 같은 키 없는 등록이다.
 const RP_KEY = process.env.MODE3_RP_KEY || null;
@@ -636,7 +650,7 @@ async function transcriptFromTx(txHash) {
   // exportSolidityCallData 는 b 의 각 행을 (y, x) 로 뒤집는다 — proofFromCalldata 가 되돌린다(릴레이의 증명 확인과 같은 변환).
   return { publicSignals: d.pub, proof: proofFromCalldata(d), PPID: d.pub[0] };
 }
-app.post('/api/mode3/open', async (req, res) => {
+app.post('/api/mode3/open', requireRpAdmin, async (req, res) => {
   try {
     if (!verifier) return res.status(503).json({ ok: false, reason: inactiveReason() });
     const { PPID, txHash } = req.body ?? {};
@@ -658,7 +672,7 @@ app.post('/api/mode3/open', async (req, res) => {
     res.status(r.status).json(await r.json().catch(() => ({})));
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });
-app.get('/api/mode3/open/:id', async (req, res) => {
+app.get('/api/mode3/open/:id', requireRpAdmin, async (req, res) => {
   try {
     // 다른 라우트와 같이 fail-closed(2026-09-25 리뷰 C-5) — 검증기가 없는 RP 가 IdP 로 서명한 조회를 중계하지 않는다.
     if (!verifier) return res.status(503).json({ ok: false, reason: inactiveReason() });
@@ -669,8 +683,8 @@ app.get('/api/mode3/open/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });
 
-app.get('/api/mode3/logins', (req, res) => res.json({ logins }));
-app.get('/api/mode3/txs', (req, res) => res.json({ txs: relayedTxs }));   // 개봉 경로와 같이 데모용, 인증 없음(관리자 페이지가 읽는다)
+app.get('/api/mode3/logins', requireRpAdmin, (req, res) => res.json({ logins }));
+app.get('/api/mode3/txs', requireRpAdmin, (req, res) => res.json({ txs: relayedTxs }));   // 관리자 페이지가 읽는다(2026-11-05 비밀번호 필요)
 // 2026-10-16 로그아웃: 이 RP 가 세션을 잊는다(세션키 서명은 요구하지 않는다 — 피해가 없는 동작). 그 r_s 는 이후 unknown_session.
 // 2026-10-21: 사용자 페이지(지갑 오리진)도 부른다 — 세션 폐기 뒤 이 RP 에 알려 RP 페이지가 바로 로그아웃 상태가 되게(최선 노력, 폐기 자체는 체인 root 로 효력).
 app.options('/api/mode3/logout', relayCors);
