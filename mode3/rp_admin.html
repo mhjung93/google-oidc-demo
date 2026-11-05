@@ -186,7 +186,9 @@
         const at = row.insertCell(); at.textContent = fmtAt(x.at); at.title = x.at;
         const pp = row.insertCell(); const pc = document.createElement('code'); pc.textContent = `${String(x.PPID).slice(0, 10)}…`; if (Demo.expert) pc.title = x.PPID; pp.appendChild(pc);
         const ac = row.insertCell(); const acc = document.createElement('code'); acc.textContent = shortAddr(x.account); acc.title = x.account ?? ''; ac.appendChild(acc);
-        row.insertCell().textContent = x.kind === 'claim' ? (tt('rp_tx_content_claim') || '조건 확인(AttrGate)') : (tt('rp_tx_content_transfer', { to: shortAddr(x.target), value: x.value }) || `${shortAddr(x.target)} 로 ${x.value} wei`);
+        // 2026-11-05: 금액은 wei 가 아니라 ETH 로; 'buy' 는 거래소(릴레이어)가 세션 계정에 넣어 준 구매 입금.
+        const ethOf = (wei) => { try { const w = BigInt(wei); const s = `${w / 10n ** 18n}.${String(w % 10n ** 18n).padStart(18, '0')}`; return s.replace(/\.?0+$/, '') || '0'; } catch { return String(wei); } };
+        row.insertCell().textContent = x.kind === 'claim' ? (tt('rp_tx_content_claim') || '조건 확인(AttrGate)') : x.kind === 'buy' ? (tt('rp_tx_content_buy', { to: shortAddr(x.target), value: ethOf(x.value) }) || `구매 — ${shortAddr(x.target)} 에 ${ethOf(x.value)} ETH 입금`) : (tt('rp_tx_content_transfer', { to: shortAddr(x.target), value: ethOf(x.value) }) || `${shortAddr(x.target)} 로 ${ethOf(x.value)} ETH`);
         const st = row.insertCell(); const b = document.createElement('span');
         b.className = `badge ${x.status === 'success' ? 'ok' : x.status === 'failed' ? 'bad' : 'muted'}`; tte(b, `rp_tx_status_${x.status}`); if (!b.textContent) b.textContent = x.status; st.appendChild(b);
         const hx = row.insertCell(); const hc = document.createElement('code'); hc.textContent = `${String(x.txHash).slice(0, 12)}…`; hc.title = x.txHash; hx.appendChild(hc);

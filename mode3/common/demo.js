@@ -20,10 +20,17 @@
     applyI18n() { document.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = D.t(el.dataset.i18n); }); document.querySelectorAll('[data-term]').forEach((el) => { el.textContent = D.term(el.dataset.term); }); },
     /** tour:false 면 체험 모드를 아예 켜지 않는다(승인 팝업 — 설계 2026-09-25 §3.1). */
     init({ page, tour = true }) {
-      D.page = page; document.documentElement.lang = D.lang; document.documentElement.toggleAttribute('data-expert', D.expert);
-      // 2026-11-03: 안내 바는 도구(언어·전문가 보기)만 남긴다 — 9단계 칩·"다음 할 일"·다른 창 링크·체험 모드 스위치는 화면을
-      // 어지럽혀 뺐다(사용자 요청). guide()·tour.evaluate() 는 페이지 코드가 그대로 부르므로 아무것도 그리지 않는 채로 둔다.
-      const bar = document.getElementById('demoBar'); if (bar) { bar.innerHTML = '<div class="bar-tools"><button type="button" class="btn-ghost" id="langToggle"></button><label class="switch"><input type="checkbox" id="expertToggle"> <span data-i18n="toggle_expert"></span></label></div>'; bar.querySelector('#langToggle').addEventListener('click', () => D.setLang(D.lang === 'ko' ? 'en' : 'ko')); const ex = bar.querySelector('#expertToggle'); ex.checked = D.expert; ex.addEventListener('change', () => D.setExpert(ex.checked)); }
+      D.page = page;
+      // 2026-11-04: 안내 바(#demoBar)는 그리지 않고 숨긴다(사용자 요청 — 11-03 에 도구 둘만 남겼던 것도 뺀다). 마크업은 페이지에 그대로 두어
+      // guide()·stack.renderDots() 등 바를 찾는 코드가 지금처럼 조용히 끝나게 한다. 언어·전문가 보기는 URL 로 바꾼다:
+      // ?lang=ko|en, ?expert=1|0 — 값은 localStorage 에 남아 다음 열기에도 유지된다(콘솔 Demo.setLang()/setExpert() 도 그대로).
+      try {
+        const q = new URLSearchParams(location.search);
+        const ql = q.get('lang'); if (ql && S.langs.includes(ql)) { D.lang = ql; store.set('mode3.lang', ql); }
+        const qe = q.get('expert'); if (qe === '1' || qe === '0') { D.expert = qe === '1'; store.set('mode3.expert', qe); }
+      } catch { /* URL 파싱 실패는 무시 — 저장값으로 간다 */ }
+      document.documentElement.lang = D.lang; document.documentElement.toggleAttribute('data-expert', D.expert);
+      const bar = document.getElementById('demoBar'); if (bar) { bar.innerHTML = ''; bar.hidden = true; }
       D.applyI18n(); D.guide({ done: [], current: null, hint: null, links: {} });
       // 체험 모드(D.tour)는 2026-11-03 부터 켜지 않는다 — init() 을 부르지 않으면 enabled 가 false 로 남아 잠금·말풍선·카드가 모두 빈 동작이다.
       void tour;

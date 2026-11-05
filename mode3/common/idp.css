@@ -16,12 +16,12 @@
 }
 
 /* ---- 관리자: 절 메뉴(고정) — 카드를 숨기지 않고 해당 절로 이동만 한다. ---- */
-/* top 은 안내 바(#demoBar, sticky top:0, 높이 약 56px) 아래 — 같은 top:0 이면 안내 바가 메뉴를 덮는다(리뷰 2026-11-03 I-5). */
-.section-menu { position: sticky; top: 56px; z-index: 4; background: var(--card); border-bottom: 1px solid var(--line); }
+/* 안내 바(#demoBar)는 2026-11-04 부터 숨기므로(demo.js init) 메뉴가 맨 위에 붙는다 — 바가 있던 11-03 에는 top:56px 였다(리뷰 I-5). */
+.section-menu { position: sticky; top: 0; z-index: 4; background: var(--card); border-bottom: 1px solid var(--line); }
 .section-menu .menu-inner { max-width: 1100px; margin: 0 auto; padding: 0 var(--gap); display: flex; gap: 4px 18px; flex-wrap: wrap; align-items: center; }
 .section-menu a { color: var(--muted); text-decoration: none; font-size: 14px; font-weight: 600; padding: 11px 0; border-bottom: 2px solid transparent; }
 .section-menu a:hover { color: var(--ink); } .section-menu a.current { color: var(--accent); border-bottom-color: var(--accent); }
-main.cards > section[id] { scroll-margin-top: 110px; }   /* 메뉴·데모 바 아래에 제목이 가려지지 않게 */
+main.cards > section[id] { scroll-margin-top: 56px; }   /* 절 메뉴 아래에 제목이 가려지지 않게 */
 
 /* ---- 로그인·가입 화면(한 장짜리 카드) — /user·/rp 공통 ---- */
 .auth-card { max-width: 440px; margin: 24px auto 0; grid-column: 1 / -1; width: 100%; box-sizing: border-box }
@@ -32,4 +32,6 @@ main.cards > section[id] { scroll-margin-top: 110px; }   /* 메뉴·데모 바 �
 .auth-links { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; font-size: 14px; color: var(--muted); margin: 0 }
 .auth-links button { padding: 4px 8px }
 .me-head { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin: 0 }
+/* 내 등록 정보의 값 아래 한 줄 설명(2026-11-04) — .card .desc 의 아래 여백(12px)을 줄여 다음 항목과 붙지 않게만 띄운다. */
+.kv .kv-desc { margin: 0 0 8px; font-size: 13px; line-height: 1.45 }
 .me-head .who { font-weight: 600 }

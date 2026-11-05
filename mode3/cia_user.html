@@ -60,7 +60,9 @@
     <h3 data-i18n="idp_info_title">내 등록 정보</h3>
     <dl class="kv">
       <dt data-term="auid">auid</dt><dd><code id="meAuid">-</code> <button type="button" id="copyAuidBtn" class="copy-btn" hidden title="복사" aria-label="복사" data-i18n-title="rp_copy_btn_title">⧉</button></dd>
+      <dt></dt><dd><p class="desc kv-desc" data-i18n="idp_auid_desc">uid 와 지갑 비밀(salt)로 만든 가명입니다. IdP 가 이 계정을 지갑과 잇는 데 쓰고, 서비스에는 보내지 않습니다. 로그인 인증 창에 넣는 값입니다.</p></dd>
       <dt data-i18n="idp_slot_label">등록부 슬롯</dt><dd id="meSlot">-</dd>
+      <dt></dt><dd><p class="desc kv-desc" data-i18n="idp_slot_desc">IdP 등록부에서 이 계정의 자리 번호입니다. 활성 자격증명이 이 자리에 실리고, 폐기되면 비워집니다. 지갑은 이 자리를 보고 내 자격증명이 바뀌지 않았는지 확인합니다.</p></dd>
     </dl>
     <p><a id="walletLink2" class="btn-ghost" target="_blank" rel="noopener" data-i18n="idp_wallet_link">지갑 페이지 열기</a></p>
   </section>
@@ -149,7 +151,7 @@
       $('loginId').value = r.body.id; $('loginPwd').value = '';
       clearVerdict($('signupVerdict'));   // 지난 가입 오류(id_taken 등)가 다음 가입 화면에 남지 않게
       showView('login');
-      verdict($('userVerdict'), true, 'idp_signup_ok_title', () => ({ summary: tt('idp_signup_ok', { id: r.body.id, uid: r.body.uid }) || `가입됨 — 아이디 ${r.body.id} (uid ${r.body.uid}). 비밀번호를 넣고 로그인하세요.` }));
+      verdict($('userVerdict'), true, 'idp_signup_ok_title', () => ({ summary: tt('idp_signup_ok', { id: r.body.id, uid: r.body.uid }) || `아이디 ${r.body.id} (uid ${r.body.uid}) 로 가입했습니다. 비밀번호를 넣고 로그인하세요.` }));
     } else {
       verdict($('signupVerdict'), false, 'idp_signup_failed', { reason: r.body?.reason ?? `HTTP ${r.status}`, detail: r.body });
     }

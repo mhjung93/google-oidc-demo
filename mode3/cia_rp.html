@@ -115,8 +115,9 @@
       const tr = document.createElement('tr');
       const nameTd = document.createElement('td'); nameTd.textContent = s.name; tr.appendChild(nameTd);
       const statusTd = document.createElement('td');
-      const badge = document.createElement('span'); badge.className = `badge ${statusBadgeClass(s.status)}`; badge.textContent = s.status; statusTd.appendChild(badge); tr.appendChild(statusTd);
-      const originTd = document.createElement('td'); originTd.textContent = s.origin ?? '-'; tr.appendChild(originTd);
+      // 2026-11-05: 상태는 영어 코드가 아니라 말로(모르는 상태면 코드 그대로), 주소 열은 줄이 꺾이지 않게.
+      const badge = document.createElement('span'); badge.className = `badge ${statusBadgeClass(s.status)}`; badge.textContent = tt(`idp_rp_status_${s.status}`) || s.status; statusTd.appendChild(badge); tr.appendChild(statusTd);
+      const originTd = document.createElement('td'); originTd.textContent = s.origin ?? '-'; originTd.style.whiteSpace = 'nowrap'; tr.appendChild(originTd);
       const cached = s.status === 'created' ? justCreated[s.name] : null;
       const keyTd = document.createElement('td');
       if (cached) { const code = document.createElement('code'); code.textContent = cached.key; keyTd.append(code, ' ', copyBtn(cached.key)); }
