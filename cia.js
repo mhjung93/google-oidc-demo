@@ -541,6 +541,7 @@ app.use('/common', express.static(path.join(__dirname, 'mode3', 'common')));
 app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_admin.html')));
 
 // IdP 사용자·RP·인증 창 페이지(Task 12, 2026-10-22 B3 — 설계 §3.4). 사용자가 찾아가는 입구는 지갑이 아니라 IdP 자신이다.
+app.get('/', (req, res) => res.redirect('/user'));   // 2026-11-05(7차): 주소만 치면 404 였다 — 사용자 페이지로
 app.get('/user', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_user.html')));
 app.get('/rp', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_rp.html')));
 app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_login.html')));
@@ -1573,7 +1574,7 @@ app.post('/cia/admin/registry/restore', requireAdmin, async (req, res) => {
 // Google 계정은 비밀번호 대신 폐기용 nonce("revoke:…")의 id_token 으로 인증한다(OIDC 래퍼 2026-10-16) — 검증된 토큰 보유자에게는 미등록이면 404 로 알린다.
 app.post('/cia/account/self_revoke', userCors, async (req, res) => {
   try {
-    const { uid: uidIn, pwd, id_token } = req.body ?? {};
+    const { uid: uidIn, id, pwd, id_token } = req.body ?? {};
     let uid;
     if (id_token !== undefined) {
       if (typeof id_token !== 'string') return res.status(400).json({ error: 'id_token 은 문자열' });
@@ -1581,9 +1582,11 @@ app.post('/cia/account/self_revoke', userCors, async (req, res) => {
       if (!isRevokeNonce(o.nonce)) return res.status(400).json({ error: 'oidc_nonce_mismatch', reason: 'oidc_nonce_mismatch', detail: 'nonce 가 폐기용이 아니다' });
       uid = o.uid;
     } else {
-      if (!isDec(uidIn) || typeof pwd !== 'string') return res.status(400).json({ error: 'uid, pwd required' });
-      if (!pwOk(state.accounts[uidIn], pwd)) return res.status(401).json({ error: 'invalid credentials' });
-      uid = uidIn;
+      // 2026-11-05(7차): 내 계정 페이지가 uid 대신 아이디(id)를 보낸다 — 둘 다 받는다. 모르는 아이디도 401(아이디 존재를 가르지 않는다).
+      if (typeof pwd !== 'string' || (!isDec(uidIn) && typeof id !== 'string')) return res.status(400).json({ error: 'uid or id, pwd required' });
+      const resolved = isDec(uidIn) ? uidIn : uidByLoginId(id);
+      if (!resolved || !pwOk(state.accounts[resolved], pwd)) return res.status(401).json({ error: 'invalid credentials' });
+      uid = resolved;
     }
     // Task 10(B1): 가입만 하고 등록 전인 계정(pk_u:null)도 "미등록" — self_revoke 는 등록된 자격증명이 있어야 뜻이 있다
     // (registerAccount 의 "이미 등록됨" 판정과 같은 기준).

@@ -237,7 +237,7 @@ try {
     await awaitPopupClosed(popup);
   });
   await t('지갑 페이지 제목은 "지갑", 신원 카드에 auid·salt 와 복사 버튼', async () => {
-    assert.equal(await walletPage.title(), '지갑');   // 새로고침 버튼은 없다(2026-11-05) — 화면이 5초마다 스스로 갱신한다
+    assert.equal(await walletPage.title(), 'zk 지갑');   // 새로고침 버튼은 없다(2026-11-05) — 화면이 5초마다 스스로 갱신한다
     await walletTab(walletPage, 'account'); await walletPage.click('#identityDetails summary');   // auid·salt 는 '상세' 접힘 안(2026-11-03)
     await waitText(walletPage, '#meAuid', AUID.slice(0, 10));                           // showSalt 확인 창은 없다(2026-11-05)
     await walletPage.click('#showSaltBtn'); await walletPage.waitForFunction(() => /^[0-9]{10,}$/.test(document.querySelector('#meSalt')?.textContent ?? ''), undefined, { timeout: 10_000 });

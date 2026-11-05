@@ -5,7 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="same-origin" />
   <!-- 제목의 "IdP 내 계정" 은 tests/test_mode3_demo_stack.mjs 의 페이지 서빙 검사 marker 다. -->
-  <title>IdP 내 계정</title>
+  <title>zkID — Google 계정</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b1d3a'/%3E%3Ctext x='16' y='22' font-size='15' font-family='sans-serif' font-weight='700' text-anchor='middle' fill='%23fff'%3Ezk%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="/common/demo.css" />
   <link rel="stylesheet" href="/common/idp.css" />
   <script src="/common/strings.js"></script>
@@ -18,14 +19,14 @@
   <!-- 2026-11-05: 다른 IdP 페이지와 같은 상단 바(idp.css) — 어느 사이트인지 보이게. -->
   <nav class="idp-nav"><div class="nav-inner">
     <span class="brand" data-i18n="idp_brand">zkID</span>
-    <div class="nav-menu"><a href="/user" data-i18n="idp_nav_user">사용자</a><a href="/account" aria-current="page" data-i18n="account_nav">Google 계정</a><a href="/rp" data-i18n="idp_nav_rp">RP 운영자</a><a href="/admin" data-i18n="idp_nav_admin">관리자</a></div>
+    <div class="nav-menu"><a href="/user" data-i18n="idp_nav_user">내 계정</a><a href="/account" aria-current="page" data-i18n="account_nav">Google 계정</a><a href="/rp" data-i18n="idp_nav_rp">RP 운영자</a><a href="/admin" data-i18n="idp_nav_admin">관리자</a></div>
   </div></nav>
   <main class="cards">
     <section class="card span2">
       <h3 data-i18n="account_revoke_title">내 계정 폐기</h3>
       <p class="desc" data-i18n="account_revoke_desc">기기를 잃었을 때 비밀번호만으로 계정을 폐기합니다. 지갑 키는 필요 없습니다.</p>
       <p>
-        <label><span data-i18n="account_uid_label">uid</span> <input id="uid" value="" size="8" inputmode="numeric" /></label>
+        <label><span data-i18n="account_uid_label">아이디</span> <input id="uid" value="" size="16" autocomplete="username" /></label>
         <label><span data-i18n="account_pwd_label">계정 비밀번호</span> <input id="pwd" type="password" size="24" autocomplete="off" /></label>
         <button id="revokeBtn" class="danger" data-i18n="account_revoke_btn">내 계정 폐기</button>
       </p>
@@ -122,7 +123,8 @@
     $('revokeBtn').addEventListener('click', async () => {
       const uid = $('uid').value.trim();
       if (!Demo.confirmDanger('confirm_revoke')) return;
-      await submitRevoke({ uid, pwd: $('pwd').value }, uid);
+      // 2026-11-05(7차): 사용자는 아이디를 안다 — 숫자만이면 옛 uid 로, 아니면 아이디로 보낸다(cia.js 가 둘 다 받는다).
+      await submitRevoke(/^[0-9]+$/.test(uid) ? { uid, pwd: $('pwd').value } : { id: uid, pwd: $('pwd').value }, uid);
     });
 
     // ---- Google(OIDC 래퍼, 스펙 2026-10-16 §3.3) — Google 로 등록한 계정은 비밀번호가 없어 Google 재로그인 토큰으로 폐기한다 ----

@@ -44,6 +44,7 @@ window.DemoStrings = {
     wallet_tab_send: { ko: '보내기', en: 'Send' },
     wallet_tab_settings: { ko: '설정', en: 'Settings' },
     wallet_connect_title: { ko: 'MetaMask 를 연결하세요', en: 'Connect MetaMask' },
+    wallet_connect_req: { ko: 'MetaMask Flask 와 zk Snap 이 설치돼 있어야 합니다. 처음 연결하면 Snap 설치를 묻습니다.', en: 'MetaMask Flask and the zk Snap must be installed. The first connection asks to install the Snap.' },
     wallet_connect_desc: { ko: '등록 비밀은 MetaMask Snap 안에 있습니다. 연결하면 계정·연결된 서비스·보내기 화면이 열립니다.', en: 'Your registration secret lives inside the MetaMask Snap. Connect to open the account, services and send screens.' },
     wallet_profile_title: { ko: '내 속성', en: 'My attributes' },
     wallet_details_summary: { ko: '상세', en: 'Details' },
@@ -80,7 +81,7 @@ window.DemoStrings = {
     rp_signup_hint: { ko: 'zkID 계정이 없으면 먼저 zkID 에서 가입하고 지갑을 등록하세요: ', en: 'No zkID account yet? Sign up at zkID and register your wallet first: ' },
     rp_signup_link: { ko: 'zkID 가입·지갑 등록', en: 'zkID sign-up & wallet registration' },
     rp_login_desc: { ko: 'zkID 계정으로 로그인합니다. 이 거래소는 회원이 누구인지 모르고, zkID 는 회원이 어디에 로그인하는지 모릅니다.', en: 'Log in with your zkID account. This exchange never learns who you are, and zkID never learns where you log in.' },
-    rp_session_title: { ko: '내 세션', en: 'My session' },
+    rp_session_title: { ko: '로그인 상태', en: 'Login status' },
     rp_logins_title: { ko: '로그인 기록', en: 'Login records' },
     rp_open_title: { ko: '승인 개봉', en: 'Authorized opening' },
     // U5(2026-10-14): 승인 개봉 카드가 컴플라이언스 묶음(전문가 전용)에서 늘 보이는 별도 카드로 빠지며 쓰는 카드 제목.
@@ -105,7 +106,7 @@ window.DemoStrings = {
     none: { ko: '(없음)', en: '(none)' },
     refresh: { ko: '새로고침', en: 'Refresh' },
     rp_login_btn: { ko: '로그인', en: 'Log in' },
-    rp_reval_btn: { ko: '세션 재검증', en: 'Revalidate session' },
+    rp_reval_btn: { ko: '지금 확인', en: 'Check now' },
     // U5(2026-10-14 RP 데모 개편): 이 버튼은 "세션 요청 보내기" 메커니즘을 그대로 쓰되 화면 문구만 거래소의
     // "출금 신청"으로 입힌다 — 보내는 본문('hello')과 서버 왕복은 바뀌지 않는다(mode3/rp.html 참고).
     rp_balance_btn: { ko: '잔액 새로고침', en: 'Refresh balance' },
@@ -128,7 +129,7 @@ window.DemoStrings = {
     rp_policy: { ko: '정책: 국가 ∈ {{countries}}, 나이 ≥ {minAge}', en: 'Policy: country ∈ {{countries}}, age ≥ {minAge}' },
     rp_no_attrgate: { ko: '속성 조건 컨트랙트가 없습니다(팩토리 미배포) — 조건 요구 로그인을 쓸 수 없습니다.', en: 'No attribute-condition contract (the factory is not deployed) — predicate logins are unavailable.' },
     rp_require_pred: { ko: '조건 요구(국가·나이)', en: 'Require predicate (country·age)' },
-    rp_session_desc: { ko: '"세션 재검증" 을 누르면 이 로그인이 아직 유효한지(계정·세션이 폐기되지 않았는지) 다시 확인합니다.', en: 'Press "Revalidate session" to re-check that this login is still valid (the account and session have not been revoked).' },
+    rp_session_desc: { ko: '이 로그인이 아직 유효한지 zkID 폐기 목록으로 다시 확인합니다.', en: 'Re-checks against the zkID revocation list that this login is still valid.' },
     rp_logins_desc: { ko: '이 RP 에 남은 기록입니다. RP 는 누구인지 모르고 이 주소만 압니다.', en: 'What this RP recorded. It never learns who you are — only this address.' },
     rp_login_same_ppid: { ko: '새 세션. 내 계정 주소는 이전과 같습니다.', en: 'New session. Your account address is unchanged.' },
     rp_my_account_addr: { ko: '내 계정 주소', en: 'My account address' },
@@ -239,9 +240,9 @@ window.DemoStrings = {
     assets_title: { ko: '내 자산', en: 'My assets' },
     // {minAge}·{countries} 는 rp_info 의 predicates(minAge, allowedCountryNames)로 채운다 — 정보를 아직 못 읽었으면
     // 페이지는 이 문구의 ko 리터럴과 같은 기본 문구를 그대로 둔다(mode3/rp.html 의 #loginPolicy 기본 텍스트).
-    rp_login_policy: { ko: '만 {minAge}세 이상, 허용 국가({countries})만 이용할 수 있습니다', en: 'Available only to ages {minAge}+ in allowed countries ({countries})' },
-    rp_login_policy_enforced: { ko: '만 {minAge}세 이상, 허용 국가({countries})만 이용할 수 있습니다 — 로그인 때 나이·국가 조건만 증명으로 확인하고 값은 받지 않습니다', en: 'Ages {minAge}+ in allowed countries ({countries}) only — at login only the age and country conditions are proven; the values are never received' },
-    rp_login_open: { ko: '누구나 이용할 수 있습니다 — 로그인에 속성 조건이 없습니다', en: 'Open to everyone — no attribute conditions at login' },
+    rp_login_policy: { ko: '만 {minAge}세 이상, {countries} 거주자만 이용할 수 있습니다', en: 'Ages {minAge}+ living in {countries} only' },
+    rp_login_policy_enforced: { ko: '만 {minAge}세 이상, {countries} 거주자만 이용할 수 있습니다. 나이와 국가는 값 대신 조건만 증명으로 확인합니다.', en: 'Ages {minAge}+ living in {countries} only. Age and country are checked as conditions by proof, never as values.' },
+    rp_login_open: { ko: '이용 조건 없음 — 누구나 이용할 수 있습니다', en: 'No conditions — open to everyone' },
     // 로그인 모달(2026-10-15) — 직접 로그인(장식)·Google·Naver(데모 미지원)·IdP(zk-Delegation, 실제 로그인) 선택 창.
     rp_login_modal_title: { ko: '로그인', en: 'Log in' },
     rp_admin_ppid_label: { ko: '고객의 이 RP 주소', en: 'Customer address at this RP' },
@@ -605,12 +606,12 @@ window.DemoStrings = {
     admin_open_deny_summary: { ko: '개봉 요청을 거절했습니다. 사용자는 밝혀지지 않습니다.', en: 'The opening request was denied. The user stays unidentified.' },
     admin_open_failed: { ko: '개봉 처리 실패', en: 'The opening decision failed' },
     // 계정 페이지(cia_account.html)
-    account_uid_label: { ko: 'uid', en: 'uid' },
+    account_uid_label: { ko: '아이디', en: 'Login ID' },
     account_pwd_label: { ko: '계정 비밀번호', en: 'Account password' },
     account_revoke_btn: { ko: '내 계정 폐기', en: 'Revoke my account' },
     account_note: { ko: '폐기하면 재발급이 즉시 막히고, 이미 발급된 자격증명은 관리자가 폐기 목록을 게시한 뒤부터 거절됩니다. 복구는 관리자만 할 수 있습니다.', en: 'Revoking blocks re-issuance at once; credentials already issued are refused from the moment the admin publishes the revocation list. Only the admin can recover the account.' },
     account_pwd_note: { ko: '비밀번호는 이 요청에만 쓰이고 화면·결과 어디에도 남지 않습니다.', en: 'The password is used only for this request and is never shown or stored.' },
-    account_revoked_summary: { ko: 'uid {uid} 계정을 폐기했습니다 — 되돌릴 수 없습니다. 관리자가 게시하면 이미 발급된 자격증명도 거절됩니다.', en: 'Account uid {uid} was revoked — this cannot be undone. Once the admin publishes, credentials already issued are refused too.' },
+    account_revoked_summary: { ko: '계정({uid})을 폐기했습니다 — 되돌릴 수 없습니다. 관리자가 게시하면 이미 발급된 자격증명도 거절됩니다.', en: 'Account {uid} was revoked — this cannot be undone. Once the admin publishes, credentials already issued are refused too.' },
     account_revoke_failed: { ko: '폐기 실패', en: 'Revocation failed' },
     account_network_error: { ko: 'IdP 에 연결하지 못했습니다: {err}', en: 'Could not reach the IdP: {err}' },
     // Google(OIDC 래퍼, 스펙 2026-10-16 §3.3) — Google 로 등록한 계정은 비밀번호가 없어 Google 재로그인으로 폐기한다.
@@ -665,7 +666,7 @@ window.DemoStrings = {
     // IdP RP 페이지(운영자 가입·로그인·RP 만들기) — cia_rp.html.
     // 2026-11-03: IdP 페이지 공통 상단 바(idp.css) + /rp 를 /user 와 같은 로그인·가입 화면으로.
     idp_brand: { ko: 'zkID', en: 'zkID' },
-    idp_nav_user: { ko: '사용자', en: 'Users' },
+    idp_nav_user: { ko: '내 계정', en: 'My account' },
     idp_nav_rp: { ko: 'RP 운영자', en: 'RP operators' },
     idp_nav_admin: { ko: '관리자', en: 'Admin' },
     idp_rp_login_title: { ko: '운영자 로그인', en: 'Operator login' },
@@ -708,9 +709,11 @@ window.DemoStrings = {
     idp_auth_desc: { ko: '아이디·비밀번호를 넣으면 지갑으로 돌아가 로그인을 이어갑니다.', en: 'Enter your login id and password; you return to the wallet and the login continues.' },
     idp_auth_go: { ko: '로그인', en: 'Log in' },
     idp_auth_cancel: { ko: '취소', en: 'Cancel' },
+    idp_auth_no_wallet_hint: { ko: '서비스 페이지에서 로그인을 시작하세요. 이 창을 직접 열었다면 닫아도 됩니다.', en: 'Start the login from the service page. If you opened this window yourself, you can close it.' },
     idp_auth_signup: { ko: '계정 만들기', en: 'Create an account' },
     idp_auth_signup_hint: { ko: '계정이 없으면 새 탭에서 가입하고 지갑을 등록한 뒤 다시 로그인하세요.', en: 'No account? Sign up and register your wallet in a new tab, then log in again.' },
     idp_auth_bad_wallet: { ko: '지갑 오리진이 일치하지 않습니다 — 이 창은 안전하지 않은 요청일 수 있습니다.', en: 'The wallet origin does not match — this window may be an unsafe request.' },
+    idp_auth_no_wallet: { ko: '이 창은 서비스에서 로그인할 때 지갑이 엽니다.', en: 'The wallet opens this window during a service login.' },
     idp_auth_sent_title: { ko: '전달됨', en: 'Sent' },
     idp_auth_sent: { ko: '코드를 지갑에 전달했습니다 — 이 창은 곧 닫힙니다.', en: 'The code was handed to the wallet — this window will close shortly.' },
     idp_auth_return: { ko: '인증됐습니다 — 지갑으로 돌아갑니다.', en: 'Authenticated — returning to the wallet.' },

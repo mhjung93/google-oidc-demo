@@ -5,7 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="same-origin" />
   <!-- 제목의 "IdP 관리자" 는 tests/test_mode3_demo_stack.mjs 의 페이지 서빙 검사 marker 다. -->
-  <title>IdP 관리자</title>
+  <title>zkID — 관리자</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b1d3a'/%3E%3Ctext x='16' y='22' font-size='15' font-family='sans-serif' font-weight='700' text-anchor='middle' fill='%23fff'%3Ezk%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="/common/demo.css" />
   <link rel="stylesheet" href="/common/idp.css" />
   <script src="/common/strings.js"></script>
@@ -16,7 +17,7 @@
   <!-- 2026-11-03: 공통 상단 바(idp.css) + 절 메뉴 — 카드를 숨기지 않고 해당 절로 이동만 한다(테스트 선택자 불변). -->
   <nav class="idp-nav"><div class="nav-inner">
     <span class="brand" data-i18n="idp_brand">zkID</span>
-    <div class="nav-menu"><a href="/user" data-i18n="idp_nav_user">사용자</a><a href="/rp" data-i18n="idp_nav_rp">RP 운영자</a><a href="/admin" aria-current="page" data-i18n="idp_nav_admin">관리자</a></div>
+    <div class="nav-menu"><a href="/user" data-i18n="idp_nav_user">내 계정</a><a href="/rp" data-i18n="idp_nav_rp">RP 운영자</a><a href="/admin" aria-current="page" data-i18n="idp_nav_admin">관리자</a></div>
   </div></nav>
   <div class="section-menu"><div class="menu-inner"><a href="#secAccounts" data-i18n="admin_accounts_title">계정</a><a href="#secRps" data-i18n="admin_rps_title">RP</a><a href="#secOpenings" data-i18n="admin_openings_title">개봉 요청</a><a href="#secRcl" data-i18n="admin_rcl_title">폐기 목록</a><a href="#secCreds" data-i18n="admin_creds_title">사용자 자격증명</a><a href="#secRevoked" data-i18n="admin_revoked_sessions_title">세션 폐기 목록</a></div></div>
   <main class="cards">

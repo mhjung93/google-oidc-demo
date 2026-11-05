@@ -6,7 +6,8 @@
   <meta name="referrer" content="same-origin" />
   <!-- 제목의 "IdP 인증" 은 페이지 서빙 검사 marker 다(mode3/cia_admin.html 의 관례). 데모 바 없음 — 지갑 팝업 창이 이 페이지로 왔다가 돌아간다
        (2026-11-05, ?return=1·auid=…) — 옛 방식(지갑 팝업이 따로 연 창, postMessage 로 코드 전달)도 그대로 받는다. -->
-  <title>IdP 인증</title>
+  <title>zkID 로그인</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b1d3a'/%3E%3Ctext x='16' y='22' font-size='15' font-family='sans-serif' font-weight='700' text-anchor='middle' fill='%23fff'%3Ezk%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="/common/demo.css" />
   <link rel="stylesheet" href="/common/idp.css" />
   <script src="/common/strings.js"></script>
@@ -46,8 +47,8 @@
       const r = reason ? Demo.reason(reason) : null;
       if (summary || r) { const p = document.createElement('p'); p.textContent = summary ?? r.title; el.appendChild(p); }
       if (r && !ok) { const c = document.createElement('p'); c.className = 'cause'; c.textContent = r.cause; el.appendChild(c); const a = document.createElement('p'); a.className = 'action'; a.textContent = r.action; el.appendChild(a); }
-      if (reason) { const code = document.createElement('code'); code.className = 'reason'; code.textContent = reason; el.appendChild(code); }
-      if (detail !== undefined) { const pre = document.createElement('pre'); pre.textContent = typeof detail === 'string' ? detail : JSON.stringify(detail, null, 2); el.appendChild(pre); }
+      // 2026-11-05(7차): 사유 코드·원문은 공통 카드(demo.js renderVerdict)와 같이 화면에 싣지 않고 콘솔에만 남긴다.
+      if (!ok && !pending && (reason || detail !== undefined)) { try { console.debug('[verdict]', title, reason ?? '', detail ?? ''); } catch { /* 콘솔 없음 */ } }
     },
   };
   document.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = Demo.t(el.dataset.i18n); });
@@ -64,7 +65,8 @@
   if (/^[0-9]+$/.test(auidQuery)) { $('authAuid').value = auidQuery; $('authAuidRow').hidden = true; }
 
   (async () => {
-    if (!nonce || !walletQuery) { setVerdict($('authVerdict'), false, 'idp_auth_bad_wallet', { reason: 'idp_auth_bad_wallet' }); disableForm(); return; }
+    // 2026-11-05(7차): nonce·wallet 이 아예 없으면(주소창에 직접 침) 보안 경고가 아니라 "지갑이 여는 창" 안내만 — 경고는 wallet 이 있는데 다를 때.
+    if (!nonce || !walletQuery) { setVerdict($('authVerdict'), false, 'idp_auth_no_wallet', { pending: true, summary: Demo.t('idp_auth_no_wallet_hint') }); disableForm(); return; }
     let walletOrigin;
     try { walletOrigin = (await (await fetch('/mode3/health')).json()).walletOrigin; }
     catch { setVerdict($('authVerdict'), false, 'idp_auth_bad_wallet', { reason: 'idp_auth_bad_wallet' }); disableForm(); return; }

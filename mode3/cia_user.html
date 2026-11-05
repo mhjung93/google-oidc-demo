@@ -5,7 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="same-origin" />
   <!-- 제목의 "IdP 사용자" 는 페이지 서빙 검사 marker 다(mode3/cia_admin.html 의 관례). -->
-  <title>IdP 사용자</title>
+  <title>zkID — 내 계정</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b1d3a'/%3E%3Ctext x='16' y='22' font-size='15' font-family='sans-serif' font-weight='700' text-anchor='middle' fill='%23fff'%3Ezk%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="/common/demo.css" />
   <link rel="stylesheet" href="/common/idp.css" />
   <script src="/common/strings.js"></script>
@@ -15,7 +16,7 @@
 <header id="demoBar"></header>
 <nav class="idp-nav"><div class="nav-inner">
   <span class="brand" data-i18n="idp_brand">zkID</span>
-  <div class="nav-menu"><a href="/user" aria-current="page" data-i18n="idp_nav_user">사용자</a><a href="/rp" data-i18n="idp_nav_rp">RP 운영자</a><a href="/admin" data-i18n="idp_nav_admin">관리자</a></div>
+  <div class="nav-menu"><a href="/user" aria-current="page" data-i18n="idp_nav_user">내 계정</a><a href="/rp" data-i18n="idp_nav_rp">RP 운영자</a><a href="/admin" data-i18n="idp_nav_admin">관리자</a></div>
 </div></nav>
 <main class="cards">
   <!-- ===== 로그인 전 ① 로그인 (2026-11-03 재구성: 로그인해야 등록·폐기 카드가 보인다) ===== -->
@@ -251,7 +252,9 @@
     Demo.init({ page: 'idp_user' });
     initStack();
     // Google 등록 버튼은 이 IdP 가 OIDC 래퍼를 켰을 때만 보인다(public_keys.oidc.enabled).
-    try { $('googleRow').hidden = !(await (await fetch('/cia/public_keys')).json()).oidc?.enabled; } catch { /* 숨긴 채 */ }
+    // 2026-11-05(7차): 그리고 localhost 로 열었을 때만 — Google 은 localhost 오리진만 허용해 VM 주소(192.168.x.x)에서는 눌러도 안 된다.
+    const googleOrigin = ['localhost', '127.0.0.1'].includes(location.hostname);
+    try { $('googleRow').hidden = !(googleOrigin && (await (await fetch('/cia/public_keys')).json()).oidc?.enabled); } catch { /* 숨긴 채 */ }
     await refreshMe();
   })();
 </script>
