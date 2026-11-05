@@ -967,7 +967,7 @@
       rb.className = `badge ${!rg ? 'muted' : rg.match === true ? 'ok' : rg.leaf === '0' ? 'warn' : 'bad'}`;
       tte(rb, key);
       const slotInfo = rg ? (tt('wallet_registry_info', { slot: rg.slot, epoch: rg.epoch }) || `슬롯 ${rg.slot} · epoch ${rg.epoch}`) : '';
-      $('registryInfo').textContent = rg ? (tt(key) || slotInfo) : '';   // 슬롯·epoch 는 보이지 않는다(2026-11-05 — 전문가 보기 제거)
+      $('registryInfo').textContent = '';   // 상태 문구는 배지가 이미 보인다(2026-11-05 — 슬롯·epoch 는 전문가 보기 제거와 함께 숨김; 같은 문장이 두 번 보이던 것을 고쳤다)
 
       // auid·salt(Task 14, B5) — auid 는 상태 응답의 공개 값을 전체로 보인다. salt(s_u)는 비밀이라 기본 가림(SALT_MASK)
       // 이고, "보기"(showSaltBtn)가 받아 둔 값(saltRevealed)이 있을 때만 전체를 보인다 — 등록이 없어지면 가림으로 되돌린다.
