@@ -65,7 +65,6 @@
         <h2 data-i18n="rp_login_title">로그인</h2>
         <p class="desc" data-i18n="rp_login_desc">zkID 계정으로 로그인합니다. 이 거래소는 회원이 누구인지 모르고, zkID 는 회원이 어디에 로그인하는지 모릅니다.</p>
         <p class="login-policy" id="loginPolicy">만 19세 이상, 허용 국가(KR·JP·US·DE·FR)만 이용할 수 있습니다</p>
-        <label class="opt-row"><input type="checkbox" id="allowAgent" /> <span data-term="allowAgent">AI 에이전트 허용</span></label>
         <label class="opt-row expert"><input type="checkbox" id="requirePred" /> <span id="requirePredLabel" data-i18n="rp_require_pred">조건 요구(국가·나이)</span></label>
         <p><button type="button" id="cardLoginBtn" class="nav-cta" data-i18n="rp_login_btn">로그인</button></p>   <!-- 2026-11-05: 카드 안에서 바로 시작 — 상단 버튼과 같은 모달 -->
         <div id="verdict"></div>
@@ -113,8 +112,9 @@
           <h3 data-i18n="rp_session_title">내 세션</h3>
         <p class="desc" data-i18n="rp_session_desc">로그인 뒤에 활성화됩니다. 재검증은 이 세션이 아직 폐기되지 않았음을 다시 보입니다.</p>
         <dl class="kv">
-          <dt data-term="session">로그인 세션</dt><dd><code id="sessionId">(없음)</code></dd>
-          <dt data-i18n="rp_session_expiry_label">세션 만료</dt><dd id="sessionExpiry">-</dd>
+          <!-- 2026-11-05: 세션 난수·만료 블록은 사용자 말이 아니라 숨긴다(값은 그대로 채워져 테스트·디버깅에 남는다). -->
+          <dt class="expert" data-term="session">로그인 세션</dt><dd class="expert"><code id="sessionId">(없음)</code></dd>
+          <dt class="expert" data-i18n="rp_session_expiry_label">세션 만료</dt><dd class="expert" id="sessionExpiry">-</dd>
         </dl>
         <p>
           <button id="revalidateBtn" data-i18n="rp_reval_btn">세션 재검증</button>
@@ -156,15 +156,19 @@
         <h2 id="loginModalTitle" data-i18n="rp_login_modal_title">로그인</h2>
         <button type="button" id="loginModalClose" class="modal-close" aria-label="닫기">×</button>
       </div>
-      <!-- #loginPolicy 와 같은 문구(rp_login_policy) — renderStatus() 가 둘 다 채운다. 사전이 없으면 이 기본 문구가 남는다. -->
-      <p class="login-policy" id="loginPolicyModal">만 19세 이상, 허용 국가(KR·JP·US·DE·FR)만 이용할 수 있습니다</p>
+      <!-- 2026-11-05: 진짜 로그인(zkID)을 맨 위 주 버튼으로, 아이디/비밀번호·Google·네이버는 "이 데모에서는 동작하지 않는 다른 방법" 으로 아래에 둔다. 정책 문구는 카드에만. -->
+      <div class="social-row">
+        <button type="button" id="idpLoginBtn" class="social-btn social-btn-idp">
+          <span data-i18n="rp_idp_btn">zkID 로 로그인</span>
+        </button>
+      </div>
+      <p id="loginModalNote" class="modal-note" hidden></p>
+      <div class="modal-divider"><span data-i18n="rp_or_social">다른 방법 — 이 데모에서는 동작하지 않습니다</span></div>
       <div class="direct-login">
         <input type="text" id="directId" autocomplete="username" />
         <input type="password" id="directPw" autocomplete="current-password" />
         <button type="button" id="directLoginBtn" data-i18n="rp_direct_login_btn">로그인</button>
       </div>
-      <p id="loginModalNote" class="modal-note" hidden></p>
-      <div class="modal-divider"><span data-i18n="rp_or_social">또는 다음으로 로그인</span></div>
       <div class="social-row">
         <button type="button" id="googleLoginBtn" class="social-btn">
           <span class="social-badge badge-google" aria-hidden="true">G</span>
@@ -173,9 +177,6 @@
         <button type="button" id="naverLoginBtn" class="social-btn">
           <span class="social-badge badge-naver" aria-hidden="true">N</span>
           <span data-i18n="rp_naver_btn">네이버로 로그인</span>
-        </button>
-        <button type="button" id="idpLoginBtn" class="social-btn social-btn-idp">
-          <span data-i18n="rp_idp_btn">IdP 로 로그인(zk-Delegation)</span>
         </button>
       </div>
     </div>
@@ -283,7 +284,7 @@
       // 로그인 카드의 국가·나이 조건 문구 — 사전이 없으면(tte 가 아무것도 안 쓴다) #loginPolicy 의 HTML 기본 문구가 남는다.
       // 2026-10-21: 로그인 조건을 요구하는 RP(zkTWO)만 조건 문구 + 체크박스 숨김(강제라 고를 게 없다). 아니면(zkONE) "누구나" — 체크박스는 전문가 보기의 선택 사항으로 남는다.
       const polVars = { minAge: info.predicates.minAge, countries: (info.predicates.allowedCountryNames ?? info.predicates.allowedCountries ?? []).join('·') };
-      for (const id of ['loginPolicy', 'loginPolicyModal']) tte($(id), info.requireDisclosure ? 'rp_login_policy_enforced' : 'rp_login_open', polVars);
+      for (const id of ['loginPolicy']) tte($(id), info.requireDisclosure ? 'rp_login_policy_enforced' : 'rp_login_open', polVars);
       $('requirePred').closest('label').style.display = info.requireDisclosure ? 'none' : '';
       $('rpInfoExpert').textContent = `arid=${info.arid ?? '-'}   origin=${info.origin}   cert_s=있음   pk_trace=있음   Mode3Log=${info.logAddress}`
         + `   지갑 에이전트=${info.walletAgentOrigin}   pk_CIA=${info.pkCiaSource}   chainId=${info.chainId}   팩토리=${info.factoryAddress ?? '(없음)'}`
@@ -640,7 +641,7 @@
         const { r_s, r_rp, factoryAddress, attrGateAddress } = ch;
         log(`1. r_s 발급 ${ms(t0)}: ${r_s.slice(0, 16)}…`);
 
-        const allowAgent = $('allowAgent').checked ? '1' : '0';
+        const allowAgent = '0';   // 2026-11-05: "AI 에이전트 허용" 체크박스는 화면에서 뺐다(사용자 결정) — 프로토콜 값은 늘 '0'
         t0 = Date.now();
         pendingVerdict($('verdict'), 'proving');
         let wb;

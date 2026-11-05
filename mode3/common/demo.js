@@ -4,32 +4,31 @@
   const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch { /* 사생활 모드 등 */ } } };
   const D = {
     lang: S.langs.includes(store.get('mode3.lang')) ? store.get('mode3.lang') : 'ko',
-    expert: store.get('mode3.expert') === '1',
+    expert: false,   // 2026-11-05: 전문가 보기 스위치 제거 — .expert 요소는 늘 숨김(DOM 에는 남는다)
     page: null, lastGuide: null,
     // split/join 으로 갈아 끼운다 — replace 의 치환 문자열은 $&·$' 같은 패턴을 해석해, 값에 $ 가 든 오류 메시지가
     // 문구를 망가뜨린다(문구 값에 든 {키} 는 그대로 두고 값만 넣어야 한다).
     t(key, vars = {}) { const e = S.ui[key]; let s = e ? (e[D.lang] ?? e.ko) : key; for (const [k, v] of Object.entries(vars)) s = s.split(`{${k}}`).join(String(v)); return s; },
-    term(name) { const e = S.terms[name]; if (!e) return name; return D.expert ? `${e[D.lang]} (${e.expert})` : e[D.lang]; },
+    term(name) { const e = S.terms[name]; if (!e) return name; return e[D.lang]; },
     verdictText(key) { const e = S.verdicts[key]; return e ? (e[D.lang] ?? e.ko) : key; },
     reason(code) { const r = S.reasons[code]; return r ? r[D.lang] ?? r.ko : null; },
     setLang(l) { if (!S.langs.includes(l)) return; D.lang = l; store.set('mode3.lang', l); document.documentElement.lang = l; D.applyI18n(); D.rerenderVerdicts(); D.tour.syncSwitch(); if (D.tour.enabled && D.tour.lastEval) D.tour.evaluate(D.tour.lastEval); else if (D.lastGuide) D.guide(D.lastGuide); if (D.stack.state) D.stack.renderDots(); },
     // 토글을 페이지가 직접 부를 수도 있으므로(안내 바의 체크박스만이 아니다) 체크 상태를 여기서 맞춘다.
     // applyI18n 을 함께 부른다 — data-term 라벨은 term() 이 전문가 여부로 원래 기호를 덧붙이므로(설계 §3.1),
     // 여기서 다시 그리지 않으면 토글 뒤에도 옛 표기가 남는다(껐는데 기호가 보이는 등).
-    setExpert(b) { D.expert = !!b; store.set('mode3.expert', b ? '1' : '0'); document.documentElement.toggleAttribute('data-expert', D.expert); const ex = document.getElementById('expertToggle'); if (ex) ex.checked = D.expert; D.applyI18n(); D.rerenderVerdicts(); D.tour.syncSwitch(); if (D.tour.enabled && D.tour.lastEval) D.tour.evaluate(D.tour.lastEval); else if (D.lastGuide) D.guide(D.lastGuide); if (D.stack.state) D.stack.renderDots(); },
+    setExpert() { /* 2026-11-05: 전문가 보기 제거 — 호환용 빈 함수 */ },
     applyI18n() { document.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = D.t(el.dataset.i18n); }); document.querySelectorAll('[data-term]').forEach((el) => { el.textContent = D.term(el.dataset.term); }); },
     /** tour:false 면 체험 모드를 아예 켜지 않는다(승인 팝업 — 설계 2026-09-25 §3.1). */
     init({ page, tour = true }) {
       D.page = page;
       // 2026-11-04: 안내 바(#demoBar)는 그리지 않고 숨긴다(사용자 요청 — 11-03 에 도구 둘만 남겼던 것도 뺀다). 마크업은 페이지에 그대로 두어
-      // guide()·stack.renderDots() 등 바를 찾는 코드가 지금처럼 조용히 끝나게 한다. 언어·전문가 보기는 URL 로 바꾼다:
-      // ?lang=ko|en, ?expert=1|0 — 값은 localStorage 에 남아 다음 열기에도 유지된다(콘솔 Demo.setLang()/setExpert() 도 그대로).
+      // guide()·stack.renderDots() 등 바를 찾는 코드가 지금처럼 조용히 끝나게 한다. 언어는 URL 로 바꾼다: ?lang=ko|en — 값은
+      // localStorage 에 남아 다음 열기에도 유지된다. (전문가 보기 ?expert= 는 2026-11-05 에 없앴다 — 화면은 하나다.)
       try {
         const q = new URLSearchParams(location.search);
         const ql = q.get('lang'); if (ql && S.langs.includes(ql)) { D.lang = ql; store.set('mode3.lang', ql); }
-        const qe = q.get('expert'); if (qe === '1' || qe === '0') { D.expert = qe === '1'; store.set('mode3.expert', qe); }
       } catch { /* URL 파싱 실패는 무시 — 저장값으로 간다 */ }
-      document.documentElement.lang = D.lang; document.documentElement.toggleAttribute('data-expert', D.expert);
+      document.documentElement.lang = D.lang;
       const bar = document.getElementById('demoBar'); if (bar) { bar.innerHTML = ''; bar.hidden = true; }
       D.applyI18n(); D.guide({ done: [], current: null, hint: null, links: {} });
       // 체험 모드(D.tour)는 2026-11-03 부터 켜지 않는다 — init() 을 부르지 않으면 enabled 가 false 로 남아 잠금·말풍선·카드가 모두 빈 동작이다.

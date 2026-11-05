@@ -213,7 +213,7 @@ try {
     assert.equal(await walletPage.$eval('#fileRegFields', (el) => el.hidden), true, 'snap 모드는 uid·pwd 폼을 숨긴다(게이트와 무관하게 요소 자체의 hidden 으로 본다)');
     await walletPage.click('#connectBtn');
     await waitText(walletPage, '#mmStatus', account);
-    assert.ok((await text(walletPage, '#mmStatus')).includes(cfg.snapId), 'Snap 연결 표시');
+    assert.ok((await text(walletPage, '#mmStatus')).startsWith('MetaMask'), '배지는 "MetaMask 0x…"(2026-11-05 — Snap id 는 보이지 않는다)');
   });
 
   // Task 14(B5, 2026-10-23): 등록은 이제 IdP /user 페이지가 지갑 팝업(?authorize=1)을 열고 mode3-register 를 보낸다 —
@@ -261,14 +261,13 @@ try {
   });
 
   await t('로그인: 팝업이 IdP 로그인 페이지로 갔다가 돌아와 Snap 동의 창 없이 결과를 postMessage 로 돌려준다 → RP 세션', async () => {
-    await rpPage.check('#allowAgent');          // allowAgent='1' — 재승인이 세션의 같은 값을 써야 한다(§4.3)
     const before = dialogs.length;
     const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
     assert.ok(popup.url().includes('authorize=1'), `팝업 URL: ${popup.url()}`);
     await completeIdpAuth(popup);               // Task 14: IdP 인증(CIA_ISSUE_AUTH=code) — 2026-11-05 부터 팝업 창 자체가 갔다 온다
     await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
     assert.equal(dialogs.length, before, '로그인에 Snap 동의 창이 없다(2026-11-05 중복 확인 제거)');
-    assert.ok((await text(rpPage, '#log')).includes('allowAgent=1'), 'RP 검증 결과의 allowAgent 가 1');
+    assert.ok((await text(rpPage, '#log')).includes('allowAgent=0'), 'AI 에이전트 체크박스를 없앴으므로 늘 0(2026-11-05)');
     await awaitPopupClosed(popup);
     assert.ok((await text(rpPage, '#log')).includes('3. RP 검증'), 'RP 페이지가 /api/mode3/login 까지 냈다');
     assert.equal((await text(rpPage, '#sessionId')).includes('(없음)'), false, '세션이 잡혔다');
@@ -420,12 +419,12 @@ try {
     assert.equal(dialogs.length, before, '동의 창을 띄우지 않는다');
   });
 
-  // 2026-09-23 점검 B-I1: 재승인의 allowAgent 를 서비스가 정하면 안 된다. 세션은 allowAgent='1' 인데 요청에 '0' 을 실어 보내도,
-  // 팝업은 precheck 이 돌려준 세션 값을 /wallet/session/witness 에 실으므로 성공한다(요청 값을 썼다면 409 allow_agent_mismatch 로 실패한다).
-  await t('재승인 allowAgent 바인딩: 요청이 0 이라도 팝업은 세션의 실제 값으로 재승인한다', async () => {
+  // 2026-09-23 점검 B-I1: 재승인의 allowAgent 를 서비스가 정하면 안 된다. 세션은 allowAgent='0'(2026-11-05 부터 체크박스 없음) 인데 요청에 '1' 을
+  // 실어 보내도, 팝업은 precheck 이 돌려준 세션 값을 /wallet/session/witness 에 실으므로 성공한다(요청 값을 썼다면 409 allow_agent_mismatch 로 실패한다).
+  await t('재승인 allowAgent 바인딩: 요청이 1 이라도 팝업은 세션의 실제 값(0)으로 재승인한다', async () => {
     const before = dialogs.length;
     const { popup, result } = await forgeAuthorize('mode3-authorize-forged-allowagent', {
-      ...(await rpRequestBase()), reauth: true, r_s: sessionRs, allowAgent: '0', serviceName: '○○은행',
+      ...(await rpRequestBase()), reauth: true, r_s: sessionRs, allowAgent: '1', serviceName: '○○은행',
     });
     assert.equal(result.ok, true, j(result));
     assert.equal(dialogs.length, before, '동의 창 없음');

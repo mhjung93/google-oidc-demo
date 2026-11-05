@@ -188,17 +188,14 @@ export const onRpcRequest = async ({ origin, request }) => {
       if (relay !== true) return { ok: true };
       // V7 집합 소속: 에이전트가 members 로부터 root 를 계산해 증명에 넣는다 — 여기서는 사용자에게 원소를 보여 준다(root 검산은 에이전트 몫, 스펙 §5.2).
       const lines = predicateLines(disclose, set);
-      if (lines.length === 0) lines.push('공개하는 속성 없음');
-      const ok = await confirm('속성 공개 동의', [
-        rpOrigin ? `RP: ${rpOrigin}` : 'RP: (지갑 페이지)',
-        arid === undefined || arid === null ? undefined : `요청 식별자(arid): ${arid}`,   // 없으면 줄 자체를 뺀다(null 은 구분선)
+      // 2026-11-05: 공개할 속성이 없는 평범한 출금은 "출금 확인" 창(서비스·받는 주소·금액)이다 — "속성 공개 동의 / 공개하는 속성 없음" 은 어색했다.
+      const ok = await confirm(lines.length ? '속성 공개 동의' : '출금 확인', [
+        rpOrigin ? `서비스: ${rpOrigin}` : '서비스: (지갑 페이지)',
         null,
-        '공개할 속성:',
-        ...lines,
-        null,
-        `대상 주소: ${to}`,
+        ...(lines.length ? ['공개할 속성:', ...lines, null] : []),
+        `받는 주소: ${to}`,
         `금액: ${weiToEth(String(value ?? '0'))} ETH (${value ?? '0'} wei)`,
-      ].filter((l) => l !== undefined));
+      ]);
       return ok ? { ok: true } : { denied: true };
     }
 

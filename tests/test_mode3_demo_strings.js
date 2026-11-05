@@ -66,7 +66,7 @@ t('지갑 페이지가 RP 로 돌려보내는 사유 리터럴은 전부 reasons
 t('ui·terms 항목은 전부 ko·en 이 있고 빈 문자열이 없다', () => {
   for (const [k, v] of Object.entries(S.ui)) for (const l of S.langs) assert.ok(typeof v[l] === 'string' && v[l].length, `ui.${k}.${l}`);
   for (const [k, v] of Object.entries(S.terms)) { for (const l of S.langs) assert.ok(v[l], `terms.${k}.${l}`); assert.ok(v.expert, `terms.${k}.expert`); }
-  for (const n of ['PPID', 'AA', 'session', 'root', 'proof', 'disclosure', 'cred', 'tag', 'allowAgent', 'attr0', 'attr1', 'attr2', 'attr3', 'auid', 'auid_s', 'r_rp']) assert.ok(S.terms[n], `terms.${n}`);
+  for (const n of ['PPID', 'AA', 'session', 'root', 'proof', 'disclosure', 'cred', 'tag', 'attr0', 'attr1', 'attr2', 'attr3', 'auid', 'auid_s', 'r_rp']) assert.ok(S.terms[n], `terms.${n}`);
 });
 t('ui 에 안내 바·토글·공통 버튼 키가 있다', () => {
   for (const k of ['bar_next', 'bar_other_window', 'toggle_lang', 'toggle_expert', 'details', 'working', 'proving', 'confirm_revoke', 'confirm_publish', 'confirm_reset', 'go_wallet', 'go_rp', 'go_rp2', 'go_admin', 'go_account', 'wallet_profile_save_btn', 'wallet_profile_saved', 'wallet_profile_failed', 'wallet_profile_saved_snap_pending']) assert.ok(S.ui[k], k);
@@ -141,7 +141,7 @@ t('ui 에 사용자 페이지(web 모드) 키가 있다', () => {
   assert.ok(S.ui.rp_wallet_web.ko.includes('사용자 비밀=브라우저')); assert.ok(S.ui.rp_wallet_mode_web.ko.includes('브라우저'));
   assert.ok(S.ui.user_vault_unlocked.ko.includes('해제')); assert.ok(S.ui.user_vault_locked.ko.includes('잠김'));
   assert.ok(S.ui.user_vault_none.ko.includes('없음')); assert.ok(S.ui.user_zk_ready.ko.includes('준비'));
-  assert.ok(S.ui.wallet_no_sessions.ko.includes('로그인 세션이 없습니다'));
+  assert.ok(S.ui.wallet_no_sessions.ko.includes('로그인한 서비스가 없습니다'));
 });
 
 // 2026-11-05 — 팝업 큰 제목은 요청 종류(로그인·등록·온체인 출금)를 따른다; IdP 인증은 팝업 창 자체가 IdP 로 갔다가 돌아오므로 "IdP 인증 창 열기" 버튼 키는 없어졌다.

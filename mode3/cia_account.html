@@ -7,6 +7,7 @@
   <!-- 제목의 "IdP 내 계정" 은 tests/test_mode3_demo_stack.mjs 의 페이지 서빙 검사 marker 다. -->
   <title>IdP 내 계정</title>
   <link rel="stylesheet" href="/common/demo.css" />
+  <link rel="stylesheet" href="/common/idp.css" />
   <script src="/common/strings.js"></script>
   <script src="/common/demo.js"></script>
   <!-- Google Identity Services 로더(스펙 2026-10-16) — window.Mode3Gsi. 사용자 페이지와 같은 사본이다. -->
@@ -14,14 +15,17 @@
 </head>
 <body data-page="account">
   <header id="demoBar"></header>
+  <!-- 2026-11-05: 다른 IdP 페이지와 같은 상단 바(idp.css) — 어느 사이트인지 보이게. -->
+  <nav class="idp-nav"><div class="nav-inner">
+    <span class="brand" data-i18n="idp_brand">zkID</span>
+    <div class="nav-menu"><a href="/user" data-i18n="idp_nav_user">사용자</a><a href="/account" aria-current="page" data-i18n="account_nav">Google 계정</a><a href="/rp" data-i18n="idp_nav_rp">RP 운영자</a><a href="/admin" data-i18n="idp_nav_admin">관리자</a></div>
+  </div></nav>
   <main class="cards">
-    <!-- F-0: /user 는 비밀번호 계정(가입·커밋먼트 등록) 입구 — 이 페이지(Google/OIDC 계정 관리)와는 다르므로 서로 가리킨다. -->
-    <p><a href="/user" data-i18n="account_idp_user_link">IdP 사용자 페이지로</a></p>
     <section class="card span2">
       <h3 data-i18n="account_revoke_title">내 계정 폐기</h3>
       <p class="desc" data-i18n="account_revoke_desc">기기를 잃었을 때 비밀번호만으로 계정을 폐기합니다. 지갑 키는 필요 없습니다.</p>
       <p>
-        <label><span data-i18n="account_uid_label">uid</span> <input id="uid" value="12345" size="8" /></label>
+        <label><span data-i18n="account_uid_label">uid</span> <input id="uid" value="" size="8" inputmode="numeric" /></label>
         <label><span data-i18n="account_pwd_label">계정 비밀번호</span> <input id="pwd" type="password" size="24" autocomplete="off" /></label>
         <button id="revokeBtn" class="danger" data-i18n="account_revoke_btn">내 계정 폐기</button>
       </p>

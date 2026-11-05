@@ -76,7 +76,7 @@ try {
   });
   await t('A4b 로그아웃(2026-10-16): RP 로그아웃 → 사용자 페이지 세션 목록이 곧 빈다(2초 새로고침) → 다시 로그인하면 세션 하나', async () => {
     await rpPage.click('#logoutBtn');
-    await userPage.waitForFunction(() => (document.querySelector('#sessionActions')?.textContent ?? '').includes('로그인 세션이 없습니다'), undefined, { timeout: 15_000 });
+    await userPage.waitForFunction(() => (document.querySelector('#sessionActions')?.textContent ?? '').includes('로그인한 서비스가 없습니다'), undefined, { timeout: 15_000 });
     assert.equal(await rpPage.$eval('#loginBtn', (b) => b.hidden), false, '로그아웃 뒤 로그인 버튼 복귀'); assert.equal((await text(rpPage, '#sessionVerdict')).trim(), '', '로그아웃하면 이전 세션 결과가 비워진다(2026-10-21)');
     await viaPopup(async () => { await rpPage.click('#loginBtn'); await rpPage.click('#idpLoginBtn'); }, approve);
     await waitText(rpPage, '#verdict', '로그인 성공', 120_000);
@@ -135,7 +135,7 @@ try {
     await userPage.waitForSelector('#sessionActions button.danger');
     await userPage.$eval('#sessionActions button.danger', (b) => b.click());
     await waitText(userPage, '#sessionVerdict', '폐기 요청 접수');
-    await waitText(userPage, '#sessionActions', '로그인 세션이 없습니다', 15_000);
+    await waitText(userPage, '#sessionActions', '로그인한 서비스가 없습니다', 15_000);
     // 2026-10-21: 폐기하면 사용자 페이지가 RP 에 로그아웃을 알리고, RP 페이지는 2초 확인에서 로그아웃 상태가 된다
     await waitText(rpPage, '#verdict', '로그아웃됨', 10_000);
     assert.equal(await rpPage.$eval('#accountPill', (e) => e.hidden), true, 'RP 페이지 계정 표시가 사라진다');
@@ -194,7 +194,7 @@ try {
     await waitText(rp2Page, '#verdict', '로그인 성공', 120_000);
     // 2026-10-21: zkTWO 는 로그인 조건 강제 — 페이지가 술어를 자동으로 싣고 서버가 요구한다. 세션에 국가 집합 공개가 실린다. zkONE 은 "누구나".
     const s2 = (await rp2.get('/api/mode3/sessions')).body.sessions; assert.ok(s2.length >= 1 && s2[0].disclosure?.set, `zkTWO 세션에 공개 집합이 없다: ${j(s2)}`);
-    assert.match(await text(rp2Page, '#loginPolicy'), /조건 증명/); assert.match(await text(rpPage, '#loginPolicy'), /누구나/);
+    assert.match(await text(rp2Page, '#loginPolicy'), /증명으로 확인/); assert.match(await text(rpPage, '#loginPolicy'), /누구나/);
     assert.equal(await rp2Page.$eval('#requirePred', (e) => e.closest('label').style.display), 'none', 'zkTWO 는 체크박스를 숨긴다');
     const sessions = Object.values((await idbDump(userPage)).sessions);
     const accounts = new Set(sessions.map((s) => s.account)); assert.ok(accounts.size >= 2, 'RP 마다 다른 계정 주소');

@@ -93,6 +93,7 @@ html[data-expert] .opt-row.expert { display: flex; }
 @media (max-width: 640px) {
   .nav-inner { flex-wrap: wrap; min-height: auto; padding: 10px 16px; gap: 8px 16px; }
   .nav-menu { order: 3; width: 100%; gap: 16px; }
+  .nav-actions { order: 2; margin-left: auto; }   /* 2026-11-05: 첫 줄은 브랜드 … 로그인(오른쪽), 둘째 줄 메뉴 */
   .nav-link { padding: 4px 0; }
   .exchange-main { padding: 16px 16px 40px; }
 }

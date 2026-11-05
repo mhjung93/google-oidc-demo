@@ -233,7 +233,7 @@
       $('connectCard').hidden = !gated;
       $('walletTabs').hidden = gated;
       // file 모드의 설정 탭은 전문가 보기(시연 카드)에서만 내용이 있다 — 비어 있는 탭은 숨기고, 거기 있었으면 계정 탭으로.
-      const settingsEmpty = cfg.secrets !== 'snap' && !document.documentElement.hasAttribute('data-expert');
+      const settingsEmpty = cfg.secrets !== 'snap';   // 2026-11-05: 전문가 보기 스위치 제거
       document.querySelector('#walletTabs [data-tab="settings"]').hidden = settingsEmpty;
       if (settingsEmpty && currentTab === 'settings') { currentTab = 'account'; for (const b of document.querySelectorAll('#walletTabs [data-tab]')) b.setAttribute('aria-selected', b.dataset.tab === 'account' ? 'true' : 'false'); }
       for (const el of document.querySelectorAll('[data-panel]')) el.hidden = gated || el.dataset.panel !== currentTab || el.dataset.off === '1';
@@ -482,7 +482,6 @@
       }
       const conds = requestConditions(req);
       row('wallet_auth_conditions', conds.length ? conds.join(' · ') : tt('wallet_cond_none'));
-      if (req.allowAgent === '1' || req.allowAgent === true) row('wallet_auth_agent', tt('rp_agent_yes') || '허용');
     }
     /** 일반 보기용 진행 줄(2026-11-05) — 사용자가 지금 무엇을 기다리는지, 어디(MetaMask)를 봐야 하는지. 실패는 사유 제목을 붙인다. */
     function say(key, vars) { const el = $('authProgress'); if (!el) return; el.textContent = tt(key, vars) || key; }
@@ -968,7 +967,7 @@
       rb.className = `badge ${!rg ? 'muted' : rg.match === true ? 'ok' : rg.leaf === '0' ? 'warn' : 'bad'}`;
       tte(rb, key);
       const slotInfo = rg ? (tt('wallet_registry_info', { slot: rg.slot, epoch: rg.epoch }) || `슬롯 ${rg.slot} · epoch ${rg.epoch}`) : '';
-      $('registryInfo').textContent = rg ? [tt(key), Demo.expert ? slotInfo : ''].filter(Boolean).join(' · ') : '';   // 슬롯·epoch 는 전문가 보기에서만(2026-11-05)
+      $('registryInfo').textContent = rg ? (tt(key) || slotInfo) : '';   // 슬롯·epoch 는 보이지 않는다(2026-11-05 — 전문가 보기 제거)
 
       // auid·salt(Task 14, B5) — auid 는 상태 응답의 공개 값을 전체로 보인다. salt(s_u)는 비밀이라 기본 가림(SALT_MASK)
       // 이고, "보기"(showSaltBtn)가 받아 둔 값(saltRevealed)이 있을 때만 전체를 보인다 — 등록이 없어지면 가림으로 되돌린다.
@@ -1038,10 +1037,6 @@
         kvRow(dl, tt('wallet_session_service') || 'RP', rpLabel(c));            // 이름(없으면 주소) — arid 는 전문가 행(2026-11-05)
         kvRow(dl, termEl('PPID'), shortCode(c.PPID, 12));
         kvRow(dl, tt('wallet_session_expiry') || '만료', tt('wallet_session_expires', { h: c.max_height }) || String(c.max_height));
-        const agent = document.createElement('span');
-        agent.className = `badge ${c.allowAgent === '1' ? 'ok' : 'muted'}`;
-        agent.textContent = tt(c.allowAgent === '1' ? 'rp_agent_yes' : 'rp_agent_no') || c.allowAgent;
-        kvRow(dl, termEl('allowAgent'), agent);
         kvRow(dl, tt('wallet_session_nonce') || 'nonce', String(c.nonce ?? '-'));
         kvRow(dl, 'arid', shortCode(c.arid, 8), true);
         kvRow(dl, termEl('session'), shortCode(r_s, 16), true);
@@ -1126,7 +1121,7 @@
       const el = $('mmStatus');
       el.hidden = cfg.secrets !== 'snap';
       applyGate();
-      if (mmState.kind === 'ok') { el.className = 'badge ok'; el.textContent = tt('wallet_mm_connected', { account, snap: cfg.snapId }) || `${account} · ${cfg.snapId}`; return; }
+      if (mmState.kind === 'ok') { el.className = 'badge ok'; el.textContent = tt('wallet_mm_connected', { account, snap: cfg.snapId }) || `MetaMask ${account}`; return; }
       if (mmState.kind === 'fail') { el.className = 'badge bad'; el.textContent = tt('wallet_mm_failed', { err: mmState.err }) || mmState.err; return; }
       el.className = 'badge';
       tte(el, 'wallet_mm_none');
