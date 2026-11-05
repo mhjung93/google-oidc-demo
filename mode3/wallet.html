@@ -38,15 +38,13 @@
   <!-- 팝업 모드(?authorize=1, 스펙 2026-09-22 metamask-snap §3.2): 폼 대신 승인 진행 화면만 보인다. -->
   <main class="cards" id="authorizeView" hidden>
     <section class="card span2">
-      <h3 data-i18n="wallet_auth_title">로그인 승인</h3>
-      <p id="authTitle">RP 페이지의 요청을 기다리는 중…</p>
+      <!-- 2026-11-05: 큰 제목은 요청 종류(등록·로그인·온체인 출금)를 따라 renderAuthTitle 이 바꾼다 — 늘 "로그인 승인"이던 것을 고쳤다.
+           IdP 인증은 별도 창·버튼 없이 이 창 자체가 IdP 로그인 페이지로 갔다가 돌아온다(goIdpAuth). 개발자용 postMessage 안내문은 뺐다. -->
+      <h3 id="authHeading">지갑</h3>
+      <p id="authTitle">요청을 기다리는 중…</p>
       <dl class="kv" id="authSummary"></dl>
       <p id="authStep" class="muted expert"></p>
-      <!-- F-13(2026-10-23): Snap 동의 뒤 이 버튼의 click 처리기 "안에서" 동기적으로 window.open 을 불러야 일반 팝업
-           차단기를 피한다(await 뒤에 부르면 사용자 제스처가 끊긴다) — 승인 뒤에만 보인다(openIdpAuthOnClick). -->
-      <p><button type="button" id="idpAuthOpenBtn" data-i18n="idp_auth_open_btn" hidden>IdP 인증 창 열기</button></p>
       <pre id="authLog" class="expert"></pre>
-      <p class="muted" data-i18n="wallet_auth_note">요청은 주소창이 아니라 postMessage 로 받습니다. 메시지를 보낸 오리진이 RP 인증서의 오리진과 같을 때만 진행합니다.</p>
     </section>
   </main>
 
@@ -95,7 +93,7 @@
         <summary data-i18n="wallet_details_summary">상세</summary>
         <dl class="kv">
           <dt data-term="auid">auid</dt><dd><code id="meAuid">-</code> <button type="button" id="copyAuidBtn" class="copy-btn" hidden title="복사">⧉</button></dd>
-          <dt><span data-i18n="wallet_salt_label">salt(s_u)</span> <span class="badge warn" data-i18n="wallet_salt_warn">비밀 — 시연용 표시</span></dt><dd><code id="meSalt">-</code> <button type="button" id="showSaltBtn" class="btn-ghost" data-i18n="wallet_salt_show">보기</button> <button type="button" id="copySaltBtn" class="copy-btn" hidden title="복사">⧉</button></dd>
+          <dt><span data-i18n="wallet_salt_label">salt</span> <span class="badge warn" data-i18n="wallet_salt_warn">비밀 — 시연용 표시</span></dt><dd><code id="meSalt">-</code> <button type="button" id="showSaltBtn" class="btn-ghost" data-i18n="wallet_salt_show">보기</button> <button type="button" id="copySaltBtn" class="copy-btn" hidden title="복사">⧉</button></dd>
         </dl>
         <p id="intro" class="muted expert"></p>
       </details>
@@ -173,7 +171,7 @@
       </details>
       <p class="row-actions">
         <button id="txBtn" data-i18n="wallet_tx_btn">보내기</button>
-        <button id="claimBtn" type="button" class="btn-ghost" data-i18n="wallet_tx_claim_btn">Selective disclosure proof 보내기</button>
+        <button id="claimBtn" type="button" class="btn-ghost" data-i18n="wallet_tx_claim_btn">조건 증명(선택 공개) 보내기</button>
       </p>
       <p class="muted" data-i18n="wallet_tx_claim_hint"></p>
       <div id="txVerdict"></div>
@@ -390,7 +388,7 @@
 
     // ---- MetaMask · Snap ----
     function requireEthereum() {
-      if (!window.ethereum) throw Object.assign(new Error('MetaMask 확장이 없다(window.ethereum 없음)'), { reason: 'snap_unavailable' });
+      if (!window.ethereum) throw Object.assign(new Error('MetaMask 확장이 없습니다 — 설치한 뒤 다시 시도하세요'), { reason: 'snap_unavailable' });
       return window.ethereum;
     }
     /** eth_requestAccounts → 계정, wallet_requestSnaps → Snap 설치·연결. 둘 다 사용자 확인 창을 띄운다. */
@@ -398,7 +396,7 @@
       const eth = requireEthereum();
       const accounts = await eth.request({ method: 'eth_requestAccounts' });
       account = accounts && accounts.length ? accounts[0] : null;
-      if (!cfg.snapId) throw new Error('snapId 가 없다(/wallet/config)');
+      if (!cfg.snapId) throw new Error('지갑 설정에 snapId 가 없습니다(/wallet/config)');
       await eth.request({ method: 'wallet_requestSnaps', params: { [cfg.snapId]: {} } });
       mmState = { kind: 'ok', err: null };
       renderMmStatus();
@@ -445,6 +443,8 @@
       const cp = [...one];
       return cp.length > MAX_SERVICE_NAME ? `${cp.slice(0, MAX_SERVICE_NAME - 1).join('')}…` : one;
     }
+    /** wei 10진 문자열 → ETH('0.01'). 숫자가 아니면 그대로 돌려준다. */
+    const weiToEth = (wei) => { if (!/^[0-9]+$/.test(wei)) return wei; const w = BigInt(wei); return `${w / 10n ** 18n}.${String(w % 10n ** 18n).padStart(18, '0')}`.replace(/\.?0+$/, '') || '0'; };
     /** 요청이 무엇을 공개하라는지 사람 말로. 서비스가 보낸 값이므로 전부 textContent 로만 들어간다. */
     function requestConditions(req) {
       if (req.reauth === true) return [tt('wallet_auth_reauth')];
@@ -465,6 +465,7 @@
     function renderAuthSummary(req) {
       const dl = $('authSummary');
       dl.textContent = '';
+      if (req.type === 'mode3-register') return;   // 등록 팝업(IdP 페이지가 연다)은 서비스·조건 표가 없다
       const row = (labelKey, value) => {
         const dt = document.createElement('dt');
         dt.textContent = tt(labelKey) || labelKey;
@@ -474,58 +475,53 @@
       };
       row('wallet_auth_service', cleanServiceName(req.serviceName) || req.origin);
       row('wallet_auth_origin', req.origin);
+      if (req.type === 'mode3-tx') {   // 온체인 출금(2026-11-04): 조건 대신 받는 주소·금액
+        row('wallet_auth_tx_to', String(req.to ?? '')); row('wallet_auth_tx_value', `${weiToEth(String(req.value ?? '0'))} ETH`);   // 2026-11-05: wei 대신 ETH
+        return;
+      }
       const conds = requestConditions(req);
       row('wallet_auth_conditions', conds.length ? conds.join(' · ') : tt('wallet_cond_none'));
     }
-    /** 팝업 제목 — 아직 요청이 없으면 대기 문구, 있으면 어느 서비스의 요청인지. */
+    /** 팝업 제목 — 큰 제목은 요청 종류(등록·로그인·온체인 출금), 작은 제목은 아직 요청이 없으면 대기 문구, 있으면 어느 서비스의 요청인지. */
     function renderAuthTitle() {
+      const t = lastAuthReq?.type;
+      tte($('authHeading'), !t ? 'wallet_auth_title' : t === 'mode3-register' ? 'wallet_auth_heading_register' : t === 'mode3-tx' ? 'wallet_auth_heading_tx' : 'wallet_auth_heading_login');
       if (!window.opener) { tte($('authTitle'), 'wallet_auth_no_opener'); return; }
       if (!lastAuthReq) { tte($('authTitle'), 'wallet_auth_waiting'); return; }
+      if (t === 'mode3-register') { tte($('authTitle'), 'wallet_auth_registering'); return; }
       const service = cleanServiceName(lastAuthReq.serviceName) || lastAuthReq.origin;
-      $('authTitle').textContent = tt('wallet_auth_approving', { service }) || service;
+      const key = t === 'mode3-tx' ? 'user_auth_tx_title' : 'wallet_auth_approving';
+      $('authTitle').textContent = tt(key, { service }) || service;
     }
-    // IdP 인증 창(Task 14, B5) — 로그인 동의(consentLogin) 승인 뒤, 신규 로그인(비-reauth)마다 연다. nonce 로 응답을
-    // 묶고, 발신 오리진이 cfg.ciaUrl 의 오리진과 nonce 가 둘 다 맞을 때만 받는다('*' 로 보내지 않는다, 받지도 않는다).
-    // 창이 닫히거나 60초 안에 응답이 없으면 idp_auth_cancelled(호출자가 그 사유로 RP 에 돌린다).
-    // F-13(2026-10-23): window.open 은 이 함수가 "동기적으로" 불려야(= 사용자 click 처리기 안에서, 그 앞에 await 가
-    // 없어야) 일반 팝업 차단기를 피한다 — openIdpAuthOnClick 이 버튼의 click 처리기 안에서 이 함수를 그대로 부른다.
-    // win===null 이면 즉시 { code:null, reason:'popup_blocked' } 로 resolve 한다 — 호출자(runAuthorize)는 그 사유를 RP 에 돌려주고 창을 닫는다.
-    function idpAuth() {
-      return new Promise((resolve) => {
-        const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
-        const ciaOrigin = new URL(cfg.ciaUrl).origin;
-        const win = window.open(`${cfg.ciaUrl}/login?nonce=${nonce}&wallet=${encodeURIComponent(location.origin)}`, 'mode3-idp-auth', 'width=420,height=520');
-        if (!win) return resolve({ code: null, reason: 'popup_blocked' });
-        const done = (v) => { clearInterval(tick); clearTimeout(timer); window.removeEventListener('message', onMsg); resolve(v); };
-        // F-15 M4: IdP 창은 코드 대신 { error } 로 실패를 알릴 수 있다(사용자가 재시도 않고 닫을 때, cia_login.html 쪽
-        // — 그 창 쪽은 Y2 담당, 여기는 받는 쪽만). error 가 있으면 그 사유를 그대로 돌려 RP 에 넘긴다.
-        const onMsg = (ev) => {
-          if (ev.origin !== ciaOrigin || ev.data?.type !== 'mode3-idp-auth' || ev.data.nonce !== nonce) return;
-          done({ code: ev.data.code || null, reason: ev.data.code ? null : (ev.data.error || 'idp_auth_cancelled') });
-        };
-        window.addEventListener('message', onMsg);
-        const tick = setInterval(() => { if (win.closed) done({ code: null, reason: 'idp_auth_cancelled' }); }, 500);
-        const timer = setTimeout(() => { try { win.close(); } catch { /* */ } done({ code: null, reason: 'idp_auth_cancelled' }); }, 60_000);
-      });
+    // IdP 인증(2026-11-05) — 별도 창과 "IdP 인증 창 열기" 버튼(F-13 의 팝업 차단기 우회) 대신 이 팝업 창 자체가 IdP 로그인 페이지로 갔다가
+    // 돌아온다(OIDC 리다이렉트 꼴). 가기 전에 RP 요청(공개값: arid·cert_s·r_s·r_rp …)과 발신 오리진·nonce 만 sessionStorage(이 오리진·이 창)에
+    // 두고, 비밀(증인)은 돌아온 뒤 Snap 에서 받는다. IdP(cia_login.html)는 성공하면 `${wallet}/?authorize=1&idp_nonce=…&idp_code=…` 로
+    // 돌려보낸다 — 대상은 IdP 가 /mode3/health 로 검증한 지갑 오리진 하나다. window.opener(RP 페이지)는 같은 창의 이동을 넘어 유지되고,
+    // RP 의 popupCall 은 ev.source(=이 창)로 결과를 받는다. auid(에이전트 /wallet/status 의 공개값)는 URL 로 넘겨 사용자가 77자리 수를
+    // 손으로 넣지 않게 한다. CIA_ISSUE_AUTH=code 인 IdP 는 로그인마다 이 코드가 있어야 /cia/issue 가 받는다(재승인은 /cia/issue 를 타지 않는다).
+    const PENDING_KEY = 'mode3.authorize.pending';
+    const PENDING_MAX_AGE_MS = 10 * 60_000;
+    async function goIdpAuth(req, evOrigin) {
+      const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
+      let auid = null;
+      try { auid = (await (await fetch('/wallet/status')).json()).auid ?? null; } catch { /* 없으면 IdP 페이지가 auid 칸을 보인다 */ }
+      sessionStorage.setItem(PENDING_KEY, JSON.stringify({ req, origin: evOrigin, nonce, at: Date.now() }));
+      const u = new URL(`${cfg.ciaUrl}/login`);
+      u.searchParams.set('nonce', nonce); u.searchParams.set('wallet', location.origin); u.searchParams.set('return', '1');
+      if (auid) u.searchParams.set('auid', auid);
+      location.assign(u.toString());
     }
-    // F-13: Snap 동의 뒤 "IdP 인증 창 열기" 버튼(#idpAuthOpenBtn)을 보이고, 그 click 처리기 "안에서" idpAuth() 를
-    // 불러 window.open 이 사용자 제스처를 잃지 않게 한다. win===null(popup_blocked)이면 진행 줄에 사유를 적고 호출자(runAuthorize)가
-    // RP 에 popup_blocked 를 돌려준 뒤 3초 뒤 창을 닫는다(2026-11-03 주석 정정: 버튼을 되살려 재시도하는 경로는 없다 — RP 에서 다시
-    // 로그인한다). 그 밖(성공·idp_auth_cancelled)에는 더 쓸 일이 없어 숨긴다.
-    function openIdpAuthOnClick(step) {
-      return new Promise((resolve) => {
-        const btn = $('idpAuthOpenBtn');
-        btn.hidden = false;
-        const onClick = () => {
-          btn.removeEventListener('click', onClick);
-          idpAuth().then((v) => {
-            if (v.reason === 'popup_blocked') step(tt('popup_blocked') || '팝업이 차단됐습니다.');
-            else btn.hidden = true;
-            resolve(v);
-          });
-        };
-        btn.addEventListener('click', onClick);
-      });
+    /** IdP 에서 돌아온 길인지 본다. 돌아온 길이 아니면 null, 저장분과 nonce 가 맞으면 { req, origin, code }, 어긋나면 { req: null }(저장분은 지운다). */
+    function takeIdpReturn() {
+      const q = new URLSearchParams(location.search);
+      const code = q.get('idp_code'), nonce = q.get('idp_nonce');
+      if (!code && !nonce) return null;
+      let pend = null;
+      try { pend = JSON.parse(sessionStorage.getItem(PENDING_KEY) ?? 'null'); } catch { pend = null; }
+      sessionStorage.removeItem(PENDING_KEY);
+      history.replaceState(null, '', `${location.pathname}?authorize=1`);   // 1회용 코드가 주소창·히스토리에 남지 않게
+      if (!pend || !code || !nonce || pend.nonce !== nonce || typeof pend.at !== 'number' || Date.now() - pend.at > PENDING_MAX_AGE_MS) return { req: null, origin: null, code: null };
+      return { req: pend.req, origin: pend.origin, code };
     }
     // Google 토큰(OIDC 래퍼, 2026-10-26 Snap OIDC 래퍼 §2): #gsiWrap 에 버튼을 그리고 사용자가 누르기를 기다린다. nonce 는 에이전트
     // /wallet/oidc/nonce 가 계산한 값. 2분 안에 토큰이 없으면 oidc_cancelled. 돌려주는 것은 { token, reason } — token 이 없으면 reason.
@@ -587,6 +583,7 @@
         log(`메시지 오리진=${ev.origin}\nIdP 오리진=${ciaOrigin ?? '(모름)'}`);
         return reply({ ok: false, reason: 'origin_mismatch' });
       }
+      lastAuthReq = req; renderAuthTitle(); renderAuthSummary(req);   // 큰 제목 "등록"(2026-11-05) — 오리진 대조를 통과한 뒤에만
       if (cfg.secrets !== 'snap') { step('이 지갑은 file 모드다 — 이 팝업 경로를 쓰지 않는다.'); return reply({ ok: false, reason: 'not_snap_mode' }); }
       try {
         step('MetaMask·Snap 연결 중…');
@@ -596,9 +593,9 @@
           log(e.message);
           return reply({ ok: false, reason: isUserRejected(e) ? 'user_denied' : 'snap_unavailable', detail: e.message });
         }
-        // M12(2026-10-23): Snap 의 등록 확인 창을 띄우기 전에 에이전트가 이미 등록돼 있는지 먼저 본다 — 이미
-        // 등록이면 Snap 을 부르지 않고 바로 already_registered 로 끝낸다(헛되이 확인 창을 띄우지 않는다). 상태를
-        // 못 읽으면(네트워크 등) 그냥 진행한다 — 어차피 /wallet/register 가 다시 걸러준다.
+        // M12(2026-10-23): Snap 을 부르기 전에 에이전트가 이미 등록돼 있는지 먼저 본다 — 이미 등록이면 Snap 을 부르지 않고
+        // 바로 already_registered 로 끝낸다. 상태를 못 읽으면(네트워크 등) 그냥 진행한다 — 어차피 /wallet/register 가 다시 걸러준다.
+        // (2026-11-05: Snap 의 등록 확인 창은 없어졌다 — 사용자가 IdP 페이지에서 "등록" 을 눌러 시작한 요청이다.)
         let already = false;
         try { already = Boolean((await (await fetch('/wallet/status')).json()).registered); } catch { /* 진행 */ }
         if (already && req.provider === 'google') {
@@ -607,7 +604,7 @@
           let info = null;
           try { info = await invokeSnap('getPublicInfo', {}); } catch { /* 못 읽으면 아래에서 already_registered 로 끝낸다 */ }
           if (info?.pending === true) {
-            step('반쯤 된 등록을 이어서 끝낸다 — Snap 확인 창을 확인하세요.');
+            step('반쯤 된 등록을 이어서 끝낸다…');
             const prep = await invokeSnap('prepareRegister', {});
             if (!prep || prep.denied) { step('등록 거절'); return reply({ ok: false, reason: 'user_denied' }); }
             const { status, body: b } = await postJson('/wallet/register/resume', { s_u: prep.s_u, sk_u: prep.sk_u });
@@ -619,7 +616,7 @@
             return reply({ ok: true, slot: b.slot, auid: b.auid, uid: b.uid, resumed: true });
           }
           if (info && !info.registered) {
-            step('에이전트에는 등록이 있지만 이 Snap 은 비어 있다 — 재시연 세트로 지갑·IdP 를 함께 비워야 한다.');
+            step('에이전트에는 등록이 있지만 이 Snap 은 비어 있습니다 — 재시연 세트로 지갑·IdP 를 함께 비우세요.');
             return reply({ ok: false, reason: 'already_registered', detail: 'snap_empty' });
           }
         }
@@ -629,7 +626,7 @@
         if (req.provider === 'google') {
           const pre = gsiPrecheck();   // Snap 에 보류 등록을 만들게 하기 전에 — 어차피 못 끝낼 등록을 시작하지 않는다
           if (pre) { step(gsiReasonText(pre)); return reply({ ok: false, reason: pre }); }
-          step('Snap 등록 확인 창을 확인하세요.');
+          step('등록 비밀을 만드는 중…');
           const prep = await invokeSnap('prepareRegister', {});
           if (!prep || prep.denied) { step('등록 거절'); return reply({ ok: false, reason: 'user_denied' }); }
           const g = await oidcToken({ purpose: 'register', sk_u: prep.sk_u }, () => step(tt('wallet_gsi_hint') || 'Google 버튼을 눌러 로그인하세요.'));
@@ -643,7 +640,7 @@
           step('등록 완료 — 창을 닫는다.');
           return reply({ ok: true, slot: b.slot, auid: b.auid, uid: b.uid });
         }
-        step('Snap 등록 확인 창을 확인하세요.');
+        step('등록 비밀을 만드는 중…');
         const reg = await invokeSnap('register', { uid: req.uid });
         if (!reg || reg.denied) { step('등록 거절'); return reply({ ok: false, reason: 'user_denied' }); }
         step('에이전트에 등록하는 중…');
@@ -665,10 +662,169 @@
       }
     }
 
+    /**
+     * RP 페이지의 "온체인 출금"(mode3-tx, 2026-11-04) — web 모드 팝업(mode3/user/popup.js)과 같은 순서를 Snap 모드로 옮긴 것.
+     * 호출자(runAuthorize)가 오리진 자기일치·snap 모드·MetaMask 연결까지 끝낸 뒤 부른다. 가스는 RP 릴레이어가 낸다(지갑 페이지의
+     * "보내기" 탭이 MetaMask EOA 로 보내는 것과 다르다 — 릴레이 CORS 는 이 지갑 오리진에 열려 있다, mode3_rp.js relayCors).
+     * 동의는 Snap 의 consentDisclosure 창(RP 오리진·대상 주소·금액, { relay: true }) — 릴레이어가 보내는 트랜잭션은 MetaMask 확인 창을
+     * 거치지 않아 받는 주소·금액을 사용자가 보는 자리가 이 창뿐이다(2026-11-05 중복 확인 제거 때도 남긴 유일한 Snap 동의 창).
+     */
+    async function handleTxRequest(req, { step, log, reply }) {
+      const value = String(req.value ?? '0');
+      const data = req.data === undefined || req.data === null ? '0x' : String(req.data);
+      if (!/^[0-9]+$/.test(String(req.r_s ?? '')) || typeof req.to !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(req.to) || !/^[0-9]+$/.test(value) || !/^0x([0-9a-fA-F]{2})*$/.test(data)) {
+        step('요청 형식 오류'); return reply({ ok: false, reason: 'bad_request' });
+      }
+      // 인증서·팩토리 + 세션 소속(r_s 가 이 arid 의 세션인지) — 남의 RP 가 내 세션으로 출금을 시키지 못하게(precheck 의 r_s 분기).
+      step('RP 인증서·세션 검사 중…');
+      const pre = await postJson('/wallet/authorize/precheck', { arid: req.arid, origin: req.origin, cert_s: req.cert_s, pk_trace: req.pk_trace, factoryAddress: req.factoryAddress ?? null, r_s: req.r_s });
+      if (pre.status !== 200) { step('RP 검증 실패'); log(errText(pre.status, pre.body)); return reply({ ok: false, reason: pre.body.reason ?? 'precheck_failed', detail: pre.body.detail ?? null, status: pre.status }); }
+      step('Snap 동의 창을 확인하세요 — 받는 주소·금액.');
+      let c;
+      try { c = await invokeSnap('consentDisclosure', { relay: true, arid: String(req.arid), origin: req.origin, disclose: null, to: req.to, value, set: null }); }
+      catch (e) { step('Snap 동의 실패'); log(e.message); return reply({ ok: false, reason: isUserRejected(e) ? 'user_denied' : 'snap_unavailable', detail: e.message }); }
+      if (!c || c.denied) { step('거절'); return reply({ ok: false, reason: 'user_denied' }); }
+      step('증명·세션키 서명 중… (수 초 걸린다)');
+      const p = await postJson('/wallet/tx/prepare', { r_s: req.r_s, to: req.to, value, data });
+      if (p.status !== 200) { step('준비 실패'); log(errText(p.status, p.body)); return reply({ ok: false, reason: p.body.reason ?? 'tx_prepare_failed', detail: p.body.detail ?? null, status: p.status }); }
+      step('RP 릴레이로 보내는 중…');
+      let relay;
+      try {
+        const r = await fetch(`${req.origin}/api/mode3/relay`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: p.body.walletAddr, data: p.body.calldata }) });
+        relay = await r.json().catch(() => ({ ok: false, reason: 'internal', detail: `HTTP ${r.status}` }));
+      } catch (e) { step('릴레이 호출 실패'); log(e.message); return reply({ ok: false, reason: 'relay_unavailable', detail: e.message }); }
+      if (!relay.ok) { step('릴레이 거절'); log(`${relay.reason ?? ''} ${relay.detail ?? ''}`); return reply({ ok: false, reason: relay.reason ?? 'internal', detail: relay.detail ?? null }); }
+      step('영수증 대기…');
+      const rec = await recordTx(req.r_s, relay.txHash);
+      if (rec.status !== 200) { step('영수증 기록 실패'); log(errText(rec.status, rec.body)); return reply({ ok: false, reason: rec.body?.reason ?? (rec.status === 202 ? 'tx_pending' : 'tx_record_failed'), detail: rec.body?.detail ?? null, status: rec.status }); }
+      step('전송 완료 — 창을 닫는다.');
+      // RP 에는 영수증 사실만(지갑·nonce·gas·ok·txHash). 선택 공개는 이 요청에 없다.
+      const { disclosure, onchainDisclosure, ...pub } = rec.body;
+      return reply({ ok: rec.body.ok !== false, ...pub, txHash: relay.txHash, deployTxHash: relay.deployTxHash ?? null });
+    }
+
+    /**
+     * 승인 요청 한 건의 처리(2026-11-05 에 runAuthorize 의 onMessage 에서 분리 — IdP 에서 돌아온 길(takeIdpReturn)도 같은 함수로 이어 간다).
+     * authCode 는 IdP 에서 돌아왔을 때의 1회용 코드, 처음이면 null. 2026-11-05 중복 확인 제거: Snap 의 로그인 동의 창은 없다(consentLogin 은
+     * 증인만 돌려준다) — 사용자가 RP 에서 "로그인" 을 눌러 시작한 요청이고, 인증서·팩토리 precheck 을 통과한 뒤에만 Snap 을 부른다.
+     */
+    async function processAuthorize(req, evOrigin, { step, log, reply, authCode }) {
+      try {
+        const connect = async () => {
+          step('MetaMask·Snap 연결 중…');
+          try { await connectMetaMask(); return true; }
+          catch (e) {
+            step('MetaMask·Snap 연결 실패');
+            log(e.message);
+            reply({ ok: false, reason: isUserRejected(e) ? 'user_denied' : 'snap_unavailable', detail: e.message });
+            return false;
+          }
+        };
+        // 온체인 출금(mode3-tx, 2026-11-04): 인증서·세션 검사 → Snap 동의 창(받는 주소·금액) → /wallet/tx/prepare → RP 릴레이 → 영수증.
+        if (req.type === 'mode3-tx') { if (!(await connect())) return; return handleTxRequest(req, { step, log, reply }); }
+
+        // 인증서·팩토리 검사는 **로그인과 재승인이 함께** 거친다(스펙 §4.2·§4.3). 오리진 자기일치만 보고 Snap 을 부르면 임의 페이지가
+        // 자기 오리진·자기가 쓴 서비스 이름으로 로그인 증인을 끌어낼 수 있다(2026-09-22 최종 리뷰 Important 1). 재승인 요청에도
+        // arid·cert_s·pk_trace 가 실려 오므로 같은 precheck 을 통과해야 한다. IdP 로 가기 전에도 한다 — 가짜 RP 때문에 IdP 로그인을 시키지 않게.
+        step('RP 인증서·팩토리 검사 중…');
+        // 재승인이면 r_s 도 보낸다 — allowAgent 를 서비스 말이 아니라 에이전트가 든 세션 값에서 받는다(2026-09-23 점검 B-I1).
+        const pre = await postJson('/wallet/authorize/precheck', {
+          arid: req.arid, origin: req.origin, cert_s: req.cert_s, pk_trace: req.pk_trace, factoryAddress: req.factoryAddress ?? null,
+          r_s: req.reauth === true ? req.r_s : undefined,
+        });
+        if (pre.status !== 200) { step('RP 검증 실패'); log(errText(pre.status, pre.body)); return reply({ ok: false, reason: pre.body.reason ?? 'precheck_failed', detail: pre.body.detail ?? null, status: pre.status }); }
+
+        // 재승인(스펙 §4.3): 이미 있는 세션에 증인만 다시 채운다 — 증명·발급은 하지 않는다.
+        if (req.reauth === true) {
+          // allowAgent 는 precheck 이 돌려준 세션의 실제 값이다 — 서비스가 보낸 req.allowAgent 는 쓰지 않는다. 같은 값을
+          // /wallet/session/witness 에도 실어, 세션 권한과 다르면 에이전트가 409 로 막게 한다.
+          const sessionAllowAgent = pre.body.sessionAllowAgent;
+          // 세션 값을 못 받았으면(서비스가 reauth 만 넣고 r_s 를 뺐거나 응답에 필드가 없으면) 멈춘다(리뷰 I-1).
+          if (sessionAllowAgent !== '0' && sessionAllowAgent !== '1') { step('세션 정보를 받지 못했다 — 재승인하지 않는다.'); return reply({ ok: false, reason: 'no_session' }); }
+          if (!(await connect())) return;
+          step('세션 재승인 중…');
+          const witness = await consentLogin({ ...req, allowAgent: sessionAllowAgent });
+          if (!witness) { step('동의 거절'); return reply({ ok: false, reason: 'user_denied' }); }
+          const w = await postJson('/wallet/session/witness', { r_s: req.r_s, witness, allowAgent: sessionAllowAgent });
+          if (w.status !== 200) { step('재승인 실패'); log(errText(w.status, w.body)); return reply({ ok: false, reason: w.body.reason ?? 'session_witness_failed', detail: w.body.detail ?? null, status: w.status }); }
+          step('재승인 완료 — 창을 닫는다.');
+          return reply({ ok: true, reauth: true });
+        }
+
+        // 발급 인증(2026-10-26 Snap OIDC 래퍼 §2.2): 데모 계정은 IdP 로그인 페이지(이 창이 갔다가 돌아온다, goIdpAuth — MetaMask 를 부르기
+        // 전에 간다), Google 계정은 이 팝업의 Google 버튼 — nonce 는 issue:H(pk_u|arid_s)(에이전트가 이 로그인의 arid·r_rp 로 계산).
+        const provider = await walletProvider();
+        if (authCode === null && provider === 'demo') { step(tt('wallet_auth_to_idp') || 'IdP 로그인 페이지로 이동합니다…'); await goIdpAuth(req, evOrigin); return; }
+
+        if (!(await connect())) return;
+        step('로그인 증인 준비 중…');
+        const witness = await consentLogin(req);
+        if (!witness) { step('동의 거절'); return reply({ ok: false, reason: 'user_denied' }); }
+        let idToken = null;
+        if (authCode === null) {
+          const g = await oidcToken({ purpose: 'issue', arid: req.arid, r_rp: req.r_rp }, () => step(tt('wallet_gsi_hint') || 'Google 버튼을 눌러 로그인하세요.'));
+          if (!g.token) { oidcFailStep(g, step, log); return reply({ ok: false, reason: g.reason }); }
+          idToken = g.token;
+        }
+
+        step('로그인·증명 생성 중… (수 초 걸린다)');
+        const lg = await postJson('/wallet/login', {
+          arid: req.arid, origin: req.origin, cert_s: req.cert_s, pk_trace: req.pk_trace, r_s: req.r_s, r_rp: req.r_rp,
+          allowAgent: req.allowAgent === '1' || req.allowAgent === true ? '1' : '0',
+          factoryAddress: req.factoryAddress ?? null, attrGateAddress: req.attrGateAddress ?? null,
+          disclose: req.disclose ?? null, set: req.set ?? null,
+          witness, verifiedOrigin: evOrigin,          // Origin 헤더 대신 팝업이 확인한 값(스펙 §3.3)
+          serviceName: cleanServiceName(req.serviceName) || null,   // 세션 카드 표기용(2026-11-05) — RP 가 고른 이름, 에이전트는 저장만 한다
+          auth_code: authCode,
+          id_token: idToken ?? undefined,
+        });
+        if (lg.status !== 200) {
+          step('로그인 실패'); log(errText(lg.status, lg.body));
+          // 리뷰 S3: 발급 뒤(게시 대기·증명)에 실패해도 에이전트가 새 C_u·속성을 실어 보낸다 — Snap 에 반영해야 파일과 어긋나지 않는다.
+          if (lg.body?.userCredIssued !== undefined || lg.body?.attrsChanged) { try { await applyPendingToSnap(lg.body); } catch (e) { log(e.message); } }
+          return reply({ ok: false, reason: lg.body.reason ?? 'login_failed', detail: lg.body.detail ?? lg.body.cia?.reason ?? null, status: lg.status });
+        }
+
+        step('Snap 에 새 자격증명·속성 반영 중…');
+        await applyPendingToSnap(lg.body);
+        // userCredIssued 에는 blind_u 가 들어 있다 — 서비스에 넘기지 않는다. attrsChanged 도 지갑 안 정보다.
+        const { userCredIssued, attrsChanged, ...toRp } = lg.body;
+        step('로그인 성공 — 창을 닫는다.');
+        reply({ ok: true, ...toRp });
+      } catch (e) {
+        // 반쯤 된 등록(2026-10-26): Snap 이 보류 등록이면 consentLogin 이 registration_incomplete(또는 보류를 등록 없음으로 보는 not_registered)로 던진다.
+        // not_registered 는 에이전트에 등록이 있을 때만 이 안내로 본다 — 정말 미등록이면 기존 동작 그대로.
+        let half = /registration_incomplete/.test(e.message ?? '');
+        if (!half && /not_registered/.test(e.message ?? '')) { try { half = Boolean((await (await fetch('/wallet/status')).json()).registered); } catch { /* 기존 동작 */ } }
+        if (half) {
+          step("등록이 반만 됐다 — IdP /user 에서 'Google 로 등록'을 다시 누르면 이어진다(데모 계정은 재시연 세트).");
+          log(e.message);
+          return reply({ ok: false, reason: 'registration_incomplete', detail: e.message });
+        }
+        step('오류');
+        log(e.message);
+        reply({ ok: false, reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
+      }
+    }
+
     function runAuthorize() {
       const step = (s) => { $('authStep').textContent = s; };
       const log = (s) => { $('authLog').textContent += `${s}\n`; };
-      if (!window.opener) { renderAuthTitle(); step('이 창은 RP 페이지가 열어야 한다(window.opener 가 없다).'); return; }
+      if (!window.opener) { renderAuthTitle(); step(tt('wallet_auth_no_opener') || '이 창은 RP 페이지가 열어야 합니다(여는 창이 없습니다).'); return; }
+      // 결과는 요청을 보낸 창에만 돌려준다. 실패는 이유를 잠시 보이게 둔다.
+      const makeReply = (type, r_s, target) => (result) => {
+        try { window.opener.postMessage({ type: `${type}-result`, r_s: r_s ?? null, result }, target); }
+        catch (e) { log(`결과 전송 실패: ${e.message}`); }
+        setTimeout(() => window.close(), result.ok ? 200 : 3000);
+      };
+      // IdP 에서 돌아온 길(2026-11-05) — ready 를 다시 보내지 않는다(보내면 RP 가 요청을 한 번 더 보낸다). 저장분이 어긋나면 안내만 하고 멈춘다.
+      const back = takeIdpReturn();
+      if (back) {
+        if (!back.req) { renderAuthTitle(); step(tt('wallet_auth_resume_failed') || 'IdP 인증 결과를 이어받지 못했습니다 — RP 페이지에서 다시 로그인하세요.'); return; }
+        lastAuthReq = back.req; renderAuthTitle(); renderAuthSummary(back.req);
+        processAuthorize(back.req, back.origin, { step, log, reply: makeReply(back.req.type, back.req.r_s, back.origin), authCode: back.code });
+        return;
+      }
       let handled = false;
       const onMessage = async (ev) => {
         const req = ev.data;
@@ -680,17 +836,13 @@
           window.removeEventListener('message', onMessage);
           return handleRegisterMessage(ev, req, { step, log });
         }
-        if (req.type !== 'mode3-authorize') return;
+        // 2026-11-04: RP 페이지의 "온체인 출금"(mode3-tx)도 이 팝업이 받는다 — web 모드 사용자 페이지(mode3/user/popup.js)와 같은
+        // 프로토콜. 결과 타입은 `${req.type}-result`(RP 의 popupCall 이 그렇게 기다린다).
+        if (req.type !== 'mode3-authorize' && req.type !== 'mode3-tx') return;
         handled = true;
         window.removeEventListener('message', onMessage);
-        // 결과는 요청을 보낸 창에만 돌려준다. 오리진이 어긋나면 진행하지 않고, 실제로 말을 건 오리진에 실패만 알린다
-        // (인증서의 오리진에 남의 요청 결과를 보내지 않는다).
-        const target = ev.origin === req.origin ? req.origin : ev.origin;
-        const reply = (result) => {
-          try { window.opener.postMessage({ type: 'mode3-authorize-result', r_s: req.r_s ?? null, result }, target); }
-          catch (e) { log(`결과 전송 실패: ${e.message}`); }
-          setTimeout(() => window.close(), result.ok ? 200 : 3000);   // 실패는 이유를 잠시 보이게 둔다
-        };
+        // 오리진이 어긋나면 진행하지 않고, 실제로 말을 건 오리진에 실패만 알린다(인증서의 오리진에 남의 요청 결과를 보내지 않는다).
+        const reply = makeReply(req.type, req.r_s, ev.origin === req.origin ? req.origin : ev.origin);
         if (ev.origin !== req.origin) {
           step('오리진 불일치 — 이 요청은 진행하지 않는다.');
           log(`메시지 오리진=${ev.origin}\n인증서 오리진=${req.origin}`);
@@ -701,108 +853,13 @@
         renderAuthTitle();
         renderAuthSummary(req);
         if (cfg.secrets !== 'snap') { step('이 지갑은 file 모드다 — 팝업 경로를 쓰지 않는다.'); return reply({ ok: false, reason: 'not_snap_mode' }); }
-        try {
-          step('MetaMask·Snap 연결 중…');
-          try { await connectMetaMask(); }
-          catch (e) {
-            step('MetaMask·Snap 연결 실패');
-            log(e.message);
-            return reply({ ok: false, reason: isUserRejected(e) ? 'user_denied' : 'snap_unavailable', detail: e.message });
-          }
-
-          // 인증서·팩토리 검사는 **로그인과 재승인이 함께** 거친다(스펙 §4.2·§4.3). 오리진 자기일치만 보고 동의 창을 띄우면
-          // 임의 페이지가 자기 오리진·자기가 쓴 서비스 이름으로 Snap 로그인 동의 창을 띄울 수 있다(2026-09-22 최종 리뷰 Important 1).
-          // 재승인 요청에도 arid·cert_s·pk_trace 가 실려 오므로 같은 precheck 을 통과해야만 동의 창으로 간다.
-          step('RP 인증서·팩토리 검사 중…');
-          // 재승인이면 r_s 도 보낸다 — 동의 창에 쓸 allowAgent 를 서비스 말이 아니라 에이전트가 든 세션 값에서 받는다(2026-09-23 점검 B-I1).
-          const pre = await postJson('/wallet/authorize/precheck', {
-            arid: req.arid, origin: req.origin, cert_s: req.cert_s, pk_trace: req.pk_trace, factoryAddress: req.factoryAddress ?? null,
-            r_s: req.reauth === true ? req.r_s : undefined,
-          });
-          if (pre.status !== 200) { step('RP 검증 실패'); log(errText(pre.status, pre.body)); return reply({ ok: false, reason: pre.body.reason ?? 'precheck_failed', detail: pre.body.detail ?? null, status: pre.status }); }
-
-          // 재승인(스펙 §4.3): 이미 있는 세션에 증인만 다시 채운다 — 증명·발급은 하지 않는다.
-          if (req.reauth === true) {
-            // 동의 창의 "AI 에이전트 허용" 은 precheck 이 돌려준 세션의 실제 값이다 — 서비스가 보낸 req.allowAgent 는 쓰지 않는다.
-            // 같은 값을 /wallet/session/witness 에도 실어, 사용자가 읽은 문구와 세션 권한이 다르면 에이전트가 409 로 막게 한다.
-            const sessionAllowAgent = pre.body.sessionAllowAgent;
-            // 세션 값을 못 받았으면(서비스가 reauth 만 넣고 r_s 를 뺐거나 응답에 필드가 없으면) **동의 창을 띄우기 전에** 멈춘다.
-            // 그대로 진행하면 consentLogin 의 정규화가 undefined 를 '0' 으로 만들어 "AI 에이전트 허용: 아니오" 가 떠 버린다(리뷰 I-1).
-            if (sessionAllowAgent !== '0' && sessionAllowAgent !== '1') { step('세션 정보를 받지 못했다 — 재승인하지 않는다.'); return reply({ ok: false, reason: 'no_session' }); }
-            step('세션 재승인 — Snap 동의 창을 확인하세요.');
-            const witness = await consentLogin({ ...req, allowAgent: sessionAllowAgent });
-            if (!witness) { step('동의 거절'); return reply({ ok: false, reason: 'user_denied' }); }
-            const w = await postJson('/wallet/session/witness', { r_s: req.r_s, witness, allowAgent: sessionAllowAgent });
-            if (w.status !== 200) { step('재승인 실패'); log(errText(w.status, w.body)); return reply({ ok: false, reason: w.body.reason ?? 'session_witness_failed', detail: w.body.detail ?? null, status: w.status }); }
-            step('재승인 완료 — 창을 닫는다.');
-            return reply({ ok: true, reauth: true });
-          }
-
-          step('Snap 동의 창을 확인하세요.');
-          const witness = await consentLogin(req);
-          if (!witness) { step('동의 거절'); return reply({ ok: false, reason: 'user_denied' }); }
-
-          // 발급 인증(2026-10-26 Snap OIDC 래퍼 §2.2): Google 계정은 IdP 인증 창 대신 이 팝업에서 Google 로그인 — nonce 는
-          // issue:H(pk_u|arid_s)(에이전트가 이 로그인의 arid·r_rp 로 계산). 데모 계정은 지금처럼 IdP 인증 창(CIA_ISSUE_AUTH=code)의 1회용 코드.
-          let authCode = null, idToken = null;
-          if ((await walletProvider()) !== 'demo') {
-            const g = await oidcToken({ purpose: 'issue', arid: req.arid, r_rp: req.r_rp }, () => step(tt('wallet_gsi_hint') || 'Google 버튼을 눌러 로그인하세요.'));
-            if (!g.token) { oidcFailStep(g, step, log); return reply({ ok: false, reason: g.reason }); }
-            idToken = g.token;
-          } else {
-            // IdP 인증 창(Task 14, B5) — CIA_ISSUE_AUTH=code 인 IdP 는 로그인마다 이 창이 낸 1회용 코드가 있어야
-            // /cia/issue 가 받는다. 재승인(위 reauth 분기)은 /cia/issue 를 타지 않으므로 거치지 않는다.
-            // F-13(2026-10-23): window.open 은 버튼의 click 처리기 안에서만 부른다(openIdpAuthOnClick) — 여기서
-            // 곧바로 부르면 Snap 동의의 await 들을 지나며 사용자 제스처가 끊겨 일반 팝업 차단기에 막힌다.
-            step(tt('idp_auth_open_btn') || 'IdP 인증 창 열기 버튼을 누르세요.');
-            const authRes = await openIdpAuthOnClick(step);   // { code, reason } — code 없으면 취소·차단
-            if (!authRes.code) { step('IdP 인증 취소'); return reply({ ok: false, reason: authRes.reason ?? 'idp_auth_cancelled' }); }
-            authCode = authRes.code;
-          }
-
-          step('로그인·증명 생성 중… (수 초 걸린다)');
-          const lg = await postJson('/wallet/login', {
-            arid: req.arid, origin: req.origin, cert_s: req.cert_s, pk_trace: req.pk_trace, r_s: req.r_s, r_rp: req.r_rp,
-            allowAgent: req.allowAgent === '1' || req.allowAgent === true ? '1' : '0',
-            factoryAddress: req.factoryAddress ?? null, attrGateAddress: req.attrGateAddress ?? null,
-            disclose: req.disclose ?? null, set: req.set ?? null,
-            witness, verifiedOrigin: ev.origin,          // Origin 헤더 대신 팝업이 확인한 값(스펙 §3.3)
-            auth_code: authCode,
-            id_token: idToken ?? undefined,
-          });
-          if (lg.status !== 200) {
-            step('로그인 실패'); log(errText(lg.status, lg.body));
-            // 리뷰 S3: 발급 뒤(게시 대기·증명)에 실패해도 에이전트가 새 C_u·속성을 실어 보낸다 — Snap 에 반영해야 파일과 어긋나지 않는다.
-            if (lg.body?.userCredIssued !== undefined || lg.body?.attrsChanged) { try { await applyPendingToSnap(lg.body); } catch (e) { log(e.message); } }
-            return reply({ ok: false, reason: lg.body.reason ?? 'login_failed', detail: lg.body.detail ?? lg.body.cia?.reason ?? null, status: lg.status });
-          }
-
-          step('Snap 에 새 자격증명·속성 반영 중…');
-          await applyPendingToSnap(lg.body);
-          // userCredIssued 에는 blind_u 가 들어 있다 — 서비스에 넘기지 않는다. attrsChanged 도 지갑 안 정보다.
-          const { userCredIssued, attrsChanged, ...toRp } = lg.body;
-          step('로그인 성공 — 창을 닫는다.');
-          reply({ ok: true, ...toRp });
-        } catch (e) {
-          // 반쯤 된 등록(2026-10-26): Snap 이 보류 등록이면 consentLogin 이 registration_incomplete(또는 보류를 등록 없음으로 보는 not_registered)로 던진다.
-          // not_registered 는 에이전트에 등록이 있을 때만 이 안내로 본다 — 정말 미등록이면 기존 동작 그대로.
-          let half = /registration_incomplete/.test(e.message ?? '');
-          if (!half && /not_registered/.test(e.message ?? '')) { try { half = Boolean((await (await fetch('/wallet/status')).json()).registered); } catch { /* 기존 동작 */ } }
-          if (half) {
-            step("등록이 반만 됐다 — IdP /user 에서 'Google 로 등록'을 다시 누르면 이어진다(데모 계정은 재시연 세트).");
-            log(e.message);
-            return reply({ ok: false, reason: 'registration_incomplete', detail: e.message });
-          }
-          step('오류');
-          log(e.message);
-          reply({ ok: false, reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
-        }
+        await processAuthorize(req, ev.origin, { step, log, reply, authCode: null });
       };
       window.addEventListener('message', onMessage);
       renderAuthTitle();
       // 준비 신호는 오리진을 모르는 상태에서 보낸다('*'). 비밀은 실리지 않는다 — 요청을 받고 나서야 오리진을 대조한다.
       window.opener.postMessage({ type: 'mode3-authorize-ready' }, '*');
-      step('RP 페이지의 요청을 기다리는 중…');
+      step(tt('wallet_auth_waiting') || '요청을 기다리는 중…');
     }
 
     // ---- 지갑 화면 ----
@@ -911,6 +968,14 @@
     }
 
     // ---- 로그인 세션 카드 + 트랜잭션 세션 선택 ----
+    /** 세션 카드·보낼 세션 목록에 보이는 RP 표기 — 에이전트가 세션에 적어 둔 서비스 이름(RP 가 고른 값, cleanServiceName 으로 위생) → 없으면
+     *  RP 주소(host:port) → 그것도 없으면(옛 세션 파일) arid 앞자리(2026-11-05). */
+    function rpLabel(c) {
+      const name = cleanServiceName(c.serviceName);
+      if (name) return name;
+      if (c.origin) { try { return new URL(c.origin).host; } catch { return String(c.origin); } }
+      return `RP ${String(c.arid).slice(0, 10)}…`;
+    }
     function renderSessions() {
       const s = lastStatus;
       const entries = s ? Object.entries(s.sessions ?? {}) : [];
@@ -927,17 +992,14 @@
       const sel = $('txSession');
       const prev = sel.value;
       sel.textContent = '';
-      let anyFactory = false;
       for (const [r_s, c] of entries) {
         const opt = document.createElement('option');
         opt.value = r_s;
-        const factory = tt(c.factoryAddress ? 'wallet_factory_yes' : 'wallet_factory_no');
         // 계정 주소는 0x 앞 6·뒤 4 자리로 줄여 보이고 전체는 title 에 둔다(2026-10-14). 팩토리가 아직 없으면 PPID 앞자리로 대신한다.
         const acct = c.account ? `${c.account.slice(0, 6)}…${c.account.slice(-4)}` : `PPID ${String(c.PPID).slice(0, 8)}…`;
-        opt.textContent = tt('wallet_tx_session_opt', { account: acct, arid: String(c.arid).slice(0, 10), factory })
-          || `${acct} / ${String(c.arid).slice(0, 10)}…`;
-        opt.title = c.account ? `${c.account}  (PPID ${c.PPID})` : `PPID ${c.PPID}`;
-        if (c.factoryAddress) anyFactory = true;
+        // 2026-11-05: RP 는 이름(없으면 주소, 그것도 없으면 arid 앞자리)으로 — 번호와 '팩토리 있음' 은 사용자 말이 아니었다.
+        opt.textContent = tt('wallet_tx_session_opt', { account: acct, rp: rpLabel(c) }) || `${rpLabel(c)} · ${acct}`;
+        opt.title = `${c.account ? `${c.account}  (PPID ${c.PPID})` : `PPID ${c.PPID}`}  arid ${c.arid}`;
         sel.appendChild(opt);
       }
       if (entries.some(([r_s]) => r_s === prev)) sel.value = prev;
@@ -959,7 +1021,7 @@
         box.className = 'session';   // wallet.css 의 한 줄 카드
         const dl = document.createElement('dl');
         dl.className = 'kv';
-        kvRow(dl, tt('wallet_session_service') || 'RP', shortCode(c.arid, 8));
+        kvRow(dl, tt('wallet_session_service') || 'RP', rpLabel(c));            // 이름(없으면 주소) — arid 는 전문가 행(2026-11-05)
         kvRow(dl, termEl('PPID'), shortCode(c.PPID, 12));
         kvRow(dl, tt('wallet_session_expiry') || '만료', tt('wallet_session_expires', { h: c.max_height }) || String(c.max_height));
         const agent = document.createElement('span');
@@ -967,6 +1029,7 @@
         agent.textContent = tt(c.allowAgent === '1' ? 'rp_agent_yes' : 'rp_agent_no') || c.allowAgent;
         kvRow(dl, termEl('allowAgent'), agent);
         kvRow(dl, tt('wallet_session_nonce') || 'nonce', String(c.nonce ?? '-'));
+        kvRow(dl, 'arid', shortCode(c.arid, 8), true);
         kvRow(dl, termEl('session'), shortCode(r_s, 16), true);
         kvRow(dl, tt('wallet_session_addr') || '세션 주소', shortCode(c.sessionAddress, 20), true);
         kvRow(dl, tt('wallet_session_factory') || '팩토리', shortCode(c.factoryAddress ?? '-', 20), true);
@@ -1117,8 +1180,8 @@
       };
     }
 
-    // V8 세션 폐기(설계 2026-09-24 §4). snap 모드는 Snap 동의 창을 먼저 받는다 — Snap 에는 Poseidon 이 없어 서명 자체는
-    // 에이전트가 세션의 메모리 증인에 든 sk_u 로 한다. 거절하면 에이전트를 부르지 않는다.
+    // V8 세션 폐기(설계 2026-09-24 §4). Snap 에는 Poseidon 이 없어 서명 자체는 에이전트가 세션의 메모리 증인에 든 sk_u 로 한다.
+    // 2026-11-05: Snap 동의 창(consentRevokeSession)은 뺐다 — 아래 confirmDanger 가 이미 묻는다(중복 확인 제거).
     async function revokeSession(r_s, c, btn, box) {
       if (btn.dataset.busy === '1') return;   // 처리 중 재클릭만 무시(버튼은 비활성화하지 않는다, 2026-10-16)
       if (!Demo.confirmDanger('confirm_revoke')) return;
@@ -1129,15 +1192,6 @@
       btn.dataset.busy = '1';
       pendingVerdict($('sessionVerdict'), 'working');
       try {
-        if (cfg.secrets === 'snap') {
-          await ensureConnected();
-          const consent = await invokeSnap('consentRevokeSession', { arid: String(c.arid), issuedAt: c.issuedAt, maxHeight: String(c.max_height), bound });
-          if (!consent || consent.denied) {
-            out('세션 폐기 취소됨');
-            setVerdict($('sessionVerdict'), false, 'wallet_session_revoke_failed', () => ({ summary: tt('wallet_cancelled') || '창에서 취소했습니다.' }));
-            return;
-          }
-        }
         const { status, body: b } = await postJson('/wallet/session/revoke', { r_s, bound });
         if (status === 200) {
           out(`세션 폐기 요청 완료 (r_s=${r_s.slice(0, 12)}…): inserted=${b.inserted}, pending=${b.pending}, bound=${b.bound} — 다음 게시부터 효력`);
@@ -1158,7 +1212,7 @@
     $('copyAuidBtn').addEventListener('click', () => copyText(lastStatus?.auid ?? null, $('copyAuidBtn')));
     $('copySaltBtn').addEventListener('click', () => copyText(saltRevealed, $('copySaltBtn')));
     // "보기"(showSaltBtn, Task 14 B5) — file 모드는 같은 오리진의 GET /wallet/secrets/salt(Task 13), snap 모드는
-    // Snap RPC showSalt(확인 창 하나, Task 15) 로 s_u 를 받는다. 취소·실패면 가림 상태를 그대로 둔다 — 비밀은
+    // Snap RPC showSalt(Task 15; 확인 창은 2026-11-05 에 뺐다) 로 s_u 를 받는다. 취소·실패면 가림 상태를 그대로 둔다 — 비밀은
     // 실패 메시지에도 담지 않는다(실패해도 s_u 자체를 받지 못했으므로 로그에 남을 것이 없다).
     $('showSaltBtn').addEventListener('click', async () => {
       try {
@@ -1401,18 +1455,16 @@
       return { ok: true, body: rec.body, deployHash };
     }
 
-    /** snap 모드(스펙 §4.4): 동의 → prepare → submitPrepared(배포·execute·record). 가스는 MetaMask 가 추정한다. */
+    /** snap 모드(스펙 §4.4): prepare → submitPrepared(배포·execute·record). 가스는 MetaMask 가 추정한다.
+     *  2026-11-05: Snap 의 속성 공개 동의 창은 뺐다 — 바로 뒤에 MetaMask 트랜잭션 확인 창이 뜨므로 중복이었다(RP 릴레이 출금만 Snap 이 묻는다). */
     async function sendTxViaMetaMask() {
       const f = txForm();
       await ensureConnected();
-      const arid = lastSessions[f.r_s] ? lastSessions[f.r_s].arid : null;
-      const c = await invokeSnap('consentDisclosure', { arid, origin: null, disclose: f.disclose, to: f.to, value: f.value, set: f.set });
-      if (!c || c.denied) { txFailed('wallet_tx_denied', 'user_denied'); return; }
 
       txLog('POST /wallet/tx/prepare — 증명 생성 중…');
       const p = await postJson('/wallet/tx/prepare', f);
       if (p.status !== 200) {
-        txLog(errText(p.status, p.body) + (p.body.reason === 'needs_consent' ? ' — RP 페이지에서 다시 로그인(재승인)해야 한다' : ''));
+        txLog(errText(p.status, p.body) + (p.body.reason === 'needs_consent' ? ' — RP 페이지에서 다시 로그인(재승인)하세요' : ''));
         txFailed('wallet_tx_prepare_failed', p.body.reason ?? `HTTP ${p.status}`, safeDetail(p.body));
         return;
       }

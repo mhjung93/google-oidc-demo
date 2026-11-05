@@ -328,7 +328,7 @@ async function chooseUserCred(synced, src) {
 /** 세션 발급(V11 §5.2): C_u(blind_u)·C_s·π_IdP 를 한 요청으로. 200 이면 세션을 저장하고, 새 C_u 였으면 사용자 자격증명도 바꿔 앉힌다(옛 세션은 함께 버린다).
  *  id_token: Google 계정의 발급 토큰(issue:H(pk_u|arid_s) nonce) — 그대로 /cia/issue 본문에 얹는다.
  *  auth_code(Task 13): IdP 가 CIA_ISSUE_AUTH=code 로 떠 있을 때만 보는 1회용 코드 — 그대로 /cia/issue 본문에 얹는다(로그에 찍지 않는다). */
-async function issueSession({ arid, r_s, r_rp, pk_trace, allowAgent, factoryAddress, attrGateAddress, head, src, blind_u, auth_code = null, id_token = null }) {
+async function issueSession({ arid, r_s, r_rp, pk_trace, allowAgent, factoryAddress, attrGateAddress, head, src, blind_u, auth_code = null, id_token = null, origin = null, serviceName = null }) {
   const reg = src.registration();
   const session = createSessionKey();
   const chainid = await chainId();
@@ -351,6 +351,8 @@ async function issueSession({ arid, r_s, r_rp, pk_trace, allowAgent, factoryAddr
     arid, PPID: PPID.toString(), pk_trace: { x: pk_trace.x.toString(), y: pk_trace.y.toString() }, factoryAddress, attrGateAddress, allowAgent,
     r_rp: r_rp.toString(), auid_s: req.auid_s.toString(), arid_s: req.arid_s.toString(),
     credential: r.body, sessionPrivKey: session.wallet.privateKey, pk_i: session.pk_i.toString(), issuedAt: new Date().toISOString(),
+    // 2026-11-05: 지갑 화면 표기용 — origin 은 인증서로 확인된 RP 오리진, serviceName 은 RP 가 고른 이름(한 줄·48자로 잘라 저장, 화면이 다시 위생한다). 검증에는 쓰지 않는다.
+    origin, serviceName,
   };
   persist();
   return { r, demo: ov ? 'override:issue' : undefined };
@@ -579,7 +581,7 @@ app.get('/wallet/status', async (req, res) => {
       try { nonce = (await accountNonceOf(account)).nonce.toString(); }
       catch { nonce = null; }
     }
-    sessions[r_s] = { account, nonce, arid: e.arid, PPID: e.PPID, max_height: e.credential.max_height, chainid: e.credential.chainid, allowAgent: e.allowAgent, factoryAddress: e.factoryAddress, attrGateAddress: e.attrGateAddress ?? null, sessionAddress: new ethers.Wallet(e.sessionPrivKey).address, issuedAt: e.issuedAt, pk_trace: e.pk_trace };
+    sessions[r_s] = { account, nonce, arid: e.arid, PPID: e.PPID, max_height: e.credential.max_height, chainid: e.credential.chainid, allowAgent: e.allowAgent, factoryAddress: e.factoryAddress, attrGateAddress: e.attrGateAddress ?? null, sessionAddress: new ethers.Wallet(e.sessionPrivKey).address, issuedAt: e.issuedAt, pk_trace: e.pk_trace, origin: e.origin ?? null, serviceName: e.serviceName ?? null };
   }
   // 2026-10-22: 체인에 아직 반영되지 않은 setSessionBound 대기 항목. applicableSession 은 같은 account(= 같은 PPID·팩토리) 를 가진
   // 살아 있는 세션의 r_s — 그 세션으로 /wallet/bounds/apply 를 바로 부를 수 있다. 없으면 null(새로 로그인해야 반영할 수 있다).
@@ -776,7 +778,9 @@ app.post('/wallet/authorize/precheck', async (req, res) => {
 app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
   let src = null;   // 바깥 catch 도 src.pending 을 싣도록 try 밖에 둔다(리뷰 S3)
   try {
-    const { arid, origin, cert_s, pk_trace, r_s, r_rp, allowAgent = '0', factoryAddress = null, attrGateAddress = null, witness = null, verifiedOrigin = null, disclose = null, set = null, auth_code = null, id_token = null } = req.body ?? {};
+    const { arid, origin, cert_s, pk_trace, r_s, r_rp, allowAgent = '0', factoryAddress = null, attrGateAddress = null, witness = null, verifiedOrigin = null, disclose = null, set = null, auth_code = null, id_token = null, serviceName = null } = req.body ?? {};
+    // 2026-11-05: 세션 카드 표기용 RP 이름 — 선택 항목, 문자열이 아니거나 비면 null, 개행·제어문자 제거 뒤 48자까지만 둔다.
+    const svcName = typeof serviceName === 'string' ? [...serviceName.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim()].slice(0, 48).join('') || null : null;
     if (!isDec(arid) || typeof origin !== 'string' || !cert_s || !pk_trace || !isDec(pk_trace.x) || !isDec(pk_trace.y) || !isDec(r_s) || !isDec(r_rp)) return res.status(400).json({ error: 'arid, origin, cert_s, pk_trace{x,y}, r_s, r_rp 필요' });
     if (allowAgent !== '0' && allowAgent !== '1') return res.status(400).json({ error: 'allowAgent 는 "0" 또는 "1"' });
     if (id_token !== null && typeof id_token !== 'string') return res.status(400).json({ error: 'id_token 은 문자열' });
@@ -860,7 +864,7 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     const pick = await chooseUserCred(synced, src);
     if (pick.status === 403) return res.status(403).json({ reason: pick.reason, ...(pick.registry ? { registry: pick.registry } : {}), timings });
     t = Date.now();
-    const issued = await issueSession({ arid, r_s: rs, r_rp: rrp, pk_trace: { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress: factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress: attrGateAddress ? ethers.getAddress(attrGateAddress) : null, head: synced.head, src, blind_u: pick.blind_u, auth_code, id_token });
+    const issued = await issueSession({ arid, r_s: rs, r_rp: rrp, pk_trace: { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress: factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress: attrGateAddress ? ethers.getAddress(attrGateAddress) : null, head: synced.head, src, blind_u: pick.blind_u, auth_code, id_token, origin, serviceName: svcName });
     timings.issueMs = Date.now() - t;
     timings.userCredMs = pick.fresh ? timings.issueMs : 0;   // 새 C_u 를 받은 로그인만 0 이 아니다(옛 의미 유지 — 테스트·화면이 본다)
     let r = issued.r, demo = issued.demo;
@@ -871,7 +875,7 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
       // auth_code 는 1회용이라 첫 시도에서 이미 소비됐을 수 있다(IdP 는 sig_u·π_IdP 검증 뒤에 소비한다 — cred_revoked 는 그 뒤에만
       // 난다) — 재시도가 같은 코드를 다시 쓰면 bad_code 로 막힐 수 있다. 코드 재발급은 이 흐름 밖(인증 창)이라 여기서는
       // 그대로 한 번 더 건네는 것 이상은 하지 않는다(알려진 한계 — 보고서에 남긴다).
-      const retried = await issueSession({ arid, r_s: rs, r_rp: rrp, pk_trace: { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress: factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress: attrGateAddress ? ethers.getAddress(attrGateAddress) : null, head: synced.head, src, blind_u: randomScalar(), auth_code, id_token });
+      const retried = await issueSession({ arid, r_s: rs, r_rp: rrp, pk_trace: { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress: factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress: attrGateAddress ? ethers.getAddress(attrGateAddress) : null, head: synced.head, src, blind_u: randomScalar(), auth_code, id_token, origin, serviceName: svcName });
       const retryMs = Date.now() - t;
       timings.issueMs += retryMs;
       timings.userCredMs = retryMs;

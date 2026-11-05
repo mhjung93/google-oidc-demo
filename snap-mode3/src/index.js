@@ -1,6 +1,9 @@
-// Mode 3 Snap — 등록 비밀(s_u·sk_u)을 MetaMask 암호화 저장소에 보관하고 동의 대화상자를 띄운다.
+// Mode 3 Snap — 등록 비밀(s_u·sk_u)을 MetaMask 암호화 저장소에 보관한다.
+// 2026-11-05: 등록·로그인 동의·세션 폐기·salt 표시의 확인 대화상자는 뺐다 — 모두 사용자가 지갑·RP 페이지에서 직접 눌러 시작하는
+// 요청이라 Snap 이 한 번 더 묻는 것은 중복이었다(사용자 결정). 남은 대화상자는 셋: 자기 폐기 비밀번호 프롬프트, 등록 초기화 확인,
+// RP 릴레이 출금의 받는 주소·금액 확인(consentDisclosure { relay: true } — 사용자가 달리 확인할 창이 없는 유일한 전송).
 // 정본은 스펙 2026-09-22 metamask-snap §3.1(RPC 표·상태 모양). tests/helpers/snap_sim.mjs(시뮬레이터)와 입출력이 같아야 한다.
-// 시뮬레이터와 다른 점은 둘: 대화상자를 실제로 띄운다는 것과, 호출 오리진을 검사한다는 것이다.
+// 시뮬레이터와 다른 점은 둘: 남은 대화상자를 실제로 띄운다는 것과, 호출 오리진을 검사한다는 것이다.
 //
 // @metamask/snaps-sdk 1.4.0 은 CommonJS·ESM 두 빌드를 함께 낸다. webpack 은 ESM 빌드를 집어 명명 export 가 보이고,
 // Node 는 CommonJS 빌드를 집어 default 하나만 보인다(단위 테스트가 이 경로다). 두 경우를 모두 받는다.
@@ -45,6 +48,9 @@ function predicateLines(disclose, set) {
   }
   return lines;
 }
+
+/** wei 10진 문자열 → ETH 표기('0.01'); 숫자가 아니면 그대로(2026-11-05 — 동의 창이 wei 만 보이던 것을 고쳤다). */
+const weiToEth = (wei) => { if (!/^[0-9]+$/.test(wei)) return wei; const w = BigInt(wei); return `${w / 10n ** 18n}.${String(w % 10n ** 18n).padStart(18, '0')}`.replace(/\.?0+$/, '') || '0'; };
 
 const EMPTY_STATE = { version: 1, registration: null, userCred: null, consents: {} };
 const clone = (v) => (v === null || v === undefined ? null : JSON.parse(JSON.stringify(v)));
@@ -99,14 +105,12 @@ export const onRpcRequest = async ({ origin, request }) => {
 
   switch (request.method) {
     // 등록(V11 갱신, 2026-10-23): 비밀번호 프롬프트는 없어졌다 — 지갑 페이지가 이미 받은 uid 를 params 로 넘기고,
-    // Snap 은 확인 창 하나만 띄워 s_u·sk_u 를 만들어 저장한다. IdP 에는 커밋먼트(auid)와 공개키만 간다(storeRegistration).
+    // Snap 은 s_u·sk_u 를 만들어 저장한다(2026-11-05: 확인 창도 뺐다). IdP 에는 커밋먼트(auid)와 공개키만 간다(storeRegistration).
     // 보류 등록(prepareRegister)이 있으면 덮어쓴다 — 완성 등록만 already_registered.
     case 'register': {
       if (state.registration?.uid) fail('already_registered: 이미 등록돼 있다 (초기화하려면 reset)');
       const uid = String(params.uid ?? '').trim();
       if (!isDec(uid)) fail('bad_uid: uid 는 10진 숫자 문자열이어야 한다');
-      const ok = await confirm('IdP 등록', [`uid: ${uid}`, null, '등록 비밀(s_u·sk_u)을 만들어 이 Snap 에 보관합니다.', '속성은 지갑에만 남고 IdP 에는 커밋먼트와 공개키만 갑니다.']);
-      if (!ok) return { denied: true };
       const secrets = createRegistrationSecrets();
       state.registration = { uid, s_u: secrets.s_u, auid: null, sk_u: secrets.sk_u, slot: null, attrs: null, registeredAt: new Date().toISOString() };
       state.userCred = null; await setState(state);
@@ -118,8 +122,6 @@ export const onRpcRequest = async ({ origin, request }) => {
     // 보류가 이미 있으면(Google·IdP 단계 실패 뒤 재시도) 같은 비밀을 돌려준다 — 같은 pk_u 라 nonce 도 같다.
     case 'prepareRegister': {
       if (state.registration?.uid) fail('already_registered: 이미 등록돼 있다 (초기화하려면 reset)');
-      const ok = await confirm('Google 계정 등록', ['등록 비밀(s_u·sk_u)을 만들어 이 Snap 에 보관합니다.', 'uid 는 Google 로그인 뒤 IdP 가 정합니다.', null, '속성은 지갑에만 남고 IdP 에는 커밋먼트와 공개키만 갑니다.']);
-      if (!ok) return { denied: true };
       const pend = state.registration;
       if (pend) return { s_u: pend.s_u, sk_u: pend.sk_u };
       const secrets = createRegistrationSecrets();
@@ -128,12 +130,10 @@ export const onRpcRequest = async ({ origin, request }) => {
       return { s_u: secrets.s_u, sk_u: secrets.sk_u };
     }
 
-    // salt(s_u) 를 지갑 페이지에 보여 준다 — 시연용(복구 코드 설계 2026-10-21 과 무관, 화면 표시만). 비밀 자체는
-    // 대화상자에 싣지 않는다(경고문뿐) — 싣는 순간 팝업 캡처로 유출될 수 있다.
+    // salt(s_u) 를 지갑 페이지에 보여 준다 — 시연용(복구 코드 설계 2026-10-21 과 무관, 화면 표시만). 확인 창은 2026-11-05 에 뺐다.
     case 'showSalt': {
       const reg = requireRegistered(state);
-      const ok = await confirm('salt 표시', ['salt(s_u)를 지갑 페이지에 표시합니다 — 시연용입니다.', '화면 밖으로 보내지 마세요.']);
-      return ok ? { s_u: reg.s_u } : { denied: true };
+      return { s_u: reg.s_u };
     }
 
     // 에이전트 POST /wallet/register 응답(slot·attrs·auid)을 저장한다. sk_u·s_u 는 register/prepareRegister 때 이미 저장했으므로 받지 않는다(V9 §7.1).
@@ -166,33 +166,26 @@ export const onRpcRequest = async ({ origin, request }) => {
       };
     }
 
-    // 로그인 동의(스펙 §4.2). 승인이면 증인 묶음, 거절이면 { denied:true }.
+    // 로그인 동의(스펙 §4.2) — 증인 묶음을 돌려주고 동의 기록을 남긴다. 2026-11-05: 확인 대화상자는 뺐다(사용자가 RP 에서 "로그인" 을
+    // 눌러 시작한 요청이고, 지갑 팝업이 precheck(인증서·팩토리)를 통과한 뒤에만 이 RPC 를 부른다). 응답 모양은 그대로다.
     case 'consentLogin': {
       requireRegistered(state);
-      const { origin: rpOrigin, arid, allowAgent, serviceName, disclose, set } = params;
+      const { origin: rpOrigin, arid, allowAgent } = params;
       if (typeof rpOrigin !== 'string' || !rpOrigin) fail('bad_params: origin 필요');
       const agentOk = allowAgent === true || allowAgent === 1 || allowAgent === '1';
-      const pred = predicateLines(disclose, set);
-      const ok = await confirm('로그인 동의', [
-        `RP: ${cleanServiceName(serviceName) || rpOrigin}`,   // 이름은 RP 가 고른 값이다 — 인증서가 덮는 것은 아래 오리진 뿐
-        `오리진: ${rpOrigin}`,
-        `요청 식별자(arid): ${arid}`,
-        null,
-        `AI 에이전트 허용: ${agentOk ? '예' : '아니오'}`,
-        ...(pred.length ? [null, '공개할 속성:', ...pred] : []),
-        '승인하면 이 로그인에 쓸 등록 비밀이 지갑 페이지로 전달됩니다.',
-      ]);
-      if (!ok) return { denied: true };
       const witness = buildWitness(state);
-      // 대화상자가 보여 준 그대로를 기록한다 — allowAgent 는 예/아니오 로 보였으므로 '1'/'0' 로 굳힌다.
+      // allowAgent 는 '1'/'0' 로 굳혀 기록한다.
       state.consents[rpOrigin] = { arid: arid === undefined || arid === null ? null : String(arid), allowAgent: agentOk ? '1' : '0', grantedAt: new Date().toISOString() };
       await setState(state);
       return witness;
     }
 
-    // 속성 공개 동의(스펙 §4.4). 공개할 슬롯·구간과 트랜잭션 대상·금액을 보여 준다.
+    // 속성 공개 동의(스펙 §4.4). 2026-11-05: 대화상자는 RP 릴레이 출금({ relay: true }, mode3/wallet.html handleTxRequest)만 띄운다 —
+    // 릴레이어가 보내는 트랜잭션은 MetaMask 확인 창을 거치지 않아 받는 주소·금액을 사용자가 볼 자리가 여기뿐이다. 지갑 페이지의
+    // "보내기"(MetaMask 가 그 뒤에 트랜잭션 확인 창을 띄운다)는 묻지 않고 { ok: true } 를 돌려준다.
     case 'consentDisclosure': {
-      const { arid, origin: rpOrigin, disclose, to, value, set } = params;
+      const { arid, origin: rpOrigin, disclose, to, value, set, relay } = params;
+      if (relay !== true) return { ok: true };
       // V7 집합 소속: 에이전트가 members 로부터 root 를 계산해 증명에 넣는다 — 여기서는 사용자에게 원소를 보여 준다(root 검산은 에이전트 몫, 스펙 §5.2).
       const lines = predicateLines(disclose, set);
       if (lines.length === 0) lines.push('공개하는 속성 없음');
@@ -204,7 +197,7 @@ export const onRpcRequest = async ({ origin, request }) => {
         ...lines,
         null,
         `대상 주소: ${to}`,
-        `금액: ${value ?? '0'} wei`,
+        `금액: ${weiToEth(String(value ?? '0'))} ETH (${value ?? '0'} wei)`,
       ].filter((l) => l !== undefined));
       return ok ? { ok: true } : { denied: true };
     }
@@ -238,20 +231,11 @@ export const onRpcRequest = async ({ origin, request }) => {
       return { uid: reg.uid, pwd };
     }
 
-    // V8 세션 폐기 동의(설계 2026-09-24 §4). Snap 에는 Poseidon 이 없어 서명은 에이전트가 세션 증인의 sk_u 로 한다 —
-    // 여기서는 동의만 받는다(스펙 §4 의 signRevokeSession RPC 를 이 이름으로 갱신).
+    // V8 세션 폐기(설계 2026-09-24 §4). Snap 에는 Poseidon 이 없어 서명은 에이전트가 세션 증인의 sk_u 로 한다.
+    // 2026-11-05: 동의 창은 뺐다(지갑 페이지의 "정말 폐기하시겠습니까?" 확인이 이미 있다) — 등록 여부만 보고 { ok: true }.
     case 'consentRevokeSession': {
       requireRegistered(state);
-      const { arid, issuedAt, maxHeight, bound } = params;
-      const ok = await confirm('세션 폐기', [
-        `RP arid: ${arid}`,
-        `발급 시각: ${issuedAt}`,
-        `만료 블록: ${maxHeight}`,
-        `허용 거래 수: ${String(bound ?? '0')} (nonce < ${String(bound ?? '0')} 만 유효)`,
-        null,
-        '이 세션을 폐기합니다. 다음 게시부터 이 세션의 로그인·트랜잭션이 거부됩니다.',
-      ]);
-      return ok ? { ok: true } : { denied: true };
+      return { ok: true };
     }
 
     // 데모 초기화 — 등록 비밀·동의 기록을 모두 지운다.

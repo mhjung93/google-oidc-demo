@@ -312,9 +312,7 @@ try {
     const rs = base.r_s;
     const c = (await wallet.get('/wallet/status')).body.sessions[rs];
     assert.ok(c, '폐기할 세션이 상태에 있어야 한다');
-    // 페이지는 에이전트를 부르기 전에 Snap 동의를 받는다 — 거절이면 아예 부르지 않는다.
-    assert.deepEqual(sim.consentRevokeSession({ arid: c.arid, issuedAt: c.issuedAt, maxHeight: c.max_height }, 'deny'), { denied: true });
-    assert.ok((await wallet.get('/wallet/status')).body.sessions[rs], '동의 거절은 세션을 건드리지 않는다');
+    // 2026-11-05: Snap 의 세션 폐기 동의 창은 없어졌다(지갑 페이지의 확인만) — 등록만 있으면 { ok: true }.
     // 재시작하면 메모리 증인이 사라진다 → sk_u 가 없어 409 needs_consent
     await stack.restartWallet();
     assert.deepEqual(sim.consentRevokeSession({ arid: c.arid, issuedAt: c.issuedAt, maxHeight: c.max_height }), { ok: true });
@@ -330,16 +328,11 @@ try {
     assert.equal((await wallet.post('/wallet/session/revoke', { r_s: rs })).status, 404, '이미 버린 세션은 no_session');
   });
 
-  await t('consent 거절: 시뮬레이터가 denied 를 주면 페이지가 로그인하지 않는다(시뮬레이터 수준 검증)', async () => {
-    const base = await loginBase();
-    const before = Object.keys((await wallet.get('/wallet/status')).body.sessions).length;
-    const w = sim.consentLogin({ origin: 'http://other.example', arid: info.arid, allowAgent: '0' }, 'deny');
-    assert.deepEqual(w, { denied: true });
-    assert.equal('http://other.example' in sim.state.consents, false, '거절은 consents 에 남지 않는다');
-    assert.deepEqual(sim.consentDisclosure({}, 'deny'), { denied: true });
-    // 페이지 로직: denied 면 /wallet/login 을 부르지 않고 RP 에 user_denied 를 돌려준다 — 세션 수가 그대로다
-    if (!w.denied) await wallet.post('/wallet/login', { ...base, witness: w });
-    assert.equal(Object.keys((await wallet.get('/wallet/status')).body.sessions).length, before);
+  // 2026-11-05: 로그인 동의 창은 없어졌다 — 남은 거절 경로는 릴레이 출금의 consentDisclosure({ relay: true }) 하나다(시뮬레이터 수준 검증).
+  await t('consentDisclosure: relay 가 아니면 묻지 않고 ok, relay 거절은 denied', async () => {
+    assert.deepEqual(sim.consentDisclosure({ to: '0x' + '11'.repeat(20), value: '0' }, 'deny'), { ok: true });
+    assert.deepEqual(sim.consentDisclosure({ relay: true, to: '0x' + '11'.repeat(20), value: '0' }, 'deny'), { denied: true });
+    assert.deepEqual(sim.consentDisclosure({ relay: true, to: '0x' + '11'.repeat(20), value: '0' }), { ok: true });
   });
 
   // Task 11 보충(task-11-addendum.md) — Task 9 리뷰 Important 1 판정의 자가 치유 경로. 세션·C_u·sim 의 attrs 를 바꾸므로

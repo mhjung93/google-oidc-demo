@@ -107,13 +107,13 @@ try {
     await waitText(walletPage, '#mmStatus', cfg.snapId);
   });
 
-  await t('/user: "Google 로 등록" → 지갑 팝업 → Snap 보류 등록 확인 → 팝업의 Google 버튼 → 등록됨(provider·uid=H(provider|sub)); IdP 로그인 없이', async () => {
+  await t('/user: "Google 로 등록" → 지갑 팝업 → Snap 보류 등록(확인 창 없음, 2026-11-05) → 팝업의 Google 버튼 → 등록됨(provider·uid=H(provider|sub)); IdP 로그인 없이', async () => {
     const u = await context.newPage(); await u.goto(`${cia.base}/user`);
     await u.waitForSelector('#registerGoogleBtn:not([hidden])', { timeout: 15_000 });
-    answers.push(true);                                                            // prepareRegister 확인 창
+    const dBefore = dialogs.length;
     const [popup] = await Promise.all([context.waitForEvent('page'), u.click('#registerGoogleBtn')]);
     await popup.waitForSelector('#gsiBox .gsi-stub', { timeout: 30_000 });
-    assert.ok(/Google/.test(JSON.stringify(dialogs.at(-1))), 'Snap 확인 창은 Google 등록');
+    assert.equal(dialogs.length, dBefore, 'Snap 등록 확인 창은 없다(2026-11-05 중복 확인 제거)');
     await popup.click('#gsiBox .gsi-stub');
     await waitText(u, '#userVerdict', uidOf(stub.provider, SUB).slice(0, 8), 60_000);
     const st = (await wallet.get('/wallet/status')).body;
@@ -129,8 +129,7 @@ try {
     for (const k of ['uid', 'auid', 'slot', 'attrs', 'provider']) snapState.registration[k] = null;
     const u = await context.newPage(); await u.goto(`${cia.base}/user`);
     await u.waitForSelector('#registerGoogleBtn:not([hidden])', { timeout: 15_000 });
-    answers.push(true);                                                            // prepareRegister 확인 창(같은 비밀)
-    const [popup] = await Promise.all([context.waitForEvent('page'), u.click('#registerGoogleBtn')]);
+    const [popup] = await Promise.all([context.waitForEvent('page'), u.click('#registerGoogleBtn')]);   // prepareRegister 는 확인 창 없이 같은 비밀을 돌려준다
     await waitText(u, '#userVerdict', full.uid.slice(0, 8), 60_000);
     assert.equal(await popup.$('#gsiBox .gsi-stub'), null, '복구는 Google 로그인을 다시 하지 않는다');
     const back = JSON.parse(JSON.stringify(snapState.registration));
@@ -151,12 +150,13 @@ try {
     } finally { snapState.registration = full; }
   });
 
-  await t('RP 로그인: Snap 동의 뒤 IdP 인증 창 대신 팝업의 Google 버튼 → 로그인 성공(CIA_ISSUE_AUTH=code 인데 코드 없음)', async () => {
+  await t('RP 로그인: IdP 로그인 페이지로 가지 않고 팝업의 Google 버튼 → 로그인 성공(CIA_ISSUE_AUTH=code 인데 코드 없음; 2026-11-05 부터 Snap 동의 창도 없다)', async () => {
     const rpPage = await context.newPage(); await rpPage.goto(rp.base);
-    answers.push(true);                                                            // consentLogin
+    const dBefore = dialogs.length;
     const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
     await popup.waitForSelector('#gsiBox .gsi-stub', { timeout: 60_000 });
-    assert.equal(await popup.$eval('#idpAuthOpenBtn', (b) => b.hidden), true, 'IdP 인증 창 버튼은 안 보인다');
+    assert.ok(popup.url().includes('authorize=1') && !popup.url().includes('/login'), `Google 계정은 IdP 로그인 페이지로 가지 않는다: ${popup.url()}`);
+    assert.equal(dialogs.length, dBefore, 'Snap 로그인 동의 창은 없다(2026-11-05)');
     await popup.click('#gsiBox .gsi-stub');
     await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
     await rpPage.close();

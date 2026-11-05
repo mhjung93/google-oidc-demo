@@ -1,6 +1,7 @@
 // Snap 시뮬레이터 — 스펙 2026-09-22 metamask-snap §3.1 의 Snap 상태·RPC 를 Node 함수로 흉내 낸다.
 // Task 3 의 snap-mode3/src/index.js 는 이 시뮬레이터와 같은 입출력을 구현한다(스펙 §3.1 표가 정본). 여기서는
-// 대화상자를 decision('allow'|'deny') 인자로 대신하고, 오리진 검사는 하지 않는다(테스트 프로세스가 곧 지갑 페이지다).
+// 남은 대화상자(릴레이 출금 consentDisclosure)는 decision('allow'|'deny') 인자로 대신하고, 오리진 검사는 하지 않는다(테스트 프로세스가 곧 지갑 페이지다).
+// 2026-11-05: 등록·로그인 동의·세션 폐기·salt 표시의 확인 창은 실제 Snap 과 함께 뺐다(중복 확인 제거) — decision 인자도 받지 않는다.
 import { createRegistration, registrationSecretsFromSeed } from '../../lib/mode3_wallet.js';
 import { randomBytes } from 'node:crypto';
 import { ATTR_MAX } from '../../lib/mode3_credential.js';
@@ -15,23 +16,21 @@ export function createSnapSim() {
   return {
     state,   // 검사용 — 테스트가 상태 파일과 대조한다
 
-    /** V11 갱신(2026-10-23): 비밀번호 프롬프트는 없어졌다 — confirm(decision) 하나만. 실제 Snap(index.js register:102-112)과
-     *  같은 순서로 검사한다: already_registered → bad_uid → 확인창. s_u·sk_u 를 만들어 상태에 두고(sk_u 는 register
+    /** V11 갱신(2026-10-23): 비밀번호 프롬프트는 없어졌고, 2026-11-05 에 확인 창도 뺐다. 실제 Snap(index.js register)과
+     *  같은 순서로 검사한다: already_registered → bad_uid. s_u·sk_u 를 만들어 상태에 두고(sk_u 는 register
      *  응답에 한 번만 싣는다 — V9 §7.1) s_u 와 함께 돌려준다. auid 는 등록이 아직 끝나지 않아 null(storeRegistration 이 채운다). */
-    async register({ uid }, decision = 'allow') {
+    async register({ uid }) {
       if (state.registration?.uid) throw new Error('already_registered: snap_sim: 이미 등록돼 있다');
       const uidStr = String(uid ?? '').trim();
       if (!isDec(uidStr)) fail('bad_uid: uid 는 10진 숫자 문자열이어야 한다');
-      if (decision !== 'allow') return { denied: true };
       const reg = await createRegistration(BigInt(uidStr));
       state.registration = { uid: uidStr, pwdHash: null, s_u: reg.s_u.toString(), auid: null, sk_u: reg.sk_u, slot: null, attrs: null, registeredAt: new Date().toISOString() };
       return { uid: uidStr, s_u: state.registration.s_u, sk_u: reg.sk_u };
     },
 
     /** Google 등록(2026-10-26): 실제 Snap(index.js prepareRegister)과 같은 입출력 — uid 없는 보류 등록, 보류가 있으면 같은 비밀. */
-    prepareRegister(decision = 'allow') {
+    prepareRegister() {
       if (state.registration?.uid) fail('already_registered: 이미 등록돼 있다 (초기화하려면 reset)');
-      if (decision !== 'allow') return { denied: true };
       const pend = state.registration;
       if (pend) return { s_u: pend.s_u, sk_u: pend.sk_u };
       const { s_u, sk_u } = registrationSecretsFromSeed(new Uint8Array(randomBytes(32)));
@@ -40,10 +39,10 @@ export function createSnapSim() {
       return { s_u: state.registration.s_u, sk_u };
     },
 
-    /** salt(s_u) 를 지갑 페이지에 보여 준다 — 실제 Snap(index.js showSalt:116-120)과 같은 입출력. */
-    showSalt(decision = 'allow') {
+    /** salt(s_u) 를 지갑 페이지에 보여 준다 — 실제 Snap(index.js showSalt)과 같은 입출력(확인 창 없음). */
+    showSalt() {
       requireRegistered();
-      return decision === 'allow' ? { s_u: state.registration.s_u } : { denied: true };
+      return { s_u: state.registration.s_u };
     },
 
     /** 에이전트 /wallet/register 응답의 slot·attrs·auid 를 저장한다(sk_u·s_u 는 register 때 이미 저장했으므로 받지 않는다).
@@ -73,12 +72,11 @@ export function createSnapSim() {
       return { registered: Boolean(r?.uid), pending: Boolean(r && !r.uid), uid: r?.uid ?? null, auid: r?.auid ?? null, attrs: clone(r?.attrs), slot: r?.slot ?? null, provider: r?.provider ?? null, hasUserCred: Boolean(state.userCred), consents: clone(state.consents) };
     },
 
-    /** 로그인 동의 창. 승인이면 증인 묶음(validateWitness 형식), 거절이면 { denied:true }.
-     *  실제 Snap(index.js consentLogin:144-145)과 같다 — origin 이 없으면 대화상자도 띄우지 않고 거절한다(리뷰 2026-10-13 U1). */
-    consentLogin({ origin, arid, allowAgent }, decision = 'allow') {
+    /** 로그인 동의 — 증인 묶음(validateWitness 형식)과 동의 기록. 확인 창은 없다(2026-11-05).
+     *  실제 Snap(index.js consentLogin)과 같다 — origin 이 없으면 거절한다(리뷰 2026-10-13 U1). */
+    consentLogin({ origin, arid, allowAgent }) {
       requireRegistered();
       if (typeof origin !== 'string' || !origin) fail('bad_params: origin 필요');
-      if (decision !== 'allow') return { denied: true };
       const r = state.registration;
       // 실제 Snap 의 buildWitness(index.js:74-77)와 같은 완결성 검사 — sk_u 64자 16진, uid·s_u 10진, attrs 배열(재리뷰 N4)
       if (!isDec(String(r.uid)) || !isDec(String(r.s_u)) || !/^[0-9a-fA-F]{64}$/.test(r.sk_u ?? '') || !Array.isArray(r.attrs)) fail('registration_incomplete: storeRegistration 이 아직 끝나지 않았다');
@@ -86,8 +84,9 @@ export function createSnapSim() {
       return { uid: r.uid, s_u: r.s_u, sk_u: r.sk_u, attrs: clone(r.attrs), userCred: clone(state.userCred) };
     },
 
-    /** 속성 공개 동의 창. 슬롯 목록·대상·금액은 표시용이라 시뮬레이터는 보지 않는다. */
-    consentDisclosure(_args, decision = 'allow') {
+    /** 속성 공개 동의. 2026-11-05: 대화상자는 릴레이 출금({ relay: true })만 띄운다 — 그 외는 묻지 않고 { ok: true }. 슬롯 목록·대상·금액은 표시용이라 시뮬레이터는 보지 않는다. */
+    consentDisclosure(args, decision = 'allow') {
+      if (args?.relay !== true) return { ok: true };
       return decision === 'allow' ? { ok: true } : { denied: true };
     },
 
@@ -109,11 +108,10 @@ export function createSnapSim() {
       return { ok: true, changed };
     },
 
-    /** V8 세션 폐기 동의 창(설계 2026-09-24 §4). arid·발급 시각·만료 블록·허용 거래 수(bound, 2026-10-23 추가)는
-     *  표시용이라 시뮬레이터는 보지 않는다. Snap 은 서명하지 않는다 — 서명은 에이전트가 세션의 메모리 증인에 든 sk_u 로 한다. */
-    consentRevokeSession(_args, decision = 'allow') {
+    /** V8 세션 폐기(설계 2026-09-24 §4). 2026-11-05: 동의 창은 뺐다 — 등록 여부만 보고 { ok: true }. Snap 은 서명하지 않는다 — 서명은 에이전트가 세션의 메모리 증인에 든 sk_u 로 한다. */
+    consentRevokeSession() {
       requireRegistered();
-      return decision === 'allow' ? { ok: true } : { denied: true };
+      return { ok: true };
     },
 
     /** prompt(pwd) 대신 인자로. */
