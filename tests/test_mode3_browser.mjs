@@ -648,7 +648,7 @@ try {
     await p.fill('#opPwd', 'operator-1'); await p.click('#opLoginBtn'); await p.waitForSelector('#rpCreateCard:not([hidden])');
     await p.fill('#rpName', 'zkTHREE'); await p.fill('#rpOrigin', 'http://localhost:3999'); await p.click('#rpCreateBtn');   // 2026-11-06: 서비스 주소도 넣는다 — 명령의 포트가 채워진다
     await waitText(p, '#rpList', 'zkTHREE'); assert.match(await text(p, '#rpList'), /new_rp\.sh zkTHREE 3999 [0-9a-f]{64}/);
-    assert.ok((await text(p, '#rpList')).includes('RP 서버가 등록 요청을 보내면'), '서버가 등록 전이라 인증서 열은 안내만'); await p.close();
+    assert.ok((await text(p, '#rpList')).includes('RP 서버 기동 전'), '서버가 등록 전이라 인증서 열은 짧은 안내만(2026-11-06)'); await p.close();
   });
   await t('IdP 인증 창: wallet 쿼리가 지갑 오리진과 다르면 폼을 막는다; 맞으면 uid·pwd·auid 로 코드를 받아 opener 에 postMessage', async () => {
     const bad = await context.newPage(); await bad.goto(`${cia.base}/login?nonce=abc&wallet=http://evil.example`); await waitText(bad, '#authVerdict', '지갑 오리진'); await bad.close();

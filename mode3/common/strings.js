@@ -607,6 +607,9 @@ window.DemoStrings = {
     admin_publish_failed: { ko: '게시 실패', en: 'Publication failed' },
     admin_rp_approve_title: { ko: 'RP 승인', en: 'RP approved' },
     admin_rp_revoke_cert_btn: { ko: '인증서 회수', en: 'Revoke certificate' },   // 2026-11-06
+    admin_rp_reopen_btn: { ko: '다시 대기로', en: 'Reopen (pending)' },
+    admin_rp_reopen_title: { ko: '다시 승인 대기로 돌렸습니다', en: 'Back to pending' },
+    admin_rp_reopen_summary: { ko: '{name} 이(가) 승인 대기로 돌아왔습니다. RP 서버를 재기동(또는 30초 재확인)하면 다시 폴링하고, 승인하면 활성화됩니다.', en: '{name} is pending again. Restart the RP server (or wait for its 30s re-check) so it polls again, then approve to activate.' },
     admin_rp_revoke_cert_title: { ko: '인증서를 회수했습니다', en: 'Certificate revoked' },
     admin_rp_revoke_cert_summary: { ko: '{name} 은(는) 다시 승인 대기입니다 — RP 서버가 몇 초 안에 비활성으로 돌아가고, 운영자가 "인증서 발급 요청" 을 하면 여기서 승인하세요.', en: '{name} is pending again — the RP server goes inactive within seconds; approve it here once its operator requests a certificate again.' },
     admin_rp_approve_summary: { ko: '{name} 을(를) 승인했습니다 — RP 쪽이 몇 초 안에 활성화됩니다.', en: '{name} was approved — the RP turns active within a few seconds.' },
@@ -724,6 +727,7 @@ window.DemoStrings = {
     idp_rp_origin_label: { ko: '서비스 주소', en: 'Service address' },
     idp_rp_col_cert: { ko: '인증서', en: 'Certificate' },
     idp_rp_cert_wait_server: { ko: 'RP 서버가 등록 요청을 보내면 인증서를 요청할 수 있습니다 — 명령으로 서버를 띄우세요', en: 'You can request a certificate once the RP server has sent its registration — start it with the command' },
+    idp_rp_cert_wait_server_short: { ko: 'RP 서버 기동 전', en: 'RP server not started' },   // 2026-11-06: 표 칸은 짧게, 긴 안내는 툴팁
     idp_rp_request_btn: { ko: '인증서 발급 요청', en: 'Request certificate' },
     idp_rp_cert_requested: { ko: '승인 대기 — 관리자가 승인하면 발급됩니다', en: 'Awaiting approval — issued once an administrator approves' },
     idp_rp_cert_issued: { ko: '발급됨', en: 'Issued' },

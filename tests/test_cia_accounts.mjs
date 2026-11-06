@@ -489,6 +489,12 @@ try {
     assert.equal((await cia.adminPost(`/cia/rps/${reg4.body.arid}/deny`)).status, 200);
     const deniedIssue = await withJar('/cia/rp/request_cert', { method: 'POST', body: JSON.stringify({ name: 'zkTEN' }) });
     assert.equal(deniedIssue.status, 409, j(deniedIssue.body)); assert.equal(deniedIssue.body.reason, 'rp_denied');
+    // 2026-11-06: 관리자 reopen — 거절 → 다시 pending(키 그대로) → RP 폴링 202 → 요청·승인 가능. approved 항목에는 409.
+    assert.equal((await cia.adminPost(`/cia/rps/${reg4.body.arid}/reopen`)).body.status, 'pending');
+    assert.equal((await cia.adminPost(`/cia/rps/${reg4.body.arid}/reopen`)).status, 409, '이미 pending 이면 409');
+    assert.equal((await cia.post('/cia/register_rp', body4)).status, 202, 'reopen 뒤 같은 키의 RP 폴링은 202');
+    assert.equal((await withJar('/cia/rp/request_cert', { method: 'POST', body: JSON.stringify({ name: 'zkTEN' }) })).status, 200, 'reopen 뒤 운영자 요청 가능');
+    assert.equal((await cia.adminPost(`/cia/rps/${reg4.body.arid}/deny`)).status, 200, '다시 거절(아래 넘겨받기 케이스가 거부 상태를 전제한다)');
     // 거부된 주소는 다른 운영자가 넘겨받을 수 있고, 그러면 옛 슬롯은 은퇴한다(리뷰 MEDIUM-2) — 옛 키로는 더 되찾지 못한다.
     const take = await withJar2('/cia/rp/create', { method: 'POST', body: JSON.stringify({ name: 'zkTEN', origin: origin4 }) });
     assert.equal(take.status, 201, j(take.body)); assert.equal(take.body.status, 'created', '거부된 항목에는 묶지 않는다');

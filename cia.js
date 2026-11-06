@@ -704,6 +704,16 @@ app.post('/cia/rps/:arid/revoke_cert', requireAdmin, (req, res) => {
   persist();
   res.json({ arid: req.params.arid, status: e.status });
 });
+// 2026-11-06: 거절된 RP 를 다시 승인 대기로(관리자) — 데모 복구용. 거절은 원래 되돌릴 수 없는 설계였지만(A-I2: 키로 재등록), 데모에서는 관리자가 잘못
+// 거절한 RP 를 되살릴 길이 필요했다(2026-11-06 12:23 zkONE·zkTWO 거절 사고). 키·조각은 그대로 두고 상태만 pending 으로; RP 서버는 재기동(또는 재확인)으로 폴링을 재개한다.
+app.post('/cia/rps/:arid/reopen', requireAdmin, (req, res) => {
+  const e = state.rps[req.params.arid];
+  if (!e) return res.status(404).json({ error: 'unknown service' });
+  if (e.status !== 'denied') return res.status(409).json({ error: `not denied (${e.status})` });
+  e.status = 'pending'; e.decidedAt = null; e.certRequestedAt = null; e.reopenedAt = new Date().toISOString();
+  persist();
+  res.json({ arid: req.params.arid, status: e.status });
+});
 app.post('/cia/rps/:arid/deny', requireAdmin, (req, res) => {
   const e = state.rps[req.params.arid];
   if (!e) return res.status(404).json({ error: 'unknown service' });
