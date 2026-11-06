@@ -95,7 +95,9 @@
   function renderGoogleRow() {
     let walletLocal = false;
     try { walletLocal = !!walletOrigin && new URL(walletOrigin).hostname === 'localhost'; } catch { /* 잘못된 오리진이면 숨긴다 */ }
-    const showBtn = oidcEnabled && walletLocal, showLink = oidcEnabled && location.hostname === 'localhost';
+    // 2026-11-06(사용자 결정): "Google 계정으로 등록" 은 평소 화면에서 뺀다 — ?google=1 로 열 때만(자동 테스트·수동 확인용) 보인다.
+    const googleOptIn = new URLSearchParams(location.search).has('google');
+    const showBtn = oidcEnabled && walletLocal && googleOptIn, showLink = oidcEnabled && location.hostname === 'localhost';
     $('registerGoogleBtn').hidden = !showBtn;
     $('googleAccountLink').hidden = !showLink;
     $('googleRow').hidden = !(showBtn || showLink);

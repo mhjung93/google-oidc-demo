@@ -108,7 +108,7 @@ try {
   });
 
   await t('/user: "Google 로 등록" → 지갑 팝업 → Snap 보류 등록(확인 창 없음, 2026-11-05) → 팝업의 Google 버튼 → 등록됨(provider·uid=H(provider|sub)); IdP 로그인 없이', async () => {
-    const u = await context.newPage(); await u.goto(`${cia.base}/user`);
+    const u = await context.newPage(); await u.goto(`${cia.base}/user?google=1`);   // 2026-11-06: Google 등록 버튼은 ?google=1 일 때만 보인다
     await u.waitForSelector('#registerGoogleBtn:not([hidden])', { timeout: 15_000 });
     const dBefore = dialogs.length;
     const [popup] = await Promise.all([context.waitForEvent('page'), u.click('#registerGoogleBtn')]);
@@ -127,7 +127,7 @@ try {
     assert.ok(full.uid && full.sk_u && full.s_u, 'Snap 에 완성된 등록이 있어야 한다');
     // IdP 등록·에이전트 저장은 끝났는데 Snap storeRegistration 이 안 된 상태 — s_u·sk_u 만 남긴다
     for (const k of ['uid', 'auid', 'slot', 'attrs', 'provider']) snapState.registration[k] = null;
-    const u = await context.newPage(); await u.goto(`${cia.base}/user`);
+    const u = await context.newPage(); await u.goto(`${cia.base}/user?google=1`);   // 2026-11-06: Google 등록 버튼은 ?google=1 일 때만 보인다
     await u.waitForSelector('#registerGoogleBtn:not([hidden])', { timeout: 15_000 });
     const [popup] = await Promise.all([context.waitForEvent('page'), u.click('#registerGoogleBtn')]);   // prepareRegister 는 확인 창 없이 같은 비밀을 돌려준다
     await waitText(u, '#userVerdict', '등록됨', 60_000);   // 2026-11-05: 결과 문구에 uid 는 없다 — 복원된 uid 는 아래 Snap 상태로 본다
