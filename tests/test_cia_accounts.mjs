@@ -505,6 +505,30 @@ try {
     assert.equal((await withJar2('/cia/rp/me')).body.rps.find((r) => r.name === 'zkTEN').status, 'pending');
   });
 
+  await t('지갑 연결 해제(2026-11-06): 등록된 계정에서 pk_u·auid 를 풀고 활성 자격증명을 은퇴·게시(disabled 아님) → me.registered=false → 같은 계정에 새 지갑을 다시 등록(새 슬롯); 비밀번호 틀리면 401, 미등록이면 409', async () => {
+    const withJar = makeJar(cia.base);
+    const su = await withJar('/cia/signup', { method: 'POST', body: JSON.stringify({ id: 'unlink-1', pwd: 'password-u1' }) });
+    await withJar('/cia/user/login', { method: 'POST', body: JSON.stringify({ id: 'unlink-1', pwd: 'password-u1' }) });
+    assert.equal((await withJar('/cia/user/unlink_wallet', { method: 'POST', body: JSON.stringify({ pwd: 'password-u1' }) })).status, 409, '등록 전엔 풀 것이 없다');
+    const reg1 = async () => {
+      const rc = await withJar('/cia/user/register_code', { method: 'POST', body: JSON.stringify({}) });
+      const reg = await createRegistration(BigInt(su.body.uid));
+      const sig_reg = await signRegistration(reg.sk_u, BigInt(su.body.uid), reg.auid);
+      const rr = await cia.post('/cia/register', { uid: su.body.uid, code: rc.body.code, auid: reg.auid.toString(), pk_u: pointToStrings(reg.pk_u), sig_reg });
+      assert.equal(rr.status, 201, j(rr.body)); return rr.body;
+    };
+    const first = await reg1();
+    const me1 = (await withJar('/cia/user/me')).body; assert.equal(me1.registered, true);
+    assert.equal((await withJar('/cia/user/unlink_wallet', { method: 'POST', body: JSON.stringify({ pwd: 'wrong' }) })).status, 401);
+    const un = await withJar('/cia/user/unlink_wallet', { method: 'POST', body: JSON.stringify({ pwd: 'password-u1' }) });
+    assert.equal(un.status, 200, j(un.body)); assert.equal(un.body.unlinked, true); assert.equal(un.body.retired, 0, '발급 전이라 은퇴할 자격증명은 없다');
+    const me2 = (await withJar('/cia/user/me')).body; assert.equal(me2.registered, false, '지갑 연결이 풀렸다'); assert.equal(me2.disabled, false, '계정은 폐기되지 않았다');
+    assert.equal((await withJar('/cia/user/login', { method: 'POST', body: JSON.stringify({ id: 'unlink-1', pwd: 'password-u1' }) })).status, 200, '같은 아이디로 계속 로그인된다');
+    const second = await reg1();
+    assert.notEqual(second.slot, first.slot, '다시 등록하면 새 슬롯');
+    assert.equal((await withJar('/cia/user/me')).body.registered, true);
+  });
+
   await t('계정 삭제(2026-11-06, 관리자): 가입만 한 계정은 레코드·아이디 색인이 지워져 같은 아이디로 재가입; 등록된 계정은 먼저 폐기(슬롯 0)되고 지워진다; 모르는 uid 404; 시크릿 없이 401', async () => {
     const withJar = makeJar(cia.base);
     const su = await withJar('/cia/signup', { method: 'POST', body: JSON.stringify({ id: 'del-1', pwd: 'password-d1' }) });

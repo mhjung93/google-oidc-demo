@@ -27,6 +27,7 @@ window.DemoStrings = {
     where_rp2: { ko: '두 번째 RP', en: 'the second RP' },
     where_idp_user: { ko: 'IdP 사용자 페이지', en: 'the IdP user page' }, where_idp_rp: { ko: 'IdP RP 페이지', en: 'the IdP RP page' },
     confirm_revoke: { ko: '되돌릴 수 없습니다. 폐기할까요?', en: 'This cannot be undone. Revoke?' },
+    confirm_unlink_wallet: { ko: '이 계정에서 지갑 등록을 풉니다. 발급된 자격증명은 폐기(게시)되고, 계정과 아이디는 남아 새 지갑을 다시 등록할 수 있습니다. 지갑 쪽은 설정 탭 "Snap 초기화" 로 비우세요. 계속할까요?', en: 'Unlink the wallet from this account. The issued credential is revoked (and published); the account and login id stay so you can register a new wallet. Clear the wallet side with "Reset the Snap" in wallet settings. Continue?' },
     confirm_delete_account: { ko: '계정과 지갑 등록을 지웁니다. 되돌릴 수 없습니다. 등록된 자격증명은 먼저 폐기(게시)됩니다. 지갑 쪽 Snap 비밀은 사용자가 "지갑 설정 → Snap 초기화" 로 지워야 합니다. 계속할까요?', en: 'This deletes the account and its wallet registration and cannot be undone. A registered credential is revoked (and published) first. The secret inside the user’s Snap must be cleared by the user (wallet settings → Reset the Snap). Continue?' },
     confirm_tamper: { ko: '시연용입니다 — 이 계정의 등록부 슬롯에 가짜 자격증명을 게시합니다. 계속할까요?', en: 'Demo only — publish a fake credential into this account’s registry slot. Continue?' },
     confirm_publish: { ko: '폐기 목록을 체인에 게시합니다. 계속할까요?', en: 'Publish the revocation list on-chain. Continue?' },
@@ -384,6 +385,7 @@ window.DemoStrings = {
     wallet_prog_sending: { ko: '전송하는 중…', en: 'Sending…' },
     wallet_prog_registering: { ko: '등록하는 중…', en: 'Registering…' },
     wallet_prog_done: { ko: '완료 — 창을 닫습니다.', en: 'Done — closing this window.' },
+    wallet_google_needs_google_account: { ko: '이 지갑은 zkID 아이디 계정으로 등록돼 있어 Google 로그인을 쓸 수 없습니다 — "zkID 로 로그인" 을 쓰거나, 지갑을 초기화하고 Google 계정으로 등록하세요.', en: 'This wallet is registered with a zkID login id, so Google login cannot be used — use "Log in with zkID", or reset the wallet and register with a Google account.' },   // 2026-11-06
     wallet_prog_not_registered: { ko: '등록된 지갑이 없습니다 — zkID 사용자 페이지에서 가입하고 지갑을 등록한 뒤 다시 로그인하세요.', en: 'This wallet is not registered — sign up at the zkID user page and register the wallet, then log in again.' },
     wallet_prog_failed: { ko: '실패했습니다 — 창이 곧 닫힙니다.', en: 'Failed — this window will close shortly.' },
     wallet_auth_conditions: { ko: '요청한 조건', en: 'Requested conditions' },
@@ -666,6 +668,11 @@ window.DemoStrings = {
     // 2026-11-04: 내 등록 정보 카드의 두 값에 한 줄 설명(사용자 질문 — 가명·슬롯이 무엇인지 화면만 보고는 알 수 없었다).
     idp_auid_desc: { ko: 'zkID 가 이 계정을 지갑과 잇는 데 쓰는 가명입니다. 로그인 때 지갑이 자동으로 넘깁니다.', en: 'A pseudonym zkID uses to tie this account to your wallet. The wallet hands it over automatically at login.' },
     idp_slot_desc: { ko: 'zkID 등록부에서 이 계정의 자리 번호입니다.', en: 'The position of this account in the zkID registry.' },
+    idp_manage_title: { ko: '계정 관리', en: 'Account' },   // 2026-11-06: 폐기 카드에 지갑 연결 해제가 함께 들어가 제목을 바꿈
+    idp_unlink_btn: { ko: '지갑 연결 해제', en: 'Unlink wallet' },
+    idp_unlink_ok_title: { ko: '지갑 연결 해제됨', en: 'Wallet unlinked' },
+    idp_unlink_ok: { ko: '이 계정에서 지갑 등록을 풀었습니다. 지갑 설정 탭의 "Snap 초기화" 로 지갑을 비운 뒤 "지갑 연결해 등록" 으로 새 지갑을 등록하세요.', en: 'The wallet registration was removed from this account. Clear the wallet with "Reset the Snap" in wallet settings, then register a new wallet with "Connect wallet and register".' },
+    idp_unlink_failed: { ko: '지갑 연결 해제 실패', en: 'Unlinking the wallet failed' },
     idp_signup_ok_title: { ko: '가입됨', en: 'Signed up' },
     idp_signup_ok: { ko: '아이디 {id} 로 가입했습니다. 비밀번호를 넣고 로그인하세요.', en: 'Your account {id} is ready. Enter your password to log in.' },
     idp_signup_ok_next: { ko: '아이디 {id} 로 가입했습니다. 이제 지갑을 등록하세요.', en: 'Your account {id} is ready. Now register your wallet.' },   // 2026-11-06: 가입 직후 자동 로그인 뒤
@@ -903,6 +910,7 @@ window.DemoStrings = {
     relay_bad_proof: { where: 'rp', ko: { title: '릴레이가 증명을 거절했습니다', cause: 'RP 릴레이가 calldata 안의 증명을 검증하지 못했습니다.', action: '다시 로그인한 뒤 다시 시도하세요.' }, en: { title: 'The relay rejected the proof', cause: 'The RP relay could not verify the proof inside the calldata.', action: 'Log in again and retry.' } },
     oidc_required: { where: 'aa', ko: { title: 'Google 본인 확인이 필요합니다', cause: 'Google 로 등록된 계정은 로그인마다 Google ID 토큰을 함께 내야 합니다.', action: 'RP 의 "Google 로 로그인" 버튼으로 다시 로그인하세요.' }, en: { title: 'Google verification required', cause: 'Accounts registered through Google must present a Google ID token on every login.', action: 'Log in again with the RP\'s "Sign in with Google" button.' } },
     // 지갑(mode3_wallet_agent.js, state.registration 없음)과 IdP(cia.js /cia/auth/code, pk_u 없는 계정) 양쪽에서 나는 코드다.
+    google_requires_google_account: { where: 'wallet', ko: { title: 'Google 계정으로 등록된 지갑이 아닙니다', cause: '이 지갑은 zkID 아이디 계정으로 등록돼 있습니다. Google 로그인은 Google 로 등록한 지갑만 쓸 수 있습니다.', action: '"zkID 로 로그인" 을 쓰거나, 지갑 설정의 "Snap 초기화" 뒤 Google 계정으로 다시 등록하세요.' }, en: { title: 'This wallet is not registered with Google', cause: 'This wallet is registered with a zkID login id; Google login works only for wallets registered with Google.', action: 'Use "Log in with zkID", or reset the Snap in wallet settings and register with Google.' } },
     not_registered: { where: 'wallet', ko: { title: '이 지갑은 아직 zkID 에 등록되지 않았습니다', cause: 'zkID 에 계정을 만들고 지갑을 등록해야 로그인할 수 있습니다.', action: 'zkID 사용자 페이지에서 가입(또는 로그인)하고 "지갑 연결해 등록"을 누른 뒤 다시 로그인하세요.' }, en: { title: 'This wallet is not registered with zkID yet', cause: 'You need a zkID account with this wallet registered before you can log in.', action: 'Sign up (or log in) on the zkID user page, press "Connect the wallet and register", then log in again.' } },
     cia_unavailable: { where: 'wallet', ko: { title: 'IdP 에 연결하지 못했습니다', cause: '지갑이 IdP 서버를 부르지 못했습니다 — 꺼져 있거나 주소가 다릅니다.', action: 'IdP 서버(:4100)가 떠 있는지 확인하고 다시 시도하세요.' }, en: { title: 'Could not reach the IdP', cause: 'The wallet failed to call the IdP server — it is down or configured at a different address.', action: 'Check that the IdP server (:4100) is running and try again.' } },
     witness_required: { where: 'wallet', ko: { title: 'Snap 동의가 빠졌습니다', cause: 'Snap 모드에서는 요청에 Snap 이 만든 증인이 함께 와야 하는데 오지 않았습니다.', action: '지갑 승인 창에서 Snap 동의를 마친 뒤 다시 시도하세요.' }, en: { title: 'The Snap consent is missing', cause: 'In Snap mode the request must carry a witness produced by the Snap, and none arrived.', action: 'Complete the Snap consent in the wallet approval window, then try again.' } },

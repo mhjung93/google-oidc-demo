@@ -909,6 +909,23 @@ app.post('/cia/user/self_revoke', requireUser, async (req, res) => {
     res.json(r);
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
+// 2026-11-06(사용자 요청): 지갑 연결 해제 — 계정은 남기고 지갑 등록(pk_u·auid·슬롯)만 푼다. 활성 자격증명은 은퇴·게시(계정 폐기와 같은 등록부 처리)하되
+// disabled 는 걸지 않아 같은 아이디로 새 지갑을 다시 등록할 수 있다(registerAccount 는 pk_u 가 없으면 받고 슬롯은 새로 배정한다 — 번호 재사용 없음).
+// 세션 기록은 남는다(세션 폐기는 사용자가 지갑에서 이미 했거나 관리자가 한다). 지갑(Snap·에이전트) 쪽은 사용자가 "Snap 초기화" 로 비운다.
+app.post('/cia/user/unlink_wallet', requireUser, async (req, res) => {
+  try {
+    const { pwd } = req.body ?? {};
+    const uid = req.session.uid, acct = state.accounts[uid];
+    if (!pwOk(acct, pwd)) return res.status(401).json({ error: 'invalid credentials', reason: 'invalid_credentials' });
+    if (!acct.pk_u) return res.status(409).json({ error: 'not registered', reason: 'not_registered' });
+    const retired = retireActiveCred(uid);
+    if (retired) setSlot(uid, 0n);
+    acct.pk_u = null; acct.auid = null; acct.slotRetired = true;
+    persist();
+    const pub = retired ? await publishSafely() : { published: false };
+    res.json({ unlinked: true, retired, published: Boolean(pub.published), pending: state.pending.length });
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
 // 인증 창(§4)이 부른다 — 세션 없이도 된다. pwd 검사 → 등록 상태 → auid 일치 순으로 본다(틀린 비밀번호에는 등록 여부를 알려주지 않는다).
 app.post('/cia/auth/code', (req, res) => {
   const { uid: uidIn, id, pwd, auid } = req.body ?? {};

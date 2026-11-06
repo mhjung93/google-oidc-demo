@@ -72,9 +72,9 @@
     <p><a id="walletLink2" class="btn-ghost" target="_blank" rel="noopener" data-i18n="idp_wallet_link">지갑 페이지 열기</a></p>
   </section>
   <section class="card me-view" id="revokeCard" hidden>
-    <h3 data-i18n="account_revoke_btn">내 계정 폐기</h3>
-    <p class="desc" data-i18n="idp_revoke_desc">비밀번호를 다시 넣어 확인합니다. 되돌릴 수 없습니다.</p>
-    <p><label><span data-i18n="idp_pwd_label">비밀번호</span> <input id="revokePwd" type="password" autocomplete="current-password" /></label> <button id="revokeBtn" class="danger" data-i18n="account_revoke_btn">내 계정 폐기</button></p>
+    <h3 data-i18n="idp_manage_title">계정 관리</h3>
+    <p class="desc" data-i18n="idp_revoke_desc">비밀번호를 다시 넣어 확인합니다. 지갑 연결 해제는 이 계정에서 지갑 등록만 풀어 새 지갑을 다시 등록할 수 있게 하고, 계정 폐기는 되돌릴 수 없습니다.</p>
+    <p><label><span data-i18n="idp_pwd_label">비밀번호</span> <input id="revokePwd" type="password" autocomplete="current-password" /></label> <button id="unlinkBtn" class="btn-ghost" data-i18n="idp_unlink_btn">지갑 연결 해제</button> <button id="revokeBtn" class="danger" data-i18n="account_revoke_btn">내 계정 폐기</button></p>
     <div id="revokeVerdict"></div>
   </section>
 </main>
@@ -200,6 +200,15 @@
   $('copyAuidBtn').addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(me.auid); }
     catch { const ta = document.createElement('textarea'); ta.value = me.auid; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); } finally { ta.remove(); } }
+  });
+  // 2026-11-06: 지갑 연결 해제 — 세션 폐기 뒤 지갑을 초기화해도 zkID 는 "지갑과 연결돼 있습니다" 로 남아 있던 것(사용자 지적). 계정은 두고 등록만 푼다.
+  $('unlinkBtn').addEventListener('click', async () => {
+    if (!me) return;
+    if (!Demo.confirmDanger('confirm_unlink_wallet')) return;
+    const r = await post('/cia/user/unlink_wallet', { pwd: $('revokePwd').value });
+    $('revokePwd').value = '';
+    verdict($('revokeVerdict'), r.status === 200, r.status === 200 ? 'idp_unlink_ok_title' : 'idp_unlink_failed', r.status === 200 ? () => ({ summary: tt('idp_unlink_ok') || '지갑 연결을 해제했습니다.' }) : { reason: r.body?.reason, detail: r.body });
+    await refreshMe();
   });
   $('revokeBtn').addEventListener('click', async () => {
     if (!me) return;

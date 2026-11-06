@@ -174,6 +174,28 @@ try {
     assert.equal(a?.disabled, true);
   });
 
+  await t('zkONE "Google 계정으로 로그인" + 미등록 지갑(2026-11-06): 팝업이 그 자리에서 Google 등록 → Google 발급 → 로그인 성공', async () => {
+    await context.addInitScript(() => { window.__gsiSub = 'g-browser-2'; });   // 새 Google 계정 — 이후 생기는 페이지의 GSI 스텁이 이 sub 로 토큰을 받는다
+    assert.equal((await wallet.post('/wallet/reset', { confirm: true })).status, 200, '에이전트 등록 비움');
+    snapState.registration = null; snapState.userCred = null;                   // Snap 비움
+    const rpPage = await context.newPage(); await rpPage.goto(rp.base);
+    if (await rpPage.$eval('#loginBtn', (b) => b.hidden)) { await rpPage.click('#logoutBtn'); await rpPage.waitForSelector('#loginBtn:not([hidden])'); }   // 앞 케이스의 세션이 복원돼 있을 수 있다(idpLogin 과 같다)
+    await rpPage.click('#loginBtn');
+    const [popup] = await Promise.all([context.waitForEvent('page'), rpPage.click('#googleLoginBtn')]);
+    const popupLog = []; popup.on('console', (m) => popupLog.push(`${m.type()}: ${m.text()}`)); popup.on('pageerror', (e) => popupLog.push(`pageerror: ${e.message}`));
+    await popup.waitForSelector('#gsiBox .gsi-stub', { timeout: 60_000 });    // 1) 등록 토큰
+    const first = await popup.$('#gsiBox .gsi-stub');
+    await popup.click('#gsiBox .gsi-stub');
+    // 등록이 끝나면 팝업이 곧바로 발급용 Google 버튼을 새로 그린다("Google 계정으로 등록됨" 안내는 바로 다음 안내로 덮여 잡을 수 없다) — 새 버튼(다른 요소)을 기다린다.
+    await popup.waitForFunction((prev) => { const b = document.querySelector('#gsiBox .gsi-stub'); return Boolean(b) && b !== prev; }, first, { timeout: 60_000 });   // 2) 발급 토큰 — 새로 그려진 버튼
+    await popup.click('#gsiBox .gsi-stub');
+    await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
+    const st = (await wallet.get('/wallet/status')).body;
+    assert.equal(st.registered, true); assert.equal(st.provider, stub.provider, '등록 provider 는 발급자 스텁의 것'); assert.equal(String(st.uid), uidOf(stub.provider, 'g-browser-2'));
+    assert.ok((await cia.adminGet('/cia/accounts')).body.accounts.some((x) => String(x.uid) === uidOf(stub.provider, 'g-browser-2')), 'IdP 에 Google 계정이 생겼다');
+    await rpPage.close();
+  });
+
   await t('하네스: 준비한 대화상자 응답이 남지 않았다(기대한 동의 창이 다 떴다)', async () => {
     assert.equal(answers.length, 0, `쓰이지 않은 응답이 남았다: ${j(answers)}`);
   });
