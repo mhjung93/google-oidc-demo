@@ -34,7 +34,7 @@ window.DemoStrings = {
     confirm_rp_deny: { ko: 'RP 를 거절합니다. 거절은 되돌릴 수 없고, 운영자가 키로 다시 등록해야 합니다. 계속할까요?', en: 'Deny this RP. This cannot be undone; the operator must re-register with the key. Continue?' },
     confirm_open_approve: { ko: '개봉을 승인하면 이 세션의 uid 가 영구히 기록됩니다(조건부 프라이버시 해제). 계속할까요?', en: 'Approving records this session’s uid permanently (conditional privacy is lifted). Continue?' },
     confirm_open_deny: { ko: '개봉 요청을 거절합니다. 되돌릴 수 없습니다. 계속할까요?', en: 'Deny this opening request. This cannot be undone. Continue?' },
-    confirm_reset: { ko: 'Snap 의 등록 비밀과 동의 기록을 지웁니다. 계속할까요?', en: 'Erase the Snap’s registration secrets and consents. Continue?' },
+    confirm_reset: { ko: 'Snap 의 등록 비밀·동의 기록과 이 지갑(에이전트)의 등록·세션 기록을 모두 지웁니다. zkID 쪽 계정은 그대로이므로 새로 등록하려면 새 계정(또는 관리자의 계정 삭제)이 필요합니다. 계속할까요?', en: 'Erase the Snap’s registration secrets and consents and this wallet agent’s registration and sessions. The zkID account itself stays; to register again you need a new account (or an administrator deletes it). Continue?' },
     // 페이지 제목·카드 제목·설명 — T2~T4 가 쓴다(키 이름 = 페이지_카드_역할)
     // Task 14(B5, 2026-10-23): "사용자 속성 등록" → "내 신원" — 이 카드가 이제 auid·salt 도 보이므로(아래 wallet_salt_*),
     // reasons.auid_mismatch(아래)가 이미 "지갑 페이지의 '내 신원' 카드에서 복사" 라고 이 이름을 가리키고 있었다.
@@ -361,7 +361,8 @@ window.DemoStrings = {
     wallet_self_revoke_ok: { ko: '내 계정의 폐기를 zkID 에 요청했습니다 — 되돌릴 수 없습니다.', en: 'Requested zkID to revoke my account — this cannot be undone.' },
     wallet_self_revoke_failed: { ko: '자기 폐기 실패', en: 'Self-revocation failed' },
     wallet_snap_reset_ok: { ko: 'Snap 초기화 완료', en: 'The Snap was reset' },
-    wallet_snap_reset_summary: { ko: 'Snap 의 등록 비밀과 동의 기록을 지웠습니다. 에이전트 파일의 공개 등록은 그대로입니다.', en: 'The Snap’s registration secrets and consent records were erased. The public registration in the agent’s file is untouched.' },
+    wallet_salt_failed: { ko: 'salt 를 보일 수 없습니다', en: 'Cannot show the salt' },   // 2026-11-06
+    wallet_snap_reset_summary: { ko: 'Snap 의 등록 비밀·동의 기록과 이 지갑(에이전트)의 등록·세션을 지웠습니다. 이제 zkID 에서 새 계정으로 등록할 수 있습니다.', en: 'Erased the Snap’s secrets and consents and this wallet agent’s registration and sessions. You can now register a new zkID account.' },
     wallet_snap_reset_failed: { ko: 'Snap 초기화 실패', en: 'Resetting the Snap failed' },
     wallet_snap_reinstall_ok: { ko: 'Snap 다시 설치 완료', en: 'The Snap was reinstalled' },
     wallet_snap_reinstall_summary: { ko: 'MetaMask 가 Snap 번들을 다시 받아 설치했습니다. 등록 비밀과 동의 기록은 그대로입니다.', en: 'MetaMask fetched and installed the Snap bundle again. Your registration secret and consents are unchanged.' },

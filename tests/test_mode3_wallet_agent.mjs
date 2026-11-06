@@ -1288,6 +1288,12 @@ await t('/wallet/register { uid, code }: register_code 로 받은 코드로 등�
     assert.equal(r.status, 201, j(r.body));
     assert.equal(r.body.uid, uid);
     assert.equal((await w4.get('/wallet/status')).body.registered, true);
+    // 2026-11-06: 지갑 쪽 초기화 — 에이전트의 등록·세션을 비운다(confirm:true 필수). IdP 계정은 그대로라 같은 uid 재등록은 IdP 가 409.
+    assert.equal((await w4.post('/wallet/reset', {})).status, 400, 'confirm 없이는 안 된다');
+    const rst = await w4.post('/wallet/reset', { confirm: true });
+    assert.equal(rst.status, 200, j(rst.body)); assert.equal(rst.body.hadRegistration, true);
+    assert.equal((await w4.get('/wallet/status')).body.registered, false, '초기화 뒤 미등록');
+    assert.equal((await w4.post('/wallet/reset', { confirm: true })).body.hadRegistration, false, '두 번째는 지울 것이 없다');
   } finally { await st.stop(); }
 });
 

@@ -1236,6 +1236,16 @@ app.post('/wallet/session/revoke', async (req, res) => {
 // 운영·시연용: 폐기 트리 체크포인트를 버린다. 다음 동기화가 창세기부터 재생한다(스펙 §8). 같은 오리진만.
 // CORS 를 열지 않지만 self_revoke 와 같은 이유로 본문에 JSON `{confirm:true}` 를 요구한다 — express.json() 은
 // text/plain 단순 요청(폼 전송 등)을 파싱하지 않으므로, 이 확인 없이는 다른 오리진 페이지가 폼으로 캐시를 지울 수 없다.
+// 2026-11-06(사용자 지적): 지갑 페이지 "Snap 초기화" 가 Snap 비밀만 지우고 이 에이전트의 등록 기록은 남겨 두어, 다시 등록하면 409 already_registered
+// 가 나고 salt 보기도(Snap 에 등록이 없어) 실패했다. 이 경로가 에이전트 쪽 등록·세션·게시 대기 bound 를 함께 비운다 — 같은 오리진(지갑 페이지)만 부르고
+// CORS 는 열지 않는다. IdP 의 계정·등록부는 건드리지 않는다(관리자 "계정 삭제" 또는 그대로 두고 새 계정으로 등록).
+app.post('/wallet/reset', (req, res) => {
+  if (req.body?.confirm !== true) return res.status(400).json({ error: 'confirm:true 필요' });
+  const had = Boolean(state.registration);
+  state.registration = null; state.sessions = {}; state.pendingBounds = [];
+  persist();
+  res.json({ ok: true, hadRegistration: had });
+});
 app.post('/wallet/rcl/reset', (req, res) => {
   if (req.body?.confirm !== true) return res.status(400).json({ error: 'confirm:true 필요' });
   if (!rcl) return res.status(503).json({ reason: 'chain_unavailable', detail: 'CIA_LOG_ADDRESS not configured' });

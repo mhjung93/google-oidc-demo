@@ -1258,7 +1258,11 @@
         // 화면에 비밀이 계속 떠 있지 않게 몇 초 뒤 스스로 가린다 — 다시 누르면 타이머가 늘어난다.
         clearTimeout(saltHideTimer);
         saltHideTimer = setTimeout(() => { saltRevealed = null; renderIdentity(); }, SALT_REVEAL_MS);
-      } catch (e) { console.warn(`[wallet] salt 보기 실패: ${e.message}`); }
+      } catch (e) {
+        console.warn(`[wallet] salt 보기 실패: ${e.message}`);
+        // 2026-11-06: 조용히 실패하면 사용자는 버튼이 고장난 줄 안다 — Snap 에 등록이 없으면(초기화 뒤 등) 그 사유를 보인다.
+        setVerdict($('snapVerdict'), false, 'wallet_salt_failed', { reason: /not_registered/.test(e.message) ? 'not_registered' : 'wallet_error', detail: e.message });
+      }
     });
 
     // 등록: file 모드는 지금처럼 폼의 uid·pwd, snap 모드는 Snap 이 묻고(§4.1) 페이지는 s_u·sk_u 만 나른다.
@@ -1707,7 +1711,11 @@
         await ensureConnected();
         const r = await invokeSnap('reset', {});
         if (r && r.denied) { setVerdict($('snapVerdict'), false, 'wallet_snap_reset_failed', () => ({ summary: tt('wallet_cancelled') || '창에서 취소했습니다.' })); return; }
-        setVerdict($('snapVerdict'), true, 'wallet_snap_reset_ok', () => ({ summary: tt('wallet_snap_reset_summary') || 'Snap 의 등록 비밀과 동의 기록을 지웠습니다.' }));
+        // 2026-11-06: 에이전트(이 서버)의 등록·세션도 함께 비운다 — 아니면 다음 등록이 409 already_registered 로 막힌다.
+        const a = await fetch('/wallet/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: true }) });
+        if (!a.ok) { setVerdict($('snapVerdict'), false, 'wallet_snap_reset_failed', { reason: 'wallet_error', detail: `agent reset HTTP ${a.status}` }); return; }
+        setVerdict($('snapVerdict'), true, 'wallet_snap_reset_ok', () => ({ summary: tt('wallet_snap_reset_summary') || 'Snap 과 이 지갑의 등록 기록을 지웠습니다. 이제 zkID 에서 새로 등록할 수 있습니다.' }));
+        await refresh();
       } catch (e) {
         setVerdict($('snapVerdict'), false, 'wallet_snap_reset_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
       }
