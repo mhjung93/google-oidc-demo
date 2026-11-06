@@ -319,6 +319,13 @@ try {
     const r2 = await rp.post('/api/mode3/open', { PPID: PPID1 }, rp.adminHeaders);   // 같은 (arid, c1) — IdP 가 같은 id 로 dedup 한다
     assert.equal(r2.status, 200); assert.equal(r2.body.id, id);
     assert.equal((await rp.post('/api/mode3/open', { PPID: '1' }, rp.adminHeaders)).status, 404);
+    // 2026-11-06: 관리자 화면이 보이는 0x 계정 주소(팩토리 computeAddress(PPID))로도 같은 요청 — 로그인 기록의 account 와 같아야 한다.
+    const rec = (await rp.get('/api/mode3/logins', rp.adminHeaders)).body.logins.find((l) => l.PPID === PPID1);
+    assert.match(rec.account, /^0x[0-9a-fA-F]{40}$/, j(rec));
+    const r3 = await rp.post('/api/mode3/open', { account: rec.account }, rp.adminHeaders);
+    assert.equal(r3.status, 200, j(r3.body)); assert.equal(r3.body.id, id, '주소로 요청해도 같은 (arid, c1) → 같은 id');
+    assert.equal((await rp.post('/api/mode3/open', { account: '0x' + '22'.repeat(20) }, rp.adminHeaders)).body.reason, 'unknown_rp_account');
+    assert.equal((await rp.post('/api/mode3/open', { account: '0x123' }, rp.adminHeaders)).status, 400);
   });
 
   await t('9a. allowAgent=1 로그인 → PPID 개봉 결과에 allowAgent 1', async () => {

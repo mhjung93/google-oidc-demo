@@ -630,14 +630,32 @@ app.get('/api/mode3/relay/:txHash', relayCors, async (req, res) => {
 });
 
 // ---- §6 개봉(데모용, 인증 없음) ----
-function lastTranscriptOf(PPID) {
-  if (!fs.existsSync(LOGIN_LOG)) return null;
-  // 마지막 줄이 쓰다 만 채로 잘려 있을 수 있다 — 파싱 안 되는 줄만 건너뛰고 나머지는 그대로 쓴다.
+/** 로그인 로그 파일의 줄들(오래된 것부터). 마지막 줄이 쓰다 만 채로 잘려 있을 수 있다 — 파싱 안 되는 줄만 건너뛰고 나머지는 그대로 쓴다. */
+function readLoginLog() {
+  if (!fs.existsSync(LOGIN_LOG)) return [];
   let dropped = 0;
   const lines = fs.readFileSync(LOGIN_LOG, 'utf8').split('\n').filter(Boolean)
     .map((l) => { try { return JSON.parse(l); } catch { dropped++; return null; } }).filter(Boolean);
   if (dropped > 0) console.warn(`[rp] 로그인 로그 손상 줄 ${dropped}개 건너뜀`);
-  return lines.reverse().find((l) => l.PPID === PPID) ?? null;
+  return lines;
+}
+function lastTranscriptOf(PPID) {
+  return readLoginLog().reverse().find((l) => l.PPID === PPID) ?? null;
+}
+// 2026-11-06(사용자 결정): 관리자 화면은 PPID 숫자 대신 세션 계정의 0x 주소(팩토리 computeAddress(PPID))를 보인다. 주소 → PPID 는 되돌릴 수 없으므로
+// 이 RP 가 본 PPID(로그인 로그·메모리 목록)마다 주소를 계산해 대조한다. 팩토리가 바뀌면(재배포) 캐시 키가 달라져 다시 계산한다.
+const accountCache = new Map();   // `${factoryAddress}|${PPID}` → 0x 주소
+async function accountOfCached(PPID) {
+  if (!reg.factoryAddress) return null;
+  const k = `${reg.factoryAddress}|${PPID}`;
+  if (!accountCache.has(k)) accountCache.set(k, await accountOf(PPID));
+  return accountCache.get(k);
+}
+async function ppidOfAccount(address) {
+  const want = address.toLowerCase();
+  const seen = new Set([...logins.map((l) => l.PPID), ...readLoginLog().map((l) => l.PPID)]);
+  for (const PPID of seen) { const a = await accountOfCached(PPID); if (a && a.toLowerCase() === want) return PPID; }
+  return null;
 }
 /** 트랜잭션 해시에서 개봉 재료(§6.2): calldata 의 (a, b, c, pub) 을 snarkjs 증명 형식으로 되돌린다. 성공한 execute 만 받는다. */
 async function transcriptFromTx(txHash) {
@@ -653,12 +671,19 @@ async function transcriptFromTx(txHash) {
 app.post('/api/mode3/open', requireRpAdmin, async (req, res) => {
   try {
     if (!verifier) return res.status(503).json({ ok: false, reason: inactiveReason() });
-    const { PPID, txHash } = req.body ?? {};
+    const { PPID, txHash, account } = req.body ?? {};
     let T;
     if (typeof txHash === 'string') {
       if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) return res.status(400).json({ ok: false, reason: 'malformed' });
       T = await transcriptFromTx(txHash);
       if (T.error) return res.status(404).json({ ok: false, reason: T.error });
+    } else if (typeof account === 'string') {
+      // 2026-11-06: 관리자 화면이 보이는 0x 계정 주소로도 요청한다 — 이 RP 의 로그인 기록에서 그 주소의 PPID 를 찾는다.
+      if (!/^0x[0-9a-fA-F]{40}$/.test(account)) return res.status(400).json({ ok: false, reason: 'malformed' });
+      const ppid = await ppidOfAccount(account);
+      if (!ppid) return res.status(404).json({ ok: false, reason: 'unknown_rp_account' });
+      T = lastTranscriptOf(ppid);
+      if (!T) return res.status(404).json({ ok: false, reason: 'no_transcript' });
     } else if (typeof PPID === 'string') {
       T = lastTranscriptOf(PPID);
       if (!T) return res.status(404).json({ ok: false, reason: 'no_transcript' });
@@ -683,7 +708,11 @@ app.get('/api/mode3/open/:id', requireRpAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });
 
-app.get('/api/mode3/logins', requireRpAdmin, (req, res) => res.json({ logins }));
+// 2026-11-06: 각 기록에 세션 계정의 0x 주소(account)를 붙인다 — 관리자 화면이 PPID 대신 보인다(팩토리 전이면 null).
+app.get('/api/mode3/logins', requireRpAdmin, async (req, res) => {
+  try { res.json({ logins: await Promise.all(logins.map(async (l) => ({ ...l, account: await accountOfCached(l.PPID) }))) }); }
+  catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
+});
 app.get('/api/mode3/txs', requireRpAdmin, (req, res) => res.json({ txs: relayedTxs }));   // 관리자 페이지가 읽는다(2026-11-05 비밀번호 필요)
 // 2026-10-16 로그아웃: 이 RP 가 세션을 잊는다(세션키 서명은 요구하지 않는다 — 피해가 없는 동작). 그 r_s 는 이후 unknown_session.
 // 2026-10-21: 사용자 페이지(지갑 오리진)도 부른다 — 세션 폐기 뒤 이 RP 에 알려 RP 페이지가 바로 로그아웃 상태가 되게(최선 노력, 폐기 자체는 체인 root 로 효력).

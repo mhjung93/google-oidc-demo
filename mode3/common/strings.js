@@ -226,7 +226,7 @@ window.DemoStrings = {
     user_auth_tx_title: { ko: '{service} 출금 — 받는 주소와 금액을 확인하세요', en: '{service} withdrawal — check the recipient and amount' },
     wallet_auth_tx_to: { ko: '받는 주소', en: 'Recipient' },
     wallet_auth_tx_value: { ko: '금액', en: 'Amount' },
-    rp_open_no_request: { ko: '먼저 개봉을 요청하세요(PPID 또는 해시로)', en: 'Request an opening first (by PPID or tx hash)' },
+    rp_open_no_request: { ko: '먼저 개봉을 요청하세요(계정 주소 또는 해시로)', en: 'Request an opening first (by account address or tx hash)' },
     rp_logout_btn: { ko: '로그아웃', en: 'Log out' },
     rp_session_ended_title: { ko: '로그아웃됨', en: 'Logged out' },
     rp_session_ended: { ko: '이 세션이 끝났습니다 — 사용자 페이지에서 폐기하거나 로그아웃했습니다. 계속 쓰려면 다시 로그인하세요.', en: 'This session has ended — it was revoked or logged out from the user page. Log in again to continue.' },
@@ -920,6 +920,7 @@ window.DemoStrings = {
     admin_secret_required: { where: 'aa', ko: { title: '관리자 기능이 꺼져 있습니다', cause: 'IdP 에 CIA_ADMIN_SECRET 이 설정돼 있지 않아 관리자 엔드포인트가 전부 비활성입니다(503).', action: 'IdP 서버에 CIA_ADMIN_SECRET 을 설정하고 다시 띄우세요.' }, en: { title: 'Admin functions are disabled', cause: 'The IdP has no CIA_ADMIN_SECRET configured, so every admin endpoint is off (503).', action: 'Set CIA_ADMIN_SECRET on the IdP server and restart it.' } },
     admin_uid_required: { where: 'aa', ko: { title: 'uid 를 먼저 고르세요', cause: '폐기·복구할 계정의 uid 가 비어 있습니다.', action: '계정 표의 "선택" 을 누르거나 uid 를 직접 입력한 뒤 다시 누르세요.' }, en: { title: 'Choose a uid first', cause: 'The uid of the account to revoke or recover is empty.', action: 'Press "Select" in the accounts table or type the uid, then try again.' } },
     admin_unauthorized: { where: 'aa', ko: { title: '관리자 비밀번호가 맞지 않습니다', cause: '요청에 실린 관리자 비밀번호가 서버에 설정된 값과 다릅니다.', action: '관리자 로그아웃을 누르고 다시 로그인하세요.' }, en: { title: 'The admin password does not match', cause: 'The admin password sent with the request differs from the one configured on the server.', action: 'Press admin log-out and log in again.' } },
+    unknown_rp_account: { where: 'rp', ko: { title: '그 주소로 로그인한 기록이 없습니다', cause: '이 RP 의 로그인 기록에 그 계정 주소(0x)에 해당하는 PPID 가 없습니다(404).', action: '로그인 기록의 "개봉 요청" 버튼을 쓰거나, 기록에 있는 주소를 그대로 붙여 넣으세요.' }, en: { title: 'No login recorded for that address', cause: 'No PPID in this RP’s login records maps to that account address (404).', action: 'Use the "Request opening" button in the login records, or paste an address exactly as shown there.' } },
     unknown_account: { where: 'aa', ko: { title: '그 uid 의 계정이 없습니다', cause: 'IdP 등록부에 그 uid 가 없습니다 — 아직 지갑이 등록하지 않았거나 uid 를 잘못 적었습니다(404).', action: '계정 목록에서 uid 를 골라 넣으세요.' }, en: { title: 'No account with that uid', cause: 'The IdP’s registry has no such uid — the wallet has not registered yet, or the uid is mistyped (404).', action: 'Pick the uid from the account list.' } },
     invalid_credentials: { where: 'aa', ko: { title: '아이디 또는 비밀번호가 맞지 않습니다', cause: '입력한 아이디와 비밀번호가 맞지 않습니다. 어느 쪽이 틀렸는지는 알려 주지 않습니다.', action: '아이디와 비밀번호를 확인해 다시 넣으세요.' }, en: { title: 'The id or the password is wrong', cause: 'The id and password you entered do not match. Which one is wrong is not revealed.', action: 'Check the id and password and try again.' } },
     // 브라우저 전용 사용자 페이지(web 모드, 2026-10-15) — 금고(mode3/user/core/vault.js)·증명 워커·RP 릴레이(mode3_rp.js /api/mode3/relay)·승인 창이 내는 코드.
