@@ -191,6 +191,8 @@
       <p class="row-actions"><button id="snapInfoBtn" class="btn-ghost" data-i18n="wallet_snap_info_btn">Snap 상태 보기</button></p>
       <div id="snapVerdict"></div>
       <pre id="snapInfo" class="expert"></pre>
+      <!-- 2026-11-06: 설치돼 있으면 연결 때 설치 창이 다시 뜨지 않으므로, 번들이 바뀐 뒤에는 여기서 명시적으로 다시 설치한다. -->
+      <p class="row-actions"><button id="snapReinstallBtn" class="btn-ghost" data-i18n="wallet_snap_reinstall_btn">Snap 다시 설치</button> <span class="muted" data-i18n="wallet_snap_reinstall_hint">Snap 번들이 바뀌었을 때만 — 등록 비밀은 그대로 남습니다.</span></p>
       <div class="danger-zone">
         <h4 data-i18n="wallet_danger_title">위험 구역</h4>
         <p class="desc muted" data-i18n="wallet_danger_desc">되돌릴 수 없습니다. 계정 폐기는 IdP 에 이 계정의 자격증명 은퇴를 요청하고, Snap 초기화는 이 브라우저의 등록 비밀과 동의 기록을 지웁니다.</p>
@@ -399,12 +401,23 @@
       const accounts = await eth.request({ method: 'eth_requestAccounts' });
       account = accounts && accounts.length ? accounts[0] : null;
       if (!cfg.snapId) throw new Error('지갑 설정에 snapId 가 없습니다(/wallet/config)');
-      await eth.request({ method: 'wallet_requestSnaps', params: { [cfg.snapId]: {} } });
+      // 2026-11-06(사용자 지적): 이미 설치·연결된 Snap 은 다시 요청하지 않는다 — local: Snap 은 wallet_requestSnaps 마다 MetaMask 가
+      // 재설치 창을 띄워 로그인·등록·재승인 팝업마다 "Snap 설치" 가 반복됐다. wallet_getSnaps 는 이 오리진에 허용된 Snap 만 돌려주므로
+      // (권한이 없으면 빈 객체) 설치 여부 판단에 충분하다. 번들이 바뀐 뒤 새로 깔려면 설정 탭 "Snap 다시 설치"(아래) 를 쓴다.
+      if (!(await snapInstalled(eth))) await eth.request({ method: 'wallet_requestSnaps', params: { [cfg.snapId]: {} } });
       mmState = { kind: 'ok', err: null };
       renderMmStatus();
       return account;
     }
     const ensureConnected = async () => (account ? account : connectMetaMask());
+    /** 이 오리진에 우리 Snap 이 설치·허용돼 있는가(wallet_getSnaps). 지원하지 않거나 실패하면 false — 설치 요청으로 간다. */
+    async function snapInstalled(eth) {
+      try {
+        const snaps = await eth.request({ method: 'wallet_getSnaps' });
+        const s = snaps?.[cfg.snapId];
+        return Boolean(s) && !s.blocked && s.enabled !== false;
+      } catch { return false; }
+    }
     /** params 를 생략하면 request.params 자체를 보내지 않는다 — updateUserCred 는 명시적 null 만 폐기로 본다(Snap Ruling 6). */
     function invokeSnap(method, params) {
       const eth = requireEthereum();
@@ -1673,6 +1686,19 @@
         setVerdict($('snapVerdict'), false, 'wallet_self_revoke_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
       }
       refresh();
+    });
+    // Snap 다시 설치(2026-11-06): wallet_requestSnaps 를 명시적으로 — MetaMask 가 local: 번들을 다시 받아 설치 창을 띄운다(Snap 상태는 유지).
+    $('snapReinstallBtn').addEventListener('click', async () => {
+      pendingVerdict($('snapVerdict'), 'working');
+      try {
+        const eth = requireEthereum();
+        if (!cfg.snapId) throw new Error('지갑 설정에 snapId 가 없습니다(/wallet/config)');
+        await eth.request({ method: 'wallet_requestSnaps', params: { [cfg.snapId]: {} } });
+        mmState = { kind: 'ok', err: null }; renderMmStatus();
+        setVerdict($('snapVerdict'), true, 'wallet_snap_reinstall_ok', () => ({ summary: tt('wallet_snap_reinstall_summary') || 'MetaMask 가 Snap 을 다시 설치했습니다.' }));
+      } catch (e) {
+        setVerdict($('snapVerdict'), false, 'wallet_snap_reinstall_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
+      }
     });
     $('snapResetBtn').addEventListener('click', async () => {
       if (!Demo.confirmDanger('confirm_reset')) return;

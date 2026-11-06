@@ -173,7 +173,7 @@ except Exception: print('(응답 없음)')"; done
     sleep 2
   done
 else
-  echo "RP 등록 $N 건 — 승인 대기(pending). http://$IDP:$IDP_PORT/admin 에서 승인하세요 (AUTO_APPROVE=1 이면 자동)."
+  echo "RP 등록 $N 건 — 인증서 대기(pending). http://$IDP:$IDP_PORT/rp 에서 운영자 계정을 만들고 '새 RP 만들기' 에 같은 이름·주소(zkONE http://$RP1:$RP1_PORT, zkTWO http://$RP2:$RP2_PORT)를 넣은 뒤 '인증서 발급' 을 누르세요 (2026-11-06; /admin 승인·AUTO_APPROVE=1 도 그대로 된다)."
 fi
 
 # 8. 요약

@@ -610,6 +610,7 @@ app.post('/cia/register_rp', async (req, res) => {
       const bound = Object.values(state.rpSlots).find((sl) => sl.arid === arid);
       const slot = (bound && bound.keyTag === rpKeyTag(rp_key) && pwOk(bound, rp_key)) ? bound : findRpSlotByKey(state.rpSlots, rp_key, pwOk);
       if (!slot || slot.name !== name) return res.status(400).json({ error: 'bad_rp_key', reason: 'bad_rp_key' });
+      if (slot.origin && slot.origin !== origin) return res.status(400).json({ error: 'origin_mismatch', reason: 'origin_mismatch' });   // 2026-11-06: 슬롯에 적은 서비스 주소와 다르다
       for (const sl of Object.values(state.rpSlots)) if (sl !== slot && sl.arid === arid) { sl.status = 'created'; sl.arid = null; }   // 옛 선점 항목에 묶였던 슬롯은 푼다
       Object.assign(e, { name, pk_service: addr, X_svc: Xn, x_AA: null, pk_trace: null, status: 'pending', requestedAt: new Date().toISOString(), decidedAt: null, operator: slot.opId });
       slot.status = 'pending'; slot.arid = arid;
@@ -626,7 +627,10 @@ app.post('/cia/register_rp', async (req, res) => {
         if (typeof rp_key !== 'string') return res.status(400).json({ error: 'rp_key must be a string', reason: 'bad_rp_key' });
         slot = findRpSlotByKey(state.rpSlots, rp_key, pwOk);
         if (!slot || slot.name !== name) return res.status(400).json({ error: 'bad_rp_key', reason: 'bad_rp_key' });
+        if (slot.origin && slot.origin !== origin) return res.status(400).json({ error: 'origin_mismatch', reason: 'origin_mismatch' });   // 2026-11-06: 슬롯에 적은 서비스 주소와 다르다
       }
+      // 키 없는 등록은 어떤 슬롯에도 묶이지 않는다(운영자 없음) — 운영자가 뒤에 /cia/rp/create 에서 같은 이름·주소로 만들면 그쪽이 묶는다.
+      // (2026-11-06 리뷰 HIGH-2: 여기서 이름·주소만 보고 미리 만든 슬롯에 묶으면 키로 쓸 슬롯을 키 없는 가짜 등록이 차지할 수 있었다.)
       arid = randomScalar().toString();
       e = state.rps[arid] = { name, origin, pk_service: addr, X_svc: Xn, x_AA: null, pk_trace: null, status: 'pending', requestedAt: new Date().toISOString(), decidedAt: null, operator: slot ? slot.opId : null };
       if (slot) { slot.status = 'pending'; slot.arid = arid; }
@@ -656,6 +660,18 @@ async function makeShare(arid) {
   persist();
 }
 
+/** 승인 공통(관리자 /cia/rps/:arid/approve · 운영자 /cia/rp/issue, 2026-11-06): 조각을 먼저 만들고 성공한 **뒤에** status 를 바꾼다
+ *  (2026-09-25 리뷰 B-6). makeShare 의 persist 는 status 변경 전이다(이미 조각이 있어 일찍 반환한 경우 아예 안 쓴다). */
+async function approveRp(arid) {
+  const e = state.rps[arid];
+  const X0 = e.X_svc;
+  await makeShare(arid);
+  // await 사이에 거절(deny)·되찾기(register_rp 의 키 재등록이 X_svc 를 바꾼다)가 끼었으면 승인하지 않는다(2026-11-06 리뷰 LOW-1) — 조각은 버린다.
+  if (e.status !== 'pending' || e.X_svc !== X0) { e.x_AA = null; e.pk_trace = null; persist(); throw Object.assign(new Error('rp changed during approval'), { status: 409, reason: 'state_changed' }); }
+  e.status = 'approved'; e.decidedAt = new Date().toISOString();
+  persist();
+}
+
 const rpView = (arid, e) => ({ arid, name: e.name, origin: e.origin, pk_service: e.pk_service, X_svc: e.X_svc, pk_trace: e.pk_trace, status: e.status, requestedAt: e.requestedAt, decidedAt: e.decidedAt, operator: e.operator ?? null });
 app.get('/cia/rps', requireAdmin, (req, res) => res.json({ rps: Object.entries(state.rps).map(([a, e]) => rpView(a, e)) }));
 // 공개 RP 주소 목록(Task 11, 스펙 §3.3·§5.4) — 지갑 에이전트가 10초마다 폴링해 동적 CORS 허용 목록을 넓힌다.
@@ -672,11 +688,9 @@ app.post('/cia/rps/:arid/approve', requireAdmin, async (req, res) => {
     // 조각을 먼저 만들고, 성공한 **뒤에** status 를 바꾼다(2026-09-25 리뷰 B-6). 순서가 반대면 makeShare 가 던졌을 때
     // pk_trace = null 인 approved 로 굳는다 — 재승인은 409(already approved)고, 재등록도 status 가 pending 이 아니라
     // 조각을 다시 만들지 않는다. 그 RP 는 영영 조합 키를 못 받는다.
-    await makeShare(req.params.arid);
-    e.status = 'approved'; e.decidedAt = new Date().toISOString();
-    persist();   // makeShare 의 persist 는 status 변경 전이다(이미 조각이 있어 일찍 반환한 경우 아예 안 쓴다)
+    await approveRp(req.params.arid);
     res.json({ arid: req.params.arid, status: e.status });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { res.status(err.status ?? 500).json({ error: err.message, ...(err.reason ? { reason: err.reason } : {}) }); }
 });
 app.post('/cia/rps/:arid/deny', requireAdmin, (req, res) => {
   const e = state.rps[req.params.arid];
@@ -744,24 +758,80 @@ app.post('/cia/rp/logout', (req, res) => logoutRole(req, res, 'operator', 'uid')
  *  하지 않는다(컨트롤러 판정: 평문은 /cia/rp/create 의 1회 응답에만). */
 function rpSlotView(slot) {
   const e = slot.arid ? state.rps[slot.arid] : null;
-  return { name: slot.name, status: e ? e.status : slot.status, origin: e ? e.origin : null, arid: slot.arid, requestedAt: e ? e.requestedAt : slot.createdAt, createdAt: slot.createdAt };
+  return { name: slot.name, status: e ? e.status : slot.status, origin: e ? e.origin : (slot.origin ?? null), arid: slot.arid, requestedAt: e ? e.requestedAt : slot.createdAt, createdAt: slot.createdAt };
 }
 app.get('/cia/rp/me', requireOperator, (req, res) => {
   const opId = req.session.operator;
   const rps = Object.values(state.rpSlots).filter((s) => s.opId === opId).map(rpSlotView);
   res.json({ id: opId, rps });
 });
+const RP_ORIGIN_RE = /^https?:\/\/[^/\s]+$/;   // register_rp 와 같은 모양 — http(s)://host[:port], 경로 없음
+/** 서비스 주소(2026-11-06): 앞뒤 공백·끝 슬래시만 떼고, 그 뒤에는 **정규형**(URL.origin 과 같음 — 소문자 호스트, 기본 포트 생략, 경로 없음)만 받는다.
+ *  register_rp 는 RP 가 보낸 origin 을 그대로 대조·인증서에 넣으므로(정규화하지 않는다) 슬롯 주소도 RP 가 보낼 문자열 그대로여야 한다.
+ *  IPv6 리터럴은 받지 않는다(new_rp.sh --host 에 못 쓴다). 형식이 아니면 null. (리뷰 HIGH-1) */
+function canonicalOrigin(v) {
+  if (typeof v !== 'string') return null;
+  const s = v.trim().replace(/\/+$/, '');
+  if (!RP_ORIGIN_RE.test(s)) return null;
+  let u; try { u = new URL(s); } catch { return null; }
+  if (u.origin !== s || u.hostname.startsWith('[')) return null;
+  return s;
+}
+/** 기동 명령(§6): 주소에서 포트·호스트를 채운다. new_rp.sh 는 로컬이면 http://localhost:PORT, --host IP 면 http://IP:PORT 로 등록하므로 그 밖의
+ *  주소(127.0.0.1, https, 기본 포트)는 --public-origin 으로 그대로 넘긴다(2026-11-06 리뷰 HIGH-1). 그전에는 자리표시(<port>) 였다. */
+function rpStartCommand(name, origin, key) {
+  const u = new URL(origin);
+  const port = u.port || (u.protocol === 'https:' ? '443' : '80');
+  const plainHttp = u.protocol === 'http:' && u.port !== '';
+  if (u.hostname === 'localhost' && plainHttp) return `bash scripts/new_rp.sh ${name} ${port} ${key}`;
+  const loopback = u.hostname === '127.0.0.1';
+  const hostArg = loopback ? '' : ` --host ${u.hostname}`;
+  const pubArg = (plainHttp && !loopback) ? '' : ` --public-origin ${origin}`;
+  return `bash scripts/new_rp.sh ${name} ${port} ${key}${hostArg}${pubArg}`;
+}
 app.post('/cia/rp/create', requireOperator, (req, res) => {
-  const { name } = req.body ?? {};
+  const { name, origin: originIn } = req.body ?? {};
   if (typeof name !== 'string' || !RP_SLOT_NAME_RE.test(name)) return res.status(400).json({ error: 'name 은 zk 로 시작하는 영문·숫자 1~15자', reason: 'bad_name' });
+  // 2026-11-06: 서비스 주소(origin)도 받는다 — RP 서버가 등록할 때 보내는 origin 과 맞아야 하고(register_rp 의 origin_mismatch), 기동 명령의 포트·호스트를 여기서 채운다.
+  const origin = canonicalOrigin(originIn);
+  if (!origin) return res.status(400).json({ error: 'origin 은 정규형 http(s)://host[:port] (소문자 호스트, 기본 포트 생략, 경로 없음, IPv6 리터럴 불가)', reason: 'bad_origin' });
   const opId = req.session.operator;
   if (Object.values(state.rpSlots).some((s) => s.opId === opId && s.name === name)) return res.status(409).json({ error: 'name_taken', reason: 'name_taken' });
+  // 주소는 운영자를 넘어 슬롯 하나에만 — 누가든 그 주소로 만든(거부되지 않은) 슬롯이 있거나, 다른 운영자에게 이미 묶인 등록이 있으면 409.
+  const slotStatus = (sl) => (sl.arid ? state.rps[sl.arid]?.status : sl.status);
+  if (Object.values(state.rpSlots).some((sl) => sl.origin === origin && !['denied', 'retired'].includes(slotStatus(sl)))) return res.status(409).json({ error: 'origin_taken', reason: 'origin_taken' });
+  // 거부된 주소를 넘겨받는 경우 옛 슬롯은 은퇴시킨다(status 'retired', arid 해제) — 그 키는 더 이상 되찾기(register_rp)에 쓰이지 않아
+  // 두 운영자가 pending 항목을 번갈아 가져가는 핑퐁이 없다(2026-11-06 리뷰 MEDIUM-2).
+  for (const sl of Object.values(state.rpSlots)) if (sl.origin === origin && slotStatus(sl) === 'denied') { sl.status = 'retired'; sl.arid = null; }
+  // 같은 주소로 이미 들어온 운영자 없는 등록(zkONE·zkTWO 의 기동 자동 등록)이 있으면 이 슬롯에 묶는다 — 운영자 계정을 데모 때 만들어도
+  // RP 서버를 다시 띄우지 않고 아래 "인증서 발급" 으로 이어진다. 이름이 다르면 묶지 않고 409(그 주소의 RP 는 다른 이름으로 등록돼 있다).
+  const bindArid = Object.keys(state.rps).find((a) => state.rps[a].origin === origin && state.rps[a].status !== 'denied') ?? null;
+  const bindE = bindArid ? state.rps[bindArid] : null;
+  if (bindE && bindE.operator != null) return res.status(409).json({ error: 'origin_taken', reason: 'origin_taken' });
+  if (bindE && bindE.name !== name) return res.status(409).json({ error: 'origin_name_mismatch', reason: 'origin_name_mismatch', registeredName: bindE.name });
   const key = randomBytes(32).toString('hex');
   const slotId = randomBytes(16).toString('hex');   // 상태의 object key — rp_key(비밀) 가 아니라 내부 식별자일 뿐이다
-  state.rpSlots[slotId] = { opId, name, ...newPw(key), keyTag: rpKeyTag(key), status: 'created', createdAt: new Date().toISOString(), arid: null };   // keyTag: 조회 인덱스(리뷰 C2)
+  const slot = state.rpSlots[slotId] = { opId, name, origin, ...newPw(key), keyTag: rpKeyTag(key), status: 'created', createdAt: new Date().toISOString(), arid: null };   // keyTag: 조회 인덱스(리뷰 C2)
+  if (bindE) { bindE.operator = opId; slot.arid = bindArid; slot.status = 'pending'; }   // 묶인 뒤의 상태·주소는 rpSlotView 가 state.rps 쪽을 본다
   persist();
-  // §6 의 한 줄: IdP 는 호스트·포트를 모르므로 자리표시(<port>, [--host <rp-vm-ip>])를 남긴다.
-  res.status(201).json({ name, key, command: `bash scripts/new_rp.sh ${name} <port> ${key} [--host <rp-vm-ip>]` });
+  const view = rpSlotView(slot);
+  res.status(201).json({ name, origin, key, command: rpStartCommand(name, origin, key), status: view.status, arid: view.arid });
+});
+// 2026-11-06: 운영자가 자기 RP 에 인증서를 낸다 — 관리자 승인(/cia/rps/:arid/approve)과 같은 처리(approveRp). RP 서버가 등록 요청을 보내
+// 슬롯이 묶여 있어야(arid) 한다 — 조합 키 pk_trace 는 RP 의 X_svc 가 있어야 만들 수 있다. RP 서버는 다음 폴링(5초)에 cert_s 를 받아 활성화된다.
+// 신뢰 전제: 운영자 계정이 곧 승인 권한이다(관리자 승인·거절은 그대로 남는다 — 키 없이 등록된 RP 와 비상용).
+app.post('/cia/rp/issue', requireOperator, async (req, res) => {
+  try {
+    const { name } = req.body ?? {};
+    const slot = Object.values(state.rpSlots).find((s) => s.opId === req.session.operator && s.name === name);
+    if (!slot) return res.status(404).json({ error: 'unknown_rp', reason: 'unknown_rp' });
+    const e = slot.arid ? state.rps[slot.arid] : null;
+    if (!e) return res.status(409).json({ error: 'rp_not_registered', reason: 'rp_not_registered' });
+    if (e.status === 'approved') return res.status(409).json({ error: 'already_issued', reason: 'already_issued' });
+    if (e.status !== 'pending' || !e.X_svc) return res.status(409).json({ error: `already ${e.status}`, reason: 'rp_denied' });
+    await approveRp(slot.arid);
+    res.json({ name, arid: slot.arid, status: 'approved' });
+  } catch (err) { res.status(err.status ?? 500).json({ error: err.message, ...(err.reason ? { reason: err.reason } : {}) }); }
 });
 
 // ---- Task 10(B1, 2026-10-22 스펙 §3.1~3.3): 사용자 계정·세션·1회용 코드 ----

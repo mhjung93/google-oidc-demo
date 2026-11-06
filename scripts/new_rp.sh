@@ -4,7 +4,7 @@
 # 띄운 것) 또는 --host 로 분리 데모의 RP VM(~/zkd-demo, demo_split_start.sh 가 쓰는 role.env 위에 덮어 기동)에 ssh 로 띄운다.
 #
 # 사용:
-#   bash scripts/new_rp.sh NAME PORT KEY [--host IP] [--relayer N] [--countries 410,392] [--min-age 19] [--require-disclosure]
+#   bash scripts/new_rp.sh NAME PORT KEY [--host IP] [--public-origin URL] [--relayer N] [--countries 410,392] [--min-age 19] [--require-disclosure]
 #   bash scripts/new_rp.sh NAME PORT [KEY] [--host IP] --stop
 #   bash scripts/new_rp.sh --help
 #
@@ -15,6 +15,8 @@
 #
 # 옵션:
 #   --host IP              로컬이 아니라 이 IP 의 RP VM(SPLIT_SSH_USER, 기본 zkd)에 ssh 로 띄운다(분리 데모)
+#   --public-origin URL    MODE3_RP_PUBLIC_ORIGIN 을 이 값으로(기본: 로컬 http://localhost:PORT, --host 면 http://IP:PORT). IdP /rp 에 적은
+#                          서비스 주소가 그 기본값과 다를 때(127.0.0.1·https·기본 포트) IdP 가 명령에 붙여 준다(2026-11-06)
 #   --relayer N             릴레이어 계정 인덱스(기본: 로컬은 3+기존 RP 수, --host 는 3). 겹치면 nonce 충돌로 배포 실패
 #   --countries C1,C2,...   MODE3_ALLOWED_COUNTRIES(숫자 국가코드 CSV, 예: 410,392)
 #   --min-age N             MODE3_MIN_AGE
@@ -33,7 +35,7 @@ cd "$(dirname "$0")/.."
 
 usage() {
   cat <<'EOF'
-사용: bash scripts/new_rp.sh NAME PORT KEY [--host IP] [--relayer N] [--countries 410,392] [--min-age 19] [--require-disclosure]
+사용: bash scripts/new_rp.sh NAME PORT KEY [--host IP] [--public-origin URL] [--relayer N] [--countries 410,392] [--min-age 19] [--require-disclosure]
       bash scripts/new_rp.sh NAME PORT [KEY] [--host IP] --stop
       bash scripts/new_rp.sh --help
 
@@ -44,6 +46,7 @@ usage() {
 
 옵션:
   --host IP              이 IP 의 RP VM(SPLIT_SSH_USER, 기본 zkd)에 ssh 로 띄운다(분리 데모). 없으면 로컬(한 머신 데모)
+  --public-origin URL    MODE3_RP_PUBLIC_ORIGIN 을 이 값으로(기본: 로컬 http://localhost:PORT, --host 면 http://IP:PORT) — IdP /rp 의 서비스 주소와 같아야 한다
   --relayer N            릴레이어 계정 인덱스(기본: 로컬은 3+기존 RP 수, --host 는 3)
   --countries C1,C2,...  MODE3_ALLOWED_COUNTRIES(숫자 국가코드 CSV)
   --min-age N            MODE3_MIN_AGE
@@ -64,10 +67,11 @@ if [ $# -eq 0 ] || [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then usage; e
 NAME="${1:?NAME}"; PORT="${2:?PORT}"; shift 2
 KEY=""
 if [ $# -gt 0 ] && [[ "$1" != --* ]]; then KEY="$1"; shift; fi
-HOST=""; RELAYER=""; COUNTRIES=""; MIN_AGE=""; REQ=""; STOP=0
+HOST=""; PUB=""; RELAYER=""; COUNTRIES=""; MIN_AGE=""; REQ=""; STOP=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --host) HOST="${2:?--host 는 IP 가 필요하다}"; shift 2;;
+    --public-origin) PUB="${2:?--public-origin 은 URL 이 필요하다}"; shift 2;;
     --relayer) RELAYER="${2:?--relayer 는 숫자가 필요하다}"; shift 2;;
     --countries) COUNTRIES="${2:?--countries 는 CSV 가 필요하다}"; shift 2;;
     --min-age) MIN_AGE="${2:?--min-age 는 숫자가 필요하다}"; shift 2;;
@@ -106,7 +110,7 @@ if [ -z "$HOST" ]; then
   set -a; . "$LOGS/demo_env.txt"; set +a
   export CIA_ADMIN_OPEN="${CIA_ADMIN_OPEN:-1}" MODE3_VERIFIER_ADDRESS="" MODE3_RP_FACTORY_ADDRESS="" \
     MODE3_WALLET_AGENT_ORIGIN="http://localhost:5100" MODE3_CIA_URL="http://localhost:4100" CIA_RPC_URL="http://127.0.0.1:8545"
-  export MODE3_RP_NAME="$NAME" MODE3_RP_PORT="$PORT" MODE3_RP_PUBLIC_ORIGIN="http://localhost:$PORT" \
+  export MODE3_RP_NAME="$NAME" MODE3_RP_PORT="$PORT" MODE3_RP_PUBLIC_ORIGIN="${PUB:-http://localhost:$PORT}" \
     MODE3_RP_KEY="$KEY" MODE3_RELAYER_INDEX="$RELAYER" \
     MODE3_RP_REGISTRATION_FILE="mode3_rp_${NAME}_registration.json" MODE3_RP_LOGIN_LOG="mode3_rp_${NAME}_logins.jsonl"
   [ -n "$COUNTRIES" ] && export MODE3_ALLOWED_COUNTRIES="$COUNTRIES"
@@ -114,7 +118,7 @@ if [ -z "$HOST" ]; then
   [ -n "$REQ" ] && export MODE3_REQUIRE_DISCLOSURE=1
   setsid nohup node mode3_rp.js > "$LOGS/rp_${NAME}.log" 2>&1 < /dev/null &
   timeout 40 bash -c "until ss -ltn | grep -q ':$PORT '; do sleep 1; done" \
-    && echo "$NAME up at http://localhost:$PORT (등록 요청 보냄 — IdP 관리자 승인 대기)" \
+    && echo "$NAME up at ${PUB:-http://localhost:$PORT} (등록 요청 보냄 — IdP /rp 의 '인증서 발급' 또는 관리자 승인 대기)" \
     || { echo "$NAME :$PORT 기동 실패 — $LOGS/rp_${NAME}.log" >&2; exit 1; }
 else
   # --host: 분리 데모의 RP VM 에 ssh 로 띄운다
@@ -127,10 +131,10 @@ else
   RELAYER="${RELAYER:-3}"
   # MODE3_RP_KEY 는 role.env 파생 파일(rp_${NAME}.env)에 쓰지 않는다 — 기동 명령에 env 로 한 번만 얹는다(디스크에 남지 않게).
   KEY_Q=$(printf '%s' "$KEY" | sed "s/'/'\\\\''/g")
-  ssh -o BatchMode=yes "$U@$HOST" "cd ~/zkd-demo && { grep -vE '^(MODE3_RP_PORT|MODE3_RP_NAME|MODE3_RP_PUBLIC_ORIGIN|MODE3_RELAYER_INDEX|MODE3_ALLOWED_COUNTRIES|MODE3_MIN_AGE|MODE3_REQUIRE_DISCLOSURE|MODE3_RP_REGISTRATION_FILE|MODE3_RP_LOGIN_LOG|MODE3_RP_KEY)=' role.env 2>/dev/null; echo MODE3_RP_PORT=$PORT; echo MODE3_RP_NAME=$NAME; echo MODE3_RP_PUBLIC_ORIGIN=http://$HOST:$PORT; echo MODE3_RELAYER_INDEX=$RELAYER; echo MODE3_RP_REGISTRATION_FILE=mode3_rp_${NAME}_registration.json; echo MODE3_RP_LOGIN_LOG=mode3_rp_${NAME}_logins.jsonl; ${COUNTRIES:+echo MODE3_ALLOWED_COUNTRIES=$COUNTRIES;} ${MIN_AGE:+echo MODE3_MIN_AGE=$MIN_AGE;} ${REQ:+echo MODE3_REQUIRE_DISCLOSURE=1;} } > rp_${NAME}.env && chmod 600 rp_${NAME}.env"
+  ssh -o BatchMode=yes "$U@$HOST" "cd ~/zkd-demo && { grep -vE '^(MODE3_RP_PORT|MODE3_RP_NAME|MODE3_RP_PUBLIC_ORIGIN|MODE3_RELAYER_INDEX|MODE3_ALLOWED_COUNTRIES|MODE3_MIN_AGE|MODE3_REQUIRE_DISCLOSURE|MODE3_RP_REGISTRATION_FILE|MODE3_RP_LOGIN_LOG|MODE3_RP_KEY)=' role.env 2>/dev/null; echo MODE3_RP_PORT=$PORT; echo MODE3_RP_NAME=$NAME; echo MODE3_RP_PUBLIC_ORIGIN=${PUB:-http://$HOST:$PORT}; echo MODE3_RELAYER_INDEX=$RELAYER; echo MODE3_RP_REGISTRATION_FILE=mode3_rp_${NAME}_registration.json; echo MODE3_RP_LOGIN_LOG=mode3_rp_${NAME}_logins.jsonl; ${COUNTRIES:+echo MODE3_ALLOWED_COUNTRIES=$COUNTRIES;} ${MIN_AGE:+echo MODE3_MIN_AGE=$MIN_AGE;} ${REQ:+echo MODE3_REQUIRE_DISCLOSURE=1;} } > rp_${NAME}.env && chmod 600 rp_${NAME}.env"
   ssh -o BatchMode=yes "$U@$HOST" "cd ~/zkd-demo && set -a && . ./rp_${NAME}.env && set +a && { MODE3_RP_KEY='$KEY_Q' setsid nohup \$HOME/zkd-demo/bin/node mode3_rp.js > logs/rp_${NAME}.log 2>&1 < /dev/null & }"
   for i in $(seq 1 40); do
-    curl -s -m 2 -o /dev/null "http://$HOST:$PORT/mode3/health" && { echo "$NAME up at http://$HOST:$PORT (승인 대기)"; exit 0; }
+    curl -s -m 2 -o /dev/null "http://$HOST:$PORT/mode3/health" && { echo "$NAME up at ${PUB:-http://$HOST:$PORT} (IdP /rp 의 '인증서 발급' 또는 관리자 승인 대기)"; exit 0; }
     sleep 1
   done
   echo "$NAME :$PORT 기동 실패 — $HOST 의 ~/zkd-demo/logs/rp_${NAME}.log" >&2

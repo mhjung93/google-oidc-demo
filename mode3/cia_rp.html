@@ -51,8 +51,9 @@
   </section>
   <section class="card span2" id="rpCreateCard" hidden>
     <h3 data-i18n="idp_rp_create_title">새 RP 만들기</h3>
-    <p class="desc" data-i18n="idp_rp_create_desc">이름을 정하면 1회용 RP 키와 기동 명령을 드립니다 — 키는 지금만 보입니다.</p>
-    <p><label><span data-i18n="idp_rp_name_label">이름(zk 로 시작)</span> <input id="rpName" size="16" /></label> <button id="rpCreateBtn" data-i18n="idp_rp_create_btn">만들기</button></p>
+    <p class="desc" data-i18n="idp_rp_create_desc">이름과 서비스 주소를 넣으면 1회용 RP 키와 기동 명령을 드립니다 — 키는 지금만 보입니다. 그 주소의 RP 서버가 등록 요청을 보내면 아래 표에서 인증서를 발급합니다.</p>
+    <!-- 2026-11-06: 서비스 주소도 받는다 — RP 서버의 origin 과 맞아야 하고, 이미 같은 주소로 등록 요청을 보낸(운영자 없는) RP 가 있으면 그 자리에 묶인다. -->
+    <p><label><span data-i18n="idp_rp_name_label">이름(zk 로 시작)</span> <input id="rpName" size="12" /></label> <label><span data-i18n="idp_rp_origin_label">서비스 주소</span> <input id="rpOrigin" size="28" placeholder="http://192.168.226.11:3100" autocapitalize="off" spellcheck="false" /></label> <button id="rpCreateBtn" data-i18n="idp_rp_create_btn">만들기</button></p>
     <p class="muted" data-i18n="idp_rp_key_once">키는 지금만 보입니다 — 복사해 두세요. 다시 볼 수 없습니다.</p>
     <div id="rpVerdict"></div>
     <h4 data-i18n="idp_rp_list_title">내 RP</h4>
@@ -108,7 +109,7 @@
     const table = document.createElement('table');
     table.className = 'list';
     const thead = document.createElement('tr');
-    for (const k of ['idp_rp_col_name', 'idp_rp_col_status', 'idp_rp_col_origin', 'idp_rp_col_key', 'idp_rp_col_command']) {
+    for (const k of ['idp_rp_col_name', 'idp_rp_col_status', 'idp_rp_col_cert', 'idp_rp_col_origin', 'idp_rp_col_key', 'idp_rp_col_command']) {
       const th = document.createElement('th'); th.dataset.i18n = k; th.textContent = Demo.t(k); thead.appendChild(th);
     }
     table.appendChild(thead);
@@ -118,8 +119,18 @@
       const statusTd = document.createElement('td');
       // 2026-11-05: 상태는 영어 코드가 아니라 말로(모르는 상태면 코드 그대로), 주소 열은 줄이 꺾이지 않게.
       const badge = document.createElement('span'); badge.className = `badge ${statusBadgeClass(s.status)}`; badge.textContent = tt(`idp_rp_status_${s.status}`) || s.status; badge.style.whiteSpace = 'nowrap'; statusTd.appendChild(badge); tr.appendChild(statusTd);
+      // 인증서 열(2026-11-06): RP 서버가 등록 요청을 보낸 뒤(pending)에만 운영자가 "인증서 발급" 을 누를 수 있다.
+      const certTd = document.createElement('td');
+      if (s.status === 'pending') {
+        const b = document.createElement('button'); b.type = 'button'; b.textContent = tt('idp_rp_issue_btn') || '인증서 발급'; b.disabled = issuing.has(s.name);
+        b.addEventListener('click', () => issueCert(s.name, b)); certTd.appendChild(b);
+      } else if (s.status === 'retired') { certTd.textContent = '-'; }
+      else if (s.status === 'approved') { const ok = document.createElement('span'); ok.className = 'badge ok'; ok.textContent = tt('idp_rp_cert_issued') || '발급됨'; certTd.appendChild(ok); }
+      else if (s.status === 'denied') { certTd.className = 'muted'; certTd.textContent = tt('idp_rp_cert_denied') || '거부됨 — 발급 불가'; }
+      else { certTd.className = 'muted'; certTd.textContent = tt('idp_rp_cert_wait_server') || 'RP 서버가 등록 요청을 보내면 발급할 수 있습니다 — 명령으로 서버를 띄우세요'; }
+      tr.appendChild(certTd);
       const originTd = document.createElement('td'); originTd.textContent = s.origin ?? '-'; originTd.style.whiteSpace = 'nowrap'; tr.appendChild(originTd);
-      const cached = s.status === 'created' ? justCreated[s.name] : null;
+      const cached = justCreated[s.name] ?? null;   // 2026-11-06: 묶여서 바로 '발급 대기' 가 된 슬롯도 1회용 키를 보인다(이 세션에서 만든 것만)
       const keyTd = document.createElement('td');
       if (cached) { const code = document.createElement('code'); code.textContent = cached.key; keyTd.append(code, ' ', copyBtn(cached.key)); }
       else { keyTd.className = 'muted'; keyTd.textContent = tt('idp_rp_key_hidden') || '(다시 볼 수 없음)'; }
@@ -133,12 +144,14 @@
     box.innerHTML = ''; box.appendChild(table);
   }
   /** 로그인 상태와 내 RP 목록을 다시 읽는다. 로그아웃 상태에서 가입 화면을 보고 있었다면 그대로 둔다. */
+  let lastListSig = null;   // 표는 내용이 바뀌었을 때만 다시 그린다 — 5초 갱신이 키 드래그 선택을 풀지 않게(2026-11-06 리뷰 MEDIUM-1)
   async function refreshRpList() {
     const r = await get('/cia/rp/me');
     opMe = r.status === 200 ? { id: r.body.id } : null;
     myRps = opMe ? (r.body.rps ?? []) : [];
     $('opInfo').textContent = opMe ? (tt('idp_rp_me_who', { id: opMe.id }) || `운영자 ${opMe.id}`) : '';
-    renderRpList();
+    const sig = JSON.stringify([Demo.lang, opMe, myRps, Object.keys(justCreated), [...issuing]]);
+    if (sig !== lastListSig) { lastListSig = sig; renderRpList(); }
     // 세션이 다른 길로 끝났을 때(다른 탭 로그아웃·만료) 이전 운영자의 결과·키가 다음 사람에게 보이지 않게 비운다.
     if (!opMe) { clearVerdict($('rpVerdict')); for (const k of Object.keys(justCreated)) delete justCreated[k]; }
     if (opMe) showView('me'); else if ($('opSignupView').hidden) showView('login');
@@ -180,19 +193,37 @@
     await refreshRpList();
   });
   $('rpCreateBtn').addEventListener('click', async () => {
-    const r = await post('/cia/rp/create', { name: $('rpName').value.trim() });
+    const r = await post('/cia/rp/create', { name: $('rpName').value.trim(), origin: $('rpOrigin').value.trim() });
     if (r.status === 201) {
       justCreated[r.body.name] = { key: r.body.key, command: r.body.command };
-      verdict($('rpVerdict'), true, 'idp_rp_create_ok_title', () => ({ summary: tt('idp_rp_create_ok', { name: r.body.name }) || `만들어짐 — ${r.body.name}. 아래 명령으로 RP 서버를 띄우세요.` }));
+      $('rpName').value = ''; $('rpOrigin').value = '';
+      // 2026-11-06: 같은 주소의 RP 서버가 이미 등록 요청을 보냈으면(묶임) 다음 할 일은 명령 실행이 아니라 "인증서 발급" 이다.
+      const k = r.body.status === 'approved' ? 'idp_rp_create_ok_active' : r.body.status === 'pending' ? 'idp_rp_create_ok_bound' : 'idp_rp_create_ok';
+      verdict($('rpVerdict'), true, 'idp_rp_create_ok_title', () => ({ summary: tt(k, { name: r.body.name }) || `만들어짐 — ${r.body.name}.` }));
     } else {
       verdict($('rpVerdict'), false, 'idp_rp_create_failed', { reason: r.body?.reason ?? `HTTP ${r.status}`, detail: r.body });
     }
     await refreshRpList();
   });
 
+  /** 운영자 "인증서 발급"(2026-11-06): 관리자 승인과 같은 처리를 IdP 가 하고, RP 서버는 다음 폴링(5초)에 인증서를 받는다. */
+  const issuing = new Set();   // 발급 요청 중인 이름 — 갱신으로 표가 다시 그려져도 버튼은 비활성(리뷰 LOW-2)
+  async function issueCert(name, btn) {
+    if (issuing.has(name)) return;
+    issuing.add(name); btn.disabled = true;
+    try {
+      const r = await post('/cia/rp/issue', { name });
+      if (r.status === 200) verdict($('rpVerdict'), true, 'idp_rp_issue_ok_title', () => ({ summary: tt('idp_rp_issue_ok', { name }) || `${name} 에 인증서를 냈습니다. RP 서버가 몇 초 안에 활성화됩니다.` }));
+      else verdict($('rpVerdict'), false, 'idp_rp_issue_failed', { reason: r.body?.reason ?? `HTTP ${r.status}`, detail: r.body });
+    } finally { issuing.delete(name); }
+    await refreshRpList();
+  }
+
   Demo.init({ page: 'idp_rp' });
   Demo.stack?.({ self: 'aa', urls: {} });
   refreshRpList();
+  // 2026-11-06: RP 서버가 등록 요청을 보내면(만들어짐 → 발급 대기) 표가 스스로 바뀌게 5초마다 다시 읽는다(로그인 중·탭이 보일 때만).
+  setInterval(() => { if (opMe && !document.hidden) refreshRpList(); }, 5000);
 </script>
 </body>
 </html>
