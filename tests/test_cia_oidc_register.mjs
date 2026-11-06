@@ -116,6 +116,26 @@ try {
     const reg2 = await createRegistration(67890n);
     assert.equal((await cia.post('/cia/register', { uid: '67890', pwd: 'wrong', auid: reg2.auid.toString(), pk_u: { x: reg2.pk_u.x.toString(), y: reg2.pk_u.y.toString() }, sig_reg: await signRegistration(reg2.sk_u, 67890n, reg2.auid) })).status, 401);
   });
+  await t('Google 계정 연결(2026-11-06): 아이디(demo) 계정의 발급에 다른 sub 의 issue 토큰 → 첫 번은 연결(200), 같은 sub 재발급 200, 다른 sub 는 403 oidc_account_mismatch; 미등록 uid 는 uid_mismatch 그대로', async () => {
+    const uid = 67890n;   // 시드 데모 계정(password123) — 위 '데모 계정 경로' 케이스는 이 uid 를 등록하지 않는다
+    const reg = await createRegistration(uid);
+    const pk_u = { x: reg.pk_u.x.toString(), y: reg.pk_u.y.toString() };
+    const r0 = await cia.post('/cia/register', { uid: uid.toString(), pwd: 'alicepw', auid: reg.auid.toString(), pk_u, sig_reg: await signRegistration(reg.sk_u, uid, reg.auid) });   // alice(67890) 의 비밀번호
+    assert.equal(r0.status, 201, j(r0.body));
+    const user = { uid, s_u: reg.s_u, auid: reg.auid, sk_u: reg.sk_u, attrs: [...TESTUSER_ATTRS] };
+    const issueWith = async (sub) => { const r_rp = randomScalar(); const arid_s = await aridSOf({ arid: ISSUE_ARID, r_rp }); const id_token = await stub.mint({ sub, nonce: issueNonce(pk_u, arid_s) }); return issueV11(cia, user, { arid: ISSUE_ARID, r_rp, provider, overrides: { id_token } }); };
+    const { r: first } = await issueWith('google-link-A');
+    assert.equal(first.status, 200, j(first.body));
+    const acc = (await cia.adminGet('/cia/accounts')).body; const mine = (acc.accounts ?? acc).find((a) => String(a.uid) === uid.toString());
+    assert.equal(mine.provider, 'demo', '계정 종류는 그대로 demo');
+    const { r: again } = await issueWith('google-link-A'); assert.equal(again.status, 200, j(again.body), '연결된 같은 Google 계정은 다시 발급');
+    const { r: other } = await issueWith('google-link-B'); assert.equal(other.status, 403, j(other.body)); assert.equal(other.body.reason, 'oidc_account_mismatch');
+    const ghost = await createRegistration(55556n); const pkG = { x: ghost.pk_u.x.toString(), y: ghost.pk_u.y.toString() };
+    const r_rp = randomScalar(); const arid_s = await aridSOf({ arid: ISSUE_ARID, r_rp });
+    const { r: g } = await issueV11(cia, { uid: 55556n, s_u: ghost.s_u, auid: ghost.auid, sk_u: ghost.sk_u, attrs: [...TESTUSER_ATTRS] }, { arid: ISSUE_ARID, r_rp, provider, overrides: { id_token: await stub.mint({ sub: 'google-link-C', nonce: issueNonce(pkG, arid_s) }) } });
+    assert.equal(g.status, 403, j(g.body)); assert.equal(g.body.reason, 'uid_mismatch');
+  });
+
   await t('형식: id_token 과 uid/pwd 가 둘 다 없으면 400; 둘 다 있으면 id_token 을 우선하지 않고 400(모호)', async () => {
     assert.equal((await cia.post('/cia/register', { auid: '1', pk_u: { x: '1', y: '1' }, sig_reg: { R8x: '1', R8y: '1', S: '1' } })).status, 400);
     const w = await makeReg('google-sub-5');

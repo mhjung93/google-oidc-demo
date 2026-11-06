@@ -888,7 +888,7 @@ app.post('/cia/user/login', (req, res) => {
 app.post('/cia/user/logout', (req, res) => logoutRole(req, res, 'uid', 'operator'));
 app.get('/cia/user/me', requireUser, (req, res) => {
   const uid = req.session.uid, a = state.accounts[uid];
-  res.json({ uid, id: a.loginId ?? null, registered: Boolean(a.pk_u), auid: a.auid, slot: a.slot, provider: a.provider, disabled: a.disabled, activeCf_u: activeCfU(a), registryLeaf: a.slot === null ? null : registry.leafAt(a.slot).toString() });
+  res.json({ uid, id: a.loginId ?? null, registered: Boolean(a.pk_u), auid: a.auid, slot: a.slot, provider: a.provider, linkedOidc: a.linkedOidc?.provider ?? null, disabled: a.disabled, activeCf_u: activeCfU(a), registryLeaf: a.slot === null ? null : registry.leafAt(a.slot).toString() });
 });
 app.post('/cia/user/register_code', requireUser, (req, res) => {
   const a = state.accounts[req.session.uid];
@@ -920,7 +920,7 @@ app.post('/cia/user/unlink_wallet', requireUser, async (req, res) => {
     if (!acct.pk_u) return res.status(409).json({ error: 'not registered', reason: 'not_registered' });
     const retired = retireActiveCred(uid);
     if (retired) setSlot(uid, 0n);
-    acct.pk_u = null; acct.auid = null; acct.slotRetired = true;
+    acct.pk_u = null; acct.auid = null; acct.slotRetired = true; delete acct.linkedOidc;   // 연결된 Google 계정도 함께 푼다(새 지갑에서 다시 연결)
     persist();
     const pub = retired ? await publishSafely() : { published: false };
     res.json({ unlinked: true, retired, published: Boolean(pub.published), pending: state.pending.length });
@@ -1038,11 +1038,19 @@ app.post('/cia/issue', userCors, async (req, res) => {
     // OIDC 래퍼 — RP 로그인 흐름(2026-10-16): Google 로 로그인한 사용자는 발급마다 ID 토큰을 함께 낸다. 래퍼가 토큰을 검증해 계정(uid=H(provider|sub))을
     // 정하고, 계정이 아직 없으면 요청에 실린 등록 재료(auid·pk_u·sig_reg)로 그 자리에서 등록한 뒤 발급한다 — 사용자에게 보이는 등록 단계가 없다.
     // 토큰은 이 지갑의 공개키와 이 로그인(arid_s)에 nonce 로 묶여 있어 가로채도 다른 키·다른 로그인에 못 쓴다. 데모 계정(uid/pwd 등록)은 id_token 없이 지금처럼.
-    let oidcClaims = null;
+    let oidcClaims = null, pendingLink = null;   // pendingLink: 아이디 계정에 처음 연결하는 Google 계정(아래 서명 직전에 기록)
     if (id_token !== undefined) {
       if (typeof id_token !== 'string') return res.status(400).json({ error: 'id_token 은 문자열' });
       const o = await oidcUid(id_token, ISSUE_PREFIX); if (o.error) return res.status(o.error.status).json(o.error.body);
-      if (o.uid !== uid) return res.status(403).json({ error: 'uid_mismatch', reason: 'uid_mismatch', detail: '토큰의 계정이 요청의 uid 와 다르다' });
+      if (o.uid !== uid) {
+        // 2026-11-06(사용자 요청 "Google 계정으로 로그인이 돌아야"): 아이디(demo) 계정에 Google 계정을 **연결**한다 — 지갑(sig_u·π_IdP, 토큰 nonce 가 pk_u 에 묶임)이
+        // 계정 소유를, 토큰이 Google 계정 소유를 증명하므로 첫 번에 연결하고 그 뒤에는 같은 sub 만 받는다(다른 sub 는 403 oidc_account_mismatch). 연결 기록은 아래
+        // 모든 검증을 통과한 뒤 토큰 서명 직전에 쓴다(실패한 요청으로 연결되지 않게). 등록 전 계정·래퍼 계정에 다른 sub 는 지금처럼 uid_mismatch.
+        const a0 = state.accounts[uid];
+        if (!a0?.pk_u || (a0.provider && a0.provider !== 'demo')) return res.status(403).json({ error: 'uid_mismatch', reason: 'uid_mismatch', detail: '토큰의 계정이 요청의 uid 와 다르다' });
+        if (a0.linkedOidc && (a0.linkedOidc.provider !== OIDC.provider || a0.linkedOidc.sub !== o.sub)) return res.status(403).json({ error: 'oidc_account_mismatch', reason: 'oidc_account_mismatch', detail: '이 계정에는 다른 Google 계정이 연결돼 있다' });
+        if (!a0.linkedOidc) pendingLink = { provider: OIDC.provider, sub: o.sub };
+      }
       oidcClaims = o;
       if (!state.accounts[uid]) {
         if (!registration || typeof registration !== 'object') return res.status(404).json({ error: 'unknown account', reason: 'not_registered', detail: '첫 로그인이면 registration{auid,pk_u,sig_reg} 을 함께 보낸다' });
@@ -1066,7 +1074,8 @@ app.post('/cia/issue', userCors, async (req, res) => {
     // 수정 라운드 1(스펙 "성공 시 소진")·F-7: 여기서는 조회만(peek) — sig_u·π_IdP 검증과 headOf(503)·cred_revoked 사전 검사까지
     // 모두 거친 뒤, 실제 상태 변경(발급 기록 또는 signPoseidon) 바로 앞에서만 consumeCode 로 태운다(아래 두 지점). 그 전에
     // 실패하면(서명·증명·체인·폐기 충돌 무엇이든) 코드는 그대로 남는다.
-    const needsAuthCode = ISSUE_AUTH === 'code' && acct.provider === 'demo';
+    // 2026-11-06: Google 토큰이 함께 오면(연결된/연결 중인 Google 계정) 인증 창의 1회용 코드를 대신한다 — Google 로그인이 그 자리의 본인 확인이다.
+    const needsAuthCode = ISSUE_AUTH === 'code' && acct.provider === 'demo' && !oidcClaims;
     if (needsAuthCode) {
       if (typeof auth_code !== 'string') return res.status(401).json({ error: 'auth_code required', reason: 'auth_code_required' });
       if (!peekCode(auth_code, { uid, purpose: 'issue', auid: acct.auid })) return res.status(401).json({ error: 'bad_code', reason: 'bad_code' });
@@ -1124,6 +1133,7 @@ app.post('/cia/issue', userCors, async (req, res) => {
       // 같은 C_u 로 재서명만 하는 경로(F-7) — 발급 기록이 없으므로 여기서는 signPoseidon 바로 앞이 "상태 변경 직전" 이다.
       return res.status(401).json({ error: 'bad_code', reason: 'bad_code' });
     }
+    if (pendingLink && !acct.linkedOidc) { acct.linkedOidc = { ...pendingLink, linkedAt: new Date().toISOString() }; persist(); }   // 2026-11-06: 모든 검증 뒤에 연결 기록
     const s = eddsa.signPoseidon(ciaPrv, F.e(await credMessageV11(auidS, aridS, Cf_u, Cf_s, BigInt(chainStr), agent)));
     // V8(2026-09-24 §2.1): 세션 단위 폐기를 하려면 IdP 가 Cf_s 를 알아야 한다. 정리는 하트비트뿐 아니라 여기서도(최종 리뷰 F2). auid_s·arid_s 는 적지 않는다(D1).
     acct.sessions = (acct.sessions ?? []).filter((r) => r.chainid !== chainStr || BigInt(r.max_height) >= head);

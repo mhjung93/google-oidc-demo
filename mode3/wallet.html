@@ -792,12 +792,16 @@
             // 2026-11-06(사용자 지적): RP 의 "Google 계정으로 로그인" 으로 들어왔으면 zkID 인증 창으로 가지 않는다 — 미등록 지갑은 그 자리에서 Google 로
             // 등록(googleRegister)한 뒤 아래 Google 발급으로 이어 가고(Google 로그인 두 번: 등록 nonce·발급 nonce 가 다르다), 아이디 계정으로 등록된
             // 지갑은 Google 로 발급할 수 없으므로(uid 가 등록에 묶임) 사유를 내고 멈춘다.
-            if (registered) { step(tt('wallet_google_needs_google_account') || '이 지갑은 zkID 아이디 계정으로 등록돼 있어 Google 로그인을 쓸 수 없습니다.'); return reply({ ok: false, reason: 'google_requires_google_account' }); }
-            if (!(await connect())) return;
-            say('wallet_prog_registering');
-            const r = await googleRegister({ step, log });
-            if (!r.ok) return reply(r);
-            step('Google 계정으로 등록됨 — 이어서 로그인합니다.');
+            if (registered) {
+              // 아이디 계정 지갑: Google 계정을 이 계정에 연결해 로그인한다(IdP 가 첫 번에 연결, 그 뒤엔 같은 Google 계정만) — 인증 창 대신 Google 이 본인 확인.
+              step(tt('wallet_google_link') || 'zkID 아이디 계정에 Google 계정을 연결해 로그인합니다…');
+            } else {
+              if (!(await connect())) return;
+              say('wallet_prog_registering');
+              const r = await googleRegister({ step, log });
+              if (!r.ok) return reply(r);
+              step('Google 계정으로 등록됨 — 이어서 로그인합니다.');
+            }
             provider = 'google';
           } else {
             if (!registered) { step('등록된 지갑이 없다.'); reply({ ok: false, reason: 'not_registered' }); say('wallet_prog_not_registered'); return; }

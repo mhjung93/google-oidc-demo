@@ -39,7 +39,7 @@ const REASONS = ['stale_root', 'stale_registry_root', 'root_too_old', 'revalidat
   // RP 의 counter 검사(bad_counter), 체인 반영 대기(bound_not_applied·no_pending_bound·bound_wrong_account).
   'id_taken', 'bad_name', 'name_taken', 'timeout', 'popup_closed', 'popup_blocked', 'bad_counter', 'bound_not_applied', 'no_pending_bound', 'bound_wrong_account',
   // 2026-11-06 — /rp 서비스 주소·운영자 인증서 발급(/cia/rp/create·/cia/rp/issue).
-  'bad_origin', 'origin_taken', 'origin_name_mismatch', 'unknown_rp', 'rp_not_registered', 'already_issued', 'rp_denied', 'unknown_rp_account'];
+  'bad_origin', 'origin_taken', 'origin_name_mismatch', 'unknown_rp', 'rp_not_registered', 'already_issued', 'rp_denied', 'unknown_rp_account', 'oidc_account_mismatch'];
 
 t('langs 는 ko, en', () => assert.deepEqual(S.langs, ['ko', 'en']));
 // U6(2026-10-14): login2(두 번째 RP 로그인, unlinkability 시연) 추가 — login 과 use 사이, 7단계→8단계.

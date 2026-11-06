@@ -796,7 +796,8 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
       if (!oc.enabled) return res.status(503).json({ reason: 'oidc_disabled' });
       const tokUid = oidcUidOf(oc.provider, id_token);
       if (!tokUid) return res.status(400).json({ reason: 'bad_id_token' });
-      if (tokUid !== state.registration.uid) return res.status(403).json({ reason: 'uid_mismatch' });
+      // 2026-11-06: 아이디(demo) 계정 지갑은 다른 uid 의 토큰을 보낼 수 있다 — IdP 가 그 Google 계정을 이 계정에 연결(첫 번) 또는 대조한다. 래퍼 계정은 지금처럼 자기 토큰만.
+      if (tokUid !== state.registration.uid && (state.registration.provider ?? 'demo') !== 'demo') return res.status(403).json({ reason: 'uid_mismatch' });
     }
     if (chainConfigMissing()) return res.status(503).json({ reason: 'chain_unavailable', detail: chainConfigMissing() });
     const rs = BigInt(r_s), rrp = BigInt(r_rp);
