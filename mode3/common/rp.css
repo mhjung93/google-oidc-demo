@@ -97,6 +97,10 @@ html[data-expert] .opt-row.expert { display: flex; }
   .nav-link { padding: 4px 0; }
   .exchange-main { padding: 16px 16px 40px; }
 }
+/* 2026-11-06(8차): 한 열이 되는 폭에서는 로그인·내 자산 카드를 시세표 위로 — 폰에서 8개 코인을 다 지나야 로그인 카드가 보였다. */
+@media (max-width: 900px) {
+  .card.assets-panel { order: -1; }
+}
 
 /* 2026-10-15: 상단 "지갑 연결" 보조 버튼과 지갑 상태 배지 */
 .nav-cta-secondary { background: transparent; color: #0b1f3a; border: 1px solid #0b1f3a; margin-right: 8px; }

@@ -30,7 +30,7 @@
     </form>
     <p class="auth-links"><span data-i18n="idp_no_account">계정이 없으세요?</span> <button type="button" class="btn-ghost" id="showSignupBtn" data-i18n="idp_signup_title">계정 만들기</button></p>
     <!-- Google(OIDC 래퍼, 2026-10-26 Snap OIDC 래퍼 §2.1): IdP 비밀번호 계정 없이 지갑 팝업에서 Google 로 등록 — IdP 가 래퍼를 켰을 때만 보인다. -->
-    <p class="auth-links" id="googleRow" hidden><button type="button" class="btn-ghost" id="registerGoogleBtn" data-i18n="idp_register_google_btn">Google 계정으로 등록</button> <a href="/account" data-i18n="user_google_account_link">Google 계정 관리</a></p>
+    <p class="auth-links" id="googleRow" hidden><button type="button" class="btn-ghost" id="registerGoogleBtn" data-i18n="idp_register_google_btn">Google 계정으로 등록</button> <a href="/account" id="googleAccountLink" data-i18n="user_google_account_link">Google 로 등록한 계정 관리</a></p>
     <div id="userVerdict"></div>
   </section>
   <!-- ===== 로그인 전 ② 계정 만들기 ===== -->
@@ -87,6 +87,19 @@
   /** 결과 칸 비우기 — Demo.verdict 는 null 을 받지 않으므로 판정 클래스와 내용만 지운다(화면 전환·로그아웃 때). */
   const clearVerdict = (el) => { el.__verdictArgs = null; el.innerHTML = ''; el.classList.remove('verdict', 'ok', 'bad', 'pending'); };
   let walletOrigin = null, me = null;
+  let oidcEnabled = false;   // public_keys.oidc.enabled — Google 줄(renderGoogleRow)
+  // Google 줄(OIDC 래퍼, 2026-11-06 8차): "Google 계정으로 등록" 은 Google 로그인이 지갑 팝업(walletOrigin) 안에서 일어나므로
+  // 지갑 오리진이 localhost 일 때 보인다 — IdP 를 VM 주소(192.168.x.x)로 열어도 된다. "/account" 링크는 그 페이지가 IdP 화면에
+  // Google 버튼을 그리므로 IdP 페이지 자체가 localhost 일 때만 보인다. Google 은 평문 http 오리진을 localhost 에만 허용하고
+  // 127.0.0.1 은 다른 오리진으로 본다(gsi.js 의 검사와 같다). 7차의 "IdP 주소가 localhost 일 때만 둘 다" 는 등록 버튼을 잘못 숨겼다.
+  function renderGoogleRow() {
+    let walletLocal = false;
+    try { walletLocal = !!walletOrigin && new URL(walletOrigin).hostname === 'localhost'; } catch { /* 잘못된 오리진이면 숨긴다 */ }
+    const showBtn = oidcEnabled && walletLocal, showLink = oidcEnabled && location.hostname === 'localhost';
+    $('registerGoogleBtn').hidden = !showBtn;
+    $('googleAccountLink').hidden = !showLink;
+    $('googleRow').hidden = !(showBtn || showLink);
+  }
   const progress = { revoked: false };   // 이 페이지가 아는 완료 신호(설계 §2.1) — register 는 me.registered 로 바로 안다
   // 안내(Task 17b): 공통 레이어가 2026-11-03 부터 바에 아무것도 그리지 않지만, 호출 모양은 다른 페이지와 같게 둔다.
   function renderGuide() {
@@ -107,6 +120,7 @@
       const wallet = last.aa?.walletOrigin || null;
       if (wallet === walletOrigin) return;
       walletOrigin = wallet;
+      renderGoogleRow();
       for (const id of ['walletLink', 'walletLink2']) $(id).href = walletOrigin ? `${walletOrigin}/` : '#';
       Demo.stack({ self: 'aa', urls: { wallet } });
       renderGuide();
@@ -153,10 +167,19 @@
     $('signupBtn').disabled = false;
     if (r.status === 201) {
       $('signupPwd').value = ''; $('signupPwd2').value = ''; $('signupId').value = '';
-      $('loginId').value = r.body.id; $('loginPwd').value = '';
       clearVerdict($('signupVerdict'));   // 지난 가입 오류(id_taken 등)가 다음 가입 화면에 남지 않게
-      showView('login');
-      verdict($('userVerdict'), true, 'idp_signup_ok_title', () => ({ summary: tt('idp_signup_ok', { id: r.body.id, uid: r.body.uid }) || `아이디 ${r.body.id} (uid ${r.body.uid}) 로 가입했습니다. 비밀번호를 넣고 로그인하세요.` }));
+      // 2026-11-06(8차): 가입 직후 같은 아이디·비밀번호로 바로 로그인한다(실제 서비스처럼 한 번 더 입력하지 않게) — 등록 카드에
+      // "이제 지갑을 등록하세요" 를 보인다. 로그인이 실패하면(드묾) 예전처럼 로그인 화면에 아이디를 채워 두고 안내한다.
+      const l = await post('/cia/user/login', { id, pwd });
+      if (l.status === 200) {
+        clearVerdict($('userVerdict'));
+        await refreshMe();
+        verdict($('registerVerdict'), true, 'idp_signup_ok_title', () => ({ summary: tt('idp_signup_ok_next', { id: r.body.id }) || `아이디 ${r.body.id} 로 가입했습니다. 이제 지갑을 등록하세요.` }));
+      } else {
+        $('loginId').value = r.body.id; $('loginPwd').value = '';
+        showView('login');
+        verdict($('userVerdict'), true, 'idp_signup_ok_title', () => ({ summary: tt('idp_signup_ok', { id: r.body.id }) || `아이디 ${r.body.id} 로 가입했습니다. 비밀번호를 넣고 로그인하세요.` }));
+      }
     } else {
       verdict($('signupVerdict'), false, 'idp_signup_failed', { reason: r.body?.reason ?? `HTTP ${r.status}`, detail: r.body });
     }
@@ -251,10 +274,9 @@
   (async () => {
     Demo.init({ page: 'idp_user' });
     initStack();
-    // Google 등록 버튼은 이 IdP 가 OIDC 래퍼를 켰을 때만 보인다(public_keys.oidc.enabled).
-    // 2026-11-05(7차): 그리고 localhost 로 열었을 때만 — Google 은 localhost 오리진만 허용해 VM 주소(192.168.x.x)에서는 눌러도 안 된다.
-    const googleOrigin = ['localhost', '127.0.0.1'].includes(location.hostname);
-    try { $('googleRow').hidden = !(googleOrigin && (await (await fetch('/cia/public_keys')).json()).oidc?.enabled); } catch { /* 숨긴 채 */ }
+    // Google 줄은 이 IdP 가 OIDC 래퍼를 켰을 때만(public_keys.oidc.enabled) — 어느 요소를 보일지는 renderGoogleRow(위) 가 정한다.
+    try { oidcEnabled = Boolean((await (await fetch('/cia/public_keys')).json()).oidc?.enabled); } catch { /* 숨긴 채 */ }
+    renderGoogleRow();
     await refreshMe();
   })();
 </script>

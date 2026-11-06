@@ -221,12 +221,11 @@ try {
   // 만 받는다(cia.js 의 /cia/register) — uid·비밀번호를 직접 프롬프트하던 옛 Snap RPC 는 이제 없다.
   await t('등록(2026-10-22): IdP 사용자 페이지 가입·로그인 → "지갑으로 커밋먼트 등록" → 지갑 팝업 → Snap 확인 창(uid·비밀번호 프롬프트 없음) → 등록됨; IdP 는 auid·pk_u·sig_reg 만 받았다', async () => {
     const u = await context.newPage(); await u.goto(`${cia.base}/user`);
-    // 2026-11-03 재구성: 로그인 화면 → "계정 만들기" → 아이디·비밀번호·확인 → 가입되면 로그인 화면으로 돌아오고 아이디가 채워져 있다.
+    // 2026-11-03 재구성: 로그인 화면 → "계정 만들기" → 아이디·비밀번호·확인. 2026-11-06(8차): 가입되면 바로 로그인돼 등록 카드가 열린다.
     assert.equal(await u.isHidden('#registerBtn'), true, '로그인 전에는 등록 카드가 없다');
     await u.click('#showSignupBtn'); await u.fill('#signupId', 'demo-user'); await u.fill('#signupPwd', DEMO_PWD); await u.fill('#signupPwd2', DEMO_PWD); await u.click('#signupBtn');
-    await waitText(u, '#userVerdict', '가입했습니다');   // 2026-11-05: 가입 문구에 uid 는 없다 — uid 는 등록 뒤 지갑 상태에서 받는다
-    assert.equal(await u.inputValue('#loginId'), 'demo-user', '가입한 아이디가 로그인 폼에 채워진다');
-    await u.fill('#loginPwd', DEMO_PWD); await u.click('#loginBtn'); await waitText(u, '#meBadge', '등록 전');
+    await waitText(u, '#registerVerdict', '가입했습니다');   // 2026-11-05: 가입 문구에 uid 는 없다 — uid 는 등록 뒤 지갑 상태에서 받는다
+    await waitText(u, '#meBadge', '등록 전'); assert.equal(await u.isHidden('#loginView'), true, '가입 직후 자동 로그인 — 로그인 화면으로 돌아가지 않는다');
     assert.equal(await u.isHidden('#revokeCard'), true, '등록 전에는 폐기 카드가 없다');
     const dBefore = dialogs.length;                                                        // 2026-11-05: Snap 등록 확인 창은 없다(중복 확인 제거)
     const [popup] = await Promise.all([context.waitForEvent('page'), u.click('#registerBtn')]);
@@ -619,7 +618,7 @@ try {
 
   // ---- Task 12(B3, 2026-10-22): IdP 사용자·RP·인증 창 페이지(/user·/rp·/login) ----
   // 가입·로그인·RP 만들기는 Snap 대화상자를 쓰지 않는다 — 새 계정(가입으로 받은 uid·새 운영자 id)을 쓴다.
-  await t('IdP 사용자 페이지(2026-11-03): 계정 만들기(아이디·비밀번호·확인, 불일치는 pwd_mismatch, 중복 아이디는 id_taken) → 아이디로 로그인 → 상태(등록 전) → 로그아웃하면 로그인 화면', async () => {
+  await t('IdP 사용자 페이지(2026-11-03): 계정 만들기(아이디·비밀번호·확인, 불일치는 pwd_mismatch, 중복 아이디는 id_taken) → 가입 직후 자동 로그인(2026-11-06) → 로그아웃 → 아이디로 로그인 → 상태(등록 전) → 로그아웃하면 로그인 화면', async () => {
     const p = await context.newPage(); await p.goto(`${cia.base}/user`);
     // 같은 브라우저 컨텍스트라 앞의 등록 케이스가 로그인해 둔 세션 쿠키가 남아 있을 수 있다 — 내 계정 화면이면 먼저 로그아웃한다.
     await p.waitForSelector('#loginView:not([hidden]), #meCard:not([hidden])');
@@ -629,7 +628,10 @@ try {
     await p.fill('#signupId', 'demo-user-2'); await p.fill('#signupPwd', 'demo-pass-1'); await p.fill('#signupPwd2', 'demo-pass-X'); await p.click('#signupBtn');
     await waitText(p, '#signupVerdict', '비밀번호 확인이 일치하지 않습니다');   // pwd_mismatch 제목
     await p.fill('#signupPwd2', 'demo-pass-1'); await p.click('#signupBtn');
-    await waitText(p, '#userVerdict', '가입했습니다'); assert.equal(await p.inputValue('#loginId'), 'demo-user-2');
+    // 2026-11-06(8차): 가입 직후 자동 로그인 — 등록 카드에 안내가 뜨고 상태는 등록 전. 로그인 화면으로 돌아가지 않는다.
+    await waitText(p, '#registerVerdict', '가입했습니다'); await waitText(p, '#meBadge', '등록 전'); await waitText(p, '#meInfo', 'demo-user-2');
+    assert.equal(await p.isHidden('#loginView'), true);
+    await p.click('#logoutBtn'); await p.waitForSelector('#loginView:not([hidden])');
     // 같은 아이디(대소문자만 다른)로 다시 가입하면 409 id_taken.
     await p.click('#showSignupBtn'); await p.fill('#signupId', 'DEMO-USER-2'); await p.fill('#signupPwd', 'demo-pass-1'); await p.fill('#signupPwd2', 'demo-pass-1'); await p.click('#signupBtn');
     await waitText(p, '#signupVerdict', '그 아이디는 이미 쓰고 있습니다'); await p.click('#showLoginBtn');   // id_taken 제목

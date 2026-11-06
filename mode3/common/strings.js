@@ -44,8 +44,7 @@ window.DemoStrings = {
     wallet_tab_send: { ko: '보내기', en: 'Send' },
     wallet_tab_settings: { ko: '설정', en: 'Settings' },
     wallet_connect_title: { ko: 'MetaMask 를 연결하세요', en: 'Connect MetaMask' },
-    wallet_connect_req: { ko: 'MetaMask Flask 와 zk Snap 이 설치돼 있어야 합니다. 처음 연결하면 Snap 설치를 묻습니다.', en: 'MetaMask Flask and the zk Snap must be installed. The first connection asks to install the Snap.' },
-    wallet_connect_desc: { ko: '등록 비밀은 MetaMask Snap 안에 있습니다. 연결하면 계정·연결된 서비스·보내기 화면이 열립니다.', en: 'Your registration secret lives inside the MetaMask Snap. Connect to open the account, services and send screens.' },
+    wallet_connect_desc: { ko: '등록 비밀은 MetaMask Snap 안에 있습니다. MetaMask Flask 와 zk Snap 이 필요하고, 처음 연결하면 Snap 설치를 묻습니다. 연결하면 계정·연결된 서비스·보내기 화면이 열립니다.', en: 'Your registration secret lives inside the MetaMask Snap. You need MetaMask Flask and the zk Snap; the first connection asks to install the Snap. Connect to open the account, services and send screens.' },
     wallet_profile_title: { ko: '내 속성', en: 'My attributes' },
     wallet_details_summary: { ko: '상세', en: 'Details' },
     wallet_danger_title: { ko: '위험 구역', en: 'Danger zone' },
@@ -643,19 +642,20 @@ window.DemoStrings = {
     idp_register_btn: { ko: '지갑 연결해 등록', en: 'Connect the wallet and register' },
     idp_wallet_link: { ko: '지갑 페이지 열기', en: 'Open the wallet page' },
     idp_slot_label: { ko: '등록부 슬롯', en: 'Registry slot' },
-    idp_info_registered: { ko: '등록됨 — 이 계정은 지갑과 연결돼 있습니다.', en: 'Registered — this account is linked to your wallet.' },
+    idp_info_registered: { ko: '등록됨 — 이 계정은 지갑과 연결돼 있습니다. 이제 서비스 페이지로 돌아가 로그인하세요.', en: 'Registered — this account is linked to your wallet. Now go back to the service page and log in.' },
     idp_info_details: { ko: '상세', en: 'Details' },
     // 2026-11-04: 내 등록 정보 카드의 두 값에 한 줄 설명(사용자 질문 — 가명·슬롯이 무엇인지 화면만 보고는 알 수 없었다).
     idp_auid_desc: { ko: 'zkID 가 이 계정을 지갑과 잇는 데 쓰는 가명입니다. 로그인 때 지갑이 자동으로 넘깁니다.', en: 'A pseudonym zkID uses to tie this account to your wallet. The wallet hands it over automatically at login.' },
     idp_slot_desc: { ko: 'zkID 등록부에서 이 계정의 자리 번호입니다.', en: 'The position of this account in the zkID registry.' },
     idp_signup_ok_title: { ko: '가입됨', en: 'Signed up' },
     idp_signup_ok: { ko: '아이디 {id} 로 가입했습니다. 비밀번호를 넣고 로그인하세요.', en: 'Your account {id} is ready. Enter your password to log in.' },
+    idp_signup_ok_next: { ko: '아이디 {id} 로 가입했습니다. 이제 지갑을 등록하세요.', en: 'Your account {id} is ready. Now register your wallet.' },   // 2026-11-06: 가입 직후 자동 로그인 뒤
     idp_signup_failed: { ko: '가입 실패', en: 'Sign-up failed' },
     idp_login_failed: { ko: '로그인 실패', en: 'Login failed' },
     idp_register_ok_title: { ko: '등록됨', en: 'Registered' },
-    idp_register_ok: { ko: '등록됨', en: 'Registered' },
+    idp_register_ok: { ko: '등록됨 — 이제 서비스 페이지로 돌아가 로그인하세요', en: 'Registered — now go back to the service page and log in' },
     idp_register_google_btn: { ko: 'Google 계정으로 등록', en: 'Register with a Google account' },
-    idp_register_google_ok: { ko: 'Google 계정 등록됨', en: 'Google account registered' },
+    idp_register_google_ok: { ko: 'Google 계정 등록됨 — 이제 서비스 페이지로 돌아가 로그인하세요', en: 'Google account registered — now go back to the service page and log in' },
     idp_register_failed: { ko: '등록 실패', en: 'Registration failed' },
     // Task 12 수정 라운드 1(2026-10-22) — 등록 팝업 수신 심층 방어·타임아웃·닫힘 감지(cia_user.html #registerBtn).
     // rp.html 의 rp_popup_timeout·rp_popup_closed 와 같은 문구 결이다.

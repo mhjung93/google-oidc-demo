@@ -336,8 +336,11 @@
     for (const id of ['copyPpidBtn', 'copyPpidNavBtn']) $(id).addEventListener('click', () => copyText(lastAccount ?? lastPPID, $(id)));
     let lastTxHash = null;   // 마지막 온체인 출금의 txHash — 결과 아래 ⧉ 가 복사한다
     $('copyTxHashBtn').addEventListener('click', () => copyText(lastTxHash, $('copyTxHashBtn')));
+    // 2026-11-06(8차): 탭 제목은 로그인 전 "zkONE — 로그인", 로그인 뒤 "zkONE — 내 자산"(renderBrand·renderAccountView 둘이 부른다).
+    function renderTitle() { document.title = `${SERVICE_NAME} — ${currentSession ? '내 자산' : '로그인'}`; }
     function renderAccountView() {
       const loggedIn = !!currentSession;
+      renderTitle();
       $('accountPill').hidden = !loggedIn;
       // 2026-10-21: 로그인 상태에서는 상단의 지갑 연결·로그인 버튼을 숨긴다(로그아웃 상태에서만 보인다). 다시 로그인하려면 먼저 로그아웃.
       $('loginBtn').hidden = loggedIn;   // 2026-11-05: "지갑 연결"(MetaMask 배지) 버튼은 로그인에 필요 없어 뺐다(사용자 결정)
@@ -434,8 +437,8 @@
       const brand = /^zk/i.test(info?.name ?? '') ? info.name : 'zkONE';
       document.querySelector('.brand').textContent = brand;
       document.body.dataset.brand = brand;
-      document.title = `${brand} — 로그인`;
       SERVICE_NAME = brand;
+      renderTitle();
     }
     async function loadInfo() {
       info = await (await fetch('/api/mode3/rp_info')).json();
