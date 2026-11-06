@@ -252,7 +252,7 @@ window.DemoStrings = {
     rp_direct_login_btn: { ko: '로그인', en: 'Log in' },
     rp_direct_login_note: { ko: '데모에서는 zkID 로그인만 동작합니다', en: 'In this demo, only IdP login actually works.' },
     rp_or_social: { ko: '다른 방법 — 이 데모에서는 동작하지 않습니다', en: 'Other methods — not available in this demo' },
-    rp_google_btn: { ko: 'Google 로 로그인', en: 'Log in with Google' },
+    rp_google_btn: { ko: 'Google 계정으로 로그인', en: 'Log in with Google' },   // 2026-11-06: 주 버튼 아래 두 번째 선택지(snap 모드 포함)
     rp_naver_btn: { ko: '네이버로 로그인', en: 'Log in with Naver' },
     rp_idp_btn: { ko: 'zkID 로 로그인', en: 'Log in with zkID' },
     rp_social_not_in_demo: { ko: '이 데모에서는 아직 준비되지 않았습니다', en: 'Not available in this demo yet.' },

@@ -163,6 +163,11 @@
         <button type="button" id="idpLoginBtn" class="social-btn social-btn-idp">
           <span data-i18n="rp_idp_btn">zkID 로 로그인</span>
         </button>
+        <!-- 2026-11-06: Google 계정 로그인은 주 버튼 아래 두 번째 선택지 — 같은 zk 로그인을 provider:'google' 로 시작한다(snap 모드 포함). -->
+        <button type="button" id="googleLoginBtn" class="social-btn">
+          <span class="social-badge badge-google" aria-hidden="true">G</span>
+          <span data-i18n="rp_google_btn">Google 계정으로 로그인</span>
+        </button>
       </div>
       <p id="loginModalNote" class="modal-note" hidden></p>
       <div class="modal-divider"><span data-i18n="rp_or_social">다른 방법 — 이 데모에서는 동작하지 않습니다</span></div>
@@ -172,10 +177,6 @@
         <button type="button" id="directLoginBtn" data-i18n="rp_direct_login_btn">로그인</button>
       </div>
       <div class="social-row">
-        <button type="button" id="googleLoginBtn" class="social-btn">
-          <span class="social-badge badge-google" aria-hidden="true">G</span>
-          <span data-i18n="rp_google_btn">Google 로 로그인</span>
-        </button>
         <button type="button" id="naverLoginBtn" class="social-btn">
           <span class="social-badge badge-naver" aria-hidden="true">N</span>
           <span data-i18n="rp_naver_btn">네이버로 로그인</span>
@@ -617,7 +618,8 @@
     // 승인 창이 Google 본인 확인을 끼워 넣고, 지갑이 토큰을 발급 요청에 실어 래퍼(IdP)가 자격증명을 낸다. RP 는 토큰·Google 신원을 보지 않는다. 아니면 안내만.
     $('googleLoginBtn').addEventListener('click', async () => {
       if (!info) { try { await loadInfo(); } catch { /* 아래에서 꺼진 것으로 본다 */ } }
-      if (info?.oidc?.enabled && WEB()) { closeLoginModal(); startIdpLogin({ provider: 'google' }); return; }
+      // 2026-11-06: snap 모드에서도 연다 — 지갑 팝업이 등록 provider 에 따라 Google 버튼(Google 등록 계정) 또는 zkID 인증 창(아이디 계정)으로 진행한다.
+      if (info?.oidc?.enabled) { closeLoginModal(); startIdpLogin({ provider: 'google' }); return; }
       showModalNote('rp_social_not_in_demo', '이 데모에서는 아직 준비되지 않았습니다');
     });
     $('naverLoginBtn').addEventListener('click', () => showModalNote('rp_social_not_in_demo', '이 데모에서는 준비되지 않았습니다'));
