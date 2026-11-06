@@ -660,7 +660,7 @@ async function makeShare(arid) {
   persist();
 }
 
-/** 승인 공통(관리자 /cia/rps/:arid/approve · 운영자 /cia/rp/issue, 2026-11-06): 조각을 먼저 만들고 성공한 **뒤에** status 를 바꾼다
+/** 승인(관리자 /cia/rps/:arid/approve — 2026-11-06 운영자는 /cia/rp/request_cert 로 요청만 한다): 조각을 먼저 만들고 성공한 **뒤에** status 를 바꾼다
  *  (2026-09-25 리뷰 B-6). makeShare 의 persist 는 status 변경 전이다(이미 조각이 있어 일찍 반환한 경우 아예 안 쓴다). */
 async function approveRp(arid) {
   const e = state.rps[arid];
@@ -672,7 +672,7 @@ async function approveRp(arid) {
   persist();
 }
 
-const rpView = (arid, e) => ({ arid, name: e.name, origin: e.origin, pk_service: e.pk_service, X_svc: e.X_svc, pk_trace: e.pk_trace, status: e.status, requestedAt: e.requestedAt, decidedAt: e.decidedAt, operator: e.operator ?? null });
+const rpView = (arid, e) => ({ arid, name: e.name, origin: e.origin, pk_service: e.pk_service, X_svc: e.X_svc, pk_trace: e.pk_trace, status: e.status, requestedAt: e.requestedAt, decidedAt: e.decidedAt, operator: e.operator ?? null, certRequestedAt: e.certRequestedAt ?? null });
 app.get('/cia/rps', requireAdmin, (req, res) => res.json({ rps: Object.entries(state.rps).map(([a, e]) => rpView(a, e)) }));
 // 공개 RP 주소 목록(Task 11, 스펙 §3.3·§5.4) — 지갑 에이전트가 10초마다 폴링해 동적 CORS 허용 목록을 넓힌다.
 // 인증 없음. origin 만 낸다 — arid·운영자·키는 내지 않는다(IdP 가 어차피 공개하는 정보라 CORS 는 다른 공개 라우트와 같다).
@@ -758,7 +758,7 @@ app.post('/cia/rp/logout', (req, res) => logoutRole(req, res, 'operator', 'uid')
  *  하지 않는다(컨트롤러 판정: 평문은 /cia/rp/create 의 1회 응답에만). */
 function rpSlotView(slot) {
   const e = slot.arid ? state.rps[slot.arid] : null;
-  return { name: slot.name, status: e ? e.status : slot.status, origin: e ? e.origin : (slot.origin ?? null), arid: slot.arid, requestedAt: e ? e.requestedAt : slot.createdAt, createdAt: slot.createdAt };
+  return { name: slot.name, status: e ? e.status : slot.status, origin: e ? e.origin : (slot.origin ?? null), arid: slot.arid, requestedAt: e ? e.requestedAt : slot.createdAt, createdAt: slot.createdAt, certRequestedAt: e?.certRequestedAt ?? null };
 }
 app.get('/cia/rp/me', requireOperator, (req, res) => {
   const opId = req.session.operator;
@@ -817,21 +817,19 @@ app.post('/cia/rp/create', requireOperator, (req, res) => {
   const view = rpSlotView(slot);
   res.status(201).json({ name, origin, key, command: rpStartCommand(name, origin, key), status: view.status, arid: view.arid });
 });
-// 2026-11-06: 운영자가 자기 RP 에 인증서를 낸다 — 관리자 승인(/cia/rps/:arid/approve)과 같은 처리(approveRp). RP 서버가 등록 요청을 보내
-// 슬롯이 묶여 있어야(arid) 한다 — 조합 키 pk_trace 는 RP 의 X_svc 가 있어야 만들 수 있다. RP 서버는 다음 폴링(5초)에 cert_s 를 받아 활성화된다.
-// 신뢰 전제: 운영자 계정이 곧 승인 권한이다(관리자 승인·거절은 그대로 남는다 — 키 없이 등록된 RP 와 비상용).
-app.post('/cia/rp/issue', requireOperator, async (req, res) => {
-  try {
-    const { name } = req.body ?? {};
-    const slot = Object.values(state.rpSlots).find((s) => s.opId === req.session.operator && s.name === name);
-    if (!slot) return res.status(404).json({ error: 'unknown_rp', reason: 'unknown_rp' });
-    const e = slot.arid ? state.rps[slot.arid] : null;
-    if (!e) return res.status(409).json({ error: 'rp_not_registered', reason: 'rp_not_registered' });
-    if (e.status === 'approved') return res.status(409).json({ error: 'already_issued', reason: 'already_issued' });
-    if (e.status !== 'pending' || !e.X_svc) return res.status(409).json({ error: `already ${e.status}`, reason: 'rp_denied' });
-    await approveRp(slot.arid);
-    res.json({ name, arid: slot.arid, status: 'approved' });
-  } catch (err) { res.status(err.status ?? 500).json({ error: err.message, ...(err.reason ? { reason: err.reason } : {}) }); }
+// 2026-11-06(사용자 결정): 운영자는 인증서를 **요청**만 한다 — 발급(승인)은 관리자(/admin 의 /cia/rps/:arid/approve)가 한다. 요청은 등록(arid)이
+// 묶인 pending 항목에 certRequestedAt 을 찍는 것뿐이고(멱등), 관리자 목록에 "발급 요청됨" 으로 보인다. 승인되면 운영자 표가 "발급됨" 으로 바뀌고
+// RP 서버는 다음 폴링(5초)에 cert_s 를 받는다. (그전에 있던 운영자 자체 승인 /cia/rp/issue 는 뺐다 — 관리자 승인이 신뢰의 기준이다.)
+app.post('/cia/rp/request_cert', requireOperator, (req, res) => {
+  const { name } = req.body ?? {};
+  const slot = Object.values(state.rpSlots).find((s) => s.opId === req.session.operator && s.name === name);
+  if (!slot) return res.status(404).json({ error: 'unknown_rp', reason: 'unknown_rp' });
+  const e = slot.arid ? state.rps[slot.arid] : null;
+  if (!e) return res.status(409).json({ error: 'rp_not_registered', reason: 'rp_not_registered' });
+  if (e.status === 'approved') return res.status(409).json({ error: 'already_issued', reason: 'already_issued' });
+  if (e.status !== 'pending') return res.status(409).json({ error: `already ${e.status}`, reason: 'rp_denied' });
+  if (!e.certRequestedAt) { e.certRequestedAt = new Date().toISOString(); persist(); }
+  res.json({ name, arid: slot.arid, status: e.status, requested: true, certRequestedAt: e.certRequestedAt });
 });
 
 // ---- Task 10(B1, 2026-10-22 스펙 §3.1~3.3): 사용자 계정·세션·1회용 코드 ----
@@ -1576,6 +1574,27 @@ app.post('/cia/account/set_disabled', requireAdmin, (req, res) => {
   state.accounts[uid].disabled = Boolean(disabled);
   persist();
   res.json({ uid, disabled: state.accounts[uid].disabled });
+});
+
+// 2026-11-06(사용자 요청): 계정 삭제 — 등록된 계정이면 먼저 계정 폐기(revokeAccount: 자격증명 은퇴·슬롯 0·게시·접수증)를 태워 이미 발급된
+// 자격증명이 체인에서도 막히게 한 뒤, 레코드·아이디 색인(같은 아이디로 재가입 가능)·그 uid 의 1회용 코드를 지운다. 슬롯 번호는 재사용하지
+// 않는다(등록부 규칙 — 등록부 관리 화면에서 그 슬롯은 uid 없는 빈 칸이 된다). 세션은 계정이 없어져 재검증이 실패한다(의도). 개봉 기록(openings)은
+// 감사용으로 남긴다. 지갑(Snap) 안의 등록 비밀은 서버가 지울 수 없다 — 사용자가 지갑 설정 탭 "Snap 초기화" 를 눌러야 새로 등록할 수 있다.
+// 시드 계정(CIA_DEMO_ACCOUNTS=1)은 다음 기동 때 다시 생긴다.
+app.post('/cia/account/delete', requireAdmin, async (req, res) => {
+  try {
+    const { uid } = req.body ?? {};
+    const acct = isDec(uid) ? state.accounts[uid] : null;
+    if (!acct) return res.status(404).json({ error: 'unknown account' });
+    const revoked = acct.pk_u ? await revokeAccount(uid) : null;
+    if (!state.accounts[uid]) return res.status(409).json({ error: 'account vanished during revocation' });   // await 사이에 다른 삭제가 끼었다
+    const loginId = acct.loginId ?? null;
+    delete state.accounts[uid];
+    if (loginId && state.loginIds[loginIdKey(loginId)] === uid) delete state.loginIds[loginIdKey(loginId)];
+    for (const [k, v] of Object.entries(state.codes)) if (v.uid === uid) delete state.codes[k];
+    persist();
+    res.json({ uid, id: loginId, deleted: true, revoked });
+  } catch (err) { res.status(err.status ?? 500).json({ error: err.message }); }
 });
 
 // 관리자 계정 목록(관리 페이지의 계정 목록용). activeCred 는 위의 기존 헬퍼(사용자당 활성 자격증명 하나).

@@ -27,6 +27,7 @@ window.DemoStrings = {
     where_rp2: { ko: '두 번째 RP', en: 'the second RP' },
     where_idp_user: { ko: 'IdP 사용자 페이지', en: 'the IdP user page' }, where_idp_rp: { ko: 'IdP RP 페이지', en: 'the IdP RP page' },
     confirm_revoke: { ko: '되돌릴 수 없습니다. 폐기할까요?', en: 'This cannot be undone. Revoke?' },
+    confirm_delete_account: { ko: '계정과 지갑 등록을 지웁니다. 되돌릴 수 없습니다. 등록된 자격증명은 먼저 폐기(게시)됩니다. 지갑 쪽 Snap 비밀은 사용자가 "지갑 설정 → Snap 초기화" 로 지워야 합니다. 계속할까요?', en: 'This deletes the account and its wallet registration and cannot be undone. A registered credential is revoked (and published) first. The secret inside the user’s Snap must be cleared by the user (wallet settings → Reset the Snap). Continue?' },
     confirm_tamper: { ko: '시연용입니다 — 이 계정의 등록부 슬롯에 가짜 자격증명을 게시합니다. 계속할까요?', en: 'Demo only — publish a fake credential into this account’s registry slot. Continue?' },
     confirm_publish: { ko: '폐기 목록을 체인에 게시합니다. 계속할까요?', en: 'Publish the revocation list on-chain. Continue?' },
     confirm_rp_deny: { ko: 'RP 를 거절합니다. 거절은 되돌릴 수 없고, 운영자가 키로 다시 등록해야 합니다. 계속할까요?', en: 'Deny this RP. This cannot be undone; the operator must re-register with the key. Continue?' },
@@ -504,6 +505,7 @@ window.DemoStrings = {
     admin_sessions_btn: { ko: '세션', en: 'Sessions' },
     admin_revoke_btn: { ko: '계정 폐기', en: 'Revoke account' },
     admin_recover_btn: { ko: '복구(다시 쓰게)', en: 'Recover (re-enable)' },
+    admin_delete_btn: { ko: '계정 삭제', en: 'Delete account' },   // 2026-11-06
     admin_tamper_btn: { ko: '슬롯 바꿔치기(시연)', en: 'Tamper slot (demo)' }, admin_restore_btn: { ko: '되돌리기', en: 'Restore' },
     admin_revoke_session_btn: { ko: '폐기', en: 'Revoke' },
     admin_revoke_bound_prompt: { ko: '허용 거래 수 c (nonce < c 만 유효, 0 = 전부 차단)', en: 'Allowed tx count c (only nonce < c stays valid; 0 = block all)' },
@@ -540,6 +542,7 @@ window.DemoStrings = {
     admin_col_arid: { ko: 'RP 식별자', en: 'RP id' },
     admin_col_decided: { ko: '처리 시각', en: 'Decided at' },
     admin_rp_pending: { ko: '승인 대기', en: 'Pending' },
+    admin_rp_cert_requested: { ko: '발급 요청됨', en: 'Certificate requested' },   // 2026-11-06: 운영자가 /rp 에서 요청함 — 승인할 차례
     admin_rp_approved: { ko: '승인됨', en: 'Approved' },
     admin_rp_denied: { ko: '거절됨', en: 'Denied' },
     admin_openings_desc: { ko: 'RP 가 올린 개봉 요청입니다. 승인하면 IdP 조각으로 봉인을 풀어 uid 를 기록합니다 — 대기 중인 항목에는 uid 가 없습니다.', en: 'Opening requests filed by RPs. Approving unseals with the IdP’s share and records the uid — a pending entry has no uid.' },
@@ -586,6 +589,9 @@ window.DemoStrings = {
     admin_revoke_summary: { ko: 'uid {uid} 계정을 폐기했습니다. 게시해야 이미 발급된 자격증명까지 막힙니다.', en: 'Account uid {uid} was revoked. Publish to also block credentials already issued.' },
     admin_session_revoke_summary: { ko: '세션 하나만 폐기했습니다. 계정과 다른 세션은 그대로입니다.', en: 'Only that one session was revoked. The account and the other sessions are untouched.' },
     admin_revoke_failed: { ko: '폐기 실패', en: 'Revocation failed' },
+    admin_delete_title: { ko: '계정 삭제됨', en: 'Account deleted' },
+    admin_delete_summary: { ko: 'uid {uid} 계정과 지갑 등록을 지웠습니다. 등록돼 있었다면 자격증명은 먼저 폐기(게시)됐습니다. 같은 아이디로 다시 가입할 수 있습니다. 지갑 쪽 Snap 비밀은 사용자가 지갑 설정 탭 "Snap 초기화" 로 지워야 새로 등록할 수 있습니다.', en: 'Account uid {uid} and its wallet registration were deleted. If it was registered, its credential was revoked (and published) first. The login id can be used again. The secret inside the user\'s Snap must be cleared by the user ("Reset the Snap" in wallet settings) before registering again.' },
+    admin_delete_failed: { ko: '삭제 실패', en: 'Deletion failed' },
     admin_recover_title: { ko: '복구됨', en: 'Recovered' },
     admin_recover_summary: { ko: 'uid {uid} 를 다시 쓸 수 있게 했습니다. 이미 폐기된 자격증명은 되살아나지 않습니다 — 지갑이 다음 로그인에서 새로 받습니다.', en: 'uid {uid} can be used again. Credentials already revoked do not come back — the wallet receives a fresh one at its next login.' },
     admin_recover_failed: { ko: '복구 실패', en: 'Recovery failed' },
@@ -686,7 +692,7 @@ window.DemoStrings = {
     idp_rp_login_btn: { ko: '로그인', en: 'Log in' },
     idp_rp_logout_btn: { ko: '로그아웃', en: 'Log out' },
     idp_rp_create_title: { ko: '새 RP 만들기', en: 'Create a new RP' },
-    idp_rp_create_desc: { ko: '이름과 서비스 주소를 넣으면 1회용 RP 키와 기동 명령을 드립니다 — 키는 지금만 보입니다. 그 주소의 RP 서버가 등록 요청을 보내면 아래 표에서 인증서를 발급합니다.', en: 'Enter a name and the service address to get a one-time RP key and the start command — the key is shown only now. Once the RP server at that address has sent its registration, issue its certificate in the table below.' },
+    idp_rp_create_desc: { ko: '이름과 서비스 주소를 넣으면 1회용 RP 키와 기동 명령을 드립니다 — 키는 지금만 보입니다. 그 주소의 RP 서버가 등록 요청을 보내면 아래 표에서 인증서 발급을 요청하고, zkID 관리자가 승인하면 발급됩니다.', en: 'Enter a name and the service address to get a one-time RP key and the start command — the key is shown only now. Once the RP server at that address has sent its registration, request its certificate in the table below; it is issued when a zkID administrator approves.' },
     idp_rp_name_label: { ko: '이름', en: 'Name' },   // 2026-11-06: 'zk 로 시작' 규칙은 placeholder·bad_name 안내로만
     idp_rp_create_btn: { ko: '만들기', en: 'Create' },
     idp_rp_list_title: { ko: '내 RP', en: 'My RPs' },
@@ -695,7 +701,7 @@ window.DemoStrings = {
     idp_rp_col_status: { ko: '상태', en: 'Status' },
     idp_rp_col_origin: { ko: '주소', en: 'Origin' },
     idp_rp_status_created: { ko: '만들어짐', en: 'Created' },
-    idp_rp_status_pending: { ko: '발급 대기', en: 'Awaiting certificate' },   // 2026-11-06: 운영자가 "인증서 발급" 을 누르는 단계
+    idp_rp_status_pending: { ko: '등록됨', en: 'Registered' },   // 2026-11-06: RP 서버가 등록 요청을 보냈고 인증서는 아직 — 인증서 열이 요청·승인 상태를 보인다
     idp_rp_status_approved: { ko: '인증서 발급됨', en: 'Certificate issued' },
     idp_rp_status_denied: { ko: '거부됨', en: 'Denied' },
     idp_rp_status_retired: { ko: '주소를 넘김', en: 'Address handed over' },   // 2026-11-06: 거부된 주소를 다른 슬롯이 넘겨받아 은퇴한 슬롯
@@ -708,20 +714,20 @@ window.DemoStrings = {
     idp_rp_signup_failed: { ko: '가입 실패', en: 'Sign-up failed' },
     idp_rp_login_ok: { ko: '로그인됨 — id {id}.', en: 'Logged in — id {id}.' },
     idp_rp_create_ok_title: { ko: '만들어짐', en: 'Created' },
-    idp_rp_create_ok: { ko: '만들어짐 — {name}. 아래 명령으로 RP 서버를 띄우세요. 서버가 등록 요청을 보내면 "인증서 발급" 을 누릅니다.', en: 'Created — {name}. Start the RP server with the command below; once it has sent its registration, press "Issue certificate".' },
+    idp_rp_create_ok: { ko: '만들어짐 — {name}. 아래 명령으로 RP 서버를 띄우세요. 서버가 등록 요청을 보내면 "인증서 발급 요청" 을 누릅니다.', en: 'Created — {name}. Start the RP server with the command below; once it has sent its registration, press "Request certificate".' },
     idp_rp_create_failed: { ko: '만들기 실패', en: 'Creation failed' },
     // 2026-11-06: 서비스 주소 입력 + 운영자 "인증서 발급"(관리자 승인 대신 운영자가 자기 RP 에 인증서를 낸다).
     idp_rp_origin_label: { ko: '서비스 주소', en: 'Service address' },
     idp_rp_col_cert: { ko: '인증서', en: 'Certificate' },
-    idp_rp_cert_wait_server: { ko: 'RP 서버가 등록 요청을 보내면 발급할 수 있습니다 — 명령으로 서버를 띄우세요', en: 'You can issue once the RP server has sent its registration — start it with the command' },
-    idp_rp_issue_btn: { ko: '인증서 발급', en: 'Issue certificate' },
+    idp_rp_cert_wait_server: { ko: 'RP 서버가 등록 요청을 보내면 인증서를 요청할 수 있습니다 — 명령으로 서버를 띄우세요', en: 'You can request a certificate once the RP server has sent its registration — start it with the command' },
+    idp_rp_request_btn: { ko: '인증서 발급 요청', en: 'Request certificate' },
+    idp_rp_cert_requested: { ko: '승인 대기 — 관리자가 승인하면 발급됩니다', en: 'Awaiting approval — issued once an administrator approves' },
     idp_rp_cert_issued: { ko: '발급됨', en: 'Issued' },
     idp_rp_cert_denied: { ko: '거부됨 — 발급 불가', en: 'Denied — cannot issue' },
-    idp_rp_issue_ok_title: { ko: '인증서 발급됨', en: 'Certificate issued' },
-    idp_rp_issue_ok: { ko: '{name} 에 인증서를 냈습니다. RP 서버가 몇 초 안에 인증서를 받아 활성화됩니다.', en: 'A certificate was issued to {name}. The RP server picks it up within a few seconds and becomes active.' },
-    idp_rp_issue_failed: { ko: '인증서 발급 실패', en: 'Certificate issuance failed' },
-    idp_rp_create_ok_bound: { ko: '만들어짐 — {name}. 이 주소의 RP 서버가 이미 등록 요청을 보냈습니다. 아래 표에서 "인증서 발급" 을 누르세요.', en: 'Created — {name}. The RP server at this address has already sent its registration. Press "Issue certificate" in the table below.' },
-    idp_rp_create_ok_active: { ko: '만들어짐 — {name}. 이 주소의 RP 는 이미 인증서가 있어 바로 쓸 수 있습니다.', en: 'Created — {name}. The RP at this address already has a certificate and is ready to use.' },
+    idp_rp_request_ok_title: { ko: '발급 요청됨', en: 'Certificate requested' },
+    idp_rp_request_ok: { ko: '{name} 의 인증서 발급을 요청했습니다. zkID 관리자가 승인하면 발급되고, RP 서버가 몇 초 안에 받아 활성화됩니다.', en: 'A certificate was requested for {name}. Once a zkID administrator approves, it is issued and the RP server picks it up within a few seconds.' },
+    idp_rp_request_failed: { ko: '인증서 발급 요청 실패', en: 'Certificate request failed' },
+    idp_rp_create_ok_bound: { ko: '만들어짐 — {name}. 이 주소의 RP 등록을 이 계정에 연결했습니다. 아래 표에서 상태를 확인하고 "인증서 발급 요청" 을 누르세요.', en: 'Created — {name}. The registration from this address is now linked to your account. Check the status in the table below and press "Request certificate".' },
     // IdP 인증 창(cia_login.html, §4) — 지갑 팝업이 연다.
     idp_auth_title: { ko: 'zkID 로그인', en: 'zkID sign-in' },
     idp_auth_desc: { ko: '아이디·비밀번호를 넣으면 지갑으로 돌아가 로그인을 이어갑니다.', en: 'Enter your login id and password; you return to the wallet and the login continues.' },
@@ -953,7 +959,7 @@ window.DemoStrings = {
     bad_id: { where: 'aa', ko: { title: '아이디 형식이 맞지 않습니다', cause: '아이디는 영문 또는 숫자로 시작하는 3~32자이고, 영문·숫자·. _ - 만 쓸 수 있으며 숫자만으로는 만들 수 없습니다(400).', action: '조건에 맞는 아이디를 넣으세요.' }, en: { title: 'The id format is not valid', cause: 'An id is 3–32 characters, starts with a letter or digit, and may contain letters, digits, ".", "_" or "-" (400).', action: 'Enter an id that meets the rule.' } },
     pwd_mismatch: { where: 'page', ko: { title: '비밀번호 확인이 일치하지 않습니다', cause: '두 번 입력한 비밀번호가 다릅니다. 서버에는 보내지 않았습니다.', action: '같은 비밀번호를 두 번 넣으세요.' }, en: { title: 'The passwords do not match', cause: 'The two passwords you typed differ. Nothing was sent to the server.', action: 'Type the same password twice.' } },
     bad_name: { where: 'aa', ko: { title: 'RP 이름 형식이 아닙니다', cause: '이름은 zk 로 시작하는 영문·숫자 1~15자여야 합니다(400).', action: '이름을 그 형식으로 고쳐 다시 만드세요.' }, en: { title: 'The RP name is not in the right format', cause: 'A name must start with "zk" and be 1–15 letters or digits (400).', action: 'Fix the name to that format and try again.' } },
-    // 2026-11-06: 서비스 주소·운영자 발급(/cia/rp/create·/cia/rp/issue).
+    // 2026-11-06: 서비스 주소·운영자 인증서 요청(/cia/rp/create·/cia/rp/request_cert).
     bad_origin: { where: 'aa', ko: { title: '서비스 주소 형식이 아닙니다', cause: '주소는 http(s)://호스트[:포트] 모양이어야 하고, 경로 없이 소문자 호스트로 적어야 합니다(기본 포트 80·443 은 생략, IPv6 리터럴 불가)(400).', action: '예: http://192.168.226.11:3100 처럼 RP 서버가 쓰는 주소 그대로 고쳐 다시 만드세요.' }, en: { title: 'The service address is not in the right format', cause: 'The address must look like http(s)://host[:port] with no path, a lowercase host, default ports 80/443 omitted and no IPv6 literal (400).', action: 'Fix it to exactly what the RP server uses, e.g. http://192.168.226.11:3100, and try again.' } },
     origin_taken: { where: 'aa', ko: { title: '그 주소는 이미 다른 RP 가 쓰고 있습니다', cause: '같은 서비스 주소로 만든 RP 가 이미 있거나 다른 운영자에게 묶여 있습니다(409).', action: '주소를 확인하세요. 내 RP 라면 목록에 이미 있습니다.' }, en: { title: 'That address is already used by another RP', cause: 'An RP with the same service address already exists or belongs to another operator (409).', action: 'Check the address. If it is yours, it is already in your list.' } },
     origin_name_mismatch: { where: 'aa', ko: { title: '그 주소의 RP 는 다른 이름으로 등록돼 있습니다', cause: '그 서비스 주소에서 온 등록 요청의 이름이 여기 넣은 이름과 다릅니다(409).', action: 'RP 서버에 설정한 이름(MODE3_RP_NAME)과 같은 이름으로 만드세요.' }, en: { title: 'The RP at that address registered under a different name', cause: 'The registration from that address carries a different name than the one entered (409).', action: 'Use the same name the RP server was started with (MODE3_RP_NAME).' } },

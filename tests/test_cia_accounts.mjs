@@ -383,11 +383,11 @@ try {
     assert.equal(keylessEntry.operator, null, '키 없는 등록은 운영자 없음');
   });
 
-  await t('운영자 인증서 발급(2026-11-06): 키 없는 등록을 같은 이름·주소의 슬롯에 묶고(어느 순서든) /cia/rp/issue 가 승인·인증서; 미등록 409, 이름 불일치 409, 중복 발급 409', async () => {
+  await t('운영자 인증서 발급 요청(2026-11-06): 키 없는 등록을 같은 이름·주소의 슬롯에 묶고 /cia/rp/request_cert 가 요청을 적으면 관리자 승인 뒤 발급; 미등록 409, 이름 불일치 409, 승인 뒤 재요청 409', async () => {
     const withJar = makeJar(cia.base);
     await withJar('/cia/rp/signup', { method: 'POST', body: JSON.stringify({ id: 'op-thirteen', pwd: 'operator-pw-3' }) });
     await withJar('/cia/rp/login', { method: 'POST', body: JSON.stringify({ id: 'op-thirteen', pwd: 'operator-pw-3' }) });
-    const unknown = await withJar('/cia/rp/issue', { method: 'POST', body: JSON.stringify({ name: 'zkNOBODY' }) });
+    const unknown = await withJar('/cia/rp/request_cert', { method: 'POST', body: JSON.stringify({ name: 'zkNOBODY' }) });
     assert.equal(unknown.status, 404, j(unknown.body)); assert.equal(unknown.body.reason, 'unknown_rp');
 
     // (1) 등록이 먼저(zkONE·zkTWO 처럼 키 없이 기동) → 뒤에 운영자가 같은 이름·주소로 만들면 그 등록에 묶인다.
@@ -405,15 +405,21 @@ try {
     await withJar2('/cia/rp/login', { method: 'POST', body: JSON.stringify({ id: 'op-fourteen', pwd: 'operator-pw-4' }) });
     const taken = await withJar2('/cia/rp/create', { method: 'POST', body: JSON.stringify({ name: 'zkSEVEN', origin: origin1 }) });
     assert.equal(taken.status, 409, j(taken.body)); assert.equal(taken.body.reason, 'origin_taken', '다른 운영자는 같은 주소를 못 가져간다');
-    const notMine = await withJar2('/cia/rp/issue', { method: 'POST', body: JSON.stringify({ name: 'zkSEVEN' }) });
+    const notMine = await withJar2('/cia/rp/request_cert', { method: 'POST', body: JSON.stringify({ name: 'zkSEVEN' }) });
     assert.equal(notMine.status, 404, j(notMine.body), '다른 운영자의 RP 에는 발급할 수 없다');
     assert.ok(!(await cia.get('/cia/rp_origins')).body.origins.includes(origin1), '발급 전에는 공개 목록에 없다');
-    const issue1 = await withJar('/cia/rp/issue', { method: 'POST', body: JSON.stringify({ name: 'zkSEVEN' }) });
-    assert.equal(issue1.status, 200, j(issue1.body)); assert.equal(issue1.body.status, 'approved'); assert.equal(issue1.body.arid, reg1.body.arid);
+    const req1 = await withJar('/cia/rp/request_cert', { method: 'POST', body: JSON.stringify({ name: 'zkSEVEN' }) });
+    assert.equal(req1.status, 200, j(req1.body)); assert.equal(req1.body.requested, true); assert.equal(req1.body.status, 'pending', '요청은 승인이 아니다'); assert.equal(req1.body.arid, reg1.body.arid);
+    assert.equal((await cia.post('/cia/register_rp', body1)).status, 202, '요청만으로는 RP 폴링이 아직 pending');
+    assert.ok((await cia.adminGet('/cia/rps')).body.rps.find((r) => r.arid === reg1.body.arid).certRequestedAt, '관리자 목록에 요청 시각이 보인다');
+    assert.equal((await withJar('/cia/rp/me')).body.rps.find((r) => r.name === 'zkSEVEN').certRequestedAt, req1.body.certRequestedAt, '운영자 표에도 요청 상태');
+    const req1b = await withJar('/cia/rp/request_cert', { method: 'POST', body: JSON.stringify({ name: 'zkSEVEN' }) });
+    assert.equal(req1b.body.certRequestedAt, req1.body.certRequestedAt, '재요청은 멱등');
+    assert.equal((await cia.adminPost(`/cia/rps/${reg1.body.arid}/approve`)).status, 200, '관리자가 승인한다');
     const poll1 = await cia.post('/cia/register_rp', body1);
     assert.equal(poll1.status, 200, j(poll1.body), 'RP 서버의 다음 폴링이 인증서를 받는다'); assert.ok(poll1.body.cert_s && poll1.body.pk_trace, '인증서·조합 키');
     assert.ok((await cia.get('/cia/rp_origins')).body.origins.includes(origin1), '발급 뒤 공개 목록에 있다');
-    const again = await withJar('/cia/rp/issue', { method: 'POST', body: JSON.stringify({ name: 'zkSEVEN' }) });
+    const again = await withJar('/cia/rp/request_cert', { method: 'POST', body: JSON.stringify({ name: 'zkSEVEN' }) });
     assert.equal(again.status, 409, j(again.body)); assert.equal(again.body.reason, 'already_issued');
     assert.equal((await withJar('/cia/rp/me')).body.rps.find((r) => r.name === 'zkSEVEN').status, 'approved');
 
@@ -421,14 +427,14 @@ try {
     const origin2 = 'http://127.0.0.1:39996';
     const c2 = await withJar('/cia/rp/create', { method: 'POST', body: JSON.stringify({ name: 'zkEIGHT', origin: origin2 }) });
     assert.equal(c2.status, 201, j(c2.body)); assert.equal(c2.body.status, 'created');
-    const early = await withJar('/cia/rp/issue', { method: 'POST', body: JSON.stringify({ name: 'zkEIGHT' }) });
+    const early = await withJar('/cia/rp/request_cert', { method: 'POST', body: JSON.stringify({ name: 'zkEIGHT' }) });
     assert.equal(early.status, 409, j(early.body)); assert.equal(early.body.reason, 'rp_not_registered');
     const squatBody = await rpRegBody('zkEIGHT', origin2);
     const squat2 = await cia.post('/cia/register_rp', squatBody);
     assert.equal(squat2.status, 202, j(squat2.body), '같은 이름·주소의 키 없는 등록은 받되 운영자 없는 등록으로 남는다');
     assert.equal((await cia.adminGet('/cia/rps')).body.rps.find((r) => r.arid === squat2.body.arid).operator, null);
     assert.equal((await withJar('/cia/rp/me')).body.rps.find((r) => r.name === 'zkEIGHT').status, 'created', '슬롯은 그대로 만들어짐 — 발급 버튼이 생기지 않는다');
-    assert.equal((await withJar('/cia/rp/issue', { method: 'POST', body: JSON.stringify({ name: 'zkEIGHT' }) })).body.reason, 'rp_not_registered');
+    assert.equal((await withJar('/cia/rp/request_cert', { method: 'POST', body: JSON.stringify({ name: 'zkEIGHT' }) })).body.reason, 'rp_not_registered');
     // 진짜 RP 가 이 슬롯의 키로 등록하면 가짜(pending) 등록을 되찾아 슬롯에 묶인다; 주소가 슬롯과 다르면 되찾기 분기에서도 origin_mismatch.
     const realBody = { ...(await rpRegBody('zkEIGHT', origin2)), rp_key: c2.body.key };
     const wrongOriginReclaim = await cia.post('/cia/register_rp', { ...(await rpRegBody('zkEIGHT', 'http://127.0.0.1:39986')), rp_key: c2.body.key });
@@ -437,8 +443,9 @@ try {
     assert.equal(real2.status, 202, j(real2.body)); assert.equal(real2.body.arid, squat2.body.arid, '같은 arid 를 유지하며 키가 바뀐다');
     const mine2 = (await withJar('/cia/rp/me')).body.rps.find((r) => r.name === 'zkEIGHT');
     assert.equal(mine2.status, 'pending'); assert.equal(mine2.arid, squat2.body.arid);
-    const issue2 = await withJar('/cia/rp/issue', { method: 'POST', body: JSON.stringify({ name: 'zkEIGHT' }) });
-    assert.equal(issue2.status, 200, j(issue2.body));
+    const req2 = await withJar('/cia/rp/request_cert', { method: 'POST', body: JSON.stringify({ name: 'zkEIGHT' }) });
+    assert.equal(req2.status, 200, j(req2.body));
+    assert.equal((await cia.adminPost(`/cia/rps/${squat2.body.arid}/approve`)).status, 200);
     assert.equal((await cia.post('/cia/register_rp', realBody)).status, 200, '진짜 RP 의 폴링이 인증서를 받는다');
     assert.equal((await cia.post('/cia/register_rp', squatBody)).status, 409, '가짜(옛 키)는 service_key_mismatch');
     // 키 등록(선점 없음)이 슬롯에 묶이는 평범한 경로 + 관리자 승인 뒤 issue 는 already_issued.
@@ -451,7 +458,7 @@ try {
     const mine3 = (await withJar('/cia/rp/me')).body.rps.find((r) => r.name === 'zkNINE');
     assert.equal(mine3.status, 'pending'); assert.equal(mine3.arid, reg3.body.arid, '키 등록이 슬롯에 묶였다');
     assert.equal((await cia.adminPost(`/cia/rps/${reg3.body.arid}/approve`)).status, 200, '관리자 승인은 그대로 된다');
-    const afterAdmin = await withJar('/cia/rp/issue', { method: 'POST', body: JSON.stringify({ name: 'zkNINE' }) });
+    const afterAdmin = await withJar('/cia/rp/request_cert', { method: 'POST', body: JSON.stringify({ name: 'zkNINE' }) });
     assert.equal(afterAdmin.status, 409, j(afterAdmin.body)); assert.equal(afterAdmin.body.reason, 'already_issued');
     assert.equal((await cia.post('/cia/register_rp', body3)).status, 200, '승인 뒤 폴링은 200');
     // 이미 승인된 키 없는 등록(AUTO_APPROVE 경로)에 뒤늦게 슬롯을 만들면 'approved' 로 묶인다.
@@ -466,7 +473,7 @@ try {
     const reg4 = await cia.post('/cia/register_rp', body4);
     assert.equal((await withJar('/cia/rp/create', { method: 'POST', body: JSON.stringify({ name: 'zkTEN', origin: origin4 }) })).status, 201);
     assert.equal((await cia.adminPost(`/cia/rps/${reg4.body.arid}/deny`)).status, 200);
-    const deniedIssue = await withJar('/cia/rp/issue', { method: 'POST', body: JSON.stringify({ name: 'zkTEN' }) });
+    const deniedIssue = await withJar('/cia/rp/request_cert', { method: 'POST', body: JSON.stringify({ name: 'zkTEN' }) });
     assert.equal(deniedIssue.status, 409, j(deniedIssue.body)); assert.equal(deniedIssue.body.reason, 'rp_denied');
     // 거부된 주소는 다른 운영자가 넘겨받을 수 있고, 그러면 옛 슬롯은 은퇴한다(리뷰 MEDIUM-2) — 옛 키로는 더 되찾지 못한다.
     const take = await withJar2('/cia/rp/create', { method: 'POST', body: JSON.stringify({ name: 'zkTEN', origin: origin4 }) });
@@ -476,6 +483,41 @@ try {
     const reclaimNew = await cia.post('/cia/register_rp', newOwner);
     assert.equal(reclaimNew.status, 202, j(reclaimNew.body), '새 운영자의 키는 거부된 항목을 되찾아 pending');
     assert.equal((await withJar2('/cia/rp/me')).body.rps.find((r) => r.name === 'zkTEN').status, 'pending');
+  });
+
+  await t('계정 삭제(2026-11-06, 관리자): 가입만 한 계정은 레코드·아이디 색인이 지워져 같은 아이디로 재가입; 등록된 계정은 먼저 폐기(슬롯 0)되고 지워진다; 모르는 uid 404; 시크릿 없이 401', async () => {
+    const withJar = makeJar(cia.base);
+    const su = await withJar('/cia/signup', { method: 'POST', body: JSON.stringify({ id: 'del-1', pwd: 'password-d1' }) });
+    assert.equal(su.status, 201, j(su.body));
+    assert.equal((await cia.post('/cia/account/delete', { uid: su.body.uid })).status, 401, '관리자 시크릿 없이는 안 된다');
+    assert.equal((await cia.adminPost('/cia/account/delete', { uid: '424242' })).status, 404, '모르는 uid');
+    const d1 = await cia.adminPost('/cia/account/delete', { uid: su.body.uid });
+    assert.equal(d1.status, 200, j(d1.body)); assert.equal(d1.body.deleted, true); assert.equal(d1.body.id, 'del-1'); assert.equal(d1.body.revoked, null, '등록 전 계정은 폐기 단계가 없다');
+    assert.equal((await withJar('/cia/user/login', { method: 'POST', body: JSON.stringify({ id: 'del-1', pwd: 'password-d1' }) })).status, 401, '지운 계정으로는 로그인할 수 없다');
+    assert.ok(!(await cia.adminGet('/cia/accounts')).body.accounts.some((a) => a.uid === su.body.uid), '관리자 목록에서 사라진다');
+    const su2 = await withJar('/cia/signup', { method: 'POST', body: JSON.stringify({ id: 'del-1', pwd: 'password-d1b' }) });
+    assert.equal(su2.status, 201, j(su2.body), '같은 아이디로 다시 가입할 수 있다'); assert.notEqual(su2.body.uid, su.body.uid, 'uid 는 새로 받는다');
+    // 등록된 계정: 가입 → 로그인 → register_code → 등록 → 삭제. 슬롯은 0 으로 비워지고(폐기) 레코드가 사라진다.
+    const withJar2 = makeJar(cia.base);
+    const su3 = await withJar2('/cia/signup', { method: 'POST', body: JSON.stringify({ id: 'del-2', pwd: 'password-d2' }) });
+    await withJar2('/cia/user/login', { method: 'POST', body: JSON.stringify({ id: 'del-2', pwd: 'password-d2' }) });
+    const rc = await withJar2('/cia/user/register_code', { method: 'POST', body: JSON.stringify({}) });
+    const reg = await createRegistration(BigInt(su3.body.uid));
+    const sig_reg = await signRegistration(reg.sk_u, BigInt(su3.body.uid), reg.auid);
+    const rr = await cia.post('/cia/register', { uid: su3.body.uid, code: rc.body.code, auid: reg.auid.toString(), pk_u: pointToStrings(reg.pk_u), sig_reg });
+    assert.equal(rr.status, 201, j(rr.body));
+    const before = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === su3.body.uid);
+    assert.ok(Number.isInteger(before.slot), '등록된 계정은 슬롯이 있다');
+    const d2 = await cia.adminPost('/cia/account/delete', { uid: su3.body.uid });
+    assert.equal(d2.status, 200, j(d2.body)); assert.equal(d2.body.deleted, true);
+    assert.ok(d2.body.revoked && d2.body.revoked.disabled === true && d2.body.revoked.slot === before.slot, '등록된 계정은 먼저 폐기된다');
+    assert.ok(!(await cia.adminGet('/cia/accounts')).body.accounts.some((a) => a.uid === su3.body.uid), '레코드가 사라진다');
+    // 등록만 하고 발급 전인 슬롯은 리프가 없어 등록부 목록에 아예 안 나온다(entries 는 채워진 칸만). 나오더라도 uid 없는 빈 칸(leaf 0)이어야 한다.
+    const regView = (await cia.adminGet('/cia/admin/registry')).body.slots.find((sl) => sl.index === before.slot);
+    assert.ok(!regView || (regView.uid === null && regView.leaf === '0'), `등록부 슬롯은 uid 없는 빈 칸으로 남고 재사용되지 않는다: ${j(regView)}`);
+    assert.ok((await cia.adminGet('/cia/admin/registry')).body.next > before.slot, '슬롯 번호는 되돌리지 않는다');
+    assert.equal((await withJar2('/cia/user/me')).status, 401, '그 계정의 세션은 더 쓸 수 없다');
+    assert.equal((await withJar2('/cia/signup', { method: 'POST', body: JSON.stringify({ id: 'del-2', pwd: 'password-d2' }) })).status, 201, '같은 아이디로 재가입');
   });
 
   await t('rp_origins: 승인 전 빈 목록, 관리자 승인 뒤 origin 포함(공개, 세션 불필요)', async () => {

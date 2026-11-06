@@ -119,15 +119,17 @@
       const statusTd = document.createElement('td');
       // 2026-11-05: 상태는 영어 코드가 아니라 말로(모르는 상태면 코드 그대로), 주소 열은 줄이 꺾이지 않게.
       const badge = document.createElement('span'); badge.className = `badge ${statusBadgeClass(s.status)}`; badge.textContent = tt(`idp_rp_status_${s.status}`) || s.status; badge.style.whiteSpace = 'nowrap'; statusTd.appendChild(badge); tr.appendChild(statusTd);
-      // 인증서 열(2026-11-06): RP 서버가 등록 요청을 보낸 뒤(pending)에만 운영자가 "인증서 발급" 을 누를 수 있다.
+      // 인증서 열(2026-11-06): RP 서버가 등록 요청을 보낸 뒤(pending)에 운영자가 "인증서 발급 요청" 을 누르고, 관리자가 승인하면 "발급됨".
       const certTd = document.createElement('td');
-      if (s.status === 'pending') {
-        const b = document.createElement('button'); b.type = 'button'; b.textContent = tt('idp_rp_issue_btn') || '인증서 발급'; b.disabled = issuing.has(s.name);
-        b.addEventListener('click', () => issueCert(s.name, b)); certTd.appendChild(b);
+      if (s.status === 'pending' && s.certRequestedAt) {
+        const w = document.createElement('span'); w.className = 'badge warn'; w.textContent = tt('idp_rp_cert_requested') || '승인 대기 — 관리자가 승인하면 발급됩니다'; certTd.appendChild(w);
+      } else if (s.status === 'pending') {
+        const b = document.createElement('button'); b.type = 'button'; b.textContent = tt('idp_rp_request_btn') || '인증서 발급 요청'; b.disabled = requesting.has(s.name);
+        b.addEventListener('click', () => requestCert(s.name, b)); certTd.appendChild(b);
       } else if (s.status === 'retired') { certTd.textContent = '-'; }
       else if (s.status === 'approved') { const ok = document.createElement('span'); ok.className = 'badge ok'; ok.textContent = tt('idp_rp_cert_issued') || '발급됨'; certTd.appendChild(ok); }
       else if (s.status === 'denied') { certTd.className = 'muted'; certTd.textContent = tt('idp_rp_cert_denied') || '거부됨 — 발급 불가'; }
-      else { certTd.className = 'muted'; certTd.textContent = tt('idp_rp_cert_wait_server') || 'RP 서버가 등록 요청을 보내면 발급할 수 있습니다 — 명령으로 서버를 띄우세요'; }
+      else { certTd.className = 'muted'; certTd.textContent = tt('idp_rp_cert_wait_server') || 'RP 서버가 등록 요청을 보내면 인증서를 요청할 수 있습니다 — 명령으로 서버를 띄우세요'; }
       tr.appendChild(certTd);
       const originTd = document.createElement('td'); originTd.textContent = s.origin ?? '-'; originTd.style.whiteSpace = 'nowrap'; tr.appendChild(originTd);
       const cached = justCreated[s.name] ?? null;   // 2026-11-06: 묶여서 바로 '발급 대기' 가 된 슬롯도 1회용 키를 보인다(이 세션에서 만든 것만)
@@ -150,7 +152,7 @@
     opMe = r.status === 200 ? { id: r.body.id } : null;
     myRps = opMe ? (r.body.rps ?? []) : [];
     $('opInfo').textContent = opMe ? (tt('idp_rp_me_who', { id: opMe.id }) || `운영자 ${opMe.id}`) : '';
-    const sig = JSON.stringify([Demo.lang, opMe, myRps, Object.keys(justCreated), [...issuing]]);
+    const sig = JSON.stringify([Demo.lang, opMe, myRps, Object.keys(justCreated), [...requesting]]);
     if (sig !== lastListSig) { lastListSig = sig; renderRpList(); }
     // 세션이 다른 길로 끝났을 때(다른 탭 로그아웃·만료) 이전 운영자의 결과·키가 다음 사람에게 보이지 않게 비운다.
     if (!opMe) { clearVerdict($('rpVerdict')); for (const k of Object.keys(justCreated)) delete justCreated[k]; }
@@ -197,8 +199,8 @@
     if (r.status === 201) {
       justCreated[r.body.name] = { key: r.body.key, command: r.body.command };
       $('rpName').value = ''; $('rpOrigin').value = '';
-      // 2026-11-06: 같은 주소의 RP 서버가 이미 등록 요청을 보냈으면(묶임) 다음 할 일은 명령 실행이 아니라 "인증서 발급" 이다.
-      const k = r.body.status === 'approved' ? 'idp_rp_create_ok_active' : r.body.status === 'pending' ? 'idp_rp_create_ok_bound' : 'idp_rp_create_ok';
+      // 2026-11-06: 같은 주소의 RP 서버가 이미 등록 요청을 보냈으면(묶임) 다음 할 일은 명령 실행이 아니라 표의 "인증서 발급 요청" 이다. 상태는 표가 보인다.
+      const k = r.body.arid ? 'idp_rp_create_ok_bound' : 'idp_rp_create_ok';
       verdict($('rpVerdict'), true, 'idp_rp_create_ok_title', () => ({ summary: tt(k, { name: r.body.name }) || `만들어짐 — ${r.body.name}.` }));
     } else {
       verdict($('rpVerdict'), false, 'idp_rp_create_failed', { reason: r.body?.reason ?? `HTTP ${r.status}`, detail: r.body });
@@ -206,16 +208,16 @@
     await refreshRpList();
   });
 
-  /** 운영자 "인증서 발급"(2026-11-06): 관리자 승인과 같은 처리를 IdP 가 하고, RP 서버는 다음 폴링(5초)에 인증서를 받는다. */
-  const issuing = new Set();   // 발급 요청 중인 이름 — 갱신으로 표가 다시 그려져도 버튼은 비활성(리뷰 LOW-2)
-  async function issueCert(name, btn) {
-    if (issuing.has(name)) return;
-    issuing.add(name); btn.disabled = true;
+  /** 운영자 "인증서 발급 요청"(2026-11-06): 요청만 적는다 — 발급(승인)은 zkID 관리자가 /admin 에서 하고, 승인되면 표가 "발급됨" 으로 바뀐다(5초 갱신). */
+  const requesting = new Set();   // 요청 중인 이름 — 갱신으로 표가 다시 그려져도 버튼은 비활성(리뷰 LOW-2)
+  async function requestCert(name, btn) {
+    if (requesting.has(name)) return;
+    requesting.add(name); btn.disabled = true;
     try {
-      const r = await post('/cia/rp/issue', { name });
-      if (r.status === 200) verdict($('rpVerdict'), true, 'idp_rp_issue_ok_title', () => ({ summary: tt('idp_rp_issue_ok', { name }) || `${name} 에 인증서를 냈습니다. RP 서버가 몇 초 안에 활성화됩니다.` }));
-      else verdict($('rpVerdict'), false, 'idp_rp_issue_failed', { reason: r.body?.reason ?? `HTTP ${r.status}`, detail: r.body });
-    } finally { issuing.delete(name); }
+      const r = await post('/cia/rp/request_cert', { name });
+      if (r.status === 200) verdict($('rpVerdict'), true, 'idp_rp_request_ok_title', () => ({ summary: tt('idp_rp_request_ok', { name }) || `${name} 의 인증서 발급을 요청했습니다. zkID 관리자가 승인하면 발급됩니다.` }));
+      else verdict($('rpVerdict'), false, 'idp_rp_request_failed', { reason: r.body?.reason ?? `HTTP ${r.status}`, detail: r.body });
+    } finally { requesting.delete(name); }
     await refreshRpList();
   }
 

@@ -48,12 +48,13 @@
 
     <section class="card span2" id="secAccounts">
       <h3 data-i18n="admin_accounts_title">계정</h3>
-      <p class="desc" data-i18n="admin_accounts_desc">등록된 계정과 로그인 세션을 폐기합니다.</p>
+      <p class="desc" data-i18n="admin_accounts_desc">등록된 계정과 로그인 세션을 폐기하거나, 계정을 지웁니다(지갑 등록 포함).</p>
       <p>
         <button id="accountsBtn" data-i18n="admin_list_btn">목록 불러오기</button>
         <label><span data-i18n="admin_col_uid">uid</span> <input id="uid" value="" size="8" /></label>
         <button id="revokeBtn" class="danger" data-i18n="admin_revoke_btn">계정 폐기</button>
         <button id="recoverBtn" class="btn-ghost" data-i18n="admin_recover_btn">복구(다시 쓰게)</button>
+        <button id="deleteBtn" class="danger" data-i18n="admin_delete_btn">계정 삭제</button>
       </p>
       <p class="muted" data-i18n="admin_sessions_note">"세션" 은 그 계정의 발급 세션 목록입니다. 활성 세션만 폐기할 수 있고, 폐기 리프도 되돌릴 수 없습니다.</p>
       <div id="accounts"><p class="muted" data-i18n="admin_need_secret">관리자 시크릿을 넣으면 목록과 대기 건수를 불러옵니다.</p></div>
@@ -399,6 +400,17 @@
         loadAccounts(); loadState();
       });
     });
+    // 2026-11-06: 계정 삭제 — 등록된 계정이면 서버가 먼저 폐기(게시)한 뒤 레코드를 지운다. 지갑 쪽 Snap 비밀은 사용자가 "Snap 초기화" 로.
+    $('deleteBtn').addEventListener('click', () => {
+      const uid = $('uid').value.trim();
+      if (!uid) return setVerdict($('adminVerdict'), false, 'admin_delete_failed', { reason: 'admin_uid_required' });
+      if (!Demo.confirmDanger('confirm_delete_account')) return;
+      run('admin_delete_failed', () => call('POST', '/cia/account/delete', { uid }), ({ body }) => {
+        $('uid').value = '';
+        setVerdict($('adminVerdict'), true, 'admin_delete_title', () => ({ summary: Demo.t('admin_delete_summary', { uid }), detail: safeDetail(body) }));
+        loadAccounts(); loadState();
+      });
+    });
     $('recoverBtn').addEventListener('click', () => {
       const uid = $('uid').value.trim();
       if (!uid) return setVerdict($('adminVerdict'), false, 'admin_recover_failed', { reason: 'admin_uid_required' });
@@ -419,7 +431,9 @@
       for (const e of rps) {
         const row = body.insertRow();
         const [key, kind] = RP_BADGE[e.status] ?? ['admin_unknown', 'muted'];
-        cell(row, badge(key, kind));
+        const st = cell(row, badge(key, kind));
+        // 2026-11-06: 운영자가 /rp 에서 "인증서 발급 요청" 을 눌렀으면 표시 — 승인할 차례라는 뜻.
+        if (e.status === 'pending' && e.certRequestedAt) { st.appendChild(document.createTextNode(' ')); const b = badge('admin_rp_cert_requested', 'warn'); b.title = e.certRequestedAt; st.appendChild(b); }
         cell(row, e.name);
         // origin 은 공백 없는 한 덩어리라 좁은 창에서 칸을 밀어낸다 — 칸 안에서 끊는다(demo.css 의 pre·kv 와 같은 규칙).
         cell(row, e.origin).style.overflowWrap = 'anywhere';
