@@ -687,7 +687,7 @@ window.DemoStrings = {
     idp_rp_logout_btn: { ko: '로그아웃', en: 'Log out' },
     idp_rp_create_title: { ko: '새 RP 만들기', en: 'Create a new RP' },
     idp_rp_create_desc: { ko: '이름과 서비스 주소를 넣으면 1회용 RP 키와 기동 명령을 드립니다 — 키는 지금만 보입니다. 그 주소의 RP 서버가 등록 요청을 보내면 아래 표에서 인증서를 발급합니다.', en: 'Enter a name and the service address to get a one-time RP key and the start command — the key is shown only now. Once the RP server at that address has sent its registration, issue its certificate in the table below.' },
-    idp_rp_name_label: { ko: '이름(zk 로 시작)', en: 'Name (starts with zk)' },
+    idp_rp_name_label: { ko: '이름', en: 'Name' },   // 2026-11-06: 'zk 로 시작' 규칙은 placeholder·bad_name 안내로만
     idp_rp_create_btn: { ko: '만들기', en: 'Create' },
     idp_rp_list_title: { ko: '내 RP', en: 'My RPs' },
     idp_rp_list_empty: { ko: '아직 만든 RP 가 없습니다.', en: 'No RPs created yet.' },

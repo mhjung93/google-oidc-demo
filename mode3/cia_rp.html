@@ -53,7 +53,7 @@
     <h3 data-i18n="idp_rp_create_title">새 RP 만들기</h3>
     <p class="desc" data-i18n="idp_rp_create_desc">이름과 서비스 주소를 넣으면 1회용 RP 키와 기동 명령을 드립니다 — 키는 지금만 보입니다. 그 주소의 RP 서버가 등록 요청을 보내면 아래 표에서 인증서를 발급합니다.</p>
     <!-- 2026-11-06: 서비스 주소도 받는다 — RP 서버의 origin 과 맞아야 하고, 이미 같은 주소로 등록 요청을 보낸(운영자 없는) RP 가 있으면 그 자리에 묶인다. -->
-    <p><label><span data-i18n="idp_rp_name_label">이름(zk 로 시작)</span> <input id="rpName" size="12" /></label> <label><span data-i18n="idp_rp_origin_label">서비스 주소</span> <input id="rpOrigin" size="28" placeholder="http://192.168.226.11:3100" autocapitalize="off" spellcheck="false" /></label> <button id="rpCreateBtn" data-i18n="idp_rp_create_btn">만들기</button></p>
+    <p><label><span data-i18n="idp_rp_name_label">이름</span> <input id="rpName" size="12" placeholder="zkTHREE" autocapitalize="off" spellcheck="false" /></label> <label><span data-i18n="idp_rp_origin_label">서비스 주소</span> <input id="rpOrigin" size="28" placeholder="http://192.168.226.11:3100" autocapitalize="off" spellcheck="false" /></label> <button id="rpCreateBtn" data-i18n="idp_rp_create_btn">만들기</button></p>
     <p class="muted" data-i18n="idp_rp_key_once">키는 지금만 보입니다 — 복사해 두세요. 다시 볼 수 없습니다.</p>
     <div id="rpVerdict"></div>
     <h4 data-i18n="idp_rp_list_title">내 RP</h4>
