@@ -422,6 +422,20 @@ try {
     const again = await withJar('/cia/rp/request_cert', { method: 'POST', body: JSON.stringify({ name: 'zkSEVEN' }) });
     assert.equal(again.status, 409, j(again.body)); assert.equal(again.body.reason, 'already_issued');
     assert.equal((await withJar('/cia/rp/me')).body.rps.find((r) => r.name === 'zkSEVEN').status, 'approved');
+    // 2026-11-06: 관리자 인증서 회수 → 다시 pending(조합 키 유지) → RP 폴링 202 → 운영자 재요청 → 승인 → 폴링 200, 같은 arid·pk_trace.
+    const pkBefore = poll1.body.pk_trace;
+    const rev = await cia.adminPost(`/cia/rps/${reg1.body.arid}/revoke_cert`);
+    assert.equal(rev.status, 200, j(rev.body)); assert.equal(rev.body.status, 'pending');
+    assert.equal((await cia.adminPost(`/cia/rps/${reg1.body.arid}/revoke_cert`)).status, 409, '이미 pending 이면 409');
+    assert.equal((await cia.post('/cia/register_rp', body1)).status, 202, '회수 뒤 RP 폴링은 다시 202');
+    assert.ok(!(await cia.get('/cia/rp_origins')).body.origins.includes(origin1), '회수 뒤 공개 목록에서 빠진다');
+    const mineRev = (await withJar('/cia/rp/me')).body.rps.find((r) => r.name === 'zkSEVEN');
+    assert.equal(mineRev.status, 'pending'); assert.equal(mineRev.certRequestedAt, null, '요청 표시도 지워져 다시 요청할 수 있다');
+    assert.equal((await withJar('/cia/rp/request_cert', { method: 'POST', body: JSON.stringify({ name: 'zkSEVEN' }) })).status, 200);
+    assert.equal((await cia.adminPost(`/cia/rps/${reg1.body.arid}/approve`)).status, 200);
+    const poll1b = await cia.post('/cia/register_rp', body1);
+    assert.equal(poll1b.status, 200, j(poll1b.body)); assert.equal(poll1b.body.arid, reg1.body.arid);
+    assert.deepEqual(poll1b.body.pk_trace, pkBefore, '재승인은 조합 키를 바꾸지 않는다(팩토리·계정 주소 유지)');
 
     // (2) 슬롯이 먼저 → 키 없는 등록은 같은 이름·주소라도 묶이지 않는다(리뷰 HIGH-2: 키로 쓸 슬롯을 가짜가 차지하지 못하게). 등록 전 발급은 409.
     const origin2 = 'http://127.0.0.1:39996';

@@ -138,7 +138,8 @@ async function verifyCiaShare(arid, pk_trace, X_AA, share_pok) {
 }
 
 /** IdP 에 등록/조회. 200 이면 파일을 채우고 true. 202 면 false. 403 이면 throw. */
-async function registerOnce() {
+async function registerOnce({ quiet = false } = {}) {   // quiet: 활성 중 재확인(startRecheck) — 상태가 그대로면 로그를 남기지 않는다
+  const wasApproved = reg.status === 'approved';
   const r = await fetch(`${CIA_URL}/cia/register_rp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: RP_NAME, origin: PUBLIC_ORIGIN, pk_service: reg.pk_service, X_svc: reg.X_svc, ...(RP_KEY ? { rp_key: RP_KEY } : {}) }) });
   const b = await r.json().catch(() => ({}));
   if (r.status === 202) { reg.arid = b.arid; reg.status = 'pending'; writeJsonAtomic(REG_FILE, reg, 0o600); return false; }
@@ -156,7 +157,7 @@ async function registerOnce() {
   if (!(await verifyCiaShare(b.arid, b.pk_trace, b.X_AA, b.share_pok))) throw Object.assign(new Error('IdP 조각 X_AA 의 지식 증명이 검증되지 않거나 pk_trace ≠ X_svc + X_AA — rogue key 의심'), { permanent: true });
   reg = { ...reg, arid: b.arid, status: 'approved', pk_trace: b.pk_trace, cert_s: b.cert_s, X_AA: b.X_AA, share_pok: b.share_pok, issuedAt: new Date().toISOString() };
   writeJsonAtomic(REG_FILE, reg, 0o600);
-  console.log(`[rp] IdP 등록 승인됨: arid=${reg.arid} origin=${reg.origin} → ${REG_FILE}`);
+  if (!(quiet && wasApproved)) console.log(`[rp] IdP 등록 승인됨: arid=${reg.arid} origin=${reg.origin} → ${REG_FILE}`);
   return true;
 }
 
@@ -284,6 +285,9 @@ async function activate() {
   await syncFactoryConstantsAndVerifier();
   try { await ensureAttrGate(); } catch (e) { console.warn(`[rp] AttrGate 배포 실패: ${e.message}`); }
 }
+// 활성 중 등록 재확인 주기(2026-11-06, 아래 startRecheck). 기동 블록이 startRecheck() 를 바로 부르므로 선언이 그보다 앞에 있어야 한다(TDZ).
+const RECHECK_MS = Number(process.env.MODE3_RP_RECHECK_MS ?? 30000);
+let recheckTimer = null;
 if (reg.status === 'approved' && reg.cert_s) {
   if (!(await verifyRpCert(pkCIA, { arid: BigInt(reg.arid), origin: reg.origin, pk_trace: { x: BigInt(reg.pk_trace.x), y: BigInt(reg.pk_trace.y) }, cert: reg.cert_s }))) {
     throw new Error('등록 파일의 cert_s 가 현재 pk_CIA 로 검증되지 않는다 — IdP 키가 바뀌었으면 파일을 지우고 재기동');
@@ -296,26 +300,47 @@ if (reg.status === 'approved' && reg.cert_s) {
     console.warn('[rp] 등록 파일에 IdP 조각 증명(X_AA·share_pok)이 없다(2026-09-21 이전 승인) — rogue key 검사를 건너뛴다');
   }
   await activate();
+  startRecheck();
 } else {
-  if (await registerOnce()) await activate();
-  else {
-    console.log(`[rp] 등록 대기 (arid=${reg.arid}) — IdP 관리자 페이지에서 승인하면 ${POLL_MS} ms 안에 활성화된다`);
-    // 한 틱이 끝나기 전에(특히 activate() 의 팩토리 배포는 느리다) 다음 틱이 시작하지 않도록 재진입을 막는다 —
-    // clearInterval 만으로는 부족하다: 두 틱이 거의 동시에 registerOnce() 를 시작해 버리면 clearInterval 이
-    // 걸리기 전에 이미 둘 다 진행 중이라 팩토리가 중복 배포되고 reg.factoryAddress 가 경합으로 덮어써진다.
-    let activating = false;
-    const timer = setInterval(async () => {
-      if (activating) return;
-      activating = true;
-      try { if (await registerOnce()) { clearInterval(timer); await activate(); } }
-      catch (e) {
-        // 거절·인증서 검증 실패는 영구 상태라 멈춘다. 그 외(IdP 일시 장애·네트워크 오류)는 계속 재시도한다.
-        if (e.permanent) { console.error(`[rp] ${e.message}`); clearInterval(timer); }
-        else console.warn(`[rp] 등록 조회 실패, 다시 시도: ${e.message}`);
-      } finally { activating = false; }
-    }, POLL_MS);
-    timer.unref();
-  }
+  if (await registerOnce()) { await activate(); startRecheck(); }
+  else startRegistrationPolling();
+}
+/** 승인 대기 폴링: 승인되면 활성화한다. 한 틱이 끝나기 전에(특히 activate() 의 팩토리 배포는 느리다) 다음 틱이 시작하지 않도록 재진입을 막는다 —
+ *  clearInterval 만으로는 부족하다: 두 틱이 거의 동시에 registerOnce() 를 시작해 버리면 clearInterval 이 걸리기 전에 이미 둘 다 진행 중이라 팩토리가
+ *  중복 배포되고 reg.factoryAddress 가 경합으로 덮어써진다. 2026-11-06: 기동 때뿐 아니라 인증서 회수 뒤에도 쓴다. */
+function startRegistrationPolling() {
+  console.log(`[rp] 등록 대기 (arid=${reg.arid}) — IdP 관리자가 승인하면 ${POLL_MS} ms 안에 활성화된다`);
+  let activating = false;
+  const timer = setInterval(async () => {
+    if (activating) return;
+    activating = true;
+    try { if (await registerOnce()) { clearInterval(timer); await activate(); startRecheck(); } }
+    catch (e) {
+      // 거절·인증서 검증 실패는 영구 상태라 멈춘다. 그 외(IdP 일시 장애·네트워크 오류)는 계속 재시도한다.
+      if (e.permanent) { console.error(`[rp] ${e.message}`); clearInterval(timer); }
+      else console.warn(`[rp] 등록 조회 실패, 다시 시도: ${e.message}`);
+    } finally { activating = false; }
+  }, POLL_MS);
+  timer.unref();
+}
+/** 2026-11-06(사용자 요청 — 인증서 회수 데모): 활성 상태에서도 RECHECK_MS 마다 IdP 에 같은 등록 본문을 다시 보내 상태를 확인한다. 관리자가 인증서를
+ *  회수해 202(pending) 가 오면 검증기를 내려 비활성(registration_pending)으로 돌아가고 승인 폴링을 다시 시작한다 — 재승인은 같은 arid·pk_trace 라
+ *  팩토리·계정 주소가 그대로다. 5xx·네트워크 오류는 무시(다음 틱). 0 이면 끈다. */
+function startRecheck() {
+  if (!RECHECK_MS || recheckTimer) return;
+  recheckTimer = setInterval(async () => {
+    try {
+      if (!(await registerOnce({ quiet: true }))) {   // 202: 회수됐다(registerOnce 가 reg.status='pending' 으로 적었다)
+        clearInterval(recheckTimer); recheckTimer = null;
+        verifier = null;
+        console.warn('[rp] IdP 가 인증서를 회수했다 — 비활성으로 돌아가 재승인을 기다린다');
+        startRegistrationPolling();
+      }
+    } catch (e) {
+      if (e.permanent) { clearInterval(recheckTimer); recheckTimer = null; verifier = null; console.error(`[rp] 등록 재확인: ${e.message}`); }
+    }
+  }, RECHECK_MS);
+  recheckTimer.unref();
 }
 
 // ---- r_s·r_rp: 메모리, TTL, 로그인 때 1회 소비. 소비된 r_s 는 세션 식별자가 된다(설계 §7). r_rp 는 세션 가명·C_s 블라인딩의 재료(V11 §3.2) — IdP 에 보내지 않는다 ----

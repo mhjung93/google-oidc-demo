@@ -692,6 +692,18 @@ app.post('/cia/rps/:arid/approve', requireAdmin, async (req, res) => {
     res.json({ arid: req.params.arid, status: e.status });
   } catch (err) { res.status(err.status ?? 500).json({ error: err.message, ...(err.reason ? { reason: err.reason } : {}) }); }
 });
+// 2026-11-06(사용자 요청): 인증서 회수 — 승인된 RP 를 다시 pending 으로 돌려 "요청 → 승인" 과정을 다시 보일 수 있게 한다. 조합 키(x_AA·pk_trace)는
+// 그대로 두어 재승인 때 조각을 새로 만들지 않는다(RP 의 팩토리·계정 주소가 바뀌지 않는다). 운영자의 발급 요청 표시(certRequestedAt)는 지운다.
+// 한계(데모): 이미 발급된 cert_s 는 IdP 서명이라 지갑 쪽에서는 여전히 검증된다 — 막히는 것은 공개 RP 목록(rp_origins → 지갑 CORS)·개봉 요청이고,
+// RP 서버는 주기 재확인(mode3_rp.js MODE3_RP_RECHECK_MS)으로 202 를 보면 스스로 비활성이 되어 다시 폴링한다.
+app.post('/cia/rps/:arid/revoke_cert', requireAdmin, (req, res) => {
+  const e = state.rps[req.params.arid];
+  if (!e) return res.status(404).json({ error: 'unknown service' });
+  if (e.status !== 'approved') return res.status(409).json({ error: `not approved (${e.status})` });
+  e.status = 'pending'; e.decidedAt = null; e.certRequestedAt = null; e.certRevokedAt = new Date().toISOString();
+  persist();
+  res.json({ arid: req.params.arid, status: e.status });
+});
 app.post('/cia/rps/:arid/deny', requireAdmin, (req, res) => {
   const e = state.rps[req.params.arid];
   if (!e) return res.status(404).json({ error: 'unknown service' });

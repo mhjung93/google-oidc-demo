@@ -30,6 +30,7 @@ window.DemoStrings = {
     confirm_delete_account: { ko: '계정과 지갑 등록을 지웁니다. 되돌릴 수 없습니다. 등록된 자격증명은 먼저 폐기(게시)됩니다. 지갑 쪽 Snap 비밀은 사용자가 "지갑 설정 → Snap 초기화" 로 지워야 합니다. 계속할까요?', en: 'This deletes the account and its wallet registration and cannot be undone. A registered credential is revoked (and published) first. The secret inside the user’s Snap must be cleared by the user (wallet settings → Reset the Snap). Continue?' },
     confirm_tamper: { ko: '시연용입니다 — 이 계정의 등록부 슬롯에 가짜 자격증명을 게시합니다. 계속할까요?', en: 'Demo only — publish a fake credential into this account’s registry slot. Continue?' },
     confirm_publish: { ko: '폐기 목록을 체인에 게시합니다. 계속할까요?', en: 'Publish the revocation list on-chain. Continue?' },
+    confirm_rp_revoke_cert: { ko: '이 RP 의 인증서를 회수합니다. RP 는 몇 초 안에 비활성이 되고, 운영자가 다시 "인증서 발급 요청" 을 하면 승인해 주어야 합니다. 계속할까요?', en: 'Revoke this RP’s certificate. The RP goes inactive within seconds; once its operator requests a certificate again you need to approve it. Continue?' },
     confirm_rp_deny: { ko: 'RP 를 거절합니다. 거절은 되돌릴 수 없고, 운영자가 키로 다시 등록해야 합니다. 계속할까요?', en: 'Deny this RP. This cannot be undone; the operator must re-register with the key. Continue?' },
     confirm_open_approve: { ko: '개봉을 승인하면 이 세션의 uid 가 영구히 기록됩니다(조건부 프라이버시 해제). 계속할까요?', en: 'Approving records this session’s uid permanently (conditional privacy is lifted). Continue?' },
     confirm_open_deny: { ko: '개봉 요청을 거절합니다. 되돌릴 수 없습니다. 계속할까요?', en: 'Deny this opening request. This cannot be undone. Continue?' },
@@ -605,6 +606,9 @@ window.DemoStrings = {
     admin_publish_none: { ko: '올릴 변경이 없어 게시하지 않았습니다.', en: 'Nothing changed, so nothing was published.' },
     admin_publish_failed: { ko: '게시 실패', en: 'Publication failed' },
     admin_rp_approve_title: { ko: 'RP 승인', en: 'RP approved' },
+    admin_rp_revoke_cert_btn: { ko: '인증서 회수', en: 'Revoke certificate' },   // 2026-11-06
+    admin_rp_revoke_cert_title: { ko: '인증서를 회수했습니다', en: 'Certificate revoked' },
+    admin_rp_revoke_cert_summary: { ko: '{name} 은(는) 다시 승인 대기입니다 — RP 서버가 몇 초 안에 비활성으로 돌아가고, 운영자가 "인증서 발급 요청" 을 하면 여기서 승인하세요.', en: '{name} is pending again — the RP server goes inactive within seconds; approve it here once its operator requests a certificate again.' },
     admin_rp_approve_summary: { ko: '{name} 을(를) 승인했습니다 — RP 쪽이 몇 초 안에 활성화됩니다.', en: '{name} was approved — the RP turns active within a few seconds.' },
     admin_rp_deny_title: { ko: 'RP 거절', en: 'RP denied' },
     admin_rp_deny_summary: { ko: '{name} 을(를) 거절했습니다. 되돌릴 수 없습니다.', en: '{name} was denied. This cannot be undone.' },

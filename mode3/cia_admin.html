@@ -446,6 +446,9 @@
           act.appendChild(button('admin_approve_btn', null, () => decideRp(e, 'approve')));
           act.appendChild(document.createTextNode(' '));
           act.appendChild(button('admin_deny_btn', 'btn-ghost', () => decideRp(e, 'deny')));
+        } else if (e.status === 'approved') {
+          // 2026-11-06: 인증서 회수 — 다시 "요청 → 승인" 을 보일 수 있게 pending 으로 되돌린다(조합 키는 그대로).
+          act.appendChild(button('admin_rp_revoke_cert_btn', 'danger', () => decideRp(e, 'revoke_cert')));
         }
       }
       host.replaceChildren(t);
@@ -461,9 +464,11 @@
     }
     function decideRp(e, act) {
       if (act === 'deny' && !Demo.confirmDanger('confirm_rp_deny')) return;   // 거절은 되돌릴 수 없다(리뷰 E-I2)
+      if (act === 'revoke_cert' && !Demo.confirmDanger('confirm_rp_revoke_cert')) return;
       run('admin_rp_failed', () => call('POST', `/cia/rps/${e.arid}/${act}`), ({ body }) => {
-        const key = act === 'approve' ? 'admin_rp_approve_summary' : 'admin_rp_deny_summary';
-        setVerdict($('adminVerdict'), true, act === 'approve' ? 'admin_rp_approve_title' : 'admin_rp_deny_title', () => ({ summary: Demo.t(key, { name: e.name }), detail: safeDetail(body) }));
+        const key = act === 'approve' ? 'admin_rp_approve_summary' : act === 'revoke_cert' ? 'admin_rp_revoke_cert_summary' : 'admin_rp_deny_summary';
+        const title = act === 'approve' ? 'admin_rp_approve_title' : act === 'revoke_cert' ? 'admin_rp_revoke_cert_title' : 'admin_rp_deny_title';
+        setVerdict($('adminVerdict'), true, title, () => ({ summary: Demo.t(key, { name: e.name }), detail: safeDetail(body) }));
         loadRps();
       });
     }
