@@ -350,7 +350,9 @@ let lastRootAge = null;
 let requestCount = 0;          // 받아들인 세션 요청(/api/mode3/request)
 let disclosedLoginCount = 0;   // 공개 조건을 실은 로그인(mask ≠ 0 이거나 집합 공개)
 
-const logins = [];   // { PPID, at, root, r_s }. 메모리만
+// 2026-11-06: 재기동해도 관리자 화면의 로그인 기록이 비지 않게 로그 파일(LOGIN_LOG)에서 되살린다 — 전에는 메모리만이어서 재기동마다 비었다.
+// 조회 API 모양은 그대로(r_s 는 축약, 트랜스크립트·pk_i 는 내지 않는다). readLoginLog 는 함수 선언이라 여기서 불러도 된다.
+const logins = readLoginLog().map((l) => ({ PPID: String(l.PPID), at: l.at, root: String(l.root), r_s: typeof l.r_s === 'string' ? l.r_s.slice(0, 8) + '…' : '', allowAgent: String(l.allowAgent ?? '0'), disclosure: l.disclosure ?? null }));   // { PPID, at, root, r_s, allowAgent, disclosure }
 // 릴레이가 보낸 트랜잭션 기록(2026-10-21, RP 관리자 페이지) — 로그인 기록과 같이 메모리만. RP 가 원래 아는 것(계정·PPID·calldata 의 받는 주소·금액)만 담는다.
 const relayedTxs = [];   // { at, txHash, account, PPID, kind, target, value, deployTxHash, status, blockNumber }
 // r_s 전문은 내지 않는다 — (PPID, 시각) 과 함께 RP 의 사용자 활동 기록이다(설계 2026-09-16 §5).
