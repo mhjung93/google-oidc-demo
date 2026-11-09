@@ -60,6 +60,9 @@ t('v12 인데 auid 가 없거나 V10 필드(attrs·profile·cm_u)가 남은 계�
   const noAuid = base(); delete noAuid.accounts['1'].auid;
   assert.throws(() => migrateCiaState(noAuid), /auid/);
   for (const k of ['attrs', 'profile', 'cm_u']) { const s = base(); s.accounts['1'][k] = {}; assert.throws(() => migrateCiaState(s), /V10 fields/, k); }
+  // 2026-11-09 Phase 1: profile 은 OIDC name 한 칸 { name, updatedAt } 만 통과한다 — 속성 모양(슬롯 이름)이나 name 없는 객체는 여전히 V10 으로 거부
+  { const s = base(); s.accounts['1'].profile = { name: '123', updatedAt: '2026-11-09T00:00:00Z' }; assert.doesNotThrow(() => migrateCiaState(s), 'name 프로필'); }
+  { const s = base(); s.accounts['1'].profile = { birthYear: '1990', country: 'KR' }; assert.throws(() => migrateCiaState(s), /V10 fields/, '속성 모양 profile'); }
 });
 t('리뷰 S5: v12 계정의 slot 이 음이 아닌 정수가 아니면 throw(기동 거부)', () => {
   const mk = (slot) => ({ ...defaultCiaState(), accounts: { '1': { pk_u: { x: '1', y: '2' }, auid: '5', slot, disabled: false } } });
