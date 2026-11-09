@@ -482,7 +482,7 @@
       const host = $('openings');
       if (!openings) { placeholder(host, 'admin_need_secret'); return; }
       if (!openings.length) { placeholder(host, 'admin_no_openings'); return; }
-      const t = table([['admin_col_status'], ['admin_col_requested'], { term: 'PPID' }, ['admin_col_founduid'], ['admin_col_arid', true], ['admin_col_action']]);
+      const t = table([['admin_col_status'], ['admin_col_requested'], ['admin_col_account'], ['admin_col_founduid'], ['admin_col_arid', true], ['admin_col_action']]);   // 2026-11-09: PPID 숫자 대신 RP 가 보낸 스마트 계정 주소
       const body = t.tBodies[0];
       for (const o of openings) {
         const row = body.insertRow();
@@ -490,7 +490,7 @@
         cell(row, badge(key, kind));
         const at = cell(row, fmtAt(o.requestedAt));
         at.title = o.requestedAt ?? '';
-        cell(row, short(o.PPID));
+        const accCell = cell(row, short(o.account ?? o.PPID)); accCell.title = o.account ? `${o.account}\nPPID ${o.PPID}` : String(o.PPID);
         if (o.uid) cell(row, o.uid);
         else if (o.resolved === false) { const p = document.createElement('span'); p.className = 'muted'; tte(p, 'admin_open_unresolved'); cell(row, p); }
         else cell(row, '');

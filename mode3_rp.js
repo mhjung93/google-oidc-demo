@@ -720,7 +720,7 @@ app.post('/api/mode3/open', requireRpAdmin, async (req, res) => {
     const D_svc = { x: D.x.toString(), y: D.y.toString() };
     const ts = Math.floor(Date.now() / 1000).toString();
     const sig = await signOpenRequest(serviceWallet, { arid: reg.arid, PPID: T.PPID, c1: { x: c1.x.toString(), y: c1.y.toString() }, D_svc, ts });
-    const r = await fetch(`${CIA_URL}/cia/open/request`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ arid: reg.arid, publicSignals: T.publicSignals, proof: T.proof, D_svc, ts, sig }) });
+    const r = await fetch(`${CIA_URL}/cia/open/request`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ arid: reg.arid, publicSignals: T.publicSignals, proof: T.proof, D_svc, ts, sig, account: await accountOfCached(T.PPID) }) });   // account: 관리자 표시용(2026-11-09)
     res.status(r.status).json(await r.json().catch(() => ({})));
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });

@@ -1753,7 +1753,9 @@ const openingTagKey = (arid, c1x, c1y, c2, PPID) => createHash('sha256').update(
 function forgetOpeningShards(o) { delete o.D_svc; delete o.c1; delete o.c2; }
 app.post('/cia/open/request', async (req, res) => {
   try {
-    const { arid, publicSignals, proof, D_svc, ts, sig } = req.body ?? {};
+    const { arid, publicSignals, proof, D_svc, ts, sig, account } = req.body ?? {};
+    // 2026-11-09: account(선택, 0x) — RP 가 PPID 로 계산한 스마트 계정 주소. 관리자 화면 표시용일 뿐 검증·개봉에는 쓰지 않는다(서명에도 안 들어간다).
+    if (account !== undefined && !isAddr(account)) return res.status(400).json({ error: 'account 는 0x 주소' });
     // V11: 공개 입력 34(COUNTER 포함, 2026-10-22) — 태그는 [12..14] 그대로
     if (!isDec(arid) || !Array.isArray(publicSignals) || publicSignals.length !== PUB_INDEX.COUNT || !publicSignals.every(isDec) || !proof || !isPt(D_svc) || !isDec(ts) || typeof sig !== 'string') {
       return res.status(400).json({ error: `arid, publicSignals[${PUB_INDEX.COUNT}], proof, D_svc{x,y}, ts, sig required` });
@@ -1794,7 +1796,7 @@ app.post('/cia/open/request', async (req, res) => {
       && (o.status === 'pending' || (o.status === 'approved' && o.resolved !== false)));
     if (dup) return res.status(200).json({ id: dup.id, status: dup.status });
     const id = randomBytes(32).toString('hex');
-    state.openings.push({ id, arid, PPID, tagKey, c1: { x: c1x, y: c1y }, c2, D_svc: { x: D_svc.x, y: D_svc.y }, allowAgent, max_height, chainid: chainIn, status: 'pending', requestedAt: new Date().toISOString(), decidedAt: null, uid: null, resolved: null });
+    state.openings.push({ id, arid, PPID, account: account ?? null, tagKey, c1: { x: c1x, y: c1y }, c2, D_svc: { x: D_svc.x, y: D_svc.y }, allowAgent, max_height, chainid: chainIn, status: 'pending', requestedAt: new Date().toISOString(), decidedAt: null, uid: null, resolved: null });
     persist();
     res.status(202).json({ id, status: 'pending' });
   } catch (err) { res.status(500).json({ error: err.message }); }

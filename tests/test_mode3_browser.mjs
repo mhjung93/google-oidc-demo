@@ -106,13 +106,14 @@ try {
    * 기다린다(cia_login.html 이 성공 시 300ms 뒤 닫는다) — 호출자는 이어서 원래 팝업·RP 의 성공 신호를 기다리면 된다.
    */
   async function completeIdpAuth(popup, { authUid = uid, pwd = DEMO_PWD } = {}) {
-    // 2026-11-05: 별도 창·"IdP 인증 창 열기" 버튼 대신 팝업 창 자체가 IdP 로그인 페이지(/login?return=1&auid=…)로 간다(mode3/wallet.html goIdpAuth).
-    // auid 는 쿼리로 넘어와 칸이 숨겨지고, 아이디·비밀번호만 넣으면 지갑 /?authorize=1 로 돌아와 로그인을 이어 간다.
+    // 2026-11-05: 별도 창·"IdP 인증 창 열기" 버튼 대신 팝업 창 자체가 IdP 로그인 페이지(/login?return=1)로 간다(mode3/wallet.html goIdpAuth).
+    // 2026-11-09(사용자 결정): auid 는 더 이상 쿼리로 넘기지 않는다 — uid·비밀번호·auid 를 모두 직접 넣어야 지갑 /?authorize=1 로 돌아와 로그인을 이어 간다.
     await atIdpLogin(popup);
-    assert.equal(await popup.isHidden('#authAuidRow'), true, 'auid 칸은 숨겨진다(쿼리로 받았다)');
-    assert.equal(await popup.inputValue('#authAuid'), String(AUID), 'auid 가 자동으로 채워진다');
+    assert.equal(await popup.isVisible('#authAuidRow'), true, 'auid 칸은 늘 보인다');
+    assert.equal(await popup.inputValue('#authAuid'), '', 'auid 는 미리 채우지 않는다');
     await popup.fill('#authUid', String(authUid));
     await popup.fill('#authPwd', pwd);
+    await popup.fill('#authAuid', String(AUID));
     await popup.click('#authGo');
     await backAtWallet(popup);
   }
@@ -643,8 +644,10 @@ try {
   await t('IdP RP 페이지: 운영자 가입·로그인 → zkTHREE 만들기 → 키·명령 표시', async () => {
     const p = await context.newPage(); await p.goto(`${cia.base}/rp`);
     // 2026-11-03: /rp 도 /user 처럼 로그인 화면 → "운영자 계정 만들기"(아이디·비밀번호·확인) → 로그인 화면으로 돌아와 비밀번호 → 로그인 뒤에만 RP 만들기.
-    await p.click('#showOpSignupBtn'); await p.fill('#opSignupId', 'op1'); await p.fill('#opSignupPwd', 'operator-1'); await p.fill('#opSignupPwd2', 'operator-1'); await p.click('#opSignupBtn');
-    await waitText(p, '#opVerdict', 'op1'); assert.equal(await p.inputValue('#opId'), 'op1', '가입 뒤 로그인 화면에 아이디가 채워진다'); assert.equal(await p.isHidden('#rpCreateCard'), true, '로그인 전에는 RP 만들기가 없다');
+    await p.waitForSelector('#opLoginView:not([hidden])');   // 초기 /cia/rp/me 조회가 끝나 로그인 화면이 선 뒤에 누른다(간헐 실패 2026-11-06·09)
+    await p.click('#showOpSignupBtn'); await p.waitForSelector('#opSignupView:not([hidden])');
+    await p.fill('#opSignupId', 'op1'); await p.fill('#opSignupPwd', 'operator-1'); await p.fill('#opSignupPwd2', 'operator-1'); await p.click('#opSignupBtn');
+    try { await waitText(p, '#opVerdict', 'op1'); } catch (e) { throw new Error(`${e.message}\n  opSignupVerdict=${await text(p, '#opSignupVerdict')}`); } assert.equal(await p.inputValue('#opId'), 'op1', '가입 뒤 로그인 화면에 아이디가 채워진다'); assert.equal(await p.isHidden('#rpCreateCard'), true, '로그인 전에는 RP 만들기가 없다');
     await p.fill('#opPwd', 'operator-1'); await p.click('#opLoginBtn'); await p.waitForSelector('#rpCreateCard:not([hidden])');
     await p.fill('#rpName', 'zkTHREE'); await p.fill('#rpOrigin', 'http://localhost:3999'); await p.click('#rpCreateBtn');   // 2026-11-06: 서비스 주소도 넣는다 — 명령의 포트가 채워진다
     await waitText(p, '#rpList', 'zkTHREE'); assert.match(await text(p, '#rpList'), /new_rp\.sh zkTHREE 3999 [0-9a-f]{64}/);
@@ -666,10 +669,11 @@ try {
 
   // Task 14(B5): 위 케이스들은 completeIdpAuth() 로 IdP 로그인을 "그냥 통과"시켰다 — 이 케이스는 그 페이지를 직접 다뤄
   // (숨겨진) auid 가 틀리면 auid_mismatch 로 막히고(페이지에 머문다), 고치면 지갑으로 돌아가 발급까지 간다는 것을 보인다.
-  await t('로그인(2026-10-22): 팝업이 IdP 로그인 페이지로 가 아이디·비밀번호를 넣어야 발급된다; (숨겨진) auid 가 틀리면 auid_mismatch', async () => {
+  await t('로그인(2026-10-22): 팝업이 IdP 로그인 페이지로 가 uid·비밀번호·auid 를 넣어야 발급된다(2026-11-09 auid 직접 입력); auid 가 틀리면 auid_mismatch', async () => {
     const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
     await atIdpLogin(popup);
-    assert.equal(await popup.isHidden('#authAuidRow'), true, 'auid 칸은 숨겨져 있다');
+    assert.equal(await popup.isVisible('#authAuidRow'), true, '2026-11-09: auid 칸은 늘 보인다(직접 입력)');
+    assert.equal(await popup.inputValue('#authAuid'), '', 'auid 는 미리 채우지 않는다');
     await popup.fill('#authUid', uid); await popup.fill('#authPwd', DEMO_PWD);
     await popup.evaluate(() => { document.querySelector('#authAuid').value = '123'; }); await popup.click('#authGo');
     await waitText(popup, '#authVerdict', '다른 zkID 계정');                                          // auid_mismatch 사유, 페이지에 머문다

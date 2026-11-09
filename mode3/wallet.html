@@ -524,12 +524,10 @@
     const PENDING_MAX_AGE_MS = 10 * 60_000;
     async function goIdpAuth(req, evOrigin) {
       const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
-      let auid = null;
-      try { auid = (await (await fetch('/wallet/status')).json()).auid ?? null; } catch { /* 없으면 IdP 페이지가 auid 칸을 보인다 */ }
+      // 2026-11-09(사용자 결정): auid 를 쿼리로 넘기지 않는다 — 인증 창에서 uid·비밀번호·auid 를 모두 직접 넣는다(auid 는 지갑 계정 탭 "상세" 에서 복사).
       sessionStorage.setItem(PENDING_KEY, JSON.stringify({ req, origin: evOrigin, nonce, at: Date.now() }));
       const u = new URL(`${cfg.ciaUrl}/login`);
       u.searchParams.set('nonce', nonce); u.searchParams.set('wallet', location.origin); u.searchParams.set('return', '1');
-      if (auid) u.searchParams.set('auid', auid);
       location.assign(u.toString());
     }
     /** IdP 에서 돌아온 길인지 본다. 돌아온 길이 아니면 null, 저장분과 nonce 가 맞으면 { req, origin, code }, 어긋나면 { req: null }(저장분은 지운다). */
@@ -1078,7 +1076,7 @@
         const dl = document.createElement('dl');
         dl.className = 'kv';
         kvRow(dl, tt('wallet_session_service') || 'RP', rpLabel(c));            // 이름(없으면 주소) — arid 는 전문가 행(2026-11-05)
-        kvRow(dl, termEl('PPID'), shortCode(c.PPID, 12));
+        kvRow(dl, termEl('PPID'), c.account ? shortCode(c.account, 14) : shortCode(c.PPID, 12));   // 2026-11-09: 값도 스마트 계정 주소로(팩토리 전이면 PPID 숫자)
         kvRow(dl, tt('wallet_session_expiry') || '만료', tt('wallet_session_expires', { h: c.max_height }) || String(c.max_height));
         kvRow(dl, tt('wallet_session_nonce') || 'nonce', String(c.nonce ?? '-'));
         kvRow(dl, 'arid', shortCode(c.arid, 8), true);

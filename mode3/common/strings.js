@@ -134,7 +134,7 @@ window.DemoStrings = {
     rp_session_desc: { ko: '이 로그인이 아직 유효한지 zkID 폐기 목록으로 다시 확인합니다.', en: 'Re-checks against the zkID revocation list that this login is still valid.' },
     rp_logins_desc: { ko: '이 RP 에 남은 기록입니다. RP 는 누구인지 모르고 이 주소만 압니다.', en: 'What this RP recorded. It never learns who you are — only this address.' },
     rp_login_same_ppid: { ko: '새 세션. 내 계정 주소는 이전과 같습니다.', en: 'New session. Your account address is unchanged.' },
-    rp_my_account_addr: { ko: '내 계정 주소', en: 'My account address' },
+    rp_my_account_addr: { ko: 'PPID 스마트 계정 주소', en: 'PPID smart account address' },   // 2026-11-09
     rp_login_new_ppid: { ko: '새 세션. 이 RP 에서만 쓰는 주소를 받았습니다.', en: 'New session. You received an address used only at this RP.' },
     rp_reval_cached: { ko: '세션이 유효합니다 — 폐기 목록이 바뀌지 않아 기존 증명으로 확인했습니다.', en: 'Session valid — the revocation list is unchanged, so the existing proof was checked.' },
     rp_reval_fresh: { ko: '새 폐기 목록으로 증명을 다시 만들었습니다.', en: 'A fresh proof was made against the new revocation list.' },
@@ -164,7 +164,7 @@ window.DemoStrings = {
     rp_txs_desc: { ko: '이 RP 의 릴레이가 사용자 대신 보낸 트랜잭션입니다. RP 는 계정 주소와 이 RP 에서의 주소만 압니다.', en: 'Transactions this RP\'s relayer sent on users\' behalf. The RP only knows the account and the user\'s address at this RP.' },
     rp_no_txs: { ko: '아직 보낸 트랜잭션이 없습니다.', en: 'No transactions yet.' },
     rp_txs_unavailable: { ko: '이 RP 서버는 아직 트랜잭션을 기록하지 않습니다 — 서버를 다시 띄우면 보입니다.', en: 'This RP server does not record transactions yet — restart it to see them.' },
-    rp_col_account: { ko: '계정', en: 'Account' },
+    rp_col_account: { ko: 'PPID 스마트 계정 주소', en: 'PPID smart account address' },   // 2026-11-09
     rp_col_tx_content: { ko: '내용', en: 'Content' },
     rp_col_status: { ko: '상태', en: 'Status' },
     rp_col_txhash: { ko: '트랜잭션 해시', en: 'Tx hash' },
@@ -247,7 +247,7 @@ window.DemoStrings = {
     rp_login_open: { ko: '이용 조건 없음 — 누구나 이용할 수 있습니다', en: 'No conditions — open to everyone' },
     // 로그인 모달(2026-10-15) — 직접 로그인(장식)·Google·Naver(데모 미지원)·IdP(zk-Delegation, 실제 로그인) 선택 창.
     rp_login_modal_title: { ko: '로그인', en: 'Log in' },
-    rp_admin_ppid_label: { ko: '고객의 이 RP 주소', en: 'Customer address at this RP' },
+    rp_admin_ppid_label: { ko: '고객 PPID 스마트 계정 주소', en: 'Customer PPID smart account address' },   // 2026-11-09
     rp_direct_id_ph: { ko: '아이디/이메일', en: 'ID / email' },
     rp_direct_pw_ph: { ko: '비밀번호', en: 'Password' },
     rp_direct_login_btn: { ko: '로그인', en: 'Log in' },
@@ -554,6 +554,7 @@ window.DemoStrings = {
     admin_no_openings: { ko: '(개봉 요청 없음)', en: '(no opening requests)' },
     admin_col_requested: { ko: '요청 시각', en: 'Requested at' },
     admin_col_founduid: { ko: '알아낸 uid', en: 'Identified uid' },
+    admin_col_account: { ko: 'PPID 스마트 계정 주소', en: 'PPID smart account address' },   // 2026-11-09: 개봉 요청 표
     admin_open_unresolved: { ko: '(역조회 실패)', en: '(lookup failed)' },
     admin_rcl_desc: { ko: '폐기는 덧붙이기만 됩니다 — 게시하면 되돌릴 수 없습니다(설계 §6.5).', en: 'Revocations are append-only — once published they cannot be undone (design §6.5).' },
     admin_rcl_heartbeat: { ko: '하트비트(CIA_HEARTBEAT_BLOCKS)가 켜져 있으면 변화가 없어도 주기적으로 재게시됩니다.', en: 'With the heartbeat (CIA_HEARTBEAT_BLOCKS) on, the list is re-published periodically even when nothing changed.' },
@@ -747,7 +748,9 @@ window.DemoStrings = {
     idp_rp_create_ok_bound: { ko: '만들어짐 — {name}. 이 주소의 RP 등록을 이 계정에 연결했습니다. 아래 표에서 상태를 확인하고 "인증서 발급 요청" 을 누르세요.', en: 'Created — {name}. The registration from this address is now linked to your account. Check the status in the table below and press "Request certificate".' },
     // IdP 인증 창(cia_login.html, §4) — 지갑 팝업이 연다.
     idp_auth_title: { ko: 'zkID 로그인', en: 'zkID sign-in' },
-    idp_auth_desc: { ko: '아이디·비밀번호를 넣으면 지갑으로 돌아가 로그인을 이어갑니다.', en: 'Enter your login id and password; you return to the wallet and the login continues.' },
+    idp_auth_uid_label: { ko: 'uid', en: 'uid' },   // 2026-11-09: 인증 창은 uid·비밀번호·auid 를 모두 직접 입력
+    idp_auth_auid_hint: { ko: '지갑 페이지의 계정 탭 "상세" 에서 auid 를 복사해 붙여 넣으세요.', en: 'Copy auid from the wallet page (Account tab → Details) and paste it here.' },
+    idp_auth_desc: { ko: 'uid·비밀번호·auid 를 모두 직접 넣으면 지갑으로 돌아가 로그인을 이어갑니다.', en: 'Enter your uid, password and auid; you return to the wallet and the login continues.' },   // 2026-11-09
     idp_auth_go: { ko: '로그인', en: 'Log in' },
     idp_auth_cancel: { ko: '취소', en: 'Cancel' },
     idp_auth_no_wallet_hint: { ko: '서비스 페이지에서 로그인을 시작하세요. 이 창을 직접 열었다면 닫아도 됩니다.', en: 'Start the login from the service page. If you opened this window yourself, you can close it.' },
@@ -787,7 +790,7 @@ window.DemoStrings = {
     tour_done_body: { ko: '8단계를 모두 마쳤습니다. 처음부터 다시 하려면 관리자에서 계정을 복구하고 RP 에서 다시 로그인하세요.', en: 'All eight steps are done. To start over, recover the account in the IdP admin and log in again at the RP.' },
   },
   terms: {
-    PPID: { ko: '이 RP 에서의 내 주소', en: 'My address at this RP', expert: 'PPID = Poseidon(uid, salt, arid, chainid)' },
+    PPID: { ko: 'PPID 스마트 계정 주소', en: 'PPID smart account address', expert: 'PPID = Poseidon(uid, salt, arid, chainid); 주소 = Factory.computeAddress(PPID)' },   // 2026-11-09: 화면 용어 통일
     AA: { ko: 'IdP', en: 'IdP', expert: 'AA / CIA, pk_CIA' },
     session: { ko: '로그인 세션', en: 'Login session', expert: 'r_s, pk_i, max_height' },
     root: { ko: '폐기 목록 버전', en: 'Revocation list version', expert: 'root, epoch, age(blocks)' },

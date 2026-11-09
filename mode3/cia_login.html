@@ -16,12 +16,12 @@
 <main class="cards">
   <section class="card" id="authCard">
     <h3 data-i18n="idp_auth_title">zkID 로그인</h3>
-    <p class="desc" data-i18n="idp_auth_desc">아이디·비밀번호·auid 를 넣으면 1회용 코드를 지갑에 전달합니다.</p>
+    <p class="desc" data-i18n="idp_auth_desc">uid·비밀번호·auid 를 모두 직접 넣으면 지갑으로 돌아가 로그인을 이어갑니다.</p>
     <form id="authForm" class="auth-form" autocomplete="on">
-      <label><span data-i18n="idp_id_label">아이디</span><input id="authUid" autocomplete="username" autocapitalize="off" spellcheck="false" /></label>   <!-- 2026-11-05: "아이디 또는 uid" 힌트는 뺐다(uid 로도 되지만 사용자 말이 아니다) -->
+      <label><span data-i18n="idp_auth_uid_label">uid</span><input id="authUid" autocomplete="username" autocapitalize="off" spellcheck="false" placeholder="uid" /></label>   <!-- 2026-11-09(사용자 결정): uid·비밀번호·auid 를 모두 손으로 넣는다(아이디도 받는다) -->
       <label><span data-i18n="idp_pwd_label">비밀번호</span><input id="authPwd" type="password" autocomplete="current-password" /></label>
-      <!-- 2026-11-05: 지갑이 auid 를 쿼리로 넘기면(지갑 팝업에서 온 길) 이 칸은 숨기고 그 값을 쓴다 — 사용자가 77자리 수를 손으로 넣던 것을 없앴다. -->
-      <label id="authAuidRow">auid<input id="authAuid" autocomplete="off" /></label>
+      <!-- 2026-11-09(사용자 결정): auid 도 늘 직접 넣는다 — 지갑은 더 이상 쿼리로 넘기지 않는다(2026-11-05 의 자동 채움을 되돌림). 값은 지갑 계정 탭 "상세" 의 auid 복사 버튼으로. -->
+      <label id="authAuidRow">auid<input id="authAuid" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="지갑 계정 탭 → 상세 → auid 복사" /><small class="muted" data-i18n="idp_auth_auid_hint">지갑 페이지의 계정 탭 "상세" 에서 auid 를 복사해 붙여 넣으세요.</small></label>
       <button id="authGo" type="submit" data-i18n="idp_auth_go">로그인</button>
       <button id="authCancel" type="button" class="btn-ghost" data-i18n="idp_auth_cancel">취소</button>   <!-- 2026-11-05: 실패했을 때 돌아갈 길 — 창을 닫는다(RP 쪽에는 "창이 닫혔습니다") -->
     </form>
@@ -61,8 +61,6 @@
   const walletQuery = q.get('wallet');
   // 2026-11-05: return=1 이면 지갑 팝업 창 자체가 여기로 온 것 — 성공하면 코드를 그 지갑 오리진의 /?authorize=1 로 돌려보낸다(opener 는 RP 페이지라 postMessage 로는 못 준다).
   const returnToWallet = q.get('return') === '1';
-  const auidQuery = (q.get('auid') ?? '').trim();
-  if (/^[0-9]+$/.test(auidQuery)) { $('authAuid').value = auidQuery; $('authAuidRow').hidden = true; }
 
   (async () => {
     // 2026-11-05(7차): nonce·wallet 이 아예 없으면(주소창에 직접 침) 보안 경고가 아니라 "지갑이 여는 창" 안내만 — 경고는 wallet 이 있는데 다를 때.
