@@ -137,6 +137,34 @@ try {
     } finally { await cia2.stop(); }
   });
 
+  // 2026-11-09(사용자 결정): 지갑 등록은 서비스 첫 로그인 중 — 인증 창이 purpose=register 로 등록 코드·uid 를 내고, 그 코드로 등록하면 발급 코드가 함께 온다.
+  await t('auth/code purpose=register: 비밀번호만으로 등록 코드·uid(auid 없음), 이미 등록이면 409; 그 코드로 /cia/register 하면 issue_code 가 함께 오고 /cia/issue(code 모드)에 바로 쓰인다; bad_purpose 400', async () => {
+    const cia8 = await startIsolatedCia({ env: { CIA_ISSUE_AUTH: 'code' } });
+    try {
+      const su = await cia8.post('/cia/signup', { id: 'reg-at-login', pwd: 'password-r1' });
+      assert.equal(su.status, 201, j(su.body)); const uid8 = su.body.uid;
+      assert.equal((await cia8.post('/cia/auth/code', { id: 'reg-at-login', pwd: 'password-r1', purpose: 'bogus' })).body.reason, 'bad_purpose');
+      assert.equal((await cia8.post('/cia/auth/code', { id: 'reg-at-login', pwd: 'wrong', purpose: 'register' })).status, 401);
+      const rc = await cia8.post('/cia/auth/code', { id: 'reg-at-login', pwd: 'password-r1', purpose: 'register' });
+      assert.equal(rc.status, 200, j(rc.body)); assert.equal(rc.body.uid, uid8); assert.equal(rc.body.purpose, 'register'); assert.match(rc.body.code, /^[0-9a-f]{64}$/);
+      const reg = await createRegistration(BigInt(uid8));
+      const r1 = await cia8.post('/cia/register', { uid: uid8, code: rc.body.code, auid: reg.auid.toString(), pk_u: pointToStrings(reg.pk_u), sig_reg: await signRegistration(reg.sk_u, BigInt(uid8), reg.auid) });
+      assert.equal(r1.status, 201, j(r1.body)); assert.match(r1.body.issue_code, /^[0-9a-f]{64}$/, '등록 코드 경로는 발급 코드를 함께 준다');
+      const again = await cia8.post('/cia/auth/code', { id: 'reg-at-login', pwd: 'password-r1', purpose: 'register' });
+      assert.equal(again.status, 409, j(again.body)); assert.equal(again.body.reason, 'already_registered');
+      const u8 = userOf({ ...reg, slot: r1.body.slot }, uid8, TESTUSER_ATTRS);
+      const ok = await issueV11(cia8, u8, { arid, provider, overrides: { auth_code: r1.body.issue_code } });
+      assert.equal(ok.r.status, 200, j(ok.r.body), '등록 응답의 발급 코드로 바로 발급된다');
+      const reuse = await issueV11(cia8, u8, { arid, provider, blind_u: ok.blind_u, overrides: { auth_code: r1.body.issue_code } });
+      assert.equal(reuse.r.status, 401, '발급 코드도 1회용');
+      // 비밀번호 경로(code 없음)의 등록 응답에는 issue_code 가 없다
+      const su2 = await cia8.post('/cia/signup', { id: 'reg-by-pwd', pwd: 'password-r2' }); const uid9 = su2.body.uid;
+      const reg2 = await createRegistration(BigInt(uid9));
+      const r2 = await cia8.post('/cia/register', { uid: uid9, pwd: 'password-r2', auid: reg2.auid.toString(), pk_u: pointToStrings(reg2.pk_u), sig_reg: await signRegistration(reg2.sk_u, BigInt(uid9), reg2.auid) });
+      assert.equal(r2.status, 201, j(r2.body)); assert.equal(r2.body.issue_code, undefined);
+    } finally { await cia8.stop(); }
+  });
+
   await t('CIA_ISSUE_AUTH=code: demo 계정 발급은 auth_code 필수(401 auth_code_required), 맞는 코드면 200, 다른 사용자의 코드면 401 bad_code', async () => {
     const cia3 = await startIsolatedCia({ env: { CIA_ISSUE_AUTH: 'code' } });
     try {

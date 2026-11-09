@@ -15,8 +15,8 @@
 <body data-page="idp_login">
 <main class="cards">
   <section class="card" id="authCard">
-    <h3 data-i18n="idp_auth_title">zkID 로그인</h3>
-    <p class="desc" data-i18n="idp_auth_desc">uid·비밀번호·auid 를 모두 직접 넣으면 지갑으로 돌아가 로그인을 이어갑니다.</p>
+    <h3 id="authTitle" data-i18n="idp_auth_title">zkID 로그인</h3>
+    <p id="authDesc" class="desc" data-i18n="idp_auth_desc">uid·비밀번호·auid 를 모두 직접 넣으면 지갑으로 돌아가 로그인을 이어갑니다.</p>
     <form id="authForm" class="auth-form" autocomplete="on">
       <label><span data-i18n="idp_auth_uid_label">uid</span><input id="authUid" autocomplete="username" autocapitalize="off" spellcheck="false" placeholder="uid" /></label>   <!-- 2026-11-09(사용자 결정): uid·비밀번호·auid 를 모두 손으로 넣는다(아이디도 받는다) -->
       <label><span data-i18n="idp_pwd_label">비밀번호</span><input id="authPwd" type="password" autocomplete="current-password" /></label>
@@ -61,6 +61,12 @@
   const walletQuery = q.get('wallet');
   // 2026-11-05: return=1 이면 지갑 팝업 창 자체가 여기로 온 것 — 성공하면 코드를 그 지갑 오리진의 /?authorize=1 로 돌려보낸다(opener 는 RP 페이지라 postMessage 로는 못 준다).
   const returnToWallet = q.get('return') === '1';
+  // 등록 모드(2026-11-09, 사용자 결정): 미등록 지갑의 첫 서비스 로그인 — 지갑 팝업이 purpose=register 로 온다. auid 칸을 숨기고 아이디·비밀번호만 받아 등록 코드·uid 를 돌려준다.
+  const purpose = q.get('purpose') === 'register' ? 'register' : 'issue';
+  if (purpose === 'register') {
+    $('authAuidRow').hidden = true;
+    for (const [id, k] of [['authTitle', 'idp_auth_register_title'], ['authDesc', 'idp_auth_register_desc'], ['authGo', 'idp_auth_register_go']]) { const el = $(id); if (el) { el.dataset.i18n = k; el.textContent = Demo.t(k); } }
+  }
 
   (async () => {
     // 2026-11-05(7차): nonce·wallet 이 아예 없으면(주소창에 직접 침) 보안 경고가 아니라 "지갑이 여는 창" 안내만 — 경고는 wallet 이 있는데 다를 때.
@@ -83,7 +89,7 @@
     $('authForm').addEventListener('submit', async (ev) => {
       ev.preventDefault();
       // 2026-11-03: 아이디로 로그인한다 — 서버(/cia/auth/code)가 아이디 색인에 없으면 10진 uid 로도 본다(옛 흐름·테스트 호환).
-      const body = { id: $('authUid').value.trim(), pwd: $('authPwd').value, auid: $('authAuid').value.trim() };
+      const body = purpose === 'register' ? { id: $('authUid').value.trim(), pwd: $('authPwd').value, purpose } : { id: $('authUid').value.trim(), pwd: $('authPwd').value, auid: $('authAuid').value.trim() };
       Demo.verdict($('authVerdict'), { pending: true, title: Demo.t('working') || '처리 중' });
       let r;
       try {
@@ -98,6 +104,7 @@
           // 지갑 팝업 창이 온 길 — 대상은 지금 검증한 지갑 오리진 하나, 경로는 고정(/?authorize=1). nonce·code 를 쿼리로 돌려준다(mode3/wallet.html takeIdpReturn).
           setVerdict($('authVerdict'), true, 'idp_auth_sent_title', { summary: Demo.t('idp_auth_return') });
           const u = new URL('/', walletOrigin); u.searchParams.set('authorize', '1'); u.searchParams.set('idp_nonce', nonce); u.searchParams.set('idp_code', r.body.code);
+          if (purpose === 'register') { u.searchParams.set('idp_purpose', 'register'); u.searchParams.set('idp_uid', String(r.body.uid)); }   // 등록 코드는 uid 와 함께 — 지갑이 Snap register({uid}) 에 쓴다
           location.replace(u.toString());
           return;
         }

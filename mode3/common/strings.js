@@ -267,7 +267,7 @@ window.DemoStrings = {
     // 지갑 페이지(wallet.html) — 버튼·배지·한 줄 요약. 세션 표의 'AI 에이전트' 값은 위의 rp_agent_yes/no 를 함께 쓴다.
     wallet_register_btn: { ko: '등록', en: 'Register' },
     // snap 모드 등록 안내(Task 14, B5) — snap 모드는 #registerBtn 을 숨기고 이 안내 + IdP /user 링크를 보인다.
-    wallet_register_hint: { ko: 'zkID 사용자 페이지에서 가입하고 지갑을 등록하세요', en: 'Sign up on the zkID user page and register your wallet' },
+    wallet_register_hint: { ko: '지갑 등록은 서비스에서 "zkID 로 로그인" 할 때 처음 한 번 진행됩니다 — 먼저 zkID 에 가입하세요', en: 'Wallet registration happens once, the first time you "Log in with zkID" at a service — sign up at zkID first' },   // 2026-11-09
     wallet_profile_save_btn: { ko: '속성 저장', en: 'Save attributes' },
     wallet_tx_btn: { ko: '보내기', en: 'Send' },
     wallet_connect_btn: { ko: 'MetaMask 연결', en: 'Connect MetaMask' },
@@ -374,6 +374,7 @@ window.DemoStrings = {
     wallet_auth_approving: { ko: '{service} 로그인을 처리하는 중입니다.', en: 'Processing your login to {service}.' },
     wallet_auth_registering: { ko: 'zkID 에 등록하는 중입니다.', en: 'Registering with the IdP.' },
     wallet_auth_to_idp: { ko: 'zkID 로그인 페이지로 이동합니다…', en: 'Going to the IdP sign-in page…' },
+    wallet_auth_to_idp_register: { ko: 'zkID 에 처음 등록합니다 — zkID 로그인 페이지로 이동합니다…', en: 'First registration with zkID — going to the zkID sign-in page…' },   // 2026-11-09
     wallet_auth_resume_failed: { ko: 'zkID 인증 결과를 이어받지 못했습니다 — 서비스 페이지에서 다시 로그인하세요.', en: 'Could not pick up the IdP sign-in result — log in again from the RP page.' },
     wallet_auth_service: { ko: '서비스', en: 'Service' },
     wallet_auth_origin: { ko: '서비스 주소', en: 'Service address' },
@@ -386,7 +387,7 @@ window.DemoStrings = {
     wallet_prog_registering: { ko: '등록하는 중…', en: 'Registering…' },
     wallet_prog_done: { ko: '완료 — 창을 닫습니다.', en: 'Done — closing this window.' },
     wallet_google_link: { ko: 'zkID 아이디 계정에 Google 계정을 연결해 로그인합니다…', en: 'Linking your Google account to this zkID account and logging in…' },   // 2026-11-06
-    wallet_prog_not_registered: { ko: '등록된 지갑이 없습니다 — zkID 사용자 페이지에서 가입하고 지갑을 등록한 뒤 다시 로그인하세요.', en: 'This wallet is not registered — sign up at the zkID user page and register the wallet, then log in again.' },
+    wallet_prog_not_registered: { ko: '등록된 지갑이 없습니다 — zkID 에 가입한 뒤 다시 로그인하면 그 자리에서 등록됩니다.', en: 'This wallet is not registered — sign up at zkID and log in again; registration happens right there.' },
     wallet_prog_failed: { ko: '실패했습니다 — 창이 곧 닫힙니다.', en: 'Failed — this window will close shortly.' },
     wallet_auth_conditions: { ko: '요청한 조건', en: 'Requested conditions' },
     wallet_auth_reauth: { ko: '이미 있는 세션의 재승인입니다 — 조건은 바뀌지 않습니다.', en: 'Re-approval of an existing session — the conditions do not change.' },
@@ -677,7 +678,7 @@ window.DemoStrings = {
     idp_info_linked_google: { ko: 'Google 계정이 연결돼 있습니다 — 서비스에서 "Google 계정으로 로그인" 도 됩니다.', en: 'A Google account is linked — you can also use "Log in with Google" at services.' },
     idp_signup_ok_title: { ko: '가입됨', en: 'Signed up' },
     idp_signup_ok: { ko: '아이디 {id} 로 가입했습니다. 비밀번호를 넣고 로그인하세요.', en: 'Your account {id} is ready. Enter your password to log in.' },
-    idp_signup_ok_next: { ko: '아이디 {id} 로 가입했습니다. 이제 지갑을 등록하세요.', en: 'Your account {id} is ready. Now register your wallet.' },   // 2026-11-06: 가입 직후 자동 로그인 뒤
+    idp_signup_ok_next: { ko: '아이디 {id} 로 가입했습니다. 속성 커밋먼트를 프로필에 저장하세요 — 지갑 등록은 서비스에서 zkID 로 로그인할 때 진행됩니다.', en: 'Your account {id} is ready. Save your attribute commitment in the profile — wallet registration happens when you log in with zkID at a service.' },   // 2026-11-06: 가입 직후 자동 로그인 뒤
     idp_signup_failed: { ko: '가입 실패', en: 'Sign-up failed' },
     idp_login_failed: { ko: '로그인 실패', en: 'Login failed' },
     idp_register_ok_title: { ko: '등록됨', en: 'Registered' },
@@ -752,10 +753,14 @@ window.DemoStrings = {
     idp_auth_auid_hint: { ko: '지갑 페이지의 계정 탭 "상세" 에서 auid 를 복사해 붙여 넣으세요.', en: 'Copy auid from the wallet page (Account tab → Details) and paste it here.' },
     idp_auth_desc: { ko: 'uid·비밀번호·auid 를 모두 직접 넣으면 지갑으로 돌아가 로그인을 이어갑니다.', en: 'Enter your uid, password and auid; you return to the wallet and the login continues.' },   // 2026-11-09
     idp_auth_go: { ko: '로그인', en: 'Log in' },
+    // 인증 창 등록 모드(2026-11-09): 미등록 지갑의 첫 서비스 로그인 — auid 칸 없이 아이디·비밀번호만
+    idp_auth_register_title: { ko: 'zkID 로그인 — 지갑 등록', en: 'zkID sign-in — wallet registration' },
+    idp_auth_register_desc: { ko: '이 지갑은 아직 zkID 에 등록되지 않았습니다. 아이디·비밀번호를 넣으면 지갑으로 돌아가 등록하고 로그인을 이어갑니다.', en: 'This wallet is not registered with zkID yet. Enter your id and password to return to the wallet, register it and continue logging in.' },
+    idp_auth_register_go: { ko: '등록하고 로그인', en: 'Register and log in' },
     idp_auth_cancel: { ko: '취소', en: 'Cancel' },
     idp_auth_no_wallet_hint: { ko: '서비스 페이지에서 로그인을 시작하세요. 이 창을 직접 열었다면 닫아도 됩니다.', en: 'Start the login from the service page. If you opened this window yourself, you can close it.' },
     idp_auth_signup: { ko: '계정 만들기', en: 'Create an account' },
-    idp_auth_signup_hint: { ko: '계정이 없으면 새 탭에서 가입하고 지갑을 등록한 뒤 다시 로그인하세요.', en: 'No account? Sign up and register your wallet in a new tab, then log in again.' },
+    idp_auth_signup_hint: { ko: '계정이 없으면 새 탭에서 가입한 뒤 다시 로그인하세요.', en: 'No account? Sign up and register your wallet in a new tab, then log in again.' },
     idp_auth_bad_wallet: { ko: '지갑 오리진이 일치하지 않습니다 — 이 창은 안전하지 않은 요청일 수 있습니다.', en: 'The wallet origin does not match — this window may be an unsafe request.' },
     idp_auth_no_wallet: { ko: '이 창은 서비스에서 로그인할 때 지갑이 엽니다.', en: 'The wallet opens this window during a service login.' },
     idp_auth_sent_title: { ko: '전달됨', en: 'Sent' },
@@ -1057,6 +1062,7 @@ window.DemoStrings = {
     bound_wrong_account: { where: 'wallet', ko: { title: '이 세션의 계정과 대기 항목이 다릅니다', cause: '대기 항목이 가리키는 계정이 지금 세션(r_s)의 계정과 다릅니다 — 다른 세션으로 보내려 한 것입니다.', action: '그 대기 항목이 속한 RP 에서 로그인한 세션으로 다시 누르세요.' }, en: { title: "The session's account does not match this item", cause: "The pending item's account differs from the current session's (r_s) account — it would send to the wrong session.", action: 'Press it again from a session logged in at the RP that item belongs to.' } },
     // 2026-11-09 Phase 1 — 속성 커밋먼트·zkID ID 토큰
     bad_id_token: { where: 'rp', ko: { title: 'zkID ID 토큰이 맞지 않습니다', cause: '지갑이 넘긴 ID 토큰의 서명·만료·발급자가 틀리거나, sub·aud 가 이 로그인 증명의 가명(auid_s·arid_s)과 다릅니다.', action: '다시 로그인하세요. 반복되면 IdP 가 재시작됐거나(키 교체) RP 의 MODE3_CIA_URL 이 다른 IdP 를 가리키는지 확인하세요.' }, en: { title: 'The zkID ID token did not verify', cause: 'The signature, expiry or issuer of the token the wallet passed is wrong, or its sub/aud differ from this login proof\'s pseudonyms (auid_s/arid_s).', action: 'Log in again. If it repeats, check whether the IdP was restarted (key change) or the RP\'s MODE3_CIA_URL points at a different IdP.' } },
+    bad_purpose: { where: 'aa', ko: { title: '인증 코드 용도가 틀립니다', cause: 'purpose 는 issue 또는 register 여야 합니다.', action: '지갑 팝업에서 다시 로그인하세요.' }, en: { title: 'Bad auth-code purpose', cause: 'purpose must be issue or register.', action: 'Log in again from the wallet popup.' } },
     bad_profile: { where: 'aa', ko: { title: '프로필 값 형식이 틀립니다', cause: '이름 칸은 한 줄 256자 이하의 문자열이어야 합니다.', action: '속성 도구에서 복사한 커밋먼트(10진 숫자)를 그대로 붙여 넣으세요.' }, en: { title: 'Bad profile value', cause: 'The name field must be a single line of at most 256 characters.', action: 'Paste the commitment (decimal number) copied from the attribute tool as is.' } },
     bad_backup: { where: 'page', ko: { title: '백업 파일을 읽지 못했습니다', cause: '형식이 다르거나 커밋먼트가 속성·blind 와 맞지 않습니다.', action: '이 도구가 내려받은 백업 파일을 고르세요.' }, en: { title: 'Could not read the backup file', cause: 'The format differs or the commitment does not match the attributes and blind.', action: 'Pick a backup file downloaded by this tool.' } },
     bundle_missing: { where: 'page', ko: { title: '도구 번들이 없습니다', cause: '/attr/dist/attr.js 가 서빙되지 않습니다.', action: '지갑 에이전트 쪽에서 npm run attr:build 를 실행하세요.' }, en: { title: 'Tool bundle missing', cause: '/attr/dist/attr.js is not served.', action: 'Run npm run attr:build on the wallet agent host.' } },

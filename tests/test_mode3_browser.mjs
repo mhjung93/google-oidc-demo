@@ -222,31 +222,18 @@ try {
     assert.ok((await text(walletPage, '#mmStatus')).startsWith('MetaMask'), '배지는 "MetaMask 0x…"(2026-11-05 — Snap id 는 보이지 않는다)');
   });
 
-  // Task 14(B5, 2026-10-23): 등록은 이제 IdP /user 페이지가 지갑 팝업(?authorize=1)을 열고 mode3-register 를 보낸다 —
-  // Snap 의 register({uid})(Task 15)는 더 이상 비밀번호를 묻지 않는다(확인 창 하나, uid 만 보인다). IdP 는 auid·pk_u·sig_reg
-  // 만 받는다(cia.js 의 /cia/register) — uid·비밀번호를 직접 프롬프트하던 옛 Snap RPC 는 이제 없다.
-  await t('등록(2026-10-22): IdP 사용자 페이지 가입·로그인 → "지갑으로 커밋먼트 등록" → 지갑 팝업 → Snap 확인 창(uid·비밀번호 프롬프트 없음) → 등록됨; IdP 는 auid·pk_u·sig_reg 만 받았다', async () => {
+  // 2026-11-09(사용자 결정): zkID 가입에는 지갑이 끼지 않는다 — /user 에는 지갑 등록 버튼이 없고, 지갑 등록은 아래 RP 로그인 케이스에서
+  // 팝업 → zkID 인증 창(등록 모드) → 돌아와 등록 → 발급으로 처음 한 번 일어난다. (Task 14 의 "/user 가 mode3-register 팝업을 연다" 는 Google 등록(?google=1)에만 남았다.)
+  await t('zkID 가입(2026-11-09): 아이디·비밀번호로 가입 → 자동 로그인 → 등록 전 배지; 지갑 등록 버튼·카드는 없고 프로필 카드만 보인다', async () => {
     const u = await context.newPage(); await u.goto(`${cia.base}/user`);
-    // 2026-11-03 재구성: 로그인 화면 → "계정 만들기" → 아이디·비밀번호·확인. 2026-11-06(8차): 가입되면 바로 로그인돼 등록 카드가 열린다.
-    assert.equal(await u.isHidden('#registerBtn'), true, '로그인 전에는 등록 카드가 없다');
     await u.click('#showSignupBtn'); await u.fill('#signupId', 'demo-user'); await u.fill('#signupPwd', DEMO_PWD); await u.fill('#signupPwd2', DEMO_PWD); await u.click('#signupBtn');
-    await waitText(u, '#registerVerdict', '가입했습니다');   // 2026-11-05: 가입 문구에 uid 는 없다 — uid 는 등록 뒤 지갑 상태에서 받는다
-    await waitText(u, '#meBadge', '등록 전'); assert.equal(await u.isHidden('#loginView'), true, '가입 직후 자동 로그인 — 로그인 화면으로 돌아가지 않는다');
-    assert.equal(await u.isHidden('#revokeCard'), true, '등록 전에는 폐기 카드가 없다');
-    const dBefore = dialogs.length;                                                        // 2026-11-05: Snap 등록 확인 창은 없다(중복 확인 제거)
-    const [popup] = await Promise.all([context.waitForEvent('page'), u.click('#registerBtn')]);
-    await waitText(u, '#meBadge', '등록됨', 60_000);
-    assert.equal(await u.isVisible('#revokeCard'), true, '등록 뒤에는 폐기 카드가 보인다'); assert.equal(await u.isHidden('#registerBtn'), true, '등록 뒤에는 등록 버튼이 없다');
-    assert.equal(dialogs.length, dBefore, '등록에 Snap 확인 창이 뜨지 않는다');
-    const st = (await wallet.get('/wallet/status')).body; assert.match(String(st.uid), /^[0-9]+$/); uid = st.uid; AUID = st.auid; await u.close();
-    await awaitPopupClosed(popup);
-  });
-  await t('지갑 페이지 제목은 "지갑", 신원 카드에 auid·salt 와 복사 버튼', async () => {
-    assert.equal(await walletPage.title(), 'zk 지갑');   // 새로고침 버튼은 없다(2026-11-05) — 화면이 5초마다 스스로 갱신한다
-    await walletTab(walletPage, 'account'); await walletPage.click('#identityDetails summary');   // auid·salt 는 '상세' 접힘 안(2026-11-03)
-    await waitText(walletPage, '#meAuid', AUID.slice(0, 10));                           // showSalt 확인 창은 없다(2026-11-05)
-    await walletPage.click('#showSaltBtn'); await walletPage.waitForFunction(() => /^[0-9]{10,}$/.test(document.querySelector('#meSalt')?.textContent ?? ''), undefined, { timeout: 10_000 });
-    assert.ok(await walletPage.$('#copyAuidBtn')); assert.ok(await walletPage.$('#copySaltBtn'));
+    await waitText(u, '#profileVerdict', '가입했습니다');   // 안내는 프로필 카드에 — "지갑 등록은 서비스에서 zkID 로 로그인할 때"
+    await waitText(u, '#meBadge', '등록 전'); assert.equal(await u.isHidden('#loginView'), true, '가입 직후 자동 로그인');
+    assert.equal(await u.$('#registerBtn'), null, '지갑 등록 버튼이 없다'); assert.equal(await u.$('#registerCard'), null, '지갑 등록 카드가 없다');
+    assert.equal(await u.isVisible('#profileCard'), true, '프로필 카드는 등록과 무관하게 보인다');
+    assert.equal(await u.isHidden('#revokeCard'), true, '등록 전에는 계정 관리(지갑 연결 해제) 카드가 없다');
+    assert.equal((await wallet.get('/wallet/status')).body.registered, false, '지갑은 아직 미등록');
+    await u.close();
   });
 
   await t('Snap 오리진 검사: 지갑 오리진이 아니면 거절한다(진짜 Snap 코드가 돈다는 증거)', async () => {
@@ -264,13 +251,21 @@ try {
     assert.ok((await text(rpPage, '#walletMode')).includes(cfg.snapId));
   });
 
-  await t('로그인: 팝업이 IdP 로그인 페이지로 갔다가 돌아와 Snap 동의 창 없이 결과를 postMessage 로 돌려준다 → RP 세션', async () => {
+  await t('첫 로그인 = 지갑 등록(2026-11-09): 팝업이 MetaMask 를 연결하고 zkID 인증 창(등록 모드, auid 칸 없음)으로 갔다가 돌아와 등록 → 발급 → RP 세션; Snap 확인 창 없음', async () => {
     const before = dialogs.length;
     const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
     assert.ok(popup.url().includes('authorize=1'), `팝업 URL: ${popup.url()}`);
-    await completeIdpAuth(popup);               // Task 14: IdP 인증(CIA_ISSUE_AUTH=code) — 2026-11-05 부터 팝업 창 자체가 갔다 온다
+    await atIdpLogin(popup);
+    assert.equal(new URL(popup.url()).searchParams.get('purpose'), 'register', '미등록 지갑은 등록 모드로 간다');
+    assert.equal(await popup.isHidden('#authAuidRow'), true, '등록 모드에는 auid 칸이 없다');
+    await waitText(popup, '#authTitle', '지갑 등록');
+    await popup.fill('#authUid', 'demo-user'); await popup.fill('#authPwd', DEMO_PWD); await popup.click('#authGo');
+    await backAtWallet(popup);
     await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
-    assert.equal(dialogs.length, before, '로그인에 Snap 동의 창이 없다(2026-11-05 중복 확인 제거)');
+    assert.equal(dialogs.length, before, '등록·로그인에 Snap 확인 창이 없다(2026-11-05 중복 확인 제거)');
+    const st = (await wallet.get('/wallet/status')).body;
+    assert.equal(st.registered, true, '첫 로그인이 지갑을 등록했다'); assert.match(String(st.uid), /^[0-9]+$/); uid = st.uid; AUID = st.auid;
+    assert.equal(snapState.registration?.uid, uid, 'Snap 에도 등록이 저장됐다');
     assert.ok((await text(rpPage, '#log')).includes('allowAgent=0'), 'AI 에이전트 체크박스를 없앴으므로 늘 0(2026-11-05)');
     await awaitPopupClosed(popup);
     assert.ok((await text(rpPage, '#log')).includes('3. RP 검증'), 'RP 페이지가 /api/mode3/login 까지 냈다');
@@ -303,6 +298,15 @@ try {
     }
     // 한편 공개 부분(Cf_u)은 에이전트가 정상으로 들고 있어야 한다 — 위 검사가 "아무것도 안 봤다"로 지나가지 않게.
     assert.equal((await wallet.get('/wallet/status')).body.userCred.Cf_u, snapState.userCred.Cf_u);
+  });
+
+  // 2026-11-09: salt 를 화면에 보이는 이 케이스는 "비밀은 Snap 에만" 검사(페이지 DOM 에 s_u 가 없어야 한다) 뒤에 둔다 — 등록이 첫 로그인으로 옮겨가 AUID 를 로그인 뒤에야 안다.
+  await t('지갑 페이지 제목은 "지갑", 신원 카드에 auid·salt 와 복사 버튼', async () => {
+    assert.equal(await walletPage.title(), 'zk 지갑');   // 새로고침 버튼은 없다(2026-11-05) — 화면이 5초마다 스스로 갱신한다
+    await walletTab(walletPage, 'account'); await walletPage.click('#identityDetails summary');   // auid·salt 는 '상세' 접힘 안(2026-11-03)
+    await waitText(walletPage, '#meAuid', AUID.slice(0, 10));                           // showSalt 확인 창은 없다(2026-11-05)
+    await walletPage.click('#showSaltBtn'); await walletPage.waitForFunction(() => /^[0-9]{10,}$/.test(document.querySelector('#meSalt')?.textContent ?? ''), undefined, { timeout: 10_000 });
+    assert.ok(await walletPage.$('#copyAuidBtn')); assert.ok(await walletPage.$('#copySaltBtn'));
   });
 
   await t('재검증: /wallet/revalidate 는 RP 오리진에 CORS 로 열려 있어 팝업 없이 된다', async () => {
@@ -629,13 +633,13 @@ try {
     // 같은 브라우저 컨텍스트라 앞의 등록 케이스가 로그인해 둔 세션 쿠키가 남아 있을 수 있다 — 내 계정 화면이면 먼저 로그아웃한다.
     await p.waitForSelector('#loginView:not([hidden]), #meCard:not([hidden])');
     if (await p.isVisible('#meCard')) { await p.click('#logoutBtn'); await p.waitForSelector('#loginView:not([hidden])'); }
-    assert.equal(await p.isHidden('#registerCard'), true); assert.equal(await p.isHidden('#revokeCard'), true);
+    assert.equal(await p.$('#registerCard'), null, '지갑 등록 카드는 없다(2026-11-09)'); assert.equal(await p.isHidden('#revokeCard'), true);
     await p.click('#showSignupBtn'); await p.waitForSelector('#signupView:not([hidden])');
     await p.fill('#signupId', 'demo-user-2'); await p.fill('#signupPwd', 'demo-pass-1'); await p.fill('#signupPwd2', 'demo-pass-X'); await p.click('#signupBtn');
     await waitText(p, '#signupVerdict', '비밀번호 확인이 일치하지 않습니다');   // pwd_mismatch 제목
     await p.fill('#signupPwd2', 'demo-pass-1'); await p.click('#signupBtn');
     // 2026-11-06(8차): 가입 직후 자동 로그인 — 등록 카드에 안내가 뜨고 상태는 등록 전. 로그인 화면으로 돌아가지 않는다.
-    await waitText(p, '#registerVerdict', '가입했습니다'); await waitText(p, '#meBadge', '등록 전'); await waitText(p, '#meInfo', 'demo-user-2');
+    await waitText(p, '#profileVerdict', '가입했습니다'); await waitText(p, '#meBadge', '등록 전'); await waitText(p, '#meInfo', 'demo-user-2');
     assert.equal(await p.isHidden('#loginView'), true);
     await p.click('#logoutBtn'); await p.waitForSelector('#loginView:not([hidden])');
     // 같은 아이디(대소문자만 다른)로 다시 가입하면 409 id_taken.
@@ -643,7 +647,7 @@ try {
     await waitText(p, '#signupVerdict', '그 아이디는 이미 쓰고 있습니다'); await p.click('#showLoginBtn');   // id_taken 제목
     await p.fill('#loginId', 'demo-user-2'); await p.fill('#loginPwd', 'wrong-pass-1'); await p.click('#loginBtn'); await waitText(p, '#userVerdict', '아이디 또는 비밀번호가 맞지 않습니다');   // invalid_credentials 제목
     await p.fill('#loginPwd', 'demo-pass-1'); await p.click('#loginBtn');
-    await waitText(p, '#meBadge', '등록 전'); await waitText(p, '#meInfo', 'demo-user-2'); assert.equal(await p.isVisible('#registerBtn'), true);
+    await waitText(p, '#meBadge', '등록 전'); await waitText(p, '#meInfo', 'demo-user-2'); assert.equal(await p.isVisible('#profileCard'), true);
     await p.click('#logoutBtn'); await p.waitForSelector('#loginView:not([hidden])'); assert.equal(await p.isHidden('#meCard'), true); await p.close();
   });
   // 2026-11-09 Phase 1: 속성 커밋먼트 도구(지갑 오리진 /attr.html — 독립 정적 페이지) + zkID 프로필 카드.

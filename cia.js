@@ -969,11 +969,18 @@ app.post('/cia/user/unlink_wallet', requireUser, async (req, res) => {
 });
 // 인증 창(§4)이 부른다 — 세션 없이도 된다. pwd 검사 → 등록 상태 → auid 일치 순으로 본다(틀린 비밀번호에는 등록 여부를 알려주지 않는다).
 app.post('/cia/auth/code', (req, res) => {
-  const { uid: uidIn, id, pwd, auid } = req.body ?? {};
+  const { uid: uidIn, id, pwd, auid, purpose = 'issue' } = req.body ?? {};
+  if (purpose !== 'issue' && purpose !== 'register') return res.status(400).json({ error: 'bad_purpose', reason: 'bad_purpose' });
   // 2026-11-03: 인증 창은 아이디를 보낸다(id). 아이디 색인에 없으면 10진 uid 로 본다(한 칸에 "아이디 또는 uid") — API 의 uid 는 그대로.
   const uid = typeof id === 'string' ? resolveLogin(id) : (isDec(uidIn) ? uidIn : null);
   const a = uid ? state.accounts[uid] : null;
   if (!pwOk(a, pwd)) return res.status(401).json({ error: 'invalid credentials', reason: 'invalid_credentials' });
+  // 등록 코드(2026-11-09, 사용자 결정): 지갑 등록은 zkID 페이지가 아니라 서비스의 "zkID 로 로그인" 중에 처음 한 번 일어난다 — 팝업이 이 인증 창으로
+  // 와 아이디·비밀번호만 넣으면(auid 는 아직 없다) 등록 코드와 uid 를 받아 /cia/register 로 간다. 이미 등록된 계정이면 409.
+  if (purpose === 'register') {
+    if (a.pk_u) return res.status(409).json({ error: 'already registered', reason: 'already_registered' });
+    return res.json({ ...issueCode({ uid, purpose: 'register' }), uid, purpose: 'register' });
+  }
   if (!a.pk_u) return res.status(409).json({ error: 'not registered', reason: 'not_registered' });
   if (!isDec(auid) || BigInt(auid).toString() !== a.auid) return res.status(403).json({ error: 'auid mismatch', reason: 'auid_mismatch' });
   res.json(issueCode({ uid, purpose: 'issue', auid: a.auid }));
@@ -1011,7 +1018,10 @@ app.post('/cia/register', userCors, async (req, res) => {
   const beforeCommit = (oidcPath || code === undefined) ? undefined : () => consumeCode(code, { uid: uidIn, purpose: 'register' });
   const made = await registerAccount({ uid, provider, auid, pk_u, sig_reg, beforeCommit });
   if (made.error) return res.status(made.error.status).json(made.error.body);
-  res.status(201).json({ slot: made.slot, schemaHash: ATTR_SCHEMA_HASH, uid, provider });
+  // 2026-11-09: 등록 코드로 등록했으면(서비스 첫 로그인 중의 등록) 같은 사용자가 비밀번호를 다시 넣지 않고 바로 발급으로 이어 가게 이 auid 에 묶인
+  // 발급 코드를 함께 준다(인증 창에서 방금 비밀번호를 확인했다). ISSUE_AUTH 가 key 모드면 쓰이지 않을 뿐 해는 없다(1회용·TTL).
+  const issue_code = code !== undefined ? issueCode({ uid, purpose: 'issue', auid: BigInt(auid).toString() }).code : undefined;
+  res.status(201).json({ slot: made.slot, schemaHash: ATTR_SCHEMA_HASH, uid, provider, ...(issue_code ? { issue_code } : {}) });
 });
 /** 계정 등록의 공통 부분(/cia/register 와 /cia/issue 의 id_token 암묵 등록이 같이 쓴다, 2026-10-16): 409·auid 범위·pk_u 점·sig_reg 검증·슬롯 배정.
  *  beforeCommit(수정 라운드 1): 서명 검증을 통과한 뒤, 상태 변경 바로 앞에서 동기로 부른다 — /cia/register 의 code 경로가 1회용 코드를

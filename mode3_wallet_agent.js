@@ -707,7 +707,8 @@ app.post('/wallet/register', async (req, res) => {
     const full = { uid, s_u: reg.s_u.toString(), sk_u: reg.sk_u, pk_u: pub, auid: reg.auid.toString(), slot: r.body.slot, profile: normalized, attrs, provider, userCred: null };
     state.registration = SECRETS === 'snap' ? stripSecrets(full) : full;
     persist();
-    res.status(201).json({ uid, slot: r.body.slot, auid: reg.auid.toString(), attrs, profile: normalized, provider });
+    // issue_code(2026-11-09): 등록 코드 경로면 IdP 가 그 auid 의 발급 코드를 함께 준다 — 서비스 첫 로그인 중의 등록이 비밀번호 재입력 없이 발급으로 이어진다. 에이전트는 저장하지 않고 넘긴다.
+    res.status(201).json({ uid, slot: r.body.slot, auid: reg.auid.toString(), attrs, profile: normalized, provider, ...(typeof r.body.issue_code === 'string' ? { issue_code: r.body.issue_code } : {}) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

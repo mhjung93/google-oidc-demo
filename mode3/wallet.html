@@ -522,25 +522,29 @@
     // 손으로 넣지 않게 한다. CIA_ISSUE_AUTH=code 인 IdP 는 로그인마다 이 코드가 있어야 /cia/issue 가 받는다(재승인은 /cia/issue 를 타지 않는다).
     const PENDING_KEY = 'mode3.authorize.pending';
     const PENDING_MAX_AGE_MS = 10 * 60_000;
-    async function goIdpAuth(req, evOrigin) {
+    // purpose 'register'(2026-11-09, 사용자 결정): 미등록 지갑의 첫 서비스 로그인 — 인증 창은 아이디·비밀번호만 받고(auid 는 아직 없다) 등록 코드·uid 를 돌려준다.
+    async function goIdpAuth(req, evOrigin, { purpose = 'issue' } = {}) {
       const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
       // 2026-11-09(사용자 결정): auid 를 쿼리로 넘기지 않는다 — 인증 창에서 uid·비밀번호·auid 를 모두 직접 넣는다(auid 는 지갑 계정 탭 "상세" 에서 복사).
       sessionStorage.setItem(PENDING_KEY, JSON.stringify({ req, origin: evOrigin, nonce, at: Date.now() }));
       const u = new URL(`${cfg.ciaUrl}/login`);
       u.searchParams.set('nonce', nonce); u.searchParams.set('wallet', location.origin); u.searchParams.set('return', '1');
+      if (purpose === 'register') u.searchParams.set('purpose', 'register');
       location.assign(u.toString());
     }
-    /** IdP 에서 돌아온 길인지 본다. 돌아온 길이 아니면 null, 저장분과 nonce 가 맞으면 { req, origin, code }, 어긋나면 { req: null }(저장분은 지운다). */
+    /** IdP 에서 돌아온 길인지 본다. 돌아온 길이 아니면 null, 저장분과 nonce 가 맞으면 { req, origin, code, purpose, uid }, 어긋나면 { req: null }(저장분은 지운다). */
     function takeIdpReturn() {
       const q = new URLSearchParams(location.search);
       const code = q.get('idp_code'), nonce = q.get('idp_nonce');
+      const purpose = q.get('idp_purpose') === 'register' ? 'register' : 'issue', uid = q.get('idp_uid');
       if (!code && !nonce) return null;
       let pend = null;
       try { pend = JSON.parse(sessionStorage.getItem(PENDING_KEY) ?? 'null'); } catch { pend = null; }
       sessionStorage.removeItem(PENDING_KEY);
       history.replaceState(null, '', `${location.pathname}?authorize=1`);   // 1회용 코드가 주소창·히스토리에 남지 않게
       if (!pend || !code || !nonce || pend.nonce !== nonce || typeof pend.at !== 'number' || Date.now() - pend.at > PENDING_MAX_AGE_MS) return { req: null, origin: null, code: null };
-      return { req: pend.req, origin: pend.origin, code };
+      if (purpose === 'register' && !/^[0-9]+$/.test(uid ?? '')) return { req: null, origin: null, code: null };
+      return { req: pend.req, origin: pend.origin, code, purpose, uid: purpose === 'register' ? uid : null };
     }
     // Google 토큰(OIDC 래퍼, 2026-10-26 Snap OIDC 래퍼 §2): #gsiWrap 에 버튼을 그리고 사용자가 누르기를 기다린다. nonce 는 에이전트
     // /wallet/oidc/nonce 가 계산한 값. 2분 안에 토큰이 없으면 oidc_cancelled. 돌려주는 것은 { token, reason } — token 이 없으면 reason.
@@ -606,6 +610,24 @@
       return { ok: true, slot: b.slot, auid: b.auid, uid: b.uid };
     }
 
+    /** 등록 코드(uid·code)로 등록(2026-11-09 에 함수로 뽑음 — 서비스 첫 로그인 중의 등록(processAuthorize)과 옛 mode3-register 팝업 경로 공용).
+     *  Snap register({uid}) → 에이전트 /wallet/register { uid, code, s_u, sk_u } → Snap storeRegistration. 성공 { ok:true, slot, auid, issue_code|null } / 실패 { ok:false, reason, detail? }. */
+    async function codeRegister({ uid, code, step, log }) {
+      let already = false;
+      try { already = Boolean((await (await fetch('/wallet/status')).json()).registered); } catch { /* 진행 — /wallet/register 가 다시 걸러준다 */ }
+      if (already) { step('이미 등록돼 있다.'); return { ok: false, reason: 'already_registered' }; }
+      step('등록 비밀을 만드는 중…');
+      const reg = await invokeSnap('register', { uid });
+      if (!reg || reg.denied) { step('등록 거절'); return { ok: false, reason: 'user_denied' }; }
+      step('에이전트에 등록하는 중…');
+      const { status, body: b } = await postJson('/wallet/register', { uid, code, s_u: reg.s_u, sk_u: reg.sk_u });
+      if (status !== 201) { step('등록 실패'); log(errText(status, b)); return { ok: false, reason: b.cia?.reason ?? b.reason ?? `HTTP ${status}`, detail: b.detail ?? b.cia?.detail ?? null }; }
+      step('Snap 에 등록 결과 저장 중…');
+      try { await invokeSnap('storeRegistration', { attrs: b.attrs, slot: b.slot, auid: b.auid }); }
+      catch (e) { step('등록이 반만 됐다 — Snap 저장 실패'); log(e.message); return { ok: false, reason: 'wallet_error', detail: e.message }; }
+      return { ok: true, slot: b.slot, auid: b.auid, issue_code: typeof b.issue_code === 'string' ? b.issue_code : null };
+    }
+
     // 등록 팝업(Task 14, B5) — IdP /user 페이지가 ${walletOrigin}/?authorize=1 을 열고 mode3-register 를 보낸다
     // (cia_user.html 의 #registerBtn). mode3-authorize 와는 아예 다른 요청이라 runAuthorize() 의 onMessage 가 먼저
     // type 으로 갈라 이 함수로 넘긴다. 결과(mode3-register-result)는 실제 발신 오리진(ev.source·ev.origin)에만 보낸다.
@@ -669,21 +691,10 @@
           if (r.ok) step('등록 완료 — 창을 닫는다.');
           return reply(r);
         }
-        step('등록 비밀을 만드는 중…');
-        const reg = await invokeSnap('register', { uid: req.uid });
-        if (!reg || reg.denied) { step('등록 거절'); return reply({ ok: false, reason: 'user_denied' }); }
-        step('에이전트에 등록하는 중…');
-        const { status, body: b } = await postJson('/wallet/register', { uid: req.uid, code: req.code, s_u: reg.s_u, sk_u: reg.sk_u });
-        if (status !== 201) { step('등록 실패'); log(errText(status, b)); return reply({ ok: false, reason: b.reason ?? `HTTP ${status}`, detail: b.detail ?? null }); }
-        step('Snap 에 등록 결과 저장 중…');
-        try { await invokeSnap('storeRegistration', { attrs: b.attrs, slot: b.slot, auid: b.auid }); }
-        catch (e) {
-          step('등록이 반만 됐다 — Snap 저장 실패');
-          log(e.message);
-          return reply({ ok: false, reason: 'wallet_error', detail: e.message });
-        }
-        step('등록 완료 — 창을 닫는다.');
-        reply({ ok: true, slot: b.slot, auid: b.auid });
+        const r = await codeRegister({ uid: req.uid, code: req.code, step, log });
+        if (r.ok) step('등록 완료 — 창을 닫는다.');
+        const { issue_code: _unused, ...pub } = r;   // 발급 코드는 이 경로(zkID 페이지가 연 등록 팝업)에서는 쓰지 않는다
+        reply(pub);
       } catch (e) {
         step('오류');
         log(e.message);
@@ -737,7 +748,7 @@
      * authCode 는 IdP 에서 돌아왔을 때의 1회용 코드, 처음이면 null. 2026-11-05 중복 확인 제거: Snap 의 로그인 동의 창은 없다(consentLogin 은
      * 증인만 돌려준다) — 사용자가 RP 에서 "로그인" 을 눌러 시작한 요청이고, 인증서·팩토리 precheck 을 통과한 뒤에만 Snap 을 부른다.
      */
-    async function processAuthorize(req, evOrigin, { step, log, reply, authCode }) {
+    async function processAuthorize(req, evOrigin, { step, log, reply, authCode, authPurpose = 'issue', authUid = null }) {
       try {
         const connect = async () => {
           step('MetaMask·Snap 연결 중…'); say('wallet_prog_connect');
@@ -783,8 +794,21 @@
         // 발급 인증(2026-10-26 Snap OIDC 래퍼 §2.2): 데모 계정은 IdP 로그인 페이지(이 창이 갔다가 돌아온다, goIdpAuth — MetaMask 를 부르기
         // 전에 간다), Google 계정은 이 팝업의 Google 버튼 — nonce 는 issue:H(pk_u|arid_s)(에이전트가 이 로그인의 arid·r_rp 로 계산).
         let provider = await walletProvider();
-        if (authCode === null && provider === 'demo') {
-          // 2026-11-05: 등록이 없는 지갑은 IdP 로그인 페이지로 보내지 않는다 — 가입·지갑 등록 안내로 멈춘다. 상태를 못 읽으면 진행한다(IdP 가 다시 걸러준다).
+        let authCodeNow = authCode;
+        // 등록 코드로 돌아온 길(2026-11-09, 사용자 결정 "등록 과정에는 지갑 연결이 없고, 지갑은 위임 인증 때 처음 붙는다"): 이 서비스 로그인이 이 지갑의
+        // 첫 zkID 등록이다 — MetaMask 연결 → Snap 이 비밀 생성 → 에이전트가 /cia/register → Snap 저장 → IdP 가 함께 준 발급 코드로 바로 발급·로그인.
+        if (authPurpose === 'register') {
+          if (!(await connect())) return;
+          say('wallet_prog_registering');
+          const r = await codeRegister({ uid: authUid, code: authCode, step, log });
+          if (!r.ok) return reply(r);
+          step('zkID 에 등록됨 — 이어서 로그인합니다.');
+          authCodeNow = r.issue_code;   // ISSUE_AUTH=key 인 IdP 는 코드를 주지 않는다(null) — 그 경우 코드 없이 발급된다
+          provider = 'demo';
+        }
+        if (authCodeNow === null && provider === 'demo' && authPurpose !== 'register') {
+          // 미등록 지갑(2026-11-09): zkID 인증 창으로 가되 등록 모드(purpose=register)로 — 아이디·비밀번호만 넣으면 등록 코드를 들고 돌아온다(위 분기).
+          // 상태를 못 읽으면 등록된 것으로 보고 진행한다(IdP 가 다시 걸러준다).
           let registered = true; try { registered = Boolean((await (await fetch('/wallet/status')).json()).registered); } catch { /* 진행 */ }
           if (req.provider === 'google') {
             // 2026-11-06(사용자 지적): RP 의 "Google 계정으로 로그인" 으로 들어왔으면 zkID 인증 창으로 가지 않는다 — 미등록 지갑은 그 자리에서 Google 로
@@ -802,7 +826,7 @@
             }
             provider = 'google';
           } else {
-            if (!registered) { step('등록된 지갑이 없다.'); reply({ ok: false, reason: 'not_registered' }); say('wallet_prog_not_registered'); return; }
+            if (!registered) { step(tt('wallet_auth_to_idp_register') || 'zkID 에 처음 등록합니다 — zkID 로그인 페이지로 이동합니다…'); say('wallet_auth_to_idp_register'); await goIdpAuth(req, evOrigin, { purpose: 'register' }); return; }
             step(tt('wallet_auth_to_idp') || 'IdP 로그인 페이지로 이동합니다…'); say('wallet_auth_to_idp'); await goIdpAuth(req, evOrigin); return;
           }
         }
@@ -812,7 +836,7 @@
         const witness = await consentLogin(req);
         if (!witness) { step('동의 거절'); return reply({ ok: false, reason: 'user_denied' }); }
         let idToken = null;
-        if (authCode === null) {
+        if (authCodeNow === null && provider !== 'demo') {
           const g = await oidcToken({ purpose: 'issue', arid: req.arid, r_rp: req.r_rp }, () => { step(tt('wallet_gsi_hint') || 'Google 버튼을 눌러 로그인하세요.'); say('wallet_gsi_hint'); });
           if (!g.token) { oidcFailStep(g, step, log); return reply({ ok: false, reason: g.reason }); }
           idToken = g.token;
@@ -826,7 +850,7 @@
           disclose: req.disclose ?? null, set: req.set ?? null,
           witness, verifiedOrigin: evOrigin,          // Origin 헤더 대신 팝업이 확인한 값(스펙 §3.3)
           serviceName: cleanServiceName(req.serviceName) || null,   // 세션 카드 표기용(2026-11-05) — RP 가 고른 이름, 에이전트는 저장만 한다
-          auth_code: authCode,
+          auth_code: authCodeNow,
           id_token: idToken ?? undefined,
         });
         if (lg.status !== 200) {
@@ -874,7 +898,7 @@
       if (back) {
         if (!back.req) { renderAuthTitle(); step(tt('wallet_auth_resume_failed') || 'IdP 인증 결과를 이어받지 못했습니다 — RP 페이지에서 다시 로그인하세요.'); return; }
         lastAuthReq = back.req; renderAuthTitle(); renderAuthSummary(back.req);
-        processAuthorize(back.req, back.origin, { step, log, reply: makeReply(back.req.type, back.req.r_s, back.origin), authCode: back.code });
+        processAuthorize(back.req, back.origin, { step, log, reply: makeReply(back.req.type, back.req.r_s, back.origin), authCode: back.code, authPurpose: back.purpose, authUid: back.uid });
         return;
       }
       let handled = false;
