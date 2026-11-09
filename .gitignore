@@ -10,6 +10,7 @@ cache/
 *.sym
 *.wtns
 mode3/user/dist/
+mode3/attr/dist/
 
 # sensitive files
 .env
@@ -31,6 +32,7 @@ mode3_rp_logins.jsonl
 # mode3_rp_* 는 lib/mode3_rp_cert.js 같은 .js 소스까지 가려서 mode3_rp*_registration*.json / mode3_rp*_logins.jsonl 로 좁힌다(2026-10-23)
 mode3_rp*_registration*.json
 mode3_rp*_logins.jsonl
+mode3_rp*_accounts*.json
 # 데모 리셋 스크립트가 .bak-시각 으로 옮겨 두는 옛 상태 파일 백업
 *.bak-*
 

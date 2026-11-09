@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="no-referrer" />
+  <!-- 속성 커밋먼트 도구(2026-11-09 Phase 1). 지갑 에이전트(:5100)가 /attr.html 로 서빙하는 독립 정적 페이지 — MetaMask·Snap·IdP·RP 와
+       아무 통신도 하지 않는다. 속성과 blind 는 이 브라우저의 localStorage(mode3_attr_tool_v1)에만 남고, 사용자는 커밋먼트(10진)만 복사해
+       zkID 프로필의 "이름" 칸에 붙여 넣는다. Phase 2 에서 같은 저장값으로 속성 증명(π_attr)을 만들어 RP 에 팝업으로 넘긴다.
+       제목의 "속성 커밋먼트 도구" 는 tests 의 페이지 서빙 검사 marker 다. -->
+  <title>속성 커밋먼트 도구</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23345'/%3E%3Ctext x='16' y='22' font-size='15' font-family='sans-serif' font-weight='700' text-anchor='middle' fill='%23fff'%3EC%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/common/demo.css" />
+  <script src="/common/strings.js"></script>
+  <script src="/common/demo.js"></script>
+  <script src="/attr/dist/attr.js"></script>
+  <style>
+    .attr-form label { display:block; margin:8px 0 } .attr-form input, .attr-form select { width:100%; max-width:360px; padding:6px 8px }
+    .commit-box { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; overflow-wrap:anywhere; background:#f2f4f8; padding:10px 12px; border-radius:8px }
+    .row-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:10px 0 }
+    .tool-head { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap } .tool-head h2 { margin:0 }
+  </style>
+</head>
+<body data-page="attr">
+<header id="demoBar"></header>
+<main class="cards">
+  <section class="card span2">
+    <div class="tool-head"><h2 data-i18n="attr_title">속성 커밋먼트 도구</h2><span class="badge muted" data-i18n="attr_badge_offline">서버와 통신하지 않음</span></div>
+    <p class="desc" data-i18n="attr_desc">내 속성(출생연도·국가 등)과 무작위 blind 로 커밋먼트를 만듭니다. 속성과 blind 는 이 브라우저에만 저장되고, 커밋먼트만 zkID 프로필의 "이름" 칸에 붙여 넣습니다. 지갑·IdP·서비스 어디와도 연결하지 않습니다.</p>
+  </section>
+
+  <section class="card">
+    <h3 data-i18n="attr_form_title">1. 속성 입력</h3>
+    <form id="attrForm" class="attr-form" autocomplete="off">
+      <label><span data-i18n="attr_birth_year">출생연도</span> <input id="birthYear" inputmode="numeric" pattern="[0-9]*" placeholder="1990" required /></label>
+      <label><span data-i18n="attr_country">국가</span> <select id="country" required></select></label>
+      <label><span data-i18n="attr_extra1">예비 1</span> <input id="extra1" maxlength="124" /></label>
+      <label><span data-i18n="attr_extra2">예비 2</span> <input id="extra2" maxlength="124" /></label>
+      <p class="row-actions"><button id="makeBtn" type="submit" data-i18n="attr_make_btn">커밋먼트 만들기</button> <span class="muted" data-i18n="attr_make_hint">만들 때마다 새 blind 를 뽑습니다 — 이전 커밋먼트는 대체됩니다.</span></p>
+    </form>
+    <div id="formVerdict"></div>
+  </section>
+
+  <section class="card">
+    <h3 data-i18n="attr_result_title">2. 내 커밋먼트</h3>
+    <p class="desc" data-i18n="attr_result_desc">이 값을 복사해 zkID 사용자 페이지 → 프로필 → "이름" 칸에 붙여 넣고 저장하세요. 그 뒤 서비스에 로그인하면 서비스가 이 커밋먼트를 내 계정에 고정합니다.</p>
+    <div id="commitBox" class="commit-box" hidden></div>
+    <p id="noCommit" class="muted" data-i18n="attr_none">아직 만든 커밋먼트가 없습니다.</p>
+    <p class="row-actions" id="commitActions" hidden>
+      <button type="button" id="copyBtn" data-i18n="attr_copy_btn">커밋먼트 복사</button>
+      <button type="button" id="exportBtn" class="btn-ghost" data-i18n="attr_export_btn">백업 내려받기</button>
+      <button type="button" id="clearBtn" class="danger" data-i18n="attr_clear_btn">지우기</button>
+    </p>
+    <p class="row-actions"><label class="btn-ghost" style="cursor:pointer"><span data-i18n="attr_import_btn">백업 불러오기</span> <input type="file" id="importFile" accept="application/json" hidden /></label></p>
+    <details class="muted"><summary data-i18n="attr_details">상세</summary>
+      <dl class="kv">
+        <dt data-i18n="attr_created_at">만든 시각</dt><dd id="createdAt">-</dd>
+        <dt data-i18n="attr_profile_label">속성</dt><dd id="profileShown">-</dd>
+        <dt data-i18n="attr_blind_label">blind</dt><dd><span class="muted" data-i18n="attr_blind_hidden">이 브라우저에만 저장됨(표시하지 않음) — 백업 파일에 들어 있습니다.</span></dd>
+      </dl>
+    </details>
+    <div id="resultVerdict"></div>
+  </section>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const STORE_KEY = 'mode3_attr_tool_v1';
+  const tt = (k, v) => { const s = Demo.t(k, v); return s === k ? '' : s; };
+  const verdict = (el, ok, title, extra) => Demo.verdict(el, () => ({ ok, title: window.DemoStrings?.verdicts?.[title] ? title : Demo.t(title), ...(typeof extra === 'function' ? extra() : extra) }));
+  const clearVerdict = (el) => { el.__verdictArgs = null; el.innerHTML = ''; el.classList.remove('verdict', 'ok', 'bad', 'pending'); };
+  const A = window.Mode3Attr;
+  const schema = A?.DEFAULT_ATTR_SCHEMA;
+
+  function load() { try { const v = JSON.parse(localStorage.getItem(STORE_KEY) ?? 'null'); return v && v.version === 1 && A?.isAttrCommit(v.commit) ? v : null; } catch { return null; } }
+  function save(rec) { localStorage.setItem(STORE_KEY, JSON.stringify(rec)); }
+
+  function fillCountries() {
+    const sel = $('country'); sel.innerHTML = '';
+    const slot = schema.slots.find((s) => s.name === 'country');
+    const empty = document.createElement('option'); empty.value = ''; empty.textContent = tt('attr_country_pick') || '선택'; sel.appendChild(empty);
+    for (const code of Object.keys(slot.values)) { const o = document.createElement('option'); o.value = code; o.textContent = code; sel.appendChild(o); }
+  }
+  function render() {
+    const rec = load();
+    $('commitBox').hidden = !rec; $('noCommit').hidden = !!rec; $('commitActions').hidden = !rec;
+    if (!rec) { $('createdAt').textContent = '-'; $('profileShown').textContent = '-'; return; }
+    $('commitBox').textContent = rec.commit;
+    $('createdAt').textContent = new Date(rec.createdAt).toLocaleString();
+    $('profileShown').textContent = Object.entries(rec.profile).filter(([, v]) => v !== '').map(([k, v]) => `${k}=${v}`).join(', ') || '-';
+    for (const k of ['birthYear', 'country', 'extra1', 'extra2']) if (rec.profile[k] !== undefined) $(k).value = rec.profile[k];
+  }
+
+  $('attrForm').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    clearVerdict($('formVerdict'));
+    if (!A) return verdict($('formVerdict'), false, 'attr_make_failed', { reason: 'bundle_missing', detail: '/attr/dist/attr.js 가 없습니다 — npm run attr:build' });
+    $('makeBtn').disabled = true;
+    try {
+      const profile = A.normalizeProfile(schema, { birthYear: $('birthYear').value, country: $('country').value, extra1: $('extra1').value, extra2: $('extra2').value });
+      // 필수 칸이 비면 인코더가 거절한다(allowEmptyRequired:false — 0 은 "값 없음" 이라 나이 술어가 뚫린다. 지갑 폼과 같은 규칙).
+      const attrs = await A.encodeProfile(schema, { birthYear: '', country: '', ...profile }, { allowEmptyRequired: false });
+      const blind = A.randomBlind();
+      const commit = await A.attrCommit({ attrs, blind });
+      save({ version: 1, schema: { id: schema.id, version: schema.version }, profile, attrs, blind, commit, createdAt: new Date().toISOString() });
+      render();
+      verdict($('formVerdict'), true, 'attr_make_ok', { summary: tt('attr_make_ok_summary') || '커밋먼트를 만들었습니다. 아래에서 복사해 zkID 프로필에 붙여 넣으세요.' });
+    } catch (e) {
+      verdict($('formVerdict'), false, 'attr_make_failed', { reason: e.reason ?? e.detail ?? 'bad_attr', detail: e.message });
+    } finally { $('makeBtn').disabled = false; }
+  });
+
+  async function copyText(text, btn) {
+    try { await navigator.clipboard.writeText(text); }
+    catch { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); } finally { ta.remove(); } }
+    const prev = btn.textContent; btn.textContent = tt('rp_copied') || '복사됨';
+    setTimeout(() => { btn.textContent = prev; }, 1200);
+  }
+  $('copyBtn').addEventListener('click', () => { const rec = load(); if (rec) copyText(rec.commit, $('copyBtn')); });
+  $('exportBtn').addEventListener('click', () => {
+    const rec = load(); if (!rec) return;
+    const blob = new Blob([JSON.stringify(rec, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `zkd-attr-${rec.createdAt.slice(0, 10)}.json`; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  });
+  $('clearBtn').addEventListener('click', () => {
+    if (!window.confirm(tt('attr_clear_confirm') || '저장된 속성·blind·커밋먼트를 지웁니다. 백업이 없으면 같은 커밋먼트를 다시 만들 수 없습니다. 계속할까요?')) return;
+    localStorage.removeItem(STORE_KEY); render(); clearVerdict($('formVerdict')); clearVerdict($('resultVerdict'));
+  });
+  $('importFile').addEventListener('change', async (ev) => {
+    const f = ev.target.files?.[0]; ev.target.value = ''; if (!f) return;
+    clearVerdict($('resultVerdict'));
+    try {
+      const rec = JSON.parse(await f.text());
+      if (!(rec && rec.version === 1 && Array.isArray(rec.attrs) && rec.attrs.length === 6 && typeof rec.blind === 'string' && rec.profile && typeof rec.profile === 'object')) throw new Error('형식이 다릅니다');
+      // 저장된 commit 을 믿지 않고 다시 계산해 맞춰 본다 — 손상된 백업이 조용히 들어오지 않게.
+      const commit = await A.attrCommit({ attrs: rec.attrs, blind: rec.blind });
+      if (rec.commit !== commit) throw new Error('백업의 커밋먼트가 속성·blind 와 맞지 않습니다');
+      save({ ...rec, importedAt: new Date().toISOString() }); render();
+      verdict($('resultVerdict'), true, 'attr_import_ok', { summary: tt('attr_import_ok_summary') || '백업을 불러왔습니다.' });
+    } catch (e) { verdict($('resultVerdict'), false, 'attr_import_failed', { reason: 'bad_backup', detail: e.message }); }
+  });
+
+  Demo.init({ page: 'attr', tour: false });
+  if (schema) fillCountries();
+  render();
+</script>
+</body>
+</html>

@@ -9,6 +9,9 @@ import { createRegistration, signRegistration } from '../lib/mode3_wallet.js';
 import { pointToStrings } from '../lib/mode3_issuance.js';
 import { createShare } from '../lib/mode3_trace.js';
 import { issueV11, userOf, TESTUSER_ATTRS, ALICE_ATTRS } from './helpers/mode3_flow.mjs';
+import { jwtVerify, createLocalJWKSet } from 'jose';
+import { attrCommit } from '../lib/mode3_attr_commit.js';
+import { DEFAULT_ATTR_SCHEMA, encodeProfile } from '../lib/mode3_attr_schema.js';
 
 const j = (o) => JSON.stringify(o, (k, v) => (typeof v === 'bigint' ? v.toString() : v));
 let failed = 0;
@@ -623,6 +626,55 @@ try {
       '다른 역할이 남아 있지 않으면 지금처럼 clearCookie 로 쿠키를 만료시킨다');
     assert.equal((await get('/cia/user/me')).status, 401);
     assert.equal((await get('/cia/rp/me')).status, 401);
+  });
+  // 2026-11-09 Phase 1: 프로필 name(속성 커밋먼트) + OIDC 모양 ID 토큰. 별도 IdP 로 돈다(이 파일의 기본 IdP 는 앞 케이스들이 12345 를 쓴다).
+  await t('프로필(/cia/user/profile): 세션 필수(401), 형식 검사(400 bad_profile), 저장 → /me.profile, 빈 값이면 지움; discovery·JWKS 공개; 발급 응답 id_token(ES256) 은 JWKS 로 검증되고 sub=auid_s·aud=arid_s·name=프로필·exp 10분', async () => {
+    const cia7 = await startIsolatedCia();
+    try {
+      const attrs = await encodeProfile(DEFAULT_ATTR_SCHEMA, { birthYear: '1990', country: 'KR' });
+      const C = await attrCommit({ attrs, blind: '777' });
+      assert.equal((await cia7.post('/cia/user/profile', { name: C })).status, 401, '세션 없음');
+      const withJar = makeJar(cia7.base);
+      const li = await withJar('/cia/user/login', { method: 'POST', body: JSON.stringify({ uid: '12345', pwd: 'password123' }) });
+      assert.equal(li.status, 200, j(li.body));
+      assert.equal((await withJar('/cia/user/me')).body.profile, null, '처음엔 프로필 없음');
+      for (const name of ['a\nb', 'x'.repeat(257), 123, null]) {
+        const bad = await withJar('/cia/user/profile', { method: 'POST', body: JSON.stringify({ name }) });
+        assert.equal(bad.status, 400, `bad_profile: ${JSON.stringify(name)?.slice(0, 20)}`); assert.equal(bad.body.reason, 'bad_profile');
+      }
+      const ok = await withJar('/cia/user/profile', { method: 'POST', body: JSON.stringify({ name: `  ${C} ` }) });
+      assert.equal(ok.status, 200, j(ok.body)); assert.equal(ok.body.profile.name, C, '앞뒤 공백 제거');
+      assert.equal((await withJar('/cia/user/me')).body.profile.name, C);
+      // discovery·JWKS — 공개, 개인키 d 없음
+      const disc = await cia7.get('/.well-known/openid-configuration');
+      assert.equal(disc.status, 200); assert.equal(disc.body.issuer, cia7.base); assert.equal(disc.body.jwks_uri, `${cia7.base}/.well-known/jwks.json`);
+      assert.deepEqual(disc.body.id_token_signing_alg_values_supported, ['ES256']);
+      const jwks = await cia7.get('/.well-known/jwks.json');
+      assert.equal(jwks.status, 200); assert.equal(jwks.body.keys.length, 1);
+      const k = jwks.body.keys[0];
+      assert.equal(k.kty, 'EC'); assert.equal(k.crv, 'P-256'); assert.equal(k.alg, 'ES256'); assert.equal(k.use, 'sig'); assert.ok(k.kid && k.x && k.y); assert.equal(k.d, undefined, '개인키가 새면 안 된다');
+      // 발급 → id_token
+      const u = userOf(await cia7.registerUser('12345', 'password123'), '12345', TESTUSER_ATTRS);
+      const iss = await issueV11(cia7, u, { arid, provider });
+      assert.equal(iss.r.status, 200, j(iss.r.body));
+      assert.equal(typeof iss.cred.id_token, 'string');
+      const keyset = createLocalJWKSet(jwks.body);
+      const { payload, protectedHeader } = await jwtVerify(iss.cred.id_token, keyset, { issuer: cia7.base, audience: iss.req.arid_s.toString(), algorithms: ['ES256'] });
+      assert.equal(protectedHeader.kid, k.kid);
+      assert.equal(payload.sub, iss.req.auid_s.toString(), 'sub = auid_s');
+      assert.equal(payload.aud, iss.req.arid_s.toString(), 'aud = arid_s');
+      assert.equal(payload.name, C, 'name = 프로필 커밋먼트');
+      assert.equal(payload.exp - payload.iat, 600);
+      for (const key of ['uid', 'auid', 'arid', 'email']) assert.equal(payload[key], undefined, `${key} 는 토큰에 없다`);
+      await assert.rejects(jwtVerify(iss.cred.id_token, keyset, { issuer: cia7.base, audience: '1', algorithms: ['ES256'] }), /aud/, '다른 aud 는 거절');
+      // 프로필을 비우면 name 클레임이 빠진다(토큰은 여전히 나온다)
+      const cleared = await withJar('/cia/user/profile', { method: 'POST', body: JSON.stringify({ name: '' }) });
+      assert.equal(cleared.status, 200); assert.equal(cleared.body.profile, null);
+      const iss2 = await issueV11(cia7, u, { arid, provider, blind_u: iss.blind_u });
+      assert.equal(iss2.r.status, 200, j(iss2.r.body));
+      const { payload: p2 } = await jwtVerify(iss2.cred.id_token, keyset, { issuer: cia7.base, audience: iss2.req.arid_s.toString() });
+      assert.equal(p2.name, undefined); assert.equal(p2.sub, iss2.req.auid_s.toString());
+    } finally { await cia7.stop(); }
   });
 } finally { await cia.stop(); }
 

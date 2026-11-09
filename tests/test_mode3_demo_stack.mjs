@@ -11,6 +11,7 @@ import { ethers } from 'ethers';
 import { getProvider, getFunder } from './helpers/mode3_chain.mjs';
 import { MODE3_LOG_ABI } from '../lib/mode3_log.js';
 import { DEFAULT_ATTR_SCHEMA, encodeSlotValue } from '../lib/mode3_attr_schema.js';
+import { attrCommit } from '../lib/mode3_attr_commit.js';
 
 const j = (o) => JSON.stringify(o);
 let failed = 0;
@@ -42,7 +43,8 @@ async function loginViaRp(allowAgent = '0', targetRp = rp) {
   const { r_s, r_rp, factoryAddress, attrGateAddress } = (await targetRp.post('/api/mode3/challenge')).body;
   const w = await stack.withRelay(() => wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s, r_rp, allowAgent, factoryAddress, attrGateAddress }, { Origin: targetRp.origin }));
   if (w.status !== 200) return { walletStatus: w.status, wallet: w.body, r_s, r_rp };
-  const r = await targetRp.post('/api/mode3/login', { proof: w.body.proof, publicSignals: w.body.publicSignals, sig: w.body.sig, r_s });
+  // id_token(2026-11-09 Phase 1): 페이지가 지갑 응답의 zkID ID 토큰을 그대로 RP 에 넘긴다 — RP 가 검증해 name(C_attr)을 계정에 고정한다.
+  const r = await targetRp.post('/api/mode3/login', { proof: w.body.proof, publicSignals: w.body.publicSignals, sig: w.body.sig, r_s, id_token: w.body.id_token ?? null });
   return { walletStatus: 200, wallet: w.body, rpStatus: r.status, rp: r.body, r_s, r_rp, factoryAddress, attrGateAddress };
 }
 /** 세션 재검증: 지갑이 같은 성명으로 (root 가 바뀌었으면 새) π 를 만들어 RP 에 낸다. targetRp: 위와 같은 이유. */
@@ -844,6 +846,46 @@ try {
     assert.match(rp.log(), /온체인 값을 쓴다/, 'env 와 다르면 경고가 남아야 한다');
     const l = await loginViaRp();
     assert.equal(l.rp?.ok, true, `env(200)가 아니라 팩토리(400)를 써야 통과한다: ${j(l.rp)}`);
+  });
+  // 2026-11-09 Phase 1: 속성 커밋먼트 — IdP 프로필 name → 발급 응답 id_token → 지갑이 그대로 전달 → RP 가 검증·고정(attrCommit).
+  await t('속성 커밋먼트(Phase 1): 프로필 없이 로그인하면 attrCommit null·id_token 은 있다; 프로필에 C1 → attrCommit=C1(세션 목록에도); C2 로 바꾸면 attrCommitChanged; 프로필을 비우면 C2 유지; 변조 토큰은 bad_id_token', async () => {
+    const jar = {};
+    const withJar = async (p, body) => {
+      const r = await fetch(`${cia.base}${p}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(jar.cookie ? { Cookie: jar.cookie } : {}) }, body: JSON.stringify(body) });
+      const sc = r.headers.get('set-cookie'); if (sc) jar.cookie = sc.split(';')[0];
+      return { status: r.status, body: await r.json().catch(() => null) };
+    };
+    assert.equal((await withJar('/cia/user/login', { uid, pwd: 'password123' })).status, 200);
+    assert.equal((await withJar('/cia/user/profile', { name: '' })).status, 200, '전제: 프로필 없음');
+    const l0 = await loginViaRp();
+    assert.equal(l0.rp?.ok, true, j(l0.rp)); assert.equal(typeof l0.wallet.id_token, 'string', '지갑 응답에 id_token'); assert.equal(l0.rp.attrCommit, null);
+    const attrsA = await Promise.all(['1990', '410', '', '', '', ''].map((v, i) => encodeSlotValue(DEFAULT_ATTR_SCHEMA, i, v)));
+    const C1 = await attrCommit({ attrs: attrsA, blind: '111' }), C2 = await attrCommit({ attrs: attrsA, blind: '222' });
+    assert.equal((await withJar('/cia/user/profile', { name: C1 })).body.profile.name, C1);
+    const l1 = await loginViaRp();
+    assert.equal(l1.rp?.ok, true, j(l1.rp)); assert.equal(l1.rp.attrCommit, C1); assert.equal(l1.rp.attrCommitChanged, false);
+    const sess = (await rp.get('/api/mode3/sessions')).body.sessions.find((s) => s.r_s === `${l1.r_s.slice(0, 8)}…`);
+    assert.equal(sess?.attrCommit, C1, '세션 목록에도 실린다');
+    assert.equal((await withJar('/cia/user/profile', { name: C2 })).status, 200);
+    const l2 = await loginViaRp();
+    assert.equal(l2.rp?.ok, true, j(l2.rp)); assert.equal(l2.rp.attrCommit, C2); assert.equal(l2.rp.attrCommitChanged, true, '바뀐 커밋먼트는 알린다');
+    assert.equal((await withJar('/cia/user/profile', { name: '' })).status, 200);
+    const l3 = await loginViaRp();
+    assert.equal(l3.rp?.ok, true, j(l3.rp)); assert.equal(l3.rp.attrCommit, C2, 'name 이 없는 토큰은 고정값을 지우지 않는다'); assert.equal(l3.rp.attrCommitChanged, false);
+    // 변조: 서명 마지막 글자를 바꾼 토큰 → bad_id_token(로그인 거절). 토큰 없이 보내면(옛 지갑) 예전처럼 로그인된다.
+    const info = (await rp.get('/api/mode3/rp_info')).body;
+    const { r_s, r_rp, factoryAddress, attrGateAddress } = (await rp.post('/api/mode3/challenge')).body;
+    const w = await stack.withRelay(() => wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s, r_rp, allowAgent: '0', factoryAddress, attrGateAddress }, { Origin: rp.origin }));
+    assert.equal(w.status, 200, j(w.body));
+    const tok = w.body.id_token; const last = tok.at(-1);
+    const tampered = tok.slice(0, -1) + (last === 'A' ? 'B' : 'A');
+    const bad = await rp.post('/api/mode3/login', { proof: w.body.proof, publicSignals: w.body.publicSignals, sig: w.body.sig, r_s, id_token: tampered });
+    assert.equal(bad.status, 200); assert.equal(bad.body.ok, false); assert.equal(bad.body.reason, 'bad_id_token', j(bad.body));
+    const notString = await rp.post('/api/mode3/login', { proof: w.body.proof, publicSignals: w.body.publicSignals, sig: w.body.sig, r_s, id_token: 5 });
+    assert.equal(notString.status, 400); assert.equal(notString.body.reason, 'malformed');
+    // 챌린지는 첫 시도에서 소비됐다 — 토큰 없는 로그인은 새 챌린지로
+    const l4 = await (async () => { const c = (await rp.post('/api/mode3/challenge')).body; const w2 = await stack.withRelay(() => wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s: c.r_s, r_rp: c.r_rp, allowAgent: '0', factoryAddress: c.factoryAddress, attrGateAddress: c.attrGateAddress }, { Origin: rp.origin })); return rp.post('/api/mode3/login', { proof: w2.body.proof, publicSignals: w2.body.publicSignals, sig: w2.body.sig, r_s: c.r_s }); })();
+    assert.equal(l4.body.ok, true, j(l4.body)); assert.equal(l4.body.attrCommit, C2, '토큰 없이도 고정값은 보인다');
   });
   // 이 케이스는 RP 를 활성화되지 않는 상태로 두므로 반드시 맨 마지막이다.
   await t('I-1: 팩토리 상수를 못 읽으면 env 로 되돌아가지 않고 검증기를 만들지 않는다 (503 factory_constants_unavailable, fail-closed)', async () => {

@@ -25,7 +25,8 @@ import cors from 'cors';
 import session from 'express-session';
 import path from 'node:path';
 import fs from 'node:fs';
-import { randomBytes, timingSafeEqual, createHash, scryptSync } from 'node:crypto';
+import { randomBytes, timingSafeEqual, createHash, scryptSync, generateKeyPairSync, createPrivateKey } from 'node:crypto';
+import { SignJWT } from 'jose';
 import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
@@ -49,6 +50,10 @@ import { uidOf, regNonce, issueNonce, isRevokeNonce, REG_PREFIX, REVOKE_PREFIX, 
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.CIA_PORT) || 4100;
+// OIDC 모양의 ID 토큰 발급자(2026-11-09 Phase 1): iss 클레임·discovery 문서의 issuer. RP 는 자기 MODE3_CIA_URL 로 discovery 를 읽어 issuer 를
+// 알아내므로 둘이 같은 형태가 아니어도 되지만, 분리 데모에서는 VM 주소(CIA_PUBLIC_URL=http://192.168.226.10:4100)로 맞춘다.
+const PUBLIC_URL = (process.env.CIA_PUBLIC_URL || `http://127.0.0.1:${PORT}`).replace(/\/+$/, '');
+const ID_TOKEN_TTL_SEC = 10 * 60;   // 발급 → 지갑 → RP 로그인 사이만 살면 된다(세션 자격증명 자체의 수명은 max_height 가 정한다)
 // 수신 주소(2026-10-20, VM 분리 데모): 기본은 지금처럼 127.0.0.1. 다른 기계에서 붙게 하려면 MODE3_BIND_HOST=0.0.0.0.
 const BIND_HOST = process.env.MODE3_BIND_HOST || '127.0.0.1';
 const STATE_FILE = process.env.CIA_STATE_FILE || path.join(__dirname, 'cia_state.json');
@@ -170,6 +175,8 @@ let eddsa, poseidon, F;
 let ciaPrv;        // Buffer 32 — signPoseidon 이 요구하는 형식
 let ciaPub;        // [Ax, Ay]
 let ethWallet;     // ethers.Wallet
+let idTokenKey;    // KeyObject(P-256 개인키) — ID 토큰 ES256 서명(2026-11-09)
+let idTokenJwk;    // 공개 JWK(+kid·use·alg) — /.well-known/jwks.json
 
 function loadOrCreateKeys() {
   let keys = readJson(KEYS_FILE, null);
@@ -177,6 +184,14 @@ function loadOrCreateKeys() {
     keys = { eddsaPrv: randomBytes(32).toString('hex'), ethPrv: ethers.Wallet.createRandom().privateKey };
     writeJsonAtomic(KEYS_FILE, keys, 0o600);
   }
+  // ID 토큰 키(2026-11-09 Phase 1): 기존 키 파일에 없으면 여기서 더한다 — EdDSA·ETH 키는 그대로라 재배포 연쇄가 없다.
+  if (!keys.idTokenJwk) {
+    keys = { ...keys, idTokenJwk: generateKeyPairSync('ec', { namedCurve: 'P-256' }).privateKey.export({ format: 'jwk' }) };
+    writeJsonAtomic(KEYS_FILE, keys, 0o600);
+  }
+  idTokenKey = createPrivateKey({ key: keys.idTokenJwk, format: 'jwk' });
+  const { d: _d, ...pub } = keys.idTokenJwk;   // 공개 부분만 — d 는 절대 내보내지 않는다
+  idTokenJwk = { ...pub, kid: createHash('sha256').update(`${pub.x}.${pub.y}`).digest('hex').slice(0, 16), use: 'sig', alg: 'ES256' };
   ciaPrv = Buffer.from(keys.eddsaPrv, 'hex');
   ciaPub = eddsa.prv2pub(ciaPrv);
   const ethPrv = process.env.CIA_ETH_PRIVATE_KEY || keys.ethPrv;   // 테스트는 배포한 로그와 맞는 키를 주입한다
@@ -187,7 +202,9 @@ function loadOrCreateKeys() {
 }
 
 // ---- 상태 ----
-// accounts:  uid → { pk_u:{x,y}, auid(10진 — Poseidon(T_AUID, uid, s_u), V11 D4), disabled, slot, tampered, creds, sessions, receipt, slotRetired }   (attrs·profile 없음 — D15)
+// accounts:  uid → { pk_u:{x,y}, auid(10진 — Poseidon(T_AUID, uid, s_u), V11 D4), disabled, slot, tampered, creds, sessions, receipt, slotRetired,
+//                    profile?:{ name, updatedAt } }   (attrs 없음 — D15. profile.name 은 2026-11-09 부터: 사용자가 붙여 넣는 속성 커밋먼트 C_attr —
+//                    IdP 에는 불투명한 문자열이고 ID 토큰의 name 클레임으로 RP 에 실린다. 속성·blind 는 속성 도구 페이지에만 있다.)
 //            creds 중 revoked:false 는 하나뿐(사용자당 활성 자격증명 하나, 2026-09-21 §3.1).
 // rps:       arid → { name, origin, pk_service, X_svc, x_AA, pk_trace, status, requestedAt, decidedAt }   (2026-09-16 §3)
 // openings:  [ { id, arid, PPID, tagKey, c1:{x,y}, c2, D_svc:{x,y}, allowAgent, max_height, chainid, status, requestedAt, decidedAt,
@@ -549,6 +566,18 @@ app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_
 // 되돌리지 않는다(F-0, 컨트롤러 판정 2026-10-23 — Task 12 의 302 리다이렉트는 회귀였다).
 app.get('/account', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_account.html')));
 
+// OIDC discovery·JWKS(2026-11-09 Phase 1) — RP 가 서버에서 읽어 ID 토큰(ES256)을 검증한다. 공개 자료뿐이라 인증·CORS 가 없다.
+app.get('/.well-known/openid-configuration', (req, res) => {
+  res.json({ issuer: PUBLIC_URL, jwks_uri: `${PUBLIC_URL}/.well-known/jwks.json`, id_token_signing_alg_values_supported: ['ES256'],
+    subject_types_supported: ['pairwise'], response_types_supported: ['id_token'], claims_supported: ['sub', 'aud', 'iss', 'iat', 'exp', 'name'], scopes_supported: ['openid', 'profile'] });
+});
+app.get('/.well-known/jwks.json', (req, res) => res.json({ keys: [idTokenJwk] }));
+/** ID 토큰 서명(ES256). name 이 없으면 클레임을 넣지 않는다. */
+async function signIdToken({ sub, aud, name }) {
+  const jwt = new SignJWT(name ? { name } : {}).setProtectedHeader({ alg: 'ES256', kid: idTokenJwk.kid, typ: 'JWT' }).setIssuer(PUBLIC_URL).setSubject(sub).setAudience(aud).setIssuedAt().setExpirationTime(`${ID_TOKEN_TTL_SEC}s`);
+  return jwt.sign(idTokenKey);
+}
+
 app.get('/cia/public_keys', userCors, (req, res) => {
   // V10: canonicalChainId = 게시 로그가 있는 체인(selfChainId 와 같은 provider). mirrors = CIA_MIRRORS(릴레이 대상 거울, 2026-10-02 Task 6).
   res.json({ pk_CIA: S(ciaPub), ethAddress: ethWallet.address, heartbeatBlocks: Number(HEARTBEAT_BLOCKS), chainIds: [...CHAIN_RPCS.keys()], logAddress: LOG_ADDRESS,
@@ -888,7 +917,19 @@ app.post('/cia/user/login', (req, res) => {
 app.post('/cia/user/logout', (req, res) => logoutRole(req, res, 'uid', 'operator'));
 app.get('/cia/user/me', requireUser, (req, res) => {
   const uid = req.session.uid, a = state.accounts[uid];
-  res.json({ uid, id: a.loginId ?? null, registered: Boolean(a.pk_u), auid: a.auid, slot: a.slot, provider: a.provider, linkedOidc: a.linkedOidc?.provider ?? null, disabled: a.disabled, activeCf_u: activeCfU(a), registryLeaf: a.slot === null ? null : registry.leafAt(a.slot).toString() });
+  res.json({ uid, id: a.loginId ?? null, registered: Boolean(a.pk_u), auid: a.auid, slot: a.slot, provider: a.provider, linkedOidc: a.linkedOidc?.provider ?? null, disabled: a.disabled, activeCf_u: activeCfU(a), registryLeaf: a.slot === null ? null : registry.leafAt(a.slot).toString(), profile: a.profile ?? null });
+});
+// 프로필(2026-11-09 Phase 1): OIDC profile 스코프의 `name` 한 칸. 사용자가 속성 도구(지갑 오리진 /attr.html)에서 만든 커밋먼트를 붙여 넣는다 —
+// IdP 는 형식만 보고(한 줄·256자 이하) 뜻은 모른다(불투명). 지갑 등록 여부와 무관하게 로그인만 하면 저장할 수 있다(사용자 결정: MetaMask 와 별개 흐름).
+// 빈 문자열이면 지운다. 발급(/cia/issue)이 ID 토큰의 name 클레임에 그대로 싣는다.
+app.post('/cia/user/profile', requireUser, (req, res) => {
+  const { name } = req.body ?? {};
+  if (typeof name !== 'string' || name.length > 256 || /[\u0000-\u001f\u007f]/.test(name)) return res.status(400).json({ error: 'bad_profile', reason: 'bad_profile' });
+  const a = state.accounts[req.session.uid];
+  const v = name.trim();
+  if (v) a.profile = { name: v, updatedAt: new Date().toISOString() }; else delete a.profile;
+  persist();
+  res.json({ profile: a.profile ?? null });
 });
 app.post('/cia/user/register_code', requireUser, (req, res) => {
   const a = state.accounts[req.session.uid];
@@ -1139,10 +1180,13 @@ app.post('/cia/issue', userCors, async (req, res) => {
     acct.sessions = (acct.sessions ?? []).filter((r) => r.chainid !== chainStr || BigInt(r.max_height) >= head);
     acct.sessions.push({ Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString(), issuedAt: new Date().toISOString(), revokedAt: null });
     persist();
+    // OIDC 모양의 ID 토큰(2026-11-09 Phase 1): sub=auid_s(세션 가명), aud=arid_s(세션 RP 가명) — 둘 다 π_RP 의 공개 신호라 RP 가 증명과 맞춰 본다.
+    // name = 프로필의 커밋먼트(없으면 클레임 자체가 없다). IdP 는 여기서도 RP 가 누구인지 모른다(arid_s 는 블라인딩된 값).
+    const zkidToken = await signIdToken({ sub: auidS.toString(), aud: aridS.toString(), name: acct.profile?.name });   // 요청 본문의 id_token(Google)과 이름이 겹치지 않게
     res.json({
       Cf_u: cfu, Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString(),
       sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() },
-      pk_CIA: S(ciaPub), slot: acct.slot, regRoot: registry.root().toString(), epoch: state.epoch, published,
+      pk_CIA: S(ciaPub), slot: acct.slot, regRoot: registry.root().toString(), epoch: state.epoch, published, id_token: zkidToken,
     });
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });

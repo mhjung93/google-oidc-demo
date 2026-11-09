@@ -439,7 +439,8 @@ const WALLET_URL = new URL(WALLET_ORIGIN);   // MODE3_WALLET_PUBLIC_ORIGIN 이 �
 const ALLOWED_HOSTS = new Set([`localhost:${PORT}`, `127.0.0.1:${PORT}`, `[::1]:${PORT}`, WALLET_URL.host,
   ...(process.env.MODE3_WALLET_ALLOWED_HOSTS ?? '').split(',').map((h) => h.trim()).filter(Boolean)].map((h) => h.toLowerCase()));
 // 비밀·세션·서명 자료가 없는 GET — RP 페이지가 교차 오리진으로 읽거나(config·health), RP 가 팝업으로 연다('/' — 교차 사이트 탐색).
-const isPublicGet = (p) => p === '/' || p === '/wallet/config' || p === '/mode3/health' || p === '/wallet/attr_schema' || p === '/common' || p.startsWith('/common/');
+// /attr.html·/attr/* 는 속성 커밋먼트 도구(2026-11-09 Phase 1) — 정적 파일뿐이고 에이전트 상태를 읽지 않는다. 사용자가 새 탭으로 연다.
+const isPublicGet = (p) => p === '/' || p === '/wallet/config' || p === '/mode3/health' || p === '/wallet/attr_schema' || p === '/common' || p.startsWith('/common/') || p === '/attr.html' || p === '/attr' || p.startsWith('/attr/');
 // RP CORS 가 붙은 라우트(loginCors) — 여기서만 허용 RP 오리진을 받는다. snap 모드 /wallet/login 은 같은 오리진 팝업만 부른다.
 const RP_CORS_PATHS = new Set(['/wallet/revalidate', '/wallet/request', ...(SECRETS === 'file' ? ['/wallet/login'] : [])]);
 app.use((req, res, next) => {
@@ -479,6 +480,10 @@ app.use('/common', express.static(path.join(__dirname, 'mode3', 'common')));
 
 // 같은 파일이 지갑 화면과 /authorize 팝업(?authorize=1)을 겸한다 — 팝업은 쿼리로 모드만 바꾼다(metamask-snap §3.2).
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'wallet.html')));
+// 속성 커밋먼트 도구(2026-11-09 Phase 1, 사용자 결정 "localhost:5100 에 다 몰기"): 독립 정적 페이지 + 번들(npm run attr:build → mode3/attr/dist).
+// 지갑 상태·Snap 과 무관하고 이 서버의 어떤 API 도 부르지 않는다 — 같은 오리진에 두는 것은 주소 하나로 데모를 돌리기 위해서다.
+app.get('/attr.html', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'attr.html')));
+app.use('/attr', express.static(path.join(__dirname, 'mode3', 'attr'), { index: false }));
 
 // 비밀 없음 — RP 페이지가 로그인 전에 지갑의 비밀 모드·체인 정보를 미리 읽는다(설계 2026-09-22 metamask-snap Ruling 1).
 // ciaUrl(Task 13, 2026-10-23): 지갑 페이지(Task 14)가 IdP 쪽 페이지(인증 창·코드 등록)로 안내하려면 필요하다 — 당시 Ruling 7
@@ -940,7 +945,9 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     if (state.sessions[rs.toString()]) { state.sessions[rs.toString()].loginDisclose = disclose ?? null; state.sessions[rs.toString()].loginSet = set ?? null; persist(); }
     // src.pending: snap 모드에서 이 로그인이 새로 받은 C_u(userCredIssued) — 페이지가 Snap 에 저장한다. attrsChanged 는 증인의 attrs 가
     // 지갑 파일과 달라 자가 치유(위 V11(D15))가 걸렸을 때만 실린다 — 평소 로그인은 attrs 를 바꾸지 않는다. file 모드는 {}.
-    res.json({ ...out, issued: true, allowAgent, timings, disclosure: hasPredicate(disclosure) ? discStrings(disclosure) : null, ...src.pending });
+    // id_token(2026-11-09 Phase 1): IdP 가 발급 응답에 실은 OIDC 모양 토큰(sub=auid_s, aud=arid_s, name=속성 커밋먼트). 지갑은 열어 보지 않고
+    // 그대로 RP 에 넘긴다 — 팝업(wallet.html)이 toRp 에 포함시키고 RP 페이지가 /api/mode3/login 에 함께 보낸다.
+    res.json({ ...out, issued: true, allowAgent, timings, disclosure: hasPredicate(disclosure) ? discStrings(disclosure) : null, id_token: state.sessions[rs.toString()]?.credential?.id_token ?? null, ...src.pending });
   } catch (e) { res.status(500).json({ error: e.message, ...(src?.pending ?? {}) }); }
 });
 

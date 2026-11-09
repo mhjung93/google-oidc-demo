@@ -23,6 +23,8 @@ import { deployVerifier, deployFactory, deployAttrGate, decodeExecuteCalldata, p
 import { setRoot } from './lib/mode3_set_tree.js';
 import { buildRpHealth, applyHealthHeaders, bounded, originList } from './lib/mode3_health.js';
 import { DEFAULT_ATTR_SCHEMA, loadSchema, slotIndexOf, encodeMembers, schemaInfo } from './lib/mode3_attr_schema.js';
+import { isAttrCommit } from './lib/mode3_attr_commit.js';
+import { createRemoteJWKSet, jwtVerify } from 'jose';   // zkID ID 토큰(ES256) 검증(2026-11-09 Phase 1)
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.MODE3_RP_PORT) || 3100;
@@ -105,6 +107,43 @@ function requireRpAdmin(req, res, next) {
 const RP_KEY = process.env.MODE3_RP_KEY || null;
 const POLL_MS = Number(process.env.MODE3_RP_REGISTRATION_POLL_MS) || 5000;
 const LOGIN_LOG = process.env.MODE3_RP_LOGIN_LOG || path.join(__dirname, 'mode3_rp_logins.jsonl');
+// 계정별 속성 커밋먼트(2026-11-09 Phase 1): PPID → { attrCommit, since, updatedAt, history }. 로그인 때 zkID ID 토큰의 name 클레임(C_attr)을 받아
+// 처음 보면 고정하고, 달라지면 바꾸면서 changed 로 알린다(사용자가 속성 도구에서 새로 만들어 프로필을 고친 경우). Phase 2 의 속성 증명(π_attr)은
+// 여기 고정된 값을 공개 입력으로 검증한다. 비밀은 없다(커밋먼트뿐).
+const ACCOUNTS_FILE = process.env.MODE3_RP_ACCOUNTS_FILE || path.join(__dirname, 'mode3_rp_accounts.json');
+const accounts = (() => { const a = readJson(ACCOUNTS_FILE, null); return a && a.version === 1 && a.byPPID && typeof a.byPPID === 'object' ? a : { version: 1, byPPID: {} }; })();
+function pinAttrCommit(PPID, commit) {
+  const cur = accounts.byPPID[PPID] ?? null;
+  if (!commit) return { attrCommit: cur?.attrCommit ?? null, changed: false };   // 토큰에 name 이 없으면 고정된 값은 그대로
+  if (cur && cur.attrCommit === commit) return { attrCommit: commit, changed: false };
+  const now = new Date().toISOString();
+  accounts.byPPID[PPID] = cur
+    ? { ...cur, attrCommit: commit, updatedAt: now, history: [...(cur.history ?? []), { attrCommit: cur.attrCommit, until: now }].slice(-10) }
+    : { attrCommit: commit, since: now, updatedAt: now, history: [] };
+  writeJsonAtomic(ACCOUNTS_FILE, accounts, 0o600);
+  return { attrCommit: commit, changed: Boolean(cur) };
+}
+// zkID ID 토큰 검증: 키는 MODE3_CIA_URL 의 JWKS 에서(서버 간), issuer 는 같은 곳의 discovery 문서에서 읽는다 — IdP 의 CIA_PUBLIC_URL 과 이 RP 의
+// MODE3_CIA_URL 이 다른 형태(127.0.0.1 vs VM 주소)여도 된다. sub·aud 는 호출자가 π_RP 의 공개 신호(auid_s·arid_s)로 넘긴다 — 토큰이 이 증명의 것임을 묶는다.
+const idpJwks = createRemoteJWKSet(new URL(`${CIA_URL}/.well-known/jwks.json`), { cooldownDuration: 5_000, cacheMaxAge: 600_000 });
+let idpIssuerPromise = null;
+function idpIssuer() {
+  if (!idpIssuerPromise) {
+    idpIssuerPromise = bounded(fetch(`${CIA_URL}/.well-known/openid-configuration`).then((r) => { if (!r.ok) throw new Error(`discovery HTTP ${r.status}`); return r.json(); }), 3000)
+      .then((d) => { if (typeof d?.issuer !== 'string' || !d.issuer) throw new Error('discovery 에 issuer 가 없다'); return d.issuer; })
+      .catch((e) => { idpIssuerPromise = null; throw e; });   // 실패는 캐시하지 않는다 — 다음 로그인이 다시 읽는다
+  }
+  return idpIssuerPromise;
+}
+async function verifyIdToken(token, { sub, aud }) {
+  try {
+    const issuer = await idpIssuer();
+    const { payload } = await jwtVerify(token, idpJwks, { issuer, audience: aud, algorithms: ['ES256'] });
+    if (payload.sub !== sub) return { ok: false, detail: 'sub ≠ auid_s' };
+    const name = typeof payload.name === 'string' ? payload.name : undefined;
+    return { ok: true, name };
+  } catch (e) { return { ok: false, detail: e.message }; }
+}
 if (fs.existsSync(LOGIN_LOG)) fs.chmodSync(LOGIN_LOG, 0o600);   // 옛 실행이 남긴 파일의 권한도 조인다
 
 let reg = readJson(REG_FILE, null);
@@ -467,22 +506,34 @@ app.post('/api/mode3/login', async (req, res) => {
     if (requireP !== null && (typeof requireP !== 'object' || Array.isArray(requireP))) return res.status(400).json({ ok: false, reason: 'malformed' });
     // 2026-10-21: 서버 정책 게이트 — MODE3_REQUIRE_DISCLOSURE=1 이면 페이지가 뭘 보내든 국가 집합·나이 술어를 요구한다(없으면 아래서 predicate_unmet).
     if (REQUIRE_DISCLOSURE) requireP = { ...(requireP ?? {}), countrySet: true, minAge: true };
+    // id_token 형식(2026-11-09): 다른 형식 오류처럼 챌린지를 소비하기 전에 본다(400 malformed).
+    const idTok = req.body.id_token ?? null;
+    if (idTok !== null && (typeof idTok !== 'string' || idTok.length > 4096)) return res.status(400).json({ ok: false, reason: 'malformed', detail: 'id_token' });
     const rsStr = BigInt(r_s).toString();
     const r_rp = consumeChallenge(rsStr);   // 검증 전에 소비
     if (r_rp === null) return res.status(401).json({ ok: false, reason: 'bad_challenge' });
     const v = await verifyBody(req, res, BigInt(rsStr), BigInt(r_rp)); if (v === null) return;
     if (!v.ok) return res.json({ ok: false, reason: v.reason });
     if (requireP) { const why = requiredPredicateReason(v.disclosure, requireP); if (why) return res.json({ ok: false, reason: why }); }
+    // zkID ID 토큰(2026-11-09 Phase 1, 선택): 있으면 서명·iss·exp 와 sub=auid_s·aud=arid_s(이 증명의 공개 신호)를 확인하고 name(C_attr)을 계정에 고정한다.
+    // 틀린 토큰은 로그인 자체를 거절한다(bad_id_token). 없으면(옛 지갑·web 모드) 예전처럼 로그인만 한다 — 고정된 커밋먼트가 있으면 그대로 보인다.
+    let tokenName;
+    if (idTok !== null) {
+      const vt = await verifyIdToken(idTok, { sub: v.auid_s.toString(), aud: v.arid_s.toString() });
+      if (!vt.ok) return res.json({ ok: false, reason: 'bad_id_token', detail: vt.detail });
+      tokenName = vt.name;
+    }
+    const attr = pinAttrCommit(v.PPID.toString(), tokenName !== undefined && isAttrCommit(tokenName) ? tokenName : null);
     const at = new Date().toISOString();
     const disclosure = discOf(v.disclosure);
-    sessions.set(rsStr, { PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), regRoot: v.regRoot.toString(), disclosure, auid_s: v.auid_s.toString(), arid_s: v.arid_s.toString(), r_rp, at });
+    sessions.set(rsStr, { PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), regRoot: v.regRoot.toString(), disclosure, auid_s: v.auid_s.toString(), arid_s: v.arid_s.toString(), r_rp, at, attrCommit: attr.attrCommit });
     // 2026-10-16: 같은 계정(PPID)의 이전 세션은 새 로그인이 대체한다 — "RP 당 활성 세션 하나". IdP 폐기 트리는 건드리지 않는다(강한 무효화는 V8 세션 폐기).
     for (const [k, s] of sessions) if (k !== rsStr && s.PPID === v.PPID.toString()) forgetSession(k);
     if (disclosure.mask !== '0' || disclosure.set) disclosedLoginCount++;
     logins.push({ PPID: v.PPID.toString(), at, root: v.root.toString(), r_s: rsShort(rsStr), allowAgent: v.allowAgent.toString(), disclosure });
     // §5 로그인 로그 — 전체 r_s 와 트랜스크립트(태그 포함). 개봉 요청의 재료다. 조회 API 로는 내지 않는다.
     fs.appendFileSync(LOGIN_LOG, JSON.stringify({ at, PPID: v.PPID.toString(), r_s: rsStr, pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), disclosure, auid_s: v.auid_s.toString(), arid_s: v.arid_s.toString(), publicSignals: v.publicSignals, proof: v.proof }) + '\n', { mode: 0o600 });
-    res.json({ ok: true, PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), r_s: rsStr, root: v.root.toString(), allowAgent: v.allowAgent.toString(), disclosure });
+    res.json({ ok: true, PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), r_s: rsStr, root: v.root.toString(), allowAgent: v.allowAgent.toString(), disclosure, attrCommit: attr.attrCommit, attrCommitChanged: attr.changed });
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });
 
@@ -761,7 +812,7 @@ app.post('/api/mode3/sessions/check', relayCors, (req, res) => {
   const alive = {}; for (const x of list) { const k = BigInt(x).toString(); alive[x] = sessions.has(k) ? true : (removedSessions.has(k) ? false : null); }
   res.json({ alive });
 });
-app.get('/api/mode3/sessions', (req, res) => res.json({ sessions: [...sessions.entries()].map(([r_s, s]) => ({ r_s: rsShort(r_s), PPID: s.PPID, pk_i: s.pk_i, max_height: s.max_height, allowAgent: s.allowAgent, root: s.root, disclosure: s.disclosure, auid_s: rsShort(s.auid_s), arid_s: rsShort(s.arid_s), at: s.at })) }));
+app.get('/api/mode3/sessions', (req, res) => res.json({ sessions: [...sessions.entries()].map(([r_s, s]) => ({ r_s: rsShort(r_s), PPID: s.PPID, pk_i: s.pk_i, max_height: s.max_height, allowAgent: s.allowAgent, root: s.root, disclosure: s.disclosure, auid_s: rsShort(s.auid_s), arid_s: rsShort(s.arid_s), at: s.at, attrCommit: s.attrCommit ?? null })) }));
 
 // 라우트 밖으로 샌 오류의 마지막 그물(2026-10-11): JSON 파싱 실패 400 malformed, 그 밖 500 internal — 다른 라우트와 같은 { ok, reason } 봉투.
 app.use((err, req, res, next) => {

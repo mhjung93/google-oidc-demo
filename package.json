@@ -24,6 +24,7 @@
     "zk:prove": "npx snarkjs groth16 prove ./build/bind_key_to_idtoken_final.zkey ./build/witness.wtns ./build/proof.json ./build/public.json",
     "zk:verify": "npx snarkjs groth16 verify ./build/verification_key.json ./build/public.json ./build/proof.json",
     "user:build": "node scripts/build_user_app.mjs",
+    "attr:build": "node scripts/build_attr_tool.mjs",
     "user:static": "node mode3_user_static.js"
   },
   "keywords": [],

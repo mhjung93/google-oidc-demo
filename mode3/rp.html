@@ -78,6 +78,8 @@
         <h2 data-i18n="assets_title">내 자산</h2>
         <dl class="kv account-kv">
           <dt data-i18n="rp_my_account_addr">내 계정 주소</dt><dd><code id="accountPPID">-</code> <button type="button" id="copyPpidBtn" class="copy-btn" title="복사" aria-label="복사" data-i18n-title="rp_copy_btn_title">⧉</button></dd>
+          <!-- 2026-11-09 Phase 1: zkID ID 토큰의 name 클레임으로 받은 속성 커밋먼트(C_attr) — 이 RP 가 이 계정에 고정한 값. 없으면 "없음". -->
+          <dt data-i18n="rp_my_attr_commit">속성 커밋먼트</dt><dd><code id="attrCommit" title="">-</code></dd>
         </dl>
         <!-- 2026-11-05(B안): 잔액은 0 에서 시작한다. KRW 는 RP 의 시연용 장부, ETH 는 세션 계정의 실제 체인 잔액(로그인·입금·구매·출금 뒤 RP 에 다시 묻는다). BTC 는 체인에 없어 뺐다. -->
         <ul class="balance-list">
@@ -225,6 +227,7 @@
     let walletCfgError = null;              // 못 읽었을 때의 원문(화면·언어 전환에서 다시 쓴다)                    // 마지막으로 받아온 로그인 기록(언어·전문가 전환 때 다시 그린다)
     let lastPPID = null;                    // 직전 로그인의 PPID — 같은 주소가 다시 나오는지 한 줄 요약에 쓴다
     let lastAccount = null;                 // 2026-11-05: 세션 계정의 0x 주소(잔액 조회 응답) — 배지·"내 계정 주소" 에 PPID 숫자 대신 보인다(사용자 결정)
+    let lastAttrCommit = null;              // 2026-11-09: 로그인 응답의 attrCommit(zkID ID 토큰 name 클레임에서 RP 가 고정한 C_attr) — "속성 커밋먼트" 줄
     const progress = { used: false, disclosed: false, opened: false, login2: false };   // 이 페이지가 아는 완료 신호(세션 중 메모리)
     // U6(2026-10-14): 지갑 health 의 rpOrigins(/mode3/health, Demo.stack 가 이미 폴링 중)에서 내 오리진이 첫 번째가
     // 아니면 "두 번째 RP"다 — login2 단계(두 번째 RP 로그인) 말풍선·"다른 창에서" 카드 판정에 쓴다.
@@ -353,6 +356,8 @@
       $('accountPPID').textContent = shown;
       $('accountPPID').title = lastAccount ?? lastPPID ?? ''; $('accountAddr').title = lastAccount ?? lastPPID ?? '';
       $('copyPpidBtn').hidden = !(lastAccount || lastPPID);   // 복사할 값이 있을 때만 보인다
+      $('attrCommit').textContent = lastAttrCommit ? `${lastAttrCommit.slice(0, 12)}…${lastAttrCommit.slice(-6)}` : (tt('rp_attr_none') || '없음');
+      $('attrCommit').title = lastAttrCommit ?? '';
     }
     // 2026-11-05: 로그인 전에는 "자산"·"잔액·출금" 탭의 대상 절이 숨겨져 있어 눌러도 아무 반응이 없었다 — 로그인 카드로 안내한다.
     for (const a of document.querySelectorAll('.nav-link[href="#assets"], .nav-link[href="#balance"]')) a.addEventListener('click', (e) => {
@@ -377,7 +382,7 @@
     // 서버가 재시작돼 세션이 사라졐으면 복원 뒤 /api/mode3/sessions 대조에서 걸러 다시 로그아웃 상태가 된다. 비밀은 없다(r_s·PPID·allowAgent 만).
     const SESSION_KEY = 'mode3.rp.session';
     function saveSession(r_s, allowAgent) {
-      try { if (r_s) localStorage.setItem(SESSION_KEY, JSON.stringify({ r_s, allowAgent, PPID: lastPPID, account: lastAccount })); else localStorage.removeItem(SESSION_KEY); } catch { /* 저장소가 막혀 있으면 탭 안에서만 유지 */ }
+      try { if (r_s) localStorage.setItem(SESSION_KEY, JSON.stringify({ r_s, allowAgent, PPID: lastPPID, account: lastAccount, attrCommit: lastAttrCommit })); else localStorage.removeItem(SESSION_KEY); } catch { /* 저장소가 막혀 있으면 탭 안에서만 유지 */ }
     }
     async function restoreSession() {
       let saved = null;
@@ -387,7 +392,7 @@
         const { sessions } = await (await fetch('/api/mode3/sessions')).json();
         if (!(sessions ?? []).some((x) => x.r_s === `${String(saved.r_s).slice(0, 8)}…`)) { try { localStorage.removeItem(SESSION_KEY); } catch { /* */ } return; }   // 서버에 없는 세션(재시작·폐기)
       } catch { return; }   // RP 서버를 못 읽으면 복원하지 않는다(다음 로드에 다시 시도)
-      lastPPID = saved.PPID ?? null; lastAccount = saved.account ?? null;
+      lastPPID = saved.PPID ?? null; lastAccount = saved.account ?? null; lastAttrCommit = saved.attrCommit ?? null;
       setSession(saved.r_s, saved.allowAgent ?? null);
       refreshSessionMeta();
     }
@@ -698,12 +703,14 @@
         log(`2. 지갑 π+σ ${ms(t0)} (동기화 ${tm.syncMs} ms, 발급 ${tm.issueMs} ms, 증명 ${tm.proveMs} ms, 캐시 히트=${wb.cacheHit}, 새 발급=${wb.issued})\n   root=${wb.root}`);
 
         t0 = Date.now();
-        const r = await post('/api/mode3/login', { proof: wb.proof, publicSignals: wb.publicSignals, sig: wb.sig, r_s, require: pred?.require ?? null });
+        // id_token(2026-11-09 Phase 1): 지갑이 IdP 발급 응답에서 그대로 넘긴 zkID ID 토큰 — RP 가 검증하고 name(속성 커밋먼트)을 계정에 고정한다. 없으면 null.
+        const r = await post('/api/mode3/login', { proof: wb.proof, publicSignals: wb.publicSignals, sig: wb.sig, r_s, require: pred?.require ?? null, id_token: wb.id_token ?? null });
         const rb = await r.json();
         log(`3. RP 검증 ${ms(t0)}: ${JSON.stringify(rb)}\n   allowAgent=${rb.allowAgent}`);
         if (rb.ok) {
           const same = lastPPID !== null && lastPPID === rb.PPID;
           lastPPID = rb.PPID;
+          lastAttrCommit = rb.attrCommit ?? null;
           const disclosed = rb.disclosure && (rb.disclosure.mask !== '0' || rb.disclosure.set);
           setVerdict($('verdict'), true, 'login_ok', () => ({
             summary: (tt(same ? 'rp_login_same_ppid' : 'rp_login_new_ppid') || (same ? '새 세션. 이 RP 에서의 내 주소는 이전과 같습니다.' : '새 세션. 이 RP 에서만 쓰는 주소를 받았습니다.'))

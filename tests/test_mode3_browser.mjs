@@ -15,7 +15,10 @@ import { getProvider } from './helpers/mode3_chain.mjs';
 import { buildInitScript } from './helpers/ethereum_stub.js';
 import { VKEY_PATH } from '../lib/mode3_wallet.js';
 import { attrGateAt } from '../lib/mode3_onchain.js';
+import { execFileSync } from 'node:child_process';
 import { DEFAULT_ATTR_SCHEMA, encodeSlotValue } from '../lib/mode3_attr_schema.js';
+import { encodeProfile } from '../lib/mode3_attr_schema.js';
+import { attrCommit } from '../lib/mode3_attr_commit.js';
 
 const DEBUG = process.env.MODE3_BROWSER_DEBUG === '1';
 const j = (o) => JSON.stringify(o);
@@ -38,6 +41,8 @@ async function launchBrowser() {
   throw new Error(`BLOCKED: 브라우저를 띄우지 못했다.\n  ${tried.join('\n  ')}`);
 }
 
+// 속성 커밋먼트 도구 번들(2026-11-09 Phase 1) — /attr.html 케이스가 쓴다. user_static 테스트와 같은 방식으로 여기서 만든다.
+execFileSync('node', ['scripts/build_attr_tool.mjs'], { stdio: 'inherit' });
 const browser = await launchBrowser();
 const provider = getProvider();
 // Task 14(B5): CIA_ISSUE_AUTH=code — 신규 로그인마다 IdP 인증 창의 1회용 코드(auth_code)가 필요하다(completeIdpAuth 참고).
@@ -640,6 +645,60 @@ try {
     await p.fill('#loginPwd', 'demo-pass-1'); await p.click('#loginBtn');
     await waitText(p, '#meBadge', '등록 전'); await waitText(p, '#meInfo', 'demo-user-2'); assert.equal(await p.isVisible('#registerBtn'), true);
     await p.click('#logoutBtn'); await p.waitForSelector('#loginView:not([hidden])'); assert.equal(await p.isHidden('#meCard'), true); await p.close();
+  });
+  // 2026-11-09 Phase 1: 속성 커밋먼트 도구(지갑 오리진 /attr.html — 독립 정적 페이지) + zkID 프로필 카드.
+  let toolCommit = null;
+  await t('속성 도구(/attr.html): 정적 자원 말고는 아무 요청도 없이 커밋먼트를 만들고, localStorage 의 attrs·blind 로 Node 가 다시 계산한 값과 같다; 지우기·백업 불러오기', async () => {
+    const p = await context.newPage();
+    const reqs = []; p.on('request', (r) => reqs.push(r.url()));
+    await p.goto(`${wallet.base}/attr.html`);
+    await p.waitForSelector('#noCommit:not([hidden])');
+    await p.fill('#birthYear', '1990'); await p.selectOption('#country', 'KR'); await p.fill('#extra1', 'hello');
+    await p.click('#makeBtn');
+    await p.waitForSelector('#commitBox:not([hidden])');
+    await waitText(p, '#formVerdict', '커밋먼트 생성 완료');
+    const shown = (await p.textContent('#commitBox')).trim();
+    const rec = JSON.parse(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')));
+    assert.equal(rec.commit, shown); assert.match(shown, /^[0-9]+$/);
+    const attrs = await encodeProfile(DEFAULT_ATTR_SCHEMA, { birthYear: '1990', country: 'KR', extra1: 'hello' });
+    assert.deepEqual(rec.attrs, attrs);
+    assert.equal(await attrCommit({ attrs, blind: rec.blind }), rec.commit, 'Node 재계산과 일치');
+    assert.deepEqual(rec.profile, { birthYear: '1990', country: 'KR', extra1: 'hello' });
+    assert.ok(reqs.every((u) => /\/attr\.html|\/attr\/dist\/|\/common\//.test(u)), `정적 자원 외 요청: ${reqs.filter((u) => !/\/attr\.html|\/attr\/dist\/|\/common\//.test(u)).join(', ')}`);
+    // 범위 밖 값(출생연도 1800 < min 1900)은 인코더가 거절한다 — 저장값은 그대로(빈 칸은 폼의 required 가 먼저 막아 요청 자체가 없다)
+    await p.fill('#birthYear', '1800'); await p.click('#makeBtn'); await waitText(p, '#formVerdict', '커밋먼트를 만들지 못했습니다');
+    assert.equal(JSON.parse(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1'))).commit, rec.commit);
+    // 지우기(confirm 수락) → 없음; 백업 불러오기 → 같은 커밋먼트 복원
+    p.once('dialog', (d) => d.accept());
+    await p.click('#clearBtn'); await p.waitForSelector('#noCommit:not([hidden])');
+    assert.equal(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')), null);
+    await p.setInputFiles('#importFile', { name: 'backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(rec)) });
+    await waitText(p, '#resultVerdict', '백업 불러오기 완료');
+    assert.equal((await p.textContent('#commitBox')).trim(), rec.commit);
+    const broken = { ...rec, commit: '1' };
+    await p.setInputFiles('#importFile', { name: 'bad.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(broken)) });
+    await waitText(p, '#resultVerdict', '백업을 불러오지 못했습니다');
+    toolCommit = rec.commit;
+    await p.close();
+  });
+  await t('zkID 사용자 페이지 프로필 카드: 로그인만 하면 보인다(지갑 등록과 무관) → 커밋먼트 저장 → 현재 값 표시 → /me.profile; 비우면 없음', async () => {
+    const p = await context.newPage(); await p.goto(`${cia.base}/user`);
+    await p.waitForSelector('#loginView:not([hidden]), #meCard:not([hidden])');
+    if (await p.isVisible('#meCard')) { await p.click('#logoutBtn'); await p.waitForSelector('#loginView:not([hidden])'); }
+    assert.equal(await p.isHidden('#profileCard'), true, '로그인 전엔 숨김');
+    await p.fill('#loginId', 'demo-user-2'); await p.fill('#loginPwd', 'demo-pass-1'); await p.click('#loginBtn');   // 앞 케이스가 만든 미등록 계정
+    await waitText(p, '#meBadge', '등록 전');
+    await p.waitForSelector('#profileCard:not([hidden])');
+    assert.equal((await p.textContent('#profileCurrent')).trim(), '없음');
+    assert.ok((await p.getAttribute('#attrToolLink', 'href')).endsWith('/attr.html'), '속성 도구 링크는 지갑 오리진 /attr.html');
+    await p.fill('#profileName', toolCommit); await p.click('#profileSaveBtn');
+    await waitText(p, '#profileVerdict', '프로필 저장 완료');
+    assert.equal((await p.textContent('#profileCurrent')).trim(), toolCommit);
+    const me = await p.evaluate(() => fetch('/cia/user/me', { credentials: 'same-origin' }).then((r) => r.json()));
+    assert.equal(me.profile?.name, toolCommit);
+    await p.fill('#profileName', ''); await p.click('#profileSaveBtn'); await waitText(p, '#profileVerdict', '프로필을 비웠습니다');   // 제목은 앞 저장과 같아 요약으로 기다린다
+    assert.equal((await p.textContent('#profileCurrent')).trim(), '없음');
+    await p.click('#logoutBtn'); await p.waitForSelector('#loginView:not([hidden])'); await p.close();
   });
   await t('IdP RP 페이지: 운영자 가입·로그인 → zkTHREE 만들기 → 키·명령 표시', async () => {
     const p = await context.newPage(); await p.goto(`${cia.base}/rp`);

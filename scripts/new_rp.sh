@@ -112,7 +112,7 @@ if [ -z "$HOST" ]; then
     MODE3_WALLET_AGENT_ORIGIN="http://localhost:5100" MODE3_CIA_URL="http://localhost:4100" CIA_RPC_URL="http://127.0.0.1:8545"
   export MODE3_RP_NAME="$NAME" MODE3_RP_PORT="$PORT" MODE3_RP_PUBLIC_ORIGIN="${PUB:-http://localhost:$PORT}" \
     MODE3_RP_KEY="$KEY" MODE3_RELAYER_INDEX="$RELAYER" \
-    MODE3_RP_REGISTRATION_FILE="mode3_rp_${NAME}_registration.json" MODE3_RP_LOGIN_LOG="mode3_rp_${NAME}_logins.jsonl"
+    MODE3_RP_REGISTRATION_FILE="mode3_rp_${NAME}_registration.json" MODE3_RP_LOGIN_LOG="mode3_rp_${NAME}_logins.jsonl" MODE3_RP_ACCOUNTS_FILE="mode3_rp_${NAME}_accounts.json"
   [ -n "$COUNTRIES" ] && export MODE3_ALLOWED_COUNTRIES="$COUNTRIES"
   [ -n "$MIN_AGE" ] && export MODE3_MIN_AGE="$MIN_AGE"
   [ -n "$REQ" ] && export MODE3_REQUIRE_DISCLOSURE=1
@@ -131,7 +131,7 @@ else
   RELAYER="${RELAYER:-3}"
   # MODE3_RP_KEY 는 role.env 파생 파일(rp_${NAME}.env)에 쓰지 않는다 — 기동 명령에 env 로 한 번만 얹는다(디스크에 남지 않게).
   KEY_Q=$(printf '%s' "$KEY" | sed "s/'/'\\\\''/g")
-  ssh -o BatchMode=yes "$U@$HOST" "cd ~/zkd-demo && { grep -vE '^(MODE3_RP_PORT|MODE3_RP_NAME|MODE3_RP_PUBLIC_ORIGIN|MODE3_RELAYER_INDEX|MODE3_ALLOWED_COUNTRIES|MODE3_MIN_AGE|MODE3_REQUIRE_DISCLOSURE|MODE3_RP_REGISTRATION_FILE|MODE3_RP_LOGIN_LOG|MODE3_RP_KEY)=' role.env 2>/dev/null; echo MODE3_RP_PORT=$PORT; echo MODE3_RP_NAME=$NAME; echo MODE3_RP_PUBLIC_ORIGIN=${PUB:-http://$HOST:$PORT}; echo MODE3_RELAYER_INDEX=$RELAYER; echo MODE3_RP_REGISTRATION_FILE=mode3_rp_${NAME}_registration.json; echo MODE3_RP_LOGIN_LOG=mode3_rp_${NAME}_logins.jsonl; ${COUNTRIES:+echo MODE3_ALLOWED_COUNTRIES=$COUNTRIES;} ${MIN_AGE:+echo MODE3_MIN_AGE=$MIN_AGE;} ${REQ:+echo MODE3_REQUIRE_DISCLOSURE=1;} } > rp_${NAME}.env && chmod 600 rp_${NAME}.env"
+  ssh -o BatchMode=yes "$U@$HOST" "cd ~/zkd-demo && { grep -vE '^(MODE3_RP_PORT|MODE3_RP_NAME|MODE3_RP_PUBLIC_ORIGIN|MODE3_RELAYER_INDEX|MODE3_ALLOWED_COUNTRIES|MODE3_MIN_AGE|MODE3_REQUIRE_DISCLOSURE|MODE3_RP_REGISTRATION_FILE|MODE3_RP_LOGIN_LOG|MODE3_RP_ACCOUNTS_FILE|MODE3_RP_KEY)=' role.env 2>/dev/null; echo MODE3_RP_PORT=$PORT; echo MODE3_RP_NAME=$NAME; echo MODE3_RP_PUBLIC_ORIGIN=${PUB:-http://$HOST:$PORT}; echo MODE3_RELAYER_INDEX=$RELAYER; echo MODE3_RP_REGISTRATION_FILE=mode3_rp_${NAME}_registration.json; echo MODE3_RP_LOGIN_LOG=mode3_rp_${NAME}_logins.jsonl; echo MODE3_RP_ACCOUNTS_FILE=mode3_rp_${NAME}_accounts.json; ${COUNTRIES:+echo MODE3_ALLOWED_COUNTRIES=$COUNTRIES;} ${MIN_AGE:+echo MODE3_MIN_AGE=$MIN_AGE;} ${REQ:+echo MODE3_REQUIRE_DISCLOSURE=1;} } > rp_${NAME}.env && chmod 600 rp_${NAME}.env"
   ssh -o BatchMode=yes "$U@$HOST" "cd ~/zkd-demo && set -a && . ./rp_${NAME}.env && set +a && { MODE3_RP_KEY='$KEY_Q' setsid nohup \$HOME/zkd-demo/bin/node mode3_rp.js > logs/rp_${NAME}.log 2>&1 < /dev/null & }"
   for i in $(seq 1 40); do
     curl -s -m 2 -o /dev/null "http://$HOST:$PORT/mode3/health" && { echo "$NAME up at ${PUB:-http://$HOST:$PORT} (IdP /rp 의 '인증서 발급' 또는 관리자 승인 대기)"; exit 0; }

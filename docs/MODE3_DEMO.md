@@ -677,6 +677,29 @@ reason: 'predicate_unmet'}` 로 거절한다(200, 컨트랙트 호출 없이 오
 | 5 | alice(2005, 840): 허용 집합은 그대로 공개하되 슬롯 0 을 정책보다 넓은 구간(`[0, 올해−5]`)으로 공개 | 국가는 실제 허용 집합이라 `country` 는 통과하지만 minAge 를 증명하지 못해 `claim()` 이 `age` 로 revert |
 | 6 | 지갑에서 testuser 의 예비 1(extra1) 에 문자열을 입력해 "속성 저장" → 다음 로그인 | 속성 저장이 옛 C_u 를 그 자리에서 지우고, 로그인이 새 C_u 를 받아 성공, **PPID 동일** |
 
+### 사용자 속성 커밋먼트 → zkID 프로필 → RP 고정 (Phase 1, 2026-11-09)
+
+설계: `docs/superpowers/specs/2026-11-06-mode3-attr-commitment-id-token-design.md`(11-09 개정). 원칙(사용자 결정): **IdP 는 사용자 속성 커밋먼트를
+저장하는 것 말고는 zk-Delegation 에 관여하지 않는다.** 커밋먼트 등록은 MetaMask·Snap 과 완전히 별개 흐름이고, 커밋먼트에는 RP 관련 값이 없다.
+
+- **속성 도구** `http://localhost:5100/attr.html` — 지갑 에이전트가 서빙하는 **독립 정적 페이지**. 어떤 서버와도 통신하지 않는다(지갑 상태·Snap·IdP·RP 무관).
+  속성(출생연도·국가·예비 1·2)을 넣고 "커밋먼트 만들기" → `C_attr = Poseidon(T_ATTRC, attrs[0..5], blind)`(10진). 속성·blind 는 이 브라우저의
+  localStorage(`mode3_attr_tool_v1`)에만 남는다. 백업 내려받기/불러오기(불러올 때 다시 계산해 맞춰 본다), 지우기. 번들은 `npm run attr:build`
+  (`mode3/attr/dist/`, ignore) — **에이전트를 띄우는 기계에서 한 번** 만들어 둔다(없으면 페이지가 `bundle_missing` 을 보인다).
+- **zkID 프로필** `/user` → 로그인 → "프로필" 카드(지갑 등록 여부와 무관하게 보인다) → "이름(속성 커밋먼트)" 에 붙여 넣고 저장(`POST /cia/user/profile`).
+  IdP 는 한 줄·256자 이하 문자열로만 보고 뜻을 모른다. "속성 도구 열기" 링크는 지갑 오리진 `/attr.html`.
+- **ID 토큰**: 발급(`POST /cia/issue`) 응답에 `id_token`(JWT ES256, `iss=CIA_PUBLIC_URL`, `sub=auid_s`, `aud=arid_s`, `name=프로필`, 10분) 이 함께 온다.
+  키는 `cia_keys.json` 의 `idTokenJwk`(없으면 기동 때 더한다 — 다른 키는 그대로). `GET /.well-known/openid-configuration`·`GET /.well-known/jwks.json`.
+  분리 데모는 `demo_split_start.sh` 가 IdP role.env 에 `CIA_PUBLIC_URL=http://192.168.226.10:4100` 을 넣는다.
+- **지갑**은 토큰을 열어 보지 않고 `/wallet/login` 응답에 그대로 싣는다(팝업 → RP 페이지 → `POST /api/mode3/login { …, id_token }`). Snap·지갑 페이지 변경 없음.
+- **RP** 는 `MODE3_CIA_URL` 의 JWKS·discovery 로 토큰을 검증하고 `sub`·`aud` 를 증명의 `auid_s`·`arid_s` 와 맞춘 뒤 `name` 을 계정(PPID)에 고정한다
+  (`mode3_rp_accounts.json`, `new_rp.sh` 는 `mode3_rp_<name>_accounts.json`). 응답 `attrCommit`·`attrCommitChanged`(바뀌면 교체하고 알린다). 세션 카드
+  "속성 커밋먼트" 줄(앞 12자…뒤 6자, 툴팁 전체). 틀린 토큰은 `bad_id_token` 으로 로그인 거절; 토큰이 없으면(옛 지갑·web 모드) 예전처럼 로그인된다.
+
+시연 순서: 속성 도구에서 만들기 → 복사 → zkID `/user` 프로필 저장 → zkONE "zkID 로 로그인" → 세션 카드에 커밋먼트 → 도구에서 다시 만들어 프로필을 바꾸고
+다시 로그인하면 `attrCommitChanged`. **한계**: 커밋먼트가 실제 속성을 여는지는 아직 보이지 않는다(2단계 `pi_attr`, 사용자 승인 뒤). `C_attr` 는 RP 마다 같으므로
+두 RP 가 `name` 을 맞대면 같은 사용자임을 알 수 있다(사용자 결정으로 수용 — 설계 §3·§11). 도구의 비밀은 localStorage 평문이다(같은 오리진의 지갑 페이지가 읽을 수 있다).
+
 ## 세션 폐기 (V8, 설계 2026-09-24)
 
 계정 폐기(4·4′)는 사용자 자격증명 리프 하나로 그 사용자의 **모든** 세션을 죽인다. V8 은 그 아래 단위를 더한다 — **세션 하나만**
@@ -1130,6 +1153,12 @@ Google 버튼) → zkTWO 로그인 → 계정 페이지(`:4100/account`)의 "Goo
 | `POST /wallet/tx` (`disclose`·`set` 필드, V7) | 지갑 | 트랜잭션에 선택 공개 첨부 — `disclose`: `{lo,hi}\|null` × 1..6(int 슬롯만); `set`: `{slot, members}`(선택, 슬롯 하나 — root 를 지갑이 계산). 둘 중 하나라도 있으면(mask ≠ 0 또는 set_sel ≠ 0) 새 π |
 | `GET /api/mode3/rp_info` (`attrGateAddress`·`predicates` 필드, V7) | RP | 배포된 `AttrGate` 주소, `predicates: { allowedCountries, allowedCountryNames, allowedCountriesRoot, minAge, birthYearMin, attrSchema }` |
 | `POST /api/mode3/login` (`require` 필드, V7) | RP | 로그인 성명이 만족해야 할 오프체인 술어 — `{ countrySet, minAge }`, 미충족 시 `predicate_unmet` |
+| `GET /attr.html`, `GET /attr/dist/attr.js` (2026-11-09) | 지갑(정적) | 속성 커밋먼트 도구 — 에이전트 상태를 읽지 않는 공개 GET |
+| `POST /cia/user/profile` (2026-11-09) | IdP(사용자 세션) | `{ name }` — 한 줄·256자 이하, 빈 값이면 지움 → `profile`; `GET /cia/user/me` 에 `profile` |
+| `GET /.well-known/openid-configuration`, `GET /.well-known/jwks.json` (2026-11-09) | IdP | ID 토큰(ES256) 발견 문서·공개 JWK — 인증·CORS 없음 |
+| `POST /cia/issue` → 응답 `id_token` (2026-11-09) | IdP | `sub=auid_s`·`aud=arid_s`·`name=프로필`, 10분 |
+| `POST /wallet/login` → 응답 `id_token` (2026-11-09) | 지갑 | IdP 토큰을 그대로 전달 |
+| `POST /api/mode3/login` (`id_token` 필드) → 응답 `attrCommit`·`attrCommitChanged` (2026-11-09) | RP | 검증·결속(`sub`·`aud`) 뒤 `name` 을 계정에 고정; 틀리면 `bad_id_token` |
 
 MetaMask/Snap 경로(2026-09-22 metamask-snap)로 새로 생긴 지갑 라우트:
 
@@ -1399,6 +1428,9 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
   유도 — `uidOf`·`regNonce`·`newRevokeNonce`, 3)·`tests/test_mode3_oidc_verifier.mjs`(jose 검증기 — 발급자 스텁
   `tests/helpers/oidc_issuer_stub.mjs`, 5).
 - 개봉은 `tests/test_cia_opening.mjs`(IdP 단독)와 `test_mode3_demo_stack.mjs` 시나리오 9(전 구간)로 고정돼 있다.
+- 속성 커밋먼트(Phase 1, 2026-11-09)는 `tests/test_mode3_attr_commit.mjs`(unit), `tests/test_cia_accounts.mjs` 마지막 케이스(프로필·discovery·JWKS·토큰 클레임),
+  `tests/test_mode3_demo_stack.mjs` "속성 커밋먼트(Phase 1)"(운반·고정·변경·변조 거절·하위호환), `tests/test_mode3_browser.mjs`(도구 페이지 — 정적 자원 외 무요청·
+  Node 재계산 일치·지우기·백업; `/user` 프로필 카드)로 고정돼 있다. 브라우저 테스트는 `scripts/build_attr_tool.mjs` 로 번들을 스스로 만든다.
 - 등록부(V9, 2026-10-01)는 단위 셋 `tests/test_mode3_registry.js`(슬롯 트리 라이브러리)·`tests/test_mode3_credential_v11.js`·
   `tests/test_pi_idp_witness.mjs`·`tests/test_mode3_wallet_lib.js`(등록 서명·auid·π_IdP 등)·`tests/test_mode3_cia_state.js`
   (상태 v12 기동 거부, 모두 `unit`), `tests/test_cia_registry.mjs`
