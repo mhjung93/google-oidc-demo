@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="/common/idp.css" />
   <script src="/common/strings.js"></script>
   <script src="/common/demo.js"></script>
+  <script src="/common/gsi.js"></script>   <!-- 2026-11-09 연결 로그인: "Google 계정 연결" 버튼 -->
 </head>
 <body data-page="idp_user">
 <header id="demoBar"></header>
@@ -56,7 +57,6 @@
   <section class="card me-view" id="infoCard" hidden>
     <h3 data-i18n="idp_info_title">내 등록 정보</h3>
     <p data-i18n="idp_info_registered">등록됨 — 이 계정은 지갑과 연결돼 있습니다.</p>   <!-- 2026-11-05: 상세를 접은 뒤 빈 카드처럼 보이던 것 -->
-    <p id="meLinked" class="muted" data-i18n="idp_info_linked_google" hidden>Google 계정이 연결돼 있습니다 — 서비스에서 "Google 계정으로 로그인" 도 됩니다.</p>   <!-- 2026-11-06: RP 의 Google 로그인으로 연결된 계정 -->
     <!-- 2026-11-05: 가명·슬롯은 사용자가 쓸 일이 없는 값이라 "상세" 로 접는다(지갑 계정 탭과 같은 모양). -->
     <details class="muted"><summary data-i18n="idp_info_details">상세</summary>
     <dl class="kv">
@@ -78,6 +78,20 @@
     <p class="muted"><span data-i18n="idp_profile_current">현재 값</span>: <code id="profileCurrent">-</code></p>
     <div id="profileVerdict"></div>
   </section>
+  <!-- 2026-11-09 연결 로그인(스펙 linked-logins §3.2): Google·네이버 계정을 공급자별로 하나씩 연결한다. 서비스의 "Google/네이버로 로그인" 은
+       zkID 인증 창이 이 연결로 계정을 찾는다. 지갑 등록과 별개라 아이디 계정이면 로그인만 하면 보인다(Google 로 가입한 계정에는 없다). -->
+  <section class="card me-view" id="linksCard" hidden>
+    <h3 data-i18n="idp_links_title">연결된 로그인</h3>
+    <p class="desc" data-i18n="idp_links_desc">Google·네이버 계정을 연결하면 서비스의 "Google/네이버로 로그인" 으로도 이 zkID 계정으로 로그인합니다.</p>
+    <dl class="kv">
+      <dt data-i18n="idp_links_google">Google</dt>
+      <dd><span id="linkGoogleState">-</span> <button id="linkGoogleBtn" type="button" data-i18n="idp_links_link_btn" hidden>연결</button> <button id="unlinkGoogleBtn" type="button" class="btn-ghost" data-i18n="idp_links_unlink_btn" hidden>연결 해제</button>
+        <div id="linkGsiSlot" class="gsi-slot" hidden></div></dd>
+      <dt data-i18n="idp_links_naver">네이버</dt>
+      <dd><span id="linkNaverState">-</span> <button id="linkNaverBtn" type="button" data-i18n="idp_links_link_btn" hidden>연결</button> <button id="unlinkNaverBtn" type="button" class="btn-ghost" data-i18n="idp_links_unlink_btn" hidden>연결 해제</button></dd>
+    </dl>
+    <div id="linksVerdict"></div>
+  </section>
   <section class="card me-view" id="revokeCard" hidden>
     <h3 data-i18n="idp_manage_title">계정 관리</h3>
     <p class="desc" data-i18n="idp_revoke_desc">비밀번호를 다시 넣어 확인합니다. 지갑 연결 해제는 이 계정에서 지갑 등록만 풀어 새 지갑을 다시 등록할 수 있게 하고, 계정 폐기는 되돌릴 수 없습니다.</p>
@@ -95,6 +109,19 @@
   const clearVerdict = (el) => { el.__verdictArgs = null; el.innerHTML = ''; el.classList.remove('verdict', 'ok', 'bad', 'pending'); };
   let walletOrigin = null, me = null;
   let oidcEnabled = false;   // public_keys.oidc.enabled — Google 줄(renderGoogleRow)
+  let linkProviders = {};    // public_keys.oidc.providers(2026-11-09 연결 로그인) — { google: { enabled, clientId }, naver: { enabled } }
+  const LINK_ROWS = [['google', 'Google'], ['naver', 'Naver']];
+  const providerLabel = (p) => tt(`idp_links_${p}`) || p;
+  /** 연결 카드의 공급자 줄 — 꺼진 공급자는 버튼 없이 "설정되지 않음". */
+  function renderLinks() {
+    for (const [p, Cap] of LINK_ROWS) {
+      const on = Boolean(linkProviders[p]?.enabled), l = me?.linked?.[p] ?? null;
+      $(`link${Cap}State`).textContent = l ? tt('idp_links_linked', { date: String(l.linkedAt ?? '').slice(0, 10) }) : on ? tt('idp_links_none') : tt('idp_links_disabled');
+      $(`link${Cap}Btn`).hidden = !on || Boolean(l);
+      $(`unlink${Cap}Btn`).hidden = !l;
+    }
+    if (me?.linked?.google) $('linkGsiSlot').hidden = true;
+  }
   // Google 줄(OIDC 래퍼, 2026-11-06 8차): "Google 계정으로 등록" 은 Google 로그인이 지갑 팝업(walletOrigin) 안에서 일어나므로
   // 지갑 오리진이 localhost 일 때 보인다 — IdP 를 VM 주소(192.168.x.x)로 열어도 된다. "/account" 링크는 그 페이지가 IdP 화면에
   // Google 버튼을 그리므로 IdP 페이지 자체가 localhost 일 때만 보인다. Google 은 평문 http 오리진을 localhost 에만 허용하고
@@ -144,7 +171,7 @@
     const loggedIn = v === 'me';
     $('meCard').hidden = !loggedIn;
     $('infoCard').hidden = !loggedIn || !me?.registered;
-    $('meLinked').hidden = !me?.linkedOidc;
+    $('linksCard').hidden = !loggedIn || (me?.provider ?? 'demo') !== 'demo';   // 2026-11-09: Google 로 가입한 계정에는 연결이 없다
     $('profileCard').hidden = !loggedIn;   // 2026-11-09: 지갑 등록 여부와 무관
     $('revokeCard').hidden = !loggedIn || !me?.registered;
     if (v === 'login') setTimeout(() => $($('loginId').value ? 'loginPwd' : 'loginId').focus(), 0);
@@ -163,7 +190,8 @@
     if (me && document.activeElement !== $('profileName')) $('profileName').value = me.profile?.name ?? '';
     // 로그인 뒤에만 등록·폐기가 보인다. 로그아웃 상태에서 가입 화면을 보고 있었다면 그대로 둔다.
     // 세션이 다른 길로 끝났을 때(다른 탭 로그아웃·만료) 숨긴 카드의 결과가 다음 사람에게 보이지 않게 비운다.
-    if (!me) { clearVerdict($('profileVerdict')); clearVerdict($('revokeVerdict')); }
+    if (!me) { clearVerdict($('profileVerdict')); clearVerdict($('revokeVerdict')); clearVerdict($('linksVerdict')); $('linkGsiSlot').hidden = true; }
+    renderLinks();
     if (me) showView('me'); else if ($('signupView').hidden) showView('login');
     renderGuide();
   }
@@ -238,6 +266,36 @@
     verdict($('revokeVerdict'), r.status === 200, r.status === 200 ? 'revoked_ok' : 'account_revoke_failed', { reason: r.body?.reason, detail: r.body });
     await refreshMe();
   });
+  // 연결 로그인(2026-11-09). Google: IdP 가 이 로그인 세션에 묶은 1회용 nonce(link:)로 GIS 버튼을 그려 토큰을 /cia/user/link 로. 네이버: IdP 서버를 거쳐
+  // 다녀온다(/cia/oidc/naver/start → 네이버 → 콜백 → /user?linked=naver 또는 ?link_error=사유).
+  $('linkGoogleBtn').addEventListener('click', async () => {
+    const out = $('linksVerdict');
+    if (!window.Mode3Gsi?.originOk()) return verdict(out, false, 'idp_links_failed', { reason: 'gsi_origin' });
+    const n = await post('/cia/oidc/nonce', { purpose: 'link' });
+    if (n.status !== 200) return verdict(out, false, 'idp_links_failed', { reason: n.body?.reason ?? `HTTP ${n.status}`, detail: n.body });
+    $('linkGsiSlot').hidden = false;
+    Demo.verdict(out, { pending: true, title: tt('idp_links_gsi_hint') || 'Google 버튼으로 로그인하세요' });
+    try {
+      await window.Mode3Gsi.render({ el: $('linkGsiSlot'), clientId: linkProviders.google?.clientId, nonce: n.body.nonce, onToken: async (id_token) => {
+        if (!id_token) return;
+        const r = await post('/cia/user/link', { provider: 'google', id_token });
+        $('linkGsiSlot').hidden = true;
+        if (r.status === 200) verdict(out, true, tt('idp_links_done', { provider: providerLabel('google') }) || 'linked');
+        else verdict(out, false, 'idp_links_failed', { reason: r.body?.reason ?? `HTTP ${r.status}`, detail: r.body });
+        await refreshMe();
+      } });
+    } catch (e) { $('linkGsiSlot').hidden = true; verdict(out, false, 'idp_links_failed', { reason: 'gsi_unavailable', detail: e.message }); }
+  });
+  $('linkNaverBtn').addEventListener('click', () => location.assign('/cia/oidc/naver/start?purpose=link'));
+  for (const [p, Cap] of LINK_ROWS) {
+    $(`unlink${Cap}Btn`).addEventListener('click', async () => {
+      const r = await post('/cia/user/unlink', { provider: p });
+      if (r.status === 200) verdict($('linksVerdict'), true, tt('idp_links_removed', { provider: providerLabel(p) }) || 'unlinked');
+      else verdict($('linksVerdict'), false, 'idp_links_failed', { reason: r.body?.reason ?? `HTTP ${r.status}`, detail: r.body });
+      await refreshMe();
+    });
+  }
+
   // 지갑 등록 팝업(Task 14) — 2026-11-09 부터 zkID 아이디 계정의 등록 버튼은 없고(등록은 서비스 로그인 중), Google 등록(?google=1, 테스트·수동 확인용)만 이 팝업을 연다.
   // 수신 심층 방어(ev.source)·타임아웃·닫힘 감지는 rp.html 의 popupCall(mode3/rp.html:480-508)과 같은 기준이다.
   const REGISTER_POPUP_TIMEOUT_MS = 120_000;
@@ -294,9 +352,14 @@
     Demo.init({ page: 'idp_user' });
     initStack();
     // Google 줄은 이 IdP 가 OIDC 래퍼를 켰을 때만(public_keys.oidc.enabled) — 어느 요소를 보일지는 renderGoogleRow(위) 가 정한다.
-    try { oidcEnabled = Boolean((await (await fetch('/cia/public_keys')).json()).oidc?.enabled); } catch { /* 숨긴 채 */ }
+    try { const o = (await (await fetch('/cia/public_keys')).json()).oidc; oidcEnabled = Boolean(o?.enabled); linkProviders = o?.providers ?? {}; } catch { /* 숨긴 채 */ }
     renderGoogleRow();
+    // 네이버 연결에서 돌아온 길(?linked=naver | ?link_error=사유) — 결과를 보이고 주소를 정리한다.
+    const q0 = new URLSearchParams(location.search), linkedBack = q0.get('linked'), linkErr = q0.get('link_error');
+    if (linkedBack || linkErr) { const u = new URL(location.href); u.searchParams.delete('linked'); u.searchParams.delete('link_error'); history.replaceState(null, '', u.toString()); }
     await refreshMe();
+    if (linkedBack === 'naver') verdict($('linksVerdict'), true, tt('idp_links_done', { provider: providerLabel('naver') }) || 'linked');
+    else if (linkErr) verdict(me ? $('linksVerdict') : $('userVerdict'), false, 'idp_links_failed', { reason: linkErr });
   })();
 </script>
 </body>

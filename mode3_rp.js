@@ -31,6 +31,9 @@ const PORT = Number(process.env.MODE3_RP_PORT) || 3100;
 // 수신 주소(2026-10-20, VM 분리 데모): 기본은 지금처럼 127.0.0.1. 다른 기계에서 붙게 하려면 MODE3_BIND_HOST=0.0.0.0.
 const BIND_HOST = process.env.MODE3_BIND_HOST || '127.0.0.1';
 const CIA_URL = process.env.MODE3_CIA_URL || 'http://127.0.0.1:4100';
+// 브라우저용 IdP 주소(2026-11-09 리뷰 I-2): 분리 데모는 브라우저가 IdP 를 localhost:4100(SSH 터널)으로 연다 — 페이지 링크(rp_info.ciaUrl)·health CORS 는
+// 이 값을, 서버 간 호출(위 CIA_URL)은 VM 주소를 쓴다. 없으면 CIA_URL 과 같다.
+const CIA_BROWSER_URL = process.env.MODE3_CIA_BROWSER_URL || CIA_URL;
 /** 오리진 정규화(리뷰 C-M8, 2026-11-03): 끝의 '/'·경로가 섞여 들어와도 브라우저가 보내는 Origin 헤더와 같은 꼴로 맞춘다. */
 const normOrigin = (u) => { try { return new URL(u).origin; } catch { return u; } };
 const WALLET_ORIGIN = normOrigin(process.env.MODE3_WALLET_AGENT_ORIGIN || 'http://127.0.0.1:5100');
@@ -448,13 +451,13 @@ const currentPredicates = () => ({ allowedCountries: ALLOWED_COUNTRIES_EFFECTIVE
 const REQUIRE_DISCLOSURE = process.env.MODE3_REQUIRE_DISCLOSURE === '1';
 app.get('/api/mode3/rp_info', (req, res) => {
   res.json({ name: RP_NAME, requireDisclosure: REQUIRE_DISCLOSURE,   // 2026-10-15: 페이지 브랜드(zkONE/zkTWO) 표기용
-       status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, mirrorAddress: MIRROR_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, ciaUrl: CIA_URL, pkCiaSource: pkCIA.source, chainId: chainId.toString(), active: Boolean(verifier), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null, predicates: currentPredicates(),
-       oidc: pkCIA.oidc });   // 2026-10-16: IdP 의 public_keys.oidc 중계 — 페이지는 enabled·provider 만 본다
+       status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, mirrorAddress: MIRROR_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, ciaUrl: CIA_BROWSER_URL, pkCiaSource: pkCIA.source, chainId: chainId.toString(), active: Boolean(verifier), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null, predicates: currentPredicates(),
+       oidc: pkCIA.oidc });   // 2026-10-16: IdP 의 public_keys.oidc 중계 — 페이지는 enabled·provider, 2026-11-09 부터 providers.{google,naver}.enabled(버튼 활성)를 본다
 });
 
 // 상태 엔드포인트(설계 2026-09-25 §1) — 민감정보 없음, 지갑·AA 오리진에만 CORS.
 // 허용 오리진은 설정값에서 origin 만 남겨 만든다 — MODE3_CIA_URL 끝의 '/' 같은 것이 CORS 를 조용히 깨뜨리지 않게.
-const HEALTH_ALLOW = originList(WALLET_ORIGIN, CIA_URL);
+const HEALTH_ALLOW = originList(WALLET_ORIGIN, CIA_URL, CIA_BROWSER_URL);
 app.get('/mode3/health', async (req, res) => {
   applyHealthHeaders(req, res, HEALTH_ALLOW);
   let chain = null;
@@ -463,7 +466,7 @@ app.get('/mode3/health', async (req, res) => {
   const p = currentPredicates();
   res.json(buildRpHealth({ now: new Date().toISOString(), chain, status: reg.status, active: !!verifier, inactiveReason: verifier ? null : inactiveReason(), maxRootAge: Number(EFFECTIVE_MAX_ROOT_AGE), rootAge: lastRootAge,
     sessions: sessions.size, requests: requestCount, disclosures: disclosedLoginCount,
-    predicates: { countries: p.allowedCountries.length, minAge: Number(p.minAge) }, walletAgentOrigin: WALLET_ORIGIN, ciaUrl: CIA_URL }));
+    predicates: { countries: p.allowedCountries.length, minAge: Number(p.minAge) }, walletAgentOrigin: WALLET_ORIGIN, ciaUrl: CIA_BROWSER_URL }));
 });
 app.post('/api/mode3/challenge', (req, res) => {
   // 봉투를 다른 라우트와 같은 { ok, reason } 으로 맞춘다 — 페이지가 상태 코드가 아니라 본문으로 사유를 읽는다(2026-09-23 최종 리뷰 M3).

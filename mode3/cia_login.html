@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="/common/demo.css" />
   <link rel="stylesheet" href="/common/idp.css" />
   <script src="/common/strings.js"></script>
+  <script src="/common/gsi.js"></script>   <!-- 2026-11-09 연결 로그인: method=google 일 때만 버튼을 그린다 -->
 </head>
 <body data-page="idp_login">
 <main class="cards">
@@ -18,8 +19,13 @@
     <h3 id="authTitle" data-i18n="idp_auth_title">zkID 로그인</h3>
     <p id="authDesc" class="desc" data-i18n="idp_auth_desc">uid·비밀번호·auid 를 모두 직접 넣으면 지갑으로 돌아가 로그인을 이어갑니다.</p>
     <form id="authForm" class="auth-form" autocomplete="on">
-      <label><span data-i18n="idp_auth_uid_label">uid</span><input id="authUid" autocomplete="username" autocapitalize="off" spellcheck="false" placeholder="uid" /></label>   <!-- 2026-11-09(사용자 결정): uid·비밀번호·auid 를 모두 손으로 넣는다(아이디도 받는다) -->
-      <label><span data-i18n="idp_pwd_label">비밀번호</span><input id="authPwd" type="password" autocomplete="current-password" /></label>
+      <label id="authUidRow"><span data-i18n="idp_auth_uid_label">uid</span><input id="authUid" autocomplete="username" autocapitalize="off" spellcheck="false" placeholder="uid" /></label>   <!-- 2026-11-09(사용자 결정): uid·비밀번호·auid 를 모두 손으로 넣는다(아이디도 받는다) -->
+      <label id="authPwdRow"><span data-i18n="idp_pwd_label">비밀번호</span><input id="authPwd" type="password" autocomplete="current-password" /></label>
+      <!-- 2026-11-09 연결 로그인: method=google|naver 면 아이디·비밀번호 대신 공급자 인증. Google 은 GIS 버튼, 네이버는 IdP 서버를 거쳐 다녀온다(ticket). -->
+      <div id="authExtRow" hidden>
+        <div id="authGsiSlot" class="gsi-slot"></div>
+        <button id="authNaverBtn" type="button" hidden data-i18n="idp_auth_naver_btn">네이버로 인증</button>
+      </div>
       <!-- 2026-11-09(사용자 결정): auid 도 늘 직접 넣는다 — 지갑은 더 이상 쿼리로 넘기지 않는다(2026-11-05 의 자동 채움을 되돌림). 값은 지갑 계정 탭 "상세" 의 auid 복사 버튼으로. -->
       <label id="authAuidRow">auid<input id="authAuid" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="지갑 계정 탭 → 상세 → auid 복사" /><small class="muted" data-i18n="idp_auth_auid_hint">지갑 페이지의 계정 탭 "상세" 에서 auid 를 복사해 붙여 넣으세요.</small></label>
       <button id="authGo" type="submit" data-i18n="idp_auth_go">로그인</button>
@@ -53,7 +59,7 @@
   };
   document.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = Demo.t(el.dataset.i18n); });
   const setVerdict = (el, ok, title, extra) => Demo.verdict(el, () => ({ ok, title, ...(typeof extra === 'function' ? extra() : extra) }));
-  const disableForm = () => { for (const id of ['authUid', 'authPwd', 'authAuid', 'authGo']) $(id).disabled = true; };
+  const disableForm = () => { for (const id of ['authUid', 'authPwd', 'authAuid', 'authGo', 'authNaverBtn']) $(id).disabled = true; $('authGsiSlot').hidden = true; };
   const clearPwd = () => { $('authPwd').value = ''; };
 
   const q = new URLSearchParams(location.search);
@@ -63,9 +69,21 @@
   const returnToWallet = q.get('return') === '1';
   // 등록 모드(2026-11-09, 사용자 결정): 미등록 지갑의 첫 서비스 로그인 — 지갑 팝업이 purpose=register 로 온다. auid 칸을 숨기고 아이디·비밀번호만 받아 등록 코드·uid 를 돌려준다.
   const purpose = q.get('purpose') === 'register' ? 'register' : 'issue';
+  // 연결 로그인(2026-11-09): RP 의 Google·네이버 버튼으로 왔으면 지갑 팝업이 method 를 붙인다. ext = 지금까지 받은 공급자 인증({ method, id_token|ticket }).
+  const method = ['google', 'naver'].includes(q.get('method')) ? q.get('method') : 'password';
+  const providerName = Demo.t(method === 'naver' ? 'idp_links_naver' : 'idp_links_google');
+  let ext = method === 'naver' && /^[0-9a-f]{64}$/.test(q.get('ticket') ?? '') ? { method: 'naver', ticket: q.get('ticket') } : null;
+  const setText = (id, k, vars) => { const el = $(id); if (el) { el.dataset.i18n = k; el.textContent = Demo.t(k, vars); } };
   if (purpose === 'register') {
     $('authAuidRow').hidden = true;
-    for (const [id, k] of [['authTitle', 'idp_auth_register_title'], ['authDesc', 'idp_auth_register_desc'], ['authGo', 'idp_auth_register_go']]) { const el = $(id); if (el) { el.dataset.i18n = k; el.textContent = Demo.t(k); } }
+    for (const [id, k] of [['authTitle', 'idp_auth_register_title'], ['authDesc', 'idp_auth_register_desc'], ['authGo', 'idp_auth_register_go']]) setText(id, k);
+  }
+  if (method !== 'password') {
+    $('authUidRow').hidden = true; $('authPwdRow').hidden = true; $('authExtRow').hidden = false;
+    if (purpose === 'issue') { setText('authTitle', `idp_auth_${method}_title`); setText('authDesc', `idp_auth_${method}_desc`); setText('authGo', 'idp_auth_continue'); }
+    else setText('authDesc', 'idp_auth_ext_register_desc', { provider: providerName });
+    $('authGo').disabled = !ext;
+    if (q.has('ticket') || q.has('auth_error')) { const u = new URL(location.href); u.searchParams.delete('ticket'); u.searchParams.delete('auth_error'); history.replaceState(null, '', u.toString()); }   // 1회용 값이 주소창·히스토리에 남지 않게
   }
 
   (async () => {
@@ -86,10 +104,33 @@
 
     // 취소(2026-11-05): 팝업이면 닫는다(지갑 팝업이 온 길이면 RP 가 popup_closed 를 받는다). 스크립트가 열지 않은 창이라 못 닫히면 뒤로 간다.
     $('authCancel').addEventListener('click', () => { window.close(); setTimeout(() => { if (!window.closed) history.back(); }, 100); });
+
+    // 공급자 인증(2026-11-09). Google: IdP 가 낸 1회용 nonce(auth:)로 GIS 버튼을 그린다. 네이버: 쿼리를 IdP 에 맡기고 다녀온다 — 돌아오면 ticket 이 붙는다.
+    const extReady = () => { $('authGo').disabled = false; setVerdict($('authVerdict'), true, Demo.t('idp_auth_ext_done', { provider: providerName }), { pending: true }); };
+    if (method === 'naver') {
+      $('authNaverBtn').hidden = Boolean(ext);
+      if (q.get('auth_error')) { lastReason = q.get('auth_error'); setVerdict($('authVerdict'), false, 'idp_login_failed', { reason: lastReason }); }
+      else if (ext) extReady();
+      $('authNaverBtn').addEventListener('click', () => {
+        const ctx = new URLSearchParams(location.search); ctx.delete('ticket'); ctx.delete('auth_error');
+        lastReason = null;   // 리뷰 Minor 4: 다시 시도하러 떠나는 것 — pagehide 가 지난 실패를 opener 에 알리지 않게
+        location.assign(`/cia/oidc/naver/start?purpose=auth&ctx=${encodeURIComponent(ctx.toString())}`);
+      });
+    } else if (method === 'google') {
+      try {
+        const cfg = (await (await fetch('/cia/public_keys')).json()).oidc?.providers?.google;
+        if (!cfg?.enabled) throw Object.assign(new Error('provider_disabled'), { reason: 'provider_disabled' });
+        if (!window.Mode3Gsi?.originOk()) throw Object.assign(new Error('gsi_origin'), { reason: 'gsi_origin' });
+        const n = await (await fetch('/cia/oidc/nonce', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ purpose: 'auth' }) })).json();
+        await window.Mode3Gsi.render({ el: $('authGsiSlot'), clientId: cfg.clientId, nonce: n.nonce, onToken: (tok) => { if (tok) { ext = { method: 'google', id_token: tok }; extReady(); } } });
+      } catch (e) { lastReason = e.reason ?? 'gsi_unavailable'; setVerdict($('authVerdict'), false, 'idp_login_failed', { reason: lastReason, detail: e.message }); }
+    }
     $('authForm').addEventListener('submit', async (ev) => {
       ev.preventDefault();
       // 2026-11-03: 아이디로 로그인한다 — 서버(/cia/auth/code)가 아이디 색인에 없으면 10진 uid 로도 본다(옛 흐름·테스트 호환).
-      const body = purpose === 'register' ? { id: $('authUid').value.trim(), pwd: $('authPwd').value, purpose } : { id: $('authUid').value.trim(), pwd: $('authPwd').value, auid: $('authAuid').value.trim() };
+      const who = method === 'password' ? { id: $('authUid').value.trim(), pwd: $('authPwd').value } : ext;
+      if (!who) return;
+      const body = purpose === 'register' ? { ...who, purpose } : { ...who, auid: $('authAuid').value.trim() };
       Demo.verdict($('authVerdict'), { pending: true, title: Demo.t('working') || '처리 중' });
       let r;
       try {

@@ -112,4 +112,20 @@ t('아이디 색인(2026-11-03, 리뷰 M-4): loginIds 는 accounts 에서 다시
   assert.equal(state.accounts['3'].loginId, null);
   assert.equal(notes.length, 1); assert.match(notes[0], /ALICE/);
 });
+t('2026-11-09 연결 로그인: 옛 linkedOidc(Google 한 칸) → linked.google 로 옮기고 지운다, 이미 있는 linked 는 둔다, linked 가 객체가 아니면 throw', () => {
+  const acct = (over) => ({ pk_u: null, auid: null, slot: null, disabled: false, ...over });
+  const { state } = migrateCiaState({ ...defaultCiaState(), accounts: {
+    '1': acct({ linkedOidc: { provider: 'google', sub: 'g-1', linkedAt: 't1' } }),
+    '2': acct({ linked: { naver: { sub: 'n-2', linkedAt: 't2' } } }),
+    '3': acct({ linkedOidc: { provider: 'google' } }),
+  } });
+  assert.deepEqual(state.accounts['1'].linked, { google: { sub: 'g-1', linkedAt: 't1' } }); assert.equal('linkedOidc' in state.accounts['1'], false);
+  assert.deepEqual(state.accounts['2'].linked, { naver: { sub: 'n-2', linkedAt: 't2' } });
+  assert.equal('linkedOidc' in state.accounts['3'], false); assert.equal('linked' in state.accounts['3'], false, 'sub 없는 옛 기록은 버린다');
+  assert.throws(() => migrateCiaState({ ...defaultCiaState(), accounts: { '4': acct({ linked: [] }) } }), /linked/);
+  // 리뷰 Minor 5: 같은 외부 계정이 둘에 연결된 옛 기록은 앞 계정만 남긴다
+  const dup = migrateCiaState({ ...defaultCiaState(), accounts: { '5': acct({ linkedOidc: { provider: 'google', sub: 'g-d' } }), '6': acct({ linkedOidc: { provider: 'google', sub: 'g-d' } }) } });
+  assert.deepEqual(dup.state.accounts['5'].linked, { google: { sub: 'g-d', linkedAt: null } }); assert.equal('linked' in dup.state.accounts['6'], false);
+  assert.equal(dup.notes.length, 1); assert.match(dup.notes[0], /중복/);
+});
 process.exit(failed === 0 ? 0 : 1);

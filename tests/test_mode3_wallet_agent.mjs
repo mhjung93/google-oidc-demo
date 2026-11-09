@@ -119,6 +119,9 @@ try {
     first = r.body; PPID1 = v.PPID; S1 = ch;
     assert.ok(r.body.timings.userCredMs > 0, '첫 로그인은 사용자 자격증명을 새로 받는다');
     assert.equal((await wallet.post('/wallet/login', { arid, origin, cert_s, pk_trace: { x: pk_trace.x.toString(), y: pk_trace.y.toString() }, r_s: newCh().r_s }, { Origin: stack.rpOriginForWallet })).status, 400, 'r_rp 없으면 400');
+    // 2026-11-09 연결 로그인(L5): 아이디 계정 지갑은 Google 토큰을 싣지 않는다 — 연결한 Google·네이버 로그인도 zkID 인증 창의 1회용 코드다.
+    const withTok = await wallet.post('/wallet/login', { arid, origin, cert_s, pk_trace: { x: pk_trace.x.toString(), y: pk_trace.y.toString() }, ...newCh(), id_token: 'a.b.c' }, { Origin: stack.rpOriginForWallet });
+    assert.equal(withTok.status, 400, j(withTok.body)); assert.equal(withTok.body.reason, 'use_auth_window');
     const s = await wallet.get('/wallet/status');
     assert.ok(s.body.sessions[ch.r_s], 'r_s 별 세션이 상태에 있어야 한다');
     assert.ok(s.body.userCred?.Cf_u, '사용자 자격증명이 상태에 있어야 한다');

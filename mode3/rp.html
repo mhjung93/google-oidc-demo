@@ -152,7 +152,7 @@
   </main>
 
   <!-- 로그인 모달(2026-10-15) — 상단 #loginBtn 은 이 창을 열기만 한다. 직접 로그인(아이디/비밀번호)은 장식이고,
-       Google·Naver 는 이 데모에서 동작하지 않는다(안내문만 보인다). 실제 zk-Delegation 로그인은 #idpLoginBtn 이 한다.
+       2026-11-09: Google·네이버는 IdP 가 켰으면 같은 zk 로그인을 연다(zkID 계정에 연결한 계정으로 인증 창에서 본인 확인), 아니면 안내문만. 실제 zk-Delegation 로그인은 #idpLoginBtn 이 한다.
        예외(2026-10-16 OIDC 래퍼): IdP 가 Google 을 켰고 브라우저 모드면 Google 버튼도 같은 zk 로그인을 연다(data-oidc="1"). -->
   <div id="loginModal" class="modal-backdrop" hidden>
     <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="loginModalTitle">
@@ -170,6 +170,11 @@
           <span class="social-badge badge-google" aria-hidden="true">G</span>
           <span data-i18n="rp_google_btn">Google 계정으로 로그인</span>
         </button>
+        <!-- 2026-11-09 연결 로그인: 네이버도 같은 zk 로그인을 provider:'naver' 로 시작한다 — zkID 계정에 연결한 네이버로 인증 창에서 본인 확인(IdP 가 네이버를 켰을 때). -->
+        <button type="button" id="naverLoginBtn" class="social-btn">
+          <span class="social-badge badge-naver" aria-hidden="true">N</span>
+          <span data-i18n="rp_naver_btn">네이버로 로그인</span>
+        </button>
       </div>
       <p id="loginModalNote" class="modal-note" hidden></p>
       <div class="modal-divider"><span data-i18n="rp_or_social">다른 방법 — 이 데모에서는 동작하지 않습니다</span></div>
@@ -177,12 +182,6 @@
         <input type="text" id="directId" autocomplete="username" />
         <input type="password" id="directPw" autocomplete="current-password" />
         <button type="button" id="directLoginBtn" data-i18n="rp_direct_login_btn">로그인</button>
-      </div>
-      <div class="social-row">
-        <button type="button" id="naverLoginBtn" class="social-btn">
-          <span class="social-badge badge-naver" aria-hidden="true">N</span>
-          <span data-i18n="rp_naver_btn">네이버로 로그인</span>
-        </button>
       </div>
     </div>
   </div>
@@ -623,14 +622,20 @@
     // 승인 창이 Google 본인 확인을 끼워 넣고, 지갑이 토큰을 발급 요청에 실어 래퍼(IdP)가 자격증명을 낸다. RP 는 토큰·Google 신원을 보지 않는다. 아니면 안내만.
     $('googleLoginBtn').addEventListener('click', async () => {
       if (!info) { try { await loadInfo(); } catch { /* 아래에서 꺼진 것으로 본다 */ } }
-      // 2026-11-06: snap 모드에서도 연다 — 지갑 팝업이 등록 provider 에 따라 Google 버튼(Google 등록 계정) 또는 zkID 인증 창(아이디 계정)으로 진행한다.
-      if (info?.oidc?.enabled) { closeLoginModal(); startIdpLogin({ provider: 'google' }); return; }
+      // 2026-11-06: snap 모드에서도 연다 — 지갑 팝업이 등록 provider 에 따라 Google 버튼(Google 등록 계정) 또는 zkID 인증 창(아이디 계정, 2026-11-09 부터
+      // method=google — 그 계정에 연결한 Google 로 본인 확인)으로 진행한다. providers 가 없는 옛 IdP 는 oidc.enabled 를 본다.
+      if (info?.oidc?.providers?.google?.enabled ?? info?.oidc?.enabled) { closeLoginModal(); startIdpLogin({ provider: 'google' }); return; }
       showModalNote('rp_social_not_in_demo', '이 데모에서는 아직 준비되지 않았습니다');
     });
-    $('naverLoginBtn').addEventListener('click', () => showModalNote('rp_social_not_in_demo', '이 데모에서는 준비되지 않았습니다'));
+    // 네이버(2026-11-09 연결 로그인): IdP 가 네이버를 켰으면 같은 zk 로그인 — 인증 창이 zkID 계정에 연결된 네이버로 본인 확인한다. 아니면 안내만.
+    $('naverLoginBtn').addEventListener('click', async () => {
+      if (!info) { try { await loadInfo(); } catch { /* 아래에서 꺼진 것으로 본다 */ } }
+      if (info?.oidc?.providers?.naver?.enabled) { closeLoginModal(); startIdpLogin({ provider: 'naver' }); return; }
+      showModalNote('rp_social_not_in_demo', '이 데모에서는 준비되지 않았습니다');
+    });
     renderModalTexts();
 
-    /** opts.provider: 어느 버튼으로 들어왔는지('google' | 없음) — 승인 팝업이 미등록 안내를 고르는 데만 쓴다(증명·검증에는 쓰지 않는다). */
+    /** opts.provider: 어느 버튼으로 들어왔는지('google' | 'naver' | 없음) — 승인 팝업이 미등록 안내를 고르는 데만 쓴다(증명·검증에는 쓰지 않는다). */
     async function startIdpLogin(opts = {}) {
       // tourBusy: 처리 중에는 체험 모드의 잠금 적용이 이 버튼을 건드리지 않는다(폴링이 요청 도중에 다시 열지 않게).
       if ($('loginBtn').dataset.tourBusy === '1') return;   // 처리 중 재클릭 무시(버튼은 항상 활성 상태로 둔다 — 2026-10-15)

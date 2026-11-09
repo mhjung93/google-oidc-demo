@@ -523,13 +523,14 @@
     const PENDING_KEY = 'mode3.authorize.pending';
     const PENDING_MAX_AGE_MS = 10 * 60_000;
     // purpose 'register'(2026-11-09, 사용자 결정): 미등록 지갑의 첫 서비스 로그인 — 인증 창은 아이디·비밀번호만 받고(auid 는 아직 없다) 등록 코드·uid 를 돌려준다.
-    async function goIdpAuth(req, evOrigin, { purpose = 'issue' } = {}) {
+    async function goIdpAuth(req, evOrigin, { purpose = 'issue', method = 'password' } = {}) {
       const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
       // 2026-11-09(사용자 결정): auid 를 쿼리로 넘기지 않는다 — 인증 창에서 uid·비밀번호·auid 를 모두 직접 넣는다(auid 는 지갑 계정 탭 "상세" 에서 복사).
       sessionStorage.setItem(PENDING_KEY, JSON.stringify({ req, origin: evOrigin, nonce, at: Date.now() }));
       const u = new URL(`${cfg.ciaUrl}/login`);
       u.searchParams.set('nonce', nonce); u.searchParams.set('wallet', location.origin); u.searchParams.set('return', '1');
       if (purpose === 'register') u.searchParams.set('purpose', 'register');
+      if (method !== 'password') u.searchParams.set('method', method);   // 2026-11-09 연결 로그인: 인증 창이 Google·네이버로 본인 확인
       location.assign(u.toString());
     }
     /** IdP 에서 돌아온 길인지 본다. 돌아온 길이 아니면 null, 저장분과 nonce 가 맞으면 { req, origin, code, purpose, uid }, 어긋나면 { req: null }(저장분은 지운다). */
@@ -810,26 +811,18 @@
           // 미등록 지갑(2026-11-09): zkID 인증 창으로 가되 등록 모드(purpose=register)로 — 아이디·비밀번호만 넣으면 등록 코드를 들고 돌아온다(위 분기).
           // 상태를 못 읽으면 등록된 것으로 보고 진행한다(IdP 가 다시 걸러준다).
           let registered = true; try { registered = Boolean((await (await fetch('/wallet/status')).json()).registered); } catch { /* 진행 */ }
-          if (req.provider === 'google') {
-            // 2026-11-06(사용자 지적): RP 의 "Google 계정으로 로그인" 으로 들어왔으면 zkID 인증 창으로 가지 않는다 — 미등록 지갑은 그 자리에서 Google 로
-            // 등록(googleRegister)한 뒤 아래 Google 발급으로 이어 가고(Google 로그인 두 번: 등록 nonce·발급 nonce 가 다르다), 아이디 계정으로 등록된
-            // 지갑은 Google 로 발급할 수 없으므로(uid 가 등록에 묶임) 사유를 내고 멈춘다.
-            if (registered) {
-              // 아이디 계정 지갑: Google 계정을 이 계정에 연결해 로그인한다(IdP 가 첫 번에 연결, 그 뒤엔 같은 Google 계정만) — 인증 창 대신 Google 이 본인 확인.
-              step(tt('wallet_google_link') || 'zkID 아이디 계정에 Google 계정을 연결해 로그인합니다…');
-            } else {
-              if (!(await connect())) return;
-              say('wallet_prog_registering');
-              const r = await googleRegister({ step, log });
-              if (!r.ok) return reply(r);
-              step('Google 계정으로 등록됨 — 이어서 로그인합니다.');
-            }
-            provider = 'google';
-          } else {
-            if (!registered) { step(tt('wallet_auth_to_idp_register') || 'zkID 에 처음 등록합니다 — zkID 로그인 페이지로 이동합니다…'); say('wallet_auth_to_idp_register'); await goIdpAuth(req, evOrigin, { purpose: 'register' }); return; }
-            step(tt('wallet_auth_to_idp') || 'IdP 로그인 페이지로 이동합니다…'); say('wallet_auth_to_idp'); await goIdpAuth(req, evOrigin); return;
-          }
+          // 연결 로그인(2026-11-09, 스펙 linked-logins L2·L6): RP 의 Google·네이버 버튼으로 왔으면 zkID 인증 창을 그 공급자 방식(method)으로 연다 — 인증 창이
+          // 공급자 인증을 받아 연결된 zkID 계정의 코드를 준다(미등록 지갑은 등록 모드). 2026-11-06 의 "미등록이면 Google 래퍼 가입, 아이디 지갑이면 Google
+          // 토큰으로 발급하며 연결" 은 없앴다 — 연결은 zkID 페이지(/user)에서만 한다.
+          const method = req.provider === 'google' || req.provider === 'naver' ? req.provider : 'password';
+          const via = method === 'password' ? null : (tt(`idp_links_${method}`) || method);
+          if (!registered) { step(tt('wallet_auth_to_idp_register') || 'zkID 에 처음 등록합니다 — zkID 로그인 페이지로 이동합니다…'); say('wallet_auth_to_idp_register'); await goIdpAuth(req, evOrigin, { purpose: 'register', method }); return; }
+          if (via) { step(tt('wallet_auth_to_idp_ext', { provider: via }) || `${via} 로 본인 확인하러 zkID 로그인 페이지로 이동합니다…`); say('wallet_auth_to_idp_ext', { provider: via }); }
+          else { step(tt('wallet_auth_to_idp') || 'IdP 로그인 페이지로 이동합니다…'); say('wallet_auth_to_idp'); }
+          await goIdpAuth(req, evOrigin, { method }); return;
         }
+        // Google 래퍼 지갑(Google 로 가입, provider 'google')은 지금처럼 이 팝업의 Google 버튼으로 발급한다(L7) — 네이버 버튼으로는 로그인하지 않는다.
+        if (authCodeNow === null && provider !== 'demo' && req.provider === 'naver') return reply({ ok: false, reason: 'provider_mismatch' });
 
         if (!(await connect())) return;
         step('로그인 증인 준비 중…');

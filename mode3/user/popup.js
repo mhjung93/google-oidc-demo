@@ -228,6 +228,8 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false } }
         return reply({ ok: true, reauth: true });
       }
       // Google 로 로그인(RP 로그인 흐름, 2026-10-16): IdP 의 OIDC 설정을 읽는다 — 꺼져 있으면 Google 경로는 없다.
+      // 연결 로그인(2026-11-09, 리뷰 I-3): 네이버 로그인은 Snap 지갑(zkID 인증 창 method=naver)에서만 된다 — 이 web 모드 페이지는 인증 창의 method 를 모른다.
+      if (req.provider === 'naver') { step('네이버 로그인은 Snap 지갑에서만 된다.'); return reply({ ok: false, reason: 'snap_mode_only' }); }
       const google = req.provider === 'google';
       let oidcCfg = null;
       if (google) {

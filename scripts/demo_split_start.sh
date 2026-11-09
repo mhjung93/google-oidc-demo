@@ -15,6 +15,13 @@
 #                                                           # 있어야 발급한다(2026-10-22). key 면 옛 방식(서명만) — CIA_DEMO_ACCOUNTS 는 그대로 미설정(가입(POST /cia/signup)만 쓴다)
 #        OIDC=0 bash scripts/demo_split_start.sh          # Google(OIDC 래퍼) 끔. 기본은 켬(2026-10-26): IdP 에 MODE3_OIDC_CLIENT_ID 를 넘긴다 — 값은 환경변수 MODE3_OIDC_CLIENT_ID,
 #                                                          # 없으면 이 VM .env 의 GOOGLE_CLIENT_ID(Mode 1 공유 ID, 출력하지 않는다). Google 콘솔 승인 오리진에 http://localhost:5100 이 있어야 한다.
+#        (2026-11-09 연결 로그인) 브라우저는 IdP 를 http://localhost:4100 으로 연다 — 이 VM 의 SSH 터널(127.0.0.1:4100 → IdP VM:4100)이다. Google 은 http 원본으로
+#                                                          # localhost 만 받으므로 /user 의 "Google 계정 연결"·인증 창의 Google 인증이 이 주소에서만 된다. Google 콘솔 승인 오리진에 http://localhost:4100 도 넣는다.
+#                                                          # 지갑의 MODE3_CIA_URL·RP 의 MODE3_CIA_BROWSER_URL(페이지 링크) 이 이 주소다(RP 의 서버 간 호출은 VM 주소). 기본은 snap 모드만 켬,
+#                                                          # SPLIT_IDP_TUNNEL=0/1 로 바꾼다(0 이면 VM 주소 — Google 연결은 안 된다).
+#                                                          # :4100 을 한 머신 데모 IdP 가 쓰고 있으면 중단한다.
+#        네이버 연결: 환경변수(없으면 이 VM .env) 의 MODE3_NAVER_CLIENT_ID·MODE3_NAVER_CLIENT_SECRET 이 있으면 IdP 에 넘긴다(출력하지 않는다, on/off 만).
+#                                                          # 네이버 개발자센터: 서비스 URL http://localhost:4100, Callback URL http://localhost:4100/cia/oidc/naver/callback.
 # 주소는 SPLIT_HOST_IP·SPLIT_IDP_IP·SPLIT_RP1_IP·SPLIT_RP2_IP·SPLIT_SSH_USER 로 바꿀 수 있다. 로그는 DEMO_LOG_DIR(기본 /tmp/mode3-split).
 # 새 체인은 Ethernal 플러그인을 싣지 않는 최소 hardhat 설정으로 띄운다 — 프로젝트 설정은 노드 기동 때 .env 의 Ethernal 워크스페이스를 초기화한다.
 # 사용자 페이지는 이 VM 의 .env 를 읽지 않는다(DOTENV_CONFIG_PATH) — 라이브 IdP 의 고정 공개키 같은 값이 섞이지 않게.
@@ -32,14 +39,18 @@ LOGS="${DEMO_LOG_DIR:-/tmp/mode3-split}"; mkdir -p "$LOGS"
 TS=$(date '+%Y%m%d-%H%M')
 ADMIN="${CIA_ADMIN_SECRET:-idp}"   # IdP 관리자 페이지 비밀번호(2026-11-05, 사용자 요청: 쉽게 idp)
 WALLET_ORIGIN="http://localhost:$USER_PORT"
+TUNNEL_SPEC="-L 127.0.0.1:$IDP_PORT:127.0.0.1:$IDP_PORT"   # 2026-11-09: 브라우저용 IdP 주소(localhost:4100) 터널 — stop_local 이 이 명령줄로 찾는다
+# 기본은 snap 모드에서만 켠다(리뷰 Minor 7) — web 모드 지갑(:5200)은 연결 로그인을 쓰지 않아(인증 창 method 를 모른다) 한 머신 IdP(:4100)와 같이 띄울 수 있게 둔다.
+SPLIT_IDP_TUNNEL="${SPLIT_IDP_TUNNEL:-$([ "$WALLET_MODE" = snap ] && echo 1 || echo 0)}"
+if [ "$SPLIT_IDP_TUNNEL" != 0 ]; then IDP_UI="http://localhost:$IDP_PORT"; else IDP_UI="http://$IDP:$IDP_PORT"; fi
 on() { local h="$1"; shift; ssh -o BatchMode=yes -o ConnectTimeout=5 "$U@$h" "$@"; }
 
 # 이 VM 쪽은 포트 주인 중 명령줄이 우리 것과 맞는 것만 내린다(라이브 데모와 명령줄이 같은 사용자 페이지는 포트로 가른다).
 stop_local() {
-  for spec in "$APP_PORT:chain.config.cjs" "$REV_PORT:chain.config.cjs" "5200:mode3_user_static.js" "5100:mode3_wallet_agent.js" "$SNAP_PORT:mm-snap serve"; do
+  for spec in "$APP_PORT:chain.config.cjs" "$REV_PORT:chain.config.cjs" "5200:mode3_user_static.js" "5100:mode3_wallet_agent.js" "$SNAP_PORT:mm-snap serve" "$IDP_PORT:$TUNNEL_SPEC"; do
     port="${spec%%:*}"; want="${spec#*:}"
     for pid in $(ss -ltnp 2>/dev/null | grep ":$port " | grep -oE "pid=[0-9]+" | cut -d= -f2 | sort -u); do
-      tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q "$want" && kill "$pid" && echo "stop :$port (pid $pid)"
+      tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -qF -- "$want" && kill "$pid" && echo "stop :$port (pid $pid)"
     done
   done
 }
@@ -55,6 +66,7 @@ echo "SPLIT_START $(date '+%H:%M:%S')  (logs: $LOGS)"
 # 0. 내림
 stop_remote; stop_local; sleep 2
 for p in $APP_PORT $REV_PORT $USER_PORT; do ss -ltn | grep -q ":$p " && { echo "ABORT :$p 를 다른 프로세스가 쓰고 있다"; exit 1; }; done
+if [ "$SPLIT_IDP_TUNNEL" != 0 ] && ss -ltn | grep -q ":$IDP_PORT "; then echo "ABORT :$IDP_PORT 를 다른 프로세스(한 머신 데모 IdP?)가 쓰고 있다 — IdP 터널을 열 수 없다(SPLIT_IDP_TUNNEL=0 이면 터널 없이)"; exit 1; fi
 
 # 1. (선택) 코드·의존성·Node 다시 보내기 — 서버가 읽는 것만. 비밀·상태 파일, .env, ptau, 문서는 보내지 않는다.
 if [ "${SYNC:-0}" = "1" ]; then
@@ -116,7 +128,8 @@ CIA_MIRRORS=$MIRRORS
 MODE3_WALLET_AGENT_ORIGIN=$WALLET_ORIGIN
 MODE3_VERIFIER_ADDRESS=
 MODE3_RP_FACTORY_ADDRESS=
-MODE3_BIND_HOST=0.0.0.0"
+MODE3_BIND_HOST=0.0.0.0
+MODE3_CIA_BROWSER_URL=$IDP_UI"
 put_env() { on "$1" "umask 077 && cat > ~/zkd-demo/role.env && chmod 600 ~/zkd-demo/role.env"; }
 # OIDC 래퍼 클라이언트 ID(2026-10-26 Snap OIDC 래퍼 §3) — 값은 어디에도 출력하지 않는다(진행 줄은 on/off 만).
 oidc_client_id() { [ -n "${MODE3_OIDC_CLIENT_ID:-}" ] && { printf '%s' "$MODE3_OIDC_CLIENT_ID"; return; }; [ -f "$1" ] && sed -n 's/^GOOGLE_CLIENT_ID=//p' "$1" | head -n1 | tr -d '\r"'"'"; }
@@ -124,7 +137,14 @@ OIDC_LINE=""
 if [ "${OIDC:-1}" != 0 ]; then OIDC_ID="$(oidc_client_id .env)"; [ -n "$OIDC_ID" ] && OIDC_LINE="MODE3_OIDC_CLIENT_ID=$OIDC_ID"; unset OIDC_ID; fi
 echo "  OIDC(Google): $([ -n "$OIDC_LINE" ] && echo on || echo off)"
 if [ -z "${MODE3_OIDC_CLIENT_ID:-}" ] && [ -n "$OIDC_LINE" ]; then echo "  경고: .env 의 GOOGLE_CLIENT_ID(Mode 1 공유 클라이언트 ID)를 IdP 에 넘긴다 — 같은 ID 의 다른 앱 토큰을 받을 수 있다(선행 스펙 §5)"; fi
-printf '%s\n' "$COMMON" "CIA_PORT=$IDP_PORT" "CIA_RPC_URL=http://$HOST:$REV_PORT" "CIA_CHAIN_RPCS=$APP_CHAIN=http://$HOST:$APP_PORT" "CIA_ADMIN_SECRET=$ADMIN" "CIA_ADMIN_OPEN=${ADMIN_OPEN:-0}" "CIA_PUBLIC_URL=http://$IDP:$IDP_PORT" "CIA_ISSUE_AUTH=${ISSUE_AUTH:-$([ "$WALLET_MODE" = snap ] && echo code || echo key)}" ${OIDC_LINE:+"$OIDC_LINE"} | put_env "$IDP"
+# 네이버 연결(2026-11-09) — 값은 출력하지 않는다. 콜백은 브라우저가 IdP 를 여는 주소(IDP_UI)여야 한다(로그인 세션 쿠키가 그 호스트에 있다).
+env_or_dotenv() { [ -n "${!1:-}" ] && { printf '%s' "${!1}"; return; }; [ -f .env ] && sed -n "s/^$1=//p" .env | head -n1 | tr -d '\r"'"'"; }
+NAVER_ID="$(env_or_dotenv MODE3_NAVER_CLIENT_ID)"; NAVER_SECRET="$(env_or_dotenv MODE3_NAVER_CLIENT_SECRET)"
+NAVER_LINES=()
+[ -n "$NAVER_ID" ] && [ -n "$NAVER_SECRET" ] && NAVER_LINES=("MODE3_NAVER_CLIENT_ID=$NAVER_ID" "MODE3_NAVER_CLIENT_SECRET=$NAVER_SECRET" "MODE3_NAVER_REDIRECT_URI=$IDP_UI/cia/oidc/naver/callback")
+unset NAVER_ID NAVER_SECRET
+echo "  네이버: $([ ${#NAVER_LINES[@]} -gt 0 ] && echo on || echo off)   브라우저용 IdP 주소: $IDP_UI"
+printf '%s\n' "$COMMON" "CIA_PORT=$IDP_PORT" "CIA_RPC_URL=http://$HOST:$REV_PORT" "CIA_CHAIN_RPCS=$APP_CHAIN=http://$HOST:$APP_PORT" "CIA_ADMIN_SECRET=$ADMIN" "CIA_ADMIN_OPEN=${ADMIN_OPEN:-0}" "CIA_PUBLIC_URL=http://$IDP:$IDP_PORT" "CIA_ISSUE_AUTH=${ISSUE_AUTH:-$([ "$WALLET_MODE" = snap ] && echo code || echo key)}" ${OIDC_LINE:+"$OIDC_LINE"} ${NAVER_LINES[@]+"${NAVER_LINES[@]}"} | put_env "$IDP"
 printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP1_PORT" "MODE3_RP_NAME=zkONE" "MODE3_RP_PUBLIC_ORIGIN=http://$RP1:$RP1_PORT" "MODE3_CIA_URL=http://$IDP:$IDP_PORT" \
   "CIA_RPC_URL=http://$HOST:$APP_PORT" "MODE3_RELAYER_INDEX=0" | put_env "$RP1"
 printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP2_PORT" "MODE3_RP_NAME=zkTWO" "MODE3_RP_PUBLIC_ORIGIN=http://$RP2:$RP2_PORT" "MODE3_CIA_URL=http://$IDP:$IDP_PORT" \
@@ -135,18 +155,22 @@ start_remote() { # $1 호스트 $2 스크립트 $3 포트
   echo "$2 at $1:$3 failed — $1 의 ~/zkd-demo/logs/${2%.js}.log"; exit 1
 }
 start_remote "$IDP" cia.js $IDP_PORT
+if [ "$SPLIT_IDP_TUNNEL" != 0 ]; then
+  ssh -o BatchMode=yes -o ConnectTimeout=5 -o ExitOnForwardFailure=yes -f -N $TUNNEL_SPEC "$U@$IDP" && curl -s -m 3 -o /dev/null "$IDP_UI/mode3/health" \
+    && echo "IdP 터널 up: $IDP_UI → $IDP:$IDP_PORT" || { echo "IdP 터널 실패($TUNNEL_SPEC $U@$IDP)"; exit 1; }
+fi
 : > "$LOGS/empty.env"
 if [ "$WALLET_MODE" = "snap" ]; then
   # Snap 모드(2026-10-22): 에이전트는 증명·동기화만, 비밀은 MetaMask 의 Snap 안. 릴레이어 계정은 RP 둘(0·1)과 겹치지 않게 2. .env 는 읽지 않는다(DOTENV_CONFIG_PATH).
   DOTENV_CONFIG_PATH="$LOGS/empty.env" MODE3_WALLET_SECRETS=snap MODE3_SNAP_ID="local:http://localhost:$SNAP_PORT" MODE3_WALLET_PORT=$USER_PORT MODE3_WALLET_PUBLIC_ORIGIN="$WALLET_ORIGIN" \
-    MODE3_CIA_URL="http://$IDP:$IDP_PORT" MODE3_RP_ORIGIN="http://$RP1:$RP1_PORT,http://$RP2:$RP2_PORT" MODE3_RELAYER_INDEX=2 MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}" \
+    MODE3_CIA_URL="$IDP_UI" MODE3_RP_ORIGIN="http://$RP1:$RP1_PORT,http://$RP2:$RP2_PORT" MODE3_RELAYER_INDEX=2 MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}" \
     CIA_RPC_URL="http://127.0.0.1:$APP_PORT" MODE3_REV_CHAIN_RPC="http://127.0.0.1:$REV_PORT" CIA_LOG_ADDRESS="$LOGADDR" MODE3_MIRROR_ADDRESS="$MIRROR" \
     setsid nohup node mode3_wallet_agent.js > "$LOGS/wallet_agent.log" 2>&1 < /dev/null &
   (cd snap-mode3 && setsid nohup npm run serve > "$LOGS/snap_serve.log" 2>&1 < /dev/null &)
   timeout 40 bash -c "until ss -ltn | grep -q ':$SNAP_PORT '; do sleep 1; done" && echo "snap serve :$SNAP_PORT up" || { echo "snap serve failed — $LOGS/snap_serve.log"; exit 1; }
 else
 DOTENV_CONFIG_PATH="$LOGS/empty.env" MODE3_PK_CIA_X="" MODE3_PK_CIA_Y="" MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}" MODE3_DEMO_GENERATION="$(date +%s)" MODE3_WALLET_PORT=$USER_PORT MODE3_WALLET_PUBLIC_ORIGIN="$WALLET_ORIGIN" \
-  MODE3_CIA_URL="http://$IDP:$IDP_PORT" MODE3_RP_ORIGIN="http://$RP1:$RP1_PORT,http://$RP2:$RP2_PORT" \
+  MODE3_CIA_URL="$IDP_UI" MODE3_RP_ORIGIN="http://$RP1:$RP1_PORT,http://$RP2:$RP2_PORT" \
   CIA_RPC_URL="http://127.0.0.1:$APP_PORT" MODE3_REV_CHAIN_RPC="http://127.0.0.1:$REV_PORT" CIA_LOG_ADDRESS="$LOGADDR" MODE3_MIRROR_ADDRESS="$MIRROR" \
   setsid nohup node mode3_user_static.js > "$LOGS/user_static.log" 2>&1 < /dev/null &
 fi

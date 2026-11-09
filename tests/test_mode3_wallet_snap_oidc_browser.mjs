@@ -40,8 +40,9 @@ async function launchBrowser() {
 
 const browser = await launchBrowser();
 const provider = getProvider();
-const stack = await startIsolatedMode3Stack({ walletEnv: { MODE3_WALLET_SECRETS: 'snap' }, ciaEnv: { CIA_ISSUE_AUTH: 'code' }, autoRelay: true, oidc: true, walletHost: 'localhost' });
-const { cia, wallet, rp, oidc: stub } = stack;
+// ciaHost 'localhost'(2026-11-09 연결 로그인): 인증 창·/user 도 localhost 오리진이라 GIS(스텁)가 그려진다 — 분리 데모의 SSH 터널과 같은 모양. naver: 네이버 흉내.
+const stack = await startIsolatedMode3Stack({ walletEnv: { MODE3_WALLET_SECRETS: 'snap' }, ciaEnv: { CIA_ISSUE_AUTH: 'code' }, autoRelay: true, oidc: true, naver: true, walletHost: 'localhost', ciaHost: 'localhost' });
+const { cia, wallet, rp, oidc: stub, naver: naverStub, ciaUiBase: ciaUi } = stack;
 const SUB = 'g-browser-1';
 
 // ---- 하네스가 맡는 것: Snap 저장소, 대화상자, 체인 전송 (test_mode3_browser.mjs 와 같다) ----
@@ -108,7 +109,7 @@ try {
   });
 
   await t('/user: "Google 로 등록" → 지갑 팝업 → Snap 보류 등록(확인 창 없음, 2026-11-05) → 팝업의 Google 버튼 → 등록됨(provider·uid=H(provider|sub)); IdP 로그인 없이', async () => {
-    const u = await context.newPage(); await u.goto(`${cia.base}/user?google=1`);   // 2026-11-06: Google 등록 버튼은 ?google=1 일 때만 보인다
+    const u = await context.newPage(); await u.goto(`${ciaUi}/user?google=1`);   // 2026-11-06: Google 등록 버튼은 ?google=1 일 때만 보인다
     await u.waitForSelector('#registerGoogleBtn:not([hidden])', { timeout: 15_000 });
     const dBefore = dialogs.length;
     const [popup] = await Promise.all([context.waitForEvent('page'), u.click('#registerGoogleBtn')]);
@@ -127,7 +128,7 @@ try {
     assert.ok(full.uid && full.sk_u && full.s_u, 'Snap 에 완성된 등록이 있어야 한다');
     // IdP 등록·에이전트 저장은 끝났는데 Snap storeRegistration 이 안 된 상태 — s_u·sk_u 만 남긴다
     for (const k of ['uid', 'auid', 'slot', 'attrs', 'provider']) snapState.registration[k] = null;
-    const u = await context.newPage(); await u.goto(`${cia.base}/user?google=1`);   // 2026-11-06: Google 등록 버튼은 ?google=1 일 때만 보인다
+    const u = await context.newPage(); await u.goto(`${ciaUi}/user?google=1`);   // 2026-11-06: Google 등록 버튼은 ?google=1 일 때만 보인다
     await u.waitForSelector('#registerGoogleBtn:not([hidden])', { timeout: 15_000 });
     const [popup] = await Promise.all([context.waitForEvent('page'), u.click('#registerGoogleBtn')]);   // prepareRegister 는 확인 창 없이 같은 비밀을 돌려준다
     await waitText(u, '#userVerdict', '등록됨', 60_000);   // 2026-11-05: 결과 문구에 uid 는 없다 — 복원된 uid 는 아래 Snap 상태로 본다
@@ -174,25 +175,65 @@ try {
     assert.equal(a?.disabled, true);
   });
 
-  await t('zkONE "Google 계정으로 로그인" + 미등록 지갑(2026-11-06): 팝업이 그 자리에서 Google 등록 → Google 발급 → 로그인 성공', async () => {
-    await context.addInitScript(() => { window.__gsiSub = 'g-browser-2'; });   // 새 Google 계정 — 이후 생기는 페이지의 GSI 스텁이 이 sub 로 토큰을 받는다
+  // 2026-11-09 연결 로그인(스펙 linked-logins L1·L2·L6): 아이디 계정에 /user 에서 Google·네이버를 연결 → 미등록 지갑 + RP 의 Google 버튼 → 인증 창이
+  // 연결된 Google 로 본인 확인(등록 모드) → 등록·발급 → 로그인. 지갑은 아이디 계정(provider demo)이고 Google 래퍼 가입은 일어나지 않는다(2026-11-06 흐름 대체).
+  const LINK_ID = 'linkuser1', LINK_PWD = 'linkpw-12345', LINK_GSUB = 'g-linked-1', LINK_NSUB = 'n-linked-1';
+  let linkUid = null;
+  await t('/user: 아이디 계정에 Google·네이버 연결("연결된 로그인" 카드 — Google 은 GIS, 네이버는 IdP 를 거쳐 다녀온다)', async () => {
+    const s = await cia.post('/cia/signup', { id: LINK_ID, pwd: LINK_PWD }); assert.equal(s.status, 201, j(s.body)); linkUid = s.body.uid;
+    const u = await context.newPage(); await u.goto(`${ciaUi}/user`);
+    await u.fill('#loginId', LINK_ID); await u.fill('#loginPwd', LINK_PWD); await u.click('#loginBtn');
+    await u.waitForSelector('#linksCard:not([hidden])');
+    await u.evaluate((sub) => { window.__gsiSub = sub; }, LINK_GSUB);
+    await u.click('#linkGoogleBtn');
+    await u.waitForSelector('#linkGsiSlot .gsi-stub'); await u.click('#linkGsiSlot .gsi-stub');
+    await waitText(u, '#linksVerdict', 'Google 계정을 연결했습니다');
+    naverStub.setNextSub(LINK_NSUB);
+    await u.click('#linkNaverBtn');   // IdP → 네이버 흉내(바로 code) → 콜백 → /user?linked=naver
+    await waitText(u, '#linksVerdict', '네이버 계정을 연결했습니다');
+    assert.match(await text(u, '#linkGoogleState'), /연결됨/); assert.match(await text(u, '#linkNaverState'), /연결됨/);
+    assert.equal(new URL(u.url()).searchParams.has('linked'), false, '돌아온 주소의 ?linked 는 지운다');
+    await u.close();
+  });
+
+  /** RP 모달의 버튼(btnId)으로 로그인을 시작하고 팝업을 돌려준다(앞 케이스의 세션이 복원돼 있으면 먼저 로그아웃). */
+  async function startRpLogin(rpPage, btnId) {
+    await rpPage.goto(rp.base);
+    if (await rpPage.$eval('#loginBtn', (b) => b.hidden)) { await rpPage.click('#logoutBtn'); await rpPage.waitForSelector('#loginBtn:not([hidden])'); }
+    await rpPage.click('#loginBtn');
+    const [popup] = await Promise.all([context.waitForEvent('page'), rpPage.click(`#${btnId}`)]);
+    return popup;
+  }
+  await t('zkONE "Google 계정으로 로그인" + 미등록 지갑: 인증 창(등록 모드, method=google) → 연결된 Google → 등록 → 발급 → 로그인 성공, 지갑은 아이디 계정', async () => {
     assert.equal((await wallet.post('/wallet/reset', { confirm: true })).status, 200, '에이전트 등록 비움');
     snapState.registration = null; snapState.userCred = null;                   // Snap 비움
-    const rpPage = await context.newPage(); await rpPage.goto(rp.base);
-    if (await rpPage.$eval('#loginBtn', (b) => b.hidden)) { await rpPage.click('#logoutBtn'); await rpPage.waitForSelector('#loginBtn:not([hidden])'); }   // 앞 케이스의 세션이 복원돼 있을 수 있다(idpLogin 과 같다)
-    await rpPage.click('#loginBtn');
-    const [popup] = await Promise.all([context.waitForEvent('page'), rpPage.click('#googleLoginBtn')]);
-    const popupLog = []; popup.on('console', (m) => popupLog.push(`${m.type()}: ${m.text()}`)); popup.on('pageerror', (e) => popupLog.push(`pageerror: ${e.message}`));
-    await popup.waitForSelector('#gsiBox .gsi-stub', { timeout: 60_000 });    // 1) 등록 토큰
-    const first = await popup.$('#gsiBox .gsi-stub');
-    await popup.click('#gsiBox .gsi-stub');
-    // 등록이 끝나면 팝업이 곧바로 발급용 Google 버튼을 새로 그린다("Google 계정으로 등록됨" 안내는 바로 다음 안내로 덮여 잡을 수 없다) — 새 버튼(다른 요소)을 기다린다.
-    await popup.waitForFunction((prev) => { const b = document.querySelector('#gsiBox .gsi-stub'); return Boolean(b) && b !== prev; }, first, { timeout: 60_000 });   // 2) 발급 토큰 — 새로 그려진 버튼
-    await popup.click('#gsiBox .gsi-stub');
+    const rpPage = await context.newPage();
+    const popup = await startRpLogin(rpPage, 'googleLoginBtn');
+    await popup.waitForURL(/\/login\?/, { timeout: 60_000 });
+    const pu = new URL(popup.url());
+    assert.equal(pu.origin, ciaUi); assert.equal(pu.searchParams.get('method'), 'google'); assert.equal(pu.searchParams.get('purpose'), 'register');
+    await popup.waitForSelector('#authGsiSlot .gsi-stub', { timeout: 30_000 });
+    assert.equal(await popup.$eval('#authUidRow', (el) => el.hidden), true, '아이디·비밀번호 칸은 숨긴다');
+    await popup.evaluate((sub) => { window.__gsiSub = sub; }, LINK_GSUB);
+    await popup.click('#authGsiSlot .gsi-stub');
+    await popup.waitForSelector('#authGo:not([disabled])'); await popup.click('#authGo');
     await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
     const st = (await wallet.get('/wallet/status')).body;
-    assert.equal(st.registered, true); assert.equal(st.provider, stub.provider, '등록 provider 는 발급자 스텁의 것'); assert.equal(String(st.uid), uidOf(stub.provider, 'g-browser-2'));
-    assert.ok((await cia.adminGet('/cia/accounts')).body.accounts.some((x) => String(x.uid) === uidOf(stub.provider, 'g-browser-2')), 'IdP 에 Google 계정이 생겼다');
+    assert.equal(st.registered, true); assert.equal(st.provider, 'demo', '아이디 계정 지갑'); assert.equal(String(st.uid), String(linkUid));
+    assert.equal((await cia.adminGet('/cia/accounts')).body.accounts.some((x) => String(x.uid) === uidOf(stub.provider, LINK_GSUB)), false, 'Google 래퍼 계정은 생기지 않는다');
+    await rpPage.close();
+  });
+  await t('zkONE "네이버로 로그인" + 등록된 아이디 지갑: 인증 창(method=naver) → 네이버 흉내 → auid 입력·계속 → 로그인 성공', async () => {
+    const rpPage = await context.newPage();
+    const popup = await startRpLogin(rpPage, 'naverLoginBtn');
+    await popup.waitForURL(/\/login\?.*method=naver/, { timeout: 60_000 });
+    naverStub.setNextSub(LINK_NSUB);
+    await popup.click('#authNaverBtn');   // 인증 창 → IdP → 네이버 흉내 → 콜백 → 인증 창(ticket)
+    await popup.waitForSelector('#authGo:not([disabled])', { timeout: 30_000 });
+    assert.equal(new URL(popup.url()).searchParams.has('ticket'), false, 'ticket 은 주소창에서 지운다');
+    await popup.fill('#authAuid', String((await wallet.get('/wallet/status')).body.auid));
+    await popup.click('#authGo');
+    await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
     await rpPage.close();
   });
 
