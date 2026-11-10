@@ -3,7 +3,7 @@
 // userMode:'web'(기본 'agent') 이면 지갑 자리에 mode3_wallet_agent.js 대신 mode3_user_static.js 를 띄운다(태스크 5).
 // oidc(스펙 2026-10-16): 주면 startIsolatedCia({ oidc }) 로 넘겨 발급자 스텁을 띄우고 stack.oidc 로 돌려준다. walletHost(기본 '127.0.0.1'):
 // 지갑 오리진의 호스트 — IdP·RP·지갑 자식에 같은 오리진을 넣는다(서버는 127.0.0.1 에 listen 하므로 'localhost' 로도 닿는다).
-// naver(2026-11-09 연결 로그인): startIsolatedCia({ naver }) 로 넘겨 stack.naver 로 돌려준다. ciaHost(기본 '127.0.0.1'): 지갑이 아는(=브라우저가 여는)
+// ciaHost(기본 '127.0.0.1'): 지갑이 아는(=브라우저가 여는)
 // IdP 주소의 호스트 — 'localhost' 면 인증 창·/user 가 localhost 오리진이라 GIS(스텁 포함)가 그려진다. 분리 데모의 SSH 터널(L8)과 같은 모양. stack.ciaUiBase.
 import fs from 'node:fs';
 import os from 'node:os';
@@ -83,12 +83,12 @@ export async function startIsolatedMode3Stack(opts = {}) {
   //   extraRps: [{ name, env }] — 두 번째 이후 서비스. 첫 RP 와 같은 방식으로 띄워 승인·활성화를 기다리고 rps[] 로 돌려준다.
   //     릴레이어 계정 인덱스는 RP 마다 다르게 준다(첫 RP 0, 다음 1, …) — 팩토리 배포 nonce 가 겹치지 않게(MODE3_DEMO.md 두 번째 서비스 절).
   const { twoChains = false, revRpcUrl = 'http://127.0.0.1:8546', appRpcUrl = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545', extraRps = [] } = opts;
-  const { oidc = null, naver = null, walletHost = '127.0.0.1', ciaHost = '127.0.0.1', rpHost = '127.0.0.1' } = opts;   // rpHost(2026-11-10): 첫 RP 의 공개 오리진 호스트 — 'localhost' 면 RP 페이지의 GIS·네이버 콜백 쿠키가 맞는다
+  const { oidc = null, walletHost = '127.0.0.1', ciaHost = '127.0.0.1', rpHost = '127.0.0.1' } = opts;   // rpHost(2026-11-10): 첫 RP 의 공개 오리진 호스트 — 'localhost' 면 RP 페이지의 GIS·네이버 콜백 쿠키가 맞는다
   // 지갑 포트·오리진은 CIA 보다 **먼저** 잡는다 — CIA 의 /mode3/health CORS 허용 목록(설계 2026-09-25 §1.2)에
   // MODE3_WALLET_AGENT_ORIGIN 으로 넘겨야 한다. 호출자의 ciaEnv 가 우선한다.
   const walletPort = await freePort();
   const walletOrigin = `http://${walletHost}:${walletPort}`;
-  const cia = await startIsolatedCia({ env: { MODE3_WALLET_AGENT_ORIGIN: walletOrigin, ...ciaEnv }, oidc, naver, uiHost: ciaHost, ...(twoChains ? { revRpcUrl, appRpcUrl } : {}) });
+  const cia = await startIsolatedCia({ env: { MODE3_WALLET_AGENT_ORIGIN: walletOrigin, ...ciaEnv }, oidc, ...(twoChains ? { revRpcUrl, appRpcUrl } : {}) });
   const ciaUiBase = `http://${ciaHost}:${cia.port}`;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-stack-'));
   const rpPort = await freePort();
@@ -205,7 +205,7 @@ export async function startIsolatedMode3Stack(opts = {}) {
     return {
       cia, wallet, rp, rps, dir, walletStateFile, userMode, relay, relayIfBehind, withRelay,
       oidc: cia.oidc,   // oidc 옵션으로 띄웠으면 발급자 스텁(mint·stop), 아니면 null
-      naver: cia.naver, ciaUiBase,   // 2026-11-09: 네이버 흉내(naver 옵션) · 지갑이 쓰는 IdP 주소(ciaHost)
+      ciaUiBase,   // 지갑이 쓰는 IdP 주소(ciaHost)
       rpOriginForWallet: rpOrigin,   // rp:false 여도 지갑에는 이 값을 CORS 오리진으로 넘겼다
       /** 지갑 자식만 죽이고 같은 상태 파일·env 로 다시 띄운다. 메모리(세션 witness·증명 캐시)만 사라진다. */
       async restartWallet(extraEnv = {}) {   // extraEnv 는 restartRp 처럼 누적된다(2026-10-21)

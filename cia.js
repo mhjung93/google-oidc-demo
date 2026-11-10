@@ -47,7 +47,6 @@ import { CIA_STATE_VERSION, defaultCiaState, migrateCiaState, rpKeyTag, findRpSl
 import { buildAaHealth, applyHealthHeaders, bounded, originList } from './lib/mode3_health.js';
 import { createOidcVerifier, GOOGLE_DEFAULTS } from './lib/mode3_oidc.js';
 import { uidOf, regNonce, issueNonce, isRevokeNonce, REG_PREFIX, REVOKE_PREFIX, ISSUE_PREFIX } from './lib/mode3_oidc_nonce.js';
-import { NAVER_DEFAULTS, LINK_PREFIX, AUTH_PREFIX, LINK_SLOTS, createOnceStore, pkcePair, naverAuthorizeUrl, exchangeNaverCode, sanitizeAuthCtx, randomHex } from './lib/mode3_oidc_link.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.CIA_PORT) || 4100;
@@ -95,55 +94,6 @@ async function oidcUid(idToken, noncePrefix) {
   try { const v = await OIDC.verifier.verify(idToken, { noncePrefix }); return { uid: uidOf(OIDC.provider, v.sub), sub: v.sub, nonce: v.nonce }; }
   catch (e) { const status = OIDC_STATUS[e.reason]; if (!status) throw e; return { error: { status, body: { error: e.reason, reason: e.reason, detail: e.detail } } }; }
 }
-// 외부 로그인 연결(스펙 2026-11-09-mode3-linked-logins): zkID(아이디) 계정 하나에 Google·네이버를 공급자별로 하나씩 연결한다. 연결은 /user 에서만 하고,
-// RP 의 "Google/네이버로 로그인" 은 인증 창(/login?method=…)이 공급자 인증을 받아 연결된 계정의 1회용 코드를 낸다(L2). Google 칸은 위 OIDC(래퍼와 같은
-// 클라이언트)를 쓰고, 네이버는 인가 코드 + PKCE 다(네이버는 response_type=code 만 지원). 둘 다 client ID 가 없으면 꺼진다.
-const NAVER_CLIENT_ID = envStr('MODE3_NAVER_CLIENT_ID', null), NAVER_CLIENT_SECRET = envStr('MODE3_NAVER_CLIENT_SECRET', null);
-const NAVER = {
-  enabled: Boolean(NAVER_CLIENT_ID && NAVER_CLIENT_SECRET), provider: 'naver',
-  issuer: envStr('MODE3_NAVER_ISSUER', NAVER_DEFAULTS.issuer), jwksUrl: envStr('MODE3_NAVER_JWKS_URL', NAVER_DEFAULTS.jwksUrl),
-  authorizeUrl: envStr('MODE3_NAVER_AUTHORIZE_URL', NAVER_DEFAULTS.authorizeUrl), tokenUrl: envStr('MODE3_NAVER_TOKEN_URL', NAVER_DEFAULTS.tokenUrl),
-  clientId: NAVER_CLIENT_ID, clientSecret: NAVER_CLIENT_SECRET, redirectUri: envStr('MODE3_NAVER_REDIRECT_URI', `${PUBLIC_URL}/cia/oidc/naver/callback`),
-};
-NAVER.verifier = NAVER.enabled ? createOidcVerifier({ issuer: NAVER.issuer, jwksUrl: NAVER.jwksUrl, clientId: NAVER.clientId }) : null;
-if (NAVER.enabled) console.log(`[cia] 네이버 로그인 연결 켜짐: issuer=${NAVER.issuer}, redirect=${NAVER.redirectUri}`);
-// 리뷰 Minor 6: 콜백은 브라우저가 IdP 를 여는 주소여야 한다(로그인 세션 쿠키가 그 호스트에 있다) — 기본값(CIA_PUBLIC_URL)은 ID 토큰 iss 용이라 다를 수 있다.
-if (NAVER.enabled && envStr('MODE3_NAVER_REDIRECT_URI', null) === null) console.warn(`[cia] 경고: MODE3_NAVER_REDIRECT_URI 가 없어 ${NAVER.redirectUri} 를 쓴다 — 브라우저가 IdP 를 다른 주소(예: localhost)로 열면 연결이 login_required 로 끝난다`);
-const LINK_CFG = { google: OIDC, naver: NAVER };
-// 1회용(메모리, 5분): nonce(link:·auth:) → { purpose, uid? } · 'naver-state:'+state → { purpose, nonce, verifier, uid, ctx } · 'ticket:'+t → { provider, sub, purpose }
-// 리뷰 Minor 1: 인증 없이 채울 수 있는 것(auth nonce·auth 쪽 네이버 state)은 따로 담는다 — 그쪽을 쏟아부어도 로그인 세션이 필요한 연결 흐름·ticket 은 밀려나지 않는다.
-const linkOnce = createOnceStore();
-const authOnce = createOnceStore({ max: 2000 });
-const onceFor = (purpose) => (purpose === 'link' ? linkOnce : authOnce);
-/** (slot, sub) 에 연결된 계정 uid — 없으면 null. 계정 수가 데모 규모라 훑는다(색인을 따로 두면 해제·삭제 때 어긋날 수 있다). */
-function uidLinkedTo(slot, sub) {
-  for (const [uid, a] of Object.entries(state.accounts)) if (a.linked?.[slot]?.sub === sub) return uid;
-  return null;
-}
-/** 연결 규칙(스펙 §2.4, L3) — 실패는 { status, reason }, 성공은 null. 모든 검사를 지난 뒤에만 기록한다. */
-function linkAccount(uid, slot, sub) {
-  const a = state.accounts[uid];
-  if (!a || (a.provider ?? 'demo') !== 'demo') return { status: 409, reason: 'link_not_allowed' };
-  if (slot === 'google' && OIDC.enabled && own(state.accounts, uidOf(OIDC.provider, sub))) return { status: 409, reason: 'oidc_has_own_account' };
-  const other = uidLinkedTo(slot, sub);
-  if (other && other !== uid) return { status: 409, reason: 'oidc_linked_elsewhere' };
-  if (a.linked?.[slot] && a.linked[slot].sub !== sub) return { status: 409, reason: 'oidc_already_linked' };
-  a.linked = { ...(a.linked ?? {}), [slot]: { sub, linkedAt: a.linked?.[slot]?.linkedAt ?? new Date().toISOString() } };
-  persist();
-  return null;
-}
-/** 공급자 토큰 검증(서명·iss·aud·exp + nonce 접두어) → { sub, nonce } 또는 { error: { status, body } }. */
-async function verifyLinkToken(slot, idToken, noncePrefix) {
-  const cfg = LINK_CFG[slot];
-  if (!cfg?.enabled) return { error: { status: 503, body: { error: 'provider_disabled', reason: 'provider_disabled' } } };
-  if (typeof idToken !== 'string') return { error: { status: 400, body: { error: 'id_token 은 문자열', reason: 'oidc_invalid' } } };
-  try { const v = await cfg.verifier.verify(idToken, { noncePrefix }); return { sub: v.sub, nonce: v.nonce }; }
-  catch (e) { const status = OIDC_STATUS[e.reason]; if (!status) throw e; return { error: { status, body: { error: e.reason, reason: e.reason, detail: e.detail } } }; }
-}
-/** 화면용 연결 상태 — sub 는 내지 않는다. */
-const linkedView = (a) => Object.fromEntries(LINK_SLOTS.map((k) => [k, a.linked?.[k] ? { linkedAt: a.linked[k].linkedAt } : null]));
-/** 인증 창으로 되돌아가는 주소 — 맡겨 둔 쿼리(sanitizeAuthCtx 를 거친 것)에 extra 를 얹는다. */
-const loginBack = (ctx, extra) => { const q = new URLSearchParams(ctx); for (const [k, v] of Object.entries(extra)) q.set(k, v); return `/login?${q}`; };
 // 사용자 페이지가 브라우저에서 직접 부르는 라우트에만 연다(계획 2026-10-15 Task 6). 관리자 헤더는 허용 목록에 없다 —
 // 교차 오리진에서 관리자 경로를 부를 수 없다(관리자 페이지는 같은 오리진 /admin 이다). 문자열이 아니라 함수형 origin 이어야
 // 일치할 때만 헤더가 붙는다(에이전트의 loginCors 와 같은 이유).
@@ -633,9 +583,7 @@ app.get('/cia/public_keys', userCors, (req, res) => {
   // V10: canonicalChainId = 게시 로그가 있는 체인(selfChainId 와 같은 provider). mirrors = CIA_MIRRORS(릴레이 대상 거울, 2026-10-02 Task 6).
   res.json({ pk_CIA: S(ciaPub), ethAddress: ethWallet.address, heartbeatBlocks: Number(HEARTBEAT_BLOCKS), chainIds: [...CHAIN_RPCS.keys()], logAddress: LOG_ADDRESS,
     canonicalChainId: selfChainId, mirrors: MIRRORS.map(({ chainStr, address }) => ({ chainId: chainStr, address })),
-    oidc: { enabled: OIDC.enabled, provider: OIDC.provider, clientId: OIDC.clientId, issuer: OIDC.issuer,
-      // 연결 로그인(2026-11-09): /user·인증 창·RP 가 버튼을 켜고 끄는 데 쓴다. 네이버의 client ID 는 화면에 필요 없다(서버가 인가 주소를 만든다).
-      providers: { google: { enabled: OIDC.enabled, clientId: OIDC.clientId }, naver: { enabled: NAVER.enabled } } } });
+    oidc: { enabled: OIDC.enabled, provider: OIDC.provider, clientId: OIDC.clientId, issuer: OIDC.issuer } });   // 2026-11-10: 11-09 의 providers(zkID 쪽 연결)는 없앴다
 });
 
 // 속성 스키마 공개(스펙 2 §5.2, 인증 없음). 지갑·RP 가 기동 때 받아 술어 타입·정책 이름을 해석하고, 화면이 이름값을 그린다.
@@ -970,7 +918,7 @@ app.post('/cia/user/login', (req, res) => {
 app.post('/cia/user/logout', (req, res) => logoutRole(req, res, 'uid', 'operator'));
 app.get('/cia/user/me', requireUser, (req, res) => {
   const uid = req.session.uid, a = state.accounts[uid];
-  res.json({ uid, id: a.loginId ?? null, registered: Boolean(a.pk_u), auid: a.auid, slot: a.slot, provider: a.provider, linked: linkedView(a), disabled: a.disabled, activeCf_u: activeCfU(a), registryLeaf: a.slot === null ? null : registry.leafAt(a.slot).toString(), profile: a.profile ?? null });
+  res.json({ uid, id: a.loginId ?? null, registered: Boolean(a.pk_u), auid: a.auid, slot: a.slot, provider: a.provider, disabled: a.disabled, activeCf_u: activeCfU(a), registryLeaf: a.slot === null ? null : registry.leafAt(a.slot).toString(), profile: a.profile ?? null });
 });
 // 프로필(2026-11-09 Phase 1): OIDC profile 스코프의 `name` 한 칸. 사용자가 속성 도구(지갑 오리진 /attr.html)에서 만든 커밋먼트를 붙여 넣는다 —
 // IdP 는 형식만 보고(한 줄·256자 이하) 뜻은 모른다(불투명). 지갑 등록 여부와 무관하게 로그인만 하면 저장할 수 있다(사용자 결정: MetaMask 와 별개 흐름).
@@ -1014,135 +962,31 @@ app.post('/cia/user/unlink_wallet', requireUser, async (req, res) => {
     if (!acct.pk_u) return res.status(409).json({ error: 'not registered', reason: 'not_registered' });
     const retired = retireActiveCred(uid);
     if (retired) setSlot(uid, 0n);
-    acct.pk_u = null; acct.auid = null; acct.slotRetired = true;   // 외부 로그인 연결(linked)은 계정에 속해 남는다(2026-11-09 L4)
+    acct.pk_u = null; acct.auid = null; acct.slotRetired = true;
     persist();
     const pub = retired ? await publishSafely() : { published: false };
     res.json({ unlinked: true, retired, published: Boolean(pub.published), pending: state.pending.length });
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
-// 인증 창(§4)이 부른다 — 세션 없이도 된다. 본인 확인 → 등록 상태 → auid 일치 순으로 본다(틀린 비밀번호에는 등록 여부를 알려주지 않는다).
-// 본인 확인(2026-11-09 연결 로그인 L2): method 'password'(아이디·비밀번호, 기본) | 'google'(id_token, nonce auth:) | 'naver'(콜백이 낸 ticket).
-// 외부 수단은 확인된 sub 에 연결된 zkID 계정을 찾는다(없으면 404 oidc_not_linked). nonce·ticket 은 코드를 내기 직전에만 소진한다 —
-// auid 를 잘못 넣어 403 이 나도 공급자 로그인을 다시 하지 않아도 된다.
-app.post('/cia/auth/code', async (req, res) => {
-  try {
-    const { uid: uidIn, id, pwd, auid, purpose = 'issue', method = 'password', id_token, ticket } = req.body ?? {};
-    if (purpose !== 'issue' && purpose !== 'register') return res.status(400).json({ error: 'bad_purpose', reason: 'bad_purpose' });
-    let uid = null, a = null, spend = () => {};
-    if (method === 'password') {
-      // 2026-11-03: 인증 창은 아이디를 보낸다(id). 아이디 색인에 없으면 10진 uid 로 본다(한 칸에 "아이디 또는 uid") — API 의 uid 는 그대로.
-      uid = typeof id === 'string' ? resolveLogin(id) : (isDec(uidIn) ? uidIn : null);
-      a = uid ? state.accounts[uid] : null;
-      if (!pwOk(a, pwd)) return res.status(401).json({ error: 'invalid credentials', reason: 'invalid_credentials' });
-    } else if (method === 'google') {
-      const v = await verifyLinkToken('google', id_token, AUTH_PREFIX); if (v.error) return res.status(v.error.status).json(v.error.body);
-      const n = authOnce.peek(v.nonce);
-      if (!n || n.purpose !== 'auth') return res.status(400).json({ error: 'oidc_nonce_mismatch', reason: 'oidc_nonce_mismatch', detail: '이 IdP 가 낸 인증용 nonce 가 아니거나 이미 썼다' });
-      uid = uidLinkedTo('google', v.sub); spend = () => authOnce.take(v.nonce);
-    } else if (method === 'naver') {
-      if (!NAVER.enabled) return res.status(503).json({ error: 'provider_disabled', reason: 'provider_disabled' });
-      const key = typeof ticket === 'string' ? `ticket:${ticket}` : null;
-      const t = key ? linkOnce.peek(key) : null;
-      // 리뷰 Minor 2: ticket 은 네이버를 다녀온 인증 창의 용도(issue|register)에 묶인다.
-      if (!t || t.provider !== 'naver' || t.purpose !== purpose) return res.status(401).json({ error: 'bad_ticket', reason: 'bad_ticket' });
-      uid = uidLinkedTo('naver', t.sub); spend = () => linkOnce.take(key);
-    } else return res.status(400).json({ error: 'bad_method', reason: 'bad_method' });
-    if (method !== 'password') {
-      a = uid ? state.accounts[uid] : null;
-      if (!a) return res.status(404).json({ error: 'not linked', reason: 'oidc_not_linked' });
-    }
-    // 등록 코드(2026-11-09, 사용자 결정): 지갑 등록은 zkID 페이지가 아니라 서비스의 "zkID 로 로그인" 중에 처음 한 번 일어난다 — 팝업이 이 인증 창으로
-    // 와 본인 확인만 하면(auid 는 아직 없다) 등록 코드와 uid 를 받아 /cia/register 로 간다. 이미 등록된 계정이면 409.
-    if (purpose === 'register') {
-      if (a.pk_u) return res.status(409).json({ error: 'already registered', reason: 'already_registered' });
-      spend();
-      return res.json({ ...issueCode({ uid, purpose: 'register' }), uid, purpose: 'register' });
-    }
-    if (!a.pk_u) return res.status(409).json({ error: 'not registered', reason: 'not_registered' });
-    if (!isDec(auid) || BigInt(auid).toString() !== a.auid) return res.status(403).json({ error: 'auid mismatch', reason: 'auid_mismatch' });
-    spend();
-    res.json(issueCode({ uid, purpose: 'issue', auid: a.auid }));
-  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
-});
-
-// ---- 외부 로그인 연결(2026-11-09 스펙 linked-logins §2.4) ----
-// Google 버튼(GIS)에 넣을 nonce. link 는 로그인 세션의 uid 에 묶이고(남의 세션에서 받은 토큰으로 연결하지 못하게), auth 는 인증 창용이다.
-app.post('/cia/oidc/nonce', (req, res) => {
-  const { purpose } = req.body ?? {};
-  if (purpose === 'link') {
-    if (!req.session?.uid || !state.accounts[req.session.uid]) return res.status(401).json({ error: 'login required', reason: 'login_required' });
-    const nonce = LINK_PREFIX + randomHex();
-    linkOnce.put(nonce, { purpose: 'link', uid: req.session.uid });
-    return res.json({ nonce });
+// 인증 창(§4)이 부른다 — 세션 없이도 된다. pwd 검사 → 등록 상태 → auid 일치 순으로 본다(틀린 비밀번호에는 등록 여부를 알려주지 않는다).
+// 2026-11-10: 본인 확인은 아이디·비밀번호뿐이다 — 11-09 의 method=google|naver(연결된 외부 계정)는 RP 직접 연결로 옮겨 없앴다(bad_method).
+app.post('/cia/auth/code', (req, res) => {
+  const { uid: uidIn, id, pwd, auid, purpose = 'issue', method = 'password' } = req.body ?? {};
+  if (purpose !== 'issue' && purpose !== 'register') return res.status(400).json({ error: 'bad_purpose', reason: 'bad_purpose' });
+  if (method !== 'password') return res.status(400).json({ error: 'bad_method', reason: 'bad_method' });
+  // 2026-11-03: 인증 창은 아이디를 보낸다(id). 아이디 색인에 없으면 10진 uid 로 본다(한 칸에 "아이디 또는 uid") — API 의 uid 는 그대로.
+  const uid = typeof id === 'string' ? resolveLogin(id) : (isDec(uidIn) ? uidIn : null);
+  const a = uid ? state.accounts[uid] : null;
+  if (!pwOk(a, pwd)) return res.status(401).json({ error: 'invalid credentials', reason: 'invalid_credentials' });
+  // 등록 코드(2026-11-09, 사용자 결정): 지갑 등록은 zkID 페이지가 아니라 서비스의 "zkID 로 로그인" 중에 처음 한 번 일어난다 — 팝업이 이 인증 창을 등록 모드로 열고
+  // 아이디·비밀번호만 넣으면(auid 는 아직 없다) 등록 코드와 uid 를 받아 /cia/register 로 간다. 이미 등록된 계정이면 409.
+  if (purpose === 'register') {
+    if (a.pk_u) return res.status(409).json({ error: 'already registered', reason: 'already_registered' });
+    return res.json({ ...issueCode({ uid, purpose: 'register' }), uid, purpose: 'register' });
   }
-  if (purpose === 'auth') { const nonce = AUTH_PREFIX + randomHex(); authOnce.put(nonce, { purpose: 'auth' }); return res.json({ nonce }); }
-  res.status(400).json({ error: 'bad_purpose', reason: 'bad_purpose' });
-});
-app.post('/cia/user/link', requireUser, async (req, res) => {
-  try {
-    const { provider, id_token } = req.body ?? {};
-    if (provider !== 'google') return res.status(400).json({ error: 'bad_provider', reason: 'bad_provider', detail: '네이버는 /cia/oidc/naver/start?purpose=link 로 연결한다' });
-    const v = await verifyLinkToken('google', id_token, LINK_PREFIX); if (v.error) return res.status(v.error.status).json(v.error.body);
-    const n = linkOnce.peek(v.nonce);
-    if (!n || n.purpose !== 'link' || n.uid !== req.session.uid) return res.status(400).json({ error: 'oidc_nonce_mismatch', reason: 'oidc_nonce_mismatch', detail: '이 로그인 세션이 받은 연결용 nonce 가 아니거나 이미 썼다' });
-    linkOnce.take(v.nonce);
-    const err = linkAccount(req.session.uid, 'google', v.sub);
-    if (err) return res.status(err.status).json({ error: err.reason, reason: err.reason });
-    res.json({ linked: linkedView(state.accounts[req.session.uid]) });
-  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
-});
-// 해제는 로그인 세션으로 충분하다(데모 범위 — 비밀번호를 다시 묻지 않는다).
-app.post('/cia/user/unlink', requireUser, (req, res) => {
-  const { provider } = req.body ?? {};
-  if (!LINK_SLOTS.includes(provider)) return res.status(400).json({ error: 'bad_provider', reason: 'bad_provider' });
-  const a = state.accounts[req.session.uid];
-  if (!a.linked?.[provider]) return res.status(409).json({ error: 'not linked', reason: 'oidc_not_linked' });
-  delete a.linked[provider];
-  if (Object.keys(a.linked).length === 0) delete a.linked;
-  persist();
-  res.json({ linked: linkedView(a) });
-});
-// 네이버(인가 코드 + PKCE S256). state 는 1회용·5분. purpose=link 는 시작과 콜백이 같은 로그인 세션이어야 하고,
-// purpose=auth 는 인증 창이 맡긴 쿼리(ctx)를 그대로 돌려준다 — 지갑 오리진 검사는 돌아온 인증 창이 다시 한다.
-app.get('/cia/oidc/naver/start', (req, res) => {
-  const purpose = req.query.purpose;
-  let ctx = '';
-  if (purpose === 'link') {
-    if (!NAVER.enabled) return res.redirect('/user?link_error=provider_disabled');
-    if (!req.session?.uid || !state.accounts[req.session.uid]) return res.redirect('/user?link_error=login_required');
-  } else if (purpose === 'auth') {
-    ctx = sanitizeAuthCtx(typeof req.query.ctx === 'string' ? req.query.ctx : '');
-    if (!NAVER.enabled) return res.redirect(loginBack(ctx, { auth_error: 'provider_disabled' }));
-  } else return res.status(400).json({ error: 'bad_purpose', reason: 'bad_purpose' });
-  // state 앞에 용도를 붙인다(리뷰 Minor 3) — 만료된 state 로 돌아와도 인증 창 쪽이면 /user 가 아니라 인증 창으로 돌려보낸다.
-  const st = `${purpose}-${randomHex()}`, nonce = (purpose === 'link' ? LINK_PREFIX : AUTH_PREFIX) + randomHex(), { verifier, challenge } = pkcePair();
-  onceFor(purpose).put(`naver-state:${st}`, { purpose, nonce, verifier, uid: purpose === 'link' ? req.session.uid : null, ctx });
-  res.redirect(naverAuthorizeUrl(NAVER, { state: st, nonce, challenge }));
-});
-app.get('/cia/oidc/naver/callback', async (req, res) => {
-  const st = typeof req.query.state === 'string' ? req.query.state : '';
-  const stPurpose = st.startsWith('auth-') ? 'auth' : 'link';
-  const rec = st ? onceFor(stPurpose).take(`naver-state:${st}`) : null;
-  if (!rec) return res.redirect(stPurpose === 'auth' ? '/login?auth_error=naver_state_invalid' : '/user?link_error=naver_state_invalid');
-  const fail = (reason) => res.redirect(rec.purpose === 'link' ? `/user?link_error=${encodeURIComponent(reason)}` : loginBack(rec.ctx, { auth_error: reason }));
-  try {
-    if (typeof req.query.code !== 'string' || !req.query.code) return fail(req.query.error === 'access_denied' ? 'user_denied' : 'naver_denied');
-    const idToken = await exchangeNaverCode(NAVER, { code: req.query.code, state: st, verifier: rec.verifier });
-    const v = await verifyLinkToken('naver', idToken, rec.purpose === 'link' ? LINK_PREFIX : AUTH_PREFIX);
-    if (v.error) return fail(v.error.body.reason);
-    if (v.nonce !== rec.nonce) return fail('oidc_nonce_mismatch');
-    if (rec.purpose === 'link') {
-      if (req.session?.uid !== rec.uid) return fail('login_required');
-      const err = linkAccount(rec.uid, 'naver', v.sub);
-      return err ? fail(err.reason) : res.redirect('/user?linked=naver');
-    }
-    const ticket = randomHex();
-    linkOnce.put(`ticket:${ticket}`, { provider: 'naver', sub: v.sub, purpose: new URLSearchParams(rec.ctx).get('purpose') === 'register' ? 'register' : 'issue' });
-    return res.redirect(loginBack(rec.ctx, { ticket }));
-  } catch (e) {
-    console.warn(`[cia] 네이버 콜백 실패: ${e.reason ?? e.name}`);   // 토큰·응답 본문은 찍지 않는다
-    return fail(e.reason ?? 'naver_token_failed');
-  }
+  if (!a.pk_u) return res.status(409).json({ error: 'not registered', reason: 'not_registered' });
+  if (!isDec(auid) || BigInt(auid).toString() !== a.auid) return res.status(403).json({ error: 'auid mismatch', reason: 'auid_mismatch' });
+  res.json(issueCode({ uid, purpose: 'issue', auid: a.auid }));
 });
 
 // V11 §3.1 등록. 지갑이 auid = Poseidon(T_AUID, uid, s_u) 와 등록 키 pk_u 를 낸다 — IdP 는 소유 증명 서명만 보고 슬롯 번호를 배정한다. 속성은 받지 않는다(D15).
@@ -1161,7 +1005,6 @@ app.post('/cia/register', userCors, async (req, res) => {
     // 토큰은 이 pk_u 에 묶여 있어야 한다(D4) — 가로챈 토큰으로 다른 키를 등록하지 못하게. auid 는 sig_reg 가 결속한다.
     if (o.nonce !== regNonce(pk_u)) return res.status(400).json({ error: 'oidc_nonce_mismatch', reason: 'oidc_nonce_mismatch', detail: 'nonce 가 요청의 pk_u 와 다르다' });
     // 연결 로그인 L3(2026-11-09 리뷰 I-1): 이미 아이디 계정에 연결된 Google 은 래퍼 계정을 따로 만들지 않는다(같은 신원이 두 계정으로 갈라지지 않게).
-    if (uidLinkedTo('google', o.sub)) return res.status(409).json({ error: 'oidc_linked_elsewhere', reason: 'oidc_linked_elsewhere' });
     uid = o.uid; provider = OIDC.provider;
   } else {
     if (!isDec(uidIn)) return res.status(400).json({ error: 'uid, (pwd 또는 code), auid, pk_u{x,y}, sig_reg required' });
@@ -1268,7 +1111,6 @@ app.post('/cia/issue', userCors, async (req, res) => {
         // 들어간 뒤라, 가로챈 issue 토큰 + 공격자 registration(자기 sk 로 만든 sig_reg) 으로 피해자 uid 가 영구 선점된다. 실패면 상태 변경 없음.
         if (!isPt(registration.pk_u)) return res.status(400).json({ error: 'registration.pk_u{x,y} required' });
         if (o.nonce !== issueNonce(registration.pk_u, arid_s)) return res.status(400).json({ error: 'oidc_nonce_mismatch', reason: 'oidc_nonce_mismatch', detail: 'nonce 가 등록할 지갑 키·이 로그인(arid_s)과 다르다' });
-        if (uidLinkedTo('google', o.sub)) return res.status(409).json({ error: 'oidc_linked_elsewhere', reason: 'oidc_linked_elsewhere' });   // L3(리뷰 I-1) — /cia/register 와 같다
         const made = await registerAccount({ uid, provider: OIDC.provider, auid: registration.auid, pk_u: registration.pk_u, sig_reg: registration.sig_reg });
         if (made.error) return res.status(made.error.status).json(made.error.body);
       }

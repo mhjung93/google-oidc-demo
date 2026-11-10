@@ -23,19 +23,13 @@ export function freePort() {
 }
 
 export async function startIsolatedCia(opts = {}) {
-  const { env: extraEnv = {}, readyTimeoutMs = 30_000, oidc = null, naver = null, uiHost = '127.0.0.1' } = opts;
+  const { env: extraEnv = {}, readyTimeoutMs = 30_000, oidc = null } = opts;
   // OIDC 래퍼(스펙 2026-10-16 Task 3): oidc 를 주면 발급자 스텁을 먼저 띄우고 그 설정을 env 로 넣는다. 옵션이 없으면
   // 빈 문자열로 고정한다 — 개발용 .env 의 GOOGLE_CLIENT_ID 가 새어 들어와 테스트 IdP 가 Google 을 켜지 않게 막는다.
   let oidcStub = null;
   if (oidc) {
     const { startOidcIssuerStub } = await import('./oidc_issuer_stub.mjs');
     oidcStub = await startOidcIssuerStub(typeof oidc === 'object' ? oidc : {});
-  }
-  // 연결 로그인(2026-11-09): naver 를 주면 네이버 흉내 발급자(인가 코드·PKCE·토큰 교환)를 따로 띄운다. 없으면 네이버 env 를 빈 값으로 막는다.
-  let naverStub = null;
-  if (naver) {
-    const { startOidcIssuerStub } = await import('./oidc_issuer_stub.mjs');
-    naverStub = await startOidcIssuerStub({ clientId: 'naver-test-client', clientSecret: 'naver-test-secret', provider: 'naver', ...(typeof naver === 'object' ? naver : {}) });
   }
   // 두 체인(2026-10-03, test_mode3_demo_full.mjs): revRpcUrl 을 주면 캐노니컬 로그는 그 체인(폐기 체인)에, 거울은 appRpcUrl
   // (기본 CIA_RPC_URL 또는 :8545)에 배포한다. 둘 다 없으면 지금처럼 한 체인에 로그와 거울을 함께 둔다.
@@ -86,14 +80,6 @@ export async function startIsolatedCia(opts = {}) {
     // cia.js 는 MODE3_OIDC_CLIENT_ID 가 비면 GOOGLE_CLIENT_ID(Mode 1 용, .env 에 있을 수 있다)로 떨어진다 — 그 값까지
     // 빈 문자열로 막아야 oidc 옵션 없는 격리 IdP 가 뜻하지 않게 Google 을 켜지 않는다.
     GOOGLE_CLIENT_ID: '',
-    MODE3_NAVER_CLIENT_ID: naverStub?.clientId ?? '',
-    MODE3_NAVER_CLIENT_SECRET: naverStub?.clientSecret ?? '',
-    MODE3_NAVER_ISSUER: naverStub?.issuer ?? '',
-    MODE3_NAVER_JWKS_URL: naverStub?.jwksUrl ?? '',
-    MODE3_NAVER_AUTHORIZE_URL: naverStub?.authorizeUrl ?? '',
-    MODE3_NAVER_TOKEN_URL: naverStub?.tokenUrl ?? '',
-    // 콜백은 브라우저가 IdP 를 여는 주소여야 한다(로그인 세션 쿠키가 그 호스트에 있다) — uiHost 는 isolated_mode3_stack 의 ciaHost.
-    MODE3_NAVER_REDIRECT_URI: naverStub ? `http://${uiHost}:${port}/cia/oidc/naver/callback` : '',
     // 데모 설정(2026-10-21)은 기본으로 끈다 — 데모 스크립트가 내보낸 값이 셸에 남아 있어도 테스트 IdP 는 시크릿을 묻는다. 켜는 테스트만 extraEnv 로.
     CIA_ADMIN_OPEN: '',
     // 계정·발급 정책(Task 10, 2026-10-22): 기존 테스트는 시드 데모 계정(12345·67890)과 발급 인증 없음(key)을 전제한다 — 고정한다.
@@ -126,7 +112,6 @@ export async function startIsolatedCia(opts = {}) {
     provider.destroy();
     if (revProvider !== provider) revProvider.destroy();
     if (oidcStub) await oidcStub.stop();
-    if (naverStub) await naverStub.stop();
     fs.rmSync(dir, { recursive: true, force: true });
     throw new Error(`격리 CIA 기동 실패(${port}).${spawnError ? ' spawn: ' + spawnError.message : ''}\n${log}`);
   }
@@ -137,7 +122,6 @@ export async function startIsolatedCia(opts = {}) {
     base, port, dir, adminSecret, adminHeaders, ethAddress: ethWallet.address, logAddress, ciaEthWallet,
     mirrorAddress, mirrorContract: new ethers.Contract(mirrorAddress, MODE3_MIRROR_ABI, provider),
     oidc: oidcStub,   // Task 3: oidc:true 로 띄우면 발급자 스텁(mint·stop 포함), 아니면 null
-    naver: naverStub, // 2026-11-09: naver:true 로 띄우면 네이버 흉내(setNextSub 로 다음 로그인 sub 를 정한다), 아니면 null
     // 두 체인(2026-10-03): 캐노니컬은 revProvider, 거울은 provider(appProvider) 로 읽는다. 단일 체인이면 둘이 같은 객체다.
     twoChains, revRpcUrl, appRpcUrl, revProvider, appProvider: provider,
     log: () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : ''),
@@ -178,7 +162,6 @@ export async function startIsolatedCia(opts = {}) {
       provider.destroy();   // fundAddress/deployMode3Log/ciaEthWallet 가 같이 쓰던 provider
       if (revProvider !== provider) revProvider.destroy();
       if (oidcStub) await oidcStub.stop();
-      if (naverStub) await naverStub.stop();
       fs.rmSync(dir, { recursive: true, force: true });
     },
   };

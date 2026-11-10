@@ -41,7 +41,7 @@ async function launchBrowser() {
 
 const browser = await launchBrowser();
 const provider = getProvider();
-// ciaHost 'localhost'(2026-11-09 연결 로그인): 인증 창·/user 도 localhost 오리진이라 GIS(스텁)가 그려진다 — 분리 데모의 SSH 터널과 같은 모양. naver: 네이버 흉내.
+// ciaHost 'localhost': IdP 페이지(/user·/account)도 localhost 오리진이라 GIS(스텁)가 그려진다 — 분리 데모의 SSH 터널과 같은 모양.
 // RP 소셜(2026-11-10): RP 가 직접 쓰는 Google·네이버 흉내 — IdP 래퍼용 stub 과 따로. RP 는 localhost 오리진(rpHost)이라 GIS 가 그려지고 네이버 콜백 쿠키가 맞는다.
 const rpGoogle = await startOidcIssuerStub({ clientId: 'rp-google-client', provider: 'google' });
 const rpNaver = await startOidcIssuerStub({ clientId: 'rp-naver-client', provider: 'naver', clientSecret: 'rp-naver-secret' });
@@ -50,8 +50,8 @@ const rpSocialEnv = {
   MODE3_RP_NAVER_CLIENT_ID: rpNaver.clientId, MODE3_RP_NAVER_CLIENT_SECRET: rpNaver.clientSecret, MODE3_RP_NAVER_ISSUER: rpNaver.issuer, MODE3_RP_NAVER_JWKS_URL: rpNaver.jwksUrl,
   MODE3_RP_NAVER_AUTHORIZE_URL: rpNaver.authorizeUrl, MODE3_RP_NAVER_TOKEN_URL: rpNaver.tokenUrl,
 };
-const stack = await startIsolatedMode3Stack({ walletEnv: { MODE3_WALLET_SECRETS: 'snap' }, ciaEnv: { CIA_ISSUE_AUTH: 'code' }, rpEnv: rpSocialEnv, autoRelay: true, oidc: true, naver: true, walletHost: 'localhost', ciaHost: 'localhost', rpHost: 'localhost' });
-const { cia, wallet, rp, oidc: stub, naver: naverStub, ciaUiBase: ciaUi } = stack;
+const stack = await startIsolatedMode3Stack({ walletEnv: { MODE3_WALLET_SECRETS: 'snap' }, ciaEnv: { CIA_ISSUE_AUTH: 'code' }, rpEnv: rpSocialEnv, autoRelay: true, oidc: true, walletHost: 'localhost', ciaHost: 'localhost', rpHost: 'localhost' });
+const { cia, wallet, rp, oidc: stub, ciaUiBase: ciaUi } = stack;
 const SUB = 'g-browser-1';
 
 // ---- 하네스가 맡는 것: Snap 저장소, 대화상자, 체인 전송 (test_mode3_browser.mjs 와 같다) ----
@@ -182,27 +182,6 @@ try {
     assert.equal(dialogs.length, before, 'Snap 비밀번호 프롬프트를 띄우지 않는다');
     const a = (await cia.adminGet('/cia/accounts')).body.accounts.find((x) => String(x.uid) === uidOf(stub.provider, SUB));
     assert.equal(a?.disabled, true);
-  });
-
-  // 2026-11-09 연결 로그인(스펙 linked-logins L1·L2·L6): 아이디 계정에 /user 에서 Google·네이버를 연결 → 미등록 지갑 + RP 의 Google 버튼 → 인증 창이
-  // 연결된 Google 로 본인 확인(등록 모드) → 등록·발급 → 로그인. 지갑은 아이디 계정(provider demo)이고 Google 래퍼 가입은 일어나지 않는다(2026-11-06 흐름 대체).
-  const LINK_ID = 'linkuser1', LINK_PWD = 'linkpw-12345', LINK_GSUB = 'g-linked-1', LINK_NSUB = 'n-linked-1';
-  let linkUid = null;
-  await t('/user: 아이디 계정에 Google·네이버 연결("연결된 로그인" 카드 — Google 은 GIS, 네이버는 IdP 를 거쳐 다녀온다)', async () => {
-    const s = await cia.post('/cia/signup', { id: LINK_ID, pwd: LINK_PWD }); assert.equal(s.status, 201, j(s.body)); linkUid = s.body.uid;
-    const u = await context.newPage(); await u.goto(`${ciaUi}/user`);
-    await u.fill('#loginId', LINK_ID); await u.fill('#loginPwd', LINK_PWD); await u.click('#loginBtn');
-    await u.waitForSelector('#linksCard:not([hidden])');
-    await u.evaluate((sub) => { window.__gsiSub = sub; }, LINK_GSUB);
-    await u.click('#linkGoogleBtn');
-    await u.waitForSelector('#linkGsiSlot .gsi-stub'); await u.click('#linkGsiSlot .gsi-stub');
-    await waitText(u, '#linksVerdict', 'Google 계정을 연결했습니다');
-    naverStub.setNextSub(LINK_NSUB);
-    await u.click('#linkNaverBtn');   // IdP → 네이버 흉내(바로 code) → 콜백 → /user?linked=naver
-    await waitText(u, '#linksVerdict', '네이버 계정을 연결했습니다');
-    assert.match(await text(u, '#linkGoogleState'), /연결됨/); assert.match(await text(u, '#linkNaverState'), /연결됨/);
-    assert.equal(new URL(u.url()).searchParams.has('linked'), false, '돌아온 주소의 ?linked 는 지운다');
-    await u.close();
   });
 
   await t('RP 소셜(2026-11-10): 로그인 창 Google(GIS 흉내) → 새 RP 계정·via google 배지 → 내 계정에서 네이버 연결 → 자산에 거래소 보관 ETH·출금 출처; 로그아웃하면 /api/rp/me 401', async () => {

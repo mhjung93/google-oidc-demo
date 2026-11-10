@@ -24,8 +24,8 @@ async function makeReg(sub, { nonce = null, aud, iss, expSeconds } = {}) {
 try {
   await t('public_keys.oidc 가 스텁 발급자 설정을 공개한다(enabled·provider·clientId·issuer)', async () => {
     const k = (await cia.get('/cia/public_keys')).body;
-    assert.deepEqual(k.oidc, { enabled: true, provider: stub.provider, clientId: stub.clientId, issuer: stub.issuer,
-      providers: { google: { enabled: true, clientId: stub.clientId }, naver: { enabled: false } } });   // providers: 2026-11-09 연결 로그인
+    assert.deepEqual(k.oidc, { enabled: true, provider: stub.provider, clientId: stub.clientId, issuer: stub.issuer });
+    assert.equal('providers' in k.oidc, false, '2026-11-10: zkID 쪽 연결(providers)은 없앴다 — RP 가 직접 받는다');
   });
   let first;
   await t('Google 경로 등록: 201, uid = uidOf(provider, sub), provider 기록, 데모 계정 경로와 같은 슬롯 배정', async () => {

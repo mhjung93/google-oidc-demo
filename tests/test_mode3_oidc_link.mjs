@@ -1,7 +1,8 @@
-// lib/mode3_oidc_link.js — 1회용 저장소·PKCE·네이버 인가 주소·인증 창 쿼리 정리(스펙 2026-11-09-mode3-linked-logins). 외부 의존 없음(unit).
+// lib/mode3_oidc_link.js — 1회용 저장소·PKCE·네이버 인가 주소·코드 교환(2026-11-10 부터 RP 의 네이버 로그인이 쓴다, 스펙 rp-social-logins). 외부 의존 없음(unit).
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { createOnceStore, pkcePair, naverAuthorizeUrl, sanitizeAuthCtx, exchangeNaverCode, NAVER_DEFAULTS } from '../lib/mode3_oidc_link.js';
+import * as L from '../lib/mode3_oidc_link.js';
+const { createOnceStore, pkcePair, naverAuthorizeUrl, exchangeNaverCode, NAVER_DEFAULTS } = L;
 let failed = 0;
 async function t(name, fn) { try { await fn(); console.log(`ok   ${name}`); } catch (e) { failed++; console.error(`FAIL ${name}\n     ${e.message}`); } }
 
@@ -25,11 +26,8 @@ await t('네이버 인가 주소: code·openid·state·nonce·S256', () => {
   assert.equal(u.origin + u.pathname, NAVER_DEFAULTS.authorizeUrl);
   for (const [k, v] of Object.entries({ response_type: 'code', client_id: 'cid', scope: 'openid', state: 's1', nonce: 'auth:x', code_challenge: 'c1', code_challenge_method: 'S256', redirect_uri: 'http://localhost:4100/cia/oidc/naver/callback' })) assert.equal(u.searchParams.get(k), v, k);
 });
-await t('인증 창 쿼리 정리: 허용 키만, 긴 값은 버린다', () => {
-  const q = new URLSearchParams(sanitizeAuthCtx(`nonce=n&wallet=http%3A%2F%2Flocalhost%3A5100&return=1&purpose=register&method=naver&ticket=t&evil=1&x=${'a'.repeat(10)}`));
-  assert.deepEqual([...q.keys()].sort(), ['method', 'nonce', 'purpose', 'return', 'wallet']);
-  assert.equal(new URLSearchParams(sanitizeAuthCtx(`nonce=${'a'.repeat(300)}`)).has('nonce'), false);
-  assert.equal(sanitizeAuthCtx(undefined), '');
+await t('2026-11-10: IdP 전용 내보내기(LINK_PREFIX·AUTH_PREFIX·LINK_SLOTS·sanitizeAuthCtx)는 없다', () => {
+  for (const k of ['LINK_PREFIX', 'AUTH_PREFIX', 'LINK_SLOTS', 'sanitizeAuthCtx']) assert.equal(k in L, false, k);
 });
 await t('토큰 교환: 성공은 id_token, HTTP 오류·id_token 없음·네트워크 오류는 naver_token_failed(비밀은 메시지에 없다)', async () => {
   const cfg = { ...NAVER_DEFAULTS, clientId: 'cid', clientSecret: 'SECRET-XYZ', redirectUri: 'http://localhost/cb' };
