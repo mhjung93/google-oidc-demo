@@ -20,8 +20,10 @@
 #                                                          # 지갑의 MODE3_CIA_URL·RP 의 MODE3_CIA_BROWSER_URL(페이지 링크) 이 이 주소다(RP 의 서버 간 호출은 VM 주소). 기본은 snap 모드만 켬,
 #                                                          # SPLIT_IDP_TUNNEL=0/1 로 바꾼다(0 이면 VM 주소 — Google 연결은 안 된다).
 #                                                          # :4100 을 한 머신 데모 IdP 가 쓰고 있으면 중단한다.
-#        네이버 연결: 환경변수(없으면 이 VM .env) 의 MODE3_NAVER_CLIENT_ID·MODE3_NAVER_CLIENT_SECRET 이 있으면 IdP 에 넘긴다(출력하지 않는다, on/off 만).
-#                                                          # 네이버 개발자센터: 서비스 URL http://localhost:4100, Callback URL http://localhost:4100/cia/oidc/naver/callback.
+#        (2026-11-10 RP 소셜 로그인) snap 모드 기본 SPLIT_RP_TUNNEL=1 — 이 VM 에 localhost:3100→zkONE, localhost:3101→zkTWO 터널. RP 공개 주소·지갑의 RP 오리진이 localhost 가 된다
+#                                                          # (Google 은 http 원본으로 localhost 만). Google 클라이언트 ID(IdP 래퍼와 같은 값)와 네이버 ID·Secret(환경변수 또는 이 VM .env 의 MODE3_NAVER_CLIENT_ID·_SECRET)은
+#                                                          # RP role.env 에만, 출력은 on/off 만. 네이버 Callback: http://localhost:3100/api/rp/naver/callback, http://localhost:3101/api/rp/naver/callback.
+#                                                          # Google 콘솔 승인된 원본: http://localhost:3100, http://localhost:3101. RP 공개 주소가 바뀌면 RP 가 스스로 새로 등록한다(IdP 승인 다시).
 # 주소는 SPLIT_HOST_IP·SPLIT_IDP_IP·SPLIT_RP1_IP·SPLIT_RP2_IP·SPLIT_SSH_USER 로 바꿀 수 있다. 로그는 DEMO_LOG_DIR(기본 /tmp/mode3-split).
 # 새 체인은 Ethernal 플러그인을 싣지 않는 최소 hardhat 설정으로 띄운다 — 프로젝트 설정은 노드 기동 때 .env 의 Ethernal 워크스페이스를 초기화한다.
 # 사용자 페이지는 이 VM 의 .env 를 읽지 않는다(DOTENV_CONFIG_PATH) — 라이브 IdP 의 고정 공개키 같은 값이 섞이지 않게.
@@ -43,11 +45,15 @@ TUNNEL_SPEC="-L 127.0.0.1:$IDP_PORT:127.0.0.1:$IDP_PORT"   # 2026-11-09: 브라�
 # 기본은 snap 모드에서만 켠다(리뷰 Minor 7) — web 모드 지갑(:5200)은 연결 로그인을 쓰지 않아(인증 창 method 를 모른다) 한 머신 IdP(:4100)와 같이 띄울 수 있게 둔다.
 SPLIT_IDP_TUNNEL="${SPLIT_IDP_TUNNEL:-$([ "$WALLET_MODE" = snap ] && echo 1 || echo 0)}"
 if [ "$SPLIT_IDP_TUNNEL" != 0 ]; then IDP_UI="http://localhost:$IDP_PORT"; else IDP_UI="http://$IDP:$IDP_PORT"; fi
+# RP 터널(2026-11-10 RP 소셜 로그인): 브라우저가 zkONE·zkTWO 를 localhost 로 연다 — RP 의 Google(GIS)·네이버 콜백이 localhost 원본에서만 된다. 기본은 snap 모드만.
+RP1_TUNNEL="-L 127.0.0.1:$RP1_PORT:127.0.0.1:$RP1_PORT"; RP2_TUNNEL="-L 127.0.0.1:$RP2_PORT:127.0.0.1:$RP2_PORT"
+SPLIT_RP_TUNNEL="${SPLIT_RP_TUNNEL:-$([ "$WALLET_MODE" = snap ] && echo 1 || echo 0)}"
+if [ "$SPLIT_RP_TUNNEL" != 0 ]; then RP1_UI="http://localhost:$RP1_PORT"; RP2_UI="http://localhost:$RP2_PORT"; else RP1_UI="http://$RP1:$RP1_PORT"; RP2_UI="http://$RP2:$RP2_PORT"; fi
 on() { local h="$1"; shift; ssh -o BatchMode=yes -o ConnectTimeout=5 "$U@$h" "$@"; }
 
 # 이 VM 쪽은 포트 주인 중 명령줄이 우리 것과 맞는 것만 내린다(라이브 데모와 명령줄이 같은 사용자 페이지는 포트로 가른다).
 stop_local() {
-  for spec in "$APP_PORT:chain.config.cjs" "$REV_PORT:chain.config.cjs" "5200:mode3_user_static.js" "5100:mode3_wallet_agent.js" "$SNAP_PORT:mm-snap serve" "$IDP_PORT:$TUNNEL_SPEC"; do
+  for spec in "$APP_PORT:chain.config.cjs" "$REV_PORT:chain.config.cjs" "5200:mode3_user_static.js" "5100:mode3_wallet_agent.js" "$SNAP_PORT:mm-snap serve" "$IDP_PORT:$TUNNEL_SPEC" "$RP1_PORT:$RP1_TUNNEL" "$RP2_PORT:$RP2_TUNNEL"; do
     port="${spec%%:*}"; want="${spec#*:}"
     for pid in $(ss -ltnp 2>/dev/null | grep ":$port " | grep -oE "pid=[0-9]+" | cut -d= -f2 | sort -u); do
       tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -qF -- "$want" && kill "$pid" && echo "stop :$port (pid $pid)"
@@ -67,6 +73,7 @@ echo "SPLIT_START $(date '+%H:%M:%S')  (logs: $LOGS)"
 stop_remote; stop_local; sleep 2
 for p in $APP_PORT $REV_PORT $USER_PORT; do ss -ltn | grep -q ":$p " && { echo "ABORT :$p 를 다른 프로세스가 쓰고 있다"; exit 1; }; done
 if [ "$SPLIT_IDP_TUNNEL" != 0 ] && ss -ltn | grep -q ":$IDP_PORT "; then echo "ABORT :$IDP_PORT 를 다른 프로세스(한 머신 데모 IdP?)가 쓰고 있다 — IdP 터널을 열 수 없다(SPLIT_IDP_TUNNEL=0 이면 터널 없이)"; exit 1; fi
+if [ "$SPLIT_RP_TUNNEL" != 0 ]; then for p in $RP1_PORT $RP2_PORT; do ss -ltn | grep -q ":$p " && { echo "ABORT :$p 를 다른 프로세스(한 머신 데모 RP?)가 쓰고 있다 — RP 터널을 열 수 없다(SPLIT_RP_TUNNEL=0 이면 터널 없이)"; exit 1; }; done; fi
 
 # 1. (선택) 코드·의존성·Node 다시 보내기 — 서버가 읽는 것만. 비밀·상태 파일, .env, ptau, 문서는 보내지 않는다.
 if [ "${SYNC:-0}" = "1" ]; then
@@ -137,18 +144,18 @@ OIDC_LINE=""
 if [ "${OIDC:-1}" != 0 ]; then OIDC_ID="$(oidc_client_id .env)"; [ -n "$OIDC_ID" ] && OIDC_LINE="MODE3_OIDC_CLIENT_ID=$OIDC_ID"; unset OIDC_ID; fi
 echo "  OIDC(Google): $([ -n "$OIDC_LINE" ] && echo on || echo off)"
 if [ -z "${MODE3_OIDC_CLIENT_ID:-}" ] && [ -n "$OIDC_LINE" ]; then echo "  경고: .env 의 GOOGLE_CLIENT_ID(Mode 1 공유 클라이언트 ID)를 IdP 에 넘긴다 — 같은 ID 의 다른 앱 토큰을 받을 수 있다(선행 스펙 §5)"; fi
-# 네이버 연결(2026-11-09) — 값은 출력하지 않는다. 콜백은 브라우저가 IdP 를 여는 주소(IDP_UI)여야 한다(로그인 세션 쿠키가 그 호스트에 있다).
+# RP 소셜(2026-11-10) — 값은 출력하지 않는다(on/off 만). Google 은 IdP 래퍼와 같은 클라이언트 ID 를 RP 에도 준다. 네이버 ID·Secret 은 RP role.env 에만(IdP 에는 주지 않는다).
 env_or_dotenv() { [ -n "${!1:-}" ] && { printf '%s' "${!1}"; return; }; [ -f .env ] && sed -n "s/^$1=//p" .env | head -n1 | tr -d '\r"'"'"; }
+RP_GOOGLE_LINE=""; [ -n "$OIDC_LINE" ] && RP_GOOGLE_LINE="MODE3_RP_GOOGLE_CLIENT_ID=${OIDC_LINE#MODE3_OIDC_CLIENT_ID=}"
 NAVER_ID="$(env_or_dotenv MODE3_NAVER_CLIENT_ID)"; NAVER_SECRET="$(env_or_dotenv MODE3_NAVER_CLIENT_SECRET)"
-NAVER_LINES=()
-[ -n "$NAVER_ID" ] && [ -n "$NAVER_SECRET" ] && NAVER_LINES=("MODE3_NAVER_CLIENT_ID=$NAVER_ID" "MODE3_NAVER_CLIENT_SECRET=$NAVER_SECRET" "MODE3_NAVER_REDIRECT_URI=$IDP_UI/cia/oidc/naver/callback")
+rp_naver_lines() { [ -n "$NAVER_ID" ] && [ -n "$NAVER_SECRET" ] && printf '%s\n' "MODE3_RP_NAVER_CLIENT_ID=$NAVER_ID" "MODE3_RP_NAVER_CLIENT_SECRET=$NAVER_SECRET" "MODE3_RP_NAVER_REDIRECT_URI=$1/api/rp/naver/callback"; return 0; }
+echo "  RP 소셜: Google $([ -n "$RP_GOOGLE_LINE" ] && echo on || echo off) · 네이버 $([ -n "$NAVER_ID" ] && [ -n "$NAVER_SECRET" ] && echo on || echo off)   브라우저용 주소: IdP $IDP_UI · zkONE $RP1_UI · zkTWO $RP2_UI"
+printf '%s\n' "$COMMON" "CIA_PORT=$IDP_PORT" "CIA_RPC_URL=http://$HOST:$REV_PORT" "CIA_CHAIN_RPCS=$APP_CHAIN=http://$HOST:$APP_PORT" "CIA_ADMIN_SECRET=$ADMIN" "CIA_ADMIN_OPEN=${ADMIN_OPEN:-0}" "CIA_PUBLIC_URL=http://$IDP:$IDP_PORT" "CIA_ISSUE_AUTH=${ISSUE_AUTH:-$([ "$WALLET_MODE" = snap ] && echo code || echo key)}" ${OIDC_LINE:+"$OIDC_LINE"} | put_env "$IDP"
+{ printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP1_PORT" "MODE3_RP_NAME=zkONE" "MODE3_RP_PUBLIC_ORIGIN=$RP1_UI" "MODE3_CIA_URL=http://$IDP:$IDP_PORT" ${RP_GOOGLE_LINE:+"$RP_GOOGLE_LINE"} \
+  "CIA_RPC_URL=http://$HOST:$APP_PORT" "MODE3_RELAYER_INDEX=0"; rp_naver_lines "$RP1_UI"; } | put_env "$RP1"
+{ printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP2_PORT" "MODE3_RP_NAME=zkTWO" "MODE3_RP_PUBLIC_ORIGIN=$RP2_UI" "MODE3_CIA_URL=http://$IDP:$IDP_PORT" ${RP_GOOGLE_LINE:+"$RP_GOOGLE_LINE"} \
+  "CIA_RPC_URL=http://$HOST:$APP_PORT" "MODE3_RELAYER_INDEX=1" "MODE3_ALLOWED_COUNTRIES=410,392" "MODE3_MIN_AGE=19" "MODE3_REQUIRE_DISCLOSURE=1"; rp_naver_lines "$RP2_UI"; } | put_env "$RP2"
 unset NAVER_ID NAVER_SECRET
-echo "  네이버: $([ ${#NAVER_LINES[@]} -gt 0 ] && echo on || echo off)   브라우저용 IdP 주소: $IDP_UI"
-printf '%s\n' "$COMMON" "CIA_PORT=$IDP_PORT" "CIA_RPC_URL=http://$HOST:$REV_PORT" "CIA_CHAIN_RPCS=$APP_CHAIN=http://$HOST:$APP_PORT" "CIA_ADMIN_SECRET=$ADMIN" "CIA_ADMIN_OPEN=${ADMIN_OPEN:-0}" "CIA_PUBLIC_URL=http://$IDP:$IDP_PORT" "CIA_ISSUE_AUTH=${ISSUE_AUTH:-$([ "$WALLET_MODE" = snap ] && echo code || echo key)}" ${OIDC_LINE:+"$OIDC_LINE"} ${NAVER_LINES[@]+"${NAVER_LINES[@]}"} | put_env "$IDP"
-printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP1_PORT" "MODE3_RP_NAME=zkONE" "MODE3_RP_PUBLIC_ORIGIN=http://$RP1:$RP1_PORT" "MODE3_CIA_URL=http://$IDP:$IDP_PORT" \
-  "CIA_RPC_URL=http://$HOST:$APP_PORT" "MODE3_RELAYER_INDEX=0" | put_env "$RP1"
-printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP2_PORT" "MODE3_RP_NAME=zkTWO" "MODE3_RP_PUBLIC_ORIGIN=http://$RP2:$RP2_PORT" "MODE3_CIA_URL=http://$IDP:$IDP_PORT" \
-  "CIA_RPC_URL=http://$HOST:$APP_PORT" "MODE3_RELAYER_INDEX=1" "MODE3_ALLOWED_COUNTRIES=410,392" "MODE3_MIN_AGE=19" "MODE3_REQUIRE_DISCLOSURE=1" | put_env "$RP2"
 start_remote() { # $1 호스트 $2 스크립트 $3 포트
   on "$1" "cd ~/zkd-demo && set -a && . ./role.env && set +a && { setsid nohup \$HOME/zkd-demo/bin/node $2 > logs/${2%.js}.log 2>&1 < /dev/null & }"
   for i in $(seq 1 40); do curl -s -m 2 -o /dev/null "http://$1:$3/mode3/health" && { echo "$2 up at http://$1:$3"; return 0; }; sleep 1; done
@@ -163,20 +170,26 @@ fi
 if [ "$WALLET_MODE" = "snap" ]; then
   # Snap 모드(2026-10-22): 에이전트는 증명·동기화만, 비밀은 MetaMask 의 Snap 안. 릴레이어 계정은 RP 둘(0·1)과 겹치지 않게 2. .env 는 읽지 않는다(DOTENV_CONFIG_PATH).
   DOTENV_CONFIG_PATH="$LOGS/empty.env" MODE3_WALLET_SECRETS=snap MODE3_SNAP_ID="local:http://localhost:$SNAP_PORT" MODE3_WALLET_PORT=$USER_PORT MODE3_WALLET_PUBLIC_ORIGIN="$WALLET_ORIGIN" \
-    MODE3_CIA_URL="$IDP_UI" MODE3_RP_ORIGIN="http://$RP1:$RP1_PORT,http://$RP2:$RP2_PORT" MODE3_RELAYER_INDEX=2 MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}" \
+    MODE3_CIA_URL="$IDP_UI" MODE3_RP_ORIGIN="$RP1_UI,$RP2_UI" MODE3_RELAYER_INDEX=2 MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}" \
     CIA_RPC_URL="http://127.0.0.1:$APP_PORT" MODE3_REV_CHAIN_RPC="http://127.0.0.1:$REV_PORT" CIA_LOG_ADDRESS="$LOGADDR" MODE3_MIRROR_ADDRESS="$MIRROR" \
     setsid nohup node mode3_wallet_agent.js > "$LOGS/wallet_agent.log" 2>&1 < /dev/null &
   (cd snap-mode3 && setsid nohup npm run serve > "$LOGS/snap_serve.log" 2>&1 < /dev/null &)
   timeout 40 bash -c "until ss -ltn | grep -q ':$SNAP_PORT '; do sleep 1; done" && echo "snap serve :$SNAP_PORT up" || { echo "snap serve failed — $LOGS/snap_serve.log"; exit 1; }
 else
 DOTENV_CONFIG_PATH="$LOGS/empty.env" MODE3_PK_CIA_X="" MODE3_PK_CIA_Y="" MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}" MODE3_DEMO_GENERATION="$(date +%s)" MODE3_WALLET_PORT=$USER_PORT MODE3_WALLET_PUBLIC_ORIGIN="$WALLET_ORIGIN" \
-  MODE3_CIA_URL="$IDP_UI" MODE3_RP_ORIGIN="http://$RP1:$RP1_PORT,http://$RP2:$RP2_PORT" \
+  MODE3_CIA_URL="$IDP_UI" MODE3_RP_ORIGIN="$RP1_UI,$RP2_UI" \
   CIA_RPC_URL="http://127.0.0.1:$APP_PORT" MODE3_REV_CHAIN_RPC="http://127.0.0.1:$REV_PORT" CIA_LOG_ADDRESS="$LOGADDR" MODE3_MIRROR_ADDRESS="$MIRROR" \
   setsid nohup node mode3_user_static.js > "$LOGS/user_static.log" 2>&1 < /dev/null &
 fi
 timeout 30 bash -c "until ss -ltn | grep -q ':$USER_PORT '; do sleep 1; done" && echo "지갑($WALLET_MODE) up at $WALLET_ORIGIN" || { echo "지갑($WALLET_MODE) failed — $LOGS/$([ "$WALLET_MODE" = snap ] && echo wallet_agent || echo user_static).log"; exit 1; }
 start_remote "$RP1" mode3_rp.js $RP1_PORT
 start_remote "$RP2" mode3_rp.js $RP2_PORT
+if [ "$SPLIT_RP_TUNNEL" != 0 ]; then
+  ssh -o BatchMode=yes -o ConnectTimeout=5 -o ExitOnForwardFailure=yes -f -N $RP1_TUNNEL "$U@$RP1" && curl -s -m 3 -o /dev/null "$RP1_UI/mode3/health" \
+    && echo "RP 터널 up: $RP1_UI → $RP1:$RP1_PORT" || { echo "RP 터널 실패($RP1_TUNNEL $U@$RP1)"; exit 1; }
+  ssh -o BatchMode=yes -o ConnectTimeout=5 -o ExitOnForwardFailure=yes -f -N $RP2_TUNNEL "$U@$RP2" && curl -s -m 3 -o /dev/null "$RP2_UI/mode3/health" \
+    && echo "RP 터널 up: $RP2_UI → $RP2:$RP2_PORT" || { echo "RP 터널 실패($RP2_TUNNEL $U@$RP2)"; exit 1; }
+fi
 
 # 7. RP 등록 대기(승인은 기본 수동)
 HDR="X-CIA-Admin-Secret: $ADMIN"
@@ -197,14 +210,14 @@ except Exception: print('(응답 없음)')"; done
     sleep 2
   done
 else
-  echo "RP 등록 $N 건 — 인증서 대기(pending). http://$IDP:$IDP_PORT/rp 에서 운영자 계정을 만들고 '새 RP 만들기' 에 같은 이름·주소(zkONE http://$RP1:$RP1_PORT, zkTWO http://$RP2:$RP2_PORT)를 넣은 뒤 '인증서 발급 요청' → http://$IDP:$IDP_PORT/admin 에서 승인하세요 (2026-11-06; 바로 /admin 승인·AUTO_APPROVE=1 도 된다)."
+  echo "RP 등록 $N 건 — 인증서 대기(pending). http://$IDP:$IDP_PORT/rp 에서 운영자 계정을 만들고 '새 RP 만들기' 에 같은 이름·주소(zkONE $RP1_UI, zkTWO $RP2_UI)를 넣은 뒤 '인증서 발급 요청' → http://$IDP:$IDP_PORT/admin 에서 승인하세요 (2026-11-06; 바로 /admin 승인·AUTO_APPROVE=1 도 된다)."
 fi
 
 # 8. 요약
 for u in "$IDP:$IDP_PORT" "127.0.0.1:$USER_PORT" "$RP1:$RP1_PORT" "$RP2:$RP2_PORT"; do printf -- "--- %s " "$u"; curl -s -m 10 "http://$u/mode3/health" | python3 -c "import sys,json;d=json.load(sys.stdin);print({k:d.get(k) for k in ('role','ok','status','secrets','registered','accounts','pendingRps','active') if d.get(k) is not None})"; done
 printf -- "--- 체인 구성: "; curl -s -m 5 "http://$IDP:$IDP_PORT/cia/public_keys" | python3 -c "import sys,json;d=json.load(sys.stdin);print('캐노니컬 chainId', d.get('canonicalChainId'), '· 거울', [m.get('chainId') for m in d.get('mirrors',[])])"
 echo "SPLIT_DONE $(date '+%H:%M:%S')"
-echo "페이지: IdP 사용자 http://$IDP:$IDP_PORT/user  IdP RP 운영자 http://$IDP:$IDP_PORT/rp  지갑 $WALLET_ORIGIN/  zkONE http://$RP1:$RP1_PORT/ (관리자 /admin)  zkTWO http://$RP2:$RP2_PORT/  IdP 관리자 http://$IDP:$IDP_PORT/admin"
+echo "페이지: IdP 사용자 http://$IDP:$IDP_PORT/user  IdP RP 운영자 http://$IDP:$IDP_PORT/rp  지갑 $WALLET_ORIGIN/  zkONE $RP1_UI/ (관리자 /admin)  zkTWO $RP2_UI/  IdP 관리자 http://$IDP:$IDP_PORT/admin"
 echo "새 RP: http://$IDP:$IDP_PORT/rp 에서 운영자 가입 → '새 RP 만들기' → 받은 키로 bash scripts/new_rp.sh <name> <port> <key> --host <RP VM IP>"
 if [ "$WALLET_MODE" = "snap" ]; then
   echo "Snap 모드: 브라우저에 MetaMask Flask 가 있어야 한다. 지갑 페이지 $WALLET_ORIGIN/ 에서 MetaMask 연결 → Snap(local:http://localhost:$SNAP_PORT) 설치/재연결."

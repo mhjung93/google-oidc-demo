@@ -947,20 +947,30 @@ Snap 번들이 다시 빌드됐다(등록 확인 창이 uid·비밀번호 프롬
   IdP 등록은 됐는데 Snap 저장 전에 끊겼으면(팝업이 닫힘 등) 'Google 로 등록'을 다시 누르면 Google 로그인 없이 Snap 저장을 마저 한다.
 - IdP 만 다시 띄워 래퍼를 켜거나 끈 경우 에이전트도 다시 띄운다 — 에이전트는 IdP 의 oidc 설정을 처음 받은 값으로 고정한다(받지 못한 경우만 다시 읽는다).
 
-### zkID 계정에 Google·네이버 로그인 연결 (2026-11-09, 스펙 `docs/superpowers/specs/2026-11-09-mode3-linked-logins-design.md`)
+### RP 계정에 Google·네이버 로그인 연결 (2026-11-10, 스펙 `docs/superpowers/specs/2026-11-10-mode3-rp-social-logins-design.md`)
 
-- **모델**: 계정의 중심은 zkID(아이디) 계정이다. `/user` 에 로그인하면 "연결된 로그인" 카드에서 Google·네이버를 **공급자마다 하나씩** 연결·해제한다. 외부 계정 하나는 zkID 계정 하나에만 연결된다(`oidc_linked_elsewhere`), Google 로 가입한 래퍼 계정의 Google 은 연결할 수 없다(`oidc_has_own_account`). 지갑 연결 해제는 외부 연결을 풀지 않는다.
-- **서비스 로그인**: RP 의 "Google 계정으로 로그인"·"네이버로 로그인" → 지갑 팝업 → zkID 인증 창이 `method=google|naver` 로 열려 그 공급자로 본인 확인 → 연결된 zkID 계정의 1회용 코드(발급; 미등록 지갑이면 등록 모드 → 등록 코드) → 지갑으로 돌아가 발급·로그인. 어느 버튼이든 같은 zkID 계정·같은 지갑·같은 PPID 다. 발급 모드는 `auid` 를 넣고 "계속".
-  - 2026-11-06 의 "아이디 지갑 + Google 토큰으로 발급하며 첫 번에 자동 연결" 과 "미등록 지갑 + Google 버튼 → Google 래퍼 가입" 은 없앴다(`/cia/issue`·`/wallet/login` 은 아이디 계정의 `id_token` 을 `use_auth_window` 로 거절). Google 래퍼 지갑의 Google 로그인은 그대로다.
-- **snap 모드 전용**: web 모드 사용자 페이지(개발 일시 중지)는 인증 창 `method` 를 모른다 — 네이버 버튼은 `snap_mode_only` 로 거절되고, Google 버튼은 예전 래퍼 경로다.
-- **주소(분리 데모, snap 모드)**: Google 은 `http://` 원본으로 `localhost` 만 받으므로 브라우저는 IdP 를 `http://localhost:4100` 으로 연다 — `demo_split_start.sh` 가 이 VM 에 SSH 터널(`-L 127.0.0.1:4100:127.0.0.1:4100 zkd@192.168.226.10`)을 띄우고 지갑의 `MODE3_CIA_URL`·RP 의 `MODE3_CIA_BROWSER_URL`(가입·관리자 링크, health CORS)을 이 주소로 둔다(RP 의 서버 간 호출은 VM 주소; ID 토큰 iss 는 discovery 로 읽는다). 터널은 snap 모드에서 기본으로 켜진다(`SPLIT_IDP_TUNNEL=0/1` 로 바꾼다; 0 이면 Google 연결은 안 된다). 이 VM 의 `:4100` 이 비어 있어야 한다. 발표 PC 가 이 VM 이 아니면 그 PC 에서 같은 터널을 연다.
+11-09 의 "zkID 계정에 Google·네이버 연결" 은 걷어냈다(사용자 지적: 연결된 로그인은 RP 가 지원하는 기능). zkID 인증 창은 다시 아이디·비밀번호만 받는다.
+
+- **모델**: RP(zkONE·zkTWO)마다 계정이 따로다. 계정 하나에 로그인 수단 세 칸 — zkID(PPID)·Google·네이버. 처음 쓰는 수단으로 로그인하면 그 칸만 채운 새 계정이 생긴다.
+  나머지는 로그인한 뒤 상단 메뉴 **"내 계정"** 탭에서 연결·해제한다(마지막 수단은 해제할 수 없다). 다른 계정에 이미 붙은 수단은 연결을 거부한다(계정 병합 없음).
+  zkONE 에서 연결한 것은 zkTWO 에 아무 영향이 없다.
+- **로그인 창**: "zkID 로 로그인" 은 지금처럼 지갑 팝업. "Google 계정으로 로그인" 은 그 자리에 Google 버튼(GIS), "네이버로 로그인" 은 네이버를 다녀온다 — 둘 다 지갑을 거치지 않는다.
+  (RP 에 Google 설정이 없고 IdP 가 Google 래퍼를 켰으면 Google 버튼은 예전 래퍼 로그인 — web 모드가 쓴다.)
+- **자산**: KRW · ETH(내 계정 = PPID 스마트 계정, zkID 로 연결돼 있을 때) · ETH(거래소 보관). Google·네이버 세션에서 산 ETH 는 거래소 보관 장부에 쌓이고, 출금은 RP 릴레이어가
+  자기 돈으로 보낸다. 온체인 출금의 **출금 출처**: "내 계정" 은 zkID 세션(지갑 증명)일 때만, "거래소 보관" 은 늘. 계정·장부는 `mode3_rp_accounts.json`(version 2)에 남는다.
+- **zk 를 거치지 않는 지점(데모 대비)**: zkID 자격증명을 폐기해도 Google·네이버 로그인은 된다(PPID 계정 출금만 막힌다) · zkTWO 의 국가·나이 요구는 소셜 로그인에 적용되지 않는다 ·
+  두 RP 가 같은 Google 클라이언트·네이버 앱을 쓰면 sub 이 같아 두 RP 가 같은 사람임을 안다(zkID 는 RP 마다 다른 PPID) · 거래소 보관은 수탁이다 · localhost 에서 쿠키는 포트로 격리되지 않는다(이름만 다르다 — `zkone.sid`·`zktwo.sid`·`cia.sid`).
+  zkID 로 로그인해 생긴 쿠키 세션은 그 zkID 세션(r_s)과 함께 끝난다(폐기·로그아웃).
+- **주소(분리 데모, snap 모드)**: 브라우저는 zkONE `http://localhost:3100`, zkTWO `http://localhost:3101`, IdP `http://localhost:4100` 으로 연다 — `demo_split_start.sh` 가 이 VM 에 SSH 터널 셋을 연다
+  (`SPLIT_RP_TUNNEL`·`SPLIT_IDP_TUNNEL`, 0 이면 VM 주소). RP 공개 주소가 바뀌면 RP 가 스스로 새로 등록한다 — IdP 관리자 페이지에서 다시 승인한다.
 - **설정(사용자)**:
-  - Google 콘솔 승인된 JavaScript 원본에 `http://localhost:4100`(그리고 기존 `http://localhost:5100`).
-  - 네이버 개발자센터 애플리케이션: 사용 API "네이버 로그인", 서비스 URL `http://localhost:4100`, Callback URL `http://localhost:4100/cia/oidc/naver/callback`. 받은 Client ID·Secret 을 환경변수 또는 이 VM `.env` 의 `MODE3_NAVER_CLIENT_ID`·`MODE3_NAVER_CLIENT_SECRET` 으로 — 스크립트가 IdP `role.env` 에만 넣고 출력하지 않는다(진행 줄은 on/off). 없으면 네이버 버튼·연결 줄은 "설정되지 않음".
-  - IdP 쪽 env: `MODE3_NAVER_REDIRECT_URI`(기본 `${CIA_PUBLIC_URL}/cia/oidc/naver/callback` — 브라우저가 IdP 를 여는 주소여야 한다, 로그인 세션 쿠키가 그 호스트에 있다). 테스트용 `MODE3_NAVER_ISSUER`·`_JWKS_URL`·`_AUTHORIZE_URL`·`_TOKEN_URL`.
-  - IdP 를 새 설정으로 다시 띄우면 RP 도 다시 띄운다 — RP 는 IdP 의 oidc 설정(`providers`)을 기동 때 받아 버튼을 켠다.
-- **시연 순서**: `/user`(localhost:4100) 가입·로그인 → "연결된 로그인" 에서 Google 연결(GIS) → 네이버 연결(네이버 다녀옴) → zkONE "네이버로 로그인"(지갑 미등록이면 인증 창 등록 모드로 네이버 인증 → 등록 → 로그인) → 로그아웃 → "Google 계정으로 로그인"(auid 넣고 계속) → 같은 계정으로 들어온 것 확인.
-- **미확인(실제 네이버)**: Callback 에 `http://localhost` 가 허용되는지, 토큰 교환에 `client_secret` 과 PKCE `code_verifier` 를 함께 보내도 되는지 — 자동 테스트는 네이버 흉내 발급자로만 돌렸다.
+  - Google 콘솔 승인된 JavaScript 원본에 `http://localhost:3100`·`http://localhost:3101`(그리고 기존 `http://localhost:4100`·`http://localhost:5100`). 클라이언트 ID 는 IdP 래퍼와 같은 값을 RP 에도 준다.
+  - 네이버 개발자센터 애플리케이션 Callback URL 에 `http://localhost:3100/api/rp/naver/callback`·`http://localhost:3101/api/rp/naver/callback`. Client ID·Secret 은 환경변수 또는 이 VM `.env` 의
+    `MODE3_NAVER_CLIENT_ID`·`MODE3_NAVER_CLIENT_SECRET` — 스크립트가 **RP `role.env` 에만** `MODE3_RP_NAVER_*` 로 옮긴다(출력은 on/off 만).
+  - RP env: `MODE3_RP_GOOGLE_CLIENT_ID`, `MODE3_RP_NAVER_CLIENT_ID`·`_SECRET`·`_REDIRECT_URI`(기본 `${MODE3_RP_PUBLIC_ORIGIN}/api/rp/naver/callback`), `MODE3_RP_SESSION_SECRET`(없으면 기동마다 무작위 — 재기동하면 다시 로그인).
+- **시연 순서**: zkONE 에서 zkID 로 로그인 → 내 계정 → Google 연결 → 로그아웃 → Google 로 로그인(같은 계정·같은 잔고) → 네이버 연결 → zkTWO 에서 Google 로 로그인(새 계정 — RP 마다 따로).
+- **미확인(실제 네이버)**: Callback 에 `http://localhost` 가 허용되는지, 토큰 교환에 `client_secret` 과 PKCE `code_verifier` 를 함께 보내도 되는지, 앱 하나에 Callback 을 여러 개 등록할 수 있는지 —
+  자동 테스트는 네이버 흉내 발급자로만 돌렸다.
 
 ### 한계
 
