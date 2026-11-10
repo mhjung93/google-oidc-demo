@@ -23,6 +23,7 @@ const PINNED_ENV = {
   CIA_RPC_URL: process.env.CIA_RPC_URL || 'http://127.0.0.1:8545',
   MODE3_PK_CIA_X: '', MODE3_PK_CIA_Y: '', MODE3_RP_REGISTRATION_FILE: '', MODE3_CHALLENGE_TTL_MS: '',
   MODE3_RP_REGISTRATION_POLL_MS: '300', MODE3_RP_LOGIN_LOG: '',
+  MODE3_RP_ACCOUNTS_FILE: '', MODE3_RP_GOOGLE_CLIENT_ID: '', MODE3_RP_NAVER_CLIENT_ID: '', MODE3_RP_NAVER_CLIENT_SECRET: '', MODE3_RP_NAVER_REDIRECT_URI: '', MODE3_RP_SESSION_SECRET: '',   // 2026-11-10 RP 소셜 — 셸에 남은 데모 값이 새지 않게
   MODE3_RP_FACTORY_ADDRESS: '', MODE3_VERIFIER_ADDRESS: '', MODE3_RELAYER_INDEX: '', MODE3_MAX_ROOT_AGE: '', MODE3_MAX_LIFETIME_BLOCKS: '',
   MODE3_TTL_BLOCKS: '', MODE3_HEIGHT_GRID: '', MODE3_ALLOWED_COUNTRIES: '', MODE3_MIN_AGE: '',
   MODE3_REQUIRE_DISCLOSURE: '', MODE3_DEMO_GENERATION: '',   // 2026-10-21 데모 설정 — 데모 스크립트가 내보낸 값이 셸에 남아 있어도 테스트는 끈다
@@ -123,6 +124,7 @@ export async function startIsolatedMode3Stack(opts = {}) {
         MODE3_RP_REGISTRATION_FILE: path.join(dir, `mode3_${tag}_registration.json`),
         MODE3_RP_PUBLIC_ORIGIN: origin,
         MODE3_RP_LOGIN_LOG: path.join(dir, `mode3_${tag}_logins.jsonl`),
+        MODE3_RP_ACCOUNTS_FILE: path.join(dir, `mode3_${tag}_accounts.json`),   // 2026-11-10: 없으면 저장소 루트의 mode3_rp_accounts.json 에 썼다(테스트 누수)
         MODE3_RP_ADMIN_SECRET: RP_ADMIN_SECRET,
         ...chainEnv,
         ...e,

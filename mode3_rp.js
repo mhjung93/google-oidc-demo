@@ -10,7 +10,7 @@ import cors from 'cors';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual, randomBytes } from 'node:crypto';
 import { ethers } from 'ethers';
 import { createRpVerifier, verifySessionRequest, canonicalProof, proofFromCalldata, verifyCalldataProof, uniqueMembers } from './lib/mode3_rp.js';
 import { VKEY_PATH } from './lib/mode3_wallet.js';
@@ -25,6 +25,9 @@ import { buildRpHealth, applyHealthHeaders, bounded, originList } from './lib/mo
 import { DEFAULT_ATTR_SCHEMA, loadSchema, slotIndexOf, encodeMembers, schemaInfo } from './lib/mode3_attr_schema.js';
 import { isAttrCommit } from './lib/mode3_attr_commit.js';
 import { createRemoteJWKSet, jwtVerify } from 'jose';   // zkID ID 토큰(ES256) 검증(2026-11-09 Phase 1)
+import session from 'express-session';
+import { openAccountStore, AccountError } from './lib/mode3_rp_accounts.js';
+import { socialConfigFromEnv, mountRpSocial, setRpSession } from './lib/mode3_rp_social.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.MODE3_RP_PORT) || 3100;
@@ -110,22 +113,11 @@ function requireRpAdmin(req, res, next) {
 const RP_KEY = process.env.MODE3_RP_KEY || null;
 const POLL_MS = Number(process.env.MODE3_RP_REGISTRATION_POLL_MS) || 5000;
 const LOGIN_LOG = process.env.MODE3_RP_LOGIN_LOG || path.join(__dirname, 'mode3_rp_logins.jsonl');
-// 계정별 속성 커밋먼트(2026-11-09 Phase 1): PPID → { attrCommit, since, updatedAt, history }. 로그인 때 zkID ID 토큰의 name 클레임(C_attr)을 받아
-// 처음 보면 고정하고, 달라지면 바꾸면서 changed 로 알린다(사용자가 속성 도구에서 새로 만들어 프로필을 고친 경우). Phase 2 의 속성 증명(π_attr)은
-// 여기 고정된 값을 공개 입력으로 검증한다. 비밀은 없다(커밋먼트뿐).
+// RP 계정(2026-11-10 스펙 rp-social-logins §2): 계정 하나에 로그인 수단 세 칸(zkid=PPID·google·naver)·속성 커밋먼트·KRW·거래소 보관 ETH. 11-09 Phase 1 의
+// byPPID 파일(version 1 — PPID → { attrCommit, since, updatedAt, history })은 열 때 옮긴다. 비밀은 없다(sub 은 파일에만).
 const ACCOUNTS_FILE = process.env.MODE3_RP_ACCOUNTS_FILE || path.join(__dirname, 'mode3_rp_accounts.json');
-const accounts = (() => { const a = readJson(ACCOUNTS_FILE, null); return a && a.version === 1 && a.byPPID && typeof a.byPPID === 'object' ? a : { version: 1, byPPID: {} }; })();
-function pinAttrCommit(PPID, commit) {
-  const cur = accounts.byPPID[PPID] ?? null;
-  if (!commit) return { attrCommit: cur?.attrCommit ?? null, changed: false };   // 토큰에 name 이 없으면 고정된 값은 그대로
-  if (cur && cur.attrCommit === commit) return { attrCommit: commit, changed: false };
-  const now = new Date().toISOString();
-  accounts.byPPID[PPID] = cur
-    ? { ...cur, attrCommit: commit, updatedAt: now, history: [...(cur.history ?? []), { attrCommit: cur.attrCommit, until: now }].slice(-10) }
-    : { attrCommit: commit, since: now, updatedAt: now, history: [] };
-  writeJsonAtomic(ACCOUNTS_FILE, accounts, 0o600);
-  return { attrCommit: commit, changed: Boolean(cur) };
-}
+const accountStore = openAccountStore({ file: ACCOUNTS_FILE });
+const SOCIAL = socialConfigFromEnv(process.env, { publicOrigin: PUBLIC_ORIGIN });
 // zkID ID 토큰 검증: 키는 MODE3_CIA_URL 의 JWKS 에서(서버 간), issuer 는 같은 곳의 discovery 문서에서 읽는다 — IdP 의 CIA_PUBLIC_URL 과 이 RP 의
 // MODE3_CIA_URL 이 다른 형태(127.0.0.1 vs VM 주소)여도 된다. sub·aud 는 호출자가 π_RP 의 공개 신호(auid_s·arid_s)로 넘긴다 — 토큰이 이 증명의 것임을 묶는다.
 const idpJwks = createRemoteJWKSet(new URL(`${CIA_URL}/.well-known/jwks.json`), { cooldownDuration: 5_000, cacheMaxAge: 600_000 });
@@ -419,7 +411,7 @@ let disclosedLoginCount = 0;   // 공개 조건을 실은 로그인(mask ≠ 0 �
 
 // 2026-11-06: 재기동해도 관리자 화면의 로그인 기록이 비지 않게 로그 파일(LOGIN_LOG)에서 되살린다 — 전에는 메모리만이어서 재기동마다 비었다.
 // 조회 API 모양은 그대로(r_s 는 축약, 트랜스크립트·pk_i 는 내지 않는다). readLoginLog 는 함수 선언이라 여기서 불러도 된다.
-const logins = readLoginLog().map((l) => ({ PPID: String(l.PPID), at: l.at, root: String(l.root), r_s: typeof l.r_s === 'string' ? l.r_s.slice(0, 8) + '…' : '', allowAgent: String(l.allowAgent ?? '0'), disclosure: l.disclosure ?? null }));   // { PPID, at, root, r_s, allowAgent, disclosure }
+const logins = readLoginLog().map((l) => ({ via: l.via ?? 'zkid', rpAccount: l.rpAccount ?? null, PPID: String(l.PPID ?? ''), at: l.at, root: String(l.root ?? ''), r_s: typeof l.r_s === 'string' ? l.r_s.slice(0, 8) + '…' : '', allowAgent: String(l.allowAgent ?? '0'), disclosure: l.disclosure ?? null }));   // { PPID, at, root, r_s, allowAgent, disclosure }
 // 릴레이가 보낸 트랜잭션 기록(2026-10-21, RP 관리자 페이지) — 로그인 기록과 같이 메모리만. RP 가 원래 아는 것(계정·PPID·calldata 의 받는 주소·금액)만 담는다.
 const relayedTxs = [];   // { at, txHash, account, PPID, kind, target, value, deployTxHash, status, blockNumber }
 // r_s 전문은 내지 않는다 — (PPID, 시각) 과 함께 RP 의 사용자 활동 기록이다(설계 2026-09-16 §5).
@@ -432,6 +424,10 @@ const app = express();
 // 본문 상한은 IdP(cia.js) 와 같은 256kb(2026-10-26 리뷰 E1). 정상 로그인 본문은 수 KB, 릴레이 calldata 도 수십 KB 안이다.
 // 더 크면 기록해 둔 트랜스크립트가 개봉 요청에서 IdP 상한에 걸리는 비대칭이 생긴다(기록은 정규 proof 로만 하지만 이중 방어).
 app.use(express.json({ limit: '256kb' }));
+// 쿠키 세션(2026-11-10): 소셜 로그인·zkID 로그인 모두 { rpAccount, via } 를 둔다. 이름을 RP 마다 다르게 — localhost 에서는 포트가 달라도
+// 쿠키를 함께 쓰므로 같은 이름이면 zkONE·zkTWO·IdP(cia.sid) 세션이 서로 덮어쓴다. 비밀이 기동마다 바뀌면 재기동 뒤 옛 쿠키는 무효(계정·장부는 파일에 남는다).
+const SESSION_COOKIE = `${RP_NAME.toLowerCase().replace(/[^a-z0-9_-]/g, '') || 'rp'}.sid`;
+app.use(session({ name: SESSION_COOKIE, secret: process.env.MODE3_RP_SESSION_SECRET || randomBytes(32).toString('hex'), resave: false, saveUninitialized: false, cookie: { httpOnly: true, sameSite: 'lax' } }));
 // 리뷰(2026-11-03 E-M7): 이 페이지들을 남의 프레임에 넣지 못하게(클릭재킹) — 팝업·새 창으로만 쓰이고 프레임 임베드는 없다.
 app.use((req, res, next) => { res.setHeader('X-Frame-Options', 'DENY'); res.setHeader('Content-Security-Policy', "frame-ancestors 'none'"); next(); });
 
@@ -449,9 +445,17 @@ const currentPredicates = () => ({ allowedCountries: ALLOWED_COUNTRIES_EFFECTIVE
 
 // 2026-10-21: MODE3_REQUIRE_DISCLOSURE=1(데모의 zkTWO)이면 로그인 때 국가 집합·나이 술어를 **서버가** 요구한다 — 페이지의 체크박스와 무관. 기본은 끔(zkONE: 누구나).
 const REQUIRE_DISCLOSURE = process.env.MODE3_REQUIRE_DISCLOSURE === '1';
+// RP 소셜 로그인·계정 연결(2026-11-10) — lib/mode3_rp_social.js. 로그인 기록에 수단(via)을 남긴다.
+mountRpSocial(app, { store: accountStore, cfg: SOCIAL, ledgerOp, onLogin: ({ account, via }) => {
+  const at = new Date().toISOString();
+  logins.push({ via, rpAccount: account, PPID: '', at, root: '', r_s: '', allowAgent: '0', disclosure: null });
+  fs.appendFileSync(LOGIN_LOG, JSON.stringify({ at, via, rpAccount: account }) + '\n', { mode: 0o600 });
+} });
+if (SOCIAL.google.enabled || SOCIAL.naver.enabled) console.log(`[rp] 소셜 로그인: Google ${SOCIAL.google.enabled ? '켜짐' : '꺼짐'} · 네이버 ${SOCIAL.naver.enabled ? `켜짐(콜백 ${SOCIAL.naver.redirectUri})` : '꺼짐'}`);
 app.get('/api/mode3/rp_info', (req, res) => {
   res.json({ name: RP_NAME, requireDisclosure: REQUIRE_DISCLOSURE,   // 2026-10-15: 페이지 브랜드(zkONE/zkTWO) 표기용
        status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, mirrorAddress: MIRROR_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, ciaUrl: CIA_BROWSER_URL, pkCiaSource: pkCIA.source, chainId: chainId.toString(), active: Boolean(verifier), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null, predicates: currentPredicates(),
+       social: { google: { enabled: SOCIAL.google.enabled, clientId: SOCIAL.google.clientId }, naver: { enabled: SOCIAL.naver.enabled } },   // 2026-11-10 RP 소셜 버튼
        oidc: pkCIA.oidc });   // 2026-10-16: IdP 의 public_keys.oidc 중계 — 페이지는 enabled·provider, 2026-11-09 부터 providers.{google,naver}.enabled(버튼 활성)를 본다
 });
 
@@ -526,17 +530,29 @@ app.post('/api/mode3/login', async (req, res) => {
       if (!vt.ok) return res.json({ ok: false, reason: 'bad_id_token', detail: vt.detail });
       tokenName = vt.name;
     }
-    const attr = pinAttrCommit(v.PPID.toString(), tokenName !== undefined && isAttrCommit(tokenName) ? tokenName : null);
+    // RP 계정(2026-11-10): link:true 면 지금 쿠키 세션 계정의 zkID 칸에 이 PPID 를 붙이고(이미 다른 계정의 PPID 면 409 — r_s 세션도 만들지 않는다),
+    // 아니면 PPID 의 계정으로 들어간다(없으면 새로). 어느 쪽이든 쿠키 세션은 그 계정(via zkid).
+    const PPIDs = v.PPID.toString();
+    let rpAccount;
+    try {
+      if (req.body.link === true) {
+        rpAccount = req.session?.rpAccount && accountStore.get(req.session.rpAccount) ? req.session.rpAccount : null;
+        if (!rpAccount) return res.status(401).json({ ok: false, reason: 'no_rp_session' });
+        accountStore.link(rpAccount, 'zkid', { PPID: PPIDs });
+      } else rpAccount = accountStore.loginOrCreate('zkid', { PPID: PPIDs }).id;
+    } catch (e) { if (e instanceof AccountError) return res.status(e.status).json({ ok: false, reason: e.reason }); throw e; }
+    const attr = accountStore.pinAttrCommit(rpAccount, tokenName !== undefined && isAttrCommit(tokenName) ? tokenName : null);
+    if (req.body.link === true) req.session.via = 'zkid'; else await setRpSession(req, rpAccount, 'zkid');
     const at = new Date().toISOString();
     const disclosure = discOf(v.disclosure);
-    sessions.set(rsStr, { PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), regRoot: v.regRoot.toString(), disclosure, auid_s: v.auid_s.toString(), arid_s: v.arid_s.toString(), r_rp, at, attrCommit: attr.attrCommit });
+    sessions.set(rsStr, { rpAccount, PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), regRoot: v.regRoot.toString(), disclosure, auid_s: v.auid_s.toString(), arid_s: v.arid_s.toString(), r_rp, at, attrCommit: attr.attrCommit });
     // 2026-10-16: 같은 계정(PPID)의 이전 세션은 새 로그인이 대체한다 — "RP 당 활성 세션 하나". IdP 폐기 트리는 건드리지 않는다(강한 무효화는 V8 세션 폐기).
     for (const [k, s] of sessions) if (k !== rsStr && s.PPID === v.PPID.toString()) forgetSession(k);
     if (disclosure.mask !== '0' || disclosure.set) disclosedLoginCount++;
-    logins.push({ PPID: v.PPID.toString(), at, root: v.root.toString(), r_s: rsShort(rsStr), allowAgent: v.allowAgent.toString(), disclosure });
+    logins.push({ via: 'zkid', rpAccount, PPID: v.PPID.toString(), at, root: v.root.toString(), r_s: rsShort(rsStr), allowAgent: v.allowAgent.toString(), disclosure });
     // §5 로그인 로그 — 전체 r_s 와 트랜스크립트(태그 포함). 개봉 요청의 재료다. 조회 API 로는 내지 않는다.
-    fs.appendFileSync(LOGIN_LOG, JSON.stringify({ at, PPID: v.PPID.toString(), r_s: rsStr, pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), disclosure, auid_s: v.auid_s.toString(), arid_s: v.arid_s.toString(), publicSignals: v.publicSignals, proof: v.proof }) + '\n', { mode: 0o600 });
-    res.json({ ok: true, PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), r_s: rsStr, root: v.root.toString(), allowAgent: v.allowAgent.toString(), disclosure, attrCommit: attr.attrCommit, attrCommitChanged: attr.changed });
+    fs.appendFileSync(LOGIN_LOG, JSON.stringify({ at, via: 'zkid', rpAccount, PPID: v.PPID.toString(), r_s: rsStr, pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), disclosure, auid_s: v.auid_s.toString(), arid_s: v.arid_s.toString(), publicSignals: v.publicSignals, proof: v.proof }) + '\n', { mode: 0o600 });
+    res.json({ ok: true, account: rpAccount, via: 'zkid', PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), r_s: rsStr, root: v.root.toString(), allowAgent: v.allowAgent.toString(), disclosure, attrCommit: attr.attrCommit, attrCommitChanged: attr.changed });
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });
 
@@ -574,28 +590,83 @@ app.post('/api/mode3/revalidate', async (req, res) => {
 const ETH_PRICE_KRW = 4_210_000n;            // rp.html 시세표의 ETH 가격과 같은 값(표는 장식으로 흔들리지만 체결은 이 고정값)
 const DEMO_DEPOSIT_KRW = 1_000_000n;
 const LEDGER_TS_WINDOW_MS = 5 * 60_000;
-const krwLedger = new Map();                  // PPID → bigint KRW
-const usedLedgerBodies = new Set();           // `${PPID}|${body}` — 입금·구매 재전송 방지(메모리)
+const usedLedgerBodies = new Set();           // `${계정}|${body}` — 입금·구매·출금 재전송 방지(메모리)
 const fmtKrw = (n) => n.toLocaleString('ko-KR');
 /** '0.05' 같은 ETH 10진 문자열 → wei(bigint), 형식이 틀리면 null. 소수 18자리까지. */
 const parseEth = (str) => { const m = /^([0-9]+)(?:\.([0-9]{1,18}))?$/.exec(str); return m ? BigInt(m[1]) * 10n ** 18n + BigInt(((m[2] ?? '') + '0'.repeat(18)).slice(0, 18)) : null; };
 /** wei → 사람이 읽는 ETH('0.05', '1', '0') — 뒤따르는 0 과 점을 뗀다. */
 const fmtEth = (wei) => ethers.formatEther(wei).replace(/\.?0+$/, '') || '0';
 const accountOf = (PPID) => (reg.factoryAddress ? new ethers.Contract(reg.factoryAddress, FACTORY_ABI, provider).computeAddress(BigInt(PPID)) : Promise.resolve(null));
-async function ledgerView(PPID) {
-  const account = await accountOf(PPID);
+/** 계정의 장부 보기 — KRW·거래소 보관 ETH 는 RP 장부, ETH 는 PPID 계정(있으면)의 실제 체인 잔액. */
+async function ledgerView(acctId) {
+  const PPID = accountStore.get(acctId)?.zkid?.PPID ?? null;
+  const account = PPID ? await accountOf(PPID) : null;
   let wei = null;
   if (account) { try { wei = await provider.getBalance(account); } catch { wei = null; } }
-  return { ledger: { KRW: fmtKrw(krwLedger.get(PPID) ?? 0n), ETH: wei === null ? '-' : fmtEth(wei) }, account, ethWei: wei === null ? null : wei.toString(), priceKrw: ETH_PRICE_KRW.toString() };
+  const custody = accountStore.custody(acctId);
+  return { ledger: { KRW: fmtKrw(accountStore.krw(acctId)), ETH: wei === null ? '-' : fmtEth(wei), ETH_CUSTODY: fmtEth(custody) }, account, ethWei: wei === null ? null : wei.toString(), custodyWei: custody.toString(), priceKrw: ETH_PRICE_KRW.toString() };
 }
-/** 입금·구매 본문의 재전송 방지 — 클라이언트 시각이 ±5분 안이고 같은 (PPID, 본문) 을 아직 쓰지 않았을 때만 true(그리고 쓴 것으로 적는다). */
-function freshLedgerBody(PPID, body, tsMs) {
+/** 입금·구매·출금 본문의 재전송 방지 — 클라이언트 시각이 ±5분 안이고 같은 (계정, 본문) 을 아직 쓰지 않았을 때만 true. */
+function freshLedgerBody(acctId, body, tsMs) {
   if (!Number.isFinite(tsMs) || Math.abs(Date.now() - tsMs) > LEDGER_TS_WINDOW_MS) return false;
-  const key = `${PPID}|${body}`;
+  const key = `${acctId}|${body}`;
   if (usedLedgerBodies.has(key)) return false;
   usedLedgerBodies.add(key);
   if (usedLedgerBodies.size > 5000) usedLedgerBodies.delete(usedLedgerBodies.values().next().value);
   return true;
+}
+/**
+ * 장부 요청 하나(2026-11-10) — channel 'signed' 는 zkID r_s 세션의 세션키 서명 요청(/api/mode3/request), 'cookie' 는 쿠키 세션(/api/rp/ledger).
+ * 구매: signed 면 RP 릴레이어가 PPID 계정으로 실제 ETH 를 보내고(지금과 같다), cookie 면 거래소 보관 장부에 쌓는다(체인 거래 없음).
+ * 출금(cookie 만): 거래소 보관에서 먼저 깎고 릴레이어가 보낸다 — 전송이 실패하면 되돌린다. 결과 { status?, body }.
+ */
+async function ledgerOp({ account, body, channel, PPID = null }) {
+  const bad = (reason, extra = {}) => ({ status: 400, body: { ok: false, reason, ...extra } });
+  if (typeof body !== 'string' || body.length > 200) return bad('malformed');
+  if (body === 'balance') return { body: { ok: true, echo: body, balance: await ledgerView(account) } };
+  const dep = /^deposit:([0-9]{10,16})$/.exec(body);
+  if (dep) {
+    if (!freshLedgerBody(account, body, Number(dep[1]))) return { status: 409, body: { ok: false, reason: 'request_replayed' } };
+    accountStore.addKrw(account, DEMO_DEPOSIT_KRW);
+    return { body: { ok: true, echo: body, depositedKrw: DEMO_DEPOSIT_KRW.toString(), balance: await ledgerView(account) } };
+  }
+  const buy = /^buy:([0-9]+(?:\.[0-9]{1,18})?):([0-9]{10,16})$/.exec(body);
+  if (buy) {
+    const wei = parseEth(buy[1]);
+    if (wei === null || wei <= 0n) return bad('bad_amount');
+    const cost = (wei * ETH_PRICE_KRW + 10n ** 18n - 1n) / 10n ** 18n;   // KRW 올림
+    const have = accountStore.krw(account);
+    if (have < cost) return bad('insufficient_krw', { detail: { needKrw: fmtKrw(cost), haveKrw: fmtKrw(have) } });
+    if (!freshLedgerBody(account, body, Number(buy[2]))) return { status: 409, body: { ok: false, reason: 'request_replayed' } };
+    let txHash = null;
+    if (channel === 'signed') {
+      if (!reg.factoryAddress) return { status: 503, body: { ok: false, reason: 'relay_inactive', detail: 'no_factory' } };
+      const target = await accountOf(PPID);
+      let tx, rc;
+      try { tx = await (await provider.getSigner(RELAYER_INDEX)).sendTransaction({ to: target, value: wei }); rc = await tx.wait(); }
+      catch (e) { return { status: 502, body: { ok: false, reason: 'buy_transfer_failed', detail: e.shortMessage ?? e.message } }; }
+      txHash = tx.hash;
+      relayedTxs.push({ at: new Date().toISOString(), txHash, account: target, PPID, kind: 'buy', target, value: wei.toString(), deployTxHash: null, status: rc?.status === 1 ? 'success' : 'failed', blockNumber: rc?.blockNumber ?? null });
+    } else accountStore.addCustody(account, wei);
+    accountStore.addKrw(account, -cost);
+    return { body: { ok: true, echo: body, txHash, boughtWei: wei.toString(), costKrw: fmtKrw(cost), balance: await ledgerView(account) } };
+  }
+  const wd = /^withdraw:([^:]+):([0-9]{1,30}):([0-9]{10,16})$/.exec(body);
+  if (wd) {
+    if (channel !== 'cookie') return bad('malformed', { detail: '거래소 보관 출금은 /api/rp/ledger 로' });
+    if (!/^0x[0-9a-fA-F]{40}$/.test(wd[1])) return bad('bad_address');
+    const wei = BigInt(wd[2]);
+    if (wei <= 0n) return bad('bad_amount');
+    if (accountStore.custody(account) < wei) return bad('insufficient_custody');
+    if (!freshLedgerBody(account, body, Number(wd[3]))) return { status: 409, body: { ok: false, reason: 'request_replayed' } };
+    accountStore.addCustody(account, -wei);   // 먼저 깎는다 — 동시에 두 번 눌러도 잔고보다 많이 나가지 않게
+    let tx, rc;
+    try { tx = await (await provider.getSigner(RELAYER_INDEX)).sendTransaction({ to: wd[1], value: wei }); rc = await tx.wait(); }
+    catch (e) { accountStore.addCustody(account, wei); return { status: 502, body: { ok: false, reason: 'withdraw_failed', detail: e.shortMessage ?? e.message } }; }
+    relayedTxs.push({ at: new Date().toISOString(), txHash: tx.hash, account: null, PPID: null, kind: 'custody_withdraw', target: wd[1], value: wei.toString(), deployTxHash: null, status: rc?.status === 1 ? 'success' : 'failed', blockNumber: rc?.blockNumber ?? null });
+    return { body: { ok: true, echo: body, txHash: tx.hash, balance: await ledgerView(account) } };
+  }
+  return { body: { ok: true, echo: body } };
 }
 app.post('/api/mode3/request', async (req, res) => {
   try {
@@ -618,35 +689,9 @@ app.post('/api/mode3/request', async (req, res) => {
     if (view.head - view.lastPublishedBlock > EFFECTIVE_MAX_ROOT_AGE) return res.status(503).json({ ok: false, reason: 'root_too_old' });
     if (!verifySessionRequest({ pk_i: s.pk_i, r_s: rsKey, body, sig })) return res.status(401).json({ ok: false, reason: 'bad_signature' });
     requestCount++;
-    // 'balance'(2026-10-21, B안 2026-11-05): KRW 장부 + 세션 계정의 실제 ETH 잔액.
-    if (body === 'balance') return res.json({ ok: true, echo: body, PPID: s.PPID, balance: await ledgerView(s.PPID) });
-    // 'deposit:<ms>'(2026-11-05): KRW 입금(시연) — 고정 금액을 장부에 더한다.
-    const dep = /^deposit:([0-9]{10,16})$/.exec(body);
-    if (dep) {
-      if (!freshLedgerBody(s.PPID, body, Number(dep[1]))) return res.status(409).json({ ok: false, reason: 'request_replayed' });
-      krwLedger.set(s.PPID, (krwLedger.get(s.PPID) ?? 0n) + DEMO_DEPOSIT_KRW);
-      return res.json({ ok: true, echo: body, PPID: s.PPID, depositedKrw: DEMO_DEPOSIT_KRW.toString(), balance: await ledgerView(s.PPID) });
-    }
-    // 'buy:<eth>:<ms>'(2026-11-05): 시세로 KRW 를 깎고 RP 릴레이어가 그 수량의 ETH 를 세션 계정으로 보낸다(거래소가 매수한 코인을 내 계정에 넣는 셈).
-    const buy = /^buy:([0-9]+(?:\.[0-9]{1,18})?):([0-9]{10,16})$/.exec(body);
-    if (buy) {
-      const wei = parseEth(buy[1]);
-      if (wei === null || wei <= 0n) return res.status(400).json({ ok: false, reason: 'bad_amount' });
-      if (!reg.factoryAddress) return res.status(503).json({ ok: false, reason: 'relay_inactive', detail: 'no_factory' });
-      const cost = (wei * ETH_PRICE_KRW + 10n ** 18n - 1n) / 10n ** 18n;   // KRW 올림
-      const have = krwLedger.get(s.PPID) ?? 0n;
-      if (have < cost) return res.status(400).json({ ok: false, reason: 'insufficient_krw', detail: { needKrw: fmtKrw(cost), haveKrw: fmtKrw(have) } });
-      if (!freshLedgerBody(s.PPID, body, Number(buy[2]))) return res.status(409).json({ ok: false, reason: 'request_replayed' });
-      const account = await accountOf(s.PPID);
-      let tx, rc;
-      try { tx = await (await provider.getSigner(RELAYER_INDEX)).sendTransaction({ to: account, value: wei }); rc = await tx.wait(); }
-      catch (e) { return res.status(502).json({ ok: false, reason: 'buy_transfer_failed', detail: e.shortMessage ?? e.message }); }
-      krwLedger.set(s.PPID, have - cost);
-      // 관리자 페이지 거래 기록에도 남긴다(kind 'buy': 릴레이어 → 세션 계정 입금). 미배포 계정이라도 CREATE2 주소로 받아 두면 배포 뒤 그 잔액이 그대로다.
-      relayedTxs.push({ at: new Date().toISOString(), txHash: tx.hash, account, PPID: s.PPID, kind: 'buy', target: account, value: wei.toString(), deployTxHash: null, status: rc?.status === 1 ? 'success' : 'failed', blockNumber: rc?.blockNumber ?? null });
-      return res.json({ ok: true, echo: body, PPID: s.PPID, txHash: tx.hash, boughtWei: wei.toString(), costKrw: fmtKrw(cost), balance: await ledgerView(s.PPID) });
-    }
-    res.json({ ok: true, echo: body, PPID: s.PPID });
+    const acctId = s.rpAccount ?? accountStore.loginOrCreate('zkid', { PPID: s.PPID }).id;   // 2026-11-10 전에 만든 세션(rpAccount 없음)도 받는다
+    const r = await ledgerOp({ account: acctId, body, channel: 'signed', PPID: s.PPID });
+    return res.status(r.status ?? 200).json({ ...r.body, PPID: s.PPID });
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });
 
@@ -721,7 +766,7 @@ function readLoginLog() {
   return lines;
 }
 function lastTranscriptOf(PPID) {
-  return readLoginLog().reverse().find((l) => l.PPID === PPID) ?? null;
+  return readLoginLog().reverse().find((l) => l.r_s && l.PPID === PPID) ?? null;   // 소셜 줄(2026-11-10)에는 트랜스크립트가 없다
 }
 // 2026-11-06(사용자 결정): 관리자 화면은 PPID 숫자 대신 세션 계정의 0x 주소(팩토리 computeAddress(PPID))를 보인다. 주소 → PPID 는 되돌릴 수 없으므로
 // 이 RP 가 본 PPID(로그인 로그·메모리 목록)마다 주소를 계산해 대조한다. 팩토리가 바뀌면(재배포) 캐시 키가 달라져 다시 계산한다.
@@ -734,7 +779,7 @@ async function accountOfCached(PPID) {
 }
 async function ppidOfAccount(address) {
   const want = address.toLowerCase();
-  const seen = new Set([...logins.map((l) => l.PPID), ...readLoginLog().map((l) => l.PPID)]);
+  const seen = new Set([...logins.map((l) => l.PPID), ...readLoginLog().map((l) => l.PPID)].filter(Boolean));   // 소셜 줄은 PPID 가 없다
   for (const PPID of seen) { const a = await accountOfCached(PPID); if (a && a.toLowerCase() === want) return PPID; }
   return null;
 }
@@ -791,7 +836,7 @@ app.get('/api/mode3/open/:id', requireRpAdmin, async (req, res) => {
 
 // 2026-11-06: 각 기록에 세션 계정의 0x 주소(account)를 붙인다 — 관리자 화면이 PPID 대신 보인다(팩토리 전이면 null).
 app.get('/api/mode3/logins', requireRpAdmin, async (req, res) => {
-  try { res.json({ logins: await Promise.all(logins.map(async (l) => ({ ...l, account: await accountOfCached(l.PPID) }))) }); }
+  try { res.json({ logins: await Promise.all(logins.map(async (l) => ({ ...l, account: l.PPID ? await accountOfCached(l.PPID) : null }))) }); }
   catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });
 app.get('/api/mode3/txs', requireRpAdmin, (req, res) => res.json({ txs: relayedTxs }));   // 관리자 페이지가 읽는다(2026-11-05 비밀번호 필요)
