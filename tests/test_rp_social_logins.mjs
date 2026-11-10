@@ -166,12 +166,38 @@ try {
     const v = jar(rp.base); await googleLogin(v, 'g-hana');
     assert.equal((await v.req('GET', '/api/rp/me')).status, 200);
   });
+  await t('리뷰 I2: 네이버 state 는 시작한 브라우저에 묶인다 — 다른 브라우저가 콜백 URL 을 열면 naver_state_invalid 이고 로그인되지 않는다(로그인 CSRF)', async () => {
+    const attacker = jar(rp.base); nv.setNextSub('n-attacker');
+    const s = await attacker.req('GET', '/api/rp/naver/start?purpose=login');
+    const a = await fetch(s.location, { redirect: 'manual' });
+    const victim = jar(rp.base);
+    const r = await victim.req('GET', a.headers.get('location'));
+    assert.match(r.location, /social_error=naver_state_invalid/);
+    assert.equal((await victim.req('GET', '/api/rp/me')).status, 401);
+  });
+  await t('리뷰 I3: 형식이 틀린 출금·입금·구매 본문은 400 malformed — 성공(ok:true)으로 빠지지 않는다', async () => {
+    const u = jar(rp.base); await googleLogin(u, 'g-ivan');
+    for (const body of [`withdraw::1000:${Date.now()}`, `withdraw:0x000000000000000000000000000000000000bEEF:${'9'.repeat(31)}:${Date.now()}`, 'deposit:abc', 'buy:x:1']) {
+      const r = await u.req('POST', '/api/rp/ledger', { body });
+      assert.equal(r.status, 400, `${body} → ${j(r.body)}`); assert.equal(r.body.reason, 'malformed');
+    }
+  });
   await t('로그아웃: /api/rp/logout 뒤 /api/rp/me 401; JSON 이 아닌 본문은 415 json_only', async () => {
     const u = jar(rp.base); await googleLogin(u, 'g-gina');
     await u.req('POST', '/api/rp/logout', {});
     assert.equal((await u.req('GET', '/api/rp/me')).status, 401);
     const r = await fetch(new URL('/api/rp/unlink', rp.base), { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: 'method=google' });
     assert.equal(r.status, 415);
+  });
+  // 맨 끝에 둔다 — 지갑의 testuser 계정을 폐기한다.
+  await t('리뷰 I1: zkID 로 만든 쿠키 세션은 IdP 폐기(root 변경)로 r_s 세션이 재검증을 요구하면 함께 막힌다 — /api/rp/me·/api/rp/ledger 401', async () => {
+    const u = jar(rp.base); const z = await zkLogin(u);
+    assert.equal(z.body.ok, true, j(z.body)); assert.equal((await u.req('GET', '/api/rp/me')).status, 200);
+    const rv = await stack.cia.adminPost('/cia/revoke', { uid: '12345', scope: 'account' });
+    assert.equal(rv.status, 200, j(rv.body));
+    await stack.relayIfBehind();   // 폐기 게시를 RP 가 읽는 거울에 싣는다
+    assert.equal((await u.req('GET', '/api/rp/me')).status, 401, '폐기 뒤 쿠키 세션이 남으면 거래소 보관 출금까지 된다');
+    assert.equal((await u.req('POST', '/api/rp/ledger', { body: 'balance' })).status, 401);
   });
 } finally {
   await stack.stop(); await g.stop(); await nv.stop();

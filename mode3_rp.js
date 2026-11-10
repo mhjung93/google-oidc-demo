@@ -446,7 +446,22 @@ const currentPredicates = () => ({ allowedCountries: ALLOWED_COUNTRIES_EFFECTIVE
 // 2026-10-21: MODE3_REQUIRE_DISCLOSURE=1(데모의 zkTWO)이면 로그인 때 국가 집합·나이 술어를 **서버가** 요구한다 — 페이지의 체크박스와 무관. 기본은 끔(zkONE: 누구나).
 const REQUIRE_DISCLOSURE = process.env.MODE3_REQUIRE_DISCLOSURE === '1';
 // RP 소셜 로그인·계정 연결(2026-11-10) — lib/mode3_rp_social.js. 로그인 기록에 수단(via)을 남긴다.
-mountRpSocial(app, { store: accountStore, cfg: SOCIAL, ledgerOp, sessionAlive: (req) => req.session?.via !== 'zkid' || (typeof req.session.rs === 'string' && sessions.has(req.session.rs)), onLogin: ({ account, via }) => {
+/**
+ * zkID 로 만든 쿠키 세션이 아직 유효한지(리뷰 I1) — 그 r_s 세션이 살아 있고, /api/mode3/request 와 같은 게이트(만료 블록·root·regRoot 일치)를 지나야 한다.
+ * IdP 폐기로 root 가 바뀌면 r_s 세션은 재검증 전까지 요청을 받지 않는데(revalidate_required), 쿠키 경로가 그 사이 거래소 보관 출금까지 하면 폐기를 우회한다.
+ * 재검증(/api/mode3/revalidate)이 세션의 root 를 새로 묶으면 다시 열린다. 체인을 못 읽으면 닫는다. 소셜로 만든 세션은 zk 와 무관하다(스펙 §6).
+ */
+async function zkidCookieAlive(req) {
+  if (req.session?.via !== 'zkid') return true;
+  const rs = typeof req.session.rs === 'string' ? req.session.rs : null;
+  const s = rs ? sessions.get(rs) : null;
+  if (!s || !verifier) return false;
+  const view = await verifier.refreshChainView().catch(() => null);
+  if (!view) return false;
+  if (view.head > BigInt(s.max_height)) { forgetSession(rs); return false; }
+  return view.root.toString() === s.root && view.regRoot.toString() === s.regRoot;
+}
+mountRpSocial(app, { store: accountStore, cfg: SOCIAL, ledgerOp, sessionAlive: zkidCookieAlive, onLogin: ({ account, via }) => {
   const at = new Date().toISOString();
   logins.push({ via, rpAccount: account, PPID: '', at, root: '', r_s: '', allowAgent: '0', disclosure: null });
   fs.appendFileSync(LOGIN_LOG, JSON.stringify({ at, via, rpAccount: account }) + '\n', { mode: 0o600 });
@@ -668,6 +683,9 @@ async function ledgerOp({ account, body, channel, PPID = null }) {
     relayedTxs.push({ at: new Date().toISOString(), txHash: tx.hash, account: null, PPID: null, kind: 'custody_withdraw', target: wd[1], value: wei.toString(), deployTxHash: null, status: rc?.status === 1 ? 'success' : 'failed', blockNumber: rc?.blockNumber ?? null });
     return { body: { ok: true, echo: body, txHash: tx.hash, balance: await ledgerView(account) } };
   }
+  // 리뷰 I3: 장부 명령 모양(deposit:·buy:·withdraw:)인데 위 형식에 안 맞으면 400 — 성공(echo)으로 빠지면 화면이 "보냈습니다" 를 띄운다.
+  // 쿠키 채널은 장부 명령만 받는다(세션키 서명 요청은 지금처럼 임의 본문을 echo — 서명 요청 시연).
+  if (/^(deposit|buy|withdraw):/.test(body) || channel === 'cookie') return bad('malformed');
   return { body: { ok: true, echo: body } };
 }
 app.post('/api/mode3/request', async (req, res) => {
