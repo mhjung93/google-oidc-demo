@@ -83,7 +83,7 @@ export async function startIsolatedMode3Stack(opts = {}) {
   //   extraRps: [{ name, env }] — 두 번째 이후 서비스. 첫 RP 와 같은 방식으로 띄워 승인·활성화를 기다리고 rps[] 로 돌려준다.
   //     릴레이어 계정 인덱스는 RP 마다 다르게 준다(첫 RP 0, 다음 1, …) — 팩토리 배포 nonce 가 겹치지 않게(MODE3_DEMO.md 두 번째 서비스 절).
   const { twoChains = false, revRpcUrl = 'http://127.0.0.1:8546', appRpcUrl = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545', extraRps = [] } = opts;
-  const { oidc = null, naver = null, walletHost = '127.0.0.1', ciaHost = '127.0.0.1' } = opts;
+  const { oidc = null, naver = null, walletHost = '127.0.0.1', ciaHost = '127.0.0.1', rpHost = '127.0.0.1' } = opts;   // rpHost(2026-11-10): 첫 RP 의 공개 오리진 호스트 — 'localhost' 면 RP 페이지의 GIS·네이버 콜백 쿠키가 맞는다
   // 지갑 포트·오리진은 CIA 보다 **먼저** 잡는다 — CIA 의 /mode3/health CORS 허용 목록(설계 2026-09-25 §1.2)에
   // MODE3_WALLET_AGENT_ORIGIN 으로 넘겨야 한다. 호출자의 ciaEnv 가 우선한다.
   const walletPort = await freePort();
@@ -92,7 +92,7 @@ export async function startIsolatedMode3Stack(opts = {}) {
   const ciaUiBase = `http://${ciaHost}:${cia.port}`;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-stack-'));
   const rpPort = await freePort();
-  const rpOrigin = `http://127.0.0.1:${rpPort}`;
+  const rpOrigin = `http://${rpHost}:${rpPort}`;
   const extraRpSpecs = [];
   for (const [i, spec] of extraRps.entries()) {
     const port = await freePort();

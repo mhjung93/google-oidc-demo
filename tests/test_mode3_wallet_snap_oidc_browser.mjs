@@ -11,6 +11,7 @@ import { getProvider } from './helpers/mode3_chain.mjs';
 import { buildInitScript } from './helpers/ethereum_stub.js';
 import { VKEY_PATH } from '../lib/mode3_wallet.js';
 import { uidOf } from '../lib/mode3_oidc_nonce.js';
+import { startOidcIssuerStub } from './helpers/oidc_issuer_stub.mjs';
 
 const DEBUG = process.env.MODE3_BROWSER_DEBUG === '1';
 const j = (o) => JSON.stringify(o);
@@ -41,7 +42,15 @@ async function launchBrowser() {
 const browser = await launchBrowser();
 const provider = getProvider();
 // ciaHost 'localhost'(2026-11-09 연결 로그인): 인증 창·/user 도 localhost 오리진이라 GIS(스텁)가 그려진다 — 분리 데모의 SSH 터널과 같은 모양. naver: 네이버 흉내.
-const stack = await startIsolatedMode3Stack({ walletEnv: { MODE3_WALLET_SECRETS: 'snap' }, ciaEnv: { CIA_ISSUE_AUTH: 'code' }, autoRelay: true, oidc: true, naver: true, walletHost: 'localhost', ciaHost: 'localhost' });
+// RP 소셜(2026-11-10): RP 가 직접 쓰는 Google·네이버 흉내 — IdP 래퍼용 stub 과 따로. RP 는 localhost 오리진(rpHost)이라 GIS 가 그려지고 네이버 콜백 쿠키가 맞는다.
+const rpGoogle = await startOidcIssuerStub({ clientId: 'rp-google-client', provider: 'google' });
+const rpNaver = await startOidcIssuerStub({ clientId: 'rp-naver-client', provider: 'naver', clientSecret: 'rp-naver-secret' });
+const rpSocialEnv = {
+  MODE3_RP_GOOGLE_CLIENT_ID: rpGoogle.clientId, MODE3_RP_GOOGLE_ISSUER: rpGoogle.issuer, MODE3_RP_GOOGLE_JWKS_URL: rpGoogle.jwksUrl,
+  MODE3_RP_NAVER_CLIENT_ID: rpNaver.clientId, MODE3_RP_NAVER_CLIENT_SECRET: rpNaver.clientSecret, MODE3_RP_NAVER_ISSUER: rpNaver.issuer, MODE3_RP_NAVER_JWKS_URL: rpNaver.jwksUrl,
+  MODE3_RP_NAVER_AUTHORIZE_URL: rpNaver.authorizeUrl, MODE3_RP_NAVER_TOKEN_URL: rpNaver.tokenUrl,
+};
+const stack = await startIsolatedMode3Stack({ walletEnv: { MODE3_WALLET_SECRETS: 'snap' }, ciaEnv: { CIA_ISSUE_AUTH: 'code' }, rpEnv: rpSocialEnv, autoRelay: true, oidc: true, naver: true, walletHost: 'localhost', ciaHost: 'localhost', rpHost: 'localhost' });
 const { cia, wallet, rp, oidc: stub, naver: naverStub, ciaUiBase: ciaUi } = stack;
 const SUB = 'g-browser-1';
 
@@ -196,46 +205,28 @@ try {
     await u.close();
   });
 
-  /** RP 모달의 버튼(btnId)으로 로그인을 시작하고 팝업을 돌려준다(앞 케이스의 세션이 복원돼 있으면 먼저 로그아웃). */
-  async function startRpLogin(rpPage, btnId) {
-    await rpPage.goto(rp.base);
-    if (await rpPage.$eval('#loginBtn', (b) => b.hidden)) { await rpPage.click('#logoutBtn'); await rpPage.waitForSelector('#loginBtn:not([hidden])'); }
-    await rpPage.click('#loginBtn');
-    const [popup] = await Promise.all([context.waitForEvent('page'), rpPage.click(`#${btnId}`)]);
-    return popup;
-  }
-  await t('zkONE "Google 계정으로 로그인" + 미등록 지갑: 인증 창(등록 모드, method=google) → 연결된 Google → 등록 → 발급 → 로그인 성공, 지갑은 아이디 계정', async () => {
-    assert.equal((await wallet.post('/wallet/reset', { confirm: true })).status, 200, '에이전트 등록 비움');
-    snapState.registration = null; snapState.userCred = null;                   // Snap 비움
-    const rpPage = await context.newPage();
-    const popup = await startRpLogin(rpPage, 'googleLoginBtn');
-    await popup.waitForURL(/\/login\?/, { timeout: 60_000 });
-    const pu = new URL(popup.url());
-    assert.equal(pu.origin, ciaUi); assert.equal(pu.searchParams.get('method'), 'google'); assert.equal(pu.searchParams.get('purpose'), 'register');
-    await popup.waitForSelector('#authGsiSlot .gsi-stub', { timeout: 30_000 });
-    assert.equal(await popup.$eval('#authUidRow', (el) => el.hidden), true, '아이디·비밀번호 칸은 숨긴다');
-    await popup.evaluate((sub) => { window.__gsiSub = sub; }, LINK_GSUB);
-    await popup.click('#authGsiSlot .gsi-stub');
-    await popup.waitForSelector('#authGo:not([disabled])'); await popup.click('#authGo');
-    await popup.waitForSelector('#saltAsk:not([hidden])', { timeout: 60_000 }); await popup.click('#saltAskNewBtn');   // 2026-11-10: salt 를 묻는다 — 새로 만들기
-    await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
-    const st = (await wallet.get('/wallet/status')).body;
-    assert.equal(st.registered, true); assert.equal(st.provider, 'demo', '아이디 계정 지갑'); assert.equal(String(st.uid), String(linkUid));
-    assert.equal((await cia.adminGet('/cia/accounts')).body.accounts.some((x) => String(x.uid) === uidOf(stub.provider, LINK_GSUB)), false, 'Google 래퍼 계정은 생기지 않는다');
-    await rpPage.close();
-  });
-  await t('zkONE "네이버로 로그인" + 등록된 아이디 지갑: 인증 창(method=naver) → 네이버 흉내 → auid 입력·계속 → 로그인 성공', async () => {
-    const rpPage = await context.newPage();
-    const popup = await startRpLogin(rpPage, 'naverLoginBtn');
-    await popup.waitForURL(/\/login\?.*method=naver/, { timeout: 60_000 });
-    naverStub.setNextSub(LINK_NSUB);
-    await popup.click('#authNaverBtn');   // 인증 창 → IdP → 네이버 흉내 → 콜백 → 인증 창(ticket)
-    await popup.waitForSelector('#authGo:not([disabled])', { timeout: 30_000 });
-    assert.equal(new URL(popup.url()).searchParams.has('ticket'), false, 'ticket 은 주소창에서 지운다');
-    await popup.fill('#authAuid', String((await wallet.get('/wallet/status')).body.auid));
-    await popup.click('#authGo');
-    await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
-    await rpPage.close();
+  await t('RP 소셜(2026-11-10): 로그인 창 Google(GIS 흉내) → 새 RP 계정·via google 배지 → 내 계정에서 네이버 연결 → 자산에 거래소 보관 ETH·출금 출처; 로그아웃하면 /api/rp/me 401', async () => {
+    const page = await context.newPage(); await page.goto(`${rp.base}/`);
+    if (await page.$eval('#loginBtn', (b) => b.hidden)) { await page.click('#logoutBtn'); await page.waitForSelector('#loginBtn:not([hidden])'); }
+    await page.evaluate((u) => { window.__gsiMintUrl = u; window.__gsiSub = 'rp-g-user'; }, `${rpGoogle.base}/mint`);   // 이 페이지의 GIS 흉내는 RP 용 Google 스텁으로
+    await page.click('#loginBtn'); await page.click('#googleLoginBtn');
+    await page.waitForSelector('#loginGsiSlot .gsi-stub', { timeout: 30_000 });
+    await page.click('#loginGsiSlot .gsi-stub');
+    await page.waitForSelector('#assetsLoggedIn:not([hidden])', { timeout: 30_000 });
+    assert.match(await text(page, '#viaBadge'), /Google/);
+    await page.click('#navAccount'); await page.waitForSelector('#account:not([hidden])');
+    assert.match(await text(page, '#mState_google'), /연결됨/); assert.match(await text(page, '#mState_naver'), /연결 안 됨/);
+    assert.equal(await page.isVisible('#mUnlink_google'), true);
+    rpNaver.setNextSub('rp-n-user');
+    await page.click('#mLink_naver');                                   // 네이버 흉내를 다녀와 /?linked=naver#account 로 돌아온다
+    await page.waitForURL((u) => u.hash === '#account' && !u.search, { timeout: 30_000 });
+    await waitText(page, '#accountVerdict', '네이버');
+    assert.match(await text(page, '#mState_naver'), /연결됨/);
+    assert.equal(await page.$eval('li[data-asset="ETH_CUSTODY"]', (el) => !el.hidden), true);
+    assert.equal(await page.$eval('#txSource option[value="account"]', (o) => o.disabled), true, 'zkID 세션이 아니면 내 계정 출금 불가');
+    await page.click('#logoutBtn'); await page.waitForSelector('#assetsLoggedOut:not([hidden])');
+    assert.equal(await page.evaluate(() => fetch('/api/rp/me').then((r) => r.status)), 401);
+    await page.close();
   });
 
   await t('하네스: 준비한 대화상자 응답이 남지 않았다(기대한 동의 창이 다 떴다)', async () => {
@@ -244,6 +235,7 @@ try {
 } finally {
   await browser.close();
   await stack.stop();
+  await rpGoogle.stop(); await rpNaver.stop();
   provider.destroy();
 }
 console.log(failed ? `\n${failed} failed` : '\nall passed');

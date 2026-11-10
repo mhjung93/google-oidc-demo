@@ -154,3 +154,6 @@ body[data-brand="zkTWO"] .brand::after {
 }
 /* 내 주소 복사 버튼(2026-10-16) — 계정 pill(흰 글자 위)과 카드 안(검은 글자) 양쪽에서 쓴다. */
 .account-pill .pill-copy { color: #fff; }
+/* 내 계정 패널(2026-11-10 RP 소셜 로그인) — 수단 줄의 상태·버튼·GIS 자리 */
+.account-panel .method-list dd { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+.gsi-slot { margin-top: 8px; }

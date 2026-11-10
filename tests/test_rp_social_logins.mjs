@@ -158,6 +158,14 @@ try {
     const v = jar(rp.base); await googleLogin(v, 'g-frank');
     assert.deepEqual((await v.req('POST', '/api/rp/ledger', { body: 'balance' })).body.balance.ledger, bal);
   });
+  await t('zkID 로 만든 쿠키 세션은 그 r_s 세션이 끝나면(로그아웃·폐기) 함께 끝난다 — 소셜로 만든 세션은 그대로', async () => {
+    const u = jar(rp.base); const z = await zkLogin(u);
+    assert.equal(z.body.ok, true, j(z.body)); assert.equal((await u.req('GET', '/api/rp/me')).status, 200);
+    await rp.post('/api/mode3/logout', { r_s: z.body.r_s });
+    assert.equal((await u.req('GET', '/api/rp/me')).status, 401, 'r_s 세션이 끝났는데 쿠키 세션이 남으면 폐기를 우회한다');
+    const v = jar(rp.base); await googleLogin(v, 'g-hana');
+    assert.equal((await v.req('GET', '/api/rp/me')).status, 200);
+  });
   await t('로그아웃: /api/rp/logout 뒤 /api/rp/me 401; JSON 이 아닌 본문은 415 json_only', async () => {
     const u = jar(rp.base); await googleLogin(u, 'g-gina');
     await u.req('POST', '/api/rp/logout', {});

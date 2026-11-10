@@ -446,7 +446,7 @@ const currentPredicates = () => ({ allowedCountries: ALLOWED_COUNTRIES_EFFECTIVE
 // 2026-10-21: MODE3_REQUIRE_DISCLOSURE=1(데모의 zkTWO)이면 로그인 때 국가 집합·나이 술어를 **서버가** 요구한다 — 페이지의 체크박스와 무관. 기본은 끔(zkONE: 누구나).
 const REQUIRE_DISCLOSURE = process.env.MODE3_REQUIRE_DISCLOSURE === '1';
 // RP 소셜 로그인·계정 연결(2026-11-10) — lib/mode3_rp_social.js. 로그인 기록에 수단(via)을 남긴다.
-mountRpSocial(app, { store: accountStore, cfg: SOCIAL, ledgerOp, onLogin: ({ account, via }) => {
+mountRpSocial(app, { store: accountStore, cfg: SOCIAL, ledgerOp, sessionAlive: (req) => req.session?.via !== 'zkid' || (typeof req.session.rs === 'string' && sessions.has(req.session.rs)), onLogin: ({ account, via }) => {
   const at = new Date().toISOString();
   logins.push({ via, rpAccount: account, PPID: '', at, root: '', r_s: '', allowAgent: '0', disclosure: null });
   fs.appendFileSync(LOGIN_LOG, JSON.stringify({ at, via, rpAccount: account }) + '\n', { mode: 0o600 });
@@ -542,7 +542,9 @@ app.post('/api/mode3/login', async (req, res) => {
       } else rpAccount = accountStore.loginOrCreate('zkid', { PPID: PPIDs }).id;
     } catch (e) { if (e instanceof AccountError) return res.status(e.status).json({ ok: false, reason: e.reason }); throw e; }
     const attr = accountStore.pinAttrCommit(rpAccount, tokenName !== undefined && isAttrCommit(tokenName) ? tokenName : null);
-    if (req.body.link === true) req.session.via = 'zkid'; else await setRpSession(req, rpAccount, 'zkid');
+    // zkID 로 만든 쿠키 세션은 이 r_s 세션에 묶는다(sessionAlive) — r_s 가 폐기·로그아웃·대체되면 쿠키 세션도 끝난다(안 그러면 폐기를 우회한다).
+    // 연결(link)은 지금 세션(소셜)을 그대로 둔다.
+    if (req.body.link !== true) await setRpSession(req, rpAccount, 'zkid', { rs: rsStr });
     const at = new Date().toISOString();
     const disclosure = discOf(v.disclosure);
     sessions.set(rsStr, { rpAccount, PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), regRoot: v.regRoot.toString(), disclosure, auid_s: v.auid_s.toString(), arid_s: v.arid_s.toString(), r_rp, at, attrCommit: attr.attrCommit });

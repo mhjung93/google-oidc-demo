@@ -132,7 +132,7 @@
       table.className = 'list';
       const head = table.createTHead().insertRow();
       // r_s·root 는 예전 <pre> 목록에 있던 값이다 — 전문가 보기에서만 보이는 칸으로 남긴다(열 전체가 숨는다).
-      for (const c of [{ key: 'rp_col_time' }, { key: 'rp_admin_ppid_label' }, { key: 'rp_col_rs', expert: true }, { term: 'root', expert: true }, { key: 'rp_col_disclosure' }, { key: 'rp_col_action' }]) {   // 2026-11-05: AI 에이전트 열 제거
+      for (const c of [{ key: 'rp_col_time' }, { key: 'rp_col_via' }, { key: 'rp_admin_ppid_label' }, { key: 'rp_col_rs', expert: true }, { term: 'root', expert: true }, { key: 'rp_col_disclosure' }, { key: 'rp_col_action' }]) {   // 2026-11-05: AI 에이전트 열 제거
         const th = document.createElement('th');
         if (c.expert) th.className = 'expert';
         if (c.term) th.appendChild(termEl(c.term)); else tte(th, c.key);
@@ -142,16 +142,18 @@
       for (const l of lastLogins) {
         const row = body.insertRow();
         const at = row.insertCell(); at.textContent = fmtAt(l.at); at.title = l.at;
+        row.insertCell().textContent = tt(`rp_via_${l.via ?? 'zkid'}`) || (l.via ?? 'zkid');   // 2026-11-10: 로그인 수단(소셜 줄은 PPID·root·개봉이 없다)
         // 2026-11-06(사용자 결정): PPID 숫자 대신 세션 계정의 0x 주소 — 사용자 화면·체인 탐색기와 같은 값. 툴팁에 전체 주소(와 PPID).
         const addr = row.insertCell();
         const code = document.createElement('code');
-        code.textContent = shortAddr(l.account ?? l.PPID);
+        code.textContent = l.account || l.PPID ? shortAddr(l.account ?? l.PPID) : '-';
         code.title = l.account ? `${l.account}\nPPID ${l.PPID}` : l.PPID;
         addr.appendChild(code);
         const rs = row.insertCell(); rs.className = 'expert'; rs.textContent = l.r_s ?? '';
-        const root = row.insertCell(); root.className = 'expert'; root.textContent = `${l.root.slice(0, 18)}…`; root.title = l.root;
+        const root = row.insertCell(); root.className = 'expert'; root.textContent = l.root ? `${l.root.slice(0, 18)}…` : ''; root.title = l.root ?? '';
         row.insertCell().textContent = discSummary(l.disclosure);
         const act = row.insertCell();
+        if (!l.PPID) { act.textContent = '-'; continue; }   // 소셜 로그인 줄 — 개봉할 트랜스크립트가 없다
         const btn = document.createElement('button');
         btn.type = 'button'; btn.className = 'btn-ghost'; tte(btn, 'rp_open_req');
         btn.addEventListener('click', () => { $('openPpid').value = l.account ?? l.PPID; $('openBtn').click(); });
