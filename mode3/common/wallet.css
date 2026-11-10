@@ -76,3 +76,7 @@ details.fold > :not(summary) { margin-top: 8px; }
 #authorizeView { max-width: 520px; padding: 16px; }
 #authorizeView .card { padding: 18px 20px; }
 .auth-progress { margin: 10px 0 6px; font-weight: 600; color: var(--ink, #1a1a1a); min-height: 1.4em; }   /* 2026-11-05: 일반 보기용 진행 줄 */
+/* 처음 등록 때 salt 묻기(2026-11-10) — 지갑 창(?authorize=1) */
+.salt-ask { margin: 8px 0 12px; } .salt-ask label { display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
+.salt-ask input { width: 100%; box-sizing: border-box; padding: 8px 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.bad-text { color: var(--bad); font-size: 14px; }

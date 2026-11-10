@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="same-origin" />
+  <title>zkID — 내 정보</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b1d3a'/%3E%3Ctext x='16' y='22' font-size='15' font-family='sans-serif' font-weight='700' text-anchor='middle' fill='%23fff'%3Ezk%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/common/demo.css" />
+  <link rel="stylesheet" href="/common/idp.css" />
+  <script src="/common/strings.js"></script>
+  <script src="/common/demo.js"></script>
+</head>
+<!-- 2026-11-10: "내 계정" 하위 메뉴 "내 정보" — /cia/user/me 를 읽기만 한다(바꾸는 일은 /user 의 계정 관리에서). 저장한 속성 커밋먼트와 저장 시각을 확인하는 곳. -->
+<body data-page="idp_user_info">
+<header id="demoBar"></header>
+<nav class="idp-nav"><div class="nav-inner">
+  <span class="brand" data-i18n="idp_brand">zkID</span>
+  <div class="nav-menu"><a href="/user" aria-current="page" data-i18n="idp_nav_user">내 계정</a><a href="/rp" data-i18n="idp_nav_rp">RP 운영자</a><a href="/admin" data-i18n="idp_nav_admin">관리자</a></div>
+</div></nav>
+<nav class="sub-nav"><div class="sub-inner"><a href="/user" data-i18n="idp_subnav_manage">계정 관리</a><a href="/user/info" aria-current="page" data-i18n="idp_subnav_info">내 정보</a></div></nav>
+<main class="cards">
+  <section class="card auth-card" id="loginNeeded" hidden>
+    <p data-i18n="idp_myinfo_login_needed">로그인이 필요합니다.</p>
+    <p><a href="/user" class="btn" data-i18n="idp_myinfo_login_link">로그인하러 가기</a></p>
+  </section>
+  <section class="card" id="infoView" hidden>
+    <h3 data-i18n="idp_myinfo_title">내 정보</h3>
+    <p class="desc" data-i18n="idp_myinfo_desc">zkID 가 이 계정에 대해 저장하고 있는 값입니다. 바꾸려면 "계정 관리" 로 가세요.</p>
+    <dl class="kv">
+      <dt data-i18n="idp_myinfo_id">아이디</dt><dd id="infoId">-</dd>
+      <dt data-i18n="idp_myinfo_uid">uid</dt><dd><code id="infoUid">-</code> <button type="button" id="copyUidBtn" class="copy-btn" title="복사">⧉</button></dd>
+      <dt></dt><dd><p class="desc kv-desc" data-i18n="idp_myinfo_uid_desc">zkID 가 배정한 계정 번호입니다. 속성 커밋먼트 도구에 넣습니다.</p></dd>
+      <dt data-i18n="idp_myinfo_method">가입 방식</dt><dd id="infoMethod">-</dd>
+      <dt data-i18n="idp_myinfo_wallet">지갑 등록</dt><dd id="infoWallet">-</dd>
+      <dt data-i18n="idp_myinfo_attr">속성 커밋먼트</dt><dd><code id="infoAttr">-</code></dd>
+      <dt data-i18n="idp_myinfo_attr_saved_at">마지막 저장</dt><dd id="infoAttrAt">-</dd>
+    </dl>
+  </section>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const tt = (k, v) => { const s = Demo.t(k, v); return s === k ? '' : s; };
+  /** ISO 시각 → 이 브라우저 시간대의 "YYYY-MM-DD HH:MM:SS" (원본은 title 에 둔다). */
+  const localTime = (iso) => {
+    const d = new Date(iso); if (Number.isNaN(d.getTime())) return String(iso);
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  };
+  async function copyText(text, btn) {
+    try { await navigator.clipboard.writeText(text); }
+    catch { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); } finally { ta.remove(); } }
+    const prev = btn.textContent; btn.textContent = '✓'; setTimeout(() => { btn.textContent = prev; }, 1200);
+  }
+  $('copyUidBtn').addEventListener('click', () => { const v = $('infoUid').textContent; if (v && v !== '-') copyText(v, $('copyUidBtn')); });
+  (async () => {
+    Demo.init({ page: 'idp_user_info' });
+    let me = null;
+    try { const r = await fetch('/cia/user/me', { credentials: 'same-origin' }); if (r.status === 200) me = await r.json(); } catch { /* 로그인 안내로 */ }
+    $('loginNeeded').hidden = Boolean(me); $('infoView').hidden = !me;
+    if (!me) return;
+    $('infoId').textContent = me.id ?? '-';
+    $('infoUid').textContent = me.uid;   // 2026-11-10: 속성 커밋먼트 도구의 uid 칸에 넣는 값
+    const provider = me.provider ?? 'demo';
+    $('infoMethod').textContent = tt(`idp_myinfo_method_${provider}`) || provider;
+    $('infoWallet').textContent = me.registered ? (tt('idp_myinfo_wallet_yes') || '등록됨') : (tt('idp_myinfo_wallet_no') || '아직 없음');
+    const name = me.profile?.name ?? null, at = me.profile?.updatedAt ?? null;
+    $('infoAttr').textContent = name ?? (tt('idp_myinfo_attr_none') || '저장된 값 없음');
+    $('infoAttrAt').textContent = at ? localTime(at) : '-';
+    if (at) $('infoAttrAt').title = at;
+  })();
+</script>
+</body>
+</html>

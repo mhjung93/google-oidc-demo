@@ -19,6 +19,8 @@
   <span class="brand" data-i18n="idp_brand">zkID</span>
   <div class="nav-menu"><a href="/user" aria-current="page" data-i18n="idp_nav_user">내 계정</a><a href="/rp" data-i18n="idp_nav_rp">RP 운영자</a><a href="/admin" data-i18n="idp_nav_admin">관리자</a></div>
 </div></nav>
+<!-- 2026-11-10: "내 계정" 하위 메뉴 — 계정 관리(/user) · 내 정보(/user/info, 읽기 전용) -->
+<nav class="sub-nav"><div class="sub-inner"><a href="/user" aria-current="page" data-i18n="idp_subnav_manage">계정 관리</a><a href="/user/info" data-i18n="idp_subnav_info">내 정보</a></div></nav>
 <main class="cards">
   <!-- ===== 로그인 전 ① 로그인 (2026-11-03 재구성: 로그인해야 등록·폐기 카드가 보인다) ===== -->
   <section class="card auth-card" id="loginView">
@@ -50,7 +52,7 @@
 
   <!-- ===== 로그인 뒤 ===== -->
   <section class="card span2 me-view" id="meCard" hidden>
-    <p class="me-head"><span class="who" id="meInfo"></span> <span id="meBadge" class="badge muted">로그아웃</span> <button id="logoutBtn" class="btn-ghost" data-i18n="idp_logout_btn">로그아웃</button></p>
+    <p class="me-head"><span class="who" id="meInfo"></span> <button id="logoutBtn" class="btn-ghost" data-i18n="idp_logout_btn">로그아웃</button></p>
   </section>
   <!-- 2026-11-09(사용자 결정): "커밋먼트 등록 — 지갑 연결해 등록" 카드는 뺐다. 지갑 등록은 서비스에서 "zkID 로 로그인" 할 때 처음 한 번, 지갑 팝업 → zkID 인증 창(등록 모드)에서 일어난다.
        zkID 가입·속성 커밋먼트 프로필에는 지갑이 끼지 않는다. -->
@@ -180,8 +182,7 @@
   async function refreshMe() {
     const r = await get('/cia/user/me');
     me = r.status === 200 ? r.body : null;
-    $('meBadge').className = `badge ${!me ? 'muted' : me.registered ? 'ok' : 'warn'}`;
-    $('meBadge').textContent = !me ? (tt('idp_me_out') || '로그아웃') : me.registered ? (tt('idp_me_registered') || '등록됨') : (tt('idp_me_unregistered') || '등록 전');
+    // 2026-11-10(사용자 결정): 아이디 옆 등록 상태 배지(등록 전·등록됨)는 뺐다 — 무엇의 등록인지 알기 어려웠다. 지갑 등록 여부는 "내 정보"(/user/info)에서 본다.
     $('meInfo').textContent = me ? (me.id ? me.id : `uid ${me.uid}`) : '';   // 2026-11-05: 아이디가 있으면 uid 는 보이지 않는다
     $('meAuid').textContent = me?.auid ?? '-';
     $('copyAuidBtn').hidden = !me?.auid;

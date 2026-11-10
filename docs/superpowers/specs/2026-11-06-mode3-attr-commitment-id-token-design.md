@@ -1,6 +1,7 @@
 # Mode 3 — 사용자 속성 커밋먼트를 zkID ID 토큰 `name` 으로 RP 에 전달 설계
 
 - 작성: 2026-11-06, **개정: 2026-11-09**(사용자 결정 반영 — 커밋먼트에 RP 값 없음·계산은 독립 정적 페이지·IdP 최소 관여·Phase 1 구현).
+- **개정 2: 2026-11-10**(D16·D17 — `C_attr` 에 uid·salt(s_u)를 묶는다, salt 는 사용자가 지갑 등록 전에 정하고 첫 등록 때 지갑 창에 넣는다; §3·§4 갱신, §3.1 추가).
 - 선행 스펙: `2026-10-12-mode3-v11-figure-protocol-design.md`(V11 — D15 "속성은 사용자가 넣고 IdP 는 모른다"), `2026-10-16-mode3-oidc-wrapper-design.md`·`2026-10-26-mode3-snap-oidc-wrapper-design.md`(OIDC 래퍼 — Google 경로), 속성 매핑 스펙 2(`lib/mode3_attr_schema.js`).
 - 범위: 사용자가 **지갑·IdP·RP 어디와도 통신하지 않는 독립 정적 페이지**(속성 도구)에서 속성 커밋먼트 `C_attr` 를 만들고, 그 값을 **zkID 프로필의 `name` 칸**에 직접 붙여 넣는다. zkID(IdP, `cia.js`)는 세션 발급 때 **OIDC 모양의 ID 토큰**(`sub=auid_s`, `aud=arid_s`, `name=C_attr`)을 함께 내고, 지갑은 열어 보지 않고 RP 에 전달하며, RP 는 토큰을 검증해 `name` 을 계정(PPID)에 고정한다. 2단계에서 같은 도구 페이지가 그 커밋먼트를 여는 속성 증명(`pi_attr`)을 만들어 RP 에 팝업으로 넘긴다.
 - 비범위: Google(외부 OIDC) 경로(§9), IdP 가 값을 검증·보증하는 속성(KYC 류) — D15 는 그대로다. 발급 때 지갑 키를 IdP 가 모르게 묶는 nonce 설계, 등록부·폐기 게시·RP 인증서·개봉을 IdP 밖으로 빼는 분리(ZDS)는 후속(§11).
@@ -26,6 +27,8 @@
 | D11 | 증명(2단계)은 **팝업/postMessage** 로 RP 에 넘긴다. | 11-09 | 사용자가 복사-붙여넣기 하지 않게. |
 | D12 | **"일단 그 상태로 데모 한 번"** — Phase 1 을 지금 구현한다. | 11-09 | |
 | D13 | **zkID 페이지에 지갑 등록이 없어야 한다** — 등록 과정에는 지갑 연결이 아예 없고, 지갑(MetaMask)은 위임 인증(RP "zkID 로 로그인") 때 처음 붙는다. 미등록 지갑의 첫 로그인이 곧 등록이다(인증 창 등록 모드 → 등록 코드 → `/cia/register` → 함께 받은 발급 코드로 발급). | 11-09 | `/user` 의 "커밋먼트 등록" 카드 제거. IdP 가 `pk_u`·`auid` 를 저장하는 프로토콜은 유지(§11). |
+| D16 | **`C_attr` 에 uid·s_u(salt)를 묶는다** — `C_attr = Poseidon(T_ATTRC, uid, s_u, attrs[0..5], blind)`. 도구는 여전히 아무와도 통신하지 않고(D9 유지), 사용자가 uid·salt 를 직접 넣는다. | 11-10 | "원래 user attribute 에 uid·salt 포함되는 거 아니었어?" — 지갑의 `C_u` 에는 늘 들어 있었고, 11-09 의 `C_attr` 는 도구가 지갑과 끊겨 있어 빠졌던 것. 옛 정의와 섞이지 않게 도메인 상수를 바꿨다(§3). |
+| D17 | **salt 는 지갑 등록 전에 사용자가 정한다**(도구에서 직접 입력 또는 "새로 뽑기") — **첫 지갑 등록 때 지갑 창이 salt 를 묻고**, 넣으면 Snap 이 그 값을 `s_u` 로 저장한다(비우면 지금처럼 새로 뽑는다). uid 는 zkID 내 정보(`/user/info`)에서 본다. | 11-10 | D13 흐름(가입 → 커밋먼트 → 프로필 → 첫 서비스 로그인 = 지갑 등록)에서는 커밋먼트를 만들 때 지갑의 salt 가 아직 없다 — 사용자 제안. 이미 등록한 지갑이면 zk 지갑 화면 → 계정 탭 → 상세의 uid·salt 를 넣는다. |
 
 ## 2. 배경과 제약(현재 코드)
 
@@ -37,17 +40,25 @@
 
 ## 3. 사용자 속성 커밋먼트 `C_attr`
 
-- 정의: **`C_attr = Poseidon(T_ATTRC, attrs[0], …, attrs[5], blind)`**(BN254 스칼라, 10진 문자열로 운반). `lib/mode3_attr_commit.js` `attrCommit({ attrs, blind })`.
+- 정의(2026-11-10 D16): **`C_attr = Poseidon(T_ATTRC, uid, s_u, attrs[0], …, attrs[5], blind)`**(입력 10개, BN254 스칼라, 10진 문자열로 운반). `lib/mode3_attr_commit.js` `attrCommit({ uid, s_u, attrs, blind })`. (11-09 Phase 1 의 첫 정의는 `Poseidon(T, attrs[0..5], blind)` 였다.)
+  - `uid`: zkID 가 배정한 계정 번호(로그인 아이디가 아니다). `s_u`: 지갑의 salt — 지갑 `C_u`·`auid = Poseidon(T_AUID, uid, s_u)`·PPID 와 같은 값이다. 둘 다 사용자가 도구에 넣는다(§3.1).
   - 입력은 스키마 인코딩된 속성 6칸 전부(`encodeProfile`) — 지갑의 `C_u` 와 같은 인코딩이라 2단계 증명이 "같은 속성" 임을 보일 여지를 남긴다. **RP 값은 없다**(D7).
   - `blind`: 도구 페이지가 만들 때마다 새로 뽑는 31바이트 난수. 속성을 바꾸거나 다시 만들면 새 blind → 옛 커밋먼트와 연결되지 않는다.
-  - `T_ATTRC = 365084431357309388870211`(ASCII "MODE3ATTRC" 빅엔디언, 다른 도메인 상수와 같은 방식).
+  - `T_ATTRC = 93461614427471203550774066`(ASCII "MODE3ATTRC2" 빅엔디언, 다른 도메인 상수와 같은 방식). 11-09 의 `365084431357309388870211`("MODE3ATTRC")은 uid·s_u 없는 옛 정의 — 바꾼 것은 두 정의의 값이 우연히라도 섞이지 않게 하려는 것이다.
 - **IdP 는 `C_attr` 를 검증하지 않고 뜻도 모른다** — 사용자가 `name` 칸에 적은 문자열을 서명해 주는 표준 IdP 와 같다. 커밋먼트가 실제 속성을 여는지는 **RP 앞에서 도구 페이지가 만드는 증명**(§7 2단계)이 보인다.
 - 비연결성 메모(D7 의 대가): `C_attr` 는 RP 마다 같으므로 **두 RP 가 `name` 을 맞대면 같은 사용자임을 알 수 있다**(PPID 는 RP 마다 다르지만 커밋먼트는 같다). 사용자 결정으로 수용한다 — 필요하면 RP 마다 도구에서 새로 만들어(새 blind) 각 RP 에 다른 값을 넣으면 된다(도구는 하나만 보관하므로 백업으로 돌려 쓴다). §11.
+
+### 3.1 uid·salt 를 어디서 얻나(2026-11-10 D17)
+
+- **uid**: zkID → 내 계정 → **내 정보**(`/user/info`)의 uid 줄(복사 버튼). 이미 등록한 지갑이면 zk 지갑 화면(`/`) → 계정 탭 → 상세의 uid 줄도 같은 값이다.
+- **salt**: 지갑 등록 전이면 도구에서 직접 넣거나 "salt 새로 뽑기"(31바이트 난수, 지갑의 `s_u` 상한 2^250 미만). **첫 지갑 등록(서비스의 첫 "zkID 로 로그인") 때 지갑 창이 salt 를 묻는다** — 같은 값을 넣으면 Snap `register({ uid, s_u })` 가 그 값을 저장한다(형식: 1 이상 2^250 미만의 10진, 아니면 `bad_salt`). "새로 만들기" 면 Snap 이 새로 뽑는다(그때는 도구의 커밋먼트를 지갑의 salt 로 다시 만들어야 한다). 이미 등록한 지갑이면 zk 지갑 화면 → 계정 탭 → 상세 → salt "보기".
+- **한계**: 도구는 지갑·IdP 와 통신하지 않으므로, 도구에 넣은 uid·salt 가 실제 계정·지갑 값과 같은지 아무도 확인하지 않는다. 틀리면 2단계 속성 증명이 지갑 값과 이어지지 않을 뿐 Phase 1 에서는 드러나지 않는다. (등록 때 지갑 창이 프로필의 `C_attr` 를 다시 계산해 맞춰 보는 방법은 속성·blind 를 지갑 창에 넘겨야 해 이번에 하지 않았다.)
+- 첫 로그인 창은 IdP 인증 + salt 입력 + 증명을 한 창에서 하므로 RP 의 지갑 창 대기 시간을 120초 → 300초로 늘렸다(`mode3/rp.html` `POPUP_TIMEOUT_MS`).
 
 ## 4. 속성 도구 페이지(`mode3/attr.html`, 2026-11-09)
 
 - 지갑 에이전트가 `GET /attr.html` 로 서빙하는 **독립 정적 페이지**. 번들 `mode3/attr/dist/attr.js`(`npm run attr:build` → esbuild IIFE `window.Mode3Attr`, `lib/browser/` shim 으로 `node:` 모듈 대체 — `build_user_app.mjs` 와 같은 방식, 출력은 `.gitignore`).
-- 하는 일: 속성 입력(스키마 폼: 출생연도·국가·예비 1·2) → `encodeProfile(…, { allowEmptyRequired: false })` → 새 `blind` → `C_attr` → **localStorage `mode3_attr_tool_v1`** `{ version:1, schema:{id,version}, profile, attrs, blind, commit, createdAt }` → 커밋먼트 표시·복사. 백업 내려받기/불러오기(불러올 때 커밋먼트를 다시 계산해 맞춰 본다), 지우기(confirm).
+- 하는 일: 속성 입력(스키마 폼: 출생연도·국가·예비 1·2) → `encodeProfile(…, { allowEmptyRequired: false })` → 새 `blind` → `C_attr` → **localStorage `mode3_attr_tool_v1`** `{ version:2, schema:{id,version}, uid, s_u, profile, attrs, blind, commit, createdAt }`(2026-11-10 — version 1 기록·백업은 읽지 않고 "다시 만드세요" 를 보인다). 화면은 커밋먼트의 재료를 모두 펼쳐 보인다: 식, `T_ATTRC`, uid, salt, 속성(입력값 → 인코딩 값 `attrᵢ`), blind(복사 버튼, "비밀 — 시연용 표시") → 커밋먼트 표시·복사. 백업 내려받기/불러오기(불러올 때 커밋먼트를 다시 계산해 맞춰 본다), 지우기(confirm).
 - 하지 않는 일: 어떤 서버에도 요청하지 않는다(정적 자원 `/attr.html`·`/attr/dist/*`·`/common/*` 뿐 — 브라우저 테스트가 요청 목록으로 확인한다). MetaMask·Snap·에이전트 API 와 무관. 에이전트의 `isPublicGet` 에 `/attr.html`·`/attr/*` 를 추가했다(상태를 읽지 않는 공개 GET).
 - 2단계(§7): 같은 저장값(`attrs`, `blind`)으로 `pi_attr` 증명을 만들어 RP 에 `?prove=1` 팝업 + postMessage 로 넘긴다(D11).
 

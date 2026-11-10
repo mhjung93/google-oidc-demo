@@ -7,34 +7,39 @@ import { DEFAULT_ATTR_SCHEMA, encodeProfile } from '../lib/mode3_attr_schema.js'
 let failed = 0;
 async function t(name, fn) { try { await fn(); console.log(`ok   ${name}`); } catch (e) { failed++; console.error(`FAIL ${name}\n     ${e.message}`); } }
 
-await t('도메인 상수는 ASCII "MODE3ATTRC" 빅엔디언', () => {
-  assert.equal(DOMAIN_MODE3_ATTRC, BigInt('0x' + Buffer.from('MODE3ATTRC').toString('hex')));
+await t('도메인 상수는 ASCII "MODE3ATTRC2" 빅엔디언(2026-11-10: uid·s_u 를 묶은 정의 — 옛 "MODE3ATTRC" 와 다르다)', () => {
+  assert.equal(DOMAIN_MODE3_ATTRC, BigInt('0x' + Buffer.from('MODE3ATTRC2').toString('hex')));
 });
 await t('randomBlind 는 10진·필드 안·매번 다르다', () => {
   const a = randomBlind(), b = randomBlind();
   assert.match(a, /^[0-9]+$/); assert.ok(BigInt(a) < FIELD_P); assert.notEqual(a, b);
 });
-await t('attrCommit 은 Poseidon(T, attrs[0..5], blind) 과 같고 결정적이다', async () => {
+const U = { uid: '4242', s_u: '987654321987654321' };
+await t('attrCommit 은 Poseidon(T, uid, s_u, attrs[0..5], blind) 과 같고 결정적이다', async () => {
   const attrs = await encodeProfile(DEFAULT_ATTR_SCHEMA, { birthYear: '1990', country: 'KR', extra1: 'x' });
   const blind = '12345678901234567890';
-  const c1 = await attrCommit({ attrs, blind }), c2 = await attrCommit({ attrs, blind });
+  const c1 = await attrCommit({ ...U, attrs, blind }), c2 = await attrCommit({ ...U, attrs, blind });
   assert.equal(c1, c2);
   const poseidon = await buildPoseidon();
-  const want = poseidon.F.toObject(poseidon([DOMAIN_MODE3_ATTRC, ...attrs.map(BigInt), BigInt(blind)])).toString();
+  const want = poseidon.F.toObject(poseidon([DOMAIN_MODE3_ATTRC, BigInt(U.uid), BigInt(U.s_u), ...attrs.map(BigInt), BigInt(blind)])).toString();
   assert.equal(c1, want);
   assert.ok(isAttrCommit(c1));
 });
-await t('blind 가 다르거나 속성 하나가 다르면 커밋먼트가 다르다(RP 값은 입력에 없다 — 인자 자체가 없다)', async () => {
+await t('blind·속성·uid·s_u 중 하나라도 다르면 커밋먼트가 다르다(RP 값은 입력에 없다 — 인자 자체가 없다)', async () => {
   const attrs = await encodeProfile(DEFAULT_ATTR_SCHEMA, { birthYear: '1990', country: 'KR' });
-  const c = await attrCommit({ attrs, blind: '1' });
-  assert.notEqual(c, await attrCommit({ attrs, blind: '2' }));
+  const c = await attrCommit({ ...U, attrs, blind: '1' });
+  assert.notEqual(c, await attrCommit({ ...U, attrs, blind: '2' }));
   const attrs2 = await encodeProfile(DEFAULT_ATTR_SCHEMA, { birthYear: '1991', country: 'KR' });
-  assert.notEqual(c, await attrCommit({ attrs: attrs2, blind: '1' }));
+  assert.notEqual(c, await attrCommit({ ...U, attrs: attrs2, blind: '1' }));
+  assert.notEqual(c, await attrCommit({ ...U, uid: '4243', attrs, blind: '1' }), 'uid');
+  assert.notEqual(c, await attrCommit({ ...U, s_u: '987654321987654322', attrs, blind: '1' }), 's_u');
 });
 await t('형식 검사: attrs 6개가 아니거나 10진이 아니거나 필드 밖이면 오류; isAttrCommit 은 빈 값·필드 밖·비10진을 거절', async () => {
-  await assert.rejects(attrCommit({ attrs: ['1', '2'], blind: '1' }), /6개/);
-  await assert.rejects(attrCommit({ attrs: ['1', '2', '3', '4', '5', 'x'], blind: '1' }), /10진/);
-  await assert.rejects(attrCommit({ attrs: ['1', '2', '3', '4', '5', '6'], blind: FIELD_P.toString() }), /필드 밖/);
+  await assert.rejects(attrCommit({ ...U, attrs: ['1', '2'], blind: '1' }), /6개/);
+  await assert.rejects(attrCommit({ ...U, attrs: ['1', '2', '3', '4', '5', 'x'], blind: '1' }), /10진/);
+  await assert.rejects(attrCommit({ ...U, attrs: ['1', '2', '3', '4', '5', '6'], blind: FIELD_P.toString() }), /필드 밖/);
+  await assert.rejects(attrCommit({ s_u: U.s_u, attrs: ['1', '2', '3', '4', '5', '6'], blind: '1' }), /uid/, 'uid 없음');
+  await assert.rejects(attrCommit({ uid: U.uid, s_u: 'abc', attrs: ['1', '2', '3', '4', '5', '6'], blind: '1' }), /s_u/, 's_u 형식');
   assert.equal(isAttrCommit(''), false); assert.equal(isAttrCommit('0x12'), false); assert.equal(isAttrCommit(FIELD_P.toString()), false);
   assert.equal(isAttrCommit('0'), true);
 });

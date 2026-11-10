@@ -5,7 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="no-referrer" />
   <!-- 속성 커밋먼트 도구(2026-11-09 Phase 1). 지갑 에이전트(:5100)가 /attr.html 로 서빙하는 독립 정적 페이지 — MetaMask·Snap·IdP·RP 와
-       아무 통신도 하지 않는다. 속성과 blind 는 이 브라우저의 localStorage(mode3_attr_tool_v1)에만 남고, 사용자는 커밋먼트(10진)만 복사해
+       아무 통신도 하지 않는다. 2026-11-10(B+b1): 사용자가 zk 지갑 화면(계정 탭 → 상세)의 uid·salt 를 복사해 넣으면 C_attr 에 함께 묶는다.
+       uid·salt·속성·blind 는 이 브라우저의 localStorage(mode3_attr_tool_v1, 기록 version 2)에만 남고 화면에 모두 보인다. 사용자는 커밋먼트(10진)만 복사해
        zkID 프로필의 "이름" 칸에 붙여 넣는다. Phase 2 에서 같은 저장값으로 속성 증명(π_attr)을 만들어 RP 에 팝업으로 넘긴다.
        제목의 "속성 커밋먼트 도구" 는 tests 의 페이지 서빙 검사 marker 다. -->
   <title>속성 커밋먼트 도구</title>
@@ -19,6 +20,8 @@
     .commit-box { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; overflow-wrap:anywhere; background:#f2f4f8; padding:10px 12px; border-radius:8px }
     .row-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:10px 0 }
     .tool-head { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap } .tool-head h2 { margin:0 }
+    .formula { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; overflow-wrap:anywhere; margin:4px 0 12px }
+    .inputs-kv code { overflow-wrap:anywhere }
   </style>
 </head>
 <body data-page="attr">
@@ -32,6 +35,14 @@
   <section class="card">
     <h3 data-i18n="attr_form_title">1. 속성 입력</h3>
     <form id="attrForm" class="attr-form" autocomplete="off">
+      <!-- 2026-11-10(B+b1): 계정·지갑에 묶는 값. 이 도구는 지갑과 통신하지 않으므로 사용자가 직접 복사해 넣는다. -->
+      <!-- 2026-11-10(사용자 결정): salt 는 지갑 등록 전에도 사용자가 정한다(직접 입력 또는 새로 뽑기) — 지갑 등록 때 지갑 팝업의 salt 칸에 같은 값을 넣으면
+           Snap 이 그 값을 저장한다. 이미 등록한 지갑이면 zk 지갑 화면(계정 탭 → 상세)의 salt 를 넣는다. -->
+      <p class="muted" data-i18n="attr_uid_hint">uid 는 zkID 내 정보(zkID → 내 계정 → 내 정보)에 있습니다.</p>
+      <label><span data-i18n="attr_uid">uid</span> <input id="uid" inputmode="numeric" pattern="[0-9]+" placeholder="12345…" required /></label>
+      <p class="muted" data-i18n="attr_salt_hint">salt 는 직접 넣거나 "새로 뽑기" 로 만드세요. 지갑을 처음 등록할 때 지갑 창의 salt 칸에 같은 값을 넣어야 합니다. 이미 등록한 지갑이면 zk 지갑 화면 → 계정 탭 → 상세의 salt 를 넣으세요.</p>
+      <label><span data-i18n="attr_salt">salt (s_u)</span> <input id="salt" inputmode="numeric" pattern="[0-9]+" placeholder="98765…" required /></label>
+      <p class="row-actions"><button type="button" id="saltGenBtn" class="btn-ghost" data-i18n="attr_salt_gen_btn">salt 새로 뽑기</button> <button type="button" id="copySaltBtn" class="btn-ghost" data-i18n="attr_salt_copy_btn">salt 복사</button></p>
       <label><span data-i18n="attr_birth_year">출생연도</span> <input id="birthYear" inputmode="numeric" pattern="[0-9]*" placeholder="1990" required /></label>
       <label><span data-i18n="attr_country">국가</span> <select id="country" required></select></label>
       <label><span data-i18n="attr_extra1">예비 1</span> <input id="extra1" maxlength="124" /></label>
@@ -52,13 +63,24 @@
       <button type="button" id="clearBtn" class="danger" data-i18n="attr_clear_btn">지우기</button>
     </p>
     <p class="row-actions"><label class="btn-ghost" style="cursor:pointer"><span data-i18n="attr_import_btn">백업 불러오기</span> <input type="file" id="importFile" accept="application/json" hidden /></label></p>
-    <details class="muted"><summary data-i18n="attr_details">상세</summary>
-      <dl class="kv">
-        <dt data-i18n="attr_created_at">만든 시각</dt><dd id="createdAt">-</dd>
-        <dt data-i18n="attr_profile_label">속성</dt><dd id="profileShown">-</dd>
-        <dt data-i18n="attr_blind_label">blind</dt><dd><span class="muted" data-i18n="attr_blind_hidden">이 브라우저에만 저장됨(표시하지 않음) — 백업 파일에 들어 있습니다.</span></dd>
+    <p id="oldRecord" class="muted" hidden data-i18n="attr_old_record">이 브라우저에 옛 형식(uid·salt 없음)의 커밋먼트가 있습니다. uid·salt 를 넣고 다시 만드세요.</p>
+    <!-- 2026-11-10: 커밋먼트의 재료를 모두 숨기지 않고 보인다(사용자 요청) — 식, 도메인 상수, uid, salt, 속성(입력값 → 인코딩 값), blind. -->
+    <div id="inputsView" hidden>
+      <h4 data-i18n="attr_inputs_title">커밋먼트 재료</h4>
+      <p class="formula">C_attr = Poseidon(DOMAIN, uid, s_u, attr₀, attr₁, attr₂, attr₃, attr₄, attr₅, blind)</p>
+      <p><span class="badge warn" data-i18n="attr_secret_warn">salt·blind 는 비밀 — 시연용 표시</span></p>
+      <dl class="kv inputs-kv">
+        <dt>DOMAIN</dt><dd><code id="domainShown">-</code></dd>
+        <dt data-i18n="attr_uid">uid</dt><dd><code id="uidShown">-</code></dd>
+        <dt data-i18n="attr_salt">salt (s_u)</dt><dd><code id="saltShown">-</code></dd>
       </dl>
-    </details>
+      <dl class="kv inputs-kv" id="attrsShown"></dl>
+      <dl class="kv inputs-kv">
+        <dt data-i18n="attr_blind_label">blind</dt><dd><code id="blindShown">-</code> <button type="button" id="copyBlindBtn" class="copy-btn" title="복사">⧉</button></dd>
+        <dt data-i18n="attr_schema_label">스키마</dt><dd id="schemaShown">-</dd>
+        <dt data-i18n="attr_created_at">만든 시각</dt><dd id="createdAt">-</dd>
+      </dl>
+    </div>
     <div id="resultVerdict"></div>
   </section>
 </main>
@@ -71,7 +93,11 @@
   const A = window.Mode3Attr;
   const schema = A?.DEFAULT_ATTR_SCHEMA;
 
-  function load() { try { const v = JSON.parse(localStorage.getItem(STORE_KEY) ?? 'null'); return v && v.version === 1 && A?.isAttrCommit(v.commit) ? v : null; } catch { return null; } }
+  // 기록 version 2(2026-11-10): { uid, s_u } 가 더해졌다. version 1(uid·s_u 없는 옛 정의)은 읽지 않고 "다시 만드세요" 를 보인다.
+  const REC_VERSION = 2;
+  const raw = () => { try { return JSON.parse(localStorage.getItem(STORE_KEY) ?? 'null'); } catch { return null; } };
+  const isDec = (v) => typeof v === 'string' && /^[0-9]+$/.test(v);
+  function load() { const v = raw(); return v && v.version === REC_VERSION && isDec(v.uid) && isDec(v.s_u) && A?.isAttrCommit(v.commit) ? v : null; }
   function save(rec) { localStorage.setItem(STORE_KEY, JSON.stringify(rec)); }
 
   function fillCountries() {
@@ -81,12 +107,25 @@
     for (const code of Object.keys(slot.values)) { const o = document.createElement('option'); o.value = code; o.textContent = code; sel.appendChild(o); }
   }
   function render() {
-    const rec = load();
-    $('commitBox').hidden = !rec; $('noCommit').hidden = !!rec; $('commitActions').hidden = !rec;
-    if (!rec) { $('createdAt').textContent = '-'; $('profileShown').textContent = '-'; return; }
+    const rec = load(), old = !rec && raw()?.version === 1;
+    $('commitBox').hidden = !rec; $('noCommit').hidden = !!rec; $('commitActions').hidden = !rec; $('inputsView').hidden = !rec; $('oldRecord').hidden = !old;
+    if (!rec) return;
     $('commitBox').textContent = rec.commit;
+    $('domainShown').textContent = String(A.DOMAIN_MODE3_ATTRC);
+    $('uidShown').textContent = rec.uid; $('saltShown').textContent = rec.s_u; $('blindShown').textContent = rec.blind;
+    // 속성 6칸: 슬롯 이름 · 입력값 → 해시에 들어가는 인코딩 값(attrᵢ). 스키마에 없는 칸은 "(예약)".
+    const dl = $('attrsShown'); dl.innerHTML = '';
+    rec.attrs.forEach((v, i) => {
+      const slot = schema.slots[i], input = slot ? rec.profile[slot.name] : undefined;
+      const dt = document.createElement('dt'); dt.textContent = `attr${'₀₁₂₃₄₅'[i]}${slot ? ` (${slot.name})` : ''}`;
+      const dd = document.createElement('dd'); dd.id = `attrShown${i}`;
+      const code = document.createElement('code'); code.textContent = v;
+      dd.append(`${slot ? (input === '' || input === undefined ? '(빈 칸)' : input) : '(예약)'} → `, code);
+      dl.append(dt, dd);
+    });
+    $('schemaShown').textContent = `${rec.schema?.id ?? '-'} v${rec.schema?.version ?? '-'}`;
     $('createdAt').textContent = new Date(rec.createdAt).toLocaleString();
-    $('profileShown').textContent = Object.entries(rec.profile).filter(([, v]) => v !== '').map(([k, v]) => `${k}=${v}`).join(', ') || '-';
+    $('uid').value = rec.uid; $('salt').value = rec.s_u;
     for (const k of ['birthYear', 'country', 'extra1', 'extra2']) if (rec.profile[k] !== undefined) $(k).value = rec.profile[k];
   }
 
@@ -96,12 +135,14 @@
     if (!A) return verdict($('formVerdict'), false, 'attr_make_failed', { reason: 'bundle_missing', detail: '/attr/dist/attr.js 가 없습니다 — npm run attr:build' });
     $('makeBtn').disabled = true;
     try {
+      const uid = $('uid').value.trim(), s_u = $('salt').value.trim();
+      if (!isDec(uid) || !isDec(s_u) || BigInt(s_u) >= (1n << 250n)) throw Object.assign(new Error(tt('attr_bind_required') || 'uid·salt 는 10진 숫자로 넣어야 합니다'), { reason: 'bad_uid_salt' });
       const profile = A.normalizeProfile(schema, { birthYear: $('birthYear').value, country: $('country').value, extra1: $('extra1').value, extra2: $('extra2').value });
       // 필수 칸이 비면 인코더가 거절한다(allowEmptyRequired:false — 0 은 "값 없음" 이라 나이 술어가 뚫린다. 지갑 폼과 같은 규칙).
       const attrs = await A.encodeProfile(schema, { birthYear: '', country: '', ...profile }, { allowEmptyRequired: false });
       const blind = A.randomBlind();
-      const commit = await A.attrCommit({ attrs, blind });
-      save({ version: 1, schema: { id: schema.id, version: schema.version }, profile, attrs, blind, commit, createdAt: new Date().toISOString() });
+      const commit = await A.attrCommit({ uid, s_u, attrs, blind });
+      save({ version: REC_VERSION, schema: { id: schema.id, version: schema.version }, uid, s_u, profile, attrs, blind, commit, createdAt: new Date().toISOString() });
       render();
       verdict($('formVerdict'), true, 'attr_make_ok', { summary: tt('attr_make_ok_summary') || '커밋먼트를 만들었습니다. 아래에서 복사해 zkID 프로필에 붙여 넣으세요.' });
     } catch (e) {
@@ -116,6 +157,10 @@
     setTimeout(() => { btn.textContent = prev; }, 1200);
   }
   $('copyBtn').addEventListener('click', () => { const rec = load(); if (rec) copyText(rec.commit, $('copyBtn')); });
+  // salt 새로 뽑기 — 31바이트 난수(248비트). 지갑의 s_u 상한(2^250, lib/mode3_credential.js SCALAR_MAX)보다 작다. randomBlind 와 같은 함수다.
+  $('saltGenBtn').addEventListener('click', () => { if (A) $('salt').value = A.randomBlind(); });
+  $('copySaltBtn').addEventListener('click', () => { const v = $('salt').value.trim(); if (v) copyText(v, $('copySaltBtn')); });
+  $('copyBlindBtn').addEventListener('click', () => { const rec = load(); if (rec) copyText(rec.blind, $('copyBlindBtn')); });
   $('exportBtn').addEventListener('click', () => {
     const rec = load(); if (!rec) return;
     const blob = new Blob([JSON.stringify(rec, null, 2)], { type: 'application/json' });
@@ -123,7 +168,7 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   });
   $('clearBtn').addEventListener('click', () => {
-    if (!window.confirm(tt('attr_clear_confirm') || '저장된 속성·blind·커밋먼트를 지웁니다. 백업이 없으면 같은 커밋먼트를 다시 만들 수 없습니다. 계속할까요?')) return;
+    if (!window.confirm(tt('attr_clear_confirm') || '저장된 uid·salt·속성·blind·커밋먼트를 지웁니다. 백업이 없으면 같은 커밋먼트를 다시 만들 수 없습니다. 계속할까요?')) return;
     localStorage.removeItem(STORE_KEY); render(); clearVerdict($('formVerdict')); clearVerdict($('resultVerdict'));
   });
   $('importFile').addEventListener('change', async (ev) => {
@@ -131,10 +176,11 @@
     clearVerdict($('resultVerdict'));
     try {
       const rec = JSON.parse(await f.text());
-      if (!(rec && rec.version === 1 && Array.isArray(rec.attrs) && rec.attrs.length === 6 && typeof rec.blind === 'string' && rec.profile && typeof rec.profile === 'object')) throw new Error('형식이 다릅니다');
+      if (rec?.version === 1) throw new Error('옛 형식(uid·salt 없음)의 백업입니다 — uid·salt 를 넣고 다시 만드세요');
+      if (!(rec && rec.version === REC_VERSION && isDec(rec.uid) && isDec(rec.s_u) && Array.isArray(rec.attrs) && rec.attrs.length === 6 && typeof rec.blind === 'string' && rec.profile && typeof rec.profile === 'object')) throw new Error('형식이 다릅니다');
       // 저장된 commit 을 믿지 않고 다시 계산해 맞춰 본다 — 손상된 백업이 조용히 들어오지 않게.
-      const commit = await A.attrCommit({ attrs: rec.attrs, blind: rec.blind });
-      if (rec.commit !== commit) throw new Error('백업의 커밋먼트가 속성·blind 와 맞지 않습니다');
+      const commit = await A.attrCommit({ uid: rec.uid, s_u: rec.s_u, attrs: rec.attrs, blind: rec.blind });
+      if (rec.commit !== commit) throw new Error('백업의 커밋먼트가 uid·salt·속성·blind 와 맞지 않습니다');
       save({ ...rec, importedAt: new Date().toISOString() }); render();
       verdict($('resultVerdict'), true, 'attr_import_ok', { summary: tt('attr_import_ok_summary') || '백업을 불러왔습니다.' });
     } catch (e) { verdict($('resultVerdict'), false, 'attr_import_failed', { reason: 'bad_backup', detail: e.message }); }

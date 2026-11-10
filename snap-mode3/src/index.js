@@ -8,7 +8,7 @@
 // @metamask/snaps-sdk 1.4.0 은 CommonJS·ESM 두 빌드를 함께 낸다. webpack 은 ESM 빌드를 집어 명명 export 가 보이고,
 // Node 는 CommonJS 빌드를 집어 default 하나만 보인다(단위 테스트가 이 경로다). 두 경우를 모두 받는다.
 import * as sdkNamespace from '@metamask/snaps-sdk';
-import { createRegistrationSecrets, ATTR_MAX } from './crypto.js';
+import { createRegistrationSecrets, ATTR_MAX, SCALAR_MAX } from './crypto.js';
 
 const sdk = typeof sdkNamespace.panel === 'function' ? sdkNamespace : sdkNamespace.default;
 const { panel, text, heading, divider } = sdk;
@@ -112,6 +112,13 @@ export const onRpcRequest = async ({ origin, request }) => {
       const uid = String(params.uid ?? '').trim();
       if (!isDec(uid)) fail('bad_uid: uid 는 10진 숫자 문자열이어야 한다');
       const secrets = createRegistrationSecrets();
+      // 2026-11-10(사용자 결정): 사용자가 속성 커밋먼트 도구에서 미리 정한 salt 를 지갑 창에 넣으면 그 값을 s_u 로 쓴다(C_attr 에 같은 salt 가 묶인다).
+      // 없으면 지금처럼 새로 뽑는다. sk_u 는 늘 여기서 만든다.
+      if (params.s_u !== undefined && params.s_u !== null && params.s_u !== '') {
+        const su = String(params.s_u).trim();
+        if (!isDec(su) || BigInt(su) === 0n || BigInt(su) >= SCALAR_MAX) fail('bad_salt: salt 는 1 이상 2^250 미만의 10진 숫자여야 한다');
+        secrets.s_u = BigInt(su).toString();
+      }
       state.registration = { uid, s_u: secrets.s_u, auid: null, sk_u: secrets.sk_u, slot: null, attrs: null, registeredAt: new Date().toISOString() };
       state.userCred = null; await setState(state);
       return { uid, s_u: secrets.s_u, sk_u: secrets.sk_u };

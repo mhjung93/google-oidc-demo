@@ -349,6 +349,20 @@ await t('register 는 보류 등록을 덮어쓴다(완성 등록만 already_reg
   assert.equal(store.state, null);
 });
 
+await t('register({ uid, s_u }): 사용자가 정한 salt 를 s_u 로 쓴다(2026-11-10) — 형식이 틀리거나 0·2^250 이상이면 bad_salt, 빈 값이면 새로 뽑는다', async () => {
+  await assert.rejects(() => call('register', { uid: '7', s_u: 'abc' }), /bad_salt/);
+  await assert.rejects(() => call('register', { uid: '7', s_u: '0' }), /bad_salt/);
+  await assert.rejects(() => call('register', { uid: '7', s_u: (1n << 250n).toString() }), /bad_salt/);
+  assert.equal(store.state?.registration ?? null, null, '거절되면 아무것도 저장하지 않는다');
+  const r = await call('register', { uid: '7', s_u: ' 00123456789 ' });
+  assert.equal(r.s_u, '123456789', '앞뒤 공백·앞자리 0 은 정규화'); assert.equal(store.state.registration.s_u, '123456789');
+  assert.match(r.sk_u, /^[0-9a-f]{64}$/, 'sk_u 는 늘 새로 만든다');
+  answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
+  const r2 = await call('register', { uid: '7', s_u: '' });
+  assert.match(r2.s_u, /^[0-9]+$/); assert.notEqual(r2.s_u, '123456789', '빈 값이면 새로 뽑는다');
+  answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
+});
+
 await t('등록 전에는 비밀이 필요한 RPC 가 거절된다', async () => {
   for (const m of ['storeRegistration', 'consentLogin', 'updateUserCred', 'syncAttrs', 'selfRevoke', 'consentRevokeSession', 'showSalt']) {
     await assert.rejects(() => call(m, {}), /not_registered|등록/, `${m} 은 등록을 요구한다`);

@@ -660,7 +660,7 @@ try {
     const cia7 = await startIsolatedCia();
     try {
       const attrs = await encodeProfile(DEFAULT_ATTR_SCHEMA, { birthYear: '1990', country: 'KR' });
-      const C = await attrCommit({ attrs, blind: '777' });
+      const C = await attrCommit({ uid: '1', s_u: '2', attrs, blind: '777' });
       assert.equal((await cia7.post('/cia/user/profile', { name: C })).status, 401, '세션 없음');
       const withJar = makeJar(cia7.base);
       const li = await withJar('/cia/user/login', { method: 'POST', body: JSON.stringify({ uid: '12345', pwd: 'password123' }) });

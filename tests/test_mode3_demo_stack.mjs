@@ -860,7 +860,7 @@ try {
     const l0 = await loginViaRp();
     assert.equal(l0.rp?.ok, true, j(l0.rp)); assert.equal(typeof l0.wallet.id_token, 'string', '지갑 응답에 id_token'); assert.equal(l0.rp.attrCommit, null);
     const attrsA = await Promise.all(['1990', '410', '', '', '', ''].map((v, i) => encodeSlotValue(DEFAULT_ATTR_SCHEMA, i, v)));
-    const C1 = await attrCommit({ attrs: attrsA, blind: '111' }), C2 = await attrCommit({ attrs: attrsA, blind: '222' });
+    const C1 = await attrCommit({ uid: '1', s_u: '2', attrs: attrsA, blind: '111' }), C2 = await attrCommit({ uid: '1', s_u: '2', attrs: attrsA, blind: '222' });
     assert.equal((await withJar('/cia/user/profile', { name: C1 })).body.profile.name, C1);
     const l1 = await loginViaRp();
     assert.equal(l1.rp?.ok, true, j(l1.rp)); assert.equal(l1.rp.attrCommit, C1); assert.equal(l1.rp.attrCommitChanged, false);

@@ -217,6 +217,7 @@ try {
     await popup.evaluate((sub) => { window.__gsiSub = sub; }, LINK_GSUB);
     await popup.click('#authGsiSlot .gsi-stub');
     await popup.waitForSelector('#authGo:not([disabled])'); await popup.click('#authGo');
+    await popup.waitForSelector('#saltAsk:not([hidden])', { timeout: 60_000 }); await popup.click('#saltAskNewBtn');   // 2026-11-10: salt 를 묻는다 — 새로 만들기
     await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
     const st = (await wallet.get('/wallet/status')).body;
     assert.equal(st.registered, true); assert.equal(st.provider, 'demo', '아이디 계정 지갑'); assert.equal(String(st.uid), String(linkUid));

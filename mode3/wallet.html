@@ -45,6 +45,14 @@
       <!-- 2026-11-05: 일반 보기용 진행 줄 — 전문가용 #authStep 은 내부 단계명이라 숨겨져 있어 창이 "멈춘 것처럼" 보였다. -->
       <p id="authProgress" class="auth-progress"></p>
       <dl class="kv" id="authSummary"></dl>
+      <!-- 2026-11-10(사용자 결정): 처음 등록할 때 salt 를 묻는다 — 속성 커밋먼트 도구에서 정한 salt 를 넣으면 Snap 이 그 값을 s_u 로 저장한다(C_attr 와 같은 salt).
+           비우고 "새로 만들기" 면 지금처럼 Snap 이 새로 뽑는다. codeRegister 가 askSalt() 로 띄우고 기다린다. -->
+      <div id="saltAsk" class="salt-ask" hidden>
+        <p data-i18n="wallet_salt_ask_desc">속성 커밋먼트 도구에서 정한 salt 가 있으면 넣으세요. 없으면 "새로 만들기" 를 누르세요.</p>
+        <label><span data-i18n="wallet_salt_label">salt</span> <input id="saltAskInput" inputmode="numeric" autocomplete="off" spellcheck="false" /></label>
+        <p class="row-actions"><button type="button" id="saltAskUseBtn" data-i18n="wallet_salt_ask_use">이 salt 로 등록</button> <button type="button" id="saltAskNewBtn" class="btn-ghost" data-i18n="wallet_salt_ask_new">새로 만들기</button></p>
+        <p id="saltAskErr" class="bad-text" hidden data-i18n="wallet_salt_ask_bad">salt 는 1 이상 2^250 미만의 10진 숫자여야 합니다.</p>
+      </div>
       <p id="authStep" class="muted expert"></p>
       <pre id="authLog" class="expert"></pre>
     </section>
@@ -94,6 +102,7 @@
       <details class="fold" id="identityDetails">
         <summary data-i18n="wallet_details_summary">상세</summary>
         <dl class="kv">
+          <dt data-i18n="wallet_uid_label">uid</dt><dd><code id="meUid">-</code> <button type="button" id="copyUidBtn" class="copy-btn" hidden title="복사">⧉</button></dd>   <!-- 2026-11-10: 속성 커밋먼트 도구에 넣는 값 -->
           <dt data-term="auid">auid</dt><dd><code id="meAuid">-</code> <button type="button" id="copyAuidBtn" class="copy-btn" hidden title="복사">⧉</button></dd>
           <dt><span data-i18n="wallet_salt_label">salt</span> <span class="badge warn" data-i18n="wallet_salt_warn">비밀 — 시연용 표시</span></dt><dd><code id="meSalt">-</code> <button type="button" id="showSaltBtn" class="btn-ghost" data-i18n="wallet_salt_show">보기</button> <button type="button" id="copySaltBtn" class="copy-btn" hidden title="복사">⧉</button></dd>
         </dl>
@@ -611,14 +620,31 @@
       return { ok: true, slot: b.slot, auid: b.auid, uid: b.uid };
     }
 
+    /** 처음 등록 때 salt 를 묻는다(2026-11-10) — 넣은 값(10진, 1 이상 2^250 미만) 또는 "새로 만들기" 면 null. */
+    function askSalt() {
+      const box = $('saltAsk'), input = $('saltAskInput'), err = $('saltAskErr');
+      box.hidden = false; err.hidden = true; input.value = ''; setTimeout(() => input.focus(), 0);
+      return new Promise((resolve) => {
+        const done = (v) => { box.hidden = true; $('saltAskUseBtn').onclick = null; $('saltAskNewBtn').onclick = null; resolve(v); };
+        $('saltAskUseBtn').onclick = () => {
+          const v = input.value.trim();
+          if (!/^[0-9]+$/.test(v) || BigInt(v) === 0n || BigInt(v) >= (1n << 250n)) { err.hidden = false; return; }
+          done(BigInt(v).toString());
+        };
+        $('saltAskNewBtn').onclick = () => done(null);
+      });
+    }
+
     /** 등록 코드(uid·code)로 등록(2026-11-09 에 함수로 뽑음 — 서비스 첫 로그인 중의 등록(processAuthorize)과 옛 mode3-register 팝업 경로 공용).
      *  Snap register({uid}) → 에이전트 /wallet/register { uid, code, s_u, sk_u } → Snap storeRegistration. 성공 { ok:true, slot, auid, issue_code|null } / 실패 { ok:false, reason, detail? }. */
     async function codeRegister({ uid, code, step, log }) {
       let already = false;
       try { already = Boolean((await (await fetch('/wallet/status')).json()).registered); } catch { /* 진행 — /wallet/register 가 다시 걸러준다 */ }
       if (already) { step('이미 등록돼 있다.'); return { ok: false, reason: 'already_registered' }; }
-      step('등록 비밀을 만드는 중…');
-      const reg = await invokeSnap('register', { uid });
+      say('wallet_salt_ask_title');
+      const s_u = await askSalt();
+      step('등록 비밀을 만드는 중…'); say('wallet_prog_registering');
+      const reg = await invokeSnap('register', s_u ? { uid, s_u } : { uid });
       if (!reg || reg.denied) { step('등록 거절'); return { ok: false, reason: 'user_denied' }; }
       step('에이전트에 등록하는 중…');
       const { status, body: b } = await postJson('/wallet/register', { uid, code, s_u: reg.s_u, sk_u: reg.sk_u });
@@ -1031,6 +1057,8 @@
       // 이고, "보기"(showSaltBtn)가 받아 둔 값(saltRevealed)이 있을 때만 전체를 보인다 — 등록이 없어지면 가림으로 되돌린다.
       $('meAuid').textContent = s?.auid ?? '-';
       $('copyAuidBtn').hidden = !s?.auid;
+      $('meUid').textContent = s?.uid ?? '-';
+      $('copyUidBtn').hidden = !s?.uid;
       if (!s?.registered) saltRevealed = null;
       $('meSalt').textContent = saltRevealed ?? (s?.registered ? SALT_MASK : '-');
       $('copySaltBtn').hidden = !saltRevealed;
@@ -1275,6 +1303,7 @@
 
     // auid·salt 복사(Task 14, B5) — lastStatus.auid 는 공개 값, saltRevealed 는 "보기" 를 눌러야 채워진다.
     $('copyAuidBtn').addEventListener('click', () => copyText(lastStatus?.auid ?? null, $('copyAuidBtn')));
+    $('copyUidBtn').addEventListener('click', () => copyText(lastStatus?.uid ?? null, $('copyUidBtn')));
     $('copySaltBtn').addEventListener('click', () => copyText(saltRevealed, $('copySaltBtn')));
     // "보기"(showSaltBtn, Task 14 B5) — file 모드는 같은 오리진의 GET /wallet/secrets/salt(Task 13), snap 모드는
     // Snap RPC showSalt(Task 15; 확인 창은 2026-11-05 에 뺐다) 로 s_u 를 받는다. 취소·실패면 가림 상태를 그대로 둔다 — 비밀은

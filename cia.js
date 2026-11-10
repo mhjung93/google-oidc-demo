@@ -610,6 +610,7 @@ app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_
 // IdP 사용자·RP·인증 창 페이지(Task 12, 2026-10-22 B3 — 설계 §3.4). 사용자가 찾아가는 입구는 지갑이 아니라 IdP 자신이다.
 app.get('/', (req, res) => res.redirect('/user'));   // 2026-11-05(7차): 주소만 치면 404 였다 — 사용자 페이지로
 app.get('/user', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_user.html')));
+app.get('/user/info', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_user_info.html')));   // 2026-11-10: "내 계정" 하위 메뉴 "내 정보"(읽기 전용)
 app.get('/rp', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_rp.html')));
 app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_login.html')));
 // "내 계정" 페이지 — Google/OIDC 계정 관리·Google 재로그인 폐기 UI. /user(일반 가입·발급)와는 다른 입구라

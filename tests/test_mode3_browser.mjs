@@ -64,6 +64,7 @@ try {
   // Task 14(B5): 등록 케이스(아래 "등록(2026-10-22): …")가 채운다 — IdP 가입이 배정한 uid, 지갑이 낸 auid.
   // 이후의 모든 로그인(completeIdpAuth 의 기본값)과 Task 12 "IdP 인증 창" 케이스가 재사용한다.
   let uid = null, AUID = null;
+  const USER_SALT = '123456789012345678901234567890';   // 2026-11-10: 첫 등록 때 지갑 창에 넣는 salt(속성 커밋먼트 도구와 같은 값)
   const DEMO_PWD = 'demo-pass-9';   // IdP /user 가입 비밀번호(등록 케이스가 쓴다) — Snap 은 비밀번호를 받지 않는다(Task 15).
   const cfg = (await wallet.get('/wallet/config')).body;
   assert.equal(cfg.secrets, 'snap', `지갑이 snap 모드여야 한다: ${j(cfg)}`);
@@ -224,11 +225,12 @@ try {
 
   // 2026-11-09(사용자 결정): zkID 가입에는 지갑이 끼지 않는다 — /user 에는 지갑 등록 버튼이 없고, 지갑 등록은 아래 RP 로그인 케이스에서
   // 팝업 → zkID 인증 창(등록 모드) → 돌아와 등록 → 발급으로 처음 한 번 일어난다. (Task 14 의 "/user 가 mode3-register 팝업을 연다" 는 Google 등록(?google=1)에만 남았다.)
-  await t('zkID 가입(2026-11-09): 아이디·비밀번호로 가입 → 자동 로그인 → 등록 전 배지; 지갑 등록 버튼·카드는 없고 프로필 카드만 보인다', async () => {
+  await t('zkID 가입(2026-11-09): 아이디·비밀번호로 가입 → 자동 로그인(등록 상태 배지는 없다, 2026-11-10); 지갑 등록 버튼·카드는 없고 프로필 카드만 보인다', async () => {
     const u = await context.newPage(); await u.goto(`${cia.base}/user`);
     await u.click('#showSignupBtn'); await u.fill('#signupId', 'demo-user'); await u.fill('#signupPwd', DEMO_PWD); await u.fill('#signupPwd2', DEMO_PWD); await u.click('#signupBtn');
     await waitText(u, '#profileVerdict', '가입했습니다');   // 안내는 프로필 카드에 — "지갑 등록은 서비스에서 zkID 로 로그인할 때"
-    await waitText(u, '#meBadge', '등록 전'); assert.equal(await u.isHidden('#loginView'), true, '가입 직후 자동 로그인');
+    await waitText(u, '#meInfo', 'demo-user'); assert.equal(await u.isHidden('#loginView'), true, '가입 직후 자동 로그인');
+    assert.equal(await u.$('#meBadge'), null, '아이디 옆 등록 상태 배지는 없다(2026-11-10)');
     assert.equal(await u.$('#registerBtn'), null, '지갑 등록 버튼이 없다'); assert.equal(await u.$('#registerCard'), null, '지갑 등록 카드가 없다');
     assert.equal(await u.isVisible('#profileCard'), true, '프로필 카드는 등록과 무관하게 보인다');
     assert.equal(await u.isHidden('#revokeCard'), true, '등록 전에는 계정 관리(지갑 연결 해제) 카드가 없다');
@@ -261,11 +263,16 @@ try {
     await waitText(popup, '#authTitle', '지갑 등록');
     await popup.fill('#authUid', 'demo-user'); await popup.fill('#authPwd', DEMO_PWD); await popup.click('#authGo');
     await backAtWallet(popup);
+    // 2026-11-10: 처음 등록 때 지갑 창이 salt 를 묻는다 — 형식이 틀리면(0) 안내만 하고 머문다, 맞으면 Snap 이 그 값을 s_u 로 저장한다.
+    await popup.waitForSelector('#saltAsk:not([hidden])', { timeout: 60_000 });
+    await popup.fill('#saltAskInput', '0'); await popup.click('#saltAskUseBtn'); await popup.waitForSelector('#saltAskErr:not([hidden])');
+    await popup.fill('#saltAskInput', USER_SALT); await popup.click('#saltAskUseBtn');
     await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
     assert.equal(dialogs.length, before, '등록·로그인에 Snap 확인 창이 없다(2026-11-05 중복 확인 제거)');
     const st = (await wallet.get('/wallet/status')).body;
     assert.equal(st.registered, true, '첫 로그인이 지갑을 등록했다'); assert.match(String(st.uid), /^[0-9]+$/); uid = st.uid; AUID = st.auid;
     assert.equal(snapState.registration?.uid, uid, 'Snap 에도 등록이 저장됐다');
+    assert.equal(snapState.registration?.s_u, USER_SALT, '지갑 창에 넣은 salt 가 s_u 로 저장됐다');
     assert.ok((await text(rpPage, '#log')).includes('allowAgent=0'), 'AI 에이전트 체크박스를 없앴으므로 늘 0(2026-11-05)');
     await awaitPopupClosed(popup);
     assert.ok((await text(rpPage, '#log')).includes('3. RP 검증'), 'RP 페이지가 /api/mode3/login 까지 냈다');
@@ -628,7 +635,7 @@ try {
 
   // ---- Task 12(B3, 2026-10-22): IdP 사용자·RP·인증 창 페이지(/user·/rp·/login) ----
   // 가입·로그인·RP 만들기는 Snap 대화상자를 쓰지 않는다 — 새 계정(가입으로 받은 uid·새 운영자 id)을 쓴다.
-  await t('IdP 사용자 페이지(2026-11-03): 계정 만들기(아이디·비밀번호·확인, 불일치는 pwd_mismatch, 중복 아이디는 id_taken) → 가입 직후 자동 로그인(2026-11-06) → 로그아웃 → 아이디로 로그인 → 상태(등록 전) → 로그아웃하면 로그인 화면', async () => {
+  await t('IdP 사용자 페이지(2026-11-03): 계정 만들기(아이디·비밀번호·확인, 불일치는 pwd_mismatch, 중복 아이디는 id_taken) → 가입 직후 자동 로그인(2026-11-06) → 로그아웃 → 아이디로 로그인 → 로그아웃하면 로그인 화면', async () => {
     const p = await context.newPage(); await p.goto(`${cia.base}/user`);
     // 같은 브라우저 컨텍스트라 앞의 등록 케이스가 로그인해 둔 세션 쿠키가 남아 있을 수 있다 — 내 계정 화면이면 먼저 로그아웃한다.
     await p.waitForSelector('#loginView:not([hidden]), #meCard:not([hidden])');
@@ -639,7 +646,7 @@ try {
     await waitText(p, '#signupVerdict', '비밀번호 확인이 일치하지 않습니다');   // pwd_mismatch 제목
     await p.fill('#signupPwd2', 'demo-pass-1'); await p.click('#signupBtn');
     // 2026-11-06(8차): 가입 직후 자동 로그인 — 등록 카드에 안내가 뜨고 상태는 등록 전. 로그인 화면으로 돌아가지 않는다.
-    await waitText(p, '#profileVerdict', '가입했습니다'); await waitText(p, '#meBadge', '등록 전'); await waitText(p, '#meInfo', 'demo-user-2');
+    await waitText(p, '#profileVerdict', '가입했습니다'); await waitText(p, '#meInfo', 'demo-user-2');
     assert.equal(await p.isHidden('#loginView'), true);
     await p.click('#logoutBtn'); await p.waitForSelector('#loginView:not([hidden])');
     // 같은 아이디(대소문자만 다른)로 다시 가입하면 409 id_taken.
@@ -647,7 +654,7 @@ try {
     await waitText(p, '#signupVerdict', '그 아이디는 이미 쓰고 있습니다'); await p.click('#showLoginBtn');   // id_taken 제목
     await p.fill('#loginId', 'demo-user-2'); await p.fill('#loginPwd', 'wrong-pass-1'); await p.click('#loginBtn'); await waitText(p, '#userVerdict', '아이디 또는 비밀번호가 맞지 않습니다');   // invalid_credentials 제목
     await p.fill('#loginPwd', 'demo-pass-1'); await p.click('#loginBtn');
-    await waitText(p, '#meBadge', '등록 전'); await waitText(p, '#meInfo', 'demo-user-2'); assert.equal(await p.isVisible('#profileCard'), true);
+    await waitText(p, '#meInfo', 'demo-user-2'); assert.equal(await p.isVisible('#profileCard'), true);
     await p.click('#logoutBtn'); await p.waitForSelector('#loginView:not([hidden])'); assert.equal(await p.isHidden('#meCard'), true); await p.close();
   });
   // 2026-11-09 Phase 1: 속성 커밋먼트 도구(지갑 오리진 /attr.html — 독립 정적 페이지) + zkID 프로필 카드.
@@ -657,6 +664,10 @@ try {
     const reqs = []; p.on('request', (r) => reqs.push(r.url()));
     await p.goto(`${wallet.base}/attr.html`);
     await p.waitForSelector('#noCommit:not([hidden])');
+    // 2026-11-10(B+b1): uid·salt 를 묶는다 — 비우면 만들지 않는다(required), "salt 새로 뽑기" 는 10진·2^250 미만 값을 채운다.
+    await p.fill('#uid', String(uid)); await p.click('#saltGenBtn');
+    const gen = await p.inputValue('#salt'); assert.match(gen, /^[0-9]+$/); assert.ok(BigInt(gen) < (1n << 250n));
+    await p.fill('#salt', USER_SALT);   // 지갑 등록 때 넣은 것과 같은 salt
     await p.fill('#birthYear', '1990'); await p.selectOption('#country', 'KR'); await p.fill('#extra1', 'hello');
     await p.click('#makeBtn');
     await p.waitForSelector('#commitBox:not([hidden])');
@@ -666,7 +677,13 @@ try {
     assert.equal(rec.commit, shown); assert.match(shown, /^[0-9]+$/);
     const attrs = await encodeProfile(DEFAULT_ATTR_SCHEMA, { birthYear: '1990', country: 'KR', extra1: 'hello' });
     assert.deepEqual(rec.attrs, attrs);
-    assert.equal(await attrCommit({ attrs, blind: rec.blind }), rec.commit, 'Node 재계산과 일치');
+    assert.equal(rec.version, 2); assert.equal(rec.uid, String(uid)); assert.equal(rec.s_u, USER_SALT);
+    assert.equal(await attrCommit({ uid: rec.uid, s_u: rec.s_u, attrs, blind: rec.blind }), rec.commit, 'Node 재계산과 일치');
+    // 재료를 모두 숨기지 않고 보인다 — uid·salt·blind·인코딩 값
+    assert.equal((await p.textContent('#uidShown')).trim(), rec.uid); assert.equal((await p.textContent('#saltShown')).trim(), USER_SALT);
+    assert.equal((await p.textContent('#blindShown')).trim(), rec.blind);
+    for (let i = 0; i < 6; i++) assert.ok((await p.textContent(`#attrShown${i}`)).includes(rec.attrs[i]), `attr${i} 인코딩 값 표시`);
+    assert.ok((await p.textContent('#attrShown0')).includes('1990'), '입력값도 함께');
     assert.deepEqual(rec.profile, { birthYear: '1990', country: 'KR', extra1: 'hello' });
     assert.ok(reqs.every((u) => /\/attr\.html|\/attr\/dist\/|\/common\//.test(u)), `정적 자원 외 요청: ${reqs.filter((u) => !/\/attr\.html|\/attr\/dist\/|\/common\//.test(u)).join(', ')}`);
     // 범위 밖 값(출생연도 1800 < min 1900)은 인코더가 거절한다 — 저장값은 그대로(빈 칸은 폼의 required 가 먼저 막아 요청 자체가 없다)
@@ -679,6 +696,10 @@ try {
     await p.setInputFiles('#importFile', { name: 'backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(rec)) });
     await waitText(p, '#resultVerdict', '백업 불러오기 완료');
     assert.equal((await p.textContent('#commitBox')).trim(), rec.commit);
+    // 옛 형식(version 1, uid·salt 없음) 백업은 거절하고, 저장소에 옛 기록이 있으면 "다시 만드세요" 를 보인다.
+    const { uid: _u, s_u: _s, ...v1 } = rec;
+    await p.setInputFiles('#importFile', { name: 'v1.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ ...v1, version: 1 })) });
+    await waitText(p, '#resultVerdict', '백업을 불러오지 못했습니다');
     const broken = { ...rec, commit: '1' };
     await p.setInputFiles('#importFile', { name: 'bad.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(broken)) });
     await waitText(p, '#resultVerdict', '백업을 불러오지 못했습니다');
@@ -691,7 +712,7 @@ try {
     if (await p.isVisible('#meCard')) { await p.click('#logoutBtn'); await p.waitForSelector('#loginView:not([hidden])'); }
     assert.equal(await p.isHidden('#profileCard'), true, '로그인 전엔 숨김');
     await p.fill('#loginId', 'demo-user-2'); await p.fill('#loginPwd', 'demo-pass-1'); await p.click('#loginBtn');   // 앞 케이스가 만든 미등록 계정
-    await waitText(p, '#meBadge', '등록 전');
+    await waitText(p, '#meInfo', 'demo-user-2');
     await p.waitForSelector('#profileCard:not([hidden])');
     assert.equal((await p.textContent('#profileCurrent')).trim(), '없음');
     assert.ok((await p.getAttribute('#attrToolLink', 'href')).endsWith('/attr.html'), '속성 도구 링크는 지갑 오리진 /attr.html');
@@ -700,9 +721,25 @@ try {
     assert.equal((await p.textContent('#profileCurrent')).trim(), toolCommit);
     const me = await p.evaluate(() => fetch('/cia/user/me', { credentials: 'same-origin' }).then((r) => r.json()));
     assert.equal(me.profile?.name, toolCommit);
+    // 2026-11-10: "내 계정" 하위 메뉴 "내 정보"(/user/info) — 저장한 커밋먼트·저장 시각·지갑 등록 여부를 읽기 전용으로 보인다.
+    await p.click('.sub-nav a[href="/user/info"]'); await p.waitForSelector('#infoView:not([hidden])');
+    assert.equal(await p.getAttribute('.sub-nav a[href="/user/info"]', 'aria-current'), 'page');
+    assert.equal((await p.textContent('#infoId')).trim(), 'demo-user-2');
+    assert.equal((await p.textContent('#infoUid')).trim(), String(me.uid), 'uid 를 보인다(2026-11-10 — 속성 커밋먼트 도구에 넣는 값)');
+    assert.equal((await p.textContent('#infoMethod')).trim(), '아이디·비밀번호');
+    assert.match(await p.textContent('#infoWallet'), /아직 없음/, '미등록 계정');
+    assert.equal((await p.textContent('#infoAttr')).trim(), toolCommit);
+    assert.match((await p.textContent('#infoAttrAt')).trim(), /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/);
+    assert.equal(await p.getAttribute('#infoAttrAt', 'title'), me.profile.updatedAt, '원본 시각은 title 에');
+    await p.click('.sub-nav a[href="/user"]'); await p.waitForSelector('#profileCard:not([hidden])');
     await p.fill('#profileName', ''); await p.click('#profileSaveBtn'); await waitText(p, '#profileVerdict', '프로필을 비웠습니다');   // 제목은 앞 저장과 같아 요약으로 기다린다
     assert.equal((await p.textContent('#profileCurrent')).trim(), '없음');
-    await p.click('#logoutBtn'); await p.waitForSelector('#loginView:not([hidden])'); await p.close();
+    await p.goto(`${cia.base}/user/info`); await p.waitForSelector('#infoView:not([hidden])');
+    assert.equal((await p.textContent('#infoAttr')).trim(), '저장된 값 없음'); assert.equal((await p.textContent('#infoAttrAt')).trim(), '-');
+    await p.goto(`${cia.base}/user`); await p.waitForSelector('#meCard:not([hidden])');
+    await p.click('#logoutBtn'); await p.waitForSelector('#loginView:not([hidden])');
+    await p.goto(`${cia.base}/user/info`); await p.waitForSelector('#loginNeeded:not([hidden])');   // 로그아웃 상태에서는 로그인 안내만
+    assert.equal(await p.isHidden('#infoView'), true); await p.close();
   });
   await t('IdP RP 페이지: 운영자 가입·로그인 → zkTHREE 만들기 → 키·명령 표시', async () => {
     const p = await context.newPage(); await p.goto(`${cia.base}/rp`);
