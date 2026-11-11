@@ -12,7 +12,8 @@ import fs from 'node:fs';
 import { chromium } from '@playwright/test';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
 import { getProvider } from './helpers/mode3_chain.mjs';
-import { buildInitScript } from './helpers/ethereum_stub.js';
+import { buildInitScript, STUB_SRP } from './helpers/ethereum_stub.js';
+import { derivedSecrets } from './helpers/snap_sim.mjs';
 import { VKEY_PATH } from '../lib/mode3_wallet.js';
 import { attrGateAt } from '../lib/mode3_onchain.js';
 import { execFileSync } from 'node:child_process';
@@ -66,7 +67,8 @@ try {
   // Task 14(B5): 등록 케이스(아래 "등록(2026-10-22): …")가 채운다 — IdP 가입이 배정한 uid, 지갑이 낸 auid.
   // 이후의 모든 로그인(completeIdpAuth 의 기본값)과 Task 12 "IdP 인증 창" 케이스가 재사용한다.
   let uid = null, AUID = null;
-  const USER_SALT = '123456789012345678901234567890';   // 2026-11-10: 첫 등록 때 지갑 창에 넣는 salt(속성 커밋먼트 도구와 같은 값)
+  // 2026-11-12(스펙 snap-derived-secrets): salt 는 스냅이 시드에서 유도한다 — 스텁 SRP(STUB_SRP)의 유도값이 곧 이 사용자의 salt 다.
+  const USER_SALT = derivedSecrets(STUB_SRP).s_u;
   const DEMO_PWD = 'demo-pass-9';   // IdP /user 가입 비밀번호(등록 케이스가 쓴다) — Snap 은 비밀번호를 받지 않는다(Task 15).
   const cfg = (await wallet.get('/wallet/config')).body;
   assert.equal(cfg.secrets, 'snap', `지갑이 snap 모드여야 한다: ${j(cfg)}`);
@@ -504,6 +506,56 @@ try {
   // 이번에는 바로 위 테스트(페이지를 거쳐 속성을 바꾼 경우)와 다르게, **에이전트 API 를 페이지 없이 직접 불러**
   // Snap 을 일부러 못 따라오게 만든다 — 그래야 다음 로그인이 자가 치유(attrsChanged + userCredIssued 동시 응답)를
   // 실제로 타고, 팝업의 applyPendingToSnap 이 그 둘을 올바른 순서로 반영하는지(새 C_u 가 살아남는지)를 본다.
+  // 2026-11-12(스펙 snap-derived-secrets §4): 같은 SRP 로 MetaMask 를 다시 깔면 스냅이 같은 비밀을 유도한다 — 등록이 돌아오고 PPID 가 같다.
+  const ppids = async () => (await rp.get('/api/mode3/logins', rp.adminHeaders)).body.logins.filter((l) => l.PPID).map((l) => l.PPID);
+  await t('복구 R1: 스냅 상태만 잃음(MetaMask 재설치) → RP 로그인이 유도 비밀로 스냅 등록을 되살리고 같은 PPID 로 로그인', async () => {
+    const before = await ppids(); const known = new Set(before);
+    assert.ok(before.length > 0, '앞 케이스의 로그인 기록이 있어야 비교할 수 있다');
+    snapState = null;   // MetaMask 재설치 — 확장의 암호화 저장소가 비었다
+    const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
+    await completeIdpAuth(popup);
+    await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
+    await awaitPopupClosed(popup);
+    assert.equal(snapState.registration?.uid, uid, '스냅 등록이 돌아왔다'); assert.equal(snapState.registration?.s_u, USER_SALT);
+    assert.equal(snapState.registration?.auid, AUID);
+    const after = await ppids();
+    assert.equal(after.length, before.length + 1, '로그인 한 번이 더 기록됐다');
+    assert.deepEqual(new Set(after), known, '새 PPID 가 생기지 않았다 — 같은 PPID');
+  });
+  await t('복구 R2: 스냅·에이전트 상태 둘 다 잃음(새 PC) → 등록 모드 인증 창 → IdP 가 같은 비밀 재등록을 복구로 받아 같은 PPID', async () => {
+    const before = await ppids(); const known = new Set(before);
+    snapState = null;
+    assert.equal((await wallet.post('/wallet/reset', { confirm: true })).status, 200);
+    const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
+    await atIdpLogin(popup);
+    assert.equal(new URL(popup.url()).searchParams.get('purpose'), 'register', '에이전트가 비어 등록 모드로 간다');
+    const loginId = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === String(uid))?.id ?? String(uid);
+    await popup.fill('#authUid', loginId); await popup.fill('#authPwd', DEMO_PWD); await popup.fill('#authAuid', String(AUID)); await popup.click('#authGo');
+    await backAtWallet(popup);
+    await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
+    await awaitPopupClosed(popup);
+    const st = (await wallet.get('/wallet/status')).body;
+    assert.equal(st.registered, true); assert.equal(String(st.uid), String(uid)); assert.equal(st.auid, AUID);
+    assert.equal(snapState.registration?.uid, uid); assert.equal(snapState.registration?.s_u, USER_SALT);
+    const after = await ppids();
+    assert.equal(after.length, before.length + 1); assert.deepEqual(new Set(after), known, '같은 PPID');
+  });
+  await t('다른 SRP 의 스냅으로는 복구하지 않는다 — 스냅이 비었고 에이전트 등록과 비밀이 다르면 snap_restore_mismatch 로 멈춘다', async () => {
+    const saved = snapState;
+    snapState = null;
+    await context.addInitScript({ content: 'window.__srpOverride = "other-srp";' });   // 이 컨텍스트의 새 페이지부터 — 다른 시드의 MetaMask
+    try {
+      const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
+      await completeIdpAuth(popup);
+      await waitText(rpPage, '#verdict', '이 스냅의 비밀이 등록과 다릅니다', 120_000);
+      await awaitPopupClosed(popup);
+      assert.notEqual(snapState?.registration?.uid, uid, '다른 계정 등록을 만들지 않았다');
+    } finally {
+      await context.addInitScript({ content: 'window.__srpOverride = null;' });   // addInitScript 는 누적된다 — 뒤에 실행되는 이 줄이 되돌린다
+      snapState = saved;
+    }
+  });
+
   await t('에이전트에서 직접 속성을 바꾸면(Snap 모름) 다음 로그인이 attrsChanged·새 C_u 를 함께 반영한다', async () => {
     const beforeCf = snapState.userCred?.Cf_u ?? null;
     assert.ok(beforeCf, '시작 시 Snap 에 C_u 가 있다');

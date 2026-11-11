@@ -607,6 +607,28 @@
       return { ok: true, slot: b.slot, auid: b.auid, uid: b.uid };
     }
 
+    /** 스냅 복구(2026-11-12, 스펙 snap-derived-secrets §4.3): 에이전트에는 등록이 있는데 스냅이 비었으면(MetaMask 재설치) 스냅이 시드에서 같은 비밀을
+     *  다시 유도하므로, 보류 등록으로 그 비밀을 받아 에이전트 /wallet/register/resume 로 대조하고(auid·pk_u) 맞으면 스냅에 등록을 채운다.
+     *  할 일이 없으면 null, 복구했으면 { ok:true }, 비밀이 다르면(옛 무작위 등록·다른 SRP) { ok:false, reason:'snap_restore_mismatch' }. */
+    async function restoreSnapIfEmpty({ step, log }) {
+      let st = null;
+      try { st = await (await fetch('/wallet/status')).json(); } catch { return null; }   // 못 읽으면 지금처럼 진행 — 뒤 단계가 다시 거른다
+      if (!st?.registered) return null;
+      const info = await invokeSnap('getPublicInfo', {});
+      if (info?.registered) return null;
+      step('스냅이 비어 있다 — 시드에서 같은 비밀을 다시 만들어 등록을 되살리는 중…');
+      const prep = await invokeSnap('prepareRegister', {});
+      if (!prep || prep.denied) return { ok: false, reason: 'user_denied' };
+      const { status, body: b } = await postJson('/wallet/register/resume', { s_u: prep.s_u, sk_u: prep.sk_u });
+      if (status !== 200) {
+        log(errText(status, b));
+        return { ok: false, reason: b.reason === 'secrets_mismatch' ? 'snap_restore_mismatch' : (b.reason ?? 'wallet_error'), detail: b.detail ?? null };
+      }
+      await invokeSnap('storeRegistration', { attrs: b.attrs, slot: b.slot, auid: b.auid, uid: b.uid, provider: b.provider });
+      step('스냅 등록을 되살렸다.');
+      return { ok: true };
+    }
+
     /** 속성 도구(같은 오리진의 /attr.html)가 남긴 커밋먼트 기록(2026-11-11) — { uid, s_u } 가 있는 version 2 기록이면 그대로, 아니면 null.
      *  첫 등록은 이 salt 를 쓴다(사용자 결정: 스냅 팝업에서 salt 를 묻지 않는다). 키 이름은 attr.html 의 STORE_KEY 와 같다. */
     /** 속성 도구 번들(3.6MB, Mode3Attr.auidOf)을 첫 등록 때만 읽는다 — 팝업이 열릴 때마다 받지 않게. 없으면 false. */
@@ -733,8 +755,10 @@
             return reply({ ok: true, slot: b.slot, auid: b.auid, uid: b.uid, resumed: true });
           }
           if (info && !info.registered) {
-            step('에이전트에는 등록이 있지만 이 스냅은 비어 있습니다 — 재시연 세트로 스냅·IdP 를 함께 비우세요.');
-            return reply({ ok: false, reason: 'already_registered', detail: 'snap_empty' });
+            // 2026-11-12(스펙 snap-derived-secrets §4.3): 스냅만 비었으면 시드 유도 비밀로 되살린다(예전엔 재시연 세트로 둘 다 비우라고 안내했다).
+            const rs = await restoreSnapIfEmpty({ step, log });
+            if (rs?.ok) { step('등록을 되살렸다 — 창을 닫는다.'); return reply({ ok: true, restored: true }); }
+            return reply(rs ?? { ok: false, reason: 'already_registered', detail: 'snap_empty' });
           }
         }
         if (already) { step('이미 등록돼 있다.'); return reply({ ok: false, reason: 'already_registered' }); }
@@ -836,6 +860,8 @@
           // 세션 값을 못 받았으면(서비스가 reauth 만 넣고 r_s 를 뺐거나 응답에 필드가 없으면) 멈춘다(리뷰 I-1).
           if (sessionAllowAgent !== '0' && sessionAllowAgent !== '1') { step('세션 정보를 받지 못했다 — 재승인하지 않는다.'); return reply({ ok: false, reason: 'no_session' }); }
           if (!(await connect())) return;
+          const rs = await restoreSnapIfEmpty({ step, log });   // 2026-11-12: 스냅만 비었으면(MetaMask 재설치) 증인 전에 등록을 되살린다
+          if (rs && !rs.ok) { step('스냅 복구 실패 — 재승인하지 않는다.'); return reply(rs); }
           step('세션 재승인 중…'); say('wallet_prog_reauth');
           const witness = await consentLogin({ ...req, allowAgent: sessionAllowAgent });
           if (!witness) { step('동의 거절'); return reply({ ok: false, reason: 'user_denied' }); }
@@ -885,6 +911,8 @@
         }
 
         if (!(await connect())) return;
+        const rs = await restoreSnapIfEmpty({ step, log });   // 2026-11-12: 스냅만 비었으면(MetaMask 재설치) 증인 전에 등록을 되살린다
+        if (rs && !rs.ok) { step('스냅 복구 실패 — 로그인하지 않는다.'); return reply(rs); }
         const sync = await syncAttrsFromRecord({ step, log });   // 증인(consentLogin)이 새 속성을 싣도록 그 앞에서
         if (sync && !sync.ok) { step('속성 맞추기 실패 — 로그인하지 않는다.'); return reply(sync); }
         step('로그인 증인 준비 중…');

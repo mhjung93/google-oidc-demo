@@ -148,16 +148,20 @@ try {
     await u.close();
   });
 
-  await t('반쯤 된 등록 + RP 로그인: 동의 창 없이 "등록이 반만 됐다" 안내(reason=registration_incomplete), Snap 복원 뒤에는 다시 정상', async () => {
+  // 2026-11-12(스펙 snap-derived-secrets §4.3): 예전엔 "등록이 반만 됐다" 로 멈췄다 — 이제 로그인 팝업이 보류 등록을 시드 유도 비밀로 마저 채우고(에이전트 resume) 로그인을 이어 간다.
+  await t('반쯤 된 등록 + RP 로그인: 팝업이 보류 등록을 에이전트 등록으로 마저 채우고(Google 재로그인 없이 복구) 발급용 Google 버튼으로 로그인 성공', async () => {
     const full = JSON.parse(JSON.stringify(snapState.registration));
     for (const k of ['uid', 'auid', 'slot', 'attrs', 'provider']) snapState.registration[k] = null;
     try {
       const rpPage = await context.newPage(); await rpPage.goto(rp.base);
       const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
-      await waitText(popup, '#authStep', '등록이 반만 됐다', 60_000);
-      assert.ok((await text(popup, '#authStep')).includes("'Google 로 등록'"), '다시 등록하라는 안내');
+      await popup.waitForSelector('#gsiBox .gsi-stub', { timeout: 60_000 });   // 복구 뒤 발급용 Google 버튼
+      const back = JSON.parse(JSON.stringify(snapState.registration));
+      for (const k of ['uid', 'auid', 'slot', 'provider', 's_u', 'sk_u']) assert.equal(back[k], full[k], `복구된 Snap 등록.${k}`);
+      await popup.click('#gsiBox .gsi-stub');
+      await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
       await rpPage.close();
-    } finally { snapState.registration = full; }
+    } finally { if (!snapState.registration?.uid) snapState.registration = full; }
   });
 
   await t('RP 로그인: IdP 로그인 페이지로 가지 않고 팝업의 Google 버튼 → 로그인 성공(CIA_ISSUE_AUTH=code 인데 코드 없음; 2026-11-05 부터 Snap 동의 창도 없다)', async () => {
@@ -246,6 +250,42 @@ try {
     await rpPage.close();
   });
 
+  // 2026-11-12(스펙 snap-derived-secrets §4): 스냅 비밀이 시드 유도라 Google 계정도 MetaMask 재설치(R1)·새 PC(R2) 뒤 같은 PPID 로 돌아온다.
+  // 앞 케이스("Google 래퍼")가 SUB2 계정으로 등록·로그인한 상태에서 이어 간다.
+  const googleLogin = async (clicks) => {
+    const rpPage = await context.newPage(); await rpPage.goto(rp.base);
+    if (await rpPage.$eval('#loginBtn', (b) => b.hidden)) { await rpPage.click('#logoutBtn'); await rpPage.waitForSelector('#loginBtn:not([hidden])'); }
+    await rpPage.click('#loginBtn');
+    const [popup] = await Promise.all([context.waitForEvent('page'), rpPage.click('#googleLoginBtn')]);
+    for (let i = 0; i < clicks; i++) {
+      if (i > 0) await popup.waitForSelector('#gsiBox .gsi-stub', { state: 'detached', timeout: 60_000 });
+      await popup.waitForSelector('#gsiBox .gsi-stub', { timeout: 120_000 });
+      await popup.evaluate((sub) => { window.__gsiSub = sub; }, 'g-browser-2');
+      await popup.click('#gsiBox .gsi-stub');
+    }
+    await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
+    const ppid = (await text(rpPage, '#accountPPID')).trim();
+    await rpPage.close();
+    return ppid;
+  };
+  let googlePPID = null;
+  await t('복구 R1(Google): 스냅 상태만 잃으면 RP "Google 계정으로 로그인" 이 유도 비밀로 스냅을 되살리고 같은 PPID(Google 버튼은 발급용 한 번)', async () => {
+    const st0 = (await wallet.get('/wallet/status')).body;
+    assert.equal(st0.provider, stub.provider, '앞 케이스의 Google 계정 등록이 있어야 한다');
+    googlePPID = await googleLogin(1);   // 기준 PPID(스냅 그대로)
+    assert.notEqual(googlePPID, '-');
+    snapState = null;   // MetaMask 재설치
+    assert.equal(await googleLogin(1), googlePPID, '같은 PPID');
+    assert.equal(snapState.registration?.uid, st0.uid); assert.equal(snapState.registration?.provider, stub.provider);
+  });
+  await t('복구 R2(Google): 스냅·에이전트 둘 다 잃으면 Google 등록이 IdP 복구(같은 uid·slot)로 이어져 같은 PPID(Google 버튼은 등록·발급 두 번)', async () => {
+    const st0 = (await wallet.get('/wallet/status')).body;
+    assert.equal((await wallet.post('/wallet/reset', { confirm: true })).status, 200);
+    snapState = null;
+    assert.equal(await googleLogin(2), googlePPID, '같은 PPID');
+    const st = (await wallet.get('/wallet/status')).body;
+    assert.equal(st.uid, st0.uid); assert.equal(st.slot, st0.slot, 'IdP 가 같은 슬롯을 돌려줬다(새 등록이 아니다)');
+  });
   await t('하네스: 준비한 대화상자 응답이 남지 않았다(기대한 동의 창이 다 떴다)', async () => {
     assert.equal(answers.length, 0, `쓰이지 않은 응답이 남았다: ${j(answers)}`);
   });
