@@ -65,10 +65,6 @@ try {
     assert.ok(popupDump !== null && !popupDump.includes('"s_u"') && !popupDump.includes('sessionPrivKey'));
     assert.equal(await rpPage.$eval('#loginBtn', (b) => b.hidden), true, '로그인 뒤 로그인 버튼 숨김');   // 2026-10-21
   });
-  await t('A3 재검증: 팝업이 캐시 히트로 바로 끝난다(승인 버튼 없음) → 재검증 성공', async () => {
-    await viaPopup(() => rpPage.click('#revalidateBtn'), async (popup) => { assert.equal(await popup.$('#authApproveBtn:not([hidden])'), null, '캐시 히트는 동의 화면이 없다'); });
-    await waitText(rpPage, '#sessionVerdict', '재검증 성공');
-  });
   await t('A4 현재 잔액 확인(2026-10-21, 옛 세션 요청): 팝업 승인 → 세션 요청 성공, 온체인 계정 잔액 줄이 보인다', async () => {
     await viaPopup(() => rpPage.click('#balanceBtn'), async (popup) => { await waitText(popup, '#authSummary', '잔액 확인'); await approve(popup); });
     await waitText(rpPage, '#ledgerVerdict', '세션 요청 성공');   // 2026-11-05: 잔액 결과는 입금·구매 절의 #ledgerVerdict, 장부는 0 에서 시작(B안)
@@ -77,7 +73,7 @@ try {
   await t('A4b 로그아웃(2026-10-16): RP 로그아웃 → 사용자 페이지 세션 목록이 곧 빈다(2초 새로고침) → 다시 로그인하면 세션 하나', async () => {
     await rpPage.click('#logoutBtn');
     await userPage.waitForFunction(() => (document.querySelector('#sessionActions')?.textContent ?? '').includes('로그인한 서비스가 없습니다'), undefined, { timeout: 15_000 });
-    assert.equal(await rpPage.$eval('#loginBtn', (b) => b.hidden), false, '로그아웃 뒤 로그인 버튼 복귀'); assert.equal((await text(rpPage, '#sessionVerdict')).trim(), '', '로그아웃하면 이전 세션 결과가 비워진다(2026-10-21)');
+    assert.equal(await rpPage.$eval('#loginBtn', (b) => b.hidden), false, '로그아웃 뒤 로그인 버튼 복귀'); assert.equal((await text(rpPage, '#ledgerVerdict')).trim(), '', '로그아웃하면 이전 세션 결과가 비워진다(2026-10-21 — 11-11 부터 "로그인 상태" 카드가 없어 장부 결과칸으로 본다)');
     await viaPopup(async () => { await rpPage.click('#loginBtn'); await rpPage.click('#idpLoginBtn'); }, approve);
     await waitText(rpPage, '#verdict', '로그인 성공', 120_000);
     await userPage.waitForFunction(() => document.querySelectorAll('#sessionActions dl').length === 1, undefined, { timeout: 15_000 });

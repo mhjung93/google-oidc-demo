@@ -120,7 +120,7 @@ t('ui 에 지갑 공개 조건 폼·claim 버튼 키가 있다', () => {
 t('ui 에 RP 거래소 꾸밈(내비·시세표·내 자산·컴플라이언스) 키가 있다', () => {
   for (const k of ['nav_market', 'nav_assets', 'rp_logout_btn', 'rp_pending_banner', 'rp_wallet_pill_ok', 'rp_wallet_pill_fail', 'rp_wallet_reg_yes', 'rp_wallet_reg_no',
     'market_title', 'market_demo_note', 'market_col_coin', 'market_col_price', 'market_col_change', 'market_col_volume',
-    'assets_title', 'rp_login_policy', 'rp_session_expiry_label',
+    'assets_title', 'rp_login_policy',
     'rp_balance_title', 'rp_balance_desc', 'rp_balance_btn', 'compliance_title']) assert.ok(S.ui[k], k);
 });
 // 로그인 모달(2026-10-15) — mode3/rp.html 의 #loginModal(직접 로그인 장식·Google·Naver 미지원 안내·#idpLoginBtn 이 실제 zk 로그인).

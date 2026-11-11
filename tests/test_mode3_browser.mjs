@@ -276,7 +276,7 @@ try {
     assert.ok((await text(rpPage, '#log')).includes('allowAgent=0'), 'AI 에이전트 체크박스를 없앴으므로 늘 0(2026-11-05)');
     await awaitPopupClosed(popup);
     assert.ok((await text(rpPage, '#log')).includes('3. RP 검증'), 'RP 페이지가 /api/mode3/login 까지 냈다');
-    assert.equal((await text(rpPage, '#sessionId')).includes('(없음)'), false, '세션이 잡혔다');
+    assert.ok(await rpPage.evaluate(() => currentSession), '세션이 잡혔다');
     // 팝업 결과에는 지갑 안 정보가 실리지 않는다(스펙 §3.2) — 그래도 Snap 에는 새 C_u 가 저장돼 있어야 한다.
     assert.ok(snapState.userCred?.blind_u, '팝업이 userCredIssued 를 Snap 에 저장했다');
     assert.equal((await rp.get('/api/mode3/logins', rp.adminHeaders)).body.logins.length, 1);
@@ -316,12 +316,6 @@ try {
     assert.ok(await walletPage.$('#copyAuidBtn')); assert.ok(await walletPage.$('#copySaltBtn'));
   });
 
-  await t('재검증: /wallet/revalidate 는 RP 오리진에 CORS 로 열려 있어 팝업 없이 된다', async () => {
-    const before = dialogs.length;
-    await rpPage.click('#revalidateBtn');
-    await waitText(rpPage, '#sessionVerdict', '재검증 성공', 120_000);
-    assert.equal(dialogs.length, before, '세션 안 재검증은 동의를 다시 묻지 않는다');
-  });
 
   // ---- 평범한 트랜잭션 + 공개 트랜잭션: MetaMask(스텁)가 배포·execute 를 보낸다 ----
   const info = (await rp.get('/api/mode3/rp_info')).body;
@@ -409,30 +403,8 @@ try {
     assert.equal((await provider.getBalance(sessionAccount)).toString(), '40000000000000000', '0.05 − 0.01');
   });
 
-  // ---- 재승인(§4.3): 지갑이 재시작해 세션 증인이 사라진 경우 ----
-  await t('지갑 재시작 뒤 재검증: 409 needs_consent → 같은 팝업을 reauth 로 열고 한 번 재시도한다', async () => {
-    await stack.restartWallet();
-    assert.equal((await wallet.get('/wallet/config')).body.secrets, 'snap');
-    assert.equal((await wallet.post('/wallet/revalidate', { r_s: sessionRs }, { Origin: rp.origin })).status, 409, '재시작 뒤엔 증인이 없다');
-    const before = dialogs.length;
-    const [popup] = await Promise.all([context.waitForEvent('page'), rpPage.click('#revalidateBtn')]);
-    assert.ok(popup.url().includes('authorize=1'));
-    await waitText(rpPage, '#sessionVerdict', '재검증 성공', 180_000);
-    assert.equal(dialogs.length, before, '재승인도 Snap 동의 창 없이 끝난다(2026-11-05)');
-    const log = await text(rpPage, '#sessionLog');
-    assert.ok(log.includes('재승인 팝업을 연다'), log);
-    assert.ok(log.includes('재승인 완료'), log);
-    await awaitPopupClosed(popup);
-  });
+  // ---- 재승인(§4.3): RP 의 "지금 확인"(재검증) 버튼으로 하던 화면 케이스 둘은 2026-11-11 카드 제거와 함께 뺐다 — 팝업 쪽 가드는 아래 위조 요청 케이스가 본다 ----
 
-  await t('재승인 가드: 세션의 allowAgent 를 모르면 팝업을 열지 않고 다시 로그인하라고 안내한다', async () => {
-    await stack.restartWallet();
-    await rpPage.evaluate(() => { currentSessionAllowAgent = null; });
-    const before = dialogs.length;
-    await rpPage.click('#revalidateBtn');
-    await waitText(rpPage, '#sessionVerdict', '재승인 불가', 60_000);
-    assert.equal(dialogs.length, before, '동의 창을 띄우지 않는다');
-  });
 
   // 2026-09-23 점검 B-I1: 재승인의 allowAgent 를 서비스가 정하면 안 된다. 세션은 allowAgent='0'(2026-11-05 부터 체크박스 없음) 인데 요청에 '1' 을
   // 실어 보내도, 팝업은 precheck 이 돌려준 세션 값을 /wallet/session/witness 에 실으므로 성공한다(요청 값을 썼다면 409 allow_agent_mismatch 로 실패한다).
@@ -682,7 +654,9 @@ try {
     // 재료를 모두 숨기지 않고 보인다 — uid·salt·blind·인코딩 값
     assert.equal((await p.textContent('#uidShown')).trim(), rec.uid); assert.equal((await p.textContent('#saltShown')).trim(), USER_SALT);
     assert.equal((await p.textContent('#blindShown')).trim(), rec.blind);
-    for (let i = 0; i < 6; i++) assert.ok((await p.textContent(`#attrShown${i}`)).includes(rec.attrs[i]), `attr${i} 인코딩 값 표시`);
+    for (let i = 0; i < 4; i++) assert.ok((await p.textContent(`#attrShown${i}`)).includes(rec.attrs[i]), `attr${i} 인코딩 값 표시`);
+    // 2026-11-11(사용자 결정): 입력할 수 없는 미사용 슬롯(attr₄·attr₅, 늘 0)은 보이지 않는다 — 해시에는 그대로 0 이 들어간다
+    assert.equal(await p.locator('#attrShown4, #attrShown5').count(), 0, '미사용 슬롯 행 없음');
     assert.ok((await p.textContent('#attrShown0')).includes('1990'), '입력값도 함께');
     assert.deepEqual(rec.profile, { birthYear: '1990', country: 'KR', extra1: 'hello' });
     assert.ok(reqs.every((u) => /\/attr\.html|\/attr\/dist\/|\/common\//.test(u)), `정적 자원 외 요청: ${reqs.filter((u) => !/\/attr\.html|\/attr\/dist\/|\/common\//.test(u)).join(', ')}`);

@@ -113,14 +113,16 @@
     $('commitBox').textContent = rec.commit;
     $('domainShown').textContent = String(A.DOMAIN_MODE3_ATTRC);
     $('uidShown').textContent = rec.uid; $('saltShown').textContent = rec.s_u; $('blindShown').textContent = rec.blind;
-    // 속성 6칸: 슬롯 이름 · 입력값 → 해시에 들어가는 인코딩 값(attrᵢ). 스키마에 없는 칸은 "(예약)".
+    // 속성 칸: 슬롯 이름 · 입력값 → 해시에 들어가는 인코딩 값(attrᵢ). 미사용 슬롯(늘 0)은 보이지 않는다(2026-11-11).
     const dl = $('attrsShown'); dl.innerHTML = '';
     rec.attrs.forEach((v, i) => {
-      const slot = schema.slots[i], input = slot ? rec.profile[slot.name] : undefined;
-      const dt = document.createElement('dt'); dt.textContent = `attr${'₀₁₂₃₄₅'[i]}${slot ? ` (${slot.name})` : ''}`;
+      const slot = schema.slots[i];
+      if (!slot || slot.type === 'unused') return;   // 2026-11-11(사용자 결정): 입력할 수 없는 미사용 슬롯(늘 0)은 보이지 않는다 — 해시에는 그대로 0
+      const input = rec.profile[slot.name];
+      const dt = document.createElement('dt'); dt.textContent = `attr${'₀₁₂₃₄₅'[i]} (${slot.name})`;
       const dd = document.createElement('dd'); dd.id = `attrShown${i}`;
       const code = document.createElement('code'); code.textContent = v;
-      dd.append(`${slot ? (input === '' || input === undefined ? '(빈 칸)' : input) : '(예약)'} → `, code);
+      dd.append(`${input === '' || input === undefined ? '(빈 칸)' : input} → `, code);
       dl.append(dt, dd);
     });
     $('schemaShown').textContent = `${rec.schema?.id ?? '-'} v${rec.schema?.version ?? '-'}`;

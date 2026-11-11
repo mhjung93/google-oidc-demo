@@ -86,10 +86,7 @@ window.DemoStrings = {
     // F-13(2026-10-22): Snap 동의 뒤 이 버튼의 클릭 처리기 안에서 동기로 window.open 을 불러야 팝업 차단기를 피한다.
     rp_status_title: { ko: 'RP 상태', en: 'RP status' },
     rp_login_title: { ko: '로그인', en: 'Log in' },
-    rp_signup_hint: { ko: 'zkID 계정이 없으면 먼저 zkID 에서 가입하고 스냅을 등록하세요: ', en: 'No zkID account yet? Sign up at zkID and register your Snap first: ' },
-    rp_signup_link: { ko: 'zkID 가입·스냅 등록', en: 'zkID sign-up & Snap registration' },
     rp_login_desc: { ko: 'zkID 계정으로 로그인합니다. 이 거래소는 회원이 누구인지 모르고, zkID 는 회원이 어디에 로그인하는지 모릅니다.', en: 'Log in with your zkID account. This exchange never learns who you are, and zkID never learns where you log in.' },
-    rp_session_title: { ko: '로그인 상태', en: 'Login status' },
     rp_logins_title: { ko: '로그인 기록', en: 'Login records' },
     rp_open_title: { ko: '승인 개봉', en: 'Authorized opening' },
     // U5(2026-10-14): 승인 개봉 카드가 컴플라이언스 묶음(전문가 전용)에서 늘 보이는 별도 카드로 빠지며 쓰는 카드 제목.
@@ -114,7 +111,6 @@ window.DemoStrings = {
     none: { ko: '(없음)', en: '(none)' },
     refresh: { ko: '새로고침', en: 'Refresh' },
     rp_login_btn: { ko: '로그인', en: 'Log in' },
-    rp_reval_btn: { ko: '지금 확인', en: 'Check now' },
     // U5(2026-10-14 RP 데모 개편): 이 버튼은 "세션 요청 보내기" 메커니즘을 그대로 쓰되 화면 문구만 거래소의
     // "출금 신청"으로 입힌다 — 보내는 본문('hello')과 서버 왕복은 바뀌지 않는다(mode3/rp.html 참고).
     rp_balance_btn: { ko: '잔액 새로고침', en: 'Refresh balance' },
@@ -137,13 +133,10 @@ window.DemoStrings = {
     rp_policy: { ko: '정책: 국가 ∈ {{countries}}, 나이 ≥ {minAge}', en: 'Policy: country ∈ {{countries}}, age ≥ {minAge}' },
     rp_no_attrgate: { ko: '속성 조건 컨트랙트가 없습니다(팩토리 미배포) — 조건 요구 로그인을 쓸 수 없습니다.', en: 'No attribute-condition contract (the factory is not deployed) — predicate logins are unavailable.' },
     rp_require_pred: { ko: '조건 요구(국가·나이)', en: 'Require predicate (country·age)' },
-    rp_session_desc: { ko: '이 로그인이 아직 유효한지 zkID 폐기 목록으로 다시 확인합니다.', en: 'Re-checks against the zkID revocation list that this login is still valid.' },
     rp_logins_desc: { ko: '이 RP 에 남은 기록입니다. RP 는 누구인지 모르고 이 주소만 압니다.', en: 'What this RP recorded. It never learns who you are — only this address.' },
     rp_login_same_ppid: { ko: '새 세션. 내 계정 주소는 이전과 같습니다.', en: 'New session. Your account address is unchanged.' },
     rp_my_account_addr: { ko: 'PPID 스마트 계정 주소', en: 'PPID smart account address' },   // 2026-11-09
     rp_login_new_ppid: { ko: '새 세션. 이 RP 에서만 쓰는 주소를 받았습니다.', en: 'New session. You received an address used only at this RP.' },
-    rp_reval_cached: { ko: '세션이 유효합니다 — 폐기 목록이 바뀌지 않아 기존 증명으로 확인했습니다.', en: 'Session valid — the revocation list is unchanged, so the existing proof was checked.' },
-    rp_reval_fresh: { ko: '새 폐기 목록으로 증명을 다시 만들었습니다.', en: 'A fresh proof was made against the new revocation list.' },
     rp_balance_ok: { ko: '잔액 — KRW {krw} · ETH {eth}', en: 'Balance — KRW {krw} · ETH {eth}' },
     rp_wallet_checking: { ko: '스냅 비밀 모드 확인 중…', en: 'Checking the Snap secret mode…' },
     rp_wallet_snap: { ko: '스냅 비밀=snap', en: 'Snap secrets=snap' },
@@ -156,7 +149,6 @@ window.DemoStrings = {
     rp_popup_blocked_hint: { ko: '이 사이트의 팝업을 허용한 뒤 다시 시도하세요.', en: 'Allow popups for this site, then try again.' },
     rp_popup_timeout: { ko: '승인 창이 제한 시간 안에 끝나지 않았습니다.', en: 'The approval window did not finish in time.' },
     rp_popup_closed: { ko: '승인 창이 결과 없이 닫혔습니다.', en: 'The approval window closed without a result.' },
-    rp_reauth_unknown: { ko: '이 페이지가 이 세션의 정보를 잃었습니다(새로고침 등). 다시 로그인하세요.', en: 'This page lost this session’s details (for example after a reload). Log in again.' },
     rp_disclosed: { ko: '공개한 조건: {what}', en: 'Disclosed conditions: {what}' },
     rp_disc_none: { ko: '공개 없음', en: 'None' },
     rp_disc_range: { ko: '{attr} {lo}–{hi}', en: '{attr} {lo}–{hi}' },
@@ -266,7 +258,6 @@ window.DemoStrings = {
     rp_modal_close: { ko: '닫기', en: 'Close' },
     // Google 버튼(스펙 2026-10-16 §3.2) — IdP 가 Google 을 켜고 사용자가 브라우저 모드일 때만 실제로 동작한다(버튼 설명).
     rp_google_login_note: { ko: 'Google 계정으로 등록한 사용자는 이 버튼으로 같은 zk 로그인을 합니다. zkID 는 Google 토큰을 등록·자기 폐기 때만 봅니다.', en: 'Users who registered with a Google account use this button for the same zk login. The IdP sees a Google token only at registration and self-revocation.' },
-    rp_session_expiry_label: { ko: '세션 만료', en: 'Session expiry' },
     rp_balance_title: { ko: '입금·구매(시연)', en: 'Deposit & buy (demo)' },
     rp_balance_desc: { ko: '실제 거래소처럼 KRW 를 입금(시연)하고 시세로 ETH 를 사면, 산 ETH 가 내 계정에 실제로 들어옵니다(테스트 체인).', en: 'Like a real exchange: deposit KRW (demo) and buy ETH at the quoted price — the ETH really lands in your account (test chain).' },
     compliance_title: { ko: '컴플라이언스', en: 'Compliance' },
@@ -945,8 +936,8 @@ window.DemoStrings = {
     // demo.js 쪽에서 "지금 이 RP 가 두 번째 RP 인지"를 따로 봐 두 번째 RP 에서만 말풍선을 붙인다(첫 RP 는 "다른 창에서" 카드).
     { key: 'login2', where: ['rp'], target: { rp: 'loginBtn' }, ko: { title: '두 번째 로그인', hint: '다른 RP 에서도 같은 스냅으로 로그인해 주소가 다름을 봅니다.' }, en: { title: 'Second login', hint: 'Log in with the same Snap at a second RP to see a different address.' },
       tour: { ko: { title: '5. 두 번째 RP 에도 로그인하세요', body: '다른 RP(zkTWO)에서 같은 스냅으로 로그인하면 주소(PPID)가 첫 RP 와 다릅니다 — 두 RP 가 공모해도 같은 사용자임을 알 수 없습니다(unlinkability). 첫 RP 의 주소와 비교해 보세요.' }, en: { title: '5. Log in to a second RP too', body: 'Log in with the same Snap at another RP (zkTWO) and the address (PPID) differs from the first RP — even if the two RPs collude, they cannot tell it is the same user (unlinkability). Compare it with the first RP’s address.' } } },
-    { key: 'use', where: ['rp', 'wallet'], target: { rp: 'revalidateBtn', wallet: 'txBtn' }, ko: { title: '이용', hint: '세션을 재검증하거나 요청·트랜잭션을 보냅니다.' }, en: { title: 'Use', hint: 'Revalidate the session, make a request, or send a transaction.' },
-      tour: { ko: { title: '6. 세션을 써 보세요', body: 'RP 에서 세션을 재검증하거나 요청을 보내고, 스냅에서는 평범한 트랜잭션 1건을 보냅니다(기본 대상·조건 없음 — 늘 성공합니다).' }, en: { title: '6. Use the session', body: 'Revalidate the session or send a request at the RP, or send a single plain transaction from the Snap (default target, no conditions — always succeeds).' } } },
+    { key: 'use', where: ['rp', 'wallet'], target: { rp: 'balanceBtn', wallet: 'txBtn' }, ko: { title: '이용', hint: '잔액을 확인하거나 요청·트랜잭션을 보냅니다.' }, en: { title: 'Use', hint: 'Check the balance, make a request, or send a transaction.' },
+      tour: { ko: { title: '6. 세션을 써 보세요', body: 'RP 에서 잔액을 확인하거나 요청을 보내고, 스냅에서는 평범한 트랜잭션 1건을 보냅니다(기본 대상·조건 없음 — 늘 성공합니다).' }, en: { title: '6. Use the session', body: 'Check the balance or send a request at the RP, or send a single plain transaction from the Snap (default target, no conditions — always succeeds).' } } },
     { key: 'disclose', where: ['wallet', 'rp'], target: { wallet: 'claimBtn', rp: 'requirePred' }, ko: { title: '공개·조건', hint: '속성 조건만 골라 공개합니다.' }, en: { title: 'Disclose', hint: 'Reveal only chosen attribute conditions.' },
       tour: { ko: { title: '7. 조건만 골라 공개하세요', body: '① 이 "조건 증명(선택 공개) 보내기" 버튼을 누르면 받는 주소·데이터와 조건(나이·국가)이 자동으로 채워집니다. ② 그 다음 "트랜잭션 보내기" 를 누르세요 — 값 자체는 넘기지 않고 조건만 증명합니다.' }, en: { title: '7. Disclose only conditions', body: '① Press this "Send condition proof (selective disclosure)" button: the target, data and conditions (age, country) are filled in automatically. ② Then press "Send transaction" — only the conditions are proven, never the values.' } } },
     // Task 17(B8): 계정 폐기가 /account 에서 /user 로 옮겼다(/account 는 302 redirect) — revokeBtn 은 cia_user.html 에 있다.
