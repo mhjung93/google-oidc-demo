@@ -44,7 +44,7 @@
 ## 4. 복구 = 같은 비밀로 다시 등록
 
 ### 4.1 IdP (`cia.js`)
-- `registerAccount`: `state.accounts[uid].pk_u` 가 있을 때, 요청의 `auid` 가 `acct.auid` 와 같고 `pk_u` 가 `acct.pk_u` 와 같으며 `sig_reg` 가 그 `pk_u` 로 검증되면 → 슬롯을 새로 잡지 않고 `{ slot: acct.slot, restored: true }`. 하나라도 다르면 지금처럼 409.
+- `registerAccount`: `state.accounts[uid].pk_u` 가 있을 때, 요청의 `auid` 가 `acct.auid` 와 같고 `pk_u` 가 `acct.pk_u` 와 같으며 `sig_reg` 가 그 `pk_u` 로 검증되면 → 슬롯을 새로 잡지 않고 `{ slot: acct.slot, restored: true }` — 상태는 201(새 등록과 같다, 에이전트·헬퍼가 201 만 성공으로 본다. 계획 Ruling P1). 하나라도 다르면 지금처럼 409.
   `beforeCommit`(1회용 코드 소비)는 복구에도 똑같이 적용한다. 상태 변경·게시는 없다. 계정이 `disabled` 면 복구도 409(`account_disabled`) — 폐기된 계정을 되살리지 않는다.
 - `/cia/auth/code` 의 `purpose:'register'`: 이미 등록된 계정이라도 요청의 `auid` 가 `a.auid` 와 같으면 등록 코드를 낸다(복구). 다르면 지금처럼 409.
 - `/cia/register` 의 Google(`id_token`) 경로와 `/cia/issue` 의 암묵 등록도 `registerAccount` 를 쓰므로 같은 규칙을 따른다.
@@ -52,12 +52,13 @@
 - 응답 `/cia/register` 201 에 `restored` 를 더한다(새 등록은 생략 또는 false). 테스트의 응답 키 목록 갱신 포함.
 
 ### 4.2 에이전트 (`mode3_wallet_agent.js` `/wallet/register`)
-- 에이전트에 등록이 이미 있을 때: 요청의 uid·(s_u, sk_u 로 계산한) auid·pk_u 가 저장된 등록과 같으면 저장된 등록을 200 `restored:true` 로 돌려준다. 다르면 지금처럼 409 `already_registered`.
+- 에이전트에 등록이 이미 있을 때: 이미 있는 `POST /wallet/register/resume`(s_u·sk_u → auid·pk_u 대조 → 기존 등록 반환, 다르면 409 `secrets_mismatch`)으로 처리한다. `/wallet/register` 는 바꾸지 않는다(계획 Ruling P2).
 - 에이전트에 등록이 없을 때: 지금처럼 IdP 에 등록하고, IdP 가 `restored:true` 를 주면 그 slot 으로 저장한다.
 
 ### 4.3 스냅 팝업 (`mode3/wallet.html`)
 - 지금 "에이전트에는 등록이 있지만 스냅은 비었다"(`already_registered` / `snap_empty`) 로 끝나는 분기는 **평소 등록 흐름으로 진행**한다 — 유도값이 같으므로 에이전트가 기존 등록을 돌려주고, 스냅이 `storeRegistration` 으로 채운다.
-  유도값이 다르면(옛 무작위 등록, 다른 SRP) 에이전트가 409 를 주고 지금 문구 그대로 멈춘다.
+  유도값이 다르면(옛 무작위 등록, 다른 SRP) 에이전트가 409 `secrets_mismatch` 를 주고 팝업은 `snap_restore_mismatch`("이 스냅의 비밀이 등록과 다릅니다")로 멈춘다.
+  스냅이 보류 등록(반쯤 된 Google 등록)인 경우도 같은 복구로 마저 채운다 — 예전의 "등록이 반만 됐다" 안내는 resume 이 실패할 때만 남는다.
 - 복구 뒤 스냅에는 동의(consents)·사용자 자격증명(userCred)이 없다 — 다음 로그인에서 동의를 다시 받고 새 C_u 를 발급받는다(기존 흐름).
 - 속성(attrs·blind)은 속성 도구 기록(또는 D20 백업에서 불러온 기록)에서 — 첫 등록과 같은 경로(f00c4c0). 기록이 없으면 속성 도구에서 다시 만든다:
   salt 는 스냅에서 같은 값이 오므로 auid 가 같고, 새 blind 로 C_attr 가 바뀌면 zkID 내 정보 저장 때 D19 흐름(기존 세션 폐기·새 C_u)이 돈다.
@@ -65,6 +66,7 @@
 ### 4.4 결과
 - 같은 SRP 로 MetaMask 를 다시 설치(또는 스냅 상태를 잃음) → RP 에서 로그인 → 같은 uid·같은 s_u → **같은 PPID**, RP 계정이 그대로 이어진다.
 - 데모 리셋(IdP·RP 상태를 비움) 뒤 같은 스냅·같은 uid 로 등록하면 이제 auid·PPID 가 리셋 전과 같다(전에는 새 무작위 값). 데모 리셋은 RP 계정도 비우므로 화면상 차이는 없다.
+- 범위 밖(계획 Ruling P3): 스냅 등록은 남고 에이전트 상태만 잃은 경우 — 지금처럼 `already_registered`.
 
 ## 5. 테스트
 
