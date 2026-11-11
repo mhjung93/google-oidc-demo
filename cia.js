@@ -204,7 +204,7 @@ function loadOrCreateKeys() {
 // ---- 상태 ----
 // accounts:  uid → { pk_u:{x,y}, auid(10진 — Poseidon(T_AUID, uid, s_u), V11 D4), disabled, slot, tampered, creds, sessions, receipt, slotRetired,
 //                    profile?:{ name, updatedAt } }   (attrs 없음 — D15. profile.name 은 2026-11-09 부터: 사용자가 붙여 넣는 속성 커밋먼트 C_attr —
-//                    IdP 에는 불투명한 문자열이고 ID 토큰의 name 클레임으로 RP 에 실린다. 속성·blind 는 속성 도구 페이지에만 있다.)
+//                    IdP 에는 불투명한 문자열이다 — 2026-11-11 부터 ID 토큰에 싣지 않는다(RP 로 가지 않음). 속성·blind 는 속성 도구 페이지에만 있다.)
 //            creds 중 revoked:false 는 하나뿐(사용자당 활성 자격증명 하나, 2026-09-21 §3.1).
 // rps:       arid → { name, origin, pk_service, X_svc, x_AA, pk_trace, status, requestedAt, decidedAt }   (2026-09-16 §3)
 // openings:  [ { id, arid, PPID, tagKey, c1:{x,y}, c2, D_svc:{x,y}, allowAgent, max_height, chainid, status, requestedAt, decidedAt,
@@ -570,12 +570,13 @@ app.get('/account', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'ci
 // OIDC discovery·JWKS(2026-11-09 Phase 1) — RP 가 서버에서 읽어 ID 토큰(ES256)을 검증한다. 공개 자료뿐이라 인증·CORS 가 없다.
 app.get('/.well-known/openid-configuration', (req, res) => {
   res.json({ issuer: PUBLIC_URL, jwks_uri: `${PUBLIC_URL}/.well-known/jwks.json`, id_token_signing_alg_values_supported: ['ES256'],
-    subject_types_supported: ['pairwise'], response_types_supported: ['id_token'], claims_supported: ['sub', 'aud', 'iss', 'iat', 'exp', 'name'], scopes_supported: ['openid', 'profile'] });
+    subject_types_supported: ['pairwise'], response_types_supported: ['id_token'], claims_supported: ['sub', 'aud', 'iss', 'iat', 'exp'], scopes_supported: ['openid'] });   // 2026-11-11: name(C_attr) 클레임 없음
 });
 app.get('/.well-known/jwks.json', (req, res) => res.json({ keys: [idTokenJwk] }));
-/** ID 토큰 서명(ES256). name 이 없으면 클레임을 넣지 않는다. */
-async function signIdToken({ sub, aud, name }) {
-  const jwt = new SignJWT(name ? { name } : {}).setProtectedHeader({ alg: 'ES256', kid: idTokenJwk.kid, typ: 'JWT' }).setIssuer(PUBLIC_URL).setSubject(sub).setAudience(aud).setIssuedAt().setExpirationTime(`${ID_TOKEN_TTL_SEC}s`);
+/** ID 토큰 서명(ES256). 2026-11-11(사용자 결정): 프로필의 속성 커밋먼트(C_attr)는 싣지 않는다 — RP 마다 같은 값이라 두 RP 가 맞대면
+ *  같은 사람임을 알게 된다(PPID 를 RP 마다 다르게 만든 의미가 깨진다). 프로필은 IdP 에만 저장된다. */
+async function signIdToken({ sub, aud }) {
+  const jwt = new SignJWT({}).setProtectedHeader({ alg: 'ES256', kid: idTokenJwk.kid, typ: 'JWT' }).setIssuer(PUBLIC_URL).setSubject(sub).setAudience(aud).setIssuedAt().setExpirationTime(`${ID_TOKEN_TTL_SEC}s`);
   return jwt.sign(idTokenKey);
 }
 
@@ -924,7 +925,7 @@ app.get('/cia/user/me', requireUser, (req, res) => {
 });
 // 프로필(2026-11-09 Phase 1): OIDC profile 스코프의 `name` 한 칸. 사용자가 속성 도구(지갑 오리진 /attr.html)에서 만든 커밋먼트를 붙여 넣는다 —
 // IdP 는 형식만 보고(한 줄·256자 이하) 뜻은 모른다(불투명). 지갑 등록 여부와 무관하게 로그인만 하면 저장할 수 있다(사용자 결정: MetaMask 와 별개 흐름).
-// 빈 문자열이면 지운다. 발급(/cia/issue)이 ID 토큰의 name 클레임에 그대로 싣는다.
+// 빈 문자열이면 지운다. 2026-11-11 부터 ID 토큰에는 싣지 않는다(RP 간 연결 방지) — IdP 에만 남는다.
 app.post('/cia/user/profile', requireUser, (req, res) => {
   const { name } = req.body ?? {};
   if (typeof name !== 'string' || name.length > 256 || /[\u0000-\u001f\u007f]/.test(name)) return res.status(400).json({ error: 'bad_profile', reason: 'bad_profile' });
@@ -1195,7 +1196,7 @@ app.post('/cia/issue', userCors, async (req, res) => {
     persist();
     // OIDC 모양의 ID 토큰(2026-11-09 Phase 1): sub=auid_s(세션 가명), aud=arid_s(세션 RP 가명) — 둘 다 π_RP 의 공개 신호라 RP 가 증명과 맞춰 본다.
     // name = 프로필의 커밋먼트(없으면 클레임 자체가 없다). IdP 는 여기서도 RP 가 누구인지 모른다(arid_s 는 블라인딩된 값).
-    const zkidToken = await signIdToken({ sub: auidS.toString(), aud: aridS.toString(), name: acct.profile?.name });   // 요청 본문의 id_token(Google)과 이름이 겹치지 않게
+    const zkidToken = await signIdToken({ sub: auidS.toString(), aud: aridS.toString() });   // 요청 본문의 id_token(Google)과 이름이 겹치지 않게
     res.json({
       Cf_u: cfu, Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString(),
       sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() },

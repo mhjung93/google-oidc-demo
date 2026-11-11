@@ -699,7 +699,7 @@ try {
       assert.equal(protectedHeader.kid, k.kid);
       assert.equal(payload.sub, iss.req.auid_s.toString(), 'sub = auid_s');
       assert.equal(payload.aud, iss.req.arid_s.toString(), 'aud = arid_s');
-      assert.equal(payload.name, C, 'name = 프로필 커밋먼트');
+      assert.equal(payload.name, undefined, '2026-11-11: 프로필 커밋먼트(C_attr)는 RP 로 가는 ID 토큰에 싣지 않는다 — RP 마다 같은 값이라 RP 간 연결이 된다');
       assert.equal(payload.exp - payload.iat, 600);
       for (const key of ['uid', 'auid', 'arid', 'email']) assert.equal(payload[key], undefined, `${key} 는 토큰에 없다`);
       await assert.rejects(jwtVerify(iss.cred.id_token, keyset, { issuer: cia7.base, audience: '1', algorithms: ['ES256'] }), /aud/, '다른 aud 는 거절');

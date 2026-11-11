@@ -681,6 +681,8 @@ reason: 'predicate_unmet'}` 로 거절한다(200, 컨트랙트 호출 없이 오
 
 ### 사용자 속성 커밋먼트 → zkID 프로필 → RP 고정 (Phase 1, 2026-11-09)
 
+> **2026-11-11(사용자 결정, 스펙 D18)**: RP 로 보내는 부분은 걷어냈다 — zkID ID 토큰에 `name`(C_attr)을 싣지 않고, RP 는 받지도 고정·표시하지도 않는다(RP 마다 같은 값이라 두 RP 가 맞대면 같은 사람임을 안다). 속성 도구·zkID 프로필 저장은 그대로다. 아래의 "ID 토큰 name"·"RP 고정"·`attrCommitChanged` 서술과 시연 순서의 RP 단계는 옛 내용이다.
+
 설계: `docs/superpowers/specs/2026-11-06-mode3-attr-commitment-id-token-design.md`(11-09 개정). 원칙(사용자 결정): **IdP 는 사용자 속성 커밋먼트를
 저장하는 것 말고는 zk-Delegation 에 관여하지 않는다.** 커밋먼트 등록은 MetaMask·스냅과 완전히 별개 흐름이고, 커밋먼트에는 RP 관련 값이 없다.
 

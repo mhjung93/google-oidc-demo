@@ -868,8 +868,6 @@ window.DemoStrings = {
     idp_profile_saved_summary: { ko: '프로필을 저장했습니다. 이제 서비스에 로그인하면 이 커밋먼트가 전달됩니다.', en: 'Profile saved. This commitment is now passed along when you log in to a service.' },
     idp_profile_cleared_summary: { ko: '프로필을 비웠습니다.', en: 'Profile cleared.' },
     // RP 세션 카드(2026-11-09 Phase 1)
-    rp_my_attr_commit: { ko: '속성 커밋먼트', en: 'Attribute commitment' },
-    rp_attr_none: { ko: '없음', en: 'none' },
     // RP 소셜 로그인·내 계정(2026-11-10 스펙 rp-social-logins)
     nav_account: { ko: '내 계정', en: 'My account' },
     rp_account_title: { ko: '내 계정', en: 'My account' },

@@ -23,7 +23,6 @@ import { deployVerifier, deployFactory, deployAttrGate, decodeExecuteCalldata, p
 import { setRoot } from './lib/mode3_set_tree.js';
 import { buildRpHealth, applyHealthHeaders, bounded, originList } from './lib/mode3_health.js';
 import { DEFAULT_ATTR_SCHEMA, loadSchema, slotIndexOf, encodeMembers, schemaInfo } from './lib/mode3_attr_schema.js';
-import { isAttrCommit } from './lib/mode3_attr_commit.js';
 import { createRemoteJWKSet, jwtVerify } from 'jose';   // zkID ID 토큰(ES256) 검증(2026-11-09 Phase 1)
 import session from 'express-session';
 import { openAccountStore, AccountError } from './lib/mode3_rp_accounts.js';
@@ -114,7 +113,7 @@ const RP_KEY = process.env.MODE3_RP_KEY || null;
 const POLL_MS = Number(process.env.MODE3_RP_REGISTRATION_POLL_MS) || 5000;
 const LOGIN_LOG = process.env.MODE3_RP_LOGIN_LOG || path.join(__dirname, 'mode3_rp_logins.jsonl');
 // RP 계정(2026-11-10 스펙 rp-social-logins §2): 계정 하나에 로그인 수단 세 칸(zkid=PPID·google·naver)·속성 커밋먼트·KRW·거래소 보관 ETH. 11-09 Phase 1 의
-// byPPID 파일(version 1 — PPID → { attrCommit, since, updatedAt, history })은 열 때 옮긴다. 비밀은 없다(sub 은 파일에만).
+// byPPID 파일(version 1 — PPID → { attrCommit, … })은 열 때 PPID 계정만 옮긴다(커밋먼트는 버린다, 2026-11-11). 비밀은 없다(sub 은 파일에만).
 const ACCOUNTS_FILE = process.env.MODE3_RP_ACCOUNTS_FILE || path.join(__dirname, 'mode3_rp_accounts.json');
 const accountStore = openAccountStore({ file: ACCOUNTS_FILE });
 const SOCIAL = socialConfigFromEnv(process.env, { publicOrigin: PUBLIC_ORIGIN });
@@ -537,13 +536,11 @@ app.post('/api/mode3/login', async (req, res) => {
     const v = await verifyBody(req, res, BigInt(rsStr), BigInt(r_rp)); if (v === null) return;
     if (!v.ok) return res.json({ ok: false, reason: v.reason });
     if (requireP) { const why = requiredPredicateReason(v.disclosure, requireP); if (why) return res.json({ ok: false, reason: why }); }
-    // zkID ID 토큰(2026-11-09 Phase 1, 선택): 있으면 서명·iss·exp 와 sub=auid_s·aud=arid_s(이 증명의 공개 신호)를 확인하고 name(C_attr)을 계정에 고정한다.
-    // 틀린 토큰은 로그인 자체를 거절한다(bad_id_token). 없으면(옛 지갑·web 모드) 예전처럼 로그인만 한다 — 고정된 커밋먼트가 있으면 그대로 보인다.
-    let tokenName;
+    // zkID ID 토큰(2026-11-09 Phase 1, 선택): 있으면 서명·iss·exp 와 sub=auid_s·aud=arid_s(이 증명의 공개 신호)를 확인한다. 틀린 토큰은 로그인 자체를 거절한다(bad_id_token).
+    // 없으면(옛 지갑·web 모드) 예전처럼 로그인만 한다. 2026-11-11(사용자 결정): 사용자 속성 커밋먼트(name)는 받지도 고정하지도 않는다 — RP 마다 같은 값이라 RP 간 연결이 된다.
     if (idTok !== null) {
       const vt = await verifyIdToken(idTok, { sub: v.auid_s.toString(), aud: v.arid_s.toString() });
       if (!vt.ok) return res.json({ ok: false, reason: 'bad_id_token', detail: vt.detail });
-      tokenName = vt.name;
     }
     // RP 계정(2026-11-10): link:true 면 지금 쿠키 세션 계정의 zkID 칸에 이 PPID 를 붙이고(이미 다른 계정의 PPID 면 409 — r_s 세션도 만들지 않는다),
     // 아니면 PPID 의 계정으로 들어간다(없으면 새로). 어느 쪽이든 쿠키 세션은 그 계정(via zkid).
@@ -556,20 +553,19 @@ app.post('/api/mode3/login', async (req, res) => {
         accountStore.link(rpAccount, 'zkid', { PPID: PPIDs });
       } else rpAccount = accountStore.loginOrCreate('zkid', { PPID: PPIDs }).id;
     } catch (e) { if (e instanceof AccountError) return res.status(e.status).json({ ok: false, reason: e.reason }); throw e; }
-    const attr = accountStore.pinAttrCommit(rpAccount, tokenName !== undefined && isAttrCommit(tokenName) ? tokenName : null);
     // zkID 로 만든 쿠키 세션은 이 r_s 세션에 묶는다(sessionAlive) — r_s 가 폐기·로그아웃·대체되면 쿠키 세션도 끝난다(안 그러면 폐기를 우회한다).
     // 연결(link)은 지금 세션(소셜)을 그대로 둔다.
     if (req.body.link !== true) await setRpSession(req, rpAccount, 'zkid', { rs: rsStr });
     const at = new Date().toISOString();
     const disclosure = discOf(v.disclosure);
-    sessions.set(rsStr, { rpAccount, PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), regRoot: v.regRoot.toString(), disclosure, auid_s: v.auid_s.toString(), arid_s: v.arid_s.toString(), r_rp, at, attrCommit: attr.attrCommit });
+    sessions.set(rsStr, { rpAccount, PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), regRoot: v.regRoot.toString(), disclosure, auid_s: v.auid_s.toString(), arid_s: v.arid_s.toString(), r_rp, at });
     // 2026-10-16: 같은 계정(PPID)의 이전 세션은 새 로그인이 대체한다 — "RP 당 활성 세션 하나". IdP 폐기 트리는 건드리지 않는다(강한 무효화는 V8 세션 폐기).
     for (const [k, s] of sessions) if (k !== rsStr && s.PPID === v.PPID.toString()) forgetSession(k);
     if (disclosure.mask !== '0' || disclosure.set) disclosedLoginCount++;
     logins.push({ via: 'zkid', rpAccount, PPID: v.PPID.toString(), at, root: v.root.toString(), r_s: rsShort(rsStr), allowAgent: v.allowAgent.toString(), disclosure });
     // §5 로그인 로그 — 전체 r_s 와 트랜스크립트(태그 포함). 개봉 요청의 재료다. 조회 API 로는 내지 않는다.
     fs.appendFileSync(LOGIN_LOG, JSON.stringify({ at, via: 'zkid', rpAccount, PPID: v.PPID.toString(), r_s: rsStr, pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), disclosure, auid_s: v.auid_s.toString(), arid_s: v.arid_s.toString(), publicSignals: v.publicSignals, proof: v.proof }) + '\n', { mode: 0o600 });
-    res.json({ ok: true, account: rpAccount, via: 'zkid', PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), r_s: rsStr, root: v.root.toString(), allowAgent: v.allowAgent.toString(), disclosure, attrCommit: attr.attrCommit, attrCommitChanged: attr.changed });
+    res.json({ ok: true, account: rpAccount, via: 'zkid', PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), r_s: rsStr, root: v.root.toString(), allowAgent: v.allowAgent.toString(), disclosure });
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });
 
@@ -880,7 +876,7 @@ app.post('/api/mode3/sessions/check', relayCors, (req, res) => {
   const alive = {}; for (const x of list) { const k = BigInt(x).toString(); alive[x] = sessions.has(k) ? true : (removedSessions.has(k) ? false : null); }
   res.json({ alive });
 });
-app.get('/api/mode3/sessions', (req, res) => res.json({ sessions: [...sessions.entries()].map(([r_s, s]) => ({ r_s: rsShort(r_s), PPID: s.PPID, pk_i: s.pk_i, max_height: s.max_height, allowAgent: s.allowAgent, root: s.root, disclosure: s.disclosure, auid_s: rsShort(s.auid_s), arid_s: rsShort(s.arid_s), at: s.at, attrCommit: s.attrCommit ?? null })) }));
+app.get('/api/mode3/sessions', (req, res) => res.json({ sessions: [...sessions.entries()].map(([r_s, s]) => ({ r_s: rsShort(r_s), PPID: s.PPID, pk_i: s.pk_i, max_height: s.max_height, allowAgent: s.allowAgent, root: s.root, disclosure: s.disclosure, auid_s: rsShort(s.auid_s), arid_s: rsShort(s.arid_s), at: s.at })) }));
 
 // 라우트 밖으로 샌 오류의 마지막 그물(2026-10-11): JSON 파싱 실패 400 malformed, 그 밖 500 internal — 다른 라우트와 같은 { ok, reason } 봉투.
 app.use((err, req, res, next) => {
