@@ -20,6 +20,7 @@ import { DEFAULT_ATTR_SCHEMA, encodeSlotValue } from '../lib/mode3_attr_schema.j
 import { encodeProfile } from '../lib/mode3_attr_schema.js';
 import { attrCommit } from '../lib/mode3_attr_commit.js';
 import { auidOf } from '../lib/mode3_credential.js';
+import { openBackup, isSealedBackup } from '../lib/browser/attr_backup.js';
 
 const DEBUG = process.env.MODE3_BROWSER_DEBUG === '1';
 const j = (o) => JSON.stringify(o);
@@ -695,6 +696,55 @@ try {
     } finally { fs.rmSync(resetFile, { force: true }); }
     await p.close();
   });
+  // 2026-11-11(사용자 결정, 스펙 D20): 자동 암호화 백업 — 백업 비밀번호와 한 번 고른 파일. 기록이 바뀔 때마다 그 파일을 암호문으로 덮어쓴다(평문 내려받기는 없다).
+  await t('속성 도구 자동 백업: 비밀번호·파일을 한 번 정하면 기록을 만들 때마다 그 파일을 암호문으로 덮어쓴다(평문 없음)·새로고침 뒤에도 이어진다·내려받기도 암호문; 불러오기는 틀린 비밀번호면 실패, 맞으면 복원', async () => {
+    const PW = 'backup-pw-1234';
+    const p = await context.newPage();
+    // 파일 선택 창 대신 브라우저 내부 파일(OPFS)의 실제 파일 핸들 — 진짜 핸들이라 IndexedDB 에 그대로 저장된다
+    await p.addInitScript(() => { window.showSaveFilePicker = async () => (await navigator.storage.getDirectory()).getFileHandle('zkd-attr-backup.json', { create: true }); });
+    const readBackup = async () => JSON.parse(await p.evaluate(async () => (await (await (await navigator.storage.getDirectory()).getFileHandle('zkd-attr-backup.json')).getFile()).text()));
+    const make = async (birthYear) => {
+      await p.fill('#uid', String(uid)); await p.fill('#salt', USER_SALT); await p.fill('#birthYear', birthYear); await p.selectOption('#country', 'KR');
+      await p.click('#makeBtn'); await waitText(p, '#formVerdict', '커밋먼트 생성 완료');
+    };
+    const record = async () => JSON.parse(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')));
+    await p.goto(`${wallet.base}/attr.html`);
+    await make('1990');
+    assert.match(await text(p, '#backupStatus'), /꺼짐/, '설정 전에는 꺼짐');
+    await p.fill('#backupPw', 'short'); await p.fill('#backupPw2', 'short'); await p.click('#backupSetupBtn');
+    await waitText(p, '#backupVerdict', '8자');
+    await p.fill('#backupPw', PW); await p.fill('#backupPw2', `${PW}x`); await p.click('#backupSetupBtn');
+    await waitText(p, '#backupVerdict', '일치하지');
+    await p.fill('#backupPw', PW); await p.fill('#backupPw2', PW); await p.click('#backupSetupBtn');
+    await waitText(p, '#backupStatus', '마지막 백업', 60_000);
+    assert.equal(await p.inputValue('#backupPw'), '', '비밀번호 칸은 비운다');
+    const rec1 = await record();
+    const b1 = await readBackup();
+    assert.equal(isSealedBackup(b1), true, '봉인 백업 형식');
+    const raw1 = JSON.stringify(b1);
+    for (const v of [USER_SALT, rec1.blind, rec1.commit, 'birthYear', 's_u']) assert.equal(raw1.includes(v), false, `백업 파일에 평문 ${v.slice(0, 12)} 가 없다`);
+    assert.deepEqual(await openBackup(PW, b1), rec1, '비밀번호로 풀면 기록과 같다');
+    // 새로고침 뒤 기록을 다시 만들면 자동으로 덮어쓴다(핸들·키는 IndexedDB)
+    await p.reload(); await make('1991');
+    const rec2 = await record();
+    let b2 = b1;
+    for (let i = 0; i < 120 && b2.savedAt === b1.savedAt; i++) { await new Promise((r) => setTimeout(r, 250)); b2 = await readBackup(); }
+    assert.equal((await openBackup(PW, b2)).commit, rec2.commit, '새 기록으로 덮어썼다');
+    // 내려받기도 암호문
+    const [dl] = await Promise.all([p.waitForEvent('download'), p.click('#exportBtn')]);
+    assert.equal(isSealedBackup(JSON.parse(fs.readFileSync(await dl.path(), 'utf8'))), true, '내려받기도 암호화 백업');
+    // 불러오기: 지우기 → 틀린 비밀번호는 실패 → 맞는 비밀번호는 복원
+    p.once('dialog', (d) => d.accept()); await p.click('#clearBtn'); await p.waitForSelector('#noCommit:not([hidden])');
+    const file = { name: 'zkd-attr-backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(b2)) };
+    p.once('dialog', (d) => d.accept('wrong-password')); await p.setInputFiles('#importFile', file);
+    await waitText(p, '#resultVerdict', '백업을 불러오지 못했습니다');
+    assert.equal(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')), null, '틀린 비밀번호로는 아무것도 들어오지 않는다');
+    p.once('dialog', (d) => d.accept(PW)); await p.setInputFiles('#importFile', file);
+    await waitText(p, '#resultVerdict', '백업 불러오기 완료');
+    assert.equal((await p.textContent('#commitBox')).trim(), rec2.commit);
+    await p.close();
+  });
+
   await t('zkID 사용자 페이지 프로필 카드: 로그인만 하면 보인다(지갑 등록과 무관) → 커밋먼트 저장 → 현재 값 표시 → /me.profile; 비우면 없음', async () => {
     const p = await context.newPage(); await p.goto(`${cia.base}/user`);
     await p.waitForSelector('#loginView:not([hidden]), #meCard:not([hidden])');
