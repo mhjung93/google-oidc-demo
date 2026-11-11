@@ -45,14 +45,7 @@
       <!-- 2026-11-05: 일반 보기용 진행 줄 — 전문가용 #authStep 은 내부 단계명이라 숨겨져 있어 창이 "멈춘 것처럼" 보였다. -->
       <p id="authProgress" class="auth-progress"></p>
       <dl class="kv" id="authSummary"></dl>
-      <!-- 2026-11-10(사용자 결정): 처음 등록할 때 salt 를 묻는다 — 속성 커밋먼트 도구에서 정한 salt 를 넣으면 Snap 이 그 값을 s_u 로 저장한다(C_attr 와 같은 salt).
-           비우고 "새로 만들기" 면 지금처럼 Snap 이 새로 뽑는다. codeRegister 가 askSalt() 로 띄우고 기다린다. -->
-      <div id="saltAsk" class="salt-ask" hidden>
-        <p data-i18n="wallet_salt_ask_desc">속성 커밋먼트 도구에서 정한 salt 가 있으면 넣으세요. 없으면 "새로 만들기" 를 누르세요.</p>
-        <label><span data-i18n="wallet_salt_label">salt</span> <input id="saltAskInput" inputmode="numeric" autocomplete="off" spellcheck="false" /></label>
-        <p class="row-actions"><button type="button" id="saltAskUseBtn" data-i18n="wallet_salt_ask_use">이 salt 로 등록</button> <button type="button" id="saltAskNewBtn" class="btn-ghost" data-i18n="wallet_salt_ask_new">새로 만들기</button></p>
-        <p id="saltAskErr" class="bad-text" hidden data-i18n="wallet_salt_ask_bad">salt 는 1 이상 2^250 미만의 10진 숫자여야 합니다.</p>
-      </div>
+      <!-- 2026-11-11(사용자 결정): 처음 등록 때 salt 를 묻던 칸은 뺐다 — salt 는 같은 브라우저 속성 도구(attr.html)의 기록에서 가져온다(codeRegister). -->
       <p id="authStep" class="muted expert"></p>
       <pre id="authLog" class="expert"></pre>
     </section>
@@ -545,7 +538,7 @@
     function takeIdpReturn() {
       const q = new URLSearchParams(location.search);
       const code = q.get('idp_code'), nonce = q.get('idp_nonce');
-      const purpose = q.get('idp_purpose') === 'register' ? 'register' : 'issue', uid = q.get('idp_uid');
+      const purpose = q.get('idp_purpose') === 'register' ? 'register' : 'issue', uid = q.get('idp_uid'), auid = q.get('idp_auid');
       if (!code && !nonce) return null;
       let pend = null;
       try { pend = JSON.parse(sessionStorage.getItem(PENDING_KEY) ?? 'null'); } catch { pend = null; }
@@ -553,7 +546,7 @@
       history.replaceState(null, '', `${location.pathname}?authorize=1`);   // 1회용 코드가 주소창·히스토리에 남지 않게
       if (!pend || !code || !nonce || pend.nonce !== nonce || typeof pend.at !== 'number' || Date.now() - pend.at > PENDING_MAX_AGE_MS) return { req: null, origin: null, code: null };
       if (purpose === 'register' && !/^[0-9]+$/.test(uid ?? '')) return { req: null, origin: null, code: null };
-      return { req: pend.req, origin: pend.origin, code, purpose, uid: purpose === 'register' ? uid : null };
+      return { req: pend.req, origin: pend.origin, code, purpose, uid: purpose === 'register' ? uid : null, auid: purpose === 'register' && /^[0-9]+$/.test(auid ?? '') ? auid : null };
     }
     // Google 토큰(OIDC 래퍼, 2026-10-26 Snap OIDC 래퍼 §2): #gsiWrap 에 버튼을 그리고 사용자가 누르기를 기다린다. nonce 는 에이전트
     // /wallet/oidc/nonce 가 계산한 값. 2분 안에 토큰이 없으면 oidc_cancelled. 돌려주는 것은 { token, reason } — token 이 없으면 reason.
@@ -619,31 +612,47 @@
       return { ok: true, slot: b.slot, auid: b.auid, uid: b.uid };
     }
 
-    /** 처음 등록 때 salt 를 묻는다(2026-11-10) — 넣은 값(10진, 1 이상 2^250 미만) 또는 "새로 만들기" 면 null. */
-    function askSalt() {
-      const box = $('saltAsk'), input = $('saltAskInput'), err = $('saltAskErr');
-      box.hidden = false; err.hidden = true; input.value = ''; setTimeout(() => input.focus(), 0);
+    /** 속성 도구(같은 오리진의 /attr.html)가 남긴 커밋먼트 기록(2026-11-11) — { uid, s_u } 가 있는 version 2 기록이면 그대로, 아니면 null.
+     *  첫 등록은 이 salt 를 쓴다(사용자 결정: 스냅 팝업에서 salt 를 묻지 않는다). 키 이름은 attr.html 의 STORE_KEY 와 같다. */
+    /** 속성 도구 번들(3.6MB, Mode3Attr.auidOf)을 첫 등록 때만 읽는다 — 팝업이 열릴 때마다 받지 않게. 없으면 false. */
+    function loadAttrBundle() {
+      if (window.Mode3Attr?.auidOf) return Promise.resolve(true);
       return new Promise((resolve) => {
-        const done = (v) => { box.hidden = true; $('saltAskUseBtn').onclick = null; $('saltAskNewBtn').onclick = null; resolve(v); };
-        $('saltAskUseBtn').onclick = () => {
-          const v = input.value.trim();
-          if (!/^[0-9]+$/.test(v) || BigInt(v) === 0n || BigInt(v) >= (1n << 250n)) { err.hidden = false; return; }
-          done(BigInt(v).toString());
-        };
-        $('saltAskNewBtn').onclick = () => done(null);
+        const sc = document.createElement('script'); sc.src = '/attr/dist/attr.js';
+        sc.onload = () => resolve(Boolean(window.Mode3Attr?.auidOf)); sc.onerror = () => resolve(false);
+        document.head.appendChild(sc);
       });
+    }
+    async function readAttrRecord() {
+      // 데모 리셋(2026-11-11): 속성 도구가 아직 열리지 않아 이전 데모의 기록이 남아 있어도 리셋 뒤에는 쓰지 않는다(attr.html 과 같은 규칙 — reset.json).
+      try {
+        const r = await fetch('/attr/dist/reset.json', { cache: 'no-store' });
+        if (r.ok) { const epoch = String((await r.json()).epoch ?? ''); if (epoch && localStorage.getItem('mode3_attr_tool_reset') !== epoch) { localStorage.removeItem('mode3_attr_tool_v1'); localStorage.setItem('mode3_attr_tool_reset', epoch); } }
+      } catch { /* 파일이 없으면(한 머신 데모·테스트) 그대로 */ }
+      let v = null;
+      try { v = JSON.parse(localStorage.getItem('mode3_attr_tool_v1') ?? 'null'); } catch { v = null; }
+      const dec = (x) => typeof x === 'string' && /^[0-9]+$/.test(x);
+      return v && v.version === 2 && dec(v.uid) && dec(v.s_u) && BigInt(v.s_u) > 0n && BigInt(v.s_u) < (1n << 250n) ? { uid: v.uid, s_u: v.s_u } : null;
     }
 
     /** 등록 코드(uid·code)로 등록(2026-11-09 에 함수로 뽑음 — 서비스 첫 로그인 중의 등록(processAuthorize)과 옛 mode3-register 팝업 경로 공용).
      *  Snap register({uid}) → 에이전트 /wallet/register { uid, code, s_u, sk_u } → Snap storeRegistration. 성공 { ok:true, slot, auid, issue_code|null } / 실패 { ok:false, reason, detail? }. */
-    async function codeRegister({ uid, code, step, log }) {
+    async function codeRegister({ uid, code, auid = null, step, log }) {
       let already = false;
       try { already = Boolean((await (await fetch('/wallet/status')).json()).registered); } catch { /* 진행 — /wallet/register 가 다시 걸러준다 */ }
       if (already) { step('이미 등록돼 있다.'); return { ok: false, reason: 'already_registered' }; }
-      say('wallet_salt_ask_title');
-      const s_u = await askSalt();
+      // 2026-11-11(사용자 결정): salt 는 속성 도구 기록에서 — 없으면 등록하지 않고 안내한다(가). 인증 창에 붙여 넣은 auid 와 Poseidon(uid, salt) 를 먼저 맞춰 본다
+      // (IdP 도 코드에 묶인 auid 로 다시 막지만 — register_auid_mismatch — Snap 을 부르기 전에 멈춰 반쯤 된 등록을 만들지 않는다).
+      const rec = await readAttrRecord();
+      if (!rec) { step('속성 도구 기록 없음 — 등록하지 않는다.'); return { ok: false, reason: 'attr_record_missing' }; }
+      if (rec.uid !== String(uid)) { step('속성 도구 기록의 uid 가 다르다.'); log(`기록 uid=${rec.uid}  이 계정 uid=${uid}`); return { ok: false, reason: 'attr_record_uid_mismatch' }; }
+      if (auid !== null) {
+        if (!(await loadAttrBundle())) return { ok: false, reason: 'bundle_missing' };
+        const mine = (await Mode3Attr.auidOf({ uid: BigInt(uid), s_u: BigInt(rec.s_u) })).toString();
+        if (mine !== auid) { step('붙여 넣은 auid 가 속성 도구 기록과 다르다.'); return { ok: false, reason: 'register_auid_mismatch' }; }
+      }
       step('등록 비밀을 만드는 중…'); say('wallet_prog_registering');
-      const reg = await invokeSnap('register', s_u ? { uid, s_u } : { uid });
+      const reg = await invokeSnap('register', { uid, s_u: rec.s_u });
       if (!reg || reg.denied) { step('등록 거절'); return { ok: false, reason: 'user_denied' }; }
       step('에이전트에 등록하는 중…');
       const { status, body: b } = await postJson('/wallet/register', { uid, code, s_u: reg.s_u, sk_u: reg.sk_u });
@@ -774,7 +783,7 @@
      * authCode 는 IdP 에서 돌아왔을 때의 1회용 코드, 처음이면 null. 2026-11-05 중복 확인 제거: Snap 의 로그인 동의 창은 없다(consentLogin 은
      * 증인만 돌려준다) — 사용자가 RP 에서 "로그인" 을 눌러 시작한 요청이고, 인증서·팩토리 precheck 을 통과한 뒤에만 Snap 을 부른다.
      */
-    async function processAuthorize(req, evOrigin, { step, log, reply, authCode, authPurpose = 'issue', authUid = null }) {
+    async function processAuthorize(req, evOrigin, { step, log, reply, authCode, authPurpose = 'issue', authUid = null, authAuid = null }) {
       try {
         const connect = async () => {
           step('MetaMask·스냅 연결 중…'); say('wallet_prog_connect');
@@ -826,7 +835,7 @@
         if (authPurpose === 'register') {
           if (!(await connect())) return;
           say('wallet_prog_registering');
-          const r = await codeRegister({ uid: authUid, code: authCode, step, log });
+          const r = await codeRegister({ uid: authUid, code: authCode, auid: authAuid, step, log });
           if (!r.ok) return reply(r);
           step('zkID 에 등록됨 — 이어서 로그인합니다.');
           authCodeNow = r.issue_code;   // ISSUE_AUTH=key 인 IdP 는 코드를 주지 않는다(null) — 그 경우 코드 없이 발급된다
@@ -909,7 +918,7 @@
       if (back) {
         if (!back.req) { renderAuthTitle(); step(tt('wallet_auth_resume_failed') || 'IdP 인증 결과를 이어받지 못했습니다 — RP 페이지에서 다시 로그인하세요.'); return; }
         lastAuthReq = back.req; renderAuthTitle(); renderAuthSummary(back.req);
-        processAuthorize(back.req, back.origin, { step, log, reply: makeReply(back.req.type, back.req.r_s, back.origin), authCode: back.code, authPurpose: back.purpose, authUid: back.uid });
+        processAuthorize(back.req, back.origin, { step, log, reply: makeReply(back.req.type, back.req.r_s, back.origin), authCode: back.code, authPurpose: back.purpose, authUid: back.uid, authAuid: back.auid });
         return;
       }
       let handled = false;
@@ -1113,6 +1122,7 @@
         const dl = document.createElement('dl');
         dl.className = 'kv';
         kvRow(dl, tt('wallet_session_service') || 'RP', rpLabel(c));            // 이름(없으면 주소) — arid 는 전문가 행(2026-11-05)
+        kvRow(dl, tt('wallet_session_idp') || 'IdP', cfg?.ciaUrl ? `zkID · ${cfg.ciaUrl}` : 'zkID');   // 2026-11-11(사용자 요청): 이 세션을 발급한 IdP — 이 스냅은 IdP 하나(MODE3_CIA_URL)에 등록된다
         kvRow(dl, termEl('PPID'), c.account ? shortCode(c.account, 14) : shortCode(c.PPID, 12));   // 2026-11-09: 값도 스마트 계정 주소로(팩토리 전이면 PPID 숫자)
         kvRow(dl, tt('wallet_session_expiry') || '만료', tt('wallet_session_expires', { h: c.max_height }) || String(c.max_height));
         kvRow(dl, tt('wallet_session_nonce') || 'nonce', String(c.nonce ?? '-'));

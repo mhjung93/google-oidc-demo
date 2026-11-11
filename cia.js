@@ -521,14 +521,15 @@ function issueCode({ uid, purpose, auid = null }) {
   return { code, expiresAt: entry.expiresAt };   // 수정 라운드 1: 위 청소 루프가 지웠을 수 있으니 state.codes[code] 를 다시 읽지 않는다
 }
 /** 코드가 지금 쓸 수 있는지만 본다(지우지 않음) — 형식·존재·만료·{uid, purpose, auid} 일치. 수정 라운드 1(리뷰): auid 는 purpose 'issue' 면
- *  정확히 같아야 하고 purpose 'register' 면 애초에 없어야 한다 — 와일드카드(auid===null 이면 통과)를 없앴다. */
+ *  정확히 같아야 한다 — 와일드카드(auid===null 이면 통과)를 없앴다. purpose 'register' 는 2026-11-11 부터 인증 창이 auid 를 묶어 낸다(사용자가
+ *  속성 도구에서 복사해 붙여 넣은 값) — 묶여 있으면 등록하는 auid 와 같아야 하고, 옛 /cia/user/register_code 코드(auid 없음)는 그대로 통과한다. */
 function peekCode(code, { uid, purpose, auid = null }) {
   if (typeof code !== 'string' || !CODE_FORMAT.test(code)) return false;
   if (!Object.hasOwn(state.codes, code)) return false;
   const c = state.codes[code];
   if (c.expiresAt < Date.now()) return false;
   if (c.uid !== uid || c.purpose !== purpose) return false;
-  return purpose === 'register' ? c.auid === null : c.auid === auid;
+  return purpose === 'register' ? (c.auid === null || c.auid === auid) : c.auid === auid;
 }
 /** 1회용 코드 소비 — peekCode 와 같은 조건일 때만 지우고 true. 형식이 틀리거나 없거나 안 맞으면 false 고 아무것도 지우지 않는다
  *  (스펙 "성공 시 소진" — 호출자가 서명·증명 검증을 모두 통과한 뒤, 상태 변경 바로 앞에서만 부른다). */
@@ -982,10 +983,12 @@ app.post('/cia/auth/code', (req, res) => {
   const a = uid ? state.accounts[uid] : null;
   if (!pwOk(a, pwd)) return res.status(401).json({ error: 'invalid credentials', reason: 'invalid_credentials' });
   // 등록 코드(2026-11-09, 사용자 결정): 지갑 등록은 zkID 페이지가 아니라 서비스의 "zkID 로 로그인" 중에 처음 한 번 일어난다 — 팝업이 이 인증 창을 등록 모드로 열고
-  // 아이디·비밀번호만 넣으면(auid 는 아직 없다) 등록 코드와 uid 를 받아 /cia/register 로 간다. 이미 등록된 계정이면 409.
+  // 아이디·비밀번호와 auid(2026-11-11 — 속성 도구가 계산해 보여 준 값)를 넣으면 등록 코드와 uid 를 받아 /cia/register 로 간다. 이미 등록된 계정이면 409.
   if (purpose === 'register') {
     if (a.pk_u) return res.status(409).json({ error: 'already registered', reason: 'already_registered' });
-    return res.json({ ...issueCode({ uid, purpose: 'register' }), uid, purpose: 'register' });
+    // 2026-11-11(사용자 결정): 첫 등록에도 auid 를 받는다 — 속성 도구가 uid·salt 로 계산해 보여 준 값. 코드에 묶어 /cia/register 의 auid 와 대조한다.
+    if (!isDec(auid)) return res.status(400).json({ error: 'auid required', reason: 'bad_auid' });
+    return res.json({ ...issueCode({ uid, purpose: 'register', auid: BigInt(auid).toString() }), uid, purpose: 'register' });
   }
   if (!a.pk_u) return res.status(409).json({ error: 'not registered', reason: 'not_registered' });
   if (!isDec(auid) || BigInt(auid).toString() !== a.auid) return res.status(403).json({ error: 'auid mismatch', reason: 'auid_mismatch' });
@@ -1015,14 +1018,17 @@ app.post('/cia/register', userCors, async (req, res) => {
     // 수정 라운드 1(스펙 "성공 시 소진"): code 는 여기서 조회만 하고(peek, 소비 안 함) — 실제 소비는 서명 검증을 통과한 뒤
     // registerAccount 의 beforeCommit 이 상태 변경 바로 앞에서 한다. 그래야 서명이 틀려 등록이 실패해도 코드가 타지 않는다.
     if (code !== undefined) {
-      if (!peekCode(code, { uid: uidIn, purpose: 'register' })) return res.status(401).json({ error: 'bad_code', reason: 'bad_code' });
+      // 2026-11-11: 코드에 묶인 auid(인증 창에 붙여 넣은 값)와 지금 등록하는 auid 가 다르면 — 속성 커밋먼트와 다른 salt 로 등록하려는 경우 — 따로 알린다.
+      const ce = typeof code === 'string' && Object.hasOwn(state.codes, code) ? state.codes[code] : null;
+      if (ce && ce.purpose === 'register' && ce.uid === uidIn && ce.auid !== null && ce.auid !== BigInt(auid).toString()) return res.status(403).json({ error: 'register auid mismatch', reason: 'register_auid_mismatch' });
+      if (!peekCode(code, { uid: uidIn, purpose: 'register', auid: BigInt(auid).toString() })) return res.status(401).json({ error: 'bad_code', reason: 'bad_code' });
     } else {
       if (typeof pwd !== 'string') return res.status(400).json({ error: 'uid, (pwd 또는 code), auid, pk_u{x,y}, sig_reg required' });
       if (!pwOk(state.accounts[uidIn], pwd)) return res.status(401).json({ error: 'invalid credentials', reason: 'invalid_credentials' });
     }
     uid = uidIn; provider = 'demo';
   }
-  const beforeCommit = (oidcPath || code === undefined) ? undefined : () => consumeCode(code, { uid: uidIn, purpose: 'register' });
+  const beforeCommit = (oidcPath || code === undefined) ? undefined : () => consumeCode(code, { uid: uidIn, purpose: 'register', auid: BigInt(auid).toString() });
   const made = await registerAccount({ uid, provider, auid, pk_u, sig_reg, beforeCommit });
   if (made.error) return res.status(made.error.status).json(made.error.body);
   // 2026-11-09: 등록 코드로 등록했으면(서비스 첫 로그인 중의 등록) 같은 사용자가 비밀번호를 다시 넣지 않고 바로 발급으로 이어 가게 이 auid 에 묶인

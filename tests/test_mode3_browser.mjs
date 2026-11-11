@@ -19,6 +19,7 @@ import { execFileSync } from 'node:child_process';
 import { DEFAULT_ATTR_SCHEMA, encodeSlotValue } from '../lib/mode3_attr_schema.js';
 import { encodeProfile } from '../lib/mode3_attr_schema.js';
 import { attrCommit } from '../lib/mode3_attr_commit.js';
+import { auidOf } from '../lib/mode3_credential.js';
 
 const DEBUG = process.env.MODE3_BROWSER_DEBUG === '1';
 const j = (o) => JSON.stringify(o);
@@ -149,7 +150,10 @@ try {
   const pageDump = (page) => page.evaluate(() => {
     const inputs = [...document.querySelectorAll('input,textarea,select')].map((e) => `${e.id}=${e.value}`).join('\n');
     const store = (s) => { try { return JSON.stringify(s); } catch { return ''; } };
-    return [document.documentElement.outerHTML, inputs, store(localStorage), store(sessionStorage)].join('\n');
+    // 2026-11-11: 속성 커밋먼트 도구의 기록(mode3_attr_tool_v1)은 salt 를 평문으로 든다 — 첫 등록이 그 salt 를 쓰므로(사용자 결정) 의도된 예외다
+    // (런북 "도구의 비밀은 localStorage 평문" 한계). 이 검사는 스냅·에이전트 쪽 비밀이 새지 않는지만 본다.
+    const ls = {}; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k !== 'mode3_attr_tool_v1') ls[k] = localStorage.getItem(k); }
+    return [document.documentElement.outerHTML, inputs, store(ls), store(sessionStorage)].join('\n');
   });
 
   /** RP 페이지가 들고 있는 서비스 정보(진짜 arid·origin·cert_s·pk_trace). */
@@ -253,30 +257,46 @@ try {
     assert.ok((await text(rpPage, '#walletMode')).includes(cfg.snapId));
   });
 
-  await t('첫 로그인 = 지갑 등록(2026-11-09): 팝업이 MetaMask 를 연결하고 zkID 인증 창(등록 모드, auid 칸 없음)으로 갔다가 돌아와 등록 → 발급 → RP 세션; Snap 확인 창 없음', async () => {
+  // 2026-11-11(사용자 결정): 첫 등록은 속성 도구 기록의 salt 를 쓴다(스냅 팝업의 salt 칸은 없다) — 인증 창(등록 모드)에 속성 도구가 보여 준 auid 를 붙여 넣는다.
+  await t('첫 로그인 전에 속성 도구 기록이 없으면 등록하지 않고 안내한다(attr_record_missing) — 코드·Snap 은 쓰지 않는다', async () => {
+    const demoUid = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.id === 'demo-user').uid;
+    const demoAuid = (await auidOf({ uid: BigInt(demoUid), s_u: BigInt(USER_SALT) })).toString();
+    await walletPage.evaluate(() => localStorage.removeItem('mode3_attr_tool_v1'));
+    const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
+    await atIdpLogin(popup);
+    await popup.fill('#authUid', 'demo-user'); await popup.fill('#authPwd', DEMO_PWD); await popup.fill('#authAuid', demoAuid); await popup.click('#authGo');
+    await backAtWallet(popup);
+    await waitText(rpPage, '#verdict', '속성 커밋먼트 기록이 없습니다', 120_000);
+    assert.equal((await wallet.get('/wallet/status')).body.registered, false, '등록하지 않았다');
+    assert.equal(snapState?.registration, undefined, 'Snap 에도 아무것도 없다');
+    await awaitPopupClosed(popup);
+  });
+
+  await t('첫 로그인 = 지갑 등록(2026-11-09): 팝업이 MetaMask 를 연결하고 zkID 인증 창(등록 모드, 2026-11-11 부터 auid 칸 있음)으로 갔다가 돌아와 속성 도구 기록의 salt 로 등록 → 발급 → RP 세션; Snap 확인 창 없음', async () => {
     const before = dialogs.length;
+    const demoUid = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.id === 'demo-user').uid;
+    const demoAuid = (await auidOf({ uid: BigInt(demoUid), s_u: BigInt(USER_SALT) })).toString();
+    await walletPage.evaluate((r) => localStorage.setItem('mode3_attr_tool_v1', JSON.stringify(r)), { version: 2, uid: String(demoUid), s_u: USER_SALT });   // 속성 도구가 남기는 기록(필요한 칸만)
     const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
     assert.ok(popup.url().includes('authorize=1'), `팝업 URL: ${popup.url()}`);
     await atIdpLogin(popup);
     assert.equal(new URL(popup.url()).searchParams.get('purpose'), 'register', '미등록 지갑은 등록 모드로 간다');
-    assert.equal(await popup.isHidden('#authAuidRow'), true, '등록 모드에는 auid 칸이 없다');
+    assert.equal(await popup.isVisible('#authAuidRow'), true, '2026-11-11: 등록 모드에도 auid 칸이 있다');
     await waitText(popup, '#authTitle', '스냅 등록');
-    await popup.fill('#authUid', 'demo-user'); await popup.fill('#authPwd', DEMO_PWD); await popup.click('#authGo');
+    await popup.fill('#authUid', 'demo-user'); await popup.fill('#authPwd', DEMO_PWD); await popup.fill('#authAuid', demoAuid); await popup.click('#authGo');
     await backAtWallet(popup);
-    // 2026-11-10: 처음 등록 때 지갑 창이 salt 를 묻는다 — 형식이 틀리면(0) 안내만 하고 머문다, 맞으면 Snap 이 그 값을 s_u 로 저장한다.
-    await popup.waitForSelector('#saltAsk:not([hidden])', { timeout: 60_000 });
-    await popup.fill('#saltAskInput', '0'); await popup.click('#saltAskUseBtn'); await popup.waitForSelector('#saltAskErr:not([hidden])');
-    await popup.fill('#saltAskInput', USER_SALT); await popup.click('#saltAskUseBtn');
+    assert.equal(await popup.$('#saltAsk'), null, '스냅 팝업에 salt 칸은 없다(2026-11-11)');
     await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
     assert.equal(dialogs.length, before, '등록·로그인에 Snap 확인 창이 없다(2026-11-05 중복 확인 제거)');
     const st = (await wallet.get('/wallet/status')).body;
     assert.equal(st.registered, true, '첫 로그인이 지갑을 등록했다'); assert.match(String(st.uid), /^[0-9]+$/); uid = st.uid; AUID = st.auid;
     assert.equal(snapState.registration?.uid, uid, 'Snap 에도 등록이 저장됐다');
-    assert.equal(snapState.registration?.s_u, USER_SALT, '지갑 창에 넣은 salt 가 s_u 로 저장됐다');
+    assert.equal(snapState.registration?.s_u, USER_SALT, '속성 도구 기록의 salt 가 s_u 로 저장됐다'); assert.equal(String(AUID), demoAuid, '붙여 넣은 auid 로 등록됐다');
     assert.ok((await text(rpPage, '#log')).includes('allowAgent=0'), 'AI 에이전트 체크박스를 없앴으므로 늘 0(2026-11-05)');
     await awaitPopupClosed(popup);
     assert.ok((await text(rpPage, '#log')).includes('3. RP 검증'), 'RP 페이지가 /api/mode3/login 까지 냈다');
     assert.ok(await rpPage.evaluate(() => currentSession), '세션이 잡혔다');
+    await waitText(walletPage, '#sessionActions', 'zkID · ', 30_000);   // 2026-11-11: 연결된 서비스 줄에 발급 IdP(zkID · 주소)
     // 팝업 결과에는 지갑 안 정보가 실리지 않는다(스펙 §3.2) — 그래도 Snap 에는 새 C_u 가 저장돼 있어야 한다.
     assert.ok(snapState.userCred?.blind_u, '팝업이 userCredIssued 를 Snap 에 저장했다');
     assert.equal((await rp.get('/api/mode3/logins', rp.adminHeaders)).body.logins.length, 1);
@@ -654,6 +674,8 @@ try {
     // 재료를 모두 숨기지 않고 보인다 — uid·salt·blind·인코딩 값
     assert.equal((await p.textContent('#uidShown')).trim(), rec.uid); assert.equal((await p.textContent('#saltShown')).trim(), USER_SALT);
     assert.equal((await p.textContent('#blindShown')).trim(), rec.blind);
+    // 2026-11-11: 같은 uid·salt 로 계산한 auid 도 보인다 — 첫 RP 로그인 인증 창에 붙여 넣는 값
+    assert.equal((await p.textContent('#auidShown')).trim(), (await auidOf({ uid: BigInt(rec.uid), s_u: BigInt(rec.s_u) })).toString());
     for (let i = 0; i < 4; i++) assert.ok((await p.textContent(`#attrShown${i}`)).includes(rec.attrs[i]), `attr${i} 인코딩 값 표시`);
     // 2026-11-11(사용자 결정): 입력할 수 없는 미사용 슬롯(attr₄·attr₅, 늘 0)은 보이지 않는다 — 해시에는 그대로 0 이 들어간다
     assert.equal(await p.locator('#attrShown4, #attrShown5').count(), 0, '미사용 슬롯 행 없음');
@@ -678,6 +700,18 @@ try {
     await p.setInputFiles('#importFile', { name: 'bad.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(broken)) });
     await waitText(p, '#resultVerdict', '백업을 불러오지 못했습니다');
     toolCommit = rec.commit;
+    // 2026-11-11: 데모 리셋(scripts/demo_split_start.sh 가 /attr/dist/reset.json 에 리셋 시각을 쓴다) — 도구가 처음 보는 값이면 이 브라우저의 기록을 비운다.
+    await p.setInputFiles('#importFile', { name: 'backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(rec)) });
+    await waitText(p, '#resultVerdict', '백업 불러오기 완료');
+    const resetFile = new URL('../mode3/attr/dist/reset.json', import.meta.url);
+    fs.writeFileSync(resetFile, JSON.stringify({ epoch: 'test-reset-1' }));
+    try {
+      await p.reload(); await p.waitForSelector('#resetCleared:not([hidden])', { timeout: 15_000 });
+      assert.equal(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')), null, '리셋 뒤 기록이 비었다');
+      assert.equal(await p.isVisible('#noCommit'), true);
+      await p.reload(); await p.waitForTimeout(500);
+      assert.equal(await p.isHidden('#resetCleared'), true, '같은 리셋 값이면 다시 비우지 않는다(안내도 없다)');
+    } finally { fs.rmSync(resetFile, { force: true }); }
     await p.close();
   });
   await t('zkID 사용자 페이지 프로필 카드: 로그인만 하면 보인다(지갑 등록과 무관) → 커밋먼트 저장 → 현재 값 표시 → /me.profile; 비우면 없음', async () => {
@@ -796,6 +830,11 @@ try {
     await p.fill('#adminGate .gate-pwd', rp.adminHeaders['X-RP-Admin-Secret']); await p.click('#adminGate .gate-form button[type=submit]');
     await p.waitForFunction(() => document.querySelectorAll('#logins table tbody tr').length > 0, undefined, { timeout: 20_000 });
     assert.equal(await p.$eval('#adminGate', (el) => el.hidden), true);
+    // 2026-11-11: "auid_s ↔ PPID" 표 — zkID 로그인 줄마다 auid_s·PPID 를 자르지 않고 보인다
+    const lg = (await rp.get('/api/mode3/logins', rp.adminHeaders)).body.logins.filter((l) => l.PPID);
+    const auidRows = await p.$$eval('#auids table tbody tr', (trs) => trs.map((tr) => [tr.cells[1].textContent, tr.cells[2].textContent]));
+    assert.equal(auidRows.length, lg.length);
+    for (const l of lg) assert.ok(auidRows.some(([a, pp]) => a === l.auid_s && pp === l.PPID), `auid_s ${l.auid_s} ↔ PPID ${l.PPID}`);
     await p.reload({ waitUntil: 'load' });
     await p.waitForFunction(() => document.querySelectorAll('#logins table tbody tr').length > 0, undefined, { timeout: 20_000 });   // sessionStorage 로 넘어간다
     await p.click('#gateLogoutBtn'); await p.waitForSelector('#adminGate:not([hidden])');
@@ -812,6 +851,14 @@ try {
     assert.equal(await p.$eval('#adminGate', (el) => el.hidden), true);
     // 2026-11-11: "uid ↔ auid 대응" 표는 계정마다 한 줄, auid 는 자르지 않고 보인다. "등록부 DB" 는 regRoot 전체와 슬롯별 리프를 보인다.
     const accts = await p.evaluate((sec) => fetch('/cia/accounts', { headers: { 'X-CIA-Admin-Secret': sec } }).then((r) => r.json()), cia.adminSecret);
+    // 2026-11-11: 계정 표의 등록부 칸 — 슬롯이 없으면 "#null" 이 아니라 "스냅 미등록", 있으면 "#번호"
+    const regCells = await p.$$eval('#accounts table tbody tr', (trs) => trs.map((tr) => [tr.cells[0].textContent.trim(), tr.cells[3].textContent]));
+    assert.equal(regCells.some(([, c]) => c.includes('#null')), false, j(regCells));
+    for (const a of accts.accounts) {
+      const c = regCells.find(([u]) => u === a.uid)?.[1] ?? '';
+      if (a.slot === null) assert.match(c, /스냅 미등록/, `uid ${a.uid}`); else assert.ok(c.includes(`#${a.slot}`), `uid ${a.uid}: ${c}`);
+    }
+    assert.ok(accts.accounts.some((a) => a.slot === null), '미등록 계정도 하나는 있다(앞 케이스의 demo-user-2)');
     await p.waitForFunction((n) => document.querySelectorAll('#auidMap table tbody tr').length === n, accts.accounts.length, { timeout: 20_000 });
     const mapRows = await p.$$eval('#auidMap table tbody tr', (trs) => trs.map((tr) => [...tr.cells].map((c) => c.querySelector('code')?.textContent ?? c.textContent.trim())));
     for (const a of accts.accounts) {

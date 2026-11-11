@@ -7,6 +7,7 @@
 #        SYNC=1 bash scripts/demo_split_start.sh           # 먼저 코드·의존성·Node 를 세 VM 에 다시 보냄
 #        bash scripts/demo_split_start.sh stop             # 분리 데모만 전부 내림
 #        HEIGHT_GRID=100 bash scripts/demo_split_start.sh  # 만료(max_height) 올림 단위(기본 5 — 데모용. 코드 기본은 100, 2026-10-21)
+#        TTL_BLOCKS=300 bash scripts/demo_split_start.sh  # (snap 모드) 세션 수명 블록 수(기본 5 — 2026-11-11 사용자 요청: 자연 만료를 시연한다. 코드 기본은 300)
 #        WALLET_MODE=snap bash scripts/demo_split_start.sh  # Snap 모드(2026-10-22): 이 VM 의 지갑 자리에 에이전트(:5100, MODE3_WALLET_SECRETS=snap)+Snap 서버(:8082). 포트 5100 은 Snap 이 허용하는
 #                                                          # 지갑 오리진(snap-mode3/src/index.js)이라 바꿀 수 없다 — 한 머신 데모(:5100)와 동시에 못 띄운다. scripts/demo_split_snap_reset.sh 가 이 값을 넣어 부른다(web 모드 리셋은 scripts/demo_split_reset.sh).
 #        ADMIN_OPEN=1 bash scripts/demo_split_start.sh     # IdP 관리자 인증을 끈 채로(2026-11-05 부터 기본은 켬 — 관리자 페이지 비밀번호 idp; RP 관리자는 zkone·zktwo)
@@ -95,6 +96,9 @@ done
 
 # 2b. Snap 모드: 이 VM 의 에이전트 상태 파일도 새 체인과 맞지 않는다 — .bak-시각 으로 옮긴다(MetaMask 안의 Snap 상태는 못 지운다 — 지갑 페이지 'Snap 초기화').
 if [ "$WALLET_MODE" = "snap" ]; then for f in mode3_wallet_state.json mode3_wallet_rcl.json; do [ -e "$f" ] && mv "$f" "$f.bak-$TS" && echo "backup $f"; done; fi
+# 2c. (2026-11-11 사용자 요청) 속성 커밋먼트 도구(localhost:5100/attr.html)의 기록은 브라우저 저장소라 여기서 지울 수 없다 — 리셋 시각을 정적 파일로 남기면
+#     도구·스냅 팝업이 그 값이 바뀐 것을 보고 이전 데모의 기록(uid·salt)을 비운다. mode3/attr/dist 는 ignore 된 번들 폴더(에이전트가 /attr/ 로 서빙).
+if [ "$WALLET_MODE" = "snap" ]; then mkdir -p mode3/attr/dist && printf '{"epoch":"%s"}\n' "$TS" > mode3/attr/dist/reset.json && echo "attr 도구 리셋 표시: $TS"; fi
 # 3. 체인 두 개(Ethernal 없는 최소 설정, NAT 망에 연다)
 cat > "$LOGS/chain.config.cjs" <<'EOF'
 // 분리 데모 체인 전용 최소 설정(demo_split_start.sh 가 만든다) — Ethernal 플러그인·dotenv 를 싣지 않는다.
@@ -170,7 +174,7 @@ fi
 if [ "$WALLET_MODE" = "snap" ]; then
   # Snap 모드(2026-10-22): 에이전트는 증명·동기화만, 비밀은 MetaMask 의 Snap 안. 릴레이어 계정은 RP 둘(0·1)과 겹치지 않게 2. .env 는 읽지 않는다(DOTENV_CONFIG_PATH).
   DOTENV_CONFIG_PATH="$LOGS/empty.env" MODE3_WALLET_SECRETS=snap MODE3_SNAP_ID="local:http://localhost:$SNAP_PORT" MODE3_WALLET_PORT=$USER_PORT MODE3_WALLET_PUBLIC_ORIGIN="$WALLET_ORIGIN" \
-    MODE3_CIA_URL="$IDP_UI" MODE3_RP_ORIGIN="$RP1_UI,$RP2_UI" MODE3_RELAYER_INDEX=2 MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}" \
+    MODE3_CIA_URL="$IDP_UI" MODE3_RP_ORIGIN="$RP1_UI,$RP2_UI" MODE3_RELAYER_INDEX=2 MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}" MODE3_TTL_BLOCKS="${TTL_BLOCKS:-5}" \
     CIA_RPC_URL="http://127.0.0.1:$APP_PORT" MODE3_REV_CHAIN_RPC="http://127.0.0.1:$REV_PORT" CIA_LOG_ADDRESS="$LOGADDR" MODE3_MIRROR_ADDRESS="$MIRROR" \
     setsid nohup node mode3_wallet_agent.js > "$LOGS/wallet_agent.log" 2>&1 < /dev/null &
   (cd snap-mode3 && setsid nohup npm run serve > "$LOGS/snap_serve.log" 2>&1 < /dev/null &)

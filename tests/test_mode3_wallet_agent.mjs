@@ -93,7 +93,7 @@ try {
     assert.deepEqual(s.body.attrSchema, { id: 'zkd-attrs', version: 1, hash: sch.hash });
     assert.deepEqual(s.body.attrsView.map((v) => v.display), ['1990', 'KR', '', '', '', '']);
     const acct = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === uid);
-    assert.equal(acct.attrs, undefined, 'D15: IdP 는 속성을 받지 않는다'); assert.equal(acct.auid, undefined, '/cia/accounts 는 auid 를 내지 않아도 된다(계획: 공개 필드 아님)');
+    assert.equal(acct.attrs, undefined, 'D15: IdP 는 속성을 받지 않는다'); assert.equal(acct.auid, r.body.auid, '2026-11-11(사용자 요청, ed5764d): 관리자 /cia/accounts 는 auid 를 낸다 — 관리자 화면 "uid ↔ auid 대응"(관리자 비밀번호 필요, RP 에는 가지 않는다)');
     // Task 13: file 모드는 등록 뒤 /wallet/secrets/salt 로 s_u(10진 문자열)를 본다 — 같은 오리진 전용이라 CORS 는 열지 않는다.
     const salt = await wallet.get('/wallet/secrets/salt');
     assert.equal(salt.status, 200, j(salt.body)); assert.match(salt.body.s_u, /^[0-9]+$/);

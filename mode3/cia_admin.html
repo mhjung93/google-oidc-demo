@@ -324,8 +324,14 @@
         cell(row, a.uid);
         cell(row, a.id ?? '-');   // 2026-11-03: 아이디 가입(loginId). 아이디 없이 만든 옛 계정은 '-'
         cell(row, badge(a.disabled ? 'admin_acct_disabled' : 'admin_acct_active', a.disabled ? 'bad' : 'ok'));
-        const regCell = cell(row, badge(a.tampered ? 'admin_reg_tampered' : a.registryLeaf !== '0' ? 'admin_reg_active' : 'admin_reg_empty', a.tampered ? 'bad' : a.registryLeaf !== '0' ? 'ok' : 'muted'));
-        regCell.insertBefore(document.createTextNode(`#${a.slot} `), regCell.firstChild);
+        // 2026-11-11(사용자 요청): 스냅을 아직 등록하지 않은 계정(슬롯 없음)은 "#null 비어 있음" 대신 "스냅 미등록", 슬롯이 있으면 번호·상태와 리프(앞자리, 전체는 툴팁)를 보인다.
+        let regCell;
+        if (a.slot === null || a.slot === undefined) regCell = cell(row, badge('admin_reg_unregistered', 'muted'));
+        else {
+          regCell = cell(row, badge(a.tampered ? 'admin_reg_tampered' : a.registryLeaf !== '0' ? 'admin_reg_active' : 'admin_reg_empty', a.tampered ? 'bad' : a.registryLeaf !== '0' ? 'ok' : 'muted'));
+          regCell.insertBefore(document.createTextNode(`#${a.slot} `), regCell.firstChild);
+          if (a.registryLeaf !== '0') { regCell.append(' '); regCell.appendChild(short(a.registryLeaf, 12)); }
+        }
         const act = row.insertCell();
         act.appendChild(button('admin_sessions_btn', 'btn-ghost', () => toggleSessions(a.uid)));
         act.appendChild(document.createTextNode(' '));

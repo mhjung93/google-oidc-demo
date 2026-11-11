@@ -162,6 +162,9 @@ try {
     const { sessions } = (await rp.get('/api/mode3/sessions')).body;
     assert.ok(logins.length > 0);
     for (const l of logins) assert.ok(l.r_s.length <= 9 && l.r_s.endsWith('…'), j(l));
+    // 2026-11-11(사용자 요청): 관리자 "auid_s ↔ PPID" 표 — RP 가 아는 것은 이 로그인의 세션 가명 auid_s(증명의 공개 신호)와 PPID 다(auid 가 아니다).
+    const mine = logins.find((l) => l.PPID === PPID1);
+    assert.match(String(mine?.auid_s), /^[0-9]+$/, j(mine)); assert.ok(r.wallet.publicSignals.includes(mine.auid_s), 'auid_s 는 증명의 공개 신호');
     assert.ok(sessions.length > 0);
     for (const s of sessions) assert.ok(s.r_s.length <= 9 && s.r_s.endsWith('…'), j(s));
   });

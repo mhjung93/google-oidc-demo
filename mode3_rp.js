@@ -410,7 +410,7 @@ let disclosedLoginCount = 0;   // 공개 조건을 실은 로그인(mask ≠ 0 �
 
 // 2026-11-06: 재기동해도 관리자 화면의 로그인 기록이 비지 않게 로그 파일(LOGIN_LOG)에서 되살린다 — 전에는 메모리만이어서 재기동마다 비었다.
 // 조회 API 모양은 그대로(r_s 는 축약, 트랜스크립트·pk_i 는 내지 않는다). readLoginLog 는 함수 선언이라 여기서 불러도 된다.
-const logins = readLoginLog().map((l) => ({ via: l.via ?? 'zkid', rpAccount: l.rpAccount ?? null, PPID: String(l.PPID ?? ''), at: l.at, root: String(l.root ?? ''), r_s: typeof l.r_s === 'string' ? l.r_s.slice(0, 8) + '…' : '', allowAgent: String(l.allowAgent ?? '0'), disclosure: l.disclosure ?? null }));   // { PPID, at, root, r_s, allowAgent, disclosure }
+const logins = readLoginLog().map((l) => ({ via: l.via ?? 'zkid', rpAccount: l.rpAccount ?? null, PPID: String(l.PPID ?? ''), at: l.at, root: String(l.root ?? ''), r_s: typeof l.r_s === 'string' ? l.r_s.slice(0, 8) + '…' : '', allowAgent: String(l.allowAgent ?? '0'), disclosure: l.disclosure ?? null, auid_s: typeof l.auid_s === 'string' ? l.auid_s : null }));   // { PPID, at, root, r_s, allowAgent, disclosure, auid_s }
 // 릴레이가 보낸 트랜잭션 기록(2026-10-21, RP 관리자 페이지) — 로그인 기록과 같이 메모리만. RP 가 원래 아는 것(계정·PPID·calldata 의 받는 주소·금액)만 담는다.
 const relayedTxs = [];   // { at, txHash, account, PPID, kind, target, value, deployTxHash, status, blockNumber }
 // r_s 전문은 내지 않는다 — (PPID, 시각) 과 함께 RP 의 사용자 활동 기록이다(설계 2026-09-16 §5).
@@ -562,7 +562,7 @@ app.post('/api/mode3/login', async (req, res) => {
     // 2026-10-16: 같은 계정(PPID)의 이전 세션은 새 로그인이 대체한다 — "RP 당 활성 세션 하나". IdP 폐기 트리는 건드리지 않는다(강한 무효화는 V8 세션 폐기).
     for (const [k, s] of sessions) if (k !== rsStr && s.PPID === v.PPID.toString()) forgetSession(k);
     if (disclosure.mask !== '0' || disclosure.set) disclosedLoginCount++;
-    logins.push({ via: 'zkid', rpAccount, PPID: v.PPID.toString(), at, root: v.root.toString(), r_s: rsShort(rsStr), allowAgent: v.allowAgent.toString(), disclosure });
+    logins.push({ via: 'zkid', rpAccount, PPID: v.PPID.toString(), at, root: v.root.toString(), r_s: rsShort(rsStr), allowAgent: v.allowAgent.toString(), disclosure, auid_s: v.auid_s.toString() });   // auid_s: 관리자 "auid_s ↔ PPID" 표(2026-11-11)
     // §5 로그인 로그 — 전체 r_s 와 트랜스크립트(태그 포함). 개봉 요청의 재료다. 조회 API 로는 내지 않는다.
     fs.appendFileSync(LOGIN_LOG, JSON.stringify({ at, via: 'zkid', rpAccount, PPID: v.PPID.toString(), r_s: rsStr, pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), disclosure, auid_s: v.auid_s.toString(), arid_s: v.arid_s.toString(), publicSignals: v.publicSignals, proof: v.proof }) + '\n', { mode: 0o600 });
     res.json({ ok: true, account: rpAccount, via: 'zkid', PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), r_s: rsStr, root: v.root.toString(), allowAgent: v.allowAgent.toString(), disclosure });

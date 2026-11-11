@@ -172,6 +172,33 @@ try {
     await rpPage.close();
   });
 
+  // 2026-11-11(사용자 지적): zkID 로 로그인한 상태에서 Google·네이버로 로그인하면 화면이 이전 zkID 세션(r_s)을 버리지 않아 새 소셜 계정에 그 PPID·자산이
+  // 섞여 보였다("zkID 연결이 자동으로 됐다"). 소셜 로그인은 로그인 전체를 바꾼다 — 남은 zkID 세션은 끝낸다(RP 에서도).
+  await t('zkID 로그인 상태에서 Google·네이버로 로그인하면 이전 zkID 세션이 정리된다(PPID·r_s 가 새 계정에 섞이지 않는다)', async () => {
+    const page = await context.newPage(); await page.goto(`${rp.base}/`);
+    await page.waitForFunction(() => typeof currentSession !== 'undefined' && currentSession, undefined, { timeout: 15_000 });   // 앞 케이스의 zkID 세션이 복원돼 있다
+    const oldRs = await page.evaluate(() => currentSession);
+    await page.evaluate((u) => { window.__gsiMintUrl = u; window.__gsiSub = 'rp-g-mix'; }, `${rpGoogle.base}/mint`);
+    await page.evaluate(() => openLoginModal());   // 로그인 상태라 상단 버튼은 숨어 있다 — 열린 다른 탭 등에서 연 것과 같다
+    await page.waitForSelector('#loginGsiSlot .gsi-stub', { timeout: 30_000 }); await page.click('#loginGsiSlot .gsi-stub');
+    await page.waitForFunction(() => (document.querySelector('#viaBadge')?.textContent ?? '').includes('Google'), undefined, { timeout: 30_000 });
+    assert.equal(await page.evaluate(() => currentSession), null, '화면의 zkID 세션은 끝났다');
+    assert.equal((await text(page, '#accountPPID')).trim(), '-', '새 Google 계정에는 PPID 가 없다');
+    const me = await page.evaluate(() => fetch('/api/rp/me').then((r) => r.json()));
+    assert.equal(me.methods.zkid, null, j(me));
+    const sess = await page.evaluate(() => fetch('/api/mode3/sessions').then((r) => r.json()));
+    assert.equal(sess.sessions.some((x) => x.r_s === `${oldRs.slice(0, 8)}…`), false, 'RP 에서도 옛 zkID 세션이 끝났다');
+    // 네이버로 돌아오는 길(페이지 새로 열림)도 저장해 둔 zkID 세션을 되살리지 않는다
+    await page.evaluate((rs) => localStorage.setItem('mode3.rp.session', JSON.stringify({ r_s: rs, allowAgent: '0' })), oldRs);
+    rpNaver.setNextSub('rp-n-mix');
+    await page.evaluate(() => openLoginModal()); await page.click('#naverLoginBtn');
+    await page.waitForFunction(() => (document.querySelector('#viaBadge')?.textContent ?? '').includes('네이버'), undefined, { timeout: 30_000 });
+    assert.equal(await page.evaluate(() => currentSession), null);
+    assert.equal(await page.evaluate(() => localStorage.getItem('mode3.rp.session')), null, '저장된 zkID 세션도 지웠다');
+    await page.click('#logoutBtn'); await page.waitForSelector('#assetsLoggedOut:not([hidden])');
+    await page.close();
+  });
+
   await t('자기 폐기: 지갑 페이지의 Google 버튼(비밀번호 프롬프트 없음) → IdP 계정 disabled', async () => {
     const before = dialogs.length;
     await walletPage.click('#walletTabs [data-tab="settings"]');   // 자기 폐기는 설정 탭(2026-11-03)
@@ -188,7 +215,7 @@ try {
     const page = await context.newPage(); await page.goto(`${rp.base}/`);
     if (await page.$eval('#loginBtn', (b) => b.hidden)) { await page.click('#logoutBtn'); await page.waitForSelector('#loginBtn:not([hidden])'); }
     await page.evaluate((u) => { window.__gsiMintUrl = u; window.__gsiSub = 'rp-g-user'; }, `${rpGoogle.base}/mint`);   // 이 페이지의 GIS 흉내는 RP 용 Google 스텁으로
-    await page.click('#loginBtn'); await page.click('#googleLoginBtn');
+    await page.click('#loginBtn'); assert.equal(await page.isHidden('#googleLoginBtn'), true, '2026-11-11: 창을 열면 Google 버튼이 바로 그려진다');
     await page.waitForSelector('#loginGsiSlot .gsi-stub', { timeout: 30_000 });
     await page.click('#loginGsiSlot .gsi-stub');
     await page.waitForSelector('#assetsLoggedIn:not([hidden])', { timeout: 30_000 });

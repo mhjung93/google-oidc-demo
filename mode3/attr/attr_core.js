@@ -3,3 +3,4 @@
 // (lib/mode3_attr_commit.js)가 Node(테스트·지갑)와 같은 코드다. 네트워크 호출은 없다 — 이 페이지는 아무 서버와도 말하지 않는다.
 export { DEFAULT_ATTR_SCHEMA, encodeProfile, normalizeProfile, decodeAttrs } from '../../lib/mode3_attr_schema.js';
 export { attrCommit, randomBlind, isAttrCommit, DOMAIN_MODE3_ATTRC } from '../../lib/mode3_attr_commit.js';
+export { auidOf } from '../../lib/mode3_credential.js';   // 2026-11-11: 같은 uid·salt 로 auid 를 보인다(첫 RP 로그인 인증 창에 붙여 넣는 값)
