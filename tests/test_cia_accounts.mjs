@@ -332,6 +332,14 @@ try {
     assert.equal(create.body.status, 'created'); assert.equal(create.body.arid, null);
     assert.ok(/^[0-9a-f]{64}$/.test(create.body.key), `키는 64자 hex: ${create.body.key}`);
     assert.equal(create.body.command, `bash scripts/new_rp.sh zkTHREE 39990 ${create.body.key} --public-origin http://127.0.0.1:39990`, '127.0.0.1 은 new_rp.sh 기본(localhost)과 달라 --public-origin 을 붙인다(리뷰 HIGH-1)');
+    // 2026-11-11(사용자 지적): 스킴을 빼고 "localhost:3100" 처럼 넣으면 http:// 를 붙여 받는다 — 대문자·경로·IPv6 는 위처럼 여전히 거절
+    const noScheme = await withJar('/cia/rp/create', { method: 'POST', body: JSON.stringify({ name: 'zkNOSCH', origin: 'localhost:39987' }) });
+    assert.equal(noScheme.status, 201, j(noScheme.body)); assert.equal(noScheme.body.origin, 'http://localhost:39987', '스킴 없으면 http://');
+    assert.equal(noScheme.body.command, `bash scripts/new_rp.sh zkNOSCH 39987 ${noScheme.body.key}`);
+    for (const origin of ['LocalHost:39986', 'localhost:39986/path', 'ftp://localhost:39986']) {
+      const bo = await withJar('/cia/rp/create', { method: 'POST', body: JSON.stringify({ name: 'zkNOSCHB', origin }) });
+      assert.equal(bo.status, 400, j(bo.body)); assert.equal(bo.body.reason, 'bad_origin', `주소 ${origin}`);
+    }
     const local = await withJar('/cia/rp/create', { method: 'POST', body: JSON.stringify({ name: 'zkLOCAL', origin: 'http://localhost:39988' }) });
     assert.equal(local.body.command, `bash scripts/new_rp.sh zkLOCAL 39988 ${local.body.key}`, 'localhost 면 new_rp.sh 기본과 같아 포트만');
     const tls = await withJar('/cia/rp/create', { method: 'POST', body: JSON.stringify({ name: 'zkTLS', origin: 'https://rp.example.com' }) });

@@ -820,10 +820,12 @@ app.get('/cia/rp/me', requireOperator, (req, res) => {
 const RP_ORIGIN_RE = /^https?:\/\/[^/\s]+$/;   // register_rp 와 같은 모양 — http(s)://host[:port], 경로 없음
 /** 서비스 주소(2026-11-06): 앞뒤 공백·끝 슬래시만 떼고, 그 뒤에는 **정규형**(URL.origin 과 같음 — 소문자 호스트, 기본 포트 생략, 경로 없음)만 받는다.
  *  register_rp 는 RP 가 보낸 origin 을 그대로 대조·인증서에 넣으므로(정규화하지 않는다) 슬롯 주소도 RP 가 보낼 문자열 그대로여야 한다.
- *  IPv6 리터럴은 받지 않는다(new_rp.sh --host 에 못 쓴다). 형식이 아니면 null. (리뷰 HIGH-1) */
+ *  IPv6 리터럴은 받지 않는다(new_rp.sh --host 에 못 쓴다). 형식이 아니면 null. (리뷰 HIGH-1)
+ *  2026-11-11(사용자 지적): 스킴 없이 "localhost:3100" 처럼 넣으면 http:// 를 붙여 본다 — 그 밖의 정규화(대문자·경로)는 여전히 하지 않는다. */
 function canonicalOrigin(v) {
   if (typeof v !== 'string') return null;
-  const s = v.trim().replace(/\/+$/, '');
+  let s = v.trim().replace(/\/+$/, '');
+  if (s && !/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) s = `http://${s}`;
   if (!RP_ORIGIN_RE.test(s)) return null;
   let u; try { u = new URL(s); } catch { return null; }
   if (u.origin !== s || u.hostname.startsWith('[')) return null;
