@@ -631,6 +631,29 @@
       return v && v.version === 2 && dec(v.uid) && dec(v.s_u) && BigInt(v.s_u) > 0n && BigInt(v.s_u) < (1n << 250n) ? { uid: v.uid, s_u: v.s_u, profile } : null;
     }
 
+    /** 속성 변경(2026-11-11, 스펙 D19): 로그인 전에 속성 도구 기록의 속성이 에이전트 값과 다르면 PUT /wallet/profile·Snap syncAttrs 로 맞춘다 —
+     *  그러면 이번 로그인이 새 속성의 C_u 를 받는다. 기록이 없거나 같으면 null. 기록의 uid·salt 가 이 등록과 다르면 맞추지 않고 { ok:false, reason } —
+     *  다른 계정이나 다른 salt 로 만든 기록으로 속성을 바꾸지 않게(salt 는 auid = Poseidon(uid, salt) 로 대조한다). */
+    async function syncAttrsFromRecord({ step, log }) {
+      const rec = await readAttrRecord();
+      if (!rec?.profile) return null;
+      let st = null;
+      try { st = await (await fetch('/wallet/status')).json(); } catch { return null; }   // 못 읽으면 맞추지 않고 진행 — 로그인 자체는 에이전트가 다시 거른다
+      if (!st?.registered) return null;
+      const cur = st.profile ?? {};
+      const keys = new Set([...Object.keys(cur), ...Object.keys(rec.profile)]);
+      if ([...keys].every((k) => String(cur[k] ?? '').trim() === String(rec.profile[k] ?? '').trim())) return null;
+      step('속성 도구 기록의 속성이 바뀌었다 — 스냅 속성을 맞추는 중…');
+      if (rec.uid !== String(st.uid)) { log(`기록 uid=${rec.uid}  등록 uid=${st.uid}`); return { ok: false, reason: 'attr_record_uid_mismatch' }; }
+      if (!(await loadAttrBundle())) return { ok: false, reason: 'bundle_missing' };
+      if ((await Mode3Attr.auidOf({ uid: BigInt(rec.uid), s_u: BigInt(rec.s_u) })).toString() !== String(st.auid)) return { ok: false, reason: 'attr_record_salt_mismatch' };
+      const { status, body: b } = await putJson('/wallet/profile', { profile: rec.profile });
+      if (status !== 200) { log(errText(status, b)); return { ok: false, reason: b.reason ?? 'wallet_error', detail: b.detail ?? null }; }
+      if (b.attrsChanged) await invokeSnap('syncAttrs', { attrs: b.attrsChanged });
+      log(`속성 반영: ${JSON.stringify(b.profile)}`);
+      return { ok: true };
+    }
+
     /** 등록 코드(uid·code)로 등록(2026-11-09 에 함수로 뽑음 — 서비스 첫 로그인 중의 등록(processAuthorize)과 옛 mode3-register 팝업 경로 공용).
      *  Snap register({uid}) → 에이전트 /wallet/register { uid, code, s_u, sk_u } → Snap storeRegistration. 성공 { ok:true, slot, auid, issue_code|null } / 실패 { ok:false, reason, detail? }. */
     async function codeRegister({ uid, code, auid = null, step, log }) {
@@ -848,6 +871,8 @@
         }
 
         if (!(await connect())) return;
+        const sync = await syncAttrsFromRecord({ step, log });   // 증인(consentLogin)이 새 속성을 싣도록 그 앞에서
+        if (sync && !sync.ok) { step('속성 맞추기 실패 — 로그인하지 않는다.'); return reply(sync); }
         step('로그인 증인 준비 중…');
         const witness = await consentLogin(req);
         if (!witness) { step('동의 거절'); return reply({ ok: false, reason: 'user_denied' }); }

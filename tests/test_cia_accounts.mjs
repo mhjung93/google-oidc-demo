@@ -718,6 +718,37 @@ try {
       assert.equal(p2.name, undefined); assert.equal(p2.sub, iss2.req.auid_s.toString());
     } finally { await cia7.stop(); }
   });
+  // 2026-11-11(사용자 결정): 속성 변경 = 내 정보의 커밋먼트를 **다른 값으로** 바꿔 저장. IdP 는 속성 값을 모르므로(D15) 이 저장을 신호로 본다.
+  await t('속성 변경(/cia/user/profile 다른 값 저장): 활성 C_u 은퇴·슬롯 0, 살아 있는 세션 폐기 트리 삽입(revokedSessions), 첫 저장·같은 값·비우기는 그대로, 다음 발급이 슬롯을 다시 채운다', async () => {
+    const cia8 = await startIsolatedCia();
+    try {
+      const withJar = makeJar(cia8.base);
+      assert.equal((await withJar('/cia/user/login', { method: 'POST', body: JSON.stringify({ uid: '12345', pwd: 'password123' }) })).status, 200);
+      const u = userOf(await cia8.registerUser('12345', 'password123'), '12345', TESTUSER_ATTRS);
+      const iss = await issueV11(cia8, u, { arid, provider });
+      assert.equal(iss.r.status, 200, j(iss.r.body));
+      const save = (name) => withJar('/cia/user/profile', { method: 'POST', body: JSON.stringify({ name }) });
+      const leaves0 = (await cia8.get('/cia/state')).body.leafCount;
+      const first = await save('C1');
+      assert.equal(first.status, 200, j(first.body)); assert.equal(first.body.revokedSessions, 0, '첫 저장은 변경이 아니다'); assert.equal(first.body.retired, 0);
+      assert.ok((await withJar('/cia/user/me')).body.activeCf_u, '첫 저장 뒤에도 C_u 활성');
+      const same = await save('C1');
+      assert.equal(same.body.revokedSessions, 0, '같은 값'); assert.equal(same.body.retired, 0);
+      const ch = await save('C2');
+      assert.equal(ch.status, 200, j(ch.body)); assert.equal(ch.body.revokedSessions, 1, j(ch.body)); assert.equal(ch.body.retired, 1);
+      const me = (await withJar('/cia/user/me')).body;
+      assert.equal(me.activeCf_u, null, '활성 C_u 은퇴'); assert.equal(me.registryLeaf, '0', '슬롯 비움');
+      assert.equal((await cia8.get('/cia/state')).body.leafCount, leaves0 + 1, '세션 리프 하나가 폐기 트리에');
+      const again = await save('C3');
+      assert.equal(again.body.revokedSessions, 0, '이미 폐기된 세션은 다시 넣지 않는다'); assert.equal(again.body.retired, 0);
+      const cleared = await save('');
+      assert.equal(cleared.status, 200); assert.equal(cleared.body.revokedSessions, 0);
+      const iss2 = await issueV11(cia8, u, { arid, provider });
+      assert.equal(iss2.r.status, 200, j(iss2.r.body));
+      const me2 = (await withJar('/cia/user/me')).body;
+      assert.ok(me2.activeCf_u, '다음 발급이 새 C_u'); assert.notEqual(me2.registryLeaf, '0', '슬롯을 다시 채운다');
+    } finally { await cia8.stop(); }
+  });
 } finally { await cia.stop(); }
 
 provider.destroy();

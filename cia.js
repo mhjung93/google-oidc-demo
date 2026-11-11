@@ -927,15 +927,52 @@ app.get('/cia/user/me', requireUser, (req, res) => {
 // 프로필(2026-11-09 Phase 1): OIDC profile 스코프의 `name` 한 칸. 사용자가 속성 도구(지갑 오리진 /attr.html)에서 만든 커밋먼트를 붙여 넣는다 —
 // IdP 는 형식만 보고(한 줄·256자 이하) 뜻은 모른다(불투명). 지갑 등록 여부와 무관하게 로그인만 하면 저장할 수 있다(사용자 결정: MetaMask 와 별개 흐름).
 // 빈 문자열이면 지운다. 2026-11-11 부터 ID 토큰에는 싣지 않는다(RP 간 연결 방지) — IdP 에만 남는다.
-app.post('/cia/user/profile', requireUser, (req, res) => {
-  const { name } = req.body ?? {};
-  if (typeof name !== 'string' || name.length > 256 || /[\u0000-\u001f\u007f]/.test(name)) return res.status(400).json({ error: 'bad_profile', reason: 'bad_profile' });
-  const a = state.accounts[req.session.uid];
-  const v = name.trim();
-  if (v) a.profile = { name: v, updatedAt: new Date().toISOString() }; else delete a.profile;
-  persist();
-  res.json({ profile: a.profile ?? null });
+// 2026-11-11(사용자 결정): 이미 저장된 값을 **다른 값으로** 바꾸면 속성 변경으로 보고 retireForAttrChange 를 탄다(첫 저장·같은 값·비우기는 아님).
+app.post('/cia/user/profile', requireUser, async (req, res) => {
+  try {
+    const { name } = req.body ?? {};
+    if (typeof name !== 'string' || name.length > 256 || /[\u0000-\u001f\u007f]/.test(name)) return res.status(400).json({ error: 'bad_profile', reason: 'bad_profile' });
+    const a = state.accounts[req.session.uid];
+    const v = name.trim();
+    const changed = Boolean(v) && Boolean(a.profile?.name) && a.profile.name !== v;
+    if (v) a.profile = { name: v, updatedAt: new Date().toISOString() }; else delete a.profile;
+    persist();
+    const r = changed ? await retireForAttrChange(req.session.uid) : { retired: 0, revokedSessions: 0, published: false };
+    res.json({ profile: a.profile ?? null, ...r });
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
+/** 속성 변경(2026-11-11): 활성 C_u 를 은퇴시키고 슬롯을 비운다(scope=credential 과 같다 — 다음 로그인이 새 속성의 C_u 로 다시 채운다).
+ *  살아 있는 세션은 bound 0 으로 폐기 트리에 넣는다 — 등록부 대조만으로는 root 유효 창 동안 옛 세션이 남는다. 만료된 세션은 넣지 않는다(/cia/revoke 와 같은 기준). */
+async function retireForAttrChange(uid) {
+  const acct = state.accounts[uid];
+  const retired = retireActiveCred(uid);
+  if (retired) setSlot(uid, 0n);
+  persist();
+  const heads = new Map();
+  const live = [];
+  for (const rec of acct.sessions ?? []) {
+    if (rec.revokedAt) continue;
+    if (!heads.has(rec.chainid)) { try { heads.set(rec.chainid, await headOf(rec.chainid)); } catch { heads.set(rec.chainid, null); } }
+    const head = heads.get(rec.chainid);
+    if (head !== null && head > BigInt(rec.max_height)) continue;   // 체인을 못 읽으면 살아 있는 것으로 보고 넣는다(fail-closed)
+    live.push({ Cf_s: rec.Cf_s, leaf: (await sessionLeaf(BigInt(rec.Cf_s), 0n)).toString() });
+  }
+  let revokedSessions = 0;
+  for (const { Cf_s, leaf } of live) {
+    // await 사이에 하트비트가 acct.sessions 를 갈아끼울 수 있다(/cia/revoke 와 같은 이유) — 넣기 직전에 다시 찾는다.
+    const cur = (acct.sessions ?? []).find((s) => s.Cf_s === Cf_s);
+    if (!cur || cur.revokedAt) continue;
+    const inserted = await tree.insert(BigInt(leaf));
+    if (inserted) { state.revoked.push(leaf); state.pending.push(leaf); }
+    cur.revokedAt = new Date().toISOString();
+    cur.bound = '0';
+    if (cur.pk_i) queueBound(cur.pk_i, cur.bound);
+    revokedSessions++;
+  }
+  persist();
+  const pub = retired || revokedSessions ? await publishSafely() : { published: false };
+  return { retired, revokedSessions, published: Boolean(pub.published) };
+}
 app.post('/cia/user/register_code', requireUser, (req, res) => {
   const a = state.accounts[req.session.uid];
   if (a.pk_u) return res.status(409).json({ error: 'already registered', reason: 'already_registered' });

@@ -215,7 +215,9 @@
     $('profileSaveBtn').disabled = true;
     const r = await post('/cia/user/profile', { name: $('profileName').value });
     $('profileSaveBtn').disabled = false;
-    verdict($('profileVerdict'), r.status === 200, r.status === 200 ? 'idp_profile_saved' : 'idp_profile_failed', r.status === 200 ? () => ({ summary: r.body?.profile ? (tt('idp_profile_saved_summary') || '프로필을 저장했습니다. 이제 서비스에 로그인하면 이 커밋먼트가 전달됩니다.') : (tt('idp_profile_cleared_summary') || '프로필을 비웠습니다.') }) : { reason: r.body?.reason ?? `HTTP ${r.status}`, detail: r.body });
+    verdict($('profileVerdict'), r.status === 200, r.status === 200 ? 'idp_profile_saved' : 'idp_profile_failed', r.status === 200 ? () => ({ summary: !r.body?.profile ? (tt('idp_profile_cleared_summary') || '프로필을 비웠습니다.')
+      : (r.body.retired || r.body.revokedSessions) ? (tt('idp_profile_attr_changed_summary', { n: r.body.revokedSessions ?? 0 }) || `속성 변경으로 저장 — 기존 세션 ${r.body.revokedSessions ?? 0}개 폐기`)
+      : (tt('idp_profile_saved_summary') || '프로필을 저장했습니다.') }) : { reason: r.body?.reason ?? `HTTP ${r.status}`, detail: r.body });
     await refreshMe();
   });
   $('unlinkBtn').addEventListener('click', async () => {

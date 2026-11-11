@@ -513,6 +513,8 @@ try {
     const chg = await wallet.put('/wallet/profile', { profile: newProfile });
     assert.equal(chg.status, 200, j(chg.body));
     assert.equal(chg.body.changed, true, '페이지를 거치지 않은 PUT 도 에이전트 파일의 attrs 를 바꾼다');
+    // 2026-11-11: 로그인 팝업은 속성 도구 기록을 기준으로 속성을 맞춘다 — 기록도 같은 값으로 두어야 이 케이스(Snap 만 모르는 상태)가 그대로 남는다.
+    await walletPage.evaluate((p) => { const r = JSON.parse(localStorage.getItem('mode3_attr_tool_v1')); localStorage.setItem('mode3_attr_tool_v1', JSON.stringify({ ...r, profile: p })); }, newProfile);
     // Snap 은 이 변경을 전혀 모른다 — syncAttrs 를 부른 적이 없으니 그대로 옛 attrs·C_u 를 들고 있다.
     assert.deepEqual(snapState.registration.attrs, beforeAttrs, 'Snap 은 아직 옛 속성을 들고 있다(일부러 어긋낸 상태)');
     assert.ok(snapState.userCred, 'Snap 은 아직 옛 C_u 도 그대로 들고 있다');
@@ -524,6 +526,37 @@ try {
     assert.ok(snapState.userCred, '새 C_u 가 Snap 에 남아 있다(syncAttrs 를 updateUserCred 보다 나중에 하면 지워진다)');
     assert.notEqual(snapState.userCred.Cf_u, beforeCf, '옛 C_u 가 아니라 새로 받은 것이다');
     assert.equal((await wallet.get('/wallet/status')).body.userCred.Cf_u, snapState.userCred.Cf_u, '에이전트의 공개 Cf_u 와 같다');
+  });
+
+  // 2026-11-11(사용자 보고: 속성 도구에서 바꿔도 반영되지 않았다): 로그인 팝업이 속성 도구 기록의 속성을 에이전트·Snap 에 먼저 맞추고 새 C_u 를 받는다.
+  await t('속성 도구 기록의 salt 가 등록과 다르면 속성을 맞추지 않고 멈춘다(attr_record_salt_mismatch) — 에이전트 속성은 그대로', async () => {
+    const status0 = (await wallet.get('/wallet/status')).body;
+    const rec = JSON.parse(await walletPage.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')));
+    await walletPage.evaluate((r) => localStorage.setItem('mode3_attr_tool_v1', JSON.stringify(r)), { ...rec, s_u: '12345', profile: { ...status0.profile, country: 'US' } });
+    try {
+      const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
+      await completeIdpAuth(popup);
+      await waitText(rpPage, '#verdict', '속성 도구 기록의 salt 가 등록과 다릅니다', 120_000);
+      await awaitPopupClosed(popup);
+      assert.deepEqual((await wallet.get('/wallet/status')).body.profile, status0.profile, '에이전트 속성은 바뀌지 않았다');
+    } finally { await walletPage.evaluate((r) => localStorage.setItem('mode3_attr_tool_v1', JSON.stringify(r)), rec); }
+  });
+
+  await t('속성 도구에서 속성을 바꾸면 다음 로그인 팝업이 에이전트·Snap 속성을 기록 값으로 맞추고 새 C_u 를 받는다', async () => {
+    const beforeCf = snapState.userCred?.Cf_u ?? null;
+    assert.ok(beforeCf, '시작 시 Snap 에 C_u 가 있다');
+    const status0 = (await wallet.get('/wallet/status')).body;
+    const newProfile = { ...status0.profile, country: status0.profile.country === 'KR' ? 'JP' : 'KR' };
+    await walletPage.evaluate((p) => { const r = JSON.parse(localStorage.getItem('mode3_attr_tool_v1')); localStorage.setItem('mode3_attr_tool_v1', JSON.stringify({ ...r, profile: p })); }, newProfile);
+    const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
+    await completeIdpAuth(popup);
+    await waitText(rpPage, '#verdict', '로그인 성공', 240_000);
+    await awaitPopupClosed(popup);
+    const st = (await wallet.get('/wallet/status')).body;
+    assert.deepEqual(st.profile, newProfile, '에이전트 속성이 속성 도구 기록 값이 됐다');
+    assert.deepEqual(snapState.registration.attrs, st.attrs, 'Snap 속성도 같다');
+    assert.ok(snapState.userCred, '새 C_u 가 Snap 에 있다');
+    assert.notEqual(snapState.userCred.Cf_u, beforeCf, '옛 C_u 가 아니라 새 속성으로 받은 것이다');
   });
 
   await t('폐기 상한(2026-10-22): 세션 카드에 nonce, 폐기 때 허용 수 입력(Snap 동의 창 없음) → 체인 반영 대기 행 → 재로그인 뒤 "지금 반영" → 행 사라짐', async () => {
