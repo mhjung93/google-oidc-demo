@@ -161,6 +161,35 @@ try {
     assert.equal((await cia.post('/cia/register', { uid: '12345', pwd: 'password123', auid: '1', pk_u: dummyPk, sig_reg: dummySig })).status, 409);
   });
 
+  await t('복구(2026-11-12, 스펙 snap-derived-secrets S3): 같은 auid·pk_u·서명으로 재등록하면 201 restored·같은 slot, 슬롯을 새로 잡지 않는다; 하나라도 다르면 409; disabled 면 409 account_disabled', async () => {
+    const su = await cia.post('/cia/signup', { id: 'restore-1', pwd: 'restore-pw-1' }); assert.equal(su.status, 201, JSON.stringify(su.body));
+    const uidR = su.body.uid;
+    const reg = await createRegistration(BigInt(uidR), Buffer.alloc(32, 7));
+    const body = async (r) => ({ uid: uidR, pwd: 'restore-pw-1', auid: r.auid.toString(), pk_u: pointToStrings(r.pk_u), sig_reg: await signRegistration(r.sk_u, BigInt(uidR), r.auid) });
+    const first = await cia.post('/cia/register', await body(reg));
+    assert.equal(first.status, 201, JSON.stringify(first.body)); assert.equal(first.body.restored, undefined, '새 등록에는 restored 가 없다');
+    const snap = async () => { const { head: _h, ...rest } = (await cia.get('/cia/state')).body; return rest; };
+    const stBefore = await snap();
+    const again = await cia.post('/cia/register', await body(reg));
+    assert.equal(again.status, 201, JSON.stringify(again.body)); assert.equal(again.body.restored, true); assert.equal(again.body.slot, first.body.slot);
+    assert.equal(again.body.uid, uidR); assert.equal(again.body.provider, 'demo');
+    assert.deepEqual(await snap(), stBefore, '복구는 상태(등록부·epoch)를 바꾸지 않는다');
+    // 같은 uid, 다른 비밀(다른 SRP) — auid·pk_u 가 다르다
+    const other = await createRegistration(BigInt(uidR), Buffer.alloc(32, 8));
+    assert.equal((await cia.post('/cia/register', await body(other))).status, 409);
+    // auid 는 같고 pk_u 만 다름 — 서명은 그 다른 키로
+    const mixed = { ...(await body(reg)), pk_u: pointToStrings(other.pk_u), sig_reg: await signRegistration(other.sk_u, BigInt(uidR), reg.auid) };
+    assert.equal((await cia.post('/cia/register', mixed)).status, 409, 'pk_u 가 다르면 복구가 아니다');
+    // 같은 auid·pk_u 지만 서명이 틀림(다른 키로 서명)
+    const badSig = { ...(await body(reg)), sig_reg: await signRegistration(other.sk_u, BigInt(uidR), reg.auid) };
+    assert.equal((await cia.post('/cia/register', badSig)).status, 400);
+    assert.deepEqual(await snap(), stBefore, '거절된 재등록도 상태를 바꾸지 않는다');
+    // 폐기된 계정은 되살리지 않는다
+    assert.equal((await cia.post('/cia/account/self_revoke', { uid: uidR, pwd: 'restore-pw-1' })).status, 200);
+    const dis = await cia.post('/cia/register', await body(reg));
+    assert.equal(dis.status, 409, JSON.stringify(dis.body)); assert.equal(dis.body.reason, 'account_disabled');
+  });
+
   await t('issue V11: 첫 발급 — 새 C_u 가 슬롯에 게시(published:true)되고 토큰·세션 기록; 같은 C_u 재발급은 published:false, 활성 자격증명은 하나', async () => {
     const a = await issue(user);
     assert.equal(a.r.status, 200, JSON.stringify(a.r.body));

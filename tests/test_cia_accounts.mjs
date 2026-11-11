@@ -156,8 +156,14 @@ try {
       assert.equal(wrong.status, 403, j(wrong.body)); assert.equal(wrong.body.reason, 'register_auid_mismatch');
       const r1 = await cia8.post('/cia/register', { uid: uid8, code: rc.body.code, auid: reg.auid.toString(), pk_u: pointToStrings(reg.pk_u), sig_reg: await signRegistration(reg.sk_u, BigInt(uid8), reg.auid) });
       assert.equal(r1.status, 201, j(r1.body)); assert.match(r1.body.issue_code, /^[0-9a-f]{64}$/, '등록 코드 경로는 발급 코드를 함께 준다');
+      // 2026-11-12(스펙 snap-derived-secrets S3): 이미 등록된 계정도 같은 auid 면 등록 코드를 준다(복구 — 같은 비밀로 다시 등록). 다른 auid 면 409.
       const again = await cia8.post('/cia/auth/code', { id: 'reg-at-login', pwd: 'password-r1', purpose: 'register', auid: reg.auid.toString() });
-      assert.equal(again.status, 409, j(again.body)); assert.equal(again.body.reason, 'already_registered');
+      assert.equal(again.status, 200, j(again.body)); assert.equal(again.body.purpose, 'register');
+      const diff = await cia8.post('/cia/auth/code', { id: 'reg-at-login', pwd: 'password-r1', purpose: 'register', auid: other.auid.toString() });
+      assert.equal(diff.status, 409, j(diff.body)); assert.equal(diff.body.reason, 'already_registered');
+      const rr = await cia8.post('/cia/register', { uid: uid8, code: again.body.code, auid: reg.auid.toString(), pk_u: pointToStrings(reg.pk_u), sig_reg: await signRegistration(reg.sk_u, BigInt(uid8), reg.auid) });
+      assert.equal(rr.status, 201, j(rr.body)); assert.equal(rr.body.restored, true); assert.equal(rr.body.slot, r1.body.slot);
+      assert.match(rr.body.issue_code, /^[0-9a-f]{64}$/, '복구도 등록 코드 경로면 발급 코드를 준다');
       const u8 = userOf({ ...reg, slot: r1.body.slot }, uid8, TESTUSER_ATTRS);
       const ok = await issueV11(cia8, u8, { arid, provider, overrides: { auth_code: r1.body.issue_code } });
       assert.equal(ok.r.status, 200, j(ok.r.body), '등록 응답의 발급 코드로 바로 발급된다');

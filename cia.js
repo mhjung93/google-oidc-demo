@@ -1022,9 +1022,10 @@ app.post('/cia/auth/code', (req, res) => {
   // 등록 코드(2026-11-09, 사용자 결정): 지갑 등록은 zkID 페이지가 아니라 서비스의 "zkID 로 로그인" 중에 처음 한 번 일어난다 — 팝업이 이 인증 창을 등록 모드로 열고
   // 아이디·비밀번호와 auid(2026-11-11 — 속성 도구가 계산해 보여 준 값)를 넣으면 등록 코드와 uid 를 받아 /cia/register 로 간다. 이미 등록된 계정이면 409.
   if (purpose === 'register') {
-    if (a.pk_u) return res.status(409).json({ error: 'already registered', reason: 'already_registered' });
     // 2026-11-11(사용자 결정): 첫 등록에도 auid 를 받는다 — 속성 도구가 uid·salt 로 계산해 보여 준 값. 코드에 묶어 /cia/register 의 auid 와 대조한다.
     if (!isDec(auid)) return res.status(400).json({ error: 'auid required', reason: 'bad_auid' });
+    // 2026-11-12(스펙 snap-derived-secrets S3): 이미 등록된 계정도 같은 auid 면 등록 코드를 준다 — 복구(같은 비밀로 다시 등록). 다르면 409.
+    if (a.pk_u && String(a.auid) !== BigInt(auid).toString()) return res.status(409).json({ error: 'already registered', reason: 'already_registered' });
     return res.json({ ...issueCode({ uid, purpose: 'register', auid: BigInt(auid).toString() }), uid, purpose: 'register' });
   }
   if (!a.pk_u) return res.status(409).json({ error: 'not registered', reason: 'not_registered' });
@@ -1071,7 +1072,8 @@ app.post('/cia/register', userCors, async (req, res) => {
   // 2026-11-09: 등록 코드로 등록했으면(서비스 첫 로그인 중의 등록) 같은 사용자가 비밀번호를 다시 넣지 않고 바로 발급으로 이어 가게 이 auid 에 묶인
   // 발급 코드를 함께 준다(인증 창에서 방금 비밀번호를 확인했다). ISSUE_AUTH 가 key 모드면 쓰이지 않을 뿐 해는 없다(1회용·TTL).
   const issue_code = code !== undefined ? issueCode({ uid, purpose: 'issue', auid: BigInt(auid).toString() }).code : undefined;
-  res.status(201).json({ slot: made.slot, schemaHash: ATTR_SCHEMA_HASH, uid, provider, ...(issue_code ? { issue_code } : {}) });
+  // 복구(2026-11-12)는 저장된 provider 가 정본 — 같은 상태로 201 을 준다(에이전트·헬퍼가 201 만 등록 성공으로 본다, 계획 Ruling P1).
+  res.status(201).json({ slot: made.slot, schemaHash: ATTR_SCHEMA_HASH, uid, provider: made.restored ? (state.accounts[uid].provider ?? provider) : provider, ...(issue_code ? { issue_code } : {}), ...(made.restored ? { restored: true } : {}) });
 });
 /** 계정 등록의 공통 부분(/cia/register 와 /cia/issue 의 id_token 암묵 등록이 같이 쓴다, 2026-10-16): 409·auid 범위·pk_u 점·sig_reg 검증·슬롯 배정.
  *  beforeCommit(수정 라운드 1): 서명 검증을 통과한 뒤, 상태 변경 바로 앞에서 동기로 부른다 — /cia/register 의 code 경로가 1회용 코드를
@@ -1081,7 +1083,14 @@ async function registerAccount({ uid, provider, auid, pk_u, sig_reg, beforeCommi
   const fail = (status, body) => ({ error: { status, body } });
   if (!isDec(auid) || !isPt(pk_u) || !sig_reg) return fail(400, { error: 'auid, pk_u{x,y}, sig_reg required' });
   // Task 10(B1): 가입만 하고 등록 전인 계정(pk_u:null)은 막지 않는다 — "이미 등록됨" 은 pk_u 가 채워져 있을 때뿐이다.
-  if (state.accounts[uid]?.pk_u) return fail(409, { error: 'already registered' });
+  // 복구(2026-11-12, 스펙 snap-derived-secrets S3): 스냅 비밀이 시드에서 유도되므로, MetaMask 를 다시 깐 사용자는 같은 (auid, pk_u) 로 다시 등록한다.
+  // 저장값과 둘 다 같고 sig_reg 가 그 pk_u 로 맞으면 슬롯을 새로 잡지 않고 기존 등록을 돌려준다(상태 변경·게시 없음). 하나라도 다르면 지금처럼 409.
+  // 로그인 수단(비밀번호·코드·Google)과 같은 시드가 둘 다 있어야 하므로 공격면은 그대로다. 폐기된 계정은 되살리지 않는다.
+  const prev = state.accounts[uid];
+  const sameKeys = Boolean(prev?.pk_u) && isPt(pk_u) && String(prev.auid) === BigInt(auid).toString()
+    && String(prev.pk_u.x) === BigInt(pk_u.x).toString() && String(prev.pk_u.y) === BigInt(pk_u.y).toString();
+  if (prev?.pk_u && !sameKeys) return fail(409, { error: 'already registered' });
+  if (sameKeys && prev.disabled) return fail(409, { error: 'account disabled', reason: 'account_disabled' });
   if (BigInt(auid) >= F.p) return fail(400, { error: 'auid is not a field element' });   // Poseidon 출력 범위 — 비정규 값은 등록부 리프·π 와 어긋난다
   if (!(await isValidPoint(pointFromStrings(pk_u)))) return fail(400, { error: 'pk_u is not a valid subgroup point' });
   let ok = false;
@@ -1091,6 +1100,10 @@ async function registerAccount({ uid, provider, auid, pk_u, sig_reg, beforeCommi
     ok = sigReg !== null && eddsa.verifyPoseidon(m, sigReg, [F.e(BigInt(pk_u.x)), F.e(BigInt(pk_u.y))]);
   } catch { ok = false; }
   if (!ok) return fail(400, { error: 'bad_registration_signature' });
+  if (sameKeys) {
+    if (beforeCommit && !beforeCommit()) return fail(401, { error: 'bad_code', reason: 'bad_code' });
+    return { slot: prev.slot, restored: true };
+  }
   if (state.accounts[uid]?.pk_u) return fail(409, { error: 'already registered' });   // await 사이 경합
   if (beforeCommit && !beforeCommit()) return fail(401, { error: 'bad_code', reason: 'bad_code' });
   const slot = state.registry.next++;
