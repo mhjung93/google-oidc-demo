@@ -6,6 +6,7 @@
 // 체인도 브라우저도 필요 없지만 snap-mode3/node_modules(@metamask/snaps-sdk)를 전제하므로 unit 이 아니라 별도 그룹이다.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import { validateWitness } from '../../lib/mode3_secret_source.js';
 import { auidOf } from '../../lib/mode3_credential.js';
 
@@ -24,6 +25,7 @@ async function t(name, fn) {
 // ---- 전역 snap 스텁 ----
 const clone = (v) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
 const store = { state: null };          // snap_manageState 의 암호화 저장소 대역
+const entropy = { srp: 'srp-A' };        // snap_getEntropy 의 SRP 대역 — 테스트가 바꿔 "다른 SRP" 를 흉내 낸다(2026-11-12)
 const dialogs = [];                     // 표시된 대화상자(내용 검사용)
 const answers = [];                     // 다음 대화상자들이 돌려줄 값
 
@@ -40,6 +42,11 @@ globalThis.snap = {
       dialogs.push(clone(params));
       if (!answers.length) throw new Error('stub: 대화상자 응답 큐가 비었다');
       return answers.shift();
+    }
+    if (method === 'snap_getEntropy') {
+      // MetaMask 는 (SRP, 스냅 ID, salt) 로 결정적 32바이트를 준다 — 스텁은 SRP 대역 문자열과 salt 의 SHA-256.
+      if (params?.version !== 1 || typeof params?.salt !== 'string') throw new Error('stub: snap_getEntropy 는 { version: 1, salt }');
+      return '0x' + createHash('sha256').update(`${entropy.srp}|${params.salt}`).digest('hex');
     }
     throw new Error(`stub: 모르는 method ${method}`);
   },
@@ -340,7 +347,7 @@ await t('register 는 보류 등록을 덮어쓴다(완성 등록만 already_reg
   answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
   const p = await call('prepareRegister', {});
   const r = await call('register', { uid: '42' });
-  assert.equal(r.uid, '42'); assert.notEqual(r.sk_u, p.sk_u, 'register 는 새 비밀을 만든다');
+  assert.equal(r.uid, '42'); assert.equal(r.sk_u, p.sk_u, '2026-11-12: 비밀은 시드 유도라 보류 등록과 같다 — register 는 uid 를 채운 완성 등록으로 덮어쓴다');
   assert.equal((await call('getPublicInfo', {})).pending, false);
   answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
   answers.push(true); const p2 = await call('prepareRegister', {});
@@ -349,18 +356,43 @@ await t('register 는 보류 등록을 덮어쓴다(완성 등록만 already_reg
   assert.equal(store.state, null);
 });
 
-await t('register({ uid, s_u }): 사용자가 정한 salt 를 s_u 로 쓴다(2026-11-10) — 형식이 틀리거나 0·2^250 이상이면 bad_salt, 빈 값이면 새로 뽑는다', async () => {
-  await assert.rejects(() => call('register', { uid: '7', s_u: 'abc' }), /bad_salt/);
-  await assert.rejects(() => call('register', { uid: '7', s_u: '0' }), /bad_salt/);
-  await assert.rejects(() => call('register', { uid: '7', s_u: (1n << 250n).toString() }), /bad_salt/);
-  assert.equal(store.state?.registration ?? null, null, '거절되면 아무것도 저장하지 않는다');
-  const r = await call('register', { uid: '7', s_u: ' 00123456789 ' });
-  assert.equal(r.s_u, '123456789', '앞뒤 공백·앞자리 0 은 정규화'); assert.equal(store.state.registration.s_u, '123456789');
-  assert.match(r.sk_u, /^[0-9a-f]{64}$/, 'sk_u 는 늘 새로 만든다');
+await t('유도(2026-11-12): 같은 SRP 면 register·prepareRegister·getSalt 가 같은 s_u·sk_u, 다른 SRP 면 다르다; reset 뒤에도 같다', async () => {
+  entropy.srp = 'srp-A';
+  const g = await call('getSalt', {});
+  assert.match(g.s_u, /^[0-9]+$/); assert.ok(BigInt(g.s_u) >= 1n && BigInt(g.s_u) < (1n << 250n));
+  assert.equal(store.state?.registration ?? null, null, 'getSalt 는 상태를 만들지 않는다');
+  const r = await call('register', { uid: '7' });
+  assert.equal(r.s_u, g.s_u); assert.match(r.sk_u, /^[0-9a-f]{64}$/);
   answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
-  const r2 = await call('register', { uid: '7', s_u: '' });
-  assert.match(r2.s_u, /^[0-9]+$/); assert.notEqual(r2.s_u, '123456789', '빈 값이면 새로 뽑는다');
+  const p = await call('prepareRegister', {});
+  assert.equal(p.s_u, r.s_u, 'reset 뒤 보류 등록도 같은 s_u'); assert.equal(p.sk_u, r.sk_u, '같은 sk_u');
   answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
+  entropy.srp = 'srp-B';
+  const b = await call('register', { uid: '7' });
+  assert.notEqual(b.s_u, r.s_u, '다른 SRP 면 다른 s_u'); assert.notEqual(b.sk_u, r.sk_u);
+  assert.equal((await call('getSalt', {})).s_u, b.s_u, '등록 뒤에도 getSalt 는 같은 값');
+  answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
+  entropy.srp = 'srp-A';
+});
+
+await t('register({ uid, s_u }): s_u 는 유도값과 같을 때만 받는다 — 다르면 salt_not_derived 이고 아무것도 저장하지 않는다', async () => {
+  const { s_u } = await call('getSalt', {});
+  await assert.rejects(() => call('register', { uid: '7', s_u: '123456789' }), /salt_not_derived/);
+  await assert.rejects(() => call('register', { uid: '7', s_u: 'abc' }), /salt_not_derived/);
+  assert.equal(store.state?.registration ?? null, null);
+  const r = await call('register', { uid: '7', s_u: ` 0${s_u} ` });
+  assert.equal(r.s_u, s_u, '공백·앞자리 0 은 정규화 뒤 비교');
+  answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
+});
+
+await t('saltFromEntropy·skFromEntropy: 경계값과 형식 오류', async () => {
+  const { saltFromEntropy, skFromEntropy } = await import('../src/crypto.js');
+  assert.equal(saltFromEntropy('0x' + '00'.repeat(32)), '1', '0 → 1(0 은 쓰지 않는다)');
+  const max = (1n << 256n) - 1n; assert.equal(saltFromEntropy('0x' + 'ff'.repeat(32)), (1n + (max % ((1n << 250n) - 1n))).toString());
+  assert.equal(skFromEntropy('0x' + 'AB'.repeat(32)), 'ab'.repeat(32));
+  for (const bad of ['', '0x', '0x1234', 'zz'.repeat(32), '0x' + 'g'.repeat(64)]) {
+    assert.throws(() => saltFromEntropy(bad), /bad_entropy/); assert.throws(() => skFromEntropy(bad), /bad_entropy/);
+  }
 });
 
 await t('등록 전에는 비밀이 필요한 RPC 가 거절된다', async () => {

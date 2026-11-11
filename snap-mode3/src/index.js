@@ -8,7 +8,7 @@
 // @metamask/snaps-sdk 1.4.0 은 CommonJS·ESM 두 빌드를 함께 낸다. webpack 은 ESM 빌드를 집어 명명 export 가 보이고,
 // Node 는 CommonJS 빌드를 집어 default 하나만 보인다(단위 테스트가 이 경로다). 두 경우를 모두 받는다.
 import * as sdkNamespace from '@metamask/snaps-sdk';
-import { createRegistrationSecrets, ATTR_MAX, SCALAR_MAX } from './crypto.js';
+import { deriveRegistrationSecrets, ATTR_MAX, SCALAR_MAX } from './crypto.js';
 
 const sdk = typeof sdkNamespace.panel === 'function' ? sdkNamespace : sdkNamespace.default;
 const { panel, text, heading, divider } = sdk;
@@ -111,13 +111,12 @@ export const onRpcRequest = async ({ origin, request }) => {
       if (state.registration?.uid) fail('already_registered: 이미 등록돼 있다 (초기화하려면 reset)');
       const uid = String(params.uid ?? '').trim();
       if (!isDec(uid)) fail('bad_uid: uid 는 10진 숫자 문자열이어야 한다');
-      const secrets = createRegistrationSecrets();
-      // 2026-11-10(사용자 결정): 사용자가 속성 커밋먼트 도구에서 미리 정한 salt 를 지갑 창에 넣으면 그 값을 s_u 로 쓴다(C_attr 에 같은 salt 가 묶인다).
-      // 없으면 지금처럼 새로 뽑는다. sk_u 는 늘 여기서 만든다.
+      // 2026-11-12(스펙 snap-derived-secrets S1·S2): s_u·sk_u 는 시드에서 유도한다. 속성 도구가 getSalt 로 받은 salt 를 다시 실어 보내면
+      // 유도값과 같은지만 본다 — 다르면(옛 기록의 직접 입력 salt) 등록하지 않는다. 시드로 복구할 수 없는 계정이 섞이지 않게.
+      const secrets = await deriveRegistrationSecrets();
       if (params.s_u !== undefined && params.s_u !== null && params.s_u !== '') {
         const su = String(params.s_u).trim();
-        if (!isDec(su) || BigInt(su) === 0n || BigInt(su) >= SCALAR_MAX) fail('bad_salt: salt 는 1 이상 2^250 미만의 10진 숫자여야 한다');
-        secrets.s_u = BigInt(su).toString();
+        if (!isDec(su) || BigInt(su).toString() !== secrets.s_u) fail('salt_not_derived: salt 는 이 스냅이 시드에서 유도한 값이어야 한다(속성 도구 "스냅에서 가져오기")');
       }
       state.registration = { uid, s_u: secrets.s_u, auid: null, sk_u: secrets.sk_u, slot: null, attrs: null, registeredAt: new Date().toISOString() };
       state.userCred = null; await setState(state);
@@ -131,10 +130,17 @@ export const onRpcRequest = async ({ origin, request }) => {
       if (state.registration?.uid) fail('already_registered: 이미 등록돼 있다 (초기화하려면 reset)');
       const pend = state.registration;
       if (pend) return { s_u: pend.s_u, sk_u: pend.sk_u };
-      const secrets = createRegistrationSecrets();
+      const secrets = await deriveRegistrationSecrets();
       state.registration = { uid: null, s_u: secrets.s_u, auid: null, sk_u: secrets.sk_u, slot: null, attrs: null, provider: null, registeredAt: new Date().toISOString() };
       state.userCred = null; await setState(state);
       return { s_u: secrets.s_u, sk_u: secrets.sk_u };
+    }
+
+    // 속성 도구용(2026-11-12, 스펙 §2.3): 등록 전에도 시드에서 유도한 s_u 를 돌려준다. 등록 여부와 무관하게 같은 값이고 상태를 바꾸지 않는다.
+    // 부를 수 있는 오리진은 다른 RPC 와 같이 지갑 오리진(:5100)뿐이다 — 속성 도구(/attr.html)도 그 오리진에서 서빙된다.
+    case 'getSalt': {
+      const { s_u } = await deriveRegistrationSecrets();
+      return { s_u };
     }
 
     // salt(s_u) 를 지갑 페이지에 보여 준다 — 시연용(복구 코드 설계 2026-10-21 과 무관, 화면 표시만). 확인 창은 2026-11-05 에 뺐다.

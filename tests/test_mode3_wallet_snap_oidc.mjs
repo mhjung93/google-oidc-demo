@@ -83,7 +83,7 @@ try {
     for (const k of ['uid', 'slot', 'auid', 'attrs', 'provider']) assert.deepEqual(rs.body[k], r.body[k], `resume.${k}`);
     assert.deepEqual(rs.body.profile, r.body.profile);
     assert.ok(!('sk_u' in rs.body) && !('s_u' in rs.body));
-    const other = createSnapSim().prepareRegister();
+    const other = createSnapSim({ srp: 'other-srp' }).prepareRegister();   // 2026-11-12: 비밀이 시드 유도라 "다른 스냅" 은 다른 SRP
     const mm = await wallet.post('/wallet/register/resume', { s_u: other.s_u, sk_u: other.sk_u });
     assert.equal(mm.status, 409, j(mm.body)); assert.equal(mm.body.reason, 'secrets_mismatch');
     const mixed = await wallet.post('/wallet/register/resume', { s_u: prep.s_u, sk_u: other.sk_u });
