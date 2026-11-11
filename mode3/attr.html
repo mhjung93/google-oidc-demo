@@ -29,7 +29,7 @@
 <main class="cards">
   <section class="card span2">
     <div class="tool-head"><h2 data-i18n="attr_title">속성 커밋먼트 도구</h2><span class="badge muted" data-i18n="attr_badge_offline">서버와 통신하지 않음</span></div>
-    <p class="desc" data-i18n="attr_desc">내 속성(출생연도·국가 등)과 무작위 blind 로 커밋먼트를 만듭니다. 속성과 blind 는 이 브라우저에만 저장되고, 커밋먼트만 zkID 프로필의 "이름" 칸에 붙여 넣습니다. 지갑·IdP·서비스 어디와도 연결하지 않습니다.</p>
+    <p class="desc" data-i18n="attr_desc">내 속성(출생연도·국가 등)과 무작위 blind 로 커밋먼트를 만듭니다. 속성과 blind 는 이 브라우저에만 저장되고, 커밋먼트만 zkID 프로필의 "이름" 칸에 붙여 넣습니다. 스냅·IdP·서비스 어디와도 연결하지 않습니다.</p>
   </section>
 
   <section class="card">
@@ -40,7 +40,7 @@
            Snap 이 그 값을 저장한다. 이미 등록한 지갑이면 zk 지갑 화면(계정 탭 → 상세)의 salt 를 넣는다. -->
       <p class="muted" data-i18n="attr_uid_hint">uid 는 zkID 내 정보(zkID → 내 계정 → 내 정보)에 있습니다.</p>
       <label><span data-i18n="attr_uid">uid</span> <input id="uid" inputmode="numeric" pattern="[0-9]+" placeholder="12345…" required /></label>
-      <p class="muted" data-i18n="attr_salt_hint">salt 는 직접 넣거나 "새로 뽑기" 로 만드세요. 지갑을 처음 등록할 때 지갑 창의 salt 칸에 같은 값을 넣어야 합니다. 이미 등록한 지갑이면 zk 지갑 화면 → 계정 탭 → 상세의 salt 를 넣으세요.</p>
+      <p class="muted" data-i18n="attr_salt_hint">salt 는 직접 넣거나 "새로 뽑기" 로 만드세요. 스냅을 처음 등록할 때 스냅 창의 salt 칸에 같은 값을 넣어야 합니다. 이미 등록한 스냅이면 zk 스냅 화면 → 계정 탭 → 상세의 salt 를 넣으세요.</p>
       <label><span data-i18n="attr_salt">salt (s_u)</span> <input id="salt" inputmode="numeric" pattern="[0-9]+" placeholder="98765…" required /></label>
       <p class="row-actions"><button type="button" id="saltGenBtn" class="btn-ghost" data-i18n="attr_salt_gen_btn">salt 새로 뽑기</button> <button type="button" id="copySaltBtn" class="btn-ghost" data-i18n="attr_salt_copy_btn">salt 복사</button></p>
       <label><span data-i18n="attr_birth_year">출생연도</span> <input id="birthYear" inputmode="numeric" pattern="[0-9]*" placeholder="1990" required /></label>

@@ -6,7 +6,7 @@
   <meta name="referrer" content="same-origin" />
   <!-- Task 14(B5, 2026-10-23): "사용자 페이지" → "지갑". tests/test_mode3_demo_stack.mjs:778 는 이 제목을 marker 로
        쓴다 — 확인 결과(F-15, 2026-10-23) 그 테스트는 이미 "지갑"을 기대하도록 고쳐져 있어 더 이상 깨지지 않는다. -->
-  <title>zk 지갑</title>
+  <title>zk 스냅</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b1d3a'/%3E%3Ctext x='16' y='22' font-size='15' font-family='sans-serif' font-weight='700' text-anchor='middle' fill='%23fff'%3Ezk%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="/common/demo.css" />
   <link rel="stylesheet" href="/common/wallet.css" />
@@ -20,7 +20,7 @@
        스크립트·테스트의 선택자는 바뀌지 않는다(탭에 가려진 요소는 테스트가 탭을 먼저 누른다). -->
   <nav class="wallet-nav" id="walletNav">
     <div class="nav-inner">
-      <span class="brand" data-i18n="wallet_brand">zk 지갑</span>
+      <span class="brand" data-i18n="wallet_brand">zk 스냅</span>
       <div class="wallet-tabs" id="walletTabs" role="tablist" hidden>
         <button type="button" role="tab" data-tab="account" aria-selected="true" data-i18n="wallet_tab_account">계정</button>
         <button type="button" role="tab" data-tab="services" data-i18n="wallet_tab_services">연결된 서비스</button>
@@ -40,7 +40,7 @@
     <section class="card span2">
       <!-- 2026-11-05: 큰 제목은 요청 종류(등록·로그인·온체인 출금)를 따라 renderAuthTitle 이 바꾼다 — 늘 "로그인 승인"이던 것을 고쳤다.
            IdP 인증은 별도 창·버튼 없이 이 창 자체가 IdP 로그인 페이지로 갔다가 돌아온다(goIdpAuth). 개발자용 postMessage 안내문은 뺐다. -->
-      <h3 id="authHeading">지갑</h3>
+      <h3 id="authHeading">스냅</h3>
       <p id="authTitle">요청을 기다리는 중…</p>
       <!-- 2026-11-05: 일반 보기용 진행 줄 — 전문가용 #authStep 은 내부 단계명이라 숨겨져 있어 창이 "멈춘 것처럼" 보였다. -->
       <p id="authProgress" class="auth-progress"></p>
@@ -62,7 +62,7 @@
     <!-- snap 모드: 연결 전에는 이 카드 하나만 보인다(applyGate). file 모드는 연결이 없어 바로 탭이 보인다. -->
     <section class="card" id="connectCard" hidden>
       <h3 data-i18n="wallet_connect_title">MetaMask 를 연결하세요</h3>
-      <p class="desc" data-i18n="wallet_connect_desc">등록 비밀은 MetaMask Snap 안에 있습니다. MetaMask Flask 와 zk Snap 이 필요하고, 처음 연결하면 Snap 설치를 묻습니다. 연결하면 계정·연결된 서비스·보내기 화면이 열립니다.</p>
+      <p class="desc" data-i18n="wallet_connect_desc">등록 비밀은 MetaMask 스냅 안에 있습니다. MetaMask Flask 와 zk 스냅이 필요하고, 처음 연결하면 스냅 설치를 묻습니다. 연결하면 계정·연결된 서비스·보내기 화면이 열립니다.</p>
       <p><button id="connectBtn" data-i18n="wallet_connect_btn">MetaMask 연결</button></p>
       <p id="connectError" class="muted" hidden></p>
     </section>
@@ -145,7 +145,7 @@
            inputValue·isChecked 로만 읽어 접힘과 무관하다. -->
       <details class="fold" id="discloseBox">
         <summary data-term="disclosure">공개할 속성 조건</summary>
-        <p class="muted" data-i18n="wallet_disclose_desc">체크한 조건만 증명에 실립니다. 최소=최대 면 그 값 하나를 공개합니다. 집합 소속은 슬롯 하나만 고를 수 있고, 지갑이 허용 원소 목록으로 계산해 증명에 넣습니다. 나이는 연 단위(올해 − 출생연도)입니다.</p>
+        <p class="muted" data-i18n="wallet_disclose_desc">체크한 조건만 증명에 실립니다. 최소=최대 면 그 값 하나를 공개합니다. 집합 소속은 슬롯 하나만 고를 수 있고, 스냅이 허용 원소 목록으로 계산해 증명에 넣습니다. 나이는 연 단위(올해 − 출생연도)입니다.</p>
         <div id="discloseRows">
           <div><label><input type="checkbox" id="dk0" /> <span data-term="attr0">출생연도</span></label>
             <label><span data-i18n="wallet_lo">최소</span> <input id="discLo0" size="10" /></label>
@@ -196,25 +196,25 @@
     <!-- snap 모드 전용(스펙 §3.2). file 모드에서는 숨긴 채로 둔다. -->
     <section class="card" id="snapPanel" data-panel="settings" data-off="1" hidden>
       <h3 data-i18n="wallet_snap_title">MetaMask · Snap</h3>
-      <p class="desc" data-i18n="wallet_snap_desc">비밀은 MetaMask Snap 안에 있습니다. 이 페이지는 비밀을 보지 않습니다.</p>
-      <p class="row-actions"><button id="snapInfoBtn" class="btn-ghost" data-i18n="wallet_snap_info_btn">Snap 상태 보기</button></p>
+      <p class="desc" data-i18n="wallet_snap_desc">비밀은 MetaMask 스냅 안에 있습니다. 이 페이지는 비밀을 보지 않습니다.</p>
+      <p class="row-actions"><button id="snapInfoBtn" class="btn-ghost" data-i18n="wallet_snap_info_btn">스냅 상태 보기</button></p>
       <div id="snapVerdict"></div>
       <pre id="snapInfo" class="expert"></pre>
       <!-- 2026-11-06: 설치돼 있으면 연결 때 설치 창이 다시 뜨지 않으므로, 번들이 바뀐 뒤에는 여기서 명시적으로 다시 설치한다. -->
-      <p class="row-actions"><button id="snapReinstallBtn" class="btn-ghost" data-i18n="wallet_snap_reinstall_btn">Snap 다시 설치</button> <span class="muted" data-i18n="wallet_snap_reinstall_hint">Snap 번들이 바뀌었을 때만 — 등록 비밀은 그대로 남습니다.</span></p>
+      <p class="row-actions"><button id="snapReinstallBtn" class="btn-ghost" data-i18n="wallet_snap_reinstall_btn">스냅 다시 설치</button> <span class="muted" data-i18n="wallet_snap_reinstall_hint">스냅 번들이 바뀌었을 때만 — 등록 비밀은 그대로 남습니다.</span></p>
       <div class="danger-zone">
         <h4 data-i18n="wallet_danger_title">위험 구역</h4>
-        <p class="desc muted" data-i18n="wallet_danger_desc">되돌릴 수 없습니다. 계정 폐기는 IdP 에 이 계정의 자격증명 은퇴를 요청하고, Snap 초기화는 이 브라우저의 등록 비밀과 동의 기록을 지웁니다.</p>
+        <p class="desc muted" data-i18n="wallet_danger_desc">되돌릴 수 없습니다. 계정 폐기는 IdP 에 이 계정의 자격증명 은퇴를 요청하고, 스냅 초기화는 이 브라우저의 등록 비밀과 동의 기록을 지웁니다.</p>
         <p class="row-actions">
           <button id="selfRevokeBtn" class="danger" data-i18n="wallet_self_revoke_btn">계정 자기 폐기</button>
-          <button id="snapResetBtn" class="danger" data-i18n="wallet_snap_reset_btn">Snap 초기화</button>
+          <button id="snapResetBtn" class="danger" data-i18n="wallet_snap_reset_btn">스냅 초기화</button>
         </p>
       </div>
     </section>
 
     <section class="card expert" id="demoCard" data-panel="settings" hidden>
       <h3 data-i18n="wallet_demo_title">시연: 비밀 바꾸기</h3>
-      <p class="desc" data-i18n="wallet_demo_desc">다음 발급(또는 다음 증명)에 쓸 salt·uid 를 메모리에서만 바꿉니다. 지갑 자체 검사를 건너뛰고 프로토콜이 거절하는 장면을 보일 때 씁니다.</p>
+      <p class="desc" data-i18n="wallet_demo_desc">다음 발급(또는 다음 증명)에 쓸 salt·uid 를 메모리에서만 바꿉니다. 스냅 자체 검사를 건너뛰고 프로토콜이 거절하는 장면을 보일 때 씁니다.</p>
       <p><label>salt <input id="demoSalt" size="24" /></label> <button id="demoNewSalt" type="button" class="btn-ghost" data-i18n="wallet_demo_new_salt">새 난수</button>
          <label>uid <input id="demoUid" size="8" /></label>
          <select id="demoScope"><option value="issue" data-i18n="wallet_demo_scope_issue">다음 발급</option><option value="prove" data-i18n="wallet_demo_scope_prove">다음 증명</option></select>
@@ -409,7 +409,7 @@
       const eth = requireEthereum();
       const accounts = await eth.request({ method: 'eth_requestAccounts' });
       account = accounts && accounts.length ? accounts[0] : null;
-      if (!cfg.snapId) throw new Error('지갑 설정에 snapId 가 없습니다(/wallet/config)');
+      if (!cfg.snapId) throw new Error('스냅 설정에 snapId 가 없습니다(/wallet/config)');
       // 2026-11-06(사용자 지적): 이미 설치·연결된 Snap 은 다시 요청하지 않는다 — local: Snap 은 wallet_requestSnaps 마다 MetaMask 가
       // 재설치 창을 띄워 로그인·등록·재승인 팝업마다 "Snap 설치" 가 반복됐다. wallet_getSnaps 는 이 오리진에 허용된 Snap 만 돌려주므로
       // (권한이 없으면 빈 객체) 설치 여부 판단에 충분하다. 번들이 바뀐 뒤 새로 깔려면 설정 탭 "Snap 다시 설치"(아래) 를 쓴다.
@@ -613,9 +613,9 @@
       step('에이전트에 등록하는 중…');
       const { status, body: b } = await postJson('/wallet/register', { id_token: g.token, s_u: prep.s_u, sk_u: prep.sk_u });
       if (status !== 201) { step('등록 실패 — 다시 시도하면 같은 비밀로 이어진다'); log(errText(status, b)); return { ok: false, reason: b.cia?.reason ?? b.reason ?? `HTTP ${status}`, detail: b.detail ?? b.cia?.detail ?? null }; }
-      step('Snap 에 등록 결과 저장 중…');
+      step('스냅에 등록 결과 저장 중…');
       try { await invokeSnap('storeRegistration', { attrs: b.attrs, slot: b.slot, auid: b.auid, uid: b.uid, provider: b.provider }); }
-      catch (e) { step('등록이 반만 됐다 — Snap 저장 실패'); log(e.message); return { ok: false, reason: 'wallet_error', detail: e.message }; }
+      catch (e) { step('등록이 반만 됐다 — 스냅 저장 실패'); log(e.message); return { ok: false, reason: 'wallet_error', detail: e.message }; }
       return { ok: true, slot: b.slot, auid: b.auid, uid: b.uid };
     }
 
@@ -648,9 +648,9 @@
       step('에이전트에 등록하는 중…');
       const { status, body: b } = await postJson('/wallet/register', { uid, code, s_u: reg.s_u, sk_u: reg.sk_u });
       if (status !== 201) { step('등록 실패'); log(errText(status, b)); return { ok: false, reason: b.cia?.reason ?? b.reason ?? `HTTP ${status}`, detail: b.detail ?? b.cia?.detail ?? null }; }
-      step('Snap 에 등록 결과 저장 중…');
+      step('스냅에 등록 결과 저장 중…');
       try { await invokeSnap('storeRegistration', { attrs: b.attrs, slot: b.slot, auid: b.auid }); }
-      catch (e) { step('등록이 반만 됐다 — Snap 저장 실패'); log(e.message); return { ok: false, reason: 'wallet_error', detail: e.message }; }
+      catch (e) { step('등록이 반만 됐다 — 스냅 저장 실패'); log(e.message); return { ok: false, reason: 'wallet_error', detail: e.message }; }
       return { ok: true, slot: b.slot, auid: b.auid, issue_code: typeof b.issue_code === 'string' ? b.issue_code : null };
     }
 
@@ -672,12 +672,12 @@
         return reply({ ok: false, reason: 'origin_mismatch' });
       }
       lastAuthReq = req; renderAuthTitle(); renderAuthSummary(req); say('wallet_prog_registering');   // 큰 제목 "등록"(2026-11-05) — 오리진 대조를 통과한 뒤에만
-      if (cfg.secrets !== 'snap') { step('이 지갑은 file 모드다 — 이 팝업 경로를 쓰지 않는다.'); return reply({ ok: false, reason: 'not_snap_mode' }); }
+      if (cfg.secrets !== 'snap') { step('이 스냅은 file 모드다 — 이 팝업 경로를 쓰지 않는다.'); return reply({ ok: false, reason: 'not_snap_mode' }); }
       try {
-        step('MetaMask·Snap 연결 중…'); say('wallet_prog_connect');
+        step('MetaMask·스냅 연결 중…'); say('wallet_prog_connect');
         try { await connectMetaMask(); }
         catch (e) {
-          step('MetaMask·Snap 연결 실패');
+          step('MetaMask·스냅 연결 실패');
           log(e.message);
           return reply({ ok: false, reason: isUserRejected(e) ? 'user_denied' : 'snap_unavailable', detail: e.message });
         }
@@ -697,15 +697,15 @@
             const prep = await invokeSnap('prepareRegister', {});
             if (!prep || prep.denied) { step('등록 거절'); return reply({ ok: false, reason: 'user_denied' }); }
             const { status, body: b } = await postJson('/wallet/register/resume', { s_u: prep.s_u, sk_u: prep.sk_u });
-            if (status !== 200) { step('복구 실패 — 이 Snap 의 비밀이 에이전트 등록과 맞지 않거나 에이전트에 닿지 못했다'); log(errText(status, b)); return reply({ ok: false, reason: b.reason ?? `HTTP ${status}`, detail: b.detail ?? null }); }
-            step('Snap 에 등록 결과 저장 중…');
+            if (status !== 200) { step('복구 실패 — 이 스냅의 비밀이 에이전트 등록과 맞지 않거나 에이전트에 닿지 못했다'); log(errText(status, b)); return reply({ ok: false, reason: b.reason ?? `HTTP ${status}`, detail: b.detail ?? null }); }
+            step('스냅에 등록 결과 저장 중…');
             try { await invokeSnap('storeRegistration', { attrs: b.attrs, slot: b.slot, auid: b.auid, uid: b.uid, provider: b.provider }); }
-            catch (e) { step('등록이 반만 됐다 — Snap 저장 실패'); log(e.message); return reply({ ok: false, reason: 'wallet_error', detail: e.message }); }
+            catch (e) { step('등록이 반만 됐다 — 스냅 저장 실패'); log(e.message); return reply({ ok: false, reason: 'wallet_error', detail: e.message }); }
             step('등록을 마저 끝냈다 — 창을 닫는다.');
             return reply({ ok: true, slot: b.slot, auid: b.auid, uid: b.uid, resumed: true });
           }
           if (info && !info.registered) {
-            step('에이전트에는 등록이 있지만 이 Snap 은 비어 있습니다 — 재시연 세트로 지갑·IdP 를 함께 비우세요.');
+            step('에이전트에는 등록이 있지만 이 스냅은 비어 있습니다 — 재시연 세트로 스냅·IdP 를 함께 비우세요.');
             return reply({ ok: false, reason: 'already_registered', detail: 'snap_empty' });
           }
         }
@@ -745,10 +745,10 @@
       step('RP 인증서·세션 검사 중…');
       const pre = await postJson('/wallet/authorize/precheck', { arid: req.arid, origin: req.origin, cert_s: req.cert_s, pk_trace: req.pk_trace, factoryAddress: req.factoryAddress ?? null, r_s: req.r_s });
       if (pre.status !== 200) { step('RP 검증 실패'); log(errText(pre.status, pre.body)); return reply({ ok: false, reason: pre.body.reason ?? 'precheck_failed', detail: pre.body.detail ?? null, status: pre.status }); }
-      step('Snap 동의 창을 확인하세요 — 받는 주소·금액.'); say('wallet_prog_confirm_mm');
+      step('스냅 동의 창을 확인하세요 — 받는 주소·금액.'); say('wallet_prog_confirm_mm');
       let c;
       try { c = await invokeSnap('consentDisclosure', { relay: true, arid: String(req.arid), origin: req.origin, disclose: null, to: req.to, value, set: null }); }
-      catch (e) { step('Snap 동의 실패'); log(e.message); return reply({ ok: false, reason: isUserRejected(e) ? 'user_denied' : 'snap_unavailable', detail: e.message }); }
+      catch (e) { step('스냅 동의 실패'); log(e.message); return reply({ ok: false, reason: isUserRejected(e) ? 'user_denied' : 'snap_unavailable', detail: e.message }); }
       if (!c || c.denied) { step('거절'); return reply({ ok: false, reason: 'user_denied' }); }
       step('증명·세션키 서명 중… (수 초 걸린다)'); say('wallet_prog_proving');
       const p = await postJson('/wallet/tx/prepare', { r_s: req.r_s, to: req.to, value, data });
@@ -777,10 +777,10 @@
     async function processAuthorize(req, evOrigin, { step, log, reply, authCode, authPurpose = 'issue', authUid = null }) {
       try {
         const connect = async () => {
-          step('MetaMask·Snap 연결 중…'); say('wallet_prog_connect');
+          step('MetaMask·스냅 연결 중…'); say('wallet_prog_connect');
           try { await connectMetaMask(); return true; }
           catch (e) {
-            step('MetaMask·Snap 연결 실패');
+            step('MetaMask·스냅 연결 실패');
             log(e.message);
             reply({ ok: false, reason: isUserRejected(e) ? 'user_denied' : 'snap_unavailable', detail: e.message });
             return false;
@@ -871,7 +871,7 @@
           return reply({ ok: false, reason: lg.body.reason ?? 'login_failed', detail: lg.body.detail ?? lg.body.cia?.reason ?? null, status: lg.status });
         }
 
-        step('Snap 에 새 자격증명·속성 반영 중…');
+        step('스냅에 새 자격증명·속성 반영 중…');
         await applyPendingToSnap(lg.body);
         // userCredIssued 에는 blind_u 가 들어 있다 — 서비스에 넘기지 않는다. attrsChanged 도 지갑 안 정보다.
         const { userCredIssued, attrsChanged, ...toRp } = lg.body;
@@ -939,7 +939,7 @@
         lastAuthReq = req;
         renderAuthTitle();
         renderAuthSummary(req);
-        if (cfg.secrets !== 'snap') { step('이 지갑은 file 모드다 — 팝업 경로를 쓰지 않는다.'); return reply({ ok: false, reason: 'not_snap_mode' }); }
+        if (cfg.secrets !== 'snap') { step('이 스냅은 file 모드다 — 팝업 경로를 쓰지 않는다.'); return reply({ ok: false, reason: 'not_snap_mode' }); }
         await processAuthorize(req, ev.origin, { step, log, reply, authCode: null });
       };
       window.addEventListener('message', onMessage);
@@ -1402,7 +1402,7 @@
           catch (e) { snapSyncErr = e.message; }
         }
         setVerdict($('registerResult'), true, 'wallet_profile_saved', () => (snapSyncErr
-          ? { summary: tt('wallet_profile_saved_snap_pending', { err: snapSyncErr }) || `저장됨 — Snap 반영 실패(${snapSyncErr}), 다음 로그인이 맞춘다`, detail: safeDetail(b) }
+          ? { summary: tt('wallet_profile_saved_snap_pending', { err: snapSyncErr }) || `저장됨 — 스냅 반영 실패(${snapSyncErr}), 다음 로그인이 맞춘다`, detail: safeDetail(b) }
           : { summary: tt(b.changed ? 'wallet_profile_changed' : 'wallet_profile_same', { attrs: profileText(b.profile) }) || profileText(b.profile), detail: safeDetail(b) }));
       } catch (e) { setVerdict($('registerResult'), false, 'wallet_profile_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message }); }
       refresh();
@@ -1467,7 +1467,7 @@
     // 앞에 붙인다(2026-10-14) — summaryKey 가 없어 reasons 사전의 제목만 뜨던 자리에 사전 조회를 한 번 더해 접두어만 더한다.
     const txFailed = (summaryKey, reason, detail) => setVerdict($('txVerdict'), false, 'tx_failed', () => ({ summary: detail?.demo ? `[시연 모드] ${Demo.reason(reason)?.title ?? ''}` : (summaryKey ? (tt(summaryKey) || undefined) : undefined), reason, detail }));
     function showTxResult(b, extra, deployed) {
-      txLog(`${extra}지갑=${b.wallet}  nonce=${b.nonce}  ok(실행 성공)=${b.ok}  gasUsed=${b.gasUsed}\n공개=${JSON.stringify(b.disclosure)}\n온체인 공개(Disclosure 이벤트)=${JSON.stringify(b.onchainDisclosure)}\n실행=${JSON.stringify(b.executed)}`);
+      txLog(`${extra}PPID 계정=${b.wallet}  nonce=${b.nonce}  ok(실행 성공)=${b.ok}  gasUsed=${b.gasUsed}\n공개=${JSON.stringify(b.disclosure)}\n온체인 공개(Disclosure 이벤트)=${JSON.stringify(b.onchainDisclosure)}\n실행=${JSON.stringify(b.executed)}`);
       // 영수증은 받았지만 계정 안의 호출이 revert 된 경우(예: 공개 조건 미충족)에는 성공으로 보이면 안 된다 —
       // 안내 바의 '이용' 완료 신호도 이 값에 달려 있다.
       const okx = b.ok !== false;
@@ -1566,7 +1566,7 @@
         return;
       }
       const b = p.body;
-      txLog(`지갑 주소=${b.walletAddr}  nonce=${b.nonce}  배포 필요=${b.deployNeeded}  캐시 히트=${b.cacheHit}  root=${b.root}\ntimings=${JSON.stringify(b.timings)}`);
+      txLog(`PPID 계정 주소=${b.walletAddr}  nonce=${b.nonce}  배포 필요=${b.deployNeeded}  캐시 히트=${b.cacheHit}  root=${b.root}\ntimings=${JSON.stringify(b.timings)}`);
       const r = await submitPrepared(b, f.r_s);
       if (!r.ok) {
         if (r.stage === 'deploy') { txFailed('wallet_tx_deploy_failed', null, r.detail); return; }
@@ -1757,10 +1757,10 @@
       pendingVerdict($('snapVerdict'), 'working');
       try {
         const eth = requireEthereum();
-        if (!cfg.snapId) throw new Error('지갑 설정에 snapId 가 없습니다(/wallet/config)');
+        if (!cfg.snapId) throw new Error('스냅 설정에 snapId 가 없습니다(/wallet/config)');
         await eth.request({ method: 'wallet_requestSnaps', params: { [cfg.snapId]: {} } });
         mmState = { kind: 'ok', err: null }; renderMmStatus();
-        setVerdict($('snapVerdict'), true, 'wallet_snap_reinstall_ok', () => ({ summary: tt('wallet_snap_reinstall_summary') || 'MetaMask 가 Snap 을 다시 설치했습니다.' }));
+        setVerdict($('snapVerdict'), true, 'wallet_snap_reinstall_ok', () => ({ summary: tt('wallet_snap_reinstall_summary') || 'MetaMask 가 스냅을 다시 설치했습니다.' }));
       } catch (e) {
         setVerdict($('snapVerdict'), false, 'wallet_snap_reinstall_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
       }
@@ -1775,7 +1775,7 @@
         // 2026-11-06: 에이전트(이 서버)의 등록·세션도 함께 비운다 — 아니면 다음 등록이 409 already_registered 로 막힌다.
         const a = await fetch('/wallet/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: true }) });
         if (!a.ok) { setVerdict($('snapVerdict'), false, 'wallet_snap_reset_failed', { reason: 'wallet_error', detail: `agent reset HTTP ${a.status}` }); return; }
-        setVerdict($('snapVerdict'), true, 'wallet_snap_reset_ok', () => ({ summary: tt('wallet_snap_reset_summary') || 'Snap 과 이 지갑의 등록 기록을 지웠습니다. 이제 zkID 에서 새로 등록할 수 있습니다.' }));
+        setVerdict($('snapVerdict'), true, 'wallet_snap_reset_ok', () => ({ summary: tt('wallet_snap_reset_summary') || '스냅과 이 스냅의 등록 기록을 지웠습니다. 이제 zkID 에서 새로 등록할 수 있습니다.' }));
         await refresh();
       } catch (e) {
         setVerdict($('snapVerdict'), false, 'wallet_snap_reset_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });

@@ -68,7 +68,7 @@
         <h2 data-i18n="rp_login_title">로그인</h2>
         <p class="desc" data-i18n="rp_login_desc">zkID 계정으로 로그인합니다. 이 거래소는 회원이 누구인지 모르고, zkID 는 회원이 어디에 로그인하는지 모릅니다.</p>
         <!-- 2026-11-05: 처음 온 사람의 길 — zkID 가입·지갑 등록으로 가는 링크(주소는 rp_info.ciaUrl 로 채운다). -->
-        <p class="muted" id="signupHint"><span data-i18n="rp_signup_hint">zkID 계정이 없으면 먼저 zkID 에서 가입하고 지갑을 등록하세요: </span><a id="signupLink" href="#" target="_blank" rel="noopener" data-i18n="rp_signup_link">zkID 가입·지갑 등록</a></p>
+        <p class="muted" id="signupHint"><span data-i18n="rp_signup_hint">zkID 계정이 없으면 먼저 zkID 에서 가입하고 스냅을 등록하세요: </span><a id="signupLink" href="#" target="_blank" rel="noopener" data-i18n="rp_signup_link">zkID 가입·스냅 등록</a></p>
         <p class="login-policy" id="loginPolicy">만 19세 이상, 허용 국가(KR·JP·US·DE·FR)만 이용할 수 있습니다</p>
         <label class="opt-row expert"><input type="checkbox" id="requirePred" /> <span id="requirePredLabel" data-i18n="rp_require_pred">조건 요구(국가·나이)</span></label>
         <p><button type="button" id="cardLoginBtn" class="nav-cta" data-i18n="rp_login_btn">로그인</button></p>   <!-- 2026-11-05: 카드 안에서 바로 시작 — 상단 버튼과 같은 모달 -->
@@ -157,7 +157,7 @@
 
       <div class="compliance-block">
         <h3 data-i18n="rp_status_title">RP 상태</h3>
-        <p><span id="rpStatusBadge" class="badge">확인 중…</span> <span id="walletMode" class="badge">지갑 비밀 모드 확인 중…</span></p>
+        <p><span id="rpStatusBadge" class="badge">확인 중…</span> <span id="walletMode" class="badge">스냅 비밀 모드 확인 중…</span></p>
         <p id="rpInfo" class="muted">RP 정보를 불러오는 중…</p>
         <p id="walletModeNote" class="muted"></p>
         <p id="attrGateInfo" class="muted">-</p>
@@ -321,7 +321,7 @@
       for (const id of ['loginPolicy']) tte($(id), info.requireDisclosure ? 'rp_login_policy_enforced' : 'rp_login_open', polVars);
       $('requirePred').closest('label').style.display = info.requireDisclosure ? 'none' : '';
       $('rpInfoExpert').textContent = `arid=${info.arid ?? '-'}   origin=${info.origin}   cert_s=있음   pk_trace=있음   Mode3Log=${info.logAddress}`
-        + `   지갑 에이전트=${info.walletAgentOrigin}   pk_CIA=${info.pkCiaSource}   chainId=${info.chainId}   팩토리=${info.factoryAddress ?? '(없음)'}`
+        + `   스냅 에이전트=${info.walletAgentOrigin}   pk_CIA=${info.pkCiaSource}   chainId=${info.chainId}   팩토리=${info.factoryAddress ?? '(없음)'}`
         + `   AttrGate=${info.attrGateAddress ?? '(없음)'}`;
       renderWalletMode();
     }
@@ -753,7 +753,7 @@
         pendingVerdict($('verdict'), 'proving');
         let wb;
         if (walletCfg.secrets === 'snap' || WEB()) {
-          log(WEB() ? '2. 사용자 승인 팝업 — 사용자 창에서 승인하세요.' : '2. 지갑 승인 팝업 — 지갑 창에서 MetaMask·Snap 동의를 확인하세요.');
+          log(WEB() ? '2. 사용자 승인 팝업 — 사용자 창에서 승인하세요.' : '2. 스냅 승인 팝업 — 스냅 창에서 MetaMask·스냅 동의를 확인하세요.');
           let result;
           try {
             result = await authorizeViaPopup(authorizeRequest({ r_s, r_rp, allowAgent, factoryAddress, attrGateAddress, disclose: pred?.disclose ?? null, set: pred?.set ?? null, provider: opts.provider ?? null }));
@@ -774,7 +774,7 @@
           const w = await post(`${info.walletAgentOrigin}/wallet/login`, { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s, r_rp, allowAgent, factoryAddress, attrGateAddress, disclose: pred?.disclose ?? null, set: pred?.set ?? null });
           wb = await w.json().catch(() => ({}));
           if (w.status !== 200) {
-            log(`2. 지갑 ${w.status} ${ms(t0)}: ${wb.reason ?? wb.error ?? ''} ${wb.detail ?? ''}`);
+            log(`2. 스냅 ${w.status} ${ms(t0)}: ${wb.reason ?? wb.error ?? ''} ${wb.detail ?? ''}`);
             // 지갑의 시연 덮어쓰기(demoOverride)가 걸려 있다가 거절된 경우 — 에이전트 응답의 demo 필드로 알 수 있다.
             // summary 를 안 건드리면(undefined) demo.js 의 renderVerdict 가 사유 사전의 제목(r.title)으로 채운다(기존
             // 동작, mode3/common/demo.js 의 `summary ?? r.title`) — 그 자리에 빈 문자열을 넣으면 ?? 를 통과하지 못해
@@ -787,7 +787,7 @@
           }
         }
         const tm = wb.timings ?? {};
-        log(`2. 지갑 π+σ ${ms(t0)} (동기화 ${tm.syncMs} ms, 발급 ${tm.issueMs} ms, 증명 ${tm.proveMs} ms, 캐시 히트=${wb.cacheHit}, 새 발급=${wb.issued})\n   root=${wb.root}`);
+        log(`2. 스냅 π+σ ${ms(t0)} (동기화 ${tm.syncMs} ms, 발급 ${tm.issueMs} ms, 증명 ${tm.proveMs} ms, 캐시 히트=${wb.cacheHit}, 새 발급=${wb.issued})\n   root=${wb.root}`);
 
         t0 = Date.now();
         // id_token(2026-11-09 Phase 1): 지갑이 IdP 발급 응답에서 그대로 넘긴 zkID ID 토큰 — RP 가 검증하고 name(속성 커밋먼트)을 계정에 고정한다. 없으면 null.
@@ -856,7 +856,7 @@
             setVerdict($('sessionVerdict'), false, 'reauth_denied', () => ({ summary: tt('rp_reauth_unknown') || '이 페이지는 이 세션의 AI 에이전트 허용 여부를 모릅니다. 다시 로그인하세요.' }));
             return;
           }
-          log(`세션 증인이 없다(지갑 재시작) — 재승인 팝업을 연다(allowAgent=${currentSessionAllowAgent}).`);
+          log(`세션 증인이 없다(스냅 재시작) — 재승인 팝업을 연다(allowAgent=${currentSessionAllowAgent}).`);
           let result;
           try {
             result = await authorizeViaPopup(authorizeRequest({ r_s: currentSession, reauth: true, allowAgent: currentSessionAllowAgent }));
@@ -876,13 +876,13 @@
           ({ status, body: wb } = await callRevalidate());
         }
         if (status !== 200) {
-          log(`지갑 ${status} ${ms(t0)}: ${wb.reason ?? wb.error ?? ''}`);
+          log(`스냅 ${status} ${ms(t0)}: ${wb.reason ?? wb.error ?? ''}`);
           setVerdict($('sessionVerdict'), false, 'reval_failed', { reason: wb.reason ?? `HTTP ${status}`, detail: wb });
           // V8(2026-09-24): revoked_session 은 이 세션 하나만 죽은 것이지만, 서비스 페이지가 할 일은 같다 — 세션을 버린다.
           if (wb.reason === 'revoked' || wb.reason === 'revoked_session') setSession(null);
           return;
         }
-        log(`지갑 π+σ ${ms(t0)} (캐시 히트=${wb.cacheHit})\n   root=${wb.root}`);
+        log(`스냅 π+σ ${ms(t0)} (캐시 히트=${wb.cacheHit})\n   root=${wb.root}`);
         t0 = Date.now();
         const r = await post('/api/mode3/revalidate', { proof: wb.proof, publicSignals: wb.publicSignals, sig: wb.sig, r_s: currentSession });
         const rb = await r.json();
@@ -929,11 +929,11 @@
           wb = await w.json().catch(() => ({}));
         }
         if (w.status !== 200) {
-          log(`지갑 ${w.status} ${ms(t0)}: ${wb.reason ?? wb.error ?? ''}`);
+          log(`스냅 ${w.status} ${ms(t0)}: ${wb.reason ?? wb.error ?? ''}`);
           if (!quiet) setVerdict(vEl, false, 'request_failed', { reason: wb.reason ?? `HTTP ${w.status}`, detail: wb });
           return null;
         }
-        log(`지갑 σ ${ms(t0)}`);
+        log(`스냅 σ ${ms(t0)}`);
         t0 = Date.now();
         const r = await post('/api/mode3/request', { r_s: currentSession, body, sig: wb.sig });
         const rb = await r.json();
@@ -1007,7 +1007,7 @@
       }
       if (!currentSession) { setVerdict($('txVerdict'), false, 'tx_failed', { reason: 'no_session' }); return; }
       // 2026-11-04: snap 모드의 지갑 팝업도 mode3-tx 를 받는다(mode3/wallet.html handleTxRequest). 팝업 경로가 없는 file 모드만 막는다.
-      if (!WEB() && walletCfg.secrets !== 'snap') { setVerdict($('txVerdict'), false, 'tx_failed', () => ({ summary: tt('rp_tx_web_only') || '온체인 출금은 지갑 승인 창(Snap·web 모드)에서 합니다' })); return; }
+      if (!WEB() && walletCfg.secrets !== 'snap') { setVerdict($('txVerdict'), false, 'tx_failed', () => ({ summary: tt('rp_tx_web_only') || '온체인 출금은 스냅 승인 창(스냅·web 모드)에서 합니다' })); return; }
       $('txBtn').dataset.tourBusy = '1'; $('txLog').textContent = ''; $('txHashRow').hidden = true;
       pendingVerdict($('txVerdict'), 'proving');
       const log = (s) => { $('txLog').textContent += s + '\n'; };
@@ -1024,7 +1024,7 @@
           return;
         }
         if (!result.ok) { log(`팝업 ${ms(t0)}: ${result.reason ?? ''} ${result.detail ?? ''}`); setVerdict($('txVerdict'), false, 'tx_failed', { reason: result.reason ?? 'internal', detail: result }); return; }
-        log(`2. 전송 ${ms(t0)}: txHash=${result.txHash}${result.deployTxHash ? `  배포 txHash=${result.deployTxHash}` : ''}  지갑=${result.wallet ?? ''}`);
+        log(`2. 전송 ${ms(t0)}: txHash=${result.txHash}${result.deployTxHash ? `  배포 txHash=${result.deployTxHash}` : ''}  PPID 계정=${result.wallet ?? ''}`);
         setVerdict($('txVerdict'), true, 'tx_ok', () => ({ summary: tt('rp_tx_ok', { eth: $('txValue').value.trim() || '0' }) || `${$('txValue').value.trim() || '0'} ETH 를 보냈습니다.`, detail: result }));   // 해시는 아래 #txHashRow 한 곳에만(2026-11-05)
         lastTxHash = result.txHash; $('txHashCode').textContent = `${String(result.txHash).slice(0, 18)}…`; $('txHashCode').title = result.txHash; $('txHashRow').hidden = false;
         progress.used = true; renderGuide();

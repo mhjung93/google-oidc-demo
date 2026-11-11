@@ -509,7 +509,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false })
   // demo(시연 덮어쓰기)가 실린 실패는 "[시연 모드]" 를 앞에 붙인다(wallet.html 과 같은 규칙).
   const txFailed = (summaryKey, reason, detail) => setVerdict($('txVerdict'), false, 'tx_failed', () => ({ summary: detail?.demo ? `[시연 모드] ${Demo.reason(reason)?.title ?? ''}` : (summaryKey ? (tt(summaryKey) || undefined) : undefined), reason, detail }));
   function showTxResult(b, extra, deployed) {
-    txLog(`${extra}지갑=${b.wallet}  nonce=${b.nonce}  ok(실행 성공)=${b.ok}  gasUsed=${b.gasUsed}\n공개=${JSON.stringify(b.disclosure)}\n온체인 공개(Disclosure 이벤트)=${JSON.stringify(b.onchainDisclosure)}\n실행=${JSON.stringify(b.executed)}`);
+    txLog(`${extra}PPID 계정=${b.wallet}  nonce=${b.nonce}  ok(실행 성공)=${b.ok}  gasUsed=${b.gasUsed}\n공개=${JSON.stringify(b.disclosure)}\n온체인 공개(Disclosure 이벤트)=${JSON.stringify(b.onchainDisclosure)}\n실행=${JSON.stringify(b.executed)}`);
     // 영수증은 받았지만 계정 안의 호출이 revert 된 경우에는 성공으로 보이면 안 된다 — 안내 바의 '이용' 완료 신호도 이 값에 달려 있다.
     const okx = b.ok !== false;
     const hash = b.txHash;
@@ -548,7 +548,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false })
       return;
     }
     const b = p.body;
-    txLog(`지갑 주소=${b.walletAddr}  nonce=${b.nonce}  배포 필요=${b.deployNeeded}  캐시 히트=${b.cacheHit}  root=${b.root}\ntimings=${JSON.stringify(b.timings)}`);
+    txLog(`PPID 계정 주소=${b.walletAddr}  nonce=${b.nonce}  배포 필요=${b.deployNeeded}  캐시 히트=${b.cacheHit}  root=${b.root}\ntimings=${JSON.stringify(b.timings)}`);
     // 릴레이는 그 세션을 만든 RP 의 것이다(세션 레코드의 origin). 옛 세션에 origin 이 없으면 첫 RP 로 본다.
     const rpOrigin = (await meta.session(f.r_s))?.origin ?? cfg.rpOrigins?.[0] ?? null;
     const relayUrl = `${rpOrigin}${cfg.relayPath ?? '/api/mode3/relay'}`;

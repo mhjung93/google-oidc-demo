@@ -24,7 +24,7 @@
   <!-- ===== 로그인 전 ① 로그인 (2026-11-03 재구성: 로그인해야 등록·폐기 카드가 보인다) ===== -->
   <section class="card auth-card" id="loginView">
     <h3 data-i18n="idp_login_title">로그인</h3>
-    <p class="desc" data-i18n="idp_login_desc">zkID 계정으로 로그인하면 지갑 등록과 계정 관리를 할 수 있습니다.</p>
+    <p class="desc" data-i18n="idp_login_desc">zkID 계정으로 로그인하면 스냅 등록과 계정 관리를 할 수 있습니다.</p>
     <form id="loginForm" class="auth-form" autocomplete="on">
       <label><span data-i18n="idp_id_label">아이디</span><input id="loginId" autocomplete="username" autocapitalize="off" spellcheck="false" /></label>
       <label><span data-i18n="idp_pwd_label">비밀번호</span><input id="loginPwd" type="password" autocomplete="current-password" /></label>
@@ -57,17 +57,17 @@
        zkID 가입·속성 커밋먼트 프로필에는 지갑이 끼지 않는다. -->
   <section class="card me-view" id="infoCard" hidden>
     <h3 data-i18n="idp_info_title">내 등록 정보</h3>
-    <p data-i18n="idp_info_registered">등록됨 — 이 계정은 지갑과 연결돼 있습니다.</p>   <!-- 2026-11-05: 상세를 접은 뒤 빈 카드처럼 보이던 것 -->
+    <p data-i18n="idp_info_registered">등록됨 — 이 계정은 스냅과 연결돼 있습니다.</p>   <!-- 2026-11-05: 상세를 접은 뒤 빈 카드처럼 보이던 것 -->
     <!-- 2026-11-05: 가명·슬롯은 사용자가 쓸 일이 없는 값이라 "상세" 로 접는다(지갑 계정 탭과 같은 모양). -->
     <details class="muted"><summary data-i18n="idp_info_details">상세</summary>
     <dl class="kv">
       <dt data-term="auid">auid</dt><dd><code id="meAuid">-</code> <button type="button" id="copyAuidBtn" class="copy-btn" hidden title="복사" aria-label="복사" data-i18n-title="rp_copy_btn_title">⧉</button></dd>
-      <dt></dt><dd><p class="desc kv-desc" data-i18n="idp_auid_desc">uid 와 지갑 비밀(salt)로 만든 가명입니다. IdP 가 이 계정을 지갑과 잇는 데 쓰고, 서비스에는 보내지 않습니다. 로그인 때 지갑이 자동으로 넘깁니다.</p></dd>
+      <dt></dt><dd><p class="desc kv-desc" data-i18n="idp_auid_desc">uid 와 스냅 비밀(salt)로 만든 가명입니다. IdP 가 이 계정을 스냅과 잇는 데 쓰고, 서비스에는 보내지 않습니다. 로그인 때 스냅이 자동으로 넘깁니다.</p></dd>
       <dt data-i18n="idp_slot_label">등록부 슬롯</dt><dd id="meSlot">-</dd>
-      <dt></dt><dd><p class="desc kv-desc" data-i18n="idp_slot_desc">IdP 등록부에서 이 계정의 자리 번호입니다. 활성 자격증명이 이 자리에 실리고, 폐기되면 비워집니다. 지갑은 이 자리를 보고 내 자격증명이 바뀌지 않았는지 확인합니다.</p></dd>
+      <dt></dt><dd><p class="desc kv-desc" data-i18n="idp_slot_desc">IdP 등록부에서 이 계정의 자리 번호입니다. 활성 자격증명이 이 자리에 실리고, 폐기되면 비워집니다. 스냅은 이 자리를 보고 내 자격증명이 바뀌지 않았는지 확인합니다.</p></dd>
     </dl>
     </details>
-    <p><a id="walletLink2" class="btn-ghost" target="_blank" rel="noopener" data-i18n="idp_wallet_link">지갑 페이지 열기</a></p>
+    <p><a id="walletLink2" class="btn-ghost" target="_blank" rel="noopener" data-i18n="idp_wallet_link">zk 스냅 페이지 열기</a></p>
   </section>
   <!-- 2026-11-09 Phase 1: 프로필(OIDC profile 의 name 한 칸). 사용자가 속성 도구(지갑 오리진 /attr.html — MetaMask 와 무관한 독립 페이지)에서 만든
        속성 커밋먼트를 붙여 넣는다. IdP 는 뜻을 모르는 문자열로만 저장하고, 서비스 로그인 때 ID 토큰의 name 클레임으로 실려 간다. 지갑 등록과 별개라 로그인만 하면 보인다. -->
@@ -81,8 +81,8 @@
   </section>
   <section class="card me-view" id="revokeCard" hidden>
     <h3 data-i18n="idp_manage_title">계정 관리</h3>
-    <p class="desc" data-i18n="idp_revoke_desc">비밀번호를 다시 넣어 확인합니다. 지갑 연결 해제는 이 계정에서 지갑 등록만 풀어 새 지갑을 다시 등록할 수 있게 하고, 계정 폐기는 되돌릴 수 없습니다.</p>
-    <p><label><span data-i18n="idp_pwd_label">비밀번호</span> <input id="revokePwd" type="password" autocomplete="current-password" /></label> <button id="unlinkBtn" class="btn-ghost" data-i18n="idp_unlink_btn">지갑 연결 해제</button> <button id="revokeBtn" class="danger" data-i18n="account_revoke_btn">내 계정 폐기</button></p>
+    <p class="desc" data-i18n="idp_revoke_desc">비밀번호를 다시 넣어 확인합니다. 스냅 연결 해제는 이 계정에서 스냅 등록만 풀어 새 스냅을 다시 등록할 수 있게 하고, 계정 폐기는 되돌릴 수 없습니다.</p>
+    <p><label><span data-i18n="idp_pwd_label">비밀번호</span> <input id="revokePwd" type="password" autocomplete="current-password" /></label> <button id="unlinkBtn" class="btn-ghost" data-i18n="idp_unlink_btn">스냅 연결 해제</button> <button id="revokeBtn" class="danger" data-i18n="account_revoke_btn">내 계정 폐기</button></p>
     <div id="revokeVerdict"></div>
   </section>
 </main>
@@ -184,7 +184,7 @@
       if (l.status === 200) {
         clearVerdict($('userVerdict'));
         await refreshMe();
-        verdict($('profileVerdict'), true, 'idp_signup_ok_title', () => ({ summary: tt('idp_signup_ok_next', { id: r.body.id }) || `아이디 ${r.body.id} 로 가입했습니다. 속성 커밋먼트를 프로필에 저장하세요 — 지갑 등록은 서비스에서 zkID 로 로그인할 때 진행됩니다.` }));
+        verdict($('profileVerdict'), true, 'idp_signup_ok_title', () => ({ summary: tt('idp_signup_ok_next', { id: r.body.id }) || `아이디 ${r.body.id} 로 가입했습니다. 속성 커밋먼트를 프로필에 저장하세요 — 스냅 등록은 서비스에서 zkID 로 로그인할 때 진행됩니다.` }));
       } else {
         $('loginId').value = r.body.id; $('loginPwd').value = '';
         showView('login');
@@ -223,7 +223,7 @@
     if (!Demo.confirmDanger('confirm_unlink_wallet')) return;
     const r = await post('/cia/user/unlink_wallet', { pwd: $('revokePwd').value });
     $('revokePwd').value = '';
-    verdict($('revokeVerdict'), r.status === 200, r.status === 200 ? 'idp_unlink_ok_title' : 'idp_unlink_failed', r.status === 200 ? () => ({ summary: tt('idp_unlink_ok') || '지갑 연결을 해제했습니다.' }) : { reason: r.body?.reason, detail: r.body });
+    verdict($('revokeVerdict'), r.status === 200, r.status === 200 ? 'idp_unlink_ok_title' : 'idp_unlink_failed', r.status === 200 ? () => ({ summary: tt('idp_unlink_ok') || '스냅 연결을 해제했습니다.' }) : { reason: r.body?.reason, detail: r.body });
     await refreshMe();
   });
   $('revokeBtn').addEventListener('click', async () => {

@@ -249,7 +249,7 @@ try {
   let sessionRs = null;
 
   await t('RP 페이지: /wallet/config 를 CORS 로 읽어 snap 모드임을 안다', async () => {
-    await waitText(rpPage, '#walletMode', '지갑 비밀=snap', 15_000);
+    await waitText(rpPage, '#walletMode', '스냅 비밀=snap', 15_000);
     assert.ok((await text(rpPage, '#walletMode')).includes(cfg.snapId));
   });
 
@@ -260,7 +260,7 @@ try {
     await atIdpLogin(popup);
     assert.equal(new URL(popup.url()).searchParams.get('purpose'), 'register', '미등록 지갑은 등록 모드로 간다');
     assert.equal(await popup.isHidden('#authAuidRow'), true, '등록 모드에는 auid 칸이 없다');
-    await waitText(popup, '#authTitle', '지갑 등록');
+    await waitText(popup, '#authTitle', '스냅 등록');
     await popup.fill('#authUid', 'demo-user'); await popup.fill('#authPwd', DEMO_PWD); await popup.click('#authGo');
     await backAtWallet(popup);
     // 2026-11-10: 처음 등록 때 지갑 창이 salt 를 묻는다 — 형식이 틀리면(0) 안내만 하고 머문다, 맞으면 Snap 이 그 값을 s_u 로 저장한다.
@@ -309,7 +309,7 @@ try {
 
   // 2026-11-09: salt 를 화면에 보이는 이 케이스는 "비밀은 Snap 에만" 검사(페이지 DOM 에 s_u 가 없어야 한다) 뒤에 둔다 — 등록이 첫 로그인으로 옮겨가 AUID 를 로그인 뒤에야 안다.
   await t('지갑 페이지 제목은 "지갑", 신원 카드에 auid·salt 와 복사 버튼', async () => {
-    assert.equal(await walletPage.title(), 'zk 지갑');   // 새로고침 버튼은 없다(2026-11-05) — 화면이 5초마다 스스로 갱신한다
+    assert.equal(await walletPage.title(), 'zk 스냅');   // 새로고침 버튼은 없다(2026-11-05) — 화면이 5초마다 스스로 갱신한다
     await walletTab(walletPage, 'account'); await walletPage.click('#identityDetails summary');   // auid·salt 는 '상세' 접힘 안(2026-11-03)
     await waitText(walletPage, '#meAuid', AUID.slice(0, 10));                           // showSalt 확인 창은 없다(2026-11-05)
     await walletPage.click('#showSaltBtn'); await walletPage.waitForFunction(() => /^[0-9]{10,}$/.test(document.querySelector('#meSalt')?.textContent ?? ''), undefined, { timeout: 10_000 });
@@ -355,7 +355,7 @@ try {
     assert.equal(dialogs.length, before, '공개 트랜잭션도 Snap 동의 창 없이(MetaMask 확인 창만) 간다(2026-11-05)');
     const log = await text(walletPage, '#txLog');
     assert.ok(log.includes('온체인 공개(Disclosure 이벤트)'), '영수증 파싱 결과가 표시된다');
-    const walletAddr = /지갑 주소=(0x[0-9a-fA-F]{40})/.exec(log)?.[1];
+    const walletAddr = /PPID 계정 주소=(0x[0-9a-fA-F]{40})/.exec(log)?.[1];
     assert.ok(walletAddr, `지갑 주소를 로그에서 못 찾았다:\n${log}`);
     assert.equal(await attrGateAt(info.attrGateAddress, provider).claimed(walletAddr), true, '온체인에서 claim 됐다');
   });
@@ -729,7 +729,7 @@ try {
     assert.equal((await p.textContent('#infoMethod')).trim(), '아이디·비밀번호');
     assert.match(await p.textContent('#infoWallet'), /아직 없음/, '미등록 계정');
     // 2026-11-11: auid·슬롯 — 지갑 등록 전에는 auid 가 없고 복사 버튼도 숨는다
-    assert.equal((await p.textContent('#infoAuid')).trim(), '아직 없음(지갑 등록 전)'); assert.equal(await p.isHidden('#copyAuidBtn'), true);
+    assert.equal((await p.textContent('#infoAuid')).trim(), '아직 없음(스냅 등록 전)'); assert.equal(await p.isHidden('#copyAuidBtn'), true);
     assert.equal((await p.textContent('#infoSlot')).trim(), '-');
     assert.equal((await p.textContent('#infoAttr')).trim(), toolCommit);
     assert.match((await p.textContent('#infoAttrAt')).trim(), /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/);
@@ -757,7 +757,7 @@ try {
     assert.ok((await text(p, '#rpList')).includes('RP 서버 기동 전'), '서버가 등록 전이라 인증서 열은 짧은 안내만(2026-11-06)'); await p.close();
   });
   await t('IdP 인증 창: wallet 쿼리가 지갑 오리진과 다르면 폼을 막는다; 맞으면 uid·pwd·auid 로 코드를 받아 opener 에 postMessage', async () => {
-    const bad = await context.newPage(); await bad.goto(`${cia.base}/login?nonce=abc&wallet=http://evil.example`); await waitText(bad, '#authVerdict', '지갑 오리진'); await bad.close();
+    const bad = await context.newPage(); await bad.goto(`${cia.base}/login?nonce=abc&wallet=http://evil.example`); await waitText(bad, '#authVerdict', '스냅 오리진'); await bad.close();
     // 등록된 계정(맨 위 "등록(2026-10-22): …" 케이스가 IdP 가입으로 만든 uid·AUID)으로: opener 를 흉내 내는 페이지가
     // window.open 으로 연다. 그 등록 케이스가 실패해 uid 가 null 로 남으면 /cia/auth/code 가 not_registered 로 막아
     // 아래가 시간 초과로 실패한다 — /login 페이지·/cia/auth/code 자체의 결함이 아니라 그 실패가 이어진 것이다.

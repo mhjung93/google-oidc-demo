@@ -16,16 +16,16 @@
 <main class="cards">
   <section class="card" id="authCard">
     <h3 id="authTitle" data-i18n="idp_auth_title">zkID 로그인</h3>
-    <p id="authDesc" class="desc" data-i18n="idp_auth_desc">uid·비밀번호·auid 를 모두 직접 넣으면 지갑으로 돌아가 로그인을 이어갑니다.</p>
+    <p id="authDesc" class="desc" data-i18n="idp_auth_desc">uid·비밀번호·auid 를 모두 직접 넣으면 스냅으로 돌아가 로그인을 이어갑니다.</p>
     <form id="authForm" class="auth-form" autocomplete="on">
       <label><span data-i18n="idp_auth_uid_label">uid</span><input id="authUid" autocomplete="username" autocapitalize="off" spellcheck="false" placeholder="uid" /></label>   <!-- 2026-11-09(사용자 결정): uid·비밀번호·auid 를 모두 손으로 넣는다(아이디도 받는다) -->
       <label><span data-i18n="idp_pwd_label">비밀번호</span><input id="authPwd" type="password" autocomplete="current-password" /></label>
       <!-- 2026-11-09(사용자 결정): auid 도 늘 직접 넣는다 — 지갑은 더 이상 쿼리로 넘기지 않는다(2026-11-05 의 자동 채움을 되돌림). 값은 지갑 계정 탭 "상세" 의 auid 복사 버튼으로. -->
-      <label id="authAuidRow">auid<input id="authAuid" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="지갑 계정 탭 → 상세 → auid 복사" /><small class="muted" data-i18n="idp_auth_auid_hint">지갑 페이지의 계정 탭 "상세" 에서 auid 를 복사해 붙여 넣으세요.</small></label>
+      <label id="authAuidRow">auid<input id="authAuid" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="스냅 계정 탭 → 상세 → auid 복사" /><small class="muted" data-i18n="idp_auth_auid_hint">zk 스냅 페이지의 계정 탭 "상세" 에서 auid 를 복사해 붙여 넣으세요.</small></label>
       <button id="authGo" type="submit" data-i18n="idp_auth_go">로그인</button>
       <button id="authCancel" type="button" class="btn-ghost" data-i18n="idp_auth_cancel">취소</button>   <!-- 2026-11-05: 실패했을 때 돌아갈 길 — 창을 닫는다(RP 쪽에는 "창이 닫혔습니다") -->
     </form>
-    <p class="muted"><span data-i18n="idp_auth_signup_hint">계정이 없으면 새 탭에서 가입하고 지갑을 등록한 뒤 다시 로그인하세요.</span> <a id="authSignup" href="/user" target="_blank" rel="noopener" data-i18n="idp_auth_signup">계정 만들기</a></p>
+    <p class="muted"><span data-i18n="idp_auth_signup_hint">계정이 없으면 새 탭에서 가입하고 스냅을 등록한 뒤 다시 로그인하세요.</span> <a id="authSignup" href="/user" target="_blank" rel="noopener" data-i18n="idp_auth_signup">계정 만들기</a></p>
     <div id="authVerdict"></div>
   </section>
 </main>
