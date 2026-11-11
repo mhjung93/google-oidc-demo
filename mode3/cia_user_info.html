@@ -31,6 +31,9 @@
       <dt data-i18n="idp_myinfo_id">아이디</dt><dd id="infoId">-</dd>
       <dt data-i18n="idp_myinfo_uid">uid</dt><dd><code id="infoUid">-</code> <button type="button" id="copyUidBtn" class="copy-btn" title="복사">⧉</button></dd>
       <dt></dt><dd><p class="desc kv-desc" data-i18n="idp_myinfo_uid_desc">zkID 가 배정한 계정 번호입니다. 속성 커밋먼트 도구에 넣습니다.</p></dd>
+      <dt data-i18n="idp_myinfo_auid">auid</dt><dd><code id="infoAuid" style="overflow-wrap:anywhere;word-break:break-all">-</code> <button type="button" id="copyAuidBtn" class="copy-btn" title="복사" hidden>⧉</button></dd>
+      <dt></dt><dd><p class="desc kv-desc" data-i18n="idp_myinfo_auid_desc">지갑 등록 때 지갑이 낸 값입니다. 서비스 로그인 인증 창에 넣는 값과 같아야 합니다.</p></dd>
+      <dt data-i18n="idp_myinfo_slot">등록부 슬롯</dt><dd id="infoSlot">-</dd>
       <dt data-i18n="idp_myinfo_method">가입 방식</dt><dd id="infoMethod">-</dd>
       <dt data-i18n="idp_myinfo_wallet">지갑 등록</dt><dd id="infoWallet">-</dd>
       <dt data-i18n="idp_myinfo_attr">속성 커밋먼트</dt><dd><code id="infoAttr">-</code></dd>
@@ -53,6 +56,7 @@
     const prev = btn.textContent; btn.textContent = '✓'; setTimeout(() => { btn.textContent = prev; }, 1200);
   }
   $('copyUidBtn').addEventListener('click', () => { const v = $('infoUid').textContent; if (v && v !== '-') copyText(v, $('copyUidBtn')); });
+  $('copyAuidBtn').addEventListener('click', () => { const v = $('infoAuid').textContent; if (v && !$('copyAuidBtn').hidden) copyText(v, $('copyAuidBtn')); });
   (async () => {
     Demo.init({ page: 'idp_user_info' });
     let me = null;
@@ -61,6 +65,10 @@
     if (!me) return;
     $('infoId').textContent = me.id ?? '-';
     $('infoUid').textContent = me.uid;   // 2026-11-10: 속성 커밋먼트 도구의 uid 칸에 넣는 값
+    // 2026-11-11(사용자 요청): auid·슬롯 — /cia/user/me 가 이미 준다. 지갑 등록 전·연결 해제 뒤에는 둘 다 null.
+    $('infoAuid').textContent = me.auid ?? (tt('idp_myinfo_auid_none') || '아직 없음');
+    $('copyAuidBtn').hidden = !me.auid;
+    $('infoSlot').textContent = me.slot ?? '-';
     const provider = me.provider ?? 'demo';
     $('infoMethod').textContent = tt(`idp_myinfo_method_${provider}`) || provider;
     $('infoWallet').textContent = me.registered ? (tt('idp_myinfo_wallet_yes') || '등록됨') : (tt('idp_myinfo_wallet_no') || '아직 없음');

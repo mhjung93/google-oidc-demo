@@ -1703,7 +1703,7 @@ app.post('/cia/account/delete', requireAdmin, async (req, res) => {
 
 // 관리자 계정 목록(관리 페이지의 계정 목록용). activeCred 는 위의 기존 헬퍼(사용자당 활성 자격증명 하나).
 app.get('/cia/accounts', requireAdmin, (req, res) => res.json({
-  accounts: Object.entries(state.accounts).map(([uid, a]) => ({ uid, id: a.loginId ?? null, disabled: a.disabled, activeCf_u: activeCfU(a), slot: a.slot, tampered: Boolean(a.tampered), registryLeaf: state.registry.leaves[a.slot] ?? '0', provider: a.provider ?? 'demo' })),
+  accounts: Object.entries(state.accounts).map(([uid, a]) => ({ uid, id: a.loginId ?? null, auid: a.auid ?? null, disabled: a.disabled, activeCf_u: activeCfU(a), slot: a.slot, tampered: Boolean(a.tampered), registryLeaf: state.registry.leaves[a.slot] ?? '0', provider: a.provider ?? 'demo' })),
 }));
 
 // ---- V9 등록부 관리(설계 2026-10-01 §9) ----
@@ -1714,7 +1714,8 @@ app.get('/cia/admin/registry', requireAdmin, (req, res) => {
     const e = byIndex.get(index);
     const cred = e ? activeCred(e.uid) : null;
     // 관리자 화면 "사용자 자격증명 활성 목록"(2026-10-14): 활성 C_u 의 Cf_u·발급 시각·disabled·게시 대기 여부를 함께 준다. 값은 모두 공개 부분이다.
-    return { index, uid: e?.uid ?? null, leaf: leaf.toString(), tampered: Boolean(e?.a.tampered), active: Boolean(cred),
+    // 관리자 화면 "등록부 DB"·"uid ↔ auid 대응"(2026-11-11, 사용자 요청): 리프 = Poseidon(auid, Cf_u) 를 대조할 수 있게 auid·아이디도 싣는다(관리자 전용, RP 에는 나가지 않는다).
+    return { index, uid: e?.uid ?? null, id: e?.a.loginId ?? null, auid: e?.a.auid ?? null, leaf: leaf.toString(), tampered: Boolean(e?.a.tampered), active: Boolean(cred),
       Cf_u: cred?.Cf_u ?? null, issuedAt: cred?.issuedAt ?? null, disabled: Boolean(e?.a.disabled), pending: pendingIdx.has(index) };
   });
   res.json({ depth: registry.depth, next: state.registry.next, regRoot: registry.root().toString(), epoch: state.epoch, pendingSlots: state.registry.pendingSlots.length, slots });

@@ -728,6 +728,9 @@ try {
     assert.equal((await p.textContent('#infoUid')).trim(), String(me.uid), 'uid 를 보인다(2026-11-10 — 속성 커밋먼트 도구에 넣는 값)');
     assert.equal((await p.textContent('#infoMethod')).trim(), '아이디·비밀번호');
     assert.match(await p.textContent('#infoWallet'), /아직 없음/, '미등록 계정');
+    // 2026-11-11: auid·슬롯 — 지갑 등록 전에는 auid 가 없고 복사 버튼도 숨는다
+    assert.equal((await p.textContent('#infoAuid')).trim(), '아직 없음(지갑 등록 전)'); assert.equal(await p.isHidden('#copyAuidBtn'), true);
+    assert.equal((await p.textContent('#infoSlot')).trim(), '-');
     assert.equal((await p.textContent('#infoAttr')).trim(), toolCommit);
     assert.match((await p.textContent('#infoAttrAt')).trim(), /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/);
     assert.equal(await p.getAttribute('#infoAttrAt', 'title'), me.profile.updatedAt, '원본 시각은 title 에');
@@ -833,6 +836,21 @@ try {
     await p.fill('#adminGate .gate-pwd', cia.adminSecret); await p.click('#adminGate .gate-form button[type=submit]');
     await p.waitForFunction(() => document.querySelectorAll('#accounts table tbody tr').length > 0, undefined, { timeout: 20_000 });
     assert.equal(await p.$eval('#adminGate', (el) => el.hidden), true);
+    // 2026-11-11: "uid ↔ auid 대응" 표는 계정마다 한 줄, auid 는 자르지 않고 보인다. "등록부 DB" 는 regRoot 전체와 슬롯별 리프를 보인다.
+    const accts = await p.evaluate((sec) => fetch('/cia/accounts', { headers: { 'X-CIA-Admin-Secret': sec } }).then((r) => r.json()), cia.adminSecret);
+    await p.waitForFunction((n) => document.querySelectorAll('#auidMap table tbody tr').length === n, accts.accounts.length, { timeout: 20_000 });
+    const mapRows = await p.$$eval('#auidMap table tbody tr', (trs) => trs.map((tr) => [...tr.cells].map((c) => c.querySelector('code')?.textContent ?? c.textContent.trim())));
+    for (const a of accts.accounts) {
+      const row = mapRows.find((r) => r[0] === a.uid);
+      assert.ok(row, `uid ${a.uid} 줄이 있다`);
+      assert.equal(row[2], a.auid ?? '(없음)', `uid ${a.uid} 의 auid 전체`);
+    }
+    assert.ok(accts.accounts.some((a) => a.auid), '등록된 계정이 하나는 있다(대응 표가 실제 auid 를 보이는지 확인하려면)');
+    const st = await p.evaluate(() => fetch('/cia/state').then((r) => r.json()));
+    await p.waitForFunction((root) => [...document.querySelectorAll('#regDbKv code')].some((c) => c.textContent === root), st.regRoot, { timeout: 20_000 });
+    const reg = await p.evaluate((sec) => fetch('/cia/admin/registry', { headers: { 'X-CIA-Admin-Secret': sec } }).then((r) => r.json()), cia.adminSecret);
+    const leaves = await p.$$eval('#regDb table tbody tr', (trs) => trs.map((tr) => tr.cells[4].querySelector('code').textContent));
+    assert.deepEqual(leaves, reg.slots.filter((x) => x.uid !== null).map((x) => x.leaf), '등록부 DB 의 리프는 API 와 같은 전체 값');
     await p.close();
   });
 

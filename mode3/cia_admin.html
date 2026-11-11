@@ -19,7 +19,7 @@
     <span class="brand" data-i18n="idp_brand">zkID</span>
     <div class="nav-menu"><a href="/user" data-i18n="idp_nav_user">내 계정</a><a href="/rp" data-i18n="idp_nav_rp">RP 운영자</a><a href="/admin" aria-current="page" data-i18n="idp_nav_admin">관리자</a></div>
   </div></nav>
-  <div class="section-menu"><div class="menu-inner"><a href="#secAccounts" data-i18n="admin_accounts_title">계정</a><a href="#secRps" data-i18n="admin_rps_title">RP</a><a href="#secOpenings" data-i18n="admin_openings_title">개봉 요청</a><a href="#secRcl" data-i18n="admin_rcl_title">폐기 목록</a><a href="#secCreds" data-i18n="admin_creds_title">사용자 자격증명</a><a href="#secRevoked" data-i18n="admin_revoked_sessions_title">세션 폐기 목록</a></div></div>
+  <div class="section-menu"><div class="menu-inner"><a href="#secAccounts" data-i18n="admin_accounts_title">계정</a><a href="#secRps" data-i18n="admin_rps_title">RP</a><a href="#secOpenings" data-i18n="admin_openings_title">개봉 요청</a><a href="#secRcl" data-i18n="admin_rcl_title">폐기 목록</a><a href="#secCreds" data-i18n="admin_creds_title">사용자 자격증명</a><a href="#secRegDb" data-i18n="admin_regdb_title">등록부 DB</a><a href="#secAuidMap" data-i18n="admin_auidmap_title">uid ↔ auid 대응</a><a href="#secRevoked" data-i18n="admin_revoked_sessions_title">세션 폐기 목록</a></div></div>
   <main class="cards">
     <!-- 관리자 비밀번호 화면(2026-11-05, 사용자 요청) — Demo.gate 가 맞는 비밀번호를 받을 때까지 다른 카드는 body.admin-locked 로 숨는다. -->
     <section class="card gate-card" id="adminGate" hidden>
@@ -92,6 +92,20 @@
       <div id="creds"><p class="muted" data-i18n="admin_need_secret">관리자 시크릿을 넣으면 목록과 대기 건수를 불러옵니다.</p></div>
     </section>
 
+    <!-- 2026-11-11(사용자 요청): 등록부 전체 값과 uid ↔ auid 대응을 따로 보인다. 값은 자르지 않는다(대조·복사용). -->
+    <section class="card span2" id="secRegDb">
+      <h3 data-i18n="admin_regdb_title">등록부 DB</h3>
+      <p class="desc" data-i18n="admin_regdb_desc">사용자 자격증명 등록부의 슬롯별 리프 = Poseidon(auid, H(C_u)) 전체 값입니다.</p>
+      <dl class="kv" id="regDbKv"></dl>
+      <div id="regDb"><p class="muted" data-i18n="admin_need_secret">관리자 시크릿을 넣으면 목록과 대기 건수를 불러옵니다.</p></div>
+    </section>
+
+    <section class="card span2" id="secAuidMap">
+      <h3 data-i18n="admin_auidmap_title">uid ↔ auid 대응</h3>
+      <p class="desc" data-i18n="admin_auidmap_desc">계정마다 IdP 가 저장한 auid 입니다.</p>
+      <div id="auidMap"><p class="muted" data-i18n="admin_need_secret">관리자 시크릿을 넣으면 목록과 대기 건수를 불러옵니다.</p></div>
+    </section>
+
     <section class="card span2" id="secRevoked">
       <h3 data-i18n="admin_revoked_sessions_title">세션 — 폐기 목록</h3>
       <p class="desc" data-i18n="admin_revoked_sessions_desc">폐기된(revokedAt 있는) 세션만 최근 폐기 순으로 보여 줍니다.</p>
@@ -147,6 +161,7 @@
     let ciaState = null;             // /cia/state
     let ciaMirrors = null;           // /mode3/health 의 mirrors(V10 — 거울별 epoch·뒤처짐)
     let creds = null;                // /cia/admin/registry 의 slots(2026-10-14 U1 — 사용자 자격증명 활성 목록)
+    let regDb = null;                // /cia/admin/registry 응답 전체(2026-11-11 — 등록부 DB 카드)
     let revokedSessions = null;      // /cia/admin/revoked_sessions 의 sessions(2026-10-14 U1 — 세션 폐기 목록)
     const sessionsByUid = {};        // uid → 마지막으로 읽은 세션 목록(언어 전환 때 다시 그린다)
     const expandedUids = new Set();  // 세션 표를 펼친 계정
@@ -294,7 +309,7 @@
     // 언어·전문가 전환은 사전이 채우는 요소와 결과 카드만 바꾼다(Demo) — 스크립트가 만든 표는 여기서 다시 그린다.
     for (const k of ['setLang', 'setExpert']) {
       const orig = Demo[k];
-      Demo[k] = (v) => { orig(v); renderBadges(); renderAccounts(); renderRps(); renderOpenings(); renderState(); renderCreds(); renderRevokedSessions(); };
+      Demo[k] = (v) => { orig(v); renderBadges(); renderAccounts(); renderRps(); renderOpenings(); renderState(); renderCreds(); renderRevokedSessions(); renderRegDb(); renderAuidMap(); };
     }
 
     // ---- 계정 ----
@@ -364,6 +379,8 @@
         accounts = r.body.accounts;
       } catch (e) { accounts = null; placeholder($('accounts'), 'admin_load_failed'); setVerdict($('adminVerdict'), false, 'admin_load_failed', { reason: 'cia_unavailable', detail: e.message }); return; }
       renderAccounts();
+      renderAuidMap();
+      loadCreds();   // 등록부 DB 카드도 계정 목록과 함께 새로 고친다(계정 폐기·삭제·바꿔치기 뒤 loadAccounts 가 불린다)
     }
     async function loadSessions(uid) {
       try {
@@ -604,9 +621,71 @@
       if (!hasSecret()) { placeholder($('creds'), 'admin_need_secret'); return; }
       try {
         const r = await adminJson('GET', '/cia/admin/registry');
-        creds = r.status === 200 ? r.body.slots : null;
-      } catch { creds = null; }
+        regDb = r.status === 200 ? r.body : null;
+        creds = regDb ? regDb.slots : null;
+      } catch { creds = regDb = null; }
       renderCreds();
+      renderRegDb();
+    }
+
+    // ---- 등록부 DB · uid ↔ auid 대응 (2026-11-11, 사용자 요청) ----
+    /** 긴 값을 자르지 않고 보이며 복사 버튼을 붙인다(short() 는 앞자리만 보인다). */
+    function fullVal(v) {
+      const wrap = document.createElement('span');
+      const code = document.createElement('code');
+      code.textContent = String(v);
+      code.style.overflowWrap = 'anywhere'; code.style.wordBreak = 'break-all'; code.style.fontSize = '12px';
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'copy-btn'; b.textContent = '⧉'; b.title = Demo.lang === 'en' ? 'Copy' : '복사';
+      b.addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(String(v)); } catch { return; }
+        b.textContent = '✓'; setTimeout(() => { b.textContent = '⧉'; }, 1200);
+      });
+      wrap.append(code, ' ', b);
+      return wrap;
+    }
+    function renderRegDb() {
+      const host = $('regDb'), kv = $('regDbKv');
+      kv.replaceChildren();
+      if (!regDb) { placeholder(host, 'admin_need_secret'); return; }
+      for (const [key, val] of [['admin_regdb_depth', regDb.depth], ['admin_regdb_next', regDb.next], ['admin_kv_epoch', regDb.epoch], ['admin_regdb_pending', regDb.pendingSlots], ['admin_regdb_root', regDb.regRoot]]) {
+        const dt = document.createElement('dt'); tte(dt, key);
+        const dd = document.createElement('dd'); dd.appendChild(key === 'admin_regdb_root' ? fullVal(val) : document.createTextNode(String(val)));
+        kv.append(dt, dd);
+      }
+      const rows = regDb.slots.filter((s) => s.uid !== null);
+      if (!rows.length) { placeholder(host, 'admin_creds_empty'); return; }
+      const t = table([['admin_col_slot'], ['admin_col_uid'], ['admin_col_id'], ['admin_col_cfu'], ['admin_col_leaf'], ['admin_col_state'], ['admin_col_published']]);
+      const body = t.tBodies[0];
+      for (const s of rows) {
+        const row = body.insertRow();
+        cell(row, String(s.index));
+        cell(row, s.uid);
+        cell(row, s.id ?? '-');
+        cell(row, s.Cf_u ? fullVal(s.Cf_u) : '-');
+        cell(row, fullVal(s.leaf));
+        const [stateKey, stateKind] = s.tampered ? ['admin_state_tampered', 'bad']
+          : s.disabled ? ['admin_state_disabled', 'bad']
+            : s.active ? ['admin_state_active', 'ok'] : ['admin_state_retired', 'muted'];
+        cell(row, badge(stateKey, stateKind));
+        cell(row, badge(s.pending ? 'admin_pub_pending' : 'admin_pub_yes', s.pending ? 'warn' : 'ok'));
+      }
+      host.replaceChildren(t);
+    }
+    function renderAuidMap() {
+      const host = $('auidMap');
+      if (!accounts) { placeholder(host, 'admin_need_secret'); return; }
+      if (!accounts.length) { placeholder(host, 'admin_auidmap_empty'); return; }
+      const t = table([['admin_col_uid'], ['admin_col_id'], ['admin_col_auid'], ['admin_col_slot']]);
+      const body = t.tBodies[0];
+      for (const a of accounts) {
+        const row = body.insertRow();
+        cell(row, a.uid);
+        cell(row, a.id ?? '-');
+        if (a.auid) cell(row, fullVal(a.auid)); else { const c = cell(row, ''); c.className = 'muted'; tte(c, 'admin_auid_none'); }
+        cell(row, a.slot === null || a.slot === undefined ? '-' : String(a.slot));
+      }
+      host.replaceChildren(t);
     }
 
     // ---- 세션 — 폐기 목록 (2026-10-14 U1) ----
@@ -664,8 +743,8 @@
     // ---- 기동 ----
     function reloadAll() {
       if (!hasSecret()) {
-        accounts = rps = openings = ciaState = creds = revokedSessions = null;
-        renderAccounts(); renderRps(); renderOpenings(); renderState(); renderCreds(); renderRevokedSessions(); refreshBadges();
+        accounts = rps = openings = ciaState = creds = revokedSessions = regDb = null;
+        renderAccounts(); renderRps(); renderOpenings(); renderState(); renderCreds(); renderRevokedSessions(); renderRegDb(); renderAuidMap(); refreshBadges();
         return;
       }
       loadAccounts(); loadRps(); loadOpenings(); loadState(); refreshBadges();

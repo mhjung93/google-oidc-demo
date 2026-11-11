@@ -98,6 +98,10 @@ try {
     const reg = (await cia.adminGet('/cia/admin/registry')).body;
     const s = reg.slots.find((x) => x.index === 1);
     assert.equal(s.uid, '67890'); assert.equal(s.tampered, true); assert.equal(s.leaf, tp.body.leaf);
+    // 관리자 "등록부 DB" 카드(2026-11-11): 슬롯마다 auid·아이디도 싣는다(리프 = Poseidon(auid, Cf_u) 를 화면에서 대조할 수 있게)
+    assert.equal(s.auid, alice.auid.toString()); assert.ok('id' in s, j(s));
+    // "uid ↔ auid 대응" 카드(2026-11-11)는 계정 목록에서 auid 를 읽는다
+    assert.equal((await cia.adminGet('/cia/accounts')).body.accounts.find((x) => x.uid === '67890').auid, alice.auid.toString());
     const rs = await cia.adminPost('/cia/admin/registry/restore', { uid: '67890' });
     assert.equal(rs.status, 200, j(rs.body)); assert.equal(BigInt(rs.body.leaf), real);
     assert.equal((await cia.adminGet('/cia/admin/registry')).body.slots.find((x) => x.index === 1).tampered, false);
