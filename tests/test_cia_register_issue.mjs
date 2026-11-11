@@ -164,7 +164,7 @@ try {
   await t('issue V11: 첫 발급 — 새 C_u 가 슬롯에 게시(published:true)되고 토큰·세션 기록; 같은 C_u 재발급은 published:false, 활성 자격증명은 하나', async () => {
     const a = await issue(user);
     assert.equal(a.r.status, 200, JSON.stringify(a.r.body));
-    assert.deepEqual(Object.keys(a.cred).sort(), ['Cf_s', 'Cf_u', 'allowAgent', 'chainid', 'epoch', 'max_height', 'pk_CIA', 'published', 'regRoot', 'sigma', 'slot']);
+    assert.deepEqual(Object.keys(a.cred).sort(), ['Cf_s', 'Cf_u', 'allowAgent', 'chainid', 'epoch', 'id_token', 'max_height', 'pk_CIA', 'published', 'regRoot', 'sigma', 'slot']);
     assert.equal(a.cred.Cf_u, a.req.Cf_u.toString()); assert.equal(a.cred.Cf_s, a.req.Cf_s.toString()); assert.equal(a.cred.published, true);
     const m = F.e(await credMessageV11(a.req.auid_s, a.req.arid_s, a.req.Cf_u, a.req.Cf_s, CHAIN_ID, 0n));
     const pk = (await cia.get('/cia/public_keys')).body.pk_CIA;

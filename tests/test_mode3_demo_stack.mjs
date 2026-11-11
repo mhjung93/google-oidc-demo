@@ -870,13 +870,14 @@ try {
     assert.ok(sess); assert.equal('attrCommit' in sess, false, '세션 목록에도 없다');
     assert.equal(JSON.stringify(l1.rp).includes(C1), false);
     assert.equal((await withJar('/cia/user/profile', { name: '' })).status, 200);
-    // 변조: 서명 마지막 글자를 바꾼 토큰 → bad_id_token(로그인 거절). 토큰 없이 보내면(옛 지갑) 예전처럼 로그인된다.
+    // 변조: 서명 첫 글자를 바꾼 토큰 → bad_id_token(로그인 거절). 토큰 없이 보내면(옛 지갑) 예전처럼 로그인된다.
+    // (마지막 글자는 안 된다 — 64바이트 서명의 base64url 마지막 글자는 아래 4비트가 버려지는 패딩이라 'A'→'B' 는 같은 서명으로 디코딩돼 1/4 확률로 통과했다)
     const info = (await rp.get('/api/mode3/rp_info')).body;
     const { r_s, r_rp, factoryAddress, attrGateAddress } = (await rp.post('/api/mode3/challenge')).body;
     const w = await stack.withRelay(() => wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s, r_rp, allowAgent: '0', factoryAddress, attrGateAddress }, { Origin: rp.origin }));
     assert.equal(w.status, 200, j(w.body));
-    const tok = w.body.id_token; const last = tok.at(-1);
-    const tampered = tok.slice(0, -1) + (last === 'A' ? 'B' : 'A');
+    const tok = w.body.id_token; const sigAt = tok.lastIndexOf('.') + 1;
+    const tampered = tok.slice(0, sigAt) + (tok[sigAt] === 'A' ? 'B' : 'A') + tok.slice(sigAt + 1);
     const bad = await rp.post('/api/mode3/login', { proof: w.body.proof, publicSignals: w.body.publicSignals, sig: w.body.sig, r_s, id_token: tampered });
     assert.equal(bad.status, 200); assert.equal(bad.body.ok, false); assert.equal(bad.body.reason, 'bad_id_token', j(bad.body));
     const notString = await rp.post('/api/mode3/login', { proof: w.body.proof, publicSignals: w.body.publicSignals, sig: w.body.sig, r_s, id_token: 5 });
