@@ -26,8 +26,8 @@ window.DemoStrings = {
     where_rp2: { ko: '두 번째 RP', en: 'the second RP' },
     where_idp_user: { ko: 'IdP 사용자 페이지', en: 'the IdP user page' }, where_idp_rp: { ko: 'IdP RP 페이지', en: 'the IdP RP page' },
     confirm_revoke: { ko: '되돌릴 수 없습니다. 폐기할까요?', en: 'This cannot be undone. Revoke?' },
-    confirm_unlink_wallet: { ko: '이 계정에서 스냅 등록을 풉니다. 발급된 자격증명은 폐기(게시)되고, 계정과 아이디는 남아 새 스냅을 다시 등록할 수 있습니다. 스냅 쪽은 설정 탭 "스냅 초기화" 로 비우세요. 계속할까요?', en: 'Unlink the Snap from this account. The issued credential is revoked (and published); the account and login id stay so you can register a new Snap. Clear the Snap side with "Reset the Snap" in Snap settings. Continue?' },
-    confirm_delete_account: { ko: '계정과 스냅 등록을 지웁니다. 되돌릴 수 없습니다. 등록된 자격증명은 먼저 폐기(게시)됩니다. 스냅 쪽 스냅 비밀은 사용자가 "스냅 설정 → 스냅 초기화" 로 지워야 합니다. 계속할까요?', en: 'This deletes the account and its Snap registration and cannot be undone. A registered credential is revoked (and published) first. The secret inside the user’s Snap must be cleared by the user (Snap settings → Reset the Snap). Continue?' },
+    confirm_unlink_wallet: { ko: '이 계정에서 스냅 등록을 풉니다. 발급된 자격증명은 폐기(게시)되고, 계정과 아이디는 남아 새 스냅을 다시 등록할 수 있습니다. 스냅 쪽은 MetaMask 에서 스냅을 다시 설치해 비우세요. 계속할까요?', en: 'Unlink the Snap from this account. The issued credential is revoked (and published); the account and login id stay so you can register a new Snap. Clear the Snap side by reinstalling the Snap in MetaMask. Continue?' },
+    confirm_delete_account: { ko: '계정과 스냅 등록을 지웁니다. 되돌릴 수 없습니다. 등록된 자격증명은 먼저 폐기(게시)됩니다. 스냅 비밀은 MetaMask 에서 스냅을 다시 설치해야 지워집니다. 계속할까요?', en: 'This deletes the account and its Snap registration and cannot be undone. A registered credential is revoked (and published) first. The secret inside the user’s Snap is only cleared by reinstalling the Snap in MetaMask. Continue?' },
     confirm_tamper: { ko: '시연용입니다 — 이 계정의 등록부 슬롯에 가짜 자격증명을 게시합니다. 계속할까요?', en: 'Demo only — publish a fake credential into this account’s registry slot. Continue?' },
     confirm_publish: { ko: '폐기 목록을 체인에 게시합니다. 계속할까요?', en: 'Publish the revocation list on-chain. Continue?' },
     confirm_rp_revoke_cert: { ko: '이 RP 의 인증서를 회수합니다. RP 는 몇 초 안에 비활성이 되고, 운영자가 다시 "인증서 발급 요청" 을 하면 승인해 주어야 합니다. 계속할까요?', en: 'Revoke this RP’s certificate. The RP goes inactive within seconds; once its operator requests a certificate again you need to approve it. Continue?' },
@@ -285,7 +285,7 @@ window.DemoStrings = {
     wallet_registered_summary: { ko: '등록했습니다. 내 속성: {attrs}', en: 'Registered. My attributes: {attrs}' },
     wallet_register_failed: { ko: '등록 실패', en: 'Registration failed' },
     wallet_register_cancel: { ko: '스냅 대화상자에서 등록을 취소했습니다.', en: 'Registration was cancelled in the Snap dialog.' },
-    wallet_register_snap_reset: { ko: '스냅 에는 등록 비밀이 이미 만들어졌습니다. "스냅 초기화" 를 누른 뒤 다시 등록하세요.', en: 'The Snap has already created its registration secrets. Press "Reset the Snap", then register again.' },
+    wallet_register_snap_reset: { ko: '스냅 에는 등록 비밀이 이미 만들어졌습니다. MetaMask 에서 스냅을 다시 설치한 뒤 다시 등록하세요.', en: 'The Snap has already created its registration secrets. Reinstall the Snap in MetaMask, then register again.' },
     // 409 already_registered 의 출구는 "Snap 초기화" 가 아니다(2026-09-23 점검 B·M1) — 문구를 그대로 옮긴다.
     wallet_register_stuck: { ko: '에이전트 상태 파일에 이미 등록이 있습니다. "스냅 초기화" + 상태 파일 삭제만으로는 풀리지 않습니다 — IdP 에 그 uid 가 이미 등록돼 있어(uid 존재만 봅니다) 다시 409 가 납니다. docs/MODE3_DEMO.md 의 "하지 말 것 / 재시연" 재시연 세트로 IdP·에이전트·스냅 세 보관소를 함께 비우세요.', en: 'The agent’s state file already holds a registration. "Reset the Snap" plus deleting the state file does not fix it — the IdP already has that uid (it only checks that the uid exists), so /cia/register returns 409 again. Use the re-run set in "하지 말 것 / 재시연" of docs/MODE3_DEMO.md to clear the IdP, the agent and the Snap together.' },
     wallet_register_half: { ko: '등록이 반만 됐습니다: 에이전트에는 등록(uid={uid})됐지만 스냅 저장에 실패했습니다({err}). 스냅은 registration_incomplete 상태라 이대로는 로그인할 수 없습니다 — docs/MODE3_DEMO.md 의 재시연 세트로 IdP·에이전트·스냅 세 보관소를 함께 비워야 합니다.', en: 'The registration is only half done: the agent registered (uid={uid}) but storing into the Snap failed ({err}). The Snap is left registration_incomplete, so login is impossible — clear the IdP, the agent and the Snap together with the re-run set in docs/MODE3_DEMO.md.' },
@@ -605,7 +605,7 @@ window.DemoStrings = {
     admin_session_revoke_summary: { ko: '세션 하나만 폐기했습니다. 계정과 다른 세션은 그대로입니다.', en: 'Only that one session was revoked. The account and the other sessions are untouched.' },
     admin_revoke_failed: { ko: '폐기 실패', en: 'Revocation failed' },
     admin_delete_title: { ko: '계정 삭제됨', en: 'Account deleted' },
-    admin_delete_summary: { ko: 'uid {uid} 계정과 스냅 등록을 지웠습니다. 등록돼 있었다면 자격증명은 먼저 폐기(게시)됐습니다. 같은 아이디로 다시 가입할 수 있습니다. 스냅 쪽 스냅 비밀은 사용자가 스냅 설정 탭 "스냅 초기화" 로 지워야 새로 등록할 수 있습니다.', en: 'Account uid {uid} and its Snap registration were deleted. If it was registered, its credential was revoked (and published) first. The login id can be used again. The secret inside the user\'s Snap must be cleared by the user ("Reset the Snap" in Snap settings) before registering again.' },
+    admin_delete_summary: { ko: 'uid {uid} 계정과 스냅 등록을 지웠습니다. 등록돼 있었다면 자격증명은 먼저 폐기(게시)됐습니다. 같은 아이디로 다시 가입할 수 있습니다. 스냅 비밀은 MetaMask 에서 스냅을 다시 설치해야 지워져 새로 등록할 수 있습니다.', en: 'Account uid {uid} and its Snap registration were deleted. If it was registered, its credential was revoked (and published) first. The login id can be used again. The secret inside the user\'s Snap is only cleared by reinstalling the Snap in MetaMask before registering again.' },
     admin_delete_failed: { ko: '삭제 실패', en: 'Deletion failed' },
     admin_recover_title: { ko: '복구됨', en: 'Recovered' },
     admin_recover_summary: { ko: 'uid {uid} 를 다시 쓸 수 있게 했습니다. 이미 폐기된 자격증명은 되살아나지 않습니다 — 스냅이 다음 로그인에서 새로 받습니다.', en: 'uid {uid} can be used again. Credentials already revoked do not come back — the Snap receives a fresh one at its next login.' },
@@ -679,7 +679,7 @@ window.DemoStrings = {
     idp_manage_title: { ko: '계정 관리', en: 'Account' },   // 2026-11-06: 폐기 카드에 지갑 연결 해제가 함께 들어가 제목을 바꿈
     idp_unlink_btn: { ko: '스냅 연결 해제', en: 'Unlink Snap' },
     idp_unlink_ok_title: { ko: '스냅 연결 해제됨', en: 'Snap unlinked' },
-    idp_unlink_ok: { ko: '이 계정에서 스냅 등록을 풀었습니다. 스냅 설정 탭의 "스냅 초기화" 로 스냅을 비운 뒤 "스냅 연결해 등록" 으로 새 스냅을 등록하세요.', en: 'The Snap registration was removed from this account. Clear the Snap with "Reset the Snap" in Snap settings, then register a new Snap with "Connect Snap and register".' },
+    idp_unlink_ok: { ko: '이 계정에서 스냅 등록을 풀었습니다. MetaMask 에서 스냅을 다시 설치해 비운 뒤 "스냅 연결해 등록" 으로 새 스냅을 등록하세요.', en: 'The Snap registration was removed from this account. Reinstall the Snap in MetaMask to clear it, then register a new Snap with "Connect Snap and register".' },
     idp_unlink_failed: { ko: '스냅 연결 해제 실패', en: 'Unlinking the Snap failed' },
     idp_signup_ok_title: { ko: '가입됨', en: 'Signed up' },
     idp_signup_ok: { ko: '아이디 {id} 로 가입했습니다. 비밀번호를 넣고 로그인하세요.', en: 'Your account {id} is ready. Enter your password to log in.' },
@@ -778,7 +778,7 @@ window.DemoStrings = {
     // IdP 인증 창(cia_login.html, §4) — 지갑 팝업이 연다.
     idp_auth_title: { ko: 'zkID 로그인', en: 'zkID sign-in' },
     idp_auth_uid_label: { ko: 'uid', en: 'uid' },   // 2026-11-09: 인증 창은 uid·비밀번호·auid 를 모두 직접 입력
-    idp_auth_auid_hint: { ko: 'zk 스냅 페이지의 계정 탭 "상세" 에서 auid 를 복사해 붙여 넣으세요.', en: 'Copy auid from the zk Snap page (Account tab → Details) and paste it here.' },
+    idp_auth_auid_hint: { ko: '속성 커밋먼트 도구(localhost:5100/attr.html) 또는 zkID 내 정보(등록 뒤)에서 auid 를 복사해 붙여 넣으세요.', en: 'Copy auid from the attribute commitment tool (localhost:5100/attr.html) or zkID My info (after registration) and paste it here.' },
     idp_auth_desc: { ko: 'uid·비밀번호·auid 를 모두 직접 넣으면 스냅으로 돌아가 로그인을 이어갑니다.', en: 'Enter your uid, password and auid; you return to the Snap and the login continues.' },   // 2026-11-09
     idp_auth_go: { ko: '로그인', en: 'Log in' },
     // 인증 창 등록 모드(2026-11-09): 미등록 지갑의 첫 서비스 로그인 — auid 칸 없이 아이디·비밀번호만
@@ -849,7 +849,7 @@ window.DemoStrings = {
     attr_uid: { ko: 'uid', en: 'uid' },
     attr_salt: { ko: 'salt (s_u)', en: 'salt (s_u)' },
     attr_uid_hint: { ko: 'uid 는 zkID 내 정보(zkID → 내 계정 → 내 정보)에 있습니다.', en: 'Your uid is on zkID My info (zkID → My account → My info).' },
-    attr_salt_hint: { ko: 'salt 는 직접 넣거나 "새로 뽑기" 로 만드세요. 스냅을 처음 등록할 때 스냅이 이 기록의 salt 를 그대로 씁니다(같은 브라우저). 이미 등록한 스냅이면 zk 스냅 화면 → 계정 탭 → 상세의 salt 를 넣으세요.', en: 'Type a salt or use "New salt". When the Snap is first registered it uses this record’s salt (same browser). If your Snap is already registered, enter the salt from zk Snap → Account tab → Details.' },
+    attr_salt_hint: { ko: 'salt 는 직접 넣거나 "새로 뽑기" 로 만드세요. 스냅을 처음 등록할 때 스냅이 이 기록의 salt 를 그대로 씁니다(같은 브라우저). ', en: 'Type a salt or use "New salt". When the Snap is first registered it uses this record’s salt (same browser).' },
     attr_salt_gen_btn: { ko: 'salt 새로 뽑기', en: 'New salt' },
     attr_salt_copy_btn: { ko: 'salt 복사', en: 'Copy salt' },
     attr_auid_label: { ko: 'auid', en: 'auid' },   // 2026-11-11

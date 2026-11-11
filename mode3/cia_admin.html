@@ -19,7 +19,7 @@
     <span class="brand" data-i18n="idp_brand">zkID</span>
     <div class="nav-menu"><a href="/user" data-i18n="idp_nav_user">내 계정</a><a href="/rp" data-i18n="idp_nav_rp">RP 운영자</a><a href="/admin" aria-current="page" data-i18n="idp_nav_admin">관리자</a></div>
   </div></nav>
-  <div class="section-menu"><div class="menu-inner"><a href="#secAccounts" data-i18n="admin_accounts_title">계정</a><a href="#secRps" data-i18n="admin_rps_title">RP</a><a href="#secOpenings" data-i18n="admin_openings_title">개봉 요청</a><a href="#secRcl" data-i18n="admin_rcl_title">폐기 목록</a><a href="#secCreds" data-i18n="admin_creds_title">사용자 자격증명</a><a href="#secRegDb" data-i18n="admin_regdb_title">등록부 DB</a><a href="#secAuidMap" data-i18n="admin_auidmap_title">uid ↔ auid 대응</a><a href="#secRevoked" data-i18n="admin_revoked_sessions_title">세션 폐기 목록</a></div></div>
+  <div class="section-menu"><div class="menu-inner"><a href="#secRps" data-i18n="admin_rps_title">RP</a><a href="#secOpenings" data-i18n="admin_openings_title">개봉 요청</a><a href="#secRcl" data-i18n="admin_rcl_title">폐기 목록</a><a href="#secCreds" data-i18n="admin_creds_title">사용자 자격증명</a><a href="#secRegDb" data-i18n="admin_regdb_title">등록부 DB</a><a href="#secAuidMap" data-i18n="admin_auidmap_title">uid ↔ auid 대응</a><a href="#secRevoked" data-i18n="admin_revoked_sessions_title">세션 폐기 목록</a></div></div>
   <main class="cards">
     <!-- 관리자 비밀번호 화면(2026-11-05, 사용자 요청) — Demo.gate 가 맞는 비밀번호를 받을 때까지 다른 카드는 body.admin-locked 로 숨는다. -->
     <section class="card gate-card" id="adminGate" hidden>
@@ -46,7 +46,8 @@
       <pre id="out" class="expert">-</pre>
     </section>
 
-    <section class="card span2" id="secAccounts">
+    <!-- 2026-11-11(사용자 결정): 계정 카드는 화면에서 뺐다 — 표는 아래 "uid ↔ auid 대응"·"등록부 DB" 가 같은 목록(/cia/accounts)을 보인다. 스크립트가 참조해 DOM 에는 숨겨 둔다. -->
+    <section class="card span2" id="secAccounts" hidden style="display:none">
       <h3 data-i18n="admin_accounts_title">계정</h3>
       <p class="desc" data-i18n="admin_accounts_desc">등록된 계정과 로그인 세션을 폐기하거나, 계정을 지웁니다(스냅 등록 포함).</p>
       <p>

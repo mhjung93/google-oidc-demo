@@ -22,10 +22,9 @@
     <div class="nav-inner">
       <span class="brand" data-i18n="wallet_brand">zk 스냅</span>
       <div class="wallet-tabs" id="walletTabs" role="tablist" hidden>
-        <button type="button" role="tab" data-tab="account" aria-selected="true" data-i18n="wallet_tab_account">계정</button>
-        <button type="button" role="tab" data-tab="services" data-i18n="wallet_tab_services">연결된 서비스</button>
-        <button type="button" role="tab" data-tab="send" data-i18n="wallet_tab_send">보내기</button>
-        <button type="button" role="tab" data-tab="settings" data-i18n="wallet_tab_settings">설정</button>
+        <!-- 2026-11-11(사용자 결정): 계정·보내기·설정 탭은 뺐다 — 화면은 "연결된 서비스" 하나. 속성·salt 는 속성 도구(attr.html)에서 첫 등록 때 가져온다.
+             그 탭들의 카드(identityCard·txCard·snapPanel·demoCard)는 DOM 에 남지만 탭이 없어 보이지 않는다(스크립트가 참조해 한 번에 걷어내지 않았다). -->
+        <button type="button" role="tab" data-tab="services" aria-selected="true" data-i18n="wallet_tab_services">연결된 서비스</button>
       </div>
       <div class="nav-actions">
         <span id="mmStatus" class="badge" hidden>연결 안 됨</span>
@@ -229,21 +228,17 @@
     // 탭(2026-11-03): 본문은 한 번에 한 탭(data-panel)만 보인다. snap 모드는 MetaMask 연결 전에는 탭 대신 #connectCard 만
     // 보인다(applyGate). file 모드는 연결이 없어 바로 탭이다. data-off="1" 인 패널(file 모드의 #snapPanel)은 그 탭에서도 숨긴다.
     const TAB_KEY = 'mode3.wallet.tab';
-    const TABS = ['account', 'services', 'send', 'settings'];
-    let currentTab = (() => { try { const v = sessionStorage.getItem(TAB_KEY); return TABS.includes(v) ? v : 'account'; } catch { return 'account'; } })();
+    const TABS = ['services'];   // 2026-11-11: 계정·보내기·설정 탭 제거
+    let currentTab = 'services';
     function applyGate() {
       if (IS_AUTHORIZE) return;
       const gated = cfg.secrets === 'snap' && mmState.kind !== 'ok';
       $('connectCard').hidden = !gated;
       $('walletTabs').hidden = gated;
-      // file 모드의 설정 탭은 전문가 보기(시연 카드)에서만 내용이 있다 — 비어 있는 탭은 숨기고, 거기 있었으면 계정 탭으로.
-      const settingsEmpty = cfg.secrets !== 'snap';   // 2026-11-05: 전문가 보기 스위치 제거
-      document.querySelector('#walletTabs [data-tab="settings"]').hidden = settingsEmpty;
-      if (settingsEmpty && currentTab === 'settings') { currentTab = 'account'; for (const b of document.querySelectorAll('#walletTabs [data-tab]')) b.setAttribute('aria-selected', b.dataset.tab === 'account' ? 'true' : 'false'); }
       for (const el of document.querySelectorAll('[data-panel]')) el.hidden = gated || el.dataset.panel !== currentTab || el.dataset.off === '1';
     }
     function showTab(name) {
-      currentTab = name;
+      currentTab = TABS.includes(name) ? name : 'services';
       try { sessionStorage.setItem(TAB_KEY, name); } catch { /* 저장 못 해도 동작은 같다 */ }
       for (const b of document.querySelectorAll('#walletTabs [data-tab]')) b.setAttribute('aria-selected', b.dataset.tab === name ? 'true' : 'false');
       applyGate();
@@ -632,7 +627,8 @@
       let v = null;
       try { v = JSON.parse(localStorage.getItem('mode3_attr_tool_v1') ?? 'null'); } catch { v = null; }
       const dec = (x) => typeof x === 'string' && /^[0-9]+$/.test(x);
-      return v && v.version === 2 && dec(v.uid) && dec(v.s_u) && BigInt(v.s_u) > 0n && BigInt(v.s_u) < (1n << 250n) ? { uid: v.uid, s_u: v.s_u } : null;
+      const profile = v?.profile && typeof v.profile === 'object' && !Array.isArray(v.profile) ? v.profile : null;   // 2026-11-11(가): 스냅 속성도 이 기록에서 — C_attr 와 같은 값
+      return v && v.version === 2 && dec(v.uid) && dec(v.s_u) && BigInt(v.s_u) > 0n && BigInt(v.s_u) < (1n << 250n) ? { uid: v.uid, s_u: v.s_u, profile } : null;
     }
 
     /** 등록 코드(uid·code)로 등록(2026-11-09 에 함수로 뽑음 — 서비스 첫 로그인 중의 등록(processAuthorize)과 옛 mode3-register 팝업 경로 공용).
@@ -655,7 +651,7 @@
       const reg = await invokeSnap('register', { uid, s_u: rec.s_u });
       if (!reg || reg.denied) { step('등록 거절'); return { ok: false, reason: 'user_denied' }; }
       step('에이전트에 등록하는 중…');
-      const { status, body: b } = await postJson('/wallet/register', { uid, code, s_u: reg.s_u, sk_u: reg.sk_u });
+      const { status, body: b } = await postJson('/wallet/register', { uid, code, s_u: reg.s_u, sk_u: reg.sk_u, ...(rec.profile ? { profile: rec.profile } : {}) });
       if (status !== 201) { step('등록 실패'); log(errText(status, b)); return { ok: false, reason: b.cia?.reason ?? b.reason ?? `HTTP ${status}`, detail: b.detail ?? b.cia?.detail ?? null }; }
       step('스냅에 등록 결과 저장 중…');
       try { await invokeSnap('storeRegistration', { attrs: b.attrs, slot: b.slot, auid: b.auid }); }

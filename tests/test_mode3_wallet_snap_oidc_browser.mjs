@@ -199,17 +199,7 @@ try {
     await page.close();
   });
 
-  await t('자기 폐기: 지갑 페이지의 Google 버튼(비밀번호 프롬프트 없음) → IdP 계정 disabled', async () => {
-    const before = dialogs.length;
-    await walletPage.click('#walletTabs [data-tab="settings"]');   // 자기 폐기는 설정 탭(2026-11-03)
-    await walletPage.click('#selfRevokeBtn');
-    await walletPage.waitForSelector('#gsiBox .gsi-stub', { timeout: 15_000 });
-    await walletPage.click('#gsiBox .gsi-stub');
-    await waitText(walletPage, '#snapVerdict', '폐기를 zkID 에 요청', 60_000);   // 2026-11-05: 결과 문구에 uid 는 없다
-    assert.equal(dialogs.length, before, 'Snap 비밀번호 프롬프트를 띄우지 않는다');
-    const a = (await cia.adminGet('/cia/accounts')).body.accounts.find((x) => String(x.uid) === uidOf(stub.provider, SUB));
-    assert.equal(a?.disabled, true);
-  });
+  // 2026-11-11: zk 스냅 화면의 설정 탭(스냅 자기 폐기)은 없앴다 — 계정 폐기는 zkID 내 계정·관리자에서 한다.
 
   await t('RP 소셜(2026-11-10): 로그인 창 Google(GIS 흉내) → 새 RP 계정·via google 배지 → 내 계정에서 네이버 연결 → 자산에 거래소 보관 ETH·출금 출처; 로그아웃하면 /api/rp/me 401', async () => {
     const page = await context.newPage(); await page.goto(`${rp.base}/`);

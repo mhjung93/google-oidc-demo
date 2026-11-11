@@ -276,7 +276,7 @@ try {
     const before = dialogs.length;
     const demoUid = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.id === 'demo-user').uid;
     const demoAuid = (await auidOf({ uid: BigInt(demoUid), s_u: BigInt(USER_SALT) })).toString();
-    await walletPage.evaluate((r) => localStorage.setItem('mode3_attr_tool_v1', JSON.stringify(r)), { version: 2, uid: String(demoUid), s_u: USER_SALT });   // 속성 도구가 남기는 기록(필요한 칸만)
+    await walletPage.evaluate((r) => localStorage.setItem('mode3_attr_tool_v1', JSON.stringify(r)), { version: 2, uid: String(demoUid), s_u: USER_SALT, profile: { birthYear: '1990', country: 'JP' } });   // 속성 도구가 남기는 기록(필요한 칸만) — 2026-11-11(가): 속성도 여기서
     const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
     assert.ok(popup.url().includes('authorize=1'), `팝업 URL: ${popup.url()}`);
     await atIdpLogin(popup);
@@ -291,7 +291,7 @@ try {
     const st = (await wallet.get('/wallet/status')).body;
     assert.equal(st.registered, true, '첫 로그인이 지갑을 등록했다'); assert.match(String(st.uid), /^[0-9]+$/); uid = st.uid; AUID = st.auid;
     assert.equal(snapState.registration?.uid, uid, 'Snap 에도 등록이 저장됐다');
-    assert.equal(snapState.registration?.s_u, USER_SALT, '속성 도구 기록의 salt 가 s_u 로 저장됐다'); assert.equal(String(AUID), demoAuid, '붙여 넣은 auid 로 등록됐다');
+    assert.equal(snapState.registration?.s_u, USER_SALT, '속성 도구 기록의 salt 가 s_u 로 저장됐다'); assert.deepEqual(st.profile, { birthYear: '1990', country: 'JP' }, '속성 도구 기록의 속성으로 등록됐다(가)'); assert.equal(String(AUID), demoAuid, '붙여 넣은 auid 로 등록됐다');
     assert.ok((await text(rpPage, '#log')).includes('allowAgent=0'), 'AI 에이전트 체크박스를 없앴으므로 늘 0(2026-11-05)');
     await awaitPopupClosed(popup);
     assert.ok((await text(rpPage, '#log')).includes('3. RP 검증'), 'RP 페이지가 /api/mode3/login 까지 냈다');
@@ -328,51 +328,18 @@ try {
   });
 
   // 2026-11-09: salt 를 화면에 보이는 이 케이스는 "비밀은 Snap 에만" 검사(페이지 DOM 에 s_u 가 없어야 한다) 뒤에 둔다 — 등록이 첫 로그인으로 옮겨가 AUID 를 로그인 뒤에야 안다.
-  await t('지갑 페이지 제목은 "지갑", 신원 카드에 auid·salt 와 복사 버튼', async () => {
-    assert.equal(await walletPage.title(), 'zk 스냅');   // 새로고침 버튼은 없다(2026-11-05) — 화면이 5초마다 스스로 갱신한다
-    await walletTab(walletPage, 'account'); await walletPage.click('#identityDetails summary');   // auid·salt 는 '상세' 접힘 안(2026-11-03)
-    await waitText(walletPage, '#meAuid', AUID.slice(0, 10));                           // showSalt 확인 창은 없다(2026-11-05)
-    await walletPage.click('#showSaltBtn'); await walletPage.waitForFunction(() => /^[0-9]{10,}$/.test(document.querySelector('#meSalt')?.textContent ?? ''), undefined, { timeout: 10_000 });
-    assert.ok(await walletPage.$('#copyAuidBtn')); assert.ok(await walletPage.$('#copySaltBtn'));
+  // 2026-11-11(사용자 결정): zk 스냅 화면은 "연결된 서비스" 하나 — 계정·보내기·설정 탭은 없다(속성·salt 는 속성 도구에서 첫 등록 때).
+  await t('zk 스냅 화면: 제목 "zk 스냅", 탭은 연결된 서비스뿐(계정·보내기·설정 없음)', async () => {
+    assert.equal(await walletPage.title(), 'zk 스냅');
+    const tabs = await walletPage.$$eval('#walletTabs [data-tab]', (bs) => bs.map((b) => b.dataset.tab));
+    assert.deepEqual(tabs, ['services']);
+    assert.equal(await walletPage.isVisible('#sessionsCard'), true);
+    for (const id of ['#identityCard', '#txCard', '#snapPanel']) assert.equal(await walletPage.isHidden(id), true, `${id} 는 보이지 않는다`);
   });
 
 
-  // ---- 평범한 트랜잭션 + 공개 트랜잭션: MetaMask(스텁)가 배포·execute 를 보낸다 ----
+  // 2026-11-11: zk 스냅 화면의 "보내기" 탭(평범한·공개 트랜잭션)은 없앴다 — 거래는 RP 의 온체인 출금으로만.
   const info = (await rp.get('/api/mode3/rp_info')).body;
-
-  // U4(2026-10-14): 세션을 골라도 더는 AttrGate 로 자동 재배선하지 않는다 — 기본 대상(사망 주소)·조건 없음인
-  // 평범한 트랜잭션은 늘 성공해야 한다(사용자가 실제로 겪은 문제: 예전에는 모든 기본 tx 가 AttrGate.claim 으로
-  // 가 조건 미공개로 늘 revert 됐다).
-  await t('평범한 트랜잭션: 기본 대상·조건 없이 보내도 늘 성공한다(U4)', async () => {
-    await walletTab(walletPage, 'send');
-    await walletPage.waitForFunction(() => !document.querySelector('#txBtn').disabled, undefined, { timeout: 15_000 });
-    assert.equal(await walletPage.inputValue('#txTo'), '0x000000000000000000000000000000000000dEaD', '기본 대상을 AttrGate 로 재배선하지 않는다');
-    assert.equal(await walletPage.inputValue('#txData'), '0x');
-    const before = dialogs.length;             // 2026-11-05: 지갑 "보내기" 는 Snap 동의 창 없이 MetaMask 확인 창(스텁)만 거친다
-    await walletPage.click('#txBtn');
-    await waitText(walletPage, '#txVerdict', '전송 성공', 180_000);
-    assert.equal(dialogs.length, before, 'Snap 동의 창이 없다');
-    const log = await text(walletPage, '#txLog');
-    assert.match(log, /ok\(실행 성공\)=true/, `평범한 트랜잭션은 ok=true 여야 한다: ${log}`);
-  });
-
-  await t('공개 트랜잭션: "AttrGate 에 자격 증명(claim)" 버튼이 조건을 자동으로 채우고 claim 이 성공한다', async () => {
-    assert.ok(info.attrGateAddress, 'AttrGate 가 배포돼 있어야 한다');
-    await walletTab(walletPage, 'send'); await walletPage.click('#claimBtn');
-    assert.equal(await walletPage.inputValue('#txTo'), info.attrGateAddress, 'claim 버튼이 받는 주소를 AttrGate 로 채운다');
-    assert.equal(await walletPage.inputValue('#txData'), '0x4e71d92d', 'claim 버튼이 데이터를 claim() 셀렉터로 채운다');
-    assert.equal(await walletPage.isChecked('#dk0'), true, 'claim 버튼이 출생연도 조건을 자동으로 채운다');
-    assert.equal(await walletPage.inputValue('#setSlot'), '1', 'claim 버튼이 국가 집합 조건(슬롯 1)을 채운다');
-    const before = dialogs.length;
-    await walletPage.click('#txBtn');
-    await waitText(walletPage, '#txVerdict', '전송 성공', 180_000);
-    assert.equal(dialogs.length, before, '공개 트랜잭션도 Snap 동의 창 없이(MetaMask 확인 창만) 간다(2026-11-05)');
-    const log = await text(walletPage, '#txLog');
-    assert.ok(log.includes('온체인 공개(Disclosure 이벤트)'), '영수증 파싱 결과가 표시된다');
-    const walletAddr = /PPID 계정 주소=(0x[0-9a-fA-F]{40})/.exec(log)?.[1];
-    assert.ok(walletAddr, `지갑 주소를 로그에서 못 찾았다:\n${log}`);
-    assert.equal(await attrGateAt(info.attrGateAddress, provider).claimed(walletAddr), true, '온체인에서 claim 됐다');
-  });
 
   // ---- RP 페이지의 잔액(2026-11-05 B안): KRW 는 RP 장부, ETH 는 세션 계정의 실제 체인 잔액 — 입금(시연) → 구매 → (아래) 온체인 출금 ----
   const balText = (asset) => rpPage.$eval(`.balance-list li[data-asset="${asset}"] .bal-amt`, (e) => e.textContent.trim());
@@ -531,25 +498,6 @@ try {
   // (Snap 의 syncAttrs 는 changed 면 attrs 와 함께 저장된 C_u 도 지운다). 다음 로그인이 새 C_u 를 받는다.
   // 2026-10-15 W5: extra1(#attr2)은 화면에서 숨긴 예비 슬롯이라 더는 채울 수 없다 — 출생연도(#attr0)로 같은 의도(속성
   // 변경 → 새 C_u)를 보인다.
-  await t('지갑에서 속성 저장(출생연도) → Snap 의 속성 갱신·C_u 폐기 → 다음 로그인이 새 C_u', async () => {
-    const beforeCf = snapState.userCred?.Cf_u ?? null;
-    assert.ok(beforeCf, '시작 시 Snap 에 C_u 가 있다');
-    assert.deepEqual(snapState.registration.attrs, ['1990', '410', '0', '0', '0', '0']);
-    await walletTab(walletPage, 'account'); await walletPage.fill('#attr0', '1991');
-    await walletPage.click('#profileSaveBtn');
-    // '속성 저장 완료'(성공)까지 — 실패 문구('속성 저장 실패'·'속성 값이 스키마에 맞지 않습니다')에도 '속성'이 들어가
-    // 그냥 '속성'만 찾으면 실패도 통과해 버린다.
-    await waitText(walletPage, '#registerResult', '속성 저장 완료', 15_000);
-    assert.deepEqual(snapState.registration.attrs, [await encodeSlotValue(DEFAULT_ATTR_SCHEMA, 0, '1991'), '410', '0', '0', '0', '0'], 'syncAttrs 가 Snap 의 속성을 갱신했다');
-    assert.equal(snapState.userCred, null, '속성이 바뀌면 Snap 의 syncAttrs 가 옛 C_u 를 함께 버린다');
-    const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
-    await completeIdpAuth(popup);               // Task 14: IdP 인증(CIA_ISSUE_AUTH=code)
-    await waitText(rpPage, '#verdict', '로그인 성공', 240_000);
-    await awaitPopupClosed(popup);
-    assert.ok(snapState.userCred, '새 C_u 가 Snap 에 남아 있다');
-    assert.notEqual(snapState.userCred.Cf_u, beforeCf, '옛 C_u 가 아니라 새로 받은 것이다');
-    assert.equal((await wallet.get('/wallet/status')).body.userCred.Cf_u, snapState.userCred.Cf_u, '에이전트의 공개 Cf_u 와 같다');
-  });
 
   // 리뷰 round 1 Minor 7 — 지난 삭제된 테스트가 지키던 "syncAttrs → updateUserCred" 순서 회귀 가드를 다시 둔다.
   // 이번에는 바로 위 테스트(페이지를 거쳐 속성을 바꾼 경우)와 다르게, **에이전트 API 를 페이지 없이 직접 불러**
@@ -851,14 +799,9 @@ try {
     assert.equal(await p.$eval('#adminGate', (el) => el.hidden), true);
     // 2026-11-11: "uid ↔ auid 대응" 표는 계정마다 한 줄, auid 는 자르지 않고 보인다. "등록부 DB" 는 regRoot 전체와 슬롯별 리프를 보인다.
     const accts = await p.evaluate((sec) => fetch('/cia/accounts', { headers: { 'X-CIA-Admin-Secret': sec } }).then((r) => r.json()), cia.adminSecret);
-    // 2026-11-11: 계정 표의 등록부 칸 — 슬롯이 없으면 "#null" 이 아니라 "스냅 미등록", 있으면 "#번호"
-    const regCells = await p.$$eval('#accounts table tbody tr', (trs) => trs.map((tr) => [tr.cells[0].textContent.trim(), tr.cells[3].textContent]));
-    assert.equal(regCells.some(([, c]) => c.includes('#null')), false, j(regCells));
-    for (const a of accts.accounts) {
-      const c = regCells.find(([u]) => u === a.uid)?.[1] ?? '';
-      if (a.slot === null) assert.match(c, /스냅 미등록/, `uid ${a.uid}`); else assert.ok(c.includes(`#${a.slot}`), `uid ${a.uid}: ${c}`);
-    }
-    assert.ok(accts.accounts.some((a) => a.slot === null), '미등록 계정도 하나는 있다(앞 케이스의 demo-user-2)');
+    // 2026-11-11(사용자 결정): 계정 카드는 화면에서 뺐다 — 메뉴에도 없다. 목록은 "uid ↔ auid 대응"·"등록부 DB" 로 본다.
+    assert.equal(await p.isVisible('#secAccounts'), false, '계정 카드는 보이지 않는다');
+    assert.equal(await p.$('.section-menu a[href="#secAccounts"]'), null, '메뉴에 계정이 없다');
     await p.waitForFunction((n) => document.querySelectorAll('#auidMap table tbody tr').length === n, accts.accounts.length, { timeout: 20_000 });
     const mapRows = await p.$$eval('#auidMap table tbody tr', (trs) => trs.map((tr) => [...tr.cells].map((c) => c.querySelector('code')?.textContent ?? c.textContent.trim())));
     for (const a of accts.accounts) {
