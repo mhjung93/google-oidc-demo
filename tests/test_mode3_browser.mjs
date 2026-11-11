@@ -685,15 +685,18 @@ try {
   });
   // 2026-11-09 Phase 1: 속성 커밋먼트 도구(지갑 오리진 /attr.html — 독립 정적 페이지) + zkID 프로필 카드.
   let toolCommit = null;
-  await t('속성 도구(/attr.html): 정적 자원 말고는 아무 요청도 없이 커밋먼트를 만들고, localStorage 의 attrs·blind 로 Node 가 다시 계산한 값과 같다; 지우기·백업 불러오기', async () => {
+  await t('속성 도구(/attr.html): 정적 자원과 스냅 설정(/wallet/config) 말고는 요청 없이 커밋먼트를 만들고, localStorage 의 attrs·blind 로 Node 가 다시 계산한 값과 같다; 지우기·백업 불러오기', async () => {
     const p = await context.newPage();
     const reqs = []; p.on('request', (r) => reqs.push(r.url()));
     await p.goto(`${wallet.base}/attr.html`);
     await p.waitForSelector('#noCommit:not([hidden])');
-    // 2026-11-10(B+b1): uid·salt 를 묶는다 — 비우면 만들지 않는다(required), "salt 새로 뽑기" 는 10진·2^250 미만 값을 채운다.
-    await p.fill('#uid', String(uid)); await p.click('#saltGenBtn');
-    const gen = await p.inputValue('#salt'); assert.match(gen, /^[0-9]+$/); assert.ok(BigInt(gen) < (1n << 250n));
-    await p.fill('#salt', USER_SALT);   // 지갑 등록 때 넣은 것과 같은 salt
+    // 2026-11-10(B+b1): uid·salt 를 묶는다 — 비우면 만들지 않는다(required).
+    // 2026-11-12(스펙 snap-derived-secrets S2): salt 는 직접 넣지 않는다 — "스냅에서 가져오기" 가 시드 유도 salt 를 채운다.
+    assert.equal(await p.$('#saltGenBtn'), null, '"salt 새로 뽑기" 는 없다');
+    assert.equal(await p.getAttribute('#salt', 'readonly'), '', 'salt 칸은 읽기 전용');
+    await p.fill('#uid', String(uid)); await p.click('#saltFromSnapBtn');
+    await p.waitForFunction(() => document.getElementById('salt').value !== '');
+    assert.equal(await p.inputValue('#salt'), USER_SALT, '스냅이 유도한 salt(지갑 등록 때와 같은 값)');
     await p.fill('#birthYear', '1990'); await p.selectOption('#country', 'KR'); await p.fill('#extra1', 'hello');
     await p.click('#makeBtn');
     await p.waitForSelector('#commitBox:not([hidden])');
@@ -715,7 +718,8 @@ try {
     assert.equal(await p.locator('#attrShown4, #attrShown5').count(), 0, '미사용 슬롯 행 없음');
     assert.ok((await p.textContent('#attrShown0')).includes('1990'), '입력값도 함께');
     assert.deepEqual(rec.profile, { birthYear: '1990', country: 'KR', extra1: 'hello' });
-    assert.ok(reqs.every((u) => /\/attr\.html|\/attr\/dist\/|\/common\//.test(u)), `정적 자원 외 요청: ${reqs.filter((u) => !/\/attr\.html|\/attr\/dist\/|\/common\//.test(u)).join(', ')}`);
+    const okReq = (u) => /\/attr\.html|\/attr\/dist\/|\/common\/|\/wallet\/config$/.test(u);   // 2026-11-12: 가져오기가 snapId 를 읽는다
+    assert.ok(reqs.every(okReq), `정적 자원 외 요청: ${reqs.filter((u) => !okReq(u)).join(', ')}`);
     // 범위 밖 값(출생연도 1800 < min 1900)은 인코더가 거절한다 — 저장값은 그대로(빈 칸은 폼의 required 가 먼저 막아 요청 자체가 없다)
     await p.fill('#birthYear', '1800'); await p.click('#makeBtn'); await waitText(p, '#formVerdict', '커밋먼트를 만들지 못했습니다');
     assert.equal(JSON.parse(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1'))).commit, rec.commit);
@@ -756,7 +760,7 @@ try {
     await p.addInitScript(() => { window.showSaveFilePicker = async () => (await navigator.storage.getDirectory()).getFileHandle('zkd-attr-backup.json', { create: true }); });
     const readBackup = async () => JSON.parse(await p.evaluate(async () => (await (await (await navigator.storage.getDirectory()).getFileHandle('zkd-attr-backup.json')).getFile()).text()));
     const make = async (birthYear) => {
-      await p.fill('#uid', String(uid)); await p.fill('#salt', USER_SALT); await p.fill('#birthYear', birthYear); await p.selectOption('#country', 'KR');
+      await p.fill('#uid', String(uid)); await p.click('#saltFromSnapBtn'); await p.waitForFunction(() => document.getElementById('salt').value !== ''); await p.fill('#birthYear', birthYear); await p.selectOption('#country', 'KR');
       await p.click('#makeBtn'); await waitText(p, '#formVerdict', '커밋먼트 생성 완료');
     };
     const record = async () => JSON.parse(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')));
@@ -795,6 +799,29 @@ try {
     await waitText(p, '#resultVerdict', '백업 불러오기 완료');
     assert.equal((await p.textContent('#commitBox')).trim(), rec2.commit);
     await p.close();
+  });
+
+  await t('속성 도구: MetaMask 가 없으면 salt 를 못 가져오고 사유를 보이며 salt 칸을 바꾸지 않는다; 옛 기록의 salt 가 스냅 salt 와 다르면 경고', async () => {
+    const p = await context.newPage();
+    await p.addInitScript(() => { delete window.ethereum; });
+    await p.goto(`${wallet.base}/attr.html`);
+    const shownBefore = await p.inputValue('#salt');   // 앞 케이스의 기록이 있으면 그 salt 가 보인다(기록 표시) — 가져오기 실패는 이 값을 바꾸지 않는다
+    await p.fill('#uid', String(uid)); await p.click('#saltFromSnapBtn');
+    await waitText(p, '#formVerdict', 'MetaMask');
+    assert.equal(await p.inputValue('#salt'), shownBefore, '가져오기에 실패하면 salt 칸을 바꾸지 않는다');
+    await p.close();
+    const q = await context.newPage();
+    await q.goto(`${wallet.base}/attr.html`);
+    const orig = await q.evaluate(() => localStorage.getItem('mode3_attr_tool_v1'));
+    assert.ok(orig, '앞 케이스가 남긴 기록이 있어야 한다');
+    try {
+      await q.evaluate((r) => localStorage.setItem('mode3_attr_tool_v1', r), JSON.stringify({ ...JSON.parse(orig), s_u: '987654321' }));
+      await q.reload();
+      assert.equal(await q.isHidden('#saltWarn'), true, '가져오기 전에는 경고가 없다(MetaMask 를 스스로 부르지 않는다)');
+      await q.click('#saltFromSnapBtn');
+      await q.waitForSelector('#saltWarn:not([hidden])');
+      assert.ok((await q.textContent('#saltWarn')).includes('시드로 복구할 수 없는'));
+    } finally { await q.evaluate((r) => localStorage.setItem('mode3_attr_tool_v1', r), orig); await q.close(); }
   });
 
   await t('zkID 사용자 페이지 프로필 카드: 로그인만 하면 보인다(지갑 등록과 무관) → 커밋먼트 저장 → 현재 값 표시 → /me.profile; 비우면 없음', async () => {

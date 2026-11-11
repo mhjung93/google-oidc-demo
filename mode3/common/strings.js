@@ -865,8 +865,9 @@ window.DemoStrings = {
     attr_uid: { ko: 'uid', en: 'uid' },
     attr_salt: { ko: 'salt (s_u)', en: 'salt (s_u)' },
     attr_uid_hint: { ko: 'uid 는 zkID 내 정보(zkID → 내 계정 → 내 정보)에 있습니다.', en: 'Your uid is on zkID My info (zkID → My account → My info).' },
-    attr_salt_hint: { ko: 'salt 는 직접 넣거나 "새로 뽑기" 로 만드세요. 스냅을 처음 등록할 때 스냅이 이 기록의 salt 를 그대로 씁니다(같은 브라우저). ', en: 'Type a salt or use "New salt". When the Snap is first registered it uses this record’s salt (same browser).' },
-    attr_salt_gen_btn: { ko: 'salt 새로 뽑기', en: 'New salt' },
+    attr_salt_hint: { ko: 'salt 는 스냅이 MetaMask 시드에서 만듭니다 — "스냅에서 가져오기" 를 누르세요. 시드만 있으면 같은 salt 가 다시 나옵니다.', en: 'The Snap derives the salt from your MetaMask seed — press "Get from Snap". The same seed always gives the same salt.' },   // 2026-11-12(스펙 snap-derived-secrets S2)
+    attr_salt_from_snap_btn: { ko: '스냅에서 가져오기', en: 'Get from Snap' },
+    attr_salt_not_derived: { ko: '이 기록의 salt 는 스냅이 만든 값과 다릅니다 — 시드로 복구할 수 없는 salt 입니다.', en: "This record's salt differs from the Snap's — it cannot be recovered from the seed." },
     attr_salt_copy_btn: { ko: 'salt 복사', en: 'Copy salt' },
     attr_auid_label: { ko: 'auid', en: 'auid' },   // 2026-11-11
     attr_auid_hint: { ko: '첫 RP 로그인 때 zkID 인증 창의 auid 칸에 붙여 넣으세요. 스냅은 이 기록의 salt 로 등록합니다.', en: 'Paste this into the auid field of the zkID sign-in window on your first RP login. The Snap registers with this record’s salt.' },
