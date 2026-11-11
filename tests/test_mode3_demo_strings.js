@@ -153,8 +153,9 @@ t('ui 에 팝업 제목 키 셋이 있고 IdP 인증 창 열기 버튼 키는 �
   assert.equal(S.ui.wallet_auth_note, undefined, 'postMessage 안내문(wallet_auth_note)은 없어졌다');
 });
 // F-0(2026-10-23) — /account(Google/OIDC 계정 관리) ↔ /user(비밀번호 계정)의 상호 링크 문구.
-t('ui 에 /account ↔ /user 상호 링크 키가 있다', () => {
-  assert.ok(S.ui.user_google_account_link, 'user_google_account_link');
+// 2026-11-11(사용자 결정): /user 의 "Google 로 등록한 계정 관리" 링크는 뺐다 — /account 는 주소로만 연다(→ /user 링크는 남는다).
+t('ui 에 /account → /user 링크 키만 있고 /user → /account 링크 키는 없다', () => {
+  assert.equal(S.ui.user_google_account_link, undefined, 'user_google_account_link 은 없어졌다');
   assert.ok(S.ui.account_idp_user_link, 'account_idp_user_link');
 });
 

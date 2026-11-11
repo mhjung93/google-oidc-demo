@@ -16,7 +16,6 @@ window.DemoStrings = {
     go_wallet: { ko: '지갑 페이지 열기', en: 'Open the wallet page' }, go_rp: { ko: 'RP 열기', en: 'Open RP' },
     go_admin: { ko: 'IdP 관리자 열기', en: 'Open IdP admin' }, go_account: { ko: '내 계정 페이지 열기', en: 'Open my account page' },
     // F-0(2026-10-23): /account(Google/OIDC 계정 관리)와 /user(비밀번호 계정) 는 서로 다른 입구 — 각 페이지 상단에서 서로를 가리킨다.
-    user_google_account_link: { ko: 'Google 로 등록한 계정 관리', en: 'Manage an account registered with Google' },
     account_nav: { ko: 'Google 계정', en: 'Google account' },
     account_idp_user_link: { ko: 'IdP 사용자 페이지로', en: 'To the IdP user page' },
     // U6(2026-10-14) — login2 단계(두 번째 RP 로그인)가 첫 RP 창에서 쓰는 "다른 창" 링크·라벨.
