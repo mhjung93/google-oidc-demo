@@ -607,6 +607,11 @@
       return { ok: true, slot: b.slot, auid: b.auid, uid: b.uid };
     }
 
+    /** 스냅의 시드 유도 salt(getSalt, 2026-11-12). 옛 스냅(0.1.0)은 getSalt 가 없어 method_not_found — { ok:false, reason:'snap_outdated' }. 그 밖의 오류는 던진다. */
+    async function snapDerivedSalt() {
+      try { const r = await invokeSnap('getSalt', {}); return { ok: true, s_u: String(r?.s_u ?? '') }; }
+      catch (e) { if (/method_not_found/.test(e?.message ?? '')) return { ok: false, reason: 'snap_outdated' }; throw e; }
+    }
     /** 스냅 복구(2026-11-12, 스펙 snap-derived-secrets §4.3): 에이전트에는 등록이 있는데 스냅이 비었으면(MetaMask 재설치) 스냅이 시드에서 같은 비밀을
      *  다시 유도하므로, 보류 등록으로 그 비밀을 받아 에이전트 /wallet/register/resume 로 대조하고(auid·pk_u) 맞으면 스냅에 등록을 채운다.
      *  할 일이 없으면 null, 복구했으면 { ok:true }, 비밀이 다르면(옛 무작위 등록·다른 SRP) { ok:false, reason:'snap_restore_mismatch' }. */
@@ -616,6 +621,9 @@
       if (!st?.registered) return null;
       const info = await invokeSnap('getPublicInfo', {});
       if (info?.registered) return null;
+      // 리뷰 M-3: 옛 스냅(0.1.0)의 prepareRegister 는 무작위라 "다른 시드" 로 오인된다 — 버전부터 본다.
+      const probe = await snapDerivedSalt();
+      if (!probe.ok) { step('스냅이 옛 버전이다 — 다시 설치해야 한다.'); return { ok: false, reason: probe.reason }; }
       step('스냅이 비어 있다 — 시드에서 같은 비밀을 다시 만들어 등록을 되살리는 중…');
       const prep = await invokeSnap('prepareRegister', {});
       if (!prep || prep.denied) return { ok: false, reason: 'user_denied' };
@@ -692,6 +700,11 @@
         const mine = (await Mode3Attr.auidOf({ uid: BigInt(uid), s_u: BigInt(rec.s_u) })).toString();
         if (mine !== auid) { step('붙여 넣은 auid 가 속성 도구 기록과 다르다.'); return { ok: false, reason: 'register_auid_mismatch' }; }
       }
+      // 리뷰 I-2·M-3(2026-11-12): 스냅은 시드 유도 salt 만 받는다 — 기록의 salt 가 다르면(11-10·11-11 의 직접 입력) Snap register 의 salt_not_derived 를
+      // 원인 모를 wallet_error 로 만들지 않고 먼저 알린다. 옛 스냅(0.1.0)은 getSalt 를 모른다.
+      const snapSalt = await snapDerivedSalt();
+      if (!snapSalt.ok) { step('스냅이 옛 버전이다 — 다시 설치해야 한다.'); return { ok: false, reason: snapSalt.reason }; }
+      if (snapSalt.s_u !== rec.s_u) { step('속성 도구 기록의 salt 가 스냅이 시드에서 만든 salt 와 다르다 — 등록하지 않는다.'); return { ok: false, reason: 'attr_record_salt_not_derived' }; }
       step('등록 비밀을 만드는 중…'); say('wallet_prog_registering');
       const reg = await invokeSnap('register', { uid, s_u: rec.s_u });
       if (!reg || reg.denied) { step('등록 거절'); return { ok: false, reason: 'user_denied' }; }

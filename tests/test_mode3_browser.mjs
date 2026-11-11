@@ -275,6 +275,22 @@ try {
     await awaitPopupClosed(popup);
   });
 
+  await t('리뷰 I-2(2026-11-12): 직접 넣은 salt(시드 유도 전)로 만든 속성 기록이면 첫 등록을 멈추고 "스냅에서 가져오기" 로 다시 만들라고 안내한다(attr_record_salt_not_derived)', async () => {
+    const OLD_SALT = '123456789012345678901234567890';   // 11-10·11-11 의 직접 입력 salt — 스냅 유도값이 아니다
+    assert.notEqual(OLD_SALT, USER_SALT);
+    const demoUid = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.id === 'demo-user').uid;
+    const oldAuid = (await auidOf({ uid: BigInt(demoUid), s_u: BigInt(OLD_SALT) })).toString();
+    await walletPage.evaluate((r) => localStorage.setItem('mode3_attr_tool_v1', JSON.stringify(r)), { version: 2, uid: String(demoUid), s_u: OLD_SALT, profile: { birthYear: '1990', country: 'JP' } });
+    const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
+    await atIdpLogin(popup);
+    await popup.fill('#authUid', 'demo-user'); await popup.fill('#authPwd', DEMO_PWD); await popup.fill('#authAuid', oldAuid); await popup.click('#authGo');
+    await backAtWallet(popup);
+    await waitText(rpPage, '#verdict', '속성 도구 기록의 salt 가 스냅과 다릅니다', 120_000);
+    assert.equal((await wallet.get('/wallet/status')).body.registered, false, '등록하지 않았다');
+    assert.equal(snapState?.registration, undefined, 'Snap 에도 아무것도 없다');
+    await awaitPopupClosed(popup);
+  });
+
   await t('첫 로그인 = 지갑 등록(2026-11-09): 팝업이 MetaMask 를 연결하고 zkID 인증 창(등록 모드, 2026-11-11 부터 auid 칸 있음)으로 갔다가 돌아와 속성 도구 기록의 salt 로 등록 → 발급 → RP 세션; Snap 확인 창 없음', async () => {
     const before = dialogs.length;
     const demoUid = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.id === 'demo-user').uid;
@@ -548,6 +564,8 @@ try {
       const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
       await completeIdpAuth(popup);
       await waitText(rpPage, '#verdict', '이 스냅의 비밀이 등록과 다릅니다', 120_000);
+      assert.ok((await text(rpPage, '#verdict')).includes('재시연 세트'), '리뷰 I-1: 시드 유도 전 등록은 되찾을 수 없다는 실행 가능한 안내');
+      assert.equal((await text(rpPage, '#verdict')).includes('백업의 salt 로만'), false, '되찾을 수 없는 길을 안내하지 않는다');
       await awaitPopupClosed(popup);
       assert.notEqual(snapState?.registration?.uid, uid, '다른 계정 등록을 만들지 않았다');
     } finally {
@@ -822,6 +840,17 @@ try {
       await q.waitForSelector('#saltWarn:not([hidden])');
       assert.ok((await q.textContent('#saltWarn')).includes('시드로 복구할 수 없는'));
     } finally { await q.evaluate((r) => localStorage.setItem('mode3_attr_tool_v1', r), orig); await q.close(); }
+  });
+
+  await t('리뷰 M-3(2026-11-12): 옛 스냅(0.1.0, getSalt 없음)이면 속성 도구가 "스냅이 옛 버전" 으로 안내한다(snap_outdated)', async () => {
+    const p = await context.newPage();
+    await p.addInitScript(() => { window.__snapOutdated = true; });
+    await p.goto(`${wallet.base}/attr.html`);
+    const before = await p.inputValue('#salt');
+    await p.click('#saltFromSnapBtn');
+    await waitText(p, '#formVerdict', '스냅이 옛 버전입니다');
+    assert.equal(await p.inputValue('#salt'), before);
+    await p.close();
   });
 
   await t('zkID 사용자 페이지 프로필 카드: 로그인만 하면 보인다(지갑 등록과 무관) → 커밋먼트 저장 → 현재 값 표시 → /me.profile; 비우면 없음', async () => {

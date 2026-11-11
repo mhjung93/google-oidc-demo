@@ -235,7 +235,12 @@
     let installed = false;
     try { const s = (await eth.request({ method: 'wallet_getSnaps' }))?.[cfg.snapId]; installed = Boolean(s) && !s.blocked && s.enabled !== false; } catch { installed = false; }
     if (!installed) await eth.request({ method: 'wallet_requestSnaps', params: { [cfg.snapId]: {} } });
-    const r = await eth.request({ method: 'wallet_invokeSnap', params: { snapId: cfg.snapId, request: { method: 'getSalt', params: {} } } });
+    let r;
+    try { r = await eth.request({ method: 'wallet_invokeSnap', params: { snapId: cfg.snapId, request: { method: 'getSalt', params: {} } } }); }
+    catch (e) {   // 리뷰 M-3: 옛 스냅(0.1.0)은 getSalt 를 모른다
+      if (/method_not_found/.test(e?.message ?? '')) throw Object.assign(new Error('설치된 스냅이 0.2.0 전 버전입니다'), { reason: 'snap_outdated' });
+      throw e;
+    }
     if (!isDec(String(r?.s_u ?? ''))) throw Object.assign(new Error('스냅이 salt 를 주지 않았습니다'), { reason: 'snap_unavailable' });
     return String(r.s_u);
   }

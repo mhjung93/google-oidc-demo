@@ -105,6 +105,8 @@ ${snapModuleSource().split('\n').map((l) => (l ? '  ' + l : l)).join('\n')}
         case 'wallet_invokeSnap': {
           const { snapId, request } = params || {};
           if (snapId !== SNAP_ID) throw new Error('ethereum_stub: 모르는 snapId ' + snapId);
+          // 테스트 전용 훅(2026-11-12 리뷰 M-3): 옛 스냅(0.1.0)은 getSalt 를 모른다 — 실제 스냅의 default 분기와 같은 오류.
+          if (window.__snapOutdated && request && request.method === 'getSalt') throw new Error('method_not_found: getSalt');
           // MetaMask 가 부르는 자리 — origin 은 확장이 정한다. 페이지가 고를 수 없으므로 여기서 준다.
           return window.__snapOnRpcRequest({ origin: SNAP_ORIGIN, request });
         }
