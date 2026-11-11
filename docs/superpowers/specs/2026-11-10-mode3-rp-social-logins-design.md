@@ -3,6 +3,10 @@
 - 상태: 사용자 승인(2026-11-10, 대화 중 결정 R1~R5 → 섹션 1·2·3 각각 "그래").
 - 대체: `2026-11-09-mode3-linked-logins-design.md`(zkID 계정에 Google·네이버 연결, 45f3602). 사용자 지적 — "연결된 로그인은 RP 에서 지원해야 하는 기능" — 으로
   연결의 자리를 IdP 에서 RP 로 옮긴다. 11-09 의 IdP 쪽 연결은 걷어낸다(§5).
+- **개정 1: 2026-11-11 — 로그인 창의 Google 은 zkID 래퍼(사용자 결정).** "빨리 wrapper 만들어서 oidc 토큰 받은 다음에 zkID 와 동일하게 흐름 따라가게 해줘" —
+  RP 로그인 창의 "Google 계정으로 로그인" 은 RP 가 직접 받지 않고 같은 zk 로그인을 `provider:'google'` 로 연다. 스냅 팝업이 Google 토큰을 받아(미등록 스냅이면 Google 로 등록 —
+  uid = H(google, sub), Google 계정마다 별도 zkID 계정) zkID 와 같은 발급·증명으로 PPID 세션을 만든다. 아이디 계정으로 등록된 스냅은 `snap_other_account` 로 멈춘다(스냅 하나 = 계정 하나).
+  네이버 로그인과 내 계정의 Google·네이버 "연결"(RP 직접, R1)은 그대로다. 그래서 R1 의 "Google 로그인" 은 이제 연결 칸에만 해당한다.
 - 비범위: 다중 IdP, ZDS, Google 래퍼 계정(`provider:'google'`, `/user?google=1`·`/account`) 경로(그대로 둔다), 회로·컨트랙트(바꾸지 않는다), RP 간 계정 병합.
 
 ## 1. 결정

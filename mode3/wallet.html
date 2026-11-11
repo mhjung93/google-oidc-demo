@@ -639,7 +639,7 @@
       if (!rec?.profile) return null;
       let st = null;
       try { st = await (await fetch('/wallet/status')).json(); } catch { return null; }   // 못 읽으면 맞추지 않고 진행 — 로그인 자체는 에이전트가 다시 거른다
-      if (!st?.registered) return null;
+      if (!st?.registered || (st.provider ?? 'demo') !== 'demo') return null;   // Google 래퍼 계정은 속성 도구가 uid 를 미리 묶을 수 없다 — 맞추지 않는다
       const cur = st.profile ?? {};
       const keys = new Set([...Object.keys(cur), ...Object.keys(rec.profile)]);
       if ([...keys].every((k) => String(cur[k] ?? '').trim() === String(rec.profile[k] ?? '').trim())) return null;
@@ -849,6 +849,20 @@
         // 전에 간다), Google 계정은 이 팝업의 Google 버튼 — nonce 는 issue:H(pk_u|arid_s)(에이전트가 이 로그인의 arid·r_rp 로 계산).
         let provider = await walletProvider();
         let authCodeNow = authCode;
+        // OIDC 래퍼(2026-11-11 사용자 결정): RP 의 "Google 계정으로 로그인" — Google 토큰을 받은 뒤 zkID 와 같은 발급·증명 흐름을 탄다. 미등록 스냅이면
+        // 여기서 Google 로 등록하고(uid = H(google, sub), Google 계정마다 별도 zkID 계정) 아래 Google 발급으로 이어진다. 스냅 하나에는 계정 하나라
+        // 아이디 계정으로 등록된 스냅은 멈춘다. 첫 등록에 속성 도구 기록은 쓰지 않는다(uid 가 Google 로그인 뒤에야 정해진다) — 기본 속성.
+        if (req.provider === 'google' && authPurpose !== 'register') {
+          let registered = true; try { registered = Boolean((await (await fetch('/wallet/status')).json()).registered); } catch { /* 진행 — 에이전트가 다시 거른다 */ }
+          if (!registered) {
+            if (!(await connect())) return;
+            say('wallet_prog_registering');
+            const r = await googleRegister({ step, log });
+            if (!r.ok) return reply(r);
+            step('zkID 에 Google 계정으로 등록됨 — 이어서 로그인합니다.');
+            provider = 'google';
+          } else if (provider === 'demo') { step('이 스냅은 아이디 계정으로 등록돼 있다 — Google 로 로그인하지 않는다.'); return reply({ ok: false, reason: 'snap_other_account' }); }
+        }
         // 등록 코드로 돌아온 길(2026-11-09, 사용자 결정 "등록 과정에는 지갑 연결이 없고, 지갑은 위임 인증 때 처음 붙는다"): 이 서비스 로그인이 이 지갑의
         // 첫 zkID 등록이다 — MetaMask 연결 → Snap 이 비밀 생성 → 에이전트가 /cia/register → Snap 저장 → IdP 가 함께 준 발급 코드로 바로 발급·로그인.
         if (authPurpose === 'register') {

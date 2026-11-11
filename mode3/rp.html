@@ -169,7 +169,7 @@
         <button type="button" id="idpLoginBtn" class="social-btn social-btn-idp">
           <span data-i18n="rp_idp_btn">zkID 로 로그인</span>
         </button>
-        <!-- 2026-11-10(스펙 rp-social-logins): Google·네이버는 RP 가 직접 받는다 — 지갑·zkID 를 거치지 않는다. Google 은 아래 자리에 GIS 버튼을 그린다. -->
+        <!-- 2026-11-10(스펙 rp-social-logins): 네이버는 RP 가 직접 받는다. 2026-11-11(사용자 결정): Google 은 zkID 래퍼 — 스냅 팝업이 Google 토큰을 받아 zkID 흐름을 탄다. -->
         <button type="button" id="googleLoginBtn" class="social-btn">
           <span class="social-badge badge-google" aria-hidden="true">G</span>
           <span data-i18n="rp_google_btn">Google 계정으로 로그인</span>
@@ -621,11 +621,7 @@
       $('loginModal').hidden = false;
       $('loginModalNote').hidden = true;
       // data-oidc: Google 버튼의 활성 표시(테스트가 본다). 켜져 있으면 버튼 설명을 붙인다.
-      // 2026-11-11(사용자 요청): RP 에 Google 이 켜져 있으면 "Google 계정으로 로그인" 을 한 번 더 누르게 하지 않고 창을 열 때 바로 Google 버튼(GIS)을 그린다.
-      // 정보를 아직 못 읽었거나 localhost 가 아니면 예전 버튼을 둔다(누르면 사유를 보인다 — 래퍼 경로·web 모드도 그대로).
-      const gsiNow = Boolean(info?.social?.google?.enabled && window.Mode3Gsi?.originOk());
-      $('googleLoginBtn').hidden = gsiNow;
-      if (gsiNow) renderGoogle($('loginGsiSlot'), 'login', $('verdict'));
+      // 2026-11-11(사용자 결정): "Google 계정으로 로그인" 은 zkID 래퍼다 — Google 버튼(GIS)은 스냅 팝업이 그린다(오전의 "창을 열면 바로 GIS" 는 되돌렸다).
       document.addEventListener('keydown', onLoginModalKeydown);
       Demo.tour?.refresh();      // 체험 모드가 켜져 있으면 말풍선을 바로 #idpLoginBtn 으로 옮긴다(아래 anchorOverride).
     }
@@ -637,9 +633,8 @@
     $('loginModalClose').addEventListener('click', closeLoginModal);
     $('loginModal').addEventListener('click', (ev) => { if (ev.target === $('loginModal')) closeLoginModal(); });
     $('directLoginBtn').addEventListener('click', () => showModalNote('rp_direct_login_note', '데모에서는 IdP 로그인만 동작합니다'));
-    // Google: IdP 가 Google 을 켰고 브라우저 모드면 같은 zk 로그인을 provider:'google' 표시와 함께 연다(미등록이면 팝업이 등록 안내).
-    // Google·네이버(2026-11-10 스펙 rp-social-logins): RP 가 직접 받는다 — 지갑·zkID 를 거치지 않는다(R1). Google 은 모달 안 자리에 GIS 버튼을 그린다.
-    // 이 RP 에 Google 설정이 없고 IdP 가 Google 래퍼를 켰으면 예전처럼 같은 zk 로그인을 provider:'google' 로 시작한다(래퍼 경로 — web 모드가 쓴다).
+    // Google(2026-11-11 사용자 결정 — OIDC 래퍼): 같은 zk 로그인을 provider:'google' 로 연다. 스냅 팝업이 Google 토큰을 받아 zkID 와 같은 발급·증명을
+    // 탄다(미등록 스냅이면 Google 로 등록부터). 네이버(2026-11-10 스펙 rp-social-logins)는 그대로 RP 가 직접 받는다. RP 직접 Google 은 내 계정의 "연결"에만 남는다.
     /** 소셜 로그인은 로그인 전체를 바꾼다(2026-11-11 사용자 지적) — 남아 있던 zkID 세션(r_s)을 RP 에서도 끝내고 화면·저장소에서 지운다.
      *  그대로 두면 새 소셜 계정 화면에 옛 zkID 계정의 PPID·자산이 섞여 "zkID 가 저절로 연결된" 것처럼 보인다. 쿠키 세션(새 계정)은 건드리지 않는다. */
     async function endZkidSession(r_s = currentSession) {
@@ -669,7 +664,6 @@
     }
     $('googleLoginBtn').addEventListener('click', async () => {
       if (!info) { try { await loadInfo(); } catch { /* 아래에서 꺼진 것으로 본다 */ } }
-      if (info?.social?.google?.enabled) { renderGoogle($('loginGsiSlot'), 'login', $('verdict')); return; }
       if (info?.oidc?.enabled) { closeLoginModal(); startIdpLogin({ provider: 'google' }); return; }
       showModalNote('rp_social_not_in_demo', '이 데모에서는 아직 준비되지 않았습니다');
     });

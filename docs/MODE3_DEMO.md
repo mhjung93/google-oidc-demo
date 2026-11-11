@@ -957,6 +957,8 @@ IdP 의 약속이다:
 
 ### RP 계정에 Google·네이버 로그인 연결 (2026-11-10, 스펙 `docs/superpowers/specs/2026-11-10-mode3-rp-social-logins-design.md`)
 
+> **2026-11-11(사용자 결정, 스펙 개정 1) Google 은 zkID 래퍼**: RP 로그인 창의 "Google 계정으로 로그인" 을 누르면 스냅 팝업이 열리고, 팝업 안의 Google 버튼으로 받은 토큰으로 zkID 와 같은 발급·증명을 거쳐 PPID 세션이 된다(IdP 로그인 페이지로 가지 않는다). 미등록 스냅이면 첫 로그인이 Google 등록이다 — Google 버튼을 두 번(등록·발급) 누른다. Google 계정마다 별도 zkID 계정이라 아이디 계정과 PPID 가 다르고, 아이디 계정으로 등록된 스냅은 `snap_other_account` 로 멈춘다(바꾸려면 MetaMask 에서 스냅 재설치). 첫 등록은 기본 속성이고 속성 도구 기록·D19 속성 맞추기는 쓰지 않는다. **Google Cloud Console 의 승인된 JavaScript 원본에 `http://localhost:5100` 이 있어야 한다**(버튼이 스냅 팝업에 뜬다). 네이버 로그인과 내 계정의 Google·네이버 "연결" 은 아래 그대로 RP 직접이다.
+
 11-09 의 "zkID 계정에 Google·네이버 연결" 은 걷어냈다(사용자 지적: 연결된 로그인은 RP 가 지원하는 기능). zkID 인증 창은 다시 아이디·비밀번호만 받는다.
 
 - **모델**: RP(zkONE·zkTWO)마다 계정이 따로다. 계정 하나에 로그인 수단 세 칸 — zkID(PPID)·Google·네이버. 처음 쓰는 수단으로 로그인하면 그 칸만 채운 새 계정이 생긴다.

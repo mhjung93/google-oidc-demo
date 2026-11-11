@@ -174,26 +174,21 @@ try {
 
   // 2026-11-11(사용자 지적): zkID 로 로그인한 상태에서 Google·네이버로 로그인하면 화면이 이전 zkID 세션(r_s)을 버리지 않아 새 소셜 계정에 그 PPID·자산이
   // 섞여 보였다("zkID 연결이 자동으로 됐다"). 소셜 로그인은 로그인 전체를 바꾼다 — 남은 zkID 세션은 끝낸다(RP 에서도).
-  await t('zkID 로그인 상태에서 Google·네이버로 로그인하면 이전 zkID 세션이 정리된다(PPID·r_s 가 새 계정에 섞이지 않는다)', async () => {
+  // 2026-11-11(사용자 결정): RP 의 Google 버튼은 zkID 래퍼가 됐다(그 자체가 zkID 세션) — 소셜 로그인의 세션 정리는 네이버로 본다.
+  await t('zkID 로그인 상태에서 네이버로 로그인하면 이전 zkID 세션이 정리된다(PPID·r_s 가 새 계정에 섞이지 않는다)', async () => {
     const page = await context.newPage(); await page.goto(`${rp.base}/`);
     await page.waitForFunction(() => typeof currentSession !== 'undefined' && currentSession, undefined, { timeout: 15_000 });   // 앞 케이스의 zkID 세션이 복원돼 있다
     const oldRs = await page.evaluate(() => currentSession);
-    await page.evaluate((u) => { window.__gsiMintUrl = u; window.__gsiSub = 'rp-g-mix'; }, `${rpGoogle.base}/mint`);
-    await page.evaluate(() => openLoginModal());   // 로그인 상태라 상단 버튼은 숨어 있다 — 열린 다른 탭 등에서 연 것과 같다
-    await page.waitForSelector('#loginGsiSlot .gsi-stub', { timeout: 30_000 }); await page.click('#loginGsiSlot .gsi-stub');
-    await page.waitForFunction(() => (document.querySelector('#viaBadge')?.textContent ?? '').includes('Google'), undefined, { timeout: 30_000 });
+    // 네이버로 돌아오는 길(페이지 새로 열림)은 저장해 둔 zkID 세션을 되살리지 않고 RP 에서도 끝낸다
+    rpNaver.setNextSub('rp-n-mix');
+    await page.evaluate(() => openLoginModal()); await page.click('#naverLoginBtn');   // 로그인 상태라 상단 버튼은 숨어 있다 — 열린 다른 탭 등에서 연 것과 같다
+    await page.waitForFunction(() => (document.querySelector('#viaBadge')?.textContent ?? '').includes('네이버'), undefined, { timeout: 30_000 });
     assert.equal(await page.evaluate(() => currentSession), null, '화면의 zkID 세션은 끝났다');
-    assert.equal((await text(page, '#accountPPID')).trim(), '-', '새 Google 계정에는 PPID 가 없다');
+    assert.equal((await text(page, '#accountPPID')).trim(), '-', '새 네이버 계정에는 PPID 가 없다');
     const me = await page.evaluate(() => fetch('/api/rp/me').then((r) => r.json()));
     assert.equal(me.methods.zkid, null, j(me));
     const sess = await page.evaluate(() => fetch('/api/mode3/sessions').then((r) => r.json()));
     assert.equal(sess.sessions.some((x) => x.r_s === `${oldRs.slice(0, 8)}…`), false, 'RP 에서도 옛 zkID 세션이 끝났다');
-    // 네이버로 돌아오는 길(페이지 새로 열림)도 저장해 둔 zkID 세션을 되살리지 않는다
-    await page.evaluate((rs) => localStorage.setItem('mode3.rp.session', JSON.stringify({ r_s: rs, allowAgent: '0' })), oldRs);
-    rpNaver.setNextSub('rp-n-mix');
-    await page.evaluate(() => openLoginModal()); await page.click('#naverLoginBtn');
-    await page.waitForFunction(() => (document.querySelector('#viaBadge')?.textContent ?? '').includes('네이버'), undefined, { timeout: 30_000 });
-    assert.equal(await page.evaluate(() => currentSession), null);
     assert.equal(await page.evaluate(() => localStorage.getItem('mode3.rp.session')), null, '저장된 zkID 세션도 지웠다');
     await page.click('#logoutBtn'); await page.waitForSelector('#assetsLoggedOut:not([hidden])');
     await page.close();
@@ -201,28 +196,54 @@ try {
 
   // 2026-11-11: zk 스냅 화면의 설정 탭(스냅 자기 폐기)은 없앴다 — 계정 폐기는 zkID 내 계정·관리자에서 한다.
 
-  await t('RP 소셜(2026-11-10): 로그인 창 Google(GIS 흉내) → 새 RP 계정·via google 배지 → 내 계정에서 네이버 연결 → 자산에 거래소 보관 ETH·출금 출처; 로그아웃하면 /api/rp/me 401', async () => {
+  // 2026-11-11(사용자 결정): 로그인 창의 Google 버튼은 zkID 래퍼다 — RP 직접 Google 은 내 계정의 "연결"에만 남는다.
+  await t('RP 소셜(2026-11-10): 로그인 창 네이버 → 새 RP 계정·via 네이버 배지 → 내 계정에서 Google 연결(GIS 흉내, RP 직접) → 자산에 거래소 보관 ETH·출금 출처; 로그아웃하면 /api/rp/me 401', async () => {
     const page = await context.newPage(); await page.goto(`${rp.base}/`);
     if (await page.$eval('#loginBtn', (b) => b.hidden)) { await page.click('#logoutBtn'); await page.waitForSelector('#loginBtn:not([hidden])'); }
-    await page.evaluate((u) => { window.__gsiMintUrl = u; window.__gsiSub = 'rp-g-user'; }, `${rpGoogle.base}/mint`);   // 이 페이지의 GIS 흉내는 RP 용 Google 스텁으로
-    await page.click('#loginBtn'); assert.equal(await page.isHidden('#googleLoginBtn'), true, '2026-11-11: 창을 열면 Google 버튼이 바로 그려진다');
-    await page.waitForSelector('#loginGsiSlot .gsi-stub', { timeout: 30_000 });
-    await page.click('#loginGsiSlot .gsi-stub');
-    await page.waitForSelector('#assetsLoggedIn:not([hidden])', { timeout: 30_000 });
-    assert.match(await text(page, '#viaBadge'), /Google/);
-    await page.click('#navAccount'); await page.waitForSelector('#account:not([hidden])');
-    assert.match(await text(page, '#mState_google'), /연결됨/); assert.match(await text(page, '#mState_naver'), /연결 안 됨/);
-    assert.equal(await page.isVisible('#mUnlink_google'), true);
+    await page.click('#loginBtn'); assert.equal(await page.isVisible('#googleLoginBtn'), true, '로그인 창의 Google 버튼은 래퍼 버튼 그대로 보인다(GIS 를 바로 그리지 않는다)');
     rpNaver.setNextSub('rp-n-user');
-    await page.click('#mLink_naver');                                   // 네이버 흉내를 다녀와 /?linked=naver#account 로 돌아온다
-    await page.waitForURL((u) => u.hash === '#account' && !u.search, { timeout: 30_000 });
-    await waitText(page, '#accountVerdict', '네이버');
-    assert.match(await text(page, '#mState_naver'), /연결됨/);
+    await page.click('#naverLoginBtn');
+    await page.waitForSelector('#assetsLoggedIn:not([hidden])', { timeout: 30_000 });
+    assert.match(await text(page, '#viaBadge'), /네이버/);
+    await page.click('#navAccount'); await page.waitForSelector('#account:not([hidden])');
+    assert.match(await text(page, '#mState_naver'), /연결됨/); assert.match(await text(page, '#mState_google'), /연결 안 됨/);
+    await page.evaluate((u) => { window.__gsiMintUrl = u; window.__gsiSub = 'rp-g-user'; }, `${rpGoogle.base}/mint`);   // 이 페이지의 GIS 흉내는 RP 용 Google 스텁으로
+    await page.click('#mLink_google');
+    await page.waitForSelector('#linkGsiSlot .gsi-stub', { timeout: 30_000 }); await page.click('#linkGsiSlot .gsi-stub');
+    await waitText(page, '#accountVerdict', 'Google');
+    assert.match(await text(page, '#mState_google'), /연결됨/);
+    assert.equal(await page.isVisible('#mUnlink_google'), true);
     assert.equal(await page.$eval('li[data-asset="ETH_CUSTODY"]', (el) => !el.hidden), true);
     assert.equal(await page.$eval('#txSource option[value="account"]', (o) => o.disabled), true, 'zkID 세션이 아니면 내 계정 출금 불가');
     await page.click('#logoutBtn'); await page.waitForSelector('#assetsLoggedOut:not([hidden])');
     assert.equal(await page.evaluate(() => fetch('/api/rp/me').then((r) => r.status)), 401);
     await page.close();
+  });
+
+  // 2026-11-11(사용자 결정): RP 의 "Google 계정으로 로그인" = OIDC 래퍼 — 미등록 스냅이면 팝업에서 Google 로 등록(uid = H(google, sub))하고 이어서
+  // zkID 와 같은 발급·증명으로 PPID 세션을 만든다. 등록·발급의 nonce 가 달라 팝업의 Google 버튼을 두 번 누른다.
+  await t('Google 래퍼: 미등록 스냅에서 RP 의 Google 버튼 → 팝업 Google(등록) → 팝업 Google(발급) → zkID 로그인 성공·PPID; IdP 로그인 페이지로 가지 않는다', async () => {
+    assert.equal((await wallet.post('/wallet/reset', { confirm: true })).status, 200);
+    snapState = null;                                                   // 새로 설치한 스냅
+    const SUB2 = 'g-browser-2';
+    const rpPage = await context.newPage(); await rpPage.goto(rp.base);
+    if (await rpPage.$eval('#loginBtn', (b) => b.hidden)) { await rpPage.click('#logoutBtn'); await rpPage.waitForSelector('#loginBtn:not([hidden])'); }
+    await rpPage.click('#loginBtn');
+    const [popup] = await Promise.all([context.waitForEvent('page'), rpPage.click('#googleLoginBtn')]);
+    await popup.waitForSelector('#gsiBox .gsi-stub', { timeout: 60_000 });
+    await popup.evaluate((s) => { window.__gsiSub = s; }, SUB2);        // 로드된 뒤에 — 흉내 버튼은 누를 때 이 값을 읽는다
+    assert.ok(popup.url().includes('authorize=1') && !popup.url().includes('/login'), `IdP 로그인 페이지로 가지 않는다: ${popup.url()}`);
+    await popup.click('#gsiBox .gsi-stub');                             // 등록용 토큰
+    await popup.waitForSelector('#gsiBox .gsi-stub', { state: 'detached', timeout: 60_000 });   // 첫 버튼이 치워진 뒤에 다음 버튼을 기다린다
+    await popup.waitForSelector('#gsiBox .gsi-stub', { timeout: 120_000 });
+    await popup.click('#gsiBox .gsi-stub');                             // 발급용 토큰
+    await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
+    const st = (await wallet.get('/wallet/status')).body;
+    assert.equal(st.registered, true); assert.equal(st.provider, stub.provider); assert.equal(st.uid, uidOf(stub.provider, SUB2), 'Google 계정마다 별도 zkID 계정');
+    assert.equal(snapState.registration.uid, st.uid, '스냅에도 등록됐다');
+    assert.ok(await rpPage.evaluate(() => currentSession), 'zkID 세션이 잡혔다');
+    assert.notEqual((await text(rpPage, '#accountPPID')).trim(), '-', 'PPID 가 있다');
+    await rpPage.close();
   });
 
   await t('하네스: 준비한 대화상자 응답이 남지 않았다(기대한 동의 창이 다 떴다)', async () => {
