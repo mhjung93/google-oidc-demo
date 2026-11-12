@@ -845,19 +845,22 @@ try {
     assert.equal(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')), null);
     for (const id of ['#uid', '#salt', '#acctIndex']) assert.equal(await p.inputValue(id), '', `지우기는 ${id} 칸도 비운다(최종 리뷰 I-1 — 다음 계정이 앞 계정 값으로 만들지 않게)`);
     await p.setInputFiles('#importFile', { name: 'backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(rec)) });
-    await waitText(p, '#resultVerdict', '백업 불러오기 완료');
+    await waitText(p, '#importVerdict', '백업 불러오기 완료');
     assert.equal((await p.textContent('#commitBox')).trim(), rec.commit);
+    // 2026-11-12(사용자 보고): 결과가 "커밋먼트 재료" 표 아래에 찍혀 화면 밖이라 아무 일도 없어 보였다 — 버튼 바로 아래(표 위)에 보인다.
+    const topOf = (sel) => p.$eval(sel, (el) => el.getBoundingClientRect().top);
+    assert.ok(await topOf('#importVerdict') < await topOf('#inputsView'), '불러오기 결과는 재료 표보다 위에 보인다');
     // 옛 형식(version 1, uid·salt 없음) 백업은 거절하고, 저장소에 옛 기록이 있으면 "다시 만드세요" 를 보인다.
     const { uid: _u, s_u: _s, ...v1 } = rec;
     await p.setInputFiles('#importFile', { name: 'v1.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ ...v1, version: 1 })) });
-    await waitText(p, '#resultVerdict', '백업을 불러오지 못했습니다');
+    await waitText(p, '#importVerdict', '백업을 불러오지 못했습니다');
     const broken = { ...rec, commit: '1' };
     await p.setInputFiles('#importFile', { name: 'bad.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(broken)) });
-    await waitText(p, '#resultVerdict', '백업을 불러오지 못했습니다');
+    await waitText(p, '#importVerdict', '백업을 불러오지 못했습니다');
     toolCommit = rec.commit;
     // 2026-11-11: 데모 리셋(scripts/demo_split_start.sh 가 /attr/dist/reset.json 에 리셋 시각을 쓴다) — 도구가 처음 보는 값이면 이 브라우저의 기록을 비운다.
     await p.setInputFiles('#importFile', { name: 'backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(rec)) });
-    await waitText(p, '#resultVerdict', '백업 불러오기 완료');
+    await waitText(p, '#importVerdict', '백업 불러오기 완료');
     const resetFile = new URL('../mode3/attr/dist/reset.json', import.meta.url);
     fs.writeFileSync(resetFile, JSON.stringify({ epoch: 'test-reset-1' }));
     try {
@@ -917,15 +920,27 @@ try {
     // 내려받기도 암호문
     const [dl] = await Promise.all([p.waitForEvent('download'), p.click('#exportBtn')]);
     assert.equal(isSealedBackup(JSON.parse(fs.readFileSync(await dl.path(), 'utf8'))), true, '내려받기도 암호화 백업');
-    // 불러오기: 지우기 → 틀린 비밀번호는 실패 → 맞는 비밀번호는 복원
+    // 불러오기: 지우기 → 취소 → 틀린 비밀번호는 실패 → 맞는 비밀번호는 복원.
+    // 2026-11-12(사용자 보고): 비밀번호를 브라우저 기본 창(window.prompt)으로 받았는데 그 창이 안 뜨면 아무 일도 없어 보였다 — 페이지 안의 칸으로 받는다.
     p.once('dialog', (d) => d.accept()); await p.click('#clearBtn'); await p.waitForSelector('#noCommit:not([hidden])');
+    const nativeDialogs = []; p.on('dialog', (d) => { nativeDialogs.push(d.type()); d.dismiss().catch(() => {}); });
+    const stored = () => p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1'));
     const file = { name: 'zkd-attr-backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(b2)) };
-    p.once('dialog', (d) => d.accept('wrong-password')); await p.setInputFiles('#importFile', file);
-    await waitText(p, '#resultVerdict', '백업을 불러오지 못했습니다');
-    assert.equal(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')), null, '틀린 비밀번호로는 아무것도 들어오지 않는다');
-    p.once('dialog', (d) => d.accept(PW)); await p.setInputFiles('#importFile', file);
-    await waitText(p, '#resultVerdict', '백업 불러오기 완료');
+    await p.setInputFiles('#importFile', file); await p.waitForSelector('#importPwRow', { state: 'visible' });
+    assert.equal(await p.evaluate(() => document.activeElement?.id), 'importPw', '비밀번호 칸에 초점이 간다');
+    await p.click('#importCancelBtn'); await p.waitForSelector('#importPwRow', { state: 'hidden' });
+    assert.equal(await stored(), null, '취소하면 아무것도 들어오지 않는다');
+    await p.setInputFiles('#importFile', file); await p.waitForSelector('#importPwRow', { state: 'visible' });
+    await p.fill('#importPw', 'wrong-password'); await p.click('#importOpenBtn');
+    await waitText(p, '#importVerdict', '백업을 불러오지 못했습니다');
+    assert.equal(await stored(), null, '틀린 비밀번호로는 아무것도 들어오지 않는다');
+    assert.equal(await p.isVisible('#importPwRow'), true, '틀리면 칸을 그대로 둔다 — 다시 넣어 볼 수 있다');
+    await p.fill('#importPw', PW); await p.press('#importPw', 'Enter');
+    await waitText(p, '#importVerdict', '백업 불러오기 완료');
     assert.equal((await p.textContent('#commitBox')).trim(), rec2.commit);
+    assert.equal(await p.isVisible('#importPwRow'), false, '불러오면 비밀번호 칸을 닫는다');
+    assert.equal(await p.inputValue('#importPw'), '', '비밀번호 칸은 비운다');
+    assert.deepEqual(nativeDialogs, [], '브라우저 기본 창을 띄우지 않는다');
     await p.close();
   });
 

@@ -914,6 +914,10 @@ window.DemoStrings = {
     attr_export_need_setup: { ko: '먼저 아래 "자동 백업" 에서 백업 비밀번호를 정하세요.', en: 'Set a backup password under "Automatic backup" first.' },
     attr_import_pw_prompt: { ko: '백업 비밀번호를 넣으세요', en: 'Enter the backup password' },
     attr_import_bad_pw: { ko: '백업 비밀번호가 맞지 않습니다', en: 'Wrong backup password' },
+    // 2026-11-12(사용자 보고): 비밀번호를 페이지 안의 칸으로 받는다(attr_import_pw_prompt 는 그 칸의 레이블이 됐다)
+    attr_import_pw_file: { ko: '{file} 은 암호화 백업입니다.', en: '{file} is an encrypted backup.' },
+    attr_import_open_btn: { ko: '불러오기', en: 'Load' },
+    attr_import_cancel_btn: { ko: '취소', en: 'Cancel' },
     attr_clear_btn: { ko: '지우기', en: 'Clear' },
     attr_clear_confirm: { ko: '저장된 uid·salt·속성·blind·커밋먼트를 지웁니다. 백업이 없으면 같은 커밋먼트를 다시 만들 수 없습니다. 계속할까요?', en: 'This deletes the saved uid, salt, attributes, blind and commitment. Without a backup you cannot recreate the same commitment. Continue?' },
     attr_import_btn: { ko: '백업 불러오기', en: 'Load backup' },
