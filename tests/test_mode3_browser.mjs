@@ -237,6 +237,9 @@ try {
     await walletPage.waitForSelector('#meStoreEmpty:not([hidden])', { timeout: 15_000 });
     await waitText(walletPage, storeCell('nextIndex'), '0');
     assert.equal(await walletPage.$(storeCell('registration.uid')), null, '등록 줄은 없다');
+    // 2026-11-12(화면 리뷰): 저장 형식 버전은 내부 값이라 목록 줄이 아니라 맨 아래 작은 글씨로 보인다 — 등록 전 목록에는 다음 가입 번호 한 줄만 남는다
+    assert.equal(await walletPage.$$eval('#meStore dl.kv dt', (e) => e.length), 1, '등록 전 목록은 다음 가입 번호 한 줄');
+    assert.equal(await walletPage.$eval(storeCell('version'), (el) => Boolean(el.closest('dl'))), false, '저장 형식 버전은 목록 줄이 아니다');
     await walletTab(walletPage, 'services');
   });
 
@@ -389,14 +392,38 @@ try {
     assert.equal(await walletPage.isHidden('#meStoreEmpty'), true);
     const reg = snapState.registration, uc = snapState.userCred;
     for (const [path, want] of [
-      ['registration.uid', reg.uid], ['registration.auid', reg.auid], ['registration.index', String(reg.index)], ['registration.slot', String(reg.slot)], ['registration.registeredAt', reg.registeredAt],
+      ['registration.uid', reg.uid], ['registration.auid', reg.auid], ['registration.index', String(reg.index)], ['registration.slot', String(reg.slot)],
       ['registration.attrs[0]', reg.attrs[0]], ['registration.attrs[5]', reg.attrs[5]],
-      ['userCred.C_u_pt.x', uc.C_u_pt.x], ['userCred.C_u_pt.y', uc.C_u_pt.y], ['userCred.Cf_u', uc.Cf_u], ['userCred.issuedAt', uc.issuedAt],
+      ['userCred.C_u_pt.x', uc.C_u_pt.x], ['userCred.C_u_pt.y', uc.C_u_pt.y], ['userCred.Cf_u', uc.Cf_u],
       ['nextIndex', String(snapState.nextIndex)], ['version', '1'],
     ]) assert.equal(await cell(path), want, path);
     const rpOrigin = Object.keys(snapState.consents)[0];
     assert.ok(rpOrigin, '동의 기록이 있다');
-    assert.equal(await cell(`consents.${rpOrigin}.grantedAt`), snapState.consents[rpOrigin].grantedAt);
+    // 2026-11-12(화면 리뷰): 시각은 다른 화면처럼 현지 형식으로 보이고(저장된 값 그대로는 title), 복사 버튼을 달지 않는다
+    for (const [path, iso] of [['registration.registeredAt', reg.registeredAt], ['userCred.issuedAt', uc.issuedAt], [`consents.${rpOrigin}.grantedAt`, snapState.consents[rpOrigin].grantedAt]]) {
+      assert.equal(await cell(path), await walletPage.evaluate((x) => new Date(x).toLocaleString(), iso), `${path} 는 현지 시각으로 보인다`);
+      assert.equal(await walletPage.$eval(storeCell(path), (el) => el.title), iso, `${path} 의 저장된 값은 title 에 있다`);
+      assert.equal(await walletPage.$eval(storeCell(path), (el) => Boolean(el.parentElement.querySelector('.copy-btn'))), false, `${path} 에는 복사 버튼이 없다`);
+    }
+    // 2026-11-12(화면 리뷰): 묶음이 달라도 값 열이 한 줄로 서고, 버튼과 첫 묶음 사이가 떨어져 있고, 긴 값의 복사 버튼은 값 오른쪽 첫 줄에 붙는다
+    const layout = () => walletPage.evaluate(() => {
+      const r = (el) => el.getBoundingClientRect();
+      const auid = document.querySelector('#meCard [data-store-path="registration.auid"]'), btn = auid.parentElement.querySelector('.copy-btn');
+      return {
+        valueLefts: [...new Set([...document.querySelectorAll('#meStore dl.kv dd')].map((d) => Math.round(r(d).left)))],
+        gap: r(document.querySelector('#meStore h4')).top - r(document.querySelector('#meCard .row-actions')).bottom,
+        btnDy: Math.abs(r(btn).top - r(auid).top), btnRightOfValue: r(btn).left >= r(auid).right - 1,
+        subs: [...document.querySelectorAll('#meStore .store-sub')].map((e) => e.textContent.trim()),
+        versionInList: Boolean(document.querySelector('#meCard [data-store-path="version"]').closest('dl')),
+        height: r(document.querySelector('#meStore')).height,
+      };
+    });
+    const lay = await layout();
+    assert.equal(lay.valueLefts.length, 1, `값 열의 시작 위치가 묶음마다 같다: ${lay.valueLefts}`);
+    assert.ok(lay.gap >= 12, `버튼과 첫 묶음 제목 사이 간격: ${lay.gap}`);
+    assert.ok(lay.btnDy < 8 && lay.btnRightOfValue, `auid 의 복사 버튼은 값 오른쪽 첫 줄에 있다: ${j(lay)}`);
+    assert.deepEqual(lay.subs, [rpOrigin], '동의 기록은 서비스 주소가 작은 제목이다');
+    assert.equal(lay.versionInList, false, '저장 형식 버전은 목록 줄이 아니다');
     assert.equal(await cell(`consents.${rpOrigin}.allowAgent`), snapState.consents[rpOrigin].allowAgent);
     // 비밀은 기본 가림 — 칸은 있지만 값은 DOM 어디에도 없다
     const secrets = { 'registration.s_u': reg.s_u, 'registration.sk_u': reg.sk_u, 'userCred.blind_u': uc.blind_u };
@@ -407,6 +434,7 @@ try {
     }
     await walletPage.click('#meRevealBtn');
     for (const [path, v] of Object.entries(secrets)) assert.equal(await cell(path), v, `${path} 가 열린다`);
+    assert.equal((await layout()).height, lay.height, '비밀 값을 열어도 아래 내용이 밀리지 않는다(2026-11-12 화면 리뷰)');
     // 탭을 떠났다 돌아오면 다시 가린다
     await walletTab(walletPage, 'services'); await walletTab(walletPage, 'me');
     await waitText(walletPage, storeCell('registration.uid'), uid);
@@ -850,6 +878,15 @@ try {
     // 2026-11-12(사용자 보고): 결과가 "커밋먼트 재료" 표 아래에 찍혀 화면 밖이라 아무 일도 없어 보였다 — 버튼 바로 아래(표 위)에 보인다.
     const topOf = (sel) => p.$eval(sel, (el) => el.getBoundingClientRect().top);
     assert.ok(await topOf('#importVerdict') < await topOf('#inputsView'), '불러오기 결과는 재료 표보다 위에 보인다');
+    // 2026-11-12(화면 리뷰): "백업 불러오기" 는 옆의 버튼들처럼 테두리 버튼으로 보이고, "3. 자동 백업" 의 비밀번호 확인은 레이블과 칸이 한 줄에 있다
+    const look = await p.evaluate(() => {
+      const lab = document.querySelector('#importFile').closest('label'), cs = getComputedStyle(lab);
+      const mid = (el) => { const b = el.getBoundingClientRect(); return (b.top + b.bottom) / 2; };
+      const pw2 = document.querySelector('#backupPw2');
+      return { border: `${cs.borderTopWidth} ${cs.borderTopStyle}`, pw2Dy: Math.abs(mid(pw2) - mid(pw2.closest('label').querySelector('span'))) };
+    });
+    assert.equal(look.border, '1px solid', '"백업 불러오기" 는 테두리 버튼이다');
+    assert.ok(look.pw2Dy < 12, `"비밀번호 확인" 레이블과 칸이 한 줄에 있다: ${look.pw2Dy}`);
     // 옛 형식(version 1, uid·salt 없음) 백업은 거절하고, 저장소에 옛 기록이 있으면 "다시 만드세요" 를 보인다.
     const { uid: _u, s_u: _s, ...v1 } = rec;
     await p.setInputFiles('#importFile', { name: 'v1.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ ...v1, version: 1 })) });
@@ -933,6 +970,10 @@ try {
     await p.setInputFiles('#importFile', file); await p.waitForSelector('#importPwRow', { state: 'visible' });
     await p.fill('#importPw', 'wrong-password'); await p.click('#importOpenBtn');
     await waitText(p, '#importVerdict', '백업을 불러오지 못했습니다');
+    // 2026-11-12(화면 리뷰): 틀린 비밀번호는 그렇다고 말한다 — 그전에는 "형식이 다르거나…" 라는 일반 문구만 보였다
+    await waitText(p, '#importVerdict', '백업 비밀번호가 맞지 않습니다');
+    assert.equal((await p.textContent('#importVerdict')).includes('형식이 다르거나'), false, '틀린 비밀번호에 형식 오류 문구를 보이지 않는다');
+    assert.equal((await p.textContent('#importPwRow label span')).trim(), '백업 비밀번호', '비밀번호 칸의 레이블은 다른 칸처럼 이름이다');
     assert.equal(await stored(), null, '틀린 비밀번호로는 아무것도 들어오지 않는다');
     assert.equal(await p.isVisible('#importPwRow'), true, '틀리면 칸을 그대로 둔다 — 다시 넣어 볼 수 있다');
     await p.fill('#importPw', PW); await p.press('#importPw', 'Enter');
@@ -1119,13 +1160,30 @@ try {
     assert.equal(await p.isVisible('#secAccounts'), false, '계정 카드는 보이지 않는다');
     assert.equal(await p.$('.section-menu a[href="#secAccounts"]'), null, '메뉴에 계정이 없다');
     await p.waitForFunction((n) => document.querySelectorAll('#auidMap table tbody tr').length === n, accts.accounts.length, { timeout: 20_000 });
-    const mapRows = await p.$$eval('#auidMap table tbody tr', (trs) => trs.map((tr) => [...tr.cells].map((c) => c.querySelector('code')?.textContent ?? c.textContent.trim())));
+    const mapRows = await p.$$eval('#auidMap table tbody tr', (trs) => trs.map((tr) => [...tr.cells].map((c) => c.querySelector('code')?.title ?? c.textContent.trim())));
     for (const a of accts.accounts) {
       const row = mapRows.find((r) => r[0] === a.uid);
       assert.ok(row, `uid ${a.uid} 줄이 있다`);
-      assert.equal(row[2], a.auid ?? '(없음)', `uid ${a.uid} 의 auid 전체`);
-      assert.equal(row[3], a.lastAuidS?.value ?? '(없음)', `uid ${a.uid} 의 최신 auid_s 전체(2026-11-12)`);
+      assert.equal(row[2], a.auid ?? '(없음)', `uid ${a.uid} 의 auid 전체(title)`);
+      assert.equal(row[3], a.lastAuidS?.value ?? '(없음)', `uid ${a.uid} 의 최신 auid_s 전체(title, 2026-11-12)`);
     }
+    // 2026-11-12(화면 리뷰, 사용자 결정 "한 줄로"): auid·최신 auid_s 는 가운데를 줄여 한 줄로 보인다(전체 값은 title 과 복사 버튼). 머리글·배지는 세로로 꺾이지 않는다.
+    const shape = await p.evaluate(() => {
+      const h = (el) => Math.round(el.getBoundingClientRect().height);
+      return {
+        rowHeights: [...new Set([...document.querySelectorAll('#auidMap tbody tr')].map(h))],
+        shown: [...document.querySelectorAll('#auidMap tbody code')].map((c) => [c.textContent, c.title]),
+        headHeights: [...document.querySelectorAll('#auidMap thead th, #regDb thead th')].map(h),
+        badgeHeights: [...document.querySelectorAll('#regDb .badge')].map(h),
+      };
+    });
+    assert.equal(shape.rowHeights.length, 1, `"uid ↔ auid 대응" 의 줄 높이가 모두 같다(한 줄): ${shape.rowHeights}`);
+    for (const [shown, full] of shape.shown) {
+      const [head, tail] = shown.split('…');
+      assert.ok(shown.length < 30 && head && tail && full.startsWith(head) && full.endsWith(tail), `가운데를 줄인 값: ${shown} ← ${full}`);
+    }
+    assert.ok(Math.max(...shape.headHeights) < 40, `표 머리글이 한 줄이다: ${shape.headHeights}`);
+    assert.ok(shape.badgeHeights.length > 0 && Math.max(...shape.badgeHeights) < 30, `등록부 DB 의 배지가 한 줄이다: ${shape.badgeHeights}`);
     assert.ok(accts.accounts.some((a) => a.auid), '등록된 계정이 하나는 있다(대응 표가 실제 auid 를 보이는지 확인하려면)');
     assert.ok(accts.accounts.some((a) => a.lastAuidS?.value), '발급받은 계정이 하나는 있다(최신 auid_s 열이 실제 값을 보이는지 확인하려면)');
     assert.deepEqual(await p.$$eval('#auidMap table thead th', (ths) => ths.map((th) => th.textContent.trim())), ['uid', '아이디', 'auid', '최신 auid_s', '슬롯']);

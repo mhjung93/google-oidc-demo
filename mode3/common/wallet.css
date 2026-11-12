@@ -35,6 +35,17 @@ main.wallet-main .card { padding: 20px 22px; }
 .status-line .badge { font-size: 13px; padding: 4px 12px; }
 .kv { row-gap: 6px; }
 .kv dt { padding-top: 2px; }
+/* "내 계정" 탭(2026-11-12 화면 리뷰) — 묶음이 달라도 값 열이 한 줄로 서게 레이블 열 폭을 고정하고, 긴 값의 복사 버튼은 값 오른쪽 첫 줄에 붙인다. */
+#meStore { margin-top: 16px; }
+#meStore .store-group > h4 { margin: 0 0 8px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 15px; color: var(--ink); letter-spacing: 0; }
+#meStore .store-group + .store-group, #meStore .store-subgroup + .store-group { margin-top: 18px; }
+#meStore .store-sub { margin: 10px 0 6px; font-size: 13px; font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
+#meStore .kv { grid-template-columns: 160px minmax(0, 1fr); }
+#meStore .kv dd { display: flex; align-items: flex-start; gap: 4px; }
+#meStore .kv dd code { min-width: 0; overflow-wrap: anywhere; }
+#meStore .kv dd .copy-btn { flex: none; }
+#meStore .store-foot { margin: 18px 0 0; }
+@media (max-width: 520px) { #meStore .kv { grid-template-columns: 1fr; row-gap: 2px; } #meStore .kv dd { margin-bottom: 6px; } }
 details.fold { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 10px; }
 details.fold > summary { cursor: pointer; color: var(--muted); font-size: 14px; font-weight: 600; list-style: none; }
 details.fold > summary::before { content: '▸ '; } details.fold[open] > summary::before { content: '▾ '; }

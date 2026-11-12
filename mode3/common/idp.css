@@ -41,3 +41,8 @@ main.cards > section[id] { scroll-margin-top: 56px; }   /* 절 메뉴 아래에 
 /* 내 등록 정보의 값 아래 한 줄 설명(2026-11-04) — .card .desc 의 아래 여백(12px)을 줄여 다음 항목과 붙지 않게만 띄운다. */
 .kv .kv-desc { margin: 0 0 8px; font-size: 13px; line-height: 1.45 }
 .me-head .who { font-weight: 600 }
+/* 관리자 표(2026-11-12 화면 리뷰) — 좁은 열의 머리글("슬롯")과 배지("활성"·"게시됨")가 글자 단위로 세로로 꺾이지 않게 한다. */
+table.list th, table.list .badge, .nowrap { white-space: nowrap; }
+/* 가운데를 줄인 값 + 복사 버튼 한 줄(midVal) — 고정폭 글꼴·버튼이 줄 높이를 키우지 않게 줄 상자 밖에서 가운데로 맞춘다(값이 없는 줄과 높이가 같다). */
+.val-line { display: inline-flex; align-items: center; gap: 4px; vertical-align: top; white-space: nowrap; }
+.val-line code { line-height: 1.5; } .val-line .copy-btn { padding-top: 1px; padding-bottom: 1px; }

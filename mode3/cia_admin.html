@@ -642,13 +642,25 @@
       const code = document.createElement('code');
       code.textContent = String(v);
       code.style.overflowWrap = 'anywhere'; code.style.wordBreak = 'break-all'; code.style.fontSize = '12px';
+      wrap.append(code, ' ', copyBtn(v));
+      return wrap;
+    }
+    function copyBtn(v) {
       const b = document.createElement('button');
       b.type = 'button'; b.className = 'copy-btn'; b.textContent = '⧉'; b.title = Demo.lang === 'en' ? 'Copy' : '복사';
       b.addEventListener('click', async () => {
         try { await navigator.clipboard.writeText(String(v)); } catch { return; }
         b.textContent = '✓'; setTimeout(() => { b.textContent = '⧉'; }, 1200);
       });
-      wrap.append(code, ' ', b);
+      return b;
+    }
+    /** 긴 값의 가운데를 줄여 한 줄로 보인다 — 전체 값은 title 에 있고 복사 버튼은 전체 값을 복사한다(2026-11-12 사용자 결정 "한 줄로"). */
+    function midVal(v, head = 10, tail = 8) {
+      const s = String(v), wrap = document.createElement('span'), code = document.createElement('code');
+      wrap.className = 'val-line';
+      code.textContent = s.length > head + tail + 1 ? `${s.slice(0, head)}…${s.slice(-tail)}` : s;
+      code.title = s;
+      wrap.append(code, ' ', copyBtn(s));
       return wrap;
     }
     function renderRegDb() {
@@ -668,7 +680,7 @@
         const row = body.insertRow();
         cell(row, String(s.index));
         cell(row, s.uid);
-        cell(row, s.id ?? '-');
+        cell(row, s.id ?? '-', 'nowrap');
         cell(row, s.Cf_u ? fullVal(s.Cf_u) : '-');
         cell(row, fullVal(s.leaf));
         const [stateKey, stateKind] = s.tampered ? ['admin_state_tampered', 'bad']
@@ -688,13 +700,13 @@
       for (const a of accounts) {
         const row = body.insertRow();
         cell(row, a.uid);
-        cell(row, a.id ?? '-');
-        if (a.auid) cell(row, fullVal(a.auid)); else { const c = cell(row, ''); c.className = 'muted'; tte(c, 'admin_auid_none'); }
+        cell(row, a.id ?? '-', 'nowrap');
+        if (a.auid) cell(row, midVal(a.auid)); else { const c = cell(row, ''); c.className = 'muted'; tte(c, 'admin_auid_none'); }
         // 2026-11-12(사용자 결정): IdP 가 계정마다 덮어써 두는 가장 최신 auid_s 하나와 그 발급 시각 — 기록은 없다.
         if (a.lastAuidS?.value) {
-          const c = cell(row, fullVal(a.lastAuidS.value));
+          const c = cell(row, midVal(a.lastAuidS.value), 'nowrap');
           const at = document.createElement('small'); at.className = 'muted'; at.textContent = new Date(a.lastAuidS.at).toLocaleString();
-          c.append(document.createElement('br'), at);
+          c.append(' ', at);
         } else { const c = cell(row, ''); c.className = 'muted'; tte(c, 'admin_auid_none'); }
         cell(row, a.slot === null || a.slot === undefined ? '-' : String(a.slot));
       }

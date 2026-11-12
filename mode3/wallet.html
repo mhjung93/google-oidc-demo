@@ -323,6 +323,7 @@
     let saltRevealed = null;
     let saltHideTimer = null;
     const SALT_MASK = '●●●●●●●●●●';
+    const STORE_MASK_CHAR = '*';   // "내 계정" 의 가린 비밀 — 값과 같은 글자 수로 채운다. 고정폭 글꼴에서 숫자와 폭이 같은 ASCII 문자여야 줄바꿈 위치가 값과 같다
     const SALT_REVEAL_MS = 5000;   // "보기" 뒤 이만큼만 화면에 남는다 — 그 전에 복사해야 한다
 
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1491,6 +1492,8 @@
     // 탭을 떠나면 값을 버린다(closeStore). 탭을 열 때와 "새로 고침" 때만 스냅을 부른다(5초 refresh 와 무관). 콘솔·로그에는 찍지 않는다.
     const STORE_SECRETS = new Set(['s_u', 'sk_u', 'blind_u']);
     const STORE_REG_ORDER = ['uid', 'index', 'provider', 'registeredAt', 'auid', 's_u', 'sk_u', 'slot', 'attrs'];
+    // 2026-11-12(화면 리뷰): 시각(ISO UTC 문자열)은 다른 화면처럼 현지 형식으로 보인다 — 저장된 값 그대로는 title 에 둔다.
+    const STORE_TIME = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$/;
     let storeState = null;
     let storeRevealed = false;
     /** 값 하나짜리 줄들로 편다 — path 는 상태 전체에서의 경로, rel 은 묶음 안에서의 경로(레이블 키). 빈 객체·배열·null 은 값 없는 한 줄. */
@@ -1501,9 +1504,9 @@
       return out;
     }
     function storeGroup(titleKey, titleText, rows, sub = null) {
-      const box = document.createElement('div');
+      const box = document.createElement('div'); box.className = titleKey ? 'store-group' : 'store-subgroup';
       if (titleKey) { const h = document.createElement('h4'); h.dataset.i18n = titleKey; h.textContent = tt(titleKey) || titleText; box.appendChild(h); }
-      if (sub) { const p = document.createElement('p'); p.className = 'muted'; const c = document.createElement('code'); c.textContent = sub; p.appendChild(c); box.appendChild(p); }
+      if (sub) { const p = document.createElement('p'); p.className = 'store-sub'; const c = document.createElement('code'); c.textContent = sub; p.appendChild(c); box.appendChild(p); }
       if (!rows.length) { const p = document.createElement('p'); p.className = 'muted'; p.dataset.i18n = 'wallet_me_none'; p.textContent = tt('wallet_me_none') || '없음'; box.appendChild(p); return box; }
       const dl = document.createElement('dl'); dl.className = 'kv';
       for (const r of rows) {
@@ -1516,11 +1519,15 @@
         const dd = document.createElement('dd');
         const code = document.createElement('code'); code.dataset.storePath = r.path;
         const shown = !secret || storeRevealed || raw === '-';
-        code.textContent = shown ? raw : SALT_MASK;
+        const isTime = !secret && STORE_TIME.test(raw);
+        // 가린 비밀은 값과 같은 길이의 가림 문자로 채우고 복사 버튼 자리도 잡아 둔다 — "비밀 값 보기" 를 눌러도 줄 수가 같아 아래가 밀리지 않는다.
+        code.textContent = isTime ? new Date(raw).toLocaleString() : shown ? raw : STORE_MASK_CHAR.repeat(raw.length);
+        if (isTime) code.title = raw;
         dd.appendChild(code);
-        if (shown && raw.length >= 12) {
+        if (!isTime && raw.length >= 12) {
           const cb = document.createElement('button'); cb.type = 'button'; cb.className = 'copy-btn'; cb.title = '복사'; cb.textContent = '⧉';
-          cb.addEventListener('click', () => copyText(raw, cb));
+          if (shown) cb.addEventListener('click', () => copyText(raw, cb));
+          else { cb.style.visibility = 'hidden'; cb.disabled = true; }
           dd.append(' ', cb);
         }
         dl.append(dt, dd);
@@ -1548,7 +1555,14 @@
         if (Object.keys(consents).length) host.lastChild.lastChild.remove();   // 묶음 제목만 남기고 "없음" 은 지운다 — 아래에 오리진별 줄이 온다
         for (const [origin, c] of Object.entries(consents)) host.appendChild(storeGroup(null, '', Object.keys(c ?? {}).flatMap((k) => storeRows(c[k], `consents.${origin}.${k}`, k)), origin));
       }
-      host.appendChild(storeGroup('wallet_me_g_other', '그 밖', Object.keys(st).filter((k) => !['registration', 'userCred', 'consents'].includes(k)).flatMap((k) => storeRows(st[k], k, k))));
+      host.appendChild(storeGroup('wallet_me_g_other', '그 밖', Object.keys(st).filter((k) => !['registration', 'userCred', 'consents', 'version'].includes(k)).flatMap((k) => storeRows(st[k], k, k))));
+      // 저장 형식 버전은 내부 값이다 — 목록 줄이 아니라 맨 아래 작은 글씨로 보인다(2026-11-12 화면 리뷰).
+      if (st.version !== undefined) {
+        const p = document.createElement('p'); p.className = 'muted store-foot';
+        const lab = document.createElement('span'); lab.dataset.i18n = 'wallet_me_f_version'; lab.textContent = tt('wallet_me_f_version') || '저장 형식 버전';
+        const c = document.createElement('code'); c.dataset.storePath = 'version'; c.textContent = String(st.version);
+        p.append(lab, ' ', c); host.appendChild(p);
+      }
     }
     async function loadStore() {
       const v = $('meStoreVerdict'); v.className = ''; v.textContent = '';

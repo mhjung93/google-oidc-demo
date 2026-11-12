@@ -271,7 +271,7 @@ window.DemoStrings = {
     wallet_me_f_allowAgent: { ko: '에이전트 허용', en: 'Agent allowed' },
     wallet_me_f_grantedAt: { ko: '동의 시각', en: 'Granted at' },
     wallet_me_f_nextIndex: { ko: '다음 가입 번호', en: 'Next sign-up number' },
-    wallet_me_f_version: { ko: '상태 버전', en: 'State version' },
+    wallet_me_f_version: { ko: '저장 형식 버전', en: 'Storage format version' },
     rp_race_show_btn: { ko: '시연 보이기', en: 'Show demo' },   // 해시는 아래 줄(#txHashRow)에만 — 두 번 보이던 것을 고쳤다(2026-11-05)
     rp_tx_web_only: { ko: '온체인 출금은 스냅 승인 창(스냅·web 모드)에서 합니다. file 모드는 zk 스냅 페이지의 "보내기"에서 보내세요.', en: 'On-chain withdrawal goes through the Snap approval window (Snap or web mode). In file mode, send from the zk Snap page instead.' },
     user_auth_tx_title: { ko: '{service} 출금 — 받는 주소와 금액을 확인하세요', en: '{service} withdrawal — check the recipient and amount' },
@@ -912,8 +912,7 @@ window.DemoStrings = {
     attr_backup_pw_mismatch: { ko: '비밀번호 확인이 일치하지 않습니다.', en: 'The password confirmation does not match.' },
     attr_backup_set_summary: { ko: '{file} 에 자동으로 백업합니다.', en: 'Backing up to {file} automatically.' },
     attr_export_need_setup: { ko: '먼저 아래 "자동 백업" 에서 백업 비밀번호를 정하세요.', en: 'Set a backup password under "Automatic backup" first.' },
-    attr_import_pw_prompt: { ko: '백업 비밀번호를 넣으세요', en: 'Enter the backup password' },
-    attr_import_bad_pw: { ko: '백업 비밀번호가 맞지 않습니다', en: 'Wrong backup password' },
+    attr_import_pw_prompt: { ko: '백업 비밀번호', en: 'Backup password' },
     // 2026-11-12(사용자 보고): 비밀번호를 페이지 안의 칸으로 받는다(attr_import_pw_prompt 는 그 칸의 레이블이 됐다)
     attr_import_pw_file: { ko: '{file} 은 암호화 백업입니다.', en: '{file} is an encrypted backup.' },
     attr_import_open_btn: { ko: '불러오기', en: 'Load' },
@@ -1252,6 +1251,7 @@ window.DemoStrings = {
     bad_purpose: { where: 'aa', ko: { title: '인증 코드 용도가 틀립니다', cause: 'purpose 는 issue 또는 register 여야 합니다.', action: '스냅 팝업에서 다시 로그인하세요.' }, en: { title: 'Bad auth-code purpose', cause: 'purpose must be issue or register.', action: 'Log in again from the Snap popup.' } },
     bad_profile: { where: 'aa', ko: { title: '프로필 값 형식이 틀립니다', cause: '이름 칸은 한 줄 256자 이하의 문자열이어야 합니다.', action: '속성 도구에서 복사한 커밋먼트(10진 숫자)를 그대로 붙여 넣으세요.' }, en: { title: 'Bad profile value', cause: 'The name field must be a single line of at most 256 characters.', action: 'Paste the commitment (decimal number) copied from the attribute tool as is.' } },
     bad_backup: { where: 'page', ko: { title: '백업 파일을 읽지 못했습니다', cause: '형식이 다르거나 커밋먼트가 속성·blind 와 맞지 않습니다.', action: '이 도구가 내려받은 백업 파일을 고르세요.' }, en: { title: 'Could not read the backup file', cause: 'The format differs or the commitment does not match the attributes and blind.', action: 'Pick a backup file downloaded by this tool.' } },
+    backup_bad_password: { where: 'page', ko: { title: '백업 비밀번호가 맞지 않습니다', cause: '넣은 비밀번호로는 이 백업 파일이 열리지 않습니다.', action: '비밀번호를 다시 넣으세요.' }, en: { title: 'Wrong backup password', cause: 'This backup file does not open with the password you entered.', action: 'Enter the password again.' } },
     bundle_missing: { where: 'page', ko: { title: '도구 번들이 없습니다', cause: '/attr/dist/attr.js 가 서빙되지 않습니다.', action: '스냅 에이전트 쪽에서 npm run attr:build 를 실행하세요.' }, en: { title: 'Tool bundle missing', cause: '/attr/dist/attr.js is not served.', action: 'Run npm run attr:build on the Snap agent host.' } },
   },
 };
