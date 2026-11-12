@@ -230,6 +230,16 @@ try {
     assert.ok((await text(walletPage, '#mmStatus')).startsWith('MetaMask'), '배지는 "MetaMask 0x…"(2026-11-05 — Snap id 는 보이지 않는다)');
   });
 
+  // "내 계정"(2026-11-12 사용자 요청): 스냅이 저장한 값 전부를 보여 주는 탭. 값이 든 칸은 data-store-path(상태 안의 경로)로 찾는다.
+  const storeCell = (path) => `#meCard [data-store-path="${path}"]`;
+  await t('내 계정: 등록 전에는 "저장된 등록 없음" 과 다음 가입 번호만 보인다', async () => {
+    await walletTab(walletPage, 'me');
+    await walletPage.waitForSelector('#meStoreEmpty:not([hidden])', { timeout: 15_000 });
+    await waitText(walletPage, storeCell('nextIndex'), '0');
+    assert.equal(await walletPage.$(storeCell('registration.uid')), null, '등록 줄은 없다');
+    await walletTab(walletPage, 'services');
+  });
+
   // 2026-11-09(사용자 결정): zkID 가입에는 지갑이 끼지 않는다 — /user 에는 지갑 등록 버튼이 없고, 지갑 등록은 아래 RP 로그인 케이스에서
   // 팝업 → zkID 인증 창(등록 모드) → 돌아와 등록 → 발급으로 처음 한 번 일어난다. (Task 14 의 "/user 가 mode3-register 팝업을 연다" 는 Google 등록(?google=1)에만 남았다.)
   await t('zkID 가입(2026-11-09): 아이디·비밀번호로 가입 → 자동 로그인(등록 상태 배지는 없다, 2026-11-10); 지갑 등록 버튼·카드는 없고 프로필 카드만 보인다', async () => {
@@ -350,10 +360,12 @@ try {
 
   // 2026-11-09: salt 를 화면에 보이는 이 케이스는 "비밀은 Snap 에만" 검사(페이지 DOM 에 s_u 가 없어야 한다) 뒤에 둔다 — 등록이 첫 로그인으로 옮겨가 AUID 를 로그인 뒤에야 안다.
   // 2026-11-11(사용자 결정): zk 스냅 화면은 "연결된 서비스" 하나 — 계정·보내기·설정 탭은 없다(속성·salt 는 속성 도구에서 첫 등록 때).
-  await t('zk 스냅 화면: 제목 "zk 스냅", 탭은 연결된 서비스뿐(계정·보내기·설정 없음)', async () => {
+  // 2026-11-12(사용자 요청): "내 계정" 탭이 생겼다 — 스냅이 저장한 값 전부.
+  await t('zk 스냅 화면: 제목 "zk 스냅", 탭은 연결된 서비스·내 계정(계정·보내기·설정 없음)', async () => {
     assert.equal(await walletPage.title(), 'zk 스냅');
     const tabs = await walletPage.$$eval('#walletTabs [data-tab]', (bs) => bs.map((b) => b.dataset.tab));
-    assert.deepEqual(tabs, ['services']);
+    assert.deepEqual(tabs, ['services', 'me']);
+    assert.equal(await walletPage.isHidden('#meCard'), true, '내 계정 카드는 그 탭에서만 보인다');
     assert.equal(await walletPage.isVisible('#sessionsCard'), true);
     for (const id of ['#identityCard', '#txCard', '#snapPanel']) assert.equal(await walletPage.isHidden(id), true, `${id} 는 보이지 않는다`);
   });
@@ -368,6 +380,40 @@ try {
     await walletPage.fill('#nextIndexInput', '1'); await walletPage.click('#nextIndexBtn');
     await waitText(walletPage, '#meNextIndex', '1'); assert.equal(snapState.nextIndex, 1);
     await walletPage.click('#indexFold > summary');
+  });
+
+  await t('내 계정: 스냅이 저장한 값 전부(등록·자격증명·동의 기록·다음 가입 번호)가 보인다 — 비밀(s_u·sk_u·blind_u)은 가려 있고 "비밀 값 보기" 로만 열리며, 탭을 떠나면 다시 가린다', async () => {
+    const cell = (path) => text(walletPage, storeCell(path));
+    await walletTab(walletPage, 'me');
+    await waitText(walletPage, storeCell('registration.uid'), uid);
+    assert.equal(await walletPage.isHidden('#meStoreEmpty'), true);
+    const reg = snapState.registration, uc = snapState.userCred;
+    for (const [path, want] of [
+      ['registration.uid', reg.uid], ['registration.auid', reg.auid], ['registration.index', String(reg.index)], ['registration.slot', String(reg.slot)], ['registration.registeredAt', reg.registeredAt],
+      ['registration.attrs[0]', reg.attrs[0]], ['registration.attrs[5]', reg.attrs[5]],
+      ['userCred.C_u_pt.x', uc.C_u_pt.x], ['userCred.C_u_pt.y', uc.C_u_pt.y], ['userCred.Cf_u', uc.Cf_u], ['userCred.issuedAt', uc.issuedAt],
+      ['nextIndex', String(snapState.nextIndex)], ['version', '1'],
+    ]) assert.equal(await cell(path), want, path);
+    const rpOrigin = Object.keys(snapState.consents)[0];
+    assert.ok(rpOrigin, '동의 기록이 있다');
+    assert.equal(await cell(`consents.${rpOrigin}.grantedAt`), snapState.consents[rpOrigin].grantedAt);
+    assert.equal(await cell(`consents.${rpOrigin}.allowAgent`), snapState.consents[rpOrigin].allowAgent);
+    // 비밀은 기본 가림 — 칸은 있지만 값은 DOM 어디에도 없다
+    const secrets = { 'registration.s_u': reg.s_u, 'registration.sk_u': reg.sk_u, 'userCred.blind_u': uc.blind_u };
+    const masked = await pageDump(walletPage);
+    for (const [path, v] of Object.entries(secrets)) {
+      assert.ok((await cell(path)).length > 0, `${path} 칸이 있다`);
+      assert.equal(masked.includes(v), false, `${path} 는 누르기 전에 화면에 없다`);
+    }
+    await walletPage.click('#meRevealBtn');
+    for (const [path, v] of Object.entries(secrets)) assert.equal(await cell(path), v, `${path} 가 열린다`);
+    // 탭을 떠났다 돌아오면 다시 가린다
+    await walletTab(walletPage, 'services'); await walletTab(walletPage, 'me');
+    await waitText(walletPage, storeCell('registration.uid'), uid);
+    const again = await pageDump(walletPage);
+    for (const [path, v] of Object.entries(secrets)) assert.equal(again.includes(v), false, `탭을 떠났다 오면 ${path} 는 다시 가려진다`);
+    await walletTab(walletPage, 'services');
+    assert.equal((await pageDump(walletPage)).includes(reg.s_u), false, '탭을 떠난 뒤 화면에 비밀이 남지 않는다');
   });
 
 

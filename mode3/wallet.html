@@ -25,6 +25,8 @@
         <!-- 2026-11-11(사용자 결정): 계정·보내기·설정 탭은 뺐다 — 화면은 "연결된 서비스" 하나. 속성·salt 는 속성 도구(attr.html)에서 첫 등록 때 가져온다.
              그 탭들의 카드(identityCard·txCard·snapPanel·demoCard)는 DOM 에 남지만 탭이 없어 보이지 않는다(스크립트가 참조해 한 번에 걷어내지 않았다). -->
         <button type="button" role="tab" data-tab="services" aria-selected="true" data-i18n="wallet_tab_services">연결된 서비스</button>
+        <!-- 2026-11-12(사용자 요청): "내 계정" — 스냅이 저장한 값 전부. snap 모드에서만 보인다(applySnapMode). -->
+        <button type="button" role="tab" data-tab="me" id="meTabBtn" aria-selected="false" data-i18n="wallet_tab_me" hidden>내 계정</button>
       </div>
       <div class="nav-actions">
         <span id="mmStatus" class="badge" hidden>연결 안 됨</span>
@@ -139,6 +141,19 @@
       <pre id="sessionLog" class="expert"></pre>
     </section>
 
+    <!-- ===== 탭: 내 계정(2026-11-12 사용자 요청) — 스냅 RPC getStoredState 가 준 저장 상태 전부. 줄은 renderStore 가 그린다. ===== -->
+    <section class="card" id="meCard" data-panel="me" hidden>
+      <h3 data-i18n="wallet_me_title">내 계정</h3>
+      <p class="desc" data-i18n="wallet_me_desc">이 MetaMask 스냅이 저장하고 있는 값 전부입니다. 비밀 값은 가려 두었습니다.</p>
+      <p class="row-actions">
+        <button type="button" id="meReloadBtn" class="btn-ghost" data-i18n="wallet_me_reload">새로 고침</button>
+        <button type="button" id="meRevealBtn" class="btn-ghost" hidden>비밀 값 보기</button>
+      </p>
+      <p id="meStoreEmpty" class="muted" data-i18n="wallet_me_empty" hidden>저장된 등록 없음</p>
+      <div id="meStore"></div>
+      <div id="meStoreVerdict"></div>
+    </section>
+
     <!-- ===== 탭: 보내기 ===== -->
     <section class="card" id="txCard" data-panel="send" hidden>
       <h3 data-i18n="wallet_tx_title">트랜잭션 보내기</h3>
@@ -244,7 +259,7 @@
     // 탭(2026-11-03): 본문은 한 번에 한 탭(data-panel)만 보인다. snap 모드는 MetaMask 연결 전에는 탭 대신 #connectCard 만
     // 보인다(applyGate). file 모드는 연결이 없어 바로 탭이다. data-off="1" 인 패널(file 모드의 #snapPanel)은 그 탭에서도 숨긴다.
     const TAB_KEY = 'mode3.wallet.tab';
-    const TABS = ['services'];   // 2026-11-11: 계정·보내기·설정 탭 제거
+    const TABS = ['services', 'me'];   // 2026-11-11: 계정·보내기·설정 탭 제거. 2026-11-12: 내 계정(스냅 저장 값) 추가
     let currentTab = 'services';
     function applyGate() {
       if (IS_AUTHORIZE) return;
@@ -254,10 +269,13 @@
       for (const el of document.querySelectorAll('[data-panel]')) el.hidden = gated || el.dataset.panel !== currentTab || el.dataset.off === '1';
     }
     function showTab(name) {
+      const prev = currentTab;
       currentTab = TABS.includes(name) ? name : 'services';
       try { sessionStorage.setItem(TAB_KEY, name); } catch { /* 저장 못 해도 동작은 같다 */ }
       for (const b of document.querySelectorAll('#walletTabs [data-tab]')) b.setAttribute('aria-selected', b.dataset.tab === name ? 'true' : 'false');
       applyGate();
+      // 내 계정: 탭을 열 때 스냅을 읽고, 떠나면 읽은 값(비밀 포함)을 버린다(loadStore·closeStore).
+      if (currentTab === 'me') loadStore(); else if (prev === 'me') closeStore();
     }
     for (const b of document.querySelectorAll('#walletTabs [data-tab]')) b.addEventListener('click', () => showTab(b.dataset.tab));
     // /common 이 뜨지 않아도(404) 페이지는 HTML 의 한국어 기본 텍스트로 계속 돌아간다(설계 §5).
@@ -1466,6 +1484,85 @@
     // "보기"(showSaltBtn, Task 14 B5) — file 모드는 같은 오리진의 GET /wallet/secrets/salt(Task 13), snap 모드는
     // Snap RPC showSalt(Task 15; 확인 창은 2026-11-05 에 뺐다) 로 s_u 를 받는다. 취소·실패면 가림 상태를 그대로 둔다 — 비밀은
     // 실패 메시지에도 담지 않는다(실패해도 s_u 자체를 받지 못했으므로 로그에 남을 것이 없다).
+    // ---- 내 계정(2026-11-12 사용자 요청): 스냅이 저장한 값 전부 ----
+    // 스냅 RPC getStoredState 의 응답을 묶음(등록·사용자 자격증명·동의 기록·그 밖)으로 그대로 편다. 모르는 필드는 이름 그대로 보인다 —
+    // 스냅의 저장 모양이 바뀌어도 이 화면은 따로 고치지 않아도 된다. 값이 든 <code> 는 data-store-path(상태 안의 경로)를 단다.
+    // 비밀(STORE_SECRETS)은 기본 가림이다: 읽은 값은 변수(storeState)에만 두고 DOM 에는 가림 문자만 넣는다. "비밀 값 보기" 가 한꺼번에 열고,
+    // 탭을 떠나면 값을 버린다(closeStore). 탭을 열 때와 "새로 고침" 때만 스냅을 부른다(5초 refresh 와 무관). 콘솔·로그에는 찍지 않는다.
+    const STORE_SECRETS = new Set(['s_u', 'sk_u', 'blind_u']);
+    const STORE_REG_ORDER = ['uid', 'index', 'provider', 'registeredAt', 'auid', 's_u', 'sk_u', 'slot', 'attrs'];
+    let storeState = null;
+    let storeRevealed = false;
+    /** 값 하나짜리 줄들로 편다 — path 는 상태 전체에서의 경로, rel 은 묶음 안에서의 경로(레이블 키). 빈 객체·배열·null 은 값 없는 한 줄. */
+    function storeRows(v, path, rel, out = []) {
+      if (Array.isArray(v) && v.length) v.forEach((x, i) => storeRows(x, `${path}[${i}]`, `${rel}[${i}]`, out));
+      else if (v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length) for (const k of Object.keys(v)) storeRows(v[k], `${path}.${k}`, `${rel}.${k}`, out);
+      else out.push({ path, rel, value: (v !== null && typeof v === 'object') ? null : v });
+      return out;
+    }
+    function storeGroup(titleKey, titleText, rows, sub = null) {
+      const box = document.createElement('div');
+      if (titleKey) { const h = document.createElement('h4'); h.dataset.i18n = titleKey; h.textContent = tt(titleKey) || titleText; box.appendChild(h); }
+      if (sub) { const p = document.createElement('p'); p.className = 'muted'; const c = document.createElement('code'); c.textContent = sub; p.appendChild(c); box.appendChild(p); }
+      if (!rows.length) { const p = document.createElement('p'); p.className = 'muted'; p.dataset.i18n = 'wallet_me_none'; p.textContent = tt('wallet_me_none') || '없음'; box.appendChild(p); return box; }
+      const dl = document.createElement('dl'); dl.className = 'kv';
+      for (const r of rows) {
+        const secret = STORE_SECRETS.has(r.rel.split('.').pop());
+        const raw = r.value === null || r.value === undefined ? '-' : String(r.value);
+        const dt = document.createElement('dt');
+        const labKey = `wallet_me_f_${r.rel.replace(/[^A-Za-z0-9]+/g, '_').replace(/_+$/, '')}`;
+        const lab = document.createElement('span'); lab.dataset.i18n = labKey; lab.textContent = tt(labKey) || r.rel; dt.appendChild(lab);
+        if (secret) { const b = document.createElement('span'); b.className = 'badge warn'; b.dataset.i18n = 'wallet_me_secret'; b.textContent = tt('wallet_me_secret') || '비밀'; dt.append(' ', b); }
+        const dd = document.createElement('dd');
+        const code = document.createElement('code'); code.dataset.storePath = r.path;
+        const shown = !secret || storeRevealed || raw === '-';
+        code.textContent = shown ? raw : SALT_MASK;
+        dd.appendChild(code);
+        if (shown && raw.length >= 12) {
+          const cb = document.createElement('button'); cb.type = 'button'; cb.className = 'copy-btn'; cb.title = '복사'; cb.textContent = '⧉';
+          cb.addEventListener('click', () => copyText(raw, cb));
+          dd.append(' ', cb);
+        }
+        dl.append(dt, dd);
+      }
+      box.appendChild(dl);
+      return box;
+    }
+    function renderStore() {
+      const host = $('meStore'), st = storeState;
+      host.replaceChildren();
+      $('meRevealBtn').hidden = !st;
+      const revealKey = storeRevealed ? 'wallet_me_hide' : 'wallet_me_reveal';
+      $('meRevealBtn').dataset.i18n = revealKey;
+      $('meRevealBtn').textContent = tt(revealKey) || (storeRevealed ? '비밀 값 가리기' : '비밀 값 보기');
+      $('meStoreEmpty').hidden = !st || Boolean(st.registration);
+      if (!st) return;
+      const reg = st.registration, consents = st.consents ?? {};
+      if (reg) {
+        const keys = Object.keys(reg).sort((a, b) => (STORE_REG_ORDER.indexOf(a) + 1 || 99) - (STORE_REG_ORDER.indexOf(b) + 1 || 99));
+        host.appendChild(storeGroup('wallet_me_g_registration', '등록', keys.flatMap((k) => storeRows(reg[k], `registration.${k}`, k))));
+      }
+      if (reg || st.userCred) host.appendChild(storeGroup('wallet_me_g_userCred', '사용자 자격증명', st.userCred ? Object.keys(st.userCred).flatMap((k) => storeRows(st.userCred[k], `userCred.${k}`, k)) : []));
+      if (reg || Object.keys(consents).length) {
+        host.appendChild(storeGroup('wallet_me_g_consents', '동의 기록', [], null));
+        if (Object.keys(consents).length) host.lastChild.lastChild.remove();   // 묶음 제목만 남기고 "없음" 은 지운다 — 아래에 오리진별 줄이 온다
+        for (const [origin, c] of Object.entries(consents)) host.appendChild(storeGroup(null, '', Object.keys(c ?? {}).flatMap((k) => storeRows(c[k], `consents.${origin}.${k}`, k)), origin));
+      }
+      host.appendChild(storeGroup('wallet_me_g_other', '그 밖', Object.keys(st).filter((k) => !['registration', 'userCred', 'consents'].includes(k)).flatMap((k) => storeRows(st[k], k, k))));
+    }
+    async function loadStore() {
+      const v = $('meStoreVerdict'); v.className = ''; v.textContent = '';
+      try { await ensureConnected(); storeState = await invokeSnap('getStoredState', {}); }
+      catch (e) {
+        storeState = null;
+        setVerdict(v, false, 'wallet_me_failed', { reason: /method_not_found/.test(e?.message ?? '') ? 'snap_outdated_store' : (e?.reason ?? 'snap_unavailable'), detail: e?.message });
+      }
+      renderStore();
+    }
+    function closeStore() { storeState = null; storeRevealed = false; renderStore(); }
+    $('meReloadBtn').addEventListener('click', () => loadStore());
+    $('meRevealBtn').addEventListener('click', () => { storeRevealed = !storeRevealed; renderStore(); });
+
     // 다음 가입 번호(스냅 getPublicInfo.nextIndex, 2026-11-12) — 접는 칸을 열 때와 바꾼 뒤에만 읽는다(5초 refresh 마다 스냅을 부르지 않게).
     async function loadNextIndex() {
       try { const info = await invokeSnap('getPublicInfo', {}); $('meNextIndex').textContent = Number.isInteger(info?.nextIndex) ? String(info.nextIndex) : '-'; }
@@ -1970,6 +2067,7 @@
     function applySnapMode() {
       delete $('snapPanel').dataset.off;   // 설정 탭에서 보인다(applyGate)
       $('indexFold').hidden = false;   // 계정 번호(2026-11-12, Ruling P2)
+      $('meTabBtn').hidden = false;   // 내 계정(2026-11-12) — 스냅이 저장한 값이라 snap 모드에서만
       $('fileRegFields').hidden = true;
       // 등록 안내(Task 14, B5) — snap 모드는 등록이 IdP /user 페이지 경유(mode3-register 팝업)로 가므로 registerBtn 을
       // 숨기고 그 페이지로 가는 안내만 보인다. cfg.ciaUrl 은 /wallet/config(Task 13)가 준다 — init() 이 cfg 를 채운 뒤 부른다.

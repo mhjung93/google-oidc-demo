@@ -200,6 +200,12 @@ export const onRpcRequest = async ({ origin, request }) => {
       };
     }
 
+    // "내 계정"(2026-11-12 사용자 요청): zk 스냅 화면이 이 스냅에 저장된 값을 전부 보여 준다 — 비밀(s_u·sk_u·blind_u)까지 싣는 조회다.
+    // 확인 창은 없다: 부를 수 있는 오리진은 :5100 뿐이고, 그 페이지는 로그인 때 consentLogin 으로 같은 비밀을 이미 받는다. 상태는 바꾸지 않는다.
+    case 'getStoredState': {
+      return { ...clone(state), registration: clone(state.registration), userCred: clone(state.userCred), consents: clone(state.consents) ?? {}, nextIndex: nextIndexOf(state) };
+    }
+
     // 로그인 동의(스펙 §4.2) — 증인 묶음을 돌려주고 동의 기록을 남긴다. 2026-11-05: 확인 대화상자는 뺐다(사용자가 RP 에서 "로그인" 을
     // 눌러 시작한 요청이고, 지갑 팝업이 precheck(인증서·팩토리)를 통과한 뒤에만 이 RPC 를 부른다). 응답 모양은 그대로다.
     case 'consentLogin': {

@@ -106,6 +106,10 @@ try {
     const r = await wallet.get('/wallet/secrets/salt');
     assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'snap_mode');
     assert.deepEqual(sim.showSalt(), { s_u: sim.state.registration.s_u }, '대신 Snap 이 보관한 s_u 를 보여준다');
+    // "내 계정"(2026-11-12): 시뮬레이터도 실제 Snap(index.js getStoredState)과 같은 모양으로 저장 상태 전부를 준다
+    const st = sim.getStoredState();
+    assert.deepEqual(Object.keys(st).sort(), ['consents', 'nextIndex', 'registration', 'userCred', 'version']);
+    assert.equal(st.version, 1); assert.equal(st.registration.s_u, sim.state.registration.s_u); assert.equal(st.nextIndex, sim.state.nextIndex);
   });
 
   // 아래 bad_factory 케이스는 팩토리가 **아닌** 컨트랙트를 줘서 게터가 revert 하는 경로만 탄다. 팩토리이긴 한데

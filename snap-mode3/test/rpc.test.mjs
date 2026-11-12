@@ -293,6 +293,23 @@ await t('showSalt: 대화상자 없이 { s_u }(저장된 값과 같다)', async 
   assert.equal(dialogs.length, before, '확인 창을 띄우지 않는다(2026-11-05)');
 });
 
+// "내 계정"(2026-11-12 사용자 요청): zk 스냅 화면이 스냅에 저장된 값을 전부 보여 준다 — 비밀까지 싣는 유일한 조회 RPC.
+await t('getStoredState: 대화상자 없이 저장 상태 전부(비밀 s_u·sk_u·blind_u 포함)를 돌려주고 상태는 바꾸지 않는다', async () => {
+  await call('updateUserCred', USER_CRED);
+  const before = dialogs.length, saved = stateJson();
+  const st = await call('getStoredState', {});
+  assert.deepEqual(Object.keys(st).sort(), ['consents', 'nextIndex', 'registration', 'userCred', 'version']);
+  assert.equal(st.version, 1);
+  assert.deepEqual(st.registration, store.state.registration);
+  assert.equal(st.registration.s_u, registered.s_u); assert.equal(st.registration.sk_u, registered.sk_u);
+  assert.deepEqual(st.userCred, USER_CRED);
+  assert.deepEqual(st.consents, store.state.consents);
+  assert.ok(Object.keys(st.consents).length >= 1, '동의 기록이 실려 있다');
+  assert.equal(st.nextIndex, (await call('getPublicInfo', {})).nextIndex);
+  assert.equal(dialogs.length, before, '확인 창 없음');
+  assert.equal(stateJson(), saved, '읽기만 한다');
+});
+
 await t('모르는 method 는 거절', async () => {
   await assert.rejects(() => call('nope', {}), /nope/);
 });
@@ -308,6 +325,8 @@ await t('reset: 확인 뒤 상태를 비운다(거절하면 그대로)', async (
   assert.equal(info.uid, null);
   assert.deepEqual(info.consents, {});
   assert.ok(!stateJson().includes(registered.sk_u), '초기화 뒤 비밀이 남지 않는다');
+  // 등록이 없을 때의 getStoredState — 빈 등록·빈 동의 기록과 남은 다음 가입 번호
+  assert.deepEqual(await call('getStoredState', {}), { version: 1, registration: null, userCred: null, consents: {}, nextIndex: info.nextIndex });
 });
 
 await t('prepareRegister: 대화상자 없이 uid 없는 보류 등록 — registered=false, pending=true', async () => {

@@ -100,6 +100,11 @@ export function createSnapSim({ srp = 'zkd-test-srp-1' } = {}) {
       return { registered: Boolean(r?.uid), pending: Boolean(r && !r.uid), uid: r?.uid ?? null, auid: r?.auid ?? null, attrs: clone(r?.attrs), slot: r?.slot ?? null, provider: r?.provider ?? null, hasUserCred: Boolean(state.userCred), consents: clone(state.consents), index: r && isIndex(r.index) ? r.index : null, nextIndex: state.nextIndex };
     },
 
+    /** "내 계정"(2026-11-12) — 실제 Snap(index.js getStoredState)과 같은 모양: 저장 상태 전부(비밀 포함), 상태는 그대로. */
+    getStoredState() {
+      return { version: 1, registration: clone(state.registration), userCred: clone(state.userCred), consents: clone(state.consents) ?? {}, nextIndex: state.nextIndex };
+    },
+
     /** 로그인 동의 — 증인 묶음(validateWitness 형식)과 동의 기록. 확인 창은 없다(2026-11-05).
      *  실제 Snap(index.js consentLogin)과 같다 — origin 이 없으면 거절한다(리뷰 2026-10-13 U1). */
     consentLogin({ origin, arid, allowAgent }) {
