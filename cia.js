@@ -136,6 +136,9 @@ const MIRROR_POLL_MS = Number(process.env.CIA_MIRROR_POLL_MS) || 5000;
 // (실패 재시도·behindSince 상한·불일치 복구)으로 남는다. '0' 이면 예전처럼 주기 틱만 — 거울 지연을 눈으로 보이는 시연용.
 // 릴레이 자체가 꺼져 있으면(CIA_MIRROR_HEARTBEAT_BLOCKS=0, 격리 하네스 기본값) 이것도 꺼진다.
 const MIRROR_RELAY_ON_PUBLISH = (process.env.CIA_MIRROR_RELAY_ON_PUBLISH ?? '1').trim() !== '0';
+// 시연(2026-11-12 Race (2)): pk_i 를 실은 세션 폐기를 받은 뒤 그 세션 체인의 블록이 이만큼 지나면 바로 게시하고 거울로 중계한다 —
+// 스냅 팝업의 "2블록 뒤·5블록 뒤 보내기" 가 거울 반영 전·후를 매번 같은 결과로 보이게. 0 = 끔(기본, 평소에는 하트비트·관리자 게시만).
+const REVOKE_PUBLISH_AFTER_BLOCKS = envBig('CIA_REVOKE_PUBLISH_AFTER_BLOCKS', 0);
 const MIRROR_SPECS = [];   // [{ chainStr, address }] — provider·서명자는 키를 읽은 뒤 initMirrors() 가 붙인다
 for (const item of (process.env.CIA_MIRRORS || '').split(',').map((s) => s.trim()).filter(Boolean)) {
   const i = item.indexOf('=');
@@ -1352,7 +1355,8 @@ app.post('/cia/revoke', userCors, async (req, res) => {
     // 만료된 세션은 리프를 넣지 않는다 — append-only 트리를 이미 죽은 세션으로 불리는 일이다(설계 §6).
     // 만료 기준은 head > max_height 다 — 컨트랙트(Mode3Wallet.sol `block.number > pub[3]`)·RP(lib/mode3_rp.js)와 같은 부등호를
     // 쓴다. head == max_height 는 아직 살아 있는 세션이라 폐기할 수 있어야 한다(최종 리뷰 F1).
-    if ((await headOf(rec.chainid)) > BigInt(rec.max_height)) return res.status(409).json({ error: 'session expired', reason: 'expired' });
+    const revokeHead = await headOf(rec.chainid);
+    if (revokeHead > BigInt(rec.max_height)) return res.status(409).json({ error: 'session expired', reason: 'expired' });
     const leaf = (await sessionLeaf(BigInt(Cf_s), BigInt(bound))).toString();
     // 위 await 들 사이에 하트비트의 pruneExpiredSessions() 가 acct.sessions 를 통째로 갈아끼울 수 있다 — 그러면 rec 은 버려진
     // 객체라 revokedAt 이 아무 데도 안 남고, 그 사이 만료된 세션에 리프만 들어간다. 삽입 직전에 다시 찾는다.
@@ -1365,6 +1369,7 @@ app.post('/cia/revoke', userCors, async (req, res) => {
     if (boundKey) cur.pk_i = boundKey;            // 거울 공개용 — 발급 때는 모르는 값(D1)이라 폐기 때 지갑이 알려 준다
     if (cur.pk_i) queueBound(cur.pk_i, cur.bound);   // 관리자 폐기도 레코드에 pk_i 가 있으면(앞선 사용자 폐기) 같이 게시한다
     persist();
+    if (boundKey) schedulePublishAfterRevoke(rec.chainid, revokeHead);
     res.json({ inserted, leaf, bound: cur.bound, root: tree.getRoot().toString(), pending: state.pending.length, mirrorBound: Boolean(cur.pk_i) });
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
@@ -1530,6 +1535,21 @@ async function publishNow({ heartbeat = false, wait = false } = {}) {
   }, { wait });
   if (r.published) scheduleRelayAfterPublish();
   return r;
+}
+/** 시연(CIA_REVOKE_PUBLISH_AFTER_BLOCKS): 세션 체인 헤드가 startHead + N 에 닿으면 게시하고 거울 중계까지 기다린다. 10분 안에 닿지 않으면 그만둔다
+ *  (하트비트·관리자 게시가 남는다). 타이머 콜백이라 던지지 않는다. */
+function schedulePublishAfterRevoke(chainStr, startHead) {
+  if (REVOKE_PUBLISH_AFTER_BLOCKS === 0n) return;
+  const target = startHead + REVOKE_PUBLISH_AFTER_BLOCKS, deadline = Date.now() + 600_000;
+  const tick = async () => {
+    try {
+      if ((await headOf(chainStr)) < target) { if (Date.now() < deadline) setTimeout(tick, 200).unref(); return; }
+      const r = await publishNow({ wait: true });
+      if (r.published && MIRRORS.length) await relayAll({ behindOnly: true });
+      console.log(`[cia] 폐기 뒤 ${REVOKE_PUBLISH_AFTER_BLOCKS}블록 게시(시연): epoch ${r.epoch}, published=${r.published}`);
+    } catch (e) { console.warn(`[cia] 폐기 뒤 게시(시연) 실패: ${e.message}`); }
+  };
+  setTimeout(tick, 200).unref();
 }
 /** 2026-10-05 전체 코드 리뷰 3번: 게시 직후 거울 중계. 게시 잠금 **밖에서**(같은 체인 거울 tx 가 그 잠금을 빌리므로 안에서 부르면
  *  교착) 다음 틱에 돌리고 기다리지 않는다 — 발급·폐기 응답을 거울 체인 tx 만큼 늦추지 않게. 뒤처진 거울만 보낸다(behindOnly —

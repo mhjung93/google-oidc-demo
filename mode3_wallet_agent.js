@@ -1256,6 +1256,22 @@ app.post('/wallet/reset', (req, res) => {
   persist();
   res.json({ ok: true, hadRegistration: had });
 });
+// 시연(2026-11-12 Race (2)): 응용 체인에 빈 블록을 만든다(hardhat evm_mine) — 스냅 팝업의 "2블록 뒤·5블록 뒤 보내기" 가 쓴다. MODE3_DEMO_RACE=1 일
+// 때만 켜진다. CORS 를 열지 않고 JSON 본문의 정수 blocks 를 요구한다(/wallet/reset 과 같은 이유). pendingBoundId(세션 폐기 응답)를 주면 그 세션키의
+// 거울 상한 sessionBoundOf(pk_i)(0 = 아직 반영 전)도 돌려준다 — 팝업이 "거울 반영 전·후" 를 보인다.
+const DEMO_RACE = (process.env.MODE3_DEMO_RACE ?? '').trim() === '1';
+app.post('/wallet/demo/mine', async (req, res) => {
+  if (!DEMO_RACE) return res.status(403).json({ reason: 'demo_race_off' });
+  const { blocks, pendingBoundId = null } = req.body ?? {};
+  if (!Number.isInteger(blocks) || blocks < 0 || blocks > 10) return res.status(400).json({ error: 'blocks 는 0..10 정수' });
+  try {
+    for (let i = 0; i < blocks; i++) await provider.send('evm_mine', []);
+    const head = await provider.getBlockNumber();
+    const pb = typeof pendingBoundId === 'string' ? state.pendingBounds.find((e) => e.id === pendingBoundId) : null;
+    const mirrorBound = pb && mirror ? (await mirror.sessionBoundOf(BigInt(pb.pk_i))).toString() : null;
+    res.json({ head: String(head), mirrorBound });
+  } catch (e) { res.status(503).json({ reason: 'chain_unavailable', detail: e.message }); }
+});
 app.post('/wallet/rcl/reset', (req, res) => {
   if (req.body?.confirm !== true) return res.status(400).json({ error: 'confirm:true 필요' });
   if (!rcl) return res.status(503).json({ reason: 'chain_unavailable', detail: 'CIA_LOG_ADDRESS not configured' });

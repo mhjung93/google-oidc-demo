@@ -49,7 +49,7 @@ execFileSync('node', ['scripts/build_attr_tool.mjs'], { stdio: 'inherit' });
 const browser = await launchBrowser();
 const provider = getProvider();
 // Task 14(B5): CIA_ISSUE_AUTH=code — 신규 로그인마다 IdP 인증 창의 1회용 코드(auth_code)가 필요하다(completeIdpAuth 참고).
-const stack = await startIsolatedMode3Stack({ walletEnv: { MODE3_WALLET_SECRETS: 'snap' }, ciaEnv: { CIA_ISSUE_AUTH: 'code' }, autoRelay: true });   // V10: 거울 릴레이는 헬퍼가 대신 돈다(페이지 안 로그인)
+const stack = await startIsolatedMode3Stack({ walletEnv: { MODE3_WALLET_SECRETS: 'snap', MODE3_DEMO_RACE: '1' }, ciaEnv: { CIA_ISSUE_AUTH: 'code', CIA_REVOKE_PUBLISH_AFTER_BLOCKS: '3' }, autoRelay: true });   // 2026-11-12: Race (2) 시연 — 폐기 뒤 3블록에 IdP 가 게시   // V10: 거울 릴레이는 헬퍼가 대신 돈다(페이지 안 로그인)
 const { cia, wallet, rp } = stack;
 
 // ---- 하네스가 맡는 것: Snap 저장소, 대화상자, 체인 전송 ----
@@ -657,6 +657,42 @@ try {
     assert.ok(typeof recordReqBody.pendingBoundId === 'string' && recordReqBody.pendingBoundId.length > 0, `record 요청에 pendingBoundId 가 있어야 한다: ${j(recordReqBody)}`);
     assert.equal(recordResBody.applied, true, `record 응답이 applied:true 여야 한다: ${j(recordResBody)}`);
     await walletPage.waitForFunction(() => !/반영 대기/.test(document.querySelector('#boundsList')?.textContent ?? ''), undefined, { timeout: 60_000 });
+  });
+
+  // 2026-11-12 시연 Race (2): RP 출금 카드의 "보내기 전에 멈춤" → 팝업이 증명·서명 뒤 멈춘다 → "N블록 뒤 보내기" 가 그 세션을 폐기하고
+  // 블록을 N 개 진행한 뒤 보낸다. IdP 는 폐기 뒤 3블록에 게시·중계하므로(CIA_REVOKE_PUBLISH_AFTER_BLOCKS=3) 2블록은 통과, 5블록은 SessionBounded.
+  const reloginRp = async () => {
+    const [p] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
+    await completeIdpAuth(p);
+    await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
+    await awaitPopupClosed(p);
+  };
+  const raceSend = async (btn) => {
+    await rpPage.fill('#txValue', '0');
+    if (!(await rpPage.isChecked('#raceHold', { timeout: 5000 }))) await rpPage.check('#raceHold', { timeout: 5000 });
+    answers.push(true);                        // consentDisclosure(relay) 확인
+    const [popup] = await Promise.all([context.waitForEvent('page'), rpPage.click('#txBtn')]);
+    await popup.waitForSelector(btn, { state: 'visible', timeout: 180_000 });
+    assert.equal((await text(rpPage, '#txVerdict')).includes('영지식'), false, 'RP 는 기다리는 동안 "영지식 증명 생성 중" 을 띄우지 않는다');
+    await popup.click(btn);
+    return popup;
+  };
+  await t('시연 Race (2) 2블록: 멈춘 출금을 "2블록 뒤 보내기" → 세션 폐기 → 2블록 뒤 전송 → 거울 반영 전이라 통과', async () => {
+    assert.equal(await rpPage.isVisible('#raceHold'), true, '시연 체크박스는 평소 화면에 보인다');
+    await rpPage.click('#raceToggleBtn', { timeout: 5000 }); assert.equal(await rpPage.isVisible('#raceHold'), false, '숨기기');
+    await rpPage.click('#raceToggleBtn', { timeout: 5000 }); assert.equal(await rpPage.isVisible('#raceHold'), true, '다시 보이기');
+    const popup = await raceSend('#race2Btn');
+    await waitText(rpPage, '#txVerdict', '거울 반영 전이라 통과했습니다', 120_000);
+    await awaitPopupClosed(popup);
+  });
+  await t('시연 Race (2) 5블록: 같은 순서를 "5블록 뒤 보내기" 로 하면 거울이 상한을 받은 뒤라 session_bounded 로 막힌다', async () => {
+    await reloginRp();
+    const popup = await raceSend('#race5Btn');
+    await waitText(rpPage, '#txVerdict', '폐기된 세션의 거래가 막혔습니다', 120_000);
+    assert.match(await text(rpPage, '#txVerdict'), /SessionBounded/, '자세히의 detail 에 컨트랙트 오류 이름');
+    await awaitPopupClosed(popup);
+    await rpPage.uncheck('#raceHold', { timeout: 5000 });
+    await reloginRp();   // 뒤 케이스를 위해 살아 있는 세션으로 돌려 둔다
   });
 
   // 2026-09-23 최종 리뷰 M3: 검증기가 없는 동안 /challenge 는 503 { ok:false, reason } 이다. 예전 페이지는 본문을 바로

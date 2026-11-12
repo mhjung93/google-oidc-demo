@@ -113,6 +113,9 @@
             <select id="txSource"><option value="account" data-i18n="rp_tx_source_account">내 계정(PPID — zkID 로그인 필요)</option><option value="custody" data-i18n="rp_tx_source_custody">거래소 보관</option></select></label>
           <label class="withdraw-amount"><span data-i18n="rp_tx_to_label">받는 주소</span> <input id="txTo" value="0x000000000000000000000000000000000000dEaD" size="44" /></label>
           <label class="withdraw-amount"><span data-i18n="rp_tx_value_label">금액(ETH)</span> <input id="txValue" value="0.01" size="12" inputmode="decimal" /></label>
+          <!-- 2026-11-12 시연 Race (2): 켜면 스냅 창이 증명·서명 뒤 멈추고 "2블록 뒤·5블록 뒤 보내기" 를 고른다(세션 폐기 → 블록 진행 → 전송). -->
+          <p class="race-demo"><label id="raceHoldOpt"><input type="checkbox" id="raceHold" /> <span data-i18n="rp_race_hold_label">시연: Race (2) — 보내기 전에 멈춤</span></label>
+            <button type="button" id="raceToggleBtn" class="btn-ghost" data-i18n="rp_race_hide_btn">시연 숨기기</button></p>
           <button id="txBtn" data-i18n="rp_tx_btn">온체인 출금 실행</button>
           <div id="txVerdict"></div>
           <p id="txHashRow" hidden><span data-i18n="rp_col_txhash">트랜잭션 해시</span> <code id="txHashCode"></code> <button type="button" id="copyTxHashBtn" class="copy-btn" title="트랜잭션 해시 복사" aria-label="트랜잭션 해시 복사" data-i18n-title="copy_txhash_title">⧉</button></p>
@@ -261,6 +264,8 @@
       Demo.verdict(el, () => ({ ok, title: window.DemoStrings?.verdicts?.[title] ? title : Demo.t(title), ...(typeof extra === 'function' ? extra() : extra) }));
     }
     const pendingVerdict = (el, key) => setVerdict(el, null, key, { pending: true });
+    // 2026-11-12(사용자 결정): 증명은 RP 가 아니라 스냅 승인 창이 만든다 — 승인 창을 기다리는 동안 RP 결과 칸은 비워 둔다("영지식 증명 생성 중" 없음).
+    const clearVerdict = (el) => { el.__verdictArgs = null; el.className = ''; el.textContent = ''; };
 
     // ---- 안내 바 ----
     function renderGuide() {
@@ -716,7 +721,7 @@
 
         const allowAgent = '0';   // 2026-11-05: "AI 에이전트 허용" 체크박스는 화면에서 뺐다(사용자 결정) — 프로토콜 값은 늘 '0'
         t0 = Date.now();
-        pendingVerdict($('verdict'), 'proving');
+        clearVerdict($('verdict'));
         let wb;
         if (walletCfg.secrets === 'snap' || WEB()) {
           log(WEB() ? '2. 사용자 승인 팝업 — 사용자 창에서 승인하세요.' : '2. 스냅 승인 팝업 — 스냅 창에서 MetaMask·스냅 동의를 확인하세요.');
@@ -883,6 +888,14 @@
     const ethToWei = (str) => { const m = /^([0-9]+)(?:\.([0-9]{1,18}))?$/.exec(str); return m ? (BigInt(m[1]) * 10n ** 18n + BigInt(((m[2] ?? '') + '0'.repeat(18)).slice(0, 18))).toString() : null; };
 
     // 온체인 출금(2026-10-16): 사용자 승인 창에 mode3-tx 요청 — 팝업이 증명·서명·릴레이·영수증까지 끝내고 txHash 를 돌려준다.
+    // 시연 Race (2)(2026-11-12): "보내기 전에 멈춤" 줄은 평소 화면에 보이고 버튼으로 숨긴다(숨김 여부는 이 브라우저에만 기억). 숨겨 두면 체크돼 있어도 멈추지 않는다.
+    const RACE_HIDDEN_KEY = 'zkd.rp.raceHidden';
+    let raceHidden = false;
+    try { raceHidden = localStorage.getItem(RACE_HIDDEN_KEY) === '1'; } catch { /* 저장소 없음 — 보이게 둔다 */ }
+    const applyRaceHidden = () => { $('raceHoldOpt').hidden = raceHidden; const k = raceHidden ? 'rp_race_show_btn' : 'rp_race_hide_btn'; $('raceToggleBtn').dataset.i18n = k; tte($('raceToggleBtn'), k); };
+    applyRaceHidden();
+    $('raceToggleBtn').addEventListener('click', () => { raceHidden = !raceHidden; applyRaceHidden(); try { localStorage.setItem(RACE_HIDDEN_KEY, raceHidden ? '1' : '0'); } catch { /* */ } });
+    const raceHoldOn = () => !raceHidden && $('raceHold').checked;
     $('txBtn').addEventListener('click', async () => {
       if ($('txBtn').dataset.tourBusy === '1') return;   // 처리 중 재클릭만 무시(버튼은 늘 활성)
       // 거래소 보관 출금(2026-11-10, R5): RP 릴레이어가 자기 돈으로 보내고 장부를 깎는다 — 쿠키 세션으로(zkID 로그인도 쿠키 세션을 만든다).
@@ -905,7 +918,7 @@
       // 2026-11-04: snap 모드의 지갑 팝업도 mode3-tx 를 받는다(mode3/wallet.html handleTxRequest). 팝업 경로가 없는 file 모드만 막는다.
       if (!WEB() && walletCfg.secrets !== 'snap') { setVerdict($('txVerdict'), false, 'tx_failed', () => ({ summary: tt('rp_tx_web_only') || '온체인 출금은 스냅 승인 창(스냅·web 모드)에서 합니다' })); return; }
       $('txBtn').dataset.tourBusy = '1'; $('txLog').textContent = ''; $('txHashRow').hidden = true;
-      pendingVerdict($('txVerdict'), 'proving');
+      clearVerdict($('txVerdict'));
       const log = (s) => { $('txLog').textContent += s + '\n'; };
       try {
         const to = $('txTo').value.trim(), value = ethToWei($('txValue').value.trim() || '0');   // 2026-11-05: 입력 단위는 ETH, 요청은 wei
@@ -913,7 +926,9 @@
         const t0 = Date.now();
         log('1. 사용자 승인 창 — 받는 주소·금액을 확인하고 승인하세요.');
         let result;
-        try { result = await popupCall('mode3-tx', authorizeRequest({ r_s: currentSession, to, value, data: '0x' })); }
+        const hold = raceHoldOn();
+        if (hold) log('   시연 Race (2): 스냅 창이 증명·서명 뒤 멈춥니다 — 2블록 뒤·5블록 뒤 보내기 중에서 고르세요.');
+        try { result = await popupCall('mode3-tx', authorizeRequest({ r_s: currentSession, to, value, data: '0x', ...(hold ? { hold: true } : {}) })); }
         catch (e) {
           log(`팝업 ${ms(t0)}: ${e.reason ?? ''} ${e.message}`);
           setVerdict($('txVerdict'), false, e.reason === 'popup_blocked' ? 'popup_blocked' : 'tx_failed', () => ({ summary: tt(POPUP_HINT[e.reason] ?? '') || e.message, reason: e.reason, detail: e.message }));
@@ -921,7 +936,9 @@
         }
         if (!result.ok) { log(`팝업 ${ms(t0)}: ${result.reason ?? ''} ${result.detail ?? ''}`); setVerdict($('txVerdict'), false, 'tx_failed', { reason: result.reason ?? 'internal', detail: result }); return; }
         log(`2. 전송 ${ms(t0)}: txHash=${result.txHash}${result.deployTxHash ? `  배포 txHash=${result.deployTxHash}` : ''}  PPID 계정=${result.wallet ?? ''}`);
-        setVerdict($('txVerdict'), true, 'tx_ok', () => ({ summary: tt('rp_tx_ok', { eth: $('txValue').value.trim() || '0' }) || `${$('txValue').value.trim() || '0'} ETH 를 보냈습니다.`, detail: result }));   // 해시는 아래 #txHashRow 한 곳에만(2026-11-05)
+        // 시연 Race (2): 팝업이 보내기 전에 이 세션을 폐기했는데 통과했으면(거울 반영 전) 그 사실을 함께 보인다.
+        const okKey = result.raceRevoked ? 'rp_tx_ok_race' : 'rp_tx_ok';
+        setVerdict($('txVerdict'), true, 'tx_ok', () => ({ summary: tt(okKey, { eth: $('txValue').value.trim() || '0' }) || `${$('txValue').value.trim() || '0'} ETH 를 보냈습니다.`, detail: result }));   // 해시는 아래 #txHashRow 한 곳에만(2026-11-05)
         lastTxHash = result.txHash; $('txHashCode').textContent = `${String(result.txHash).slice(0, 18)}…`; $('txHashCode').title = result.txHash; $('txHashRow').hidden = false;
         progress.used = true; renderGuide();
         refreshLedger();   // 보낸 만큼 ETH 가 줄어든 것을 바로 보인다(2026-11-05)

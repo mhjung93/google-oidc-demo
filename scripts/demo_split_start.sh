@@ -8,6 +8,8 @@
 #        bash scripts/demo_split_start.sh stop             # 분리 데모만 전부 내림
 #        HEIGHT_GRID=100 bash scripts/demo_split_start.sh  # 만료(max_height) 올림 단위(기본 5 — 데모용. 코드 기본은 100, 2026-10-21)
 #        TTL_BLOCKS=300 bash scripts/demo_split_start.sh  # (snap 모드) 세션 수명 블록 수(기본 5 — 2026-11-11 사용자 요청: 자연 만료를 시연한다. 코드 기본은 300)
+#        REVOKE_PUBLISH_AFTER=0 bash scripts/demo_split_start.sh  # (2026-11-12 시연 Race (2)) IdP 가 스냅의 세션 폐기를 받은 뒤 이 블록 수가 지나면 스스로 게시·중계(기본 3, 0 = 끔 — 관리자 "게시"·하트비트만)
+#        DEMO_RACE=0 bash scripts/demo_split_start.sh  # (snap 모드) 스냅 에이전트의 블록 진행 시연(/wallet/demo/mine, 기본 켜짐 — RP 출금의 "보내기 전에 멈춤")
 #        WALLET_MODE=snap bash scripts/demo_split_start.sh  # Snap 모드(2026-10-22): 이 VM 의 지갑 자리에 에이전트(:5100, MODE3_WALLET_SECRETS=snap)+Snap 서버(:8082). 포트 5100 은 Snap 이 허용하는
 #                                                          # 지갑 오리진(snap-mode3/src/index.js)이라 바꿀 수 없다 — 한 머신 데모(:5100)와 동시에 못 띄운다. scripts/demo_split_snap_reset.sh 가 이 값을 넣어 부른다(web 모드 리셋은 scripts/demo_split_reset.sh).
 #        ADMIN_OPEN=1 bash scripts/demo_split_start.sh     # IdP 관리자 인증을 끈 채로(2026-11-05 부터 기본은 켬 — 관리자 페이지 비밀번호 idp; RP 관리자는 zkone·zktwo)
@@ -154,7 +156,7 @@ RP_GOOGLE_LINE=""; [ -n "$OIDC_LINE" ] && RP_GOOGLE_LINE="MODE3_RP_GOOGLE_CLIENT
 NAVER_ID="$(env_or_dotenv MODE3_NAVER_CLIENT_ID)"; NAVER_SECRET="$(env_or_dotenv MODE3_NAVER_CLIENT_SECRET)"
 rp_naver_lines() { [ -n "$NAVER_ID" ] && [ -n "$NAVER_SECRET" ] && printf '%s\n' "MODE3_RP_NAVER_CLIENT_ID=$NAVER_ID" "MODE3_RP_NAVER_CLIENT_SECRET=$NAVER_SECRET" "MODE3_RP_NAVER_REDIRECT_URI=$1/api/rp/naver/callback"; return 0; }
 echo "  RP 소셜: Google $([ -n "$RP_GOOGLE_LINE" ] && echo on || echo off) · 네이버 $([ -n "$NAVER_ID" ] && [ -n "$NAVER_SECRET" ] && echo on || echo off)   브라우저용 주소: IdP $IDP_UI · zkONE $RP1_UI · zkTWO $RP2_UI"
-printf '%s\n' "$COMMON" "CIA_PORT=$IDP_PORT" "CIA_RPC_URL=http://$HOST:$REV_PORT" "CIA_CHAIN_RPCS=$APP_CHAIN=http://$HOST:$APP_PORT" "CIA_ADMIN_SECRET=$ADMIN" "CIA_ADMIN_OPEN=${ADMIN_OPEN:-0}" "CIA_PUBLIC_URL=http://$IDP:$IDP_PORT" "CIA_ISSUE_AUTH=${ISSUE_AUTH:-$([ "$WALLET_MODE" = snap ] && echo code || echo key)}" ${OIDC_LINE:+"$OIDC_LINE"} | put_env "$IDP"
+printf '%s\n' "$COMMON" "CIA_PORT=$IDP_PORT" "CIA_RPC_URL=http://$HOST:$REV_PORT" "CIA_CHAIN_RPCS=$APP_CHAIN=http://$HOST:$APP_PORT" "CIA_ADMIN_SECRET=$ADMIN" "CIA_ADMIN_OPEN=${ADMIN_OPEN:-0}" "CIA_PUBLIC_URL=http://$IDP:$IDP_PORT" "CIA_ISSUE_AUTH=${ISSUE_AUTH:-$([ "$WALLET_MODE" = snap ] && echo code || echo key)}" "CIA_REVOKE_PUBLISH_AFTER_BLOCKS=${REVOKE_PUBLISH_AFTER:-3}" ${OIDC_LINE:+"$OIDC_LINE"} | put_env "$IDP"
 { printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP1_PORT" "MODE3_RP_NAME=zkONE" "MODE3_RP_PUBLIC_ORIGIN=$RP1_UI" "MODE3_CIA_URL=http://$IDP:$IDP_PORT" ${RP_GOOGLE_LINE:+"$RP_GOOGLE_LINE"} \
   "CIA_RPC_URL=http://$HOST:$APP_PORT" "MODE3_RELAYER_INDEX=0"; rp_naver_lines "$RP1_UI"; } | put_env "$RP1"
 { printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP2_PORT" "MODE3_RP_NAME=zkTWO" "MODE3_RP_PUBLIC_ORIGIN=$RP2_UI" "MODE3_CIA_URL=http://$IDP:$IDP_PORT" ${RP_GOOGLE_LINE:+"$RP_GOOGLE_LINE"} \
@@ -174,7 +176,7 @@ fi
 if [ "$WALLET_MODE" = "snap" ]; then
   # Snap 모드(2026-10-22): 에이전트는 증명·동기화만, 비밀은 MetaMask 의 Snap 안. 릴레이어 계정은 RP 둘(0·1)과 겹치지 않게 2. .env 는 읽지 않는다(DOTENV_CONFIG_PATH).
   DOTENV_CONFIG_PATH="$LOGS/empty.env" MODE3_WALLET_SECRETS=snap MODE3_SNAP_ID="local:http://localhost:$SNAP_PORT" MODE3_WALLET_PORT=$USER_PORT MODE3_WALLET_PUBLIC_ORIGIN="$WALLET_ORIGIN" \
-    MODE3_CIA_URL="$IDP_UI" MODE3_RP_ORIGIN="$RP1_UI,$RP2_UI" MODE3_RELAYER_INDEX=2 MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}" MODE3_TTL_BLOCKS="${TTL_BLOCKS:-5}" \
+    MODE3_DEMO_RACE="${DEMO_RACE:-1}" MODE3_CIA_URL="$IDP_UI" MODE3_RP_ORIGIN="$RP1_UI,$RP2_UI" MODE3_RELAYER_INDEX=2 MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}" MODE3_TTL_BLOCKS="${TTL_BLOCKS:-5}" \
     CIA_RPC_URL="http://127.0.0.1:$APP_PORT" MODE3_REV_CHAIN_RPC="http://127.0.0.1:$REV_PORT" CIA_LOG_ADDRESS="$LOGADDR" MODE3_MIRROR_ADDRESS="$MIRROR" \
     setsid nohup node mode3_wallet_agent.js > "$LOGS/wallet_agent.log" 2>&1 < /dev/null &
   (cd snap-mode3 && setsid nohup npm run serve > "$LOGS/snap_serve.log" 2>&1 < /dev/null &)

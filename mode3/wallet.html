@@ -44,6 +44,12 @@
       <!-- 2026-11-05: 일반 보기용 진행 줄 — 전문가용 #authStep 은 내부 단계명이라 숨겨져 있어 창이 "멈춘 것처럼" 보였다. -->
       <p id="authProgress" class="auth-progress"></p>
       <dl class="kv" id="authSummary"></dl>
+      <!-- 2026-11-12 시연 Race (2): RP 가 hold 로 보낸 출금이면 증명·서명 뒤 여기서 멈춘다(handleTxRequest → raceHold). -->
+      <div id="raceHoldBox" hidden>
+        <p class="desc" data-i18n="wallet_race_desc">시연 Race (2): 거래를 만들어 들고 있습니다. 버튼을 누르면 이 세션을 폐기하고 블록을 진행한 뒤 보냅니다 — IdP 는 폐기 3블록 뒤 거울에 상한을 올립니다.</p>
+        <p><button id="race2Btn" data-i18n="wallet_race_2_btn">2블록 뒤 보내기</button> <button id="race5Btn" data-i18n="wallet_race_5_btn">5블록 뒤 보내기</button> <button id="raceCancelBtn" class="btn-ghost" data-i18n="wallet_race_cancel_btn">취소</button></p>
+        <p id="raceStatus" class="muted"></p>
+      </div>
       <!-- 2026-11-11(사용자 결정): 처음 등록 때 salt 를 묻던 칸은 뺐다 — salt 는 같은 브라우저 속성 도구(attr.html)의 기록에서 가져온다(codeRegister). -->
       <p id="authStep" class="muted expert"></p>
       <pre id="authLog" class="expert"></pre>
@@ -818,20 +824,74 @@
       step('증명·세션키 서명 중… (수 초 걸린다)'); say('wallet_prog_proving');
       const p = await postJson('/wallet/tx/prepare', { r_s: req.r_s, to: req.to, value, data });
       if (p.status !== 200) { step('준비 실패'); log(errText(p.status, p.body)); return reply({ ok: false, reason: p.body.reason ?? 'tx_prepare_failed', detail: p.body.detail ?? null, status: p.status }); }
+      const held = req.hold === true ? await raceHold(req, { step, log, reply }) : null;
+      if (req.hold === true && !held) return;   // 취소·실패 — raceHold 가 이미 답했다
       step('RP 릴레이로 보내는 중…'); say('wallet_prog_sending');
       let relay;
       try {
         const r = await fetch(`${req.origin}/api/mode3/relay`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: p.body.walletAddr, data: p.body.calldata }) });
         relay = await r.json().catch(() => ({ ok: false, reason: 'internal', detail: `HTTP ${r.status}` }));
       } catch (e) { step('릴레이 호출 실패'); log(e.message); return reply({ ok: false, reason: 'relay_unavailable', detail: e.message }); }
-      if (!relay.ok) { step('릴레이 거절'); log(`${relay.reason ?? ''} ${relay.detail ?? ''}`); return reply({ ok: false, reason: relay.reason ?? 'internal', detail: relay.detail ?? null }); }
+      if (!relay.ok) {
+        step('릴레이 거절'); log(`${relay.reason ?? ''} ${relay.detail ?? ''}`);
+        // 폐기된 세션키의 거래는 거울이 상한(sessionBoundOf)을 받은 뒤 RP 릴레이의 가스 추정에서 SessionBounded 로 되돌려진다(Race (2) 의 막히는 쪽).
+        const reason = relay.reason === 'relay_gas' && /SessionBounded/.test(String(relay.detail ?? '')) ? 'session_bounded' : (relay.reason ?? 'internal');
+        return reply({ ok: false, reason, detail: relay.detail ?? null, ...(held ? { race: held } : {}) });
+      }
       step('영수증 대기…');
+      // 시연: 세션은 위에서 폐기돼 에이전트 기록이 없다(/wallet/tx/record 는 404) — 체인 결과는 RP 릴레이의 영수증으로 본다.
+      if (held) return reply(await raceReceipt(req, relay, held, { step, log }));
       const rec = await recordTx(req.r_s, relay.txHash);
       if (rec.status !== 200) { step('영수증 기록 실패'); log(errText(rec.status, rec.body)); return reply({ ok: false, reason: rec.body?.reason ?? (rec.status === 202 ? 'tx_pending' : 'tx_record_failed'), detail: rec.body?.detail ?? null, status: rec.status }); }
       step('전송 완료 — 창을 닫는다.');
       // RP 에는 영수증 사실만(지갑·nonce·gas·ok·txHash). 선택 공개는 이 요청에 없다.
       const { disclosure, onchainDisclosure, ...pub } = rec.body;
       return reply({ ok: rec.body.ok !== false, ...pub, txHash: relay.txHash, deployTxHash: relay.deployTxHash ?? null });
+    }
+
+    /** 시연 Race (2)(2026-11-12): 증명·서명이 끝난 출금을 들고 멈춘다. "N블록 뒤 보내기" 를 누르면 이 세션을 폐기하고(허용 거래 수 = 현재 nonce —
+     *  들고 있는 거래가 그 대상) 응용 체인 블록을 N 개 진행한 뒤 돌아간다. 그 사이 IdP 가 폐기를 게시·중계했는지(거울 상한)가 결과를 가른다.
+     *  블록은 에이전트 /wallet/demo/mine(MODE3_DEMO_RACE=1)이 하나씩 만든다 — 사이마다 1.5초를 둬 IdP 의 게시·중계가 끝날 틈을 준다.
+     *  취소·실패면 reply 하고 null, 아니면 { blocks, mirrorBound }. */
+    async function raceHold(req, { step, log, reply }) {
+      $('raceHoldBox').hidden = false;
+      step('시연: 보내기 전에 멈춤'); say('wallet_race_ready');
+      const n = await new Promise((resolve) => { $('race2Btn').onclick = () => resolve(2); $('race5Btn').onclick = () => resolve(5); $('raceCancelBtn').onclick = () => resolve(null); });
+      for (const id of ['race2Btn', 'race5Btn', 'raceCancelBtn']) $(id).disabled = true;
+      if (n === null) { step('시연 취소'); reply({ ok: false, reason: 'user_denied' }); return null; }
+      const fail = (what, r) => { step(what); log(errText(r.status, r.body)); reply({ ok: false, reason: r.body.reason ?? 'internal', detail: r.body.detail ?? null }); return null; };
+      step('세션 폐기 중…'); say('wallet_race_revoking');
+      const rv = await postJson('/wallet/session/revoke', { r_s: req.r_s });
+      if (rv.status !== 200) return fail('세션 폐기 실패', rv);
+      const mine = (blocks) => postJson('/wallet/demo/mine', { blocks, pendingBoundId: rv.body.pendingBoundId ?? null });
+      let m = await mine(0);
+      if (m.status !== 200) return fail('블록 진행 실패', m);
+      const start = BigInt(m.body.head), passed = () => BigInt(m.body.head) - start;
+      const show = () => { $('raceStatus').textContent = tt('wallet_race_progress', { k: String(passed()), n: String(n), bound: m.body.mirrorBound && m.body.mirrorBound !== '0' ? m.body.mirrorBound : '-' }); };
+      show();
+      while (passed() < BigInt(n)) {
+        await sleep(1500);
+        m = await mine(0);
+        if (m.status === 200 && passed() < BigInt(n)) m = await mine(1);
+        if (m.status !== 200) return fail('블록 진행 실패', m);
+        show();
+      }
+      log(`시연: 폐기 뒤 ${passed()}블록, 거울 상한 ${m.body.mirrorBound ?? '?'}`);
+      return { blocks: n, mirrorBound: m.body.mirrorBound ?? null };
+    }
+    /** 시연 출금의 영수증 — 폐기된 세션이라 에이전트가 아니라 RP 릴레이(GET /api/mode3/relay/:txHash)에 묻는다. */
+    async function raceReceipt(req, relay, held, { step, log }) {
+      for (let i = 0; i < 30; i++) {
+        let r;
+        try { r = await (await fetch(`${req.origin}/api/mode3/relay/${relay.txHash}`)).json(); } catch (e) { log(e.message); r = null; }
+        if (r && r.ok && !r.pending) {
+          if (r.status !== 1) { step('거래 실패'); return { ok: false, reason: 'execute_reverted', detail: r, race: held }; }
+          step('전송 완료(폐기된 세션) — 창을 닫는다.');
+          return { ok: true, raceRevoked: true, race: held, txHash: relay.txHash, deployTxHash: relay.deployTxHash ?? null, blockNumber: r.blockNumber };
+        }
+        await sleep(700);
+      }
+      return { ok: false, reason: 'tx_pending', detail: { txHash: relay.txHash }, race: held };
     }
 
     /**

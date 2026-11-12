@@ -226,6 +226,12 @@ try {
     assert.equal((await rawHttp('GET', '/wallet/status', { Host: 'evil.example' })).status, 421);
     for (const h of [`localhost:${port}`, `LOCALHOST:${port}`, `127.0.0.1:${port}`]) assert.equal((await rawHttp('GET', '/wallet/status', { Host: h })).status, 200, h);
   });
+  await t('시연 Race (2)(2026-11-12): /wallet/demo/mine 은 MODE3_DEMO_RACE=1 이 아니면 403 demo_race_off 이고 블록을 만들지 않는다', async () => {
+    const h0 = await provider.getBlockNumber();
+    const r = await wallet.post('/wallet/demo/mine', { blocks: 2 });
+    assert.equal(r.status, 403, j(r.body)); assert.equal(r.body.reason, 'demo_race_off');
+    assert.equal(await provider.getBlockNumber(), h0);
+  });
   await t('리뷰 D2: Origin 정책 — 남의 Origin·교차 사이트(Sec-Fetch-Site) 는 403 bad_origin; 같은 오리진·헤더 없음은 통과; RP CORS 라우트는 RP 오리진 허용', async () => {
     const evil = { Origin: 'http://evil.example' };
     for (const [m, p, body] of [['POST', '/wallet/tx/prepare', { r_s: '1' }], ['POST', '/wallet/session/revoke', { r_s: '1' }], ['POST', '/wallet/demo/override', { clear: true }], ['POST', '/wallet/revalidate', { r_s: '1' }], ['POST', '/wallet/request', { r_s: '1', body: 'x' }], ['PUT', '/wallet/profile', {}], ['GET', '/wallet/status', null], ['GET', '/wallet/secrets/salt', null]]) {
