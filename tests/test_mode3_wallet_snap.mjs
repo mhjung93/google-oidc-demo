@@ -72,7 +72,11 @@ try {
     const code1 = await codeFor();
     assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, code: code1 })).status, 400, 'snap 모드는 s_u·sk_u 필수');
     assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, code: code1, s_u: 'zz', sk_u: r0.sk_u })).status, 400);
-    const r = await wallet.post('/wallet/register', { uid: r0.uid, code: code1, s_u: r0.s_u, sk_u: r0.sk_u });
+    for (const bad of [-1, 1.5, '0', 2 ** 31]) {
+      const rb = await wallet.post('/wallet/register', { uid: r0.uid, code: code1, s_u: r0.s_u, sk_u: r0.sk_u, index: bad });
+      assert.equal(rb.status, 400, `index=${j(bad)}`); assert.equal(rb.body.reason, 'bad_index');
+    }
+    const r = await wallet.post('/wallet/register', { uid: r0.uid, code: code1, s_u: r0.s_u, sk_u: r0.sk_u, index: r0.index });
     assert.equal(r.status, 201, j(r.body));
     assert.equal(r.body.provider, 'demo');
     assert.equal('sk_u' in r.body, false, '응답에는 sk_u 가 없다(요청에만 한 번 실린다)');
@@ -93,6 +97,8 @@ try {
     assert.equal(s.registered, true); assert.equal(s.uid, '12345'); assert.deepEqual(s.attrs, ['1990', '410', '0', '0', '0', '0']); assert.equal(s.userCred, null);
     assert.equal(s.provider, 'demo', '데모(code) 등록은 provider=demo — 로그인은 지금처럼 IdP 인증 창 경로');
     assert.deepEqual(s.profile, { birthYear: '1990', country: 'KR' });
+    assert.equal(r0.index, 0, '시뮬레이터 첫 등록은 0번'); assert.equal(s.index, 0, '/wallet/status 가 계정 번호를 준다');
+    assert.ok(file.includes('"index"'), '번호는 상태 파일에 남는다(비밀이 아니다)');
     assert.equal(sim.getPublicInfo().registered, true); assert.equal(sim.getPublicInfo().hasUserCred, false);
   });
 

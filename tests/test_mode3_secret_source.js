@@ -32,6 +32,8 @@ await t('stripSecrets 는 s_u·sk_u·blind_u 를 지우고 auid·profile 을 남
   assert.deepEqual(Object.keys(s).sort(), ['attrs', 'auid', 'pk_u', 'profile', 'provider', 'slot', 'uid', 'userCred']);
   assert.deepEqual(s.userCred, { Cf_u: '3', issuedAt: 't' }); assert.equal(s.auid, AUID);
   assert.equal(stripSecrets({ ...REG, profile: undefined }).profile, null, 'profile 이 없으면 null');
+  assert.equal(stripSecrets({ ...REG, index: 3 }).index, 3, '계정 번호는 비밀이 아니라 남긴다(2026-11-12 스펙 snap-account-index)');
+  assert.equal('index' in stripSecrets(REG), false, '번호가 없으면 키도 없다');
   assert.equal(stripSecrets(null), null);
 });
 await t('validateWitness: uid 불일치·형식·범위 오류는 bad_witness; r_u 는 더 요구하지 않는다', async () => {
