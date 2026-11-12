@@ -123,6 +123,16 @@
       </div>
       <!-- 리뷰(2026-11-03) I-3: 결과 칸은 절 밖에 — 반영 성공으로 대기 건이 0 이 되어 절이 숨어도 판정 카드는 보여야 한다. -->
       <div id="boundsVerdict"></div>
+      <!-- 계정 번호(2026-11-12 스펙 snap-account-index §3.4, Ruling P2): snap 모드 화면에는 계정 탭이 없어 여기 둔다(applySnapMode 가 보인다). -->
+      <details class="fold" id="indexFold" hidden>
+        <summary data-i18n="wallet_index_summary">계정 번호</summary>
+        <dl class="kv">
+          <dt data-i18n="wallet_index_label">이 계정 번호</dt><dd><code id="meIndex">-</code></dd>
+          <dt data-i18n="wallet_next_index_label">다음 가입 번호</dt><dd><code id="meNextIndex">-</code> <input id="nextIndexInput" inputmode="numeric" style="width:7em" /> <button type="button" id="nextIndexBtn" class="btn-ghost" data-i18n="wallet_next_index_btn">바꾸기</button></dd>
+        </dl>
+        <p class="muted" data-i18n="wallet_index_desc">한 MetaMask 로 계정을 여러 개 쓰면 계정마다 번호가 다르고 비밀도 다릅니다. 새 PC 에서 0번이 아닌 계정을 되살리거나 새로 가입할 때 다음 가입 번호를 여기서 정합니다.</p>
+        <div id="indexVerdict"></div>
+      </details>
       <p id="mirrorInfo" class="muted expert"></p>
       <p id="chainInfo" class="muted expert"></p>
       <pre id="status" class="expert">불러오는 중…</pre>
@@ -599,13 +609,15 @@
     async function googleRegister({ step, log }) {
       const pre = gsiPrecheck();   // Snap 에 보류 등록을 만들게 하기 전에 — 어차피 못 끝낼 등록을 시작하지 않는다
       if (pre) { step(gsiReasonText(pre)); return { ok: false, reason: pre }; }
+      const probe = await snapDerivedSalt();   // 0.3.0 전 스냅이면 보류 등록을 만들기 전에 멈춘다(Ruling P4) — 번호 없는 비밀로 등록하지 않게
+      if (!probe.ok) { step('스냅이 옛 버전이다 — 다시 설치해야 한다.'); return { ok: false, reason: probe.reason }; }
       step('등록 비밀을 만드는 중…');
       const prep = await invokeSnap('prepareRegister', {});
       if (!prep || prep.denied) { step('등록 거절'); return { ok: false, reason: 'user_denied' }; }
       const g = await oidcToken({ purpose: 'register', sk_u: prep.sk_u }, () => { step(tt('wallet_gsi_hint') || 'Google 버튼을 눌러 로그인하세요.'); say('wallet_gsi_hint'); });
       if (!g.token) { oidcFailStep(g, step, log); return { ok: false, reason: g.reason }; }
       step('에이전트에 등록하는 중…');
-      const { status, body: b } = await postJson('/wallet/register', { id_token: g.token, s_u: prep.s_u, sk_u: prep.sk_u });
+      const { status, body: b } = await postJson('/wallet/register', { id_token: g.token, s_u: prep.s_u, sk_u: prep.sk_u, ...(Number.isInteger(prep.index) ? { index: prep.index } : {}) });
       if (status !== 201) { step('등록 실패 — 다시 시도하면 같은 비밀로 이어진다'); log(errText(status, b)); return { ok: false, reason: b.cia?.reason ?? b.reason ?? `HTTP ${status}`, detail: b.detail ?? b.cia?.detail ?? null }; }
       step('스냅에 등록 결과 저장 중…');
       try { await invokeSnap('storeRegistration', { attrs: b.attrs, slot: b.slot, auid: b.auid, uid: b.uid, provider: b.provider }); }
@@ -613,10 +625,14 @@
       return { ok: true, slot: b.slot, auid: b.auid, uid: b.uid };
     }
 
-    /** 스냅의 시드 유도 salt(getSalt, 2026-11-12). 옛 스냅(0.1.0)은 getSalt 가 없어 method_not_found — { ok:false, reason:'snap_outdated' }. 그 밖의 오류는 던진다. */
-    async function snapDerivedSalt() {
-      try { const r = await invokeSnap('getSalt', {}); return { ok: true, s_u: String(r?.s_u ?? '') }; }
+    /** 스냅의 시드 유도 salt(getSalt). index 를 주면 그 계정 번호, 안 주면 스냅 기본(등록 번호 → 다음 가입 번호). 0.3.0 전 스냅은 { ok:false, reason:'snap_outdated' }
+     *  — 0.1.0 은 getSalt 가 없고(method_not_found), 0.2.0 은 번호를 몰라 응답에 index 가 없다(2026-11-12 스펙 snap-account-index, Ruling P4). 그 밖의 오류는 던진다. */
+    async function snapDerivedSalt(index) {
+      let r;
+      try { r = await invokeSnap('getSalt', index === undefined ? {} : { index }); }
       catch (e) { if (/method_not_found/.test(e?.message ?? '')) return { ok: false, reason: 'snap_outdated' }; throw e; }
+      if (!Number.isInteger(r?.index)) return { ok: false, reason: 'snap_outdated' };
+      return { ok: true, s_u: String(r?.s_u ?? ''), index: r.index };
     }
     /** 스냅 복구(2026-11-12, 스펙 snap-derived-secrets §4.3): 에이전트에는 등록이 있는데 스냅이 비었으면(MetaMask 재설치) 스냅이 시드에서 같은 비밀을
      *  다시 유도하므로, 보류 등록으로 그 비밀을 받아 에이전트 /wallet/register/resume 로 대조하고(auid·pk_u) 맞으면 스냅에 등록을 채운다.
@@ -628,10 +644,11 @@
       const info = await invokeSnap('getPublicInfo', {});
       if (info?.registered) return null;
       // 리뷰 M-3: 옛 스냅(0.1.0)의 prepareRegister 는 무작위라 "다른 시드" 로 오인된다 — 버전부터 본다.
-      const probe = await snapDerivedSalt();
+      const index = Number.isInteger(st.index) ? st.index : 0;   // 에이전트 기록의 계정 번호 — 이 변경 전 기록에는 없어 0번(스펙 snap-account-index §3.2)
+      const probe = await snapDerivedSalt(index);
       if (!probe.ok) { step('스냅이 옛 버전이다 — 다시 설치해야 한다.'); return { ok: false, reason: probe.reason }; }
       step('스냅이 비어 있다 — 시드에서 같은 비밀을 다시 만들어 등록을 되살리는 중…');
-      const prep = await invokeSnap('prepareRegister', {});
+      const prep = await invokeSnap('prepareRegister', { index });
       if (!prep || prep.denied) return { ok: false, reason: 'user_denied' };
       const { status, body: b } = await postJson('/wallet/register/resume', { s_u: prep.s_u, sk_u: prep.sk_u });
       if (status !== 200) {
@@ -664,7 +681,7 @@
       try { v = JSON.parse(localStorage.getItem('mode3_attr_tool_v1') ?? 'null'); } catch { v = null; }
       const dec = (x) => typeof x === 'string' && /^[0-9]+$/.test(x);
       const profile = v?.profile && typeof v.profile === 'object' && !Array.isArray(v.profile) ? v.profile : null;   // 2026-11-11(가): 스냅 속성도 이 기록에서 — C_attr 와 같은 값
-      return v && v.version === 2 && dec(v.uid) && dec(v.s_u) && BigInt(v.s_u) > 0n && BigInt(v.s_u) < (1n << 250n) ? { uid: v.uid, s_u: v.s_u, profile } : null;
+      return v && v.version === 2 && dec(v.uid) && dec(v.s_u) && BigInt(v.s_u) > 0n && BigInt(v.s_u) < (1n << 250n) ? { uid: v.uid, s_u: v.s_u, index: Number.isInteger(v.index) ? v.index : null, profile } : null;   // index: 계정 번호(2026-11-12 스펙 snap-account-index) — 없으면 null
     }
 
     /** 속성 변경(2026-11-11, 스펙 D19): 로그인 전에 속성 도구 기록의 속성이 에이전트 값과 다르면 PUT /wallet/profile·Snap syncAttrs 로 맞춘다 —
@@ -708,14 +725,16 @@
       }
       // 리뷰 I-2·M-3(2026-11-12): 스냅은 시드 유도 salt 만 받는다 — 기록의 salt 가 다르면(11-10·11-11 의 직접 입력) Snap register 의 salt_not_derived 를
       // 원인 모를 wallet_error 로 만들지 않고 먼저 알린다. 옛 스냅(0.1.0)은 getSalt 를 모른다.
-      const snapSalt = await snapDerivedSalt();
+      // 2026-11-12(스펙 snap-account-index §3.2): 기록에 계정 번호가 없으면 번호 없는 v1 salt(0.2.0 이전) — 시드로 복구할 수 없는 기록이다.
+      if (!Number.isInteger(rec.index)) { step('속성 도구 기록에 계정 번호가 없다 — 속성 도구에서 "스냅에서 가져오기" 로 다시 만들어야 한다.'); return { ok: false, reason: 'attr_record_salt_not_derived' }; }
+      const snapSalt = await snapDerivedSalt(rec.index);
       if (!snapSalt.ok) { step('스냅이 옛 버전이다 — 다시 설치해야 한다.'); return { ok: false, reason: snapSalt.reason }; }
       if (snapSalt.s_u !== rec.s_u) { step('속성 도구 기록의 salt 가 스냅이 시드에서 만든 salt 와 다르다 — 등록하지 않는다.'); return { ok: false, reason: 'attr_record_salt_not_derived' }; }
       step('등록 비밀을 만드는 중…'); say('wallet_prog_registering');
-      const reg = await invokeSnap('register', { uid, s_u: rec.s_u });
+      const reg = await invokeSnap('register', { uid, s_u: rec.s_u, index: rec.index });
       if (!reg || reg.denied) { step('등록 거절'); return { ok: false, reason: 'user_denied' }; }
       step('에이전트에 등록하는 중…');
-      const { status, body: b } = await postJson('/wallet/register', { uid, code, s_u: reg.s_u, sk_u: reg.sk_u, ...(rec.profile ? { profile: rec.profile } : {}) });
+      const { status, body: b } = await postJson('/wallet/register', { uid, code, s_u: reg.s_u, sk_u: reg.sk_u, index: reg.index, ...(rec.profile ? { profile: rec.profile } : {}) });
       if (status !== 201) { step('등록 실패'); log(errText(status, b)); return { ok: false, reason: b.cia?.reason ?? b.reason ?? `HTTP ${status}`, detail: b.detail ?? b.cia?.detail ?? null }; }
       step('스냅에 등록 결과 저장 중…');
       try { await invokeSnap('storeRegistration', { attrs: b.attrs, slot: b.slot, auid: b.auid }); }
@@ -1195,6 +1214,7 @@
       $('meAuid').textContent = s?.auid ?? '-';
       $('copyAuidBtn').hidden = !s?.auid;
       $('meUid').textContent = s?.uid ?? '-';
+      $('meIndex').textContent = Number.isInteger(s?.index) ? String(s.index) : '-';
       $('copyUidBtn').hidden = !s?.uid;
       if (!s?.registered) saltRevealed = null;
       $('meSalt').textContent = saltRevealed ?? (s?.registered ? SALT_MASK : '-');
@@ -1446,6 +1466,25 @@
     // "보기"(showSaltBtn, Task 14 B5) — file 모드는 같은 오리진의 GET /wallet/secrets/salt(Task 13), snap 모드는
     // Snap RPC showSalt(Task 15; 확인 창은 2026-11-05 에 뺐다) 로 s_u 를 받는다. 취소·실패면 가림 상태를 그대로 둔다 — 비밀은
     // 실패 메시지에도 담지 않는다(실패해도 s_u 자체를 받지 못했으므로 로그에 남을 것이 없다).
+    // 다음 가입 번호(스냅 getPublicInfo.nextIndex, 2026-11-12) — 접는 칸을 열 때와 바꾼 뒤에만 읽는다(5초 refresh 마다 스냅을 부르지 않게).
+    async function loadNextIndex() {
+      try { const info = await invokeSnap('getPublicInfo', {}); $('meNextIndex').textContent = Number.isInteger(info?.nextIndex) ? String(info.nextIndex) : '-'; }
+      catch { $('meNextIndex').textContent = '-'; }
+    }
+    $('indexFold').addEventListener('toggle', () => { if ($('indexFold').open) loadNextIndex(); });
+    $('nextIndexBtn').addEventListener('click', async () => {
+      $('indexVerdict').className = ''; $('indexVerdict').textContent = '';
+      const raw = $('nextIndexInput').value.trim();
+      try {
+        if (!/^[0-9]+$/.test(raw) || Number(raw) > 2 ** 31 - 1) throw Object.assign(new Error(raw), { reason: 'bad_index' });
+        await ensureConnected();
+        await invokeSnap('setNextIndex', { index: Number(raw) });
+        $('nextIndexInput').value = '';
+        await loadNextIndex();
+      } catch (e) {
+        setVerdict($('indexVerdict'), false, 'wallet_next_index_failed', { reason: e.reason ?? (/bad_index/.test(e.message ?? '') ? 'bad_index' : 'snap_unavailable'), detail: e.message });
+      }
+    });
     $('showSaltBtn').addEventListener('click', async () => {
       try {
         let su;
@@ -1930,6 +1969,7 @@
 
     function applySnapMode() {
       delete $('snapPanel').dataset.off;   // 설정 탭에서 보인다(applyGate)
+      $('indexFold').hidden = false;   // 계정 번호(2026-11-12, Ruling P2)
       $('fileRegFields').hidden = true;
       // 등록 안내(Task 14, B5) — snap 모드는 등록이 IdP /user 페이지 경유(mode3-register 팝업)로 가므로 registerBtn 을
       // 숨기고 그 페이지로 가는 안내만 보인다. cfg.ciaUrl 은 /wallet/config(Task 13)가 준다 — init() 이 cfg 를 채운 뒤 부른다.

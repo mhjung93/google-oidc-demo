@@ -295,7 +295,7 @@ try {
     const before = dialogs.length;
     const demoUid = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.id === 'demo-user').uid;
     const demoAuid = (await auidOf({ uid: BigInt(demoUid), s_u: BigInt(USER_SALT) })).toString();
-    await walletPage.evaluate((r) => localStorage.setItem('mode3_attr_tool_v1', JSON.stringify(r)), { version: 2, uid: String(demoUid), s_u: USER_SALT, profile: { birthYear: '1990', country: 'JP' } });   // 속성 도구가 남기는 기록(필요한 칸만) — 2026-11-11(가): 속성도 여기서
+    await walletPage.evaluate((r) => localStorage.setItem('mode3_attr_tool_v1', JSON.stringify(r)), { version: 2, uid: String(demoUid), s_u: USER_SALT, index: 0, profile: { birthYear: '1990', country: 'JP' } });   // 속성 도구가 남기는 기록(필요한 칸만) — 2026-11-11(가): 속성도 여기서
     const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
     assert.ok(popup.url().includes('authorize=1'), `팝업 URL: ${popup.url()}`);
     await atIdpLogin(popup);
@@ -310,6 +310,8 @@ try {
     const st = (await wallet.get('/wallet/status')).body;
     assert.equal(st.registered, true, '첫 로그인이 지갑을 등록했다'); assert.match(String(st.uid), /^[0-9]+$/); uid = st.uid; AUID = st.auid;
     assert.equal(snapState.registration?.uid, uid, 'Snap 에도 등록이 저장됐다');
+    assert.equal(snapState.registration?.index, 0, '기록의 계정 번호로 등록했다(2026-11-12 스펙 snap-account-index)');
+    assert.equal(snapState.nextIndex, 1, '등록을 저장하면 다음 가입 번호가 오른다'); assert.equal(st.index, 0, '에이전트 기록에도 번호');
     assert.equal(snapState.registration?.s_u, USER_SALT, '속성 도구 기록의 salt 가 s_u 로 저장됐다'); assert.deepEqual(st.profile, { birthYear: '1990', country: 'JP' }, '속성 도구 기록의 속성으로 등록됐다(가)'); assert.equal(String(AUID), demoAuid, '붙여 넣은 auid 로 등록됐다');
     assert.ok((await text(rpPage, '#log')).includes('allowAgent=0'), 'AI 에이전트 체크박스를 없앴으므로 늘 0(2026-11-05)');
     await awaitPopupClosed(popup);
@@ -354,6 +356,18 @@ try {
     assert.deepEqual(tabs, ['services']);
     assert.equal(await walletPage.isVisible('#sessionsCard'), true);
     for (const id of ['#identityCard', '#txCard', '#snapPanel']) assert.equal(await walletPage.isHidden(id), true, `${id} 는 보이지 않는다`);
+  });
+
+  await t('zk 스냅 화면 계정 번호(2026-11-12 스펙 snap-account-index §3.4): "연결된 서비스" 아래 접는 칸에 이 계정 번호·다음 가입 번호, 바꾸기는 스냅 setNextIndex', async () => {
+    await walletPage.click('#indexFold > summary');
+    await waitText(walletPage, '#meIndex', '0'); await waitText(walletPage, '#meNextIndex', '1');
+    await walletPage.fill('#nextIndexInput', '7'); await walletPage.click('#nextIndexBtn');
+    await waitText(walletPage, '#meNextIndex', '7'); assert.equal(snapState.nextIndex, 7);
+    await walletPage.fill('#nextIndexInput', '-1'); await walletPage.click('#nextIndexBtn');
+    await waitText(walletPage, '#indexVerdict', '계정 번호'); assert.equal(snapState.nextIndex, 7, '잘못된 번호는 바꾸지 않는다');
+    await walletPage.fill('#nextIndexInput', '1'); await walletPage.click('#nextIndexBtn');
+    await waitText(walletPage, '#meNextIndex', '1'); assert.equal(snapState.nextIndex, 1);
+    await walletPage.click('#indexFold > summary');
   });
 
 
@@ -751,6 +765,7 @@ try {
     await p.fill('#uid', String(uid)); await p.click('#saltFromSnapBtn');
     await p.waitForFunction(() => document.getElementById('salt').value !== '');
     assert.equal(await p.inputValue('#salt'), USER_SALT, '스냅이 유도한 salt(지갑 등록 때와 같은 값)');
+    assert.equal(await p.inputValue('#acctIndex'), '0', '번호 칸이 비어 있으면 스냅 기본 — 등록된 계정의 번호(Ruling P1)');
     await p.fill('#birthYear', '1990'); await p.selectOption('#country', 'KR'); await p.fill('#extra1', 'hello');
     await p.click('#makeBtn');
     await p.waitForSelector('#commitBox:not([hidden])');
@@ -761,6 +776,7 @@ try {
     const attrs = await encodeProfile(DEFAULT_ATTR_SCHEMA, { birthYear: '1990', country: 'KR', extra1: 'hello' });
     assert.deepEqual(rec.attrs, attrs);
     assert.equal(rec.version, 2); assert.equal(rec.uid, String(uid)); assert.equal(rec.s_u, USER_SALT);
+    assert.equal(rec.index, 0, '기록에 계정 번호');
     assert.equal(await attrCommit({ uid: rec.uid, s_u: rec.s_u, attrs, blind: rec.blind }), rec.commit, 'Node 재계산과 일치');
     // 재료를 모두 숨기지 않고 보인다 — uid·salt·blind·인코딩 값
     assert.equal((await p.textContent('#uidShown')).trim(), rec.uid); assert.equal((await p.textContent('#saltShown')).trim(), USER_SALT);
@@ -807,6 +823,17 @@ try {
     await p.close();
   });
   // 2026-11-11(사용자 결정, 스펙 D20): 자동 암호화 백업 — 백업 비밀번호와 한 번 고른 파일. 기록이 바뀔 때마다 그 파일을 암호문으로 덮어쓴다(평문 내려받기는 없다).
+  await t('속성 도구 계정 번호: 번호를 바꾸면 salt 칸이 비고, 1번으로 가져오면 다른 salt(같은 시드라도) — 0번으로 되돌리면 등록 salt', async () => {
+    const p = await context.newPage(); await p.goto(`${wallet.base}/attr.html`);
+    try {
+      await p.fill('#acctIndex', '1');
+      assert.equal(await p.inputValue('#salt'), '', '번호를 바꾸면 salt 를 다시 가져와야 한다');
+      await p.click('#saltFromSnapBtn'); await p.waitForFunction(() => document.getElementById('salt').value !== '');
+      assert.equal(await p.inputValue('#salt'), derivedSecrets(STUB_SRP, 1).s_u); assert.notEqual(await p.inputValue('#salt'), USER_SALT);
+      await p.fill('#acctIndex', '0'); await p.click('#saltFromSnapBtn');
+      await p.waitForFunction((v) => document.getElementById('salt').value === v, USER_SALT);
+    } finally { await p.close(); }
+  });
   await t('속성 도구 자동 백업: 비밀번호·파일을 한 번 정하면 기록을 만들 때마다 그 파일을 암호문으로 덮어쓴다(평문 없음)·새로고침 뒤에도 이어진다·내려받기도 암호문; 불러오기는 틀린 비밀번호면 실패, 맞으면 복원', async () => {
     const PW = 'backup-pw-1234';
     const p = await context.newPage();
@@ -1043,6 +1070,28 @@ try {
     const leaves = await p.$$eval('#regDb table tbody tr', (trs) => trs.map((tr) => tr.cells[4].querySelector('code').textContent));
     assert.deepEqual(leaves, reg.slots.filter((x) => x.uid !== null).map((x) => x.leaf), '등록부 DB 의 리프는 API 와 같은 전체 값');
     await p.close();
+  });
+
+  await t('I-3(2026-11-12 스펙 snap-account-index): 같은 시드의 스냅을 초기화하고 다른 계정을 가입하면 계정 번호가 올라 sk_u·salt 가 다르다 — IdP 는 새 계정으로 받는다', async () => {
+    const skA = snapState.registration.sk_u, saltA = snapState.registration.s_u;
+    assert.equal((await cia.post('/cia/signup', { id: 'demo-user-b', pwd: DEMO_PWD })).status, 201, '계정 B 가입');
+    const uidB = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.id === 'demo-user-b').uid;
+    // "스냅 초기화" 의 결과(등록·동의를 지우고 nextIndex 만 남긴다 — 스냅 RPC 테스트가 reset 자체를 본다) + 에이전트 비우기
+    snapState = { version: 1, registration: null, userCred: null, consents: {}, nextIndex: snapState.nextIndex };
+    assert.equal((await wallet.post('/wallet/reset', { confirm: true })).status, 200);
+    const saltB = derivedSecrets(STUB_SRP, 1).s_u;
+    const auidB = (await auidOf({ uid: BigInt(uidB), s_u: BigInt(saltB) })).toString();
+    await walletPage.evaluate((r) => localStorage.setItem('mode3_attr_tool_v1', JSON.stringify(r)), { version: 2, uid: String(uidB), s_u: saltB, index: 1, profile: { birthYear: '1990', country: 'JP' } });
+    const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
+    await atIdpLogin(popup);
+    await popup.fill('#authUid', 'demo-user-b'); await popup.fill('#authPwd', DEMO_PWD); await popup.fill('#authAuid', auidB); await popup.click('#authGo');
+    await backAtWallet(popup);
+    await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
+    await awaitPopupClosed(popup);
+    assert.equal(snapState.registration?.index, 1); assert.equal(snapState.registration?.uid, String(uidB));
+    assert.notEqual(snapState.registration.sk_u, skA, '다른 계정은 다른 서명키 — IdP 가 pk_u 로 묶지 못한다');
+    assert.notEqual(snapState.registration.s_u, saltA);
+    const st = (await wallet.get('/wallet/status')).body; assert.equal(st.index, 1); assert.equal(String(st.uid), String(uidB));
   });
 
   await t('하네스: 준비한 대화상자 응답이 남지 않았다(기대한 동의 창이 다 떴다)', async () => {
