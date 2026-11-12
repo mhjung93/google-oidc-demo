@@ -1,9 +1,9 @@
 {
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Mode 3 Snap — 등록 비밀 보관과 로그인·속성 공개 동의 대화상자.",
   "proposedName": "Mode 3 Wallet Snap",
   "source": {
-    "shasum": "9m18h0fs4LTviW8Tz7GX1jxW6ZvjGkECfbUMfUE/q68=",
+    "shasum": "9yClfxr3jjwoO7qG0csT+0ZqMywGvEzfqUXu0Y3+GlQ=",
     "location": {
       "npm": {
         "filePath": "dist/bundle.js",

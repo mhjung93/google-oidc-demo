@@ -1,6 +1,6 @@
 {
   "name": "mode3-snap",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Mode 3 Snap — 등록 비밀 보관과 동의 대화상자(스펙 2026-09-22 metamask-snap §3.1).",
   "main": "src/index.js",
   "type": "module",

@@ -89,7 +89,7 @@ export function buildInitScript({ snapId, account, chainId, srp = STUB_SRP }) {
 
 ${snapModuleSource().split('\n').map((l) => (l ? '  ' + l : l)).join('\n')}
 
-  const snaps = { [SNAP_ID]: { id: SNAP_ID, version: '0.2.0', enabled: true, blocked: false } };
+  const snaps = { [SNAP_ID]: { id: SNAP_ID, version: '0.3.0', enabled: true, blocked: false } };
   window.ethereum = {
     isMetaMask: true,
     request: async ({ method, params }) => {

@@ -157,7 +157,7 @@ await t('storeRegistration: attrs 원소는 2^64 미만이어야 한다(ATTR_MAX
 
 await t('getPublicInfo 에는 비밀이 없다', async () => {
   const info = await call('getPublicInfo', {});
-  assert.deepEqual(Object.keys(info).sort(), ['attrs', 'auid', 'consents', 'hasUserCred', 'pending', 'provider', 'registered', 'slot', 'uid']);
+  assert.deepEqual(Object.keys(info).sort(), ['attrs', 'auid', 'consents', 'hasUserCred', 'index', 'nextIndex', 'pending', 'provider', 'registered', 'slot', 'uid']);
   assert.equal(info.registered, true);
   assert.equal(info.uid, '12345');
   assert.equal(info.auid, auid);
@@ -353,7 +353,7 @@ await t('register 는 보류 등록을 덮어쓴다(완성 등록만 already_reg
   answers.push(true); const p2 = await call('prepareRegister', {});
   answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
   assert.ok(!String(stateJson()).includes(p2.sk_u), 'reset 뒤 보류 비밀이 남지 않는다');
-  assert.equal(store.state, null);
+  assert.equal(store.state?.registration ?? null, null, 'reset 뒤 등록이 없다(2026-11-12: 다음 가입 번호 nextIndex 만 남는다)');
 });
 
 await t('유도(2026-11-12): 같은 SRP 면 register·prepareRegister·getSalt 가 같은 s_u·sk_u, 다른 SRP 면 다르다; reset 뒤에도 같다', async () => {
@@ -399,6 +399,48 @@ await t('등록 전에는 비밀이 필요한 RPC 가 거절된다', async () =>
   for (const m of ['storeRegistration', 'consentLogin', 'updateUserCred', 'syncAttrs', 'selfRevoke', 'consentRevokeSession', 'showSalt']) {
     await assert.rejects(() => call(m, {}), /not_registered|등록/, `${m} 은 등록을 요구한다`);
   }
+});
+
+// 2026-11-12(스펙 snap-account-index, 리뷰 I-3): 계정 번호 k 마다 다른 비밀. 번호는 기록이 들고 다니고, nextIndex 는 reset 을 넘어 남는다.
+await t('계정 번호: 번호가 다르면 s_u·sk_u 가 다르고 같은 번호면 같다; getSalt 기본은 등록 번호 → 없으면 nextIndex; storeRegistration 이 nextIndex 를 올리고 reset 뒤에도 남는다', async () => {
+  entropy.srp = 'srp-A'; store.state = null;
+  const g0 = await call('getSalt', {}); assert.equal(g0.index, 0, '처음엔 0번');
+  const g1 = await call('getSalt', { index: 1 }); assert.equal(g1.index, 1);
+  assert.notEqual(g1.s_u, g0.s_u, '번호가 다르면 salt 가 다르다');
+  assert.equal((await call('getSalt', { index: 1 })).s_u, g1.s_u, '같은 번호면 같은 salt');
+  const r = await call('register', { uid: '7', s_u: g1.s_u, index: 1 });
+  assert.equal(r.index, 1); assert.equal(r.s_u, g1.s_u); assert.match(r.sk_u, /^[0-9a-f]{64}$/);
+  assert.equal((await call('getSalt', {})).index, 1, '등록이 있으면 기본은 그 번호(Ruling P1)');
+  await call('storeRegistration', { attrs: ATTRS, slot: 0, auid: '5' });
+  const info = await call('getPublicInfo', {}); assert.equal(info.index, 1); assert.equal(info.nextIndex, 2);
+  answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
+  assert.equal(store.state?.registration ?? null, null, 'reset 은 등록을 지운다');
+  assert.equal((await call('getPublicInfo', {})).nextIndex, 2, 'reset 뒤에도 nextIndex 는 남는다');
+  const p = await call('prepareRegister', {});
+  assert.equal(p.index, 2, '보류 등록은 nextIndex'); assert.notEqual(p.sk_u, r.sk_u, '다른 번호 → 다른 sk_u');
+  assert.deepEqual(await call('prepareRegister', { index: 9 }), p, '보류가 있으면 그 비밀·번호 그대로');
+  answers.push(true); await call('reset', {});
+  store.state = null;
+});
+
+await t('계정 번호 검사: bad_index(범위·형식)·setNextIndex·번호와 어긋난 s_u 는 salt_not_derived; nextIndex 는 상한에서 넘치지 않는다', async () => {
+  store.state = null;
+  for (const bad of [-1, 1.5, '3', 2 ** 31]) {
+    await assert.rejects(() => call('getSalt', { index: bad }), /bad_index/);
+    await assert.rejects(() => call('setNextIndex', { index: bad }), /bad_index/);
+    await assert.rejects(() => call('register', { uid: '7', index: bad }), /bad_index/);
+  }
+  await assert.rejects(() => call('setNextIndex', {}), /bad_index/);
+  assert.deepEqual(await call('setNextIndex', { index: 5 }), { ok: true, nextIndex: 5 });
+  assert.equal((await call('getSalt', {})).index, 5, '등록이 없으면 기본은 nextIndex');
+  const s0 = (await call('getSalt', { index: 0 })).s_u;
+  await assert.rejects(() => call('register', { uid: '7', s_u: s0, index: 4 }), /salt_not_derived/, '0번 salt 를 4번으로 등록할 수 없다');
+  assert.equal(store.state?.registration ?? null, null, '거절은 등록을 만들지 않는다');
+  await call('setNextIndex', { index: 2 ** 31 - 1 });
+  await call('register', { uid: '7' }); await call('storeRegistration', { attrs: ATTRS, slot: 0, auid: '5' });
+  assert.equal((await call('getPublicInfo', {})).nextIndex, 2 ** 31 - 1, '상한에서 멈춘다');
+  answers.push(true); await call('reset', {});
+  store.state = null;
 });
 
 console.log(failed ? `\n${failed} failed` : '\nall passed');

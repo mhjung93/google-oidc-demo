@@ -8,7 +8,7 @@
 // @metamask/snaps-sdk 1.4.0 은 CommonJS·ESM 두 빌드를 함께 낸다. webpack 은 ESM 빌드를 집어 명명 export 가 보이고,
 // Node 는 CommonJS 빌드를 집어 default 하나만 보인다(단위 테스트가 이 경로다). 두 경우를 모두 받는다.
 import * as sdkNamespace from '@metamask/snaps-sdk';
-import { deriveRegistrationSecrets, ATTR_MAX, SCALAR_MAX } from './crypto.js';
+import { deriveRegistrationSecrets, isIndex, INDEX_MAX, ATTR_MAX, SCALAR_MAX } from './crypto.js';
 
 const sdk = typeof sdkNamespace.panel === 'function' ? sdkNamespace : sdkNamespace.default;
 const { panel, text, heading, divider } = sdk;
@@ -56,6 +56,13 @@ const EMPTY_STATE = { version: 1, registration: null, userCred: null, consents: 
 const clone = (v) => (v === null || v === undefined ? null : JSON.parse(JSON.stringify(v)));
 const isDec = (v) => typeof v === 'string' && /^[0-9]+$/.test(v);
 const fail = (msg) => { throw new Error(msg); };
+// 계정 번호(2026-11-12 스펙 snap-account-index): nextIndex 는 다음 가입이 쓸 번호 — reset 을 넘어 남는다(비밀이 아니다).
+const nextIndexOf = (state) => (isIndex(state.nextIndex) ? state.nextIndex : 0);
+const indexParam = (params, dflt) => {
+  if (params.index === undefined || params.index === null) return dflt;
+  if (!isIndex(params.index)) fail('bad_index: 계정 번호는 0 이상 2^31−1 이하의 정수');
+  return params.index;
+};
 
 async function getState() {
   const s = await snap.request({ method: 'snap_manageState', params: { operation: 'get' } });
@@ -113,14 +120,15 @@ export const onRpcRequest = async ({ origin, request }) => {
       if (!isDec(uid)) fail('bad_uid: uid 는 10진 숫자 문자열이어야 한다');
       // 2026-11-12(스펙 snap-derived-secrets S1·S2): s_u·sk_u 는 시드에서 유도한다. 속성 도구가 getSalt 로 받은 salt 를 다시 실어 보내면
       // 유도값과 같은지만 본다 — 다르면(옛 기록의 직접 입력 salt) 등록하지 않는다. 시드로 복구할 수 없는 계정이 섞이지 않게.
-      const secrets = await deriveRegistrationSecrets();
+      const index = indexParam(params, nextIndexOf(state));
+      const secrets = await deriveRegistrationSecrets(index);
       if (params.s_u !== undefined && params.s_u !== null && params.s_u !== '') {
         const su = String(params.s_u).trim();
         if (!isDec(su) || BigInt(su).toString() !== secrets.s_u) fail('salt_not_derived: salt 는 이 스냅이 시드에서 유도한 값이어야 한다(속성 도구 "스냅에서 가져오기")');
       }
-      state.registration = { uid, s_u: secrets.s_u, auid: null, sk_u: secrets.sk_u, slot: null, attrs: null, registeredAt: new Date().toISOString() };
+      state.registration = { uid, index, s_u: secrets.s_u, auid: null, sk_u: secrets.sk_u, slot: null, attrs: null, registeredAt: new Date().toISOString() };
       state.userCred = null; await setState(state);
-      return { uid, s_u: secrets.s_u, sk_u: secrets.sk_u };
+      return { uid, s_u: secrets.s_u, sk_u: secrets.sk_u, index };
     }
 
     // Google 등록(2026-10-26 Snap OIDC 래퍼 §2.1): 등록 토큰의 nonce 는 pk_u 에 묶이는데(reg:H(pk_u)), uid 는 토큰을 받은 뒤에야
@@ -129,18 +137,22 @@ export const onRpcRequest = async ({ origin, request }) => {
     case 'prepareRegister': {
       if (state.registration?.uid) fail('already_registered: 이미 등록돼 있다 (초기화하려면 reset)');
       const pend = state.registration;
-      if (pend) return { s_u: pend.s_u, sk_u: pend.sk_u };
-      const secrets = await deriveRegistrationSecrets();
-      state.registration = { uid: null, s_u: secrets.s_u, auid: null, sk_u: secrets.sk_u, slot: null, attrs: null, provider: null, registeredAt: new Date().toISOString() };
+      if (pend) return { s_u: pend.s_u, sk_u: pend.sk_u, index: isIndex(pend.index) ? pend.index : 0 };
+      const index = indexParam(params, nextIndexOf(state));
+      const secrets = await deriveRegistrationSecrets(index);
+      state.registration = { uid: null, index, s_u: secrets.s_u, auid: null, sk_u: secrets.sk_u, slot: null, attrs: null, provider: null, registeredAt: new Date().toISOString() };
       state.userCred = null; await setState(state);
-      return { s_u: secrets.s_u, sk_u: secrets.sk_u };
+      return { s_u: secrets.s_u, sk_u: secrets.sk_u, index };
     }
 
     // 속성 도구용(2026-11-12, 스펙 §2.3): 등록 전에도 시드에서 유도한 s_u 를 돌려준다. 등록 여부와 무관하게 같은 값이고 상태를 바꾸지 않는다.
     // 부를 수 있는 오리진은 다른 RPC 와 같이 지갑 오리진(:5100)뿐이다 — 속성 도구(/attr.html)도 그 오리진에서 서빙된다.
     case 'getSalt': {
-      const { s_u } = await deriveRegistrationSecrets();
-      return { s_u };
+      // 기본 번호(Ruling P1): 등록(보류 포함)이 있으면 그 번호 — 속성 도구는 등록된 계정의 속성 변경에도 쓰인다. 없으면 다음 가입 번호.
+      const own = state.registration && isIndex(state.registration.index) ? state.registration.index : null;
+      const index = indexParam(params, own ?? nextIndexOf(state));
+      const { s_u } = await deriveRegistrationSecrets(index);
+      return { s_u, index };
     }
 
     // salt(s_u) 를 지갑 페이지에 보여 준다 — 시연용(복구 코드 설계 2026-10-21 과 무관, 화면 표시만). 확인 창은 2026-11-05 에 뺐다.
@@ -166,8 +178,16 @@ export const onRpcRequest = async ({ origin, request }) => {
       reg.attrs = attrs.map(String);
       reg.slot = slot;
       reg.auid = String(auid);
+      state.nextIndex = Math.min(INDEX_MAX, Math.max(nextIndexOf(state), (isIndex(reg.index) ? reg.index : 0) + 1));   // 이 번호는 이제 쓰였다(복구로 채운 등록도)
       await setState(state);
       return { ok: true };
+    }
+
+    // 다음 가입 번호를 사용자가 정한다(2026-11-12 스펙 snap-account-index §2.3) — 새 PC 에서 0번이 아닌 계정을 되살리거나 새로 가입할 때. 확인 창 없음(오리진은 :5100 뿐).
+    case 'setNextIndex': {
+      if (!isIndex(params.index)) fail('bad_index: 계정 번호는 0 이상 2^31−1 이하의 정수');
+      state.nextIndex = params.index; await setState(state);
+      return { ok: true, nextIndex: state.nextIndex };
     }
 
     // 비밀을 절대 싣지 않는다(스펙 §3.1).
@@ -176,6 +196,7 @@ export const onRpcRequest = async ({ origin, request }) => {
       return {
         registered: Boolean(r?.uid), pending: Boolean(r && !r.uid), uid: r?.uid ?? null, auid: r?.auid ?? null, attrs: clone(r?.attrs), slot: r?.slot ?? null,
         provider: r?.provider ?? null, hasUserCred: Boolean(state.userCred), consents: clone(state.consents) ?? {},
+        index: r && isIndex(r.index) ? r.index : null, nextIndex: nextIndexOf(state),
       };
     }
 
@@ -255,7 +276,9 @@ export const onRpcRequest = async ({ origin, request }) => {
         '체인·AA 쪽 상태는 지워지지 않습니다.',
       ]);
       if (!ok) return { denied: true };
+      const keep = nextIndexOf(state);
       await clearState();
+      if (keep > 0) await setState({ ...EMPTY_STATE, consents: {}, nextIndex: keep });   // 다음 가입 번호만 남긴다 — 초기화 뒤 다른 계정이 같은 비밀을 받지 않게
       return { ok: true };
     }
 
