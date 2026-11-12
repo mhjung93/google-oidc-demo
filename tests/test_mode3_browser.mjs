@@ -797,6 +797,7 @@ try {
     p.once('dialog', (d) => d.accept());
     await p.click('#clearBtn'); await p.waitForSelector('#noCommit:not([hidden])');
     assert.equal(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')), null);
+    for (const id of ['#uid', '#salt', '#acctIndex']) assert.equal(await p.inputValue(id), '', `지우기는 ${id} 칸도 비운다(최종 리뷰 I-1 — 다음 계정이 앞 계정 값으로 만들지 않게)`);
     await p.setInputFiles('#importFile', { name: 'backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(rec)) });
     await waitText(p, '#resultVerdict', '백업 불러오기 완료');
     assert.equal((await p.textContent('#commitBox')).trim(), rec.commit);
@@ -1081,7 +1082,19 @@ try {
     assert.equal((await wallet.post('/wallet/reset', { confirm: true })).status, 200);
     const saltB = derivedSecrets(STUB_SRP, 1).s_u;
     const auidB = (await auidOf({ uid: BigInt(uidB), s_u: BigInt(saltB) })).toString();
-    await walletPage.evaluate((r) => localStorage.setItem('mode3_attr_tool_v1', JSON.stringify(r)), { version: 2, uid: String(uidB), s_u: saltB, index: 1, profile: { birthYear: '1990', country: 'JP' } });
+    // 최종 리뷰 I-1: 속성 도구 화면을 거친다 — 앞 계정 A 의 기록이 칸을 채운 채 열리고, uid 만 B 로 바꾸면 번호·salt 가 비어야 한다(그대로면 B 도 0번 = A 의 pk_u).
+    const a = await context.newPage(); await a.goto(`${wallet.base}/attr.html`);
+    try {
+      await a.waitForFunction(() => document.getElementById('acctIndex').value === '0');   // A 의 기록(0번)으로 열린다
+      await a.fill('#uid', String(uidB));
+      assert.equal(await a.inputValue('#acctIndex'), '', 'uid 를 바꾸면 번호 칸이 빈다'); assert.equal(await a.inputValue('#salt'), '', 'salt 칸도 빈다');
+      await a.click('#saltFromSnapBtn'); await a.waitForFunction(() => document.getElementById('salt').value !== '');
+      assert.equal(await a.inputValue('#acctIndex'), '1', '등록이 없는 스냅의 기본은 다음 가입 번호'); assert.equal(await a.inputValue('#salt'), saltB);
+      await a.fill('#birthYear', '1990'); await a.selectOption('#country', 'KR'); await a.click('#makeBtn');
+      await waitText(a, '#formVerdict', '커밋먼트 생성 완료');
+      const recB = JSON.parse(await a.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')));
+      assert.equal(recB.uid, String(uidB)); assert.equal(recB.index, 1); assert.equal(recB.s_u, saltB);
+    } finally { await a.close(); }
     const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
     await atIdpLogin(popup);
     await popup.fill('#authUid', 'demo-user-b'); await popup.fill('#authPwd', DEMO_PWD); await popup.fill('#authAuid', auidB); await popup.click('#authGo');

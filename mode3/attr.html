@@ -267,6 +267,8 @@
     } finally { $('saltFromSnapBtn').disabled = false; }
   });
   $('acctIndex').addEventListener('input', () => { $('salt').value = ''; });   // 번호를 바꾸면 그 번호의 salt 를 다시 가져와야 한다(Ruling P3)
+  // 최종 리뷰 I-1(2026-11-12): uid 를 바꾸면(다른 계정) 앞 계정 기록이 채운 번호·salt 를 비운다 — 그대로 두면 새 계정도 앞 계정 번호(같은 pk_u)로 만들어진다.
+  $('uid').addEventListener('input', () => { const rec = load(); if (!rec || rec.uid !== $('uid').value.trim()) { $('acctIndex').value = ''; $('salt').value = ''; } });   // 같은 계정(기록의 uid)이면 그대로
   $('copySaltBtn').addEventListener('click', () => { const v = $('salt').value.trim(); if (v) copyText(v, $('copySaltBtn')); });
   $('copyBlindBtn').addEventListener('click', () => { const rec = load(); if (rec) copyText(rec.blind, $('copyBlindBtn')); });
   $('copyAuidBtn').addEventListener('click', () => { const v = $('auidShown').textContent; if (/^[0-9]+$/.test(v)) copyText(v, $('copyAuidBtn')); });
@@ -305,6 +307,7 @@
   $('clearBtn').addEventListener('click', () => {
     if (!window.confirm(tt('attr_clear_confirm') || '저장된 uid·salt·속성·blind·커밋먼트를 지웁니다. 백업이 없으면 같은 커밋먼트를 다시 만들 수 없습니다. 계속할까요?')) return;
     localStorage.removeItem(STORE_KEY); render(); clearVerdict($('formVerdict')); clearVerdict($('resultVerdict'));
+    for (const k of ['uid', 'salt', 'acctIndex']) $(k).value = '';   // 최종 리뷰 I-1: 입력 칸도 비운다 — 다음 계정이 지운 기록의 값으로 만들지 않게
   });
   $('importFile').addEventListener('change', async (ev) => {
     const f = ev.target.files?.[0]; ev.target.value = ''; if (!f) return;
