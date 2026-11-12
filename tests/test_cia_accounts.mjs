@@ -566,7 +566,7 @@ try {
       const reg = await createRegistration(BigInt(su.body.uid));
       const sig_reg = await signRegistration(reg.sk_u, BigInt(su.body.uid), reg.auid);
       const rr = await cia.post('/cia/register', { uid: su.body.uid, code: rc.body.code, auid: reg.auid.toString(), pk_u: pointToStrings(reg.pk_u), sig_reg });
-      assert.equal(rr.status, 201, j(rr.body)); return rr.body;
+      assert.equal(rr.status, 201, j(rr.body)); return { ...rr.body, reg };
     };
     const first = await reg1();
     const me1 = (await withJar('/cia/user/me')).body; assert.equal(me1.registered, true);
@@ -578,6 +578,13 @@ try {
     const second = await reg1();
     assert.notEqual(second.slot, first.slot, '다시 등록하면 새 슬롯');
     assert.equal((await withJar('/cia/user/me')).body.registered, true);
+    // 2026-11-12(사용자 결정): 계정의 최신 auid_s(lastAuidS)는 옛 auid 에서 나온 값이라 연결을 풀면 함께 지운다.
+    const lastOf = async () => (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === su.body.uid).lastAuidS;
+    assert.equal(await lastOf(), null, '발급 전에는 없다');
+    const is = await issueV11(cia, userOf({ ...second.reg, slot: second.slot }, su.body.uid, TESTUSER_ATTRS), { arid, provider });
+    assert.equal(is.r.status, 200, j(is.r.body)); assert.equal((await lastOf())?.value, is.req.auid_s.toString());
+    assert.equal((await withJar('/cia/user/unlink_wallet', { method: 'POST', body: JSON.stringify({ pwd: 'password-u1' }) })).status, 200);
+    assert.equal(await lastOf(), null, '연결을 풀면 최신 auid_s 도 지운다');
   });
 
   await t('계정 삭제(2026-11-06, 관리자): 가입만 한 계정은 레코드·아이디 색인이 지워져 같은 아이디로 재가입; 등록된 계정은 먼저 폐기(슬롯 0)되고 지워진다; 모르는 uid 404; 시크릿 없이 401', async () => {

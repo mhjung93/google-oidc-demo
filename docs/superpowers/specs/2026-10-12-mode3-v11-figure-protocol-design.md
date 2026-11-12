@@ -10,7 +10,7 @@
 
 | # | 결정 | 내용 | 출처 |
 |---|---|---|---|
-| D1 | 추적은 trace_tag 로만 | auid_s·arid_s 는 세션 바인딩용. IdP 세션 기록에는 지금처럼 `(H(C_s), max_height, chain_id, allowAgent)` 만 — auid_s 를 남기지 않는다 | 사용자 2026-10-12 |
+| D1 | 추적은 trace_tag 로만 | auid_s·arid_s 는 세션 바인딩용. IdP 세션 기록에는 지금처럼 `(H(C_s), max_height, chain_id, allowAgent)` 만 — auid_s 를 남기지 않는다. **2026-11-12 수정(사용자 결정)**: 계정마다 가장 최신 auid_s 하나만 덮어써 둔다(`accounts[uid].lastAuidS = { value, at }`, 관리자 화면 표시용). 기록(이력)은 남기지 않고, 세션 기록과 arid_s 는 그대로다 | 사용자 2026-10-12, 2026-11-12 |
 | D2 | π_IdP 는 세션마다 | 토큰 발급 요청마다 π_IdP(Groth16) 제출·검증 (그림 3). 로그인당 ≈ +0.45 s 를 수용 | 사용자 2026-10-12 (Q1) |
 | D3 | 토큰에 auid_s·arid_s 포함 | IdP 는 값을 보되 저장하지 않는다(그림 3·4) | 사용자 2026-10-12 |
 | D4 | auid 가 `cm_u` 를 대체 | 등록 때 지갑이 `auid = Poseidon(T_AUID, uid, s_u)` 제출. 등록부 리프 = `Poseidon(auid, H(C_u))`. `r_u`·`cm_u`·`RegistrationCommit` 삭제 | 기본값(§3.1) |
@@ -98,7 +98,7 @@ RP → 지갑: `{ arid, origin, cert_s, pk_trace, r_s, r_rp, allowAgent, factory
 IdP 검사 순서(코드 순서, `cia.js`): 형식 → `max_height < 2^64` → 계정·disabled → chainid 허용 → C_u·C_s 부분군 → sig_u → **π_IdP 검증**(공개 입력: uid, 계정의 auid, auid_s, C_u_pt, C_s_pt, max_height) → 체인 생존 → disabled 재확인 →
 - `Cf_u = Poseidon(C_u_pt)` 가 활성 자격증명과 같으면 그대로; 다르면(첫 로그인·사용자의 속성 변경 뒤) **활성 자격증명 은퇴 → `creds` 에 추가 → `setSlot(uid, Poseidon(auid, Cf_u))` → persist → 즉시 게시**(지금 `/cia/user_cred` 가 하던 일) →
 - 서명 `sigma = EdDSA_IdP(Poseidon(D_V11, auid_s, arid_s, Cf_u, Cf_s, chainid, allowAgent))` →
-- 세션 기록 `{ Cf_s, max_height, chainid, allowAgent, issuedAt }`(auid_s·arid_s 는 **기록하지 않음**, D1) →
+- 세션 기록 `{ Cf_s, max_height, chainid, allowAgent, issuedAt }`(auid_s·arid_s 는 **기록하지 않음**, D1 — 2026-11-12 부터 계정의 최신 auid_s 하나만 `lastAuidS` 에 덮어쓴다) →
 - 응답 `{ Cf_u, Cf_s, chainid, allowAgent, sigma, pk_CIA, slot, regRoot, epoch, published }`.
 `/cia/user_cred`·`/cia/attrs`·`/cia/accounts/:uid/attrs` 라우트는 삭제한다(D11·D15). `/cia/slot` 은 그대로.
 
@@ -155,7 +155,7 @@ RP `verifyLogin` 추가 검사(기존 a~g 사이, d 뒤): `pub[32] === 소비한
 
 - **G5 복원(D15)**: IdP 는 속성 값을 모른다(C_u 는 Pedersen 은닉, π_IdP 의 공개 입력에 속성 없음). RP 는 공개한 술어만 안다(G5a). IdP 측 "익명 집합 축소"(V6 §7 G4′ 약화 — IdP 가 모든 값을 알아 술어 만족 집합을 셈)는 **사라진다**.
 - **대가**: 속성 값에 보증이 없다. 거래소가 "나이 ≥ 19" 를 받아들이는 근거는 "이 사용자가 그렇게 주장했고 그 주장이 그 자격증명에 고정돼 있다" 까지다. 논문·덱에 한계로 적고, 보증은 §10 의 속성 발급자로.
-- **IdP 가 보는 것**: uid, auid(고정), auid_s·arid_s(세션마다, 저장 안 함 — D1), H(C_u), H(C_s), max_height, chain_id, allowAgent. r_rp 를 모르므로 arid_s 로 RP 를 못 알아보고(G4), auid_s 로 세션을 사용자와 묶는 것은 uid 를 이미 알므로 새 정보가 아니다.
+- **IdP 가 보는 것**: uid, auid(고정), auid_s·arid_s(세션마다, 저장 안 함 — D1; 2026-11-12 부터 auid_s 는 계정마다 최신 값 하나만 덮어써 둔다), H(C_u), H(C_s), max_height, chain_id, allowAgent. r_rp 를 모르므로 arid_s 로 RP 를 못 알아보고(G4), auid_s 로 세션을 사용자와 묶는 것은 uid 를 이미 알므로 새 정보가 아니다.
 - **설계 노출 — IdP 단독으로도 연결 가능(후퇴, 컨트롤러 판정: 설계는 바꾸지 않는다).** π_RP 공개 입력 `[30] auid_s`·`[31] arid_s`
   는 `/wallet/tx` → `Mode3Wallet.execute(..., uint[33] pub)` 의 calldata 에 그대로 올라가 체인을 읽는 누구나 본다. IdP 는
   `/cia/issue` 에서 같은 `auid_s`·`arid_s` 를 요청 본문으로 받는다(D3). **요청 본문을 남기는 honest-but-curious IdP 라면**, RP

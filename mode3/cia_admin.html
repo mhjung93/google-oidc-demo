@@ -683,13 +683,19 @@
       const host = $('auidMap');
       if (!accounts) { placeholder(host, 'admin_need_secret'); return; }
       if (!accounts.length) { placeholder(host, 'admin_auidmap_empty'); return; }
-      const t = table([['admin_col_uid'], ['admin_col_id'], ['admin_col_auid'], ['admin_col_slot']]);
+      const t = table([['admin_col_uid'], ['admin_col_id'], ['admin_col_auid'], ['admin_col_auid_s'], ['admin_col_slot']]);
       const body = t.tBodies[0];
       for (const a of accounts) {
         const row = body.insertRow();
         cell(row, a.uid);
         cell(row, a.id ?? '-');
         if (a.auid) cell(row, fullVal(a.auid)); else { const c = cell(row, ''); c.className = 'muted'; tte(c, 'admin_auid_none'); }
+        // 2026-11-12(사용자 결정): IdP 가 계정마다 덮어써 두는 가장 최신 auid_s 하나와 그 발급 시각 — 기록은 없다.
+        if (a.lastAuidS?.value) {
+          const c = cell(row, fullVal(a.lastAuidS.value));
+          const at = document.createElement('small'); at.className = 'muted'; at.textContent = new Date(a.lastAuidS.at).toLocaleString();
+          c.append(document.createElement('br'), at);
+        } else { const c = cell(row, ''); c.className = 'muted'; tte(c, 'admin_auid_none'); }
         cell(row, a.slot === null || a.slot === undefined ? '-' : String(a.slot));
       }
       host.replaceChildren(t);

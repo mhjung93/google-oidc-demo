@@ -198,13 +198,22 @@ try {
     const m = F.e(await credMessageV11(a.req.auid_s, a.req.arid_s, a.req.Cf_u, a.req.Cf_s, CHAIN_ID, 0n));
     const pk = (await cia.get('/cia/public_keys')).body.pk_CIA;
     assert.equal(eddsa.verifyPoseidon(m, { R8: [F.e(BigInt(a.cred.sigma.R8x)), F.e(BigInt(a.cred.sigma.R8y))], S: BigInt(a.cred.sigma.S) }, [F.e(BigInt(pk.x)), F.e(BigInt(pk.y))]), true, '토큰은 (auid_s, arid_s, Cf_u, Cf_s, chainid, allowAgent) 위 CIA 서명');
+    // 2026-11-12(사용자 결정 — D1 수정): 계정마다 "가장 최신 auid_s 하나" 만 덮어써 둔다(값 + 발급 시각). 세션 기록에는 여전히 없다.
+    const latest = async () => (await cia.adminGet('/cia/accounts')).body.accounts.find((x) => String(x.uid) === String(uid)).lastAuidS;
+    const la = await latest();
+    assert.equal(la?.value, a.req.auid_s.toString(), '첫 발급의 auid_s 가 최신값으로 남는다'); assert.ok(!Number.isNaN(Date.parse(la.at)), '발급 시각');
     const b = await issue(user, { blind_u: a.blind_u });   // 같은 C_u, 새 세션
+    assert.notEqual(b.req.auid_s, a.req.auid_s, '세션마다 auid_s 는 다르다');
+    assert.equal((await latest()).value, b.req.auid_s.toString(), '새 발급이 덮어쓴다');
     assert.equal(b.r.status, 200); assert.equal(b.cred.published, false); assert.equal(b.cred.Cf_u, a.cred.Cf_u); assert.notEqual(b.cred.Cf_s, a.cred.Cf_s);
     assert.equal((await cia.get('/cia/state')).body.credCount, 1);
     const sessions = (await cia.adminGet(`/cia/admin/sessions?uid=${uid}`)).body.sessions;
     assert.ok(sessions.some((s) => s.Cf_s === a.cred.Cf_s) && sessions.some((s) => s.Cf_s === b.cred.Cf_s), '세션 기록 둘');
-    assert.ok(sessions.every((s) => s.auid_s === undefined && s.arid_s === undefined), 'D1: auid_s·arid_s 는 기록하지 않는다');
+    assert.ok(sessions.every((s) => s.auid_s === undefined && s.arid_s === undefined), 'D1: 세션 기록에는 auid_s·arid_s 를 남기지 않는다');
     const file = fs.readFileSync(path.join(cia.dir, 'cia_state.json'), 'utf8');
+    assert.equal(file.includes(a.req.auid_s.toString()), false, '앞 발급의 auid_s 는 남지 않는다(기록이 아니라 최신값 하나)');
+    assert.equal(file.split(b.req.auid_s.toString()).length - 1, 1, '최신 auid_s 는 상태 파일에 한 번만 있다');
+    for (const v of [a.req.arid_s, b.req.arid_s]) assert.equal(file.includes(v.toString()), false, 'arid_s 는 저장하지 않는다');
     for (const k of ['"attrs"', '"profile"', '"auid_s"', '"arid_s"', '"cm_u"']) assert.equal(file.includes(k), false, `${k} 가 상태 파일에 있다`);
   });
 

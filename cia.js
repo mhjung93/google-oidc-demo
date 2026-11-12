@@ -413,7 +413,7 @@ const pwOk = (acct, pwd) => Boolean(acct?.pwHash) && acct.pwAlgo === 'scrypt' &&
 /** 계정 레코드 공통 스캐폴드(수정 라운드 1 — 가입/시드/등록 세 곳의 리터럴을 하나로). 비밀번호 없이 만들면(OIDC 선등록)
  *  pwSalt·pwHash·pwAlgo 가 전부 null — pwOk 는 pwAlgo 검사로 자연히 거절한다. */
 function newAccountRecord({ pwSalt = null, pwHash = null, pwAlgo = null, pk_u = null, auid = null, slot = null, provider = 'demo', loginId = null } = {}) {
-  return { pwSalt, pwHash, pwAlgo, createdAt: new Date().toISOString(), pk_u, auid, slot, provider, loginId, tampered: false, disabled: false, creds: [], sessions: [], receipt: null, slotRetired: false };
+  return { pwSalt, pwHash, pwAlgo, createdAt: new Date().toISOString(), pk_u, auid, slot, provider, loginId, tampered: false, disabled: false, creds: [], sessions: [], receipt: null, slotRetired: false, lastAuidS: null };
 }
 // 아이디 가입(2026-11-03, /user 페이지 재구성): 사용자가 정하는 로그인 아이디. 프로토콜의 uid 는 그대로 IdP 내부 번호(가입 때 배정)이고,
 // 아이디는 로그인 폼에서 uid 를 찾는 열쇠일 뿐이다 — 대소문자를 가리지 않고(색인 키는 소문자) 계정당 하나, 바꿀 수 없다.
@@ -1007,6 +1007,7 @@ app.post('/cia/user/unlink_wallet', requireUser, async (req, res) => {
     const retired = retireActiveCred(uid);
     if (retired) setSlot(uid, 0n);
     acct.pk_u = null; acct.auid = null; acct.slotRetired = true;
+    acct.lastAuidS = null;   // 최신 auid_s(2026-11-12)는 방금 푼 auid 에서 나온 값이다 — 함께 지운다
     persist();
     const pub = retired ? await publishSafely() : { published: false };
     res.json({ unlinked: true, retired, published: Boolean(pub.published), pending: state.pending.length });
@@ -1139,7 +1140,8 @@ app.post('/cia/slot', userCors, async (req, res) => {
 // V11(스펙 2026-10-12 §5.2, 그림 3 "DA request") 세션 발급 = (C_u, C_s, π_IdP, sig_u) 한 요청. 옛 /cia/user_cred 를 흡수했다 — 요청의 C_u 가
 // 활성 자격증명과 다르면(첫 로그인·사용자의 속성 변경) 등록부 슬롯을 갱신·게시한 뒤 토큰을 낸다. 속성 값은 받지 않는다(D15).
 // 검사 순서: 형식 → max_height 범위 → 계정·disabled → chainid 허용 → C_u·C_s 부분군 → sig_u → π_IdP → 체인 생존(fail-closed) → disabled 재확인 →
-// (C_u 교체: 은퇴 → creds 추가 → setSlot → persist → 즉시 게시) → 토큰 서명 → 세션 기록. auid_s·arid_s 는 서명·토큰에만 쓰고 저장하지 않는다(D1).
+// (C_u 교체: 은퇴 → creds 추가 → setSlot → persist → 즉시 게시) → 토큰 서명 → 세션 기록. arid_s 는 서명·토큰에만 쓰고 저장하지 않는다(D1).
+// auid_s 는 세션 기록에 남기지 않되, 2026-11-12(사용자 결정 — D1 수정)부터 계정마다 **가장 최신 값 하나**만 덮어써 둔다(acct.lastAuidS — 관리자 화면 표시용, 기록은 없다).
 // /cia/issue — 데모 계정은 sig_u 만, 래퍼(Google) 계정은 sig_u + id_token(+첫 로그인이면 registration). 2026-10-16.
 app.post('/cia/issue', userCors, async (req, res) => {
   try {
@@ -1249,9 +1251,12 @@ app.post('/cia/issue', userCors, async (req, res) => {
       return res.status(401).json({ error: 'bad_code', reason: 'bad_code' });
     }
     const s = eddsa.signPoseidon(ciaPrv, F.e(await credMessageV11(auidS, aridS, Cf_u, Cf_s, BigInt(chainStr), agent)));
-    // V8(2026-09-24 §2.1): 세션 단위 폐기를 하려면 IdP 가 Cf_s 를 알아야 한다. 정리는 하트비트뿐 아니라 여기서도(최종 리뷰 F2). auid_s·arid_s 는 적지 않는다(D1).
+    // V8(2026-09-24 §2.1): 세션 단위 폐기를 하려면 IdP 가 Cf_s 를 알아야 한다. 정리는 하트비트뿐 아니라 여기서도(최종 리뷰 F2). 세션 기록에는 auid_s·arid_s 를 적지 않는다(D1).
     acct.sessions = (acct.sessions ?? []).filter((r) => r.chainid !== chainStr || BigInt(r.max_height) >= head);
-    acct.sessions.push({ Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString(), issuedAt: new Date().toISOString(), revokedAt: null });
+    const issuedAt = new Date().toISOString();
+    acct.sessions.push({ Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString(), issuedAt, revokedAt: null });
+    // 2026-11-12(사용자 결정 — D1 수정): 가장 최신 auid_s 하나만 덮어쓴다 — 앞 값은 사라진다(기록 아님). 어느 세션(Cf_s)의 것인지는 적지 않는다.
+    acct.lastAuidS = { value: auidS.toString(), at: issuedAt };
     persist();
     // OIDC 모양의 ID 토큰(2026-11-09 Phase 1): sub=auid_s(세션 가명), aud=arid_s(세션 RP 가명) — 둘 다 π_RP 의 공개 신호라 RP 가 증명과 맞춰 본다.
     // name = 프로필의 커밋먼트(없으면 클레임 자체가 없다). IdP 는 여기서도 RP 가 누구인지 모른다(arid_s 는 블라인딩된 값).
@@ -1782,7 +1787,7 @@ app.post('/cia/account/delete', requireAdmin, async (req, res) => {
 
 // 관리자 계정 목록(관리 페이지의 계정 목록용). activeCred 는 위의 기존 헬퍼(사용자당 활성 자격증명 하나).
 app.get('/cia/accounts', requireAdmin, (req, res) => res.json({
-  accounts: Object.entries(state.accounts).map(([uid, a]) => ({ uid, id: a.loginId ?? null, auid: a.auid ?? null, disabled: a.disabled, activeCf_u: activeCfU(a), slot: a.slot, tampered: Boolean(a.tampered), registryLeaf: state.registry.leaves[a.slot] ?? '0', provider: a.provider ?? 'demo' })),
+  accounts: Object.entries(state.accounts).map(([uid, a]) => ({ uid, id: a.loginId ?? null, auid: a.auid ?? null, disabled: a.disabled, activeCf_u: activeCfU(a), slot: a.slot, tampered: Boolean(a.tampered), registryLeaf: state.registry.leaves[a.slot] ?? '0', provider: a.provider ?? 'demo', lastAuidS: a.lastAuidS ?? null })),   // lastAuidS: 최신 auid_s 하나(2026-11-12)
 }));
 
 // ---- V9 등록부 관리(설계 2026-10-01 §9) ----
@@ -1800,7 +1805,7 @@ app.get('/cia/admin/registry', requireAdmin, (req, res) => {
   res.json({ depth: registry.depth, next: state.registry.next, regRoot: registry.root().toString(), epoch: state.epoch, pendingSlots: state.registry.pendingSlots.length, slots });
 });
 /** 관리자 화면 "세션 폐기 목록"(2026-10-14): 폐기된(revokedAt 있는) 세션만 계정 전체에서 모은다. 세션 리프 H'(Cf_s)·2^32+bound(2026-10-22, sessionLeaf) 와
- *  게시 여부(pending = 아직 체인에 안 올라감)를 함께 준다. auid_s·arid_s 는 기록에 없으므로(D1) 여기에도 없다. */
+ *  게시 여부(pending = 아직 체인에 안 올라감)를 함께 준다. auid_s·arid_s 는 세션 기록에 없으므로(D1) 여기에도 없다(최신 auid_s 하나는 /cia/accounts 의 lastAuidS). */
 app.get('/cia/admin/revoked_sessions', requireAdmin, async (req, res) => {
   const pendingLeaves = new Set(state.pending);
   const out = [];

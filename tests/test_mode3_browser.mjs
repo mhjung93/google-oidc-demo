@@ -1109,8 +1109,11 @@ try {
       const row = mapRows.find((r) => r[0] === a.uid);
       assert.ok(row, `uid ${a.uid} 줄이 있다`);
       assert.equal(row[2], a.auid ?? '(없음)', `uid ${a.uid} 의 auid 전체`);
+      assert.equal(row[3], a.lastAuidS?.value ?? '(없음)', `uid ${a.uid} 의 최신 auid_s 전체(2026-11-12)`);
     }
     assert.ok(accts.accounts.some((a) => a.auid), '등록된 계정이 하나는 있다(대응 표가 실제 auid 를 보이는지 확인하려면)');
+    assert.ok(accts.accounts.some((a) => a.lastAuidS?.value), '발급받은 계정이 하나는 있다(최신 auid_s 열이 실제 값을 보이는지 확인하려면)');
+    assert.deepEqual(await p.$$eval('#auidMap table thead th', (ths) => ths.map((th) => th.textContent.trim())), ['uid', '아이디', 'auid', '최신 auid_s', '슬롯']);
     const st = await p.evaluate(() => fetch('/cia/state').then((r) => r.json()));
     await p.waitForFunction((root) => [...document.querySelectorAll('#regDbKv code')].some((c) => c.textContent === root), st.regRoot, { timeout: 20_000 });
     const reg = await p.evaluate((sec) => fetch('/cia/admin/registry', { headers: { 'X-CIA-Admin-Secret': sec } }).then((r) => r.json()), cia.adminSecret);
