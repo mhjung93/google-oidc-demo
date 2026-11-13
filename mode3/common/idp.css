@@ -53,3 +53,13 @@ main.cards.narrow { grid-template-columns: 1fr; max-width: 760px; }
 .field input { width: 100%; padding: 9px 10px; }
 /* 안내 문장 안의 링크 — 기본 파란 밑줄 대신 다른 버튼·링크와 같은 색. */
 .card p.muted a { color: var(--accent); font-weight: 600; text-decoration: none; } .card p.muted a:hover { text-decoration: underline; }
+/* 2026-11-14 화면 리뷰: 좁은 한 칸 페이지(/user·/user/info)는 상단 바·하위 메뉴도 같은 폭으로 — 메뉴의 왼쪽 끝이 카드의 왼쪽 끝과 맞는다. */
+.idp-nav.narrow .nav-inner, .sub-nav.narrow .sub-inner { max-width: 760px; padding-left: var(--gap); padding-right: var(--gap); box-sizing: border-box; }
+/* 값 자리에 든 안내 문구("아직 없음" 등) — 값이 아니므로 본문 글꼴로. */
+code.plain { font-family: inherit; font-size: inherit; background: none; padding: 0; color: var(--muted); }
+/* 카드 안의 작은 묶음(스냅 연결 해제 / 내 계정 폐기) — 묶음마다 설명·비밀번호·버튼을 따로 둔다. */
+.sub-block { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 12px; }
+.sub-block h4 { margin: 0 0 4px; font-size: 15px; } .sub-block.danger h4 { color: var(--danger); }
+.sub-block p { margin: 8px 0 0; } .sub-block p.desc { margin: 0 0 4px; }
+/* 카드 밖에 선 결과 칸 — 비어 있을 때는 칸(격자 간격)을 차지하지 않는다. */
+main.cards > #revokeVerdict { grid-column: 1 / -1; } main.cards > #revokeVerdict:empty { display: none; }

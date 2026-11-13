@@ -14,12 +14,12 @@
 </head>
 <body data-page="idp_user">
 <header id="demoBar"></header>
-<nav class="idp-nav"><div class="nav-inner">
+<nav class="idp-nav narrow"><div class="nav-inner">   <!-- narrow: 상단 바·하위 메뉴의 왼쪽 끝을 좁은 카드(main.cards.narrow)와 맞춘다(2026-11-14) -->
   <span class="brand" data-i18n="idp_brand">zkID</span>
   <div class="nav-menu"><a href="/user" aria-current="page" data-i18n="idp_nav_user">내 계정</a><a href="/rp" data-i18n="idp_nav_rp">RP 운영자</a><a href="/admin" data-i18n="idp_nav_admin">관리자</a></div>
 </div></nav>
 <!-- 2026-11-10: "내 계정" 하위 메뉴 — 계정 관리(/user) · 내 정보(/user/info, 읽기 전용) -->
-<nav class="sub-nav"><div class="sub-inner"><a href="/user" aria-current="page" data-i18n="idp_subnav_manage">계정 관리</a><a href="/user/info" data-i18n="idp_subnav_info">내 정보</a></div></nav>
+<nav class="sub-nav narrow"><div class="sub-inner"><a href="/user" aria-current="page" data-i18n="idp_subnav_manage">계정 관리</a><a href="/user/info" data-i18n="idp_subnav_info">내 정보</a></div></nav>
 <main class="cards narrow">   <!-- 2026-11-13(화면 리뷰): 카드가 한 칸으로 선다 — 반쪽만 차는 카드가 없게 -->
   <!-- ===== 로그인 전 ① 로그인 (2026-11-03 재구성: 로그인해야 등록·폐기 카드가 보인다) ===== -->
   <section class="card auth-card" id="loginView">
@@ -67,7 +67,7 @@
       <dt></dt><dd><p class="desc kv-desc" data-i18n="idp_slot_desc">IdP 등록부에서 이 계정의 자리 번호입니다. 활성 자격증명이 이 자리에 실리고, 폐기되면 비워집니다. 스냅은 이 자리를 보고 내 자격증명이 바뀌지 않았는지 확인합니다.</p></dd>
     </dl>
     </details>
-    <p><a id="walletLink2" class="btn-ghost" target="_blank" rel="noopener" data-i18n="idp_wallet_link">zk 스냅 페이지 열기</a></p>
+    <p><a id="walletLink2" class="btn btn-ghost" target="_blank" rel="noopener" data-i18n="idp_wallet_link">zk 스냅 화면 열기</a></p>   <!-- 2026-11-14: .btn 이 빠져 기본 파란 밑줄 링크로 보였다 -->
   </section>
   <!-- 2026-11-09 Phase 1: 프로필(OIDC profile 의 name 한 칸). 사용자가 속성 도구(지갑 오리진 /attr.html — MetaMask 와 무관한 독립 페이지)에서 만든
        속성 커밋먼트를 붙여 넣는다. IdP 는 뜻을 모르는 문자열로만 저장하고, 서비스 로그인 때 ID 토큰의 name 클레임으로 실려 간다. 지갑 등록과 별개라 로그인만 하면 보인다. -->
@@ -80,11 +80,24 @@
     <div id="profileVerdict"></div>
   </section>
   <section class="card me-view" id="revokeCard" hidden>
-    <h3 data-i18n="idp_manage_title">계정 관리</h3>
-    <p class="desc" data-i18n="idp_revoke_desc">비밀번호를 다시 넣어 확인합니다. 스냅 연결 해제는 이 계정에서 스냅 등록만 풀어 새 스냅을 다시 등록할 수 있게 하고, 계정 폐기는 되돌릴 수 없습니다.</p>
-    <p><label><span data-i18n="idp_pwd_label">비밀번호</span> <input id="revokePwd" type="password" autocomplete="current-password" /></label> <button id="unlinkBtn" class="btn-ghost" data-i18n="idp_unlink_btn">스냅 연결 해제</button> <button id="revokeBtn" class="danger" data-i18n="account_revoke_btn">내 계정 폐기</button></p>
-    <div id="revokeVerdict"></div>
+    <!-- 2026-11-14(화면 리뷰): 비밀번호 한 칸을 두 버튼이 같이 쓰던 것을 두 묶음으로 나눴다 — 묶음마다 무엇이 일어나는지 적고 비밀번호를 따로 받는다. 제목도 하위 메뉴("계정 관리")와 겹치지 않게. -->
+    <h3 data-i18n="idp_manage_title">스냅 연결 해제 · 계정 폐기</h3>
+    <p class="desc" data-i18n="idp_revoke_desc">둘 다 비밀번호를 다시 넣어 확인하며, 직접 되돌릴 수 없습니다.</p>
+    <div class="sub-block" id="unlinkBlock">
+      <h4 data-i18n="idp_unlink_btn">스냅 연결 해제</h4>
+      <p class="desc" data-i18n="idp_unlink_desc">계정은 남기고 스냅 등록만 풉니다. 이 스냅으로 받은 자격증명은 폐기됩니다. 그 뒤 다른 스냅을 등록하거나 같은 스냅을 다시 등록할 수 있습니다.</p>
+      <p><label class="field"><span data-i18n="idp_pwd_label">비밀번호</span><input id="unlinkPwd" type="password" autocomplete="current-password" /></label></p>
+      <p><button id="unlinkBtn" class="btn-ghost" data-i18n="idp_unlink_btn">스냅 연결 해제</button></p>
+    </div>
+    <div class="sub-block danger" id="revokeBlock">
+      <h4 data-i18n="account_revoke_title">내 계정 폐기</h4>
+      <p class="desc" data-i18n="idp_self_revoke_desc">이 zkID 계정을 폐기합니다. 자격증명이 폐기되고 이 계정으로는 어느 서비스에도 로그인할 수 없습니다. 폐기된 계정은 스냅을 쥐지 않으므로, 같은 스냅으로 새 계정을 만들어 등록할 수 있습니다.</p>
+      <p><label class="field"><span data-i18n="idp_pwd_label">비밀번호</span><input id="revokePwd" type="password" autocomplete="current-password" /></label></p>
+      <p><button id="revokeBtn" class="danger" data-i18n="account_revoke_btn">내 계정 폐기</button></p>
+    </div>
   </section>
+  <!-- 결과 칸은 카드 밖에 둔다(2026-11-14) — 연결 해제가 되면 위 카드가 숨어(등록 없음) 그 안에 있던 "스냅 연결 해제됨" 과 다음 할 일 안내가 함께 사라졌다. -->
+  <div id="revokeVerdict"></div>
 </main>
 <script>
   const $ = (id) => document.getElementById(id);
@@ -222,8 +235,8 @@
   $('unlinkBtn').addEventListener('click', async () => {
     if (!me) return;
     if (!Demo.confirmDanger('confirm_unlink_wallet')) return;
-    const r = await post('/cia/user/unlink_wallet', { pwd: $('revokePwd').value });
-    $('revokePwd').value = '';
+    const r = await post('/cia/user/unlink_wallet', { pwd: $('unlinkPwd').value });
+    $('unlinkPwd').value = '';
     verdict($('revokeVerdict'), r.status === 200, r.status === 200 ? 'idp_unlink_ok_title' : 'idp_unlink_failed', r.status === 200 ? () => ({ summary: tt('idp_unlink_ok') || '스냅 연결을 해제했습니다.' }) : { reason: r.body?.reason, detail: r.body });
     await refreshMe();
   });

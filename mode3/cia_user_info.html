@@ -14,12 +14,12 @@
 <!-- 2026-11-10: "내 계정" 하위 메뉴 "내 정보" — /cia/user/me 를 읽기만 한다(바꾸는 일은 /user 의 계정 관리에서). 저장한 속성 커밋먼트와 저장 시각을 확인하는 곳. -->
 <body data-page="idp_user_info">
 <header id="demoBar"></header>
-<nav class="idp-nav"><div class="nav-inner">
+<nav class="idp-nav narrow"><div class="nav-inner">   <!-- narrow: 상단 바·하위 메뉴의 왼쪽 끝을 좁은 카드(main.cards.narrow)와 맞춘다(2026-11-14) -->
   <span class="brand" data-i18n="idp_brand">zkID</span>
   <div class="nav-menu"><a href="/user" aria-current="page" data-i18n="idp_nav_user">내 계정</a><a href="/rp" data-i18n="idp_nav_rp">RP 운영자</a><a href="/admin" data-i18n="idp_nav_admin">관리자</a></div>
 </div></nav>
-<nav class="sub-nav"><div class="sub-inner"><a href="/user" data-i18n="idp_subnav_manage">계정 관리</a><a href="/user/info" aria-current="page" data-i18n="idp_subnav_info">내 정보</a></div></nav>
-<main class="cards">
+<nav class="sub-nav narrow"><div class="sub-inner"><a href="/user" data-i18n="idp_subnav_manage">계정 관리</a><a href="/user/info" aria-current="page" data-i18n="idp_subnav_info">내 정보</a></div></nav>
+<main class="cards narrow">   <!-- 2026-11-14(화면 리뷰): /user 와 같은 좁은 한 칸 — 반쪽만 차는 카드가 없게 -->
   <section class="card auth-card" id="loginNeeded" hidden>
     <p data-i18n="idp_myinfo_login_needed">로그인이 필요합니다.</p>
     <p><a href="/user" class="btn" data-i18n="idp_myinfo_login_link">로그인하러 가기</a></p>
@@ -30,7 +30,7 @@
     <dl class="kv">
       <dt data-i18n="idp_myinfo_id">아이디</dt><dd id="infoId">-</dd>
       <dt data-i18n="idp_myinfo_uid">uid</dt><dd><code id="infoUid">-</code> <button type="button" id="copyUidBtn" class="copy-btn" title="복사">⧉</button></dd>
-      <dt></dt><dd><p class="desc kv-desc" data-i18n="idp_myinfo_uid_desc">zkID 가 배정한 계정 번호입니다. 속성 커밋먼트 도구에 넣습니다.</p></dd>
+      <dt></dt><dd><p class="desc kv-desc" data-i18n="idp_myinfo_uid_desc">zkID 가 배정한 계정 번호입니다. 속성 도구는 zkID 로그인에서 이 값을 받아옵니다.</p></dd>
       <dt data-i18n="idp_myinfo_auid">auid</dt><dd><code id="infoAuid" style="overflow-wrap:anywhere;word-break:break-all">-</code> <button type="button" id="copyAuidBtn" class="copy-btn" title="복사" hidden>⧉</button></dd>
       <dt></dt><dd><p class="desc kv-desc" data-i18n="idp_myinfo_auid_desc">스냅 등록 때 스냅이 낸 값입니다. 서비스 로그인 인증 창에 넣는 값과 같아야 합니다.</p></dd>
       <dt data-i18n="idp_myinfo_slot">등록부 슬롯</dt><dd id="infoSlot">-</dd>
@@ -64,16 +64,18 @@
     $('loginNeeded').hidden = Boolean(me); $('infoView').hidden = !me;
     if (!me) return;
     $('infoId').textContent = me.id ?? '-';
-    $('infoUid').textContent = me.uid;   // 2026-11-10: 속성 커밋먼트 도구의 uid 칸에 넣는 값
+    $('infoUid').textContent = me.uid;   // 속성 도구는 이 값을 zkID 로그인(/cia/user/uid)에서 받아온다 — 손으로 넣지 않는다(2026-11-13)
     // 2026-11-11(사용자 요청): auid·슬롯 — /cia/user/me 가 이미 준다. 지갑 등록 전·연결 해제 뒤에는 둘 다 null.
     $('infoAuid').textContent = me.auid ?? (tt('idp_myinfo_auid_none') || '아직 없음');
     $('copyAuidBtn').hidden = !me.auid;
+    // 값이 없을 때의 안내 문구("아직 없음"·"저장된 값 없음")는 값이 아니다 — 고정폭 글꼴로 그리지 않는다(낱말 사이가 벌어져 보였다, 2026-11-14).
+    $('infoAuid').classList.toggle('plain', !me.auid);
     $('infoSlot').textContent = me.slot ?? '-';
     const provider = me.provider ?? 'demo';
     $('infoMethod').textContent = tt(`idp_myinfo_method_${provider}`) || provider;
     $('infoWallet').textContent = me.registered ? (tt('idp_myinfo_wallet_yes') || '등록됨') : (tt('idp_myinfo_wallet_no') || '아직 없음');
     const name = me.profile?.name ?? null, at = me.profile?.updatedAt ?? null;
-    $('infoAttr').textContent = name ?? (tt('idp_myinfo_attr_none') || '저장된 값 없음');
+    $('infoAttr').textContent = name ?? (tt('idp_myinfo_attr_none') || '저장된 값 없음'); $('infoAttr').classList.toggle('plain', !name);
     $('infoAttrAt').textContent = at ? localTime(at) : '-';
     if (at) $('infoAttrAt').title = at;
   })();

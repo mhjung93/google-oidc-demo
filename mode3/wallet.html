@@ -171,6 +171,13 @@
       <div id="meStoreVerdict"></div>
       <!-- 2026-11-13(계획 P11): 새 파일·새 비밀번호로 salt 백업을 다시 만든다(위 설정 카드가 열린다). -->
       <p class="row-actions" id="rebackupRow" hidden><button type="button" id="rebackupBtn" class="btn-ghost" data-i18n="wallet_rebackup_btn">백업 다시 만들기</button></p>
+      <!-- 2026-11-14(화면 리뷰): "스냅 초기화" 는 여기 둔다 — 설정 탭이 빠진 뒤(11-11) 버튼에 갈 길이 없었는데 안내 문구들은 초기화하라고 했다. -->
+      <div class="danger-zone" id="meDanger">
+        <h4 data-i18n="wallet_reset_title">스냅 초기화</h4>
+        <p class="desc muted" data-i18n="wallet_reset_desc">이 스냅의 등록·동의 기록과 스냅 에이전트의 등록·세션 기록을 지웁니다. salt 는 남습니다 — 다시 등록하면 같은 주소로 이어집니다. 되돌릴 수 없습니다.</p>
+        <p class="row-actions"><button type="button" id="snapResetBtn" class="danger" data-i18n="wallet_snap_reset_btn">스냅 초기화</button></p>
+        <div id="snapResetVerdict"></div>
+      </div>
     </section>
 
     <!-- ===== 탭: 보내기 ===== -->
@@ -249,7 +256,6 @@
         <p class="desc muted" data-i18n="wallet_danger_desc">되돌릴 수 없습니다. 계정 폐기는 IdP 에 이 계정의 자격증명 은퇴를 요청하고, 스냅 초기화는 이 브라우저의 등록 비밀과 동의 기록을 지웁니다.</p>
         <p class="row-actions">
           <button id="selfRevokeBtn" class="danger" data-i18n="wallet_self_revoke_btn">계정 자기 폐기</button>
-          <button id="snapResetBtn" class="danger" data-i18n="wallet_snap_reset_btn">스냅 초기화</button>
         </p>
       </div>
     </section>
@@ -566,7 +572,9 @@
     }
     /** 일반 보기용 진행 줄(2026-11-05) — 사용자가 지금 무엇을 기다리는지, 어디(MetaMask)를 봐야 하는지. 실패는 사유 제목을 붙인다. */
     function say(key, vars) { const el = $('authProgress'); if (!el) return; el.textContent = tt(key, vars) || key; }
+    let authFailed = false;   // 실패로 끝난 팝업 — 작은 제목이 "…처리하는 중입니다" 로 남지 않게(2026-11-14 화면 리뷰)
     function sayFailed(reason) {
+      authFailed = true; renderAuthTitle();
       const r = reason ? window.DemoStrings?.reasons?.[reason] : null;
       const title = r ? (r[Demo.lang] ?? r.ko)?.title : null;
       $('authProgress').textContent = `${tt('wallet_prog_failed') || '실패했습니다 — 창이 곧 닫힙니다.'}${title ? ` ${title}` : reason ? ` (${reason})` : ''}`;
@@ -576,6 +584,7 @@
       const t = lastAuthReq?.type;
       tte($('authHeading'), !t ? 'wallet_auth_title' : t === 'mode3-register' ? 'wallet_auth_heading_register' : t === 'mode3-tx' ? 'wallet_auth_heading_tx' : 'wallet_auth_heading_login');
       if (!window.opener) { tte($('authTitle'), 'wallet_auth_no_opener'); return; }
+      if (authFailed) { tte($('authTitle'), 'wallet_auth_failed'); return; }
       if (!lastAuthReq) { tte($('authTitle'), 'wallet_auth_waiting'); return; }
       if (t === 'mode3-register') { tte($('authTitle'), 'wallet_auth_registering'); return; }
       const service = cleanServiceName(lastAuthReq.serviceName) || lastAuthReq.origin;
@@ -769,7 +778,7 @@
     }
 
     /** 등록 코드(uid·code)로 등록(2026-11-09 에 함수로 뽑음 — 서비스 첫 로그인 중의 등록(processAuthorize)과 옛 mode3-register 팝업 경로 공용).
-     *  Snap register({uid}) → 에이전트 /wallet/register { uid, code, s_u } → Snap storeRegistration. 성공 { ok:true, slot, auid, issue_code|null } / 실패 { ok:false, reason, detail? }. */
+     *  Snap prepareRegister(보류 등록) → 에이전트 /wallet/register { uid, code, s_u } → Snap storeRegistration({…, uid}). 성공 { ok:true, slot, auid, issue_code|null } / 실패 { ok:false, reason, detail? }. */
     async function codeRegister({ uid, code, auid = null, step, log }) {
       let already = false;
       try { already = Boolean((await (await fetch('/wallet/status')).json()).registered); } catch { /* 진행 — /wallet/register 가 다시 걸러준다 */ }
@@ -789,13 +798,15 @@
       if (!mySalt.ok) { step(mySalt.reason === 'snap_setup_required' ? '스냅에 salt 가 없거나 백업 전이다 — zk 스냅 화면에서 먼저 설정해야 한다.' : '스냅이 옛 버전이다 — 다시 설치해야 한다.'); return { ok: false, reason: mySalt.reason }; }
       if (mySalt.s_u !== rec.s_u) { step('속성 도구 기록의 salt 가 이 스냅의 salt 와 다르다 — 등록하지 않는다.'); return { ok: false, reason: 'attr_record_salt_mismatch' }; }
       step('등록 비밀을 만드는 중…'); say('wallet_prog_registering');
-      const reg = await invokeSnap('register', { uid, s_u: rec.s_u });
+      // 2026-11-14(화면 리뷰): 스냅에는 보류 등록(prepareRegister — uid 없음, "등록 없음" 으로 취급)만 먼저 둔다. 전에는 Snap register({uid}) 가 IdP 응답 전에 uid 를
+      // 적어, IdP 가 거절하면(auid_taken 등) 거절된 계정의 uid 가 스냅에 남고 다음 등록이 already_registered 로 막혔다. uid 는 IdP 가 받은 뒤 storeRegistration 이 채운다.
+      const reg = await invokeSnap('prepareRegister', {});
       if (!reg || reg.denied) { step('등록 거절'); return { ok: false, reason: 'user_denied' }; }
       step('에이전트에 등록하는 중…');
       const { status, body: b } = await postJson('/wallet/register', { uid, code, s_u: reg.s_u, ...(rec.profile ? { profile: rec.profile } : {}) });
       if (status !== 201) { step('등록 실패'); log(errText(status, b)); return { ok: false, reason: b.cia?.reason ?? b.reason ?? `HTTP ${status}`, detail: b.detail ?? b.cia?.detail ?? null }; }
       step('스냅에 등록 결과 저장 중…');
-      try { await invokeSnap('storeRegistration', { attrs: b.attrs, slot: b.slot, auid: b.auid }); }
+      try { await invokeSnap('storeRegistration', { attrs: b.attrs, slot: b.slot, auid: b.auid, uid: String(uid) }); }
       catch (e) { step('등록이 반만 됐다 — 스냅 저장 실패'); log(e.message); return { ok: false, reason: 'wallet_error', detail: e.message }; }
       return { ok: true, slot: b.slot, auid: b.auid, issue_code: typeof b.issue_code === 'string' ? b.issue_code : null };
     }
@@ -1367,7 +1378,7 @@
         btn.addEventListener('click', () => revokeSession(r_s, c, btn, box));
         const foot = document.createElement('div');
         foot.className = 'session-foot';
-        foot.append(boundHint, boundLabel, btn);
+        foot.append(boundLabel, btn, boundHint);   // 설명은 칸·버튼 아래 한 줄(2026-11-14 화면 리뷰 — 라벨보다 앞서 읽혔다)
         box.append(dl, foot);
         acts.appendChild(box);
       }
@@ -1597,7 +1608,11 @@
       const revealKey = storeRevealed ? 'wallet_me_hide' : 'wallet_me_reveal';
       $('meRevealBtn').dataset.i18n = revealKey;
       $('meRevealBtn').textContent = tt(revealKey) || (storeRevealed ? '비밀 값 가리기' : '비밀 값 보기');
-      $('meStoreEmpty').hidden = !st || Boolean(st.registration);
+      // 보류 등록(uid 없음 — IdP 등록이 끝나지 않았다)은 "등록 없음" 과 같이 다루되 문구로 구분한다(2026-11-14). 저장된 값이라 묶음은 그대로 그린다.
+      const pendingReg = Boolean(st?.registration) && !st.registration.uid;
+      $('meStoreEmpty').hidden = !st || (Boolean(st.registration) && !pendingReg);
+      const emptyKey = pendingReg ? 'wallet_me_pending' : 'wallet_me_empty';
+      $('meStoreEmpty').dataset.i18n = emptyKey; $('meStoreEmpty').textContent = tt(emptyKey) || (pendingReg ? '끝나지 않은 등록이 있습니다' : '저장된 등록 없음');
       // "백업 다시 만들기" 는 salt 묶음 바로 아래에 둔다(2026-11-13 화면 리뷰) — 묶음은 매번 새로 그리므로 줄을 그때마다 옮겨 붙인다. salt 가 안 보이면 숨긴다.
       rebackupRow.hidden = !st?.salt; $('meCard').appendChild(rebackupRow);
       if (!st) return;
@@ -2230,18 +2245,19 @@
     });
     $('snapResetBtn').addEventListener('click', async () => {
       if (!Demo.confirmDanger('confirm_reset')) return;
-      pendingVerdict($('snapVerdict'), 'working');
+      pendingVerdict($('snapResetVerdict'), 'working');
       try {
         await ensureConnected();
         const r = await invokeSnap('reset', {});
-        if (r && r.denied) { setVerdict($('snapVerdict'), false, 'wallet_snap_reset_failed', () => ({ summary: tt('wallet_cancelled') || '창에서 취소했습니다.' })); return; }
+        if (r && r.denied) { setVerdict($('snapResetVerdict'), false, 'wallet_snap_reset_failed', () => ({ summary: tt('wallet_cancelled') || '창에서 취소했습니다.' })); return; }
         // 2026-11-06: 에이전트(이 서버)의 등록·세션도 함께 비운다 — 아니면 다음 등록이 409 already_registered 로 막힌다.
         const a = await fetch('/wallet/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: true }) });
-        if (!a.ok) { setVerdict($('snapVerdict'), false, 'wallet_snap_reset_failed', { reason: 'wallet_error', detail: `agent reset HTTP ${a.status}` }); return; }
-        setVerdict($('snapVerdict'), true, 'wallet_snap_reset_ok', () => ({ summary: tt('wallet_snap_reset_summary') || '스냅과 이 스냅의 등록 기록을 지웠습니다. 이제 zkID 에서 새로 등록할 수 있습니다.' }));
+        if (!a.ok) { setVerdict($('snapResetVerdict'), false, 'wallet_snap_reset_failed', { reason: 'wallet_error', detail: `agent reset HTTP ${a.status}` }); return; }
+        setVerdict($('snapResetVerdict'), true, 'wallet_snap_reset_ok', () => ({ summary: tt('wallet_snap_reset_summary') || '스냅과 이 스냅의 등록 기록을 지웠습니다. 이제 zkID 에서 새로 등록할 수 있습니다.' }));
         await refresh();
+        await loadStore();   // "내 계정" 의 값도 지운 뒤의 것으로
       } catch (e) {
-        setVerdict($('snapVerdict'), false, 'wallet_snap_reset_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
+        setVerdict($('snapResetVerdict'), false, 'wallet_snap_reset_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
       }
     });
 
