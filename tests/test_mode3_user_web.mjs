@@ -51,7 +51,7 @@ try {
     await userPage.click('#recoveryCodeClose'); assert.equal(await text(userPage, '#recoveryCodeText'), '');
     const d = await idbDump(userPage);
     assert.deepEqual(Object.keys(d).sort(), ['meta', 'registration', 'secrets', 'sessions', 'unlock'].filter((k) => k in d).sort());
-    assert.equal(d.registration.uid, '12345'); assert.ok(!('s_u' in d.registration) && !('sk_u' in d.registration));
+    assert.equal(d.registration.uid, '12345'); assert.ok(!('s_u' in d.registration) && !('sk_u' in d.registration) && !('pk_u' in d.registration));
     assert.ok(d.secrets.iv && d.secrets.ct); assert.equal(d.unlock.key, '[CryptoKey]'); assert.equal(d.meta.mode, 'auto'); assert.equal(d.unlock.expiresAt, null);
     const dump = await pageDump(userPage); assert.ok(!dump.includes(d.secrets.ct), '암호문도 DOM 에 없다');
     assert.equal((await userPage.$('#vaultPw')) === null, true, '금고 비밀번호 칸이 없다'); assert.equal((await userPage.$('#googleRegRow')) === null, true, 'Google 등록 행이 없다');

@@ -24,8 +24,8 @@ try {
   assert.ok(info.attrGateAddress, 'RP 의 AttrGate 가 배포되지 않았다');
   const PW = 'vault-oidc';
   const SUB = 'google-user-77';
-  await t('prepareRegistration: nonce 가 "reg:"+hex64 이고 pk_u 를 돌려준다; 다시 부르면 새 재료', async () => {
-    const a = await core.prepareRegistration(); assert.match(a.nonce, /^reg:[0-9a-f]{64}$/); assert.match(a.pk_u.x, /^[0-9]+$/);
+  await t('prepareRegistration: nonce 가 "reg:"+hex64, 등록 키는 돌려주지 않는다; 다시 부르면 새 재료', async () => {
+    const a = await core.prepareRegistration(); assert.match(a.nonce, /^reg:[0-9a-f]{64}$/); assert.equal('pk_u' in a, false); assert.deepEqual(Object.keys(a).sort(), ['nonce', 'pending']);
     const b = await core.prepareRegistration(); assert.notEqual(a.nonce, b.nonce);
   });
   await t('completeRegistration: 스텁 토큰(nonce = prepare 의 것) → 201, uid = uidOf(provider, sub), registration.provider = 스텁 provider, 비밀은 금고에만', async () => {
@@ -33,7 +33,7 @@ try {
     const idToken = await stub.mint({ sub: SUB, nonce: p.nonce });
     const r = await core.completeRegistration({ idToken, profile: { birthYear: '1990', country: 'KR' }, vaultPassword: PW });
     assert.equal(r.status, 201, j(r.body)); assert.equal(r.body.uid, uidOf(stub.provider, SUB)); assert.equal(r.body.provider, stub.provider);
-    const reg = await kv.get('registration'); assert.equal(reg.provider, stub.provider); assert.equal(reg.uid, r.body.uid); assert.ok(!('s_u' in reg) && !('sk_u' in reg));
+    const reg = await kv.get('registration'); assert.equal(reg.provider, stub.provider); assert.equal(reg.uid, r.body.uid); assert.ok(!('s_u' in reg) && !('sk_u' in reg) && !('pk_u' in reg));
     assert.equal((await core.status()).body.provider, stub.provider);
   });
   await t('nonce 가 다른 토큰·pending 없음·토큰 형식 오류의 사유', async () => {
@@ -60,7 +60,7 @@ try {
     assert.equal(r.status, 201, j(r.body));
     const ch = (await rp.post('/api/mode3/challenge')).body;
     // 2026-10-16: Google 로 만든 계정은 로그인(발급)마다 그 로그인에 묶인 토큰이 필요하다 — loginPrepare 의 nonce 로 받는다.
-    const prep = await core.loginPrepare({ arid: info.arid, r_rp: ch.r_rp });
+    const prep = await core.loginPrepare({ arid: info.arid, r_rp: ch.r_rp, allowAgent: '0' });
     const lg = await core.login({ arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s: ch.r_s, r_rp: ch.r_rp, allowAgent: '0', factoryAddress: info.factoryAddress, attrGateAddress: info.attrGateAddress }, { verifiedOrigin: info.origin, idToken: await stub.mint({ sub: 'google-user-78', nonce: prep.body.nonce }) });
     assert.equal(lg.status, 200, j(lg.body));
     assert.equal((await rp.post('/api/mode3/login', { proof: lg.body.proof, publicSignals: lg.body.publicSignals, sig: lg.body.sig, r_s: ch.r_s })).body.ok, true);
@@ -95,7 +95,7 @@ try {
     const SUBG = 'g-login-77';
     const ch1 = (await rp.post('/api/mode3/challenge')).body;
     const body1 = { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s: ch1.r_s, r_rp: ch1.r_rp, allowAgent: '0', factoryAddress: info.factoryAddress, attrGateAddress: info.attrGateAddress };
-    const prep = await core.loginPrepare({ arid: info.arid, r_rp: ch1.r_rp });
+    const prep = await core.loginPrepare({ arid: info.arid, r_rp: ch1.r_rp, allowAgent: '0' });
     assert.equal(prep.status, 200, j(prep.body)); assert.equal(prep.body.registered, false); assert.match(prep.body.nonce, /^issue:[0-9a-f]{64}$/);
     const tok = await stub.mint({ sub: SUBG, nonce: prep.body.nonce });
     const lg = await core.login(body1, { verifiedOrigin: info.origin, serviceName: 'zkONE', idToken: tok });
@@ -103,7 +103,7 @@ try {
     assert.equal((await rp.post('/api/mode3/login', { proof: lg.body.proof, publicSignals: lg.body.publicSignals, sig: lg.body.sig, r_s: ch1.r_s })).body.ok, true);
     const st = (await core.status()).body;
     assert.equal(st.registered, true); assert.equal(st.provider, stub.provider); assert.equal(st.uid, uidOf(stub.provider, SUBG)); assert.ok(Number.isInteger(st.slot) && st.slot >= 0, j(st.slot));
-    const reg = await kv.get('registration'); assert.equal(reg.pendingIdp, false); assert.ok(!('s_u' in reg) && !('sk_u' in reg));
+    const reg = await kv.get('registration'); assert.equal(reg.pendingIdp, false); assert.ok(!('s_u' in reg) && !('sk_u' in reg) && !('pk_u' in reg));
     // 토큰 없이 다시 로그인 → 래퍼가 거절(oidc_required)
     const ch2 = (await rp.post('/api/mode3/challenge')).body;
     const body2 = { ...body1, r_s: ch2.r_s, r_rp: ch2.r_rp };
@@ -113,7 +113,10 @@ try {
     const bad = await core.login(body2, { verifiedOrigin: info.origin, idToken: tok });
     assert.equal(bad.status, 400, j(bad.body)); assert.equal(bad.body.reason, 'oidc_nonce_mismatch');
     // 이 로그인의 nonce 로 받은 토큰 → ok(같은 PPID)
-    const prep2 = await core.loginPrepare({ arid: info.arid, r_rp: ch2.r_rp }); assert.equal(prep2.body.registered, true);
+    // 2026-11-13(스펙 no-pk-u §3.3): nonce 는 이 로그인의 tag(s_u·arid_s·chainid·allowAgent) — allowAgent 가 없으면 400, 다르면 다른 nonce
+    assert.equal((await core.loginPrepare({ arid: info.arid, r_rp: ch2.r_rp })).status, 400, 'allowAgent 없음');
+    const prep2 = await core.loginPrepare({ arid: info.arid, r_rp: ch2.r_rp, allowAgent: '0' }); assert.equal(prep2.body.registered, true);
+    assert.notEqual((await core.loginPrepare({ arid: info.arid, r_rp: ch2.r_rp, allowAgent: '1' })).body.nonce, prep2.body.nonce, 'allowAgent 가 tag 의 ctx 에 든다');
     const ok2 = await core.login(body2, { verifiedOrigin: info.origin, idToken: await stub.mint({ sub: SUBG, nonce: prep2.body.nonce }) });
     assert.equal(ok2.status, 200, j(ok2.body));
     const v2 = await rp.post('/api/mode3/login', { proof: ok2.body.proof, publicSignals: ok2.body.publicSignals, sig: ok2.body.sig, r_s: ch2.r_s }); assert.equal(v2.body.ok, true, j(v2.body));

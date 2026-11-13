@@ -6,8 +6,9 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { chromium } from '@playwright/test';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
-import { createRegistration, signRegistration } from '../lib/mode3_wallet.js';
-import { auidOf } from '../lib/mode3_credential.js';
+import { createRegistration } from '../lib/mode3_wallet.js';
+import { auidOf, randomScalar, registerCtx, tagOf } from '../lib/mode3_credential.js';
+import { regBody } from './helpers/mode3_flow.mjs';
 import { uidOf, regNonce } from '../lib/mode3_oidc_nonce.js';
 
 const DEBUG = process.env.MODE3_BROWSER_DEBUG === '1';
@@ -58,11 +59,11 @@ try {
     await userPage.close(); await rpPage.close();
   });
   await t('(3) 계정 페이지(localhost): Google 로 등록한 계정을 Google 재로그인으로 폐기 → 200, disabled', async () => {
-    // 계정은 Node 에서 IdP 의 id_token 경로로 만든다(지갑 흉내: 재료 → sub 로 uid 선계산 → 등록 토큰 → sig_reg).
+    // 계정은 Node 에서 IdP 의 id_token 경로로 만든다(지갑 흉내: 재료 → sub 로 uid 선계산 → n 으로 tag → 등록 토큰 → 등록용 π_IdP).
     const reg = await createRegistration(0n); const uid = uidOf(stub.provider, SUB); const auid = await auidOf({ uid: BigInt(uid), s_u: reg.s_u });
-    const pk_u = { x: reg.pk_u.x.toString(), y: reg.pk_u.y.toString() };
-    const id_token = await stub.mint({ sub: SUB, nonce: regNonce(pk_u) });
-    const r = await cia.post('/cia/register', { id_token, auid: auid.toString(), pk_u, sig_reg: await signRegistration(reg.sk_u, BigInt(uid), auid) });
+    const n = randomScalar();
+    const id_token = await stub.mint({ sub: SUB, nonce: regNonce(await tagOf({ s_u: reg.s_u, ctx: await registerCtx({ n }) })) });
+    const r = await cia.post('/cia/register', { id_token, ...(await regBody({ s_u: reg.s_u, auid }, uid, { n })) });
     assert.ok(r.status === 201 || r.status === 409, j(r.body));   // (2) 가 이미 암묵 등록했으면 409 — 그 계정을 폐기한다
     const acct = await context.newPage(); await acct.goto(`${cia.base.replace('127.0.0.1', 'localhost')}/account`);
     await acct.waitForSelector('#googleRevokeRow:not([hidden])'); await acct.waitForSelector('#googleRevokeSlot .gsi-stub', { timeout: 30_000 });

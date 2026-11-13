@@ -1,6 +1,6 @@
 // mode3/user/ui.js — 브라우저 전용 사용자 페이지의 화면(스펙 2026-10-15 §4.2). mode3/wallet.html(에이전트 페이지)의 화면 로직을 옮겼다.
 // 치환 규칙(계획 Task 9): 에이전트 HTTP 호출 → user_core 의 같은 이름 함수(같은 { status, body }), 트랜잭션은 RP 의 릴레이로(sendTxViaRelay),
-// MetaMask·Snap 코드는 없다. 비밀(s_u·sk_u·blind_u·세션 개인키·금고 비밀번호·secrets 암호문)은 DOM·localStorage·로그·postMessage 에
+// MetaMask·Snap 코드는 없다. 비밀(s_u·blind_u·세션 개인키·금고 비밀번호·secrets 암호문)은 DOM·localStorage·로그·postMessage 에
 // 넣지 않는다 — 코어 응답은 에이전트와 같은 모양이라 비밀이 실리지 않고, safeDetail 이 한 번 더 거른다. 비밀번호 입력칸은 읽자마자 비운다.
 import { ZK_CACHE_NAME } from '../../lib/browser/zk_assets.js';
 export const $ = (id) => document.getElementById(id);
@@ -396,7 +396,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false })
     Demo[k] = (v) => { orig(v); renderModeTexts(); renderProofInfo(); renderZk(); renderIdentity(); renderSessions(); renderTxs(); renderVault(); };
   }
 
-  // V8 세션 폐기(설계 2026-09-24 §4): 서명은 코어가 금고의 sk_u 로 한다(잠겨 있으면 잠금 해제 창).
+  // V8 세션 폐기(설계 2026-09-24 §4): 인증 증명은 코어가 금고의 s_u 로 만든다(잠겨 있으면 잠금 해제 창).
   async function revokeSession(r_s, c, btn) {
     if (btn.dataset.busy === '1') return;   // 처리 중 재클릭만 무시(버튼은 비활성화하지 않는다, 2026-10-16)
     if (!Demo.confirmDanger('confirm_revoke')) return;
@@ -436,7 +436,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false })
     return true;
   }
 
-  // 등록: 폼의 uid·pwd(IdP 계정). s_u·sk_u 는 코어가 만들어 금고에만 넣는다 — 금고 비밀번호는 없다(자동 금고, 2026-10-16).
+  // 등록: 폼의 uid·pwd(IdP 계정). s_u 는 코어가 만들어 금고에만 넣는다 — 금고 비밀번호는 없다(자동 금고, 2026-10-16).
   // IdP 비밀번호는 IdP 로 한 번 지날 뿐이다.
   $('registerBtn').addEventListener('click', async () => {
     pendingVerdict($('registerResult'), 'working');

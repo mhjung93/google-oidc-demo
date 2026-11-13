@@ -255,7 +255,8 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false } }
       // 데모 계정으로 등록된 브라우저에서는 토큰이 그 계정과 맞지 않으므로 Google 단계 없이 데모 경로로 간다.
       let idToken = null;
       if (google && (!st.body?.registered || (st.body?.provider && st.body.provider !== 'demo'))) {
-        const prep = await core.loginPrepare({ arid: req.arid, r_rp: req.r_rp });
+        // nonce 는 이 로그인의 tag 에 묶인다(2026-11-13) — allowAgent 는 아래 core.login 에 넘기는 값과 같은 식이어야 한다(다르면 oidc_nonce_mismatch).
+        const prep = await core.loginPrepare({ arid: req.arid, r_rp: req.r_rp, allowAgent: req.allowAgent === '1' || req.allowAgent === true ? '1' : '0' });
         if (prep.status !== 200) { step('Google 로그인 준비 실패'); log(errText(prep.status, prep.body)); return reply(fail(prep, 'login_failed')); }
         step('Google 로 본인 확인 — 아래 Google 버튼을 누르세요.');
         const got = await googleToken(oidcCfg, prep.body.nonce);

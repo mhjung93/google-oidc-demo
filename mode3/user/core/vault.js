@@ -4,7 +4,7 @@
 // 비밀번호 금고(옛 등록)는 그대로 동작한다.
 import { createMeta, openMeta, deriveKey, randomSaltHex, makeCheck, encryptJson, decryptJson, KDF_ITERATIONS } from '../../../lib/browser/secret_box.js';
 export const UNLOCK_TTL_MS = 30 * 60_000;
-const EMPTY_SECRETS = () => ({ s_u: null, sk_u: null, blind_u: null, sessionKeys: {} });
+const EMPTY_SECRETS = () => ({ s_u: null, blind_u: null, sessionKeys: {} });
 const locked = () => Object.assign(new Error('locked'), { reason: 'locked' });
 export function createVault(kv, { now = Date.now, ttlMs = UNLOCK_TTL_MS } = {}) {
   // meta 는 kv 에서 읽어 메모리에 둔다(공개값). unlock 은 **매번 kv 에서** 읽는다 — 팝업·다른 탭이 지우거나 바꾼 것을 바로 보기 위해(R3).

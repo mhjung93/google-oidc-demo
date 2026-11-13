@@ -52,11 +52,11 @@ try {
   await t('등록: 금고를 만들고 IdP 에 등록 — registration 은 평문(공개 부분), secrets 는 암호문, 비밀은 kv 어디에도 평문으로 없다', async () => {
     const r = await core.register({ uid: '12345', pwd: 'password123', profile: { birthYear: '1990', country: 'KR' }, vaultPassword: PW });
     assert.equal(r.status, 201, j(r.body)); assert.equal(r.body.uid, '12345'); assert.deepEqual(r.body.attrs, ['1990', '410', '0', '0', '0', '0']);
-    const reg = await kv.get('registration'); assert.equal(reg.uid, '12345'); assert.ok(!('s_u' in reg) && !('sk_u' in reg));
+    const reg = await kv.get('registration'); assert.equal(reg.uid, '12345'); assert.ok(!('s_u' in reg) && !('sk_u' in reg) && !('pk_u' in reg));
     const sec = await kv.get('secrets'); assert.ok(sec.iv && sec.ct);
-    const secrets = await core.vault.readSecrets(); assert.match(secrets.sk_u, /^[0-9a-f]{64}$/);
+    const secrets = await core.vault.readSecrets(); assert.equal('sk_u' in secrets, false); assert.match(secrets.s_u, /^[0-9]+$/);
     const all = {}; for (const k of await kv.keys()) all[k] = await kv.get(k);
-    const dump = j(all); assert.ok(!dump.includes(secrets.s_u) && !dump.includes(secrets.sk_u), '비밀 평문이 kv 어디에도 없다');
+    const dump = j(all); assert.ok(!dump.includes(secrets.s_u), '비밀 평문이 kv 어디에도 없다');
     assert.equal((await core.register({ uid: '12345', pwd: 'password123', vaultPassword: PW })).body.reason, 'already_registered');
     assert.equal((await core.health()).registered, true);
   });
@@ -208,7 +208,7 @@ try {
     const u = await kv.get('unlock'); assert.equal(u.expiresAt, null); assert.equal((await kv.get('meta')).mode, 'auto');
     const lg = await core.login(loginBody(await challenge()), { verifiedOrigin: info.origin }); assert.equal(lg.status, 200, j(lg.body));
   });
-  await t('복구 코드(2026-10-21): recoveryCode() 는 zkd1.시드; wipe 뒤 recover(uid, code) 로 같은 auid·pk_u·슬롯이 돌아오고 로그인 PPID 가 같다; 틀린 코드 401, 모르는 uid 404, 형식 오류 400, 등록된 채로는 409', async () => {
+  await t('복구 코드(2026-10-21): recoveryCode() 는 zkd1.시드; wipe 뒤 recover(uid, code) 로 같은 auid·슬롯이 돌아오고 로그인 PPID 가 같다; zkd0(옛 형식)은 뒤 32바이트를 무시하고 0 으로 채운다; 틀린 코드 401, 모르는 uid 404, 형식 오류 400, 등록된 채로는 409', async () => {
     const before = await kv.get('registration'); const uid = before.uid;
     const c = await core.recoveryCode(); assert.equal(c.status, 200, j(c.body)); assert.match(c.body.code, /^zkd1\.[A-Za-z0-9_-]{43}$/); assert.equal(c.body.format, 'seed');
     const l0 = await core.login(loginBody(await challenge()), { verifiedOrigin: info.origin }); assert.equal(l0.status, 200, j(l0.body)); const ppid0 = l0.body.publicSignals[0];
@@ -218,9 +218,26 @@ try {
     assert.equal((await core.recover({ uid, code: 'zkd1.' + 'A'.repeat(43) })).body.reason, 'recover_bad_code');
     assert.equal((await core.recover({ uid: '999999999', code: c.body.code })).body.reason, 'unknown_account');
     const r = await core.recover({ uid, code: c.body.code }); assert.equal(r.status, 200, j(r.body));
-    const after = await kv.get('registration'); assert.equal(after.auid, before.auid); assert.deepEqual(after.pk_u, before.pk_u); assert.equal(after.slot, before.slot);
+    const after = await kv.get('registration'); assert.equal(after.auid, before.auid); assert.equal('pk_u' in after, false); assert.equal(after.slot, before.slot);
     assert.equal((await core.recoveryCode()).body.code, c.body.code, '복구 뒤 같은 코드');
     const l1 = await core.login(loginBody(await challenge()), { verifiedOrigin: info.origin }); assert.equal(l1.status, 200, j(l1.body)); assert.equal(l1.body.publicSignals[0], ppid0, '같은 PPID');
+    // zkd0(시드 없는 옛 등록): 형식은 그대로 64바이트 — 뒤 32바이트(옛 sk_u 자리)는 읽을 때 무시하고 쓸 때 0 으로 채운다(스펙 no-pk-u §4.5).
+    const sec = await core.vault.readSecrets();
+    const raw = new Uint8Array(64); let v = BigInt(sec.s_u); for (let i = 31; i >= 0; i--) { raw[i] = Number(v & 0xffn); v >>= 8n; }
+    raw.fill(0xab, 32);                                           // 옛 코드가 넣었을 임의의 sk_u
+    const zkd0 = 'zkd0.' + Buffer.from(raw).toString('base64url');
+    await core.wipe();
+    const rec0 = await core.recover({ uid, code: zkd0 });
+    assert.equal(rec0.status, 200, j(rec0.body)); assert.equal(rec0.body.format, 'raw'); assert.equal(rec0.body.auid, before.auid);
+    const code0 = await core.recoveryCode();
+    assert.equal(code0.body.format, 'raw');
+    const back = Buffer.from(code0.body.code.slice(5), 'base64url');
+    assert.equal(back.length, 64); assert.ok(back.subarray(32).every((b) => b === 0), '쓸 때 뒤 32바이트는 0');
+    assert.deepEqual([...back.subarray(0, 32)], [...raw.subarray(0, 32)]);
+    // 다음 테스트를 위해 시드 코드로 되돌려 둔다(같은 auid·같은 PPID)
+    await core.wipe();
+    assert.equal((await core.recover({ uid, code: c.body.code })).status, 200);
+    const l2 = await core.login(loginBody(await challenge()), { verifiedOrigin: info.origin }); assert.equal(l2.status, 200, j(l2.body)); assert.equal(l2.body.publicSignals[0], ppid0, 'zkd0 복구를 거쳐도 같은 PPID');
   });
   await t('로그인 조건 강제(2026-10-21): MODE3_REQUIRE_DISCLOSURE=1 로 재기동한 RP 는 술어 없는 로그인을 predicate_unmet 으로 거절하고, 국가·나이 술어가 있는 로그인은 받는다', async () => {
     await stack.restartRp({ MODE3_REQUIRE_DISCLOSURE: '1' });
