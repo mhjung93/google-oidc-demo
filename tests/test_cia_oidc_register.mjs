@@ -111,6 +111,29 @@ try {
     assert.equal(ok.status, 201, j(ok.body)); assert.equal(ok.body.uid, v.uid);
     assert.equal((await accountOf(v.uid)).auid, v.reg.auid.toString(), '등록된 것은 피해자의 auid 다');
   });
+  // 리뷰 M-3(2026-11-13, 스펙 random-salt R11): 한 스냅(같은 salt → 같은 auid)의 계정은 하나 — Google 경로 둘(등록·발급 중 암묵 등록)에서도 같다.
+  await t('R11: 다른 계정이 쥔 스냅(같은 auid)으로 Google 등록 → 409 auid_taken; 발급 중 암묵 등록 → 409 auid_taken — 어느 쪽도 계정을 만들지 않는다', async () => {
+    const seed = Buffer.alloc(32, 31);
+    const regWith = async (sub) => {
+      const uid = uidOf(stub.provider, sub), reg = await createRegistration(BigInt(uid), seed), n = randomScalar();
+      const tag = await tagOf({ s_u: reg.s_u, ctx: await registerCtx({ n }) });
+      return { uid, reg, id_token: await stub.mint({ sub, nonce: regNonce(tag) }), body: await regBody(reg, uid, { n }) };
+    };
+    const holder = await regWith('google-sub-holder');
+    assert.equal((await cia.post('/cia/register', { id_token: holder.id_token, ...holder.body })).status, 201);
+    const second = await regWith('google-sub-second');
+    assert.equal(second.reg.auid, holder.reg.auid, '같은 salt → 같은 auid');
+    const r = await cia.post('/cia/register', { id_token: second.id_token, ...second.body });
+    assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'auid_taken');
+    assert.equal(await accountOf(second.uid), undefined, '거절된 등록은 계정을 만들지 않는다');
+    const uid3 = uidOf(stub.provider, 'google-sub-third'), reg3 = await createRegistration(BigInt(uid3), seed);
+    const r_rp = randomScalar(), n = randomScalar();
+    const id_token = await stub.mint({ sub: 'google-sub-third', nonce: issueNonce(await issueTag(reg3.s_u, ISSUE_ARID, r_rp, n)) });
+    const user = { uid: BigInt(uid3), s_u: reg3.s_u, auid: reg3.auid, attrs: [...TESTUSER_ATTRS] };
+    const imp = await issueV11(cia, user, { arid: ISSUE_ARID, r_rp, n, provider, overrides: { id_token, registration: { auid: reg3.auid.toString() } } });
+    assert.equal(imp.r.status, 409, j(imp.r.body)); assert.equal(imp.r.body.reason, 'auid_taken');
+    assert.equal(await accountOf(uid3), undefined, '거절된 암묵 등록은 계정을 만들지 않는다');
+  });
   await t('자기 폐기(id_token): revoke 토큰 → 200, 계정 disabled; 등록 토큰으로 폐기 → 400; 모르는 sub → 404', async () => {
     const tok = await stub.mint({ sub: 'google-sub-1', nonce: newRevokeNonce() });
     const r = await cia.post('/cia/account/self_revoke', { id_token: tok }); assert.equal(r.status, 200, j(r.body));

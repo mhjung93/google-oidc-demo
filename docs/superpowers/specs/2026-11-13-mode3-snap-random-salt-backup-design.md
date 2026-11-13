@@ -29,7 +29,7 @@
 | R8 | **"스냅 초기화"(`reset`)는 salt·backedUp 을 남기고** 등록·동의 기록·userCred 만 지운다. salt 까지 지우는 것은 스냅 제거뿐이다. | 초기화 뒤 다시 가입하면 같은 auid·PPID. 비밀을 지우는 버튼이 백업 없는 손실로 이어지지 않게. |
 | R9 | **PPID = Poseidon(salt, arid, chainid)** — uid 를 뺀다(`circuits/pi_cred.circom` ③, `lib/mode3_credential.js` `ppid`). | 사용자 결정: RP 쪽 신원 단위는 스냅. arid 로 RP 사이, chainid 로 체인 사이 연결 불가는 그대로. IdP 는 salt 가 없어 PPID 를 계산하지 못한다. auid(R10)와는 입력 개수가 달라(3 vs 2) Poseidon 인스턴스가 다르다. |
 | R10 | **auid = Poseidon(T_AUID2, salt)** — uid 를 뺀다(`pi_idp` ②, `pi_cred` ②, `auidOf`). 도메인 상수는 새 값(ASCII `"MODE3AUID2"` 빅엔디언)으로 바꿔 옛 정의의 값과 섞이지 않게 한다. auid_s = Poseidon(T_AUIDS, auid, arid, r_rp)·등록부 리프 Poseidon(auid, Cf_u) 의 **식은 그대로**(auid 값만 바뀐다). | 사용자 결정(IdP 에는 H(salt)). salt 가 250비트라 IdP 가 auid 에서 salt 를 대입으로 찾지 못한다. PPID 는 auid 가 아니라 salt 에서 바로 만든다(메모 "PPID 는 auid 로 만들지 않음" 유지). |
-| R11 | **같은 IdP 에서 한 스냅(같은 auid)의 계정은 하나** — 이미 다른 uid 에 묶인 auid 로 등록하면 IdP 가 `auid_taken`(409)으로 거절한다. 같은 uid·같은 auid 의 재등록은 지금처럼 `restored`. | 사용자 결정(거절). auid 가 IdP 의 계정 키로 그대로 남아 등록부·복구 경로·관리자 표를 다시 설계하지 않는다. 결과적으로 honest-but-curious IdP 가 자기 기록에서 "같은 스냅의 여러 계정" 을 볼 일도 없다. |
+| R11 | **같은 IdP 에서 한 스냅(같은 auid)의 활성 계정은 하나** — 이미 다른 uid 의 **활성** 계정에 묶인 auid 로 등록하면 IdP 가 `auid_taken`(409)으로 거절한다. 같은 uid·같은 auid 의 재등록은 지금처럼 `restored`. **폐기된(disabled) 계정은 스냅을 쥐지 않는다**(사용자 결정 2026-11-13 오후 — 자기 폐기·관리자 폐기 뒤 같은 스냅으로 새 계정을 등록할 수 있다. 폐기된 계정 자신은 `account_disabled` 그대로이고, 관리자가 되살리려 할 때 그 스냅을 다른 활성 계정이 쓰고 있으면 `auid_taken`). | 사용자 결정(거절). auid 가 IdP 의 계정 키로 그대로 남아 등록부·복구 경로·관리자 표를 다시 설계하지 않는다. 결과적으로 honest-but-curious IdP 가 자기 기록에서 "같은 스냅의 여러 활성 계정" 을 볼 일은 없다(폐기된 계정과 그 뒤의 새 계정은 같은 auid 라 같은 스냅임이 보인다). |
 | R12 | **위협 모델**: IdP 는 honest-but-curious, IdP 끼리의 공모는 범위 밖(그래서 auid 에 IdP 식별자를 섞지 않는다 — 여러 IdP 가 같은 스냅에서 같은 auid 를 본다). salt 탈취(백업 파일 유출 + 비밀번호 대입, 단말 감염)는 범위 밖. | 사용자 결정(2026-11-13). 범위 밖 항목은 논문 위협 모델 절에 한계로 적는다(§6). |
 | R13 | **계정 번호 k 를 없앤다** — `nextIndex`·`setNextIndex`·`index` 인자·응답의 `index`·속성 도구 "계정 번호" 칸·zk 스냅 화면 번호 표시·에이전트 기록의 `index`. | R1 로 계정마다 비밀을 나눌 필요가 없다. 옛 기록에 남은 `index` 는 읽을 때 무시한다. |
 | R15 | **C_attr = Poseidon(T_ATTRC4, salt, attrs[0..5])** — blind 를 뺀다(도메인 ASCII `"MODE3ATTRC4"`, `lib/mode3_attr_commit.js` `attrCommit({ s_u, attrs })`, 속성 도구 기록 version 4 — `blind`·`index` 없음). | R5 의 짝(사용자 결정, §9-3): blind 가 무작위면 salt 만으로 같은 커밋먼트를 다시 만들 수 없어, 복구할 때마다 프로필을 바꿔야 한다(그러면 IdP 가 세션을 폐기한다, D19). salt 가 이미 식 안의 250비트 비밀이라 숨김은 그대로다(IdP 는 salt 없이 속성을 대입해 볼 수 없다). 대가: 같은 salt·같은 속성이면 항상 같은 값 — 속성을 A → B → A 로 바꾸면 IdP 가 "예전 값으로 돌아갔다" 는 것을 알고, 같은 스냅을 쓰는 두 IdP 는 같은 C_attr 를 본다(IdP 공모는 R12 로 범위 밖 — auid 도 이미 같다). C_attr 는 회로·컨트랙트에 쓰이지 않아 zkey 와 무관하다. |
@@ -84,7 +84,7 @@
   검증자·팩토리를 다시 배포한다(데모 리셋 스크립트가 하는 경로).
 
 ## 4. IdP (`cia.js`, `lib/mode3_cia_state.js`)
-- 등록(일반·Google 래퍼 경로 모두): 요청의 auid 가 **다른 uid** 의 계정에 이미 있으면 `409 auid_taken`(R11). 같은 uid 면 지금처럼 `restored`. 검사 순서는 π_IdP 검증 뒤
+- 등록(일반·Google 래퍼 경로 모두): 요청의 auid 가 **다른 uid** 의 활성(폐기되지 않은) 계정에 이미 있으면 `409 auid_taken`(R11). 같은 uid 면 지금처럼 `restored`. 검사 순서는 π_IdP 검증 뒤
   (증명이 틀린 요청에 auid 존재 여부를 알려 주지 않는다).
 - 상태 버전 13 → 14(R14): 14 는 auid 의 뜻이 바뀌었다는 표시다. 13 이하는 기동을 거부하고 리셋을 안내한다. **Mode 2 의 `idp_state.json` 과는 무관하다**(지우지 않는다).
 - 관리자 페이지 "uid ↔ auid 대응" 표: 열 이름·설명을 "uid ↔ auid(스냅 가명)" 로. 계정 하나에 auid 하나라 표 구조는 그대로.
@@ -121,7 +121,7 @@
 
 ## 6. 동작 변화·보안 메모
 - **한 스냅 = RP 에서 한 신원**: IdP 계정을 잃어도 같은 스냅(또는 백업)으로 새 계정을 만들면 RP 마다 같은 PPID 로 이어진다. 여러 IdP 를 같은 스냅으로 쓰면 RP 에서 같은 PPID 다.
-- **IdP 계정 폐기와 RP 신원**: 계정을 폐기해도 같은 스냅으로 다른 IdP 의 계정을 쓰면 같은 PPID 로 로그인된다(같은 IdP 에서는 R11 로 새 계정을 못 만든다). RP 가 PPID 를 막으면 그 스냅의 모든 계정이 막힌다.
+- **IdP 계정 폐기와 RP 신원**: 계정을 폐기해도 같은 스냅으로 다른 IdP 의 계정을, 또는 같은 IdP 에 새로 만든 계정을(2026-11-13 오후 결정 — 폐기된 계정은 스냅을 쥐지 않는다) 쓰면 같은 PPID 로 로그인된다. 곧 **계정 폐기는 그 계정의 자격증명·세션을 끊을 뿐 스냅을 막지 않는다** — 관리자 폐기로 사용자를 내보내려면 새 가입을 따로 막아야 한다. 새 계정의 C_u 는 uid·blind_u 가 달라 옛 등록부 리프와 다르므로 폐기 전의 세션이 되살아나지는 않는다. RP 가 PPID 를 막으면 그 스냅의 모든 계정이 막힌다.
 - **11-10 결정(rp-social-logins, 계정 연결은 RP)과의 관계**: 같은 스냅이면 RP 가 연결하지 않아도 같은 PPID 다. RP 연결 기능은 서로 다른 스냅(서로 다른 salt)을 묶는 용도로 남는다 — 설명만 고친다.
 - **손실**: 백업 파일 또는 비밀번호를 잃고 스냅 상태도 잃으면 salt 를 되찾을 수 없다 — PPID 지갑 자산이 잠기고 RP 계정이 끊긴다. 위협 모델에 사용자 책임으로 적고,
   R6 이 백업 없이 자산이 생기는 구간을 막는다. 문서는 파일을 PC 밖에 두라고 안내한다.

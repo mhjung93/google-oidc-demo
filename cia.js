@@ -1050,7 +1050,7 @@ app.post('/cia/auth/code', (req, res) => {
   // 등록 코드(2026-11-09, 사용자 결정): 지갑 등록은 zkID 페이지가 아니라 서비스의 "zkID 로 로그인" 중에 처음 한 번 일어난다 — 팝업이 이 인증 창을 등록 모드로 열고
   // 아이디·비밀번호와 auid(2026-11-11 — 속성 도구가 계산해 보여 준 값)를 넣으면 등록 코드와 uid 를 받아 /cia/register 로 간다. 이미 등록된 계정이면 409.
   if (purpose === 'register') {
-    // 2026-11-11(사용자 결정): 첫 등록에도 auid 를 받는다 — 속성 도구가 uid·salt 로 계산해 보여 준 값. 코드에 묶어 /cia/register 의 auid 와 대조한다.
+    // 2026-11-11(사용자 결정): 첫 등록에도 auid 를 받는다 — 속성 도구가 salt 로 계산해 보여 준 값(2026-11-13 부터 uid 없음). 코드에 묶어 /cia/register 의 auid 와 대조한다.
     if (!isDec(auid)) return res.status(400).json({ error: 'auid required', reason: 'bad_auid' });
     // 2026-11-12(스펙 snap-derived-secrets S3): 이미 등록된 계정도 같은 auid 면 등록 코드를 준다 — 복구(같은 비밀로 다시 등록). 다르면 409.
     if (a.auid && String(a.auid) !== BigInt(auid).toString()) return res.status(409).json({ error: 'already registered', reason: 'already_registered' });
@@ -1110,6 +1110,8 @@ app.post('/cia/register', userCors, async (req, res) => {
  *  checkTag(tag): 증명을 본 뒤 부른다 — Google 등록이 토큰 nonce 를 tag 에 대조한다. null 이 아닌 { status, body } 를 돌려주면 그대로 실패.
  *  beforeCommit: 인증을 통과한 뒤, 상태 변경 바로 앞에서 동기로 부른다 — code 경로가 1회용 코드를 "성공 시에만" 태운다. false 면 401 bad_code.
  *  성공 { slot, restored? }, 실패 { error: { status, body } }. */
+/** R11: uid 가 아닌 **활성**(폐기되지 않은) 계정이 이 auid(스냅의 가명)를 쥐고 있는가. 한 스냅의 활성 계정은 같은 IdP 에서 하나다. */
+const auidHeldByOther = (uid, auidStr) => Object.entries(state.accounts).some(([u, a]) => u !== String(uid) && a?.auid === auidStr && !a.disabled);
 async function registerAccount({ uid, provider, auid, auth = null, verified = false, checkTag, beforeCommit }) {
   const fail = (status, body) => ({ error: { status, body } });
   if (!isDec(auid)) return fail(400, { error: 'auid required' });
@@ -1133,10 +1135,11 @@ async function registerAccount({ uid, provider, auid, auth = null, verified = fa
     return { slot: prev.slot, restored: true };
   }
   // R11(2026-11-13 스펙 random-salt): auid = Poseidon(T_AUID2, salt) 는 스냅의 가명이라 계정이 달라도 같은 스냅이면 같다 — 같은 IdP 에서 한 스냅의 계정은 하나다.
-  // 다른 uid 가 이 auid 를 지금 들고 있으면(폐기된 계정 포함) 거절한다. 연결 해제로 auid 가 비워진 계정은 막지 않는다. 증명을 본 **뒤에** 검사한다 — 틀린 요청에
+  // 다른 **활성** 계정이 이 auid 를 지금 들고 있으면 거절한다. 폐기된 계정은 스냅을 쥐지 않는다(2026-11-13 사용자 결정 — 자기 폐기·관리자 폐기 뒤 같은 스냅으로
+  // 새 계정을 만들 수 있다. 폐기된 계정 자신은 위에서 account_disabled). 연결 해제로 auid 가 비워진 계정도 막지 않는다. 증명을 본 **뒤에** 검사한다 — 틀린 요청에
   // auid 가 등록돼 있는지를 알려 주지 않는다. 1회용 코드를 태우기 전이다. 아래 검사는 동기라 await 사이 경합에도 같은 답이다.
   const auidStr = BigInt(auid).toString();
-  if (Object.entries(state.accounts).some(([u, a]) => u !== String(uid) && a?.auid === auidStr)) return fail(409, { error: 'auid taken', reason: 'auid_taken' });
+  if (auidHeldByOther(uid, auidStr)) return fail(409, { error: 'auid taken', reason: 'auid_taken' });
   if (state.accounts[uid]?.auid) return fail(409, { error: 'already registered' });   // await 사이 경합
   if (beforeCommit && !beforeCommit()) return fail(401, { error: 'bad_code', reason: 'bad_code' });
   const slot = state.registry.next++;
@@ -1780,6 +1783,9 @@ async function pruneExpiredSessions() {
 app.post('/cia/account/set_disabled', requireAdmin, (req, res) => {
   const { uid, disabled } = req.body ?? {};
   if (!isDec(uid) || !state.accounts[uid]) return res.status(404).json({ error: 'unknown account' });
+  // 되살리기: 폐기된 동안 같은 스냅(auid)으로 다른 계정이 등록됐으면 되살리지 않는다 — 한 스냅의 활성 계정이 둘이 된다(R11).
+  const acct = state.accounts[uid];
+  if (!disabled && acct.disabled && acct.auid && auidHeldByOther(uid, acct.auid)) return res.status(409).json({ error: 'auid taken', reason: 'auid_taken' });
   state.accounts[uid].disabled = Boolean(disabled);
   persist();
   res.json({ uid, disabled: state.accounts[uid].disabled });
