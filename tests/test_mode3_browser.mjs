@@ -265,6 +265,14 @@ try {
     assert.equal(await walletPage.isHidden('#setupChoice'), true, 'salt 가 생긴 뒤에는 새로 만들기·불러오기가 보이지 않는다');
     assert.equal(await walletPage.isVisible('#setupBackupRow'), true, '백업 칸은 남아 다시 할 수 있다');
     assert.equal((await pageDump(walletPage)).includes(snapState.salt.s_u), false, 'salt 는 화면에 남지 않는다');
+    // 리뷰 M-3: 다시 열어 본 파일에서 다른 salt 가 나오면(그 자리에 다른 백업이 있다) 스냅이 backup_mismatch 로 거절한다 — 여전히 백업 전이고 탭은 막혀 있다
+    const { key: k2, kdf: kdf2 } = await backupKey(BACKUP_PW, undefined, 1000);
+    const swapped = JSON.stringify(await sealBackup(k2, kdf2, { version: 4, s_u: '999' }));
+    await walletPage.evaluate((txt) => { window.showSaveFilePicker = async () => ({ name: 'swapped.json', createWritable: async () => ({ write: async () => {}, close: async () => {} }), getFile: async () => ({ text: async () => txt }) }); }, swapped);
+    await walletPage.click('#setupSaveBtn');
+    await waitText(walletPage, '#setupVerdict', '백업 파일의 salt 가 스냅과 다릅니다');
+    assert.equal(snapState.salt.backedUp, false, '다른 값이 든 파일로는 백업을 확인하지 않는다');
+    assert.equal(await walletPage.isHidden('#walletTabs'), true); assert.equal(await walletPage.isVisible('#setupBackupRow'), true);
   });
 
   await t('설정(R3·R5·R7): 다시 저장하면 같은 salt 로 백업된다 — 파일에는 암호문뿐이고 열면 { version: 4, s_u } 하나, 스냅이 backedUp 이 되고 탭이 열린다', async () => {
@@ -288,6 +296,18 @@ try {
     USER_SALT = '424242424242424242424242424242'; snapState = readySnapState(USER_SALT);
     await walletPage.reload(); await walletPage.click('#connectBtn'); await walletPage.waitForSelector('#walletTabs:not([hidden])', { timeout: 15_000 });
   }
+
+  await t('리뷰 M-8: 다른 탭에서 스냅을 다시 깔고 돌아오면(화면이 다시 보일 때) 설정 카드가 바로 뜬다 — 연결을 다시 누르지 않아도; salt 가 돌아오면 탭이 다시 열린다', async () => {
+    const saved = snapState; snapState = null;   // 다른 탭에서 스냅을 지우고 다시 깔았다
+    try {
+      await walletPage.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+      await walletPage.waitForSelector('#setupCard:not([hidden])', { timeout: 5_000 });
+      assert.equal(await walletPage.isHidden('#walletTabs'), true, 'salt 가 없으면 탭이 닫힌다'); assert.equal(await walletPage.isVisible('#setupChoice'), true);
+    } finally { snapState = saved; }
+    await walletPage.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await walletPage.waitForSelector('#walletTabs:not([hidden])', { timeout: 5_000 });
+    assert.equal(await walletPage.isHidden('#setupCard'), true);
+  });
 
   // "내 계정"(2026-11-12 사용자 요청): 스냅이 저장한 값 전부를 보여 주는 탭. 값이 든 칸은 data-store-path(상태 안의 경로)로 찾는다.
   const storeCell = (path) => `#meCard [data-store-path="${path}"]`;
@@ -365,20 +385,26 @@ try {
     await awaitPopupClosed(popup);
   });
 
-  await t('Review 1: 설정 전(salt 없음) 스냅으로 RP 로그인하면 팝업이 "스냅 설정이 끝나지 않았습니다" 로 끝난다 — 등록하지 않고 스냅은 그대로 비어 있다', async () => {
+  await t('Review 1: 설정 전(salt 없음, 또는 만들었지만 백업 전 — 리뷰 M-3) 스냅으로 RP 로그인하면 팝업이 "스냅 설정이 끝나지 않았습니다" 로 끝난다 — 등록하지 않고 스냅은 그대로다', async () => {
     const demoUid = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.id === 'demo-user').uid;
     const someSalt = '987654321098765432109876543210';
-    const saved = snapState; snapState = null;   // 스냅을 막 설치했다 — 설정(새로 만들기·불러오기) 전
+    const unbacked = { version: 2, salt: { s_u: someSalt, createdAt: new Date().toISOString(), source: 'new', backedUp: false, backedUpAt: null }, registration: null, userCred: null, consents: {} };
+    const saved = snapState;
     try {
     await walletPage.evaluate((r) => localStorage.setItem('mode3_attr_tool_v1', JSON.stringify(r)), { version: 4, uid: String(demoUid), s_u: someSalt, profile: { birthYear: '1990', country: 'JP' } });
-    const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
-    await atIdpLogin(popup);
-    await popup.fill('#authUid', 'demo-user'); await popup.fill('#authPwd', DEMO_PWD); await popup.fill('#authAuid', (await auidOf({ s_u: BigInt(someSalt) })).toString()); await popup.click('#authGo');
-    await backAtWallet(popup);
-    await waitText(rpPage, '#verdict', '스냅 설정이 끝나지 않았습니다', 120_000);
-    assert.equal((await wallet.get('/wallet/status')).body.registered, false, '등록하지 않았다');
-    assert.equal(snapState, null, '스냅에 아무것도 생기지 않았다');
-    await awaitPopupClosed(popup);
+    // 스냅을 막 설치했다(no_salt) / 새로 만들기를 하다 말았다(backup_required) — 어느 쪽이든 설정 전이다
+    for (const [label, st] of [['salt 없음', null], ['백업 전', unbacked]]) {
+      snapState = st === null ? null : JSON.parse(JSON.stringify(st));
+      await rpPage.evaluate(() => { document.getElementById('verdict').textContent = ''; });   // 앞 차례의 결과 문구로 통과하지 않게
+      const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
+      await atIdpLogin(popup);
+      await popup.fill('#authUid', 'demo-user'); await popup.fill('#authPwd', DEMO_PWD); await popup.fill('#authAuid', (await auidOf({ s_u: BigInt(someSalt) })).toString()); await popup.click('#authGo');
+      await backAtWallet(popup);
+      await waitText(rpPage, '#verdict', '스냅 설정이 끝나지 않았습니다', 120_000);
+      assert.equal((await wallet.get('/wallet/status')).body.registered, false, `${label}: 등록하지 않았다`);
+      assert.deepEqual(snapState, st, `${label}: 스냅 상태는 그대로다`);
+      await awaitPopupClosed(popup);
+    }
     } finally { snapState = saved; await walletPage.evaluate(() => localStorage.removeItem('mode3_attr_tool_v1')); }
   });
 
@@ -754,12 +780,22 @@ try {
     await walletPage.click('#setupImportCancelBtn');
     await walletPage.waitForSelector('#setupImportPwRow', { state: 'hidden' });
     assert.equal(snapState, null, '취소하면 아무것도 들어오지 않는다');
-    // 틀린 비밀번호 — 그렇다고 말하고 칸은 그대로 둔다
+    // 틀린 비밀번호 — 그렇다고 말하고 칸은 그대로 둔다. 리뷰 M-7: 0.7초는 헛**클릭**만 막는다 — 칸이 나타난 직후에 친 Enter 는 듣는다(더블클릭이 Enter 를 만들지는 않는다).
     await walletPage.setInputFiles('#setupImportFile', realFile);
-    await walletPage.waitForSelector('#setupImportPwRow:not([hidden])'); await walletPage.waitForTimeout(GUARD_WAIT);
-    await walletPage.fill('#setupImportPw', 'wrong-password'); await walletPage.click('#setupImportOpenBtn');
+    await walletPage.waitForSelector('#setupImportPwRow:not([hidden])');
+    const enterLeft = await walletPage.evaluate(() => {
+      const el = document.getElementById('setupImportPw'); el.value = 'wrong-password';
+      const left = importGuardUntil - Date.now();
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      return left;
+    });
+    assert.ok(enterLeft > 0, `Enter 를 방지 구간 안에서 쳤다: ${enterLeft}`);
     await waitText(walletPage, '#setupVerdict', '백업 비밀번호가 맞지 않습니다');
     assert.equal(await walletPage.isVisible('#setupImportPwRow'), true); assert.equal(snapState, null);
+    // 리뷰 M-7: 파일 창을 다시 열었다가 취소하면(파일 없는 change) 열려 있던 칸과 고른 파일은 그대로다 — 아래에서 그 파일로 이어 간다
+    await walletPage.evaluate(() => document.getElementById('setupImportFile').dispatchEvent(new Event('change', { bubbles: true })));
+    await walletPage.waitForTimeout(100);
+    assert.equal(await walletPage.isVisible('#setupImportPwRow'), true, '취소한 파일 창이 열린 칸을 닫지 않는다');
     assert.equal(dialogs.length, before, '여기까지 스냅 확인 창이 뜨지 않았다');
     // 맞는 비밀번호지만 스냅의 확인 창에서 거절
     answers.push(false);

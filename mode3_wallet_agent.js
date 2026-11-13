@@ -99,11 +99,14 @@ const chainConfigMissing = () => (!LOG_ADDRESS ? 'CIA_LOG_ADDRESS not configured
 //                       credential:{Cf_u,Cf_s,max_height,chainid,allowAgent,sigma,pk_CIA,slot,regRoot,epoch,published}, sessionPrivKey, pk_i, issuedAt,
 //                       witness?: { s_u, blind_u, attrs } }   ← snap 모드 전용, 메모리에만(persist 가 뺀다)
 // snap 모드의 registration 은 stripSecrets 결과({ uid, auid, slot, profile, attrs, provider, userCred:{Cf_u,issuedAt} }) 다.
-// 2026-11-13(스펙 2026-11-12 no-pk-u §4.3): 등록 키(sk_u·pk_u)는 없어졌다 — 옛 파일의 값은 기동 때 버린다(버전은 그대로 10).
+// 2026-11-13(스펙 2026-11-12 no-pk-u §4.3): 등록 키(sk_u·pk_u)는 없어졌다 — 옛 파일의 값은 기동 때 버린다(그때 버전은 그대로 10 이었다).
 // version 9 (2026-10-12, V11): r_u·cm_u 삭제, auid(= Poseidon(T_AUID2, s_u))·profile(사용자 입력, D15) 추가; 세션에 r_rp·auid_s·arid_s.
 //   옛 파일은 등록만 유지하고(file 모드 — auid 를 s_u 로 재계산; snap 모드는 비밀이 없어 재계산할 수 없으므로 등록을 비운다) 세션·userCred 를 비운다.
 // version 10 (2026-10-22): pendingBounds(세션키별 체인 반영 대기 중인 setSessionBound 요청) 추가 — 옛 파일은 빈 배열로 시작한다.
-const WALLET_STATE_VERSION = 10;
+// version 11 (2026-11-13, 스펙 random-salt, 리뷰 M-5): auid = Poseidon(T_AUID2, s_u)(uid 없음)·PPID 식이 바뀌고 계정 번호(index)가 없어졌다. 버전 10 의 등록은
+//   옛 식의 값이라 이어 쓰지 않는다 — 아래 이행이 그대로 맞다(file 모드는 auid 를 새 식으로 재계산해 유지, snap 모드는 등록을 비움, 세션은 비움). 그대로 두면
+//   IdP 만 리셋했을 때 로그인이 원인이 흐린 snap_restore_mismatch 로 끝난다.
+const WALLET_STATE_VERSION = 11;
 const DEFAULT_PROFILE = Object.freeze({ birthYear: '1990', country: 'KR' });   // 데모 testuser 기본값(스펙 §7). 사용자가 등록 폼에서 바꿀 수 있다.
 let state = readJson(STATE_FILE, { version: WALLET_STATE_VERSION, registration: null, sessions: {}, pendingBounds: [] });
 // 세션의 witness 는 메모리에만(스펙 §3.3) — 재시작하면 사라지고 /wallet/revalidate 가 needs_consent 로 다시 동의를 받는다.

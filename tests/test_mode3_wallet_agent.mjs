@@ -1134,11 +1134,11 @@ try {
   provider.destroy();
 }
 
-// ---- 독립 시험(공유 stack 과 무관한 자기 IdP·지갑): 지갑 상태 파일 8→10 이행이 auid 를 재계산하는지(file 모드)와
+// ---- 독립 시험(공유 stack 과 무관한 자기 IdP·지갑): 지갑 상태 파일 8→11 이행이 auid 를 재계산하는지(file 모드)와
 // snap 모드(파일에 비밀 없음)는 등록을 비우는지. isolated_mode3_stack.mjs 의 walletEnv 는 자신의 MODE3_WALLET_STATE_FILE 뒤에
 // 스프레드되므로(헬퍼 수정 없이) 이 경로를 바로 덮어쓸 수 있다 — v8 모양 상태 파일을 그 경로에 미리 써 둔다.
 // uid 424242 는 IdP 에 등록돼 있지 않지만 /wallet/status 는 파일의 공개 부분만 읽고 IdP 를 부르지 않으므로 상관없다.
-await t('지갑 상태 파일 8→10 이행: file 모드 등록은 auid 를 s_u 로 재계산해 유지(r_u·cm_u·옛 등록 키 sk_u·pk_u 삭제, 세션 비움), snap 모드(비밀 없음) 등록은 비운다; 버전 10 파일에 남은 pk_u·sk_u 도 기동 때 버린다; pendingBounds 는 빈 배열 (+ V10: 거울 주소가 없으면 체인 라우트는 503)', async () => {
+await t('지갑 상태 파일 8→11 이행: file 모드 등록은 auid 를 s_u 로 재계산해 유지(r_u·cm_u·옛 등록 키 sk_u·pk_u 삭제, 세션 비움), snap 모드(비밀 없음) 등록은 비운다 — 버전 10(계정 번호·옛 auid 식)의 snap 등록도(리뷰 M-5); 버전 11 파일에 남은 pk_u·sk_u 도 기동 때 버린다; pendingBounds 는 빈 배열 (+ V10: 거울 주소가 없으면 체인 라우트는 503)', async () => {
   const { auidOf } = await import('../lib/mode3_credential.js');
   const reg = await createRegistration(424242n);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-wallet-v8-'));
@@ -1153,7 +1153,7 @@ await t('지갑 상태 파일 8→10 이행: file 모드 등록은 auid 를 s_u 
       assert.deepEqual(s.attrs, ['1990', '410', '2', '0', '0', '0']); assert.deepEqual(s.sessions, {}); assert.equal(s.userCred, null);
       assert.deepEqual(s.pendingBounds, [], '2026-10-22: 이행 뒤 pendingBounds 는 빈 배열');
       const onDisk = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-      assert.equal(onDisk.version, 10); assert.equal(onDisk.registration.r_u, undefined); assert.equal(onDisk.registration.cm_u, undefined); assert.ok(onDisk.registration.auid);
+      assert.equal(onDisk.version, 11); assert.equal(onDisk.registration.r_u, undefined); assert.equal(onDisk.registration.cm_u, undefined); assert.ok(onDisk.registration.auid);
       assert.equal('pk_u' in onDisk.registration, false); assert.equal('sk_u' in onDisk.registration, false);   // 2026-11-13(스펙 no-pk-u §4.3): 등록 키는 이행 때 버린다
       assert.deepEqual(onDisk.pendingBounds, []);
       const pre = await stack2.wallet.post('/wallet/authorize/precheck', { arid: '1', origin: 'http://x', cert_s: {}, pk_trace: { x: '1', y: '2' } });
@@ -1163,15 +1163,24 @@ await t('지갑 상태 파일 8→10 이행: file 모드 등록은 auid 를 s_u 
     const stack3 = await startIsolatedMode3Stack({ rp: false, walletEnv: { MODE3_WALLET_STATE_FILE: stateFile, MODE3_WALLET_SECRETS: 'snap', MODE3_MIRROR_ADDRESS: '' } });
     try { assert.equal((await stack3.wallet.get('/wallet/status')).body.registered, false, 'snap 모드 옛 등록은 auid 를 재계산할 수 없어 비운다'); }
     finally { await stack3.stop(); }
-    // 2026-11-13(스펙 no-pk-u §4.3): 같은 버전(10) 파일에 남은 등록 키 — 등록은 그대로 두고 pk_u·sk_u 만 버린다(죽은 비밀이 디스크에 남지 않게 기동 때 바로 다시 쓴다).
+    // 리뷰 M-5(2026-11-13, 스펙 random-salt): 버전 10 의 snap 등록은 옛 식의 auid(uid 포함)·계정 번호를 담고 있다 — 0.5.0 스냅의 salt 와 맞을 수 없으므로
+    // 이어 쓰지 않고 비운다(그대로 두면 IdP 만 리셋했을 때 로그인이 원인이 흐린 snap_restore_mismatch 로 끝난다).
+    fs.writeFileSync(stateFile, JSON.stringify({ version: 10, registration: { uid: '424242', auid: '12345', slot: 3, index: 2, attrs: ['1990', '410', '2', '0', '0', '0'], profile: { birthYear: '1990', country: 'KR' }, provider: 'demo', userCred: { Cf_u: '9', issuedAt: '2026-11-12T00:00:00.000Z' } }, sessions: { '5': {} }, pendingBounds: [] }));
+    const stack3b = await startIsolatedMode3Stack({ rp: false, walletEnv: { MODE3_WALLET_STATE_FILE: stateFile, MODE3_WALLET_SECRETS: 'snap', MODE3_MIRROR_ADDRESS: '' } });
+    try {
+      const s3b = (await stack3b.wallet.get('/wallet/status')).body;
+      assert.equal(s3b.registered, false, '버전 10 의 snap 등록은 비운다'); assert.deepEqual(s3b.sessions, {});
+      assert.equal(JSON.parse(fs.readFileSync(stateFile, 'utf8')).version, 11);
+    } finally { await stack3b.stop(); }
+    // 2026-11-13(스펙 no-pk-u §4.3): 같은 버전(11) 파일에 남은 등록 키 — 등록은 그대로 두고 pk_u·sk_u 만 버린다(죽은 비밀이 디스크에 남지 않게 기동 때 바로 다시 쓴다).
     const auid10 = (await auidOf({ s_u: reg.s_u })).toString();
-    fs.writeFileSync(stateFile, JSON.stringify({ version: 10, registration: { uid: '424242', s_u: reg.s_u.toString(), sk_u: 'ab'.repeat(32), pk_u: { x: '1', y: '2' }, auid: auid10, slot: 3, attrs: ['1990', '410', '2', '0', '0', '0'], profile: { birthYear: '1990', country: 'KR' }, userCred: null }, sessions: {}, pendingBounds: [] }));
+    fs.writeFileSync(stateFile, JSON.stringify({ version: 11, registration: { uid: '424242', s_u: reg.s_u.toString(), sk_u: 'ab'.repeat(32), pk_u: { x: '1', y: '2' }, auid: auid10, slot: 3, attrs: ['1990', '410', '2', '0', '0', '0'], profile: { birthYear: '1990', country: 'KR' }, userCred: null }, sessions: {}, pendingBounds: [] }));
     const stack4 = await startIsolatedMode3Stack({ rp: false, walletEnv: { MODE3_WALLET_STATE_FILE: stateFile, MODE3_MIRROR_ADDRESS: '' } });
     try {
       const s4 = (await stack4.wallet.get('/wallet/status')).body;
       assert.equal(s4.registered, true); assert.equal(s4.uid, '424242'); assert.equal(s4.auid, auid10); assert.equal(s4.slot, 3);
       const after = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-      assert.equal(after.version, 10); assert.equal('pk_u' in after.registration, false); assert.equal('sk_u' in after.registration, false);
+      assert.equal(after.version, 11); assert.equal('pk_u' in after.registration, false); assert.equal('sk_u' in after.registration, false);
       assert.equal(after.registration.auid, auid10); assert.equal(after.registration.s_u, reg.s_u.toString(), 'file 모드의 s_u 는 그대로');
       assert.equal(JSON.stringify(after).includes('ab'.repeat(32)), false, '옛 sk_u 값이 파일에 남지 않는다');
     } finally { await stack4.stop(); }

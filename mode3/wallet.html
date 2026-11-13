@@ -734,7 +734,7 @@
 
     /** 속성 변경(2026-11-11, 스펙 D19): 로그인 전에 속성 도구 기록의 속성이 에이전트 값과 다르면 PUT /wallet/profile·Snap syncAttrs 로 맞춘다 —
      *  그러면 이번 로그인이 새 속성의 C_u 를 받는다. 기록이 없거나 같으면 null. 기록의 uid·salt 가 이 등록과 다르면 맞추지 않고 { ok:false, reason } —
-     *  다른 계정이나 다른 salt 로 만든 기록으로 속성을 바꾸지 않게(salt 는 auid = Poseidon(uid, salt) 로 대조한다). */
+     *  다른 계정이나 다른 salt 로 만든 기록으로 속성을 바꾸지 않게(salt 는 auid = Poseidon(T_AUID2, salt) 로 대조한다). */
     async function syncAttrsFromRecord({ step, log }) {
       const rec = await readAttrRecord();
       if (!rec?.profile) return null;
@@ -761,7 +761,7 @@
       let already = false;
       try { already = Boolean((await (await fetch('/wallet/status')).json()).registered); } catch { /* 진행 — /wallet/register 가 다시 걸러준다 */ }
       if (already) { step('이미 등록돼 있다.'); return { ok: false, reason: 'already_registered' }; }
-      // 2026-11-11(사용자 결정): salt 는 속성 도구 기록에서 — 없으면 등록하지 않고 안내한다(가). 인증 창에 붙여 넣은 auid 와 Poseidon(uid, salt) 를 먼저 맞춰 본다
+      // 2026-11-11(사용자 결정): salt 는 속성 도구 기록에서 — 없으면 등록하지 않고 안내한다(가). 인증 창에 붙여 넣은 auid 와 Poseidon(T_AUID2, salt) 를 먼저 맞춰 본다
       // (IdP 도 코드에 묶인 auid 로 다시 막지만 — register_auid_mismatch — Snap 을 부르기 전에 멈춰 반쯤 된 등록을 만들지 않는다).
       const rec = await readAttrRecord();
       if (!rec) { step('속성 도구 기록 없음 — 등록하지 않는다.'); return { ok: false, reason: 'attr_record_missing' }; }
@@ -1676,10 +1676,10 @@
     });
     $('setupImportFile').addEventListener('change', async (ev) => {
       // R16(사용자 보고 2026-11-13): 파일 선택 창에서 파일을 더블클릭하면 두 번째 클릭이 창이 닫힌 뒤 이 페이지에 떨어진다 — 막 나타난 "취소" 가 눌려 아무 일도 없던 것처럼 보였다.
-      importGuardUntil = Date.now() + IMPORT_GUARD_MS;
       const f = ev.target.files?.[0]; ev.target.value = '';
+      if (!f) return;   // 파일 창을 다시 열었다가 취소했다 — 열려 있던 비밀번호 칸과 고른 파일은 그대로 둔다
+      importGuardUntil = Date.now() + IMPORT_GUARD_MS;
       clearVerdictEl($('setupVerdict')); closeSaltImport();
-      if (!f) return;
       let sealed = null;
       try { sealed = JSON.parse(await f.text()); } catch { return importFail('bad_backup'); }
       if (!(await loadAttrBundle()) || !window.Mode3Attr?.openBackup) return importFail('bundle_missing', '/attr/dist/attr.js 가 없습니다 — npm run attr:build');
@@ -1689,8 +1689,9 @@
       $('setupImportHint').textContent = tt('wallet_setup_import_file', { file: f.name }) || `${f.name} — 백업 비밀번호를 넣으세요.`;
       $('setupBackupRow').hidden = true; $('setupImportPwRow').hidden = false; $('setupImportPw').focus();
     });
-    async function openSaltImport() {
-      if (importGuarded() || !pendingSaltImport) return;
+    /** viaKey: 비밀번호 칸의 Enter — 0.7초 방지는 헛**클릭**(파일 창의 더블클릭)만 막는다. 칸이 나타나자마자 친 Enter 는 듣는다. */
+    async function openSaltImport({ viaKey = false } = {}) {
+      if ((!viaKey && importGuarded()) || !pendingSaltImport) return;
       clearVerdictEl($('setupVerdict'));
       try {
         let rec;
@@ -1709,9 +1710,11 @@
     }
     // 헛클릭이 "백업에서 불러오기" 자체에 떨어지면 파일 창이 다시 열린다 — 같은 시간 동안 막는다.
     $('setupImportFile').closest('label').addEventListener('click', (ev) => { if (importGuarded()) ev.preventDefault(); });
-    $('setupImportOpenBtn').addEventListener('click', openSaltImport);
-    $('setupImportPw').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); openSaltImport(); } });
+    $('setupImportOpenBtn').addEventListener('click', () => openSaltImport());
+    $('setupImportPw').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); openSaltImport({ viaKey: true }); } });
     $('setupImportCancelBtn').addEventListener('click', () => { if (importGuarded()) return; closeSaltImport(); clearVerdictEl($('setupVerdict')); });
+    // 다른 탭에서 스냅을 다시 깔거나 salt 를 만들고 돌아왔을 때 — 연결 때만 보면 탭이 열린(또는 닫힌) 채 남는다. 화면이 다시 보일 때 스냅의 설정 상태를 한 번 더 읽는다.
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && account && cfg.secrets === 'snap') refreshSetup().catch(() => {}); });
 
     $('showSaltBtn').addEventListener('click', async () => {
       try {

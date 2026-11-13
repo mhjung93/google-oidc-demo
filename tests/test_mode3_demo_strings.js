@@ -171,4 +171,24 @@ t('리뷰 I-1: 스냅 안내가 R8·R11 과 맞는다 — 다른 계정을 쓰�
   }
 });
 
+// 2026-11-13 리뷰 M-4: 스냅(0.5.0)이 내는 salt 사유 — 화면이 사유 낱말을 그대로 사전에서 찾는다(wallet.html snapReason). 없으면 "알 수 없는 오류" 로 보인다.
+t('리뷰 M-4: 스냅의 salt 사유 넷(no_salt·backup_required·bad_salt·salt_mismatch)에 ko·en 문구(title·cause·action)가 있다', () => {
+  for (const k of ['no_salt', 'backup_required', 'bad_salt', 'salt_mismatch']) {
+    const r = S.reasons[k]; assert.ok(r, k); assert.equal(r.where, 'wallet', k);
+    for (const lang of ['ko', 'en']) for (const f of ['title', 'cause', 'action']) assert.ok(typeof r[lang]?.[f] === 'string' && r[lang][f].length > 0, `${k}.${lang}.${f}`);
+  }
+  assert.match(S.reasons.no_salt.ko.action, /localhost:5100/); assert.match(S.reasons.backup_required.ko.action, /백업 파일 저장/);
+});
+// 2026-11-13 리뷰 M-6 + 사용자 결정(폐기된 계정은 스냅을 쥐지 않는다): 식에서 uid 가 빠졌다(auid = H(salt), PPID = H(salt, arid, chainid)) — 문구도 그렇게 말한다.
+t('리뷰 M-6: 식에 uid 가 남은 문구가 없고 죽은 키가 없다; auid_taken·관리자 설명은 ko·en 모두 "활성 계정 하나 — 폐기된 계정은 스냅을 쥐지 않는다" 를 말한다', () => {
+  const all = JSON.stringify(S);
+  assert.equal(/Poseidon\(uid, ?salt/.test(all), false, 'PPID·auid 식에 uid 가 없다');
+  assert.equal(/uid·salt 로 계산|uid and salt/.test(all), false, 'auid 는 salt 만으로 계산한다');
+  assert.equal(S.ui.wallet_me_f_nextIndex, undefined, '계정 번호(다음 가입 번호) 키는 없어졌다');
+  const d = S.ui.admin_auidmap_desc;
+  assert.match(d.ko, /폐기/); assert.match(d.en, /auid_taken/); assert.match(d.en, /revoked/i); assert.match(d.en, /Poseidon\(T_AUID2, s_u\)/);
+  assert.match(S.reasons.auid_taken.ko.cause, /활성/); assert.match(S.reasons.auid_taken.ko.action, /폐기/);
+  assert.match(S.reasons.auid_taken.en.cause, /active/i); assert.match(S.reasons.auid_taken.en.action, /revoke/i);
+});
+
 if (fails) { console.log(`\n${fails} FAIL`); process.exit(1); } else console.log('\nall ok');
