@@ -602,7 +602,7 @@
      * nonce 계산(/wallet/oidc/nonce) → Google 버튼 → id_token 을 한 번에(2026-10-26). nonceBody 는 purpose 별 본문.
      * onNonce 는 nonce 를 받은 직후, 버튼을 그리기 전에 부르는 선택 콜백(안내 줄용). 성공이면 { token }, 실패면
      * { token: null, stage: 'nonce'|'google', reason, detail } — stage 로 호출자가 안내 문구를 가른다.
-     * 등록 nonce 응답의 n(에이전트가 뽑은 난수 — /wallet/register 에 다시 싣는다)도 함께 돌려준다({ token, n }).
+     * 등록·발급 nonce 응답의 n(에이전트가 뽑은 난수 — /wallet/register·/wallet/login 에 다시 싣는다)도 함께 돌려준다({ token, n }).
      */
     async function oidcToken(nonceBody, onNonce) {
       const pre = gsiPrecheck();
@@ -984,7 +984,7 @@
         }
 
         // 발급 인증(2026-10-26 Snap OIDC 래퍼 §2.2): 데모 계정은 IdP 로그인 페이지(이 창이 갔다가 돌아온다, goIdpAuth — MetaMask 를 부르기
-        // 전에 간다), Google 계정은 이 팝업의 Google 버튼 — nonce 는 issue:H(tag) — tag 는 이 지갑의 s_u 와 이 로그인(arid_s·allowAgent)에 묶인다(에이전트가 계산).
+        // 전에 간다), Google 계정은 이 팝업의 Google 버튼 — nonce 는 issue:H(tag) — tag 는 이 지갑의 s_u 와 이 로그인(arid_s·allowAgent)과 에이전트가 뽑은 난수 n 에 묶인다(n 은 /wallet/login 에 다시 싣는다).
         let provider = await walletProvider();
         let authCodeNow = authCode;
         // OIDC 래퍼(2026-11-11 사용자 결정): RP 의 "Google 계정으로 로그인" — Google 토큰을 받은 뒤 zkID 와 같은 발급·증명 흐름을 탄다. 미등록 스냅이면
@@ -1030,11 +1030,11 @@
         step('로그인 증인 준비 중…');
         const witness = await consentLogin(req);
         if (!witness) { step('동의 거절'); return reply({ ok: false, reason: 'user_denied' }); }
-        let idToken = null;
+        let idToken = null, issueN = null;
         if (authCodeNow === null && provider !== 'demo') {
           const g = await oidcToken({ purpose: 'issue', arid: req.arid, r_rp: req.r_rp, allowAgent: req.allowAgent === '1' || req.allowAgent === true ? '1' : '0', s_u: witness.s_u }, () => { step(tt('wallet_gsi_hint') || 'Google 버튼을 눌러 로그인하세요.'); say('wallet_gsi_hint'); });
           if (!g.token) { oidcFailStep(g, step, log); return reply({ ok: false, reason: g.reason }); }
-          idToken = g.token;
+          idToken = g.token; issueN = g.n;
         }
 
         step('로그인·증명 생성 중… (수 초 걸린다)'); say('wallet_prog_proving');
@@ -1046,7 +1046,7 @@
           witness, verifiedOrigin: evOrigin,          // Origin 헤더 대신 팝업이 확인한 값(스펙 §3.3)
           serviceName: cleanServiceName(req.serviceName) || null,   // 세션 카드 표기용(2026-11-05) — RP 가 고른 이름, 에이전트는 저장만 한다
           auth_code: authCodeNow,
-          id_token: idToken ?? undefined,
+          id_token: idToken ?? undefined, n: issueN ?? undefined,   // n: 토큰 nonce 를 만들 때 쓴 발급 난수(2026-11-13)
         });
         if (lg.status !== 200) {
           step('로그인 실패'); log(errText(lg.status, lg.body));

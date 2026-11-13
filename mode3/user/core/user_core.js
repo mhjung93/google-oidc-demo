@@ -239,14 +239,14 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
   /** 에이전트 issueSession 의 등가. 세션 발급(V11 §5.2): C_u(blind_u)·C_s·π_IdP 를 한 요청으로. 200 이면 세션을 저장하고, 새 C_u 였으면
    *  사용자 자격증명도 바꿔 앉힌다(옛 세션은 함께 버린다). π_IdP 는 주입된 fullProve.idp 로 만든다(브라우저는 워커 프록시, 계획 R7).
    *  세션 개인키는 금고(secrets.sessionKeys[r_s])에만, 공개 레코드에는 origin·account(PPID 계정 주소)·sessionAddress 를 함께 둔다. */
-  async function issueSession({ arid, r_s, r_rp, pk_trace, allowAgent, factoryAddress, attrGateAddress, head, src, blind_u, origin, serviceName = null, policy = null, oidc = null }) {
+  async function issueSession({ arid, r_s, r_rp, pk_trace, allowAgent, factoryAddress, attrGateAddress, head, src, blind_u, n, origin, serviceName = null, policy = null, oidc = null }) {
     const reg = src.registration();
     const session = createSessionKey();
     const chainid = await chain.chainId();
     const ov = await takeOverride('issue');   // 시연(설계 §8.3): 이번 발급의 s_u·uid 를 한 번만 덮어쓴다 — 가짜 auid 로 증명돼 IdP 가 bad_idp_proof 를 낸다
     const req = await buildIssueRequest({
       uid: BigInt(ov?.uid ?? reg.uid), s_u: BigInt(ov?.s_u ?? reg.s_u), blind_u, attrs: (reg.attrs ?? []).map(BigInt), arid: BigInt(arid), r_rp, r_s,
-      session, chainid, allowAgent: BigInt(allowAgent), max_height: chooseMaxHeight(head, { ttlBlocks: TTL, grid: GRID }), fullProve: fullProve.idp,
+      session, chainid, allowAgent: BigInt(allowAgent), max_height: chooseMaxHeight(head, { ttlBlocks: TTL, grid: GRID }), n, fullProve: fullProve.idp,
     });
     if (ov?.uid) req.body.uid = reg.uid;   // 요청 본문의 uid 는 진짜 — C_u·π_IdP 안의 uid 만 바뀐다(스펙 §8.3)
     // OIDC 래퍼(RP 로그인 흐름, 2026-10-16): Google 토큰을 발급 요청에 싣는다. IdP 에 계정이 아직 없으면(첫 로그인) 등록 재료도 함께 — IdP 가 그 자리에서 등록·발급.
@@ -534,9 +534,10 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       await updateReg((r) => { r.profile = normalized; if (changed) { r.attrs = attrs; r.userCred = null; } });
       return R(200, { attrs, profile: normalized, changed });
     },
-    /** Google 로그인 준비(RP 로그인 흐름): 이 로그인의 ID 토큰 nonce = issueNonce(tag) — tag = Poseidon(T_TAG, s_u, issueCtx(arid_s, chainid, allowAgent))
+    /** Google 로그인 준비(RP 로그인 흐름): 이 로그인의 ID 토큰 nonce = issueNonce(tag) — tag = Poseidon(T_TAG, s_u, issueCtx(arid_s, chainid, allowAgent, n))
      *  (2026-11-13 스펙 no-pk-u §3.3; 전에는 pk_u). 등록이 없으면 등록 재료를 만들어 메모리에 보류한다(uid 는 토큰의 sub 로 정해지므로 auid 는 login 에서).
-     *  등록된 브라우저는 금고의 s_u 가 필요하다 — 잠겨 있으면 423(계획 Ruling R6). 반환 { nonce, registered, provider, pendingIdp }. */
+     *  등록된 브라우저는 금고의 s_u 가 필요하다 — 잠겨 있으면 423(계획 Ruling R6). n 은 여기서 뽑는 발급 난수(2026-11-13) — 호출자가 login 의 n 으로 다시 넘긴다.
+     *  반환 { nonce, n, registered, provider, pendingIdp }. */
     async loginPrepare(body) {
       const { arid, r_rp, allowAgent } = body ?? {};
       if (!isDec(arid) || !isDec(r_rp)) return R(400, { error: 'arid, r_rp 필요' });
@@ -549,8 +550,9 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
         s_u = BigInt((await vault.readSecrets()).s_u);
       } else { await core.prepareRegistration(); s_u = pendingReg.s_u; }
       const arid_s = await aridSOf({ arid: BigInt(arid), r_rp: BigInt(r_rp) });
-      const tag = await tagOf({ s_u, ctx: await issueCtx({ arid_s, chainid: await chain.chainId(), allowAgent: BigInt(allowAgent) }) });
-      return R(200, { nonce: issueNonce(tag), registered: Boolean(reg), provider: reg?.provider ?? null, pendingIdp: Boolean(reg?.pendingIdp) });
+      const n = randomScalar();
+      const tag = await tagOf({ s_u, ctx: await issueCtx({ arid_s, chainid: await chain.chainId(), allowAgent: BigInt(allowAgent), n }) });
+      return R(200, { nonce: issueNonce(tag), n: n.toString(), registered: Boolean(reg), provider: reg?.provider ?? null, pendingIdp: Boolean(reg?.pendingIdp) });
     },
     /** 에이전트 POST /wallet/authorize/precheck 의 등가 — 팝업이 동의 화면을 띄우기 전에 인증서·팩토리를 검사한다. 오리진 대조는 여기서
      *  하지 않는다: 팝업이 postMessage 의 event.origin 으로 확인한 값을 login 의 verifiedOrigin 으로 낸다. 비밀이 필요 없다. */
@@ -575,13 +577,18 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     /** 에이전트 POST /wallet/login 의 등가. 오리진은 snap 모드 규칙 — 팝업이 postMessage 의 event.origin 으로 확인한 verifiedOrigin 을
      *  인증서 오리진(body.origin)과 대조한다(피싱 페이지는 인증서의 오리진에서 메시지를 보낼 수 없다). 비밀은 금고에서(witness 없음).
      *  사유·상태 코드·검사 순서는 에이전트와 같다. 성공 본문에는 비밀·uid 가 없다. */
-    async login(body, { verifiedOrigin = null, serviceName = null, policy = null, idToken = null } = {}) {
+    async login(body, { verifiedOrigin = null, serviceName = null, policy = null, idToken = null, n: nIn = null } = {}) {
       const { arid, origin, cert_s, pk_trace, r_s, r_rp, allowAgent = '0', factoryAddress = null, attrGateAddress = null, disclose = null, set = null } = body ?? {};
       if (!isDec(arid) || typeof origin !== 'string' || !cert_s || !pk_trace || !isDec(pk_trace.x) || !isDec(pk_trace.y) || !isDec(r_s) || !isDec(r_rp)) return R(400, { error: 'arid, origin, cert_s, pk_trace{x,y}, r_s, r_rp 필요' });
       if (allowAgent !== '0' && allowAgent !== '1') return R(400, { error: 'allowAgent 는 "0" 또는 "1"' });
       if (factoryAddress !== null && !isAddr(factoryAddress)) return R(400, { error: 'factoryAddress 는 주소' });
       // attrGateAddress 는 RP 가 알려주는 값을 세션에 실어 나를 뿐 지갑이 검증하지 않는다(스펙 §6.1) — 지갑 폼 기본값(to)으로만 쓰인다.
       if (attrGateAddress !== null && !isAddr(attrGateAddress)) return R(400, { error: 'attrGateAddress 는 주소' });
+      // 발급 ctx 의 지갑 난수 n(2026-11-13): Google 토큰을 싣는 로그인은 loginPrepare 가 뽑아 토큰 nonce 에 쓴 값을 다시 받아야 한다(다르면 IdP 가 oidc_nonce_mismatch).
+      // 그 밖은 여기서 뽑는다. cred_revoked 재시도도 같은 n 을 쓴다.
+      if (nIn !== null && !(isDec(nIn) && BigInt(nIn) < SCALAR_MAX)) return R(400, { error: 'n 은 10진, 2^250 미만' });
+      if (idToken !== null && nIn === null) return R(400, { error: 'idToken 로그인은 n(loginPrepare 가 준 값) 필요' });
+      const issueN = nIn !== null ? BigInt(nIn) : randomScalar();
       // OIDC 래퍼 — RP 로그인 흐름(2026-10-16): Google 버튼으로 들어온 로그인은 ID 토큰을 함께 낸다. 이 브라우저에 등록이 없으면 loginPrepare 의 보류 재료로
       // 로컬 등록을 먼저 만들고(IdP 쪽 등록은 발급 요청에 실어 IdP 가 그 자리에서 한다), 있으면 토큰만 싣는다. 데모 계정으로 등록된 브라우저면 토큰은 쓰지 않는다.
       let oidcReq = null;
@@ -658,7 +665,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       // V11: 사용자 자격증명은 발급 요청에 함께 실려 간다 — 들고 있는 C_u 를 재사용할지(등록부에 살아 있음) 새로 만들지(없음·은퇴)를 먼저 정한다.
       const pick = await chooseUserCred(synced, src);
       if (pick.status === 403) return R(403, { reason: pick.reason, ...(pick.registry ? { registry: pick.registry } : {}), timings });
-      const issueArgs = { arid, r_s: rs, r_rp: rrp, pk_trace: { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress: factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress: attrGateAddress ? ethers.getAddress(attrGateAddress) : null, head: synced.head, src, origin };
+      const issueArgs = { arid, r_s: rs, r_rp: rrp, pk_trace: { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress: factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress: attrGateAddress ? ethers.getAddress(attrGateAddress) : null, head: synced.head, src, origin, n: issueN };
       t = now();
       const oidcArg = oidcReq ? { ...oidcReq, registration: pubReg.pendingIdp ? await regMaterials(src) : null } : null;
       const issued = await issueSession({ ...issueArgs, blind_u: pick.blind_u, serviceName, policy, oidc: oidcArg });

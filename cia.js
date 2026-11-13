@@ -1159,10 +1159,11 @@ app.post('/cia/slot', userCors, async (req, res) => {
 // /cia/issue — 데모 계정은 π_IdP 만, 래퍼(Google) 계정은 π_IdP + id_token(+첫 로그인이면 registration{auid}). 2026-10-16, 2026-11-13.
 app.post('/cia/issue', userCors, async (req, res) => {
   try {
-    const { uid, auid_s, arid_s, C_u_pt, C_s_pt, chainid, allowAgent, max_height, proof_idp, tag, id_token, registration, auth_code } = req.body ?? {};
-    if (!isDec(uid) || !isDec(auid_s) || !isDec(arid_s) || !isPt(C_u_pt) || !isPt(C_s_pt) || !isDec(chainid) || (allowAgent !== '0' && allowAgent !== '1') || !isDec(max_height) || !isDec(tag) || !proof_idp || typeof proof_idp !== 'object') {
-      return res.status(400).json({ error: 'uid, auid_s, arid_s, C_u_pt{x,y}, C_s_pt{x,y}, chainid, allowAgent("0"|"1"), max_height, tag, proof_idp required' });
+    const { uid, auid_s, arid_s, C_u_pt, C_s_pt, chainid, allowAgent, max_height, proof_idp, tag, n, id_token, registration, auth_code } = req.body ?? {};
+    if (!isDec(uid) || !isDec(auid_s) || !isDec(arid_s) || !isPt(C_u_pt) || !isPt(C_s_pt) || !isDec(chainid) || (allowAgent !== '0' && allowAgent !== '1') || !isDec(max_height) || !isDec(n) || !isDec(tag) || !proof_idp || typeof proof_idp !== 'object') {
+      return res.status(400).json({ error: 'uid, auid_s, arid_s, C_u_pt{x,y}, C_s_pt{x,y}, chainid, allowAgent("0"|"1"), max_height, n, tag, proof_idp required' });
     }
+    if (BigInt(n) >= F.p) return res.status(400).json({ error: 'n must be a field element (< p)' });
     const mh = BigInt(max_height);
     if (mh >= (1n << 64n)) return res.status(400).json({ error: 'max_height must be < 2^64' });
     // 리뷰 L5(2026-10-13): auid_s·arid_s 도 /cia/register 의 auid 처럼 필드 원소(< p)여야 한다 — arid_s = A + p 는 Poseidon 안에서 A 와 같아져
@@ -1215,10 +1216,11 @@ app.post('/cia/issue', userCors, async (req, res) => {
     if (!CHAIN_RPCS.has(chainStr)) return res.status(400).json({ error: `bad chainid ${chainStr}: allowed ${[...CHAIN_RPCS.keys()].join(',')}` });
     const agent = BigInt(allowAgent);
     const aridS = BigInt(arid_s);
-    // 요청 인증(스펙 2026-11-12 no-pk-u §3.2): ctx 는 IdP 가 요청 필드에서 스스로 계산한다 — arid_s·chainid·allowAgent 중 하나라도 바뀌면 tag 가 어긋난다.
+    // 요청 인증(스펙 2026-11-12 no-pk-u §3.2): ctx 는 IdP 가 요청 필드에서 스스로 계산한다 — arid_s·chainid·allowAgent·n 중 하나라도 바뀌면 tag 가 어긋난다.
+    // n 은 지갑이 요청마다 뽑는 난수다(2026-11-13) — r_rp 는 RP 가 정하므로, n 이 없으면 RP 가 r_rp 를 되풀이해 같은 s_u 의 두 계정이 같은 tag 를 내게 만들 수 있다.
     // 나머지(auid_s·C_u·C_s·max_height)는 π_IdP 공개 입력이 덮는다. auid 는 DB 값(암묵 등록만 요청의 registration.auid) — 지갑이 보낸 공개 입력을
     // 그대로 넣으면 아무 auid 에 대한 증명이 통과한다.
-    const au = await checkIdpAuth({ uid, auid: implicitAuid ?? acct.auid, ctx: await issueCtx({ arid_s: aridS, chainid: BigInt(chainStr), allowAgent: agent }), body: req.body });
+    const au = await checkIdpAuth({ uid, auid: implicitAuid ?? acct.auid, ctx: await issueCtx({ arid_s: aridS, chainid: BigInt(chainStr), allowAgent: agent, n: BigInt(n) }), body: req.body });
     if (au.error) return res.status(au.error.status).json(au.error.body);
     const { cupt, cspt, auidS } = au;
     // Google: 토큰은 검증된 tag(이 지갑의 s_u + 이 로그인의 arid_s)에 묶여 있어야 한다 — 가로채도 다른 지갑·다른 로그인에 못 쓴다.

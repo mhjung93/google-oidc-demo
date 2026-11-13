@@ -94,16 +94,16 @@ async function proveWith(disclosure) {
 
 await t('V11: 발급 요청(C_u·C_s·π_IdP·tag) → 로컬 IdP 서명 → 증명 생성 → vkey 로 검증; 공개 입력 34, [30..33] = auid_s·arid_s·r_s·counter', async () => {
   const { proof, publicSignals, revRoot, tag } = await proveWith(null);
-  assert.deepEqual(Object.keys(req.body).sort(), ['C_s_pt', 'C_u_pt', 'allowAgent', 'arid_s', 'auid_s', 'chainid', 'max_height', 'proof_idp', 'tag', 'uid']);
+  assert.deepEqual(Object.keys(req.body).sort(), ['C_s_pt', 'C_u_pt', 'allowAgent', 'arid_s', 'auid_s', 'chainid', 'max_height', 'n', 'proof_idp', 'tag', 'uid']);
   const vkIdp = await loadIdpVkey(IDP_VKEY_PATH);
-  // CIA 가 하는 대로: ctx 는 요청 필드(arid_s·chainid·allowAgent)에서 다시 계산하고, tag 는 본문의 값을 넣는다(2026-11-13 스펙 no-pk-u §3.2).
-  const idpCtx = await issueCtx({ arid_s: BigInt(req.body.arid_s), chainid: BigInt(req.body.chainid), allowAgent: BigInt(req.body.allowAgent) });
+  // CIA 가 하는 대로: ctx 는 요청 필드(arid_s·chainid·allowAgent·n)에서 다시 계산하고, tag 는 본문의 값을 넣는다(2026-11-13 스펙 no-pk-u §3.2).
+  const idpCtx = await issueCtx({ arid_s: BigInt(req.body.arid_s), chainid: BigInt(req.body.chainid), allowAgent: BigInt(req.body.allowAgent), n: BigInt(req.body.n) });
   const idpPub = (over = {}) => idpPublicSignals({ uid, auid: reg.auid, auid_s: req.auid_s, C_u_pt: req.C_u_pt, C_s_pt: req.C_s_pt, max_height: BigInt(req.body.max_height), ctx: idpCtx, tag: BigInt(req.body.tag), ...over });
   const pubIdp = idpPub();
   assert.deepEqual(pubIdp, req.idpPublicSignals, 'CIA 가 스스로 조립한 공개 입력이 지갑의 것과 같다');
   assert.equal(await verifyIdp(vkIdp, pubIdp, req.body.proof_idp), true, 'CIA 가 하는 π_IdP 검증');
   assert.equal(await verifyIdp(vkIdp, idpPub({ auid: reg.auid + 1n }), req.body.proof_idp), false, '다른 auid 로는 통과하지 않는다');
-  assert.equal(await verifyIdp(vkIdp, idpPub({ ctx: await issueCtx({ arid_s: BigInt(req.body.arid_s), chainid: BigInt(req.body.chainid), allowAgent: 1n }) }), req.body.proof_idp), false, '요청 필드(allowAgent)가 바뀌면 ctx 가 달라 통과하지 않는다');
+  assert.equal(await verifyIdp(vkIdp, idpPub({ ctx: await issueCtx({ arid_s: BigInt(req.body.arid_s), chainid: BigInt(req.body.chainid), allowAgent: 1n, n: BigInt(req.body.n) }) }), req.body.proof_idp), false, '요청 필드(allowAgent)가 바뀌면 ctx 가 달라 통과하지 않는다');
   assert.equal(req.auid_s, await auidSOf({ auid: reg.auid, arid, r_rp })); assert.equal(req.arid_s, await aridSOf({ arid, r_rp }));
   assert.equal(cred.Cf_s, req.Cf_s.toString());
   assert.equal(revRoot, tree0.getRoot());
@@ -160,7 +160,7 @@ await t('buildCredentialProof 는 pk_trace 없이는 throw — 태그 없는 성
   );
 });
 
-await t('V11 buildIssueRequest: 본문 10필드, allowAgent 기본 0, Cf_u·Cf_s·auid 를 돌려준다; 범위·누락은 throw', async () => {
+await t('V11 buildIssueRequest: 본문 11필드(n 포함), allowAgent 기본 0, Cf_u·Cf_s·auid 를 돌려준다; 범위·누락은 throw', async () => {
   const session = createSessionKey();
   const h = await mh();
   const base = { uid, s_u: reg.s_u, blind_u: randomScalar(), attrs: ATTRS, arid, r_rp: randomScalar(), r_s: randomScalar(), session, chainid: 31337n, max_height: h };

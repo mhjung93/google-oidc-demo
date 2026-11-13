@@ -29,13 +29,14 @@ export async function revokeSessionBody(user, { Cf_s, bound = 0n, nonce = random
  * 세션 발급 한 번. 돌려주는 값 { r, req, session, r_s, r_rp, blind_u, cred } — r 은 CIA 응답, cred = r.body(토큰 묶음).
  * blind_u 를 같은 값으로 다시 주면 같은 C_u(재사용), 새 값이면 새 C_u(CIA 가 슬롯을 갱신·게시). max_height 가 없으면 provider 로 head+300.
  * uidInBody 는 본문의 uid 만 바꾼다(C_u 안의 uid 는 user.uid) — 시연 덮어쓰기 재현용. overrides 는 본문 필드를 덮는다(음성 케이스용).
+ * n 은 발급 ctx 의 지갑 난수(2026-11-13) — 안 주면 buildIssueRequest 가 뽑는다. Google 토큰 nonce 를 미리 만든 테스트는 그때 쓴 n 을 준다.
  */
-export async function issueV11(cia, user, { arid, chainid = 31337n, allowAgent = 0n, max_height, provider = null, blind_u = randomScalar(), r_s = randomScalar(), r_rp = randomScalar(), session = createSessionKey(), uidInBody = null, overrides = {}, post = (p, b) => cia.post(p, b) } = {}) {
+export async function issueV11(cia, user, { arid, chainid = 31337n, allowAgent = 0n, max_height, provider = null, blind_u = randomScalar(), r_s = randomScalar(), r_rp = randomScalar(), session = createSessionKey(), uidInBody = null, overrides = {}, n, post = (p, b) => cia.post(p, b) } = {}) {
   if (max_height === undefined) {
     if (!provider) throw new Error('issueV11: max_height 또는 provider 가 필요하다');
     max_height = BigInt(await provider.getBlockNumber()) + 300n;
   }
-  const req = await buildIssueRequest({ uid: user.uid, s_u: user.s_u, blind_u, attrs: user.attrs, arid: BigInt(arid), r_rp, r_s, session, chainid, allowAgent, max_height });
+  const req = await buildIssueRequest({ uid: user.uid, s_u: user.s_u, blind_u, attrs: user.attrs, arid: BigInt(arid), r_rp, r_s, session, chainid, allowAgent, max_height, ...(n !== undefined ? { n } : {}) });
   if (uidInBody !== null) req.body.uid = String(uidInBody);
   const r = await post('/cia/issue', { ...req.body, ...overrides });
   return { r, req, session, r_s, r_rp, blind_u, cred: r.body, user };

@@ -253,7 +253,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false } }
       if (!(await waitDecision())) { step('동의 거절'); return reply({ ok: false, reason: 'user_denied' }); }
       // Google 본인 확인(래퍼): 미등록이거나 Google 계정으로 등록된 브라우저면 이 로그인에 묶인 nonce 로 GIS 버튼을 그리고 토큰을 받는다.
       // 데모 계정으로 등록된 브라우저에서는 토큰이 그 계정과 맞지 않으므로 Google 단계 없이 데모 경로로 간다.
-      let idToken = null;
+      let idToken = null, issueN = null;
       if (google && (!st.body?.registered || (st.body?.provider && st.body.provider !== 'demo'))) {
         // nonce 는 이 로그인의 tag 에 묶인다(2026-11-13) — allowAgent 는 아래 core.login 에 넘기는 값과 같은 식이어야 한다(다르면 oidc_nonce_mismatch).
         const prep = await core.loginPrepare({ arid: req.arid, r_rp: req.r_rp, allowAgent: req.allowAgent === '1' || req.allowAgent === true ? '1' : '0' });
@@ -261,7 +261,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false } }
         step('Google 로 본인 확인 — 아래 Google 버튼을 누르세요.');
         const got = await googleToken(oidcCfg, prep.body.nonce);
         if (!got.ok) { step('Google 본인 확인 실패'); return reply({ ok: false, reason: got.reason, detail: got.detail ?? null }); }
-        idToken = got.idToken;
+        idToken = got.idToken; issueN = prep.body.n;
         step('로그인·증명 생성 중… (수 초 걸린다)');
       }
       step('로그인·증명 생성 중… (수 초 걸린다)');
@@ -272,7 +272,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false } }
         disclose: req.disclose ?? null, set: req.set ?? null,
       };
       // verifiedOrigin: Origin 헤더 대신 이 창이 확인한 postMessage 의 오리진(스펙 §3.3). 금고가 잠겨 있으면 잠금 해제 창 → 한 번 다시.
-      const lg = await withUnlock(() => core.login(body, { verifiedOrigin: ev.origin, serviceName: cleanServiceName(req.serviceName) || null, policy: req.policy ?? null, idToken }));   // 이름·정책은 표기용, idToken 은 래퍼 경로(2026-10-16)
+      const lg = await withUnlock(() => core.login(body, { verifiedOrigin: ev.origin, serviceName: cleanServiceName(req.serviceName) || null, policy: req.policy ?? null, idToken, n: issueN }));   // 이름·정책은 표기용, idToken 은 래퍼 경로(2026-10-16)
       if (lg.cancelled) { step('잠금 해제 취소'); return reply({ ok: false, reason: 'user_denied' }); }
       if (lg.status !== 200) { step('로그인 실패'); log(errText(lg.status, lg.body)); return reply(fail(lg, 'login_failed')); }
       // 지갑 안 정보(userCredIssued·attrsChanged)는 RP 에 넘기지 않는다 — 코어 응답에는 원래 없다(에이전트 snap 모드와 같은 경계).

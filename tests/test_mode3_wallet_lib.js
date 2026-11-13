@@ -109,7 +109,7 @@ await t('R7: proveIdp 는 fullProve 를 주입받는다 — 회로 입력 전부
   assert.deepEqual(Object.keys(calls[0].input).sort(), ['C_s_x', 'C_s_y', 'C_u_x', 'C_u_y', 'arid', 'attrs', 'auid', 'auid_s', 'blind_u', 'ctx', 'max_height', 'pk_i', 'r_rp', 'r_s', 's_u', 'tag', 'uid']);
   assert.deepEqual(calls[0].input.attrs, ['1990', '410', '0', '0', '0', '0']);
 });
-await t('buildIssueRequest: sk_u 없이 — 본문에 sig_u 대신 tag, ctx = issueCtx(arid_s, chainid, allowAgent); fullProve 를 proveIdp 에 넘긴다', async () => {
+await t('buildIssueRequest: sk_u 없이 — 본문에 sig_u 대신 tag·n, ctx = issueCtx(arid_s, chainid, allowAgent, n); fullProve 를 proveIdp 에 넘긴다', async () => {
   const { buildIssueRequest, createSessionKey } = await import('../lib/mode3_wallet.js');
   const reg = await createRegistration(12345n);
   let seen = null;
@@ -117,9 +117,26 @@ await t('buildIssueRequest: sk_u 없이 — 본문에 sig_u 대신 tag, ctx = is
   assert.ok(seen && seen.uid === '12345', 'proveIdp 가 주입된 fullProve 로 돌았다');
   assert.deepEqual(req.body.proof_idp, { stub: true });
   assert.equal('sig_u' in req.body, false);
-  const ctx = await issueCtx({ arid_s: await aridSOf({ arid: 3n, r_rp: 4n }), chainid: 31337n, allowAgent: 1n });
+  assert.match(req.body.n, /^[0-9]+$/); assert.equal(req.n.toString(), req.body.n);
+  const ctx = await issueCtx({ arid_s: await aridSOf({ arid: 3n, r_rp: 4n }), chainid: 31337n, allowAgent: 1n, n: req.n });
   assert.equal(req.body.tag, (await tagOf({ s_u: reg.s_u, ctx })).toString());
   assert.equal(req.tag.toString(), req.body.tag); assert.equal(seen.ctx, ctx.toString()); assert.equal(seen.tag, req.body.tag);
   assert.equal(req.body.auid_s, req.auid_s.toString());
+});
+// 2026-11-13(사용자 결정): 발급 ctx 의 난수 n 은 지갑이 요청마다 뽑는다. 한 스냅의 여러 계정이 같은 s_u 를 쓰게 돼도(스펙 초안 2026-11-13 snap-random-salt-backup R1),
+// RP 가 r_rp 를 되풀이해 같은 tag 를 내게 만들어 IdP 가 두 계정을 묶는 길이 없다 — tag 가 (s_u, ctx) 만으로 정해지므로 ctx 가 요청마다 달라야 한다.
+await t('buildIssueRequest: 같은 s_u·arid·r_rp·chainid·allowAgent 라도 요청마다 tag 가 다르다(uid 가 달라도, 같아도); n 을 주면 그 n 으로 — Google nonce 를 미리 계산한 요청이 같은 tag 를 낸다', async () => {
+  const { buildIssueRequest, createSessionKey } = await import('../lib/mode3_wallet.js');
+  const fullProve = async () => ({ proof: { stub: true }, publicSignals: [] });
+  const base = { s_u: 777n, blind_u: 11n, attrs: [1990n, 410n], arid: 3n, r_rp: 4n, r_s: 6n, chainid: 31337n, allowAgent: 0n, max_height: 100n, fullProve };
+  const a = await buildIssueRequest({ ...base, uid: 111n, session: createSessionKey() });
+  const b = await buildIssueRequest({ ...base, uid: 222n, session: createSessionKey() });   // 다른 계정, 같은 s_u·같은 r_rp
+  const a2 = await buildIssueRequest({ ...base, uid: 111n, session: createSessionKey() });
+  assert.equal(a.arid_s, b.arid_s, 'r_rp 가 같으면 arid_s 는 같다(RP 가 되풀이한 상황)');
+  assert.notEqual(a.tag, b.tag, '다른 계정의 tag 가 같으면 IdP 가 둘을 묶는다'); assert.notEqual(a.tag, a2.tag); assert.notEqual(a.n, b.n);
+  const fixed = await buildIssueRequest({ ...base, uid: 111n, session: createSessionKey(), n: 42n });
+  assert.equal(fixed.body.n, '42');
+  assert.equal(fixed.tag, await tagOf({ s_u: 777n, ctx: await issueCtx({ arid_s: a.arid_s, chainid: 31337n, allowAgent: 0n, n: 42n }) }));
+  await assert.rejects(() => buildIssueRequest({ ...base, uid: 111n, session: createSessionKey(), n: '42' }), /n/);
 });
 process.exit(fails ? 1 : 0);

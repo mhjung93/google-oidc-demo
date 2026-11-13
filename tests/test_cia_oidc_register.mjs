@@ -21,8 +21,9 @@ async function makeReg(sub, { nonce = null, aud, iss, expSeconds } = {}) {
   const id_token = await stub.mint({ sub, nonce: nonce ?? regNonce(tag), ...(aud ? { aud } : {}), ...(iss ? { iss } : {}), ...(expSeconds ? { expSeconds } : {}) });
   return { uid, reg, n, tag, id_token, body: await regBody(reg, uid, { n }) };
 }
-/** 발급 요청의 tag — 지갑이 Google 로 가기 전에 계산해 토큰 nonce(issueNonce) 에 넣는 값. issueV11 의 기본값(chainid 31337, allowAgent 0)과 맞춘다. */
-const issueTag = async (s_u, arid, r_rp) => tagOf({ s_u, ctx: await issueCtx({ arid_s: await aridSOf({ arid, r_rp }), chainid: 31337n, allowAgent: 0n }) });
+/** 발급 요청의 tag — 지갑이 Google 로 가기 전에 계산해 토큰 nonce(issueNonce) 에 넣는 값. issueV11 의 기본값(chainid 31337, allowAgent 0)과 맞춘다.
+ *  n 은 지갑이 그때 뽑는 난수 — 발급 요청(issueV11 의 n)에 같은 값을 실어야 tag 가 맞는다. */
+const issueTag = async (s_u, arid, r_rp, n) => tagOf({ s_u, ctx: await issueCtx({ arid_s: await aridSOf({ arid, r_rp }), chainid: 31337n, allowAgent: 0n, n }) });
 try {
   await t('public_keys.oidc 가 스텁 발급자 설정을 공개한다(enabled·provider·clientId·issuer)', async () => {
     const k = (await cia.get('/cia/public_keys')).body;
@@ -74,15 +75,15 @@ try {
   async function issueMaterial(sub) {
     const uid = uidOf(stub.provider, sub);
     const reg = await createRegistration(BigInt(uid));
-    const r_rp = randomScalar();
-    const id_token = await stub.mint({ sub, nonce: issueNonce(await issueTag(reg.s_u, ISSUE_ARID, r_rp)) });
+    const r_rp = randomScalar(), n = randomScalar();
+    const id_token = await stub.mint({ sub, nonce: issueNonce(await issueTag(reg.s_u, ISSUE_ARID, r_rp, n)) });
     const registration = { auid: reg.auid.toString() };
     const user = { uid: BigInt(uid), s_u: reg.s_u, auid: reg.auid, attrs: [...TESTUSER_ATTRS] };
-    return { uid, reg, r_rp, id_token, registration, user };
+    return { uid, reg, r_rp, n, id_token, registration, user };
   }
   await t('암묵 등록(issue 토큰 + registration{auid}, 발급 증명이 그 auid 로 맞음) → 200, 계정이 provider 로 생긴다', async () => {
     const v = await issueMaterial('google-sub-implicit-ok');
-    const { r } = await issueV11(cia, v.user, { arid: ISSUE_ARID, r_rp: v.r_rp, provider, overrides: { id_token: v.id_token, registration: v.registration } });
+    const { r } = await issueV11(cia, v.user, { arid: ISSUE_ARID, r_rp: v.r_rp, n: v.n, provider, overrides: { id_token: v.id_token, registration: v.registration } });
     assert.equal(r.status, 200, j(r.body));
     const mine = await accountOf(v.uid); assert.ok(mine, '계정이 생겨야 한다'); assert.equal(mine.provider, stub.provider); assert.equal(mine.auid, v.reg.auid.toString());
   });
@@ -91,15 +92,16 @@ try {
     const v = await issueMaterial(SUB);
     const a = await createRegistration(BigInt(v.uid));   // 공격자: 피해자 uid 로 자기 s_u — 자기 auid 에 대한 발급 증명은 유효하다
     const attacker = { uid: BigInt(v.uid), s_u: a.s_u, auid: a.auid, attrs: [...TESTUSER_ATTRS] };
-    const { r } = await issueV11(cia, attacker, { arid: ISSUE_ARID, r_rp: v.r_rp, provider, overrides: { id_token: v.id_token, registration: { auid: a.auid.toString() } } });
+    // 공격자는 피해자의 r_rp·n 까지 그대로 쓴다(요청 본문에서 볼 수 있는 값이다) — 그래도 s_u 가 달라 tag 가 다르다
+    const { r } = await issueV11(cia, attacker, { arid: ISSUE_ARID, r_rp: v.r_rp, n: v.n, provider, overrides: { id_token: v.id_token, registration: { auid: a.auid.toString() } } });
     assert.equal(r.status, 400, j(r.body)); assert.equal(r.body.reason, 'oidc_nonce_mismatch');   // 증명은 맞지만 tag 가 피해자 토큰의 것과 다르다
     assert.equal(await accountOf(v.uid), undefined, '공격자의 auid 로 계정이 생기면 안 된다');
     // 피해자의 auid 를 대면 공격자의 증명(다른 s_u)이 그 auid 로 검증되지 않는다 — nonce 대조까지 가지도 못한다
-    const forged = await issueV11(cia, attacker, { arid: ISSUE_ARID, r_rp: v.r_rp, provider, overrides: { id_token: v.id_token, registration: v.registration } });
+    const forged = await issueV11(cia, attacker, { arid: ISSUE_ARID, r_rp: v.r_rp, n: v.n, provider, overrides: { id_token: v.id_token, registration: v.registration } });
     assert.equal(forged.r.status, 400, j(forged.r.body)); assert.equal(forged.r.body.reason, 'bad_idp_proof');
     assert.equal(await accountOf(v.uid), undefined, '증명이 틀린 요청은 계정을 만들지 않는다');
     // 형식이 틀린 registration.auid 는 증명 검증 전에 400(상태 변경 없음)
-    const bad = await issueV11(cia, attacker, { arid: ISSUE_ARID, r_rp: v.r_rp, provider, overrides: { id_token: v.id_token, registration: { auid: 'nope' } } });
+    const bad = await issueV11(cia, attacker, { arid: ISSUE_ARID, r_rp: v.r_rp, n: v.n, provider, overrides: { id_token: v.id_token, registration: { auid: 'nope' } } });
     assert.equal(bad.r.status, 400, j(bad.r.body));
     assert.equal(await accountOf(v.uid), undefined);
     // 피해자는 여전히 자기 지갑으로 등록할 수 있다(uid 선점 안 됨)
@@ -131,15 +133,15 @@ try {
     const r0 = await cia.post('/cia/register', { uid: uid.toString(), pwd: 'alicepw', ...(await regBody(reg, uid.toString())) });   // alice(67890) 의 비밀번호
     assert.equal(r0.status, 201, j(r0.body));
     const user = { uid, s_u: reg.s_u, auid: reg.auid, attrs: [...TESTUSER_ATTRS] };
-    const issueWith = async (sub) => { const r_rp = randomScalar(); const id_token = await stub.mint({ sub, nonce: issueNonce(await issueTag(reg.s_u, ISSUE_ARID, r_rp)) }); return issueV11(cia, user, { arid: ISSUE_ARID, r_rp, provider, overrides: { id_token } }); };
+    const issueWith = async (sub) => { const r_rp = randomScalar(), n = randomScalar(); const id_token = await stub.mint({ sub, nonce: issueNonce(await issueTag(reg.s_u, ISSUE_ARID, r_rp, n)) }); return issueV11(cia, user, { arid: ISSUE_ARID, r_rp, n, provider, overrides: { id_token } }); };
     const { r: first } = await issueWith('google-link-A');
     assert.equal(first.status, 400, j(first.body)); assert.equal(first.body.reason, 'use_auth_window');
     const acc = (await cia.adminGet('/cia/accounts')).body; const mine = (acc.accounts ?? acc).find((a) => String(a.uid) === uid.toString());
     assert.equal(mine.provider, 'demo', '계정 종류는 그대로 demo');
     const { r: again } = await issueWith('google-link-A'); assert.equal(again.status, 400, j(again.body), '자동 연결이 없으므로 두 번째도 400');
     const ghost = await createRegistration(55556n);
-    const r_rp = randomScalar();
-    const { r: g } = await issueV11(cia, { uid: 55556n, s_u: ghost.s_u, auid: ghost.auid, attrs: [...TESTUSER_ATTRS] }, { arid: ISSUE_ARID, r_rp, provider, overrides: { id_token: await stub.mint({ sub: 'google-link-C', nonce: issueNonce(await issueTag(ghost.s_u, ISSUE_ARID, r_rp)) }) } });
+    const r_rp = randomScalar(), nG = randomScalar();
+    const { r: g } = await issueV11(cia, { uid: 55556n, s_u: ghost.s_u, auid: ghost.auid, attrs: [...TESTUSER_ATTRS] }, { arid: ISSUE_ARID, r_rp, n: nG, provider, overrides: { id_token: await stub.mint({ sub: 'google-link-C', nonce: issueNonce(await issueTag(ghost.s_u, ISSUE_ARID, r_rp, nG)) }) } });
     assert.equal(g.status, 403, j(g.body)); assert.equal(g.body.reason, 'uid_mismatch');
   });
 

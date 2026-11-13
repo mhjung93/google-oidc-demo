@@ -330,15 +330,16 @@ async function chooseUserCred(synced, src) {
 
 /** 세션 발급(V11 §5.2): C_u(blind_u)·C_s·π_IdP 를 한 요청으로. 200 이면 세션을 저장하고, 새 C_u 였으면 사용자 자격증명도 바꿔 앉힌다(옛 세션은 함께 버린다).
  *  id_token: Google 계정의 발급 토큰(issue:H(tag) nonce) — 그대로 /cia/issue 본문에 얹는다.
+ *  n: 발급 ctx 의 지갑 난수(2026-11-13). Google 계정은 /wallet/oidc/nonce 가 뽑아 토큰 nonce 에 쓴 값이어야 tag 가 맞는다 — 호출자가 정해 넘긴다.
  *  auth_code(Task 13): IdP 가 CIA_ISSUE_AUTH=code 로 떠 있을 때만 보는 1회용 코드 — 그대로 /cia/issue 본문에 얹는다(로그에 찍지 않는다). */
-async function issueSession({ arid, r_s, r_rp, pk_trace, allowAgent, factoryAddress, attrGateAddress, head, src, blind_u, auth_code = null, id_token = null, origin = null, serviceName = null }) {
+async function issueSession({ arid, r_s, r_rp, pk_trace, allowAgent, factoryAddress, attrGateAddress, head, src, blind_u, n, auth_code = null, id_token = null, origin = null, serviceName = null }) {
   const reg = src.registration();
   const session = createSessionKey();
   const chainid = await chainId();
   const ov = takeOverride('issue');   // 시연(설계 §8.3): 이번 발급의 s_u·uid 를 한 번만 덮어쓴다 — 가짜 auid 로 증명돼 IdP 가 bad_idp_proof 를 낸다
   const req = await buildIssueRequest({
     uid: BigInt(ov?.uid ?? reg.uid), s_u: BigInt(ov?.s_u ?? reg.s_u), blind_u, attrs: (reg.attrs ?? []).map(BigInt), arid: BigInt(arid), r_rp, r_s,
-    session, chainid, allowAgent: BigInt(allowAgent), max_height: chooseMaxHeight(head, { ttlBlocks: TTL_BLOCKS, grid: HEIGHT_GRID }),
+    session, chainid, allowAgent: BigInt(allowAgent), max_height: chooseMaxHeight(head, { ttlBlocks: TTL_BLOCKS, grid: HEIGHT_GRID }), n,
   });
   if (ov?.uid) req.body.uid = reg.uid;   // 요청 본문의 uid 는 진짜 — C_u·π_IdP 안의 uid 만 바뀐다(스펙 §8.3)
   if (auth_code) req.body.auth_code = auth_code;
@@ -640,7 +641,7 @@ app.post('/wallet/demo/override', (req, res) => {
 
 // OIDC 래퍼 nonce(2026-10-26 Snap OIDC 래퍼 §2; 2026-11-13 스펙 no-pk-u §3.3·§4.3): 지갑 페이지가 Google 버튼에 넣을 nonce 를 계산한다.
 // nonce 는 그 요청의 tag(= Poseidon(T_TAG, s_u, ctx))의 해시다 — 토큰이 이 지갑의 s_u 와 그 요청에 묶인다. s_u 는 계산에만 쓰고 저장·로그하지 않는다
-// (바로 다음 /wallet/register·/wallet/login 이 같은 s_u 를 보낸다). register 는 난수 n 을 뽑아 함께 돌려준다 — 페이지가 /wallet/register 에 다시 싣는다.
+// (바로 다음 /wallet/register·/wallet/login 이 같은 s_u 를 보낸다). register·issue 는 난수 n 을 뽑아 함께 돌려준다 — 페이지가 /wallet/register·/wallet/login 에 다시 싣는다.
 // CORS 없음(같은 오리진 전용).
 app.post('/wallet/oidc/nonce', async (req, res) => {
   try {
@@ -663,8 +664,9 @@ app.post('/wallet/oidc/nonce', async (req, res) => {
       // 이 등록의 s_u 가 아니면 tag 가 발급 요청의 것과 달라 IdP 가 oidc_nonce_mismatch 를 낸다 — Google 창을 띄우기 전에 여기서 알린다.
       if ((await auidOf({ uid: BigInt(reg.uid), s_u: BigInt(su) })).toString() !== String(reg.auid)) return res.status(409).json({ reason: 'secrets_mismatch', detail: '이 s_u 는 에이전트 등록의 것이 아니다' });
       const arid_s = await aridSOf({ arid: BigInt(arid), r_rp: BigInt(r_rp) });
-      const tag = await tagOf({ s_u: BigInt(su), ctx: await issueCtx({ arid_s, chainid: await chainId(), allowAgent: BigInt(allowAgent) }) });
-      return res.json({ nonce: issueNonce(tag) });
+      const n = randomScalar();   // 발급 ctx 의 지갑 난수(2026-11-13) — RP 가 r_rp 를 되풀이해도 tag 가 요청마다 다르다
+      const tag = await tagOf({ s_u: BigInt(su), ctx: await issueCtx({ arid_s, chainid: await chainId(), allowAgent: BigInt(allowAgent), n }) });
+      return res.json({ nonce: issueNonce(tag), n: n.toString() });
     }
     if (purpose === 'revoke') return res.json({ nonce: newRevokeNonce() });
     res.status(400).json({ reason: 'bad_purpose', detail: 'purpose 는 register·issue·revoke' });
@@ -804,12 +806,17 @@ app.post('/wallet/authorize/precheck', async (req, res) => {
 app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
   let src = null;   // 바깥 catch 도 src.pending 을 싣도록 try 밖에 둔다(리뷰 S3)
   try {
-    const { arid, origin, cert_s, pk_trace, r_s, r_rp, allowAgent = '0', factoryAddress = null, attrGateAddress = null, witness = null, verifiedOrigin = null, disclose = null, set = null, auth_code = null, id_token = null, serviceName = null } = req.body ?? {};
+    const { arid, origin, cert_s, pk_trace, r_s, r_rp, allowAgent = '0', factoryAddress = null, attrGateAddress = null, witness = null, verifiedOrigin = null, disclose = null, set = null, auth_code = null, id_token = null, n: nIn = null, serviceName = null } = req.body ?? {};
     // 2026-11-05: 세션 카드 표기용 RP 이름 — 선택 항목, 문자열이 아니거나 비면 null, 개행·제어문자 제거 뒤 48자까지만 둔다.
     const svcName = typeof serviceName === 'string' ? [...serviceName.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim()].slice(0, 48).join('') || null : null;
     if (!isDec(arid) || typeof origin !== 'string' || !cert_s || !pk_trace || !isDec(pk_trace.x) || !isDec(pk_trace.y) || !isDec(r_s) || !isDec(r_rp)) return res.status(400).json({ error: 'arid, origin, cert_s, pk_trace{x,y}, r_s, r_rp 필요' });
     if (allowAgent !== '0' && allowAgent !== '1') return res.status(400).json({ error: 'allowAgent 는 "0" 또는 "1"' });
     if (id_token !== null && typeof id_token !== 'string') return res.status(400).json({ error: 'id_token 은 문자열' });
+    // 발급 ctx 의 지갑 난수 n(2026-11-13): Google 계정은 /wallet/oidc/nonce 가 뽑아 토큰 nonce 에 쓴 값을 다시 실어야 한다(다르면 IdP 가 oidc_nonce_mismatch 를 낸다).
+    // 그 밖은 여기서 뽑는다. cred_revoked 재시도도 같은 n 을 쓴다(같은 로그인 — 토큰이 묶인 tag 가 그대로다).
+    if (nIn !== null && !(isDec(nIn) && BigInt(nIn) < SCALAR_MAX)) return res.status(400).json({ error: 'n 은 10진, 2^250 미만' });
+    if (id_token !== null && nIn === null) return res.status(400).json({ error: 'id_token 로그인은 n(/wallet/oidc/nonce 가 준 값) 필요' });
+    const issueN = nIn !== null ? BigInt(nIn) : randomScalar();
     if (factoryAddress !== null && !isAddr(factoryAddress)) return res.status(400).json({ error: 'factoryAddress 는 주소' });
     // attrGateAddress 는 RP 가 알려주는 값을 세션에 실어 나를 뿐 지갑이 검증하지 않는다(스펙 §6.1) — 지갑 폼 기본값(to)으로만 쓰인다.
     if (attrGateAddress !== null && !isAddr(attrGateAddress)) return res.status(400).json({ error: 'attrGateAddress 는 주소' });
@@ -892,7 +899,7 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     const pick = await chooseUserCred(synced, src);
     if (pick.status === 403) return res.status(403).json({ reason: pick.reason, ...(pick.registry ? { registry: pick.registry } : {}), timings });
     t = Date.now();
-    const issued = await issueSession({ arid, r_s: rs, r_rp: rrp, pk_trace: { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress: factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress: attrGateAddress ? ethers.getAddress(attrGateAddress) : null, head: synced.head, src, blind_u: pick.blind_u, auth_code, id_token, origin, serviceName: svcName });
+    const issued = await issueSession({ arid, r_s: rs, r_rp: rrp, pk_trace: { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress: factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress: attrGateAddress ? ethers.getAddress(attrGateAddress) : null, head: synced.head, src, blind_u: pick.blind_u, n: issueN, auth_code, id_token, origin, serviceName: svcName });
     timings.issueMs = Date.now() - t;
     timings.userCredMs = pick.fresh ? timings.issueMs : 0;   // 새 C_u 를 받은 로그인만 0 이 아니다(옛 의미 유지 — 테스트·화면이 본다)
     let r = issued.r, demo = issued.demo;
@@ -903,7 +910,7 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
       // auth_code 는 1회용이라 첫 시도에서 이미 소비됐을 수 있다(IdP 는 π_IdP 검증 뒤에 소비한다 — cred_revoked 는 그 뒤에만
       // 난다) — 재시도가 같은 코드를 다시 쓰면 bad_code 로 막힐 수 있다. 코드 재발급은 이 흐름 밖(인증 창)이라 여기서는
       // 그대로 한 번 더 건네는 것 이상은 하지 않는다(알려진 한계 — 보고서에 남긴다).
-      const retried = await issueSession({ arid, r_s: rs, r_rp: rrp, pk_trace: { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress: factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress: attrGateAddress ? ethers.getAddress(attrGateAddress) : null, head: synced.head, src, blind_u: randomScalar(), auth_code, id_token, origin, serviceName: svcName });
+      const retried = await issueSession({ arid, r_s: rs, r_rp: rrp, pk_trace: { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress: factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress: attrGateAddress ? ethers.getAddress(attrGateAddress) : null, head: synced.head, src, blind_u: randomScalar(), n: issueN, auth_code, id_token, origin, serviceName: svcName });
       const retryMs = Date.now() - t;
       timings.issueMs += retryMs;
       timings.userCredMs = retryMs;

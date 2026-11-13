@@ -107,22 +107,22 @@ try {
 
   await t('login: id_token 없으면 IdP 401 oidc_required 를 그대로; 다른 로그인(r_rp)의 nonce 토큰은 502 cia.reason=oidc_nonce_mismatch; 다른 계정 토큰은 403 uid_mismatch·못 읽는 토큰은 400; 맞는 토큰은 200', async () => {
     const w = () => sim.consentLogin({ origin: info.origin, arid: info.arid, allowAgent: '0' });
-    // 발급 nonce 요청: 그 로그인의 arid·r_rp·allowAgent 와, 페이지가 방금 받은 로그인 증인의 s_u(Ruling R2)
+    // 발급 nonce 요청: 그 로그인의 arid·r_rp·allowAgent 와, 페이지가 방금 받은 로그인 증인의 s_u(Ruling R2). 응답 { nonce, n } — n 은 /wallet/login 에 다시 싣는다(2026-11-13)
     const issueNonceReq = (b, over = {}) => wallet.post('/wallet/oidc/nonce', { purpose: 'issue', arid: b.arid, r_rp: b.r_rp, allowAgent: '0', s_u: w().s_u, ...over });
     const b0 = await loginBase();
     const no = await wallet.post('/wallet/login', { ...b0, witness: w() });
     assert.equal(no.status, 401, j(no.body)); assert.equal(no.body.reason, 'oidc_required');
     const b1 = await loginBase();
-    const nOther = (await issueNonceReq(b0)).body.nonce;
-    const mm = await wallet.post('/wallet/login', { ...b1, witness: w(), id_token: await mint({ sub: SUB, nonce: nOther }) });
+    const nOther = (await issueNonceReq(b0)).body;
+    const mm = await wallet.post('/wallet/login', { ...b1, witness: w(), id_token: await mint({ sub: SUB, nonce: nOther.nonce }), n: nOther.n });
     assert.equal(mm.status, 502, j(mm.body)); assert.equal(mm.body.cia?.reason, 'oidc_nonce_mismatch');
     if (mm.body.userCredIssued !== undefined) sim.updateUserCred(mm.body.userCredIssued);
     // 최종 리뷰 I1: 올바른 nonce 라도 다른 Google 계정의 토큰이면 account_disabled 가 아니라 403 uid_mismatch(체인 작업 전에 에이전트가 끝낸다)
     const bx = await loginBase();
-    const nx = (await issueNonceReq(bx)).body.nonce;
-    const wrongAcct = await wallet.post('/wallet/login', { ...bx, witness: w(), id_token: await mint({ sub: 'someone-else', nonce: nx }) });
+    const nx = (await issueNonceReq(bx)).body;
+    const wrongAcct = await wallet.post('/wallet/login', { ...bx, witness: w(), id_token: await mint({ sub: 'someone-else', nonce: nx.nonce }), n: nx.n });
     assert.equal(wrongAcct.status, 403, j(wrongAcct.body)); assert.equal(wrongAcct.body.reason, 'uid_mismatch');
-    const unreadable = await wallet.post('/wallet/login', { ...bx, witness: w(), id_token: 'not-a-jwt' });
+    const unreadable = await wallet.post('/wallet/login', { ...bx, witness: w(), id_token: 'not-a-jwt', n: nx.n });
     assert.equal(unreadable.status, 400, j(unreadable.body)); assert.equal(unreadable.body.reason, 'bad_id_token');
     const b2 = await loginBase();
     const n = await issueNonceReq(b2);
@@ -130,13 +130,18 @@ try {
     const reg = JSON.parse(stateFile()).registration;
     assert.equal('pk_u' in reg, false, '에이전트 파일에 등록 키가 없다');
     const arid_s = await aridSOf({ arid: BigInt(b2.arid), r_rp: BigInt(b2.r_rp) });
-    assert.equal(n.body.nonce, issueNonce(await tagOf({ s_u: BigInt(w().s_u), ctx: await issueCtx({ arid_s, chainid: 31337n, allowAgent: 0n }) })));
+    assert.match(n.body.n, /^[0-9]+$/);
+    assert.equal(n.body.nonce, issueNonce(await tagOf({ s_u: BigInt(w().s_u), ctx: await issueCtx({ arid_s, chainid: 31337n, allowAgent: 0n, n: BigInt(n.body.n) }) })));
+    const nAgain = await issueNonceReq(b2);
+    assert.notEqual(nAgain.body.n, n.body.n); assert.notEqual(nAgain.body.nonce, n.body.nonce, '같은 로그인(같은 r_rp)이라도 지갑 난수 n 때문에 tag 가 매번 다르다');
     // 같은 arid·r_rp 라도 allowAgent 가 다르면 다른 로그인이다(ctx 에 든다); 이 등록의 것이 아닌 s_u 는 Google 창을 띄우기 전에 거절
     assert.notEqual((await issueNonceReq(b2, { allowAgent: '1' })).body.nonce, n.body.nonce);
     const wrongSu = await issueNonceReq(b2, { s_u: createSnapSim({ srp: 'other-srp' }).prepareRegister().s_u });
     assert.equal(wrongSu.status, 409, j(wrongSu.body)); assert.equal(wrongSu.body.reason, 'secrets_mismatch');
     const tok2 = await mint({ sub: SUB, nonce: n.body.nonce });
-    const ok = await stack.withRelay(() => wallet.post('/wallet/login', { ...b2, witness: w(), id_token: tok2 }));
+    const noN = await wallet.post('/wallet/login', { ...b2, witness: w(), id_token: tok2 });
+    assert.equal(noN.status, 400, 'id_token 로그인은 n 필수');
+    const ok = await stack.withRelay(() => wallet.post('/wallet/login', { ...b2, witness: w(), id_token: tok2, n: n.body.n }));
     assert.equal(ok.status, 200, j(ok.body)); assert.equal(ok.body.issued, true);
     if (ok.body.userCredIssued) sim.updateUserCred(ok.body.userCredIssued);
   });
@@ -149,8 +154,8 @@ try {
     const ok = await wallet.post('/wallet/self_revoke', { id_token: await mint({ sub: SUB, nonce: await nr() }) });
     assert.equal(ok.status, 200, j(ok.body));
     const b = await loginBase();
-    const n = (await wallet.post('/wallet/oidc/nonce', { purpose: 'issue', arid: b.arid, r_rp: b.r_rp, allowAgent: '0', s_u: sim.consentLogin({ origin: info.origin, arid: info.arid, allowAgent: '0' }).s_u })).body.nonce;
-    const after = await wallet.post('/wallet/login', { ...b, witness: sim.consentLogin({ origin: info.origin, arid: info.arid, allowAgent: '0' }), id_token: await mint({ sub: SUB, nonce: n }) });
+    const n = (await wallet.post('/wallet/oidc/nonce', { purpose: 'issue', arid: b.arid, r_rp: b.r_rp, allowAgent: '0', s_u: sim.consentLogin({ origin: info.origin, arid: info.arid, allowAgent: '0' }).s_u })).body;
+    const after = await wallet.post('/wallet/login', { ...b, witness: sim.consentLogin({ origin: info.origin, arid: info.arid, allowAgent: '0' }), id_token: await mint({ sub: SUB, nonce: n.nonce }), n: n.n });
     assert.equal(after.status, 403, j(after.body)); assert.equal(after.body.reason, 'account_disabled');
   });
 

@@ -17,7 +17,7 @@ export async function buildIdpInput({ attrs = IDP_FIXTURE.attrs, maxHeight = IDP
   const auid = await auidOf({ uid, s_u });
   const auid_s = await auidSOf({ auid, arid, r_rp });
   const arid_s = await aridSOf({ arid, r_rp });
-  const c = ctx ?? await issueCtx({ arid_s, chainid: 31337n, allowAgent: 0n });   // 기본은 발급 요청의 ctx
+  const c = ctx ?? await issueCtx({ arid_s, chainid: 31337n, allowAgent: 0n, n: 14141414141414141414n });   // 기본은 발급 요청의 ctx(n 은 고정 픽스처 값)
   const tag = await tagOf({ s_u, ctx: c });
   const input = {
     s_u: s_u.toString(), blind_u: blind_u.toString(), attrs: a.map(String), arid: arid.toString(), r_rp: r_rp.toString(), pk_i: pk_i.toString(), r_s: r_s.toString(),

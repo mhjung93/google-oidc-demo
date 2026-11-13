@@ -619,17 +619,22 @@ try {
     assert.equal((await cia.post('/cia/slot', { uid: a.uidStr, nonce: '1' })).status, 400, '증명 없음');
   });
 
-  await t('발급: tag·allowAgent·arid_s 중 하나만 바꿔도 bad_idp_proof; 등록용 ctx 로 만든 tag 도 거절; tag 가 없으면 400; sig_u 는 요구하지 않는다', async () => {
+  await t('발급: tag·allowAgent·arid_s·n 중 하나만 바꿔도 bad_idp_proof; 등록용 ctx 로 만든 tag 도 거절; tag·n 이 없으면 400; 같은 r_rp 를 되풀이해도 tag 가 다르다; sig_u 는 요구하지 않는다', async () => {
     const a = await fresh(); await cia.post('/cia/register', { uid: a.uidStr, pwd: a.pwd, ...(await regBody(a.reg, a.uidStr)) });
     const ok = await issueV11(cia, a.user, { arid, provider });
     assert.equal(ok.r.status, 200, JSON.stringify(ok.r.body)); assert.equal('sig_u' in ok.req.body, false);
-    for (const [label, patch] of [['allowAgent', { allowAgent: '1' }], ['arid_s', { arid_s: (BigInt(ok.req.body.arid_s) + 1n).toString() }], ['tag', { tag: (BigInt(ok.req.body.tag) + 1n).toString() }]]) {
+    for (const [label, patch] of [['allowAgent', { allowAgent: '1' }], ['arid_s', { arid_s: (BigInt(ok.req.body.arid_s) + 1n).toString() }], ['tag', { tag: (BigInt(ok.req.body.tag) + 1n).toString() }], ['n', { n: (BigInt(ok.req.body.n) + 1n).toString() }]]) {
       badProof((await issueV11(cia, a.user, { arid, provider, overrides: patch })).r, label);
     }
     const regTag = await tagOf({ s_u: a.reg.s_u, ctx: await registerCtx({ n: 1n }) });
     badProof((await issueV11(cia, a.user, { arid, provider, overrides: { tag: regTag.toString() } })).r, '등록용 ctx 의 tag');
     const noTag = await issueV11(cia, a.user, { arid, provider, overrides: { tag: undefined } });
     assert.equal(noTag.r.status, 400, 'tag 없음');
+    assert.equal((await issueV11(cia, a.user, { arid, provider, overrides: { n: undefined } })).r.status, 400, 'n 없음');
+    assert.equal((await issueV11(cia, a.user, { arid, provider, overrides: { n: F.p.toString() } })).r.status, 400, 'n 이 필드 밖');
+    // 2026-11-13(사용자 결정): RP 가 같은 r_rp 를 다시 줘도(같은 arid_s) 지갑 난수 n 때문에 IdP 가 보는 tag 는 요청마다 다르다 — 둘 다 발급된다
+    const again = await issueV11(cia, a.user, { arid, provider, r_rp: ok.r_rp, blind_u: ok.blind_u });
+    assert.equal(again.r.status, 200, JSON.stringify(again.r.body)); assert.equal(again.req.body.arid_s, ok.req.body.arid_s); assert.notEqual(again.req.body.tag, ok.req.body.tag);
   });
 
   await t('세션 폐기(사용자 경로): 맞는 증명 200; bound·Cf_s·nonce 를 바꾸면 bad_idp_proof; 슬롯 조회용 증명은 거절; 증명 없이는 401', async () => {
