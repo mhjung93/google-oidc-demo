@@ -9,9 +9,10 @@ include "lib/mode3_commit.circom";
 //   ② auid   = Poseidon(T_AUID, uid, s_u)                        — IdP DB 의 auid 와 같은가
 //   ③ auid_s = Poseidon(T_AUIDS, auid, arid, r_rp)               — 토큰에 들어갈 세션 가명이 정형인가(D3·D7)
 //   ④ C_s = pk_i·G_PK + max_height·G_EXP + r_s·G_RS + r_rp·H      — ③ 과 **같은 r_rp**(세션 가명과 세션 커밋의 결합)
+//   ⑤ tag = Poseidon(T_TAG, s_u, ctx)                             — 이 증명을 요청(ctx)에 묶는다(스펙 2026-11-12 no-pk-u §2). ctx 의 내용은 회로 밖.
 // 비공개: s_u, blind_u, attrs[6], arid, r_rp, pk_i, r_s — arid·r_rp 가 비공개라 IdP 는 RP 를 알아보지 못한다(G4).
 // 공개 입력 순서는 lib/mode3_idp_proof.js IDP_PUB_INDEX 와 cia.js 의 조립 순서가 의존한다. 바꾸지 말 것:
-//   [0] uid [1] auid [2] auid_s [3] C_u_x [4] C_u_y [5] C_s_x [6] C_s_y [7] max_height
+//   [0] uid [1] auid [2] auid_s [3] C_u_x [4] C_u_y [5] C_s_x [6] C_s_y [7] max_height [8] ctx [9] tag
 // 온체인에 가지 않는다(IdP 만 검증, §6).
 template PiIdp() {
     // ---- Private ----
@@ -31,9 +32,12 @@ template PiIdp() {
     signal input C_s_x;
     signal input C_s_y;
     signal input max_height;
+    signal input ctx;
+    signal input tag;
 
     var DOMAIN_MODE3_AUID  = 1426111059989489862980;     // ASCII "MODE3AUID"  — lib/mode3_credential.js DOMAIN_MODE3_AUID
     var DOMAIN_MODE3_AUIDS = 365084431357309404922963;   // ASCII "MODE3AUIDS" — DOMAIN_MODE3_AUIDS
+    var DOMAIN_MODE3_TAG   = 5570746328085184839;        // ASCII "MODE3TAG"   — DOMAIN_MODE3_TAG
 
     // ① C_u 재계산
     component cu = CommitUser();
@@ -57,6 +61,11 @@ template PiIdp() {
     cs.pk_i <== pk_i;  cs.max_height <== max_height;  cs.r_s <== r_s;  cs.r_rp <== r_rp;
     C_s_x === cs.Cx;
     C_s_y === cs.Cy;
+
+    // ⑤ tag — ② 와 같은 s_u. ctx 는 공개 입력으로만 들어온다.
+    component th = Poseidon(3);
+    th.inputs[0] <== DOMAIN_MODE3_TAG;  th.inputs[1] <== s_u;  th.inputs[2] <== ctx;
+    tag === th.out;
 }
 
-component main {public [uid, auid, auid_s, C_u_x, C_u_y, C_s_x, C_s_y, max_height]} = PiIdp();
+component main {public [uid, auid, auid_s, C_u_x, C_u_y, C_s_x, C_s_y, max_height, ctx, tag]} = PiIdp();

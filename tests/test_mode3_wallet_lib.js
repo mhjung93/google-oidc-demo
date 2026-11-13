@@ -47,22 +47,24 @@ await t('buildCredentialProof: counter 가 [0, 2^32) bigint 가 아니면(2^32·
   await assert.rejects(() => buildCredentialProof({ ...base, counter: 1n << 32n }), /counter/, '상한');
   await assert.rejects(() => buildCredentialProof({ ...base, counter: 5 }), /counter/, 'bigint 가 아닌 number');
 });
-await t('idpPublicSignals: 8개 10진 문자열, 순서 = IDP_PUB_INDEX; 범위 밖은 throw', () => {
-  const pub = idpPublicSignals({ uid: 1n, auid: 2n, auid_s: 3n, C_u_pt: { x: 4n, y: 5n }, C_s_pt: { x: 6n, y: 7n }, max_height: 8n });
-  assert.deepEqual(pub, ['1', '2', '3', '4', '5', '6', '7', '8']); assert.equal(IDP_PUB_INDEX.COUNT, 8); assert.equal(pub[IDP_PUB_INDEX.MAX_HEIGHT], '8');
-  assert.throws(() => idpPublicSignals({ uid: SCALAR_MAX, auid: 2n, auid_s: 3n, C_u_pt: { x: 4n, y: 5n }, C_s_pt: { x: 6n, y: 7n }, max_height: 8n }), /uid/);
-  assert.throws(() => idpPublicSignals({ uid: 1n, auid: 2n, auid_s: 3n, C_u_pt: { x: 4n, y: 5n }, C_s_pt: { x: 6n, y: 7n }, max_height: 1n << 64n }), /max_height/);
+await t('idpPublicSignals: 10개 10진 문자열, 순서 = IDP_PUB_INDEX; 범위 밖은 throw', () => {
+  const pub = idpPublicSignals({ uid: 1n, auid: 2n, auid_s: 3n, C_u_pt: { x: 4n, y: 5n }, C_s_pt: { x: 6n, y: 7n }, max_height: 8n, ctx: 9n, tag: 10n });
+  assert.deepEqual(pub, ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10']); assert.equal(IDP_PUB_INDEX.COUNT, 10); assert.equal(pub[IDP_PUB_INDEX.MAX_HEIGHT], '8');
+  assert.equal(pub[IDP_PUB_INDEX.CTX], '9'); assert.equal(pub[IDP_PUB_INDEX.TAG], '10');
+  assert.throws(() => idpPublicSignals({ uid: SCALAR_MAX, auid: 2n, auid_s: 3n, C_u_pt: { x: 4n, y: 5n }, C_s_pt: { x: 6n, y: 7n }, max_height: 8n, ctx: 9n, tag: 10n }), /uid/);
+  assert.throws(() => idpPublicSignals({ uid: 1n, auid: 2n, auid_s: 3n, C_u_pt: { x: 4n, y: 5n }, C_s_pt: { x: 6n, y: 7n }, max_height: 1n << 64n, ctx: 9n, tag: 10n }), /max_height/);
+  assert.throws(() => idpPublicSignals({ uid: 1n, auid: 2n, auid_s: 3n, C_u_pt: { x: 4n, y: 5n }, C_s_pt: { x: 6n, y: 7n }, max_height: 8n, ctx: 9n }), /ctx·tag/);
 });
 // 리뷰(2026-10-13) 테스트 공백: verifyIdp 의 입력 검사 음성 케이스. vkey 는 접근을 기록하는 Proxy 다 — 형식 검사에서 거절되면 snarkjs 까지 가지
-// 않으므로 touched 가 false 로 남는다(snarkjs 가 던져서 false 가 된 것과 구별된다). 대조군(정규 8개)은 snarkjs 까지 가서 vkey 를 읽는다.
-await t('verifyIdp: 길이 7·9, 앞자리 0, 10진 아님(음수·0x·공백·숫자형)은 snarkjs 전에 false; 증명이 객체가 아니면 false', async () => {
+// 않으므로 touched 가 false 로 남는다(snarkjs 가 던져서 false 가 된 것과 구별된다). 대조군(정규 10개)은 snarkjs 까지 가서 vkey 를 읽는다.
+await t('verifyIdp: 길이 8·9·11, 앞자리 0, 10진 아님(음수·0x·공백·숫자형)은 snarkjs 전에 false; 증명이 객체가 아니면 false', async () => {
   let touched = false;
   const vkey = new Proxy({}, { get: (o, k) => { touched = true; return undefined; }, ownKeys: () => { touched = true; return []; }, has: () => { touched = true; return false; } });
-  const good = ['1', '2', '3', '4', '5', '6', '7', '8'];
+  const good = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'];
   const proof = { pi_a: ['1', '2', '1'], pi_b: [['1', '2'], ['3', '4'], ['1', '0']], pi_c: ['1', '2', '1'], protocol: 'groth16', curve: 'bn128' };
   const bad = [
-    ['길이 7', good.slice(0, 7)], ['길이 9', [...good, '9']], ['배열 아님', '1,2,3,4,5,6,7,8'],
-    ['앞자리 0', ['01', ...good.slice(1)]], ['앞자리 0(뒤쪽)', [...good.slice(0, 7), '007']],
+    ['길이 9', good.slice(0, 9)], ['길이 11', [...good, '11']], ['길이 8(옛 형식)', good.slice(0, 8)], ['배열 아님', '1,2,3,4,5,6,7,8,9,10'],
+    ['앞자리 0', ['01', ...good.slice(1)]], ['앞자리 0(뒤쪽)', [...good.slice(0, 9), '007']],
     ['음수', ['-1', ...good.slice(1)]], ['0x', ['0x1', ...good.slice(1)]], ['공백', [' 1', ...good.slice(1)]], ['+', ['+1', ...good.slice(1)]],
     ['빈 문자열', ['', ...good.slice(1)]], ['숫자형', [1, ...good.slice(1)]], ['bigint', [1n, ...good.slice(1)]],
   ];
@@ -72,7 +74,7 @@ await t('verifyIdp: 길이 7·9, 앞자리 0, 10진 아님(음수·0x·공백·�
     assert.equal(touched, false, `${label}: 형식 검사에서 거절돼 vkey 를 읽지 않아야 한다`);
   }
   for (const p of [null, undefined, 'proof', 7]) { touched = false; assert.equal(await verifyIdp(vkey, good, p), false, String(p)); assert.equal(touched, false, `proof=${String(p)}`); }
-  // 대조군: 정규 8개·객체 증명은 형식 검사를 지나 snarkjs 가 vkey 를 읽는다(가짜 vkey 라 결과는 false — 예외는 삼킨다)
+  // 대조군: 정규 10개·객체 증명은 형식 검사를 지나 snarkjs 가 vkey 를 읽는다(가짜 vkey 라 결과는 false — 예외는 삼킨다)
   touched = false;
   assert.equal(await verifyIdp(vkey, good, proof), false);
   assert.equal(touched, true, '정규 입력은 snarkjs 까지 가야 한다(위 거절들이 형식 검사 덕임을 보이는 대조군)');
@@ -91,10 +93,10 @@ await t('R7: proveIdp 는 fullProve 를 주입받는다 — 회로 입력 전부
   const { proveIdp } = await import('../lib/mode3_idp_proof.js');
   const calls = [];
   const stub = async (input, wasmPath, zkeyPath) => { calls.push({ input, wasmPath, zkeyPath }); return { proof: { pi_a: ['stub'] }, publicSignals: ['1', '2'] }; };
-  const out = await proveIdp({ uid: 12345n, s_u: 7n, blind_u: 8n, attrs: [1990n, 410n], arid: 3n, r_rp: 4n, pk_i: 5n, r_s: 6n, auid: 9n, auid_s: 10n, C_u_pt: { x: 1n, y: 2n }, C_s_pt: { x: 3n, y: 4n }, max_height: 100n, wasmPath: 'W', zkeyPath: 'Z', fullProve: stub });
+  const out = await proveIdp({ uid: 12345n, s_u: 7n, blind_u: 8n, attrs: [1990n, 410n], arid: 3n, r_rp: 4n, pk_i: 5n, r_s: 6n, auid: 9n, auid_s: 10n, C_u_pt: { x: 1n, y: 2n }, C_s_pt: { x: 3n, y: 4n }, max_height: 100n, ctx: 11n, tag: 12n, wasmPath: 'W', zkeyPath: 'Z', fullProve: stub });
   assert.deepEqual(out, { proof: { pi_a: ['stub'] }, publicSignals: ['1', '2'] });
   assert.equal(calls.length, 1); assert.equal(calls[0].wasmPath, 'W'); assert.equal(calls[0].zkeyPath, 'Z');
-  assert.deepEqual(Object.keys(calls[0].input).sort(), ['C_s_x', 'C_s_y', 'C_u_x', 'C_u_y', 'arid', 'attrs', 'auid', 'auid_s', 'blind_u', 'max_height', 'pk_i', 'r_rp', 'r_s', 's_u', 'uid']);
+  assert.deepEqual(Object.keys(calls[0].input).sort(), ['C_s_x', 'C_s_y', 'C_u_x', 'C_u_y', 'arid', 'attrs', 'auid', 'auid_s', 'blind_u', 'ctx', 'max_height', 'pk_i', 'r_rp', 'r_s', 's_u', 'tag', 'uid']);
   assert.deepEqual(calls[0].input.attrs, ['1990', '410', '0', '0', '0', '0']);
 });
 await t('R7: buildIssueRequest 는 fullProve 를 proveIdp 에 넘긴다(기본값이면 snarkjs 를 부른다 — 여기서는 스텁으로 호출만 확인)', async () => {

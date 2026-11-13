@@ -1,4 +1,4 @@
-// 배포용 산출물(build/mode3)이 지금의 회로 소스에서 나온 것인가 — pi_cred(V11, 공개 33)·pi_idp(공개 8). (circuit 그룹)
+// 배포용 산출물(build/mode3)이 지금의 회로 소스에서 나온 것인가 — pi_cred(V11, 공개 33)·pi_idp(공개 10). (circuit 그룹)
 //   node tests/test_mode3_artifacts.mjs
 // 2026-09-25 리뷰 E-3: 회로를 고쳐도 `bash scripts/build_mode3_circuit.sh` 를 안 돌리면 zkey·vkey·wasm 은 옛 회로의 것으로 남는데,
 // 테스트는 대부분 배포용 산출물로 증명을 만들어 검증하므로 전부 초록색이다. 여기서 둘을 잇는다.
@@ -77,7 +77,7 @@ const CIRCUITS = {
     indexNote: 'contracts/Mode3Wallet.sol·lib/mode3_rp.js·lib/mode3_onchain.js·cia.js',
   },
   // lib/mode3_idp_proof.js IDP_PUB_INDEX·cia.js 의 공개 입력 조립 순서
-  pi_idp: { publicInputs: ['uid', 'auid', 'auid_s', 'C_u_x', 'C_u_y', 'C_s_x', 'C_s_y', 'max_height'], indexNote: 'lib/mode3_idp_proof.js·cia.js' },
+  pi_idp: { publicInputs: ['uid', 'auid', 'auid_s', 'C_u_x', 'C_u_y', 'C_s_x', 'C_s_y', 'max_height', 'ctx', 'tag'], indexNote: 'lib/mode3_idp_proof.js·cia.js' },
 };
 
 for (const [name, spec] of Object.entries(CIRCUITS)) {
@@ -137,7 +137,7 @@ await t('E-3 PUB_INDEX 의 색인이 pi_cred 회로의 실제 공개 입력 이�
 });
 await t('E-3 IDP_PUB_INDEX 의 색인이 pi_idp 회로의 실제 공개 입력 이름을 정확히 가리킨다', () => {
   const names = CIRCUITS.pi_idp.publicInputs;
-  const expect = { UID: 'uid', AUID: 'auid', AUID_S: 'auid_s', C_U_X: 'C_u_x', C_U_Y: 'C_u_y', C_S_X: 'C_s_x', C_S_Y: 'C_s_y', MAX_HEIGHT: 'max_height' };
+  const expect = { UID: 'uid', AUID: 'auid', AUID_S: 'auid_s', C_U_X: 'C_u_x', C_U_Y: 'C_u_y', C_S_X: 'C_s_x', C_S_Y: 'C_s_y', MAX_HEIGHT: 'max_height', CTX: 'ctx', TAG: 'tag' };
   for (const [key, name] of Object.entries(expect)) assert.equal(names[IDP_PUB_INDEX[key]], name, `IDP_PUB_INDEX.${key} → pub[${IDP_PUB_INDEX[key]}]`);
 });
 process.exit(failed === 0 ? 0 : 1);

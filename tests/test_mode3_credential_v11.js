@@ -6,6 +6,8 @@ import {
   userCommit, sessionCommit, credMessageV11, compressPoint, auidOf, auidSOf, aridSOf, ppid, normalizeAttrs,
   PEDERSEN_GENERATORS, SCALAR_MAX, PK_I_MAX, MAX_HEIGHT_MAX, ATTR_SLOTS,
   DOMAIN_MODE3_CRED_V11, DOMAIN_MODE3_AUID, DOMAIN_MODE3_AUIDS, DOMAIN_MODE3_ARIDS,
+  DOMAIN_MODE3_TAG, DOMAIN_MODE3_CTX_ISSUE, DOMAIN_MODE3_CTX_REG, DOMAIN_MODE3_CTX_SLOT, DOMAIN_MODE3_CTX_REVOKE,
+  issueCtx, registerCtx, slotCtx, revokeSessionCtx, tagOf,
 } from '../lib/mode3_credential.js';
 import { sessionLeaf, TAG_MODE3_SESSION } from '../lib/mode3_revocation.js';
 
@@ -27,6 +29,41 @@ await t('도메인 상수는 ASCII 빅엔디언이다', () => {
   assert.equal(DOMAIN_MODE3_AUIDS, be('MODE3AUIDS'));
   assert.equal(DOMAIN_MODE3_ARIDS, be('MODE3ARIDS'));
   assert.equal(PK_I_MAX, 1n << 160n);
+});
+
+// 2026-11-13(스펙 2026-11-12 no-pk-u §2·§3.1): 요청 인증은 π_IdP 의 ctx·tag — 용도마다 다른 도메인.
+await t('ctx·tag 도메인 상수는 ASCII 빅엔디언이고 서로 다르다', () => {
+  assert.equal(DOMAIN_MODE3_TAG, be('MODE3TAG'));
+  assert.equal(DOMAIN_MODE3_CTX_ISSUE, be('MODE3CTXISSUE'));
+  assert.equal(DOMAIN_MODE3_CTX_REG, be('MODE3CTXREG'));
+  assert.equal(DOMAIN_MODE3_CTX_SLOT, be('MODE3CTXSLOT'));
+  assert.equal(DOMAIN_MODE3_CTX_REVOKE, be('MODE3CTXREVOKE'));
+  assert.equal(new Set([DOMAIN_MODE3_TAG, DOMAIN_MODE3_CTX_ISSUE, DOMAIN_MODE3_CTX_REG, DOMAIN_MODE3_CTX_SLOT, DOMAIN_MODE3_CTX_REVOKE]).size, 5);
+});
+await t('ctx 넷 = 도메인이 앞에 붙은 Poseidon — 같은 숫자라도 용도가 다르면 값이 다르다', async () => {
+  assert.equal(await issueCtx({ arid_s: 7n, chainid: 31337n, allowAgent: 1n }), H([DOMAIN_MODE3_CTX_ISSUE, 7n, 31337n, 1n]));
+  assert.equal(await registerCtx({ n: 7n }), H([DOMAIN_MODE3_CTX_REG, 7n]));
+  assert.equal(await slotCtx({ nonce: 7n }), H([DOMAIN_MODE3_CTX_SLOT, 7n]));
+  assert.equal(await revokeSessionCtx({ Cf_s: 7n, bound: 3n, nonce: 9n }), H([DOMAIN_MODE3_CTX_REVOKE, 7n, 3n, 9n]));
+  assert.notEqual(await registerCtx({ n: 7n }), await slotCtx({ nonce: 7n }), '등록용과 슬롯용은 같은 난수라도 다르다');
+  assert.notEqual(await issueCtx({ arid_s: 7n, chainid: 31337n, allowAgent: 0n }), await issueCtx({ arid_s: 7n, chainid: 31337n, allowAgent: 1n }), 'allowAgent 가 ctx 에 든다');
+  assert.notEqual(await revokeSessionCtx({ Cf_s: 7n, bound: 3n, nonce: 9n }), await revokeSessionCtx({ Cf_s: 7n, bound: 2n, nonce: 9n }), 'bound 가 ctx 에 든다');
+});
+await t('ctx·tag 입력 검사: bigint 아님·음수·p 이상·allowAgent 2·bound 2^32 는 throw', async () => {
+  const P = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+  await assert.rejects(() => issueCtx({ arid_s: 7n, chainid: 31337n, allowAgent: 2n }), /allowAgent/);
+  await assert.rejects(() => issueCtx({ arid_s: '7', chainid: 31337n, allowAgent: 0n }), /arid_s/);
+  await assert.rejects(() => registerCtx({ n: P }), /n /);
+  await assert.rejects(() => slotCtx({ nonce: -1n }), /nonce/);
+  await assert.rejects(() => revokeSessionCtx({ Cf_s: 7n, bound: 1n << 32n, nonce: 9n }), /bound/);
+  await assert.rejects(() => revokeSessionCtx({ Cf_s: 7n, bound: 3, nonce: 9n }), /bound/);
+  await assert.rejects(() => tagOf({ s_u: 1n << 250n, ctx: 5n }), /s_u/);
+  await assert.rejects(() => tagOf({ s_u: 5n, ctx: P }), /ctx/);
+});
+await t('tagOf = Poseidon(T_TAG, s_u, ctx) — s_u 나 ctx 가 다르면 다르다', async () => {
+  assert.equal(await tagOf({ s_u: 22n, ctx: 5n }), H([DOMAIN_MODE3_TAG, 22n, 5n]));
+  assert.notEqual(await tagOf({ s_u: 22n, ctx: 5n }), await tagOf({ s_u: 23n, ctx: 5n }));
+  assert.notEqual(await tagOf({ s_u: 22n, ctx: 5n }), await tagOf({ s_u: 22n, ctx: 6n }));
 });
 
 await t('생성원 13개 — uid,arid,s_u,pk_i,blind,attr0..3 = getBasePoint(0..8), attr4·attr5 = 9·10, exp = 11, rs = 12; 전부 곡선 위·부분군 안', async () => {

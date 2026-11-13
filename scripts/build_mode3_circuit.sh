@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Mode 3 회로 둘(pi_cred·pi_idp) 컴파일 + Groth16 셋업. 산출물은 전부 build/mode3/ 아래.
 #
-#   bash scripts/build_mode3_circuit.sh [pot21_final.ptau]
+#   bash scripts/build_mode3_circuit.sh [pi_cred|pi_idp] [pot21_final.ptau]
+#
+# 첫 인자가 회로 이름이면 그 회로만 빌드한다(2026-11-13, 스펙 2026-11-12 no-pk-u P7 — pi_idp 만 바꿀 때 pi_cred 의 zkey 를
+# 건드리면 배포된 온체인 검증자와 어긋난다). 없으면 지금처럼 둘 다.
 #
 # 회로를 바꾸면 반드시 이 스크립트로 zkey·vkey·wasm 을 **한 세트로** 다시 만든다 — 셋이 어긋나면 지갑의 로그인이 전부
 # bad_proof 가 된다(tests/test_mode3_artifacts.mjs 가 소스와 산출물의 공개 입력 수·순서를 대조한다).
@@ -12,6 +15,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+NAMES=(pi_cred pi_idp)
+case "${1:-}" in
+  pi_cred|pi_idp) NAMES=("$1"); shift ;;
+esac
 PTAU="${1:-pot21_final.ptau}"
 if [ ! -f "$PTAU" ]; then
   echo "$PTAU 가 없습니다. pi_cred 는 2^14 를 넘어 pot21_final.ptau(2^21) 가 필요합니다." >&2
@@ -22,7 +29,7 @@ OUT=build/mode3
 mkdir -p "$OUT"
 rm -f "$OUT/MANIFEST.sha256"   # pack_mode3_build.sh 가 다시 만든다 — 묵은 매니페스트를 새 빌드와 섞어 두지 않는다
 
-for NAME in pi_cred pi_idp; do
+for NAME in "${NAMES[@]}"; do
   rm -f "$OUT/${NAME}_0000.zkey" "$OUT/${NAME}_final.zkey" "$OUT/${NAME}_vkey.json"
   echo "=== compile $NAME ==="
   circom "circuits/${NAME}.circom" --r1cs --wasm --sym -o "$OUT" \
@@ -46,6 +53,10 @@ for NAME in pi_cred pi_idp; do
   fi
 done
 
-echo "완료: $OUT/pi_cred_final.zkey, $OUT/pi_cred_vkey.json, $OUT/pi_cred_js/pi_cred.wasm, contracts/PiCredVerifier.sol"
-echo "      $OUT/pi_idp_final.zkey, $OUT/pi_idp_vkey.json, $OUT/pi_idp_js/pi_idp.wasm"
-echo "다음: npx hardhat compile (artifacts/ 의 PiCredVerifier 갱신) — 그 뒤 팩토리·AttrGate 재배포(docs/MODE3_DEMO.md '처음 한 번')"
+for NAME in "${NAMES[@]}"; do
+  echo "완료: $OUT/${NAME}_final.zkey, $OUT/${NAME}_vkey.json, $OUT/${NAME}_js/${NAME}.wasm"
+done
+case " ${NAMES[*]} " in
+  *" pi_cred "*) echo "      contracts/PiCredVerifier.sol"
+                 echo "다음: npx hardhat compile (artifacts/ 의 PiCredVerifier 갱신) — 그 뒤 팩토리·AttrGate 재배포(docs/MODE3_DEMO.md '처음 한 번')" ;;
+esac

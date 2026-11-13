@@ -54,13 +54,13 @@ const rows = [];
 
 // ---- Mode 3 pi_idp (Groth16, V11 — 세션(토큰 발급)마다 IdP 에 제출. arid·attrs·r_rp 는 IdP 에 비공개, D10) ----
 {
-  const { auid, auid_s, arid, r_rp, r_s, pk_i, uid, attrs, max_height, C_u, C_s } = await buildIdpInput();
+  const { auid, auid_s, arid, r_rp, r_s, pk_i, uid, attrs, max_height, C_u, C_s, ctx, tag } = await buildIdpInput();
   const { s_u, blind_u } = IDP_FIXTURE;
   const vkey = JSON.parse(fs.readFileSync(IDP_VKEY_PATH, 'utf8'));
   const P = [], V = []; let out, publicSignals;
   for (let i = 0; i < N; i++) {
     const t0 = now();
-    out = await proveIdp({ uid, s_u, blind_u, attrs, arid, r_rp, pk_i, r_s, auid, auid_s, C_u_pt: { x: C_u.x, y: C_u.y }, C_s_pt: { x: C_s.x, y: C_s.y }, max_height });
+    out = await proveIdp({ uid, s_u, blind_u, attrs, arid, r_rp, pk_i, r_s, auid, auid_s, C_u_pt: { x: C_u.x, y: C_u.y }, C_s_pt: { x: C_s.x, y: C_s.y }, max_height, ctx, tag });
     const t1 = now();
     const ok = await verifyIdp(vkey, out.publicSignals, out.proof);
     const t2 = now();

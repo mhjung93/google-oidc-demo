@@ -43,13 +43,13 @@ const valid = fx.input;
 const bump = (v) => (BigInt(v) + 1n).toString();
 
 await t('양성: 정상 입력의 witness 가 계산된다', async () => { assert.ok((await witness(valid)).length > 0); });
-await t('공개 입력 순서 = [uid, auid, auid_s, C_u_x, C_u_y, C_s_x, C_s_y, max_height] (witness 1..8, .sym)', async () => {
+await t('공개 입력 순서 = [uid, auid, auid_s, C_u_x, C_u_y, C_s_x, C_s_y, max_height, ctx, tag] (witness 1..10, .sym)', async () => {
   const sym = fs.readFileSync(path.join(OUT_DIR, `${NAME}.sym`), 'utf8');
   const byIndex = new Map();
-  for (const line of sym.split('\n')) { const f = line.split(','); if (f.length < 4) continue; const idx = Number(f[1]); if (idx >= 1 && idx <= 8 && /^main\.[^.]+$/.test(f[3]) && !byIndex.has(idx)) byIndex.set(idx, f[3].slice(5)); }
-  assert.deepEqual(Array.from({ length: 8 }, (_, i) => byIndex.get(i + 1)), ['uid', 'auid', 'auid_s', 'C_u_x', 'C_u_y', 'C_s_x', 'C_s_y', 'max_height']);
+  for (const line of sym.split('\n')) { const f = line.split(','); if (f.length < 4) continue; const idx = Number(f[1]); if (idx >= 1 && idx <= 10 && /^main\.[^.]+$/.test(f[3]) && !byIndex.has(idx)) byIndex.set(idx, f[3].slice(5)); }
+  assert.deepEqual(Array.from({ length: 10 }, (_, i) => byIndex.get(i + 1)), ['uid', 'auid', 'auid_s', 'C_u_x', 'C_u_y', 'C_s_x', 'C_s_y', 'max_height', 'ctx', 'tag']);
   const w = await witness(valid);
-  assert.equal(BigInt(w[2]).toString(), valid.auid); assert.equal(BigInt(w[8]).toString(), valid.max_height);
+  assert.equal(BigInt(w[2]).toString(), valid.auid); assert.equal(BigInt(w[8]).toString(), valid.max_height); assert.equal(BigInt(w[10]).toString(), valid.tag);
 });
 await t('D15: 속성 값은 자유 — 다른 attrs 로 만든 C_u 도 통과한다(IdP 는 값을 보지 않는다)', async () => {
   const other = await buildIdpInput({ attrs: [1n, 2n, 3n, 4n, 5n, 6n] });
@@ -77,7 +77,21 @@ await t('양성: 같은 r_rp 로 다른 세션키·만료의 C_s 를 만들면(�
   const other = await buildIdpInput({ pk_i: 0x9999n, maxHeight: 42n, r_s: 777n });
   assert.ok((await witness(other.input)).length > 0);
 });
+// 2026-11-13(스펙 2026-11-12 no-pk-u §2): 공개 입력 ctx·tag — tag = Poseidon(T_TAG, s_u, ctx). 회로는 ctx 의 내용을 모른다.
+await t('음성: tag 를 바꾸면 거부; ctx 만 바꿔도 tag 가 어긋나 거부', async () => {
+  await assert.rejects(() => witness({ ...valid, tag: bump(valid.tag) }), /Assert Failed/);
+  await assert.rejects(() => witness({ ...valid, ctx: bump(valid.ctx) }), /Assert Failed/);
+});
+await t('양성: 다른 ctx 로 tag 를 다시 만들면 통과한다(용도는 회로 밖에서 정한다)', async () => {
+  const other = await buildIdpInput({ ctx: 123456789n });
+  assert.notEqual(other.input.tag, valid.tag);
+  assert.ok((await witness(other.input)).length > 0);
+});
+await t('양성: 버릴 값(attrs·arid·pk_i·max_height = 0)으로도 witness 가 계산된다 — 등록·슬롯·세션 폐기의 인증 증명(P4)', async () => {
+  const dummy = await buildIdpInput({ attrs: [0n, 0n, 0n, 0n, 0n, 0n], arid: 0n, pk_i: 0n, maxHeight: 0n, ctx: 42n });
+  assert.ok((await witness(dummy.input)).length > 0);
+});
 
 console.log('');
-console.log(`## pi_idp 비선형 제약: ${constraints.toLocaleString()} (스펙 §4 추정 약 13,000)`);
+console.log(`## pi_idp 비선형 제약: ${constraints.toLocaleString()} (스펙 2026-11-12 §2: 6,325 + Poseidon(3) 하나, 약 240 추정)`);
 process.exit(failed === 0 ? 0 : 1);
