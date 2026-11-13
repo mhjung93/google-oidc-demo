@@ -88,7 +88,7 @@ async function makeAliceAgent() {
     await stack.relayIfBehind();   // V10: 계정 컨트랙트는 거울을 읽는다 — 캐노니컬 최신으로 증명하므로 거울을 먼저 맞춘다
     // 2026-10-22: 거래 π 는 counter=nonce 를 공개 입력으로 싣는다(컨트랙트가 pub[33]==payload.nonce 를 검사한다) — 증명보다
     // 먼저 계정 주소·nonce 를 읽는다(mode3_wallet_agent.js buildExecute 와 같은 순서, Task 7).
-    const PPID = await ppid({ uid: user.uid, s_u: user.s_u, arid, chainid: chainId });
+    const PPID = await ppid({ s_u: user.s_u, arid, chainid: chainId });
     const walletAddr = await factoryAt(factoryAddress, provider).computeAddress(PPID);
     const relayer = await provider.getSigner(0);
     if ((await provider.getCode(walletAddr)) === '0x') await (await factoryAt(factoryAddress, relayer).deploy(PPID)).wait();

@@ -25,7 +25,7 @@ const uid = 11n, s_u = 22n, blind_u = 33n, attrs = [19n, 410n, 0n, 0n, 0n, 0n], 
 
 await t('도메인 상수는 ASCII 빅엔디언이다', () => {
   assert.equal(DOMAIN_MODE3_CRED_V11, be('MODE3CREDV11'));
-  assert.equal(DOMAIN_MODE3_AUID, be('MODE3AUID'));
+  assert.equal(DOMAIN_MODE3_AUID, be('MODE3AUID2'));   // 2026-11-13: uid 를 뺀 새 정의
   assert.equal(DOMAIN_MODE3_AUIDS, be('MODE3AUIDS'));
   assert.equal(DOMAIN_MODE3_ARIDS, be('MODE3ARIDS'));
   assert.equal(PK_I_MAX, 1n << 160n);
@@ -132,20 +132,26 @@ await t('credMessageV11 = Poseidon(D_V11, auid_s, arid_s, Cf_u, Cf_s, chainid, a
 });
 
 await t('auidOf·auidSOf·aridSOf 는 태그가 붙은 Poseidon 이고, 같은 r_rp 라도 arid 가 다르면 auid_s 가 다르다(D7)', async () => {
-  const a = await auidOf({ uid, s_u });
-  assert.equal(a, H([DOMAIN_MODE3_AUID, uid, s_u]));
+  const a = await auidOf({ s_u });
+  assert.equal(a, H([DOMAIN_MODE3_AUID, s_u]));   // 2026-11-13(스펙 random-salt R10): uid 가 식에 없다
+  assert.equal(DOMAIN_MODE3_AUID, 365084431357309404922930n);   // ASCII "MODE3AUID2"
+  assert.equal(DOMAIN_MODE3_AUID, BigInt('0x' + Buffer.from('MODE3AUID2').toString('hex')));
+  assert.notEqual(await auidOf({ s_u: s_u + 1n }), a);
   assert.equal(await auidSOf({ auid: a, arid, r_rp }), H([DOMAIN_MODE3_AUIDS, a, arid, r_rp]));
   assert.equal(await aridSOf({ arid, r_rp }), H([DOMAIN_MODE3_ARIDS, arid, r_rp]));
   assert.notEqual(await auidSOf({ auid: a, arid, r_rp }), await auidSOf({ auid: a, arid: arid + 1n, r_rp }));
   assert.notEqual(await aridSOf({ arid, r_rp }), await aridSOf({ arid, r_rp: r_rp + 1n }));
-  await assert.rejects(() => auidOf({ uid: SCALAR_MAX, s_u }), /2\^250/);
+  await assert.rejects(() => auidOf({ s_u: SCALAR_MAX }), /2\^250/);
 });
 
-await t('PPID = Poseidon(uid, s_u, arid, chainid) — 옛 순서(uid, s_u, chainid, arid)와 다르다(D13)', async () => {
-  const p = await ppid({ uid, s_u, arid, chainid: 31337n });
-  assert.equal(p, H([uid, s_u, arid, 31337n]));
-  assert.notEqual(p, H([uid, s_u, 31337n, arid]));
-  await assert.rejects(() => ppid({ uid, s_u, arid }), /chainid/);
+await t('PPID = Poseidon(s_u, arid, chainid) — uid 가 식에 없다(2026-11-13 스펙 random-salt R9); arid·chainid 가 다르면 다르다', async () => {
+  const p = await ppid({ s_u, arid, chainid: 31337n });
+  assert.equal(p, H([s_u, arid, 31337n]));
+  assert.notEqual(p, H([s_u, 31337n, arid]));
+  assert.notEqual(p, await ppid({ s_u, arid: arid + 1n, chainid: 31337n }));
+  assert.notEqual(p, await ppid({ s_u, arid, chainid: 1n }));
+  assert.notEqual(p, await ppid({ s_u: s_u + 1n, arid, chainid: 31337n }));
+  await assert.rejects(() => ppid({ s_u, arid }), /chainid/);
 });
 
 await t('세션 리프 = (Poseidon(5, Cf_s) mod 2^220)·2^32 + bound — 태그 5 는 불변', async () => {

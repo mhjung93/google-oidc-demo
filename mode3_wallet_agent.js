@@ -100,7 +100,7 @@ const chainConfigMissing = () => (!LOG_ADDRESS ? 'CIA_LOG_ADDRESS not configured
 //                       witness?: { s_u, blind_u, attrs } }   ← snap 모드 전용, 메모리에만(persist 가 뺀다)
 // snap 모드의 registration 은 stripSecrets 결과({ uid, auid, slot, profile, attrs, provider, userCred:{Cf_u,issuedAt} }) 다.
 // 2026-11-13(스펙 2026-11-12 no-pk-u §4.3): 등록 키(sk_u·pk_u)는 없어졌다 — 옛 파일의 값은 기동 때 버린다(버전은 그대로 10).
-// version 9 (2026-10-12, V11): r_u·cm_u 삭제, auid(= Poseidon(T_AUID, uid, s_u))·profile(사용자 입력, D15) 추가; 세션에 r_rp·auid_s·arid_s.
+// version 9 (2026-10-12, V11): r_u·cm_u 삭제, auid(= Poseidon(T_AUID2, s_u))·profile(사용자 입력, D15) 추가; 세션에 r_rp·auid_s·arid_s.
 //   옛 파일은 등록만 유지하고(file 모드 — auid 를 s_u 로 재계산; snap 모드는 비밀이 없어 재계산할 수 없으므로 등록을 비운다) 세션·userCred 를 비운다.
 // version 10 (2026-10-22): pendingBounds(세션키별 체인 반영 대기 중인 setSessionBound 요청) 추가 — 옛 파일은 빈 배열로 시작한다.
 const WALLET_STATE_VERSION = 10;
@@ -115,7 +115,7 @@ if (state.version !== WALLET_STATE_VERSION) {
   const reg = state.registration ?? null;
   let kept = null;
   if (reg && typeof reg.s_u === 'string' && /^[0-9]+$/.test(reg.s_u) && typeof reg.uid === 'string') {
-    kept = { uid: reg.uid, s_u: reg.s_u, auid: (await auidOf({ uid: BigInt(reg.uid), s_u: BigInt(reg.s_u) })).toString(), slot: reg.slot ?? null, profile: reg.profile ?? { ...DEFAULT_PROFILE }, attrs: padAttrs6(reg.attrs), userCred: null };
+    kept = { uid: reg.uid, s_u: reg.s_u, auid: (await auidOf({ s_u: BigInt(reg.s_u) })).toString(), slot: reg.slot ?? null, profile: reg.profile ?? { ...DEFAULT_PROFILE }, attrs: padAttrs6(reg.attrs), userCred: null };
   } else if (reg) console.warn('[wallet] snap 모드 등록(파일에 비밀 없음)은 auid 를 재계산할 수 없어 등록을 비운다 — 다시 등록한다(Snap 쪽 "초기화" 도 함께)');
   state = { version: WALLET_STATE_VERSION, registration: kept, sessions: {}, pendingBounds: [] };
   persist();
@@ -350,7 +350,7 @@ async function issueSession({ arid, r_s, r_rp, pk_trace, allowAgent, factoryAddr
   if (Number.isInteger(r.body?.slot) && r.body.slot >= 0 && r.body.slot !== state.registration.slot) state.registration.slot = r.body.slot;
   const uc = src.userCred();
   if (!uc || uc.Cf_u !== req.Cf_u.toString()) replaceUserCred(src, { C_u_pt: { x: req.C_u_pt.x.toString(), y: req.C_u_pt.y.toString() }, Cf_u: req.Cf_u.toString(), blind_u: blind_u.toString(), issuedAt: new Date().toISOString() });
-  const PPID = await ppid({ uid: BigInt(reg.uid), s_u: BigInt(reg.s_u), arid: BigInt(arid), chainid });
+  const PPID = await ppid({ s_u: BigInt(reg.s_u), arid: BigInt(arid), chainid });
   state.sessions[r_s.toString()] = {
     arid, PPID: PPID.toString(), pk_trace: { x: pk_trace.x.toString(), y: pk_trace.y.toString() }, factoryAddress, attrGateAddress, allowAgent,
     r_rp: r_rp.toString(), auid_s: req.auid_s.toString(), arid_s: req.arid_s.toString(),
@@ -662,7 +662,7 @@ app.post('/wallet/oidc/nonce', async (req, res) => {
       const su = SECRETS === 'snap' ? s_u : reg.s_u;
       if (!okSu(su)) return res.status(400).json({ error: 's_u(10진, 2^250 미만) 필요' });
       // 이 등록의 s_u 가 아니면 tag 가 발급 요청의 것과 달라 IdP 가 oidc_nonce_mismatch 를 낸다 — Google 창을 띄우기 전에 여기서 알린다.
-      if ((await auidOf({ uid: BigInt(reg.uid), s_u: BigInt(su) })).toString() !== String(reg.auid)) return res.status(409).json({ reason: 'secrets_mismatch', detail: '이 s_u 는 에이전트 등록의 것이 아니다' });
+      if ((await auidOf({ s_u: BigInt(su) })).toString() !== String(reg.auid)) return res.status(409).json({ reason: 'secrets_mismatch', detail: '이 s_u 는 에이전트 등록의 것이 아니다' });
       const arid_s = await aridSOf({ arid: BigInt(arid), r_rp: BigInt(r_rp) });
       const n = randomScalar();   // 발급 ctx 의 지갑 난수(2026-11-13) — RP 가 r_rp 를 되풀이해도 tag 가 요청마다 다르다
       const tag = await tagOf({ s_u: BigInt(su), ctx: await issueCtx({ arid_s, chainid: await chainId(), allowAgent: BigInt(allowAgent), n }) });
@@ -673,7 +673,7 @@ app.post('/wallet/oidc/nonce', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// V11 §3.1·§3.3 — salt(s_u) 는 지갑이 만들고 auid = Poseidon(T_AUID, uid, s_u) 를 IdP 에 낸다. 속성은 **사용자가 넣는다**(D15):
+// V11 §3.1·§3.3 — salt(s_u) 는 지갑이 만들고 auid = Poseidon(T_AUID2, s_u) 를 IdP 에 낸다. 속성은 **사용자가 넣는다**(D15):
 // 본문 profile(스키마 이름→값, 기본 DEFAULT_PROFILE)을 공개 스키마로 인코딩해 attrs 를 만든다 — IdP 는 받지 않는다.
 // snap 모드(metamask-snap §4.1): s_u 는 Snap 이 만들고 페이지가 한 번 넘긴다(로그인 증인과 같은 모델). 파일에는 stripSecrets 결과만 남는다.
 // Task 13(2026-10-23): pwd 대신 code(가입 계정이 /cia/user/register_code 로 받은 1회용 코드, 세션 필요)도 받는다 —
@@ -716,7 +716,7 @@ app.post('/wallet/register', async (req, res) => {
     try { attrs = await encodeProfile(schema, profile, { allowEmptyRequired: false }); }
     catch (e) { if (e.reason === 'bad_attr') return res.status(400).json({ reason: 'bad_attr', slot: e.slot, field: e.field, detail: e.detail, message: e.message }); throw e; }
     const normalized = normalizeProfile(schema, profile);
-    const reg = SECRETS === 'snap' ? { s_u: BigInt(suIn), auid: await auidOf({ uid: BigInt(uid), s_u: BigInt(suIn) }) } : await createRegistration(BigInt(uid));
+    const reg = SECRETS === 'snap' ? { s_u: BigInt(suIn), auid: await auidOf({ s_u: BigInt(suIn) }) } : await createRegistration(BigInt(uid));
     const idBody = oidcProvider ? { id_token } : typeof code === 'string' ? { code, uid } : { pwd, uid };
     // 인증(스펙 2026-11-12 no-pk-u §3.2): "이 auid 의 s_u 를 안다" 는 π_IdP 를 등록용 ctx(n)로. Google 은 nonce 에 쓴 n, 그 밖은 여기서 뽑는다.
     const n = oidcProvider ? BigInt(nIn) : randomScalar();
@@ -748,7 +748,7 @@ app.post('/wallet/register/resume', async (req, res) => {
     if (!(isDec(s_u) && BigInt(s_u) < SCALAR_MAX)) return res.status(400).json({ error: 's_u(10진, 2^250 미만) 필요' });
     const reg = state.registration;
     if (!reg) return res.status(409).json({ reason: 'not_registered' });
-    const auid = await auidOf({ uid: BigInt(reg.uid), s_u: BigInt(s_u) });
+    const auid = await auidOf({ s_u: BigInt(s_u) });
     if (auid.toString() !== String(reg.auid)) return res.status(409).json({ reason: 'secrets_mismatch', detail: '이 Snap 의 비밀이 에이전트 등록과 다르다' });
     res.json({ uid: reg.uid, slot: reg.slot, auid: reg.auid, attrs: reg.attrs, profile: reg.profile, provider: reg.provider ?? 'demo' });
   } catch (e) { res.status(500).json({ error: e.message }); }

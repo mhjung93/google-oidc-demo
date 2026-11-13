@@ -188,7 +188,7 @@
     $('domainShown').textContent = String(A.DOMAIN_MODE3_ATTRC);
     $('uidShown').textContent = rec.uid; $('saltShown').textContent = rec.s_u; $('blindShown').textContent = rec.blind;
     $('auidShown').textContent = '…';
-    A.auidOf({ uid: BigInt(rec.uid), s_u: BigInt(rec.s_u) }).then((v) => { $('auidShown').textContent = v.toString(); }, () => { $('auidShown').textContent = '-'; });
+    A.auidOf({ s_u: BigInt(rec.s_u) }).then((v) => { $('auidShown').textContent = v.toString(); }, () => { $('auidShown').textContent = '-'; });
     // 속성 칸: 슬롯 이름 · 입력값 → 해시에 들어가는 인코딩 값(attrᵢ). 미사용 슬롯(늘 0)은 보이지 않는다(2026-11-11).
     const dl = $('attrsShown'); dl.innerHTML = '';
     rec.attrs.forEach((v, i) => {

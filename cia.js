@@ -207,7 +207,7 @@ function loadOrCreateKeys() {
 }
 
 // ---- 상태 ----
-// accounts:  uid → { auid(10진 — Poseidon(T_AUID, uid, s_u), V11 D4), disabled, slot, tampered, creds, sessions, receipt, slotRetired,
+// accounts:  uid → { auid(10진 — Poseidon(T_AUID2, s_u), V11 D4), disabled, slot, tampered, creds, sessions, receipt, slotRetired,
 //                    profile?:{ name, updatedAt } }   (attrs 없음 — D15. profile.name 은 2026-11-09 부터: 사용자가 붙여 넣는 속성 커밋먼트 C_attr —
 //                    IdP 에는 불투명한 문자열이다 — 2026-11-11 부터 ID 토큰에 싣지 않는다(RP 로 가지 않음). 속성·blind 는 속성 도구 페이지에만 있다.)
 //            (등록 키 pk_u 는 2026-11-13 에 없앴다 — 스펙 2026-11-12 no-pk-u. 등록됨의 표지는 auid 다)
@@ -1061,7 +1061,7 @@ app.post('/cia/auth/code', (req, res) => {
   res.json(issueCode({ uid, purpose: 'issue', auid: a.auid }));
 });
 
-// V11 §3.1 등록. 지갑이 auid = Poseidon(T_AUID, uid, s_u) 를 내고 "그 s_u 를 안다" 는 π_IdP 로 인증한다(스펙 2026-11-12 no-pk-u — 등록 키와 등록 서명은 없다).
+// V11 §3.1 등록. 지갑이 auid = Poseidon(T_AUID2, s_u) 를 내고 "그 s_u 를 안다" 는 π_IdP 로 인증한다(스펙 2026-11-12 no-pk-u — 등록 키와 등록 서명은 없다).
 // IdP 는 슬롯 번호를 배정한다. 속성은 받지 않는다(D15). 신원은 데모 계정 {uid, pwd|code} 또는 Google ID 토큰 {id_token}(nonce 는 이 요청의 tag 에 묶임) 중 하나.
 app.post('/cia/register', userCors, async (req, res) => {
   const { uid: uidIn, pwd, code, id_token, auid } = req.body ?? {};
@@ -1252,7 +1252,7 @@ app.post('/cia/issue', userCors, async (req, res) => {
       // 앞에서 동기로 소비한다 — 동시 요청도 하나만 통과한다. 이보다 앞에서 태우면 체인 오류·폐기 충돌로 끝내 실패해도 코드가 사라진다.
       if (needsAuthCode && !consumeCode(auth_code, { uid, purpose: 'issue', auid: acct.auid })) return res.status(401).json({ error: 'bad_code', reason: 'bad_code' });
       retireActiveCred(uid);
-      // V10(§4.5): 대기열로 영구 은퇴된 슬롯에는 0 아닌 리프를 쓸 수 없다(컨트랙트 SlotIsRetired) — 새 슬롯을 받는다. PPID 는 (uid, s_u, arid, chainid) 에만 걸려 있어 슬롯이 바뀌어도 그대로다.
+      // V10(§4.5): 대기열로 영구 은퇴된 슬롯에는 0 아닌 리프를 쓸 수 없다(컨트랙트 SlotIsRetired) — 새 슬롯을 받는다. PPID 는 (s_u, arid, chainid) 에만 걸려 있어 슬롯이 바뀌어도 그대로다.
       if (acct.slotRetired) { acct.slot = state.registry.next++; acct.slotRetired = false; }
       acct.creds.push({ Cf_u: cfu, C_u_pt: { x: cupt.x.toString(), y: cupt.y.toString() }, issuedAt: new Date().toISOString(), revoked: false });
       setSlot(uid, newLeaf);

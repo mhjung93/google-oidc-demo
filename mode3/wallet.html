@@ -719,7 +719,7 @@
       step('속성 도구 기록의 속성이 바뀌었다 — 스냅 속성을 맞추는 중…');
       if (rec.uid !== String(st.uid)) { log(`기록 uid=${rec.uid}  등록 uid=${st.uid}`); return { ok: false, reason: 'attr_record_uid_mismatch' }; }
       if (!(await loadAttrBundle())) return { ok: false, reason: 'bundle_missing' };
-      if ((await Mode3Attr.auidOf({ uid: BigInt(rec.uid), s_u: BigInt(rec.s_u) })).toString() !== String(st.auid)) return { ok: false, reason: 'attr_record_salt_mismatch' };
+      if ((await Mode3Attr.auidOf({ s_u: BigInt(rec.s_u) })).toString() !== String(st.auid)) return { ok: false, reason: 'attr_record_salt_mismatch' };
       const { status, body: b } = await putJson('/wallet/profile', { profile: rec.profile });
       if (status !== 200) { log(errText(status, b)); return { ok: false, reason: b.reason ?? 'wallet_error', detail: b.detail ?? null }; }
       if (b.attrsChanged) await invokeSnap('syncAttrs', { attrs: b.attrsChanged });
@@ -740,7 +740,7 @@
       if (rec.uid !== String(uid)) { step('속성 도구 기록의 uid 가 다르다.'); log(`기록 uid=${rec.uid}  이 계정 uid=${uid}`); return { ok: false, reason: 'attr_record_uid_mismatch' }; }
       if (auid !== null) {
         if (!(await loadAttrBundle())) return { ok: false, reason: 'bundle_missing' };
-        const mine = (await Mode3Attr.auidOf({ uid: BigInt(uid), s_u: BigInt(rec.s_u) })).toString();
+        const mine = (await Mode3Attr.auidOf({ s_u: BigInt(rec.s_u) })).toString();
         if (mine !== auid) { step('붙여 넣은 auid 가 속성 도구 기록과 다르다.'); return { ok: false, reason: 'register_auid_mismatch' }; }
       }
       // 리뷰 I-2·M-3(2026-11-12): 스냅은 시드 유도 salt 만 받는다 — 기록의 salt 가 다르면(11-10·11-11 의 직접 입력) Snap register 의 salt_not_derived 를

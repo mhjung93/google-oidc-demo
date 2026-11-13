@@ -276,7 +276,7 @@ try {
   // 2026-11-11(사용자 결정): 첫 등록은 속성 도구 기록의 salt 를 쓴다(스냅 팝업의 salt 칸은 없다) — 인증 창(등록 모드)에 속성 도구가 보여 준 auid 를 붙여 넣는다.
   await t('첫 로그인 전에 속성 도구 기록이 없으면 등록하지 않고 안내한다(attr_record_missing) — 코드·Snap 은 쓰지 않는다', async () => {
     const demoUid = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.id === 'demo-user').uid;
-    const demoAuid = (await auidOf({ uid: BigInt(demoUid), s_u: BigInt(USER_SALT) })).toString();
+    const demoAuid = (await auidOf({ s_u: BigInt(USER_SALT) })).toString();
     await walletPage.evaluate(() => localStorage.removeItem('mode3_attr_tool_v1'));
     const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
     await atIdpLogin(popup);
@@ -292,7 +292,7 @@ try {
     const OLD_SALT = '123456789012345678901234567890';   // 11-10·11-11 의 직접 입력 salt — 스냅 유도값이 아니다
     assert.notEqual(OLD_SALT, USER_SALT);
     const demoUid = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.id === 'demo-user').uid;
-    const oldAuid = (await auidOf({ uid: BigInt(demoUid), s_u: BigInt(OLD_SALT) })).toString();
+    const oldAuid = (await auidOf({ s_u: BigInt(OLD_SALT) })).toString();
     await walletPage.evaluate((r) => localStorage.setItem('mode3_attr_tool_v1', JSON.stringify(r)), { version: 3, uid: String(demoUid), s_u: OLD_SALT, profile: { birthYear: '1990', country: 'JP' } });
     const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
     await atIdpLogin(popup);
@@ -307,7 +307,7 @@ try {
   await t('첫 로그인 = 지갑 등록(2026-11-09): 팝업이 MetaMask 를 연결하고 zkID 인증 창(등록 모드, 2026-11-11 부터 auid 칸 있음)으로 갔다가 돌아와 속성 도구 기록의 salt 로 등록 → 발급 → RP 세션; Snap 확인 창 없음', async () => {
     const before = dialogs.length;
     const demoUid = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.id === 'demo-user').uid;
-    const demoAuid = (await auidOf({ uid: BigInt(demoUid), s_u: BigInt(USER_SALT) })).toString();
+    const demoAuid = (await auidOf({ s_u: BigInt(USER_SALT) })).toString();
     await walletPage.evaluate((r) => localStorage.setItem('mode3_attr_tool_v1', JSON.stringify(r)), { version: 3, uid: String(demoUid), s_u: USER_SALT, index: 0, profile: { birthYear: '1990', country: 'JP' } });   // 속성 도구가 남기는 기록(필요한 칸만) — 2026-11-11(가): 속성도 여기서
     const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
     assert.ok(popup.url().includes('authorize=1'), `팝업 URL: ${popup.url()}`);
@@ -865,7 +865,7 @@ try {
     assert.equal((await p.textContent('#uidShown')).trim(), rec.uid); assert.equal((await p.textContent('#saltShown')).trim(), USER_SALT);
     assert.equal((await p.textContent('#blindShown')).trim(), rec.blind);
     // 2026-11-11: uid·salt 로 계산한 auid 도 보인다 — 첫 RP 로그인 인증 창에 붙여 넣는 값
-    assert.equal((await p.textContent('#auidShown')).trim(), (await auidOf({ uid: BigInt(rec.uid), s_u: BigInt(rec.s_u) })).toString());
+    assert.equal((await p.textContent('#auidShown')).trim(), (await auidOf({ s_u: BigInt(rec.s_u) })).toString());
     for (let i = 0; i < 4; i++) assert.ok((await p.textContent(`#attrShown${i}`)).includes(rec.attrs[i]), `attr${i} 인코딩 값 표시`);
     // 2026-11-11(사용자 결정): 입력할 수 없는 미사용 슬롯(attr₄·attr₅, 늘 0)은 보이지 않는다 — 해시에는 그대로 0 이 들어간다
     assert.equal(await p.locator('#attrShown4, #attrShown5').count(), 0, '미사용 슬롯 행 없음');
@@ -1196,7 +1196,7 @@ try {
     snapState = { version: 1, registration: null, userCred: null, consents: {}, nextIndex: snapState.nextIndex };
     assert.equal((await wallet.post('/wallet/reset', { confirm: true })).status, 200);
     const saltB = derivedSecrets(STUB_SRP, 1).s_u;
-    const auidB = (await auidOf({ uid: BigInt(uidB), s_u: BigInt(saltB) })).toString();
+    const auidB = (await auidOf({ s_u: BigInt(saltB) })).toString();
     // 속성 도구 화면을 거친다 — 앞 계정 A 의 기록이 보이는 채 열려도, 만들 때 uid 는 zkID 로그인(계정 B)에서, salt·번호는 스냅(초기화 뒤 다음 가입 번호)에서 새로 받아온다
     // (2026-11-13: 직접 넣는 칸이 없어 "앞 계정 값으로 만든다"(최종 리뷰 I-1)가 생기지 않는다).
     const a = await context.newPage(); await a.goto(`${wallet.base}/attr.html`);

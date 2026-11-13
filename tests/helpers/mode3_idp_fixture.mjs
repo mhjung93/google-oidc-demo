@@ -14,7 +14,7 @@ export async function buildIdpInput({ attrs = IDP_FIXTURE.attrs, maxHeight = IDP
   const a = [...attrs];
   const cu = await userCommit({ uid, s_u, blind_u, attrs: a });
   const cs = await sessionCommit({ pk_i, max_height: maxHeight, r_s, r_rp });
-  const auid = await auidOf({ uid, s_u });
+  const auid = await auidOf({ s_u });
   const auid_s = await auidSOf({ auid, arid, r_rp });
   const arid_s = await aridSOf({ arid, r_rp });
   const c = ctx ?? await issueCtx({ arid_s, chainid: 31337n, allowAgent: 0n, n: 14141414141414141414n });   // 기본은 발급 요청의 ctx(n 은 고정 픽스처 값)

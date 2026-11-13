@@ -119,7 +119,7 @@ await t('register({ uid }): 대화상자 없이 → { uid, s_u, index }(pwd·sk_
 });
 
 await t('auid 는 에이전트가 계산한다 — storeRegistration 이 받은 auid 가 getPublicInfo 에 보인다', async () => {
-  auid = (await auidOf({ uid: 12345n, s_u: BigInt(registered.s_u) })).toString();
+  auid = (await auidOf({ s_u: BigInt(registered.s_u) })).toString();
   await call('storeRegistration', { attrs: ATTRS, slot: SLOT, auid });
   assert.equal((await call('getPublicInfo', {})).auid, auid);
 });
@@ -472,7 +472,7 @@ await t('0.4.0: register·prepareRegister·getStoredState·증인 어디에도 s
   assert.equal(p.s_u, saltFromEntropy('0x' + createHash('sha256').update(`srp-A|zkd/mode3/s_u/v2/${p.index}`).digest('hex')));
   const r = await call('register', { uid: '4242' });
   assert.deepEqual(Object.keys(r).sort(), ['index', 's_u', 'uid']); assert.equal(r.s_u, p.s_u);
-  await call('storeRegistration', { attrs: ATTRS, slot: SLOT, auid: (await auidOf({ uid: 4242n, s_u: BigInt(r.s_u) })).toString() });
+  await call('storeRegistration', { attrs: ATTRS, slot: SLOT, auid: (await auidOf({ s_u: BigInt(r.s_u) })).toString() });
   const st = await call('getStoredState', {});
   assert.equal('sk_u' in st.registration, false); assert.equal(stateJson().includes('sk_u'), false);
   const w = await call('consentLogin', { origin: RP_ORIGIN, arid: '777', allowAgent: '0' });

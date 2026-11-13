@@ -5,7 +5,7 @@ import { auidOf } from '../lib/mode3_credential.js';
 
 let failed = 0;
 async function t(name, fn) { try { await fn(); console.log(`ok   ${name}`); } catch (e) { failed++; console.error(`FAIL ${name}\n     ${e.message}`); } }
-const AUID = (await auidOf({ uid: 12345n, s_u: 11n })).toString();
+const AUID = (await auidOf({ s_u: 11n })).toString();
 const REG = { uid: '12345', s_u: '11', attrs: ['1990', '410', '2', '0', '0', '0'], auid: AUID, slot: 0, profile: { birthYear: '1990', country: 'KR' },
   userCred: { C_u_pt: { x: '1', y: '2' }, Cf_u: '3', blind_u: '4', issuedAt: 't' } };
 

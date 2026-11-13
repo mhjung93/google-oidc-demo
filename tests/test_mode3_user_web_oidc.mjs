@@ -60,7 +60,7 @@ try {
   });
   await t('(3) 계정 페이지(localhost): Google 로 등록한 계정을 Google 재로그인으로 폐기 → 200, disabled', async () => {
     // 계정은 Node 에서 IdP 의 id_token 경로로 만든다(지갑 흉내: 재료 → sub 로 uid 선계산 → n 으로 tag → 등록 토큰 → 등록용 π_IdP).
-    const reg = await createRegistration(0n); const uid = uidOf(stub.provider, SUB); const auid = await auidOf({ uid: BigInt(uid), s_u: reg.s_u });
+    const reg = await createRegistration(0n); const uid = uidOf(stub.provider, SUB); const auid = await auidOf({ s_u: reg.s_u });
     const n = randomScalar();
     const id_token = await stub.mint({ sub: SUB, nonce: regNonce(await tagOf({ s_u: reg.s_u, ctx: await registerCtx({ n }) })) });
     const r = await cia.post('/cia/register', { id_token, ...(await regBody({ s_u: reg.s_u, auid }, uid, { n })) });

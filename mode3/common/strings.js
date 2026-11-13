@@ -630,7 +630,7 @@ window.DemoStrings = {
     admin_col_auid: { ko: 'auid', en: 'auid' },
     admin_col_auid_s: { ko: '최신 auid_s', en: 'Latest auid_s' },   // 2026-11-12: 계정마다 가장 최신 값 하나(기록 없음)
     admin_auidmap_title: { ko: 'uid ↔ auid 대응', en: 'uid ↔ auid map' },
-    admin_auidmap_desc: { ko: '계정마다 IdP 가 저장한 auid = Poseidon(T_AUID, uid, s_u) 입니다. 스냅을 등록하기 전이거나 연결을 해제한 계정은 auid 가 없습니다. "최신 auid_s" 는 가장 최근 발급의 세션 가명 하나이고, 새로 발급하면 덮어씁니다(기록은 남기지 않습니다).', en: 'The auid = Poseidon(T_AUID, uid, s_u) the IdP stores for each account. Accounts that have not registered a Snap, or unlinked it, have none. "Latest auid_s" is the session pseudonym of the most recent issuance; a new issuance overwrites it (no history is kept).' },
+    admin_auidmap_desc: { ko: '계정마다 IdP 가 저장한 auid = Poseidon(T_AUID2, s_u) 입니다. 스냅을 등록하기 전이거나 연결을 해제한 계정은 auid 가 없습니다. "최신 auid_s" 는 가장 최근 발급의 세션 가명 하나이고, 새로 발급하면 덮어씁니다(기록은 남기지 않습니다).', en: 'The auid = Poseidon(T_AUID2, s_u) the IdP stores for each account. Accounts that have not registered a Snap, or unlinked it, have none. "Latest auid_s" is the session pseudonym of the most recent issuance; a new issuance overwrites it (no history is kept).' },
     admin_auidmap_empty: { ko: '계정이 없습니다.', en: 'No accounts.' },
     admin_auid_none: { ko: '(없음)', en: '(none)' },
     admin_col_slot: { ko: '슬롯', en: 'Slot' },
@@ -772,7 +772,7 @@ window.DemoStrings = {
     idp_myinfo_uid: { ko: 'uid', en: 'uid' },
     idp_myinfo_uid_desc: { ko: 'zkID 가 배정한 계정 번호입니다. 속성 커밋먼트 도구에 넣습니다.', en: 'The account number zkID assigned. Enter it in the attribute commitment tool.' },
     idp_myinfo_auid: { ko: 'auid', en: 'auid' },   // 2026-11-11(사용자 요청)
-    idp_myinfo_auid_desc: { ko: '스냅 등록 때 스냅이 낸 값 Poseidon(T_AUID, uid, s_u) 입니다. 서비스 로그인 인증 창에 넣는 값과 같아야 합니다.', en: 'The value Poseidon(T_AUID, uid, s_u) the Snap submitted at registration. It must match what you enter in the sign-in window.' },
+    idp_myinfo_auid_desc: { ko: '스냅 등록 때 스냅이 낸 값 Poseidon(T_AUID2, s_u) 입니다. 서비스 로그인 인증 창에 넣는 값과 같아야 합니다.', en: 'The value Poseidon(T_AUID2, s_u) the Snap submitted at registration. It must match what you enter in the sign-in window.' },
     idp_myinfo_auid_none: { ko: '아직 없음(스냅 등록 전)', en: 'None yet (no Snap registered)' },
     idp_myinfo_slot: { ko: '등록부 슬롯', en: 'Registry slot' },
     idp_myinfo_method: { ko: '가입 방식', en: 'Signed up with' },
@@ -990,7 +990,7 @@ window.DemoStrings = {
     attr4: { ko: '미사용', en: 'Unused', expert: 'attrs[4] (a₅), always 0' },
     attr5: { ko: '미사용', en: 'Unused', expert: 'attrs[5] (a₆), always 0' },
     registry: { ko: '등록부', en: 'Registry', expert: 'regRoot · 슬롯 리프 Poseidon(auid, H(C_u))' },
-    auid: { ko: '사용자 가명(auid)', en: 'User pseudonym (auid)', expert: 'auid = Poseidon(T_AUID, uid, salt)' },   // 2026-11-06: 사용자 요청 — 라벨에 auid 를 함께
+    auid: { ko: '사용자 가명(auid)', en: 'User pseudonym (auid)', expert: 'auid = Poseidon(T_AUID2, salt)' },   // 2026-11-06: 사용자 요청 — 라벨에 auid 를 함께
     auid_s: { ko: '세션 가명', en: 'Session pseudonym', expert: 'auid_s = Poseidon(T_AUIDS, auid, arid, r_RP)' },
     r_rp: { ko: 'RP 난수', en: 'RP nonce', expert: 'r_RP — RP 가 챌린지와 함께 주는 250비트 난수(IdP 비공개)' },
   },

@@ -76,8 +76,8 @@ await t('PPID 는 chainid 를 덮는다 — 같은 uid·s_u·arid 라도 체인�
   // 체인 간 unlinkability(발표 자료 6장의 H(ID, salt, chain, rid)). chainid 는 서명 메시지에도 들어가므로
   // 서명을 다시 만들지 않고는 chainid 만 바꿔 통과시킬 수 없다 — 여기서는 JS 유도값이 체인마다 다름과,
   // 다른 체인용 PPID 를 그대로 내면 회로가 거부함을 본다.
-  const a = await ppid({ uid: BigInt(valid.uid), s_u: BigInt(valid.s_u), arid: BigInt(valid.arid), chainid: BigInt(valid.chainid) });
-  const b = await ppid({ uid: BigInt(valid.uid), s_u: BigInt(valid.s_u), arid: BigInt(valid.arid), chainid: BigInt(valid.chainid) + 1n });
+  const a = await ppid({ s_u: BigInt(valid.s_u), arid: BigInt(valid.arid), chainid: BigInt(valid.chainid) });
+  const b = await ppid({ s_u: BigInt(valid.s_u), arid: BigInt(valid.arid), chainid: BigInt(valid.chainid) + 1n });
   assert.equal(a.toString(), valid.PPID, 'JS ppid 가 픽스처의 PPID 와 같아야 한다');
   assert.notEqual(a, b);
   await assert.rejects(() => witness({ ...valid, PPID: b.toString() }), /Assert Failed/);

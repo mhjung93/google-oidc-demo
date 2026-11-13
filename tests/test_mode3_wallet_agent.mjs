@@ -1149,7 +1149,7 @@ await t('지갑 상태 파일 8→10 이행: file 모드 등록은 auid 를 s_u 
     try {
       const s = (await stack2.wallet.get('/wallet/status')).body;
       assert.equal(s.registered, true); assert.equal(s.uid, '424242'); assert.equal(s.slot, 3);
-      assert.equal(s.auid, (await auidOf({ uid: 424242n, s_u: reg.s_u })).toString(), 'auid 는 s_u 로 재계산');
+      assert.equal(s.auid, (await auidOf({ s_u: reg.s_u })).toString(), 'auid 는 s_u 로 재계산');
       assert.deepEqual(s.attrs, ['1990', '410', '2', '0', '0', '0']); assert.deepEqual(s.sessions, {}); assert.equal(s.userCred, null);
       assert.deepEqual(s.pendingBounds, [], '2026-10-22: 이행 뒤 pendingBounds 는 빈 배열');
       const onDisk = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
@@ -1164,7 +1164,7 @@ await t('지갑 상태 파일 8→10 이행: file 모드 등록은 auid 를 s_u 
     try { assert.equal((await stack3.wallet.get('/wallet/status')).body.registered, false, 'snap 모드 옛 등록은 auid 를 재계산할 수 없어 비운다'); }
     finally { await stack3.stop(); }
     // 2026-11-13(스펙 no-pk-u §4.3): 같은 버전(10) 파일에 남은 등록 키 — 등록은 그대로 두고 pk_u·sk_u 만 버린다(죽은 비밀이 디스크에 남지 않게 기동 때 바로 다시 쓴다).
-    const auid10 = (await auidOf({ uid: 424242n, s_u: reg.s_u })).toString();
+    const auid10 = (await auidOf({ s_u: reg.s_u })).toString();
     fs.writeFileSync(stateFile, JSON.stringify({ version: 10, registration: { uid: '424242', s_u: reg.s_u.toString(), sk_u: 'ab'.repeat(32), pk_u: { x: '1', y: '2' }, auid: auid10, slot: 3, attrs: ['1990', '410', '2', '0', '0', '0'], profile: { birthYear: '1990', country: 'KR' }, userCred: null }, sessions: {}, pendingBounds: [] }));
     const stack4 = await startIsolatedMode3Stack({ rp: false, walletEnv: { MODE3_WALLET_STATE_FILE: stateFile, MODE3_MIRROR_ADDRESS: '' } });
     try {

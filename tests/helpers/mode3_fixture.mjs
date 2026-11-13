@@ -35,7 +35,7 @@ export async function buildValidInput({ pk_i: pkIOpt, maxHeight = 1789000000n, a
 
   const { Cf: Cf_u } = await userCommit({ uid, s_u, blind_u, attrs });
   const { Cf: Cf_s } = await sessionCommit({ pk_i, max_height, r_s, r_rp });
-  const auid = await auidOf({ uid, s_u });
+  const auid = await auidOf({ s_u });
   const auid_s = await auidSOf({ auid, arid, r_rp });
   const arid_s = await aridSOf({ arid, r_rp });
   const PPID = await computePpid({ uid, s_u, arid, chainid });

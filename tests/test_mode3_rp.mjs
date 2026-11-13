@@ -208,7 +208,7 @@ await t('V11 D7: 같은 r_rp 를 두 RP 가 쓰면 auid_s 가 RP 마다 다르�
   const a = await makeLogin(); const b = await makeLogin({ useArid: otherArid });
   // 같은 사용자(uid·s_u 고정은 makeLogin 이 매번 새 등록을 만들므로 여기서는 라이브러리 수준으로 본다)
   const { auidOf, auidSOf } = await import('../lib/mode3_credential.js');
-  const auid = await auidOf({ uid, s_u: a.reg.s_u });
+  const auid = await auidOf({ s_u: a.reg.s_u });
   assert.notEqual(await auidSOf({ auid, arid, r_rp }), await auidSOf({ auid, arid: otherArid, r_rp }));
   assert.notEqual(await aridSOf({ arid, r_rp }), await aridSOf({ arid: otherArid, r_rp }));
   assert.equal((await rp.verifyLogin(b)).reason, 'wrong_arid', '다른 서비스의 π 는 arid 에서 걸린다(변함 없음)');

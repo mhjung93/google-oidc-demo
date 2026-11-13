@@ -120,7 +120,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     await vault.refresh();
     if (!vault.hasVault()) await vault.setup(null);
     else if (!(await vault.key())) return LOCKED();
-    const auid = await auidOf({ uid: BigInt(uid), s_u: pend.s_u });
+    const auid = await auidOf({ s_u: pend.s_u });
     await vault.writeSecrets({ s_u: pend.s_u.toString(), seed: pend.seed ?? null, blind_u: null, sessionKeys: {} });
     await kv.set('registration', { uid, auid: auid.toString(), slot: null, profile: normalized, attrs, userCred: null, provider, pendingIdp: true });
     await putSessions({});
@@ -258,7 +258,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     if (Number.isInteger(r.body?.slot) && r.body.slot >= 0 && r.body.slot !== reg.slot) await src.setSlot(r.body.slot);
     const uc = src.userCred();
     if (!uc || uc.Cf_u !== req.Cf_u.toString()) await replaceUserCred(src, { C_u_pt: { x: req.C_u_pt.x.toString(), y: req.C_u_pt.y.toString() }, Cf_u: req.Cf_u.toString(), blind_u: blind_u.toString(), issuedAt: new Date(now()).toISOString() });
-    const PPID = await ppid({ uid: BigInt(reg.uid), s_u: BigInt(reg.s_u), arid: BigInt(arid), chainid });
+    const PPID = await ppid({ s_u: BigInt(reg.s_u), arid: BigInt(arid), chainid });
     const rsKey = r_s.toString();
     const account = factoryAddress ? await chain.accountAddressOf(factoryAddress, PPID.toString()) : null;
     // 개인키를 먼저 금고에 넣고 공개 레코드를 쓴다 — 레코드가 있는데 키가 없는 순간을 만들지 않는다.
@@ -381,7 +381,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
   }
 
   /** 등록 공통부 — 에이전트 POST /wallet/register(file 모드 규칙)의 등가 + 금고, + OIDC 분기(스펙 2026-10-16 §3.1). register(데모 계정)와
-   *  completeRegistration(Google)이 같이 쓴다. V11 §3.1·§3.3 — salt(s_u) 는 지갑이 만들고(reg) auid = Poseidon(T_AUID, uid, s_u)
+   *  completeRegistration(Google)이 같이 쓴다. V11 §3.1·§3.3 — salt(s_u) 는 지갑이 만들고(reg) auid = Poseidon(T_AUID2, s_u)
    *  를 IdP 에 낸다. 속성은 사용자가 넣는다(D15): profile(기본 DEFAULT_PROFILE)을 공개 스키마로 인코딩해 attrs 를 만든다 — IdP 는 받지 않는다.
    *  금고가 없으면 vaultPassword 로 만들고(IdP 호출 직전), 있으면 잠금 해제 상태여야 한다. kv 에는 공개 부분(registration)만 평문으로,
    *  s_u 는 금고(secrets)에만 둔다. auth 는 IdP 인증({ uid, pwd } 또는 { id_token }) — 요청 본문에 그대로 펼친다.
@@ -511,7 +511,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       const oidc = keys.body?.oidc;
       if (!oidc?.enabled || typeof oidc.provider !== 'string' || !oidc.provider) return R(503, { reason: 'oidc_disabled' });
       const uid = uidOf(oidc.provider, claims.sub);
-      const makeReg = async () => ({ s_u: pend.s_u, n: pend.n, seed: pend.seed ?? null, auid: await auidOf({ uid: BigInt(uid), s_u: pend.s_u }) });
+      const makeReg = async () => ({ s_u: pend.s_u, n: pend.n, seed: pend.seed ?? null, auid: await auidOf({ s_u: pend.s_u }) });
       const r = await registerWith({ uid, auth: { id_token: idToken }, makeReg, profileIn, vaultPassword, providerName: oidc.provider });
       if (r.status === 201 && pendingReg === pend) pendingReg = null;   // 그 사이 다시 prepare 했으면 새 재료는 남긴다
       return r;
@@ -1007,7 +1007,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       await vault.refresh();
       if (!vault.hasVault()) await vault.setup(null);
       else if (!(await vault.key())) return LOCKED();
-      const auid = await auidOf({ uid: BigInt(uid), s_u });
+      const auid = await auidOf({ s_u });
       await vault.writeSecrets({ s_u: s_u.toString(), seed: seedHex, blind_u: null, sessionKeys: {} });
       await kv.set('registration', { uid, auid: auid.toString(), slot: r0.body.slot, provider: 'demo', profile: normalized, attrs, userCred: null });
       await putSessions({}); lastSync = null; lastRegistry = null;

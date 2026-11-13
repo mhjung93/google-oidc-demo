@@ -8,11 +8,11 @@ import { IDP_PUB_INDEX, idpPublicSignals, verifyIdp } from '../lib/mode3_idp_pro
 let fails = 0;
 async function t(name, fn) { try { await fn(); console.log('ok   -', name); } catch (e) { fails++; console.log('FAIL -', name, '\n      ', e.message); } }
 
-await t('createRegistration(uid) = { s_u, auid = Poseidon(T_AUID, uid, s_u), seed } — 등록 키(sk_u·pk_u)는 없다; uid 없이는 throw', async () => {
+await t('createRegistration(uid) = { s_u, auid = Poseidon(T_AUID2, s_u), seed } — 등록 키(sk_u·pk_u)는 없다; uid 없이는 throw', async () => {
   const reg = await createRegistration(12345n);
   assert.deepEqual(Object.keys(reg).sort(), ['auid', 's_u', 'seed']);
   assert.ok(reg.s_u < SCALAR_MAX); assert.match(reg.seed, /^[0-9a-f]{64}$/);
-  assert.equal(reg.auid, await auidOf({ uid: 12345n, s_u: reg.s_u }));
+  assert.equal(reg.auid, await auidOf({ s_u: reg.s_u }));
   await assert.rejects(() => createRegistration(), /uid/);
   assert.notEqual((await createRegistration(12345n)).auid, reg.auid, 's_u 가 매번 다르다');
 });
