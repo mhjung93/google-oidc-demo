@@ -14,22 +14,36 @@
   <title>속성 커밋먼트 도구</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23345'/%3E%3Ctext x='16' y='22' font-size='15' font-family='sans-serif' font-weight='700' text-anchor='middle' fill='%23fff'%3EC%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="/common/demo.css" />
+  <link rel="stylesheet" href="/common/wallet.css" />   <!-- 2026-11-13(화면 리뷰): zk 스냅 화면과 같은 상단 바 -->
   <script src="/common/strings.js"></script>
   <script src="/common/demo.js"></script>
   <script src="/attr/dist/attr.js"></script>
   <style>
-    .attr-form label { display:block; margin:8px 0 } .attr-form input, .attr-form select { width:100%; max-width:360px; padding:6px 8px }
+    /* 2026-11-13(화면 리뷰): 라벨 위·입력칸 아래 — 라벨 길이에 따라 칸의 시작 위치가 달라지지 않는다. 선택 상자도 입력칸과 같은 모양. */
+    .attr-form label { display:flex; flex-direction:column; gap:4px; margin:10px 0; font-size:14px; color:var(--muted); max-width:360px }
+    .attr-form input, .attr-form select { width:100%; padding:9px 10px; background:#fff; color:var(--ink) }
+    .wallet-nav .nav-inner { max-width:1100px; padding:0 var(--gap) }   /* 상단 바의 왼쪽 끝을 아래 카드와 맞춘다 */
+    main.cards > .card { align-self:start }   /* 옆 카드 높이에 맞춰 늘어나 아래가 비지 않게 */
+    .salt-line { display:flex; align-items:flex-start; gap:8px } .salt-line code { min-width:0 } .salt-line button { padding:2px 10px; font-size:13px; flex:none }
     .commit-box { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; overflow-wrap:anywhere; background:#f2f4f8; padding:10px 12px; border-radius:8px }
     .row-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:10px 0 }
     .tool-head { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap } .tool-head h2 { margin:0 }
     .formula { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; overflow-wrap:anywhere; margin:4px 0 12px }
     .inputs-kv code { overflow-wrap:anywhere }
-    /* 비밀번호 칸(불러오기·자동 백업, 2026-11-12 화면 리뷰) — 레이블과 칸을 한 줄에 두고 칸의 시작 위치를 맞춘다 */
-    .pw-form label { display:grid; grid-template-columns:170px minmax(0, 1fr); gap:8px; align-items:center; margin:8px 0 } .pw-form input { width:100%; max-width:280px }
   </style>
 </head>
 <body data-page="attr">
 <header id="demoBar"></header>
+<!-- 2026-11-13(화면 리뷰): zk 스냅 화면과 같은 상단 바 — 두 화면을 오갈 수 있다. -->
+<nav class="wallet-nav">
+  <div class="nav-inner">
+    <a class="brand" href="/" data-i18n="wallet_brand">zk 스냅</a>
+    <div class="wallet-tabs">
+      <a class="nav-link" href="/" data-i18n="wallet_nav_snap">스냅</a>
+      <a class="nav-link" href="/attr.html" aria-current="page" data-i18n="wallet_nav_attr">속성 도구</a>
+    </div>
+  </div>
+</nav>
 <main class="cards">
   <section class="card span2">
     <div class="tool-head"><h2 data-i18n="attr_title">속성 커밋먼트 도구</h2><span class="badge muted" data-i18n="attr_badge_offline">속성·salt 는 서버로 보내지 않음</span></div>
@@ -64,24 +78,27 @@
     <!-- 2026-11-10: 커밋먼트의 재료를 모두 숨기지 않고 보인다(사용자 요청) — 식, 도메인 상수, salt, 속성(입력값 → 인코딩 값).
          2026-11-13: uid 는 식의 재료가 아니다 — 계정 정보(uid·auid)로 따로 보인다. -->
     <div id="inputsView" hidden>
-      <h4 data-i18n="attr_inputs_title">커밋먼트 재료</h4>
-      <p class="formula">C_attr = Poseidon(DOMAIN, s_u, attr₀, attr₁, attr₂, attr₃, attr₄, attr₅)</p>
-      <p><span class="badge warn" data-i18n="attr_secret_warn">salt 는 비밀 — 시연용 표시</span></p>
-      <dl class="kv inputs-kv">
-        <dt>DOMAIN</dt><dd><code id="domainShown">-</code></dd>
-        <dt data-i18n="attr_salt">salt (s_u)</dt><dd><code id="saltShown">-</code></dd>
-      </dl>
-      <dl class="kv inputs-kv" id="attrsShown"></dl>
-      <dl class="kv inputs-kv">
-        <dt data-i18n="attr_schema_label">스키마</dt><dd id="schemaShown">-</dd>
-        <dt data-i18n="attr_created_at">만든 시각</dt><dd id="createdAt">-</dd>
-      </dl>
       <h4 data-i18n="attr_account_title">계정</h4>
       <dl class="kv inputs-kv">
         <dt data-i18n="attr_uid">uid</dt><dd><code id="uidShown">-</code></dd>
         <!-- 2026-11-11(사용자 결정): salt 로 계산한 auid(2026-11-13 부터 uid 없음) — 첫 RP 로그인 때 zkID 인증 창의 auid 칸에 붙여 넣는다. uid 는 zkID 로그인에서 받아온 값(2026-11-13). -->
         <dt data-i18n="attr_auid_label">auid</dt><dd><code id="auidShown" style="overflow-wrap:anywhere;word-break:break-all">-</code> <button type="button" id="copyAuidBtn" class="copy-btn" title="복사">⧉</button><br /><small class="muted" data-i18n="attr_auid_hint">첫 RP 로그인 때 zkID 인증 창의 auid 칸에 붙여 넣으세요.</small></dd>
       </dl>
+      <!-- 2026-11-13(화면 리뷰): 재료(식·도메인 상수·salt·인코딩 값)는 접어 둔다. salt 는 스냅의 모든 서비스 주소를 정하는 비밀이라 기본 가림 — "보기" 로만 연다(zk 스냅 화면 "내 계정" 과 같다). -->
+      <details class="fold" id="inputsFold">
+        <summary data-i18n="attr_inputs_title">커밋먼트 재료</summary>
+        <p class="formula">C_attr = Poseidon(DOMAIN, s_u, attr₀, attr₁, attr₂, attr₃, attr₄, attr₅)</p>
+        <dl class="kv inputs-kv">
+          <dt>DOMAIN</dt><dd><code id="domainShown">-</code></dd>
+          <dt><span data-i18n="attr_salt">salt (s_u)</span> <span class="badge warn" data-i18n="attr_secret_warn">salt 는 비밀 — 가려 둠</span></dt>
+          <dd class="salt-line"><code id="saltShown">-</code> <button type="button" id="saltRevealBtn" class="btn-ghost" data-i18n="attr_salt_reveal">보기</button></dd>
+        </dl>
+        <dl class="kv inputs-kv" id="attrsShown"></dl>
+        <dl class="kv inputs-kv">
+          <dt data-i18n="attr_schema_label">스키마</dt><dd id="schemaShown">-</dd>
+          <dt data-i18n="attr_created_at">만든 시각</dt><dd id="createdAt">-</dd>
+        </dl>
+      </details>
     </div>
     <div id="resultVerdict"></div>
   </section>
@@ -113,13 +130,22 @@
     const empty = document.createElement('option'); empty.value = ''; empty.textContent = tt('attr_country_pick') || '선택'; sel.appendChild(empty);
     for (const code of Object.keys(slot.values)) { const o = document.createElement('option'); o.value = code; o.textContent = code; sel.appendChild(o); }
   }
+  const SALT_MASK = '●'.repeat(12);
+  let saltRevealed = false;
+  function showSalt(rec) {
+    $('saltShown').textContent = saltRevealed ? rec.s_u : SALT_MASK;
+    const k = saltRevealed ? 'attr_salt_hide' : 'attr_salt_reveal';
+    $('saltRevealBtn').dataset.i18n = k; $('saltRevealBtn').textContent = tt(k) || (saltRevealed ? '가리기' : '보기');
+  }
   function render() {
     const rec = load(), old = !rec && [1, 2, 3].includes(raw()?.version);
     $('commitBox').hidden = !rec; $('noCommit').hidden = !!rec; $('commitActions').hidden = !rec; $('inputsView').hidden = !rec; $('oldRecord').hidden = !old;
     if (!rec) return;
     $('commitBox').textContent = rec.commit;
     $('domainShown').textContent = String(A.DOMAIN_MODE3_ATTRC);
-    $('uidShown').textContent = rec.uid; $('saltShown').textContent = rec.s_u;
+    $('uidShown').textContent = rec.uid;
+    // salt 는 기본 가림(2026-11-13 화면 리뷰) — 가림 문자는 길이가 늘 같다. render() 가 다시 돌면(새로 만들기·지우기·새로 고침) 다시 가린다.
+    saltRevealed = false; showSalt(rec);
     $('auidShown').textContent = '…';
     A.auidOf({ s_u: BigInt(rec.s_u) }).then((v) => { $('auidShown').textContent = v.toString(); }, () => { $('auidShown').textContent = '-'; });
     // 속성 칸: 슬롯 이름 · 입력값 → 해시에 들어가는 인코딩 값(attrᵢ). 미사용 슬롯(늘 0)은 보이지 않는다(2026-11-11).
@@ -167,6 +193,7 @@
     setTimeout(() => { btn.textContent = prev; }, 1200);
   }
   $('copyBtn').addEventListener('click', () => { const rec = load(); if (rec) copyText(rec.commit, $('copyBtn')); });
+  $('saltRevealBtn').addEventListener('click', () => { const rec = load(); if (!rec) return; saltRevealed = !saltRevealed; showSalt(rec); });
   // 2026-11-13(사용자 결정): uid 는 묻지 않는다 — 같은 사이트(localhost)의 zkID 로그인 세션에서 받아온다. IdP 는 이 경로 하나만 쿠키와 함께 스냅 오리진에 연다
   // (cia.js GET /cia/user/uid — uid 만 돌려준다). IdP 주소는 같은 오리진 에이전트의 /wallet/config(ciaUrl). 속성·salt 는 보내지 않는다.
   let cfgCache = null;

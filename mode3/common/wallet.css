@@ -52,6 +52,26 @@ details.fold > summary::before { content: '▸ '; } details.fold[open] > summary
 details.fold > summary::-webkit-details-marker { display: none; }
 details.fold > :not(summary) { margin-top: 8px; }
 
+/* 스냅 설정 카드(2026-11-13 화면 리뷰) — 비밀번호 칸은 zkID 가입 화면처럼 라벨 위·입력칸 아래. 좁은 창에서도 라벨이 끊기지 않는다.
+   고른 방법(새로 만들기·백업에서 불러오기)은 채운 버튼으로 보인다 — 고르기 전에는 둘 다 테두리만. */
+.pw-form { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; max-width: 360px; }
+.pw-form label { display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: var(--muted); }
+.pw-form input { width: 100%; padding: 9px 10px; }
+.pw-form .row-actions { margin-top: 2px; } .pw-form p.muted { margin: 0; }
+#setupChoice [aria-pressed="true"] { background: var(--accent); color: #fff; }
+#setupNotice:empty { display: none; } #setupNotice.verdict { margin-top: 0; }
+/* 상단 바의 페이지 링크(zk 스냅 화면 ↔ 속성 도구) — 탭 버튼과 같은 글씨. */
+.wallet-nav a.nav-link { color: rgba(255,255,255,.72); font-size: 14px; font-weight: 600; text-decoration: none; padding: 17px 0; border-bottom: 2px solid transparent; white-space: nowrap; }
+.wallet-nav a.nav-link:hover, .wallet-nav a.nav-link:focus-visible { color: #fff; }
+.wallet-nav a.nav-link[aria-current="page"] { color: #fff; border-bottom-color: #fff; }
+.wallet-nav .nav-actions a.nav-link { padding: 0; border-bottom: 0; }
+.wallet-nav .nav-actions { margin-left: auto; }   /* 탭이 숨은 동안(연결 전·설정 중)에도 링크·연결 상태는 오른쪽 끝에 선다 */
+/* "내 계정" 의 가린 비밀 — 가림 문자는 길이가 늘 같고(값의 길이를 드러내지 않는다), 보이지 않는 자리 채움이 값이 들어올 줄 수를 미리 잡아 "보기" 를 눌러도 아래가 밀리지 않는다. */
+#meStore code.masked { position: relative; } #meStore code.masked .mask { position: absolute; left: 0; top: 0; } #meStore code.masked .fill { visibility: hidden; }
+#meStore .gloss { color: var(--muted); font-size: 13px; white-space: nowrap; }
+#meStore .store-group .row-actions { margin-top: 10px; }
+.session .session-foot .hint { font-size: 12.5px; color: var(--muted); }
+
 /* 연결 전 안내 카드 — 지갑을 열면 제일 먼저 보이는 한 장. */
 #connectCard { text-align: center; padding: 40px 22px; }
 #connectCard h3 { font-size: 20px; }

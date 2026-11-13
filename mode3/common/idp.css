@@ -46,3 +46,10 @@ table.list th, table.list .badge, .nowrap { white-space: nowrap; }
 /* 가운데를 줄인 값 + 복사 버튼 한 줄(midVal) — 고정폭 글꼴·버튼이 줄 높이를 키우지 않게 줄 상자 밖에서 가운데로 맞춘다(값이 없는 줄과 높이가 같다). */
 .val-line { display: inline-flex; align-items: center; gap: 4px; vertical-align: top; white-space: nowrap; }
 .val-line code { line-height: 1.5; } .val-line .copy-btn { padding-top: 1px; padding-bottom: 1px; }
+/* 2026-11-13 화면 리뷰: 사용자 페이지(/user)는 카드가 한 칸으로 선다(반쪽만 차는 카드가 없게) — zk 스냅 화면과 같은 좁은 한 칸. */
+main.cards.narrow { grid-template-columns: 1fr; max-width: 760px; }
+/* 라벨 위·입력칸 아래 한 칸(.auth-form 과 같은 모양) — 카드 안의 낱개 입력에 쓴다. */
+.field { display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: var(--muted); max-width: 520px; }
+.field input { width: 100%; padding: 9px 10px; }
+/* 안내 문장 안의 링크 — 기본 파란 밑줄 대신 다른 버튼·링크와 같은 색. */
+.card p.muted a { color: var(--accent); font-weight: 600; text-decoration: none; } .card p.muted a:hover { text-decoration: underline; }

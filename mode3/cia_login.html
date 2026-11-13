@@ -16,9 +16,9 @@
 <main class="cards">
   <section class="card" id="authCard">
     <h3 id="authTitle" data-i18n="idp_auth_title">zkID 로그인</h3>
-    <p id="authDesc" class="desc" data-i18n="idp_auth_desc">uid·비밀번호·auid 를 모두 직접 넣으면 스냅으로 돌아가 로그인을 이어갑니다.</p>
+    <p id="authDesc" class="desc" data-i18n="idp_auth_desc">아이디·비밀번호·auid 를 모두 직접 넣으면 스냅으로 돌아가 로그인을 이어갑니다.</p>
     <form id="authForm" class="auth-form" autocomplete="on">
-      <label><span data-i18n="idp_auth_uid_label">uid</span><input id="authUid" autocomplete="username" autocapitalize="off" spellcheck="false" placeholder="uid" /></label>   <!-- 2026-11-09(사용자 결정): uid·비밀번호·auid 를 모두 손으로 넣는다(아이디도 받는다) -->
+      <label><span data-i18n="idp_auth_uid_label">아이디</span><input id="authUid" autocomplete="username" autocapitalize="off" spellcheck="false" placeholder="아이디" /></label>   <!-- 2026-11-09(사용자 결정): uid·비밀번호·auid 를 모두 손으로 넣는다(아이디도 받는다) -->
       <label><span data-i18n="idp_pwd_label">비밀번호</span><input id="authPwd" type="password" autocomplete="current-password" /></label>
       <!-- 2026-11-09(사용자 결정): auid 도 늘 직접 넣는다 — 지갑은 더 이상 쿼리로 넘기지 않는다(2026-11-05 의 자동 채움을 되돌림). 값은 지갑 계정 탭 "상세" 의 auid 복사 버튼으로. -->
       <label id="authAuidRow">auid<input id="authAuid" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="속성 도구·zkID 내 정보의 auid 복사" /><small class="muted" data-i18n="idp_auth_auid_hint">zk 스냅 페이지의 계정 탭 "상세" 에서 auid 를 복사해 붙여 넣으세요.</small></label>

@@ -230,6 +230,7 @@ window.DemoStrings = {
     wallet_tab_me: { ko: '내 계정', en: 'My account' },
     // 스냅 설정 카드(2026-11-13 스펙 random-salt R3~R7): salt 새로 만들기·백업에서 불러오기·백업 다시 만들기
     wallet_setup_title: { ko: '스냅 설정 — salt 와 백업', en: 'Snap setup — salt and backup' },
+    wallet_rebackup_title: { ko: 'salt 백업 다시 만들기', en: 'Make the salt backup again' },   // 2026-11-13(화면 리뷰): "내 계정" 에서 연 카드의 제목 — 첫 설정 설명은 숨긴다
     wallet_setup_desc: { ko: '이 스냅의 salt 가 서비스마다의 주소를 정합니다. 새로 만들면 암호화 백업 파일을 먼저 저장해야 쓸 수 있습니다. 백업 파일과 비밀번호를 모두 잃으면 되찾을 수 없습니다 — 파일은 이 PC 밖에도 두세요.', en: 'The salt in this Snap decides your address at every service. A new salt can be used only after its encrypted backup file is saved. If you lose both the backup file and the password it cannot be recovered — keep a copy of the file off this PC.' },
     wallet_setup_state_none: { ko: '이 스냅에는 아직 salt 가 없습니다.', en: 'This Snap has no salt yet.' },
     wallet_setup_state_backup: { ko: 'salt 는 만들었지만 백업을 확인하지 못했습니다 — 백업 파일을 저장해야 계속할 수 있습니다.', en: 'The salt exists but its backup is not confirmed — save a backup file to continue.' },
@@ -250,6 +251,8 @@ window.DemoStrings = {
     wallet_setup_import_done: { ko: '백업에서 salt 를 불러왔습니다', en: 'Salt loaded from the backup' },
     wallet_setup_import_failed: { ko: '백업을 불러오지 못했습니다', en: 'Could not load the backup' },
     wallet_rebackup_btn: { ko: '백업 다시 만들기', en: 'Make the backup again' },
+    wallet_nav_attr: { ko: '속성 도구', en: 'Attribute tool' },   // 2026-11-13(화면 리뷰): zk 스냅 화면 ↔ 속성 도구 상단 바 링크
+    wallet_nav_snap: { ko: '스냅', en: 'Snap' },
     wallet_me_title: { ko: '내 계정', en: 'My account' },
     wallet_me_desc: { ko: '이 MetaMask 스냅이 저장하고 있는 값 전부입니다. 비밀 값은 가려 두었습니다.', en: 'Everything this MetaMask Snap stores. Secret values are hidden.' },
     wallet_me_reload: { ko: '새로 고침', en: 'Reload' },
@@ -265,7 +268,12 @@ window.DemoStrings = {
     wallet_me_g_consents: { ko: '동의 기록', en: 'Consent records' },
     wallet_me_g_other: { ko: '그 밖', en: 'Other' },
     wallet_me_f_uid: { ko: 'uid', en: 'uid' },
-    wallet_me_f_source: { ko: '출처(new = 새로 만듦, import = 백업에서)', en: 'Source (new = created, import = from backup)' },
+    wallet_me_f_source: { ko: '출처', en: 'Source' },
+    // 2026-11-13(화면 리뷰): 저장된 값(new·import·true·false)은 그대로 보이고 뜻을 옆에 붙인다 — wallet_me_v_<필드>_<값>
+    wallet_me_v_source_new: { ko: '새로 만듦', en: 'created here' },
+    wallet_me_v_source_import: { ko: '백업에서 불러옴', en: 'loaded from a backup' },
+    wallet_me_v_backedUp_true: { ko: '확인됨', en: 'confirmed' },
+    wallet_me_v_backedUp_false: { ko: '아직 확인 안 됨', en: 'not confirmed yet' },
     wallet_me_f_createdAt: { ko: '만든 시각', en: 'Created at' },
     wallet_me_f_backedUp: { ko: '백업 확인', en: 'Backup confirmed' },
     wallet_me_f_backedUpAt: { ko: '백업 확인 시각', en: 'Backup confirmed at' },
@@ -281,6 +289,7 @@ window.DemoStrings = {
     wallet_me_f_attrs_3: { ko: '속성 a₃ (예비 2)', en: 'Attribute a₃ (spare 2)' },
     wallet_me_f_attrs_4: { ko: '속성 a₄ (미사용)', en: 'Attribute a₄ (unused)' },
     wallet_me_f_attrs_5: { ko: '속성 a₅ (미사용)', en: 'Attribute a₅ (unused)' },
+    wallet_me_f_attrs_unused: { ko: '속성 a₄·a₅ (미사용)', en: 'Attributes a₄·a₅ (unused)' },   // 2026-11-13(화면 리뷰): 미사용 두 칸은 한 줄로
     wallet_me_f_C_u_pt_x: { ko: 'C_u (x)', en: 'C_u (x)' },
     wallet_me_f_C_u_pt_y: { ko: 'C_u (y)', en: 'C_u (y)' },
     wallet_me_f_Cf_u: { ko: 'Cf_u', en: 'Cf_u' },
@@ -367,13 +376,14 @@ window.DemoStrings = {
     wallet_sessions_note: { ko: '로그인은 서비스 페이지에서 시작합니다 — 자격증명 발급은 로그인 안에서 필요할 때 자동으로 일어납니다.', en: 'Logins start on the service page — credentials are issued automatically inside the login when needed.' },
     wallet_session_service: { ko: '서비스', en: 'Service' },
     wallet_session_expiry: { ko: '만료', en: 'Expiry' },
-    wallet_session_expires: { ko: '만료 블록 {h}', en: 'expires at block {h}' },
+    wallet_session_expires: { ko: '블록 {h}', en: 'block {h}' },
     wallet_session_addr: { ko: '세션 주소', en: 'Session address' },
     wallet_session_issued: { ko: '발급 시각', en: 'Issued at' },
     wallet_session_factory: { ko: '팩토리', en: 'Factory' },
     // 2026-10-23(Task 9) — 세션 카드의 체인 nonce(기술 용어, 번역하지 않는다)와 폐기할 때 체인 계정에 올릴 허용 거래 수 입력.
-    wallet_session_nonce: { ko: 'nonce', en: 'nonce' },
+    wallet_session_nonce: { ko: '보낸 거래 수(nonce)', en: 'Transactions sent (nonce)' },
     wallet_bound_label: { ko: '허용 거래 수', en: 'Allowed tx count' },
+    wallet_bound_hint: { ko: '끝낸 뒤에도 받아 줄 거래 수 — 0 이면 전부 막습니다', en: 'Transactions still accepted after ending — 0 blocks them all' },   // 2026-11-13(화면 리뷰)
     wallet_session_revoked: { ko: '이 세션만 폐기를 요청했습니다 — 다음 게시부터 이 세션의 로그인·트랜잭션이 거부됩니다. 계정과 다른 세션은 그대로입니다.', en: 'Only this session was submitted for revocation — from the next publication its logins and transactions are refused. The account and the other sessions are untouched.' },
     wallet_session_revoke_failed: { ko: '세션 폐기 실패', en: 'Session revocation failed' },
     wallet_cancelled: { ko: '창에서 취소했습니다.', en: 'Cancelled in the dialog.' },
@@ -649,7 +659,7 @@ window.DemoStrings = {
     admin_col_auid: { ko: 'auid', en: 'auid' },
     admin_col_auid_s: { ko: '최신 auid_s', en: 'Latest auid_s' },   // 2026-11-12: 계정마다 가장 최신 값 하나(기록 없음)
     admin_auidmap_title: { ko: 'uid ↔ auid(스냅 가명) 대응', en: 'uid ↔ auid (snap pseudonym) map' },
-    admin_auidmap_desc: { ko: '계정마다 IdP 가 저장한 auid = Poseidon(T_AUID2, s_u) 입니다 — 스냅(salt)의 가명이라 활성 계정 하나에 스냅 하나이고, 같은 스냅을 다른 활성 계정에 등록할 수 없습니다(auid_taken). 폐기된 계정은 스냅을 쥐지 않습니다 — 같은 스냅으로 새 계정을 등록하면 폐기된 계정과 새 계정에 같은 auid 가 보입니다. 스냅을 등록하기 전이거나 연결을 해제한 계정은 auid 가 없습니다. "최신 auid_s" 는 가장 최근 발급의 세션 가명 하나이고, 새로 발급하면 덮어씁니다(기록은 남기지 않습니다).', en: 'The auid = Poseidon(T_AUID2, s_u) the IdP stores for each account. It is the pseudonym of the Snap (salt): one Snap per active account, and the same Snap cannot be registered to another active account (auid_taken). A revoked account does not hold its Snap — after the same Snap registers a new account, the revoked account and the new one show the same auid. Accounts that have not registered a Snap, or unlinked it, have none. "Latest auid_s" is the session pseudonym of the most recent issuance; a new issuance overwrites it (no history is kept).' },
+    admin_auidmap_desc: { ko: 'auid = Poseidon(T_AUID2, s_u) — 스냅(salt)의 가명입니다. 한 스냅은 활성 계정 하나에만 등록되고(auid_taken), 폐기된 계정은 스냅을 쥐지 않아 새 계정과 같은 auid 가 보일 수 있습니다. "최신 auid_s" 는 가장 최근 발급의 세션 가명 하나입니다.', en: 'auid = Poseidon(T_AUID2, s_u) — the pseudonym of the Snap (salt). One Snap registers to one active account only (auid_taken); a revoked account does not hold its Snap, so it can show the same auid as a new account. "Latest auid_s" is the session pseudonym of the most recent issuance.' },
     admin_auidmap_empty: { ko: '계정이 없습니다.', en: 'No accounts.' },
     admin_auid_none: { ko: '(없음)', en: '(none)' },
     admin_col_slot: { ko: '슬롯', en: 'Slot' },
@@ -854,9 +864,9 @@ window.DemoStrings = {
     idp_rp_create_ok_bound: { ko: '만들어짐 — {name}. 이 주소의 RP 등록을 이 계정에 연결했습니다. 아래 표에서 상태를 확인하고 "인증서 발급 요청" 을 누르세요.', en: 'Created — {name}. The registration from this address is now linked to your account. Check the status in the table below and press "Request certificate".' },
     // IdP 인증 창(cia_login.html, §4) — 지갑 팝업이 연다.
     idp_auth_title: { ko: 'zkID 로그인', en: 'zkID sign-in' },
-    idp_auth_uid_label: { ko: 'uid', en: 'uid' },   // 2026-11-09: 인증 창은 uid·비밀번호·auid 를 모두 직접 입력
+    idp_auth_uid_label: { ko: '아이디', en: 'ID' },   // 2026-11-09: 인증 창은 uid·비밀번호·auid 를 모두 직접 입력
     idp_auth_auid_hint: { ko: '속성 커밋먼트 도구(localhost:5100/attr.html) 또는 zkID 내 정보(등록 뒤)에서 auid 를 복사해 붙여 넣으세요.', en: 'Copy auid from the attribute commitment tool (localhost:5100/attr.html) or zkID My info (after registration) and paste it here.' },
-    idp_auth_desc: { ko: 'uid·비밀번호·auid 를 모두 직접 넣으면 스냅으로 돌아가 로그인을 이어갑니다.', en: 'Enter your uid, password and auid; you return to the Snap and the login continues.' },   // 2026-11-09
+    idp_auth_desc: { ko: '아이디·비밀번호·auid 를 모두 직접 넣으면 스냅으로 돌아가 로그인을 이어갑니다.', en: 'Enter your ID, password and auid; you return to the Snap and the login continues.' },   // 2026-11-09
     idp_auth_go: { ko: '로그인', en: 'Log in' },
     // 인증 창 등록 모드(2026-11-09): 미등록 지갑의 첫 서비스 로그인 — auid 칸 없이 아이디·비밀번호만
     idp_auth_register_title: { ko: 'zkID 로그인 — 스냅 등록', en: 'zkID sign-in — Snap registration' },
@@ -925,7 +935,9 @@ window.DemoStrings = {
     attr_auid_hint: { ko: '첫 RP 로그인 때 zkID 인증 창의 auid 칸에 붙여 넣으세요.', en: 'Paste this into the auid field of the zkID sign-in window on your first RP login.' },
     attr_reset_cleared: { ko: '데모를 새로 시작해 이 브라우저의 이전 기록을 비웠습니다.', en: 'The demo was restarted, so the previous record in this browser was cleared.' },
     attr_inputs_title: { ko: '커밋먼트 재료', en: 'Commitment inputs' },
-    attr_secret_warn: { ko: 'salt 는 비밀 — 시연용 표시', en: 'salt is secret — shown for the demo' },
+    attr_secret_warn: { ko: 'salt 는 비밀 — 가려 둠', en: 'salt is secret — hidden' },
+    attr_salt_reveal: { ko: '보기', en: 'Show' },
+    attr_salt_hide: { ko: '가리기', en: 'Hide' },
     attr_schema_label: { ko: '스키마', en: 'Schema' },
     attr_old_record: { ko: '이 브라우저에 옛 형식의 커밋먼트가 있습니다 — 식이 바뀌었으니 다시 만드세요.', en: 'This browser holds an old-format commitment — the formula changed, so make it again.' },
     // 2026-11-13(사용자 결정): 속성 도구는 uid·계정 번호·salt 를 묻지 않는다 — uid 는 zkID 로그인 세션에서, salt·번호는 스냅에서 받아온다.

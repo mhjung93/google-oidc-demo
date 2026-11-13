@@ -75,14 +75,16 @@
     verdict(el, args) { el.__verdictArgs = args; D.renderVerdict(el, typeof args === 'function' ? args() : args); },
     /** 인자를 들고 있는 결과 카드를 전부 다시 그린다 — 페이지가 따로 기억할 필요가 없다. */
     rerenderVerdicts() { document.querySelectorAll('.verdict').forEach((el) => { if (el.__verdictArgs) D.verdict(el, el.__verdictArgs); }); },
-    renderVerdict(el, { ok, title, summary, reason, detail, pending }) {
+    renderVerdict(el, { ok, title, summary, reason, detail, pending, brief }) {
       // 페이지가 붙여 둔 다른 클래스(레이아웃·browser 테스트가 잡는 것)를 지우지 않는다 — 판정 클래스만 갈아 끼운다.
       el.innerHTML = ''; el.classList.add('verdict'); el.classList.remove('ok', 'bad', 'pending'); el.classList.add(pending ? 'pending' : ok ? 'ok' : 'bad');
       const badge = document.createElement('span'); badge.className = 'badge'; badge.textContent = pending ? '…' : ok ? '✓' : '✕'; el.appendChild(badge);
       const h = document.createElement('strong'); h.textContent = S.verdicts[title] ? D.verdictText(title) : (title ?? ''); el.appendChild(h);
       const r = reason ? D.reason(reason) : null;
-      if (summary || r) { const p = document.createElement('p'); p.className = 'summary'; p.textContent = summary ?? r.title; el.appendChild(p); }
-      if (r && !ok) { const c = document.createElement('p'); c.className = 'cause'; c.textContent = r.cause; el.appendChild(c); const a = document.createElement('p'); a.className = 'action'; a.textContent = r.action; el.appendChild(a); }
+      // brief(2026-11-13 화면 리뷰): 입력 검증처럼 뻔한 실패는 사유의 제목과 조치를 한 줄로 — 원인 줄을 따로 두지 않는다.
+      const oneLine = Boolean(brief && r && !ok && !summary);
+      if (summary || r) { const p = document.createElement('p'); p.className = 'summary'; p.textContent = summary ?? (oneLine ? `${r.title} — ${r.action}` : r.title); el.appendChild(p); }
+      if (r && !ok && !oneLine) { const c = document.createElement('p'); c.className = 'cause'; c.textContent = r.cause; el.appendChild(c); const a = document.createElement('p'); a.className = 'action'; a.textContent = r.action; el.appendChild(a); }
       // 2026-11-05: 사유 코드·원문(detail)은 화면에 싣지 않는다(전문가 보기가 없어졌다) — 디버깅용으로 콘솔에만 남긴다.
       if (!ok && !pending && (reason || detail !== undefined)) { try { console.debug('[verdict]', title, reason ?? '', detail ?? ''); } catch { /* 콘솔 없음 */ } }
     },
