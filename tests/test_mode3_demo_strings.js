@@ -159,4 +159,16 @@ t('ui 에 /account → /user 링크 키만 있고 /user → /account 링크 키�
   assert.ok(S.ui.account_idp_user_link, 'account_idp_user_link');
 });
 
+
+// 2026-11-13 리뷰 I-1(스펙 random-salt R8·R11): 스냅 초기화는 salt 를 남기고, 한 스냅은 같은 IdP 에서 계정 하나다 — 안내가 "스냅을 다시 설치하면 다른 계정을 쓸 수 있다" 로 이끌면 auid_taken 으로 끝난다.
+t('리뷰 I-1: 스냅 안내가 R8·R11 과 맞는다 — 다른 계정을 쓰려고 스냅을 다시 설치하라고 하지 않고, 초기화가 salt 를 남긴다고 말한다', () => {
+  const a = S.reasons.snap_other_account;
+  assert.equal(/다시 설치하세요/.test(a.ko.action), false, a.ko.action); assert.match(a.ko.action, /계정 하나/);
+  assert.equal(/reinstall the Snap in MetaMask to use/i.test(a.en.action), false, a.en.action); assert.match(a.en.action, /one account/i);
+  for (const k of ['confirm_reset', 'wallet_snap_reset_summary']) {
+    assert.match(S.ui[k].ko, /salt 는[^.]*남/, `${k}: ${S.ui[k].ko}`); assert.equal(/새 계정으로 등록할 수|등록 비밀/.test(S.ui[k].ko), false, `${k}: ${S.ui[k].ko}`);
+    assert.match(S.ui[k].en, /salt (stays|is kept)/i, `${k}: ${S.ui[k].en}`); assert.equal(/register a new zkID account|registration secrets/i.test(S.ui[k].en), false);
+  }
+});
+
 if (fails) { console.log(`\n${fails} FAIL`); process.exit(1); } else console.log('\nall ok');

@@ -138,8 +138,9 @@ try {
 
   await t('반쯤 된 등록 복구: Snap 을 보류로 되돌리고 "Google 로 등록" 다시 → Google 버튼 없이 Snap 저장을 마저 한다(uid 복원)', async () => {
     const full = JSON.parse(JSON.stringify(snapState.registration));
-    assert.ok(full.uid && full.s_u, 'Snap 에 완성된 등록이 있어야 한다');
-    // IdP 등록·에이전트 저장은 끝났는데 Snap storeRegistration 이 안 된 상태 — s_u 만 남긴다
+    assert.ok(full.uid && snapState.salt?.s_u, 'Snap 에 완성된 등록과 salt 가 있어야 한다');
+    const saltBefore = snapState.salt.s_u;
+    // IdP 등록·에이전트 저장은 끝났는데 Snap storeRegistration 이 안 된 상태 — 보류 등록만 남긴다(0.5.0: 비밀은 등록이 아니라 salt 에 있다)
     for (const k of ['uid', 'auid', 'slot', 'attrs', 'provider']) snapState.registration[k] = null;
     const u = await context.newPage(); await u.goto(`${ciaUi}/user?google=1`);   // 2026-11-06: Google 등록 버튼은 ?google=1 일 때만 보인다
     await u.waitForSelector('#registerGoogleBtn:not([hidden])', { timeout: 15_000 });
@@ -147,8 +148,9 @@ try {
     await waitText(u, '#userVerdict', '등록됨', 60_000);   // 2026-11-05: 결과 문구에 uid 는 없다 — 복원된 uid 는 아래 Snap 상태로 본다
     assert.equal(await popup.$('#gsiBox .gsi-stub'), null, '복구는 Google 로그인을 다시 하지 않는다');
     const back = JSON.parse(JSON.stringify(snapState.registration));
-    for (const k of ['uid', 'auid', 'slot', 'provider', 's_u']) assert.equal(back[k], full[k], `복구된 Snap 등록.${k}`);
+    for (const k of ['uid', 'auid', 'slot', 'provider']) assert.equal(back[k], full[k], `복구된 Snap 등록.${k}`);
     assert.deepEqual(back.attrs, full.attrs);
+    assert.equal(snapState.salt.s_u, saltBefore, 'salt 는 그대로다');
     await u.close();
   });
 
