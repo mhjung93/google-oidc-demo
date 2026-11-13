@@ -279,7 +279,7 @@
     } finally { $('saltFromSnapBtn').disabled = false; }
   });
   $('acctIndex').addEventListener('input', () => { $('salt').value = ''; });   // 번호를 바꾸면 그 번호의 salt 를 다시 가져와야 한다(Ruling P3)
-  // 최종 리뷰 I-1(2026-11-12): uid 를 바꾸면(다른 계정) 앞 계정 기록이 채운 번호·salt 를 비운다 — 그대로 두면 새 계정도 앞 계정 번호(같은 pk_u)로 만들어진다.
+  // 최종 리뷰 I-1(2026-11-12): uid 를 바꾸면(다른 계정) 앞 계정 기록이 채운 번호·salt 를 비운다 — 그대로 두면 새 계정도 앞 계정 번호(같은 s_u)로 만들어진다.
   $('uid').addEventListener('input', () => { const rec = load(); if (!rec || rec.uid !== $('uid').value.trim()) { $('acctIndex').value = ''; $('salt').value = ''; } });   // 같은 계정(기록의 uid)이면 그대로
   $('copySaltBtn').addEventListener('click', () => { const v = $('salt').value.trim(); if (v) copyText(v, $('copySaltBtn')); });
   $('copyBlindBtn').addEventListener('click', () => { const rec = load(); if (rec) copyText(rec.blind, $('copyBlindBtn')); });

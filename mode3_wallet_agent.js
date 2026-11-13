@@ -21,12 +21,12 @@ import { ethers } from 'ethers';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { createSecretSource, stripSecrets, validateWitness } from './lib/mode3_secret_source.js';
 import { DEFAULT_ATTR_SCHEMA, loadSchema, assertPredicateTypes, decodeAttrs, schemaInfo, encodeProfile, normalizeProfile } from './lib/mode3_attr_schema.js';
-import { createRegistration, createSessionKey, buildIssueRequest, buildCredentialProof, signChallenge, signSessionRequest, signSlotRequest, signRevokeSession, signRegistration, eddsaPubOf, normalizeDisclosure, normalizeSet, disclosureKey, hasPredicate, ProofCache, chooseMaxHeight, syncRegistryTree } from './lib/mode3_wallet.js';
+import { createRegistration, createSessionKey, buildIssueRequest, buildAuthProof, buildCredentialProof, signChallenge, signSessionRequest, normalizeDisclosure, normalizeSet, disclosureKey, hasPredicate, ProofCache, chooseMaxHeight, syncRegistryTree } from './lib/mode3_wallet.js';
 import { sessionLeafRange, SESSION_BOUND_MAX, signRevokeBind } from './lib/mode3_revocation.js';
 import { createRevocationSync } from './lib/mode3_rcl_sync.js';
 import { registryLeaf } from './lib/mode3_registry.js';
 import { signPayload, statementDigestFields, proofToCalldata, parseExecuteReceipt, decodeExecuteCalldata, factoryAt, walletAt, walletInterface, FACTORY_ABI, verifyReferenceCode, FACTORY_MAX_ROOT_AGE_BAND, FACTORY_MAX_LIFETIME_BAND, FACTORY_ROOT_WINDOW_BAND, PUB_INDEX, LOGIN_COUNTER } from './lib/mode3_onchain.js';
-import { SCALAR_MAX, ppid, randomScalar, auidOf, aridSOf } from './lib/mode3_credential.js';
+import { SCALAR_MAX, ppid, randomScalar, auidOf, aridSOf, registerCtx, slotCtx, revokeSessionCtx, issueCtx, tagOf } from './lib/mode3_credential.js';
 import { uidOf, regNonce, issueNonce, newRevokeNonce } from './lib/mode3_oidc_nonce.js';
 import { verifyRpCert } from './lib/mode3_rp_cert.js';
 import { MODE3_ROOTS_ABI } from './lib/mode3_log.js';
@@ -94,11 +94,12 @@ const mirror = MIRROR_ADDRESS ? new ethers.Contract(MIRROR_ADDRESS, MODE3_ROOTS_
 const chainConfigMissing = () => (!LOG_ADDRESS ? 'CIA_LOG_ADDRESS not configured' : !MIRROR_ADDRESS ? 'MODE3_MIRROR_ADDRESS not configured' : null);
 
 // ---- 상태 ----
-// registration: { uid, s_u, sk_u, pk_u:{x,y}, auid(10진), slot, profile:{스키마 이름→값}, attrs:[6개 10진], userCred: { C_u_pt:{x,y}, Cf_u, blind_u, issuedAt } | null }
+// registration: { uid, s_u, auid(10진), slot, profile:{스키마 이름→값}, attrs:[6개 10진], userCred: { C_u_pt:{x,y}, Cf_u, blind_u, issuedAt } | null }
 // sessions:     r_s → { arid, origin, PPID, pk_trace:{x,y}, factoryAddress|null, attrGateAddress|null, allowAgent("0"|"1"), r_rp, auid_s, arid_s,
 //                       credential:{Cf_u,Cf_s,max_height,chainid,allowAgent,sigma,pk_CIA,slot,regRoot,epoch,published}, sessionPrivKey, pk_i, issuedAt,
-//                       witness?: { s_u, blind_u, attrs, sk_u } }   ← snap 모드 전용, 메모리에만(persist 가 뺀다)
-// snap 모드의 registration 은 stripSecrets 결과({ uid, auid, pk_u, slot, profile, attrs, provider, userCred:{Cf_u,issuedAt} }) 다.
+//                       witness?: { s_u, blind_u, attrs } }   ← snap 모드 전용, 메모리에만(persist 가 뺀다)
+// snap 모드의 registration 은 stripSecrets 결과({ uid, auid, slot, profile, attrs, provider, userCred:{Cf_u,issuedAt} }) 다.
+// 2026-11-13(스펙 2026-11-12 no-pk-u §4.3): 등록 키(sk_u·pk_u)는 없어졌다 — 옛 파일의 값은 기동 때 버린다(버전은 그대로 10).
 // version 9 (2026-10-12, V11): r_u·cm_u 삭제, auid(= Poseidon(T_AUID, uid, s_u))·profile(사용자 입력, D15) 추가; 세션에 r_rp·auid_s·arid_s.
 //   옛 파일은 등록만 유지하고(file 모드 — auid 를 s_u 로 재계산; snap 모드는 비밀이 없어 재계산할 수 없으므로 등록을 비운다) 세션·userCred 를 비운다.
 // version 10 (2026-10-22): pendingBounds(세션키별 체인 반영 대기 중인 setSessionBound 요청) 추가 — 옛 파일은 빈 배열로 시작한다.
@@ -114,11 +115,13 @@ if (state.version !== WALLET_STATE_VERSION) {
   const reg = state.registration ?? null;
   let kept = null;
   if (reg && typeof reg.s_u === 'string' && /^[0-9]+$/.test(reg.s_u) && typeof reg.uid === 'string') {
-    kept = { uid: reg.uid, s_u: reg.s_u, sk_u: reg.sk_u, pk_u: reg.pk_u ?? null, auid: (await auidOf({ uid: BigInt(reg.uid), s_u: BigInt(reg.s_u) })).toString(), slot: reg.slot ?? null, profile: reg.profile ?? { ...DEFAULT_PROFILE }, attrs: padAttrs6(reg.attrs), userCred: null };
+    kept = { uid: reg.uid, s_u: reg.s_u, auid: (await auidOf({ uid: BigInt(reg.uid), s_u: BigInt(reg.s_u) })).toString(), slot: reg.slot ?? null, profile: reg.profile ?? { ...DEFAULT_PROFILE }, attrs: padAttrs6(reg.attrs), userCred: null };
   } else if (reg) console.warn('[wallet] snap 모드 등록(파일에 비밀 없음)은 auid 를 재계산할 수 없어 등록을 비운다 — 다시 등록한다(Snap 쪽 "초기화" 도 함께)');
   state = { version: WALLET_STATE_VERSION, registration: kept, sessions: {}, pendingBounds: [] };
   persist();
 }
+// 등록 키는 없어졌다(스펙 2026-11-12 no-pk-u §4.3) — 옛 파일의 pk_u·(file 모드의) sk_u 는 읽을 때 버리고, 죽은 비밀이 디스크에 남지 않게 바로 다시 쓴다.
+if (state.registration && ('pk_u' in state.registration || 'sk_u' in state.registration)) { delete state.registration.pk_u; delete state.registration.sk_u; persist(); }
 state.sessions ??= {};
 state.pendingBounds ??= [];
 if (state.registration) {
@@ -326,7 +329,7 @@ async function chooseUserCred(synced, src) {
 }
 
 /** 세션 발급(V11 §5.2): C_u(blind_u)·C_s·π_IdP 를 한 요청으로. 200 이면 세션을 저장하고, 새 C_u 였으면 사용자 자격증명도 바꿔 앉힌다(옛 세션은 함께 버린다).
- *  id_token: Google 계정의 발급 토큰(issue:H(pk_u|arid_s) nonce) — 그대로 /cia/issue 본문에 얹는다.
+ *  id_token: Google 계정의 발급 토큰(issue:H(tag) nonce) — 그대로 /cia/issue 본문에 얹는다.
  *  auth_code(Task 13): IdP 가 CIA_ISSUE_AUTH=code 로 떠 있을 때만 보는 1회용 코드 — 그대로 /cia/issue 본문에 얹는다(로그에 찍지 않는다). */
 async function issueSession({ arid, r_s, r_rp, pk_trace, allowAgent, factoryAddress, attrGateAddress, head, src, blind_u, auth_code = null, id_token = null, origin = null, serviceName = null }) {
   const reg = src.registration();
@@ -335,7 +338,7 @@ async function issueSession({ arid, r_s, r_rp, pk_trace, allowAgent, factoryAddr
   const ov = takeOverride('issue');   // 시연(설계 §8.3): 이번 발급의 s_u·uid 를 한 번만 덮어쓴다 — 가짜 auid 로 증명돼 IdP 가 bad_idp_proof 를 낸다
   const req = await buildIssueRequest({
     uid: BigInt(ov?.uid ?? reg.uid), s_u: BigInt(ov?.s_u ?? reg.s_u), blind_u, attrs: (reg.attrs ?? []).map(BigInt), arid: BigInt(arid), r_rp, r_s,
-    sk_u: reg.sk_u, session, chainid, allowAgent: BigInt(allowAgent), max_height: chooseMaxHeight(head, { ttlBlocks: TTL_BLOCKS, grid: HEIGHT_GRID }),
+    session, chainid, allowAgent: BigInt(allowAgent), max_height: chooseMaxHeight(head, { ttlBlocks: TTL_BLOCKS, grid: HEIGHT_GRID }),
   });
   if (ov?.uid) req.body.uid = reg.uid;   // 요청 본문의 uid 는 진짜 — C_u·π_IdP 안의 uid 만 바뀐다(스펙 §8.3)
   if (auth_code) req.body.auth_code = auth_code;
@@ -367,13 +370,13 @@ function secretSourceFor(req, rsKey = null) {
   if (SECRETS === 'file') return createSecretSource({ mode: 'file', state });
   let w = null;
   if (rsKey) {
-    // 세션 증인은 { s_u, blind_u, attrs, sk_u } 를 든다 — 공개 부분(uid, userCred 의 Cf_u)은 파일에서 채운다.
+    // 세션 증인은 { s_u, blind_u, attrs } 를 든다 — 공개 부분(uid, userCred 의 Cf_u)은 파일에서 채운다.
     const sw = state.sessions[rsKey]?.witness;
     const pub = state.registration?.userCred;
     // pub 이 없으면(상태 파일 버전을 올려 userCred 를 비운 경우 등) 증인을 재조립할 수 없다. 그대로 두면 userCred:null 로
     // 조립돼 proveSession 이 revoked 로 던지고 **세션이 지워진다** — 복구할 수 없는 손실이다. 대신 needs_consent 로 떨어뜨려
     // 팝업이 Snap 의 C_u 로 /wallet/session/witness 를 다시 채우게 한다(그 라우트가 파일의 공개 부분도 되살린다).
-    if (sw && pub) w = { uid: state.registration?.uid, s_u: sw.s_u, sk_u: sw.sk_u, attrs: sw.attrs, userCred: { ...pub, blind_u: sw.blind_u } };
+    if (sw && pub) w = { uid: state.registration?.uid, s_u: sw.s_u, attrs: sw.attrs, userCred: { ...pub, blind_u: sw.blind_u } };
   } else w = req.body?.witness ?? null;
   if (!w) throw Object.assign(new Error(rsKey ? 'needs_consent' : 'witness_required'), { reason: rsKey ? 'needs_consent' : 'witness_required' });
   return createSecretSource({ mode: 'snap', state, witness: w });
@@ -635,40 +638,56 @@ app.post('/wallet/demo/override', (req, res) => {
   res.json({ ok: true, override: { scope, fields: Object.keys(demoOverride).filter((k) => k !== 'scope') } });
 });
 
-// OIDC 래퍼 nonce(2026-10-26 Snap OIDC 래퍼 §2): 지갑 페이지가 Google 버튼에 넣을 nonce 를 계산한다 — 비밀을 내지 않는다(pk_u·arid_s 의 해시).
-// register 는 sk_u 를 받지만 pk_u 계산에만 쓰고 저장·로그하지 않는다(바로 다음 /wallet/register 가 같은 sk_u 를 보낸다). CORS 없음(같은 오리진 전용).
+// OIDC 래퍼 nonce(2026-10-26 Snap OIDC 래퍼 §2; 2026-11-13 스펙 no-pk-u §3.3·§4.3): 지갑 페이지가 Google 버튼에 넣을 nonce 를 계산한다.
+// nonce 는 그 요청의 tag(= Poseidon(T_TAG, s_u, ctx))의 해시다 — 토큰이 이 지갑의 s_u 와 그 요청에 묶인다. s_u 는 계산에만 쓰고 저장·로그하지 않는다
+// (바로 다음 /wallet/register·/wallet/login 이 같은 s_u 를 보낸다). register 는 난수 n 을 뽑아 함께 돌려준다 — 페이지가 /wallet/register 에 다시 싣는다.
+// CORS 없음(같은 오리진 전용).
 app.post('/wallet/oidc/nonce', async (req, res) => {
   try {
-    const { purpose, sk_u, arid, r_rp } = req.body ?? {};
+    const { purpose, s_u, arid, r_rp, allowAgent } = req.body ?? {};
+    const okSu = (v) => isDec(v) && BigInt(v) < SCALAR_MAX;
     if (purpose === 'register') {
-      if (typeof sk_u !== 'string' || !/^[0-9a-fA-F]{64}$/.test(sk_u)) return res.status(400).json({ error: 'sk_u(hex 64자) 필요' });
-      return res.json({ nonce: regNonce(await eddsaPubOf(sk_u)) });
+      if (!okSu(s_u)) return res.status(400).json({ error: 's_u(10진, 2^250 미만) 필요' });
+      const n = randomScalar();
+      const tag = await tagOf({ s_u: BigInt(s_u), ctx: await registerCtx({ n }) });
+      return res.json({ nonce: regNonce(tag), n: n.toString() });
     }
     if (purpose === 'issue') {
-      if (!isDec(arid) || !isDec(r_rp)) return res.status(400).json({ error: 'arid, r_rp(10진 문자열) 필요' });
-      if (!state.registration?.pk_u) return res.status(409).json({ reason: 'not_registered' });
-      return res.json({ nonce: issueNonce(state.registration.pk_u, await aridSOf({ arid: BigInt(arid), r_rp: BigInt(r_rp) })) });
+      if (!isDec(arid) || !isDec(r_rp) || (allowAgent !== '0' && allowAgent !== '1')) return res.status(400).json({ error: 'arid, r_rp(10진 문자열), allowAgent("0"|"1") 필요' });
+      if (BigInt(arid) >= SCALAR_MAX || BigInt(r_rp) >= SCALAR_MAX) return res.status(400).json({ error: 'arid, r_rp 는 2^250 미만' });
+      const reg = state.registration;
+      if (!reg?.auid) return res.status(409).json({ reason: 'not_registered' });
+      // snap 모드는 페이지가 방금 받은 로그인 증인의 s_u 를 싣는다(계획 Ruling R2), file 모드는 상태 파일의 값.
+      const su = SECRETS === 'snap' ? s_u : reg.s_u;
+      if (!okSu(su)) return res.status(400).json({ error: 's_u(10진, 2^250 미만) 필요' });
+      // 이 등록의 s_u 가 아니면 tag 가 발급 요청의 것과 달라 IdP 가 oidc_nonce_mismatch 를 낸다 — Google 창을 띄우기 전에 여기서 알린다.
+      if ((await auidOf({ uid: BigInt(reg.uid), s_u: BigInt(su) })).toString() !== String(reg.auid)) return res.status(409).json({ reason: 'secrets_mismatch', detail: '이 s_u 는 에이전트 등록의 것이 아니다' });
+      const arid_s = await aridSOf({ arid: BigInt(arid), r_rp: BigInt(r_rp) });
+      const tag = await tagOf({ s_u: BigInt(su), ctx: await issueCtx({ arid_s, chainid: await chainId(), allowAgent: BigInt(allowAgent) }) });
+      return res.json({ nonce: issueNonce(tag) });
     }
     if (purpose === 'revoke') return res.json({ nonce: newRevokeNonce() });
     res.status(400).json({ reason: 'bad_purpose', detail: 'purpose 는 register·issue·revoke' });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// V11 §3.1·§3.3 — 등록 키(sk_u/pk_u)·salt(s_u) 는 지갑이 만들고 auid = Poseidon(T_AUID, uid, s_u) 를 IdP 에 낸다. 속성은 **사용자가 넣는다**(D15):
+// V11 §3.1·§3.3 — salt(s_u) 는 지갑이 만들고 auid = Poseidon(T_AUID, uid, s_u) 를 IdP 에 낸다. 속성은 **사용자가 넣는다**(D15):
 // 본문 profile(스키마 이름→값, 기본 DEFAULT_PROFILE)을 공개 스키마로 인코딩해 attrs 를 만든다 — IdP 는 받지 않는다.
-// snap 모드(metamask-snap §4.1): s_u·sk_u 는 Snap 이 만들고 페이지가 한 번 넘긴다(로그인 증인과 같은 모델). 파일에는 stripSecrets 결과만 남는다.
+// snap 모드(metamask-snap §4.1): s_u 는 Snap 이 만들고 페이지가 한 번 넘긴다(로그인 증인과 같은 모델). 파일에는 stripSecrets 결과만 남는다.
 // Task 13(2026-10-23): pwd 대신 code(가입 계정이 /cia/user/register_code 로 받은 1회용 코드, 세션 필요)도 받는다 —
 // snap 모드는 Snap 의 register(uid)가 더 이상 비밀번호를 받지 않으므로(Task 15) 지갑 페이지가 pwd 대신 code 를 싣는다.
 // 둘 다 왔으면 code 를 우선한다(IdP /cia/register 의 같은 우선순위와 맞춘다) — IdP 본문에는 받은 쪽 하나만 싣는다.
-// 2026-10-26: id_token(Google 등록) — uid 는 토큰의 sub 로 계산하고 IdP 에는 uid 없이 { id_token, auid, pk_u, sig_reg } 를 낸다.
+// 2026-10-26: id_token(Google 등록) — uid 는 토큰의 sub 로 계산하고 IdP 에는 uid 없이 { id_token, auid, n, π_IdP } 를 낸다(n 은 /wallet/oidc/nonce 가 뽑은 값).
 app.post('/wallet/register', async (req, res) => {
   try {
-    const { uid: uidIn, pwd, code, id_token, profile: profileIn = null, s_u: suIn, sk_u: skIn, index } = req.body ?? {};
+    const { uid: uidIn, pwd, code, id_token, profile: profileIn = null, s_u: suIn, n: nIn, index } = req.body ?? {};
     let uid = uidIn, oidcProvider = null;
     if (id_token !== undefined) {
       if (uidIn !== undefined || pwd !== undefined || code !== undefined) return res.status(400).json({ error: 'id_token 과 uid·pwd·code 는 함께 줄 수 없다' });
       if (typeof id_token !== 'string') return res.status(400).json({ error: 'id_token 은 문자열' });
       if (SECRETS !== 'snap') return res.status(400).json({ reason: 'not_snap_mode', detail: 'id_token 등록은 snap 모드만(스펙 §7)' });
+      // n 은 /wallet/oidc/nonce(purpose register)가 뽑아 준 난수다 — 토큰의 nonce 가 그 n 으로 만든 tag 에 묶여 있다(스펙 2026-11-12 no-pk-u §3.3).
+      if (!isDec(nIn) || BigInt(nIn) >= SCALAR_MAX) return res.status(400).json({ error: 'id_token 등록은 n(/wallet/oidc/nonce 가 준 10진 값) 필요' });
       let oc;
       try { oc = await oidcConfig(); } catch (e) { return res.status(502).json({ reason: 'cia_unavailable', detail: e.message }); }
       if (!oc.enabled) return res.status(503).json({ reason: 'oidc_disabled' });
@@ -680,7 +699,7 @@ app.post('/wallet/register', async (req, res) => {
       if (typeof pwd !== 'string' && typeof code !== 'string') return res.status(400).json({ error: 'pwd 또는 code 필요' });
     }
     if (BigInt(uid) >= SCALAR_MAX) return res.status(400).json({ error: 'uid 는 2^250 미만' });
-    if (SECRETS === 'snap' && !(isDec(suIn) && BigInt(suIn) < SCALAR_MAX && typeof skIn === 'string' && /^[0-9a-fA-F]{64}$/.test(skIn))) return res.status(400).json({ error: 'snap 모드는 s_u(10진, 2^250 미만)·sk_u(hex) 필요' });
+    if (SECRETS === 'snap' && !(isDec(suIn) && BigInt(suIn) < SCALAR_MAX)) return res.status(400).json({ error: 'snap 모드는 s_u(10진, 2^250 미만) 필요' });
     if (profileIn !== null && (typeof profileIn !== 'object' || Array.isArray(profileIn))) return res.status(400).json({ reason: 'bad_attr', detail: 'profile_required' });
     // 계정 번호(2026-11-12 스펙 snap-account-index §3.3): 스냅이 비밀을 유도한 번호 — 비밀이 아니라 기록에 남긴다(스냅만 비었을 때 같은 번호로 되살린다).
     if (index !== undefined && !(Number.isInteger(index) && index >= 0 && index <= 2 ** 31 - 1)) return res.status(400).json({ reason: 'bad_index', detail: '계정 번호는 0 이상 2^31−1 이하의 정수' });
@@ -695,10 +714,12 @@ app.post('/wallet/register', async (req, res) => {
     try { attrs = await encodeProfile(schema, profile, { allowEmptyRequired: false }); }
     catch (e) { if (e.reason === 'bad_attr') return res.status(400).json({ reason: 'bad_attr', slot: e.slot, field: e.field, detail: e.detail, message: e.message }); throw e; }
     const normalized = normalizeProfile(schema, profile);
-    const reg = SECRETS === 'snap' ? { s_u: BigInt(suIn), sk_u: skIn, auid: await auidOf({ uid: BigInt(uid), s_u: BigInt(suIn) }), pk_u: await eddsaPubOf(skIn) } : await createRegistration(BigInt(uid));
-    const pub = { x: reg.pk_u.x.toString(), y: reg.pk_u.y.toString() };
+    const reg = SECRETS === 'snap' ? { s_u: BigInt(suIn), auid: await auidOf({ uid: BigInt(uid), s_u: BigInt(suIn) }) } : await createRegistration(BigInt(uid));
     const idBody = oidcProvider ? { id_token } : typeof code === 'string' ? { code, uid } : { pwd, uid };
-    const r = await ciaPost('/cia/register', { ...idBody, auid: reg.auid.toString(), pk_u: pub, sig_reg: await signRegistration(reg.sk_u, BigInt(uid), reg.auid) });
+    // 인증(스펙 2026-11-12 no-pk-u §3.2): "이 auid 의 s_u 를 안다" 는 π_IdP 를 등록용 ctx(n)로. Google 은 nonce 에 쓴 n, 그 밖은 여기서 뽑는다.
+    const n = oidcProvider ? BigInt(nIn) : randomScalar();
+    const auth = await buildAuthProof({ uid: BigInt(uid), s_u: reg.s_u, ctx: await registerCtx({ n }) });
+    const r = await ciaPost('/cia/register', { ...idBody, auid: reg.auid.toString(), n: n.toString(), ...auth });
     if (r.status !== 201) {
       const status = r.status === 401 || r.status === 409 ? r.status : 502;
       return res.status(status).json({ reason: 'register_failed', cia: r.body });
@@ -706,7 +727,7 @@ app.post('/wallet/register', async (req, res) => {
     if (oidcProvider && r.body.uid !== uid) return res.status(502).json({ reason: 'uid_mismatch', detail: 'IdP 가 정한 uid 가 토큰의 sub 로 계산한 값과 다르다' });
     const provider = r.body.provider ?? oidcProvider ?? 'demo';
     await noteSchemaHint(r.body.schemaHash ?? null);
-    const full = { uid, s_u: reg.s_u.toString(), sk_u: reg.sk_u, pk_u: pub, auid: reg.auid.toString(), slot: r.body.slot, profile: normalized, attrs, provider, userCred: null, ...(index !== undefined ? { index } : {}) };
+    const full = { uid, s_u: reg.s_u.toString(), auid: reg.auid.toString(), slot: r.body.slot, profile: normalized, attrs, provider, userCred: null, ...(index !== undefined ? { index } : {}) };
     state.registration = SECRETS === 'snap' ? stripSecrets(full) : full;
     persist();
     // issue_code(2026-11-09): 등록 코드 경로면 IdP 가 그 auid 의 발급 코드를 함께 준다 — 서비스 첫 로그인 중의 등록이 비밀번호 재입력 없이 발급으로 이어진다. 에이전트는 저장하지 않고 넘긴다.
@@ -714,22 +735,19 @@ app.post('/wallet/register', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// 반쯤 된 Google 등록 복구(2026-10-26): IdP 등록·에이전트 저장은 끝났는데 Snap 이 보류 등록으로 남은 경우(Snap storeRegistration 실패,
-// /user 타이머가 /wallet/register 도중 팝업을 닫음) 지갑 페이지가 Snap 의 보류 비밀(s_u·sk_u)을 보내 에이전트 등록과 맞는지 묻는다.
-// 판정을 에이전트가 하는 이유: 페이지에는 Poseidon(auid)·EdDSA(pk_u) 계산이 없다. IdP 를 부르지 않는 이유: 등록은 이미 끝났다 —
-// 맞으면 Snap 이 저장할 값(register 201 과 같은 필드)만 돌려주고 상태를 바꾸지 않는다. s_u·sk_u 는 비교에만 쓰고 저장·로그하지 않는다. CORS 없음(같은 오리진 전용).
+// 반쯤 된 등록 복구(2026-10-26; 2026-11-12 스냅 복구): IdP 등록·에이전트 저장은 끝났는데 Snap 이 비었거나 보류 등록으로 남은 경우(Snap storeRegistration 실패,
+// /user 타이머가 /wallet/register 도중 팝업을 닫음), 지갑 페이지가 Snap 의 s_u 를 보내 에이전트 등록과 맞는지 묻는다. 판정을 에이전트가 하는 이유: 페이지에는
+// Poseidon(auid) 계산이 없다. IdP 를 부르지 않는 이유: 등록은 이미 끝났다 — 맞으면 Snap 이 저장할 값(register 201 과 같은 필드)만 돌려주고 상태를 바꾸지 않는다.
+// s_u 는 비교에만 쓰고 저장·로그하지 않는다. 대조는 auid 하나다(2026-11-13 — 등록 키가 없어졌다). CORS 없음(같은 오리진 전용).
 app.post('/wallet/register/resume', async (req, res) => {
   try {
     if (SECRETS !== 'snap') return res.status(400).json({ reason: 'not_snap_mode' });
-    const { s_u, sk_u } = req.body ?? {};
-    if (!(isDec(s_u) && BigInt(s_u) < SCALAR_MAX && typeof sk_u === 'string' && /^[0-9a-fA-F]{64}$/.test(sk_u))) return res.status(400).json({ error: 's_u(10진, 2^250 미만)·sk_u(hex 64자) 필요' });
+    const { s_u } = req.body ?? {};
+    if (!(isDec(s_u) && BigInt(s_u) < SCALAR_MAX)) return res.status(400).json({ error: 's_u(10진, 2^250 미만) 필요' });
     const reg = state.registration;
     if (!reg) return res.status(409).json({ reason: 'not_registered' });
-    const pk = await eddsaPubOf(sk_u);
     const auid = await auidOf({ uid: BigInt(reg.uid), s_u: BigInt(s_u) });
-    if (pk.x.toString() !== String(reg.pk_u?.x) || pk.y.toString() !== String(reg.pk_u?.y) || auid.toString() !== String(reg.auid)) {
-      return res.status(409).json({ reason: 'secrets_mismatch', detail: '이 Snap 의 보류 비밀이 에이전트 등록과 다르다' });
-    }
+    if (auid.toString() !== String(reg.auid)) return res.status(409).json({ reason: 'secrets_mismatch', detail: '이 Snap 의 비밀이 에이전트 등록과 다르다' });
     res.json({ uid: reg.uid, slot: reg.slot, auid: reg.auid, attrs: reg.attrs, profile: reg.profile, provider: reg.provider ?? 'demo' });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -854,7 +872,7 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     const reg = src.registration();
     if (reg.slot === null || reg.slot === undefined) {
       const nonce = randomScalar();
-      const r0 = await ciaPost('/cia/slot', { uid: reg.uid, nonce: nonce.toString(), sig_u: await signSlotRequest(reg.sk_u, BigInt(reg.uid), nonce) });
+      const r0 = await ciaPost('/cia/slot', { uid: reg.uid, nonce: nonce.toString(), ...(await buildAuthProof({ uid: BigInt(reg.uid), s_u: BigInt(reg.s_u), ctx: await slotCtx({ nonce }) })) });
       // 슬롯은 음이 아닌 정수여야 한다(리뷰 Minor 1) — IdP 가 망가진 값을 주면 state.registration.slot 에 그대로 박혀
       // registryCheck 가 영구히 null 을 돌려주게 된다. 여기서 막으면 그 상태로 persist() 되는 일이 없다.
       if (r0.status !== 200 || !Number.isInteger(r0.body?.slot) || r0.body.slot < 0) return res.status(502).json({ reason: 'slot_failed', cia: r0.body });
@@ -882,7 +900,7 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     if (r.status === 409 && r.body?.reason === 'cred_revoked') {
       replaceUserCred(src, null);
       t = Date.now();
-      // auth_code 는 1회용이라 첫 시도에서 이미 소비됐을 수 있다(IdP 는 sig_u·π_IdP 검증 뒤에 소비한다 — cred_revoked 는 그 뒤에만
+      // auth_code 는 1회용이라 첫 시도에서 이미 소비됐을 수 있다(IdP 는 π_IdP 검증 뒤에 소비한다 — cred_revoked 는 그 뒤에만
       // 난다) — 재시도가 같은 코드를 다시 쓰면 bad_code 로 막힐 수 있다. 코드 재발급은 이 흐름 밖(인증 창)이라 여기서는
       // 그대로 한 번 더 건네는 것 이상은 하지 않는다(알려진 한계 — 보고서에 남긴다).
       const retried = await issueSession({ arid, r_s: rs, r_rp: rrp, pk_trace: { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress: factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress: attrGateAddress ? ethers.getAddress(attrGateAddress) : null, head: synced.head, src, blind_u: randomScalar(), auth_code, id_token, origin, serviceName: svcName });
@@ -960,7 +978,7 @@ function setSessionWitness(rsKey, src) {
   const s = state.sessions[rsKey];
   if (!s) return;
   const reg = src.registration(), uc = src.userCred();
-  s.witness = { s_u: reg.s_u, blind_u: uc?.blind_u ?? null, attrs: reg.attrs, sk_u: reg.sk_u };
+  s.witness = { s_u: reg.s_u, blind_u: uc?.blind_u ?? null, attrs: reg.attrs };
 }
 
 // 재시작 등으로 세션 증인이 없을 때(revalidate·tx/prepare 의 needs_consent) 팝업이 consentLogin 을 다시 받아 채운다(metamask-snap §4.3).
@@ -1190,7 +1208,7 @@ app.post('/wallet/self_revoke', async (req, res) => {
   } catch (e) { res.status(502).json({ reason: 'cia_unavailable', detail: e.message }); }
 });
 
-// V8 세션 폐기(설계 2026-09-24 §4, 2026-10-22 §3 bound 추가): 이 지갑의 세션 하나를 AA 에 폐기 요청한다. 서명은 sk_u — file 모드는 상태 파일,
+// V8 세션 폐기(설계 2026-09-24 §4, 2026-10-22 §3 bound 추가): 이 지갑의 세션 하나를 AA 에 폐기 요청한다. 인증 증명은 s_u 로 만든다 — file 모드는 상태 파일,
 // snap 모드는 세션의 메모리 증인(로그인·재승인 때 채워진다). 증인이 없으면 409 needs_consent 로 떨어뜨려 페이지가
 // 팝업으로 동의를 다시 받게 한다. self_revoke 와 같이 CORS 를 열지 않는다(지갑 페이지, 같은 오리진 전용).
 // bound(본문, 선택) — 생략하면 계정의 현재 체인 nonce(팩토리 없으면 0). AA 가 받아들이면 account 가 있는 한 pendingBounds 에
@@ -1204,8 +1222,8 @@ app.post('/wallet/session/revoke', async (req, res) => {
     if (!s) return res.status(404).json({ reason: 'no_session' });
     // self_revoke 와 같은 규칙 — 등록이 없으면 여기서 끝낸다. 없으면 file 모드가 snap 전용 사유인 needs_consent 를 내게 된다.
     if (!state.registration) return res.status(409).json({ reason: 'not_registered' });
-    const sk_u = SECRETS === 'snap' ? s.witness?.sk_u : state.registration.sk_u;
-    if (!sk_u) return res.status(409).json({ reason: 'needs_consent' });
+    const s_u = SECRETS === 'snap' ? s.witness?.s_u : state.registration.s_u;
+    if (!s_u) return res.status(409).json({ reason: 'needs_consent' });
     // bound 형식·범위 검사(2026-10-23 리뷰 3-2): 체인을 읽기 **전**에 먼저 끝낸다 — bound 를 명시한 요청은 체인을 전혀 읽지 않는다.
     if (boundIn !== undefined && boundIn !== null && !isDec(boundIn)) return res.status(400).json({ error: 'bound 는 10진 문자열' });
     let bound = boundIn !== undefined && boundIn !== null ? BigInt(boundIn) : null;
@@ -1221,13 +1239,14 @@ app.post('/wallet/session/revoke', async (req, res) => {
       } else bound = 0n;
     }
     const nonce = randomScalar();   // lib/mode3_credential.js — 다른 요청과 같은 난수원. 신선도는 IdP 가 보지 않는다(재생 = 같은 세션 재폐기, 멱등)
-    const sig_u = await signRevokeSession(sk_u, BigInt(state.registration.uid), BigInt(s.credential.Cf_s), bound, nonce);
+    // 인증(스펙 2026-11-12 no-pk-u §3.1): ctx = Poseidon(D_CTX_REVOKE, Cf_s, bound, nonce) 에 묶인 π_IdP — bound 를 바꾸면 증명이 맞지 않는다.
+    const auth = await buildAuthProof({ uid: BigInt(state.registration.uid), s_u: BigInt(s_u), ctx: await revokeSessionCtx({ Cf_s: BigInt(s.credential.Cf_s), bound, nonce }) });
     // 2026-10-25 root 유효 창 §4: 세션키 pk_i 를 세션키 서명으로 묶어 함께 낸다 — IdP 가 다음 게시에 (pk_i, bound) 를 실어 거울이 창 안에서도 즉시 막는다.
     const sig_i = await signRevokeBind(s.sessionPrivKey, { uid: state.registration.uid, Cf_s: s.credential.Cf_s, bound, nonce });
-    // 502 cia_unavailable 은 **IdP 호출 실패만** 가리킨다(최종 리뷰 F3). 서명·BigInt 같은 지역 오류는 아래 500 internal 로 간다 —
+    // 502 cia_unavailable 은 **IdP 호출 실패만** 가리킨다(최종 리뷰 F3). 증명·BigInt 같은 지역 오류는 아래 500 internal 로 간다 —
     // 둘을 뭉치면 운영자가 "AA 가 죽었나" 를 잘못 쫓는다.
     let r;
-    try { r = await ciaPost('/cia/revoke', { uid: state.registration.uid, scope: 'session', Cf_s: s.credential.Cf_s, bound: bound.toString(), sig_u, nonce: nonce.toString(), pk_i: s.pk_i, sig_i }); }
+    try { r = await ciaPost('/cia/revoke', { uid: state.registration.uid, scope: 'session', Cf_s: s.credential.Cf_s, bound: bound.toString(), nonce: nonce.toString(), ...auth, pk_i: s.pk_i, sig_i }); }
     catch (e) { return res.status(502).json({ reason: 'cia_unavailable', detail: e.message }); }
     if (r.status !== 200) return res.status(r.status).json(r.body ?? {});
     // AA 가 받아들인 순간부터 이 지갑은 그 세션을 더 쓰지 않는다 — 게시 전이라도(게시 뒤에는 어차피 π 가 안 만들어진다).

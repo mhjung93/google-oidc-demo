@@ -351,8 +351,8 @@
     const pendingVerdict = (el, key) => setVerdict(el, null, key, { pending: true });
     /**
      * '자세히'에 실을 응답 본문. 에이전트 응답에는 지갑 밖으로 내면 안 되는 값이 섞여 있다 —
-     * 로그인·재동기화의 userCredIssued(blind_u)·attrsChanged. 요청의 sk_u 는 Snap 이 준 값으로 한 번만 지나간다
-     * (응답에는 없다 — 혹시 몰라 아래서 함께 거른다).
+     * 로그인·재동기화의 userCredIssued(blind_u)·attrsChanged. 요청의 s_u 는 Snap 이 준 값으로 한 번만 지나간다
+     * (응답에는 없다 — 혹시 몰라 아래서 함께 거른다; sk_u 는 0.3.x 스냅 응답에 남아 있을 수 있어 같이 거른다).
      * 이 페이지는 그 값들을 Snap 에 넘길 뿐 화면·DOM 에 남기지 않는다(browser 테스트의 "비밀은 Snap 에만" 계약).
      */
     const safeDetail = (b) => { const { sk_u, s_u, pwd, witness, userCredIssued, attrsChanged, ...rest } = b ?? {}; return rest; };
@@ -602,6 +602,7 @@
      * nonce 계산(/wallet/oidc/nonce) → Google 버튼 → id_token 을 한 번에(2026-10-26). nonceBody 는 purpose 별 본문.
      * onNonce 는 nonce 를 받은 직후, 버튼을 그리기 전에 부르는 선택 콜백(안내 줄용). 성공이면 { token }, 실패면
      * { token: null, stage: 'nonce'|'google', reason, detail } — stage 로 호출자가 안내 문구를 가른다.
+     * 등록 nonce 응답의 n(에이전트가 뽑은 난수 — /wallet/register 에 다시 싣는다)도 함께 돌려준다({ token, n }).
      */
     async function oidcToken(nonceBody, onNonce) {
       const pre = gsiPrecheck();
@@ -610,7 +611,7 @@
       if (n.status !== 200) return { token: null, stage: 'nonce', reason: n.body.reason ?? `HTTP ${n.status}`, detail: errText(n.status, n.body) };
       if (onNonce) onNonce();
       const g = await googleToken(n.body.nonce);
-      return g.token ? { token: g.token } : { token: null, stage: 'google', reason: g.reason, detail: gsiReasonText(g.reason) };
+      return g.token ? { token: g.token, n: n.body.n ?? null } : { token: null, stage: 'google', reason: g.reason, detail: gsiReasonText(g.reason) };
     }
     /** oidcToken 실패를 팝업의 진행 줄·로그에 낸다(등록·RP 로그인 두 팝업 경로 공용). */
     const oidcFailStep = (g, step, log) => {
@@ -623,7 +624,7 @@
     }
 
     /** Google 등록(2026-10-26 Snap OIDC 래퍼 §2.1; 2026-11-06 에 함수로 뽑음 — /user 의 등록 버튼과 RP 의 "Google 계정으로 로그인"(미등록 지갑의 자리 등록) 공용).
-     *  uid·code 없이: Snap 이 비밀을 보류 등록으로 먼저 만들고(pk_u → reg: nonce) → 팝업의 Google 로그인 → 에이전트가 IdP 에 { id_token, auid, pk_u, sig_reg } 로
+     *  uid·code 없이: Snap 이 비밀을 보류 등록으로 먼저 만들고(s_u → reg: nonce) → 팝업의 Google 로그인 → 에이전트가 IdP 에 { id_token, auid, n, π_IdP } 로
      *  등록 → Snap 이 uid·provider 를 채운다. 성공 { ok:true, slot, auid, uid } / 실패 { ok:false, reason, detail? } — 창은 닫지 않는다(호출자가 정한다). */
     async function googleRegister({ step, log }) {
       const pre = gsiPrecheck();   // Snap 에 보류 등록을 만들게 하기 전에 — 어차피 못 끝낼 등록을 시작하지 않는다
@@ -633,10 +634,10 @@
       step('등록 비밀을 만드는 중…');
       const prep = await invokeSnap('prepareRegister', {});
       if (!prep || prep.denied) { step('등록 거절'); return { ok: false, reason: 'user_denied' }; }
-      const g = await oidcToken({ purpose: 'register', sk_u: prep.sk_u }, () => { step(tt('wallet_gsi_hint') || 'Google 버튼을 눌러 로그인하세요.'); say('wallet_gsi_hint'); });
+      const g = await oidcToken({ purpose: 'register', s_u: prep.s_u }, () => { step(tt('wallet_gsi_hint') || 'Google 버튼을 눌러 로그인하세요.'); say('wallet_gsi_hint'); });
       if (!g.token) { oidcFailStep(g, step, log); return { ok: false, reason: g.reason }; }
       step('에이전트에 등록하는 중…');
-      const { status, body: b } = await postJson('/wallet/register', { id_token: g.token, s_u: prep.s_u, sk_u: prep.sk_u, ...(Number.isInteger(prep.index) ? { index: prep.index } : {}) });
+      const { status, body: b } = await postJson('/wallet/register', { id_token: g.token, s_u: prep.s_u, n: g.n, ...(Number.isInteger(prep.index) ? { index: prep.index } : {}) });
       if (status !== 201) { step('등록 실패 — 다시 시도하면 같은 비밀로 이어진다'); log(errText(status, b)); return { ok: false, reason: b.cia?.reason ?? b.reason ?? `HTTP ${status}`, detail: b.detail ?? b.cia?.detail ?? null }; }
       step('스냅에 등록 결과 저장 중…');
       try { await invokeSnap('storeRegistration', { attrs: b.attrs, slot: b.slot, auid: b.auid, uid: b.uid, provider: b.provider }); }
@@ -654,7 +655,7 @@
       return { ok: true, s_u: String(r?.s_u ?? ''), index: r.index };
     }
     /** 스냅 복구(2026-11-12, 스펙 snap-derived-secrets §4.3): 에이전트에는 등록이 있는데 스냅이 비었으면(MetaMask 재설치) 스냅이 시드에서 같은 비밀을
-     *  다시 유도하므로, 보류 등록으로 그 비밀을 받아 에이전트 /wallet/register/resume 로 대조하고(auid·pk_u) 맞으면 스냅에 등록을 채운다.
+     *  다시 유도하므로, 보류 등록으로 그 비밀을 받아 에이전트 /wallet/register/resume 로 대조하고(auid) 맞으면 스냅에 등록을 채운다.
      *  할 일이 없으면 null, 복구했으면 { ok:true }, 비밀이 다르면(옛 무작위 등록·다른 SRP) { ok:false, reason:'snap_restore_mismatch' }. */
     async function restoreSnapIfEmpty({ step, log }) {
       let st = null;
@@ -669,7 +670,7 @@
       step('스냅이 비어 있다 — 시드에서 같은 비밀을 다시 만들어 등록을 되살리는 중…');
       const prep = await invokeSnap('prepareRegister', { index });
       if (!prep || prep.denied) return { ok: false, reason: 'user_denied' };
-      const { status, body: b } = await postJson('/wallet/register/resume', { s_u: prep.s_u, sk_u: prep.sk_u });
+      const { status, body: b } = await postJson('/wallet/register/resume', { s_u: prep.s_u });
       if (status !== 200) {
         log(errText(status, b));
         return { ok: false, reason: b.reason === 'secrets_mismatch' ? 'snap_restore_mismatch' : (b.reason ?? 'wallet_error'), detail: b.detail ?? null };
@@ -727,7 +728,7 @@
     }
 
     /** 등록 코드(uid·code)로 등록(2026-11-09 에 함수로 뽑음 — 서비스 첫 로그인 중의 등록(processAuthorize)과 옛 mode3-register 팝업 경로 공용).
-     *  Snap register({uid}) → 에이전트 /wallet/register { uid, code, s_u, sk_u } → Snap storeRegistration. 성공 { ok:true, slot, auid, issue_code|null } / 실패 { ok:false, reason, detail? }. */
+     *  Snap register({uid}) → 에이전트 /wallet/register { uid, code, s_u } → Snap storeRegistration. 성공 { ok:true, slot, auid, issue_code|null } / 실패 { ok:false, reason, detail? }. */
     async function codeRegister({ uid, code, auid = null, step, log }) {
       let already = false;
       try { already = Boolean((await (await fetch('/wallet/status')).json()).registered); } catch { /* 진행 — /wallet/register 가 다시 걸러준다 */ }
@@ -753,7 +754,7 @@
       const reg = await invokeSnap('register', { uid, s_u: rec.s_u, index: rec.index });
       if (!reg || reg.denied) { step('등록 거절'); return { ok: false, reason: 'user_denied' }; }
       step('에이전트에 등록하는 중…');
-      const { status, body: b } = await postJson('/wallet/register', { uid, code, s_u: reg.s_u, sk_u: reg.sk_u, index: reg.index, ...(rec.profile ? { profile: rec.profile } : {}) });
+      const { status, body: b } = await postJson('/wallet/register', { uid, code, s_u: reg.s_u, index: reg.index, ...(rec.profile ? { profile: rec.profile } : {}) });
       if (status !== 201) { step('등록 실패'); log(errText(status, b)); return { ok: false, reason: b.cia?.reason ?? b.reason ?? `HTTP ${status}`, detail: b.detail ?? b.cia?.detail ?? null }; }
       step('스냅에 등록 결과 저장 중…');
       try { await invokeSnap('storeRegistration', { attrs: b.attrs, slot: b.slot, auid: b.auid }); }
@@ -803,7 +804,7 @@
             step('반쯤 된 등록을 이어서 끝낸다…');
             const prep = await invokeSnap('prepareRegister', {});
             if (!prep || prep.denied) { step('등록 거절'); return reply({ ok: false, reason: 'user_denied' }); }
-            const { status, body: b } = await postJson('/wallet/register/resume', { s_u: prep.s_u, sk_u: prep.sk_u });
+            const { status, body: b } = await postJson('/wallet/register/resume', { s_u: prep.s_u });
             if (status !== 200) { step('복구 실패 — 이 스냅의 비밀이 에이전트 등록과 맞지 않거나 에이전트에 닿지 못했다'); log(errText(status, b)); return reply({ ok: false, reason: b.reason ?? `HTTP ${status}`, detail: b.detail ?? null }); }
             step('스냅에 등록 결과 저장 중…');
             try { await invokeSnap('storeRegistration', { attrs: b.attrs, slot: b.slot, auid: b.auid, uid: b.uid, provider: b.provider }); }
@@ -819,8 +820,8 @@
           }
         }
         if (already) { step('이미 등록돼 있다.'); return reply({ ok: false, reason: 'already_registered' }); }
-        // Google 등록(2026-10-26 Snap OIDC 래퍼 §2.1): uid·code 없이 온다. Snap 이 비밀을 보류 등록으로 먼저 만들고(pk_u → reg: nonce),
-        // 팝업에서 Google 로그인 → 에이전트가 IdP 에 { id_token, auid, pk_u, sig_reg } 로 등록 → Snap 이 uid·provider 를 채운다.
+        // Google 등록(2026-10-26 Snap OIDC 래퍼 §2.1): uid·code 없이 온다. Snap 이 비밀을 보류 등록으로 먼저 만들고(s_u → reg: nonce),
+        // 팝업에서 Google 로그인 → 에이전트가 IdP 에 { id_token, auid, n, π_IdP } 로 등록 → Snap 이 uid·provider 를 채운다.
         if (req.provider === 'google') {
           const r = await googleRegister({ step, log });
           if (r.ok) step('등록 완료 — 창을 닫는다.');
@@ -983,7 +984,7 @@
         }
 
         // 발급 인증(2026-10-26 Snap OIDC 래퍼 §2.2): 데모 계정은 IdP 로그인 페이지(이 창이 갔다가 돌아온다, goIdpAuth — MetaMask 를 부르기
-        // 전에 간다), Google 계정은 이 팝업의 Google 버튼 — nonce 는 issue:H(pk_u|arid_s)(에이전트가 이 로그인의 arid·r_rp 로 계산).
+        // 전에 간다), Google 계정은 이 팝업의 Google 버튼 — nonce 는 issue:H(tag) — tag 는 이 지갑의 s_u 와 이 로그인(arid_s·allowAgent)에 묶인다(에이전트가 계산).
         let provider = await walletProvider();
         let authCodeNow = authCode;
         // OIDC 래퍼(2026-11-11 사용자 결정): RP 의 "Google 계정으로 로그인" — Google 토큰을 받은 뒤 zkID 와 같은 발급·증명 흐름을 탄다. 미등록 스냅이면
@@ -1031,7 +1032,7 @@
         if (!witness) { step('동의 거절'); return reply({ ok: false, reason: 'user_denied' }); }
         let idToken = null;
         if (authCodeNow === null && provider !== 'demo') {
-          const g = await oidcToken({ purpose: 'issue', arid: req.arid, r_rp: req.r_rp }, () => { step(tt('wallet_gsi_hint') || 'Google 버튼을 눌러 로그인하세요.'); say('wallet_gsi_hint'); });
+          const g = await oidcToken({ purpose: 'issue', arid: req.arid, r_rp: req.r_rp, allowAgent: req.allowAgent === '1' || req.allowAgent === true ? '1' : '0', s_u: witness.s_u }, () => { step(tt('wallet_gsi_hint') || 'Google 버튼을 눌러 로그인하세요.'); say('wallet_gsi_hint'); });
           if (!g.token) { oidcFailStep(g, step, log); return reply({ ok: false, reason: g.reason }); }
           idToken = g.token;
         }
@@ -1451,7 +1452,7 @@
       };
     }
 
-    // V8 세션 폐기(설계 2026-09-24 §4). Snap 에는 Poseidon 이 없어 서명 자체는 에이전트가 세션의 메모리 증인에 든 sk_u 로 한다.
+    // V8 세션 폐기(설계 2026-09-24 §4). Snap 에는 Poseidon 이 없어 인증 증명은 에이전트가 세션의 메모리 증인에 든 s_u 로 만든다.
     // 2026-11-05: Snap 동의 창(consentRevokeSession)은 뺐다 — 아래 confirmDanger 가 이미 묻는다(중복 확인 제거).
     async function revokeSession(r_s, c, btn, box) {
       if (btn.dataset.busy === '1') return;   // 처리 중 재클릭만 무시(버튼은 비활성화하지 않는다, 2026-10-16)
@@ -1490,8 +1491,9 @@
     // 스냅의 저장 모양이 바뀌어도 이 화면은 따로 고치지 않아도 된다. 값이 든 <code> 는 data-store-path(상태 안의 경로)를 단다.
     // 비밀(STORE_SECRETS)은 기본 가림이다: 읽은 값은 변수(storeState)에만 두고 DOM 에는 가림 문자만 넣는다. "비밀 값 보기" 가 한꺼번에 열고,
     // 탭을 떠나면 값을 버린다(closeStore). 탭을 열 때와 "새로 고침" 때만 스냅을 부른다(5초 refresh 와 무관). 콘솔·로그에는 찍지 않는다.
+    // sk_u 는 0.4.0 스냅에는 없다 — 0.3.x 스냅이 아직 설치돼 있으면 상태에 남아 있을 수 있어 가림 목록에는 둔다(있으면 가린다, 계획 Ruling R3).
     const STORE_SECRETS = new Set(['s_u', 'sk_u', 'blind_u']);
-    const STORE_REG_ORDER = ['uid', 'index', 'provider', 'registeredAt', 'auid', 's_u', 'sk_u', 'slot', 'attrs'];
+    const STORE_REG_ORDER = ['uid', 'index', 'provider', 'registeredAt', 'auid', 's_u', 'slot', 'attrs'];
     // 2026-11-12(화면 리뷰): 시각(ISO UTC 문자열)은 다른 화면처럼 현지 형식으로 보인다 — 저장된 값 그대로는 title 에 둔다.
     const STORE_TIME = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$/;
     let storeState = null;
@@ -1622,7 +1624,7 @@
       }
     });
 
-    // 등록: file 모드는 지금처럼 폼의 uid·pwd, snap 모드는 Snap 이 묻고(§4.1) 페이지는 s_u·sk_u 만 나른다.
+    // 등록: file 모드는 지금처럼 폼의 uid·pwd, snap 모드는 Snap 이 묻고(§4.1) 페이지는 s_u 만 나른다.
     // 비밀번호는 Snap → 페이지 → 에이전트 → CIA 를 한 번 지날 뿐이다 — 화면·로그 어디에도 남기지 않는다.
     // 속성은 내가 지갑에 넣는다(V11 D15) — 등록 폼에 적은 profile 을 그대로 본문에 싣는다.
     $('registerBtn').addEventListener('click', async () => {
@@ -1656,13 +1658,13 @@
           return;
         }
         // 에이전트는 이미 201 로 등록을 마쳤다 — 여기서 Snap 저장이 실패하면(탭 닫힘·MetaMask 거절) 양쪽이 어긋난 채 굳는다.
-        // Snap 의 등록은 sk_u·attrs 가 빈 registration_incomplete 로 남아 증인 생성이 영구히 막히고, 다시 등록하려 해도
+        // Snap 의 등록은 attrs 가 빈 registration_incomplete 로 남아 증인 생성이 영구히 막히고, 다시 등록하려 해도
         // 에이전트가 409 already_registered 로 거절한다. "Snap 초기화" + 상태 파일 삭제만으로도 풀리지 않는다 — CIA 에
         // 그 uid 가 이미 등록돼 있어(CIA 는 uid 존재만 본다) /cia/register 가 409 를 내고 같은 골목에 다시 도달한다. 세 보관소(CIA·에이전트·Snap)를
         // 함께 비우는 재시연 세트가 유일한 출구라, 일반 오류 문구 대신 그 길을 알려 준다(2026-09-23 점검 B).
-        // 요청의 sk_u 는 Snap 이 준 값으로 한 번만 지나간다 — '자세히'에도, 카드가 들고 있는 인자에도 남기지 않는다.
+        // 요청의 s_u 는 Snap 이 준 값으로 한 번만 지나간다 — '자세히'에도, 카드가 들고 있는 인자에도 남기지 않는다.
         // 그래서 카드에 쓸 값은 성공·반쪽 실패 양쪽 모두 여기서 먼저 꺼내 둔다(인자 생성기가 b 를 붙잡으면
-        // Demo 가 그 생성기를 #registerResult 에 페이지 수명 내내 들고 있어 sk_u 가 함께 남는다).
+        // Demo 가 그 생성기를 #registerResult 에 페이지 수명 내내 들고 있어 s_u 가 함께 남는다).
         const uid = b.uid;
         const detail = safeDetail(b);
         if (cfg.secrets === 'snap') {

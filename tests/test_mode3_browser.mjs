@@ -339,10 +339,10 @@ try {
     assert.match(String(sessionRs), /^[0-9]+$/, 'RP 페이지가 세션 r_s 를 들고 있다');
   });
 
-  await t('비밀은 Snap 에만: 에이전트 응답·양쪽 페이지 DOM·브라우저 저장소 어디에도 s_u·sk_u·blind_u 가 없다', async () => {
+  await t('비밀은 Snap 에만: 에이전트 응답·양쪽 페이지 DOM·브라우저 저장소 어디에도 s_u·blind_u 가 없다', async () => {
     const secrets = {
       s_u: snapState.registration.s_u,
-      sk_u: snapState.registration.sk_u, blind_u: snapState.userCred.blind_u,
+      blind_u: snapState.userCred.blind_u,
     };
     for (const [k, v] of Object.entries(secrets)) assert.ok(typeof v === 'string' && v.length >= 16, `${k} 가 Snap 상태에 있어야 한다: ${v}`);
     // 에이전트가 HTTP 로 내보내는 것(파일은 열지 않는다 — 공개 표면만 본다) + RP 가 기록·노출하는 것
@@ -385,7 +385,7 @@ try {
     await walletPage.click('#indexFold > summary');
   });
 
-  await t('내 계정: 스냅이 저장한 값 전부(등록·자격증명·동의 기록·다음 가입 번호)가 보인다 — 비밀(s_u·sk_u·blind_u)은 가려 있고 "비밀 값 보기" 로만 열리며, 탭을 떠나면 다시 가린다', async () => {
+  await t('내 계정: 스냅이 저장한 값 전부(등록·자격증명·동의 기록·다음 가입 번호)가 보인다 — 비밀(s_u·blind_u)은 가려 있고 "비밀 값 보기" 로만 열리며, 탭을 떠나면 다시 가린다', async () => {
     const cell = (path) => text(walletPage, storeCell(path));
     await walletTab(walletPage, 'me');
     await waitText(walletPage, storeCell('registration.uid'), uid);
@@ -426,7 +426,8 @@ try {
     assert.equal(lay.versionInList, false, '저장 형식 버전은 목록 줄이 아니다');
     assert.equal(await cell(`consents.${rpOrigin}.allowAgent`), snapState.consents[rpOrigin].allowAgent);
     // 비밀은 기본 가림 — 칸은 있지만 값은 DOM 어디에도 없다
-    const secrets = { 'registration.s_u': reg.s_u, 'registration.sk_u': reg.sk_u, 'userCred.blind_u': uc.blind_u };
+    const secrets = { 'registration.s_u': reg.s_u, 'userCred.blind_u': uc.blind_u };
+    assert.equal(await walletPage.locator(storeCell('registration.sk_u')).count(), 0, '"내 계정" 탭에 sk_u 줄이 없다(0.4.0 — 등록 키는 없다)');
     const masked = await pageDump(walletPage);
     for (const [path, v] of Object.entries(secrets)) {
       assert.ok((await cell(path)).length > 0, `${path} 칸이 있다`);
@@ -1195,8 +1196,8 @@ try {
     await p.close();
   });
 
-  await t('I-3(2026-11-12 스펙 snap-account-index): 같은 시드의 스냅을 초기화하고 다른 계정을 가입하면 계정 번호가 올라 sk_u·salt 가 다르다 — IdP 는 새 계정으로 받는다', async () => {
-    const skA = snapState.registration.sk_u, saltA = snapState.registration.s_u;
+  await t('I-3(2026-11-12 스펙 snap-account-index): 같은 시드의 스냅을 초기화하고 다른 계정을 가입하면 계정 번호가 올라 salt 가 다르다 — IdP 는 새 계정으로 받는다', async () => {
+    const saltA = snapState.registration.s_u;
     assert.equal((await cia.post('/cia/signup', { id: 'demo-user-b', pwd: DEMO_PWD })).status, 201, '계정 B 가입');
     const uidB = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.id === 'demo-user-b').uid;
     // "스냅 초기화" 의 결과(등록·동의를 지우고 nextIndex 만 남긴다 — 스냅 RPC 테스트가 reset 자체를 본다) + 에이전트 비우기
@@ -1204,7 +1205,7 @@ try {
     assert.equal((await wallet.post('/wallet/reset', { confirm: true })).status, 200);
     const saltB = derivedSecrets(STUB_SRP, 1).s_u;
     const auidB = (await auidOf({ uid: BigInt(uidB), s_u: BigInt(saltB) })).toString();
-    // 최종 리뷰 I-1: 속성 도구 화면을 거친다 — 앞 계정 A 의 기록이 칸을 채운 채 열리고, uid 만 B 로 바꾸면 번호·salt 가 비어야 한다(그대로면 B 도 0번 = A 의 pk_u).
+    // 최종 리뷰 I-1: 속성 도구 화면을 거친다 — 앞 계정 A 의 기록이 칸을 채운 채 열리고, uid 만 B 로 바꾸면 번호·salt 가 비어야 한다(그대로면 B 도 0번 = A 와 같은 salt).
     const a = await context.newPage(); await a.goto(`${wallet.base}/attr.html`);
     try {
       await a.waitForFunction(() => document.getElementById('acctIndex').value === '0');   // A 의 기록(0번)으로 열린다
@@ -1224,8 +1225,7 @@ try {
     await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
     await awaitPopupClosed(popup);
     assert.equal(snapState.registration?.index, 1); assert.equal(snapState.registration?.uid, String(uidB));
-    assert.notEqual(snapState.registration.sk_u, skA, '다른 계정은 다른 서명키 — IdP 가 pk_u 로 묶지 못한다');
-    assert.notEqual(snapState.registration.s_u, saltA);
+    assert.notEqual(snapState.registration.s_u, saltA, '다른 계정은 다른 salt — IdP 가 묶을 고리가 없다');
     const st = (await wallet.get('/wallet/status')).body; assert.equal(st.index, 1); assert.equal(String(st.uid), String(uidB));
   });
 

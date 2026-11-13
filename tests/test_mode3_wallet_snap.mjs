@@ -64,22 +64,21 @@ try {
 
   // Task 13/15: Snap 의 register(uid)는 더 이상 비밀번호를 받지 않는다 — 지갑 페이지는 IdP 세션의 1회용 코드
   // (/cia/user/register_code)를 pwd 대신 /wallet/register 에 싣는다. 데모 시드 계정(12345/password123)으로 로그인해 코드를 받는다.
-  await t('register: s_u·sk_u 없으면 400; code(register_code)로 등록(pwd 없음); 응답 { uid, slot, auid, attrs, profile }(sk_u·s_u 없음); 파일에 비밀 없음·auid 있음', async () => {
+  await t('register: s_u 없으면 400; code(register_code)로 등록(pwd 없음); 응답 { uid, slot, auid, attrs, profile }(비밀 없음); 파일에 비밀·등록 키 없음·auid 있음', async () => {
     const r0 = await sim.register({ uid: '12345' });
     const withJar = makeJar(cia.base);
     assert.equal((await withJar('/cia/user/login', { method: 'POST', body: JSON.stringify({ uid: '12345', pwd: 'password123' }) })).status, 200, '시드 계정 로그인');
     const codeFor = async () => { const rc = await withJar('/cia/user/register_code', { method: 'POST', body: JSON.stringify({}) }); assert.equal(rc.status, 200, j(rc.body)); return rc.body.code; };
     const code1 = await codeFor();
-    assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, code: code1 })).status, 400, 'snap 모드는 s_u·sk_u 필수');
-    assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, code: code1, s_u: 'zz', sk_u: r0.sk_u })).status, 400);
+    assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, code: code1 })).status, 400, 'snap 모드는 s_u 필수');
+    assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, code: code1, s_u: 'zz' })).status, 400);
     for (const bad of [-1, 1.5, '0', 2 ** 31]) {
-      const rb = await wallet.post('/wallet/register', { uid: r0.uid, code: code1, s_u: r0.s_u, sk_u: r0.sk_u, index: bad });
+      const rb = await wallet.post('/wallet/register', { uid: r0.uid, code: code1, s_u: r0.s_u, index: bad });
       assert.equal(rb.status, 400, `index=${j(bad)}`); assert.equal(rb.body.reason, 'bad_index');
     }
-    const r = await wallet.post('/wallet/register', { uid: r0.uid, code: code1, s_u: r0.s_u, sk_u: r0.sk_u, index: r0.index });
+    const r = await wallet.post('/wallet/register', { uid: r0.uid, code: code1, s_u: r0.s_u, index: r0.index });
     assert.equal(r.status, 201, j(r.body));
     assert.equal(r.body.provider, 'demo');
-    assert.equal('sk_u' in r.body, false, '응답에는 sk_u 가 없다(요청에만 한 번 실린다)');
     assert.equal('s_u' in r.body, false, '응답에는 s_u 가 없다(요청에만 한 번 실린다)');
     assert.equal(typeof r.body.slot, 'number');
     assert.deepEqual(r.body.attrs, ['1990', '410', '0', '0', '0', '0']);
@@ -88,11 +87,11 @@ try {
     assert.match(r.body.auid, /^[0-9]+$/);
     sim.storeRegistration({ attrs: r.body.attrs, slot: r.body.slot, auid: r.body.auid });
     const file = stateFile();
-    for (const k of ['"s_u"', '"sk_u"', '"blind_u"']) assert.equal(file.includes(k), false, `${k} 가 파일에 있다`);
+    for (const k of ['"s_u"', '"sk_u"', '"pk_u"', '"blind_u"']) assert.equal(file.includes(k), false, `${k} 가 파일에 있다`);
     assert.ok(file.includes('"auid"'), '공개 auid 는 파일에 있다');
     // 위 두 400(필수값·형식 검사)은 ciaPost 전에 끝나 code1 을 소비하지 않았고, 이 중복 등록 시도는 지갑이 already_registered 로
     // 로컬에서 막아 IdP 를 다시 부르지 않는다 — 이미 쓴 code1 을 그대로 재사용해도 된다.
-    assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, code: code1, s_u: r0.s_u, sk_u: r0.sk_u })).status, 409);
+    assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, code: code1, s_u: r0.s_u })).status, 409);
     const s = (await wallet.get('/wallet/status')).body;
     assert.equal(s.registered, true); assert.equal(s.uid, '12345'); assert.deepEqual(s.attrs, ['1990', '410', '0', '0', '0', '0']); assert.equal(s.userCred, null);
     assert.equal(s.provider, 'demo', '데모(code) 등록은 provider=demo — 로그인은 지금처럼 IdP 인증 창 경로');
@@ -170,7 +169,7 @@ try {
     const v = await verify(ok.body, base); assert.equal(v.ok, true, j(v));
     S1 = base.r_s; W1 = ok.body; B1 = base;
     const file = stateFile();
-    for (const k of ['"s_u"', '"sk_u"', '"blind_u"', '"witness"']) assert.equal(file.includes(k), false, `${k} 가 파일에 있다`);
+    for (const k of ['"s_u"', '"sk_u"', '"pk_u"', '"blind_u"', '"witness"']) assert.equal(file.includes(k), false, `${k} 가 파일에 있다`);
     assert.ok(file.includes('"Cf_u"'), 'C_u 의 공개 부분(Cf_u)은 파일에 있다');
     const s = (await wallet.get('/wallet/status')).body;
     assert.ok(s.sessions[S1]); assert.equal(s.userCred?.Cf_u, ok.body.userCredIssued.Cf_u); assert.equal(s.userCred.revoked, false);
@@ -323,7 +322,7 @@ try {
     const c = (await wallet.get('/wallet/status')).body.sessions[rs];
     assert.ok(c, '폐기할 세션이 상태에 있어야 한다');
     // 2026-11-05: Snap 의 세션 폐기 동의 창은 없어졌다(지갑 페이지의 확인만) — 등록만 있으면 { ok: true }.
-    // 재시작하면 메모리 증인이 사라진다 → sk_u 가 없어 409 needs_consent
+    // 재시작하면 메모리 증인이 사라진다 → 증인의 s_u 가 없어 409 needs_consent
     await stack.restartWallet();
     assert.deepEqual(sim.consentRevokeSession({ arid: c.arid, issuedAt: c.issuedAt, maxHeight: c.max_height }), { ok: true });
     const nc = await wallet.post('/wallet/session/revoke', { r_s: rs });

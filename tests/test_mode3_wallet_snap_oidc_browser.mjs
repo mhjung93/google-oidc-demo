@@ -134,8 +134,8 @@ try {
 
   await t('반쯤 된 등록 복구: Snap 을 보류로 되돌리고 "Google 로 등록" 다시 → Google 버튼 없이 Snap 저장을 마저 한다(uid 복원)', async () => {
     const full = JSON.parse(JSON.stringify(snapState.registration));
-    assert.ok(full.uid && full.sk_u && full.s_u, 'Snap 에 완성된 등록이 있어야 한다');
-    // IdP 등록·에이전트 저장은 끝났는데 Snap storeRegistration 이 안 된 상태 — s_u·sk_u 만 남긴다
+    assert.ok(full.uid && full.s_u, 'Snap 에 완성된 등록이 있어야 한다');
+    // IdP 등록·에이전트 저장은 끝났는데 Snap storeRegistration 이 안 된 상태 — s_u 만 남긴다
     for (const k of ['uid', 'auid', 'slot', 'attrs', 'provider']) snapState.registration[k] = null;
     const u = await context.newPage(); await u.goto(`${ciaUi}/user?google=1`);   // 2026-11-06: Google 등록 버튼은 ?google=1 일 때만 보인다
     await u.waitForSelector('#registerGoogleBtn:not([hidden])', { timeout: 15_000 });
@@ -143,7 +143,7 @@ try {
     await waitText(u, '#userVerdict', '등록됨', 60_000);   // 2026-11-05: 결과 문구에 uid 는 없다 — 복원된 uid 는 아래 Snap 상태로 본다
     assert.equal(await popup.$('#gsiBox .gsi-stub'), null, '복구는 Google 로그인을 다시 하지 않는다');
     const back = JSON.parse(JSON.stringify(snapState.registration));
-    for (const k of ['uid', 'auid', 'slot', 'provider', 's_u', 'sk_u']) assert.equal(back[k], full[k], `복구된 Snap 등록.${k}`);
+    for (const k of ['uid', 'auid', 'slot', 'provider', 's_u']) assert.equal(back[k], full[k], `복구된 Snap 등록.${k}`);
     assert.deepEqual(back.attrs, full.attrs);
     await u.close();
   });
@@ -157,7 +157,7 @@ try {
       const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
       await popup.waitForSelector('#gsiBox .gsi-stub', { timeout: 60_000 });   // 복구 뒤 발급용 Google 버튼
       const back = JSON.parse(JSON.stringify(snapState.registration));
-      for (const k of ['uid', 'auid', 'slot', 'provider', 's_u', 'sk_u']) assert.equal(back[k], full[k], `복구된 Snap 등록.${k}`);
+      for (const k of ['uid', 'auid', 'slot', 'provider', 's_u']) assert.equal(back[k], full[k], `복구된 Snap 등록.${k}`);
       await popup.click('#gsiBox .gsi-stub');
       await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
       await rpPage.close();

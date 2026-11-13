@@ -59,7 +59,7 @@ async function revalidateViaRp(r_s, { skipSync = false } = {}, targetRp = rp) {
 // ---- alice(uid 67890, 2005/840) — 지갑 에이전트는 testuser 하나만 들고 있으므로(§4.1) 선택 공개 시나리오 11 은
 // 라이브러리로 alice 의 등록·세션을 직접 만들고 signPayload/walletAt 으로 execute() 를 직접 보낸다
 // (Ruling 2 — /wallet/tx 를 흉내낸다. mode3_wallet_agent.js 의 같은 이름 로직과 순서를 맞춘다).
-let aliceReg = null;   // { user, blind_u } — uid 67890 등록은 한 번뿐이라 캐시한다(V11: sk_u·attrs 는 user 안, cm_u·r_u 는 없어졌다).
+let aliceReg = null;   // { user, blind_u } — uid 67890 등록은 한 번뿐이라 캐시한다(V11: s_u·attrs 는 user 안, cm_u·r_u 는 없어졌다; 2026-11-13: sk_u 도 없다).
 async function ensureAlice() {
   if (aliceReg) return aliceReg;
   const reg = await cia.registerUser('67890', 'alicepw');
