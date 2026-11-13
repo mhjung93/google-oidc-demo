@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
-import { createSnapSim } from './helpers/snap_sim.mjs';
+import { createReadySnapSim } from './helpers/snap_sim.mjs';
 import { VKEY_PATH } from '../lib/mode3_wallet.js';
 import { aridSOf, registerCtx, issueCtx, tagOf } from '../lib/mode3_credential.js';
 import { uidOf, regNonce, issueNonce, isRevokeNonce } from '../lib/mode3_oidc_nonce.js';
@@ -19,7 +19,7 @@ async function t(name, fn) {
 assert.ok(fs.existsSync(VKEY_PATH), `pi_cred vkey 없음: ${VKEY_PATH} (build/mode3 산출물 필요)`);
 const stack = await startIsolatedMode3Stack({ walletEnv: { MODE3_WALLET_SECRETS: 'snap' }, ciaEnv: { CIA_ISSUE_AUTH: 'code' }, oidc: true });
 const { cia, wallet, rp, oidc: stub } = stack;
-const sim = createSnapSim();
+const sim = createReadySnapSim();   // 0.5.0(2026-11-13): 무작위 salt + 백업 확인까지 끝낸 스냅
 const SUB = 'g-snap-1';
 const UID = uidOf(stub.provider, SUB);
 
@@ -91,7 +91,7 @@ try {
     for (const k of ['uid', 'slot', 'auid', 'attrs', 'provider']) assert.deepEqual(rs.body[k], r.body[k], `resume.${k}`);
     assert.deepEqual(rs.body.profile, r.body.profile);
     assert.ok(!('sk_u' in rs.body) && !('s_u' in rs.body));
-    const other = createSnapSim({ srp: 'other-srp' }).prepareRegister();   // 2026-11-12: 비밀이 시드 유도라 "다른 스냅" 은 다른 SRP
+    const other = createReadySnapSim().prepareRegister();   // 다른 스냅 = 다른 무작위 salt
     const mm = await wallet.post('/wallet/register/resume', { s_u: other.s_u });
     assert.equal(mm.status, 409, j(mm.body)); assert.equal(mm.body.reason, 'secrets_mismatch');
     for (const bad of [{}, { s_u: 'x' }, { s_u: '9'.repeat(80) }]) {
@@ -136,7 +136,7 @@ try {
     assert.notEqual(nAgain.body.n, n.body.n); assert.notEqual(nAgain.body.nonce, n.body.nonce, '같은 로그인(같은 r_rp)이라도 지갑 난수 n 때문에 tag 가 매번 다르다');
     // 같은 arid·r_rp 라도 allowAgent 가 다르면 다른 로그인이다(ctx 에 든다); 이 등록의 것이 아닌 s_u 는 Google 창을 띄우기 전에 거절
     assert.notEqual((await issueNonceReq(b2, { allowAgent: '1' })).body.nonce, n.body.nonce);
-    const wrongSu = await issueNonceReq(b2, { s_u: createSnapSim({ srp: 'other-srp' }).prepareRegister().s_u });
+    const wrongSu = await issueNonceReq(b2, { s_u: createReadySnapSim().prepareRegister().s_u });
     assert.equal(wrongSu.status, 409, j(wrongSu.body)); assert.equal(wrongSu.body.reason, 'secrets_mismatch');
     const tok2 = await mint({ sub: SUB, nonce: n.body.nonce });
     const noN = await wallet.post('/wallet/login', { ...b2, witness: w(), id_token: tok2 });

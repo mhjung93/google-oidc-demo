@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { ethers } from 'ethers';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
-import { createSnapSim } from './helpers/snap_sim.mjs';
+import { createReadySnapSim } from './helpers/snap_sim.mjs';
 import { getProvider } from './helpers/mode3_chain.mjs';
 import { VKEY_PATH } from '../lib/mode3_wallet.js';
 import { createRpVerifier } from '../lib/mode3_rp.js';
@@ -37,7 +37,7 @@ const vkey = JSON.parse(fs.readFileSync(VKEY_PATH, 'utf8'));
 const provider = getProvider();
 const stack = await startIsolatedMode3Stack({ walletEnv: { MODE3_WALLET_SECRETS: 'snap' } });
 const { cia, wallet, rp } = stack;
-const sim = createSnapSim();
+const sim = createReadySnapSim();   // 0.5.0(2026-11-13): 무작위 salt 를 만들고 백업 확인까지 끝낸 스냅
 
 try {
   assert.ok(stack.walletStateFile, '헬퍼가 walletStateFile 을 준다');
@@ -72,11 +72,7 @@ try {
     const code1 = await codeFor();
     assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, code: code1 })).status, 400, 'snap 모드는 s_u 필수');
     assert.equal((await wallet.post('/wallet/register', { uid: r0.uid, code: code1, s_u: 'zz' })).status, 400);
-    for (const bad of [-1, 1.5, '0', 2 ** 31]) {
-      const rb = await wallet.post('/wallet/register', { uid: r0.uid, code: code1, s_u: r0.s_u, index: bad });
-      assert.equal(rb.status, 400, `index=${j(bad)}`); assert.equal(rb.body.reason, 'bad_index');
-    }
-    const r = await wallet.post('/wallet/register', { uid: r0.uid, code: code1, s_u: r0.s_u, index: r0.index });
+    const r = await wallet.post('/wallet/register', { uid: r0.uid, code: code1, s_u: r0.s_u, index: 7 });   // 2026-11-13: 계정 번호는 없어졌다 — 옛 클라이언트가 실어 보내도 무시한다
     assert.equal(r.status, 201, j(r.body));
     assert.equal(r.body.provider, 'demo');
     assert.equal('s_u' in r.body, false, '응답에는 s_u 가 없다(요청에만 한 번 실린다)');
@@ -96,24 +92,34 @@ try {
     assert.equal(s.registered, true); assert.equal(s.uid, '12345'); assert.deepEqual(s.attrs, ['1990', '410', '0', '0', '0', '0']); assert.equal(s.userCred, null);
     assert.equal(s.provider, 'demo', '데모(code) 등록은 provider=demo — 로그인은 지금처럼 IdP 인증 창 경로');
     assert.deepEqual(s.profile, { birthYear: '1990', country: 'KR' });
-    assert.equal(r0.index, 0, '시뮬레이터 첫 등록은 0번'); assert.equal(s.index, 0, '/wallet/status 가 계정 번호를 준다');
-    assert.ok(file.includes('"index"'), '번호는 상태 파일에 남는다(비밀이 아니다)');
+    assert.equal('index' in r0, false); assert.equal('index' in s, false, '/wallet/status 에 계정 번호가 없다(2026-11-13)');
+    assert.equal(file.includes('"index"'), false, '상태 파일에도 번호를 남기지 않는다');
     assert.equal(sim.getPublicInfo().registered, true); assert.equal(sim.getPublicInfo().hasUserCred, false);
   });
 
   await t('secrets/salt: snap 모드는 409 snap_mode(에이전트는 s_u 를 모른다, Snap 의 showSalt() 가 대신한다)', async () => {
     const r = await wallet.get('/wallet/secrets/salt');
     assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'snap_mode');
-    assert.deepEqual(sim.showSalt(), { s_u: sim.state.registration.s_u }, '대신 Snap 이 보관한 s_u 를 보여준다');
+    assert.deepEqual(sim.showSalt(), { s_u: sim.state.salt.s_u }, '대신 Snap 이 보관한 s_u 를 보여준다');
     // "내 계정"(2026-11-12): 시뮬레이터도 실제 Snap(index.js getStoredState)과 같은 모양으로 저장 상태 전부를 준다
     const st = sim.getStoredState();
-    assert.deepEqual(Object.keys(st).sort(), ['consents', 'nextIndex', 'registration', 'userCred', 'version']);
-    assert.equal(st.version, 1); assert.equal(st.registration.s_u, sim.state.registration.s_u); assert.equal(st.nextIndex, sim.state.nextIndex);
+    assert.deepEqual(Object.keys(st).sort(), ['consents', 'registration', 'salt', 'userCred', 'version']);
+    assert.equal(st.version, 2); assert.equal(st.salt.s_u, sim.state.salt.s_u); assert.equal(st.salt.backedUp, true); assert.equal('s_u' in st.registration, false);
   });
 
   // 아래 bad_factory 케이스는 팩토리가 **아닌** 컨트랙트를 줘서 게터가 revert 하는 경로만 탄다. 팩토리이긴 한데
   // arid·log·pk_CIA·pk_trace·maxRootAge·maxLifetime 이 기대와 다른 경우(값 대조)는 tests/test_mode3_wallet_agent.mjs
   // 의 'I-3/E-2' 케이스가 본다 — 제목이 그 둘을 다 덮는 것처럼 읽히지 않게 여기서 범위를 밝힌다(2026-09-25 리뷰).
+  await t('복구(2026-11-13 스펙 random-salt): 같은 salt 를 불러온 스냅(importSalt)은 /wallet/register/resume 로 등록을 되찾고, 다른 salt 의 스냅은 409 secrets_mismatch — 상태 파일은 그대로', async () => {
+    const before = stateFile();
+    const restored = createReadySnapSim({ s_u: sim.state.salt.s_u });
+    const rs = await wallet.post('/wallet/register/resume', { s_u: restored.prepareRegister().s_u });
+    assert.equal(rs.status, 200, j(rs.body)); assert.equal(rs.body.uid, '12345'); assert.equal('s_u' in rs.body, false);
+    const mm = await wallet.post('/wallet/register/resume', { s_u: createReadySnapSim().prepareRegister().s_u });
+    assert.equal(mm.status, 409, j(mm.body)); assert.equal(mm.body.reason, 'secrets_mismatch');
+    assert.equal(stateFile(), before);
+  });
+
   await t('precheck: 정상 ok, 인증서 위조 403 bad_rp_cert, 팩토리가 아닌 컨트랙트 주소(게터 revert) 409 bad_factory', async () => {
     const ch = (await rp.post('/api/mode3/challenge')).body;
     const base = { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, factoryAddress: ch.factoryAddress };

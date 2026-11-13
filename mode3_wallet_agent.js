@@ -605,7 +605,7 @@ app.get('/wallet/status', async (req, res) => {
   const userCred = uc ? { Cf_u: uc.Cf_u, issuedAt: uc.issuedAt, revoked: lastRegistry ? !lastRegistry.match : null } : null;
   const st = rcl ? rcl.stats() : null;
   res.json({
-    registered: Boolean(reg), uid: reg?.uid ?? null, index: Number.isInteger(reg?.index) ? reg.index : null, provider: reg ? (reg.provider ?? 'demo') : null, auid: reg?.auid ?? null, slot: reg?.slot ?? null, attrs: reg?.attrs ?? null, userCred, sessions, pendingBounds,
+    registered: Boolean(reg), uid: reg?.uid ?? null, provider: reg ? (reg.provider ?? 'demo') : null, auid: reg?.auid ?? null, slot: reg?.slot ?? null, attrs: reg?.attrs ?? null, userCred, sessions, pendingBounds,
     profile: reg?.profile ?? null, attrSchema: attrSchema ? schemaInfo(attrSchema.schema, attrSchema.hash) : null,
     attrsView: reg && attrSchema ? decodeAttrs(attrSchema.schema, reg.attrs, reg.profile ?? null) : null,
     registry: lastRegistry, demoOverride: demoOverride ? { scope: demoOverride.scope, fields: Object.keys(demoOverride).filter((k) => k !== 'scope') } : null,
@@ -682,7 +682,7 @@ app.post('/wallet/oidc/nonce', async (req, res) => {
 // 2026-10-26: id_token(Google 등록) — uid 는 토큰의 sub 로 계산하고 IdP 에는 uid 없이 { id_token, auid, n, π_IdP } 를 낸다(n 은 /wallet/oidc/nonce 가 뽑은 값).
 app.post('/wallet/register', async (req, res) => {
   try {
-    const { uid: uidIn, pwd, code, id_token, profile: profileIn = null, s_u: suIn, n: nIn, index } = req.body ?? {};
+    const { uid: uidIn, pwd, code, id_token, profile: profileIn = null, s_u: suIn, n: nIn } = req.body ?? {};   // 2026-11-13(스펙 random-salt R13): 계정 번호(index)는 없어졌다 — 실려 와도 읽지 않는다
     let uid = uidIn, oidcProvider = null;
     if (id_token !== undefined) {
       if (uidIn !== undefined || pwd !== undefined || code !== undefined) return res.status(400).json({ error: 'id_token 과 uid·pwd·code 는 함께 줄 수 없다' });
@@ -703,8 +703,6 @@ app.post('/wallet/register', async (req, res) => {
     if (BigInt(uid) >= SCALAR_MAX) return res.status(400).json({ error: 'uid 는 2^250 미만' });
     if (SECRETS === 'snap' && !(isDec(suIn) && BigInt(suIn) < SCALAR_MAX)) return res.status(400).json({ error: 'snap 모드는 s_u(10진, 2^250 미만) 필요' });
     if (profileIn !== null && (typeof profileIn !== 'object' || Array.isArray(profileIn))) return res.status(400).json({ reason: 'bad_attr', detail: 'profile_required' });
-    // 계정 번호(2026-11-12 스펙 snap-account-index §3.3): 스냅이 비밀을 유도한 번호 — 비밀이 아니라 기록에 남긴다(스냅만 비었을 때 같은 번호로 되살린다).
-    if (index !== undefined && !(Number.isInteger(index) && index >= 0 && index <= 2 ** 31 - 1)) return res.status(400).json({ reason: 'bad_index', detail: '계정 번호는 0 이상 2^31−1 이하의 정수' });
     if (state.registration) return res.status(409).json({ reason: 'already_registered', uid: state.registration.uid });
     let schema;
     try { schema = (await schemaFor()).schema; } catch (e) { if (e.reason === 'schema_invalid') return res.status(503).json({ reason: 'schema_invalid', detail: e.message }); throw e; }
@@ -729,7 +727,7 @@ app.post('/wallet/register', async (req, res) => {
     if (oidcProvider && r.body.uid !== uid) return res.status(502).json({ reason: 'uid_mismatch', detail: 'IdP 가 정한 uid 가 토큰의 sub 로 계산한 값과 다르다' });
     const provider = r.body.provider ?? oidcProvider ?? 'demo';
     await noteSchemaHint(r.body.schemaHash ?? null);
-    const full = { uid, s_u: reg.s_u.toString(), auid: reg.auid.toString(), slot: r.body.slot, profile: normalized, attrs, provider, userCred: null, ...(index !== undefined ? { index } : {}) };
+    const full = { uid, s_u: reg.s_u.toString(), auid: reg.auid.toString(), slot: r.body.slot, profile: normalized, attrs, provider, userCred: null };
     state.registration = SECRETS === 'snap' ? stripSecrets(full) : full;
     persist();
     // issue_code(2026-11-09): 등록 코드 경로면 IdP 가 그 auid 의 발급 코드를 함께 준다 — 서비스 첫 로그인 중의 등록이 비밀번호 재입력 없이 발급으로 이어진다. 에이전트는 저장하지 않고 넘긴다.
