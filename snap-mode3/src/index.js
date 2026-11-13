@@ -1,4 +1,4 @@
-// Mode 3 Snap — 등록 비밀(s_u·sk_u)을 MetaMask 암호화 저장소에 보관한다.
+// Mode 3 Snap — 등록 비밀(s_u)을 MetaMask 암호화 저장소에 보관한다.
 // 2026-11-05: 등록·로그인 동의·세션 폐기·salt 표시의 확인 대화상자는 뺐다 — 모두 사용자가 지갑·RP 페이지에서 직접 눌러 시작하는
 // 요청이라 Snap 이 한 번 더 묻는 것은 중복이었다(사용자 결정). 남은 대화상자는 셋: 자기 폐기 비밀번호 프롬프트, 등록 초기화 확인,
 // RP 릴레이 출금의 받는 주소·금액 확인(consentDisclosure { relay: true } — 사용자가 달리 확인할 창이 없는 유일한 전송).
@@ -67,7 +67,10 @@ const indexParam = (params, dflt) => {
 async function getState() {
   const s = await snap.request({ method: 'snap_manageState', params: { operation: 'get' } });
   if (!s || s.version !== 1) return { ...EMPTY_STATE, consents: {} };
-  return { ...EMPTY_STATE, ...s, consents: s.consents ?? {} };
+  const st = { ...EMPTY_STATE, ...s, consents: s.consents ?? {} };
+  // 0.4.0(스펙 2026-11-12 no-pk-u §4.1): 등록 키는 없어졌다 — 0.3.x 상태의 sk_u 는 읽을 때 버린다(다음 저장 때 저장소에서도 사라진다). 등록은 그대로 쓴다.
+  if (st.registration && 'sk_u' in st.registration) { const { sk_u: _dropped, ...rest } = st.registration; st.registration = rest; }
+  return st;
 }
 
 const setState = (newState) => snap.request({ method: 'snap_manageState', params: { operation: 'update', newState } });
@@ -87,10 +90,10 @@ const requireRegistered = (state) => (state.registration?.uid ? state.registrati
 /** 증인 묶음 — lib/mode3_secret_source.js 의 validateWitness 형식(스펙 §3.1). consentLogin 응답으로만 나간다. */
 function buildWitness(state) {
   const r = state.registration;
-  if (!isDec(r.uid) || !isDec(r.s_u) || !/^[0-9a-fA-F]{64}$/.test(r.sk_u ?? '') || !Array.isArray(r.attrs)) {
+  if (!isDec(r.uid) || !isDec(r.s_u) || !Array.isArray(r.attrs)) {
     fail('registration_incomplete: storeRegistration 이 아직 끝나지 않았다');
   }
-  return { uid: r.uid, s_u: r.s_u, sk_u: r.sk_u, attrs: clone(r.attrs), userCred: clone(state.userCred) };
+  return { uid: r.uid, s_u: r.s_u, attrs: clone(r.attrs), userCred: clone(state.userCred) };
 }
 
 /** 페이지가 { userCred } 로 감싸 보내도 받는다 — JSON-RPC 의 params 는 null 을 못 싣는 경우가 있다. */
@@ -112,13 +115,13 @@ export const onRpcRequest = async ({ origin, request }) => {
 
   switch (request.method) {
     // 등록(V11 갱신, 2026-10-23): 비밀번호 프롬프트는 없어졌다 — 지갑 페이지가 이미 받은 uid 를 params 로 넘기고,
-    // Snap 은 s_u·sk_u 를 만들어 저장한다(2026-11-05: 확인 창도 뺐다). IdP 에는 커밋먼트(auid)와 공개키만 간다(storeRegistration).
+    // Snap 은 s_u 를 만들어 저장한다(2026-11-05: 확인 창도 뺐다). IdP 에는 커밋먼트(auid)만 간다(storeRegistration).
     // 보류 등록(prepareRegister)이 있으면 덮어쓴다 — 완성 등록만 already_registered.
     case 'register': {
       if (state.registration?.uid) fail('already_registered: 이미 등록돼 있다 (초기화하려면 reset)');
       const uid = String(params.uid ?? '').trim();
       if (!isDec(uid)) fail('bad_uid: uid 는 10진 숫자 문자열이어야 한다');
-      // 2026-11-12(스펙 snap-derived-secrets S1·S2): s_u·sk_u 는 시드에서 유도한다. 속성 도구가 getSalt 로 받은 salt 를 다시 실어 보내면
+      // 2026-11-12(스펙 snap-derived-secrets S1·S2): s_u 는 시드에서 유도한다. 속성 도구가 getSalt 로 받은 salt 를 다시 실어 보내면
       // 유도값과 같은지만 본다 — 다르면(옛 기록의 직접 입력 salt) 등록하지 않는다. 시드로 복구할 수 없는 계정이 섞이지 않게.
       const index = indexParam(params, nextIndexOf(state));
       const secrets = await deriveRegistrationSecrets(index);
@@ -126,23 +129,23 @@ export const onRpcRequest = async ({ origin, request }) => {
         const su = String(params.s_u).trim();
         if (!isDec(su) || BigInt(su).toString() !== secrets.s_u) fail('salt_not_derived: salt 는 이 스냅이 시드에서 유도한 값이어야 한다(속성 도구 "스냅에서 가져오기")');
       }
-      state.registration = { uid, index, s_u: secrets.s_u, auid: null, sk_u: secrets.sk_u, slot: null, attrs: null, registeredAt: new Date().toISOString() };
+      state.registration = { uid, index, s_u: secrets.s_u, auid: null, slot: null, attrs: null, registeredAt: new Date().toISOString() };
       state.userCred = null; await setState(state);
-      return { uid, s_u: secrets.s_u, sk_u: secrets.sk_u, index };
+      return { uid, s_u: secrets.s_u, index };
     }
 
-    // Google 등록(2026-10-26 Snap OIDC 래퍼 §2.1): 등록 토큰의 nonce 는 pk_u 에 묶이는데(reg:H(pk_u)), uid 는 토큰을 받은 뒤에야
+    // Google 등록(2026-10-26 Snap OIDC 래퍼 §2.1): 등록 토큰의 nonce 는 등록 요청의 tag 에 묶이는데(reg:H(tag) — tag 는 s_u 로 만든다), uid 는 토큰을 받은 뒤에야
     // IdP 가 정한다 — 그래서 uid 없이 비밀을 먼저 만들어 "보류 등록" 으로 둔다. uid 는 storeRegistration 이 채운다.
-    // 보류가 이미 있으면(Google·IdP 단계 실패 뒤 재시도) 같은 비밀을 돌려준다 — 같은 pk_u 라 nonce 도 같다.
+    // 보류가 이미 있으면(Google·IdP 단계 실패 뒤 재시도) 같은 비밀을 돌려준다(시드 유도라 어차피 같다).
     case 'prepareRegister': {
       if (state.registration?.uid) fail('already_registered: 이미 등록돼 있다 (초기화하려면 reset)');
       const pend = state.registration;
-      if (pend) return { s_u: pend.s_u, sk_u: pend.sk_u, index: isIndex(pend.index) ? pend.index : 0 };
+      if (pend) return { s_u: pend.s_u, index: isIndex(pend.index) ? pend.index : 0 };
       const index = indexParam(params, nextIndexOf(state));
       const secrets = await deriveRegistrationSecrets(index);
-      state.registration = { uid: null, index, s_u: secrets.s_u, auid: null, sk_u: secrets.sk_u, slot: null, attrs: null, provider: null, registeredAt: new Date().toISOString() };
+      state.registration = { uid: null, index, s_u: secrets.s_u, auid: null, slot: null, attrs: null, provider: null, registeredAt: new Date().toISOString() };
       state.userCred = null; await setState(state);
-      return { s_u: secrets.s_u, sk_u: secrets.sk_u, index };
+      return { s_u: secrets.s_u, index };
     }
 
     // 속성 도구용(2026-11-12, 스펙 §2.3): 등록 전에도 시드에서 유도한 s_u 를 돌려준다. 등록 여부와 무관하게 같은 값이고 상태를 바꾸지 않는다.
@@ -161,7 +164,7 @@ export const onRpcRequest = async ({ origin, request }) => {
       return { s_u: reg.s_u };
     }
 
-    // 에이전트 POST /wallet/register 응답(slot·attrs·auid)을 저장한다. sk_u·s_u 는 register/prepareRegister 때 이미 저장했으므로 받지 않는다(V9 §7.1).
+    // 에이전트 POST /wallet/register 응답(slot·attrs·auid)을 저장한다. s_u 는 register/prepareRegister 때 이미 저장했으므로 받지 않는다(V9 §7.1).
     // 2026-10-26: 보류 등록(prepareRegister)은 여기서 uid 를 받아 완성된다. provider 는 IdP 응답의 값(데모 등록은 생략 가능).
     case 'storeRegistration': {
       const reg = state.registration ?? fail('not_registered: 이 Snap 에 등록이 없다');
@@ -200,7 +203,7 @@ export const onRpcRequest = async ({ origin, request }) => {
       };
     }
 
-    // "내 계정"(2026-11-12 사용자 요청): zk 스냅 화면이 이 스냅에 저장된 값을 전부 보여 준다 — 비밀(s_u·sk_u·blind_u)까지 싣는 조회다.
+    // "내 계정"(2026-11-12 사용자 요청): zk 스냅 화면이 이 스냅에 저장된 값을 전부 보여 준다 — 비밀(s_u·blind_u)까지 싣는 조회다.
     // 확인 창은 없다: 부를 수 있는 오리진은 :5100 뿐이고, 그 페이지는 로그인 때 consentLogin 으로 같은 비밀을 이미 받는다. 상태는 바꾸지 않는다.
     case 'getStoredState': {
       return { ...clone(state), registration: clone(state.registration), userCred: clone(state.userCred), consents: clone(state.consents) ?? {}, nextIndex: nextIndexOf(state) };
@@ -268,7 +271,7 @@ export const onRpcRequest = async ({ origin, request }) => {
       return { uid: reg.uid, pwd };
     }
 
-    // V8 세션 폐기(설계 2026-09-24 §4). Snap 에는 Poseidon 이 없어 서명은 에이전트가 세션 증인의 sk_u 로 한다.
+    // V8 세션 폐기(설계 2026-09-24 §4). Snap 에는 Poseidon 이 없어 인증 증명은 에이전트가 세션 증인의 s_u 로 만든다.
     // 2026-11-05: 동의 창은 뺐다(지갑 페이지의 "정말 폐기하시겠습니까?" 확인이 이미 있다) — 등록 여부만 보고 { ok: true }.
     case 'consentRevokeSession': {
       requireRegistered(state);
@@ -278,7 +281,7 @@ export const onRpcRequest = async ({ origin, request }) => {
     // 데모 초기화 — 등록 비밀·동의 기록을 모두 지운다.
     case 'reset': {
       const ok = await confirm('등록 초기화', [
-        '이 Snap 의 등록을 지웁니다. 등록 비밀(s_u·sk_u)과 동의 기록이 사라집니다.',
+        '이 Snap 의 등록을 지웁니다. 등록 비밀(s_u)과 동의 기록이 사라집니다.',
         '체인·AA 쪽 상태는 지워지지 않습니다.',
       ]);
       if (!ok) return { denied: true };

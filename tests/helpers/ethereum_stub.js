@@ -19,7 +19,7 @@ const SRC_DIR = fileURLToPath(new URL('../../snap-mode3/src/', import.meta.url))
 // snap-mode3/src/index.js 의 WALLET_ORIGINS 상수(번들에 굳어 있어 env 로 못 바꾼다). 격리 스택의 지갑 포트는
 // 매번 다르므로, MetaMask 역할인 이 스텁이 Snap 에 알려 주는 오리진은 이 고정값을 쓴다.
 export const SNAP_WALLET_ORIGIN = 'http://127.0.0.1:5100';
-// 2026-11-12(스펙 snap-derived-secrets): snap_getEntropy 의 SRP 대역. tests/helpers/snap_sim.mjs 의 derivedSecrets(STUB_SRP) 가 이 스텁 스냅이 유도하는 s_u·sk_u 와 같다.
+// 2026-11-12(스펙 snap-derived-secrets): snap_getEntropy 의 SRP 대역. tests/helpers/snap_sim.mjs 의 derivedSecrets(STUB_SRP) 가 이 스텁 스냅이 유도하는 s_u 와 같다.
 export const STUB_SRP = 'zkd-test-srp-1';
 
 /** `export ` 접두사만 떼어 고전 스크립트에 넣을 수 있게 한다. */
@@ -89,7 +89,7 @@ export function buildInitScript({ snapId, account, chainId, srp = STUB_SRP }) {
 
 ${snapModuleSource().split('\n').map((l) => (l ? '  ' + l : l)).join('\n')}
 
-  const snaps = { [SNAP_ID]: { id: SNAP_ID, version: '0.3.1', enabled: true, blocked: false } };
+  const snaps = { [SNAP_ID]: { id: SNAP_ID, version: '0.4.0', enabled: true, blocked: false } };
   window.ethereum = {
     isMetaMask: true,
     request: async ({ method, params }) => {

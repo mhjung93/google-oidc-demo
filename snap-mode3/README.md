@@ -1,6 +1,6 @@
 # snap-mode3 — Mode 3 MetaMask Snap
 
-Mode 3 의 등록 비밀(`s_u`·`r_u`·`sk_u`)을 MetaMask 의 암호화 저장소에 보관하고, 로그인·속성 공개·자기 폐기 동의 대화상자를 띄우는
+Mode 3 의 등록 비밀 `s_u` 를 MetaMask 의 암호화 저장소에 보관하고, 로그인·속성 공개·자기 폐기 동의 대화상자를 띄우는
 Snap 이다. 정본은 스펙 `docs/superpowers/specs/2026-09-22-mode3-metamask-snap-design.md` §3.1(RPC 표·상태 모양)이고, 같은 입출력의
 Node 시뮬레이터가 `tests/helpers/snap_sim.mjs` 다. Mode 2 의 `snap/` 과는 별개 패키지이며 서로 건드리지 않는다.
 

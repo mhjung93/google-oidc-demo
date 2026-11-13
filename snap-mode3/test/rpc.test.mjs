@@ -99,19 +99,19 @@ await t('register: uid 가 10진 문자열이 아니면 bad_uid, 대화상자는
   assert.equal(dialogs.length, before, '대화상자 없음');
 });
 
-await t('register({ uid }): 대화상자 없이 → { uid, s_u, sk_u }(pwd 없음), 상태에 s_u·sk_u', async () => {
+await t('register({ uid }): 대화상자 없이 → { uid, s_u, index }(pwd·sk_u 없음), 상태에 s_u', async () => {
   const before = dialogs.length;
   registered = await call('register', { uid: '12345' });
   assert.equal(registered.uid, '12345');
   assert.equal('pwd' in registered, false, 'pwd 는 더 이상 없다');
   assert.match(registered.s_u, /^[0-9]+$/);
-  assert.match(registered.sk_u, /^[0-9a-fA-F]{64}$/);
+  assert.equal('sk_u' in registered, false, '등록 키는 없어졌다(0.4.0)');
   assert.equal(dialogs.length, before, '확인 창을 띄우지 않는다(2026-11-05)');
   const reg = store.state.registration;
   assert.equal(store.state.version, 1);
   assert.equal(reg.s_u, registered.s_u);
   assert.ok(BigInt(reg.s_u) < (1n << 250n), '스칼라는 2^250 미만');
-  assert.equal(reg.sk_u, registered.sk_u);
+  assert.equal('sk_u' in reg, false);
   assert.equal(reg.attrs, null);
   assert.equal('r_u' in reg, false, 'r_u 는 없어졌다');
   assert.equal('cm_u' in reg, false, 'cm_u 는 없어졌다');
@@ -128,14 +128,14 @@ await t('register 두 번째는 거절된다', async () => {
   await assert.rejects(() => call('register', {}), /already_registered|이미/);
 });
 
-await t('storeRegistration: attrs 는 6개(짧으면 bad_attrs)·slot 저장, auid 없으면 bad_auid, sk_u 는 받지 않는다', async () => {
+await t('storeRegistration: attrs 는 6개(짧으면 bad_attrs)·slot 저장, auid 없으면 bad_auid, 비밀은 받지 않는다', async () => {
   await assert.rejects(() => call('storeRegistration', { attrs: ATTRS.slice(0, 4), slot: SLOT, auid }), /bad_attrs/);
   await assert.rejects(() => call('storeRegistration', { attrs: ATTRS, slot: SLOT }), /bad_auid/);
   assert.deepEqual(await call('storeRegistration', { attrs: ATTRS, slot: SLOT, auid }), { ok: true });
   assert.deepEqual(store.state.registration.attrs, ATTRS);
   assert.equal(store.state.registration.slot, SLOT);
   assert.equal(store.state.registration.auid, auid);
-  assert.equal(store.state.registration.sk_u, registered.sk_u, 'storeRegistration 은 sk_u 를 건드리지 않는다');
+  assert.equal(store.state.registration.s_u, registered.s_u, 'storeRegistration 은 s_u 를 건드리지 않는다');
 });
 
 await t('storeRegistration: slot 은 음이 아닌 정수여야 한다 — 음수·문자열은 bad_slot, 정상 값은 저장된다', async () => {
@@ -165,18 +165,17 @@ await t('getPublicInfo 에는 비밀이 없다', async () => {
   assert.equal(info.slot, SLOT);
   assert.equal(info.hasUserCred, false);
   const s = JSON.stringify(info);
-  for (const secret of [store.state.registration.s_u, registered.sk_u]) {
+  for (const secret of [store.state.registration.s_u]) {
     assert.ok(!s.includes(secret), `공개 정보에 비밀이 실렸다: ${secret.slice(0, 8)}…`);
   }
 });
 
-// 리뷰 2026-10-13 U3: buildWitness 가 sk_u 를 문자열이면 그대로 받아 줬다(64자 16진 검사 없음) — 손상된 상태라도
-// 형식 검사를 통과해 그대로 지갑 페이지로 나갔다. 기존 사유(registration_incomplete)는 그대로 두고 검사만 좁힌다.
-await t('buildWitness: sk_u 가 64자 16진이 아니면 registration_incomplete(상태는 건드리지 않는다)', async () => {
-  const savedSkU = store.state.registration.sk_u;
-  store.state.registration.sk_u = 'zz'.repeat(32);   // 길이는 64지만 16진이 아니다
+// 리뷰 2026-10-13 U3 의 자리: buildWitness 는 손상된 등록 비밀을 그대로 내보내지 않는다(0.4.0 부터 비밀은 s_u 하나 — 전에는 sk_u 의 16진 검사였다).
+await t('buildWitness: s_u 가 10진이 아니면 registration_incomplete(상태는 건드리지 않는다)', async () => {
+  const saved = store.state.registration.s_u;
+  store.state.registration.s_u = 'zz';
   await assert.rejects(() => call('consentLogin', { origin: RP_ORIGIN, arid: '777', allowAgent: '0' }), /registration_incomplete/);
-  store.state.registration.sk_u = savedSkU;
+  store.state.registration.s_u = saved;
 });
 
 await t('consentLogin → 대화상자 없이 validateWitness 를 통과하는 증인, consents 기록', async () => {
@@ -186,7 +185,7 @@ await t('consentLogin → 대화상자 없이 validateWitness 를 통과하는 �
   // auid 까지 준다 — 증인의 s_u 가 register 가 낸 auid 와 실제로 묶였는지 본다(최종 리뷰 Minor 1 의 V11 판).
   await validateWitness(w, '12345', auid);
   assert.equal(w.uid, '12345');
-  assert.equal(w.sk_u, registered.sk_u, 'buildWitness 의 sk_u 는 register 때 만든 것과 같다');
+  assert.equal('sk_u' in w, false, '증인에 sk_u 가 없다');
   assert.deepEqual(w.attrs, ATTRS);
   assert.equal(w.userCred, null);
   assert.equal(store.state.consents[RP_ORIGIN].arid, '777');
@@ -294,14 +293,14 @@ await t('showSalt: 대화상자 없이 { s_u }(저장된 값과 같다)', async 
 });
 
 // "내 계정"(2026-11-12 사용자 요청): zk 스냅 화면이 스냅에 저장된 값을 전부 보여 준다 — 비밀까지 싣는 유일한 조회 RPC.
-await t('getStoredState: 대화상자 없이 저장 상태 전부(비밀 s_u·sk_u·blind_u 포함)를 돌려주고 상태는 바꾸지 않는다', async () => {
+await t('getStoredState: 대화상자 없이 저장 상태 전부(비밀 s_u·blind_u 포함)를 돌려주고 상태는 바꾸지 않는다', async () => {
   await call('updateUserCred', USER_CRED);
   const before = dialogs.length, saved = stateJson();
   const st = await call('getStoredState', {});
   assert.deepEqual(Object.keys(st).sort(), ['consents', 'nextIndex', 'registration', 'userCred', 'version']);
   assert.equal(st.version, 1);
   assert.deepEqual(st.registration, store.state.registration);
-  assert.equal(st.registration.s_u, registered.s_u); assert.equal(st.registration.sk_u, registered.sk_u);
+  assert.equal(st.registration.s_u, registered.s_u); assert.equal('sk_u' in st.registration, false);
   assert.deepEqual(st.userCred, USER_CRED);
   assert.deepEqual(st.consents, store.state.consents);
   assert.ok(Object.keys(st.consents).length >= 1, '동의 기록이 실려 있다');
@@ -324,7 +323,7 @@ await t('reset: 확인 뒤 상태를 비운다(거절하면 그대로)', async (
   assert.equal(info.registered, false);
   assert.equal(info.uid, null);
   assert.deepEqual(info.consents, {});
-  assert.ok(!stateJson().includes(registered.sk_u), '초기화 뒤 비밀이 남지 않는다');
+  assert.ok(!stateJson().includes(registered.s_u), '초기화 뒤 비밀이 남지 않는다');
   // 등록이 없을 때의 getStoredState — 빈 등록·빈 동의 기록과 남은 다음 가입 번호
   assert.deepEqual(await call('getStoredState', {}), { version: 1, registration: null, userCred: null, consents: {}, nextIndex: info.nextIndex });
 });
@@ -332,11 +331,11 @@ await t('reset: 확인 뒤 상태를 비운다(거절하면 그대로)', async (
 await t('prepareRegister: 대화상자 없이 uid 없는 보류 등록 — registered=false, pending=true', async () => {
   const before = dialogs.length;
   const p = await call('prepareRegister', {});
-  assert.match(p.s_u, /^[0-9]+$/); assert.match(p.sk_u, /^[0-9a-f]{64}$/);
+  assert.match(p.s_u, /^[0-9]+$/); assert.equal('sk_u' in p, false);
   assert.equal(dialogs.length, before, '확인 창을 띄우지 않는다(2026-11-05)');
   const info = await call('getPublicInfo', {});
   assert.equal(info.registered, false); assert.equal(info.pending, true); assert.equal(info.uid, null); assert.equal(info.provider, null);
-  // 다시 시도(Google 단계 실패 뒤) — 같은 비밀(같은 pk_u → 같은 nonce)
+  // 다시 시도(Google 단계 실패 뒤) — 같은 비밀
   assert.deepEqual(await call('prepareRegister', {}), p);
 });
 
@@ -366,29 +365,29 @@ await t('register 는 보류 등록을 덮어쓴다(완성 등록만 already_reg
   answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
   const p = await call('prepareRegister', {});
   const r = await call('register', { uid: '42' });
-  assert.equal(r.uid, '42'); assert.equal(r.sk_u, p.sk_u, '2026-11-12: 비밀은 시드 유도라 보류 등록과 같다 — register 는 uid 를 채운 완성 등록으로 덮어쓴다');
+  assert.equal(r.uid, '42'); assert.equal(r.s_u, p.s_u, '2026-11-12: 비밀은 시드 유도라 보류 등록과 같다 — register 는 uid 를 채운 완성 등록으로 덮어쓴다');
   assert.equal((await call('getPublicInfo', {})).pending, false);
   answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
   answers.push(true); const p2 = await call('prepareRegister', {});
   answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
-  assert.ok(!String(stateJson()).includes(p2.sk_u), 'reset 뒤 보류 비밀이 남지 않는다');
+  assert.ok(!String(stateJson()).includes(p2.s_u), 'reset 뒤 보류 비밀이 남지 않는다');
   assert.equal(store.state?.registration ?? null, null, 'reset 뒤 등록이 없다(2026-11-12: 다음 가입 번호 nextIndex 만 남는다)');
 });
 
-await t('유도(2026-11-12): 같은 SRP 면 register·prepareRegister·getSalt 가 같은 s_u·sk_u, 다른 SRP 면 다르다; reset 뒤에도 같다', async () => {
+await t('유도(2026-11-12): 같은 SRP 면 register·prepareRegister·getSalt 가 같은 s_u, 다른 SRP 면 다르다; reset 뒤에도 같다', async () => {
   entropy.srp = 'srp-A';
   const g = await call('getSalt', {});
   assert.match(g.s_u, /^[0-9]+$/); assert.ok(BigInt(g.s_u) >= 1n && BigInt(g.s_u) < (1n << 250n));
   assert.equal(store.state?.registration ?? null, null, 'getSalt 는 상태를 만들지 않는다');
   const r = await call('register', { uid: '7' });
-  assert.equal(r.s_u, g.s_u); assert.match(r.sk_u, /^[0-9a-f]{64}$/);
+  assert.equal(r.s_u, g.s_u);
   answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
   const p = await call('prepareRegister', {});
-  assert.equal(p.s_u, r.s_u, 'reset 뒤 보류 등록도 같은 s_u'); assert.equal(p.sk_u, r.sk_u, '같은 sk_u');
+  assert.equal(p.s_u, r.s_u, 'reset 뒤 보류 등록도 같은 s_u');
   answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
   entropy.srp = 'srp-B';
   const b = await call('register', { uid: '7' });
-  assert.notEqual(b.s_u, r.s_u, '다른 SRP 면 다른 s_u'); assert.notEqual(b.sk_u, r.sk_u);
+  assert.notEqual(b.s_u, r.s_u, '다른 SRP 면 다른 s_u');
   assert.equal((await call('getSalt', {})).s_u, b.s_u, '등록 뒤에도 getSalt 는 같은 값');
   answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
   entropy.srp = 'srp-A';
@@ -404,13 +403,12 @@ await t('register({ uid, s_u }): s_u 는 유도값과 같을 때만 받는다 �
   answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
 });
 
-await t('saltFromEntropy·skFromEntropy: 경계값과 형식 오류', async () => {
-  const { saltFromEntropy, skFromEntropy } = await import('../src/crypto.js');
+await t('saltFromEntropy: 경계값과 형식 오류', async () => {
+  const { saltFromEntropy } = await import('../src/crypto.js');
   assert.equal(saltFromEntropy('0x' + '00'.repeat(32)), '1', '0 → 1(0 은 쓰지 않는다)');
   const max = (1n << 256n) - 1n; assert.equal(saltFromEntropy('0x' + 'ff'.repeat(32)), (1n + (max % ((1n << 250n) - 1n))).toString());
-  assert.equal(skFromEntropy('0x' + 'AB'.repeat(32)), 'ab'.repeat(32));
   for (const bad of ['', '0x', '0x1234', 'zz'.repeat(32), '0x' + 'g'.repeat(64)]) {
-    assert.throws(() => saltFromEntropy(bad), /bad_entropy/); assert.throws(() => skFromEntropy(bad), /bad_entropy/);
+    assert.throws(() => saltFromEntropy(bad), /bad_entropy/);
   }
 });
 
@@ -421,14 +419,14 @@ await t('등록 전에는 비밀이 필요한 RPC 가 거절된다', async () =>
 });
 
 // 2026-11-12(스펙 snap-account-index, 리뷰 I-3): 계정 번호 k 마다 다른 비밀. 번호는 기록이 들고 다니고, nextIndex 는 reset 을 넘어 남는다.
-await t('계정 번호: 번호가 다르면 s_u·sk_u 가 다르고 같은 번호면 같다; getSalt 기본은 등록 번호 → 없으면 nextIndex; storeRegistration 이 nextIndex 를 올리고 reset 뒤에도 남는다', async () => {
+await t('계정 번호: 번호가 다르면 s_u 가 다르고 같은 번호면 같다; getSalt 기본은 등록 번호 → 없으면 nextIndex; storeRegistration 이 nextIndex 를 올리고 reset 뒤에도 남는다', async () => {
   entropy.srp = 'srp-A'; store.state = null;
   const g0 = await call('getSalt', {}); assert.equal(g0.index, 0, '처음엔 0번');
   const g1 = await call('getSalt', { index: 1 }); assert.equal(g1.index, 1);
   assert.notEqual(g1.s_u, g0.s_u, '번호가 다르면 salt 가 다르다');
   assert.equal((await call('getSalt', { index: 1 })).s_u, g1.s_u, '같은 번호면 같은 salt');
   const r = await call('register', { uid: '7', s_u: g1.s_u, index: 1 });
-  assert.equal(r.index, 1); assert.equal(r.s_u, g1.s_u); assert.match(r.sk_u, /^[0-9a-f]{64}$/);
+  assert.equal(r.index, 1); assert.equal(r.s_u, g1.s_u);
   assert.equal((await call('getSalt', {})).index, 1, '등록이 있으면 기본은 그 번호(Ruling P1)');
   await call('storeRegistration', { attrs: ATTRS, slot: 0, auid: '5' });
   const info = await call('getPublicInfo', {}); assert.equal(info.index, 1); assert.equal(info.nextIndex, 2);
@@ -436,7 +434,7 @@ await t('계정 번호: 번호가 다르면 s_u·sk_u 가 다르고 같은 번�
   assert.equal(store.state?.registration ?? null, null, 'reset 은 등록을 지운다');
   assert.equal((await call('getPublicInfo', {})).nextIndex, 2, 'reset 뒤에도 nextIndex 는 남는다');
   const p = await call('prepareRegister', {});
-  assert.equal(p.index, 2, '보류 등록은 nextIndex'); assert.notEqual(p.sk_u, r.sk_u, '다른 번호 → 다른 sk_u');
+  assert.equal(p.index, 2, '보류 등록은 nextIndex'); assert.notEqual(p.s_u, r.s_u, '다른 번호 → 다른 s_u');
   assert.deepEqual(await call('prepareRegister', { index: 9 }), p, '보류가 있으면 그 비밀·번호 그대로');
   answers.push(true); await call('reset', {});
   store.state = null;
@@ -460,6 +458,36 @@ await t('계정 번호 검사: bad_index(범위·형식)·setNextIndex·번호�
   assert.equal((await call('getPublicInfo', {})).nextIndex, 2 ** 31 - 1, '상한에서 멈춘다');
   answers.push(true); await call('reset', {});
   store.state = null;
+});
+
+// 0.4.0(2026-11-13, 스펙 2026-11-12 no-pk-u §4.1): 등록 키 sk_u 는 없다 — 유도하지도 저장하지도 내주지도 않는다.
+await t('0.4.0: register·prepareRegister·getStoredState·증인 어디에도 sk_u 가 없고, s_u 는 0.3.x 와 같은 salt(zkd/mode3/s_u/v2/<k>)로 유도된다', async () => {
+  store.state = null; entropy.srp = 'srp-A';
+  const crypto = await import('../src/crypto.js');
+  const { ENTROPY_SALT_S_U, saltFromEntropy } = crypto;
+  assert.equal(ENTROPY_SALT_S_U, 'zkd/mode3/s_u/v2/');
+  assert.equal('ENTROPY_SALT_SK_U' in crypto, false); assert.equal('skFromEntropy' in crypto, false);
+  const p = await call('prepareRegister', {});
+  assert.deepEqual(Object.keys(p).sort(), ['index', 's_u']);
+  assert.equal(p.s_u, saltFromEntropy('0x' + createHash('sha256').update(`srp-A|zkd/mode3/s_u/v2/${p.index}`).digest('hex')));
+  const r = await call('register', { uid: '4242' });
+  assert.deepEqual(Object.keys(r).sort(), ['index', 's_u', 'uid']); assert.equal(r.s_u, p.s_u);
+  await call('storeRegistration', { attrs: ATTRS, slot: SLOT, auid: (await auidOf({ uid: 4242n, s_u: BigInt(r.s_u) })).toString() });
+  const st = await call('getStoredState', {});
+  assert.equal('sk_u' in st.registration, false); assert.equal(stateJson().includes('sk_u'), false);
+  const w = await call('consentLogin', { origin: RP_ORIGIN, arid: '777', allowAgent: '0' });
+  assert.deepEqual(Object.keys(w).sort(), ['attrs', 's_u', 'uid', 'userCred']);
+  await validateWitness(w, '4242');
+});
+await t('0.4.0: 0.3.x 상태(registration.sk_u 있음)를 재등록 없이 읽는다 — 증인·조회에 sk_u 가 나가지 않고 다음 저장 때 저장소에서도 사라진다', async () => {
+  const old = JSON.parse(stateJson());
+  old.registration.sk_u = 'ab'.repeat(32);                      // 0.3.x 가 저장해 둔 모양
+  store.state = old;
+  const w = await call('consentLogin', { origin: RP_ORIGIN, arid: '778', allowAgent: '0' });
+  assert.equal('sk_u' in w, false); assert.equal(w.s_u, old.registration.s_u);
+  assert.equal('sk_u' in (await call('getStoredState', {})).registration, false);
+  assert.equal(stateJson().includes('ab'.repeat(32)), false, 'consentLogin 이 동의 기록을 저장하면서 sk_u 가 사라졌다');
+  assert.equal((await call('getPublicInfo', {})).registered, true, '등록은 그대로다');
 });
 
 console.log(failed ? `\n${failed} failed` : '\nall passed');
