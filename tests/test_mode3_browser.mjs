@@ -9,11 +9,12 @@
 //   MODE3_BROWSER_DEBUG=1 로 브라우저 콘솔·페이지 오류를 그대로 흘려 본다.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { chromium } from '@playwright/test';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
 import { getProvider } from './helpers/mode3_chain.mjs';
-import { buildInitScript, STUB_SRP } from './helpers/ethereum_stub.js';
-import { derivedSecrets } from './helpers/snap_sim.mjs';
+import { buildInitScript } from './helpers/ethereum_stub.js';
 import { VKEY_PATH } from '../lib/mode3_wallet.js';
 import { attrGateAt } from '../lib/mode3_onchain.js';
 import { execFileSync } from 'node:child_process';
@@ -21,7 +22,7 @@ import { DEFAULT_ATTR_SCHEMA, encodeSlotValue } from '../lib/mode3_attr_schema.j
 import { encodeProfile } from '../lib/mode3_attr_schema.js';
 import { attrCommit } from '../lib/mode3_attr_commit.js';
 import { auidOf } from '../lib/mode3_credential.js';
-import { openBackup, isSealedBackup } from '../lib/browser/attr_backup.js';
+import { openBackup, isSealedBackup, backupKey, sealBackup } from '../lib/browser/attr_backup.js';
 
 const DEBUG = process.env.MODE3_BROWSER_DEBUG === '1';
 const j = (o) => JSON.stringify(o);
@@ -67,8 +68,17 @@ try {
   // Task 14(B5): 등록 케이스(아래 "등록(2026-10-22): …")가 채운다 — IdP 가입이 배정한 uid, 지갑이 낸 auid.
   // 이후의 모든 로그인(completeIdpAuth 의 기본값)과 Task 12 "IdP 인증 창" 케이스가 재사용한다.
   let uid = null, AUID = null;
-  // 2026-11-12(스펙 snap-derived-secrets): salt 는 스냅이 시드에서 유도한다 — 스텁 SRP(STUB_SRP)의 유도값이 곧 이 사용자의 salt 다.
-  const USER_SALT = derivedSecrets(STUB_SRP).s_u;
+  // 2026-11-13(스펙 random-salt, 스냅 0.5.0): salt 는 스냅이 무작위로 만든다 — 아래 "설정" 케이스(새로 만들기)가 끝난 뒤 스냅 상태에서 읽어 채운다.
+  let USER_SALT = null;
+  const BACKUP_PW = 'backup-pass-1';
+  let BACKUP_TEXT = null;      // 설정 케이스가 저장한 봉인 백업 파일의 내용 — 복구 케이스가 다시 불러온다
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-browser-backup-'));
+  const tmpFile = (name, content) => { const f = path.join(tmpDir, name); fs.writeFileSync(f, content); return f; };
+  /** 설정이 끝난 스냅 상태(salt 를 불러와 백업 확인까지) — 하네스가 스냅 저장소를 직접 채울 때 쓴다. */
+  const readySnapState = (s_u) => ({ version: 2, salt: { s_u: String(s_u), createdAt: new Date().toISOString(), source: 'import', backedUp: true, backedUpAt: new Date().toISOString() }, registration: null, userCred: null, consents: {} });
+  /** showSaveFilePicker 대역 — OPFS 파일 핸들(OS 파일 창은 자동화로 못 연다). 저장된 내용은 savedBackup(page). */
+  const stubSavePicker = (page) => page.evaluate(() => { window.showSaveFilePicker = async () => (await navigator.storage.getDirectory()).getFileHandle('zkd-salt-backup.json', { create: true }); });
+  const savedBackup = (page) => page.evaluate(async () => (await (await (await navigator.storage.getDirectory()).getFileHandle('zkd-salt-backup.json')).getFile()).text());
   const DEMO_PWD = 'demo-pass-9';   // IdP /user 가입 비밀번호(등록 케이스가 쓴다) — Snap 은 비밀번호를 받지 않는다(Task 15).
   const cfg = (await wallet.get('/wallet/config')).body;
   assert.equal(cfg.secrets, 'snap', `지갑이 snap 모드여야 한다: ${j(cfg)}`);
@@ -228,17 +238,68 @@ try {
     await walletPage.click('#connectBtn');
     await waitText(walletPage, '#mmStatus', account);
     assert.ok((await text(walletPage, '#mmStatus')).startsWith('MetaMask'), '배지는 "MetaMask 0x…"(2026-11-05 — Snap id 는 보이지 않는다)');
+    // 2026-11-13(스펙 random-salt R3·R4): 스냅에 salt 가 없으면 탭 대신 설정 카드가 먼저다 — 연결만으로는 salt 를 만들지 않는다.
+    await walletPage.waitForSelector('#setupCard:not([hidden])', { timeout: 15_000 });
+    assert.equal(await walletPage.isHidden('#walletTabs'), true, 'salt 가 없으면 탭이 보이지 않는다');
+    assert.equal(await walletPage.isVisible('#setupNewBtn'), true); assert.equal(await walletPage.isHidden('#setupBackupRow'), true);
+    assert.equal(snapState, null, '설치·연결만으로는 salt 를 만들지 않는다(R4)');
   });
+
+  // ---- 스냅 설정(2026-11-13 스펙 random-salt R3~R7, 계획 Review 2 — Review 1 은 zkID 가입 뒤에 있다) ----
+  await t('Review 2: 비밀번호가 짧거나 서로 다르면, 또는 파일 창을 취소하면 salt 를 만들지 않는다; 쓰기가 실패하면 salt 는 남고 백업 전 — 탭은 여전히 막혀 있다', async () => {
+    await walletPage.click('#setupNewBtn');
+    await walletPage.waitForSelector('#setupBackupRow:not([hidden])');
+    await walletPage.fill('#setupPw', 'short'); await walletPage.fill('#setupPw2', 'short'); await walletPage.click('#setupSaveBtn');
+    await waitText(walletPage, '#setupVerdict', '백업 비밀번호가 너무 짧습니다');
+    await walletPage.fill('#setupPw', BACKUP_PW); await walletPage.fill('#setupPw2', 'different-pass'); await walletPage.click('#setupSaveBtn');
+    await waitText(walletPage, '#setupVerdict', '비밀번호가 서로 다릅니다');
+    await walletPage.evaluate(() => { window.showSaveFilePicker = async () => { throw new DOMException('사용자가 취소', 'AbortError'); }; });
+    await walletPage.fill('#setupPw2', BACKUP_PW); await walletPage.click('#setupSaveBtn');
+    await waitText(walletPage, '#setupVerdict', '파일 선택을 취소했습니다');
+    assert.equal(snapState, null, '파일을 고르기 전에는 salt 를 만들지 않는다(계획 P12)');
+    await walletPage.evaluate(() => { window.showSaveFilePicker = async () => ({ name: 'broken.json', createWritable: async () => { throw new Error('disk full'); } }); });
+    await walletPage.click('#setupSaveBtn');
+    await waitText(walletPage, '#setupVerdict', '백업 파일을 저장하지 못했습니다');
+    assert.ok(snapState?.salt?.s_u, '파일을 고른 뒤에는 salt 가 생겼다'); assert.equal(snapState.salt.backedUp, false, '아직 백업 전');
+    assert.equal(await walletPage.isHidden('#walletTabs'), true, '백업 전에는 탭이 열리지 않는다');
+    assert.equal(await walletPage.isHidden('#setupChoice'), true, 'salt 가 생긴 뒤에는 새로 만들기·불러오기가 보이지 않는다');
+    assert.equal(await walletPage.isVisible('#setupBackupRow'), true, '백업 칸은 남아 다시 할 수 있다');
+    assert.equal((await pageDump(walletPage)).includes(snapState.salt.s_u), false, 'salt 는 화면에 남지 않는다');
+  });
+
+  await t('설정(R3·R5·R7): 다시 저장하면 같은 salt 로 백업된다 — 파일에는 암호문뿐이고 열면 { version: 4, s_u } 하나, 스냅이 backedUp 이 되고 탭이 열린다', async () => {
+    const before = snapState.salt.s_u;
+    await stubSavePicker(walletPage);
+    await walletPage.fill('#setupPw', BACKUP_PW); await walletPage.fill('#setupPw2', BACKUP_PW); await walletPage.click('#setupSaveBtn');
+    await walletPage.waitForSelector('#setupCard', { state: 'hidden', timeout: 60_000 });
+    assert.equal(snapState.salt.s_u, before, '재시도는 새 salt 를 만들지 않는다(P5)'); assert.equal(snapState.salt.backedUp, true); assert.equal(snapState.salt.source, 'new');
+    USER_SALT = snapState.salt.s_u;
+    BACKUP_TEXT = await savedBackup(walletPage);
+    const sealed = JSON.parse(BACKUP_TEXT);
+    assert.equal(isSealedBackup(sealed), true); assert.equal(BACKUP_TEXT.includes(USER_SALT), false, '파일에 salt 평문이 없다');
+    assert.deepEqual(await openBackup(BACKUP_PW, sealed), { version: 4, s_u: USER_SALT }, '백업에는 salt 만 든다(R5)');
+    assert.equal(await walletPage.isVisible('#walletTabs'), true); assert.equal(await walletPage.isVisible('#sessionsCard'), true);
+    await waitText(walletPage, '#sessionVerdict', 'salt 백업 완료');
+    assert.equal(await walletPage.inputValue('#setupPw'), '', '비밀번호 칸을 비운다');
+    assert.equal(dialogs.length, 0, '새로 만들기에는 스냅 확인 창이 없다');
+  });
+
+  if (!USER_SALT) {   // 위 설정 케이스가 실패했다 — 뒤 케이스가 줄줄이 무너지지 않게 하네스가 스냅 저장소를 직접 채우고 화면을 다시 연다
+    USER_SALT = '424242424242424242424242424242'; snapState = readySnapState(USER_SALT);
+    await walletPage.reload(); await walletPage.click('#connectBtn'); await walletPage.waitForSelector('#walletTabs:not([hidden])', { timeout: 15_000 });
+  }
 
   // "내 계정"(2026-11-12 사용자 요청): 스냅이 저장한 값 전부를 보여 주는 탭. 값이 든 칸은 data-store-path(상태 안의 경로)로 찾는다.
   const storeCell = (path) => `#meCard [data-store-path="${path}"]`;
-  await t('내 계정: 등록 전에는 "저장된 등록 없음" 과 다음 가입 번호만 보인다', async () => {
+  await t('내 계정: 등록 전에는 "저장된 등록 없음" 과 salt 묶음만 보인다 — salt 값은 가려 있고 계정 번호 줄은 없다', async () => {
     await walletTab(walletPage, 'me');
     await walletPage.waitForSelector('#meStoreEmpty:not([hidden])', { timeout: 15_000 });
-    await waitText(walletPage, storeCell('nextIndex'), '0');
+    await waitText(walletPage, storeCell('salt.backedUp'), 'true');
+    assert.equal((await text(walletPage, storeCell('salt.source'))).trim(), 'new');
     assert.equal(await walletPage.$(storeCell('registration.uid')), null, '등록 줄은 없다');
-    // 2026-11-12(화면 리뷰): 저장 형식 버전은 내부 값이라 목록 줄이 아니라 맨 아래 작은 글씨로 보인다 — 등록 전 목록에는 다음 가입 번호 한 줄만 남는다
-    assert.equal(await walletPage.$$eval('#meStore dl.kv dt', (e) => e.length), 1, '등록 전 목록은 다음 가입 번호 한 줄');
+    assert.equal(await walletPage.$(storeCell('nextIndex')), null, '다음 가입 번호 줄은 없어졌다(2026-11-13)');
+    assert.equal(await walletPage.$$eval('#meStore dl.kv dt', (e) => e.length), 5, '등록 전 목록은 salt 묶음 다섯 줄(s_u·출처·만든 시각·백업 확인·백업 확인 시각)');
+    assert.ok((await text(walletPage, storeCell('salt.s_u'))).length > 0); assert.equal((await pageDump(walletPage)).includes(USER_SALT), false, 'salt 값은 가려 있다');
     assert.equal(await walletPage.$eval(storeCell('version'), (el) => Boolean(el.closest('dl'))), false, '저장 형식 버전은 목록 줄이 아니다');
     await walletTab(walletPage, 'services');
   });
@@ -284,31 +345,48 @@ try {
     await backAtWallet(popup);
     await waitText(rpPage, '#verdict', '속성 커밋먼트 기록이 없습니다', 120_000);
     assert.equal((await wallet.get('/wallet/status')).body.registered, false, '등록하지 않았다');
-    assert.equal(snapState?.registration, undefined, 'Snap 에도 아무것도 없다');
+    assert.equal(snapState?.registration ?? null, null, 'Snap 에도 등록이 없다');
     await awaitPopupClosed(popup);
   });
 
-  await t('리뷰 I-2(2026-11-12): 직접 넣은 salt(시드 유도 전)로 만든 속성 기록이면 첫 등록을 멈추고 "스냅에서 가져오기" 로 다시 만들라고 안내한다(attr_record_salt_not_derived)', async () => {
-    const OLD_SALT = '123456789012345678901234567890';   // 11-10·11-11 의 직접 입력 salt — 스냅 유도값이 아니다
+  await t('다른 스냅(다른 salt)에서 만든 속성 기록이면 첫 등록을 멈춘다(attr_record_salt_mismatch) — 스냅에 등록을 만들지 않는다', async () => {
+    const OLD_SALT = '123456789012345678901234567890';   // 이 스냅의 salt 가 아니다
     assert.notEqual(OLD_SALT, USER_SALT);
     const demoUid = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.id === 'demo-user').uid;
     const oldAuid = (await auidOf({ s_u: BigInt(OLD_SALT) })).toString();
-    await walletPage.evaluate((r) => localStorage.setItem('mode3_attr_tool_v1', JSON.stringify(r)), { version: 3, uid: String(demoUid), s_u: OLD_SALT, profile: { birthYear: '1990', country: 'JP' } });
+    await walletPage.evaluate((r) => localStorage.setItem('mode3_attr_tool_v1', JSON.stringify(r)), { version: 4, uid: String(demoUid), s_u: OLD_SALT, profile: { birthYear: '1990', country: 'JP' } });
     const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
     await atIdpLogin(popup);
     await popup.fill('#authUid', 'demo-user'); await popup.fill('#authPwd', DEMO_PWD); await popup.fill('#authAuid', oldAuid); await popup.click('#authGo');
     await backAtWallet(popup);
-    await waitText(rpPage, '#verdict', '속성 도구 기록의 salt 가 스냅과 다릅니다', 120_000);
+    await waitText(rpPage, '#verdict', '속성 도구 기록의 salt 가', 120_000);
     assert.equal((await wallet.get('/wallet/status')).body.registered, false, '등록하지 않았다');
-    assert.equal(snapState?.registration, undefined, 'Snap 에도 아무것도 없다');
+    assert.equal(snapState?.registration ?? null, null, 'Snap 에도 등록이 없다');
     await awaitPopupClosed(popup);
+  });
+
+  await t('Review 1: 설정 전(salt 없음) 스냅으로 RP 로그인하면 팝업이 "스냅 설정이 끝나지 않았습니다" 로 끝난다 — 등록하지 않고 스냅은 그대로 비어 있다', async () => {
+    const demoUid = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.id === 'demo-user').uid;
+    const someSalt = '987654321098765432109876543210';
+    const saved = snapState; snapState = null;   // 스냅을 막 설치했다 — 설정(새로 만들기·불러오기) 전
+    try {
+    await walletPage.evaluate((r) => localStorage.setItem('mode3_attr_tool_v1', JSON.stringify(r)), { version: 4, uid: String(demoUid), s_u: someSalt, profile: { birthYear: '1990', country: 'JP' } });
+    const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
+    await atIdpLogin(popup);
+    await popup.fill('#authUid', 'demo-user'); await popup.fill('#authPwd', DEMO_PWD); await popup.fill('#authAuid', (await auidOf({ s_u: BigInt(someSalt) })).toString()); await popup.click('#authGo');
+    await backAtWallet(popup);
+    await waitText(rpPage, '#verdict', '스냅 설정이 끝나지 않았습니다', 120_000);
+    assert.equal((await wallet.get('/wallet/status')).body.registered, false, '등록하지 않았다');
+    assert.equal(snapState, null, '스냅에 아무것도 생기지 않았다');
+    await awaitPopupClosed(popup);
+    } finally { snapState = saved; await walletPage.evaluate(() => localStorage.removeItem('mode3_attr_tool_v1')); }
   });
 
   await t('첫 로그인 = 지갑 등록(2026-11-09): 팝업이 MetaMask 를 연결하고 zkID 인증 창(등록 모드, 2026-11-11 부터 auid 칸 있음)으로 갔다가 돌아와 속성 도구 기록의 salt 로 등록 → 발급 → RP 세션; Snap 확인 창 없음', async () => {
     const before = dialogs.length;
     const demoUid = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.id === 'demo-user').uid;
     const demoAuid = (await auidOf({ s_u: BigInt(USER_SALT) })).toString();
-    await walletPage.evaluate((r) => localStorage.setItem('mode3_attr_tool_v1', JSON.stringify(r)), { version: 3, uid: String(demoUid), s_u: USER_SALT, index: 0, profile: { birthYear: '1990', country: 'JP' } });   // 속성 도구가 남기는 기록(필요한 칸만) — 2026-11-11(가): 속성도 여기서
+    await walletPage.evaluate((r) => localStorage.setItem('mode3_attr_tool_v1', JSON.stringify(r)), { version: 4, uid: String(demoUid), s_u: USER_SALT, profile: { birthYear: '1990', country: 'JP' } });   // 속성 도구가 남기는 기록(필요한 칸만) — 2026-11-11(가): 속성도 여기서
     const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
     assert.ok(popup.url().includes('authorize=1'), `팝업 URL: ${popup.url()}`);
     await atIdpLogin(popup);
@@ -323,9 +401,8 @@ try {
     const st = (await wallet.get('/wallet/status')).body;
     assert.equal(st.registered, true, '첫 로그인이 지갑을 등록했다'); assert.match(String(st.uid), /^[0-9]+$/); uid = st.uid; AUID = st.auid;
     assert.equal(snapState.registration?.uid, uid, 'Snap 에도 등록이 저장됐다');
-    assert.equal(snapState.registration?.index, 0, '기록의 계정 번호로 등록했다(2026-11-12 스펙 snap-account-index)');
-    assert.equal(snapState.nextIndex, 1, '등록을 저장하면 다음 가입 번호가 오른다'); assert.equal(st.index, 0, '에이전트 기록에도 번호');
-    assert.equal(snapState.registration?.s_u, USER_SALT, '속성 도구 기록의 salt 가 s_u 로 저장됐다'); assert.deepEqual(st.profile, { birthYear: '1990', country: 'JP' }, '속성 도구 기록의 속성으로 등록됐다(가)'); assert.equal(String(AUID), demoAuid, '붙여 넣은 auid 로 등록됐다');
+    assert.equal('index' in snapState.registration, false, '계정 번호는 없어졌다(2026-11-13)'); assert.equal('nextIndex' in snapState, false); assert.equal('index' in st, false, '에이전트 상태에도 번호가 없다');
+    assert.equal(snapState.salt.s_u, USER_SALT, '등록 비밀은 스냅의 salt 그대로다'); assert.equal('s_u' in snapState.registration, false, '등록 기록에는 s_u 를 두지 않는다'); assert.deepEqual(st.profile, { birthYear: '1990', country: 'JP' }, '속성 도구 기록의 속성으로 등록됐다(가)'); assert.equal(String(AUID), demoAuid, '붙여 넣은 auid 로 등록됐다');
     assert.ok((await text(rpPage, '#log')).includes('allowAgent=0'), 'AI 에이전트 체크박스를 없앴으므로 늘 0(2026-11-05)');
     await awaitPopupClosed(popup);
     assert.ok((await text(rpPage, '#log')).includes('3. RP 검증'), 'RP 페이지가 /api/mode3/login 까지 냈다');
@@ -341,7 +418,7 @@ try {
 
   await t('비밀은 Snap 에만: 에이전트 응답·양쪽 페이지 DOM·브라우저 저장소 어디에도 s_u·blind_u 가 없다', async () => {
     const secrets = {
-      s_u: snapState.registration.s_u,
+      s_u: snapState.salt.s_u,
       blind_u: snapState.userCred.blind_u,
     };
     for (const [k, v] of Object.entries(secrets)) assert.ok(typeof v === 'string' && v.length >= 16, `${k} 가 Snap 상태에 있어야 한다: ${v}`);
@@ -373,29 +450,21 @@ try {
     for (const id of ['#identityCard', '#txCard', '#snapPanel']) assert.equal(await walletPage.isHidden(id), true, `${id} 는 보이지 않는다`);
   });
 
-  await t('zk 스냅 화면 계정 번호(2026-11-12 스펙 snap-account-index §3.4): "연결된 서비스" 아래 접는 칸에 이 계정 번호·다음 가입 번호, 바꾸기는 스냅 setNextIndex', async () => {
-    await walletPage.click('#indexFold > summary');
-    await waitText(walletPage, '#meIndex', '0'); await waitText(walletPage, '#meNextIndex', '1');
-    await walletPage.fill('#nextIndexInput', '7'); await walletPage.click('#nextIndexBtn');
-    await waitText(walletPage, '#meNextIndex', '7'); assert.equal(snapState.nextIndex, 7);
-    await walletPage.fill('#nextIndexInput', '-1'); await walletPage.click('#nextIndexBtn');
-    await waitText(walletPage, '#indexVerdict', '계정 번호'); assert.equal(snapState.nextIndex, 7, '잘못된 번호는 바꾸지 않는다');
-    await walletPage.fill('#nextIndexInput', '1'); await walletPage.click('#nextIndexBtn');
-    await waitText(walletPage, '#meNextIndex', '1'); assert.equal(snapState.nextIndex, 1);
-    await walletPage.click('#indexFold > summary');
+  await t('계정 번호 UI 가 없다(2026-11-13 스펙 random-salt R13): 접는 칸·다음 가입 번호 입력이 화면에 없다', async () => {
+    assert.equal(await walletPage.locator('#indexFold, #meIndex, #meNextIndex, #nextIndexInput, #nextIndexBtn').count(), 0);
   });
 
-  await t('내 계정: 스냅이 저장한 값 전부(등록·자격증명·동의 기록·다음 가입 번호)가 보인다 — 비밀(s_u·blind_u)은 가려 있고 "비밀 값 보기" 로만 열리며, 탭을 떠나면 다시 가린다', async () => {
+  await t('내 계정: 스냅이 저장한 값 전부(salt·등록·자격증명·동의 기록)가 보인다 — 비밀(s_u·blind_u)은 가려 있고 "비밀 값 보기" 로만 열리며, 탭을 떠나면 다시 가린다', async () => {
     const cell = (path) => text(walletPage, storeCell(path));
     await walletTab(walletPage, 'me');
     await waitText(walletPage, storeCell('registration.uid'), uid);
     assert.equal(await walletPage.isHidden('#meStoreEmpty'), true);
     const reg = snapState.registration, uc = snapState.userCred;
     for (const [path, want] of [
-      ['registration.uid', reg.uid], ['registration.auid', reg.auid], ['registration.index', String(reg.index)], ['registration.slot', String(reg.slot)],
+      ['registration.uid', reg.uid], ['registration.auid', reg.auid], ['registration.slot', String(reg.slot)], ['salt.source', 'new'], ['salt.backedUp', 'true'],
       ['registration.attrs[0]', reg.attrs[0]], ['registration.attrs[5]', reg.attrs[5]],
       ['userCred.C_u_pt.x', uc.C_u_pt.x], ['userCred.C_u_pt.y', uc.C_u_pt.y], ['userCred.Cf_u', uc.Cf_u],
-      ['nextIndex', String(snapState.nextIndex)], ['version', '1'],
+      ['version', '2'],
     ]) assert.equal(await cell(path), want, path);
     const rpOrigin = Object.keys(snapState.consents)[0];
     assert.ok(rpOrigin, '동의 기록이 있다');
@@ -426,7 +495,8 @@ try {
     assert.equal(lay.versionInList, false, '저장 형식 버전은 목록 줄이 아니다');
     assert.equal(await cell(`consents.${rpOrigin}.allowAgent`), snapState.consents[rpOrigin].allowAgent);
     // 비밀은 기본 가림 — 칸은 있지만 값은 DOM 어디에도 없다
-    const secrets = { 'registration.s_u': reg.s_u, 'userCred.blind_u': uc.blind_u };
+    const secrets = { 'salt.s_u': snapState.salt.s_u, 'userCred.blind_u': uc.blind_u };
+    assert.equal(await walletPage.locator(storeCell('registration.s_u')).count(), 0, '등록 묶음에 s_u 줄이 없다(0.5.0 — salt 묶음에 있다)'); assert.equal(await walletPage.locator(storeCell('registration.index')).count(), 0);
     assert.equal(await walletPage.locator(storeCell('registration.sk_u')).count(), 0, '"내 계정" 탭에 sk_u 줄이 없다(0.4.0 — 등록 키는 없다)');
     const masked = await pageDump(walletPage);
     for (const [path, v] of Object.entries(secrets)) {
@@ -442,7 +512,28 @@ try {
     const again = await pageDump(walletPage);
     for (const [path, v] of Object.entries(secrets)) assert.equal(again.includes(v), false, `탭을 떠났다 오면 ${path} 는 다시 가려진다`);
     await walletTab(walletPage, 'services');
-    assert.equal((await pageDump(walletPage)).includes(reg.s_u), false, '탭을 떠난 뒤 화면에 비밀이 남지 않는다');
+    assert.equal((await pageDump(walletPage)).includes(snapState.salt.s_u), false, '탭을 떠난 뒤 화면에 비밀이 남지 않는다');
+  });
+
+  await t('백업 다시 만들기(계획 P11): "내 계정" 의 버튼 → 설정 카드가 탭과 함께 열린다 → 새 비밀번호로 저장 → 새 파일은 새 비밀번호로만 열리고 같은 salt 다; "닫기" 로 그만둘 수 있다', async () => {
+    await walletTab(walletPage, 'me');
+    await walletPage.click('#rebackupBtn');
+    await walletPage.waitForSelector('#setupCard:not([hidden])');
+    assert.equal(await walletPage.isVisible('#walletTabs'), true, '다시 만들기는 탭을 막지 않는다'); assert.equal(await walletPage.isHidden('#setupChoice'), true);
+    await walletPage.click('#setupBackBtn');
+    await walletPage.waitForSelector('#setupCard', { state: 'hidden' });
+    await walletPage.click('#rebackupBtn');
+    await walletPage.waitForSelector('#setupBackupRow:not([hidden])');
+    await stubSavePicker(walletPage);
+    await walletPage.fill('#setupPw', 'backup-pass-2'); await walletPage.fill('#setupPw2', 'backup-pass-2'); await walletPage.click('#setupSaveBtn');
+    await waitText(walletPage, '#meStoreVerdict', 'salt 백업 완료', 60_000);
+    assert.equal(await walletPage.isHidden('#setupCard'), true);
+    const again = JSON.parse(await savedBackup(walletPage));
+    assert.deepEqual(await openBackup('backup-pass-2', again), { version: 4, s_u: USER_SALT });
+    await assert.rejects(() => openBackup(BACKUP_PW, again), (e) => e.reason === 'bad_password');
+    assert.deepEqual(await openBackup(BACKUP_PW, JSON.parse(BACKUP_TEXT)), { version: 4, s_u: USER_SALT }, '예전 백업 파일도 그대로 열린다');
+    assert.equal(snapState.salt.s_u, USER_SALT); assert.equal(snapState.salt.backedUp, true);
+    await walletTab(walletPage, 'services');
   });
 
 
@@ -611,26 +702,112 @@ try {
   // 이번에는 바로 위 테스트(페이지를 거쳐 속성을 바꾼 경우)와 다르게, **에이전트 API 를 페이지 없이 직접 불러**
   // Snap 을 일부러 못 따라오게 만든다 — 그래야 다음 로그인이 자가 치유(attrsChanged + userCredIssued 동시 응답)를
   // 실제로 타고, 팝업의 applyPendingToSnap 이 그 둘을 올바른 순서로 반영하는지(새 C_u 가 살아남는지)를 본다.
-  // 2026-11-12(스펙 snap-derived-secrets §4): 같은 SRP 로 MetaMask 를 다시 깔면 스냅이 같은 비밀을 유도한다 — 등록이 돌아오고 PPID 가 같다.
+  // 2026-11-13(스펙 random-salt): salt 는 무작위라 스냅을 다시 깔면 사라진다 — 백업 파일을 zk 스냅 화면에서 불러와야 등록이 돌아오고 PPID 가 같다.
   const ppids = async () => (await rp.get('/api/mode3/logins', rp.adminHeaders)).body.logins.filter((l) => l.PPID).map((l) => l.PPID);
-  await t('복구 R1: 스냅 상태만 잃음(MetaMask 재설치) → RP 로그인이 유도 비밀로 스냅 등록을 되살리고 같은 PPID 로 로그인', async () => {
+  /** 스냅을 다시 깐 상태(저장소가 비었다)로 zk 스냅 화면을 다시 열어 설정 카드까지 간다. */
+  const reopenWalletWithEmptySnap = async () => {
+    snapState = null;
+    await walletPage.reload(); await walletPage.waitForSelector('#connectCard:not([hidden])', { timeout: 15_000 });
+    await walletPage.click('#connectBtn');
+    await walletPage.waitForSelector('#setupCard:not([hidden])', { timeout: 15_000 });
+    assert.equal(await walletPage.isVisible('#setupChoice'), true, 'salt 가 없으면 새로 만들기·불러오기를 고른다');
+  };
+  const sealedFile = async (name, rec, pw = BACKUP_PW) => { const { key, kdf } = await backupKey(pw, undefined, 1000); return tmpFile(name, JSON.stringify(await sealBackup(key, kdf, rec))); };
+  const GUARD_WAIT = 850;   // 파일 선택 직후 0.7초(R16)가 지나기를 기다린다
+
+  await t('Review 3·R16: 잘못된 불러오기는 사유를 보이고 스냅은 그대로 비어 있다 — 다른 형식·JSON 아님·s_u 없는 기록·틀린 비밀번호·확인 창 거절; 파일 선택 직후 0.7초 안의 클릭은 무시한다', async () => {
+    await reopenWalletWithEmptySnap();
+    const before = dialogs.length;
+    for (const [name, body] of [['not-backup.json', '{"hello":1}'], ['garbage.json', 'not json at all']]) {
+      await walletPage.setInputFiles('#setupImportFile', tmpFile(name, body));
+      await waitText(walletPage, '#setupVerdict', '백업 파일을 읽지 못했습니다');
+      assert.equal(await walletPage.isHidden('#setupImportPwRow'), true, `${name}: 비밀번호 칸을 열지 않는다`);
+      await walletPage.waitForTimeout(GUARD_WAIT);
+    }
+    // 봉인은 맞지만 안에 salt 가 없는 기록
+    await walletPage.setInputFiles('#setupImportFile', await sealedFile('no-salt.json', { version: 4 }));
+    await walletPage.waitForSelector('#setupImportPwRow:not([hidden])');
+    assert.equal(await walletPage.evaluate(() => document.activeElement?.id), 'setupImportPw', '비밀번호 칸에 초점이 간다');
+    await walletPage.waitForTimeout(GUARD_WAIT);
+    await walletPage.fill('#setupImportPw', BACKUP_PW); await walletPage.click('#setupImportOpenBtn');
+    await waitText(walletPage, '#setupVerdict', '백업 파일을 읽지 못했습니다');
+    assert.equal(snapState, null);
+    await walletPage.click('#setupImportCancelBtn'); await walletPage.waitForSelector('#setupImportPwRow', { state: 'hidden' });   // 칸을 닫고 시작한다 — 아래 "직후" 클릭이 이 파일의 칸에 떨어지지 않게
+    // R16(사용자 보고 2026-11-13): 파일 창에서 더블클릭하면 두 번째 클릭이 막 나타난 "취소"·"불러오기" 에 떨어진다 — 그 클릭은 듣지 않는다
+    const realFile = tmpFile('zkd-salt-backup.json', BACKUP_TEXT);
+    await walletPage.setInputFiles('#setupImportFile', realFile);
+    await walletPage.waitForSelector('#setupImportPwRow:not([hidden])');
+    // 클릭은 페이지 안에서 바로 낸다 — Playwright 의 click 은 조작 가능 여부를 기다리느라 0.7초를 넘길 수 있어 "직후" 를 보장하지 못한다(2026-11-13 전체 실행에서 이 자리의 click 한 번이 1,788ms 걸렸다).
+    const stray = await walletPage.evaluate(() => {
+      const left = importGuardUntil - Date.now();
+      document.getElementById('setupImportCancelBtn').click(); const afterCancel = !document.getElementById('setupImportPwRow').hidden;
+      document.getElementById('setupImportOpenBtn').click();
+      document.getElementById('setupImportFile').closest('label').click();   // 라벨에 떨어진 헛클릭 — 파일 창을 다시 열지 않는다(preventDefault)
+      return { left, afterCancel };
+    });
+    assert.ok(stray.left > 0 && stray.left <= 700, `칸이 나타난 직후에는 방지 구간 안이다: ${j(stray)}`);
+    assert.equal(stray.afterCancel, true, '직후의 "취소" 클릭은 무시된다 — 칸이 남는다');
+    await walletPage.waitForTimeout(150);
+    assert.equal((await text(walletPage, '#setupVerdict')).trim(), '', '직후의 "불러오기" 클릭도 무시된다 — 빈 비밀번호로 실패를 찍지 않는다');
+    assert.equal(await walletPage.isVisible('#setupImportPwRow'), true);
+    await walletPage.waitForTimeout(GUARD_WAIT);
+    await walletPage.click('#setupImportCancelBtn');
+    await walletPage.waitForSelector('#setupImportPwRow', { state: 'hidden' });
+    assert.equal(snapState, null, '취소하면 아무것도 들어오지 않는다');
+    // 틀린 비밀번호 — 그렇다고 말하고 칸은 그대로 둔다
+    await walletPage.setInputFiles('#setupImportFile', realFile);
+    await walletPage.waitForSelector('#setupImportPwRow:not([hidden])'); await walletPage.waitForTimeout(GUARD_WAIT);
+    await walletPage.fill('#setupImportPw', 'wrong-password'); await walletPage.click('#setupImportOpenBtn');
+    await waitText(walletPage, '#setupVerdict', '백업 비밀번호가 맞지 않습니다');
+    assert.equal(await walletPage.isVisible('#setupImportPwRow'), true); assert.equal(snapState, null);
+    assert.equal(dialogs.length, before, '여기까지 스냅 확인 창이 뜨지 않았다');
+    // 맞는 비밀번호지만 스냅의 확인 창에서 거절
+    answers.push(false);
+    await walletPage.fill('#setupImportPw', BACKUP_PW); await walletPage.press('#setupImportPw', 'Enter');
+    await waitText(walletPage, '#setupVerdict', '백업을 불러오지 못했습니다');
+    assert.ok(lastDialog().includes('백업에서 salt 불러오기'), `확인 창 문구: ${lastDialog()}`);
+    assert.equal(lastDialog().includes(USER_SALT), false, '확인 창에 salt 값을 보이지 않는다');
+    assert.equal(snapState?.salt ?? null, null, '거절하면 salt 가 들어오지 않는다');
+    assert.equal(await walletPage.isHidden('#walletTabs'), true, '여전히 설정 카드만 보인다');
+    assert.equal((await pageDump(walletPage)).includes(USER_SALT), false, '불러오는 동안 salt 가 화면에 남지 않는다');
+  });
+
+  await t('복구 R1: 스냅을 다시 깔았다(에이전트 등록은 남음) → 속성이 든 옛 형식 백업도 salt 만 받아 불러온다 → RP 로그인이 스냅 등록을 되살리고 같은 PPID 로 로그인', async () => {
     const before = await ppids(); const known = new Set(before);
     assert.ok(before.length > 0, '앞 케이스의 로그인 기록이 있어야 비교할 수 있다');
-    snapState = null;   // MetaMask 재설치 — 확장의 암호화 저장소가 비었다
+    assert.equal(snapState?.salt ?? null, null, '앞 케이스가 스냅을 비워 두었다');
+    const toolRec = await walletPage.evaluate(() => localStorage.getItem('mode3_attr_tool_v1'));
+    // 스펙 §5.3: 옛 백업(속성 도구 version 3 — uid·속성·blind 가 든 기록)도 s_u 가 있으면 받고 나머지는 버린다
+    const old = await sealedFile('zkd-attr-backup-old.json', { version: 3, uid: '999999', s_u: USER_SALT, index: 0, profile: { birthYear: '1970', country: 'US' }, attrs: ['1970', '840', '0', '0', '0', '0'], blind: '5', commit: '9' });
+    await walletPage.setInputFiles('#setupImportFile', old);
+    await walletPage.waitForSelector('#setupImportPwRow:not([hidden])'); await walletPage.waitForTimeout(GUARD_WAIT);
+    answers.push(true);
+    await walletPage.fill('#setupImportPw', BACKUP_PW); await walletPage.click('#setupImportOpenBtn');
+    await walletPage.waitForSelector('#setupCard', { state: 'hidden', timeout: 30_000 });
+    assert.equal(snapState.salt.s_u, USER_SALT); assert.equal(snapState.salt.source, 'import'); assert.equal(snapState.salt.backedUp, true, '불러온 salt 는 백업이 있다는 뜻이다');
+    assert.equal(await walletPage.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')), toolRec, '백업의 속성으로 속성 도구 기록을 채우지 않는다(R5)');
+    await waitText(walletPage, '#sessionVerdict', '백업에서 salt 를 불러왔습니다');
+    assert.equal(await walletPage.inputValue('#setupImportPw'), '', '비밀번호 칸을 비운다');
     const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
     await completeIdpAuth(popup);
     await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
     await awaitPopupClosed(popup);
-    assert.equal(snapState.registration?.uid, uid, '스냅 등록이 돌아왔다'); assert.equal(snapState.registration?.s_u, USER_SALT);
+    assert.equal(snapState.registration?.uid, uid, '스냅 등록이 돌아왔다'); assert.equal(snapState.salt.s_u, USER_SALT);
     assert.equal(snapState.registration?.auid, AUID);
     const after = await ppids();
     assert.equal(after.length, before.length + 1, '로그인 한 번이 더 기록됐다');
     assert.deepEqual(new Set(after), known, '새 PPID 가 생기지 않았다 — 같은 PPID');
   });
-  await t('복구 R2: 스냅·에이전트 상태 둘 다 잃음(새 PC) → 등록 모드 인증 창 → IdP 가 같은 비밀 재등록을 복구로 받아 같은 PPID', async () => {
+  await t('복구 R2: 스냅·에이전트 상태 둘 다 잃음(새 PC) → 설치 때 저장한 백업 파일을 불러온다 → 등록 모드 인증 창 → IdP 가 같은 salt 의 재등록을 복구로 받아 같은 PPID', async () => {
     const before = await ppids(); const known = new Set(before);
-    snapState = null;
     assert.equal((await wallet.post('/wallet/reset', { confirm: true })).status, 200);
+    await reopenWalletWithEmptySnap();
+    await walletPage.setInputFiles('#setupImportFile', tmpFile('zkd-salt-backup.json', BACKUP_TEXT));
+    await walletPage.waitForSelector('#setupImportPwRow:not([hidden])'); await walletPage.waitForTimeout(GUARD_WAIT);
+    answers.push(true);
+    await walletPage.fill('#setupImportPw', BACKUP_PW); await walletPage.click('#setupImportOpenBtn');
+    await walletPage.waitForSelector('#setupCard', { state: 'hidden', timeout: 30_000 });
+    assert.equal(snapState.salt.s_u, USER_SALT, '백업에서 같은 salt 가 돌아왔다');
     const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
     await atIdpLogin(popup);
     assert.equal(new URL(popup.url()).searchParams.get('purpose'), 'register', '에이전트가 비어 등록 모드로 간다');
@@ -641,26 +818,21 @@ try {
     await awaitPopupClosed(popup);
     const st = (await wallet.get('/wallet/status')).body;
     assert.equal(st.registered, true); assert.equal(String(st.uid), String(uid)); assert.equal(st.auid, AUID);
-    assert.equal(snapState.registration?.uid, uid); assert.equal(snapState.registration?.s_u, USER_SALT);
+    assert.equal(snapState.registration?.uid, uid); assert.equal(snapState.salt.s_u, USER_SALT);
     const after = await ppids();
     assert.equal(after.length, before.length + 1); assert.deepEqual(new Set(after), known, '같은 PPID');
   });
-  await t('다른 SRP 의 스냅으로는 복구하지 않는다 — 스냅이 비었고 에이전트 등록과 비밀이 다르면 snap_restore_mismatch 로 멈춘다', async () => {
+  await t('다른 salt 의 스냅으로는 복구하지 않는다 — 스냅에 등록이 없고 그 salt 가 에이전트 등록과 다르면 snap_restore_mismatch 로 멈춘다', async () => {
     const saved = snapState;
-    snapState = null;
-    await context.addInitScript({ content: 'window.__srpOverride = "other-srp";' });   // 이 컨텍스트의 새 페이지부터 — 다른 시드의 MetaMask
+    snapState = readySnapState('555555555555555555555555555555');   // 새로 만든(또는 다른 백업을 불러온) 스냅
     try {
       const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
       await completeIdpAuth(popup);
-      await waitText(rpPage, '#verdict', '이 스냅의 비밀이 등록과 다릅니다', 120_000);
-      assert.ok((await text(rpPage, '#verdict')).includes('재시연 세트'), '리뷰 I-1: 시드 유도 전 등록은 되찾을 수 없다는 실행 가능한 안내');
-      assert.equal((await text(rpPage, '#verdict')).includes('백업의 salt 로만'), false, '되찾을 수 없는 길을 안내하지 않는다');
+      await waitText(rpPage, '#verdict', '이 스냅의 salt 가 등록과 다릅니다', 120_000);
+      assert.ok((await text(rpPage, '#verdict')).includes('백업 파일'), '되찾는 길(그 salt 의 백업 파일)을 안내한다');
       await awaitPopupClosed(popup);
-      assert.notEqual(snapState?.registration?.uid, uid, '다른 계정 등록을 만들지 않았다');
-    } finally {
-      await context.addInitScript({ content: 'window.__srpOverride = null;' });   // addInitScript 는 누적된다 — 뒤에 실행되는 이 줄이 되돌린다
-      snapState = saved;
-    }
+      assert.notEqual(snapState?.registration?.uid, uid, '다른 salt 로 이 계정의 등록을 만들지 않았다');
+    } finally { snapState = saved; }
   });
 
   await t('에이전트에서 직접 속성을 바꾸면(Snap 모름) 다음 로그인이 attrsChanged·새 C_u 를 함께 반영한다', async () => {
@@ -831,7 +1003,7 @@ try {
   const zkidLogin = async (id, pwd = DEMO_PWD) => { const r = await context.request.post(`${cia.base}/cia/user/login`, { data: { id, pwd } }); assert.equal(r.status(), 200, `zkID 로그인 ${id}`); };
   const zkidLogout = async () => { await context.request.post(`${cia.base}/cia/user/logout`, { data: {} }); };
   let toolCommit = null;
-  await t('속성 도구(/attr.html): 입력은 속성뿐 — uid 는 zkID 로그인에서, salt·계정 번호는 스냅에서 받아와 커밋먼트를 만든다(식에 uid 없음); 그 밖의 요청은 없고 Node 재계산과 같다; 지우기·백업 불러오기', async () => {
+  await t('속성 도구(/attr.html): 입력은 속성뿐 — uid 는 zkID 로그인에서, salt 는 스냅에서 받아와 커밋먼트를 만든다(식에 uid·blind 없음, R15); 그 밖의 요청은 없고 Node 재계산과 같다; 같은 속성이면 같은 값; 백업 기능은 없다', async () => {
     const p = await context.newPage();
     const reqs = []; p.on('request', (r) => reqs.push(r.url()));
     await p.goto(`${wallet.base}/attr.html`);
@@ -857,13 +1029,13 @@ try {
     assert.equal(rec.commit, shown); assert.match(shown, /^[0-9]+$/);
     const attrs = await encodeProfile(DEFAULT_ATTR_SCHEMA, { birthYear: '1990', country: 'KR', extra1: 'hello' });
     assert.deepEqual(rec.attrs, attrs);
-    assert.equal(rec.version, 3); assert.equal(rec.uid, String(uid), 'uid 는 zkID 로그인 세션에서 받아온 값'); assert.equal(rec.s_u, USER_SALT, 'salt 는 스냅이 유도한 값(등록 때와 같다)');
-    assert.equal(rec.index, 0, '계정 번호는 스냅이 고른다 — 등록된 계정의 번호');
-    assert.equal(await attrCommit({ s_u: rec.s_u, attrs, blind: rec.blind }), rec.commit, 'Node 재계산과 일치(식에 uid 없음)');
+    assert.equal(rec.version, 4); assert.equal(rec.uid, String(uid), 'uid 는 zkID 로그인 세션에서 받아온 값'); assert.equal(rec.s_u, USER_SALT, 'salt 는 스냅의 salt(등록 때와 같다)');
+    assert.equal('index' in rec, false, '계정 번호는 없어졌다'); assert.equal('blind' in rec, false, 'blind 는 없어졌다(R15)');
+    assert.equal(await attrCommit({ s_u: rec.s_u, attrs }), rec.commit, 'Node 재계산과 일치(식에 uid·blind 없음)');
+    assert.equal(/blind/.test(await p.textContent('.formula')), false, '식 표시에 blind 가 없다');
     assert.equal((await p.textContent('.formula')).includes('uid'), false, '식 표시에 uid 가 없다');
-    // 재료를 모두 숨기지 않고 보인다 — salt·blind·인코딩 값, 그리고 계정(uid·auid)
+    // 재료를 모두 숨기지 않고 보인다 — salt·인코딩 값, 그리고 계정(uid·auid)
     assert.equal((await p.textContent('#uidShown')).trim(), rec.uid); assert.equal((await p.textContent('#saltShown')).trim(), USER_SALT);
-    assert.equal((await p.textContent('#blindShown')).trim(), rec.blind);
     // 2026-11-11: uid·salt 로 계산한 auid 도 보인다 — 첫 RP 로그인 인증 창에 붙여 넣는 값
     assert.equal((await p.textContent('#auidShown')).trim(), (await auidOf({ s_u: BigInt(rec.s_u) })).toString());
     for (let i = 0; i < 4; i++) assert.ok((await p.textContent(`#attrShown${i}`)).includes(rec.attrs[i]), `attr${i} 인코딩 값 표시`);
@@ -877,39 +1049,25 @@ try {
     // 범위 밖 값(출생연도 1800 < min 1900)은 인코더가 거절한다 — 저장값은 그대로(빈 칸은 폼의 required 가 먼저 막아 요청 자체가 없다)
     await p.fill('#birthYear', '1800'); await p.click('#makeBtn'); await waitText(p, '#formVerdict', '커밋먼트를 만들지 못했습니다');
     assert.equal(JSON.parse(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1'))).commit, rec.commit);
-    // 지우기(confirm 수락) → 없음; 백업 불러오기 → 같은 커밋먼트 복원
+    // 2026-11-13(스펙 random-salt R5·R15): 백업 버튼·자동 백업 절·blind 가 없다. 같은 스냅·같은 속성이면 같은 커밋먼트라, 지운 뒤 다시 만들면 같은 값이다.
+    for (const sel of ['#exportBtn', '#importFile', '#importPwRow', '#backupSetupBtn', '#backupPw', '#blindShown', '#copyBlindBtn']) assert.equal(await p.$(sel), null, `${sel} 는 없다`);
+    assert.equal(/blind|백업 내려받기|백업 불러오기|자동 백업/.test(await p.textContent('main')), false, '화면에 blind·백업 문구가 없다');
+    const make = async (birthYear) => { await p.fill('#birthYear', birthYear); await p.selectOption('#country', 'KR'); await p.fill('#extra1', 'hello'); await p.click('#makeBtn'); await p.waitForFunction((y) => JSON.parse(localStorage.getItem('mode3_attr_tool_v1') ?? 'null')?.profile?.birthYear === y, birthYear); return (await p.textContent('#commitBox')).trim(); };
     p.once('dialog', (d) => d.accept());
     await p.click('#clearBtn'); await p.waitForSelector('#noCommit:not([hidden])');
     assert.equal(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')), null);
-    await p.setInputFiles('#importFile', { name: 'backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(rec)) });
-    await waitText(p, '#importVerdict', '백업 불러오기 완료');
-    assert.equal((await p.textContent('#commitBox')).trim(), rec.commit);
-    // 2026-11-12(사용자 보고): 결과가 "커밋먼트 재료" 표 아래에 찍혀 화면 밖이라 아무 일도 없어 보였다 — 버튼 바로 아래(표 위)에 보인다.
-    const topOf = (sel) => p.$eval(sel, (el) => el.getBoundingClientRect().top);
-    assert.ok(await topOf('#importVerdict') < await topOf('#inputsView'), '불러오기 결과는 재료 표보다 위에 보인다');
-    // 2026-11-12(화면 리뷰): "백업 불러오기" 는 옆의 버튼들처럼 테두리 버튼으로 보이고, "3. 자동 백업" 의 비밀번호 확인은 레이블과 칸이 한 줄에 있다
-    const look = await p.evaluate(() => {
-      const lab = document.querySelector('#importFile').closest('label'), cs = getComputedStyle(lab);
-      const mid = (el) => { const b = el.getBoundingClientRect(); return (b.top + b.bottom) / 2; };
-      const pw2 = document.querySelector('#backupPw2');
-      return { border: `${cs.borderTopWidth} ${cs.borderTopStyle}`, pw2Dy: Math.abs(mid(pw2) - mid(pw2.closest('label').querySelector('span'))) };
-    });
-    assert.equal(look.border, '1px solid', '"백업 불러오기" 는 테두리 버튼이다');
-    assert.ok(look.pw2Dy < 12, `"비밀번호 확인" 레이블과 칸이 한 줄에 있다: ${look.pw2Dy}`);
-    // 옛 형식(version 1, uid·salt 없음) 백업은 거절한다. version 2(uid 가 식에 든 정의)는 재료가 다 있으므로 새 식으로 바꿔 받는다 — 커밋먼트는 새 식의 값.
-    await p.setInputFiles('#importFile', { name: 'v2.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ ...rec, version: 2, commit: '424242' })) });
-    await waitText(p, '#importVerdict', '옛 형식 백업을 새 식으로 바꿔 불러왔습니다');
-    assert.equal((await p.textContent('#commitBox')).trim(), rec.commit); assert.equal(JSON.parse(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1'))).version, 3);
-    const { uid: _u, s_u: _s, ...v1 } = rec;
-    await p.setInputFiles('#importFile', { name: 'v1.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ ...v1, version: 1 })) });
-    await waitText(p, '#importVerdict', '백업을 불러오지 못했습니다');
-    const broken = { ...rec, commit: '1' };
-    await p.setInputFiles('#importFile', { name: 'bad.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(broken)) });
-    await waitText(p, '#importVerdict', '백업을 불러오지 못했습니다');
+    assert.equal(await make('1990'), rec.commit, '지운 뒤 같은 속성으로 다시 만들면 같은 커밋먼트(R15) — zkID 프로필을 다시 붙여 넣을 필요가 없다');
+    const other = await make('1991');
+    assert.notEqual(other, rec.commit, '속성이 다르면 다른 값'); assert.match(other, /^[0-9]+$/);
+    assert.equal(await make('1990'), rec.commit, '속성을 되돌리면 값도 돌아온다');
+    // 옛 기록(version 3 — blind 가 든 식)은 읽지 않고 "다시 만드세요" 를 보인다
+    await p.evaluate((r) => localStorage.setItem('mode3_attr_tool_v1', JSON.stringify({ ...r, version: 3, blind: '5', index: 0 })), rec);
+    await p.reload(); await p.waitForSelector('#oldRecord:not([hidden])');
+    assert.equal(await p.isVisible('#noCommit'), true, '옛 기록의 커밋먼트는 보이지 않는다');
+    await p.evaluate((r) => localStorage.setItem('mode3_attr_tool_v1', JSON.stringify(r)), rec);
+    await p.reload(); await p.waitForSelector('#commitBox:not([hidden])');
     toolCommit = rec.commit;
     // 2026-11-11: 데모 리셋(scripts/demo_split_start.sh 가 /attr/dist/reset.json 에 리셋 시각을 쓴다) — 도구가 처음 보는 값이면 이 브라우저의 기록을 비운다.
-    await p.setInputFiles('#importFile', { name: 'backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(rec)) });
-    await waitText(p, '#importVerdict', '백업 불러오기 완료');
     const resetFile = new URL('../mode3/attr/dist/reset.json', import.meta.url);
     fs.writeFileSync(resetFile, JSON.stringify({ epoch: 'test-reset-1' }));
     try {
@@ -919,70 +1077,30 @@ try {
       await p.reload(); await p.waitForTimeout(500);
       assert.equal(await p.isHidden('#resetCleared'), true, '같은 리셋 값이면 다시 비우지 않는다(안내도 없다)');
     } finally { fs.rmSync(resetFile, { force: true }); }
+    // 뒤 케이스들이 쓰는 기록을 다시 만든다 — 같은 속성이라 같은 커밋먼트다
+    await p.reload(); await p.waitForSelector('#noCommit:not([hidden])');
+    assert.equal(await make('1990'), toolCommit);
     await p.close();
   });
-  // 2026-11-11(사용자 결정, 스펙 D20): 자동 암호화 백업 — 백업 비밀번호와 한 번 고른 파일. 기록이 바뀔 때마다 그 파일을 암호문으로 덮어쓴다(평문 내려받기는 없다).
-  await t('속성 도구 자동 백업: 비밀번호·파일을 한 번 정하면 기록을 만들 때마다 그 파일을 암호문으로 덮어쓴다(평문 없음)·새로고침 뒤에도 이어진다·내려받기도 암호문; 불러오기는 틀린 비밀번호면 실패, 맞으면 복원', async () => {
-    const PW = 'backup-pw-1234';
+  // 2026-11-13(스펙 random-salt R5·R6): 속성 도구의 자동 암호화 백업(D20)은 없어졌다 — 백업은 zk 스냅 화면이 만든다. 스냅이 설정 전이면 도구는 salt 를 받지 못한다.
+  await t('속성 도구: 스냅 설정 전(salt 없음·백업 전)이면 만들지 못하고 zk 스냅 화면으로 안내한다(snap_setup_required) — 기록은 그대로', async () => {
+    const saved = snapState;
     const p = await context.newPage();
-    // 파일 선택 창 대신 브라우저 내부 파일(OPFS)의 실제 파일 핸들 — 진짜 핸들이라 IndexedDB 에 그대로 저장된다
-    await p.addInitScript(() => { window.showSaveFilePicker = async () => (await navigator.storage.getDirectory()).getFileHandle('zkd-attr-backup.json', { create: true }); });
-    const readBackup = async () => JSON.parse(await p.evaluate(async () => (await (await (await navigator.storage.getDirectory()).getFileHandle('zkd-attr-backup.json')).getFile()).text()));
-    const make = async (birthYear) => {
-      await zkidLogin('demo-user'); await p.fill('#birthYear', birthYear); await p.selectOption('#country', 'KR');
-      await p.click('#makeBtn'); await waitText(p, '#formVerdict', '커밋먼트 생성 완료');
-    };
-    const record = async () => JSON.parse(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')));
     await p.goto(`${wallet.base}/attr.html`);
-    await make('1990');
-    assert.match(await text(p, '#backupStatus'), /꺼짐/, '설정 전에는 꺼짐');
-    await p.fill('#backupPw', 'short'); await p.fill('#backupPw2', 'short'); await p.click('#backupSetupBtn');
-    await waitText(p, '#backupVerdict', '8자');
-    await p.fill('#backupPw', PW); await p.fill('#backupPw2', `${PW}x`); await p.click('#backupSetupBtn');
-    await waitText(p, '#backupVerdict', '일치하지');
-    await p.fill('#backupPw', PW); await p.fill('#backupPw2', PW); await p.click('#backupSetupBtn');
-    await waitText(p, '#backupStatus', '마지막 백업', 60_000);
-    assert.equal(await p.inputValue('#backupPw'), '', '비밀번호 칸은 비운다');
-    const rec1 = await record();
-    const b1 = await readBackup();
-    assert.equal(isSealedBackup(b1), true, '봉인 백업 형식');
-    const raw1 = JSON.stringify(b1);
-    for (const v of [USER_SALT, rec1.blind, rec1.commit, 'birthYear', 's_u']) assert.equal(raw1.includes(v), false, `백업 파일에 평문 ${v.slice(0, 12)} 가 없다`);
-    assert.deepEqual(await openBackup(PW, b1), rec1, '비밀번호로 풀면 기록과 같다');
-    // 새로고침 뒤 기록을 다시 만들면 자동으로 덮어쓴다(핸들·키는 IndexedDB)
-    await p.reload(); await make('1991');
-    const rec2 = await record();
-    let b2 = b1;
-    for (let i = 0; i < 120 && b2.savedAt === b1.savedAt; i++) { await new Promise((r) => setTimeout(r, 250)); b2 = await readBackup(); }
-    assert.equal((await openBackup(PW, b2)).commit, rec2.commit, '새 기록으로 덮어썼다');
-    // 내려받기도 암호문
-    const [dl] = await Promise.all([p.waitForEvent('download'), p.click('#exportBtn')]);
-    assert.equal(isSealedBackup(JSON.parse(fs.readFileSync(await dl.path(), 'utf8'))), true, '내려받기도 암호화 백업');
-    // 불러오기: 지우기 → 취소 → 틀린 비밀번호는 실패 → 맞는 비밀번호는 복원.
-    // 2026-11-12(사용자 보고): 비밀번호를 브라우저 기본 창(window.prompt)으로 받았는데 그 창이 안 뜨면 아무 일도 없어 보였다 — 페이지 안의 칸으로 받는다.
-    p.once('dialog', (d) => d.accept()); await p.click('#clearBtn'); await p.waitForSelector('#noCommit:not([hidden])');
-    const nativeDialogs = []; p.on('dialog', (d) => { nativeDialogs.push(d.type()); d.dismiss().catch(() => {}); });
-    const stored = () => p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1'));
-    const file = { name: 'zkd-attr-backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(b2)) };
-    await p.setInputFiles('#importFile', file); await p.waitForSelector('#importPwRow', { state: 'visible' });
-    assert.equal(await p.evaluate(() => document.activeElement?.id), 'importPw', '비밀번호 칸에 초점이 간다');
-    await p.click('#importCancelBtn'); await p.waitForSelector('#importPwRow', { state: 'hidden' });
-    assert.equal(await stored(), null, '취소하면 아무것도 들어오지 않는다');
-    await p.setInputFiles('#importFile', file); await p.waitForSelector('#importPwRow', { state: 'visible' });
-    await p.fill('#importPw', 'wrong-password'); await p.click('#importOpenBtn');
-    await waitText(p, '#importVerdict', '백업을 불러오지 못했습니다');
-    // 2026-11-12(화면 리뷰): 틀린 비밀번호는 그렇다고 말한다 — 그전에는 "형식이 다르거나…" 라는 일반 문구만 보였다
-    await waitText(p, '#importVerdict', '백업 비밀번호가 맞지 않습니다');
-    assert.equal((await p.textContent('#importVerdict')).includes('형식이 다르거나'), false, '틀린 비밀번호에 형식 오류 문구를 보이지 않는다');
-    assert.equal((await p.textContent('#importPwRow label span')).trim(), '백업 비밀번호', '비밀번호 칸의 레이블은 다른 칸처럼 이름이다');
-    assert.equal(await stored(), null, '틀린 비밀번호로는 아무것도 들어오지 않는다');
-    assert.equal(await p.isVisible('#importPwRow'), true, '틀리면 칸을 그대로 둔다 — 다시 넣어 볼 수 있다');
-    await p.fill('#importPw', PW); await p.press('#importPw', 'Enter');
-    await waitText(p, '#importVerdict', '백업 불러오기 완료');
-    assert.equal((await p.textContent('#commitBox')).trim(), rec2.commit);
-    assert.equal(await p.isVisible('#importPwRow'), false, '불러오면 비밀번호 칸을 닫는다');
-    assert.equal(await p.inputValue('#importPw'), '', '비밀번호 칸은 비운다');
-    assert.deepEqual(nativeDialogs, [], '브라우저 기본 창을 띄우지 않는다');
+    const before = await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1'));
+    assert.ok(before, '앞 케이스가 남긴 기록이 있어야 한다');
+    await zkidLogin('demo-user');
+    const notBackedUp = readySnapState('777777777777'); notBackedUp.salt.backedUp = false; notBackedUp.salt.backedUpAt = null;
+    try {
+      for (const st of [null, notBackedUp]) {
+        snapState = st;
+        await p.fill('#birthYear', '1993'); await p.selectOption('#country', 'KR'); await p.click('#makeBtn');
+        await waitText(p, '#formVerdict', 'zk 스냅 화면');   // 어디서 설정하는지 알려 준다
+        assert.ok((await text(p, '#formVerdict')).includes('salt 가 없거나'), '까닭(salt 없음·백업 전)도 보인다');
+        assert.equal(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')), before, '실패하면 기록을 바꾸지 않는다');
+        await p.reload();
+      }
+    } finally { snapState = saved; }
     await p.close();
   });
 
@@ -1188,41 +1306,38 @@ try {
     await p.close();
   });
 
-  await t('I-3(2026-11-12 스펙 snap-account-index): 같은 시드의 스냅을 초기화하고 다른 계정을 가입하면 계정 번호가 올라 salt 가 다르다 — IdP 는 새 계정으로 받는다', async () => {
-    const saltA = snapState.registration.s_u;
+  await t('R11(2026-11-13 스펙 random-salt): 스냅을 초기화해도 salt 는 남는다 — 같은 스냅으로 다른 계정을 등록하려 하면 "이 스냅은 이 IdP 에 이미 다른 계정으로 등록돼 있습니다"(auid_taken)', async () => {
     assert.equal((await cia.post('/cia/signup', { id: 'demo-user-b', pwd: DEMO_PWD })).status, 201, '계정 B 가입');
     const uidB = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.id === 'demo-user-b').uid;
-    // "스냅 초기화" 의 결과(등록·동의를 지우고 nextIndex 만 남긴다 — 스냅 RPC 테스트가 reset 자체를 본다) + 에이전트 비우기
-    snapState = { version: 1, registration: null, userCred: null, consents: {}, nextIndex: snapState.nextIndex };
+    // "스냅 초기화" 의 결과(등록·동의를 지우고 salt 는 남긴다 — 스냅 RPC 테스트가 reset 자체를 본다) + 에이전트 비우기
+    snapState = { version: 2, salt: snapState.salt, registration: null, userCred: null, consents: {} };
     assert.equal((await wallet.post('/wallet/reset', { confirm: true })).status, 200);
-    const saltB = derivedSecrets(STUB_SRP, 1).s_u;
-    const auidB = (await auidOf({ s_u: BigInt(saltB) })).toString();
-    // 속성 도구 화면을 거친다 — 앞 계정 A 의 기록이 보이는 채 열려도, 만들 때 uid 는 zkID 로그인(계정 B)에서, salt·번호는 스냅(초기화 뒤 다음 가입 번호)에서 새로 받아온다
-    // (2026-11-13: 직접 넣는 칸이 없어 "앞 계정 값으로 만든다"(최종 리뷰 I-1)가 생기지 않는다).
+    // 속성 도구: 앞 계정 A 의 기록이 보이는 채 열려도, 만들 때 uid 는 zkID 로그인(계정 B)에서 새로 받아온다. salt 는 같은 스냅의 것이라 A 때와 같다.
     const a = await context.newPage(); await a.goto(`${wallet.base}/attr.html`);
     try {
       await a.waitForSelector('#commitBox:not([hidden])');   // A 의 기록으로 열린다
       assert.equal((await a.textContent('#uidShown')).trim(), String(uid));
       await zkidLogin('demo-user-b');
       await a.fill('#birthYear', '1990'); await a.selectOption('#country', 'KR'); await a.click('#makeBtn');
-      await waitText(a, '#formVerdict', '커밋먼트 생성 완료');
+      await a.waitForFunction((u) => JSON.parse(localStorage.getItem('mode3_attr_tool_v1') ?? 'null')?.uid === u, String(uidB));
       const recB = JSON.parse(await a.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')));
-      assert.equal(recB.uid, String(uidB), 'uid 는 zkID 에 로그인한 계정 B'); assert.equal(recB.index, 1, '등록이 없는 스냅의 기본은 다음 가입 번호'); assert.equal(recB.s_u, saltB);
+      assert.equal(recB.uid, String(uidB), 'uid 는 zkID 에 로그인한 계정 B'); assert.equal(recB.s_u, USER_SALT, 'salt 는 스냅의 것 — 계정이 달라도 같다');
     } finally { await a.close(); }
     const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
     await atIdpLogin(popup);
-    await popup.fill('#authUid', 'demo-user-b'); await popup.fill('#authPwd', DEMO_PWD); await popup.fill('#authAuid', auidB); await popup.click('#authGo');
+    await popup.fill('#authUid', 'demo-user-b'); await popup.fill('#authPwd', DEMO_PWD); await popup.fill('#authAuid', String(AUID)); await popup.click('#authGo');   // 같은 스냅 → 같은 auid
     await backAtWallet(popup);
-    await waitText(rpPage, '#verdict', '로그인 성공', 180_000);
+    await waitText(rpPage, '#verdict', '이 스냅은 이 IdP 에 이미 다른 계정으로 등록돼 있습니다', 180_000);
     await awaitPopupClosed(popup);
-    assert.equal(snapState.registration?.index, 1); assert.equal(snapState.registration?.uid, String(uidB));
-    assert.notEqual(snapState.registration.s_u, saltA, '다른 계정은 다른 salt — IdP 가 묶을 고리가 없다');
-    const st = (await wallet.get('/wallet/status')).body; assert.equal(st.index, 1); assert.equal(String(st.uid), String(uidB));
+    const st = (await wallet.get('/wallet/status')).body;
+    assert.equal(st.registered, false, '에이전트는 계정 B 를 등록하지 않았다');
+    assert.equal((await cia.adminGet('/cia/accounts')).body.accounts.find((x) => x.id === 'demo-user-b').auid, null, 'IdP 도 계정 B 에 auid 를 묶지 않았다');
   });
 
   await t('하네스: 준비한 대화상자 응답이 남지 않았다(기대한 동의 창이 다 떴다)', async () => {
     assert.equal(answers.length, 0, `쓰이지 않은 응답이 남았다: ${j(answers)}`);
   });
+  fs.rmSync(tmpDir, { recursive: true, force: true });   // 테스트용 백업 파일(암호문)
 } finally {
   await browser.close();
   await stack.stop();

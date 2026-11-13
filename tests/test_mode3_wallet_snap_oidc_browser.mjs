@@ -55,7 +55,11 @@ const { cia, wallet, rp, oidc: stub, ciaUiBase: ciaUi } = stack;
 const SUB = 'g-browser-1';
 
 // ---- 하네스가 맡는 것: Snap 저장소, 대화상자, 체인 전송 (test_mode3_browser.mjs 와 같다) ----
-let snapState = null;
+// 2026-11-13(스냅 0.5.0, 스펙 random-salt): salt 는 무작위이고 백업을 확인해야 쓸 수 있다 — 하네스가 "설정이 끝난 스냅" 의 저장 상태를 직접 채운다(설정 화면 자체는 test_mode3_browser.mjs 가 본다).
+// 같은 IdP 에서 한 스냅(salt)의 계정은 하나라(R11), 다른 Google 계정으로 새로 가입하는 케이스는 다른 salt 의 스냅을 쓴다.
+const readySnap = (s_u) => ({ version: 2, salt: { s_u: String(s_u), createdAt: new Date().toISOString(), source: 'import', backedUp: true, backedUpAt: new Date().toISOString() }, registration: null, userCred: null, consents: {} });
+const SALT_A = '111111111111111111111111111111', SALT_B = '222222222222222222222222222222';
+let snapState = readySnap(SALT_A);
 const dialogs = [];        // 사용자에게 보인 대화상자(문구 검사용)
 const answers = [];        // 다음 대화상자들이 돌려줄 값
 
@@ -228,7 +232,7 @@ try {
   // zkID 와 같은 발급·증명으로 PPID 세션을 만든다. 등록·발급의 nonce 가 달라 팝업의 Google 버튼을 두 번 누른다.
   await t('Google 래퍼: 미등록 스냅에서 RP 의 Google 버튼 → 팝업 Google(등록) → 팝업 Google(발급) → zkID 로그인 성공·PPID; IdP 로그인 페이지로 가지 않는다', async () => {
     assert.equal((await wallet.post('/wallet/reset', { confirm: true })).status, 200);
-    snapState = null;                                                   // 새로 설치한 스냅
+    snapState = readySnap(SALT_B);                                      // 새로 설치해 설정을 끝낸 스냅(다른 salt — 앞 계정과 다른 스냅)
     const SUB2 = 'g-browser-2';
     const rpPage = await context.newPage(); await rpPage.goto(rp.base);
     if (await rpPage.$eval('#loginBtn', (b) => b.hidden)) { await rpPage.click('#logoutBtn'); await rpPage.waitForSelector('#loginBtn:not([hidden])'); }
@@ -250,7 +254,7 @@ try {
     await rpPage.close();
   });
 
-  // 2026-11-12(스펙 snap-derived-secrets §4): 스냅 비밀이 시드 유도라 Google 계정도 MetaMask 재설치(R1)·새 PC(R2) 뒤 같은 PPID 로 돌아온다.
+  // 2026-11-13(스펙 random-salt): 스냅을 다시 깐 뒤 백업에서 같은 salt 를 불러오면 Google 계정도 재설치(R1)·새 PC(R2) 뒤 같은 PPID 로 돌아온다.
   // 앞 케이스("Google 래퍼")가 SUB2 계정으로 등록·로그인한 상태에서 이어 간다.
   const googleLogin = async (clicks) => {
     const rpPage = await context.newPage(); await rpPage.goto(rp.base);
@@ -269,19 +273,19 @@ try {
     return ppid;
   };
   let googlePPID = null;
-  await t('복구 R1(Google): 스냅 상태만 잃으면 RP "Google 계정으로 로그인" 이 유도 비밀로 스냅을 되살리고 같은 PPID(Google 버튼은 발급용 한 번)', async () => {
+  await t('복구 R1(Google): 스냅을 다시 깔고 백업에서 같은 salt 를 불러오면 RP "Google 계정으로 로그인" 이 스냅 등록을 되살리고 같은 PPID(Google 버튼은 발급용 한 번)', async () => {
     const st0 = (await wallet.get('/wallet/status')).body;
     assert.equal(st0.provider, stub.provider, '앞 케이스의 Google 계정 등록이 있어야 한다');
     googlePPID = await googleLogin(1);   // 기준 PPID(스냅 그대로)
     assert.notEqual(googlePPID, '-');
-    snapState = null;   // MetaMask 재설치
+    snapState = readySnap(SALT_B);   // 스냅 재설치 + 백업에서 salt 불러오기(등록은 비었다)
     assert.equal(await googleLogin(1), googlePPID, '같은 PPID');
     assert.equal(snapState.registration?.uid, st0.uid); assert.equal(snapState.registration?.provider, stub.provider);
   });
   await t('복구 R2(Google): 스냅·에이전트 둘 다 잃으면 Google 등록이 IdP 복구(같은 uid·slot)로 이어져 같은 PPID(Google 버튼은 등록·발급 두 번)', async () => {
     const st0 = (await wallet.get('/wallet/status')).body;
     assert.equal((await wallet.post('/wallet/reset', { confirm: true })).status, 200);
-    snapState = null;
+    snapState = readySnap(SALT_B);
     assert.equal(await googleLogin(2), googlePPID, '같은 PPID');
     const st = (await wallet.get('/wallet/status')).body;
     assert.equal(st.uid, st0.uid); assert.equal(st.slot, st0.slot, 'IdP 가 같은 슬롯을 돌려줬다(새 등록이 아니다)');
