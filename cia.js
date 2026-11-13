@@ -942,6 +942,11 @@ app.post('/cia/user/login', (req, res) => {
   loginKeepingOtherRole(req, res, { role: 'uid', value: uid, other: 'operator' }, () => res.json({ uid, id: state.accounts[uid].loginId ?? null }));
 });
 app.post('/cia/user/logout', (req, res) => logoutRole(req, res, 'uid', 'operator'));
+// 2026-11-13(사용자 결정): 속성 도구(스냅 오리진의 /attr.html)가 uid 를 묻지 않고 zkID 로그인 세션에서 받아온다. 쿠키를 싣는 교차 오리진 읽기는 이 경로 하나뿐이고
+// (credentials:true — userCors 와 따로 둔다), 스냅 오리진에만 열며 uid 만 돌려준다 — 프로필·auid·슬롯은 /cia/user/me(같은 오리진 전용)에 그대로 둔다.
+// 스냅 오리진은 등록 때 어차피 uid 를 받는다(등록 코드와 함께). 세션 쿠키는 SameSite=Lax 라 같은 사이트(localhost)의 스냅 화면에서만 실린다.
+const uidCors = cors({ origin: (origin, cb) => cb(null, origin === WALLET_AGENT_ORIGIN), methods: ['GET'], credentials: true });
+app.get('/cia/user/uid', uidCors, requireUser, (req, res) => res.json({ uid: req.session.uid }));
 app.get('/cia/user/me', requireUser, (req, res) => {
   const uid = req.session.uid, a = state.accounts[uid];
   res.json({ uid, id: a.loginId ?? null, registered: Boolean(a.auid), auid: a.auid, slot: a.slot, provider: a.provider, disabled: a.disabled, activeCf_u: activeCfU(a), registryLeaf: a.slot === null ? null : registry.leafAt(a.slot).toString(), profile: a.profile ?? null });

@@ -28,6 +28,26 @@ try {
       assert.equal(h(await fetch(`${cia.base}/cia/public_keys`, { headers: { Origin: o } }), 'access-control-allow-origin'), null, o);
     }
   });
+  // 2026-11-13(사용자 결정): 속성 도구(스냅 오리진)가 uid 를 묻지 않고 zkID 로그인 세션에서 받아온다 — uid 만 돌려주는 경로 하나를 쿠키와 함께 스냅 오리진에만 연다.
+  await t('GET /cia/user/uid: 로그인 세션 + 스냅 오리진이면 { uid } 만(ACAO·Allow-Credentials); 세션 없으면 401; 다른 오리진에는 ACAO 가 없어 브라우저가 읽지 못한다', async () => {
+    const post = (p, body, cookie) => fetch(`${cia.base}${p}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) }, body: JSON.stringify(body) });
+    const su = await post('/cia/signup', { id: 'uid-cors-1', pwd: 'uid-cors-pw1' }); assert.equal(su.status, 201);
+    const uid = (await su.json()).uid;
+    const li = await post('/cia/user/login', { id: 'uid-cors-1', pwd: 'uid-cors-pw1' }); assert.equal(li.status, 200);
+    const cookie = (li.headers.get('set-cookie') ?? '').split(';')[0]; assert.ok(cookie, '로그인이 세션 쿠키를 준다');
+    const ok = await fetch(`${cia.base}/cia/user/uid`, { headers: { Origin: USER, Cookie: cookie } });
+    assert.equal(ok.status, 200); assert.deepEqual(await ok.json(), { uid }, 'uid 하나만 — 프로필·auid·슬롯은 싣지 않는다');
+    assert.equal(h(ok, 'access-control-allow-origin'), USER); assert.equal(h(ok, 'access-control-allow-credentials'), 'true'); assert.match(h(ok, 'vary') ?? '', /Origin/);
+    const anon = await fetch(`${cia.base}/cia/user/uid`, { headers: { Origin: USER } });
+    assert.equal(anon.status, 401); assert.equal((await anon.json()).reason, 'login_required'); assert.equal(h(anon, 'access-control-allow-origin'), USER, '401 도 스냅 오리진은 읽을 수 있어야 "로그인하세요" 를 보인다');
+    for (const o of ['http://evil.example', 'http://127.0.0.1:5198']) {
+      const r = await fetch(`${cia.base}/cia/user/uid`, { headers: { Origin: o, Cookie: cookie } });
+      assert.equal(h(r, 'access-control-allow-origin'), null, o); assert.equal(h(r, 'access-control-allow-credentials'), null, o);
+    }
+    // 쿠키를 싣는 CORS 는 이 경로 하나뿐이다 — 다른 사용자 경로(/cia/user/me)는 그대로 닫혀 있다
+    const me = await fetch(`${cia.base}/cia/user/me`, { headers: { Origin: USER, Cookie: cookie } });
+    assert.equal(h(me, 'access-control-allow-origin'), null); assert.equal(h(me, 'access-control-allow-credentials'), null);
+  });
   await t('관리자 라우트에는 사용자 오리진이어도 CORS 가 없다', async () => {
     for (const [p, m] of [['/cia/rps', 'GET'], ['/cia/admin/relay', 'POST'], ['/cia/admin/registry', 'GET']]) {
       assert.equal(h(await pre(p, USER, m, 'content-type,x-cia-admin-secret'), 'access-control-allow-origin'), null, p);

@@ -881,8 +881,8 @@ window.DemoStrings = {
     tour_done_body: { ko: '8단계를 모두 마쳤습니다. 처음부터 다시 하려면 관리자에서 계정을 복구하고 RP 에서 다시 로그인하세요.', en: 'All eight steps are done. To start over, recover the account in the IdP admin and log in again at the RP.' },
     // 속성 커밋먼트 도구(mode3/attr.html, 2026-11-09 Phase 1)
     attr_title: { ko: '속성 커밋먼트 도구', en: 'Attribute commitment tool' },
-    attr_badge_offline: { ko: '서버와 통신하지 않음', en: 'Talks to no server' },
-    attr_desc: { ko: 'uid·salt·속성(출생연도·국가 등)과 무작위 blind 로 커밋먼트를 만듭니다. 값은 이 브라우저에만 저장되고, 커밋먼트만 zkID 프로필의 "이름" 칸에 붙여 넣습니다. 스냅·IdP·서비스 어디와도 연결하지 않습니다.', en: 'Makes a commitment from uid, salt, your attributes (birth year, country, …) and a random blind. The values stay in this browser; only the commitment goes into the "name" field of your zkID profile. It connects to no Snap, IdP or service.' },
+    attr_badge_offline: { ko: '속성·blind 는 서버로 보내지 않음', en: 'Attributes and blind never leave this browser' },
+    attr_desc: { ko: '내 속성(출생연도·국가 등)으로 커밋먼트를 만듭니다. 속성과 blind 는 이 브라우저에만 저장되고, 커밋먼트만 zkID 프로필의 "이름" 칸에 붙여 넣습니다. 만들 때 zkID 로그인과 스냅(MetaMask)이 필요합니다.', en: 'Make a commitment from your attributes (birth year, country, …). The attributes and blind stay in this browser; only the commitment goes into the "name" field of your zkID profile. Making one needs a zkID login and the Snap (MetaMask).' },
     attr_form_title: { ko: '1. 속성 입력', en: '1. Enter attributes' },
     attr_birth_year: { ko: '출생연도', en: 'Birth year' },
     attr_country: { ko: '국가', en: 'Country' },
@@ -917,7 +917,7 @@ window.DemoStrings = {
     attr_import_open_btn: { ko: '불러오기', en: 'Load' },
     attr_import_cancel_btn: { ko: '취소', en: 'Cancel' },
     attr_clear_btn: { ko: '지우기', en: 'Clear' },
-    attr_clear_confirm: { ko: '저장된 uid·salt·속성·blind·커밋먼트를 지웁니다. 백업이 없으면 같은 커밋먼트를 다시 만들 수 없습니다. 계속할까요?', en: 'This deletes the saved uid, salt, attributes, blind and commitment. Without a backup you cannot recreate the same commitment. Continue?' },
+    attr_clear_confirm: { ko: '저장된 속성·blind·커밋먼트를 지웁니다. 백업이 없으면 같은 커밋먼트를 다시 만들 수 없습니다. 계속할까요?', en: 'This deletes the saved attributes, blind and commitment. Without a backup you cannot recreate the same commitment. Continue?' },
     attr_import_btn: { ko: '백업 불러오기', en: 'Load backup' },
     attr_import_ok_summary: { ko: '백업을 불러왔습니다.', en: 'Backup loaded.' },
     attr_created_at: { ko: '만든 시각', en: 'Created' },
@@ -925,21 +925,18 @@ window.DemoStrings = {
     // 2026-11-10(B+b1): C_attr 에 uid·salt 를 묶는다 — 입력 칸·안내·재료 표시
     attr_uid: { ko: 'uid', en: 'uid' },
     attr_salt: { ko: 'salt (s_u)', en: 'salt (s_u)' },
-    attr_uid_hint: { ko: 'uid 는 zkID 내 정보(zkID → 내 계정 → 내 정보)에 있습니다.', en: 'Your uid is on zkID My info (zkID → My account → My info).' },
-    attr_index: { ko: '계정 번호', en: 'Account number' },   // 2026-11-12(스펙 snap-account-index §3.1)
-    attr_index_hint: { ko: '비워 두면 스냅이 고릅니다 — 등록된 계정이 있으면 그 번호, 없으면 다음 가입 번호. 번호가 다르면 salt 도 다릅니다.', en: "Leave empty to let the Snap choose — the registered account's number, otherwise the next sign-up number. A different number gives a different salt." },
-    attr_salt_hint: { ko: 'salt 는 스냅이 MetaMask 시드에서 만듭니다 — "스냅에서 가져오기" 를 누르세요. 시드만 있으면 같은 salt 가 다시 나옵니다.', en: 'The Snap derives the salt from your MetaMask seed — press "Get from Snap". The same seed always gives the same salt.' },   // 2026-11-12(스펙 snap-derived-secrets S2)
-    attr_salt_from_snap_btn: { ko: '스냅에서 가져오기', en: 'Get from Snap' },
-    attr_salt_not_derived: { ko: '이 기록의 salt 는 스냅이 만든 값과 다릅니다 — 시드로 복구할 수 없는 salt 입니다.', en: "This record's salt differs from the Snap's — it cannot be recovered from the seed." },
-    attr_salt_copy_btn: { ko: 'salt 복사', en: 'Copy salt' },
     attr_auid_label: { ko: 'auid', en: 'auid' },   // 2026-11-11
-    attr_auid_hint: { ko: '첫 RP 로그인 때 zkID 인증 창의 auid 칸에 붙여 넣으세요. 스냅은 이 기록의 salt 로 등록합니다.', en: 'Paste this into the auid field of the zkID sign-in window on your first RP login. The Snap registers with this record’s salt.' },
+    attr_auid_hint: { ko: '첫 RP 로그인 때 zkID 인증 창의 auid 칸에 붙여 넣으세요.', en: 'Paste this into the auid field of the zkID sign-in window on your first RP login.' },
     attr_reset_cleared: { ko: '데모를 새로 시작해 이 브라우저의 이전 기록을 비웠습니다.', en: 'The demo was restarted, so the previous record in this browser was cleared.' },
-    attr_bind_required: { ko: 'uid·salt 는 10진 숫자로 넣어야 합니다(salt 는 2^250 미만).', en: 'uid and salt must be decimal numbers (salt below 2^250).' },
     attr_inputs_title: { ko: '커밋먼트 재료', en: 'Commitment inputs' },
     attr_secret_warn: { ko: 'salt·blind 는 비밀 — 시연용 표시', en: 'salt and blind are secret — shown for the demo' },
     attr_schema_label: { ko: '스키마', en: 'Schema' },
-    attr_old_record: { ko: '이 브라우저에 옛 형식(uid·salt 없음)의 커밋먼트가 있습니다. uid·salt 를 넣고 다시 만드세요.', en: 'This browser holds an old-format commitment (no uid or salt). Enter uid and salt and make it again.' },
+    attr_old_record: { ko: '이 브라우저에 옛 형식의 커밋먼트가 있습니다 — 식이 바뀌었으니 다시 만드세요.', en: 'This browser holds an old-format commitment — the formula changed, so make it again.' },
+    // 2026-11-13(사용자 결정): 속성 도구는 uid·계정 번호·salt 를 묻지 않는다 — uid 는 zkID 로그인 세션에서, salt·번호는 스냅에서 받아온다.
+    attr_account_title: { ko: '계정', en: 'Account' },
+    attr_zkid_login_required: { ko: 'zkID 에 먼저 로그인한 뒤 다시 누르세요 — 계정(uid)을 zkID 로그인에서 받아옵니다.', en: 'Log in to zkID first, then press again — the account (uid) is read from your zkID login.' },
+    attr_zkid_unreachable: { ko: 'zkID 에서 계정(uid)을 받아오지 못했습니다.', en: 'Could not read the account (uid) from zkID.' },
+    attr_import_ok_converted: { ko: '옛 형식 백업을 새 식으로 바꿔 불러왔습니다 — 커밋먼트 값이 바뀌었으니 zkID 프로필에 다시 붙여 넣으세요.', en: 'Imported an old-format backup with the new formula — the commitment changed, so paste it into your zkID profile again.' },
     // zkID 사용자 페이지 프로필 카드(2026-11-09 Phase 1)
     idp_profile_title: { ko: '프로필', en: 'Profile' },
     idp_profile_desc: { ko: '속성 도구에서 만든 속성 커밋먼트를 "이름" 칸에 붙여 넣고 저장하세요. zkID 는 이 값의 뜻을 모르며 서비스에 전달하지 않습니다. 저장된 값을 다른 커밋먼트로 바꾸면 속성 변경으로 보고 기존 세션을 모두 폐기합니다.', en: 'Paste the attribute commitment made in the attribute tool into "name" and save. zkID does not know what it means and does not pass it to services. Replacing a saved value with a different commitment counts as an attribute change and revokes all existing sessions.' },

@@ -4,11 +4,12 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="no-referrer" />
-  <!-- 속성 커밋먼트 도구(2026-11-09 Phase 1). 지갑 에이전트(:5100)가 /attr.html 로 서빙하는 독립 정적 페이지 — MetaMask·Snap·IdP·RP 와
-       아무 통신도 하지 않는다. 2026-11-10(B+b1): 사용자가 zk 지갑 화면(계정 탭 → 상세)의 uid·salt 를 복사해 넣으면 C_attr 에 함께 묶는다.
-       uid·salt·속성·blind 는 이 브라우저의 localStorage(mode3_attr_tool_v1, 기록 version 2)에만 남고 화면에 모두 보인다. 사용자는 커밋먼트(10진)만 복사해
-       zkID 프로필의 "이름" 칸에 붙여 넣는다. Phase 2 에서 같은 저장값으로 속성 증명(π_attr)을 만들어 RP 에 팝업으로 넘긴다.
-       제목의 "속성 커밋먼트 도구" 는 tests 의 페이지 서빙 검사 marker 다. -->
+  <!-- 속성 커밋먼트 도구(2026-11-09 Phase 1). 스냅 에이전트(:5100)가 /attr.html 로 서빙하는 정적 페이지.
+       2026-11-13(사용자 결정): 입력은 속성뿐이다 — uid·계정 번호·salt 는 묻지 않는다. "커밋먼트 만들기" 를 누르면 uid 는 zkID 로그인 세션에서
+       (GET {ciaUrl}/cia/user/uid, 쿠키), salt·계정 번호는 스냅에서(getSalt) 받아온다. 커밋먼트 식에는 uid 가 없다(C_attr = Poseidon(DOMAIN, s_u, attrs, blind)) —
+       uid 는 기록에만 남아 auid 표시와 첫 등록의 계정 대조에 쓰인다. 속성·blind 는 어디로도 보내지 않는다.
+       uid·salt·속성·blind 는 이 브라우저의 localStorage(mode3_attr_tool_v1, 기록 version 3)에만 남는다. 사용자는 커밋먼트(10진)만 복사해 zkID 프로필의 "이름" 칸에
+       붙여 넣는다. 제목의 "속성 커밋먼트 도구" 는 tests 의 페이지 서빙 검사 marker 다. -->
   <title>속성 커밋먼트 도구</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23345'/%3E%3Ctext x='16' y='22' font-size='15' font-family='sans-serif' font-weight='700' text-anchor='middle' fill='%23fff'%3EC%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="/common/demo.css" />
@@ -30,25 +31,14 @@
 <header id="demoBar"></header>
 <main class="cards">
   <section class="card span2">
-    <div class="tool-head"><h2 data-i18n="attr_title">속성 커밋먼트 도구</h2><span class="badge muted" data-i18n="attr_badge_offline">서버와 통신하지 않음</span></div>
-    <p class="desc" data-i18n="attr_desc">내 속성(출생연도·국가 등)과 무작위 blind 로 커밋먼트를 만듭니다. 속성과 blind 는 이 브라우저에만 저장되고, 커밋먼트만 zkID 프로필의 "이름" 칸에 붙여 넣습니다. 스냅·IdP·서비스 어디와도 연결하지 않습니다.</p>
+    <div class="tool-head"><h2 data-i18n="attr_title">속성 커밋먼트 도구</h2><span class="badge muted" data-i18n="attr_badge_offline">속성·blind 는 서버로 보내지 않음</span></div>
+    <p class="desc" data-i18n="attr_desc">내 속성(출생연도·국가 등)으로 커밋먼트를 만듭니다. 속성과 blind 는 이 브라우저에만 저장되고, 커밋먼트만 zkID 프로필의 "이름" 칸에 붙여 넣습니다. 만들 때 zkID 로그인과 스냅(MetaMask)이 필요합니다.</p>
   </section>
 
   <section class="card">
     <h3 data-i18n="attr_form_title">1. 속성 입력</h3>
     <form id="attrForm" class="attr-form" autocomplete="off">
-      <!-- 2026-11-10(B+b1): 계정·지갑에 묶는 값. 이 도구는 지갑과 통신하지 않으므로 사용자가 직접 복사해 넣는다. -->
-      <!-- 2026-11-12(스펙 snap-derived-secrets S2): salt 는 스냅이 MetaMask 시드에서 유도한다 — 직접 넣지 않고 "스냅에서 가져오기" 로 받는다. 같은 시드면 언제나 같은 값이라
-           MetaMask 를 시드로 복원하면 같은 PPID 로 돌아온다(11-10 의 직접 입력·새로 뽑기를 대체). -->
-      <p class="muted" data-i18n="attr_uid_hint">uid 는 zkID 내 정보(zkID → 내 계정 → 내 정보)에 있습니다.</p>
-      <label><span data-i18n="attr_uid">uid</span> <input id="uid" inputmode="numeric" pattern="[0-9]+" placeholder="12345…" required /></label>
-      <!-- 2026-11-12(스펙 snap-account-index §3.1): 계정 번호 — 같은 시드라도 번호마다 salt 가 다르다. 기록에 함께 남는다. -->
-      <p class="muted" data-i18n="attr_index_hint">비워 두면 스냅이 고릅니다 — 등록된 계정이 있으면 그 번호, 없으면 다음 가입 번호. 번호가 다르면 salt 도 다릅니다.</p>
-      <label><span data-i18n="attr_index">계정 번호</span> <input id="acctIndex" inputmode="numeric" pattern="[0-9]*" /></label>
-      <p class="muted" data-i18n="attr_salt_hint">salt 는 스냅이 MetaMask 시드에서 만듭니다 — "스냅에서 가져오기" 를 누르세요. 시드만 있으면 같은 salt 가 다시 나옵니다.</p>
-      <label><span data-i18n="attr_salt">salt (s_u)</span> <input id="salt" inputmode="numeric" pattern="[0-9]+" placeholder="98765…" required readonly /></label>
-      <p class="row-actions"><button type="button" id="saltFromSnapBtn" class="btn-ghost" data-i18n="attr_salt_from_snap_btn">스냅에서 가져오기</button> <button type="button" id="copySaltBtn" class="btn-ghost" data-i18n="attr_salt_copy_btn">salt 복사</button></p>
-      <p id="saltWarn" hidden><span class="badge warn" data-i18n="attr_salt_not_derived">이 기록의 salt 는 스냅이 만든 값과 다릅니다 — 시드로 복구할 수 없는 salt 입니다.</span></p>
+      <!-- 2026-11-13(사용자 결정): 속성만 입력한다 — uid·계정 번호·salt 칸과 "스냅에서 가져오기" 는 없앴다(만들 때 도구가 스스로 받아온다). -->
       <label><span data-i18n="attr_birth_year">출생연도</span> <input id="birthYear" inputmode="numeric" pattern="[0-9]*" placeholder="1990" required /></label>
       <label><span data-i18n="attr_country">국가</span> <select id="country" required></select></label>
       <label><span data-i18n="attr_extra1">예비 1</span> <input id="extra1" maxlength="124" /></label>
@@ -78,24 +68,28 @@
     </div>
     <div id="importVerdict"></div>
     <p id="resetCleared" class="muted" hidden data-i18n="attr_reset_cleared">데모를 새로 시작해 이 브라우저의 이전 기록을 비웠습니다.</p>
-    <p id="oldRecord" class="muted" hidden data-i18n="attr_old_record">이 브라우저에 옛 형식(uid·salt 없음)의 커밋먼트가 있습니다. uid·salt 를 넣고 다시 만드세요.</p>
-    <!-- 2026-11-10: 커밋먼트의 재료를 모두 숨기지 않고 보인다(사용자 요청) — 식, 도메인 상수, uid, salt, 속성(입력값 → 인코딩 값), blind. -->
+    <p id="oldRecord" class="muted" hidden data-i18n="attr_old_record">이 브라우저에 옛 형식의 커밋먼트가 있습니다 — 식이 바뀌었으니 다시 만드세요.</p>
+    <!-- 2026-11-10: 커밋먼트의 재료를 모두 숨기지 않고 보인다(사용자 요청) — 식, 도메인 상수, salt, 속성(입력값 → 인코딩 값), blind.
+         2026-11-13: uid 는 식의 재료가 아니다 — 계정 정보(uid·auid)로 따로 보인다. -->
     <div id="inputsView" hidden>
       <h4 data-i18n="attr_inputs_title">커밋먼트 재료</h4>
-      <p class="formula">C_attr = Poseidon(DOMAIN, uid, s_u, attr₀, attr₁, attr₂, attr₃, attr₄, attr₅, blind)</p>
+      <p class="formula">C_attr = Poseidon(DOMAIN, s_u, attr₀, attr₁, attr₂, attr₃, attr₄, attr₅, blind)</p>
       <p><span class="badge warn" data-i18n="attr_secret_warn">salt·blind 는 비밀 — 시연용 표시</span></p>
       <dl class="kv inputs-kv">
         <dt>DOMAIN</dt><dd><code id="domainShown">-</code></dd>
-        <dt data-i18n="attr_uid">uid</dt><dd><code id="uidShown">-</code></dd>
         <dt data-i18n="attr_salt">salt (s_u)</dt><dd><code id="saltShown">-</code></dd>
-        <!-- 2026-11-11(사용자 결정): 같은 uid·salt 로 계산한 auid — 첫 RP 로그인 때 zkID 인증 창의 auid 칸에 붙여 넣는다. -->
-        <dt data-i18n="attr_auid_label">auid</dt><dd><code id="auidShown" style="overflow-wrap:anywhere;word-break:break-all">-</code> <button type="button" id="copyAuidBtn" class="copy-btn" title="복사">⧉</button><br /><small class="muted" data-i18n="attr_auid_hint">첫 RP 로그인 때 zkID 인증 창의 auid 칸에 붙여 넣으세요. 스냅은 이 기록의 salt 로 등록합니다.</small></dd>
       </dl>
       <dl class="kv inputs-kv" id="attrsShown"></dl>
       <dl class="kv inputs-kv">
         <dt data-i18n="attr_blind_label">blind</dt><dd><code id="blindShown">-</code> <button type="button" id="copyBlindBtn" class="copy-btn" title="복사">⧉</button></dd>
         <dt data-i18n="attr_schema_label">스키마</dt><dd id="schemaShown">-</dd>
         <dt data-i18n="attr_created_at">만든 시각</dt><dd id="createdAt">-</dd>
+      </dl>
+      <h4 data-i18n="attr_account_title">계정</h4>
+      <dl class="kv inputs-kv">
+        <dt data-i18n="attr_uid">uid</dt><dd><code id="uidShown">-</code></dd>
+        <!-- 2026-11-11(사용자 결정): uid·salt 로 계산한 auid — 첫 RP 로그인 때 zkID 인증 창의 auid 칸에 붙여 넣는다. uid 는 zkID 로그인에서 받아온 값(2026-11-13). -->
+        <dt data-i18n="attr_auid_label">auid</dt><dd><code id="auidShown" style="overflow-wrap:anywhere;word-break:break-all">-</code> <button type="button" id="copyAuidBtn" class="copy-btn" title="복사">⧉</button><br /><small class="muted" data-i18n="attr_auid_hint">첫 RP 로그인 때 zkID 인증 창의 auid 칸에 붙여 넣으세요.</small></dd>
       </dl>
     </div>
     <div id="resultVerdict"></div>
@@ -124,8 +118,9 @@
   const A = window.Mode3Attr;
   const schema = A?.DEFAULT_ATTR_SCHEMA;
 
-  // 기록 version 2(2026-11-10): { uid, s_u } 가 더해졌다. version 1(uid·s_u 없는 옛 정의)은 읽지 않고 "다시 만드세요" 를 보인다.
-  const REC_VERSION = 2;
+  // 기록 version 3(2026-11-13): 식에서 uid 가 빠졌다(commit 값이 달라진다). uid·s_u·index 는 그대로 기록에 남는다 — uid 는 zkID, s_u·index 는 스냅에서 받아온 값.
+  // version 1(uid·s_u 없음)·version 2(uid 가 식에 든 정의)는 읽지 않고 "다시 만드세요" 를 보인다(백업 불러오기는 version 2 를 새 식으로 바꿔 받는다).
+  const REC_VERSION = 3;
   const raw = () => { try { return JSON.parse(localStorage.getItem(STORE_KEY) ?? 'null'); } catch { return null; } };
   const isDec = (v) => typeof v === 'string' && /^[0-9]+$/.test(v);
   function load() { const v = raw(); return v && v.version === REC_VERSION && isDec(v.uid) && isDec(v.s_u) && A?.isAttrCommit(v.commit) ? v : null; }
@@ -186,7 +181,7 @@
     for (const code of Object.keys(slot.values)) { const o = document.createElement('option'); o.value = code; o.textContent = code; sel.appendChild(o); }
   }
   function render() {
-    const rec = load(), old = !rec && raw()?.version === 1;
+    const rec = load(), old = !rec && [1, 2].includes(raw()?.version);
     $('commitBox').hidden = !rec; $('noCommit').hidden = !!rec; $('commitActions').hidden = !rec; $('inputsView').hidden = !rec; $('oldRecord').hidden = !old;
     if (!rec) return;
     $('commitBox').textContent = rec.commit;
@@ -208,7 +203,6 @@
     });
     $('schemaShown').textContent = `${rec.schema?.id ?? '-'} v${rec.schema?.version ?? '-'}`;
     $('createdAt').textContent = new Date(rec.createdAt).toLocaleString();
-    $('uid').value = rec.uid; $('salt').value = rec.s_u; $('acctIndex').value = Number.isInteger(rec.index) ? String(rec.index) : '';
     for (const k of ['birthYear', 'country', 'extra1', 'extra2']) if (rec.profile[k] !== undefined) $(k).value = rec.profile[k];
   }
 
@@ -218,21 +212,19 @@
     if (!A) return verdict($('formVerdict'), false, 'attr_make_failed', { reason: 'bundle_missing', detail: '/attr/dist/attr.js 가 없습니다 — npm run attr:build' });
     $('makeBtn').disabled = true;
     try {
-      const uid = $('uid').value.trim(), s_u = $('salt').value.trim();
-      const idxRaw = $('acctIndex').value.trim();
-      if (!(/^[0-9]+$/.test(idxRaw) && Number(idxRaw) <= 2 ** 31 - 1)) throw Object.assign(new Error('계정 번호와 salt 는 "스냅에서 가져오기" 로 채웁니다'), { reason: 'bad_index' });
-      const index = Number(idxRaw);
-      if (!isDec(uid) || !isDec(s_u) || BigInt(s_u) >= (1n << 250n)) throw Object.assign(new Error(tt('attr_bind_required') || 'uid·salt 는 10진 숫자로 넣어야 합니다'), { reason: 'bad_uid_salt' });
       const profile = A.normalizeProfile(schema, { birthYear: $('birthYear').value, country: $('country').value, extra1: $('extra1').value, extra2: $('extra2').value });
       // 필수 칸이 비면 인코더가 거절한다(allowEmptyRequired:false — 0 은 "값 없음" 이라 나이 술어가 뚫린다. 지갑 폼과 같은 규칙).
       const attrs = await A.encodeProfile(schema, { birthYear: '', country: '', ...profile }, { allowEmptyRequired: false });
+      // 속성 검사를 통과한 뒤에 받아온다 — uid 는 zkID 로그인 세션에서, salt·계정 번호는 스냅에서(번호는 스냅이 고른다: 등록된 계정의 번호, 없으면 다음 가입 번호).
+      const uid = await zkidUid();
+      const { s_u, index } = await snapSalt();
       const blind = A.randomBlind();
-      const commit = await A.attrCommit({ uid, s_u, attrs, blind });
+      const commit = await A.attrCommit({ s_u, attrs, blind });
       save({ version: REC_VERSION, schema: { id: schema.id, version: schema.version }, uid, s_u, index, profile, attrs, blind, commit, createdAt: new Date().toISOString() });
       render();
       verdict($('formVerdict'), true, 'attr_make_ok', { summary: tt('attr_make_ok_summary') || '커밋먼트를 만들었습니다. 아래에서 복사해 zkID 프로필에 붙여 넣으세요.' });
     } catch (e) {
-      verdict($('formVerdict'), false, 'attr_make_failed', { reason: e.reason ?? e.detail ?? 'bad_attr', detail: e.message });
+      verdict($('formVerdict'), false, 'attr_make_failed', { reason: e.reason ?? e.detail ?? 'bad_attr', detail: e.message, ...(e.summary ? { summary: e.summary } : {}) });
     } finally { $('makeBtn').disabled = false; }
   });
 
@@ -243,45 +235,42 @@
     setTimeout(() => { btn.textContent = prev; }, 1200);
   }
   $('copyBtn').addEventListener('click', () => { const rec = load(); if (rec) copyText(rec.commit, $('copyBtn')); });
-  // salt 새로 뽑기 — 31바이트 난수(248비트). 지갑의 s_u 상한(2^250, lib/mode3_credential.js SCALAR_MAX)보다 작다. randomBlind 와 같은 함수다.
-  // 2026-11-12(스펙 snap-derived-secrets §3): 스냅의 getSalt — snapId 는 같은 오리진 에이전트의 /wallet/config 에서. 이미 설치·허용된 스냅이면 다시 요청하지 않는다(지갑 화면과 같은 규칙).
-  async function snapSalt(index) {
+  // 2026-11-13(사용자 결정): uid 는 묻지 않는다 — 같은 사이트(localhost)의 zkID 로그인 세션에서 받아온다. IdP 는 이 경로 하나만 쿠키와 함께 스냅 오리진에 연다
+  // (cia.js GET /cia/user/uid — uid 만 돌려준다). IdP 주소는 같은 오리진 에이전트의 /wallet/config(ciaUrl). 속성·blind·salt 는 보내지 않는다.
+  let cfgCache = null;
+  async function walletConfig() { return (cfgCache ??= await (await fetch('/wallet/config')).json()); }
+  async function zkidUid() {
+    const fail = (reason, key, fallback) => Object.assign(new Error(fallback), { reason, summary: tt(key) || fallback });
+    let cfg; try { cfg = await walletConfig(); } catch { cfg = null; }
+    if (!cfg?.ciaUrl) throw fail('zkid_unreachable', 'attr_zkid_unreachable', 'zkID 주소를 알 수 없습니다(스냅 에이전트 설정).');
+    let r;
+    try { r = await fetch(`${cfg.ciaUrl}/cia/user/uid`, { credentials: 'include', cache: 'no-store' }); }
+    catch { throw fail('zkid_unreachable', 'attr_zkid_unreachable', `zkID(${cfg.ciaUrl})에 닿지 못했습니다.`); }
+    if (r.status === 401) throw fail('zkid_login_required', 'attr_zkid_login_required', `zkID(${cfg.ciaUrl}/user)에 먼저 로그인한 뒤 다시 누르세요.`);
+    const uid = r.ok ? String((await r.json().catch(() => null))?.uid ?? '') : '';
+    if (!isDec(uid)) throw fail('zkid_unreachable', 'attr_zkid_unreachable', `zkID 가 uid 를 주지 않았습니다(HTTP ${r.status}).`);
+    return uid;
+  }
+  // 스냅의 getSalt — snapId 는 같은 오리진 에이전트의 /wallet/config 에서. 이미 설치·허용된 스냅이면 다시 요청하지 않는다(zk 스냅 화면과 같은 규칙).
+  // 계정 번호는 주지 않는다 — 스냅이 고른다(2026-11-13: 번호 칸을 없앴다).
+  async function snapSalt() {
     const eth = window.ethereum;
     if (!eth?.request) throw Object.assign(new Error('MetaMask(Flask)가 없습니다'), { reason: 'snap_unavailable' });
-    const cfg = await (await fetch('/wallet/config')).json();
+    const cfg = await walletConfig();
     if (!cfg?.snapId) throw Object.assign(new Error('스냅 설정(snapId)을 읽지 못했습니다'), { reason: 'snap_unavailable' });
     let installed = false;
     try { const s = (await eth.request({ method: 'wallet_getSnaps' }))?.[cfg.snapId]; installed = Boolean(s) && !s.blocked && s.enabled !== false; } catch { installed = false; }
     if (!installed) await eth.request({ method: 'wallet_requestSnaps', params: { [cfg.snapId]: {} } });
     let r;
-    try { r = await eth.request({ method: 'wallet_invokeSnap', params: { snapId: cfg.snapId, request: { method: 'getSalt', params: index === undefined ? {} : { index } } } }); }
+    try { r = await eth.request({ method: 'wallet_invokeSnap', params: { snapId: cfg.snapId, request: { method: 'getSalt', params: {} } } }); }
     catch (e) {   // 리뷰 M-3: 옛 스냅(0.1.0)은 getSalt 를 모른다
       if (/method_not_found/.test(e?.message ?? '')) throw Object.assign(new Error('설치된 스냅이 0.3.0 전 버전입니다'), { reason: 'snap_outdated' });
       throw e;
     }
-    if (!isDec(String(r?.s_u ?? ''))) throw Object.assign(new Error('스냅이 salt 를 주지 않았습니다'), { reason: 'snap_unavailable' });
+    if (!isDec(String(r?.s_u ?? '')) || BigInt(r.s_u) >= (1n << 250n)) throw Object.assign(new Error('스냅이 salt 를 주지 않았습니다'), { reason: 'snap_unavailable' });
     if (!Number.isInteger(r?.index)) throw Object.assign(new Error('설치된 스냅이 0.3.0 전 버전입니다(계정 번호를 모른다)'), { reason: 'snap_outdated' });   // Ruling P4
     return { s_u: String(r.s_u), index: r.index };
   }
-  $('saltFromSnapBtn').addEventListener('click', async () => {
-    clearVerdict($('formVerdict'));
-    $('saltFromSnapBtn').disabled = true;
-    try {
-      const raw = $('acctIndex').value.trim();
-      if (raw !== '' && !(/^[0-9]+$/.test(raw) && Number(raw) <= 2 ** 31 - 1)) throw Object.assign(new Error(raw), { reason: 'bad_index' });
-      const r = await snapSalt(raw === '' ? undefined : Number(raw));
-      $('salt').value = r.s_u; $('acctIndex').value = String(r.index);
-      const rec = load();
-      // 경고는 "이 기록이 시드로 복구되지 않는다" 일 때만: 번호가 없는 기록, 또는 같은 번호인데 salt 가 다른 기록.
-      $('saltWarn').hidden = !(rec && (!Number.isInteger(rec.index) || (rec.index === r.index && rec.s_u !== r.s_u)));
-    } catch (e) {
-      verdict($('formVerdict'), false, 'attr_make_failed', { reason: e.reason ?? 'snap_unavailable', detail: e.message });
-    } finally { $('saltFromSnapBtn').disabled = false; }
-  });
-  $('acctIndex').addEventListener('input', () => { $('salt').value = ''; });   // 번호를 바꾸면 그 번호의 salt 를 다시 가져와야 한다(Ruling P3)
-  // 최종 리뷰 I-1(2026-11-12): uid 를 바꾸면(다른 계정) 앞 계정 기록이 채운 번호·salt 를 비운다 — 그대로 두면 새 계정도 앞 계정 번호(같은 s_u)로 만들어진다.
-  $('uid').addEventListener('input', () => { const rec = load(); if (!rec || rec.uid !== $('uid').value.trim()) { $('acctIndex').value = ''; $('salt').value = ''; } });   // 같은 계정(기록의 uid)이면 그대로
-  $('copySaltBtn').addEventListener('click', () => { const v = $('salt').value.trim(); if (v) copyText(v, $('copySaltBtn')); });
   $('copyBlindBtn').addEventListener('click', () => { const rec = load(); if (rec) copyText(rec.blind, $('copyBlindBtn')); });
   $('copyAuidBtn').addEventListener('click', () => { const v = $('auidShown').textContent; if (/^[0-9]+$/.test(v)) copyText(v, $('copyAuidBtn')); });
   // 2026-11-11(스펙 D20): 내려받기도 암호문이다 — 평문 내려받기는 없다. 백업 비밀번호(설정)가 먼저 있어야 한다.
@@ -319,18 +308,18 @@
   $('clearBtn').addEventListener('click', () => {
     if (!window.confirm(tt('attr_clear_confirm') || '저장된 uid·salt·속성·blind·커밋먼트를 지웁니다. 백업이 없으면 같은 커밋먼트를 다시 만들 수 없습니다. 계속할까요?')) return;
     localStorage.removeItem(STORE_KEY); render(); clearVerdict($('formVerdict')); clearVerdict($('resultVerdict')); clearVerdict($('importVerdict')); closeImportPw();
-    for (const k of ['uid', 'salt', 'acctIndex']) $(k).value = '';   // 최종 리뷰 I-1: 입력 칸도 비운다 — 다음 계정이 지운 기록의 값으로 만들지 않게
   });
   // 불러오기 마무리(평문 백업과, 비밀번호로 연 암호화 백업이 함께 쓴다): 형식·계정 번호·커밋먼트를 검사하고 저장한다.
   async function finishImport(rec) {
-    if (rec?.version === 1) throw new Error('옛 형식(uid·salt 없음)의 백업입니다 — uid·salt 를 넣고 다시 만드세요');
+    if (rec?.version === 1) throw new Error('옛 형식(uid·salt 없음)의 백업입니다 — 다시 만드세요');
+    const fromV2 = rec?.version === 2;   // 2026-11-13: uid 가 식에 든 옛 정의 — 재료는 다 있으므로 새 식으로 바꿔 받는다(커밋먼트 값이 달라진다)
     if (rec?.index !== undefined && !(Number.isInteger(rec.index) && rec.index >= 0 && rec.index <= 2 ** 31 - 1)) throw new Error('백업의 계정 번호가 올바르지 않습니다');
-    if (!(rec && rec.version === REC_VERSION && isDec(rec.uid) && isDec(rec.s_u) && Array.isArray(rec.attrs) && rec.attrs.length === 6 && typeof rec.blind === 'string' && rec.profile && typeof rec.profile === 'object')) throw new Error('형식이 다릅니다');
-    // 저장된 commit 을 믿지 않고 다시 계산해 맞춰 본다 — 손상된 백업이 조용히 들어오지 않게.
-    const commit = await A.attrCommit({ uid: rec.uid, s_u: rec.s_u, attrs: rec.attrs, blind: rec.blind });
-    if (rec.commit !== commit) throw new Error('백업의 커밋먼트가 uid·salt·속성·blind 와 맞지 않습니다');
-    save({ ...rec, importedAt: new Date().toISOString() }); render();
-    verdict($('importVerdict'), true, 'attr_import_ok', { summary: tt('attr_import_ok_summary') || '백업을 불러왔습니다.' });
+    if (!(rec && (rec.version === REC_VERSION || fromV2) && isDec(rec.uid) && isDec(rec.s_u) && Array.isArray(rec.attrs) && rec.attrs.length === 6 && typeof rec.blind === 'string' && rec.profile && typeof rec.profile === 'object')) throw new Error('형식이 다릅니다');
+    // 저장된 commit 을 믿지 않고 다시 계산해 맞춰 본다 — 손상된 백업이 조용히 들어오지 않게. 옛 정의(version 2)의 commit 은 식이 달라 대조하지 않는다.
+    const commit = await A.attrCommit({ s_u: rec.s_u, attrs: rec.attrs, blind: rec.blind });
+    if (!fromV2 && rec.commit !== commit) throw new Error('백업의 커밋먼트가 salt·속성·blind 와 맞지 않습니다');
+    save({ ...rec, version: REC_VERSION, commit, importedAt: new Date().toISOString() }); render();
+    verdict($('importVerdict'), true, 'attr_import_ok', { summary: fromV2 ? (tt('attr_import_ok_converted') || '옛 형식 백업을 새 식으로 바꿔 불러왔습니다 — 커밋먼트 값이 바뀌었으니 zkID 프로필에 다시 붙여 넣으세요.') : (tt('attr_import_ok_summary') || '백업을 불러왔습니다.') });
   }
   const importFailed = (e, reason = 'bad_backup') => verdict($('importVerdict'), false, 'attr_import_failed', { reason, detail: e.message });
   let pendingImport = null;   // 비밀번호를 기다리는 암호화 백업(파일 내용)
@@ -378,7 +367,7 @@
     if (seen === epoch) return;
     const had = raw() !== null;
     try { localStorage.removeItem(STORE_KEY); localStorage.setItem(RESET_KEY, epoch); } catch { return; }
-    if (had) { $('resetCleared').hidden = false; for (const id of ['uid', 'salt', 'birthYear', 'country', 'extra1', 'extra2']) if ($(id)) $(id).value = ''; }
+    if (had) { $('resetCleared').hidden = false; for (const id of ['birthYear', 'country', 'extra1', 'extra2']) if ($(id)) $(id).value = ''; }
     render();
   })();
   if (schema) fillCountries();

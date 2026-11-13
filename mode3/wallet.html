@@ -680,7 +680,7 @@
       return { ok: true };
     }
 
-    /** 속성 도구(같은 오리진의 /attr.html)가 남긴 커밋먼트 기록(2026-11-11) — { uid, s_u } 가 있는 version 2 기록이면 그대로, 아니면 null.
+    /** 속성 도구(같은 오리진의 /attr.html)가 남긴 커밋먼트 기록(2026-11-11) — { uid, s_u } 가 있는 version 3 기록(2026-11-13: 식에서 uid 가 빠진 정의)이면 그대로, 아니면 null.
      *  첫 등록은 이 salt 를 쓴다(사용자 결정: 스냅 팝업에서 salt 를 묻지 않는다). 키 이름은 attr.html 의 STORE_KEY 와 같다. */
     /** 속성 도구 번들(3.6MB, Mode3Attr.auidOf)을 첫 등록 때만 읽는다 — 팝업이 열릴 때마다 받지 않게. 없으면 false. */
     function loadAttrBundle() {
@@ -701,7 +701,7 @@
       try { v = JSON.parse(localStorage.getItem('mode3_attr_tool_v1') ?? 'null'); } catch { v = null; }
       const dec = (x) => typeof x === 'string' && /^[0-9]+$/.test(x);
       const profile = v?.profile && typeof v.profile === 'object' && !Array.isArray(v.profile) ? v.profile : null;   // 2026-11-11(가): 스냅 속성도 이 기록에서 — C_attr 와 같은 값
-      return v && v.version === 2 && dec(v.uid) && dec(v.s_u) && BigInt(v.s_u) > 0n && BigInt(v.s_u) < (1n << 250n) ? { uid: v.uid, s_u: v.s_u, index: Number.isInteger(v.index) ? v.index : null, profile } : null;   // index: 계정 번호(2026-11-12 스펙 snap-account-index) — 없으면 null
+      return v && v.version === 3 && dec(v.uid) && dec(v.s_u) && BigInt(v.s_u) > 0n && BigInt(v.s_u) < (1n << 250n) ? { uid: v.uid, s_u: v.s_u, index: Number.isInteger(v.index) ? v.index : null, profile } : null;   // index: 계정 번호(2026-11-12 스펙 snap-account-index) — 없으면 null
     }
 
     /** 속성 변경(2026-11-11, 스펙 D19): 로그인 전에 속성 도구 기록의 속성이 에이전트 값과 다르면 PUT /wallet/profile·Snap syncAttrs 로 맞춘다 —

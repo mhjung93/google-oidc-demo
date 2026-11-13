@@ -696,6 +696,12 @@ reason: 'predicate_unmet'}` 로 거절한다(200, 컨트랙트 호출 없이 오
 >
 > **2026-11-12(사용자 결정) IdP 가 최신 auid_s 하나를 둔다**: IdP 는 발급에 성공할 때마다 그 계정의 `lastAuidS = { value, at }` 를 덮어쓴다(설계 D1 수정 — 이력은 없고, 세션 기록에는 여전히 auid_s·arid_s 가 없다). IdP 관리자 페이지 "uid ↔ auid 대응" 표의 "최신 auid_s" 열에 보인다. 스냅 연결을 해제하면 지운다. 아래 "한계" 의 D1 신뢰 가정은 이만큼 약해진다 — IdP 는 계정마다 마지막 세션 가명을 실제로 들고 있다.
 
+> **2026-11-13(사용자 결정) 속성 도구는 속성만 묻는다**: 속성 도구(http://localhost:5100/attr.html)의 입력은 출생연도·국가·예비 1·2 뿐이다 — uid·계정 번호·salt 칸, "스냅에서 가져오기"·"salt 복사" 버튼, salt 설명을 뺐다. "커밋먼트 만들기" 를 누르면 도구가 ① zkID 로그인 세션에서 uid 를 읽고(`GET {ciaUrl}/cia/user/uid`, 쿠키 — IdP 는 uid 만 돌려주고, 스냅 에이전트 오리진에만 CORS 를 연다) ② 스냅에서 salt 와 계정 번호를 받는다(`getSalt({})` — 번호는 스냅이 고른다).
+> - **식에서 uid 가 빠졌다**: `C_attr = Poseidon(T_ATTRC3, s_u, attrs[0..5], blind)`(도메인 `"MODE3ATTRC3"`). uid 는 기록(version 3)과 화면의 "계정" 칸(uid·auid)에만 남는다 — 스냅 팝업이 기록의 uid 로 로그인한 계정과 맞춰 본다. 같은 속성·blind·salt 라도 옛 식(`MODE3ATTRC2`)의 커밋먼트와 값이 다르므로 zkID 프로필에 다시 붙여 넣어야 한다.
+> - **zkID 로그인이 먼저다**: 같은 브라우저에서 `{ciaUrl}/user`(스냅 에이전트의 `/wallet/config` 가 알려 주는 주소)에 로그인해 둔다. 로그인하지 않았으면 "zkID 에 먼저 로그인…" 으로 멈추고 아무것도 만들지 않는다. 속성·blind·salt 는 여전히 어디에도 보내지 않는다.
+> - **옛 기록·백업**: 저장된 version 1·2 기록은 "다시 만드세요" 로 보인다. version 2 백업 파일은 불러올 때 새 식으로 바꿔 계산한다(커밋먼트 값이 달라진다 — 안내가 뜬다). version 1 은 거부한다.
+> - 아래 11-12·11-11 메모의 "계정 번호 칸"·"스냅에서 가져오기"·"시드로 복구할 수 없는 salt 경고"·"uid·salt 는 그대로 두고" 는 이 메모로 대체됐다(칸·버튼·경고가 없다).
+>
 > **2026-11-12(사용자 결정, 리뷰 I-3·`2026-11-12-mode3-snap-account-index-design.md`) 스냅 0.3.0 — 계정 번호**: 비밀을 계정 번호 k 마다 따로 유도한다(`zkd/mode3/s_u/v2/<k>`). 한 MetaMask 로 계정을 여러 개 만들어도 s_u·sk_u 가 달라 IdP 가 pk_u 로 계정을 묶지 못한다(0.2.0 은 같은 시드면 계정이 달라도 같은 값이었다).
 > - **0.3.0 재설치 필요.** 유도 규칙이 v1 → v2 로 바뀌어 0.2.0 으로 등록한 계정은 시드로 되찾을 수 없다 — 데모 리셋 뒤 새로 등록한다. 0.2.0 스냅이 남아 있으면 스냅 창·속성 도구가 `snap_outdated`("스냅이 옛 버전입니다")로 멈춘다.
 > - **번호가 남는 곳**: 속성 도구(`/attr.html`)의 "계정 번호" 칸과 그 기록(자동 백업 포함), 에이전트 등록 기록. 칸을 비워 두면 스냅이 고른다(등록된 계정이 있으면 그 번호, 없으면 다음 가입 번호). 번호를 바꾸면 salt 칸이 비므로 "스냅에서 가져오기" 를 다시 누른다.
@@ -717,8 +723,8 @@ reason: 'predicate_unmet'}` 로 거절한다(200, 컨트랙트 호출 없이 오
 설계: `docs/superpowers/specs/2026-11-06-mode3-attr-commitment-id-token-design.md`(11-09 개정). 원칙(사용자 결정): **IdP 는 사용자 속성 커밋먼트를
 저장하는 것 말고는 zk-Delegation 에 관여하지 않는다.** 커밋먼트 등록은 MetaMask·스냅과 완전히 별개 흐름이고, 커밋먼트에는 RP 관련 값이 없다.
 
-- **속성 도구** `http://localhost:5100/attr.html` — 스냅 에이전트가 서빙하는 **독립 정적 페이지**. 어떤 서버와도 통신하지 않는다(스냅 상태·스냅·IdP·RP 무관).
-  속성(출생연도·국가·예비 1·2)을 넣고 "커밋먼트 만들기" → `C_attr = Poseidon(T_ATTRC, attrs[0..5], blind)`(10진). 속성·blind 는 이 브라우저의
+- **속성 도구** `http://localhost:5100/attr.html` — 스냅 에이전트가 서빙하는 **정적 페이지**. 에이전트 상태·RP 와 무관하다. 밖으로 나가는 요청은 uid 를 읽는 `GET {ciaUrl}/cia/user/uid` 하나뿐이고(2026-11-13), salt·계정 번호는 스냅에서 받는다.
+  속성(출생연도·국가·예비 1·2)을 넣고 "커밋먼트 만들기" → `C_attr = Poseidon(T_ATTRC3, s_u, attrs[0..5], blind)`(10진, 2026-11-13 — uid 는 식에 없다). 속성·blind 는 이 브라우저의
   localStorage(`mode3_attr_tool_v1`)에만 남는다. 백업 내려받기/불러오기(불러올 때 다시 계산해 맞춰 본다), 지우기. 번들은 `npm run attr:build`
   (`mode3/attr/dist/`, ignore) — **에이전트를 띄우는 기계에서 한 번** 만들어 둔다(없으면 페이지가 `bundle_missing` 을 보인다).
 - **zkID 프로필** `/user` → 로그인 → "프로필" 카드(스냅 등록 여부와 무관하게 보인다) → "이름(속성 커밋먼트)" 에 붙여 넣고 저장(`POST /cia/user/profile`).
@@ -1233,7 +1239,8 @@ Google 버튼) → zkTWO 로그인 → 계정 페이지(`:4100/account`)의 "Goo
 | `POST /wallet/tx` (`disclose`·`set` 필드, V7) | 스냅 | 트랜잭션에 선택 공개 첨부 — `disclose`: `{lo,hi}\|null` × 1..6(int 슬롯만); `set`: `{slot, members}`(선택, 슬롯 하나 — root 를 스냅이 계산). 둘 중 하나라도 있으면(mask ≠ 0 또는 set_sel ≠ 0) 새 π |
 | `GET /api/mode3/rp_info` (`attrGateAddress`·`predicates` 필드, V7) | RP | 배포된 `AttrGate` 주소, `predicates: { allowedCountries, allowedCountryNames, allowedCountriesRoot, minAge, birthYearMin, attrSchema }` |
 | `POST /api/mode3/login` (`require` 필드, V7) | RP | 로그인 성명이 만족해야 할 오프체인 술어 — `{ countrySet, minAge }`, 미충족 시 `predicate_unmet` |
-| `GET /attr.html`, `GET /attr/dist/attr.js` (2026-11-09) | 스냅(정적) | 속성 커밋먼트 도구 — 에이전트 상태를 읽지 않는 공개 GET |
+| `GET /attr.html`, `GET /attr/dist/attr.js` (2026-11-09) | 스냅(정적) | 속성 커밋먼트 도구 — 에이전트 상태를 읽지 않는 공개 GET (2026-11-13: 페이지가 `/wallet/config` 의 `ciaUrl` 로 IdP `GET /cia/user/uid` 를 부른다) |
+| `GET /cia/user/uid` (2026-11-13) | IdP(사용자 세션) | `{ uid }` 만 — 속성 도구가 로그인한 uid 를 읽는다. 쿠키 CORS 는 스냅 에이전트 오리진(`WALLET_AGENT_ORIGIN`)에만, 로그인 안 했으면 401 |
 | `POST /cia/user/profile` (2026-11-09) | IdP(사용자 세션) | `{ name }` — 한 줄·256자 이하, 빈 값이면 지움 → `profile`; `GET /cia/user/me` 에 `profile` |
 | `GET /.well-known/openid-configuration`, `GET /.well-known/jwks.json` (2026-11-09) | IdP | ID 토큰(ES256) 발견 문서·공개 JWK — 인증·CORS 없음 |
 | `POST /cia/issue` → 응답 `id_token` (2026-11-09) | IdP | `sub=auid_s`·`aud=arid_s`·`name=프로필`, 10분 |
