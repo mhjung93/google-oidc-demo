@@ -199,7 +199,7 @@ await t('상태 파일(리프가 비어 있는 슬롯) → 기동이 활성 자�
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-v12-empty-'));
   const stateFile = path.join(dir, 'cia_state.json');
   fs.writeFileSync(stateFile, JSON.stringify({
-    version: 13,
+    version: 14,
     accounts: { '12345': { auid: reg.auid.toString(), slot: 0, tampered: false, disabled: false,
       creds: [{ Cf_u: Cf.toString(), C_u_pt: { x: Cx.toString(), y: Cy.toString() }, issuedAt: 'x', revoked: false }], sessions: [], receipt: null, slotRetired: false } },
     rps: {}, openings: [], revoked: [], pending: [], epoch: 0, registry: { depth: 20, next: 1, leaves: {}, pendingSlots: [] }, lastPublication: null, signedEpochMax: 0, attrSchemaHash: null,
@@ -228,7 +228,7 @@ await t('재기동 백로그 자동 게시: 리프는 이미 저장됐지만 게
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-backlog-'));
   const stateFile = path.join(dir, 'cia_state.json');
   fs.writeFileSync(stateFile, JSON.stringify({
-    version: 13,
+    version: 14,
     accounts: { '12345': { auid: reg.auid.toString(), disabled: false, slot: 0, tampered: false,
       creds: [{ Cf_u: Cf.toString(), C_u_pt: { x: Cx.toString(), y: Cy.toString() }, issuedAt: 'x', revoked: false }], sessions: [], receipt: null, slotRetired: false } },
     rps: {}, openings: [], revoked: [], pending: [], epoch: 0,

@@ -559,12 +559,27 @@ try {
     };
     const first = await reg1();
     const me1 = (await withJar('/cia/user/me')).body; assert.equal(me1.registered, true);
+    // R11·P7(2026-11-13 스펙 random-salt): 같은 스냅(같은 salt → 같은 auid)으로 다른 계정을 등록하면 auid_taken — 연결을 풀면 그 스냅을 다른 계정에 쓸 수 있다(아래).
+    const jar2 = makeJar(cia.base);
+    const su2 = await jar2('/cia/signup', { method: 'POST', body: JSON.stringify({ id: 'unlink-2', pwd: 'password-u2' }) });
+    await jar2('/cia/user/login', { method: 'POST', body: JSON.stringify({ id: 'unlink-2', pwd: 'password-u2' }) });
+    const regSameSnap = async () => {
+      const rc = await jar2('/cia/user/register_code', { method: 'POST', body: JSON.stringify({}) });
+      const reg = await createRegistration(BigInt(su2.body.uid), Buffer.from(first.reg.seed, 'hex'));
+      assert.equal(reg.auid, first.reg.auid, '같은 salt → 같은 auid');
+      return cia.post('/cia/register', { uid: su2.body.uid, code: rc.body.code, ...(await regBody(reg, su2.body.uid)) });
+    };
+    const taken = await regSameSnap();
+    assert.equal(taken.status, 409, j(taken.body)); assert.equal(taken.body.reason, 'auid_taken');
+    assert.equal((await jar2('/cia/user/me')).body.registered, false);
     assert.equal((await withJar('/cia/user/unlink_wallet', { method: 'POST', body: JSON.stringify({ pwd: 'wrong' }) })).status, 401);
     const un = await withJar('/cia/user/unlink_wallet', { method: 'POST', body: JSON.stringify({ pwd: 'password-u1' }) });
     assert.equal(un.status, 200, j(un.body)); assert.equal(un.body.unlinked, true); assert.equal(un.body.retired, 0, '발급 전이라 은퇴할 자격증명은 없다');
     const me2 = (await withJar('/cia/user/me')).body; assert.equal(me2.registered, false, '지갑 연결이 풀렸다'); assert.equal(me2.disabled, false, '계정은 폐기되지 않았다');
     assert.equal((await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === su.body.uid).auid, null, '연결을 풀면 auid 가 비고(등록됨의 표지), 옛 슬롯 번호는 남는다');
     assert.equal((await withJar('/cia/user/login', { method: 'POST', body: JSON.stringify({ id: 'unlink-1', pwd: 'password-u1' }) })).status, 200, '같은 아이디로 계속 로그인된다');
+    const freed = await regSameSnap();
+    assert.equal(freed.status, 201, j(freed.body) + ' — 연결을 푼 계정의 auid 는 다른 계정이 쓸 수 있다(P7)');
     const second = await reg1();
     assert.notEqual(second.slot, first.slot, '다시 등록하면 새 슬롯');
     assert.equal((await withJar('/cia/user/me')).body.registered, true);

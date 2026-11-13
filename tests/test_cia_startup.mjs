@@ -137,15 +137,15 @@ try {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
-  await t('V11: 백로그(pendingSlots)가 남은 v12 파일(pk_u 있음)은 기동이 13 으로 이행하고 자동 게시한다 — 그 계정은 재등록 없이 발급된다; 자동 게시가 RPC 를 못 읽으면 경고만 남기고 기동은 계속한다', async () => {
+  await t('V11: 백로그(pendingSlots)가 남은 상태 파일은 기동이 자동 게시한다 — 그 계정은 재등록 없이 발급된다; 자동 게시가 RPC 를 못 읽으면 경고만 남기고 기동은 계속한다', async () => {
     const { createRegistration } = await import('../lib/mode3_wallet.js');
     const { userCommit } = await import('../lib/mode3_credential.js');
     const { registryLeaf } = await import('../lib/mode3_registry.js');
     const reg = await createRegistration(12345n);
     const { Cx, Cy, Cf } = await userCommit({ uid: 12345n, s_u: reg.s_u, blind_u: randomScalar(), attrs: [1990n, 410n, 0n, 0n, 0n, 0n] });
     const leaf = (await registryLeaf(reg.auid, Cf)).toString();
-    // 2026-11-13(스펙 no-pk-u §5): 일부러 v12 모양(pk_u 있음)으로 둔다 — 로더가 pk_u 를 지우고 13 으로 올리는 실제 이행을 본다.
-    const mk = () => ({ version: 12, accounts: { '12345': { pk_u: { x: '1', y: '2' }, auid: reg.auid.toString(), slot: 0, tampered: false, disabled: false, creds: [{ Cf_u: Cf.toString(), C_u_pt: { x: Cx.toString(), y: Cy.toString() }, issuedAt: 'x', revoked: false }], sessions: [], receipt: null, slotRetired: false } },
+    // 2026-11-13(스펙 random-salt R14): 옛 버전 이행은 없다 — v14 파일이다(pk_u 가 손으로 남아 있어도 로더가 지운다).
+    const mk = () => ({ version: 14, accounts: { '12345': { pk_u: { x: '1', y: '2' }, auid: reg.auid.toString(), slot: 0, tampered: false, disabled: false, creds: [{ Cf_u: Cf.toString(), C_u_pt: { x: Cx.toString(), y: Cy.toString() }, issuedAt: 'x', revoked: false }], sessions: [], receipt: null, slotRetired: false } },
       rps: {}, openings: [], revoked: [], pending: [], epoch: 0, registry: { depth: 20, next: 1, leaves: { '0': leaf }, pendingSlots: [{ index: 0, leaf }] }, lastPublication: null, signedEpochMax: 0, attrSchemaHash: null });
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-v12-backlog-'));
     const stateFile = path.join(dir, 'cia_state.json');
@@ -154,11 +154,10 @@ try {
     try {
       const st = (await cia.get('/cia/state')).body;
       assert.equal(st.pendingSlots, 0, '기동이 백로그를 게시했어야 한다'); assert.equal(st.epoch, 1);
-      assert.match(cia.log(), /12 → 13/, '기동 로그에 이행 한 줄');
       const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));   // 테스트가 만든 임시 상태 파일
-      assert.equal(saved.version, 13); assert.equal('pk_u' in saved.accounts['12345'], false, '저장된 파일에서 pk_u 가 사라졌다');
+      assert.equal(saved.version, 14); assert.equal('pk_u' in saved.accounts['12345'], false, '저장된 파일에서 pk_u 가 사라졌다');
       const iss = await issueV11(cia, { uid: 12345n, s_u: reg.s_u, auid: reg.auid, attrs: [1990n, 410n, 0n, 0n, 0n, 0n] }, { arid, provider: getProvider() });
-      assert.equal(iss.r.status, 200, `v12 에서 온 계정은 재등록 없이 발급된다: ${JSON.stringify(iss.r.body)}`);
+      assert.equal(iss.r.status, 200, `상태 파일에서 온 계정은 재등록 없이 발급된다: ${JSON.stringify(iss.r.body)}`);
     } finally { await cia.stop(); }
     fs.writeFileSync(stateFile, JSON.stringify(mk()), { mode: 0o600 });
     const dead = await startIsolatedCia({ env: { CIA_STATE_FILE: stateFile, CIA_RPC_URL: 'http://127.0.0.1:1' } });
@@ -166,6 +165,18 @@ try {
       assert.match(dead.log(), /\/cia\/publish/, '수동 게시 안내');
       assert.equal((await dead.get('/cia/state')).body.pendingSlots, 1, '게시가 실패했으므로 백로그는 그대로');
     } finally { await dead.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  await t('R14(2026-11-13): 상태 버전 13·12 파일은 기동을 거부한다(auid·PPID 식이 바뀌었다 — 이행 없음) — 파일은 그대로 둔다', async () => {
+    for (const v of [13, 12]) {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), `mode3-old-state-${v}-`));
+      const stateFile = path.join(dir, 'cia_state.json');
+      const body = JSON.stringify({ version: v, accounts: { '12345': { auid: '77', slot: 0 } }, rps: {}, openings: [], revoked: [], pending: [], epoch: 0, registry: { depth: 20, next: 1, leaves: {}, pendingSlots: [] } });
+      fs.writeFileSync(stateFile, body, { mode: 0o600 });
+      await expectStartupRefused({ env: { CIA_STATE_FILE: stateFile } });
+      assert.equal(fs.readFileSync(stateFile, 'utf8'), body, '거부된 기동은 상태 파일을 건드리지 않는다');
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   await t('CIA_ATTR_SCHEMA_FILE 이 검증에 실패하면 기동하지 않는다', async () => {
@@ -182,7 +193,7 @@ try {
     const stateFile = path.join(dir, 'cia_state.json');
     const schemaFile = path.join(dir, 'schema.json');
     try {
-      fs.writeFileSync(stateFile, JSON.stringify({ version: 13, accounts: {}, rps: {}, openings: [], revoked: [], pending: [], epoch: 0, registry: { depth: 20, next: 0, leaves: {}, pendingSlots: [] }, lastPublication: null, signedEpochMax: 0 }), { mode: 0o600 });
+      fs.writeFileSync(stateFile, JSON.stringify({ version: 14, accounts: {}, rps: {}, openings: [], revoked: [], pending: [], epoch: 0, registry: { depth: 20, next: 0, leaves: {}, pendingSlots: [] }, lastPublication: null, signedEpochMax: 0 }), { mode: 0o600 });
       const cia = await startIsolatedCia({ env: { CIA_STATE_FILE: stateFile } });
       try {
         const sch = (await cia.get('/cia/attr_schema')).body;

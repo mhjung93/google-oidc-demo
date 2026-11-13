@@ -1,16 +1,16 @@
-// IdP 상태 v13(V11 2026-10-12, 2026-11-13 등록 키 제거) — 기본 상태·검사·v12 이행·옛 버전 거부. 외부 의존 없음(unit).  node tests/test_mode3_cia_state.js
+// IdP 상태 v14(2026-11-13 스펙 random-salt R14 — auid·PPID 식이 바뀌어 옛 상태를 이행하지 않는다) — 기본 상태·검사·옛 버전 거부. 외부 의존 없음(unit).  node tests/test_mode3_cia_state.js
 import assert from 'node:assert/strict';
 import { CIA_STATE_VERSION, defaultCiaState, migrateCiaState, rpKeyTag, findRpSlotByKey } from '../lib/mode3_cia_state.js';
 let failed = 0;
 function t(name, fn) { try { fn(); console.log(`ok   ${name}`); } catch (e) { failed++; console.error(`FAIL ${name}\n     ${e.message}`); } }
 
-t('기본 상태는 v13 이고 attrs·profile·issued 가 없다', () => {
+t('기본 상태는 v14 이고 attrs·profile·issued 가 없다', () => {
   const s = defaultCiaState();
-  assert.equal(s.version, 13); assert.equal(CIA_STATE_VERSION, 13);
-  assert.deepEqual(s, { version: 13, accounts: {}, rps: {}, operators: {}, rpSlots: {}, openings: [], revoked: [], pending: [], epoch: 0, registry: { depth: 20, next: 0, leaves: {}, pendingSlots: [] }, pendingBounds: [], lastPublication: null, signedEpochMax: 0, attrSchemaHash: null, nextUid: 100001, codes: {}, loginIds: {} });   // loginIds: 2026-11-03 아이디 가입 색인
+  assert.equal(s.version, 14); assert.equal(CIA_STATE_VERSION, 14);
+  assert.deepEqual(s, { version: 14, accounts: {}, rps: {}, operators: {}, rpSlots: {}, openings: [], revoked: [], pending: [], epoch: 0, registry: { depth: 20, next: 0, leaves: {}, pendingSlots: [] }, pendingBounds: [], lastPublication: null, signedEpochMax: 0, attrSchemaHash: null, nextUid: 100001, codes: {}, loginIds: {} });   // loginIds: 2026-11-03 아이디 가입 색인
 });
-t('v13 은 그대로(notes 없음), 빠진 하위 필드는 채운다(nextUid·codes 포함), 계정 기본값(creds·sessions·tampered·receipt·slotRetired·provider·pwSalt·pwHash·pwAlgo·createdAt)', () => {
-  const { state, notes } = migrateCiaState({ version: 13, accounts: { '12345': { auid: '99', slot: 0, disabled: false } }, rps: {}, openings: [], revoked: [], pending: [], epoch: 3, registry: {} });
+t('v14 는 그대로(notes 없음), 빠진 하위 필드는 채운다(nextUid·codes 포함), 계정 기본값(creds·sessions·tampered·receipt·slotRetired·provider·pwSalt·pwHash·pwAlgo·createdAt)', () => {
+  const { state, notes } = migrateCiaState({ version: 14, accounts: { '12345': { auid: '99', slot: 0, disabled: false } }, rps: {}, openings: [], revoked: [], pending: [], epoch: 3, registry: {} });
   assert.deepEqual(notes, []); assert.equal(state.epoch, 3);
   assert.deepEqual(state.registry, { depth: 20, next: 0, leaves: {}, pendingSlots: [] });
   assert.equal(state.nextUid, 100001, '옛(이 필드 이전) 파일은 100001 부터'); assert.deepEqual(state.codes, {});
@@ -18,7 +18,7 @@ t('v13 은 그대로(notes 없음), 빠진 하위 필드는 채운다(nextUid·c
   assert.equal(state.signedEpochMax, 0); assert.equal(state.attrSchemaHash, null, '스키마 해시는 cia.js 기동이 기록한다');
 });
 t('Task 11(B2, 2026-10-22): 옛(이 필드 이전) 파일에 operators·rpSlots 가 빈 값으로 채워지고, 옛 rps 엔트리는 operator:null 인 레거시로 읽힌다', () => {
-  const { state, notes } = migrateCiaState({ version: 13, accounts: {}, rps: { '1': { name: 'n', origin: 'http://x', pk_service: '0x0', X_svc: null, x_AA: null, pk_trace: null, status: 'pending', requestedAt: 't', decidedAt: null } }, openings: [], revoked: [], pending: [], epoch: 0, registry: {} });
+  const { state, notes } = migrateCiaState({ version: 14, accounts: {}, rps: { '1': { name: 'n', origin: 'http://x', pk_service: '0x0', X_svc: null, x_AA: null, pk_trace: null, status: 'pending', requestedAt: 't', decidedAt: null } }, openings: [], revoked: [], pending: [], epoch: 0, registry: {} });
   assert.deepEqual(notes, []);
   assert.deepEqual(state.operators, {}); assert.deepEqual(state.rpSlots, {});
   assert.equal(state.rps['1'].operator, null, '옛 RP 엔트리는 운영자 없음');
@@ -37,16 +37,17 @@ t('Task 10(B1, 2026-10-22): 가입만 하고 등록 전인 계정(auid·slot 모
   assert.deepEqual(state.accounts['100001'], { auid: null, slot: null, disabled: false, pwSalt: 'a', pwHash: 'b', pwAlgo: 'scrypt', createdAt: 'c', creds: [], sessions: [], tampered: false, receipt: null, slotRetired: false, provider: 'demo', loginId: null, lastAuidS: null });
 });
 t('OIDC 래퍼(2026-10-16): provider 없는 계정은 migrateCiaState 뒤 demo 가 되고, 이미 있는 provider(google)는 유지된다', () => {
-  const { state } = migrateCiaState({ version: 13, accounts: {
+  const { state } = migrateCiaState({ version: 14, accounts: {
     noProvider: { auid: '99', slot: 0, disabled: false },
     google: { auid: '77', slot: 1, disabled: false, provider: 'google' },
   }, rps: {}, openings: [], revoked: [], pending: [], epoch: 0, registry: {} });
   assert.equal(state.accounts.noProvider.provider, 'demo');
   assert.equal(state.accounts.google.provider, 'google');
 });
-t('v11 이하(v2·v4·v8·v10·v11)와 미래 버전(14), 버전 없음은 전부 throw — 이행하지 않는다(12 만 이행한다)', () => {
-  for (const v of [2, 4, 8, 10, 11, 14, undefined]) assert.throws(() => migrateCiaState({ version: v, accounts: {} }), /unsupported IdP state version/, String(v));
-  assert.throws(() => migrateCiaState({ version: 11, accounts: {} }), /재시연 세트/);
+t('R14: v13 이하(v2·v4·v8·v10·v11·v12·v13)와 미래 버전(15), 버전 없음은 전부 throw — 이행하지 않는다(auid 의 뜻이 바뀌었다)', () => {
+  for (const v of [2, 4, 8, 10, 11, 12, 13, 15, undefined]) assert.throws(() => migrateCiaState({ version: v, accounts: {} }), /unsupported IdP state version/, String(v));
+  assert.throws(() => migrateCiaState({ version: 13, accounts: {} }), /데모 리셋/);
+  assert.throws(() => migrateCiaState({ version: 13, accounts: {} }), /expected 14/);
 });
 t('auid 가 없거나 V10 필드(attrs·profile·cm_u)가 남은 계정은 throw', () => {
   const base = () => ({ ...defaultCiaState(), accounts: { '1': { auid: '5', slot: 0, disabled: false } } });
@@ -119,23 +120,12 @@ t('2026-11-12(사용자 결정 — D1 수정): 계정의 lastAuidS(최신 auid_s
   assert.equal(open({}).lastAuidS, null, '옛 파일에는 없다 — null 로 채운다');
   for (const bad of ['777', { value: 'x', at: 't' }, { value: '777' }, ['777']]) assert.throws(() => open({ lastAuidS: bad }), /lastAuidS/, JSON.stringify(bad));
 });
-// 2026-11-13(스펙 2026-11-12 no-pk-u §5): 등록 키가 없어졌다 — v12 는 pk_u 를 지우고 13 으로 올린다. auid 는 그대로라 재등록이 없다.
-t('v12 → v13: 계정의 pk_u 를 지우고 버전을 올린다(notes 에 한 줄), auid·slot·creds 는 그대로', () => {
-  const s = { ...defaultCiaState(), version: 12, accounts: {
-    '1': { pk_u: { x: '9', y: '10' }, auid: '77', slot: 0, creds: [{ Cf_u: '5' }], sessions: [] },
-    '2': { pk_u: null, auid: null, slot: null },
-  } };
-  const { state, notes } = migrateCiaState(s);
-  assert.equal(state.version, 13);
-  assert.equal('pk_u' in state.accounts['1'], false); assert.equal('pk_u' in state.accounts['2'], false);
-  assert.equal(state.accounts['1'].auid, '77'); assert.equal(state.accounts['1'].slot, 0); assert.deepEqual(state.accounts['1'].creds, [{ Cf_u: '5' }]);
-  assert.equal(notes.filter((n) => /12 → 13/.test(n)).length, 1);
-});
-t('v13 에 남은 pk_u(손으로 고친 파일)는 거부하지 않고 지운다; 그 밖의 버전(11·14·없음)은 거부', () => {
+// 2026-11-13(스펙 2026-11-12 no-pk-u §5): 등록 키가 없어졌다. 같은 날 뒤(random-salt R14) 12 → 13 이행은 없앴다 — 12·13 은 기동을 거부한다.
+t('v14 에 남은 pk_u(손으로 고친 파일)는 거부하지 않고 지운다; 12·13 은 이행하지 않고 거부한다', () => {
   const s = { ...defaultCiaState(), accounts: { '1': { pk_u: { x: '9', y: '10' }, auid: '77', slot: 0 } } };
   const { state, notes } = migrateCiaState(s);
-  assert.equal('pk_u' in state.accounts['1'], false); assert.equal(notes.some((n) => /12 → 13/.test(n)), false);
-  for (const v of [11, 14, undefined]) assert.throws(() => migrateCiaState({ ...defaultCiaState(), version: v }), /unsupported IdP state version/);
+  assert.equal('pk_u' in state.accounts['1'], false); assert.equal(notes.some((n) => /→/.test(n) && /버전/.test(n)), false);
+  for (const v of [12, 13]) assert.throws(() => migrateCiaState({ ...defaultCiaState(), version: v, accounts: { '1': { auid: '77', slot: 0 } } }), /unsupported IdP state version/);
 });
 t('등록됨(auid 있음)인데 slot 이 없거나 음수면 거부; auid 가 10진이 아니면 거부', () => {
   for (const slot of [null, undefined, -1, 1.5, '0']) assert.throws(() => migrateCiaState({ ...defaultCiaState(), accounts: { '1': { auid: '77', slot } } }), /valid slot/, String(slot));

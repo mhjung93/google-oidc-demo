@@ -174,6 +174,31 @@ try {
     assert.equal(dis.status, 409, JSON.stringify(dis.body)); assert.equal(dis.body.reason, 'account_disabled');
   });
 
+  // 2026-11-13(스펙 random-salt R11): auid = Poseidon(T_AUID2, salt) 라 같은 스냅(같은 salt)은 계정이 달라도 같은 auid 다 — 같은 IdP 에서 한 스냅의 계정은 하나.
+  await t('R11: 같은 스냅(같은 auid)의 두 번째 계정은 409 auid_taken — 상태는 그대로; 증명이 틀리면 auid 가 있든 없든 400 bad_idp_proof(존재를 알려 주지 않는다)', async () => {
+    const seed = Buffer.alloc(32, 21);
+    const sa = await cia.post('/cia/signup', { id: 'taken-a', pwd: 'taken-pw-a' }); assert.equal(sa.status, 201, JSON.stringify(sa.body));
+    const sb = await cia.post('/cia/signup', { id: 'taken-b', pwd: 'taken-pw-b' }); assert.equal(sb.status, 201, JSON.stringify(sb.body));
+    const regA = await createRegistration(BigInt(sa.body.uid), seed), regB = await createRegistration(BigInt(sb.body.uid), seed);
+    assert.equal(regA.auid, regB.auid, '같은 salt → uid 가 달라도 같은 auid');
+    const first = await cia.post('/cia/register', { uid: sa.body.uid, pwd: 'taken-pw-a', ...(await regBody(regA, sa.body.uid)) });
+    assert.equal(first.status, 201, JSON.stringify(first.body));
+    const snap = async () => { const { head: _h, ...rest } = (await cia.get('/cia/state')).body; return rest; };
+    const stBefore = await snap();
+    const taken = await cia.post('/cia/register', { uid: sb.body.uid, pwd: 'taken-pw-b', ...(await regBody(regB, sb.body.uid)) });
+    assert.equal(taken.status, 409, JSON.stringify(taken.body)); assert.equal(taken.body.reason, 'auid_taken');
+    // 같은 auid 를 대지만 증명은 다른 salt 의 것 — auid_taken 이 아니라 bad_idp_proof(auid 가 이미 있는지 알려 주지 않는다). 없는 auid 를 대도 같은 답.
+    const other = await createRegistration(BigInt(sb.body.uid), Buffer.alloc(32, 22));
+    for (const claimed of [regA.auid.toString(), (regA.auid + 1n).toString()]) {
+      const forged = await cia.post('/cia/register', { uid: sb.body.uid, pwd: 'taken-pw-b', ...(await regBody(other, sb.body.uid)), auid: claimed });
+      assert.equal(forged.status, 400, JSON.stringify(forged.body)); assert.equal(forged.body.reason, 'bad_idp_proof');
+    }
+    assert.deepEqual(await snap(), stBefore, '거절된 등록은 상태를 바꾸지 않는다');
+    // 다른 스냅(다른 salt)이면 그 계정은 등록된다
+    const ok = await cia.post('/cia/register', { uid: sb.body.uid, pwd: 'taken-pw-b', ...(await regBody(other, sb.body.uid)) });
+    assert.equal(ok.status, 201, JSON.stringify(ok.body));
+  });
+
   await t('issue V11: 첫 발급 — 새 C_u 가 슬롯에 게시(published:true)되고 토큰·세션 기록; 같은 C_u 재발급은 published:false, 활성 자격증명은 하나', async () => {
     const a = await issue(user);
     assert.equal(a.r.status, 200, JSON.stringify(a.r.body));

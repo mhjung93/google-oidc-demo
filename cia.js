@@ -20,7 +20,7 @@
 // bound(2026-10-22): 세션 폐기 리프가 Cf_s 하나가 아니라 (H'(Cf_s), 허용 거래 수 bound) 묶음이다 — 설계
 //   2026-10-22-mode3-revocation-counter-bound-design.md §3(lib/mode3_revocation.js sessionLeaf). 발급·폐기 모두 bound 를 함께 남긴다.
 // 2026-11-13(스펙 2026-11-12-mode3-no-pk-u-design.md): IdP 는 사용자 키(pk_u)를 갖지 않는다 — 등록·슬롯 조회·발급·세션 폐기를 서명 대신
-//   π_IdP 의 공개 입력 ctx·tag 로 인증한다(checkIdpAuth). 상태는 v13(pk_u 삭제, v12 는 열 때 이행).
+//   π_IdP 의 공개 입력 ctx·tag 로 인증한다(checkIdpAuth). 상태는 v14(2026-11-13 random-salt — auid = H(T_AUID2, salt), 옛 버전은 기동 거부).
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
@@ -1132,12 +1132,17 @@ async function registerAccount({ uid, provider, auid, auth = null, verified = fa
     if (beforeCommit && !beforeCommit()) return fail(401, { error: 'bad_code', reason: 'bad_code' });
     return { slot: prev.slot, restored: true };
   }
+  // R11(2026-11-13 스펙 random-salt): auid = Poseidon(T_AUID2, salt) 는 스냅의 가명이라 계정이 달라도 같은 스냅이면 같다 — 같은 IdP 에서 한 스냅의 계정은 하나다.
+  // 다른 uid 가 이 auid 를 지금 들고 있으면(폐기된 계정 포함) 거절한다. 연결 해제로 auid 가 비워진 계정은 막지 않는다. 증명을 본 **뒤에** 검사한다 — 틀린 요청에
+  // auid 가 등록돼 있는지를 알려 주지 않는다. 1회용 코드를 태우기 전이다. 아래 검사는 동기라 await 사이 경합에도 같은 답이다.
+  const auidStr = BigInt(auid).toString();
+  if (Object.entries(state.accounts).some(([u, a]) => u !== String(uid) && a?.auid === auidStr)) return fail(409, { error: 'auid taken', reason: 'auid_taken' });
   if (state.accounts[uid]?.auid) return fail(409, { error: 'already registered' });   // await 사이 경합
   if (beforeCommit && !beforeCommit()) return fail(401, { error: 'bad_code', reason: 'bad_code' });
   const slot = state.registry.next++;
   // 가입 때 만든 레코드(pwSalt·pwHash·pwAlgo·createdAt)가 있으면 그 자리를 채운다 — 새 객체로 덮어 비밀번호를 잃지 않는다(Task 10).
   const acct = state.accounts[uid] ??= newAccountRecord();
-  Object.assign(acct, { auid: BigInt(auid).toString(), slot, provider });
+  Object.assign(acct, { auid: auidStr, slot, provider });
   persist();
   return { slot };
 }
