@@ -27,6 +27,7 @@ const store = { state: null };          // snap_manageState 의 암호화 저장
 const snapCalls = [];                   // 스냅이 부른 snap.request method 기록 — 0.5.0 은 snap_getEntropy 를 부르지 않는다
 const dialogs = [];                     // 표시된 대화상자(내용 검사용)
 const answers = [];                     // 다음 대화상자들이 돌려줄 값
+const hooks = { onDialog: null, failNextUpdate: false };   // onDialog: 확인 창이 떠 있는 동안 다른 탭이 끼어드는 것을 흉내 낸다(한 번 쓰고 비운다). failNextUpdate: 다음 저장 한 번이 실패한다(중간에 끊김).
 
 globalThis.snap = {
   request: async ({ method, params }) => {
@@ -34,12 +35,16 @@ globalThis.snap = {
     if (method === 'snap_manageState') {
       const op = params?.operation;
       if (op === 'get') return clone(store.state) ?? null;
-      if (op === 'update') { store.state = clone(params.newState); return null; }
+      if (op === 'update') {
+        if (hooks.failNextUpdate) { hooks.failNextUpdate = false; throw new Error('stub: 저장 실패'); }
+        store.state = clone(params.newState); return null;
+      }
       if (op === 'clear') { store.state = null; return null; }
       throw new Error(`stub: 모르는 operation ${op}`);
     }
     if (method === 'snap_dialog') {
       dialogs.push(clone(params));
+      if (hooks.onDialog) { const fn = hooks.onDialog; hooks.onDialog = null; await fn(); }
       if (!answers.length) throw new Error('stub: 대화상자 응답 큐가 비었다');
       return answers.shift();
     }
@@ -489,6 +494,37 @@ await t('같은 salt 를 불러온 스냅은 같은 등록 비밀을 낸다(복�
   await call('importSalt', { s_u: SALT });
   assert.deepEqual(await call('register', { uid: '12345' }), { uid: '12345', s_u: SALT });
   assert.equal((await auidOf({ s_u: BigInt(SALT) })).toString(), auid, '같은 salt → 같은 auid');
+});
+
+// ---- 확인 창이 떠 있는 동안 상태가 바뀌는 경우(두 탭) · 저장이 중간에 끊기는 경우 — salt 를 잃지 않는다(리뷰 2026-11-13 M-1·M-2) ----
+await t('importSalt: 확인 창이 떠 있는 동안 다른 탭이 salt 를 만들어 백업까지 확인했으면 덮어쓰지 않는다(salt_exists) — 그 salt 가 그대로 남는다', async () => {
+  store.state = null; answers.length = 0;
+  let made = null;
+  hooks.onDialog = async () => { made = (await call('initSalt', {})).s_u; await call('confirmBackup', { s_u: made }); };
+  answers.push(true);
+  await assert.rejects(() => call('importSalt', { s_u: '777' }), /salt_exists/);
+  assert.equal(store.state.salt.s_u, made); assert.equal(store.state.salt.backedUp, true); assert.equal(store.state.salt.source, 'new');
+});
+
+await t('reset: 확인 창이 떠 있는 동안 다른 탭이 만든 salt·백업 표시를 지우지 않는다', async () => {
+  store.state = null; answers.length = 0;
+  let made = null;
+  hooks.onDialog = async () => { made = (await call('initSalt', {})).s_u; await call('confirmBackup', { s_u: made }); };
+  answers.push(true);
+  assert.deepEqual(await call('reset', {}), { ok: true });
+  assert.equal(store.state?.salt?.s_u, made, '창을 띄우기 전에 읽은 상태(salt 없음)로 덮어쓰지 않는다'); assert.equal(store.state.salt.backedUp, true);
+});
+
+await t('reset: 저장이 실패해도 salt 가 사라지지 않는다 — 지우고 다시 쓰는 두 단계가 아니라 한 번에 바꾼다', async () => {
+  store.state = null; answers.length = 0; answers.push(true);
+  await call('importSalt', { s_u: '4242' });
+  await call('register', { uid: '9' });
+  hooks.failNextUpdate = true; answers.push(true);
+  await assert.rejects(() => call('reset', {}), /저장 실패/);
+  assert.equal(store.state?.salt?.s_u, '4242', '실패한 초기화는 아무것도 바꾸지 않는다');
+  answers.push(true);
+  assert.deepEqual(await call('reset', {}), { ok: true });
+  assert.equal(store.state.salt.s_u, '4242'); assert.equal(store.state.registration, null);
 });
 
 await t('R14: 0.4.x 상태(version 1 — 시드 유도 등록·계정 번호)를 만나면 이어 쓰지 않는다 — 등록 없음·salt 없음으로 시작하고 옛 비밀을 내지 않는다', async () => {

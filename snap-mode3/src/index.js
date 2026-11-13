@@ -124,16 +124,20 @@ export const onRpcRequest = async ({ origin, request }) => {
     case 'importSalt': {
       const su = String(params.s_u ?? '').trim();
       if (!isSalt(su)) fail('bad_salt: salt 는 1 이상 2^250 미만의 10진 문자열');
-      if (state.salt && (state.salt.backedUp === true || state.registration)) fail('salt_exists: 이미 쓰고 있는 salt 가 있다(바꾸려면 스냅을 제거한다)');
+      const inUse = (st) => st.salt && (st.salt.backedUp === true || st.registration);
+      if (inUse(state)) fail('salt_exists: 이미 쓰고 있는 salt 가 있다(바꾸려면 스냅을 제거한다)');
       const ok = await confirm('백업에서 salt 불러오기', [
         '백업 파일의 salt 를 이 스냅에 넣습니다.',
         '같은 salt 면 서비스마다 예전과 같은 주소로 로그인됩니다.',
       ]);
       if (!ok) return { denied: true };
+      // 확인 창이 떠 있는 동안 다른 탭이 salt 를 만들어 쓰기 시작했을 수 있다 — 창 전에 읽은 상태로 덮어쓰지 않게 다시 읽어 같은 조건을 본다.
+      const fresh = await getState();
+      if (inUse(fresh)) fail('salt_exists: 이미 쓰고 있는 salt 가 있다(바꾸려면 스냅을 제거한다)');
       const now = new Date().toISOString();
-      state.salt = { s_u: BigInt(su).toString(), createdAt: now, source: 'import', backedUp: true, backedUpAt: now };
-      state.registration = null; state.userCred = null;
-      await setState(state);
+      fresh.salt = { s_u: BigInt(su).toString(), createdAt: now, source: 'import', backedUp: true, backedUpAt: now };
+      fresh.registration = null; fresh.userCred = null;
+      await setState(fresh);
       return { ok: true };
     }
 
@@ -306,8 +310,10 @@ export const onRpcRequest = async ({ origin, request }) => {
         '체인·AA 쪽 상태는 지워지지 않습니다.',
       ]);
       if (!ok) return { denied: true };
-      await clearState();
-      if (state.salt) await setState({ ...EMPTY_STATE, consents: {}, salt: state.salt });
+      // salt 는 확인 창 뒤에 다시 읽은 값을 남긴다(창이 떠 있는 동안 다른 탭이 만들거나 백업을 확인했을 수 있다). 지우고 다시 쓰는 두 단계로 하지 않는다 — 사이에 끊기면 salt 가 사라진다.
+      const { salt } = await getState();
+      if (salt) await setState({ ...EMPTY_STATE, consents: {}, salt });
+      else await clearState();
       return { ok: true };
     }
 
