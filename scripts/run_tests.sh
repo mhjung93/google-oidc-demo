@@ -12,7 +12,7 @@
 #   bash scripts/run_tests.sh chain      # hardhat 노드(:8545) 필요. IdP는 스스로 격리 기동.
 #                                        # :8546 은 비어 있거나 chainId 31338 노드여야 한다 — test_mode3_demo_full.mjs 가 비어 있으면
 #                                        # 폐기 체인 노드를 띄우고 끝나면 끈다. 이미 31338 노드가 있으면 끄지 않고 그 위에 배포·트랜잭션을 보낸다
-#                                        # Mode 3 테스트는 build/mode3/pi_cred_*.zkey·vkey 와 (V11) pi_idp_*.zkey·vkey·wasm 도 필요
+#                                        # Mode 3 테스트는 build/mode3/pi_cred_*.zkey·vkey 와 (V11) pi_idp_*.zkey·vkey·wasm 도 필요(2026-11-13: 공개 입력 10개 — 옛 산출물이면 bad_idp_proof)
 #   bash scripts/run_tests.sh contract   # 컨트랙트(test/*.test.mjs). hardhat 인프로세스 체인
 #                                        # build/mode3 zkey·wasm 필요(Mode3Wallet.test.mjs 가 실제 π 를 만든다)
 #   bash scripts/run_tests.sh browser    # chain 의 조건 + Chrome(또는 Chromium) 필요. Playwright 로 페이지를 띄운다

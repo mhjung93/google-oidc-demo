@@ -1,6 +1,6 @@
 # Mode 3 — 등록 키(sk_u·pk_u) 제거: 사용자 요청 인증을 π_IdP(ctx·tag)로 (설계, 2026-11-12)
 
-- 상태: 사용자 승인(2026-11-12, 대화 중 "pk_u는 없애도 될 것 같고 없애야 할 것 같고" → 안 선택 "B안으로 가고" → 2부 "추천대로"). 미구현.
+- 상태: 사용자 승인(2026-11-12, 대화 중 "pk_u는 없애도 될 것 같고 없애야 할 것 같고" → 안 선택 "B안으로 가고" → 2부 "추천대로"). 구현됨(2026-11-13, 계획 `docs/superpowers/plans/2026-11-13-mode3-no-pk-u.md`). 미배포.
 - 배경: IdP 는 등록 때 사용자 키 pk_u 를 받아 두고, 발급·슬롯 조회·세션 폐기 요청을 sk_u 서명(`sig_u`)으로 인증한다. 기존 web2 IdP 는 사용자 키를 등록받지 않는다(사용자 지적).
   pk_u 는 IdP 쪽 연결 고리이기도 하다(리뷰 I-3 — 같은 pk_u 면 다른 계정이 한 사람으로 묶인다; 스냅 0.3.0 이 계정 번호로 갈랐다).
   한편 지갑은 이미 세션마다 "auid 의 s_u 를 안다" 는 π_IdP 를 낸다 — 같은 증명에 요청을 묶으면 sk_u 가 할 일이 없다.
@@ -26,7 +26,7 @@
   `[0] uid [1] auid [2] auid_s [3] C_u_x [4] C_u_y [5] C_s_x [6] C_s_y [7] max_height [8] ctx [9] tag`.
 - 새 제약 하나: `tag === Poseidon(DOMAIN_MODE3_TAG, s_u, ctx)`. `ctx` 는 공개 입력으로만 들어온다(회로는 그 내용을 모른다).
 - `DOMAIN_MODE3_TAG` = ASCII `"MODE3TAG"` 를 큰 끝(big-endian) 정수로 읽은 값(기존 `DOMAIN_MODE3_AUID` 와 같은 규칙). `lib/mode3_credential.js` 에 같은 상수를 둔다.
-- 늘어나는 제약은 Poseidon(3) 하나 — 약 240개로 **추정**(빌드 뒤 `.r1cs` 로 확인해 결과 문서에 적는다). 지금 6,325.
+- 늘어나는 제약은 Poseidon(3) 하나 — 약 240개로 **추정**했고, 빌드 뒤 확인한 값은 **258개**다(비선형 제약 6,325 → 6,583, 공개 입력 8 → 10, 비공개 12. `tests/test_pi_idp_witness.mjs`·`npx snarkjs r1cs info build/mode3/pi_idp.r1cs`).
 - `lib/mode3_idp_proof.js`: `IDP_PUB_INDEX` 에 `CTX: 8, TAG: 9, COUNT: 10`. `idpPublicSignals`·`proveIdp` 가 `ctx`·`tag` 를 받는다. `tests/test_mode3_artifacts.mjs` 의 `.sym` 대조가 새 순서를 본다.
 - 빌드: `scripts/build_mode3_circuit.sh` 가 회로 이름을 인자로 받게 한다(`bash scripts/build_mode3_circuit.sh pi_idp`). 인자가 없으면 지금처럼 둘 다. **이 작업에서는 `pi_idp` 만 빌드한다**(P7). 빌드는 실행 전에 사용자 승인을 받는다(CLAUDE.md).
   산출물은 `build/mode3/pi_idp_final.zkey`·`pi_idp_vkey.json`·`pi_idp_js/pi_idp.wasm` — 에이전트·IdP·웹 사용자 페이지(`mode3_user_static.js`)가 모두 이 자리에서 읽는다(사본 없음).
@@ -37,7 +37,7 @@
 
 | 요청 | ctx | 지금의 서명 메시지 |
 |---|---|---|
-| 발급 `/cia/issue` | `Poseidon(D_CTX_ISSUE, arid_s, chainid, allowAgent)` | `(auid_s, arid_s, Cf_u, Cf_s, chainid, allowAgent, max_height)` — 나머지 넷은 π_IdP 공개 입력이 이미 덮는다 |
+| 발급 `/cia/issue` | `Poseidon(D_CTX_ISSUE, arid_s, chainid, allowAgent, n)` — n 은 지갑 난수(2026-11-13 추가, §10) | `(auid_s, arid_s, Cf_u, Cf_s, chainid, allowAgent, max_height)` — 나머지 넷은 π_IdP 공개 입력이 이미 덮는다 |
 | 등록 `/cia/register` | `Poseidon(D_CTX_REG, n)` — n 은 지갑이 뽑은 난수(2^250 미만) | `(uid, auid)` — 둘 다 공개 입력 |
 | 슬롯 조회 `/cia/slot` | `Poseidon(D_CTX_SLOT, nonce)` | `(uid, nonce)` |
 | 세션 폐기 `/cia/revoke` scope=session | `Poseidon(D_CTX_REVOKE, Cf_s, bound, nonce)` | `(uid, Cf_s, bound, nonce)` |
@@ -113,7 +113,7 @@
 
 ## 7. 비용·한계
 
-- 발급: 증명 수는 그대로 하나. 제약이 약 240개(추정) 는다 — 지금 prove ≈292 ms·verify ≈13 ms(`results/mode3_v11_figure_protocol_20261013.md`). 빌드 뒤 같은 머신에서 다시 재서 **새 결과 파일**에 적는다(기존 파일은 덮어쓰지 않는다).
+- 발급: 증명 수는 그대로 하나. 제약이 약 240개(추정) 는다 — 지금 prove ≈292 ms·verify ≈13 ms(`results/mode3_v11_figure_protocol_20261013.md`). 증명·검증 시간의 재측정은 하지 않았다(사용자 결정 2026-11-13) — 결과 파일도 만들지 않았다. 위 수치는 옛 회로(공개 8)의 것이다.
 - 등록·슬롯 조회·세션 폐기: 요청마다 증명 하나(≈0.3초)가 든다. IdP 는 EdDSA 검증 대신 Groth16 검증(≈13 ms)을 한다 — 인증 전 요청의 검증 비용이 는다(데모 범위에서는 받아들인다).
 - 계정의 비밀은 s_u 하나다. s_u 가 새면 계정 전체가 넘어간다 — 지금도 s_u·sk_u 가 함께 움직여 실질은 같다.
 - 스냅 번호 찾기(스펙 snap-account-index K2): "후보 pk_u 를 IdP 에 대 보지 않는다" 의 근거는 auid 에도 그대로 선다(번호가 다르면 auid 가 다르다) — 결정은 유지.
@@ -131,3 +131,22 @@
 
 - 런북 `docs/MODE3_DEMO.md`(스냅 0.4.0, 재설치, 리셋), V11 스펙 `2026-10-12-mode3-v11-figure-protocol-design.md` 의 `sig_u`·pk_u 서술에 이 스펙으로 대체됐다는 표시,
   `2026-11-12-mode3-snap-derived-secrets-design.md`·`2026-11-12-mode3-snap-account-index-design.md` 의 sk_u 서술에 같은 표시, `cia.js` 머리 주석의 계정 모양.
+
+## 10. 구현 중 정한 것 (2026-11-13)
+
+계획(`docs/superpowers/plans/2026-11-13-mode3-no-pk-u.md`)의 Rulings 와 실행 중 더한 결정이다. 이 스펙의 앞 절과 다른 곳은 여기가 맞다.
+
+- **발급 ctx 의 지갑 난수 n(사용자 결정 2026-11-13)** — 발급 `ctx = Poseidon(D_CTX_ISSUE, arid_s, chainid, allowAgent, n)`. n 은 지갑이 요청마다 뽑아 `/cia/issue` 본문에 싣는다(필수, 필드 원소). 이유: tag 는 `(s_u, ctx)` 만으로 정해지고 `arid_s` 의 `r_rp` 는 RP 가 정한다 — n 이 없으면 RP 가 `r_rp` 를 되풀이해 같은 s_u 를 쓰는 두 계정이 같은 tag 를 IdP 에 내게 만들 수 있다(지금은 계정마다 s_u 가 달라 해당 없지만, 한 스냅이 s_u 하나를 쓰는 설계 초안 `2026-11-13-mode3-snap-random-salt-backup-design.md` R1 에서는 계정이 묶인다). ctx 에 uid 를 넣는 안은 버렸다 — Google 토큰의 nonce 는 tag 로 만드는데 uid 는 그 토큰의 sub 에서 나와, 토큰을 받기 전에 tag 를 계산할 수 없다. 등록·슬롯·세션 폐기의 ctx 는 처음부터 지갑 난수(n·nonce)를 담는다. Google 발급은 nonce 를 만들 때 쓴 n 을 로그인 요청에 다시 싣는다(`/wallet/oidc/nonce` 응답 `{ nonce, n }` → `/wallet/login` 의 `n`; 웹 코어는 `loginPrepare` 응답의 `n` → `login` 의 `n`). 회로는 그대로다(ctx 는 회로 밖).
+- **비용 재측정 생략(사용자 결정 2026-11-13)** — §7·§9 가 예정한 `pi_idp` 증명·검증 시간 재측정과 새 결과 파일은 하지 않았다. 확인한 것은 제약 수(6,583)·공개 입력 수(10)뿐이다.
+- **R1 빌드 스크립트 인자** — `bash scripts/build_mode3_circuit.sh [pi_cred|pi_idp] [ptau]`. 회로 이름을 주면 그 회로만 빌드한다(`pi_idp` 만 바꿀 때 `pi_cred` 의 zkey 를 건드리지 않게). 이름이 없으면 지금처럼 둘 다.
+- **R2 Google 발급 nonce 의 재료** — §4.3 은 `/wallet/oidc/nonce` `purpose:'issue'` 가 "세션 증인의 s_u" 를 쓴다고 했지만 첫 로그인에는 세션이 없다. snap 모드는 페이지가 방금 받은 로그인 증인의 `s_u` 와 `allowAgent` 를 본문에 싣고, 에이전트는 그 s_u 가 등록의 auid 와 맞는지 본 뒤(다르면 409 `secrets_mismatch`) `tag` 를 계산한다. file 모드는 상태 파일의 s_u. s_u 는 저장·로그하지 않는다.
+- **R3 "내 계정" 탭의 가림 목록** — §4.4 와 달리 `STORE_SECRETS` 에 `sk_u` 를 남긴다. 0.3.x 스냅이 아직 설치돼 있으면 저장 상태에 `sk_u` 가 남아 가림 없이 보이기 때문이다. 줄 순서 목록과 이름 문자열만 지웠다.
+- **R4 스냅 버전 검사 없음** — 0.3.x 스냅은 새 페이지와 그대로 돈다(s_u 유도가 같고 응답의 `sk_u` 는 페이지가 버린다). `snap_outdated` 판별을 새로 넣지 않았다. 0.4.0 재설치는 배포 절차의 일이다.
+- **R5 연결 해제된 계정의 로더 검사(기존 결함 수정)** — "지갑 연결 해제" 는 `auid` 를 비우고 `slot` 은 남긴 채 `slotRetired:true` 로 둔다. 옛 로더는 그 모양을 손상으로 보아 **연결 해제 뒤 IdP 가 재시작하면 뜨지 않았다**. `auid:null` 인 계정은 `slot:null` 이거나 `slotRetired:true` 인 정수 slot 을 받는다.
+- **R6 웹 사용자 페이지의 `loginPrepare`** — nonce 가 `tag` 에 묶이므로 `allowAgent`("0"|"1")를 받고, 등록된 브라우저에서 금고가 잠겨 있으면 423 을 낸다. 화면·문구는 고치지 않았다(팝업이 인자 하나를 더 넘긴다).
+- **R7 옛 메시지 함수 삭제** — `lib/mode3_issuance.js` 의 `issueRequestMessageV11`·`registerMessage`·`slotRequestMessage`·`revokeSessionMessage` 와 도메인 상수 넷을 지웠다. `lib/mode3_health.js` 의 `SENSITIVE_KEYS`(`sk_u`·`pk_u` 포함)는 이름 감시 목록이라 그대로 둔다.
+- **R8 서명 변형 DoS 회귀 테스트의 대체** — `parseEddsaSig`(음수 S 가 IdP 를 멈추던 문제)는 서명과 함께 없어졌다. 같은 자리의 회귀 테스트는 "기형 `tag`·`proof_idp` 가 시간 안에 400 으로 끝난다" 로 바꿨다. `verifyIdp` 는 고치지 않고 통과했다.
+- **옛 상태 파일의 등록 키** — 에이전트는 `pk_u`·(file 모드의) `sk_u` 를 읽을 때 버리고 **기동 때 바로 파일을 다시 쓴다**(§4.3 의 "다음 저장 때" 보다 이르다 — 죽은 비밀이 디스크에 남는 시간을 없앤다). 스냅은 0.3.x 상태의 `sk_u` 를 읽을 때 버리고 다음 저장 때 저장소에서 사라진다.
+- **vkey 가 없을 때** — 등록도 π_IdP 로 인증하므로, π_IdP vkey 를 못 읽는 IdP 는 `/cia/register` 부터 503 `idp_vkey_unavailable` 이다(전에는 `/cia/issue` 만).
+- **범위 검사** — `/wallet/oidc/nonce`(issue)와 웹 `loginPrepare` 는 `arid`·`r_rp` 가 2^250 이상이면 400 이다. 웹 `recover` 는 복구 코드의 s_u 가 2^250 이상이면 `bad_recovery_code`.
+- **남겨 둔 것** — 웹 사용자 페이지의 옛 브라우저 저장에 남은 `registration.pk_u`·금고의 `sk_u` 는 지우지 않는다(읽지 않을 뿐이다). `snap-mode3/package-lock.json` 의 루트 `version` 은 앞선 릴리스들처럼 올리지 않았다.

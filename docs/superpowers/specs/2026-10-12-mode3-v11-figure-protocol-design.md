@@ -2,6 +2,8 @@
 
 작성 2026-10-12. 상태: **구현 완료(결과 `results/mode3_v11_figure_protocol_20261013.md`)**. 브랜치 `feat/mode3-v11`(태그 `mode3-v10` = 78b2a1f 에서 분기). 근거: `documents/261012.pptx`(Overall Flow·Properties), `documents/261010_now.pptx` 3~8장(ID 변환·π_IdP·π_RP·π_s·토큰), 2026-10-12 대화의 결정 D1~D3·D7·D10·D15, 현행 코드 사실(`circuits/pi_cred.circom` `PiCred(32, 20)` 공개 입력 30개, `lib/mode3_credential.js`, `lib/mode3_issuance.js`, `cia.js`, `mode3_wallet_agent.js`, `mode3_rp.js`, `contracts/Mode3Wallet.sol`).
 
+> **2026-11-13 대체:** 등록 키(sk_u·pk_u)와 요청 서명(sig_u·sig_reg)은 `2026-11-12-mode3-no-pk-u-design.md` 로 없어졌다 — 아래의 그 서술은 당시 기록이다. (§3.1 등록의 `pk_u`·`sig_reg`, §5.2 발급의 `sig_u`, `/cia/slot`·세션 폐기의 서명. π_IdP 는 공개 입력이 8 → 10 개가 됐다 — `ctx`·`tag`.)
+
 ## 0. 한 줄 요약
 
 사용자 가명 `auid = H(uid, salt)` 와 세션 가명 `auid_s = H(auid, rid, r_RP)`, `arid_s = H(rid, r_RP)` 를 도입하고, IdP 토큰이 `(auid_s, arid_s, H(C_u), H(C_s))` 를 덮으며, 세션 커밋먼트 `C_s` 가 `(pk_s, max_height, r_s)` 를 blind `r_RP` 로 묶고, 세션(토큰 발급)마다 π_IdP 를 제출한다. **속성 값은 사용자가 지갑에서 넣고 IdP 는 모른다**(V6 이전으로 복귀 — G5 "attribute privacy" 원래 뜻 복원). 추적은 trace_tag(2-of-2) 하나로 둔다. 모드를 새로 만들지 않고 Mode 3 의 판을 올린다(V11).

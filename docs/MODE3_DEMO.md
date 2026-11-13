@@ -683,6 +683,15 @@ reason: 'predicate_unmet'}` 로 거절한다(200, 컨트랙트 호출 없이 오
 
 ### 사용자 속성 커밋먼트 → zkID 프로필 → RP 고정 (Phase 1, 2026-11-09)
 
+> **2026-11-13(사용자 결정, 스펙 `2026-11-12-mode3-no-pk-u-design.md`) 등록 키(sk_u·pk_u) 제거 — 스냅 0.4.0·IdP 상태 v13**: IdP 는 사용자 키를 갖지 않는다. 등록·슬롯 조회·발급·세션 폐기 요청을 서명 대신 π_IdP(공개 입력 `ctx`·`tag`, 공개 10개)로 인증한다 — 계정의 비밀은 s_u 하나다. auid·PPID·s_u 유도는 그대로라 **재등록이 없다**.
+> - **스냅 0.4.0 재설치**: MetaMask 에서 스냅을 지운 뒤 zk 스냅 화면(http://localhost:5100)에서 다시 연결한다. 0.3.x 스냅도 새 화면과 그대로 돌지만 저장소에 옛 `sk_u` 가 남는다(0.4.0 은 읽을 때 버린다). "내 계정" 탭에서 `sk_u` 줄이 사라진다.
+> - **IdP 상태 12 → 13**: 기동 때 저절로 올라가고(계정의 `pk_u` 삭제, 기동 로그에 한 줄) 등록·슬롯은 그대로다. **옛 코드는 v13 파일을 열지 못한다** — 되돌리려면 반영 전 상태 파일 사본이 필요하므로 배포 전에 IdP VM 의 상태 파일을 떠 둔다. 에이전트 상태 파일의 `pk_u`·`sk_u` 는 기동 때 버리고 바로 다시 쓴다.
+> - **`pi_idp` 산출물이 함께 가야 한다**: 회로가 바뀌어(`ctx`·`tag`) `build/mode3/pi_idp_*`(zkey·vkey·wasm)를 새로 빌드했다(`bash scripts/build_mode3_circuit.sh pi_idp` — `pi_cred`·`PiCredVerifier.sol` 은 그대로). 지갑과 IdP 가 서로 다른 산출물을 쓰면 모든 요청이 `bad_idp_proof` 다.
+> - **배포 순서**(스펙 §6): IdP VM 상태 파일 사본 → VM 에 rsync(코드 + `build/mode3/pi_idp_*`) → IdP 재시작 → 스냅 에이전트 재시작 → 스냅 0.4.0 재설치 → 데모 리셋(아직 배포 안 된 스냅 0.3.0 의 유도 규칙 변경 때문에 함께 한다).
+> - **대가**: 등록·슬롯 조회·세션 폐기에도 π_IdP 증명 하나가 든다(발급과 같은 회로 — 시간은 따로 재지 않았다). π_IdP vkey 를 못 읽는 IdP 는 등록부터 503 `idp_vkey_unavailable` 이다.
+> - **발급 요청의 `n`**: `/cia/issue` 본문에 지갑이 뽑는 난수 `n` 이 든다(tag 의 ctx 에 들어가 요청마다 tag 가 다르다). Google 계정은 nonce 를 만들 때 쓴 `n` 을 로그인에 다시 싣는다.
+> - **기존 결함 수정**: "지갑 연결 해제" 를 한 계정이 있으면 IdP 가 재시작 때 기동을 거부하던 문제를 함께 고쳤다(연결 해제는 `auid` 를 비우고 옛 슬롯 번호를 `slotRetired` 로 남긴다 — 로더가 그 모양을 받는다).
+>
 > **2026-11-12(사용자 요청) 스냅 0.3.1 — "내 계정" 탭**: zk 스냅 화면(http://localhost:5100)의 "내 계정" 탭이 스냅에 저장된 값 전부(등록·사용자 자격증명·동의 기록·다음 가입 번호)를 보인다(스냅 RPC `getStoredState`). 비밀(salt·sk_u·blind_u)은 가려 두고 "비밀 값 보기" 로 한꺼번에 열며, 탭을 떠나면 다시 가린다. **0.3.1 재설치 필요** — 0.3.0 이하 스냅이면 "스냅이 옛 버전입니다"(`snap_outdated_store`)가 뜬다. 로그인 세션은 스냅이 아니라 스냅 에이전트가 들고 있어 "연결된 서비스" 탭에 그대로 있다.
 >
 > **2026-11-12(사용자 결정) IdP 가 최신 auid_s 하나를 둔다**: IdP 는 발급에 성공할 때마다 그 계정의 `lastAuidS = { value, at }` 를 덮어쓴다(설계 D1 수정 — 이력은 없고, 세션 기록에는 여전히 auid_s·arid_s 가 없다). IdP 관리자 페이지 "uid ↔ auid 대응" 표의 "최신 auid_s" 열에 보인다. 스냅 연결을 해제하면 지운다. 아래 "한계" 의 D1 신뢰 가정은 이만큼 약해진다 — IdP 는 계정마다 마지막 세션 가명을 실제로 들고 있다.
@@ -732,7 +741,7 @@ reason: 'predicate_unmet'}` 로 거절한다(200, 컨트랙트 호출 없이 오
 폐기한다. 폐기 트리(RCL)에 세션 리프 `Poseidon(5, Cf_s)` 를 넣고(사용자 리프는 `Poseidon(4, Cf_u)`, **같은 트리·같은 root**),
 회로가 비멤버십을 하나 더 증명한다(④′). 공개 입력은 25개 그대로라 RP·컨트랙트 인터페이스는 바뀌지 않는다.
 
-**누가 폐기하나.** 사용자(스냅)는 등록 키 `sk_u` 서명으로 자기 세션의 `Cf_s` 를 지정하고, 운영자는 관리자 시크릿으로 한다.
+**누가 폐기하나.** 사용자(스냅)는 `s_u` 로 만든 π_IdP(ctx = `Cf_s`·`bound`·`nonce`)로 자기 세션의 `Cf_s` 를 지정하고, 운영자는 관리자 시크릿으로 한다(2026-11-13 부터 — 전에는 등록 키 `sk_u` 서명).
 RP 는 `Cf_s` 를 모르므로 세션을 폐기할 수 없다.
 
 - zk 스냅 페이지(`/`) (로그인 세션) 카드의 각 세션 요약 아래 **"이 세션 끝내기(폐기)"** 버튼 → `POST /wallet/session/revoke {r_s}`.
@@ -748,10 +757,10 @@ RP 는 `Cf_s` 를 모르므로 세션을 폐기할 수 없다.
 
 | 메서드/경로 | 프로세스 | 설명 |
 |---|---|---|
-| `POST /cia/revoke` `{uid, scope:'session', Cf_s, sig_u?, nonce?}` | IdP | 세션 하나 폐기. **관리자 시크릿** 또는 **사용자 서명**(`Poseidon(DOMAIN_MODE3_REVOKESESS, uid, Cf_s, nonce)` 위 `sk_u` EdDSA-Poseidon). 성공 `{inserted, leaf, root, pending}` |
+| `POST /cia/revoke` `{uid, scope:'session', Cf_s, bound, nonce?, auid_s?, C_u_pt?, C_s_pt?, max_height?, tag?, proof_idp?}` | IdP | 세션 하나 폐기. **관리자 시크릿** 또는 **사용자 인증**(π_IdP — `ctx = Poseidon(D_CTX_REVOKE, Cf_s, bound, nonce)`, `tag = Poseidon(T_TAG, s_u, ctx)`; 2026-11-13 부터, 전에는 `sk_u` 서명). 성공 `{inserted, leaf, root, pending}` |
 | `GET /cia/admin/sessions?uid=` | IdP(관리자) | 그 계정의 세션 기록 + `expired`(그 체인 head 기준, 못 읽으면 `null`) |
 | `POST /wallet/session/revoke` `{r_s}` | 스냅 | 같은 오리진 전용(CORS 없음). 서명 후 IdP 로 중계하고 성공하면 로컬 세션 삭제. 응답 `{revoked:true, inserted, pending}`. 인증은 `r_s` 를 아는 것뿐이다(`/wallet/revalidate` 와 같은 bearer) — zk 스냅 페이지의 확인(confirm)은 페이지가 거치는 절차이고 에이전트는 검증하지 않는다(2026-11-05: 스냅 동의 창은 뺐다) |
-| 스냅 RPC `consentRevokeSession` `{arid, issuedAt, maxHeight}` | 스냅 | 2026-11-05 부터 동의 창 없이 등록 여부만 보고 `{ ok:true }`(zk 스냅 페이지는 더 이상 부르지 않는다). 스냅 에는 Poseidon 이 없어 서명은 에이전트가 세션의 메모리 증인 `sk_u` 로 한다 |
+| 스냅 RPC `consentRevokeSession` `{arid, issuedAt, maxHeight}` | 스냅 | 2026-11-05 부터 동의 창 없이 등록 여부만 보고 `{ ok:true }`(zk 스냅 페이지는 더 이상 부르지 않는다). 스냅 에는 Poseidon 이 없어 인증 증명은 에이전트가 세션의 메모리 증인 `s_u` 로 만든다 |
 
 **사유.** "화면 문구" 는 `mode3/common/strings.js` 의 `reasons[코드].ko.title` — 페이지가 결과 카드 제목으로 쓰는 말이다
 (원인·조치 두 줄이 그 아래 붙고, 코드 자체도 제목 옆에 작게 그대로 남는다).
@@ -762,7 +771,7 @@ RP 는 `Cf_s` 를 모르므로 세션을 폐기할 수 없다.
 | `unknown_session` | IdP 에 그 세션 기록이 없습니다 | IdP `POST /cia/revoke scope=session` | 404 | 그 `Cf_s` 기록이 이 계정에 없다(옛 세션이거나 만료 정리로 사라졌다). **서명 검사를 먼저 하므로** 서명 없이 "이 Cf_s 가 이 계정 것인가" 를 떠볼 수는 없다 |
 | `expired` | 세션이 만료됐습니다 | IdP `POST /cia/revoke scope=session` | 409 | 그 체인 head > `max_height` — 만료가 이미 막으므로 리프를 넣지 않는다. 경계는 컨트랙트(`block.number > pub[3]`)·RP 와 같다: `head == max_height` 는 아직 산 세션이라 폐기된다 |
 | `unknown_session`(중계) | IdP 에 그 세션 기록이 없습니다 | 스냅 `POST /wallet/session/revoke` | 404 | IdP 의 404 를 그대로 옮긴 것 — 스냅은 그 `r_s` 세션을 들고 있는데 **IdP 쪽에 기록이 없다**(v8 이행 전 세션이거나 만료 정리로 사라졌다). 스냅이 세션 자체를 모르는 `no_session` 과 다르다 |
-| `needs_consent` | 다시 승인해야 합니다 | 스냅 `POST /wallet/session/revoke`(snap 모드) | 409 | 그 세션의 메모리 증인이 없다(에이전트 재시작) — 서명할 `sk_u` 가 없다. zk 스냅 페이지는 사유만 보이고 스스로 팝업을 열지 않는다. RP 페이지에서 그 세션을 한 번 재검증해 재승인(§4.3, 아래 S8)을 거친 뒤 다시 누른다 |
+| `needs_consent` | 다시 승인해야 합니다 | 스냅 `POST /wallet/session/revoke`(snap 모드) | 409 | 그 세션의 메모리 증인이 없다(에이전트 재시작) — 인증 증명을 만들 `s_u` 가 없다. zk 스냅 페이지는 사유만 보이고 스스로 팝업을 열지 않는다. RP 페이지에서 그 세션을 한 번 재검증해 재승인(§4.3, 아래 S8)을 거친 뒤 다시 누른다 |
 | `not_registered` | 스냅이 등록되지 않았습니다 | 스냅 `POST /wallet/session/revoke` | 409 | 이 에이전트에 등록이 없다 |
 | `no_session` | 그 세션을 스냅이 들고 있지 않습니다 | 스냅 `POST /wallet/session/revoke` | 404 | 그 `r_s` 세션을 스냅이 들고 있지 않다(이미 폐기했거나 만료) |
 
@@ -825,7 +834,7 @@ IdP 의 약속이다:
 
 ## MetaMask / 스냅 경로 (`MODE3_WALLET_SECRETS`, 설계 2026-09-22 metamask-snap)
 
-스냅 에이전트는 등록 비밀(uid·s_u·sk_u·blind_u)을 어디서 얻을지 `MODE3_WALLET_SECRETS` 로 고른다. 기본은 `file` 이고,
+스냅 에이전트는 등록 비밀(uid·s_u·blind_u)을 어디서 얻을지 `MODE3_WALLET_SECRETS` 로 고른다. 기본은 `file` 이고,
 지금까지의 헤드리스 데모·자동 테스트는 모두 `file` 이다. `snap` 은 브라우저 + MetaMask Flask 로 사람이 직접 하는 경로다.
 회로·컨트랙트·IdP·RP 로직·증명 형식은 두 모드가 같다.
 
@@ -837,7 +846,7 @@ IdP 의 약속이다:
 | 재검증·세션 요청 | RP 페이지가 CORS 로 직접 | 같다(비밀이 필요 없다). 증인이 없으면 `409 needs_consent` → RP 가 재승인 팝업을 연다 |
 | 세션 증인 | 상태 파일 | **에이전트 메모리만** — `persist()` 가 제외한다. 에이전트를 재시작하면 재승인이 필요하다 |
 | 트랜잭션 전송 | 릴레이어(hardhat 언락 계정 `MODE3_RELAYER_INDEX`), `POST /wallet/tx` | MetaMask `eth_sendTransaction`(사용자 EOA 가 가스). `POST /wallet/tx/prepare` → `/wallet/tx/record` |
-| 등록 | 에이전트가 s_u 를 만든다 | 스냅이 s_u·sk_u 를 만들고 페이지가 한 번 넘긴다(에이전트가 auid 계산) |
+| 등록 | 에이전트가 s_u 를 만든다 | 스냅이 s_u 를 만들고 페이지가 한 번 넘긴다(에이전트가 auid 와 등록용 π_IdP 계산) |
 | 자동 테스트 | `chain` 그룹 전 구간 | `tests/test_mode3_wallet_snap.mjs`(시뮬레이터, `chain`) + `tests/test_mode3_browser.mjs`(`browser`) |
 
 ### 준비 (처음 한 번)
@@ -883,7 +892,7 @@ IdP 의 약속이다:
 
 - **EOA 가 드러난다.** 트랜잭션 수수료를 MetaMask 의 사용자 계정이 내므로 체인에서 그 EOA 와 PPID 스냅이 이어진다.
   릴레이어를 쓰는 `file` 모드에는 이 연결이 없다. Mode 2 와 같은 데모 한계다.
-- **증인은 요청마다 스냅에서 온다.** 에이전트는 등록 비밀을 디스크에 쓰지 않지만, 세션 동안 `{ s_u, blind_u, attrs, sk_u }` 를
+- **증인은 요청마다 스냅에서 온다.** 에이전트는 등록 비밀을 디스크에 쓰지 않지만, 세션 동안 `{ s_u, blind_u, attrs }` 를
   **메모리에** 들고 재검증·재증명·`tx/prepare` 에 쓴다. "스냅이 보관한다"는 영속 저장에 대한 보증이지 프로세스 메모리에 대한
   보증이 아니다.
 - **에이전트 재시작 = 재승인.** 메모리 증인이 사라져 그 세션의 재검증이 `409 needs_consent` 가 된다(S8).
@@ -1070,7 +1079,7 @@ RP(`mode3_rp.js`)는 사용자 오리진에만 `POST /api/mode3/relay`·`GET /ap
 >
 > **데모 설정(2026-10-21):** 두 스크립트(`demo_web_reset.sh`·`demo_split_start.sh`)는 데모 편의로 다음을 기본으로 켠다 — 모두 **데모 전용**이며 코드 기본값은 꺼짐이다. ① `CIA_ADMIN_OPEN=1`: IdP 관리자 경로가 시크릿을 묻지 않는다 — **2026-11-05 부터 기본은 끔(`ADMIN_OPEN=1` 로 켬)**, 위 관리자 비밀번호 참고. 2026-11-03 리뷰 뒤: 목록 GET 은 그대로 열려 있지만 상태를 바꾸는 POST 는 `X-CIA-Admin-Secret` 헤더가(자리표시 `open` 이라도) 있어야 한다 — 교차 사이트 폼으로 승인·게시가 눌리지 않게(관리자 페이지·데모 스크립트는 이미 헤더를 보낸다). ② `MODE3_HEIGHT_GRID=5`: 만료(max_height) 올림 단위(`HEIGHT_GRID=100` 으로 원래대로). ③ `MODE3_DEMO_GENERATION=<실행 시각>`: 사용자 페이지가 기억한 세대와 다르면 브라우저의 옛 등록·세션을 스스로 지운다(리셋마다 "모두 지우기"를 누르지 않게; 이 설정 이전에 등록한 브라우저만 처음 한 번 수동). ④ zkTWO 에 `MODE3_REQUIRE_DISCLOSURE=1`: 로그인 때 국가 집합·나이 술어를 서버가 요구한다(없으면 `predicate_unmet`) — zkONE 은 누구나. 2026-11-03 리뷰 뒤: **재검증에도** 같은 요구를 적용한다. 스냅 에이전트는 로그인 때의 술어를 재검증 π 에 다시 싣으므로 속성이 그대로면 통과하고, 바뀌었으면 `predicate_unmet` 으로 세션이 끝나 다시 로그인해야 한다(web 모드 코어는 술어 없이 재검증하므로 zkTWO 재검증이 실패한다 — web 모드는 일시 중지 상태). 그 밖에 RP 관리자 페이지의 거래 기록(`GET /api/mode3/txs`, 메모리만)·거래 해시 복사 버튼, RP 페이지의 "입금·구매(시연)"(옛 "출금 신청"→"현재 잔액 확인" 자리 — `body:'balance'` 세션 요청에 KRW 장부와 세션 계정의 실제 ETH 잔액을 돌려준다; 2026-11-05 B안, 위 S3′), 사용자 페이지 세션 폐기 → RP 로그아웃 알림, RP 가 모르는 세션의 로그아웃도 묘비(사용자 페이지가 지운다).
 > **스냅 모드 한 번에(2026-10-22):** `bash scripts/demo_snap_reset.sh`(한 머신) / `bash scripts/demo_split_snap_reset.sh`(VM 분리 — 스냅 에이전트 :5100 은 스냅이 허용하는 오리진이라 한 머신 스냅 데모와 동시에 못 띄운다; web 분리 리셋은 `demo_split_reset.sh`) — 같은 순서로 스냅 자리에 에이전트(`MODE3_WALLET_SECRETS=snap`)와 스냅 서버(:8082)를 띄운다(`WALLET_MODE=snap` 의 demo_web_reset.sh). 브라우저에는 MetaMask Flask 가 필요하고, 리셋 뒤 MetaMask 안의 옛 등록은 zk 스냅 페이지의 "스냅 초기화" 로 지운다(데모 세대 자동 정리는 web 모드 전용).
-> **복구 코드(2026-10-21, web 모드):** 등록 비밀 s_u·sk_u 는 32바이트 시드에서 유도된다(`registrationSecretsFromSeed`, lib/mode3_wallet.js). 사용자 페이지 보관 상태 카드의 "복구 코드 보기"가 `zkd1.`+base64url(시드)를 보여 주고(어디에도 보내지 않는다), "복구 코드로 복구"는 uid + 코드로 비밀을 되살린 뒤 IdP 의 슬롯 되찾기(`POST /cia/slot`, sk_u 서명)로 계정·키를 확인하고 등록 상태를 다시 만든다 — 같은 uid·s_u 라 모든 RP 의 PPID 가 그대로다(다음 로그인이 새 C_u). 시드 없는 옛 등록은 `zkd0.`+base64url(s_u‖sk_u). Google(래퍼) 계정 복구는 아직 범위 밖(uid 를 토큰에서 얻어야 한다). 페이지는 기동 때 `navigator.storage.persist()` 도 요청한다(iOS 7일 삭제·Chrome 용량 정리 완화).
+> **복구 코드(2026-10-21, web 모드):** 등록 비밀 s_u 는 32바이트 시드에서 유도된다(`registrationSecretsFromSeed`, lib/mode3_wallet.js). 사용자 페이지 보관 상태 카드의 "복구 코드 보기"가 `zkd1.`+base64url(시드)를 보여 주고(어디에도 보내지 않는다), "복구 코드로 복구"는 uid + 코드로 비밀을 되살린 뒤 IdP 의 슬롯 되찾기(`POST /cia/slot`, π_IdP 인증)로 계정·비밀을 확인하고 등록 상태를 다시 만든다 — 같은 uid·s_u 라 모든 RP 의 PPID 가 그대로다(다음 로그인이 새 C_u). 시드 없는 옛 등록은 `zkd0.`+base64url(s_u‖32바이트 — 옛 sk_u 자리. 2026-11-13 부터 읽을 때 무시하고 쓸 때 0). Google(래퍼) 계정 복구는 아직 범위 밖(uid 를 토큰에서 얻어야 한다). 페이지는 기동 때 `navigator.storage.persist()` 도 요청한다(iOS 7일 삭제·Chrome 용량 정리 완화).
 > **참고(2026-10-22, `snap`·`file` 모드):** 사용자·RP 운영자의 입구가 IdP 페이지(`/user`·`/rp`)로 옮겨 가고 세션 폐기에 허용 거래 수(카운터)가 붙었다 — **web 모드(이 절)는 아직 그대로다.** 위 "MetaMask / 스냅 경로" 절 뒤의 "IdP 페이지·폐기 상한" 절 참고.
 
 ```
@@ -1084,7 +1093,7 @@ node mode3_rp.js                       # :3100
 ### 금고(비밀 보관)
 
 등록할 때 **이 브라우저용 금고 비밀번호**를 정한다(8자 이상 권장). 비밀번호 → PBKDF2(SHA-256, 310,000회, salt 16바이트) →
-AES-GCM-256 키이고, 이 키로 비밀(`s_u`·`sk_u`·`blind_u`·세션 개인키)만 암호문으로 묶는다 — 그 밖의 등록·속성·세션 정보는
+AES-GCM-256 키이고, 이 키로 비밀(`s_u`·`blind_u`·세션 개인키)만 암호문으로 묶는다 — 그 밖의 등록·속성·세션 정보는
 평문으로 IndexedDB(`mode3-user`)에 있다. 잠금 해제 키는 추출 불가(`extractable:false`) `CryptoKey` 로 IndexedDB 에 두고
 30분(`UNLOCK_TTL_MS`) 뒤 자동으로 잠기며, "잠그기" 버튼으로 바로 잠글 수도 있다. 팝업과 메인 탭이 이 잠금 상태를 공유한다(R3).
 
@@ -1164,8 +1173,8 @@ CORS 는 사용자 오리진만 연다.
 
 IdP(`cia.js`)가 Google ID 토큰을 **체인 밖에서** `jose` 로 검증해(RS256, `iss`·`aud`·`exp` — 모르는 `kid` 는 JWKS 를 다시 받아본
 뒤에도 없으면 무효로 본다) `uid = SHA-256("<provider>|<sub>") mod 2^250`(`provider` 는 설정값, 기본 `google`)으로 계정을
-만든다. 회로·PS 토큰·로그인·폐기 트리는 바뀌지 않는다. 등록 nonce 는 `"reg:" + SHA-256(pk_u.x|pk_u.y)`(auid 는 넣지 않는다 —
-토큰 발급 전에는 알 수 없고, `sig_reg` 가 uid·auid 를 결속한다), 자기 폐기 nonce 는 `"revoke:" + 32바이트 hex` 다. Google
+만든다. 회로·PS 토큰·로그인·폐기 트리는 바뀌지 않는다. 등록 nonce 는 `"reg:" + SHA-256(tag)` — `tag = Poseidon(T_TAG, s_u, Poseidon(D_CTX_REG, n))`(2026-11-13 부터; 전에는 `pk_u` 의 해시. auid 는 넣지 않는다 —
+토큰 발급 전에는 알 수 없고, 등록용 π_IdP 가 uid·auid 와 같은 `s_u` 를 강제한다), 발급 nonce 는 `"issue:" + SHA-256(tag)`(ctx 에 `arid_s`·`chainid`·`allowAgent`·지갑 난수 `n`), 자기 폐기 nonce 는 `"revoke:" + 32바이트 hex` 다. Google
 토큰은 등록·자기 폐기 요청에만 쓰고 저장·로그하지 않는다. IdP 는 토큰을 받는 순간 Google 계정과 uid 를 연결할 수 있다 —
 데모 계정의 uid·비밀번호와 같은 신뢰 수준이다.
 
@@ -1266,7 +1275,7 @@ V11(그림 프로토콜, 2026-10-12)로 바뀌거나 추가된 것:
 
 | 메서드/경로 | 프로세스 | 설명 |
 |---|---|---|
-| `POST /cia/issue` | IdP | 본문 `{ uid, auid_s, arid_s, C_u_pt, C_s_pt, chainid, allowAgent, max_height, proof_idp, sig_u }` — `(C_u, C_s, π_IdP, sig_u)`. `C_u` 가 바뀌면(첫 로그인·속성 변경 뒤) 등록부 슬롯을 갱신·게시한 뒤 토큰을 낸다 — 옛 `/cia/user_cred` 를 흡수했다(D11) |
+| `POST /cia/issue` | IdP | 본문 `{ uid, auid_s, arid_s, C_u_pt, C_s_pt, chainid, allowAgent, max_height, n, tag, proof_idp }` — `(C_u, C_s, π_IdP)`, 요청은 `tag = Poseidon(T_TAG, s_u, Poseidon(D_CTX_ISSUE, arid_s, chainid, allowAgent, n))` 로 증명에 묶인다(2026-11-13 부터 — `sig_u` 는 없다. `n` 은 지갑이 요청마다 뽑는 난수). `C_u` 가 바뀌면(첫 로그인·속성 변경 뒤) 등록부 슬롯을 갱신·게시한 뒤 토큰을 낸다 — 옛 `/cia/user_cred` 를 흡수했다(D11) |
 | `POST /api/mode3/challenge` | RP | 응답에 `r_rp`(250비트 난수, D6) 가 더해진다 — 세션 가명·`C_s` blind 의 재료, IdP 에는 보내지 않는다 |
 
 web 모드(브라우저 전용 사용자 페이지, 2026-10-15)로 새로 생긴 것:
@@ -1333,7 +1342,7 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
 `8854e87`·`8a7cb62`·`4aa5589`·`d9af457` 로 닫았고(형식 문서 `docs/paper/zkd/security_formal.md` §11), 아래는 남겼다.
 각 줄에 왜 지금 안 고치는지를 같이 적는다.
 
-- **uid 존재 열거.** `POST /cia/issue`·`POST /cia/slot` 는 서명을 보기 **전에** `state.accounts[uid]` 를 확인해 404
+- **uid 존재 열거.** `POST /cia/issue`·`POST /cia/slot` 는 증명을 보기 **전에** `state.accounts[uid]` 를 확인해 404
   `unknown account` 를 낸다 — 인증 없는 호출자가 "이 uid 가 등록됐는가" 를 응답 코드로 안다. **왜 지금 안 고치나**: 데모
   계정은 `DEMO_ACCOUNTS` 에 하드코딩된 둘(12345·67890)뿐이라 열거할 것이 없고, IdP 의 다른 무인증 라우트도 같은 수준이다.
   세션 폐기(`/cia/revoke scope=session`)만은 서명을 먼저 봐 이 누수가 없는데, 그 순서를 나머지 라우트로 넓히는 것은 후속이다.
@@ -1346,13 +1355,13 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
 - **동의 창이 `data` 를 보이지 않는다.** 스냅·zk 스냅 페이지의 트랜잭션 동의 창은 RP·오리진·대상(`to`)·금액(`value`)·공개
   항목까지만 보이고 calldata 는 안 보인다. **왜 지금 안 고치나**: 원시 calldata 를 사람이 읽고 판단하게 하려면 ABI 디코딩과
   함수 서명 사전이 필요한 2차 UI 작업이고, 데모의 호출 대상은 `AttrGate.claim` 하나다.
-- **snap 증인에 유휴 수명이 없다.** 세션의 메모리 증인(`{s_u, blind_u, attrs, sk_u}`)은 에이전트가 살아 있는 한 남는다
+- **snap 증인에 유휴 수명이 없다.** 세션의 메모리 증인(`{s_u, blind_u, attrs}`)은 에이전트가 살아 있는 한 남는다
   — 사라지는 경계는 **재시작**뿐이고 그때 `needs_consent` 로 재승인을 받는다. **왜 지금 안 고치나**: 유휴 만료를 넣으려면
   "언제부터 유휴인가, 만료를 사용자에게 어떻게 알리나" 를 정하는 타이머 설계가 먼저다.
 - **스냅 `GET /mode3/health` 가 IdP 오리진에도 열려 있다.** 허용 오리진이 `RP_ORIGIN` 과 `CIA_URL` 둘이라, IdP 오리진의 페이지도
   스냅의 등록 여부·세션 수·트랜잭션 수를 읽을 수 있다. **왜 지금 안 고치나**: 상태 패널이 세 페이지 어디서나 같은 그림을
   그리게 하려는 **의도된 개방**이다. 응답에 비밀값은 없다 — `tests/test_mode3_health.mjs` 가 키 이름뿐 아니라 실제 값
-  (등록 uid·`s_u`·`sk_u`·`Cf_u`·`Cf_s`)이 세 응답 어디에도 없는지 확인한다.
+  (등록 uid·`s_u`·`Cf_u`·`Cf_s`)이 세 응답 어디에도 없는지 확인한다.
 - **`countedTxHashes` 가 자란다.** 스냅 에이전트가 `/wallet/tx/record` 의 중복 집계를 막으려고 처리한 트랜잭션 해시를 Set 에
   모은다. **왜 지금 안 고치나**: 메모리에만 있어 재시작이면 사라지고, 한 시연에서 보내는 트랜잭션 수는 손에 꼽는다.
 - **세션 라우트의 RP 대조가 fail-open 이다.** `/wallet/revalidate`·`/wallet/request` 는 요청에 있는 RP 단서를 **전부**
@@ -1419,7 +1428,7 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
   스냅 초기화에 해당한다.
 - **등록 직후 스냅 저장 실패 복구 절차(2026-09-23 점검 주목 Minor)**: `snap` 모드에서 `POST /wallet/register` 가 201 로 이미
   끝난 뒤(에이전트 상태 파일에는 등록이 남았다) 탭이 닫히거나 MetaMask 를 거절해 스냅 쪽 `storeRegistration` 이 실패하면
-  스냅은 `sk_u`·`attrs` 가 빈 `registration_incomplete` 로 굳는다. **부분 복구는 안 된다** — "스냅 초기화" 만 하거나 상태
+  스냅은 `attrs` 가 빈 `registration_incomplete` 로 굳는다. **부분 복구는 안 된다** — "스냅 초기화" 만 하거나 상태
   파일만 지워도 다시 등록하면 IdP 쪽에 그 uid 가 이미 등록돼 있어 `/cia/register` 가 409 를 내고 같은 골목으로
   돌아온다. 유일한 출구는 **IdP·에이전트·스냅 세 보관소를 한꺼번에 비우는 재시연 세트**(위 문단)뿐이다.
 - `mode3_wallet_rcl.json`(스냅의 폐기 트리 체크포인트, 공개 데이터)은 지워도 되고 안 지워도 된다 — 로그 주소가 바뀌면 자동으로
@@ -1491,7 +1500,7 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
   `chain`), `tests/test_mode3_wallet_agent.mjs`·`tests/test_mode3_wallet_snap.mjs`(스냅 라우트·`revoked_session`·snap
   동의, `chain`), `tests/test_mode3_demo_stack.mjs` 각본 4″(전 구간), `tests/test_pi_cred_witness.mjs`(회로 ④′, `circuit`)로
   고정돼 있다.
-- `bash scripts/run_tests.sh unit` 의 `tests/test_mode3_cia_state.js` — 상태 v12 기동 거부(v11 이하 상태 파일은 이행하지 않는다)를 커버한다.
+- `bash scripts/run_tests.sh unit` 의 `tests/test_mode3_cia_state.js` — 상태 v13(2026-11-13: v12 는 `pk_u` 를 지우고 이행), v11 이하 기동 거부를 커버한다.
 - `bash scripts/run_tests.sh unit` 의 web 모드(2026-10-15) 셋 — 외부 의존 없이 브라우저 공통 코드를 Node 에서 본다:
   `tests/test_browser_sha256.js`(순수 JS SHA-256·`node:crypto` shim, 오라클은 진짜 `node:crypto`), `tests/test_secret_box.mjs`
   (금고 암복호 — PBKDF2 310,000회 + AES-GCM-256, WebCrypto), `tests/test_browser_node_shims.js`(번들용 `node:fs`·`node:path`·
@@ -1503,8 +1512,8 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
   `tests/test_mode3_demo_stack.mjs` "속성 커밋먼트(Phase 1)"(운반·고정·변경·변조 거절·하위호환), `tests/test_mode3_browser.mjs`(도구 페이지 — 정적 자원 외 무요청·
   Node 재계산 일치·지우기·백업; `/user` 프로필 카드)로 고정돼 있다. 브라우저 테스트는 `scripts/build_attr_tool.mjs` 로 번들을 스스로 만든다.
 - 등록부(V9, 2026-10-01)는 단위 셋 `tests/test_mode3_registry.js`(슬롯 트리 라이브러리)·`tests/test_mode3_credential_v11.js`·
-  `tests/test_pi_idp_witness.mjs`·`tests/test_mode3_wallet_lib.js`(등록 서명·auid·π_IdP 등)·`tests/test_mode3_cia_state.js`
-  (상태 v12 기동 거부, 모두 `unit`), `tests/test_cia_registry.mjs`
+  `tests/test_pi_idp_witness.mjs`·`tests/test_mode3_wallet_lib.js`(등록값·auid·π_IdP·인증 증명 등)·`tests/test_mode3_cia_state.js`
+  (상태 v13·v12 이행·v11 이하 기동 거부, 모두 `unit`), `tests/test_cia_registry.mjs`
   (IdP 엔드포인트 — 등록·발급·교체·은퇴·계정 폐기·관리자 바꿔치기/되돌리기·재기동 백로그, `chain`), `test/Mode3Log.test.mjs`
   (컨트랙트 — 두 root 갱신·`SlotUpdated`·하트비트·서명 검사·재생 방지, `contract`), `tests/test_mode3_demo_stack.mjs`
   각본 10~12(전 구간)로 고정돼 있다.

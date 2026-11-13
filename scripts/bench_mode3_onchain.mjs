@@ -273,7 +273,7 @@ try {
   console.log(`| ├ 첫 로그인(사용자 자격증명 신규 발급 + 등록부 게시 대기 포함) | ${L.total[0].toFixed(0)} ms |`);
   console.log(`| ├ 체인 동기화 syncMs | ${fmt(L.sync)} |`);
   console.log(`| ├ 사용자 자격증명 발급 userCredMs (issueMs 의 별칭; 첫 로그인 ${L.userCred[0]} ms, 이후 재사용 시 0) | ${fmt(L.userCred)} |`);
-  console.log(`| ├ IdP 세션 발급 issueMs (지갑 쪽 π_IdP 생성 포함, sig_u·π_IdP 검증 + 서명) | ${fmt(L.issue)} |`);
+  console.log(`| ├ IdP 세션 발급 issueMs (지갑 쪽 π_IdP 생성 포함, π_IdP 검증 + 서명) | ${fmt(L.issue)} |`);
   console.log(`| ├ 증명 proveMs (pi_cred V11) | ${fmt(L.prove)} |`);
   console.log(`| RP verifyLogin (Groth16 + σ + root) | ${fmt(L.verify)} |`);
   console.log(`| 재검증 왕복(캐시 π) | ${fmt(R.total)} |`);
