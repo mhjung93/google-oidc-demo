@@ -1,44 +1,54 @@
-// 지갑 라이브러리의 체인·zkey 없는 부분(V11) — 등록값·서명 메시지·ProofCache. (unit)  node tests/test_mode3_wallet_lib.js
+// 지갑 라이브러리의 체인·zkey 없는 부분(V11) — 등록값·요청 인증 증명(스텁)·ProofCache. (unit)  node tests/test_mode3_wallet_lib.js
 import assert from 'node:assert/strict';
-import { buildEddsa } from 'circomlibjs';
-import { createRegistration, signRegistration, signSlotRequest, signRevokeSession, buildCredentialProof, eddsaPubOf, ProofCache, chooseMaxHeight } from '../lib/mode3_wallet.js';
-import { registerMessage, slotRequestMessage, revokeSessionMessage } from '../lib/mode3_issuance.js';
-import { auidOf, SCALAR_MAX } from '../lib/mode3_credential.js';
+import { createRegistration, registrationSecretsFromSeed, buildAuthProof, buildCredentialProof, ProofCache, chooseMaxHeight } from '../lib/mode3_wallet.js';
+import { auidOf, auidSOf, userCommit, sessionCommit, registerCtx, issueCtx, aridSOf, tagOf, SCALAR_MAX } from '../lib/mode3_credential.js';
+import * as walletLib from '../lib/mode3_wallet.js';
 import { IDP_PUB_INDEX, idpPublicSignals, verifyIdp } from '../lib/mode3_idp_proof.js';
 
 let fails = 0;
 async function t(name, fn) { try { await fn(); console.log('ok   -', name); } catch (e) { fails++; console.log('FAIL -', name, '\n      ', e.message); } }
-const eddsa = await buildEddsa(); const F = eddsa.F;
-const verify = (m, sig, pub) => eddsa.verifyPoseidon(F.e(m), { R8: [F.e(BigInt(sig.R8x)), F.e(BigInt(sig.R8y))], S: BigInt(sig.S) }, [F.e(pub.x), F.e(pub.y)]);
 
-await t('createRegistration(uid) = { s_u, auid = Poseidon(T_AUID, uid, s_u), sk_u(hex64), pk_u }; uid 없이는 throw', async () => {
+await t('createRegistration(uid) = { s_u, auid = Poseidon(T_AUID, uid, s_u), seed } — 등록 키(sk_u·pk_u)는 없다; uid 없이는 throw', async () => {
   const reg = await createRegistration(12345n);
-  assert.ok(reg.s_u < SCALAR_MAX); assert.match(reg.sk_u, /^[0-9a-f]{64}$/); assert.equal(typeof reg.pk_u.x, 'bigint');
+  assert.deepEqual(Object.keys(reg).sort(), ['auid', 's_u', 'seed']);
+  assert.ok(reg.s_u < SCALAR_MAX); assert.match(reg.seed, /^[0-9a-f]{64}$/);
   assert.equal(reg.auid, await auidOf({ uid: 12345n, s_u: reg.s_u }));
-  assert.deepEqual(await eddsaPubOf(reg.sk_u), reg.pk_u);
   await assert.rejects(() => createRegistration(), /uid/);
   assert.notEqual((await createRegistration(12345n)).auid, reg.auid, 's_u 가 매번 다르다');
 });
-await t('signRegistration 은 registerMessage(uid, auid) 위 서명 — 다른 키·다른 auid 는 검증 실패', async () => {
-  const reg = await createRegistration(12345n);
-  const sig = await signRegistration(reg.sk_u, 12345n, reg.auid);
-  assert.equal(verify(await registerMessage(12345n, reg.auid), sig, reg.pk_u), true);
-  assert.equal(verify(await registerMessage(12345n, reg.auid + 1n), sig, reg.pk_u), false);
-  assert.equal(verify(await registerMessage(12345n, reg.auid), sig, (await createRegistration(12345n)).pk_u), false);
+await t('registrationSecretsFromSeed: 같은 시드 → 같은 s_u(유도 규칙 그대로), sk_u 는 돌려주지 않는다', () => {
+  const seed = new Uint8Array(32).fill(7);
+  const a = registrationSecretsFromSeed(seed);
+  assert.deepEqual(Object.keys(a), ['s_u']);
+  assert.ok(a.s_u < SCALAR_MAX);
+  assert.equal(registrationSecretsFromSeed(new Uint8Array(32).fill(7)).s_u, a.s_u);
+  assert.notEqual(registrationSecretsFromSeed(new Uint8Array(32).fill(8)).s_u, a.s_u);
 });
-await t('signSlotRequest 는 slotRequestMessage(uid, nonce) 위 서명', async () => {
-  const reg = await createRegistration(12345n);
-  const sig = await signSlotRequest(reg.sk_u, 12345n, 7n);
-  assert.equal(verify(await slotRequestMessage(12345n, 7n), sig, reg.pk_u), true);
-  assert.equal(verify(await slotRequestMessage(12345n, 8n), sig, reg.pk_u), false);
+await t('서명 함수는 없어졌다 — eddsaPubOf·signRegistration·signSlotRequest·signRevokeSession·signIssueRequest', () => {
+  for (const k of ['eddsaPubOf', 'signRegistration', 'signSlotRequest', 'signRevokeSession', 'signIssueRequest']) assert.equal(k in walletLib, false, k);
 });
-await t('signRevokeSession(sk, uid, Cf_s, bound, nonce) 는 revokeSessionMessage(uid, Cf_s, bound, nonce) 위 서명 — bound·nonce 가 다르면 검증 실패', async () => {
+await t('buildAuthProof: 버릴 값(attrs·arid·pk_i·max_height = 0, 새 blind·r_rp·r_s)으로 π_IdP 를 만들고 본문 조각을 10진 문자열로 돌려준다', async () => {
   const reg = await createRegistration(12345n);
-  const Cf_s = 999n, nonce = 7n;
-  const sig = await signRevokeSession(reg.sk_u, 12345n, Cf_s, 3n, nonce);
-  assert.equal(verify(await revokeSessionMessage(12345n, Cf_s, 3n, nonce), sig, reg.pk_u), true);
-  assert.equal(verify(await revokeSessionMessage(12345n, Cf_s, 2n, nonce), sig, reg.pk_u), false);
-  assert.equal(verify(await revokeSessionMessage(12345n, Cf_s, 3n, nonce + 1n), sig, reg.pk_u), false);
+  const ctx = await registerCtx({ n: 77n });
+  const calls = [];
+  const fullProve = async (input) => { calls.push(input); return { proof: { stub: true }, publicSignals: [] }; };
+  const a = await buildAuthProof({ uid: 12345n, s_u: reg.s_u, ctx, fullProve });
+  assert.deepEqual(Object.keys(a).sort(), ['C_s_pt', 'C_u_pt', 'auid_s', 'max_height', 'proof_idp', 'tag']);
+  assert.deepEqual(a.proof_idp, { stub: true }); assert.equal(a.max_height, '0');
+  assert.equal(a.tag, (await tagOf({ s_u: reg.s_u, ctx })).toString());
+  const inp = calls[0];
+  assert.equal(inp.uid, '12345'); assert.equal(inp.auid, reg.auid.toString()); assert.equal(inp.ctx, ctx.toString()); assert.equal(inp.tag, a.tag);
+  assert.deepEqual(inp.attrs, ['0', '0', '0', '0', '0', '0']); assert.equal(inp.arid, '0'); assert.equal(inp.pk_i, '0'); assert.equal(inp.max_height, '0');
+  // 공개값이 비밀과 맞는다: C_u·C_s·auid_s 를 입력의 비밀로 다시 계산
+  const cu = await userCommit({ uid: 12345n, s_u: reg.s_u, blind_u: BigInt(inp.blind_u), attrs: [] });
+  assert.deepEqual(a.C_u_pt, { x: cu.Cx.toString(), y: cu.Cy.toString() });
+  const cs = await sessionCommit({ pk_i: 0n, max_height: 0n, r_s: BigInt(inp.r_s), r_rp: BigInt(inp.r_rp) });
+  assert.deepEqual(a.C_s_pt, { x: cs.Cx.toString(), y: cs.Cy.toString() });
+  assert.equal(a.auid_s, (await auidSOf({ auid: reg.auid, arid: 0n, r_rp: BigInt(inp.r_rp) })).toString());
+  // blind 는 매번 새 난수다 — C_u 에 진짜 s_u 가 들어가므로 같은 blind 를 다시 쓰면 요청들이 서로 묶인다
+  const b = await buildAuthProof({ uid: 12345n, s_u: reg.s_u, ctx, fullProve });
+  assert.notDeepEqual(b.C_u_pt, a.C_u_pt); assert.notDeepEqual(b.C_s_pt, a.C_s_pt); assert.equal(b.tag, a.tag, 'tag 는 (s_u, ctx) 만으로 정해진다');
+  await assert.rejects(() => buildAuthProof({ uid: 12345n, s_u: reg.s_u, ctx: '5', fullProve }), /ctx/);
 });
 // 리뷰 지적: counter 경계 가드(lib/mode3_wallet.js:243 부근)는 함수 초입이라 다른 무거운 일(증명·트리 조회) 전에 던져야 한다 —
 // 다른 인자는 전부 트리비얼한 자리표시(bigint 1n·{x:1n,y:1n}·빈 registry·slot 0)만 채워 counter 검사까지만 도달시킨다.
@@ -99,13 +109,17 @@ await t('R7: proveIdp 는 fullProve 를 주입받는다 — 회로 입력 전부
   assert.deepEqual(Object.keys(calls[0].input).sort(), ['C_s_x', 'C_s_y', 'C_u_x', 'C_u_y', 'arid', 'attrs', 'auid', 'auid_s', 'blind_u', 'ctx', 'max_height', 'pk_i', 'r_rp', 'r_s', 's_u', 'tag', 'uid']);
   assert.deepEqual(calls[0].input.attrs, ['1990', '410', '0', '0', '0', '0']);
 });
-await t('R7: buildIssueRequest 는 fullProve 를 proveIdp 에 넘긴다(기본값이면 snarkjs 를 부른다 — 여기서는 스텁으로 호출만 확인)', async () => {
+await t('buildIssueRequest: sk_u 없이 — 본문에 sig_u 대신 tag, ctx = issueCtx(arid_s, chainid, allowAgent); fullProve 를 proveIdp 에 넘긴다', async () => {
   const { buildIssueRequest, createSessionKey } = await import('../lib/mode3_wallet.js');
   const reg = await createRegistration(12345n);
   let seen = null;
-  const req = await buildIssueRequest({ uid: 12345n, s_u: reg.s_u, blind_u: 11n, attrs: [1990n, 410n], arid: 3n, r_rp: 4n, r_s: 6n, sk_u: reg.sk_u, session: createSessionKey(), chainid: 31337n, max_height: 100n, fullProve: async (input) => { seen = input; return { proof: { stub: true }, publicSignals: [] }; } });
+  const req = await buildIssueRequest({ uid: 12345n, s_u: reg.s_u, blind_u: 11n, attrs: [1990n, 410n], arid: 3n, r_rp: 4n, r_s: 6n, session: createSessionKey(), chainid: 31337n, allowAgent: 1n, max_height: 100n, fullProve: async (input) => { seen = input; return { proof: { stub: true }, publicSignals: [] }; } });
   assert.ok(seen && seen.uid === '12345', 'proveIdp 가 주입된 fullProve 로 돌았다');
   assert.deepEqual(req.body.proof_idp, { stub: true });
+  assert.equal('sig_u' in req.body, false);
+  const ctx = await issueCtx({ arid_s: await aridSOf({ arid: 3n, r_rp: 4n }), chainid: 31337n, allowAgent: 1n });
+  assert.equal(req.body.tag, (await tagOf({ s_u: reg.s_u, ctx })).toString());
+  assert.equal(req.tag.toString(), req.body.tag); assert.equal(seen.ctx, ctx.toString()); assert.equal(seen.tag, req.body.tag);
   assert.equal(req.body.auid_s, req.auid_s.toString());
 });
 process.exit(fails ? 1 : 0);

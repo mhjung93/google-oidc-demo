@@ -1,7 +1,7 @@
 // tests/test_mode3_oidc_nonce.js — OIDC 래퍼의 순수 유도 함수(스펙 2026-10-16 D3·D4). 외부 의존 없음. (unit)  node tests/test_mode3_oidc_nonce.js
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { REG_PREFIX, REVOKE_PREFIX, uidOf, regNonce, newRevokeNonce, isRevokeNonce, isRegNonce } from '../lib/mode3_oidc_nonce.js';
+import { REG_PREFIX, REVOKE_PREFIX, ISSUE_PREFIX, uidOf, regNonce, issueNonce, isIssueNonce, newRevokeNonce, isRevokeNonce, isRegNonce } from '../lib/mode3_oidc_nonce.js';
 import { SCALAR_MAX } from '../lib/mode3_credential.js';
 
 let fails = 0;
@@ -16,14 +16,15 @@ t('uidOf: SHA-256(provider|sub) mod 2^250, 10진, 결정적, provider·sub 가 �
   assert.notEqual(uidOf('google', '1234567891'), u); assert.notEqual(uidOf('naver', '1234567890'), u);
   assert.throws(() => uidOf('', 'x'), /provider/); assert.throws(() => uidOf('google', ''), /sub/); assert.throws(() => uidOf('google', 5), /sub/);
 });
-t('regNonce: "reg:" + sha256(x|y) — 10진·bigint 입력이 같은 값, 비정규(앞자리 0)도 정규화된다', () => {
-  const n = regNonce({ x: '45', y: '67' });
-  assert.equal(n, REG_PREFIX + sha('45|67')); assert.match(n, /^reg:[0-9a-f]{64}$/);
-  assert.equal(regNonce({ x: 45n, y: 67n }), n);
-  assert.equal(regNonce({ x: '045', y: '67' }), n);
-  assert.notEqual(regNonce({ x: '46', y: '67' }), n);
-  assert.throws(() => regNonce({ x: 'abc', y: '2' })); assert.throws(() => regNonce({ x: '1' })); assert.throws(() => regNonce(null));
-  assert.equal(isRegNonce(n), true); assert.equal(isRegNonce('revoke:' + 'a'.repeat(64)), false);
+t('regNonce·issueNonce: 접두어 + sha256(tag 10진) — bigint·10진 입력이 같은 값, 비정규(앞자리 0)도 정규화, 접두어가 달라 서로 섞이지 않는다', () => {
+  const n = regNonce('4567');
+  assert.equal(n, REG_PREFIX + sha('4567')); assert.match(n, /^reg:[0-9a-f]{64}$/);
+  assert.equal(regNonce(4567n), n); assert.equal(regNonce('04567'), n); assert.notEqual(regNonce('4568'), n);
+  const i = issueNonce('4567');
+  assert.equal(i, ISSUE_PREFIX + sha('4567')); assert.equal(issueNonce(4567n), i);
+  assert.equal(isRegNonce(n), true); assert.equal(isIssueNonce(i), true); assert.equal(isRegNonce(i), false); assert.equal(isIssueNonce(n), false);
+  assert.equal(isRegNonce('revoke:' + 'a'.repeat(64)), false);
+  for (const bad of [null, undefined, 'abc', -1n, { x: '1', y: '2' }]) { assert.throws(() => regNonce(bad)); assert.throws(() => issueNonce(bad)); }
 });
 t('newRevokeNonce: "revoke:" + 64 hex, 매번 다르다; isRevokeNonce 는 형식만 본다', () => {
   const a = newRevokeNonce(), b = newRevokeNonce();

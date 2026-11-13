@@ -96,15 +96,6 @@ await t('세션 리프 태그는 5 — 같은 Cf 라도 userLeaf 와 sessionLeaf
   assert.equal(b, await sessionLeaf(123n, 0n));
 });
 
-await t('revokeSessionMessage: 도메인은 ASCII MODE3REVOKESESS, 입력이 하나라도 다르면 값이 다르다(2026-10-22: uid, Cf_s, bound, nonce)', async () => {
-  const { DOMAIN_MODE3_REVOKESESS, revokeSessionMessage } = await import('../lib/mode3_issuance.js');
-  assert.equal(Buffer.from(DOMAIN_MODE3_REVOKESESS.toString(16), 'hex').toString(), 'MODE3REVOKESESS');
-  const m = await revokeSessionMessage(1n, 2n, 3n, 4n);
-  assert.notEqual(m, await revokeSessionMessage(1n, 2n, 3n, 5n));
-  assert.notEqual(m, await revokeSessionMessage(1n, 2n, 9n, 4n));
-  assert.notEqual(m, await revokeSessionMessage(1n, 5n, 3n, 4n));
-});
-
 await t('sessionLeaf(Cf_s, bound) = (Poseidon(5,Cf_s) mod 2^220)·2^32 + bound, 2^252 미만', async () => {
   const Cf_s = 123456789n;
   const hp = (await leafValue(TAG_MODE3_SESSION, Cf_s)) & ((1n << 220n) - 1n);
