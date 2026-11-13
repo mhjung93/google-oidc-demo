@@ -19,8 +19,8 @@ const SRC_DIR = fileURLToPath(new URL('../../snap-mode3/src/', import.meta.url))
 // snap-mode3/src/index.js 의 WALLET_ORIGINS 상수(번들에 굳어 있어 env 로 못 바꾼다). 격리 스택의 지갑 포트는
 // 매번 다르므로, MetaMask 역할인 이 스텁이 Snap 에 알려 주는 오리진은 이 고정값을 쓴다.
 export const SNAP_WALLET_ORIGIN = 'http://127.0.0.1:5100';
-// 2026-11-12(스펙 snap-derived-secrets): snap_getEntropy 의 SRP 대역. tests/helpers/snap_sim.mjs 의 derivedSecrets(STUB_SRP) 가 이 스텁 스냅이 유도하는 s_u 와 같다.
-export const STUB_SRP = 'zkd-test-srp-1';
+// 2026-11-13(스냅 0.5.0, 스펙 random-salt): snap_getEntropy 대역은 없다 — 스냅은 salt 를 스스로 무작위로 만든다(crypto.getRandomValues). 정해진 salt 가 필요한 테스트는
+// 저장 상태(__snapState)에 { version: 2, salt: { s_u, backedUp: true, … } } 를 미리 넣거나 importSalt 를 부른다.
 
 /** `export ` 접두사만 떼어 고전 스크립트에 넣을 수 있게 한다. */
 function stripExports(src) {
@@ -49,13 +49,12 @@ function snapModuleSource() {
  * addInitScript 에 넣을 스크립트를 만든다.
  * @param {{snapId: string, account: string, chainId: string, srp?: string}} opts
  */
-export function buildInitScript({ snapId, account, chainId, srp = STUB_SRP }) {
+export function buildInitScript({ snapId, account, chainId }) {
   return `(() => {
   const SNAP_ID = ${JSON.stringify(snapId)};
   const ACCOUNT = ${JSON.stringify(account)};
   const CHAIN_ID = ${JSON.stringify('0x' + BigInt(chainId).toString(16))};
   const SNAP_ORIGIN = ${JSON.stringify(SNAP_WALLET_ORIGIN)};
-  const SRP = ${JSON.stringify(srp)};
 
   // @metamask/snaps-sdk 의 UI 빌더 — Snap 은 모양만 만들고 표시는 MetaMask 가 한다. 하네스가 문구를 검사할 수 있게 그대로 담는다.
   const __SDK_SHIM__ = {
@@ -76,20 +75,13 @@ export function buildInitScript({ snapId, account, chainId, srp = STUB_SRP }) {
         throw new Error('ethereum_stub: 모르는 snap_manageState operation ' + op);
       }
       if (method === 'snap_dialog') return window.__snapDialog(params);
-      if (method === 'snap_getEntropy') {
-        // MetaMask 는 (SRP, 스냅 ID, salt) 로 결정적 32바이트를 준다 — 스텁은 SRP 대역 문자열과 salt 의 SHA-256(tests/helpers/snap_sim.mjs stubEntropy 와 같은 값).
-        // window.__srpOverride 는 테스트 전용 훅("다른 시드의 MetaMask") — 실제 MetaMask 에는 없다.
-        if (!params || params.version !== 1 || typeof params.salt !== 'string') throw new Error('ethereum_stub: snap_getEntropy 는 { version: 1, salt }');
-        const d = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode((window.__srpOverride || SRP) + '|' + params.salt)));
-        return '0x' + Array.from(d, (b) => b.toString(16).padStart(2, '0')).join('');
-      }
       throw new Error('ethereum_stub: 모르는 snap method ' + method);
     },
   };
 
 ${snapModuleSource().split('\n').map((l) => (l ? '  ' + l : l)).join('\n')}
 
-  const snaps = { [SNAP_ID]: { id: SNAP_ID, version: '0.4.0', enabled: true, blocked: false } };
+  const snaps = { [SNAP_ID]: { id: SNAP_ID, version: '0.5.0', enabled: true, blocked: false } };
   window.ethereum = {
     isMetaMask: true,
     request: async ({ method, params }) => {

@@ -1,12 +1,11 @@
 // snap-mode3 단위 테스트 — 스펙 2026-09-22 metamask-snap §3.1 의 RPC 표·상태 모양이 정본이고,
 // tests/helpers/snap_sim.mjs(시뮬레이터)와 같은 입출력을 지켜야 한다. MetaMask 없이 전역 `snap` 을 스텁으로 대신한다
-// (`snap_manageState` 는 메모리 맵, `snap_dialog` 는 시나리오별 응답 큐).
+// (`snap_manageState` 는 메모리 맵, `snap_dialog` 는 시나리오별 응답 큐). 2026-11-13(0.5.0): `snap_getEntropy` 대역은 없다 — 부르면 "모르는 method" 로 실패한다.
 //   node snap-mode3/test/rpc.test.mjs
 // scripts/run_tests.sh 의 `snap` 그룹이 이 파일을 돌린다(2026-09-22 Ruling 9): `bash scripts/run_tests.sh snap`.
 // 체인도 브라우저도 필요 없지만 snap-mode3/node_modules(@metamask/snaps-sdk)를 전제하므로 unit 이 아니라 별도 그룹이다.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { createHash } from 'node:crypto';
 import { validateWitness } from '../../lib/mode3_secret_source.js';
 import { auidOf } from '../../lib/mode3_credential.js';
 
@@ -25,12 +24,13 @@ async function t(name, fn) {
 // ---- 전역 snap 스텁 ----
 const clone = (v) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
 const store = { state: null };          // snap_manageState 의 암호화 저장소 대역
-const entropy = { srp: 'srp-A' };        // snap_getEntropy 의 SRP 대역 — 테스트가 바꿔 "다른 SRP" 를 흉내 낸다(2026-11-12)
+const snapCalls = [];                   // 스냅이 부른 snap.request method 기록 — 0.5.0 은 snap_getEntropy 를 부르지 않는다
 const dialogs = [];                     // 표시된 대화상자(내용 검사용)
 const answers = [];                     // 다음 대화상자들이 돌려줄 값
 
 globalThis.snap = {
   request: async ({ method, params }) => {
+    snapCalls.push(method);
     if (method === 'snap_manageState') {
       const op = params?.operation;
       if (op === 'get') return clone(store.state) ?? null;
@@ -43,16 +43,12 @@ globalThis.snap = {
       if (!answers.length) throw new Error('stub: 대화상자 응답 큐가 비었다');
       return answers.shift();
     }
-    if (method === 'snap_getEntropy') {
-      // MetaMask 는 (SRP, 스냅 ID, salt) 로 결정적 32바이트를 준다 — 스텁은 SRP 대역 문자열과 salt 의 SHA-256.
-      if (params?.version !== 1 || typeof params?.salt !== 'string') throw new Error('stub: snap_getEntropy 는 { version: 1, salt }');
-      return '0x' + createHash('sha256').update(`${entropy.srp}|${params.salt}`).digest('hex');
-    }
     throw new Error(`stub: 모르는 method ${method}`);
   },
 };
 
 const { onRpcRequest } = await import('../src/index.js');
+const { randomSalt, isSalt } = await import('../src/crypto.js');
 const call = (method, params, origin = WALLET_ORIGIN) => onRpcRequest({ origin, request: { method, params } });
 const lastDialogText = () => JSON.stringify(dialogs[dialogs.length - 1]);
 const stateJson = () => JSON.stringify(store.state);
@@ -87,6 +83,63 @@ await t('지갑 오리진 두 철자(127.0.0.1·localhost)는 모두 허용된�
   }
 });
 
+// ---- 0.5.0(스펙 2026-11-13 random-salt): 스냅 하나에 무작위 salt 하나. 백업을 확인하기 전에는 salt 를 내거나 가입·로그인으로 이어지는 RPC 를 거절한다. ----
+const GATED = [['getSalt', {}], ['prepareRegister', {}], ['register', { uid: '12345' }], ['consentLogin', { origin: RP_ORIGIN }], ['consentDisclosure', { relay: true, to: '0x0', value: '0' }]];
+let SALT = null;
+
+await t('salt 없음: 가입·로그인·salt 조회는 no_salt, getPublicInfo 는 hasSalt·backedUp 거짓(계정 번호 필드 없음), exportSaltForBackup·confirmBackup·showSalt 도 no_salt', async () => {
+  for (const [m, p] of GATED) await assert.rejects(() => call(m, p), /no_salt/, m);
+  for (const m of ['exportSaltForBackup', 'showSalt']) await assert.rejects(() => call(m, {}), /no_salt/, m);
+  await assert.rejects(() => call('confirmBackup', { s_u: '1' }), /no_salt/);
+  const info = await call('getPublicInfo', {});
+  assert.equal(info.hasSalt, false); assert.equal(info.backedUp, false);
+  assert.equal('index' in info, false); assert.equal('nextIndex' in info, false);
+  assert.equal(store.state, null, '거절은 상태를 만들지 않는다');
+  assert.equal(dialogs.length, 0, '대화상자 없음');
+});
+
+await t('initSalt 는 한 번만 — [1, 2^250) 의 10진 문자열, 두 번째는 salt_exists; snap_getEntropy 를 부르지 않는다', async () => {
+  const r = await call('initSalt', {});
+  assert.deepEqual(Object.keys(r), ['s_u']); assert.match(r.s_u, /^[0-9]+$/);
+  assert.ok(BigInt(r.s_u) >= 1n && BigInt(r.s_u) < (1n << 250n));
+  SALT = r.s_u;
+  await assert.rejects(() => call('initSalt', {}), /salt_exists/);
+  assert.equal(store.state.version, 2);
+  assert.deepEqual(Object.keys(store.state.salt).sort(), ['backedUp', 'backedUpAt', 'createdAt', 's_u', 'source']);
+  assert.equal(store.state.salt.s_u, SALT); assert.equal(store.state.salt.source, 'new'); assert.equal(store.state.salt.backedUp, false);
+  assert.equal(snapCalls.includes('snap_getEntropy'), false);
+});
+
+await t('백업 강제(R6): 백업 확인 전에는 getSalt·prepareRegister·register·consentLogin·consentDisclosure 가 backup_required — 상태는 그대로', async () => {
+  const before = stateJson();
+  for (const [m, p] of GATED) await assert.rejects(() => call(m, p), /backup_required/, m);
+  assert.equal(stateJson(), before);
+  const info = await call('getPublicInfo', {});
+  assert.equal(info.hasSalt, true); assert.equal(info.backedUp, false);
+});
+
+await t('exportSaltForBackup(P5): 백업 전에도 같은 salt 를 준다(백업 절차만 다시 할 수 있게); showSalt 도 같다(P3)', async () => {
+  assert.deepEqual(await call('exportSaltForBackup', {}), { s_u: SALT });
+  assert.deepEqual(await call('showSalt', {}), { s_u: SALT });
+});
+
+await t('confirmBackup(R7): 다른 값·형식 밖이면 backup_mismatch 로 그대로, 같은 값이면 backedUp — 그 뒤 getSalt 가 같은 값을 준다', async () => {
+  for (const bad of [(BigInt(SALT) + 1n).toString(), 'abc', '', undefined]) await assert.rejects(() => call('confirmBackup', { s_u: bad }), /backup_mismatch/);
+  assert.equal((await call('getPublicInfo', {})).backedUp, false);
+  const r = await call('confirmBackup', { s_u: SALT });
+  assert.equal(r.ok, true); assert.ok(r.backedUpAt);
+  assert.equal(store.state.salt.backedUp, true); assert.equal(store.state.salt.backedUpAt, r.backedUpAt);
+  assert.deepEqual(await call('getSalt', {}), { s_u: SALT });
+  assert.equal((await call('getPublicInfo', {})).backedUp, true);
+  assert.equal(dialogs.length, 0, '여기까지 대화상자 없음');
+});
+
+await t('importSalt: 백업을 확인한 salt 는 덮어쓸 수 없다(salt_exists) — 확인 창도 띄우지 않는다', async () => {
+  const before = dialogs.length;
+  await assert.rejects(() => call('importSalt', { s_u: '777' }), /salt_exists/);
+  assert.equal(dialogs.length, before); assert.equal(store.state.salt.s_u, SALT);
+});
+
 let registered = null;
 let auid = null;
 
@@ -94,24 +147,25 @@ let auid = null;
 // 2026-11-05: 확인 창도 뺐다(중복 확인 제거) — 어떤 register 호출도 대화상자를 띄우지 않는다.
 await t('register: uid 가 10진 문자열이 아니면 bad_uid, 대화상자는 없다', async () => {
   const before = dialogs.length;
+  const saved = stateJson();
   await assert.rejects(() => call('register', { uid: 'abc' }), /bad_uid/);
-  assert.equal(store.state, null, '검증 실패는 상태를 만들지 않는다');
+  assert.equal(stateJson(), saved, '검증 실패는 상태를 바꾸지 않는다'); assert.equal(store.state.registration, null);
   assert.equal(dialogs.length, before, '대화상자 없음');
 });
 
-await t('register({ uid }): 대화상자 없이 → { uid, s_u, index }(pwd·sk_u 없음), 상태에 s_u', async () => {
+await t('register({ uid }): 대화상자 없이 → { uid, s_u }(salt.s_u — 계정 번호 없음), 등록 기록에는 s_u 를 두지 않는다', async () => {
   const before = dialogs.length;
   registered = await call('register', { uid: '12345' });
   assert.equal(registered.uid, '12345');
   assert.equal('pwd' in registered, false, 'pwd 는 더 이상 없다');
-  assert.match(registered.s_u, /^[0-9]+$/);
-  assert.equal('sk_u' in registered, false, '등록 키는 없어졌다(0.4.0)');
+  assert.deepEqual(Object.keys(registered).sort(), ['s_u', 'uid']);
+  assert.equal(registered.s_u, SALT, '등록 비밀은 스냅의 salt 다');
   assert.equal(dialogs.length, before, '확인 창을 띄우지 않는다(2026-11-05)');
   const reg = store.state.registration;
-  assert.equal(store.state.version, 1);
-  assert.equal(reg.s_u, registered.s_u);
-  assert.ok(BigInt(reg.s_u) < (1n << 250n), '스칼라는 2^250 미만');
-  assert.equal('sk_u' in reg, false);
+  assert.equal(store.state.version, 2);
+  assert.equal('s_u' in reg, false, '값이 두 군데 있어 어긋나지 않게 — 등록은 salt.s_u 를 쓴다(스펙 §2.2)');
+  assert.equal('index' in reg, false); assert.equal('sk_u' in reg, false);
+  assert.equal(store.state.salt.s_u, SALT);
   assert.equal(reg.attrs, null);
   assert.equal('r_u' in reg, false, 'r_u 는 없어졌다');
   assert.equal('cm_u' in reg, false, 'cm_u 는 없어졌다');
@@ -135,7 +189,7 @@ await t('storeRegistration: attrs 는 6개(짧으면 bad_attrs)·slot 저장, au
   assert.deepEqual(store.state.registration.attrs, ATTRS);
   assert.equal(store.state.registration.slot, SLOT);
   assert.equal(store.state.registration.auid, auid);
-  assert.equal(store.state.registration.s_u, registered.s_u, 'storeRegistration 은 s_u 를 건드리지 않는다');
+  assert.equal(store.state.salt.s_u, registered.s_u, 'storeRegistration 은 salt 를 건드리지 않는다'); assert.equal('s_u' in store.state.registration, false);
 });
 
 await t('storeRegistration: slot 은 음이 아닌 정수여야 한다 — 음수·문자열은 bad_slot, 정상 값은 저장된다', async () => {
@@ -157,7 +211,7 @@ await t('storeRegistration: attrs 원소는 2^64 미만이어야 한다(ATTR_MAX
 
 await t('getPublicInfo 에는 비밀이 없다', async () => {
   const info = await call('getPublicInfo', {});
-  assert.deepEqual(Object.keys(info).sort(), ['attrs', 'auid', 'consents', 'hasUserCred', 'index', 'nextIndex', 'pending', 'provider', 'registered', 'slot', 'uid']);
+  assert.deepEqual(Object.keys(info).sort(), ['attrs', 'auid', 'backedUp', 'consents', 'hasSalt', 'hasUserCred', 'pending', 'provider', 'registered', 'slot', 'uid']);
   assert.equal(info.registered, true);
   assert.equal(info.uid, '12345');
   assert.equal(info.auid, auid);
@@ -165,17 +219,17 @@ await t('getPublicInfo 에는 비밀이 없다', async () => {
   assert.equal(info.slot, SLOT);
   assert.equal(info.hasUserCred, false);
   const s = JSON.stringify(info);
-  for (const secret of [store.state.registration.s_u]) {
+  for (const secret of [store.state.salt.s_u]) {
     assert.ok(!s.includes(secret), `공개 정보에 비밀이 실렸다: ${secret.slice(0, 8)}…`);
   }
 });
 
 // 리뷰 2026-10-13 U3 의 자리: buildWitness 는 손상된 등록 비밀을 그대로 내보내지 않는다(0.4.0 부터 비밀은 s_u 하나 — 전에는 sk_u 의 16진 검사였다).
 await t('buildWitness: s_u 가 10진이 아니면 registration_incomplete(상태는 건드리지 않는다)', async () => {
-  const saved = store.state.registration.s_u;
-  store.state.registration.s_u = 'zz';
+  const saved = store.state.salt.s_u;
+  store.state.salt.s_u = 'zz';
   await assert.rejects(() => call('consentLogin', { origin: RP_ORIGIN, arid: '777', allowAgent: '0' }), /registration_incomplete/);
-  store.state.registration.s_u = saved;
+  store.state.salt.s_u = saved;
 });
 
 await t('consentLogin → 대화상자 없이 validateWitness 를 통과하는 증인, consents 기록', async () => {
@@ -185,6 +239,7 @@ await t('consentLogin → 대화상자 없이 validateWitness 를 통과하는 �
   // auid 까지 준다 — 증인의 s_u 가 register 가 낸 auid 와 실제로 묶였는지 본다(최종 리뷰 Minor 1 의 V11 판).
   await validateWitness(w, '12345', auid);
   assert.equal(w.uid, '12345');
+  assert.equal(w.s_u, SALT, '증인의 s_u 는 salt.s_u');
   assert.equal('sk_u' in w, false, '증인에 sk_u 가 없다');
   assert.deepEqual(w.attrs, ATTRS);
   assert.equal(w.userCred, null);
@@ -286,7 +341,7 @@ await t('consentRevokeSession: 대화상자 없이 { ok: true }(bound 생략도 
 });
 
 await t('showSalt: 대화상자 없이 { s_u }(저장된 값과 같다)', async () => {
-  const savedSU = store.state.registration.s_u;
+  const savedSU = store.state.salt.s_u;
   const before = dialogs.length;
   assert.deepEqual(await call('showSalt', {}), { s_u: savedSU });
   assert.equal(dialogs.length, before, '확인 창을 띄우지 않는다(2026-11-05)');
@@ -297,14 +352,13 @@ await t('getStoredState: 대화상자 없이 저장 상태 전부(비밀 s_u·bl
   await call('updateUserCred', USER_CRED);
   const before = dialogs.length, saved = stateJson();
   const st = await call('getStoredState', {});
-  assert.deepEqual(Object.keys(st).sort(), ['consents', 'nextIndex', 'registration', 'userCred', 'version']);
-  assert.equal(st.version, 1);
+  assert.deepEqual(Object.keys(st).sort(), ['consents', 'registration', 'salt', 'userCred', 'version']);
+  assert.equal(st.version, 2);
   assert.deepEqual(st.registration, store.state.registration);
-  assert.equal(st.registration.s_u, registered.s_u); assert.equal('sk_u' in st.registration, false);
+  assert.deepEqual(st.salt, store.state.salt); assert.equal(st.salt.s_u, SALT); assert.equal('s_u' in st.registration, false);
   assert.deepEqual(st.userCred, USER_CRED);
   assert.deepEqual(st.consents, store.state.consents);
   assert.ok(Object.keys(st.consents).length >= 1, '동의 기록이 실려 있다');
-  assert.equal(st.nextIndex, (await call('getPublicInfo', {})).nextIndex);
   assert.equal(dialogs.length, before, '확인 창 없음');
   assert.equal(stateJson(), saved, '읽기만 한다');
 });
@@ -313,7 +367,7 @@ await t('모르는 method 는 거절', async () => {
   await assert.rejects(() => call('nope', {}), /nope/);
 });
 
-await t('reset: 확인 뒤 상태를 비운다(거절하면 그대로)', async () => {
+await t('reset(R8): 확인 뒤 등록·동의 기록·userCred 를 지우고 salt·backedUp 은 남긴다(거절하면 그대로)', async () => {
   answers.push(false);
   assert.deepEqual(await call('reset', {}), { denied: true });
   assert.equal((await call('getPublicInfo', {})).registered, true);
@@ -323,16 +377,21 @@ await t('reset: 확인 뒤 상태를 비운다(거절하면 그대로)', async (
   assert.equal(info.registered, false);
   assert.equal(info.uid, null);
   assert.deepEqual(info.consents, {});
-  assert.ok(!stateJson().includes(registered.s_u), '초기화 뒤 비밀이 남지 않는다');
-  // 등록이 없을 때의 getStoredState — 빈 등록·빈 동의 기록과 남은 다음 가입 번호
-  assert.deepEqual(await call('getStoredState', {}), { version: 1, registration: null, userCred: null, consents: {}, nextIndex: info.nextIndex });
+  assert.equal(info.hasSalt, true); assert.equal(info.backedUp, true);
+  assert.match(lastDialogText(), /salt 는 남습니다/, '확인 창이 salt 가 남는다고 말한다');
+  // 등록이 없을 때의 getStoredState — 빈 등록·빈 동의 기록과 남은 salt
+  const st = await call('getStoredState', {});
+  assert.deepEqual({ ...st, salt: null }, { version: 2, salt: null, registration: null, userCred: null, consents: {} });
+  assert.equal(st.salt.s_u, SALT); assert.equal(st.salt.backedUp, true);
+  assert.deepEqual(await call('getSalt', {}), { s_u: SALT }, '초기화 뒤에도 같은 salt — 다시 등록하면 같은 auid·PPID');
 });
 
 await t('prepareRegister: 대화상자 없이 uid 없는 보류 등록 — registered=false, pending=true', async () => {
   const before = dialogs.length;
   const p = await call('prepareRegister', {});
-  assert.match(p.s_u, /^[0-9]+$/); assert.equal('sk_u' in p, false);
+  assert.deepEqual(p, { s_u: SALT });
   assert.equal(dialogs.length, before, '확인 창을 띄우지 않는다(2026-11-05)');
+  assert.equal('s_u' in store.state.registration, false);
   const info = await call('getPublicInfo', {});
   assert.equal(info.registered, false); assert.equal(info.pending, true); assert.equal(info.uid, null); assert.equal(info.provider, null);
   // 다시 시도(Google 단계 실패 뒤) — 같은 비밀
@@ -340,7 +399,7 @@ await t('prepareRegister: 대화상자 없이 uid 없는 보류 등록 — regis
 });
 
 await t('보류 등록에서는 비밀이 필요한 RPC 가 not_registered 로 거절된다(uid 없는 증인·프롬프트 금지)', async () => {
-  for (const m of ['consentLogin', 'updateUserCred', 'syncAttrs', 'selfRevoke', 'consentRevokeSession', 'showSalt']) {
+  for (const m of ['consentLogin', 'updateUserCred', 'syncAttrs', 'selfRevoke', 'consentRevokeSession']) {
     await assert.rejects(() => call(m, { origin: RP_ORIGIN }), /not_registered/, `${m}`);
   }
 });
@@ -365,129 +424,96 @@ await t('register 는 보류 등록을 덮어쓴다(완성 등록만 already_reg
   answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
   const p = await call('prepareRegister', {});
   const r = await call('register', { uid: '42' });
-  assert.equal(r.uid, '42'); assert.equal(r.s_u, p.s_u, '2026-11-12: 비밀은 시드 유도라 보류 등록과 같다 — register 는 uid 를 채운 완성 등록으로 덮어쓴다');
+  assert.equal(r.uid, '42'); assert.equal(r.s_u, p.s_u, '비밀은 스냅의 salt 라 보류 등록과 같다 — register 는 uid 를 채운 완성 등록으로 덮어쓴다');
   assert.equal((await call('getPublicInfo', {})).pending, false);
   answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
   answers.push(true); const p2 = await call('prepareRegister', {});
   answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
-  assert.ok(!String(stateJson()).includes(p2.s_u), 'reset 뒤 보류 비밀이 남지 않는다');
-  assert.equal(store.state?.registration ?? null, null, 'reset 뒤 등록이 없다(2026-11-12: 다음 가입 번호 nextIndex 만 남는다)');
+  assert.equal(p2.s_u, SALT);
+  assert.equal(store.state?.registration ?? null, null, 'reset 뒤 등록이 없다(salt 만 남는다)');
+  answers.length = 0;
 });
 
-await t('유도(2026-11-12): 같은 SRP 면 register·prepareRegister·getSalt 가 같은 s_u, 다른 SRP 면 다르다; reset 뒤에도 같다', async () => {
-  entropy.srp = 'srp-A';
-  const g = await call('getSalt', {});
-  assert.match(g.s_u, /^[0-9]+$/); assert.ok(BigInt(g.s_u) >= 1n && BigInt(g.s_u) < (1n << 250n));
-  assert.equal(store.state?.registration ?? null, null, 'getSalt 는 상태를 만들지 않는다');
-  const r = await call('register', { uid: '7' });
-  assert.equal(r.s_u, g.s_u);
-  answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
-  const p = await call('prepareRegister', {});
-  assert.equal(p.s_u, r.s_u, 'reset 뒤 보류 등록도 같은 s_u');
-  answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
-  entropy.srp = 'srp-B';
-  const b = await call('register', { uid: '7' });
-  assert.notEqual(b.s_u, r.s_u, '다른 SRP 면 다른 s_u');
-  assert.equal((await call('getSalt', {})).s_u, b.s_u, '등록 뒤에도 getSalt 는 같은 값');
-  answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
-  entropy.srp = 'srp-A';
+await t('register({ uid, s_u }): s_u 를 실어 보내면 salt 와 같을 때만 받는다 — 다르면 salt_mismatch 이고 아무것도 저장하지 않는다', async () => {
+  const before = stateJson();
+  await assert.rejects(() => call('register', { uid: '7', s_u: (BigInt(SALT) + 1n).toString() }), /salt_mismatch/);
+  await assert.rejects(() => call('register', { uid: '7', s_u: 'abc' }), /salt_mismatch/);
+  assert.equal(stateJson(), before);
+  assert.deepEqual(await call('register', { uid: '7', s_u: SALT }), { uid: '7', s_u: SALT });
+  answers.push(true); await call('reset', {});
 });
 
-await t('register({ uid, s_u }): s_u 는 유도값과 같을 때만 받는다 — 다르면 salt_not_derived 이고 아무것도 저장하지 않는다', async () => {
-  const { s_u } = await call('getSalt', {});
-  await assert.rejects(() => call('register', { uid: '7', s_u: '123456789' }), /salt_not_derived/);
-  await assert.rejects(() => call('register', { uid: '7', s_u: 'abc' }), /salt_not_derived/);
-  assert.equal(store.state?.registration ?? null, null);
-  const r = await call('register', { uid: '7', s_u: ` 0${s_u} ` });
-  assert.equal(r.s_u, s_u, '공백·앞자리 0 은 정규화 뒤 비교');
-  answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
-});
-
-await t('saltFromEntropy: 경계값과 형식 오류', async () => {
-  const { saltFromEntropy } = await import('../src/crypto.js');
-  assert.equal(saltFromEntropy('0x' + '00'.repeat(32)), '1', '0 → 1(0 은 쓰지 않는다)');
-  const max = (1n << 256n) - 1n; assert.equal(saltFromEntropy('0x' + 'ff'.repeat(32)), (1n + (max % ((1n << 250n) - 1n))).toString());
-  for (const bad of ['', '0x', '0x1234', 'zz'.repeat(32), '0x' + 'g'.repeat(64)]) {
-    assert.throws(() => saltFromEntropy(bad), /bad_entropy/);
-  }
+await t('randomSalt·isSalt: 범위 [1, 2^250) 의 10진 문자열, 매번 다르다; isSalt 는 0·상한·비10진·숫자형을 거절', async () => {
+  const a = randomSalt(), b = randomSalt();
+  assert.ok(isSalt(a) && isSalt(b)); assert.notEqual(a, b);
+  for (const bad of ['0', (1n << 250n).toString(), 'abc', '', '1.5', 12345, null, undefined]) assert.equal(isSalt(bad), false, String(bad));
+  assert.equal(isSalt('1'), true); assert.equal(isSalt(((1n << 250n) - 1n).toString()), true);
 });
 
 await t('등록 전에는 비밀이 필요한 RPC 가 거절된다', async () => {
-  for (const m of ['storeRegistration', 'consentLogin', 'updateUserCred', 'syncAttrs', 'selfRevoke', 'consentRevokeSession', 'showSalt']) {
+  for (const m of ['storeRegistration', 'consentLogin', 'updateUserCred', 'syncAttrs', 'selfRevoke', 'consentRevokeSession']) {
     await assert.rejects(() => call(m, {}), /not_registered|등록/, `${m} 은 등록을 요구한다`);
   }
 });
 
-// 2026-11-12(스펙 snap-account-index, 리뷰 I-3): 계정 번호 k 마다 다른 비밀. 번호는 기록이 들고 다니고, nextIndex 는 reset 을 넘어 남는다.
-await t('계정 번호: 번호가 다르면 s_u 가 다르고 같은 번호면 같다; getSalt 기본은 등록 번호 → 없으면 nextIndex; storeRegistration 이 nextIndex 를 올리고 reset 뒤에도 남는다', async () => {
-  entropy.srp = 'srp-A'; store.state = null;
-  const g0 = await call('getSalt', {}); assert.equal(g0.index, 0, '처음엔 0번');
-  const g1 = await call('getSalt', { index: 1 }); assert.equal(g1.index, 1);
-  assert.notEqual(g1.s_u, g0.s_u, '번호가 다르면 salt 가 다르다');
-  assert.equal((await call('getSalt', { index: 1 })).s_u, g1.s_u, '같은 번호면 같은 salt');
-  const r = await call('register', { uid: '7', s_u: g1.s_u, index: 1 });
-  assert.equal(r.index, 1); assert.equal(r.s_u, g1.s_u);
-  assert.equal((await call('getSalt', {})).index, 1, '등록이 있으면 기본은 그 번호(Ruling P1)');
-  await call('storeRegistration', { attrs: ATTRS, slot: 0, auid: '5' });
-  const info = await call('getPublicInfo', {}); assert.equal(info.index, 1); assert.equal(info.nextIndex, 2);
-  answers.push(true); assert.deepEqual(await call('reset', {}), { ok: true });
-  assert.equal(store.state?.registration ?? null, null, 'reset 은 등록을 지운다');
-  assert.equal((await call('getPublicInfo', {})).nextIndex, 2, 'reset 뒤에도 nextIndex 는 남는다');
-  const p = await call('prepareRegister', {});
-  assert.equal(p.index, 2, '보류 등록은 nextIndex'); assert.notEqual(p.s_u, r.s_u, '다른 번호 → 다른 s_u');
-  assert.deepEqual(await call('prepareRegister', { index: 9 }), p, '보류가 있으면 그 비밀·번호 그대로');
-  answers.push(true); await call('reset', {});
-  store.state = null;
-});
-
-await t('계정 번호 검사: bad_index(범위·형식)·setNextIndex·번호와 어긋난 s_u 는 salt_not_derived; nextIndex 는 상한에서 넘치지 않는다', async () => {
-  store.state = null;
-  for (const bad of [-1, 1.5, '3', 2 ** 31]) {
-    await assert.rejects(() => call('getSalt', { index: bad }), /bad_index/);
-    await assert.rejects(() => call('setNextIndex', { index: bad }), /bad_index/);
-    await assert.rejects(() => call('register', { uid: '7', index: bad }), /bad_index/);
+// ---- importSalt(스펙 §2.3): 빈 스냅, 또는 아직 백업하지 않았고 등록도 없는 salt 만 바꿀 수 있다. ----
+await t('importSalt: 빈 스냅은 확인 창 뒤에 받고 backedUp 참(source import); 거절하면 { denied } 로 그대로; 형식·범위 밖은 bad_salt(창 없음)', async () => {
+  store.state = null; answers.length = 0;
+  for (const bad of ['0', 'abc', (1n << 250n).toString(), '', undefined]) {
+    const before = dialogs.length;
+    await assert.rejects(() => call('importSalt', { s_u: bad }), /bad_salt/, String(bad));
+    assert.equal(dialogs.length, before, '형식 오류는 창을 띄우지 않는다');
   }
-  await assert.rejects(() => call('setNextIndex', {}), /bad_index/);
-  assert.deepEqual(await call('setNextIndex', { index: 5 }), { ok: true, nextIndex: 5 });
-  assert.equal((await call('getSalt', {})).index, 5, '등록이 없으면 기본은 nextIndex');
-  const s0 = (await call('getSalt', { index: 0 })).s_u;
-  await assert.rejects(() => call('register', { uid: '7', s_u: s0, index: 4 }), /salt_not_derived/, '0번 salt 를 4번으로 등록할 수 없다');
-  assert.equal(store.state?.registration ?? null, null, '거절은 등록을 만들지 않는다');
-  await call('setNextIndex', { index: 2 ** 31 - 1 });
-  await call('register', { uid: '7' }); await call('storeRegistration', { attrs: ATTRS, slot: 0, auid: '5' });
-  assert.equal((await call('getPublicInfo', {})).nextIndex, 2 ** 31 - 1, '상한에서 멈춘다');
-  answers.push(true); await call('reset', {});
-  store.state = null;
+  answers.push(false);
+  assert.deepEqual(await call('importSalt', { s_u: '12345' }), { denied: true });
+  assert.equal((await call('getPublicInfo', {})).hasSalt, false);
+  answers.push(true);
+  assert.deepEqual(await call('importSalt', { s_u: '0012345' }), { ok: true });
+  assert.match(lastDialogText(), /백업에서 salt 불러오기/);
+  assert.equal(lastDialogText().includes('12345'), false, '확인 창에 salt 값을 보이지 않는다');
+  assert.equal(store.state.salt.s_u, '12345', '정규화한 10진'); assert.equal(store.state.salt.source, 'import'); assert.equal(store.state.salt.backedUp, true);
+  assert.deepEqual(await call('getSalt', {}), { s_u: '12345' });
+  await assert.rejects(() => call('importSalt', { s_u: '888' }), /salt_exists/);
 });
 
-// 0.4.0(2026-11-13, 스펙 2026-11-12 no-pk-u §4.1): 등록 키 sk_u 는 없다 — 유도하지도 저장하지도 내주지도 않는다.
-await t('0.4.0: register·prepareRegister·getStoredState·증인 어디에도 sk_u 가 없고, s_u 는 0.3.x 와 같은 salt(zkd/mode3/s_u/v2/<k>)로 유도된다', async () => {
-  store.state = null; entropy.srp = 'srp-A';
-  const crypto = await import('../src/crypto.js');
-  const { ENTROPY_SALT_S_U, saltFromEntropy } = crypto;
-  assert.equal(ENTROPY_SALT_S_U, 'zkd/mode3/s_u/v2/');
-  assert.equal('ENTROPY_SALT_SK_U' in crypto, false); assert.equal('skFromEntropy' in crypto, false);
-  const p = await call('prepareRegister', {});
-  assert.deepEqual(Object.keys(p).sort(), ['index', 's_u']);
-  assert.equal(p.s_u, saltFromEntropy('0x' + createHash('sha256').update(`srp-A|zkd/mode3/s_u/v2/${p.index}`).digest('hex')));
-  const r = await call('register', { uid: '4242' });
-  assert.deepEqual(Object.keys(r).sort(), ['index', 's_u', 'uid']); assert.equal(r.s_u, p.s_u);
-  await call('storeRegistration', { attrs: ATTRS, slot: SLOT, auid: (await auidOf({ s_u: BigInt(r.s_u) })).toString() });
-  const st = await call('getStoredState', {});
-  assert.equal('sk_u' in st.registration, false); assert.equal(stateJson().includes('sk_u'), false);
-  const w = await call('consentLogin', { origin: RP_ORIGIN, arid: '777', allowAgent: '0' });
-  assert.deepEqual(Object.keys(w).sort(), ['attrs', 's_u', 'uid', 'userCred']);
-  await validateWitness(w, '4242');
+await t('importSalt: 백업 전·등록 없는 salt 는 불러온 값으로 바꿀 수 있다(새로 만들다 만 스냅에 백업을 불러오는 경우)', async () => {
+  store.state = null; answers.length = 0;
+  const made = (await call('initSalt', {})).s_u;
+  answers.push(true);
+  assert.deepEqual(await call('importSalt', { s_u: '777' }), { ok: true });
+  assert.notEqual(made, '777'); assert.deepEqual(await call('getSalt', {}), { s_u: '777' });
 });
-await t('0.4.0: 0.3.x 상태(registration.sk_u 있음)를 재등록 없이 읽는다 — 증인·조회에 sk_u 가 나가지 않고 다음 저장 때 저장소에서도 사라진다', async () => {
-  const old = JSON.parse(stateJson());
-  old.registration.sk_u = 'ab'.repeat(32);                      // 0.3.x 가 저장해 둔 모양
-  store.state = old;
-  const w = await call('consentLogin', { origin: RP_ORIGIN, arid: '778', allowAgent: '0' });
-  assert.equal('sk_u' in w, false); assert.equal(w.s_u, old.registration.s_u);
-  assert.equal('sk_u' in (await call('getStoredState', {})).registration, false);
-  assert.equal(stateJson().includes('ab'.repeat(32)), false, 'consentLogin 이 동의 기록을 저장하면서 sk_u 가 사라졌다');
-  assert.equal((await call('getPublicInfo', {})).registered, true, '등록은 그대로다');
+
+await t('같은 salt 를 불러온 스냅은 같은 등록 비밀을 낸다(복구) — register 가 그 salt 를 돌려준다', async () => {
+  store.state = null; answers.length = 0; answers.push(true);
+  await call('importSalt', { s_u: SALT });
+  assert.deepEqual(await call('register', { uid: '12345' }), { uid: '12345', s_u: SALT });
+  assert.equal((await auidOf({ s_u: BigInt(SALT) })).toString(), auid, '같은 salt → 같은 auid');
+});
+
+await t('R14: 0.4.x 상태(version 1 — 시드 유도 등록·계정 번호)를 만나면 이어 쓰지 않는다 — 등록 없음·salt 없음으로 시작하고 옛 비밀을 내지 않는다', async () => {
+  store.state = { version: 1, registration: { uid: '100001', index: 0, s_u: '5555555555', auid: '9', slot: 0, attrs: ATTRS, registeredAt: '2026-11-12T00:00:00.000Z' }, userCred: USER_CRED, consents: { [RP_ORIGIN]: { arid: '1', allowAgent: '0' } }, nextIndex: 1 };
+  const info = await call('getPublicInfo', {});
+  assert.equal(info.registered, false); assert.equal(info.hasSalt, false); assert.equal(info.hasUserCred, false); assert.deepEqual(info.consents, {});
+  await assert.rejects(() => call('consentLogin', { origin: RP_ORIGIN }), /no_salt/);
+  assert.equal(JSON.stringify(await call('getStoredState', {})).includes('5555555555'), false);
+  const made = (await call('initSalt', {})).s_u;
+  assert.notEqual(made, '5555555555'); assert.equal(store.state.version, 2);
+  assert.equal(stateJson().includes('5555555555'), false, '다음 저장 때 옛 상태가 저장소에서 사라진다');
+  assert.equal('nextIndex' in store.state, false);
+});
+
+await t('없어진 것: setNextIndex 는 method_not_found; 응답 어디에도 index 가 없다; manifest 에 snap_getEntropy 권한이 없고 버전은 0.5.0; 실행 내내 snap_getEntropy 를 부르지 않았다', async () => {
+  store.state = null; answers.length = 0;
+  await assert.rejects(() => call('setNextIndex', { index: 1 }), /method_not_found/);
+  assert.equal(RPC_METHODS.includes('setNextIndex'), false);
+  for (const m of ['initSalt', 'importSalt', 'confirmBackup', 'exportSaltForBackup']) assert.ok(RPC_METHODS.includes(m), m);
+  const s_u = (await call('initSalt', {})).s_u; await call('confirmBackup', { s_u });
+  for (const r of [await call('getSalt', { index: 3 }), await call('prepareRegister', { index: 3 }), await call('register', { uid: '9', index: 3 })]) assert.equal('index' in r, false);
+  const mf = JSON.parse(fs.readFileSync(new URL('../snap.manifest.json', import.meta.url), 'utf8'));
+  assert.equal('snap_getEntropy' in mf.initialPermissions, false); assert.equal(mf.version, '0.5.0');
+  assert.equal(JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version, '0.5.0');
+  assert.equal(snapCalls.includes('snap_getEntropy'), false);
 });
 
 console.log(failed ? `\n${failed} failed` : '\nall passed');
