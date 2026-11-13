@@ -701,7 +701,7 @@
       try { v = JSON.parse(localStorage.getItem('mode3_attr_tool_v1') ?? 'null'); } catch { v = null; }
       const dec = (x) => typeof x === 'string' && /^[0-9]+$/.test(x);
       const profile = v?.profile && typeof v.profile === 'object' && !Array.isArray(v.profile) ? v.profile : null;   // 2026-11-11(가): 스냅 속성도 이 기록에서 — C_attr 와 같은 값
-      return v && v.version === 3 && dec(v.uid) && dec(v.s_u) && BigInt(v.s_u) > 0n && BigInt(v.s_u) < (1n << 250n) ? { uid: v.uid, s_u: v.s_u, index: Number.isInteger(v.index) ? v.index : null, profile } : null;   // index: 계정 번호(2026-11-12 스펙 snap-account-index) — 없으면 null
+      return v && v.version === 4 && dec(v.uid) && dec(v.s_u) && BigInt(v.s_u) > 0n && BigInt(v.s_u) < (1n << 250n) ? { uid: v.uid, s_u: v.s_u, index: Number.isInteger(v.index) ? v.index : null, profile } : null;   // index: 계정 번호(2026-11-12 스펙 snap-account-index) — 없으면 null
     }
 
     /** 속성 변경(2026-11-11, 스펙 D19): 로그인 전에 속성 도구 기록의 속성이 에이전트 값과 다르면 PUT /wallet/profile·Snap syncAttrs 로 맞춘다 —

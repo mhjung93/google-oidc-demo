@@ -2,6 +2,6 @@
 // mode3/attr/dist/attr.js (IIFE, window.Mode3Attr). 공유 lib 를 그대로 묶는다 — 인코딩(lib/mode3_attr_schema.js)과 커밋먼트
 // (lib/mode3_attr_commit.js)가 Node(테스트·지갑)와 같은 코드다. 네트워크 호출은 없다 — 이 페이지는 아무 서버와도 말하지 않는다.
 export { DEFAULT_ATTR_SCHEMA, encodeProfile, normalizeProfile, decodeAttrs } from '../../lib/mode3_attr_schema.js';
-export { attrCommit, randomBlind, isAttrCommit, DOMAIN_MODE3_ATTRC } from '../../lib/mode3_attr_commit.js';
+export { attrCommit, isAttrCommit, DOMAIN_MODE3_ATTRC } from '../../lib/mode3_attr_commit.js';
 export { auidOf } from '../../lib/mode3_credential.js';
 export { BACKUP_FORMAT, BACKUP_MIN_PASSWORD, backupKey, sealBackup, openBackup, isSealedBackup } from '../../lib/browser/attr_backup.js';   // 2026-11-11: 암호화 자동 백업(스펙 D20)   // 2026-11-11: 같은 uid·salt 로 auid 를 보인다(첫 RP 로그인 인증 창에 붙여 넣는 값)

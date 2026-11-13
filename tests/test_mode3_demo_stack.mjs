@@ -861,7 +861,7 @@ try {
     };
     assert.equal((await withJar('/cia/user/login', { uid, pwd: 'password123' })).status, 200);
     const attrsA = await Promise.all(['1990', '410', '', '', '', ''].map((v, i) => encodeSlotValue(DEFAULT_ATTR_SCHEMA, i, v)));
-    const C1 = await attrCommit({ uid: '1', s_u: '2', attrs: attrsA, blind: '111' });
+    const C1 = await attrCommit({ s_u: '2', attrs: attrsA });
     assert.equal((await withJar('/cia/user/profile', { name: C1 })).body.profile.name, C1, 'IdP 프로필 저장은 그대로');
     const l1 = await loginViaRp();
     assert.equal(l1.rp?.ok, true, j(l1.rp)); assert.equal(typeof l1.wallet.id_token, 'string', '지갑 응답에 id_token');
