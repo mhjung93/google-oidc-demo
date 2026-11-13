@@ -1029,7 +1029,8 @@ try {
     await waitText(p, '#meInfo', 'demo-user-2');
     await p.waitForSelector('#profileCard:not([hidden])');
     assert.equal((await p.textContent('#profileCurrent')).trim(), '없음');
-    assert.ok((await p.getAttribute('#attrToolLink', 'href')).endsWith('/attr.html'), '속성 도구 링크는 지갑 오리진 /attr.html');
+    assert.equal(await p.locator('#attrToolLink').count(), 0, '"속성 도구 열기" 링크는 없다(2026-11-13 사용자 요청으로 제거)');
+    assert.equal((await p.textContent('#profileCard')).includes('속성 도구 열기'), false);
     await p.fill('#profileName', toolCommit); await p.click('#profileSaveBtn');
     await waitText(p, '#profileVerdict', '프로필 저장 완료');
     assert.equal((await p.textContent('#profileCurrent')).trim(), toolCommit);

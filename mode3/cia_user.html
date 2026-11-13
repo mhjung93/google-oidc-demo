@@ -75,7 +75,7 @@
     <h3 data-i18n="idp_profile_title">프로필</h3>
     <p class="desc" data-i18n="idp_profile_desc">속성 도구에서 만든 속성 커밋먼트를 "이름" 칸에 붙여 넣고 저장하세요. zkID 는 이 값의 뜻을 모르며, 서비스에 로그인할 때 ID 토큰의 name 으로 전달됩니다.</p>
     <p><label><span data-i18n="idp_profile_name_label">이름(속성 커밋먼트)</span> <input id="profileName" maxlength="256" autocomplete="off" placeholder="속성 도구에서 복사한 값" /></label></p>
-    <p><button id="profileSaveBtn" data-i18n="idp_profile_save_btn">저장</button> <a id="attrToolLink" class="btn-ghost" target="_blank" rel="noopener" data-i18n="idp_profile_tool_link">속성 도구 열기</a></p>
+    <p><button id="profileSaveBtn" data-i18n="idp_profile_save_btn">저장</button></p>
     <p class="muted"><span data-i18n="idp_profile_current">현재 값</span>: <code id="profileCurrent">-</code></p>
     <div id="profileVerdict"></div>
   </section>
@@ -130,7 +130,6 @@
       walletOrigin = wallet;
       renderGoogleRow();
       $('walletLink2').href = walletOrigin ? `${walletOrigin}/` : '#';
-      $('attrToolLink').href = walletOrigin ? `${walletOrigin}/attr.html` : '#';   // 속성 도구는 지갑 오리진에서 서빙된다(2026-11-09)
       Demo.stack({ self: 'aa', urls: { wallet } });
       renderGuide();
     });

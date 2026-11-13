@@ -945,7 +945,6 @@ window.DemoStrings = {
     idp_profile_desc: { ko: '속성 도구에서 만든 속성 커밋먼트를 "이름" 칸에 붙여 넣고 저장하세요. zkID 는 이 값의 뜻을 모르며 서비스에 전달하지 않습니다. 저장된 값을 다른 커밋먼트로 바꾸면 속성 변경으로 보고 기존 세션을 모두 폐기합니다.', en: 'Paste the attribute commitment made in the attribute tool into "name" and save. zkID does not know what it means and does not pass it to services. Replacing a saved value with a different commitment counts as an attribute change and revokes all existing sessions.' },
     idp_profile_name_label: { ko: '이름(속성 커밋먼트)', en: 'Name (attribute commitment)' },
     idp_profile_save_btn: { ko: '저장', en: 'Save' },
-    idp_profile_tool_link: { ko: '속성 도구 열기', en: 'Open attribute tool' },
     idp_profile_current: { ko: '현재 값', en: 'Current value' },
     idp_profile_none: { ko: '없음', en: 'none' },
     idp_profile_saved_summary: { ko: '프로필을 저장했습니다.', en: 'Profile saved.' },

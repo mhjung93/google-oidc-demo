@@ -722,7 +722,7 @@ reason: 'predicate_unmet'}` 로 거절한다(200, 컨트랙트 호출 없이 오
   localStorage(`mode3_attr_tool_v1`)에만 남는다. 백업 내려받기/불러오기(불러올 때 다시 계산해 맞춰 본다), 지우기. 번들은 `npm run attr:build`
   (`mode3/attr/dist/`, ignore) — **에이전트를 띄우는 기계에서 한 번** 만들어 둔다(없으면 페이지가 `bundle_missing` 을 보인다).
 - **zkID 프로필** `/user` → 로그인 → "프로필" 카드(스냅 등록 여부와 무관하게 보인다) → "이름(속성 커밋먼트)" 에 붙여 넣고 저장(`POST /cia/user/profile`).
-  IdP 는 한 줄·256자 이하 문자열로만 보고 뜻을 모른다. "속성 도구 열기" 링크는 스냅 오리진 `/attr.html`.
+  IdP 는 한 줄·256자 이하 문자열로만 보고 뜻을 모른다. 프로필 카드의 "속성 도구 열기" 링크는 2026-11-13 에 뺐다(사용자 요청) — 속성 도구는 `http://localhost:5100/attr.html` 로 직접 연다.
 - **ID 토큰**: 발급(`POST /cia/issue`) 응답에 `id_token`(JWT ES256, `iss=CIA_PUBLIC_URL`, `sub=auid_s`, `aud=arid_s`, `name=프로필`, 10분) 이 함께 온다.
   키는 `cia_keys.json` 의 `idTokenJwk`(없으면 기동 때 더한다 — 다른 키는 그대로). `GET /.well-known/openid-configuration`·`GET /.well-known/jwks.json`.
   분리 데모는 `demo_split_start.sh` 가 IdP role.env 에 `CIA_PUBLIC_URL=http://192.168.226.10:4100` 을 넣는다.
