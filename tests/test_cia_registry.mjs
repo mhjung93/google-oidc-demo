@@ -6,12 +6,11 @@ import path from 'node:path';
 import { ethers } from 'ethers';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { getProvider } from './helpers/mode3_chain.mjs';
-import { createRegistration, signRegistration, signRevokeSession } from '../lib/mode3_wallet.js';
-import { pointToStrings } from '../lib/mode3_issuance.js';
+import { createRegistration } from '../lib/mode3_wallet.js';
 import { userCommit, randomScalar } from '../lib/mode3_credential.js';
 import { registryLeaf, createRegistryTree } from '../lib/mode3_registry.js';
 import { MODE3_LOG_ABI, verifyReceipt } from '../lib/mode3_log.js';
-import { issueV11, userOf, TESTUSER_ATTRS, ALICE_ATTRS } from './helpers/mode3_flow.mjs';
+import { issueV11, userOf, regBody, revokeSessionBody, TESTUSER_ATTRS, ALICE_ATTRS } from './helpers/mode3_flow.mjs';
 
 const j = (o) => JSON.stringify(o, (k, v) => (typeof v === 'bigint' ? v.toString() : v));
 let failed = 0;
@@ -25,13 +24,13 @@ let u;       // userOf(registerUser('12345')) 결과
 let alice;   // userOf(registerUser('67890')) 결과 — 관리자 바꿔치기 케이스(Task 9)가 쓴다
 let iss;     // u 의 최근 발급 결과(issueV11) — 다음 케이스가 blind_u·Cf_s 를 이어 쓴다
 try {
-  await t('등록: pk_u·sig_reg 필수, 틀린 서명 400, 정상 201 { slot, schemaHash }, 두 번째 계정은 슬롯 1', async () => {
+  await t('등록: 증명 필수, 다른 s_u 의 증명 400, 정상 201 { slot, schemaHash }, 두 번째 계정은 슬롯 1', async () => {
     const reg = await createRegistration(12345n);
-    const base = { uid: '12345', pwd: 'password123', auid: reg.auid.toString(), pk_u: pointToStrings(reg.pk_u) };
-    assert.equal((await cia.post('/cia/register', { ...base, pk_u: undefined, sig_reg: await signRegistration(reg.sk_u, 12345n, reg.auid) })).status, 400);
+    const base = { uid: '12345', pwd: 'password123' };
+    assert.equal((await cia.post('/cia/register', { ...base, ...(await regBody(reg, '12345')), proof_idp: undefined })).status, 400);
     const other = await createRegistration(12345n);
-    const bad = await cia.post('/cia/register', { ...base, sig_reg: await signRegistration(other.sk_u, 12345n, reg.auid) });
-    assert.equal(bad.status, 400); assert.equal(bad.body.error, 'bad_registration_signature');
+    const bad = await cia.post('/cia/register', { ...base, ...(await regBody(other, '12345')), auid: reg.auid.toString() });
+    assert.equal(bad.status, 400); assert.equal(bad.body.reason, 'bad_idp_proof');
     u = userOf(await cia.registerUser('12345', 'password123'), '12345', TESTUSER_ATTRS);
     assert.equal(u.slot, 0);
     alice = userOf(await cia.registerUser('67890', 'alicepw'), '67890', ALICE_ATTRS);
@@ -72,7 +71,7 @@ try {
     assert.equal(iss.r.status, 200, j(iss.r.body));
     const nonce = randomScalar();
     const bound = 0n;
-    const rv = await cia.post('/cia/revoke', { uid: '12345', scope: 'session', Cf_s: iss.cred.Cf_s, bound: bound.toString(), sig_u: await signRevokeSession(u.sk_u, u.uid, BigInt(iss.cred.Cf_s), bound, nonce), nonce: nonce.toString() });
+    const rv = await cia.post('/cia/revoke', await revokeSessionBody(u, { Cf_s: iss.cred.Cf_s, bound, nonce }));
     assert.equal(rv.status, 200, j(rv.body)); assert.equal(rv.body.inserted, true);
     assert.equal((await cia.get('/cia/state')).body.pendingCount, 1);
     const ra = await cia.adminPost('/cia/revoke', { uid: '12345', scope: 'account' });
@@ -193,15 +192,15 @@ try {
 // ---- 마이그레이션: v12 상태 파일(리프가 비어 있는 슬롯)로 기동하면 활성 자격증명 리프를 채워 게시한다 ----
 // V11(2026-10-12)은 v11 이하 상태를 이행하지 않는다(lib/mode3_cia_state.js) — "마이그레이션"은 이제 손으로 적은(또는 크래시로
 // 리프가 비어 있는) v12 상태 파일을 기동이 채워 게시하는 경로만 남는다.
-await t('v12 상태 파일(리프가 비어 있는 슬롯) → 기동이 활성 자격증명의 리프를 채워 게시', async () => {
+await t('상태 파일(리프가 비어 있는 슬롯) → 기동이 활성 자격증명의 리프를 채워 게시', async () => {
   const reg = await createRegistration(12345n);
   const blind_u = randomScalar();
   const { Cx, Cy, Cf } = await userCommit({ uid: 12345n, s_u: reg.s_u, blind_u, attrs: TESTUSER_ATTRS });
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-v12-empty-'));
   const stateFile = path.join(dir, 'cia_state.json');
   fs.writeFileSync(stateFile, JSON.stringify({
-    version: 12,
-    accounts: { '12345': { pk_u: { x: reg.pk_u.x.toString(), y: reg.pk_u.y.toString() }, auid: reg.auid.toString(), slot: 0, tampered: false, disabled: false,
+    version: 13,
+    accounts: { '12345': { auid: reg.auid.toString(), slot: 0, tampered: false, disabled: false,
       creds: [{ Cf_u: Cf.toString(), C_u_pt: { x: Cx.toString(), y: Cy.toString() }, issuedAt: 'x', revoked: false }], sessions: [], receipt: null, slotRetired: false } },
     rps: {}, openings: [], revoked: [], pending: [], epoch: 0, registry: { depth: 20, next: 1, leaves: {}, pendingSlots: [] }, lastPublication: null, signedEpochMax: 0, attrSchemaHash: null,
   }));
@@ -229,8 +228,8 @@ await t('재기동 백로그 자동 게시: 리프는 이미 저장됐지만 게
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-backlog-'));
   const stateFile = path.join(dir, 'cia_state.json');
   fs.writeFileSync(stateFile, JSON.stringify({
-    version: 12,
-    accounts: { '12345': { pk_u: { x: reg.pk_u.x.toString(), y: reg.pk_u.y.toString() }, auid: reg.auid.toString(), disabled: false, slot: 0, tampered: false,
+    version: 13,
+    accounts: { '12345': { auid: reg.auid.toString(), disabled: false, slot: 0, tampered: false,
       creds: [{ Cf_u: Cf.toString(), C_u_pt: { x: Cx.toString(), y: Cy.toString() }, issuedAt: 'x', revoked: false }], sessions: [], receipt: null, slotRetired: false } },
     rps: {}, openings: [], revoked: [], pending: [], epoch: 0,
     registry: { depth: 20, next: 1, leaves: { '0': expected.toString() }, pendingSlots: [{ index: 0, leaf: expected.toString() }] },

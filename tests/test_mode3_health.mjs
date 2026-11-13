@@ -53,7 +53,7 @@ await t('Vary: Origin 은 허용·거절 모두에 붙는다(중간 캐시가 �
 // 2026-09-25 리뷰: 위 '민감 키 없음' 은 **키 이름**만 본다 — uid 를 'account' 같은 다른 이름으로 싣는 순간
 // 통째로 무력해진다. 여기서는 테스트가 값을 직접 만든 뒤(등록·자격증명·세션) 그 **값**이 세 응답 어디에도
 // 문자열로 없는지 본다. 맨 뒤에 둔다 — 계정·세션을 만들어 앞 케이스들의 카운터를 흔들지 않게.
-await t('민감 "값" 없음 — 등록 uid·s_u·sk_u, C_u 의 Cf_u, 세션의 Cf_s 가 응답에 안 실린다', async () => {
+await t('민감 "값" 없음 — 등록 uid·s_u, C_u 의 Cf_u, 세션의 Cf_s 가 응답에 안 실린다', async () => {
   // 지갑에도 계정을 하나 만든다(testuser) — 지갑 health 가 registered 상태에서 uid 를 흘리지 않는지 보려면 필요하다.
   const wreg = await wallet.post('/wallet/register', { uid: '12345', pwd: 'password123' });
   assert.equal(wreg.status, 201, JSON.stringify(wreg.body));
@@ -67,7 +67,7 @@ await t('민감 "값" 없음 — 등록 uid·s_u·sk_u, C_u 의 Cf_u, 세션의 
   assert.equal(iss.r.status, 200, JSON.stringify(iss.r.body));
 
   const secrets = {
-    s_u: reg.s_u.toString(), sk_u: reg.sk_u,
+    s_u: reg.s_u.toString(),
     Cf_u: iss.req.Cf_u.toString(), blind_u: iss.blind_u.toString(),
     Cf_s: iss.cred.Cf_s, r_s: iss.r_s.toString(), r_rp: iss.r_rp.toString(),
     arid: arid.toString(),

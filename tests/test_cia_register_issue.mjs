@@ -7,15 +7,14 @@ import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import { ethers } from 'ethers';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { getProvider, canonOf } from './helpers/mode3_chain.mjs';
-import { randomScalar, credMessageV11, auidOf, SCALAR_MAX } from '../lib/mode3_credential.js';
+import { randomScalar, credMessageV11, auidOf, SCALAR_MAX, registerCtx, slotCtx, tagOf } from '../lib/mode3_credential.js';
 import { sessionLeaf } from '../lib/mode3_revocation.js';
-import { pointToStrings } from '../lib/mode3_issuance.js';
-import { createRegistration, signRegistration, signSlotRequest } from '../lib/mode3_wallet.js';
+import { createRegistration, buildAuthProof } from '../lib/mode3_wallet.js';
 import { verifyRpCert } from '../lib/mode3_rp_cert.js';
 import { verifyShare, combinePublicKey } from '../lib/mode3_trace.js';
 import { createShare } from '../lib/mode3_trace.js';
 import { MODE3_LOG_ABI, signPublicationV3 } from '../lib/mode3_log.js';
-import { issueV11, userOf, TESTUSER_ATTRS, ALICE_ATTRS } from './helpers/mode3_flow.mjs';
+import { issueV11, userOf, TESTUSER_ATTRS, ALICE_ATTRS, regBody, slotBody, revokeSessionBody } from './helpers/mode3_flow.mjs';
 
 let failed = 0;
 async function t(name, fn) {
@@ -36,9 +35,9 @@ const uid = 12345n;
 const arid = 22222222222222222222n;
 let user;   // userOf(registerUser('12345'))
 
-// V11(2026-10-12): /cia/issue 한 요청으로 (C_u, C_s, π_IdP, sig_u) 를 받아 발급한다 — 사용자 자격증명과 세션 발급이
-// 더 이상 나뉘어 있지 않다. 서명은 auid_s·arid_s·Cf_u·Cf_s·chainid·allowAgent·max_height 를 덮는다. IdP 는 세션
-// 기록을 남긴다(V8) — 개별 폐기(/cia/revoke scope=session)가 그 기록을 찾는다.
+// V11(2026-10-12): /cia/issue 한 요청으로 (C_u, C_s, π_IdP) 를 받아 발급한다 — 사용자 자격증명과 세션 발급이
+// 더 이상 나뉘어 있지 않다. 2026-11-13(스펙 no-pk-u): 요청 서명은 없다 — π_IdP 의 공개 입력이 auid_s·C_u·C_s·max_height 를,
+// ctx(tag)가 arid_s·chainid·allowAgent 를 덮는다. IdP 는 세션 기록을 남긴다(V8) — 개별 폐기(/cia/revoke scope=session)가 그 기록을 찾는다.
 const CHAIN_ID = 31337n;
 
 /** 데모 계정 하나를 등록만 한다. userOf 는 body(등록 응답)를 들지 않으므로 여기서 다시 붙인다 — 등록 응답 모양을 보는
@@ -49,17 +48,6 @@ let _testuser = null;
 async function freshWallet() { return (_testuser ??= await freshRegistered('12345', 'password123')); }
 /** 발급 한 번(기본값: 새 C_u, head+300). issueV11 의 얇은 포장 — 이 파일의 케이스가 자주 쓰는 모양. */
 const issue = (u, opts = {}) => issueV11(cia, u, { arid, provider, ...opts });
-/** 리뷰 S1(2026-10-13): 응답 시간 상한을 건 POST. 서명 S 가 음수면 예전 IdP 는 verifyPoseidon 안(mulPointEscalar)에서 끝나지 않아
- *  프로세스 전체가 멈췄다 — 그 회귀는 여기서 ms 뒤 TimeoutError 로 드러난다(상한이 없으면 테스트가 같이 멈출 뿐 실패하지 않는다). */
-const postWithin = (inst, p, body, ms = 2000) => fetch(`${inst.base}${p}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}), signal: AbortSignal.timeout(ms) })
-  .then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
-/** 서명 { R8x, R8y, S } 의 비정규·범위 밖 변형. 앞의 셋(음수)이 예전 IdP 를 멈추던 값이고 나머지는 같은 파서가 함께 거르는 값이다. */
-const badSigVariants = (g) => [
-  ['S=-1', { ...g, S: '-1' }], ['S=-7', { ...g, S: '-7' }], ['R8x=-1', { ...g, R8x: '-1' }],
-  ['S=subOrder', { ...g, S: eddsa.babyJub.subOrder.toString() }], ['S=subOrder+S', { ...g, S: (eddsa.babyJub.subOrder + BigInt(g.S)).toString() }], ['R8y=R8y+p', { ...g, R8y: (BigInt(g.R8y) + F.p).toString() }],
-  ['S 숫자형', { ...g, S: Number(1) }], ['S=0x', { ...g, S: '0x1' }], ['S 공백', { ...g, S: ` ${g.S}` }], ['R8x 없음', { R8y: g.R8y, S: g.S }], ['문자열', 'sig'],
-];
-
 /** 세션 하나 발급 → 그 자격증명 은퇴(scope=credential, 즉시 게시) → 그 세션 폐기(scope=session, pending 에만 쌓는다). 리프(10진)를 돌려준다. (설명은 V10 과 같다) */
 async function revokedLeaf() {
   const iss = await issue(user);
@@ -80,20 +68,20 @@ try {
     assert.equal(r.body.logAddress.toLowerCase(), cia.logAddress.toLowerCase());
   });
 
-  await t('register: auid 가 10진이 아니거나 필드 밖이면 400 이고 uid 는 잠기지 않는다', async () => {
-    const dummyPk = { x: '1', y: '1' }, dummySig = { R8x: '1', R8y: '1', S: '1' };
-    assert.equal((await cia.post('/cia/register', { uid: '12345', pwd: 'password123', auid: 'zz', pk_u: dummyPk, sig_reg: dummySig })).status, 400);
-    assert.equal((await cia.post('/cia/register', { uid: '12345', pwd: 'password123', auid: F.p.toString(), pk_u: dummyPk, sig_reg: dummySig })).status, 400, '필드 밖');
-    assert.equal((await cia.post('/cia/register', { uid: '12345', pwd: 'password123', auid: '7', pk_u: dummyPk, sig_reg: dummySig })).status, 400, 'pk_u 가 곡선 밖');
+  await t('register: auid 가 10진이 아니거나 필드 밖이면 400 이고 uid 는 잠기지 않는다; 증명의 점이 곡선 밖이면 400', async () => {
+    assert.equal((await cia.post('/cia/register', { uid: '12345', pwd: 'password123', auid: 'zz' })).status, 400);
+    assert.equal((await cia.post('/cia/register', { uid: '12345', pwd: 'password123', auid: F.p.toString() })).status, 400, '필드 밖');
+    const reg = await createRegistration(12345n);
+    const r = await cia.post('/cia/register', { uid: '12345', pwd: 'password123', ...(await regBody(reg, '12345')), C_u_pt: { x: '1', y: '1' } });
+    assert.equal(r.status, 400, 'C_u_pt 가 곡선 밖'); assert.match(r.body.error, /C_u_pt is not a valid subgroup point/);
   });
 
   // uid 12345 는 아직 등록되지 않았다(바로 위 케이스가 "uid 는 잠기지 않는다" 를 확인한다) — freshWallet() 이 실제로
-  // 등록하기 전에, 서명이 본문과 다른 auid 를 보증하면 거절되는지를 본다(등록은 되돌릴 수 없어 §6.1 이 여기서 걸러낸다).
-  await t('register: 등록 서명이 본문과 다른 auid 를 보증하면 400 bad_registration_signature', async () => {
+  // 등록하기 전에, 증명이 본문과 다른 auid 를 보증하면 거절되는지를 본다(등록은 되돌릴 수 없어 §6.1 이 여기서 걸러낸다).
+  await t('register: 증명이 본문과 다른 auid 를 보증하면 400 bad_idp_proof', async () => {
     const reg = await createRegistration(12345n);
-    const sig_reg = await signRegistration(reg.sk_u, 12345n, reg.auid + 1n);   // auid+1 을 보증 — 본문의 auid(reg.auid)와 다르다
-    const r = await cia.post('/cia/register', { uid: '12345', pwd: 'password123', auid: reg.auid.toString(), pk_u: pointToStrings(reg.pk_u), sig_reg });
-    assert.equal(r.status, 400); assert.equal(r.body.error, 'bad_registration_signature');
+    const r = await cia.post('/cia/register', { uid: '12345', pwd: 'password123', ...(await regBody(reg, '12345')), auid: (reg.auid + 1n).toString() });   // 증명은 reg.auid 의 것 — 본문의 auid 와 다르다
+    assert.equal(r.status, 400); assert.equal(r.body.reason, 'bad_idp_proof');
   });
 
   await t('register_rp: 등록은 pending 202 → 승인 → 같은 키로 재호출하면 200 에 pk_trace·cert_s(V2), 같은 origin 은 같은 arid', async () => {
@@ -156,16 +144,15 @@ try {
   });
 
   await t('register: 잘못된 비밀번호는 401, 재등록은 409', async () => {
-    const dummyPk = { x: '1', y: '1' }, dummySig = { R8x: '1', R8y: '1', S: '1' };
-    assert.equal((await cia.post('/cia/register', { uid: '12345', pwd: 'wrong', auid: '1', pk_u: dummyPk, sig_reg: dummySig })).status, 401);
-    assert.equal((await cia.post('/cia/register', { uid: '12345', pwd: 'password123', auid: '1', pk_u: dummyPk, sig_reg: dummySig })).status, 409);
+    assert.equal((await cia.post('/cia/register', { uid: '12345', pwd: 'wrong', auid: '1' })).status, 401);
+    assert.equal((await cia.post('/cia/register', { uid: '12345', pwd: 'password123', auid: '1' })).status, 409, '등록된 계정에 다른 auid');
   });
 
-  await t('복구(2026-11-12, 스펙 snap-derived-secrets S3): 같은 auid·pk_u·서명으로 재등록하면 201 restored·같은 slot, 슬롯을 새로 잡지 않는다; 하나라도 다르면 409; disabled 면 409 account_disabled', async () => {
+  await t('복구(2026-11-12, 스펙 snap-derived-secrets S3): 같은 auid·유효한 증명으로 재등록하면 201 restored·같은 slot, 슬롯을 새로 잡지 않는다; auid 가 다르면 409, 증명이 틀리면 400; disabled 면 409 account_disabled', async () => {
     const su = await cia.post('/cia/signup', { id: 'restore-1', pwd: 'restore-pw-1' }); assert.equal(su.status, 201, JSON.stringify(su.body));
     const uidR = su.body.uid;
     const reg = await createRegistration(BigInt(uidR), Buffer.alloc(32, 7));
-    const body = async (r) => ({ uid: uidR, pwd: 'restore-pw-1', auid: r.auid.toString(), pk_u: pointToStrings(r.pk_u), sig_reg: await signRegistration(r.sk_u, BigInt(uidR), r.auid) });
+    const body = async (r) => ({ uid: uidR, pwd: 'restore-pw-1', ...(await regBody(r, uidR)) });
     const first = await cia.post('/cia/register', await body(reg));
     assert.equal(first.status, 201, JSON.stringify(first.body)); assert.equal(first.body.restored, undefined, '새 등록에는 restored 가 없다');
     const snap = async () => { const { head: _h, ...rest } = (await cia.get('/cia/state')).body; return rest; };
@@ -174,15 +161,12 @@ try {
     assert.equal(again.status, 201, JSON.stringify(again.body)); assert.equal(again.body.restored, true); assert.equal(again.body.slot, first.body.slot);
     assert.equal(again.body.uid, uidR); assert.equal(again.body.provider, 'demo');
     assert.deepEqual(await snap(), stBefore, '복구는 상태(등록부·epoch)를 바꾸지 않는다');
-    // 같은 uid, 다른 비밀(다른 SRP) — auid·pk_u 가 다르다
+    // 같은 uid, 다른 비밀(다른 SRP) — auid 가 다르다
     const other = await createRegistration(BigInt(uidR), Buffer.alloc(32, 8));
     assert.equal((await cia.post('/cia/register', await body(other))).status, 409);
-    // auid 는 같고 pk_u 만 다름 — 서명은 그 다른 키로
-    const mixed = { ...(await body(reg)), pk_u: pointToStrings(other.pk_u), sig_reg: await signRegistration(other.sk_u, BigInt(uidR), reg.auid) };
-    assert.equal((await cia.post('/cia/register', mixed)).status, 409, 'pk_u 가 다르면 복구가 아니다');
-    // 같은 auid·pk_u 지만 서명이 틀림(다른 키로 서명)
-    const badSig = { ...(await body(reg)), sig_reg: await signRegistration(other.sk_u, BigInt(uidR), reg.auid) };
-    assert.equal((await cia.post('/cia/register', badSig)).status, 400);
+    // 같은 auid 를 대지만 증명은 다른 s_u 의 것 — 복구가 아니다
+    const badAuth = await cia.post('/cia/register', { ...(await body(other)), auid: reg.auid.toString() });
+    assert.equal(badAuth.status, 400, JSON.stringify(badAuth.body)); assert.equal(badAuth.body.reason, 'bad_idp_proof');
     assert.deepEqual(await snap(), stBefore, '거절된 재등록도 상태를 바꾸지 않는다');
     // 폐기된 계정은 되살리지 않는다
     assert.equal((await cia.post('/cia/account/self_revoke', { uid: uidR, pwd: 'restore-pw-1' })).status, 200);
@@ -241,30 +225,31 @@ try {
     assert.equal((await issue(user, { overrides: { proof_idp: undefined } })).r.status, 400);
   });
 
-  await t('issue V11: 서명이 auid_s·arid_s·C_u·C_s·chainid·allowAgent·max_height 를 덮는다 — 하나라도 바꾸면 400; 부분군 밖 점은 400', async () => {
+  await t('issue V11: π_IdP(공개 입력·ctx)가 auid_s·arid_s·C_u·C_s·allowAgent·max_height 를 덮는다 — 하나라도 바꾸면 400 bad_idp_proof; 부분군 밖 점은 400', async () => {
     // max_height 를 고정한다(999999n) — 기본값(provider 로 head+300)을 쓰면, g 자신의 발급(새 blind_u → 첫 C_u 교체 →
     // 즉시 게시 tx)이 블록을 하나 전진시켜, 뒤이은 호출의 "기본" max_height(head+300)가 g.max_height+1 과 우연히
     // 같아져 아래 max_height 패치가 패치가 아니라 공교롭게 "제자리" 값이 돼 버린다(관찰됨: 200 이 나왔다 — 2026-10-12).
     const g = await issue(user, { max_height: 999999n }); assert.equal(g.r.status, 200);
     for (const patch of [{ auid_s: '1' }, { arid_s: '1' }, { allowAgent: '1' }, { max_height: (BigInt(g.req.body.max_height) + 1n).toString() }]) {
       const r = await issue(user, { blind_u: g.blind_u, max_height: 999999n, overrides: patch });
-      assert.equal(r.r.status, 400, JSON.stringify(patch)); assert.equal(r.r.body.error, 'bad user signature', JSON.stringify(patch));
+      assert.equal(r.r.status, 400, JSON.stringify(patch)); assert.equal(r.r.body.reason, 'bad_idp_proof', JSON.stringify(patch));
     }
-    // chainid 는 서명 검증보다 먼저인 허용 목록 검사에 걸린다 — 다른 에러 문구이므로 상태 코드만 본다.
+    // chainid 는 증명 검증보다 먼저인 허용 목록 검사에 걸린다 — 다른 에러 문구이므로 상태 코드만 본다.
     assert.equal((await issue(user, { blind_u: g.blind_u, max_height: 999999n, overrides: { chainid: '1' } })).r.status, 400);
-    const h = await issue(user, { blind_u: g.blind_u, max_height: 999999n });   // 다른 요청의 C_s 로 바꿔치기 — 서명·π 모두 어긋난다
+    const h = await issue(user, { blind_u: g.blind_u, max_height: 999999n });   // 다른 요청의 C_s 로 바꿔치기 — π_IdP 공개 입력과 어긋난다
     assert.equal((await issue(user, { blind_u: g.blind_u, max_height: 999999n, overrides: { C_s_pt: h.req.body.C_s_pt } })).r.status, 400);
     assert.equal((await issue(user, { overrides: { C_s_pt: { x: '1', y: '1' } } })).r.status, 400);
     assert.equal((await issue(user, { overrides: { C_u_pt: { x: '1', y: '1' } } })).r.status, 400);
   });
 
-  await t('issue V11: 사용자 서명이 다른 키면 400', async () => {
-    const other = await issue({ ...user, sk_u: (await createRegistration(uid)).sk_u });
-    assert.equal(other.r.status, 400); assert.equal(other.r.body.error, 'bad user signature');
-    assert.equal((await issue(user, { overrides: { sig_u: other.req.body.sig_u } })).r.status, 400);
+  await t('issue V11: 다른 s_u 로 만든 요청은 400 bad_idp_proof; 그 요청의 tag 만 내 요청에 옮겨 붙여도 400', async () => {
+    const other = await issue({ ...user, s_u: (await createRegistration(uid)).s_u });
+    assert.equal(other.r.status, 400); assert.equal(other.r.body.reason, 'bad_idp_proof');
+    const swapped = await issue(user, { overrides: { tag: other.req.body.tag } });
+    assert.equal(swapped.r.status, 400); assert.equal(swapped.r.body.reason, 'bad_idp_proof');
   });
 
-  await t('issue V11: max_height 는 서명이 덮는다 — 값만 바꾸면 400, 2^64 이상 400, 없으면 400; 먼 미래 값도 IdP 는 그대로 서명(상한은 검증자)', async () => {
+  await t('issue V11: max_height 는 증명이 덮는다 — 값만 바꾸면 400, 2^64 이상 400, 없으면 400; 먼 미래 값도 IdP 는 그대로 서명(상한은 검증자)', async () => {
     // g 와 뒤이은 호출 모두 max_height 를 고정한다(999999n) — 바로 위 케이스와 같은 이유(기본값이면 g 자신의 즉시
     // 게시 tx 가 블록을 전진시켜 "+1" 패치가 뒤 호출의 기본값과 우연히 같아진다, 2026-10-12 관찰).
     const g = await issue(user, { max_height: 999999n }); assert.equal(g.r.status, 200, JSON.stringify(g.r.body));
@@ -279,9 +264,9 @@ try {
     assert.equal(far.r.status, 200, JSON.stringify(far.r.body)); assert.equal(far.cred.max_height, '10000000');
   });
 
-  // 리뷰 L5/A8(2026-10-13): arid_s(·auid_s) = 유효값 + p 는 Poseidon 안에서 유효값과 같아져 서명은 그대로 맞는다 — 예전에는 200 이었다.
-  // 본문만 바꿔 보내는 post 훅을 쓴다(서명·π_IdP 는 원래 값으로 만들었다). /cia/register 의 auid 와 같이 필드 밖은 400.
-  await t('issue V11: arid_s·auid_s 가 필드 밖(유효값 + p)이면 400 — 서명이 맞아도 정규형만 받는다', async () => {
+  // 리뷰 L5/A8(2026-10-13): arid_s(·auid_s) = 유효값 + p 는 Poseidon 안에서 유효값과 같아져 해시는 그대로 맞는다 — 예전에는 200 이었다.
+  // 본문만 바꿔 보내는 post 훅을 쓴다(π_IdP·tag 는 원래 값으로 만들었다). /cia/register 의 auid 와 같이 필드 밖은 400.
+  await t('issue V11: arid_s·auid_s 가 필드 밖(유효값 + p)이면 400 — 증명이 맞아도 정규형만 받는다', async () => {
     const lift = (k) => (p, b) => cia.post(p, { ...b, [k]: (BigInt(b[k]) + F.p).toString() });
     for (const k of ['arid_s', 'auid_s']) {
       const r = await issue(user, { max_height: 999999n, post: lift(k) });
@@ -291,7 +276,7 @@ try {
     assert.equal(ok.r.status, 200, JSON.stringify(ok.r.body));
   });
 
-  await t('issue V11: allowAgent 는 서명이 덮는다 — 2 는 400, 없으면 400, 허용 목록 밖 chainid 는 400; allowAgent=1 로 서명하면 200 이고 응답도 1', async () => {
+  await t('issue V11: allowAgent 는 ctx 가 덮는다 — 2 는 400, 없으면 400, 허용 목록 밖 chainid 는 400; allowAgent=1 로 요청하면 200 이고 응답도 1', async () => {
     const g = await issue(user); assert.equal(g.r.status, 200, JSON.stringify(g.r.body));
     const two = await issue(user, { blind_u: g.blind_u, overrides: { allowAgent: '2' } });
     assert.equal(two.r.status, 400);
@@ -565,65 +550,113 @@ try {
     } finally { await hbCia.stop(); }
   });
 
-  await t('V11: 사라진 라우트는 404 — /cia/user_cred, /cia/attrs, /cia/accounts/:uid/attrs; /cia/slot 은 D_SLOTREQ 서명으로 슬롯을 준다', async () => {
+  await t('V11: 사라진 라우트는 404 — /cia/user_cred, /cia/attrs, /cia/accounts/:uid/attrs; /cia/slot 은 π_IdP(슬롯용 ctx)로 슬롯을 준다', async () => {
     assert.equal((await cia.post('/cia/user_cred', {})).status, 404);
     assert.equal((await cia.post('/cia/attrs', {})).status, 404);
     assert.equal((await cia.adminPost('/cia/accounts/12345/attrs', { profile: {} })).status, 404);
     const nonce = randomScalar();
-    const r = await cia.post('/cia/slot', { uid: '12345', nonce: nonce.toString(), sig_u: await signSlotRequest(user.sk_u, uid, nonce) });
+    const r = await cia.post('/cia/slot', await slotBody(user, nonce));
     assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(typeof r.body.slot, 'number');
-    assert.equal((await cia.post('/cia/slot', { uid: '12345', nonce: '100', sig_u: await signSlotRequest(user.sk_u, uid, nonce) })).status, 400, '다른 nonce 의 서명은 거절');
-  });
-
-  // 리뷰 S1(2026-10-13): 서명 필드를 BigInt() 로 그대로 파싱하던 때는 S='-1' 하나로 IdP 가 영구히 멈췄다(verifyPoseidon 의 mulPointEscalar(-1n)).
-  // 회귀하면 그 인스턴스가 멈추므로 별도 격리 인스턴스에서 돌린다 — 공유 인스턴스(위 케이스들)를 끌고 들어가지 않게. 요청마다 2초 상한.
-  // /cia/revoke scope=session 의 같은 검사는 tests/test_mode3_session_revoke.mjs 에 있다.
-  await t('리뷰 S1: 서명 필드가 음수·비10진·범위 밖이면 register·slot·issue 모두 2초 안에 400 — 프로세스는 계속 응답하고 정상 서명은 통한다', async () => {
-    const sc = await startIsolatedCia();
-    try {
-      const reg = await createRegistration(uid);
-      const regBody = (sig_reg) => ({ uid: '12345', pwd: 'password123', auid: reg.auid.toString(), pk_u: pointToStrings(reg.pk_u), sig_reg });
-      const goodReg = await signRegistration(reg.sk_u, uid, reg.auid);
-      for (const [label, bad] of badSigVariants(goodReg)) {
-        const r = await postWithin(sc, '/cia/register', regBody(bad));
-        assert.equal(r.status, 400, `register ${label}: ${JSON.stringify(r.body)}`); assert.equal(r.body.error, 'bad_registration_signature', `register ${label}`);
-      }
-      const okReg = await postWithin(sc, '/cia/register', regBody(goodReg));   // 거절된 시도는 uid 를 잠그지 않았다
-      assert.equal(okReg.status, 201, JSON.stringify(okReg.body));
-      const u = userOf({ ...reg, slot: okReg.body.slot }, '12345');
-
-      const nonce = randomScalar();
-      const goodSlot = await signSlotRequest(reg.sk_u, uid, nonce);
-      for (const [label, bad] of badSigVariants(goodSlot)) {
-        const r = await postWithin(sc, '/cia/slot', { uid: '12345', nonce: nonce.toString(), sig_u: bad });
-        assert.equal(r.status, 400, `slot ${label}: ${JSON.stringify(r.body)}`); assert.equal(r.body.error, 'bad user signature', `slot ${label}`);
-      }
-      assert.equal((await postWithin(sc, '/cia/slot', { uid: '12345', nonce: nonce.toString(), sig_u: goodSlot })).status, 200);
-
-      // /cia/issue: 요청 하나를 만들어 두고(보내지 않는다) sig_u 만 바꿔 보낸다 — 서명 검사는 π_IdP 검증·체인 조회보다 앞이다.
-      let body = null;
-      await issueV11(sc, u, { arid, max_height: 999999n, post: async (p, b) => { body = b; return { status: 0, body: null }; } });
-      for (const [label, bad] of badSigVariants(body.sig_u)) {
-        const r = await postWithin(sc, '/cia/issue', { ...body, sig_u: bad });
-        assert.equal(r.status, 400, `issue ${label}: ${JSON.stringify(r.body)}`); assert.equal(r.body.error, 'bad user signature', `issue ${label}`);
-      }
-      assert.equal((await postWithin(sc, '/cia/issue', body, 10_000)).status, 200, '대조군: 같은 요청을 원래 서명으로 보내면 발급된다');
-      const alive = await fetch(`${sc.base}/cia/public_keys`, { signal: AbortSignal.timeout(2000) });
-      assert.equal(alive.status, 200, '프로세스가 계속 응답한다');
-    } finally { await sc.stop(); }
+    const stale = await cia.post('/cia/slot', { ...(await slotBody(user, nonce)), nonce: '100' });
+    assert.equal(stale.status, 400, '다른 nonce 의 증명은 거절'); assert.equal(stale.body.reason, 'bad_idp_proof');
   });
 
   // 리뷰 S4(2026-10-13): π_IdP vkey 를 못 읽으면 503 이되 응답은 고정 사유뿐 — 절대경로·ENOENT 는 지갑을 거쳐 페이지까지 가므로 서버 로그에만.
-  await t('리뷰 S4: π_IdP vkey 가 없으면 /cia/issue 는 503 idp_vkey_unavailable — 응답에 경로·ENOENT 없음(서버 로그에만)', async () => {
+  // 2026-11-13: 등록도 π_IdP 로 인증하므로 vkey 가 없으면 등록부터 503 이다 — 네 경로가 같은 checkIdpAuth 를 쓴다(발급까지 가 볼 계정을 만들 수 없다).
+  await t('리뷰 S4: π_IdP vkey 가 없으면 /cia/register 는 503 idp_vkey_unavailable — 응답에 경로·ENOENT 없음(서버 로그에만)', async () => {
     const missing = path.join(cia.dir, 'no-such-pi_idp_vkey.json');
     const vc = await startIsolatedCia({ env: { MODE3_IDP_VKEY_PATH: missing } });
     try {
-      const u = userOf(await vc.registerUser('12345', 'password123'), '12345');
-      const r = await issueV11(vc, u, { arid, max_height: 999999n });
-      assert.equal(r.r.status, 503, JSON.stringify(r.r.body));
-      assert.deepEqual(r.r.body, { error: 'idp_vkey_unavailable', reason: 'idp_vkey_unavailable' });
+      const reg = await createRegistration(12345n);
+      const r = await vc.post('/cia/register', { uid: '12345', pwd: 'password123', ...(await regBody(reg, '12345')) });
+      assert.equal(r.status, 503, JSON.stringify(r.body));
+      assert.deepEqual(r.body, { error: 'idp_vkey_unavailable', reason: 'idp_vkey_unavailable' });
       assert.ok(vc.log().includes('ENOENT'), '원인은 서버 로그에 남는다');
+      assert.equal((await vc.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === '12345')?.auid ?? null, null, '실패한 등록은 계정을 등록하지 않았다');
     } finally { await vc.stop(); }
+  });
+  // 2026-11-13(스펙 2026-11-12 no-pk-u §3·§8): 사용자 요청 넷은 π_IdP 의 ctx·tag 로 인증한다 — 요청 서명·등록 서명은 없다.
+  let seq = 0;
+  const fresh = async () => {
+    const su = await cia.post('/cia/signup', { id: `nopk${Date.now().toString(36)}${seq++}`, pwd: 'nopk-pw-1' });
+    assert.equal(su.status, 201, JSON.stringify(su.body));
+    const reg = await createRegistration(BigInt(su.body.uid));
+    return { uidStr: su.body.uid, pwd: 'nopk-pw-1', reg, user: { uid: BigInt(su.body.uid), s_u: reg.s_u, auid: reg.auid, attrs: [...TESTUSER_ATTRS] } };
+  };
+  const badProof = (r, label) => { assert.equal(r.status, 400, `${label}: ${JSON.stringify(r.body)}`); assert.equal(r.body.reason, 'bad_idp_proof', label); };
+
+  await t('등록: 맞는 증명 201; 필드가 빠지면 400; 다른 s_u 의 증명·n 을 바꾼 요청·다른 용도(슬롯) ctx 의 증명은 bad_idp_proof — 실패한 요청은 계정을 등록하지 않는다', async () => {
+    const a = await fresh();
+    const good = await regBody(a.reg, a.uidStr);
+    const base = { uid: a.uidStr, pwd: a.pwd };
+    for (const k of ['n', 'tag', 'proof_idp', 'auid_s', 'C_u_pt', 'C_s_pt', 'max_height']) {
+      const { [k]: _omit, ...rest } = good;
+      assert.equal((await cia.post('/cia/register', { ...base, ...rest })).status, 400, `${k} 없음`);
+    }
+    const other = await createRegistration(a.user.uid);                       // 같은 uid, 다른 s_u
+    badProof(await cia.post('/cia/register', { ...base, ...(await regBody(other, a.uidStr)), auid: good.auid }), '다른 s_u 의 증명으로 이 auid 를 등록');
+    badProof(await cia.post('/cia/register', { ...base, ...good, n: (BigInt(good.n) + 1n).toString() }), 'n 을 바꿈');
+    const nonce = randomScalar();
+    const slotProof = await buildAuthProof({ uid: a.user.uid, s_u: a.reg.s_u, ctx: await slotCtx({ nonce }) });
+    badProof(await cia.post('/cia/register', { ...base, auid: good.auid, n: nonce.toString(), ...slotProof }), '슬롯 조회용 증명을 등록에');
+    assert.equal((await cia.post('/cia/slot', await slotBody(a.user))).status, 404, '실패한 등록은 계정을 등록하지 않았다');
+    const ok = await cia.post('/cia/register', { ...base, ...good });
+    assert.equal(ok.status, 201, JSON.stringify(ok.body)); assert.equal(Number.isInteger(ok.body.slot), true);
+    assert.equal('pk_u' in ok.body, false);
+  });
+
+  await t('슬롯 조회: 맞는 증명 200 { slot }; nonce 를 바꾸면·다른 계정의 s_u 면·등록용 ctx 의 증명이면 bad_idp_proof', async () => {
+    const a = await fresh(); const made = await cia.post('/cia/register', { uid: a.uidStr, pwd: a.pwd, ...(await regBody(a.reg, a.uidStr)) });
+    const body = await slotBody(a.user);
+    const r = await cia.post('/cia/slot', body);
+    assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.body.slot, made.body.slot);
+    badProof(await cia.post('/cia/slot', { ...body, nonce: (BigInt(body.nonce) + 1n).toString() }), 'nonce 를 바꿈');
+    const b = await fresh();
+    badProof(await cia.post('/cia/slot', { ...(await slotBody({ uid: a.user.uid, s_u: b.reg.s_u })) }), '다른 s_u');
+    const n = randomScalar();
+    const regProof = await buildAuthProof({ uid: a.user.uid, s_u: a.reg.s_u, ctx: await registerCtx({ n }) });
+    badProof(await cia.post('/cia/slot', { uid: a.uidStr, nonce: n.toString(), ...regProof }), '등록용 증명을 슬롯 조회에');
+    assert.equal((await cia.post('/cia/slot', { uid: a.uidStr, nonce: '1' })).status, 400, '증명 없음');
+  });
+
+  await t('발급: tag·allowAgent·arid_s 중 하나만 바꿔도 bad_idp_proof; 등록용 ctx 로 만든 tag 도 거절; tag 가 없으면 400; sig_u 는 요구하지 않는다', async () => {
+    const a = await fresh(); await cia.post('/cia/register', { uid: a.uidStr, pwd: a.pwd, ...(await regBody(a.reg, a.uidStr)) });
+    const ok = await issueV11(cia, a.user, { arid, provider });
+    assert.equal(ok.r.status, 200, JSON.stringify(ok.r.body)); assert.equal('sig_u' in ok.req.body, false);
+    for (const [label, patch] of [['allowAgent', { allowAgent: '1' }], ['arid_s', { arid_s: (BigInt(ok.req.body.arid_s) + 1n).toString() }], ['tag', { tag: (BigInt(ok.req.body.tag) + 1n).toString() }]]) {
+      badProof((await issueV11(cia, a.user, { arid, provider, overrides: patch })).r, label);
+    }
+    const regTag = await tagOf({ s_u: a.reg.s_u, ctx: await registerCtx({ n: 1n }) });
+    badProof((await issueV11(cia, a.user, { arid, provider, overrides: { tag: regTag.toString() } })).r, '등록용 ctx 의 tag');
+    const noTag = await issueV11(cia, a.user, { arid, provider, overrides: { tag: undefined } });
+    assert.equal(noTag.r.status, 400, 'tag 없음');
+  });
+
+  await t('세션 폐기(사용자 경로): 맞는 증명 200; bound·Cf_s·nonce 를 바꾸면 bad_idp_proof; 슬롯 조회용 증명은 거절; 증명 없이는 401', async () => {
+    const a = await fresh(); await cia.post('/cia/register', { uid: a.uidStr, pwd: a.pwd, ...(await regBody(a.reg, a.uidStr)) });
+    const iss = await issueV11(cia, a.user, { arid, provider });
+    assert.equal(iss.r.status, 200, JSON.stringify(iss.r.body));
+    const body = await revokeSessionBody(a.user, { Cf_s: iss.cred.Cf_s, bound: 5n });
+    badProof(await cia.post('/cia/revoke', { ...body, bound: '4' }), 'bound 를 바꿈');
+    badProof(await cia.post('/cia/revoke', { ...body, nonce: (BigInt(body.nonce) + 1n).toString() }), 'nonce 를 바꿈');
+    badProof(await cia.post('/cia/revoke', { ...body, Cf_s: (BigInt(body.Cf_s) + 1n).toString() }), 'Cf_s 를 바꿈 — 기록 조회보다 인증이 먼저다');
+    const sb = await slotBody(a.user, BigInt(body.nonce));
+    badProof(await cia.post('/cia/revoke', { ...body, tag: sb.tag, proof_idp: sb.proof_idp, auid_s: sb.auid_s, C_u_pt: sb.C_u_pt, C_s_pt: sb.C_s_pt }), '슬롯 조회용 증명을 세션 폐기에');
+    assert.equal((await cia.post('/cia/revoke', { uid: a.uidStr, scope: 'session', Cf_s: iss.cred.Cf_s, bound: '5' })).status, 401, '증명·nonce 없음');
+    const ok = await cia.post('/cia/revoke', body);
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  });
+
+  await t('기형 tag·proof_idp 는 시간 안에 400 으로 끝난다 — IdP 가 멈추지 않는다(R8, 옛 리뷰 S1 의 자리)', async () => {
+    const a = await fresh(); await cia.post('/cia/register', { uid: a.uidStr, pwd: a.pwd, ...(await regBody(a.reg, a.uidStr)) });
+    const body = await slotBody(a.user);
+    const within = (p, b) => Promise.race([cia.post(p, b), new Promise((_, rej) => setTimeout(() => rej(new Error('5초 안에 응답 없음')), 5000))]);
+    const neg = { ...body.proof_idp, pi_a: ['-1', '-1', '1'] };
+    for (const [label, patch] of [['tag -1', { tag: '-1' }], ['tag 0x', { tag: '0x1' }], ['tag ≥ p', { tag: (1n << 255n).toString() }], ['proof {}', { proof_idp: {} }], ['proof 문자열', { proof_idp: 'x' }], ['proof 음수 좌표', { proof_idp: neg }], ['proof 배열', { proof_idp: [] }], ['max_height 2^64', { max_height: (1n << 64n).toString() }], ['C_u 곡선 밖', { C_u_pt: { x: '1', y: '1' } }]]) {
+      const r = await within('/cia/slot', { ...body, ...patch });
+      assert.equal(r.status, 400, `${label}: ${JSON.stringify(r.body)}`);
+    }
+    assert.equal((await within('/cia/slot', body)).status, 200, '그 뒤에도 IdP 는 살아 있다');
   });
 } finally {
   await cia.stop();

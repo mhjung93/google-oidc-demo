@@ -62,7 +62,7 @@ async function makeLogin({ key = CIA, useArid = arid, ttlBlocks = 300n, chainid 
   const session = createSessionKey();
   const r_s = randomScalar(), r_rp = randomScalar(), blind_u = randomScalar();
   const max_height = BigInt(await provider.getBlockNumber()) + 1n + ttlBlocks;   // 아래 슬롯 게시가 블록 하나를 전진시킨다
-  const req = await buildIssueRequest({ uid, s_u: reg.s_u, blind_u, attrs, arid: useArid, r_rp, r_s, sk_u: reg.sk_u, session, chainid, allowAgent, max_height });
+  const req = await buildIssueRequest({ uid, s_u: reg.s_u, blind_u, attrs, arid: useArid, r_rp, r_s, session, chainid, allowAgent, max_height });
   const cred = await issueWith(key, req, { chainid, allowAgent });
   const { tree } = await syncRevocationTree(provider, logAddress);
   registry.set(SLOT, await registryLeaf(reg.auid, req.Cf_u));
@@ -378,7 +378,7 @@ await t('같은 사용자·같은 RP 라도 chainid 가 다르면 PPID 가 다�
     const session = createSessionKey();
     const r_s = randomScalar(), r_rp = randomScalar();
     const max_height = BigInt(await provider.getBlockNumber()) + 300n;
-    const req = await buildIssueRequest({ uid, s_u: reg.s_u, blind_u, attrs, arid, r_rp, r_s, sk_u: reg.sk_u, session, chainid, max_height });
+    const req = await buildIssueRequest({ uid, s_u: reg.s_u, blind_u, attrs, arid, r_rp, r_s, session, chainid, max_height });
     const cred = await issueWith(CIA, req, { chainid });
     localRegistry.set(SLOT, await registryLeaf(reg.auid, req.Cf_u));
     const { tree } = await syncRevocationTree(provider, logAddress);
@@ -474,7 +474,7 @@ await t('거울이 뒤처지면 캐노니컬 root 의 π 는 stale_root, 거울 
   const session2 = createSessionKey();
   const r_s2 = randomScalar(), r_rp2 = randomScalar();
   const max_height2 = BigInt(await provider.getBlockNumber()) + 300n;
-  const req2 = await buildIssueRequest({ uid: uid2, s_u: reg2.s_u, blind_u: blind_u2, attrs: attrs2, arid, r_rp: r_rp2, r_s: r_s2, sk_u: reg2.sk_u, session: session2, chainid: 31337n, allowAgent: 0n, max_height: max_height2 });
+  const req2 = await buildIssueRequest({ uid: uid2, s_u: reg2.s_u, blind_u: blind_u2, attrs: attrs2, arid, r_rp: r_rp2, r_s: r_s2, session: session2, chainid: 31337n, allowAgent: 0n, max_height: max_height2 });
   const cred2 = await issueWith(CIA, req2, { chainid: 31337n, allowAgent: 0n });
 
   const { tree } = await syncRevocationTree(provider, logAddress);

@@ -5,12 +5,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { getProvider } from './helpers/mode3_chain.mjs';
-import { syncRevocationTree, syncRegistryTree, signChallenge, signRevokeSession, ProofCache, VKEY_PATH } from '../lib/mode3_wallet.js';
+import { syncRevocationTree, syncRegistryTree, signChallenge, ProofCache, VKEY_PATH } from '../lib/mode3_wallet.js';
 import { LOGIN_COUNTER } from '../lib/mode3_onchain.js';
 import { createRpVerifier } from '../lib/mode3_rp.js';
 import { randomScalar } from '../lib/mode3_credential.js';
 import { createShare, combinePublicKey } from '../lib/mode3_trace.js';
-import { issueV11, proveV11, userOf, TESTUSER_ATTRS } from './helpers/mode3_flow.mjs';
+import { issueV11, proveV11, userOf, revokeSessionBody, TESTUSER_ATTRS } from './helpers/mode3_flow.mjs';
 
 const j = (o) => JSON.stringify(o, (k, v) => (typeof v === 'bigint' ? v.toString() : v));
 let failed = 0;
@@ -54,10 +54,10 @@ try {
     return iss.r;
   }
 
-  await t('등록(지갑 키): 슬롯 0, sk_u 는 지갑에만', async () => {
+  await t('등록: 슬롯 0, 응답에 비밀이 없다', async () => {
     const reg = await cia.registerUser('12345', 'password123');
     u = userOf(reg, '12345', TESTUSER_ATTRS);
-    assert.equal(u.slot, 0); assert.equal(reg.body.sk_u, undefined);
+    assert.equal(u.slot, 0); assert.equal(JSON.stringify(reg.body).includes(u.s_u.toString()), false);
   });
   await t('발급 → 슬롯 게시 → 로그인 성공 (공개 입력 34, [7] = regRoot, [30..32] = auid_s·arid_s·r_s)', async () => {
     const r = await newSessionAndIssue();
@@ -108,7 +108,7 @@ try {
   await t('세션 폐기(폐기 트리)는 그대로: 리프 게시 뒤 옛 π 는 stale_root, 새 π 는 is a member', async () => {
     const nonce = randomScalar();
     const bound = 0n;
-    const rv = await cia.post('/cia/revoke', { uid: '12345', scope: 'session', Cf_s: cred.Cf_s, bound: bound.toString(), sig_u: await signRevokeSession(u.sk_u, u.uid, BigInt(cred.Cf_s), bound, nonce), nonce: nonce.toString() });
+    const rv = await cia.post('/cia/revoke', await revokeSessionBody(u, { Cf_s: cred.Cf_s, bound, nonce }));
     assert.equal(rv.status, 200, j(rv.body));
     assert.equal((await cia.adminPost('/cia/publish')).body.published, true);
     const { tree, registry } = await trees();

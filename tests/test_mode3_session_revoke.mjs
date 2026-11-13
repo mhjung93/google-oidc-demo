@@ -1,13 +1,11 @@
 // IdP 세션 폐기(설계 2026-09-24 V8) — 발급 세션 기록, /cia/revoke scope=session, 관리자 세션 목록. 격리 IdP + :8545. (chain 그룹)
 //   node tests/test_mode3_session_revoke.mjs
 import assert from 'node:assert/strict';
-import { buildEddsa } from 'circomlibjs';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { getProvider } from './helpers/mode3_chain.mjs';
-import { signRevokeSession } from '../lib/mode3_wallet.js';
 import { sessionLeaf } from '../lib/mode3_revocation.js';
 import { randomScalar } from '../lib/mode3_credential.js';
-import { issueV11, userOf, TESTUSER_ATTRS, ALICE_ATTRS } from './helpers/mode3_flow.mjs';
+import { issueV11, userOf, revokeSessionBody, TESTUSER_ATTRS, ALICE_ATTRS } from './helpers/mode3_flow.mjs';
 
 let failed = 0;
 async function t(name, fn) {
@@ -57,11 +55,11 @@ try {
     assert.equal((await cia.adminGet('/cia/admin/sessions?uid=424242')).status, 404);
   });
 
-  await t('사용자 서명으로 세션 하나 폐기 → 리프 pending, 다시 하면 멱등, 다른 세션은 그대로', async () => {
+  await t('사용자 인증(π_IdP)으로 세션 하나 폐기 → 리프 pending, 다시 하면 멱등, 다른 세션은 그대로', async () => {
     const nonce = 12345n;
     const bound = 0n;
-    const sig_u = await signRevokeSession(user.sk_u, uid, BigInt(issued1.cred.Cf_s), bound, nonce);
-    const r = await cia.post('/cia/revoke', { uid: UID, scope: 'session', Cf_s: issued1.cred.Cf_s, bound: bound.toString(), sig_u, nonce: nonce.toString() });
+    const body = await revokeSessionBody(user, { Cf_s: issued1.cred.Cf_s, bound, nonce });
+    const r = await cia.post('/cia/revoke', body);
     assert.equal(r.status, 200, JSON.stringify(r.body));
     assert.equal(r.body.inserted, true);
     // 2026-10-23 리뷰 3-7: 기대 리프는 응답의 bound(r.body.bound) 가 아니라 **요청에 쓴** 지역 변수 bound 로 계산한다 —
@@ -69,7 +67,7 @@ try {
     assert.equal(r.body.bound, bound.toString());
     assert.equal(BigInt(r.body.leaf), await sessionLeaf(BigInt(issued1.cred.Cf_s), bound));
     assert.ok(r.body.pending >= 1, '리프가 게시 대기열에 들어간다');
-    const again = await cia.post('/cia/revoke', { uid: UID, scope: 'session', Cf_s: issued1.cred.Cf_s, bound: bound.toString(), sig_u, nonce: nonce.toString() });
+    const again = await cia.post('/cia/revoke', body);   // 같은 요청을 다시 — nonce 신선도는 보지 않는다(멱등)
     assert.equal(again.status, 200);
     assert.equal(again.body.inserted, false);
     const list = (await cia.adminGet(`/cia/admin/sessions?uid=${UID}`)).body.sessions;
@@ -98,14 +96,14 @@ try {
     assert.equal(after.pending, false, '게시 뒤에는 pending 이 풀린다');
   });
 
-  await t('서명이 다른 세션 것이면 400, 관리자 헤더 없이 서명도 없으면 401, 모르는 Cf_s 는 관리자에게만 404', async () => {
-    const bad = await signRevokeSession(user.sk_u, uid, BigInt(issued2.cred.Cf_s), 0n, 1n);
-    assert.equal((await cia.post('/cia/revoke', { uid: UID, scope: 'session', Cf_s: issued1.cred.Cf_s, sig_u: bad, nonce: '1', bound: '0' })).status, 400);
+  await t('증명이 다른 세션 것이면 400, 관리자 헤더 없이 증명도 없으면 401, 모르는 Cf_s 는 관리자에게만 404', async () => {
+    const bad = await revokeSessionBody(user, { Cf_s: issued2.cred.Cf_s, bound: 0n, nonce: 1n });   // issued2 의 Cf_s 에 묶인 증명
+    assert.equal((await cia.post('/cia/revoke', { ...bad, Cf_s: issued1.cred.Cf_s })).status, 400);
     assert.equal((await cia.post('/cia/revoke', { uid: UID, scope: 'session', Cf_s: issued2.cred.Cf_s, bound: '0' })).status, 401);
     assert.equal((await cia.adminPost('/cia/revoke', { uid: UID, scope: 'session', Cf_s: '424242' })).status, 404);
-    // 검사 순서 고정: 인증 없는 요청은 기록 조회보다 서명을 먼저 본다 — 모르는 Cf_s 라도 404 가 아니라 400 이라야
-    // "그 Cf_s 가 이 계정 것인지" 가 서명 없이 새지 않는다.
-    assert.equal((await cia.post('/cia/revoke', { uid: UID, scope: 'session', Cf_s: '424242', sig_u: bad, nonce: '1', bound: '0' })).status, 400, '서명이 먼저다');
+    // 검사 순서 고정: 관리자가 아닌 요청은 기록 조회보다 인증을 먼저 본다 — 모르는 Cf_s 라도 404 가 아니라 400 이라야
+    // "그 Cf_s 가 이 계정 것인지" 가 인증 없이 새지 않는다.
+    assert.equal((await cia.post('/cia/revoke', { ...bad, Cf_s: '424242' })).status, 400, '인증이 먼저다');
   });
 
   await t('scope=account·credential 은 여전히 관리자 전용(401)', async () => {
@@ -174,43 +172,41 @@ try {
     const issuedB = await issueV11(cia, userB, { arid, provider, chainid: CHAIN_ID });
     assert.equal(issuedB.r.status, 200, JSON.stringify(issuedB.r.body));
 
-    // A(testuser)가 자기 uid 와 **B 의 Cf_s** 위에 제대로 서명해 보낸다 — 서명 자체는 유효하다.
+    // A(testuser)가 자기 uid 와 **B 의 Cf_s** 로 제대로 증명해 보낸다 — 인증 자체는 통과한다(uid 가 A 다).
     const nonce = 777n;
-    const sig_u = await signRevokeSession(user.sk_u, uid, BigInt(issuedB.cred.Cf_s), 0n, nonce);
-    const cross = await cia.post('/cia/revoke', { uid: UID, scope: 'session', Cf_s: issuedB.cred.Cf_s, bound: '0', sig_u, nonce: nonce.toString() });
+    const crossBody = await revokeSessionBody(user, { Cf_s: issuedB.cred.Cf_s, bound: 0n, nonce });
+    const cross = await cia.post('/cia/revoke', crossBody);
     assert.equal(cross.status, 404, JSON.stringify(cross.body));
     assert.equal(cross.body.reason, 'unknown_session');
+    // 같은 본문의 uid 만 B 로 바꾸면 인증에서 걸린다 — A 의 s_u 는 B 의 auid 를 증명하지 못한다.
+    const asB = await cia.post('/cia/revoke', { ...crossBody, uid: UID_B });
+    assert.equal(asB.status, 400, JSON.stringify(asB.body)); assert.equal(asB.body.reason, 'bad_idp_proof');
 
     // B 의 세션은 그대로고(리프도 안 들어갔고), B 자신은 여전히 폐기할 수 있다.
     const recB = (await cia.adminGet(`/cia/admin/sessions?uid=${UID_B}`)).body.sessions.find((s) => s.Cf_s === issuedB.cred.Cf_s);
     assert.ok(recB, 'B 의 세션 기록이 있어야 한다');
     assert.equal(recB.revokedAt, null, 'A 의 요청으로 B 의 세션이 폐기되면 안 된다');
-    const sigB = await signRevokeSession(userB.sk_u, uidB, BigInt(issuedB.cred.Cf_s), 0n, 1n);
-    const own = await cia.post('/cia/revoke', { uid: UID_B, scope: 'session', Cf_s: issuedB.cred.Cf_s, bound: '0', sig_u: sigB, nonce: '1' });
+    const own = await cia.post('/cia/revoke', await revokeSessionBody(userB, { Cf_s: issuedB.cred.Cf_s, bound: 0n, nonce: 1n }));
     assert.equal(own.status, 200, JSON.stringify(own.body));
     assert.equal(own.body.inserted, true, '주인의 폐기는 리프를 넣는다');
     assert.equal(BigInt(own.body.leaf), await sessionLeaf(BigInt(issuedB.cred.Cf_s), BigInt(own.body.bound)));
   });
 
-  // 리뷰 S1(2026-10-13): 사용자 서명 경로의 서명 필드를 BigInt() 로 그대로 파싱하던 때는 S='-1' 하나로 IdP 가 영구히 멈췄다
-  // (verifyPoseidon 의 mulPointEscalar(-1n)). 요청마다 2초 상한 — 회귀하면 여기서 TimeoutError 로 실패한다. 마지막 케이스로 둔다(회귀 시
-  // 인스턴스가 멈추므로 뒤 케이스를 끌고 들어가지 않게). register·slot·issue 의 같은 검사는 tests/test_cia_register_issue.mjs 에 있다.
-  await t('리뷰 S1: scope=session 사용자 서명 필드가 음수·비10진·범위 밖이면 2초 안에 400 — 세션은 그대로, 정상 서명은 통한다', async () => {
-    const subOrder = (await buildEddsa()).babyJub.subOrder;
+  // 리뷰 S1(2026-10-13)의 자리: 서명 필드 파서는 서명과 함께 없어졌다(2026-11-13 스펙 no-pk-u). 같은 성질 — 기형 인증 값이 IdP 를 멈추지 않고 400 으로 끝난다 — 을
+  // 증명·tag 로 본다(시간 상한 2초). register·slot 의 같은 검사는 tests/test_cia_register_issue.mjs 에 있다. 마지막 케이스로 둔다.
+  await t('리뷰 S1 의 자리: scope=session 의 기형 proof_idp·tag 는 2초 안에 400 — 세션은 그대로, 정상 증명은 통한다', async () => {
     const live = await issueWith();
-    const nonce = 4242n;
-    const good = await signRevokeSession(user.sk_u, uid, BigInt(live.cred.Cf_s), 0n, nonce);
+    const good = await revokeSessionBody(user, { Cf_s: live.cred.Cf_s, bound: 0n, nonce: 4242n });
     const postWithin = (body) => fetch(`${cia.base}/cia/revoke`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(2000) })
       .then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
-    const variants = [['S=-1', { ...good, S: '-1' }], ['R8y=-1', { ...good, R8y: '-1' }], ['S=subOrder', { ...good, S: subOrder.toString() }], ['S=1e3', { ...good, S: '1e3' }], ['S 숫자형', { ...good, S: 5 }]];
-    for (const [label, bad] of variants) {
-      const r = await postWithin({ uid: UID, scope: 'session', Cf_s: live.cred.Cf_s, sig_u: bad, nonce: nonce.toString(), bound: '0' });
-      assert.equal(r.status, 400, `${label}: ${JSON.stringify(r.body)}`); assert.equal(r.body.error, 'bad user signature', label);
+    for (const [label, patch] of [['proof {}', { proof_idp: {} }], ['tag -1', { tag: '-1' }], ['proof 음수 좌표', { proof_idp: { ...good.proof_idp, pi_a: ['-1', '-1', '1'] } }]]) {
+      const r = await postWithin({ ...good, ...patch });
+      assert.equal(r.status, 400, `${label}: ${JSON.stringify(r.body)}`);
     }
     const rec = (await cia.adminGet(`/cia/admin/sessions?uid=${UID}`)).body.sessions.find((x) => x.Cf_s === live.cred.Cf_s);
     assert.equal(rec.revokedAt, null, '거절된 요청은 세션을 건드리지 않는다');
-    const ok = await postWithin({ uid: UID, scope: 'session', Cf_s: live.cred.Cf_s, sig_u: good, nonce: nonce.toString(), bound: '0' });
-    assert.equal(ok.status, 200, JSON.stringify(ok.body)); assert.equal(ok.body.inserted, true, '대조군: 정상 서명은 통한다');
+    const ok = await postWithin(good);
+    assert.equal(ok.status, 200, JSON.stringify(ok.body)); assert.equal(ok.body.inserted, true, '대조군: 정상 증명은 통한다');
   });
 } finally {
   await cia.stop();

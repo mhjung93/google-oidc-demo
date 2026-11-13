@@ -10,7 +10,8 @@ import { ethers } from 'ethers';
 import { getProvider, fundAddress, deployMode3Log, deployMode3Mirror } from './mode3_chain.mjs';
 import { MODE3_MIRROR_ABI } from '../../lib/mode3_log.js';
 import { createShare } from '../../lib/mode3_trace.js';
-import { createRegistration, signRegistration } from '../../lib/mode3_wallet.js';
+import { createRegistration } from '../../lib/mode3_wallet.js';
+import { regBody } from './mode3_flow.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 
@@ -129,10 +130,10 @@ export async function startIsolatedCia(opts = {}) {
     adminPost: (p, body) => fetch(`${base}${p}`, { method: 'POST', headers: adminHeaders, body: JSON.stringify(body ?? {}) }).then(json),
     get: (p) => fetch(`${base}${p}`).then(json),
     adminGet: (p) => fetch(`${base}${p}`, { headers: adminHeaders }).then(json),
-    /** V11 등록(스펙 2026-10-12 §3.1): 지갑 키·auid 를 만들어 /cia/register 를 부른다. { s_u, auid, sk_u, pk_u, slot, body } */
+    /** 등록(스펙 2026-11-12 no-pk-u §3.2): s_u·auid 를 만들고 등록용 π_IdP 와 함께 /cia/register 를 부른다. { s_u, auid, seed, slot, body } */
     async registerUser(uid, pwd) {
       const reg = await createRegistration(BigInt(uid));
-      const r = await this.post('/cia/register', { uid, pwd, auid: reg.auid.toString(), pk_u: { x: reg.pk_u.x.toString(), y: reg.pk_u.y.toString() }, sig_reg: await signRegistration(reg.sk_u, BigInt(uid), reg.auid) });
+      const r = await this.post('/cia/register', { uid, pwd, ...(await regBody(reg, uid)) });
       if (r.status !== 201) throw new Error(`register 실패(${r.status}): ${JSON.stringify(r.body)}`);
       return { ...reg, slot: r.body.slot, body: r.body };
     },

@@ -8,8 +8,7 @@ import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { getProvider } from './helpers/mode3_chain.mjs';
 import { randomScalar } from '../lib/mode3_credential.js';
 import { signRevokeBind } from '../lib/mode3_revocation.js';
-import { signRevokeSession } from '../lib/mode3_wallet.js';
-import { issueV11, userOf, TESTUSER_ATTRS } from './helpers/mode3_flow.mjs';
+import { issueV11, userOf, revokeSessionBody, TESTUSER_ATTRS } from './helpers/mode3_flow.mjs';
 
 const j = (o) => JSON.stringify(o, (k, v) => (typeof v === 'bigint' ? v.toString() : v));
 let failed = 0;
@@ -31,8 +30,7 @@ try {
   const revokeWithBind = async (iss, bound) => {
     const Cf_s = iss.cred.Cf_s, nonce = randomScalar();
     return cia.post('/cia/revoke', {
-      uid: uid.toString(), scope: 'session', Cf_s, bound: bound.toString(), nonce: nonce.toString(),
-      sig_u: await signRevokeSession(user.sk_u, uid, BigInt(Cf_s), bound, nonce),
+      ...(await revokeSessionBody(user, { Cf_s, bound, nonce })),
       pk_i: iss.session.pk_i.toString(), sig_i: await signRevokeBind(iss.session.wallet.privateKey, { uid, Cf_s, bound, nonce }),
     });
   };

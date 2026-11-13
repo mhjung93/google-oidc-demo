@@ -5,11 +5,10 @@ import fs from 'node:fs';
 import { ethers } from 'ethers';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { getProvider } from './helpers/mode3_chain.mjs';
-import { signRegistration, VKEY_PATH } from '../lib/mode3_wallet.js';
-import { pointToStrings } from '../lib/mode3_issuance.js';
+import { VKEY_PATH } from '../lib/mode3_wallet.js';
 import { createShare, combinePublicKey, partialDecrypt } from '../lib/mode3_trace.js';
 import { signOpenRequest, signOpenResult } from '../lib/mode3_opening.js';
-import { issueV11, proveV11, userOf, TESTUSER_ATTRS, ALICE_ATTRS } from './helpers/mode3_flow.mjs';
+import { issueV11, proveV11, userOf, regBody, TESTUSER_ATTRS, ALICE_ATTRS } from './helpers/mode3_flow.mjs';
 
 const j = (o) => JSON.stringify(o, (_, v) => (typeof v === 'bigint' ? v.toString() : v));
 let failed = 0;
@@ -235,8 +234,8 @@ try {
     try {
       const S = await cia2.registerRp('http://127.0.0.1:3199', 's-vkey-missing');
       // cia2 는 별도 격리 인스턴스라 다시 등록해야 한다 — 같은 지갑 정체성(reg)을 재사용하므로 cia.registerUser 를
-      // 쓸 수 없고(그건 매번 새 createRegistration 을 만든다) reg.sk_u 로 직접 서명해 등록한다.
-      const r0 = await cia2.post('/cia/register', { uid: '12345', pwd: 'password123', auid: reg.auid.toString(), pk_u: pointToStrings(reg.pk_u), sig_reg: await signRegistration(reg.sk_u, 12345n, reg.auid) });
+      // 쓸 수 없고(그건 매번 새 createRegistration 을 만든다) 같은 reg 로 등록 증명을 만들어 등록한다.
+      const r0 = await cia2.post('/cia/register', { uid: '12345', pwd: 'password123', ...(await regBody(reg, '12345')) });
       assert.equal(r0.status, 201, j(r0.body));
       const user2 = userOf(reg, '12345', TESTUSER_ATTRS);
       const iss2 = await issueV11(cia2, user2, { arid: S.arid, provider });

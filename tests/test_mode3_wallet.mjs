@@ -8,7 +8,7 @@ import * as snarkjs from 'snarkjs';
 import { getProvider, fundAddress, deployMode3Log, rootToBytes32, publishV3 } from './helpers/mode3_chain.mjs';
 import { createRevocationTree } from '../lib/mode3_revocation.js';
 import { createRegistryTree, registryLeaf } from '../lib/mode3_registry.js';
-import { credMessageV11, compressPoint, randomScalar, auidSOf, aridSOf } from '../lib/mode3_credential.js';
+import { credMessageV11, compressPoint, randomScalar, auidSOf, aridSOf, issueCtx } from '../lib/mode3_credential.js';
 import {
   createRegistration, createSessionKey, buildIssueRequest, syncRevocationTree, syncRegistryTree,
   buildCredentialProof, ProofCache, signChallenge, signSessionRequest, ZKEY_PATH, VKEY_PATH, chooseMaxHeight,
@@ -84,7 +84,7 @@ async function proveWith(disclosure) {
   reg = await createRegistration(uid);
   session = createSessionKey();
   blind_u = randomScalar(); r_rp = randomScalar(); r_s = randomScalar();
-  req = await buildIssueRequest({ uid, s_u: reg.s_u, blind_u, attrs: ATTRS, arid, r_rp, r_s, sk_u: reg.sk_u, session, chainid: 31337n, max_height: await mh() });
+  req = await buildIssueRequest({ uid, s_u: reg.s_u, blind_u, attrs: ATTRS, arid, r_rp, r_s, session, chainid: 31337n, max_height: await mh() });
   cred = await localIssue(req, 31337n);
   ({ tree: tree0 } = await syncRevocationTree(provider, logAddress));
   registry.set(SLOT, await registryLeaf(reg.auid, req.Cf_u));
@@ -92,14 +92,18 @@ async function proveWith(disclosure) {
   return buildCredentialProof({ uid, arid, s_u: reg.s_u, auid: reg.auid, blind_u, r_rp, r_s, pk_i: session.pk_i, attrs: ATTRS, credential: cred, pk_CIA, pk_trace, tree: tree0, registry, slot: SLOT, disclosure });
 }
 
-await t('V11: 발급 요청(C_u·C_s·π_IdP·sig_u) → 로컬 IdP 서명 → 증명 생성 → vkey 로 검증; 공개 입력 34, [30..33] = auid_s·arid_s·r_s·counter', async () => {
+await t('V11: 발급 요청(C_u·C_s·π_IdP·tag) → 로컬 IdP 서명 → 증명 생성 → vkey 로 검증; 공개 입력 34, [30..33] = auid_s·arid_s·r_s·counter', async () => {
   const { proof, publicSignals, revRoot, tag } = await proveWith(null);
-  assert.deepEqual(Object.keys(req.body).sort(), ['C_s_pt', 'C_u_pt', 'allowAgent', 'arid_s', 'auid_s', 'chainid', 'max_height', 'proof_idp', 'sig_u', 'uid']);
+  assert.deepEqual(Object.keys(req.body).sort(), ['C_s_pt', 'C_u_pt', 'allowAgent', 'arid_s', 'auid_s', 'chainid', 'max_height', 'proof_idp', 'tag', 'uid']);
   const vkIdp = await loadIdpVkey(IDP_VKEY_PATH);
-  const pubIdp = idpPublicSignals({ uid, auid: reg.auid, auid_s: req.auid_s, C_u_pt: req.C_u_pt, C_s_pt: req.C_s_pt, max_height: BigInt(req.body.max_height) });
+  // CIA 가 하는 대로: ctx 는 요청 필드(arid_s·chainid·allowAgent)에서 다시 계산하고, tag 는 본문의 값을 넣는다(2026-11-13 스펙 no-pk-u §3.2).
+  const idpCtx = await issueCtx({ arid_s: BigInt(req.body.arid_s), chainid: BigInt(req.body.chainid), allowAgent: BigInt(req.body.allowAgent) });
+  const idpPub = (over = {}) => idpPublicSignals({ uid, auid: reg.auid, auid_s: req.auid_s, C_u_pt: req.C_u_pt, C_s_pt: req.C_s_pt, max_height: BigInt(req.body.max_height), ctx: idpCtx, tag: BigInt(req.body.tag), ...over });
+  const pubIdp = idpPub();
   assert.deepEqual(pubIdp, req.idpPublicSignals, 'CIA 가 스스로 조립한 공개 입력이 지갑의 것과 같다');
   assert.equal(await verifyIdp(vkIdp, pubIdp, req.body.proof_idp), true, 'CIA 가 하는 π_IdP 검증');
-  assert.equal(await verifyIdp(vkIdp, idpPublicSignals({ uid, auid: reg.auid + 1n, auid_s: req.auid_s, C_u_pt: req.C_u_pt, C_s_pt: req.C_s_pt, max_height: BigInt(req.body.max_height) }), req.body.proof_idp), false, '다른 auid 로는 통과하지 않는다');
+  assert.equal(await verifyIdp(vkIdp, idpPub({ auid: reg.auid + 1n }), req.body.proof_idp), false, '다른 auid 로는 통과하지 않는다');
+  assert.equal(await verifyIdp(vkIdp, idpPub({ ctx: await issueCtx({ arid_s: BigInt(req.body.arid_s), chainid: BigInt(req.body.chainid), allowAgent: 1n }) }), req.body.proof_idp), false, '요청 필드(allowAgent)가 바뀌면 ctx 가 달라 통과하지 않는다');
   assert.equal(req.auid_s, await auidSOf({ auid: reg.auid, arid, r_rp })); assert.equal(req.arid_s, await aridSOf({ arid, r_rp }));
   assert.equal(cred.Cf_s, req.Cf_s.toString());
   assert.equal(revRoot, tree0.getRoot());
@@ -159,7 +163,7 @@ await t('buildCredentialProof 는 pk_trace 없이는 throw — 태그 없는 성
 await t('V11 buildIssueRequest: 본문 10필드, allowAgent 기본 0, Cf_u·Cf_s·auid 를 돌려준다; 범위·누락은 throw', async () => {
   const session = createSessionKey();
   const h = await mh();
-  const base = { uid, s_u: reg.s_u, blind_u: randomScalar(), attrs: ATTRS, arid, r_rp: randomScalar(), r_s: randomScalar(), sk_u: reg.sk_u, session, chainid: 31337n, max_height: h };
+  const base = { uid, s_u: reg.s_u, blind_u: randomScalar(), attrs: ATTRS, arid, r_rp: randomScalar(), r_s: randomScalar(), session, chainid: 31337n, max_height: h };
   const a = await buildIssueRequest(base);
   assert.equal(a.body.allowAgent, '0'); assert.equal(a.body.chainid, '31337'); assert.equal(a.body.max_height, h.toString());
   assert.equal(a.body.C_u_pt.x, a.C_u_pt.x.toString()); assert.equal(a.body.C_s_pt.x, a.C_s_pt.x.toString());
@@ -257,7 +261,7 @@ await t('증인을 만든 뒤 트리가 바뀌어도 증명의 revRoot 는 증�
   const reg2 = await createRegistration(uid);
   const session2 = createSessionKey();
   const b2 = randomScalar(), rp2 = randomScalar(), rs2 = randomScalar();
-  const req2 = await buildIssueRequest({ uid, s_u: reg2.s_u, blind_u: b2, attrs: ATTRS, arid, r_rp: rp2, r_s: rs2, sk_u: reg2.sk_u, session: session2, chainid: 31337n, max_height: await mh() });
+  const req2 = await buildIssueRequest({ uid, s_u: reg2.s_u, blind_u: b2, attrs: ATTRS, arid, r_rp: rp2, r_s: rs2, session: session2, chainid: 31337n, max_height: await mh() });
   const cred2 = await localIssue(req2, 31337n);
   const registry2 = await createRegistryTree();   // 이 테스트 전용 — 체인에 올리지 않는다(브리프 규칙 4의 "단순 케이스")
   registry2.set(SLOT, await registryLeaf(reg2.auid, req2.Cf_u));
@@ -293,7 +297,7 @@ await t('V9: 비멤버십 증인은 세션 리프 하나만 요청한다 (사용
   const reg3 = await createRegistration(uid);
   const session3 = createSessionKey();
   const b3 = randomScalar(), rp3 = randomScalar(), rs3 = randomScalar();
-  const req3 = await buildIssueRequest({ uid, s_u: reg3.s_u, blind_u: b3, attrs: ATTRS, arid, r_rp: rp3, r_s: rs3, sk_u: reg3.sk_u, session: session3, chainid: 31337n, max_height: await mh() });
+  const req3 = await buildIssueRequest({ uid, s_u: reg3.s_u, blind_u: b3, attrs: ATTRS, arid, r_rp: rp3, r_s: rs3, session: session3, chainid: 31337n, max_height: await mh() });
   const cred3 = await localIssue(req3, 31337n);
   const registry3 = await createRegistryTree();   // 이 테스트 전용 — 체인에 올리지 않는다(브리프 규칙 4의 "단순 케이스")
   registry3.set(SLOT, await registryLeaf(reg3.auid, req3.Cf_u));

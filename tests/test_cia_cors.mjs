@@ -34,8 +34,8 @@ try {
       assert.equal(h(await fetch(`${cia.base}${p}`, { method: m, headers: { Origin: USER } }), 'access-control-allow-origin'), null, p);
     }
   });
-  await t('/cia/revoke 의 scope=session 사용자 서명 경로는 CORS 를 타고(400 bad user signature), 관리자 헤더가 실린 교차 요청은 프리플라이트가 막는다', async () => {
-    const r = await fetch(`${cia.base}/cia/revoke`, { method: 'POST', headers: { Origin: USER, 'Content-Type': 'application/json' }, body: JSON.stringify({ uid: '12345', scope: 'session', Cf_s: '1', sig_u: { R8x: '1', R8y: '1', S: '1' }, nonce: '1' }) });
+  await t('/cia/revoke 의 scope=session 사용자 인증 경로는 CORS 를 타고(400), 관리자 헤더가 실린 교차 요청은 프리플라이트가 막는다', async () => {
+    const r = await fetch(`${cia.base}/cia/revoke`, { method: 'POST', headers: { Origin: USER, 'Content-Type': 'application/json' }, body: JSON.stringify({ uid: '12345', scope: 'session', Cf_s: '1', bound: '0', nonce: '1', auid_s: '1', C_u_pt: { x: '1', y: '1' }, C_s_pt: { x: '1', y: '1' }, max_height: '0', tag: '1', proof_idp: {} }) });
     assert.equal(h(r, 'access-control-allow-origin'), USER); assert.ok([400, 404].includes(r.status));
     const p = await pre('/cia/revoke', USER, 'POST', 'content-type,x-cia-admin-secret');
     // cors 패키지는 요청한 헤더를 그대로 돌려주지 않고 설정값(Content-Type)만 돌려준다 — 브라우저가 x-cia-admin-secret 을 거절한다.

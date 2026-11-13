@@ -19,6 +19,8 @@
 // Task 11(B2, 2026-10-22): 같은 스펙 §3.3 — RP 운영자 계정(/cia/rp/*)·RP 슬롯(rp_key)·공개 /cia/rp_origins 를 더한다.
 // bound(2026-10-22): 세션 폐기 리프가 Cf_s 하나가 아니라 (H'(Cf_s), 허용 거래 수 bound) 묶음이다 — 설계
 //   2026-10-22-mode3-revocation-counter-bound-design.md §3(lib/mode3_revocation.js sessionLeaf). 발급·폐기 모두 bound 를 함께 남긴다.
+// 2026-11-13(스펙 2026-11-12-mode3-no-pk-u-design.md): IdP 는 사용자 키(pk_u)를 갖지 않는다 — 등록·슬롯 조회·발급·세션 폐기를 서명 대신
+//   π_IdP 의 공개 입력 ctx·tag 로 인증한다(checkIdpAuth). 상태는 v13(pk_u 삭제, v12 는 열 때 이행).
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
@@ -32,10 +34,10 @@ import { ethers } from 'ethers';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import * as snarkjs from 'snarkjs';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
-import { credMessageV11, compressPoint, randomScalar } from './lib/mode3_credential.js';
+import { credMessageV11, compressPoint, randomScalar, issueCtx, registerCtx, slotCtx, revokeSessionCtx } from './lib/mode3_credential.js';
 import { DEFAULT_ATTR_SCHEMA, loadSchema, schemaInfo } from './lib/mode3_attr_schema.js';
 import { sessionLeaf, createRevocationTree, SESSION_BOUND_MAX, verifyRevokeBind } from './lib/mode3_revocation.js';
-import { isValidPoint, pointFromStrings, issueRequestMessageV11, slotRequestMessage, revokeSessionMessage, registerMessage } from './lib/mode3_issuance.js';
+import { isValidPoint, pointFromStrings } from './lib/mode3_issuance.js';
 import { PUB_INDEX } from './lib/mode3_onchain.js';
 import { loadIdpVkey, idpPublicSignals, verifyIdp, IDP_VKEY_PATH } from './lib/mode3_idp_proof.js';
 import { MODE3_LOG_ABI, MODE3_MIRROR_ABI, rootToBytes32, signPublicationV3, entryHashes, signReceipt } from './lib/mode3_log.js';
@@ -158,7 +160,7 @@ const DEMO_ACCOUNTS = {
   testuser: { password: 'password123', uid: '12345' },
   alice: { password: 'alicepw', uid: '67890' },
 };
-// Task 10(B1, 2026-10-22 스펙 §3.1~3.3): 발급 인증 정책 — key(기본·테스트) = /cia/issue 는 sig_u 만. code(데모) = provider 'demo' 계정은
+// Task 10(B1, 2026-10-22 스펙 §3.1~3.3): 발급 인증 정책 — key(기본·테스트) = /cia/issue 는 π_IdP 만. code(데모) = provider 'demo' 계정은
 // /cia/auth/code 로 받은 1회용 코드(auth_code)가 추가로 필요하다. DEMO_SEED 는 기동 때 DEMO_ACCOUNTS(testuser·alice)를 상태에 심는다 —
 // 옛 흐름·기존 테스트 호환용이고, 가입(POST /cia/signup)만 쓰는 데모에서는 꺼 둔다(CIA_DEMO_ACCOUNTS 미설정).
 const ISSUE_AUTH = process.env.CIA_ISSUE_AUTH === 'code' ? 'code' : 'key';
@@ -205,9 +207,10 @@ function loadOrCreateKeys() {
 }
 
 // ---- 상태 ----
-// accounts:  uid → { pk_u:{x,y}, auid(10진 — Poseidon(T_AUID, uid, s_u), V11 D4), disabled, slot, tampered, creds, sessions, receipt, slotRetired,
+// accounts:  uid → { auid(10진 — Poseidon(T_AUID, uid, s_u), V11 D4), disabled, slot, tampered, creds, sessions, receipt, slotRetired,
 //                    profile?:{ name, updatedAt } }   (attrs 없음 — D15. profile.name 은 2026-11-09 부터: 사용자가 붙여 넣는 속성 커밋먼트 C_attr —
 //                    IdP 에는 불투명한 문자열이다 — 2026-11-11 부터 ID 토큰에 싣지 않는다(RP 로 가지 않음). 속성·blind 는 속성 도구 페이지에만 있다.)
+//            (등록 키 pk_u 는 2026-11-13 에 없앴다 — 스펙 2026-11-12 no-pk-u. 등록됨의 표지는 auid 다)
 //            creds 중 revoked:false 는 하나뿐(사용자당 활성 자격증명 하나, 2026-09-21 §3.1).
 // rps:       arid → { name, origin, pk_service, X_svc, x_AA, pk_trace, status, requestedAt, decidedAt }   (2026-09-16 §3)
 // openings:  [ { id, arid, PPID, tagKey, c1:{x,y}, c2, D_svc:{x,y}, allowAgent, max_height, chainid, status, requestedAt, decidedAt,
@@ -327,7 +330,7 @@ async function loadState() {
         if (loginId) state.loginIds[name] = a.uid;
         seeded = true;
       } else if (!existing.pwHash) {
-        // 수정 라운드 1: 이 필드 이전에 만들어진(또는 손으로 적은) 시드 계정 — 등록 상태(pk_u·auid·slot·creds 등)는 그대로 두고 비밀번호만 채운다.
+        // 수정 라운드 1: 이 필드 이전에 만들어진(또는 손으로 적은) 시드 계정 — 등록 상태(auid·slot·creds 등)는 그대로 두고 비밀번호만 채운다.
         Object.assign(existing, newPw(a.password));
         seeded = true;
       }
@@ -388,16 +391,6 @@ async function loadState() {
 const S = (o) => ({ x: F.toObject(o[0]).toString(), y: F.toObject(o[1]).toString() });
 const isDec = (v) => typeof v === 'string' && /^[0-9]+$/.test(v);
 const isPt = (p) => p && isDec(p.x) && isDec(p.y);
-// 서명 필드 파서(2026-10-13 리뷰 S1). BigInt(sig.S) 를 그대로 쓰면 '-1' 같은 값이 통과하는데, circomlibjs verifyPoseidon 은 S ≥ subOrder 만
-// 거르므로 mulPointEscalar(-1n) 가 끝나지 않는다(-1n >> 1n === -1n) — IdP 프로세스 전체(하트비트·릴레이·전 라우트)가 멈춘다.
-// 세 필드가 10진이고 R8x·R8y < p, S < 부분군 차수일 때만 verifyPoseidon 이 받는 { R8, S } 를, 아니면 null 을 돌려준다 — 호출자는 null 을
-// 서명 불일치(400)로 다룬다. 네 라우트(/cia/register·/cia/slot·/cia/issue·/cia/revoke scope=session)가 함께 쓴다. 값은 로그에 남기지 않는다.
-function parseEddsaSig(sig) {
-  if (!sig || typeof sig !== 'object' || !isDec(sig.R8x) || !isDec(sig.R8y) || !isDec(sig.S)) return null;
-  const r8x = BigInt(sig.R8x), r8y = BigInt(sig.R8y), sc = BigInt(sig.S);
-  if (r8x >= F.p || r8y >= F.p || sc >= eddsa.babyJub.subOrder) return null;
-  return { R8: [F.e(r8x), F.e(r8y)], S: sc };
-}
 function secretMatches(a, b) {
   const A = Buffer.from(a), B = Buffer.from(b);
   return A.length === B.length && timingSafeEqual(A, B);
@@ -412,8 +405,34 @@ const newPw = (pwd) => { const pwSalt = randomBytes(16).toString('hex'); return 
 const pwOk = (acct, pwd) => Boolean(acct?.pwHash) && acct.pwAlgo === 'scrypt' && typeof pwd === 'string' && secretMatches(acct.pwHash, hashPw(acct.pwSalt, pwd));
 /** 계정 레코드 공통 스캐폴드(수정 라운드 1 — 가입/시드/등록 세 곳의 리터럴을 하나로). 비밀번호 없이 만들면(OIDC 선등록)
  *  pwSalt·pwHash·pwAlgo 가 전부 null — pwOk 는 pwAlgo 검사로 자연히 거절한다. */
-function newAccountRecord({ pwSalt = null, pwHash = null, pwAlgo = null, pk_u = null, auid = null, slot = null, provider = 'demo', loginId = null } = {}) {
-  return { pwSalt, pwHash, pwAlgo, createdAt: new Date().toISOString(), pk_u, auid, slot, provider, loginId, tampered: false, disabled: false, creds: [], sessions: [], receipt: null, slotRetired: false, lastAuidS: null };
+function newAccountRecord({ pwSalt = null, pwHash = null, pwAlgo = null, auid = null, slot = null, provider = 'demo', loginId = null } = {}) {
+  return { pwSalt, pwHash, pwAlgo, createdAt: new Date().toISOString(), auid, slot, provider, loginId, tampered: false, disabled: false, creds: [], sessions: [], receipt: null, slotRetired: false, lastAuidS: null };
+}
+// ---- 사용자 요청 인증: π_IdP(ctx·tag) — 스펙 2026-11-12 no-pk-u §3.2 ----
+// 네 경로(/cia/register·/cia/slot·/cia/issue·/cia/revoke scope=session)가 함께 쓴다. IdP 는 사용자 키를 갖지 않는다 — 지갑은 "이 계정 auid 의 s_u 를 안다" 는
+// 증명을 요청마다 내고, 그 증명은 tag = Poseidon(T_TAG, s_u, ctx) 로 요청에 묶인다. ctx 는 호출자가 요청 필드에서 **스스로 계산해** 넘긴다(지갑이 보낸 ctx 는
+// 받지 않는다). 공개 입력도 여기서 조립한다: uid·auid 는 호출자가 정한 값(계정·DB — 등록 경로만 요청의 auid), 나머지는 요청의 점·값과 계산한 ctx.
+// 성공 { cupt, cspt, auidS, mh, tag }(점·bigint), 실패 { error: { status, body } }. 발급이 아닌 요청의 C_u·C_s·auid_s 는 버릴 값이다 — 호출자는 저장하지 않는다.
+// tag·증명 값은 로그에 남기지 않는다.
+const AUTH_FIELDS = 'auid_s, C_u_pt{x,y}, C_s_pt{x,y}, max_height, tag, proof_idp';
+async function checkIdpAuth({ uid, auid, ctx, body }) {
+  const fail = (status, b) => ({ error: { status, body: b } });
+  const { auid_s, C_u_pt, C_s_pt, max_height, tag, proof_idp } = body ?? {};
+  if (!isDec(auid_s) || !isPt(C_u_pt) || !isPt(C_s_pt) || !isDec(max_height) || !isDec(tag) || !proof_idp || typeof proof_idp !== 'object' || Array.isArray(proof_idp)) return fail(400, { error: `${AUTH_FIELDS} required` });
+  const mh = BigInt(max_height), auidS = BigInt(auid_s), tagV = BigInt(tag);
+  if (mh >= (1n << 64n)) return fail(400, { error: 'max_height must be < 2^64' });
+  if (auidS >= F.p || tagV >= F.p) return fail(400, { error: 'auid_s and tag must be field elements (< p)' });
+  const cupt = pointFromStrings(C_u_pt), cspt = pointFromStrings(C_s_pt);
+  if (!(await isValidPoint(cupt))) return fail(400, { error: 'C_u_pt is not a valid subgroup point' });
+  if (!(await isValidPoint(cspt))) return fail(400, { error: 'C_s_pt is not a valid subgroup point' });
+  let vk;
+  // 리뷰 S4: 응답에는 고정 사유만 — 절대경로·ENOENT 는 지갑을 거쳐 페이지까지 가므로 서버 로그에만 남긴다.
+  try { vk = await loadIdpVkey(IDP_VKEY); } catch (e) { console.error(`[cia] π_IdP vkey 를 읽지 못했다: ${e.message}`); return fail(503, { error: 'idp_vkey_unavailable', reason: 'idp_vkey_unavailable' }); }
+  let pub;
+  try { pub = idpPublicSignals({ uid: BigInt(uid), auid: BigInt(auid), auid_s: auidS, C_u_pt: cupt, C_s_pt: cspt, max_height: mh, ctx, tag: tagV }); }
+  catch { return fail(400, { error: 'bad idp proof', reason: 'bad_idp_proof' }); }   // uid ≥ 2^250 같은 범위 밖 — 증명이 있을 수 없다
+  if (!(await verifyIdp(vk, pub, proof_idp))) return fail(400, { error: 'bad idp proof', reason: 'bad_idp_proof' });
+  return { cupt, cspt, auidS, mh, tag: tagV };
 }
 // 아이디 가입(2026-11-03, /user 페이지 재구성): 사용자가 정하는 로그인 아이디. 프로토콜의 uid 는 그대로 IdP 내부 번호(가입 때 배정)이고,
 // 아이디는 로그인 폼에서 uid 를 찾는 열쇠일 뿐이다 — 대소문자를 가리지 않고(색인 키는 소문자) 계정당 하나, 바꿀 수 없다.
@@ -925,7 +944,7 @@ app.post('/cia/user/login', (req, res) => {
 app.post('/cia/user/logout', (req, res) => logoutRole(req, res, 'uid', 'operator'));
 app.get('/cia/user/me', requireUser, (req, res) => {
   const uid = req.session.uid, a = state.accounts[uid];
-  res.json({ uid, id: a.loginId ?? null, registered: Boolean(a.pk_u), auid: a.auid, slot: a.slot, provider: a.provider, disabled: a.disabled, activeCf_u: activeCfU(a), registryLeaf: a.slot === null ? null : registry.leafAt(a.slot).toString(), profile: a.profile ?? null });
+  res.json({ uid, id: a.loginId ?? null, registered: Boolean(a.auid), auid: a.auid, slot: a.slot, provider: a.provider, disabled: a.disabled, activeCf_u: activeCfU(a), registryLeaf: a.slot === null ? null : registry.leafAt(a.slot).toString(), profile: a.profile ?? null });
 });
 // 프로필(2026-11-09 Phase 1): OIDC profile 스코프의 `name` 한 칸. 사용자가 속성 도구(지갑 오리진 /attr.html)에서 만든 커밋먼트를 붙여 넣는다 —
 // IdP 는 형식만 보고(한 줄·256자 이하) 뜻은 모른다(불투명). 지갑 등록 여부와 무관하게 로그인만 하면 저장할 수 있다(사용자 결정: MetaMask 와 별개 흐름).
@@ -978,7 +997,7 @@ async function retireForAttrChange(uid) {
 }
 app.post('/cia/user/register_code', requireUser, (req, res) => {
   const a = state.accounts[req.session.uid];
-  if (a.pk_u) return res.status(409).json({ error: 'already registered', reason: 'already_registered' });
+  if (a.auid) return res.status(409).json({ error: 'already registered', reason: 'already_registered' });
   res.json(issueCode({ uid: req.session.uid, purpose: 'register' }));
 });
 // 세션 버전의 자기 폐기(Task 12, B3, `/user` 페이지). 비밀번호는 요청 본문에 받지만 uid 는 요청에 싣지 않는다 —
@@ -989,24 +1008,24 @@ app.post('/cia/user/self_revoke', requireUser, async (req, res) => {
     const { pwd } = req.body ?? {};
     const uid = req.session.uid;
     if (!pwOk(state.accounts[uid], pwd)) return res.status(401).json({ error: 'invalid credentials', reason: 'invalid_credentials' });
-    // 가입만 하고 등록 전인 계정(pk_u:null)도 "미등록" — /cia/account/self_revoke 와 같은 기준(아래 §6.5.1 주석).
-    if (!state.accounts[uid]?.pk_u) return res.status(404).json({ error: 'unknown account' });
+    // 가입만 하고 등록 전인 계정(auid:null)도 "미등록" — /cia/account/self_revoke 와 같은 기준(아래 §6.5.1 주석).
+    if (!state.accounts[uid]?.auid) return res.status(404).json({ error: 'unknown account' });
     const r = await revokeAccount(uid);
     res.json(r);
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
-// 2026-11-06(사용자 요청): 지갑 연결 해제 — 계정은 남기고 지갑 등록(pk_u·auid·슬롯)만 푼다. 활성 자격증명은 은퇴·게시(계정 폐기와 같은 등록부 처리)하되
-// disabled 는 걸지 않아 같은 아이디로 새 지갑을 다시 등록할 수 있다(registerAccount 는 pk_u 가 없으면 받고 슬롯은 새로 배정한다 — 번호 재사용 없음).
+// 2026-11-06(사용자 요청): 지갑 연결 해제 — 계정은 남기고 지갑 등록(auid·슬롯)만 푼다. 활성 자격증명은 은퇴·게시(계정 폐기와 같은 등록부 처리)하되
+// disabled 는 걸지 않아 같은 아이디로 새 지갑을 다시 등록할 수 있다(registerAccount 는 auid 가 없으면 받고 슬롯은 새로 배정한다 — 번호 재사용 없음).
 // 세션 기록은 남는다(세션 폐기는 사용자가 지갑에서 이미 했거나 관리자가 한다). 지갑(Snap·에이전트) 쪽은 사용자가 "Snap 초기화" 로 비운다.
 app.post('/cia/user/unlink_wallet', requireUser, async (req, res) => {
   try {
     const { pwd } = req.body ?? {};
     const uid = req.session.uid, acct = state.accounts[uid];
     if (!pwOk(acct, pwd)) return res.status(401).json({ error: 'invalid credentials', reason: 'invalid_credentials' });
-    if (!acct.pk_u) return res.status(409).json({ error: 'not registered', reason: 'not_registered' });
+    if (!acct.auid) return res.status(409).json({ error: 'not registered', reason: 'not_registered' });
     const retired = retireActiveCred(uid);
     if (retired) setSlot(uid, 0n);
-    acct.pk_u = null; acct.auid = null; acct.slotRetired = true;
+    acct.auid = null; acct.slotRetired = true;
     acct.lastAuidS = null;   // 최신 auid_s(2026-11-12)는 방금 푼 auid 에서 나온 값이다 — 함께 지운다
     persist();
     const pub = retired ? await publishSafely() : { published: false };
@@ -1029,49 +1048,50 @@ app.post('/cia/auth/code', (req, res) => {
     // 2026-11-11(사용자 결정): 첫 등록에도 auid 를 받는다 — 속성 도구가 uid·salt 로 계산해 보여 준 값. 코드에 묶어 /cia/register 의 auid 와 대조한다.
     if (!isDec(auid)) return res.status(400).json({ error: 'auid required', reason: 'bad_auid' });
     // 2026-11-12(스펙 snap-derived-secrets S3): 이미 등록된 계정도 같은 auid 면 등록 코드를 준다 — 복구(같은 비밀로 다시 등록). 다르면 409.
-    if (a.pk_u && String(a.auid) !== BigInt(auid).toString()) return res.status(409).json({ error: 'already registered', reason: 'already_registered' });
+    if (a.auid && String(a.auid) !== BigInt(auid).toString()) return res.status(409).json({ error: 'already registered', reason: 'already_registered' });
     return res.json({ ...issueCode({ uid, purpose: 'register', auid: BigInt(auid).toString() }), uid, purpose: 'register' });
   }
-  if (!a.pk_u) return res.status(409).json({ error: 'not registered', reason: 'not_registered' });
+  if (!a.auid) return res.status(409).json({ error: 'not registered', reason: 'not_registered' });
   if (!isDec(auid) || BigInt(auid).toString() !== a.auid) return res.status(403).json({ error: 'auid mismatch', reason: 'auid_mismatch' });
   res.json(issueCode({ uid, purpose: 'issue', auid: a.auid }));
 });
 
-// V11 §3.1 등록. 지갑이 auid = Poseidon(T_AUID, uid, s_u) 와 등록 키 pk_u 를 낸다 — IdP 는 소유 증명 서명만 보고 슬롯 번호를 배정한다. 속성은 받지 않는다(D15).
-// 신원은 데모 계정 {uid, pwd} 또는 Google ID 토큰 {id_token}(OIDC 래퍼 2026-10-16 — uid 는 IdP 가 검증한 sub 로 유도, nonce 는 pk_u 에 묶임) 중 하나로 확인한다.
+// V11 §3.1 등록. 지갑이 auid = Poseidon(T_AUID, uid, s_u) 를 내고 "그 s_u 를 안다" 는 π_IdP 로 인증한다(스펙 2026-11-12 no-pk-u — 등록 키와 등록 서명은 없다).
+// IdP 는 슬롯 번호를 배정한다. 속성은 받지 않는다(D15). 신원은 데모 계정 {uid, pwd|code} 또는 Google ID 토큰 {id_token}(nonce 는 이 요청의 tag 에 묶임) 중 하나.
 app.post('/cia/register', userCors, async (req, res) => {
-  const { uid: uidIn, pwd, code, id_token, auid, pk_u, sig_reg } = req.body ?? {};
-  if (!isDec(auid) || !isPt(pk_u) || !sig_reg) return res.status(400).json({ error: 'auid, pk_u{x,y}, sig_reg required' });
+  const { uid: uidIn, pwd, code, id_token, auid } = req.body ?? {};
+  if (!isDec(auid)) return res.status(400).json({ error: `auid, n, ${AUTH_FIELDS} required` });
   // 수정 라운드 1: 모호성 검사를 uid 뿐 아니라 pwd·code 도 보게 복원한다 — {pwd 또는 code} 가 uid 없이 id_token 과 함께 오는 것도
   // "둘 다 있음" 으로 막는다(이전엔 uid 가 없으면 통과해 id_token 경로로 조용히 흘렀다).
   const demoPath = uidIn !== undefined || pwd !== undefined || code !== undefined, oidcPath = id_token !== undefined;
   if (demoPath === oidcPath) return res.status(400).json({ error: '{uid, pwd 또는 code} 또는 {id_token} 중 하나만' });   // 둘 다 없거나 둘 다 있음
-  let uid, provider;
+  let uid, provider, oidcNonce = null;
   if (oidcPath) {
     if (typeof id_token !== 'string') return res.status(400).json({ error: 'id_token 은 문자열' });
     const o = await oidcUid(id_token, REG_PREFIX); if (o.error) return res.status(o.error.status).json(o.error.body);
-    // 토큰은 이 pk_u 에 묶여 있어야 한다(D4) — 가로챈 토큰으로 다른 키를 등록하지 못하게. auid 는 sig_reg 가 결속한다.
-    if (o.nonce !== regNonce(pk_u)) return res.status(400).json({ error: 'oidc_nonce_mismatch', reason: 'oidc_nonce_mismatch', detail: 'nonce 가 요청의 pk_u 와 다르다' });
+    oidcNonce = o.nonce;   // 아래 registerAccount 가 증명을 본 뒤 이 요청의 tag 에 대조한다
     // 연결 로그인 L3(2026-11-09 리뷰 I-1): 이미 아이디 계정에 연결된 Google 은 래퍼 계정을 따로 만들지 않는다(같은 신원이 두 계정으로 갈라지지 않게).
     uid = o.uid; provider = OIDC.provider;
   } else {
-    if (!isDec(uidIn)) return res.status(400).json({ error: 'uid, (pwd 또는 code), auid, pk_u{x,y}, sig_reg required' });
+    if (!isDec(uidIn)) return res.status(400).json({ error: `uid, (pwd 또는 code), auid, n, ${AUTH_FIELDS} required` });
     // 가입 계정(§3.1): POST /cia/user/register_code 로 받은 1회용 코드(purpose register), 또는(API·옛 흐름 호환) 가입 비밀번호.
-    // 수정 라운드 1(스펙 "성공 시 소진"): code 는 여기서 조회만 하고(peek, 소비 안 함) — 실제 소비는 서명 검증을 통과한 뒤
-    // registerAccount 의 beforeCommit 이 상태 변경 바로 앞에서 한다. 그래야 서명이 틀려 등록이 실패해도 코드가 타지 않는다.
+    // 수정 라운드 1(스펙 "성공 시 소진"): code 는 여기서 조회만 하고(peek, 소비 안 함) — 실제 소비는 π_IdP 검증을 통과한 뒤
+    // registerAccount 의 beforeCommit 이 상태 변경 바로 앞에서 한다. 그래야 증명이 틀려 등록이 실패해도 코드가 타지 않는다.
     if (code !== undefined) {
       // 2026-11-11: 코드에 묶인 auid(인증 창에 붙여 넣은 값)와 지금 등록하는 auid 가 다르면 — 속성 커밋먼트와 다른 salt 로 등록하려는 경우 — 따로 알린다.
       const ce = typeof code === 'string' && Object.hasOwn(state.codes, code) ? state.codes[code] : null;
       if (ce && ce.purpose === 'register' && ce.uid === uidIn && ce.auid !== null && ce.auid !== BigInt(auid).toString()) return res.status(403).json({ error: 'register auid mismatch', reason: 'register_auid_mismatch' });
       if (!peekCode(code, { uid: uidIn, purpose: 'register', auid: BigInt(auid).toString() })) return res.status(401).json({ error: 'bad_code', reason: 'bad_code' });
     } else {
-      if (typeof pwd !== 'string') return res.status(400).json({ error: 'uid, (pwd 또는 code), auid, pk_u{x,y}, sig_reg required' });
+      if (typeof pwd !== 'string') return res.status(400).json({ error: `uid, (pwd 또는 code), auid, n, ${AUTH_FIELDS} required` });
       if (!pwOk(state.accounts[uidIn], pwd)) return res.status(401).json({ error: 'invalid credentials', reason: 'invalid_credentials' });
     }
     uid = uidIn; provider = 'demo';
   }
   const beforeCommit = (oidcPath || code === undefined) ? undefined : () => consumeCode(code, { uid: uidIn, purpose: 'register', auid: BigInt(auid).toString() });
-  const made = await registerAccount({ uid, provider, auid, pk_u, sig_reg, beforeCommit });
+  // Google: 토큰의 nonce 는 **검증된** tag 에 묶여 있어야 한다 — 증명을 본 뒤, 상태를 바꾸기 전에 대조한다(리뷰 C1 의 순서 요건).
+  const checkTag = oidcNonce === null ? undefined : (tag) => (oidcNonce === regNonce(tag) ? null : { status: 400, body: { error: 'oidc_nonce_mismatch', reason: 'oidc_nonce_mismatch', detail: 'nonce 가 이 등록 요청의 tag 와 다르다' } });
+  const made = await registerAccount({ uid, provider, auid, auth: req.body, checkTag, beforeCommit });
   if (made.error) return res.status(made.error.status).json(made.error.body);
   // 2026-11-09: 등록 코드로 등록했으면(서비스 첫 로그인 중의 등록) 같은 사용자가 비밀번호를 다시 넣지 않고 바로 발급으로 이어 가게 이 auid 에 묶인
   // 발급 코드를 함께 준다(인증 창에서 방금 비밀번호를 확인했다). ISSUE_AUTH 가 key 모드면 쓰이지 않을 뿐 해는 없다(1회용·TTL).
@@ -1079,85 +1099,79 @@ app.post('/cia/register', userCors, async (req, res) => {
   // 복구(2026-11-12)는 저장된 provider 가 정본 — 같은 상태로 201 을 준다(에이전트·헬퍼가 201 만 등록 성공으로 본다, 계획 Ruling P1).
   res.status(201).json({ slot: made.slot, schemaHash: ATTR_SCHEMA_HASH, uid, provider: made.restored ? (state.accounts[uid].provider ?? provider) : provider, ...(issue_code ? { issue_code } : {}), ...(made.restored ? { restored: true } : {}) });
 });
-/** 계정 등록의 공통 부분(/cia/register 와 /cia/issue 의 id_token 암묵 등록이 같이 쓴다, 2026-10-16): 409·auid 범위·pk_u 점·sig_reg 검증·슬롯 배정.
- *  beforeCommit(수정 라운드 1): 서명 검증을 통과한 뒤, 상태 변경 바로 앞에서 동기로 부른다 — /cia/register 의 code 경로가 1회용 코드를
- *  "성공 시에만" 태우는 데 쓴다(스펙 §3.3). false 를 돌려주면 401 bad_code 로 끝나고 아무것도 바뀌지 않는다.
- *  성공 { slot }, 실패 { error: { status, body } }. */
-async function registerAccount({ uid, provider, auid, pk_u, sig_reg, beforeCommit }) {
+/** 계정 등록의 공통 부분(/cia/register 와 /cia/issue 의 id_token 암묵 등록이 같이 쓴다): 409·auid 범위·π_IdP 인증·슬롯 배정.
+ *  auth: /cia/register 의 요청 본문({ n, …π_IdP }) — 여기서 ctx = registerCtx(n) 으로 검증한다. verified:true 는 /cia/issue 의 암묵 등록 —
+ *  호출자가 **발급 증명을 이 auid 로 이미 검증**했다(등록용 증명을 따로 받지 않는다, 스펙 §3.2).
+ *  checkTag(tag): 증명을 본 뒤 부른다 — Google 등록이 토큰 nonce 를 tag 에 대조한다. null 이 아닌 { status, body } 를 돌려주면 그대로 실패.
+ *  beforeCommit: 인증을 통과한 뒤, 상태 변경 바로 앞에서 동기로 부른다 — code 경로가 1회용 코드를 "성공 시에만" 태운다. false 면 401 bad_code.
+ *  성공 { slot, restored? }, 실패 { error: { status, body } }. */
+async function registerAccount({ uid, provider, auid, auth = null, verified = false, checkTag, beforeCommit }) {
   const fail = (status, body) => ({ error: { status, body } });
-  if (!isDec(auid) || !isPt(pk_u) || !sig_reg) return fail(400, { error: 'auid, pk_u{x,y}, sig_reg required' });
-  // Task 10(B1): 가입만 하고 등록 전인 계정(pk_u:null)은 막지 않는다 — "이미 등록됨" 은 pk_u 가 채워져 있을 때뿐이다.
-  // 복구(2026-11-12, 스펙 snap-derived-secrets S3): 스냅 비밀이 시드에서 유도되므로, MetaMask 를 다시 깐 사용자는 같은 (auid, pk_u) 로 다시 등록한다.
-  // 저장값과 둘 다 같고 sig_reg 가 그 pk_u 로 맞으면 슬롯을 새로 잡지 않고 기존 등록을 돌려준다(상태 변경·게시 없음). 하나라도 다르면 지금처럼 409.
-  // 로그인 수단(비밀번호·코드·Google)과 같은 시드가 둘 다 있어야 하므로 공격면은 그대로다. 폐기된 계정은 되살리지 않는다.
+  if (!isDec(auid)) return fail(400, { error: 'auid required' });
+  // "이미 등록됨" 은 auid 가 채워져 있을 때다(P3). 가입만 하고 등록 전인 계정·연결 해제한 계정(auid:null)은 막지 않는다.
+  // 복구(스펙 snap-derived-secrets S3): 스냅 비밀이 시드에서 유도되므로, MetaMask 를 다시 깐 사용자는 같은 auid 로 다시 등록한다 — 저장값과 같고 증명이 맞으면
+  // 슬롯을 새로 잡지 않고 기존 등록을 돌려준다(상태 변경·게시 없음). 다르면 409. 폐기된 계정은 되살리지 않는다.
   const prev = state.accounts[uid];
-  const sameKeys = Boolean(prev?.pk_u) && isPt(pk_u) && String(prev.auid) === BigInt(auid).toString()
-    && String(prev.pk_u.x) === BigInt(pk_u.x).toString() && String(prev.pk_u.y) === BigInt(pk_u.y).toString();
-  if (prev?.pk_u && !sameKeys) return fail(409, { error: 'already registered' });
-  if (sameKeys && prev.disabled) return fail(409, { error: 'account disabled', reason: 'account_disabled' });
+  const same = Boolean(prev?.auid) && String(prev.auid) === BigInt(auid).toString();
+  if (prev?.auid && !same) return fail(409, { error: 'already registered' });
+  if (same && prev.disabled) return fail(409, { error: 'account disabled', reason: 'account_disabled' });
   if (BigInt(auid) >= F.p) return fail(400, { error: 'auid is not a field element' });   // Poseidon 출력 범위 — 비정규 값은 등록부 리프·π 와 어긋난다
-  if (!(await isValidPoint(pointFromStrings(pk_u)))) return fail(400, { error: 'pk_u is not a valid subgroup point' });
-  let ok = false;
-  const sigReg = parseEddsaSig(sig_reg);   // 리뷰 S1: 비정규·범위 밖 서명은 verifyPoseidon 에 넣지 않는다
-  try {
-    const m = F.e(await registerMessage(BigInt(uid), BigInt(auid)));
-    ok = sigReg !== null && eddsa.verifyPoseidon(m, sigReg, [F.e(BigInt(pk_u.x)), F.e(BigInt(pk_u.y))]);
-  } catch { ok = false; }
-  if (!ok) return fail(400, { error: 'bad_registration_signature' });
-  if (sameKeys) {
+  if (!verified) {
+    if (!auth || !isDec(auth.n) || BigInt(auth.n) >= F.p) return fail(400, { error: `n, ${AUTH_FIELDS} required` });
+    const au = await checkIdpAuth({ uid, auid, ctx: await registerCtx({ n: BigInt(auth.n) }), body: auth });
+    if (au.error) return au;
+    const bad = checkTag ? checkTag(au.tag) : null;
+    if (bad) return fail(bad.status, bad.body);
+  }
+  if (same) {
     if (beforeCommit && !beforeCommit()) return fail(401, { error: 'bad_code', reason: 'bad_code' });
     return { slot: prev.slot, restored: true };
   }
-  if (state.accounts[uid]?.pk_u) return fail(409, { error: 'already registered' });   // await 사이 경합
+  if (state.accounts[uid]?.auid) return fail(409, { error: 'already registered' });   // await 사이 경합
   if (beforeCommit && !beforeCommit()) return fail(401, { error: 'bad_code', reason: 'bad_code' });
   const slot = state.registry.next++;
   // 가입 때 만든 레코드(pwSalt·pwHash·pwAlgo·createdAt)가 있으면 그 자리를 채운다 — 새 객체로 덮어 비밀번호를 잃지 않는다(Task 10).
   const acct = state.accounts[uid] ??= newAccountRecord();
-  Object.assign(acct, { pk_u: { x: BigInt(pk_u.x).toString(), y: BigInt(pk_u.y).toString() }, auid: BigInt(auid).toString(), slot, provider });
+  Object.assign(acct, { auid: BigInt(auid).toString(), slot, provider });
   persist();
   return { slot };
 }
 
-// V9: 옛 지갑 상태 파일(슬롯 없음)이 자기 슬롯 번호를 되찾는다. sk_u 서명 인증, 메시지는 Poseidon(D_SLOTREQ, uid, nonce).
+// V9: 옛 지갑 상태 파일(슬롯 없음)·복구가 자기 슬롯 번호를 되찾는다. 인증은 π_IdP, ctx = Poseidon(D_CTX_SLOT, nonce)(스펙 2026-11-12 no-pk-u §3.1).
+// nonce 의 신선도는 보지 않는다 — 다시 보내도 같은 답(공개 슬롯 번호)이다.
 app.post('/cia/slot', userCors, async (req, res) => {
   try {
-    const { uid, nonce, sig_u } = req.body ?? {};
-    if (!isDec(uid) || !isDec(nonce) || !sig_u) return res.status(400).json({ error: 'uid, nonce, sig_u required' });
+    const { uid, nonce } = req.body ?? {};
+    if (!isDec(uid) || !isDec(nonce) || BigInt(nonce) >= F.p) return res.status(400).json({ error: `uid, nonce, ${AUTH_FIELDS} required` });
     const acct = state.accounts[uid];
-    // 수정 라운드 1: 가입만 하고 등록 전인 계정(pk_u:null)도 404 — 아니면 아래 acct.pk_u.x 역참조가 try 에 삼켜져 400 으로 바뀐다(하위호환 위반).
-    if (!acct?.pk_u) return res.status(404).json({ error: 'unknown account' });
-    let ok = false;
-    const sigU = parseEddsaSig(sig_u);   // 리뷰 S1
-    try {
-      const m = F.e(await slotRequestMessage(BigInt(uid), BigInt(nonce)));
-      ok = sigU !== null && eddsa.verifyPoseidon(m, sigU, [F.e(BigInt(acct.pk_u.x)), F.e(BigInt(acct.pk_u.y))]);
-    } catch { ok = false; }
-    if (!ok) return res.status(400).json({ error: 'bad user signature' });
+    if (!acct?.auid) return res.status(404).json({ error: 'unknown account' });   // 가입만 하고 등록 전인 계정도 404
+    const au = await checkIdpAuth({ uid, auid: acct.auid, ctx: await slotCtx({ nonce: BigInt(nonce) }), body: req.body });
+    if (au.error) return res.status(au.error.status).json(au.error.body);
     res.json({ slot: acct.slot });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// V11(스펙 2026-10-12 §5.2, 그림 3 "DA request") 세션 발급 = (C_u, C_s, π_IdP, sig_u) 한 요청. 옛 /cia/user_cred 를 흡수했다 — 요청의 C_u 가
+// V11(스펙 2026-10-12 §5.2, 그림 3 "DA request") 세션 발급 = (C_u, C_s, π_IdP — tag 로 요청에 묶인다) 한 요청. 옛 /cia/user_cred 를 흡수했다 — 요청의 C_u 가
 // 활성 자격증명과 다르면(첫 로그인·사용자의 속성 변경) 등록부 슬롯을 갱신·게시한 뒤 토큰을 낸다. 속성 값은 받지 않는다(D15).
-// 검사 순서: 형식 → max_height 범위 → 계정·disabled → chainid 허용 → C_u·C_s 부분군 → sig_u → π_IdP → 체인 생존(fail-closed) → disabled 재확인 →
+// 검사 순서: 형식 → max_height 범위 → 계정·disabled → chainid 허용 → C_u·C_s 부분군 → π_IdP(ctx·tag) → 체인 생존(fail-closed) → disabled 재확인 →
 // (C_u 교체: 은퇴 → creds 추가 → setSlot → persist → 즉시 게시) → 토큰 서명 → 세션 기록. arid_s 는 서명·토큰에만 쓰고 저장하지 않는다(D1).
 // auid_s 는 세션 기록에 남기지 않되, 2026-11-12(사용자 결정 — D1 수정)부터 계정마다 **가장 최신 값 하나**만 덮어써 둔다(acct.lastAuidS — 관리자 화면 표시용, 기록은 없다).
-// /cia/issue — 데모 계정은 sig_u 만, 래퍼(Google) 계정은 sig_u + id_token(+첫 로그인이면 registration). 2026-10-16.
+// /cia/issue — 데모 계정은 π_IdP 만, 래퍼(Google) 계정은 π_IdP + id_token(+첫 로그인이면 registration{auid}). 2026-10-16, 2026-11-13.
 app.post('/cia/issue', userCors, async (req, res) => {
   try {
-    const { uid, auid_s, arid_s, C_u_pt, C_s_pt, chainid, allowAgent, max_height, proof_idp, sig_u, id_token, registration, auth_code } = req.body ?? {};
-    if (!isDec(uid) || !isDec(auid_s) || !isDec(arid_s) || !isPt(C_u_pt) || !isPt(C_s_pt) || !isDec(chainid) || (allowAgent !== '0' && allowAgent !== '1') || !isDec(max_height) || !proof_idp || typeof proof_idp !== 'object' || !sig_u) {
-      return res.status(400).json({ error: 'uid, auid_s, arid_s, C_u_pt{x,y}, C_s_pt{x,y}, chainid, allowAgent("0"|"1"), max_height, proof_idp, sig_u required' });
+    const { uid, auid_s, arid_s, C_u_pt, C_s_pt, chainid, allowAgent, max_height, proof_idp, tag, id_token, registration, auth_code } = req.body ?? {};
+    if (!isDec(uid) || !isDec(auid_s) || !isDec(arid_s) || !isPt(C_u_pt) || !isPt(C_s_pt) || !isDec(chainid) || (allowAgent !== '0' && allowAgent !== '1') || !isDec(max_height) || !isDec(tag) || !proof_idp || typeof proof_idp !== 'object') {
+      return res.status(400).json({ error: 'uid, auid_s, arid_s, C_u_pt{x,y}, C_s_pt{x,y}, chainid, allowAgent("0"|"1"), max_height, tag, proof_idp required' });
     }
     const mh = BigInt(max_height);
     if (mh >= (1n << 64n)) return res.status(400).json({ error: 'max_height must be < 2^64' });
     // 리뷰 L5(2026-10-13): auid_s·arid_s 도 /cia/register 의 auid 처럼 필드 원소(< p)여야 한다 — arid_s = A + p 는 Poseidon 안에서 A 와 같아져
-    // 서명·토큰은 그대로 통과하지만 정규형이 아닌 별칭이다(auid_s 는 snarkjs 가 거절하지만 같은 자리에서 먼저 막는다).
+    // 토큰 서명은 그대로 통과하지만 정규형이 아닌 별칭이다(auid_s 는 snarkjs 가 거절하지만 같은 자리에서 먼저 막는다).
     if (BigInt(auid_s) >= F.p || BigInt(arid_s) >= F.p) return res.status(400).json({ error: 'auid_s and arid_s must be field elements (< p)' });
     // OIDC 래퍼 — RP 로그인 흐름(2026-10-16): Google 로 로그인한 사용자는 발급마다 ID 토큰을 함께 낸다. 래퍼가 토큰을 검증해 계정(uid=H(provider|sub))을
-    // 정하고, 계정이 아직 없으면 요청에 실린 등록 재료(auid·pk_u·sig_reg)로 그 자리에서 등록한 뒤 발급한다 — 사용자에게 보이는 등록 단계가 없다.
-    // 토큰은 이 지갑의 공개키와 이 로그인(arid_s)에 nonce 로 묶여 있어 가로채도 다른 키·다른 로그인에 못 쓴다. 데모 계정(uid/pwd 등록)은 id_token 없이 지금처럼.
-    let oidcClaims = null;
+    // 정하고, 계정이 아직 없으면 요청에 실린 registration{auid} 로 — 발급 증명을 그 auid 로 검증한 뒤 — 등록하고 발급한다. 사용자에게 보이는 등록 단계가 없다.
+    // 토큰은 이 발급 요청의 tag(이 지갑의 s_u + 이 로그인의 arid_s)에 nonce 로 묶여 있어 가로채도 다른 지갑·다른 로그인에 못 쓴다. 데모 계정(uid/pwd 등록)은 id_token 없이 지금처럼.
+    let oidcClaims = null, implicitAuid = null;
     if (id_token !== undefined) {
       if (typeof id_token !== 'string') return res.status(400).json({ error: 'id_token 은 문자열' });
       const o = await oidcUid(id_token, ISSUE_PREFIX); if (o.error) return res.status(o.error.status).json(o.error.body);
@@ -1170,29 +1184,28 @@ app.post('/cia/issue', userCors, async (req, res) => {
       }
       oidcClaims = o;
       if (!state.accounts[uid]) {
-        if (!registration || typeof registration !== 'object') return res.status(404).json({ error: 'unknown account', reason: 'not_registered', detail: '첫 로그인이면 registration{auid,pk_u,sig_reg} 을 함께 보낸다' });
-        // 리뷰 C1(2026-10-26): nonce 결속은 등록 **전에** 등록할 키(registration.pk_u)로 본다 — 등록 뒤 acct.pk_u 로 보면 이미 공격자 키가
-        // 들어간 뒤라, 가로챈 issue 토큰 + 공격자 registration(자기 sk 로 만든 sig_reg) 으로 피해자 uid 가 영구 선점된다. 실패면 상태 변경 없음.
-        if (!isPt(registration.pk_u)) return res.status(400).json({ error: 'registration.pk_u{x,y} required' });
-        if (o.nonce !== issueNonce(registration.pk_u, arid_s)) return res.status(400).json({ error: 'oidc_nonce_mismatch', reason: 'oidc_nonce_mismatch', detail: 'nonce 가 등록할 지갑 키·이 로그인(arid_s)과 다르다' });
-        const made = await registerAccount({ uid, provider: OIDC.provider, auid: registration.auid, pk_u: registration.pk_u, sig_reg: registration.sig_reg });
-        if (made.error) return res.status(made.error.status).json(made.error.body);
+        // 첫 로그인의 암묵 등록(스펙 2026-11-12 no-pk-u §3.2): registration 은 { auid } 뿐이다. 등록용 증명을 따로 받지 않는다 — 아래에서 이 발급 증명을
+        // auid = registration.auid 로 검증하고 토큰 nonce 를 그 tag 에 대조한 **뒤에** 등록한다(리뷰 C1: 검증 전에 등록하면 가로챈 토큰 + 공격자의
+        // auid 로 피해자 uid 가 선점된다). 여기서는 형식만 본다 — 상태 변경 없음.
+        if (!registration || typeof registration !== 'object') return res.status(404).json({ error: 'unknown account', reason: 'not_registered', detail: '첫 로그인이면 registration{auid} 을 함께 보낸다' });
+        if (!isDec(registration.auid) || BigInt(registration.auid) >= F.p) return res.status(400).json({ error: 'registration.auid required (field element)' });
+        implicitAuid = BigInt(registration.auid).toString();
       }
     }
-    const acct = state.accounts[uid];
-    // 수정 라운드 1: 가입만 하고 등록 전인 계정(pk_u:null)도 404 — 아니면 아래 acct.pk_u.x 역참조가 try 에 삼켜져 400 으로 바뀐다(하위호환 위반).
-    // OIDC 경로는 바로 위에서 미등록이면 registerAccount 로 즉시 등록하므로, 여기 닿았는데 pk_u 가 없으면 등록이 실패해 이미 응답을 보낸 뒤다.
-    if (!acct?.pk_u) return res.status(404).json({ error: 'unknown account' });
-    if (acct.disabled) return res.status(403).json({ error: 'account disabled', reason: 'account_disabled' });
-    // 래퍼 계정(provider 가 demo 가 아님)은 발급마다 토큰이 있어야 한다 — Google 이 매 로그인을 확인한다는 의미다.
-    if (acct.provider && acct.provider !== 'demo' && !oidcClaims) return res.status(401).json({ error: 'oidc_required', reason: 'oidc_required' });
-    if (oidcClaims && oidcClaims.nonce !== issueNonce(acct.pk_u, arid_s)) return res.status(400).json({ error: 'oidc_nonce_mismatch', reason: 'oidc_nonce_mismatch', detail: 'nonce 가 이 지갑·이 로그인(arid_s)과 다르다' });
+    let acct = state.accounts[uid];
+    if (implicitAuid === null) {
+      // 가입만 하고 등록 전인 계정(auid:null)도 404.
+      if (!acct?.auid) return res.status(404).json({ error: 'unknown account' });
+      if (acct.disabled) return res.status(403).json({ error: 'account disabled', reason: 'account_disabled' });
+      // 래퍼 계정(provider 가 demo 가 아님)은 발급마다 토큰이 있어야 한다 — Google 이 매 로그인을 확인한다는 의미다.
+      if (acct.provider && acct.provider !== 'demo' && !oidcClaims) return res.status(401).json({ error: 'oidc_required', reason: 'oidc_required' });
+    }
     // 발급 인증 정책(CIA_ISSUE_AUTH=code, Task 10 B1, 2026-10-22): demo 계정은 §4 의 인증 창이 낸 1회용 코드가 있어야 발급한다.
-    // 수정 라운드 1(스펙 "성공 시 소진")·F-7: 여기서는 조회만(peek) — sig_u·π_IdP 검증과 headOf(503)·cred_revoked 사전 검사까지
+    // 수정 라운드 1(스펙 "성공 시 소진")·F-7: 여기서는 조회만(peek) — π_IdP 검증과 headOf(503)·cred_revoked 사전 검사까지
     // 모두 거친 뒤, 실제 상태 변경(발급 기록 또는 signPoseidon) 바로 앞에서만 consumeCode 로 태운다(아래 두 지점). 그 전에
-    // 실패하면(서명·증명·체인·폐기 충돌 무엇이든) 코드는 그대로 남는다.
+    // 실패하면(증명·체인·폐기 충돌 무엇이든) 코드는 그대로 남는다.
     // 래퍼 계정(oidcClaims)은 발급마다 Google 토큰이 본인 확인이다. 아이디 계정은 위에서 id_token 이 막히므로 늘 코드가 필요하다(2026-11-09 L5).
-    const needsAuthCode = ISSUE_AUTH === 'code' && acct.provider === 'demo' && !oidcClaims;
+    const needsAuthCode = ISSUE_AUTH === 'code' && implicitAuid === null && acct.provider === 'demo' && !oidcClaims;
     if (needsAuthCode) {
       if (typeof auth_code !== 'string') return res.status(401).json({ error: 'auth_code required', reason: 'auth_code_required' });
       if (!peekCode(auth_code, { uid, purpose: 'issue', auid: acct.auid })) return res.status(401).json({ error: 'bad_code', reason: 'bad_code' });
@@ -1201,25 +1214,22 @@ app.post('/cia/issue', userCors, async (req, res) => {
     if (CHAIN_RPCS.size === 0) return res.status(503).json({ error: 'chain id unknown: CIA_CHAIN_RPCS not configured and RPC unreachable at startup' });
     if (!CHAIN_RPCS.has(chainStr)) return res.status(400).json({ error: `bad chainid ${chainStr}: allowed ${[...CHAIN_RPCS.keys()].join(',')}` });
     const agent = BigInt(allowAgent);
-    const cupt = pointFromStrings(C_u_pt), cspt = pointFromStrings(C_s_pt);
-    if (!(await isValidPoint(cupt))) return res.status(400).json({ error: 'C_u_pt is not a valid subgroup point' });
-    if (!(await isValidPoint(cspt))) return res.status(400).json({ error: 'C_s_pt is not a valid subgroup point' });
+    const aridS = BigInt(arid_s);
+    // 요청 인증(스펙 2026-11-12 no-pk-u §3.2): ctx 는 IdP 가 요청 필드에서 스스로 계산한다 — arid_s·chainid·allowAgent 중 하나라도 바뀌면 tag 가 어긋난다.
+    // 나머지(auid_s·C_u·C_s·max_height)는 π_IdP 공개 입력이 덮는다. auid 는 DB 값(암묵 등록만 요청의 registration.auid) — 지갑이 보낸 공개 입력을
+    // 그대로 넣으면 아무 auid 에 대한 증명이 통과한다.
+    const au = await checkIdpAuth({ uid, auid: implicitAuid ?? acct.auid, ctx: await issueCtx({ arid_s: aridS, chainid: BigInt(chainStr), allowAgent: agent }), body: req.body });
+    if (au.error) return res.status(au.error.status).json(au.error.body);
+    const { cupt, cspt, auidS } = au;
+    // Google: 토큰은 검증된 tag(이 지갑의 s_u + 이 로그인의 arid_s)에 묶여 있어야 한다 — 가로채도 다른 지갑·다른 로그인에 못 쓴다.
+    if (oidcClaims && oidcClaims.nonce !== issueNonce(au.tag)) return res.status(400).json({ error: 'oidc_nonce_mismatch', reason: 'oidc_nonce_mismatch', detail: 'nonce 가 이 지갑·이 로그인의 tag 와 다르다' });
+    if (implicitAuid !== null) {
+      const made = await registerAccount({ uid, provider: OIDC.provider, auid: implicitAuid, verified: true });
+      if (made.error) return res.status(made.error.status).json(made.error.body);
+      acct = state.accounts[uid];
+    }
     // Cf_u·Cf_s 는 IdP 가 점에서 스스로 유도한다(설계 §6.2) — 사용자가 보낸 Cf 를 서명하면 증명된 점과 무관한 값에 서명이 붙는다.
     const Cf_u = await compressPoint(cupt), Cf_s = await compressPoint(cspt);
-    const auidS = BigInt(auid_s), aridS = BigInt(arid_s);
-    let sigOk = false;
-    const sigU = parseEddsaSig(sig_u);   // 리뷰 S1
-    try {
-      const m = F.e(await issueRequestMessageV11(auidS, aridS, Cf_u, Cf_s, BigInt(chainStr), agent, mh));
-      sigOk = sigU !== null && eddsa.verifyPoseidon(m, sigU, [F.e(BigInt(acct.pk_u.x)), F.e(BigInt(acct.pk_u.y))]);
-    } catch { sigOk = false; }
-    if (!sigOk) return res.status(400).json({ error: 'bad user signature' });
-    // π_IdP — 공개 입력은 IdP 가 스스로 조립한다(uid 는 요청·계정, auid 는 DB 값): 지갑이 보낸 값을 그대로 넣으면 아무 auid 에 대한 증명이 통과한다.
-    let vkIdp;
-    // 리뷰 S4: 응답에는 고정 사유만 — 절대경로·ENOENT 는 지갑을 거쳐 페이지까지 가므로 서버 로그에만 남긴다.
-    try { vkIdp = await loadIdpVkey(IDP_VKEY); } catch (e) { console.error(`[cia] π_IdP vkey 를 읽지 못했다: ${e.message}`); return res.status(503).json({ error: 'idp_vkey_unavailable', reason: 'idp_vkey_unavailable' }); }
-    const pubIdp = idpPublicSignals({ uid: BigInt(uid), auid: BigInt(acct.auid), auid_s: auidS, C_u_pt: cupt, C_s_pt: cspt, max_height: mh });
-    if (!(await verifyIdp(vkIdp, pubIdp, proof_idp))) return res.status(400).json({ error: 'bad idp proof', reason: 'bad_idp_proof' });
     const head = await headOf(chainStr);   // fail-closed: 체인이 죽어 있으면 발급하지 않는다(게시도 불가하므로 폐기가 닿지 않는 세션이 된다)
     const cfu = Cf_u.toString();
     // 이 await 를 끝으로 아래 물리기→push→setSlot→persist 구간은 동기다(2026-10-01 리뷰 Important 2 와 같은 이유).
@@ -1231,7 +1241,7 @@ app.post('/cia/issue', userCors, async (req, res) => {
     if (!cur || cur.Cf_u !== cfu) {
       // 물린 적 있는 C_u 는 다시 받지 않는다 — 은퇴·폐기의 되감기를 막는다.
       if (acct.creds.some((c) => c.Cf_u === cfu)) return res.status(409).json({ error: 'this user credential was revoked; make a new one', reason: 'cred_revoked' });
-      // 코드 소비(F-7): sig_u·π_IdP 뿐 아니라 headOf(503)·위 cred_revoked 사전 검사까지 모두 지난 뒤, 상태 변경(발급 기록) 바로
+      // 코드 소비(F-7): π_IdP 뿐 아니라 headOf(503)·위 cred_revoked 사전 검사까지 모두 지난 뒤, 상태 변경(발급 기록) 바로
       // 앞에서 동기로 소비한다 — 동시 요청도 하나만 통과한다. 이보다 앞에서 태우면 체인 오류·폐기 충돌로 끝내 실패해도 코드가 사라진다.
       if (needsAuthCode && !consumeCode(auth_code, { uid, purpose: 'issue', auid: acct.auid })) return res.status(401).json({ error: 'bad_code', reason: 'bad_code' });
       retireActiveCred(uid);
@@ -1291,24 +1301,24 @@ async function revokeAccount(uid) {
 
 // §4.3(2026-09-21) 폐기. account = 활성 사용자 자격증명의 슬롯을 0 으로 비움 + disabled. credential = 슬롯만 비움(계정은 살아 있어 새 C_u 로 /cia/issue 를 다시 받아야 한다).
 // 슬롯은 사용자당 하나라 leaf/C 인자를 받지 않는다(있어도 무시). setSlot(uid, 0n) 은 멱등(이미 0 이면 값이 그대로)이다.
-// V8(2026-09-24 §2.2) session = 세션 하나만 — 사용자는 sk_u 서명으로, 운영자는 관리자 시크릿으로. 그래서 requireAdmin 을 미들웨어로
+// V8(2026-09-24 §2.2) session = 세션 하나만 — 사용자는 π_IdP(ctx = 세션·bound·nonce)로, 운영자는 관리자 시크릿으로. 그래서 requireAdmin 을 미들웨어로
 // 걸지 않고 안에서 분기한다. 관리자 헤더가 틀리게 오면 isAdmin=false 라 scope=session 은 서명 경로로 흐르고 account/credential 은 401 이다.
 app.post('/cia/revoke', userCors, async (req, res) => {
   try {
-    const { uid, scope, Cf_s, sig_u, nonce, bound: boundIn } = req.body ?? {};
+    const { uid, scope, Cf_s, nonce, bound: boundIn } = req.body ?? {};
     const hdr = req.get('X-CIA-Admin-Secret');
-    // CIA_ADMIN_OPEN 이면 헤더가 있는 요청(관리자 페이지)만 관리자로 본다 — 헤더 없는 사용자 본인 서명 요청은 그대로 서명 경로로 간다.
+    // CIA_ADMIN_OPEN 이면 헤더가 있는 요청(관리자 페이지)만 관리자로 본다 — 헤더 없는 사용자 본인 요청은 그대로 π_IdP 인증 경로로 간다.
     const isAdmin = ADMIN_OPEN ? typeof hdr === 'string' : Boolean(ADMIN_SECRET) && typeof hdr === 'string' && secretMatches(hdr, ADMIN_SECRET);
     if (scope !== 'session') {   // requireAdmin 과 같은 응답을 그대로 유지한다(시크릿 미설정 503, 틀린 시크릿 401)
       if (!ADMIN_OPEN && !ADMIN_SECRET) return res.status(503).json({ error: 'admin endpoints disabled: CIA_ADMIN_SECRET is not configured' });
       if (!isAdmin) return res.status(401).json({ error: 'unauthorized' });
     }
     if (!isDec(uid) || !state.accounts[uid]) return res.status(404).json({ error: 'unknown account' });
-    // 수정 라운드 1: scope=account 는 가입만 하고 등록 전인 계정(pk_u:null)도 404 — 아니면 등록된 적 없는 자리에 disabled·
+    // 수정 라운드 1: scope=account 는 가입만 하고 등록 전인 계정(auid:null)도 404 — 아니면 등록된 적 없는 자리에 disabled·
     // slotRetired 플래그를 박아 버린다(self_revoke 와 같은 기준). credential·session 은 그대로(등록 전 계정엔 자격증명·세션이
     // 없어 각자의 로직이 이미 안전하게 아무것도 하지 않는다 — retired:0 또는 unknown_session).
     if (scope === 'account') {
-      if (!state.accounts[uid]?.pk_u) return res.status(404).json({ error: 'unknown account' });
+      if (!state.accounts[uid]?.auid) return res.status(404).json({ error: 'unknown account' });
       return res.json(await revokeAccount(uid));
     }
     if (scope === 'credential') {
@@ -1322,24 +1332,23 @@ app.post('/cia/revoke', userCors, async (req, res) => {
     if (scope !== 'session') return res.status(400).json({ error: "scope must be 'account', 'credential' or 'session'" });
     if (!isDec(Cf_s)) return res.status(400).json({ error: 'Cf_s required' });
     // 허용 거래 수 bound ∈ [0, 2^32)(설계 2026-10-22 §3): nonce < bound 인 거래만 유효, 0 = 세션 전부 차단. 관리자 경로는
-    // 생략하면 0(전부 차단)이고, 사용자 서명 경로는 서명이 bound 를 덮으므로 생략할 수 없다(아래에서 isDec 이 걸러낸다).
+    // 생략하면 0(전부 차단)이고, 사용자 경로는 인증(ctx)이 bound 를 덮으므로 생략할 수 없다(아래에서 isDec 이 걸러낸다).
     const bound = isAdmin ? (boundIn ?? '0') : boundIn;
     if (!isDec(bound) || BigInt(bound) >= SESSION_BOUND_MAX) return res.status(400).json({ error: 'bound 는 [0, 2^32)' });
     const acct = state.accounts[uid];
     const rec = (acct.sessions ?? []).find((s) => s.Cf_s === BigInt(Cf_s).toString());
-    // 서명은 기록 조회보다 먼저 본다 — 서명 없이 "그 Cf_s 가 이 계정에 있는지" 를 알아내지 못하게.
+    // 인증은 기록 조회보다 먼저 본다 — 인증 없이 "그 Cf_s 가 이 계정에 있는지" 를 알아내지 못하게.
     if (!isAdmin) {
-      if (!sig_u || !isDec(nonce)) return res.status(401).json({ error: 'sig_u and nonce required without admin secret' });
-      let ok = false;
-      const sigU = parseEddsaSig(sig_u);   // 리뷰 S1
-      try {
-        const m = F.e(await revokeSessionMessage(BigInt(uid), BigInt(Cf_s), BigInt(bound), BigInt(nonce)));
-        ok = sigU !== null && eddsa.verifyPoseidon(m, sigU, [F.e(BigInt(acct.pk_u.x)), F.e(BigInt(acct.pk_u.y))]);
-      } catch { ok = false; }
-      if (!ok) return res.status(400).json({ error: 'bad user signature' });
+      if (!isDec(nonce) || !req.body?.proof_idp) return res.status(401).json({ error: 'nonce and proof_idp required without admin secret' });
+      let ctx = null;
+      // ctx = Poseidon(D_CTX_REVOKE, Cf_s, bound, nonce)(스펙 2026-11-12 no-pk-u §3.1) — bound 가 인증에 든다. 범위 밖 값·등록 전 계정은 증명이 있을 수 없다.
+      try { ctx = acct.auid ? await revokeSessionCtx({ Cf_s: BigInt(Cf_s), bound: BigInt(bound), nonce: BigInt(nonce) }) : null; } catch { ctx = null; }
+      if (ctx === null) return res.status(400).json({ error: 'bad idp proof', reason: 'bad_idp_proof' });
+      const au = await checkIdpAuth({ uid, auid: acct.auid, ctx, body: req.body });
+      if (au.error) return res.status(au.error.status).json(au.error.body);
     }
     // 2026-10-25 root 유효 창 §4: 지갑이 세션키 pk_i 를 세션키 서명 sig_i 로 묶어 함께 내면 거울 공개 counter 게시 대기열에 넣는다.
-    // 둘 중 하나만 오거나 서명이 틀리면 400 — 묶지 않으면 sig_u 만 있는 사용자가 남의 pk_i 를 넣어 그 세션을 막을 수 있다(낮추기만이라 못 되돌린다).
+    // 둘 중 하나만 오거나 서명이 틀리면 400 — 묶지 않으면 인증된 사용자가 남의 pk_i 를 넣어 그 세션을 막을 수 있다(낮추기만이라 못 되돌린다).
     const { pk_i: pkIn, sig_i } = req.body ?? {};
     let boundKey = null;
     if (pkIn !== undefined || sig_i !== undefined) {
@@ -1774,7 +1783,7 @@ app.post('/cia/account/delete', requireAdmin, async (req, res) => {
     const { uid } = req.body ?? {};
     const acct = isDec(uid) ? state.accounts[uid] : null;
     if (!acct) return res.status(404).json({ error: 'unknown account' });
-    const revoked = acct.pk_u ? await revokeAccount(uid) : null;
+    const revoked = acct.auid ? await revokeAccount(uid) : null;
     if (!state.accounts[uid]) return res.status(409).json({ error: 'account vanished during revocation' });   // await 사이에 다른 삭제가 끼었다
     const loginId = acct.loginId ?? null;
     delete state.accounts[uid];
@@ -1846,7 +1855,7 @@ app.post('/cia/admin/registry/restore', requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// §6.5.1 사용자 개시 폐기. 인증은 계정 비밀번호다 — 지갑 키가 아니다. 장치를 잃은 사용자에게 sk_u 는 없고
+// §6.5.1 사용자 개시 폐기. 인증은 계정 비밀번호다 — 지갑 키가 아니다. 장치를 잃은 사용자에게 지갑 비밀(s_u)은 없고
 // 공격자에게는 있으므로, 인증 수단은 장치 밖에 있어야 한다. 처리는 관리자의 계정 폐기와 같다.
 // 형식 → 비밀번호 → 등록 상태 순으로 검사한다. 비밀번호가 틀리면 등록 여부를 알려주지 않는다.
 // Google 계정은 비밀번호 대신 폐기용 nonce("revoke:…")의 id_token 으로 인증한다(OIDC 래퍼 2026-10-16) — 검증된 토큰 보유자에게는 미등록이면 404 로 알린다.
@@ -1866,9 +1875,9 @@ app.post('/cia/account/self_revoke', userCors, async (req, res) => {
       if (!resolved || !pwOk(state.accounts[resolved], pwd)) return res.status(401).json({ error: 'invalid credentials' });
       uid = resolved;
     }
-    // Task 10(B1): 가입만 하고 등록 전인 계정(pk_u:null)도 "미등록" — self_revoke 는 등록된 자격증명이 있어야 뜻이 있다
+    // Task 10(B1): 가입만 하고 등록 전인 계정(auid:null)도 "미등록" — self_revoke 는 등록된 자격증명이 있어야 뜻이 있다
     // (registerAccount 의 "이미 등록됨" 판정과 같은 기준).
-    if (!state.accounts[uid]?.pk_u) return res.status(404).json({ error: 'unknown account' });
+    if (!state.accounts[uid]?.auid) return res.status(404).json({ error: 'unknown account' });
     // revokeAccount 안에서 disabled 가 동기적으로(await 전에) 걸린다(설계 §6.5.1) — 재발급 차단은 트리·게시와 분리된
     // 별개의 효력이다. 슬롯은 체인을 읽지 않고 활성 사용자 자격증명 하나에서 나오므로(2026-09-21 §3.6) 체인이 죽어 있어도 걸린다.
     const r = await revokeAccount(uid);

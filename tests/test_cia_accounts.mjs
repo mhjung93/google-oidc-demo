@@ -5,10 +5,9 @@ import assert from 'node:assert/strict';
 import { ethers } from 'ethers';
 import { startIsolatedCia } from './helpers/isolated_cia.mjs';
 import { getProvider } from './helpers/mode3_chain.mjs';
-import { createRegistration, signRegistration } from '../lib/mode3_wallet.js';
-import { pointToStrings } from '../lib/mode3_issuance.js';
+import { createRegistration } from '../lib/mode3_wallet.js';
 import { createShare } from '../lib/mode3_trace.js';
-import { issueV11, userOf, TESTUSER_ATTRS, ALICE_ATTRS } from './helpers/mode3_flow.mjs';
+import { issueV11, userOf, regBody, TESTUSER_ATTRS, ALICE_ATTRS } from './helpers/mode3_flow.mjs';
 import { jwtVerify, createLocalJWKSet } from 'jose';
 import { attrCommit } from '../lib/mode3_attr_commit.js';
 import { DEFAULT_ATTR_SCHEMA, encodeProfile } from '../lib/mode3_attr_schema.js';
@@ -84,10 +83,9 @@ try {
     assert.ok(typeof rc.body.code === 'string' && rc.body.code.length >= 32, '코드는 32B hex 이상');
     assert.ok(typeof rc.body.expiresAt === 'number' && rc.body.expiresAt > Date.now());
     const reg = await createRegistration(BigInt(regUid));
-    const sig_reg = await signRegistration(reg.sk_u, BigInt(regUid), reg.auid);
-    const r1 = await cia.post('/cia/register', { uid: regUid, code: rc.body.code, auid: reg.auid.toString(), pk_u: pointToStrings(reg.pk_u), sig_reg });
+    const r1 = await cia.post('/cia/register', { uid: regUid, code: rc.body.code, ...(await regBody(reg, regUid)) });
     assert.equal(r1.status, 201, j(r1.body));
-    const r2 = await cia.post('/cia/register', { uid: regUid, code: rc.body.code, auid: reg.auid.toString(), pk_u: pointToStrings(reg.pk_u), sig_reg });
+    const r2 = await cia.post('/cia/register', { uid: regUid, code: rc.body.code, ...(await regBody(reg, regUid)) });
     assert.equal(r2.status, 401, j(r2.body)); assert.equal(r2.body.error, 'bad_code', '코드는 1회용');
     const again = await withJar('/cia/user/register_code', { method: 'POST', body: JSON.stringify({}) });
     assert.equal(again.status, 409, j(again.body)); assert.equal(again.body.reason, 'already_registered');
@@ -108,8 +106,7 @@ try {
     await withJar('/cia/user/login', { method: 'POST', body: JSON.stringify({ uid: authUid, pwd: authPwd }) });
     const rc = await withJar('/cia/user/register_code', { method: 'POST', body: JSON.stringify({}) });
     authReg = await createRegistration(BigInt(authUid));
-    const sig_reg = await signRegistration(authReg.sk_u, BigInt(authUid), authReg.auid);
-    const rr = await cia.post('/cia/register', { uid: authUid, code: rc.body.code, auid: authReg.auid.toString(), pk_u: pointToStrings(authReg.pk_u), sig_reg });
+    const rr = await cia.post('/cia/register', { uid: authUid, code: rc.body.code, ...(await regBody(authReg, authUid)) });
     assert.equal(rr.status, 201, j(rr.body));
     const mism = await cia.post('/cia/auth/code', { uid: authUid, pwd: authPwd, auid: (authReg.auid + 1n).toString() });
     assert.equal(mism.status, 403, j(mism.body)); assert.equal(mism.body.reason, 'auid_mismatch');
@@ -130,9 +127,8 @@ try {
       await withJar2('/cia/user/login', { method: 'POST', body: JSON.stringify({ uid: uid2, pwd: 'password-6' }) });
       const rc = await withJar2('/cia/user/register_code', { method: 'POST', body: JSON.stringify({}) });
       const reg2 = await createRegistration(BigInt(uid2));
-      const sig_reg2 = await signRegistration(reg2.sk_u, BigInt(uid2), reg2.auid);
       await new Promise((r) => setTimeout(r, 150));
-      const r1 = await cia2.post('/cia/register', { uid: uid2, code: rc.body.code, auid: reg2.auid.toString(), pk_u: pointToStrings(reg2.pk_u), sig_reg: sig_reg2 });
+      const r1 = await cia2.post('/cia/register', { uid: uid2, code: rc.body.code, ...(await regBody(reg2, uid2)) });
       assert.equal(r1.status, 401, j(r1.body)); assert.equal(r1.body.error, 'bad_code', '만료된 코드');
     } finally { await cia2.stop(); }
   });
@@ -152,16 +148,16 @@ try {
       const rc = await cia8.post('/cia/auth/code', { id: 'reg-at-login', pwd: 'password-r1', purpose: 'register', auid: reg.auid.toString() });
       assert.equal(rc.status, 200, j(rc.body)); assert.equal(rc.body.uid, uid8); assert.equal(rc.body.purpose, 'register'); assert.match(rc.body.code, /^[0-9a-f]{64}$/);
       const other = await createRegistration(BigInt(uid8));   // 다른 salt — 커밋먼트와 다른 salt 로 등록하려는 경우
-      const wrong = await cia8.post('/cia/register', { uid: uid8, code: rc.body.code, auid: other.auid.toString(), pk_u: pointToStrings(other.pk_u), sig_reg: await signRegistration(other.sk_u, BigInt(uid8), other.auid) });
+      const wrong = await cia8.post('/cia/register', { uid: uid8, code: rc.body.code, ...(await regBody(other, uid8)) });
       assert.equal(wrong.status, 403, j(wrong.body)); assert.equal(wrong.body.reason, 'register_auid_mismatch');
-      const r1 = await cia8.post('/cia/register', { uid: uid8, code: rc.body.code, auid: reg.auid.toString(), pk_u: pointToStrings(reg.pk_u), sig_reg: await signRegistration(reg.sk_u, BigInt(uid8), reg.auid) });
+      const r1 = await cia8.post('/cia/register', { uid: uid8, code: rc.body.code, ...(await regBody(reg, uid8)) });
       assert.equal(r1.status, 201, j(r1.body)); assert.match(r1.body.issue_code, /^[0-9a-f]{64}$/, '등록 코드 경로는 발급 코드를 함께 준다');
       // 2026-11-12(스펙 snap-derived-secrets S3): 이미 등록된 계정도 같은 auid 면 등록 코드를 준다(복구 — 같은 비밀로 다시 등록). 다른 auid 면 409.
       const again = await cia8.post('/cia/auth/code', { id: 'reg-at-login', pwd: 'password-r1', purpose: 'register', auid: reg.auid.toString() });
       assert.equal(again.status, 200, j(again.body)); assert.equal(again.body.purpose, 'register');
       const diff = await cia8.post('/cia/auth/code', { id: 'reg-at-login', pwd: 'password-r1', purpose: 'register', auid: other.auid.toString() });
       assert.equal(diff.status, 409, j(diff.body)); assert.equal(diff.body.reason, 'already_registered');
-      const rr = await cia8.post('/cia/register', { uid: uid8, code: again.body.code, auid: reg.auid.toString(), pk_u: pointToStrings(reg.pk_u), sig_reg: await signRegistration(reg.sk_u, BigInt(uid8), reg.auid) });
+      const rr = await cia8.post('/cia/register', { uid: uid8, code: again.body.code, ...(await regBody(reg, uid8)) });
       assert.equal(rr.status, 201, j(rr.body)); assert.equal(rr.body.restored, true); assert.equal(rr.body.slot, r1.body.slot);
       assert.match(rr.body.issue_code, /^[0-9a-f]{64}$/, '복구도 등록 코드 경로면 발급 코드를 준다');
       const u8 = userOf({ ...reg, slot: r1.body.slot }, uid8, TESTUSER_ATTRS);
@@ -172,7 +168,7 @@ try {
       // 비밀번호 경로(code 없음)의 등록 응답에는 issue_code 가 없다
       const su2 = await cia8.post('/cia/signup', { id: 'reg-by-pwd', pwd: 'password-r2' }); const uid9 = su2.body.uid;
       const reg2 = await createRegistration(BigInt(uid9));
-      const r2 = await cia8.post('/cia/register', { uid: uid9, pwd: 'password-r2', auid: reg2.auid.toString(), pk_u: pointToStrings(reg2.pk_u), sig_reg: await signRegistration(reg2.sk_u, BigInt(uid9), reg2.auid) });
+      const r2 = await cia8.post('/cia/register', { uid: uid9, pwd: 'password-r2', ...(await regBody(reg2, uid9)) });
       assert.equal(r2.status, 201, j(r2.body)); assert.equal(r2.body.issue_code, undefined);
     } finally { await cia8.stop(); }
   });
@@ -197,16 +193,16 @@ try {
     } finally { await cia3.stop(); }
   });
 
-  await t('F-7: 발급 코드 소비는 sig_u 검증 뒤 — 맞는 코드 + 틀린 sig_u 는 400 이고 코드는 타지 않아, 같은 코드로 재시도하면 200', async () => {
+  await t('F-7: 발급 코드 소비는 π_IdP 검증 뒤 — 맞는 코드 + 틀린 tag 는 400 이고 코드는 타지 않아, 같은 코드로 재시도하면 200', async () => {
     const cia6 = await startIsolatedCia({ env: { CIA_ISSUE_AUTH: 'code' } });
     try {
       const u = userOf(await cia6.registerUser('12345', 'password123'), '12345', TESTUSER_ATTRS);
       const authResp = await cia6.post('/cia/auth/code', { uid: '12345', pwd: 'password123', auid: u.auid.toString() });
       assert.equal(authResp.status, 200, j(authResp.body));
-      const bad = await issueV11(cia6, u, { arid, provider, overrides: { auth_code: authResp.body.code, sig_u: { R8x: '1', R8y: '1', S: '1' } } });
-      assert.equal(bad.r.status, 400, j(bad.r.body)); assert.equal(bad.r.body.error, 'bad user signature');
+      const bad = await issueV11(cia6, u, { arid, provider, overrides: { auth_code: authResp.body.code, tag: '1' } });
+      assert.equal(bad.r.status, 400, j(bad.r.body)); assert.equal(bad.r.body.reason, 'bad_idp_proof');
       const ok = await issueV11(cia6, u, { arid, provider, overrides: { auth_code: authResp.body.code } });
-      assert.equal(ok.r.status, 200, j(ok.r.body), '틀린 서명 시도가 코드를 태우지 않았어야 한다');
+      assert.equal(ok.r.status, 200, j(ok.r.body), '틀린 증명 시도가 코드를 태우지 않았어야 한다');
     } finally { await cia6.stop(); }
   });
 
@@ -214,48 +210,44 @@ try {
     const ciaOff = await startIsolatedCia({ env: { CIA_DEMO_ACCOUNTS: '' } });
     try {
       const reg = await createRegistration(12345n);
-      const sig_reg = await signRegistration(reg.sk_u, 12345n, reg.auid);
-      const r = await ciaOff.post('/cia/register', { uid: '12345', pwd: 'password123', auid: reg.auid.toString(), pk_u: pointToStrings(reg.pk_u), sig_reg });
+      const r = await ciaOff.post('/cia/register', { uid: '12345', pwd: 'password123', ...(await regBody(reg, '12345')) });
       assert.equal(r.status, 401, j(r.body));
       const su = await ciaOff.post('/cia/signup', { id: 'user-off-1', pwd: 'password-off-1' });
       assert.equal(su.status, 201, j(su.body), '가입으로는 여전히 계정을 만들 수 있다');
     } finally { await ciaOff.stop(); }
     const reg2 = await createRegistration(12345n);
-    const sig_reg2 = await signRegistration(reg2.sk_u, 12345n, reg2.auid);
-    const r2 = await cia.post('/cia/register', { uid: '12345', pwd: 'password123', auid: reg2.auid.toString(), pk_u: pointToStrings(reg2.pk_u), sig_reg: sig_reg2 });
+    const r2 = await cia.post('/cia/register', { uid: '12345', pwd: 'password123', ...(await regBody(reg2, '12345')) });
     assert.equal(r2.status, 201, j(r2.body));
   });
 
   // ---- 수정 라운드 1(리뷰 97158aa) ----
-  await t('가입만 한(등록 전) uid 는 /cia/issue·/cia/slot·관리자 /cia/revoke scope=account 모두 404 unknown account(레코드는 있지만 pk_u 없음)', async () => {
+  await t('가입만 한(등록 전) uid 는 /cia/issue·/cia/slot·관리자 /cia/revoke scope=account 모두 404 unknown account(레코드는 있지만 auid 없음)', async () => {
     const withJar = makeJar(cia.base);
     const su = await withJar('/cia/signup', { method: 'POST', body: JSON.stringify({ id: 'user-7', pwd: 'password-7' }) });
     const uid = su.body.uid;
     const head = await provider.getBlockNumber();
-    const dummyPt = { x: '1', y: '1' }, dummySig = { R8x: '1', R8y: '1', S: '1' };
+    const dummyPt = { x: '1', y: '1' };
     const issueRes = await cia.post('/cia/issue', {
-      uid, auid_s: '1', arid_s: '1', C_u_pt: dummyPt, C_s_pt: dummyPt, chainid: '31337', allowAgent: '0', max_height: String(head + 300), proof_idp: {}, sig_u: dummySig,
+      uid, auid_s: '1', arid_s: '1', C_u_pt: dummyPt, C_s_pt: dummyPt, chainid: '31337', allowAgent: '0', max_height: String(head + 300), proof_idp: {}, tag: '1',
     });
     assert.equal(issueRes.status, 404, j(issueRes.body)); assert.equal(issueRes.body.error, 'unknown account');
-    const slotRes = await cia.post('/cia/slot', { uid, nonce: '1', sig_u: dummySig });
+    const slotRes = await cia.post('/cia/slot', { uid, nonce: '1' });
     assert.equal(slotRes.status, 404, j(slotRes.body)); assert.equal(slotRes.body.error, 'unknown account');
     const revokeRes = await cia.adminPost('/cia/revoke', { uid, scope: 'account' });
     assert.equal(revokeRes.status, 404, j(revokeRes.body)); assert.equal(revokeRes.body.error, 'unknown account');
   });
 
-  await t('register 코드: 잘못된 서명으로 등록이 실패해도 코드는 타지 않는다 — 같은 코드로 재시도하면 성공(스펙 "성공 시 소진")', async () => {
+  await t('register 코드: 잘못된 증명으로 등록이 실패해도 코드는 타지 않는다 — 같은 코드로 재시도하면 성공(스펙 "성공 시 소진")', async () => {
     const withJar = makeJar(cia.base);
     const su = await withJar('/cia/signup', { method: 'POST', body: JSON.stringify({ id: 'user-8', pwd: 'password-8' }) });
     const uid = su.body.uid;
     await withJar('/cia/user/login', { method: 'POST', body: JSON.stringify({ uid, pwd: 'password-8' }) });
     const rc = await withJar('/cia/user/register_code', { method: 'POST', body: JSON.stringify({}) });
     const reg = await createRegistration(BigInt(uid));
-    const badSig = { R8x: '1', R8y: '1', S: '1' };
-    const bad = await cia.post('/cia/register', { uid, code: rc.body.code, auid: reg.auid.toString(), pk_u: pointToStrings(reg.pk_u), sig_reg: badSig });
-    assert.equal(bad.status, 400, j(bad.body)); assert.equal(bad.body.error, 'bad_registration_signature');
-    const sig_reg = await signRegistration(reg.sk_u, BigInt(uid), reg.auid);
-    const ok = await cia.post('/cia/register', { uid, code: rc.body.code, auid: reg.auid.toString(), pk_u: pointToStrings(reg.pk_u), sig_reg });
-    assert.equal(ok.status, 201, j(ok.body), '서명이 틀렸던 시도가 코드를 태우지 않았어야 한다');
+    const bad = await cia.post('/cia/register', { uid, code: rc.body.code, ...(await regBody(reg, uid)), tag: '1' });
+    assert.equal(bad.status, 400, j(bad.body)); assert.equal(bad.body.reason, 'bad_idp_proof');
+    const ok = await cia.post('/cia/register', { uid, code: rc.body.code, ...(await regBody(reg, uid)) });
+    assert.equal(ok.status, 201, j(ok.body), '증명이 틀렸던 시도가 코드를 태우지 않았어야 한다');
   });
 
   await t('로그인은 세션 id 를 새로 받는다(세션 고정 방지) — 옛 sid 는 로그인 뒤에도 폐기, 세션 없이 register_code 는 401', async () => {
@@ -283,13 +275,12 @@ try {
     await withJarA('/cia/user/login', { method: 'POST', body: JSON.stringify({ uid: suA.body.uid, pwd: 'password-a1' }) });
     const rcA = await withJarA('/cia/user/register_code', { method: 'POST', body: JSON.stringify({}) });
     const regB = await createRegistration(BigInt(suB.body.uid));
-    const sig_regB = await signRegistration(regB.sk_u, BigInt(suB.body.uid), regB.auid);
-    const r = await cia.post('/cia/register', { uid: suB.body.uid, code: rcA.body.code, auid: regB.auid.toString(), pk_u: pointToStrings(regB.pk_u), sig_reg: sig_regB });
+    const r = await cia.post('/cia/register', { uid: suB.body.uid, code: rcA.body.code, ...(await regBody(regB, suB.body.uid)) });
     assert.equal(r.status, 401, j(r.body)); assert.equal(r.body.error, 'bad_code', 'A 의 코드로 B 를 등록할 수 없다');
   });
 
   await t('모호성 복원: uid 없이 pwd 와 id_token 이 함께 오면 400(id_token 을 우선하지 않는다)', async () => {
-    const r = await cia.post('/cia/register', { pwd: 'whatever1', id_token: 'x', auid: '1', pk_u: { x: '1', y: '1' }, sig_reg: { R8x: '1', R8y: '1', S: '1' } });
+    const r = await cia.post('/cia/register', { pwd: 'whatever1', id_token: 'x', auid: '1' });
     assert.equal(r.status, 400, j(r.body));
   });
 
@@ -303,8 +294,7 @@ try {
       const su5 = await withJar5('/cia/signup', { method: 'POST', body: JSON.stringify({ id: 'user-x', pwd: 'password-x' }) });
       const uid2 = su5.body.uid;
       const reg2 = await createRegistration(BigInt(uid2));
-      const sig_reg2 = await signRegistration(reg2.sk_u, BigInt(uid2), reg2.auid);
-      const regAttempt = await cia5.post('/cia/register', { uid: uid2, code: issueCodeResp.body.code, auid: reg2.auid.toString(), pk_u: pointToStrings(reg2.pk_u), sig_reg: sig_reg2 });
+      const regAttempt = await cia5.post('/cia/register', { uid: uid2, code: issueCodeResp.body.code, ...(await regBody(reg2, uid2)) });
       assert.equal(regAttempt.status, 401, j(regAttempt.body)); assert.equal(regAttempt.body.error, 'bad_code', 'issue 코드는 register 에 못 쓴다');
       await withJar5('/cia/user/login', { method: 'POST', body: JSON.stringify({ uid: uid2, pwd: 'password-x' }) });
       const registerCodeResp = await withJar5('/cia/user/register_code', { method: 'POST', body: JSON.stringify({}) });
@@ -556,7 +546,7 @@ try {
     assert.equal((await withJar2('/cia/rp/me')).body.rps.find((r) => r.name === 'zkTEN').status, 'pending');
   });
 
-  await t('지갑 연결 해제(2026-11-06): 등록된 계정에서 pk_u·auid 를 풀고 활성 자격증명을 은퇴·게시(disabled 아님) → me.registered=false → 같은 계정에 새 지갑을 다시 등록(새 슬롯); 비밀번호 틀리면 401, 미등록이면 409', async () => {
+  await t('지갑 연결 해제(2026-11-06): 등록된 계정에서 auid 를 풀고 활성 자격증명을 은퇴·게시(disabled 아님) → me.registered=false → 같은 계정에 새 지갑을 다시 등록(새 슬롯); 비밀번호 틀리면 401, 미등록이면 409', async () => {
     const withJar = makeJar(cia.base);
     const su = await withJar('/cia/signup', { method: 'POST', body: JSON.stringify({ id: 'unlink-1', pwd: 'password-u1' }) });
     await withJar('/cia/user/login', { method: 'POST', body: JSON.stringify({ id: 'unlink-1', pwd: 'password-u1' }) });
@@ -564,8 +554,7 @@ try {
     const reg1 = async () => {
       const rc = await withJar('/cia/user/register_code', { method: 'POST', body: JSON.stringify({}) });
       const reg = await createRegistration(BigInt(su.body.uid));
-      const sig_reg = await signRegistration(reg.sk_u, BigInt(su.body.uid), reg.auid);
-      const rr = await cia.post('/cia/register', { uid: su.body.uid, code: rc.body.code, auid: reg.auid.toString(), pk_u: pointToStrings(reg.pk_u), sig_reg });
+      const rr = await cia.post('/cia/register', { uid: su.body.uid, code: rc.body.code, ...(await regBody(reg, su.body.uid)) });
       assert.equal(rr.status, 201, j(rr.body)); return { ...rr.body, reg };
     };
     const first = await reg1();
@@ -574,6 +563,7 @@ try {
     const un = await withJar('/cia/user/unlink_wallet', { method: 'POST', body: JSON.stringify({ pwd: 'password-u1' }) });
     assert.equal(un.status, 200, j(un.body)); assert.equal(un.body.unlinked, true); assert.equal(un.body.retired, 0, '발급 전이라 은퇴할 자격증명은 없다');
     const me2 = (await withJar('/cia/user/me')).body; assert.equal(me2.registered, false, '지갑 연결이 풀렸다'); assert.equal(me2.disabled, false, '계정은 폐기되지 않았다');
+    assert.equal((await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === su.body.uid).auid, null, '연결을 풀면 auid 가 비고(등록됨의 표지), 옛 슬롯 번호는 남는다');
     assert.equal((await withJar('/cia/user/login', { method: 'POST', body: JSON.stringify({ id: 'unlink-1', pwd: 'password-u1' }) })).status, 200, '같은 아이디로 계속 로그인된다');
     const second = await reg1();
     assert.notEqual(second.slot, first.slot, '다시 등록하면 새 슬롯');
@@ -605,8 +595,7 @@ try {
     await withJar2('/cia/user/login', { method: 'POST', body: JSON.stringify({ id: 'del-2', pwd: 'password-d2' }) });
     const rc = await withJar2('/cia/user/register_code', { method: 'POST', body: JSON.stringify({}) });
     const reg = await createRegistration(BigInt(su3.body.uid));
-    const sig_reg = await signRegistration(reg.sk_u, BigInt(su3.body.uid), reg.auid);
-    const rr = await cia.post('/cia/register', { uid: su3.body.uid, code: rc.body.code, auid: reg.auid.toString(), pk_u: pointToStrings(reg.pk_u), sig_reg });
+    const rr = await cia.post('/cia/register', { uid: su3.body.uid, code: rc.body.code, ...(await regBody(reg, su3.body.uid)) });
     assert.equal(rr.status, 201, j(rr.body));
     const before = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === su3.body.uid);
     assert.ok(Number.isInteger(before.slot), '등록된 계정은 슬롯이 있다');

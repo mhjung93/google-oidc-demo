@@ -39,7 +39,7 @@ const keptKeys = path.join(keep, 'cia_keys.json');
  * 자체가 등록부를 즉시 게시해 epoch 가 예측과 어긋난다).
  */
 async function registerAndIssueLeaf(cia, user) {
-  if (!user.sk_u) Object.assign(user, userOf(await cia.registerUser(uid.toString(), 'password123'), uid), { blind_u: randomScalar() });
+  if (!user.s_u) Object.assign(user, userOf(await cia.registerUser(uid.toString(), 'password123'), uid), { blind_u: randomScalar() });
   // 사용자 자격증명은 한 번만(매번 새 C_u 면 그 발급 자체가 등록부를 즉시 게시해 epoch 가 예측과 어긋난다) — 같은 blind_u 를 다시 준다.
   const iss = await issueV11(cia, user, { arid, provider: getProvider(), blind_u: user.blind_u });
   assert.equal(iss.r.status, 200, JSON.stringify(iss.r.body));
@@ -65,7 +65,7 @@ const firstEthPrv = first.ciaEthWallet.privateKey;
 const b32 = (leaf) => rootToBytes32(BigInt(leaf));
 
 try {
-  const user = { sk_u: null };
+  const user = { s_u: null };
   // 상황 만들기: L1 은 정상 게시, L2·L3 는 pending. 그 다음 "L2 만 실은 게시 tx 는 성공했는데 IdP 가 persist() 전에
   // 죽었다" 를 흉내낸다 — 체인에 직접 게시하고 상태 파일은 그대로 둔다. V9: registerAndIssueLeaf 안의 사용자
   // 자격증명 발급(최초 1회)이 등록부를 즉시 게시하므로(세션 폐기 pending 과는 별개 epoch 증가) 아래는 전부
@@ -137,14 +137,15 @@ try {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
-  await t('V11: 백로그(pendingSlots)가 남은 v12 파일은 기동이 자동 게시한다; 자동 게시가 RPC 를 못 읽으면 경고만 남기고 기동은 계속한다', async () => {
+  await t('V11: 백로그(pendingSlots)가 남은 v12 파일(pk_u 있음)은 기동이 13 으로 이행하고 자동 게시한다 — 그 계정은 재등록 없이 발급된다; 자동 게시가 RPC 를 못 읽으면 경고만 남기고 기동은 계속한다', async () => {
     const { createRegistration } = await import('../lib/mode3_wallet.js');
     const { userCommit } = await import('../lib/mode3_credential.js');
     const { registryLeaf } = await import('../lib/mode3_registry.js');
     const reg = await createRegistration(12345n);
     const { Cx, Cy, Cf } = await userCommit({ uid: 12345n, s_u: reg.s_u, blind_u: randomScalar(), attrs: [1990n, 410n, 0n, 0n, 0n, 0n] });
     const leaf = (await registryLeaf(reg.auid, Cf)).toString();
-    const mk = () => ({ version: 12, accounts: { '12345': { pk_u: { x: reg.pk_u.x.toString(), y: reg.pk_u.y.toString() }, auid: reg.auid.toString(), slot: 0, tampered: false, disabled: false, creds: [{ Cf_u: Cf.toString(), C_u_pt: { x: Cx.toString(), y: Cy.toString() }, issuedAt: 'x', revoked: false }], sessions: [], receipt: null, slotRetired: false } },
+    // 2026-11-13(스펙 no-pk-u §5): 일부러 v12 모양(pk_u 있음)으로 둔다 — 로더가 pk_u 를 지우고 13 으로 올리는 실제 이행을 본다.
+    const mk = () => ({ version: 12, accounts: { '12345': { pk_u: { x: '1', y: '2' }, auid: reg.auid.toString(), slot: 0, tampered: false, disabled: false, creds: [{ Cf_u: Cf.toString(), C_u_pt: { x: Cx.toString(), y: Cy.toString() }, issuedAt: 'x', revoked: false }], sessions: [], receipt: null, slotRetired: false } },
       rps: {}, openings: [], revoked: [], pending: [], epoch: 0, registry: { depth: 20, next: 1, leaves: { '0': leaf }, pendingSlots: [{ index: 0, leaf }] }, lastPublication: null, signedEpochMax: 0, attrSchemaHash: null });
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-v12-backlog-'));
     const stateFile = path.join(dir, 'cia_state.json');
@@ -153,6 +154,11 @@ try {
     try {
       const st = (await cia.get('/cia/state')).body;
       assert.equal(st.pendingSlots, 0, '기동이 백로그를 게시했어야 한다'); assert.equal(st.epoch, 1);
+      assert.match(cia.log(), /12 → 13/, '기동 로그에 이행 한 줄');
+      const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));   // 테스트가 만든 임시 상태 파일
+      assert.equal(saved.version, 13); assert.equal('pk_u' in saved.accounts['12345'], false, '저장된 파일에서 pk_u 가 사라졌다');
+      const iss = await issueV11(cia, { uid: 12345n, s_u: reg.s_u, auid: reg.auid, attrs: [1990n, 410n, 0n, 0n, 0n, 0n] }, { arid, provider: getProvider() });
+      assert.equal(iss.r.status, 200, `v12 에서 온 계정은 재등록 없이 발급된다: ${JSON.stringify(iss.r.body)}`);
     } finally { await cia.stop(); }
     fs.writeFileSync(stateFile, JSON.stringify(mk()), { mode: 0o600 });
     const dead = await startIsolatedCia({ env: { CIA_STATE_FILE: stateFile, CIA_RPC_URL: 'http://127.0.0.1:1' } });
@@ -171,12 +177,12 @@ try {
   });
 
   // 최종 리뷰 I4(2026-10-07): 계정 attrs 는 저장 당시 스키마로 인코딩돼 있다 — 상태 파일이 해시를 기억하고, 다른 스키마로 뜨면 거부한다.
-  await t('스키마 해시: 해시가 없던 v12 상태 파일은 지금 스키마의 해시를 기록하고, 해시가 다른 v12 상태 파일은 기동 거부', async () => {
+  await t('스키마 해시: 해시가 없던 상태 파일은 지금 스키마의 해시를 기록하고, 해시가 다른 상태 파일은 기동 거부', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-schemahash-'));
     const stateFile = path.join(dir, 'cia_state.json');
     const schemaFile = path.join(dir, 'schema.json');
     try {
-      fs.writeFileSync(stateFile, JSON.stringify({ version: 12, accounts: {}, rps: {}, openings: [], revoked: [], pending: [], epoch: 0, registry: { depth: 20, next: 0, leaves: {}, pendingSlots: [] }, lastPublication: null, signedEpochMax: 0 }), { mode: 0o600 });
+      fs.writeFileSync(stateFile, JSON.stringify({ version: 13, accounts: {}, rps: {}, openings: [], revoked: [], pending: [], epoch: 0, registry: { depth: 20, next: 0, leaves: {}, pendingSlots: [] }, lastPublication: null, signedEpochMax: 0 }), { mode: 0o600 });
       const cia = await startIsolatedCia({ env: { CIA_STATE_FILE: stateFile } });
       try {
         const sch = (await cia.get('/cia/attr_schema')).body;
