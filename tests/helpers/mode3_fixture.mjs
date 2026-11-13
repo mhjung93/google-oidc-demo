@@ -14,12 +14,12 @@ export const FIXTURE_ATTRS = Object.freeze([1990n, 410n, 2n, 0n, 0n, 0n]);   // 
 /** 정상 입력 하나. 옵션: pk_i(실제 세션키 주소), maxHeight, allowAgent, chainid, disclosure{mask, lo[6], hi[6]}, set{slot 0..5, members},
  *  revokedSessions(남의 세션 폐기 리프, [{Cf_s, bound}]), registrySlot(기본 7), registryLeafOverride(음성용), r_s·r_rp(V11 세션 난수 — 기본은 고정값),
  *  counter(2026-10-22 §6.5 — 기본 LOGIN_COUNTER, "이 세션의 폐기 리프가 하나도 없다"). */
-export async function buildValidInput({ pk_i: pkIOpt, maxHeight = 1789000000n, allowAgent = 0n, chainid = 31337n, disclosure = null, set = null, revokedSessions = [], registrySlot = 7, registryLeafOverride = null, r_s = 13131313131313131313n, r_rp = 12121212121212121212n, counter = LOGIN_COUNTER } = {}) {
+export async function buildValidInput({ uid: uidOpt, pk_i: pkIOpt, maxHeight = 1789000000n, allowAgent = 0n, chainid = 31337n, disclosure = null, set = null, revokedSessions = [], registrySlot = 7, registryLeafOverride = null, r_s = 13131313131313131313n, r_rp = 12121212121212121212n, counter = LOGIN_COUNTER } = {}) {
   const poseidon = await buildPoseidon();
   const F = poseidon.F;
   const eddsa = await buildEddsa();
 
-  const uid     = 11111111111111111111n;
+  const uid     = uidOpt ?? 11111111111111111111n;   // uid 옵션(2026-11-13): PPID·auid 가 uid 와 무관함을 보는 테스트용
   const arid    = 22222222222222222222n;
   const s_u     = 33333333333333333333n;
   const blind_u = 44444444444444444444n;
@@ -38,7 +38,7 @@ export async function buildValidInput({ pk_i: pkIOpt, maxHeight = 1789000000n, a
   const auid = await auidOf({ s_u });
   const auid_s = await auidSOf({ auid, arid, r_rp });
   const arid_s = await aridSOf({ arid, r_rp });
-  const PPID = await computePpid({ uid, s_u, arid, chainid });
+  const PPID = await computePpid({ s_u, arid, chainid });
   const msg = await credMessageV11(auid_s, arid_s, Cf_u, Cf_s, chainid, allowAgent);
 
   const prv = Buffer.from('0001020304050607080900010203040506070809000102030405060708090001', 'hex');

@@ -77,6 +77,13 @@ await t('양성: 같은 r_rp 로 다른 세션키·만료의 C_s 를 만들면(�
   const other = await buildIdpInput({ pk_i: 0x9999n, maxHeight: 42n, r_s: 777n });
   assert.ok((await witness(other.input)).length > 0);
 });
+await t('R10(2026-11-13): auid 는 uid 와 무관하다 — uid 만 바꾸면 C_u 가 어긋나 거부되지만, uid 를 바꿔 C_u 를 다시 만든 입력은 같은 auid 로 통과한다', async () => {
+  await assert.rejects(() => witness({ ...valid, uid: bump(valid.uid) }), /Assert Failed/);
+  const other = await buildIdpInput({ uid: 99999n });
+  assert.equal(other.input.auid, valid.auid);
+  assert.notEqual(other.input.C_u_x, valid.C_u_x);
+  assert.ok((await witness(other.input)).length > 0);
+});
 // 2026-11-13(스펙 2026-11-12 no-pk-u §2): 공개 입력 ctx·tag — tag = Poseidon(T_TAG, s_u, ctx). 회로는 ctx 의 내용을 모른다.
 await t('음성: tag 를 바꾸면 거부; ctx 만 바꿔도 tag 가 어긋나 거부', async () => {
   await assert.rejects(() => witness({ ...valid, tag: bump(valid.tag) }), /Assert Failed/);
@@ -93,5 +100,5 @@ await t('양성: 버릴 값(attrs·arid·pk_i·max_height = 0)으로도 witness 
 });
 
 console.log('');
-console.log(`## pi_idp 비선형 제약: ${constraints.toLocaleString()} (스펙 2026-11-12 §2: 6,325 + Poseidon(3) 하나, 약 240 추정)`);
+console.log(`## pi_idp 비선형 제약: ${constraints.toLocaleString()} (2026-11-13 random-salt: ② 가 Poseidon(3) → Poseidon(2))`);
 process.exit(failed === 0 ? 0 : 1);

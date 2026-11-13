@@ -14,7 +14,7 @@ include "babyjub.circom";
 //   C_u = uid·G_UID + s_u·G_SU + attr₀·G_ATTR0 + … + attr₅·G_ATTR5 + blind_u·H   (사용자당 하나)
 //   C_s = pk_i·G_PKI + max_height·G_EXP + r_s·G_RS + r_rp·H (세션마다, V11)
 //
-//   uid     — 계정 식별자. PPID 유도에 쓰인다
+//   uid     — 계정 식별자. C_u 와 추적 tag 에 쓰인다(PPID·auid 에는 2026-11-13 부터 없다)
 //   s_u     — 사용자 비밀. IdP 가 PPID를 열거하지 못하게 막는다 (Mode 2의 salt)
 //   attrs   — 속성 6슬롯. IdP 는 값을 모른다
 //   blind_u — C_u 블라인딩. IdP 가 자기가 아는 uid 로 C_u 를 재계산해 대조하는 것을 막는다

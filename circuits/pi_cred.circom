@@ -15,9 +15,9 @@ include "lib/mode3_trace_tag.circom";
 // 2026-10-22: counter(34번째 공개 입력) · 세션 구간 비멤버십.
 // 여덟 가지를 함께 증명한다. 하나라도 빠지면 뚫린다:
 //   ① 토큰: IdP 가 (auid_s, arid_s, Cf_u, Cf_s, chainid, allowAgent) 에 서명했다 — 없으면 아무나 credential 을 만든다
-//   ② ID 정확성: auid = Poseidon(T_AUID, uid, s_u), auid_s = Poseidon(T_AUIDS, auid, arid, r_rp), arid_s = Poseidon(T_ARIDS, arid, r_rp)
+//   ② ID 정확성: auid = Poseidon(T_AUID2, s_u)(2026-11-13: uid 를 뺐다), auid_s = Poseidon(T_AUIDS, auid, arid, r_rp), arid_s = Poseidon(T_ARIDS, arid, r_rp)
 //      — 없으면 토큰의 세션 가명이 이 uid·arid 와 무관하다(남의 토큰을 자기 arid 로 쓴다)
-//   ③ PPID = Poseidon(uid, s_u, arid, chainid) — 없으면 지갑 주소를 특정할 수 없다(D13 순서)
+//   ③ PPID = Poseidon(s_u, arid, chainid) — 없으면 지갑 주소를 특정할 수 없다(2026-11-13 스펙 random-salt R9: uid 를 뺐다 — RP 쪽 신원 단위는 스냅)
 //   ④ 선택 공개·집합 소속(불변) — 사용자가 넣은 attrs 위에서(D15)
 //   ⑤ 같은 r_rp: ② 의 두 해시와 ⑦ 의 C_s 블라인딩이 하나의 비공개 r_rp — 없으면 토큰(C_s)과 가명이 다른 세션 것일 수 있다
 //   ⑥ 등록부: Poseidon(auid, Cf_u) ∈ Tree(regRoot)(깊이 20) · 폐기: [H'·2^32, H'·2^32 + counter] ∩ Tree(revRoot) = ∅(IMT 32), H' = Poseidon(5, Cf_s) mod 2^220
@@ -82,7 +82,7 @@ template PiCred(depth, regDepth) {
     signal input counter;    // 2026-10-22 [33] — 거래는 payload.nonce, 로그인·재검증은 2^32 − 1. 32비트.
 
     var DOMAIN_MODE3_CRED_V11 = 23926173293433188795270181169;   // ASCII "MODE3CREDV11" — lib/mode3_credential.js DOMAIN_MODE3_CRED_V11
-    var DOMAIN_MODE3_AUID  = 1426111059989489862980;             // "MODE3AUID"
+    var DOMAIN_MODE3_AUID  = 365084431357309404922930;           // "MODE3AUID2"(2026-11-13)
     var DOMAIN_MODE3_AUIDS = 365084431357309404922963;           // "MODE3AUIDS"
     var DOMAIN_MODE3_ARIDS = 365084431357309354591315;           // "MODE3ARIDS"
     var TAG_MODE3_SESSION = 5;
@@ -105,8 +105,8 @@ template PiCred(depth, regDepth) {
     Cf_s <== cfs.out;
 
     // ---- ② ID 정확성 (⑤: 같은 r_rp 신호) ----
-    component ah = Poseidon(3);
-    ah.inputs[0] <== DOMAIN_MODE3_AUID;  ah.inputs[1] <== uid;  ah.inputs[2] <== s_u;
+    component ah = Poseidon(2);
+    ah.inputs[0] <== DOMAIN_MODE3_AUID;  ah.inputs[1] <== s_u;
     signal auid;
     auid <== ah.out;
     component ash = Poseidon(4);
@@ -135,13 +135,12 @@ template PiCred(depth, regDepth) {
     sigVerifier.R8y <== R8y;
     sigVerifier.M <== msgHasher.out;
 
-    // ---- ③ PPID (D13 순서) ----
+    // ---- ③ PPID (2026-11-13 R9: uid 를 뺐다 — 스냅별 가명) ----
     // chainid 는 토큰 메시지에도 들어가는 같은 공개 입력이라, 토큰이 보증하는 체인과 가명의 체인이 어긋날 수 없다.
-    component ppidHasher = Poseidon(4);
-    ppidHasher.inputs[0] <== uid;
-    ppidHasher.inputs[1] <== s_u;
-    ppidHasher.inputs[2] <== arid;
-    ppidHasher.inputs[3] <== chainid;
+    component ppidHasher = Poseidon(3);
+    ppidHasher.inputs[0] <== s_u;
+    ppidHasher.inputs[1] <== arid;
+    ppidHasher.inputs[2] <== chainid;
     PPID === ppidHasher.out;
 
     // ---- ⑥ 세션 구간 비멤버십 (폐기 트리, 2026-10-22 상한) ----

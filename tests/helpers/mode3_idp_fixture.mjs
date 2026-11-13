@@ -9,8 +9,8 @@ export const IDP_FIXTURE = Object.freeze({
 });
 
 /** 정상 입력 하나. 옵션으로 attrs·maxHeight·pk_i·r_s·r_rp·arid·ctx 를 바꿀 수 있다(값은 자유 — IdP 는 속성을 보지 않는다, D15). ctx 를 안 주면 발급 요청의 ctx. */
-export async function buildIdpInput({ attrs = IDP_FIXTURE.attrs, maxHeight = IDP_FIXTURE.max_height, pk_i = IDP_FIXTURE.pk_i, r_s = IDP_FIXTURE.r_s, r_rp = IDP_FIXTURE.r_rp, arid = IDP_FIXTURE.arid, ctx = null } = {}) {
-  const { uid, s_u, blind_u } = IDP_FIXTURE;
+export async function buildIdpInput({ uid = IDP_FIXTURE.uid, attrs = IDP_FIXTURE.attrs, maxHeight = IDP_FIXTURE.max_height, pk_i = IDP_FIXTURE.pk_i, r_s = IDP_FIXTURE.r_s, r_rp = IDP_FIXTURE.r_rp, arid = IDP_FIXTURE.arid, ctx = null } = {}) {
+  const { s_u, blind_u } = IDP_FIXTURE;
   const a = [...attrs];
   const cu = await userCommit({ uid, s_u, blind_u, attrs: a });
   const cs = await sessionCommit({ pk_i, max_height: maxHeight, r_s, r_rp });

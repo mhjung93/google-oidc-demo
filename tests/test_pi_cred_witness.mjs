@@ -140,12 +140,19 @@ await t('V11 양성: 다른 r_s·r_rp 로 만든 세션(픽스처 재생성)은 
   await witness(fx2.input);
   assert.notEqual(await auidSOf({ auid: fx2.auid, arid: fx2.arid, r_rp: 2n }), await auidSOf({ auid: fx2.auid, arid: fx2.arid + 1n, r_rp: 2n }));
 });
-await t('V11 음성: PPID 를 옛 순서 Poseidon(uid, s_u, chainid, arid) 로 내면 거부(D13)', async () => {
+await t('R9 음성: PPID 를 옛 식 Poseidon(uid, s_u, arid, chainid) 로 내면 거부(2026-11-13 — uid 가 식에 없다)', async () => {
   const { buildPoseidon } = await import('circomlibjs');
   const ps = await buildPoseidon();
-  const old = ps.F.toObject(ps([BigInt(valid.uid), BigInt(valid.s_u), BigInt(valid.chainid), BigInt(valid.arid)])).toString();
+  const old = ps.F.toObject(ps([BigInt(valid.uid), BigInt(valid.s_u), BigInt(valid.arid), BigInt(valid.chainid)])).toString();
   assert.notEqual(old, valid.PPID);
   await assert.rejects(() => witness({ ...valid, PPID: old }), /Assert Failed/);
+});
+await t('R9·R10 양성: uid 가 다른 계정(같은 salt)으로 C_u·토큰을 다시 만들어도 PPID 와 등록 가명이 같다 — RP 쪽 신원 단위는 스냅', async () => {
+  const other = await buildValidInput({ uid: 99999n });
+  assert.equal(other.input.PPID, valid.PPID);
+  assert.equal(other.auid, (await buildValidInput()).auid);
+  assert.ok((await witness(other.input)).length > 0);
+  await assert.rejects(() => witness({ ...valid, uid: (BigInt(valid.uid) + 1n).toString() }), /Assert Failed/);   // uid 만 바꾸면 C_u(토큰이 서명한 Cf_u)·추적 tag 가 어긋난다
 });
 await t('V11 음성: pk_i ≥ 2^160 은 CommitSessionV11 의 Num2Bits(160) 이 거부한다', async () => {
   await assert.rejects(() => witness({ ...valid, pk_i: (1n << 160n).toString() }), /Assert Failed/);
