@@ -815,7 +815,6 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     // 발급 ctx 의 지갑 난수 n(2026-11-13): Google 계정은 /wallet/oidc/nonce 가 뽑아 토큰 nonce 에 쓴 값을 다시 실어야 한다(다르면 IdP 가 oidc_nonce_mismatch 를 낸다).
     // 그 밖은 여기서 뽑는다. cred_revoked 재시도도 같은 n 을 쓴다(같은 로그인 — 토큰이 묶인 tag 가 그대로다).
     if (nIn !== null && !(isDec(nIn) && BigInt(nIn) < SCALAR_MAX)) return res.status(400).json({ error: 'n 은 10진, 2^250 미만' });
-    if (id_token !== null && nIn === null) return res.status(400).json({ error: 'id_token 로그인은 n(/wallet/oidc/nonce 가 준 값) 필요' });
     const issueN = nIn !== null ? BigInt(nIn) : randomScalar();
     if (factoryAddress !== null && !isAddr(factoryAddress)) return res.status(400).json({ error: 'factoryAddress 는 주소' });
     // attrGateAddress 는 RP 가 알려주는 값을 세션에 실어 나를 뿐 지갑이 검증하지 않는다(스펙 §6.1) — 지갑 폼 기본값(to)으로만 쓰인다.
@@ -832,6 +831,8 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
       const tokUid = oidcUidOf(oc.provider, id_token);
       if (!tokUid) return res.status(400).json({ reason: 'bad_id_token' });
       if (tokUid !== state.registration.uid) return res.status(403).json({ reason: 'uid_mismatch' });
+      // 토큰을 IdP 로 보낼 로그인만 n 을 요구한다 — 위의 사유(use_auth_window·bad_id_token·uid_mismatch)가 먼저다.
+      if (nIn === null) return res.status(400).json({ error: 'id_token 로그인은 n(/wallet/oidc/nonce 가 준 값) 필요' });
     }
     if (chainConfigMissing()) return res.status(503).json({ reason: 'chain_unavailable', detail: chainConfigMissing() });
     const rs = BigInt(r_s), rrp = BigInt(r_rp);

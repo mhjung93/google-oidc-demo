@@ -228,7 +228,7 @@ try {
     const head = await provider.getBlockNumber();
     const dummyPt = { x: '1', y: '1' };
     const issueRes = await cia.post('/cia/issue', {
-      uid, auid_s: '1', arid_s: '1', C_u_pt: dummyPt, C_s_pt: dummyPt, chainid: '31337', allowAgent: '0', max_height: String(head + 300), proof_idp: {}, tag: '1',
+      uid, auid_s: '1', arid_s: '1', C_u_pt: dummyPt, C_s_pt: dummyPt, chainid: '31337', allowAgent: '0', max_height: String(head + 300), proof_idp: {}, tag: '1', n: '1',
     });
     assert.equal(issueRes.status, 404, j(issueRes.body)); assert.equal(issueRes.body.error, 'unknown account');
     const slotRes = await cia.post('/cia/slot', { uid, nonce: '1' });

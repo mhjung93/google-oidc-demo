@@ -587,7 +587,6 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       // 발급 ctx 의 지갑 난수 n(2026-11-13): Google 토큰을 싣는 로그인은 loginPrepare 가 뽑아 토큰 nonce 에 쓴 값을 다시 받아야 한다(다르면 IdP 가 oidc_nonce_mismatch).
       // 그 밖은 여기서 뽑는다. cred_revoked 재시도도 같은 n 을 쓴다.
       if (nIn !== null && !(isDec(nIn) && BigInt(nIn) < SCALAR_MAX)) return R(400, { error: 'n 은 10진, 2^250 미만' });
-      if (idToken !== null && nIn === null) return R(400, { error: 'idToken 로그인은 n(loginPrepare 가 준 값) 필요' });
       const issueN = nIn !== null ? BigInt(nIn) : randomScalar();
       // OIDC 래퍼 — RP 로그인 흐름(2026-10-16): Google 버튼으로 들어온 로그인은 ID 토큰을 함께 낸다. 이 브라우저에 등록이 없으면 loginPrepare 의 보류 재료로
       // 로컬 등록을 먼저 만들고(IdP 쪽 등록은 발급 요청에 실어 IdP 가 그 자리에서 한다), 있으면 토큰만 싣는다. 데모 계정으로 등록된 브라우저면 토큰은 쓰지 않는다.
@@ -598,6 +597,8 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
         try { claims = jwtPayload(idToken); } catch { return R(400, { reason: 'oidc_invalid', detail: 'id_token 형식이 아니다' }); }
         if (typeof claims?.sub !== 'string' || !claims.sub) return R(400, { reason: 'oidc_invalid', detail: 'sub 가 없다' });
         const existing0 = await getReg();
+        // 토큰을 IdP 로 보낼 로그인(미등록·Google 계정)만 n 을 요구한다 — 데모 계정으로 등록된 브라우저는 토큰을 쓰지 않는다.
+        if ((!existing0 || (existing0.provider && existing0.provider !== 'demo')) && nIn === null) return R(400, { error: 'idToken 로그인은 n(loginPrepare 가 준 값) 필요' });
         if (!existing0) {
           const pend = pendingReg;
           if (!pend) return R(409, { reason: 'no_pending_registration' });
