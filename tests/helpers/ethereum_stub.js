@@ -15,6 +15,8 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const SRC_DIR = fileURLToPath(new URL('../../snap-mode3/src/', import.meta.url));
+/** 저장소의 스냅 번들 버전(snap-mode3/snap.manifest.json) — 에이전트의 /wallet/config.snapVersion 과 같은 값이다. */
+export const SNAP_MANIFEST_VERSION = JSON.parse(fs.readFileSync(fileURLToPath(new URL('../../snap-mode3/snap.manifest.json', import.meta.url)), 'utf8')).version;
 
 // snap-mode3/src/index.js 의 WALLET_ORIGINS 상수(번들에 굳어 있어 env 로 못 바꾼다). 격리 스택의 지갑 포트는
 // 매번 다르므로, MetaMask 역할인 이 스텁이 Snap 에 알려 주는 오리진은 이 고정값을 쓴다.
@@ -55,6 +57,7 @@ export function buildInitScript({ snapId, account, chainId }) {
   const ACCOUNT = ${JSON.stringify(account)};
   const CHAIN_ID = ${JSON.stringify('0x' + BigInt(chainId).toString(16))};
   const SNAP_ORIGIN = ${JSON.stringify(SNAP_WALLET_ORIGIN)};
+  const SNAP_VERSION = ${JSON.stringify(SNAP_MANIFEST_VERSION)};
 
   // @metamask/snaps-sdk 의 UI 빌더 — Snap 은 모양만 만들고 표시는 MetaMask 가 한다. 하네스가 문구를 검사할 수 있게 그대로 담는다.
   const __SDK_SHIM__ = {
@@ -81,10 +84,18 @@ export function buildInitScript({ snapId, account, chainId }) {
 
 ${snapModuleSource().split('\n').map((l) => (l ? '  ' + l : l)).join('\n')}
 
-  const snaps = { [SNAP_ID]: { id: SNAP_ID, version: '0.5.0', enabled: true, blocked: false } };
+  // 설치된 스냅의 버전(2026-11-14): 기본은 저장소의 매니페스트 버전. 옛 스냅을 흉내 내려면 sessionStorage.__snapStubVersion 에 버전을 둔다(새로 고쳐도 남는다) —
+  // wallet_requestSnaps(설치·업데이트)가 그것을 지워 지금 버전이 설치된 것으로 만든다. 부른 메서드는 window.__ethCalls 에 쌓는다(계정을 요청하지 않는지 테스트가 본다).
+  const stubVersion = () => { try { return sessionStorage.getItem('__snapStubVersion') || SNAP_VERSION; } catch { return SNAP_VERSION; } };
+  const snaps = () => ({ [SNAP_ID]: { id: SNAP_ID, version: stubVersion(), enabled: true, blocked: false } });
+  // 스냅은 오리진마다 한 번 허용받는다(2026-11-14): wallet_requestSnaps 전에는 wallet_getSnaps 가 빈 객체다 — 화면이 처음에는 "MetaMask 연결" 카드를 보이고,
+  // 허용 뒤에는 새로 고쳐도 창 없이 다시 잇는 것을 그대로 본다. 허용 표시는 그 오리진의 localStorage 에 둔다(스냅 화면과 승인 팝업·속성 도구가 같은 오리진이다).
+  const installed = () => { try { return localStorage.getItem('__snapStubInstalled') === '1'; } catch { return true; } };
+  window.__ethCalls = [];
   window.ethereum = {
     isMetaMask: true,
     request: async ({ method, params }) => {
+      window.__ethCalls.push(method);
       switch (method) {
         case 'eth_requestAccounts':
         case 'eth_accounts':
@@ -92,8 +103,10 @@ ${snapModuleSource().split('\n').map((l) => (l ? '  ' + l : l)).join('\n')}
         case 'eth_chainId':
           return CHAIN_ID;
         case 'wallet_requestSnaps':
+          try { sessionStorage.removeItem('__snapStubVersion'); localStorage.setItem('__snapStubInstalled', '1'); } catch { /* 저장소 없음 */ }
+          return snaps();
         case 'wallet_getSnaps':
-          return snaps;
+          return installed() ? snaps() : {};
         case 'wallet_invokeSnap': {
           const { snapId, request } = params || {};
           if (snapId !== SNAP_ID) throw new Error('ethereum_stub: 모르는 snapId ' + snapId);

@@ -141,6 +141,8 @@
     <!-- 2026-11-14(화면 리뷰 3차): zkID 에서 계정을 폐기하거나 스냅 연결을 풀어도 이 화면은 등록·세션을 정상처럼 보였다 — 등록부 확인(/wallet/status 의 registry)이
          "내 슬롯에 내 자격증명이 없다" 고 하면 여기에 알린다(renderIdentity). 탭과 무관하게 보이도록 카드 밖에 둔다. -->
     <p class="notice" id="regNotice" hidden></p>
+    <!-- 2026-11-14(MetaMask 의존성 점검): MetaMask 에 설치된 스냅이 이 화면의 번들과 다른 버전이면 알린다(renderSnapVersion) — 그전에는 옛 스냅이 깔려 있어도 화면이 몰랐다. -->
+    <p class="notice" id="snapVerNotice" hidden></p>
 
     <!-- ===== 탭: 연결된 서비스 ===== -->
     <section class="card" id="sessionsCard" data-panel="services" hidden>
@@ -176,6 +178,13 @@
       <div id="meStoreVerdict"></div>
       <!-- 2026-11-13(계획 P11): 새 파일·새 비밀번호로 salt 백업을 다시 만든다(위 설정 카드가 열린다). -->
       <p class="row-actions" id="rebackupRow" hidden><button type="button" id="rebackupBtn" class="btn-ghost" data-i18n="wallet_rebackup_btn">백업 다시 만들기</button></p>
+      <!-- 2026-11-14(MetaMask 의존성 점검): 번들이 바뀐 뒤 MetaMask 에 스냅을 다시 요청하는 길 — 숨은 설정 패널을 걷어내며(같은 날) "스냅 다시 설치" 가 함께 없어져,
+           남은 길이 MetaMask 에서 스냅을 지우는 것(salt 도 지워진다)뿐이었다. 다시 요청한 뒤 salt 가 남는지는 MetaMask 가 정한다 — 그래서 먼저 백업을 확인하게 한다. -->
+      <div class="snap-ver" id="snapVerRow">
+        <p class="row-actions"><span class="muted" id="snapVerText">설치된 스냅 버전 -</span> <button type="button" id="snapUpdateBtn" class="btn-ghost" data-i18n="wallet_snap_update_btn">스냅 업데이트</button></p>
+        <p class="muted" data-i18n="wallet_snap_update_desc">스냅 번들이 바뀌었을 때 MetaMask 에 이 스냅을 다시 요청합니다. 누르기 전에 salt 백업 파일과 비밀번호가 있는지 확인하세요 — 업데이트 뒤 salt 가 보이지 않으면 "백업에서 불러오기" 로 되돌립니다.</p>
+        <div id="snapUpdateVerdict"></div>
+      </div>
       <!-- 2026-11-14(화면 리뷰): "스냅 초기화" 는 여기 둔다 — 설정 탭이 빠진 뒤(11-11) 버튼에 갈 길이 없었는데 안내 문구들은 초기화하라고 했다. -->
       <div class="danger-zone" id="meDanger">
         <h4 data-i18n="wallet_reset_title">스냅 초기화</h4>
@@ -285,7 +294,14 @@
       $('setupCard').hidden = !(setup || (!gated && setupMode === 'rebackup'));
       $('walletTabs').hidden = gated || setup;
       for (const el of document.querySelectorAll('[data-panel]')) el.hidden = gated || setup || el.dataset.panel !== currentTab;
-      renderRegNotice();
+      renderRegNotice(); renderSnapVersion();
+    }
+    /** 스냅 버전(2026-11-14): 설치된 스냅이 이 화면의 번들과 다른 버전이면 탭 위에 안내하고, "내 계정" 탭의 버전 줄을 채운다. 연결 전·승인 팝업에는 없다. */
+    function renderSnapVersion() {
+      const n = $('snapVerNotice'), old = snapOutdated();
+      n.hidden = !old || !snapConnected || IS_AUTHORIZE;
+      if (old) n.textContent = tt('wallet_snap_outdated_notice', { have: snapVersion, want: cfg.snapVersion }) || `설치된 스냅은 ${snapVersion} 인데 이 화면은 ${cfg.snapVersion} 에 맞춰져 있습니다 — "내 계정" 탭에서 "스냅 업데이트" 를 누르세요.`;
+      $('snapVerText').textContent = tt('wallet_snap_version', { have: snapVersion ?? '-' }) || `설치된 스냅 버전 ${snapVersion ?? '-'}`;
     }
     function showTab(name) {
       const prev = currentTab;
@@ -316,7 +332,11 @@
     };
     // /wallet/config 를 못 읽으면 지금까지의 동작(file 모드)으로 본다.
     let cfg = { secrets: 'file', snapId: null, walletOrigin: location.origin, rpcUrl: null, chainId: null };
-    let account = null;        // MetaMask 가 준 EOA — 가스를 내는 계정이다(PPID 계정과 다르다)
+    // 2026-11-14(MetaMask 의존성 점검): 연결은 스냅만 요청한다(wallet_requestSnaps) — 계정 권한(eth_requestAccounts)은 MetaMask 로 트랜잭션을 보낼 때만 받는다(requireAccount).
+    // 신원은 스냅의 salt 에 묶여 있고 MetaMask 계정과 무관하다. 그전에는 연결 때마다 계정을 요구하고 상단 알약에 그 주소를 보여, 계정이 신원인 것처럼 보였다.
+    let account = null;        // MetaMask 가 준 EOA — 가스를 내는 계정이다(PPID 계정과 다르다). "지금 반영"·"보내기" 가 처음 보낼 때 받는다
+    let snapConnected = false; // 이 오리진에 스냅이 설치·허용돼 있음을 이 화면이 확인했다
+    let snapVersion = null;    // 설치된 스냅의 버전(wallet_getSnaps) — cfg.snapVersion(이 저장소의 번들 버전)과 다르면 "스냅 업데이트" 를 안내한다
     let lastAttrs = null;      // /wallet/status 가 준 값 — "정확히 공개" 버튼이 쓴다
     let lastSessions = {};     // /wallet/status 의 sessions — 선택된 세션의 attrGateAddress 로 tx 폼 기본값을 채운다(스펙 §6.1)
     let lastStatus = null;     // 마지막 /wallet/status 본문(언어·전문가 전환 때 다시 그린다)
@@ -448,30 +468,54 @@
       if (!window.ethereum) throw Object.assign(new Error('MetaMask 확장이 없습니다 — 설치한 뒤 다시 시도하세요'), { reason: 'snap_unavailable' });
       return window.ethereum;
     }
-    /** eth_requestAccounts → 계정, wallet_requestSnaps → Snap 설치·연결. 둘 다 사용자 확인 창을 띄운다. */
+    /** wallet_requestSnaps → Snap 설치·연결(처음 한 번 사용자 확인 창). 계정은 요청하지 않는다(2026-11-14 — 위 상태 변수의 설명). */
     async function connectMetaMask() {
       const eth = requireEthereum();
-      const accounts = await eth.request({ method: 'eth_requestAccounts' });
-      account = accounts && accounts.length ? accounts[0] : null;
       if (!cfg.snapId) throw new Error('스냅 설정에 snapId 가 없습니다(/wallet/config)');
       // 2026-11-06(사용자 지적): 이미 설치·연결된 Snap 은 다시 요청하지 않는다 — local: Snap 은 wallet_requestSnaps 마다 MetaMask 가
       // 재설치 창을 띄워 로그인·등록·재승인 팝업마다 "Snap 설치" 가 반복됐다. wallet_getSnaps 는 이 오리진에 허용된 Snap 만 돌려주므로
-      // (권한이 없으면 빈 객체) 설치 여부 판단에 충분하다. 번들이 바뀐 뒤 새로 깔려면 설정 탭 "Snap 다시 설치"(아래) 를 쓴다.
-      if (!(await snapInstalled(eth))) await eth.request({ method: 'wallet_requestSnaps', params: { [cfg.snapId]: {} } });
+      // (권한이 없으면 빈 객체) 설치 여부 판단에 충분하다. 번들이 바뀐 뒤 새로 깔려면 "내 계정" 탭의 "스냅 업데이트"(requestSnapAgain) 를 쓴다.
+      const s = (await installedSnap(eth)) ?? (await requestSnapAgain(eth));
+      await markConnected(s);
+      return true;
+    }
+    const ensureConnected = async () => (snapConnected ? true : connectMetaMask());
+    /** MetaMask 에 스냅을 (다시) 요청한다 — 첫 설치와 "스냅 업데이트" 가 함께 쓴다. local: 스냅은 요청마다 번들을 새로 받는다. 설치된 스냅의 항목을 돌려준다. */
+    async function requestSnapAgain(eth) {
+      const got = await eth.request({ method: 'wallet_requestSnaps', params: { [cfg.snapId]: {} } });
+      return got?.[cfg.snapId] ?? (await installedSnap(eth));
+    }
+    /** 연결됨으로 표시하고 설치된 버전을 기억한다. 설정 상태(salt·백업)도 함께 읽는다. */
+    async function markConnected(s) {
+      snapConnected = true; snapVersion = typeof s?.version === 'string' ? s.version : null;
       mmState = { kind: 'ok', err: null };
       renderMmStatus();
       if (!IS_AUTHORIZE) { try { await refreshSetup(); } catch { /* 스냅을 못 읽으면 탭은 그대로 — 뒤 단계가 다시 거른다 */ } }
+    }
+    /** 새로 고친 뒤 창 없이 다시 잇는다(2026-11-14) — 이미 설치·허용된 스냅이면 wallet_getSnaps 만으로 안다. 그전에는 새로 고칠 때마다 "MetaMask 연결" 을 다시 눌러야 했다. */
+    async function restoreConnection() {
+      if (cfg.secrets !== 'snap' || !cfg.snapId || !window.ethereum) return;
+      const s = await installedSnap(window.ethereum);
+      if (s) await markConnected(s);
+    }
+    /** 설치된 스냅이 이 화면의 번들과 다른 버전인가 — 에이전트가 기대 버전을 주지 않거나(옛 에이전트) MetaMask 가 버전을 주지 않으면 견주지 않는다. */
+    const snapOutdated = () => Boolean(cfg.snapVersion && snapVersion && snapVersion !== cfg.snapVersion);
+    /** MetaMask 로 트랜잭션을 보낼 계정 — 보낼 때 처음 요청한다(연결에는 필요 없다). */
+    async function requireAccount() {
+      if (account) return account;
+      const accounts = await requireEthereum().request({ method: 'eth_requestAccounts' });
+      account = accounts && accounts.length ? accounts[0] : null;
+      if (!account) throw Object.assign(new Error('MetaMask 계정이 없습니다'), { reason: 'wallet_error' });
       return account;
     }
-    const ensureConnected = async () => (account ? account : connectMetaMask());
-    /** 이 오리진에 우리 Snap 이 설치·허용돼 있는가(wallet_getSnaps). 지원하지 않거나 실패하면 false — 설치 요청으로 간다. */
-    async function snapInstalled(eth) {
+    /** 이 오리진에 설치·허용된 우리 Snap 의 항목(wallet_getSnaps — { id, version, enabled, blocked }). 없거나 막혔거나 지원하지 않으면 null — 설치 요청으로 간다. */
+    async function installedSnap(eth) {
       try {
-        const snaps = await eth.request({ method: 'wallet_getSnaps' });
-        const s = snaps?.[cfg.snapId];
-        return Boolean(s) && !s.blocked && s.enabled !== false;
-      } catch { return false; }
+        const s = (await eth.request({ method: 'wallet_getSnaps' }))?.[cfg.snapId];
+        return s && !s.blocked && s.enabled !== false ? s : null;
+      } catch { return null; }
     }
+    const snapInstalled = async (eth) => Boolean(await installedSnap(eth));
     /** 스냅 설정(salt 있음·백업 확인)이 끝났는가 — MetaMask 창을 띄우지 않고 본다: 이미 설치·허용된 스냅에만 getPublicInfo 를 부른다(설치 전이면 salt 도 없다).
      *  MetaMask 가 없거나 스냅을 읽지 못하면 true — 뒤 단계(연결·등록)가 제 사유로 다시 거른다. */
     async function snapSetupReady() {
@@ -826,6 +870,7 @@
           log(e.message);
           return reply({ ok: false, reason: isUserRejected(e) ? 'user_denied' : 'snap_unavailable', detail: e.message });
         }
+        if (snapOutdated()) { step(`스냅 버전 ${snapVersion} ≠ ${cfg.snapVersion}`); return reply({ ok: false, reason: 'snap_outdated', detail: `installed ${snapVersion}, expected ${cfg.snapVersion}` }); }   // 2026-11-14: 옛 번들이면 일찍 멈춘다
         say('wallet_prog_registering');
         // M12(2026-10-23): Snap 을 부르기 전에 에이전트가 이미 등록돼 있는지 먼저 본다 — 이미 등록이면 Snap 을 부르지 않고
         // 바로 already_registered 로 끝낸다. 상태를 못 읽으면(네트워크 등) 그냥 진행한다 — 어차피 /wallet/register 가 다시 걸러준다.
@@ -979,7 +1024,12 @@
       try {
         const connect = async () => {
           step('MetaMask·스냅 연결 중…'); say('wallet_prog_connect');
-          try { await connectMetaMask(); return true; }
+          try {
+            await connectMetaMask();
+            // 설치된 스냅이 옛 번들이면 여기서 멈춘다(2026-11-14) — 그전에는 없는 RPC 를 부르다 method_not_found 원문으로 끝났다.
+            if (snapOutdated()) { step(`스냅 버전 ${snapVersion} ≠ ${cfg.snapVersion}`); reply({ ok: false, reason: 'snap_outdated', detail: `installed ${snapVersion}, expected ${cfg.snapVersion}` }); return false; }
+            return true;
+          }
           catch (e) {
             step('MetaMask·스냅 연결 실패');
             log(e.message);
@@ -1439,7 +1489,8 @@
       const el = $('mmStatus');
       el.hidden = cfg.secrets !== 'snap';
       applyGate();
-      if (mmState.kind === 'ok') { el.className = 'badge ok'; el.textContent = tt('wallet_mm_connected', { account, snap: cfg.snapId }) || `MetaMask ${account}`; return; }
+      // 2026-11-14: 계정 주소가 아니라 스냅 연결과 그 버전을 보인다(신원은 스냅에 묶여 있다 — 계정을 바꿔도 같다).
+      if (mmState.kind === 'ok') { el.className = 'badge ok'; el.textContent = tt('wallet_mm_connected', { version: snapVersion ?? '?' }) || `MetaMask 스냅 ${snapVersion ?? ''}`; return; }
       if (mmState.kind === 'fail') { el.className = 'badge bad'; el.textContent = tt('wallet_mm_failed', { err: mmState.err }) || mmState.err; return; }
       el.className = 'badge';
       tte(el, 'wallet_mm_none');
@@ -1672,7 +1723,7 @@
       renderStore();
     }
     // 초기화 결과("스냅 초기화 완료")는 탭을 떠나거나 다시 읽으면 지운다(2026-11-14) — 그 뒤의 상태(다시 등록 등)와 섞여 보이지 않게.
-    function closeStore() { storeState = null; storeRevealed = false; clearVerdictEl($('snapResetVerdict')); renderStore(); }
+    function closeStore() { storeState = null; storeRevealed = false; clearVerdictEl($('snapResetVerdict')); clearVerdictEl($('snapUpdateVerdict')); renderStore(); }
     $('meReloadBtn').addEventListener('click', () => { clearVerdictEl($('snapResetVerdict')); loadStore(); refresh(true); });   // 등록부도 다시 확인한다(2026-11-14)
     $('meRevealBtn').addEventListener('click', () => { storeRevealed = !storeRevealed; renderStore(); });
 
@@ -1795,7 +1846,7 @@
     $('setupImportPw').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); openSaltImport({ viaKey: true }); } });
     $('setupImportCancelBtn').addEventListener('click', () => { if (importGuarded()) return; closeSaltImport(); clearVerdictEl($('setupVerdict')); });
     // 다른 탭에서 스냅을 다시 깔거나 salt 를 만들고 돌아왔을 때 — 연결 때만 보면 탭이 열린(또는 닫힌) 채 남는다. 화면이 다시 보일 때 스냅의 설정 상태를 한 번 더 읽는다.
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && account && cfg.secrets === 'snap') refreshSetup().catch(() => {}); });
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && snapConnected && cfg.secrets === 'snap') refreshSetup().catch(() => {}); });
 
     $('showSaltBtn').addEventListener('click', async () => {
       try {
@@ -2024,6 +2075,7 @@
      */
     async function submitPrepared(prep, rsKey, { pendingBoundId = null } = {}) {
       const eth = requireEthereum();
+      const account = await requireAccount();   // 가스를 낼 MetaMask 계정 — 처음 보낼 때 MetaMask 가 계정 연결을 묻는다(2026-11-14)
       let deployHash = null;
       if (prep.deployNeeded) {
         txLog('배포 트랜잭션 — MetaMask 확인 창을 확인하세요.');
@@ -2196,6 +2248,18 @@
       try { await connectMetaMask(); document.querySelector('#walletTabs [aria-selected="true"]')?.focus(); }
       catch (e) { mmState = { kind: 'fail', err: e.message }; renderMmStatus(); $('connectError').textContent = e.message; $('connectError').hidden = false; }
     });
+    // 스냅 업데이트(2026-11-14): MetaMask 에 스냅을 다시 요청한다 — MetaMask 가 설치(갱신) 창을 띄운다. 끝나면 버전·설정 상태·저장 값을 다시 읽는다.
+    // salt 가 없어졌으면 refreshSetup 이 설정 카드(새로 만들기·백업에서 불러오기)를 연다.
+    $('snapUpdateBtn').addEventListener('click', async () => {
+      if (!Demo.confirmDanger('confirm_snap_update')) return;
+      const v = $('snapUpdateVerdict');
+      pendingVerdict(v, 'working');
+      try {
+        await markConnected(await requestSnapAgain(requireEthereum()));
+        setVerdict(v, !snapOutdated(), snapOutdated() ? 'wallet_snap_update_failed' : 'wallet_snap_update_ok', () => ({ summary: tt('wallet_snap_version', { have: snapVersion ?? '-' }) || `설치된 스냅 버전 ${snapVersion ?? '-'}` }));
+        if (currentTab === 'me' && !setupNeeded) await loadStore();
+      } catch (e) { setVerdict(v, false, 'wallet_snap_update_failed', { reason: isUserRejected(e) ? 'user_denied' : 'snap_unavailable', detail: e?.message }); }
+    });
     $('snapResetBtn').addEventListener('click', async () => {
       if (!Demo.confirmDanger('confirm_reset')) return;
       pendingVerdict($('snapResetVerdict'), 'working');
@@ -2238,6 +2302,7 @@
         if (r.ok) cfg = { ...cfg, ...(await r.json()) };
       } catch { /* 설정을 못 읽으면 file 모드로 본다 */ }
       if (cfg.secrets === 'snap') applySnapMode();
+      if (!IS_AUTHORIZE) { try { await restoreConnection(); } catch { /* 못 이으면 연결 카드가 보인다 */ } }
       if (!IS_AUTHORIZE) showTab(currentTab);
       renderModeTexts();
       renderMmStatus();

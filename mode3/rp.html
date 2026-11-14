@@ -78,6 +78,11 @@
 
       <!-- 로그인 상태: 내 자산(가짜 잔액) + 세션 상태 + 재검증 + 출금 신청. -->
       <div id="assetsLoggedIn" hidden>
+        <!-- 2026-11-14: 닫힌 zkID 로그인의 안내(checkZkidStale) — 화면은 그대로 두고 다시 로그인하게 한다. -->
+        <div class="stale-notice" id="staleNotice" hidden>
+          <p data-i18n="rp_session_stale">이 로그인은 닫혔습니다 — zkID 가 폐기 목록을 새로 게시하면 그 전의 로그인은 다시 확인해야 합니다. 로그아웃한 뒤 다시 로그인하세요.</p>
+          <button type="button" id="staleReloginBtn" class="btn-ghost" data-i18n="rp_stale_relogin_btn">로그아웃하고 다시 로그인</button>
+        </div>
         <h2 data-i18n="assets_title">내 자산</h2>
         <dl class="kv account-kv">
           <dt data-i18n="rp_my_account_addr">내 계정 주소</dt><dd><code id="accountPPID">-</code> <button type="button" id="copyPpidBtn" class="copy-btn" title="복사" aria-label="복사" data-i18n-title="rp_copy_btn_title">⧉</button></dd>
@@ -237,6 +242,7 @@
     let lastAccount = null;                 // 2026-11-05: 세션 계정의 0x 주소(잔액 조회 응답) — 배지·"내 계정 주소" 에 PPID 숫자 대신 보인다(사용자 결정)
     let rpMe = null;                        // 2026-11-10: 쿠키 세션의 계정(/api/rp/me) — 소셜·zkID 로그인 모두. null 이면 쿠키 세션 없음
     const isLoggedIn = () => !!currentSession || !!rpMe;
+    let sessionStale = false;               // 2026-11-14: zkID 로그인이 서버에서 닫혔다(폐기 목록이 새로 게시됐다) — 화면은 두고 안내만 보인다(checkZkidStale)
     let txSourcePicked = null;              // 출금 출처를 사용자가 직접 고른 값(없으면 세션 종류로 기본값)
     const progress = { used: false, disclosed: false, opened: false, login2: false };   // 이 페이지가 아는 완료 신호(세션 중 메모리)
     // U6(2026-10-14): 지갑 health 의 rpOrigins(/mode3/health, Demo.stack 가 이미 폴링 중)에서 내 오리진이 첫 번째가
@@ -364,7 +370,9 @@
       $('accountPPID').textContent = shown;
       $('accountPPID').title = lastAccount ?? lastPPID ?? ''; $('accountAddr').title = lastAccount ?? lastPPID ?? '';
       $('copyPpidBtn').hidden = !(lastAccount || lastPPID);   // 복사할 값이 있을 때만 보인다
-      $('navAccount').hidden = !loggedIn; $('account').hidden = !loggedIn;
+      // 닫힌 로그인(sessionStale)이면 "내 계정"(연결 수단) 카드는 보이지 않는다 — 쿠키 세션이 없어 "연결 안 됨"·버튼 없음으로만 그려진다. 대신 내 자산 위에 안내를 보인다.
+      $('navAccount').hidden = !loggedIn || sessionStale; $('account').hidden = !loggedIn || sessionStale;
+      $('staleNotice').hidden = !(loggedIn && sessionStale);
       const via = rpMe?.via ?? (currentSession ? 'zkid' : null);
       $('viaBadge').textContent = via ? (tt(`rp_via_${via}`) || via) : ''; $('viaBadge').hidden = !via;
       // 출금 출처(R5): PPID 계정에서 내보내는 것은 zkID 세션(지갑 증명)만 — 소셜 세션이면 거래소 보관으로 고정한다.
@@ -438,8 +446,9 @@
     setInterval(checkSessionAlive, 2000);
     // 닫힌 zkID 로그인(2026-11-14 화면 리뷰 3차): IdP 가 폐기를 게시해 root 가 바뀌면 서버는 r_s 세션의 요청을 재검증 전까지 받지 않고(revalidate_required) 그 쿠키 세션도
     // 닫는다(zkidCookieAlive). 그런데 r_s 세션은 목록(/api/mode3/sessions)에 남아 위 대조를 지나므로, 상단은 로그인 상태인데 "내 계정" 은 "연결 안 됨"·버튼 없음으로 남았다.
-    // 재검증 화면은 없으므로(11-11) 다시 로그인하게 한다 — /api/rp/me 가 401 이면 서버의 r_s 세션을 끝내고 로그아웃 상태로 바꾼다. 소셜 세션이면 200 이라 건드리지 않는다.
-    // 서버를 못 읽었으면(네트워크) 그대로 둔다. 복원 직후 한 번, 그 뒤 10초마다 본다(쿠키 확인은 서버가 체인을 읽는다 — 2초 주기에는 싣지 않는다).
+    // 재검증 화면은 없으므로(11-11) 다시 로그인하게 안내한다 — /api/rp/me 가 401 이면 "닫힌 로그인" 으로 표시하고(sessionStale) 내 자산 위에 안내와 "로그아웃하고 다시 로그인" 을 보인다.
+    // 화면을 로그아웃 상태로 바꾸지는 않는다: 시연 Race (2)는 세션을 폐기한 직후의 출금 결과를 이 화면에 보여 주는데, 자동 로그아웃은 그 결과 카드를 지웠다(같은 날 MetaMask 점검 중 확인).
+    // 소셜 세션이면 200 이라 건드리지 않는다. 서버를 못 읽었으면(네트워크) 그대로 둔다. 복원 직후 한 번, 그 뒤 10초마다 본다(쿠키 확인은 서버가 체인을 읽는다 — 2초 주기에는 싣지 않는다).
     let staleChecking = false;
     async function checkZkidStale() {
       if (!currentSession || staleChecking || document.hidden) return;
@@ -447,13 +456,13 @@
       try {
         const r_s = currentSession;
         const r = await fetch('/api/rp/me');
-        if (r.status !== 401 || currentSession !== r_s) return;
-        rpMe = null; setSession(null);
-        setVerdict($('verdict'), false, 'rp_session_ended_title', () => ({ summary: tt('rp_session_stale') || '이 로그인이 닫혔습니다 — 다시 로그인하세요.' }));   // 사유는 화면이 바뀌는 그 순간에 함께 보인다
-        try { await post('/api/mode3/logout', { r_s }); } catch { /* 화면은 이미 로그아웃 */ }
+        if (currentSession !== r_s) return;
+        if (r.status === 401 && !sessionStale) { sessionStale = true; rpMe = null; renderAccountView(); }
+        else if (r.ok && sessionStale) { sessionStale = false; await refreshMe(); }   // 다시 열렸다(체인을 못 읽던 것이 풀린 경우 등)
       } catch { /* RP 서버를 못 읽으면 그대로 둔다 */ } finally { staleChecking = false; }
     }
     setInterval(checkZkidStale, 10000);
+    $('staleReloginBtn').addEventListener('click', () => $('logoutBtn').click());   // 로그아웃하면 로그인 카드가 보인다
     /** 세션 범위의 결과 표시(재검증·잔액·출금 결과)를 초기 화면으로. 로그아웃이면 로그인 카드의 결과·로그도 비운다(2026-10-21 — 재로그인 때 옛 메시지가 남지 않게). */
     function resetSessionViews(includeLogin) {
       const clear = (el) => { el.__verdictArgs = null; el.className = ''; el.textContent = ''; };   // demo.js 의 언어 전환 재렌더(__verdictArgs)도 풀어 준다
@@ -467,6 +476,7 @@
       const changed = r_s !== currentSession;
       currentSession = r_s;
       if (!r_s) lastAccount = null;
+      if (changed) sessionStale = false;   // 새 로그인·로그아웃은 "닫힌 로그인" 표시를 지운다
       currentSessionAllowAgent = r_s ? allowAgent : null;
       saveSession(r_s, currentSessionAllowAgent);
       if (changed) resetSessionViews(!r_s);

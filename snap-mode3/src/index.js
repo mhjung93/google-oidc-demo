@@ -1,6 +1,8 @@
 // Mode 3 Snap — salt(s_u) 하나를 MetaMask 암호화 저장소에 보관한다.
 // 0.5.0(2026-11-13, 스펙 2026-11-13 random-salt): salt 는 스냅 안에서 무작위로 한 번 만들거나(initSalt) 백업에서 불러온다(importSalt). 사용자가 암호화 백업을
 // 확인하기 전에는(confirmBackup) salt 를 밖으로 내거나 가입·로그인으로 이어지는 RPC 를 거절한다(R6). 시드 유도(snap_getEntropy)와 계정 번호는 없어졌다.
+// 0.5.1(2026-11-14): register RPC 를 뺐다(등록은 prepareRegister → storeRegistration). 저장 모양·나머지 RPC 는 0.5.0 과 같다 — 번들이 바뀌었으므로 버전을 올린다:
+// zk 스냅 화면이 MetaMask 에 설치된 버전(wallet_getSnaps)을 이 저장소의 매니페스트 버전과 견줘 옛 번들을 알아본다. **번들을 바꾸면 버전도 올린다.**
 // 2026-11-05: 등록·로그인 동의·세션 폐기·salt 표시의 확인 대화상자는 뺐다 — 모두 사용자가 지갑·RP 페이지에서 직접 눌러 시작하는
 // 요청이라 Snap 이 한 번 더 묻는 것은 중복이었다(사용자 결정). 남은 대화상자는 넷: 자기 폐기 비밀번호 프롬프트, 등록 초기화 확인, 백업에서 salt 불러오기 확인(0.5.0),
 // RP 릴레이 출금의 받는 주소·금액 확인(consentDisclosure { relay: true } — 사용자가 달리 확인할 창이 없는 유일한 전송).

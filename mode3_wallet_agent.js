@@ -14,6 +14,7 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { decodeJwt } from 'jose';
@@ -499,7 +500,11 @@ app.get('/wallet/config', configCors, async (req, res) => {
   try {
     let oidc = OIDC_OFF;
     try { oidc = await oidcConfig(); } catch { /* IdP 를 못 읽으면 꺼진 것으로 보인다 — 다음 요청이 다시 읽는다 */ }
-    res.json({ secrets: SECRETS, snapId: SNAP_ID, walletOrigin: WALLET_ORIGIN, rpcUrl: RPC_URL, chainId: (await chainId()).toString(), ciaUrl: CIA_URL, oidc });
+    // snapVersion(2026-11-14): 이 저장소의 스냅 번들 버전(snap-mode3/snap.manifest.json) — 화면이 MetaMask 에 설치된 스냅의 버전과 견줘 옛 번들이면 "스냅 업데이트" 를 안내한다.
+    // 번들은 에이전트가 떠 있는 동안에도 다시 빌드되므로 요청마다 읽는다. 파일이 없으면 null(화면은 견주지 않는다).
+    let snapVersion = null;
+    try { const v = JSON.parse(fs.readFileSync(path.join(__dirname, 'snap-mode3', 'snap.manifest.json'), 'utf8')).version; if (typeof v === 'string' && v) snapVersion = v; } catch { /* 매니페스트 없음 */ }
+    res.json({ secrets: SECRETS, snapId: SNAP_ID, snapVersion, walletOrigin: WALLET_ORIGIN, rpcUrl: RPC_URL, chainId: (await chainId()).toString(), ciaUrl: CIA_URL, oidc });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

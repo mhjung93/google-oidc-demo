@@ -56,7 +56,7 @@
 | `confirmBackup({ s_u })` (새) | R7. 같으면 `backedUp = true`·`backedUpAt`. 다르면 `backup_mismatch`. | 아니오 |
 | `exportSaltForBackup({})` (새) | 백업 다시 만들기(새 파일·새 비밀번호)용 `{ s_u }`. salt 없으면 `no_salt`. | 아니오 |
 | `getSalt({})` | `{ s_u }`(속성 도구 C_attr 계산용 — 속성 도구가 "커밋먼트 만들기" 때 부른다). `index` 인자·응답 필드 삭제. | **예** |
-| `prepareRegister({})` · `register({ uid, s_u? })` | 비밀은 `salt.s_u`. `register` 에 `s_u` 가 오면 같을 때만(다르면 `salt_mismatch` — `salt_not_derived` 대체). | **예** |
+| `prepareRegister({})` · `register({ uid, s_u? })` | 비밀은 `salt.s_u`. `register` 에 `s_u` 가 오면 같을 때만(다르면 `salt_mismatch` — `salt_not_derived` 대체). **구현 뒤 변경(2026-11-14, 스냅 0.5.1):** `register` 와 `salt_mismatch` 는 없앴다 — 등록은 `prepareRegister` → `storeRegistration` 하나의 길이고, 다른 스냅의 속성 기록은 화면이 `attr_record_salt_mismatch` 로 먼저 막는다. | **예** |
 | `consentLogin` · `consentDisclosure` | 증인의 salt 는 `salt.s_u`. | **예** |
 | `getPublicInfo` | `hasSalt`·`backedUp` 을 더하고 `index`·`nextIndex` 를 뺀다. 비밀 없음. | 아니오 |
 | `getStoredState` | `salt` 를 싣는다("내 계정" 탭, 비밀은 화면이 기본 가림). `nextIndex` 삭제. | 아니오 |

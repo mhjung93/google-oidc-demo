@@ -14,7 +14,7 @@ import path from 'node:path';
 import { chromium } from '@playwright/test';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
 import { getProvider } from './helpers/mode3_chain.mjs';
-import { buildInitScript } from './helpers/ethereum_stub.js';
+import { buildInitScript, SNAP_MANIFEST_VERSION } from './helpers/ethereum_stub.js';
 import { VKEY_PATH } from '../lib/mode3_wallet.js';
 import { attrGateAt } from '../lib/mode3_onchain.js';
 import { execFileSync } from 'node:child_process';
@@ -236,8 +236,11 @@ try {
     await walletPage.waitForSelector('#connectCard:not([hidden])', { timeout: 15_000 });   // snap 모드는 연결 전에 연결 카드만 보인다(2026-11-03)
     assert.equal(await walletPage.$eval('#fileRegFields', (el) => el.hidden), true, 'snap 모드는 uid·pwd 폼을 숨긴다(게이트와 무관하게 요소 자체의 hidden 으로 본다)');
     await walletPage.click('#connectBtn');
-    await waitText(walletPage, '#mmStatus', account);
-    assert.ok((await text(walletPage, '#mmStatus')).startsWith('MetaMask'), '배지는 "MetaMask 0x…"(2026-11-05 — Snap id 는 보이지 않는다)');
+    // 2026-11-14(MetaMask 의존성 점검): 연결은 스냅만 요청한다 — 계정 권한(eth_requestAccounts)을 요구하지 않고, 배지는 계정 주소가 아니라 스냅 연결·버전이다(Snap id 는 여전히 보이지 않는다)
+    await waitText(walletPage, '#mmStatus', `MetaMask 스냅 연결됨 · ${SNAP_MANIFEST_VERSION}`);
+    assert.equal((await text(walletPage, '#mmStatus')).includes(account), false, '배지에 MetaMask 계정 주소가 없다'); assert.equal((await text(walletPage, '#mmStatus')).includes(cfg.snapId), false);
+    assert.equal((await walletPage.evaluate(() => window.__ethCalls)).some((m) => m === 'eth_requestAccounts' || m === 'eth_accounts'), false, '연결에 계정을 요청하지 않는다');
+    assert.equal((await wallet.get('/wallet/config')).body.snapVersion, SNAP_MANIFEST_VERSION, '에이전트가 이 저장소의 스냅 번들 버전을 알려 준다');
     // 2026-11-13(스펙 random-salt R3·R4): 스냅에 salt 가 없으면 탭 대신 설정 카드가 먼저다 — 연결만으로는 salt 를 만들지 않는다.
     await walletPage.waitForSelector('#setupCard:not([hidden])', { timeout: 15_000 });
     assert.equal(await walletPage.isHidden('#walletTabs'), true, 'salt 가 없으면 탭이 보이지 않는다');
@@ -312,7 +315,7 @@ try {
 
   if (!USER_SALT) {   // 위 설정 케이스가 실패했다 — 뒤 케이스가 줄줄이 무너지지 않게 하네스가 스냅 저장소를 직접 채우고 화면을 다시 연다
     USER_SALT = '424242424242424242424242424242'; snapState = readySnapState(USER_SALT);
-    await walletPage.reload(); await walletPage.click('#connectBtn'); await walletPage.waitForSelector('#walletTabs:not([hidden])', { timeout: 15_000 });
+    await walletPage.reload(); await walletPage.waitForSelector('#walletTabs:not([hidden])', { timeout: 15_000 });   // 이미 허용된 스냅은 창 없이 다시 이어진다(2026-11-14)
   }
 
   await t('리뷰 M-8: 다른 탭에서 스냅을 다시 깔고 돌아오면(화면이 다시 보일 때) 설정 카드가 바로 뜬다 — 연결을 다시 누르지 않아도; salt 가 돌아오면 탭이 다시 열린다', async () => {
@@ -523,6 +526,26 @@ try {
 
   await t('계정 번호 UI 가 없다(2026-11-13 스펙 random-salt R13): 접는 칸·다음 가입 번호 입력이 화면에 없다', async () => {
     assert.equal(await walletPage.locator('#indexFold, #meIndex, #meNextIndex, #nextIndexInput, #nextIndexBtn').count(), 0);
+  });
+
+  await t('MetaMask 의존성(2026-11-14): 새로 고쳐도 창 없이 다시 이어지고, 설치된 스냅이 옛 버전이면 탭 위에 안내가 뜨며 "내 계정" 의 "스냅 업데이트" 로 갱신한다 — salt 와 등록은 그대로다', async () => {
+    const before = j(snapState);
+    await walletPage.evaluate(() => sessionStorage.setItem('__snapStubVersion', '0.4.0'));   // MetaMask 에 옛 스냅이 깔려 있는 상태
+    await walletPage.reload();
+    await walletPage.waitForSelector('#walletTabs:not([hidden])', { timeout: 15_000 }); assert.equal(await walletPage.isHidden('#connectCard'), true, '"MetaMask 연결" 을 다시 누르지 않는다');
+    await walletPage.waitForSelector('#snapVerNotice:not([hidden])');
+    const notice = await text(walletPage, '#snapVerNotice');
+    assert.ok(notice.includes('0.4.0') && notice.includes(SNAP_MANIFEST_VERSION) && notice.includes('스냅 업데이트'), notice);
+    assert.ok((await text(walletPage, '#mmStatus')).includes('0.4.0'));
+    await walletTab(walletPage, 'me'); await walletPage.waitForSelector('#snapUpdateBtn', { state: 'visible' });
+    assert.ok((await text(walletPage, '#snapVerText')).includes('0.4.0')); assert.ok((await text(walletPage, '#snapVerRow')).includes('백업'), '누르기 전에 백업을 확인하라고 말한다');
+    walletPage.once('dialog', (d) => d.accept());
+    await walletPage.click('#snapUpdateBtn');
+    await waitText(walletPage, '#snapUpdateVerdict', '스냅 업데이트 완료');
+    assert.equal(await walletPage.isHidden('#snapVerNotice'), true); assert.ok((await text(walletPage, '#snapVerText')).includes(SNAP_MANIFEST_VERSION)); assert.ok((await text(walletPage, '#mmStatus')).includes(SNAP_MANIFEST_VERSION));
+    assert.equal((await walletPage.evaluate(() => window.__ethCalls)).filter((m) => m === 'wallet_requestSnaps').length, 1, '업데이트가 MetaMask 에 스냅을 한 번 다시 요청했다');
+    assert.equal(j(snapState), before, '스냅의 저장 값(salt·등록)은 그대로다(이 하네스의 MetaMask 흉내에서)');
+    await walletTab(walletPage, 'services');
   });
 
   await t('내 계정: 스냅이 저장한 값 전부(salt·등록·자격증명·동의 기록)가 보인다 — 비밀(s_u·blind_u)은 가려 있고 "비밀 값 보기" 로만 열리며, 탭을 떠나면 다시 가린다', async () => {
@@ -791,9 +814,8 @@ try {
   /** 스냅을 다시 깐 상태(저장소가 비었다)로 zk 스냅 화면을 다시 열어 설정 카드까지 간다. */
   const reopenWalletWithEmptySnap = async () => {
     snapState = null;
-    await walletPage.reload(); await walletPage.waitForSelector('#connectCard:not([hidden])', { timeout: 15_000 });
-    await walletPage.click('#connectBtn');
-    await walletPage.waitForSelector('#setupCard:not([hidden])', { timeout: 15_000 });
+    await walletPage.reload();   // 2026-11-14: 스냅은 이미 이 오리진에 허용돼 있으므로 "MetaMask 연결" 을 다시 누르지 않아도 이어진다 — salt 가 없으니 설정 카드가 바로 보인다
+    await walletPage.waitForSelector('#setupCard:not([hidden])', { timeout: 15_000 }); assert.equal(await walletPage.isHidden('#connectCard'), true);
     assert.equal(await walletPage.isVisible('#setupChoice'), true, 'salt 가 없으면 새로 만들기·불러오기를 고른다');
   };
   const sealedFile = async (name, rec, pw = BACKUP_PW) => { const { key, kdf } = await backupKey(pw, undefined, 1000); return tmpFile(name, JSON.stringify(await sealBackup(key, kdf, rec))); };
@@ -1573,10 +1595,14 @@ try {
     await p.goto(`${cia.base}/user/info`); await p.waitForSelector('#infoView:not([hidden])');
     assert.ok((await text(p, '#infoState')).startsWith('폐기됨'), await text(p, '#infoState')); assert.ok((await text(p, '#infoWallet')).startsWith('폐기된 계정'), await text(p, '#infoWallet'));
     await p.close();
-    // 서비스: 폐기가 게시돼 root 가 바뀌면 서버가 그 로그인(쿠키)을 닫는다 — 화면이 상단은 로그인·"내 계정" 은 빈 채로 남지 않고, 로그아웃 상태로 바뀌며 사유를 말한다
+    // 서비스: 폐기가 게시돼 root 가 바뀌면 서버가 그 로그인(쿠키)을 닫는다 — 화면이 "내 계정" 을 빈 채로 두지 않고 내 자산 위에 사유와 다시 로그인하는 길을 보인다.
+    // 화면을 로그아웃으로 바꾸지는 않는다(시연 Race (2)의 출금 결과가 지워지지 않게) — 버튼을 누르면 로그아웃된다
     await rpPage.reload();
-    await waitText(rpPage, '#verdict', '이 로그인이 닫혔습니다', 30_000);
-    assert.equal(await rpPage.isHidden('#accountPill'), true); assert.equal(await rpPage.isVisible('#loginBtn'), true); assert.equal(await rpPage.isHidden('#account'), true, '"내 계정" 카드가 반쯤 남지 않는다');
+    await rpPage.waitForSelector('#staleNotice:not([hidden])', { timeout: 30_000 });
+    assert.ok((await text(rpPage, '#staleNotice')).includes('이 로그인은 닫혔습니다'), await text(rpPage, '#staleNotice'));
+    assert.equal(await rpPage.isHidden('#account'), true, '"내 계정" 카드가 "연결 안 됨"·버튼 없음으로 남지 않는다'); assert.equal(await rpPage.isVisible('#assetsLoggedIn'), true, '내 자산(출금 결과 포함)은 그대로 보인다');
+    await rpPage.click('#staleReloginBtn');
+    await rpPage.waitForSelector('#loginBtn', { state: 'visible' }); assert.equal(await rpPage.isHidden('#accountPill'), true); assert.equal(await rpPage.isHidden('#staleNotice'), true);
     // zk 스냅 화면: 등록부에 내 자격증명이 없다는 안내가 탭 위에 뜬다(다시 읽으면 체인에서 확인한다)
     await walletTab(walletPage, 'me'); await walletPage.click('#meReloadBtn');
     await walletPage.waitForSelector('#regNotice:not([hidden])', { timeout: 30_000 });

@@ -118,7 +118,7 @@ try {
   await walletPage.goto(`${wallet.base}/`);
   await t('지갑 페이지(localhost): MetaMask·Snap 연결', async () => {
     await walletPage.click('#connectBtn');
-    await waitText(walletPage, '#mmStatus', 'MetaMask 0x');   // 2026-11-05: 배지는 "MetaMask 0x…"(Snap id 는 보이지 않는다)
+    await waitText(walletPage, '#mmStatus', 'MetaMask 스냅 연결됨');   // 2026-11-14: 배지는 스냅 연결·버전(계정 주소도 Snap id 도 보이지 않는다)
   });
 
   await t('/user: "Google 로 등록" → 지갑 팝업 → Snap 보류 등록(확인 창 없음, 2026-11-05) → 팝업의 Google 버튼 → 등록됨(provider·uid=H(provider|sub)); IdP 로그인 없이', async () => {

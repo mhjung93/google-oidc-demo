@@ -531,7 +531,7 @@ await t('R14: 0.4.x 상태(version 1 — 시드 유도 등록·계정 번호)를
   assert.equal('nextIndex' in store.state, false);
 });
 
-await t('없어진 것: setNextIndex 는 method_not_found; 응답 어디에도 index 가 없다; manifest 에 snap_getEntropy 권한이 없고 버전은 0.5.0; 실행 내내 snap_getEntropy 를 부르지 않았다', async () => {
+await t('없어진 것: setNextIndex 는 method_not_found; 응답 어디에도 index 가 없다; manifest 에 snap_getEntropy 권한이 없고 버전은 0.5.1(package.json 과 같다); 실행 내내 snap_getEntropy 를 부르지 않았다', async () => {
   store.state = null; answers.length = 0;
   await assert.rejects(() => call('setNextIndex', { index: 1 }), /method_not_found/);
   assert.equal(RPC_METHODS.includes('setNextIndex'), false);
@@ -539,8 +539,8 @@ await t('없어진 것: setNextIndex 는 method_not_found; 응답 어디에도 i
   const s_u = (await call('initSalt', {})).s_u; await call('confirmBackup', { s_u });
   for (const r of [await call('getSalt', { index: 3 }), await call('prepareRegister', { index: 3 })]) assert.equal('index' in r, false);
   const mf = JSON.parse(fs.readFileSync(new URL('../snap.manifest.json', import.meta.url), 'utf8'));
-  assert.equal('snap_getEntropy' in mf.initialPermissions, false); assert.equal(mf.version, '0.5.0');
-  assert.equal(JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version, '0.5.0');
+  assert.equal('snap_getEntropy' in mf.initialPermissions, false); assert.equal(mf.version, '0.5.1');   // 0.5.1(2026-11-14): register RPC 를 뺀 번들 — 번들이 바뀌면 버전을 올린다(화면이 설치된 버전과 견준다)
+  assert.equal(JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version, mf.version, 'package.json 과 manifest 의 버전이 같다');
   assert.equal(snapCalls.includes('snap_getEntropy'), false);
 });
 
