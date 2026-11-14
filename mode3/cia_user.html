@@ -53,6 +53,12 @@
   <section class="card span2 me-view" id="meCard" hidden>
     <p class="me-head"><span class="who" id="meInfo"></span> <button id="logoutBtn" class="btn-ghost" data-i18n="idp_logout_btn">로그아웃</button></p>
   </section>
+  <!-- 2026-11-14(화면 리뷰 3차): 폐기된 계정(me.disabled)은 이 카드 하나만 보인다 — 폐기 뒤에도 "등록됨 — 서비스에서 로그인하세요" 와 연결 해제·폐기 버튼이 그대로였다. -->
+  <section class="card me-view" id="disabledCard" hidden>
+    <h3><span class="badge bad" data-i18n="idp_disabled_title">폐기된 계정</span></h3>
+    <p data-i18n="idp_disabled_desc">이 계정은 폐기됐습니다. 이 계정으로는 어느 서비스에도 로그인할 수 없고, 되살리는 것은 zkID 관리자만 할 수 있습니다. 같은 스냅을 계속 쓰려면 로그아웃해 새 zkID 계정을 만들고, zk 스냅 화면 "내 계정" 탭에서 스냅을 초기화한 뒤(salt 는 남습니다) 서비스에서 다시 로그인하세요.</p>
+    <p><a id="walletLink3" class="btn btn-ghost" target="_blank" rel="noopener" data-i18n="idp_wallet_link">zk 스냅 화면 열기</a></p>
+  </section>
   <!-- 2026-11-09(사용자 결정): "커밋먼트 등록 — 지갑 연결해 등록" 카드는 뺐다. 지갑 등록은 서비스에서 "zkID 로 로그인" 할 때 처음 한 번, 지갑 팝업 → zkID 인증 창(등록 모드)에서 일어난다.
        zkID 가입·속성 커밋먼트 프로필에는 지갑이 끼지 않는다. -->
   <section class="card me-view" id="infoCard" hidden>
@@ -62,7 +68,7 @@
     <details class="muted"><summary data-i18n="idp_info_details">상세</summary>
     <dl class="kv">
       <dt data-term="auid">auid</dt><dd><code id="meAuid">-</code> <button type="button" id="copyAuidBtn" class="copy-btn" hidden title="복사" aria-label="복사" data-i18n-title="rp_copy_btn_title">⧉</button></dd>
-      <dt></dt><dd><p class="desc kv-desc" data-i18n="idp_auid_desc">uid 와 스냅 비밀(salt)로 만든 가명입니다. IdP 가 이 계정을 스냅과 잇는 데 쓰고, 서비스에는 보내지 않습니다. 로그인 때 스냅이 자동으로 넘깁니다.</p></dd>
+      <dt></dt><dd><p class="desc kv-desc" data-i18n="idp_auid_desc">zkID 가 이 계정을 스냅과 잇는 데 쓰는 가명입니다. 서비스에 로그인할 때마다 zkID 인증 창의 auid 칸에 이 값을 넣습니다.</p></dd>
       <dt data-i18n="idp_slot_label">등록부 슬롯</dt><dd id="meSlot">-</dd>
       <dt></dt><dd><p class="desc kv-desc" data-i18n="idp_slot_desc">IdP 등록부에서 이 계정의 자리 번호입니다. 활성 자격증명이 이 자리에 실리고, 폐기되면 비워집니다. 스냅은 이 자리를 보고 내 자격증명이 바뀌지 않았는지 확인합니다.</p></dd>
     </dl>
@@ -88,15 +94,18 @@
       <p class="desc" data-i18n="idp_unlink_desc">계정은 남기고 스냅 등록만 풉니다. 이 스냅으로 받은 자격증명은 폐기됩니다. 그 뒤 다른 스냅을 등록하거나 같은 스냅을 다시 등록할 수 있습니다.</p>
       <p><label class="field"><span data-i18n="idp_pwd_label">비밀번호</span><input id="unlinkPwd" type="password" autocomplete="current-password" /></label></p>
       <p><button id="unlinkBtn" class="btn-ghost" data-i18n="idp_unlink_btn">스냅 연결 해제</button></p>
+      <div id="unlinkVerdict"></div>
     </div>
     <div class="sub-block danger" id="revokeBlock">
       <h4 data-i18n="account_revoke_title">내 계정 폐기</h4>
       <p class="desc" data-i18n="idp_self_revoke_desc">이 zkID 계정을 폐기합니다. 자격증명이 폐기되고 이 계정으로는 어느 서비스에도 로그인할 수 없습니다. 폐기된 계정은 스냅을 쥐지 않으므로, 같은 스냅으로 새 계정을 만들어 등록할 수 있습니다.</p>
       <p><label class="field"><span data-i18n="idp_pwd_label">비밀번호</span><input id="revokePwd" type="password" autocomplete="current-password" /></label></p>
       <p><button id="revokeBtn" class="danger" data-i18n="account_revoke_btn">내 계정 폐기</button></p>
+      <div id="selfRevokeVerdict"></div>
     </div>
   </section>
-  <!-- 결과 칸은 카드 밖에 둔다(2026-11-14) — 연결 해제가 되면 위 카드가 숨어(등록 없음) 그 안에 있던 "스냅 연결 해제됨" 과 다음 할 일 안내가 함께 사라졌다. -->
+  <!-- 연결 해제·폐기의 "성공" 은 카드 밖에 둔다(2026-11-14) — 성공하면 위 카드가 숨어(등록 없음·폐기된 계정) 그 안에 있던 결과와 다음 할 일 안내가 함께 사라진다.
+       실패는 누른 묶음 안(#unlinkVerdict·#selfRevokeVerdict)에 보인다 — 카드가 남으므로 누른 자리 바로 아래다. -->
   <div id="revokeVerdict"></div>
 </main>
 <script>
@@ -107,6 +116,10 @@
   const verdict = (el, ok, title, extra) => Demo.verdict(el, () => ({ ok, title: window.DemoStrings?.verdicts?.[title] ? title : Demo.t(title), ...(typeof extra === 'function' ? extra() : extra) }));
   /** 결과 칸 비우기 — Demo.verdict 는 null 을 받지 않으므로 판정 클래스와 내용만 지운다(화면 전환·로그아웃 때). */
   const clearVerdict = (el) => { el.__verdictArgs = null; el.innerHTML = ''; el.classList.remove('verdict', 'ok', 'bad', 'pending'); };
+  // 연결 해제·폐기의 결과 칸 셋(묶음 안 둘 + 카드 밖 하나, 2026-11-14) — 한쪽을 누르면 다른 쪽의 지난 결과는 지운다.
+  const clearManageVerdicts = () => { for (const id of ['unlinkVerdict', 'selfRevokeVerdict', 'revokeVerdict']) clearVerdict($(id)); };
+  // 연결 해제·폐기는 비밀번호만 받는다 — 서버의 invalid_credentials("아이디 또는 비밀번호")를 비밀번호 사유로 바꿔 보인다(2026-11-14).
+  const pwReason = (r) => (r.body?.reason === 'invalid_credentials' ? 'password_wrong' : r.body?.reason);
   let walletOrigin = null, me = null;
   let oidcEnabled = false;   // public_keys.oidc.enabled — Google 줄(renderGoogleRow)
   // Google 줄(OIDC 래퍼, 2026-11-06 8차): "Google 계정으로 등록" 은 Google 로그인이 지갑 팝업(walletOrigin) 안에서 일어나므로
@@ -142,21 +155,23 @@
       if (wallet === walletOrigin) return;
       walletOrigin = wallet;
       renderGoogleRow();
-      $('walletLink2').href = walletOrigin ? `${walletOrigin}/` : '#';
+      for (const id of ['walletLink2', 'walletLink3']) $(id).href = walletOrigin ? `${walletOrigin}/` : '#';
       Demo.stack({ self: 'aa', urls: { wallet } });
       renderGuide();
     });
   }
 
-  /** 세 화면 중 하나만 보인다: 로그인 전엔 login|signup, 로그인 뒤엔 me(등록 전 → 등록 카드, 등록 뒤 → 등록 정보·폐기 카드). */
+  /** 세 화면 중 하나만 보인다: 로그인 전엔 login|signup, 로그인 뒤엔 me(등록 전 → 프로필, 등록 뒤 → 등록 정보·프로필·폐기 카드, 폐기된 계정 → 안내 카드 하나). */
   function showView(v) {
     $('loginView').hidden = v !== 'login';
     $('signupView').hidden = v !== 'signup';
     const loggedIn = v === 'me';
     $('meCard').hidden = !loggedIn;
-    $('infoCard').hidden = !loggedIn || !me?.registered;
-    $('profileCard').hidden = !loggedIn;   // 2026-11-09: 지갑 등록 여부와 무관
-    $('revokeCard').hidden = !loggedIn || !me?.registered;
+    const revoked = Boolean(me?.disabled);   // 2026-11-14: 폐기된 계정에는 할 일이 없다 — 안내 카드만
+    $('disabledCard').hidden = !loggedIn || !revoked;
+    $('infoCard').hidden = !loggedIn || revoked || !me?.registered;
+    $('profileCard').hidden = !loggedIn || revoked;   // 2026-11-09: 지갑 등록 여부와 무관
+    $('revokeCard').hidden = !loggedIn || revoked || !me?.registered;
     if (v === 'login') setTimeout(() => $($('loginId').value ? 'loginPwd' : 'loginId').focus(), 0);
     if (v === 'signup') setTimeout(() => $('signupId').focus(), 0);
   }
@@ -172,7 +187,7 @@
     if (me && document.activeElement !== $('profileName')) $('profileName').value = me.profile?.name ?? '';
     // 로그인 뒤에만 등록·폐기가 보인다. 로그아웃 상태에서 가입 화면을 보고 있었다면 그대로 둔다.
     // 세션이 다른 길로 끝났을 때(다른 탭 로그아웃·만료) 숨긴 카드의 결과가 다음 사람에게 보이지 않게 비운다.
-    if (!me) { clearVerdict($('profileVerdict')); clearVerdict($('revokeVerdict')); }
+    if (!me) { clearVerdict($('profileVerdict')); clearManageVerdicts(); }
     if (me) showView('me'); else if ($('signupView').hidden) showView('login');
     renderGuide();
   }
@@ -216,7 +231,7 @@
     clearVerdict($('userVerdict'));
     await refreshMe();
   });
-  $('logoutBtn').addEventListener('click', async () => { await post('/cia/user/logout'); clearVerdict($('profileVerdict')); clearVerdict($('revokeVerdict')); await refreshMe(); });
+  $('logoutBtn').addEventListener('click', async () => { await post('/cia/user/logout'); clearVerdict($('profileVerdict')); clearManageVerdicts(); await refreshMe(); });
   $('copyAuidBtn').addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(me.auid); }
     catch { const ta = document.createElement('textarea'); ta.value = me.auid; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); } finally { ta.remove(); } }
@@ -237,7 +252,9 @@
     if (!Demo.confirmDanger('confirm_unlink_wallet')) return;
     const r = await post('/cia/user/unlink_wallet', { pwd: $('unlinkPwd').value });
     $('unlinkPwd').value = '';
-    verdict($('revokeVerdict'), r.status === 200, r.status === 200 ? 'idp_unlink_ok_title' : 'idp_unlink_failed', r.status === 200 ? () => ({ summary: tt('idp_unlink_ok') || '스냅 연결을 해제했습니다.' }) : { reason: r.body?.reason, detail: r.body });
+    clearManageVerdicts();
+    if (r.status === 200) verdict($('revokeVerdict'), true, 'idp_unlink_ok_title', () => ({ summary: tt('idp_unlink_ok') || '스냅 연결을 해제했습니다.' }));
+    else verdict($('unlinkVerdict'), false, 'idp_unlink_failed', { reason: pwReason(r), detail: r.body });
     await refreshMe();
   });
   $('revokeBtn').addEventListener('click', async () => {
@@ -246,7 +263,10 @@
     const r = await post('/cia/user/self_revoke', { pwd: $('revokePwd').value });
     $('revokePwd').value = '';
     if (r.status === 200) progress.revoked = true;
-    verdict($('revokeVerdict'), r.status === 200, r.status === 200 ? 'revoked_ok' : 'account_revoke_failed', { reason: r.body?.reason, detail: r.body });
+    clearManageVerdicts();
+    // 성공하면 폐기 카드가 숨는다(폐기된 계정) — 결과는 카드 밖에, 그 뒤의 일은 위의 "폐기된 계정" 카드가 말한다.
+    if (r.status === 200) verdict($('revokeVerdict'), true, 'revoked_ok', () => ({ summary: tt('idp_self_revoke_ok') || '이 계정을 폐기했습니다 — 이 계정으로는 더 이상 서비스에 로그인할 수 없습니다.' }));
+    else verdict($('selfRevokeVerdict'), false, 'account_revoke_failed', { reason: pwReason(r), detail: r.body });
     await refreshMe();
   });
   // 지갑 등록 팝업(Task 14) — 2026-11-09 부터 zkID 아이디 계정의 등록 버튼은 없고(등록은 서비스 로그인 중), Google 등록(?google=1, 테스트·수동 확인용)만 이 팝업을 연다.

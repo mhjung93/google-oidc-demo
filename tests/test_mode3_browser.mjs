@@ -248,8 +248,9 @@ try {
   // ---- 스냅 설정(2026-11-13 스펙 random-salt R3~R7, 계획 Review 2 — Review 1 은 zkID 가입 뒤에 있다) ----
   await t('Review 2: 비밀번호가 짧거나 서로 다르면, 또는 파일 창을 취소하면 salt 를 만들지 않는다; 쓰기가 실패하면 salt 는 남고 백업 전 — 탭은 여전히 막혀 있다', async () => {
     // 2026-11-13(화면 리뷰): 고르기 전에는 두 버튼 모두 테두리만 — 고른 쪽만 채워진다
-    const pressed = () => walletPage.evaluate(() => ['setupNewBtn', 'setupImportLabel'].map((id) => document.getElementById(id).getAttribute('aria-pressed')));
+    const pressed = () => walletPage.evaluate(() => [document.getElementById('setupNewBtn').getAttribute('aria-pressed'), document.getElementById('setupImportLabel').dataset.pressed]);
     assert.deepEqual(await pressed(), ['false', 'false']);
+    assert.equal(await walletPage.$eval('#setupImportLabel', (l) => l.hasAttribute('aria-pressed')), false, '<label> 은 버튼 역할이 아니다 — aria-pressed 를 달지 않는다(2026-11-14)');
     await walletPage.click('#setupNewBtn');
     await walletPage.waitForSelector('#setupBackupRow:not([hidden])');
     assert.deepEqual(await pressed(), ['true', 'false'], '"새로 만들기" 를 골랐다는 표시');
@@ -341,9 +342,15 @@ try {
     // 가림 문자는 값의 길이를 드러내지 않고 한 줄이다
     const saltCell = await walletPage.$eval(storeCell('salt.s_u'), (el) => ({ mask: el.querySelector('.mask')?.textContent ?? '', text: el.textContent }));
     assert.equal(saltCell.mask, '●'.repeat(12)); assert.equal(saltCell.text.includes('*'), false);
-    assert.equal(saltCell.text.length, 12 + 77, '가림 칸의 글자 수는 값과 무관하다(가림 12 + 자리 채움 77)');
+    assert.match(saltCell.text, /^●+0+$/, '가림 문자와 자리 채움뿐이다'); assert.notEqual(saltCell.text.length, USER_SALT.length, '가림 칸의 글자 수는 값의 길이가 아니다');
     assert.equal(await walletPage.$(storeCell('registration.uid')), null, '등록 줄은 없다');
     assert.equal(await walletPage.$(storeCell('nextIndex')), null, '다음 가입 번호 줄은 없어졌다(2026-11-13)');
+    // 2026-11-14(화면 리뷰 3차): 지울 것이 없으면 "스냅 초기화" 구획이 없다; 상단 바의 브랜드와 카드의 왼쪽 끝이 맞는다; 가린 칸은 바탕이 있어 빈 줄로 보이지 않는다
+    assert.equal(await walletPage.isHidden('#meDanger'), true, '등록 전에는 "스냅 초기화" 구획이 보이지 않는다');
+    assert.equal(await walletPage.isHidden('#regNotice'), true);
+    const navLay = await walletPage.evaluate(() => { const L = (q) => Math.round(document.querySelector(q).getBoundingClientRect().left); return { brand: L('.wallet-nav .brand'), card: L('#meCard') }; });
+    assert.ok(Math.abs(navLay.brand - navLay.card) <= 1, `브랜드와 카드의 왼쪽 끝: ${j(navLay)}`);
+    assert.notEqual(await walletPage.$eval(storeCell('salt.s_u'), (el) => getComputedStyle(el).backgroundColor), 'rgba(0, 0, 0, 0)', '가린 칸에 바탕이 있다');
     assert.equal(await walletPage.$$eval('#meStore dl.kv dt', (e) => e.length), 5, '등록 전 목록은 salt 묶음 다섯 줄(s_u·출처·만든 시각·백업 확인·백업 확인 시각)');
     assert.ok((await text(walletPage, storeCell('salt.s_u'))).length > 0); assert.equal((await pageDump(walletPage)).includes(USER_SALT), false, 'salt 값은 가려 있다');
     assert.equal(await walletPage.$eval(storeCell('version'), (el) => Boolean(el.closest('dl'))), false, '저장 형식 버전은 목록 줄이 아니다');
@@ -505,7 +512,8 @@ try {
     assert.equal(await walletPage.$eval('#walletNav a.nav-link', (a) => a.getAttribute('href')), '/attr.html', '상단 바에 속성 도구로 가는 링크가 있다(2026-11-13 화면 리뷰)');
     assert.equal(await walletPage.isHidden('#meCard'), true, '내 계정 카드는 그 탭에서만 보인다');
     assert.equal(await walletPage.isVisible('#sessionsCard'), true);
-    for (const id of ['#identityCard', '#txCard', '#snapPanel']) assert.equal(await walletPage.isHidden(id), true, `${id} 는 보이지 않는다`);
+    for (const id of ['#identityCard', '#txCard']) assert.equal(await walletPage.isHidden(id), true, `${id} 는 보이지 않는다`);
+    for (const id of ['#snapPanel', '#selfRevokeBtn', '#snapInfoBtn', '#snapReinstallBtn', '#snapVerdict']) assert.equal(await walletPage.locator(id).count(), 0, `${id} 는 없다 — 탭이 없어 갈 길이 없던 설정 패널을 걷어냈다(2026-11-14)`);
     // 2026-11-14(화면 리뷰): 좁은 폭(640px 이하)에서 탭은 아래 한 줄을 다 쓴다 — 오른쪽 좁은 칸에 세로로 접히지 않는다
     await walletPage.setViewportSize({ width: 480, height: 800 });
     const narrowTabs = await walletPage.$$eval('#walletTabs [data-tab]', (bs) => bs.map((b) => { const r = b.getBoundingClientRect(); return { top: Math.round(r.top), h: Math.round(r.height), left: Math.round(r.left) }; }));
@@ -522,6 +530,7 @@ try {
     await walletTab(walletPage, 'me');
     await waitText(walletPage, storeCell('registration.uid'), uid);
     assert.equal(await walletPage.isHidden('#meStoreEmpty'), true);
+    assert.equal(await walletPage.locator(storeCell('registration.provider')).count(), 0, '아이디 계정의 등록에는 빈 "로그인 방식" 줄이 없다(2026-11-14)'); assert.equal((await text(walletPage, '#meStore')).includes('로그인 방식'), false);
     const reg = snapState.registration, uc = snapState.userCred;
     for (const [path, want] of [
       ['registration.uid', reg.uid], ['registration.auid', reg.auid], ['registration.slot', String(reg.slot)], ['salt.source', 'new'], ['salt.backedUp', 'true'],
@@ -558,11 +567,21 @@ try {
     assert.deepEqual(lay.subs, [rpOrigin], '동의 기록은 서비스 주소가 작은 제목이다');
     assert.equal(lay.versionInList, false, '저장 형식 버전은 목록 줄이 아니다');
     assert.equal(await cell(`consents.${rpOrigin}.allowAgent`), snapState.consents[rpOrigin].allowAgent);
+    // 2026-11-14(화면 리뷰 3차): 날 값(0·국가 코드) 옆에 뜻이 붙는다; 지울 것이 있으면 "스냅 초기화" 구획이 보인다
+    const gloss = (path) => walletPage.$eval(storeCell(path), (c) => c.parentElement.querySelector('.gloss')?.textContent ?? '');
+    assert.equal(await gloss(`consents.${rpOrigin}.allowAgent`), '허용 안 함'); assert.ok((await text(walletPage, '#meStore')).includes('AI 에이전트 허용'));
+    assert.notEqual(await gloss('registration.attrs[1]'), '', '국가 코드 옆에 이름이 붙는다');
+    assert.equal(await walletPage.isVisible('#meDanger'), true); assert.equal(await walletPage.isHidden('#regNotice'), true, '등록부가 맞으면 안내가 없다');
+    // "연결된 서비스" 의 PPID 계정 주소는 자르지 않고 복사 버튼이 붙는다
+    const ppidCell = await walletPage.$eval('#sessionActions .val-copy', (v) => ({ code: v.querySelector('code').textContent, copy: Boolean(v.querySelector('.copy-btn')) }));
+    assert.match(ppidCell.code, /^0x[0-9a-fA-F]{40}$/, `계정 주소 전체: ${ppidCell.code}`); assert.equal(ppidCell.copy, true);
     // 비밀은 기본 가림 — 칸은 있지만 값은 DOM 어디에도 없다
     const secrets = { 'salt.s_u': snapState.salt.s_u, 'userCred.blind_u': uc.blind_u };
     assert.equal(await walletPage.locator(storeCell('registration.s_u')).count(), 0, '등록 묶음에 s_u 줄이 없다(0.5.0 — salt 묶음에 있다)'); assert.equal(await walletPage.locator(storeCell('registration.index')).count(), 0);
     assert.equal(await walletPage.locator(storeCell('registration.sk_u')).count(), 0, '"내 계정" 탭에 sk_u 줄이 없다(0.4.0 — 등록 키는 없다)');
     const masked = await pageDump(walletPage);
+    assert.notEqual(secrets['salt.s_u'], secrets['userCred.blind_u'], '(전제) 두 비밀은 다른 값이다');
+    assert.equal(await cell('salt.s_u'), await cell('userCred.blind_u'), '가린 칸은 값이 달라도 똑같이 보인다 — 값도 길이도 드러내지 않는다');
     for (const [path, v] of Object.entries(secrets)) {
       assert.ok((await cell(path)).length > 0, `${path} 칸이 있다`);
       assert.equal(masked.includes(v), false, `${path} 는 누르기 전에 화면에 없다`);
@@ -802,7 +821,8 @@ try {
     const realFile = tmpFile('zkd-salt-backup.json', BACKUP_TEXT);
     await walletPage.setInputFiles('#setupImportFile', realFile);
     await walletPage.waitForSelector('#setupImportPwRow:not([hidden])');
-    assert.deepEqual(await walletPage.evaluate(() => ['setupNewBtn', 'setupImportLabel'].map((id) => document.getElementById(id).getAttribute('aria-pressed'))), ['false', 'true'], '"백업에서 불러오기" 를 골랐다는 표시(2026-11-13 화면 리뷰)');
+    assert.deepEqual(await walletPage.evaluate(() => [document.getElementById('setupNewBtn').getAttribute('aria-pressed'), document.getElementById('setupImportLabel').dataset.pressed]), ['false', 'true'], '"백업에서 불러오기" 를 골랐다는 표시(2026-11-13 화면 리뷰)');
+    assert.equal(await walletPage.$eval('#setupImportLabel', (l) => getComputedStyle(l).backgroundColor === getComputedStyle(document.getElementById('setupNewBtn')).backgroundColor), false, '고른 쪽만 채워진다');
     // 클릭은 페이지 안에서 바로 낸다 — Playwright 의 click 은 조작 가능 여부를 기다리느라 0.7초를 넘길 수 있어 "직후" 를 보장하지 못한다(2026-11-13 전체 실행에서 이 자리의 click 한 번이 1,788ms 걸렸다).
     const stray = await walletPage.evaluate(() => {
       const left = importGuardUntil - Date.now();
@@ -976,6 +996,7 @@ try {
     // 2026-11-14(화면 리뷰): 설명은 라벨·칸보다 앞서 읽히지 않는다 — 칸 아래 한 줄
     const foot = await walletPage.$eval('#sessionActions .session-foot', (f) => ({ hintTop: f.querySelector('.hint').getBoundingClientRect().top, inputBottom: f.querySelector('input.bound').getBoundingClientRect().bottom }));
     assert.ok(foot.hintTop >= foot.inputBottom - 1, `허용 거래 수 설명의 자리: ${j(foot)}`);
+    assert.equal(await walletPage.$eval('#sessionActions .session-foot label', (l) => l.title), '', '설명은 줄 아래 한 번만 — 툴팁으로 되풀이하지 않는다(2026-11-14)');
     await walletPage.fill('#sessionActions input.bound', '1');
     const dBefore = dialogs.length;                                       // 2026-11-05: Snap 의 consentRevokeSession 동의 창은 없다 — 페이지의 confirm 만
     walletPage.once('dialog', (d) => d.accept());                         // confirm_revoke
@@ -1125,6 +1146,7 @@ try {
     assert.equal((await p.textContent('#saltShown')).trim(), USER_SALT, '"보기" 로 연다');
     await p.click('#saltRevealBtn'); assert.equal((await p.textContent('#saltShown')).trim(), '●'.repeat(12), '"가리기" 로 다시 가린다');
     assert.deepEqual(await p.$$eval('nav.wallet-nav a.nav-link', (as) => as.map((a) => [a.getAttribute('href'), a.getAttribute('aria-current')])), [['/', null], ['/attr.html', 'page']]);
+    assert.equal(await p.$$eval('nav.wallet-nav .nav-actions a.nav-link', (as) => as.length), 2, '페이지 링크는 zk 스냅 화면처럼 상단 바 오른쪽에 있다(2026-11-14)');
     const formLayout = await p.$$eval('#attrForm label', (ls) => ls.map((l) => { const sp = l.querySelector('span').getBoundingClientRect(), c = l.querySelector('input, select').getBoundingClientRect(); return { below: c.top >= sp.bottom - 1, left: Math.round(c.left) }; }));
     assert.ok(formLayout.every((l) => l.below) && new Set(formLayout.map((l) => l.left)).size === 1, `입력칸은 라벨 아래, 시작 위치가 같다: ${j(formLayout)}`);
     // 2026-11-11: uid·salt 로 계산한 auid 도 보인다 — 첫 RP 로그인 인증 창에 붙여 넣는 값
@@ -1406,11 +1428,12 @@ try {
     await p.close();
   });
 
+  let recA = null, recBRaw = null;   // 속성 도구 기록(계정 A·B) — 아래 케이스들이 계정을 바꿔 등록할 때 쓴다
   await t('R11(2026-11-13 스펙 random-salt): 스냅을 초기화해도 salt 는 남는다 — 같은 스냅으로 다른 계정을 등록하려 하면 "이 스냅은 이 IdP 에 이미 다른 계정으로 등록돼 있습니다"(auid_taken)', async () => {
     assert.equal((await cia.post('/cia/signup', { id: 'demo-user-b', pwd: DEMO_PWD })).status, 201, '계정 B 가입');
     const uidB = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.id === 'demo-user-b').uid;
     // 2026-11-14(화면 리뷰): "스냅 초기화" 는 "내 계정" 탭에 있다(전에는 탭이 없는 설정 카드에 있어 누를 길이 없었다 — 이 케이스도 상태를 직접 바꿔 흉내 냈다).
-    const recA = await walletPage.evaluate(() => localStorage.getItem('mode3_attr_tool_v1'));   // 계정 A 의 속성 도구 기록 — 아래에서 A 로 다시 등록할 때 쓴다
+    recA = await walletPage.evaluate(() => localStorage.getItem('mode3_attr_tool_v1'));   // 계정 A 의 속성 도구 기록 — 아래에서 A 로 다시 등록할 때 쓴다
     assert.equal(JSON.parse(recA).uid, String(uid));
     await walletTab(walletPage, 'me');
     await walletPage.waitForSelector('#snapResetBtn', { state: 'visible' });
@@ -1430,7 +1453,8 @@ try {
       await zkidLogin('demo-user-b');
       await a.fill('#birthYear', '1990'); await a.selectOption('#country', 'KR'); await a.click('#makeBtn');
       await a.waitForFunction((u) => JSON.parse(localStorage.getItem('mode3_attr_tool_v1') ?? 'null')?.uid === u, String(uidB));
-      const recB = JSON.parse(await a.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')));
+      recBRaw = await a.evaluate(() => localStorage.getItem('mode3_attr_tool_v1'));   // 계정 B 의 속성 도구 기록 — 맨 아래 케이스가 B 를 등록할 때 쓴다
+      const recB = JSON.parse(recBRaw);
       assert.equal(recB.uid, String(uidB), 'uid 는 zkID 에 로그인한 계정 B'); assert.equal(recB.s_u, USER_SALT, 'salt 는 스냅의 것 — 계정이 달라도 같다');
     } finally { await a.close(); }
     const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
@@ -1448,8 +1472,15 @@ try {
     assert.equal((await cia.adminGet('/cia/accounts')).body.accounts.find((x) => x.id === 'demo-user-b').auid, null, 'IdP 도 계정 B 에 auid 를 묶지 않았다');
     // 2026-11-14(화면 리뷰): IdP 가 거절한 등록은 스냅에 uid 를 남기지 않는다 — 남는 것은 보류 등록(uid 없음)뿐이라 다음 등록을 막지 않는다
     assert.equal(snapState.registration?.uid ?? null, null, '거절된 계정 B 의 uid 가 스냅에 남지 않았다');
+    assert.ok((await text(walletPage, '#snapResetVerdict')).includes('스냅 초기화 완료'), '(전제) 초기화 결과가 아직 떠 있다');
     await walletTab(walletPage, 'me'); await walletPage.click('#meReloadBtn');
     await waitText(walletPage, '#meStoreEmpty', '끝나지 않은 등록'); assert.equal(await walletPage.isVisible('#meStoreEmpty'), true);
+    assert.equal((await text(walletPage, '#snapResetVerdict')).trim(), '', '"스냅 초기화 완료" 는 다시 읽으면 지워진다 — 그 뒤의 상태와 섞이지 않게(2026-11-14)');
+    assert.equal((await text(walletPage, '#meStore')).includes('로그인 방식'), false, '보류 등록에도 빈 "로그인 방식" 줄이 없다');
+    // 2026-11-14(화면 리뷰 3차): 보류 등록은 "끝나지 않은 등록" 묶음에 값이 든 줄(시작한 시각)만 — uid·auid·슬롯·속성의 빈 줄과 빈 자격증명·동의 묶음은 그리지 않는다
+    assert.deepEqual(await walletPage.$$eval('#meStore .store-group > h4', (hs) => hs.map((h) => h.textContent.trim())), ['salt', '끝나지 않은 등록']);
+    assert.ok((await text(walletPage, '#meStore')).includes('등록을 시작한 시각')); assert.equal(await walletPage.locator(storeCell('registration.uid')).count(), 0); assert.equal(await walletPage.locator(storeCell('registration.registeredAt')).count(), 1);
+    assert.equal(await walletPage.isVisible('#meDanger'), true, '보류 등록이 있으면 초기화할 것이 있다');
     assert.equal((await text(walletPage, '#meStore')).includes(String(uidB)), false, '"내 계정" 에 거절된 계정의 uid 가 보이지 않는다');
     // 안내대로 이 스냅을 이미 등록한 계정 A 로 로그인하면 등록이 이어진다(전에는 스냅이 already_registered 로 막아 일반 오류로 끝났다)
     await walletPage.evaluate((r) => localStorage.setItem('mode3_attr_tool_v1', r), recA);
@@ -1476,15 +1507,81 @@ try {
     assert.deepEqual(fields, [{ id: 'unlinkPwd', block: 'unlinkBlock', below: true }, { id: 'revokePwd', block: 'revokeBlock', below: true }], '비밀번호 칸은 묶음마다 하나, 라벨 아래');
     assert.ok((await p.textContent('#unlinkBlock')).includes('계정은 남기고'), '연결 해제가 무엇인지 적혀 있다'); assert.ok((await p.textContent('#revokeBlock')).includes('같은 스냅으로 새 계정'), '폐기 뒤 스냅이 어떻게 되는지 적혀 있다');
     const acctA = async () => (await cia.adminGet('/cia/accounts')).body.accounts.find((x) => x.id === 'demo-user');
-    // 폐기 칸에 넣은 비밀번호로는 연결 해제가 되지 않는다(칸을 같이 쓰지 않는다)
+    // 폐기 칸에 넣은 비밀번호로는 연결 해제가 되지 않는다(칸을 같이 쓰지 않는다). 2026-11-14: 실패는 누른 묶음 안에 뜬다 — 카드 아래(폐기 묶음 밑)가 아니다
     await p.fill('#revokePwd', DEMO_PWD); p.once('dialog', (d) => d.accept()); await p.click('#unlinkBtn');
-    await waitText(p, '#revokeVerdict', '스냅 연결 해제 실패'); assert.equal((await acctA()).auid, AUID, '계정 A 는 그대로 연결돼 있다');
-    await p.fill('#revokePwd', ''); await p.fill('#unlinkPwd', DEMO_PWD); p.once('dialog', (d) => d.accept()); await p.click('#unlinkBtn');
+    await waitText(p, '#unlinkBlock #unlinkVerdict', '스냅 연결 해제 실패'); assert.equal((await acctA()).auid, AUID, '계정 A 는 그대로 연결돼 있다');
+    // 2026-11-14(화면 리뷰 3차): 비밀번호만 받는 폼이다 — 사유가 "아이디 또는 비밀번호" 가 아니다
+    assert.ok((await text(p, '#unlinkVerdict')).includes('비밀번호가 맞지 않습니다')); assert.equal((await text(p, '#unlinkVerdict')).includes('아이디'), false);
+    assert.equal((await text(p, '#revokeVerdict')).trim(), '', '연결 해제 실패는 카드 아래 칸에 뜨지 않는다');
+    // 반대로, 연결 해제 칸에 넣은 비밀번호로는 폐기가 되지 않는다 — 실패는 폐기 묶음 안에
+    await p.fill('#revokePwd', ''); await p.fill('#unlinkPwd', DEMO_PWD); p.once('dialog', (d) => d.accept()); await p.click('#revokeBtn');
+    await waitText(p, '#revokeBlock #selfRevokeVerdict', '폐기 실패'); assert.equal(Boolean((await acctA()).disabled), false, '계정 A 는 폐기되지 않았다'); assert.equal((await acctA()).auid, AUID);
+    assert.ok((await text(p, '#selfRevokeVerdict')).includes('비밀번호가 맞지 않습니다')); assert.equal((await text(p, '#selfRevokeVerdict')).includes('아이디'), false);
+    // 폐기 묶음의 결과 글씨는 빨갛지 않다 — 묶음의 .danger(버튼용 빨간 글자)가 결과 칸까지 물려주던 것(2026-11-14). 빨간 것은 묶음 제목뿐이다
+    const colors = await p.evaluate(() => { const c = (q) => getComputedStyle(document.querySelector(q)).color; return { verdict: c('#selfRevokeVerdict strong'), action: c('#selfRevokeVerdict .action'), card: c('#revokeCard h3'), title: c('#revokeBlock h4') }; });
+    assert.equal(colors.verdict, colors.card, j(colors)); assert.equal(colors.action, colors.card, j(colors)); assert.notEqual(colors.title, colors.card, '묶음 제목은 빨갛다');
+    assert.equal((await text(p, '#unlinkVerdict')).trim(), '', '다른 묶음의 지난 결과는 지워진다');
+    p.once('dialog', (d) => d.accept()); await p.click('#unlinkBtn');   // 비밀번호는 연결 해제 칸에 그대로 있다(실패한 폐기는 자기 칸만 비운다)
     await waitText(p, '#revokeVerdict', '스냅 연결 해제됨');
     await p.waitForSelector('#revokeCard', { state: 'hidden' });
     assert.equal(await p.isVisible('#revokeVerdict'), true, '카드가 숨은 뒤에도 결과가 보인다'); assert.ok((await text(p, '#revokeVerdict')).includes('스냅을 초기화'), '다음 할 일(스냅 초기화)을 안내한다');
     assert.equal((await acctA()).auid, null, 'IdP 가 계정 A 의 스냅 등록을 풀었다');
     await p.close();
+  });
+
+  // 2026-11-14(셀프 리뷰): 위 케이스의 안내("스냅을 초기화한 뒤 서비스에서 다시 로그인하면 새로 등록합니다")대로 끝까지 가 본다 — 그리고 새 묶음의 "내 계정 폐기" 버튼을 실제로 누른다.
+  // 주의: 이 케이스 뒤에는 등록된 활성 계정이 없다(A 는 연결 해제, B 는 폐기) — 뒤에 케이스를 붙이면 그 상태에서 시작한다.
+  await t('연결 해제 뒤 스냅 초기화 → 같은 스냅으로 계정 B 등록 → zkID /user 의 "내 계정 폐기": 자기 칸의 비밀번호로 폐기되고, 그 뒤 /user·/user/info·서비스·zk 스냅 화면이 모두 폐기를 안다', async () => {
+    const uidB = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.id === 'demo-user-b').uid;
+    await walletTab(walletPage, 'me'); await walletPage.waitForSelector('#snapResetBtn', { state: 'visible' });
+    walletPage.once('dialog', (d) => d.accept()); answers.push(true);
+    await walletPage.click('#snapResetBtn');
+    await waitText(walletPage, '#snapResetVerdict', '스냅 초기화 완료');
+    assert.equal((await wallet.get('/wallet/status')).body.registered, false);
+    await walletPage.evaluate((r) => localStorage.setItem('mode3_attr_tool_v1', r), recBRaw);
+    const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
+    await atIdpLogin(popup);
+    await popup.fill('#authUid', 'demo-user-b'); await popup.fill('#authPwd', DEMO_PWD); await popup.fill('#authAuid', String(AUID)); await popup.click('#authGo');   // 같은 스냅 → 같은 auid(A 가 풀어 줬다)
+    await backAtWallet(popup);
+    await popup.waitForEvent('close', { timeout: 180_000 }).catch(() => {});
+    const st = (await wallet.get('/wallet/status')).body;
+    assert.equal(st.registered, true, j(st)); assert.equal(String(st.uid), String(uidB), '에이전트의 등록은 계정 B'); assert.equal(st.auid, AUID, '같은 스냅이라 같은 auid');
+    assert.equal(snapState.registration?.uid, String(uidB));
+    // 탭을 떠났다 오면 지난 "스냅 초기화 완료" 는 없다 — 새 등록과 섞여 보이지 않는다
+    await walletTab(walletPage, 'services'); await walletTab(walletPage, 'me');
+    await waitText(walletPage, storeCell('registration.uid'), String(uidB));
+    assert.equal((await text(walletPage, '#snapResetVerdict')).trim(), '', '탭을 떠났다 오면 초기화 결과가 지워져 있다');
+    await walletTab(walletPage, 'services');
+    await zkidLogin('demo-user-b');
+    const p = await context.newPage(); await p.goto(`${cia.base}/user`); await p.waitForSelector('#revokeCard:not([hidden])');
+    const acctB = async () => (await cia.adminGet('/cia/accounts')).body.accounts.find((x) => x.id === 'demo-user-b');
+    assert.equal(Boolean((await acctB()).disabled), false); assert.equal((await acctB()).auid, AUID);
+    await rpPage.waitForSelector('#accountPill:not([hidden])', { timeout: 60_000 });   // (전제) 서비스에는 계정 B 로 로그인돼 있다
+    assert.equal(await p.isHidden('#disabledCard'), true);
+    await p.fill('#revokePwd', DEMO_PWD); p.once('dialog', (d) => d.accept()); await p.click('#revokeBtn');
+    // 2026-11-14(화면 리뷰 3차): 폐기 뒤 /user 는 "폐기된 계정" 카드 하나만 보인다 — "등록됨 — 서비스에서 로그인하세요" 와 연결 해제·폐기·프로필 카드는 없다. 결과는 카드 밖에 남는다
+    await waitText(p, '#revokeVerdict', '폐기 요청 접수');
+    assert.ok((await text(p, '#revokeVerdict')).includes('더 이상 서비스에 로그인할 수 없습니다'), '결과가 무슨 일이 생기는지 말한다');
+    assert.equal((await acctB()).disabled, true, 'IdP 가 계정 B 를 폐기했다');
+    const cards = () => p.evaluate(() => Object.fromEntries(['disabledCard', 'infoCard', 'profileCard', 'revokeCard', 'meCard'].map((id) => [id, !document.getElementById(id).hidden])));
+    await p.waitForSelector('#disabledCard:not([hidden])');
+    assert.deepEqual(await cards(), { disabledCard: true, infoCard: false, profileCard: false, revokeCard: false, meCard: true });
+    assert.ok((await text(p, '#disabledCard')).includes('폐기된 계정') && (await text(p, '#disabledCard')).includes('스냅을 초기화'));
+    assert.equal(await p.isVisible('#revokeVerdict'), true, '폐기 결과가 화면에 남는다');
+    await p.reload(); await p.waitForSelector('#disabledCard:not([hidden])');   // 새로 고쳐도 폐기된 계정임을 안다
+    assert.deepEqual(await cards(), { disabledCard: true, infoCard: false, profileCard: false, revokeCard: false, meCard: true });
+    await p.goto(`${cia.base}/user/info`); await p.waitForSelector('#infoView:not([hidden])');
+    assert.ok((await text(p, '#infoState')).startsWith('폐기됨'), await text(p, '#infoState')); assert.ok((await text(p, '#infoWallet')).startsWith('폐기된 계정'), await text(p, '#infoWallet'));
+    await p.close();
+    // 서비스: 폐기가 게시돼 root 가 바뀌면 서버가 그 로그인(쿠키)을 닫는다 — 화면이 상단은 로그인·"내 계정" 은 빈 채로 남지 않고, 로그아웃 상태로 바뀌며 사유를 말한다
+    await rpPage.reload();
+    await waitText(rpPage, '#verdict', '이 로그인이 닫혔습니다', 30_000);
+    assert.equal(await rpPage.isHidden('#accountPill'), true); assert.equal(await rpPage.isVisible('#loginBtn'), true); assert.equal(await rpPage.isHidden('#account'), true, '"내 계정" 카드가 반쯤 남지 않는다');
+    // zk 스냅 화면: 등록부에 내 자격증명이 없다는 안내가 탭 위에 뜬다(다시 읽으면 체인에서 확인한다)
+    await walletTab(walletPage, 'me'); await walletPage.click('#meReloadBtn');
+    await walletPage.waitForSelector('#regNotice:not([hidden])', { timeout: 30_000 });
+    assert.ok((await text(walletPage, '#regNotice')).includes('zkID 등록부에 이 스냅의 자격증명이 없습니다'), await text(walletPage, '#regNotice'));
+    await walletTab(walletPage, 'services'); assert.equal(await walletPage.isVisible('#regNotice'), true, '안내는 탭과 무관하게 보인다');
   });
 
   await t('하네스: 준비한 대화상자 응답이 남지 않았다(기대한 동의 창이 다 떴다)', async () => {

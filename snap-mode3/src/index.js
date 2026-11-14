@@ -156,30 +156,15 @@ export const onRpcRequest = async ({ origin, request }) => {
       return { s_u: requireSalt(state).s_u };
     }
 
-    // 등록(V11 갱신, 2026-10-23): 지갑 페이지가 이미 받은 uid 를 params 로 넘긴다(2026-11-05: 확인 창 없음). 비밀은 스냅의 salt 다 — IdP 에는 auid 만 간다(storeRegistration).
-    // 보류 등록(prepareRegister)이 있으면 덮어쓴다 — 완성 등록만 already_registered.
-    case 'register': {
-      const salt = requireBackedUp(state);
-      if (state.registration?.uid) fail('already_registered: 이미 등록돼 있다 (초기화하려면 reset)');
-      const uid = String(params.uid ?? '').trim();
-      if (!isDec(uid)) fail('bad_uid: uid 는 10진 숫자 문자열이어야 한다');
-      // 속성 도구가 getSalt 로 받은 salt 를 다시 실어 보내면 이 스냅의 값과 같은지만 본다 — 다르면(다른 스냅에서 만든 기록) 등록하지 않는다.
-      if (params.s_u !== undefined && params.s_u !== null && params.s_u !== '') {
-        const su = String(params.s_u).trim();
-        if (!isDec(su) || BigInt(su).toString() !== salt.s_u) fail('salt_mismatch: 보낸 salt 가 이 스냅의 salt 와 다르다');
-      }
-      state.registration = { uid, auid: null, slot: null, attrs: null, registeredAt: new Date().toISOString() };
-      state.userCred = null; await setState(state);
-      return { uid, s_u: salt.s_u };
-    }
-
-    // Google 등록(2026-10-26 Snap OIDC 래퍼 §2.1): 등록 토큰의 nonce 는 등록 요청의 tag 에 묶이는데(reg:H(tag) — tag 는 s_u 로 만든다), uid 는 토큰을 받은 뒤에야
-    // IdP 가 정한다 — 그래서 uid 없이 "보류 등록" 을 먼저 둔다. uid 는 storeRegistration 이 채운다. 다시 불러도 같은 salt 다.
+    // 등록의 첫 단계 — uid 없는 "보류 등록" 을 두고 salt 를 돌려준다(확인 창 없음). uid 는 IdP 가 등록을 받은 뒤 storeRegistration 이 채운다. 다시 불러도 같은 salt 다.
+    //  - Google 등록(2026-10-26 Snap OIDC 래퍼 §2.1): 등록 토큰의 nonce 는 등록 요청의 tag 에 묶이는데(reg:H(tag) — tag 는 s_u 로 만든다), uid 는 토큰을 받은 뒤에야 IdP 가 정한다.
+    //  - 아이디 계정(2026-11-14): 전에는 register({ uid }) 가 IdP 응답 전에 uid 를 적어, IdP 가 거절하면 거절된 계정의 uid 가 스냅에 남았다 — 그 RPC 는 없앴다.
+    // provider 는 storeRegistration 이 받을 때만 생긴다(아이디 계정의 등록에는 그 줄이 없다).
     case 'prepareRegister': {
       const salt = requireBackedUp(state);
       if (state.registration?.uid) fail('already_registered: 이미 등록돼 있다 (초기화하려면 reset)');
       if (!state.registration) {
-        state.registration = { uid: null, auid: null, slot: null, attrs: null, provider: null, registeredAt: new Date().toISOString() };
+        state.registration = { uid: null, auid: null, slot: null, attrs: null, registeredAt: new Date().toISOString() };
         state.userCred = null; await setState(state);
       }
       return { s_u: salt.s_u };
@@ -195,7 +180,7 @@ export const onRpcRequest = async ({ origin, request }) => {
       return { s_u: requireSalt(state).s_u };
     }
 
-    // 에이전트 POST /wallet/register 응답(slot·attrs·auid)을 저장한다. s_u 는 register/prepareRegister 때 이미 저장했으므로 받지 않는다(V9 §7.1).
+    // 에이전트 POST /wallet/register 응답(slot·attrs·auid)을 저장한다. s_u 는 스냅의 salt 라 받지 않는다(V9 §7.1).
     // 2026-10-26: 보류 등록(prepareRegister)은 여기서 uid 를 받아 완성된다. provider 는 IdP 응답의 값(데모 등록은 생략 가능).
     case 'storeRegistration': {
       const reg = state.registration ?? fail('not_registered: 이 Snap 에 등록이 없다');

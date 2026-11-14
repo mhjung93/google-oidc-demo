@@ -44,26 +44,12 @@ export function createSnapSim() {
     },
     exportSaltForBackup() { return { s_u: requireSalt().s_u }; },
 
-    /** 등록 — 실제 Snap(index.js register)과 같은 순서: no_salt → backup_required → already_registered → bad_uid → salt_mismatch. 비밀은 스냅의 salt 다(등록 기록에는 두지 않는다). */
-    async register({ uid, s_u: suIn } = {}) {
-      const salt = requireBackedUp();
-      if (state.registration?.uid) throw new Error('already_registered: snap_sim: 이미 등록돼 있다');
-      const uidStr = String(uid ?? '').trim();
-      if (!isDec(uidStr)) fail('bad_uid: uid 는 10진 숫자 문자열이어야 한다');
-      if (suIn !== undefined && suIn !== null && suIn !== '') {
-        const su = String(suIn).trim();
-        if (!isDec(su) || BigInt(su).toString() !== salt.s_u) fail('salt_mismatch: 보낸 salt 가 이 스냅의 salt 와 다르다');
-      }
-      state.registration = { uid: uidStr, auid: null, slot: null, attrs: null, registeredAt: new Date().toISOString() };
-      state.userCred = null;
-      return { uid: uidStr, s_u: salt.s_u };
-    },
-
-    /** Google 등록(2026-10-26): 실제 Snap(index.js prepareRegister)과 같은 입출력 — uid 없는 보류 등록, 다시 불러도 같은 salt. */
+    /** 등록의 첫 단계: 실제 Snap(index.js prepareRegister)과 같은 입출력 — uid 없는 보류 등록, 다시 불러도 같은 salt. uid 는 storeRegistration 이 채운다
+     *  (2026-11-14: uid 를 먼저 적던 register 는 실제 Snap 에서 없어졌다 — 아이디 계정·Google 등록 모두 이 길이다). */
     prepareRegister() {
       const salt = requireBackedUp();
       if (state.registration?.uid) fail('already_registered: 이미 등록돼 있다 (초기화하려면 reset)');
-      if (!state.registration) { state.registration = { uid: null, auid: null, slot: null, attrs: null, provider: null, registeredAt: new Date().toISOString() }; state.userCred = null; }
+      if (!state.registration) { state.registration = { uid: null, auid: null, slot: null, attrs: null, registeredAt: new Date().toISOString() }; state.userCred = null; }
       return { s_u: salt.s_u };
     },
 
@@ -73,7 +59,7 @@ export function createSnapSim() {
     /** salt(s_u) 를 지갑 페이지에 보여 준다 — 등록이 없어도 salt 가 있으면 답한다(0.5.0). */
     showSalt() { return { s_u: requireSalt().s_u }; },
 
-    /** 에이전트 /wallet/register 응답의 slot·attrs·auid 를 저장한다(s_u 는 register 때 이미 저장했으므로 받지 않는다).
+    /** 에이전트 /wallet/register 응답의 slot·attrs·auid 를 저장한다(s_u 는 스냅의 salt 라 받지 않는다).
      *  실제 Snap(index.js storeRegistration:119-130)과 같은 검사를 같은 사유 문자열로 한다(리뷰 2026-10-13 U1·U2) — 이 검사가
      *  없으면 시뮬레이터가 실제 Snap 보다 느슨하게 통과시켜 둘의 입출력이 어긋난다. */
     storeRegistration({ attrs, slot, auid, uid, provider }) {

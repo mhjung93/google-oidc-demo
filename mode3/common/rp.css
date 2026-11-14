@@ -40,6 +40,12 @@ body { background: var(--bg); }
 @media (min-width: 901px) {
   .exchange-main { grid-template-columns: 2fr 1fr; align-items: start; }
   .compliance-panel { grid-column: 1 / -1; }
+  /* 2026-11-14(화면 리뷰 3차): 오른쪽 열(내 자산)이 두 줄에 걸쳐 서고 남는 높이는 둘째 줄이 가져간다 — "내 계정" 카드가 시세표 바로 아래에 붙는다
+     (그전에는 첫 줄이 긴 오른쪽 열 높이만큼 늘어나 두 카드 사이가 크게 비었다). */
+  .exchange-main { grid-template-rows: auto 1fr; }
+  .card.market-panel { grid-column: 1; grid-row: 1; }
+  .card.assets-panel { grid-column: 2; grid-row: 1 / span 2; }
+  .card.account-panel { grid-column: 1; grid-row: 2; }
 }
 .card.market-panel, .card.assets-panel, .card.compliance-panel { min-width: 0; }
 .card h2 { margin: 0 0 14px; font-size: 18px; color: var(--navy-ink); font-weight: 800; }
@@ -87,7 +93,12 @@ html[data-expert] .opt-row.expert { display: flex; }
 
 .withdraw-box { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
 .withdraw-amount { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); margin: 10px 0 12px; max-width: 220px; }
-.withdraw-amount input { width: 100%; }
+.withdraw-amount input, .withdraw-amount select { width: 100%; }
+/* 출금 출처·받는 주소(0x…42자)는 칸을 열 폭만큼 쓴다 — 220px 에서는 값이 잘렸다(2026-11-14). 주소는 고정폭 작은 글씨로 한 줄에 들어오게. */
+.withdraw-amount.wide { max-width: none; }
+#txTo { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.race-demo { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; margin: 14px 0 0; font-size: 13px; color: var(--muted); }
+.race-demo .btn-ghost { padding: 3px 10px; font-size: 12.5px; }
 
 /* ---- 좁은 화면 ---- */
 @media (max-width: 640px) {

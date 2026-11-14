@@ -29,6 +29,7 @@
     <p class="desc" data-i18n="idp_myinfo_desc">zkID 가 이 계정에 대해 저장하고 있는 값입니다. 바꾸려면 "계정 관리" 로 가세요.</p>
     <dl class="kv">
       <dt data-i18n="idp_myinfo_id">아이디</dt><dd id="infoId">-</dd>
+      <dt data-i18n="idp_myinfo_state">계정 상태</dt><dd id="infoState">-</dd>   <!-- 2026-11-14(화면 리뷰 3차): 폐기된 계정이 "등록됨" 으로만 보였다 -->
       <dt data-i18n="idp_myinfo_uid">uid</dt><dd><code id="infoUid">-</code> <button type="button" id="copyUidBtn" class="copy-btn" title="복사">⧉</button></dd>
       <dt></dt><dd><p class="desc kv-desc" data-i18n="idp_myinfo_uid_desc">zkID 가 배정한 계정 번호입니다. 속성 도구는 zkID 로그인에서 이 값을 받아옵니다.</p></dd>
       <dt data-i18n="idp_myinfo_auid">auid</dt><dd><code id="infoAuid" style="overflow-wrap:anywhere;word-break:break-all">-</code> <button type="button" id="copyAuidBtn" class="copy-btn" title="복사" hidden>⧉</button></dd>
@@ -73,7 +74,8 @@
     $('infoSlot').textContent = me.slot ?? '-';
     const provider = me.provider ?? 'demo';
     $('infoMethod').textContent = tt(`idp_myinfo_method_${provider}`) || provider;
-    $('infoWallet').textContent = me.registered ? (tt('idp_myinfo_wallet_yes') || '등록됨') : (tt('idp_myinfo_wallet_no') || '아직 없음');
+    $('infoState').textContent = me.disabled ? (tt('idp_myinfo_state_revoked') || '폐기됨') : (tt('idp_myinfo_state_ok') || '정상');
+    $('infoWallet').textContent = me.disabled ? (tt('idp_myinfo_wallet_revoked') || '폐기된 계정') : me.registered ? (tt('idp_myinfo_wallet_yes') || '등록됨') : (tt('idp_myinfo_wallet_no') || '아직 없음');
     const name = me.profile?.name ?? null, at = me.profile?.updatedAt ?? null;
     $('infoAttr').textContent = name ?? (tt('idp_myinfo_attr_none') || '저장된 값 없음'); $('infoAttr').classList.toggle('plain', !name);
     $('infoAttrAt').textContent = at ? localTime(at) : '-';

@@ -34,7 +34,7 @@ window.DemoStrings = {
     confirm_rp_deny: { ko: 'RP 를 거절합니다. 거절은 되돌릴 수 없고, 운영자가 키로 다시 등록해야 합니다. 계속할까요?', en: 'Deny this RP. This cannot be undone; the operator must re-register with the key. Continue?' },
     confirm_open_approve: { ko: '개봉을 승인하면 이 세션의 uid 가 영구히 기록됩니다(조건부 프라이버시 해제). 계속할까요?', en: 'Approving records this session’s uid permanently (conditional privacy is lifted). Continue?' },
     confirm_open_deny: { ko: '개봉 요청을 거절합니다. 되돌릴 수 없습니다. 계속할까요?', en: 'Deny this opening request. This cannot be undone. Continue?' },
-    confirm_reset: { ko: '스냅의 등록·동의 기록과 이 스냅(에이전트)의 등록·세션 기록을 지웁니다. salt 는 스냅에 남습니다 — 같은 zkID 계정으로 다시 등록하면 같은 주소로 이어지고, 다른 계정으로는 등록할 수 없습니다(한 스냅은 이 IdP 에서 계정 하나). 계속할까요?', en: 'Erase the Snap’s registration and consents and this Snap agent’s registration and sessions. The salt stays in the Snap — registering the same zkID account again continues with the same addresses, and a different account cannot be registered (one Snap holds one account at this IdP). Continue?' },   // 2026-11-13 리뷰 I-1(R8·R11)
+    confirm_reset: { ko: '스냅의 등록·동의 기록과 스냅 에이전트의 등록·세션 기록을 지웁니다. salt 는 스냅에 남습니다 — 같은 zkID 계정으로 다시 등록하면 같은 주소로 이어지고, 다른 계정으로는 등록할 수 없습니다(한 스냅은 이 IdP 에서 계정 하나). 계속할까요?', en: 'Erase the Snap’s registration and consents and the Snap agent’s registration and sessions. The salt stays in the Snap — registering the same zkID account again continues with the same addresses, and a different account cannot be registered (one Snap holds one account at this IdP). Continue?' },   // 2026-11-13 리뷰 I-1(R8·R11)
     // 페이지 제목·카드 제목·설명 — T2~T4 가 쓴다(키 이름 = 페이지_카드_역할)
     // Task 14(B5, 2026-10-23): "사용자 속성 등록" → "내 신원" — 이 카드가 이제 auid·salt 도 보이므로(아래 wallet_salt_*),
     // reasons.auid_mismatch(아래)가 이미 "지갑 페이지의 '내 신원' 카드에서 복사" 라고 이 이름을 가리키고 있었다.
@@ -50,8 +50,6 @@ window.DemoStrings = {
     wallet_connect_desc: { ko: 'salt 는 MetaMask 스냅 안에 있습니다. MetaMask Flask 와 zk 스냅이 필요하고, 처음 연결하면 스냅 설치를 묻습니다. 스냅에 salt 가 없으면 연결 뒤에 새로 만들거나 백업에서 불러옵니다.', en: 'The salt lives inside the MetaMask Snap. You need MetaMask Flask and the zk Snap; the first connection asks to install the Snap. If the Snap has no salt yet, you create one or load it from a backup after connecting.' },
     wallet_profile_title: { ko: '내 속성', en: 'My attributes' },
     wallet_details_summary: { ko: '상세', en: 'Details' },
-    wallet_danger_title: { ko: '위험 구역', en: 'Danger zone' },
-    wallet_danger_desc: { ko: '되돌릴 수 없습니다. 내 계정 폐기는 zkID 계정을 폐기해 모든 서비스 로그인이 막힙니다. 스냅 초기화는 이 브라우저의 스냅 비밀을 지웁니다.', en: 'Cannot be undone. Revoking my account revokes the zkID account and blocks logins at every service. Resetting the Snap erases the Snap secret in this browser.' },
     wallet_identity_title: { ko: '내 신원', en: 'My identity' },
     wallet_identity_desc: { ko: 'zkID 에 한 번 등록합니다. 속성은 내가 넣고 zkID 는 값을 모릅니다.', en: 'Register once with the IdP. I enter the attributes myself; the IdP never learns the values.' },
     // salt(s_u) 표시(Task 14, B5) — 비밀이라 기본 가림이고 "보기" 를 눌러야 나온다(지갑 에이전트 로그·콘솔에도 안 남긴다).
@@ -73,8 +71,6 @@ window.DemoStrings = {
     wallet_bounds_apply_failed: { ko: '반영 실패', en: 'Apply failed' },
     wallet_tx_title: { ko: '트랜잭션 보내기', en: 'Send a transaction' },
     wallet_tx_desc: { ko: '이 서비스 전용 주소에서 보냅니다. 필요하면 속성 조건만 골라 공개합니다.', en: 'Sent from your RP-specific address. Optionally reveal only chosen attribute conditions.' },
-    wallet_snap_title: { ko: 'MetaMask · 스냅', en: 'MetaMask · Snap' },
-    wallet_snap_desc: { ko: '비밀은 MetaMask 스냅 안에 있습니다. 이 페이지는 비밀을 보지 않습니다.', en: 'Secrets live inside the MetaMask Snap. This page never sees them.' },
     wallet_auth_title: { ko: '스냅', en: 'Snap' },   // 팝업 큰 제목의 기본값 — 요청이 오면 아래 heading 키로 바뀐다(2026-11-05)
     wallet_auth_heading_login: { ko: '로그인', en: 'Login' },
     wallet_auth_heading_register: { ko: '등록', en: 'Registration' },
@@ -267,6 +263,7 @@ window.DemoStrings = {
     wallet_me_failed: { ko: '스냅에 저장된 값을 읽지 못했습니다', en: 'Could not read the values stored in the Snap' },
     wallet_me_g_salt: { ko: 'salt', en: 'salt' },
     wallet_me_g_registration: { ko: '등록', en: 'Registration' },
+    wallet_me_g_registration_pending: { ko: '끝나지 않은 등록', en: 'Unfinished registration' },   // 2026-11-14(화면 리뷰 3차): uid 없는 보류 등록 — 빈 줄은 그리지 않는다
     wallet_me_g_userCred: { ko: '사용자 자격증명', en: 'User credential' },
     wallet_me_g_consents: { ko: '동의 기록', en: 'Consent records' },
     wallet_me_g_other: { ko: '그 밖', en: 'Other' },
@@ -282,6 +279,7 @@ window.DemoStrings = {
     wallet_me_f_backedUpAt: { ko: '백업 확인 시각', en: 'Backup confirmed at' },
     wallet_me_f_provider: { ko: '로그인 방식', en: 'Sign-in method' },
     wallet_me_f_registeredAt: { ko: '등록 시각', en: 'Registered at' },
+    wallet_me_f_registeredAt_pending: { ko: '등록을 시작한 시각', en: 'Registration started at' },
     wallet_me_f_auid: { ko: 'auid', en: 'auid' },
     wallet_me_f_s_u: { ko: 'salt (s_u)', en: 'salt (s_u)' },
     wallet_me_f_slot: { ko: '슬롯', en: 'Slot' },
@@ -299,7 +297,9 @@ window.DemoStrings = {
     wallet_me_f_blind_u: { ko: 'blind_u', en: 'blind_u' },
     wallet_me_f_issuedAt: { ko: '발급 시각', en: 'Issued at' },
     wallet_me_f_arid: { ko: 'arid', en: 'arid' },
-    wallet_me_f_allowAgent: { ko: '에이전트 허용', en: 'Agent allowed' },
+    wallet_me_f_allowAgent: { ko: 'AI 에이전트 허용', en: 'AI agent allowed' },
+    wallet_me_v_allowAgent_0: { ko: '허용 안 함', en: 'not allowed' },   // 2026-11-14(화면 리뷰 3차): 저장된 0·1 옆에 뜻을 붙인다
+    wallet_me_v_allowAgent_1: { ko: '허용', en: 'allowed' },
     wallet_me_f_grantedAt: { ko: '동의 시각', en: 'Granted at' },
     wallet_me_f_version: { ko: '저장 형식 버전', en: 'Storage format version' },
     rp_race_show_btn: { ko: '시연 보이기', en: 'Show demo' },   // 해시는 아래 줄(#txHashRow)에만 — 두 번 보이던 것을 고쳤다(2026-11-05)
@@ -309,6 +309,7 @@ window.DemoStrings = {
     wallet_auth_tx_value: { ko: '금액', en: 'Amount' },
     rp_open_no_request: { ko: '먼저 개봉을 요청하세요(계정 주소 또는 해시로)', en: 'Request an opening first (by account address or tx hash)' },
     rp_logout_btn: { ko: '로그아웃', en: 'Log out' },
+    rp_session_stale: { ko: '이 로그인이 닫혔습니다 — zkID 가 폐기 목록을 새로 게시하면 그 전의 로그인은 다시 확인해야 합니다. 다시 로그인하세요.', en: 'This login was closed — when zkID publishes a new revocation list, earlier logins must be checked again. Log in again.' },   // 2026-11-14(화면 리뷰 3차): 상단은 로그인 상태인데 "내 계정" 이 비어 있던 것
     rp_session_ended_title: { ko: '로그아웃됨', en: 'Logged out' },
     rp_session_ended: { ko: '이 세션이 끝났습니다 — 사용자 페이지에서 폐기하거나 로그아웃했습니다. 계속 쓰려면 다시 로그인하세요.', en: 'This session has ended — it was revoked or logged out from the user page. Log in again to continue.' },
     rp_pending_banner: { ko: '서비스 준비 중 — zkID 승인 대기', en: 'Service not ready yet — awaiting IdP approval' },
@@ -349,13 +350,10 @@ window.DemoStrings = {
     wallet_profile_save_btn: { ko: '속성 저장', en: 'Save attributes' },
     wallet_tx_btn: { ko: '보내기', en: 'Send' },
     wallet_connect_btn: { ko: 'MetaMask 연결', en: 'Connect MetaMask' },
-    wallet_snap_info_btn: { ko: '스냅 상태 보기', en: 'Show Snap status' },
     wallet_self_revoke_btn: { ko: '내 계정 폐기', en: 'Revoke my account' },
     wallet_gsi_hint: { ko: 'Google 버튼을 눌러 로그인하세요.', en: 'Press the Google button to sign in.' },
     wallet_gsi_origin: { ko: 'Google 로그인은 localhost 오리진에서만 됩니다(예: http://localhost:5100).', en: 'Google sign-in works only on a localhost origin (for example http://localhost:5100).' },
     wallet_snap_reset_btn: { ko: '스냅 초기화', en: 'Reset the Snap' },
-    wallet_snap_reinstall_btn: { ko: '스냅 다시 설치', en: 'Reinstall the Snap' },   // 2026-11-06: 설치돼 있으면 연결 때 설치 창을 띄우지 않으므로 번들 갱신은 여기서
-    wallet_snap_reinstall_hint: { ko: '스냅 번들이 바뀌었을 때만 — 등록 비밀은 그대로 남습니다.', en: 'Only after the Snap bundle changed — your registration secret is kept.' },
     wallet_end_session: { ko: '이 세션 끝내기(폐기)', en: 'End this session (revoke)' },
     wallet_reg_yes: { ko: '등록됨', en: 'Registered' },
     wallet_reg_no: { ko: '미등록', en: 'Not registered' },
@@ -433,20 +431,13 @@ window.DemoStrings = {
     wallet_mm_none: { ko: '연결 안 됨', en: 'Not connected' },
     wallet_mm_connected: { ko: 'MetaMask {account}', en: 'MetaMask {account}' },
     wallet_mm_failed: { ko: '연결 실패: {err}', en: 'Connection failed: {err}' },
-    wallet_snap_info_title: { ko: '스냅 상태', en: 'Snap status' },
-    wallet_snap_info_summary: { ko: '등록 {reg} · 자격증명 보관 {cred} · 동의 기록 {consents}건', en: 'Registration {reg} · credential stored {cred} · {consents} consent records' },
-    wallet_snap_info_failed: { ko: '스냅 상태를 읽지 못했습니다', en: 'Could not read the Snap status' },
     wallet_yes: { ko: '예', en: 'Yes' },
     wallet_no: { ko: '아니오', en: 'No' },
     wallet_self_revoke_ok: { ko: '내 계정의 폐기를 zkID 에 요청했습니다 — 되돌릴 수 없습니다.', en: 'Requested zkID to revoke my account — this cannot be undone.' },
     wallet_self_revoke_failed: { ko: '자기 폐기 실패', en: 'Self-revocation failed' },
     wallet_snap_reset_ok: { ko: '스냅 초기화 완료', en: 'The Snap was reset' },
-    wallet_salt_failed: { ko: 'salt 를 보일 수 없습니다', en: 'Cannot show the salt' },   // 2026-11-06
-    wallet_snap_reset_summary: { ko: '스냅의 등록·동의 기록과 이 스냅(에이전트)의 등록·세션을 지웠습니다. salt 는 남아 있습니다 — 같은 zkID 계정으로 다시 로그인하면 등록이 이어집니다.', en: 'Erased the Snap’s registration and consents and this Snap agent’s registration and sessions. The salt stays — logging in again with the same zkID account continues the registration.' },   // 2026-11-13 리뷰 I-1(R8·R11)
+    wallet_snap_reset_summary: { ko: '스냅의 등록·동의 기록과 스냅 에이전트의 등록·세션을 지웠습니다. salt 는 남아 있습니다 — 같은 zkID 계정으로 다시 로그인하면 등록이 이어집니다.', en: 'Erased the Snap’s registration and consents and the Snap agent’s registration and sessions. The salt stays — logging in again with the same zkID account continues the registration.' },   // 2026-11-13 리뷰 I-1(R8·R11)
     wallet_snap_reset_failed: { ko: '스냅 초기화 실패', en: 'Resetting the Snap failed' },
-    wallet_snap_reinstall_ok: { ko: '스냅 다시 설치 완료', en: 'The Snap was reinstalled' },
-    wallet_snap_reinstall_summary: { ko: 'MetaMask 가 스냅 번들을 다시 받아 설치했습니다. 등록 비밀과 동의 기록은 그대로입니다.', en: 'MetaMask fetched and installed the Snap bundle again. Your registration secret and consents are unchanged.' },
-    wallet_snap_reinstall_failed: { ko: '스냅 다시 설치 실패', en: 'Reinstalling the Snap failed' },
     // 승인 팝업(?authorize=1)
     wallet_auth_waiting: { ko: '요청을 기다리는 중…', en: 'Waiting for the request…' },
     wallet_auth_no_opener: { ko: '이 창은 서비스 페이지가 열어야 합니다.', en: 'This window must be opened by an RP page.' },
@@ -488,6 +479,7 @@ window.DemoStrings = {
     wallet_registry_label: { ko: '등록 상태', en: 'Registration' },
     wallet_idp_label: { ko: 'zkID', en: 'zkID' },
     wallet_registry_empty: { ko: '게시 대기 — zkID 가 곧 체인에 올립니다', en: 'Pending — the IdP will publish it on chain shortly' },
+    wallet_reg_gone: { ko: 'zkID 등록부에 이 스냅의 자격증명이 없습니다. 계정을 폐기했거나 스냅 연결을 해제했다면 이 등록은 더 쓸 수 없습니다 — "내 계정" 탭에서 스냅을 초기화하세요. 속성을 바꾼 것이라면 다음 로그인 때 새로 발급됩니다.', en: 'The zkID registry no longer holds this Snap’s credential. If you revoked the account or unlinked the Snap, this registration can no longer be used — reset the Snap on the "My account" tab. If you changed your attributes, a new credential is issued at your next login.' },   // 2026-11-14(화면 리뷰 3차)
     wallet_registry_mismatch: { ko: '등록부의 내 자격증명이 바뀌었습니다', en: 'My credential in the registry has changed' },
     wallet_registry_unknown: { ko: '아직 확인 안 됨', en: 'Not checked yet' },
     wallet_registry_info: { ko: '슬롯 {slot} · epoch {epoch}', en: 'Slot {slot} · epoch {epoch}' },
@@ -765,10 +757,13 @@ window.DemoStrings = {
     idp_register_btn: { ko: '스냅 연결해 등록', en: 'Connect the Snap and register' },
     idp_wallet_link: { ko: 'zk 스냅 화면 열기', en: 'Open the zk Snap screen' },
     idp_slot_label: { ko: '등록부 슬롯', en: 'Registry slot' },
+    idp_disabled_title: { ko: '폐기된 계정', en: 'Revoked account' },   // 2026-11-14(화면 리뷰 3차): 폐기 뒤에도 /user 가 "등록됨 — 로그인하세요" 로 남아 있었다
+    idp_disabled_desc: { ko: '이 계정은 폐기됐습니다. 이 계정으로는 어느 서비스에도 로그인할 수 없고, 되살리는 것은 zkID 관리자만 할 수 있습니다. 같은 스냅을 계속 쓰려면 로그아웃해 새 zkID 계정을 만들고, zk 스냅 화면 "내 계정" 탭에서 스냅을 초기화한 뒤(salt 는 남습니다) 서비스에서 다시 로그인하세요.', en: 'This account has been revoked. It cannot log in to any service, and only the zkID admin can restore it. To keep using the same Snap, log out, create a new zkID account, reset the Snap on the "My account" tab of the zk Snap page (the salt stays), then log in at the service again.' },
+    idp_self_revoke_ok: { ko: '이 계정을 폐기했습니다 — 이 계정으로는 더 이상 서비스에 로그인할 수 없습니다.', en: 'This account was revoked — it can no longer log in to services.' },
     idp_info_registered: { ko: '등록됨 — 이 계정은 스냅과 연결돼 있습니다. 이제 서비스 페이지로 돌아가 로그인하세요.', en: 'Registered — this account is linked to your Snap. Now go back to the service page and log in.' },
     idp_info_details: { ko: '상세', en: 'Details' },
     // 2026-11-04: 내 등록 정보 카드의 두 값에 한 줄 설명(사용자 질문 — 가명·슬롯이 무엇인지 화면만 보고는 알 수 없었다).
-    idp_auid_desc: { ko: 'zkID 가 이 계정을 스냅과 잇는 데 쓰는 가명입니다. 로그인 때 스냅이 자동으로 넘깁니다.', en: 'A pseudonym zkID uses to tie this account to your Snap. The Snap hands it over automatically at login.' },
+    idp_auid_desc: { ko: 'zkID 가 이 계정을 스냅과 잇는 데 쓰는 가명입니다. 서비스에 로그인할 때마다 zkID 인증 창의 auid 칸에 이 값을 넣습니다.', en: 'A pseudonym zkID uses to tie this account to your Snap. You enter it in the auid field of the zkID sign-in window every time you log in to a service.' },   // 2026-11-14(화면 리뷰 3차): 11-09 부터 auid 는 늘 직접 넣는다
     idp_slot_desc: { ko: 'zkID 등록부에서 이 계정의 자리 번호입니다.', en: 'The position of this account in the zkID registry.' },
     idp_manage_title: { ko: '스냅 연결 해제 · 계정 폐기', en: 'Unlink Snap · Revoke account' },   // 2026-11-06: 폐기 카드에 지갑 연결 해제가 함께 들어가 제목을 바꿈
     idp_unlink_btn: { ko: '스냅 연결 해제', en: 'Unlink Snap' },
@@ -816,6 +811,10 @@ window.DemoStrings = {
     idp_myinfo_method_google: { ko: 'Google', en: 'Google' },
     idp_myinfo_wallet: { ko: '스냅 등록', en: 'Snap registration' },
     idp_myinfo_wallet_yes: { ko: '등록됨 — 이 계정은 스냅과 연결돼 있습니다.', en: 'Registered — this account is linked to a Snap.' },
+    idp_myinfo_wallet_revoked: { ko: '폐기된 계정 — 스냅을 쥐지 않습니다.', en: 'Revoked account — it no longer holds a Snap.' },
+    idp_myinfo_state: { ko: '계정 상태', en: 'Account status' },
+    idp_myinfo_state_ok: { ko: '정상', en: 'Active' },
+    idp_myinfo_state_revoked: { ko: '폐기됨 — 이 계정으로는 서비스에 로그인할 수 없습니다.', en: 'Revoked — this account cannot log in to services.' },
     idp_myinfo_wallet_no: { ko: '아직 없음 — 서비스에서 처음 "zkID 로 로그인" 할 때 등록됩니다.', en: 'Not yet — it happens the first time you "Log in with zkID" at a service.' },
     idp_myinfo_attr: { ko: '속성 커밋먼트', en: 'Attribute commitment' },
     idp_myinfo_attr_none: { ko: '저장된 값 없음', en: 'Nothing saved' },
@@ -872,7 +871,9 @@ window.DemoStrings = {
     // IdP 인증 창(cia_login.html, §4) — 지갑 팝업이 연다.
     idp_auth_title: { ko: 'zkID 로그인', en: 'zkID sign-in' },
     idp_auth_uid_label: { ko: '아이디', en: 'ID' },   // 2026-11-09: 인증 창은 uid·비밀번호·auid 를 모두 직접 입력
-    idp_auth_auid_hint: { ko: '속성 커밋먼트 도구(localhost:5100/attr.html) 또는 zkID 내 정보(등록 뒤)에서 auid 를 복사해 붙여 넣으세요.', en: 'Copy auid from the attribute commitment tool (localhost:5100/attr.html) or zkID My info (after registration) and paste it here.' },
+    idp_auth_auid_hint: { ko: '속성 도구 또는 zkID "내 정보" 에서 auid 를 복사해 붙여 넣으세요.', en: 'Copy auid from the attribute tool or zkID "My info" and paste it here.' },   // 2026-11-14(화면 리뷰 3차): 주소(localhost:5100)를 박아 두지 않는다
+    idp_auth_auid_hint_register: { ko: '속성 도구가 보여 준 auid 를 복사해 붙여 넣으세요.', en: 'Copy the auid shown by the attribute tool and paste it here.' },   // 등록 전에는 zkID "내 정보" 에 auid 가 없다
+    idp_auth_auid_ph_register: { ko: '속성 도구의 auid 복사', en: 'auid from the attribute tool' },
     idp_auth_desc: { ko: '아이디·비밀번호·auid 를 모두 직접 넣으면 스냅으로 돌아가 로그인을 이어갑니다.', en: 'Enter your ID, password and auid; you return to the Snap and the login continues.' },   // 2026-11-09
     idp_auth_go: { ko: '로그인', en: 'Log in' },
     // 인증 창 등록 모드(2026-11-09): 미등록 지갑의 첫 서비스 로그인 — auid 칸 없이 아이디·비밀번호만
@@ -929,7 +930,7 @@ window.DemoStrings = {
     attr_make_hint: { ko: '같은 스냅에서 같은 속성이면 항상 같은 커밋먼트입니다.', en: 'The same snap and the same attributes always give the same commitment.' },   // 2026-11-13(사용자 요청): 입력 폼에 salt 설명을 두지 않는다
     attr_make_ok_summary: { ko: '커밋먼트를 만들었습니다. 아래에서 복사해 zkID 프로필에 붙여 넣으세요.', en: 'Commitment created. Copy it below and paste it into your zkID profile.' },
     attr_result_title: { ko: '2. 내 커밋먼트', en: '2. My commitment' },
-    attr_result_desc: { ko: '이 값을 복사해 zkID 사용자 페이지 → 프로필 → "이름" 칸에 붙여 넣고 저장하세요. 그 뒤 서비스에 로그인하면 서비스가 이 커밋먼트를 내 계정에 고정합니다.', en: 'Copy this value into zkID user page → Profile → "name" and save. When you then log in to a service, the service pins this commitment to your account.' },
+    attr_result_desc: { ko: '이 값을 복사해 zkID 사용자 페이지 → 프로필 → "이름" 칸에 붙여 넣고 저장하세요. zkID 는 이 값을 서비스에 전달하지 않습니다 — 저장된 값이 바뀌면 속성 변경으로 보고 기존 세션을 폐기합니다.', en: 'Copy this value into zkID user page → Profile → "name" and save. zkID does not pass it to services — if the saved value changes, zkID treats it as an attribute change and revokes existing sessions.' },
     attr_none: { ko: '아직 만든 커밋먼트가 없습니다.', en: 'No commitment yet.' },
     attr_copy_btn: { ko: '커밋먼트 복사', en: 'Copy commitment' },
     attr_clear_btn: { ko: '지우기', en: 'Clear' },
@@ -939,7 +940,7 @@ window.DemoStrings = {
     attr_uid: { ko: 'uid', en: 'uid' },
     attr_salt: { ko: 'salt (s_u)', en: 'salt (s_u)' },
     attr_auid_label: { ko: 'auid', en: 'auid' },   // 2026-11-11
-    attr_auid_hint: { ko: '첫 RP 로그인 때 zkID 인증 창의 auid 칸에 붙여 넣으세요.', en: 'Paste this into the auid field of the zkID sign-in window on your first RP login.' },
+    attr_auid_hint: { ko: '서비스에 로그인할 때마다 zkID 인증 창의 auid 칸에 붙여 넣으세요.', en: 'Paste this into the auid field of the zkID sign-in window each time you log in to a service.' },
     attr_reset_cleared: { ko: '데모를 새로 시작해 이 브라우저의 이전 기록을 비웠습니다.', en: 'The demo was restarted, so the previous record in this browser was cleared.' },
     attr_inputs_title: { ko: '커밋먼트 재료', en: 'Commitment inputs' },
     attr_secret_warn: { ko: 'salt 는 비밀 — 가려 둠', en: 'salt is secret — hidden' },
@@ -1151,6 +1152,7 @@ window.DemoStrings = {
     admin_unauthorized: { where: 'aa', ko: { title: '관리자 비밀번호가 맞지 않습니다', cause: '요청에 실린 관리자 비밀번호가 서버에 설정된 값과 다릅니다.', action: '관리자 로그아웃을 누르고 다시 로그인하세요.' }, en: { title: 'The admin password does not match', cause: 'The admin password sent with the request differs from the one configured on the server.', action: 'Press admin log-out and log in again.' } },
     unknown_rp_account: { where: 'rp', ko: { title: '그 주소로 로그인한 기록이 없습니다', cause: '이 RP 의 로그인 기록에 그 계정 주소(0x)에 해당하는 PPID 가 없습니다(404).', action: '로그인 기록의 "개봉 요청" 버튼을 쓰거나, 기록에 있는 주소를 그대로 붙여 넣으세요.' }, en: { title: 'No login recorded for that address', cause: 'No PPID in this RP’s login records maps to that account address (404).', action: 'Use the "Request opening" button in the login records, or paste an address exactly as shown there.' } },
     unknown_account: { where: 'aa', ko: { title: '그 uid 의 계정이 없습니다', cause: 'IdP 등록부에 그 uid 가 없습니다 — 아직 스냅이 등록하지 않았거나 uid 를 잘못 적었습니다(404).', action: '계정 목록에서 uid 를 골라 넣으세요.' }, en: { title: 'No account with that uid', cause: 'The IdP’s registry has no such uid — the Snap has not registered yet, or the uid is mistyped (404).', action: 'Pick the uid from the account list.' } },
+    password_wrong: { where: 'aa', ko: { title: '비밀번호가 맞지 않습니다', cause: '넣은 비밀번호가 이 계정의 비밀번호와 다릅니다.', action: '비밀번호를 확인해 다시 넣으세요.' }, en: { title: 'The password is wrong', cause: 'The password you entered does not match this account.', action: 'Check the password and enter it again.' } },   // 2026-11-14(화면 리뷰 3차): 연결 해제·폐기는 비밀번호만 받는다 — invalid_credentials 의 "아이디 또는 비밀번호" 는 맞지 않는다
     invalid_credentials: { where: 'aa', ko: { title: '아이디 또는 비밀번호가 맞지 않습니다', cause: '입력한 아이디와 비밀번호가 맞지 않습니다. 어느 쪽이 틀렸는지는 알려 주지 않습니다.', action: '아이디와 비밀번호를 확인해 다시 넣으세요.' }, en: { title: 'The id or the password is wrong', cause: 'The id and password you entered do not match. Which one is wrong is not revealed.', action: 'Check the id and password and try again.' } },
     // 브라우저 전용 사용자 페이지(web 모드, 2026-10-15) — 금고(mode3/user/core/vault.js)·증명 워커·RP 릴레이(mode3_rp.js /api/mode3/relay)·승인 창이 내는 코드.
     locked: { where: 'wallet', ko: { title: '사용자 금고가 잠겨 있습니다', cause: '등록 비밀이나 세션키가 필요한 동작인데 이 브라우저의 금고가 잠겨 있습니다 — 잠금 해제 뒤 30분이 지났거나 "잠그기" 를 눌렀거나, 잠금 해제 창을 취소했습니다.', action: '"잠금 해제" 를 눌러 금고 비밀번호를 넣고 다시 시도하세요.' }, en: { title: 'The user vault is locked', cause: 'This action needs the registration secrets or a session key, but the vault in this browser is locked — 30 minutes passed since unlocking, "Lock" was pressed, or the unlock window was cancelled.', action: 'Press "Unlock", enter the vault password and try again.' } },
@@ -1202,7 +1204,6 @@ window.DemoStrings = {
     no_salt: { where: 'wallet', ko: { title: '이 스냅에 salt 가 없습니다', cause: '스냅을 막 설치했거나 다시 설치해 salt 가 아직 없습니다.', action: 'zk 스냅 화면(http://localhost:5100)에서 salt 를 새로 만들거나 백업에서 불러오세요.' }, en: { title: 'This Snap has no salt', cause: 'The Snap was just installed or reinstalled, so it has no salt yet.', action: 'On the zk Snap page (http://localhost:5100), create a salt or load it from a backup.' } },   // 2026-11-13 리뷰 M-4: 스냅 0.5.0 이 내는 사유 넷
     backup_required: { where: 'wallet', ko: { title: 'salt 백업을 아직 확인하지 않았습니다', cause: 'salt 는 만들었지만, 백업 파일을 저장해 확인하기 전에는 가입·로그인에 쓸 수 없습니다.', action: 'zk 스냅 화면(http://localhost:5100)에서 "백업 파일 저장" 을 끝내세요.' }, en: { title: 'The salt backup is not confirmed yet', cause: 'The salt exists, but it cannot be used to sign up or log in until a backup file is saved and confirmed.', action: 'On the zk Snap page (http://localhost:5100), finish "Save backup file".' } },
     bad_salt: { where: 'wallet', ko: { title: '백업의 salt 값이 올바르지 않습니다', cause: 'salt 는 1 이상 2^250 미만의 숫자여야 합니다. 파일이 salt 백업이 아니거나 손상됐습니다.', action: '설치 때 저장한 백업 파일을 다시 고르세요.' }, en: { title: 'The salt in the backup is not valid', cause: 'A salt must be a number from 1 up to (not including) 2^250. The file is not a salt backup or is damaged.', action: 'Choose the backup file you saved at setup again.' } },
-    salt_mismatch: { where: 'wallet', ko: { title: '등록하려는 salt 가 이 스냅의 salt 와 다릅니다', cause: '화면이 보낸 salt(속성 도구 기록의 값)가 이 스냅이 가진 salt 와 다릅니다 — 다른 스냅에서 만든 기록입니다. 등록하지 않았습니다.', action: '속성 도구에서 이 스냅으로 커밋먼트를 다시 만든 뒤 로그인하세요.' }, en: { title: 'The salt to register differs from this Snap’s salt', cause: 'The salt sent by the page (from the attribute tool record) differs from the salt in this Snap — the record was made with another Snap. Nothing was registered.', action: 'Remake the commitment in the attribute tool with this Snap, then log in.' } },
     snap_outdated_store: { where: 'wallet', ko: { title: '스냅이 옛 버전입니다', cause: '설치된 스냅이 0.3.1 전 버전이라 저장된 값을 한꺼번에 내주지 못합니다(getStoredState 없음).', action: 'MetaMask 에서 스냅을 지운 뒤 zk 스냅 화면(http://localhost:5100)에서 다시 연결해 새 버전을 설치하세요.' }, en: { title: 'The Snap is outdated', cause: 'The installed Snap is older than 0.3.1 and cannot return its stored values (no getStoredState).', action: 'Remove the Snap in MetaMask, then reconnect on the zk Snap page (http://localhost:5100) to install the new version.' } },   // 내 계정(2026-11-12)
     register_auid_mismatch: { where: 'wallet', ko: { title: '붙여 넣은 auid 가 커밋먼트와 맞지 않습니다', cause: '인증 창에 넣은 auid 가 속성 커밋먼트 도구 기록의 salt 로 계산한 값과 다릅니다. 등록하지 않았습니다.', action: '속성 커밋먼트 도구에서 auid 를 다시 복사해 붙여 넣으세요.' }, en: { title: 'The pasted auid does not match the commitment', cause: 'The auid entered in the sign-in window differs from the one computed from the salt in the attribute tool record. Nothing was registered.', action: 'Copy the auid from the attribute commitment tool again and paste it.' } },
     bad_auid: { where: 'aa', ko: { title: 'auid 를 넣어야 합니다', cause: 'auid 칸이 비었거나 숫자가 아닙니다(400).', action: '속성 커밋먼트 도구(처음 등록) 또는 zk 스냅 화면 "내 계정" 탭(등록 뒤)에서 auid 를 복사해 넣으세요.' }, en: { title: 'auid is required', cause: 'The auid field is empty or not a number (400).', action: 'Copy the auid from the attribute commitment tool (first registration) or the zk Snap screen’s "My account" tab (after registration).' } },
@@ -1232,7 +1233,7 @@ window.DemoStrings = {
     not_snap_mode: { where: 'wallet', ko: { title: '스냅 에이전트가 스냅 모드가 아닙니다', cause: '스냅 에이전트가 file 모드로 떠 있어 승인 팝업 경로를 쓰지 않습니다.', action: 'MODE3_WALLET_SECRETS=snap 으로 띄운 스냅 에이전트에서 다시 시도하거나 file 모드의 zk 스냅 페이지에서 직접 로그인하세요.' }, en: { title: 'The Snap agent is not in Snap mode', cause: 'The Snap agent runs in file mode, which does not use the approval popup.', action: 'Retry with a Snap agent started with MODE3_WALLET_SECRETS=snap, or log in from the file-mode zk Snap page.' } },
     precheck_failed: { where: 'wallet', ko: { title: 'RP 인증서·팩토리 검사에 실패했습니다', cause: '스냅 에이전트가 RP 의 인증서·추적 키·팩토리 주소를 검증하지 못했습니다.', action: 'RP 가 IdP 승인을 받았는지, 팩토리 주소가 맞는지 확인하고 다시 로그인하세요.' }, en: { title: 'RP certificate / factory check failed', cause: 'The Snap agent could not validate the RP certificate, trace key or factory address.', action: 'Check that the RP is approved by the IdP and its factory address is right, then log in again.' } },
     session_witness_failed: { where: 'wallet', ko: { title: '세션 재승인에 실패했습니다', cause: '스냅 에이전트가 스냅의 증인을 세션에 다시 채우지 못했습니다(권한 값 불일치 등).', action: 'RP 에서 다시 로그인하세요.' }, en: { title: 'Session re-approval failed', cause: 'The Snap agent could not restore the Snap witness into the session (for example a permission mismatch).', action: 'Log in again at the RP.' } },
-    registration_incomplete: { where: 'wallet', ko: { title: '스냅 등록이 끝나지 않았습니다', cause: '스냅 등록이 중간에 멈춰 zkID 쪽 결과가 저장되지 않았습니다.', action: 'zkID 사용자 페이지에서 "스냅 연결해 등록"을 다시 눌러 마무리하세요.' }, en: { title: 'Snap registration did not finish', cause: 'The Snap registration stopped halfway and the zkID result was not saved.', action: 'Press "Connect the Snap and register" again on the zkID user page to finish it.' } },
+    registration_incomplete: { where: 'wallet', ko: { title: '스냅 등록이 끝나지 않았습니다', cause: '스냅 등록이 중간에 멈춰 zkID 쪽 결과가 저장되지 않았습니다.', action: '서비스에서 다시 로그인하면 멈춘 등록을 이어서 끝냅니다. 계속 실패하면 zk 스냅 화면 "내 계정" 탭에서 스냅을 초기화한 뒤 다시 로그인하세요.' }, en: { title: 'Snap registration did not finish', cause: 'The Snap registration stopped halfway and the zkID result was not saved.', action: 'Log in again at the service — the stopped registration continues. If it keeps failing, reset the Snap on the zk Snap screen’s "My account" tab, then log in again.' } },
     oidc_cancelled: { where: 'page', ko: { title: 'Google 로그인이 취소됐습니다', cause: 'Google 버튼을 누르지 않았거나 2분 안에 토큰이 오지 않았습니다.', action: '다시 시도해 Google 버튼을 누르고 계정을 고르세요.' }, en: { title: 'Google sign-in was cancelled', cause: 'The Google button was not pressed, or no token arrived within two minutes.', action: 'Try again, press the Google button and choose the account.' } },
     snap_empty: { where: 'wallet', ko: { title: '스냅이 비어 있습니다', cause: '스냅 에이전트에는 등록이 있는데 이 브라우저의 스냅 에는 등록 비밀이 없습니다.', action: '재시연 세트로 스냅·IdP 를 함께 비우고 처음부터 등록하세요.' }, en: { title: 'The Snap is empty', cause: 'The Snap agent has a registration but this browser’s Snap holds no registration secret.', action: 'Reset Snap and IdP together with the reset set and register from the start.' } },
     login_failed: { where: 'wallet', ko: { title: '로그인에 실패했습니다', cause: '스냅 에이전트의 로그인 요청이 거절됐습니다(자세한 사유는 detail).', action: 'detail 의 사유를 보고 다시 시도하세요.' }, en: { title: 'Login failed', cause: 'The Snap agent’s login request was rejected (see detail).', action: 'Check the detail and try again.' } },

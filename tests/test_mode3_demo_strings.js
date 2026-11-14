@@ -172,12 +172,21 @@ t('리뷰 I-1: 스냅 안내가 R8·R11 과 맞는다 — 다른 계정을 쓰�
 });
 
 // 2026-11-13 리뷰 M-4: 스냅(0.5.0)이 내는 salt 사유 — 화면이 사유 낱말을 그대로 사전에서 찾는다(wallet.html snapReason). 없으면 "알 수 없는 오류" 로 보인다.
-t('리뷰 M-4: 스냅의 salt 사유 넷(no_salt·backup_required·bad_salt·salt_mismatch)에 ko·en 문구(title·cause·action)가 있다', () => {
-  for (const k of ['no_salt', 'backup_required', 'bad_salt', 'salt_mismatch']) {
+t('리뷰 M-4: 스냅의 salt 사유 셋(no_salt·backup_required·bad_salt)에 ko·en 문구(title·cause·action)가 있다 — salt_mismatch 는 register RPC 와 함께 없어졌다(2026-11-14)', () => {
+  for (const k of ['no_salt', 'backup_required', 'bad_salt']) {
     const r = S.reasons[k]; assert.ok(r, k); assert.equal(r.where, 'wallet', k);
     for (const lang of ['ko', 'en']) for (const f of ['title', 'cause', 'action']) assert.ok(typeof r[lang]?.[f] === 'string' && r[lang][f].length > 0, `${k}.${lang}.${f}`);
   }
   assert.match(S.reasons.no_salt.ko.action, /localhost:5100/); assert.match(S.reasons.backup_required.ko.action, /백업 파일 저장/);
+  assert.equal('salt_mismatch' in S.reasons, false, '스냅이 내지 않는 사유는 사전에 두지 않는다(다른 스냅의 기록은 화면이 attr_record_salt_mismatch 로 먼저 막는다)');
+  assert.ok(S.reasons.attr_record_salt_mismatch);
+});
+// 2026-11-14(셀프 리뷰): 없는 버튼을 가리키지 않는다 — zkID /user 의 "스냅 연결해 등록"·"Google 로 등록" 은 없다(등록은 서비스 로그인 중에 일어나고, 멈춘 등록은 다음 로그인이 잇는다).
+t('registration_incomplete 의 조치는 없는 버튼이 아니라 "다시 로그인" 과 스냅 초기화를 가리킨다', () => {
+  const r = S.reasons.registration_incomplete;
+  assert.equal(/스냅 연결해 등록|Google 로 등록/.test(r.ko.action), false, r.ko.action); assert.equal(/Connect the Snap and register/i.test(r.en.action), false, r.en.action);
+  assert.match(r.ko.action, /다시 로그인/); assert.match(r.ko.action, /스냅 초기화|스냅을 초기화/);
+  assert.match(r.en.action, /log in again/i); assert.match(r.en.action, /reset the snap/i);
 });
 // 2026-11-13 리뷰 M-6 + 사용자 결정(폐기된 계정은 스냅을 쥐지 않는다): 식에서 uid 가 빠졌다(auid = H(salt), PPID = H(salt, arid, chainid)) — 문구도 그렇게 말한다.
 t('리뷰 M-6: 식에 uid 가 남은 문구가 없고 죽은 키가 없다; auid_taken·관리자 설명은 ko·en 모두 "활성 계정 하나 — 폐기된 계정은 스냅을 쥐지 않는다" 를 말한다', () => {
@@ -189,6 +198,25 @@ t('리뷰 M-6: 식에 uid 가 남은 문구가 없고 죽은 키가 없다; auid
   assert.match(d.ko, /폐기/); assert.match(d.en, /auid_taken/); assert.match(d.en, /revoked/i); assert.match(d.en, /Poseidon\(T_AUID2, s_u\)/);
   assert.match(S.reasons.auid_taken.ko.cause, /활성/); assert.match(S.reasons.auid_taken.ko.action, /폐기/);
   assert.match(S.reasons.auid_taken.en.cause, /active/i); assert.match(S.reasons.auid_taken.en.action, /revoke/i);
+});
+
+// 2026-11-14(화면 리뷰 3차): 묵은 문구·용어 — 서비스는 속성 커밋먼트를 받지 않고(11-11), auid 는 로그인마다 직접 넣으며(11-09), 연결 해제·폐기는 비밀번호만 받는다.
+t('화면 리뷰 3차: 속성 도구·auid 안내가 지금 동작과 맞고, 용어("서비스"·"스냅 에이전트")가 한 가지이며, 비밀번호만 받는 폼의 사유에 "아이디" 가 없다', () => {
+  const ui = S.ui;
+  assert.equal(/고정합니다|pins this commitment/.test(ui.attr_result_desc.ko + ui.attr_result_desc.en), false, '서비스는 커밋먼트를 고정하지 않는다');
+  assert.match(ui.attr_result_desc.ko, /서비스에 전달하지 않습니다/); assert.match(ui.attr_result_desc.en, /does not pass it to services/);
+  assert.equal(/자동으로|automatically/.test(ui.idp_auid_desc.ko + ui.idp_auid_desc.en), false, 'auid 는 스냅이 자동으로 넘기지 않는다');
+  assert.match(ui.idp_auid_desc.ko, /로그인할 때마다/); assert.match(ui.attr_auid_hint.ko, /로그인할 때마다/);
+  assert.equal(/RP|첫 /.test(ui.attr_auid_hint.ko), false, ui.attr_auid_hint.ko); assert.equal(/first|RP/.test(ui.attr_auid_hint.en), false, ui.attr_auid_hint.en);
+  assert.equal(/localhost|등록 뒤/.test(ui.idp_auth_auid_hint.ko), false, ui.idp_auth_auid_hint.ko);
+  assert.equal(/내 정보|My info/.test(ui.idp_auth_auid_hint_register.ko + ui.idp_auth_auid_hint_register.en), false, '등록 전에는 zkID "내 정보" 에 auid 가 없다');
+  assert.equal(JSON.stringify(S).includes('스냅(에이전트)'), false, '"이 스냅(에이전트)" 대신 "스냅 에이전트"');
+  const pw = S.reasons.password_wrong;
+  for (const lang of ['ko', 'en']) for (const k of ['title', 'cause', 'action']) assert.ok(pw[lang][k], `password_wrong.${lang}.${k}`);
+  assert.equal(/아이디/.test(JSON.stringify(pw.ko)), false); assert.equal(/\bid\b/i.test(JSON.stringify(pw.en)), false);
+  for (const k of ['idp_disabled_title', 'idp_disabled_desc', 'idp_self_revoke_ok', 'idp_myinfo_state', 'idp_myinfo_state_ok', 'idp_myinfo_state_revoked', 'idp_myinfo_wallet_revoked', 'rp_session_stale', 'wallet_reg_gone',
+    'wallet_me_g_registration_pending', 'wallet_me_f_registeredAt_pending', 'wallet_me_v_allowAgent_0', 'wallet_me_v_allowAgent_1', 'idp_auth_auid_ph_register']) { assert.ok(ui[k]?.ko, `${k}.ko`); assert.ok(ui[k]?.en, `${k}.en`); }
+  assert.match(ui.idp_disabled_desc.ko, /스냅을 초기화/); assert.match(ui.wallet_reg_gone.ko, /스냅을 초기화/);
 });
 
 if (fails) { console.log(`\n${fails} FAIL`); process.exit(1); } else console.log('\nall ok');

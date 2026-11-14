@@ -109,16 +109,17 @@
           <h3 data-i18n="rp_tx_title">온체인 출금</h3>
           <p class="desc" data-i18n="rp_tx_desc">이 세션의 내 주소(계정)에서 체인으로 보냅니다. 사용자 승인 창에서 확인한 뒤 RP 릴레이가 보냅니다.</p>
           <!-- 2026-11-10(R5): 출금 출처 — 내 계정(PPID 스마트 계정)은 zkID 세션(지갑 증명)만, 거래소 보관은 늘. -->
-          <label class="withdraw-amount"><span data-i18n="rp_tx_source_label">출금 출처</span>
+          <label class="withdraw-amount wide"><span data-i18n="rp_tx_source_label">출금 출처</span>
             <select id="txSource"><option value="account" data-i18n="rp_tx_source_account">내 계정(PPID — zkID 로그인 필요)</option><option value="custody" data-i18n="rp_tx_source_custody">거래소 보관</option></select></label>
-          <label class="withdraw-amount"><span data-i18n="rp_tx_to_label">받는 주소</span> <input id="txTo" value="0x000000000000000000000000000000000000dEaD" size="44" /></label>
+          <label class="withdraw-amount wide"><span data-i18n="rp_tx_to_label">받는 주소</span> <input id="txTo" value="0x000000000000000000000000000000000000dEaD" size="44" /></label>
           <label class="withdraw-amount"><span data-i18n="rp_tx_value_label">금액(ETH)</span> <input id="txValue" value="0.01" size="12" inputmode="decimal" /></label>
-          <!-- 2026-11-12 시연 Race (2): 켜면 스냅 창이 증명·서명 뒤 멈추고 "2블록 뒤·5블록 뒤 보내기" 를 고른다(세션 폐기 → 블록 진행 → 전송). -->
-          <p class="race-demo"><label id="raceHoldOpt"><input type="checkbox" id="raceHold" /> <span data-i18n="rp_race_hold_label">시연: Race (2) — 보내기 전에 멈춤</span></label>
-            <button type="button" id="raceToggleBtn" class="btn-ghost" data-i18n="rp_race_hide_btn">시연 숨기기</button></p>
           <button id="txBtn" data-i18n="rp_tx_btn">온체인 출금 실행</button>
           <div id="txVerdict"></div>
           <p id="txHashRow" hidden><span data-i18n="rp_col_txhash">트랜잭션 해시</span> <code id="txHashCode"></code> <button type="button" id="copyTxHashBtn" class="copy-btn" title="트랜잭션 해시 복사" aria-label="트랜잭션 해시 복사" data-i18n-title="copy_txhash_title">⧉</button></p>
+          <!-- 2026-11-12 시연 Race (2): 켜면 스냅 창이 증명·서명 뒤 멈추고 "2블록 뒤·5블록 뒤 보내기" 를 고른다(세션 폐기 → 블록 진행 → 전송).
+               2026-11-14(화면 리뷰 3차): 폼과 출금 버튼 사이에 끼어 있던 것을 묶음 맨 아래로 내렸다. -->
+          <p class="race-demo"><label id="raceHoldOpt"><input type="checkbox" id="raceHold" /> <span data-i18n="rp_race_hold_label">시연: Race (2) — 보내기 전에 멈춤</span></label>
+            <button type="button" id="raceToggleBtn" class="btn-ghost" data-i18n="rp_race_hide_btn">시연 숨기기</button></p>
           <pre id="txLog" class="expert"></pre>
         </div>
         <!-- 2026-11-11(사용자 결정): "로그인 상태" 카드(재검증 "지금 확인"·skipSync)는 뺐다 — 로그인 유효성은 checkSessionAlive 가 2초마다 본다. 스냅 에이전트가 재기동되면 다시 로그인한다. -->
@@ -435,6 +436,24 @@
       } catch { /* RP 서버를 못 읽으면 그대로 둔다 */ } finally { aliveChecking = false; }
     }
     setInterval(checkSessionAlive, 2000);
+    // 닫힌 zkID 로그인(2026-11-14 화면 리뷰 3차): IdP 가 폐기를 게시해 root 가 바뀌면 서버는 r_s 세션의 요청을 재검증 전까지 받지 않고(revalidate_required) 그 쿠키 세션도
+    // 닫는다(zkidCookieAlive). 그런데 r_s 세션은 목록(/api/mode3/sessions)에 남아 위 대조를 지나므로, 상단은 로그인 상태인데 "내 계정" 은 "연결 안 됨"·버튼 없음으로 남았다.
+    // 재검증 화면은 없으므로(11-11) 다시 로그인하게 한다 — /api/rp/me 가 401 이면 서버의 r_s 세션을 끝내고 로그아웃 상태로 바꾼다. 소셜 세션이면 200 이라 건드리지 않는다.
+    // 서버를 못 읽었으면(네트워크) 그대로 둔다. 복원 직후 한 번, 그 뒤 10초마다 본다(쿠키 확인은 서버가 체인을 읽는다 — 2초 주기에는 싣지 않는다).
+    let staleChecking = false;
+    async function checkZkidStale() {
+      if (!currentSession || staleChecking || document.hidden) return;
+      staleChecking = true;
+      try {
+        const r_s = currentSession;
+        const r = await fetch('/api/rp/me');
+        if (r.status !== 401 || currentSession !== r_s) return;
+        rpMe = null; setSession(null);
+        setVerdict($('verdict'), false, 'rp_session_ended_title', () => ({ summary: tt('rp_session_stale') || '이 로그인이 닫혔습니다 — 다시 로그인하세요.' }));   // 사유는 화면이 바뀌는 그 순간에 함께 보인다
+        try { await post('/api/mode3/logout', { r_s }); } catch { /* 화면은 이미 로그아웃 */ }
+      } catch { /* RP 서버를 못 읽으면 그대로 둔다 */ } finally { staleChecking = false; }
+    }
+    setInterval(checkZkidStale, 10000);
     /** 세션 범위의 결과 표시(재검증·잔액·출금 결과)를 초기 화면으로. 로그아웃이면 로그인 카드의 결과·로그도 비운다(2026-10-21 — 재로그인 때 옛 메시지가 남지 않게). */
     function resetSessionViews(includeLogin) {
       const clear = (el) => { el.__verdictArgs = null; el.className = ''; el.textContent = ''; };   // demo.js 의 언어 전환 재렌더(__verdictArgs)도 풀어 준다
@@ -976,7 +995,7 @@
     });
     // 2026-11-11: 네이버 로그인으로 돌아왔으면(?social=ok) 저장해 둔 zkID 세션은 되살리지 않고 RP 에서도 끝낸다(Google 과 같은 규칙 — endZkidSession).
     if (socialBack.ok) { let saved = null; try { saved = JSON.parse(localStorage.getItem(SESSION_KEY) ?? 'null'); } catch { saved = null; } endZkidSession(saved?.r_s ? String(saved.r_s) : null); }
-    else restoreSession();   // 로그인 상태 복원(2026-10-16) — rp_info 와 무관하게 이 서버의 세션 목록만 본다
+    else restoreSession().then(checkZkidStale);   // 로그인 상태 복원(2026-10-16) — rp_info 와 무관하게 이 서버의 세션 목록만 본다. 복원한 로그인이 서버에서 닫혔는지도 본다(2026-11-14)
   </script>
 
   <script>

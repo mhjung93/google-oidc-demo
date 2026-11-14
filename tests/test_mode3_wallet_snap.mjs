@@ -62,10 +62,10 @@ try {
     assert.equal(r.status, 200); assert.equal(r.body.secrets, 'snap');
   });
 
-  // Task 13/15: Snap 의 register(uid)는 더 이상 비밀번호를 받지 않는다 — 지갑 페이지는 IdP 세션의 1회용 코드
-  // (/cia/user/register_code)를 pwd 대신 /wallet/register 에 싣는다. 데모 시드 계정(12345/password123)으로 로그인해 코드를 받는다.
+  // Task 13/15: Snap 은 비밀번호를 받지 않는다 — 지갑 페이지는 IdP 세션의 1회용 코드(/cia/user/register_code)를 pwd 대신 /wallet/register 에 싣는다.
+  // 데모 시드 계정(12345/password123)으로 로그인해 코드를 받는다. 2026-11-14: Snap 에는 보류 등록(prepareRegister)만 먼저 두고 uid 는 storeRegistration 이 채운다.
   await t('register: s_u 없으면 400; code(register_code)로 등록(pwd 없음); 응답 { uid, slot, auid, attrs, profile }(비밀 없음); 파일에 비밀·등록 키 없음·auid 있음', async () => {
-    const r0 = await sim.register({ uid: '12345' });
+    const r0 = { uid: '12345', ...sim.prepareRegister() };
     const withJar = makeJar(cia.base);
     assert.equal((await withJar('/cia/user/login', { method: 'POST', body: JSON.stringify({ uid: '12345', pwd: 'password123' }) })).status, 200, '시드 계정 로그인');
     const codeFor = async () => { const rc = await withJar('/cia/user/register_code', { method: 'POST', body: JSON.stringify({}) }); assert.equal(rc.status, 200, j(rc.body)); return rc.body.code; };
@@ -81,7 +81,7 @@ try {
     assert.deepEqual(r.body.profile, { birthYear: '1990', country: 'KR' });
     assert.equal(r.body.uid, '12345');
     assert.match(r.body.auid, /^[0-9]+$/);
-    sim.storeRegistration({ attrs: r.body.attrs, slot: r.body.slot, auid: r.body.auid });
+    sim.storeRegistration({ attrs: r.body.attrs, slot: r.body.slot, auid: r.body.auid, uid: r.body.uid });
     const file = stateFile();
     for (const k of ['"s_u"', '"sk_u"', '"pk_u"', '"blind_u"']) assert.equal(file.includes(k), false, `${k} 가 파일에 있다`);
     assert.ok(file.includes('"auid"'), '공개 auid 는 파일에 있다');

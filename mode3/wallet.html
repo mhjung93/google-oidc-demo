@@ -23,7 +23,8 @@
       <span class="brand" data-i18n="wallet_brand">zk 스냅</span>
       <div class="wallet-tabs" id="walletTabs" role="tablist" hidden>
         <!-- 2026-11-11(사용자 결정): 계정·보내기·설정 탭은 뺐다 — 화면은 "연결된 서비스" 하나. 속성·salt 는 속성 도구(attr.html)에서 첫 등록 때 가져온다.
-             그 탭들의 카드(identityCard·txCard·snapPanel·demoCard)는 DOM 에 남지만 탭이 없어 보이지 않는다(스크립트가 참조해 한 번에 걷어내지 않았다). -->
+             그 탭들의 카드(identityCard·txCard·demoCard)는 DOM 에 남지만 탭이 없어 보이지 않는다(스크립트가 참조해 한 번에 걷어내지 않았다).
+             2026-11-14: 설정 패널(snapPanel — 스냅 상태 보기·다시 설치·계정 자기 폐기)은 걷어냈다. 스냅 초기화는 "내 계정" 탭에, 계정 폐기는 zkID /user 에 있다. -->
         <button type="button" role="tab" data-tab="services" aria-selected="true" data-i18n="wallet_tab_services">연결된 서비스</button>
         <!-- 2026-11-12(사용자 요청): "내 계정" — 스냅이 저장한 값 전부. snap 모드에서만 보인다(applySnapMode). -->
         <button type="button" role="tab" data-tab="me" id="meTabBtn" aria-selected="false" data-i18n="wallet_tab_me" hidden>내 계정</button>
@@ -77,7 +78,7 @@
       <p class="muted" id="setupState"></p>
       <p class="row-actions" id="setupChoice">
         <button type="button" id="setupNewBtn" class="btn-ghost" aria-pressed="false" data-i18n="wallet_setup_new_btn">새로 만들기</button>
-        <label class="btn btn-ghost" id="setupImportLabel" aria-pressed="false"><span data-i18n="wallet_setup_import_btn">백업에서 불러오기</span> <input type="file" id="setupImportFile" accept="application/json" hidden /></label>
+        <label class="btn btn-ghost" id="setupImportLabel" data-pressed="false"><span data-i18n="wallet_setup_import_btn">백업에서 불러오기</span> <input type="file" id="setupImportFile" accept="application/json" hidden /></label>
       </p>
       <div id="setupBackupRow" class="pw-form" hidden>
         <label><span data-i18n="wallet_setup_pw">백업 비밀번호(8자 이상)</span> <input id="setupPw" type="password" autocomplete="new-password" /></label>
@@ -136,6 +137,10 @@
         <p id="intro" class="muted expert"></p>
       </details>
     </section>
+
+    <!-- 2026-11-14(화면 리뷰 3차): zkID 에서 계정을 폐기하거나 스냅 연결을 풀어도 이 화면은 등록·세션을 정상처럼 보였다 — 등록부 확인(/wallet/status 의 registry)이
+         "내 슬롯에 내 자격증명이 없다" 고 하면 여기에 알린다(renderIdentity). 탭과 무관하게 보이도록 카드 밖에 둔다. -->
+    <p class="notice" id="regNotice" hidden></p>
 
     <!-- ===== 탭: 연결된 서비스 ===== -->
     <section class="card" id="sessionsCard" data-panel="services" hidden>
@@ -242,24 +247,6 @@
     </section>
 
     <!-- ===== 탭: 설정 ===== -->
-    <!-- snap 모드 전용(스펙 §3.2). file 모드에서는 숨긴 채로 둔다. -->
-    <section class="card" id="snapPanel" data-panel="settings" data-off="1" hidden>
-      <h3 data-i18n="wallet_snap_title">MetaMask · Snap</h3>
-      <p class="desc" data-i18n="wallet_snap_desc">비밀은 MetaMask 스냅 안에 있습니다. 이 페이지는 비밀을 보지 않습니다.</p>
-      <p class="row-actions"><button id="snapInfoBtn" class="btn-ghost" data-i18n="wallet_snap_info_btn">스냅 상태 보기</button></p>
-      <div id="snapVerdict"></div>
-      <pre id="snapInfo" class="expert"></pre>
-      <!-- 2026-11-06: 설치돼 있으면 연결 때 설치 창이 다시 뜨지 않으므로, 번들이 바뀐 뒤에는 여기서 명시적으로 다시 설치한다. -->
-      <p class="row-actions"><button id="snapReinstallBtn" class="btn-ghost" data-i18n="wallet_snap_reinstall_btn">스냅 다시 설치</button> <span class="muted" data-i18n="wallet_snap_reinstall_hint">스냅 번들이 바뀌었을 때만 — 등록 비밀은 그대로 남습니다.</span></p>
-      <div class="danger-zone">
-        <h4 data-i18n="wallet_danger_title">위험 구역</h4>
-        <p class="desc muted" data-i18n="wallet_danger_desc">되돌릴 수 없습니다. 계정 폐기는 IdP 에 이 계정의 자격증명 은퇴를 요청하고, 스냅 초기화는 이 브라우저의 등록 비밀과 동의 기록을 지웁니다.</p>
-        <p class="row-actions">
-          <button id="selfRevokeBtn" class="danger" data-i18n="wallet_self_revoke_btn">계정 자기 폐기</button>
-        </p>
-      </div>
-    </section>
-
     <section class="card expert" id="demoCard" data-panel="settings" hidden>
       <h3 data-i18n="wallet_demo_title">시연: 비밀 바꾸기</h3>
       <p class="desc" data-i18n="wallet_demo_desc">다음 발급(또는 다음 증명)에 쓸 salt·uid 를 메모리에서만 바꿉니다. 스냅 자체 검사를 건너뛰고 프로토콜이 거절하는 장면을 보일 때 씁니다.</p>
@@ -282,7 +269,7 @@
     // ready 전송은 예정대로 config·리스너가 준비된 뒤다(init → runAuthorize).
     if (IS_AUTHORIZE) { $('mainView').hidden = true; $('walletNav').hidden = true; $('authorizeView').hidden = false; }
     // 탭(2026-11-03): 본문은 한 번에 한 탭(data-panel)만 보인다. snap 모드는 MetaMask 연결 전에는 탭 대신 #connectCard 만
-    // 보인다(applyGate). file 모드는 연결이 없어 바로 탭이다. data-off="1" 인 패널(file 모드의 #snapPanel)은 그 탭에서도 숨긴다.
+    // 보인다(applyGate). file 모드는 연결이 없어 바로 탭이다.
     const TAB_KEY = 'mode3.wallet.tab';
     const TABS = ['services', 'me'];   // 2026-11-11: 계정·보내기·설정 탭 제거. 2026-11-12: 내 계정(스냅 저장 값) 추가
     let currentTab = 'services';
@@ -297,7 +284,8 @@
       $('connectCard').hidden = !gated;
       $('setupCard').hidden = !(setup || (!gated && setupMode === 'rebackup'));
       $('walletTabs').hidden = gated || setup;
-      for (const el of document.querySelectorAll('[data-panel]')) el.hidden = gated || setup || el.dataset.panel !== currentTab || el.dataset.off === '1';
+      for (const el of document.querySelectorAll('[data-panel]')) el.hidden = gated || setup || el.dataset.panel !== currentTab;
+      renderRegNotice();
     }
     function showTab(name) {
       const prev = currentTab;
@@ -793,7 +781,7 @@
         const mine = (await Mode3Attr.auidOf({ s_u: BigInt(rec.s_u) })).toString();
         if (mine !== auid) { step('붙여 넣은 auid 가 속성 도구 기록과 다르다.'); return { ok: false, reason: 'register_auid_mismatch' }; }
       }
-      // 속성 도구 기록의 salt 는 이 스냅의 salt 여야 한다(계획 P8) — 다른 스냅에서 만든 기록이면 Snap register 의 salt_mismatch 를 원인 모를 wallet_error 로 만들지 않고 먼저 알린다.
+      // 속성 도구 기록의 salt 는 이 스냅의 salt 여야 한다(계획 P8) — 다른 스냅에서 만든 기록이면 여기서 멈춘다. 스냅은 보낸 salt 를 맞춰 보지 않으므로(2026-11-14: register RPC 와 함께 salt_mismatch 가 없어졌다) 이 대조가 유일하다.
       const mySalt = await snapSalt();
       if (!mySalt.ok) { step(mySalt.reason === 'snap_setup_required' ? '스냅에 salt 가 없거나 백업 전이다 — zk 스냅 화면에서 먼저 설정해야 한다.' : '스냅이 옛 버전이다 — 다시 설치해야 한다.'); return { ok: false, reason: mySalt.reason }; }
       if (mySalt.s_u !== rec.s_u) { step('속성 도구 기록의 salt 가 이 스냅의 salt 와 다르다 — 등록하지 않는다.'); return { ok: false, reason: 'attr_record_salt_mismatch' }; }
@@ -1118,7 +1106,7 @@
         let half = /registration_incomplete/.test(e.message ?? '');
         if (!half && /not_registered/.test(e.message ?? '')) { try { half = Boolean((await (await fetch('/wallet/status')).json()).registered); } catch { /* 기존 동작 */ } }
         if (half) {
-          step("등록이 반만 됐다 — IdP /user 에서 'Google 로 등록'을 다시 누르면 이어진다(데모 계정은 재시연 세트).");
+          step('등록이 반만 됐다 — 다시 로그인하면 이어서 끝낸다(restoreSnapIfEmpty). 계속 실패하면 "내 계정" 탭의 스냅 초기화 뒤 다시 로그인.');
           log(e.message);
           return reply({ ok: false, reason: 'registration_incomplete', detail: e.message });
         }
@@ -1247,6 +1235,14 @@
         if (note) note.hidden = !noValue;
       }
     }
+    /** 등록부 안내(2026-11-14 화면 리뷰 3차): 자격증명이 있는데 등록부의 내 슬롯이 그것이 아니다 — 계정 폐기·스냅 연결 해제·속성 변경 뒤(리프 0)이거나
+     *  바꿔치기(리프가 다른 값). 탭이 보일 때만 보인다(연결 전·설정 중·승인 팝업에는 없다) — 상태를 읽을 때(renderIdentity)와 화면이 바뀔 때(applyGate) 다시 그린다. */
+    function renderRegNotice() {
+      const rn = $('regNotice'), rg = lastStatus?.registry ?? null;
+      const gone = Boolean(lastStatus?.registered && rg && rg.match === false);
+      rn.hidden = !gone || IS_AUTHORIZE || $('walletTabs').hidden;
+      if (gone) tte(rn, rg.leaf === '0' ? 'wallet_reg_gone' : 'wallet_registry_mismatch');
+    }
     function renderIdentity() {
       const s = lastStatus;
       lastAttrs = s?.attrs ?? null;
@@ -1278,6 +1274,7 @@
       rb.className = `badge ${!rg ? 'muted' : rg.match === true ? 'ok' : rg.leaf === '0' ? 'warn' : 'bad'}`;
       tte(rb, key);
       const slotInfo = rg ? (tt('wallet_registry_info', { slot: rg.slot, epoch: rg.epoch }) || `슬롯 ${rg.slot} · epoch ${rg.epoch}`) : '';
+      renderRegNotice();
       $('registryInfo').textContent = '';   // 상태 문구는 배지가 이미 보인다(2026-11-05 — 슬롯·epoch 는 전문가 보기 제거와 함께 숨김; 같은 문장이 두 번 보이던 것을 고쳤다)
 
       // auid·salt(Task 14, B5) — auid 는 상태 응답의 공개 값을 전체로 보인다. salt(s_u)는 비밀이라 기본 가림(SALT_MASK)
@@ -1349,7 +1346,15 @@
         dl.className = 'kv';
         kvRow(dl, tt('wallet_session_service') || 'RP', rpLabel(c));            // 이름(없으면 주소) — arid 는 전문가 행(2026-11-05)
         kvRow(dl, tt('wallet_session_idp') || 'IdP', cfg?.ciaUrl ? `zkID · ${cfg.ciaUrl}` : 'zkID');   // 2026-11-11(사용자 요청): 이 세션을 발급한 IdP — 이 스냅은 IdP 하나(MODE3_CIA_URL)에 등록된다
-        kvRow(dl, termEl('PPID'), c.account ? shortCode(c.account, 14) : shortCode(c.PPID, 12));   // 2026-11-09: 값도 스마트 계정 주소로(팩토리 전이면 PPID 숫자)
+        // 2026-11-09: 값도 스마트 계정 주소로(팩토리 전이면 PPID 숫자). 2026-11-14: 주소는 자르지 않고 전체를 보이며 복사 버튼을 붙인다(옆이 비어 있는데 잘려 있었다).
+        const ppidFull = c.account ?? String(c.PPID);
+        const ppidVal = document.createElement('span'); ppidVal.className = 'val-copy';
+        const ppidCopy = document.createElement('button'); ppidCopy.type = 'button'; ppidCopy.className = 'copy-btn'; ppidCopy.title = '복사'; ppidCopy.textContent = '⧉';
+        ppidCopy.addEventListener('click', () => copyText(ppidFull, ppidCopy));
+        const ppidCode = c.account ? document.createElement('code') : shortCode(c.PPID, 12);
+        if (c.account) { ppidCode.textContent = c.account; ppidCode.title = c.account; }
+        ppidVal.append(ppidCode, ' ', ppidCopy);
+        kvRow(dl, termEl('PPID'), ppidVal);
         kvRow(dl, tt('wallet_session_expiry') || '만료', tt('wallet_session_expires', { h: c.max_height }) || String(c.max_height));
         kvRow(dl, tt('wallet_session_nonce') || 'nonce', String(c.nonce ?? '-'));
         kvRow(dl, 'arid', shortCode(c.arid, 8), true);
@@ -1369,8 +1374,7 @@
         boundInput.value = boundEdits[r_s] ?? String(c.nonce ?? 0);
         boundInput.addEventListener('input', () => { boundEdits[r_s] = boundInput.value; });
         boundLabel.appendChild(boundInput);
-        boundLabel.title = tt('wallet_bound_hint') || '끝낸 뒤에도 받아 줄 거래 수 — 0 이면 전부 막습니다';
-        const boundHint = document.createElement('span'); boundHint.className = 'hint'; boundHint.textContent = boundLabel.title; tte(boundHint, 'wallet_bound_hint');
+        const boundHint = document.createElement('span'); boundHint.className = 'hint'; boundHint.textContent = tt('wallet_bound_hint') || '끝낸 뒤에도 받아 줄 거래 수 — 0 이면 전부 막습니다'; tte(boundHint, 'wallet_bound_hint');
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'danger';
@@ -1576,6 +1580,7 @@
         const shown = !secret || storeRevealed || raw === '-';
         const isTime = !secret && STORE_TIME.test(raw);
         // 가린 비밀은 값과 같은 길이의 가림 문자로 채우고 복사 버튼 자리도 잡아 둔다 — "비밀 값 보기" 를 눌러도 줄 수가 같아 아래가 밀리지 않는다.
+        // 2026-11-14(화면 리뷰 3차): 잡아 둔 자리는 옅은 바탕의 가린 칸으로 보인다(wallet.css) — 바탕이 없을 때는 가린 줄 아래만 간격이 넓어 보였다.
         if (shown) code.textContent = isTime ? new Date(raw).toLocaleString() : raw;
         else {
           code.className = 'masked';
@@ -1590,6 +1595,11 @@
         // 저장된 값(new·true 등)은 그대로 두고 뜻을 옆에 붙인다 — wallet_me_v_<필드>_<값>.
         const glossKey = `wallet_me_v_${r.rel.replace(/[^A-Za-z0-9]+/g, '_')}_${raw}`;
         if (!secret && tt(glossKey)) { const g = document.createElement('span'); g.className = 'gloss'; g.dataset.i18n = glossKey; g.textContent = tt(glossKey); dd.append(' ', g); }
+        // 국가 코드(속성 a₁)는 스키마의 이름을 옆에 붙인다(2026-11-14 — "410" 만으로는 뜻을 알 수 없었다). 스키마를 못 받았거나 표에 없는 코드면 붙이지 않는다.
+        if (r.rel === 'attrs[1]' && attrSchema?.slots?.[1]?.type === 'enum') {
+          const nm = Object.entries(attrSchema.slots[1].values).find(([, code]) => String(code) === raw)?.[0];
+          if (nm) { const g = document.createElement('span'); g.className = 'gloss'; g.textContent = nm; dd.append(' ', g); }
+        }
         if (!isTime && raw.length >= 12) {
           const cb = document.createElement('button'); cb.type = 'button'; cb.className = 'copy-btn'; cb.title = '복사'; cb.textContent = '⧉';
           if (shown) cb.addEventListener('click', () => copyText(raw, cb));
@@ -1615,6 +1625,11 @@
       $('meStoreEmpty').dataset.i18n = emptyKey; $('meStoreEmpty').textContent = tt(emptyKey) || (pendingReg ? '끝나지 않은 등록이 있습니다' : '저장된 등록 없음');
       // "백업 다시 만들기" 는 salt 묶음 바로 아래에 둔다(2026-11-13 화면 리뷰) — 묶음은 매번 새로 그리므로 줄을 그때마다 옮겨 붙인다. salt 가 안 보이면 숨긴다.
       rebackupRow.hidden = !st?.salt; $('meCard').appendChild(rebackupRow);
+      // "스냅 초기화" 구획(2026-11-14 화면 리뷰 3차): 스냅에도 스냅 에이전트에도 지울 것이 없으면 보이지 않는다(가입 전·초기화 직후). 방금 초기화한 결과가 떠 있는 동안과,
+      // 스냅 상태를 못 읽었을 때(st 없음)는 그대로 둔다.
+      const nothingToReset = Boolean(st) && !st.registration && !st.userCred && !Object.keys(st.consents ?? {}).length
+        && !lastStatus?.registered && !Object.keys(lastStatus?.sessions ?? {}).length && !(lastStatus?.pendingBounds ?? []).length;
+      $('meDanger').hidden = nothingToReset && !$('snapResetVerdict').classList.contains('verdict');
       if (!st) return;
       const reg = st.registration, consents = st.consents ?? {};
       // 0.5.0(2026-11-13): salt 는 등록과 따로 있다 — 등록이 없어도(초기화 뒤·가입 전) 보인다. s_u 는 비밀이라 기본 가림(STORE_SECRETS).
@@ -1625,10 +1640,13 @@
         const rows = keys.flatMap((k) => storeRows(reg[k], `registration.${k}`, k));
         const u4 = rows.findIndex((r) => r.rel === 'attrs[4]'), u5 = rows.findIndex((r) => r.rel === 'attrs[5]');
         if (u4 >= 0 && u5 === u4 + 1) rows.splice(u4, 2, { ...rows[u4], labKey: 'wallet_me_f_attrs_unused', more: [rows[u5]] });
-        host.appendChild(storeGroup('wallet_me_g_registration', '등록', rows));
+        // 끝나지 않은 등록(2026-11-14 화면 리뷰 3차): uid·auid·슬롯·속성이 모두 "-" 인 "등록" 묶음에 "등록 시각" 만 찍혀 있었다 — 값이 든 줄만, "끝나지 않은 등록" 으로 보인다.
+        if (pendingReg) host.appendChild(storeGroup('wallet_me_g_registration_pending', '끝나지 않은 등록', rows.filter((r) => r.value !== null && r.value !== undefined).map((r) => (r.rel === 'registeredAt' ? { ...r, labKey: 'wallet_me_f_registeredAt_pending' } : r))));
+        else host.appendChild(storeGroup('wallet_me_g_registration', '등록', rows));
       }
-      if (reg || st.userCred) host.appendChild(storeGroup('wallet_me_g_userCred', '사용자 자격증명', st.userCred ? Object.keys(st.userCred).flatMap((k) => storeRows(st.userCred[k], `userCred.${k}`, k)) : []));
-      if (reg || Object.keys(consents).length) {
+      const fullReg = Boolean(reg) && !pendingReg;   // 끝나지 않은 등록에는 자격증명·동의가 있을 수 없다 — 빈 묶음("없음")을 그리지 않는다
+      if (fullReg || st.userCred) host.appendChild(storeGroup('wallet_me_g_userCred', '사용자 자격증명', st.userCred ? Object.keys(st.userCred).flatMap((k) => storeRows(st.userCred[k], `userCred.${k}`, k)) : []));
+      if (fullReg || Object.keys(consents).length) {
         host.appendChild(storeGroup('wallet_me_g_consents', '동의 기록', [], null));
         if (Object.keys(consents).length) host.lastChild.lastChild.remove();   // 묶음 제목만 남기고 "없음" 은 지운다 — 아래에 오리진별 줄이 온다
         for (const [origin, c] of Object.entries(consents)) host.appendChild(storeGroup(null, '', Object.keys(c ?? {}).flatMap((k) => storeRows(c[k], `consents.${origin}.${k}`, k)), origin));
@@ -1653,8 +1671,9 @@
       }
       renderStore();
     }
-    function closeStore() { storeState = null; storeRevealed = false; renderStore(); }
-    $('meReloadBtn').addEventListener('click', () => loadStore());
+    // 초기화 결과("스냅 초기화 완료")는 탭을 떠나거나 다시 읽으면 지운다(2026-11-14) — 그 뒤의 상태(다시 등록 등)와 섞여 보이지 않게.
+    function closeStore() { storeState = null; storeRevealed = false; clearVerdictEl($('snapResetVerdict')); renderStore(); }
+    $('meReloadBtn').addEventListener('click', () => { clearVerdictEl($('snapResetVerdict')); loadStore(); refresh(true); });   // 등록부도 다시 확인한다(2026-11-14)
     $('meRevealBtn').addEventListener('click', () => { storeRevealed = !storeRevealed; renderStore(); });
 
     // ---- 스냅 설정 카드(2026-11-13 스펙 random-salt R3~R7·R16, 계획 P5·P10~P12) ----
@@ -1668,8 +1687,8 @@
     const setupFail = (reason, detail) => setVerdict($('setupVerdict'), false, 'wallet_setup_failed', { reason, brief: BRIEF_REASONS.has(reason), ...(detail ? { detail } : {}) });
     const importFail = (reason, detail) => setVerdict($('setupVerdict'), false, 'wallet_setup_import_failed', { reason, brief: BRIEF_REASONS.has(reason), ...(detail ? { detail } : {}) });
     /** 지금 고른 방법('new' | 'import' | null)을 버튼에 표시한다 — 고른 쪽만 채운 버튼. */
-    function setChoice(which) { $('setupNewBtn').setAttribute('aria-pressed', which === 'new' ? 'true' : 'false'); $('setupImportLabel').setAttribute('aria-pressed', which === 'import' ? 'true' : 'false'); }
-    function closeSaltImport() { pendingSaltImport = null; $('setupImportPw').value = ''; $('setupImportPwRow').hidden = true; if ($('setupImportLabel').getAttribute('aria-pressed') === 'true') setChoice(null); }
+    function setChoice(which) { $('setupNewBtn').setAttribute('aria-pressed', which === 'new' ? 'true' : 'false'); $('setupImportLabel').dataset.pressed = which === 'import' ? 'true' : 'false'; }   // <label> 은 버튼 역할이 아니라 aria-pressed 대신 data-pressed
+    function closeSaltImport() { pendingSaltImport = null; $('setupImportPw').value = ''; $('setupImportPwRow').hidden = true; if ($('setupImportLabel').dataset.pressed === 'true') setChoice(null); }
     for (const b of document.querySelectorAll('#walletTabs [data-tab]')) b.addEventListener('click', () => clearVerdictEl($('setupNotice')));
     /** 스냅의 설정 상태(getPublicInfo.hasSalt·backedUp)를 읽어 카드와 탭을 맞춘다. salt 는 읽지 않는다. */
     async function refreshSetup() {
@@ -1799,8 +1818,6 @@
         saltHideTimer = setTimeout(() => { saltRevealed = null; renderIdentity(); }, SALT_REVEAL_MS);
       } catch (e) {
         console.warn(`[wallet] salt 보기 실패: ${e.message}`);
-        // 2026-11-06: 조용히 실패하면 사용자는 버튼이 고장난 줄 안다 — Snap 에 등록이 없으면(초기화 뒤 등) 그 사유를 보인다.
-        setVerdict($('snapVerdict'), false, 'wallet_salt_failed', { reason: /not_registered/.test(e.message) ? 'not_registered' : 'wallet_error', detail: e.message });
       }
     });
 
@@ -2179,70 +2196,6 @@
       try { await connectMetaMask(); document.querySelector('#walletTabs [aria-selected="true"]')?.focus(); }
       catch (e) { mmState = { kind: 'fail', err: e.message }; renderMmStatus(); $('connectError').textContent = e.message; $('connectError').hidden = false; }
     });
-    $('snapInfoBtn').addEventListener('click', async () => {
-      pendingVerdict($('snapVerdict'), 'working');
-      try {
-        await ensureConnected();
-        const i = await invokeSnap('getPublicInfo', {});
-        $('snapInfo').textContent = `등록: ${i.registered ? `예 (uid=${i.uid})` : '아니오'}\n속성: ${JSON.stringify(i.attrs)}\nauid: ${i.auid}\n사용자 자격증명 보관: ${i.hasUserCred}\n동의 기록: ${JSON.stringify(i.consents)}`;
-        const reg = Boolean(i.registered);
-        const cred = Boolean(i.hasUserCred);
-        const consents = Array.isArray(i.consents) ? i.consents.length : Object.keys(i.consents ?? {}).length;
-        setVerdict($('snapVerdict'), true, 'wallet_snap_info_title', () => ({
-          summary: tt('wallet_snap_info_summary', { reg: tt(reg ? 'wallet_yes' : 'wallet_no') || String(reg), cred: tt(cred ? 'wallet_yes' : 'wallet_no') || String(cred), consents }) || undefined,
-          detail: safeDetail(i),
-        }));
-      } catch (e) {
-        $('snapInfo').textContent = `오류: ${e.message}`;
-        setVerdict($('snapVerdict'), false, 'wallet_snap_info_failed', { reason: isUserRejected(e) ? 'user_denied' : 'snap_unavailable', detail: e.message });
-      }
-    });
-    // 자기 폐기(스펙 §4.5): Snap 이 비밀번호를 묻고, 에이전트의 프록시가 CIA 로 중계한다(같은 오리진 — cia.js 에는
-    // CORS 가 없어 이 페이지가 :4100 을 직접 부를 수 없다). 비밀번호는 이 페이지도 에이전트도 보관하지 않는다.
-    /** /wallet/self_revoke 응답을 결과 카드에 그린다(비밀번호·Google 두 경로 공용). uid 만 받아 인자 생성기가 응답 밖 값을 붙잡지 않게 한다. */
-    function showSelfRevokeResult(res, uid) {
-      if (res.status === 200) {
-        progress.revoked = true;
-        setVerdict($('snapVerdict'), true, 'revoked_ok', () => ({ summary: tt('wallet_self_revoke_ok', { uid }) || `uid ${uid} 계정의 폐기를 요청했습니다.`, detail: safeDetail(res.body) }));
-      } else setVerdict($('snapVerdict'), false, 'wallet_self_revoke_failed', { reason: res.body.reason ?? `HTTP ${res.status}`, detail: safeDetail(res.body) });
-    }
-    $('selfRevokeBtn').addEventListener('click', async () => {
-      if (!Demo.confirmDanger('confirm_revoke')) return;
-      pendingVerdict($('snapVerdict'), 'working');
-      try {
-        await ensureConnected();
-        // Google 계정(2026-10-26 Snap OIDC 래퍼 §2.3): 비밀번호 대신 revoke: nonce 의 Google 재로그인. Snap 프롬프트는 띄우지 않는다.
-        const st = await (await fetch('/wallet/status')).json().catch(() => ({}));
-        if (st.provider && st.provider !== 'demo') {
-          const g = await oidcToken({ purpose: 'revoke' });
-          if (!g.token) { setVerdict($('snapVerdict'), false, 'wallet_self_revoke_failed', { reason: g.reason, detail: g.detail }); return; }
-          showSelfRevokeResult(await postJson('/wallet/self_revoke', { id_token: g.token }), st.uid);
-          refresh();
-          return;
-        }
-        const r = await invokeSnap('selfRevoke');
-        if (!r || r.denied) { setVerdict($('snapVerdict'), false, 'wallet_self_revoke_failed', () => ({ summary: tt('wallet_cancelled') || '창에서 취소했습니다.' })); return; }
-        // uid 만 따로 꺼내 쓴다 — 결과 카드의 인자 생성기가 비밀번호가 든 응답을 붙잡고 있지 않게 한다.
-        const uid = r.uid;
-        showSelfRevokeResult(await postJson('/wallet/self_revoke', { uid: r.uid, pwd: r.pwd }), uid);
-      } catch (e) {
-        setVerdict($('snapVerdict'), false, 'wallet_self_revoke_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
-      }
-      refresh();
-    });
-    // Snap 다시 설치(2026-11-06): wallet_requestSnaps 를 명시적으로 — MetaMask 가 local: 번들을 다시 받아 설치 창을 띄운다(Snap 상태는 유지).
-    $('snapReinstallBtn').addEventListener('click', async () => {
-      pendingVerdict($('snapVerdict'), 'working');
-      try {
-        const eth = requireEthereum();
-        if (!cfg.snapId) throw new Error('스냅 설정에 snapId 가 없습니다(/wallet/config)');
-        await eth.request({ method: 'wallet_requestSnaps', params: { [cfg.snapId]: {} } });
-        mmState = { kind: 'ok', err: null }; renderMmStatus();
-        setVerdict($('snapVerdict'), true, 'wallet_snap_reinstall_ok', () => ({ summary: tt('wallet_snap_reinstall_summary') || 'MetaMask 가 스냅을 다시 설치했습니다.' }));
-      } catch (e) {
-        setVerdict($('snapVerdict'), false, 'wallet_snap_reinstall_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
-      }
-    });
     $('snapResetBtn').addEventListener('click', async () => {
       if (!Demo.confirmDanger('confirm_reset')) return;
       pendingVerdict($('snapResetVerdict'), 'working');
@@ -2262,7 +2215,6 @@
     });
 
     function applySnapMode() {
-      delete $('snapPanel').dataset.off;   // 설정 탭에서 보인다(applyGate)
       $('meTabBtn').hidden = false;   // 내 계정(2026-11-12) — 스냅이 저장한 값이라 snap 모드에서만
       $('fileRegFields').hidden = true;
       // 등록 안내(Task 14, B5) — snap 모드는 등록이 IdP /user 페이지 경유(mode3-register 팝업)로 가므로 registerBtn 을
@@ -2285,7 +2237,7 @@
         const r = await fetch('/wallet/config');
         if (r.ok) cfg = { ...cfg, ...(await r.json()) };
       } catch { /* 설정을 못 읽으면 file 모드로 본다 */ }
-      if (cfg.secrets === 'snap') applySnapMode();   // file 모드는 마크업의 data-off="1" 그대로(설정 응답 전에도 Snap 패널이 비치지 않는다)
+      if (cfg.secrets === 'snap') applySnapMode();
       if (!IS_AUTHORIZE) showTab(currentTab);
       renderModeTexts();
       renderMmStatus();
@@ -2295,7 +2247,7 @@
         runAuthorize();
         return;
       }
-      refresh();
+      refresh(true);   // 2026-11-14: 화면을 열 때 한 번은 등록부를 체인에서 다시 확인한다(?sync=1) — zkID 쪽의 폐기·연결 해제를 이 화면이 알게(regNotice)
       // 등록부 확인 줄(V9 §8.2)은 다른 창(서비스 페이지의 로그인, 관리자의 바꿔치기)이 바꾼 서버 상태를 반영해야 한다 —
       // 이 페이지 혼자서는 그 일을 모르므로 가볍게(강제 재동기화 없이) 주기적으로 다시 읽는다. 탭이 숨겨지면 쉰다
       // (Demo.stack 의 상태 폴링과 같은 주기). 강제 재동기화는 새로고침 버튼(?sync=1)만 한다.
