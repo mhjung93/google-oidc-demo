@@ -46,7 +46,8 @@
       <h3 id="authHeading">스냅</h3>
       <p id="authTitle">요청을 기다리는 중…</p>
       <!-- 2026-11-05: 일반 보기용 진행 줄 — 전문가용 #authStep 은 내부 단계명이라 숨겨져 있어 창이 "멈춘 것처럼" 보였다. -->
-      <p id="authProgress" class="auth-progress"></p>
+      <!-- 2026-11-14(시연자 피드백): 기다리는 단계에는 돌아가는 표시와 경과 시간이 붙는다(say) — 증명·등록이 길어지면 한 줄만 있는 창이 멈춘 것처럼 보였다. -->
+      <p id="authProgressRow" class="auth-progress"><span id="authProgress"></span><span id="authElapsed" class="auth-elapsed"></span></p>
       <dl class="kv" id="authSummary"></dl>
       <!-- 2026-11-12 시연 Race (2): RP 가 hold 로 보낸 출금이면 증명·서명 뒤 여기서 멈춘다(handleTxRequest → raceHold). -->
       <div id="raceHoldBox" hidden>
@@ -603,10 +604,21 @@
       row('wallet_auth_conditions', conds.length ? conds.join(' · ') : tt('wallet_cond_none'));
     }
     /** 일반 보기용 진행 줄(2026-11-05) — 사용자가 지금 무엇을 기다리는지, 어디(MetaMask)를 봐야 하는지. 실패는 사유 제목을 붙인다. */
-    function say(key, vars) { const el = $('authProgress'); if (!el) return; el.textContent = tt(key, vars) || key; }
+    /** 이 창이 일하느라 기다리게 하는 단계 — 돌아가는 표시와 경과 시간을 붙인다. 사용자의 손을 기다리는 단계(MetaMask 확인·Google 버튼·시연 멈춤)와 끝난 뒤에는 붙이지 않는다. */
+    const BUSY_KEYS = new Set(['wallet_prog_connect', 'wallet_prog_check', 'wallet_prog_reauth', 'wallet_prog_proving', 'wallet_prog_sending', 'wallet_prog_registering', 'wallet_prog_reg_proving', 'wallet_race_revoking']);
+    let elapsedTimer = null;
+    function stopElapsed() { clearInterval(elapsedTimer); elapsedTimer = null; $('authElapsed').textContent = ''; $('authProgressRow').classList.remove('busy'); }
+    /** 단계가 바뀌면 0초부터 다시 센다. 2초가 지나야 숫자를 보인다 — 금방 끝나는 단계에서 깜빡이지 않게. */
+    function startElapsed() {
+      stopElapsed();
+      const t0 = Date.now();
+      $('authProgressRow').classList.add('busy');
+      elapsedTimer = setInterval(() => { const s = Math.floor((Date.now() - t0) / 1000); $('authElapsed').textContent = s >= 2 ? (tt('wallet_prog_elapsed', { s }) || `${s}초`) : ''; }, 500);
+    }
+    function say(key, vars) { const el = $('authProgress'); if (!el) return; el.textContent = tt(key, vars) || key; if (BUSY_KEYS.has(key)) startElapsed(); else stopElapsed(); }
     let authFailed = false;   // 실패로 끝난 팝업 — 작은 제목이 "…처리하는 중입니다" 로 남지 않게(2026-11-14 화면 리뷰)
     function sayFailed(reason) {
-      authFailed = true; renderAuthTitle();
+      authFailed = true; renderAuthTitle(); stopElapsed();
       const r = reason ? window.DemoStrings?.reasons?.[reason] : null;
       const title = r ? (r[Demo.lang] ?? r.ko)?.title : null;
       $('authProgress').textContent = `${tt('wallet_prog_failed') || '실패했습니다 — 창이 곧 닫힙니다.'}${title ? ` ${title}` : reason ? ` (${reason})` : ''}`;
@@ -713,7 +725,7 @@
       if (!prep || prep.denied) { step('등록 거절'); return { ok: false, reason: 'user_denied' }; }
       const g = await oidcToken({ purpose: 'register', s_u: prep.s_u }, () => { step(tt('wallet_gsi_hint') || 'Google 버튼을 눌러 로그인하세요.'); say('wallet_gsi_hint'); });
       if (!g.token) { oidcFailStep(g, step, log); return { ok: false, reason: g.reason }; }
-      step('에이전트에 등록하는 중…');
+      step('에이전트에 등록하는 중…'); say('wallet_prog_reg_proving');
       const { status, body: b } = await postJson('/wallet/register', { id_token: g.token, s_u: prep.s_u, n: g.n });
       if (status !== 201) { step('등록 실패 — 다시 시도하면 같은 비밀로 이어진다'); log(errText(status, b)); return { ok: false, reason: b.cia?.reason ?? b.reason ?? `HTTP ${status}`, detail: b.detail ?? b.cia?.detail ?? null }; }
       step('스냅에 등록 결과 저장 중…');
@@ -834,7 +846,7 @@
       // 적어, IdP 가 거절하면(auid_taken 등) 거절된 계정의 uid 가 스냅에 남고 다음 등록이 already_registered 로 막혔다. uid 는 IdP 가 받은 뒤 storeRegistration 이 채운다.
       const reg = await invokeSnap('prepareRegister', {});
       if (!reg || reg.denied) { step('등록 거절'); return { ok: false, reason: 'user_denied' }; }
-      step('에이전트에 등록하는 중…');
+      step('에이전트에 등록하는 중…'); say('wallet_prog_reg_proving');   // 여기가 등록에서 가장 오래 걸린다 — 에이전트가 등록 증명을 만들고 zkID 가 등록부에 올린다
       const { status, body: b } = await postJson('/wallet/register', { uid, code, s_u: reg.s_u, ...(rec.profile ? { profile: rec.profile } : {}) });
       if (status !== 201) { step('등록 실패'); log(errText(status, b)); return { ok: false, reason: b.cia?.reason ?? b.reason ?? `HTTP ${status}`, detail: b.detail ?? b.cia?.detail ?? null }; }
       step('스냅에 등록 결과 저장 중…');

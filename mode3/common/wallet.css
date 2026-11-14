@@ -112,6 +112,11 @@ details.fold > :not(summary) { margin-top: 8px; }
 #authorizeView { max-width: 520px; padding: 16px; }
 #authorizeView .card { padding: 18px 20px; }
 .auth-progress { margin: 10px 0 6px; font-weight: 600; color: var(--ink, #1a1a1a); min-height: 1.4em; }   /* 2026-11-05: 일반 보기용 진행 줄 */
+/* 2026-11-14(시연자 피드백): 기다리는 단계의 돌아가는 표시와 경과 시간 — 창이 멈춘 것처럼 보이지 않게 */
+.auth-progress.busy::before { content: ''; display: inline-block; width: 0.8em; height: 0.8em; margin-right: 8px; border: 2px solid var(--line, #e3e7ee); border-top-color: var(--accent, #2455c3); border-radius: 50%; vertical-align: -0.08em; animation: auth-spin 0.9s linear infinite; }
+@keyframes auth-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .auth-progress.busy::before { animation: none; } }
+.auth-elapsed { margin-left: 8px; font-weight: 400; color: var(--muted, #5f6b7a); font-variant-numeric: tabular-nums; }
 /* 처음 등록 때 salt 묻기(2026-11-10) — 지갑 창(?authorize=1) */
 .salt-ask { margin: 8px 0 12px; } .salt-ask label { display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
 .salt-ask input { width: 100%; box-sizing: border-box; padding: 8px 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }

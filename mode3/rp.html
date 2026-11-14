@@ -462,6 +462,9 @@
       } catch { /* RP 서버를 못 읽으면 그대로 둔다 */ } finally { staleChecking = false; }
     }
     setInterval(checkZkidStale, 10000);
+    // 2026-11-14(시연자 피드백): 10초 주기만으로는 안내가 늦었다 — 폐기를 게시한 탭에서 돌아와 곧바로 출금·구매를 누르면 "세션을 다시 검증해야 합니다" 실패만 먼저 보였다.
+    // 탭으로 돌아올 때와 요청이 거절된 직후(sessionRequest·거래소 보관 출금)에도 바로 본다.
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) checkZkidStale(); });
     $('staleReloginBtn').addEventListener('click', () => $('logoutBtn').click());   // 로그아웃하면 로그인 카드가 보인다
     /** 세션 범위의 결과 표시(재검증·잔액·출금 결과)를 초기 화면으로. 로그아웃이면 로그인 카드의 결과·로그도 비운다(2026-10-21 — 재로그인 때 옛 메시지가 남지 않게). */
     function resetSessionViews(includeLogin) {
@@ -868,7 +871,7 @@
         const rb = await r.json();
         log(`RP 요청 ${ms(t0)}: ${JSON.stringify(rb)}`);
         if (currentSession !== rsAtStart) return null;
-        if (!rb.ok) { if (!quiet) setVerdict(vEl, false, 'request_failed', { reason: rb.reason ?? 'internal', detail: rb }); return null; }
+        if (!rb.ok) { if (!quiet) setVerdict(vEl, false, 'request_failed', { reason: rb.reason ?? 'internal', detail: rb }); checkZkidStale(); return null; }   // 거절 사유가 닫힌 로그인이면 안내가 함께 뜬다
         if (rb.balance) applyLedger(rb.balance);
         if (!quiet) setVerdict(vEl, true, okTitle ?? 'request_ok', () => ({ summary: okSummary ? okSummary(rb) : undefined, detail: rb }));
         progress.used = true;
@@ -935,7 +938,7 @@
         $('txBtn').dataset.tourBusy = '1'; $('txHashRow').hidden = true; pendingVerdict($('txVerdict'), 'working');
         try {
           const rb = await (await post('/api/rp/ledger', { body: `withdraw:${to}:${value}:${Date.now()}` })).json().catch(() => ({ ok: false, reason: 'internal' }));
-          if (!rb.ok) { setVerdict($('txVerdict'), false, 'tx_failed', { reason: rb.reason ?? 'internal', detail: rb }); return; }
+          if (!rb.ok) { setVerdict($('txVerdict'), false, 'tx_failed', { reason: rb.reason ?? 'internal', detail: rb }); checkZkidStale(); return; }
           setVerdict($('txVerdict'), true, 'tx_ok', () => ({ summary: tt('rp_custody_withdraw_ok', { eth: $('txValue').value.trim() }) || `거래소 보관에서 ${$('txValue').value.trim()} ETH 를 보냈습니다.`, detail: rb }));
           lastTxHash = rb.txHash; $('txHashCode').textContent = `${String(rb.txHash).slice(0, 18)}…`; $('txHashCode').title = rb.txHash; $('txHashRow').hidden = false;
           if (rb.balance) applyLedger(rb.balance);
@@ -963,7 +966,7 @@
           setVerdict($('txVerdict'), false, e.reason === 'popup_blocked' ? 'popup_blocked' : 'tx_failed', () => ({ summary: tt(POPUP_HINT[e.reason] ?? '') || e.message, reason: e.reason, detail: e.message }));
           return;
         }
-        if (!result.ok) { log(`팝업 ${ms(t0)}: ${result.reason ?? ''} ${result.detail ?? ''}`); setVerdict($('txVerdict'), false, 'tx_failed', { reason: result.reason ?? 'internal', detail: result }); return; }
+        if (!result.ok) { log(`팝업 ${ms(t0)}: ${result.reason ?? ''} ${result.detail ?? ''}`); setVerdict($('txVerdict'), false, 'tx_failed', { reason: result.reason ?? 'internal', detail: result }); checkZkidStale(); return; }
         log(`2. 전송 ${ms(t0)}: txHash=${result.txHash}${result.deployTxHash ? `  배포 txHash=${result.deployTxHash}` : ''}  PPID 계정=${result.wallet ?? ''}`);
         // 시연 Race (2): 팝업이 보내기 전에 이 세션을 폐기했는데 통과했으면(거울 반영 전) 그 사실을 함께 보인다.
         const okKey = result.raceRevoked ? 'rp_tx_ok_race' : 'rp_tx_ok';

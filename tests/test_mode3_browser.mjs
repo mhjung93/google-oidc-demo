@@ -1483,8 +1483,12 @@ try {
     await atIdpLogin(popup);
     await popup.fill('#authUid', 'demo-user-b'); await popup.fill('#authPwd', DEMO_PWD); await popup.fill('#authAuid', String(AUID)); await popup.click('#authGo');   // 같은 스냅 → 같은 auid
     await backAtWallet(popup);
+    // 2026-11-14(시연자 피드백): 기다리는 동안 진행 줄이 "일하는 중" 표시(돌아가는 표시·경과 시간 자리)를 달고, 끝나면 뗀다 — 창이 멈춘 것처럼 보이지 않게
+    await popup.waitForSelector('#authProgressRow.busy', { timeout: 60_000 });
     // 2026-11-14(화면 리뷰): 실패로 끝난 팝업의 작은 제목은 "…처리하는 중입니다" 로 남지 않는다
     await popup.waitForFunction(() => (document.querySelector('#authProgress')?.textContent ?? '').includes('실패했습니다'), undefined, { timeout: 180_000 });
+    assert.equal(await popup.evaluate(() => document.querySelector('#authProgressRow').classList.contains('busy')), false, '끝난 뒤에는 일하는 중 표시가 없다');
+    assert.equal((await popup.textContent('#authElapsed')).trim(), '', '끝난 뒤에는 경과 시간이 없다');
     assert.equal((await popup.textContent('#authTitle')).trim(), '요청을 끝내지 못했습니다.');
     await waitText(rpPage, '#verdict', '이 스냅은 이 IdP 에 이미 다른 계정으로 등록돼 있습니다', 180_000);
     assert.ok((await text(rpPage, '#verdict')).includes('이미 등록한 zkID 계정으로 로그인하세요'), '어느 계정으로 로그인할지 가리킨다("이 계정"·"그 계정" 을 섞지 않는다)');
@@ -1597,6 +1601,20 @@ try {
     await p.close();
     // 서비스: 폐기가 게시돼 root 가 바뀌면 서버가 그 로그인(쿠키)을 닫는다 — 화면이 "내 계정" 을 빈 채로 두지 않고 내 자산 위에 사유와 다시 로그인하는 길을 보인다.
     // 화면을 로그아웃으로 바꾸지는 않는다(시연 Race (2)의 출금 결과가 지워지지 않게) — 버튼을 누르면 로그아웃된다
+    // 2026-11-14(시연자 피드백): 닫힌 로그인으로 요청이 거절되면(revalidate_required) 10초 주기를 기다리지 않고 그 자리에서 로그인 상태를 다시 본다 — 실패만 먼저 보이고 안내가 늦지 않게
+    {
+      const meCalls = []; let failedAt = null;
+      const onReq = (r) => { if (new URL(r.url()).pathname === '/api/rp/me') meCalls.push(Date.now()); };
+      const onResp = (r) => { if (failedAt === null && new URL(r.url()).pathname === '/api/mode3/request' && r.status() === 401) failedAt = Date.now(); };
+      rpPage.on('request', onReq); rpPage.on('response', onResp);
+      try {
+        for (let i = 0; i < 40 && failedAt === null; i++) { await rpPage.click('#balanceBtn'); await rpPage.waitForTimeout(750); }   // 게시가 거울에 실릴 때까지 잔액을 다시 묻는다
+        assert.notEqual(failedAt, null, '폐기 게시 뒤 세션 요청이 거절된다');
+        await waitText(rpPage, '#ledgerVerdict', '세션을 다시 검증해야 합니다');
+        await rpPage.waitForSelector('#staleNotice:not([hidden])', { timeout: 3_000 });
+        assert.ok(meCalls.some((t) => t >= failedAt - 50 && t <= failedAt + 1_500), `실패 응답 직후 로그인 상태를 다시 본다(실패 ${failedAt}, 확인 ${meCalls.join(',')})`);
+      } finally { rpPage.off('request', onReq); rpPage.off('response', onResp); }
+    }
     await rpPage.reload();
     await rpPage.waitForSelector('#staleNotice:not([hidden])', { timeout: 30_000 });
     assert.ok((await text(rpPage, '#staleNotice')).includes('이 로그인은 닫혔습니다'), await text(rpPage, '#staleNotice'));

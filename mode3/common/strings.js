@@ -471,6 +471,8 @@ window.DemoStrings = {
     wallet_race_revoking: { ko: '이 세션을 폐기하고 블록을 진행하는 중…', en: 'Revoking this session and advancing blocks…' },
     wallet_race_progress: { ko: '폐기 뒤 {k}/{n}블록 · 거울 상한 {bound}', en: '{k}/{n} blocks since revocation · mirror bound {bound}' },
     wallet_prog_registering: { ko: '등록하는 중…', en: 'Registering…' },
+    wallet_prog_reg_proving: { ko: '등록 증명을 만드는 중입니다 — 몇 초 걸립니다.', en: 'Generating the registration proof — this takes a few seconds.' },   // 2026-11-14(시연자 피드백): 등록에서 가장 오래 걸리는 구간
+    wallet_prog_elapsed: { ko: '{s}초', en: '{s}s' },   // 진행 줄 옆 경과 시간
     wallet_prog_done: { ko: '완료 — 창을 닫습니다.', en: 'Done — closing this window.' },
     wallet_prog_not_registered: { ko: '등록된 스냅이 없습니다 — zkID 에 가입한 뒤 다시 로그인하면 그 자리에서 등록됩니다.', en: 'This Snap is not registered — sign up at zkID and log in again; registration happens right there.' },
     wallet_prog_failed: { ko: '실패했습니다 — 창이 곧 닫힙니다.', en: 'Failed — this window will close shortly.' },
