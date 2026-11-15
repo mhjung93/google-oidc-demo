@@ -1398,7 +1398,7 @@ app.post('/cia/revoke', userCors, async (req, res) => {
     if (boundKey) cur.pk_i = boundKey;            // 거울 공개용 — 발급 때는 모르는 값(D1)이라 폐기 때 지갑이 알려 준다
     if (cur.pk_i) queueBound(cur.pk_i, cur.bound);   // 관리자 폐기도 레코드에 pk_i 가 있으면(앞선 사용자 폐기) 같이 게시한다
     persist();
-    if (boundKey) schedulePublishAfterRevoke(rec.chainid, revokeHead);
+    if (boundKey) schedulePublishAfterRevoke(rec.chainid, revokeHead, { leaf, pk_i: boundKey });
     res.json({ inserted, leaf, bound: cur.bound, root: tree.getRoot().toString(), pending: state.pending.length, mirrorBound: Boolean(cur.pk_i) });
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
@@ -1566,13 +1566,17 @@ async function publishNow({ heartbeat = false, wait = false } = {}) {
   return r;
 }
 /** 시연(CIA_REVOKE_PUBLISH_AFTER_BLOCKS): 세션 체인 헤드가 startHead + N 에 닿으면 게시하고 거울 중계까지 기다린다. 10분 안에 닿지 않으면 그만둔다
- *  (하트비트·관리자 게시가 남는다). 타이머 콜백이라 던지지 않는다. */
-function schedulePublishAfterRevoke(chainStr, startHead) {
+ *  (하트비트·관리자 게시가 남는다). 타이머 콜백이라 던지지 않는다.
+ *  2026-11-15(시연자 화면 리뷰): 이 폐기(리프·거울 상한)가 그사이 이미 실렸으면 아무것도 올리지 않는다 — 게시는 대기열 전부를 올리므로,
+ *  관리자가 "게시" 한 뒤에도 남아 있던 예약이 **뒤에 온** 세션 폐기를 앞당겨 게시했다(세션 폐기 → 게시 → Race (2) "2블록" 이 통과 대신 막혔다). */
+function schedulePublishAfterRevoke(chainStr, startHead, { leaf, pk_i }) {
   if (REVOKE_PUBLISH_AFTER_BLOCKS === 0n) return;
   const target = startHead + REVOKE_PUBLISH_AFTER_BLOCKS, deadline = Date.now() + 600_000;
+  const stillDue = () => state.pending.some((l) => String(l) === String(leaf)) || state.pendingBounds.some((e) => e.pk_i === pk_i && e.epoch === null);
   const tick = async () => {
     try {
       if ((await headOf(chainStr)) < target) { if (Date.now() < deadline) setTimeout(tick, 200).unref(); return; }
+      if (!stillDue()) return;
       const r = await publishNow({ wait: true });
       if (r.published && MIRRORS.length) await relayAll({ behindOnly: true });
       console.log(`[cia] 폐기 뒤 ${REVOKE_PUBLISH_AFTER_BLOCKS}블록 게시(시연): epoch ${r.epoch}, published=${r.published}`);

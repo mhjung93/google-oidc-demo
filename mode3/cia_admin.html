@@ -83,6 +83,8 @@
         <button id="stateBtn" data-i18n="admin_state_btn">상태 보기</button>
         <button id="publishBtn" class="danger" data-i18n="admin_publish_btn">게시(체인에 올리기)</button>
       </p>
+      <!-- 2026-11-15(시연자 화면 리뷰): 게시 결과를 버튼 아래에도 — 맨 위 "최근 결과" 는 이 자리에서 화면 밖이라 누른 뒤 달라진 것이 숫자 하나뿐이었다. -->
+      <div id="publishVerdict"></div>
       <dl class="kv" id="stateKv"></dl>
       <p class="muted" id="mirrorInfo"></p>
     </section>
@@ -756,15 +758,18 @@
         setVerdict($('adminVerdict'), true, 'admin_state_title', () => ({ summary: Demo.t('admin_state_summary', { epoch: body.epoch, leaves: body.leafCount, pending: body.pendingCount }), detail: safeDetail(body) }));
       });
     });
-    $('publishBtn').addEventListener('click', () => {
+    $('publishBtn').addEventListener('click', async () => {
       if (!Demo.confirmDanger('confirm_publish')) return;
-      run('admin_publish_failed', () => call('POST', '/cia/publish', {}), ({ body }) => {
+      $('publishVerdict').innerHTML = '';
+      const res = await run('admin_publish_failed', () => call('POST', '/cia/publish', {}), ({ body }) => {
         if (body?.published) progress.revoked = true;
-        setVerdict($('adminVerdict'), true, 'admin_publish_title', () => (body?.published
+        for (const el of [$('adminVerdict'), $('publishVerdict')]) setVerdict(el, true, 'admin_publish_title', () => (body?.published
           ? { summary: Demo.t('admin_publish_summary', { epoch: body.epoch, n: (body.leaves ?? []).length }), detail: safeDetail(body) }
           : { summary: Demo.t('admin_publish_none'), detail: safeDetail(body) }));
         loadState(); loadAccounts();
       });
+      // 실패도 버튼 아래에 — 사유는 맨 위 카드에 있다
+      if (!res || res.status < 200 || res.status >= 300) setVerdict($('publishVerdict'), false, 'admin_publish_failed', res ? { reason: reasonFor(res) } : {});
     });
 
     // ---- 기동 ----

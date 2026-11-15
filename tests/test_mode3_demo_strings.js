@@ -231,4 +231,15 @@ t('서버·화면 소스의 reason 리터럴이 전부 사전(reasons)에 있다
   for (const k of ['revalidate_required', 'needs_consent']) { assert.equal(/재검증"을|재검증해/.test(S.reasons[k].ko.action), false, S.reasons[k].ko.action); assert.match(S.reasons[k].ko.action, /다시 로그인/); assert.match(S.reasons[k].en.action, /log in again/i); }
 });
 
+// 2026-11-15(시연자 화면 리뷰): 폐기된 계정에서 새 계정으로 옮기는 길(새 계정 → 스냅 초기화 → 로그인)을 안내대로 따라가면 attr_record_uid_mismatch 로 막혔다 —
+// 속성 도구 기록이 옛 계정의 uid 를 들고 있어서다. 그 길을 말하는 문구는 "속성 도구에서 커밋먼트를 다시 만든다" 를 함께 말한다. uid 는 사용자가 넣지 않는다(11-13).
+t('새 계정으로 옮기는 안내가 속성 도구에서 커밋먼트를 다시 만드는 단계를 말한다; 로그인 뒤 증명한 조건·다른 계정 기록 문구가 있다', () => {
+  const ui = S.ui, R = S.reasons;
+  for (const [name, s] of [['idp_disabled_desc', ui.idp_disabled_desc.ko], ['account_disabled', R.account_disabled.ko.action], ['attr_record_uid_mismatch', R.attr_record_uid_mismatch.ko.action]]) assert.match(s, /속성 도구.*커밋먼트를 다시 만/, name);
+  assert.equal(/내 정보의 uid 로/.test(R.attr_record_uid_mismatch.ko.action), false, 'uid 를 넣으라고 하지 않는다');
+  assert.match(ui.wallet_snap_reset_summary.ko, /새 zkID 계정/, '스냅 초기화 완료 문구가 새 계정으로 옮기는 경우도 말한다');
+  for (const k of ['attr_other_account', 'rp_login_proof_none', 'rp_login_proof_cond', 'rp_login_proof_policy']) { assert.ok(ui[k]?.ko, k); assert.ok(ui[k]?.en, k); }
+  assert.match(ui.rp_login_proof_policy.ko, /값은 받지 않/);
+});
+
 if (fails) { console.log(`\n${fails} FAIL`); process.exit(1); } else console.log('\nall ok');

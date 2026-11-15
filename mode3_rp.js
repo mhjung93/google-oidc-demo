@@ -767,7 +767,10 @@ app.get('/api/mode3/relay/:txHash', relayCors, async (req, res) => {
     if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) return res.status(400).json({ ok: false, reason: 'malformed' });
     const rc = await provider.getTransactionReceipt(txHash);
     if (!rc) return res.json({ ok: true, pending: true });
-    res.json({ ok: true, pending: false, status: rc.status, blockNumber: rc.blockNumber, gasUsed: rc.gasUsed.toString(), to: rc.to });
+    // executed(2026-11-15): 계정 안 호출의 성패(Executed.success) — 거래가 실려도(status 1) 잔액 부족 등으로 안쪽 송금이 실패할 수 있다. 이벤트가 없으면 null.
+    let executed = null;
+    try { executed = parseExecuteReceipt(rc, rc.to).executed?.success ?? null; } catch { executed = null; }
+    res.json({ ok: true, pending: false, status: rc.status, executed, blockNumber: rc.blockNumber, gasUsed: rc.gasUsed.toString(), to: rc.to });
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });
 

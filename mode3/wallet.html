@@ -958,7 +958,7 @@
       step('증명·세션키 서명 중… (수 초 걸린다)'); say('wallet_prog_proving');
       const p = await postJson('/wallet/tx/prepare', { r_s: req.r_s, to: req.to, value, data });
       if (p.status !== 200) { step('준비 실패'); log(errText(p.status, p.body)); return reply({ ok: false, reason: p.body.reason ?? 'tx_prepare_failed', detail: p.body.detail ?? null, status: p.status }); }
-      const held = req.hold === true ? await raceHold(req, { step, log, reply }) : null;
+      const held = req.hold === true ? await raceHold(req, { step, log, reply }, { deployNeeded: p.body.deployNeeded === true }) : null;
       if (req.hold === true && !held) return;   // 취소·실패 — raceHold 가 이미 답했다
       step('RP 릴레이로 보내는 중…'); say('wallet_prog_sending');
       let relay;
@@ -969,7 +969,9 @@
       if (!relay.ok) {
         step('릴레이 거절'); log(`${relay.reason ?? ''} ${relay.detail ?? ''}`);
         // 폐기된 세션키의 거래는 거울이 상한(sessionBoundOf)을 받은 뒤 RP 릴레이의 가스 추정에서 SessionBounded 로 되돌려진다(Race (2) 의 막히는 쪽).
-        const reason = relay.reason === 'relay_gas' && /SessionBounded/.test(String(relay.detail ?? '')) ? 'session_bounded' : (relay.reason ?? 'internal');
+        // 만료된 세션(Expired)도 가스 추정에서 되돌려진다 — 수명(TTL_BLOCKS)이 짧으면 시연 중에 난다. "가스 추정 실패" 대신 "세션이 만료됐습니다" 로 보인다(2026-11-15).
+        const revert = relay.reason === 'relay_gas' ? String(relay.detail ?? '') : '';
+        const reason = /SessionBounded/.test(revert) ? 'session_bounded' : /(^|[^A-Za-z])Expired/.test(revert) ? 'expired' : (relay.reason ?? 'internal');
         return reply({ ok: false, reason, detail: relay.detail ?? null, ...(held ? { race: held } : {}) });
       }
       step('영수증 대기…');
@@ -980,16 +982,32 @@
       step('전송 완료 — 창을 닫는다.');
       // RP 에는 영수증 사실만(지갑·nonce·gas·ok·txHash). 선택 공개는 이 요청에 없다.
       const { disclosure, onchainDisclosure, ...pub } = rec.body;
-      return reply({ ok: rec.body.ok !== false, ...pub, txHash: relay.txHash, deployTxHash: relay.deployTxHash ?? null });
+      // 2026-11-15: 거래는 실렸지만 계정 안 송금이 실패했으면(잔액 부족 등) 사유를 붙인다 — 전에는 사유 없이 ok:false 라 서비스가 "서버 오류" 로 보였다
+      return reply({ ok: rec.body.ok !== false, ...(rec.body.ok === false ? { reason: 'transfer_failed' } : {}), ...pub, txHash: relay.txHash, deployTxHash: relay.deployTxHash ?? null });
     }
 
     /** 시연 Race (2)(2026-11-12): 증명·서명이 끝난 출금을 들고 멈춘다. "N블록 뒤 보내기" 를 누르면 이 세션을 폐기하고(허용 거래 수 = 현재 nonce —
      *  들고 있는 거래가 그 대상) 응용 체인 블록을 N 개 진행한 뒤 돌아간다. 그 사이 IdP 가 폐기를 게시·중계했는지(거울 상한)가 결과를 가른다.
      *  블록은 에이전트 /wallet/demo/mine(MODE3_DEMO_RACE=1)이 하나씩 만든다 — 사이마다 1.5초를 둬 IdP 의 게시·중계가 끝날 틈을 준다.
      *  취소·실패면 reply 하고 null, 아니면 { blocks, mirrorBound }. */
-    async function raceHold(req, { step, log, reply }) {
+    async function raceHold(req, { step, log, reply }, { deployNeeded = false } = {}) {
       $('raceHoldBox').hidden = false;
       step('시연: 보내기 전에 멈춤'); say('wallet_race_ready');
+      // 2026-11-15(Race 시연 점검): (1) 세션 수명이 모자라면 미리 알린다 — n블록 뒤의 거래는 n+1 번째 블록에 실리므로 그때까지 살아 있어야 한다. 모자란 버튼은 끈다
+      // (수명이 짧은 기동(TTL_BLOCKS=5)에서 "가스 추정 실패" 로 끝나던 경우). (2) 이 계정의 첫 거래면 릴레이가 계정 컨트랙트를 먼저 배포해 블록 하나를 더 쓴다 —
+      // 그 블록까지 n 에 넣어 센다. 안 그러면 배포 블록이 3블록째가 돼 IdP 의 게시와 거래 전송이 진짜로 경주한다(2블록 쪽 결과가 타이밍에 달렸다).
+      const notes = [];
+      if (deployNeeded) notes.push(tt('wallet_race_first_tx') || '이 계정의 첫 거래라 계정 컨트랙트 배포 블록 하나를 포함해 셉니다.');
+      try {
+        const [st, m0] = await Promise.all([fetch('/wallet/status').then((r) => r.json()), postJson('/wallet/demo/mine', { blocks: 0 })]);
+        const maxH = st.sessions?.[BigInt(req.r_s).toString()]?.max_height;
+        if (maxH !== undefined && maxH !== null && m0.status === 200) {
+          const left = BigInt(maxH) - BigInt(m0.body.head);
+          for (const [id, n] of [['race2Btn', 2n], ['race5Btn', 5n]]) $(id).disabled = left < n + 1n;
+          if (left < 6n) notes.push(tt('wallet_race_ttl_short', { left: String(left) }) || `이 세션은 ${left}블록 뒤 만료됩니다 — 모자란 버튼은 꺼 두었습니다.`);
+        }
+      } catch (e) { log(`수명 확인 실패: ${e.message}`); }
+      $('raceStatus').textContent = notes.join(' ');
       const n = await new Promise((resolve) => { $('race2Btn').onclick = () => resolve(2); $('race5Btn').onclick = () => resolve(5); $('raceCancelBtn').onclick = () => resolve(null); });
       for (const id of ['race2Btn', 'race5Btn', 'raceCancelBtn']) $(id).disabled = true;
       if (n === null) { step('시연 취소'); reply({ ok: false, reason: 'user_denied' }); return null; }
@@ -1003,10 +1021,11 @@
       const start = BigInt(m.body.head), passed = () => BigInt(m.body.head) - start;
       const show = () => { $('raceStatus').textContent = tt('wallet_race_progress', { k: String(passed()), n: String(n), bound: m.body.mirrorBound && m.body.mirrorBound !== '0' ? m.body.mirrorBound : '-' }); };
       show();
-      while (passed() < BigInt(n)) {
+      const mineTo = BigInt(n - (deployNeeded ? 1 : 0));   // 첫 거래면 마지막 한 블록은 릴레이의 계정 배포가 채운다
+      while (passed() < mineTo) {
         await sleep(1500);
         m = await mine(0);
-        if (m.status === 200 && passed() < BigInt(n)) m = await mine(1);
+        if (m.status === 200 && passed() < mineTo) m = await mine(1);
         if (m.status !== 200) return fail('블록 진행 실패', m);
         show();
       }
@@ -1020,6 +1039,8 @@
         try { r = await (await fetch(`${req.origin}/api/mode3/relay/${relay.txHash}`)).json(); } catch (e) { log(e.message); r = null; }
         if (r && r.ok && !r.pending) {
           if (r.status !== 1) { step('거래 실패'); return { ok: false, reason: 'execute_reverted', detail: r, race: held }; }
+          // 2026-11-15: 세션 검사는 통과했어도 계정 안 송금이 실패했으면(잔액 부족 등) "보냈습니다" 가 아니다 — 전에는 영수증 status 만 보고 성공이라고 했다
+          if (r.executed === false) { step('계정 안 송금 실패(세션 검사는 통과)'); return { ok: false, reason: 'transfer_failed', raceRevoked: true, race: held, txHash: relay.txHash, blockNumber: r.blockNumber }; }
           step('전송 완료(폐기된 세션) — 창을 닫는다.');
           return { ok: true, raceRevoked: true, race: held, txHash: relay.txHash, deployTxHash: relay.deployTxHash ?? null, blockNumber: r.blockNumber };
         }

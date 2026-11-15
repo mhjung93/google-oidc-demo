@@ -481,6 +481,11 @@ try {
     // 목록의 r_s 는 잘라 보여 주는 값이라, 전체 r_s 는 RP 페이지가 들고 있는 것을 그대로 읽는다(전역 스크립트라 이름이 보인다).
     sessionRs = await rpPage.evaluate(() => (typeof currentSession === 'undefined' ? null : currentSession));
     assert.match(String(sessionRs), /^[0-9]+$/, 'RP 페이지가 세션 r_s 를 들고 있다');
+    // 2026-11-15(시연자 화면 리뷰): "로그인 성공" 카드는 로그인 카드와 함께 숨는다 — 무엇을 증명하고 들어왔는지는 내 자산의 한 줄에 남는다(새로 고쳐도)
+    await rpPage.waitForSelector('#loginProof:not([hidden])', { timeout: 5_000 });
+    assert.match(await text(rpPage, '#loginProof'), /zkID 로 로그인.*조건을 공개하지 않/, await text(rpPage, '#loginProof'));
+    await rpPage.reload(); await rpPage.waitForSelector('#loginProof:not([hidden])', { timeout: 15_000 });
+    assert.match(await text(rpPage, '#loginProof'), /조건을 공개하지 않/, '새로 고친 뒤에도 남는다');
   });
 
   await t('비밀은 Snap 에만: 에이전트 응답·양쪽 페이지 DOM·브라우저 저장소 어디에도 s_u·blind_u 가 없다', async () => {
@@ -1083,6 +1088,27 @@ try {
 
   // 2026-09-23 최종 리뷰 M3: 검증기가 없는 동안 /challenge 는 503 { ok:false, reason } 이다. 예전 페이지는 본문을 바로
   // 구조분해해 r_s.slice 에서 죽었고, 화면에는 "Cannot read properties of undefined" 만 남아 사유가 묻혔다.
+  // 2026-11-15(Race 시연 점검): 계정 잔액보다 큰 금액이면 거래는 체인에 실리지만 계정 안 송금은 실패한다(Executed.success=false). 전에는 Race (2) 쪽이
+  // 영수증 status 만 보고 "보냈습니다 … 통과했습니다" 라고 했고, 보통 출금은 사유 없이 "서버에서 예상치 못한 오류" 였다. 둘 다 같은 사유(transfer_failed)로 말한다.
+  await t('잔액보다 큰 금액: 보통 출금도 Race (2) 2블록도 "보냈습니다" 로 끝나지 않고, 계정 안 송금이 실패했다고 말한다', async () => {
+    await rpPage.fill('#txValue', '5');
+    answers.push(true);                        // consentDisclosure(relay) 확인
+    const [p1] = await Promise.all([context.waitForEvent('page'), rpPage.click('#txBtn')]);
+    await waitText(rpPage, '#txVerdict', '계정 안 송금이 실패했습니다', 180_000);
+    assert.equal((await text(rpPage, '#txVerdict')).includes('보냈습니다'), false, await text(rpPage, '#txVerdict'));
+    await awaitPopupClosed(p1);
+    await rpPage.check('#raceHold', { timeout: 5000 });
+    answers.push(true);
+    const [p2] = await Promise.all([context.waitForEvent('page'), rpPage.click('#txBtn')]);
+    await p2.waitForSelector('#race2Btn', { state: 'visible', timeout: 180_000 }); await p2.click('#race2Btn');
+    await waitText(rpPage, '#txVerdict', '계정 안 송금이 실패했습니다', 180_000);
+    assert.equal((await text(rpPage, '#txVerdict')).includes('보냈습니다'), false, await text(rpPage, '#txVerdict'));
+    assert.ok((await text(rpPage, '#txVerdict')).includes('폐기된 세션'), '세션 검사는 통과했다는 사실(Race (2))은 함께 말한다');
+    await awaitPopupClosed(p2);
+    await rpPage.uncheck('#raceHold', { timeout: 5000 }); await rpPage.fill('#txValue', '0.01');
+    await reloginRp();   // 뒤 케이스를 위해 살아 있는 세션으로 돌려 둔다
+  });
+
   await t('챌린지 503: 페이지가 사유(factory_constants_unavailable)를 보여 주고 멈춘다 — TypeError 가 아니다', async () => {
     const before = dialogs.length;
     await rpPage.route('**/api/mode3/challenge', (route) => route.fulfill({
@@ -1447,6 +1473,12 @@ try {
     const reg = await p.evaluate((sec) => fetch('/cia/admin/registry', { headers: { 'X-CIA-Admin-Secret': sec } }).then((r) => r.json()), cia.adminSecret);
     const leaves = await p.$$eval('#regDb table tbody tr', (trs) => trs.map((tr) => tr.cells[4].querySelector('code').textContent));
     assert.deepEqual(leaves, reg.slots.filter((x) => x.uid !== null).map((x) => x.leaf), '등록부 DB 의 리프는 API 와 같은 전체 값');
+    // 2026-11-15(시연자 화면 리뷰): "게시" 의 결과는 버튼 바로 아래에도 뜬다 — 맨 위 "최근 결과" 카드는 버튼을 누른 자리에서 화면 밖이다
+    assert.equal((await cia.adminGet('/cia/state')).body.pendingCount, 0, '이 자리에서는 올릴 폐기가 없다(게시가 다른 케이스의 로그인을 닫지 않는다)');
+    p.once('dialog', (d) => d.accept()); await p.click('#publishBtn');
+    await waitText(p, '#publishVerdict', '올릴 변경이 없어 게시하지 않았습니다', 20_000);
+    const near = await p.evaluate(() => { const b = document.querySelector('#publishBtn').getBoundingClientRect(), v = document.querySelector('#publishVerdict').getBoundingClientRect(); return { gap: Math.round(v.top - b.bottom), vh: window.innerHeight }; });
+    assert.ok(near.gap >= 0 && near.gap < 120, `결과가 버튼 바로 아래에 있다(간격 ${near.gap}px)`);
     await p.close();
   });
 
@@ -1472,9 +1504,14 @@ try {
     try {
       await a.waitForSelector('#commitBox:not([hidden])');   // A 의 기록으로 열린다
       assert.equal((await a.textContent('#uidShown')).trim(), String(uid));
+      assert.equal(await a.isHidden('#otherAccount'), true, '기록의 계정으로 zkID 에 로그인해 있으면 안내가 없다');
       await zkidLogin('demo-user-b');
+      // 2026-11-15(시연자 화면 리뷰): 기록이 지금 zkID 에 로그인한 계정의 것이 아니면 알려 준다 — 그대로 로그인하면 attr_record_uid_mismatch 로 막힌다
+      await a.reload(); await a.waitForSelector('#otherAccount:not([hidden])', { timeout: 10_000 });
+      assert.match(await a.textContent('#otherAccount'), new RegExp(`${uid}[\\s\\S]*${uidB}[\\s\\S]*커밋먼트 만들기`), await a.textContent('#otherAccount'));
       await a.fill('#birthYear', '1990'); await a.selectOption('#country', 'KR'); await a.click('#makeBtn');
       await a.waitForFunction((u) => JSON.parse(localStorage.getItem('mode3_attr_tool_v1') ?? 'null')?.uid === u, String(uidB));
+      await a.waitForSelector('#otherAccount', { state: 'hidden', timeout: 5_000 });
       recBRaw = await a.evaluate(() => localStorage.getItem('mode3_attr_tool_v1'));   // 계정 B 의 속성 도구 기록 — 맨 아래 케이스가 B 를 등록할 때 쓴다
       const recB = JSON.parse(recBRaw);
       assert.equal(recB.uid, String(uidB), 'uid 는 zkID 에 로그인한 계정 B'); assert.equal(recB.s_u, USER_SALT, 'salt 는 스냅의 것 — 계정이 달라도 같다');

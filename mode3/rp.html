@@ -88,6 +88,8 @@
           <dt data-i18n="rp_my_account_addr">내 계정 주소</dt><dd><code id="accountPPID">-</code> <button type="button" id="copyPpidBtn" class="copy-btn" title="복사" aria-label="복사" data-i18n-title="rp_copy_btn_title">⧉</button></dd>
           <!-- 2026-11-09 Phase 1: zkID ID 토큰의 name 클레임으로 받은 속성 커밋먼트(C_attr) — 이 RP 가 이 계정에 고정한 값. 없으면 "없음". -->
         </dl>
+        <!-- 2026-11-15(시연자 화면 리뷰): zkID 로 로그인하며 무엇을 증명했는지 한 줄(renderAccountView) — "로그인 성공" 카드는 로그인 카드와 함께 숨어, 로그인 뒤에는 조건을 값 없이 증명했다는 사실이 화면에 남지 않았다. -->
+        <p id="loginProof" class="login-proof" hidden></p>
         <!-- 2026-11-05(B안): 잔액은 0 에서 시작한다. KRW 는 RP 의 시연용 장부, ETH 는 세션 계정의 실제 체인 잔액(로그인·입금·구매·출금 뒤 RP 에 다시 묻는다). BTC 는 체인에 없어 뺐다. -->
         <ul class="balance-list">
           <li data-asset="KRW"><span class="bal-label">KRW</span><strong class="bal-amt">0</strong></li>
@@ -239,6 +241,7 @@
     let walletCfgLoaded = false;
     let walletCfgError = null;              // 못 읽었을 때의 원문(화면·언어 전환에서 다시 쓴다)                    // 마지막으로 받아온 로그인 기록(언어·전문가 전환 때 다시 그린다)
     let lastPPID = null;                    // 직전 로그인의 PPID — 같은 주소가 다시 나오는지 한 줄 요약에 쓴다
+    let lastDisclosure;                     // 2026-11-15: 이 세션 로그인이 공개(증명)한 조건 — null = 없음, undefined = 모름(옛 저장분). 내 자산의 "증명한 조건" 줄(#loginProof)
     let lastAccount = null;                 // 2026-11-05: 세션 계정의 0x 주소(잔액 조회 응답) — 배지·"내 계정 주소" 에 PPID 숫자 대신 보인다(사용자 결정)
     let rpMe = null;                        // 2026-11-10: 쿠키 세션의 계정(/api/rp/me) — 소셜·zkID 로그인 모두. null 이면 쿠키 세션 없음
     const isLoggedIn = () => !!currentSession || !!rpMe;
@@ -356,6 +359,17 @@
     $('copyTxHashBtn').addEventListener('click', () => copyText(lastTxHash, $('copyTxHashBtn')));
     // 2026-11-06(8차): 탭 제목은 로그인 전 "zkONE — 로그인", 로그인 뒤 "zkONE — 내 자산"(renderBrand·renderAccountView 둘이 부른다).
     function renderTitle() { document.title = `${SERVICE_NAME} — ${isLoggedIn() ? '내 자산' : '로그인'}`; }
+    /** 내 자산의 한 줄: zkID 로그인이 증명한 조건. 조건을 요구하는 서비스(zkTWO)는 정책의 말(만 N세 이상·국가 이름)로 먼저 쓰고 증명에 실린 술어를 괄호에 둔다. */
+    function loginProofText() {
+      const d = lastDisclosure;
+      if (!d || (d.mask === '0' && !d.set)) return tt('rp_login_proof_none') || 'zkID 로 로그인했습니다 — 조건을 공개하지 않았습니다.';
+      const what = discSummary(d);
+      if (info?.requireDisclosure && info.predicates) {
+        const countries = (info.predicates.allowedCountryNames ?? info.predicates.allowedCountries ?? []).map(countryLabel).join('·');
+        return tt('rp_login_proof_policy', { minAge: info.predicates.minAge, countries, what }) || `zkID 로 로그인했습니다 — 증명한 조건: ${what}. 값은 받지 않았습니다.`;
+      }
+      return tt('rp_login_proof_cond', { what }) || `zkID 로 로그인했습니다 — 증명한 조건: ${what}. 값은 받지 않았습니다.`;
+    }
     function renderAccountView() {
       const loggedIn = isLoggedIn();   // 2026-11-10: 쿠키 세션(소셜)도 로그인이다
       renderTitle();
@@ -373,6 +387,8 @@
       // 닫힌 로그인(sessionStale)이면 "내 계정"(연결 수단) 카드는 보이지 않는다 — 쿠키 세션이 없어 "연결 안 됨"·버튼 없음으로만 그려진다. 대신 내 자산 위에 안내를 보인다.
       $('navAccount').hidden = !loggedIn || sessionStale; $('account').hidden = !loggedIn || sessionStale;
       $('staleNotice').hidden = !(loggedIn && sessionStale);
+      const showProof = loggedIn && Boolean(currentSession) && !sessionStale && lastDisclosure !== undefined;
+      $('loginProof').hidden = !showProof; if (showProof) $('loginProof').textContent = loginProofText();
       const via = rpMe?.via ?? (currentSession ? 'zkid' : null);
       $('viaBadge').textContent = via ? (tt(`rp_via_${via}`) || via) : ''; $('viaBadge').hidden = !via;
       // 출금 출처(R5): PPID 계정에서 내보내는 것은 zkID 세션(지갑 증명)만 — 소셜 세션이면 거래소 보관으로 고정한다.
@@ -413,7 +429,7 @@
     // 서버가 재시작돼 세션이 사라졐으면 복원 뒤 /api/mode3/sessions 대조에서 걸러 다시 로그아웃 상태가 된다. 비밀은 없다(r_s·PPID·allowAgent 만).
     const SESSION_KEY = 'mode3.rp.session';
     function saveSession(r_s, allowAgent) {
-      try { if (r_s) localStorage.setItem(SESSION_KEY, JSON.stringify({ r_s, allowAgent, PPID: lastPPID, account: lastAccount })); else localStorage.removeItem(SESSION_KEY); } catch { /* 저장소가 막혀 있으면 탭 안에서만 유지 */ }
+      try { if (r_s) localStorage.setItem(SESSION_KEY, JSON.stringify({ r_s, allowAgent, PPID: lastPPID, account: lastAccount, ...(lastDisclosure !== undefined ? { disclosure: lastDisclosure } : {}) })); else localStorage.removeItem(SESSION_KEY); } catch { /* 저장소가 막혀 있으면 탭 안에서만 유지 */ }
     }
     async function restoreSession() {
       let saved = null;
@@ -423,7 +439,7 @@
         const { sessions } = await (await fetch('/api/mode3/sessions')).json();
         if (!(sessions ?? []).some((x) => x.r_s === `${String(saved.r_s).slice(0, 8)}…`)) { try { localStorage.removeItem(SESSION_KEY); } catch { /* */ } return; }   // 서버에 없는 세션(재시작·폐기)
       } catch { return; }   // RP 서버를 못 읽으면 복원하지 않는다(다음 로드에 다시 시도)
-      lastPPID = saved.PPID ?? null; lastAccount = saved.account ?? null;
+      lastPPID = saved.PPID ?? null; lastAccount = saved.account ?? null; lastDisclosure = 'disclosure' in saved ? saved.disclosure : undefined;
       setSession(saved.r_s, saved.allowAgent ?? null);
     }
     // 세션 생존 확인(2026-10-21): 사용자 페이지에서 이 세션을 폐기·로그아웃하면 RP 가 세션을 잊는다 — 탭이 보일 때 2초마다 서버 목록과 대조해
@@ -480,7 +496,7 @@
     function setSession(r_s, allowAgent = null) {
       const changed = r_s !== currentSession;
       currentSession = r_s;
-      if (!r_s) lastAccount = null;
+      if (!r_s) { lastAccount = null; lastDisclosure = undefined; }
       if (changed) sessionStale = false;   // 새 로그인·로그아웃은 "닫힌 로그인" 표시를 지운다
       currentSessionAllowAgent = r_s ? allowAgent : null;
       saveSession(r_s, currentSessionAllowAgent);
@@ -801,7 +817,7 @@
         log(`3. RP 검증 ${ms(t0)}: ${JSON.stringify(rb)}\n   allowAgent=${rb.allowAgent}`);
         if (rb.ok) {
           const same = lastPPID !== null && lastPPID === rb.PPID;
-          lastPPID = rb.PPID;
+          lastPPID = rb.PPID; lastDisclosure = rb.disclosure ?? null;
           const disclosed = rb.disclosure && (rb.disclosure.mask !== '0' || rb.disclosure.set);
           setVerdict($('verdict'), true, 'login_ok', () => ({
             summary: (tt(same ? 'rp_login_same_ppid' : 'rp_login_new_ppid') || (same ? '새 세션. 이 RP 에서의 내 주소는 이전과 같습니다.' : '새 세션. 이 RP 에서만 쓰는 주소를 받았습니다.'))
@@ -968,7 +984,13 @@
           setVerdict($('txVerdict'), false, e.reason === 'popup_blocked' ? 'popup_blocked' : 'tx_failed', () => ({ summary: tt(POPUP_HINT[e.reason] ?? '') || e.message, reason: e.reason, detail: e.message }));
           return;
         }
-        if (!result.ok) { log(`팝업 ${ms(t0)}: ${result.reason ?? ''} ${result.detail ?? ''}`); setVerdict($('txVerdict'), false, 'tx_failed', { reason: result.reason ?? 'internal', detail: result }); checkZkidStale(); return; }
+        if (!result.ok) {
+          log(`팝업 ${ms(t0)}: ${result.reason ?? ''} ${result.detail ?? ''}`);
+          // 시연 Race (2)에서 세션 검사는 통과했는데 계정 안 송금만 실패한 경우(잔액 부족 등) — 통과한 사실을 함께 말한다(2026-11-15)
+          const raceXfer = result.reason === 'transfer_failed' && result.raceRevoked === true;
+          setVerdict($('txVerdict'), false, 'tx_failed', () => ({ ...(raceXfer ? { summary: tt('rp_tx_race_transfer_failed') || '폐기된 세션의 거래가 거울 반영 전이라 통과했습니다(Race (2)) — 다만 계정 안 송금이 실패했습니다.' } : {}), reason: result.reason ?? 'internal', detail: result }));
+          checkZkidStale(); refreshLedger(); return;
+        }
         log(`2. 전송 ${ms(t0)}: txHash=${result.txHash}${result.deployTxHash ? `  배포 txHash=${result.deployTxHash}` : ''}  PPID 계정=${result.wallet ?? ''}`);
         // 시연 Race (2): 팝업이 보내기 전에 이 세션을 폐기했는데 통과했으면(거울 반영 전) 그 사실을 함께 보인다.
         const okKey = result.raceRevoked ? 'rp_tx_ok_race' : 'rp_tx_ok';

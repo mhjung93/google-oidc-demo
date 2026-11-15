@@ -50,6 +50,36 @@ try {
     assert.equal(got, 2n, '3블록 뒤: 거울 counter = c + 1');
   });
 
+  // 2026-11-15(시연자 화면 리뷰): 먼저 한 세션 폐기를 관리자가 "게시" 로 올린 뒤에도 그 폐기의 예약이 남아, 3블록째에 **뒤에 온** 폐기까지
+  // 게시했다 — 시연 순서(세션 폐기 → 게시 → Race (2) 2블록)에서 "2블록 뒤 보내기" 가 통과 대신 막혔다. 이미 실린 폐기의 예약은 아무것도 올리지 않는다.
+  await t('앞선 폐기를 관리자가 이미 게시했으면, 그 예약은 뒤에 온 폐기를 앞당겨 게시하지 않는다', async () => {
+    const issA = await issueV11(cia, user, { arid, provider });
+    assert.equal(issA.r.status, 200, j(issA.r.body));
+    const rA = await revokeWithBind(issA, 1n);
+    assert.equal(rA.status, 200, j(rA.body));
+    const headA = await provider.getBlockNumber();
+    const pub = await cia.adminPost('/cia/publish', {});
+    assert.equal(pub.status, 200, j(pub.body)); assert.equal(pub.body.published, true, j(pub.body));
+    const pendingCount = async () => (await cia.adminGet('/cia/state')).body.pendingCount;
+    assert.equal(await pendingCount(), 0, '관리자 게시로 앞선 폐기가 실렸다(대기 0)');
+    const issB = await issueV11(cia, user, { arid, provider });
+    assert.equal(issB.r.status, 200, j(issB.r.body));
+    const pkB = BigInt(issB.session.pk_i);
+    const rB = await revokeWithBind(issB, 1n);
+    assert.equal(rB.status, 200, j(rB.body));
+    const headB = await provider.getBlockNumber();
+    const left = 3 - (headB - headA);   // 앞선 폐기의 예약이 닿을 때까지 남은 블록
+    assert.ok(left >= 1 && left <= 2, `이 각본은 앞선 예약이 아직 살아 있고(남은 블록 ≥ 1) 뒤 폐기의 3블록보다 먼저 닿아야 한다(≤ 2) — 남은 블록 ${left} (headA=${headA}, headB=${headB})`);
+    await mine(left);
+    await sleep(2000);   // 앞선 예약이 돌 시간
+    assert.equal(await pendingCount(), 1, `앞선 폐기의 3블록째(뒤 폐기로는 ${left}블록째): 뒤 폐기는 아직 게시 대기여야 한다`);
+    assert.equal(await mirrorC.sessionBoundOf(pkB), 0n, '뒤 폐기는 아직 거울 반영 전이다');
+    await mine(3 - left);
+    let gotB = 0n;
+    for (let i = 0; i < 40 && gotB === 0n; i++) { await sleep(250); gotB = await mirrorC.sessionBoundOf(pkB); }
+    assert.equal(gotB, 2n, '뒤 폐기는 자기 3블록째에 게시된다');
+  });
+
   await t('pk_i 없는 폐기(관리자)는 자동 게시를 걸지 않는다', async () => {
     const iss = await issueV11(cia, user, { arid, provider });
     assert.equal(iss.r.status, 200, j(iss.r.body));
