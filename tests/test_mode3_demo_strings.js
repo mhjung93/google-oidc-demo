@@ -220,12 +220,13 @@ t('화면 리뷰 3차: 속성 도구·auid 안내가 지금 동작과 맞고, �
 });
 
 // 2026-11-14(일관성 점검): 서버(cia·rp·스냅 에이전트)와 화면이 내는 사유 코드는 전부 사전에 있어야 한다 — 없으면 화면에 제목만 뜨고 원인·조치가 빈다(21+2 개가 그랬다).
-// 소스의 `reason: '코드'` 리터럴을 그대로 모은다. 새 사유를 넣고 사전을 잊으면 여기서 걸린다.
+// 소스의 `reason: …` 식에 든 코드 리터럴을 모은다. 새 사유를 넣고 사전을 잊으면 여기서 걸린다.
+// 2026-11-15(셀프 리뷰): `reason: '코드'` 꼴만 모았더니 `reason: ch.reason ?? 'challenge_failed'` 같은 기본값·삼항의 코드를 지나쳤다 — 식 전체(쉼표·닫는 괄호 앞까지)에서 모은다.
 t('서버·화면 소스의 reason 리터럴이 전부 사전(reasons)에 있다; 없어진 "세션 재검증" 버튼을 가리키는 조치가 없다', () => {
   const root = new URL('../', import.meta.url);
   const files = ['cia.js', 'mode3_rp.js', 'mode3_wallet_agent.js', ...fs.readdirSync(new URL('mode3/', root)).filter((f) => f.endsWith('.html')).map((f) => `mode3/${f}`)];
   const missing = new Set();
-  for (const f of files) for (const m of fs.readFileSync(new URL(f, root), 'utf8').matchAll(/reason: '([a-z0-9_]+)'/g)) if (!S.reasons[m[1]]) missing.add(`${m[1]}@${f}`);
+  for (const f of files) for (const m of fs.readFileSync(new URL(f, root), 'utf8').matchAll(/reason: ([^,}\n]{1,200})/g)) for (const q of m[1].matchAll(/'([a-z0-9_]+)'/g)) if (!S.reasons[q[1]]) missing.add(`${q[1]}@${f}`);
   assert.deepEqual([...missing], [], '사전에 없는 사유');
   for (const k of ['revalidate_required', 'needs_consent']) { assert.equal(/재검증"을|재검증해/.test(S.reasons[k].ko.action), false, S.reasons[k].ko.action); assert.match(S.reasons[k].ko.action, /다시 로그인/); assert.match(S.reasons[k].en.action, /log in again/i); }
 });

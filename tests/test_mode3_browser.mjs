@@ -1608,12 +1608,26 @@ try {
       const onResp = (r) => { if (failedAt === null && new URL(r.url()).pathname === '/api/mode3/request' && r.status() === 401) failedAt = Date.now(); };
       rpPage.on('request', onReq); rpPage.on('response', onResp);
       try {
-        for (let i = 0; i < 40 && failedAt === null; i++) { await rpPage.click('#balanceBtn'); await rpPage.waitForTimeout(750); }   // 게시가 거울에 실릴 때까지 잔액을 다시 묻는다
+        // 게시가 거울에 실릴 때까지 잔액을 다시 묻는다. 거절을 보면 곧바로 나간다 — 아래 1초 창이 10초 주기 확인과 우연히 겹칠 틈을 줄인다(2026-11-15 셀프 리뷰: 3초 창은 느슨했다)
+        for (let i = 0; i < 40 && failedAt === null; i++) { await rpPage.click('#balanceBtn'); for (let k = 0; k < 15 && failedAt === null; k++) await rpPage.waitForTimeout(50); }
         assert.notEqual(failedAt, null, '폐기 게시 뒤 세션 요청이 거절된다');
+        await rpPage.waitForSelector('#staleNotice:not([hidden])', { timeout: 1_000 });
         await waitText(rpPage, '#ledgerVerdict', '세션을 다시 검증해야 합니다');
-        await rpPage.waitForSelector('#staleNotice:not([hidden])', { timeout: 3_000 });
-        assert.ok(meCalls.some((t) => t >= failedAt - 50 && t <= failedAt + 1_500), `실패 응답 직후 로그인 상태를 다시 본다(실패 ${failedAt}, 확인 ${meCalls.join(',')})`);
+        assert.ok(meCalls.some((t) => t >= failedAt - 50 && t <= failedAt + 1_000), `실패 응답 직후 로그인 상태를 다시 본다(실패 ${failedAt}, 확인 ${meCalls.join(',')})`);
       } finally { rpPage.off('request', onReq); rpPage.off('response', onResp); }
+    }
+    // 2026-11-15(셀프 리뷰): 탭으로 돌아올 때(visibilitychange)도 로그인 상태를 본다. 확인이 진행 중일 때 온 요청은 버리지 않고 끝난 뒤 한 번 더 본다 —
+    // 버리면 닫히기 전에 나간 확인의 답만 남아 안내가 다음 주기(10초)까지 늦는다. /api/rp/me 를 400ms 붙들어 두 요청이 겹치게 만든다.
+    {
+      const starts = [];
+      const hold = async (route) => { starts.push(Date.now()); await new Promise((r) => setTimeout(r, 400)); await route.continue(); };
+      await rpPage.route('**/api/rp/me', hold);
+      try {
+        await rpPage.evaluate(() => { document.dispatchEvent(new Event('visibilitychange')); setTimeout(() => document.dispatchEvent(new Event('visibilitychange')), 100); });
+        await rpPage.waitForTimeout(1_500);
+        assert.ok(starts.length >= 1, '탭으로 돌아오면 로그인 상태를 본다');
+        assert.ok(starts.length >= 2 && starts[1] - starts[0] >= 350 && starts[1] - starts[0] <= 900, `진행 중에 온 확인은 앞의 것이 끝난 뒤 한 번 더 나간다(시작 간격 ${starts.map((t) => t - starts[0]).join(',')}ms)`);
+      } finally { await rpPage.unroute('**/api/rp/me', hold); }
     }
     await rpPage.reload();
     await rpPage.waitForSelector('#staleNotice:not([hidden])', { timeout: 30_000 });
