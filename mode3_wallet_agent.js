@@ -598,7 +598,7 @@ app.get('/wallet/status', async (req, res) => {
       try { nonce = (await accountNonceOf(account)).nonce.toString(); }
       catch { nonce = null; }
     }
-    sessions[r_s] = { account, nonce, arid: e.arid, PPID: e.PPID, max_height: e.credential.max_height, chainid: e.credential.chainid, allowAgent: e.allowAgent, factoryAddress: e.factoryAddress, attrGateAddress: e.attrGateAddress ?? null, sessionAddress: new ethers.Wallet(e.sessionPrivKey).address, issuedAt: e.issuedAt, pk_trace: e.pk_trace, origin: e.origin ?? null, serviceName: e.serviceName ?? null };
+    sessions[r_s] = { account, nonce, arid: e.arid, PPID: e.PPID, Cf_s: e.credential.Cf_s ?? null, max_height: e.credential.max_height, chainid: e.credential.chainid, allowAgent: e.allowAgent, factoryAddress: e.factoryAddress, attrGateAddress: e.attrGateAddress ?? null, sessionAddress: new ethers.Wallet(e.sessionPrivKey).address, issuedAt: e.issuedAt, pk_trace: e.pk_trace, origin: e.origin ?? null, serviceName: e.serviceName ?? null };
   }
   // 2026-10-22: 체인에 아직 반영되지 않은 setSessionBound 대기 항목. applicableSession 은 같은 account(= 같은 PPID·팩토리) 를 가진
   // 살아 있는 세션의 r_s — 그 세션으로 /wallet/bounds/apply 를 바로 부를 수 있다. 없으면 null(새로 로그인해야 반영할 수 있다).
@@ -1304,7 +1304,10 @@ app.post('/wallet/demo/mine', async (req, res) => {
     const head = await provider.getBlockNumber();
     const pb = typeof pendingBoundId === 'string' ? state.pendingBounds.find((e) => e.id === pendingBoundId) : null;
     const mirrorBound = pb && mirror ? (await mirror.sessionBoundOf(BigInt(pb.pk_i))).toString() : null;
-    res.json({ head: String(head), mirrorBound });
+    // 2026-11-16(사용자 요청): 시연 창이 "RCL root 가 바뀌었다" 를 값으로 보이게 — 거울이 지금 든 폐기 목록 root(10진)와 epoch. 못 읽으면 null.
+    let mirrorRoot = null, mirrorEpoch = null;
+    if (mirror) { try { const [rr, ep] = await Promise.all([mirror.revRoot(), mirror.epoch()]); mirrorRoot = BigInt(rr).toString(); mirrorEpoch = ep.toString(); } catch { /* null */ } }
+    res.json({ head: String(head), mirrorBound, mirrorRoot, mirrorEpoch });
   } catch (e) { res.status(503).json({ reason: 'chain_unavailable', detail: e.message }); }
 });
 app.post('/wallet/rcl/reset', (req, res) => {

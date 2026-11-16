@@ -117,6 +117,9 @@ details.fold > :not(summary) { margin-top: 8px; }
 @keyframes auth-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .auth-progress.busy::before { animation: none; } }
 .auth-elapsed { margin-left: 8px; font-weight: 400; color: var(--muted, #5f6b7a); font-variant-numeric: tabular-nums; }
+/* 2026-11-16: 시연 Race (2) 가 막혔을 때 멈춘 화면 — root 의 생성 당시 값·현재 값 */
+.race-blocked { margin-top: 10px; padding: 12px 14px; border: 1px solid #f1c9c9; border-radius: 10px; background: #fff7f7; }
+.race-blocked-title { margin: 0 0 6px; font-weight: 700; } .race-blocked .race-roots code { overflow-wrap: anywhere; word-break: break-all; font-size: 12px; }
 /* 처음 등록 때 salt 묻기(2026-11-10) — 지갑 창(?authorize=1) */
 .salt-ask { margin: 8px 0 12px; } .salt-ask label { display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
 .salt-ask input { width: 100%; box-sizing: border-box; padding: 8px 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }

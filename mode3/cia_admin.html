@@ -722,8 +722,8 @@
       const host = $('revokedSessions');
       if (!revokedSessions) { placeholder(host, 'admin_need_secret'); return; }
       if (!revokedSessions.length) { placeholder(host, 'admin_revoked_sessions_empty'); return; }
-      // F-8: bound(허용 거래 수, 서버가 이미 낸다 — cia.js /cia/admin/revoked_sessions)를 만료 블록 옆에 보인다.
-      const t = table([['admin_col_uid'], ['admin_col_cfs'], ['admin_col_chain'], ['admin_col_maxh'], ['admin_col_bound'], ['admin_col_revoked_at'], ['admin_col_published']]);
+      // 2026-11-16(사용자 결정): 상한(bound, 허용 거래 수) 열은 보이지 않는다 — 서버는 여전히 낸다(/cia/admin/revoked_sessions).
+      const t = table([['admin_col_uid'], ['admin_col_cfs'], ['admin_col_chain'], ['admin_col_maxh'], ['admin_col_revoked_at'], ['admin_col_published']]);
       const body = t.tBodies[0];
       for (const s of revokedSessions) {
         const row = body.insertRow();
@@ -731,7 +731,6 @@
         cell(row, short(s.Cf_s));
         cell(row, String(s.chainid));
         cell(row, String(s.max_height));
-        cell(row, s.bound ?? '-');
         const at = cell(row, fmtAt(s.revokedAt));
         at.title = s.revokedAt ?? '';
         cell(row, badge(s.pending ? 'admin_pub_pending' : 'admin_pub_yes', s.pending ? 'warn' : 'ok'));

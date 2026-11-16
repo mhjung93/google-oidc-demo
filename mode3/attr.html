@@ -5,8 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="no-referrer" />
   <!-- 속성 커밋먼트 도구(2026-11-09 Phase 1). 스냅 에이전트(:5100)가 /attr.html 로 서빙하는 정적 페이지.
-       2026-11-13(사용자 결정): 입력은 속성뿐이다 — uid·salt 는 묻지 않는다. "커밋먼트 만들기" 를 누르면 uid 는 zkID 로그인 세션에서
-       (GET {ciaUrl}/cia/user/uid, 쿠키), salt 는 스냅에서(getSalt) 받아온다. 커밋먼트 식에는 uid 도 blind 도 없다(C_attr = Poseidon(DOMAIN, s_u, attrs) —
+       2026-11-16(사용자 결정): uid 도 **입력받는다** — 11-13 부터는 "커밋먼트 만들기" 를 누르면 zkID 로그인 세션에서 받아왔다(GET {ciaUrl}/cia/user/uid, 쿠키).
+       사용자가 zkID "내 정보" 에서 복사해 넣는다. 이 페이지는 zkID 에도 스냅 에이전트에도 아무것도 묻지 않는다(정적 자원만 받는다).
+       2026-11-16(사용자 결정): salt 는 **입력받는다** — 그전(11-13)에는 도구가 스냅에서 확인 창 없이 읽어 왔다(getSalt). 사용자가 zk 스냅 화면 "내 계정" 탭에서
+       복사해 붙여 넣는다. 이 페이지는 MetaMask·스냅을 부르지 않는다. 스냅의 salt 와 다른 값이면 등록·로그인 때 스냅 승인 창의 대조가 거절한다. 커밋먼트 식에는 uid 도 blind 도 없다(C_attr = Poseidon(DOMAIN, s_u, attrs) —
        스펙 2026-11-13 random-salt R15). uid 는 기록에만 남아 auid 표시와 첫 등록의 계정 대조에 쓰인다. 속성·salt 는 어디로도 보내지 않는다.
        uid·salt·속성은 이 브라우저의 localStorage(mode3_attr_tool_v1, 기록 version 4)에만 남는다. 백업 기능은 없다(R5 — 백업에는 salt 만 두고 zk 스냅 화면이
        만든다. 같은 salt·같은 속성이면 같은 커밋먼트라 다시 만들면 된다). 사용자는 커밋먼트(10진)만 복사해 zkID 프로필의 "이름" 칸에
@@ -54,11 +56,15 @@
   <section class="card">
     <h3 data-i18n="attr_form_title">1. 속성 입력</h3>
     <form id="attrForm" class="attr-form" autocomplete="off">
-      <!-- 2026-11-13(사용자 결정): 속성만 입력한다 — uid·계정 번호·salt 칸과 "스냅에서 가져오기" 는 없앴다(만들 때 도구가 스스로 받아온다). -->
+      <!-- 2026-11-13(사용자 결정): uid·계정 번호 칸과 "스냅에서 가져오기" 는 없앴다(uid 는 만들 때 도구가 zkID 로그인에서 받아온다). 2026-11-16: salt 칸은 다시 생겼다(맨 아래). -->
       <label><span data-i18n="attr_birth_year">출생연도</span> <input id="birthYear" inputmode="numeric" pattern="[0-9]*" placeholder="1990" required /></label>
       <label><span data-i18n="attr_country">국가</span> <select id="country" required></select></label>
       <label><span data-i18n="attr_extra1">예비 1</span> <input id="extra1" maxlength="124" /></label>
       <label><span data-i18n="attr_extra2">예비 2</span> <input id="extra2" maxlength="124" /></label>
+      <!-- 2026-11-16(사용자 결정): uid 입력 칸 — zkID 에 묻지 않는다. 비밀이 아니다. pattern 은 두지 않는다(숫자가 아니면 브라우저가 제출을 막아 아래 submit 의 사유가 뜨지 않는다). -->
+      <label><span data-i18n="attr_uid_input">uid</span> <input id="uid" inputmode="numeric" autocomplete="off" spellcheck="false" /></label>
+      <!-- 2026-11-16(사용자 결정): salt 입력 칸 — 비밀이라 가려서 받는다. 빈 칸·틀린 값은 폼의 required 가 아니라 아래 submit 이 사유로 알린다. -->
+      <label><span data-i18n="attr_salt_input">salt</span> <input id="salt" type="password" inputmode="numeric" autocomplete="off" spellcheck="false" /></label>
       <p class="row-actions"><button id="makeBtn" type="submit" data-i18n="attr_make_btn">커밋먼트 만들기</button> <span class="muted" data-i18n="attr_make_hint">같은 스냅에서 같은 속성이면 항상 같은 커밋먼트입니다.</span></p>
     </form>
     <div id="formVerdict"></div>
@@ -75,8 +81,6 @@
     </p>
     <!-- 2026-11-13(스펙 random-salt R5): 백업 내려받기·불러오기는 없앴다 — 백업에는 salt 만 두고(zk 스냅 화면이 설치 때 만든다) 속성은 다시 넣는다. -->
     <p id="resetCleared" class="muted" hidden data-i18n="attr_reset_cleared">데모를 새로 시작해 이 브라우저의 이전 기록을 비웠습니다.</p>
-    <!-- 2026-11-15(시연자 화면 리뷰): 기록이 지금 zkID 에 로그인한 계정의 것이 아니면 알린다(checkOtherAccount) — 계정을 바꾼 뒤 그대로 로그인하면 attr_record_uid_mismatch 로 막혔다. -->
-    <p id="otherAccount" class="notice" hidden style="margin-bottom:12px"></p>
     <p id="oldRecord" class="muted" hidden data-i18n="attr_old_record">이 브라우저에 옛 형식의 커밋먼트가 있습니다 — 식이 바뀌었으니 다시 만드세요.</p>
     <!-- 2026-11-10: 커밋먼트의 재료를 모두 숨기지 않고 보인다(사용자 요청) — 식, 도메인 상수, salt, 속성(입력값 → 인코딩 값).
          2026-11-13: uid 는 식의 재료가 아니다 — 계정 정보(uid·auid)로 따로 보인다. -->
@@ -143,9 +147,7 @@
   function render() {
     const rec = load(), old = !rec && [1, 2, 3].includes(raw()?.version);
     $('commitBox').hidden = !rec; $('noCommit').hidden = !!rec; $('commitActions').hidden = !rec; $('inputsView').hidden = !rec; $('oldRecord').hidden = !old;
-    $('otherAccount').hidden = true;
     if (!rec) return;
-    checkOtherAccount(rec);
     $('commitBox').textContent = rec.commit;
     $('domainShown').textContent = String(A.DOMAIN_MODE3_ATTRC);
     $('uidShown').textContent = rec.uid;
@@ -168,6 +170,8 @@
     $('schemaShown').textContent = `${rec.schema?.id ?? '-'} v${rec.schema?.version ?? '-'}`;
     $('createdAt').textContent = new Date(rec.createdAt).toLocaleString();
     for (const k of ['birthYear', 'country', 'extra1', 'extra2']) if (rec.profile[k] !== undefined) $(k).value = rec.profile[k];
+    $('uid').value = rec.uid;
+    $('salt').value = rec.s_u;   // 기록의 salt 를 칸에 채워 둔다 — 속성만 바꿔 다시 만들 때 또 붙여 넣지 않게(가려진 칸)
   }
 
   $('attrForm').addEventListener('submit', async (ev) => {
@@ -179,9 +183,14 @@
       const profile = A.normalizeProfile(schema, { birthYear: $('birthYear').value, country: $('country').value, extra1: $('extra1').value, extra2: $('extra2').value });
       // 필수 칸이 비면 인코더가 거절한다(allowEmptyRequired:false — 0 은 "값 없음" 이라 나이 술어가 뚫린다. 지갑 폼과 같은 규칙).
       const attrs = await A.encodeProfile(schema, { birthYear: '', country: '', ...profile }, { allowEmptyRequired: false });
-      // 속성 검사를 통과한 뒤에 받아온다 — uid 는 zkID 로그인 세션에서, salt 는 스냅에서(스냅 하나에 salt 하나).
-      const uid = await zkidUid();
-      const { s_u } = await snapSalt();
+      // salt 는 입력 칸에서(2026-11-16) — 1 이상 2^250 미만의 10진수(스냅의 salt 범위와 같다). 그다음 uid 를 본다.
+      const s_u = $('salt').value.trim();
+      if (!s_u) throw Object.assign(new Error('salt 칸이 비어 있습니다'), { reason: 'attr_salt_required' });
+      if (!isDec(s_u) || BigInt(s_u) < 1n || BigInt(s_u) >= (1n << 250n)) throw Object.assign(new Error('salt 는 1 이상 2^250 미만의 숫자여야 합니다'), { reason: 'attr_bad_salt' });
+      // uid 도 입력 칸에서(2026-11-16) — 10진수. zkID 에 묻지 않는다.
+      const uid = $('uid').value.trim();
+      if (!uid) throw Object.assign(new Error('uid 칸이 비어 있습니다'), { reason: 'attr_uid_required' });
+      if (!isDec(uid)) throw Object.assign(new Error('uid 는 숫자여야 합니다'), { reason: 'attr_bad_uid' });
       const commit = await A.attrCommit({ s_u, attrs });
       save({ version: REC_VERSION, schema: { id: schema.id, version: schema.version }, uid, s_u, profile, attrs, commit, createdAt: new Date().toISOString() });
       render();
@@ -201,49 +210,6 @@
   $('saltRevealBtn').addEventListener('click', () => { const rec = load(); if (!rec) return; saltRevealed = !saltRevealed; showSalt(rec); });
   // 2026-11-13(사용자 결정): uid 는 묻지 않는다 — 같은 사이트(localhost)의 zkID 로그인 세션에서 받아온다. IdP 는 이 경로 하나만 쿠키와 함께 스냅 오리진에 연다
   // (cia.js GET /cia/user/uid — uid 만 돌려준다). IdP 주소는 같은 오리진 에이전트의 /wallet/config(ciaUrl). 속성·salt 는 보내지 않는다.
-  /** 기록의 uid 가 지금 zkID 에 로그인한 계정과 다르면 안내를 보인다. zkID 에 로그인하지 않았거나 닿지 못하면 조용히 둔다(만들 때 다시 묻는다). uid 만 받는다. */
-  async function checkOtherAccount(rec) {
-    let cur; try { cur = await zkidUid(); } catch { return; }
-    if (load()?.uid !== rec.uid) return;   // 그사이 기록이 바뀌었다
-    const other = cur !== String(rec.uid);
-    $('otherAccount').hidden = !other;
-    if (other) $('otherAccount').textContent = tt('attr_other_account', { rec: rec.uid, cur }) || `이 기록은 다른 zkID 계정(uid ${rec.uid})으로 만든 것입니다. 지금 로그인한 계정(uid ${cur})으로 쓰려면 "커밋먼트 만들기" 를 다시 누르세요.`;
-  }
-  let cfgCache = null;
-  async function walletConfig() { return (cfgCache ??= await (await fetch('/wallet/config')).json()); }
-  async function zkidUid() {
-    const fail = (reason, key, fallback) => Object.assign(new Error(fallback), { reason, summary: tt(key) || fallback });
-    let cfg; try { cfg = await walletConfig(); } catch { cfg = null; }
-    if (!cfg?.ciaUrl) throw fail('zkid_unreachable', 'attr_zkid_unreachable', 'zkID 주소를 알 수 없습니다(스냅 에이전트 설정).');
-    let r;
-    try { r = await fetch(`${cfg.ciaUrl}/cia/user/uid`, { credentials: 'include', cache: 'no-store' }); }
-    catch { throw fail('zkid_unreachable', 'attr_zkid_unreachable', `zkID(${cfg.ciaUrl})에 닿지 못했습니다.`); }
-    if (r.status === 401) throw fail('zkid_login_required', 'attr_zkid_login_required', `zkID(${cfg.ciaUrl}/user)에 먼저 로그인한 뒤 다시 누르세요.`);
-    const uid = r.ok ? String((await r.json().catch(() => null))?.uid ?? '') : '';
-    if (!isDec(uid)) throw fail('zkid_unreachable', 'attr_zkid_unreachable', `zkID 가 uid 를 주지 않았습니다(HTTP ${r.status}).`);
-    return uid;
-  }
-  // 스냅의 getSalt — snapId 는 같은 오리진 에이전트의 /wallet/config 에서. 이미 설치·허용된 스냅이면 다시 요청하지 않는다(zk 스냅 화면과 같은 규칙).
-  // 2026-11-13(스펙 random-salt): 스냅 하나에 salt 하나 — 계정 번호가 없다. salt 가 없거나 백업 전이면 스냅이 거절한다(no_salt·backup_required) → zk 스냅 화면으로 보낸다.
-  async function snapSalt() {
-    const eth = window.ethereum;
-    if (!eth?.request) throw Object.assign(new Error('MetaMask(Flask)가 없습니다'), { reason: 'snap_unavailable' });
-    const cfg = await walletConfig();
-    if (!cfg?.snapId) throw Object.assign(new Error('스냅 설정(snapId)을 읽지 못했습니다'), { reason: 'snap_unavailable' });
-    let installed = false;
-    try { const s = (await eth.request({ method: 'wallet_getSnaps' }))?.[cfg.snapId]; installed = Boolean(s) && !s.blocked && s.enabled !== false; } catch { installed = false; }
-    if (!installed) await eth.request({ method: 'wallet_requestSnaps', params: { [cfg.snapId]: {} } });
-    let r;
-    try { r = await eth.request({ method: 'wallet_invokeSnap', params: { snapId: cfg.snapId, request: { method: 'getSalt', params: {} } } }); }
-    catch (e) {
-      const msg = e?.message ?? '';
-      if (/no_salt|backup_required/.test(msg)) throw Object.assign(new Error('스냅에 salt 가 없거나 아직 백업하지 않았습니다'), { reason: 'snap_setup_required', summary: tt('attr_snap_setup_required') || 'zk 스냅 화면(localhost:5100)에서 먼저 salt 를 만들고 백업하세요.' });
-      if (/method_not_found/.test(msg)) throw Object.assign(new Error('설치된 스냅이 옛 버전입니다'), { reason: 'snap_outdated' });
-      throw e;
-    }
-    if (!isDec(String(r?.s_u ?? '')) || BigInt(r.s_u) < 1n || BigInt(r.s_u) >= (1n << 250n)) throw Object.assign(new Error('스냅이 salt 를 주지 않았습니다'), { reason: 'snap_unavailable' });
-    return { s_u: String(r.s_u) };
-  }
   $('copyAuidBtn').addEventListener('click', () => { const v = $('auidShown').textContent; if (/^[0-9]+$/.test(v)) copyText(v, $('copyAuidBtn')); });
   $('clearBtn').addEventListener('click', () => {
     if (!window.confirm(tt('attr_clear_confirm') || '저장된 uid·salt·속성·커밋먼트를 이 브라우저에서 지웁니다. 같은 스냅에서 같은 속성을 넣으면 같은 커밋먼트를 다시 만들 수 있습니다. 계속할까요?')) return;

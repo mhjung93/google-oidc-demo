@@ -123,6 +123,12 @@
           <button id="txBtn" data-i18n="rp_tx_btn">온체인 출금 실행</button>
           <div id="txVerdict"></div>
           <p id="txHashRow" hidden><span data-i18n="rp_col_txhash">트랜잭션 해시</span> <code id="txHashCode"></code> <button type="button" id="copyTxHashBtn" class="copy-btn" title="트랜잭션 해시 복사" aria-label="트랜잭션 해시 복사" data-i18n-title="copy_txhash_title">⧉</button></p>
+          <!-- 2026-11-16(사용자 요청): 시연 Race (2) 결과 아래에 RCL root 의 생성 당시 값과 현재 값 — 통과한 쪽은 같고, 막힌 쪽은 다르다(renderRaceRoots). -->
+          <dl class="kv race-roots" id="raceRoots" hidden>
+            <dt data-i18n="rp_race_root_built">RCL root (생성 당시 값)</dt><dd><code id="raceRootBuilt"></code></dd>
+            <dt data-i18n="rp_race_root_now">RCL root (현재 값)</dt><dd><code id="raceRootNow"></code></dd>
+            <dt></dt><dd id="raceRootNote" class="muted"></dd>
+          </dl>
           <!-- 2026-11-12 시연 Race (2): 켜면 스냅 창이 증명·서명 뒤 멈추고 "2블록 뒤·5블록 뒤 보내기" 를 고른다(세션 폐기 → 블록 진행 → 전송).
                2026-11-14(화면 리뷰 3차): 폼과 출금 버튼 사이에 끼어 있던 것을 묶음 맨 아래로 내렸다. -->
           <p class="race-demo"><label id="raceHoldOpt"><input type="checkbox" id="raceHold" /> <span data-i18n="rp_race_hold_label">시연: Race (2) — 보내기 전에 멈춤</span></label>
@@ -296,7 +302,7 @@
     // 언어·전문가 전환은 사전이 채우는 요소와 결과 카드만 바꾼다(Demo) — 스크립트가 만든 텍스트(상태·표·세션)는 여기서 다시 그린다.
     for (const k of ['setLang', 'setExpert']) {
       const orig = Demo[k];
-      Demo[k] = (v) => { orig(v); renderStatus(); renderModalTexts(); };
+      Demo[k] = (v) => { orig(v); renderStatus(); renderModalTexts(); renderRaceRoots(lastRace); };
     }
 
     // ---- 서비스 상태 카드 ----
@@ -385,7 +391,8 @@
       $('accountPPID').title = lastAccount ?? lastPPID ?? ''; $('accountAddr').title = lastAccount ?? lastPPID ?? '';
       $('copyPpidBtn').hidden = !(lastAccount || lastPPID);   // 복사할 값이 있을 때만 보인다
       // 닫힌 로그인(sessionStale)이면 "내 계정"(연결 수단) 카드는 보이지 않는다 — 쿠키 세션이 없어 "연결 안 됨"·버튼 없음으로만 그려진다. 대신 내 자산 위에 안내를 보인다.
-      $('navAccount').hidden = !loggedIn || sessionStale; $('account').hidden = !loggedIn || sessionStale;
+      // 2026-11-16(사용자 결정): "내 계정" 상자(로그인 수단 연결·해제)와 상단 메뉴는 화면에서 뺐다 — 늘 숨긴다. 연결 기능의 코드·API 는 그대로 있다.
+      $('navAccount').hidden = true; $('account').hidden = true;
       $('staleNotice').hidden = !(loggedIn && sessionStale);
       const showProof = loggedIn && Boolean(currentSession) && !sessionStale && lastDisclosure !== undefined;
       $('loginProof').hidden = !showProof; if (showProof) $('loginProof').textContent = loginProofText();
@@ -485,11 +492,20 @@
     document.addEventListener('visibilitychange', () => { if (!document.hidden) checkZkidStale(); });
     $('staleReloginBtn').addEventListener('click', () => $('logoutBtn').click());   // 로그아웃하면 로그인 카드가 보인다
     /** 세션 범위의 결과 표시(재검증·잔액·출금 결과)를 초기 화면으로. 로그아웃이면 로그인 카드의 결과·로그도 비운다(2026-10-21 — 재로그인 때 옛 메시지가 남지 않게). */
+    /** 시연 Race (2) 결과의 RCL root 두 값(스냅 창이 준 race.rootAtBuild·rootNow). 없으면 숨긴다. */
+    let lastRace = null;
+    function renderRaceRoots(race) {
+      lastRace = race && race.rootAtBuild && race.rootNow ? race : null;
+      $('raceRoots').hidden = !lastRace; if (!lastRace) return;
+      $('raceRootBuilt').textContent = lastRace.rootAtBuild; $('raceRootNow').textContent = lastRace.rootNow;
+      const same = lastRace.rootAtBuild === lastRace.rootNow;
+      $('raceRootNote').textContent = tt(same ? 'rp_race_roots_same' : 'rp_race_roots_changed') || (same ? '그대로입니다.' : '바뀌었습니다.');
+    }
     function resetSessionViews(includeLogin) {
       const clear = (el) => { el.__verdictArgs = null; el.className = ''; el.textContent = ''; };   // demo.js 의 언어 전환 재렌더(__verdictArgs)도 풀어 준다
       for (const id of ['txVerdict', 'ledgerVerdict']) clear($(id));
       $('txLog').textContent = '';
-      $('txHashRow').hidden = true; lastTxHash = null;
+      $('txHashRow').hidden = true; lastTxHash = null; renderRaceRoots(null);
       for (const li of document.querySelectorAll('.balance-list li[data-asset]')) { const v = li.querySelector('.bal-amt'); if (v.dataset.init === undefined) v.dataset.init = v.textContent; v.textContent = v.dataset.init; }
       if (includeLogin) { clear($('verdict')); $('log').textContent = ''; }
     }
@@ -953,7 +969,7 @@
         const to = $('txTo').value.trim(), value = ethToWei($('txValue').value.trim() || '0');
         if (value === null) { setVerdict($('txVerdict'), false, 'tx_failed', { reason: 'bad_amount' }); return; }
         if (!rpMe) { setVerdict($('txVerdict'), false, 'tx_failed', { reason: 'no_session' }); return; }
-        $('txBtn').dataset.tourBusy = '1'; $('txHashRow').hidden = true; pendingVerdict($('txVerdict'), 'working');
+        $('txBtn').dataset.tourBusy = '1'; $('txHashRow').hidden = true; renderRaceRoots(null); pendingVerdict($('txVerdict'), 'working');
         try {
           const rb = await (await post('/api/rp/ledger', { body: `withdraw:${to}:${value}:${Date.now()}` })).json().catch(() => ({ ok: false, reason: 'internal' }));
           if (!rb.ok) { setVerdict($('txVerdict'), false, 'tx_failed', { reason: rb.reason ?? 'internal', detail: rb }); checkZkidStale(); return; }
@@ -967,7 +983,7 @@
       if (!currentSession) { setVerdict($('txVerdict'), false, 'tx_failed', { reason: 'no_session' }); return; }
       // 2026-11-04: snap 모드의 지갑 팝업도 mode3-tx 를 받는다(mode3/wallet.html handleTxRequest). 팝업 경로가 없는 file 모드만 막는다.
       if (!WEB() && walletCfg.secrets !== 'snap') { setVerdict($('txVerdict'), false, 'tx_failed', () => ({ summary: tt('rp_tx_web_only') || '온체인 출금은 스냅 승인 창(스냅·web 모드)에서 합니다' })); return; }
-      $('txBtn').dataset.tourBusy = '1'; $('txLog').textContent = ''; $('txHashRow').hidden = true;
+      $('txBtn').dataset.tourBusy = '1'; $('txLog').textContent = ''; $('txHashRow').hidden = true; renderRaceRoots(null);
       clearVerdict($('txVerdict'));
       const log = (s) => { $('txLog').textContent += s + '\n'; };
       try {
@@ -989,6 +1005,7 @@
           // 시연 Race (2)에서 세션 검사는 통과했는데 계정 안 송금만 실패한 경우(잔액 부족 등) — 통과한 사실을 함께 말한다(2026-11-15)
           const raceXfer = result.reason === 'transfer_failed' && result.raceRevoked === true;
           setVerdict($('txVerdict'), false, 'tx_failed', () => ({ ...(raceXfer ? { summary: tt('rp_tx_race_transfer_failed') || '폐기된 세션의 거래가 거울 반영 전이라 통과했습니다(Race (2)) — 다만 계정 안 송금이 실패했습니다.' } : {}), reason: result.reason ?? 'internal', detail: result }));
+          renderRaceRoots(result.race ?? null);
           checkZkidStale(); refreshLedger(); return;
         }
         log(`2. 전송 ${ms(t0)}: txHash=${result.txHash}${result.deployTxHash ? `  배포 txHash=${result.deployTxHash}` : ''}  PPID 계정=${result.wallet ?? ''}`);
@@ -996,6 +1013,7 @@
         const okKey = result.raceRevoked ? 'rp_tx_ok_race' : 'rp_tx_ok';
         setVerdict($('txVerdict'), true, 'tx_ok', () => ({ summary: tt(okKey, { eth: $('txValue').value.trim() || '0' }) || `${$('txValue').value.trim() || '0'} ETH 를 보냈습니다.`, detail: result }));   // 해시는 아래 #txHashRow 한 곳에만(2026-11-05)
         lastTxHash = result.txHash; $('txHashCode').textContent = `${String(result.txHash).slice(0, 18)}…`; $('txHashCode').title = result.txHash; $('txHashRow').hidden = false;
+        renderRaceRoots(result.race ?? null);
         progress.used = true; renderGuide();
         refreshLedger();   // 보낸 만큼 ETH 가 줄어든 것을 바로 보인다(2026-11-05)
       } finally { delete $('txBtn').dataset.tourBusy; }

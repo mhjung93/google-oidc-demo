@@ -55,6 +55,16 @@
         <p><button id="race2Btn" data-i18n="wallet_race_2_btn">2블록 뒤 보내기</button> <button id="race5Btn" data-i18n="wallet_race_5_btn">5블록 뒤 보내기</button> <button id="raceCancelBtn" class="btn-ghost" data-i18n="wallet_race_cancel_btn">취소</button></p>
         <p id="raceStatus" class="muted"></p>
       </div>
+      <!-- 2026-11-16(사용자 요청): Race (2) 가 막히면 창이 스스로 닫히지 않고 여기서 멈춘다 — 까닭(RCL root 변경)과 root 의 생성 당시 값·현재 값을 보이고 "닫기" 를 기다린다(raceBlockedPause). -->
+      <div id="raceBlockedBox" class="race-blocked" hidden>
+        <p class="race-blocked-title" data-i18n="wallet_race_blocked_title">RCL root 가 바뀌어 거래가 막혔습니다</p>
+        <p class="desc" data-i18n="wallet_race_blocked_desc">이 세션의 폐기가 게시되면서 RCL(폐기 목록) root 가 바뀌었습니다. 이 거래는 그 전 root 로 만든 것입니다.</p>
+        <dl class="kv race-roots">
+          <dt data-i18n="wallet_race_root_built">RCL root (생성 당시 값)</dt><dd><code id="raceBlockedBuilt"></code></dd>
+          <dt data-i18n="wallet_race_root_now">RCL root (현재 값)</dt><dd><code id="raceBlockedNow"></code></dd>
+        </dl>
+        <p><button type="button" id="raceBlockedCloseBtn" data-i18n="wallet_race_close_btn">닫기</button></p>
+      </div>
       <!-- 2026-11-11(사용자 결정): 처음 등록 때 salt 를 묻던 칸은 뺐다 — salt 는 같은 브라우저 속성 도구(attr.html)의 기록에서 가져온다(codeRegister). -->
       <p id="authStep" class="muted expert"></p>
       <pre id="authLog" class="expert"></pre>
@@ -65,7 +75,7 @@
     <!-- snap 모드: 연결 전에는 이 카드 하나만 보인다(applyGate). file 모드는 연결이 없어 바로 탭이 보인다. -->
     <section class="card" id="connectCard" hidden>
       <h3 data-i18n="wallet_connect_title">MetaMask 를 연결하세요</h3>
-      <p class="desc" data-i18n="wallet_connect_desc">salt 는 MetaMask 스냅 안에 있습니다. MetaMask Flask 와 zk 스냅이 필요하고, 처음 연결하면 스냅 설치를 묻습니다. 스냅에 salt 가 없으면 연결 뒤에 새로 만들거나 백업에서 불러옵니다.</p>
+      <p class="desc" data-i18n="wallet_connect_desc">salt 는 MetaMask 스냅이 보관합니다. 등록·로그인 때 이 PC 의 스냅 화면과 스냅 에이전트가 받아 증명을 만들고, zkID 와 서비스로는 보내지 않습니다. MetaMask Flask 와 zk 스냅이 필요하고, 처음 연결하면 스냅 설치를 묻습니다. 스냅에 salt 가 없으면 연결 뒤에 새로 만들거나 백업에서 불러옵니다.</p>
       <p><button id="connectBtn" data-i18n="wallet_connect_btn">MetaMask 연결</button></p>
       <p id="connectError" class="muted" hidden></p>
     </section>
@@ -960,7 +970,7 @@
       step('증명·세션키 서명 중… (수 초 걸린다)'); say('wallet_prog_proving');
       const p = await postJson('/wallet/tx/prepare', { r_s: req.r_s, to: req.to, value, data });
       if (p.status !== 200) { step('준비 실패'); log(errText(p.status, p.body)); return reply({ ok: false, reason: p.body.reason ?? 'tx_prepare_failed', detail: p.body.detail ?? null, status: p.status }); }
-      const held = req.hold === true ? await raceHold(req, { step, log, reply }, { deployNeeded: p.body.deployNeeded === true }) : null;
+      const held = req.hold === true ? await raceHold(req, { step, log, reply }, { deployNeeded: p.body.deployNeeded === true, rootAtBuild: p.body.root }) : null;
       if (req.hold === true && !held) return;   // 취소·실패 — raceHold 가 이미 답했다
       step('RP 릴레이로 보내는 중…'); say('wallet_prog_sending');
       let relay;
@@ -974,6 +984,7 @@
         // 만료된 세션(Expired)도 가스 추정에서 되돌려진다 — 수명(TTL_BLOCKS)이 짧으면 시연 중에 난다. "가스 추정 실패" 대신 "세션이 만료됐습니다" 로 보인다(2026-11-15).
         const revert = relay.reason === 'relay_gas' ? String(relay.detail ?? '') : '';
         const reason = /SessionBounded/.test(revert) ? 'session_bounded' : /(^|[^A-Za-z])Expired/.test(revert) ? 'expired' : (relay.reason ?? 'internal');
+        if (held && reason === 'session_bounded') await raceBlockedPause(held, { step });   // 시연: 막힌 까닭과 root 두 값을 보이고 "닫기" 를 기다린다
         return reply({ ok: false, reason, detail: relay.detail ?? null, ...(held ? { race: held } : {}) });
       }
       step('영수증 대기…');
@@ -992,7 +1003,19 @@
      *  들고 있는 거래가 그 대상) 응용 체인 블록을 N 개 진행한 뒤 돌아간다. 그 사이 IdP 가 폐기를 게시·중계했는지(거울 상한)가 결과를 가른다.
      *  블록은 에이전트 /wallet/demo/mine(MODE3_DEMO_RACE=1)이 하나씩 만든다 — 사이마다 1.5초를 둬 IdP 의 게시·중계가 끝날 틈을 준다.
      *  취소·실패면 reply 하고 null, 아니면 { blocks, mirrorBound }. */
-    async function raceHold(req, { step, log, reply }, { deployNeeded = false } = {}) {
+    const rootDec = (v) => { try { return v === null || v === undefined ? null : BigInt(v).toString(); } catch { return null; } };   // root 를 10진으로(관리자 화면의 "폐기 목록 버전" 과 같은 표기)
+    /** 시연(2026-11-16): 막힌 거래에서 멈춘다 — 거울의 지금 RCL root 를 다시 읽어 생성 당시 값과 나란히 보이고 "닫기" 를 기다린다. held.rootNow 를 그 값으로 바꿔 서비스에도 같은 값이 간다. */
+    async function raceBlockedPause(held, { step }) {
+      try { const m = await postJson('/wallet/demo/mine', { blocks: 0 }); if (m.status === 200 && m.body.mirrorRoot) held.rootNow = rootDec(m.body.mirrorRoot); } catch { /* 앞서 읽은 값을 쓴다 */ }
+      const unread = tt('wallet_race_root_unread') || '읽지 못했습니다';
+      $('raceBlockedBuilt').textContent = held.rootAtBuild ?? unread; $('raceBlockedNow').textContent = held.rootNow ?? unread;
+      $('raceHoldBox').hidden = true; $('raceBlockedBox').hidden = false;
+      step('시연: 막힘 — 닫기를 기다림'); say('wallet_race_blocked_wait');
+      await new Promise((resolve) => { $('raceBlockedCloseBtn').onclick = () => resolve(); });
+      $('raceBlockedCloseBtn').disabled = true;
+    }
+    async function raceHold(req, { step, log, reply }, { deployNeeded = false, rootAtBuild = null } = {}) {
+      const builtRoot = rootDec(rootAtBuild);
       $('raceHoldBox').hidden = false;
       step('시연: 보내기 전에 멈춤'); say('wallet_race_ready');
       // 2026-11-15(Race 시연 점검): (1) 세션 수명이 모자라면 미리 알린다 — n블록 뒤의 거래는 n+1 번째 블록에 실리므로 그때까지 살아 있어야 한다. 모자란 버튼은 끈다
@@ -1021,7 +1044,10 @@
       let m = await mine(0);
       if (m.status !== 200) return fail('블록 진행 실패', m);
       const start = BigInt(m.body.head), passed = () => BigInt(m.body.head) - start;
-      const show = () => { $('raceStatus').textContent = tt('wallet_race_progress', { k: String(passed()), n: String(n), bound: m.body.mirrorBound && m.body.mirrorBound !== '0' ? m.body.mirrorBound : '-' }); };
+      // 2026-11-16(사용자 결정): 상한(거울 상한)은 보이지 않는다 — 대신 거울의 RCL root 가 생성 당시 값 그대로인지 바뀌었는지를 보인다
+      const rootNow = () => rootDec(m.body.mirrorRoot);
+      // 값을 못 읽었으면(옛 스냅 에이전트·거울 읽기 실패) "바뀜" 이라고 하지 않는다 — "확인 못 함"
+      const show = () => { const now = rootNow(); const key = now === null || builtRoot === null ? 'wallet_race_root_unknown_word' : now === builtRoot ? 'wallet_race_root_same_word' : 'wallet_race_root_changed_word'; $('raceStatus').textContent = tt('wallet_race_progress', { k: String(passed()), n: String(n), root: tt(key) || key }); };
       show();
       const mineTo = BigInt(n - (deployNeeded ? 1 : 0));   // 첫 거래면 마지막 한 블록은 릴레이의 계정 배포가 채운다
       while (passed() < mineTo) {
@@ -1031,8 +1057,14 @@
         if (m.status !== 200) return fail('블록 진행 실패', m);
         show();
       }
-      log(`시연: 폐기 뒤 ${passed()}블록, 거울 상한 ${m.body.mirrorBound ?? '?'}`);
-      return { blocks: n, mirrorBound: m.body.mirrorBound ?? null };
+      // 2026-11-16(Race 시연 점검): zkID 는 폐기 3블록 뒤에 게시한다. n 이 그보다 크면(5블록) 보내기 전에 그 게시가 거울에 닿았는지(root 가 바뀌었는지) 최대 15초 본다.
+      // 시연은 블록 간격을 1.5초로 줄여 놓아 zkID 의 게시·중계 시간이 블록 간격과 비슷해진다 — 부하가 있으면 5블록 쪽이 게시보다 먼저 나가 통과해 버렸다
+      // (실제 체인에서는 5블록이면 이미 닿아 있다). 값을 못 읽거나 끝내 안 바뀌면 그대로 보낸다.
+      if (n >= 3 && builtRoot !== null) {
+        for (let i = 0; i < 30 && rootNow() === builtRoot; i++) { await sleep(500); m = await mine(0); if (m.status !== 200) return fail('블록 진행 실패', m); show(); }
+      }
+      log(`시연: 폐기 뒤 ${passed()}블록, 거울 root ${rootNow() ?? '?'} (생성 당시 ${builtRoot ?? '?'})`);
+      return { blocks: n, rootAtBuild: builtRoot, rootNow: rootNow() };
     }
     /** 시연 출금의 영수증 — 폐기된 세션이라 에이전트가 아니라 RP 릴레이(GET /api/mode3/relay/:txHash)에 묻는다. */
     async function raceReceipt(req, relay, held, { step, log }) {
@@ -1441,6 +1473,15 @@
         if (c.account) { ppidCode.textContent = c.account; ppidCode.title = c.account; }
         ppidVal.append(ppidCode, ' ', ppidCopy);
         kvRow(dl, termEl('PPID'), ppidVal);
+        // 2026-11-16(사용자 요청): H(C_s) — zkID 관리자 "세션 — 폐기 목록" 이 세션을 이 값으로 보인다. 같은 앞 10자리 표기(전체는 title·복사)로 맞춰 볼 수 있게.
+        if (c.Cf_s) {
+          const cfsVal = document.createElement('span'); cfsVal.className = 'val-copy';
+          const cfsCode = shortCode(c.Cf_s, 10); cfsCode.classList.add('cfs');
+          const cfsCopy = document.createElement('button'); cfsCopy.type = 'button'; cfsCopy.className = 'copy-btn'; cfsCopy.title = '복사'; cfsCopy.textContent = '⧉';
+          cfsCopy.addEventListener('click', () => copyText(String(c.Cf_s), cfsCopy));
+          cfsVal.append(cfsCode, ' ', cfsCopy);
+          kvRow(dl, 'H(C_s)', cfsVal);
+        }
         kvRow(dl, tt('wallet_session_expiry') || '만료', tt('wallet_session_expires', { h: c.max_height }) || String(c.max_height));
         kvRow(dl, tt('wallet_session_nonce') || 'nonce', String(c.nonce ?? '-'));
         kvRow(dl, 'arid', shortCode(c.arid, 8), true);
@@ -1460,7 +1501,10 @@
         boundInput.value = boundEdits[r_s] ?? String(c.nonce ?? 0);
         boundInput.addEventListener('input', () => { boundEdits[r_s] = boundInput.value; });
         boundLabel.appendChild(boundInput);
-        const boundHint = document.createElement('span'); boundHint.className = 'hint'; boundHint.textContent = tt('wallet_bound_hint') || '끝낸 뒤에도 받아 줄 거래 수 — 0 이면 전부 막습니다'; tte(boundHint, 'wallet_bound_hint');
+        // 2026-11-16(사용자 결정): 상한(sessionBoundOf) 관련 내용은 화면에 일체 보이지 않는다 — 칸·설명·"체인 반영 대기" 절을 숨긴다. 동작은 그대로다:
+        // 폐기 때 이 칸의 기본값(지금의 nonce)이 상한으로 간다. DOM 에는 남겨 테스트가 경로를 계속 확인한다.
+        boundLabel.hidden = true;
+        const boundHint = document.createElement('span'); boundHint.className = 'hint'; boundHint.textContent = tt('wallet_bound_hint') || '끝낸 뒤에도 받아 줄 거래 수 — 0 이면 전부 막습니다'; tte(boundHint, 'wallet_bound_hint'); boundHint.hidden = true;
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'danger';
@@ -1480,7 +1524,7 @@
       const items = lastStatus?.pendingBounds ?? [];
       const list = $('boundsList');
       list.textContent = '';
-      $('boundsSection').hidden = !items.length;   // 2026-11-03: 연결된 서비스 탭 안의 절 — 대기 건이 있을 때만 보인다
+      $('boundsSection').hidden = true;   // 2026-11-16(사용자 결정): 상한 관련 절은 보이지 않는다(그전에는 대기 건이 있을 때 보였다). 목록은 아래에서 그대로 그린다
       if (!items.length) {
         const p = document.createElement('p');
         p.className = 'muted';
@@ -1619,7 +1663,8 @@
         if (status === 200) {
           out(`세션 폐기 요청 완료 (r_s=${r_s.slice(0, 12)}…): inserted=${b.inserted}, pending=${b.pending}, bound=${b.bound} — 다음 게시부터 효력`);
           progress.revoked = true;
-          setVerdict($('sessionVerdict'), true, 'revoked_ok', () => ({ summary: tt('wallet_session_revoked') || '이 세션만 폐기를 요청했습니다 — 다음 게시부터 효력이 있습니다.', detail: safeDetail(b) }));
+          const cfs = c.Cf_s ? `${String(c.Cf_s).slice(0, 10)}…` : '-';   // 2026-11-16: 어느 세션을 끝냈는지 H(C_s) 로 — 관리자 "세션 — 폐기 목록" 과 같은 표기
+          setVerdict($('sessionVerdict'), true, 'revoked_ok', () => ({ summary: tt('wallet_session_revoked', { cfs }) || `이 세션(H(C_s) ${cfs})만 폐기를 요청했습니다 — 다음 게시부터 효력이 있습니다.`, detail: safeDetail(b) }));
         } else {
           out(`세션 폐기 실패 — ${errText(status, b)}`);
           setVerdict($('sessionVerdict'), false, 'wallet_session_revoke_failed', { reason: b.reason ?? `HTTP ${status}`, detail: safeDetail(b) });

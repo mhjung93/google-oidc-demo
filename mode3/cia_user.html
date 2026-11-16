@@ -205,18 +205,11 @@
     if (r.status === 201) {
       $('signupPwd').value = ''; $('signupPwd2').value = ''; $('signupId').value = '';
       clearVerdict($('signupVerdict'));   // 지난 가입 오류(id_taken 등)가 다음 가입 화면에 남지 않게
-      // 2026-11-06(8차): 가입 직후 같은 아이디·비밀번호로 바로 로그인한다(실제 서비스처럼 한 번 더 입력하지 않게) — 등록 카드에
-      // "이제 지갑을 등록하세요" 를 보인다. 로그인이 실패하면(드묾) 예전처럼 로그인 화면에 아이디를 채워 두고 안내한다.
-      const l = await post('/cia/user/login', { id, pwd });
-      if (l.status === 200) {
-        clearVerdict($('userVerdict'));
-        await refreshMe();
-        verdict($('profileVerdict'), true, 'idp_signup_ok_title', () => ({ summary: tt('idp_signup_ok_next', { id: r.body.id }) || `아이디 ${r.body.id} 로 가입했습니다. 속성 커밋먼트를 프로필에 저장하세요 — 스냅 등록은 서비스에서 zkID 로 로그인할 때 진행됩니다.` }));
-      } else {
-        $('loginId').value = r.body.id; $('loginPwd').value = '';
-        showView('login');
-        verdict($('userVerdict'), true, 'idp_signup_ok_title', () => ({ summary: tt('idp_signup_ok', { id: r.body.id }) || `아이디 ${r.body.id} 로 가입했습니다. 비밀번호를 넣고 로그인하세요.` }));
-      }
+      // 2026-11-16(사용자 결정): 가입해도 바로 로그인하지 않는다 — 로그인 화면에 아이디만 채워 두고, 비밀번호를 넣어야 들어간다.
+      // (11-06 부터는 가입 직후 같은 아이디·비밀번호로 화면이 로그인까지 했다.)
+      $('loginId').value = r.body.id; $('loginPwd').value = '';
+      showView('login');
+      verdict($('userVerdict'), true, 'idp_signup_ok_title', () => ({ summary: tt('idp_signup_ok', { id: r.body.id }) || `아이디 ${r.body.id} 로 가입했습니다. 비밀번호를 넣고 로그인하세요.` }));
     } else {
       verdict($('signupVerdict'), false, 'idp_signup_failed', { reason: r.body?.reason ?? `HTTP ${r.status}`, detail: r.body });
     }

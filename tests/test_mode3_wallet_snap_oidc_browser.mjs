@@ -215,14 +215,16 @@ try {
     await page.click('#naverLoginBtn');
     await page.waitForSelector('#assetsLoggedIn:not([hidden])', { timeout: 30_000 });
     assert.match(await text(page, '#viaBadge'), /네이버/);
-    await page.click('#navAccount'); await page.waitForSelector('#account:not([hidden])');
+    // 2026-11-16(사용자 결정): 서비스의 "내 계정" 상자와 상단 메뉴는 로그인해도 보이지 않는다. 연결 기능의 경로는 남아 있어 숨은 DOM 으로 확인한다.
+    assert.equal(await page.isVisible('#navAccount'), false, '상단에 "내 계정" 메뉴가 없다'); assert.equal(await page.isVisible('#account'), false, '"내 계정" 상자가 없다');
+    await page.waitForFunction(() => /연결됨/.test(document.querySelector('#mState_naver')?.textContent ?? ''), undefined, { timeout: 15_000 });
     assert.match(await text(page, '#mState_naver'), /연결됨/); assert.match(await text(page, '#mState_google'), /연결 안 됨/);
     await page.evaluate((u) => { window.__gsiMintUrl = u; window.__gsiSub = 'rp-g-user'; }, `${rpGoogle.base}/mint`);   // 이 페이지의 GIS 흉내는 RP 용 Google 스텁으로
-    await page.click('#mLink_google');
-    await page.waitForSelector('#linkGsiSlot .gsi-stub', { timeout: 30_000 }); await page.click('#linkGsiSlot .gsi-stub');
+    await page.$eval('#mLink_google', (b) => b.click());
+    await page.waitForSelector('#linkGsiSlot .gsi-stub', { state: 'attached', timeout: 30_000 }); await page.$eval('#linkGsiSlot .gsi-stub', (b) => b.click());
     await waitText(page, '#accountVerdict', 'Google');
     assert.match(await text(page, '#mState_google'), /연결됨/);
-    assert.equal(await page.isVisible('#mUnlink_google'), true);
+    assert.equal(await page.$eval('#mUnlink_google', (b) => !b.hidden), true);
     assert.equal(await page.$eval('li[data-asset="ETH_CUSTODY"]', (el) => !el.hidden), true);
     assert.equal(await page.$eval('#txSource option[value="account"]', (o) => o.disabled), true, 'zkID 세션이 아니면 내 계정 출금 불가');
     await page.click('#logoutBtn'); await page.waitForSelector('#assetsLoggedOut:not([hidden])');

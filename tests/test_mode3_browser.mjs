@@ -365,8 +365,13 @@ try {
   await t('zkID 가입(2026-11-09): 아이디·비밀번호로 가입 → 자동 로그인(등록 상태 배지는 없다, 2026-11-10); 지갑 등록 버튼·카드는 없고 프로필 카드만 보인다', async () => {
     const u = await context.newPage(); await u.goto(`${cia.base}/user`);
     await u.click('#showSignupBtn'); await u.fill('#signupId', 'demo-user'); await u.fill('#signupPwd', DEMO_PWD); await u.fill('#signupPwd2', DEMO_PWD); await u.click('#signupBtn');
-    await waitText(u, '#profileVerdict', '가입했습니다');   // 안내는 프로필 카드에 — "지갑 등록은 서비스에서 zkID 로 로그인할 때"
-    await waitText(u, '#meInfo', 'demo-user'); assert.equal(await u.isHidden('#loginView'), true, '가입 직후 자동 로그인');
+    // 2026-11-16(사용자 결정): 가입해도 바로 로그인되지 않는다 — 로그인 화면으로 돌아가 아이디만 채워 두고 안내한다. 비밀번호를 넣어야 들어간다.
+    await waitText(u, '#userVerdict', '가입했습니다'); assert.ok((await text(u, '#userVerdict')).includes('비밀번호를 넣고 로그인'), await text(u, '#userVerdict'));
+    assert.equal(await u.isVisible('#loginView'), true, '가입 뒤에는 로그인 화면'); assert.equal(await u.isHidden('#meCard'), true, '가입만으로는 로그인되지 않는다');
+    assert.equal(await u.inputValue('#loginId'), 'demo-user', '아이디는 채워 둔다'); assert.equal(await u.inputValue('#loginPwd'), '', '비밀번호는 비어 있다');
+    assert.equal((await u.evaluate(() => fetch('/cia/user/me').then((r) => r.status))), 401, '서버에도 로그인 세션이 없다');
+    await u.fill('#loginPwd', DEMO_PWD); await u.click('#loginBtn');
+    await waitText(u, '#meInfo', 'demo-user'); assert.equal(await u.isHidden('#loginView'), true, '로그인하면 내 계정 화면');
     const widths = await u.evaluate(() => ['meCard', 'profileCard'].map((id) => Math.round(document.getElementById(id).getBoundingClientRect().width)));
     assert.equal(widths[0], widths[1], `카드가 한 칸으로 선다 — 프로필 카드가 반쪽만 차지하지 않는다(2026-11-13 화면 리뷰): ${widths}`);
     assert.equal(await u.$('#meBadge'), null, '아이디 옆 등록 상태 배지는 없다(2026-11-10)');
@@ -1019,31 +1024,40 @@ try {
   await t('폐기 상한(2026-10-22): 세션 카드에 nonce, 폐기 때 허용 수 입력(Snap 동의 창 없음) → 체인 반영 대기 행 → 재로그인 뒤 "지금 반영" → 행 사라짐', async () => {
     await walletTab(walletPage, 'services');
     await walletPage.waitForFunction(() => /nonce\)?\s*\d+/.test(document.querySelector('#sessionActions')?.textContent ?? ''), undefined, { timeout: 15_000 });
-    // 2026-11-13(화면 리뷰): "만료 — 만료 블록 N" 처럼 겹쳐 말하지 않고, 허용 거래 수 칸에는 뜻이 붙어 있다
-    const sessText = await text(walletPage, '#sessionActions');
-    assert.equal(/만료\s*만료/.test(sessText), false, sessText.slice(0, 160)); assert.ok(sessText.includes('0 이면 전부 막습니다'), '허용 거래 수의 뜻이 보인다');
-    // 2026-11-14(화면 리뷰): 설명은 라벨·칸보다 앞서 읽히지 않는다 — 칸 아래 한 줄
-    const foot = await walletPage.$eval('#sessionActions .session-foot', (f) => ({ hintTop: f.querySelector('.hint').getBoundingClientRect().top, inputBottom: f.querySelector('input.bound').getBoundingClientRect().bottom }));
-    assert.ok(foot.hintTop >= foot.inputBottom - 1, `허용 거래 수 설명의 자리: ${j(foot)}`);
-    assert.equal(await walletPage.$eval('#sessionActions .session-foot label', (l) => l.title), '', '설명은 줄 아래 한 번만 — 툴팁으로 되풀이하지 않는다(2026-11-14)');
-    await walletPage.fill('#sessionActions input.bound', '1');
+    // 2026-11-16(사용자 결정): 상한(허용 거래 수·체인 반영 대기)은 화면에 일체 보이지 않는다 — 동작은 그대로(폐기 때 지금의 nonce 가 상한으로 간다)
+    const sessText = await walletPage.evaluate(() => document.querySelector('#sessionActions').innerText);
+    assert.equal(/만료\s*만료/.test(sessText), false, sessText.slice(0, 160));
+    assert.equal(/허용 거래 수|전부 막습니다|상한/.test(sessText), false, `세션 카드에 상한 문구가 없다: ${sessText.slice(0, 200)}`);
+    assert.equal(await walletPage.isVisible('#sessionActions input.bound'), false, '허용 거래 수 칸은 보이지 않는다');
+    await walletPage.$eval('#sessionActions input.bound', (i) => { i.value = '1'; i.dispatchEvent(new Event('input', { bubbles: true })); });   // 숨은 칸 — 뒤의 "반영" 경로 검사를 위해 값만 넣는다
+    // 2026-11-16(사용자 요청): 세션 카드에 H(C_s) — zkID 관리자 "세션 — 폐기 목록" 의 H(C_s) 와 같은 값이라 폐기한 세션을 맞춰 볼 수 있다
+    const cfsFull = await walletPage.$eval('#sessionActions .session code.cfs', (c) => c.title);
+    const cfsShown = (await walletPage.textContent('#sessionActions .session code.cfs')).trim();
+    assert.match(cfsFull, /^[0-9]{20,}$/, 'H(C_s) 전체 값(title)'); assert.equal(cfsShown, `${cfsFull.slice(0, 10)}…`, '관리자 표와 같은 앞 10자리 표기');
+    assert.ok(Object.values((await wallet.get('/wallet/status')).body.sessions).some((x) => x.Cf_s === cfsFull), '에이전트가 든 그 세션의 Cf_s');
+    assert.ok((await walletPage.textContent('#sessionActions .session')).includes('H(C_s)'), '이름도 H(C_s) 로 보인다');
     const dBefore = dialogs.length;                                       // 2026-11-05: Snap 의 consentRevokeSession 동의 창은 없다 — 페이지의 confirm 만
     walletPage.once('dialog', (d) => d.accept());                         // confirm_revoke
     await walletPage.click('#sessionActions button.danger');
     await waitText(walletPage, '#sessionVerdict', '폐기 요청 접수');
     assert.equal(dialogs.length, dBefore, '세션 폐기에 Snap 동의 창이 없다');
-    await waitText(walletPage, '#boundsList', '반영 대기', 10_000);
+    assert.ok((await text(walletPage, '#sessionVerdict')).includes(`H(C_s) ${cfsFull.slice(0, 10)}…`), `폐기 결과가 어느 세션인지 H(C_s) 로 말한다: ${await text(walletPage, '#sessionVerdict')}`);
+    assert.ok((await cia.adminGet('/cia/admin/revoked_sessions')).body.sessions.some((x) => x.Cf_s === cfsFull), 'zkID 관리자 "세션 — 폐기 목록" 에 같은 H(C_s) 가 있다');
+    await waitText(walletPage, '#boundsList', '반영 대기', 10_000);   // 숨은 DOM 에는 남는다(경로는 살아 있다)
+    assert.equal(await walletPage.isVisible('#boundsSection'), false, '"체인 반영 대기" 절은 대기 건이 있어도 보이지 않는다');
+    assert.equal(/체인 반영 대기|반영 대기/.test(await walletPage.evaluate(() => document.querySelector('main').innerText)), false, '화면에 반영 대기 문구가 없다');
     // 다시 로그인(같은 RP) → IdP 인증 창(Task 14, CIA_ISSUE_AUTH=code) → 지금 반영 → MetaMask 스텁이 보낸다 → 행 사라짐
     const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
     await completeIdpAuth(popup);
     await popup.waitForEvent('close');
     // F-14 Z(2026-10-23): snap 모드 "지금 반영"은 record 요청에 pendingBoundId 를 실어야 하고, 응답은 applied:true 여야
     // 행이 사라져야 한다(2xx 만으로는 부족하다 — boundApplyVerdict 가 실제 온체인 상한을 다시 읽어 판정한다).
+    await walletPage.waitForSelector('#boundsList button.apply', { state: 'attached', timeout: 30_000 });   // 숨은 버튼 — 다시 로그인한 세션이 목록에 잡히면 생긴다
     const recordResp = walletPage.waitForResponse(async (r) => {
       if (!r.url().endsWith('/wallet/tx/record') || r.request().method() !== 'POST') return false;
       return r.status() !== 202;                                    // 202 pending 은 최종 응답이 아니다 — 계속 기다린다
     });
-    await walletPage.click('#boundsList button.apply');
+    await walletPage.$eval('#boundsList button.apply', (b) => b.click());   // 경로만 확인한다
     const recordRes = await recordResp;
     const recordReqBody = JSON.parse(recordRes.request().postData() ?? '{}');
     const recordResBody = await recordRes.json();
@@ -1077,12 +1091,31 @@ try {
     const popup = await raceSend('#race2Btn');
     await waitText(rpPage, '#txVerdict', '거울 반영 전이라 통과했습니다', 120_000);
     await awaitPopupClosed(popup);
+    // 2026-11-16(사용자 요청): 결과 카드 아래에 RCL root 의 생성 당시 값과 현재 값을 함께 보인다 — 통과한 쪽은 둘이 같다(폐기가 아직 게시되지 않았다)
+    await rpPage.waitForSelector('#raceRoots:not([hidden])', { timeout: 5_000 });
+    const r2 = await rpPage.evaluate(() => ({ built: document.querySelector('#raceRootBuilt').textContent.trim(), now: document.querySelector('#raceRootNow').textContent.trim(), note: document.querySelector('#raceRootNote').textContent }));
+    assert.match(r2.built, /^[0-9]{20,}$/, j(r2)); assert.equal(r2.now, r2.built, '통과한 쪽: root 가 그대로다'); assert.ok(r2.note.includes('그대로'), r2.note);
+    assert.ok((await text(rpPage, '#raceRoots')).includes('생성 당시 값') && (await text(rpPage, '#raceRoots')).includes('현재 값'));
   });
-  await t('시연 Race (2) 5블록: 같은 순서를 "5블록 뒤 보내기" 로 하면 거울이 상한을 받은 뒤라 session_bounded 로 막힌다', async () => {
+  await t('시연 Race (2) 5블록: 같은 순서를 "5블록 뒤 보내기" 로 하면 막힌다 — 팝업이 "RCL root 가 바뀌어 막혔습니다" 로 멈추고 root 의 생성 당시 값·현재 값을 보인다', async () => {
     await reloginRp();
+    assert.equal(await rpPage.isHidden('#raceRoots'), true, '새로 로그인하면 지난 결과의 root 줄은 없다');
     const popup = await raceSend('#race5Btn');
-    await waitText(rpPage, '#txVerdict', '폐기된 세션의 거래가 막혔습니다', 120_000);
-    assert.match(await text(rpPage, '#txVerdict'), /SessionBounded/, '자세히의 detail 에 컨트랙트 오류 이름');
+    // 2026-11-16(사용자 요청): 막히면 창이 스스로 닫히지 않고 멈춘다 — 까닭(RCL root 변경)과 두 값을 보이고 "닫기" 를 기다린다
+    await popup.waitForSelector('#raceBlockedBox:not([hidden])', { timeout: 120_000 });
+    const pb = await popup.evaluate(() => ({ text: document.querySelector('#raceBlockedBox').innerText, built: document.querySelector('#raceBlockedBuilt').textContent.trim(), now: document.querySelector('#raceBlockedNow').textContent.trim() }));
+    assert.ok(pb.text.includes('RCL root 가 바뀌어') && pb.text.includes('생성 당시 값') && pb.text.includes('현재 값'), pb.text);
+    assert.match(pb.built, /^[0-9]{20,}$/); assert.match(pb.now, /^[0-9]{20,}$/); assert.notEqual(pb.now, pb.built, '막힌 쪽: root 가 달라졌다');
+    assert.equal(/상한|sessionBoundOf|SessionBounded/.test(await popup.evaluate(() => document.body.innerText)), false, '팝업에 상한 관련 문구가 없다');
+    await popup.waitForTimeout(1500); assert.equal(popup.isClosed(), false, '누르기 전에는 닫히지 않는다');
+    assert.equal((await text(rpPage, '#txVerdict')).includes('막혔습니다'), false, '서비스 결과도 "닫기" 뒤에 뜬다');
+    await popup.click('#raceBlockedCloseBtn');
+    await waitText(rpPage, '#txVerdict', '폐기된 세션의 거래가 막혔습니다', 30_000);
+    const vt = await text(rpPage, '#txVerdict');
+    assert.ok(vt.includes('RCL') && vt.includes('root'), vt); assert.equal(/상한|sessionBoundOf|SessionBounded/.test(vt), false, `서비스 사유에 상한 관련 문구가 없다: ${vt}`);
+    await rpPage.waitForSelector('#raceRoots:not([hidden])', { timeout: 5_000 });
+    assert.equal((await rpPage.textContent('#raceRootBuilt')).trim(), pb.built); assert.equal((await rpPage.textContent('#raceRootNow')).trim(), pb.now);
+    assert.ok((await rpPage.textContent('#raceRootNote')).includes('바뀌었습니다'));
     await awaitPopupClosed(popup);
     await rpPage.uncheck('#raceHold', { timeout: 5000 });
     await reloginRp();   // 뒤 케이스를 위해 살아 있는 세션으로 돌려 둔다
@@ -1139,10 +1172,9 @@ try {
     await p.fill('#signupId', 'demo-user-2'); await p.fill('#signupPwd', 'demo-pass-1'); await p.fill('#signupPwd2', 'demo-pass-X'); await p.click('#signupBtn');
     await waitText(p, '#signupVerdict', '비밀번호 확인이 일치하지 않습니다');   // pwd_mismatch 제목
     await p.fill('#signupPwd2', 'demo-pass-1'); await p.click('#signupBtn');
-    // 2026-11-06(8차): 가입 직후 자동 로그인 — 등록 카드에 안내가 뜨고 상태는 등록 전. 로그인 화면으로 돌아가지 않는다.
-    await waitText(p, '#profileVerdict', '가입했습니다'); await waitText(p, '#meInfo', 'demo-user-2');
-    assert.equal(await p.isHidden('#loginView'), true);
-    await p.click('#logoutBtn'); await p.waitForSelector('#loginView:not([hidden])');
+    // 2026-11-16(사용자 결정): 가입 직후 자동 로그인은 없다 — 로그인 화면에 아이디를 채우고 안내한다.
+    await waitText(p, '#userVerdict', '가입했습니다'); await p.waitForSelector('#loginView:not([hidden])');
+    assert.equal(await p.isHidden('#meCard'), true); assert.equal(await p.inputValue('#loginId'), 'demo-user-2');
     // 같은 아이디(대소문자만 다른)로 다시 가입하면 409 id_taken.
     await p.click('#showSignupBtn'); await p.fill('#signupId', 'DEMO-USER-2'); await p.fill('#signupPwd', 'demo-pass-1'); await p.fill('#signupPwd2', 'demo-pass-1'); await p.click('#signupBtn');
     await waitText(p, '#signupVerdict', '그 아이디는 이미 쓰고 있습니다'); await p.click('#showLoginBtn');   // id_taken 제목
@@ -1161,17 +1193,26 @@ try {
     const reqs = []; p.on('request', (r) => reqs.push(r.url()));
     await p.goto(`${wallet.base}/attr.html`);
     await p.waitForSelector('#noCommit:not([hidden])');
-    // 2026-11-13(사용자 결정): uid·계정 번호·salt 칸과 "스냅에서 가져오기"·"salt 복사" 는 없다. 입력 폼에 salt 설명도 없다.
-    for (const sel of ['#uid', '#acctIndex', '#salt', '#saltFromSnapBtn', '#copySaltBtn', '#saltGenBtn', '#saltWarn']) assert.equal(await p.$(sel), null, `${sel} 는 없다`);
-    assert.equal(/salt|uid|계정 번호/.test(await p.textContent('#attrForm')), false, '입력 폼에 salt·uid·계정 번호 문구가 없다');
+    // 2026-11-16(사용자 결정): salt 는 입력받는다 — 도구가 스냅에서 몰래 읽어 오지 않는다. uid 도 입력받는다(zkID 에 묻지 않는다). 계정 번호 칸과 "스냅에서 가져오기"·"salt 복사"·"salt 만들기" 는 여전히 없다.
+    for (const sel of ['#acctIndex', '#saltFromSnapBtn', '#copySaltBtn', '#saltGenBtn', '#saltWarn', '#otherAccount']) assert.equal(await p.$(sel), null, `${sel} 는 없다`);
+    assert.equal(await p.getAttribute('#salt', 'type'), 'password', 'salt 칸은 가려서 받는다');
+    assert.ok(await p.$('#uid'), 'uid 칸이 있다'); assert.equal(/계정 번호/.test(await p.textContent('#attrForm')), false, '입력 폼에 계정 번호 문구가 없다');
+    assert.equal(/비밀 값 보기|내 정보|거절됩니다/.test(await p.textContent('#attrForm')), false, '입력 폼에는 칸과 이름만 — 어디서 복사하는지 같은 안내 문장은 두지 않는다(2026-11-16 사용자 지시)');
     await p.fill('#birthYear', '1990'); await p.selectOption('#country', 'KR'); await p.fill('#extra1', 'hello');
-    // zkID 에 로그인하지 않았으면 만들지 않고 안내한다 — uid 를 받아올 곳이 없다
-    await zkidLogout();
-    const stored0 = await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1'));   // 앞 케이스(스냅 등록)가 심어 둔 기록 — 커밋먼트가 없어 화면에는 "없음"
-    await p.click('#makeBtn'); await waitText(p, '#formVerdict', 'zkID 에 먼저 로그인');
-    assert.equal(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')), stored0, '로그인 전에는 기록을 만들지도 바꾸지도 않는다');
+    assert.equal(await p.inputValue('#salt'), '', '기록이 없으면 salt 칸은 비어 있다');
+    const stored00 = await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1'));
+    await p.click('#makeBtn'); await waitText(p, '#formVerdict', 'salt 를 넣어 주세요');
+    await p.fill('#salt', 'not-a-number'); await p.click('#makeBtn'); await waitText(p, '#formVerdict', 'salt 값이 올바르지 않습니다');
+    assert.equal(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')), stored00, 'salt 가 비거나 틀리면 기록을 만들지도 바꾸지도 않는다');
+    await p.fill('#salt', USER_SALT);
+    // uid 칸: 비거나 숫자가 아니면 만들지 않는다. zkID 로그인 여부와는 무관하다(로그아웃한 채로도 만든다 — zkID 에 묻지 않는다)
+    assert.equal(await p.inputValue('#uid'), '', '기록이 없으면 uid 칸은 비어 있다');
+    await p.click('#makeBtn'); await waitText(p, '#formVerdict', 'uid 를 넣어 주세요');
+    await p.fill('#uid', 'demo-user'); await p.click('#makeBtn'); await waitText(p, '#formVerdict', 'uid 값이 올바르지 않습니다');
+    assert.equal(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')), stored00, 'uid 가 비거나 틀리면 기록을 만들지도 바꾸지도 않는다');
     assert.equal(await p.isVisible('#noCommit'), true);
-    await zkidLogin('demo-user');
+    await zkidLogout();
+    await p.fill('#uid', String(uid));
     await p.click('#makeBtn');
     await p.waitForSelector('#commitBox:not([hidden])');    await p.fill('#birthYear', '1990'); await p.selectOption('#country', 'KR'); await p.fill('#extra1', 'hello');
     await p.click('#makeBtn');
@@ -1182,7 +1223,9 @@ try {
     assert.equal(rec.commit, shown); assert.match(shown, /^[0-9]+$/);
     const attrs = await encodeProfile(DEFAULT_ATTR_SCHEMA, { birthYear: '1990', country: 'KR', extra1: 'hello' });
     assert.deepEqual(rec.attrs, attrs);
-    assert.equal(rec.version, 4); assert.equal(rec.uid, String(uid), 'uid 는 zkID 로그인 세션에서 받아온 값'); assert.equal(rec.s_u, USER_SALT, 'salt 는 스냅의 salt(등록 때와 같다)');
+    assert.equal(rec.version, 4); assert.equal(rec.uid, String(uid), 'uid 는 넣은 값 그대로'); assert.equal(rec.s_u, USER_SALT, 'salt 는 넣은 값 그대로(스냅의 salt 와 같아야 등록된다)');
+    assert.deepEqual(await p.evaluate(() => (window.__ethCalls ?? []).map((c) => c.method ?? c)), [], '속성 도구는 MetaMask·스냅을 부르지 않는다(2026-11-16)');
+    assert.equal(await p.inputValue('#salt'), USER_SALT, '만든 뒤에는 기록의 salt 가 칸에 채워져 있다(다시 만들 때 또 붙여 넣지 않는다)');
     assert.equal('index' in rec, false, '계정 번호는 없어졌다'); assert.equal('blind' in rec, false, 'blind 는 없어졌다(R15)');
     assert.equal(await attrCommit({ s_u: rec.s_u, attrs }), rec.commit, 'Node 재계산과 일치(식에 uid·blind 없음)');
     assert.equal(/blind/.test(await p.textContent('.formula')), false, '식 표시에 blind 가 없다');
@@ -1206,16 +1249,15 @@ try {
     assert.equal(await p.locator('#attrShown4, #attrShown5').count(), 0, '미사용 슬롯 행 없음');
     assert.ok((await p.textContent('#attrShown0')).includes('1990'), '입력값도 함께');
     assert.deepEqual(rec.profile, { birthYear: '1990', country: 'KR', extra1: 'hello' });
-    const okReq = (u) => /\/attr\.html|\/attr\/dist\/|\/common\/|\/wallet\/config$|\/cia\/user\/uid$/.test(u);   // 2026-11-13: 스냅 설정(snapId·ciaUrl)과 zkID 의 uid 조회만
-    assert.ok(reqs.every(okReq), `정적 자원·스냅 설정·uid 조회 외 요청: ${reqs.filter((u) => !okReq(u)).join(', ')}`);
-    const uidReqs = reqs.filter((u) => /\/cia\/user\/uid$/.test(u)); assert.ok(uidReqs.length >= 1 && uidReqs.every((u) => u.startsWith(cia.base)), 'uid 는 zkID 에서만 받아온다');
+    const okReq = (u) => /\/attr\.html|\/attr\/dist\/|\/common\//.test(u);   // 2026-11-16: 정적 자원뿐 — 스냅 설정(/wallet/config)도 zkID(/cia/user/uid)도 부르지 않는다
+    assert.ok(reqs.every(okReq), `정적 자원 외 요청: ${reqs.filter((u) => !okReq(u)).join(', ')}`);
     // 범위 밖 값(출생연도 1800 < min 1900)은 인코더가 거절한다 — 저장값은 그대로(빈 칸은 폼의 required 가 먼저 막아 요청 자체가 없다)
     await p.fill('#birthYear', '1800'); await p.click('#makeBtn'); await waitText(p, '#formVerdict', '커밋먼트를 만들지 못했습니다');
     assert.equal(JSON.parse(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1'))).commit, rec.commit);
     // 2026-11-13(스펙 random-salt R5·R15): 백업 버튼·자동 백업 절·blind 가 없다. 같은 스냅·같은 속성이면 같은 커밋먼트라, 지운 뒤 다시 만들면 같은 값이다.
     for (const sel of ['#exportBtn', '#importFile', '#importPwRow', '#backupSetupBtn', '#backupPw', '#blindShown', '#copyBlindBtn']) assert.equal(await p.$(sel), null, `${sel} 는 없다`);
     assert.equal(/blind|백업 내려받기|백업 불러오기|자동 백업/.test(await p.textContent('main')), false, '화면에 blind·백업 문구가 없다');
-    const make = async (birthYear) => { await p.fill('#birthYear', birthYear); await p.selectOption('#country', 'KR'); await p.fill('#extra1', 'hello'); await p.click('#makeBtn'); await p.waitForFunction((y) => JSON.parse(localStorage.getItem('mode3_attr_tool_v1') ?? 'null')?.profile?.birthYear === y, birthYear); return (await p.textContent('#commitBox')).trim(); };
+    const make = async (birthYear) => { await p.fill('#birthYear', birthYear); await p.selectOption('#country', 'KR'); await p.fill('#extra1', 'hello'); await p.fill('#uid', String(uid)); await p.fill('#salt', USER_SALT); await p.click('#makeBtn'); await p.waitForFunction((y) => JSON.parse(localStorage.getItem('mode3_attr_tool_v1') ?? 'null')?.profile?.birthYear === y, birthYear); return (await p.textContent('#commitBox')).trim(); };
     p.once('dialog', (d) => d.accept());
     await p.click('#clearBtn'); await p.waitForSelector('#noCommit:not([hidden])');
     assert.equal(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')), null);
@@ -1231,7 +1273,9 @@ try {
     await p.reload(); await p.waitForSelector('#commitBox:not([hidden])');
     toolCommit = rec.commit;
     // 2026-11-11: 데모 리셋(scripts/demo_split_start.sh 가 /attr/dist/reset.json 에 리셋 시각을 쓴다) — 도구가 처음 보는 값이면 이 브라우저의 기록을 비운다.
+    // 2026-11-16: 데모가 쓰던 리셋 표시가 있으면 끝나고 되돌린다 — 그냥 지우면 실행 중인 데모의 자동 초기화가 멈춘다(실제로 겪었다).
     const resetFile = new URL('../mode3/attr/dist/reset.json', import.meta.url);
+    const resetBefore = fs.existsSync(resetFile) ? fs.readFileSync(resetFile) : null;
     fs.writeFileSync(resetFile, JSON.stringify({ epoch: 'test-reset-1' }));
     try {
       await p.reload(); await p.waitForSelector('#resetCleared:not([hidden])', { timeout: 15_000 });
@@ -1239,56 +1283,28 @@ try {
       assert.equal(await p.isVisible('#noCommit'), true);
       await p.reload(); await p.waitForTimeout(500);
       assert.equal(await p.isHidden('#resetCleared'), true, '같은 리셋 값이면 다시 비우지 않는다(안내도 없다)');
-    } finally { fs.rmSync(resetFile, { force: true }); }
+    } finally { if (resetBefore === null) fs.rmSync(resetFile, { force: true }); else fs.writeFileSync(resetFile, resetBefore); }
     // 뒤 케이스들이 쓰는 기록을 다시 만든다 — 같은 속성이라 같은 커밋먼트다
     await p.reload(); await p.waitForSelector('#noCommit:not([hidden])');
     assert.equal(await make('1990'), toolCommit);
     await p.close();
   });
-  // 2026-11-13(스펙 random-salt R5·R6): 속성 도구의 자동 암호화 백업(D20)은 없어졌다 — 백업은 zk 스냅 화면이 만든다. 스냅이 설정 전이면 도구는 salt 를 받지 못한다.
-  await t('속성 도구: 스냅 설정 전(salt 없음·백업 전)이면 만들지 못하고 zk 스냅 화면으로 안내한다(snap_setup_required) — 기록은 그대로', async () => {
-    const saved = snapState;
-    const p = await context.newPage();
-    await p.goto(`${wallet.base}/attr.html`);
-    const before = await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1'));
-    assert.ok(before, '앞 케이스가 남긴 기록이 있어야 한다');
-    await zkidLogin('demo-user');
-    const notBackedUp = readySnapState('777777777777'); notBackedUp.salt.backedUp = false; notBackedUp.salt.backedUpAt = null;
-    try {
-      for (const st of [null, notBackedUp]) {
-        snapState = st;
-        await p.fill('#birthYear', '1993'); await p.selectOption('#country', 'KR'); await p.click('#makeBtn');
-        await waitText(p, '#formVerdict', 'zk 스냅 화면');   // 어디서 설정하는지 알려 준다
-        assert.ok((await text(p, '#formVerdict')).includes('salt 가 없거나'), '까닭(salt 없음·백업 전)도 보인다');
-        assert.equal(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')), before, '실패하면 기록을 바꾸지 않는다');
-        await p.reload();
-      }
-    } finally { snapState = saved; }
-    await p.close();
-  });
-
-  await t('속성 도구: MetaMask 가 없으면 만들지 못하고 사유를 보이며 기록을 바꾸지 않는다', async () => {
+  // 2026-11-16(사용자 결정): 속성 도구는 salt 를 입력받고 스냅을 읽지 않는다 — 그전의 "스냅 설정 전이면 안내"·"MetaMask 없으면 실패"·"옛 스냅이면 안내" 세 케이스는
+  // 없어졌다. MetaMask 가 없어도 넣은 salt 로 만든다. 스냅의 salt 와 다른 값을 넣었으면 등록·로그인 때 걸린다(attr_record_salt_mismatch — 스냅 승인 창의 대조).
+  await t('속성 도구: MetaMask 가 없어도 넣은 salt 로 커밋먼트를 만든다 — 스냅을 읽지 않는다', async () => {
     const p = await context.newPage();
     await p.addInitScript(() => { delete window.ethereum; });
     await p.goto(`${wallet.base}/attr.html`);
     const before = await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1'));
     assert.ok(before, '앞 케이스가 남긴 기록이 있어야 한다');
     await zkidLogin('demo-user');
-    await p.fill('#birthYear', '1992'); await p.selectOption('#country', 'KR'); await p.click('#makeBtn');
-    await waitText(p, '#formVerdict', 'MetaMask');
-    assert.equal(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')), before, '실패하면 기록을 바꾸지 않는다');
-    await p.close();
-  });
-
-  await t('리뷰 M-3(2026-11-12): 옛 스냅(0.1.0, getSalt 없음)이면 속성 도구가 "스냅이 옛 버전" 으로 안내한다(snap_outdated) — 기록은 그대로', async () => {
-    const p = await context.newPage();
-    await p.addInitScript(() => { window.__snapOutdated = true; });
-    await p.goto(`${wallet.base}/attr.html`);
-    const before = await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1'));
-    await zkidLogin('demo-user');
-    await p.fill('#birthYear', '1992'); await p.selectOption('#country', 'KR'); await p.click('#makeBtn');
-    await waitText(p, '#formVerdict', '스냅이 옛 버전입니다');
-    assert.equal(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')), before);
+    try {
+      await p.fill('#birthYear', '1992'); await p.selectOption('#country', 'KR'); await p.fill('#uid', String(uid)); await p.fill('#salt', '424242424242'); await p.click('#makeBtn');
+      await waitText(p, '#formVerdict', '커밋먼트 생성 완료');
+      const rec = JSON.parse(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')));
+      assert.equal(rec.s_u, '424242424242'); assert.equal(rec.profile.birthYear, '1992');
+      assert.equal(await attrCommit({ s_u: rec.s_u, attrs: rec.attrs }), rec.commit, '넣은 salt 로 계산한 값');
+    } finally { await p.evaluate((v) => localStorage.setItem('mode3_attr_tool_v1', v), before); }   // 뒤 케이스들이 쓰는 기록을 되돌린다
     await p.close();
   });
 
@@ -1317,7 +1333,7 @@ try {
     const infoLay = await p.evaluate(() => { const R = (q) => document.querySelector(q).getBoundingClientRect(); return { brand: Math.round(R('.idp-nav .brand').left), sub: Math.round(R('.sub-nav a').left), card: Math.round(R('#infoView').left), cardW: Math.round(R('#infoView').width), mainW: Math.round(R('main.cards').width) }; });
     assert.ok(Math.abs(infoLay.brand - infoLay.card) <= 1 && Math.abs(infoLay.sub - infoLay.card) <= 1 && infoLay.cardW >= infoLay.mainW - 40, `내 정보 배치: ${j(infoLay)}`);
     const uidDesc = await p.textContent('[data-i18n="idp_myinfo_uid_desc"]');
-    assert.ok(uidDesc.includes('받아옵니다') && !uidDesc.includes('도구에 넣습니다'), uidDesc);
+    assert.ok(uidDesc.includes('uid 칸에 이 값을 넣습니다') && !uidDesc.includes('받아옵니다'), uidDesc);   // 2026-11-16: 속성 도구가 uid 를 입력받는다
     assert.equal((await p.textContent('#infoMethod')).trim(), '아이디·비밀번호');
     assert.match(await p.textContent('#infoWallet'), /아직 없음/, '미등록 계정');
     // 2026-11-11: auid·슬롯 — 지갑 등록 전에는 auid 가 없고 복사 버튼도 숨는다
@@ -1520,14 +1536,12 @@ try {
     try {
       await a.waitForSelector('#commitBox:not([hidden])');   // A 의 기록으로 열린다
       assert.equal((await a.textContent('#uidShown')).trim(), String(uid));
-      assert.equal(await a.isHidden('#otherAccount'), true, '기록의 계정으로 zkID 에 로그인해 있으면 안내가 없다');
       await zkidLogin('demo-user-b');
-      // 2026-11-15(시연자 화면 리뷰): 기록이 지금 zkID 에 로그인한 계정의 것이 아니면 알려 준다 — 그대로 로그인하면 attr_record_uid_mismatch 로 막힌다
-      await a.reload(); await a.waitForSelector('#otherAccount:not([hidden])', { timeout: 10_000 });
-      assert.match(await a.textContent('#otherAccount'), new RegExp(`${uid}[\\s\\S]*${uidB}[\\s\\S]*커밋먼트 만들기`), await a.textContent('#otherAccount'));
+      // 2026-11-16(사용자 결정): uid 는 입력받는다 — 칸에는 앞 계정 기록의 uid·salt 가 채워져 있고, uid 칸을 새 계정의 uid 로 바꿔 다시 만든다(salt 는 같은 스냅이라 그대로)
+      assert.equal(await a.inputValue('#uid'), String(uid)); assert.equal(await a.inputValue('#salt'), USER_SALT);
+      await a.fill('#uid', String(uidB));
       await a.fill('#birthYear', '1990'); await a.selectOption('#country', 'KR'); await a.click('#makeBtn');
       await a.waitForFunction((u) => JSON.parse(localStorage.getItem('mode3_attr_tool_v1') ?? 'null')?.uid === u, String(uidB));
-      await a.waitForSelector('#otherAccount', { state: 'hidden', timeout: 5_000 });
       recBRaw = await a.evaluate(() => localStorage.getItem('mode3_attr_tool_v1'));   // 계정 B 의 속성 도구 기록 — 맨 아래 케이스가 B 를 등록할 때 쓴다
       const recB = JSON.parse(recBRaw);
       assert.equal(recB.uid, String(uidB), 'uid 는 zkID 에 로그인한 계정 B'); assert.equal(recB.s_u, USER_SALT, 'salt 는 스냅의 것 — 계정이 달라도 같다');
