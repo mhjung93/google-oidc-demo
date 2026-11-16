@@ -29,7 +29,7 @@ window.DemoStrings = {
     confirm_unlink_wallet: { ko: '이 계정에서 스냅 등록을 풉니다. 발급된 자격증명은 폐기(게시)되고, 계정과 아이디는 남아 새 스냅을 다시 등록할 수 있습니다. 스냅 쪽 등록은 zk 스냅 화면 "내 계정" 탭의 "스냅 초기화" 로 지우세요(salt 는 남습니다). 계속할까요?', en: 'Unlink the Snap from this account. The issued credential is revoked (and published); the account and login id stay so you can register a new Snap. Clear the Snap side with "Reset the Snap" on the zk Snap screen’s "My account" tab (the salt stays). Continue?' },
     confirm_delete_account: { ko: '계정과 스냅 등록을 지웁니다. 되돌릴 수 없습니다. 등록된 자격증명은 먼저 폐기(게시)됩니다. 스냅 비밀은 MetaMask 에서 스냅을 다시 설치해야 지워집니다. 계속할까요?', en: 'This deletes the account and its Snap registration and cannot be undone. A registered credential is revoked (and published) first. The secret inside the user’s Snap is only cleared by reinstalling the Snap in MetaMask. Continue?' },
     confirm_tamper: { ko: '시연용입니다 — 이 계정의 등록부 슬롯에 가짜 자격증명을 게시합니다. 계속할까요?', en: 'Demo only — publish a fake credential into this account’s registry slot. Continue?' },
-    confirm_publish: { ko: '폐기 목록을 체인에 게시합니다. 계속할까요?', en: 'Publish the revocation list on-chain. Continue?' },
+    confirm_publish: { ko: '폐기 목록과 등록부를 체인에 게시합니다. 계속할까요?', en: 'Publish the revocation list and the registry on-chain. Continue?' },
     confirm_rp_revoke_cert: { ko: '이 RP 의 인증서를 회수합니다. RP 는 몇 초 안에 비활성이 되고, 운영자가 다시 "인증서 발급 요청" 을 하면 승인해 주어야 합니다. 계속할까요?', en: 'Revoke this RP’s certificate. The RP goes inactive within seconds; once its operator requests a certificate again you need to approve it. Continue?' },
     confirm_rp_deny: { ko: 'RP 를 거절합니다. 거절은 되돌릴 수 없고, 운영자가 키로 다시 등록해야 합니다. 계속할까요?', en: 'Deny this RP. This cannot be undone; the operator must re-register with the key. Continue?' },
     confirm_open_approve: { ko: '개봉을 승인하면 이 세션의 uid 가 영구히 기록됩니다(조건부 프라이버시 해제). 계속할까요?', en: 'Approving records this session’s uid permanently (conditional privacy is lifted). Continue?' },
@@ -91,7 +91,7 @@ window.DemoStrings = {
     rp_open_desc: { ko: 'RP 와 IdP 가 함께, 운영자 승인 아래에서만 사용자를 알아냅니다.', en: 'Only the RP and the IdP together, with operator approval, can identify the user.' },
     admin_pending_rps: { ko: '승인 대기 RP {n}', en: '{n} RPs awaiting approval' },
     admin_pending_openings: { ko: '개봉 요청 {n}', en: '{n} opening requests' },
-    admin_accounts_title: { ko: '계정', en: 'Accounts' }, admin_rps_title: { ko: 'RP', en: 'RPs' }, admin_openings_title: { ko: '개봉 요청', en: 'Opening requests' }, admin_rcl_title: { ko: '폐기 목록 게시', en: 'Publish the revocation list' },
+    admin_accounts_title: { ko: '계정', en: 'Accounts' }, admin_rps_title: { ko: 'RP', en: 'RPs' }, admin_openings_title: { ko: '개봉 요청', en: 'Opening requests' }, admin_rcl_title: { ko: '폐기 목록·등록부 게시', en: 'Publish the revocation list and registry' },
     account_revoke_title: { ko: '내 계정 폐기', en: 'Revoke my account' },
     account_revoke_desc: { ko: '기기를 잃었을 때 비밀번호만으로 계정을 폐기합니다. 스냅 키는 필요 없습니다.', en: 'Revoke your account with just the password, e.g. after losing a device. No Snap key needed.' },
     // 단계 힌트(안내 바 "다음" 문장의 {what})
@@ -315,7 +315,7 @@ window.DemoStrings = {
     wallet_auth_tx_value: { ko: '금액', en: 'Amount' },
     rp_open_no_request: { ko: '먼저 개봉을 요청하세요(계정 주소 또는 해시로)', en: 'Request an opening first (by account address or tx hash)' },
     rp_logout_btn: { ko: '로그아웃', en: 'Log out' },
-    rp_session_stale: { ko: '이 로그인은 닫혔습니다 — zkID 가 폐기 목록을 새로 게시하면 그 전의 로그인은 다시 확인해야 합니다. 로그아웃한 뒤 다시 로그인하세요.', en: 'This login was closed — when zkID publishes a new revocation list, earlier logins must be checked again. Log out, then log in again.' },
+    rp_session_stale: { ko: '이 로그인은 닫혔습니다 — zkID 가 폐기 목록이나 등록부를 새로 게시하면(누군가의 폐기·첫 발급·속성 변경) 그 전의 로그인은 다시 확인해야 합니다. 로그아웃한 뒤 다시 로그인하세요.', en: 'This login was closed — when zkID publishes a new revocation list or registry (someone’s revocation, first issuance or attribute change), earlier logins must be checked again. Log out, then log in again.' },   // 2026-11-15: 등록부만 바뀌어도 닫힌다 — "폐기 목록" 만 말하지 않는다
     rp_stale_relogin_btn: { ko: '로그아웃하고 다시 로그인', en: 'Log out and log in again' },   // 2026-11-14(화면 리뷰 3차): 상단은 로그인 상태인데 "내 계정" 이 비어 있던 것
     rp_session_ended_title: { ko: '로그아웃됨', en: 'Logged out' },
     rp_session_ended: { ko: '이 세션이 끝났습니다 — 사용자 페이지에서 폐기하거나 로그아웃했습니다. 계속 쓰려면 다시 로그인하세요.', en: 'This session has ended — it was revoked or logged out from the user page. Log in again to continue.' },
@@ -381,6 +381,9 @@ window.DemoStrings = {
     wallet_profile_same: { ko: '속성은 그대로입니다: {attrs}', en: 'The attributes are unchanged: {attrs}' },
     wallet_profile_saved_snap_pending: { ko: '저장했습니다. 스냅에 반영하는 데는 실패했지만({err}) 다음 로그인이 자동으로 맞춥니다.', en: 'Saved. Updating the Snap failed ({err}), but the next login will sync it automatically.' },
     wallet_no_sessions: { ko: '로그인한 서비스가 없습니다. 서비스에서 로그인하세요.', en: 'No logged-in services. Log in at a service.' },
+    // 2026-11-15(화면의 폐기 목록 점검): 스냅 에이전트가 받아 둔 폐기 목록 — 로그인·출금의 증명은 이 목록(과 등록부) 기준으로 만든다
+    wallet_rcl_line: { ko: '폐기 목록: 리프 {leaves}개 · 블록 {block}까지 받음 — 서비스에 내는 증명은 이 목록 기준으로 만듭니다.', en: 'Revocation list: {leaves} leaves · synced to block {block} — proofs sent to services are built against this list.' },
+    wallet_rcl_none: { ko: '폐기 목록: 아직 받지 않았습니다 — 첫 로그인 때 받습니다.', en: 'Revocation list: not fetched yet — it is fetched at the first login.' },
     wallet_sessions_note: { ko: '로그인은 서비스 페이지에서 시작합니다 — 자격증명 발급은 로그인 안에서 필요할 때 자동으로 일어납니다.', en: 'Logins start on the service page — credentials are issued automatically inside the login when needed.' },
     wallet_session_service: { ko: '서비스', en: 'Service' },
     wallet_session_expiry: { ko: '만료', en: 'Expiry' },
@@ -652,11 +655,11 @@ window.DemoStrings = {
     admin_col_founduid: { ko: '알아낸 uid', en: 'Identified uid' },
     admin_col_account: { ko: 'PPID 스마트 계정 주소', en: 'PPID smart account address' },   // 2026-11-09: 개봉 요청 표
     admin_open_unresolved: { ko: '(역조회 실패)', en: '(lookup failed)' },
-    admin_rcl_desc: { ko: '폐기는 덧붙이기만 됩니다 — 게시하면 되돌릴 수 없습니다(설계 §6.5).', en: 'Revocations are append-only — once published they cannot be undone (design §6.5).' },
+    admin_rcl_desc: { ko: '폐기는 덧붙이기만 됩니다 — 게시하면 되돌릴 수 없습니다. 같은 게시가 등록부(첫 발급·속성 변경·계정 폐기)도 함께 올리고 판(epoch)을 하나 올립니다. 판이 오르면 서비스들은 그 전의 로그인을 닫습니다 — 폐기 목록 버전이 그대로여도 그렇습니다.', en: 'Revocations are append-only — once published they cannot be undone. The same publication also carries the registry (first issuance, attribute change, account revocation) and raises the epoch by one. When the epoch rises, services close earlier logins — even if the revocation list version is unchanged.' },   // 2026-11-15
     admin_rcl_heartbeat: { ko: '하트비트(CIA_HEARTBEAT_BLOCKS)가 켜져 있으면 변화가 없어도 주기적으로 재게시됩니다.', en: 'With the heartbeat (CIA_HEARTBEAT_BLOCKS) on, the list is re-published periodically even when nothing changed.' },
     // 관리자 "사용자 자격증명 — 활성 목록"·"세션 — 폐기 목록" 두 표(2026-10-14) — U1.
     admin_creds_title: { ko: '사용자 자격증명 — 활성 목록', en: 'User credentials — active list' },
-    admin_creds_desc: { ko: '등록부 슬롯마다 지금 활성인 자격증명을 보여 줍니다. 은퇴한 슬롯도 함께 보입니다(폐기 효과를 보기 위함).', en: 'Shows the currently active credential in each registry slot. Retired slots are listed too, so the effect of revocation is visible.' },
+    admin_creds_desc: { ko: '등록부 슬롯마다 지금 활성인 자격증명을 보여 줍니다. 계정 폐기·스냅 연결 해제로 비운 슬롯도 함께 보입니다 — 등록부 DB 에서는 리프 0 으로 나옵니다(폐기 효과를 보기 위함).', en: 'Shows the currently active credential in each registry slot. Slots emptied by account revocation or Snap unlinking are listed too — their leaf is 0 in the registry DB, so the effect of revocation is visible.' },
     admin_creds_empty: { ko: '등록된 슬롯이 없습니다.', en: 'No slots are registered yet.' },
     admin_revoked_sessions_title: { ko: '세션 — 폐기 목록', en: 'Sessions — revoked list' },
     admin_revoked_sessions_desc: { ko: '폐기된(revokedAt 있는) 세션만 최근 폐기 순으로 보여 줍니다.', en: 'Shows only revoked sessions (those with a revokedAt), most recently revoked first.' },
@@ -1088,10 +1091,10 @@ window.DemoStrings = {
   reasons: {
     // where: 'rp' | 'wallet' | 'page' | 'aa'. 각 항목의 cause·action 은 그 코드를 내는 소스의 실제 조건을 보고 썼다
     // (lib/mode3_rp.js verifyLogin, mode3_rp.js 세션 라우트, mode3_wallet_agent.js, lib/mode3_onchain.js, cia.js, mode3/wallet.html).
-    stale_root: { where: 'rp', ko: { title: '폐기 목록이 오래됐습니다', cause: '스냅이 최신 폐기 목록으로 증명하지 않았습니다.', action: '"동기화 생략"을 끄고 다시 재검증하세요.' }, en: { title: 'Revocation list is stale', cause: 'The Snap did not prove against the latest revocation list.', action: 'Turn off "skip sync" and revalidate again.' } },
+    stale_root: { where: 'rp', ko: { title: '폐기 목록이 오래됐습니다', cause: '스냅이 최신 폐기 목록으로 증명하지 않았습니다.', action: '다시 로그인하세요 — 스냅 에이전트가 최신 폐기 목록을 받아 증명을 새로 만듭니다.' }, en: { title: 'Revocation list is stale', cause: 'The Snap did not prove against the latest revocation list.', action: 'Log in again — the Snap agent fetches the latest revocation list and builds a new proof.' } },   // 2026-11-15: "동기화 생략" 은 없어진 전문가 옵션이다
     stale_registry_root: { where: 'rp', ko: { title: '등록부 버전이 오래됐습니다', cause: '스냅이 최신 등록부 root 가 아니라 오래된 root 로 증명을 만들었습니다 — 그 사이 등록부가 바뀌었습니다.', action: '스냅에서 다시 로그인하세요.' }, en: { title: 'The registry version is stale', cause: 'The Snap produced the proof against an old registry root — the registry changed in the meantime.', action: 'Log in again from the Snap.' } },
     root_too_old: { where: 'rp', ko: { title: '폐기 목록이 너무 오래 게시되지 않았습니다', cause: '마지막 게시 이후 지난 블록 수가 허용 한도(maxRootAge)를 넘었습니다 — IdP 의 게시가 멈춘 것입니다.', action: 'IdP 를 살리고 관리자 페이지에서 폐기 목록을 게시한 뒤 다시 시도하세요.' }, en: { title: 'Revocation list has not been published recently enough', cause: 'More blocks have passed since the last publication than the limit (maxRootAge) allows — the IdP stopped publishing.', action: 'Bring the IdP back up, publish the revocation list from the admin page, then try again.' } },
-    revalidate_required: { where: 'rp', ko: { title: '세션을 다시 검증해야 합니다', cause: '이 세션을 만든 뒤 폐기 목록이 새로 게시돼 버전이 달라졌습니다.', action: '로그아웃한 뒤 다시 로그인하고 요청을 다시 보내세요.' }, en: { title: 'The session must be revalidated', cause: 'A new revocation list was published after this session was created, so the versions differ.', action: 'Log out, log in again, then send the request again.' } },   // 2026-11-14: "세션 재검증" 버튼은 11-11 에 없어졌다 — 다시 로그인이 그 자리다
+    revalidate_required: { where: 'rp', ko: { title: '세션을 다시 검증해야 합니다', cause: '이 세션을 만든 뒤 폐기 목록이나 등록부가 새로 게시돼 버전이 달라졌습니다.', action: '로그아웃한 뒤 다시 로그인하고 요청을 다시 보내세요.' }, en: { title: 'The session must be revalidated', cause: 'A new revocation list or registry was published after this session was created, so the versions differ.', action: 'Log out, log in again, then send the request again.' } },   // 2026-11-14: "세션 재검증" 버튼은 11-11 에 없어졌다 — 다시 로그인이 그 자리다
     predicate_unmet: { where: 'rp', ko: { title: '요구한 조건을 만족하지 못했습니다', cause: '로그인 자체는 유효하지만 RP 가 요구한 조건(허용 국가 집합 소속 또는 최소 나이)이 공개된 값으로 충족되지 않았습니다.', action: '그 조건을 공개하도록 스냅에서 다시 로그인하거나, 로그인 화면에서 요구 조건을 끄세요.' }, en: { title: 'The required condition was not met', cause: 'The login itself is valid, but the disclosed values do not satisfy the condition the RP required (membership in the allowed country set, or a minimum age).', action: 'Log in again disclosing that condition, or turn the requirement off on the login form.' } },
     // 2026-10-11 데모 UI 에서 사용자가 실제로 마주치는 코드 13개 — 그동안 결과 카드에 원문 코드만 보였다(런북 "실패 각본").
     bad_disclosure: { where: 'wallet', ko: { title: '공개 조건의 형식이 잘못됐습니다', cause: '최소·최대가 10진 정수가 아니거나, 최소 > 최대이거나, 범위가 64비트를 넘거나, 집합 슬롯 번호가 0~5 밖입니다.', action: '조건 칸을 숫자로 고치고(최소 ≤ 최대) 다시 보내세요.' }, en: { title: 'The disclosure condition is malformed', cause: 'Min/max are not decimal integers, min > max, the range exceeds 64 bits, or the set slot is outside 0–5.', action: 'Fix the condition fields (numbers, min ≤ max) and resend.' } },

@@ -475,6 +475,8 @@ try {
     assert.ok((await text(rpPage, '#log')).includes('3. RP 검증'), 'RP 페이지가 /api/mode3/login 까지 냈다');
     assert.ok(await rpPage.evaluate(() => currentSession), '세션이 잡혔다');
     await waitText(walletPage, '#sessionActions', 'zkID · ', 30_000);   // 2026-11-11: 연결된 서비스 줄에 발급 IdP(zkID · 주소)
+    // 2026-11-15(화면의 폐기 목록 점검): 스냅 에이전트가 받아 둔 폐기 목록(리프 수·어느 블록까지)을 한 줄로 보인다 — 증명은 이 목록 기준으로 만든다
+    await walletPage.waitForFunction(() => /폐기 목록: 리프 \d+개 · 블록 \d+까지/.test(document.querySelector('#rclLine')?.textContent ?? ''), undefined, { timeout: 30_000 });
     // 팝업 결과에는 지갑 안 정보가 실리지 않는다(스펙 §3.2) — 그래도 Snap 에는 새 C_u 가 저장돼 있어야 한다.
     assert.ok(snapState.userCred?.blind_u, '팝업이 userCredIssued 를 Snap 에 저장했다');
     assert.equal((await rp.get('/api/mode3/logins', rp.adminHeaders)).body.logins.length, 1);
@@ -1473,12 +1475,26 @@ try {
     const reg = await p.evaluate((sec) => fetch('/cia/admin/registry', { headers: { 'X-CIA-Admin-Secret': sec } }).then((r) => r.json()), cia.adminSecret);
     const leaves = await p.$$eval('#regDb table tbody tr', (trs) => trs.map((tr) => tr.cells[4].querySelector('code').textContent));
     assert.deepEqual(leaves, reg.slots.filter((x) => x.uid !== null).map((x) => x.leaf), '등록부 DB 의 리프는 API 와 같은 전체 값');
+    // 2026-11-15(화면의 폐기 목록 점검): 탭으로 돌아오면 상태를 다시 읽는다 — 스냅에서 세션을 폐기하고 이 탭으로 와도 "게시 대기 리프 0" 이 그대로였다
+    {
+      const stateCalls = []; const onReq = (r) => { if (new URL(r.url()).pathname === '/cia/state') stateCalls.push(Date.now()); };
+      p.on('request', onReq);
+      try { await p.evaluate(() => document.dispatchEvent(new Event('visibilitychange'))); await p.waitForTimeout(1500); assert.ok(stateCalls.length >= 1, '탭 복귀에 /cia/state 를 다시 읽는다'); }
+      finally { p.off('request', onReq); }
+    }
     // 2026-11-15(시연자 화면 리뷰): "게시" 의 결과는 버튼 바로 아래에도 뜬다 — 맨 위 "최근 결과" 카드는 버튼을 누른 자리에서 화면 밖이다
     assert.equal((await cia.adminGet('/cia/state')).body.pendingCount, 0, '이 자리에서는 올릴 폐기가 없다(게시가 다른 케이스의 로그인을 닫지 않는다)');
     p.once('dialog', (d) => d.accept()); await p.click('#publishBtn');
     await waitText(p, '#publishVerdict', '올릴 변경이 없어 게시하지 않았습니다', 20_000);
     const near = await p.evaluate(() => { const b = document.querySelector('#publishBtn').getBoundingClientRect(), v = document.querySelector('#publishVerdict').getBoundingClientRect(); return { gap: Math.round(v.top - b.bottom), vh: window.innerHeight }; });
     assert.ok(near.gap >= 0 && near.gap < 120, `결과가 버튼 바로 아래에 있다(간격 ${near.gap}px)`);
+    // 게시 뒤 거울 줄을 한 번 더 읽는다(중계는 게시 직후에 끝난다 — 처음 읽은 값은 "캐노니컬 대비 −1" 일 수 있다)
+    {
+      const health = []; const onReq = (r) => { if (new URL(r.url()).pathname === '/mode3/health') health.push(Date.now()); };
+      p.on('request', onReq);
+      try { p.once('dialog', (d) => d.accept()); await p.click('#publishBtn'); await p.waitForTimeout(4000); assert.ok(health.length >= 2, `게시 뒤 거울 상태를 다시 읽는다(${health.length}회)`); }
+      finally { p.off('request', onReq); }
+    }
     await p.close();
   });
 
@@ -1677,6 +1693,16 @@ try {
     await walletPage.waitForSelector('#regNotice:not([hidden])', { timeout: 30_000 });
     assert.ok((await text(walletPage, '#regNotice')).includes('zkID 등록부에 이 스냅의 자격증명이 없습니다'), await text(walletPage, '#regNotice'));
     await walletTab(walletPage, 'services'); assert.equal(await walletPage.isVisible('#regNotice'), true, '안내는 탭과 무관하게 보인다');
+    // 2026-11-15(화면의 폐기 목록 점검): zkID 관리자 화면은 폐기된 계정의 비운 슬롯을 표에 남긴다(리프 0 · "계정 폐기됨") — 전에는 "등록된 슬롯이 없습니다"
+    {
+      const ap = await context.newPage(); await ap.goto(`${cia.base}/admin`); await ap.waitForSelector('#adminGate:not([hidden])');
+      await ap.fill('#adminGate .gate-pwd', cia.adminSecret); await ap.click('#adminGate .gate-form button[type=submit]');
+      await ap.waitForFunction((u) => [...document.querySelectorAll('#regDb table tbody tr')].some((tr) => tr.cells[1]?.textContent.trim() === u), String(uidB), { timeout: 20_000 });
+      const rowB = await ap.$$eval('#regDb table tbody tr', (trs, u) => { const tr = trs.find((x) => x.cells[1]?.textContent.trim() === u); return [...tr.cells].map((c) => (c.querySelector('code')?.textContent ?? c.textContent).trim()); }, String(uidB));
+      assert.equal(rowB[4], '0', `비운 슬롯의 리프는 0: ${j(rowB)}`); assert.equal(rowB[5], '계정 폐기됨', j(rowB));
+      assert.ok((await ap.$$eval('#creds table tbody tr', (trs) => trs.map((tr) => tr.textContent))).some((x) => x.includes(String(uidB)) && x.includes('계정 폐기됨')), '활성 목록에도 폐기된 줄이 남는다');
+      await ap.close();
+    }
   });
 
   await t('하네스: 준비한 대화상자 응답이 남지 않았다(기대한 동의 창이 다 떴다)', async () => {

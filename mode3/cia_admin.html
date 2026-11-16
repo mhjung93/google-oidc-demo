@@ -767,10 +767,15 @@
           ? { summary: Demo.t('admin_publish_summary', { epoch: body.epoch, n: (body.leaves ?? []).length }), detail: safeDetail(body) }
           : { summary: Demo.t('admin_publish_none'), detail: safeDetail(body) }));
         loadState(); loadAccounts();
+        setTimeout(loadState, 1500);   // 거울 중계는 게시 직후에 끝난다 — 방금 읽은 거울 줄은 "캐노니컬 대비 −1" 일 수 있어 한 번 더 읽는다(2026-11-15)
       });
       // 실패도 버튼 아래에 — 사유는 맨 위 카드에 있다
       if (!res || res.status < 200 || res.status >= 300) setVerdict($('publishVerdict'), false, 'admin_publish_failed', res ? { reason: reasonFor(res) } : {});
     });
+
+    // 2026-11-15(화면의 폐기 목록 점검): 탭으로 돌아오면 상태를 다시 읽는다 — 다른 탭(스냅·사용자 페이지)에서 폐기한 뒤 이 탭으로 와도
+    // "게시 대기 리프 0"·"폐기된 세션이 없습니다" 가 그대로여서, 무엇을 게시하는지 보이지 않았다.
+    document.addEventListener('visibilitychange', () => { if (!document.hidden && hasSecret()) { loadState(); loadAccounts(); } });
 
     // ---- 기동 ----
     function reloadAll() {

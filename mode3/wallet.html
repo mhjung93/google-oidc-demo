@@ -151,6 +151,8 @@
       <p class="desc" data-i18n="wallet_sessions_desc">RP 마다 다른 주소로 로그인합니다. 세션 하나만 끝낼 수도 있습니다.</p>
       <div id="sessionActions"></div>
       <div id="sessionVerdict"></div>
+      <!-- 2026-11-15(화면의 폐기 목록 점검): 에이전트가 받아 둔 폐기 목록(/wallet/status 의 rcl) — 목록을 쓰는 쪽이 사용자라는 것이 이 화면에 없었다. -->
+      <p class="muted" id="rclLine" hidden></p>
       <p class="muted" id="sessionsNote" data-i18n="wallet_sessions_note">로그인은 RP 페이지에서 시작합니다 — 자격증명 발급은 로그인 안에서 필요할 때 자동으로 일어납니다.</p>
       <!-- 체인 반영 대기(설계 2026-10-22 §3·§7, Task 9) — 2026-11-03: 따로 카드가 아니라 대기 건이 있을 때만 이 아래에 보인다(renderBounds). -->
       <div id="boundsSection" hidden>
@@ -1558,9 +1560,17 @@
       }
       renderIdentity();
       renderSessions();
+      renderRcl();
       renderBounds();
       renderGuide();
       syncStack();
+    }
+    /** 연결된 서비스 탭의 폐기 목록 한 줄. 상태를 못 읽었거나 에이전트에 체인 설정이 없으면(rcl:null) 숨긴다. */
+    function renderRcl() {
+      const el = $('rclLine'); if (!el) return;
+      const r = lastStatus?.rcl ?? null;
+      el.hidden = !r; if (!r) return;
+      el.textContent = r.lastSyncedBlock === null ? (tt('wallet_rcl_none') || '폐기 목록: 아직 받지 않았습니다.') : (tt('wallet_rcl_line', { leaves: r.leaves, block: r.lastSyncedBlock }) || `폐기 목록: 리프 ${r.leaves}개 · 블록 ${r.lastSyncedBlock}까지 받음`);
     }
     // 상태 패널(설계 2026-09-25 §2). 신원 기관 주소는 /wallet/status 가, 서비스 주소는 지갑 자신의 health(rpOrigin)가
     // 알려 준다 — 첫 폴링 결과를 구독해 한 번 더 건다. 승인 팝업(안내 바를 숨긴 창)에서는 걸지 않는다.

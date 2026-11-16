@@ -77,6 +77,10 @@ try {
     const ra = await cia.adminPost('/cia/revoke', { uid: '12345', scope: 'account' });
     assert.equal(ra.status, 200, j(ra.body)); assert.equal(ra.body.disabled, true); assert.equal(ra.body.published, true);
     assert.equal((await cia.get('/cia/state')).body.pendingCount, 0, '계정 폐기 게시에 세션 리프도 함께 나갔다');
+    // 2026-11-15(화면의 폐기 목록 점검): 비운 슬롯도 등록부 목록에 남는다(리프 0) — 전에는 목록에서 빠져 관리자 화면의 "활성 목록"·"등록부 DB" 가
+    // "등록된 슬롯이 없습니다" 가 됐다(설명은 "은퇴한 슬롯도 함께 보입니다(폐기 효과를 보기 위함)").
+    const gone = (await cia.adminGet('/cia/admin/registry')).body.slots.find((x) => x.uid === '12345');
+    assert.ok(gone, '폐기된 계정의 슬롯이 목록에 남는다'); assert.equal(gone.leaf, '0'); assert.equal(gone.active, false); assert.equal(gone.disabled, true); assert.equal(gone.Cf_u, null);
     const rev = await log.queryFilter(log.filters.Revoked(), 0, 'latest');
     assert.equal(rev.at(-1).args.leaves.length, 1);
   });

@@ -1825,7 +1825,11 @@ app.get('/cia/accounts', requireAdmin, (req, res) => res.json({
 app.get('/cia/admin/registry', requireAdmin, (req, res) => {
   const byIndex = new Map(Object.entries(state.accounts).map(([uid, a]) => [a.slot, { uid, a }]));
   const pendingIdx = new Set(state.registry.pendingSlots.map((e) => e.index));
-  const slots = registry.entries().map(([index, leaf]) => {
+  // 2026-11-15(화면의 폐기 목록 점검): 비운 슬롯(계정 폐기·스냅 연결 해제)도 리프 0 으로 싣는다 — entries() 는 채워진 칸만 주므로 전에는 목록에서
+  // 빠져, 관리자 화면에서 폐기의 효과(그 슬롯이 0 이 됐다)가 보이지 않았다. 등록만 하고 발급 전인 슬롯은 지금처럼 싣지 않는다.
+  const filled = new Map(registry.entries());
+  for (const a of Object.values(state.accounts)) if (Number.isInteger(a.slot) && (a.disabled || a.slotRetired) && !filled.has(a.slot)) filled.set(a.slot, 0n);
+  const slots = [...filled.entries()].sort((x, y) => x[0] - y[0]).map(([index, leaf]) => {
     const e = byIndex.get(index);
     const cred = e ? activeCred(e.uid) : null;
     // 관리자 화면 "사용자 자격증명 활성 목록"(2026-10-14): 활성 C_u 의 Cf_u·발급 시각·disabled·게시 대기 여부를 함께 준다. 값은 모두 공개 부분이다.

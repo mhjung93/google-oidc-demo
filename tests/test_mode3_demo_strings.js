@@ -242,4 +242,16 @@ t('새 계정으로 옮기는 안내가 속성 도구에서 커밋먼트를 다�
   assert.match(ui.rp_login_proof_policy.ko, /값은 받지 않/);
 });
 
+// 2026-11-15(화면의 폐기 목록 점검): 서비스는 폐기 목록(root)뿐 아니라 등록부(regRoot)가 바뀌어도 로그인을 닫는다 — 다른 사용자의 첫 발급만으로도.
+// 화면은 "폐기 목록을 새로 게시하면" 이라고만 했다. 게시 카드도 폐기만 말했는데 같은 게시가 등록부를 함께 올리고 판(epoch)을 올린다.
+t('닫힌 로그인·게시 문구가 폐기 목록과 등록부를 함께 말한다; 없어진 "동기화 생략" 을 가리키지 않는다; 스냅 화면의 폐기 목록 줄 문구가 있다', () => {
+  const ui = S.ui, R = S.reasons;
+  for (const [name, s] of [['rp_session_stale', ui.rp_session_stale.ko], ['revalidate_required.cause', R.revalidate_required.ko.cause], ['confirm_publish', ui.confirm_publish.ko], ['admin_rcl_desc', ui.admin_rcl_desc.ko]]) assert.match(s, /등록부/, name);
+  assert.match(ui.admin_rcl_title.ko, /등록부/);
+  assert.equal(/설계 §/.test(ui.admin_rcl_desc.ko), false, '화면 밖 문서 번호를 싣지 않는다');
+  assert.equal(/동기화 생략/.test(R.stale_root.ko.action), false); assert.match(R.stale_root.ko.action, /다시 로그인/);
+  for (const k of ['wallet_rcl_line', 'wallet_rcl_none']) { assert.ok(ui[k]?.ko, k); assert.ok(ui[k]?.en, k); }
+  assert.match(ui.admin_creds_desc.ko, /리프 0/, '비운 슬롯이 어떻게 보이는지 말한다');
+});
+
 if (fails) { console.log(`\n${fails} FAIL`); process.exit(1); } else console.log('\nall ok');
