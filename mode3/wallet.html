@@ -2349,8 +2349,10 @@
         if (currentTab === 'me' && !setupNeeded) await loadStore();
       } catch (e) { setVerdict(v, false, 'wallet_snap_update_failed', { reason: isUserRejected(e) ? 'user_denied' : 'snap_unavailable', detail: e?.message }); }
     });
-    $('snapResetBtn').addEventListener('click', async () => {
-      if (!Demo.confirmDanger('confirm_reset')) return;
+    $('snapResetBtn').addEventListener('click', () => snapResetNow());
+    /** 스냅 초기화 — 버튼과 데모 리셋 감지(checkDemoReset)가 함께 쓴다. ask=false 면 페이지 확인 창을 건너뛴다(스냅의 MetaMask 확인 창은 그대로 뜬다). */
+    async function snapResetNow({ ask = true, summary = null } = {}) {
+      if (ask && !Demo.confirmDanger('confirm_reset')) return;
       pendingVerdict($('snapResetVerdict'), 'working');
       try {
         await ensureConnected();
@@ -2359,13 +2361,30 @@
         // 2026-11-06: 에이전트(이 서버)의 등록·세션도 함께 비운다 — 아니면 다음 등록이 409 already_registered 로 막힌다.
         const a = await fetch('/wallet/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: true }) });
         if (!a.ok) { setVerdict($('snapResetVerdict'), false, 'wallet_snap_reset_failed', { reason: 'wallet_error', detail: `agent reset HTTP ${a.status}` }); return; }
-        setVerdict($('snapResetVerdict'), true, 'wallet_snap_reset_ok', () => ({ summary: tt('wallet_snap_reset_summary') || '스냅과 이 스냅의 등록 기록을 지웠습니다. 이제 zkID 에서 새로 등록할 수 있습니다.' }));
+        setVerdict($('snapResetVerdict'), true, 'wallet_snap_reset_ok', () => ({ summary: summary ? tt(summary) : tt('wallet_snap_reset_summary') || '스냅과 이 스냅의 등록 기록을 지웠습니다. 이제 zkID 에서 새로 등록할 수 있습니다.' }));
         await refresh();
         await loadStore();   // "내 계정" 의 값도 지운 뒤의 것으로
       } catch (e) {
         setVerdict($('snapResetVerdict'), false, 'wallet_snap_reset_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
       }
-    });
+    }
+    // 2026-11-16(사용자 지적): 데모 리셋 스크립트는 에이전트 상태는 치우지만 MetaMask 스냅 안의 등록(uid·auid·자격증명·동의)은 지울 수 없다 — 옛 등록이 남아
+    // "내 계정" 에 보이고 다음 등록이 already_registered 로 막혔다. 리셋 표시(/attr/dist/reset.json, 속성 도구와 같은 파일)가 이 브라우저가 본 값과 다르고 스냅에
+    // 등록이 남아 있으면 스냅 초기화를 스스로 시작한다(MetaMask 확인 창 한 번, salt 는 남는다). 처음 보는 브라우저는 표시만 기억한다(지울 옛 등록이 없다).
+    const DEMO_RESET_KEY = 'mode3_wallet_demo_reset';
+    async function checkDemoReset() {
+      if (IS_AUTHORIZE || cfg.secrets !== 'snap' || !snapConnected) return;
+      let epoch = null;
+      try { const r = await fetch('/attr/dist/reset.json', { cache: 'no-store' }); if (r.ok) epoch = String((await r.json()).epoch ?? ''); } catch { epoch = null; }
+      if (!epoch) return;
+      let seen = null; try { seen = localStorage.getItem(DEMO_RESET_KEY); } catch { return; }
+      if (seen === epoch) return;
+      try { localStorage.setItem(DEMO_RESET_KEY, epoch); } catch { return; }   // 먼저 기억한다 — 확인 창을 거절해도 새로 고칠 때마다 다시 뜨지 않게(버튼은 그대로 있다)
+      let info = null; try { info = await invokeSnap('getPublicInfo', {}); } catch { return; }
+      if (seen === null || !(info?.registered || info?.pending)) return;
+      showTab('me');
+      await snapResetNow({ ask: false, summary: 'wallet_demo_reset_done' });
+    }
 
     function applySnapMode() {
       $('meTabBtn').hidden = false;   // 내 계정(2026-11-12) — 스냅이 저장한 값이라 snap 모드에서만
@@ -2392,6 +2411,7 @@
       } catch { /* 설정을 못 읽으면 file 모드로 본다 */ }
       if (cfg.secrets === 'snap') applySnapMode();
       if (!IS_AUTHORIZE) { try { await restoreConnection(); } catch { /* 못 이으면 연결 카드가 보인다 */ } }
+      if (!IS_AUTHORIZE) checkDemoReset().catch(() => {});   // 2026-11-16: 새 데모면 스냅의 옛 등록을 지운다
       if (!IS_AUTHORIZE) showTab(currentTab);
       renderModeTexts();
       renderMmStatus();

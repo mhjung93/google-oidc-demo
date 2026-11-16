@@ -1281,6 +1281,7 @@ try {
       await p.reload(); await p.waitForSelector('#resetCleared:not([hidden])', { timeout: 15_000 });
       assert.equal(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')), null, '리셋 뒤 기록이 비었다');
       assert.equal(await p.isVisible('#noCommit'), true);
+      assert.equal(await p.inputValue('#uid'), '', '리셋 뒤 uid 칸이 비었다(2026-11-16 — 전에는 옛 기록의 uid 가 칸에 남았다)'); assert.equal(await p.inputValue('#salt'), '', '리셋 뒤 salt 칸이 비었다');
       await p.reload(); await p.waitForTimeout(500);
       assert.equal(await p.isHidden('#resetCleared'), true, '같은 리셋 값이면 다시 비우지 않는다(안내도 없다)');
     } finally { if (resetBefore === null) fs.rmSync(resetFile, { force: true }); else fs.writeFileSync(resetFile, resetBefore); }
