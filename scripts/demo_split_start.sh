@@ -13,6 +13,7 @@
 #        WALLET_MODE=snap bash scripts/demo_split_start.sh  # Snap 모드(2026-10-22): 이 VM 의 지갑 자리에 에이전트(:5100, MODE3_WALLET_SECRETS=snap)+Snap 서버(:8082). 포트 5100 은 Snap 이 허용하는
 #                                                          # 지갑 오리진(snap-mode3/src/index.js)이라 바꿀 수 없다 — 한 머신 데모(:5100)와 동시에 못 띄운다. scripts/demo_split_snap_reset.sh 가 이 값을 넣어 부른다(web 모드 리셋은 scripts/demo_split_reset.sh).
 #        ADMIN_OPEN=1 bash scripts/demo_split_start.sh     # IdP 관리자 인증을 끈 채로(2026-11-05 부터 기본은 켬 — 관리자 페이지 비밀번호 idp; RP 관리자는 zkone·zktwo)
+#        BLOCKSCOUT_RESET=0 bash scripts/demo_split_start.sh  # 로컬 Blockscout(.local/blockscout) 색인 초기화를 건너뛴다(기본은 체인을 새로 만들 때 함께 비운다, 2026-11-17)
 #        ISSUE_AUTH=code bash scripts/demo_split_start.sh  # 발급 인증 정책(기본은 WALLET_MODE 에 따른다 — snap 은 CIA_ISSUE_AUTH=code, web 은 key, 2026-10-23: web 코어는
 #                                                           # auth_code 를 보내지 않으므로 code 로 켜면 로그인이 막힌다). code 면 로그인 때 지갑 팝업이 연 IdP 인증 창(uid·비밀번호·auid)의 1회용 코드가
 #                                                           # 있어야 발급한다(2026-10-22). key 면 옛 방식(서명만) — CIA_DEMO_ACCOUNTS 는 그대로 미설정(가입(POST /cia/signup)만 쓴다)
@@ -118,6 +119,18 @@ start_chain() { # $1 포트 $2 chainId $3 이름
 }
 start_chain $REV_PORT $REV_CHAIN rev
 start_chain $APP_PORT $APP_CHAIN app
+
+# 3b. Blockscout 초기화(2026-11-17 사용자 요청): 로컬 Blockscout(.local/blockscout, :4000)는 응용 체인(:$APP_PORT)을 색인한다. 체인을 새로 만들면
+#     DB 에 옛 체인의 블록이 남아 새 블록 번호(≤ 옛 최고 높이)를 이미 색인한 것으로 보고 갱신하지 않는다 — 색인 볼륨을 지우고 다시 띄운다.
+#     compose 파일이 없거나 docker 가 없으면 건너뛴다. BLOCKSCOUT_RESET=0 이면 끈다. 체인에서 다시 만들어지는 색인뿐이라 데모 상태 파일과 무관하다.
+BS_DIR=".local/blockscout"
+if [ "${BLOCKSCOUT_RESET:-1}" != 0 ] && [ -f "$BS_DIR/compose.yml" ] && command -v docker >/dev/null 2>&1; then
+  if (cd "$BS_DIR" && docker compose down -v >"$LOGS/blockscout_reset.log" 2>&1 && docker compose up -d >>"$LOGS/blockscout_reset.log" 2>&1); then
+    echo "Blockscout 초기화: 색인을 비우고 다시 띄웠다(http://127.0.0.1:4000 — 새 체인을 0번부터 색인한다)"
+  else
+    echo "WARN Blockscout 초기화 실패 — $LOGS/blockscout_reset.log (데모는 계속 진행)"
+  fi
+fi
 
 # 4. IdP 주소: 임시 상태 파일로 IdP 를 한 번 띄워 /cia/public_keys 의 ethAddress 를 읽는다(배포 스크립트 안내대로). 키는 idp VM 안에만 생긴다.
 on "$IDP" "cd ~/zkd-demo && { CIA_STATE_FILE=/tmp/cia_keyprobe_state.json CIA_RPC_URL=http://$HOST:$REV_PORT setsid nohup \$HOME/zkd-demo/bin/node cia.js > logs/cia_keyprobe.log 2>&1 < /dev/null & }"

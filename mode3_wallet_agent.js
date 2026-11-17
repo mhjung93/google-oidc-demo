@@ -1013,6 +1013,12 @@ function setSessionWitness(rsKey, src) {
 // 같은 오리진(zk 스냅 화면·승인 팝업)만 부른다 — 교차 사이트는 위 전역 오리진 정책이 403 bad_origin 으로 막는다. blind_u 를 싣는 응답이 있다.
 const requirePasskeyMode = (res) => { if (SECRETS !== 'passkey') { res.status(409).json({ reason: 'not_passkey_mode' }); return false; } return true; };
 const isB64url = (v) => typeof v === 'string' && /^[A-Za-z0-9_-]{1,1024}$/.test(v);
+// salt 보관(스펙 §11 P16, 2026-11-17 사용자 결정 — 10분): 화면이 패스키로 만든 salt 를 **메모리에만** 잠시 둔다(파일·로그에 쓰지 않는다). 그동안의 로그인·salt 보기·
+// 세션 복구는 패스키를 다시 묻지 않는다. 시간은 패스키를 누른 때부터 센다(쓸 때마다 늘리지 않는다). 재시작·스냅 초기화·패스키 연결 끊기로 사라진다. 0 이면 보관하지 않는다.
+const PASSKEY_HOLD_MS = (() => { const v = Number(process.env.MODE3_PASSKEY_HOLD_SECONDS ?? 600); if (!Number.isFinite(v) || v < 0) throw new Error(`MODE3_PASSKEY_HOLD_SECONDS 는 0 이상의 숫자: ${process.env.MODE3_PASSKEY_HOLD_SECONDS}`); return v * 1000; })();
+let heldSalt = null;   // { s_u, until(ms) } | null
+const clearHeldSalt = () => { heldSalt = null; };
+const currentHeldSalt = () => { if (heldSalt && Date.now() >= heldSalt.until) heldSalt = null; return heldSalt; };
 app.get('/wallet/passkey/state', (req, res) => {
   if (!requirePasskeyMode(res)) return;
   const reg = state.registration;
@@ -1042,8 +1048,27 @@ app.put('/wallet/passkey/credential', async (req, res) => {
 app.delete('/wallet/passkey/credential', (req, res) => {
   if (!requirePasskeyMode(res)) return;
   if (state.registration) return res.status(409).json({ reason: 'registered' });
-  state.passkey = null; persist();
+  state.passkey = null; clearHeldSalt(); persist();
   res.json({ ok: true });
+});
+app.post('/wallet/passkey/hold', async (req, res) => {
+  try {
+    if (!requirePasskeyMode(res)) return;
+    if (PASSKEY_HOLD_MS <= 0) return res.json({ ok: true, held: false });
+    // 등록 전(첫 로그인·계정 복구)에는 대조할 auid 가 없어 받지 않는다 — 다른 패스키의 salt 를 쥐는 일이 없게.
+    if (!state.registration) return res.status(409).json({ reason: 'not_registered' });
+    const { s_u = null } = req.body ?? {};
+    const okSalt = isDec(s_u ?? '') && BigInt(s_u) > 0n && BigInt(s_u) < SCALAR_MAX;
+    if (!okSalt || (await auidOf({ s_u: BigInt(s_u) })).toString() !== String(state.registration.auid)) return res.status(409).json({ reason: 'passkey_mismatch' });
+    heldSalt = { s_u: BigInt(s_u).toString(), until: Date.now() + PASSKEY_HOLD_MS };
+    res.json({ ok: true, held: true, until: new Date(heldSalt.until).toISOString() });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get('/wallet/passkey/held', (req, res) => {
+  if (!requirePasskeyMode(res)) return;
+  const h = currentHeldSalt();
+  if (!h) return res.status(404).json({ reason: 'passkey_not_held' });
+  res.json({ s_u: h.s_u, until: new Date(h.until).toISOString() });
 });
 app.post('/wallet/passkey/consent', (req, res) => {
   if (!requirePasskeyMode(res)) return;
@@ -1350,7 +1375,7 @@ app.post('/wallet/reset', (req, res) => {
   if (req.body?.confirm !== true) return res.status(400).json({ error: 'confirm:true 필요' });
   const had = Boolean(state.registration);
   state.registration = null; state.sessions = {}; state.pendingBounds = [];
-  state.consents = {};   // passkey 모드의 동의 기록도 등록과 함께 지운다. 패스키 연결(state.passkey)은 남긴다 — 다시 가입하면 같은 salt(스펙 §4.6)
+  state.consents = {}; clearHeldSalt();   // passkey 모드의 동의 기록·보관한 salt 도 등록과 함께 지운다. 패스키 연결(state.passkey)은 남긴다 — 다시 가입하면 같은 salt(스펙 §4.6)
   persist();
   res.json({ ok: true, hadRegistration: had });
 });

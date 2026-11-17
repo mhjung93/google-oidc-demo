@@ -99,10 +99,17 @@
       if (held) return held.s_u;
       const cur = st ?? await agentState();
       if (!cur.passkey?.credentialId) fail('passkey_setup_required');
-      const d = await derive({ credentialId: cur.passkey.credentialId });
-      if (d.credentialId !== cur.passkey.credentialId) fail('passkey_mismatch', '연결된 패스키와 다른 패스키다');   // R-E
-      if (depth > 0) held = { s_u: d.s_u };
-      return d.s_u;
+      // 스펙 §11 P16(10분 보관): 에이전트 메모리에 맡겨 둔 salt 가 있으면 패스키를 묻지 않는다. 없으면(시간 지남·재시작·등록 전) 패스키 → 맡긴다(실패는 무시 — 다음에 또 묻는다).
+      const h = await fetchJson('/wallet/passkey/held').catch(() => null);
+      let s_u = h?.status === 200 && typeof h.body?.s_u === 'string' ? h.body.s_u : null;
+      if (!s_u) {
+        const d = await derive({ credentialId: cur.passkey.credentialId });
+        if (d.credentialId !== cur.passkey.credentialId) fail('passkey_mismatch', '연결된 패스키와 다른 패스키다');   // R-E
+        s_u = d.s_u;
+        await fetchJson('/wallet/passkey/hold', { method: 'POST', body: { s_u } }).catch(() => null);
+      }
+      if (depth > 0) held = { s_u };
+      return s_u;
     }
     const requireRegistered = (st) => (st.registration?.uid ? st.registration : fail('not_registered'));
     async function withSalt(fn) {

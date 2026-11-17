@@ -36,7 +36,7 @@ function stubSalt(secretHex) {
 assert.ok(fs.existsSync(VKEY_PATH), `pi_cred vkey 없음: ${VKEY_PATH} (build/mode3 산출물 필요)`);
 execFileSync('node', ['scripts/build_attr_tool.mjs'], { stdio: 'inherit' });   // 속성 도구 번들 — zk 스냅 화면이 같은 오리진에서 읽는다
 const browser = await launchBrowser();
-const stack = await startIsolatedMode3Stack({ walletEnv: { MODE3_WALLET_SECRETS: 'passkey' }, walletHost: 'localhost', ciaEnv: { CIA_ISSUE_AUTH: 'code' }, autoRelay: true });
+const stack = await startIsolatedMode3Stack({ walletEnv: { MODE3_WALLET_SECRETS: 'passkey', MODE3_PASSKEY_HOLD_SECONDS: '0' }, walletHost: 'localhost', ciaEnv: { CIA_ISSUE_AUTH: 'code' }, autoRelay: true });
 const { cia, wallet, rp } = stack;
 const SECRET_A = 'a1'.repeat(32), SECRET_B = 'b2'.repeat(32);
 const SALT_A = stubSalt(SECRET_A);
@@ -322,6 +322,21 @@ try {
     assert.equal((await wallet.get('/wallet/status')).body.registered, false, '다른 auid 로는 등록되지 않는다');
     const acct = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.id === 'pk-user2');
     assert.ok(!acct?.auid, `IdP 의 pk-user2 에도 등록이 없다: ${j(acct)}`);
+  });
+
+  // 스펙 §11 P16(10분 보관): 보관을 켜면 패스키를 누른 뒤 10분 안의 로그인은 패스키를 묻지 않는다.
+  await t('salt 10분 보관: 첫 로그인은 패스키 한 번, 곧이은 로그인은 패스키 없이; 상태 파일에는 salt 가 없다', async () => {
+    // 앞 케이스들이 에이전트를 비웠다 — 같은 계정·같은 auid 로 다시 등록(restored)해 둔다(화면 흐름은 앞 케이스가 이미 본다)
+    const acc = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.id === 'pk-user');
+    const ac = await fetch(`${cia.base}/cia/auth/code`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ uid: acc.uid, pwd: DEMO_PWD, auid: AUID_A, purpose: 'register' }) });
+    const code = (await ac.json()).code;
+    const reg = await wallet.post('/wallet/register', { uid: String(acc.uid), code, s_u: SALT_A });
+    assert.equal(reg.status, 201, j(reg.body));
+    await stack.restartWallet({ MODE3_PASSKEY_HOLD_SECONDS: '600' });
+    const g0 = hits.get; await loginAgain(); assert.equal(hits.get - g0, 1, '보관 전 첫 로그인은 패스키 한 번');
+    const g1 = hits.get; await loginAgain(); assert.equal(hits.get - g1, 0, '10분 안의 로그인은 패스키 없이');
+    assert.equal(fs.readFileSync(stack.walletStateFile, 'utf8').includes(SALT_A), false, '보관은 메모리에만');
+    await stack.restartWallet({ MODE3_PASSKEY_HOLD_SECONDS: '0' });
   });
 } finally {
   await browser.close().catch(() => {});

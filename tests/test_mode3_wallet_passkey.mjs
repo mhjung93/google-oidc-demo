@@ -122,11 +122,25 @@ try {
     assert.equal((await wallet.post('/wallet/passkey/consent', { origin: info.origin, arid: info.arid, allowAgent: 'x' }, same)).status, 400);
   });
 
+  // 스펙 §11 P16(2026-11-17 사용자 결정 — 10분 보관): 패스키로 만든 salt 를 에이전트 메모리에만 잠시 둔다. 등록의 auid 와 맞을 때만 받고 파일에는 쓰지 않는다.
+  await t('salt 보관: 다른 salt 는 409 passkey_mismatch, 맞는 salt 는 보관·조회되고 파일에는 없다; 다른 사이트는 403', async () => {
+    assert.equal((await wallet.get('/wallet/passkey/held', same)).status, 404, '처음에는 보관된 것이 없다');
+    const bad = await wallet.post('/wallet/passkey/hold', { s_u: createReadySnapSim().state.salt.s_u }, same);
+    assert.equal(bad.status, 409, j(bad.body)); assert.equal(bad.body.reason, 'passkey_mismatch');
+    const ok = await wallet.post('/wallet/passkey/hold', { s_u: S_U }, same);
+    assert.equal(ok.status, 200, j(ok.body)); assert.equal(ok.body.held, true);
+    const h = await wallet.get('/wallet/passkey/held', same);
+    assert.equal(h.status, 200, j(h.body)); assert.equal(h.body.s_u, S_U);
+    assert.equal((await wallet.get('/wallet/passkey/held', { 'Sec-Fetch-Site': 'cross-site' })).status, 403);
+    assert.equal(stateFile().includes(S_U), false, '보관한 salt 는 파일에 없다');
+  });
+
   await t('재시작 뒤 session_restore_required(needs_consent 아님), 세션 증인으로 복구', async () => {
     const { attrGateAddress } = (await rp.get('/api/mode3/rp_info')).body;
     const before = (await wallet.get('/wallet/status')).body;
     assert.equal(before.sessions[S1].hasWitness, true);
     await stack.restartWallet();
+    assert.equal((await wallet.get('/wallet/passkey/held', same)).status, 404, '재시작하면 보관한 salt 도 사라진다(메모리)');
     const s = (await wallet.get('/wallet/status')).body;
     assert.equal(s.sessions[S1].hasWitness, false);
     const rv = await wallet.post('/wallet/revalidate', { r_s: S1 }, { Origin: rp.origin });
@@ -170,7 +184,9 @@ try {
   });
 
   await t('데모 리셋은 등록·동의를 지우고 패스키 연결은 남긴다; 그 뒤 연결 끊기 200', async () => {
+    assert.equal((await wallet.post('/wallet/passkey/hold', { s_u: S_U }, same)).status, 200);
     const rs = await wallet.post('/wallet/reset', { confirm: true });
+    assert.equal((await wallet.get('/wallet/passkey/held', same)).status, 404, '스냅 초기화는 보관한 salt 도 지운다');
     assert.equal(rs.status, 200, j(rs.body));
     const st = await pkState();
     assert.equal(st.registration, null); assert.deepEqual(st.consents, {}); assert.equal(st.passkey.credentialId, 'AAECAwQ');
@@ -188,6 +204,21 @@ try {
     const r = await wallet.post('/wallet/register', { uid: '12345', code: acBody.code, s_u: S_U });
     assert.equal(r.status, 201, j(r.body));
     assert.equal(r.body.restored, true); assert.equal(r.body.slot, SLOT1, '같은 슬롯');
+  });
+  await t('salt 보관은 정한 시간이 지나면 사라진다(MODE3_PASSKEY_HOLD_SECONDS); 0 이면 보관하지 않는다', async () => {
+    await stack.restartWallet({ MODE3_PASSKEY_HOLD_SECONDS: '1' });
+    assert.equal((await wallet.post('/wallet/passkey/hold', { s_u: S_U }, same)).body.held, true);
+    assert.equal((await wallet.get('/wallet/passkey/held', same)).status, 200);
+    await new Promise((r) => setTimeout(r, 1500));
+    assert.equal((await wallet.get('/wallet/passkey/held', same)).status, 404, '1초 뒤에는 없다');
+    await stack.restartWallet({ MODE3_PASSKEY_HOLD_SECONDS: '0' });
+    const off = await wallet.post('/wallet/passkey/hold', { s_u: S_U }, same);
+    assert.equal(off.status, 200, j(off.body)); assert.equal(off.body.held, false);
+    assert.equal((await wallet.get('/wallet/passkey/held', same)).status, 404);
+    await wallet.post('/wallet/reset', { confirm: true });
+    await stack.restartWallet({ MODE3_PASSKEY_HOLD_SECONDS: '600' });
+    const noReg = await wallet.post('/wallet/passkey/hold', { s_u: S_U }, same);
+    assert.equal(noReg.status, 409, j(noReg.body)); assert.equal(noReg.body.reason, 'not_registered', '등록 전에는 보관하지 않는다');
   });
 } finally {
   await stack.stop();
