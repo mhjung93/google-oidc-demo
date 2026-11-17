@@ -53,16 +53,18 @@ t('passkey-web 값 — 터널 끔·https 이름·AGENT_MODE=0', () => {
 });
 
 const blockedIdx = () => lines.map((l, i) => [l, i]).filter(([l]) => /BLOCKED/.test(l) && !/번들 빌드|snap-mode3/.test(l)).map(([, i]) => i);
-t('사전 검사 — CA 파일·VM 주소의 CA 이름 제약 망·hosts 를 보고 BLOCKED 로 종료(hosts 검사가 마지막)', () => {
+t('사전 검사 — CA 파일·VM 주소(IPv4)·CA 이름 제약 망·hosts 를 보고 BLOCKED 로 종료(hosts 검사가 마지막)', () => {
   const b = blockedIdx();
-  assert.equal(b.length, 3, `BLOCKED 줄 ${b.length}개`);
-  const [caLine, netLine, hostsLine] = b;
+  assert.equal(b.length, 4, `BLOCKED 줄 ${b.length}개`);
+  const [caLine, ipLine, netLine, hostsLine] = b;
+  assert.match(lines[ipLine], /IPv4/);
   const ctx = (i) => lines.slice(Math.max(0, i - 2), i + 1).join('\n');
   assert.match(ctx(caLine), /ca\.crt/); assert.match(ctx(caLine), /ca\.key/); assert.match(lines[caLine], /zkd_tls_setup\.sh/);
   assert.match(lines.slice(caLine, netLine + 1).join('\n'), /openssl x509 -noout -text/);
   assert.match(lines.slice(caLine, netLine + 1).join('\n'), /255\\\.255\\\.255\\\.0/);
   assert.match(lines[netLine], /ZKD_DEMO_NET/);
-  assert.match(ctx(hostsLine), /getent hosts wallet\.zkd\.test/);
+  assert.match(ctx(hostsLine), /getent hosts/);
+  assert.match(src, /"127\.0\.0\.1=wallet\.zkd\.test" "\$IDP=idp\.zkd\.test" "\$RP1=zkone\.zkd\.test" "\$RP2=zktwo\.zkd\.test"/);
   for (const i of b) assert.match(lines[i], /exit 1/);
 });
 
@@ -76,7 +78,7 @@ t('지갑 인증서 SAN 은 이름과 127.0.0.1 뿐 — $HOST 없음', () => {
 let orderOk = false;
 t('사전 검사가 먼저 — 모든 BLOCKED 줄 < 첫 stop_remote/stop_local 호출 < 첫 on/ssh/pkill/docker 호출', () => {
   const b = blockedIdx();
-  assert.ok(b.length >= 3, 'BLOCKED 줄 없음');
+  assert.ok(b.length >= 4, 'BLOCKED 줄 없음');
   const stopCall = firstExec(/\b(stop_remote|stop_local)\b/);
   const remote = firstExec(/\b(ssh|pkill|docker|scp|rsync)\b|(^|[\s;&|({])on "/);
   assert.ok(stopCall !== undefined && remote !== undefined, '기준 줄을 못 찾음');
@@ -149,7 +151,27 @@ if (!orderOk) {
     const r = run({ WALLET_MODE: 'passkey-web', ZKD_CA_DIR: ca });
     assert.equal(r.status, 1, r.stdout + r.stderr);
     assert.match(r.stdout, /BLOCKED[^\n]*이름 제약 망/);
+    assert.match(r.stdout, /\(10\.9\.8\.0\/24\)/, 'CA 망 파싱이 비면(없음) fail-closed 만 확인될 뿐 비교는 검증되지 않는다');
     assert.match(r.stdout, /ZKD_DEMO_NET/);
+    assert.doesNotMatch(r.stdout, /SPLIT_START|stop |ABORT|chain /);
+  });
+  t('실행 — SPLIT_*_IP 가 IPv4 가 아니면 BLOCKED, 종료 1', () => {
+    const ca = fs.mkdtempSync(path.join(tmp, 'ca-ip-'));
+    const mk = spawnSync('bash', ['-c', 'source scripts/zkd_tls_lib.sh; zkd_ca_create "$1" 192.0.2.0', 'x', ca], { encoding: 'utf8', cwd: new URL('..', import.meta.url).pathname });
+    assert.equal(mk.status, 0, mk.stderr);
+    const r = run({ WALLET_MODE: 'passkey-web', ZKD_CA_DIR: ca, SPLIT_IDP_IP: '192.0.2.x' });
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stdout, /BLOCKED[^\n]*IPv4/);
+    assert.doesNotMatch(r.stdout, /SPLIT_START|stop |ABORT|chain /);
+  });
+  t('실행 — CA 망은 맞아도 hosts 이름이 현재 주소와 다르면 BLOCKED, 종료 1', () => {
+    // 문서용 망(192.0.2.0/24)이라 개발 PC 의 실제 /etc/hosts(.226 망)와는 반드시 어긋난다 — 이름 하나에서 멈춘다
+    const ca = fs.mkdtempSync(path.join(tmp, 'ca-hosts-'));
+    const mk = spawnSync('bash', ['-c', 'source scripts/zkd_tls_lib.sh; zkd_ca_create "$1" 192.0.2.0', 'x', ca], { encoding: 'utf8', cwd: new URL('..', import.meta.url).pathname });
+    assert.equal(mk.status, 0, mk.stderr);
+    const r = run({ WALLET_MODE: 'passkey-web', ZKD_CA_DIR: ca });
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stdout, /BLOCKED[^\n]*zkd\.test/);
     assert.doesNotMatch(r.stdout, /SPLIT_START|stop |ABORT|chain /);
   });
   fs.rmSync(tmp, { recursive: true, force: true });

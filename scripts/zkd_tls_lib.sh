@@ -11,7 +11,9 @@ ZKD_HOSTS_END='# <<< zkd-demo <<<'
 zkd_ca_dir_check() {
   local dir="$1" abs probe
   command -v git >/dev/null 2>&1 || return 0
-  abs=$(realpath -m -- "$dir") || return 1
+  # realpath -m 은 GNU coreutils — 없으면 조용히 실패하지 않고 이유를 말한다
+  command -v realpath >/dev/null 2>&1 || { echo "BLOCKED: realpath 가 없어 CA 위치($dir)를 확인할 수 없다 — coreutils 를 설치한다" >&2; return 2; }
+  abs=$(realpath -m -- "$dir") || { echo "BLOCKED: realpath -m 이 실패했다(GNU coreutils 필요) — CA 위치 $dir 를 확인할 수 없다" >&2; return 2; }
   probe="$abs"
   while [ ! -d "$probe" ]; do probe=$(dirname -- "$probe"); done
   [ "$(git -C "$probe" rev-parse --is-inside-work-tree 2>/dev/null)" = true ] || return 0
@@ -28,9 +30,17 @@ zkd_ca_create() {
   ( umask 077
     mkdir -p "$dir" && chmod 700 "$dir" || exit 1
     if [ -f "$dir/ca.crt" ] && [ -f "$dir/ca.key" ]; then
-      if ! openssl x509 -noout -text -in "$dir/ca.crt" | grep -qF "IP:$net/255.255.255.0"; then
-        echo "BLOCKED: 기존 CA 의 이름 제약 망이 $net 과 다르다 — $dir 를 지우고 다시 만들거나 ZKD_DEMO_NET 을 맞춘다" >&2
-        exit 2
+      # 파이프 대신 변수로 받는다 — grep -q 가 일찍 닫으면 pipefail 이 SIGPIPE 를 실패로 볼 수 있다
+      txt=$(openssl x509 -noout -text -in "$dir/ca.crt") || exit 1
+      case "$txt" in
+        *"IP:$net/255.255.255.0"*) ;;
+        *) echo "BLOCKED: 기존 CA 의 이름 제약 망이 $net 과 다르다 — $dir 를 지우고 다시 만들거나 ZKD_DEMO_NET 을 맞춘다" >&2; exit 2 ;;
+      esac
+      # 재사용하는 개인키가 다른 사용자도 읽을 수 있으면 600 으로 고친다(막지 않는다 — 내용은 그대로, 권한만)
+      mode=$(stat -c %a "$dir/ca.key") || exit 1
+      if [ "$mode" != 600 ]; then
+        chmod 600 "$dir/ca.key" || exit 1
+        echo "[고침] $dir/ca.key 권한 $mode -> 600" >&2
       fi
       exit 0
     fi
@@ -116,7 +126,7 @@ zkd_hosts_render() {
 zkd_hosts_strip() {
   awk -v b="$ZKD_HOSTS_BEGIN" -v e="$ZKD_HOSTS_END" '
       $0 == b { skip = 1; next }
-      skip && $0 == e { skip = 0; next }
+      $0 == e { skip = 0; next }   # 짝 없는 끝 표시도 우리 표시이므로 일반 줄로 남기지 않는다
       !skip { print }
     ' "$1"
 }
@@ -130,4 +140,30 @@ zkd_hosts_check() {
     echo "BLOCKED: 새 hosts 내용에 원래 $1 의 줄이 빠지거나 바뀌었다 — 설치하지 않는다" >&2
     return 1
   fi
+}
+
+# zkd_hosts_stale_warn <hosts_file> — 표시 블록 밖에 *.zkd.test 이름이 있으면 WARN 줄을 stderr 로(막지 않는다). 있으면 0, 없으면 1
+# 같은 이름이 블록 밖에도 있으면 먼저 읽힌 줄이 이겨, 블록을 갱신해도 옛 주소로 갈 수 있다.
+zkd_hosts_stale_warn() {
+  local hits
+  hits=$(zkd_hosts_strip "$1" | awk '/^[[:space:]]*#/ { next } { for (i = 2; i <= NF; i++) if ($i ~ /\.zkd\.test$/) { print; next } }') || return 1
+  [ -n "$hits" ] || return 1
+  echo "WARN: $1 의 표시 블록 밖에 *.zkd.test 이름이 있다 — 먼저 읽히는 옛 줄이 블록을 가릴 수 있으니 직접 지운다:" >&2
+  printf '  %s\n' "$hits" >&2
+}
+
+# zkd_ip_valid <값> — 점으로 나뉜 IPv4 네 칸(각 0~255)이면 0
+zkd_ip_valid() {
+  local a b c d x
+  [[ "${1:-}" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] || return 1
+  IFS=. read -r a b c d <<< "$1"
+  for x in "$a" "$b" "$c" "$d"; do [ $((10#$x)) -le 255 ] || return 1; done
+}
+
+# zkd_ip_in_net24 <ip> <net> — 둘 다 IPv4 이고 앞 세 칸이 숫자로 같으면 0(255.255.255.0 망)
+zkd_ip_in_net24() {
+  local a1 a2 a3 a4 n1 n2 n3 n4
+  zkd_ip_valid "$1" && zkd_ip_valid "$2" || return 1
+  IFS=. read -r a1 a2 a3 a4 <<< "$1"; IFS=. read -r n1 n2 n3 n4 <<< "$2"
+  [ $((10#$a1)) -eq $((10#$n1)) ] && [ $((10#$a2)) -eq $((10#$n2)) ] && [ $((10#$a3)) -eq $((10#$n3)) ]
 }

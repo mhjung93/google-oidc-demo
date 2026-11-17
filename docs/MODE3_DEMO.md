@@ -1582,7 +1582,7 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
   `.local/` 은 `.gitignore` 에 있다(CA 개인키가 공개 저장소로 가지 않게). CA 위치가 저장소 안인데 ignore 되지 않으면 스크립트·`zkd_ca_create` 가 아무것도 바꾸기 전에 `BLOCKED: … .gitignore …`(종료 2)로 멈춘다.
   `/etc/hosts` 는 새 내용에 원래 블록 밖 줄이 그대로 있을 때만 설치한다(아니면 `BLOCKED`, 그대로 둔다).
   이 스크립트는 Claude 가 실행하지 않는다.
-- **리셋(매번)**: `WALLET_MODE=passkey-web bash scripts/demo_split_start.sh`(`AUTO_APPROVE=1`·`HEIGHT_GRID`·`TTL_BLOCKS`(기본 5)는 정적 서버에 그대로 넘어간다). 준비가 안 됐으면(`ca.crt`·`ca.key` 없음, VM 주소가 CA 의 이름 제약 망 밖, `wallet.zkd.test` 가 hosts 에 없음)
+- **리셋(매번)**: `WALLET_MODE=passkey-web bash scripts/demo_split_start.sh`(`HEIGHT_GRID`·`TTL_BLOCKS`(기본 5)는 정적 서버의 환경변수로 넘어가고, `AUTO_APPROVE=1` 은 스크립트가 기동 뒤 IdP 관리자 API 로 RP 등록을 직접 승인하게 한다). 준비가 안 됐으면(`ca.crt`·`ca.key` 없음, `SPLIT_*_IP` 가 IPv4 가 아니거나 CA 의 이름 제약 망 밖, 네 이름이 hosts 에 없거나 현재 주소와 다름)
   **아무것도 내리기 전에** `BLOCKED: 먼저 bash scripts/zkd_tls_setup.sh` 로 멈춘다. 통과하면 사용자 앱·속성 도구 번들을 다시 빌드하고, 네 서버 인증서(30일, SAN = 이름 + IP)를 데모 CA 로 발급해
   VM 세 곳의 `~/zkd-demo/tls/` 에 CA 공개 인증서와 함께 보내고(개인키는 600), 각 `role.env` 에 `MODE3_TLS_CERT`·`MODE3_TLS_KEY`·`NODE_EXTRA_CA_CERTS` 를 넣는다. 터널(`SPLIT_IDP_TUNNEL`·`SPLIT_RP_TUNNEL`)은
   이 모드에서 **강제로 꺼진다**(브라우저가 이름으로 바로 간다). 발급 인증 정책은 기본 `code`. 끝낼 때도 같은 모드로 `WALLET_MODE=passkey-web bash scripts/demo_split_start.sh stop`(정적 서버 :5100 을 찾는다). 이 모드의 내림 단계는 snap 이 :5100 에이전트를 내리듯 **한 머신 데모의 :5100 정적 서버도 함께 내린다**.

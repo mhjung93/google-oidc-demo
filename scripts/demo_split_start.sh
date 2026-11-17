@@ -7,7 +7,7 @@
 #        SYNC=1 bash scripts/demo_split_start.sh           # 먼저 코드·의존성·Node 를 세 VM 에 다시 보냄
 #        bash scripts/demo_split_start.sh stop             # 분리 데모만 전부 내림
 #        HEIGHT_GRID=100 bash scripts/demo_split_start.sh  # 만료(max_height) 올림 단위(기본 5 — 데모용. 코드 기본은 100, 2026-10-21)
-#        TTL_BLOCKS=300 bash scripts/demo_split_start.sh  # (snap 모드) 세션 수명 블록 수(기본 5 — 2026-11-11 사용자 요청: 자연 만료를 시연한다. 코드 기본은 300)
+#        TTL_BLOCKS=300 bash scripts/demo_split_start.sh  # (snap·passkey-web 모드) 세션 수명 블록 수(기본 5 — 2026-11-11 사용자 요청: 자연 만료를 시연한다. 코드 기본은 300)
 #        REVOKE_PUBLISH_AFTER=0 bash scripts/demo_split_start.sh  # (2026-11-12 시연 Race (2)) IdP 가 스냅의 세션 폐기를 받은 뒤 이 블록 수가 지나면 스스로 게시·중계(기본 3, 0 = 끔 — 관리자 "게시"·하트비트만)
 #        DEMO_RACE=0 bash scripts/demo_split_start.sh  # (snap 모드) 스냅 에이전트의 블록 진행 시연(/wallet/demo/mine, 기본 켜짐 — RP 출금의 "보내기 전에 멈춤")
 #        WALLET_MODE=snap bash scripts/demo_split_start.sh  # Snap 모드(2026-10-22): 이 VM 의 지갑 자리에 에이전트(:5100, MODE3_WALLET_SECRETS=snap)+Snap 서버(:8082). 포트 5100 은 Snap 이 허용하는
@@ -93,12 +93,18 @@ if [ "$WALLET_MODE" = passkey-web ]; then
     || { echo "BLOCKED: 먼저 bash scripts/zkd_tls_setup.sh (데모 CA 가 없다 — 처음 한 번, 끝나면 Chrome 재시작). ZKD_CA_DIR=$ZKD_CA_DIR"; exit 1; }
   # CA 의 이름 제약 망(zkd_ca_create 와 같은 openssl 출력)이 세 VM 주소를 덮는지 본다 — 벗어나면 Chrome 이 그 VM 인증서를 거부한다(R-4). 127.0.0.0/8 은 제외.
   CA_NET=$(openssl x509 -noout -text -in "$ZKD_CA_DIR/ca.crt" 2>/dev/null | grep -oE 'IP:[0-9.]+/255\.255\.255\.0' | grep -v '^IP:127\.' | head -n1 | sed 's/^IP://; s#/.*##')
+  . scripts/zkd_tls_lib.sh
   for vm_ip in "$IDP" "$RP1" "$RP2"; do
-    [ -n "$CA_NET" ] && [ "${vm_ip%.*}" = "${CA_NET%.*}" ] \
+    zkd_ip_valid "$vm_ip" || { echo "BLOCKED: SPLIT_*_IP 값이 IPv4 주소가 아니다: $vm_ip"; exit 1; }
+    zkd_ip_in_net24 "$vm_ip" "$CA_NET" \
       || { echo "BLOCKED: VM 주소 $vm_ip 가 데모 CA 의 이름 제약 망(${CA_NET:-없음}/24) 밖이다 — ZKD_DEMO_NET 을 맞춰 CA 를 새로 만들고(bash scripts/zkd_tls_setup.sh) Chrome 에 다시 등록한다"; exit 1; }
   done
-  [ -n "$(getent hosts wallet.zkd.test)" ] \
-    || { echo "BLOCKED: wallet.zkd.test 가 /etc/hosts 에 없다 — 먼저 bash scripts/zkd_tls_setup.sh"; exit 1; }
+  # 이름이 hosts 에서 지금 주소로 풀려야 한다 — 옛 주소면 브라우저가 엉뚱한 VM 으로 간다
+  for pair in "127.0.0.1=wallet.zkd.test" "$IDP=idp.zkd.test" "$RP1=zkone.zkd.test" "$RP2=zktwo.zkd.test"; do
+    have_ip=$(getent hosts "${pair#*=}" | awk 'NR==1 { print $1 }')
+    [ "$have_ip" = "${pair%%=*}" ] \
+      || { echo "BLOCKED: ${pair#*=} 가 /etc/hosts 에 없거나 ${pair%%=*} 가 아니다(현재 ${have_ip:-없음}) — 먼저 bash scripts/zkd_tls_setup.sh"; exit 1; }
+  done
   ZKD_CA_DIR="$(cd "$ZKD_CA_DIR" && pwd)"; CACERT=(--cacert "$ZKD_CA_DIR/ca.crt")
   { node scripts/build_user_app.mjs && node scripts/build_attr_tool.mjs; } > "$LOGS/build_bundles.log" 2>&1 || { echo "BLOCKED: 번들 빌드 실패 — $LOGS/build_bundles.log"; exit 1; }
 fi

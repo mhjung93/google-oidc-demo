@@ -14,6 +14,12 @@ CA_DIR="${ZKD_CA_DIR:-.local/zkd-ca}"; NET="${ZKD_DEMO_NET:-192.168.226.0}"
 NSSDB="$HOME/.pki/nssdb"
 # CA 개인키가 공개 저장소에 커밋되지 않게 — 저장소 안이면 .gitignore 에 걸려야 한다(아무것도 바꾸기 전에 검사)
 zkd_ca_dir_check "$CA_DIR" || exit 2
+# 세 주소가 IPv4 이고 데모 망(CA 이름 제약)에 들어야 한다 — 아니면 Chrome 이 인증서를 거부한다(아무것도 바꾸기 전에 검사)
+for ip in "$IDP" "$RP1" "$RP2"; do
+  zkd_ip_valid "$ip" || { echo "BLOCKED: SPLIT_*_IP 값이 IPv4 주소가 아니다: $ip" >&2; exit 2; }
+  zkd_ip_in_net24 "$ip" "$NET" || { echo "BLOCKED: $ip 가 데모 망 $NET/24 밖이다 — ZKD_DEMO_NET 또는 SPLIT_*_IP 를 맞춘다" >&2; exit 2; }
+done
+zkd_hosts_stale_warn /etc/hosts || true
 
 if command -v certutil >/dev/null 2>&1; then
   echo "[건너뜀] certutil 이미 있음"
