@@ -119,6 +119,11 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       input.addEventListener(slot.type === 'enum' ? 'change' : 'input', () => { profileDirty = true; });
       dd.replaceChildren(input);
     });
+    if (PK) lockAttrInputs();
+  }
+  /** passkey-web: 속성은 속성 커밋먼트 도구에서만 바꾸고 이 화면에는 저장 버튼이 없다 — 신원 카드의 속성 칸을 읽기 전용으로(선택 목록은 끔). */
+  function lockAttrInputs() {
+    for (let k = 0; k < 6; k++) { const el = $('attr' + k); if (!el) continue; if (el.tagName === 'SELECT') el.disabled = true; else el.readOnly = true; }
   }
   /** 신원 카드의 { slot.name: 입력값 } — unused 아닌 슬롯만. 등록·속성 저장의 profile 이 된다. */
   function readProfileForm() {
@@ -838,12 +843,13 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     if (r.ok) setVerdict($('pkRecoverVerdict'), true, r.restored ? 'user_pk_recover_done_restored' : 'user_pk_recover_done_new');
     else setVerdict($('pkRecoverVerdict'), false, 'user_pk_recover_failed', { reason: r.reason ?? 'internal', ...(r.detail ? { detail: r.detail } : {}) });
   }
-  /** passkey-web 화면 준비(한 번): 등록 폼·속성 저장·복구 코드 버튼을 숨기고 속성 도구 링크를 보인다. 오리진이 맞지 않으면 두 버튼을 끄고 안내한다. */
+  /** passkey-web 화면 준비(한 번): 등록 폼·속성 저장·복구 코드 버튼을 숨기고 속성 칸을 읽기 전용으로, 속성 도구 링크를 보인다. 오리진이 맞지 않으면 두 버튼을 끄고 안내한다. */
   function preparePasskeyUi() {
     for (const id of ['registerBtn', 'profileSaveBtn', 'recoveryCodeBtn', 'recoverBtn']) $(id).hidden = true;
     $('fileRegFields').hidden = true;
     const link = $('pkAttrLink'); link.href = `${location.origin}/attr.html`; link.textContent = link.href;
     $('pkAttrNote').hidden = false;
+    lockAttrInputs();   // 스키마가 없으면 index.html 의 기본 칸 그대로 — 스키마로 다시 그리면 renderAttrsForm 이 다시 잠근다
     if (!pkOriginOk) {
       $('pkNewBtn').disabled = true; $('pkExistingBtn').disabled = true;
       const a = $('pkOriginLink'); a.href = `${cfg.walletOrigin}/`; a.textContent = a.href;

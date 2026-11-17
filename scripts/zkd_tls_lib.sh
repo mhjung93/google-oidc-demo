@@ -6,9 +6,25 @@
 ZKD_HOSTS_BEGIN='# >>> zkd-demo (scripts/zkd_tls_setup.sh) >>>'
 ZKD_HOSTS_END='# <<< zkd-demo <<<'
 
-# zkd_ca_create <ca_dir> <demo_net> — 이미 있으면 재사용(이름 제약의 망이 다르면 종료 2)
+# zkd_ca_dir_check <ca_dir> — CA 디렉터리가 git 작업 트리 안이면 ca.key 가 .gitignore 에 걸려야 한다(아니면 BLOCKED, 2).
+# 공개 저장소에 CA 개인키가 커밋·푸시되지 않게 한다. git 이 없거나 작업 트리 밖이면 검사하지 않는다. 디렉터리는 만들지 않는다.
+zkd_ca_dir_check() {
+  local dir="$1" abs probe
+  command -v git >/dev/null 2>&1 || return 0
+  abs=$(realpath -m -- "$dir") || return 1
+  probe="$abs"
+  while [ ! -d "$probe" ]; do probe=$(dirname -- "$probe"); done
+  [ "$(git -C "$probe" rev-parse --is-inside-work-tree 2>/dev/null)" = true ] || return 0
+  if ! git -C "$probe" check-ignore -q -- "$abs/ca.key"; then
+    echo "BLOCKED: CA 위치 $dir 가 git 저장소 안인데 .gitignore 에 걸리지 않는다 — ca.key 가 커밋될 수 있다. .gitignore 에 넣거나 ZKD_CA_DIR 을 저장소 밖으로" >&2
+    return 2
+  fi
+}
+
+# zkd_ca_create <ca_dir> <demo_net> — 이미 있으면 재사용(이름 제약의 망이 다르면 종료 2, 저장소 안인데 ignore 안 됐으면 종료 2)
 zkd_ca_create() {
   local dir="$1" net="$2"
+  zkd_ca_dir_check "$dir" || return $?
   ( umask 077
     mkdir -p "$dir" && chmod 700 "$dir" || exit 1
     if [ -f "$dir/ca.crt" ] && [ -f "$dir/ca.key" ]; then
@@ -89,12 +105,29 @@ zkd_hosts_render() {
     echo "BLOCKED: $file 에 zkd-demo 시작 표시만 있고 끝 표시가 없다 — 직접 고친 뒤 다시 실행한다" >&2
     return 3
   fi
+  # 호출하는 쪽이 `if !` 안에서 부르면 errexit 가 꺼지므로, 단계마다 실패를 직접 돌려준다(블록만 남은 출력이 /etc/hosts 를 덮지 않게)
+  zkd_hosts_strip "$file" || return 1
+  echo "$ZKD_HOSTS_BEGIN" || return 1
+  for pair in "$@"; do echo "${pair%%=*} ${pair#*=}" || return 1; done
+  echo "$ZKD_HOSTS_END" || return 1
+}
+
+# zkd_hosts_strip <hosts_file> — 표시 블록을 뺀 줄들을 stdout 으로
+zkd_hosts_strip() {
   awk -v b="$ZKD_HOSTS_BEGIN" -v e="$ZKD_HOSTS_END" '
       $0 == b { skip = 1; next }
       skip && $0 == e { skip = 0; next }
       !skip { print }
-    ' "$file"
-  echo "$ZKD_HOSTS_BEGIN"
-  for pair in "$@"; do echo "${pair%%=*} ${pair#*=}"; done
-  echo "$ZKD_HOSTS_END"
+    ' "$1"
+}
+
+# zkd_hosts_check <원래 hosts> <렌더한 hosts> — 원래 파일의 블록 밖 줄이 렌더 결과에 그대로(순서까지) 남았는지. 아니면 BLOCKED, 1
+zkd_hosts_check() {
+  local a b
+  a=$(zkd_hosts_strip "$1") || { echo "BLOCKED: $1 를 읽지 못했다" >&2; return 1; }
+  b=$(zkd_hosts_strip "$2") || { echo "BLOCKED: $2 를 읽지 못했다" >&2; return 1; }
+  if [ "$a" != "$b" ]; then
+    echo "BLOCKED: 새 hosts 내용에 원래 $1 의 줄이 빠지거나 바뀌었다 — 설치하지 않는다" >&2
+    return 1
+  fi
 }

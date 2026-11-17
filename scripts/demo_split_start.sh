@@ -317,4 +317,5 @@ if [ "$WALLET_MODE" = passkey-web ]; then
   echo "passkey-web: 주소 넷 — 지갑 $WALLET_ORIGIN/  속성 도구 $WALLET_ORIGIN/attr.html  zkID $IDP_UI/user  zkONE $RP1_UI/  zkTWO $RP2_UI/"
   echo "         처음이면 bash scripts/zkd_tls_setup.sh(sudo) 뒤 Chrome 을 완전히 다시 시작한다. IP 주소로 열면 패스키가 안 된다 — 반드시 위 이름으로."
   echo "         흐름: 지갑 페이지에서 패스키 만들기 → 속성 도구(커밋먼트) → 서비스(zkONE·zkTWO)에서 zkID 로 로그인."
+  echo "         RP 소셜 로그인(Google·네이버)은 이 모드에서 쓰지 않는다(localhost 오리진 전용) — 위 OIDC 설정 줄이 켜져 있어도 마찬가지."
 fi

@@ -1574,11 +1574,13 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
 ## 설치 없는 패스키 경로 (`passkey-web`, 2026-11-17)
 
 스펙 `docs/superpowers/specs/2026-11-17-mode3-passkey-web-design.md`. MetaMask·스냅·에이전트 없이 **브라우저와 패스키만**으로 도는 네 번째 지갑 모드다. 사용자 페이지는 웹 모드 앱(`mode3/user/`)이고,
-호스트 PC 의 비밀 없는 정적 서버(`mode3_user_static.js`, `MODE3_WALLET_SECRETS=passkey-web`)가 `https://wallet.zkd.test:5100` 으로 낸다. salt 는 패스키(PRF)에서 유도하고 어디에도 저장하지 않는다
-(유도식은 위 "패스키 경로"와 같다 — 바뀌지 않는다). 회로·컨트랙트·IdP 는 바뀌지 않는다.
+호스트 PC 의 비밀 없는 정적 서버(`mode3_user_static.js`, `MODE3_WALLET_SECRETS=passkey-web`)가 `https://wallet.zkd.test:5100` 으로 낸다. salt 는 패스키(PRF)에서 유도하고 금고의 영구 비밀로는 두지 않는다 — 다만 아래 "salt 10분 보관"(암호문)과
+"예외 — 속성 커밋먼트 도구 기록"(평문)이 있으니 "어디에도 저장하지 않는다" 는 아니다(유도식은 위 "패스키 경로"와 같다 — 바뀌지 않는다). 회로·컨트랙트·IdP 는 바뀌지 않는다.
 
 - **준비(처음 한 번, 사용자가 직접)**: `bash scripts/zkd_tls_setup.sh` — sudo 가 필요하다(`libnss3-tools` 설치·`/etc/hosts` 에 네 이름 추가·데모 CA 를 Chrome 신뢰 저장소에 등록). 끝나면 **Chrome 을 완전히 다시 시작**한다.
   데모 CA(`.local/zkd-ca/`, `ZKD_CA_DIR` 로 바꾼다)는 이름 제약(`zkd.test`·`127.0.0.0/8`·데모 망)이 있어 키가 새도 다른 사이트를 사칭하지 못한다. 데모 망(`ZKD_DEMO_NET`)을 바꾸면 CA 를 새로 만들고 Chrome 에 다시 등록해야 한다.
+  `.local/` 은 `.gitignore` 에 있다(CA 개인키가 공개 저장소로 가지 않게). CA 위치가 저장소 안인데 ignore 되지 않으면 스크립트·`zkd_ca_create` 가 아무것도 바꾸기 전에 `BLOCKED: … .gitignore …`(종료 2)로 멈춘다.
+  `/etc/hosts` 는 새 내용에 원래 블록 밖 줄이 그대로 있을 때만 설치한다(아니면 `BLOCKED`, 그대로 둔다).
   이 스크립트는 Claude 가 실행하지 않는다.
 - **리셋(매번)**: `WALLET_MODE=passkey-web bash scripts/demo_split_start.sh`(`AUTO_APPROVE=1`·`HEIGHT_GRID`·`TTL_BLOCKS`(기본 5)는 정적 서버에 그대로 넘어간다). 준비가 안 됐으면(`ca.crt`·`ca.key` 없음, VM 주소가 CA 의 이름 제약 망 밖, `wallet.zkd.test` 가 hosts 에 없음)
   **아무것도 내리기 전에** `BLOCKED: 먼저 bash scripts/zkd_tls_setup.sh` 로 멈춘다. 통과하면 사용자 앱·속성 도구 번들을 다시 빌드하고, 네 서버 인증서(30일, SAN = 이름 + IP)를 데모 CA 로 발급해
@@ -1591,13 +1593,21 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
 - **흐름(스펙 §2 1~8)**: ① 준비 → ② 리셋 → ③ 지갑 페이지에서 "패스키 만들기"(PRF 를 켜고 한 번 더 계산해 같은 값인지 확인) 또는 "이미 있는 패스키 쓰기" → ④ 속성 도구에서 커밋먼트(salt 는 "salt 보기"에서 복사)
   → ⑤ 서비스에서 "zkID 로 로그인" → 팝업 → (미등록이면) zkID 인증 창에서 아이디·비밀번호·auid 로 등록 → 돌아와 패스키(또는 보관분)로 salt → 등록·발급·로그인(팝업 하나에 패스키 최대 한 번)
   → ⑥ 이후 로그인·재검증·세션 요청·출금은 보관분 salt → ⑦ 저장소를 잃으면 "이미 있는 패스키 쓰기" 와 복구 카드 → ⑧ 데모 리셋은 데모 세대 규칙대로 옛 등록·세션을 지우되 패스키 연결(credential ID)은 남긴다.
-- **salt 10분 보관**: 패스키로 만든 salt 를 사용자 페이지 금고가 **메모리에만** 10분 들고 있다(`MODE3_PASSKEY_HOLD_SECONDS`, 0 이면 끔, 연장 없음, 탭 공유). 10분이 지나면 패스키를 한 번 묻고 다시 10분.
+- **salt 10분 보관**: 패스키로 만든 salt 를 사용자 페이지 금고가 10분 들고 있다(`MODE3_PASSKEY_HOLD_SECONDS`, 0 이면 끔, 연장 없음, 탭 공유). 10분이 지나면 패스키를 한 번 묻고 다시 10분.
+  메모리가 아니라 **:5100 오리진의 IndexedDB**(금고 kv `passkeyHold`)에 추출 불가 AES-GCM 키로 **암호화해** 둔다 — 키도 같은 IndexedDB 에 있으므로 보호 경계는 브라우저의 오리진 격리다(자동 금고와 같다).
+  그래서 탭·브라우저를 닫아도 10분 안이면 남고, 만료된 암호문은 다음에 읽을 때(또는 "모두 지우기"·패스키 연결 끊기 때) 지운다 — 그 전까지는 암호문이 남아 있을 수 있다.
+- **예외 — 속성 커밋먼트 도구 기록(에이전트 패스키 모드와 같은 한계)**: 첫 등록은 속성 도구의 기록(`localStorage` 의 `mode3_attr_tool_v1`, 같은 :5100 오리진)을 읽는데,
+  그 기록에는 사용자가 붙여 넣은 salt 가 **평문으로** 남는다 — 다음 데모 리셋 뒤 새 리셋 표시(`/attr/dist/reset.json` 의 `epoch`)를 그 오리진의 페이지가 처음 읽어 지울 때까지. 속성 도구는 이 모드에서도 바뀌지 않는다(범위 밖).
 - **체인 RPC 프록시와 허용 목록(R-5)**: 브라우저는 체인 노드를 직접 부르지 않고 정적 서버의 `/rpc/app`·`/rpc/rev` 로 부른다. 허용 메서드는 읽기 12개 —
   `eth_chainId, net_version, eth_blockNumber, eth_call, eth_getLogs, eth_getCode, eth_getBalance, eth_getBlockByNumber, eth_getBlockByHash, eth_getTransactionByHash, eth_getTransactionReceipt, eth_getTransactionCount`.
   배치는 원소 하나라도 막히면 전체 403. 목록 밖 읽기 메서드를 코어가 새로 쓰면 그 기능이 403 으로 깨진다 — 브라우저 테스트가 잡는다. 트랜잭션은 RP 릴레이를 거친다.
 - **사유**: `rpc_method_blocked`(허용 목록 밖 RPC — 위 프록시), `passkey_mode`(이 모드에서 쓰지 않는 기능 — 등록 폼·복구 코드·Google 로그인 대신 서비스 로그인 중의 인증 창 등록·패스키 계정 복구).
   `passkey_*` 사유는 위 "패스키 경로" 표를 그대로 쓴다(`passkey_wrong_origin` 안내 주소만 `https://wallet.zkd.test:5100`).
+- **RP 소셜 로그인은 쓰지 않는다**: 리셋 스크립트는 다른 모드처럼 RP 의 Google·네이버 설정 줄과 IdP 의 `MODE3_OIDC_CLIENT_ID` 를 그대로 쓰지만, 소셜 로그인은 `localhost` 오리진에서만 동작하므로
+  이 모드(이름 주소 `https://*.zkd.test`)에서는 쓰지 않는다 — 리셋 끝 안내에도 같은 줄이 나온다.
 - **에이전트 패스키와 다른 패스키다**: 패스키의 RP ID 는 호스트 이름이라 이 모드(`wallet.zkd.test`)와 에이전트 패스키 모드(`localhost`)는 **같은 패스키를 공유하지 않는다** — 서로 다른 salt·auid·PPID 다.
+- **알려진 한계 — 게시 경합 중 `cred_revoked` 재시도는 `bad_code`**: 로그인 도중 IdP 의 폐기 게시와 겹쳐 발급이 `cred_revoked` 로 한 번 실패하면 사용자 페이지가 재시도하는데,
+  그 재시도는 이미 쓴 인증 창의 1회용 코드(`auth_code`)를 다시 보내 IdP 가 `401 bad_code` 로 거절한다(에이전트 패스키 모드와 같은 한계). 서비스에서 **다시 로그인**하면(새 인증 창 → 새 코드) 풀린다.
 - **없는 시연**: 에이전트 전용인 Race (2)(`MODE3_DEMO_RACE`·`/wallet/demo/mine`, 보내기 전에 멈춤)는 이 모드에 없다(스펙 §8 범위 밖) — 체크리스트·시연 순서의 Race (2) 단계는 건너뛴다.
 - **한계·미검증**(스펙 §7): ① Chrome 이 이름 제약 CA(`zkd.test`·IP 범위)를 받아들이는지 — 실제 Chrome 에서 확인 전(R-3). ② VM 세 곳의 `https` 첫 기동·인증서 복사·서버 간 IP 검증이 한 번에 맞는지 —
   실제 VM 으로만 확인된다(경로가 틀리면 RP 등록 대기가 0건으로 드러난다). ③ `zkd_tls_setup.sh` 의 `apt`·hosts·`certutil` 은 이 머신(Ubuntu 20.04)에서만. ④ 증명이 브라우저에서 돌아 로그인에 수 초, zkey(수백 MB)는 첫 접속 때 한 번.
@@ -1630,7 +1640,7 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
   `tests/test_mode3_passkey_browser.mjs`(`browser` — 결정적 WebAuthn 스텁 `tests/helpers/webauthn_stub.js` 로 설정·첫 로그인·다른 패스키·세션 복구·salt 보기·리셋, CDP 가상 인증기로 실제 Chrome WebAuthn 경로).
 - passkey-web(2026-11-17) 새 테스트 11개 — `unit`: `tests/test_mode3_tls.mjs`(서버 TLS 기동 `MODE3_TLS_CERT`·`KEY`)·`tests/test_mode3_rpc_proxy.mjs`(RPC 허용 목록)·`tests/test_mode3_passkey_rpid.mjs`(패스키 RP ID 인자)·
   `tests/test_mode3_vault_hold.mjs`(10분 salt 보관)·`tests/test_mode3_user_idp_return.mjs`(인증 창 왕복)·`tests/test_zkd_tls_certs.mjs`(데모 CA·서버 인증서)·`tests/test_demo_split_passkey_web.mjs`(분리 데모 스크립트 정적 검사 —
-  "사전 검사가 먼저" 줄 순서 단언이 통과했을 때만 스크립트를 두 경우, 잘못된 모드·CA 없음으로 실행한다; 내림·ssh 에는 닿지 않는다) / `chain`: `tests/test_mode3_tls_stack.mjs`(IdP·RP·정적 서버 https 전 구간)·
+  "사전 검사가 먼저" 줄 순서 단언이 통과했을 때만 스크립트를 두 경우, 잘못된 모드·CA 없음으로 실행한다; 내림·ssh 에는 닿지 않는다) / `chain`: `tests/test_mode3_tls_stack.mjs`(IdP·RP 만 https 로 띄워 RP→IdP 서버 간 호출까지 — 정적 서버는 https 로 띄우지 않는다. 정적 서버의 https 기동은 자동 테스트가 없고, `test_mode3_tls.mjs` 는 공통 도우미 `lib/mode3_tls.js` 만 본다)·
   `tests/test_mode3_user_static_passkey_web.mjs`(정적 서버 설정·`/rpc/*`·속성 도구)·`tests/test_mode3_user_core_passkey.mjs`(웹 코어 패스키 salt·코드 등록·계정 복구) / `browser`: `tests/test_mode3_user_passkey_web.mjs`(사용자 페이지 패스키 설정·salt 보기·연결 끊기·계정 복구).
 - `bash scripts/run_tests.sh browser` — 팝업 로그인·`needs_consent` 재승인·MetaMask 트랜잭션을 실제 페이지로 돌린다
   (`tests/test_mode3_browser.mjs`). `chain` 과 같은 조건에 더해 **설치된 Google Chrome(또는 Chromium)** 이 필요하다 —

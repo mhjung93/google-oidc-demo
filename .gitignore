@@ -48,6 +48,8 @@ zkaa-circom/
 # local tool settings / session data
 .claude/
 .omc/
+# 로컬 전용 데이터 — 데모 CA 개인키(.local/zkd-ca/, scripts/zkd_tls_setup.sh)·blockscout 등(2026-11-17)
+.local/
 
 # unrelated local document
 260605_pdf용.pdf

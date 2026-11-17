@@ -61,7 +61,7 @@ salt 를 복사할 때 잠깐 화면에 보인다. 화면을 공유하고 있다
 MetaMask·스냅 없이 패스키만 쓰는 모드다(`docs/MODE3_DEMO.md` "설치 없는 패스키 경로"). 시연 순서 S0~S18 은 대체로 그대로이고 달라지는 것은 셋이다. **Race (2)(보내기 전에 멈춤) 단계는 이 모드에 없다** — 에이전트 전용(`/wallet/demo/mine`)이라 건너뛴다(스펙 §8 범위 밖). 나머지 둘은 다음과 같다. 첫째, 기동은 `WALLET_MODE=passkey-web bash scripts/demo_split_start.sh`(처음이면 전날
 `bash scripts/zkd_tls_setup.sh` 와 Chrome 재시작)이고 탭 주소는 `https://wallet.zkd.test:5100`(지갑·`/attr.html`)·`https://idp.zkd.test:4100`(zkID)·`https://zkone.zkd.test:3100`·`https://zktwo.zkd.test:3101` 이다 —
 IP 나 localhost 로 열면 패스키가 안 된다. 둘째, "MetaMask 연결"·스냅 설치·백업 파일 단계 대신 지갑 페이지에서 **패스키 설정**("패스키 만들기" 또는 "이미 있는 패스키 쓰기")을 한다. salt 는 패스키에서 나오며
-10분간 메모리에 보관돼 그동안의 로그인은 패스키를 다시 묻지 않는다. 이 모드는 실제 Chrome·VM 으로 처음부터 끝까지 리허설해 확인한 것이 아니다(미검증 위험은 `docs/MODE3_DEMO.md` 에 있다).
+10분간 브라우저(IndexedDB)에 암호화해 보관돼 그동안의 로그인은 패스키를 다시 묻지 않는다(속성 도구 기록에는 붙여 넣은 salt 가 평문으로 남는다 — `docs/MODE3_DEMO.md` 의 예외 항목). 이 모드는 실제 Chrome·VM 으로 처음부터 끝까지 리허설해 확인한 것이 아니다(미검증 위험은 `docs/MODE3_DEMO.md` 에 있다).
 
 ## 다시 로그인
 

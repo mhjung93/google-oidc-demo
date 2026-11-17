@@ -295,6 +295,10 @@ try {
       for (const sel of ['#fileRegFields', '#registerBtn', '#profileSaveBtn', '#recoveryCodeBtn', '#recoverBtn']) assert.equal(await p.isHidden(sel), true, `${sel} 이 보인다`);
       assert.equal(await p.$eval('#pkAttrNote a', (a) => a.href), `${WALLET_ORIGIN}/attr.html`, '속성 안내에 속성 도구 링크');
       assert.equal(await p.isVisible('#pkAttrNote'), true);
+      // 속성 저장이 없으므로 신원 카드의 속성 칸은 읽기 전용(최종 리뷰) — 스키마로 다시 그린 뒤(국가 = 선택 목록)에 본다
+      await p.waitForFunction(() => document.querySelector('#attr1')?.tagName === 'SELECT', null, { timeout: 15_000 });
+      const editable = await p.$$eval('[id^="attr"]', (els) => els.filter((e) => /^attr[0-5]$/.test(e.id) && !(e.tagName === 'SELECT' ? e.disabled : e.readOnly)).map((e) => e.id));
+      assert.deepEqual(editable, [], `편집 가능한 속성 칸: ${editable}`);
     } finally { await ctx.close(); }
   });
 

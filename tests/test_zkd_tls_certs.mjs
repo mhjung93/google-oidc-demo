@@ -1,7 +1,7 @@
 // passkey-web 8: 데모 CA(이름 제약)·서버 인증서·hosts 블록 렌더러(scripts/zkd_tls_lib.sh) 단위 테스트.
 // 임시 디렉터리에서만 돈다 — /etc/hosts·~/.pki/nssdb·.local/zkd-ca 는 건드리지 않고, zkd_tls_setup.sh 는 실행하지 않는다(문법만 확인).
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, statSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, statSync, readFileSync, writeFileSync, existsSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import assert from 'node:assert/strict';
@@ -16,8 +16,8 @@ for (const bin of ['openssl', 'bash']) {
 
 const tmp = mkdtempSync(join(tmpdir(), 'zkd-tls-test-'));
 const outputs = [];
-function sh(script) {
-  const r = spawnSync('bash', ['-c', `set -u; source "${LIB}"; ${script}`], { cwd: ROOT, encoding: 'utf8' });
+function sh(script, cwd = ROOT) {
+  const r = spawnSync('bash', ['-c', `set -u; source "${LIB}"; ${script}`], { cwd, encoding: 'utf8' });
   outputs.push(r.stdout, r.stderr);
   return r;
 }
@@ -98,6 +98,56 @@ try {
     assert.ok(r.stderr.startsWith('BLOCKED:'));
   });
 
+  t('hosts: 두 번째 awk 실패를 전파한다', () => {
+    // 첫 awk(끝 표시 검사)는 통과시키고 두 번째(블록 밖 줄 출력)만 실패시키는 가짜 awk — 실패하면 블록만 남은 출력이 /etc/hosts 를 덮을 수 있다
+    const hosts = join(tmp, 'hosts_prop');
+    writeFileSync(hosts, '127.0.0.1 localhost\n');
+    const bin = join(tmp, 'fakebin'); mkdirSync(bin);
+    const realAwk = spawnSync('bash', ['-c', 'command -v awk'], { encoding: 'utf8' }).stdout.trim();
+    const cnt = join(tmp, 'awk_count');
+    writeFileSync(join(bin, 'awk'), `#!/usr/bin/env bash\nn=$(( $(cat "${cnt}" 2>/dev/null || echo 0) + 1 )); echo $n > "${cnt}"\n[ $n -ge 2 ] && exit 1\nexec "${realAwk}" "$@"\n`);
+    chmodSync(join(bin, 'awk'), 0o755);
+    const r = sh(`PATH="${bin}:$PATH" zkd_hosts_render "${hosts}" 127.0.0.1=wallet.zkd.test`);
+    assert.notEqual(r.status, 0, '두 번째 awk 실패가 0 으로 끝났다');
+  });
+
+  t('hosts: 원래 줄 보존 검사(zkd_hosts_check)', () => {
+    const hosts = join(tmp, 'hosts_chk');
+    writeFileSync(hosts, '127.0.0.1 localhost\n# 사용자 줄\n# >>> zkd-demo (scripts/zkd_tls_setup.sh) >>>\n1.2.3.4 idp.zkd.test\n# <<< zkd-demo <<<\n::1 ip6-localhost\n');
+    const good = join(tmp, 'hosts_chk_good');
+    const rr = sh(`zkd_hosts_render "${hosts}" 127.0.0.1=wallet.zkd.test > "${good}"`);
+    assert.equal(rr.status, 0, rr.stderr);
+    assert.equal(sh(`zkd_hosts_check "${hosts}" "${good}"`).status, 0);
+    const blockOnly = join(tmp, 'hosts_chk_bad');
+    writeFileSync(blockOnly, '# >>> zkd-demo (scripts/zkd_tls_setup.sh) >>>\n127.0.0.1 wallet.zkd.test\n# <<< zkd-demo <<<\n');
+    const bad = sh(`zkd_hosts_check "${hosts}" "${blockOnly}"`);
+    assert.notEqual(bad.status, 0);
+    assert.ok(bad.stderr.startsWith('BLOCKED:'), bad.stderr);
+    writeFileSync(blockOnly, '127.0.0.1 localhost\n# >>> zkd-demo (scripts/zkd_tls_setup.sh) >>>\n# <<< zkd-demo <<<\n');
+    assert.notEqual(sh(`zkd_hosts_check "${hosts}" "${blockOnly}"`).status, 0, '줄 하나가 빠졌는데 통과했다');
+  });
+
+  const hasGit = !spawnSync('git', ['--version']).error;
+  t('CA 위치: 저장소 안이면 .gitignore 에 걸려야 한다', () => {
+    if (!hasGit) { console.log('  (git 없음 — 건너뜀)'); return; }
+    const repo = join(tmp, 'repo'); mkdirSync(repo);
+    const g = spawnSync('git', ['init', '-q', repo], { encoding: 'utf8' });
+    assert.equal(g.status, 0, g.stderr);
+    const caIn = join(repo, '.local/zkd-ca');
+    const blocked = sh(`zkd_ca_create "${caIn}" ${NET}`, repo);
+    assert.equal(blocked.status, 2, blocked.stderr);
+    assert.ok(blocked.stderr.startsWith('BLOCKED:') && blocked.stderr.includes('.gitignore'), blocked.stderr);
+    assert.ok(!existsSync(join(caIn, 'ca.key')), '거부했는데 키를 만들었다');
+    // 상대 경로(setup 의 기본값 .local/zkd-ca)도 같은 판정
+    assert.equal(sh(`zkd_ca_create .local/zkd-ca ${NET}`, repo).status, 2);
+    writeFileSync(join(repo, '.gitignore'), '.local/\n');
+    const ok = sh(`zkd_ca_create .local/zkd-ca ${NET}`, repo);
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.ok(existsSync(join(caIn, 'ca.key')));
+    // 저장소 밖(임시 디렉터리)은 검사하지 않는다 — 위 'CA:' 케이스가 그 경로다
+    assert.equal(sh(`zkd_ca_dir_check "${join(tmp, 'outside-ca')}"`).status, 0);
+  });
+
   t('리프: 키 식별자 포함', () => {
     const txt = ssl('x509', '-noout', '-text', '-in', join(out, 'wallet.crt')).stdout;
     assert.ok(txt.includes('Subject Key Identifier') && txt.includes('Authority Key Identifier'));
@@ -110,9 +160,15 @@ try {
   t('zkd_tls_setup.sh 문법', () => {
     const r = spawnSync('bash', ['-n', join(ROOT, 'scripts/zkd_tls_setup.sh')], { encoding: 'utf8' });
     assert.equal(r.status, 0, r.stderr);
+    // 순서: CA 위치 검사 → hosts 렌더 → 줄 보존 검사 → sudo install (실행하지 않고 줄 순서만 본다)
+    const src = readFileSync(join(ROOT, 'scripts/zkd_tls_setup.sh'), 'utf8');
+    const at = (s) => { const i = src.indexOf(s); assert.ok(i >= 0, `없음: ${s}`); return i; };
+    assert.ok(at('zkd_ca_dir_check "$CA_DIR" || exit 2') < at('sudo apt-get'));
+    assert.ok(at('zkd_hosts_render /etc/hosts') < at('zkd_hosts_check /etc/hosts "$new_hosts"'));
+    assert.ok(at('zkd_hosts_check /etc/hosts "$new_hosts"') < at('sudo install -m 644'));
   });
 
-  console.log(`${n}/9 passed`);
+  console.log(`${n}/12 passed`);
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }

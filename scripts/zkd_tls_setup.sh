@@ -12,6 +12,8 @@ umask 077
 IDP="${SPLIT_IDP_IP:-192.168.226.10}"; RP1="${SPLIT_RP1_IP:-192.168.226.11}"; RP2="${SPLIT_RP2_IP:-192.168.226.12}"
 CA_DIR="${ZKD_CA_DIR:-.local/zkd-ca}"; NET="${ZKD_DEMO_NET:-192.168.226.0}"
 NSSDB="$HOME/.pki/nssdb"
+# CA 개인키가 공개 저장소에 커밋되지 않게 — 저장소 안이면 .gitignore 에 걸려야 한다(아무것도 바꾸기 전에 검사)
+zkd_ca_dir_check "$CA_DIR" || exit 2
 
 if command -v certutil >/dev/null 2>&1; then
   echo "[건너뜀] certutil 이미 있음"
@@ -23,6 +25,10 @@ fi
 
 new_hosts=$(mktemp); trap 'rm -f "$new_hosts"' EXIT
 if ! zkd_hosts_render /etc/hosts "127.0.0.1=wallet.zkd.test" "$IDP=idp.zkd.test" "$RP1=zkone.zkd.test" "$RP2=zktwo.zkd.test" > "$new_hosts"; then
+  echo "BLOCKED: /etc/hosts 를 건드리지 않고 중단한다" >&2; exit 3
+fi
+# 렌더가 조용히 줄을 잃었으면(블록만 남은 출력 등) 설치하지 않는다 — 원래 블록 밖 줄이 그대로 있어야 한다
+if ! zkd_hosts_check /etc/hosts "$new_hosts"; then
   echo "BLOCKED: /etc/hosts 를 건드리지 않고 중단한다" >&2; exit 3
 fi
 if cmp -s "$new_hosts" /etc/hosts; then
