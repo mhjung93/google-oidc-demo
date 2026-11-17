@@ -28,6 +28,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 UNIT=(
+  tests/test_mode3_rpc_proxy.mjs
   tests/test_ps.js
   tests/test_uid_wallet_boundary.js
   tests/test_idp_state_persistence.js
@@ -126,6 +127,7 @@ CHAIN=(
   tests/test_mode3_user_static.mjs
   # 브라우저 사용자 코어(mode3/user/core)를 Node 에서 — 메모리 kv·진짜 snarkjs, 격리 IdP·RP(릴레이 포함)
   tests/test_mode3_user_core.mjs
+  tests/test_mode3_user_static_passkey_web.mjs
   tests/test_mode3_user_core_oidc.mjs
 )
 

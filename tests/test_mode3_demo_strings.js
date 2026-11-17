@@ -28,7 +28,7 @@ const REASONS = ['stale_root', 'stale_registry_root', 'root_too_old', 'revalidat
   'bad_disclosure', 'disclosure_unsatisfiable', 'predicate_type', 'duplicate_session', 'already_registered', 'register_failed',
   // 2026-10-15 브라우저 전용 사용자 페이지(web 모드) — 금고·증명 워커·RP 릴레이·승인 창
   'locked', 'bad_password', 'zk_assets_unavailable', 'storage_unavailable', 'relay_inactive', 'relay_bad_target', 'relay_bad_calldata', 'relay_gas', 'relay_rate_limited', 'origin_mismatch',
-  'chain_unavailable', 'no_factory', 'execute_reverted', 'schema_invalid', 'bad_attr',
+  'chain_unavailable', 'rpc_method_blocked', 'no_factory', 'execute_reverted', 'schema_invalid', 'bad_attr',
   // 2026-10-16 Google(OIDC 래퍼) — IdP 의 토큰 검증 코드와 페이지의 GIS 코드
   'oidc_disabled', 'oidc_invalid', 'oidc_nonce_mismatch', 'oidc_unavailable', 'oidc_required', 'gsi_unavailable', 'gsi_origin',
   // 2026-10-16 최종 리뷰 M5 — 사용자 코어가 IdP 를 부르기 전에 내는 코드

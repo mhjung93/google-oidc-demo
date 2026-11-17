@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
 import { listenMaybeTls } from './lib/mode3_tls.js';
+import { checkRpcBody } from './lib/mode3_rpc_proxy.js';
 import { buildWalletHealth, applyHealthHeaders, bounded, originList, allowOrigin } from './lib/mode3_health.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -16,6 +17,17 @@ const WALLET_ORIGIN = process.env.MODE3_WALLET_PUBLIC_ORIGIN || `http://127.0.0.
 const CIA_URL = process.env.MODE3_CIA_URL || 'http://127.0.0.1:4100';
 const RP_ORIGINS = originList((process.env.MODE3_RP_ORIGIN || 'http://127.0.0.1:3100').split(',').map((s) => s.trim()));
 if (RP_ORIGINS.length === 0) throw new Error('MODE3_RP_ORIGIN 에 유효한 origin 이 하나도 없다');
+// 비밀 모드: web(기본) 또는 passkey-web(패스키 PRF 로 시드를 만드는 설치 없는 경로). passkey-web 은 WebAuthn 이 요구하는 보안 컨텍스트가 필요하다.
+const SECRETS = process.env.MODE3_WALLET_SECRETS || 'web';
+if (!['web', 'passkey-web'].includes(SECRETS)) { console.error(`MODE3_WALLET_SECRETS 는 web 또는 passkey-web 이어야 한다(받은 값: ${SECRETS})`); process.exit(1); }
+if (SECRETS === 'passkey-web') {
+  let u; try { u = new URL(WALLET_ORIGIN); } catch { console.error('passkey-web: MODE3_WALLET_PUBLIC_ORIGIN 이 URL 이 아니다'); process.exit(1); }
+  const isIp = /^\d+\.\d+\.\d+\.\d+$/.test(u.hostname) || u.hostname.includes(':');
+  if (isIp || (u.protocol !== 'https:' && u.hostname !== 'localhost')) { console.error(`passkey-web: 오리진은 IP 가 아닌 호스트여야 하고 https 이거나 localhost 여야 한다(WebAuthn RP ID 제약) — ${WALLET_ORIGIN}`); process.exit(1); }
+}
+const HOLD_RAW = process.env.MODE3_PASSKEY_HOLD_SECONDS;
+const PASSKEY_HOLD_SECONDS = HOLD_RAW === undefined || HOLD_RAW === '' ? 600 : Number(HOLD_RAW);
+if (!Number.isFinite(PASSKEY_HOLD_SECONDS) || PASSKEY_HOLD_SECONDS < 0) { console.error(`MODE3_PASSKEY_HOLD_SECONDS 는 0 이상 숫자여야 한다(받은 값: ${HOLD_RAW})`); process.exit(1); }
 const RPC_URL = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
 const REV_RPC = process.env.MODE3_REV_CHAIN_RPC || RPC_URL;
 const LOG_ADDRESS = process.env.CIA_LOG_ADDRESS || null;
@@ -50,26 +62,43 @@ let ciaSeenAt = 0, pinging = null; const CIA_FRESH_MS = 10_000;
 function pingCia() { if (!pinging) pinging = (async () => { const c = new AbortController(); const tm = setTimeout(() => c.abort(), 1500); try { if ((await fetch(`${CIA_URL}/cia/public_keys`, { signal: c.signal })).ok) ciaSeenAt = Date.now(); } catch { /* */ } finally { clearTimeout(tm); pinging = null; } })(); return pinging; }
 
 const app = express();
+// 같은 오리진 RPC 프록시(passkey-web 이 CORS 없이 체인을 읽게 한다): 허용 목록 읽기 메서드만 통과. ethers 배치가 16kb 를 넘으므로 전역 파서보다 앞에서 1mb 로 받는다.
+function rpcProxy(target) {
+  return async (req, res) => {
+    const chk = checkRpcBody(req.body);
+    if (!chk.ok) return res.status(chk.status).json(chk.method ? { reason: chk.reason, method: chk.method } : { reason: chk.reason });
+    try {
+      const up = await fetch(target, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req.body), signal: AbortSignal.timeout(3000) });
+      res.status(up.status).type(up.headers.get('content-type') || 'application/json').send(await up.text());
+    } catch { res.status(502).json({ reason: 'chain_unavailable' }); }
+  };
+}
+app.post('/rpc/app', express.json({ limit: '1mb' }), rpcProxy(RPC_URL));
+app.post('/rpc/rev', express.json({ limit: '1mb' }), rpcProxy(REV_RPC));
+app.all(['/rpc/app', '/rpc/rev'], (req, res) => res.status(405).set('Allow', 'POST').json({ reason: 'method_not_allowed' }));
 app.use(express.json({ limit: '16kb' }));
 const configCors = cors({ origin: (origin, cb) => cb(null, allowOrigin(origin, RP_ORIGINS)), methods: ['GET'] });
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'user', 'index.html')));
 app.use('/dist', express.static(DIST));
 app.use('/common', express.static(path.join(__dirname, 'mode3', 'common')));
+// 속성 커밋먼트 도구 — 에이전트(mode3_wallet_agent.js)와 같은 경로. 이 서버의 어떤 API 도 부르지 않는 독립 정적 페이지.
+app.get('/attr.html', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'attr.html')));
+app.use('/attr', express.static(path.join(__dirname, 'mode3', 'attr'), { index: false }));
 app.get('/zk/:name', (req, res) => {
   const rel = ZK[req.params.name];
   if (!rel) return res.status(404).json({ reason: 'not_found' });
   res.set('Cache-Control', 'public, max-age=31536000, immutable');
   res.sendFile(path.join(__dirname, rel), (err) => { if (err && !res.headersSent) res.status(err.statusCode === 404 ? 404 : 500).json({ reason: err.statusCode === 404 ? 'zk_assets_unavailable' : 'internal' }); });
 });
-app.get('/user/config', (req, res) => res.json({ secrets: 'web', walletOrigin: WALLET_ORIGIN, ciaUrl: CIA_URL, rpcUrl: RPC_URL, revRpcUrl: REV_RPC, chainId, logAddress: LOG_ADDRESS, mirrorAddress: MIRROR_ADDRESS, ttlBlocks: TTL_BLOCKS, heightGrid: HEIGHT_GRID, rpOrigins: RP_ORIGINS, pkCia: PK_CIA, relayPath: RELAY_PATH, demoGeneration: DEMO_GENERATION }));
-app.get('/wallet/config', configCors, (req, res) => res.json({ secrets: 'web', snapId: null, walletOrigin: WALLET_ORIGIN, rpcUrl: RPC_URL, chainId }));
+app.get('/user/config', (req, res) => res.json({ secrets: SECRETS, passkeyHoldSeconds: PASSKEY_HOLD_SECONDS, walletOrigin: WALLET_ORIGIN, ciaUrl: CIA_URL, rpcUrl: SECRETS === 'passkey-web' ? '/rpc/app' : RPC_URL, revRpcUrl: SECRETS === 'passkey-web' ? '/rpc/rev' : REV_RPC, chainId, logAddress: LOG_ADDRESS, mirrorAddress: MIRROR_ADDRESS, ttlBlocks: TTL_BLOCKS, heightGrid: HEIGHT_GRID, rpOrigins: RP_ORIGINS, pkCia: PK_CIA, relayPath: RELAY_PATH, demoGeneration: DEMO_GENERATION }));
+app.get('/wallet/config', configCors, (req, res) => res.json({ secrets: SECRETS, snapId: null, walletOrigin: WALLET_ORIGIN, rpcUrl: RPC_URL, chainId }));
 const HEALTH_ALLOW = originList(RP_ORIGINS, CIA_URL);
 app.get('/mode3/health', async (req, res) => {
   applyHealthHeaders(req, res, HEALTH_ALLOW);
   if (Date.now() - ciaSeenAt > CIA_FRESH_MS) pingCia();
   let chain = null;
   try { const head = await bounded(provider.getBlockNumber(), 1200); chain = { id: chainId ?? '', head: head.toString() }; } catch { /* 체인 없음 */ }
-  res.json(buildWalletHealth({ now: new Date().toISOString(), chain, secrets: 'web', ...presence, ciaReachable: Date.now() - ciaSeenAt <= CIA_FRESH_MS, rpOrigin: RP_ORIGINS[0], rpOrigins: RP_ORIGINS, ciaUrl: CIA_URL }));
+  res.json(buildWalletHealth({ now: new Date().toISOString(), chain, secrets: SECRETS, ...presence, ciaReachable: Date.now() - ciaSeenAt <= CIA_FRESH_MS, rpOrigin: RP_ORIGINS[0], rpOrigins: RP_ORIGINS, ciaUrl: CIA_URL }));
 });
 app.post('/wallet/presence', (req, res) => {
   if (!validPresence(req.body)) return res.status(400).json({ reason: 'malformed' });
