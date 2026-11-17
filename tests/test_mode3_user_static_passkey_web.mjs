@@ -15,8 +15,13 @@ let fails = 0; async function t(n, f) { try { await f(); console.log('ok   -', n
 const rpc = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 const rq = (method, id = 1) => ({ jsonrpc: '2.0', id, method, params: [] });
 // 서비스 오리진(CORS 허용 목록)도 고정한다 — 셸의 MODE3_RP_ORIGIN 이 새지 않게, CORS 단언이 이 값을 허용 오리진으로 쓴다.
-const RP_ORIGIN = 'http://127.0.0.1:3999', FOREIGN = 'http://evil.example';
-const base = (port, extra = {}) => ({ MODE3_WALLET_PORT: String(port), MODE3_WALLET_PUBLIC_ORIGIN: `http://localhost:${port}`, MODE3_RP_ORIGIN: RP_ORIGIN, CIA_RPC_URL: CHAIN, MODE3_REV_CHAIN_RPC: CHAIN, ...extra });
+// IdP 주소도 고정한다(CSP connect-src 단언이 이 값을 쓴다) — .env 의 MODE3_CIA_URL 이 새지 않게. 아무것도 듣지 않는 주소라 health 의 IdP 확인은 조용히 실패한다.
+const RP_ORIGIN = 'http://127.0.0.1:3999', FOREIGN = 'http://evil.example', CIA = 'http://127.0.0.1:3998';
+const base = (port, extra = {}) => ({ MODE3_WALLET_PORT: String(port), MODE3_WALLET_PUBLIC_ORIGIN: `http://localhost:${port}`, MODE3_RP_ORIGIN: RP_ORIGIN, MODE3_CIA_URL: CIA, CIA_RPC_URL: CHAIN, MODE3_REV_CHAIN_RPC: CHAIN, ...extra });
+/** CSP 헤더를 지시어 → 값 목록으로. 헤더가 없으면 null. */
+const cspOf = (res) => { const h = res.headers.get('content-security-policy'); return h === null ? null : Object.fromEntries(h.split(';').map((d) => d.trim()).filter(Boolean).map((d) => { const [k, ...v] = d.split(/\s+/); return [k, v]; })); };
+/** 인라인(src 없는) <script> 의 수 — 주석 안의 글자는 세지 않는다. */
+const inlineScripts = (html) => [...html.replace(/<!--[\s\S]*?-->/g, '').matchAll(/<script\b([^>]*)>/gi)].filter((m) => !/\bsrc\s*=/.test(m[1])).length;
 const start = async (name, env) => { const port = await freePort(); const child = await spawnServer('mode3_user_static.js', { env: base(port, env), readyUrl: `http://127.0.0.1:${port}/user/config`, logFile: path.join(tmp, `${name}.log`) }); return { port, child, url: `http://127.0.0.1:${port}` }; };
 // 기동 거부: 10초 안에 종료 코드 ≠ 0 이어야 한다. 포트는 빈 포트를 받는다(고정 포트가 사용 중이면 EADDRINUSE 로 "거부된 것처럼" 보인다 —
 // 그래서 각 경우의 stderr 도 그 경우의 사유 문구와 대조한다). spawn 실패('error')도 reject 로 — 멈추지 않는다.
@@ -100,6 +105,22 @@ try {
     const h = await fetch(`${pw.url}/attr.html`); assert.equal(h.status, 200); assert.match(h.headers.get('content-type'), /text\/html/);
     assert.equal((await fetch(`${pw.url}/attr/dist/attr.js`)).status, 200);
   });
+  // 2026-11-17: passkey-web 의 salt 는 지갑 오리진의 JS 메모리·IndexedDB 보관분에 있다 — 그 오리진에서 남의 스크립트가 돌지 못하게 CSP 를 건다.
+  await t('CSP: 페이지·워커·속성 도구 응답에 같은 정책 — 인라인·남의 스크립트 없음, 연결은 자기·IdP·서비스만', async () => {
+    const want = {
+      'default-src': ["'self'"], 'script-src': ["'self'", "'wasm-unsafe-eval'"], 'worker-src': ["'self'", 'blob:'],
+      'connect-src': ["'self'", CIA, RP_ORIGIN], 'img-src': ["'self'", 'data:'], 'style-src': ["'self'", "'unsafe-inline'"],
+      'object-src': ["'none'"], 'base-uri': ["'none'"], 'frame-ancestors': ["'none'"], 'form-action': ["'none'"],
+    };
+    for (const p of ['/', '/attr.html', '/dist/prover_worker.js', '/dist/user.js', '/user/config']) {
+      const r = await fetch(`${pw.url}${p}`); assert.equal(r.status, 200, p);
+      assert.deepEqual(cspOf(r), want, p);
+    }
+  });
+  await t('CSP: 지갑 오리진의 HTML 에 인라인 <script> 가 없다(속성 도구 스크립트는 /attr/attr_page.js)', async () => {
+    for (const p of ['/', '/attr.html']) assert.equal(inlineScripts(await (await fetch(`${pw.url}${p}`)).text()), 0, p);
+    const js = await fetch(`${pw.url}/attr/attr_page.js`); assert.equal(js.status, 200); assert.match(js.headers.get('content-type'), /javascript/);
+  });
 } finally { await stopChild(pw.child); }
 
 await t('기동 거부', async () => {
@@ -121,6 +142,9 @@ try {
   await t('web 회귀', async () => {
     const c = await (await fetch(`${web.url}/user/config`)).json();
     assert.equal(c.secrets, 'web'); assert.match(c.rpcUrl, /^http:\/\//);
+  });
+  await t('web 모드에는 CSP 헤더가 없다(passkey-web 전용)', async () => {
+    for (const p of ['/', '/attr.html', '/dist/prover_worker.js', '/user/config']) assert.equal((await fetch(`${web.url}${p}`)).headers.get('content-security-policy'), null, p);
   });
 } finally { await stopChild(web.child); }
 fs.rmSync(tmp, { recursive: true, force: true });

@@ -62,6 +62,19 @@ let ciaSeenAt = 0, pinging = null; const CIA_FRESH_MS = 10_000;
 function pingCia() { if (!pinging) pinging = (async () => { const c = new AbortController(); const tm = setTimeout(() => c.abort(), 1500); try { if ((await fetch(`${CIA_URL}/cia/public_keys`, { signal: c.signal })).ok) ciaSeenAt = Date.now(); } catch { /* */ } finally { clearTimeout(tm); pinging = null; } })(); return pinging; }
 
 const app = express();
+// passkey-web 지갑 오리진 CSP(2026-11-17): salt 가 이 오리진의 JS 메모리와 IndexedDB 보관분에 있으므로, 이 오리진에서는 이 서버가 낸 스크립트만 돈다.
+// 인라인 스크립트·인라인 처리기·남의 오리진 스크립트·eval 은 막는다. wasm(snarkjs·Poseidon)만 'wasm-unsafe-eval' 로 허용하고, 증명 워커가 띄우는
+// ffjavascript 스레드는 blob: 워커라 worker-src 에 blob: 를 둔다. 연결은 자기 오리진(설정·/rpc·/zk)·IdP(MODE3_CIA_URL)·서비스(MODE3_RP_ORIGIN)뿐이다.
+// 모든 응답에 같은 값을 단다 — 워커 스크립트는 자기 응답의 정책을 따른다. web 모드에는 달지 않는다(동작 그대로).
+if (SECRETS === 'passkey-web') {
+  let ciaOrigin; try { ciaOrigin = new URL(CIA_URL).origin; } catch { console.error(`passkey-web: MODE3_CIA_URL 이 URL 이 아니다 — ${CIA_URL}`); process.exit(1); }
+  const connect = ["'self'", ...new Set([ciaOrigin, ...RP_ORIGINS])].join(' ');
+  const CSP = [
+    "default-src 'self'", "script-src 'self' 'wasm-unsafe-eval'", "worker-src 'self' blob:", `connect-src ${connect}`,
+    "img-src 'self' data:", "style-src 'self' 'unsafe-inline'", "object-src 'none'", "base-uri 'none'", "frame-ancestors 'none'", "form-action 'none'",
+  ].join('; ');
+  app.use((req, res, next) => { res.set('Content-Security-Policy', CSP); next(); });
+}
 // 같은 오리진 RPC 프록시(passkey-web 이 CORS 없이 체인을 읽게 한다): 허용 목록 읽기 메서드만 통과. ethers 배치가 16kb 를 넘으므로 전역 파서보다 앞에서 1mb 로 받는다.
 function rpcProxy(target) {
   return async (req, res) => {

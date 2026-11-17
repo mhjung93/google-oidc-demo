@@ -1598,6 +1598,13 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
   그래서 탭·브라우저를 닫아도 10분 안이면 남고, 만료된 암호문은 다음에 읽을 때(또는 "모두 지우기"·패스키 연결 끊기 때) 지운다 — 그 전까지는 암호문이 남아 있을 수 있다.
 - **예외 — 속성 커밋먼트 도구 기록(에이전트 패스키 모드와 같은 한계)**: 첫 등록은 속성 도구의 기록(`localStorage` 의 `mode3_attr_tool_v1`, 같은 :5100 오리진)을 읽는데,
   그 기록에는 사용자가 붙여 넣은 salt 가 **평문으로** 남는다 — 다음 데모 리셋 뒤 새 리셋 표시(`/attr/dist/reset.json` 의 `epoch`)를 그 오리진의 페이지가 처음 읽어 지울 때까지. 속성 도구는 이 모드에서도 바뀌지 않는다(범위 밖).
+- **지갑 오리진 CSP(2026-11-17)**: 위 두 곳(보관분·속성 도구 기록)과 금고 메모리의 salt 는 :5100 오리진에서 도는 스크립트라면 누구나 읽을 수 있다. 그래서 이 모드의 정적 서버는 모든 응답에
+  `Content-Security-Policy` 를 단다 — `script-src 'self' 'wasm-unsafe-eval'`(인라인 스크립트·`onclick` 같은 인라인 처리기·남의 오리진 스크립트·`eval` 금지, wasm 만 허용), `worker-src 'self' blob:`(증명 워커와
+  그 안의 ffjavascript 스레드), `connect-src 'self'` + IdP(`MODE3_CIA_URL`)·서비스(`MODE3_RP_ORIGIN`) 오리진, `img-src 'self' data:`, `style-src 'self' 'unsafe-inline'`(인라인 style 속성이 있다),
+  `object-src`·`base-uri`·`frame-ancestors`·`form-action` 은 `'none'`. 속성 도구의 인라인 스크립트는 `mode3/attr/attr_page.js` 로 옮겼다(동작은 같고, 에이전트도 같은 파일을 낸다). web·다른 모드에는 헤더가 없다.
+  **막는 것**: 페이지에 끼워 넣어진 스크립트(HTML 주입·XSS)와 남의 오리진 스크립트의 실행. `connect-src` 는 `fetch`·XHR 로 보낼 곳을 위 오리진들로 줄인다. **막지 못하는 것**: 브라우저 확장(CSP 밖에서 페이지를 읽는다),
+  이 PC 의 악성 코드·같은 OS 사용자, 이 서버가 내는 스크립트 자체의 결함, 그리고 같은 오리진에 평문으로 남는 속성 도구 기록(위 예외 — CSP 는 저장을 바꾸지 않는다). 허용된 IdP·서비스 오리진으로 보내는 길과
+  페이지 이동·창 열기(주소에 실어 보내기)도 막지 않는다. 브라우저 테스트(`tests/test_mode3_user_passkey_web.mjs`)는 끼워 넣은 인라인·남의 오리진 스크립트가 돌지 않는 것과 정상 흐름 전체에서 위반이 0건인 것을 본다.
 - **체인 RPC 프록시와 허용 목록(R-5)**: 브라우저는 체인 노드를 직접 부르지 않고 정적 서버의 `/rpc/app`·`/rpc/rev` 로 부른다. 허용 메서드는 읽기 12개 —
   `eth_chainId, net_version, eth_blockNumber, eth_call, eth_getLogs, eth_getCode, eth_getBalance, eth_getBlockByNumber, eth_getBlockByHash, eth_getTransactionByHash, eth_getTransactionReceipt, eth_getTransactionCount`.
   배치는 원소 하나라도 막히면 전체 403. 목록 밖 읽기 메서드를 코어가 새로 쓰면 그 기능이 403 으로 깨진다 — 브라우저 테스트가 잡는다. 트랜잭션은 RP 릴레이를 거친다.
@@ -1645,7 +1652,7 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
 - passkey-web(2026-11-17) 새 테스트 11개 — `unit`: `tests/test_mode3_tls.mjs`(서버 TLS 기동 `MODE3_TLS_CERT`·`KEY`)·`tests/test_mode3_rpc_proxy.mjs`(RPC 허용 목록)·`tests/test_mode3_passkey_rpid.mjs`(패스키 RP ID 인자)·
   `tests/test_mode3_vault_hold.mjs`(10분 salt 보관)·`tests/test_mode3_user_idp_return.mjs`(인증 창 왕복)·`tests/test_zkd_tls_certs.mjs`(데모 CA·서버 인증서)·`tests/test_demo_split_passkey_web.mjs`(분리 데모 스크립트 정적 검사 —
   "사전 검사가 먼저" 줄 순서 단언이 통과했을 때만 스크립트를 두 경우, 잘못된 모드·CA 없음으로 실행한다; 내림·ssh 에는 닿지 않는다) / `chain`: `tests/test_mode3_tls_stack.mjs`(IdP·RP 만 https 로 띄워 RP→IdP 서버 간 호출까지 — 정적 서버는 https 로 띄우지 않는다. 정적 서버의 https 기동은 자동 테스트가 없고, `test_mode3_tls.mjs` 는 공통 도우미 `lib/mode3_tls.js` 만 본다)·
-  `tests/test_mode3_user_static_passkey_web.mjs`(정적 서버 설정·`/rpc/*`·속성 도구)·`tests/test_mode3_user_core_passkey.mjs`(웹 코어 패스키 salt·코드 등록·계정 복구) / `browser`: `tests/test_mode3_user_passkey_web.mjs`(사용자 페이지 패스키 설정·salt 보기·연결 끊기·계정 복구).
+  `tests/test_mode3_user_static_passkey_web.mjs`(정적 서버 설정·`/rpc/*`·속성 도구·CSP 헤더)·`tests/test_mode3_user_core_passkey.mjs`(웹 코어 패스키 salt·코드 등록·계정 복구) / `browser`: `tests/test_mode3_user_passkey_web.mjs`(사용자 페이지 패스키 설정·salt 보기·연결 끊기·계정 복구).
 - `bash scripts/run_tests.sh browser` — 팝업 로그인·`needs_consent` 재승인·MetaMask 트랜잭션을 실제 페이지로 돌린다
   (`tests/test_mode3_browser.mjs`). `chain` 과 같은 조건에 더해 **설치된 Google Chrome(또는 Chromium)** 이 필요하다 —
   Playwright 가 `channel: 'chrome'` 으로 띄우고, `window.ethereum` 을 스텁해 진짜 `snap-mode3/src/index.js` 의 `onRpcRequest` 를

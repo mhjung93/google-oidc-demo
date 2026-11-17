@@ -47,6 +47,12 @@ const DEMO_PWD = 'demo-pass-9';
 const hits = { create: 0, get: 0, rpIds: [] };
 const writes = [];        // 지갑 오리진의 localStorage·sessionStorage 쓰기 전부(키·값)
 const consoleLines = [];  // 모든 페이지의 콘솔 출력
+const cspHits = [];       // 지갑 오리진 문서의 CSP 위반(securitypolicyviolation) 전부 — 정상 흐름에서는 0건이어야 한다(마지막 케이스)
+/** CSP 위반 기록기 — 문서가 위반을 알리면 하네스로 보낸다. 지갑 오리진만 모은다. */
+async function recordCsp(ctx) {
+  await ctx.exposeFunction('__cspHit', (origin, directive, blocked, sample) => { if (origin === WALLET_ORIGIN) cspHits.push({ directive, blocked, sample }); });
+  await ctx.addInitScript(() => { document.addEventListener('securitypolicyviolation', (e) => { try { window.__cspHit?.(location.origin, e.effectiveDirective, e.blockedURI, e.sample); } catch { /* 하네스 없음 */ } }); });
+}
 const text = (page, sel) => page.$eval(sel, (el) => el.textContent ?? '');
 async function waitText(page, sel, needle, timeout = 30_000) {
   try { await page.waitForFunction(([s, n]) => (document.querySelector(s)?.textContent ?? '').includes(n), [sel, needle], { timeout }); }
@@ -57,6 +63,7 @@ async function stubContext(opts) {
   const ctx = await browser.newContext();
   await ctx.exposeFunction('__webauthnHit', (k, rpId) => { hits[k] = (hits[k] ?? 0) + 1; hits.rpIds.push(rpId); });
   await ctx.exposeFunction('__storageHit', (origin, kind, k, v) => { if (origin === WALLET_ORIGIN) writes.push({ kind, k, v }); });
+  await recordCsp(ctx);
   await ctx.addInitScript({ content: buildWebAuthnStub(opts) });
   await ctx.addInitScript(() => {
     const orig = Storage.prototype.setItem;
@@ -110,6 +117,24 @@ try {
   await t('rp 배지: passkey-web 은 브라우저(패스키)', async () => {
     await waitText(rpPage, '#walletMode', '패스키');
     assert.ok((await text(rpPage, '#walletMode')).includes('브라우저'), await text(rpPage, '#walletMode'));
+  });
+
+  // 2026-11-17: 지갑 오리진 CSP — 페이지에 끼워 넣은 인라인 스크립트·인라인 처리기·남의 오리진 스크립트는 돌지 않고 위반 이벤트가 난다.
+  // (page.evaluate·addInitScript 는 DevTools 경로라 CSP 와 무관하다 — 그래서 하네스는 그대로 돈다.)
+  await t('CSP: 끼워 넣은 인라인·남의 오리진 스크립트는 돌지 않는다(위반 이벤트)', async () => {
+    const before = cspHits.length;
+    const r = await userPage.evaluate(async (foreign) => {
+      const seen = [];
+      const done = new Promise((resolve) => { document.addEventListener('securitypolicyviolation', (e) => { seen.push(e.effectiveDirective); if (seen.length >= 3) resolve(); }); setTimeout(resolve, 5000); });
+      const s1 = document.createElement('script'); s1.textContent = 'window.__injected = "inline";'; document.body.appendChild(s1);
+      const img = document.createElement('img'); img.setAttribute('onerror', 'window.__injected2 = "attr";'); img.src = 'data:,x'; document.body.appendChild(img);
+      const s2 = document.createElement('script'); s2.src = `${foreign}/common/demo.js`; document.body.appendChild(s2);
+      await done;
+      return { seen: seen.sort(), inline: window.__injected ?? null, attr: window.__injected2 ?? null };
+    }, cia.base);
+    assert.equal(r.inline, null, '인라인 <script> 가 돌았다'); assert.equal(r.attr, null, '인라인 처리기가 돌았다');
+    assert.deepEqual(r.seen, ['script-src-attr', 'script-src-elem', 'script-src-elem'], j(r));
+    cspHits.length = before;   // 이 케이스가 일부러 낸 위반은 마지막 "위반 0건" 검사에서 뺀다
   });
 
   await t('속성 도구 기록이 없으면 IdP 로 가지 않는다', async () => {
@@ -480,6 +505,23 @@ try {
     const d = await idbDump(userPage);
     assert.equal(d.registration, undefined, '등록은 지웠다');
     assert.equal(d.passkey?.credentialId, cid, '패스키 연결은 남는다');
+  });
+
+  // 2026-11-17: 속성 도구(/attr.html)도 같은 CSP 아래에서 커밋먼트를 만든다(인라인이던 페이지 스크립트는 /attr/attr_page.js). 새 컨텍스트 — 앞 케이스의 기록과 섞이지 않게.
+  await t('CSP: 속성 도구가 커밋먼트를 만든다(위반 없이)', async () => {
+    const ctx = await browser.newContext();
+    try {
+      await recordCsp(ctx);
+      const p = await ctx.newPage(); await p.goto(`${wallet.base}/attr.html`);
+      await p.fill('#birthYear', '1990'); await p.selectOption('#country', 'KR'); await p.fill('#salt', SALT_D);
+      await p.click('#makeBtn');
+      await p.waitForSelector('#commitBox:not([hidden])', { timeout: 30_000 });
+      assert.match(await text(p, '#commitBox'), /^[0-9]+$/);
+    } finally { await ctx.close(); }
+  });
+
+  await t('CSP: 위 정상 흐름 전체(증명 워커·wasm·IdP 왕복·복구·속성 도구)에서 지갑 오리진 위반 0건', async () => {
+    assert.deepEqual(cspHits, []);
   });
 } finally {
   await browser.close().catch(() => {});

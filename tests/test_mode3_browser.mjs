@@ -1242,7 +1242,7 @@ try {
     assert.equal(await p.locator('#attrShown4, #attrShown5').count(), 0, '미사용 슬롯 행 없음');
     assert.ok((await p.textContent('#attrShown0')).includes('1990'), '입력값도 함께');
     assert.deepEqual(rec.profile, { birthYear: '1990', country: 'KR', extra1: 'hello' });
-    const okReq = (u) => /\/attr\.html|\/attr\/dist\/|\/common\//.test(u);   // 2026-11-16: 정적 자원뿐 — 스냅 설정(/wallet/config)도 zkID(/cia/user/uid)도 부르지 않는다
+    const okReq = (u) => /\/attr\.html|\/attr\/dist\/|\/attr\/attr_page\.js|\/common\//.test(u);   // 2026-11-16: 정적 자원뿐 — 스냅 설정(/wallet/config)도 zkID(/cia/user/uid)도 부르지 않는다(2026-11-17: 페이지 스크립트 /attr/attr_page.js 포함)
     assert.ok(reqs.every(okReq), `정적 자원 외 요청: ${reqs.filter((u) => !okReq(u)).join(', ')}`);
     // 범위 밖 값(출생연도 1800 < min 1900)은 인코더가 거절한다 — 저장값은 그대로(빈 칸은 폼의 required 가 먼저 막아 요청 자체가 없다)
     await p.fill('#birthYear', '1800'); await p.click('#makeBtn'); await waitText(p, '#formVerdict', '커밋먼트를 만들지 못했습니다');
