@@ -40,8 +40,8 @@ const browser = await launchBrowser();
 const stack = await startIsolatedMode3Stack({ userMode: 'web', walletHost: 'localhost', walletEnv: { MODE3_WALLET_SECRETS: 'passkey-web' }, ciaEnv: { CIA_ISSUE_AUTH: 'code' }, autoRelay: true });
 const { cia, wallet, rp } = stack;
 const WALLET_ORIGIN = new URL(wallet.base).origin;
-const SECRET_A = 'a1'.repeat(32), SECRET_C = 'c3'.repeat(32);
-const SALT_A = stubSalt(SECRET_A), SALT_C = stubSalt(SECRET_C);
+const SECRET_A = 'a1'.repeat(32), SECRET_C = 'c3'.repeat(32), SECRET_D = 'd4'.repeat(32);
+const SALT_A = stubSalt(SECRET_A), SALT_C = stubSalt(SECRET_C), SALT_D = stubSalt(SECRET_D);
 const AUID_A = (await auidOf({ s_u: BigInt(SALT_A) })).toString();
 const DEMO_PWD = 'demo-pass-9';
 const hits = { create: 0, get: 0, rpIds: [] };
@@ -73,7 +73,7 @@ async function stubContext(opts) {
   return ctx;
 }
 const idbDump = (page) => page.evaluate(async () => { const open = indexedDB.open('mode3-user', 1); open.onupgradeneeded = () => { if (!open.result.objectStoreNames.contains('kv')) open.result.createObjectStore('kv'); }; const db = await new Promise((r, x) => { open.onsuccess = () => r(open.result); open.onerror = () => x(open.error); }); const st = db.transaction('kv', 'readonly').objectStore('kv'); const keys = await new Promise((r) => { const q = st.getAllKeys(); q.onsuccess = () => r(q.result); }); const out = {}; for (const k of keys) out[k] = await new Promise((r) => { const q = st.get(k); q.onsuccess = () => r(q.result); }); db.close(); return JSON.parse(JSON.stringify(out, (k, v) => (v instanceof CryptoKey ? '[CryptoKey]' : v))); });
-/** 패스키 연결을 IndexedDB 에 직접 둔다(설정 카드는 Task 7) — kv `passkey` 는 공개값(credential ID)이다. */
+/** 패스키 연결을 IndexedDB 에 직접 둔다(설정 카드를 거치지 않는 케이스용 — 설정 카드는 아래 Task 7 케이스가 본다). kv `passkey` 는 공개값(credential ID)이다. */
 const putPasskey = (page, credentialId) => page.evaluate(async (cid) => { const open = indexedDB.open('mode3-user', 1); open.onupgradeneeded = () => { if (!open.result.objectStoreNames.contains('kv')) open.result.createObjectStore('kv'); }; const db = await new Promise((r, x) => { open.onsuccess = () => r(open.result); open.onerror = () => x(open.error); }); await new Promise((r, x) => { const q = db.transaction('kv', 'readwrite').objectStore('kv').put({ credentialId: cid, createdAt: Date.now() }, 'passkey'); q.onsuccess = () => r(); q.onerror = () => x(q.error); }); db.close(); }, credentialId);
 /** 속성 도구가 남기는 기록 — 데모 리셋 표시(reset.json)의 epoch 를 본 것으로 맞춰 둔다(readAttrRecord 가 지우지 않게). */
 const putAttrRecord = (page, s_u) => page.evaluate(async (r) => {
@@ -213,6 +213,163 @@ try {
     await popup.close();
   });
   await ctxC.close();
+
+  // ---- 사용자 페이지 화면(계획 Task 7): 패스키 설정·salt 보기·연결 끊기·계정 복구. 각 케이스는 새 스텁 컨텍스트(새 IndexedDB). ----
+  const reasonTitle = (page, code) => page.evaluate((c) => window.DemoStrings.reasons[c].ko.title, code);
+  /** 설정 카드에서 패스키를 연결한다(btn = #pkNewBtn 또는 #pkExistingBtn). */
+  const connectPasskey = async (page, btn) => {
+    await page.waitForSelector('#pkSetupCard:not([hidden])', { timeout: 15_000 });
+    await page.click(btn);
+    await waitText(page, '#pkSetupVerdict', '패스키를 연결했습니다');
+  };
+  const storagesOf = (page) => page.evaluate(() => { const ls = {}; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); ls[k] = localStorage.getItem(k); } return JSON.stringify(ls) + JSON.stringify(sessionStorage); });
+
+  await t('설정 카드: 패스키 만들기 → 연결, 카드 숨김, 보관 중 표시', async () => {
+    const ctx = await stubContext({ secretHex: SECRET_D });
+    try {
+      const p = await openUserPage(ctx);
+      const before = hits.create;
+      await connectPasskey(p, '#pkNewBtn');
+      assert.equal(hits.create - before, 1, '패스키를 한 번 만들었다');
+      assert.equal((await idbDump(p)).passkey?.credentialId, stubCredId(SECRET_D));
+      await p.waitForSelector('#pkSetupCard', { state: 'hidden', timeout: 15_000 });
+      await p.waitForSelector('#pkInfo', { state: 'visible', timeout: 15_000 });
+      await waitText(p, '#pkInfo', stubCredId(SECRET_D).slice(0, 12));
+      await waitText(p, '#pkInfo', '분 남음');
+    } finally { await ctx.close(); }
+  });
+
+  await t('127.0.0.1 로 열면 WebAuthn 을 부르지 않는다', async () => {
+    const ctx = await stubContext({ secretHex: SECRET_D });
+    try {
+      const before = { create: hits.create, get: hits.get };
+      const p = await ctx.newPage();
+      await p.goto(`${wallet.base.replace('//localhost', '//127.0.0.1')}/`);
+      await p.waitForSelector('#pkSetupCard:not([hidden])', { timeout: 15_000 });
+      await waitText(p, '#pkSetupVerdict', await reasonTitle(p, 'passkey_wrong_origin'));
+      assert.equal(await p.$eval('#pkNewBtn', (b) => b.disabled), true);
+      assert.equal(await p.$eval('#pkExistingBtn', (b) => b.disabled), true);
+      assert.equal(await p.$eval('#pkOriginLink', (a) => a.href), `${WALLET_ORIGIN}/`);
+      await p.waitForTimeout(500);
+      assert.equal(hits.create - before.create, 0); assert.equal(hits.get - before.get, 0);
+    } finally { await ctx.close(); }
+  });
+
+  await t('PRF 없는 인증기는 연결하지 않는다', async () => {
+    const ctx = await stubContext({ secretHex: SECRET_D, prf: false });
+    try {
+      const p = await openUserPage(ctx);
+      await p.waitForSelector('#pkSetupCard:not([hidden])', { timeout: 15_000 });
+      await p.click('#pkNewBtn');
+      await waitText(p, '#pkSetupVerdict', await reasonTitle(p, 'passkey_prf_unsupported'));
+      assert.equal((await idbDump(p)).passkey, undefined);
+      assert.equal(await p.isVisible('#pkSetupCard'), true, '설정 카드가 그대로 보인다');
+    } finally { await ctx.close(); }
+  });
+
+  await t('salt 보기: 보관분이면 패스키 0번, 닫으면 지워진다, 저장소에 평문 없음', async () => {
+    const ctx = await stubContext({ secretHex: SECRET_D });
+    try {
+      const p = await openUserPage(ctx);
+      await connectPasskey(p, '#pkExistingBtn');
+      const before = hits.get + hits.create;
+      await p.click('#pkShowSaltBtn');
+      await p.waitForSelector('#pkSaltModal:not([hidden])', { timeout: 15_000 });
+      assert.equal(await text(p, '#pkSaltText'), SALT_D);
+      assert.equal(hits.get + hits.create - before, 0, '보관분으로 패스키를 묻지 않는다');
+      await p.click('#pkSaltClose');
+      assert.equal(await p.isHidden('#pkSaltModal'), true);
+      assert.equal(await text(p, '#pkSaltText'), '', '닫으면 화면에서 지운다');
+      assert.equal(j(await idbDump(p)).includes(SALT_D), false, 'IndexedDB 에 평문 salt 가 있다');
+      assert.equal((await storagesOf(p)).includes(SALT_D), false, '브라우저 저장소에 salt 가 있다');
+      assert.deepEqual(writes.filter((w) => w.v.includes(SALT_D)), [], '저장소 쓰기에 salt 가 있다');
+      assert.equal(consoleLines.some((l) => l.includes(SALT_D)), false, '콘솔 로그에 salt 가 있다');
+    } finally { await ctx.close(); }
+  });
+
+  await t('등록 폼·복구 코드 버튼이 없다', async () => {
+    const ctx = await stubContext({ secretHex: SECRET_D });
+    try {
+      const p = await openUserPage(ctx);
+      await p.waitForSelector('#pkSetupCard:not([hidden])', { timeout: 15_000 });
+      for (const sel of ['#fileRegFields', '#registerBtn', '#profileSaveBtn', '#recoveryCodeBtn', '#recoverBtn']) assert.equal(await p.isHidden(sel), true, `${sel} 이 보인다`);
+      assert.equal(await p.$eval('#pkAttrNote a', (a) => a.href), `${WALLET_ORIGIN}/attr.html`, '속성 안내에 속성 도구 링크');
+      assert.equal(await p.isVisible('#pkAttrNote'), true);
+    } finally { await ctx.close(); }
+  });
+
+  await t('연결 끊기는 미등록일 때만', async () => {
+    // 등록된 브라우저(앞 케이스들의 ctxA): 끊기 버튼 비활성
+    await userPage.waitForSelector('#pkInfo', { state: 'visible', timeout: 15_000 });
+    await userPage.waitForFunction(() => document.querySelector('#pkDisconnectBtn')?.disabled === true, undefined, { timeout: 15_000 });
+    // 미등록 브라우저: 끊으면 연결이 지워지고 설정 카드가 다시 뜬다
+    const ctx = await stubContext({ secretHex: SECRET_D });
+    try {
+      const p = await openUserPage(ctx);
+      await connectPasskey(p, '#pkExistingBtn');
+      await p.waitForSelector('#pkDisconnectBtn:not([disabled])', { state: 'visible', timeout: 15_000 });
+      await p.click('#pkDisconnectBtn');
+      await p.waitForSelector('#pkSetupCard:not([hidden])', { timeout: 15_000 });
+      assert.equal((await idbDump(p)).passkey, undefined, '연결이 지워졌다');
+      assert.equal(await p.isHidden('#pkInfo'), true);
+    } finally { await ctx.close(); }
+  });
+
+  await t('계정 복구: 저장소를 비운 브라우저에서 같은 패스키로 같은 등록·같은 PPID', async () => {
+    const firstPPID = Object.values((await idbDump(userPage)).sessions ?? {})[0]?.PPID;
+    assert.ok(firstPPID, '앞 케이스(ctxA)의 세션 PPID');
+    const ctx = await stubContext({ secretHex: SECRET_A });
+    try {
+      const p = await openUserPage(ctx);
+      await connectPasskey(p, '#pkExistingBtn');
+      await p.waitForSelector('#pkRecoverCard:not([hidden])', { timeout: 15_000 });
+      await p.waitForSelector('#pkRecoverAttrs [data-slot="birthYear"]');
+      assert.equal(await p.$eval('#pkRecoverAttrs [data-slot="birthYear"]', (e) => e.value), '1990');
+      assert.equal(await p.$eval('#pkRecoverAttrs [data-slot="country"]', (e) => e.value), 'KR');
+      assert.equal(await p.$$eval('#pkRecoverAttrs [data-slot]', (els) => els.some((e) => /^extra|^unused/.test(e.dataset.slot))), false, '예비·미사용 슬롯은 없다');
+      await p.click('#pkRecoverAuidBtn');
+      await waitText(p, '#pkRecoverAuid', AUID_A);
+      await p.click('#pkRecoverGoBtn');
+      await p.waitForURL((x) => x.origin === cia.base && x.pathname === '/login' && x.searchParams.get('purpose') === 'register', { timeout: 30_000 });
+      await fillIdp(p);
+      await p.waitForURL((x) => x.origin === WALLET_ORIGIN && x.pathname === '/' && x.search === '', { timeout: 180_000 });
+      await p.waitForSelector('#mainView:not([hidden])');
+      await waitText(p, '#pkRecoverVerdict', '계정을 되찾았습니다', 60_000);
+      assert.equal(await p.evaluate(() => sessionStorage.getItem('mode3_recover_result')), null, '복구 결과는 한 번 보이고 지운다');
+      assert.equal(String((await idbDump(p)).registration?.auid), AUID_A);
+      await p.waitForSelector('#pkRecoverCard', { state: 'hidden', timeout: 15_000 });
+      // 서비스 로그인 — 같은 PPID
+      const rpR = await ctx.newPage(); await rpR.goto(rp.base);
+      const [popup] = await Promise.all([ctx.waitForEvent('page'), idpLogin(rpR)]);
+      await approve(popup);
+      await atIdpLogin(popup);
+      assert.equal(new URL(popup.url()).searchParams.get('purpose'), null, '복구된 브라우저는 발급 인증 창');
+      await fillIdp(popup);
+      await waitText(rpR, '#verdict', '로그인 성공', 180_000);
+      const ppids = Object.values((await idbDump(p)).sessions ?? {}).map((s) => s.PPID);
+      assert.deepEqual(ppids, [firstPPID], '복구 뒤 같은 PPID');
+    } finally { await ctx.close(); }
+  });
+
+  await t('복구에서 다른 auid 를 넣으면 등록되지 않는다', async () => {
+    const ctx = await stubContext({ secretHex: SECRET_A });
+    try {
+      const p = await openUserPage(ctx);
+      await connectPasskey(p, '#pkExistingBtn');
+      await p.waitForSelector('#pkRecoverCard:not([hidden])', { timeout: 15_000 });
+      await p.click('#pkRecoverGoBtn');
+      await p.waitForURL((x) => x.origin === cia.base && x.pathname === '/login' && x.searchParams.get('purpose') === 'register', { timeout: 30_000 });
+      const badAuid = AUID_A.slice(0, -1) + (AUID_A.endsWith('1') ? '2' : '1');
+      await p.fill('#authUid', 'pk-user'); await p.fill('#authPwd', DEMO_PWD); await p.fill('#authAuid', badAuid); await p.click('#authGo');
+      const outcome = await Promise.race([
+        p.waitForSelector('#authVerdict.bad', { timeout: 60_000 }).then(() => 'idp'),
+        p.waitForURL((x) => x.origin === WALLET_ORIGIN && x.pathname === '/' && x.search === '', { timeout: 60_000 }).then(() => 'wallet'),
+      ]);
+      const u = outcome === 'wallet' ? p : await openUserPage(ctx);
+      if (outcome === 'wallet') await waitText(u, '#pkRecoverVerdict', await reasonTitle(u, 'register_auid_mismatch'), 60_000);
+      assert.equal((await idbDump(u)).registration, undefined, '등록되지 않았다');
+    } finally { await ctx.close(); }
+  });
 
   await t('데모 세대가 바뀌면 등록은 지우고 패스키 연결은 남긴다', async () => {
     const cid = stubCredId(SECRET_A);

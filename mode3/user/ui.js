@@ -3,6 +3,7 @@
 // MetaMask·Snap 코드는 없다. 비밀(s_u·blind_u·세션 개인키·금고 비밀번호·secrets 암호문)은 DOM·localStorage·로그·postMessage 에
 // 넣지 않는다 — 코어 응답은 에이전트와 같은 모양이라 비밀이 실리지 않고, safeDetail 이 한 번 더 거른다. 비밀번호 입력칸은 읽자마자 비운다.
 import { ZK_CACHE_NAME } from '../../lib/browser/zk_assets.js';
+import { RECOVER_RESULT_KEY, idpAuthUrl, savePending } from './idp_return.js';
 export const $ = (id) => document.getElementById(id);
 
 /** 사전 도우미(wallet.html 의 tte·tt·setVerdict·pendingVerdict 와 같다). */
@@ -72,12 +73,18 @@ function askSecret({ modalId, inputId, goId, cancelId }) {
   });
 }
 
-/** oidc: IdP 의 public_keys.oidc({ enabled, provider, clientId, issuer }) — user.js 가 읽어 넘긴다. 못 읽으면 기본값(꺼짐)이라 Google 버튼만 숨는다. */
-export function mountUi({ core, prover, config, Demo, meta, demoReset = false }) {
+/** oidc: IdP 의 public_keys.oidc({ enabled, provider, clientId, issuer }) — user.js 가 읽어 넘긴다. 못 읽으면 기본값(꺼짐)이라 Google 버튼만 숨는다.
+ *  passkey: passkey-web 의 { derive, create }(user.js — RP ID 는 설정의 사용자 오리진 호스트). 설정 카드의 두 버튼만 직접 부른다. */
+export function mountUi({ core, prover, config, Demo, meta, demoReset = false, passkey = null }) {
   const { tte, tt, setVerdict, pendingVerdict } = textKit(Demo);
   const { withUnlock, ask: askUnlock } = createUnlocker({ core, Demo });
   // /wallet/config 대신 /user/config(같은 오리진). minAge·allowedCountries 는 없다 — claim 버튼이 기본값으로 대신한다(에이전트와 같다).
-  const cfg = { ...config, secrets: 'web' };
+  const cfg = { ...config, secrets: config.secrets ?? 'web' };
+  // passkey-web(2026-11-17 계획 Task 7): salt 는 패스키 — 설정 카드·salt 보기·연결 끊기·계정 복구 카드를 보이고, 등록 폼·복구 코드는 숨긴다.
+  const PK = cfg.secrets === 'passkey-web';
+  // 패스키는 설정의 사용자 오리진 호스트(RP ID)에서만 쓸 수 있다 — 다른 호스트(127.0.0.1 등)로 열면 WebAuthn 을 부르지 않고 안내만 한다.
+  const pkOriginOk = PK && (() => { try { return location.hostname === new URL(cfg.walletOrigin).hostname; } catch { return false; } })();
+  let pkState = null;        // core.passkeyState() 본문 { credentialId, createdAt, heldUntil } — 공개값만(salt 없음)
   let lastAttrs = null;      // core.status() 가 준 값 — "정확히 공개" 버튼이 쓴다
   let lastSessions = {};     // core.status() 의 sessions — 선택된 세션의 attrGateAddress 로 claim 버튼이 폼을 채운다(스펙 §6.1)
   let lastStatus = null;     // 마지막 core.status() 본문(언어·전문가 전환 때 다시 그린다)
@@ -221,7 +228,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false })
     $('credInfo').textContent = tt(credKey) || '-';
     $('aaInfo').textContent = s?.ciaUrl || tt('wallet_aa_none') || '-';
     // 등록 폼은 미등록일 때만 펼친다(설계 §4.1).
-    $('fileRegFields').hidden = Boolean(s?.registered);
+    $('fileRegFields').hidden = PK || Boolean(s?.registered);   // passkey-web 은 첫 서비스 로그인이 등록이다(IdP 인증 창)
     // 등록부 확인 줄(V9 §8.2).
     const rg = s?.registry ?? null;
     const rb = $('registryBadge');
@@ -354,6 +361,56 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false })
   /** 보관 상태 카드 — 금고 없음/잠김/해제(만료 시각) 배지와 버튼 활성. 동기 getter 는 core.status()·vault.refresh() 뒤에만 읽는다. */
   /** 보관 상태 — 2026-10-16: 금고 비밀번호·잠금 UI 를 뺐다(자동 금고). 옛 비밀번호 금고가 잠겨 있으면 비밀이 필요한 동작이 잠금 해제 창을 띄운다. */
   async function renderVault() { /* 보여 줄 금고 상태가 없다 — 자리만 남긴다(언어 전환·refresh 호출 호환) */ }
+  /** 결과 카드를 비운다(언어 전환 때 다시 그려지지 않게 인자도 지운다). */
+  const clearVerdict = (el) => { el.__verdictArgs = null; el.className = ''; el.textContent = ''; };
+
+  // ---- passkey-web: 설정 카드·패스키 줄·계정 복구 카드 ----
+  /** 연결이 없으면 설정 카드, 있으면 보관 상태의 패스키 줄(credential ID 앞부분·보관 남은 분). 연결 끊기는 등록이 없을 때만. */
+  function renderPasskey() {
+    if (!PK) return;
+    const cid = pkState?.credentialId ?? null;
+    $('pkSetupCard').hidden = Boolean(cid);
+    $('pkPanel').hidden = !cid;
+    if (cid) {
+      const left = Number.isFinite(pkState.heldUntil) ? pkState.heldUntil - Date.now() : 0;
+      const held = left > 0 ? tt('user_pk_held', { min: Math.ceil(left / 60_000) }) : tt('user_pk_not_held');
+      $('pkInfo').textContent = [tt('user_pk_credential', { id: `${cid.slice(0, 12)}…` }) || `${cid.slice(0, 12)}…`, held].filter(Boolean).join(' · ');
+      const registered = Boolean(lastStatus?.registered);
+      $('pkDisconnectBtn').disabled = registered;
+      $('pkDisconnectHint').hidden = !registered;
+    }
+    renderRecover();
+  }
+  const RECOVER_DEFAULTS = { birthYear: '1990', country: 'KR' };   // 코어 기본값(DEFAULT_PROFILE)과 같다 — 사용자가 고친다(zk 스냅 화면과 같다)
+  let recoverDrawn = false;
+  /** 계정 복구 카드(스펙 W6): 연결 있음 ∧ 상태를 읽었고 미등록. 속성 칸은 처음 한 번만 그린다(입력 중인 값을 지우지 않게). */
+  function renderRecover() {
+    const show = PK && Boolean(pkState?.credentialId) && Boolean(lastStatus) && !lastStatus.registered;
+    $('pkRecoverCard').hidden = !show;
+    if (!show || recoverDrawn || !attrSchema) return;
+    recoverDrawn = true;
+    const dl = $('pkRecoverAttrs'); dl.replaceChildren();
+    attrSchema.slots.forEach((slot) => {
+      if (slot.type === 'unused' || isSpareSlot(slot)) return;
+      const dt = document.createElement('dt'); dt.textContent = slot.label ?? slot.name;
+      let input;
+      if (slot.type === 'enum') {
+        input = document.createElement('select');
+        for (const name of Object.keys(slot.values)) { const o = document.createElement('option'); o.value = name; o.textContent = name; input.appendChild(o); }
+      } else { input = document.createElement('input'); input.size = slot.type === 'int' ? 6 : 10; }
+      input.dataset.slot = slot.name;
+      if (RECOVER_DEFAULTS[slot.name] !== undefined) input.value = RECOVER_DEFAULTS[slot.name];
+      const dd = document.createElement('dd'); dd.appendChild(input);
+      dl.append(dt, dd);
+    });
+  }
+  /** 복구 카드의 { 슬롯 이름: 값 } — 예비 슬롯은 빈 값(readProfileForm 과 같은 모양). */
+  function readRecoverProfile() {
+    const out = {};
+    for (const slot of attrSchema?.slots ?? []) if (slot.type !== 'unused') out[slot.name] = '';
+    for (const el of document.querySelectorAll('#pkRecoverAttrs [data-slot]')) out[el.dataset.slot] = el.value.trim();
+    return out;
+  }
   /** 증명 키 내려받기(#zkProgress). 워커의 진행률은 user.js 가 'mode3-zk-progress' 이벤트로 넘긴다. */
   function renderZk() {
     const el = $('zkProgress');
@@ -383,9 +440,11 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false })
       lastStatus = null;
       statusError = e.message;
     }
+    if (PK) { try { const r = await core.passkeyState(); pkState = r.status === 200 ? r.body : null; } catch { pkState = null; } }
     renderIdentity();
     renderSessions();
     renderTxs();
+    renderPasskey();
     renderGuide();
     await renderVault();
     await postPresence(core);
@@ -393,7 +452,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false })
   // 언어·전문가 전환은 사전이 채우는 요소와 결과 카드만 바꾼다(Demo) — 스크립트가 만든 텍스트는 여기서 다시 그린다.
   for (const k of ['setLang', 'setExpert']) {
     const orig = Demo[k];
-    Demo[k] = (v) => { orig(v); renderModeTexts(); renderProofInfo(); renderZk(); renderIdentity(); renderSessions(); renderTxs(); renderVault(); };
+    Demo[k] = (v) => { orig(v); renderModeTexts(); renderProofInfo(); renderZk(); renderIdentity(); renderSessions(); renderTxs(); renderPasskey(); renderVault(); };
   }
 
   // V8 세션 폐기(설계 2026-09-24 §4): 인증 증명은 코어가 금고의 s_u 로 만든다(잠겨 있으면 잠금 해제 창).
@@ -711,10 +770,94 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false })
     refresh(true);
   });
 
+  // ---- passkey-web 동작: 패스키 연결(만들기·이미 있는 것)·salt 보기·연결 끊기·계정 복구 ----
+  /** get() → { credentialId, s_u }(passkey_store — PRF 로 만든 salt). 코어가 금고를 만들고 credential 을 두고 salt 를 10분 보관한다. s_u 는 코어에만 넘긴다. */
+  async function linkPasskey(get) {
+    if (!pkOriginOk) return;
+    const btns = [$('pkNewBtn'), $('pkExistingBtn')];
+    if (btns.some((b) => b.dataset.busy === '1')) return;   // 패스키 창이 떠 있는 동안의 재클릭만 무시
+    btns.forEach((b) => { b.dataset.busy = '1'; });
+    pendingVerdict($('pkSetupVerdict'), 'working');
+    try {
+      const { credentialId, s_u } = await get();
+      const r = await core.passkeyConnect({ credentialId, s_u });
+      if (r.status === 200) setVerdict($('pkSetupVerdict'), true, 'user_pk_connected');
+      else setVerdict($('pkSetupVerdict'), false, 'wallet_setup_passkey_failed', { reason: r.body?.reason ?? `HTTP ${r.status}` });
+    } catch (e) {
+      setVerdict($('pkSetupVerdict'), false, 'wallet_setup_passkey_failed', { reason: e?.reason ?? 'passkey_unsupported', detail: e?.message });
+    } finally { btns.forEach((b) => { delete b.dataset.busy; }); refresh(); }
+  }
+  if (PK) {
+    $('pkNewBtn').addEventListener('click', () => linkPasskey(() => passkey.create()));
+    $('pkExistingBtn').addEventListener('click', () => linkPasskey(() => passkey.derive({})));
+    // salt 보기(스펙 §2 4단계): 보관분 또는 패스키. 창에만 보이고 닫으면 지운다 — 저장·전송하지 않는다.
+    $('pkShowSaltBtn').addEventListener('click', async () => {
+      clearVerdict(storageVerdict());
+      try {
+        const r = await core.showSalt();
+        if (r.status !== 200) { setVerdict(storageVerdict(), false, 'wallet_passkey_salt_failed', { reason: r.body?.reason ?? `HTTP ${r.status}` }); return; }
+        $('pkSaltText').textContent = r.body.s_u; $('pkSaltModal').hidden = false;
+      } catch (e) { setVerdict(storageVerdict(), false, 'wallet_passkey_salt_failed', { reason: e?.reason ?? 'internal', detail: e?.message }); }
+      finally { refresh(); }   // 패스키로 새로 받았으면 보관 남은 시간이 바뀐다
+    });
+    $('pkSaltClose').addEventListener('click', () => { $('pkSaltModal').hidden = true; $('pkSaltText').textContent = ''; });
+    $('pkSaltCopy').addEventListener('click', () => copyText($('pkSaltText').textContent, $('pkSaltCopy')));
+    $('pkDisconnectBtn').addEventListener('click', async () => {
+      if ($('pkDisconnectBtn').disabled) return;
+      clearVerdict(storageVerdict());
+      try {
+        const r = await core.passkeyDisconnect();
+        if (r.status !== 200) setVerdict(storageVerdict(), false, 'wallet_passkey_disconnect_failed', { reason: r.body?.reason ?? `HTTP ${r.status}` });
+        else clearVerdict($('pkSetupVerdict'));   // "연결했습니다" 가 다시 뜬 설정 카드 옆에 남지 않게
+      } catch (e) { setVerdict(storageVerdict(), false, 'wallet_passkey_disconnect_failed', { reason: e?.reason ?? 'internal', detail: e?.message }); }
+      finally { refresh(); }
+    });
+    // 계정 복구(스펙 W6): auid 보기(인증 창에 넣는 값 — salt 는 코어 밖으로 나오지 않는다) → 인증 창(등록 모드). 돌아오면 /?authorize=1 의
+    // runPopup 이 mode3-recover 를 보고 finishRecover(등록 코드로 등록 → 결과를 sessionStorage 에 남기고 '/')로 이어 간다. 대기 저장분에 salt 는 없다.
+    $('pkRecoverAuidBtn').addEventListener('click', async () => {
+      clearVerdict($('pkRecoverVerdict')); $('pkRecoverAuid').textContent = '';
+      try {
+        const r = await core.passkeyAuid();
+        if (r.status !== 200) { setVerdict($('pkRecoverVerdict'), false, 'user_pk_recover_failed', { reason: r.body?.reason ?? `HTTP ${r.status}` }); return; }
+        $('pkRecoverAuid').textContent = r.body.auid;
+      } catch (e) { setVerdict($('pkRecoverVerdict'), false, 'user_pk_recover_failed', { reason: e?.reason ?? 'internal', detail: e?.message }); }
+      finally { refresh(); }
+    });
+    $('pkRecoverGoBtn').addEventListener('click', () => {
+      clearVerdict($('pkRecoverVerdict'));
+      const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
+      savePending(window.sessionStorage, { req: { type: 'mode3-recover', profile: readRecoverProfile() }, origin: location.origin, nonce, at: Date.now() });
+      location.assign(idpAuthUrl({ ciaUrl: cfg.ciaUrl, walletOrigin: location.origin, nonce, purpose: 'register' }));
+    });
+  }
+  /** 복구 귀로(popup.js finishRecover)가 남긴 결과를 한 번 보이고 지운다. */
+  function showRecoverResult() {
+    let r = null;
+    try { r = JSON.parse(sessionStorage.getItem(RECOVER_RESULT_KEY) ?? 'null'); sessionStorage.removeItem(RECOVER_RESULT_KEY); } catch { r = null; }
+    if (!r) return;
+    if (r.ok) setVerdict($('pkRecoverVerdict'), true, r.restored ? 'user_pk_recover_done_restored' : 'user_pk_recover_done_new');
+    else setVerdict($('pkRecoverVerdict'), false, 'user_pk_recover_failed', { reason: r.reason ?? 'internal', ...(r.detail ? { detail: r.detail } : {}) });
+  }
+  /** passkey-web 화면 준비(한 번): 등록 폼·속성 저장·복구 코드 버튼을 숨기고 속성 도구 링크를 보인다. 오리진이 맞지 않으면 두 버튼을 끄고 안내한다. */
+  function preparePasskeyUi() {
+    for (const id of ['registerBtn', 'profileSaveBtn', 'recoveryCodeBtn', 'recoverBtn']) $(id).hidden = true;
+    $('fileRegFields').hidden = true;
+    const link = $('pkAttrLink'); link.href = `${location.origin}/attr.html`; link.textContent = link.href;
+    $('pkAttrNote').hidden = false;
+    if (!pkOriginOk) {
+      $('pkNewBtn').disabled = true; $('pkExistingBtn').disabled = true;
+      const a = $('pkOriginLink'); a.href = `${cfg.walletOrigin}/`; a.textContent = a.href;
+      $('pkOriginRow').hidden = false;
+      setVerdict($('pkSetupVerdict'), false, 'user_pk_setup_title', { reason: 'passkey_wrong_origin' });
+    }
+    showRecoverResult();
+  }
+
   async function init() {
     // 체험 모드의 잠금(설계 §3.3). #registerBtn 은 지금까지 늘 활성이었다 — 그 규칙을 otherwise 로 그대로 옮긴다.
     Demo.tour?.lock({ id: 'registerBtn', cond: 'rp_approved', otherwise: () => true });
     Demo.tour?.onToggle(renderGuide);
+    if (PK) preparePasskeyUi();
     renderModeTexts();
     renderProofInfo();
     renderZk();
