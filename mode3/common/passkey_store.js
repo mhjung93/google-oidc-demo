@@ -25,13 +25,14 @@
     return s.toString();
   }
 
-  // ---- WebAuthn(스펙 §4.1·§4.2) — RP ID 는 'localhost' 고정(P6). 서버 검증이 없는 데모라 challenge 는 무작위로만 둔다(PRF 만 쓴다). ----
-  const RP_ID = 'localhost';
+  // ---- WebAuthn(스펙 §4.1·§4.2) — RP ID 기본은 localhost(에이전트 P6), passkey-web 은 호출자가 rpId 를 준다(2026-11-17 passkey-web R-2). 서버 검증이 없는 데모라 challenge 는 무작위로만 둔다(PRF 만 쓴다). ----
+  const DEFAULT_RP_ID = 'localhost';
   const b64url = (bytes) => btoa(String.fromCharCode(...toBytes(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   const fromB64url = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
   const rand = (n) => crypto.getRandomValues(new Uint8Array(n));
-  function precheck() {
-    if (location.hostname !== RP_ID) fail('passkey_wrong_origin', `패스키는 ${RP_ID} 에서만 쓴다 (지금 ${location.hostname})`);
+  function precheck(rpId) {
+    // IP 주소는 RP ID 가 될 수 없다 — WebAuthn 호출 전에 거절한다.
+    if (/^\d+(\.\d+){3}$/.test(rpId) || rpId.includes(':') || location.hostname !== rpId) fail('passkey_wrong_origin', `패스키는 ${rpId} 에서만 쓴다 (지금 ${location.hostname})`);
     if (typeof window.PublicKeyCredential !== 'function' || !window.isSecureContext || !navigator.credentials) fail('passkey_unsupported', 'WebAuthn 을 쓸 수 없는 브라우저·페이지');
   }
   // 브라우저 오류 → 사유. 이미 사유가 붙은 오류는 그대로.
@@ -42,12 +43,12 @@
   }
 
   /** 저장된(또는 고른) 패스키로 PRF 를 계산해 s_u 를 만든다. credentialId 가 없으면 고르기 창(이미 있는 패스키 쓰기). */
-  async function derivePrf({ credentialId } = {}) {
-    precheck();
+  async function derivePrf({ credentialId, rpId = DEFAULT_RP_ID } = {}) {
+    precheck(rpId);
     let a;
     try {
       a = await navigator.credentials.get({ publicKey: {
-        challenge: rand(32), rpId: RP_ID, userVerification: 'required',
+        challenge: rand(32), rpId, userVerification: 'required',
         ...(credentialId ? { allowCredentials: [{ type: 'public-key', id: fromB64url(credentialId) }] } : {}),
         extensions: { prf: { eval: { first: PRF_INPUT } } },
       } });
@@ -59,13 +60,13 @@
   }
 
   /** 새 패스키를 만들고(PRF 켬) 바로 한 번 계산해 같은 값이 나오는지 본다 — 백업 확인의 자리(스펙 §4.2). */
-  async function createPasskey() {
-    precheck();
+  async function createPasskey({ rpId = DEFAULT_RP_ID, rpName = 'zk 스냅' } = {}) {
+    precheck(rpId);
     let cred;
     try {
       cred = await navigator.credentials.create({ publicKey: {
-        rp: { id: RP_ID, name: 'zk 스냅' },
-        user: { id: rand(16), name: 'zk-snap', displayName: 'zk 스냅' },
+        rp: { id: rpId, name: rpName },
+        user: { id: rand(16), name: 'zk-snap', displayName: rpName },
         challenge: rand(32),
         pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
         authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
@@ -77,7 +78,7 @@
     if (ext.prf?.enabled !== true) fail('passkey_prf_unsupported', '인증기가 PRF 를 켜지 않았다');
     const credentialId = b64url(cred.rawId);
     const atCreate = ext.prf?.results?.first ? await saltFromPrf(ext.prf.results.first) : null;
-    const d = await derivePrf({ credentialId });
+    const d = await derivePrf({ credentialId, rpId });
     if (atCreate !== null && atCreate !== d.s_u) fail('passkey_unstable', '만들 때와 다시 계산할 때 PRF 값이 다르다');
     return { credentialId, s_u: d.s_u };
   }

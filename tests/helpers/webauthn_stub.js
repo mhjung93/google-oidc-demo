@@ -11,7 +11,7 @@ export function buildWebAuthnStub({ secretHex, prf = true, cancel = false }) {
   const PRF = ${prf ? 'true' : 'false'}, CANCEL = ${cancel ? 'true' : 'false'};
   const enc = new TextEncoder();
   const bytes = (v) => v instanceof Uint8Array ? v : v instanceof ArrayBuffer ? new Uint8Array(v) : new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
-  const hit = (k) => { try { if (typeof window.__webauthnHit === 'function') window.__webauthnHit(k); } catch {} };
+  const hit = (k, rpId) => { try { if (typeof window.__webauthnHit === 'function') window.__webauthnHit(k, rpId); } catch {} };
   async function credId() { return new Uint8Array(await crypto.subtle.digest('SHA-256', SECRET)).slice(0, 16).buffer; }
   async function prfOf(input) {
     const pre = enc.encode('WebAuthn PRF\\0');
@@ -22,14 +22,14 @@ export function buildWebAuthnStub({ secretHex, prf = true, cancel = false }) {
   }
   const cancelled = () => Promise.reject(new DOMException('사용자가 취소했다(스텁)', 'NotAllowedError'));
   navigator.credentials.create = async ({ publicKey }) => {
-    hit('create'); if (CANCEL) return cancelled();
+    hit('create', publicKey?.rp?.id ?? publicKey?.rpId ?? null); if (CANCEL) return cancelled();
     const first = publicKey?.extensions?.prf?.eval?.first;
     const out = PRF && first ? { enabled: true, results: { first: await prfOf(first) } } : { enabled: PRF };
     const rawId = await credId();
     return { rawId, id: '', type: 'public-key', response: {}, authenticatorAttachment: 'platform', getClientExtensionResults: () => ({ prf: out }) };
   };
   navigator.credentials.get = async ({ publicKey }) => {
-    hit('get'); if (CANCEL) return cancelled();
+    hit('get', publicKey?.rp?.id ?? publicKey?.rpId ?? null); if (CANCEL) return cancelled();
     const first = publicKey?.extensions?.prf?.eval?.first;
     const ext = PRF && first ? { prf: { results: { first: await prfOf(first) } } } : {};
     return { rawId: await credId(), id: '', type: 'public-key', response: {}, authenticatorAttachment: 'platform', getClientExtensionResults: () => ext };

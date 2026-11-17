@@ -49,6 +49,7 @@ UNIT=(
   tests/test_mode3_set_tree.mjs
   tests/test_mode3_demo_strings.js
   tests/test_mode3_passkey_salt.mjs
+  tests/test_mode3_passkey_rpid.mjs
   tests/test_mode3_health_shape.js
   tests/test_mode3_stack_judge.js
   tests/test_mode3_registry.js
