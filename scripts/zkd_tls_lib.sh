@@ -38,8 +38,8 @@ zkd_ca_create() {
       esac
       # 재사용하는 개인키가 다른 사용자도 읽을 수 있으면 600 으로 고친다(막지 않는다 — 내용은 그대로, 권한만)
       mode=$(stat -c %a "$dir/ca.key") || exit 1
-      if [ "$mode" != 600 ]; then
-        chmod 600 "$dir/ca.key" || exit 1
+      if [ $((8#$mode & 8#077)) -ne 0 ]; then   # 400 처럼 그룹·기타 권한이 없으면 그대로 둔다
+        chmod 600 "$dir/ca.key" || { echo "BLOCKED: $dir/ca.key 권한($mode)을 고치지 못했다(소유자 확인) — 직접 chmod 600 하거나 CA 를 새로 만든다" >&2; exit 2; }
         echo "[고침] $dir/ca.key 권한 $mode -> 600" >&2
       fi
       exit 0

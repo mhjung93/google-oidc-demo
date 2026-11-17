@@ -103,7 +103,7 @@ if [ "$WALLET_MODE" = passkey-web ]; then
   for pair in "127.0.0.1=wallet.zkd.test" "$IDP=idp.zkd.test" "$RP1=zkone.zkd.test" "$RP2=zktwo.zkd.test"; do
     have_ip=$(getent hosts "${pair#*=}" | awk 'NR==1 { print $1 }')
     [ "$have_ip" = "${pair%%=*}" ] \
-      || { echo "BLOCKED: ${pair#*=} 가 /etc/hosts 에 없거나 ${pair%%=*} 가 아니다(현재 ${have_ip:-없음}) — 먼저 bash scripts/zkd_tls_setup.sh"; exit 1; }
+      || { echo "BLOCKED: ${pair#*=} 가 /etc/hosts 에 없거나 ${pair%%=*} 가 아니다(현재 ${have_ip:-없음}) — 먼저 bash scripts/zkd_tls_setup.sh. setup 은 블록 밖의 옛 줄은 지우지 않고 경고만 하므로 /etc/hosts 에서 블록 밖의 옛 ${pair#*=} 줄을 직접 지우세요"; exit 1; }
   done
   ZKD_CA_DIR="$(cd "$ZKD_CA_DIR" && pwd)"; CACERT=(--cacert "$ZKD_CA_DIR/ca.crt")
   { node scripts/build_user_app.mjs && node scripts/build_attr_tool.mjs; } > "$LOGS/build_bundles.log" 2>&1 || { echo "BLOCKED: 번들 빌드 실패 — $LOGS/build_bundles.log"; exit 1; }

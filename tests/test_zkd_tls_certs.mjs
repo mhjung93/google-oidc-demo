@@ -78,6 +78,10 @@ try {
     assert.equal(r.status, 0, r.stderr);
     assert.equal(statSync(join(ca, 'ca.key')).mode & 0o777, 0o600);
     assert.ok(r.stderr.includes('[고침]'), r.stderr);
+    chmodSync(join(ca, 'ca.key'), 0o400);   // 그룹·기타 권한이 없으면 건드리지 않는다
+    assert.equal(sh(`zkd_ca_create "${ca}" ${NET}`).status, 0);
+    assert.equal(statSync(join(ca, 'ca.key')).mode & 0o777, 0o400);
+    chmodSync(join(ca, 'ca.key'), 0o600);
   });
 
   t('IPv4 검사·망 비교(숫자)', () => {
@@ -179,7 +183,7 @@ try {
 
   const hasGit = !spawnSync('git', ['--version']).error;
   // 사용자·시스템 git 설정(전역 excludesFile 등)과 TMPDIR 이 git 작업 트리 안인 경우에 판정이 흔들리지 않게 한다
-  const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', XDG_CONFIG_HOME: join(tmp, 'xdg'), HOME: join(tmp, 'home') };  // git 2.25 는 GIT_CONFIG_GLOBAL 을 몰라 HOME 도 비운다
+  const gitEnv = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined, GIT_INDEX_FILE: undefined, GIT_COMMON_DIR: undefined, GIT_OBJECT_DIRECTORY: undefined, GIT_NAMESPACE: undefined, GIT_CEILING_DIRECTORIES: undefined, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', XDG_CONFIG_HOME: join(tmp, 'xdg'), HOME: join(tmp, 'home') };  // git 2.25 는 GIT_CONFIG_GLOBAL 을 몰라 HOME 도 비운다
   const tmpInGit = hasGit && spawnSync('git', ['-C', tmp, 'rev-parse', '--is-inside-work-tree'], { encoding: 'utf8', env: gitEnv }).stdout.trim() === 'true';
   t('CA 위치: 저장소 안이면 .gitignore 에 걸려야 한다', () => {
     if (!hasGit) { console.log('  (git 없음 — 건너뜀)'); return; }
@@ -221,6 +225,9 @@ try {
     assert.ok(at('zkd_ca_dir_check "$CA_DIR" || exit 2') < at('sudo apt-get'));
     assert.ok(at('zkd_hosts_render /etc/hosts') < at('zkd_hosts_check /etc/hosts "$new_hosts"'));
     assert.ok(at('zkd_hosts_check /etc/hosts "$new_hosts"') < at('sudo install -m 644'));
+    // 새 IP 검사는 sudo·certutil 등 바꾸는 단계보다 앞
+    const ipChk = at('zkd_ip_in_net24 "$ip" "$NET"');
+    for (const m of ['sudo apt-get', 'sudo install', 'certutil -N', 'certutil -A', 'certutil -D', 'zkd_ca_create "$CA_DIR"']) assert.ok(ipChk < at(m), `IP 검사가 ${m} 보다 뒤`);
   });
 
   console.log(`${n} passed`);

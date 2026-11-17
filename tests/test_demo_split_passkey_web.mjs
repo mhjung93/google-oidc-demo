@@ -169,9 +169,13 @@ if (!orderOk) {
     const ca = fs.mkdtempSync(path.join(tmp, 'ca-hosts-'));
     const mk = spawnSync('bash', ['-c', 'source scripts/zkd_tls_lib.sh; zkd_ca_create "$1" 192.0.2.0', 'x', ca], { encoding: 'utf8', cwd: new URL('..', import.meta.url).pathname });
     assert.equal(mk.status, 0, mk.stderr);
-    const r = run({ WALLET_MODE: 'passkey-web', ZKD_CA_DIR: ca });
+    // 개발 PC 의 hosts 가 우연히 192.0.2.x 로 풀면 사전검사를 다 통과해 라이브 로컬 데모를 내린다(stop_local) —
+    // 그래서 getent 를 항상 빈 결과로 가짜로 바꿔, 실제 hosts 와 무관하게 wallet 검사에서 반드시 멈추게 한다.
+    const fake = fs.mkdtempSync(path.join(tmp, 'fakegetent-'));
+    fs.writeFileSync(path.join(fake, 'getent'), '#!/bin/sh\nexit 2\n', { mode: 0o755 });
+    const r = run({ WALLET_MODE: 'passkey-web', ZKD_CA_DIR: ca, PATH: `${fake}:${process.env.PATH}` });
     assert.equal(r.status, 1, r.stdout + r.stderr);
-    assert.match(r.stdout, /BLOCKED[^\n]*zkd\.test/);
+    assert.match(r.stdout, /BLOCKED[^\n]*wallet\.zkd\.test/);
     assert.doesNotMatch(r.stdout, /SPLIT_START|stop |ABORT|chain /);
   });
   fs.rmSync(tmp, { recursive: true, force: true });
