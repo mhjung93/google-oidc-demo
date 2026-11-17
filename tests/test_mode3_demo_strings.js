@@ -237,8 +237,9 @@ t('서버·화면 소스의 reason 리터럴이 전부 사전(reasons)에 있다
 // 속성 도구 기록이 옛 계정의 uid 를 들고 있어서다. 그 길을 말하는 문구는 "속성 도구에서 커밋먼트를 다시 만든다" 를 함께 말한다. uid 는 사용자가 넣지 않는다(11-13).
 t('새 계정으로 옮기는 안내가 속성 도구에서 커밋먼트를 다시 만드는 단계를 말한다; 로그인 뒤 증명한 조건·다른 계정 기록 문구가 있다', () => {
   const ui = S.ui, R = S.reasons;
-  for (const [name, s] of [['idp_disabled_desc', ui.idp_disabled_desc.ko], ['account_disabled', R.account_disabled.ko.action], ['attr_record_uid_mismatch', R.attr_record_uid_mismatch.ko.action]]) assert.match(s, /속성 도구.*커밋먼트를 다시 만/, name);
-  assert.equal(/내 정보의 uid 로/.test(R.attr_record_uid_mismatch.ko.action), false, 'uid 를 넣으라고 하지 않는다');
+  // 2026-11-17(사용자 결정): 속성 도구에 uid 칸이 없다 — 커밋먼트는 계정과 무관(salt·속성만)이라 새 계정으로 옮길 때 다시 만들 필요가 없다. 같은 커밋먼트를 새 계정 프로필에 붙여 넣는다.
+  for (const [name, s] of [['idp_disabled_desc', ui.idp_disabled_desc.ko], ['account_disabled', R.account_disabled.ko.action]]) { assert.match(s, /새 zkID 계정/, name); assert.match(s, /스냅을 초기화/, name); assert.equal(/uid 칸|다시 만/.test(s), false, `${name}: ${s}`); }
+  assert.equal('attr_record_uid_mismatch' in R, false, '속성 도구 기록에 uid 가 없어 uid 불일치 사유도 없다');
   assert.match(ui.wallet_snap_reset_summary.ko, /새 zkID 계정/, '스냅 초기화 완료 문구가 새 계정으로 옮기는 경우도 말한다');
   for (const k of ['rp_login_proof_none', 'rp_login_proof_cond', 'rp_login_proof_policy']) { assert.ok(ui[k]?.ko, k); assert.ok(ui[k]?.en, k); }
   assert.match(ui.rp_login_proof_policy.ko, /값은 받지 않/);
@@ -270,11 +271,13 @@ t('salt 문구: "스냅 안에만" 이라고 하지 않고 어디로 가지 않�
 
 // 2026-11-16(사용자 결정 셋): (1) 속성 도구는 uid 도 입력받는다(zkID 에 묻지 않는다) (2) 상한(sessionBoundOf·허용 거래 수) 관련 문구는 화면에 일체 싣지 않는다
 // (3) Race (2) 가 막히면 "RCL root 가 바뀌어" 로 말하고 root 의 생성 당시 값·현재 값을 보인다.
-t('uid 입력 문구·사유가 있다; 화면 문구에 상한(허용 거래 수·sessionBoundOf·SessionBounded)이 없다; Race 막힘은 RCL root 로 말한다', () => {
+t('속성 도구 uid 입력 문구·사유가 없다(2026-11-17); 화면 문구에 상한(허용 거래 수·sessionBoundOf·SessionBounded)이 없다; Race 막힘은 RCL root 로 말한다', () => {
   const ui = S.ui, R = S.reasons;
-  for (const k of ['attr_uid_input', 'wallet_race_blocked_title', 'wallet_race_blocked_desc', 'wallet_race_root_built', 'wallet_race_root_now', 'wallet_race_close_btn', 'rp_race_root_built', 'rp_race_root_now', 'rp_race_roots_same', 'rp_race_roots_changed']) { assert.ok(ui[k]?.ko, k); assert.ok(ui[k]?.en, k); }
-  for (const k of ['attr_uid_required', 'attr_bad_uid']) { assert.ok(R[k]?.ko?.title && R[k]?.ko?.action, k); assert.ok(R[k]?.en?.title, k); }
-  assert.equal('attr_uid_hint' in ui, false); assert.match(R.attr_uid_required.ko.action, /zkID "내 정보"/, '어디서 복사하는지는 칸을 비웠을 때의 사유가 말한다'); assert.match(R.attr_salt_required.ko.action, /비밀 값 보기/);
+  for (const k of ['attr_uid_input', 'attr_uid']) assert.equal(k in ui, false, k);
+  for (const k of ['wallet_race_blocked_title', 'wallet_race_blocked_desc', 'wallet_race_root_built', 'wallet_race_root_now', 'wallet_race_close_btn', 'rp_race_root_built', 'rp_race_root_now', 'rp_race_roots_same', 'rp_race_roots_changed']) { assert.ok(ui[k]?.ko, k); assert.ok(ui[k]?.en, k); }
+  for (const k of ['attr_uid_required', 'attr_bad_uid']) assert.equal(k in R, false, k);
+  assert.equal('attr_uid_hint' in ui, false); assert.match(R.attr_salt_required.ko.action, /비밀 값 보기/);
+  assert.equal(/uid 칸/.test(ui.idp_myinfo_uid_desc.ko), false, 'zkID 내 정보의 uid 설명이 속성 도구의 uid 칸을 말하지 않는다'); assert.equal(/uid/.test(ui.attr_clear_confirm.ko), false, '지우기 확인에 uid 가 없다');
   // auid 가 틀렸을 때(2026-11-16 사용자 결정 1번): zkID 쪽은 "등록된 auid 와 다르다"(계산하지 못한다), 스냅 창 쪽은 "커밋먼트를 만든 salt 의 auid 와 다르다"
   assert.match(R.auid_mismatch.ko.title, /등록된 auid 와 다릅니다/); assert.match(R.auid_mismatch.ko.cause, /계산하지 못하고/); assert.match(R.register_auid_mismatch.ko.title, /커밋먼트를 만든 salt 의 auid/);
   assert.equal(/로그인에서 이 값을 받아옵니다/.test(ui.idp_myinfo_uid_desc.ko), false, 'zkID 내 정보의 uid 설명이 옛 동작을 말하지 않는다');
@@ -282,7 +285,7 @@ t('uid 입력 문구·사유가 있다; 화면 문구에 상한(허용 거래 �
   for (const [name, t0] of [['session_bounded', JSON.stringify(R.session_bounded.ko)], ['wallet_race_desc', ui.wallet_race_desc.ko], ['wallet_race_progress', ui.wallet_race_progress.ko], ['wallet_race_blocked_desc', ui.wallet_race_blocked_desc.ko]]) assert.equal(bound.test(t0), false, `${name}: ${t0}`);
   assert.match(R.session_bounded.ko.cause, /RCL.*root/); assert.match(ui.wallet_race_blocked_title.ko, /RCL root 가 바뀌어/);
   assert.match(ui.rp_race_root_built.ko, /생성 당시 값/); assert.match(ui.rp_race_root_now.ko, /현재 값/);
-  for (const [name, t0] of [['idp_disabled_desc', ui.idp_disabled_desc.ko], ['account_disabled', R.account_disabled.ko.action], ['attr_record_uid_mismatch', R.attr_record_uid_mismatch.ko.action]]) assert.match(t0, /uid 칸/, name);
+  for (const [name, t0] of [['idp_disabled_desc', ui.idp_disabled_desc.ko], ['account_disabled', R.account_disabled.ko.action]]) assert.equal(/uid 칸/.test(t0), false, name);
 });
 
 if (fails) { console.log(`\n${fails} FAIL`); process.exit(1); } else console.log('\nall ok');

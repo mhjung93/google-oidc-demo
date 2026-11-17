@@ -862,12 +862,13 @@
       try { v = JSON.parse(localStorage.getItem('mode3_attr_tool_v1') ?? 'null'); } catch { v = null; }
       const dec = (x) => typeof x === 'string' && /^[0-9]+$/.test(x);
       const profile = v?.profile && typeof v.profile === 'object' && !Array.isArray(v.profile) ? v.profile : null;   // 2026-11-11(가): 스냅 속성도 이 기록에서 — C_attr 와 같은 값
-      return v && v.version === 4 && dec(v.uid) && dec(v.s_u) && BigInt(v.s_u) > 0n && BigInt(v.s_u) < (1n << 250n) ? { uid: v.uid, s_u: v.s_u, profile } : null;   // index: 계정 번호(2026-11-12 스펙 snap-account-index) — 없으면 null
+      // 2026-11-17(사용자 결정): 속성 도구 기록에 uid 가 없다(version 5) — 커밋먼트는 계정과 무관하다. 옛 version 4 기록은 uid 를 무시하고 받는다.
+      return v && (v.version === 5 || v.version === 4) && dec(v.s_u) && BigInt(v.s_u) > 0n && BigInt(v.s_u) < (1n << 250n) ? { s_u: v.s_u, profile } : null;   // index: 계정 번호(2026-11-12 스펙 snap-account-index) — 없으면 null
     }
 
     /** 속성 변경(2026-11-11, 스펙 D19): 로그인 전에 속성 도구 기록의 속성이 에이전트 값과 다르면 PUT /wallet/profile·Snap syncAttrs 로 맞춘다 —
-     *  그러면 이번 로그인이 새 속성의 C_u 를 받는다. 기록이 없거나 같으면 null. 기록의 uid·salt 가 이 등록과 다르면 맞추지 않고 { ok:false, reason } —
-     *  다른 계정이나 다른 salt 로 만든 기록으로 속성을 바꾸지 않게(salt 는 auid = Poseidon(T_AUID2, salt) 로 대조한다). */
+     *  그러면 이번 로그인이 새 속성의 C_u 를 받는다. 기록이 없거나 같으면 null. 기록의 salt 가 이 등록과 다르면 맞추지 않고 { ok:false, reason } —
+     *  다른 salt 로 만든 기록으로 속성을 바꾸지 않게(auid = Poseidon(T_AUID2, salt) 로 대조한다). 기록에는 uid 가 없다(2026-11-17). */
     async function syncAttrsFromRecord({ step, log }) {
       const rec = await readAttrRecord();
       if (!rec?.profile) return null;
@@ -878,7 +879,6 @@
       const keys = new Set([...Object.keys(cur), ...Object.keys(rec.profile)]);
       if ([...keys].every((k) => String(cur[k] ?? '').trim() === String(rec.profile[k] ?? '').trim())) return null;
       step('속성 도구 기록의 속성이 바뀌었다 — 스냅 속성을 맞추는 중…');
-      if (rec.uid !== String(st.uid)) { log(`기록 uid=${rec.uid}  등록 uid=${st.uid}`); return { ok: false, reason: 'attr_record_uid_mismatch' }; }
       if (!(await loadAttrBundle())) return { ok: false, reason: 'bundle_missing' };
       if ((await Mode3Attr.auidOf({ s_u: BigInt(rec.s_u) })).toString() !== String(st.auid)) return { ok: false, reason: 'attr_record_salt_mismatch' };
       const { status, body: b } = await putJson('/wallet/profile', { profile: rec.profile });
@@ -898,7 +898,6 @@
       // (IdP 도 코드에 묶인 auid 로 다시 막지만 — register_auid_mismatch — Snap 을 부르기 전에 멈춰 반쯤 된 등록을 만들지 않는다).
       const rec = await readAttrRecord();
       if (!rec) { step('속성 도구 기록 없음 — 등록하지 않는다.'); return { ok: false, reason: 'attr_record_missing' }; }
-      if (rec.uid !== String(uid)) { step('속성 도구 기록의 uid 가 다르다.'); log(`기록 uid=${rec.uid}  이 계정 uid=${uid}`); return { ok: false, reason: 'attr_record_uid_mismatch' }; }
       if (auid !== null) {
         if (!(await loadAttrBundle())) return { ok: false, reason: 'bundle_missing' };
         const mine = (await Mode3Attr.auidOf({ s_u: BigInt(rec.s_u) })).toString();

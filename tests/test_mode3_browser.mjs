@@ -1196,7 +1196,7 @@ try {
     // 2026-11-16(사용자 결정): salt 는 입력받는다 — 도구가 스냅에서 몰래 읽어 오지 않는다. uid 도 입력받는다(zkID 에 묻지 않는다). 계정 번호 칸과 "스냅에서 가져오기"·"salt 복사"·"salt 만들기" 는 여전히 없다.
     for (const sel of ['#acctIndex', '#saltFromSnapBtn', '#copySaltBtn', '#saltGenBtn', '#saltWarn', '#otherAccount']) assert.equal(await p.$(sel), null, `${sel} 는 없다`);
     assert.equal(await p.getAttribute('#salt', 'type'), 'password', 'salt 칸은 가려서 받는다');
-    assert.ok(await p.$('#uid'), 'uid 칸이 있다'); assert.equal(/계정 번호/.test(await p.textContent('#attrForm')), false, '입력 폼에 계정 번호 문구가 없다');
+    assert.equal(await p.$('#uid'), null, 'uid 칸은 없다(2026-11-17 — 커밋먼트는 계정과 무관)'); assert.equal(await p.$('#uidShown'), null, 'uid 표시 줄도 없다'); assert.equal(/계정 번호/.test(await p.textContent('#attrForm')), false, '입력 폼에 계정 번호 문구가 없다');
     assert.equal(/비밀 값 보기|내 정보|거절됩니다/.test(await p.textContent('#attrForm')), false, '입력 폼에는 칸과 이름만 — 어디서 복사하는지 같은 안내 문장은 두지 않는다(2026-11-16 사용자 지시)');
     await p.fill('#birthYear', '1990'); await p.selectOption('#country', 'KR'); await p.fill('#extra1', 'hello');
     assert.equal(await p.inputValue('#salt'), '', '기록이 없으면 salt 칸은 비어 있다');
@@ -1205,14 +1205,8 @@ try {
     await p.fill('#salt', 'not-a-number'); await p.click('#makeBtn'); await waitText(p, '#formVerdict', 'salt 값이 올바르지 않습니다');
     assert.equal(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')), stored00, 'salt 가 비거나 틀리면 기록을 만들지도 바꾸지도 않는다');
     await p.fill('#salt', USER_SALT);
-    // uid 칸: 비거나 숫자가 아니면 만들지 않는다. zkID 로그인 여부와는 무관하다(로그아웃한 채로도 만든다 — zkID 에 묻지 않는다)
-    assert.equal(await p.inputValue('#uid'), '', '기록이 없으면 uid 칸은 비어 있다');
-    await p.click('#makeBtn'); await waitText(p, '#formVerdict', 'uid 를 넣어 주세요');
-    await p.fill('#uid', 'demo-user'); await p.click('#makeBtn'); await waitText(p, '#formVerdict', 'uid 값이 올바르지 않습니다');
-    assert.equal(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')), stored00, 'uid 가 비거나 틀리면 기록을 만들지도 바꾸지도 않는다');
     assert.equal(await p.isVisible('#noCommit'), true);
-    await zkidLogout();
-    await p.fill('#uid', String(uid));
+    await zkidLogout();   // zkID 로그인 여부와 무관하다(zkID 에 묻지 않는다)
     await p.click('#makeBtn');
     await p.waitForSelector('#commitBox:not([hidden])');    await p.fill('#birthYear', '1990'); await p.selectOption('#country', 'KR'); await p.fill('#extra1', 'hello');
     await p.click('#makeBtn');
@@ -1223,15 +1217,14 @@ try {
     assert.equal(rec.commit, shown); assert.match(shown, /^[0-9]+$/);
     const attrs = await encodeProfile(DEFAULT_ATTR_SCHEMA, { birthYear: '1990', country: 'KR', extra1: 'hello' });
     assert.deepEqual(rec.attrs, attrs);
-    assert.equal(rec.version, 4); assert.equal(rec.uid, String(uid), 'uid 는 넣은 값 그대로'); assert.equal(rec.s_u, USER_SALT, 'salt 는 넣은 값 그대로(스냅의 salt 와 같아야 등록된다)');
+    assert.equal(rec.version, 5); assert.equal('uid' in rec, false, '기록에 uid 가 없다(2026-11-17)'); assert.equal(rec.s_u, USER_SALT, 'salt 는 넣은 값 그대로(스냅의 salt 와 같아야 등록된다)');
     assert.deepEqual(await p.evaluate(() => (window.__ethCalls ?? []).map((c) => c.method ?? c)), [], '속성 도구는 MetaMask·스냅을 부르지 않는다(2026-11-16)');
     assert.equal(await p.inputValue('#salt'), USER_SALT, '만든 뒤에는 기록의 salt 가 칸에 채워져 있다(다시 만들 때 또 붙여 넣지 않는다)');
     assert.equal('index' in rec, false, '계정 번호는 없어졌다'); assert.equal('blind' in rec, false, 'blind 는 없어졌다(R15)');
     assert.equal(await attrCommit({ s_u: rec.s_u, attrs }), rec.commit, 'Node 재계산과 일치(식에 uid·blind 없음)');
     assert.equal(/blind/.test(await p.textContent('.formula')), false, '식 표시에 blind 가 없다');
     assert.equal((await p.textContent('.formula')).includes('uid'), false, '식 표시에 uid 가 없다');
-    // 재료를 모두 숨기지 않고 보인다 — salt·인코딩 값, 그리고 계정(uid·auid)
-    assert.equal((await p.textContent('#uidShown')).trim(), rec.uid);
+    // 재료를 모두 숨기지 않고 보인다 — salt·인코딩 값, 그리고 auid
     // 2026-11-13(화면 리뷰): salt 는 기본 가림 — "보기" 를 눌러야 보이고, 재료는 접혀 있다. 상단 바로 zk 스냅 화면과 오간다.
     assert.equal((await p.textContent('#saltShown')).trim(), '●'.repeat(12)); assert.equal((await p.evaluate(() => document.body.innerText)).includes(USER_SALT), false, 'salt 는 누르기 전에 화면에 없다');
     assert.equal(await p.$eval('#inputsFold', (d) => d.open), false, '커밋먼트 재료는 접혀 있다'); assert.equal(await p.isVisible('#auidShown'), true, 'auid 는 바로 보인다');
@@ -1257,7 +1250,7 @@ try {
     // 2026-11-13(스펙 random-salt R5·R15): 백업 버튼·자동 백업 절·blind 가 없다. 같은 스냅·같은 속성이면 같은 커밋먼트라, 지운 뒤 다시 만들면 같은 값이다.
     for (const sel of ['#exportBtn', '#importFile', '#importPwRow', '#backupSetupBtn', '#backupPw', '#blindShown', '#copyBlindBtn']) assert.equal(await p.$(sel), null, `${sel} 는 없다`);
     assert.equal(/blind|백업 내려받기|백업 불러오기|자동 백업/.test(await p.textContent('main')), false, '화면에 blind·백업 문구가 없다');
-    const make = async (birthYear) => { await p.fill('#birthYear', birthYear); await p.selectOption('#country', 'KR'); await p.fill('#extra1', 'hello'); await p.fill('#uid', String(uid)); await p.fill('#salt', USER_SALT); await p.click('#makeBtn'); await p.waitForFunction((y) => JSON.parse(localStorage.getItem('mode3_attr_tool_v1') ?? 'null')?.profile?.birthYear === y, birthYear); return (await p.textContent('#commitBox')).trim(); };
+    const make = async (birthYear) => { await p.fill('#birthYear', birthYear); await p.selectOption('#country', 'KR'); await p.fill('#extra1', 'hello'); await p.fill('#salt', USER_SALT); await p.click('#makeBtn'); await p.waitForFunction((y) => JSON.parse(localStorage.getItem('mode3_attr_tool_v1') ?? 'null')?.profile?.birthYear === y, birthYear); return (await p.textContent('#commitBox')).trim(); };
     p.once('dialog', (d) => d.accept());
     await p.click('#clearBtn'); await p.waitForSelector('#noCommit:not([hidden])');
     assert.equal(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')), null);
@@ -1281,7 +1274,7 @@ try {
       await p.reload(); await p.waitForSelector('#resetCleared:not([hidden])', { timeout: 15_000 });
       assert.equal(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')), null, '리셋 뒤 기록이 비었다');
       assert.equal(await p.isVisible('#noCommit'), true);
-      assert.equal(await p.inputValue('#uid'), '', '리셋 뒤 uid 칸이 비었다(2026-11-16 — 전에는 옛 기록의 uid 가 칸에 남았다)'); assert.equal(await p.inputValue('#salt'), '', '리셋 뒤 salt 칸이 비었다');
+      assert.equal(await p.inputValue('#salt'), '', '리셋 뒤 salt 칸이 비었다');
       await p.reload(); await p.waitForTimeout(500);
       assert.equal(await p.isHidden('#resetCleared'), true, '같은 리셋 값이면 다시 비우지 않는다(안내도 없다)');
     } finally { if (resetBefore === null) fs.rmSync(resetFile, { force: true }); else fs.writeFileSync(resetFile, resetBefore); }
@@ -1300,7 +1293,7 @@ try {
     assert.ok(before, '앞 케이스가 남긴 기록이 있어야 한다');
     await zkidLogin('demo-user');
     try {
-      await p.fill('#birthYear', '1992'); await p.selectOption('#country', 'KR'); await p.fill('#uid', String(uid)); await p.fill('#salt', '424242424242'); await p.click('#makeBtn');
+      await p.fill('#birthYear', '1992'); await p.selectOption('#country', 'KR'); await p.fill('#salt', '424242424242'); await p.click('#makeBtn');
       await waitText(p, '#formVerdict', '커밋먼트 생성 완료');
       const rec = JSON.parse(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')));
       assert.equal(rec.s_u, '424242424242'); assert.equal(rec.profile.birthYear, '1992');
@@ -1334,7 +1327,7 @@ try {
     const infoLay = await p.evaluate(() => { const R = (q) => document.querySelector(q).getBoundingClientRect(); return { brand: Math.round(R('.idp-nav .brand').left), sub: Math.round(R('.sub-nav a').left), card: Math.round(R('#infoView').left), cardW: Math.round(R('#infoView').width), mainW: Math.round(R('main.cards').width) }; });
     assert.ok(Math.abs(infoLay.brand - infoLay.card) <= 1 && Math.abs(infoLay.sub - infoLay.card) <= 1 && infoLay.cardW >= infoLay.mainW - 40, `내 정보 배치: ${j(infoLay)}`);
     const uidDesc = await p.textContent('[data-i18n="idp_myinfo_uid_desc"]');
-    assert.ok(uidDesc.includes('uid 칸에 이 값을 넣습니다') && !uidDesc.includes('받아옵니다'), uidDesc);   // 2026-11-16: 속성 도구가 uid 를 입력받는다
+    assert.ok(uidDesc.includes('계정 번호') && !uidDesc.includes('uid 칸') && !uidDesc.includes('받아옵니다'), uidDesc);   // 2026-11-17: 속성 도구에 uid 칸이 없다
     assert.equal((await p.textContent('#infoMethod')).trim(), '아이디·비밀번호');
     assert.match(await p.textContent('#infoWallet'), /아직 없음/, '미등록 계정');
     // 2026-11-11: auid·슬롯 — 지갑 등록 전에는 auid 가 없고 복사 버튼도 숨는다
@@ -1521,7 +1514,7 @@ try {
     const uidB = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.id === 'demo-user-b').uid;
     // 2026-11-14(화면 리뷰): "스냅 초기화" 는 "내 계정" 탭에 있다(전에는 탭이 없는 설정 카드에 있어 누를 길이 없었다 — 이 케이스도 상태를 직접 바꿔 흉내 냈다).
     recA = await walletPage.evaluate(() => localStorage.getItem('mode3_attr_tool_v1'));   // 계정 A 의 속성 도구 기록 — 아래에서 A 로 다시 등록할 때 쓴다
-    assert.equal(JSON.parse(recA).uid, String(uid));
+    assert.equal('uid' in JSON.parse(recA), false, '속성 도구 기록에 uid 가 없다(2026-11-17)');
     await walletTab(walletPage, 'me');
     await walletPage.waitForSelector('#snapResetBtn', { state: 'visible' });
     assert.equal(await walletPage.$$eval('#snapResetBtn', (bs) => bs.length), 1, '초기화 버튼은 하나');
@@ -1532,20 +1525,18 @@ try {
     assert.equal(snapState.registration, null, '스냅의 등록이 지워졌다'); assert.equal(snapState.salt.s_u, USER_SALT, 'salt 는 남는다(R8)'); assert.equal(snapState.salt.backedUp, true);
     assert.equal((await wallet.get('/wallet/status')).body.registered, false, '에이전트의 등록도 지워졌다');
     await walletPage.waitForSelector('#meStoreEmpty:not([hidden])'); assert.equal((await text(walletPage, '#meStoreEmpty')).trim(), '저장된 등록 없음');
-    // 속성 도구: 앞 계정 A 의 기록이 보이는 채 열려도, 만들 때 uid 는 zkID 로그인(계정 B)에서 새로 받아온다. salt 는 같은 스냅의 것이라 A 때와 같다.
+    // 속성 도구(2026-11-17 사용자 결정 — uid 칸 없음): 커밋먼트는 계정과 무관(salt·속성만)이라 계정 B 로 옮겨도 다시 만들 것이 없다. 그래도 다시 만들면 같은 커밋먼트다.
     const a = await context.newPage(); await a.goto(`${wallet.base}/attr.html`);
     try {
-      await a.waitForSelector('#commitBox:not([hidden])');   // A 의 기록으로 열린다
-      assert.equal((await a.textContent('#uidShown')).trim(), String(uid));
+      await a.waitForSelector('#commitBox:not([hidden])');   // A 때의 기록으로 열린다
+      const before = JSON.parse(await a.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')));
       await zkidLogin('demo-user-b');
-      // 2026-11-16(사용자 결정): uid 는 입력받는다 — 칸에는 앞 계정 기록의 uid·salt 가 채워져 있고, uid 칸을 새 계정의 uid 로 바꿔 다시 만든다(salt 는 같은 스냅이라 그대로)
-      assert.equal(await a.inputValue('#uid'), String(uid)); assert.equal(await a.inputValue('#salt'), USER_SALT);
-      await a.fill('#uid', String(uidB));
+      assert.equal(await a.$('#uid'), null, 'uid 칸이 없다'); assert.equal(await a.inputValue('#salt'), USER_SALT);
       await a.fill('#birthYear', '1990'); await a.selectOption('#country', 'KR'); await a.click('#makeBtn');
-      await a.waitForFunction((u) => JSON.parse(localStorage.getItem('mode3_attr_tool_v1') ?? 'null')?.uid === u, String(uidB));
-      recBRaw = await a.evaluate(() => localStorage.getItem('mode3_attr_tool_v1'));   // 계정 B 의 속성 도구 기록 — 맨 아래 케이스가 B 를 등록할 때 쓴다
+      await a.waitForFunction((t0) => JSON.parse(localStorage.getItem('mode3_attr_tool_v1') ?? 'null')?.createdAt !== t0, before.createdAt);
+      recBRaw = await a.evaluate(() => localStorage.getItem('mode3_attr_tool_v1'));   // 계정 B 로 등록할 때 쓰는 기록 — 맨 아래 케이스
       const recB = JSON.parse(recBRaw);
-      assert.equal(recB.uid, String(uidB), 'uid 는 zkID 에 로그인한 계정 B'); assert.equal(recB.s_u, USER_SALT, 'salt 는 스냅의 것 — 계정이 달라도 같다');
+      assert.equal('uid' in recB, false); assert.equal(recB.s_u, USER_SALT, 'salt 는 스냅의 것 — 계정이 달라도 같다'); assert.equal(recB.commit, before.commit, '같은 salt·같은 속성이면 같은 커밋먼트(계정과 무관)');
     } finally { await a.close(); }
     const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
     await atIdpLogin(popup);

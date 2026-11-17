@@ -136,13 +136,12 @@ try {
   const AUID_A = (await auidOf({ s_u: BigInt(SALT_A) })).toString();
 
   await t('첫 로그인 = 등록 + 로그인: 승인 팝업 하나에 패스키 한 번, 서비스에 로그인 성공', async () => {
-    const uidA = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.id === 'pk-user').uid;
     // 속성 도구가 남기는 기록 — 첫 등록은 이 기록의 salt 가 지금 salt(패스키)와 같아야 한다
     // 데모 리셋 표시(/attr/dist/reset.json)가 있으면 화면이 그 epoch 를 처음 볼 때 기록을 지운다(readAttrRecord) — 지금 epoch 를 본 것으로 맞춰 둔다
     await walletPage.evaluate(async (r) => {
       try { const x = await fetch('/attr/dist/reset.json', { cache: 'no-store' }); if (x.ok) localStorage.setItem('mode3_attr_tool_reset', String((await x.json()).epoch ?? '')); } catch {}
       localStorage.setItem('mode3_attr_tool_v1', JSON.stringify(r));
-    }, { version: 4, uid: String(uidA), s_u: SALT_A, profile: { birthYear: '1990', country: 'KR' } });
+    }, { version: 5, s_u: SALT_A, profile: { birthYear: '1990', country: 'KR' } });   // 2026-11-17: 기록에 uid 가 없다
     const before = hits.get;
     const [popup] = await Promise.all([ctxA.waitForEvent('page'), idpLogin(rpPage)]);
     await atIdpLogin(popup);
