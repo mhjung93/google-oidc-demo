@@ -40,6 +40,7 @@ UNIT=(
   tests/test_mode3_credential_v11.js
   tests/test_mode3_rp_cert.js
   tests/test_mode3_trace.js
+  tests/test_zkd_tls_certs.mjs
   tests/test_mode3_opening.js
   tests/test_mode3_attr_commit.mjs
   tests/test_mode3_rp_accounts.mjs
