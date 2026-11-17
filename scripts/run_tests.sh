@@ -129,6 +129,8 @@ CHAIN=(
   tests/test_mode3_user_static.mjs
   # 브라우저 사용자 코어(mode3/user/core)를 Node 에서 — 메모리 kv·진짜 snarkjs, 격리 IdP·RP(릴레이 포함)
   tests/test_mode3_user_core.mjs
+  # passkey-web 코어(2026-11-17) — 패스키 대역 salt 공급원·10분 보관·코드 등록(CIA_ISSUE_AUTH=code)·계정 복구
+  tests/test_mode3_user_core_passkey.mjs
   tests/test_mode3_user_static_passkey_web.mjs
   tests/test_mode3_user_core_oidc.mjs
 )

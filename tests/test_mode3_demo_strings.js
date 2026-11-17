@@ -41,7 +41,9 @@ const REASONS = ['stale_root', 'stale_registry_root', 'root_too_old', 'revalidat
   // 2026-11-06 — /rp 서비스 주소·운영자 인증서 발급(/cia/rp/create·/cia/rp/issue).
   'bad_origin', 'origin_taken', 'origin_name_mismatch', 'unknown_rp', 'rp_not_registered', 'already_issued', 'rp_denied', 'unknown_rp_account', 'oidc_account_mismatch',
   // 2026-11-17 패스키 모드(스펙 2026-11-17-mode3-passkey-mode §5)
-  'passkey_wrong_origin', 'passkey_unsupported', 'passkey_prf_unsupported', 'passkey_unstable', 'passkey_cancelled', 'passkey_mismatch', 'passkey_setup_required', 'passkey_already_set', 'passkey_bad_salt', 'session_restore_required'];
+  'passkey_wrong_origin', 'passkey_unsupported', 'passkey_prf_unsupported', 'passkey_unstable', 'passkey_cancelled', 'passkey_mismatch', 'passkey_setup_required', 'passkey_already_set', 'passkey_bad_salt', 'session_restore_required',
+  // 2026-11-17 설치 없는 패스키 모드(스펙 2026-11-17-mode3-passkey-web, 계획 R-6)
+  'passkey_mode'];
 
 t('langs 는 ko, en', () => assert.deepEqual(S.langs, ['ko', 'en']));
 // U6(2026-10-14): login2(두 번째 RP 로그인, unlinkability 시연) 추가 — login 과 use 사이, 7단계→8단계.
