@@ -12,8 +12,8 @@ zkd_ca_create() {
   ( umask 077
     mkdir -p "$dir" && chmod 700 "$dir" || exit 1
     if [ -f "$dir/ca.crt" ] && [ -f "$dir/ca.key" ]; then
-      if ! openssl x509 -noout -text -in "$dir/ca.crt" | grep -q "IP:$net/255.255.255.0"; then
-        echo "기존 CA 의 이름 제약 망이 $net 과 다르다 — $dir 를 지우고 다시 만들거나 ZKD_DEMO_NET 을 맞춘다" >&2
+      if ! openssl x509 -noout -text -in "$dir/ca.crt" | grep -qF "IP:$net/255.255.255.0"; then
+        echo "BLOCKED: 기존 CA 의 이름 제약 망이 $net 과 다르다 — $dir 를 지우고 다시 만들거나 ZKD_DEMO_NET 을 맞춘다" >&2
         exit 2
       fi
       exit 0
@@ -60,12 +60,14 @@ basicConstraints = CA:FALSE
 keyUsage = critical,digitalSignature
 extendedKeyUsage = serverAuth
 subjectAltName = $san
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid
 CFG
     openssl ecparam -name prime256v1 -genkey -noout -out "$out/$short.key" 2>/dev/null || exit 1
     chmod 600 "$out/$short.key"
     openssl req -new -key "$out/$short.key" -config "$cfg" -out "$csr" || exit 1
     openssl x509 -req -in "$csr" -CA "$ca/ca.crt" -CAkey "$ca/ca.key" -CAserial "$ca/ca.srl" -CAcreateserial \
-      -days 30 -extfile "$cfg" -extensions srv_ext -out "$out/$short.crt" 2>/dev/null || exit 1
+      -days 30 -extfile "$cfg" -extensions srv_ext -out "$out/$short.crt" || exit 1
   )
 }
 
@@ -78,13 +80,21 @@ zkd_ca_fingerprint() {
 zkd_hosts_render() {
   local file="$1"; shift
   local pair
-  { awk -v b="$ZKD_HOSTS_BEGIN" -v e="$ZKD_HOSTS_END" '
+  # 시작 표시만 있고 끝 표시가 없으면 뒤 내용을 통째로 잃으므로 아무것도 쓰지 않고 3 으로 끝낸다
+  if ! awk -v b="$ZKD_HOSTS_BEGIN" -v e="$ZKD_HOSTS_END" '
+      $0 == b { skip = 1; next }
+      skip && $0 == e { skip = 0; next }
+      END { exit skip ? 3 : 0 }
+    ' "$file"; then
+    echo "BLOCKED: $file 에 zkd-demo 시작 표시만 있고 끝 표시가 없다 — 직접 고친 뒤 다시 실행한다" >&2
+    return 3
+  fi
+  awk -v b="$ZKD_HOSTS_BEGIN" -v e="$ZKD_HOSTS_END" '
       $0 == b { skip = 1; next }
       skip && $0 == e { skip = 0; next }
       !skip { print }
     ' "$file"
-    echo "$ZKD_HOSTS_BEGIN"
-    for pair in "$@"; do echo "${pair%%=*} ${pair#*=}"; done
-    echo "$ZKD_HOSTS_END"
-  }
+  echo "$ZKD_HOSTS_BEGIN"
+  for pair in "$@"; do echo "${pair%%=*} ${pair#*=}"; done
+  echo "$ZKD_HOSTS_END"
 }

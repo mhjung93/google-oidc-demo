@@ -64,7 +64,9 @@ try {
     const before = readFileSync(join(ca, 'ca.crt'));
     assert.equal(sh(`zkd_ca_create "${ca}" ${NET}`).status, 0);
     assert.ok(before.equals(readFileSync(join(ca, 'ca.crt'))));
-    assert.equal(sh(`zkd_ca_create "${ca}" 10.1.2.0`).status, 2);
+    const mm = sh(`zkd_ca_create "${ca}" 10.1.2.0`);
+    assert.equal(mm.status, 2);
+    assert.ok(mm.stderr.startsWith('BLOCKED:'), mm.stderr);
     const fp = sh(`zkd_ca_fingerprint "${ca}"`);
     assert.equal(fp.status, 0);
     assert.match(fp.stdout.trim(), /([0-9A-F]{2}:){31}[0-9A-F]{2}/i);
@@ -87,6 +89,20 @@ try {
     assert.equal(c.split('# <<< zkd-demo <<<').length - 1, 1);
   });
 
+  t('hosts: 끝 표시 없으면 거부', () => {
+    const hosts = join(tmp, 'hosts_bad');
+    writeFileSync(hosts, 'a\n# >>> zkd-demo (scripts/zkd_tls_setup.sh) >>>\n1.2.3.4 x\nuser-line\n');
+    const r = sh(`zkd_hosts_render "${hosts}" 127.0.0.1=wallet.zkd.test`);
+    assert.notEqual(r.status, 0);
+    assert.equal(r.stdout, '');
+    assert.ok(r.stderr.startsWith('BLOCKED:'));
+  });
+
+  t('리프: 키 식별자 포함', () => {
+    const txt = ssl('x509', '-noout', '-text', '-in', join(out, 'wallet.crt')).stdout;
+    assert.ok(txt.includes('Subject Key Identifier') && txt.includes('Authority Key Identifier'));
+  });
+
   t('개인키를 출력하지 않는다', () => {
     for (const o of outputs) assert.ok(!o.includes('PRIVATE KEY'));
   });
@@ -96,7 +112,7 @@ try {
     assert.equal(r.status, 0, r.stderr);
   });
 
-  console.log(`${n}/7 passed`);
+  console.log(`${n}/9 passed`);
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }
