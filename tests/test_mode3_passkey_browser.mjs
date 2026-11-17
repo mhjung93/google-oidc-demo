@@ -338,6 +338,21 @@ try {
     assert.equal(fs.readFileSync(stack.walletStateFile, 'utf8').includes(SALT_A), false, '보관은 메모리에만');
     await stack.restartWallet({ MODE3_PASSKEY_HOLD_SECONDS: '0' });
   });
+
+  // 2026-11-17(사용자 요청): 세션이 끝나면(만료·로그아웃·폐기) 서비스 상단 바에 "현재 세션이 만료됐습니다" — "세션 복구" 를 누르면 새 zkID 로그인으로 새 세션을 맺는다
+  await t('서비스 상단 바: 세션이 끝나면 "현재 세션이 만료됐습니다" → "세션 복구" 로 새 세션', async () => {
+    const old = await curSession(); assert.match(String(old), /^[0-9]+$/);
+    assert.equal(await rpPage.isHidden('#sessionBar'), true, '살아 있는 세션에는 바가 없다');
+    assert.equal((await rp.post('/api/mode3/logout', { r_s: String(old) })).body.removed, true);   // 서버 쪽에서 세션이 끝났다(만료와 같은 길 — forgetSession)
+    await rpPage.waitForSelector('#sessionBar:not([hidden])', { timeout: 15_000 });
+    assert.ok((await text(rpPage, '#sessionBar')).includes('현재 세션이 만료됐습니다'), await text(rpPage, '#sessionBar'));
+    const [popup] = await Promise.all([ctxA.waitForEvent('page'), rpPage.click('#sessionBarBtn')]);
+    await atIdpLogin(popup);
+    await popup.fill('#authUid', 'pk-user'); await popup.fill('#authPwd', DEMO_PWD); await popup.fill('#authAuid', AUID_A); await popup.click('#authGo');
+    await rpPage.waitForFunction((p) => typeof currentSession !== 'undefined' && currentSession && currentSession !== p, String(old), { timeout: 180_000 });
+    await waitText(rpPage, '#verdict', '로그인 성공', 60_000);
+    await rpPage.waitForSelector('#sessionBar', { state: 'hidden', timeout: 10_000 });
+  });
 } finally {
   await browser.close().catch(() => {});
   await stack.stop();

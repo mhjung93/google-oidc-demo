@@ -21,6 +21,13 @@
     <strong data-i18n="rp_pending_banner">서비스 준비 중 — IdP 승인 대기</strong>
   </div>
 
+  <!-- 2026-11-17(사용자 요청): 세션이 끝나면(만료·로그아웃·폐기·닫힌 로그인) 맨 위에 알리고, "세션 복구" 로 새 zkID 로그인을 연다(실제로는 새 세션).
+       화면 내용(출금·Race 결과)은 지우지 않는다. 에이전트 재시작으로 증인만 없는 경우(session_restore_required)는 새 세션이 아니라 zk 스냅 화면의 세션 복구라 여기 넣지 않는다. -->
+  <div id="sessionBar" class="session-bar" hidden role="status">
+    <strong data-i18n="rp_session_bar_title">현재 세션이 만료됐습니다</strong> <span id="sessionBarDetail"></span>
+    <button type="button" id="sessionBarBtn" data-i18n="rp_session_bar_btn">세션 복구</button>
+  </div>
+
   <nav class="exchange-nav">
     <div class="nav-inner">
       <a class="brand" href="#market">zkONE</a>
@@ -78,11 +85,7 @@
 
       <!-- 로그인 상태: 내 자산(가짜 잔액) + 세션 상태 + 재검증 + 출금 신청. -->
       <div id="assetsLoggedIn" hidden>
-        <!-- 2026-11-14: 닫힌 zkID 로그인의 안내(checkZkidStale) — 화면은 그대로 두고 다시 로그인하게 한다. -->
-        <div class="stale-notice" id="staleNotice" hidden>
-          <p data-i18n="rp_session_stale">이 로그인은 닫혔습니다 — zkID 가 폐기 목록이나 등록부를 새로 게시하면(누군가의 폐기·첫 발급·속성 변경) 그 전의 로그인은 다시 확인해야 합니다. 로그아웃한 뒤 다시 로그인하세요.</p>
-          <button type="button" id="staleReloginBtn" class="btn-ghost" data-i18n="rp_stale_relogin_btn">로그아웃하고 다시 로그인</button>
-        </div>
+        <!-- 2026-11-14 의 닫힌 zkID 로그인 안내(#staleNotice)는 2026-11-17 맨 위 상단 바(#sessionBar)로 합쳤다. -->
         <h2 data-i18n="assets_title">내 자산</h2>
         <dl class="kv account-kv">
           <dt data-i18n="rp_my_account_addr">내 계정 주소</dt><dd><code id="accountPPID">-</code> <button type="button" id="copyPpidBtn" class="copy-btn" title="복사" aria-label="복사" data-i18n-title="rp_copy_btn_title">⧉</button></dd>
@@ -251,6 +254,9 @@
     let lastAccount = null;                 // 2026-11-05: 세션 계정의 0x 주소(잔액 조회 응답) — 배지·"내 계정 주소" 에 PPID 숫자 대신 보인다(사용자 결정)
     let rpMe = null;                        // 2026-11-10: 쿠키 세션의 계정(/api/rp/me) — 소셜·zkID 로그인 모두. null 이면 쿠키 세션 없음
     const isLoggedIn = () => !!currentSession || !!rpMe;
+    // 2026-11-17: 끝난 세션의 상단 바 사유 — 'ended'(목록에서 사라짐: 만료·다른 곳의 로그아웃·폐기) | 세션 거절 사유(session_expired·revoked·revoked_session) | null.
+    // 닫힌 로그인(sessionStale)도 같은 바로 보인다. 새 로그인(setSession(새 r_s))과 로그아웃 버튼이 지운다.
+    let sessionEndedReason = null;
     let sessionStale = false;               // 2026-11-14: zkID 로그인이 서버에서 닫혔다(폐기 목록이 새로 게시됐다) — 화면은 두고 안내만 보인다(checkZkidStale)
     let txSourcePicked = null;              // 출금 출처를 사용자가 직접 고른 값(없으면 세션 종류로 기본값)
     const progress = { used: false, disclosed: false, opened: false, login2: false };   // 이 페이지가 아는 완료 신호(세션 중 메모리)
@@ -394,7 +400,7 @@
       // 닫힌 로그인(sessionStale)이면 "내 계정"(연결 수단) 카드는 보이지 않는다 — 쿠키 세션이 없어 "연결 안 됨"·버튼 없음으로만 그려진다. 대신 내 자산 위에 안내를 보인다.
       // 2026-11-16(사용자 결정): "내 계정" 상자(로그인 수단 연결·해제)와 상단 메뉴는 화면에서 뺐다 — 늘 숨긴다. 연결 기능의 코드·API 는 그대로 있다.
       $('navAccount').hidden = true; $('account').hidden = true;
-      $('staleNotice').hidden = !(loggedIn && sessionStale);
+      renderSessionBar();
       const showProof = loggedIn && Boolean(currentSession) && !sessionStale && lastDisclosure !== undefined;
       $('loginProof').hidden = !showProof; if (showProof) $('loginProof').textContent = loginProofText();
       const via = rpMe?.via ?? (currentSession ? 'zkid' : null);
@@ -462,6 +468,7 @@
         if (!currentSession) return;
         if (!(sessions ?? []).some((x) => x.r_s === `${String(currentSession).slice(0, 8)}…`)) {
           setSession(null);
+          sessionEndedReason = 'ended'; renderSessionBar();   // 2026-11-17: 맨 위 상단 바 — "세션 복구" 로 새 로그인
           refreshMe();   // 2026-11-10: zkID 로 만든 쿠키 세션은 r_s 와 함께 끝난다(서버) — 소셜 세션이면 그대로 남는다
           setVerdict($('verdict'), false, 'rp_session_ended_title', () => ({ summary: tt('rp_session_ended') || '이 세션이 끝났습니다 — 사용자 페이지에서 폐기하거나 로그아웃했습니다. 다시 로그인하세요.' }));
         }
@@ -491,7 +498,21 @@
     // 2026-11-14(시연자 피드백): 10초 주기만으로는 안내가 늦었다 — 폐기를 게시한 탭에서 돌아와 곧바로 출금·구매를 누르면 "세션을 다시 검증해야 합니다" 실패만 먼저 보였다.
     // 탭으로 돌아올 때와 요청이 거절된 직후(sessionRequest·거래소 보관 출금·팝업 출금 실패)에도 바로 본다.
     document.addEventListener('visibilitychange', () => { if (!document.hidden) checkZkidStale(); });
-    $('staleReloginBtn').addEventListener('click', () => $('logoutBtn').click());   // 로그아웃하면 로그인 카드가 보인다
+    /** 상단 바(2026-11-17): 끝난 세션(sessionEndedReason) 또는 닫힌 로그인(sessionStale)일 때. 사유 한 줄은 기존 문구를 쓴다. */
+    function renderSessionBar() {
+      const stale = Boolean(currentSession) && sessionStale;
+      const show = Boolean(sessionEndedReason) || stale;
+      $('sessionBar').hidden = !show; if (!show) return;
+      const d = $('sessionBarDetail');
+      if (stale && !sessionEndedReason) d.textContent = tt('rp_session_stale') || '이 로그인은 닫혔습니다.';
+      else if (sessionEndedReason === 'ended') d.textContent = tt('rp_session_bar_ended') || '세션이 이 서비스에서 끝났습니다(만료·로그아웃·폐기).';
+      else d.textContent = Demo.reason(sessionEndedReason)?.title ?? sessionEndedReason;
+    }
+    /** 세션 거절 사유를 보고 끝난 세션이면 바를 띄운다(출금·잔액 요청 실패 직후). */
+    const SESSION_ENDED_REASONS = new Set(['session_expired', 'revoked', 'revoked_session', 'expired']);
+    function noteSessionReason(reason) { if (SESSION_ENDED_REASONS.has(reason)) { sessionEndedReason = reason; renderSessionBar(); } }
+    // "세션 복구" — 실제로는 새 zkID 로그인(새 세션). 바는 새 세션이 잡히면 setSession 이 지운다.
+    $('sessionBarBtn').addEventListener('click', () => { startIdpLogin(); });
     /** 세션 범위의 결과 표시(재검증·잔액·출금 결과)를 초기 화면으로. 로그아웃이면 로그인 카드의 결과·로그도 비운다(2026-10-21 — 재로그인 때 옛 메시지가 남지 않게). */
     /** 시연 Race (2) 결과의 RCL root 두 값(스냅 창이 준 race.rootAtBuild·rootNow). 없으면 숨긴다. */
     let lastRace = null;
@@ -515,6 +536,7 @@
       currentSession = r_s;
       if (!r_s) { lastAccount = null; lastDisclosure = undefined; }
       if (changed) sessionStale = false;   // 새 로그인·로그아웃은 "닫힌 로그인" 표시를 지운다
+      if (r_s) sessionEndedReason = null;   // 새 세션이 잡히면 상단 바를 내린다(2026-11-17)
       currentSessionAllowAgent = r_s ? allowAgent : null;
       saveSession(r_s, currentSessionAllowAgent);
       if (changed) resetSessionViews(!r_s);
@@ -973,7 +995,7 @@
         $('txBtn').dataset.tourBusy = '1'; $('txHashRow').hidden = true; renderRaceRoots(null); pendingVerdict($('txVerdict'), 'working');
         try {
           const rb = await (await post('/api/rp/ledger', { body: `withdraw:${to}:${value}:${Date.now()}` })).json().catch(() => ({ ok: false, reason: 'internal' }));
-          if (!rb.ok) { setVerdict($('txVerdict'), false, 'tx_failed', { reason: rb.reason ?? 'internal', detail: rb }); checkZkidStale(); return; }
+          if (!rb.ok) { setVerdict($('txVerdict'), false, 'tx_failed', { reason: rb.reason ?? 'internal', detail: rb }); noteSessionReason(rb.reason); checkZkidStale(); return; }
           setVerdict($('txVerdict'), true, 'tx_ok', () => ({ summary: tt('rp_custody_withdraw_ok', { eth: $('txValue').value.trim() }) || `거래소 보관에서 ${$('txValue').value.trim()} ETH 를 보냈습니다.`, detail: rb }));
           lastTxHash = rb.txHash; $('txHashCode').textContent = `${String(rb.txHash).slice(0, 18)}…`; $('txHashCode').title = rb.txHash; $('txHashRow').hidden = false;
           if (rb.balance) applyLedger(rb.balance);
@@ -1005,6 +1027,7 @@
           log(`팝업 ${ms(t0)}: ${result.reason ?? ''} ${result.detail ?? ''}`);
           // 시연 Race (2)에서 세션 검사는 통과했는데 계정 안 송금만 실패한 경우(잔액 부족 등) — 통과한 사실을 함께 말한다(2026-11-15)
           const raceXfer = result.reason === 'transfer_failed' && result.raceRevoked === true;
+          noteSessionReason(result.reason);
           setVerdict($('txVerdict'), false, 'tx_failed', () => ({ ...(raceXfer ? { summary: tt('rp_tx_race_transfer_failed') || '폐기된 세션의 거래가 거울 반영 전이라 통과했습니다(Race (2)) — 다만 계정 안 송금이 실패했습니다.' } : {}), reason: result.reason ?? 'internal', detail: result }));
           renderRaceRoots(result.race ?? null);
           checkZkidStale(); refreshLedger(); return;
@@ -1024,7 +1047,7 @@
     // (U5 때는 화면만 지웠다 — 세션이 RP·지갑에 남아 혼란스러웠다.) IdP 폐기 트리는 건드리지 않는다.
     $('cardLoginBtn').addEventListener('click', () => $('loginBtn').click());   // 로그인 카드 안의 버튼 = 상단 버튼(2026-11-05)
     $('logoutBtn').addEventListener('click', async () => {
-      const r_s = currentSession; rpMe = null; setSession(null);
+      const r_s = currentSession; rpMe = null; setSession(null); sessionEndedReason = null; renderSessionBar();
       if (r_s) { try { await post('/api/mode3/logout', { r_s }); } catch { /* 서버가 죽어 있어도 화면은 로그아웃 */ } }
       try { await post('/api/rp/logout', {}); } catch { /* 2026-11-10 쿠키 세션 — 화면은 이미 비웠다 */ }
       renderAccountView();

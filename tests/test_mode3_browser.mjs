@@ -1670,7 +1670,7 @@ try {
         // 게시가 거울에 실릴 때까지 잔액을 다시 묻는다. 거절을 보면 곧바로 나간다 — 아래 1초 창이 10초 주기 확인과 우연히 겹칠 틈을 줄인다(2026-11-15 셀프 리뷰: 3초 창은 느슨했다)
         for (let i = 0; i < 40 && failedAt === null; i++) { await rpPage.click('#balanceBtn'); for (let k = 0; k < 15 && failedAt === null; k++) await rpPage.waitForTimeout(50); }
         assert.notEqual(failedAt, null, '폐기 게시 뒤 세션 요청이 거절된다');
-        await rpPage.waitForSelector('#staleNotice:not([hidden])', { timeout: 1_000 });
+        await rpPage.waitForSelector('#sessionBar:not([hidden])', { timeout: 1_000 });   // 2026-11-17: 닫힌 로그인 안내는 상단 바로 합쳤다
         await waitText(rpPage, '#ledgerVerdict', '세션을 다시 검증해야 합니다');
         assert.ok(meCalls.some((t) => t >= failedAt - 50 && t <= failedAt + 1_000), `실패 응답 직후 로그인 상태를 다시 본다(실패 ${failedAt}, 확인 ${meCalls.join(',')})`);
       } finally { rpPage.off('request', onReq); rpPage.off('response', onResp); }
@@ -1689,11 +1689,12 @@ try {
       } finally { await rpPage.unroute('**/api/rp/me', hold); }
     }
     await rpPage.reload();
-    await rpPage.waitForSelector('#staleNotice:not([hidden])', { timeout: 30_000 });
-    assert.ok((await text(rpPage, '#staleNotice')).includes('이 로그인은 닫혔습니다'), await text(rpPage, '#staleNotice'));
+    await rpPage.waitForSelector('#sessionBar:not([hidden])', { timeout: 30_000 });
+    assert.ok((await text(rpPage, '#sessionBar')).includes('현재 세션이 만료됐습니다') && (await text(rpPage, '#sessionBar')).includes('이 로그인은 닫혔습니다'), await text(rpPage, '#sessionBar'));
+    assert.equal(await rpPage.$('#staleNotice'), null, '내 자산 위의 옛 안내는 없다(상단 바로 합쳤다)');
     assert.equal(await rpPage.isHidden('#account'), true, '"내 계정" 카드가 "연결 안 됨"·버튼 없음으로 남지 않는다'); assert.equal(await rpPage.isVisible('#assetsLoggedIn'), true, '내 자산(출금 결과 포함)은 그대로 보인다');
-    await rpPage.click('#staleReloginBtn');
-    await rpPage.waitForSelector('#loginBtn', { state: 'visible' }); assert.equal(await rpPage.isHidden('#accountPill'), true); assert.equal(await rpPage.isHidden('#staleNotice'), true);
+    await rpPage.click('#logoutBtn');   // 바의 "세션 복구" 는 새 로그인 팝업을 연다(패스키 브라우저 테스트가 본다) — 여기서는 로그아웃으로 정리한다
+    await rpPage.waitForSelector('#loginBtn', { state: 'visible' }); assert.equal(await rpPage.isHidden('#accountPill'), true); assert.equal(await rpPage.isHidden('#sessionBar'), true, '로그아웃하면 바도 사라진다');
     // zk 스냅 화면: 등록부에 내 자격증명이 없다는 안내가 탭 위에 뜬다(다시 읽으면 체인에서 확인한다)
     await walletTab(walletPage, 'me'); await walletPage.click('#meReloadBtn');
     await walletPage.waitForSelector('#regNotice:not([hidden])', { timeout: 30_000 });

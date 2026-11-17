@@ -19,6 +19,14 @@ body { background: var(--bg); }
   text-align: center; padding: 8px 16px; font-size: 13.5px; font-weight: 700;
 }
 
+/* 2026-11-17: 끝난 세션의 맨 위 상단 바 — "세션 복구" 로 새 로그인 */
+.session-bar {
+  background: #fdecea; border-bottom: 1px solid #f5b5ae; color: #8a1c12;
+  text-align: center; padding: 8px 16px; font-size: 13.5px;
+  position: sticky; top: 0; z-index: 50;
+}
+.session-bar button { margin-left: 10px; font-weight: 700; }
+
 /* ---- 상단 거래소 내비 ---- */
 .exchange-nav { background: var(--navy); color: #fff; }
 .nav-inner { max-width: 1200px; margin: 0 auto; padding: 0 20px; min-height: 56px; display: flex; align-items: center; gap: 28px; }
