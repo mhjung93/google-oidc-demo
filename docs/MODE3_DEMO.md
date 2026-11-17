@@ -1601,7 +1601,11 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
 - **체인 RPC 프록시와 허용 목록(R-5)**: 브라우저는 체인 노드를 직접 부르지 않고 정적 서버의 `/rpc/app`·`/rpc/rev` 로 부른다. 허용 메서드는 읽기 12개 —
   `eth_chainId, net_version, eth_blockNumber, eth_call, eth_getLogs, eth_getCode, eth_getBalance, eth_getBlockByNumber, eth_getBlockByHash, eth_getTransactionByHash, eth_getTransactionReceipt, eth_getTransactionCount`.
   배치는 원소 하나라도 막히면 전체 403. 목록 밖 읽기 메서드를 코어가 새로 쓰면 그 기능이 403 으로 깨진다 — 브라우저 테스트가 잡는다. 트랜잭션은 RP 릴레이를 거친다.
+  상류 부하 상한: 배치 하나는 **100건까지**(`lib/mode3_rpc_proxy.js` 의 `MAX_BATCH` — ethers `JsonRpcProvider` 의 기본 `batchMaxCount` 와 같아 사용자 페이지의 정상 흐름은 걸리지 않는다),
+  본문은 `/rpc/*` 1mb·그 밖 경로 16kb 까지다.
 - **사유**: `rpc_method_blocked`(허용 목록 밖 RPC — 위 프록시), `passkey_mode`(이 모드에서 쓰지 않는 기능 — 등록 폼·복구 코드·Google 로그인 대신 서비스 로그인 중의 인증 창 등록·패스키 계정 복구).
+  정적 서버의 형식 사유(정상 흐름에서는 나오지 않는다): `rpc_batch_too_large`(400, 배치 100건 초과), `payload_too_large`(413, 본문 상한 초과), `method_not_allowed`(405, `/rpc/*` 에 POST 가 아닌 요청),
+  `not_found`(404, `/zk/…` 목록에 없는 회로 파일).
   `passkey_*` 사유는 위 "패스키 경로" 표를 그대로 쓴다(`passkey_wrong_origin` 안내 주소만 `https://wallet.zkd.test:5100`).
 - **RP 소셜 로그인은 쓰지 않는다**: 리셋 스크립트는 다른 모드처럼 RP 의 Google·네이버 설정 줄과 IdP 의 `MODE3_OIDC_CLIENT_ID` 를 그대로 쓰지만, 소셜 로그인은 `localhost` 오리진에서만 동작하므로
   이 모드(이름 주소 `https://*.zkd.test`)에서는 쓰지 않는다 — 리셋 끝 안내에도 같은 줄이 나온다.

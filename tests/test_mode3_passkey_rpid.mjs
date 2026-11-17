@@ -93,6 +93,14 @@ await t('포트를 붙인 이름(localhost:5100)은 IP 가 아니라 "포트를 
     assert.equal(c.get.length, 0);
   }
 });
+// 2026-11-17(Minor C 수정 1): 숫자 호스트 + 포트('1:2')·줄인 IPv4('127.1', '1')는 이름이 아니라 IP 다 — WHATWG URL 은 마지막 라벨이 숫자인 호스트를 IPv4 로 읽는다.
+await t('숫자 호스트(1:2·127.1·1·0x7f.1:5100)는 포트 안내가 아니라 IP 로 거절', async () => {
+  for (const rpId of ['1:2', '127.1', '1', '0x7f.1:5100', '127.0.0.1:5100']) {
+    const c = setup('localhost');
+    await assert.rejects(P.derivePrf({ credentialId: 'AA', rpId }), (e) => wrongOrigin(e) && /IP 주소/.test(e.message) && !/포트/.test(e.message), rpId);
+    assert.equal(c.get.length, 0, rpId);
+  }
+});
 await t('createPasskey() 기본: rp = { id: localhost, name: zk 스냅 }, 확인 get 도 localhost', async () => {
   const c = setup('localhost');
   const r = await P.createPasskey();

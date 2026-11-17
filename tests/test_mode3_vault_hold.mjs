@@ -31,20 +31,36 @@ function saltForms(dec) {
   const be = Buffer.from(hex, 'hex'), utf = Buffer.from(dec, 'utf8');
   return { strings: [dec, hex, utf.toString('hex'), be.toString('base64').replace(/=+$/, ''), utf.toString('base64').replace(/=+$/, '')], blobs: [be, utf] };
 }
+// 문자열 안의 16진·base64(url) 처럼 보이는 토막은 바이트로 풀어 함께 본다(2026-11-17 Minor C 수정 1) — base64(JSON{…s_u…}) 처럼 salt 가 인코딩 경계와
+// 어긋난 자리에 있어도 잡는다. 토막 앞에 다른 글자가 붙었을 수 있어 시작 위치를 몇 칸(16진 2, base64 4) 옮겨 가며 푼다.
+function decodedBlobs(str) {
+  const out = [];
+  for (const m of str.matchAll(/[0-9a-fA-F]{8,}/g)) for (let o = 0; o < 2; o++) { const h = m[0].slice(o); out.push(Buffer.from(h.slice(0, h.length - (h.length % 2)), 'hex')); }
+  for (const m of str.matchAll(/[A-Za-z0-9+/_-]{8,}={0,2}/g)) for (let o = 0; o < 4; o++) out.push(Buffer.from(m[0].slice(o).replace(/-/g, '+').replace(/_/g, '/'), 'base64'));
+  return out;
+}
 async function plaintextIn(kv, dec) {
   const parts = { strings: [], blobs: [] };
   for (const k of await kv.keys()) rawParts(await kv.get(k), parts);
   const f = saltForms(dec);
   const hay = parts.strings.join('\n').toLowerCase();
   for (const x of f.strings) if (hay.includes(x.toLowerCase())) return `문자열 형태 ${x}`;
-  for (const b of parts.blobs) for (const x of f.blobs) if (Buffer.from(b).includes(x)) return `바이트 형태 ${x.toString('hex')}`;
+  const hexAscii = Buffer.from(f.strings[1], 'utf8');   // 값의 16진을 글자로 담은 바이트(풀어낸 JSON 안의 "0x…" 등)
+  const blobs = [...parts.blobs.map((b) => Buffer.from(b)), ...parts.strings.flatMap(decodedBlobs)];
+  for (const b of blobs) for (const x of [...f.blobs, hexAscii]) if (b.includes(x) || b.toString('latin1').toLowerCase().includes(x.toString('latin1').toLowerCase())) return `바이트 형태 ${x.toString('hex')}`;
   return null;
 }
 await t('평문 검사 자체: 어디에 어떤 모양으로 숨겨도 찾는다(대조군)', async () => {
   const hex = BigInt(S).toString(16).padStart(Math.ceil(BigInt(S).toString(16).length / 2) * 2, '0');
-  for (const planted of [{ a: { b: [S] } }, { x: new TextEncoder().encode(S) }, { y: Uint8Array.from(Buffer.from(hex, 'hex')).buffer }, { z: Buffer.from(S).toString('base64') }, { w: hex.toUpperCase() }]) {
+  // base64(JSON)·16진(JSON) 회귀 대조군: salt 가 인코딩 경계와 어긋난 자리에 있도록 앞에 길이가 다른 필드를 둔다. 다른 글자 뒤에 붙은 토막도 넣는다.
+  const enc = (o, how) => Buffer.from(JSON.stringify(o)).toString(how);
+  const jsonPlants = [];
+  for (const pad of ['', 'a', 'ab', 'abc']) {
+    jsonPlants.push({ b64: enc({ pad, s_u: S }, 'base64') }, { b64u: enc({ pad, s_u: S }, 'base64url') }, { hx: enc({ pad, s_u: S }, 'hex') }, { mixed: `box:${enc({ pad, s_u: S }, 'base64')}` }, { hexval: enc({ pad, v: '0x' + hex }, 'base64') });
+  }
+  for (const planted of [{ a: { b: [S] } }, { x: new TextEncoder().encode(S) }, { y: Uint8Array.from(Buffer.from(hex, 'hex')).buffer }, { z: Buffer.from(S).toString('base64') }, { w: hex.toUpperCase() }, ...jsonPlants]) {
     const kv = createMemKv(); await kv.set('k', planted);
-    assert.ok(await plaintextIn(kv, S), `못 찾음: ${Object.keys(planted)}`);
+    assert.ok(await plaintextIn(kv, S), `못 찾음: ${JSON.stringify(planted).slice(0, 80)}`);
   }
   assert.equal(await plaintextIn(createMemKv(), S), null);
 });

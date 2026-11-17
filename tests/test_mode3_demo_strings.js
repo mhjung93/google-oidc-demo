@@ -43,7 +43,11 @@ const REASONS = ['stale_root', 'stale_registry_root', 'root_too_old', 'revalidat
   // 2026-11-17 패스키 모드(스펙 2026-11-17-mode3-passkey-mode §5)
   'passkey_wrong_origin', 'passkey_unsupported', 'passkey_prf_unsupported', 'passkey_unstable', 'passkey_cancelled', 'passkey_mismatch', 'passkey_setup_required', 'passkey_already_set', 'passkey_bad_salt', 'session_restore_required',
   // 2026-11-17 설치 없는 패스키 모드(스펙 2026-11-17-mode3-passkey-web, 계획 R-6)
-  'passkey_mode'];
+  'passkey_mode',
+  // 2026-11-17 설치 없는 패스키 모드 — 정적 서버 RPC 프록시의 형식 사유(docs/MODE3_DEMO.md passkey-web 절)
+  'rpc_batch_too_large', 'payload_too_large', 'method_not_allowed', 'not_found',
+  // 계정 복구 귀로가 등록 코드가 아닌 결과로 돌아옴(mode3/user/popup.js — 서버 소스 훑기 밖이라 여기 둔다)
+  'recover_purpose_mismatch'];
 
 t('langs 는 ko, en', () => assert.deepEqual(S.langs, ['ko', 'en']));
 // U6(2026-10-14): login2(두 번째 RP 로그인, unlinkability 시연) 추가 — login 과 use 사이, 7단계→8단계.

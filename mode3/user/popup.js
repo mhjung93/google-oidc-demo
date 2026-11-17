@@ -133,7 +133,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
     let out;
     // 복구는 등록 코드로만 한다 — 발급 코드로 돌아왔으면 코어·IdP 를 부르지 않고 멈춘다(대기분의 목적 대조가 먼저 거르지만, 목적을 남기지 않은 대기분 대비).
     if (back.purpose !== 'register') {
-      out = { ok: false, restored: false, reason: 'bad_code', detail: '계정 복구는 등록 코드로만 한다' };
+      out = { ok: false, restored: false, reason: 'recover_purpose_mismatch', detail: `돌아온 목적: ${back.purpose}` };
       try { sessionStorage.setItem(RECOVER_RESULT_KEY, JSON.stringify(out)); } catch { /* 결과를 못 남기면 화면이 상태로만 보인다 */ }
       location.replace('/');
       return;

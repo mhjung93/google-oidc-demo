@@ -82,16 +82,22 @@ try {
   // passkey_ 로 시작하는 태그 오류도 409 가 아니라 500 internal 이다(둘 다 passkey-web 에서만 그대로 넘긴다). 같은 kv(열린 금고·등록)를 쓰는 코어에 IdP 응답·증명기만 바꿔 끼운다.
   await t('web 모드: IdP 401 auth_code_required·bad_code 는 502 issue_failed, passkey_ 태그 오류는 500 internal(세션은 늘지 않는다)', async () => {
     const before = Object.keys((await kv.get('sessions')) ?? {}).length;
-    const issue401 = (reason) => async (url, init) => (String(url).endsWith('/cia/issue') ? new Response(JSON.stringify({ error: reason, reason }), { status: 401, headers: { 'Content-Type': 'application/json' } }) : fetch(url, init));
+    let issueHits = 0;
+    const issue401 = (reason) => async (url, init) => (String(url).endsWith('/cia/issue') ? (issueHits++, new Response(JSON.stringify({ error: reason, reason }), { status: 401, headers: { 'Content-Type': 'application/json' } })) : fetch(url, init));
     for (const reason of ['auth_code_required', 'bad_code']) {
       const w = createUserCore({ kv, config, provider, canonProvider: provider, fullProve, fetch: issue401(reason) });
+      const h0 = issueHits;
       const r = await w.login(loginBody(await challenge()), { verifiedOrigin: info.origin });
+      assert.equal(issueHits - h0, 1, `${reason}: 바꿔 끼운 /cia/issue 401 이 한 번 쓰였다`);
       assert.equal(r.status, 502, `${reason}: ${j(r.body)}`); assert.equal(r.body.reason, 'issue_failed'); assert.equal(r.body.cia?.reason, reason);
     }
-    const tagged = { idp: async () => { throw Object.assign(new Error('시험: 태그 오류'), { reason: 'passkey_cancelled' }); }, cred: fullProve.cred };
+    // 태그 오류를 던지는 증명기가 정말 불렸는지 센다 — 다른 이유의 500(예: 증명 전 단계의 오류)으로 통과하지 않게, detail 도 그 오류의 메시지여야 한다.
+    let idpCalls = 0;
+    const tagged = { idp: async () => { idpCalls++; throw Object.assign(new Error('시험: 태그 오류'), { reason: 'passkey_cancelled' }); }, cred: fullProve.cred };
     const w2 = createUserCore({ kv, config, provider, canonProvider: provider, fullProve: tagged, log: () => {} });
     const r2 = await w2.login(loginBody(await challenge()), { verifiedOrigin: info.origin });
-    assert.equal(r2.status, 500, j(r2.body)); assert.equal(r2.body.reason, 'internal');
+    assert.equal(idpCalls, 1, '태그 오류를 던지는 증명기가 한 번 불렸다');
+    assert.equal(r2.status, 500, j(r2.body)); assert.equal(r2.body.reason, 'internal'); assert.equal(r2.body.detail, '시험: 태그 오류');
     assert.equal(Object.keys((await kv.get('sessions')) ?? {}).length, before);
   });
   await t('로그아웃·대체(2026-10-16): RP /api/mode3/logout 뒤 status() 가 세션을 정리한다; 다시 로그인하면 같은 PPID 의 이전 세션을 RP 가 대체하고 지갑 목록도 하나만 남는다', async () => {
