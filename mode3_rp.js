@@ -27,6 +27,7 @@ import { createRemoteJWKSet, jwtVerify } from 'jose';   // zkID ID 토큰(ES256)
 import session from 'express-session';
 import { openAccountStore, AccountError } from './lib/mode3_rp_accounts.js';
 import { socialConfigFromEnv, mountRpSocial, setRpSession } from './lib/mode3_rp_social.js';
+import { listenMaybeTls } from './lib/mode3_tls.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.MODE3_RP_PORT) || 3100;
@@ -889,6 +890,6 @@ app.use((err, req, res, next) => {
   res.status(500).json({ ok: false, reason: 'internal', detail: err?.message });
 });
 process.on('unhandledRejection', (e) => console.error(`[rp] unhandledRejection: ${e?.stack ?? e}`));
-app.listen(PORT, BIND_HOST, () => {
-  console.log(`Mode 3 RP at http://${BIND_HOST}:${PORT} (arid=${reg.arid ?? '-'} status=${reg.status}, origin=${reg.origin}, log=${LOG_ADDRESS}, wallet=${WALLET_ORIGIN}, pk_CIA=${pkCIA.source}, chain=${chainId})`);
-});
+listenMaybeTls(app, { port: PORT, host: BIND_HOST, onListening: (scheme) => {
+  console.log(`Mode 3 RP at ${scheme}://${BIND_HOST}:${PORT} (arid=${reg.arid ?? '-'} status=${reg.status}, origin=${reg.origin}, log=${LOG_ADDRESS}, wallet=${WALLET_ORIGIN}, pk_CIA=${pkCIA.source}, chain=${chainId})`);
+} });

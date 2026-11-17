@@ -59,6 +59,7 @@ UNIT=(
   tests/test_mode3_oidc_nonce.js
   tests/test_mode3_oidc_verifier.mjs
   tests/test_mode3_oidc_link.mjs
+  tests/test_mode3_tls.mjs
 )
 
 CIRCUIT=(
@@ -95,6 +96,7 @@ CHAIN=(
   tests/test_cia_revoke_publish_after.mjs
   tests/test_cia_accounts.mjs
   tests/test_cia_startup.mjs
+  tests/test_mode3_tls_stack.mjs
   tests/test_cia_cors.mjs
   tests/test_cia_admin_open.mjs
   tests/test_cia_oidc_register.mjs

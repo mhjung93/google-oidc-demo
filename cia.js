@@ -49,6 +49,7 @@ import { CIA_STATE_VERSION, defaultCiaState, migrateCiaState, rpKeyTag, findRpSl
 import { buildAaHealth, applyHealthHeaders, bounded, originList } from './lib/mode3_health.js';
 import { createOidcVerifier, GOOGLE_DEFAULTS } from './lib/mode3_oidc.js';
 import { uidOf, regNonce, issueNonce, isRevokeNonce, REG_PREFIX, REVOKE_PREFIX, ISSUE_PREFIX } from './lib/mode3_oidc_nonce.js';
+import { listenMaybeTls } from './lib/mode3_tls.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.CIA_PORT) || 4100;
@@ -2046,7 +2047,7 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'internal' });
 });
 process.on('unhandledRejection', (e) => console.error(`[cia] unhandledRejection: ${e?.stack ?? e}`));
-app.listen(PORT, BIND_HOST, () => {
+listenMaybeTls(app, { port: PORT, host: BIND_HOST, onListening: (scheme) => {
   if (ADMIN_OPEN) console.warn('[cia] CIA_ADMIN_OPEN=1 — 관리자 인증이 꺼져 있다(데모 전용). 이 IdP 에 닿는 누구나 RP 승인·폐기·개봉 승인을 할 수 있다.');
-  console.log(`Mode 3 IdP running at http://${BIND_HOST}:${PORT} (log=${LOG_ADDRESS ?? 'none'}, heartbeat=${HEARTBEAT_BLOCKS}, mirrors=${MIRRORS.map((m) => m.chainStr).join(',') || 'none'}(H=${MIRROR_HEARTBEAT_BLOCKS}, relayOnPublish=${MIRROR_RELAY_ON_PUBLISH && MIRROR_HEARTBEAT_BLOCKS > 0n}), chains=${[...CHAIN_RPCS.keys()].join(',') || 'none'}, vkey=${fs.existsSync(VKEY_PATH) ? 'ok' : 'missing'}, idpVkey=${fs.existsSync(IDP_VKEY) ? 'ok' : 'missing'}, registry=${registry.entries().length})`);
-});
+  console.log(`Mode 3 IdP running at ${scheme}://${BIND_HOST}:${PORT} (log=${LOG_ADDRESS ?? 'none'}, heartbeat=${HEARTBEAT_BLOCKS}, mirrors=${MIRRORS.map((m) => m.chainStr).join(',') || 'none'}(H=${MIRROR_HEARTBEAT_BLOCKS}, relayOnPublish=${MIRROR_RELAY_ON_PUBLISH && MIRROR_HEARTBEAT_BLOCKS > 0n}), chains=${[...CHAIN_RPCS.keys()].join(',') || 'none'}, vkey=${fs.existsSync(VKEY_PATH) ? 'ok' : 'missing'}, idpVkey=${fs.existsSync(IDP_VKEY) ? 'ok' : 'missing'}, registry=${registry.entries().length})`);
+} });

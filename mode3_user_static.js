@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
+import { listenMaybeTls } from './lib/mode3_tls.js';
 import { buildWalletHealth, applyHealthHeaders, bounded, originList, allowOrigin } from './lib/mode3_health.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -83,4 +84,4 @@ app.use((err, req, res, next) => {
   res.status(500).json({ reason: 'internal' });
 });
 process.on('unhandledRejection', (e) => console.error(`[user-static] unhandledRejection: ${e?.stack ?? e}`));
-app.listen(PORT, '127.0.0.1', () => console.log(`Mode 3 user static at http://127.0.0.1:${PORT} (cia=${CIA_URL}, rp=${RP_ORIGINS.join(',')}, log=${LOG_ADDRESS ?? 'none'}, mirror=${MIRROR_ADDRESS ?? 'none'})`));
+listenMaybeTls(app, { port: PORT, host: '127.0.0.1', onListening: (scheme) => console.log(`Mode 3 user static at ${scheme}://127.0.0.1:${PORT} (cia=${CIA_URL}, rp=${RP_ORIGINS.join(',')}, log=${LOG_ADDRESS ?? 'none'}, mirror=${MIRROR_ADDRESS ?? 'none'})`) });

@@ -24,7 +24,7 @@ export function freePort() {
 }
 
 export async function startIsolatedCia(opts = {}) {
-  const { env: extraEnv = {}, readyTimeoutMs = 30_000, oidc = null } = opts;
+  const { env: extraEnv = {}, readyTimeoutMs = 30_000, oidc = null, scheme = 'http' } = opts;
   // OIDC 래퍼(스펙 2026-10-16 Task 3): oidc 를 주면 발급자 스텁을 먼저 띄우고 그 설정을 env 로 넣는다. 옵션이 없으면
   // 빈 문자열로 고정한다 — 개발용 .env 의 GOOGLE_CLIENT_ID 가 새어 들어와 테스트 IdP 가 Google 을 켜지 않게 막는다.
   let oidcStub = null;
@@ -95,7 +95,7 @@ export async function startIsolatedCia(opts = {}) {
   let spawnError = null;
   child.on('error', (e) => { spawnError = e; });
 
-  const base = `http://127.0.0.1:${port}`;
+  const base = `${scheme}://127.0.0.1:${port}`;
   const deadline = Date.now() + readyTimeoutMs;
   let ready = false;
   while (Date.now() < deadline) {
