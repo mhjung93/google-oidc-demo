@@ -55,8 +55,8 @@ t('passkey-web 값 — 터널 끔·https 이름·AGENT_MODE=0', () => {
 const blockedIdx = () => lines.map((l, i) => [l, i]).filter(([l]) => /BLOCKED/.test(l) && !/번들 빌드|snap-mode3/.test(l)).map(([, i]) => i);
 t('사전 검사 — CA 파일·VM 주소(IPv4)·CA 이름 제약 망·hosts 를 보고 BLOCKED 로 종료(hosts 검사가 마지막)', () => {
   const b = blockedIdx();
-  assert.equal(b.length, 4, `BLOCKED 줄 ${b.length}개`);
-  const [caLine, ipLine, netLine, hostsLine] = b;
+  assert.equal(b.length, 5, `BLOCKED 줄 ${b.length}개`);
+  const [caLine, ipLine, netLine, hostsLine, staleLine] = b;
   assert.match(lines[ipLine], /IPv4/);
   const ctx = (i) => lines.slice(Math.max(0, i - 2), i + 1).join('\n');
   assert.match(ctx(caLine), /ca\.crt/); assert.match(ctx(caLine), /ca\.key/); assert.match(lines[caLine], /zkd_tls_setup\.sh/);
@@ -64,6 +64,8 @@ t('사전 검사 — CA 파일·VM 주소(IPv4)·CA 이름 제약 망·hosts 를
   assert.match(lines.slice(caLine, netLine + 1).join('\n'), /255\\\.255\\\.255\\\.0/);
   assert.match(lines[netLine], /ZKD_DEMO_NET/);
   assert.match(ctx(hostsLine), /getent hosts/);
+  assert.match(lines[hostsLine], /zkd_tls_setup\.sh/);
+  assert.match(lines[staleLine], /블록 밖의 옛/);
   assert.match(src, /"127\.0\.0\.1=wallet\.zkd\.test" "\$IDP=idp\.zkd\.test" "\$RP1=zkone\.zkd\.test" "\$RP2=zktwo\.zkd\.test"/);
   for (const i of b) assert.match(lines[i], /exit 1/);
 });
