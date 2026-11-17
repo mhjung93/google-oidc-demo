@@ -93,6 +93,8 @@ try {
     rs1 = ch.r_s; ppid0 = r.body.publicSignals[0];
     const n = await loginRp(coreA, null); assert.equal(n.r.status, 401, j(n.r.body)); assert.equal(n.r.body.reason, 'auth_code_required');
     const u = await loginRp(coreA, reg201.body.issue_code); assert.equal(u.r.status, 401, j(u.r.body)); assert.equal(u.r.body.reason, 'bad_code');
+    // 2026-11-17(미뤄 둔 Minor C): 문자열이 아니거나 빈 authCode 는 IdP 에 가기 전에 400
+    for (const bad of [5, '', {}, ['c']]) { const b = await loginRp(coreA, bad); assert.equal(b.r.status, 400, `${j(bad)} ${j(b.r.body)}`); assert.match(b.r.body.error, /authCode/); }
     assert.ok(!(await dumpKv()).includes(SALT));
     assert.equal(calls, 0, '보관분으로 — 패스키 0회');
   });
@@ -159,6 +161,43 @@ try {
     assert.equal((await coreA.vault.readSecrets()).s_u, null); assert.ok(!(await dumpKv()).includes(SALT));
     const { r: l, v } = await loginRp(coreA, r.body.issue_code); assert.equal(l.status, 200, j(l.body)); assert.equal(v.body.ok, true, j(v.body));
     assert.equal(l.body.publicSignals[0], ppid0, '같은 PPID');
+  });
+  // ---- 2026-11-17(미뤄 둔 Minor C) — 각 케이스는 새 kv·새 코어로 자기 상태를 만든다(앞 케이스의 등록·보관분과 무관) ----
+  const freshCore = (cfg = config) => { const k = createMemKv(); return { k, c: createUserCore({ kv: k, config: cfg, provider, canonProvider: provider, fullProve, now, passkey }) }; };
+  await t('passkeyDisconnect(미등록): 200 — credential·보관분을 지운다, 이어서 showSalt 는 passkey_setup_required', async () => {
+    const { k, c } = freshCore();
+    assert.equal((await c.passkeyConnect({ credentialId: CID, s_u: SALT })).status, 200);
+    assert.ok(await k.get('passkeyHold'));
+    const d = await c.passkeyDisconnect(); assert.equal(d.status, 200, j(d.body)); assert.deepEqual(d.body, { ok: true });
+    assert.equal(await k.get('passkey'), undefined); assert.equal(await k.get('passkeyHold'), undefined);
+    const st = await c.passkeyState(); assert.equal(st.body.credentialId, null); assert.equal(st.body.heldUntil, null);
+    const s2 = await c.showSalt(); assert.equal(s2.status, 409); assert.equal(s2.body.reason, 'passkey_setup_required');
+  });
+  await t('passkeyDisconnect 는 withSalt 메모도 버린다 — 범위 안에서 끊은 뒤의 salt 요청은 passkey_setup_required', async () => {
+    const { c } = freshCore(); const c0 = calls;
+    assert.equal((await c.passkeyConnect({ credentialId: CID, s_u: SALT })).status, 200);
+    const out = await c.withSalt(async () => [await c.showSalt(), await c.passkeyDisconnect(), await c.showSalt()]);
+    assert.equal(out[0].status, 200); assert.equal(out[0].body.s_u, SALT);
+    assert.equal(out[1].status, 200, j(out[1].body));
+    assert.equal(out[2].status, 409, `끊은 뒤에도 메모의 salt 가 나왔다: ${j(out[2].body)}`); assert.equal(out[2].body.reason, 'passkey_setup_required');
+    assert.equal(calls - c0, 0);
+  });
+  await t('passkeyConnect: 같은 credential 인데 보관분과 다른 s_u 는 409 passkey_mismatch — 보관분을 덮지 않는다; 같은 s_u 면 200', async () => {
+    const { k, c } = freshCore();
+    assert.equal((await c.passkeyConnect({ credentialId: CID, s_u: SALT })).status, 200);
+    const until0 = (await c.passkeyState()).body.heldUntil;
+    const other = randomScalar().toString();
+    const r = await c.passkeyConnect({ credentialId: CID, s_u: other }); assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'passkey_mismatch');
+    assert.equal(await c.vault.heldSalt(), SALT, '보관분은 그대로');
+    assert.equal((await c.passkeyState()).body.heldUntil, until0);
+    assert.equal((await c.passkeyConnect({ credentialId: CID, s_u: SALT })).status, 200, '같은 패스키·같은 salt 는 다시 연결해도 된다');
+    assert.equal((await k.get('passkey')).credentialId, CID);
+  });
+  await t('syncProfileFromRecord(미등록): 409 not_registered — 속성을 저장하지 않는다', async () => {
+    const { k, c } = freshCore();
+    const r = await c.syncProfileFromRecord({ recordSalt: SALT, profile: { birthYear: '1990', country: 'KR' } });
+    assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'not_registered');
+    assert.equal(await k.get('registration'), undefined);
   });
   await t('웹 모드 코어에서는 registerWithCode 409 not_passkey_mode', async () => {
     const w = createUserCore({ kv: createMemKv(), config: { ...config, secrets: 'web' }, provider, canonProvider: provider, fullProve });

@@ -832,7 +832,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     $('pkRecoverGoBtn').addEventListener('click', () => {
       clearVerdict($('pkRecoverVerdict'));
       const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
-      savePending(window.sessionStorage, { req: { type: 'mode3-recover', profile: readRecoverProfile() }, origin: location.origin, nonce, at: Date.now() });
+      savePending(window.sessionStorage, { req: { type: 'mode3-recover', profile: readRecoverProfile() }, origin: location.origin, nonce, at: Date.now(), purpose: 'register' });
       location.assign(idpAuthUrl({ ciaUrl: cfg.ciaUrl, walletOrigin: location.origin, nonce, purpose: 'register' }));
     });
   }

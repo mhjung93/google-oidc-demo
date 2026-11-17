@@ -32,8 +32,11 @@
   const rand = (n) => crypto.getRandomValues(new Uint8Array(n));
   function precheck(rpId) {
     if (typeof rpId !== 'string' || !rpId) fail('passkey_wrong_origin', `패스키 RP ID 가 비었거나 문자열이 아니다 (${String(rpId)})`);
-    // IP 주소는 RP ID 가 될 수 없다 — WebAuthn 호출 전에 거절한다.
-    if (/^\d+(\.\d+){3}$/.test(rpId) || rpId.includes(':')) fail('passkey_wrong_origin', `IP 주소(${rpId})는 패스키 RP ID 가 될 수 없다 — 이름(도메인)으로 연 페이지에서 쓴다`);
+    // IP 주소는 RP ID 가 될 수 없다 — WebAuthn 호출 전에 거절한다. 콜론이 하나뿐이고 뒤가 숫자면 IPv6 가 아니라 "이름:포트"(localhost:5100) — 포트를 빼라고 따로 말한다(IPv4:포트는 IP).
+    const port = /^([^:[\]]+):(\d+)$/.exec(rpId);
+    const isIpv4 = (h) => /^\d+(\.\d+){3}$/.test(h);
+    if (port && !isIpv4(port[1])) fail('passkey_wrong_origin', `RP ID(${rpId})에는 포트를 넣지 않는다 — 포트를 빼고 이름만(${port[1]}) 쓴다`);
+    if (isIpv4(rpId) || rpId.includes(':')) fail('passkey_wrong_origin', `IP 주소(${rpId})는 패스키 RP ID 가 될 수 없다 — 이름(도메인)으로 연 페이지에서 쓴다`);
     if (location.hostname !== rpId) fail('passkey_wrong_origin', `패스키는 ${rpId} 에서만 쓴다 (지금 ${location.hostname})`);
     if (typeof window.PublicKeyCredential !== 'function' || !window.isSecureContext || !navigator.credentials) fail('passkey_unsupported', 'WebAuthn 을 쓸 수 없는 브라우저·페이지');
   }

@@ -27,10 +27,12 @@ const get = (mod, opts) => new Promise((resolve, reject) => {
   r.on('error', reject);
   r.on('timeout', () => r.destroy(new Error('timeout')));
 });
-const start = (env) => new Promise((resolve) => {
+// listen 오류(포트 사용 중 등)는 reject 한다 — 'error' 를 듣지 않으면 onListening 이 영영 안 와 테스트가 멈춘다(2026-11-17 미뤄 둔 Minor C).
+const start = (env, port = 0) => new Promise((resolve, reject) => {
   const app = express();
   app.get('/x', (_req, res) => res.json({ ok: true }));
-  const { server, scheme } = listenMaybeTls(app, { port: 0, host: '127.0.0.1', env, onListening: () => resolve({ server, scheme, port: server.address().port }) });
+  const { server, scheme } = listenMaybeTls(app, { port, host: '127.0.0.1', env, onListening: () => resolve({ server, scheme, port: server.address().port }) });
+  server.once('error', reject);
 });
 const stop = (s) => new Promise((r) => { s.closeAllConnections?.(); s.close(() => r()); });
 
@@ -45,6 +47,10 @@ await t('cert·key → https, 같은 포트에 http 는 거부', async () => {
     assert.equal(await get(https, { port: s.port, ca: fs.readFileSync(c) }), 200);
     await assert.rejects(get(http, { port: s.port }));
   } finally { await stop(s.server); }
+});
+await t('listen 오류(같은 포트)는 멈추지 않고 reject', async () => {
+  const a = await start({});
+  try { await assert.rejects(start({}, a.port), (e) => e.code === 'EADDRINUSE'); } finally { await stop(a.server); }
 });
 await t('하나만 주면 거부', () => {
   assert.throws(() => tlsOptionsFromEnv({ MODE3_TLS_CERT: c }), /함께/);

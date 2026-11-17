@@ -13,13 +13,56 @@ const now = () => tm;
 async function fresh(opts = {}) { tm = 1_000_000; const kv = createMemKv(); const vault = createVault(kv, { now, ...opts }); await vault.setup(null); return { kv, vault }; }
 
 await t('상수: 10분', () => assert.equal(PASSKEY_HOLD_MS, 10 * MIN));
-await t('보관·읽기: 읽힌다, kv 에 salt 평문이 없다', async () => {
+// 평문 부재 검사(2026-11-17 미뤄 둔 Minor C): 상자(box) 직렬화 모양에 기대지 않고 kv 의 날 레코드를 전부 훑는다 — 문자열·바이트 배열(ArrayBuffer·TypedArray)을
+// 재귀로 모아 salt 의 10진·16진(값·10진 문자열의 UTF-8)·base64(같은 둘)·날 바이트(값의 big-endian·10진 문자열의 UTF-8)를 찾는다. CryptoKey 는 내용을 꺼낼 수 없어 건너뛴다.
+const bytesOf = (v) => (v instanceof ArrayBuffer ? new Uint8Array(v) : ArrayBuffer.isView(v) ? new Uint8Array(v.buffer, v.byteOffset, v.byteLength) : null);
+function rawParts(v, out = { strings: [], blobs: [] }, seen = new Set()) {
+  if (v === null || v === undefined) return out;
+  if (typeof v === 'string') { out.strings.push(v); return out; }
+  if (typeof v === 'number' || typeof v === 'bigint' || typeof v === 'boolean') { out.strings.push(String(v)); return out; }
+  const b = bytesOf(v); if (b) { out.blobs.push(b); return out; }
+  if (typeof v !== 'object' || seen.has(v) || (globalThis.CryptoKey && v instanceof CryptoKey)) return out;
+  seen.add(v);
+  for (const k of Object.keys(v)) { out.strings.push(k); rawParts(v[k], out, seen); }
+  return out;
+}
+function saltForms(dec) {
+  const n = BigInt(dec); let hex = n.toString(16); if (hex.length % 2) hex = '0' + hex;
+  const be = Buffer.from(hex, 'hex'), utf = Buffer.from(dec, 'utf8');
+  return { strings: [dec, hex, utf.toString('hex'), be.toString('base64').replace(/=+$/, ''), utf.toString('base64').replace(/=+$/, '')], blobs: [be, utf] };
+}
+async function plaintextIn(kv, dec) {
+  const parts = { strings: [], blobs: [] };
+  for (const k of await kv.keys()) rawParts(await kv.get(k), parts);
+  const f = saltForms(dec);
+  const hay = parts.strings.join('\n').toLowerCase();
+  for (const x of f.strings) if (hay.includes(x.toLowerCase())) return `문자열 형태 ${x}`;
+  for (const b of parts.blobs) for (const x of f.blobs) if (Buffer.from(b).includes(x)) return `바이트 형태 ${x.toString('hex')}`;
+  return null;
+}
+await t('평문 검사 자체: 어디에 어떤 모양으로 숨겨도 찾는다(대조군)', async () => {
+  const hex = BigInt(S).toString(16).padStart(Math.ceil(BigInt(S).toString(16).length / 2) * 2, '0');
+  for (const planted of [{ a: { b: [S] } }, { x: new TextEncoder().encode(S) }, { y: Uint8Array.from(Buffer.from(hex, 'hex')).buffer }, { z: Buffer.from(S).toString('base64') }, { w: hex.toUpperCase() }]) {
+    const kv = createMemKv(); await kv.set('k', planted);
+    assert.ok(await plaintextIn(kv, S), `못 찾음: ${Object.keys(planted)}`);
+  }
+  assert.equal(await plaintextIn(createMemKv(), S), null);
+});
+await t('보관·읽기: 읽힌다, kv 날 레코드 어디에도 salt 평문(10진·16진·base64·바이트)이 없다', async () => {
   const { kv, vault } = await fresh();
   assert.equal(await vault.holdSalt(S), true);
   assert.equal(await vault.heldSalt(), S);
   assert.equal(await vault.heldUntil(), tm + PASSKEY_HOLD_MS);
-  const dump = {}; for (const k of await kv.keys()) { const v = await kv.get(k); dump[k] = v?.box ? { ...v, box: JSON.stringify(v.box) } : v?.key ? '(key)' : v; }
-  assert.ok(!JSON.stringify(dump).includes(S));
+  assert.equal(await plaintextIn(kv, S), null);
+});
+// 2026-11-17(미뤄 둔 Minor C): salt 와 만료를 한 번의 복호로 함께 — heldSalt()·heldUntil() 을 따로 부르면 그 사이에 만료·덮어쓰기가 끼어 서로 다른 보관분을 볼 수 있다.
+await t('held(): 한 번에 { s_u, until }, 없으면 null', async () => {
+  const { vault } = await fresh();
+  assert.equal(await vault.held(), null);
+  await vault.holdSalt(S);
+  assert.deepEqual(await vault.held(), { s_u: S, until: tm + PASSKEY_HOLD_MS });
+  tm += PASSKEY_HOLD_MS + 1;
+  assert.equal(await vault.held(), null);
 });
 await t('만료: null 이고 kv 키가 지워진다', async () => {
   const { kv, vault } = await fresh();
@@ -69,5 +112,14 @@ await t('잠김: 금고 없으면 holdSalt locked, heldSalt null', async () => {
 await t('형식: 0·abc·2^250 이상은 reject', async () => {
   const { vault } = await fresh();
   for (const bad of ['0', 'abc', '', (2n ** 250n).toString(), 5, null]) await assert.rejects(vault.holdSalt(bad), `거부돼야 함: ${bad}`);
+});
+// 2026-11-17(미뤄 둔 Minor C): 정규 10진만 — 앞자리 0·부호·공백이 붙은 같은 값은 사유(passkey_bad_salt)가 붙은 오류로 거절하고 보관하지 않는다.
+await t('형식: 비정규 10진(007·+7·공백)은 passkey_bad_salt, 보관하지 않는다', async () => {
+  const { kv, vault } = await fresh();
+  for (const bad of ['007', '0' + S, '+7', ' 7', '7 ', '7\n', '1e3', '0x10']) {
+    await assert.rejects(vault.holdSalt(bad), (e) => e.reason === 'passkey_bad_salt', `거부돼야 함: ${JSON.stringify(bad)}`);
+  }
+  assert.equal(await kv.get('passkeyHold'), undefined);
+  assert.equal(await vault.holdSalt('7'), true);
 });
 process.exit(fails ? 1 : 0);

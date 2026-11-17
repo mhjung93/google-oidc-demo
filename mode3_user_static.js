@@ -105,10 +105,11 @@ app.post('/wallet/presence', (req, res) => {
   presence = { ...req.body };
   res.json({ ok: true });
 });
-// 라우트 밖으로 샌 오류의 마지막 그물(에이전트·RP 와 같은 패턴): JSON 파싱 실패 400 malformed, 그 밖 500 internal — stack 은 서버 로그에만 남긴다.
+// 라우트 밖으로 샌 오류의 마지막 그물(에이전트·RP 와 같은 패턴): JSON 파싱 실패 400 malformed, 본문 상한 초과 413 payload_too_large, 그 밖 500 internal — stack 은 서버 로그에만 남긴다.
 app.use((err, req, res, next) => {
   if (res.headersSent) return next(err);
   if (err?.type === 'entity.parse.failed') return res.status(400).json({ reason: 'malformed' });
+  if (err?.type === 'entity.too.large') return res.status(413).json({ reason: 'payload_too_large' });   // 본문 상한(/rpc/* 1mb, 그 밖 16kb) — 500 internal 이 아니다
   console.error(`[user-static] 처리되지 않은 라우트 오류 ${req.method} ${req.path}: ${err?.stack ?? err}`);
   res.status(500).json({ reason: 'internal' });
 });

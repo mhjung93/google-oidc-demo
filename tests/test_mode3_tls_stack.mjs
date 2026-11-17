@@ -1,7 +1,8 @@
 // 세 서버 TLS 기동 — IdP https, RP https → IdP https 서버 간 호출(passkey-web Task 1). (chain 그룹: :8545 hardhat 노드)
 //   node tests/test_mode3_tls_stack.mjs
 // 자체 서명 인증서를 NODE_EXTRA_CA_CERTS 로 신뢰시켜야 fetch 가 통과한다 — 그 env 는 프로세스 시작 때만 읽히므로
-// 없으면 인증서를 만들고 같은 파일을 그 env 로 다시 실행한다.
+// 인증서를 만들고 같은 파일을 그 env 로 다시 실행한다. 다시 실행했는지는 이 테스트의 표시(T_TLS_CERT)로 본다 — 사용자 셸에 NODE_EXTRA_CA_CERTS 가
+// 이미 있어도(데모 CA 등) 건너뛰지 않는다(2026-11-17 미뤄 둔 Minor C). 격리 헬퍼는 자식의 NODE_EXTRA_CA_CERTS 를 비우므로 자식에게도 명시해 넘긴다.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -9,7 +10,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-if (!process.env.NODE_EXTRA_CA_CERTS) {
+if (!process.env.T_TLS_CERT) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-tls-stack-'));
   const c = path.join(dir, 'c.pem');
   const k = path.join(dir, 'k.pem');
@@ -25,7 +26,7 @@ if (!process.env.NODE_EXTRA_CA_CERTS) {
 const { startIsolatedCia, freePort } = await import('./helpers/isolated_cia.mjs');
 const { spawnServer, stopChild, RP_ADMIN_SECRET } = await import('./helpers/isolated_mode3_stack.mjs');
 
-const TLS = { MODE3_TLS_CERT: process.env.T_TLS_CERT, MODE3_TLS_KEY: process.env.T_TLS_KEY };
+const TLS = { MODE3_TLS_CERT: process.env.T_TLS_CERT, MODE3_TLS_KEY: process.env.T_TLS_KEY, NODE_EXTRA_CA_CERTS: process.env.T_TLS_CERT };
 let failed = 0;
 async function t(name, fn) {
   try { await fn(); console.log(`ok   ${name}`); }
@@ -49,6 +50,7 @@ try {
       env: {
         MODE3_RP_PORT: String(port),
         MODE3_CIA_URL: cia.base,
+        MODE3_WALLET_AGENT_ORIGIN: `https://127.0.0.1:${await freePort()}`,   // rpSpawnFor 와 같은 키 — 지갑은 띄우지 않지만 셸 값이 새지 않게 이 테스트의 값으로
         CIA_LOG_ADDRESS: cia.logAddress,
         MODE3_MIRROR_ADDRESS: cia.mirrorAddress,
         MODE3_RP_REGISTRATION_FILE: path.join(tmp, 'mode3_rp_registration.json'),

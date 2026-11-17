@@ -720,6 +720,8 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       timings.userCredMs = pick.fresh ? timings.issueMs : 0;   // 새 C_u 를 받은 로그인만 0 이 아니다(테스트·화면이 본다)
       let r = issued.r, demo = issued.demo;
       // V10 no_user_cred 재시도의 V11 등가물: IdP 가 "이미 물린 C_u" 라며 거절하면(경합 등) 버리고 새 C_u 로 한 번만 다시 시도한다.
+      // 인증 코드(authCode)는 1회용이다 — 게시 경합으로 IdP 가 첫 요청에서 이미 코드를 태웠다면 재시도는 401 bad_code 가 되고, 그때는 다시 로그인(인증 창)해야 한다
+      // (에이전트와 같은 알려진 한계).
       if (r.status === 409 && r.body?.reason === 'cred_revoked') {
         await replaceUserCred(src, null);
         t = now();
@@ -731,7 +733,8 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       }
       if (typeof r.body?.reason === 'string' && (r.body.reason.startsWith('oidc_') || r.body.reason === 'uid_mismatch')) return R(r.status, { reason: r.body.reason, cia: r.body, timings });   // 래퍼 사유는 그대로(2026-10-16)
       // R-13: 인증 코드 정책의 401(코드 없음·틀린/쓴 코드)은 issue_failed 로 뭉개지 않고 사유·상태 그대로 — 화면이 인증 창으로 다시 보낸다.
-      if (r.status === 401 && (r.body?.reason === 'auth_code_required' || r.body?.reason === 'bad_code')) return R(401, { reason: r.body.reason, cia: r.body, timings });
+      // passkey-web 에서만이다 — web 모드는 이전처럼 아래 502 issue_failed(2026-11-17 미뤄 둔 Minor C: "web 은 바꾸지 않는다").
+      if (PK && r.status === 401 && (r.body?.reason === 'auth_code_required' || r.body?.reason === 'bad_code')) return R(401, { reason: r.body.reason, cia: r.body, timings });
       if (r.status === 403) return R(403, { reason: 'account_disabled', timings });
       if (r.status === 400 && r.body?.reason === 'bad_idp_proof') return R(502, { reason: 'user_cred_failed', cia: r.body, ...(demo ? { demo } : {}), timings });
       if (r.status !== 200) return R(502, { reason: 'issue_failed', cia: r.body, ...(demo ? { demo } : {}), timings });
@@ -1078,7 +1081,8 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       return R(200, { credentialId: pk?.credentialId ?? null, createdAt: pk?.createdAt ?? null, heldUntil: await vault.heldUntil() });
     },
     /** 패스키 연결(만들기 또는 이미 있는 것 쓰기): 화면이 PRF 로 만든 s_u 를 함께 낸다. 등록이 있으면 그 auid 와 대조하고(아니면 저장하지 않는다 —
-     *  에이전트 리뷰 I-2), 자동 금고를 만든 뒤 credential 을 저장하고 salt 를 보관한다(R-9 — 등록 전에도). */
+     *  에이전트 리뷰 I-2), 같은 credential 의 보관분이 있으면 그 salt 와도 대조한 뒤(다르면 409 passkey_mismatch — 덮지 않는다), 자동 금고를 만들고
+     *  credential 을 저장하고 salt 를 보관한다(R-9 — 등록 전에도). */
     async passkeyConnect({ credentialId, s_u = null } = {}) {
       if (!PK) return R(409, { reason: 'not_passkey_mode' });
       if (typeof credentialId !== 'string' || !/^[A-Za-z0-9_-]{1,1024}$/.test(credentialId)) return R(400, { reason: 'bad_credential_id' });
@@ -1088,15 +1092,17 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       const reg = await getReg();
       if (reg && (await auidOf({ s_u: BigInt(s_u) })).toString() !== String(reg.auid)) return R(409, { reason: 'passkey_mismatch' });
       await ensureVault();
+      // 같은 패스키(PRF 는 결정적)인데 보관분과 다른 salt 면 덮지 않는다 — 등록 전에는 위의 auid 대조가 없어 여기가 유일한 대조다. 보관분이 없으면(만료·끔) 대조할 것이 없다.
+      const held = pk ? await vault.held() : null;
+      if (held && held.s_u !== BigInt(s_u).toString()) return R(409, { reason: 'passkey_mismatch' });
       if (!pk) await kv.set('passkey', { credentialId, createdAt: now() });
-      const held = await vault.holdSalt(BigInt(s_u).toString());
-      return R(200, { ok: true, held });
+      return R(200, { ok: true, held: await vault.holdSalt(BigInt(s_u).toString()) });
     },
-    /** 패스키 연결 끊기 — 등록이 남아 있으면 409 registered(그 계정을 쓸 수 없게 된다). 보관분도 지운다. */
+    /** 패스키 연결 끊기 — 등록이 남아 있으면 409 registered(그 계정을 쓸 수 없게 된다). 보관분과 withSalt 메모도 지운다. */
     async passkeyDisconnect() {
       if (!PK) return R(409, { reason: 'not_passkey_mode' });
       if (await getReg()) return R(409, { reason: 'registered' });
-      await kv.del('passkey'); await vault.clearHold();
+      await kv.del('passkey'); await vault.clearHold(); saltMemo = null;   // 진행 중인 withSalt 범위의 메모도 — 끊은 뒤에는 그 salt 를 쓰지 않는다
       return R(200, { ok: true });
     },
     /** "salt 보기"(§2 4단계 — 속성 도구에 넣을 값): 보관분 또는 패스키. 화면에만 보인다. */
@@ -1151,8 +1157,8 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     try { return await fn(...args); }
     catch (e) {
       if (e?.reason === 'locked') return LOCKED();
-      // passkey-web: salt 공급원(saltNow)과 주입된 패스키(derive)가 태그한 사유 — passkey_setup_required·passkey_mismatch·passkey_cancelled 등.
-      if (typeof e?.reason === 'string' && e.reason.startsWith('passkey_')) return R(409, { reason: e.reason });
+      // passkey-web: salt 공급원(saltNow)과 주입된 패스키(derive)가 태그한 사유 — passkey_setup_required·passkey_mismatch·passkey_cancelled 등. web 모드는 이전처럼 아래 500.
+      if (PK && typeof e?.reason === 'string' && e.reason.startsWith('passkey_')) return R(409, { reason: e.reason });
       // 워커·자산 로더가 태그한 사유는 보존한다(페이지가 "증명 키를 받을 수 없습니다" 로 안내).
       if (e?.reason === 'zk_assets_unavailable') return R(503, { reason: 'zk_assets_unavailable', detail: e.message });
       log(`[user-core] ${name} 처리되지 않은 오류: ${e?.stack ?? e}`);

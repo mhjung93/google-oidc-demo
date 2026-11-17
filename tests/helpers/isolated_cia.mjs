@@ -87,6 +87,8 @@ export async function startIsolatedCia(opts = {}) {
     // CIA_DEMO_ACCOUNTS=''·CIA_ISSUE_AUTH='code' 를 보는 테스트는 extraEnv 로 덮는다.
     CIA_DEMO_ACCOUNTS: '1',
     CIA_ISSUE_AUTH: '',
+    // passkey-web TLS(2026-11-17 미뤄 둔 Minor C): 셸·.env 의 인증서 경로가 새면 IdP 가 https 로 떠 http 준비 확인이 실패한다 — 끈다. https 시험은 extraEnv·scheme 으로 켠다.
+    MODE3_TLS_CERT: '', MODE3_TLS_KEY: '', NODE_EXTRA_CA_CERTS: '',
     ...extraEnv,
   };
   const logFile = path.join(dir, 'cia.log');

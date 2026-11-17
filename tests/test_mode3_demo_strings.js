@@ -306,4 +306,14 @@ t('패스키 사유: passkey_unsupported 조치는 두 주소를 다 말한다; 
   for (const c of ['method_not_allowed', 'not_found']) { const r = R[c]; assert.ok(r, c); for (const l of S.langs) for (const f of ['title', 'cause', 'action']) assert.ok(r[l]?.[f], `${c}.${l}.${f}`); }
 });
 
+// 2026-11-17(미뤄 둔 Minor C): passkey-web 은 코어가 브라우저에서 돌아 internal 이 서버 오류가 아닐 수 있다 — "서버" 를 말하지 않는다.
+// 정적 서버의 1mb 초과 본문(413)·RPC 배치 상한(400)도 사전에 있다.
+t('internal 은 서버를 단정하지 않는다; payload_too_large·rpc_batch_too_large 가 있다', () => {
+  const R = S.reasons;
+  assert.equal(/서버/.test(R.internal.ko.title + R.internal.ko.cause), false, R.internal.ko.title + ' / ' + R.internal.ko.cause);
+  assert.equal(/server/i.test(R.internal.en.title + R.internal.en.cause), false, R.internal.en.title + ' / ' + R.internal.en.cause);
+  assert.match(R.internal.ko.title, /예상치 못한 오류/); assert.match(R.internal.en.title, /unexpected error/i);
+  for (const c of ['payload_too_large', 'rpc_batch_too_large']) { const r = R[c]; assert.ok(r, c); for (const l of S.langs) for (const f of ['title', 'cause', 'action']) assert.ok(r[l]?.[f], `${c}.${l}.${f}`); }
+});
+
 if (fails) { console.log(`\n${fails} FAIL`); process.exit(1); } else console.log('\nall ok');

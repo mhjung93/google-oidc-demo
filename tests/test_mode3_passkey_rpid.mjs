@@ -28,6 +28,7 @@ function setup(hostname) {
   return calls;
 }
 const wrongOrigin = (e) => e.reason === 'passkey_wrong_origin';
+const j = (o) => JSON.stringify(o);
 
 await t('기본은 localhost', async () => {
   const c = setup('localhost');
@@ -74,6 +75,38 @@ await t('만들기', async () => {
   await P.createPasskey({ rpId: 'wallet.zkd.test', rpName: 'zk 지갑' });
   assert.deepEqual(c.create[0].rp, { id: 'wallet.zkd.test', name: 'zk 지갑' });
   assert.equal(c.get[0].rpId, 'wallet.zkd.test');
+});
+
+// 2026-11-17(미뤄 둔 Minor C): IPv6 RP ID, createPasskey() 기본 rp, 다른 호스트의 createPasskey(만들기 0번), 포트를 붙인 이름의 안내.
+await t('IPv6 RP ID(괄호·괄호 없음·링크 로컬)는 IP 로 거절, WebAuthn 0번', async () => {
+  for (const ip of ['::1', '[::1]', 'fe80::1', '2001:db8::5', '::ffff:127.0.0.1']) {
+    const c = setup(ip);
+    await assert.rejects(P.derivePrf({ credentialId: 'AA', rpId: ip }), (e) => wrongOrigin(e) && /IP 주소/.test(e.message), ip);
+    await assert.rejects(P.createPasskey({ rpId: ip }), (e) => wrongOrigin(e) && /IP 주소/.test(e.message), ip);
+    assert.equal(c.get.length + c.create.length, 0, ip);
+  }
+});
+await t('포트를 붙인 이름(localhost:5100)은 IP 가 아니라 "포트를 빼고 이름만" 이라고 말한다', async () => {
+  for (const [rpId, name] of [['localhost:5100', 'localhost'], ['wallet.zkd.test:5100', 'wallet.zkd.test']]) {
+    const c = setup(name);
+    await assert.rejects(P.derivePrf({ credentialId: 'AA', rpId }), (e) => wrongOrigin(e) && !/IP 주소/.test(e.message) && /포트/.test(e.message) && e.message.includes(`(${name})`), rpId);
+    assert.equal(c.get.length, 0);
+  }
+});
+await t('createPasskey() 기본: rp = { id: localhost, name: zk 스냅 }, 확인 get 도 localhost', async () => {
+  const c = setup('localhost');
+  const r = await P.createPasskey();
+  assert.deepEqual(c.create[0].rp, { id: 'localhost', name: 'zk 스냅' });
+  assert.equal(c.create[0].user.displayName, 'zk 스냅');
+  assert.equal(c.get.length, 1); assert.equal(c.get[0].rpId, 'localhost');
+  assert.match(r.s_u, /^[1-9][0-9]*$/);
+});
+await t('다른 호스트의 createPasskey 는 거절하고 만들지 않는다(create 0번)', async () => {
+  for (const [host, opts] of [['idp.zkd.test', { rpId: 'wallet.zkd.test' }], ['wallet.zkd.test', {}], ['zkd.test', { rpId: 'wallet.zkd.test' }]]) {
+    const c = setup(host);
+    await assert.rejects(P.createPasskey(opts), wrongOrigin, `${host} ${j(opts)}`);
+    assert.equal(c.create.length + c.get.length, 0, host);
+  }
 });
 
 if (fails) { console.log(`\n${fails} 실패`); process.exit(1); }

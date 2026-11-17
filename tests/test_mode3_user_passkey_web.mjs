@@ -188,6 +188,8 @@ try {
     try {
       const visited = [];
       popup.on('framenavigated', (f) => { if (f === popup.mainFrame()) visited.push(f.url()); });
+      // 판별자는 이 waitText 다 — 승인 버튼을 띄웠다면 팝업은 결정을 기다리며 회신하지 않아 RP 판정이 나오지 않고 여기서 시간 초과로 실패한다.
+      // 아래 isHidden 은 보조일 뿐이다: 팝업은 회신 뒤 곧 닫히므로 이미 닫혔으면 아무것도 보지 않는다(Minor B 리뷰 잔여).
       await waitText(rpPage, '#verdict', title, 30_000);
       if (!popup.isClosed()) assert.equal(await popup.isHidden('#authApproveBtn'), true, '승인 버튼이 보인다');
       assert.equal(visited.some((u) => new URL(u).origin === cia.base), false, `팝업이 IdP 로 갔다: ${j(visited)}`);
@@ -385,8 +387,12 @@ try {
     } finally { await ctx.close(); }
   });
 
+  // 순서 의존(2026-11-17 미뤄 둔 Minor C): 아래 세 케이스(연결 끊기·계정 복구·데모 세대)의 앞 절반은 위 "첫 로그인 = 등록"·"두 번째 로그인" 케이스가 만든
+  // ctxA 상태(userPage 의 등록·세션 PPID)를 쓴다 — 그 케이스가 실패하면 여기서는 아래 '앞 케이스' 단언이 먼저 실패한다(원인은 앞 케이스다).
+  // 새 브라우저 쪽(ctx)은 각 케이스가 스스로 만든다.
   await t('연결 끊기는 미등록일 때만', async () => {
     // 등록된 브라우저(앞 케이스들의 ctxA): 끊기 버튼 비활성
+    assert.ok((await idbDump(userPage)).registration, '앞 케이스(ctxA 첫 로그인 = 등록)의 등록이 있어야 한다');
     await userPage.waitForSelector('#pkInfo', { state: 'visible', timeout: 15_000 });
     await userPage.waitForFunction(() => document.querySelector('#pkDisconnectBtn')?.disabled === true, undefined, { timeout: 15_000 });
     // 미등록 브라우저: 끊으면 연결이 지워지고 설정 카드가 다시 뜬다
@@ -403,6 +409,7 @@ try {
   });
 
   await t('계정 복구: 저장소를 비운 브라우저에서 같은 패스키로 같은 등록·같은 PPID', async () => {
+    // 앞 케이스(ctxA 의 등록·로그인)에 기댄다: 비교할 PPID 는 ctxA 의 세션에서, IdP 계정 pk-user 는 이미 AUID_A 로 등록돼 있어야 복구(restored)가 된다.
     const firstPPID = Object.values((await idbDump(userPage)).sessions ?? {})[0]?.PPID;
     assert.ok(firstPPID, '앞 케이스(ctxA)의 세션 PPID');
     const ctx = await stubContext({ secretHex: SECRET_A });
@@ -446,21 +453,23 @@ try {
       await p.waitForSelector('#pkRecoverCard:not([hidden])', { timeout: 15_000 });
       await p.click('#pkRecoverGoBtn');
       await p.waitForURL((x) => x.origin === cia.base && x.pathname === '/login' && x.searchParams.get('purpose') === 'register', { timeout: 30_000 });
+      // 실제 경로(2026-11-17 미뤄 둔 Minor C — 전에는 두 경로 중 어느 쪽이든 받았다): pk-user 는 앞 케이스에서 AUID_A 로 이미 등록돼 있으므로 IdP 의
+      // /cia/auth/code(purpose register)가 다른 auid 에 409 already_registered 를 주고 인증 창에 머문다 — 지갑으로 돌아가지 않고 등록 코드도 나오지 않는다.
       const badAuid = AUID_A.slice(0, -1) + (AUID_A.endsWith('1') ? '2' : '1');
-      await p.fill('#authUid', 'pk-user'); await p.fill('#authPwd', DEMO_PWD); await p.fill('#authAuid', badAuid); await p.click('#authGo');
-      const outcome = await Promise.race([
-        p.waitForSelector('#authVerdict.bad', { timeout: 60_000 }).then(() => 'idp'),
-        p.waitForURL((x) => x.origin === WALLET_ORIGIN && x.pathname === '/' && x.search === '', { timeout: 60_000 }).then(() => 'wallet'),
-      ]);
-      const u = outcome === 'wallet' ? p : await openUserPage(ctx);
-      if (outcome === 'wallet') await waitText(u, '#pkRecoverVerdict', await reasonTitle(u, 'register_auid_mismatch'), 60_000);
+      await p.fill('#authUid', 'pk-user'); await p.fill('#authPwd', DEMO_PWD); await p.fill('#authAuid', badAuid);
+      const [resp] = await Promise.all([p.waitForResponse((r) => new URL(r.url()).pathname === '/cia/auth/code' && r.request().method() === 'POST', { timeout: 30_000 }), p.click('#authGo')]);
+      assert.equal(resp.status(), 409, 'IdP 가 다른 auid 의 등록 코드를 409 로 거절한다');
+      assert.equal((await resp.json()).reason, 'already_registered');
+      await p.waitForSelector('#authVerdict.bad', { timeout: 30_000 });
+      assert.equal(new URL(p.url()).origin, cia.base, '인증 창에 머문다(지갑으로 돌아가지 않는다)');
+      const u = await openUserPage(ctx);
       assert.equal((await idbDump(u)).registration, undefined, '등록되지 않았다');
     } finally { await ctx.close(); }
   });
 
   await t('데모 세대가 바뀌면 등록은 지우고 패스키 연결은 남긴다', async () => {
     const cid = stubCredId(SECRET_A);
-    assert.ok((await idbDump(userPage)).registration, '앞 케이스의 등록이 있다');
+    assert.ok((await idbDump(userPage)).registration, '앞 케이스(ctxA 첫 로그인 = 등록)의 등록이 있다');   // 순서 의존 — 위 주석
     await stack.restartWallet({ MODE3_DEMO_GENERATION: 'g1' });
     await userPage.reload(); await userPage.waitForSelector('#mainView:not([hidden])');
     await userPage.waitForFunction(async () => { const open = indexedDB.open('mode3-user', 1); const db = await new Promise((r) => { open.onsuccess = () => r(open.result); }); const v = await new Promise((r) => { const q = db.transaction('kv', 'readonly').objectStore('kv').get('demoGeneration'); q.onsuccess = () => r(q.result); }); db.close(); return v === 'g1'; }, undefined, { timeout: 15_000, polling: 300 });

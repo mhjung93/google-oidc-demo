@@ -13,13 +13,13 @@ export function idpAuthUrl({ ciaUrl, walletOrigin, nonce, purpose = 'issue' }) {
   return u.toString();
 }
 
-/** IdP 로 가기 전에 이어받을 요청을 남긴다(이 오리진·이 창의 sessionStorage). */
-export function savePending(storage, { req, origin, nonce, at }) {
-  storage.setItem(PENDING_KEY, JSON.stringify({ req, origin, nonce, at }));
+/** IdP 로 가기 전에 이어받을 요청을 남긴다(이 오리진·이 창의 sessionStorage). purpose('issue'|'register')를 주면 함께 남겨 돌아온 목적과 대조한다. */
+export function savePending(storage, { req, origin, nonce, at, purpose = null }) {
+  storage.setItem(PENDING_KEY, JSON.stringify({ req, origin, nonce, at, ...(purpose ? { purpose } : {}) }));
 }
 
 const DEC = /^[0-9]+$/;
-/** IdP 에서 돌아온 길인지 본다. 돌아온 길이 아니면 null, 저장분과 nonce·나이가 맞으면 { req, origin, code, purpose, uid, auid }, 어긋나면 { req: null }.
+/** IdP 에서 돌아온 길인지 본다. 돌아온 길이 아니면 null, 저장분과 nonce·나이(·남겼으면 목적)가 맞으면 { req, origin, code, purpose, uid, auid }, 어긋나면 { req: null }.
  *  돌아온 길이면 저장분은 늘 지운다. 주소창 정리(history.replaceState)는 호출자가 한다. */
 export function takeIdpReturn({ search, storage, now }) {
   const q = new URLSearchParams(search);
@@ -30,6 +30,7 @@ export function takeIdpReturn({ search, storage, now }) {
   try { pend = JSON.parse(storage.getItem(PENDING_KEY) ?? 'null'); } catch { pend = null; }
   storage.removeItem(PENDING_KEY);
   if (!pend || !code || !nonce || pend.nonce !== nonce || typeof pend.at !== 'number' || now - pend.at > PENDING_MAX_AGE_MS) return { req: null };
+  if (typeof pend.purpose === 'string' && pend.purpose !== purpose) return { req: null };   // 갈 때의 목적과 돌아온 목적이 다르다(목적을 남기지 않은 옛 대기분은 그대로)
   if (purpose === 'register' && !DEC.test(uid ?? '')) return { req: null };
   return { req: pend.req, origin: pend.origin, code, purpose, uid: purpose === 'register' ? uid : null, auid: purpose === 'register' && DEC.test(auid ?? '') ? auid : null };
 }

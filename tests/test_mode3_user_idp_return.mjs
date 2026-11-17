@@ -98,6 +98,22 @@ const resetFetch = (epoch) => async (url) => {
 };
 const noFetch = async () => { throw new Error('없음'); };
 
+// 2026-11-17(미뤄 둔 Minor C, Task 6): 대기 저장분이 갈 때의 목적(purpose)을 기억하고, 돌아온 목적이 다르면 이어받지 않는다(nonce 와 함께 묶는다).
+// 목적을 남기지 않은 옛 대기분은 지금처럼 받는다.
+await t('savePending: purpose 를 주면 함께 남긴다', () => {
+  const s = fakeStorage(); savePending(s, { req: REQ, origin: 'http://rp.example', nonce: 'n1', at: NOW, purpose: 'register' });
+  assert.deepEqual(JSON.parse(s.getItem(PENDING_KEY)), { req: REQ, origin: 'http://rp.example', nonce: 'n1', at: NOW, purpose: 'register' });
+});
+await t('takeIdpReturn: 돌아온 purpose 가 대기분의 purpose 와 다르면 { req: null } 이고 저장분은 지워진다', () => {
+  const reg = pendingWith({ purpose: 'register' });
+  assert.deepEqual(takeIdpReturn({ search: '?authorize=1&idp_nonce=n1&idp_code=c1', storage: reg, now: NOW }), { req: null }, '등록으로 갔는데 발급 코드');
+  assert.equal(reg.getItem(PENDING_KEY), null);
+  assert.deepEqual(takeIdpReturn({ search: '?authorize=1&idp_nonce=n1&idp_code=c1&idp_purpose=register&idp_uid=123', storage: pendingWith({ purpose: 'issue' }), now: NOW }), { req: null }, '발급으로 갔는데 등록 코드');
+  assert.equal(takeIdpReturn({ search: '?authorize=1&idp_nonce=n1&idp_code=c1&idp_purpose=register&idp_uid=123&idp_auid=4', storage: pendingWith({ purpose: 'register' }), now: NOW }).purpose, 'register');
+  assert.equal(takeIdpReturn({ search: '?authorize=1&idp_nonce=n1&idp_code=c1', storage: pendingWith({ purpose: 'issue' }), now: NOW }).purpose, 'issue');
+  assert.equal(takeIdpReturn({ search: '?authorize=1&idp_nonce=n1&idp_code=c1', storage: pendingWith(), now: NOW }).purpose, 'issue', '목적 없는 옛 대기분');
+});
+
 await t('readAttrRecord: epoch 가 바뀌면 기록을 지우고 null, 새 epoch 를 기억한다', async () => {
   const ls = recordStorage({ version: 5, s_u: S_OK, profile: { birthYear: '1990' } }, { mode3_attr_tool_reset: 'e1' });
   assert.equal(await readAttrRecord({ fetch: resetFetch('e2'), localStorage: ls }), null);

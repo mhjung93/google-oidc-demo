@@ -130,8 +130,15 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
   /** 계정 복구의 귀로(R-11, zk 스냅 화면 finishRecover 와 같다): 사용자 페이지 탭이 인증 창(등록 모드)을 다녀왔다 — 패스키(보관분)로 salt → 등록 코드로
    *  등록(같은 계정·같은 auid 면 IdP 가 기존 슬롯을 돌려준다 — restored) → 결과를 남기고 사용자 화면으로. 결과·주소에 salt 는 없다. */
   async function finishRecover(back) {
-    step('계정 복구 중… (등록 증명에 수 초 걸린다)');
     let out;
+    // 복구는 등록 코드로만 한다 — 발급 코드로 돌아왔으면 코어·IdP 를 부르지 않고 멈춘다(대기분의 목적 대조가 먼저 거르지만, 목적을 남기지 않은 대기분 대비).
+    if (back.purpose !== 'register') {
+      out = { ok: false, restored: false, reason: 'bad_code', detail: '계정 복구는 등록 코드로만 한다' };
+      try { sessionStorage.setItem(RECOVER_RESULT_KEY, JSON.stringify(out)); } catch { /* 결과를 못 남기면 화면이 상태로만 보인다 */ }
+      location.replace('/');
+      return;
+    }
+    step('계정 복구 중… (등록 증명에 수 초 걸린다)');
     try {
       const r = await core.withSalt(() => core.registerWithCode({ uid: back.uid, code: back.code, auid: back.auid, profile: back.req.profile ?? null, recordSalt: null }));
       if (r.status === 201) out = { ok: true, restored: r.body.restored === true, reason: null, detail: null };
@@ -165,7 +172,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
       }
       if (!registered && !(await attrRecord())) { step('속성 도구 기록 없음 — zkID 로 가지 않는다.'); return attrMissing(); }
       const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
-      savePending(window.sessionStorage, { req, origin: evOrigin, nonce, at: Date.now() });
+      savePending(window.sessionStorage, { req, origin: evOrigin, nonce, at: Date.now(), purpose: registered ? 'issue' : 'register' });
       step(registered ? (tt('wallet_auth_to_idp') || 'zkID 로그인 페이지로 이동합니다…') : (tt('wallet_auth_to_idp_register') || 'zkID 에 처음 등록합니다 — zkID 로그인 페이지로 이동합니다…'));
       location.assign(idpAuthUrl({ ciaUrl: config.ciaUrl, walletOrigin: location.origin, nonce, purpose: registered ? 'issue' : 'register' }));
       return;

@@ -28,6 +28,10 @@ export const PINNED_ENV = {
   MODE3_TTL_BLOCKS: '', MODE3_HEIGHT_GRID: '', MODE3_ALLOWED_COUNTRIES: '', MODE3_MIN_AGE: '',
   MODE3_REQUIRE_DISCLOSURE: '', MODE3_DEMO_GENERATION: '',   // 2026-10-21 데모 설정 — 데모 스크립트가 내보낸 값이 셸에 남아 있어도 테스트는 끈다
   MODE3_REV_CHAIN_RPC: '',   // V10: 지갑의 캐노니컬 RPC — 비우면 CIA_RPC_URL(격리 스택은 체인 하나)
+  // passkey-web(2026-11-17 미뤄 둔 Minor C): 셸·.env 의 TLS·모드 값이 새면 격리 서버가 https 로 떠 http 준비 확인에 실패하거나 다른 모드로 뜬다.
+  // TLS 를 쓰는 테스트(test_mode3_tls_stack.mjs)는 MODE3_TLS_*·NODE_EXTRA_CA_CERTS 를 env 로 명시한다. 보관 시간은 '' 가 아니라 기본값 600 으로 고정한다 —
+  // 에이전트(mode3_wallet_agent.js)는 '' 를 0(보관 끔)으로 읽고 정적 서버는 600 으로 읽어, '' 로는 두 모드의 기본이 갈린다.
+  MODE3_TLS_CERT: '', MODE3_TLS_KEY: '', NODE_EXTRA_CA_CERTS: '', MODE3_WALLET_SECRETS: '', MODE3_PASSKEY_HOLD_SECONDS: '600',
 };
 
 /** node <script> 를 env 로 띄우고 readyUrl 이 200 을 줄 때까지 기다린다. */

@@ -67,15 +67,17 @@ export function createVault(kv, { now = Date.now, ttlMs = UNLOCK_TTL_MS, holdMs 
       await v._remember(key); return true;
     },
     // passkey-web 10분 보관: kv 'passkeyHold' = { until(공개), box: 암호문{ s_u, until } }. salt 는 암호문 안에만 있고, 같은 kv 를 쓰는 다른 탭도 읽는다.
+    // s_u 는 정규 10진(앞자리 0·부호·공백 없음)만 받는다 — 같은 값의 다른 표기가 보관분 대조(user_core.passkeyConnect)를 비껴가지 않게. 틀리면 passkey_bad_salt.
     async holdSalt(s_u) {
       if (!(holdMs > 0)) return false;
-      if (typeof s_u !== 'string' || !/^[0-9]+$/.test(s_u) || !(BigInt(s_u) > 0n && BigInt(s_u) < 2n ** 250n)) throw new Error('s_u 형식 오류');
+      if (typeof s_u !== 'string' || !/^[1-9][0-9]*$/.test(s_u) || !(BigInt(s_u) < 2n ** 250n)) throw Object.assign(new Error('s_u 형식 오류'), { reason: 'passkey_bad_salt' });
       const key = await v.key(); if (!key) throw locked();
       const until = now() + holdMs;
       await kv.set('passkeyHold', { until, box: await encryptJson(key, { s_u, until }) });
       return true;
     },
-    async _held() {
+    /** 보관분 { s_u, until } 또는 null — 한 번의 복호로 둘을 함께 읽는다(따로 읽으면 그 사이 만료·덮어쓰기로 서로 다른 보관분을 볼 수 있다). */
+    async held() {
       const h = (await kv.get('passkeyHold')) ?? null; if (!h) return null;
       const key = await v.key(); if (!key) return null;
       let inner = null;
@@ -83,8 +85,8 @@ export function createVault(kv, { now = Date.now, ttlMs = UNLOCK_TTL_MS, holdMs 
       if (!inner || inner.until !== h.until) { await kv.del('passkeyHold'); return null; }   // 만료·복호 실패·바깥 until 조작
       return { s_u: inner.s_u, until: h.until };
     },
-    async heldSalt() { return (await v._held())?.s_u ?? null; },
-    async heldUntil() { return (await v._held())?.until ?? null; },
+    async heldSalt() { return (await v.held())?.s_u ?? null; },
+    async heldUntil() { return (await v.held())?.until ?? null; },
     async clearHold() { await kv.del('passkeyHold'); },
     /** wipe 뒤 메모리도 비운다 — user_core.wipe() 가 부른다. */
     reset() { meta = null; unlockedUntil = 0; },
