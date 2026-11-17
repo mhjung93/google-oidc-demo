@@ -1580,10 +1580,11 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
 - **준비(처음 한 번, 사용자가 직접)**: `bash scripts/zkd_tls_setup.sh` — sudo 가 필요하다(`libnss3-tools` 설치·`/etc/hosts` 에 네 이름 추가·데모 CA 를 Chrome 신뢰 저장소에 등록). 끝나면 **Chrome 을 완전히 다시 시작**한다.
   데모 CA(`.local/zkd-ca/`, `ZKD_CA_DIR` 로 바꾼다)는 이름 제약(`zkd.test`·`127.0.0.0/8`·데모 망)이 있어 키가 새도 다른 사이트를 사칭하지 못한다. 데모 망(`ZKD_DEMO_NET`)을 바꾸면 CA 를 새로 만들고 Chrome 에 다시 등록해야 한다.
   이 스크립트는 Claude 가 실행하지 않는다.
-- **리셋(매번)**: `WALLET_MODE=passkey-web bash scripts/demo_split_start.sh`(`AUTO_APPROVE=1`·`TTL_BLOCKS=30` 등은 그대로). 준비가 안 됐으면(`ca.crt`·`ca.key` 없음, `wallet.zkd.test` 가 hosts 에 없음)
+- **리셋(매번)**: `WALLET_MODE=passkey-web bash scripts/demo_split_start.sh`(`AUTO_APPROVE=1`·`HEIGHT_GRID`·`TTL_BLOCKS`(기본 5)는 정적 서버에 그대로 넘어간다). 준비가 안 됐으면(`ca.crt`·`ca.key` 없음, VM 주소가 CA 의 이름 제약 망 밖, `wallet.zkd.test` 가 hosts 에 없음)
   **아무것도 내리기 전에** `BLOCKED: 먼저 bash scripts/zkd_tls_setup.sh` 로 멈춘다. 통과하면 사용자 앱·속성 도구 번들을 다시 빌드하고, 네 서버 인증서(30일, SAN = 이름 + IP)를 데모 CA 로 발급해
   VM 세 곳의 `~/zkd-demo/tls/` 에 CA 공개 인증서와 함께 보내고(개인키는 600), 각 `role.env` 에 `MODE3_TLS_CERT`·`MODE3_TLS_KEY`·`NODE_EXTRA_CA_CERTS` 를 넣는다. 터널(`SPLIT_IDP_TUNNEL`·`SPLIT_RP_TUNNEL`)은
-  이 모드에서 **강제로 꺼진다**(브라우저가 이름으로 바로 간다). 발급 인증 정책은 기본 `code`. 끝낼 때도 같은 모드로 `WALLET_MODE=passkey-web bash scripts/demo_split_start.sh stop`(정적 서버 :5100 을 찾는다).
+  이 모드에서 **강제로 꺼진다**(브라우저가 이름으로 바로 간다). 발급 인증 정책은 기본 `code`. 끝낼 때도 같은 모드로 `WALLET_MODE=passkey-web bash scripts/demo_split_start.sh stop`(정적 서버 :5100 을 찾는다). 이 모드의 내림 단계는 snap 이 :5100 에이전트를 내리듯 **한 머신 데모의 :5100 정적 서버도 함께 내린다**.
+  지갑 인증서 SAN 은 `wallet.zkd.test`·`127.0.0.1` 뿐이다(정적 서버는 127.0.0.1 에만 열린다).
 - **주소 넷(포트 포함, R-1)**: 지갑 `https://wallet.zkd.test:5100/`(속성 도구 `/attr.html`) · zkID `https://idp.zkd.test:4100/user` · zkONE `https://zkone.zkd.test:3100/` · zkTWO `https://zktwo.zkd.test:3101/`.
   IP 주소로 열면 패스키가 동작하지 않는다 — 반드시 이름으로. 서버 간 호출(RP→IdP)과 상태 확인은 IP 로 부르고 인증서의 IP SAN 으로 검증한다(`CIA_PUBLIC_URL`·RP 의 `MODE3_CIA_URL` = `https://<IdP IP>:4100`).
   정적 서버는 호스트 PC 에서만 열린다(`wallet.zkd.test` → `127.0.0.1`) — 다른 PC 의 브라우저에서는 이 데모 지갑을 열 수 없다.
@@ -1597,6 +1598,7 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
 - **사유**: `rpc_method_blocked`(허용 목록 밖 RPC — 위 프록시), `passkey_mode`(이 모드에서 쓰지 않는 기능 — 등록 폼·복구 코드·Google 로그인 대신 서비스 로그인 중의 인증 창 등록·패스키 계정 복구).
   `passkey_*` 사유는 위 "패스키 경로" 표를 그대로 쓴다(`passkey_wrong_origin` 안내 주소만 `https://wallet.zkd.test:5100`).
 - **에이전트 패스키와 다른 패스키다**: 패스키의 RP ID 는 호스트 이름이라 이 모드(`wallet.zkd.test`)와 에이전트 패스키 모드(`localhost`)는 **같은 패스키를 공유하지 않는다** — 서로 다른 salt·auid·PPID 다.
+- **없는 시연**: 에이전트 전용인 Race (2)(`MODE3_DEMO_RACE`·`/wallet/demo/mine`, 보내기 전에 멈춤)는 이 모드에 없다(스펙 §8 범위 밖) — 체크리스트·시연 순서의 Race (2) 단계는 건너뛴다.
 - **한계·미검증**(스펙 §7): ① Chrome 이 이름 제약 CA(`zkd.test`·IP 범위)를 받아들이는지 — 실제 Chrome 에서 확인 전(R-3). ② VM 세 곳의 `https` 첫 기동·인증서 복사·서버 간 IP 검증이 한 번에 맞는지 —
   실제 VM 으로만 확인된다(경로가 틀리면 RP 등록 대기가 0건으로 드러난다). ③ `zkd_tls_setup.sh` 의 `apt`·hosts·`certutil` 은 이 머신(Ubuntu 20.04)에서만. ④ 증명이 브라우저에서 돌아 로그인에 수 초, zkey(수백 MB)는 첫 접속 때 한 번.
   ⑤ 실제 Chrome 비밀번호 관리자 PRF. 자동 테스트는 정적 검사·가상 인증기 스텁까지만 덮는다.

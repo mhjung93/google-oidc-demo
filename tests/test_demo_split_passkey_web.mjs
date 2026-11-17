@@ -52,27 +52,39 @@ t('passkey-web 값 — 터널 끔·https 이름·AGENT_MODE=0', () => {
     'RP1_UI="https://zkone.zkd.test:$RP1_PORT"', 'RP2_UI="https://zktwo.zkd.test:$RP2_PORT"']) assert.ok(blk.includes(s), s);
 });
 
-t('사전 검사 — ca.crt·ca.key·hosts 를 보고 BLOCKED 로 종료', () => {
-  const i = lines.findIndex((l) => /BLOCKED/.test(l) && /zkd_tls_setup\.sh/.test(l));
-  assert.ok(i >= 0, 'BLOCKED 줄 없음');
-  const ctx = lines.slice(Math.max(0, i - 2), i + 1).join('\n');
-  assert.match(ctx, /ca\.crt/);
-  assert.match(ctx, /ca\.key/);
-  assert.match(ctx, /getent hosts wallet\.zkd\.test/);
-  assert.match(lines[i], /exit 1/);
+const blockedIdx = () => lines.map((l, i) => [l, i]).filter(([l]) => /BLOCKED/.test(l) && !/번들 빌드|snap-mode3/.test(l)).map(([, i]) => i);
+t('사전 검사 — CA 파일·VM 주소의 CA 이름 제약 망·hosts 를 보고 BLOCKED 로 종료(hosts 검사가 마지막)', () => {
+  const b = blockedIdx();
+  assert.equal(b.length, 3, `BLOCKED 줄 ${b.length}개`);
+  const [caLine, netLine, hostsLine] = b;
+  const ctx = (i) => lines.slice(Math.max(0, i - 2), i + 1).join('\n');
+  assert.match(ctx(caLine), /ca\.crt/); assert.match(ctx(caLine), /ca\.key/); assert.match(lines[caLine], /zkd_tls_setup\.sh/);
+  assert.match(lines.slice(caLine, netLine + 1).join('\n'), /openssl x509 -noout -text/);
+  assert.match(lines.slice(caLine, netLine + 1).join('\n'), /255\\\.255\\\.255\\\.0/);
+  assert.match(lines[netLine], /ZKD_DEMO_NET/);
+  assert.match(ctx(hostsLine), /getent hosts wallet\.zkd\.test/);
+  for (const i of b) assert.match(lines[i], /exit 1/);
+});
+
+t('지갑 인증서 SAN 은 이름과 127.0.0.1 뿐 — $HOST 없음', () => {
+  const l = lines.find((x) => /zkd_issue_cert[^\n]* wallet wallet\.zkd\.test/.test(x));
+  assert.ok(l, '지갑 발급 줄 없음');
+  assert.ok(!/\$HOST|\$\{HOST/.test(l), l.trim());
+  assert.match(l, /wallet wallet\.zkd\.test 127\.0\.0\.1( \\)?\s*$/);
 });
 
 let orderOk = false;
-t('사전 검사가 먼저 — BLOCKED 줄 < 첫 stop_remote/stop_local 호출 < 첫 on/ssh/pkill/docker 호출', () => {
-  const blocked = lines.findIndex((l) => /BLOCKED/.test(l) && /zkd_tls_setup\.sh/.test(l));
-  assert.ok(blocked >= 0, 'BLOCKED 줄 없음');
+t('사전 검사가 먼저 — 모든 BLOCKED 줄 < 첫 stop_remote/stop_local 호출 < 첫 on/ssh/pkill/docker 호출', () => {
+  const b = blockedIdx();
+  assert.ok(b.length >= 3, 'BLOCKED 줄 없음');
   const stopCall = firstExec(/\b(stop_remote|stop_local)\b/);
   const remote = firstExec(/\b(ssh|pkill|docker|scp|rsync)\b|(^|[\s;&|({])on "/);
   assert.ok(stopCall !== undefined && remote !== undefined, '기준 줄을 못 찾음');
-  assert.ok(blocked < stopCall, `BLOCKED(${blocked + 1}) < stop 호출(${stopCall + 1})`);
-  assert.ok(blocked < remote, `BLOCKED(${blocked + 1}) < 원격 호출(${remote + 1})`);
+  const last = Math.max(...b);
+  assert.ok(last < stopCall, `BLOCKED(${last + 1}) < stop 호출(${stopCall + 1})`);
+  assert.ok(last < remote, `BLOCKED(${last + 1}) < 원격 호출(${remote + 1})`);
   const start = lines.findIndex((l) => /^echo "SPLIT_START/.test(l));
-  assert.ok(blocked < start, 'BLOCKED 가 SPLIT_START 보다 앞');
+  assert.ok(last < start, 'BLOCKED 가 SPLIT_START 보다 앞');
   orderOk = true;
 });
 
@@ -85,7 +97,6 @@ t('개인키를 출력하지 않는다', () => {
 t('번들·인증서·VM 배포 줄', () => {
   assert.match(src, /node scripts\/build_user_app\.mjs/);
   assert.match(src, /node scripts\/build_attr_tool\.mjs/);
-  assert.match(src, /zkd_issue_cert[^\n]* wallet wallet\.zkd\.test 127\.0\.0\.1 "\$HOST"/);
   for (const [short, dns] of [['idp', 'idp'], ['zkone', 'zkone'], ['zktwo', 'zktwo']]) assert.match(src, new RegExp(`zkd_issue_cert[^\\n]* ${short} ${dns}\\.zkd\\.test`), short);
   assert.match(src, /mkdir -p -m 700 ~\/zkd-demo\/tls/);
   assert.match(src, /MODE3_TLS_CERT=\$1\/zkd-demo\/tls\/\$2\.crt/);
@@ -94,6 +105,14 @@ t('번들·인증서·VM 배포 줄', () => {
   assert.match(src, /"MODE3_CIA_URL=\$SCHEME:\/\/\$IDP:\$IDP_PORT"/);
   assert.match(src, /CIA_PUBLIC_URL=\$SCHEME:\/\/\$IDP:\$IDP_PORT/);
   assert.match(src, /--cacert/);
+});
+
+t('정적 서버에 TTL·높이 격자를 넘긴다, scp 는 타임아웃·BatchMode', () => {
+  const l = lines.find((x) => /MODE3_WALLET_SECRETS=passkey-web/.test(x));
+  assert.match(l, /MODE3_TTL_BLOCKS="\$\{TTL_BLOCKS:-5\}"/);
+  assert.match(src, /passkey-web[^\n]*\n[^\n]*MODE3_HEIGHT_GRID="\$\{HEIGHT_GRID:-5\}"/);
+  assert.match(src, /scp -q -o BatchMode=yes -o ConnectTimeout=5/);
+  assert.match(src, /chmod 700 ~\/zkd-demo\/tls/);
 });
 
 t('기존 모드 보존 — stop_local 의 5100 정적 서버 항목은 passkey-web 일 때만', () => {
@@ -105,7 +124,9 @@ if (!orderOk) {
   console.log('SKIP - 순서 단언이 실패해 스크립트를 실행하지 않는다(라이브 데모 보호)');
 } else {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dsp-'));
-  const baseEnv = { PATH: process.env.PATH, HOME: process.env.HOME, DEMO_LOG_DIR: path.join(tmp, 'logs') };
+  // 방어용 env — 나중에 순서가 깨져도 라이브 VM(.10/.11/.12)에 닿지 않게 문서용 주소(192.0.2.0/24)와 없는 ssh 사용자를 쓴다.
+  const baseEnv = { PATH: process.env.PATH, HOME: process.env.HOME, DEMO_LOG_DIR: path.join(tmp, 'logs'), SPLIT_SSH_USER: 'nobody',
+    SPLIT_HOST_IP: '192.0.2.1', SPLIT_IDP_IP: '192.0.2.10', SPLIT_RP1_IP: '192.0.2.11', SPLIT_RP2_IP: '192.0.2.12' };
   const run = (env) => spawnSync('bash', [SCRIPT], { encoding: 'utf8', env: { ...baseEnv, ...env }, timeout: 20000, cwd: tmp });
   t('실행 — 잘못된 WALLET_MODE 는 종료 1, 문구에 passkey-web', () => {
     const r = run({ WALLET_MODE: 'bogus' });
@@ -119,6 +140,16 @@ if (!orderOk) {
     assert.equal(r.status, 1, r.stdout + r.stderr);
     assert.match(r.stdout, /BLOCKED/);
     assert.match(r.stdout, /zkd_tls_setup\.sh/);
+    assert.doesNotMatch(r.stdout, /SPLIT_START|stop |ABORT|chain /);
+  });
+  t('실행 — VM 주소가 CA 이름 제약 망 밖이면 BLOCKED, 종료 1, SPLIT_START 이후 없음', () => {
+    const ca = fs.mkdtempSync(path.join(tmp, 'ca-net-'));
+    const mk = spawnSync('bash', ['-c', 'source scripts/zkd_tls_lib.sh; zkd_ca_create "$1" 10.9.8.0', 'x', ca], { encoding: 'utf8', cwd: new URL('..', import.meta.url).pathname });
+    assert.equal(mk.status, 0, mk.stderr);
+    const r = run({ WALLET_MODE: 'passkey-web', ZKD_CA_DIR: ca });
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stdout, /BLOCKED[^\n]*이름 제약 망/);
+    assert.match(r.stdout, /ZKD_DEMO_NET/);
     assert.doesNotMatch(r.stdout, /SPLIT_START|stop |ABORT|chain /);
   });
   fs.rmSync(tmp, { recursive: true, force: true });

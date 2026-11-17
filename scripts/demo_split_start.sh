@@ -89,8 +89,16 @@ stop_remote() {
 if [ "${1:-}" = "stop" ]; then stop_remote; stop_local; exit 0; fi
 # 사전 검사(passkey-web, 2026-11-17): 데모 CA·hosts 가 없으면 아무것도 내리기 전에 멈춘다 — 라이브 데모를 건드리지 않는다. 번들도 여기서 만든다(R-14, 옛 번들로 뜨는 것이 가장 흔한 실패).
 if [ "$WALLET_MODE" = passkey-web ]; then
-  [ -f "$ZKD_CA_DIR/ca.crt" ] && [ -f "$ZKD_CA_DIR/ca.key" ] && [ -n "$(getent hosts wallet.zkd.test)" ] \
-    || { echo "BLOCKED: 먼저 bash scripts/zkd_tls_setup.sh (데모 CA·/etc/hosts — 처음 한 번, 끝나면 Chrome 재시작). ZKD_CA_DIR=$ZKD_CA_DIR"; exit 1; }
+  [ -f "$ZKD_CA_DIR/ca.crt" ] && [ -f "$ZKD_CA_DIR/ca.key" ] \
+    || { echo "BLOCKED: 먼저 bash scripts/zkd_tls_setup.sh (데모 CA 가 없다 — 처음 한 번, 끝나면 Chrome 재시작). ZKD_CA_DIR=$ZKD_CA_DIR"; exit 1; }
+  # CA 의 이름 제약 망(zkd_ca_create 와 같은 openssl 출력)이 세 VM 주소를 덮는지 본다 — 벗어나면 Chrome 이 그 VM 인증서를 거부한다(R-4). 127.0.0.0/8 은 제외.
+  CA_NET=$(openssl x509 -noout -text -in "$ZKD_CA_DIR/ca.crt" 2>/dev/null | grep -oE 'IP:[0-9.]+/255\.255\.255\.0' | grep -v '^IP:127\.' | head -n1 | sed 's/^IP://; s#/.*##')
+  for vm_ip in "$IDP" "$RP1" "$RP2"; do
+    [ -n "$CA_NET" ] && [ "${vm_ip%.*}" = "${CA_NET%.*}" ] \
+      || { echo "BLOCKED: VM 주소 $vm_ip 가 데모 CA 의 이름 제약 망(${CA_NET:-없음}/24) 밖이다 — ZKD_DEMO_NET 을 맞춰 CA 를 새로 만들고(bash scripts/zkd_tls_setup.sh) Chrome 에 다시 등록한다"; exit 1; }
+  done
+  [ -n "$(getent hosts wallet.zkd.test)" ] \
+    || { echo "BLOCKED: wallet.zkd.test 가 /etc/hosts 에 없다 — 먼저 bash scripts/zkd_tls_setup.sh"; exit 1; }
   ZKD_CA_DIR="$(cd "$ZKD_CA_DIR" && pwd)"; CACERT=(--cacert "$ZKD_CA_DIR/ca.crt")
   { node scripts/build_user_app.mjs && node scripts/build_attr_tool.mjs; } > "$LOGS/build_bundles.log" 2>&1 || { echo "BLOCKED: 번들 빌드 실패 — $LOGS/build_bundles.log"; exit 1; }
 fi
@@ -119,13 +127,13 @@ MODE3_TLS_KEY=$1/zkd-demo/tls/$2.key
 NODE_EXTRA_CA_CERTS=$1/zkd-demo/tls/ca.crt"; }
 deploy_tls() { # $1 호스트 $2 short — 파일을 보내고 role.env 에 넣을 세 줄을 REPLY 에 남긴다
   local rh; rh=$(on "$1" 'printf %s "$HOME"') && [ -n "$rh" ] || return 1
-  on "$1" 'mkdir -p -m 700 ~/zkd-demo/tls' && scp -q -o BatchMode=yes "$TLS_OUT/$2.crt" "$TLS_OUT/$2.key" "$ZKD_CA_DIR/ca.crt" "$U@$1:zkd-demo/tls/" \
+  on "$1" 'mkdir -p -m 700 ~/zkd-demo/tls && chmod 700 ~/zkd-demo/tls' && scp -q -o BatchMode=yes -o ConnectTimeout=5 "$TLS_OUT/$2.crt" "$TLS_OUT/$2.key" "$ZKD_CA_DIR/ca.crt" "$U@$1:zkd-demo/tls/" \
     && on "$1" 'chmod 600 ~/zkd-demo/tls/*.key' || return 1
   tls_lines "$rh" "$2"
 }
 if [ "$WALLET_MODE" = passkey-web ]; then
   . scripts/zkd_tls_lib.sh
-  { zkd_issue_cert "$ZKD_CA_DIR" "$TLS_OUT" wallet wallet.zkd.test 127.0.0.1 "$HOST" \
+  { zkd_issue_cert "$ZKD_CA_DIR" "$TLS_OUT" wallet wallet.zkd.test 127.0.0.1 \
     && zkd_issue_cert "$ZKD_CA_DIR" "$TLS_OUT" idp idp.zkd.test "$IDP" \
     && zkd_issue_cert "$ZKD_CA_DIR" "$TLS_OUT" zkone zkone.zkd.test "$RP1" \
     && zkd_issue_cert "$ZKD_CA_DIR" "$TLS_OUT" zktwo zktwo.zkd.test "$RP2"; } >/dev/null || { echo "인증서 발급 실패 — $ZKD_CA_DIR 의 데모 CA 확인"; exit 1; }
@@ -247,7 +255,7 @@ elif [ "$WALLET_MODE" = "passkey" ]; then
 elif [ "$WALLET_MODE" = passkey-web ]; then
   # passkey-web(2026-11-17): web 분기와 같은 정적 서버를 https 로 — 인증서는 위에서 만든 지갑 것, IdP·RP 인증서를 검증할 데모 CA 를 NODE_EXTRA_CA_CERTS 로 준다.
   DOTENV_CONFIG_PATH="$LOGS/empty.env" MODE3_PK_CIA_X="" MODE3_PK_CIA_Y="" MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}" MODE3_DEMO_GENERATION="$(date +%s)" MODE3_WALLET_PORT=$USER_PORT MODE3_WALLET_PUBLIC_ORIGIN="$WALLET_ORIGIN" \
-    MODE3_WALLET_SECRETS=passkey-web MODE3_TLS_CERT="$TLS_OUT/wallet.crt" MODE3_TLS_KEY="$TLS_OUT/wallet.key" NODE_EXTRA_CA_CERTS="$ZKD_CA_DIR/ca.crt" \
+    MODE3_WALLET_SECRETS=passkey-web MODE3_TTL_BLOCKS="${TTL_BLOCKS:-5}" MODE3_TLS_CERT="$TLS_OUT/wallet.crt" MODE3_TLS_KEY="$TLS_OUT/wallet.key" NODE_EXTRA_CA_CERTS="$ZKD_CA_DIR/ca.crt" \
     MODE3_CIA_URL="$IDP_UI" MODE3_RP_ORIGIN="$RP1_UI,$RP2_UI" \
     CIA_RPC_URL="http://127.0.0.1:$APP_PORT" MODE3_REV_CHAIN_RPC="http://127.0.0.1:$REV_PORT" CIA_LOG_ADDRESS="$LOGADDR" MODE3_MIRROR_ADDRESS="$MIRROR" \
     setsid nohup node mode3_user_static.js > "$LOGS/user_static.log" 2>&1 < /dev/null &
