@@ -627,6 +627,11 @@ window.DemoStrings = {
     rp_wallet_web: { ko: '사용자 비밀=브라우저', en: 'User secrets=browser' },
     rp_wallet_web_note: { ko: '사용자 페이지가 브라우저 안에서 증명을 만들고 RP 의 릴레이로 트랜잭션을 보냅니다.', en: 'The user page builds proofs inside the browser and sends transactions through the RP’s relay.' },
     rp_wallet_mode_web: { ko: '브라우저', en: 'browser' },
+    // passkey-web(2026-11-17) — 서비스 페이지는 web 과 같은 팝업 프로토콜로 본다. 승인 팝업이 IdP 로 가기 전에 보는 안내.
+    rp_wallet_passkey_web: { ko: '사용자 비밀=브라우저(패스키)', en: 'User secrets=browser (passkey)' },
+    rp_wallet_passkey_web_note: { ko: '사용자 페이지가 브라우저 안에서 증명을 만듭니다 — salt 는 패스키에서 만들어 그 브라우저에 10분만 두고, 이 서비스로 오지 않습니다.', en: 'The user page builds proofs inside the browser — the salt is derived from a passkey, kept in that browser for 10 minutes only, and never reaches this service.' },
+    user_pk_setup_hint: { ko: '이 브라우저에 연결된 패스키가 없습니다. 사용자 페이지에서 먼저 패스키를 설정하세요:', en: 'No passkey is linked in this browser. Set up a passkey on the user page first:' },
+    user_pk_attr_missing_hint: { ko: '이 브라우저의 속성 커밋먼트 도구에 기록이 없어 등록할 수 없습니다. 먼저 커밋먼트를 만드세요:', en: 'The attribute commitment tool in this browser has no record, so registration cannot proceed. Make a commitment first:' },
     // Google(OIDC 래퍼, 스펙 2026-10-16) — 사용자 페이지의 Google 등록·자기 폐기 줄, 승인 창의 미등록 안내·신원 줄.
     user_google_register_or: { ko: '또는 Google 계정으로 등록:', en: 'Or register with a Google account:' },
     user_gsi_origin_note: { ko: 'Google 로그인은 http://localhost 주소에서만 됩니다 — {url} 로 여세요', en: 'Google sign-in only works on an http://localhost address — open {url}' },

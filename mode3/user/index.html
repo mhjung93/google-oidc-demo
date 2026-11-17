@@ -13,6 +13,7 @@
   <script src="/common/demo.js"></script>
   <script src="/common/gsi.js"></script>   <!-- Google Identity Services 로더 — 승인 창의 Google 본인 확인(RP 로그인 흐름, 2026-10-16)에만 쓴다 -->
   <!-- Google Identity Services 로더(스펙 2026-10-16) — window.Mode3Gsi. Google 이 켜져 있고 localhost 로 열었을 때만 버튼을 그린다. -->
+  <script src="/common/passkey_store.js"></script>   <!-- window.Mode3Passkey — passkey-web(2026-11-17)의 salt 공급원(PRF). 다른 모드에서는 부르지 않는다 -->
   <style>
     /* 금고 잠금 해제·비밀번호 창(이 페이지 전용 — demo.css 는 바꾸지 않는다). 승인 팝업에서도 같은 창을 쓴다. */
     .modal-backdrop { position:fixed; inset:0; z-index:20; background:rgba(29,36,51,.45); display:flex; align-items:center; justify-content:center; padding:16px }

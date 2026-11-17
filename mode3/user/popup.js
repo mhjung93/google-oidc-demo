@@ -2,7 +2,10 @@
 // 메시지 종류(req.type)로 가른다: mode3-config·mode3-precheck·mode3-authorize·mode3-revalidate·mode3-request.
 // 요청은 주소창이 아니라 postMessage 로 받고, 결과는 말을 건 오리진에만 돌려준다. 결과에는 비밀이 없다 — 코어의 성공 본문은
 // 증명·공개 입력·세션 서명·pk_i 뿐이고(에이전트 /wallet/login 과 같은 모양), userCredIssued·attrsChanged 같은 이름은 혹시 몰라 뺀다.
+// passkey-web(2026-11-17 계획 Task 6): 로그인은 승인 뒤 이 창이 IdP 인증 창(CIA_ISSUE_AUTH=code)을 다녀오고(idp_return.js — zk 스냅 화면의 goIdpAuth 와 같다),
+// 돌아와서 첫 등록(등록 코드)·발급(발급 코드)을 한다. 요청 하나 전체를 core.withSalt 로 감싸 패스키는 한 번만 묻는다(R-8).
 import { $, textKit, createUnlocker, postPresence, errText } from './ui.js';
+import { RECOVER_RESULT_KEY, idpAuthUrl, savePending, takeIdpReturn, readAttrRecord } from './idp_return.js';
 
 const TYPES = ['mode3-config', 'mode3-precheck', 'mode3-authorize', 'mode3-revalidate', 'mode3-request', 'mode3-tx'];
 /** 동의 창에 보이는 서비스 이름 위생(2026-09-25 리뷰 D-2, wallet.html 과 같다) — 인증서가 덮는 것은 origin 뿐이고 이름은 임의 문자열이다. */
@@ -28,8 +31,10 @@ export function failPopup({ reason, detail }) {
   window.opener.postMessage({ type: 'mode3-authorize-ready' }, '*');
 }
 
-/** oidc: IdP 의 public_keys.oidc(user.js 가 읽어 넘긴다) — 미등록 안내를 Google 용으로 고를지에만 쓴다. */
-export function runPopup({ core, config, Demo, meta, oidc = { enabled: false } }) {
+/** oidc: IdP 의 public_keys.oidc(user.js 가 읽어 넘긴다) — 미등록 안내를 Google 용으로 고를지에만 쓴다.
+ *  passkey: passkey-web 의 { derive, create }(user.js) — 코어가 이미 받아 salt 를 만든다. 팝업은 직접 부르지 않는다. */
+export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, passkey = null }) {
+  const PK = config.secrets === 'passkey-web';
   const { tte, tt } = textKit(Demo);
   const { withUnlock } = createUnlocker({ core, Demo });
   let lastReq = null;        // 받은 요청(언어 전환 때 제목·요약을 다시 그린다)
@@ -112,17 +117,95 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false } }
     });
   }
   const fail = (r, fallback) => ({ ok: false, reason: r.body?.reason ?? fallback, detail: r.body?.detail ?? r.body?.error ?? null, status: r.status, ...(r.body?.demo ? { demo: r.body.demo } : {}) });
+  // 등록 실패(코어 registerWith): IdP 가 거절하면 reason 은 register_failed 이고 IdP 의 사유는 cia 에 있다 — 그쪽을 먼저 본다(zk 스냅 화면 codeRegister 와 같다).
+  const regFail = (r) => ({ ok: false, reason: r.body?.cia?.reason ?? r.body?.reason ?? 'register_failed', detail: r.body?.detail ?? r.body?.cia?.detail ?? r.body?.error ?? null, status: r.status });
+  /** 승인 창의 안내 한 줄 + 링크(같은 오리진의 사용자 페이지·속성 도구). */
+  function showHint(key, fallback, href) {
+    const hint = $('authHint');
+    hint.textContent = tt(key) || fallback;
+    if (href) { const a = document.createElement('a'); a.href = href; a.target = '_blank'; a.rel = 'noopener'; a.textContent = href; hint.append(' ', a); }
+    hint.hidden = false;
+  }
+  const attrRecord = () => readAttrRecord({ fetch: window.fetch.bind(window), localStorage: window.localStorage });
+  /** 계정 복구의 귀로(R-11, zk 스냅 화면 finishRecover 와 같다): 사용자 페이지 탭이 인증 창(등록 모드)을 다녀왔다 — 패스키(보관분)로 salt → 등록 코드로
+   *  등록(같은 계정·같은 auid 면 IdP 가 기존 슬롯을 돌려준다 — restored) → 결과를 남기고 사용자 화면으로. 결과·주소에 salt 는 없다. */
+  async function finishRecover(back) {
+    step('계정 복구 중… (등록 증명에 수 초 걸린다)');
+    let out;
+    try {
+      const r = await core.withSalt(() => core.registerWithCode({ uid: back.uid, code: back.code, auid: back.auid, profile: back.req.profile ?? null, recordSalt: null }));
+      if (r.status === 201) out = { ok: true, restored: r.body.restored === true, reason: null, detail: null };
+      else { const f = regFail(r); out = { ok: false, restored: false, reason: f.reason, detail: f.detail }; }
+    } catch (e) { out = { ok: false, restored: false, reason: e?.reason ?? 'internal', detail: e?.message ?? null }; }
+    try { sessionStorage.setItem(RECOVER_RESULT_KEY, JSON.stringify(out)); } catch { /* 결과를 못 남기면 화면이 상태로만 보인다 */ }
+    location.replace('/');
+  }
+  /** passkey-web 의 로그인(mode3-authorize, 재승인 제외 — 스펙 W5, 계획 R-10). 처음 온 요청: 승인 → (Google 이면 passkey_mode) → 패스키 연결이 없으면
+   *  passkey_setup_required → 미등록인데 속성 도구 기록이 없으면 attr_record_missing — 여기까지는 IdP 로 가지 않는다 → 대기 저장분을 두고 이 창이 IdP 인증 창
+   *  (미등록이면 등록 모드)으로 간다. 돌아온 길(back): 등록 코드면 속성 도구 기록의 salt·속성으로 등록하고 함께 받은 발급 코드로, 발급 코드면 기록의 속성을
+   *  맞춘 뒤 그 코드로 로그인한다(loginWith). salt 는 코어가 패스키(10분 보관분)에서 받는다 — 이 함수는 만지지 않는다. */
+  async function authorizePasskey(req, evOrigin, back, { reply, loginWith }) {
+    const attrMissing = () => {
+      showHint('user_pk_attr_missing_hint', '이 브라우저의 속성 커밋먼트 도구에 기록이 없어 등록할 수 없습니다. 먼저 커밋먼트를 만드세요:', `${location.origin}/attr.html`);
+      return reply({ ok: false, reason: 'attr_record_missing' }, { closeMs: 15_000 });
+    };
+    if (!back) {
+      const st = await core.status();
+      const registered = st.status === 200 ? Boolean(st.body?.registered) : true;   // 상태를 못 읽으면 등록된 것으로 보고 발급 창으로(IdP·코어가 다시 거른다)
+      if (st.status === 200 && registered) renderAuthIdentity(st.body.provider ?? 'demo');
+      step('요청을 확인하고 승인하세요.');
+      if (!(await waitDecision())) { step('동의 거절'); return reply({ ok: false, reason: 'user_denied' }); }
+      if (req.provider === 'google') { step('설치 없는 패스키 모드에서는 Google 로 로그인하지 않는다.'); return reply({ ok: false, reason: 'passkey_mode' }); }
+      const ps = await core.passkeyState();
+      if (ps.status !== 200 || !ps.body?.credentialId) {
+        showHint('user_pk_setup_hint', '이 브라우저에 연결된 패스키가 없습니다. 사용자 페이지에서 먼저 패스키를 설정하세요:', `${location.origin}/`);
+        step('패스키 연결 없음 — zkID 로 가지 않는다.');
+        return reply({ ok: false, reason: 'passkey_setup_required' }, { closeMs: 15_000 });
+      }
+      if (!registered && !(await attrRecord())) { step('속성 도구 기록 없음 — zkID 로 가지 않는다.'); return attrMissing(); }
+      const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
+      savePending(window.sessionStorage, { req, origin: evOrigin, nonce, at: Date.now() });
+      step(registered ? (tt('wallet_auth_to_idp') || 'zkID 로그인 페이지로 이동합니다…') : (tt('wallet_auth_to_idp_register') || 'zkID 에 처음 등록합니다 — zkID 로그인 페이지로 이동합니다…'));
+      location.assign(idpAuthUrl({ ciaUrl: config.ciaUrl, walletOrigin: location.origin, nonce, purpose: registered ? 'issue' : 'register' }));
+      return;
+    }
+    renderAuthIdentity('demo');
+    const rec = await attrRecord();
+    let authCode = back.code;
+    if (back.purpose === 'register') {
+      if (!rec) { step('속성 도구 기록 없음 — 등록하지 않는다.'); return attrMissing(); }
+      step('zkID 에 등록하는 중… (등록 증명에 수 초 걸린다)');
+      const r = await core.registerWithCode({ uid: back.uid, code: back.code, auid: back.auid, profile: rec.profile, recordSalt: rec.s_u });
+      if (r.status !== 201) { step('등록 실패'); log(errText(r.status, r.body)); return reply(regFail(r)); }
+      authCode = r.body.issue_code;   // CIA_ISSUE_AUTH=key 인 IdP 는 발급 코드를 주지 않는다(null) — 그러면 코드 없이 발급된다
+      step('zkID 에 등록됨 — 이어서 로그인합니다.');
+    } else if (rec?.profile) {
+      // 속성 변경(W5): 속성 도구 기록의 속성으로 맞춘 뒤 로그인한다 — 이번 로그인이 새 속성의 C_u 를 받는다. 기록의 salt 가 이 등록과 다르면 멈춘다.
+      const s = await core.syncProfileFromRecord({ recordSalt: rec.s_u, profile: rec.profile });
+      if (s.status !== 200) { step('속성 맞추기 실패 — 로그인하지 않는다.'); log(errText(s.status, s.body)); return reply(fail(s, 'login_failed')); }
+    }
+    return loginWith({ authCode });
+  }
 
+  // passkey-web: IdP 인증 창에서 돌아온 길(?authorize=1&idp_…). 계정 복구는 팝업이 아니라 사용자 페이지 탭이 다녀온 길이라 opener 가 없다 — opener 검사보다 먼저 본다(R-11).
+  // 대기 저장분은 이 오리진·이 창의 sessionStorage 라 그 창이 남긴 것만 있다(takeIdpReturn 이 nonce·나이를 본다).
+  const back = PK ? takeIdpReturn({ search: location.search, storage: window.sessionStorage, now: Date.now() }) : null;
+  if (back) history.replaceState(null, '', `${location.pathname}?authorize=1`);   // 1회용 코드가 주소창·히스토리에 남지 않게
+  if (back?.req?.type === 'mode3-recover') { finishRecover(back); return; }
+  // 이어받지 못한 돌아온 길은 안내만 하고 멈춘다 — ready 를 다시 보내면 RP 가 같은 요청을 한 번 더 보낸다(그 요청은 승인을 다시 받아야 한다).
+  if (back && back.req?.type !== 'mode3-authorize') {
+    renderAuthTitle();
+    const msg = tt('wallet_auth_resume_failed') || 'zkID 인증 결과를 이어받지 못했습니다 — 서비스 페이지에서 다시 로그인하세요.';
+    step(msg); showHint('wallet_auth_resume_failed', msg, null);
+    return;
+  }
   if (!window.opener) { renderAuthTitle(); step('이 창은 RP 페이지가 열어야 한다(window.opener 가 없다).'); return; }
-  let handled = false;
-  const onMessage = async (ev) => {
-    const req = ev.data;
-    // 우리를 연 창이 보낸 것만 본다 — 같은 이름으로 창 참조를 얻은 다른 페이지가 끼어들지 못하게(심층 방어).
-    if (handled || ev.source !== window.opener || !req || !TYPES.includes(req.type)) return;
-    handled = true;
-    window.removeEventListener('message', onMessage);
+
+  /** 요청 한 건의 처리. evOrigin = 그 요청을 보낸 창의 오리진(postMessage 의 ev.origin — IdP 에서 돌아온 길이면 가기 전에 대조를 통과한 그 값).
+   *  back = IdP 에서 돌아온 길(takeIdpReturn) — 있으면 승인은 이미 받았다(R-10). */
+  async function handle(req, evOrigin, back = null) {
     // 결과는 요청을 보낸 창에만 돌려준다. 오리진이 어긋나면 진행하지 않고 실제로 말을 건 오리진에 실패만 알린다.
-    const target = ev.origin === req.origin ? req.origin : ev.origin;
+    const target = evOrigin === req.origin ? req.origin : evOrigin;
     // closeMs: 창을 닫기까지의 지연 — 기본은 성공 200ms·실패 3초(이유를 잠시 보이게), 미등록 안내처럼 읽을 것이 있으면 호출부가 늘린다.
     const reply = (result, { closeMs } = {}) => {
       try { window.opener.postMessage({ type: `${req.type}-result`, r_s: req.r_s ?? null, result }, target); }
@@ -134,14 +217,14 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false } }
     try {
       // 설정 조회(R5): 사용자 페이지가 아는 RP 오리진에만, uid 없이 등록 여부·세션 수만.
       if (req.type === 'mode3-config') {
-        if (!(config.rpOrigins ?? []).includes(ev.origin)) { step('모르는 RP — 설정을 알려 주지 않는다.'); log(`메시지 오리진=${ev.origin}`); return reply({ ok: false, reason: 'origin_mismatch' }); }
+        if (!(config.rpOrigins ?? []).includes(evOrigin)) { step('모르는 RP — 설정을 알려 주지 않는다.'); log(`메시지 오리진=${evOrigin}`); return reply({ ok: false, reason: 'origin_mismatch' }); }
         const h = await core.health();
         step('설정을 알렸다 — 창을 닫는다.');
-        return reply({ ok: true, secrets: 'web', registered: h.registered, rpCount: h.rpCount, sessions: h.sessions });
+        return reply({ ok: true, secrets: config.secrets ?? 'web', registered: h.registered, rpCount: h.rpCount, sessions: h.sessions });
       }
-      if (ev.origin !== req.origin) {
+      if (evOrigin !== req.origin) {
         step('오리진 불일치 — 이 요청은 진행하지 않는다.');
-        log(`메시지 오리진=${ev.origin}\n인증서 오리진=${req.origin}`);
+        log(`메시지 오리진=${evOrigin}\n인증서 오리진=${req.origin}`);
         return reply({ ok: false, reason: 'origin_mismatch' });
       }
       // 요약은 오리진 대조를 통과한 뒤에만 그린다 — 남이 보낸 서비스 이름을 승인 화면에 먼저 띄우지 않는다.
@@ -159,7 +242,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false } }
       if (req.type === 'mode3-revalidate') {
         // 동의 화면 없음(스펙): 캐시 히트면 바로 끝나고, 재증명이면 진행 문구만 보인다. 세션·오리진 대조는 코어가 한다.
         step('세션 재검증 중… (증명을 다시 만들어야 하면 수 초 걸린다)');
-        const r = await withUnlock(() => core.revalidate({ r_s: req.r_s, skipSync: req.skipSync === true, arid: req.arid ?? null, origin: ev.origin }));
+        const r = await withUnlock(() => core.revalidate({ r_s: req.r_s, skipSync: req.skipSync === true, arid: req.arid ?? null, origin: evOrigin }));
         if (r.cancelled) { step('잠금 해제 취소'); return reply({ ok: false, reason: 'user_denied' }); }
         if (r.status !== 200) { step('재검증 실패'); log(errText(r.status, r.body)); return reply(fail(r, 'revalidate_failed')); }
         await postPresence(core);
@@ -176,9 +259,9 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false } }
 
       if (req.type === 'mode3-tx') {
         // 온체인 출금(2026-10-16): RP 페이지가 이 세션의 계정으로 보내 달라고 한다. 받는 주소·금액을 보여 주고 승인 뒤 코어가 증명·세션키 서명으로
-        // execute calldata 를 만들고, 그 RP 의 릴레이(ev.origin — 세션의 오리진과 같아야 한다)가 보낸다. 사용자 페이지의 "트랜잭션 보내기"와 같은 경로.
+        // execute calldata 를 만들고, 그 RP 의 릴레이(evOrigin — 세션의 오리진과 같아야 한다)가 보낸다. 사용자 페이지의 "트랜잭션 보내기"와 같은 경로.
         const s = await meta.session(req.r_s);
-        if (!s || (s.origin && s.origin !== ev.origin)) { step('이 RP 의 세션이 아니다.'); return reply({ ok: false, reason: 'no_session' }); }
+        if (!s || (s.origin && s.origin !== evOrigin)) { step('이 RP 의 세션이 아니다.'); return reply({ ok: false, reason: 'no_session' }); }
         const value = String(req.value ?? '0');
         if (typeof req.to !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(req.to) || !/^[0-9]+$/.test(value) || (req.data !== undefined && !/^0x([0-9a-fA-F]{2})*$/.test(String(req.data)))) { step('요청 형식 오류'); return reply({ ok: false, reason: 'malformed' }); }
         row('wallet_auth_tx_to', req.to); row('wallet_auth_tx_value', `${value} wei`);
@@ -188,7 +271,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false } }
         const p = await withUnlock(() => core.prepareTx({ r_s: req.r_s, to: req.to, value, data: req.data ?? '0x' }));
         if (p.cancelled) { step('잠금 해제 취소'); return reply({ ok: false, reason: 'user_denied' }); }
         if (p.status !== 200) { step('준비 실패'); log(errText(p.status, p.body)); return reply(fail(p, 'tx_prepare_failed')); }
-        const relayUrl = `${ev.origin}${config.relayPath ?? '/api/mode3/relay'}`;
+        const relayUrl = `${evOrigin}${config.relayPath ?? '/api/mode3/relay'}`;
         step('RP 릴레이로 보내는 중…');
         let relay;
         try {
@@ -211,7 +294,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false } }
         step('서명할 요청을 확인하고 승인하세요.');
         if (!(await waitDecision())) { step('거절'); return reply({ ok: false, reason: 'user_denied' }); }
         step('세션키로 서명 중…');
-        const r = await withUnlock(() => core.request({ r_s: req.r_s, body: req.body, arid: req.arid ?? null, origin: ev.origin }));
+        const r = await withUnlock(() => core.request({ r_s: req.r_s, body: req.body, arid: req.arid ?? null, origin: evOrigin }));
         if (r.cancelled) { step('잠금 해제 취소'); return reply({ ok: false, reason: 'user_denied' }); }
         if (r.status !== 200) { step('서명 실패'); log(errText(r.status, r.body)); return reply(fail(r, 'request_failed')); }
         step('서명 완료 — 창을 닫는다.');
@@ -223,10 +306,30 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false } }
         // 재승인(R12): web 모드의 세션은 IndexedDB 에 그대로 있어 다시 채울 증인이 없다. 세션이 있고(precheck 이 arid 로 확인) 그 RP 오리진의
         // 것인지만 확인하고 끝낸다 — RP 는 needs_consent 를 web 모드에서 받지 않으므로 보통은 오지 않는 요청이다.
         const s = await meta.session(req.r_s);
-        if (!s || (s.origin && s.origin !== ev.origin)) { step('세션 정보를 받지 못했다 — 재승인하지 않는다.'); return reply({ ok: false, reason: 'no_session' }); }
+        if (!s || (s.origin && s.origin !== evOrigin)) { step('세션 정보를 받지 못했다 — 재승인하지 않는다.'); return reply({ ok: false, reason: 'no_session' }); }
         step('재승인 완료 — 창을 닫는다.');
         return reply({ ok: true, reauth: true });
       }
+      /** 로그인·증명(공통 끝부분). idToken·issueN 은 Google 래퍼 경로, authCode 는 passkey-web 의 IdP 발급 코드(인증 창에서 받았거나 등록이 함께 준 것). */
+      const loginWith = async ({ idToken = null, issueN = null, authCode = null } = {}) => {
+        step('로그인·증명 생성 중… (수 초 걸린다)');
+        const body = {
+          arid: req.arid, origin: req.origin, cert_s: req.cert_s, pk_trace: req.pk_trace, r_s: req.r_s, r_rp: req.r_rp,
+          allowAgent: req.allowAgent === '1' || req.allowAgent === true ? '1' : '0',
+          factoryAddress: req.factoryAddress ?? null, attrGateAddress: req.attrGateAddress ?? null,
+          disclose: req.disclose ?? null, set: req.set ?? null,
+        };
+        // verifiedOrigin: Origin 헤더 대신 이 창이 확인한 postMessage 의 오리진(스펙 §3.3). 금고가 잠겨 있으면 잠금 해제 창 → 한 번 다시.
+        const lg = await withUnlock(() => core.login(body, { verifiedOrigin: evOrigin, serviceName: cleanServiceName(req.serviceName) || null, policy: req.policy ?? null, idToken, n: issueN, authCode }));   // 이름·정책은 표기용, idToken 은 래퍼 경로(2026-10-16), authCode 는 passkey-web
+        if (lg.cancelled) { step('잠금 해제 취소'); return reply({ ok: false, reason: 'user_denied' }); }
+        if (lg.status !== 200) { step('로그인 실패'); log(errText(lg.status, lg.body)); return reply(fail(lg, 'login_failed')); }
+        // 지갑 안 정보(userCredIssued·attrsChanged)는 RP 에 넘기지 않는다 — 코어 응답에는 원래 없다(에이전트 snap 모드와 같은 경계).
+        const { userCredIssued, attrsChanged, ...toRp } = lg.body;
+        await postPresence(core);
+        step('로그인 성공 — 창을 닫는다.');
+        return reply({ ok: true, ...toRp });
+      };
+      if (PK) return await authorizePasskey(req, evOrigin, back, { reply, loginWith });
       // Google 로 로그인(RP 로그인 흐름, 2026-10-16): IdP 의 OIDC 설정을 읽는다 — 꺼져 있으면 Google 경로는 없다.
       const google = req.provider === 'google';
       let oidcCfg = null;
@@ -264,27 +367,25 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false } }
         idToken = got.idToken; issueN = prep.body.n;
         step('로그인·증명 생성 중… (수 초 걸린다)');
       }
-      step('로그인·증명 생성 중… (수 초 걸린다)');
-      const body = {
-        arid: req.arid, origin: req.origin, cert_s: req.cert_s, pk_trace: req.pk_trace, r_s: req.r_s, r_rp: req.r_rp,
-        allowAgent: req.allowAgent === '1' || req.allowAgent === true ? '1' : '0',
-        factoryAddress: req.factoryAddress ?? null, attrGateAddress: req.attrGateAddress ?? null,
-        disclose: req.disclose ?? null, set: req.set ?? null,
-      };
-      // verifiedOrigin: Origin 헤더 대신 이 창이 확인한 postMessage 의 오리진(스펙 §3.3). 금고가 잠겨 있으면 잠금 해제 창 → 한 번 다시.
-      const lg = await withUnlock(() => core.login(body, { verifiedOrigin: ev.origin, serviceName: cleanServiceName(req.serviceName) || null, policy: req.policy ?? null, idToken, n: issueN }));   // 이름·정책은 표기용, idToken 은 래퍼 경로(2026-10-16)
-      if (lg.cancelled) { step('잠금 해제 취소'); return reply({ ok: false, reason: 'user_denied' }); }
-      if (lg.status !== 200) { step('로그인 실패'); log(errText(lg.status, lg.body)); return reply(fail(lg, 'login_failed')); }
-      // 지갑 안 정보(userCredIssued·attrsChanged)는 RP 에 넘기지 않는다 — 코어 응답에는 원래 없다(에이전트 snap 모드와 같은 경계).
-      const { userCredIssued, attrsChanged, ...toRp } = lg.body;
-      await postPresence(core);
-      step('로그인 성공 — 창을 닫는다.');
-      return reply({ ok: true, ...toRp });
+      return await loginWith({ idToken, issueN });
     } catch (e) {
       step('오류');
       log(e.message);
       reply({ ok: false, reason: e?.reason ?? 'internal', detail: e.message });
     }
+  }
+  // passkey-web: 요청 하나 전체를 withSalt 로 감싼다 — 그 안에서 salt 는 처음 한 번만 얻는다(패스키 최대 한 번, R-8). 그 밖의 모드는 지금 그대로.
+  const run = (req, evOrigin, back = null) => (PK ? core.withSalt(() => handle(req, evOrigin, back)) : handle(req, evOrigin, back));
+  // IdP 에서 돌아온 길(passkey-web) — ready 를 다시 보내지 않고 저장해 둔 요청을 이어 처리한다. 결과는 가기 전의 발신 오리진(back.origin)으로.
+  if (back) { run(back.req, back.origin, back); return; }
+  let handled = false;
+  const onMessage = (ev) => {
+    const req = ev.data;
+    // 우리를 연 창이 보낸 것만 본다 — 같은 이름으로 창 참조를 얻은 다른 페이지가 끼어들지 못하게(심층 방어).
+    if (handled || ev.source !== window.opener || !req || !TYPES.includes(req.type)) return;
+    handled = true;
+    window.removeEventListener('message', onMessage);
+    return run(req, ev.origin);
   };
   window.addEventListener('message', onMessage);
   renderAuthTitle();

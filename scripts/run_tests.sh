@@ -57,6 +57,7 @@ UNIT=(
   tests/test_browser_sha256.js
   tests/test_secret_box.mjs
   tests/test_mode3_vault_hold.mjs
+  tests/test_mode3_user_idp_return.mjs
   tests/test_attr_backup.mjs
   tests/test_browser_node_shims.js
   tests/test_mode3_oidc_nonce.js
@@ -149,6 +150,8 @@ BROWSER=(
   tests/test_mode3_wallet_snap_oidc_browser.mjs
   # 패스키 모드(2026-11-17) — WebAuthn 스텁 + CDP 가상 인증기, 지갑 오리진 localhost
   tests/test_mode3_passkey_browser.mjs
+  # 설치 없는 패스키 모드(passkey-web, 2026-11-17) — 웹 사용자 페이지 + WebAuthn 스텁 + IdP 인증 창 왕복, 사용자 오리진 localhost; 번들을 스스로 만든다
+  tests/test_mode3_user_passkey_web.mjs
 )
 
 # Snap 패키지(snap-mode3)의 지역 테스트. 전역 snap 객체를 스텁해 RPC 9종을 검사한다 —

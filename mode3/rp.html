@@ -244,7 +244,8 @@
     let walletCfg = { secrets: 'file' };
     // web 모드(스펙 2026-10-15 §7): 지갑 자리에 브라우저 사용자 페이지(mode3_user_static.js)가 있다 — 비밀은 그 페이지의 IndexedDB 에만 있고,
     // 로그인·재검증·세션 요청을 전부 사용자 오리진의 팝업(postMessage)으로 받는다. 트랜잭션은 사용자 페이지가 이 RP 의 릴레이로 보낸다.
-    const WEB = () => walletCfg.secrets === 'web';
+    // passkey-web(2026-11-17, 스펙 W12): salt 만 패스키에서 오는 같은 사용자 페이지 — 프로토콜은 web 과 같다.
+    const WEB = () => walletCfg.secrets === 'web' || walletCfg.secrets === 'passkey-web';
     // 그 기본값이 실제로 확인된 것인지 — 못 읽었다면 지갑이 snap 모드인데 file 모드로 잘못 보고 /wallet/login 을 직접 부를 수
     // 있다(그 경로에는 CORS 가 없어 브라우저가 막는다). 실패 문구가 원인을 짚도록 이 값을 본다.
     let walletCfgLoaded = false;
@@ -350,10 +351,11 @@
       const snap = walletCfg.secrets === 'snap';
       const web = WEB();
       const passkey = walletCfg.secrets === 'passkey';   // 2026-11-17 패스키 모드 — 스냅과 같은 승인 팝업 경로
+      const pkWeb = walletCfg.secrets === 'passkey-web';   // 2026-11-17 설치 없는 패스키 모드 — web 과 같은 경로, 배지만 다르다
       el.className = 'badge';
-      tte(el, snap ? 'rp_wallet_snap' : passkey ? 'rp_wallet_passkey' : web ? 'rp_wallet_web' : 'rp_wallet_file');
+      tte(el, snap ? 'rp_wallet_snap' : passkey ? 'rp_wallet_passkey' : pkWeb ? 'rp_wallet_passkey_web' : web ? 'rp_wallet_web' : 'rp_wallet_file');
       if (snap) { const sp = document.createElement('span'); sp.className = 'expert'; sp.textContent = ` (Snap=${walletCfg.snapId})`; el.appendChild(sp); }
-      tte(note, snap ? 'rp_wallet_snap_note' : passkey ? 'rp_wallet_passkey_note' : web ? 'rp_wallet_web_note' : 'rp_wallet_file_note');
+      tte(note, snap ? 'rp_wallet_snap_note' : passkey ? 'rp_wallet_passkey_note' : pkWeb ? 'rp_wallet_passkey_web_note' : web ? 'rp_wallet_web_note' : 'rp_wallet_file_note');
     }
 
     // U5(거래소 꾸밈): 로그인 전/후로 "로그인" 카드와 "내 자산" 카드를 맞바꾸고, 계정 pill·주소를 채운다.
