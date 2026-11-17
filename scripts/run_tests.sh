@@ -47,6 +47,7 @@ UNIT=(
   tests/test_mode3_wallet_lib.js
   tests/test_mode3_set_tree.mjs
   tests/test_mode3_demo_strings.js
+  tests/test_mode3_passkey_salt.mjs
   tests/test_mode3_health_shape.js
   tests/test_mode3_stack_judge.js
   tests/test_mode3_registry.js
@@ -110,6 +111,7 @@ CHAIN=(
   tests/test_mode3_e2e.mjs
   tests/test_mode3_wallet_agent.mjs
   tests/test_mode3_wallet_snap.mjs
+  tests/test_mode3_wallet_passkey.mjs
   # snap 모드 OIDC 래퍼(Google) — 발급자 스텁, CIA_ISSUE_AUTH=code
   tests/test_mode3_wallet_snap_oidc.mjs
   tests/test_mode3_demo_stack.mjs
@@ -137,6 +139,8 @@ BROWSER=(
   tests/test_mode3_user_web_oidc.mjs
   # snap 모드 + Google(OIDC 래퍼) — 진짜 Snap 코드 + GIS 스텁, 지갑 오리진 localhost
   tests/test_mode3_wallet_snap_oidc_browser.mjs
+  # 패스키 모드(2026-11-17) — WebAuthn 스텁 + CDP 가상 인증기, 지갑 오리진 localhost
+  tests/test_mode3_passkey_browser.mjs
 )
 
 # Snap 패키지(snap-mode3)의 지역 테스트. 전역 snap 객체를 스텁해 RPC 9종을 검사한다 —

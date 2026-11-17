@@ -343,10 +343,11 @@
       }
       const snap = walletCfg.secrets === 'snap';
       const web = WEB();
+      const passkey = walletCfg.secrets === 'passkey';   // 2026-11-17 패스키 모드 — 스냅과 같은 승인 팝업 경로
       el.className = 'badge';
-      tte(el, snap ? 'rp_wallet_snap' : web ? 'rp_wallet_web' : 'rp_wallet_file');
+      tte(el, snap ? 'rp_wallet_snap' : passkey ? 'rp_wallet_passkey' : web ? 'rp_wallet_web' : 'rp_wallet_file');
       if (snap) { const sp = document.createElement('span'); sp.className = 'expert'; sp.textContent = ` (Snap=${walletCfg.snapId})`; el.appendChild(sp); }
-      tte(note, snap ? 'rp_wallet_snap_note' : web ? 'rp_wallet_web_note' : 'rp_wallet_file_note');
+      tte(note, snap ? 'rp_wallet_snap_note' : passkey ? 'rp_wallet_passkey_note' : web ? 'rp_wallet_web_note' : 'rp_wallet_file_note');
     }
 
     // U5(거래소 꾸밈): 로그인 전/후로 "로그인" 카드와 "내 자산" 카드를 맞바꾸고, 계정 pill·주소를 채운다.
@@ -789,7 +790,7 @@
         t0 = Date.now();
         clearVerdict($('verdict'));
         let wb;
-        if (walletCfg.secrets === 'snap' || WEB()) {
+        if (walletCfg.secrets === 'snap' || walletCfg.secrets === 'passkey' || WEB()) {
           log(WEB() ? '2. 사용자 승인 팝업 — 사용자 창에서 승인하세요.' : '2. 스냅 승인 팝업 — 스냅 창에서 MetaMask·스냅 동의를 확인하세요.');
           let result;
           try {
@@ -982,7 +983,7 @@
       }
       if (!currentSession) { setVerdict($('txVerdict'), false, 'tx_failed', { reason: 'no_session' }); return; }
       // 2026-11-04: snap 모드의 지갑 팝업도 mode3-tx 를 받는다(mode3/wallet.html handleTxRequest). 팝업 경로가 없는 file 모드만 막는다.
-      if (!WEB() && walletCfg.secrets !== 'snap') { setVerdict($('txVerdict'), false, 'tx_failed', () => ({ summary: tt('rp_tx_web_only') || '온체인 출금은 스냅 승인 창(스냅·web 모드)에서 합니다' })); return; }
+      if (!WEB() && walletCfg.secrets !== 'snap' && walletCfg.secrets !== 'passkey') { setVerdict($('txVerdict'), false, 'tx_failed', () => ({ summary: tt('rp_tx_web_only') || '온체인 출금은 스냅 승인 창(스냅·web 모드)에서 합니다' })); return; }
       $('txBtn').dataset.tourBusy = '1'; $('txLog').textContent = ''; $('txHashRow').hidden = true; renderRaceRoots(null);
       clearVerdict($('txVerdict'));
       const log = (s) => { $('txLog').textContent += s + '\n'; };

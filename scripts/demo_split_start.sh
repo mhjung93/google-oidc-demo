@@ -37,7 +37,11 @@ cd "$(dirname "$0")/.."
 U="${SPLIT_SSH_USER:-zkd}"; HOST="${SPLIT_HOST_IP:-192.168.226.128}"
 IDP="${SPLIT_IDP_IP:-192.168.226.10}"; RP1="${SPLIT_RP1_IP:-192.168.226.11}"; RP2="${SPLIT_RP2_IP:-192.168.226.12}"
 WALLET_MODE="${WALLET_MODE:-web}"
-case "$WALLET_MODE" in web) USER_PORT=5200 ;; snap) USER_PORT=5100 ;; *) echo "WALLET_MODE 는 web 또는 snap: $WALLET_MODE"; exit 1 ;; esac
+case "$WALLET_MODE" in web) USER_PORT=5200 ;; snap|passkey) USER_PORT=5100 ;; *) echo "WALLET_MODE 는 web·snap·passkey 중 하나: $WALLET_MODE"; exit 1 ;; esac
+# passkey(2026-11-17, 스펙 2026-11-17-mode3-passkey-mode): 지갑은 snap 처럼 에이전트(:5100)지만 MetaMask·스냅 서버가 없다. 패스키는 localhost 의 어느 포트 페이지든
+# 부를 수 있으므로(§2) 브라우저용 IdP·RP 주소는 터널을 127.0.0.1 로 연다 — IP 오리진에서는 WebAuthn 이 동작하지 않는다. 대신 RP 소셜 로그인(localhost 전용)은 쓸 수 없다.
+AGENT_MODE=$([ "$WALLET_MODE" = web ] && echo 0 || echo 1)
+PEER_HOST=$([ "$WALLET_MODE" = passkey ] && echo 127.0.0.1 || echo localhost)
 if [ "$WALLET_MODE" = "snap" ]; then [ -d snap-mode3/node_modules ] && [ -f snap-mode3/dist/bundle.js ] || { echo "BLOCKED: snap-mode3/node_modules 또는 dist/bundle.js 가 없다 — cd snap-mode3 && npm install && npm run build"; exit 1; }; fi
 APP_PORT=8547 APP_CHAIN=31339 REV_PORT=8548 REV_CHAIN=31340 IDP_PORT=4100 RP1_PORT=3100 RP2_PORT=3101 SNAP_PORT=8082
 LOGS="${DEMO_LOG_DIR:-/tmp/mode3-split}"; mkdir -p "$LOGS"
@@ -46,12 +50,12 @@ ADMIN="${CIA_ADMIN_SECRET:-idp}"   # IdP 관리자 페이지 비밀번호(2026-1
 WALLET_ORIGIN="http://localhost:$USER_PORT"
 TUNNEL_SPEC="-L 127.0.0.1:$IDP_PORT:127.0.0.1:$IDP_PORT"   # 2026-11-09: 브라우저용 IdP 주소(localhost:4100) 터널 — stop_local 이 이 명령줄로 찾는다
 # 기본은 snap 모드에서만 켠다(리뷰 Minor 7) — web 모드 지갑(:5200)은 연결 로그인을 쓰지 않아(인증 창 method 를 모른다) 한 머신 IdP(:4100)와 같이 띄울 수 있게 둔다.
-SPLIT_IDP_TUNNEL="${SPLIT_IDP_TUNNEL:-$([ "$WALLET_MODE" = snap ] && echo 1 || echo 0)}"
-if [ "$SPLIT_IDP_TUNNEL" != 0 ]; then IDP_UI="http://localhost:$IDP_PORT"; else IDP_UI="http://$IDP:$IDP_PORT"; fi
+SPLIT_IDP_TUNNEL="${SPLIT_IDP_TUNNEL:-$AGENT_MODE}"
+if [ "$SPLIT_IDP_TUNNEL" != 0 ]; then IDP_UI="http://$PEER_HOST:$IDP_PORT"; else IDP_UI="http://$IDP:$IDP_PORT"; fi
 # RP 터널(2026-11-10 RP 소셜 로그인): 브라우저가 zkONE·zkTWO 를 localhost 로 연다 — RP 의 Google(GIS)·네이버 콜백이 localhost 원본에서만 된다. 기본은 snap 모드만.
 RP1_TUNNEL="-L 127.0.0.1:$RP1_PORT:127.0.0.1:$RP1_PORT"; RP2_TUNNEL="-L 127.0.0.1:$RP2_PORT:127.0.0.1:$RP2_PORT"
-SPLIT_RP_TUNNEL="${SPLIT_RP_TUNNEL:-$([ "$WALLET_MODE" = snap ] && echo 1 || echo 0)}"
-if [ "$SPLIT_RP_TUNNEL" != 0 ]; then RP1_UI="http://localhost:$RP1_PORT"; RP2_UI="http://localhost:$RP2_PORT"; else RP1_UI="http://$RP1:$RP1_PORT"; RP2_UI="http://$RP2:$RP2_PORT"; fi
+SPLIT_RP_TUNNEL="${SPLIT_RP_TUNNEL:-$AGENT_MODE}"
+if [ "$SPLIT_RP_TUNNEL" != 0 ]; then RP1_UI="http://$PEER_HOST:$RP1_PORT"; RP2_UI="http://$PEER_HOST:$RP2_PORT"; else RP1_UI="http://$RP1:$RP1_PORT"; RP2_UI="http://$RP2:$RP2_PORT"; fi
 on() { local h="$1"; shift; ssh -o BatchMode=yes -o ConnectTimeout=5 "$U@$h" "$@"; }
 
 # 이 VM 쪽은 포트 주인 중 명령줄이 우리 것과 맞는 것만 내린다(라이브 데모와 명령줄이 같은 사용자 페이지는 포트로 가른다).
@@ -97,10 +101,10 @@ for h in "$RP1" "$RP2"; do
 done
 
 # 2b. Snap 모드: 이 VM 의 에이전트 상태 파일도 새 체인과 맞지 않는다 — .bak-시각 으로 옮긴다(MetaMask 안의 Snap 상태는 못 지운다 — 지갑 페이지 'Snap 초기화').
-if [ "$WALLET_MODE" = "snap" ]; then for f in mode3_wallet_state.json mode3_wallet_rcl.json; do [ -e "$f" ] && mv "$f" "$f.bak-$TS" && echo "backup $f"; done; fi
+if [ "$AGENT_MODE" = 1 ]; then for f in mode3_wallet_state.json mode3_wallet_rcl.json; do [ -e "$f" ] && mv "$f" "$f.bak-$TS" && echo "backup $f"; done; fi
 # 2c. (2026-11-11 사용자 요청) 속성 커밋먼트 도구(localhost:5100/attr.html)의 기록은 브라우저 저장소라 여기서 지울 수 없다 — 리셋 시각을 정적 파일로 남기면
 #     도구·스냅 팝업이 그 값이 바뀐 것을 보고 이전 데모의 기록(uid·salt)을 비운다. mode3/attr/dist 는 ignore 된 번들 폴더(에이전트가 /attr/ 로 서빙).
-if [ "$WALLET_MODE" = "snap" ]; then mkdir -p mode3/attr/dist && printf '{"epoch":"%s"}\n' "$TS" > mode3/attr/dist/reset.json && echo "attr 도구 리셋 표시: $TS"; fi
+if [ "$AGENT_MODE" = 1 ]; then mkdir -p mode3/attr/dist && printf '{"epoch":"%s"}\n' "$TS" > mode3/attr/dist/reset.json && echo "attr 도구 리셋 표시: $TS"; fi
 # 3. 체인 두 개(Ethernal 없는 최소 설정, NAT 망에 연다)
 cat > "$LOGS/chain.config.cjs" <<'EOF'
 // 분리 데모 체인 전용 최소 설정(demo_split_start.sh 가 만든다) — Ethernal 플러그인·dotenv 를 싣지 않는다.
@@ -156,7 +160,7 @@ RP_GOOGLE_LINE=""; [ -n "$OIDC_LINE" ] && RP_GOOGLE_LINE="MODE3_RP_GOOGLE_CLIENT
 NAVER_ID="$(env_or_dotenv MODE3_NAVER_CLIENT_ID)"; NAVER_SECRET="$(env_or_dotenv MODE3_NAVER_CLIENT_SECRET)"
 rp_naver_lines() { [ -n "$NAVER_ID" ] && [ -n "$NAVER_SECRET" ] && printf '%s\n' "MODE3_RP_NAVER_CLIENT_ID=$NAVER_ID" "MODE3_RP_NAVER_CLIENT_SECRET=$NAVER_SECRET" "MODE3_RP_NAVER_REDIRECT_URI=$1/api/rp/naver/callback"; return 0; }
 echo "  RP 소셜: Google $([ -n "$RP_GOOGLE_LINE" ] && echo on || echo off) · 네이버 $([ -n "$NAVER_ID" ] && [ -n "$NAVER_SECRET" ] && echo on || echo off)   브라우저용 주소: IdP $IDP_UI · zkONE $RP1_UI · zkTWO $RP2_UI"
-printf '%s\n' "$COMMON" "CIA_PORT=$IDP_PORT" "CIA_RPC_URL=http://$HOST:$REV_PORT" "CIA_CHAIN_RPCS=$APP_CHAIN=http://$HOST:$APP_PORT" "CIA_ADMIN_SECRET=$ADMIN" "CIA_ADMIN_OPEN=${ADMIN_OPEN:-0}" "CIA_PUBLIC_URL=http://$IDP:$IDP_PORT" "CIA_ISSUE_AUTH=${ISSUE_AUTH:-$([ "$WALLET_MODE" = snap ] && echo code || echo key)}" "CIA_REVOKE_PUBLISH_AFTER_BLOCKS=${REVOKE_PUBLISH_AFTER:-3}" ${OIDC_LINE:+"$OIDC_LINE"} | put_env "$IDP"
+printf '%s\n' "$COMMON" "CIA_PORT=$IDP_PORT" "CIA_RPC_URL=http://$HOST:$REV_PORT" "CIA_CHAIN_RPCS=$APP_CHAIN=http://$HOST:$APP_PORT" "CIA_ADMIN_SECRET=$ADMIN" "CIA_ADMIN_OPEN=${ADMIN_OPEN:-0}" "CIA_PUBLIC_URL=http://$IDP:$IDP_PORT" "CIA_ISSUE_AUTH=${ISSUE_AUTH:-$([ "$AGENT_MODE" = 1 ] && echo code || echo key)}" "CIA_REVOKE_PUBLISH_AFTER_BLOCKS=${REVOKE_PUBLISH_AFTER:-3}" ${OIDC_LINE:+"$OIDC_LINE"} | put_env "$IDP"
 { printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP1_PORT" "MODE3_RP_NAME=zkONE" "MODE3_RP_PUBLIC_ORIGIN=$RP1_UI" "MODE3_CIA_URL=http://$IDP:$IDP_PORT" ${RP_GOOGLE_LINE:+"$RP_GOOGLE_LINE"} \
   "CIA_RPC_URL=http://$HOST:$APP_PORT" "MODE3_RELAYER_INDEX=0"; rp_naver_lines "$RP1_UI"; } | put_env "$RP1"
 { printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP2_PORT" "MODE3_RP_NAME=zkTWO" "MODE3_RP_PUBLIC_ORIGIN=$RP2_UI" "MODE3_CIA_URL=http://$IDP:$IDP_PORT" ${RP_GOOGLE_LINE:+"$RP_GOOGLE_LINE"} \
@@ -181,13 +185,19 @@ if [ "$WALLET_MODE" = "snap" ]; then
     setsid nohup node mode3_wallet_agent.js > "$LOGS/wallet_agent.log" 2>&1 < /dev/null &
   (cd snap-mode3 && setsid nohup npm run serve > "$LOGS/snap_serve.log" 2>&1 < /dev/null &)
   timeout 40 bash -c "until ss -ltn | grep -q ':$SNAP_PORT '; do sleep 1; done" && echo "snap serve :$SNAP_PORT up" || { echo "snap serve failed — $LOGS/snap_serve.log"; exit 1; }
+elif [ "$WALLET_MODE" = "passkey" ]; then
+  # 패스키 모드(2026-11-17): snap 과 같은 에이전트 설정에서 스냅만 뺀다 — salt 는 zk 스냅 화면이 패스키 PRF 로 그때그때 만든다. 지갑 오리진은 localhost 여야 뜬다.
+  DOTENV_CONFIG_PATH="$LOGS/empty.env" MODE3_WALLET_SECRETS=passkey MODE3_WALLET_PORT=$USER_PORT MODE3_WALLET_PUBLIC_ORIGIN="$WALLET_ORIGIN" \
+    MODE3_DEMO_RACE="${DEMO_RACE:-1}" MODE3_CIA_URL="$IDP_UI" MODE3_RP_ORIGIN="$RP1_UI,$RP2_UI" MODE3_RELAYER_INDEX=2 MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}" MODE3_TTL_BLOCKS="${TTL_BLOCKS:-5}" \
+    CIA_RPC_URL="http://127.0.0.1:$APP_PORT" MODE3_REV_CHAIN_RPC="http://127.0.0.1:$REV_PORT" CIA_LOG_ADDRESS="$LOGADDR" MODE3_MIRROR_ADDRESS="$MIRROR" \
+    setsid nohup node mode3_wallet_agent.js > "$LOGS/wallet_agent.log" 2>&1 < /dev/null &
 else
 DOTENV_CONFIG_PATH="$LOGS/empty.env" MODE3_PK_CIA_X="" MODE3_PK_CIA_Y="" MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}" MODE3_DEMO_GENERATION="$(date +%s)" MODE3_WALLET_PORT=$USER_PORT MODE3_WALLET_PUBLIC_ORIGIN="$WALLET_ORIGIN" \
   MODE3_CIA_URL="$IDP_UI" MODE3_RP_ORIGIN="$RP1_UI,$RP2_UI" \
   CIA_RPC_URL="http://127.0.0.1:$APP_PORT" MODE3_REV_CHAIN_RPC="http://127.0.0.1:$REV_PORT" CIA_LOG_ADDRESS="$LOGADDR" MODE3_MIRROR_ADDRESS="$MIRROR" \
   setsid nohup node mode3_user_static.js > "$LOGS/user_static.log" 2>&1 < /dev/null &
 fi
-timeout 30 bash -c "until ss -ltn | grep -q ':$USER_PORT '; do sleep 1; done" && echo "지갑($WALLET_MODE) up at $WALLET_ORIGIN" || { echo "지갑($WALLET_MODE) failed — $LOGS/$([ "$WALLET_MODE" = snap ] && echo wallet_agent || echo user_static).log"; exit 1; }
+timeout 30 bash -c "until ss -ltn | grep -q ':$USER_PORT '; do sleep 1; done" && echo "지갑($WALLET_MODE) up at $WALLET_ORIGIN" || { echo "지갑($WALLET_MODE) failed — $LOGS/$([ "$AGENT_MODE" = 1 ] && echo wallet_agent || echo user_static).log"; exit 1; }
 start_remote "$RP1" mode3_rp.js $RP1_PORT
 start_remote "$RP2" mode3_rp.js $RP2_PORT
 if [ "$SPLIT_RP_TUNNEL" != 0 ]; then
@@ -229,4 +239,8 @@ if [ "$WALLET_MODE" = "snap" ]; then
   echo "Snap 모드: 브라우저에 MetaMask Flask 가 있어야 한다. 지갑 페이지 $WALLET_ORIGIN/ 에서 MetaMask 연결 → Snap(local:http://localhost:$SNAP_PORT) 설치/재연결."
   echo "         Snap 번들이 바뀌었으면 MetaMask 의 기존 Snap 을 지우고 다시 설치할 것 — 체크섬이 다르면 자동으로 갱신되지 않는다."
   echo "         체인·IdP 가 새로 시작됐으므로 MetaMask 안의 옛 등록은 지갑 페이지의 'Snap 초기화' 로 지운 뒤 다시 등록할 것."
+fi
+if [ "$WALLET_MODE" = "passkey" ]; then
+  echo "패스키 모드: MetaMask 가 필요 없다. 지갑 페이지는 반드시 $WALLET_ORIGIN/ (localhost) 로 연다 — '패스키 만들기' 또는 이미 만든 패스키면 '이미 있는 패스키 쓰기'(같은 salt)."
+  echo "         IdP·서비스 페이지는 위 127.0.0.1 주소로 연다(localhost 로 열면 그 페이지도 패스키를 부를 수 있다 — 스펙 §2). RP 소셜 로그인은 이 모드에서 쓰지 않는다."
 fi

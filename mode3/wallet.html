@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="/common/demo.css" />
   <link rel="stylesheet" href="/common/wallet.css" />
   <script src="/common/strings.js"></script>
+  <script src="/common/passkey_store.js"></script>   <!-- 2026-11-17 패스키 모드(MODE3_WALLET_SECRETS=passkey) -->
   <script src="/common/demo.js"></script>
   <script src="/common/gsi.js"></script>
 </head>
@@ -80,6 +81,13 @@
       <p id="connectError" class="muted" hidden></p>
     </section>
 
+    <!-- 패스키 모드(2026-11-17 스펙 P6): 패스키는 localhost 에서만 — 127.0.0.1 로 열렸으면 이 카드만 보인다. -->
+    <section class="card" id="passkeyOriginCard" hidden>
+      <h3 data-i18n="wallet_passkey_origin_title">localhost 주소로 여세요</h3>
+      <p class="desc" data-i18n="wallet_passkey_origin_desc">패스키 모드의 zk 스냅 화면은 localhost 에서만 동작합니다(패스키는 IP 주소 페이지에서 쓸 수 없습니다).</p>
+      <p><a id="passkeyOriginLink" href="#">-</a></p>
+    </section>
+
     <!-- 스냅 설정(2026-11-13 스펙 random-salt R3~R7): 연결했는데 스냅에 salt 가 없거나 백업 전이면 탭 대신 이 카드만 보인다(applyGate).
          새로 만들기 = 비밀번호 두 번 → 파일 고르기 → (그때 initSalt) → 봉인해 쓰기 → 다시 읽어 confirmBackup. 불러오기 = 파일 + 비밀번호 → importSalt.
          백업에는 salt 만 든다(R5). "내 계정" 의 "백업 다시 만들기" 도 이 카드를 쓴다. -->
@@ -90,6 +98,11 @@
       <p class="row-actions" id="setupChoice">
         <button type="button" id="setupNewBtn" class="btn-ghost" aria-pressed="false" data-i18n="wallet_setup_new_btn">새로 만들기</button>
         <label class="btn btn-ghost" id="setupImportLabel" data-pressed="false"><span data-i18n="wallet_setup_import_btn">백업에서 불러오기</span> <input type="file" id="setupImportFile" accept="application/json" hidden /></label>
+      </p>
+      <!-- 패스키 모드(2026-11-17 스펙 §4.2): 백업 파일 대신 패스키 — 만들기(PRF 확인까지) 또는 이미 있는(동기화된) 패스키 고르기. -->
+      <p class="row-actions" id="setupPasskeyChoice" hidden>
+        <button type="button" id="setupPasskeyNewBtn" data-i18n="wallet_setup_passkey_new_btn">패스키 만들기</button>
+        <button type="button" id="setupPasskeyExistingBtn" class="btn-ghost" data-i18n="wallet_setup_passkey_existing_btn">이미 있는 패스키 쓰기</button>
       </p>
       <div id="setupBackupRow" class="pw-form" hidden>
         <label><span data-i18n="wallet_setup_pw">백업 비밀번호(8자 이상)</span> <input id="setupPw" type="password" autocomplete="new-password" /></label>
@@ -156,6 +169,14 @@
     <p class="notice" id="snapVerNotice" hidden></p>
 
     <!-- ===== 탭: 연결된 서비스 ===== -->
+    <!-- 세션 복구(2026-11-17 패스키 모드 P9): 스냅 에이전트가 재시작해 증인이 없는 세션들을 패스키 한 번으로 다시 채운다. 패스키 모드에서 그런 세션이 있을 때만. -->
+    <section class="card" id="restoreCard" data-panel="services" hidden>
+      <h3 data-i18n="wallet_restore_title">세션 복구</h3>
+      <p class="desc" data-i18n="wallet_restore_desc">스냅 에이전트가 다시 시작돼 아래 서비스의 로그인 증인이 사라졌습니다. 패스키를 한 번 확인하면 모두 다시 채웁니다 — 다시 로그인할 필요는 없습니다.</p>
+      <ul id="restoreList"></ul>
+      <p class="row-actions"><button type="button" id="restoreBtn" data-i18n="wallet_restore_btn">세션 복구</button></p>
+      <div id="restoreVerdict"></div>
+    </section>
     <section class="card" id="sessionsCard" data-panel="services" hidden>
       <h3 data-i18n="wallet_sessions_title">연결된 서비스</h3>
       <p class="desc" data-i18n="wallet_sessions_desc">RP 마다 다른 주소로 로그인합니다. 세션 하나만 끝낼 수도 있습니다.</p>
@@ -189,6 +210,13 @@
       <p id="meStoreEmpty" class="muted" data-i18n="wallet_me_empty" hidden>저장된 등록 없음</p>
       <div id="meStore"></div>
       <div id="meStoreVerdict"></div>
+      <!-- 패스키 모드(2026-11-17 스펙 §4.2): salt 는 저장돼 있지 않다 — 보려면 패스키를 한 번 확인한다. 연결 끊기는 등록이 없을 때만. -->
+      <div id="passkeyMeRow" hidden>
+        <p class="row-actions"><button type="button" id="passkeyShowSaltBtn" class="btn-ghost" data-i18n="wallet_passkey_show_salt_btn">salt 보기</button> <code id="passkeySaltOut"></code></p>
+        <p class="row-actions"><button type="button" id="passkeyDisconnectBtn" class="btn-ghost" data-i18n="wallet_passkey_disconnect_btn">패스키 연결 끊기</button></p>
+        <p class="muted" id="passkeyDisconnectHint" data-i18n="wallet_passkey_disconnect_hint">등록이 남아 있으면 끊을 수 없습니다 — "스냅 초기화" 뒤에 끊으세요.</p>
+        <div id="passkeyMeVerdict"></div>
+      </div>
       <!-- 2026-11-13(계획 P11): 새 파일·새 비밀번호로 salt 백업을 다시 만든다(위 설정 카드가 열린다). -->
       <p class="row-actions" id="rebackupRow" hidden><button type="button" id="rebackupBtn" class="btn-ghost" data-i18n="wallet_rebackup_btn">백업 다시 만들기</button></p>
       <!-- 2026-11-14(MetaMask 의존성 점검): 번들이 바뀐 뒤 MetaMask 에 스냅을 다시 요청하는 길 — 숨은 설정 패널을 걷어내며(같은 날) "스냅 다시 설치" 가 함께 없어져,
@@ -301,12 +329,15 @@
     let setupMode = null;   // null | 'new'(새로 만들기를 눌렀다) | 'rebackup'
     function applyGate() {
       if (IS_AUTHORIZE) return;
-      const gated = cfg.secrets === 'snap' && mmState.kind !== 'ok';
-      const setup = !gated && cfg.secrets === 'snap' && setupNeeded;
-      $('connectCard').hidden = !gated;
+      const badOrigin = PASSKEY() && !passkeyOriginOk();   // 패스키 모드를 127.0.0.1 로 열었다 — 안내 카드만(P6)
+      $('passkeyOriginCard').hidden = !badOrigin;
+      const gated = badOrigin || (cfg.secrets === 'snap' && mmState.kind !== 'ok');
+      const setup = !gated && (cfg.secrets === 'snap' || PASSKEY()) && setupNeeded;
+      $('connectCard').hidden = !gated || badOrigin;
       $('setupCard').hidden = !(setup || (!gated && setupMode === 'rebackup'));
       $('walletTabs').hidden = gated || setup;
       for (const el of document.querySelectorAll('[data-panel]')) el.hidden = gated || setup || el.dataset.panel !== currentTab;
+      applyRestoreVisibility();
       renderRegNotice(); renderSnapVersion();
     }
     /** 스냅 버전(2026-11-14): 설치된 스냅이 이 화면의 번들과 다른 버전이면 탭 위에 안내하고, "내 계정" 탭의 버전 줄을 채운다. 연결 전·승인 팝업에는 없다. */
@@ -345,6 +376,10 @@
     };
     // /wallet/config 를 못 읽으면 지금까지의 동작(file 모드)으로 본다.
     let cfg = { secrets: 'file', snapId: null, walletOrigin: location.origin, rpcUrl: null, chainId: null };
+    // 패스키 모드(2026-11-17 스펙 2026-11-17-mode3-passkey-mode): 스냅 RPC 자리를 Mode3Passkey 어댑터가 받는다(P7). salt 는 패스키에서 그때그때.
+    const PASSKEY = () => cfg.secrets === 'passkey';
+    const passkeyOriginOk = () => location.hostname === 'localhost';
+    let passkeyStore = null;
     // 2026-11-14(MetaMask 의존성 점검): 연결은 스냅만 요청한다(wallet_requestSnaps) — 계정 권한(eth_requestAccounts)은 MetaMask 로 트랜잭션을 보낼 때만 받는다(requireAccount).
     // 신원은 스냅의 salt 에 묶여 있고 MetaMask 계정과 무관하다. 그전에는 연결 때마다 계정을 요구하고 상단 알약에 그 주소를 보여, 계정이 신원인 것처럼 보였다.
     let account = null;        // MetaMask 가 준 EOA — 가스를 내는 계정이다(PPID 계정과 다르다). "지금 반영"·"보내기" 가 처음 보낼 때 받는다
@@ -381,6 +416,11 @@
     const SALT_REVEAL_MS = 5000;   // "보기" 뒤 이만큼만 화면에 남는다 — 그 전에 복사해야 한다
 
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    /** 메서드를 고르는 JSON 요청(패스키 라우트의 GET·PUT·DELETE) — { status, body }. */
+    async function postJsonMethod(method, url, body) {
+      const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, ...(body === undefined || method === 'GET' ? {} : { body: JSON.stringify(body) }) });
+      return { status: r.status, body: await r.json().catch(() => ({})) };
+    }
     async function postJson(url, body) {
       const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       return { status: r.status, body: await r.json().catch(() => ({})) };
@@ -492,7 +532,7 @@
       await markConnected(s);
       return true;
     }
-    const ensureConnected = async () => (snapConnected ? true : connectMetaMask());
+    const ensureConnected = async () => (PASSKEY() || snapConnected ? true : connectMetaMask());
     /** MetaMask 에 스냅을 (다시) 요청한다 — 첫 설치와 "스냅 업데이트" 가 함께 쓴다. local: 스냅은 요청마다 번들을 새로 받는다. 설치된 스냅의 항목을 돌려준다. */
     async function requestSnapAgain(eth) {
       const got = await eth.request({ method: 'wallet_requestSnaps', params: { [cfg.snapId]: {} } });
@@ -532,6 +572,7 @@
     /** 스냅 설정(salt 있음·백업 확인)이 끝났는가 — MetaMask 창을 띄우지 않고 본다: 이미 설치·허용된 스냅에만 getPublicInfo 를 부른다(설치 전이면 salt 도 없다).
      *  MetaMask 가 없거나 스냅을 읽지 못하면 true — 뒤 단계(연결·등록)가 제 사유로 다시 거른다. */
     async function snapSetupReady() {
+      if (PASSKEY()) { try { return (await invokeSnap('getPublicInfo', {}))?.hasSalt === true; } catch { return true; } }
       if (cfg.secrets !== 'snap') return true;
       let eth; try { eth = requireEthereum(); } catch { return true; }
       if (!(await snapInstalled(eth))) return false;
@@ -539,12 +580,15 @@
     }
     /** params 를 생략하면 request.params 자체를 보내지 않는다 — updateUserCred 는 명시적 null 만 폐기로 본다(Snap Ruling 6). */
     function invokeSnap(method, params) {
+      if (PASSKEY()) return passkeyStore.call(method, params ?? {});   // 패스키 모드: 같은 이름·입출력의 어댑터(P7)
       const eth = requireEthereum();
       const request = params === undefined ? { method } : { method, params };
       return eth.request({ method: 'wallet_invokeSnap', params: { snapId: cfg.snapId, request } });
     }
     // MetaMask 가 사용자 거절에 쓰는 코드. Snap 대화상자 거절은 { denied: true } 로 오고, 연결·트랜잭션 거절은 이 코드로 온다.
     const isUserRejected = (e) => e && (e.code === 4001 || e.code === 'ACTION_REJECTED');
+    /** 패스키 모드의 어댑터·WebAuthn 오류는 사유를 그대로 낸다(passkey_mismatch 등 — 사전에 있다). 아니면 null(기존 매핑을 탄다). */
+    const passkeyReason = (e) => (PASSKEY() && typeof e?.reason === 'string' && /^(passkey_[a-z_]+|session_restore_required|not_registered|already_registered)$/.test(e.reason) ? e.reason : null);
     /** 로그인 동의 — 승인이면 증인 묶음, 거절이면 null. */
     async function consentLogin({ origin, arid, allowAgent, serviceName, disclose, set }) {
       const w = await invokeSnap('consentLogin', {
@@ -767,6 +811,7 @@
      *  또는 스냅 초기화) 보류 등록으로 스냅의 salt 를 받아 에이전트 /wallet/register/resume 로 대조하고(auid) 맞으면 스냅에 등록을 채운다.
      *  할 일이 없으면 null, 복구했으면 { ok:true }, salt 가 다르면(다른 백업·새로 만든 salt) { ok:false, reason:'snap_restore_mismatch' }. */
     async function restoreSnapIfEmpty({ step, log }) {
+      if (PASSKEY()) return null;   // 패스키 모드는 에이전트 자체가 등록 보관자다(R-D)
       let st = null;
       try { st = await (await fetch('/wallet/status')).json(); } catch { return null; }   // 못 읽으면 지금처럼 진행 — 뒤 단계가 다시 거른다
       if (!st?.registered) return null;
@@ -871,7 +916,10 @@
     // 등록 팝업(Task 14, B5) — IdP /user 페이지가 ${walletOrigin}/?authorize=1 을 열고 mode3-register 를 보낸다
     // (cia_user.html 의 #registerBtn). mode3-authorize 와는 아예 다른 요청이라 runAuthorize() 의 onMessage 가 먼저
     // type 으로 갈라 이 함수로 넘긴다. 결과(mode3-register-result)는 실제 발신 오리진(ev.source·ev.origin)에만 보낸다.
-    async function handleRegisterMessage(ev, req, { step, log }) {
+    /** 패스키 모드면 요청 하나 전체를 withSalt 로 감싸 패스키를 한 번만 부른다(스펙 P3 — 팝업 하나에 한 번). */
+    const processAuthorize = (...a) => (PASSKEY() ? passkeyStore.withSalt(() => processAuthorizeInner(...a)) : processAuthorizeInner(...a));
+    const handleRegisterMessage = (...a) => (PASSKEY() ? passkeyStore.withSalt(() => handleRegisterMessageInner(...a)) : handleRegisterMessageInner(...a));
+    async function handleRegisterMessageInner(ev, req, { step, log }) {
       const reply = (result) => {
         if (result.ok) say('wallet_prog_done'); else sayFailed(result.reason);
         try { ev.source.postMessage({ type: 'mode3-register-result', result }, ev.origin); }
@@ -886,14 +934,14 @@
         return reply({ ok: false, reason: 'origin_mismatch' });
       }
       lastAuthReq = req; renderAuthTitle(); renderAuthSummary(req); say('wallet_prog_registering');   // 큰 제목 "등록"(2026-11-05) — 오리진 대조를 통과한 뒤에만
-      if (cfg.secrets !== 'snap') { step('이 스냅은 file 모드다 — 이 팝업 경로를 쓰지 않는다.'); return reply({ ok: false, reason: 'not_snap_mode' }); }
+      if (cfg.secrets === 'file') { step('이 스냅은 file 모드다 — 이 팝업 경로를 쓰지 않는다.'); return reply({ ok: false, reason: 'not_snap_mode' }); }
       try {
         step('MetaMask·스냅 연결 중…'); say('wallet_prog_connect');
-        try { await connectMetaMask(); }
+        try { if (!PASSKEY()) await connectMetaMask(); }
         catch (e) {
           step('MetaMask·스냅 연결 실패');
           log(e.message);
-          return reply({ ok: false, reason: isUserRejected(e) ? 'user_denied' : 'snap_unavailable', detail: e.message });
+          return reply({ ok: false, reason: (passkeyReason(e) ?? (isUserRejected(e) ? 'user_denied' : 'snap_unavailable')), detail: e.message });
         }
         if (snapOutdated()) { step(`스냅 버전 ${snapVersion} ≠ ${cfg.snapVersion}`); return reply({ ok: false, reason: 'snap_outdated', detail: `installed ${snapVersion}, expected ${cfg.snapVersion}` }); }   // 2026-11-14: 옛 번들이면 일찍 멈춘다
         say('wallet_prog_registering');
@@ -941,7 +989,7 @@
       } catch (e) {
         step('오류');
         log(e.message);
-        reply({ ok: false, reason: isUserRejected(e) ? 'user_denied' : (needsSnapSetup(e) ? 'snap_setup_required' : 'wallet_error'), detail: e.message });
+        reply({ ok: false, reason: passkeyReason(e) ?? (isUserRejected(e) ? 'user_denied' : (needsSnapSetup(e) ? 'snap_setup_required' : 'wallet_error')), detail: e.message });
       }
     }
 
@@ -965,7 +1013,7 @@
       step('스냅 동의 창을 확인하세요 — 받는 주소·금액.'); say('wallet_prog_confirm_mm');
       let c;
       try { c = await invokeSnap('consentDisclosure', { relay: true, arid: String(req.arid), origin: req.origin, disclose: null, to: req.to, value, set: null }); }
-      catch (e) { step('스냅 동의 실패'); log(e.message); return reply({ ok: false, reason: isUserRejected(e) ? 'user_denied' : 'snap_unavailable', detail: e.message }); }
+      catch (e) { step('스냅 동의 실패'); log(e.message); return reply({ ok: false, reason: (passkeyReason(e) ?? (isUserRejected(e) ? 'user_denied' : 'snap_unavailable')), detail: e.message }); }
       if (!c || c.denied) { step('거절'); return reply({ ok: false, reason: 'user_denied' }); }
       step('증명·세션키 서명 중… (수 초 걸린다)'); say('wallet_prog_proving');
       const p = await postJson('/wallet/tx/prepare', { r_s: req.r_s, to: req.to, value, data });
@@ -1088,9 +1136,10 @@
      * authCode 는 IdP 에서 돌아왔을 때의 1회용 코드, 처음이면 null. 2026-11-05 중복 확인 제거: Snap 의 로그인 동의 창은 없다(consentLogin 은
      * 증인만 돌려준다) — 사용자가 RP 에서 "로그인" 을 눌러 시작한 요청이고, 인증서·팩토리 precheck 을 통과한 뒤에만 Snap 을 부른다.
      */
-    async function processAuthorize(req, evOrigin, { step, log, reply, authCode, authPurpose = 'issue', authUid = null, authAuid = null }) {
+    async function processAuthorizeInner(req, evOrigin, { step, log, reply, authCode, authPurpose = 'issue', authUid = null, authAuid = null }) {
       try {
         const connect = async () => {
+          if (PASSKEY()) return true;   // 패스키 모드: MetaMask 가 없다 — salt 는 어댑터가 패스키로(팝업 하나에 한 번, withSalt)
           step('MetaMask·스냅 연결 중…'); say('wallet_prog_connect');
           try {
             await connectMetaMask();
@@ -1101,7 +1150,7 @@
           catch (e) {
             step('MetaMask·스냅 연결 실패');
             log(e.message);
-            reply({ ok: false, reason: isUserRejected(e) ? 'user_denied' : 'snap_unavailable', detail: e.message });
+            reply({ ok: false, reason: (passkeyReason(e) ?? (isUserRejected(e) ? 'user_denied' : 'snap_unavailable')), detail: e.message });
             return false;
           }
         };
@@ -1230,7 +1279,7 @@
         }
         step('오류');
         log(e.message);
-        reply({ ok: false, reason: isUserRejected(e) ? 'user_denied' : (needsSnapSetup(e) ? 'snap_setup_required' : 'wallet_error'), detail: e.message });
+        reply({ ok: false, reason: passkeyReason(e) ?? (isUserRejected(e) ? 'user_denied' : (needsSnapSetup(e) ? 'snap_setup_required' : 'wallet_error')), detail: e.message });
       }
     }
 
@@ -1280,7 +1329,7 @@
         lastAuthReq = req;
         renderAuthTitle();
         renderAuthSummary(req);
-        if (cfg.secrets !== 'snap') { step('이 스냅은 file 모드다 — 팝업 경로를 쓰지 않는다.'); return reply({ ok: false, reason: 'not_snap_mode' }); }
+        if (cfg.secrets === 'file') { step('이 스냅은 file 모드다 — 팝업 경로를 쓰지 않는다.'); return reply({ ok: false, reason: 'not_snap_mode' }); }
         await processAuthorize(req, ev.origin, { step, log, reply, authCode: null });
       };
       window.addEventListener('message', onMessage);
@@ -1583,8 +1632,8 @@
     }
     /** 모드에 따라 달라지는 안내 문구(언어 전환 때 다시 부른다). */
     function renderModeTexts() {
-      const snap = cfg.secrets === 'snap';
-      tte($('intro'), snap ? 'wallet_intro_snap' : 'wallet_intro');
+      const snap = cfg.secrets === 'snap' || PASSKEY();
+      tte($('intro'), PASSKEY() ? 'wallet_intro_passkey' : snap ? 'wallet_intro_snap' : 'wallet_intro');
       tte($('txNote'), snap ? 'wallet_tx_note_snap' : 'wallet_tx_note');
       if (snap) $('registerBtn').title = tt('wallet_register_title_snap');
     }
@@ -1604,11 +1653,79 @@
       }
       renderIdentity();
       renderSessions();
+      renderRestore();
+      renderPasskeyMe();
       renderRcl();
       renderBounds();
       renderGuide();
       syncStack();
     }
+    /** 패스키 모드의 세션 복구 카드(스펙 P9) — 증인 없는 세션(hasWitness:false)이 있을 때만. 복구 결과(li.dataset.result)는 다음 렌더까지 남는다. */
+    let restoreResults = {};
+    /** applyGate 의 탭 규칙(data-panel) 뒤에 한 번 더 — 보일 세션이 없으면 서비스 탭에서도 숨긴다. */
+    function applyRestoreVisibility() {
+      const card = $('restoreCard'); if (!card) return;
+      if (card.dataset.want !== '1' || $('walletTabs').hidden || currentTab !== 'services') card.hidden = true;
+      else card.hidden = false;
+    }
+    function renderRestore() {
+      const card = $('restoreCard'); if (!card) return;
+      const sess = PASSKEY() && !IS_AUTHORIZE ? Object.entries(lastStatus?.sessions ?? {}) : [];
+      const lacking = sess.filter(([, e]) => e.hasWitness === false);
+      const shown = sess.filter(([k, e]) => e.hasWitness === false || restoreResults[k]);
+      const want = lacking.length > 0 || shown.length > 0;   // 방금 복구한 결과도 이 화면에 있는 동안은 보인다(새로 고치면 사라진다)
+      card.dataset.want = want ? '1' : '';
+      applyRestoreVisibility();
+      const ul = $('restoreList'); ul.innerHTML = '';
+      for (const [rs, e] of shown) {
+        const li = document.createElement('li'); li.dataset.rs = rs;
+        const name = e.serviceName || e.origin || e.arid;
+        li.textContent = `${name} — ${e.allowAgent === '1' ? (tt('wallet_restore_agent_on') || 'AI 에이전트 허용') : (tt('wallet_restore_agent_off') || 'AI 에이전트 허용 안 함')}`;
+        const r = restoreResults[rs];
+        if (r) { li.dataset.result = r.ok ? 'ok' : 'fail'; const v = document.createElement('span'); v.className = 'verdict'; v.textContent = r.ok ? ` · ${tt('wallet_restore_ok') || '복구됨'}` : ` · ${Demo.reason(r.reason)?.title ?? r.reason}`; li.appendChild(v); }
+        ul.appendChild(li);
+      }
+    }
+    $('restoreBtn').addEventListener('click', async () => {
+      const btn = $('restoreBtn'); if (btn.disabled) return;
+      btn.disabled = true; clearVerdictEl($('restoreVerdict'));
+      try {
+        const targets = Object.entries(lastStatus?.sessions ?? {}).filter(([, e]) => e.hasWitness === false);
+        await passkeyStore.withSalt(async () => {
+          const st = await passkeyStore.agentState();
+          const { s_u } = await invokeSnap('getSalt', {});   // 패스키 한 번 — 아래 세션 전부가 같은 salt 를 쓴다
+          const witness = { uid: st.registration?.uid, s_u, attrs: st.registration?.attrs, userCred: st.userCred ?? null };
+          for (const [rs, e] of targets) {
+            const r = await postJson('/wallet/session/witness', { r_s: rs, witness, allowAgent: e.allowAgent });
+            restoreResults[rs] = r.status === 200 ? { ok: true } : { ok: false, reason: r.body?.reason ?? `HTTP ${r.status}` };
+          }
+        });
+        const bad = Object.values(restoreResults).filter((r) => !r.ok).length;
+        setVerdict($('restoreVerdict'), bad === 0, bad === 0 ? 'wallet_restore_done' : 'wallet_restore_partial');
+      } catch (e) { setVerdict($('restoreVerdict'), false, 'wallet_restore_failed', { reason: passkeyReason(e) ?? 'wallet_error', detail: e?.message }); }
+      finally { btn.disabled = false; await refresh(); }   // 결과는 restoreResults 로 남아 다시 그려진다
+    });
+    /** "내 계정" 의 패스키 줄(스펙 §4.2) — salt 보기, 연결 끊기(등록이 없을 때만). */
+    function renderPasskeyMe() {
+      const row = $('passkeyMeRow'); if (!row) return;
+      row.hidden = !PASSKEY() || IS_AUTHORIZE;
+      if (row.hidden) return;
+      const registered = Boolean(lastStatus?.registered);
+      $('passkeyDisconnectBtn').disabled = registered;
+      $('passkeyDisconnectHint').hidden = !registered;
+    }
+    $('passkeyShowSaltBtn').addEventListener('click', async () => {
+      clearVerdictEl($('passkeyMeVerdict')); $('passkeySaltOut').textContent = '';
+      try { const { s_u } = await invokeSnap('showSalt', {}); $('passkeySaltOut').textContent = s_u; }   // 화면에만 — 저장하지 않는다(P3)
+      catch (e) { setVerdict($('passkeyMeVerdict'), false, 'wallet_passkey_salt_failed', { reason: passkeyReason(e) ?? 'wallet_error', detail: e?.message }); }
+    });
+    $('passkeyDisconnectBtn').addEventListener('click', async () => {
+      clearVerdictEl($('passkeyMeVerdict'));
+      const r = await postJsonMethod('DELETE', '/wallet/passkey/credential');
+      if (r.status !== 200) { setVerdict($('passkeyMeVerdict'), false, 'wallet_passkey_disconnect_failed', { reason: r.body?.reason ?? 'wallet_error' }); return; }
+      $('passkeySaltOut').textContent = '';
+      await refreshSetup();   // 연결이 없으니 설정 카드가 다시 뜬다
+    });
     /** 연결된 서비스 탭의 폐기 목록 한 줄. 상태를 못 읽었거나 에이전트에 체인 설정이 없으면(rcl:null) 숨긴다. */
     function renderRcl() {
       const el = $('rclLine'); if (!el) return;
@@ -1671,7 +1788,7 @@
         }
       } catch (e) {
         out(`세션 폐기 실패: ${e.message}`);
-        setVerdict($('sessionVerdict'), false, 'wallet_session_revoke_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
+        setVerdict($('sessionVerdict'), false, 'wallet_session_revoke_failed', { reason: (passkeyReason(e) ?? (isUserRejected(e) ? 'user_denied' : 'wallet_error')), detail: e.message });
       } finally { delete btn.dataset.busy; refresh(); }
     }
 
@@ -1832,6 +1949,7 @@
     for (const b of document.querySelectorAll('#walletTabs [data-tab]')) b.addEventListener('click', () => clearVerdictEl($('setupNotice')));
     /** 스냅의 설정 상태(getPublicInfo.hasSalt·backedUp)를 읽어 카드와 탭을 맞춘다. salt 는 읽지 않는다. */
     async function refreshSetup() {
+      if (PASSKEY() && !IS_AUTHORIZE) return refreshPasskeySetup();
       if (cfg.secrets !== 'snap' || IS_AUTHORIZE) return null;
       const info = await invokeSnap('getPublicInfo', {});
       const hasSalt = info?.hasSalt === true, backedUp = info?.backedUp === true;
@@ -1851,6 +1969,37 @@
       applyGate();
       return info;
     }
+    /** 패스키 모드의 설정 카드(스펙 §4.2): 연결된 패스키(credential ID)가 없으면 카드만 — 만들기 / 이미 있는 패스키 쓰기. */
+    async function refreshPasskeySetup() {
+      if (!passkeyOriginOk()) { setupNeeded = false; applyGate(); return null; }
+      const info = await invokeSnap('getPublicInfo', {});
+      setupNeeded = info?.hasSalt !== true;
+      $('setupChoice').hidden = true; $('setupBackupRow').hidden = true; $('setupImportPwRow').hidden = true; $('setupBackBtn').hidden = true;
+      $('setupPasskeyChoice').hidden = !setupNeeded;
+      $('setupTitle').dataset.i18n = 'wallet_setup_passkey_title'; $('setupTitle').textContent = tt('wallet_setup_passkey_title') || '패스키 설정';
+      $('setupDesc').dataset.i18n = 'wallet_setup_passkey_desc'; $('setupDesc').textContent = tt('wallet_setup_passkey_desc') || $('setupDesc').textContent; $('setupDesc').hidden = false;
+      $('setupState').textContent = setupNeeded ? (tt('wallet_setup_state_passkey_none') || '이 스냅 에이전트에는 아직 패스키가 없습니다.') : '';
+      applyGate();
+      return info;
+    }
+    const passkeyFail = (reason, detail) => setVerdict($('setupVerdict'), false, 'wallet_setup_passkey_failed', { reason, ...(detail ? { detail } : {}) });
+    /** 만들기·고르기 공통: 패스키에서 credential ID 를 얻어 에이전트에 연결한다(salt 는 버린다 — 쓸 때마다 다시 만든다). */
+    async function linkPasskey(get) {
+      clearVerdictEl($('setupVerdict'));
+      const btns = [$('setupPasskeyNewBtn'), $('setupPasskeyExistingBtn')];
+      for (const b of btns) b.disabled = true;
+      try {
+        const { credentialId, s_u } = await get();
+        // s_u 는 에이전트가 등록의 auid 와 대조하는 데만 쓴다(리뷰 I-2, 스펙 §4.2 — 에이전트는 저장하지 않는다)
+        const r = await postJsonMethod('PUT', '/wallet/passkey/credential', { credentialId, s_u });
+        if (r.status !== 200) return passkeyFail(r.body?.reason ?? 'wallet_error', r.body?.error ?? null);
+        await refreshSetup();
+        if (!setupNeeded) setVerdict($('setupNotice'), true, 'wallet_setup_passkey_done');
+      } catch (e) { passkeyFail(e?.reason ?? 'passkey_unsupported', e?.message ?? String(e)); }
+      finally { for (const b of btns) b.disabled = false; }
+    }
+    $('setupPasskeyNewBtn').addEventListener('click', () => linkPasskey(() => window.Mode3Passkey.createPasskey()));
+    $('setupPasskeyExistingBtn').addEventListener('click', () => linkPasskey(() => window.Mode3Passkey.derivePrf({})));
     $('setupNewBtn').addEventListener('click', () => {
       if (importGuarded()) return;
       setupMode = 'new'; closeSaltImport(); clearVerdictEl($('setupVerdict')); setChoice('new');
@@ -2015,7 +2164,7 @@
         profileDirty = false;   // 등록이 끝났다 — 이제 refresh() 가 서버의 profile 로 다시 그려도 된다
         setVerdict($('registerResult'), true, 'registered', () => ({ summary: tt('wallet_registered_summary', { uid, attrs: profileText(b.profile) }) || `uid ${uid} · ${profileText(b.profile)}`, detail }));
       } catch (e) {
-        setVerdict($('registerResult'), false, 'wallet_register_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
+        setVerdict($('registerResult'), false, 'wallet_register_failed', { reason: (passkeyReason(e) ?? (isUserRejected(e) ? 'user_denied' : 'wallet_error')), detail: e.message });
       }
       refresh();
     });
@@ -2039,7 +2188,7 @@
         setVerdict($('registerResult'), true, 'wallet_profile_saved', () => (snapSyncErr
           ? { summary: tt('wallet_profile_saved_snap_pending', { err: snapSyncErr }) || `저장됨 — 스냅 반영 실패(${snapSyncErr}), 다음 로그인이 맞춘다`, detail: safeDetail(b) }
           : { summary: tt(b.changed ? 'wallet_profile_changed' : 'wallet_profile_same', { attrs: profileText(b.profile) }) || profileText(b.profile), detail: safeDetail(b) }));
-      } catch (e) { setVerdict($('registerResult'), false, 'wallet_profile_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message }); }
+      } catch (e) { setVerdict($('registerResult'), false, 'wallet_profile_failed', { reason: (passkeyReason(e) ?? (isUserRejected(e) ? 'user_denied' : 'wallet_error')), detail: e.message }); }
       refresh();
     });
 
@@ -2248,7 +2397,7 @@
           setVerdict($('boundsVerdict'), false, 'wallet_bounds_apply_failed', { reason: b.reason ?? 'bound_not_applied', detail: safeDetail(b) });
         }
       } catch (e) {
-        setVerdict($('boundsVerdict'), false, 'wallet_bounds_apply_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
+        setVerdict($('boundsVerdict'), false, 'wallet_bounds_apply_failed', { reason: (passkeyReason(e) ?? (isUserRejected(e) ? 'user_denied' : 'wallet_error')), detail: e.message });
       } finally { delete btn.dataset.busy; refresh(); }
     }
 
@@ -2287,7 +2436,7 @@
         else await sendTxViaRelayer();
       } catch (e) {
         txLog(`오류: ${e.message}`);
-        txFailed(null, isUserRejected(e) ? 'user_denied' : 'wallet_error', e.message);
+        txFailed(null, (passkeyReason(e) ?? (isUserRejected(e) ? 'user_denied' : 'wallet_error')), e.message);
       } finally { delete $('txBtn').dataset.busy; refresh(); }
     });
 
@@ -2302,7 +2451,7 @@
         if (status !== 200) { setVerdict($('demoVerdict'), false, 'wallet_demo_failed', { reason: b.error ?? `HTTP ${status}` }); return; }
         setVerdict($('demoVerdict'), true, 'wallet_demo_set', () => ({ summary: tt('wallet_demo_set_summary', { scope: b.override.scope, fields: b.override.fields.join(', ') }) || `적용: ${b.override.scope} (${b.override.fields.join(', ')})` }));
       } catch (e) {
-        setVerdict($('demoVerdict'), false, 'wallet_demo_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
+        setVerdict($('demoVerdict'), false, 'wallet_demo_failed', { reason: (passkeyReason(e) ?? (isUserRejected(e) ? 'user_denied' : 'wallet_error')), detail: e.message });
       }
       refresh();
     });
@@ -2311,7 +2460,7 @@
         await postJson('/wallet/demo/override', { clear: true });
         setVerdict($('demoVerdict'), true, 'wallet_demo_cleared', () => ({ summary: tt('wallet_demo_cleared') || '원래대로' }));
       } catch (e) {
-        setVerdict($('demoVerdict'), false, 'wallet_demo_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
+        setVerdict($('demoVerdict'), false, 'wallet_demo_failed', { reason: (passkeyReason(e) ?? (isUserRejected(e) ? 'user_denied' : 'wallet_error')), detail: e.message });
       }
       refresh();
     });
@@ -2324,7 +2473,7 @@
         const what = tt(whatKey) || whatFallback;
         setVerdict($('demoVerdict'), true, 'wallet_demo_set', () => ({ summary: tt('wallet_demo_fake_armed', { what }) || `다음 1회: ${what}` }));
       } catch (e) {
-        setVerdict($('demoVerdict'), false, 'wallet_demo_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
+        setVerdict($('demoVerdict'), false, 'wallet_demo_failed', { reason: (passkeyReason(e) ?? (isUserRejected(e) ? 'user_denied' : 'wallet_error')), detail: e.message });
       }
       refresh();
     }
@@ -2347,7 +2496,7 @@
         await markConnected(await requestSnapAgain(requireEthereum()));
         setVerdict(v, !snapOutdated(), snapOutdated() ? 'wallet_snap_update_failed' : 'wallet_snap_update_ok', () => ({ summary: tt('wallet_snap_version', { have: snapVersion ?? '-' }) || `설치된 스냅 버전 ${snapVersion ?? '-'}` }));
         if (currentTab === 'me' && !setupNeeded) await loadStore();
-      } catch (e) { setVerdict(v, false, 'wallet_snap_update_failed', { reason: isUserRejected(e) ? 'user_denied' : 'snap_unavailable', detail: e?.message }); }
+      } catch (e) { setVerdict(v, false, 'wallet_snap_update_failed', { reason: (passkeyReason(e) ?? (isUserRejected(e) ? 'user_denied' : 'snap_unavailable')), detail: e?.message }); }
     });
     $('snapResetBtn').addEventListener('click', () => snapResetNow());
     /** 스냅 초기화 — 버튼과 데모 리셋 감지(checkDemoReset)가 함께 쓴다. ask=false 면 페이지 확인 창을 건너뛴다(스냅의 MetaMask 확인 창은 그대로 뜬다). */
@@ -2365,7 +2514,7 @@
         await refresh();
         await loadStore();   // "내 계정" 의 값도 지운 뒤의 것으로
       } catch (e) {
-        setVerdict($('snapResetVerdict'), false, 'wallet_snap_reset_failed', { reason: isUserRejected(e) ? 'user_denied' : 'wallet_error', detail: e.message });
+        setVerdict($('snapResetVerdict'), false, 'wallet_snap_reset_failed', { reason: (passkeyReason(e) ?? (isUserRejected(e) ? 'user_denied' : 'wallet_error')), detail: e.message });
       }
     }
     // 2026-11-16(사용자 지적): 데모 리셋 스크립트는 에이전트 상태는 치우지만 MetaMask 스냅 안의 등록(uid·auid·자격증명·동의)은 지울 수 없다 — 옛 등록이 남아
@@ -2398,6 +2547,20 @@
       $('registerHintLink').textContent = ciaUserUrl ?? '-';
     }
 
+    /** 패스키 모드(2026-11-17): 어댑터를 만들고 MetaMask·스냅 전용 요소를 숨긴다. 127.0.0.1 로 열렸으면 localhost 링크를 채운다(applyGate 가 카드를 보인다). */
+    function applyPasskeyMode() {
+      passkeyStore = window.Mode3Passkey.createPasskeyStore({
+        fetchJson: async (url, init = {}) => postJsonMethod(init.method ?? 'GET', url, init.body),
+        confirmBox: async (title, lines) => window.confirm([title, '', ...lines].join('\n')),
+        promptBox: async (title, lines, placeholder) => window.prompt([title, '', ...lines].join('\n'), '') ?? null,
+      });
+      $('mmStatus').hidden = true;
+      for (const id of ['snapVerNotice', 'rebackupRow']) { const el = $(id); if (el) el.hidden = true; }
+      const ver = $('snapVerText')?.closest('p'); if (ver) ver.hidden = true;
+      const link = $('passkeyOriginLink'); const u = `http://localhost:${location.port}${location.pathname}${location.search}`;
+      link.href = u; link.textContent = u;
+    }
+
     async function init() {
       // 승인 팝업에는 체험 모드를 두지 않는다(설계 2026-09-25 §3.1 — 안내 바가 없는 창이다).
       Demo.init({ page: 'wallet', tour: !IS_AUTHORIZE });
@@ -2409,8 +2572,10 @@
         const r = await fetch('/wallet/config');
         if (r.ok) cfg = { ...cfg, ...(await r.json()) };
       } catch { /* 설정을 못 읽으면 file 모드로 본다 */ }
-      if (cfg.secrets === 'snap') applySnapMode();
-      if (!IS_AUTHORIZE) { try { await restoreConnection(); } catch { /* 못 이으면 연결 카드가 보인다 */ } }
+      if (cfg.secrets === 'snap' || PASSKEY()) applySnapMode();
+      if (PASSKEY()) applyPasskeyMode();
+      if (!IS_AUTHORIZE && PASSKEY()) { try { await refreshSetup(); } catch { /* 에이전트를 못 읽으면 탭은 그대로 — 뒤 단계가 다시 거른다 */ } }
+      else if (!IS_AUTHORIZE) { try { await restoreConnection(); } catch { /* 못 이으면 연결 카드가 보인다 */ } }
       if (!IS_AUTHORIZE) checkDemoReset().catch(() => {});   // 2026-11-16: 새 데모면 스냅의 옛 등록을 지운다
       if (!IS_AUTHORIZE) showTab(currentTab);
       renderModeTexts();

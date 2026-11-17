@@ -14,6 +14,8 @@
 #                                                         # 1회용 코드가 있어야 발급한다(2026-10-22). key 면 옛 방식(서명만, 인증 창 없이 발급) — CIA_DEMO_ACCOUNTS 는 그대로 미설정(가입(POST /cia/signup)만 쓴다)
 #        WALLET_MODE=snap bash scripts/demo_web_reset.sh   # Snap 모드(2026-10-22): 지갑 자리에 mode3_user_static.js 대신 에이전트(mode3_wallet_agent.js, MODE3_WALLET_SECRETS=snap)와
 #                                                          Snap 서버(snap-mode3, :8082)를 띄운다. 브라우저에는 MetaMask Flask 가 필요하다. scripts/demo_snap_reset.sh 가 이 값을 넣어 부른다.
+#        WALLET_MODE=passkey bash scripts/demo_web_reset.sh   # 패스키 모드(2026-11-17, 스펙 2026-11-17-mode3-passkey-mode): 에이전트(MODE3_WALLET_SECRETS=passkey)만, MetaMask·Snap 서버 없음.
+#                                                             지갑은 http://localhost:5100, IdP·서비스는 http://127.0.0.1 주소로 띄운다 — 패스키는 localhost 의 어느 포트든 부를 수 있다(스펙 §2).
 #        TWO_CHAINS=1 bash scripts/demo_web_reset.sh   # 폐기 체인 분리(V10): 캐노니컬 로그는 :8546(chainId 31338), 거울·팩토리·계정은 :8545
 #                                                       (런북 "폐기 체인을 별도 노드로" 절과 같은 순서 — IdP 가 :8546 에 게시하고 :8545 거울로 중계한다)
 # 주의: 이 스크립트가 내리는 것은 자기가 띄우는 종류의 프로세스(node cia.js 등, 명령줄이 정확히 일치하는 것)와 hardhat node 뿐이다.
@@ -21,7 +23,9 @@
 set -u
 cd "$(dirname "$0")/.."
 WALLET_MODE="${WALLET_MODE:-web}"
-case "$WALLET_MODE" in web|snap) ;; *) echo "WALLET_MODE 는 web 또는 snap: $WALLET_MODE"; exit 1;; esac
+case "$WALLET_MODE" in web|snap|passkey) ;; *) echo "WALLET_MODE 는 web·snap·passkey 중 하나: $WALLET_MODE"; exit 1;; esac
+# passkey 모드: IdP·서비스 페이지 주소를 127.0.0.1 로 — 지갑(localhost:5100)만 패스키를 부를 수 있게 한다(스펙 §2). 다른 모드는 지금처럼 localhost.
+PEER_HOST=$([ "$WALLET_MODE" = passkey ] && echo 127.0.0.1 || echo localhost)
 if [ "$WALLET_MODE" = "snap" ]; then
   [ -d snap-mode3/node_modules ] && [ -f snap-mode3/dist/bundle.js ] || { echo "BLOCKED: snap-mode3/node_modules 또는 dist/bundle.js 가 없다 — cd snap-mode3 && npm install && npm run build"; exit 1; }
 fi
@@ -76,9 +80,9 @@ cat "$LOGS/demo_env.txt"
 set -a; . "$LOGS/demo_env.txt"; set +a
 
 # 5. 공통 env(오리진 localhost 통일)
-export CIA_ADMIN_SECRET="${CIA_ADMIN_SECRET:-idp}" CIA_ADMIN_OPEN="${ADMIN_OPEN:-0}" CIA_ISSUE_AUTH="${ISSUE_AUTH:-$([ "$WALLET_MODE" = snap ] && echo code || echo key)}" CIA_CHAIN_RPCS="31337=http://127.0.0.1:8545" MODE3_VERIFIER_ADDRESS="" MODE3_RP_FACTORY_ADDRESS=""
+export CIA_ADMIN_SECRET="${CIA_ADMIN_SECRET:-idp}" CIA_ADMIN_OPEN="${ADMIN_OPEN:-0}" CIA_ISSUE_AUTH="${ISSUE_AUTH:-$([ "$WALLET_MODE" = web ] && echo key || echo code)}" CIA_CHAIN_RPCS="31337=http://127.0.0.1:8545" MODE3_VERIFIER_ADDRESS="" MODE3_RP_FACTORY_ADDRESS=""
 export MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}"
-export MODE3_WALLET_AGENT_ORIGIN="http://localhost:5100" MODE3_WALLET_PUBLIC_ORIGIN="http://localhost:5100" MODE3_RP_ORIGIN="http://localhost:3100,http://localhost:3101" MODE3_CIA_URL="http://localhost:4100"
+export MODE3_WALLET_AGENT_ORIGIN="http://localhost:5100" MODE3_WALLET_PUBLIC_ORIGIN="http://localhost:5100" MODE3_RP_ORIGIN="http://$PEER_HOST:3100,http://$PEER_HOST:3101" MODE3_CIA_URL="http://$PEER_HOST:4100"
 
 # 6. 서버 넷
 # CIA_RPC_URL 은 프로세스마다 준다(런북 4단계): IdP 는 캐노니컬 체인에 게시하고, 사용자 페이지·RP 는 응용 체인을 본다(사용자 페이지는 캐노니컬도 읽는다).
@@ -90,11 +94,14 @@ if [ "$WALLET_MODE" = "snap" ]; then
   MODE3_WALLET_SECRETS=snap CIA_RPC_URL="http://127.0.0.1:8545" MODE3_REV_CHAIN_RPC="$REV_RPC" setsid nohup node mode3_wallet_agent.js > "$LOGS/wallet_agent.log" 2>&1 < /dev/null &
   (cd snap-mode3 && setsid nohup npm run serve > "$LOGS/snap_serve.log" 2>&1 < /dev/null &)
   timeout 40 bash -c 'until ss -ltn | grep -q ":8082 "; do sleep 1; done' && echo "snap serve :8082 up" || { echo "snap serve failed — $LOGS/snap_serve.log"; exit 1; }
+elif [ "$WALLET_MODE" = "passkey" ]; then
+  # 패스키 모드(2026-11-17): salt 는 지갑 화면이 패스키 PRF 로 그때그때 만든다 — 에이전트만 띄운다(지갑 오리진은 localhost 여야 뜬다).
+  MODE3_WALLET_SECRETS=passkey CIA_RPC_URL="http://127.0.0.1:8545" MODE3_REV_CHAIN_RPC="$REV_RPC" setsid nohup node mode3_wallet_agent.js > "$LOGS/wallet_agent.log" 2>&1 < /dev/null &
 else
   CIA_RPC_URL="http://127.0.0.1:8545" MODE3_REV_CHAIN_RPC="$REV_RPC" MODE3_DEMO_GENERATION="$(date +%s)" setsid nohup node mode3_user_static.js > "$LOGS/user_static.log" 2>&1 < /dev/null &
 fi
-CIA_RPC_URL="http://127.0.0.1:8545" MODE3_RP_NAME="zkONE" MODE3_RP_PUBLIC_ORIGIN="http://localhost:3100" setsid nohup node mode3_rp.js > "$LOGS/rp1.log" 2>&1 < /dev/null &
-CIA_RPC_URL="http://127.0.0.1:8545" MODE3_RP_NAME="zkTWO" MODE3_RP_PUBLIC_ORIGIN="http://localhost:3101" MODE3_REQUIRE_DISCLOSURE=1 setsid nohup bash scripts/run_mode3_rp2.sh > "$LOGS/rp2.log" 2>&1 < /dev/null &
+CIA_RPC_URL="http://127.0.0.1:8545" MODE3_RP_NAME="zkONE" MODE3_RP_PUBLIC_ORIGIN="http://$PEER_HOST:3100" setsid nohup node mode3_rp.js > "$LOGS/rp1.log" 2>&1 < /dev/null &
+CIA_RPC_URL="http://127.0.0.1:8545" MODE3_RP_NAME="zkTWO" MODE3_RP_PUBLIC_ORIGIN="http://$PEER_HOST:3101" MODE3_REQUIRE_DISCLOSURE=1 setsid nohup bash scripts/run_mode3_rp2.sh > "$LOGS/rp2.log" 2>&1 < /dev/null &
 timeout 60 bash -c 'until ss -ltn | grep -q ":5100 " && ss -ltn | grep -q ":3100 " && ss -ltn | grep -q ":3101 "; do sleep 1; done' && echo "지갑($WALLET_MODE) :5100 + zkONE :3100 + zkTWO :3101 up" || { echo "some server failed"; ss -ltn | grep -E ":(5100|3100|3101) "; exit 1; }
 
 # 7. RP 등록 대기(승인은 기본 수동)
@@ -115,17 +122,21 @@ except Exception: print('(응답 없음)')"; done
     sleep 2
   done
 else
-  echo "RP 등록 $N 건 — 승인 대기(pending). http://localhost:4100/admin 에서 승인하세요 (AUTO_APPROVE=1 이면 자동)."
+  echo "RP 등록 $N 건 — 승인 대기(pending). http://$PEER_HOST:4100/admin 에서 승인하세요 (AUTO_APPROVE=1 이면 자동)."
 fi
 
 # 8. 요약
 for p in 4100 5100 3100 3101; do printf -- "--- :%s " "$p"; curl -s -m 10 "http://127.0.0.1:$p/mode3/health" | python3 -c "import sys,json;d=json.load(sys.stdin);print({k:d.get(k) for k in ('role','ok','status','secrets','registered','accounts','pendingRps','active') if d.get(k) is not None})"; done
 printf -- "--- 체인 구성: "; curl -s -m 5 http://127.0.0.1:4100/cia/public_keys | python3 -c "import sys,json;d=json.load(sys.stdin);print('캐노니컬 chainId', d.get('canonicalChainId'), '· 거울', [m.get('chainId') for m in d.get('mirrors',[])])"
 echo "RESET_DONE $(date '+%H:%M:%S')"
-echo "페이지: IdP 사용자 http://localhost:4100/user  IdP RP 운영자 http://localhost:4100/rp  지갑 http://localhost:5100/  zkONE http://localhost:3100/ (관리자 /admin)  zkTWO http://localhost:3101/  IdP 관리자 http://localhost:4100/admin"
-echo "새 RP: http://localhost:4100/rp 에서 운영자 가입 → '새 RP 만들기' → 받은 키로 bash scripts/new_rp.sh <name> <port> <key>"
+echo "페이지: IdP 사용자 http://$PEER_HOST:4100/user  IdP RP 운영자 http://$PEER_HOST:4100/rp  지갑 http://localhost:5100/  zkONE http://$PEER_HOST:3100/ (관리자 /admin)  zkTWO http://$PEER_HOST:3101/  IdP 관리자 http://$PEER_HOST:4100/admin"
+echo "새 RP: http://$PEER_HOST:4100/rp 에서 운영자 가입 → '새 RP 만들기' → 받은 키로 bash scripts/new_rp.sh <name> <port> <key>"
 if [ "$WALLET_MODE" = "snap" ]; then
   echo "Snap 모드: 브라우저에 MetaMask Flask 가 있어야 한다. 지갑 페이지 http://localhost:5100/ 에서 MetaMask 연결 → Snap(local:http://localhost:8082) 설치/재연결."
   echo "         Snap 번들이 바뀌었으면(등록 확인창 단순화·폐기 허용 수 등) MetaMask 의 기존 Snap 을 지우고 다시 설치할 것 — 체크섬이 다르면 자동으로 갱신되지 않는다."
   echo "         체인·IdP 가 새로 시작됐으므로 MetaMask 안의 옛 등록은 지갑 페이지의 'Snap 초기화' 로 지운 뒤 다시 등록할 것(Snap 상태는 이 스크립트가 못 지운다)."
+fi
+if [ "$WALLET_MODE" = "passkey" ]; then
+  echo "패스키 모드: MetaMask 가 필요 없다. 지갑 페이지 http://localhost:5100/ 에서 '패스키 만들기'(처음) 또는 '이미 있는 패스키 쓰기'(지난 데모의 패스키 — 같은 salt·같은 주소)."
+  echo "         IdP·서비스 페이지는 반드시 127.0.0.1 주소로 연다 — localhost 로 열면 그 페이지도 지갑의 패스키를 부를 수 있다(스펙 §2)."
 fi

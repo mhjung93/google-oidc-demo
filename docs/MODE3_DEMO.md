@@ -966,6 +966,48 @@ MetaMask 가 띄우는 창은 넷뿐이다: **스냅 설치·권한 창**(S1·S1
   `r_s`·`tx/prepare` 의 서명된 calldata·비밀에 닿지 못한다. 하지만 두 헤더가 없는 요청(curl·로컬 프로세스)은 그대로 통과하므로,
   **같은 기계의 다른 OS 사용자·프로세스는 루프백으로 여전히 에이전트를 부를 수 있다** — 다중 사용자 기계에서는 돌리지 않는다.
 
+## 패스키 경로 (`MODE3_WALLET_SECRETS=passkey`, 2026-11-17)
+
+스펙 `docs/superpowers/specs/2026-11-17-mode3-passkey-mode-design.md`. 스냅 모드 옆의 세 번째 비밀 공급 모드다 — MetaMask·스냅·salt 백업 파일이 없고,
+salt 는 **패스키(WebAuthn PRF 확장)에서 그때그때 유도**해 어디에도 저장하지 않는다. 회로·컨트랙트·IdP 는 바뀌지 않는다(salt 의 출처를 모른다).
+
+- **유도식(바꾸지 않는다)**: PRF 입력 `utf8("zkd-s_u-v1")`, `s_u = SHA-256(utf8("zkd-passkey-s_u-v1") ‖ PRF 출력) >> 6`(250비트). 버전 문자열을 바꾸면 모든 salt·auid·PPID 가 바뀐다.
+- **기동**: `WALLET_MODE=passkey bash scripts/demo_web_reset.sh`(한 머신) 또는 `WALLET_MODE=passkey bash scripts/demo_split_start.sh`(분리 데모). 에이전트만 뜨고 스냅 서버(:8082)는 없다.
+  에이전트는 지갑 오리진이 `localhost` 가 아니면 기동을 거부한다 — WebAuthn 은 IP 주소를 RP ID 로 받지 않는다.
+- **`localhost` 전용과 `127.0.0.1` 규칙**: 패스키의 RP ID 는 호스트 단위라 **`localhost` 의 어느 포트 페이지든** 사용자가 패스키를 누르면 같은 salt 를 얻는다
+  (스냅은 호출 오리진을 `:5100` 으로 검사했지만 패스키는 그러지 못한다). 그래서 패스키 모드에서는 **지갑만 `http://localhost:5100`**, IdP·서비스 페이지는
+  `http://127.0.0.1:…` 로 연다 — 두 스크립트가 그렇게 띄우고(분리 데모는 터널을 `127.0.0.1` 로 연다) 마지막에 주소를 알려 준다. 대가: RP 소셜 로그인(localhost 전용)은 이 모드에서 쓰지 않는다.
+  실제 배포라면 지갑 전용 도메인이 필요하다.
+- **처음 설정**(zk 스냅 화면의 설정 카드): "패스키 만들기"(PRF 를 켜고 바로 한 번 더 계산해 같은 값인지 본다 — 백업 확인의 자리) 또는 "이미 있는 패스키 쓰기"
+  (동기화된 패스키·지난 데모의 패스키 — 같은 salt). 에이전트 파일에는 credential ID(공개값)만 적는다. 에이전트 하나에 패스키 하나.
+- **로그인·가입**: 승인 팝업은 스냅 모드와 같다. salt 가 필요한 곳에서 패스키를 **팝업 하나에 한 번** 누른다. 에이전트 파일에는 `blind_u`(C_u 전체)와 동의 기록이 더 남는다 — s_u 는 없다.
+- **세션 복구(로그인과 분리)**: 에이전트가 재시작하면 세션의 메모리 증인이 사라진다. 스냅 모드는 `needs_consent`(다시 로그인)지만 패스키 모드는 **`session_restore_required`** 를 돌려주고,
+  서비스는 "zk 스냅 화면의 세션 복구" 안내를 보인다. zk 스냅 화면의 "연결된 서비스" 탭에 **세션 복구 카드**가 뜨고, "세션 복구" 를 누르면 패스키 한 번으로 증인 없는 세션 전부를
+  `/wallet/session/witness` 로 다시 채운다(세션별 결과). 다시 로그인할 필요가 없다.
+- **예외 — 속성 커밋먼트 도구 기록(2026-11-17 리뷰 I-1 — 사용자 결정: 예외로 둔다)**: 첫 등록은 지금처럼 속성 도구의 기록(`localStorage` 의 `mode3_attr_tool_v1`, :5100 오리진)을 읽는데,
+  그 기록에는 사용자가 붙여 넣은 salt 가 **평문으로** 남는다(스냅 모드와 같은 한계 — 스펙 §4.5 "속성 도구는 바뀌지 않는다"). 그래서 패스키 모드의 "어디에도 저장하지 않는다" 는
+  에이전트 파일과 zk 스냅 화면 자체에 대한 말이고, 속성 도구 기록은 예외다.
+- **"내 계정"**: salt 는 저장돼 있지 않아 "salt 보기" 로 패스키를 한 번 눌러야 보인다(속성 도구에 붙여 넣을 값). "패스키 연결 끊기" 는 등록이 없을 때만(먼저 "스냅 초기화").
+- **데모 리셋**: 화면의 "스냅 초기화" 는 등록·세션·동의 기록만 지우고 패스키 연결은 남긴다 — 다시 로그인하면 같은 salt·같은 PPID. 리셋 스크립트는 에이전트 상태 파일을 통째로
+  옮기므로 연결도 사라진다 — "이미 있는 패스키 쓰기" 로 같은 패스키를 고르면 된다.
+- **보내기**: zk 스냅 화면에는 보내기 탭이 없다(스냅 모드와 같다). 서비스의 온체인 출금은 스냅 모드처럼 승인 팝업 → 서비스 릴레이로 가고, 받는 주소·금액 확인은 스냅 창 대신 팝업의 확인 상자가 묻는다.
+
+| 사유 | 언제 |
+|---|---|
+| `passkey_wrong_origin` | 지갑을 `127.0.0.1:5100` 으로 열었다 — 카드 대신 localhost 링크만 |
+| `passkey_unsupported` | WebAuthn 이 없는 브라우저·보안 컨텍스트가 아님 |
+| `passkey_prf_unsupported` | 고른 인증기가 PRF 를 주지 않는다 |
+| `passkey_unstable` | 만들 때와 다시 계산할 때 PRF 값이 다르다 |
+| `passkey_cancelled` | 패스키 창을 닫았다·시간 초과 |
+| `passkey_mismatch` | 연결된 패스키와 다른 패스키를 골랐다 |
+| `passkey_setup_required` | 연결된 패스키가 없다 |
+| `passkey_already_set` | 다른 패스키가 이미 연결돼 있다 |
+| `passkey_bad_salt` | 유도값이 0(사실상 없음) |
+| `session_restore_required` | 증인 없는 세션(에이전트 재시작) — zk 스냅 화면의 세션 복구 |
+
+**미검증(2026-11-17)**: 실제 인증기에서 PRF 가 나오는지는 확인하지 않았다 — 자동 테스트는 CDP 가상 인증기와 결정적 WebAuthn 스텁으로 돈다. 시연 머신(Ubuntu 20.04)은 블루투스·USB 보안 키가 없어
+쓸 수 있는 인증기가 Google 비밀번호 관리자 패스키뿐인데, 그것이 PRF 를 주는지·`localhost` 패스키를 저장하는지 아직 모른다. 분리 데모의 패스키 모드(IdP·RP 를 `127.0.0.1` 터널로 여는 것)도 실제 VM 에서 돌려 보지 않았다.
+
 ## IdP 페이지·폐기 상한 (2026-10-22)
 
 설계 `docs/superpowers/specs/2026-10-22-mode3-idp-pages-design.md`(사용자·RP 운영자의 입구를 IdP 페이지로 옮김), `docs/superpowers/specs/2026-10-22-mode3-revocation-counter-bound-design.md`(세션 폐기에 허용 거래 수). **`snap`·`file` 모드 기준이다 — web 모드(바로 위 "브라우저 전용 사용자 페이지" 절)는 아직 손대지 않았다**(설계 §10 비목표. §4·§5.3 을 사용자 코어로 옮겨야 web 모드가 따라온다).
@@ -1543,6 +1585,8 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
   (IdP 의 id_token 등록·폐기 10케이스 — 격리 IdP 를 두 번 띄운다, `startIsolatedCia({ oidc: true })`)·
   `tests/test_mode3_user_core_oidc.mjs`(사용자 코어의 prepare/complete·id_token 자기 폐기·uid_mismatch, 7케이스 — 격리
   스택의 `oidc`·`walletHost` 옵션)다.
+- 패스키 모드(2026-11-17): `tests/test_mode3_passkey_salt.mjs`(`unit` — 유도식), `tests/test_mode3_wallet_passkey.mjs`(`chain` — 에이전트 passkey 모드·`session_restore_required`·세션 증인 복구),
+  `tests/test_mode3_passkey_browser.mjs`(`browser` — 결정적 WebAuthn 스텁 `tests/helpers/webauthn_stub.js` 로 설정·첫 로그인·다른 패스키·세션 복구·salt 보기·리셋, CDP 가상 인증기로 실제 Chrome WebAuthn 경로).
 - `bash scripts/run_tests.sh browser` — 팝업 로그인·`needs_consent` 재승인·MetaMask 트랜잭션을 실제 페이지로 돌린다
   (`tests/test_mode3_browser.mjs`). `chain` 과 같은 조건에 더해 **설치된 Google Chrome(또는 Chromium)** 이 필요하다 —
   Playwright 가 `channel: 'chrome'` 으로 띄우고, `window.ethereum` 을 스텁해 진짜 `snap-mode3/src/index.js` 의 `onRpcRequest` 를

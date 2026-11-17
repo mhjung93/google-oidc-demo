@@ -124,6 +124,7 @@ try {
     assert.equal(withTok.status, 400, j(withTok.body)); assert.equal(withTok.body.reason, 'use_auth_window');
     const s = await wallet.get('/wallet/status');
     assert.ok(s.body.sessions[ch.r_s], 'r_s 별 세션이 상태에 있어야 한다');
+    assert.equal(s.body.sessions[ch.r_s].hasWitness, true, 'file 모드 세션은 늘 hasWitness(2026-11-17 passkey §3.3)');
     assert.ok(s.body.userCred?.Cf_u, '사용자 자격증명이 상태에 있어야 한다');
     assert.equal(s.body.userCred.revoked, false);
     // V9 §8.2: 등록부 확인 — 내 슬롯(0)의 리프가 내 자격증명과 같아야 한다.

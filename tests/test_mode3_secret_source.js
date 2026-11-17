@@ -29,6 +29,17 @@ await t('snap 모드: 비밀은 증인에서, auid·slot 은 파일에서; setUs
   src.setAttrs(['2', '0', '0', '0', '0', '0']);
   assert.deepEqual(src.pending.attrsChanged, ['2', '0', '0', '0', '0', '0']); assert.deepEqual(witness.attrs, ['2', '0', '0', '0', '0', '0']);
 });
+await t('passkey 모드(keepBlind): setUserCred 는 파일에 blind_u 까지 남긴다 — s_u 는 여전히 증인에서만(스펙 2026-11-17 passkey P4)', () => {
+  const state = { registration: stripSecrets(REG) };
+  const witness = { uid: '12345', s_u: '11', attrs: REG.attrs, userCred: null };
+  const src = createSecretSource({ mode: 'snap', state, witness, keepBlind: true });
+  const uc = { C_u_pt: { x: '5', y: '6' }, Cf_u: '7', blind_u: '8', issuedAt: 'u' };
+  src.setUserCred(uc);
+  assert.deepEqual(state.registration.userCred, uc);
+  assert.equal('s_u' in state.registration, false);
+  src.setUserCred(null);
+  assert.equal(state.registration.userCred, null);
+});
 await t('stripSecrets 는 s_u·blind_u 를 지우고 auid·profile 을 남긴다 — 옛 기록의 sk_u·pk_u 도 나가지 않는다', () => {
   const s = stripSecrets({ ...REG, sk_u: 'ab'.repeat(32), pk_u: { x: '9', y: '10' } });
   assert.deepEqual(Object.keys(s).sort(), ['attrs', 'auid', 'profile', 'provider', 'slot', 'uid', 'userCred']);

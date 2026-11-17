@@ -76,10 +76,19 @@ const RPC_URL = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
 const MIRROR_ADDRESS = process.env.MODE3_MIRROR_ADDRESS || null;
 const REV_RPC = process.env.MODE3_REV_CHAIN_RPC || RPC_URL;
 // 비밀 공급원(설계 2026-09-22 metamask-snap §3.3): file 은 지금처럼 상태 파일, snap 은 요청에 실린 witness(secretSourceFor).
+// passkey(2026-11-17, 스펙 2026-11-17-mode3-passkey-mode): snap 과 같은 증인 경로 — salt 는 화면이 패스키 PRF 로 그때그때 만들어 싣고, 파일에는
+// blind_u(C_u 전체)·동의 기록·패스키 credential ID 만 더 둔다. snap·passkey 를 함께 "증인 모드"(WITNESS_MODE)라 부른다.
 const SECRETS = process.env.MODE3_WALLET_SECRETS || 'file';
-if (!['file', 'snap'].includes(SECRETS)) throw new Error(`MODE3_WALLET_SECRETS 는 'file' 또는 'snap' 이어야 한다: ${SECRETS}`);
+if (!['file', 'snap', 'passkey'].includes(SECRETS)) throw new Error(`MODE3_WALLET_SECRETS 는 'file'·'snap'·'passkey' 중 하나여야 한다: ${SECRETS}`);
+const WITNESS_MODE = SECRETS !== 'file';
+// 증인 없는 세션의 사유: snap 은 지금처럼 needs_consent(다시 로그인), passkey 는 zk 스냅 화면의 세션 복구(스펙 P9).
+const NO_WITNESS = SECRETS === 'passkey' ? 'session_restore_required' : 'needs_consent';
 const SNAP_ID = process.env.MODE3_SNAP_ID || 'local:http://localhost:8082';
-const WALLET_ORIGIN = process.env.MODE3_WALLET_PUBLIC_ORIGIN || `http://127.0.0.1:${PORT}`;
+// passkey 모드는 localhost 전용(P6) — WebAuthn 은 IP 주소를 RP ID 로 받지 않는다. 기본값도 localhost 로 둔다.
+const WALLET_ORIGIN = process.env.MODE3_WALLET_PUBLIC_ORIGIN || (SECRETS === 'passkey' ? `http://localhost:${PORT}` : `http://127.0.0.1:${PORT}`);
+if (SECRETS === 'passkey' && new URL(WALLET_ORIGIN).hostname !== 'localhost') {
+  throw new Error(`passkey 모드는 localhost 오리진만 쓴다(WebAuthn 은 IP 주소를 RP ID 로 받지 않는다): MODE3_WALLET_PUBLIC_ORIGIN=${WALLET_ORIGIN}`);
+}
 // 만료는 지갑이 정한다(설계 2026-09-18 §3.2 갱신): max_height = ceil((head + TTL) / GRID) × GRID. 빈 문자열은 기본값(cia.js 의 envBig 과 같은 관례).
 const envBig = (k, d) => { const v = process.env[k]; return v === undefined || v === '' ? BigInt(d) : BigInt(v); };
 const TTL_BLOCKS = envBig('MODE3_TTL_BLOCKS', 300);
@@ -128,6 +137,9 @@ if (state.version !== WALLET_STATE_VERSION) {
 if (state.registration && ('pk_u' in state.registration || 'sk_u' in state.registration)) { delete state.registration.pk_u; delete state.registration.sk_u; persist(); }
 state.sessions ??= {};
 state.pendingBounds ??= [];
+// passkey 모드(2026-11-17, 스펙 §3.2): 연결된 패스키(credential ID — 공개값)와 서비스별 동의 기록. 다른 모드에서는 비어 있다.
+state.passkey ??= null;
+state.consents ??= {};
 if (state.registration) {
   state.registration.userCred ??= null;
   // 버전은 이미 8이지만 attrs 길이가 6이 아닌 경우(손으로 고친 상태 파일 등) 방어 — 위 이행 분기와 별개로 매번 건다.
@@ -324,7 +336,7 @@ async function chooseUserCred(synced, src) {
   // 리뷰 S3(2026-10-13): snap 모드에서는 파일의 공개 Cf_u 가 정본이다(Task 9 판정과 같은 원칙). Snap 이 든 C_u 가 그것과 다르면 — 발급 뒤 실패한
   // 로그인의 새 C_u 를 페이지가 Snap 에 반영하지 못한 경우 등 — Snap 쪽이 낡았다. 등록부로 판정하면 내 슬롯에 새 리프가 있어 registry_mismatch 로
   // 막히므로(Snap 을 초기화하기 전까지) 새 C_u 를 받는다.
-  if (SECRETS === 'snap' && uc.Cf_u !== state.registration?.userCred?.Cf_u) return { blind_u: randomScalar(), fresh: true };
+  if (WITNESS_MODE && uc.Cf_u !== state.registration?.userCred?.Cf_u) return { blind_u: randomScalar(), fresh: true };
   const chk = await registryCheck(canonicalView(synced), reg, uc);   // V10: 캐노니컬 최신 — 은퇴·바꿔치기를 거울보다 먼저 안다
   if (!chk) return { status: 403, reason: 'registry_slot_unknown' };
   if (chk.match) return { blind_u: BigInt(uc.blind_u), fresh: false };
@@ -383,8 +395,8 @@ function secretSourceFor(req, rsKey = null) {
     // 팝업이 Snap 의 C_u 로 /wallet/session/witness 를 다시 채우게 한다(그 라우트가 파일의 공개 부분도 되살린다).
     if (sw && pub) w = { uid: state.registration?.uid, s_u: sw.s_u, attrs: sw.attrs, userCred: { ...pub, blind_u: sw.blind_u } };
   } else w = req.body?.witness ?? null;
-  if (!w) throw Object.assign(new Error(rsKey ? 'needs_consent' : 'witness_required'), { reason: rsKey ? 'needs_consent' : 'witness_required' });
-  return createSecretSource({ mode: 'snap', state, witness: w });
+  if (!w) throw Object.assign(new Error(rsKey ? NO_WITNESS : 'witness_required'), { reason: rsKey ? NO_WITNESS : 'witness_required' });
+  return createSecretSource({ mode: 'snap', state, witness: w, keepBlind: SECRETS === 'passkey' });
 }
 
 /** RP 인증(설계 §3·§4)·팩토리 검증 — /wallet/login 과 /wallet/authorize/precheck 가 같이 쓴다. 통과면 null, 아니면 { status, body }.
@@ -504,7 +516,7 @@ app.get('/wallet/config', configCors, async (req, res) => {
     // 번들은 에이전트가 떠 있는 동안에도 다시 빌드되므로 요청마다 읽는다. 파일이 없으면 null(화면은 견주지 않는다).
     let snapVersion = null;
     try { const v = JSON.parse(fs.readFileSync(path.join(__dirname, 'snap-mode3', 'snap.manifest.json'), 'utf8')).version; if (typeof v === 'string' && v) snapVersion = v; } catch { /* 매니페스트 없음 */ }
-    res.json({ secrets: SECRETS, snapId: SNAP_ID, snapVersion, walletOrigin: WALLET_ORIGIN, rpcUrl: RPC_URL, chainId: (await chainId()).toString(), ciaUrl: CIA_URL, oidc });
+    res.json({ secrets: SECRETS, snapId: SECRETS === 'snap' ? SNAP_ID : null, snapVersion: SECRETS === 'snap' ? snapVersion : null, walletOrigin: WALLET_ORIGIN, rpcUrl: RPC_URL, chainId: (await chainId()).toString(), ciaUrl: CIA_URL, oidc });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -598,7 +610,8 @@ app.get('/wallet/status', async (req, res) => {
       try { nonce = (await accountNonceOf(account)).nonce.toString(); }
       catch { nonce = null; }
     }
-    sessions[r_s] = { account, nonce, arid: e.arid, PPID: e.PPID, Cf_s: e.credential.Cf_s ?? null, max_height: e.credential.max_height, chainid: e.credential.chainid, allowAgent: e.allowAgent, factoryAddress: e.factoryAddress, attrGateAddress: e.attrGateAddress ?? null, sessionAddress: new ethers.Wallet(e.sessionPrivKey).address, issuedAt: e.issuedAt, pk_trace: e.pk_trace, origin: e.origin ?? null, serviceName: e.serviceName ?? null };
+    sessions[r_s] = { account, nonce, arid: e.arid, PPID: e.PPID, Cf_s: e.credential.Cf_s ?? null, max_height: e.credential.max_height, chainid: e.credential.chainid, allowAgent: e.allowAgent, factoryAddress: e.factoryAddress, attrGateAddress: e.attrGateAddress ?? null, sessionAddress: new ethers.Wallet(e.sessionPrivKey).address, issuedAt: e.issuedAt, pk_trace: e.pk_trace, origin: e.origin ?? null, serviceName: e.serviceName ?? null,
+      hasWitness: !WITNESS_MODE || Boolean(e.witness) };   // 2026-11-17: 증인 모드에서 메모리 증인이 있는가(재시작하면 false) — passkey 의 세션 복구 카드가 쓴다
   }
   // 2026-10-22: 체인에 아직 반영되지 않은 setSessionBound 대기 항목. applicableSession 은 같은 account(= 같은 PPID·팩토리) 를 가진
   // 살아 있는 세션의 r_s — 그 세션으로 /wallet/bounds/apply 를 바로 부를 수 있다. 없으면 null(새로 로그인해야 반영할 수 있다).
@@ -667,7 +680,7 @@ app.post('/wallet/oidc/nonce', async (req, res) => {
       const reg = state.registration;
       if (!reg?.auid) return res.status(409).json({ reason: 'not_registered' });
       // snap 모드는 페이지가 방금 받은 로그인 증인의 s_u 를 싣는다(계획 Ruling R2), file 모드는 상태 파일의 값.
-      const su = SECRETS === 'snap' ? s_u : reg.s_u;
+      const su = WITNESS_MODE ? s_u : reg.s_u;
       if (!okSu(su)) return res.status(400).json({ error: 's_u(10진, 2^250 미만) 필요' });
       // 이 등록의 s_u 가 아니면 tag 가 발급 요청의 것과 달라 IdP 가 oidc_nonce_mismatch 를 낸다 — Google 창을 띄우기 전에 여기서 알린다.
       if ((await auidOf({ s_u: BigInt(su) })).toString() !== String(reg.auid)) return res.status(409).json({ reason: 'secrets_mismatch', detail: '이 s_u 는 에이전트 등록의 것이 아니다' });
@@ -695,7 +708,7 @@ app.post('/wallet/register', async (req, res) => {
     if (id_token !== undefined) {
       if (uidIn !== undefined || pwd !== undefined || code !== undefined) return res.status(400).json({ error: 'id_token 과 uid·pwd·code 는 함께 줄 수 없다' });
       if (typeof id_token !== 'string') return res.status(400).json({ error: 'id_token 은 문자열' });
-      if (SECRETS !== 'snap') return res.status(400).json({ reason: 'not_snap_mode', detail: 'id_token 등록은 snap 모드만(스펙 §7)' });
+      if (!WITNESS_MODE) return res.status(400).json({ reason: 'not_snap_mode', detail: 'id_token 등록은 snap·passkey 모드만(스펙 §7)' });
       // n 은 /wallet/oidc/nonce(purpose register)가 뽑아 준 난수다 — 토큰의 nonce 가 그 n 으로 만든 tag 에 묶여 있다(스펙 2026-11-12 no-pk-u §3.3).
       if (!isDec(nIn) || BigInt(nIn) >= SCALAR_MAX) return res.status(400).json({ error: 'id_token 등록은 n(/wallet/oidc/nonce 가 준 10진 값) 필요' });
       let oc;
@@ -709,7 +722,7 @@ app.post('/wallet/register', async (req, res) => {
       if (typeof pwd !== 'string' && typeof code !== 'string') return res.status(400).json({ error: 'pwd 또는 code 필요' });
     }
     if (BigInt(uid) >= SCALAR_MAX) return res.status(400).json({ error: 'uid 는 2^250 미만' });
-    if (SECRETS === 'snap' && !(isDec(suIn) && BigInt(suIn) < SCALAR_MAX)) return res.status(400).json({ error: 'snap 모드는 s_u(10진, 2^250 미만) 필요' });
+    if (WITNESS_MODE && !(isDec(suIn) && BigInt(suIn) < SCALAR_MAX)) return res.status(400).json({ error: `${SECRETS} 모드는 s_u(10진, 2^250 미만) 필요` });
     if (profileIn !== null && (typeof profileIn !== 'object' || Array.isArray(profileIn))) return res.status(400).json({ reason: 'bad_attr', detail: 'profile_required' });
     if (state.registration) return res.status(409).json({ reason: 'already_registered', uid: state.registration.uid });
     let schema;
@@ -722,7 +735,7 @@ app.post('/wallet/register', async (req, res) => {
     try { attrs = await encodeProfile(schema, profile, { allowEmptyRequired: false }); }
     catch (e) { if (e.reason === 'bad_attr') return res.status(400).json({ reason: 'bad_attr', slot: e.slot, field: e.field, detail: e.detail, message: e.message }); throw e; }
     const normalized = normalizeProfile(schema, profile);
-    const reg = SECRETS === 'snap' ? { s_u: BigInt(suIn), auid: await auidOf({ s_u: BigInt(suIn) }) } : await createRegistration(BigInt(uid));
+    const reg = WITNESS_MODE ? { s_u: BigInt(suIn), auid: await auidOf({ s_u: BigInt(suIn) }) } : await createRegistration(BigInt(uid));
     const idBody = oidcProvider ? { id_token } : typeof code === 'string' ? { code, uid } : { pwd, uid };
     // 인증(스펙 2026-11-12 no-pk-u §3.2): "이 auid 의 s_u 를 안다" 는 π_IdP 를 등록용 ctx(n)로. Google 은 nonce 에 쓴 n, 그 밖은 여기서 뽑는다.
     const n = oidcProvider ? BigInt(nIn) : randomScalar();
@@ -736,7 +749,7 @@ app.post('/wallet/register', async (req, res) => {
     const provider = r.body.provider ?? oidcProvider ?? 'demo';
     await noteSchemaHint(r.body.schemaHash ?? null);
     const full = { uid, s_u: reg.s_u.toString(), auid: reg.auid.toString(), slot: r.body.slot, profile: normalized, attrs, provider, userCred: null };
-    state.registration = SECRETS === 'snap' ? stripSecrets(full) : full;
+    state.registration = WITNESS_MODE ? stripSecrets(full) : full;
     persist();
     // issue_code(2026-11-09): 등록 코드 경로면 IdP 가 그 auid 의 발급 코드를 함께 준다 — 서비스 첫 로그인 중의 등록이 비밀번호 재입력 없이 발급으로 이어진다. 에이전트는 저장하지 않고 넘긴다.
     res.status(201).json({ uid, slot: r.body.slot, auid: reg.auid.toString(), attrs, profile: normalized, provider, ...(typeof r.body.issue_code === 'string' ? { issue_code: r.body.issue_code } : {}) });
@@ -857,7 +870,7 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
       try { const attrs = (state.registration.attrs ?? []).map(BigInt); disclosure = { ...normalizeDisclosure(disclose, attrs), ...(await normalizeSet(set, attrs)) }; }
       catch (e) { if (e.reason) return res.status(400).json({ reason: e.reason, detail: e.message }); throw e; }
     }
-    if (SECRETS === 'snap') {
+    if (WITNESS_MODE) {
       if (!witness) return res.status(400).json({ reason: 'witness_required' });
       try { await validateWitness(witness, state.registration.uid, state.registration.auid); }
       catch (e) { if (e.reason === 'bad_witness') return res.status(400).json({ reason: 'bad_witness', detail: e.message }); throw e; }
@@ -868,7 +881,7 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     // file 모드는 RP 페이지가 CORS 로 직접 부르므로 Origin 헤더, snap 모드는 같은 오리진의 팝업이 부르므로 팝업이 postMessage 의
     // event.origin 으로 확인한 verifiedOrigin 을 대조한다(같은 방어 — 피싱 페이지는 인증서의 오리진에서 메시지를 보낼 수 없다).
     // pk_trace 는 인증서가 덮는다 — RP 가 자기만 아는 키를 주면 RP 혼자 태그를 연다(2026-09-16 §2).
-    const seenOrigin = SECRETS === 'snap' ? verifiedOrigin : req.get('Origin');
+    const seenOrigin = WITNESS_MODE ? verifiedOrigin : req.get('Origin');
     if (seenOrigin !== origin) return res.status(403).json({ reason: 'bad_rp_cert' });
     const bad = await checkService({ arid, origin, cert_s, pk_trace, factoryAddress });
     if (bad) return res.status(bad.status).json(bad.body);
@@ -877,7 +890,7 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     // V11(D15): 지갑 파일의 attrs 가 정본이다. PUT /wallet/profile 뒤 페이지가 Snap 의 syncAttrs 전달에 실패했으면 증인의 attrs 가 옛 값이다 —
     // 그대로 두면 옛 C_u 를 재사용하면서 술어는 새 attrs 로 판정한다. 파일 값으로 맞추고(pending.attrsChanged → 페이지가 Snap 에 반영) 증인의
     // C_u 는 버려 새 C_u 를 받게 한다(응답의 userCredIssued 도 함께 간다 — applyPendingToSnap 이 syncAttrs → updateUserCred 순으로 저장한다).
-    if (SECRETS === 'snap' && JSON.stringify(witness.attrs.map(String)) !== JSON.stringify((state.registration.attrs ?? []).map(String))) {
+    if (WITNESS_MODE && JSON.stringify(witness.attrs.map(String)) !== JSON.stringify((state.registration.attrs ?? []).map(String))) {
       src.setAttrs([...state.registration.attrs]);
       if (witness.userCred) witness.userCred = null;
       console.warn('[wallet] snap 증인의 attrs 가 지갑 파일과 다르다 — 파일 값으로 맞추고 새 C_u 를 받는다(페이지가 attrsChanged 를 Snap 에 반영해야 한다)');
@@ -976,7 +989,7 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     // (buildExecute 는 이 sig 를 쓰지 않으므로 /wallet/tx 경로는 아래의 signPayload 호출부에서 따로 takeOverride 한다).
     const fakeSig = takeOverride('fake_sig');
     if (fakeSig) out = { ...out, sig: await signChallenge(ethers.Wallet.createRandom(), rs.toString()), demo: 'override:fake_sig' };
-    if (SECRETS === 'snap') setSessionWitness(rs.toString(), src);
+    if (WITNESS_MODE) setSessionWitness(rs.toString(), src);
     // 리뷰 C-I1(2026-11-03): 로그인 때의 술어 입력을 세션에 남겨 재검증 π 에 다시 싣는다(RP 가 재검증에도 정책을 적용한다).
     if (state.sessions[rs.toString()]) { state.sessions[rs.toString()].loginDisclose = disclose ?? null; state.sessions[rs.toString()].loginSet = set ?? null; persist(); }
     // src.pending: snap 모드에서 이 로그인이 새로 받은 C_u(userCredIssued) — 페이지가 Snap 에 저장한다. attrsChanged 는 증인의 attrs 가
@@ -995,10 +1008,56 @@ function setSessionWitness(rsKey, src) {
   s.witness = { s_u: reg.s_u, blind_u: uc?.blind_u ?? null, attrs: reg.attrs };
 }
 
+// ---- passkey 모드(2026-11-17, 스펙 2026-11-17-mode3-passkey-mode §3.2) ----
+// 같은 오리진(zk 스냅 화면·승인 팝업)만 부른다 — 교차 사이트는 위 전역 오리진 정책이 403 bad_origin 으로 막는다. blind_u 를 싣는 응답이 있다.
+const requirePasskeyMode = (res) => { if (SECRETS !== 'passkey') { res.status(409).json({ reason: 'not_passkey_mode' }); return false; } return true; };
+const isB64url = (v) => typeof v === 'string' && /^[A-Za-z0-9_-]{1,1024}$/.test(v);
+app.get('/wallet/passkey/state', (req, res) => {
+  if (!requirePasskeyMode(res)) return;
+  const reg = state.registration;
+  res.json({
+    passkey: state.passkey ?? null,
+    registration: reg ? { uid: reg.uid, auid: reg.auid, slot: reg.slot, attrs: reg.attrs, profile: reg.profile ?? null, provider: reg.provider ?? 'demo' } : null,
+    userCred: reg?.userCred ?? null,
+    consents: state.consents ?? {},
+  });
+});
+app.put('/wallet/passkey/credential', async (req, res) => {
+  try {
+    if (!requirePasskeyMode(res)) return;
+    const { credentialId, s_u = null } = req.body ?? {};
+    if (!isB64url(credentialId)) return res.status(400).json({ reason: 'bad_credential_id' });
+    if (state.passkey && state.passkey.credentialId !== credentialId) return res.status(409).json({ reason: 'passkey_already_set' });
+    // 리뷰 I-2(스펙 §4.2): 등록이 있으면 그 패스키의 salt 가 이 등록의 것인지 auid 로 대조한다 — 아니면 연결 뒤 로그인이 매번 bad_witness 로 막힌다.
+    // s_u 는 대조에만 쓰고 저장하지 않는다(P3). 이미 같은 패스키가 연결돼 있으면(위 409 를 지난 경우) 대조할 필요가 없다.
+    if (!state.passkey && state.registration) {
+      const okSalt = isDec(s_u ?? '') && BigInt(s_u) > 0n && BigInt(s_u) < SCALAR_MAX;
+      if (!okSalt || (await auidOf({ s_u: BigInt(s_u) })).toString() !== String(state.registration.auid)) return res.status(409).json({ reason: 'passkey_mismatch' });
+    }
+    if (!state.passkey) { state.passkey = { credentialId, createdAt: new Date().toISOString() }; persist(); }
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/wallet/passkey/credential', (req, res) => {
+  if (!requirePasskeyMode(res)) return;
+  if (state.registration) return res.status(409).json({ reason: 'registered' });
+  state.passkey = null; persist();
+  res.json({ ok: true });
+});
+app.post('/wallet/passkey/consent', (req, res) => {
+  if (!requirePasskeyMode(res)) return;
+  const { origin, arid = null, allowAgent } = req.body ?? {};
+  if (typeof origin !== 'string' || !origin) return res.status(400).json({ error: 'origin 필요' });
+  if (allowAgent !== '0' && allowAgent !== '1') return res.status(400).json({ error: "allowAgent 는 '0' 또는 '1'" });
+  state.consents[origin] = { arid: arid === null || arid === undefined ? null : String(arid), allowAgent, grantedAt: new Date().toISOString() };
+  persist();
+  res.json({ ok: true });
+});
+
 // 재시작 등으로 세션 증인이 없을 때(revalidate·tx/prepare 의 needs_consent) 팝업이 consentLogin 을 다시 받아 채운다(metamask-snap §4.3).
 app.post('/wallet/session/witness', async (req, res) => {
   try {
-    if (SECRETS !== 'snap') return res.status(409).json({ reason: 'not_snap_mode' });
+    if (!WITNESS_MODE) return res.status(409).json({ reason: 'not_snap_mode' });
     const { r_s, witness, allowAgent = null } = req.body ?? {};
     if (!isDec(r_s) || !witness) return res.status(400).json({ error: 'r_s, witness 필요' });
     // allowAgent 는 팝업이 동의 창에 실제로 쓴 값이다 — 필수로 받아야 "문구와 세션이 어긋났는지" 를 판정할 수 있다(리뷰 Ruling 5).
@@ -1017,10 +1076,12 @@ app.post('/wallet/session/witness', async (req, res) => {
     // needs_consent 가 난다. 방금 세션의 Cf_u 와 일치를 확인한 C_u 의 **공개 부분만** 되살린다(비밀은 파일에 쓰지 않는다).
     if (!state.registration.userCred) {
       const u = witness.userCred;
-      state.registration.userCred = { Cf_u: u.Cf_u, issuedAt: u.issuedAt ?? new Date().toISOString() };
+      state.registration.userCred = SECRETS === 'passkey'   // passkey 는 blind_u 까지 남긴다(P4) — 다음 재시작 뒤 복구에 필요하다
+        ? { C_u_pt: u.C_u_pt, Cf_u: u.Cf_u, blind_u: u.blind_u, issuedAt: u.issuedAt ?? new Date().toISOString() }
+        : { Cf_u: u.Cf_u, issuedAt: u.issuedAt ?? new Date().toISOString() };
       persist();
     }
-    setSessionWitness(rsKey, createSecretSource({ mode: 'snap', state, witness }));
+    setSessionWitness(rsKey, createSecretSource({ mode: 'snap', state, witness, keepBlind: SECRETS === 'passkey' }));
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1171,7 +1232,7 @@ app.post('/wallet/revalidate', loginCors, async (req, res) => {
       if (fakeSig) out = { ...out, sig: await signChallenge(ethers.Wallet.createRandom(), rsKey), demo: 'override:fake_sig' };
       res.json({ ...out, timings });
     } catch (e) {
-      if (e.reason === 'needs_consent') return res.status(409).json({ reason: 'needs_consent', timings });
+      if (e.reason === NO_WITNESS) return res.status(409).json({ reason: NO_WITNESS, timings });
       // 그 세션만 지운다. reg.userCred 는 그대로 둔다 — 다음 로그인의 chooseUserCred 가 등록부로 알아채 새로 받는다.
       if (e.reason === 'revoked') { delete state.sessions[rsKey]; cache.deleteSession(rsKey); persist(); return res.status(403).json({ reason: 'revoked', registry: e.registry, timings }); }
       // V8: 이 세션 하나만 폐기됐다 — 지우는 범위는 같지만(그 세션) 사유가 다르다. 다른 세션·자격증명은 그대로 쓴다.
@@ -1236,8 +1297,8 @@ app.post('/wallet/session/revoke', async (req, res) => {
     if (!s) return res.status(404).json({ reason: 'no_session' });
     // self_revoke 와 같은 규칙 — 등록이 없으면 여기서 끝낸다. 없으면 file 모드가 snap 전용 사유인 needs_consent 를 내게 된다.
     if (!state.registration) return res.status(409).json({ reason: 'not_registered' });
-    const s_u = SECRETS === 'snap' ? s.witness?.s_u : state.registration.s_u;
-    if (!s_u) return res.status(409).json({ reason: 'needs_consent' });
+    const s_u = WITNESS_MODE ? s.witness?.s_u : state.registration.s_u;
+    if (!s_u) return res.status(409).json({ reason: NO_WITNESS });
     // bound 형식·범위 검사(2026-10-23 리뷰 3-2): 체인을 읽기 **전**에 먼저 끝낸다 — bound 를 명시한 요청은 체인을 전혀 읽지 않는다.
     if (boundIn !== undefined && boundIn !== null && !isDec(boundIn)) return res.status(400).json({ error: 'bound 는 10진 문자열' });
     let bound = boundIn !== undefined && boundIn !== null ? BigInt(boundIn) : null;
@@ -1288,6 +1349,7 @@ app.post('/wallet/reset', (req, res) => {
   if (req.body?.confirm !== true) return res.status(400).json({ error: 'confirm:true 필요' });
   const had = Boolean(state.registration);
   state.registration = null; state.sessions = {}; state.pendingBounds = [];
+  state.consents = {};   // passkey 모드의 동의 기록도 등록과 함께 지운다. 패스키 연결(state.passkey)은 남긴다 — 다시 가입하면 같은 salt(스펙 §4.6)
   persist();
   res.json({ ok: true, hadRegistration: had });
 });
@@ -1378,7 +1440,7 @@ async function buildExecute(req) {
   if (!state.sessions[rsKey]) return fail(409, { reason: 'session_expired', timings });   // 캐시는 바로 위 pruneSessions 가 이미 지웠다
   let src;
   try { src = secretSourceFor(req, rsKey); }
-  catch (e) { if (e.reason === 'needs_consent') return fail(409, { reason: 'needs_consent', timings }); throw e; }
+  catch (e) { if (e.reason === NO_WITNESS) return fail(409, { reason: NO_WITNESS, timings }); throw e; }
   // 2026-10-22: 거래 π 는 counter = nonce 를 공개 입력으로 싣는다(컨트랙트가 pub[33]==payload.nonce 를 검사한다) — proveSession
   // 보다 먼저 nonce 를 읽어야 한다(브리프 Step 3-3).
   const walletAddr = await factoryAt(s.factoryAddress, provider).computeAddress(BigInt(s.PPID));
