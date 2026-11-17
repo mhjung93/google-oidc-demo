@@ -1605,6 +1605,7 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
   **막는 것**: 페이지에 끼워 넣어진 스크립트(HTML 주입·XSS)와 남의 오리진 스크립트의 실행. `connect-src` 는 `fetch`·XHR 로 보낼 곳을 위 오리진들로 줄인다. **막지 못하는 것**: 브라우저 확장(CSP 밖에서 페이지를 읽는다),
   이 PC 의 악성 코드·같은 OS 사용자, 이 서버가 내는 스크립트 자체의 결함, 그리고 같은 오리진에 평문으로 남는 속성 도구 기록(위 예외 — CSP 는 저장을 바꾸지 않는다). 허용된 IdP·서비스 오리진으로 보내는 길과
   페이지 이동·창 열기(주소에 실어 보내기)도 막지 않는다. 브라우저 테스트(`tests/test_mode3_user_passkey_web.mjs`)는 끼워 넣은 인라인·남의 오리진 스크립트가 돌지 않는 것과 정상 흐름 전체에서 위반이 0건인 것을 본다.
+  주의: `MODE3_RP_ORIGIN` 에서 서비스를 뺀 뒤에도 그 서비스의 옛 세션이 금고에 남아 있으면, 그 세션의 `sessions/check`·`logout` 요청은 CSP 에 막혀 조용히 실패한다(화면은 깨지지 않고 세션만 남는다).
 - **체인 RPC 프록시와 허용 목록(R-5)**: 브라우저는 체인 노드를 직접 부르지 않고 정적 서버의 `/rpc/app`·`/rpc/rev` 로 부른다. 허용 메서드는 읽기 12개 —
   `eth_chainId, net_version, eth_blockNumber, eth_call, eth_getLogs, eth_getCode, eth_getBalance, eth_getBlockByNumber, eth_getBlockByHash, eth_getTransactionByHash, eth_getTransactionReceipt, eth_getTransactionCount`.
   배치는 원소 하나라도 막히면 전체 403. 목록 밖 읽기 메서드를 코어가 새로 쓰면 그 기능이 403 으로 깨진다 — 브라우저 테스트가 잡는다. 트랜잭션은 RP 릴레이를 거친다.
