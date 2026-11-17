@@ -254,6 +254,76 @@ try {
     await walletPage.waitForSelector('#setupPasskeyNewBtn:not([hidden])', { state: 'visible', timeout: 15_000 });
     assert.equal((await pkState()).passkey, null);
   });
+
+  // ---- 계정 복구(스펙 §10 P11~P15): 에이전트 파일을 잃어도 zk 스냅 화면에서 같은 등록을 되찾는다 ----
+  /** 에이전트 상태 파일 분실 흉내 — 빈 파일로 덮고 재시작한 뒤 화면에서 같은 패스키를 다시 연결한다(이미 있는 패스키 쓰기). */
+  const loseAgentFile = async () => {
+    fs.writeFileSync(stack.walletStateFile, '{}');
+    await stack.restartWallet();
+    await walletPage.goto(walletUrl());
+    await walletPage.waitForSelector('#setupPasskeyExistingBtn:not([hidden])', { state: 'visible', timeout: 15_000 });
+    await walletPage.click('#setupPasskeyExistingBtn');
+    await walletPage.waitForSelector('#recoverCard:not([hidden])', { timeout: 15_000 });
+  };
+
+  await t('에이전트 파일을 잃어도 계정 복구로 같은 등록·같은 PPID — 패스키 두 번, salt 는 저장소에 없다', async () => {
+    const ppidsBefore = new Set((await rp.get('/api/mode3/logins', rp.adminHeaders)).body.logins.filter((l) => l.PPID).map((l) => l.PPID));
+    assert.equal(ppidsBefore.size, 1);
+    await loseAgentFile();
+    assert.equal((await wallet.get('/wallet/status')).body.registered, false);
+    assert.ok(await walletPage.$('#recoverAttrs [data-slot]'), '속성 칸이 있다');
+    const before = hits.get;
+    await walletPage.click('#recoverAuidBtn');
+    await waitText(walletPage, '#recoverAuid', AUID_A);
+    await walletPage.click('#recoverGoBtn');
+    await atIdpLogin(walletPage);
+    await walletPage.fill('#authUid', 'pk-user'); await walletPage.fill('#authPwd', DEMO_PWD); await walletPage.fill('#authAuid', AUID_A); await walletPage.click('#authGo');
+    await walletPage.waitForURL((x) => x.origin === new URL(wallet.base).origin && x.pathname === '/' && !x.searchParams.get('authorize'), { timeout: 120_000 });
+    await waitText(walletPage, '#recoverVerdict', '계정을 되찾았습니다', 60_000);
+    assert.equal(hits.get - before, 2, `복구 동안 패스키 계산 ${hits.get - before}번 — auid 표시·돌아온 뒤 두 번`);
+    const st = (await wallet.get('/wallet/status')).body;
+    assert.equal(st.registered, true); assert.equal(String(st.auid), AUID_A);
+    const dump = await walletPage.evaluate(() => {
+      const ls = {}; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k !== 'mode3_attr_tool_v1') ls[k] = localStorage.getItem(k); }
+      return { all: JSON.stringify(ls) + JSON.stringify(sessionStorage), result: sessionStorage.getItem('mode3_recover_result') };
+    });
+    assert.equal(dump.result, null, '복구 결과는 한 번 보인 뒤 지운다');
+    assert.equal(dump.all.includes(SALT_A), false, '브라우저 저장소에 s_u 가 있다');
+    assert.equal(fs.readFileSync(stack.walletStateFile, 'utf8').includes(SALT_A), false, '상태 파일에 s_u 가 있다');
+    await walletPage.reload(); await walletPage.waitForTimeout(1000);
+    assert.equal((await text(walletPage, '#recoverVerdict').catch(() => '')).includes('되찾았습니다'), false, '새로 고치면 결과가 다시 뜨지 않는다');
+    await loginAgain();
+    const ppidsAfter = new Set((await rp.get('/api/mode3/logins', rp.adminHeaders)).body.logins.filter((l) => l.PPID).map((l) => l.PPID));
+    assert.deepEqual([...ppidsAfter], [...ppidsBefore], '복구한 등록으로 로그인해도 같은 PPID');
+  });
+
+  // 리뷰(복구) I-1: 두 경로를 따로 본다 — (1) 이미 다른 auid 로 등록된 계정이면 IdP 인증 창이 거기서 막고, (2) 등록 없는 계정에 틀린 auid 를 넣으면
+  // IdP 가 그 auid 에 묶인 코드를 주고 화면으로 돌아온다 — 그때 finishRecover 의 auid 대조(또는 IdP 의 코드 대조)가 register_auid_mismatch 로 멈춘다.
+  const wrongAuid = AUID_A.slice(0, -1) + (AUID_A.endsWith('1') ? '2' : '1');
+  await t('이미 다른 auid 로 등록된 계정에 틀린 auid 를 넣으면 IdP 인증 창이 already_registered 로 막는다 — 등록되지 않는다', async () => {
+    await loseAgentFile();
+    await walletPage.click('#recoverGoBtn');
+    await atIdpLogin(walletPage);
+    await walletPage.fill('#authUid', 'pk-user'); await walletPage.fill('#authPwd', DEMO_PWD); await walletPage.fill('#authAuid', wrongAuid); await walletPage.click('#authGo');
+    await waitText(walletPage, '#authVerdict', '이미 등록', 30_000);
+    assert.equal(new URL(walletPage.url()).origin, cia.base, '지갑으로 돌아가지 않는다');
+    assert.equal((await wallet.get('/wallet/status')).body.registered, false);
+  });
+
+  await t('등록 없는 계정에 이 패스키와 다른 auid 를 넣으면 돌아와 register_auid_mismatch — 등록되지 않는다', async () => {
+    const u = await ctxA.newPage(); await u.goto(`${cia.base}/user`);
+    await u.click('#showSignupBtn'); await u.fill('#signupId', 'pk-user2'); await u.fill('#signupPwd', DEMO_PWD); await u.fill('#signupPwd2', DEMO_PWD); await u.click('#signupBtn');
+    await waitText(u, '#userVerdict', '가입했습니다'); await u.close();
+    await loseAgentFile();
+    await walletPage.click('#recoverGoBtn');
+    await atIdpLogin(walletPage);
+    await walletPage.fill('#authUid', 'pk-user2'); await walletPage.fill('#authPwd', DEMO_PWD); await walletPage.fill('#authAuid', wrongAuid); await walletPage.click('#authGo');
+    await walletPage.waitForURL((x) => x.origin === new URL(wallet.base).origin && x.pathname === '/' && !x.searchParams.get('authorize'), { timeout: 120_000 });
+    await waitText(walletPage, '#recoverVerdict', '넣은 auid 가', 60_000);
+    assert.equal((await wallet.get('/wallet/status')).body.registered, false, '다른 auid 로는 등록되지 않는다');
+    const acct = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.id === 'pk-user2');
+    assert.ok(!acct?.auid, `IdP 의 pk-user2 에도 등록이 없다: ${j(acct)}`);
+  });
 } finally {
   await browser.close().catch(() => {});
   await stack.stop();

@@ -172,3 +172,22 @@
 - 스냅 모드의 세션 복구 분리.
 - 실제 배포용 지갑 전용 도메인.
 - 패스키 모드 시연 순서(`docs/MODE3_DEMO_SCRIPT.md`)와 덱·논문 반영.
+
+## 10. 계정 복구(2026-11-17 추가 — 사용자 승인)
+
+§9 의 "에이전트 파일을 잃었을 때 계정 되찾기" 를 이번 범위로 당긴다. 결정(사용자): 패스키 모드만, zk 스냅 화면의 **"계정 복구"**(서비스 로그인과 분리),
+본인 확인은 **IdP 인증 창 재사용**(비밀번호는 IdP 에만), 속성은 **복구 카드에서 입력**(IdP 는 속성을 보관하지 않는다). 리뷰 I-1(속성 도구 기록의 평문 salt)은 예외로 둔다(사용자 결정).
+
+| # | 결정 | 이유·대가 |
+|---|---|---|
+| P11 | 복구 카드는 **패스키가 연결돼 있고 에이전트에 등록이 없을 때** zk 스냅 화면에 보인다(연결이 없으면 설정 카드의 "이미 있는 패스키 쓰기" 가 먼저). | 파일을 잃었거나 다른 PC — 연결과 복구를 한 흐름으로 묶지 않아 각 단계의 실패가 분명하다. |
+| P12 | 카드: 스키마 속성 칸(기본값 채움) + "계정 복구". 누르면 패스키 한 번 → auid 를 계산해 보인다(사용자가 복사 — 11-09 규칙대로 인증 창에 미리 채우지 않는다). | auid 는 인증 창의 등록 코드에 묶인다(cia.js `/cia/auth/code` purpose=register). |
+| P13 | "인증 창으로" 를 누르면 `sessionStorage` 의 기존 대기 키(`PENDING_KEY`)에 `{ req: { type: 'mode3-recover', profile }, origin: location.origin, nonce, at }` 를 남기고 IdP `/login?purpose=register&return=1` 로 간다. **salt 는 남기지 않는다.** | IdP 인증 창은 늘 `${wallet}/?authorize=1&idp_code…&idp_uid…&idp_auid…` 로 돌아온다 — IdP 는 바꾸지 않는다. |
+| P14 | 돌아온 페이지(`takeIdpReturn`)가 `req.type === 'mode3-recover'` 면: 패스키 한 번(페이지가 새로 떠 salt 가 없다) → 계산한 auid 가 돌아온 `idp_auid` 와 같은지 → `/wallet/register { uid, code, s_u, profile }` → 결과를 `sessionStorage` 의 `mode3_recover_result` 에 남기고 `/` 로 돌아간다. zk 스냅 화면이 그 결과를 복구 카드 자리에 한 번 보인다. | 복구 한 번에 패스키 두 번(auid 표시, 돌아온 뒤). |
+| P15 | 에이전트 `/wallet/register` 응답에 IdP 의 `restored: true` 를 그대로 싣는다. 화면은 `restored` 면 "계정을 되찾았습니다(같은 슬롯)", 아니면 "새로 등록했습니다". | IdP `registerAccount` 는 같은 계정·같은 auid 면 슬롯을 새로 잡지 않고 돌려준다 — 같은 PPID. |
+
+오류: `register_auid_mismatch`(돌아온 auid ≠ 이 패스키의 auid, 또는 IdP 가 코드의 auid 와 대조해 거절), `already_registered`(그 zkID 계정에 다른 auid — "이 패스키의 계정이 아닙니다" 로 안내),
+`account_disabled`(폐기된 계정), 패스키 사유(§5). 대기 저장분이 없거나 nonce 가 어긋나면 지금처럼 `wallet_auth_resume_failed`.
+
+테스트: 에이전트 — `/wallet/register` 가 같은 auid 재등록에 `restored: true`. 브라우저 — 에이전트 상태 파일을 비워(파일 분실 흉내) 재시작 → "이미 있는 패스키 쓰기" → 복구 카드 → 인증 창 → `restored` 문구,
+같은 슬롯 → 서비스 로그인 → 같은 PPID; 인증 창에 다른 auid 를 넣으면 `register_auid_mismatch` 이고 등록되지 않는다; `sessionStorage`·`localStorage` 에 salt 가 없다(속성 도구 기록 키 제외).

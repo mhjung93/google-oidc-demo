@@ -752,7 +752,8 @@ app.post('/wallet/register', async (req, res) => {
     state.registration = WITNESS_MODE ? stripSecrets(full) : full;
     persist();
     // issue_code(2026-11-09): 등록 코드 경로면 IdP 가 그 auid 의 발급 코드를 함께 준다 — 서비스 첫 로그인 중의 등록이 비밀번호 재입력 없이 발급으로 이어진다. 에이전트는 저장하지 않고 넘긴다.
-    res.status(201).json({ uid, slot: r.body.slot, auid: reg.auid.toString(), attrs, profile: normalized, provider, ...(typeof r.body.issue_code === 'string' ? { issue_code: r.body.issue_code } : {}) });
+    // restored(2026-11-17 패스키 모드 §10 P15): 같은 계정·같은 auid 의 재등록이면 IdP 가 기존 슬롯을 돌려주며 restored:true 를 싣는다 — 화면의 계정 복구가 문구를 가른다.
+    res.status(201).json({ uid, slot: r.body.slot, auid: reg.auid.toString(), attrs, profile: normalized, provider, ...(r.body.restored === true ? { restored: true } : {}), ...(typeof r.body.issue_code === 'string' ? { issue_code: r.body.issue_code } : {}) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

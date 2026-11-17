@@ -118,6 +118,15 @@
     </section>
     <!-- 설정이 끝났다는 알림(2026-11-13 화면 리뷰) — 서비스 목록 카드 안이 아니라 탭 위에 따로 보인다. 탭을 누르면 사라진다. -->
     <div id="setupNotice"></div>
+    <!-- 계정 복구(2026-11-17 패스키 모드 §10 P11~P15): 패스키는 연결됐는데 이 에이전트에 등록이 없을 때(파일을 잃었거나 다른 PC) — 서비스 로그인과 따로 같은 zkID 등록을 되찾는다. -->
+    <section class="card" id="recoverCard" hidden>
+      <h3 data-i18n="wallet_recover_title">계정 복구</h3>
+      <p class="desc" data-i18n="wallet_recover_desc">이 패스키로 zkID 에 등록한 적이 있으면 같은 등록(같은 서비스 주소)을 되찾습니다. 속성을 넣고, auid 를 확인해 복사한 뒤 zkID 인증 창으로 가세요. 처음이면 서비스에서 로그인하면 새로 등록됩니다.</p>
+      <dl id="recoverAttrs" class="kv"></dl>
+      <p class="row-actions"><button type="button" id="recoverAuidBtn" class="btn-ghost" data-i18n="wallet_recover_auid_btn">auid 보기(패스키)</button> <code id="recoverAuid"></code></p>
+      <p class="row-actions"><button type="button" id="recoverGoBtn" data-i18n="wallet_recover_go_btn">zkID 인증 창으로</button></p>
+    </section>
+    <div id="recoverVerdict"></div>
 
     <!-- ===== 탭: 계정 ===== -->
     <section class="card" id="identityCard" data-panel="account" hidden>
@@ -1286,6 +1295,12 @@
     function runAuthorize() {
       const step = (s) => { $('authStep').textContent = s; };
       const log = (s) => { $('authLog').textContent += `${s}\n`; };
+      // 계정 복구(스펙 §10 P14)는 팝업이 아니라 zk 스냅 화면 탭 자체가 IdP 를 다녀온 길이라 opener 가 없다 — opener 검사보다 먼저 본다.
+      // 대기 저장분(PENDING_KEY)은 이 오리진의 sessionStorage 라 그 탭이 남긴 것만 있다(takeIdpReturn 이 nonce·나이를 본다).
+      if (PASSKEY() && !window.opener) {
+        const back = takeIdpReturn();
+        if (back?.req?.type === 'mode3-recover') { finishRecover(back); return; }
+      }
       if (!window.opener) { renderAuthTitle(); step(tt('wallet_auth_no_opener') || '이 창은 RP 페이지가 열어야 합니다(여는 창이 없습니다).'); return; }
       // 결과는 요청을 보낸 창에만 돌려준다. 실패는 이유를 잠시 보이게 둔다.
       const makeReply = (type, r_s, target) => (result) => {
@@ -1296,6 +1311,7 @@
       };
       // IdP 에서 돌아온 길(2026-11-05) — ready 를 다시 보내지 않는다(보내면 RP 가 요청을 한 번 더 보낸다). 저장분이 어긋나면 안내만 하고 멈춘다.
       const back = takeIdpReturn();
+      if (back && back.req?.type === 'mode3-recover') { finishRecover(back); return; }   // 계정 복구(스펙 §10 P14) — 팝업이 아니라 zk 스냅 화면 탭이 다녀온 길
       if (back) {
         if (!back.req) { renderAuthTitle(); step(tt('wallet_auth_resume_failed') || 'IdP 인증 결과를 이어받지 못했습니다 — RP 페이지에서 다시 로그인하세요.'); return; }
         lastAuthReq = back.req; renderAuthTitle(); renderAuthSummary(back.req);
@@ -1655,6 +1671,7 @@
       renderSessions();
       renderRestore();
       renderPasskeyMe();
+      renderRecover();
       renderRcl();
       renderBounds();
       renderGuide();
@@ -1705,6 +1722,72 @@
       } catch (e) { setVerdict($('restoreVerdict'), false, 'wallet_restore_failed', { reason: passkeyReason(e) ?? 'wallet_error', detail: e?.message }); }
       finally { btn.disabled = false; await refresh(); }   // 결과는 restoreResults 로 남아 다시 그려진다
     });
+    // ---- 계정 복구(스펙 §10) ----
+    const RECOVER_RESULT_KEY = 'mode3_recover_result';
+    const RECOVER_DEFAULTS = { birthYear: '1990', country: 'KR' };   // 에이전트 기본값(DEFAULT_PROFILE)과 같다 — 사용자가 고친다
+    let recoverDrawn = false;
+    /** 보이는 조건(P11): 패스키 모드·localhost·연결됨(설정 끝)·상태를 읽었고 등록 없음. 속성 칸은 처음 한 번만 그린다(입력 중인 값을 지우지 않게). */
+    function renderRecover() {
+      const card = $('recoverCard'); if (!card) return;
+      const show = PASSKEY() && !IS_AUTHORIZE && passkeyOriginOk() && !setupNeeded && Boolean(lastStatus) && !lastStatus.registered;
+      card.hidden = !show;
+      if (!show || recoverDrawn || !attrSchema) return;
+      recoverDrawn = true;
+      const dl = $('recoverAttrs'); dl.replaceChildren();
+      attrSchema.slots.forEach((slot) => {
+        if (slot.type === 'unused' || isSpareSlot(slot)) return;
+        const dt = document.createElement('dt'); dt.textContent = slot.label ?? slot.name;
+        let input;
+        if (slot.type === 'enum') {
+          input = document.createElement('select');
+          for (const name of Object.keys(slot.values)) { const o = document.createElement('option'); o.value = name; o.textContent = name; input.appendChild(o); }
+        } else { input = document.createElement('input'); input.size = slot.type === 'int' ? 6 : 10; }
+        input.dataset.slot = slot.name;
+        if (RECOVER_DEFAULTS[slot.name] !== undefined) input.value = RECOVER_DEFAULTS[slot.name];
+        const dd = document.createElement('dd'); dd.appendChild(input);
+        dl.append(dt, dd);
+      });
+    }
+    /** 복구 카드의 { 슬롯 이름: 값 } — 예비 슬롯은 빈 값(readProfileForm 과 같은 모양). */
+    function readRecoverProfile() {
+      const out = {};
+      for (const slot of attrSchema?.slots ?? []) if (slot.type !== 'unused') out[slot.name] = '';
+      for (const el of document.querySelectorAll('#recoverAttrs [data-slot]')) out[el.dataset.slot] = el.value.trim();
+      return out;
+    }
+    $('recoverAuidBtn').addEventListener('click', async () => {
+      clearVerdictEl($('recoverVerdict')); $('recoverAuid').textContent = '';
+      try {
+        if (!(await loadAttrBundle())) throw Object.assign(new Error('/attr/dist/attr.js 가 없습니다 — npm run attr:build'), { reason: 'bundle_missing' });
+        const { s_u } = await invokeSnap('getSalt', {});   // 패스키 한 번 — salt 는 auid 계산에만 쓰고 버린다
+        $('recoverAuid').textContent = (await Mode3Attr.auidOf({ s_u: BigInt(s_u) })).toString();
+      } catch (e) { setVerdict($('recoverVerdict'), false, 'wallet_recover_failed', { reason: passkeyReason(e) ?? e?.reason ?? 'wallet_error', detail: e?.message }); }
+    });
+    // 인증 창(등록 모드)으로 — 돌아오면 /?authorize=1 의 takeIdpReturn 이 mode3-recover 를 보고 finishRecover 로 이어 간다(P13). 대기 저장분에 salt 는 없다.
+    $('recoverGoBtn').addEventListener('click', () => { clearVerdictEl($('recoverVerdict')); goIdpAuth({ type: 'mode3-recover', profile: readRecoverProfile() }, location.origin, { purpose: 'register' }); });
+    /** IdP 에서 돌아온 복구(P14): 패스키로 salt → auid 대조 → /wallet/register → 결과를 남기고 zk 스냅 화면으로. */
+    async function finishRecover(back) {
+      const done = (r) => { try { sessionStorage.setItem(RECOVER_RESULT_KEY, JSON.stringify(r)); } catch { /* 결과를 못 남기면 화면이 상태로만 보인다 */ } location.replace('/'); };
+      try {
+        await passkeyStore.withSalt(async () => {
+          if (!(await loadAttrBundle())) return done({ ok: false, reason: 'bundle_missing' });
+          const { s_u } = await invokeSnap('getSalt', {});
+          const mine = (await Mode3Attr.auidOf({ s_u: BigInt(s_u) })).toString();
+          if (back.auid && mine !== back.auid) return done({ ok: false, reason: 'register_auid_mismatch' });
+          const { status, body } = await postJson('/wallet/register', { uid: back.uid, code: back.code, s_u, profile: back.req.profile ?? undefined });
+          if (status !== 201) return done({ ok: false, reason: body?.cia?.reason ?? body?.reason ?? `HTTP ${status}`, detail: body?.detail ?? body?.cia?.error ?? null });
+          return done({ ok: true, restored: body.restored === true });
+        });
+      } catch (e) { done({ ok: false, reason: passkeyReason(e) ?? e?.reason ?? 'wallet_error', detail: e?.message ?? null }); }
+    }
+    /** 남겨 둔 복구 결과를 한 번 보이고 지운다(Review Focus 3). */
+    function showRecoverResult() {
+      let r = null;
+      try { r = JSON.parse(sessionStorage.getItem(RECOVER_RESULT_KEY) ?? 'null'); sessionStorage.removeItem(RECOVER_RESULT_KEY); } catch { r = null; }
+      if (!r) return;
+      if (r.ok) setVerdict($('recoverVerdict'), true, r.restored ? 'wallet_recover_done_restored' : 'wallet_recover_done_new');
+      else setVerdict($('recoverVerdict'), false, 'wallet_recover_failed', { reason: r.reason ?? 'wallet_error', ...(r.detail ? { detail: r.detail } : {}) });
+    }
     /** "내 계정" 의 패스키 줄(스펙 §4.2) — salt 보기, 연결 끊기(등록이 없을 때만). */
     function renderPasskeyMe() {
       const row = $('passkeyMeRow'); if (!row) return;
@@ -2574,7 +2657,7 @@
       } catch { /* 설정을 못 읽으면 file 모드로 본다 */ }
       if (cfg.secrets === 'snap' || PASSKEY()) applySnapMode();
       if (PASSKEY()) applyPasskeyMode();
-      if (!IS_AUTHORIZE && PASSKEY()) { try { await refreshSetup(); } catch { /* 에이전트를 못 읽으면 탭은 그대로 — 뒤 단계가 다시 거른다 */ } }
+      if (!IS_AUTHORIZE && PASSKEY()) { try { await refreshSetup(); } catch { /* 에이전트를 못 읽으면 탭은 그대로 — 뒤 단계가 다시 거른다 */ } showRecoverResult(); }
       else if (!IS_AUTHORIZE) { try { await restoreConnection(); } catch { /* 못 이으면 연결 카드가 보인다 */ } }
       if (!IS_AUTHORIZE) checkDemoReset().catch(() => {});   // 2026-11-16: 새 데모면 스냅의 옛 등록을 지운다
       if (!IS_AUTHORIZE) showTab(currentTab);

@@ -9,6 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
 import { createReadySnapSim } from './helpers/snap_sim.mjs';
 import { VKEY_PATH } from '../lib/mode3_wallet.js';
+import { auidOf } from '../lib/mode3_credential.js';
 
 const j = (o) => JSON.stringify(o, (k, v) => (typeof v === 'bigint' ? v.toString() : v));
 let failed = 0;
@@ -79,7 +80,7 @@ try {
     assert.equal(x.status, 403, j(x.body)); assert.equal(x.body.reason, 'bad_origin', '지갑 전역 오리진 정책(리뷰 D2)이 막는다');
   });
 
-  let S1 = null;
+  let S1 = null, SLOT1 = null;
   await t('가입·로그인은 증인을 요구하고 s_u 를 파일에 쓰지 않는다; blind_u 는 파일에 있다', async () => {
     const withJar = makeJar(cia.base);
     assert.equal((await withJar('/cia/user/login', { method: 'POST', body: JSON.stringify({ uid: '12345', pwd: 'password123' }) })).status, 200);
@@ -87,6 +88,7 @@ try {
     assert.equal((await wallet.post('/wallet/register', { uid: '12345', code })).status, 400, 'passkey 모드도 s_u 필수');
     const reg = await wallet.post('/wallet/register', { uid: '12345', code, s_u: S_U });
     assert.equal(reg.status, 201, j(reg.body));
+    SLOT1 = reg.body.slot; assert.equal('restored' in reg.body, false, '첫 등록에는 restored 가 없다');
     const base = await loginBase();
     const noW = await wallet.post('/wallet/login', base);
     assert.equal(noW.status, 400, j(noW.body)); assert.equal(noW.body.reason, 'witness_required');
@@ -177,6 +179,16 @@ try {
     assert.equal((await pkState()).passkey, null);
   });
 
+  // 스펙 §10 P15: 계정 복구 — 같은 계정·같은 auid 로 다시 등록하면 IdP 가 기존 슬롯을 돌려주고(restored), 에이전트가 그 표시를 싣는다.
+  await t('같은 auid 로 다시 등록하면 restored: true, 같은 slot', async () => {
+    assert.equal((await wallet.get('/wallet/status')).body.registered, false, '앞 케이스가 등록을 비웠다');
+    const auid = (await auidOf({ s_u: BigInt(S_U) })).toString();
+    const ac = await fetch(`${cia.base}/cia/auth/code`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ uid: '12345', pwd: 'password123', auid, purpose: 'register' }) });
+    const acBody = await ac.json(); assert.equal(ac.status, 200, j(acBody));
+    const r = await wallet.post('/wallet/register', { uid: '12345', code: acBody.code, s_u: S_U });
+    assert.equal(r.status, 201, j(r.body));
+    assert.equal(r.body.restored, true); assert.equal(r.body.slot, SLOT1, '같은 슬롯');
+  });
 } finally {
   await stack.stop();
 }
