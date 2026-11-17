@@ -2,7 +2,8 @@
 // CDP 가상 인증기는 탭(대상)마다 따로라서 승인 팝업(새 창)이 zk 스냅 화면에서 만든 패스키를 볼 수 없다 — 그래서 흐름 시험은 이 스텁으로 한다.
 // 같은 secretHex 를 컨텍스트의 모든 페이지에 넣으면 같은 패스키로 동작한다(credential ID 는 secret 에서 정해진다).
 //   PRF(input) = HMAC-SHA256(secret, SHA-256("WebAuthn PRF" ‖ 0x00 ‖ input))  — 실제 hmac-secret 의 입력 처리와 같은 모양
-// 호출 수는 페이지가 새로 떠도(IdP 를 다녀온 팝업) 세도록 하네스 함수 window.__webauthnHit(kind) 로 알린다(있을 때만).
+// 호출 수는 페이지가 새로 떠도(IdP 를 다녀온 팝업) 세도록 하네스 함수 window.__webauthnHit(kind, rpId) 로 알린다(있을 때만).
+//   kind = 'create' | 'get', rpId = 그 호출의 RP ID(create 는 publicKey.rp.id, get 은 publicKey.rpId — 없으면 null). 하네스는 둘째 인자를 무시해도 된다.
 //   createStub 옵션: prf=false 면 PRF 를 주지 않는 인증기, cancel=true 면 사용자가 창을 닫은 것처럼 NotAllowedError.
 export function buildWebAuthnStub({ secretHex, prf = true, cancel = false }) {
   if (!/^[0-9a-f]{64}$/.test(secretHex)) throw new Error('secretHex 는 32바이트 16진');

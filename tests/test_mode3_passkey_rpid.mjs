@@ -54,6 +54,21 @@ await t('IP 거절', async () => {
   await assert.rejects(P.derivePrf({ credentialId: 'AA', rpId: '192.168.226.128' }), wrongOrigin);
   assert.equal(c.get.length, 0);
 });
+// 2026-11-17(미뤄 둔 Minor): 문자열이 아닌 rpId 는 TypeError 대신 사유가 붙은 오류; IP 거절 문구는 무엇이 틀렸는지(IP 는 RP ID 가 될 수 없다) 말한다.
+await t('문자열이 아닌 rpId 는 사유가 붙은 오류(WebAuthn 을 부르지 않는다)', async () => {
+  for (const rpId of [null, 42, {}, '']) {
+    const c = setup('wallet.zkd.test');
+    await assert.rejects(P.derivePrf({ credentialId: 'AA', rpId }), wrongOrigin, String(rpId));
+    await assert.rejects(P.createPasskey({ rpId }), wrongOrigin, String(rpId));
+    assert.equal(c.get.length + c.create.length, 0);
+  }
+});
+await t('IP 거절 문구는 IP 가 RP ID 가 될 수 없다고 말하고 이름으로 열라고 한다', async () => {
+  for (const ip of ['192.168.226.128', '::1']) {
+    setup(ip);
+    await assert.rejects(P.derivePrf({ credentialId: 'AA', rpId: ip }), (e) => wrongOrigin(e) && /IP 주소/.test(e.message) && /RP ID 가 될 수 없/.test(e.message) && /이름/.test(e.message) && !/에서만 쓴다/.test(e.message));
+  }
+});
 await t('만들기', async () => {
   const c = setup('wallet.zkd.test');
   await P.createPasskey({ rpId: 'wallet.zkd.test', rpName: 'zk 지갑' });

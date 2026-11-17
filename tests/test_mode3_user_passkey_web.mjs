@@ -80,6 +80,8 @@ const putAttrRecord = (page, s_u) => page.evaluate(async (r) => {
   try { const x = await fetch('/attr/dist/reset.json', { cache: 'no-store' }); if (x.ok) localStorage.setItem('mode3_attr_tool_reset', String((await x.json()).epoch ?? '')); } catch { /* 없으면 그대로 */ }
   localStorage.setItem('mode3_attr_tool_v1', JSON.stringify(r));
 }, { version: 5, s_u, profile: { birthYear: '1990', country: 'KR' } });
+/** 10분 보관분(kv passkeyHold)을 지운다 — 보관 0초 케이스가 앞 케이스의 보관분을 쓰지 않게. */
+const delHold = (page) => page.evaluate(async () => { const open = indexedDB.open('mode3-user', 1); const db = await new Promise((r, x) => { open.onsuccess = () => r(open.result); open.onerror = () => x(open.error); }); await new Promise((r, x) => { const q = db.transaction('kv', 'readwrite').objectStore('kv').delete('passkeyHold'); q.onsuccess = () => r(); q.onerror = () => x(q.error); }); db.close(); });
 const openUserPage = async (ctx) => { const p = await ctx.newPage(); await p.goto(`${wallet.base}/`); await p.waitForSelector('#mainView:not([hidden])'); return p; };
 const idpLogin = async (page) => { if (await page.$eval('#loginBtn', (b) => b.hidden)) { await page.click('#logoutBtn'); await page.waitForSelector('#loginBtn:not([hidden])'); } await page.click('#loginBtn'); await page.click('#idpLoginBtn'); };
 const approve = async (popup) => { await popup.waitForSelector('#authApproveBtn:not([hidden])', { timeout: 60_000 }); await popup.click('#authApproveBtn'); };
@@ -177,6 +179,72 @@ try {
     assert.equal(hits.get - before, 0, '보관분으로 패스키 없이');
   });
 
+  // 2026-11-17(미뤄 둔 Minor, Task 6): Google 경로는 승인을 누르기 전에 거절한다 — 승인 뒤에야 passkey_mode 로 막으면 헛클릭 한 번이다.
+  // 승인 버튼을 띄웠다면 팝업이 결정을 기다리느라 회신하지 않아 아래 waitText 가 시간 초과로 실패한다.
+  await t('Google 로 로그인은 승인 전에 passkey_mode — 승인 버튼 없이, IdP·패스키로 가지 않는다', async () => {
+    const before = hits.get + hits.create;
+    const title = await rpPage.evaluate(() => window.DemoStrings.reasons.passkey_mode.ko.title);
+    const [popup] = await Promise.all([ctxA.waitForEvent('page'), rpPage.evaluate(() => { startIdpLogin({ provider: 'google' }); })]);
+    try {
+      const visited = [];
+      popup.on('framenavigated', (f) => { if (f === popup.mainFrame()) visited.push(f.url()); });
+      await waitText(rpPage, '#verdict', title, 30_000);
+      if (!popup.isClosed()) assert.equal(await popup.isHidden('#authApproveBtn'), true, '승인 버튼이 보인다');
+      assert.equal(visited.some((u) => new URL(u).origin === cia.base), false, `팝업이 IdP 로 갔다: ${j(visited)}`);
+      assert.equal(hits.get + hits.create - before, 0, '패스키를 묻지 않는다');
+    } finally { if (!popup.isClosed()) await popup.close(); }   // 실패해도 팝업을 닫는다 — 남으면 RP 가 다음 로그인 클릭을 무시한다
+  });
+
+  // 2026-11-17(미뤄 둔 Minor, Task 6 — 계획 R-8): 보관 0초면 보관분이 없다 — 그래도 팝업 하나(요청 하나)에 패스키는 한 번(withSalt 메모).
+  await t('보관 0초(R-8): 로그인·출금 팝업마다 패스키 정확히 한 번, 보관분을 남기지 않는다', async () => {
+    await stack.restartWallet({ MODE3_PASSKEY_HOLD_SECONDS: '0' });
+    try {
+      assert.equal((await wallet.get('/user/config')).body.passkeyHoldSeconds, 0);
+      await delHold(userPage);
+      const prev = await curSession();
+      let before = hits.get;
+      const [popup] = await Promise.all([ctxA.waitForEvent('page'), idpLogin(rpPage)]);
+      await approve(popup);
+      await atIdpLogin(popup);
+      await fillIdp(popup);
+      await rpPage.waitForFunction((p) => typeof currentSession !== 'undefined' && currentSession && currentSession !== p, prev, { timeout: 180_000 });
+      await waitText(rpPage, '#verdict', '로그인 성공', 60_000);
+      assert.equal(hits.get - before, 1, `로그인: 패스키 ${hits.get - before}번`);
+      assert.equal((await idbDump(userPage)).passkeyHold, undefined, '보관 0초인데 보관분이 있다');
+      before = hits.get;
+      const [txPopup] = await Promise.all([ctxA.waitForEvent('page'), rpPage.click('#txBtn')]);
+      await approve(txPopup);
+      await waitText(rpPage, '#txVerdict', '전송 성공', 180_000);
+      assert.equal(hits.get - before, 1, `출금: 패스키 ${hits.get - before}번`);
+      assert.equal((await idbDump(userPage)).passkeyHold, undefined);
+    } finally { await stack.restartWallet({ MODE3_PASSKEY_HOLD_SECONDS: '' }); }   // 기본(600초)으로 되돌린다 — 뒤 케이스는 보관분을 쓴다
+  });
+
+  // 2026-11-17(미뤄 둔 Minor, Task 6): 팝업이 상태(core.status)를 못 읽으면 등록된 것으로 보고 발급 인증 창으로 간다(IdP·코어가 다시 거른다).
+  // 미등록·속성 도구 기록 없음인 브라우저라, 상태를 읽었다면 attr_record_missing 으로 IdP 에 가지 않았을 것이다 — 발급 창에 닿으면 그 분기다.
+  // 실패는 승인 팝업에서만 kv 'demo' 읽기(status 만 읽는다)를 던지게 해 만든다.
+  await t('상태를 못 읽으면 발급 인증 창으로 간다(등록 창·패스키 없이)', async () => {
+    const ctx = await stubContext({ secretHex: SECRET_D });
+    try {
+      await ctx.addInitScript(() => {
+        if (new URLSearchParams(location.search).get('authorize') !== '1') return;
+        const get = IDBObjectStore.prototype.get;
+        IDBObjectStore.prototype.get = function (k) { if (k === 'demo') throw new DOMException('시험: 상태 읽기 실패', 'UnknownError'); return get.call(this, k); };
+      });
+      const u = await openUserPage(ctx);
+      await putPasskey(u, stubCredId(SECRET_D));
+      const rpS = await ctx.newPage(); await rpS.goto(rp.base);
+      const before = hits.get + hits.create;
+      const [popup] = await Promise.all([ctx.waitForEvent('page'), idpLogin(rpS)]);
+      await approve(popup);
+      await atIdpLogin(popup);
+      assert.equal(new URL(popup.url()).searchParams.get('purpose'), null, '상태를 못 읽으면 발급 인증 창');
+      assert.equal(hits.get + hits.create - before, 0, 'IdP 로 가기 전에 패스키를 묻지 않는다');
+      assert.equal((await idbDump(u)).registration, undefined);
+      await popup.close();
+    } finally { await ctx.close(); }
+  });
+
   // ---- 새 컨텍스트·미등록 ----
   const ctxC = await stubContext({ secretHex: SECRET_C });
   const userC = await openUserPage(ctxC);
@@ -264,6 +332,21 @@ try {
       await waitText(p, '#pkSetupVerdict', await reasonTitle(p, 'passkey_prf_unsupported'));
       assert.equal((await idbDump(p)).passkey, undefined);
       assert.equal(await p.isVisible('#pkSetupCard'), true, '설정 카드가 그대로 보인다');
+    } finally { await ctx.close(); }
+  });
+
+  // 2026-11-17(미뤄 둔 Minor, Task 7): 사유가 붙지 않은 오류(WebAuthn 오류는 passkey_store 가 사유를 붙인다)는 internal — passkey_unsupported 로 뭉뚱그리지 않는다.
+  // 인증기 응답의 getClientExtensionResults 가 던지게 해 만든다(passkey_store 의 mapError 밖에서 난다).
+  await t('패스키 연결 중 사유 없는 오류는 internal 로 보인다', async () => {
+    const ctx = await stubContext({ secretHex: SECRET_D });
+    try {
+      await ctx.addInitScript(() => { navigator.credentials.create = async () => ({ rawId: new ArrayBuffer(16), getClientExtensionResults() { throw new Error('시험: 확장 결과를 읽지 못했다'); } }); });
+      const p = await openUserPage(ctx);
+      await p.waitForSelector('#pkSetupCard:not([hidden])', { timeout: 15_000 });
+      await p.click('#pkNewBtn');
+      await waitText(p, '#pkSetupVerdict', await reasonTitle(p, 'internal'));
+      assert.equal((await text(p, '#pkSetupVerdict')).includes(await reasonTitle(p, 'passkey_unsupported')), false);
+      assert.equal((await idbDump(p)).passkey, undefined);
     } finally { await ctx.close(); }
   });
 

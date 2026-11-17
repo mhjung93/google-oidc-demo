@@ -789,7 +789,8 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       if (r.status === 200) setVerdict($('pkSetupVerdict'), true, 'user_pk_connected');
       else setVerdict($('pkSetupVerdict'), false, 'wallet_setup_passkey_failed', { reason: r.body?.reason ?? `HTTP ${r.status}` });
     } catch (e) {
-      setVerdict($('pkSetupVerdict'), false, 'wallet_setup_passkey_failed', { reason: e?.reason ?? 'passkey_unsupported', detail: e?.message });
+      // 브라우저(WebAuthn) 오류는 passkey_store 가 이미 사유를 붙인다 — 사유 없는 오류는 예상하지 못한 것이다(passkey_unsupported 로 뭉뚱그리지 않는다).
+      setVerdict($('pkSetupVerdict'), false, 'wallet_setup_passkey_failed', { reason: e?.reason ?? 'internal', detail: e?.message });
     } finally { btns.forEach((b) => { delete b.dataset.busy; }); refresh(); }
   }
   if (PK) {

@@ -228,7 +228,8 @@ t('화면 리뷰 3차: 속성 도구·auid 안내가 지금 동작과 맞고, �
 // 2026-11-15(셀프 리뷰): `reason: '코드'` 꼴만 모았더니 `reason: ch.reason ?? 'challenge_failed'` 같은 기본값·삼항의 코드를 지나쳤다 — 식 전체(쉼표·닫는 괄호 앞까지)에서 모은다.
 t('서버·화면 소스의 reason 리터럴이 전부 사전(reasons)에 있다; 없어진 "세션 재검증" 버튼을 가리키는 조치가 없다', () => {
   const root = new URL('../', import.meta.url);
-  const files = ['cia.js', 'mode3_rp.js', 'mode3_wallet_agent.js', ...fs.readdirSync(new URL('mode3/', root)).filter((f) => f.endsWith('.html')).map((f) => `mode3/${f}`)];
+  // 2026-11-17(passkey-web 미뤄 둔 Minor): 사용자 정적 서버·RPC 프록시도 본다 — 405 method_not_allowed·404 not_found 가 사전에 없던 것을 이 목록이 지나쳤다.
+  const files = ['cia.js', 'mode3_rp.js', 'mode3_wallet_agent.js', 'mode3_user_static.js', 'lib/mode3_rpc_proxy.js', ...fs.readdirSync(new URL('mode3/', root)).filter((f) => f.endsWith('.html')).map((f) => `mode3/${f}`)];
   const missing = new Set();
   for (const f of files) for (const m of fs.readFileSync(new URL(f, root), 'utf8').matchAll(/reason: ([^,}\n]{1,200})/g)) for (const q of m[1].matchAll(/'([a-z0-9_]+)'/g)) if (!S.reasons[q[1]]) missing.add(`${q[1]}@${f}`);
   assert.deepEqual([...missing], [], '사전에 없는 사유');
@@ -288,6 +289,21 @@ t('속성 도구 uid 입력 문구·사유가 없다(2026-11-17); 화면 문구�
   assert.match(R.session_bounded.ko.cause, /RCL.*root/); assert.match(ui.wallet_race_blocked_title.ko, /RCL root 가 바뀌어/);
   assert.match(ui.rp_race_root_built.ko, /생성 당시 값/); assert.match(ui.rp_race_root_now.ko, /현재 값/);
   for (const [name, t0] of [['idp_disabled_desc', ui.idp_disabled_desc.ko], ['account_disabled', R.account_disabled.ko.action]]) assert.equal(/uid 칸/.test(t0), false, name);
+});
+
+// 2026-11-17(passkey-web 미뤄 둔 Minor): 패스키 사유 문구는 두 패스키 모드(zk 스냅 화면의 에이전트 패스키 모드·설치 없는 지갑) 어느 쪽에도 맞아야 한다 —
+// 한쪽 주소만 말하거나(passkey_unsupported 의 조치가 localhost 만 말했다) 원인이 모드 설명으로 길어지지 않는다.
+t('패스키 사유: passkey_unsupported 조치는 두 주소를 다 말한다; passkey_setup_required 원인은 짧고 모드를 가리지 않는다', () => {
+  const R = S.reasons;
+  for (const c of ['passkey_unsupported', 'passkey_wrong_origin']) for (const l of S.langs) {
+    assert.match(R[c][l].action, /http:\/\/localhost:5100/, `${c}.${l}.action`); assert.match(R[c][l].action, /https:\/\/wallet\.zkd\.test:5100/, `${c}.${l}.action`);
+  }
+  for (const l of S.langs) {
+    const cause = R.passkey_setup_required[l].cause;
+    assert.ok(cause.length <= 80, `passkey_setup_required.${l}.cause 가 길다(${cause.length}자): ${cause}`);
+    assert.equal(/설치 없는|스냅 에이전트|no-install|Snap agent/i.test(cause), false, `passkey_setup_required.${l}.cause 가 모드를 가린다: ${cause}`);
+  }
+  for (const c of ['method_not_allowed', 'not_found']) { const r = R[c]; assert.ok(r, c); for (const l of S.langs) for (const f of ['title', 'cause', 'action']) assert.ok(r[l]?.[f], `${c}.${l}.${f}`); }
 });
 
 if (fails) { console.log(`\n${fails} FAIL`); process.exit(1); } else console.log('\nall ok');

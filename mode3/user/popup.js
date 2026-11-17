@@ -140,7 +140,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
     try { sessionStorage.setItem(RECOVER_RESULT_KEY, JSON.stringify(out)); } catch { /* 결과를 못 남기면 화면이 상태로만 보인다 */ }
     location.replace('/');
   }
-  /** passkey-web 의 로그인(mode3-authorize, 재승인 제외 — 스펙 W5, 계획 R-10). 처음 온 요청: 승인 → (Google 이면 passkey_mode) → 패스키 연결이 없으면
+  /** passkey-web 의 로그인(mode3-authorize, 재승인 제외 — 스펙 W5, 계획 R-10). 처음 온 요청: (Google 이면 승인 전에 passkey_mode) → 승인 → 패스키 연결이 없으면
    *  passkey_setup_required → 미등록인데 속성 도구 기록이 없으면 attr_record_missing — 여기까지는 IdP 로 가지 않는다 → 대기 저장분을 두고 이 창이 IdP 인증 창
    *  (미등록이면 등록 모드)으로 간다. 돌아온 길(back): 등록 코드면 속성 도구 기록의 salt·속성으로 등록하고 함께 받은 발급 코드로, 발급 코드면 기록의 속성을
    *  맞춘 뒤 그 코드로 로그인한다(loginWith). salt 는 코어가 패스키(10분 보관분)에서 받는다 — 이 함수는 만지지 않는다. */
@@ -150,12 +150,13 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
       return reply({ ok: false, reason: 'attr_record_missing' }, { closeMs: 15_000 });
     };
     if (!back) {
+      // Google 경로는 이 모드에 없다 — 승인 버튼을 띄우기 전에 거절한다(승인 뒤에 막으면 헛클릭 한 번, 2026-11-17 미뤄 둔 Minor).
+      if (req.provider === 'google') { step('설치 없는 패스키 모드에서는 Google 로 로그인하지 않는다.'); return reply({ ok: false, reason: 'passkey_mode' }); }
       const st = await core.status();
       const registered = st.status === 200 ? Boolean(st.body?.registered) : true;   // 상태를 못 읽으면 등록된 것으로 보고 발급 창으로(IdP·코어가 다시 거른다)
       if (st.status === 200 && registered) renderAuthIdentity(st.body.provider ?? 'demo');
       step('요청을 확인하고 승인하세요.');
       if (!(await waitDecision())) { step('동의 거절'); return reply({ ok: false, reason: 'user_denied' }); }
-      if (req.provider === 'google') { step('설치 없는 패스키 모드에서는 Google 로 로그인하지 않는다.'); return reply({ ok: false, reason: 'passkey_mode' }); }
       const ps = await core.passkeyState();
       if (ps.status !== 200 || !ps.body?.credentialId) {
         showHint('user_pk_setup_hint', '이 브라우저에 연결된 패스키가 없습니다. 사용자 페이지에서 먼저 패스키를 설정하세요:', `${location.origin}/`);

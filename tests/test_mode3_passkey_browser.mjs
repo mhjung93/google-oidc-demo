@@ -111,6 +111,19 @@ try {
     await ctx.close();
   });
 
+  // 2026-11-17(미뤄 둔 Minor): 사유가 붙지 않은 오류는 internal — passkey_unsupported 로 뭉뚱그리지 않는다(인증기 응답의 확장 결과 읽기가 던지게 해 만든다).
+  await t('패스키 연결 중 사유 없는 오류는 internal 로 보인다', async () => {
+    const ctx = await stubContext({ secretHex: SECRET_B });
+    await ctx.addInitScript(() => { navigator.credentials.create = async () => ({ rawId: new ArrayBuffer(16), getClientExtensionResults() { throw new Error('시험: 확장 결과를 읽지 못했다'); } }); });
+    const p = await ctx.newPage(); await p.goto(walletUrl());
+    await p.click('#setupPasskeyNewBtn');
+    const titles = await p.evaluate(() => [window.DemoStrings.reasons.internal.ko.title, window.DemoStrings.reasons.passkey_unsupported.ko.title]);
+    await waitText(p, '#setupVerdict', titles[0]);
+    assert.equal((await text(p, '#setupVerdict')).includes(titles[1]), false);
+    assert.equal((await pkState()).passkey, null);
+    await ctx.close();
+  });
+
   const walletPage = await ctxA.newPage();
   await t('설정 카드: 패스키 만들기 → 연결되고 탭이 열린다(MetaMask 연결 카드 없음)', async () => {
     await walletPage.goto(walletUrl());

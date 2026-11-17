@@ -2077,7 +2077,7 @@
         if (r.status !== 200) return passkeyFail(r.body?.reason ?? 'wallet_error', r.body?.error ?? null);
         await refreshSetup();
         if (!setupNeeded) setVerdict($('setupNotice'), true, 'wallet_setup_passkey_done');
-      } catch (e) { passkeyFail(e?.reason ?? 'passkey_unsupported', e?.message ?? String(e)); }
+      } catch (e) { passkeyFail(e?.reason ?? 'internal', e?.message ?? String(e)); }   // WebAuthn 오류는 passkey_store 가 사유를 붙인다 — 사유 없는 오류는 예상 밖(internal)
       finally { for (const b of btns) b.disabled = false; }
     }
     $('setupPasskeyNewBtn').addEventListener('click', () => linkPasskey(() => window.Mode3Passkey.createPasskey()));
