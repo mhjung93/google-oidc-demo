@@ -37,7 +37,7 @@ const stubCredId = (secretHex) => createHash('sha256').update(Buffer.from(secret
 execFileSync('node', ['scripts/build_user_app.mjs'], { stdio: 'inherit' });
 execFileSync('node', ['scripts/build_attr_tool.mjs'], { stdio: 'inherit' });   // 속성 도구 번들 — reset.json 을 사용자 페이지가 같은 오리진에서 읽는다
 const browser = await launchBrowser();
-const stack = await startIsolatedMode3Stack({ userMode: 'web', walletHost: 'localhost', walletEnv: { MODE3_WALLET_SECRETS: 'passkey-web' }, ciaEnv: { CIA_ISSUE_AUTH: 'code' }, autoRelay: true });
+const stack = await startIsolatedMode3Stack({ userMode: 'web', walletHost: 'localhost', walletEnv: { MODE3_WALLET_SECRETS: 'passkey-web' }, ciaEnv: { CIA_ISSUE_AUTH: 'code', MODE3_WALLET_KIND: 'passkey-web' }, rpEnv: { MODE3_WALLET_KIND: 'passkey-web' }, autoRelay: true });   // MODE3_WALLET_KIND: 분리 데모 스크립트가 IdP·서비스에 넘기는 값(화면 문구용)
 const { cia, wallet, rp } = stack;
 const WALLET_ORIGIN = new URL(wallet.base).origin;
 const SECRET_A = 'a1'.repeat(32), SECRET_C = 'c3'.repeat(32), SECRET_D = 'd4'.repeat(32);
@@ -91,7 +91,7 @@ const putAttrRecord = (page, s_u) => page.evaluate(async (r) => {
 const delHold = (page) => page.evaluate(async () => { const open = indexedDB.open('mode3-user', 1); const db = await new Promise((r, x) => { open.onsuccess = () => r(open.result); open.onerror = () => x(open.error); }); await new Promise((r, x) => { const q = db.transaction('kv', 'readwrite').objectStore('kv').delete('passkeyHold'); q.onsuccess = () => r(); q.onerror = () => x(q.error); }); db.close(); });
 const openUserPage = async (ctx) => { const p = await ctx.newPage(); await p.goto(`${wallet.base}/`); await p.waitForSelector('#mainView:not([hidden])'); return p; };
 const idpLogin = async (page) => { if (await page.$eval('#loginBtn', (b) => b.hidden)) { await page.click('#logoutBtn'); await page.waitForSelector('#loginBtn:not([hidden])'); } await page.click('#loginBtn'); await page.click('#idpLoginBtn'); };
-const approve = async (popup) => { await popup.waitForSelector('#authApproveBtn:not([hidden])', { timeout: 60_000 }); await popup.click('#authApproveBtn'); };
+// 2026-11-18(사용자 요청): passkey-web 의 승인 창은 승인·거절 단계가 없다(/user/config popupConsent false) — 아래 각본은 아무도 승인 버튼을 누르지 않고 끝까지 간다.
 const atIdpLogin = (popup) => popup.waitForURL((x) => x.origin === cia.base && x.pathname === '/login' && x.searchParams.get('return') === '1', { timeout: 60_000 });
 const backAtWallet = (popup) => popup.waitForURL((x) => x.origin === WALLET_ORIGIN && x.searchParams.get('authorize') === '1', { timeout: 30_000 });
 const fillIdp = async (popup) => { await popup.fill('#authUid', 'pk-user'); await popup.fill('#authPwd', DEMO_PWD); await popup.fill('#authAuid', AUID_A); await popup.click('#authGo'); };
@@ -142,7 +142,6 @@ try {
     const [popup] = await Promise.all([ctxA.waitForEvent('page'), idpLogin(rpPage)]);
     const visited = [];
     popup.on('framenavigated', (f) => { if (f === popup.mainFrame()) visited.push(f.url()); });
-    await approve(popup);
     await waitText(rpPage, '#verdict', '속성 커밋먼트 기록이 없습니다', 30_000);
     assert.equal(await popup.$eval('#authHint a', (a) => a.href), `${WALLET_ORIGIN}/attr.html`, '안내 링크는 같은 오리진의 속성 도구');
     if (!popup.isClosed()) await popup.waitForEvent('close', { timeout: 20_000 });
@@ -151,11 +150,10 @@ try {
     assert.equal((await idbDump(userPage)).registration, undefined);
   });
 
-  await t('첫 로그인 = 등록: 승인 → 인증 창(등록) → 등록·로그인 성공, 패스키 한 번, rpId localhost', async () => {
+  await t('첫 로그인 = 등록: 승인 단계 없이 인증 창(등록) → 등록·로그인 성공, 패스키 한 번, rpId localhost', async () => {
     await putAttrRecord(userPage, SALT_A);
     const before = hits.get, rpIdsFrom = hits.rpIds.length;
     const [popup] = await Promise.all([ctxA.waitForEvent('page'), idpLogin(rpPage)]);
-    await approve(popup);
     await atIdpLogin(popup);
     assert.equal(new URL(popup.url()).searchParams.get('purpose'), 'register', '미등록이면 등록 모드 인증 창');
     await fillIdp(popup);
@@ -179,7 +177,6 @@ try {
     const prev = await curSession();
     const before = hits.get;
     const [popup] = await Promise.all([ctxA.waitForEvent('page'), idpLogin(rpPage)]);
-    await approve(popup);
     await atIdpLogin(popup);
     assert.equal(new URL(popup.url()).searchParams.get('purpose'), null, '등록된 브라우저는 발급 인증 창');
     await fillIdp(popup);
@@ -194,11 +191,9 @@ try {
     assert.equal(rv.ok, true, j(rv));
     if (!rvPopup.isClosed()) await rvPopup.waitForEvent('close', { timeout: 15_000 }).catch(() => {});
     const [balPopup] = await Promise.all([ctxA.waitForEvent('page'), rpPage.click('#balanceBtn')]);
-    await approve(balPopup);
     await waitText(rpPage, '#ledgerVerdict', '세션 요청 성공', 60_000);
     await rpPage.fill('#txTo', '0x000000000000000000000000000000000000dEaD'); await rpPage.fill('#txValue', '0');
     const [txPopup] = await Promise.all([ctxA.waitForEvent('page'), rpPage.click('#txBtn')]);
-    await approve(txPopup);
     await waitText(rpPage, '#txVerdict', '전송 성공', 180_000);
     assert.ok((await text(rpPage, '#txLog')).includes('txHash='), await text(rpPage, '#txLog'));
     assert.equal(hits.get - before, 0, '보관분으로 패스키 없이');
@@ -231,7 +226,6 @@ try {
       const prev = await curSession();
       let before = hits.get;
       const [popup] = await Promise.all([ctxA.waitForEvent('page'), idpLogin(rpPage)]);
-      await approve(popup);
       await atIdpLogin(popup);
       await fillIdp(popup);
       await rpPage.waitForFunction((p) => typeof currentSession !== 'undefined' && currentSession && currentSession !== p, prev, { timeout: 180_000 });
@@ -240,7 +234,6 @@ try {
       assert.equal((await idbDump(userPage)).passkeyHold, undefined, '보관 0초인데 보관분이 있다');
       before = hits.get;
       const [txPopup] = await Promise.all([ctxA.waitForEvent('page'), rpPage.click('#txBtn')]);
-      await approve(txPopup);
       await waitText(rpPage, '#txVerdict', '전송 성공', 180_000);
       assert.equal(hits.get - before, 1, `출금: 패스키 ${hits.get - before}번`);
       assert.equal((await idbDump(userPage)).passkeyHold, undefined);
@@ -263,7 +256,6 @@ try {
       const rpS = await ctx.newPage(); await rpS.goto(rp.base);
       const before = hits.get + hits.create;
       const [popup] = await Promise.all([ctx.waitForEvent('page'), idpLogin(rpS)]);
-      await approve(popup);
       await atIdpLogin(popup);
       assert.equal(new URL(popup.url()).searchParams.get('purpose'), null, '상태를 못 읽으면 발급 인증 창');
       assert.equal(hits.get + hits.create - before, 0, 'IdP 로 가기 전에 패스키를 묻지 않는다');
@@ -281,7 +273,6 @@ try {
     const [popup] = await Promise.all([ctxC.waitForEvent('page'), idpLogin(rpC)]);
     const visited = [];
     popup.on('framenavigated', (f) => { if (f === popup.mainFrame()) visited.push(f.url()); });
-    await approve(popup);
     await waitText(rpC, '#verdict', '패스키를 먼저 설정해야 합니다', 30_000);
     if (!popup.isClosed()) await popup.waitForEvent('close', { timeout: 20_000 });
     assert.equal(visited.some((u) => new URL(u).origin === cia.base), false, `팝업이 IdP 로 갔다: ${j(visited)}`);
@@ -293,7 +284,6 @@ try {
     await putAttrRecord(userC, SALT_C);
     await recordWalletMessages(rpC);
     const [popup] = await Promise.all([ctxC.waitForEvent('page'), idpLogin(rpC)]);
-    await approve(popup);
     await atIdpLogin(popup);
     assert.equal(await rpC.evaluate(() => window.__readyCount), 1);
     await popup.goto(`${wallet.base}/?authorize=1&idp_nonce=bad&idp_code=bad&idp_purpose=register&idp_uid=1`);
@@ -460,7 +450,6 @@ try {
       // 서비스 로그인 — 같은 PPID
       const rpR = await ctx.newPage(); await rpR.goto(rp.base);
       const [popup] = await Promise.all([ctx.waitForEvent('page'), idpLogin(rpR)]);
-      await approve(popup);
       await atIdpLogin(popup);
       assert.equal(new URL(popup.url()).searchParams.get('purpose'), null, '복구된 브라우저는 발급 인증 창');
       await fillIdp(popup);
@@ -518,6 +507,46 @@ try {
       await p.waitForSelector('#commitBox:not([hidden])', { timeout: 30_000 });
       assert.match(await text(p, '#commitBox'), /^[0-9]+$/);
     } finally { await ctx.close(); }
+  });
+
+  // 2026-11-18(사용자 요청): passkey-web 에는 스냅이 없다 — 화면에 "스냅" 이 보이지 않고 지갑 자리는 "zk 클라이언트" 다.
+  const noSnap = async (page, label) => {
+    await page.waitForFunction(() => window.DemoStrings?.noSnap === true, null, { timeout: 15_000 });
+    const m = (await page.evaluate(() => document.body.innerText)).match(/.{0,30}(스냅|\bsnap\b).{0,30}/i);
+    assert.equal(m, null, `${label} 에 "스냅" 이 보인다: ${m?.[0]}`);
+  };
+  await t('표기: 속성 도구 상단 바는 "zk 클라이언트" 이고 "스냅" 메뉴가 없다', async () => {
+    const p = await ctxA.newPage();
+    try {
+      await p.goto(`${wallet.base}/attr.html`);
+      await p.waitForFunction(() => document.documentElement.dataset.walletKind === 'passkey-web', null, { timeout: 15_000 });
+      assert.equal((await text(p, '.wallet-nav .brand')).trim(), 'zk 클라이언트');
+      assert.equal(await p.isVisible('.nav-link[data-i18n="wallet_nav_snap"]'), false, '"스냅" 메뉴가 보인다');
+      assert.equal(await p.isVisible('.nav-link[data-i18n="wallet_nav_attr"]'), true, '"속성 도구" 메뉴는 남는다');
+      await noSnap(p, '속성 도구');
+    } finally { await p.close(); }
+  });
+  await t('표기: 처음 여는 브라우저의 속성 도구도 리셋 표시 파일의 walletKind 로 "zk 클라이언트" — 상태 조회는 부르지 않는다', async () => {
+    const ctx = await browser.newContext();
+    try {
+      const p = await ctx.newPage(); const reqs = [];
+      p.on('request', (r) => reqs.push(new URL(r.url()).pathname));
+      await p.route('**/attr/dist/reset.json', (route) => route.fulfill({ json: { epoch: 'test-kind', walletKind: 'passkey-web' } }));   // 실제 파일은 쓰지 않는다(라이브 데모가 읽는다)
+      await p.goto(`${wallet.base}/attr.html`);
+      await p.waitForFunction(() => document.documentElement.dataset.walletKind === 'passkey-web', null, { timeout: 15_000 });
+      assert.equal((await text(p, '.wallet-nav .brand')).trim(), 'zk 클라이언트');
+      await noSnap(p, '속성 도구(처음 여는 브라우저)');
+      assert.equal(reqs.includes('/mode3/health'), false, `속성 도구가 상태 조회를 불렀다: ${j(reqs)}`);
+    } finally { await ctx.close(); }
+  });
+  await t('표기: 사용자 페이지·승인 창·zkID 페이지·서비스 페이지에 "스냅" 이 보이지 않는다', async () => {
+    const pages = [[wallet.base, '/'], [wallet.base, '/?authorize=1'],
+      ...['/user', '/user/info', '/rp', '/admin', '/account', '/login', `/login?nonce=x&wallet=${encodeURIComponent(WALLET_ORIGIN)}`, `/login?nonce=x&purpose=register&wallet=${encodeURIComponent(WALLET_ORIGIN)}`].map((x) => [cia.base, x]),
+      [rp.base, '/'], [rp.base, '/admin']];
+    for (const [base, path] of pages) {
+      const p = await ctxA.newPage();
+      try { await p.goto(`${base}${path}`); await noSnap(p, `${new URL(base).port}${path}`); } finally { await p.close(); }
+    }
   });
 
   await t('CSP: 위 정상 흐름 전체(증명 워커·wasm·IdP 왕복·복구·속성 도구)에서 지갑 오리진 위반 0건', async () => {

@@ -80,6 +80,8 @@ const ADMIN_OPEN = process.env.CIA_ADMIN_OPEN === '1';
 const MAX_UNAPPROVED_RPS = Number(process.env.CIA_MAX_UNAPPROVED_RPS || 200);
 // 사용자 오리진(web 모드 사용자 페이지 또는 에이전트, 스펙 2026-10-15 §5.3). health 의 허용 목록과 아래 userCors 가 같은 값을 쓴다.
 const WALLET_AGENT_ORIGIN = process.env.MODE3_WALLET_AGENT_ORIGIN || 'http://127.0.0.1:5100';
+// 지갑 모드(snap·passkey·web·passkey-web, 2026-11-18): 페이지 문구에만 쓴다 — passkey-web 이면 화면이 "스냅" 대신 "zk 클라이언트" 라 부른다(/mode3/health 의 walletKind).
+const WALLET_KIND = process.env.MODE3_WALLET_KIND || '';
 // OIDC 래퍼(스펙 2026-10-16): Google ID 토큰을 체인 밖에서 검증해 계정을 만든다. 클라이언트 ID 가 없으면 꺼진다(데모 계정만).
 const envStr = (k, d) => (process.env[k] === undefined || process.env[k] === '' ? d : process.env[k]);
 const OIDC_PROVIDER = envStr('MODE3_OIDC_PROVIDER', GOOGLE_DEFAULTS.provider), OIDC_ISSUER = envStr('MODE3_OIDC_ISSUER', GOOGLE_DEFAULTS.issuer), OIDC_JWKS_URL = envStr('MODE3_OIDC_JWKS_URL', GOOGLE_DEFAULTS.jwksUrl), OIDC_CLIENT_ID = envStr('MODE3_OIDC_CLIENT_ID', envStr('GOOGLE_CLIENT_ID', null));
@@ -630,7 +632,7 @@ app.get('/mode3/health', async (req, res) => {
   const mirrors = await readMirrorsHealth();   // 거울마다 따로 1.2초 예산(병렬) — 실패는 null 항목
   res.json(buildAaHealth({ now: new Date().toISOString(), chain, root: tree.getRoot().toString(), epoch: state.epoch, lastPublishedBlock: last, heartbeatBlocks: Number(HEARTBEAT_BLOCKS),
     pendingLeaves: state.pending.length, pendingRps: Object.values(state.rps).filter((r) => r.status === 'pending').length, pendingOpenings: state.openings.filter((o) => o.status === 'pending').length,
-    accounts: Object.keys(state.accounts).length, walletOrigin: WALLET_AGENT_ORIGIN, rpOrigins, mirrors, attrSchema: schemaInfo(ATTR_SCHEMA, ATTR_SCHEMA_HASH) }));
+    accounts: Object.keys(state.accounts).length, walletOrigin: WALLET_AGENT_ORIGIN, walletKind: WALLET_KIND, rpOrigins, mirrors, attrSchema: schemaInfo(ATTR_SCHEMA, ATTR_SCHEMA_HASH) }));
 });
 
 // §3(2026-09-16) RP 등록 — pending 으로 받고 운영자가 승인하면 IdP 조각을 만들어 조합 키 pk_trace 와 cert_s(V2)를

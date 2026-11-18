@@ -40,6 +40,8 @@ const CIA_BROWSER_URL = process.env.MODE3_CIA_BROWSER_URL || CIA_URL;
 /** 오리진 정규화(리뷰 C-M8, 2026-11-03): 끝의 '/'·경로가 섞여 들어와도 브라우저가 보내는 Origin 헤더와 같은 꼴로 맞춘다. */
 const normOrigin = (u) => { try { return new URL(u).origin; } catch { return u; } };
 const WALLET_ORIGIN = normOrigin(process.env.MODE3_WALLET_AGENT_ORIGIN || 'http://127.0.0.1:5100');
+// 지갑 모드(2026-11-18): 페이지 문구에만 쓴다 — passkey-web 이면 화면이 "스냅" 대신 "zk 클라이언트" 라 부른다(/mode3/health 의 walletKind, cia.js 와 같다).
+const WALLET_KIND = process.env.MODE3_WALLET_KIND || '';
 const LOG_ADDRESS = process.env.CIA_LOG_ADDRESS || null;   // 캐노니컬 표시용(/api/mode3/rp_info) — 검증기는 이 주소를 읽지 않는다(V10)
 const MIRROR_ADDRESS = process.env.MODE3_MIRROR_ADDRESS || null;
 const RPC_URL = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
@@ -487,7 +489,7 @@ app.get('/mode3/health', async (req, res) => {
   const p = currentPredicates();
   res.json(buildRpHealth({ now: new Date().toISOString(), chain, status: reg.status, active: !!verifier, inactiveReason: verifier ? null : inactiveReason(), maxRootAge: Number(EFFECTIVE_MAX_ROOT_AGE), rootAge: lastRootAge,
     sessions: sessions.size, requests: requestCount, disclosures: disclosedLoginCount,
-    predicates: { countries: p.allowedCountries.length, minAge: Number(p.minAge) }, walletAgentOrigin: WALLET_ORIGIN, ciaUrl: CIA_BROWSER_URL }));
+    predicates: { countries: p.allowedCountries.length, minAge: Number(p.minAge) }, walletAgentOrigin: WALLET_ORIGIN, walletKind: WALLET_KIND, ciaUrl: CIA_BROWSER_URL }));
 });
 app.post('/api/mode3/challenge', (req, res) => {
   // 봉투를 다른 라우트와 같은 { ok, reason } 으로 맞춘다 — 페이지가 상태 코드가 아니라 본문으로 사유를 읽는다(2026-09-23 최종 리뷰 M3).

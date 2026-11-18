@@ -320,4 +320,35 @@ t('internal 은 서버를 단정하지 않는다; payload_too_large·rpc_batch_t
   for (const c of ['payload_too_large', 'rpc_batch_too_large']) { const r = R[c]; assert.ok(r, c); for (const l of S.langs) for (const f of ['title', 'cause', 'action']) assert.ok(r[l]?.[f], `${c}.${l}.${f}`); }
 });
 
+// passkey-web 표기(2026-11-18 사용자 요청): 그 모드에는 스냅이 없다 — noSnap 이 켜지면 화면 문구 어디에도 "스냅"·"Snap" 이 남지 않고 지갑 자리는 "zk 클라이언트" 다.
+t('passkey-web 표기: noSnap 이 꺼져 있으면 문구가 그대로다', () => {
+  assert.equal(S.noSnap, false);
+  assert.equal(S.text(S.ui.wallet_brand, 'ko'), 'zk 스냅'); assert.equal(S.text(S.ui.wallet_brand, 'en'), 'zk Snap');
+  assert.deepEqual(S.reasonText(S.reasons.already_registered, 'ko'), S.reasons.already_registered.ko);
+});
+t('passkey-web 표기: 낱말 바꾸기 — 이름·에이전트·조사(이·을·은·과·으로)', () => {
+  for (const [a, b] of [['zk 스냅 화면에서', 'zk 클라이언트 화면에서'], ['스냅 에이전트가 재시작해', 'zk 클라이언트가 재시작해'], ['스냅이 준 값', 'zk 클라이언트가 준 값'], ['스냅을 초기화', 'zk 클라이언트를 초기화'],
+    ['이 스냅은 이미', '이 zk 클라이언트는 이미'], ['스냅과 다른', 'zk 클라이언트와 다른'], ['스냅으로 돌아가', 'zk 클라이언트로 돌아가'], ['스냅으로는', 'zk 클라이언트로는'], ['이미 등록된 스냅입니다', '이미 등록된 zk 클라이언트입니다'],
+    ['MetaMask 스냅이 보관', 'zk 클라이언트가 보관'], ['스냅에 옛 등록', 'zk 클라이언트에 옛 등록'], ['스냅이면', 'zk 클라이언트이면']]) assert.equal(S.noSnapText(a, 'ko'), b, a);
+  for (const [a, b] of [['Open the zk Snap page', 'Open the zk client page'], ['the Snap agent restarted', 'the zk client restarted'], ['This snap is', 'This zk client is'], ['the MetaMask Snap holds', 'the zk client holds'], ['a snapshot', 'a snapshot']])
+    assert.equal(S.noSnapText(a, 'en'), b, a);
+});
+t('passkey-web 표기: noSnap 이면 ui·reasons 전 항목에 "스냅"·"snap" 이 없고, 지갑 이름은 zk 클라이언트', () => {
+  // 모드 이름 snap 을 글자 그대로 적는 두 항목은 스냅 모드에서만 나온다(passkey-web 화면에는 오지 않는다).
+  const SNAP_MODE_ONLY = new Set(['ui.rp_wallet_snap', 'reasons.not_snap_mode']);
+  const clean = (id, x) => SNAP_MODE_ONLY.has(id) ? !/스냅/.test(x) : !/스냅|\bsnaps?\b/i.test(x);
+  S.noSnap = true;
+  try {
+    assert.equal(S.text(S.ui.wallet_brand, 'ko'), 'zk 클라이언트'); assert.equal(S.text(S.ui.wallet_brand, 'en'), 'zk client');
+    for (const [k, v] of Object.entries(S.ui)) for (const l of S.langs) { const x = S.text(v, l); assert.ok(typeof x === 'string' && x.length, `ui.${k}.${l}`); assert.ok(clean(`ui.${k}`, x), `ui.${k}.${l}: ${x}`); }
+    for (const [k, v] of Object.entries(S.reasons)) for (const l of S.langs) { const r = S.reasonText(v, l); for (const f of ['title', 'cause', 'action']) { assert.ok(r[f], `${k}.${l}.${f}`); assert.ok(clean(`reasons.${k}`, r[f]), `reasons.${k}.${l}.${f}: ${r[f]}`); } }
+  } finally { S.noSnap = false; }
+});
+t('passkey-web 표기: 따로 쓴 문구(ko_pk·en_pk)는 짝으로 있고 스냅을 말하지 않는다', () => {
+  for (const [k, v] of [...Object.entries(S.ui), ...Object.entries(S.reasons)]) {
+    assert.equal('ko_pk' in v, 'en_pk' in v, `${k}: ko_pk·en_pk 는 함께`);
+    for (const l of ['ko_pk', 'en_pk']) if (l in v) assert.ok(!/스냅|\bsnaps?\b|MetaMask/i.test(JSON.stringify(v[l])), `${k}.${l}`);
+  }
+});
+
 if (fails) { console.log(`\n${fails} FAIL`); process.exit(1); } else console.log('\nall ok');

@@ -42,6 +42,13 @@ t('RP health', () => {
   assert.equal(h.requests, 4); assert.equal(h.disclosures, 1);
   for (const k of SENSITIVE_KEYS) assert.ok(!deepKeys(h).includes(k), k);
 });
+// 2026-11-18(사용자 요청): IdP·서비스 페이지가 지갑 모드를 알아야 passkey-web 에서 "스냅" 을 빼고 그린다 — 기동 때 받은 값(MODE3_WALLET_KIND)을 그대로 싣는다.
+t('AA·RP health: walletKind 를 싣는다(안 주면 빈 문자열)', () => {
+  const aa = { now, chain, root: '1', epoch: 0, lastPublishedBlock: '0', heartbeatBlocks: 0, pendingLeaves: 0, pendingRps: 0, pendingOpenings: 0, accounts: 0, walletOrigin: '', rpOrigins: [] };
+  const rp = { now, chain, status: 'approved', active: true, inactiveReason: null, maxRootAge: 100, rootAge: 3, sessions: 0, predicates: { countries: 0, minAge: 0 }, walletAgentOrigin: '', ciaUrl: '' };
+  assert.equal(buildAaHealth({ ...aa, walletKind: 'passkey-web' }).walletKind, 'passkey-web'); assert.equal(buildAaHealth(aa).walletKind, '');
+  assert.equal(buildRpHealth({ ...rp, walletKind: 'passkey-web' }).walletKind, 'passkey-web'); assert.equal(buildRpHealth(rp).walletKind, '');
+});
 t('RP health: 카운터를 안 넘기면 0', () => {
   const h = buildRpHealth({ now, chain, status: 'pending', active: false, inactiveReason: 'registration_pending', maxRootAge: 100, rootAge: null, sessions: 0, predicates: { countries: 0, minAge: 0 }, walletAgentOrigin: '', ciaUrl: '' });
   assert.equal(h.requests, 0); assert.equal(h.disclosures, 0);

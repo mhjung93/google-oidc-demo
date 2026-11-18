@@ -98,6 +98,14 @@ t('개인키를 출력하지 않는다', () => {
   assert.deepEqual(bad.map(([l, i]) => `${i + 1}: ${l.trim().slice(0, 80)}`), []);
 });
 
+// 2026-11-18(사용자 요청): IdP·서비스 페이지가 passkey-web 에서 "스냅" 을 빼고 그리려면 지갑 모드를 알아야 한다 — 공통 환경변수로 넘긴다.
+t('IdP·서비스 공통 환경변수에 지갑 모드(MODE3_WALLET_KIND)', () => {
+  const common = src.match(/\nCOMMON="([^"]*)"/);
+  assert.ok(common, 'COMMON 정의를 찾지 못했다');
+  assert.match(common[1], /^MODE3_WALLET_KIND=\$WALLET_MODE$/m);
+  // 속성 도구는 상태 조회를 부르지 않는다 — 리셋 표시 파일에 함께 싣는다.
+  assert.match(src, /printf '\{"epoch":"%s","walletKind":"%s"\}\\n' "\$TS" "\$WALLET_MODE" > mode3\/attr\/dist\/reset\.json/);
+});
 t('번들·인증서·VM 배포 줄', () => {
   assert.match(src, /node scripts\/build_user_app\.mjs/);
   assert.match(src, /node scripts\/build_attr_tool\.mjs/);

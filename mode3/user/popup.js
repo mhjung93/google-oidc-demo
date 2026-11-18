@@ -106,8 +106,10 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
     const orig = Demo[k];
     Demo[k] = (v) => { orig(v); renderAuthTitle(); if (lastReq && lastReq.origin && lastReq.type !== 'mode3-config') { renderAuthSummary(lastReq); if (lastIdentity) renderAuthIdentity(lastIdentity); } };
   }
-  /** 승인·거절 버튼(요약 뒤에 보인다). 창을 닫으면 RP 쪽이 popup_closed 로 끝낸다. */
+  /** 승인·거절 버튼(요약 뒤에 보인다). 창을 닫으면 RP 쪽이 popup_closed 로 끝낸다.
+   *  설정의 popupConsent 가 false 면(passkey-web 기본, 2026-11-18 사용자 요청) 버튼 없이 바로 진행한다 — 요약은 그대로 보인다. */
   function waitDecision() {
+    if (config.popupConsent === false) return Promise.resolve(true);
     return new Promise((resolve) => {
       const a = $('authApproveBtn'), d = $('authDenyBtn');
       const done = (v) => { a.hidden = true; d.hidden = true; a.removeEventListener('click', onA); d.removeEventListener('click', onD); resolve(v); };
@@ -162,7 +164,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
       const st = await core.status();
       const registered = st.status === 200 ? Boolean(st.body?.registered) : true;   // 상태를 못 읽으면 등록된 것으로 보고 발급 창으로(IdP·코어가 다시 거른다)
       if (st.status === 200 && registered) renderAuthIdentity(st.body.provider ?? 'demo');
-      step('요청을 확인하고 승인하세요.');
+      if (config.popupConsent !== false) step('요청을 확인하고 승인하세요.');
       if (!(await waitDecision())) { step('동의 거절'); return reply({ ok: false, reason: 'user_denied' }); }
       const ps = await core.passkeyState();
       if (ps.status !== 200 || !ps.body?.credentialId) {
@@ -273,7 +275,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
         const value = String(req.value ?? '0');
         if (typeof req.to !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(req.to) || !/^[0-9]+$/.test(value) || (req.data !== undefined && !/^0x([0-9a-fA-F]{2})*$/.test(String(req.data)))) { step('요청 형식 오류'); return reply({ ok: false, reason: 'malformed' }); }
         row('wallet_auth_tx_to', req.to); row('wallet_auth_tx_value', `${value} wei`);
-        step('보낼 트랜잭션을 확인하고 승인하세요.');
+        if (config.popupConsent !== false) step('보낼 트랜잭션을 확인하고 승인하세요.');
         if (!(await waitDecision())) { step('거절'); return reply({ ok: false, reason: 'user_denied' }); }
         step('증명·세션키 서명 중… (수 초 걸린다)');
         const p = await withUnlock(() => core.prepareTx({ r_s: req.r_s, to: req.to, value, data: req.data ?? '0x' }));
@@ -299,7 +301,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
       }
 
       if (req.type === 'mode3-request') {
-        step('서명할 요청을 확인하고 승인하세요.');
+        if (config.popupConsent !== false) step('서명할 요청을 확인하고 승인하세요.');
         if (!(await waitDecision())) { step('거절'); return reply({ ok: false, reason: 'user_denied' }); }
         step('세션키로 서명 중…');
         const r = await withUnlock(() => core.request({ r_s: req.r_s, body: req.body, arid: req.arid ?? null, origin: evOrigin }));
@@ -360,7 +362,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
       // 신원 줄(스펙 §3.2) — provider 가 없는 옛 등록은 데모 계정이다. 상태를 못 읽었으면 줄 없이 진행한다(로그인이 제 사유로 끝난다).
       if (st.status === 200 && st.body?.registered) renderAuthIdentity(st.body.provider ?? 'demo');
       else if (google) renderAuthIdentity(oidcCfg.provider);
-      step('요청을 확인하고 승인하세요.');
+      if (config.popupConsent !== false) step('요청을 확인하고 승인하세요.');
       if (!(await waitDecision())) { step('동의 거절'); return reply({ ok: false, reason: 'user_denied' }); }
       // Google 본인 확인(래퍼): 미등록이거나 Google 계정으로 등록된 브라우저면 이 로그인에 묶인 nonce 로 GIS 버튼을 그리고 토큰을 받는다.
       // 데모 계정으로 등록된 브라우저에서는 토큰이 그 계정과 맞지 않으므로 Google 단계 없이 데모 경로로 간다.

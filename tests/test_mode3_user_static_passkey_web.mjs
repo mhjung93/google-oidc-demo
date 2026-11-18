@@ -43,6 +43,12 @@ try {
     assert.equal((await (await fetch(`${pw.url}/wallet/config`)).json()).secrets, 'passkey-web');
     assert.equal((await (await fetch(`${pw.url}/mode3/health`)).json()).secrets, 'passkey-web');
   });
+  // 2026-11-18(사용자 요청): passkey-web 의 승인 창은 승인·거절 단계를 두지 않는다(기본). MODE3_POPUP_CONSENT=1 이면 다시 켠다.
+  await t('승인 단계 설정 — passkey-web 기본은 끔, MODE3_POPUP_CONSENT=1 이면 켬', async () => {
+    assert.equal((await (await fetch(`${pw.url}/user/config`)).json()).popupConsent, false);
+    const on = await start('pw-consent', { MODE3_WALLET_SECRETS: 'passkey-web', MODE3_POPUP_CONSENT: '1' });
+    try { assert.equal((await (await fetch(`${on.url}/user/config`)).json()).popupConsent, true); } finally { await stopChild(on.child); }
+  });
   await t('프록시 eth_chainId = 직접 호출', async () => {
     const a = await (await rpc(`${pw.url}/rpc/app`, rq('eth_chainId'))).json();
     const b = await (await rpc(`${pw.url}/rpc/rev`, rq('eth_chainId'))).json();
@@ -142,6 +148,7 @@ try {
   await t('web 회귀', async () => {
     const c = await (await fetch(`${web.url}/user/config`)).json();
     assert.equal(c.secrets, 'web'); assert.match(c.rpcUrl, /^http:\/\//);
+    assert.equal(c.popupConsent, true, 'web 모드는 승인 단계를 그대로 둔다');
   });
   await t('web 모드에는 CSP 헤더가 없다(passkey-web 전용)', async () => {
     for (const p of ['/', '/attr.html', '/dist/prover_worker.js', '/user/config']) assert.equal((await fetch(`${web.url}${p}`)).headers.get('content-security-policy'), null, p);

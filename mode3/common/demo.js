@@ -8,10 +8,18 @@
     page: null, lastGuide: null,
     // split/join 으로 갈아 끼운다 — replace 의 치환 문자열은 $&·$' 같은 패턴을 해석해, 값에 $ 가 든 오류 메시지가
     // 문구를 망가뜨린다(문구 값에 든 {키} 는 그대로 두고 값만 넣어야 한다).
-    t(key, vars = {}) { const e = S.ui[key]; let s = e ? (e[D.lang] ?? e.ko) : key; for (const [k, v] of Object.entries(vars)) s = s.split(`{${k}}`).join(String(v)); return s; },
+    t(key, vars = {}) { const e = S.ui[key]; let s = e ? S.text(e, D.lang) : key; for (const [k, v] of Object.entries(vars)) s = s.split(`{${k}}`).join(String(v)); return s; },
     term(name) { const e = S.terms[name]; if (!e) return name; return e[D.lang]; },
-    verdictText(key) { const e = S.verdicts[key]; return e ? (e[D.lang] ?? e.ko) : key; },
-    reason(code) { const r = S.reasons[code]; return r ? r[D.lang] ?? r.ko : null; },
+    verdictText(key) { const e = S.verdicts[key]; return e ? S.text(e, D.lang) : key; },
+    reason(code) { const r = S.reasons[code]; return r ? S.reasonText(r, D.lang) : null; },
+    /** 지갑 모드(2026-11-18 사용자 요청): passkey-web 이면 화면에서 "스냅" 을 빼고 지갑 자리를 "zk 클라이언트" 라 부른다(strings.js noSnap).
+     *  값은 <html data-wallet-kind> 와 localStorage 에 남긴다 — 다음에 열 때는 처음부터 맞게 그린다. */
+    setWalletKind(kind) {
+      const k = typeof kind === 'string' ? kind : '';
+      document.documentElement.dataset.walletKind = k; store.set('mode3.walletKind', k);
+      const on = k === 'passkey-web'; if (S.noSnap === on) return;
+      S.noSnap = on; D.applyI18n(); D.rerenderVerdicts();
+    },
     setLang(l) { if (!S.langs.includes(l)) return; D.lang = l; store.set('mode3.lang', l); document.documentElement.lang = l; D.applyI18n(); D.rerenderVerdicts(); D.tour.syncSwitch(); if (D.tour.enabled && D.tour.lastEval) D.tour.evaluate(D.tour.lastEval); else if (D.lastGuide) D.guide(D.lastGuide); if (D.stack.state) D.stack.renderDots(); },
     // 토글을 페이지가 직접 부를 수도 있으므로(안내 바의 체크박스만이 아니다) 체크 상태를 여기서 맞춘다.
     // applyI18n 을 함께 부른다 — data-term 라벨은 term() 이 전문가 여부로 원래 기호를 덧붙이므로(설계 §3.1),
@@ -21,6 +29,11 @@
     /** tour:false 면 체험 모드를 아예 켜지 않는다(승인 팝업 — 설계 2026-09-25 §3.1). */
     init({ page, tour = true }) {
       D.page = page;
+      // 지갑 모드(2026-11-18): 지난번에 본 값으로 먼저 그리고, 이 서버의 상태 응답으로 고친다 — 지갑 서버는 자기 secrets, IdP·서비스는 기동 때 받은
+      // MODE3_WALLET_KIND(walletKind). 로드 시점이 아니라 여기서 한다(이 파일은 로드할 때 document·네트워크를 만지지 않는다 — tests/test_mode3_stack_judge.js).
+      D.setWalletKind(store.get('mode3.walletKind') ?? '');
+      // 속성 도구(page 'attr')는 정적 자원 말고는 아무것도 부르지 않는다(tests/test_mode3_browser.mjs) — 지난 값과 리셋 표시 파일(reset.json 의 walletKind, attr_page.js)로만 안다.
+      if (page !== 'attr') fetch('/mode3/health', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).then((h) => { if (h) D.setWalletKind(h.role === 'wallet' ? h.secrets : (h.walletKind ?? '')); }).catch(() => { /* 상태를 못 읽으면 지난 값 그대로 */ });
       // 2026-11-04: 안내 바(#demoBar)는 그리지 않고 숨긴다(사용자 요청 — 11-03 에 도구 둘만 남겼던 것도 뺀다). 마크업은 페이지에 그대로 두어
       // guide()·stack.renderDots() 등 바를 찾는 코드가 지금처럼 조용히 끝나게 한다. 언어는 URL 로 바꾼다: ?lang=ko|en — 값은
       // localStorage 에 남아 다음 열기에도 유지된다. (전문가 보기 ?expert= 는 2026-11-05 에 없앴다 — 화면은 하나다.)

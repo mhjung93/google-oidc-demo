@@ -105,7 +105,8 @@ const RESET_KEY = 'mode3_attr_tool_reset';
 // 탭을 열어 둔 채 리셋한 경우를 위해 탭으로 돌아올 때도 본다.
 async function checkDemoReset() {
   let epoch = null;
-  try { const r = await fetch('/attr/dist/reset.json', { cache: 'no-store' }); if (r.ok) epoch = String((await r.json()).epoch ?? ''); } catch { epoch = null; }
+  // 2026-11-18: 같은 파일에 지갑 모드(walletKind)도 실려 온다 — passkey-web 이면 이 화면도 "스냅" 대신 "zk 클라이언트" 로 그린다(이 도구는 상태 조회를 부르지 않는다).
+  try { const r = await fetch('/attr/dist/reset.json', { cache: 'no-store' }); if (r.ok) { const j = await r.json(); epoch = String(j.epoch ?? ''); if (typeof j.walletKind === 'string') Demo.setWalletKind?.(j.walletKind); } } catch { epoch = null; }
   if (!epoch) return false;
   let seen = null; try { seen = localStorage.getItem(RESET_KEY); } catch { return false; }
   if (seen === epoch) return false;

@@ -161,7 +161,7 @@ done
 if [ "$AGENT_MODE" = 1 ]; then for f in mode3_wallet_state.json mode3_wallet_rcl.json; do [ -e "$f" ] && mv "$f" "$f.bak-$TS" && echo "backup $f"; done; fi
 # 2c. (2026-11-11 사용자 요청) 속성 커밋먼트 도구(localhost:5100/attr.html)의 기록은 브라우저 저장소라 여기서 지울 수 없다 — 리셋 시각을 정적 파일로 남기면
 #     도구·스냅 팝업이 그 값이 바뀐 것을 보고 이전 데모의 기록(uid·salt)을 비운다. mode3/attr/dist 는 ignore 된 번들 폴더(에이전트가 /attr/ 로 서빙).
-if [ "$AGENT_MODE" = 1 ] || [ "$WALLET_MODE" = passkey-web ]; then mkdir -p mode3/attr/dist && printf '{"epoch":"%s"}\n' "$TS" > mode3/attr/dist/reset.json && echo "attr 도구 리셋 표시: $TS"; fi
+if [ "$AGENT_MODE" = 1 ] || [ "$WALLET_MODE" = passkey-web ]; then mkdir -p mode3/attr/dist && printf '{"epoch":"%s","walletKind":"%s"}\n' "$TS" "$WALLET_MODE" > mode3/attr/dist/reset.json && echo "attr 도구 리셋 표시: $TS"; fi
 # 3. 체인 두 개(Ethernal 없는 최소 설정, NAT 망에 연다)
 cat > "$LOGS/chain.config.cjs" <<'EOF'
 // 분리 데모 체인 전용 최소 설정(demo_split_start.sh 가 만든다) — Ethernal 플러그인·dotenv 를 싣지 않는다.
@@ -212,6 +212,7 @@ COMMON="CIA_LOG_ADDRESS=$LOGADDR
 MODE3_MIRROR_ADDRESS=$MIRROR
 CIA_MIRRORS=$MIRRORS
 MODE3_WALLET_AGENT_ORIGIN=$WALLET_ORIGIN
+MODE3_WALLET_KIND=$WALLET_MODE
 MODE3_VERIFIER_ADDRESS=
 MODE3_RP_FACTORY_ADDRESS=
 MODE3_BIND_HOST=0.0.0.0
