@@ -596,6 +596,8 @@
     }
     // MetaMask 가 사용자 거절에 쓰는 코드. Snap 대화상자 거절은 { denied: true } 로 오고, 연결·트랜잭션 거절은 이 코드로 온다.
     const isUserRejected = (e) => e && (e.code === 4001 || e.code === 'ACTION_REJECTED');
+    /** 2026-11-18(전체 리뷰 2): 스냅의 prepareRegister 가 던지는 already_registered(옛 등록이 남은 스냅)는 사유를 그대로 낸다 — 전에는 wallet_error 로 뭉개져 "스냅 초기화" 안내가 보이지 않았다. */
+    const snapErrorReason = (e) => (/already_registered/.test(e?.message ?? '') ? 'already_registered' : 'wallet_error');
     /** 패스키 모드의 어댑터·WebAuthn 오류는 사유를 그대로 낸다(passkey_mismatch 등 — 사전에 있다). 아니면 null(기존 매핑을 탄다). */
     const passkeyReason = (e) => (PASSKEY() && typeof e?.reason === 'string' && /^(passkey_[a-z_]+|session_restore_required|not_registered|already_registered)$/.test(e.reason) ? e.reason : null);
     /** 로그인 동의 — 승인이면 증인 묶음, 거절이면 null. */
@@ -997,7 +999,7 @@
       } catch (e) {
         step('오류');
         log(e.message);
-        reply({ ok: false, reason: passkeyReason(e) ?? (isUserRejected(e) ? 'user_denied' : (needsSnapSetup(e) ? 'snap_setup_required' : 'wallet_error')), detail: e.message });
+        reply({ ok: false, reason: passkeyReason(e) ?? (isUserRejected(e) ? 'user_denied' : (needsSnapSetup(e) ? 'snap_setup_required' : snapErrorReason(e))), detail: e.message });
       }
     }
 
@@ -1232,6 +1234,12 @@
           if (!(await snapSetupReady())) { step('스냅 설정이 끝나지 않았다 — zkID 로 가지 않는다.'); return reply({ ok: false, reason: 'snap_setup_required' }); }
           // 2026-11-10: RP 의 Google·네이버 버튼은 지갑을 거치지 않는다(RP 직접, 스펙 rp-social-logins) — 지갑은 미등록이면 등록 모드, 아니면 아이디·비밀번호 인증 창.
           // 11-06 의 "미등록이면 Google 래퍼 가입, 아이디 지갑이면 Google 토큰으로 발급하며 연결" 과 11-09 의 method=google|naver 는 없다.
+          // 2026-11-18(전체 리뷰 2): 에이전트는 미등록인데 스냅에 끝난 등록이 남아 있으면(데모 리셋 뒤 스냅을 초기화하지 않은 경우) zkID 로 보내지 않는다 —
+          // 등록 모드로 가 봐야 돌아온 뒤 스냅의 prepareRegister 가 already_registered 로 막는다. 스냅을 못 읽으면 그냥 진행한다(뒤 단계가 다시 거른다).
+          if (!registered && cfg.secrets === 'snap') {
+            let info = null; try { info = await invokeSnap('getPublicInfo', {}); } catch { /* 진행 */ }
+            if (info?.registered === true) { step('스냅에 옛 등록이 남아 있다 — zkID 로 가지 않는다("내 계정" 탭에서 스냅 초기화).'); return reply({ ok: false, reason: 'already_registered' }); }
+          }
           if (!registered) { step(tt('wallet_auth_to_idp_register') || 'zkID 에 처음 등록합니다 — zkID 로그인 페이지로 이동합니다…'); say('wallet_auth_to_idp_register'); await goIdpAuth(req, evOrigin, { purpose: 'register' }); return; }
           step(tt('wallet_auth_to_idp') || 'IdP 로그인 페이지로 이동합니다…'); say('wallet_auth_to_idp'); await goIdpAuth(req, evOrigin); return;
         }
@@ -1287,7 +1295,7 @@
         }
         step('오류');
         log(e.message);
-        reply({ ok: false, reason: passkeyReason(e) ?? (isUserRejected(e) ? 'user_denied' : (needsSnapSetup(e) ? 'snap_setup_required' : 'wallet_error')), detail: e.message });
+        reply({ ok: false, reason: passkeyReason(e) ?? (isUserRejected(e) ? 'user_denied' : (needsSnapSetup(e) ? 'snap_setup_required' : snapErrorReason(e))), detail: e.message });
       }
     }
 
@@ -2166,7 +2174,8 @@
     $('setupImportPw').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); openSaltImport({ viaKey: true }); } });
     $('setupImportCancelBtn').addEventListener('click', () => { if (importGuarded()) return; closeSaltImport(); clearVerdictEl($('setupVerdict')); });
     // 다른 탭에서 스냅을 다시 깔거나 salt 를 만들고 돌아왔을 때 — 연결 때만 보면 탭이 열린(또는 닫힌) 채 남는다. 화면이 다시 보일 때 스냅의 설정 상태를 한 번 더 읽는다.
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && snapConnected && cfg.secrets === 'snap') refreshSetup().catch(() => {}); });
+    // 2026-11-18(전체 리뷰 2): 데모 리셋도 여기서 본다 — 전에는 화면을 새로 읽을 때만 봐서, 탭을 열어 둔 채 리셋하면 스냅의 옛 등록이 남았다(checkDemoReset 은 승인 창·다른 모드를 스스로 거른다).
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && snapConnected && cfg.secrets === 'snap') { refreshSetup().catch(() => {}); checkDemoReset().catch(() => {}); } });
 
     $('showSaltBtn').addEventListener('click', async () => {
       try {
@@ -2603,8 +2612,13 @@
     // "내 계정" 에 보이고 다음 등록이 already_registered 로 막혔다. 리셋 표시(/attr/dist/reset.json, 속성 도구와 같은 파일)가 이 브라우저가 본 값과 다르고 스냅에
     // 등록이 남아 있으면 스냅 초기화를 스스로 시작한다(MetaMask 확인 창 한 번, salt 는 남는다). 처음 보는 브라우저는 표시만 기억한다(지울 옛 등록이 없다).
     const DEMO_RESET_KEY = 'mode3_wallet_demo_reset';
+    let demoResetChecking = false;   // 2026-11-18: 탭 복귀가 겹쳐 와도 확인 창이 두 번 뜨지 않게
     async function checkDemoReset() {
-      if (IS_AUTHORIZE || cfg.secrets !== 'snap' || !snapConnected) return;
+      if (IS_AUTHORIZE || cfg.secrets !== 'snap' || !snapConnected || demoResetChecking) return;
+      demoResetChecking = true;
+      try { await checkDemoResetOnce(); } finally { demoResetChecking = false; }
+    }
+    async function checkDemoResetOnce() {
       let epoch = null;
       try { const r = await fetch('/attr/dist/reset.json', { cache: 'no-store' }); if (r.ok) epoch = String((await r.json()).epoch ?? ''); } catch { epoch = null; }
       if (!epoch) return;

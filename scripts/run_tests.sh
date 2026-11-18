@@ -42,6 +42,7 @@ UNIT=(
   tests/test_mode3_trace.js
   tests/test_zkd_tls_certs.mjs
   tests/test_demo_split_passkey_web.mjs
+  tests/test_mode3_rp_challenge_ttl.mjs
   tests/test_mode3_opening.js
   tests/test_mode3_attr_commit.mjs
   tests/test_mode3_rp_accounts.mjs

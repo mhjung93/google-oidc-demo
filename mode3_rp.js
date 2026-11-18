@@ -43,7 +43,9 @@ const WALLET_ORIGIN = normOrigin(process.env.MODE3_WALLET_AGENT_ORIGIN || 'http:
 const LOG_ADDRESS = process.env.CIA_LOG_ADDRESS || null;   // 캐노니컬 표시용(/api/mode3/rp_info) — 검증기는 이 주소를 읽지 않는다(V10)
 const MIRROR_ADDRESS = process.env.MODE3_MIRROR_ADDRESS || null;
 const RPC_URL = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
-const CHALLENGE_TTL_MS = Number(process.env.MODE3_CHALLENGE_TTL_MS) || 120_000;
+// 2026-11-18(전체 리뷰 1): 120초 → 360초. 챌린지는 승인 창을 열기 전에 발급되고 창이 끝난 뒤 /login 에서 소비된다 — 창 대기 시간(mode3/rp.html POPUP_TIMEOUT_MS 300초)보다
+// 짧으면 첫 로그인(등록·발급·게시 대기·증명)이 창에서는 성공하고 여기서 bad_challenge 로 끝난다. 창 대기 시간을 늘리면 이 값도 함께 늘린다(tests/test_mode3_rp_challenge_ttl.mjs).
+const CHALLENGE_TTL_MS = Number(process.env.MODE3_CHALLENGE_TTL_MS) || 360_000;
 
 if (!LOG_ADDRESS) { console.error('[rp] CIA_LOG_ADDRESS 가 없다'); process.exit(1); }
 // V10: RP 는 폐기 체인의 캐노니컬 Mode3Log 를 직접 읽지 않고 자기 체인의 거울(Mode3Mirror)만 읽는다(설계 §2·§5).

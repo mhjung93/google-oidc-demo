@@ -1712,6 +1712,38 @@ try {
     }
   });
 
+  // 2026-11-18(전체 리뷰 2): 데모 리셋 스크립트는 에이전트 상태만 치운다 — 탭을 열어 둔 채 리셋하면 스냅에 옛 등록이 남는다. 전에는 그 상태로 로그인하면 zkID 인증 창에서
+  // 아이디·비밀번호·auid 를 다 넣고 돌아온 뒤에야 스냅의 already_registered 가 "MetaMask 작업이 실패했습니다"(wallet_error)로 끝났고, 리셋 감지는 화면을 새로 읽을 때만 돌았다.
+  await t('데모 리셋 뒤 스냅에 옛 등록이 남았을 때: 서비스 로그인은 zkID 인증 창으로 가기 전에 "이미 등록된 스냅입니다" 로 멈추고, zk 스냅 화면은 탭으로 돌아오면 리셋을 알아채 스냅을 초기화한다', async () => {
+    // 준비 — 리셋 스크립트가 한 일을 흉내 낸다: 에이전트는 비었고 스냅에는 옛 등록이 그대로다
+    assert.equal((await wallet.post('/wallet/reset', { confirm: true })).status, 200);
+    if (!snapState.registration?.uid) snapState = { ...snapState, registration: { uid: '424242', auid: AUID, slot: 0, attrs: null, registeredAt: new Date().toISOString() } };
+    assert.equal((await wallet.get('/wallet/status')).body.registered, false, '(전제) 에이전트에는 등록이 없다');
+    const visited = [];
+    const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
+    popup.on('framenavigated', (f) => { if (f === popup.mainFrame()) visited.push(f.url()); });
+    try {
+      await waitText(rpPage, '#verdict', '이미 등록된 스냅입니다', 60_000);
+      await awaitPopupClosed(popup);
+      assert.equal(visited.some((u) => u.startsWith(`${cia.base}/login`)), false, `zkID 인증 창으로 가지 않았다: ${j(visited)}`);
+      assert.ok(snapState.registration?.uid, '로그인 창은 스냅의 등록을 건드리지 않는다');
+    } finally { if (!popup.isClosed()) await popup.close(); }
+    // 탭 복귀 — 리셋 표시(/attr/dist/reset.json)가 이 브라우저가 본 값과 다르면 스냅 초기화를 스스로 시작한다(MetaMask 확인 창 한 번, 페이지 확인 창은 없다).
+    // 파일을 직접 쓰지 않고 응답만 바꾼다 — 그 파일은 실행 중인 데모도 읽는다.
+    await walletPage.evaluate(() => localStorage.setItem('mode3_wallet_demo_reset', 'test-old'));
+    await walletPage.route('**/attr/dist/reset.json', (route) => route.fulfill({ json: { epoch: 'test-reset-2' } }));
+    try {
+      const shown = dialogs.length;
+      answers.push(true);   // 스냅의 "등록 초기화" 확인 창
+      await walletPage.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+      await waitText(walletPage, '#snapResetVerdict', '데모가 새로 시작돼', 30_000);
+      assert.equal(snapState.registration, null, '스냅의 옛 등록이 지워졌다'); assert.equal(snapState.salt.s_u, USER_SALT, 'salt 는 남는다');
+      assert.equal(dialogs.length, shown + 1, '스냅 확인 창은 한 번');
+      await walletPage.evaluate(() => document.dispatchEvent(new Event('visibilitychange'))); await walletPage.waitForTimeout(800);
+      assert.equal(dialogs.length, shown + 1, '같은 리셋 값이면 탭으로 돌아와도 다시 묻지 않는다');
+    } finally { await walletPage.unroute('**/attr/dist/reset.json'); }
+  });
+
   await t('하네스: 준비한 대화상자 응답이 남지 않았다(기대한 동의 창이 다 떴다)', async () => {
     assert.equal(answers.length, 0, `쓰이지 않은 응답이 남았다: ${j(answers)}`);
   });
