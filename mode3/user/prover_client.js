@@ -13,5 +13,7 @@ export function createProver({ workerUrl = '/dist/prover_worker.js', onProgress 
   worker.onerror = (e) => { for (const p of pending.values()) p.reject(Object.assign(new Error(e.message ?? 'worker error'), { reason: 'zk_assets_unavailable' })); pending.clear(); };
   const call = (msg) => new Promise((resolve, reject) => { const id = ++seq; pending.set(id, { resolve, reject }); worker.postMessage({ id, ...msg }); });
   const prove = (kind) => async (input) => { const { proof, publicSignals } = await call({ kind, input }); return { proof, publicSignals }; };
-  return { fullProve: { idp: prove('pi_idp'), cred: prove('pi_cred') }, warm: (which) => call({ kind: 'warm', which }) };
+  /** 기록된 증명을 검증키로 다시 본다 — { ok, ms }. which: 'pi_idp' | 'pi_cred'. */
+  const verify = async (which, proof, publicSignals) => { const { ok, ms } = await call({ kind: 'verify', which, proof, publicSignals }); return { ok, ms }; };
+  return { fullProve: { idp: prove('pi_idp'), cred: prove('pi_cred') }, warm: (which) => call({ kind: 'warm', which }), verify };
 }

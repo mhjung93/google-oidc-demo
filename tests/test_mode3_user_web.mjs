@@ -50,7 +50,8 @@ try {
     recoveryCode = await text(userPage, '#recoveryCodeText'); assert.match(recoveryCode, /^zkd1\.[A-Za-z0-9_-]{43}$/);
     await userPage.click('#recoveryCodeClose'); assert.equal(await text(userPage, '#recoveryCodeText'), '');
     const d = await idbDump(userPage);
-    assert.deepEqual(Object.keys(d).sort(), ['meta', 'registration', 'secrets', 'sessions', 'unlock'].filter((k) => k in d).sort());
+    // 2026-11-18: proofs = 증명 기록(만든 증명과 공개 입력 — 공개값뿐이다. 등록의 π_IdP 가 여기 처음 남는다). 기록에 비밀이 없다는 것은 tests/test_mode3_user_core.mjs 가 본다.
+    assert.deepEqual(Object.keys(d).sort(), ['meta', 'proofs', 'registration', 'secrets', 'sessions', 'unlock'].filter((k) => k in d).sort());
     assert.equal(d.registration.uid, '12345'); assert.ok(!('s_u' in d.registration) && !('sk_u' in d.registration) && !('pk_u' in d.registration));
     assert.ok(d.secrets.iv && d.secrets.ct); assert.equal(d.unlock.key, '[CryptoKey]'); assert.equal(d.meta.mode, 'auto'); assert.equal(d.unlock.expiresAt, null);
     const dump = await pageDump(userPage); assert.ok(!dump.includes(d.secrets.ct), '암호문도 DOM 에 없다');

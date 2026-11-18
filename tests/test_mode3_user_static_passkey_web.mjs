@@ -46,8 +46,10 @@ try {
   // 2026-11-18(사용자 요청): passkey-web 의 승인 창은 승인·거절 단계를 두지 않는다(기본). MODE3_POPUP_CONSENT=1 이면 다시 켠다.
   await t('승인 단계 설정 — passkey-web 기본은 끔, MODE3_POPUP_CONSENT=1 이면 켬', async () => {
     assert.equal((await (await fetch(`${pw.url}/user/config`)).json()).popupConsent, false);
-    const on = await start('pw-consent', { MODE3_WALLET_SECRETS: 'passkey-web', MODE3_POPUP_CONSENT: '1' });
-    try { assert.equal((await (await fetch(`${on.url}/user/config`)).json()).popupConsent, true); } finally { await stopChild(on.child); }
+    // 2026-11-18: 탐색기 주소(증명 기록의 거래 링크) — 안 주면 null, 주면 끝의 / 를 떼고 그대로.
+    assert.equal((await (await fetch(`${pw.url}/user/config`)).json()).explorerUrl, null);
+    const on = await start('pw-consent', { MODE3_WALLET_SECRETS: 'passkey-web', MODE3_POPUP_CONSENT: '1', MODE3_EXPLORER_URL: 'http://127.0.0.1:4000/' });
+    try { const c = await (await fetch(`${on.url}/user/config`)).json(); assert.equal(c.popupConsent, true); assert.equal(c.explorerUrl, 'http://127.0.0.1:4000'); } finally { await stopChild(on.child); }
   });
   await t('프록시 eth_chainId = 직접 호출', async () => {
     const a = await (await rpc(`${pw.url}/rpc/app`, rq('eth_chainId'))).json();

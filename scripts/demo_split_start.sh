@@ -16,6 +16,7 @@
 #        BLOCKSCOUT_RESET=0 bash scripts/demo_split_start.sh  # 로컬 Blockscout(.local/blockscout) 색인 초기화를 건너뛴다(기본은 체인을 새로 만들 때 함께 비운다, 2026-11-17)
 #        BLOCKSCOUT_VERIFY=0 bash scripts/demo_split_start.sh  # 컨트랙트 자동 검증 감시자(scripts/blockscout_verify_watch.mjs)를 띄우지 않는다(기본은 띄운다, 2026-11-18 — 로그는 $LOGS/blockscout_verify.log)
 #        BLOCKSCOUT_PROJECT=이름 bash scripts/demo_split_start.sh  # Blockscout 의 compose 프로젝트 이름(기본 zkid-blockscout — 화면에 보이는 :4000 스택). 초기화(down -v·up -d)가 이 이름에 걸린다
+#        BLOCKSCOUT_URL=주소 bash scripts/demo_split_start.sh  # 사용자 페이지(web·passkey-web)의 증명 기록이 거래 링크를 거는 탐색기 주소(기본 http://127.0.0.1:4000, Blockscout 가 없으면 링크 없음)
 #        ISSUE_AUTH=code bash scripts/demo_split_start.sh  # 발급 인증 정책(기본은 WALLET_MODE 에 따른다 — snap 은 CIA_ISSUE_AUTH=code, web 은 key, 2026-10-23: web 코어는
 #                                                           # auth_code 를 보내지 않으므로 code 로 켜면 로그인이 막힌다). code 면 로그인 때 지갑 팝업이 연 IdP 인증 창(uid·비밀번호·auid)의 1회용 코드가
 #                                                           # 있어야 발급한다(2026-10-22). key 면 옛 방식(서명만) — CIA_DEMO_ACCOUNTS 는 그대로 미설정(가입(POST /cia/signup)만 쓴다)
@@ -195,6 +196,8 @@ start_chain $APP_PORT $APP_CHAIN app
 #     2026-11-18: compose 프로젝트 이름을 준다($BS_PROJECT, 기본 zkid-blockscout) — 이름 없이 부르면 디렉터리 이름(blockscout)의 다른 스택에 걸려
 #     화면에 보이는 스택은 그대로 남고, 중복 스택의 proxy 가 :4000 충돌로 실패했다.
 BS_DIR=".local/blockscout"; BS_RESET_OK=0
+# 탐색기 주소(2026-11-18): 사용자 페이지(web·passkey-web)의 증명 기록이 거래 링크를 여기에 건다. Blockscout 가 없으면 비어 있다(BLOCKSCOUT_URL 로 바꾼다).
+BS_EXPLORER=$([ -f "$BS_DIR/compose.yml" ] && echo "${BLOCKSCOUT_URL:-http://127.0.0.1:4000}")
 if [ "${BLOCKSCOUT_RESET:-1}" != 0 ] && [ -f "$BS_DIR/compose.yml" ] && command -v docker >/dev/null 2>&1; then
   if (cd "$BS_DIR" && docker compose -p "$BS_PROJECT" down -v >"$LOGS/blockscout_reset.log" 2>&1 && docker compose -p "$BS_PROJECT" up -d >>"$LOGS/blockscout_reset.log" 2>&1); then
     BS_RESET_OK=1; echo "Blockscout 초기화($BS_PROJECT): 색인을 비우고 다시 띄웠다(http://127.0.0.1:4000 — 새 체인을 0번부터 색인한다)"
@@ -288,13 +291,13 @@ elif [ "$WALLET_MODE" = "passkey" ]; then
 elif [ "$WALLET_MODE" = passkey-web ]; then
   # passkey-web(2026-11-17): web 분기와 같은 정적 서버를 https 로 — 인증서는 위에서 만든 지갑 것, IdP·RP 인증서를 검증할 데모 CA 를 NODE_EXTRA_CA_CERTS 로 준다.
   DOTENV_CONFIG_PATH="$LOGS/empty.env" MODE3_PK_CIA_X="" MODE3_PK_CIA_Y="" MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}" MODE3_DEMO_GENERATION="$(date +%s)" MODE3_WALLET_PORT=$USER_PORT MODE3_WALLET_PUBLIC_ORIGIN="$WALLET_ORIGIN" \
-    MODE3_WALLET_SECRETS=passkey-web MODE3_TTL_BLOCKS="${TTL_BLOCKS:-5}" MODE3_TLS_CERT="$TLS_OUT/wallet.crt" MODE3_TLS_KEY="$TLS_OUT/wallet.key" NODE_EXTRA_CA_CERTS="$ZKD_CA_DIR/ca.crt" \
+    MODE3_WALLET_SECRETS=passkey-web MODE3_EXPLORER_URL="$BS_EXPLORER" MODE3_TTL_BLOCKS="${TTL_BLOCKS:-5}" MODE3_TLS_CERT="$TLS_OUT/wallet.crt" MODE3_TLS_KEY="$TLS_OUT/wallet.key" NODE_EXTRA_CA_CERTS="$ZKD_CA_DIR/ca.crt" \
     MODE3_CIA_URL="$IDP_UI" MODE3_RP_ORIGIN="$RP1_UI,$RP2_UI" \
     CIA_RPC_URL="http://127.0.0.1:$APP_PORT" MODE3_REV_CHAIN_RPC="http://127.0.0.1:$REV_PORT" CIA_LOG_ADDRESS="$LOGADDR" MODE3_MIRROR_ADDRESS="$MIRROR" \
     setsid nohup node mode3_user_static.js > "$LOGS/user_static.log" 2>&1 < /dev/null &
 else
 DOTENV_CONFIG_PATH="$LOGS/empty.env" MODE3_PK_CIA_X="" MODE3_PK_CIA_Y="" MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}" MODE3_DEMO_GENERATION="$(date +%s)" MODE3_WALLET_PORT=$USER_PORT MODE3_WALLET_PUBLIC_ORIGIN="$WALLET_ORIGIN" \
-  MODE3_CIA_URL="$IDP_UI" MODE3_RP_ORIGIN="$RP1_UI,$RP2_UI" \
+  MODE3_CIA_URL="$IDP_UI" MODE3_RP_ORIGIN="$RP1_UI,$RP2_UI" MODE3_EXPLORER_URL="$BS_EXPLORER" \
   CIA_RPC_URL="http://127.0.0.1:$APP_PORT" MODE3_REV_CHAIN_RPC="http://127.0.0.1:$REV_PORT" CIA_LOG_ADDRESS="$LOGADDR" MODE3_MIRROR_ADDRESS="$MIRROR" \
   setsid nohup node mode3_user_static.js > "$LOGS/user_static.log" 2>&1 < /dev/null &
 fi

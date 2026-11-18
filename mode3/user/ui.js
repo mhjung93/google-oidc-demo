@@ -292,6 +292,118 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     }
     host.appendChild(table);
   }
+  // ---- 영지식 증명 카드(2026-11-18 사용자 요청): 이 브라우저가 만든 증명(코어 proofs())의 목록·공개 입력·검증·값 바꿔 보기 ----
+  // 공개 입력의 묶음 [첫 색인, 개수, 이름] — 회로의 공개 신호 순서 그대로다(circuits/pi_cred.circom·pi_idp.circom, lib/mode3_onchain.js PUB_INDEX).
+  // 설명은 사전의 user_pub_s_<이름>·user_pub_idp_<이름>. 화면에서 회로 pi_cred 의 증명은 π_session(π_s) 로 적는다(사용자 결정).
+  const PUB_ROWS = {
+    pi_cred: [[0, 1, 'PPID'], [1, 1, 'arid'], [2, 1, 'pk_i'], [3, 1, 'max_height'], [4, 1, 'chainid'], [5, 1, 'allowAgent'], [6, 1, 'revRoot'], [7, 1, 'regRoot'], [8, 2, 'pk_CIA'], [10, 2, 'pk_trace'], [12, 3, 'tag'],
+      [15, 1, 'disc_mask'], [16, 6, 'disc_lo'], [22, 6, 'disc_hi'], [28, 1, 'set_sel'], [29, 1, 'set_root'], [30, 1, 'auid_s'], [31, 1, 'arid_s'], [32, 1, 'r_s'], [33, 1, 'counter']],
+    pi_idp: [[0, 1, 'uid'], [1, 1, 'auid'], [2, 1, 'auid_s'], [3, 2, 'C_u'], [5, 2, 'C_s'], [7, 1, 'max_height'], [8, 1, 'ctx'], [9, 1, 'tag']],
+  };
+  /** 버튼을 누르지 않아도 보이는 줄(사용자 결정): π_session 은 번호 1~7(arid … regRoot)만. π_IdP 는 목록에서 이미 버튼 뒤에 있으므로 전부. */
+  const pubDefault = (kind, first) => kind !== 'pi_cred' || (first >= 1 && first <= 7);
+  const pubDescKey = (kind, name) => `user_pub_${kind === 'pi_cred' ? 's' : 'idp'}_${name}`;
+  const locale = () => (Demo.lang === 'en' ? 'en-US' : 'ko-KR');
+  let lastProofs = [], proofsShowIdp = false, lastProofsKey = null;
+  let proofOpen = null;   // 보기 창의 상태 { rec, all(전체 보기), edit(값 바꿔 보기), values(검증에 넣을 공개 입력 — 고친 값 포함) }
+  const proofKindLabel = (kind) => tt(`user_proof_kind_${kind}`) || kind;
+  const proofPurposeLabel = (x) => tt(`user_proof_purpose_${x.purpose}`) || x.purpose || '-';
+  const proofTarget = (x) => (x.kind === 'pi_idp' ? [tt('user_proof_target_idp') || 'zkID', x.arid ? rpLabel(x) : null].filter(Boolean).join(' · ') : rpLabel(x));
+  function renderProofs() {
+    const host = $('proofsList'); if (!host) return;
+    const list = lastProofs.filter((x) => proofsShowIdp || x.kind === 'pi_cred');
+    // 2초 새로고침마다 표를 다시 그리지 않는다(거래 목록과 같다) — 줄·거래 해시·언어·보기 범위가 바뀔 때만.
+    const key = JSON.stringify([list.map((x) => [x.id, x.txHash ?? null]), proofsShowIdp, Demo.lang]);
+    if (key === lastProofsKey) return;
+    lastProofsKey = key;
+    const kb = $('proofsKindBtn'); kb.dataset.i18n = proofsShowIdp ? 'user_proofs_hide_idp' : 'user_proofs_show_idp'; kb.textContent = tt(kb.dataset.i18n) || kb.textContent;
+    host.textContent = '';
+    if (!list.length) { const p = document.createElement('p'); p.className = 'muted'; p.textContent = tt('user_proofs_none') || '아직 만든 증명이 없습니다.'; host.appendChild(p); return; }
+    const table = document.createElement('table'); table.className = 'list';
+    const head = table.createTHead().insertRow();
+    for (const [k, fb] of [['wallet_col_time', '시각'], ['user_proof_col_kind', '증명'], ['user_proof_col_purpose', '용도'], ['user_proof_col_target', '대상'], ['user_proof_col_ms', '생성 시간'], [null, '']]) {
+      const th = document.createElement('th'); th.textContent = k ? (tt(k) || fb) : fb; head.appendChild(th);
+    }
+    const body = table.createTBody();
+    for (const x of list) {
+      const row = body.insertRow(); row.dataset.proofKind = x.kind; row.dataset.proofPurpose = x.purpose ?? '';
+      row.insertCell().textContent = new Date(x.at).toLocaleTimeString(locale());
+      row.insertCell().textContent = proofKindLabel(x.kind);
+      row.insertCell().textContent = proofPurposeLabel(x);
+      row.insertCell().textContent = proofTarget(x);
+      row.insertCell().textContent = `${(Number(x.ms) / 1000).toFixed(1)}s`;
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'btn-ghost proof-view'; b.textContent = tt('user_proof_view_btn') || '보기';
+      b.addEventListener('click', () => openProof(x.id)); row.insertCell().appendChild(b);
+    }
+    host.appendChild(table);
+  }
+  /** 기록을 다시 읽는다 — 목록을 그린 뒤에 붙은 것(승인 창의 recordTx 가 단 거래 해시)도 보이게. */
+  async function loadProofs() { try { const r = await core.proofs(); lastProofs = r.status === 200 ? r.body.proofs : []; } catch { lastProofs = []; } }
+  async function openProof(id) {
+    await loadProofs();
+    const rec = lastProofs.find((x) => x.id === id); if (!rec) { renderProofs(); return; }   // 그 사이 지워졌다(모두 지우기·상한)
+    proofOpen = { rec, all: false, edit: false, values: rec.publicSignals.map(String) };
+    clearVerdict($('proofVerdict')); renderProofModal(); $('proofModal').hidden = false;
+  }
+  /** 창이 열린 동안 그 기록에 거래 해시가 붙으면 창도 따라간다(공개 입력·고친 값은 그대로 둔다). */
+  function syncOpenProof() {
+    if (!proofOpen) return;
+    const cur = lastProofs.find((x) => x.id === proofOpen.rec.id);
+    if (cur && (cur.txHash ?? null) !== (proofOpen.rec.txHash ?? null)) { proofOpen.rec = cur; renderProofModal(); }
+  }
+  const proofChanged = () => (proofOpen ? proofOpen.values.filter((v, i) => v !== proofOpen.rec.publicSignals[i]).length : 0);
+  function renderProofModal() {
+    if (!proofOpen) return;
+    const { rec, all, edit, values } = proofOpen;
+    $('proofTitle').textContent = `${proofKindLabel(rec.kind)} · ${proofPurposeLabel(rec)}`;
+    $('proofMeta').textContent = [proofTarget(rec), new Date(rec.at).toLocaleString(locale()), `${(Number(rec.ms) / 1000).toFixed(1)}s`].join(' · ');
+    // 출금 증명: 그 증명이 실린 거래(코어 recordTx 가 붙인 해시). 탐색기 주소(설정 explorerUrl)가 있으면 링크도.
+    $('proofTxRow').hidden = !rec.txHash; $('proofTxHash').textContent = rec.txHash ?? '';
+    const link = $('proofTxLink'); link.hidden = !(rec.txHash && cfg.explorerUrl); if (!link.hidden) link.href = `${cfg.explorerUrl}/tx/${rec.txHash}`;
+    const rows = PUB_ROWS[rec.kind] ?? [];
+    const shown = rows.filter(([first]) => all || pubDefault(rec.kind, first));
+    $('proofInputsTitle').textContent = tt('user_proof_inputs_title', { shown: shown.reduce((n, r) => n + r[1], 0), total: values.length }) || '공개 입력';
+    const table = $('proofInputs'); table.textContent = '';
+    const head = table.createTHead().insertRow();
+    for (const [k, fb] of [['user_proof_col_no', '번호'], ['user_proof_col_name', '이름'], ['user_proof_col_value', '값']]) { const th = document.createElement('th'); th.textContent = tt(k) || fb; head.appendChild(th); }
+    const body = table.createTBody();
+    for (const [first, count, name] of shown) {
+      const row = body.insertRow(); row.dataset.pub = name;
+      const no = row.insertCell(); no.className = 'pn'; no.textContent = count === 1 ? `[${first}]` : `[${first}–${first + count - 1}]`;
+      const d = row.insertCell(); d.className = 'pd';
+      const nm = document.createElement('strong'); nm.textContent = name; const ds = document.createElement('div'); ds.className = 'muted'; ds.textContent = tt(pubDescKey(rec.kind, name)) || '';
+      d.append(nm, ds);
+      const v = row.insertCell(); v.className = 'pv';
+      for (let i = first; i < first + count; i++) {
+        if (!edit) { const c = document.createElement('code'); c.textContent = values[i]; v.appendChild(c); continue; }
+        // 값 바꿔 보기: 보이는 칸만 고친다 — 검증은 숨긴 칸까지 포함한 전체 공개 입력으로 돈다.
+        const inp = document.createElement('input'); inp.value = values[i]; inp.spellcheck = false; inp.autocomplete = 'off'; inp.dataset.pubIndex = String(i);
+        inp.classList.toggle('changed', values[i] !== rec.publicSignals[i]);
+        inp.addEventListener('input', () => { values[i] = inp.value.trim(); inp.classList.toggle('changed', values[i] !== rec.publicSignals[i]); $('proofResetBtn').hidden = false; clearVerdict($('proofVerdict')); });
+        v.appendChild(inp);
+      }
+    }
+    const more = $('proofMoreBtn'); more.hidden = rows.every(([first]) => pubDefault(rec.kind, first));
+    more.dataset.i18n = all ? 'user_proof_less_btn' : 'user_proof_more_btn'; more.textContent = tt(more.dataset.i18n) || more.textContent;
+    $('proofEditBtn').hidden = edit; $('proofResetBtn').hidden = !edit;
+    $('proofBody').textContent = JSON.stringify({ pi_a: rec.proof.pi_a, pi_b: rec.proof.pi_b, pi_c: rec.proof.pi_c }, null, 1);
+  }
+  $('proofsKindBtn').addEventListener('click', () => { proofsShowIdp = !proofsShowIdp; renderProofs(); });
+  $('proofMoreBtn').addEventListener('click', () => { if (!proofOpen) return; proofOpen.all = !proofOpen.all; renderProofModal(); });
+  $('proofEditBtn').addEventListener('click', () => { if (!proofOpen) return; proofOpen.edit = true; renderProofModal(); });
+  $('proofResetBtn').addEventListener('click', () => { if (!proofOpen) return; proofOpen.edit = false; proofOpen.values = proofOpen.rec.publicSignals.map(String); clearVerdict($('proofVerdict')); renderProofModal(); });
+  $('proofCloseBtn').addEventListener('click', () => { $('proofModal').hidden = true; proofOpen = null; clearVerdict($('proofVerdict')); });
+  $('proofCopyBtn').addEventListener('click', () => copyText($('proofBody').textContent, $('proofCopyBtn')));
+  // 검증: 증명 워커가 그 종류의 검증키(/zk/*_vkey.json)로 Groth16 검증을 다시 돌린다 — 값을 고쳤으면 고친 공개 입력으로.
+  $('proofVerifyBtn').addEventListener('click', async () => {
+    if (!proofOpen) return;
+    const { rec, values } = proofOpen, changed = proofChanged(), el = $('proofVerdict');
+    pendingVerdict(el, 'user_proof_verifying');
+    try {
+      const { ok, ms } = await prover.verify(rec.kind, rec.proof, values.slice());
+      setVerdict(el, ok, ok ? 'user_proof_valid' : 'user_proof_invalid', () => ({ summary: tt(ok ? 'user_proof_valid_note' : changed ? 'user_proof_invalid_note_edited' : 'user_proof_invalid_note', { ms, n: changed }) }));
+    } catch (e) { setVerdict(el, false, 'user_proof_verify_failed', { reason: e?.reason ?? 'internal', detail: e?.message }); }
+  });
   function renderSessions() {
     const s = lastStatus;
     const entries = s ? Object.entries(s.sessions ?? {}) : [];
@@ -446,9 +558,11 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       statusError = e.message;
     }
     if (PK) { try { const r = await core.passkeyState(); pkState = r.status === 200 ? r.body : null; } catch { pkState = null; } }
+    await loadProofs(); syncOpenProof();
     renderIdentity();
     renderSessions();
     renderTxs();
+    renderProofs();
     renderPasskey();
     renderGuide();
     await renderVault();
@@ -457,7 +571,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
   // 언어·전문가 전환은 사전이 채우는 요소와 결과 카드만 바꾼다(Demo) — 스크립트가 만든 텍스트는 여기서 다시 그린다.
   for (const k of ['setLang', 'setExpert']) {
     const orig = Demo[k];
-    Demo[k] = (v) => { orig(v); renderModeTexts(); renderProofInfo(); renderZk(); renderIdentity(); renderSessions(); renderTxs(); renderPasskey(); renderVault(); };
+    Demo[k] = (v) => { orig(v); renderModeTexts(); renderProofInfo(); renderZk(); renderIdentity(); renderSessions(); renderTxs(); renderProofs(); renderProofModal(); renderPasskey(); renderVault(); };
   }
 
   // V8 세션 폐기(설계 2026-09-24 §4): 인증 증명은 코어가 금고의 s_u 로 만든다(잠겨 있으면 잠금 해제 창).

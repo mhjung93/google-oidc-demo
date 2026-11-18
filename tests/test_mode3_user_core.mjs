@@ -78,6 +78,21 @@ try {
     assert.equal((await core.status()).body.sessions[ch.r_s].serviceName, 'zkONE'); assert.deepEqual((await core.status()).body.sessions[ch.r_s].allowedCountries, ['KR', 'JP']); assert.equal((await core.status()).body.sessions[ch.r_s].minAge, 19); assert.equal((await core.status()).body.sessions[ch.r_s].origin, info.origin);
     assert.deepEqual(await core.health(), { registered: true, hasCred: true, sessions: 1, rpCount: 1, txs: 0, disclosedTxs: 0 });
   });
+  // 2026-11-18(사용자 요청 "각 zkp 를 확인할 수 있게"): 만든 증명과 공개 입력을 kv `proofs` 에 남긴다 — 화면의 "영지식 증명" 카드가 읽는다.
+  await t('증명 기록: 등록(π_IdP)·발급(π_IdP)·로그인(π_cred)이 용도·대상과 함께 남는다 — 최신이 앞, 비밀 없음', async () => {
+    const r = await core.proofs(); assert.equal(r.status, 200, j(r.body));
+    const ps = r.body.proofs;
+    const reg = ps.find((x) => x.purpose === 'register'), iss = ps.find((x) => x.purpose === 'issue'), lg = ps.find((x) => x.purpose === 'login');
+    assert.ok(reg && iss && lg, `용도: ${j(ps.map((x) => [x.kind, x.purpose]))}`);
+    assert.equal(reg.kind, 'pi_idp'); assert.equal(reg.publicSignals.length, 10);
+    assert.equal(iss.kind, 'pi_idp'); assert.equal(iss.publicSignals.length, 10); assert.equal(iss.arid, info.arid); assert.equal(iss.serviceName, 'zkONE');
+    assert.equal(lg.kind, 'pi_cred'); assert.equal(lg.publicSignals.length, 34); assert.equal(lg.publicSignals[1], info.arid); assert.equal(lg.origin, info.origin); assert.equal(lg.serviceName, 'zkONE'); assert.equal(lg.r_s, rs1);
+    for (const x of ps) { assert.match(x.id, /^[0-9a-z-]+$/); assert.ok(Number.isFinite(x.at) && x.ms >= 0); assert.ok(x.proof?.pi_a && x.proof?.pi_b && x.proof?.pi_c, 'Groth16 증명 본체'); }
+    assert.ok(ps.indexOf(lg) < ps.indexOf(iss) && ps.indexOf(iss) < ps.indexOf(reg), '최신이 앞');
+    assert.deepEqual(new Set(ps.map((x) => x.id)).size, ps.length, 'id 는 서로 다르다');
+    const sec = await core.vault.readSecrets();
+    for (const secret of [sec.s_u, sec.blind_u, ...Object.values(sec.sessionKeys ?? {})].filter(Boolean)) assert.ok(!j(ps).includes(String(secret)), '증명 기록에 비밀이 있다');
+  });
   // 2026-11-17(passkey-web 미뤄 둔 Minor C): web 모드는 passkey-web 이전과 같다 — IdP 401(auth_code_required·bad_code)은 502 issue_failed 로 뭉치고,
   // passkey_ 로 시작하는 태그 오류도 409 가 아니라 500 internal 이다(둘 다 passkey-web 에서만 그대로 넘긴다). 같은 kv(열린 금고·등록)를 쓰는 코어에 IdP 응답·증명기만 바꿔 끼운다.
   await t('web 모드: IdP 401 auth_code_required·bad_code 는 502 issue_failed, passkey_ 태그 오류는 500 internal(세션은 늘지 않는다)', async () => {
@@ -167,6 +182,14 @@ try {
     assert.equal((await kv.get('txs')).length, 1); assert.equal((await core.health()).txs, 1);
     const tx = (await core.status()).body.txs[0]; assert.equal(tx.txHash, relay.txHash); assert.equal(tx.to.toLowerCase(), '0x000000000000000000000000000000000000dead'); assert.equal(tx.value, '0'); assert.equal(tx.serviceName, 'zkONE'); assert.equal(tx.ok, true);   // 보낸 트랜잭션 목록(2026-10-16)
   });
+  await t('증명 기록: 거래 증명(용도 tx)은 counter 가 그 거래의 nonce 이고, recordTx 뒤 txHash 가 붙는다', async () => {
+    const ps = (await core.proofs()).body.proofs;
+    const tx = (await core.status()).body.txs[0];
+    const hit = ps.filter((x) => x.purpose === 'tx' && x.txHash === tx.txHash);
+    assert.equal(hit.length, 1, `txHash 가 붙은 거래 증명: ${j(ps.map((x) => [x.purpose, x.txHash ?? null]))}`);
+    assert.equal(hit[0].kind, 'pi_cred'); assert.equal(hit[0].publicSignals[33], String(tx.nonce)); assert.equal(hit[0].r_s, rs1);
+    assert.equal(ps.filter((x) => x.purpose === 'tx').length, 1, '같은 nonce 의 두 번째 prepareTx 는 캐시의 증명을 다시 쓴다 — 새 줄이 생기지 않는다');
+  });
   await t('Selective disclosure proof: 나이·국가 집합 조건을 실어 AttrGate.claim → claimed(account) true, disclosedTxs 1', async () => {
     const year = new Date().getUTCFullYear();
     const p = await core.prepareTx({ r_s: rs1, to: info.attrGateAddress, value: '0', data: '0x4e71d92d', disclose: [{ lo: '1900', hi: String(year - Number(info.predicates.minAge)) }], set: { slot: 1, members: info.predicates.allowedCountries } });
@@ -193,6 +216,10 @@ try {
     const r = await rp.post(config.relayPath, { to: p.body.walletAddr, data: p.body.calldata }, { Origin: wallet.origin });
     assert.equal(r.status, 400); assert.equal(r.body.reason, 'relay_gas'); assert.match(String(r.body.detail), /BadSignature/);
   });
+  await t('증명 기록: 상한 준비 — 기록 40개를 채워 둔다(다음 사례의 세션 폐기 증명이 하나를 더한다)', async () => {
+    const old = await kv.get('proofs'); assert.ok(Array.isArray(old) && old.length > 0);
+    await kv.set('proofs', Array.from({ length: 40 }, (_, i) => ({ ...old[0], id: `filler-${i}`, purpose: 'filler' })));
+  });
   await t('세션 폐기: IdP 에 서명 요청 → 세션·세션키·캐시 삭제, 다음 게시 뒤 재검증은 세션 없음', async () => {
     // 2026-10-23 리뷰 수정 1: bound 계산의 체인 읽기(provider.getCode)가 실패하면 503 chain_unavailable — 세션은 지워지지 않는다.
     const realGetCode = provider.getCode.bind(provider);
@@ -207,6 +234,13 @@ try {
     assert.equal((await kv.get('sessions'))[rs1], undefined); assert.equal((await core.vault.readSecrets()).sessionKeys[rs1], undefined);
     assert.equal((await core.revalidate({ r_s: rs1, origin: info.origin })).status, 404);
   });
+  await t('증명 기록: 최근 30개만 남기고, 세션 폐기의 인증 증명(π_IdP, 용도 revoke_session)이 맨 앞이다', async () => {
+    const ps = (await core.proofs()).body.proofs;
+    assert.equal(ps.length, 30);
+    const real = ps.filter((x) => x.purpose !== 'filler');
+    assert.ok(real.length >= 1 && real.every((x) => x.kind === 'pi_idp'), j(real.map((x) => [x.kind, x.purpose])));
+    assert.equal(ps[0].purpose, 'revoke_session'); assert.equal(ps[0].publicSignals.length, 10);
+  });
   await t('속성 변경: 바뀌면 userCred·세션·캐시를 버린다(다음 로그인이 새 C_u), 같으면 changed:false', async () => {
     const same = await core.saveProfile({ birthYear: '1990', country: 'KR' }); assert.equal(same.body.changed, false);
     const diff = await core.saveProfile({ birthYear: '1991', country: 'KR' }); assert.equal(diff.body.changed, true);
@@ -220,6 +254,7 @@ try {
     assert.equal(await core.vault.key(), null); assert.equal(await kv.get('unlock'), undefined);
   });
   await t('wipe(): 전부 지운다 — 금고 없음·미등록', async () => { await core.wipe(); assert.equal(core.vault.hasVault(), false); assert.equal((await core.status()).body.registered, false); });
+  await t('증명 기록: wipe 가 함께 지운다', async () => { assert.deepEqual((await core.proofs()).body.proofs, []); });
   await t('자동 금고(2026-10-16): vaultPassword 없이 등록하면 비밀번호 없는 금고가 생기고 늘 열려 있다 — lock() 은 거절, changePassword 는 false, 로그인은 된다', async () => {
     // IdP 쪽 12345 는 위에서 이미 등록됐다 → 다른 데모 계정(alice/67890)으로.
     const r = await core.register({ uid: '67890', pwd: 'alicepw', profile: { birthYear: '1992', country: 'KR' } });

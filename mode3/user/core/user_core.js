@@ -57,8 +57,26 @@ const jwtPayload = (t) => {
   return JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(pad), (c) => c.charCodeAt(0))));
 };
 
+/** 증명 기록에 남기는 개수(최근 것부터) — 증명 하나가 몇 KB 라 IndexedDB 에 부담이 없다. */
+const PROOF_LOG_MAX = 30;
 export function createUserCore({ kv, config, provider, canonProvider = provider, fetch = globalThis.fetch, fullProve, now = Date.now, log = () => {}, passkey = null }) {
   if (!fullProve?.idp || !fullProve?.cred) throw new Error('createUserCore: fullProve.idp·fullProve.cred 가 필요하다');
+  // 증명 기록(2026-11-18 사용자 요청 "각 zkp 를 확인할 수 있게"): 만든 증명과 공개 입력을 kv `proofs` 에 최근 PROOF_LOG_MAX 개 남긴다 — 화면의 "영지식 증명"
+  // 카드가 읽는다(proofs()). 공개값뿐이다(IdP·서비스·체인으로 보내는 것 그대로 — salt·blind·세션키는 없다). 꼬리표(용도·대상)는 부르는 쪽이 noted() 로 건다.
+  // 캐시에서 다시 쓴 증명은 새로 만든 것이 아니라 기록되지 않는다. 기록 실패는 증명을 막지 않는다.
+  let proofNote = null;
+  const noted = async (note, fn) => { proofNote = note; try { return await fn(); } finally { proofNote = null; } };
+  const recording = (kind, run) => async (...args) => {
+    const note = proofNote, t0 = now();
+    const out = await run(...args);
+    try {
+      const list = (await kv.get('proofs')) ?? [];
+      list.push({ id: `${t0.toString(36)}-${Math.random().toString(36).slice(2, 8)}`, at: t0, kind, ms: now() - t0, ...(note ?? {}), proof: out.proof, publicSignals: out.publicSignals.map(String) });
+      await kv.set('proofs', list.slice(-PROOF_LOG_MAX));
+    } catch (e) { log(`증명 기록 실패: ${e?.message ?? e}`); }
+    return out;
+  };
+  const provers = { idp: recording('pi_idp', fullProve.idp), cred: recording('pi_cred', fullProve.cred) };
   // passkey-web(스펙 2026-11-17-mode3-passkey-web W3·W4): salt 는 패스키 PRF 로 그때그때 만든다 — 주입된 passkey.derive({ credentialId }) → { credentialId, s_u }
   // (브라우저는 Mode3Passkey.derivePrf, 테스트는 대역). 금고에는 10분 보관분(passkeyHold)만 두고 secrets.s_u·seed 는 늘 null 이다.
   const PK = config.secrets === 'passkey-web';
@@ -138,7 +156,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
   }
   /** 시연 덮어쓰기(에이전트 takeOverride 의 등가) — kv `demo` 의 scope 가 맞을 때만 꺼내고 지운다. 다르면 그대로 둔다. */
   /** 발급이 아닌 요청의 인증 증명(스펙 2026-11-12 no-pk-u §3.2) — 에이전트와 같은 lib 함수, π_IdP 는 주입된 fullProve.idp 로(브라우저는 워커 프록시). */
-  const authProof = (uid, s_u, ctx) => buildAuthProof({ uid: BigInt(uid), s_u: BigInt(s_u), ctx, fullProve: fullProve.idp });
+  const authProof = (uid, s_u, ctx, note) => noted(note, () => buildAuthProof({ uid: BigInt(uid), s_u: BigInt(s_u), ctx, fullProve: provers.idp }));   // note: 증명 기록의 꼬리표({ purpose, … })
   async function takeOverride(scope) { const ov = await kv.get('demo'); if (!ov || ov.scope !== scope) return null; await kv.del('demo'); return ov; }
   /** 세션 전부를 버린다(공개 레코드·π 캐시·세션키). */
   async function dropSessions() { await putSessions({}); await updateSecrets((s) => { s.sessionKeys = {}; }); }
@@ -281,10 +299,10 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     const session = createSessionKey();
     const chainid = await chain.chainId();
     const ov = await takeOverride('issue');   // 시연(설계 §8.3): 이번 발급의 s_u·uid 를 한 번만 덮어쓴다 — 가짜 auid 로 증명돼 IdP 가 bad_idp_proof 를 낸다
-    const req = await buildIssueRequest({
+    const req = await noted({ purpose: 'issue', arid: String(arid), origin: origin ?? null, serviceName, r_s: BigInt(r_s).toString() }, () => buildIssueRequest({
       uid: BigInt(ov?.uid ?? reg.uid), s_u: BigInt(ov?.s_u ?? reg.s_u), blind_u, attrs: (reg.attrs ?? []).map(BigInt), arid: BigInt(arid), r_rp, r_s,
-      session, chainid, allowAgent: BigInt(allowAgent), max_height: chooseMaxHeight(head, { ttlBlocks: TTL, grid: GRID }), n, fullProve: fullProve.idp,
-    });
+      session, chainid, allowAgent: BigInt(allowAgent), max_height: chooseMaxHeight(head, { ttlBlocks: TTL, grid: GRID }), n, fullProve: provers.idp,
+    }));
     if (ov?.uid) req.body.uid = reg.uid;   // 요청 본문의 uid 는 진짜 — C_u·π_IdP 안의 uid 만 바뀐다(스펙 §8.3)
     // OIDC 래퍼(RP 로그인 흐름, 2026-10-16): Google 토큰을 발급 요청에 싣는다. IdP 에 계정이 아직 없으면(첫 로그인) 등록 재료도 함께 — IdP 가 그 자리에서 등록·발급.
     if (oidc?.id_token) { req.body.id_token = oidc.id_token; if (oidc.registration) req.body.registration = oidc.registration; }
@@ -360,12 +378,12 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       const ov = await takeOverride('prove');   // 시연(설계 §8.3): 다음 증명의 s_u·uid 를 한 번만 바꿔치기
       const prove = async (tree, registry) => {
         try {
-          return await buildCredentialProof({
+          return await noted({ purpose: counter === LOGIN_COUNTER ? 'login' : 'tx', arid: s.arid ?? null, origin: s.origin ?? null, serviceName: s.serviceName ?? null, r_s: rsKey }, () => buildCredentialProof({
             uid: BigInt(ov?.uid ?? reg.uid), arid: BigInt(s.arid), s_u: BigInt(ov?.s_u ?? reg.s_u), auid: BigInt(reg.auid), blind_u: BigInt(uc.blind_u),
             r_rp: BigInt(s.r_rp), r_s: BigInt(rsKey), pk_i: BigInt(s.pk_i), attrs: (reg.attrs ?? []).map(BigInt),
             credential: s.credential, pk_CIA: { x: BigInt(s.credential.pk_CIA.x), y: BigInt(s.credential.pk_CIA.y) },
-            pk_trace: { x: BigInt(s.pk_trace.x), y: BigInt(s.pk_trace.y) }, tree, registry, slot: reg.slot, disclosure, counter, fullProve: fullProve.cred,
-          });
+            pk_trace: { x: BigInt(s.pk_trace.x), y: BigInt(s.pk_trace.y) }, tree, registry, slot: reg.slot, disclosure, counter, fullProve: provers.cred,
+          }));
         } catch (e) {
           // 시연 덮어쓰기가 걸려 있었다면 원인은 거의 항상 그것이다(가짜 s_u·uid 로는 witness 가 안 만들어진다) — 500 대신 호출자가 409 로 보여준다.
           if (ov) throw tag('demo_proof_failed', { detail: e.message });
@@ -456,7 +474,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     if (needSetup) await vault.setup(hasVaultPw ? vaultPassword : null);
     // 인증(스펙 2026-11-12 no-pk-u §3.2): 등록용 ctx(n)에 묶인 π_IdP. Google 은 토큰 nonce 에 쓴 n(보류 재료), 그 밖은 여기서 뽑는다.
     const n = reg.n ?? randomScalar();
-    const r = await idp.post('/cia/register', { ...auth, auid: reg.auid.toString(), n: n.toString(), ...(await authProof(uid, reg.s_u, await registerCtx({ n }))) });
+    const r = await idp.post('/cia/register', { ...auth, auid: reg.auid.toString(), n: n.toString(), ...(await authProof(uid, reg.s_u, await registerCtx({ n }), { purpose: 'register' })) });
     if (r.status !== 201) {
       // OIDC 사유(oidc_disabled·oidc_invalid·oidc_nonce_mismatch·oidc_unavailable)는 그 사유·상태 그대로 — 화면이 원인을 나눠 보여준다.
       if (typeof r.body?.reason === 'string' && r.body.reason.startsWith('oidc_')) return R(r.status, { reason: r.body.reason, cia: r.body });
@@ -522,6 +540,8 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       });
     },
     /** 에이전트 GET /wallet/attr_schema 의 등가 — 지갑 화면이 이름 ↔ 코드를 바꾸는 데 쓰는 전체 스키마. */
+    /** 증명 기록(최신이 앞) — { id, at, kind: 'pi_idp'|'pi_cred', ms, purpose, arid?, origin?, serviceName?, r_s?, txHash?, proof, publicSignals }. 공개값뿐이다. */
+    async proofs() { return R(200, { proofs: ((await kv.get('proofs')) ?? []).slice().reverse() }); },
     async attrSchema() {
       try { const s = await schemaFor(); return R(200, { schema: s.schema, hash: s.hash, source: s.source }); }
       catch (e) { if (e.reason === 'schema_invalid') return R(503, { reason: 'schema_invalid', detail: e.message }); throw e; }
@@ -695,7 +715,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       const reg = src.registration();
       if ((reg.slot === null || reg.slot === undefined) && !pubReg.pendingIdp) {   // IdP 에 계정이 아직 없으면(Google 첫 로그인) 슬롯은 발급 응답이 준다
         const nonce = randomScalar();
-        const r0 = await idp.post('/cia/slot', { uid: reg.uid, nonce: nonce.toString(), ...(await authProof(reg.uid, reg.s_u, await slotCtx({ nonce }))) });
+        const r0 = await idp.post('/cia/slot', { uid: reg.uid, nonce: nonce.toString(), ...(await authProof(reg.uid, reg.s_u, await slotCtx({ nonce }), { purpose: 'slot' })) });
         // 슬롯은 음이 아닌 정수여야 한다(리뷰 Minor 1) — IdP 가 망가진 값을 주면 registryCheck 가 영구히 null 을 돌려주게 된다.
         if (r0.status !== 200 || !Number.isInteger(r0.body?.slot) || r0.body.slot < 0) return R(502, { reason: 'slot_failed', cia: r0.body });
         await src.setSlot(r0.body.slot);
@@ -935,6 +955,13 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
         txs.push({ txHash, r_s: rsKey, arid: s.arid, at: new Date(now()).toISOString(), ok: result.ok, disclosed, wallet: walletAddr, nonce: result.nonce, to: dec?.payload?.to ?? null, value: dec?.payload?.value != null ? String(dec.payload.value) : null });
         await kv.set('txs', txs);
       }
+      // 증명 기록: 이 거래에 실린 증명(공개 입력이 호출 데이터의 것과 글자 그대로 같다)에 거래 해시를 붙인다 — 화면이 탐색기 링크를 건다.
+      if (dec) {
+        const sig = dec.pub.map((v) => BigInt(v).toString()).join(',');
+        const ps = (await kv.get('proofs')) ?? [];
+        const hit = ps.find((x) => x.kind === 'pi_cred' && !x.txHash && x.publicSignals.join(',') === sig);
+        if (hit) { hit.txHash = txHash; await kv.set('proofs', ps); }
+      }
       return R(200, result);
     },
     /** 에이전트 POST /wallet/session/revoke 의 등가(V8 세션 폐기, 설계 2026-09-24 §4): 이 지갑의 세션 하나를 AA 에 폐기 요청한다. 인증 증명은
@@ -961,7 +988,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       }
       const nonce = randomScalar();   // 신선도는 IdP 가 보지 않는다(재생 = 같은 세션 재폐기, 멱등)
       // 인증(스펙 2026-11-12 no-pk-u §3.1): ctx = Poseidon(D_CTX_REVOKE, Cf_s, bound, nonce) 에 묶인 π_IdP.
-      const auth = await authProof(reg.uid, s_u, await revokeSessionCtx({ Cf_s: BigInt(s.credential.Cf_s), bound, nonce }));
+      const auth = await authProof(reg.uid, s_u, await revokeSessionCtx({ Cf_s: BigInt(s.credential.Cf_s), bound, nonce }), { purpose: 'revoke_session', arid: s.arid ?? null, origin: s.origin ?? null, serviceName: s.serviceName ?? null, r_s: rsKey });
       // 502 cia_unavailable 은 **IdP 호출 실패만** 가리킨다(최종 리뷰 F3). 증명·BigInt 같은 지역 오류는 500 internal 로 간다.
       let r;
       try { r = await idp.post('/cia/revoke', { uid: reg.uid, scope: 'session', Cf_s: s.credential.Cf_s, bound: bound.toString(), nonce: nonce.toString(), ...auth }); }
@@ -1044,7 +1071,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       } catch { return R(400, { reason: 'bad_recovery_code' }); }
       if (BigInt(uid) >= SCALAR_MAX) return R(400, { error: 'uid 는 2^250 미만' });
       const nonce = randomScalar();
-      const auth = await authProof(uid, s_u, await slotCtx({ nonce }));   // 증명 실패(지역 오류)는 502 로 뭉개지 않게 IdP 호출 밖에서 만든다
+      const auth = await authProof(uid, s_u, await slotCtx({ nonce }), { purpose: 'slot' });   // 증명 실패(지역 오류)는 502 로 뭉개지 않게 IdP 호출 밖에서 만든다
       let r0;
       try { r0 = await idp.post('/cia/slot', { uid, nonce: nonce.toString(), ...auth }); }
       catch (e) { return R(502, { reason: 'cia_unavailable', detail: e.message }); }

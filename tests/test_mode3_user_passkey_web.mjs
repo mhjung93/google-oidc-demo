@@ -37,7 +37,7 @@ const stubCredId = (secretHex) => createHash('sha256').update(Buffer.from(secret
 execFileSync('node', ['scripts/build_user_app.mjs'], { stdio: 'inherit' });
 execFileSync('node', ['scripts/build_attr_tool.mjs'], { stdio: 'inherit' });   // 속성 도구 번들 — reset.json 을 사용자 페이지가 같은 오리진에서 읽는다
 const browser = await launchBrowser();
-const stack = await startIsolatedMode3Stack({ userMode: 'web', walletHost: 'localhost', walletEnv: { MODE3_WALLET_SECRETS: 'passkey-web' }, ciaEnv: { CIA_ISSUE_AUTH: 'code', MODE3_WALLET_KIND: 'passkey-web' }, rpEnv: { MODE3_WALLET_KIND: 'passkey-web' }, autoRelay: true });   // MODE3_WALLET_KIND: 분리 데모 스크립트가 IdP·서비스에 넘기는 값(화면 문구용)
+const stack = await startIsolatedMode3Stack({ userMode: 'web', walletHost: 'localhost', walletEnv: { MODE3_WALLET_SECRETS: 'passkey-web', MODE3_EXPLORER_URL: 'http://127.0.0.1:4000' }, ciaEnv: { CIA_ISSUE_AUTH: 'code', MODE3_WALLET_KIND: 'passkey-web' }, rpEnv: { MODE3_WALLET_KIND: 'passkey-web' }, autoRelay: true });   // MODE3_WALLET_KIND: 분리 데모 스크립트가 IdP·서비스에 넘기는 값(화면 문구용)
 const { cia, wallet, rp } = stack;
 const WALLET_ORIGIN = new URL(wallet.base).origin;
 const SECRET_A = 'a1'.repeat(32), SECRET_C = 'c3'.repeat(32), SECRET_D = 'd4'.repeat(32);
@@ -197,6 +197,70 @@ try {
     await waitText(rpPage, '#txVerdict', '전송 성공', 180_000);
     assert.ok((await text(rpPage, '#txLog')).includes('txHash='), await text(rpPage, '#txLog'));
     assert.equal(hits.get - before, 0, '보관분으로 패스키 없이');
+  });
+
+  // 2026-11-18(사용자 요청 "각 zkp 를 확인할 수 있게"): 사용자 페이지의 "영지식 증명" 카드 — 승인 창(다른 창)에서 만든 증명이 같은 저장소라 여기 보인다.
+  await t('영지식 증명 카드: 기본은 π_session 만·번호 1~7 만 — 전체 보기 34개, 검증 ✓, 값을 바꾸면 ✗, 출금 증명에는 거래 링크, 버튼을 누르면 π_IdP 도', async () => {
+    await userPage.bringToFront();
+    await userPage.waitForSelector('#proofsList tr[data-proof-purpose="tx"]', { timeout: 30_000 });
+    const rows = await userPage.$$eval('#proofsList tbody tr', (rs) => rs.map((r) => [r.dataset.proofKind, r.dataset.proofPurpose, r.cells[1].textContent]));
+    assert.ok(rows.length >= 2 && rows.every(([k]) => k === 'pi_cred'), `기본은 π_session 만: ${j(rows)}`);
+    assert.ok(rows.some(([, p]) => p === 'login'), j(rows)); assert.equal(rows[0][2], 'π_session (π_s)');
+    // 보기(로그인 증명): 기본은 번호 1~7(arid … regRoot)
+    await userPage.locator('#proofsList tr[data-proof-purpose="login"] .proof-view').first().click();
+    await userPage.waitForSelector('#proofModal:not([hidden])');
+    const names = () => userPage.$$eval('#proofInputs tbody tr', (rs) => rs.map((r) => r.dataset.pub));
+    assert.deepEqual(await names(), ['arid', 'pk_i', 'max_height', 'chainid', 'allowAgent', 'revRoot', 'regRoot']);
+    assert.ok((await text(userPage, '#proofInputsTitle')).includes('7/34'), await text(userPage, '#proofInputsTitle'));
+    assert.equal(await userPage.isHidden('#proofTxRow'), true, '로그인 증명에는 거래가 없다');
+    await userPage.click('#proofMoreBtn');
+    assert.equal((await names()).length, 20, '묶음 20줄'); assert.equal(await userPage.locator('#proofInputs td.pv code').count(), 34, '값 34개');
+    assert.equal((await names())[0], 'PPID');
+    await userPage.click('#proofMoreBtn'); assert.equal((await names()).length, 7, '다시 기본만');
+    // 검증 ✓ → 값 하나를 바꾸면 ✗ → 원래대로 ✓
+    await userPage.click('#proofVerifyBtn'); await waitText(userPage, '#proofVerdict', '유효한 증명입니다', 60_000);
+    await userPage.click('#proofEditBtn');
+    const cell = '#proofInputs input[data-pub-index="1"]';
+    await userPage.fill(cell, (BigInt(await userPage.inputValue(cell)) + 1n).toString());
+    await userPage.click('#proofVerifyBtn'); await waitText(userPage, '#proofVerdict', '검증에 실패했습니다', 60_000);
+    assert.ok((await text(userPage, '#proofVerdict')).includes('1칸'), await text(userPage, '#proofVerdict'));
+    await userPage.fill(cell, '숫자가 아니다');
+    await userPage.click('#proofVerifyBtn'); await waitText(userPage, '#proofVerdict', '검증에 실패했습니다', 60_000);
+    await userPage.click('#proofResetBtn');
+    assert.equal(await userPage.locator('#proofInputs input').count(), 0, '원래대로 — 고치는 칸이 닫힌다');
+    await userPage.click('#proofVerifyBtn'); await waitText(userPage, '#proofVerdict', '유효한 증명입니다', 60_000);
+    await userPage.click('#proofCloseBtn'); assert.equal(await userPage.isHidden('#proofModal'), true);
+    // 출금 증명: 그 증명이 실린 거래의 해시와 탐색기 링크
+    {
+      const d = await idbDump(userPage);
+      const txProofs = (d.proofs ?? []).filter((x) => x.purpose === 'tx').map((x) => ({ txHash: x.txHash ?? null, counter: x.publicSignals[33], r_s: x.r_s }));
+      assert.ok(txProofs.some((x) => x.txHash), `저장소의 거래 증명에 해시가 없다: ${j(txProofs)} / txs ${j((d.txs ?? []).map((x) => ({ txHash: x.txHash, nonce: x.nonce })))}`);
+    }
+    await userPage.locator('#proofsList tr[data-proof-purpose="tx"] .proof-view').first().click();
+    await userPage.waitForSelector('#proofTxRow:not([hidden])', { timeout: 15_000 }).catch(async (e) => {
+      const d = await idbDump(userPage);
+      const st = await userPage.evaluate(() => ({ modalHidden: document.getElementById('proofModal').hidden, title: document.getElementById('proofTitle').textContent, rowHidden: document.getElementById('proofTxRow').hidden, hash: document.getElementById('proofTxHash').textContent, rows: [...document.querySelectorAll('#proofsList tbody tr')].map((r) => r.dataset.proofPurpose) }));
+      throw new Error(`${e.message.split('\n')[0]} — 화면 ${j(st)} / 저장소 ${j((d.proofs ?? []).map((x) => [x.kind, x.purpose, x.txHash ? 'tx' : '-', x.at]))}`);
+    });
+    const txHash = await text(userPage, '#proofTxHash'); assert.match(txHash, /^0x[0-9a-f]{64}$/);
+    assert.ok((await text(rpPage, '#txLog')).includes(txHash), '서비스 화면의 그 거래다');
+    assert.equal(await userPage.getAttribute('#proofTxLink', 'href'), `http://127.0.0.1:4000/tx/${txHash}`);
+    await userPage.click('#proofVerifyBtn'); await waitText(userPage, '#proofVerdict', '유효한 증명입니다', 60_000);
+    await userPage.click('#proofCloseBtn');
+    // π_IdP 도 보기: 등록·세션 발급 증명이 더 보이고, 공개 입력 10개(묶음 8줄)가 전부 보인다
+    await userPage.click('#proofsKindBtn');
+    const all = await userPage.$$eval('#proofsList tbody tr', (rs) => rs.map((r) => [r.dataset.proofKind, r.dataset.proofPurpose]));
+    assert.ok(all.some(([k, p]) => k === 'pi_idp' && p === 'register') && all.some(([k, p]) => k === 'pi_idp' && p === 'issue'), j(all));
+    await userPage.locator('#proofsList tr[data-proof-kind="pi_idp"] .proof-view').first().click();
+    await waitText(userPage, '#proofTitle', 'π_IdP', 15_000);   // 창은 기록을 다시 읽은 뒤에 열린다
+    assert.deepEqual(await names(), ['uid', 'auid', 'auid_s', 'C_u', 'C_s', 'max_height', 'ctx', 'tag']);
+    assert.equal(await userPage.isHidden('#proofMoreBtn'), true, 'π_IdP 는 전부 보인다');
+    await userPage.click('#proofVerifyBtn'); await waitText(userPage, '#proofVerdict', '유효한 증명입니다', 60_000);
+    await userPage.click('#proofCloseBtn');
+    await userPage.click('#proofsKindBtn');
+    assert.ok((await userPage.$$eval('#proofsList tbody tr', (rs) => rs.map((r) => r.dataset.proofKind))).every((k) => k === 'pi_cred'), '다시 π_session 만');
+    // 기록에는 salt 가 없다
+    assert.equal(j((await idbDump(userPage)).proofs ?? []).includes(SALT_A), false, '증명 기록에 salt 가 있다');
   });
 
   // 2026-11-17(미뤄 둔 Minor, Task 6): Google 경로는 승인을 누르기 전에 거절한다 — 승인 뒤에야 passkey_mode 로 막으면 헛클릭 한 번이다.

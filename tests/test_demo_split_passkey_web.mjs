@@ -120,6 +120,9 @@ t('Blockscout — 초기화는 프로젝트 이름을 주고(B1), 감시자는 p
   const stopWatch = src.match(/\nstop_verify_watch\(\) \{[\s\S]*?\n\}/);
   assert.ok(stopWatch, 'stop_verify_watch 함수 없음');
   assert.match(stopWatch[0], /\/proc\/\$pid\/cmdline/); assert.match(stopWatch[0], /grep -qF -- "blockscout_verify_watch\.mjs"/); assert.match(stopWatch[0], /rm -f "\$BS_VERIFY_PID"/);
+  // 2026-11-18(증명 기록의 거래 링크): Blockscout 가 있으면 정적 서버(web·passkey-web)에 탐색기 주소를 넘긴다.
+  assert.match(src, /^BS_EXPLORER=\$\(\[ -f "\$BS_DIR\/compose\.yml" \] && echo "\$\{BLOCKSCOUT_URL:-http:\/\/127\.0\.0\.1:4000\}"\)$/m);
+  assert.equal((src.match(/MODE3_EXPLORER_URL="\$BS_EXPLORER"/g) ?? []).length, 2, '정적 서버 기동 두 곳(web·passkey-web)');
   const stopLocal = src.match(/\nstop_local\(\) \{[\s\S]*?\n\}/);
   assert.match(stopLocal[0], /stop_verify_watch/, 'stop_local 이 감시자를 함께 내린다');
 });
