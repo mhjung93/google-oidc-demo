@@ -14,6 +14,8 @@
 #                                                          # 지갑 오리진(snap-mode3/src/index.js)이라 바꿀 수 없다 — 한 머신 데모(:5100)와 동시에 못 띄운다. scripts/demo_split_snap_reset.sh 가 이 값을 넣어 부른다(web 모드 리셋은 scripts/demo_split_reset.sh).
 #        ADMIN_OPEN=1 bash scripts/demo_split_start.sh     # IdP 관리자 인증을 끈 채로(2026-11-05 부터 기본은 켬 — 관리자 페이지 비밀번호 idp; RP 관리자는 zkone·zktwo)
 #        BLOCKSCOUT_RESET=0 bash scripts/demo_split_start.sh  # 로컬 Blockscout(.local/blockscout) 색인 초기화를 건너뛴다(기본은 체인을 새로 만들 때 함께 비운다, 2026-11-17)
+#        BLOCKSCOUT_VERIFY=0 bash scripts/demo_split_start.sh  # 컨트랙트 자동 검증 감시자(scripts/blockscout_verify_watch.mjs)를 띄우지 않는다(기본은 띄운다, 2026-11-18 — 로그는 $LOGS/blockscout_verify.log)
+#        BLOCKSCOUT_PROJECT=이름 bash scripts/demo_split_start.sh  # Blockscout 의 compose 프로젝트 이름(기본 zkid-blockscout — 화면에 보이는 :4000 스택). 초기화(down -v·up -d)가 이 이름에 걸린다
 #        ISSUE_AUTH=code bash scripts/demo_split_start.sh  # 발급 인증 정책(기본은 WALLET_MODE 에 따른다 — snap 은 CIA_ISSUE_AUTH=code, web 은 key, 2026-10-23: web 코어는
 #                                                           # auth_code 를 보내지 않으므로 code 로 켜면 로그인이 막힌다). code 면 로그인 때 지갑 팝업이 연 IdP 인증 창(uid·비밀번호·auid)의 1회용 코드가
 #                                                           # 있어야 발급한다(2026-10-22). key 면 옛 방식(서명만) — CIA_DEMO_ACCOUNTS 는 그대로 미설정(가입(POST /cia/signup)만 쓴다)
@@ -50,6 +52,9 @@ PEER_HOST=$([ "$WALLET_MODE" = passkey ] && echo 127.0.0.1 || echo localhost)
 if [ "$WALLET_MODE" = "snap" ]; then [ -d snap-mode3/node_modules ] && [ -f snap-mode3/dist/bundle.js ] || { echo "BLOCKED: snap-mode3/node_modules 또는 dist/bundle.js 가 없다 — cd snap-mode3 && npm install && npm run build"; exit 1; }; fi
 APP_PORT=8547 APP_CHAIN=31339 REV_PORT=8548 REV_CHAIN=31340 IDP_PORT=4100 RP1_PORT=3100 RP2_PORT=3101 SNAP_PORT=8082
 LOGS="${DEMO_LOG_DIR:-/tmp/mode3-split}"; mkdir -p "$LOGS"
+# 로컬 Blockscout(2026-11-18 스펙 blockscout-auto-verify): 화면에 보이는 스택의 compose 프로젝트 이름과, 자동 검증 감시자의 pid 파일.
+BS_PROJECT="${BLOCKSCOUT_PROJECT:-zkid-blockscout}"
+BS_VERIFY_PID="$LOGS/blockscout_verify.pid"
 TS=$(date '+%Y%m%d-%H%M')
 ADMIN="${CIA_ADMIN_SECRET:-idp}"   # IdP 관리자 페이지 비밀번호(2026-11-05, 사용자 요청: 쉽게 idp)
 WALLET_ORIGIN="http://localhost:$USER_PORT"
@@ -69,6 +74,13 @@ if [ "$WALLET_MODE" = passkey-web ]; then
 fi
 on() { local h="$1"; shift; ssh -o BatchMode=yes -o ConnectTimeout=5 "$U@$h" "$@"; }
 
+# Blockscout 자동 검증 감시자는 포트를 듣지 않아 아래 포트 목록으로는 못 찾는다 — pid 파일의 pid 를, 명령줄이 감시자일 때만 내린다(B10).
+stop_verify_watch() {
+  [ -f "$BS_VERIFY_PID" ] || return 0
+  pid=$(cat "$BS_VERIFY_PID" 2>/dev/null)
+  case "$pid" in ''|*[!0-9]*) ;; *) tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -qF -- "blockscout_verify_watch.mjs" && kill "$pid" && echo "stop blockscout_verify_watch (pid $pid)" ;; esac
+  rm -f "$BS_VERIFY_PID"
+}
 # 이 VM 쪽은 포트 주인 중 명령줄이 우리 것과 맞는 것만 내린다(라이브 데모와 명령줄이 같은 사용자 페이지는 포트로 가른다).
 stop_local() {
   # passkey-web 의 정적 서버(:5100)는 그 모드일 때만 찾는다 — 다른 모드로 부르면 한 머신 데모의 :5100 정적 서버를 건드리지 않는다.
@@ -79,6 +91,7 @@ stop_local() {
       tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -qF -- "$want" && kill "$pid" && echo "stop :$port (pid $pid)"
     done
   done
+  stop_verify_watch
 }
 # VM 쪽 패턴의 [z] 는 pkill 이 자기를 부른 원격 셸을 잡지 않게 하는 것이다.
 # 원격 기동은 `{ 명령 & }` 로 감싼다 — `a && b &` 로 쓰면 목록 전체가 백그라운드 서브셸이 되어 ssh 출력을 쥔 채 남고, ssh 가 끝나지 않는다.
@@ -179,13 +192,24 @@ start_chain $APP_PORT $APP_CHAIN app
 # 3b. Blockscout 초기화(2026-11-17 사용자 요청): 로컬 Blockscout(.local/blockscout, :4000)는 응용 체인(:$APP_PORT)을 색인한다. 체인을 새로 만들면
 #     DB 에 옛 체인의 블록이 남아 새 블록 번호(≤ 옛 최고 높이)를 이미 색인한 것으로 보고 갱신하지 않는다 — 색인 볼륨을 지우고 다시 띄운다.
 #     compose 파일이 없거나 docker 가 없으면 건너뛴다. BLOCKSCOUT_RESET=0 이면 끈다. 체인에서 다시 만들어지는 색인뿐이라 데모 상태 파일과 무관하다.
-BS_DIR=".local/blockscout"
+#     2026-11-18: compose 프로젝트 이름을 준다($BS_PROJECT, 기본 zkid-blockscout) — 이름 없이 부르면 디렉터리 이름(blockscout)의 다른 스택에 걸려
+#     화면에 보이는 스택은 그대로 남고, 중복 스택의 proxy 가 :4000 충돌로 실패했다.
+BS_DIR=".local/blockscout"; BS_RESET_OK=0
 if [ "${BLOCKSCOUT_RESET:-1}" != 0 ] && [ -f "$BS_DIR/compose.yml" ] && command -v docker >/dev/null 2>&1; then
-  if (cd "$BS_DIR" && docker compose down -v >"$LOGS/blockscout_reset.log" 2>&1 && docker compose up -d >>"$LOGS/blockscout_reset.log" 2>&1); then
-    echo "Blockscout 초기화: 색인을 비우고 다시 띄웠다(http://127.0.0.1:4000 — 새 체인을 0번부터 색인한다)"
+  if (cd "$BS_DIR" && docker compose -p "$BS_PROJECT" down -v >"$LOGS/blockscout_reset.log" 2>&1 && docker compose -p "$BS_PROJECT" up -d >>"$LOGS/blockscout_reset.log" 2>&1); then
+    BS_RESET_OK=1; echo "Blockscout 초기화($BS_PROJECT): 색인을 비우고 다시 띄웠다(http://127.0.0.1:4000 — 새 체인을 0번부터 색인한다)"
   else
     echo "WARN Blockscout 초기화 실패 — $LOGS/blockscout_reset.log (데모는 계속 진행)"
   fi
+fi
+# 3c. 컨트랙트 자동 검증(2026-11-18): 감시자 하나가 응용 체인을 0번 블록부터 따라가며 올라오는 컨트랙트(거울·검증기·팩토리·AttrGate·계정마다의 지갑)를
+#     Blockscout 에 소스 검증으로 올린다. 서비스(VM)·에이전트가 실행 중에 배포하는 것까지 체인에서 잡는다. BLOCKSCOUT_VERIFY=0 이면 띄우지 않는다.
+#     Blockscout 가 없으면(compose·docker 없음, 또는 초기화를 건너뛰었는데 :4000 응답 없음) 띄우지 않는다. 데모 기동은 이 감시자를 기다리지 않는다.
+if [ "${BLOCKSCOUT_VERIFY:-1}" != 0 ] && [ -f "$BS_DIR/compose.yml" ] && command -v docker >/dev/null 2>&1 \
+   && { [ "$BS_RESET_OK" = 1 ] || curl -s -m 3 -o /dev/null http://127.0.0.1:4000/api/v2/stats; }; then
+  BS_RPC="http://127.0.0.1:$APP_PORT" setsid nohup node scripts/blockscout_verify_watch.mjs > "$LOGS/blockscout_verify.log" 2>&1 < /dev/null &
+  echo $! > "$BS_VERIFY_PID"
+  echo "Blockscout 자동 검증 감시자 up (pid $(cat "$BS_VERIFY_PID")) — $LOGS/blockscout_verify.log"
 fi
 
 # 4. IdP 주소: 임시 상태 파일로 IdP 를 한 번 띄워 /cia/public_keys 의 ethAddress 를 읽는다(배포 스크립트 안내대로). 키는 idp VM 안에만 생긴다.

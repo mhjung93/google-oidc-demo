@@ -106,6 +106,23 @@ t('IdP·서비스 공통 환경변수에 지갑 모드(MODE3_WALLET_KIND)', () =
   // 속성 도구는 상태 조회를 부르지 않는다 — 리셋 표시 파일에 함께 싣는다.
   assert.match(src, /printf '\{"epoch":"%s","walletKind":"%s"\}\\n' "\$TS" "\$WALLET_MODE" > mode3\/attr\/dist\/reset\.json/);
 });
+// 2026-11-18(스펙 2026-11-18-blockscout-auto-verify): Blockscout 초기화는 화면에 보이는 스택(compose 프로젝트 zkid-blockscout)에 걸고, 자동 검증 감시자를 띄우고 내린다.
+t('Blockscout — 초기화는 프로젝트 이름을 주고(B1), 감시자는 pid 파일로 띄우고 내린다(B10)', () => {
+  assert.match(src, /^BS_PROJECT="\$\{BLOCKSCOUT_PROJECT:-zkid-blockscout\}"$/m);
+  const compose = lines.filter((l) => /docker compose/.test(l) && !/^\s*#/.test(l));
+  assert.ok(compose.length >= 1, 'docker compose 줄 없음');
+  for (const l of compose) assert.equal((l.match(/docker compose/g) ?? []).length, (l.match(/docker compose -p "\$BS_PROJECT"/g) ?? []).length, `프로젝트 이름 없는 docker compose: ${l.trim().slice(0, 80)}`);
+  assert.match(src, /down -v/); assert.match(src, /up -d/);
+  // 띄우기: BLOCKSCOUT_VERIFY=0 이면 띄우지 않는다. pid 를 $LOGS/blockscout_verify.pid 에 적는다.
+  assert.match(src, /\$\{BLOCKSCOUT_VERIFY:-1\}" != 0/);
+  assert.match(src, /setsid nohup node scripts\/blockscout_verify_watch\.mjs > "\$LOGS\/blockscout_verify\.log" 2>&1 < \/dev\/null &\s*\n?\s*echo \$! > "\$BS_VERIFY_PID"/);
+  // 내리기: 감시자는 포트를 듣지 않아 stop_local 의 포트 목록으로는 못 찾는다 — pid 파일의 pid 를 명령줄을 확인한 뒤에만 내린다.
+  const stopWatch = src.match(/\nstop_verify_watch\(\) \{[\s\S]*?\n\}/);
+  assert.ok(stopWatch, 'stop_verify_watch 함수 없음');
+  assert.match(stopWatch[0], /\/proc\/\$pid\/cmdline/); assert.match(stopWatch[0], /grep -qF -- "blockscout_verify_watch\.mjs"/); assert.match(stopWatch[0], /rm -f "\$BS_VERIFY_PID"/);
+  const stopLocal = src.match(/\nstop_local\(\) \{[\s\S]*?\n\}/);
+  assert.match(stopLocal[0], /stop_verify_watch/, 'stop_local 이 감시자를 함께 내린다');
+});
 t('번들·인증서·VM 배포 줄', () => {
   assert.match(src, /node scripts\/build_user_app\.mjs/);
   assert.match(src, /node scripts\/build_attr_tool\.mjs/);
