@@ -11,6 +11,12 @@
   <link rel="stylesheet" href="/common/demo.css" />
   <!-- zkONE 꾸밈(가상의 이름, 실제 거래소가 아니다) — 이 페이지에서만 흰 배경 + 남색/파랑 억양을 입힌다. demo.css 는 바꾸지 않는다. -->
   <link rel="stylesheet" href="/common/rp.css" />
+  <style>
+    /* 2026-11-18(사용자 요청): passkey-web 에는 Race (2) 시연이 없다 — 체크박스와 "시연 숨기기" 버튼 줄을 보이지 않게(모드는 demo.js setWalletKind 가 <html> 에 적는다). */
+    html[data-wallet-kind="passkey-web"] .race-demo { display:none }
+    /* 같은 날(사용자 결정): 이 모드에서 동작하지 않는 로그인 수단(Google·네이버 — 서비스의 소셜 로그인은 localhost 오리진 전용, Google 은 승인 창이 passkey_mode 로 거절)은 로그인 창에서 뺀다. */
+    html[data-wallet-kind="passkey-web"] #googleLoginBtn, html[data-wallet-kind="passkey-web"] #naverLoginBtn, html[data-wallet-kind="passkey-web"] #loginGsiSlot { display:none }
+  </style>
   <script src="/common/strings.js"></script>
   <script src="/common/demo.js"></script>
   <script src="/common/gsi.js"></script>   <!-- 2026-11-10: RP 의 Google 로그인·연결(GIS) -->
@@ -986,7 +992,8 @@
     const applyRaceHidden = () => { $('raceHoldOpt').hidden = raceHidden; const k = raceHidden ? 'rp_race_show_btn' : 'rp_race_hide_btn'; $('raceToggleBtn').dataset.i18n = k; tte($('raceToggleBtn'), k); };
     applyRaceHidden();
     $('raceToggleBtn').addEventListener('click', () => { raceHidden = !raceHidden; applyRaceHidden(); try { localStorage.setItem(RACE_HIDDEN_KEY, raceHidden ? '1' : '0'); } catch { /* */ } });
-    const raceHoldOn = () => !raceHidden && $('raceHold').checked;
+    // 2026-11-18(사용자 요청): passkey-web 에는 Race (2) 시연이 없다(블록을 진행시키는 에이전트 전용) — 체크박스 줄을 CSS 로 숨기고(아래 <style>), 체크가 남아 있어도 "멈춤" 을 보내지 않는다.
+    const raceHoldOn = () => !raceHidden && $('raceHold').checked && document.documentElement.dataset.walletKind !== 'passkey-web';
     $('txBtn').addEventListener('click', async () => {
       if ($('txBtn').dataset.tourBusy === '1') return;   // 처리 중 재클릭만 무시(버튼은 늘 활성)
       // 거래소 보관 출금(2026-11-10, R5): RP 릴레이어가 자기 돈으로 보내고 장부를 깎는다 — 쿠키 세션으로(zkID 로그인도 쿠키 세션을 만든다).

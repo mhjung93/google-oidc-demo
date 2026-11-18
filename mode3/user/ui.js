@@ -450,7 +450,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       const agent = document.createElement('span');
       agent.className = `badge ${c.allowAgent === '1' ? 'ok' : 'muted'}`;
       agent.textContent = tt(c.allowAgent === '1' ? 'rp_agent_yes' : 'rp_agent_no') || c.allowAgent;
-      kvRow(dl, termEl('allowAgent'), agent);
+      if (!PK) kvRow(dl, termEl('allowAgent'), agent);   // 2026-11-18(사용자 요청): passkey-web 에는 대리 전송할 에이전트가 없다 — 줄을 내지 않는다
       kvRow(dl, termEl('session'), shortCode(r_s, 16), true);
       kvRow(dl, tt('wallet_session_addr') || '세션 주소', shortCode(c.sessionAddress, 20), true);
       kvRow(dl, tt('wallet_session_factory') || '팩토리', shortCode(c.factoryAddress ?? '-', 20), true);

@@ -199,6 +199,35 @@ try {
     assert.equal(hits.get - before, 0, '보관분으로 패스키 없이');
   });
 
+  // 2026-11-18(사용자 요청, 화면을 보고): passkey-web 에 없는 것은 화면에서 숨긴다 — Race (2) 시연(에이전트 전용)·allowAgent 줄(에이전트 대리 전송).
+  await t('이 모드에 없는 것은 숨긴다: 서비스의 Race (2) 시연 체크박스, 사용자 페이지의 allowAgent 줄; 출금 설명은 "확인하면" 이 아니다', async () => {
+    await rpPage.bringToFront();
+    await rpPage.waitForFunction(() => document.documentElement.dataset.walletKind === 'passkey-web', null, { timeout: 15_000 });
+    assert.equal(await rpPage.isVisible('#txBtn'), true, '출금 버튼은 보인다(로그인한 상태)');
+    assert.equal(await rpPage.isVisible('#raceHold'), false, 'Race (2) 체크박스가 보인다');
+    assert.equal(await rpPage.isVisible('#raceToggleBtn'), false, '"시연 숨기기" 버튼이 보인다');
+    assert.equal((await rpPage.evaluate(() => document.body.innerText)).includes('Race (2)'), false, 'Race (2) 글자가 보인다');
+    // 체크가 남아 있어도(다른 모드에서 켜 둔 값) 이 모드에서는 "멈춤" 을 보내지 않는다
+    assert.equal(await rpPage.evaluate(() => { document.getElementById('raceHold').checked = true; const on = raceHoldOn(); document.getElementById('raceHold').checked = false; return on; }), false);
+    const desc = await rpPage.evaluate(() => window.Demo.t('rp_tx_desc'));
+    assert.ok(!desc.includes('확인하면') && desc.includes('zk 클라이언트'), desc);
+    await userPage.bringToFront();
+    await userPage.waitForSelector('#sessionsCard dl', { timeout: 15_000 });
+    assert.equal((await userPage.$eval('#sessionsCard', (el) => el.innerText)).includes('allowAgent'), false, '연결된 서비스에 allowAgent 줄이 보인다');
+    assert.ok(!(await userPage.$eval('#storagePanel', (el) => el.innerText)).includes('복구 코드'), '보관 상태 설명이 이 모드에 없는 복구 코드를 말한다');
+    // 서비스 로그인 창: 이 모드에서 동작하지 않는 Google·네이버 버튼은 보이지 않고 "zkID 로 로그인" 만 남는다(새 브라우저 — 로그인 전 화면)
+    const ctx = await browser.newContext();
+    try {
+      const p = await ctx.newPage(); await p.goto(rp.base);
+      await p.waitForFunction(() => document.documentElement.dataset.walletKind === 'passkey-web', null, { timeout: 15_000 });
+      await p.click('#loginBtn'); await p.waitForSelector('#loginModal:not([hidden])', { timeout: 10_000 });
+      assert.equal(await p.isVisible('#idpLoginBtn'), true, '"zkID 로 로그인" 은 보인다');
+      assert.equal(await p.isVisible('#googleLoginBtn'), false, 'Google 버튼이 보인다');
+      assert.equal(await p.isVisible('#naverLoginBtn'), false, '네이버 버튼이 보인다');
+      const txt = await p.$eval('#loginModal', (el) => el.innerText); assert.ok(!/Google|네이버/.test(txt), txt);
+    } finally { await ctx.close(); }
+  });
+
   // 2026-11-18(사용자 요청 "각 zkp 를 확인할 수 있게"): 사용자 페이지의 "영지식 증명" 카드 — 승인 창(다른 창)에서 만든 증명이 같은 저장소라 여기 보인다.
   await t('영지식 증명 카드: 기본은 π_session 만·번호 1~7 만 — 전체 보기 34개, 검증 ✓, 값을 바꾸면 ✗, 출금 증명에는 거래 링크, 버튼을 누르면 π_IdP 도', async () => {
     await userPage.bringToFront();
@@ -610,6 +639,8 @@ try {
     } finally { await ctx.close(); }
   });
   await t('표기: 사용자 페이지·승인 창·zkID 페이지·서비스 페이지에 "스냅" 이 보이지 않는다', async () => {
+    // 승인 창: 사전에 없는 키가 글자 그대로 보이면 안 된다(전에는 wallet_auth_note 가 그대로 보였다)
+    { const p = await ctxA.newPage(); try { await p.goto(`${wallet.base}/?authorize=1`); await p.waitForSelector('#authorizeView:not([hidden])'); const m = (await p.evaluate(() => document.body.innerText)).match(/\b[a-z]+(_[a-z0-9]+){2,}\b/); assert.equal(m, null, `승인 창에 키 이름이 보인다: ${m?.[0]}`); } finally { await p.close(); } }
     const pages = [[wallet.base, '/'], [wallet.base, '/?authorize=1'],
       ...['/user', '/user/info', '/rp', '/admin', '/account', '/login', `/login?nonce=x&wallet=${encodeURIComponent(WALLET_ORIGIN)}`, `/login?nonce=x&purpose=register&wallet=${encodeURIComponent(WALLET_ORIGIN)}`].map((x) => [cia.base, x]),
       [rp.base, '/'], [rp.base, '/admin']];
