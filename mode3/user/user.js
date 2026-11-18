@@ -84,7 +84,8 @@ async function main() {
   if (config.demoGeneration) {
     try {
       const seen = await kv.get('demoGeneration');
-      if (seen && seen !== config.demoGeneration) { await core.wipe(); demoReset = true; }
+      // 2026-11-18(사용자 요청): 리셋 때는 패스키 연결도 끊는다(passkey-web) — 새 데모는 패스키 설정부터 다시 한다. 패스키 자체는 인증기(Google 비밀번호 관리자 등)에 남는다.
+      if (seen && seen !== config.demoGeneration) { await core.wipe({ keepPasskey: false }); demoReset = true; }
       await kv.set('demoGeneration', config.demoGeneration);
     } catch { /* 저장소 오류면 그대로 진행 — 수동 "모두 지우기"가 남아 있다 */ }
   }

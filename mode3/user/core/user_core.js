@@ -1093,9 +1093,10 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       await putSessions({}); lastSync = null; lastRegistry = null;
       return R(200, { uid, slot: r0.body.slot, auid: auid.toString(), format: seedHex ? 'seed' : 'raw' });
     },
-    async wipe() {
+    async wipe({ keepPasskey = true } = {}) {
       // R-12: passkey-web 은 패스키 연결(credential ID — 공개값)을 남긴다 — 보관분·금고·등록·세션은 지운다. 연결 끊기는 passkeyDisconnect.
-      const keep = PK ? ((await kv.get('passkey')) ?? null) : null;
+      // 2026-11-18(사용자 요청): 데모 리셋은 연결도 끊는다 — 사용자 페이지가 데모 세대가 바뀌었을 때 keepPasskey:false 로 부른다(화면의 "모두 지우기" 는 기본값 그대로).
+      const keep = PK && keepPasskey ? ((await kv.get('passkey')) ?? null) : null;
       await kv.clear(); vault.reset(); lastSync = null; lastRegistry = null; pendingReg = null; saltMemo = null;
       if (keep) await kv.set('passkey', keep);
       return R(200, { ok: true });

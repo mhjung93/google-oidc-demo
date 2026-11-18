@@ -545,19 +545,25 @@ try {
     } finally { await ctx.close(); }
   });
 
-  await t('데모 세대가 바뀌면 등록은 지우고 패스키 연결은 남긴다', async () => {
+  // 2026-11-18(사용자 요청): 데모 리셋은 패스키 연결도 끊는다 — 리셋 뒤에는 패스키 설정 카드부터 다시 시작한다(그전에는 연결을 남겼다).
+  await t('데모 세대가 바뀌면 등록을 지우고 패스키 연결도 끊는다 — 설정 카드가 다시 보인다', async () => {
     const cid = stubCredId(SECRET_A);
     assert.ok((await idbDump(userPage)).registration, '앞 케이스(ctxA 첫 로그인 = 등록)의 등록이 있다');   // 순서 의존 — 위 주석
     await stack.restartWallet({ MODE3_DEMO_GENERATION: 'g1' });
     await userPage.reload(); await userPage.waitForSelector('#mainView:not([hidden])');
     await userPage.waitForFunction(async () => { const open = indexedDB.open('mode3-user', 1); const db = await new Promise((r) => { open.onsuccess = () => r(open.result); }); const v = await new Promise((r) => { const q = db.transaction('kv', 'readonly').objectStore('kv').get('demoGeneration'); q.onsuccess = () => r(q.result); }); db.close(); return v === 'g1'; }, undefined, { timeout: 15_000, polling: 300 });
     assert.ok((await idbDump(userPage)).registration, '처음 본 번호로는 지우지 않는다');
+    assert.equal((await idbDump(userPage)).passkey?.credentialId, cid, '처음 본 번호로는 연결도 그대로다');
     await stack.restartWallet({ MODE3_DEMO_GENERATION: 'g2' });
     await userPage.reload(); await userPage.waitForSelector('#mainView:not([hidden])');
     await userPage.waitForFunction(async () => { const open = indexedDB.open('mode3-user', 1); const db = await new Promise((r) => { open.onsuccess = () => r(open.result); }); const v = await new Promise((r) => { const q = db.transaction('kv', 'readonly').objectStore('kv').get('demoGeneration'); q.onsuccess = () => r(q.result); }); db.close(); return v === 'g2'; }, undefined, { timeout: 15_000, polling: 300 });
     const d = await idbDump(userPage);
     assert.equal(d.registration, undefined, '등록은 지웠다');
-    assert.equal(d.passkey?.credentialId, cid, '패스키 연결은 남는다');
+    assert.equal(d.passkey, undefined, '패스키 연결도 끊었다');
+    assert.equal(d.passkeyHold, undefined, '보관분도 없다');
+    await userPage.waitForSelector('#pkSetupCard:not([hidden])', { timeout: 15_000 });
+    assert.equal(await userPage.isHidden('#pkPanel'), true, '연결된 패스키 줄이 없다');
+    await waitText(userPage, '#storageVerdict', '패스키 연결', 15_000);   // 안내가 연결을 끊었다고 알린다
   });
 
   // 2026-11-17: 속성 도구(/attr.html)도 같은 CSP 아래에서 커밋먼트를 만든다(인라인이던 페이지 스크립트는 /attr/attr_page.js). 새 컨텍스트 — 앞 케이스의 기록과 섞이지 않게.

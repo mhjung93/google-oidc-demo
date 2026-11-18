@@ -164,6 +164,16 @@ try {
   });
   // ---- 2026-11-17(미뤄 둔 Minor C) — 각 케이스는 새 kv·새 코어로 자기 상태를 만든다(앞 케이스의 등록·보관분과 무관) ----
   const freshCore = (cfg = config) => { const k = createMemKv(); return { k, c: createUserCore({ kv: k, config: cfg, provider, canonProvider: provider, fullProve, now, passkey }) }; };
+  // 2026-11-18(사용자 요청): 데모 리셋은 패스키 연결도 끊는다 — 사용자 페이지가 wipe({ keepPasskey: false }) 로 부른다. 화면의 "모두 지우기"(기본)는 그대로 연결을 남긴다.
+  await t('wipe({ keepPasskey: false }) 는 등록·보관분과 함께 패스키 연결도 지운다', async () => {
+    const { k, c } = freshCore();
+    assert.equal((await c.passkeyConnect({ credentialId: CID, s_u: SALT })).status, 200);
+    assert.ok(await k.get('passkey')); assert.ok(await k.get('passkeyHold'));
+    assert.equal((await c.wipe({ keepPasskey: false })).status, 200);
+    assert.equal(await k.get('passkey'), undefined); assert.equal(await k.get('passkeyHold'), undefined);
+    assert.equal((await c.passkeyState()).body.credentialId, null);
+    const s2 = await c.showSalt(); assert.equal(s2.status, 409); assert.equal(s2.body.reason, 'passkey_setup_required');
+  });
   await t('passkeyDisconnect(미등록): 200 — credential·보관분을 지운다, 이어서 showSalt 는 passkey_setup_required', async () => {
     const { k, c } = freshCore();
     assert.equal((await c.passkeyConnect({ credentialId: CID, s_u: SALT })).status, 200);
