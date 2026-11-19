@@ -1464,22 +1464,27 @@ try {
     const shape = await p.evaluate(() => {
       const h = (el) => Math.round(el.getBoundingClientRect().height);
       return {
-        rowHeights: [...new Set([...document.querySelectorAll('#auidMap tbody tr')].map(h))],
+        codeHeights: [...document.querySelectorAll('#auidMap tbody code')].map(h),
+        overflow: document.querySelector('#auidMap').scrollWidth - document.querySelector('#auidMap').clientWidth,
         shown: [...document.querySelectorAll('#auidMap tbody code')].map((c) => [c.textContent, c.title]),
-        headHeights: [...document.querySelectorAll('#auidMap thead th, #regDb thead th')].map(h),
+        headHeights: [...document.querySelectorAll('#regDb thead th')].map(h),
+        mapHeadHeights: [...document.querySelectorAll('#auidMap thead th')].map(h),
         badgeHeights: [...document.querySelectorAll('#regDb .badge')].map(h),
       };
     });
-    assert.equal(shape.rowHeights.length, 1, `"uid ↔ auid 대응" 의 줄 높이가 모두 같다(한 줄): ${shape.rowHeights}`);
+    // 2026-11-19(화면 셀프 리뷰): 값이 있는 칸은 값·설명·시각을 세로로 쌓는다 — 줄 높이는 같지 않아도 되고, 값 하나하나가 한 줄이며 표가 카드 밖으로 넘치지 않으면 된다
+    assert.ok(shape.codeHeights.length > 0 && Math.max(...shape.codeHeights) < 30, `"uid ↔ auid 대응" 의 값은 한 줄이다: ${shape.codeHeights}`);
+    assert.ok(shape.overflow <= 1, `"uid ↔ auid 대응" 표가 카드 밖으로 넘치지 않는다: ${shape.overflow}px`);
     for (const [shown, full] of shape.shown) {
-      const [head, tail] = shown.split('…');
+      const [head, tail] = shown.replace(/^arid_s /, '').split('…');   // "본 서비스" 칸은 값 앞에 이름(arid_s)을 붙인다(2026-11-19)
       assert.ok(shown.length < 30 && head && tail && full.startsWith(head) && full.endsWith(tail), `가운데를 줄인 값: ${shown} ← ${full}`);
     }
-    assert.ok(Math.max(...shape.headHeights) < 40, `표 머리글이 한 줄이다: ${shape.headHeights}`);
+    assert.ok(Math.max(...shape.headHeights) < 40, `등록부 DB 의 표 머리글이 한 줄이다: ${shape.headHeights}`);
+    assert.ok(Math.max(...shape.mapHeadHeights) < 70, `"uid ↔ auid 대응" 의 머리글은 길어도 두 줄이다("…에서 본 서비스" 는 줄을 바꾼다): ${shape.mapHeadHeights}`);
     assert.ok(shape.badgeHeights.length > 0 && Math.max(...shape.badgeHeights) < 30, `등록부 DB 의 배지가 한 줄이다: ${shape.badgeHeights}`);
     assert.ok(accts.accounts.some((a) => a.auid), '등록된 계정이 하나는 있다(대응 표가 실제 auid 를 보이는지 확인하려면)');
     assert.ok(accts.accounts.some((a) => a.lastAuidS?.value), '발급받은 계정이 하나는 있다(최신 auid_s 열이 실제 값을 보이는지 확인하려면)');
-    assert.deepEqual(await p.$$eval('#auidMap table thead th', (ths) => ths.map((th) => th.textContent.trim())), ['uid', '아이디', '상태', 'auid', '최신 auid_s', '슬롯']);
+    assert.deepEqual(await p.$$eval('#auidMap table thead th', (ths) => ths.map((th) => th.textContent.trim())), ['uid', '아이디', '상태', 'auid', '최신 auid_s', '일반 OIDC 에서 본 서비스 (rid)', 'zk-Delegation 에서 본 서비스 (arid_s)', '슬롯']);
     const st = await p.evaluate(() => fetch('/cia/state').then((r) => r.json()));
     await p.waitForFunction((root) => [...document.querySelectorAll('#regDbKv code')].some((c) => c.textContent === root), st.regRoot, { timeout: 20_000 });
     const reg = await p.evaluate((sec) => fetch('/cia/admin/registry', { headers: { 'X-CIA-Admin-Secret': sec } }).then((r) => r.json()), cia.adminSecret);
