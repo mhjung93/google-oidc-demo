@@ -59,16 +59,16 @@ try {
     u = userOf(reg, '12345', TESTUSER_ATTRS);
     assert.equal(u.slot, 0); assert.equal(JSON.stringify(reg.body).includes(u.s_u.toString()), false);
   });
-  await t('발급 → 슬롯 게시 → 로그인 성공 (공개 입력 34, [7] = regRoot, [30..32] = auid_s·arid_s·r_s)', async () => {
+  await t('발급 → 슬롯 게시 → 로그인 성공 (공개 입력 29, [7] = regRoot, [25..27] = auid_s·arid_s·r_s)', async () => {
     const r = await newSessionAndIssue();
     assert.equal(r.status, 200, j(r.body)); cred = r.body;
     const v = await loginRound();
     assert.equal(v.ok, true, j(v));
     const { regRoot } = await trees();
     const cached = cache.get(ProofCache.rootKey(31337n, v.root, regRoot), session.wallet.address);
-    assert.equal(cached.publicSignals.length, 34); assert.equal(BigInt(cached.publicSignals[7]), regRoot); assert.equal(v.regRoot, regRoot);
-    assert.equal(BigInt(cached.publicSignals[30]), v.auid_s); assert.equal(BigInt(cached.publicSignals[31]), v.arid_s); assert.equal(BigInt(cached.publicSignals[32]), sessionRs);
-    assert.equal(cached.publicSignals[33], LOGIN_COUNTER.toString(), '로그인은 counter=LOGIN_COUNTER');
+    assert.equal(cached.publicSignals.length, 29); assert.equal(BigInt(cached.publicSignals[7]), regRoot); assert.equal(v.regRoot, regRoot);
+    assert.equal(BigInt(cached.publicSignals[25]), v.auid_s); assert.equal(BigInt(cached.publicSignals[26]), v.arid_s); assert.equal(BigInt(cached.publicSignals[27]), sessionRs);
+    assert.equal(cached.publicSignals[28], LOGIN_COUNTER.toString(), '로그인은 counter=LOGIN_COUNTER');
   });
   let PPID1, staleProof;
   await t('같은 root 둘이면 캐시 π 재사용', async () => {

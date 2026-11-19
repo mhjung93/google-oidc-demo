@@ -162,7 +162,7 @@ try {
   await t('id_token 은 에이전트 상태 파일에 남지 않는다', async () => {
     const file = stateFile();
     for (const tok of tokens) assert.equal(file.includes(tok), false, '토큰이 상태 파일에 있다');
-    // 2026-11-09 Phase 1: 세션 자격증명의 credential.id_token 은 zkID 가 낸 ID 토큰(sub=auid_s, aud=arid_s — revalidate 가 다시 돌려준다)이다. 그 칸 말고는 없어야 한다.
+    // 2026-11-09 Phase 1: 세션 자격증명의 credential.id_token 은 zkIdP 가 낸 ID 토큰(sub=auid_s, aud=arid_s — revalidate 가 다시 돌려준다)이다. 그 칸 말고는 없어야 한다.
     const parsed = JSON.parse(file);
     for (const sess of Object.values(parsed.sessions ?? {})) if (sess?.credential) delete sess.credential.id_token;
     assert.equal(JSON.stringify(parsed).includes('id_token'), false);

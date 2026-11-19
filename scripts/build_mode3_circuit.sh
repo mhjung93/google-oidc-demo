@@ -49,7 +49,8 @@ for NAME in "${NAMES[@]}"; do
     npx snarkjs zkey export solidityverifier "$OUT/pi_cred_final.zkey" contracts/PiCredVerifier.sol
     sed -i -E 's/contract (Groth16Verifier|Verifier) /contract PiCredVerifier /' contracts/PiCredVerifier.sol
     grep -q 'contract PiCredVerifier' contracts/PiCredVerifier.sol || { echo "PiCredVerifier 이름 치환 실패" >&2; exit 1; }
-    grep -q 'uint\[34\] calldata _pubSignals' contracts/PiCredVerifier.sol || { echo "PiCredVerifier 의 공개 입력이 34개가 아니다 — circuits/pi_cred.circom 을 확인" >&2; exit 1; }
+    # 2026-11-19(스펙 trace-without-tag T3): 공개 입력 29개(pk_trace·tag 를 뺐다 — 전에는 34)
+    grep -q 'uint\[29\] calldata _pubSignals' contracts/PiCredVerifier.sol || { echo "PiCredVerifier 의 공개 입력이 29개가 아니다 — circuits/pi_cred.circom 을 확인" >&2; exit 1; }
   fi
 done
 

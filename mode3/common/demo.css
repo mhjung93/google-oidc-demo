@@ -64,3 +64,15 @@ body.admin-locked main > :not(#adminGate), body.admin-locked .section-menu { dis
 .gate-form label { display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: var(--muted); }
 .gate-form input { width: 100%; box-sizing: border-box; padding: 9px 10px; }
 .gate-form button[type=submit] { margin-top: 4px; padding: 10px 14px; }
+/* "누가 무엇을 받아 무엇을 검증하는가" 그림(2026-11-19, common/flow_figure.js) — 보낸 쪽 상자 · 화살표(보낸 것/돌려준 것) · 받은 쪽 상자(검증한 것 ✓ / 알 수 없는 것 ✗) */
+.flow-fig { display:grid; grid-template-columns:minmax(90px,auto) minmax(0,1.3fr) minmax(0,1fr); gap:10px; align-items:stretch; margin:10px 0; font-size:13px }
+.flow-node { border:1.5px solid var(--line, #cbd5e1); border-radius:10px; padding:10px 12px; background:var(--surface, #f8fafc); display:flex; flex-direction:column; gap:4px; min-width:0 }
+.flow-node.flow-from { justify-content:center; text-align:center } .flow-node.flow-to { border-color:var(--accent, #2563eb) }
+.flow-mid { display:flex; flex-direction:column; gap:4px; min-width:0 }
+.flow-arrow { font-weight:600; border-bottom:2px solid var(--accent, #2563eb); padding-bottom:2px } .flow-arrow.flow-back { margin-top:8px; border-bottom-style:dashed; text-align:right }
+.flow-items { display:grid; grid-template-columns:auto 1fr; gap:2px 10px; margin:4px 0 0 } .flow-items dt { color:var(--muted, #64748b); white-space:nowrap } .flow-items dd { margin:0; overflow-wrap:anywhere }
+.flow-sub { font-weight:600; margin-top:6px } .flow-check, .flow-unknown, .flow-learn { margin:2px 0 0; padding:0; list-style:none } .flow-check li { color:#15803d } .flow-unknown li { color:#64748b } .flow-learn li { color:#b91c1c }
+/* 좁은 칸(서비스 화면의 옆 칸 등)에서는 세 칸을 위아래로 쌓는다 — 화면 폭이 아니라 그림이 놓인 칸의 폭으로 가른다 */
+.flow-host { container-type:inline-size }
+@container (max-width:640px) { .flow-fig { grid-template-columns:1fr } .flow-node.flow-from { flex-direction:row; gap:8px; align-items:baseline; justify-content:flex-start } }
+@media (max-width:760px) { .flow-fig { grid-template-columns:1fr } }

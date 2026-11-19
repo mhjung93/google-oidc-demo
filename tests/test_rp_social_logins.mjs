@@ -1,4 +1,4 @@
-// tests/test_rp_social_logins.mjs — RP 계정에 zkID·Google·네이버 로그인 연결(스펙 2026-11-10). 격리 스택(IdP·지갑·RP 둘) + 가짜 Google·네이버. (chain — :8545)
+// tests/test_rp_social_logins.mjs — RP 계정에 zkIdP·Google·네이버 로그인 연결(스펙 2026-11-10). 격리 스택(IdP·지갑·RP 둘) + 가짜 Google·네이버. (chain — :8545)
 import assert from 'node:assert/strict';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
 import { startOidcIssuerStub } from './helpers/oidc_issuer_stub.mjs';
@@ -54,21 +54,25 @@ async function zkLogin(u, target = rp, { link = false } = {}) {
 }
 
 try {
-  // 지갑 등록(격리 IdP 의 데모 계정 testuser — test_mode3_demo_stack.mjs 의 "1. 등록" 과 같다). zkID 로그인 케이스가 쓴다.
+  // 지갑 등록(격리 IdP 의 데모 계정 testuser — test_mode3_demo_stack.mjs 의 "1. 등록" 과 같다). zkIdP 로그인 케이스가 쓴다.
   assert.equal((await wallet.post('/wallet/register', { uid: '12345', pwd: 'password123' })).status, 201, '지갑 등록');
   let B = null;
   await t('rp_info.social: 두 공급자 켜짐, Google 클라이언트 ID 만 싣는다(비밀 없음)', async () => {
     const s = (await rp.get('/api/mode3/rp_info')).body.social;
-    assert.deepEqual(s, { google: { enabled: true, clientId: g.clientId }, naver: { enabled: true } });
+    // 2026-11-19: Google 의 리디렉션식 로그인 설정(인가 주소 — 공개값, 돌아올 주소 — 이 스택은 설정하지 않아 null)과 zkIdP 일반 OIDC 의 켜짐 여부(기본 꺼짐)가 더해졌다.
+    assert.deepEqual(s, { google: { enabled: true, clientId: g.clientId, authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth', redirectUri: null }, naver: { enabled: true }, zkoidc: { enabled: false } });
     assert.equal(j((await rp.get('/api/mode3/rp_info')).body).includes('rp-naver-secret'), false);
   });
-  await t('Google 첫 로그인 → 새 계정·쿠키 세션(이름 zkone.sid), /api/rp/me 에 sub 없음; nonce 재사용·다른 aud·purpose 불일치는 거절', async () => {
+  await t('Google 첫 로그인 → 새 계정·쿠키 세션(이름 zkone.sid), /api/rp/me 의 계정 보기(methods)에 sub 없음 — 받은 토큰은 seen 에(2026-11-19); nonce 재사용·다른 aud·purpose 불일치는 거절', async () => {
     const u = jar(rp.base);
     const r = await googleLogin(u, 'g-alice');
     assert.equal(r.status, 200, j(r.body)); assert.equal(r.body.created, true); assert.equal(r.body.via, 'google'); B = r.body.account;
     assert.ok(u.cookies.has('zkone.sid'), `쿠키: ${[...u.cookies.keys()]}`);
     const me = await u.req('GET', '/api/rp/me');
-    assert.equal(me.body.account, B); assert.equal(me.body.via, 'google'); assert.equal(j(me.body).includes('g-alice'), false);
+    assert.equal(me.body.account, B); assert.equal(me.body.via, 'google'); assert.equal(j(me.body.methods).includes('g-alice'), false, '계정 보기에는 sub 가 없다');
+    // 2026-11-19(데모 시나리오 3 — "JWT 에 uid·rid 가 드러난다"): 로그인한 본인에게, 이 서비스가 Google 에서 받은 토큰의 sub·aud 와 본문을 보인다(서명 없음).
+    assert.equal(me.body.seen.protocol, 'oidc'); assert.equal(me.body.seen.issuer, 'google'); assert.equal(me.body.seen.uid, 'g-alice'); assert.equal(me.body.seen.rid, g.clientId);
+    assert.equal(me.body.seen.jwt.payload.sub, 'g-alice'); assert.equal(me.body.seen.jwt.payload.aud, g.clientId); assert.deepEqual(Object.keys(me.body.seen.jwt).sort(), ['header', 'payload']);
     const { nonce } = (await u.req('POST', '/api/rp/oidc/nonce', { purpose: 'login' })).body;
     const tok = await g.mint({ sub: 'g-x', nonce });
     assert.equal((await u.req('POST', '/api/rp/google', { id_token: tok, purpose: 'login' })).status, 200);
@@ -79,7 +83,7 @@ try {
     assert.equal((await u.req('POST', '/api/rp/google', { id_token: await g.mint({ sub: 'g-x', nonce: n3 }), purpose: 'link' })).status, 401, '로그인 nonce 로 연결 불가(접두어)');
     assert.equal((await jar(rp.base).req('POST', '/api/rp/oidc/nonce', { purpose: 'link' })).body.reason, 'no_rp_session');
   });
-  await t('Google 계정(B)에 zkID 연결(link:true) → B 에 PPID; 이어서 새 브라우저의 zkID 로그인은 B 로 들어간다', async () => {
+  await t('Google 계정(B)에 zkIdP 연결(link:true) → B 에 PPID; 이어서 새 브라우저의 zkIdP 로그인은 B 로 들어간다', async () => {
     const u = jar(rp.base); await googleLogin(u, 'g-alice');
     const r = await zkLogin(u, rp, { link: true });
     assert.equal(r.body.ok, true, j(r.body)); assert.equal(r.body.account, B);
@@ -88,7 +92,7 @@ try {
     assert.equal(z.body.ok, true, j(z.body)); assert.equal(z.body.account, B); assert.equal(z.body.via, 'zkid');
     assert.equal((await v.req('GET', '/api/rp/me')).body.via, 'zkid');
   });
-  await t('다른 Google 계정(C)에 같은 PPID 를 zkID 로 연결하면 409 method_linked_elsewhere 이고 r_s 세션도 생기지 않는다', async () => {
+  await t('다른 Google 계정(C)에 같은 PPID 를 zkIdP 로 연결하면 409 method_linked_elsewhere 이고 r_s 세션도 생기지 않는다', async () => {
     const u = jar(rp.base); const c = await googleLogin(u, 'g-carol');
     const before = (await rp.get('/api/mode3/sessions')).body.sessions.length;
     const r = await zkLogin(u, rp, { link: true });
@@ -158,7 +162,7 @@ try {
     const v = jar(rp.base); await googleLogin(v, 'g-frank');
     assert.deepEqual((await v.req('POST', '/api/rp/ledger', { body: 'balance' })).body.balance.ledger, bal);
   });
-  await t('zkID 로 만든 쿠키 세션은 그 r_s 세션이 끝나면(로그아웃·폐기) 함께 끝난다 — 소셜로 만든 세션은 그대로', async () => {
+  await t('zkIdP 로 만든 쿠키 세션은 그 r_s 세션이 끝나면(로그아웃·폐기) 함께 끝난다 — 소셜로 만든 세션은 그대로', async () => {
     const u = jar(rp.base); const z = await zkLogin(u);
     assert.equal(z.body.ok, true, j(z.body)); assert.equal((await u.req('GET', '/api/rp/me')).status, 200);
     await rp.post('/api/mode3/logout', { r_s: z.body.r_s });
@@ -190,7 +194,7 @@ try {
     assert.equal(r.status, 415);
   });
   // 맨 끝에 둔다 — 지갑의 testuser 계정을 폐기한다.
-  await t('리뷰 I1: zkID 로 만든 쿠키 세션은 IdP 폐기(root 변경)로 r_s 세션이 재검증을 요구하면 함께 막힌다 — /api/rp/me·/api/rp/ledger 401', async () => {
+  await t('리뷰 I1: zkIdP 로 만든 쿠키 세션은 IdP 폐기(root 변경)로 r_s 세션이 재검증을 요구하면 함께 막힌다 — /api/rp/me·/api/rp/ledger 401', async () => {
     const u = jar(rp.base); const z = await zkLogin(u);
     assert.equal(z.body.ok, true, j(z.body)); assert.equal((await u.req('GET', '/api/rp/me')).status, 200);
     const rv = await stack.cia.adminPost('/cia/revoke', { uid: '12345', scope: 'account' });

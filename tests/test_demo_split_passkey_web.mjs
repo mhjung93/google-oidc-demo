@@ -107,6 +107,28 @@ t('IdP·서비스 공통 환경변수에 지갑 모드(MODE3_WALLET_KIND)', () =
   assert.match(src, /printf '\{"epoch":"%s","walletKind":"%s"\}\\n' "\$TS" "\$WALLET_MODE" > mode3\/attr\/dist\/reset\.json/);
 });
 // 2026-11-18(스펙 2026-11-18-blockscout-auto-verify): Blockscout 초기화는 화면에 보이는 스택(compose 프로젝트 zkid-blockscout)에 걸고, 자동 검증 감시자를 띄우고 내린다.
+// 2026-11-19(스펙 passkey-proof-login L1): passkey-web 의 발급 정책 기본값은 key — 등록된 지갑은 인증 창 없이 패스키 증명으로 로그인한다. 에이전트 모드(snap·passkey)는 code 그대로.
+t('발급 정책 기본값 — 에이전트 모드만 code, passkey-web·web 은 key(ISSUE_AUTH 로 덮을 수 있다)', () => {
+  const ln = lines.find((l) => l.includes('CIA_ISSUE_AUTH=${ISSUE_AUTH:-'));
+  assert.ok(ln, 'CIA_ISSUE_AUTH 기본값 줄을 찾지 못했다');
+  const expr = ln.match(/CIA_ISSUE_AUTH=\$\{ISSUE_AUTH:-(\$\([^)]*\))\}/);
+  assert.ok(expr, 'CIA_ISSUE_AUTH=${ISSUE_AUTH:-$(…)} 모양이 아니다');
+  const policy = (agentMode, walletMode) => spawnSync('bash', ['-c', `AGENT_MODE=${agentMode} WALLET_MODE=${walletMode}; echo ${expr[1]}`], { encoding: 'utf8' }).stdout.trim();
+  assert.equal(policy(0, 'passkey-web'), 'key');
+  assert.equal(policy(0, 'web'), 'key');
+  assert.equal(policy(1, 'snap'), 'code');
+  assert.equal(policy(1, 'passkey'), 'code');
+});
+// 2026-11-19(스펙 oidc-comparison C1·C7): 일반 OIDC(비교용)는 passkey-web 에서만 기본으로 켜고, IdP·서비스에 같은 값을 넘긴다.
+t('일반 OIDC(비교용) — passkey-web 에서만 기본 켬, IdP(CIA_PLAIN_OIDC)·서비스(MODE3_RP_ZKOIDC)에 같은 값', () => {
+  const ln = lines.find((l) => /^PLAIN_OIDC="\$\{PLAIN_OIDC:-/.test(l));
+  assert.ok(ln, 'PLAIN_OIDC 기본값 줄을 찾지 못했다');
+  const expr = ln.match(/^PLAIN_OIDC="\$\{PLAIN_OIDC:-(\$\([^)]*\))\}"/);
+  assert.ok(expr, 'PLAIN_OIDC="${PLAIN_OIDC:-$(…)}" 모양이 아니다');
+  const on = (walletMode) => spawnSync('bash', ['-c', `WALLET_MODE=${walletMode}; echo ${expr[1]}`], { encoding: 'utf8' }).stdout.trim();
+  assert.equal(on('passkey-web'), '1'); assert.equal(on('snap'), '0'); assert.equal(on('web'), '0'); assert.equal(on('passkey'), '0');
+  assert.ok(lines.includes('CIA_PLAIN_OIDC=$PLAIN_OIDC') && lines.includes('MODE3_RP_ZKOIDC=$PLAIN_OIDC'), '공통 환경변수에 두 값이 없다');
+});
 t('Blockscout — 초기화는 프로젝트 이름을 주고(B1), 감시자는 pid 파일로 띄우고 내린다(B10)', () => {
   assert.match(src, /^BS_PROJECT="\$\{BLOCKSCOUT_PROJECT:-zkid-blockscout\}"$/m);
   const compose = lines.filter((l) => /docker compose/.test(l) && !/^\s*#/.test(l));

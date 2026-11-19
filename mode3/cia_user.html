@@ -5,17 +5,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="same-origin" />
   <!-- 제목의 "IdP 사용자" 는 페이지 서빙 검사 marker 다(mode3/cia_admin.html 의 관례). -->
-  <title>zkID — 내 계정</title>
+  <title>zkIdP — 내 계정</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b1d3a'/%3E%3Ctext x='16' y='22' font-size='15' font-family='sans-serif' font-weight='700' text-anchor='middle' fill='%23fff'%3Ezk%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="/common/demo.css" />
   <link rel="stylesheet" href="/common/idp.css" />
+  <style>html:not([data-wallet-kind="passkey-web"]) #passkeyLoginRow { display: none; }</style>   <!-- 증명 로그인 버튼은 passkey-web 에서만(2026-11-19) — 정책(key)은 스크립트가 hidden 으로 가른다 -->
   <script src="/common/strings.js"></script>
   <script src="/common/demo.js"></script>
 </head>
 <body data-page="idp_user">
 <header id="demoBar"></header>
 <nav class="idp-nav narrow"><div class="nav-inner">   <!-- narrow: 상단 바·하위 메뉴의 왼쪽 끝을 좁은 카드(main.cards.narrow)와 맞춘다(2026-11-14) -->
-  <span class="brand" data-i18n="idp_brand">zkID</span>
+  <span class="brand" data-i18n="idp_brand">zkIdP</span>
   <div class="nav-menu"><a href="/user" aria-current="page" data-i18n="idp_nav_user">내 계정</a><a href="/rp" data-i18n="idp_nav_rp">RP 운영자</a><a href="/admin" data-i18n="idp_nav_admin">관리자</a></div>
 </div></nav>
 <!-- 2026-11-10: "내 계정" 하위 메뉴 — 계정 관리(/user) · 내 정보(/user/info, 읽기 전용) -->
@@ -24,12 +25,14 @@
   <!-- ===== 로그인 전 ① 로그인 (2026-11-03 재구성: 로그인해야 등록·폐기 카드가 보인다) ===== -->
   <section class="card auth-card" id="loginView">
     <h3 data-i18n="idp_login_title">로그인</h3>
-    <p class="desc" data-i18n="idp_login_desc">zkID 계정으로 로그인하면 스냅 등록과 계정 관리를 할 수 있습니다.</p>
+    <p class="desc" data-i18n="idp_login_desc">zkIdP 계정으로 로그인하면 스냅 등록과 계정 관리를 할 수 있습니다.</p>
     <form id="loginForm" class="auth-form" autocomplete="on">
       <label><span data-i18n="idp_id_label">아이디</span><input id="loginId" autocomplete="username" autocapitalize="off" spellcheck="false" /></label>
       <label><span data-i18n="idp_pwd_label">비밀번호</span><input id="loginPwd" type="password" autocomplete="current-password" /></label>
       <button id="loginBtn" type="submit" data-i18n="idp_login_btn">로그인</button>
     </form>
+    <!-- 증명 로그인(2026-11-19 스펙 passkey-proof-login L5): passkey-web 이고 발급 정책이 key 일 때만 보인다 — 지갑 창이 패스키로 "이 계정 auid 의 s_u 를 안다" 는 증명을 만들어 돌려준다. -->
+    <p class="auth-links" id="passkeyLoginRow" hidden><button type="button" id="passkeyLoginBtn" data-i18n="idp_passkey_login_btn">패스키로 로그인</button><br><small class="muted" data-i18n="idp_passkey_login_note">이 브라우저의 zk 클라이언트가 이 계정에 연결돼 있을 때 쓸 수 있습니다.</small></p>
     <p class="auth-links"><span data-i18n="idp_no_account">계정이 없으세요?</span> <button type="button" class="btn-ghost" id="showSignupBtn" data-i18n="idp_signup_title">계정 만들기</button></p>
     <!-- Google(OIDC 래퍼, 2026-10-26 Snap OIDC 래퍼 §2.1): IdP 비밀번호 계정 없이 지갑 팝업에서 Google 로 등록 — IdP 가 래퍼를 켰을 때만 보인다. -->
     <p class="auth-links" id="googleRow" hidden><button type="button" class="btn-ghost" id="registerGoogleBtn" data-i18n="idp_register_google_btn">Google 계정으로 등록</button></p>   <!-- 2026-11-11(사용자 결정): "Google 로 등록한 계정 관리"(/account) 링크는 뺐다 — /account 는 주소로만 연다 -->
@@ -56,11 +59,11 @@
   <!-- 2026-11-14(화면 리뷰 3차): 폐기된 계정(me.disabled)은 이 카드 하나만 보인다 — 폐기 뒤에도 "등록됨 — 서비스에서 로그인하세요" 와 연결 해제·폐기 버튼이 그대로였다. -->
   <section class="card me-view" id="disabledCard" hidden>
     <h3><span class="badge bad" data-i18n="idp_disabled_title">폐기된 계정</span></h3>
-    <p data-i18n="idp_disabled_desc">이 계정은 폐기됐습니다. 이 계정으로는 어느 서비스에도 로그인할 수 없고, 되살리는 것은 zkID 관리자만 할 수 있습니다. 같은 스냅을 계속 쓰려면 로그아웃해 새 zkID 계정을 만들고, zk 스냅 화면 "내 계정" 탭에서 스냅을 초기화한 뒤(salt 는 남습니다) 서비스에서 다시 로그인하세요.</p>
+    <p data-i18n="idp_disabled_desc">이 계정은 폐기됐습니다. 이 계정으로는 어느 서비스에도 로그인할 수 없고, 되살리는 것은 zkIdP 관리자만 할 수 있습니다. 같은 스냅을 계속 쓰려면 로그아웃해 새 zkIdP 계정을 만들고, zk 스냅 화면 "내 계정" 탭에서 스냅을 초기화한 뒤(salt 는 남습니다) 서비스에서 다시 로그인하세요.</p>
     <p><a id="walletLink3" class="btn btn-ghost" target="_blank" rel="noopener" data-i18n="idp_wallet_link">zk 스냅 화면 열기</a></p>
   </section>
-  <!-- 2026-11-09(사용자 결정): "커밋먼트 등록 — 지갑 연결해 등록" 카드는 뺐다. 지갑 등록은 서비스에서 "zkID 로 로그인" 할 때 처음 한 번, 지갑 팝업 → zkID 인증 창(등록 모드)에서 일어난다.
-       zkID 가입·속성 커밋먼트 프로필에는 지갑이 끼지 않는다. -->
+  <!-- 2026-11-09(사용자 결정): "커밋먼트 등록 — 지갑 연결해 등록" 카드는 뺐다. 지갑 등록은 서비스에서 "zkIdP 로 로그인" 할 때 처음 한 번, 지갑 팝업 → zkIdP 인증 창(등록 모드)에서 일어난다.
+       zkIdP 가입·속성 커밋먼트 프로필에는 지갑이 끼지 않는다. -->
   <section class="card me-view" id="infoCard" hidden>
     <h3 data-i18n="idp_info_title">내 등록 정보</h3>
     <p data-i18n="idp_info_registered">등록됨 — 이 계정은 스냅과 연결돼 있습니다.</p>   <!-- 2026-11-05: 상세를 접은 뒤 빈 카드처럼 보이던 것 -->
@@ -68,7 +71,7 @@
     <details class="muted"><summary data-i18n="idp_info_details">상세</summary>
     <dl class="kv">
       <dt data-term="auid">auid</dt><dd><code id="meAuid">-</code> <button type="button" id="copyAuidBtn" class="copy-btn" hidden title="복사" aria-label="복사" data-i18n-title="rp_copy_btn_title">⧉</button></dd>
-      <dt></dt><dd><p class="desc kv-desc" data-i18n="idp_auid_desc">zkID 가 이 계정을 스냅과 잇는 데 쓰는 가명입니다. 서비스에 로그인할 때마다 zkID 인증 창의 auid 칸에 이 값을 넣습니다.</p></dd>
+      <dt></dt><dd><p class="desc kv-desc" data-i18n="idp_auid_desc">zkIdP 가 이 계정을 스냅과 잇는 데 쓰는 가명입니다. 서비스에 로그인할 때마다 zkIdP 인증 창의 auid 칸에 이 값을 넣습니다.</p></dd>
       <dt data-i18n="idp_slot_label">등록부 슬롯</dt><dd id="meSlot">-</dd>
       <dt></dt><dd><p class="desc kv-desc" data-i18n="idp_slot_desc">IdP 등록부에서 이 계정의 자리 번호입니다. 활성 자격증명이 이 자리에 실리고, 폐기되면 비워집니다. 스냅은 이 자리를 보고 내 자격증명이 바뀌지 않았는지 확인합니다.</p></dd>
     </dl>
@@ -79,7 +82,7 @@
        속성 커밋먼트를 붙여 넣는다. IdP 는 뜻을 모르는 문자열로만 저장하고, 서비스 로그인 때 ID 토큰의 name 클레임으로 실려 간다. 지갑 등록과 별개라 로그인만 하면 보인다. -->
   <section class="card me-view" id="profileCard" hidden>
     <h3 data-i18n="idp_profile_title">프로필</h3>
-    <p class="desc" data-i18n="idp_profile_desc">속성 도구에서 만든 속성 커밋먼트를 "이름" 칸에 붙여 넣고 저장하세요. zkID 는 이 값의 뜻을 모르며, 서비스에 로그인할 때 ID 토큰의 name 으로 전달됩니다.</p>
+    <p class="desc" data-i18n="idp_profile_desc">속성 도구에서 만든 속성 커밋먼트를 "이름" 칸에 붙여 넣고 저장하세요. zkIdP 는 이 값의 뜻을 모르며, 서비스에 로그인할 때 ID 토큰의 name 으로 전달됩니다.</p>
     <p><label class="field"><span data-i18n="idp_profile_name_label">이름(속성 커밋먼트)</span> <input id="profileName" maxlength="256" autocomplete="off" placeholder="속성 도구에서 복사한 값" /></label></p>
     <p><button id="profileSaveBtn" data-i18n="idp_profile_save_btn">저장</button></p>
     <p class="muted"><span data-i18n="idp_profile_current">현재 값</span>: <code id="profileCurrent">-</code></p>
@@ -98,7 +101,7 @@
     </div>
     <div class="sub-block danger" id="revokeBlock">
       <h4 data-i18n="account_revoke_title">내 계정 폐기</h4>
-      <p class="desc" data-i18n="idp_self_revoke_desc">이 zkID 계정을 폐기합니다. 자격증명이 폐기되고 이 계정으로는 어느 서비스에도 로그인할 수 없습니다. 폐기된 계정은 스냅을 쥐지 않으므로, 같은 스냅으로 새 계정을 만들어 등록할 수 있습니다.</p>
+      <p class="desc" data-i18n="idp_self_revoke_desc">이 zkIdP 계정을 폐기합니다. 자격증명이 폐기되고 이 계정으로는 어느 서비스에도 로그인할 수 없습니다. 폐기된 계정은 스냅을 쥐지 않으므로, 같은 스냅으로 새 계정을 만들어 등록할 수 있습니다.</p>
       <p><label class="field"><span data-i18n="idp_pwd_label">비밀번호</span><input id="revokePwd" type="password" autocomplete="current-password" /></label></p>
       <p><button id="revokeBtn" class="danger" data-i18n="account_revoke_btn">내 계정 폐기</button></p>
       <div id="selfRevokeVerdict"></div>
@@ -229,7 +232,7 @@
     try { await navigator.clipboard.writeText(me.auid); }
     catch { const ta = document.createElement('textarea'); ta.value = me.auid; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); } finally { ta.remove(); } }
   });
-  // 2026-11-06: 지갑 연결 해제 — 세션 폐기 뒤 지갑을 초기화해도 zkID 는 "지갑과 연결돼 있습니다" 로 남아 있던 것(사용자 지적). 계정은 두고 등록만 푼다.
+  // 2026-11-06: 지갑 연결 해제 — 세션 폐기 뒤 지갑을 초기화해도 zkIdP 는 "지갑과 연결돼 있습니다" 로 남아 있던 것(사용자 지적). 계정은 두고 등록만 푼다.
   $('profileSaveBtn').addEventListener('click', async () => {
     if (!me) return;
     $('profileSaveBtn').disabled = true;
@@ -262,7 +265,7 @@
     else verdict($('selfRevokeVerdict'), false, 'account_revoke_failed', { reason: pwReason(r), detail: r.body });
     await refreshMe();
   });
-  // 지갑 등록 팝업(Task 14) — 2026-11-09 부터 zkID 아이디 계정의 등록 버튼은 없고(등록은 서비스 로그인 중), Google 등록(?google=1, 테스트·수동 확인용)만 이 팝업을 연다.
+  // 지갑 등록 팝업(Task 14) — 2026-11-09 부터 zkIdP 아이디 계정의 등록 버튼은 없고(등록은 서비스 로그인 중), Google 등록(?google=1, 테스트·수동 확인용)만 이 팝업을 연다.
   // 수신 심층 방어(ev.source)·타임아웃·닫힘 감지는 rp.html 의 popupCall(mode3/rp.html:480-508)과 같은 기준이다.
   const REGISTER_POPUP_TIMEOUT_MS = 120_000;
   const REGISTER_POPUP_CLOSED_POLL_MS = 300;
@@ -270,13 +273,15 @@
   // 이미 큐에 있는 결과 메시지를 받을 수 있게 이만큼 기다렸다가 "결과 없이 닫혔다"로 판정한다.
   const REGISTER_POPUP_RESULT_GRACE_MS = 400;
   /** 지갑 등록 팝업을 열고 결과를 out(결과 칸 요소)에 그린다. buildMsg() 는 mode3-authorize-ready 를 받았을 때 보낼 메시지. btn 은 대기 중 비활성. */
-  function openRegisterPopup(btn, out, buildMsg, okSummary) {
+  /** opts(2026-11-19 증명 로그인): resultType = 기다릴 결과 메시지, failTitle = 실패 제목 키, onOk(r) = 성공 처리를 호출자가 맡는다(없으면 등록 성공 표기). */
+  function openRegisterPopup(btn, out, buildMsg, okSummary, { resultType = 'mode3-register-result', failTitle = 'idp_register_failed', onOk = null } = {}) {
     btn.disabled = true;
     const restore = () => { btn.disabled = false; };
     const walletOrigin0 = walletOrigin;   // 호출 시점에 고정 — 대기 중 Demo.stack 이 다시 바뀌어도 이 요청은 같은 오리진으로 끝낸다
-    if (!walletOrigin0) { restore(); return verdict(out, false, 'idp_register_failed', { reason: 'wallet_origin_unknown', summary: tt('wallet_origin_unknown') }); }
-    const popup = window.open(`${walletOrigin0}/?authorize=1`, 'mode3-register', 'width=460,height=640');
-    if (!popup) { restore(); return verdict(out, false, 'idp_register_failed', { reason: 'popup_blocked' }); }
+    if (!walletOrigin0) { restore(); return verdict(out, false, failTitle, { reason: 'wallet_origin_unknown', summary: tt('wallet_origin_unknown') }); }
+    // 창 이름은 흐름마다 다르다(리뷰 M8) — 등록 창과 로그인 창이 같은 이름이면 한쪽이 떠 있을 때 다른 쪽이 그 창을 재사용해 두 요청이 섞인다.
+    const popup = window.open(`${walletOrigin0}/?authorize=1`, resultType.replace(/-result$/, ''), 'width=460,height=640');
+    if (!popup) { restore(); return verdict(out, false, failTitle, { reason: 'popup_blocked' }); }
     Demo.verdict(out, { pending: true, title: tt('working') || '처리 중' });
     let done = false;
     const finish = (fn) => {
@@ -291,22 +296,24 @@
       // 지갑 오리진이, 그것도 우리가 연 그 창이 보낸 것만 본다(ev.source 는 심층 방어 — 같은 오리진의 다른 창이 끼어들지 못하게 한다).
       if (ev.origin !== walletOrigin0 || ev.source !== popup || !ev.data) return;
       if (ev.data.type === 'mode3-authorize-ready') { popup.postMessage(buildMsg(), walletOrigin0); return; }
-      if (ev.data.type !== 'mode3-register-result' || !ev.data.result) return;
-      finish(() => {
+      if (ev.data.type !== resultType || !ev.data.result) return;
+      finish(async () => {
         const r = ev.data.result;
-        verdict(out, Boolean(r.ok), r.ok ? 'idp_register_ok_title' : 'idp_register_failed', r.ok ? () => ({ summary: okSummary(r) }) : { reason: r.reason, detail: r.detail });
+        // 성공 처리를 맡은 호출자(증명 로그인)가 끝낼 때까지 버튼을 잠근다 — 그 사이에 다시 누르면 새 챌린지가 진행 중인 것을 덮는다(리뷰 M8).
+        if (r.ok && onOk) { btn.disabled = true; try { await onOk(r); } catch (e) { verdict(out, false, failTitle, { reason: 'internal', detail: e?.message ?? String(e) }); } finally { btn.disabled = false; } return; }
+        verdict(out, Boolean(r.ok), r.ok ? 'idp_register_ok_title' : failTitle, r.ok ? () => ({ summary: okSummary(r) }) : { reason: r.reason, detail: r.detail });
         refreshMe();
       });
     };
     window.addEventListener('message', onMsg);
     const timer = setTimeout(() => {
       try { popup.close(); } catch { /* 이미 닫혔을 수 있다 */ }
-      finish(() => verdict(out, false, 'idp_register_failed', { reason: 'timeout', summary: tt('register_timeout') }));
+      finish(() => verdict(out, false, failTitle, { reason: 'timeout', summary: tt('register_timeout') }));
     }, REGISTER_POPUP_TIMEOUT_MS);
     const closedPoll = setInterval(() => {
       if (!popup.closed) return;
       clearInterval(closedPoll);
-      setTimeout(() => finish(() => verdict(out, false, 'idp_register_failed', { reason: 'popup_closed', summary: tt('register_popup_closed') })), REGISTER_POPUP_RESULT_GRACE_MS);
+      setTimeout(() => finish(() => verdict(out, false, failTitle, { reason: 'popup_closed', summary: tt('register_popup_closed') })), REGISTER_POPUP_RESULT_GRACE_MS);
     }, REGISTER_POPUP_CLOSED_POLL_MS);
   }
   // Google 로 등록(2026-10-26 Snap OIDC 래퍼 §2.1): IdP 로그인·등록 코드 없이 지갑 팝업에서 Google 로그인 — uid 는 IdP 가 토큰으로 정한다.
@@ -314,11 +321,33 @@
   $('registerGoogleBtn').addEventListener('click', () => openRegisterPopup($('registerGoogleBtn'), $('userVerdict'), () => ({ type: 'mode3-register', provider: 'google', ciaUrl: location.origin }),
     (r) => tt('idp_register_google_ok', { uid: r.uid, slot: r.slot }) || `Google 계정 등록됨 — uid ${r.uid}, 슬롯 #${r.slot}`));
 
+  // 증명 로그인(2026-11-19 스펙 passkey-proof-login §2.3): ① 이 세션에 1회용 챌린지를 받고 ② 지갑 창(mode3-idp-login)이 패스키로 증명을 만들어 돌려주면 ③ /cia/user/login_proof 로 낸다.
+  // 지갑 창은 이 오리진(IdP)이 연 창에만 답한다. 챌린지(같은 오리진의 짧은 요청)를 받은 뒤 창을 연다 — 클릭의 활성 시간 안이라 팝업 차단에 걸리지 않는다.
+  $('passkeyLoginBtn').addEventListener('click', async () => {
+    const out = $('userVerdict'), btn = $('passkeyLoginBtn');
+    const failed = (r) => verdict(out, false, 'idp_login_failed', { reason: r.body?.reason ?? `HTTP ${r.status}` });
+    btn.disabled = true;
+    const ch = await post('/cia/user/login_challenge').catch(() => ({ status: 0, body: null }));
+    btn.disabled = false;
+    if (ch.status !== 200) return failed(ch);
+    openRegisterPopup(btn, out, () => ({ type: 'mode3-idp-login', origin: location.origin, nonce: ch.body.nonce }), null, {
+      resultType: 'mode3-idp-login-result', failTitle: 'idp_login_failed',
+      onOk: async (r) => {
+        const { ok, ...proof } = r;
+        const lg = await post('/cia/user/login_proof', proof).catch(() => ({ status: 0, body: null }));
+        if (lg.status !== 200) return failed(lg);
+        clearVerdict(out);
+        await refreshMe();
+      },
+    });
+  });
+  function renderPasskeyRow(issueAuth) { $('passkeyLoginRow').hidden = issueAuth !== 'key'; }   // 모드(passkey-web)는 아래 CSS 가 가른다
+
   (async () => {
     Demo.init({ page: 'idp_user' });
     initStack();
     // Google 줄은 이 IdP 가 OIDC 래퍼를 켰을 때만(public_keys.oidc.enabled) — 어느 요소를 보일지는 renderGoogleRow(위) 가 정한다.
-    try { oidcEnabled = Boolean((await (await fetch('/cia/public_keys')).json()).oidc?.enabled); } catch { /* 숨긴 채 */ }
+    try { const keys = await (await fetch('/cia/public_keys')).json(); oidcEnabled = Boolean(keys.oidc?.enabled); renderPasskeyRow(keys.issueAuth); } catch { /* 숨긴 채 */ }
     renderGoogleRow();
     await refreshMe();
   })();

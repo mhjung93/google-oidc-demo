@@ -52,7 +52,7 @@ details.fold > summary::before { content: '▸ '; } details.fold[open] > summary
 details.fold > summary::-webkit-details-marker { display: none; }
 details.fold > :not(summary) { margin-top: 8px; }
 
-/* 스냅 설정 카드(2026-11-13 화면 리뷰) — 비밀번호 칸은 zkID 가입 화면처럼 라벨 위·입력칸 아래. 좁은 창에서도 라벨이 끊기지 않는다.
+/* 스냅 설정 카드(2026-11-13 화면 리뷰) — 비밀번호 칸은 zkIdP 가입 화면처럼 라벨 위·입력칸 아래. 좁은 창에서도 라벨이 끊기지 않는다.
    고른 방법(새로 만들기·백업에서 불러오기)은 채운 버튼으로 보인다 — 고르기 전에는 둘 다 테두리만. */
 .pw-form { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; max-width: 360px; }
 .pw-form label { display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: var(--muted); }

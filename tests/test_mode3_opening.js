@@ -11,10 +11,11 @@ async function t(name, fn) {
 }
 
 const svc = ethers.Wallet.createRandom();
-const fields = { arid: '22222', PPID: '99999', c1: { x: '11', y: '22' }, D_svc: { x: '123', y: '456' }, ts: '1789000000' };
+// 2026-11-19(스펙 trace-without-tag T7): 요청을 특정하는 것은 태그의 c1·부분 복호가 아니라 그 로그인의 auid_s 다. 접두어도 바뀌었다(mode3-open2).
+const fields = { arid: '22222', PPID: '99999', auid_s: '777', ts: '1789000000' };
 
-await t('메시지 형식은 스펙(2026-09-18 §6.2) 그대로 — r_s 가 아니라 c1 이 요청을 특정한다', () => {
-  assert.equal(openRequestMessage(fields), 'mode3-open:22222:99999:11:22:123:456:1789000000');
+await t('메시지 형식: mode3-open2:arid:PPID:auid_s:ts — auid_s 가 요청을 특정한다(태그·D_svc 없음)', () => {
+  assert.equal(openRequestMessage(fields), 'mode3-open2:22222:99999:777:1789000000');
   assert.equal(openResultMessage('abcd', '1789000001'), 'mode3-open-result:abcd:1789000001');
 });
 
@@ -22,6 +23,7 @@ await t('서명한 요청은 RP 주소로 복원되고, 필드 하나가 바뀌�
   const sig = await signOpenRequest(svc, fields);
   assert.equal(recoverSigner(openRequestMessage(fields), sig), svc.address);
   assert.notEqual(recoverSigner(openRequestMessage({ ...fields, ts: '1789000001' }), sig), svc.address);
+  assert.notEqual(recoverSigner(openRequestMessage({ ...fields, auid_s: '778' }), sig), svc.address, 'auid_s 가 서명에 든다');
   const rsig = await signOpenResult(svc, 'abcd', '1789000001');
   assert.equal(recoverSigner(openResultMessage('abcd', '1789000001'), rsig), svc.address);
 });

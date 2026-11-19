@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="no-referrer" />
+  <!-- Google 로그인 중계(2026-11-19): Google 은 공개 도메인이나 localhost 만 "돌아올 주소" 로 받는다 — 서비스의 데모 이름(*.zkd.test)은 등록할 수 없다.
+       그래서 이 주소(https://127.0.0.1:<포트>/google-relay)를 Google 에 등록하고, 여기로 돌아온 ID 토큰을 그 로그인을 시작한 서비스 페이지로 넘긴다.
+       이 화면은 토큰을 읽거나 저장하지 않는다 — 조각(#)을 그대로 옮길 뿐이다. 넘길 곳은 이 서버가 아는 서비스 오리진뿐이다. -->
+  <title>Google 로그인 — 서비스로 돌아가는 중</title>
+</head>
+<body>
+  <p id="msg">서비스로 돌아가는 중…</p>
+  <script src="/google-relay.js"></script>
+</body>
+</html>

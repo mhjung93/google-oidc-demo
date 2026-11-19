@@ -175,7 +175,7 @@ t('리뷰 I-1: 스냅 안내가 R8·R11 과 맞는다 — 다른 계정을 쓰�
   assert.equal(/reinstall the Snap in MetaMask to use/i.test(a.en.action), false, a.en.action); assert.match(a.en.action, /one account/i);
   for (const k of ['confirm_reset', 'wallet_snap_reset_summary']) {
     assert.match(S.ui[k].ko, /salt 는[^.]*남/, `${k}: ${S.ui[k].ko}`); assert.equal(/새 계정으로 등록할 수|등록 비밀/.test(S.ui[k].ko), false, `${k}: ${S.ui[k].ko}`);
-    assert.match(S.ui[k].en, /salt (stays|is kept)/i, `${k}: ${S.ui[k].en}`); assert.equal(/register a new zkID account|registration secrets/i.test(S.ui[k].en), false);
+    assert.match(S.ui[k].en, /salt (stays|is kept)/i, `${k}: ${S.ui[k].en}`); assert.equal(/register a new zkIdP account|registration secrets/i.test(S.ui[k].en), false);
   }
 });
 
@@ -189,7 +189,7 @@ t('리뷰 M-4: 스냅의 salt 사유 셋(no_salt·backup_required·bad_salt)에 
   assert.equal('salt_mismatch' in S.reasons, false, '스냅이 내지 않는 사유는 사전에 두지 않는다(다른 스냅의 기록은 화면이 attr_record_salt_mismatch 로 먼저 막는다)');
   assert.ok(S.reasons.attr_record_salt_mismatch);
 });
-// 2026-11-14(셀프 리뷰): 없는 버튼을 가리키지 않는다 — zkID /user 의 "스냅 연결해 등록"·"Google 로 등록" 은 없다(등록은 서비스 로그인 중에 일어나고, 멈춘 등록은 다음 로그인이 잇는다).
+// 2026-11-14(셀프 리뷰): 없는 버튼을 가리키지 않는다 — zkIdP /user 의 "스냅 연결해 등록"·"Google 로 등록" 은 없다(등록은 서비스 로그인 중에 일어나고, 멈춘 등록은 다음 로그인이 잇는다).
 t('registration_incomplete 의 조치는 없는 버튼이 아니라 "다시 로그인" 과 스냅 초기화를 가리킨다', () => {
   const r = S.reasons.registration_incomplete;
   assert.equal(/스냅 연결해 등록|Google 로 등록/.test(r.ko.action), false, r.ko.action); assert.equal(/Connect the Snap and register/i.test(r.en.action), false, r.en.action);
@@ -217,7 +217,7 @@ t('화면 리뷰 3차: 속성 도구·auid 안내가 지금 동작과 맞고, �
   assert.match(ui.idp_auid_desc.ko, /로그인할 때마다/); assert.match(ui.attr_auid_hint.ko, /로그인할 때마다/);
   assert.equal(/RP|첫 /.test(ui.attr_auid_hint.ko), false, ui.attr_auid_hint.ko); assert.equal(/first|RP/.test(ui.attr_auid_hint.en), false, ui.attr_auid_hint.en);
   assert.equal(/localhost|등록 뒤/.test(ui.idp_auth_auid_hint.ko), false, ui.idp_auth_auid_hint.ko);
-  assert.equal(/내 정보|My info/.test(ui.idp_auth_auid_hint_register.ko + ui.idp_auth_auid_hint_register.en), false, '등록 전에는 zkID "내 정보" 에 auid 가 없다');
+  assert.equal(/내 정보|My info/.test(ui.idp_auth_auid_hint_register.ko + ui.idp_auth_auid_hint_register.en), false, '등록 전에는 zkIdP "내 정보" 에 auid 가 없다');
   assert.equal(JSON.stringify(S).includes('스냅(에이전트)'), false, '"이 스냅(에이전트)" 대신 "스냅 에이전트"');
   const pw = S.reasons.password_wrong;
   for (const lang of ['ko', 'en']) for (const k of ['title', 'cause', 'action']) assert.ok(pw[lang][k], `password_wrong.${lang}.${k}`);
@@ -245,9 +245,9 @@ t('서버·화면 소스의 reason 리터럴이 전부 사전(reasons)에 있다
 t('새 계정으로 옮기는 안내가 속성 도구에서 커밋먼트를 다시 만드는 단계를 말한다; 로그인 뒤 증명한 조건·다른 계정 기록 문구가 있다', () => {
   const ui = S.ui, R = S.reasons;
   // 2026-11-17(사용자 결정): 속성 도구에 uid 칸이 없다 — 커밋먼트는 계정과 무관(salt·속성만)이라 새 계정으로 옮길 때 다시 만들 필요가 없다. 같은 커밋먼트를 새 계정 프로필에 붙여 넣는다.
-  for (const [name, s] of [['idp_disabled_desc', ui.idp_disabled_desc.ko], ['account_disabled', R.account_disabled.ko.action]]) { assert.match(s, /새 zkID 계정/, name); assert.match(s, /스냅을 초기화/, name); assert.equal(/uid 칸|다시 만/.test(s), false, `${name}: ${s}`); }
+  for (const [name, s] of [['idp_disabled_desc', ui.idp_disabled_desc.ko], ['account_disabled', R.account_disabled.ko.action]]) { assert.match(s, /새 zkIdP 계정/, name); assert.match(s, /스냅을 초기화/, name); assert.equal(/uid 칸|다시 만/.test(s), false, `${name}: ${s}`); }
   assert.equal('attr_record_uid_mismatch' in R, false, '속성 도구 기록에 uid 가 없어 uid 불일치 사유도 없다');
-  assert.match(ui.wallet_snap_reset_summary.ko, /새 zkID 계정/, '스냅 초기화 완료 문구가 새 계정으로 옮기는 경우도 말한다');
+  assert.match(ui.wallet_snap_reset_summary.ko, /새 zkIdP 계정/, '스냅 초기화 완료 문구가 새 계정으로 옮기는 경우도 말한다');
   for (const k of ['rp_login_proof_none', 'rp_login_proof_cond', 'rp_login_proof_policy']) { assert.ok(ui[k]?.ko, k); assert.ok(ui[k]?.en, k); }
   assert.match(ui.rp_login_proof_policy.ko, /값은 받지 않/);
 });
@@ -265,10 +265,10 @@ t('닫힌 로그인·게시 문구가 폐기 목록과 등록부를 함께 말�
 });
 
 // 2026-11-16(사용자 결정): 속성 도구는 salt 를 입력받는다(스냅에서 읽지 않는다). "salt 는 스냅 안에(만) 있다" 는 문구는 보관 위치만 맞고 과장이었다 —
-// salt 는 등록·로그인 때 이 PC 의 스냅 화면·스냅 에이전트로 나오고, zkID·서비스로는 가지 않는다.
+// salt 는 등록·로그인 때 이 PC 의 스냅 화면·스냅 에이전트로 나오고, zkIdP·서비스로는 가지 않는다.
 t('salt 문구: "스냅 안에만" 이라고 하지 않고 어디로 가지 않는지를 말한다; 속성 도구의 salt 칸 문구·사유가 있다', () => {
   const ui = S.ui, R = S.reasons;
-  assert.equal(/스냅 안에 있습니다/.test(ui.wallet_connect_desc.ko), false); assert.match(ui.wallet_connect_desc.ko, /스냅이 보관/); assert.match(ui.wallet_connect_desc.ko, /zkID 와 서비스로는 보내지 않/);
+  assert.equal(/스냅 안에 있습니다/.test(ui.wallet_connect_desc.ko), false); assert.match(ui.wallet_connect_desc.ko, /스냅이 보관/); assert.match(ui.wallet_connect_desc.ko, /zkIdP 와 서비스로는 보내지 않/);
   assert.equal(/안에만/.test(ui.rp_wallet_snap_note.ko), false); assert.match(ui.rp_wallet_snap_note.ko, /이 서비스로 오지 않/);
   assert.equal(/스냅\(MetaMask\)이 필요/.test(ui.attr_desc.ko), false, '속성 도구는 스냅을 요구하지 않는다'); assert.match(ui.attr_desc.ko, /salt/);
   assert.ok(ui.attr_salt_input?.ko && ui.attr_salt_input?.en); assert.equal('attr_salt_hint' in ui, false, '입력 폼의 salt 안내 문장은 없다(2026-11-16 사용자 지시)');
@@ -276,7 +276,7 @@ t('salt 문구: "스냅 안에만" 이라고 하지 않고 어디로 가지 않�
   assert.match(R.attr_record_salt_mismatch.ko.action, /salt 칸/);
 });
 
-// 2026-11-16(사용자 결정 셋): (1) 속성 도구는 uid 도 입력받는다(zkID 에 묻지 않는다) (2) 상한(sessionBoundOf·허용 거래 수) 관련 문구는 화면에 일체 싣지 않는다
+// 2026-11-16(사용자 결정 셋): (1) 속성 도구는 uid 도 입력받는다(zkIdP 에 묻지 않는다) (2) 상한(sessionBoundOf·허용 거래 수) 관련 문구는 화면에 일체 싣지 않는다
 // (3) Race (2) 가 막히면 "RCL root 가 바뀌어" 로 말하고 root 의 생성 당시 값·현재 값을 보인다.
 t('속성 도구 uid 입력 문구·사유가 없다(2026-11-17); 화면 문구에 상한(허용 거래 수·sessionBoundOf·SessionBounded)이 없다; Race 막힘은 RCL root 로 말한다', () => {
   const ui = S.ui, R = S.reasons;
@@ -284,10 +284,10 @@ t('속성 도구 uid 입력 문구·사유가 없다(2026-11-17); 화면 문구�
   for (const k of ['wallet_race_blocked_title', 'wallet_race_blocked_desc', 'wallet_race_root_built', 'wallet_race_root_now', 'wallet_race_close_btn', 'rp_race_root_built', 'rp_race_root_now', 'rp_race_roots_same', 'rp_race_roots_changed']) { assert.ok(ui[k]?.ko, k); assert.ok(ui[k]?.en, k); }
   for (const k of ['attr_uid_required', 'attr_bad_uid']) assert.equal(k in R, false, k);
   assert.equal('attr_uid_hint' in ui, false); assert.match(R.attr_salt_required.ko.action, /비밀 값 보기/);
-  assert.equal(/uid 칸/.test(ui.idp_myinfo_uid_desc.ko), false, 'zkID 내 정보의 uid 설명이 속성 도구의 uid 칸을 말하지 않는다'); assert.equal(/uid/.test(ui.attr_clear_confirm.ko), false, '지우기 확인에 uid 가 없다');
-  // auid 가 틀렸을 때(2026-11-16 사용자 결정 1번): zkID 쪽은 "등록된 auid 와 다르다"(계산하지 못한다), 스냅 창 쪽은 "커밋먼트를 만든 salt 의 auid 와 다르다"
+  assert.equal(/uid 칸/.test(ui.idp_myinfo_uid_desc.ko), false, 'zkIdP 내 정보의 uid 설명이 속성 도구의 uid 칸을 말하지 않는다'); assert.equal(/uid/.test(ui.attr_clear_confirm.ko), false, '지우기 확인에 uid 가 없다');
+  // auid 가 틀렸을 때(2026-11-16 사용자 결정 1번): zkIdP 쪽은 "등록된 auid 와 다르다"(계산하지 못한다), 스냅 창 쪽은 "커밋먼트를 만든 salt 의 auid 와 다르다"
   assert.match(R.auid_mismatch.ko.title, /등록된 auid 와 다릅니다/); assert.match(R.auid_mismatch.ko.cause, /계산하지 못하고/); assert.match(R.register_auid_mismatch.ko.title, /커밋먼트를 만든 salt 의 auid/);
-  assert.equal(/로그인에서 이 값을 받아옵니다/.test(ui.idp_myinfo_uid_desc.ko), false, 'zkID 내 정보의 uid 설명이 옛 동작을 말하지 않는다');
+  assert.equal(/로그인에서 이 값을 받아옵니다/.test(ui.idp_myinfo_uid_desc.ko), false, 'zkIdP 내 정보의 uid 설명이 옛 동작을 말하지 않는다');
   const bound = /상한|허용 거래 수|sessionBoundOf|SessionBounded/;
   for (const [name, t0] of [['session_bounded', JSON.stringify(R.session_bounded.ko)], ['wallet_race_desc', ui.wallet_race_desc.ko], ['wallet_race_progress', ui.wallet_race_progress.ko], ['wallet_race_blocked_desc', ui.wallet_race_blocked_desc.ko]]) assert.equal(bound.test(t0), false, `${name}: ${t0}`);
   assert.match(R.session_bounded.ko.cause, /RCL.*root/); assert.match(ui.wallet_race_blocked_title.ko, /RCL root 가 바뀌어/);

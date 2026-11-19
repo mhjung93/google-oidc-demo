@@ -65,10 +65,10 @@
     </section>
     <section class="card span2" id="pkRecoverCard" hidden>
       <h3 data-i18n="user_pk_recover_title">계정 복구</h3>
-      <p class="desc" data-i18n="user_pk_recover_desc">이미 zkID 에 등록한 계정을 이 브라우저로 되찾을 때만 씁니다.</p>
+      <p class="desc" data-i18n="user_pk_recover_desc">이미 zkIdP 에 등록한 계정을 이 브라우저로 되찾을 때만 씁니다.</p>
       <dl id="pkRecoverAttrs" class="kv"></dl>
       <p><button id="pkRecoverAuidBtn" type="button" class="btn-ghost" data-i18n="user_pk_recover_auid_btn">auid 보기</button> <code id="pkRecoverAuid" style="word-break:break-all"></code></p>
-      <p><button id="pkRecoverGoBtn" type="button" data-i18n="user_pk_recover_go_btn">zkID 인증 창으로</button></p>
+      <p><button id="pkRecoverGoBtn" type="button" data-i18n="user_pk_recover_go_btn">zkIdP 인증 창으로</button></p>
     </section>
 
     <section class="card" id="identityCard">
@@ -122,11 +122,11 @@
     </section>
 
     <!-- 영지식 증명(2026-11-18 사용자 요청): 이 브라우저가 만든 증명(코어 proofs()) — 공개 입력 보기·브라우저에서 다시 검증·값 바꿔 보기.
-         기본은 서비스·체인에 낸 π_session(회로 pi_cred)만, 버튼을 누르면 zkID 에 낸 π_IdP 도 보인다. 공개값뿐이다(salt 는 없다). -->
+         기본은 서비스·체인에 낸 π_session(회로 pi_cred)만, 버튼을 누르면 zkIdP 에 낸 π_IdP 도 보인다. 공개값뿐이다(salt 는 없다). -->
     <section class="card span2" id="proofsCard">
       <h3 data-i18n="user_proofs_title">영지식 증명</h3>
       <p class="desc" data-i18n="user_proofs_desc">이 브라우저가 만든 증명입니다. 공개 입력을 보고, 브라우저에서 다시 검증하고, 값을 바꾸면 검증이 깨지는 것을 볼 수 있습니다. 기본은 서비스·체인에 낸 π_session 만 보입니다.</p>
-      <p><button id="proofsKindBtn" type="button" class="btn-ghost" data-i18n="user_proofs_show_idp">zkID 에 낸 π_IdP 도 보기</button></p>
+      <p><button id="proofsKindBtn" type="button" class="btn-ghost" data-i18n="user_proofs_show_idp">zkIdP 에 낸 π_IdP 도 보기</button></p>
       <div id="proofsList"></div>
     </section>
 

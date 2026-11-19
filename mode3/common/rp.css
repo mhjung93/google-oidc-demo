@@ -105,9 +105,9 @@ html[data-expert] .opt-row.expert { display: flex; }
 /* 출금 출처·받는 주소(0x…42자)는 칸을 열 폭만큼 쓴다 — 220px 에서는 값이 잘렸다(2026-11-14). 주소는 고정폭 작은 글씨로 한 줄에 들어오게. */
 .withdraw-amount.wide { max-width: none; }
 #txTo { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
-/* 닫힌 zkID 로그인의 안내(2026-11-14) — 내 자산 맨 위. */
+/* 닫힌 zkIdP 로그인의 안내(2026-11-14) — 내 자산 맨 위. */
 .race-roots { margin: 10px 0 0; font-size: 13px; } .race-roots code { overflow-wrap: anywhere; word-break: break-all; font-size: 12px; }   /* 2026-11-16: 시연 Race (2) 의 RCL root 두 값 */
-.login-proof { margin: 0 0 14px; padding: 9px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; font-size: 13px; color: var(--ink); }   /* 2026-11-15: zkID 로그인이 증명한 조건 한 줄 */
+.login-proof { margin: 0 0 14px; padding: 9px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; font-size: 13px; color: var(--ink); }   /* 2026-11-15: zkIdP 로그인이 증명한 조건 한 줄 */
 .stale-notice { margin: 0 0 16px; padding: 12px 14px; border: 1px solid #f3d9a8; border-radius: 10px; background: #fff8ea; font-size: 14px; }
 .stale-notice p { margin: 0 0 8px; } .stale-notice .btn-ghost { padding: 5px 12px; font-size: 13px; }
 .race-demo { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; margin: 14px 0 0; font-size: 13px; color: var(--muted); }

@@ -8,7 +8,7 @@ include "lib/bitify.circom";
 include "lib/comparators.circom";
 include "lib/mux1.circom";
 include "lib/mode3_commit.circom";
-include "lib/mode3_trace_tag.circom";
+// 2026-11-19(스펙 trace-without-tag T1·T2): trace tag 와 그 키(pk_trace)를 뺐다 — lib/mode3_trace_tag.circom 은 더 이상 들이지 않는다.
 
 // Mode 3 credential 증명 π_RP — V11(2026-10-12, 그림 261012 · 덱 7장). 설계 docs/superpowers/specs/2026-10-12-mode3-v11-figure-protocol-design.md §5.3
 // 이력: V5 커밋 둘(09-21) · V6 선택 공개(09-22) · V7 집합 소속(09-23) · V8 세션 비멤버십(09-24) · V9 등록부 멤버십(10-01) · V11 가명·세션 바인딩(10-12).
@@ -23,10 +23,10 @@ include "lib/mode3_trace_tag.circom";
 //   ⑥ 등록부: Poseidon(auid, Cf_u) ∈ Tree(regRoot)(깊이 20) · 폐기: [H'·2^32, H'·2^32 + counter] ∩ Tree(revRoot) = ∅(IMT 32), H' = Poseidon(5, Cf_s) mod 2^220
 //      — 없으면 미등록·관리자 바꿔치기·은퇴한 자격증명, 폐기된 세션이 통과한다
 //   ⑦ C_s = pk_i·G_PK + max_height·G_EXP + r_s·G_RS + r_rp·H — r_s(공개)·max_height(공개)·pk_i(공개) 가 토큰의 Cf_s 에 묶인다(재전송 방지: RP 가 r_s 를 1회 소비)
-//   ⑧ tag = Enc(pk_trace, Poseidon(uid, arid); ρ), ρ ≠ 0 — 없으면 개봉이 엉뚱한 값을 연다
+//   ⑧ (없음 — 2026-11-19 스펙 trace-without-tag: trace tag 를 뺐다. 개봉은 공개 입력의 auid_s 를 zkIdP 가 발급 때 남긴 기록에서 찾는다)
 //
 //   attrs[6] 는 C_u 에만 실린다 — IdP 는 값을 모른다(D15). 공개 입력은 AA(IdP)·RP·체인이 모두 보므로 uid·s_u·r_rp 는 어디에도 평문으로 없다.
-//   auid_s·arid_s·r_s·counter 는 공개 입력 끝(30·31·32·33)에 붙었다 — 색인 0~29 는 V9 와 같아 contracts/Mode3Wallet.sol 의 꼬리 15워드·다이제스트가 불변이다(D12).
+//   auid_s·arid_s·r_s·counter 는 공개 입력 끝(25·26·27·28)에 있다 — 2026-11-19 에 pk_trace·tag 다섯 칸이 빠져 색인 10 뒤가 모두 당겨졌다(contracts/Mode3Wallet.sol·PUB_INDEX 와 함께 바꿨다).
 template PiCred(depth, regDepth) {
     // ---- Private ----
     signal input uid;
@@ -34,7 +34,6 @@ template PiCred(depth, regDepth) {
     signal input blind_u;
     signal input r_rp;       // V11: RP 난수 — auid_s·arid_s·C_s 블라인딩을 하나로 묶는다(⑤)
     signal input attrs[6];
-    signal input r;
 
     signal input S;
     signal input R8x;
@@ -66,20 +65,15 @@ template PiCred(depth, regDepth) {
     signal input regRoot;
     signal input pk_CIA_x;
     signal input pk_CIA_y;
-    signal input pk_trace_x;
-    signal input pk_trace_y;
-    signal input tag_c1_x;
-    signal input tag_c1_y;
-    signal input tag_c2;
     signal input disc_mask;
     signal input disc_lo[6];
     signal input disc_hi[6];
     signal input set_sel;
     signal input set_root;
-    signal input auid_s;     // V11 [30]
-    signal input arid_s;     // V11 [31]
-    signal input r_s;        // V11 [32]
-    signal input counter;    // 2026-10-22 [33] — 거래는 payload.nonce, 로그인·재검증은 2^32 − 1. 32비트.
+    signal input auid_s;     // [25](2026-11-19 — 전에는 30)
+    signal input arid_s;     // [26]
+    signal input r_s;        // [27]
+    signal input counter;    // [28](2026-10-22 추가) — 거래는 payload.nonce, 로그인·재검증은 2^32 − 1. 32비트.
 
     var DOMAIN_MODE3_CRED_V11 = 23926173293433188795270181169;   // ASCII "MODE3CREDV11" — lib/mode3_credential.js DOMAIN_MODE3_CRED_V11
     var DOMAIN_MODE3_AUID  = 365084431357309404922930;           // "MODE3AUID2"(2026-11-13)
@@ -185,21 +179,6 @@ template PiCred(depth, regDepth) {
     }
     inc.root === regRoot;
 
-    // ---- ⑧ 트레이스 태그 ----
-    // r ≠ 0 (2026-09-21 결정): c1 = r·B8 가 항등원이면 c2 가 평문을 그대로 드러낸다. 컨트랙트·RP 의 c1 ≠ O 검사와 중복 방어.
-    component rNZ = IsZero();
-    rNZ.in <== r;
-    rNZ.out === 0;
-    component tag = TraceTag();
-    tag.r <== r;
-    tag.uid <== uid;
-    tag.arid <== arid;
-    tag.pk_trace_x <== pk_trace_x;
-    tag.pk_trace_y <== pk_trace_y;
-    tag_c1_x === tag.c1x;
-    tag_c1_y === tag.c1y;
-    tag_c2 === tag.c2;
-
     // ---- ④ 선택 공개 (슬롯 6) ----
     // 속성은 CommitUser 에서 Num2Bits(64) 로 잘려 있다. lo·hi 도 64비트로 묶어야 LessEqThan(64) 이 성립한다.
     component maskBits = Num2Bits(6);
@@ -242,12 +221,12 @@ template PiCred(depth, regDepth) {
 }
 
 // 공개 입력의 순서는 lib/mode3_wallet.js·lib/mode3_rp.js·lib/mode3_onchain.js(PUB_INDEX)·cia.js(개봉)·contracts/Mode3Wallet.sol 가 의존한다. 바꾸지 말 것.
-// pk_CIA_x/y 와 pk_trace_x/y 는 공개 입력이다. 검증자는 반드시 전자를 고정된 IdP 키와, 후자를 자기 등록 파일의 조합 키와 비교해야 한다.
-// [0] PPID [1] arid [2] pk_i [3] max_height [4] chainid [5] allowAgent [6] revRoot [7] regRoot [8,9] pk_CIA [10,11] pk_trace
-// [12..14] tag [15] disc_mask [16..21] disc_lo [22..27] disc_hi [28] set_sel [29] set_root [30] auid_s [31] arid_s [32] r_s [33] counter
+// pk_CIA_x/y 는 공개 입력이다. 검증자는 반드시 고정된 IdP 키와 비교해야 한다.
+// 2026-11-19(스펙 trace-without-tag T3): 34 → 29개 — pk_trace(둘)·tag(셋)를 뺐고 뒤의 값들이 5칸씩 당겨졌다.
+// [0] PPID [1] arid [2] pk_i [3] max_height [4] chainid [5] allowAgent [6] revRoot [7] regRoot [8,9] pk_CIA
+// [10] disc_mask [11..16] disc_lo [17..22] disc_hi [23] set_sel [24] set_root [25] auid_s [26] arid_s [27] r_s [28] counter
 component main {public [
     PPID, arid, pk_i, max_height, chainid, allowAgent, revRoot, regRoot, pk_CIA_x, pk_CIA_y,
-    pk_trace_x, pk_trace_y, tag_c1_x, tag_c1_y, tag_c2,
     disc_mask, disc_lo, disc_hi, set_sel, set_root,
     auid_s, arid_s, r_s, counter
 ]} = PiCred(32, 20);

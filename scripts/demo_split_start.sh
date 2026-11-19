@@ -20,6 +20,12 @@
 #        ISSUE_AUTH=code bash scripts/demo_split_start.sh  # 발급 인증 정책(기본은 WALLET_MODE 에 따른다 — snap 은 CIA_ISSUE_AUTH=code, web 은 key, 2026-10-23: web 코어는
 #                                                           # auth_code 를 보내지 않으므로 code 로 켜면 로그인이 막힌다). code 면 로그인 때 지갑 팝업이 연 IdP 인증 창(uid·비밀번호·auid)의 1회용 코드가
 #                                                           # 있어야 발급한다(2026-10-22). key 면 옛 방식(서명만) — CIA_DEMO_ACCOUNTS 는 그대로 미설정(가입(POST /cia/signup)만 쓴다)
+#                                                           # 2026-11-19(스펙 passkey-proof-login): passkey-web 의 기본도 key — 등록된 뒤의 로그인은 인증 창 없이 패스키 증명만으로 하고,
+#                                                           # zkIdP 페이지에 "패스키로 로그인" 이 보인다. passkey-web 을 ISSUE_AUTH=code 로 띄우면 11-18 까지의 동작(로그인마다 인증 창)이다
+#        RP1_GOOGLE_CLIENT_ID=… RP2_GOOGLE_CLIENT_ID=… bash scripts/demo_split_start.sh  # passkey-web 의 Google 로그인(실제 OIDC, 2026-11-19): 서비스마다 다른 Google 클라이언트 ID(없으면 공유 ID).
+#                                                          # Google 콘솔에서 그 클라이언트의 "승인된 리디렉션 URI" 에 https://127.0.0.1:5100/google-relay 를 넣어 둬야 한다
+#        PLAIN_OIDC=0 bash scripts/demo_split_start.sh    # 일반 OIDC(비교용 — zkIdP 가 uid·rid 를 그대로 내는 보통의 OIDC 로그인, 서비스 로그인 창의 "일반 OIDC · 비교용" 버튼) 끔.
+#                                                          # 기본은 passkey-web 에서만 켬(2026-11-19). 다른 모드에서 켜려면 PLAIN_OIDC=1
 #        OIDC=0 bash scripts/demo_split_start.sh          # Google(OIDC 래퍼) 끔. 기본은 켬(2026-10-26): IdP 에 MODE3_OIDC_CLIENT_ID 를 넘긴다 — 값은 환경변수 MODE3_OIDC_CLIENT_ID,
 #                                                          # 없으면 이 VM .env 의 GOOGLE_CLIENT_ID(Mode 1 공유 ID, 출력하지 않는다). Google 콘솔 승인 오리진에 http://localhost:5100 이 있어야 한다.
 #        (2026-11-09 연결 로그인) 브라우저는 IdP 를 http://localhost:4100 으로 연다 — 이 VM 의 SSH 터널(127.0.0.1:4100 → IdP VM:4100)이다. Google 은 http 원본으로
@@ -48,6 +54,9 @@ case "$WALLET_MODE" in web) USER_PORT=5200 ;; snap|passkey) USER_PORT=5100 ;; pa
 # 부를 수 있으므로(§2) 브라우저용 IdP·RP 주소는 터널을 127.0.0.1 로 연다 — IP 오리진에서는 WebAuthn 이 동작하지 않는다. 대신 RP 소셜 로그인(localhost 전용)은 쓸 수 없다.
 # passkey-web(2026-11-17, 스펙 2026-11-17-mode3-passkey-web): 에이전트 없이 호스트 PC 의 정적 서버(web 분기와 같은 서버)가 https 로 지갑 자리를 맡는다.
 AGENT_MODE=$([ "$WALLET_MODE" = web ] || [ "$WALLET_MODE" = passkey-web ] && echo 0 || echo 1)
+# 일반 OIDC — 비교용(2026-11-19 스펙 oidc-comparison C1·C7): zkIdP 가 sub = uid·aud = rid 인 보통의 OIDC 공급자 노릇도 하고(CIA_PLAIN_OIDC), 서비스가 그 로그인을 받는다(MODE3_RP_ZKOIDC).
+# passkey-web 에서만 기본으로 켠다 — PLAIN_OIDC=0 으로 끄고, 다른 모드는 PLAIN_OIDC=1 로 켠다.
+PLAIN_OIDC="${PLAIN_OIDC:-$([ "$WALLET_MODE" = passkey-web ] && echo 1 || echo 0)}"
 SCHEME=http; ZKD_CA_DIR="${ZKD_CA_DIR:-.local/zkd-ca}"; CACERT=()
 PEER_HOST=$([ "$WALLET_MODE" = passkey ] && echo 127.0.0.1 || echo localhost)
 if [ "$WALLET_MODE" = "snap" ]; then [ -d snap-mode3/node_modules ] && [ -f snap-mode3/dist/bundle.js ] || { echo "BLOCKED: snap-mode3/node_modules 또는 dist/bundle.js 가 없다 — cd snap-mode3 && npm install && npm run build"; exit 1; }; fi
@@ -240,6 +249,8 @@ MODE3_MIRROR_ADDRESS=$MIRROR
 CIA_MIRRORS=$MIRRORS
 MODE3_WALLET_AGENT_ORIGIN=$WALLET_ORIGIN
 MODE3_WALLET_KIND=$WALLET_MODE
+CIA_PLAIN_OIDC=$PLAIN_OIDC
+MODE3_RP_ZKOIDC=$PLAIN_OIDC
 MODE3_VERIFIER_ADDRESS=
 MODE3_RP_FACTORY_ADDRESS=
 MODE3_BIND_HOST=0.0.0.0
@@ -254,14 +265,19 @@ if [ -z "${MODE3_OIDC_CLIENT_ID:-}" ] && [ -n "$OIDC_LINE" ]; then echo "  경�
 # RP 소셜(2026-11-10) — 값은 출력하지 않는다(on/off 만). Google 은 IdP 래퍼와 같은 클라이언트 ID 를 RP 에도 준다. 네이버 ID·Secret 은 RP role.env 에만(IdP 에는 주지 않는다).
 env_or_dotenv() { [ -n "${!1:-}" ] && { printf '%s' "${!1}"; return; }; [ -f .env ] && sed -n "s/^$1=//p" .env | head -n1 | tr -d '\r"'"'"; }
 RP_GOOGLE_LINE=""; [ -n "$OIDC_LINE" ] && RP_GOOGLE_LINE="MODE3_RP_GOOGLE_CLIENT_ID=${OIDC_LINE#MODE3_OIDC_CLIENT_ID=}"
+# 2026-11-19(데모 시나리오 3·4 — 실제 Google OIDC): passkey-web 에서는 서비스가 Google 에 **리디렉션식**으로 다녀온다. Google 은 공개 도메인이나 localhost 만 돌아올 주소로 받으므로
+# (*.zkd.test 불가) 지갑 정적 서버의 https://127.0.0.1:<포트>/google-relay 를 쓴다 — Google 콘솔의 "승인된 리디렉션 URI" 에 이 주소가 있어야 한다. 서비스마다 클라이언트 ID 를
+# 따로 주면(RP1_GOOGLE_CLIENT_ID·RP2_GOOGLE_CLIENT_ID) 토큰의 aud(= rid)가 서비스마다 달라진다. 없으면 위의 공유 ID. 값은 출력하지 않는다.
+GOOGLE_RELAY=""; [ "$WALLET_MODE" = passkey-web ] && GOOGLE_RELAY="https://127.0.0.1:$USER_PORT/google-relay"
+rp_google_lines() { local id="${1:-${RP_GOOGLE_LINE#MODE3_RP_GOOGLE_CLIENT_ID=}}"; [ -n "$id" ] || return 0; printf '%s\n' "MODE3_RP_GOOGLE_CLIENT_ID=$id"; [ -n "$GOOGLE_RELAY" ] && printf '%s\n' "MODE3_RP_GOOGLE_REDIRECT_URI=$GOOGLE_RELAY"; return 0; }
 NAVER_ID="$(env_or_dotenv MODE3_NAVER_CLIENT_ID)"; NAVER_SECRET="$(env_or_dotenv MODE3_NAVER_CLIENT_SECRET)"
 rp_naver_lines() { [ -n "$NAVER_ID" ] && [ -n "$NAVER_SECRET" ] && printf '%s\n' "MODE3_RP_NAVER_CLIENT_ID=$NAVER_ID" "MODE3_RP_NAVER_CLIENT_SECRET=$NAVER_SECRET" "MODE3_RP_NAVER_REDIRECT_URI=$1/api/rp/naver/callback"; return 0; }
-echo "  RP 소셜: Google $([ -n "$RP_GOOGLE_LINE" ] && echo on || echo off) · 네이버 $([ -n "$NAVER_ID" ] && [ -n "$NAVER_SECRET" ] && echo on || echo off)   브라우저용 주소: IdP $IDP_UI · zkONE $RP1_UI · zkTWO $RP2_UI"
-printf '%s\n' "$COMMON" "CIA_PORT=$IDP_PORT" "CIA_RPC_URL=http://$HOST:$REV_PORT" "CIA_CHAIN_RPCS=$APP_CHAIN=http://$HOST:$APP_PORT" "CIA_ADMIN_SECRET=$ADMIN" "CIA_ADMIN_OPEN=${ADMIN_OPEN:-0}" "CIA_PUBLIC_URL=$SCHEME://$IDP:$IDP_PORT" "CIA_ISSUE_AUTH=${ISSUE_AUTH:-$([ "$AGENT_MODE" = 1 ] || [ "$WALLET_MODE" = passkey-web ] && echo code || echo key)}" "CIA_REVOKE_PUBLISH_AFTER_BLOCKS=${REVOKE_PUBLISH_AFTER:-3}" ${OIDC_LINE:+"$OIDC_LINE"} ${TLS_IDP:+"$TLS_IDP"} | put_env "$IDP"
-{ printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP1_PORT" "MODE3_RP_NAME=zkONE" "MODE3_RP_PUBLIC_ORIGIN=$RP1_UI" "MODE3_CIA_URL=$SCHEME://$IDP:$IDP_PORT" ${RP_GOOGLE_LINE:+"$RP_GOOGLE_LINE"} \
-  "CIA_RPC_URL=http://$HOST:$APP_PORT" "MODE3_RELAYER_INDEX=0" ${TLS_RP1:+"$TLS_RP1"}; rp_naver_lines "$RP1_UI"; } | put_env "$RP1"
-{ printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP2_PORT" "MODE3_RP_NAME=zkTWO" "MODE3_RP_PUBLIC_ORIGIN=$RP2_UI" "MODE3_CIA_URL=$SCHEME://$IDP:$IDP_PORT" ${RP_GOOGLE_LINE:+"$RP_GOOGLE_LINE"} \
-  "CIA_RPC_URL=http://$HOST:$APP_PORT" "MODE3_RELAYER_INDEX=1" "MODE3_ALLOWED_COUNTRIES=410,392" "MODE3_MIN_AGE=19" "MODE3_REQUIRE_DISCLOSURE=1" ${TLS_RP2:+"$TLS_RP2"}; rp_naver_lines "$RP2_UI"; } | put_env "$RP2"
+echo "  RP 소셜: Google $([ -n "$RP_GOOGLE_LINE${RP1_GOOGLE_CLIENT_ID:-}${RP2_GOOGLE_CLIENT_ID:-}" ] && echo on || echo off)${GOOGLE_RELAY:+(리디렉션식 — Google 콘솔의 승인된 리디렉션 URI: $GOOGLE_RELAY)} · 네이버 $([ -n "$NAVER_ID" ] && [ -n "$NAVER_SECRET" ] && echo on || echo off)   브라우저용 주소: IdP $IDP_UI · zkONE $RP1_UI · zkTWO $RP2_UI"
+printf '%s\n' "$COMMON" "CIA_PORT=$IDP_PORT" "CIA_RPC_URL=http://$HOST:$REV_PORT" "CIA_CHAIN_RPCS=$APP_CHAIN=http://$HOST:$APP_PORT" "CIA_ADMIN_SECRET=$ADMIN" "CIA_ADMIN_OPEN=${ADMIN_OPEN:-0}" "CIA_PUBLIC_URL=$SCHEME://$IDP:$IDP_PORT" "CIA_ISSUE_AUTH=${ISSUE_AUTH:-$([ "$AGENT_MODE" = 1 ] && echo code || echo key)}" "CIA_REVOKE_PUBLISH_AFTER_BLOCKS=${REVOKE_PUBLISH_AFTER:-3}" ${OIDC_LINE:+"$OIDC_LINE"} ${TLS_IDP:+"$TLS_IDP"} | put_env "$IDP"
+{ printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP1_PORT" "MODE3_RP_NAME=zkONE" "MODE3_RP_PUBLIC_ORIGIN=$RP1_UI" "MODE3_CIA_URL=$SCHEME://$IDP:$IDP_PORT" \
+  "CIA_RPC_URL=http://$HOST:$APP_PORT" "MODE3_RELAYER_INDEX=0" ${TLS_RP1:+"$TLS_RP1"}; rp_google_lines "${RP1_GOOGLE_CLIENT_ID:-}"; rp_naver_lines "$RP1_UI"; } | put_env "$RP1"
+{ printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP2_PORT" "MODE3_RP_NAME=zkTWO" "MODE3_RP_PUBLIC_ORIGIN=$RP2_UI" "MODE3_CIA_URL=$SCHEME://$IDP:$IDP_PORT" \
+  "CIA_RPC_URL=http://$HOST:$APP_PORT" "MODE3_RELAYER_INDEX=1" "MODE3_ALLOWED_COUNTRIES=410,392" "MODE3_MIN_AGE=19" "MODE3_REQUIRE_DISCLOSURE=1" ${TLS_RP2:+"$TLS_RP2"}; rp_google_lines "${RP2_GOOGLE_CLIENT_ID:-}"; rp_naver_lines "$RP2_UI"; } | put_env "$RP2"
 unset NAVER_ID NAVER_SECRET
 start_remote() { # $1 호스트 $2 스크립트 $3 포트
   on "$1" "cd ~/zkd-demo && set -a && . ./role.env && set +a && { setsid nohup \$HOME/zkd-demo/bin/node $2 > logs/${2%.js}.log 2>&1 < /dev/null & }"
@@ -350,8 +366,8 @@ if [ "$WALLET_MODE" = "passkey" ]; then
   echo "         IdP·서비스 페이지는 위 127.0.0.1 주소로 연다(localhost 로 열면 그 페이지도 패스키를 부를 수 있다 — 스펙 §2). RP 소셜 로그인은 이 모드에서 쓰지 않는다."
 fi
 if [ "$WALLET_MODE" = passkey-web ]; then
-  echo "passkey-web: 주소 넷 — 지갑 $WALLET_ORIGIN/  속성 도구 $WALLET_ORIGIN/attr.html  zkID $IDP_UI/user  zkONE $RP1_UI/  zkTWO $RP2_UI/"
+  echo "passkey-web: 주소 넷 — 지갑 $WALLET_ORIGIN/  속성 도구 $WALLET_ORIGIN/attr.html  zkIdP $IDP_UI/user  zkONE $RP1_UI/  zkTWO $RP2_UI/"
   echo "         처음이면 bash scripts/zkd_tls_setup.sh(sudo) 뒤 Chrome 을 완전히 다시 시작한다. IP 주소로 열면 패스키가 안 된다 — 반드시 위 이름으로."
-  echo "         흐름: 지갑 페이지에서 패스키 만들기 → 속성 도구(커밋먼트) → 서비스(zkONE·zkTWO)에서 zkID 로 로그인."
+  echo "         흐름: 지갑 페이지에서 패스키 만들기 → 속성 도구(커밋먼트) → 서비스(zkONE·zkTWO)에서 zkIdP 로 로그인."
   echo "         RP 소셜 로그인(Google·네이버)은 이 모드에서 쓰지 않는다(localhost 오리진 전용) — 위 OIDC 설정 줄이 켜져 있어도 마찬가지."
 fi

@@ -63,13 +63,14 @@ function publicSignalNames(symFile, nPublic) {
   return Array.from({ length: nPublic }, (_, i) => byIndex.get(i + 1) ?? null);
 }
 
-// 회로가 정한 공개 입력 순서. contracts/Mode3Wallet.sol(pub[3]·pub[5]·pub[12..14]·pub[15..29]), lib/mode3_rp.js(구조분해·[30..32]),
+// 회로가 정한 공개 입력 순서. 2026-11-19(스펙 trace-without-tag T3): 29개 — pk_trace·tag 다섯 칸이 빠졌다.
+// contracts/Mode3Wallet.sol(pub[3]·pub[5]·pub[10..24]·pub[28]), lib/mode3_rp.js(구조분해),
 // lib/mode3_onchain.js(PUB_INDEX), cia.js(개봉)가 이 자리를 번호로 읽는다.
 const CIRCUITS = {
   pi_cred: {
     publicInputs: [
       'PPID', 'arid', 'pk_i', 'max_height', 'chainid', 'allowAgent', 'revRoot', 'regRoot',
-      'pk_CIA_x', 'pk_CIA_y', 'pk_trace_x', 'pk_trace_y', 'tag_c1_x', 'tag_c1_y', 'tag_c2',
+      'pk_CIA_x', 'pk_CIA_y',
       'disc_mask', 'disc_lo[0]', 'disc_lo[1]', 'disc_lo[2]', 'disc_lo[3]', 'disc_lo[4]', 'disc_lo[5]',
       'disc_hi[0]', 'disc_hi[1]', 'disc_hi[2]', 'disc_hi[3]', 'disc_hi[4]', 'disc_hi[5]',
       'set_sel', 'set_root', 'auid_s', 'arid_s', 'r_s', 'counter',
@@ -129,7 +130,6 @@ await t('E-3 PUB_INDEX 의 색인이 pi_cred 회로의 실제 공개 입력 이�
   const expect = {
     PPID: 'PPID', ARID: 'arid', PK_I: 'pk_i', MAX_HEIGHT: 'max_height', CHAINID: 'chainid', ALLOW_AGENT: 'allowAgent',
     REV_ROOT: 'revRoot', REG_ROOT: 'regRoot', PK_CIA_X: 'pk_CIA_x', PK_CIA_Y: 'pk_CIA_y',
-    PK_TRACE_X: 'pk_trace_x', PK_TRACE_Y: 'pk_trace_y', TAG_C1_X: 'tag_c1_x', TAG_C1_Y: 'tag_c1_y', TAG_C2: 'tag_c2',
     DISC_MASK: 'disc_mask', DISC_LO: 'disc_lo[0]', DISC_HI: 'disc_hi[0]', SET_SEL: 'set_sel', SET_ROOT: 'set_root',
     AUID_S: 'auid_s', ARID_S: 'arid_s', R_S: 'r_s',
   };

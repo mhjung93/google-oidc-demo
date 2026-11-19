@@ -5,18 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="same-origin" />
   <!-- 제목의 "IdP 관리자" 는 tests/test_mode3_demo_stack.mjs 의 페이지 서빙 검사 marker 다. -->
-  <title>zkID — 관리자</title>
+  <title>zkIdP — 관리자</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b1d3a'/%3E%3Ctext x='16' y='22' font-size='15' font-family='sans-serif' font-weight='700' text-anchor='middle' fill='%23fff'%3Ezk%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="/common/demo.css" />
   <link rel="stylesheet" href="/common/idp.css" />
   <script src="/common/strings.js"></script>
   <script src="/common/demo.js"></script>
+  <script src="/common/flow_figure.js"></script>   <!-- 2026-11-19: "받은 것·검증한 것" 그림 -->
 </head>
 <body data-page="admin" class="admin-locked">
   <header id="demoBar"></header>
   <!-- 2026-11-03: 공통 상단 바(idp.css) + 절 메뉴 — 카드를 숨기지 않고 해당 절로 이동만 한다(테스트 선택자 불변). -->
   <nav class="idp-nav"><div class="nav-inner">
-    <span class="brand" data-i18n="idp_brand">zkID</span>
+    <span class="brand" data-i18n="idp_brand">zkIdP</span>
     <div class="nav-menu"><a href="/user" data-i18n="idp_nav_user">내 계정</a><a href="/rp" data-i18n="idp_nav_rp">RP 운영자</a><a href="/admin" aria-current="page" data-i18n="idp_nav_admin">관리자</a></div>
   </div></nav>
   <div class="section-menu"><div class="menu-inner"><a href="#secRps" data-i18n="admin_rps_title">RP</a><a href="#secOpenings" data-i18n="admin_openings_title">개봉 요청</a><a href="#secRcl" data-i18n="admin_rcl_title">폐기 목록</a><a href="#secCreds" data-i18n="admin_creds_title">사용자 자격증명</a><a href="#secRegDb" data-i18n="admin_regdb_title">등록부 DB</a><a href="#secAuidMap" data-i18n="admin_auidmap_title">uid ↔ auid 대응</a><a href="#secRevoked" data-i18n="admin_revoked_sessions_title">세션 폐기 목록</a></div></div>
@@ -107,6 +108,8 @@
       <h3 data-i18n="admin_auidmap_title">uid ↔ auid(스냅 가명) 대응</h3>
       <p class="desc" data-i18n="admin_auidmap_desc">계정마다 IdP 가 저장한 auid 입니다.</p>
       <div id="auidMap"><p class="muted" data-i18n="admin_need_secret">관리자 시크릿을 넣으면 목록과 대기 건수를 불러옵니다.</p></div>
+      <!-- 2026-11-19(데모 시나리오 6): 위 표의 "그림" 을 누르면 그 계정의 가장 최근 로그인(발급)에서 zkIdP 가 받은 것·검증한 것·알 수 없는 것을 그린다 -->
+      <div id="issueFigure" hidden><h4 id="issueFigureTitle"></h4><div id="issueFigureBody"></div></div>
     </section>
 
     <section class="card span2" id="secRevoked">
@@ -693,11 +696,39 @@
       }
       host.replaceChildren(t);
     }
+    /** 데모 시나리오 6(2026-11-19): 그 계정의 가장 최근 발급에서 zkIdP 가 받은 것·검증한 것·알 수 없는 것. 값은 /cia/accounts 의 lastIssue(공개값 한 벌). */
+    function renderIssueFigure(a) {
+      const T = (k) => Demo.t(k), li = a.lastIssue;
+      $('issueFigure').hidden = false; $('issueFigure').dataset.uid = a.uid;
+      $('issueFigureTitle').textContent = `${T('flow_idp_title')} — ${a.id ?? `uid ${a.uid}`}`;
+      if (!li) { $('issueFigureBody').replaceChildren(); const p = document.createElement('p'); p.className = 'muted'; p.textContent = T('flow_idp_none'); $('issueFigureBody').append(p); return; }
+      FlowFigure.render($('issueFigureBody'), {
+        from: { name: T('flow_user'), sub: T('flow_user_sub') }, to: { name: 'zkIdP' },
+        sent: { title: T('flow_idp_sent'), items: [
+          { key: 'uid', name: 'uid', value: a.uid, note: T('flow_idp_uid') },
+          { key: 'auid_s', name: 'auid_s', value: li.auid_s, note: T('flow_idp_auid_s') },
+          { key: 'arid_s', name: 'arid_s', value: li.arid_s, note: T('flow_idp_arid_s') },
+          { key: 'C_u', name: 'C_u', value: li.Cf_u, note: T('flow_idp_cu') },
+          { key: 'C_s', name: 'C_s', value: li.Cf_s, note: T('flow_idp_cs') },
+          { key: 'max_height', name: 'max_height', value: li.max_height, note: T('flow_idp_height') },
+          { key: 'proof', name: 'π_IdP', value: T('flow_proof_value'), note: T('flow_idp_proof') },
+        ] },
+        back: { title: T('flow_idp_back'), items: [
+          { name: T('flow_idp_sig'), value: 'σ', note: T('flow_idp_sig_note') },
+          { name: T('flow_idp_idtoken'), value: T('flow_idp_idtoken_value') },
+        ] },
+        lists: [
+          { kind: 'check', title: T('flow_checks'), rows: ['flow_idp_c1', 'flow_idp_c2', 'flow_idp_c3', 'flow_idp_c4', 'flow_idp_c5', 'flow_idp_c6'].map(T) },
+          { kind: 'unknown', title: T('flow_unknown'), rows: ['flow_idp_u1', 'flow_idp_u2', 'flow_idp_u3', 'flow_idp_u4'].map(T) },
+        ],
+      });
+      $('issueFigure').scrollIntoView({ block: 'nearest' });
+    }
     function renderAuidMap() {
       const host = $('auidMap');
       if (!accounts) { placeholder(host, 'admin_need_secret'); return; }
       if (!accounts.length) { placeholder(host, 'admin_auidmap_empty'); return; }
-      const t = table([['admin_col_uid'], ['admin_col_id'], ['admin_col_status'], ['admin_col_auid'], ['admin_col_auid_s'], ['admin_col_slot']]);
+      const t = table([['admin_col_uid'], ['admin_col_id'], ['admin_col_status'], ['admin_col_auid'], ['admin_col_auid_s'], ['admin_col_seen_oidc'], ['admin_col_seen_zk'], ['admin_col_slot']]);
       const body = t.tBodies[0];
       for (const a of accounts) {
         const row = body.insertRow();
@@ -712,6 +743,17 @@
           const at = document.createElement('small'); at.className = 'muted'; at.textContent = new Date(a.lastAuidS.at).toLocaleString();
           c.append(' ', at);
         } else { const c = cell(row, ''); c.className = 'muted'; tte(c, 'admin_auid_none'); }
+        // 2026-11-19(스펙 oidc-comparison C6): zkIdP 가 본 서비스 — 일반 OIDC 는 어느 서비스인지(이름·rid) 그대로, zk-Delegation 은 가려진 arid_s 뿐이다. 각각 가장 최신 값 하나.
+        const seenCell = (kind, text, title, at, noteKey) => {
+          const c = cell(row, '', 'nowrap'); c.dataset.seen = kind;
+          if (!text) { c.className = 'muted'; c.textContent = '-'; return; }
+          const v = document.createElement('code'); v.textContent = text; v.title = title; c.append(v);
+          if (noteKey) { const n = document.createElement('small'); n.className = 'muted'; n.textContent = ` ${Demo.t(noteKey)}`; c.append(n); }
+          const when = document.createElement('small'); when.className = 'muted'; when.textContent = ` ${new Date(at).toLocaleString()}`; c.append(when);
+        };
+        seenCell('oidc', a.lastOidc ? `${a.lastOidc.name} · rid ${a.lastOidc.rid}` : null, a.lastOidc?.rid ?? '', a.lastOidc?.at, null);
+        seenCell('zk', a.lastAridS?.value ? `arid_s ${String(a.lastAridS.value).slice(0, 10)}…${String(a.lastAridS.value).slice(-8)}` : null, a.lastAridS?.value ?? '', a.lastAridS?.at, 'admin_seen_zk_note');
+        { const c = row.cells[row.cells.length - 1], b = document.createElement('button'); b.type = 'button'; b.className = 'btn-ghost'; b.dataset.figureUid = a.uid; b.textContent = Demo.t('flow_idp_btn'); b.addEventListener('click', () => renderIssueFigure(a)); c.append(' ', b); }
         cell(row, a.slot === null || a.slot === undefined ? '-' : String(a.slot));
       }
       host.replaceChildren(t);

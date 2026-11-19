@@ -6,8 +6,8 @@ import {
   userCommit, sessionCommit, credMessageV11, compressPoint, auidOf, auidSOf, aridSOf, ppid, normalizeAttrs,
   PEDERSEN_GENERATORS, SCALAR_MAX, PK_I_MAX, MAX_HEIGHT_MAX, ATTR_SLOTS,
   DOMAIN_MODE3_CRED_V11, DOMAIN_MODE3_AUID, DOMAIN_MODE3_AUIDS, DOMAIN_MODE3_ARIDS,
-  DOMAIN_MODE3_TAG, DOMAIN_MODE3_CTX_ISSUE, DOMAIN_MODE3_CTX_REG, DOMAIN_MODE3_CTX_SLOT, DOMAIN_MODE3_CTX_REVOKE,
-  issueCtx, registerCtx, slotCtx, revokeSessionCtx, tagOf,
+  DOMAIN_MODE3_TAG, DOMAIN_MODE3_CTX_ISSUE, DOMAIN_MODE3_CTX_REG, DOMAIN_MODE3_CTX_SLOT, DOMAIN_MODE3_CTX_REVOKE, DOMAIN_MODE3_CTX_LOGIN,
+  issueCtx, registerCtx, slotCtx, revokeSessionCtx, loginCtx, tagOf,
 } from '../lib/mode3_credential.js';
 import { sessionLeaf, TAG_MODE3_SESSION } from '../lib/mode3_revocation.js';
 
@@ -38,7 +38,8 @@ await t('ctx·tag 도메인 상수는 ASCII 빅엔디언이고 서로 다르다'
   assert.equal(DOMAIN_MODE3_CTX_REG, be('MODE3CTXREG'));
   assert.equal(DOMAIN_MODE3_CTX_SLOT, be('MODE3CTXSLOT'));
   assert.equal(DOMAIN_MODE3_CTX_REVOKE, be('MODE3CTXREVOKE'));
-  assert.equal(new Set([DOMAIN_MODE3_TAG, DOMAIN_MODE3_CTX_ISSUE, DOMAIN_MODE3_CTX_REG, DOMAIN_MODE3_CTX_SLOT, DOMAIN_MODE3_CTX_REVOKE]).size, 5);
+  assert.equal(DOMAIN_MODE3_CTX_LOGIN, be('MODE3CTXLOGIN'));
+  assert.equal(new Set([DOMAIN_MODE3_TAG, DOMAIN_MODE3_CTX_ISSUE, DOMAIN_MODE3_CTX_REG, DOMAIN_MODE3_CTX_SLOT, DOMAIN_MODE3_CTX_REVOKE, DOMAIN_MODE3_CTX_LOGIN]).size, 6);
 });
 await t('ctx 넷 = 도메인이 앞에 붙은 Poseidon — 같은 숫자라도 용도가 다르면 값이 다르다', async () => {
   assert.equal(await issueCtx({ arid_s: 7n, chainid: 31337n, allowAgent: 1n, n: 5n }), H([DOMAIN_MODE3_CTX_ISSUE, 7n, 31337n, 1n, 5n]));
@@ -46,6 +47,10 @@ await t('ctx 넷 = 도메인이 앞에 붙은 Poseidon — 같은 숫자라도 �
   assert.equal(await slotCtx({ nonce: 7n }), H([DOMAIN_MODE3_CTX_SLOT, 7n]));
   assert.equal(await revokeSessionCtx({ Cf_s: 7n, bound: 3n, nonce: 9n }), H([DOMAIN_MODE3_CTX_REVOKE, 7n, 3n, 9n]));
   assert.notEqual(await registerCtx({ n: 7n }), await slotCtx({ nonce: 7n }), '등록용과 슬롯용은 같은 난수라도 다르다');
+  // 2026-11-19(스펙 passkey-proof-login L6): zkIdP 로그인용 ctx — 슬롯·등록용 증명을 로그인에 돌려쓰지 못한다
+  assert.equal(await loginCtx({ nonce: 7n }), H([DOMAIN_MODE3_CTX_LOGIN, 7n]));
+  assert.notEqual(await loginCtx({ nonce: 7n }), await slotCtx({ nonce: 7n }), '로그인용과 슬롯용은 같은 난수라도 다르다');
+  assert.notEqual(await loginCtx({ nonce: 7n }), await registerCtx({ n: 7n }), '로그인용과 등록용은 같은 난수라도 다르다');
   assert.notEqual(await issueCtx({ arid_s: 7n, chainid: 31337n, allowAgent: 0n, n: 5n }), await issueCtx({ arid_s: 7n, chainid: 31337n, allowAgent: 1n, n: 5n }), 'allowAgent 가 ctx 에 든다');
   // 2026-11-13(사용자 결정): 발급 ctx 에 지갑이 뽑는 난수 n — RP 가 r_rp 를 되풀이해도(같은 arid_s) 요청마다 ctx·tag 가 다르다
   assert.notEqual(await issueCtx({ arid_s: 7n, chainid: 31337n, allowAgent: 0n, n: 5n }), await issueCtx({ arid_s: 7n, chainid: 31337n, allowAgent: 0n, n: 6n }), 'n 이 ctx 에 든다');
@@ -59,6 +64,7 @@ await t('ctx·tag 입력 검사: bigint 아님·음수·p 이상·allowAgent 2·
   await assert.rejects(() => issueCtx({ arid_s: 7n, chainid: 31337n, allowAgent: 0n, n: P }), /n 는/);
   await assert.rejects(() => registerCtx({ n: P }), /n /);
   await assert.rejects(() => slotCtx({ nonce: -1n }), /nonce/);
+  await assert.rejects(() => loginCtx({ nonce: P }), /nonce/);
   await assert.rejects(() => revokeSessionCtx({ Cf_s: 7n, bound: 1n << 32n, nonce: 9n }), /bound/);
   await assert.rejects(() => revokeSessionCtx({ Cf_s: 7n, bound: 3, nonce: 9n }), /bound/);
   await assert.rejects(() => tagOf({ s_u: 1n << 250n, ctx: 5n }), /s_u/);

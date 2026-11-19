@@ -12,7 +12,27 @@ let n = 0;
 const fresh = () => { const file = path.join(dir, `a${++n}.json`); let i = 0; return { file, store: openAccountStore({ file, now: () => '2026-11-10T00:00:00.000Z', newId: () => `acct_${n}_${++i}` }) }; };
 const rejectsWith = (fn, status, reason) => assert.throws(fn, (e) => e instanceof AccountError && e.status === status && e.reason === reason);
 
-await t('METHODS 는 zkid·google·naver', () => assert.deepEqual([...METHODS], ['zkid', 'google', 'naver']));
+await t('METHODS 는 zkid·google·naver·zkoidc(2026-11-19 — zkIdP 일반 OIDC, 비교용)', () => assert.deepEqual([...METHODS], ['zkid', 'google', 'naver', 'zkoidc']));
+// 2026-11-19(스펙 oidc-comparison C7): 네 번째 칸 zkoidc — 색인 키는 토큰의 sub(= uid). 다른 수단과 색인이 따로이고, 칸·색인이 없는 옛 파일도 그대로 열린다.
+await t('zkoidc: sub 로 로그인·계정 생성, 다른 수단과 색인이 따로, view 는 sub 없이 linkedAt 만, 풀면 색인도 지워진다', () => {
+  const { store } = fresh();
+  const a = store.loginOrCreate('zkoidc', { sub: '100001' });
+  assert.equal(a.created, true); assert.deepEqual(store.loginOrCreate('zkoidc', { sub: '100001' }), { id: a.id, created: false });
+  assert.equal(store.get(a.id).zkoidc.sub, '100001'); assert.equal(store.findBy('google', { sub: '100001' }), null);
+  const v = store.view(a.id);
+  assert.deepEqual(v.methods.zkoidc, { linkedAt: '2026-11-10T00:00:00.000Z' }); assert.equal(JSON.stringify(v).includes('100001'), false);
+  assert.deepEqual(Object.keys(v.methods), ['zkid', 'google', 'naver', 'zkoidc']);
+  store.link(a.id, 'zkid', { PPID: '777' }); store.unlink(a.id, 'zkoidc');
+  assert.equal(store.findBy('zkoidc', { sub: '100001' }), null); assert.equal(store.get(a.id).zkoidc, null);
+});
+await t('zkoidc: 칸·색인(byZkOidc)이 없는 옛 version 2 파일도 열리고 그 계정에 zkoidc 를 붙일 수 있다', () => {
+  const file = path.join(dir, `old${++n}.json`);
+  fs.writeFileSync(file, JSON.stringify({ version: 2, accounts: { acct_old: { id: 'acct_old', createdAt: '2026-11-10T00:00:00.000Z', zkid: { PPID: '5', linkedAt: '2026-11-10T00:00:00.000Z' }, google: null, naver: null } }, byPPID: { 5: 'acct_old' }, byGoogle: {}, byNaver: {}, krw: {}, custodyEth: {} }));
+  const store = openAccountStore({ file, now: () => '2026-11-19T00:00:00.000Z' });
+  assert.equal(store.view('acct_old').methods.zkoidc, null);
+  store.link('acct_old', 'zkoidc', { sub: '42' });
+  assert.equal(store.findBy('zkoidc', { sub: '42' }), 'acct_old'); assert.equal(store.loginOrCreate('zkid', { PPID: '5' }).id, 'acct_old');
+});
 await t('loginOrCreate: 처음 보는 수단이면 그 칸만 채운 새 계정, 두 번째는 같은 계정', () => {
   const { store } = fresh();
   const a = store.loginOrCreate('google', { sub: 'g1' });

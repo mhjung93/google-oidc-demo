@@ -17,7 +17,7 @@ import { createRegistration, registrationSecretsFromSeed, createSessionKey, buil
 import { sessionLeafRange } from '../../../lib/mode3_revocation.js';
 import { registryLeaf } from '../../../lib/mode3_registry.js';
 import { signPayload, statementDigestFields, proofToCalldata, parseExecuteReceipt, decodeExecuteCalldata, walletAt, walletInterface, FACTORY_ABI, FACTORY_MAX_ROOT_AGE_BAND, FACTORY_MAX_LIFETIME_BAND, PUB_INDEX, LOGIN_COUNTER } from '../../../lib/mode3_onchain.js';
-import { SCALAR_MAX, ppid, randomScalar, auidOf, aridSOf, registerCtx, slotCtx, revokeSessionCtx, issueCtx, tagOf } from '../../../lib/mode3_credential.js';
+import { SCALAR_MAX, ppid, randomScalar, auidOf, aridSOf, registerCtx, slotCtx, revokeSessionCtx, issueCtx, loginCtx, tagOf } from '../../../lib/mode3_credential.js';
 import { verifyRpCert } from '../../../lib/mode3_rp_cert.js';
 import { MODE3_ROOTS_ABI } from '../../../lib/mode3_log.js';
 import { bounded } from '../../../lib/mode3_health.js';
@@ -94,7 +94,8 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
   /** 세 체인 경로(login·revalidate·tx)의 설정 검사 — 에이전트 chainConfigMissing 의 등가. */
   const chainMissing = () => chain.missing();
   // withSalt 범위(계획 R-8): 범위 안에서 처음 얻은 salt 를 메모리로 재사용한다 — 보관 0초이거나 범위 도중 보관이 끝나도 패스키는 한 번만. 가장 바깥 범위가 끝나면 버린다.
-  let saltDepth = 0, saltMemo = null;
+  // saltFresh(스펙 2026-11-19 passkey-proof-login L4): withSalt(fn, { fresh: true }) 범위의 첫 salt 는 보관분을 건너뛰고 패스키에서 새로 얻는다 — 로그인마다 패스키 한 번.
+  let saltDepth = 0, saltMemo = null, saltFresh = false;
   const isSalt = (v) => isDec(v) && BigInt(v) > 0n && BigInt(v) < SCALAR_MAX;
   /** passkey-web 의 금고는 자동 금고다 — 없으면 만들고, 있는데 키가 없으면(비밀번호 금고가 잠김) locked. */
   async function ensureVault() {
@@ -110,7 +111,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     const pk = (await kv.get('passkey')) ?? null;
     if (!pk?.credentialId) throw tag('passkey_setup_required');
     await ensureVault();
-    let s = await vault.heldSalt();
+    let s = saltFresh ? null : await vault.heldSalt();
     if (!s) {
       const d = await passkey.derive({ credentialId: pk.credentialId });
       if (d?.credentialId !== pk.credentialId) throw tag('passkey_mismatch');
@@ -119,6 +120,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       if (reg && (await auidOf({ s_u: BigInt(d.s_u) })).toString() !== String(reg.auid)) throw tag('passkey_mismatch');
       s = BigInt(d.s_u).toString();
       await vault.holdSalt(s);
+      saltFresh = false;   // 이 범위의 새 확인은 끝났다 — 뒤의 동작은 메모·보관분
     }
     if (saltDepth > 0) saltMemo = s;
     return s;
@@ -793,7 +795,10 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       // 달라 bad_signature 로 거절한다. tx 경로는 prepareTx 의 signPayload 호출부에서 따로 takeOverride 한다.
       const fakeSig = await takeOverride('fake_sig');
       if (fakeSig) out = { ...out, sig: await signChallenge(ethers.Wallet.createRandom(), rs.toString()), demo: 'override:fake_sig' };
-      return R(200, { ...out, issued: true, allowAgent, timings, disclosure: hasPredicate(disclosure) ? discStrings(disclosure) : null });
+      // id_token(2026-11-19 스펙 oidc-comparison): IdP 가 발급 때 준 zkIdP ID 토큰(sub = auid_s·aud = arid_s — 공개값뿐이다)을 서비스에 그대로 넘긴다. 에이전트 /wallet/login 과 같다 —
+      // 서비스가 증명의 공개 신호와 맞춰 보고, 화면이 "서비스가 받은 토큰" 으로 보인다. 없으면 null(서비스는 토큰 없이도 로그인을 받는다).
+      const zkToken = (await getSessions())[rs.toString()]?.credential?.id_token;
+      return R(200, { ...out, issued: true, allowAgent, timings, disclosure: hasPredicate(disclosure) ? discStrings(disclosure) : null, id_token: typeof zkToken === 'string' ? zkToken : null });
     },
     /** 에이전트 POST /wallet/revalidate 의 등가(origin 은 Origin 헤더 자리 — 팝업이 event.origin 을 넘긴다). */
     async revalidate({ r_s, skipSync = false, arid = null, origin = null } = {}) {
@@ -1138,6 +1143,19 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       if (!PK) return R(409, { reason: 'not_passkey_mode' });
       return R(200, { s_u: await saltNow() });
     },
+    /** zkIdP 페이지의 증명 로그인(스펙 2026-11-19 passkey-proof-login L8): IdP 가 그 브라우저 세션에 내준 nonce 로 "이 계정 auid 의 s_u 를 안다" 는 π_IdP 를 만든다
+     *  (ctx = loginCtx(nonce)). 본문은 uid·nonce·증명 필드뿐이다(비밀 없음) — 승인 창이 IdP 오리진이 연 창에만 돌려준다. 미등록·형식 오류는 salt 를 얻기 전에 끝난다. */
+    async idpLoginProof({ nonce } = {}) {
+      if (!PK) return R(409, { reason: 'not_passkey_mode' });   // 리뷰 M10: 증명 로그인은 passkey-web 의 것 — web 모드의 동작은 그대로
+      let ctx;
+      try { if (!isDec(nonce)) throw new Error('nonce'); ctx = await loginCtx({ nonce: BigInt(nonce) }); } catch { return R(400, { reason: 'malformed' }); }
+      if (!(await getReg())) return R(409, { reason: 'not_registered' });
+      const src = await source();
+      if (src === null) return R(409, { reason: 'not_registered' });
+      if (src === 'locked') return LOCKED();
+      const reg = src.registration();
+      return R(200, { uid: String(reg.uid), nonce, ...(await authProof(reg.uid, reg.s_u, ctx, { purpose: 'idp_login' })) });
+    },
     /** 이 패스키 salt 의 auid — 인증 창(등록·복구)에 넣는 값. salt 는 응답에 없다. */
     async passkeyAuid() {
       if (!PK) return R(409, { reason: 'not_passkey_mode' });
@@ -1195,11 +1213,13 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
   };
   const core = { vault, chain, idp };
   for (const [name, fn] of Object.entries(ops)) core[name] = guard(name, fn);
-  /** 한 동작 = 패스키 최대 한 번(R-8): fn 안의 동작은 처음 얻은 salt 를 메모리로 다시 쓴다. 중첩 가능 — 가장 바깥 범위가 끝나면(던져도) 메모를 버린다. */
-  core.withSalt = async (fn) => {
+  /** 한 동작 = 패스키 최대 한 번(R-8): fn 안의 동작은 처음 얻은 salt 를 메모리로 다시 쓴다. 중첩 가능 — 가장 바깥 범위가 끝나면(던져도) 메모를 버린다.
+   *  fresh(스펙 2026-11-19 passkey-proof-login L4): 로그인(새 세션 발급·zkIdP 로그인)의 범위 — 첫 salt 를 패스키에서 새로 얻고 그 값으로 보관을 갱신한다. */
+  core.withSalt = async (fn, { fresh = false } = {}) => {
     saltDepth++;
+    if (fresh) { saltFresh = true; saltMemo = null; }   // L4: 보관분·앞선 메모로 건너뛰지 않는다. 패스키가 실패하면 그대로 실패한다(보관분으로 넘어가지 않는다)
     try { return await fn(); }
-    finally { if (--saltDepth === 0) saltMemo = null; }
+    finally { if (--saltDepth === 0) { saltMemo = null; saltFresh = false; } }
   };
   /** Google(OIDC) 등록 1단계(스펙 2026-10-16 §3.1; 2026-11-13 스펙 no-pk-u §3.3): 등록 재료(s_u)와 난수 n 을 먼저 만들고 토큰을 그 등록 요청의 tag 에 묶을
    *  nonce = regNonce(Poseidon(T_TAG, s_u, registerCtx(n))) 를 낸다 — uid 는 토큰의 sub 로 정해지므로 auid 는 completeRegistration 에서 만든다. 재료는 이 페이지의

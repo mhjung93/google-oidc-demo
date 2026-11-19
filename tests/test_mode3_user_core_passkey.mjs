@@ -7,7 +7,9 @@ import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
 import { getProvider } from './helpers/mode3_chain.mjs';
 import { createMemKv } from '../mode3/user/core/kv_mem.js';
 import { createUserCore } from '../mode3/user/core/user_core.js';
-import { randomScalar, auidOf } from '../lib/mode3_credential.js';
+import { randomScalar, auidOf, loginCtx, slotCtx } from '../lib/mode3_credential.js';
+import { loadIdpVkey, idpPublicSignals, verifyIdp } from '../lib/mode3_idp_proof.js';
+import { pointFromStrings } from '../lib/mode3_issuance.js';
 import * as snarkjs from 'snarkjs';
 
 // 정적 서버는 dist 가 없으면 기동을 거부한다 — 단독 실행도 되게 여기서 만든다.
@@ -131,6 +133,41 @@ try {
     });
     assert.equal(out[0].status, 200); assert.equal(out[1].status, 200, j(out[1].body)); assert.equal(calls - c0, 1);
   });
+  // ---- 스펙 2026-11-19 passkey-proof-login L4·L8: 로그인은 패스키를 한 번 묻는다(fresh), zkIdP 로그인 증명 ----
+  await t('withSalt fresh: 보관분이 있어도 범위의 첫 salt 는 패스키에서(derive 1회) — 범위 안 다음 동작은 메모, 보관은 갱신, 범위 밖·fresh 없는 범위는 보관분', async () => {
+    assert.equal((await coreA.showSalt()).status, 200);
+    const held0 = (await coreA.passkeyState()).body.heldUntil; assert.ok(held0 > now(), '보관분이 있다');
+    const c0 = calls; skew += 60_000;
+    const out = await coreA.withSalt(async () => [await coreA.showSalt(), await coreA.revalidate({ r_s: rs1, origin: info.origin })], { fresh: true });
+    assert.equal(out[0].status, 200); assert.equal(out[1].status, 200, j(out[1].body)); assert.equal(calls - c0, 1);
+    assert.ok((await coreA.passkeyState()).body.heldUntil > held0, '새로 얻은 값으로 보관을 갱신한다');
+    assert.equal((await coreA.showSalt()).status, 200); assert.equal(calls - c0, 1, '범위 밖은 보관분');
+    assert.equal((await coreA.withSalt(() => coreA.showSalt())).status, 200); assert.equal(calls - c0, 1, 'fresh 없는 범위는 보관분');
+  });
+  await t('withSalt fresh: 패스키가 실패하면(다른 패스키·취소) 보관분으로 넘어가지 않는다', async () => {
+    const keep = deriveFn;
+    try {
+      deriveFn = async () => ({ credentialId: 'b3RoZXI', s_u: SALT });
+      const m = await coreA.withSalt(() => coreA.showSalt(), { fresh: true }); assert.equal(m.status, 409, j(m.body)); assert.equal(m.body.reason, 'passkey_mismatch');
+      deriveFn = async () => { throw Object.assign(new Error('cancelled'), { reason: 'passkey_cancelled' }); };
+      const c = await coreA.withSalt(() => coreA.showSalt(), { fresh: true }); assert.equal(c.status, 409, j(c.body)); assert.equal(c.body.reason, 'passkey_cancelled');
+    } finally { deriveFn = keep; }
+    assert.equal((await coreA.showSalt()).status, 200, '보관분은 그대로다');
+  });
+  await t('idpLoginProof: 로그인 증명은 loginCtx(nonce) 에만 맞는다 — uid·nonce·π_IdP 필드뿐(비밀 없음), 증명 기록의 purpose 는 idp_login', async () => {
+    const nonce = randomScalar().toString();
+    const r = await coreA.idpLoginProof({ nonce }); assert.equal(r.status, 200, j(r.body));
+    assert.deepEqual(Object.keys(r.body).sort(), ['C_s_pt', 'C_u_pt', 'auid_s', 'max_height', 'nonce', 'proof_idp', 'tag', 'uid']);
+    assert.equal(r.body.uid, '12345'); assert.equal(r.body.nonce, nonce); assert.ok(!j(r.body).includes(SALT), '응답에 salt 가 없다');
+    const vk = await loadIdpVkey();
+    const pubOf = (ctx) => idpPublicSignals({ uid: 12345n, auid: BigInt(AUID), auid_s: BigInt(r.body.auid_s), C_u_pt: pointFromStrings(r.body.C_u_pt), C_s_pt: pointFromStrings(r.body.C_s_pt), max_height: BigInt(r.body.max_height), ctx, tag: BigInt(r.body.tag) });
+    assert.equal(await verifyIdp(vk, pubOf(await loginCtx({ nonce: BigInt(nonce) })), r.body.proof_idp), true, '로그인 ctx 로 검증된다');
+    assert.equal(await verifyIdp(vk, pubOf(await loginCtx({ nonce: BigInt(nonce) + 1n })), r.body.proof_idp), false, '다른 nonce');
+    assert.equal(await verifyIdp(vk, pubOf(await slotCtx({ nonce: BigInt(nonce) })), r.body.proof_idp), false, '슬롯 조회용 ctx');
+    const last = (await coreA.proofs()).body.proofs[0];
+    assert.equal(last.kind, 'pi_idp'); assert.equal(last.purpose, 'idp_login');
+    for (const bad of [undefined, '', 'abc', '-1', (1n << 255n).toString()]) { const b = await coreA.idpLoginProof({ nonce: bad }); assert.equal(b.status, 400, `${bad}: ${j(b.body)}`); assert.equal(b.body.reason, 'malformed'); }
+  });
   await t('다른 패스키: credential 다르면 409 passkey_mismatch, 같은 credential 다른 salt 도 passkey_mismatch, 보관하지 않는다', async () => {
     await coreA.vault.clearHold();
     deriveFn = async () => ({ credentialId: 'b3RoZXI', s_u: SALT });
@@ -209,9 +246,18 @@ try {
     assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'not_registered');
     assert.equal(await k.get('registration'), undefined);
   });
+  await t('idpLoginProof(미등록): 409 not_registered — 패스키를 묻지 않는다', async () => {
+    const { c } = freshCore(); assert.equal((await c.passkeyConnect({ credentialId: CID, s_u: SALT })).status, 200);
+    const c0 = calls; const r = await c.idpLoginProof({ nonce: '7' }); assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'not_registered'); assert.equal(calls, c0);
+  });
   await t('웹 모드 코어에서는 registerWithCode 409 not_passkey_mode', async () => {
     const w = createUserCore({ kv: createMemKv(), config: { ...config, secrets: 'web' }, provider, canonProvider: provider, fullProve });
     const r = await w.registerWithCode({ uid: '12345', code: 'x' }); assert.equal(r.status, 409); assert.equal(r.body.reason, 'not_passkey_mode');
+  });
+  // 리뷰(2026-11-19) M10: 증명 로그인은 passkey-web 의 것이다 — web 모드 코어는 zkIdP 로그인 증명을 내지 않는다(스펙의 "web 모드의 동작은 그대로").
+  await t('웹 모드 코어에서는 idpLoginProof 409 not_passkey_mode', async () => {
+    const w = createUserCore({ kv: createMemKv(), config: { ...config, secrets: 'web' }, provider, canonProvider: provider, fullProve });
+    const r = await w.idpLoginProof({ nonce: '7' }); assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'not_passkey_mode');
   });
 } finally { await stack.stop(); }
 process.exit(fails ? 1 : 0);

@@ -25,7 +25,7 @@
       <div class="wallet-tabs" id="walletTabs" role="tablist" hidden>
         <!-- 2026-11-11(사용자 결정): 계정·보내기·설정 탭은 뺐다 — 화면은 "연결된 서비스" 하나. 속성·salt 는 속성 도구(attr.html)에서 첫 등록 때 가져온다.
              그 탭들의 카드(identityCard·txCard·demoCard)는 DOM 에 남지만 탭이 없어 보이지 않는다(스크립트가 참조해 한 번에 걷어내지 않았다).
-             2026-11-14: 설정 패널(snapPanel — 스냅 상태 보기·다시 설치·계정 자기 폐기)은 걷어냈다. 스냅 초기화는 "내 계정" 탭에, 계정 폐기는 zkID /user 에 있다. -->
+             2026-11-14: 설정 패널(snapPanel — 스냅 상태 보기·다시 설치·계정 자기 폐기)은 걷어냈다. 스냅 초기화는 "내 계정" 탭에, 계정 폐기는 zkIdP /user 에 있다. -->
         <button type="button" role="tab" data-tab="services" aria-selected="true" data-i18n="wallet_tab_services">연결된 서비스</button>
         <!-- 2026-11-12(사용자 요청): "내 계정" — 스냅이 저장한 값 전부. snap 모드에서만 보인다(applySnapMode). -->
         <button type="button" role="tab" data-tab="me" id="meTabBtn" aria-selected="false" data-i18n="wallet_tab_me" hidden>내 계정</button>
@@ -76,7 +76,7 @@
     <!-- snap 모드: 연결 전에는 이 카드 하나만 보인다(applyGate). file 모드는 연결이 없어 바로 탭이 보인다. -->
     <section class="card" id="connectCard" hidden>
       <h3 data-i18n="wallet_connect_title">MetaMask 를 연결하세요</h3>
-      <p class="desc" data-i18n="wallet_connect_desc">salt 는 MetaMask 스냅이 보관합니다. 등록·로그인 때 이 PC 의 스냅 화면과 스냅 에이전트가 받아 증명을 만들고, zkID 와 서비스로는 보내지 않습니다. MetaMask Flask 와 zk 스냅이 필요하고, 처음 연결하면 스냅 설치를 묻습니다. 스냅에 salt 가 없으면 연결 뒤에 새로 만들거나 백업에서 불러옵니다.</p>
+      <p class="desc" data-i18n="wallet_connect_desc">salt 는 MetaMask 스냅이 보관합니다. 등록·로그인 때 이 PC 의 스냅 화면과 스냅 에이전트가 받아 증명을 만들고, zkIdP 와 서비스로는 보내지 않습니다. MetaMask Flask 와 zk 스냅이 필요하고, 처음 연결하면 스냅 설치를 묻습니다. 스냅에 salt 가 없으면 연결 뒤에 새로 만들거나 백업에서 불러옵니다.</p>
       <p><button id="connectBtn" data-i18n="wallet_connect_btn">MetaMask 연결</button></p>
       <p id="connectError" class="muted" hidden></p>
     </section>
@@ -118,13 +118,13 @@
     </section>
     <!-- 설정이 끝났다는 알림(2026-11-13 화면 리뷰) — 서비스 목록 카드 안이 아니라 탭 위에 따로 보인다. 탭을 누르면 사라진다. -->
     <div id="setupNotice"></div>
-    <!-- 계정 복구(2026-11-17 패스키 모드 §10 P11~P15): 패스키는 연결됐는데 이 에이전트에 등록이 없을 때(파일을 잃었거나 다른 PC) — 서비스 로그인과 따로 같은 zkID 등록을 되찾는다. -->
+    <!-- 계정 복구(2026-11-17 패스키 모드 §10 P11~P15): 패스키는 연결됐는데 이 에이전트에 등록이 없을 때(파일을 잃었거나 다른 PC) — 서비스 로그인과 따로 같은 zkIdP 등록을 되찾는다. -->
     <section class="card" id="recoverCard" hidden>
       <h3 data-i18n="wallet_recover_title">계정 복구</h3>
-      <p class="desc" data-i18n="wallet_recover_desc">이 패스키로 zkID 에 등록한 적이 있으면 같은 등록(같은 서비스 주소)을 되찾습니다. 속성을 넣고, auid 를 확인해 복사한 뒤 zkID 인증 창으로 가세요. 처음이면 서비스에서 로그인하면 새로 등록됩니다.</p>
+      <p class="desc" data-i18n="wallet_recover_desc">이 패스키로 zkIdP 에 등록한 적이 있으면 같은 등록(같은 서비스 주소)을 되찾습니다. 속성을 넣고, auid 를 확인해 복사한 뒤 zkIdP 인증 창으로 가세요. 처음이면 서비스에서 로그인하면 새로 등록됩니다.</p>
       <dl id="recoverAttrs" class="kv"></dl>
       <p class="row-actions"><button type="button" id="recoverAuidBtn" class="btn-ghost" data-i18n="wallet_recover_auid_btn">auid 보기(패스키)</button> <code id="recoverAuid"></code></p>
-      <p class="row-actions"><button type="button" id="recoverGoBtn" data-i18n="wallet_recover_go_btn">zkID 인증 창으로</button></p>
+      <p class="row-actions"><button type="button" id="recoverGoBtn" data-i18n="wallet_recover_go_btn">zkIdP 인증 창으로</button></p>
     </section>
     <div id="recoverVerdict"></div>
 
@@ -134,7 +134,7 @@
       <p class="desc" data-i18n="wallet_identity_desc">IdP 에 한 번 등록합니다. 속성은 내가 넣고 IdP 는 값을 모릅니다.</p>
       <p class="status-line"><span id="regBadge" class="badge">미등록</span> <span id="regInfo" class="muted"></span></p>
       <dl class="kv">
-        <dt data-i18n="wallet_idp_label">zkID</dt><dd id="aaInfo">-</dd>
+        <dt data-i18n="wallet_idp_label">zkIdP</dt><dd id="aaInfo">-</dd>
         <dt data-term="cred" hidden>내 자격증명</dt><dd id="credInfo" hidden>-</dd>   <!-- 2026-11-05: 사용자가 할 일이 없는 정보라 숨긴다(값은 채워 둔다) -->
         <dt data-i18n="wallet_registry_label">등록 상태</dt><dd><span id="registryBadge" class="badge muted">-</span> <span id="registryInfo"></span></dd>
       </dl>
@@ -171,7 +171,7 @@
       </details>
     </section>
 
-    <!-- 2026-11-14(화면 리뷰 3차): zkID 에서 계정을 폐기하거나 스냅 연결을 풀어도 이 화면은 등록·세션을 정상처럼 보였다 — 등록부 확인(/wallet/status 의 registry)이
+    <!-- 2026-11-14(화면 리뷰 3차): zkIdP 에서 계정을 폐기하거나 스냅 연결을 풀어도 이 화면은 등록·세션을 정상처럼 보였다 — 등록부 확인(/wallet/status 의 registry)이
          "내 슬롯에 내 자격증명이 없다" 고 하면 여기에 알린다(renderIdentity). 탭과 무관하게 보이도록 카드 밖에 둔다. -->
     <p class="notice" id="regNotice" hidden></p>
     <!-- 2026-11-14(MetaMask 의존성 점검): MetaMask 에 설치된 스냅이 이 화면의 번들과 다른 버전이면 알린다(renderSnapVersion) — 그전에는 옛 스냅이 깔려 있어도 화면이 몰랐다. -->
@@ -914,7 +914,7 @@
       // 적어, IdP 가 거절하면(auid_taken 등) 거절된 계정의 uid 가 스냅에 남고 다음 등록이 already_registered 로 막혔다. uid 는 IdP 가 받은 뒤 storeRegistration 이 채운다.
       const reg = await invokeSnap('prepareRegister', {});
       if (!reg || reg.denied) { step('등록 거절'); return { ok: false, reason: 'user_denied' }; }
-      step('에이전트에 등록하는 중…'); say('wallet_prog_reg_proving');   // 여기가 등록에서 가장 오래 걸린다 — 에이전트가 등록 증명을 만들고 zkID 가 등록부에 올린다
+      step('에이전트에 등록하는 중…'); say('wallet_prog_reg_proving');   // 여기가 등록에서 가장 오래 걸린다 — 에이전트가 등록 증명을 만들고 zkIdP 가 등록부에 올린다
       const { status, body: b } = await postJson('/wallet/register', { uid, code, s_u: reg.s_u, ...(rec.profile ? { profile: rec.profile } : {}) });
       if (status !== 201) { step('등록 실패'); log(errText(status, b)); return { ok: false, reason: b.cia?.reason ?? b.reason ?? `HTTP ${status}`, detail: b.detail ?? b.cia?.detail ?? null }; }
       step('스냅에 등록 결과 저장 중…');
@@ -994,7 +994,7 @@
         }
         const r = await codeRegister({ uid: req.uid, code: req.code, step, log });
         if (r.ok) step('등록 완료 — 창을 닫는다.');
-        const { issue_code: _unused, ...pub } = r;   // 발급 코드는 이 경로(zkID 페이지가 연 등록 팝업)에서는 쓰지 않는다
+        const { issue_code: _unused, ...pub } = r;   // 발급 코드는 이 경로(zkIdP 페이지가 연 등록 팝업)에서는 쓰지 않는다
         reply(pub);
       } catch (e) {
         step('오류');
@@ -1115,8 +1115,8 @@
         if (m.status !== 200) return fail('블록 진행 실패', m);
         show();
       }
-      // 2026-11-16(Race 시연 점검): zkID 는 폐기 3블록 뒤에 게시한다. n 이 그보다 크면(5블록) 보내기 전에 그 게시가 거울에 닿았는지(root 가 바뀌었는지) 최대 15초 본다.
-      // 시연은 블록 간격을 1.5초로 줄여 놓아 zkID 의 게시·중계 시간이 블록 간격과 비슷해진다 — 부하가 있으면 5블록 쪽이 게시보다 먼저 나가 통과해 버렸다
+      // 2026-11-16(Race 시연 점검): zkIdP 는 폐기 3블록 뒤에 게시한다. n 이 그보다 크면(5블록) 보내기 전에 그 게시가 거울에 닿았는지(root 가 바뀌었는지) 최대 15초 본다.
+      // 시연은 블록 간격을 1.5초로 줄여 놓아 zkIdP 의 게시·중계 시간이 블록 간격과 비슷해진다 — 부하가 있으면 5블록 쪽이 게시보다 먼저 나가 통과해 버렸다
       // (실제 체인에서는 5블록이면 이미 닿아 있다). 값을 못 읽거나 끝내 안 바뀌면 그대로 보낸다.
       if (n >= 3 && builtRoot !== null) {
         for (let i = 0; i < 30 && rootNow() === builtRoot; i++) { await sleep(500); m = await mine(0); if (m.status !== 200) return fail('블록 진행 실패', m); show(); }
@@ -1201,8 +1201,8 @@
         // 전에 간다), Google 계정은 이 팝업의 Google 버튼 — nonce 는 issue:H(tag) — tag 는 이 지갑의 s_u 와 이 로그인(arid_s·allowAgent)과 에이전트가 뽑은 난수 n 에 묶인다(n 은 /wallet/login 에 다시 싣는다).
         let provider = await walletProvider();
         let authCodeNow = authCode;
-        // OIDC 래퍼(2026-11-11 사용자 결정): RP 의 "Google 계정으로 로그인" — Google 토큰을 받은 뒤 zkID 와 같은 발급·증명 흐름을 탄다. 미등록 스냅이면
-        // 여기서 Google 로 등록하고(uid = H(google, sub), Google 계정마다 별도 zkID 계정) 아래 Google 발급으로 이어진다. 스냅 하나에는 계정 하나라
+        // OIDC 래퍼(2026-11-11 사용자 결정): RP 의 "Google 계정으로 로그인" — Google 토큰을 받은 뒤 zkIdP 와 같은 발급·증명 흐름을 탄다. 미등록 스냅이면
+        // 여기서 Google 로 등록하고(uid = H(google, sub), Google 계정마다 별도 zkIdP 계정) 아래 Google 발급으로 이어진다. 스냅 하나에는 계정 하나라
         // 아이디 계정으로 등록된 스냅은 멈춘다. 첫 등록에 속성 도구 기록은 쓰지 않는다(uid 가 Google 로그인 뒤에야 정해진다) — 기본 속성.
         if (req.provider === 'google' && authPurpose !== 'register') {
           let registered = true; try { registered = Boolean((await (await fetch('/wallet/status')).json()).registered); } catch { /* 진행 — 에이전트가 다시 거른다 */ }
@@ -1211,36 +1211,36 @@
             say('wallet_prog_registering');
             const r = await googleRegister({ step, log });
             if (!r.ok) return reply(r);
-            step('zkID 에 Google 계정으로 등록됨 — 이어서 로그인합니다.');
+            step('zkIdP 에 Google 계정으로 등록됨 — 이어서 로그인합니다.');
             provider = 'google';
           } else if (provider === 'demo') { step('이 스냅은 아이디 계정으로 등록돼 있다 — Google 로 로그인하지 않는다.'); return reply({ ok: false, reason: 'snap_other_account' }); }
         }
         // 등록 코드로 돌아온 길(2026-11-09, 사용자 결정 "등록 과정에는 지갑 연결이 없고, 지갑은 위임 인증 때 처음 붙는다"): 이 서비스 로그인이 이 지갑의
-        // 첫 zkID 등록이다 — MetaMask 연결 → Snap 이 비밀 생성 → 에이전트가 /cia/register → Snap 저장 → IdP 가 함께 준 발급 코드로 바로 발급·로그인.
+        // 첫 zkIdP 등록이다 — MetaMask 연결 → Snap 이 비밀 생성 → 에이전트가 /cia/register → Snap 저장 → IdP 가 함께 준 발급 코드로 바로 발급·로그인.
         if (authPurpose === 'register') {
           if (!(await connect())) return;
           say('wallet_prog_registering');
           const r = await codeRegister({ uid: authUid, code: authCode, auid: authAuid, step, log });
           if (!r.ok) return reply(r);
-          step('zkID 에 등록됨 — 이어서 로그인합니다.');
+          step('zkIdP 에 등록됨 — 이어서 로그인합니다.');
           authCodeNow = r.issue_code;   // ISSUE_AUTH=key 인 IdP 는 코드를 주지 않는다(null) — 그 경우 코드 없이 발급된다
           provider = 'demo';
         }
         if (authCodeNow === null && provider === 'demo' && authPurpose !== 'register') {
-          // 미등록 지갑(2026-11-09): zkID 인증 창으로 가되 등록 모드(purpose=register)로 — 아이디·비밀번호만 넣으면 등록 코드를 들고 돌아온다(위 분기).
+          // 미등록 지갑(2026-11-09): zkIdP 인증 창으로 가되 등록 모드(purpose=register)로 — 아이디·비밀번호만 넣으면 등록 코드를 들고 돌아온다(위 분기).
           // 상태를 못 읽으면 등록된 것으로 보고 진행한다(IdP 가 다시 걸러준다).
           let registered = true; try { registered = Boolean((await (await fetch('/wallet/status')).json()).registered); } catch { /* 진행 */ }
-          // 2026-11-13(화면 리뷰): 설정 전 스냅(설치 전·salt 없음·백업 전)이면 zkID 로 보내지 않는다 — 아이디·비밀번호·auid 를 다 넣고 돌아온 뒤에야 막히지 않게.
-          if (!(await snapSetupReady())) { step('스냅 설정이 끝나지 않았다 — zkID 로 가지 않는다.'); return reply({ ok: false, reason: 'snap_setup_required' }); }
+          // 2026-11-13(화면 리뷰): 설정 전 스냅(설치 전·salt 없음·백업 전)이면 zkIdP 로 보내지 않는다 — 아이디·비밀번호·auid 를 다 넣고 돌아온 뒤에야 막히지 않게.
+          if (!(await snapSetupReady())) { step('스냅 설정이 끝나지 않았다 — zkIdP 로 가지 않는다.'); return reply({ ok: false, reason: 'snap_setup_required' }); }
           // 2026-11-10: RP 의 Google·네이버 버튼은 지갑을 거치지 않는다(RP 직접, 스펙 rp-social-logins) — 지갑은 미등록이면 등록 모드, 아니면 아이디·비밀번호 인증 창.
           // 11-06 의 "미등록이면 Google 래퍼 가입, 아이디 지갑이면 Google 토큰으로 발급하며 연결" 과 11-09 의 method=google|naver 는 없다.
-          // 2026-11-18(전체 리뷰 2): 에이전트는 미등록인데 스냅에 끝난 등록이 남아 있으면(데모 리셋 뒤 스냅을 초기화하지 않은 경우) zkID 로 보내지 않는다 —
+          // 2026-11-18(전체 리뷰 2): 에이전트는 미등록인데 스냅에 끝난 등록이 남아 있으면(데모 리셋 뒤 스냅을 초기화하지 않은 경우) zkIdP 로 보내지 않는다 —
           // 등록 모드로 가 봐야 돌아온 뒤 스냅의 prepareRegister 가 already_registered 로 막는다. 스냅을 못 읽으면 그냥 진행한다(뒤 단계가 다시 거른다).
           if (!registered && cfg.secrets === 'snap') {
             let info = null; try { info = await invokeSnap('getPublicInfo', {}); } catch { /* 진행 */ }
-            if (info?.registered === true) { step('스냅에 옛 등록이 남아 있다 — zkID 로 가지 않는다("내 계정" 탭에서 스냅 초기화).'); return reply({ ok: false, reason: 'already_registered' }); }
+            if (info?.registered === true) { step('스냅에 옛 등록이 남아 있다 — zkIdP 로 가지 않는다("내 계정" 탭에서 스냅 초기화).'); return reply({ ok: false, reason: 'already_registered' }); }
           }
-          if (!registered) { step(tt('wallet_auth_to_idp_register') || 'zkID 에 처음 등록합니다 — zkID 로그인 페이지로 이동합니다…'); say('wallet_auth_to_idp_register'); await goIdpAuth(req, evOrigin, { purpose: 'register' }); return; }
+          if (!registered) { step(tt('wallet_auth_to_idp_register') || 'zkIdP 에 처음 등록합니다 — zkIdP 로그인 페이지로 이동합니다…'); say('wallet_auth_to_idp_register'); await goIdpAuth(req, evOrigin, { purpose: 'register' }); return; }
           step(tt('wallet_auth_to_idp') || 'IdP 로그인 페이지로 이동합니다…'); say('wallet_auth_to_idp'); await goIdpAuth(req, evOrigin); return;
         }
 
@@ -1535,7 +1535,7 @@
         const dl = document.createElement('dl');
         dl.className = 'kv';
         kvRow(dl, tt('wallet_session_service') || 'RP', rpLabel(c));            // 이름(없으면 주소) — arid 는 전문가 행(2026-11-05)
-        kvRow(dl, tt('wallet_session_idp') || 'IdP', cfg?.ciaUrl ? `zkID · ${cfg.ciaUrl}` : 'zkID');   // 2026-11-11(사용자 요청): 이 세션을 발급한 IdP — 이 스냅은 IdP 하나(MODE3_CIA_URL)에 등록된다
+        kvRow(dl, tt('wallet_session_idp') || 'IdP', cfg?.ciaUrl ? `zkIdP · ${cfg.ciaUrl}` : 'zkIdP');   // 2026-11-11(사용자 요청): 이 세션을 발급한 IdP — 이 스냅은 IdP 하나(MODE3_CIA_URL)에 등록된다
         // 2026-11-09: 값도 스마트 계정 주소로(팩토리 전이면 PPID 숫자). 2026-11-14: 주소는 자르지 않고 전체를 보이며 복사 버튼을 붙인다(옆이 비어 있는데 잘려 있었다).
         const ppidFull = c.account ?? String(c.PPID);
         const ppidVal = document.createElement('span'); ppidVal.className = 'val-copy';
@@ -1545,7 +1545,7 @@
         if (c.account) { ppidCode.textContent = c.account; ppidCode.title = c.account; }
         ppidVal.append(ppidCode, ' ', ppidCopy);
         kvRow(dl, termEl('PPID'), ppidVal);
-        // 2026-11-16(사용자 요청): H(C_s) — zkID 관리자 "세션 — 폐기 목록" 이 세션을 이 값으로 보인다. 같은 앞 10자리 표기(전체는 title·복사)로 맞춰 볼 수 있게.
+        // 2026-11-16(사용자 요청): H(C_s) — zkIdP 관리자 "세션 — 폐기 목록" 이 세션을 이 값으로 보인다. 같은 앞 10자리 표기(전체는 title·복사)로 맞춰 볼 수 있게.
         if (c.Cf_s) {
           const cfsVal = document.createElement('span'); cfsVal.className = 'val-copy';
           const cfsCode = shortCode(c.Cf_s, 10); cfsCode.classList.add('cfs');
@@ -2601,7 +2601,7 @@
         // 2026-11-06: 에이전트(이 서버)의 등록·세션도 함께 비운다 — 아니면 다음 등록이 409 already_registered 로 막힌다.
         const a = await fetch('/wallet/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: true }) });
         if (!a.ok) { setVerdict($('snapResetVerdict'), false, 'wallet_snap_reset_failed', { reason: 'wallet_error', detail: `agent reset HTTP ${a.status}` }); return; }
-        setVerdict($('snapResetVerdict'), true, 'wallet_snap_reset_ok', () => ({ summary: summary ? tt(summary) : tt('wallet_snap_reset_summary') || '스냅과 이 스냅의 등록 기록을 지웠습니다. 이제 zkID 에서 새로 등록할 수 있습니다.' }));
+        setVerdict($('snapResetVerdict'), true, 'wallet_snap_reset_ok', () => ({ summary: summary ? tt(summary) : tt('wallet_snap_reset_summary') || '스냅과 이 스냅의 등록 기록을 지웠습니다. 이제 zkIdP 에서 새로 등록할 수 있습니다.' }));
         await refresh();
         await loadStore();   // "내 계정" 의 값도 지운 뒤의 것으로
       } catch (e) {
@@ -2682,7 +2682,7 @@
         runAuthorize();
         return;
       }
-      refresh(true);   // 2026-11-14: 화면을 열 때 한 번은 등록부를 체인에서 다시 확인한다(?sync=1) — zkID 쪽의 폐기·연결 해제를 이 화면이 알게(regNotice)
+      refresh(true);   // 2026-11-14: 화면을 열 때 한 번은 등록부를 체인에서 다시 확인한다(?sync=1) — zkIdP 쪽의 폐기·연결 해제를 이 화면이 알게(regNotice)
       // 등록부 확인 줄(V9 §8.2)은 다른 창(서비스 페이지의 로그인, 관리자의 바꿔치기)이 바꾼 서버 상태를 반영해야 한다 —
       // 이 페이지 혼자서는 그 일을 모르므로 가볍게(강제 재동기화 없이) 주기적으로 다시 읽는다. 탭이 숨겨지면 쉰다
       // (Demo.stack 의 상태 폴링과 같은 주기). 강제 재동기화는 새로고침 버튼(?sync=1)만 한다.

@@ -15,10 +15,12 @@
     /* 2026-11-18(사용자 요청): passkey-web 에는 Race (2) 시연이 없다 — 체크박스와 "시연 숨기기" 버튼 줄을 보이지 않게(모드는 demo.js setWalletKind 가 <html> 에 적는다). */
     html[data-wallet-kind="passkey-web"] .race-demo { display:none }
     /* 같은 날(사용자 결정): 이 모드에서 동작하지 않는 로그인 수단(Google·네이버 — 서비스의 소셜 로그인은 localhost 오리진 전용, Google 은 승인 창이 passkey_mode 로 거절)은 로그인 창에서 뺀다. */
-    html[data-wallet-kind="passkey-web"] #googleLoginBtn, html[data-wallet-kind="passkey-web"] #naverLoginBtn, html[data-wallet-kind="passkey-web"] #loginGsiSlot { display:none }
+    /* 2026-11-19: Google 은 리디렉션식 로그인(지갑 정적 서버의 /google-relay 를 거친다)이 설정돼 있으면 이 모드에서도 보인다 — 시나리오의 "기존 OIDC" 쪽이다. 네이버·GIS 칸은 그대로 숨긴다. */
+    html[data-wallet-kind="passkey-web"]:not([data-google-relay="1"]) #googleLoginBtn, html[data-wallet-kind="passkey-web"] #naverLoginBtn, html[data-wallet-kind="passkey-web"] #loginGsiSlot { display:none }
   </style>
   <script src="/common/strings.js"></script>
   <script src="/common/demo.js"></script>
+  <script src="/common/flow_figure.js"></script>   <!-- 2026-11-19: "받은 것·검증한 것" 그림 -->
   <script src="/common/gsi.js"></script>   <!-- 2026-11-10: RP 의 Google 로그인·연결(GIS) -->
 </head>
 <body data-page="rp">
@@ -27,7 +29,7 @@
     <strong data-i18n="rp_pending_banner">서비스 준비 중 — IdP 승인 대기</strong>
   </div>
 
-  <!-- 2026-11-17(사용자 요청): 세션이 끝나면(만료·로그아웃·폐기·닫힌 로그인) 맨 위에 알리고, "세션 복구" 로 새 zkID 로그인을 연다(실제로는 새 세션).
+  <!-- 2026-11-17(사용자 요청): 세션이 끝나면(만료·로그아웃·폐기·닫힌 로그인) 맨 위에 알리고, "세션 복구" 로 새 zkIdP 로그인을 연다(실제로는 새 세션).
        화면 내용(출금·Race 결과)은 지우지 않는다. 에이전트 재시작으로 증인만 없는 경우(session_restore_required)는 새 세션이 아니라 zk 스냅 화면의 세션 복구라 여기 넣지 않는다. -->
   <div id="sessionBar" class="session-bar" hidden role="status">
     <strong data-i18n="rp_session_bar_title">현재 세션이 만료됐습니다</strong> <span id="sessionBarDetail"></span>
@@ -79,9 +81,9 @@
       <!-- 로그아웃 상태: 로그인 카드(조건 문구·체크박스·결과) — 실제 로그인 버튼은 상단 내비의 #loginBtn 이다. -->
       <div id="assetsLoggedOut" class="login-card">
         <h2 data-i18n="rp_login_title">로그인</h2>
-        <p class="desc" data-i18n="rp_login_desc">zkID 계정으로 로그인합니다. 이 거래소는 회원이 누구인지 모르고, zkID 는 회원이 어디에 로그인하는지 모릅니다.</p>
-        <!-- 2026-11-05: 처음 온 사람의 길 — zkID 가입·지갑 등록으로 가는 링크(주소는 rp_info.ciaUrl 로 채운다). -->
-        <!-- 2026-11-11(사용자 결정): "zkID 계정이 없으면 … zkID 가입·스냅 등록" 안내 줄은 뺐다 -->
+        <p class="desc" data-i18n="rp_login_desc">zkIdP 계정으로 로그인합니다. 이 거래소는 회원이 누구인지 모르고, zkIdP 는 회원이 어디에 로그인하는지 모릅니다.</p>
+        <!-- 2026-11-05: 처음 온 사람의 길 — zkIdP 가입·지갑 등록으로 가는 링크(주소는 rp_info.ciaUrl 로 채운다). -->
+        <!-- 2026-11-11(사용자 결정): "zkIdP 계정이 없으면 … zkIdP 가입·스냅 등록" 안내 줄은 뺐다 -->
         <p class="login-policy" id="loginPolicy">만 19세 이상, 허용 국가(KR·JP·US·DE·FR)만 이용할 수 있습니다</p>
         <label class="opt-row expert"><input type="checkbox" id="requirePred" /> <span id="requirePredLabel" data-i18n="rp_require_pred">조건 요구(국가·나이)</span></label>
         <p><button type="button" id="cardLoginBtn" class="nav-cta" data-i18n="rp_login_btn">로그인</button></p>   <!-- 2026-11-05: 카드 안에서 바로 시작 — 상단 버튼과 같은 모달 -->
@@ -91,14 +93,18 @@
 
       <!-- 로그인 상태: 내 자산(가짜 잔액) + 세션 상태 + 재검증 + 출금 신청. -->
       <div id="assetsLoggedIn" hidden>
-        <!-- 2026-11-14 의 닫힌 zkID 로그인 안내(#staleNotice)는 2026-11-17 맨 위 상단 바(#sessionBar)로 합쳤다. -->
+        <!-- 2026-11-14 의 닫힌 zkIdP 로그인 안내(#staleNotice)는 2026-11-17 맨 위 상단 바(#sessionBar)로 합쳤다. -->
         <h2 data-i18n="assets_title">내 자산</h2>
         <dl class="kv account-kv">
           <dt data-i18n="rp_my_account_addr">내 계정 주소</dt><dd><code id="accountPPID">-</code> <button type="button" id="copyPpidBtn" class="copy-btn" title="복사" aria-label="복사" data-i18n-title="rp_copy_btn_title">⧉</button></dd>
-          <!-- 2026-11-09 Phase 1: zkID ID 토큰의 name 클레임으로 받은 속성 커밋먼트(C_attr) — 이 RP 가 이 계정에 고정한 값. 없으면 "없음". -->
+          <!-- 2026-11-09 Phase 1: zkIdP ID 토큰의 name 클레임으로 받은 속성 커밋먼트(C_attr) — 이 RP 가 이 계정에 고정한 값. 없으면 "없음". -->
         </dl>
-        <!-- 2026-11-15(시연자 화면 리뷰): zkID 로 로그인하며 무엇을 증명했는지 한 줄(renderAccountView) — "로그인 성공" 카드는 로그인 카드와 함께 숨어, 로그인 뒤에는 조건을 값 없이 증명했다는 사실이 화면에 남지 않았다. -->
+        <!-- 2026-11-15(시연자 화면 리뷰): zkIdP 로 로그인하며 무엇을 증명했는지 한 줄(renderAccountView) — "로그인 성공" 카드는 로그인 카드와 함께 숨어, 로그인 뒤에는 조건을 값 없이 증명했다는 사실이 화면에 남지 않았다. -->
         <p id="loginProof" class="login-proof" hidden></p>
+        <!-- 2026-11-19(스펙 oidc-comparison C8): 이 로그인에서 zkIdP 가 이 서비스에 알려 준 사용자 식별자 — 일반 OIDC 는 uid, zk-Delegation 은 auid_s(와 PPID). -->
+        <div id="seenBox" class="login-proof" hidden><strong id="seenTitle" data-i18n="rp_seen_title">zkIdP 가 이 서비스에 알려 준 사용자 식별자</strong><div id="seenBody"></div>
+          <!-- 2026-11-19(데모 시나리오 7): 이 서비스가 이 로그인에서 받은 것·검증한 것·알 수 없는 것(기존 OIDC 면 알게 되는 것)의 그림 -->
+          <details id="seenFigure" open><summary data-i18n="flow_rp_title">이 서비스가 받은 것과 검증한 것</summary><div id="seenFigureBody"></div></details></div>
         <!-- 2026-11-05(B안): 잔액은 0 에서 시작한다. KRW 는 RP 의 시연용 장부, ETH 는 세션 계정의 실제 체인 잔액(로그인·입금·구매·출금 뒤 RP 에 다시 묻는다). BTC 는 체인에 없어 뺐다. -->
         <ul class="balance-list">
           <li data-asset="KRW"><span class="bal-label">KRW</span><strong class="bal-amt">0</strong></li>
@@ -124,9 +130,9 @@
         <div class="withdraw-box" id="onchain">
           <h3 data-i18n="rp_tx_title">온체인 출금</h3>
           <p class="desc" data-i18n="rp_tx_desc">이 세션의 내 주소(계정)에서 체인으로 보냅니다. 사용자 승인 창에서 확인한 뒤 RP 릴레이가 보냅니다.</p>
-          <!-- 2026-11-10(R5): 출금 출처 — 내 계정(PPID 스마트 계정)은 zkID 세션(지갑 증명)만, 거래소 보관은 늘. -->
+          <!-- 2026-11-10(R5): 출금 출처 — 내 계정(PPID 스마트 계정)은 zkIdP 세션(지갑 증명)만, 거래소 보관은 늘. -->
           <label class="withdraw-amount wide"><span data-i18n="rp_tx_source_label">출금 출처</span>
-            <select id="txSource"><option value="account" data-i18n="rp_tx_source_account">내 계정(PPID — zkID 로그인 필요)</option><option value="custody" data-i18n="rp_tx_source_custody">거래소 보관</option></select></label>
+            <select id="txSource"><option value="account" data-i18n="rp_tx_source_account">내 계정(PPID — zkIdP 로그인 필요)</option><option value="custody" data-i18n="rp_tx_source_custody">거래소 보관</option></select></label>
           <label class="withdraw-amount wide"><span data-i18n="rp_tx_to_label">받는 주소</span> <input id="txTo" value="0x000000000000000000000000000000000000dEaD" size="44" /></label>
           <label class="withdraw-amount"><span data-i18n="rp_tx_value_label">금액(ETH)</span> <input id="txValue" value="0.01" size="12" inputmode="decimal" /></label>
           <button id="txBtn" data-i18n="rp_tx_btn">온체인 출금 실행</button>
@@ -153,7 +159,7 @@
       <h2 data-i18n="rp_account_title">내 계정</h2>
       <p class="desc" data-i18n="rp_account_desc">이 서비스 계정에 로그인 수단을 연결합니다. 연결한 어느 수단으로 로그인해도 같은 계정·같은 잔고입니다. 다른 서비스와는 따로입니다.</p>
       <dl class="kv method-list">
-        <dt>zkID</dt><dd><span id="mState_zkid">-</span> <button type="button" id="mLink_zkid" class="btn-ghost" data-i18n="rp_link_btn">연결</button> <button type="button" id="mUnlink_zkid" class="btn-ghost" data-i18n="rp_unlink_btn">해제</button></dd>
+        <dt>zkIdP</dt><dd><span id="mState_zkid">-</span> <button type="button" id="mLink_zkid" class="btn-ghost" data-i18n="rp_link_btn">연결</button> <button type="button" id="mUnlink_zkid" class="btn-ghost" data-i18n="rp_unlink_btn">해제</button></dd>
         <dt>Google</dt><dd><span id="mState_google">-</span> <button type="button" id="mLink_google" class="btn-ghost" data-i18n="rp_link_btn">연결</button> <button type="button" id="mUnlink_google" class="btn-ghost" data-i18n="rp_unlink_btn">해제</button><div id="linkGsiSlot" class="gsi-slot" hidden></div></dd>
         <dt data-i18n="rp_naver_name">네이버</dt><dd><span id="mState_naver">-</span> <button type="button" id="mLink_naver" class="btn-ghost" data-i18n="rp_link_btn">연결</button> <button type="button" id="mUnlink_naver" class="btn-ghost" data-i18n="rp_unlink_btn">해제</button></dd>
       </dl>
@@ -182,7 +188,7 @@
   </main>
 
   <!-- 로그인 모달(2026-10-15) — 상단 #loginBtn 은 이 창을 열기만 한다. 직접 로그인(아이디/비밀번호)은 장식이고,
-       2026-11-09: Google·네이버는 IdP 가 켰으면 같은 zk 로그인을 연다(zkID 계정에 연결한 계정으로 인증 창에서 본인 확인), 아니면 안내문만. 실제 zk-Delegation 로그인은 #idpLoginBtn 이 한다.
+       2026-11-09: Google·네이버는 IdP 가 켰으면 같은 zk 로그인을 연다(zkIdP 계정에 연결한 계정으로 인증 창에서 본인 확인), 아니면 안내문만. 실제 zk-Delegation 로그인은 #idpLoginBtn 이 한다.
        예외(2026-10-16 OIDC 래퍼): IdP 가 Google 을 켰고 브라우저 모드면 Google 버튼도 같은 zk 로그인을 연다(data-oidc="1"). -->
   <div id="loginModal" class="modal-backdrop" hidden>
     <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="loginModalTitle">
@@ -190,12 +196,16 @@
         <h2 id="loginModalTitle" data-i18n="rp_login_modal_title">로그인</h2>
         <button type="button" id="loginModalClose" class="modal-close" aria-label="닫기">×</button>
       </div>
-      <!-- 2026-11-05: 진짜 로그인(zkID)을 맨 위 주 버튼으로, 아이디/비밀번호·Google·네이버는 "이 데모에서는 동작하지 않는 다른 방법" 으로 아래에 둔다. 정책 문구는 카드에만. -->
+      <!-- 2026-11-05: 진짜 로그인(zkIdP)을 맨 위 주 버튼으로, 아이디/비밀번호·Google·네이버는 "이 데모에서는 동작하지 않는 다른 방법" 으로 아래에 둔다. 정책 문구는 카드에만. -->
       <div class="social-row">
         <button type="button" id="idpLoginBtn" class="social-btn social-btn-idp">
-          <span data-i18n="rp_idp_btn">zkID 로 로그인</span>
+          <span data-i18n="rp_idp_btn">zkIdP 로 로그인</span>
         </button>
-        <!-- 2026-11-10(스펙 rp-social-logins): 네이버는 RP 가 직접 받는다. 2026-11-11(사용자 결정): Google 은 zkID 래퍼 — 스냅 팝업이 Google 토큰을 받아 zkID 흐름을 탄다. -->
+        <!-- 2026-11-19(스펙 oidc-comparison C7): zkIdP 의 일반 OIDC — 비교용. 이 서비스가 켰을 때만 보인다(rp_info.social.zkoidc). 서비스는 uid 를 그대로 받고 zkIdP 는 어느 서비스인지 안다. -->
+        <button type="button" id="zkoidcLoginBtn" class="social-btn" hidden>
+          <span data-i18n="rp_zkoidc_btn">zkIdP 로 로그인 (일반 OIDC · 비교용)</span>
+        </button>
+        <!-- 2026-11-10(스펙 rp-social-logins): 네이버는 RP 가 직접 받는다. 2026-11-11(사용자 결정): Google 은 zkIdP 래퍼 — 스냅 팝업이 Google 토큰을 받아 zkIdP 흐름을 탄다. -->
         <button type="button" id="googleLoginBtn" class="social-btn">
           <span class="social-badge badge-google" aria-hidden="true">G</span>
           <span data-i18n="rp_google_btn">Google 계정으로 로그인</span>
@@ -259,12 +269,12 @@
     let lastPPID = null;                    // 직전 로그인의 PPID — 같은 주소가 다시 나오는지 한 줄 요약에 쓴다
     let lastDisclosure;                     // 2026-11-15: 이 세션 로그인이 공개(증명)한 조건 — null = 없음, undefined = 모름(옛 저장분). 내 자산의 "증명한 조건" 줄(#loginProof)
     let lastAccount = null;                 // 2026-11-05: 세션 계정의 0x 주소(잔액 조회 응답) — 배지·"내 계정 주소" 에 PPID 숫자 대신 보인다(사용자 결정)
-    let rpMe = null;                        // 2026-11-10: 쿠키 세션의 계정(/api/rp/me) — 소셜·zkID 로그인 모두. null 이면 쿠키 세션 없음
+    let rpMe = null;                        // 2026-11-10: 쿠키 세션의 계정(/api/rp/me) — 소셜·zkIdP 로그인 모두. null 이면 쿠키 세션 없음
     const isLoggedIn = () => !!currentSession || !!rpMe;
     // 2026-11-17: 끝난 세션의 상단 바 사유 — 'ended'(목록에서 사라짐: 만료·다른 곳의 로그아웃·폐기) | 세션 거절 사유(session_expired·revoked·revoked_session) | null.
     // 닫힌 로그인(sessionStale)도 같은 바로 보인다. 새 로그인(setSession(새 r_s))과 로그아웃 버튼이 지운다.
     let sessionEndedReason = null;
-    let sessionStale = false;               // 2026-11-14: zkID 로그인이 서버에서 닫혔다(폐기 목록이 새로 게시됐다) — 화면은 두고 안내만 보인다(checkZkidStale)
+    let sessionStale = false;               // 2026-11-14: zkIdP 로그인이 서버에서 닫혔다(폐기 목록이 새로 게시됐다) — 화면은 두고 안내만 보인다(checkZkidStale)
     let txSourcePicked = null;              // 출금 출처를 사용자가 직접 고른 값(없으면 세션 종류로 기본값)
     const progress = { used: false, disclosed: false, opened: false, login2: false };   // 이 페이지가 아는 완료 신호(세션 중 메모리)
     // U6(2026-10-14): 지갑 health 의 rpOrigins(/mode3/health, Demo.stack 가 이미 폴링 중)에서 내 오리진이 첫 번째가
@@ -380,16 +390,16 @@
     $('copyTxHashBtn').addEventListener('click', () => copyText(lastTxHash, $('copyTxHashBtn')));
     // 2026-11-06(8차): 탭 제목은 로그인 전 "zkONE — 로그인", 로그인 뒤 "zkONE — 내 자산"(renderBrand·renderAccountView 둘이 부른다).
     function renderTitle() { document.title = `${SERVICE_NAME} — ${isLoggedIn() ? '내 자산' : '로그인'}`; }
-    /** 내 자산의 한 줄: zkID 로그인이 증명한 조건. 조건을 요구하는 서비스(zkTWO)는 정책의 말(만 N세 이상·국가 이름)로 먼저 쓰고 증명에 실린 술어를 괄호에 둔다. */
+    /** 내 자산의 한 줄: zkIdP 로그인이 증명한 조건. 조건을 요구하는 서비스(zkTWO)는 정책의 말(만 N세 이상·국가 이름)로 먼저 쓰고 증명에 실린 술어를 괄호에 둔다. */
     function loginProofText() {
       const d = lastDisclosure;
-      if (!d || (d.mask === '0' && !d.set)) return tt('rp_login_proof_none') || 'zkID 로 로그인했습니다 — 조건을 공개하지 않았습니다.';
+      if (!d || (d.mask === '0' && !d.set)) return tt('rp_login_proof_none') || 'zkIdP 로 로그인했습니다 — 조건을 공개하지 않았습니다.';
       const what = discSummary(d);
       if (info?.requireDisclosure && info.predicates) {
         const countries = (info.predicates.allowedCountryNames ?? info.predicates.allowedCountries ?? []).map(countryLabel).join('·');
-        return tt('rp_login_proof_policy', { minAge: info.predicates.minAge, countries, what }) || `zkID 로 로그인했습니다 — 증명한 조건: ${what}. 값은 받지 않았습니다.`;
+        return tt('rp_login_proof_policy', { minAge: info.predicates.minAge, countries, what }) || `zkIdP 로 로그인했습니다 — 증명한 조건: ${what}. 값은 받지 않았습니다.`;
       }
-      return tt('rp_login_proof_cond', { what }) || `zkID 로 로그인했습니다 — 증명한 조건: ${what}. 값은 받지 않았습니다.`;
+      return tt('rp_login_proof_cond', { what }) || `zkIdP 로 로그인했습니다 — 증명한 조건: ${what}. 값은 받지 않았습니다.`;
     }
     function renderAccountView() {
       const loggedIn = isLoggedIn();   // 2026-11-10: 쿠키 세션(소셜)도 로그인이다
@@ -413,10 +423,81 @@
       $('loginProof').hidden = !showProof; if (showProof) $('loginProof').textContent = loginProofText();
       const via = rpMe?.via ?? (currentSession ? 'zkid' : null);
       $('viaBadge').textContent = via ? (tt(`rp_via_${via}`) || via) : ''; $('viaBadge').hidden = !via;
-      // 출금 출처(R5): PPID 계정에서 내보내는 것은 zkID 세션(지갑 증명)만 — 소셜 세션이면 거래소 보관으로 고정한다.
+      // 출금 출처(R5): PPID 계정에서 내보내는 것은 zkIdP 세션(지갑 증명)만 — 소셜 세션이면 거래소 보관으로 고정한다.
       $('txSource').querySelector('option[value="account"]').disabled = !currentSession;
-      $('txSource').value = !currentSession ? 'custody' : (txSourcePicked ?? 'account');   // 사용자가 고른 값이 없으면 zkID 세션은 내 계정이 기본
-      renderMethods();
+      $('txSource').value = !currentSession ? 'custody' : (txSourcePicked ?? 'account');   // 사용자가 고른 값이 없으면 zkIdP 세션은 내 계정이 기본
+      renderMethods(); renderSeen();
+    }
+    /** 데모 시나리오 7(2026-11-19): 이 서비스가 이 로그인에서 받은 것·검증한 것. zk-Delegation 은 "알 수 없는 것", 기존 OIDC(Google·zkIdP 일반 OIDC)는 "알게 되는 것" 을 함께 적는다. */
+    function renderSeenFigure(seen) {
+      const T = (k) => tt(k) || k, me = info?.name ?? 'RP';
+      if (seen.protocol === 'zk') {
+        const r = seen.received ?? {};
+        FlowFigure.render($('seenFigureBody'), {
+          from: { name: T('flow_user'), sub: T('flow_user_sub') }, to: { name: me },
+          sent: { title: T('flow_rp_sent'), items: [
+            { key: 'proof', name: 'π_session', value: T('flow_proof_value'), note: T('flow_rp_proof') },
+            { key: 'PPID', name: 'PPID', value: seen.PPID, note: T('flow_rp_ppid') },
+            { key: 'arid', name: 'arid', value: r.arid, note: T('flow_rp_arid') },
+            { key: 'auid_s', name: 'auid_s', value: seen.auid_s, note: T('flow_rp_auid_s') },
+            { key: 'arid_s', name: 'arid_s', value: seen.arid_s, note: T('flow_rp_arid_s') },
+            { key: 'pk_i', name: 'pk_i', value: r.pk_i, note: T('flow_rp_pki') },
+            { key: 'max_height', name: 'max_height', value: r.max_height, note: T('flow_rp_height') },
+            { key: 'root', name: 'revRoot', value: r.root, note: T('flow_rp_root') },
+            { key: 'regRoot', name: 'regRoot', value: r.regRoot, note: T('flow_rp_regroot') },
+            { key: 'r_s', name: 'r_s', value: r.r_s, note: T('flow_rp_rs') },
+            { key: 'sig', name: T('flow_rp_sig'), value: 'σ_i', note: T('flow_rp_sig_note') },
+          ] },
+          back: null,
+          lists: [
+            { kind: 'check', title: T('flow_checks'), rows: ['flow_rp_c1', 'flow_rp_c2', 'flow_rp_c3', 'flow_rp_c4', 'flow_rp_c5', ...(r.hasIdToken ? ['flow_rp_c6'] : []), 'flow_rp_c7'].map(T) },
+            { kind: 'unknown', title: T('flow_unknown'), rows: ['flow_rp_u1', 'flow_rp_u2', 'flow_rp_u3'].map(T) },
+          ],
+        });
+        return;
+      }
+      const p = seen.jwt?.payload ?? {};
+      FlowFigure.render($('seenFigureBody'), {
+        from: { name: T('flow_user'), sub: T('flow_user_sub_oidc') }, to: { name: me },
+        sent: { title: T('flow_oidc_sent'), items: [
+          { key: 'iss', name: 'iss', value: p.iss ?? '-', note: T('flow_oidc_iss') },
+          { key: 'sub', name: 'sub', value: seen.uid, note: T('flow_oidc_sub') },
+          { key: 'aud', name: 'aud', value: seen.rid ?? '-', note: T('flow_oidc_aud') },
+          { key: 'nonce', name: 'nonce', value: p.nonce ?? '-', note: T('flow_oidc_nonce') },
+        ] },
+        back: null,
+        lists: [
+          { kind: 'check', title: T('flow_checks'), rows: ['flow_oidc_c1', 'flow_oidc_c2', 'flow_oidc_c3', 'flow_oidc_c4'].map(T) },
+          { kind: 'learn', title: T('flow_learns'), rows: ['flow_oidc_l1', 'flow_oidc_l2'].map(T) },
+        ],
+      });
+    }
+    /** "zkIdP 가 이 서비스에 알려 준 사용자 식별자"(스펙 oidc-comparison C8) — /api/rp/me 의 seen. 긴 값은 줄여 보이고 전체는 title 에 둔다. 값은 textContent 로만 넣는다. */
+    function renderSeen() {
+      const seen = rpMe?.seen ?? null, body = $('seenBody');
+      $('seenBox').hidden = !seen; body.replaceChildren();
+      if (!seen) return;
+      $('seenBox').dataset.protocol = seen.protocol;
+      const short = (v) => (String(v).length > 24 ? `${String(v).slice(0, 10)}…${String(v).slice(-8)}` : String(v));
+      const line = (name, value, noteKey, noteFb) => {
+        const p = document.createElement('div'); const code = document.createElement('code');
+        code.textContent = short(value); code.title = String(value); code.dataset.seen = name.split(' ').pop();   // data-seen: uid·rid·auid_s·arid_s·PPID
+        p.append(`${name} `, code, ` — ${tt(noteKey) || noteFb}`); body.append(p);
+      };
+      const head = document.createElement('div'); head.className = 'muted';
+      head.textContent = seen.protocol !== 'oidc' ? (tt('rp_seen_zk') || 'zk-Delegation 으로 로그인했습니다.') : seen.issuer === 'google' ? (tt('rp_seen_google') || 'Google(OIDC)로 로그인했습니다.') : (tt('rp_seen_oidc') || '일반 OIDC 로 로그인했습니다.');
+      $('seenTitle').textContent = seen.issuer === 'google' ? (tt('rp_seen_title_google') || 'Google 이 이 서비스에 알려 준 것 (ID 토큰의 sub·aud)') : (tt('rp_seen_title') || 'zkIdP 가 이 서비스에 알려 준 것');
+      $('seenBox').dataset.issuer = seen.issuer ?? 'zkidp';
+      body.append(head);
+      // 받은 ID 토큰의 sub·aud 자리에 무엇이 들어 있었는가 — 일반 OIDC 는 uid·rid 가 그대로, zk-Delegation 은 가려진 auid_s·arid_s 다.
+      if (seen.protocol === 'oidc') { line('sub = uid', seen.uid, 'rp_seen_uid_note', '모든 서비스에서 같은 값'); line('aud = rid', seen.rid ?? '-', seen.issuer === 'google' ? 'rp_seen_rid_note_google' : 'rp_seen_rid_note', seen.issuer === 'google' ? 'Google 이 아는 이 서비스의 식별자' : 'zkIdP 가 아는 이 서비스의 식별자'); }
+      else { line('sub = auid_s', seen.auid_s, 'rp_seen_auid_s_note', '로그인마다 다른 값'); line('aud = arid_s', seen.arid_s ?? '-', 'rp_seen_arid_s_note', '로그인마다 다른 값 — zkIdP 는 어느 서비스인지 모른다'); line('PPID', seen.PPID, 'rp_seen_ppid_note', '이 서비스에서만 같은 값'); }
+      if (seen.jwt?.payload) {
+        const det = document.createElement('details'); const sum = document.createElement('summary'); const pre = document.createElement('pre');
+        sum.textContent = tt('rp_seen_jwt') || '받은 ID 토큰(JWT) 본문 보기'; pre.id = 'seenJwt'; pre.textContent = JSON.stringify(seen.jwt.payload, null, 2);
+        det.append(sum, pre); body.append(det);
+      }
+      renderSeenFigure(seen);
     }
     /** 쿠키 세션(2026-11-10) — /api/rp/me. 401 이면 null. 계정이 바뀌면 화면을 다시 그리고 잔액을 읽는다. */
     async function refreshMe() {
@@ -477,13 +558,13 @@
         if (!(sessions ?? []).some((x) => x.r_s === `${String(currentSession).slice(0, 8)}…`)) {
           setSession(null);
           sessionEndedReason = 'ended'; renderSessionBar();   // 2026-11-17: 맨 위 상단 바 — "세션 복구" 로 새 로그인
-          refreshMe();   // 2026-11-10: zkID 로 만든 쿠키 세션은 r_s 와 함께 끝난다(서버) — 소셜 세션이면 그대로 남는다
+          refreshMe();   // 2026-11-10: zkIdP 로 만든 쿠키 세션은 r_s 와 함께 끝난다(서버) — 소셜 세션이면 그대로 남는다
           setVerdict($('verdict'), false, 'rp_session_ended_title', () => ({ summary: tt('rp_session_ended') || '이 세션이 끝났습니다 — 사용자 페이지에서 폐기하거나 로그아웃했습니다. 다시 로그인하세요.' }));
         }
       } catch { /* RP 서버를 못 읽으면 그대로 둔다 */ } finally { aliveChecking = false; }
     }
     setInterval(checkSessionAlive, 2000);
-    // 닫힌 zkID 로그인(2026-11-14 화면 리뷰 3차): IdP 가 폐기를 게시해 root 가 바뀌면 서버는 r_s 세션의 요청을 재검증 전까지 받지 않고(revalidate_required) 그 쿠키 세션도
+    // 닫힌 zkIdP 로그인(2026-11-14 화면 리뷰 3차): IdP 가 폐기를 게시해 root 가 바뀌면 서버는 r_s 세션의 요청을 재검증 전까지 받지 않고(revalidate_required) 그 쿠키 세션도
     // 닫는다(zkidCookieAlive). 그런데 r_s 세션은 목록(/api/mode3/sessions)에 남아 위 대조를 지나므로, 상단은 로그인 상태인데 "내 계정" 은 "연결 안 됨"·버튼 없음으로 남았다.
     // 재검증 화면은 없으므로(11-11) 다시 로그인하게 안내한다 — /api/rp/me 가 401 이면 "닫힌 로그인" 으로 표시하고(sessionStale) 내 자산 위에 안내와 "로그아웃하고 다시 로그인" 을 보인다.
     // 화면을 로그아웃 상태로 바꾸지는 않는다: 시연 Race (2)는 세션을 폐기한 직후의 출금 결과를 이 화면에 보여 주는데, 자동 로그아웃은 그 결과 카드를 지웠다(같은 날 MetaMask 점검 중 확인).
@@ -519,7 +600,7 @@
     /** 세션 거절 사유를 보고 끝난 세션이면 바를 띄운다(출금·잔액 요청 실패 직후). */
     const SESSION_ENDED_REASONS = new Set(['session_expired', 'revoked', 'revoked_session', 'expired']);
     function noteSessionReason(reason) { if (SESSION_ENDED_REASONS.has(reason)) { sessionEndedReason = reason; renderSessionBar(); } }
-    // "세션 복구" — 실제로는 새 zkID 로그인(새 세션). 바는 새 세션이 잡히면 setSession 이 지운다.
+    // "세션 복구" — 실제로는 새 zkIdP 로그인(새 세션). 바는 새 세션이 잡히면 setSession 이 지운다.
     $('sessionBarBtn').addEventListener('click', () => { startIdpLogin(); });
     /** 세션 범위의 결과 표시(재검증·잔액·출금 결과)를 초기 화면으로. 로그아웃이면 로그인 카드의 결과·로그도 비운다(2026-10-21 — 재로그인 때 옛 메시지가 남지 않게). */
     /** 시연 Race (2) 결과의 RCL root 두 값(스냅 창이 준 race.rootAtBuild·rootNow). 없으면 숨긴다. */
@@ -565,6 +646,8 @@
     }
     async function loadInfo() {
       info = await (await fetch('/api/mode3/rp_info')).json();
+      $('zkoidcLoginBtn').hidden = !info?.social?.zkoidc?.enabled;
+      document.documentElement.dataset.googleRelay = info?.social?.google?.enabled && info.social.google.redirectUri ? '1' : '0';
       renderBrand();
       const pending = info.status !== 'approved';
       renderStatus();
@@ -610,7 +693,7 @@
     // snap 모드에서는 /wallet/login 에 CORS 가 없다. RP 페이지가 지갑 오리진의 팝업을 열고, 팝업이 Snap 동의를 받아
     // 에이전트를 같은 오리진에서 부른 뒤 결과를 postMessage 로 돌려준다. 최종 제출(POST /api/mode3/login)은 지금처럼
     // RP 페이지가 한다 — 팝업은 RP 서버에 직접 내지 않는다.
-    const POPUP_TIMEOUT_MS = 300_000;   // 2026-11-10: 120초 → 300초 — 첫 로그인은 zkID 인증 창 로그인 + 지갑 창의 salt 입력 + 증명까지 한 창에서 한다
+    const POPUP_TIMEOUT_MS = 300_000;   // 2026-11-10: 120초 → 300초 — 첫 로그인은 zkIdP 인증 창 로그인 + 지갑 창의 salt 입력 + 증명까지 한 창에서 한다
     const POPUP_CLOSED_POLL_MS = 300;        // 창이 닫혔는지 보는 주기
     // 팝업은 결과를 보낸 뒤 스스로 닫는다(mode3/wallet.html 은 성공 200ms·실패 3000ms 뒤 close). 닫힘을 먼저 보더라도
     // 이미 큐에 있는 결과 메시지를 받을 수 있게 이만큼 기다렸다가 "결과 없이 닫혔다"로 판정한다.
@@ -723,7 +806,7 @@
       $('loginModal').hidden = false;
       $('loginModalNote').hidden = true;
       // data-oidc: Google 버튼의 활성 표시(테스트가 본다). 켜져 있으면 버튼 설명을 붙인다.
-      // 2026-11-11(사용자 결정): "Google 계정으로 로그인" 은 zkID 래퍼다 — Google 버튼(GIS)은 스냅 팝업이 그린다(오전의 "창을 열면 바로 GIS" 는 되돌렸다).
+      // 2026-11-11(사용자 결정): "Google 계정으로 로그인" 은 zkIdP 래퍼다 — Google 버튼(GIS)은 스냅 팝업이 그린다(오전의 "창을 열면 바로 GIS" 는 되돌렸다).
       document.addEventListener('keydown', onLoginModalKeydown);
       Demo.tour?.refresh();      // 체험 모드가 켜져 있으면 말풍선을 바로 #idpLoginBtn 으로 옮긴다(아래 anchorOverride).
     }
@@ -735,10 +818,10 @@
     $('loginModalClose').addEventListener('click', closeLoginModal);
     $('loginModal').addEventListener('click', (ev) => { if (ev.target === $('loginModal')) closeLoginModal(); });
     $('directLoginBtn').addEventListener('click', () => showModalNote('rp_direct_login_note', '데모에서는 IdP 로그인만 동작합니다'));
-    // Google(2026-11-11 사용자 결정 — OIDC 래퍼): 같은 zk 로그인을 provider:'google' 로 연다. 스냅 팝업이 Google 토큰을 받아 zkID 와 같은 발급·증명을
+    // Google(2026-11-11 사용자 결정 — OIDC 래퍼): 같은 zk 로그인을 provider:'google' 로 연다. 스냅 팝업이 Google 토큰을 받아 zkIdP 와 같은 발급·증명을
     // 탄다(미등록 스냅이면 Google 로 등록부터). 네이버(2026-11-10 스펙 rp-social-logins)는 그대로 RP 가 직접 받는다. RP 직접 Google 은 내 계정의 "연결"에만 남는다.
-    /** 소셜 로그인은 로그인 전체를 바꾼다(2026-11-11 사용자 지적) — 남아 있던 zkID 세션(r_s)을 RP 에서도 끝내고 화면·저장소에서 지운다.
-     *  그대로 두면 새 소셜 계정 화면에 옛 zkID 계정의 PPID·자산이 섞여 "zkID 가 저절로 연결된" 것처럼 보인다. 쿠키 세션(새 계정)은 건드리지 않는다. */
+    /** 소셜 로그인은 로그인 전체를 바꾼다(2026-11-11 사용자 지적) — 남아 있던 zkIdP 세션(r_s)을 RP 에서도 끝내고 화면·저장소에서 지운다.
+     *  그대로 두면 새 소셜 계정 화면에 옛 zkIdP 계정의 PPID·자산이 섞여 "zkIdP 가 저절로 연결된" 것처럼 보인다. 쿠키 세션(새 계정)은 건드리지 않는다. */
     async function endZkidSession(r_s = currentSession) {
       if (r_s === currentSession) { lastPPID = null; setSession(null); }
       try { localStorage.removeItem(SESSION_KEY); } catch { /* 저장소 없음 */ }
@@ -766,6 +849,7 @@
     }
     $('googleLoginBtn').addEventListener('click', async () => {
       if (!info) { try { await loadInfo(); } catch { /* 아래에서 꺼진 것으로 본다 */ } }
+      if (info?.social?.google?.enabled && info.social.google.redirectUri) return startGoogleRedirect();   // 2026-11-19: 리디렉션식(실제 OIDC — 서비스가 Google 의 클라이언트다). 래퍼(지갑 창)보다 먼저
       if (info?.oidc?.enabled) { closeLoginModal(); startIdpLogin({ provider: 'google' }); return; }
       showModalNote('rp_social_not_in_demo', '이 데모에서는 아직 준비되지 않았습니다');
     });
@@ -774,6 +858,42 @@
       if (info?.social?.naver?.enabled) { location.assign('/api/rp/naver/start?purpose=login'); return; }
       showModalNote('rp_social_not_in_demo', '이 데모에서는 준비되지 않았습니다');
     });
+    // Google 리디렉션식 로그인(2026-11-19, 시나리오 3·4 — 실제 Google OIDC): 이 서비스가 낸 1회용 nonce 로 Google 의 암묵 흐름(response_type=id_token)을 탄다. Google 은 이 서비스의 이름
+    // (*.zkd.test)을 돌아올 주소로 받지 않으므로 지갑 정적 서버의 /google-relay(https://127.0.0.1:…)로 돌아오게 하고, 그 화면이 조각(#google_back=1&id_token=…)째 여기로 넘긴다.
+    // state 는 "이 오리진(base64url).난수" — 이 브라우저의 sessionStorage 에 남겨 두고 돌아왔을 때 대조한다(남이 만든 링크로 남의 계정에 로그인시키지 못하게).
+    const GOOGLE_PENDING_KEY = 'rp.googlePending', GOOGLE_PENDING_MS = 10 * 60_000;
+    const b64url = (str) => btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    async function startGoogleRedirect() {
+      const g = info.social.google;
+      const n = await (await post('/api/rp/oidc/nonce', { purpose: 'login' })).json().catch(() => ({ ok: false, reason: 'internal' }));
+      if (!n.ok) { closeLoginModal(); return setVerdict($('verdict'), false, 'social_failed', { reason: n.reason }); }
+      const state = `${b64url(location.origin)}.${Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('')}`;
+      sessionStorage.setItem(GOOGLE_PENDING_KEY, JSON.stringify({ state, at: Date.now() }));
+      const u = new URL(g.authorizeUrl);
+      for (const [k, v] of Object.entries({ client_id: g.clientId, response_type: 'id_token', scope: 'openid', redirect_uri: g.redirectUri, nonce: n.nonce, state, prompt: 'select_account' })) u.searchParams.set(k, v);
+      location.assign(u.toString());
+    }
+    /** 중계 화면에서 돌아온 길(#google_back=1&state=…&id_token=…|error=…). 조각을 지우고, 이 브라우저가 시작한 로그인일 때만 토큰을 서버에 낸다. 처리했으면 true. */
+    async function finishGoogleRedirect() {
+      const frag = new URLSearchParams(location.hash.slice(1));
+      if (frag.get('google_back') !== '1') return false;
+      history.replaceState(null, '', location.pathname + location.search);   // 토큰이 주소창·히스토리에 남지 않게
+      let pending = null;
+      try { pending = JSON.parse(sessionStorage.getItem(GOOGLE_PENDING_KEY) ?? 'null'); } catch { pending = null; }
+      sessionStorage.removeItem(GOOGLE_PENDING_KEY);
+      const fail = (reason) => { setVerdict($('verdict'), false, 'social_failed', { reason }); return true; };
+      if (!pending || pending.state !== frag.get('state') || Date.now() - pending.at > GOOGLE_PENDING_MS) return fail('google_state_invalid');
+      const id_token = frag.get('id_token');
+      if (!id_token) return fail('google_denied');
+      const rb = await (await post('/api/rp/google', { id_token, purpose: 'login' })).json().catch(() => ({ ok: false, reason: 'internal' }));
+      if (!rb.ok) return fail(rb.reason);
+      await endZkidSession();
+      setVerdict($('verdict'), true, 'social_login_ok', () => ({ summary: tt(rb.created ? 'rp_social_new_account' : 'rp_social_same_account', { via: 'Google' }) }));
+      await refreshMe();
+      return true;
+    }
+    // zkIdP 일반 OIDC(비교용, 2026-11-19): 서비스가 zkIdP 의 인가 화면으로 보낸다 — 지갑 창을 쓰지 않는다.
+    $('zkoidcLoginBtn').addEventListener('click', () => { location.assign('/api/rp/zkoidc/start?purpose=login'); });
     $('txSource').addEventListener('change', () => { txSourcePicked = $('txSource').value; });
     $('mLink_google').addEventListener('click', () => renderGoogle($('linkGsiSlot'), 'link', $('accountVerdict')));
     $('mLink_naver').addEventListener('click', () => location.assign('/api/rp/naver/start?purpose=link'));
@@ -858,7 +978,7 @@
         log(`2. 스냅 π+σ ${ms(t0)} (동기화 ${tm.syncMs} ms, 발급 ${tm.issueMs} ms, 증명 ${tm.proveMs} ms, 캐시 히트=${wb.cacheHit}, 새 발급=${wb.issued})\n   root=${wb.root}`);
 
         t0 = Date.now();
-        // id_token(2026-11-09 Phase 1): 지갑이 IdP 발급 응답에서 그대로 넘긴 zkID ID 토큰 — RP 가 검증하고 name(속성 커밋먼트)을 계정에 고정한다. 없으면 null.
+        // id_token(2026-11-09 Phase 1): 지갑이 IdP 발급 응답에서 그대로 넘긴 zkIdP ID 토큰 — RP 가 검증하고 name(속성 커밋먼트)을 계정에 고정한다. 없으면 null.
         const r = await post('/api/mode3/login', { proof: wb.proof, publicSignals: wb.publicSignals, sig: wb.sig, r_s, require: pred?.require ?? null, id_token: wb.id_token ?? null, ...(opts.link ? { link: true } : {}) });   // link(2026-11-10): 이 PPID 를 지금 쿠키 세션 계정에 붙인다
         const rb = await r.json();
         log(`3. RP 검증 ${ms(t0)}: ${JSON.stringify(rb)}\n   allowAgent=${rb.allowAgent}`);
@@ -881,8 +1001,8 @@
           setVerdict($('verdict'), false, 'login_failed', { summary, reason: reasonCode, detail: rb });
         }
         setSession(rb.ok ? rb.r_s : null, rb.ok ? rb.allowAgent : null);
-        // 2026-11-10: zkID 로그인도 쿠키 세션(계정)을 만든다 — 내 계정 패널·수단 배지를 다시 읽는다. 연결(link)이면 결과를 내 계정 패널에도.
-        if (opts.link) setVerdict($('accountVerdict'), !!rb.ok, rb.ok ? 'social_link_ok' : 'social_failed', rb.ok ? () => ({ summary: tt('rp_social_linked', { via: 'zkID' }) }) : { reason: rb.reason });
+        // 2026-11-10: zkIdP 로그인도 쿠키 세션(계정)을 만든다 — 내 계정 패널·수단 배지를 다시 읽는다. 연결(link)이면 결과를 내 계정 패널에도.
+        if (opts.link) setVerdict($('accountVerdict'), !!rb.ok, rb.ok ? 'social_link_ok' : 'social_failed', rb.ok ? () => ({ summary: tt('rp_social_linked', { via: 'zkIdP' }) }) : { reason: rb.reason });
         await refreshMe();
       } catch (e) {
         log(`오류: ${e.message}`);
@@ -950,7 +1070,7 @@
     }
     const ledgerLine = (rb) => tt('rp_balance_ok', { krw: rb.balance?.ledger?.KRW ?? '-', eth: rb.balance?.ledger?.ETH ?? '-' }) || `KRW ${rb.balance?.ledger?.KRW ?? '-'} · ETH ${rb.balance?.ledger?.ETH ?? '-'}`;
     const LV = () => $('ledgerVerdict');
-    /** 장부 요청(2026-11-10): zkID r_s 세션이면 지금처럼 세션키 서명 요청, 아니고 쿠키 세션(소셜)이면 /api/rp/ledger — 본문 문법은 같다. */
+    /** 장부 요청(2026-11-10): zkIdP r_s 세션이면 지금처럼 세션키 서명 요청, 아니고 쿠키 세션(소셜)이면 /api/rp/ledger — 본문 문법은 같다. */
     async function ledgerRequest(body, opts = {}) {
       if (currentSession) return sessionRequest(body, opts);
       const vEl = opts.verdictEl ?? $('ledgerVerdict');
@@ -996,7 +1116,7 @@
     const raceHoldOn = () => !raceHidden && $('raceHold').checked && document.documentElement.dataset.walletKind !== 'passkey-web';
     $('txBtn').addEventListener('click', async () => {
       if ($('txBtn').dataset.tourBusy === '1') return;   // 처리 중 재클릭만 무시(버튼은 늘 활성)
-      // 거래소 보관 출금(2026-11-10, R5): RP 릴레이어가 자기 돈으로 보내고 장부를 깎는다 — 쿠키 세션으로(zkID 로그인도 쿠키 세션을 만든다).
+      // 거래소 보관 출금(2026-11-10, R5): RP 릴레이어가 자기 돈으로 보내고 장부를 깎는다 — 쿠키 세션으로(zkIdP 로그인도 쿠키 세션을 만든다).
       if ($('txSource').value === 'custody') {
         const to = $('txTo').value.trim(), value = ethToWei($('txValue').value.trim() || '0');
         if (value === null) { setVerdict($('txVerdict'), false, 'tx_failed', { reason: 'bad_amount' }); return; }
@@ -1072,18 +1192,19 @@
     if (Demo.tour) Demo.tour.anchorOverride = (id) => (id === 'loginBtn' && !$('loginModal').hidden) ? 'idpLoginBtn' : id;
     // 2026-11-10: 네이버에서 돌아온 길(?social=ok | ?social_error=… | ?linked=naver) — 결과를 보이고 주소를 정리한다.
     const q0 = new URLSearchParams(location.search);
-    const socialBack = { ok: q0.get('social'), err: q0.get('social_error'), linked: q0.get('linked') };
+    const socialBack = { ok: q0.get('social'), err: q0.get('social_error'), linked: q0.get('linked'), via: q0.get('via') };
+    const socialVia = () => (socialBack.via === 'zkoidc' ? (tt('rp_via_zkoidc') || 'zkIdP(일반 OIDC)') : (tt('rp_naver_name') || '네이버'));
     if (socialBack.ok || socialBack.err || socialBack.linked) history.replaceState(null, '', location.pathname + location.hash);
     loadInfo().then(() => { renderMethods(); if (location.hash === '#account' && isLoggedIn()) $('account').scrollIntoView(); }).catch(() => { /* 안내는 loadInfo 쪽 */ });
     refreshMe().then(() => {
-      if (socialBack.ok) setVerdict($('verdict'), true, 'social_login_ok', () => ({ summary: tt('rp_social_logged_in', { via: tt('rp_naver_name') || '네이버' }) }));
+      if (socialBack.ok) setVerdict($('verdict'), true, 'social_login_ok', () => ({ summary: tt('rp_social_logged_in', { via: socialVia() }) }));
       else if (socialBack.linked) setVerdict($('accountVerdict'), true, 'social_link_ok', () => ({ summary: tt('rp_social_linked', { via: tt('rp_naver_name') || '네이버' }) || '네이버 계정을 연결했습니다' }));
       else if (socialBack.err) setVerdict(location.hash === '#account' ? $('accountVerdict') : $('verdict'), false, 'social_failed', { reason: socialBack.err });
       if (location.hash === '#account' && isLoggedIn()) $('account').scrollIntoView();
     });
-    // 2026-11-11: 네이버 로그인으로 돌아왔으면(?social=ok) 저장해 둔 zkID 세션은 되살리지 않고 RP 에서도 끝낸다(Google 과 같은 규칙 — endZkidSession).
+    // 2026-11-11: 네이버 로그인으로 돌아왔으면(?social=ok) 저장해 둔 zkIdP 세션은 되살리지 않고 RP 에서도 끝낸다(Google 과 같은 규칙 — endZkidSession).
     if (socialBack.ok) { let saved = null; try { saved = JSON.parse(localStorage.getItem(SESSION_KEY) ?? 'null'); } catch { saved = null; } endZkidSession(saved?.r_s ? String(saved.r_s) : null); }
-    else restoreSession().then(checkZkidStale);   // 로그인 상태 복원(2026-10-16) — rp_info 와 무관하게 이 서버의 세션 목록만 본다. 복원한 로그인이 서버에서 닫혔는지도 본다(2026-11-14)
+    else finishGoogleRedirect().then((handled) => { if (!handled) return restoreSession().then(checkZkidStale); });   // Google 에서 돌아온 길이면(2026-11-19) 그 로그인이 이긴다 — 저장해 둔 zkIdP 세션은 되살리지 않는다   // 로그인 상태 복원(2026-10-16) — rp_info 와 무관하게 이 서버의 세션 목록만 본다. 복원한 로그인이 서버에서 닫혔는지도 본다(2026-11-14)
   </script>
 
   <script>

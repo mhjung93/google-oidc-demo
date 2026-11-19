@@ -103,7 +103,7 @@ t('아이디 색인(2026-11-03, 리뷰 M-4): loginIds 는 accounts 에서 다시
   assert.equal(state.accounts['3'].loginId, null);
   assert.equal(notes.length, 1); assert.match(notes[0], /ALICE/);
 });
-t('2026-11-10: 계정의 linked·linkedOidc(11-09 zkID 쪽 연결 — RP 로 옮겨 없앴다)는 열 때 지우고 노트를 남긴다; 없는 계정은 그대로', () => {
+t('2026-11-10: 계정의 linked·linkedOidc(11-09 zkIdP 쪽 연결 — RP 로 옮겨 없앴다)는 열 때 지우고 노트를 남긴다; 없는 계정은 그대로', () => {
   const acct = (over) => ({ auid: null, slot: null, disabled: false, ...over });
   const { state, notes } = migrateCiaState({ ...defaultCiaState(), accounts: {
     '1': acct({ linkedOidc: { provider: 'google', sub: 'g-1', linkedAt: 't1' } }),

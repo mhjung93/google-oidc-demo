@@ -4,7 +4,7 @@ import { buildPoseidon, buildEddsa, buildBabyjub } from 'circomlibjs';
 import { sessionLeaf, sessionLeafRange, createRevocationTree } from '../../lib/mode3_revocation.js';
 import { userCommit, sessionCommit, credMessageV11, ppid as computePpid, auidOf, auidSOf, aridSOf } from '../../lib/mode3_credential.js';
 import { createRegistryTree, registryLeaf } from '../../lib/mode3_registry.js';
-import { combinePublicKey, encryptTag } from '../../lib/mode3_trace.js';
+import { combinePublicKey } from '../../lib/mode3_trace.js';
 import { setPath, NO_SET } from '../../lib/mode3_set_tree.js';
 import { LOGIN_COUNTER } from '../../lib/mode3_onchain.js';
 
@@ -31,7 +31,7 @@ export async function buildValidInput({ uid: uidOpt, pk_i: pkIOpt, maxHeight = 1
   const shareOf = (x) => ({ x, X: { x: bj.F.toObject(bj.mulPointEscalar(bj.Base8, x)[0]), y: bj.F.toObject(bj.mulPointEscalar(bj.Base8, x)[1]) } });
   const shares = { svc: shareOf(66666666666666666666n), aa: shareOf(77777777777777777777n) };
   const pk_trace = await combinePublicKey(shares.svc.X, shares.aa.X);
-  const tag = await encryptTag(pk_trace, uid, arid, 88888888888888888888n);
+  // 2026-11-19(스펙 trace-without-tag): 회로에 트레이스 태그·pk_trace 입력이 없다 — pk_trace·shares 는 지갑 생성자 인자(값만 남아 있다)로 쓰는 테스트를 위해 돌려준다.
 
   const { Cf: Cf_u } = await userCommit({ uid, s_u, blind_u, attrs });
   const { Cf: Cf_s } = await sessionCommit({ pk_i, max_height, r_s, r_rp });
@@ -75,18 +75,15 @@ export async function buildValidInput({ uid: uidOpt, pk_i: pkIOpt, maxHeight = 1
     s_lowValue: ws.lowValue.toString(), s_lowNextIndex: ws.lowNextIndex.toString(), s_lowNextValue: ws.lowNextValue.toString(),
     s_pathElements: ws.pathElements.map(String), s_pathIndices: ws.pathIndices.map(String),
     reg_pathElements: rp.pathElements.map(String), reg_pathIndices: rp.pathIndices.map(String),
-    r: tag.r.toString(),
     PPID: PPID.toString(), arid: arid.toString(), pk_i: pk_i.toString(),
     max_height: max_height.toString(), chainid: chainid.toString(), allowAgent: allowAgent.toString(),
     revRoot: tree.getRoot().toString(), regRoot: registry.root().toString(),
     pk_CIA_x: ciaPub.x.toString(), pk_CIA_y: ciaPub.y.toString(),
-    pk_trace_x: pk_trace.x.toString(), pk_trace_y: pk_trace.y.toString(),
-    tag_c1_x: tag.c1.x.toString(), tag_c1_y: tag.c1.y.toString(), tag_c2: tag.c2.toString(),
     disc_mask: disc.mask.toString(), disc_lo: disc.lo.map(String), disc_hi: disc.hi.map(String),
     set_sel: st.sel.toString(), set_root: st.root.toString(), set_index: String(st.index), set_path: st.path.map(String),
     auid_s: auid_s.toString(), arid_s: arid_s.toString(), r_s: r_s.toString(),
     counter: counter.toString(),
   };
 
-  return { input, Cf_u, Cf_s, pk_trace, shares, tag, ciaPub, arid, uid, tree, registry, slot: registrySlot, auid, auid_s, arid_s, r_rp, r_s, attrs, disclosure: disc, set: st };
+  return { input, Cf_u, Cf_s, pk_trace, shares, ciaPub, arid, uid, tree, registry, slot: registrySlot, auid, auid_s, arid_s, r_rp, r_s, attrs, disclosure: disc, set: st };
 }

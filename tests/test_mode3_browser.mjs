@@ -248,7 +248,7 @@ try {
     assert.equal(snapState, null, '설치·연결만으로는 salt 를 만들지 않는다(R4)');
   });
 
-  // ---- 스냅 설정(2026-11-13 스펙 random-salt R3~R7, 계획 Review 2 — Review 1 은 zkID 가입 뒤에 있다) ----
+  // ---- 스냅 설정(2026-11-13 스펙 random-salt R3~R7, 계획 Review 2 — Review 1 은 zkIdP 가입 뒤에 있다) ----
   await t('Review 2: 비밀번호가 짧거나 서로 다르면, 또는 파일 창을 취소하면 salt 를 만들지 않는다; 쓰기가 실패하면 salt 는 남고 백업 전 — 탭은 여전히 막혀 있다', async () => {
     // 2026-11-13(화면 리뷰): 고르기 전에는 두 버튼 모두 테두리만 — 고른 쪽만 채워진다
     const pressed = () => walletPage.evaluate(() => [document.getElementById('setupNewBtn').getAttribute('aria-pressed'), document.getElementById('setupImportLabel').dataset.pressed]);
@@ -360,9 +360,9 @@ try {
     await walletTab(walletPage, 'services');
   });
 
-  // 2026-11-09(사용자 결정): zkID 가입에는 지갑이 끼지 않는다 — /user 에는 지갑 등록 버튼이 없고, 지갑 등록은 아래 RP 로그인 케이스에서
-  // 팝업 → zkID 인증 창(등록 모드) → 돌아와 등록 → 발급으로 처음 한 번 일어난다. (Task 14 의 "/user 가 mode3-register 팝업을 연다" 는 Google 등록(?google=1)에만 남았다.)
-  await t('zkID 가입(2026-11-09): 아이디·비밀번호로 가입 → 자동 로그인(등록 상태 배지는 없다, 2026-11-10); 지갑 등록 버튼·카드는 없고 프로필 카드만 보인다', async () => {
+  // 2026-11-09(사용자 결정): zkIdP 가입에는 지갑이 끼지 않는다 — /user 에는 지갑 등록 버튼이 없고, 지갑 등록은 아래 RP 로그인 케이스에서
+  // 팝업 → zkIdP 인증 창(등록 모드) → 돌아와 등록 → 발급으로 처음 한 번 일어난다. (Task 14 의 "/user 가 mode3-register 팝업을 연다" 는 Google 등록(?google=1)에만 남았다.)
+  await t('zkIdP 가입(2026-11-09): 아이디·비밀번호로 가입 → 자동 로그인(등록 상태 배지는 없다, 2026-11-10); 지갑 등록 버튼·카드는 없고 프로필 카드만 보인다', async () => {
     const u = await context.newPage(); await u.goto(`${cia.base}/user`);
     await u.click('#showSignupBtn'); await u.fill('#signupId', 'demo-user'); await u.fill('#signupPwd', DEMO_PWD); await u.fill('#signupPwd2', DEMO_PWD); await u.click('#signupBtn');
     // 2026-11-16(사용자 결정): 가입해도 바로 로그인되지 않는다 — 로그인 화면으로 돌아가 아이디만 채워 두고 안내한다. 비밀번호를 넣어야 들어간다.
@@ -428,7 +428,7 @@ try {
     await awaitPopupClosed(popup);
   });
 
-  await t('Review 1: 설정 전(salt 없음, 또는 만들었지만 백업 전 — 리뷰 M-3) 스냅으로 RP 로그인하면 팝업이 zkID 인증 창으로 가기 전에 "스냅 설정이 끝나지 않았습니다" 로 끝난다 — 등록하지 않고 스냅은 그대로다', async () => {
+  await t('Review 1: 설정 전(salt 없음, 또는 만들었지만 백업 전 — 리뷰 M-3) 스냅으로 RP 로그인하면 팝업이 zkIdP 인증 창으로 가기 전에 "스냅 설정이 끝나지 않았습니다" 로 끝난다 — 등록하지 않고 스냅은 그대로다', async () => {
     const demoUid = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.id === 'demo-user').uid;
     const someSalt = '987654321098765432109876543210';
     const unbacked = { version: 2, salt: { s_u: someSalt, createdAt: new Date().toISOString(), source: 'new', backedUp: false, backedUpAt: null }, registration: null, userCred: null, consents: {} };
@@ -439,11 +439,11 @@ try {
     for (const [label, st] of [['salt 없음', null], ['백업 전', unbacked]]) {
       snapState = st === null ? null : JSON.parse(JSON.stringify(st));
       await rpPage.evaluate(() => { document.getElementById('verdict').textContent = ''; });   // 앞 차례의 결과 문구로 통과하지 않게
-      // 2026-11-13(화면 리뷰): 팝업은 zkID 인증 창으로 가지 않고 바로 멈춘다 — 아이디·비밀번호·auid 를 헛되이 넣게 하지 않는다
+      // 2026-11-13(화면 리뷰): 팝업은 zkIdP 인증 창으로 가지 않고 바로 멈춘다 — 아이디·비밀번호·auid 를 헛되이 넣게 하지 않는다
       const [popup] = await Promise.all([context.waitForEvent('page'), idpLogin(rpPage)]);
       const visited = []; popup.on('framenavigated', (f) => { if (f === popup.mainFrame()) visited.push(f.url()); });
       await waitText(rpPage, '#verdict', '스냅 설정이 끝나지 않았습니다', 60_000);
-      assert.equal(visited.some((u) => u.startsWith(cia.base)), false, `${label}: zkID 로 가지 않았다 — ${visited.join(', ')}`);
+      assert.equal(visited.some((u) => u.startsWith(cia.base)), false, `${label}: zkIdP 로 가지 않았다 — ${visited.join(', ')}`);
       assert.equal((await wallet.get('/wallet/status')).body.registered, false, `${label}: 등록하지 않았다`);
       assert.deepEqual(snapState, st, `${label}: 스냅 상태는 그대로다`);
       await awaitPopupClosed(popup);
@@ -451,7 +451,7 @@ try {
     } finally { snapState = saved; await walletPage.evaluate(() => localStorage.removeItem('mode3_attr_tool_v1')); }
   });
 
-  await t('첫 로그인 = 지갑 등록(2026-11-09): 팝업이 MetaMask 를 연결하고 zkID 인증 창(등록 모드, 2026-11-11 부터 auid 칸 있음)으로 갔다가 돌아와 속성 도구 기록의 salt 로 등록 → 발급 → RP 세션; Snap 확인 창 없음', async () => {
+  await t('첫 로그인 = 지갑 등록(2026-11-09): 팝업이 MetaMask 를 연결하고 zkIdP 인증 창(등록 모드, 2026-11-11 부터 auid 칸 있음)으로 갔다가 돌아와 속성 도구 기록의 salt 로 등록 → 발급 → RP 세션; Snap 확인 창 없음', async () => {
     const before = dialogs.length;
     const demoUid = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.id === 'demo-user').uid;
     const demoAuid = (await auidOf({ s_u: BigInt(USER_SALT) })).toString();
@@ -479,7 +479,7 @@ try {
     await awaitPopupClosed(popup);
     assert.ok((await text(rpPage, '#log')).includes('3. RP 검증'), 'RP 페이지가 /api/mode3/login 까지 냈다');
     assert.ok(await rpPage.evaluate(() => currentSession), '세션이 잡혔다');
-    await waitText(walletPage, '#sessionActions', 'zkID · ', 30_000);   // 2026-11-11: 연결된 서비스 줄에 발급 IdP(zkID · 주소)
+    await waitText(walletPage, '#sessionActions', 'zkIdP · ', 30_000);   // 2026-11-11: 연결된 서비스 줄에 발급 IdP(zkIdP · 주소)
     // 2026-11-15(화면의 폐기 목록 점검): 스냅 에이전트가 받아 둔 폐기 목록(리프 수·어느 블록까지)을 한 줄로 보인다 — 증명은 이 목록 기준으로 만든다
     await walletPage.waitForFunction(() => /폐기 목록: 리프 \d+개 · 블록 \d+까지/.test(document.querySelector('#rclLine')?.textContent ?? ''), undefined, { timeout: 30_000 });
     // 팝업 결과에는 지갑 안 정보가 실리지 않는다(스펙 §3.2) — 그래도 Snap 에는 새 C_u 가 저장돼 있어야 한다.
@@ -490,7 +490,7 @@ try {
     assert.match(String(sessionRs), /^[0-9]+$/, 'RP 페이지가 세션 r_s 를 들고 있다');
     // 2026-11-15(시연자 화면 리뷰): "로그인 성공" 카드는 로그인 카드와 함께 숨는다 — 무엇을 증명하고 들어왔는지는 내 자산의 한 줄에 남는다(새로 고쳐도)
     await rpPage.waitForSelector('#loginProof:not([hidden])', { timeout: 5_000 });
-    assert.match(await text(rpPage, '#loginProof'), /zkID 로 로그인.*조건을 공개하지 않/, await text(rpPage, '#loginProof'));
+    assert.match(await text(rpPage, '#loginProof'), /zkIdP 로 로그인.*조건을 공개하지 않/, await text(rpPage, '#loginProof'));
     await rpPage.reload(); await rpPage.waitForSelector('#loginProof:not([hidden])', { timeout: 15_000 });
     assert.match(await text(rpPage, '#loginProof'), /조건을 공개하지 않/, '새로 고친 뒤에도 남는다');
   });
@@ -1030,7 +1030,7 @@ try {
     assert.equal(/허용 거래 수|전부 막습니다|상한/.test(sessText), false, `세션 카드에 상한 문구가 없다: ${sessText.slice(0, 200)}`);
     assert.equal(await walletPage.isVisible('#sessionActions input.bound'), false, '허용 거래 수 칸은 보이지 않는다');
     await walletPage.$eval('#sessionActions input.bound', (i) => { i.value = '1'; i.dispatchEvent(new Event('input', { bubbles: true })); });   // 숨은 칸 — 뒤의 "반영" 경로 검사를 위해 값만 넣는다
-    // 2026-11-16(사용자 요청): 세션 카드에 H(C_s) — zkID 관리자 "세션 — 폐기 목록" 의 H(C_s) 와 같은 값이라 폐기한 세션을 맞춰 볼 수 있다
+    // 2026-11-16(사용자 요청): 세션 카드에 H(C_s) — zkIdP 관리자 "세션 — 폐기 목록" 의 H(C_s) 와 같은 값이라 폐기한 세션을 맞춰 볼 수 있다
     const cfsFull = await walletPage.$eval('#sessionActions .session code.cfs', (c) => c.title);
     const cfsShown = (await walletPage.textContent('#sessionActions .session code.cfs')).trim();
     assert.match(cfsFull, /^[0-9]{20,}$/, 'H(C_s) 전체 값(title)'); assert.equal(cfsShown, `${cfsFull.slice(0, 10)}…`, '관리자 표와 같은 앞 10자리 표기');
@@ -1042,7 +1042,7 @@ try {
     await waitText(walletPage, '#sessionVerdict', '폐기 요청 접수');
     assert.equal(dialogs.length, dBefore, '세션 폐기에 Snap 동의 창이 없다');
     assert.ok((await text(walletPage, '#sessionVerdict')).includes(`H(C_s) ${cfsFull.slice(0, 10)}…`), `폐기 결과가 어느 세션인지 H(C_s) 로 말한다: ${await text(walletPage, '#sessionVerdict')}`);
-    assert.ok((await cia.adminGet('/cia/admin/revoked_sessions')).body.sessions.some((x) => x.Cf_s === cfsFull), 'zkID 관리자 "세션 — 폐기 목록" 에 같은 H(C_s) 가 있다');
+    assert.ok((await cia.adminGet('/cia/admin/revoked_sessions')).body.sessions.some((x) => x.Cf_s === cfsFull), 'zkIdP 관리자 "세션 — 폐기 목록" 에 같은 H(C_s) 가 있다');
     await waitText(walletPage, '#boundsList', '반영 대기', 10_000);   // 숨은 DOM 에는 남는다(경로는 살아 있다)
     assert.equal(await walletPage.isVisible('#boundsSection'), false, '"체인 반영 대기" 절은 대기 건이 있어도 보이지 않는다');
     assert.equal(/체인 반영 대기|반영 대기/.test(await walletPage.evaluate(() => document.querySelector('main').innerText)), false, '화면에 반영 대기 문구가 없다');
@@ -1183,17 +1183,17 @@ try {
     await waitText(p, '#meInfo', 'demo-user-2'); assert.equal(await p.isVisible('#profileCard'), true);
     await p.click('#logoutBtn'); await p.waitForSelector('#loginView:not([hidden])'); assert.equal(await p.isHidden('#meCard'), true); await p.close();
   });
-  // 2026-11-09 Phase 1: 속성 커밋먼트 도구(스냅 오리진 /attr.html) + zkID 프로필 카드.
-  // 2026-11-13(사용자 결정): 도구는 uid 를 묻지 않고 zkID 로그인 세션에서 받아온다 — 이 브라우저 컨텍스트에 zkID 세션 쿠키를 만든다/지운다(스냅이 쓰는 IdP 주소와 같은 호스트).
-  const zkidLogin = async (id, pwd = DEMO_PWD) => { const r = await context.request.post(`${cia.base}/cia/user/login`, { data: { id, pwd } }); assert.equal(r.status(), 200, `zkID 로그인 ${id}`); };
+  // 2026-11-09 Phase 1: 속성 커밋먼트 도구(스냅 오리진 /attr.html) + zkIdP 프로필 카드.
+  // 2026-11-13(사용자 결정): 도구는 uid 를 묻지 않고 zkIdP 로그인 세션에서 받아온다 — 이 브라우저 컨텍스트에 zkIdP 세션 쿠키를 만든다/지운다(스냅이 쓰는 IdP 주소와 같은 호스트).
+  const zkidLogin = async (id, pwd = DEMO_PWD) => { const r = await context.request.post(`${cia.base}/cia/user/login`, { data: { id, pwd } }); assert.equal(r.status(), 200, `zkIdP 로그인 ${id}`); };
   const zkidLogout = async () => { await context.request.post(`${cia.base}/cia/user/logout`, { data: {} }); };
   let toolCommit = null;
-  await t('속성 도구(/attr.html): 입력은 속성뿐 — uid 는 zkID 로그인에서, salt 는 스냅에서 받아와 커밋먼트를 만든다(식에 uid·blind 없음, R15); 그 밖의 요청은 없고 Node 재계산과 같다; 같은 속성이면 같은 값; 백업 기능은 없다', async () => {
+  await t('속성 도구(/attr.html): 입력은 속성뿐 — uid 는 zkIdP 로그인에서, salt 는 스냅에서 받아와 커밋먼트를 만든다(식에 uid·blind 없음, R15); 그 밖의 요청은 없고 Node 재계산과 같다; 같은 속성이면 같은 값; 백업 기능은 없다', async () => {
     const p = await context.newPage();
     const reqs = []; p.on('request', (r) => reqs.push(r.url()));
     await p.goto(`${wallet.base}/attr.html`);
     await p.waitForSelector('#noCommit:not([hidden])');
-    // 2026-11-16(사용자 결정): salt 는 입력받는다 — 도구가 스냅에서 몰래 읽어 오지 않는다. uid 도 입력받는다(zkID 에 묻지 않는다). 계정 번호 칸과 "스냅에서 가져오기"·"salt 복사"·"salt 만들기" 는 여전히 없다.
+    // 2026-11-16(사용자 결정): salt 는 입력받는다 — 도구가 스냅에서 몰래 읽어 오지 않는다. uid 도 입력받는다(zkIdP 에 묻지 않는다). 계정 번호 칸과 "스냅에서 가져오기"·"salt 복사"·"salt 만들기" 는 여전히 없다.
     for (const sel of ['#acctIndex', '#saltFromSnapBtn', '#copySaltBtn', '#saltGenBtn', '#saltWarn', '#otherAccount']) assert.equal(await p.$(sel), null, `${sel} 는 없다`);
     assert.equal(await p.getAttribute('#salt', 'type'), 'password', 'salt 칸은 가려서 받는다');
     assert.equal(await p.$('#uid'), null, 'uid 칸은 없다(2026-11-17 — 커밋먼트는 계정과 무관)'); assert.equal(await p.$('#uidShown'), null, 'uid 표시 줄도 없다'); assert.equal(/계정 번호/.test(await p.textContent('#attrForm')), false, '입력 폼에 계정 번호 문구가 없다');
@@ -1206,7 +1206,7 @@ try {
     assert.equal(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')), stored00, 'salt 가 비거나 틀리면 기록을 만들지도 바꾸지도 않는다');
     await p.fill('#salt', USER_SALT);
     assert.equal(await p.isVisible('#noCommit'), true);
-    await zkidLogout();   // zkID 로그인 여부와 무관하다(zkID 에 묻지 않는다)
+    await zkidLogout();   // zkIdP 로그인 여부와 무관하다(zkIdP 에 묻지 않는다)
     await p.click('#makeBtn');
     await p.waitForSelector('#commitBox:not([hidden])');    await p.fill('#birthYear', '1990'); await p.selectOption('#country', 'KR'); await p.fill('#extra1', 'hello');
     await p.click('#makeBtn');
@@ -1242,7 +1242,7 @@ try {
     assert.equal(await p.locator('#attrShown4, #attrShown5').count(), 0, '미사용 슬롯 행 없음');
     assert.ok((await p.textContent('#attrShown0')).includes('1990'), '입력값도 함께');
     assert.deepEqual(rec.profile, { birthYear: '1990', country: 'KR', extra1: 'hello' });
-    const okReq = (u) => /\/attr\.html|\/attr\/dist\/|\/attr\/attr_page\.js|\/common\//.test(u);   // 2026-11-16: 정적 자원뿐 — 스냅 설정(/wallet/config)도 zkID(/cia/user/uid)도 부르지 않는다(2026-11-17: 페이지 스크립트 /attr/attr_page.js 포함)
+    const okReq = (u) => /\/attr\.html|\/attr\/dist\/|\/attr\/attr_page\.js|\/common\//.test(u);   // 2026-11-16: 정적 자원뿐 — 스냅 설정(/wallet/config)도 zkIdP(/cia/user/uid)도 부르지 않는다(2026-11-17: 페이지 스크립트 /attr/attr_page.js 포함)
     assert.ok(reqs.every(okReq), `정적 자원 외 요청: ${reqs.filter((u) => !okReq(u)).join(', ')}`);
     // 범위 밖 값(출생연도 1800 < min 1900)은 인코더가 거절한다 — 저장값은 그대로(빈 칸은 폼의 required 가 먼저 막아 요청 자체가 없다)
     await p.fill('#birthYear', '1800'); await p.click('#makeBtn'); await waitText(p, '#formVerdict', '커밋먼트를 만들지 못했습니다');
@@ -1254,7 +1254,7 @@ try {
     p.once('dialog', (d) => d.accept());
     await p.click('#clearBtn'); await p.waitForSelector('#noCommit:not([hidden])');
     assert.equal(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')), null);
-    assert.equal(await make('1990'), rec.commit, '지운 뒤 같은 속성으로 다시 만들면 같은 커밋먼트(R15) — zkID 프로필을 다시 붙여 넣을 필요가 없다');
+    assert.equal(await make('1990'), rec.commit, '지운 뒤 같은 속성으로 다시 만들면 같은 커밋먼트(R15) — zkIdP 프로필을 다시 붙여 넣을 필요가 없다');
     const other = await make('1991');
     assert.notEqual(other, rec.commit, '속성이 다르면 다른 값'); assert.match(other, /^[0-9]+$/);
     assert.equal(await make('1990'), rec.commit, '속성을 되돌리면 값도 돌아온다');
@@ -1302,7 +1302,7 @@ try {
     await p.close();
   });
 
-  await t('zkID 사용자 페이지 프로필 카드: 로그인만 하면 보인다(지갑 등록과 무관) → 커밋먼트 저장 → 현재 값 표시 → /me.profile; 비우면 없음', async () => {
+  await t('zkIdP 사용자 페이지 프로필 카드: 로그인만 하면 보인다(지갑 등록과 무관) → 커밋먼트 저장 → 현재 값 표시 → /me.profile; 비우면 없음', async () => {
     const p = await context.newPage(); await p.goto(`${cia.base}/user`);
     await p.waitForSelector('#loginView:not([hidden]), #meCard:not([hidden])');
     if (await p.isVisible('#meCard')) { await p.click('#logoutBtn'); await p.waitForSelector('#loginView:not([hidden])'); }
@@ -1384,7 +1384,7 @@ try {
     assert.equal(await popup.inputValue('#authAuid'), '', 'auid 는 미리 채우지 않는다');
     await popup.fill('#authUid', uid); await popup.fill('#authPwd', DEMO_PWD);
     await popup.evaluate(() => { document.querySelector('#authAuid').value = '123'; }); await popup.click('#authGo');
-    await waitText(popup, '#authVerdict', '다른 zkID 계정');                                          // auid_mismatch 사유, 페이지에 머문다
+    await waitText(popup, '#authVerdict', '다른 zkIdP 계정');                                          // auid_mismatch 사유, 페이지에 머문다
     assert.ok(popup.url().includes('/login'), `실패하면 IdP 페이지에 머문다: ${popup.url()}`);
     // cia_login.html 의 #authGo 핸들러는 성공·실패 모두에서 clearPwd() 로 비밀번호 칸을 비운다(§4) — 다시 채워야 한다.
     await popup.fill('#authPwd', DEMO_PWD); await popup.evaluate((a) => { document.querySelector('#authAuid').value = a; }, String(AUID)); await popup.click('#authGo');
@@ -1427,7 +1427,7 @@ try {
     await p.fill('#adminGate .gate-pwd', rp.adminHeaders['X-RP-Admin-Secret']); await p.click('#adminGate .gate-form button[type=submit]');
     await p.waitForFunction(() => document.querySelectorAll('#logins table tbody tr').length > 0, undefined, { timeout: 20_000 });
     assert.equal(await p.$eval('#adminGate', (el) => el.hidden), true);
-    // 2026-11-11: "auid_s ↔ PPID" 표 — zkID 로그인 줄마다 auid_s·PPID 를 자르지 않고 보인다
+    // 2026-11-11: "auid_s ↔ PPID" 표 — zkIdP 로그인 줄마다 auid_s·PPID 를 자르지 않고 보인다
     const lg = (await rp.get('/api/mode3/logins', rp.adminHeaders)).body.logins.filter((l) => l.PPID);
     const auidRows = await p.$$eval('#auids table tbody tr', (trs) => trs.map((tr) => [tr.cells[1].textContent, tr.cells[2].textContent]));
     assert.equal(auidRows.length, lg.length);
@@ -1550,7 +1550,7 @@ try {
     assert.equal((await popup.textContent('#authElapsed')).trim(), '', '끝난 뒤에는 경과 시간이 없다');
     assert.equal((await popup.textContent('#authTitle')).trim(), '요청을 끝내지 못했습니다.');
     await waitText(rpPage, '#verdict', '이 스냅은 이 IdP 에 이미 다른 계정으로 등록돼 있습니다', 180_000);
-    assert.ok((await text(rpPage, '#verdict')).includes('이미 등록한 zkID 계정으로 로그인하세요'), '어느 계정으로 로그인할지 가리킨다("이 계정"·"그 계정" 을 섞지 않는다)');
+    assert.ok((await text(rpPage, '#verdict')).includes('이미 등록한 zkIdP 계정으로 로그인하세요'), '어느 계정으로 로그인할지 가리킨다("이 계정"·"그 계정" 을 섞지 않는다)');
     await awaitPopupClosed(popup);
     const st = (await wallet.get('/wallet/status')).body;
     assert.equal(st.registered, false, '에이전트는 계정 B 를 등록하지 않았다');
@@ -1580,7 +1580,7 @@ try {
     assert.equal(snapState.registration?.uid, String(uid), '스냅의 등록은 계정 A 의 것'); assert.ok(Number.isInteger(snapState.registration.slot), '등록이 끝났다(슬롯이 있다)');
   });
 
-  await t('zkID 사용자 페이지(등록된 계정, 2026-11-14 화면 리뷰): 메뉴와 카드의 왼쪽 끝이 맞고 "zk 스냅 화면 열기" 는 버튼 모양; 스냅 연결 해제와 내 계정 폐기는 묶음·설명·비밀번호 칸이 따로다 — 연결 해제는 자기 칸의 비밀번호로만 되고, 결과는 카드가 사라진 뒤에도 보인다', async () => {
+  await t('zkIdP 사용자 페이지(등록된 계정, 2026-11-14 화면 리뷰): 메뉴와 카드의 왼쪽 끝이 맞고 "zk 스냅 화면 열기" 는 버튼 모양; 스냅 연결 해제와 내 계정 폐기는 묶음·설명·비밀번호 칸이 따로다 — 연결 해제는 자기 칸의 비밀번호로만 되고, 결과는 카드가 사라진 뒤에도 보인다', async () => {
     await zkidLogin('demo-user');
     const p = await context.newPage(); await p.goto(`${cia.base}/user`); await p.waitForSelector('#revokeCard:not([hidden])');
     const lay = await p.evaluate(() => { const L = (q) => Math.round(document.querySelector(q).getBoundingClientRect().left); return { brand: L('.idp-nav .brand'), sub: L('.sub-nav a'), card: L('#infoCard') }; });
@@ -1616,7 +1616,7 @@ try {
 
   // 2026-11-14(셀프 리뷰): 위 케이스의 안내("스냅을 초기화한 뒤 서비스에서 다시 로그인하면 새로 등록합니다")대로 끝까지 가 본다 — 그리고 새 묶음의 "내 계정 폐기" 버튼을 실제로 누른다.
   // 주의: 이 케이스 뒤에는 등록된 활성 계정이 없다(A 는 연결 해제, B 는 폐기) — 뒤에 케이스를 붙이면 그 상태에서 시작한다.
-  await t('연결 해제 뒤 스냅 초기화 → 같은 스냅으로 계정 B 등록 → zkID /user 의 "내 계정 폐기": 자기 칸의 비밀번호로 폐기되고, 그 뒤 /user·/user/info·서비스·zk 스냅 화면이 모두 폐기를 안다', async () => {
+  await t('연결 해제 뒤 스냅 초기화 → 같은 스냅으로 계정 B 등록 → zkIdP /user 의 "내 계정 폐기": 자기 칸의 비밀번호로 폐기되고, 그 뒤 /user·/user/info·서비스·zk 스냅 화면이 모두 폐기를 안다', async () => {
     const uidB = (await cia.adminGet('/cia/accounts')).body.accounts.find((a) => a.id === 'demo-user-b').uid;
     await walletTab(walletPage, 'me'); await walletPage.waitForSelector('#snapResetBtn', { state: 'visible' });
     walletPage.once('dialog', (d) => d.accept()); answers.push(true);
@@ -1698,9 +1698,9 @@ try {
     // zk 스냅 화면: 등록부에 내 자격증명이 없다는 안내가 탭 위에 뜬다(다시 읽으면 체인에서 확인한다)
     await walletTab(walletPage, 'me'); await walletPage.click('#meReloadBtn');
     await walletPage.waitForSelector('#regNotice:not([hidden])', { timeout: 30_000 });
-    assert.ok((await text(walletPage, '#regNotice')).includes('zkID 등록부에 이 스냅의 자격증명이 없습니다'), await text(walletPage, '#regNotice'));
+    assert.ok((await text(walletPage, '#regNotice')).includes('zkIdP 등록부에 이 스냅의 자격증명이 없습니다'), await text(walletPage, '#regNotice'));
     await walletTab(walletPage, 'services'); assert.equal(await walletPage.isVisible('#regNotice'), true, '안내는 탭과 무관하게 보인다');
-    // 2026-11-15(화면의 폐기 목록 점검): zkID 관리자 화면은 폐기된 계정의 비운 슬롯을 표에 남긴다(리프 0 · "계정 폐기됨") — 전에는 "등록된 슬롯이 없습니다"
+    // 2026-11-15(화면의 폐기 목록 점검): zkIdP 관리자 화면은 폐기된 계정의 비운 슬롯을 표에 남긴다(리프 0 · "계정 폐기됨") — 전에는 "등록된 슬롯이 없습니다"
     {
       const ap = await context.newPage(); await ap.goto(`${cia.base}/admin`); await ap.waitForSelector('#adminGate:not([hidden])');
       await ap.fill('#adminGate .gate-pwd', cia.adminSecret); await ap.click('#adminGate .gate-form button[type=submit]');
@@ -1712,9 +1712,9 @@ try {
     }
   });
 
-  // 2026-11-18(전체 리뷰 2): 데모 리셋 스크립트는 에이전트 상태만 치운다 — 탭을 열어 둔 채 리셋하면 스냅에 옛 등록이 남는다. 전에는 그 상태로 로그인하면 zkID 인증 창에서
+  // 2026-11-18(전체 리뷰 2): 데모 리셋 스크립트는 에이전트 상태만 치운다 — 탭을 열어 둔 채 리셋하면 스냅에 옛 등록이 남는다. 전에는 그 상태로 로그인하면 zkIdP 인증 창에서
   // 아이디·비밀번호·auid 를 다 넣고 돌아온 뒤에야 스냅의 already_registered 가 "MetaMask 작업이 실패했습니다"(wallet_error)로 끝났고, 리셋 감지는 화면을 새로 읽을 때만 돌았다.
-  await t('데모 리셋 뒤 스냅에 옛 등록이 남았을 때: 서비스 로그인은 zkID 인증 창으로 가기 전에 "이미 등록된 스냅입니다" 로 멈추고, zk 스냅 화면은 탭으로 돌아오면 리셋을 알아채 스냅을 초기화한다', async () => {
+  await t('데모 리셋 뒤 스냅에 옛 등록이 남았을 때: 서비스 로그인은 zkIdP 인증 창으로 가기 전에 "이미 등록된 스냅입니다" 로 멈추고, zk 스냅 화면은 탭으로 돌아오면 리셋을 알아채 스냅을 초기화한다', async () => {
     // 준비 — 리셋 스크립트가 한 일을 흉내 낸다: 에이전트는 비었고 스냅에는 옛 등록이 그대로다
     assert.equal((await wallet.post('/wallet/reset', { confirm: true })).status, 200);
     if (!snapState.registration?.uid) snapState = { ...snapState, registration: { uid: '424242', auid: AUID, slot: 0, attrs: null, registeredAt: new Date().toISOString() } };
@@ -1725,7 +1725,7 @@ try {
     try {
       await waitText(rpPage, '#verdict', '이미 등록된 스냅입니다', 60_000);
       await awaitPopupClosed(popup);
-      assert.equal(visited.some((u) => u.startsWith(`${cia.base}/login`)), false, `zkID 인증 창으로 가지 않았다: ${j(visited)}`);
+      assert.equal(visited.some((u) => u.startsWith(`${cia.base}/login`)), false, `zkIdP 인증 창으로 가지 않았다: ${j(visited)}`);
       assert.ok(snapState.registration?.uid, '로그인 창은 스냅의 등록을 건드리지 않는다');
     } finally { if (!popup.isClosed()) await popup.close(); }
     // 탭 복귀 — 리셋 표시(/attr/dist/reset.json)가 이 브라우저가 본 값과 다르면 스냅 초기화를 스스로 시작한다(MetaMask 확인 창 한 번, 페이지 확인 창은 없다).

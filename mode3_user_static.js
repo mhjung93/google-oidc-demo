@@ -104,6 +104,10 @@ app.use('/dist', express.static(DIST));
 app.use('/common', express.static(path.join(__dirname, 'mode3', 'common')));
 // 속성 커밋먼트 도구 — 에이전트(mode3_wallet_agent.js)와 같은 경로. 이 서버의 어떤 API 도 부르지 않는 독립 정적 페이지.
 app.get('/attr.html', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'attr.html')));
+// Google 로그인 중계(2026-11-19): Google 이 받는 "돌아올 주소" 는 공개 도메인이나 localhost 뿐이라, 서비스(*.zkd.test) 대신 이 서버의 https://127.0.0.1:<포트>/google-relay 를
+// 등록한다 — 이 화면이 조각(#)에 실려 온 ID 토큰을 그 로그인을 시작한 서비스 페이지(RP_ORIGINS 안)로 넘긴다. 비밀은 없고, 이 서버는 토큰을 보지 않는다(조각은 서버에 오지 않는다).
+app.get('/google-relay', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'user', 'google_relay.html')));
+app.get('/google-relay.js', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'user', 'google_relay.js')));
 app.use('/attr', express.static(path.join(__dirname, 'mode3', 'attr'), { index: false }));
 app.get('/zk/:name', (req, res) => {
   const rel = ZK[req.params.name];

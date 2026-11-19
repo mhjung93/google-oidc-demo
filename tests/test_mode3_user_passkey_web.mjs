@@ -101,7 +101,7 @@ const recordWalletMessages = (page) => page.evaluate((origin) => { window.__wall
 try {
   assert.equal((await wallet.get('/user/config')).body.secrets, 'passkey-web');
   const ctxA = await stubContext({ secretHex: SECRET_A });
-  // zkID 가입(아이디·비밀번호) — 지갑과 무관하다(IdP /user 화면)
+  // zkIdP 가입(아이디·비밀번호) — 지갑과 무관하다(IdP /user 화면)
   {
     const u = await ctxA.newPage(); await u.goto(`${cia.base}/user`);
     await u.click('#showSignupBtn'); await u.fill('#signupId', 'pk-user'); await u.fill('#signupPwd', DEMO_PWD); await u.fill('#signupPwd2', DEMO_PWD); await u.click('#signupBtn');
@@ -215,13 +215,13 @@ try {
     await userPage.waitForSelector('#sessionsCard dl', { timeout: 15_000 });
     assert.equal((await userPage.$eval('#sessionsCard', (el) => el.innerText)).includes('allowAgent'), false, '연결된 서비스에 allowAgent 줄이 보인다');
     assert.ok(!(await userPage.$eval('#storagePanel', (el) => el.innerText)).includes('복구 코드'), '보관 상태 설명이 이 모드에 없는 복구 코드를 말한다');
-    // 서비스 로그인 창: 이 모드에서 동작하지 않는 Google·네이버 버튼은 보이지 않고 "zkID 로 로그인" 만 남는다(새 브라우저 — 로그인 전 화면)
+    // 서비스 로그인 창: 이 모드에서 동작하지 않는 Google·네이버 버튼은 보이지 않고 "zkIdP 로 로그인" 만 남는다(새 브라우저 — 로그인 전 화면)
     const ctx = await browser.newContext();
     try {
       const p = await ctx.newPage(); await p.goto(rp.base);
       await p.waitForFunction(() => document.documentElement.dataset.walletKind === 'passkey-web', null, { timeout: 15_000 });
       await p.click('#loginBtn'); await p.waitForSelector('#loginModal:not([hidden])', { timeout: 10_000 });
-      assert.equal(await p.isVisible('#idpLoginBtn'), true, '"zkID 로 로그인" 은 보인다');
+      assert.equal(await p.isVisible('#idpLoginBtn'), true, '"zkIdP 로 로그인" 은 보인다');
       assert.equal(await p.isVisible('#googleLoginBtn'), false, 'Google 버튼이 보인다');
       assert.equal(await p.isVisible('#naverLoginBtn'), false, '네이버 버튼이 보인다');
       const txt = await p.$eval('#loginModal', (el) => el.innerText); assert.ok(!/Google|네이버/.test(txt), txt);
@@ -240,10 +240,11 @@ try {
     await userPage.waitForSelector('#proofModal:not([hidden])');
     const names = () => userPage.$$eval('#proofInputs tbody tr', (rs) => rs.map((r) => r.dataset.pub));
     assert.deepEqual(await names(), ['arid', 'pk_i', 'max_height', 'chainid', 'allowAgent', 'revRoot', 'regRoot']);
-    assert.ok((await text(userPage, '#proofInputsTitle')).includes('7/34'), await text(userPage, '#proofInputsTitle'));
+    assert.ok((await text(userPage, '#proofInputsTitle')).includes('7/29'), await text(userPage, '#proofInputsTitle'));
     assert.equal(await userPage.isHidden('#proofTxRow'), true, '로그인 증명에는 거래가 없다');
     await userPage.click('#proofMoreBtn');
-    assert.equal((await names()).length, 20, '묶음 20줄'); assert.equal(await userPage.locator('#proofInputs td.pv code').count(), 34, '값 34개');
+    assert.equal((await names()).length, 18, '묶음 18줄(2026-11-19 — pk_trace·tag 묶음이 없다)'); assert.equal(await userPage.locator('#proofInputs td.pv code').count(), 29, '값 29개');
+    assert.equal((await names()).some((n) => n === 'tag' || n === 'pk_trace'), false, '태그·추적 키 줄이 없다');
     assert.equal((await names())[0], 'PPID');
     await userPage.click('#proofMoreBtn'); assert.equal((await names()).length, 7, '다시 기본만');
     // 검증 ✓ → 값 하나를 바꾸면 ✗ → 원래대로 ✓
@@ -262,7 +263,7 @@ try {
     // 출금 증명: 그 증명이 실린 거래의 해시와 탐색기 링크
     {
       const d = await idbDump(userPage);
-      const txProofs = (d.proofs ?? []).filter((x) => x.purpose === 'tx').map((x) => ({ txHash: x.txHash ?? null, counter: x.publicSignals[33], r_s: x.r_s }));
+      const txProofs = (d.proofs ?? []).filter((x) => x.purpose === 'tx').map((x) => ({ txHash: x.txHash ?? null, counter: x.publicSignals[28], r_s: x.r_s }));
       assert.ok(txProofs.some((x) => x.txHash), `저장소의 거래 증명에 해시가 없다: ${j(txProofs)} / txs ${j((d.txs ?? []).map((x) => ({ txHash: x.txHash, nonce: x.nonce })))}`);
     }
     await userPage.locator('#proofsList tr[data-proof-purpose="tx"] .proof-view').first().click();
@@ -638,7 +639,7 @@ try {
       assert.equal(reqs.includes('/mode3/health'), false, `속성 도구가 상태 조회를 불렀다: ${j(reqs)}`);
     } finally { await ctx.close(); }
   });
-  await t('표기: 사용자 페이지·승인 창·zkID 페이지·서비스 페이지에 "스냅" 이 보이지 않는다', async () => {
+  await t('표기: 사용자 페이지·승인 창·zkIdP 페이지·서비스 페이지에 "스냅" 이 보이지 않는다', async () => {
     // 승인 창: 사전에 없는 키가 글자 그대로 보이면 안 된다(전에는 wallet_auth_note 가 그대로 보였다)
     { const p = await ctxA.newPage(); try { await p.goto(`${wallet.base}/?authorize=1`); await p.waitForSelector('#authorizeView:not([hidden])'); const m = (await p.evaluate(() => document.body.innerText)).match(/\b[a-z]+(_[a-z0-9]+){2,}\b/); assert.equal(m, null, `승인 창에 키 이름이 보인다: ${m?.[0]}`); } finally { await p.close(); } }
     const pages = [[wallet.base, '/'], [wallet.base, '/?authorize=1'],
@@ -648,6 +649,29 @@ try {
       const p = await ctxA.newPage();
       try { await p.goto(`${base}${path}`); await noSnap(p, `${new URL(base).port}${path}`); } finally { await p.close(); }
     }
+  });
+
+  // 2026-11-19(스펙 passkey-proof-login §2.4): 이 스택은 code 정책이다 — 위 각본처럼 로그인마다 인증 창을 거치고, zkIdP 페이지에 증명 로그인 버튼이 없다.
+  // key 정책의 동작(인증 창 생략·"패스키로 로그인")은 tests/test_mode3_user_passkey_web_proof.mjs 가 본다.
+  await t('code 정책: zkIdP 페이지에 "패스키로 로그인" 이 보이지 않는다', async () => {
+    const p = await ctxA.newPage();
+    try {
+      const keys = p.waitForResponse((r) => new URL(r.url()).pathname === '/cia/public_keys');
+      await p.goto(`${cia.base}/user`);
+      assert.equal((await (await keys).json()).issueAuth, 'code');
+      await p.waitForFunction(() => document.documentElement.dataset.walletKind === 'passkey-web', null, { timeout: 15_000 });
+      assert.equal(await p.$eval('#passkeyLoginRow', (el) => el.hidden), true);
+    } finally { await p.close(); }
+  });
+
+  // 2026-11-19(스펙 oidc-comparison C1·C7): 이 스택은 일반 OIDC(비교용)를 켜지 않았다 — 버튼이 없고 zkIdP 의 인가 경로도 없다.
+  await t('일반 OIDC 꺼짐(기본): 서비스 로그인 창에 "일반 OIDC · 비교용" 버튼이 없고 zkIdP 는 /oidc/authorize 를 받지 않는다', async () => {
+    const p = await ctxA.newPage();
+    try {
+      await p.goto(rp.base); await p.waitForFunction(() => typeof info !== 'undefined' && info && info.social);
+      assert.equal(await p.$eval('#zkoidcLoginBtn', (el) => el.hidden), true);
+      assert.equal((await fetch(`${cia.base}/oidc/authorize?client_id=1`)).status, 404);
+    } finally { await p.close(); }
   });
 
   await t('CSP: 위 정상 흐름 전체(증명 워커·wasm·IdP 왕복·복구·속성 도구)에서 지갑 오리진 위반 0건', async () => {

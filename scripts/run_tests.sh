@@ -104,6 +104,8 @@ CHAIN=(
   tests/test_cia_revoke_bound.mjs
   tests/test_cia_revoke_publish_after.mjs
   tests/test_cia_accounts.mjs
+  # OIDC 와 zk-Delegation 비교(2026-11-19) — zkIdP 일반 OIDC(인가 코드 + PKCE)·서비스 zkoidc 로그인·각자가 본 식별자. 격리 스택, 브라우저 없음
+  tests/test_mode3_plain_oidc.mjs
   tests/test_cia_startup.mjs
   tests/test_mode3_tls_stack.mjs
   tests/test_cia_cors.mjs
@@ -157,6 +159,8 @@ BROWSER=(
   tests/test_mode3_passkey_browser.mjs
   # 설치 없는 패스키 모드(passkey-web, 2026-11-17) — 웹 사용자 페이지 + WebAuthn 스텁 + IdP 인증 창 왕복, 사용자 오리진 localhost; 번들을 스스로 만든다
   tests/test_mode3_user_passkey_web.mjs
+  # passkey-web 증명 로그인(2026-11-19) — key 정책: 인증 창 없이 패스키 증명으로 로그인, zkIdP 페이지 "패스키로 로그인", 지갑 창의 오리진 제한
+  tests/test_mode3_user_passkey_web_proof.mjs
 )
 
 # Snap 패키지(snap-mode3)의 지역 테스트. 전역 snap 객체를 스텁해 RPC 9종을 검사한다 —

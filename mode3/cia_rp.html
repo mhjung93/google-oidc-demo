@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="same-origin" />
   <!-- 제목의 "IdP RP" 는 페이지 서빙 검사 marker 다(mode3/cia_admin.html 의 관례). -->
-  <title>zkID — RP 운영자</title>
+  <title>zkIdP — RP 운영자</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b1d3a'/%3E%3Ctext x='16' y='22' font-size='15' font-family='sans-serif' font-weight='700' text-anchor='middle' fill='%23fff'%3Ezk%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="/common/demo.css" />
   <link rel="stylesheet" href="/common/idp.css" />
@@ -15,7 +15,7 @@
 <body data-page="idp_rp">
 <header id="demoBar"></header>
 <nav class="idp-nav"><div class="nav-inner">
-  <span class="brand" data-i18n="idp_brand">zkID</span>
+  <span class="brand" data-i18n="idp_brand">zkIdP</span>
   <div class="nav-menu"><a href="/user" data-i18n="idp_nav_user">내 계정</a><a href="/rp" aria-current="page" data-i18n="idp_nav_rp">RP 운영자</a><a href="/admin" data-i18n="idp_nav_admin">관리자</a></div>
 </div></nav>
 <main class="cards">
@@ -208,14 +208,14 @@
     await refreshRpList();
   });
 
-  /** 운영자 "인증서 발급 요청"(2026-11-06): 요청만 적는다 — 발급(승인)은 zkID 관리자가 /admin 에서 하고, 승인되면 표가 "발급됨" 으로 바뀐다(5초 갱신). */
+  /** 운영자 "인증서 발급 요청"(2026-11-06): 요청만 적는다 — 발급(승인)은 zkIdP 관리자가 /admin 에서 하고, 승인되면 표가 "발급됨" 으로 바뀐다(5초 갱신). */
   const requesting = new Set();   // 요청 중인 이름 — 갱신으로 표가 다시 그려져도 버튼은 비활성(리뷰 LOW-2)
   async function requestCert(name, btn) {
     if (requesting.has(name)) return;
     requesting.add(name); btn.disabled = true;
     try {
       const r = await post('/cia/rp/request_cert', { name });
-      if (r.status === 200) verdict($('rpVerdict'), true, 'idp_rp_request_ok_title', () => ({ summary: tt('idp_rp_request_ok', { name }) || `${name} 의 인증서 발급을 요청했습니다. zkID 관리자가 승인하면 발급됩니다.` }));
+      if (r.status === 200) verdict($('rpVerdict'), true, 'idp_rp_request_ok_title', () => ({ summary: tt('idp_rp_request_ok', { name }) || `${name} 의 인증서 발급을 요청했습니다. zkIdP 관리자가 승인하면 발급됩니다.` }));
       else verdict($('rpVerdict'), false, 'idp_rp_request_failed', { reason: r.body?.reason ?? `HTTP ${r.status}`, detail: r.body });
     } finally { requesting.delete(name); }
     await refreshRpList();

@@ -92,8 +92,8 @@ async function proveWith(disclosure) {
   return buildCredentialProof({ uid, arid, s_u: reg.s_u, auid: reg.auid, blind_u, r_rp, r_s, pk_i: session.pk_i, attrs: ATTRS, credential: cred, pk_CIA, pk_trace, tree: tree0, registry, slot: SLOT, disclosure });
 }
 
-await t('V11: 발급 요청(C_u·C_s·π_IdP·tag) → 로컬 IdP 서명 → 증명 생성 → vkey 로 검증; 공개 입력 34, [30..33] = auid_s·arid_s·r_s·counter', async () => {
-  const { proof, publicSignals, revRoot, tag } = await proveWith(null);
+await t('V11: 발급 요청(C_u·C_s·π_IdP·tag) → 로컬 IdP 서명 → 증명 생성 → vkey 로 검증; 공개 입력 29(2026-11-19 — pk_trace·tag 없음), [25..28] = auid_s·arid_s·r_s·counter', async () => {
+  const { proof, publicSignals, revRoot } = await proveWith(null);
   assert.deepEqual(Object.keys(req.body).sort(), ['C_s_pt', 'C_u_pt', 'allowAgent', 'arid_s', 'auid_s', 'chainid', 'max_height', 'n', 'proof_idp', 'tag', 'uid']);
   const vkIdp = await loadIdpVkey(IDP_VKEY_PATH);
   // CIA 가 하는 대로: ctx 는 요청 필드(arid_s·chainid·allowAgent·n)에서 다시 계산하고, tag 는 본문의 값을 넣는다(2026-11-13 스펙 no-pk-u §3.2).
@@ -107,30 +107,37 @@ await t('V11: 발급 요청(C_u·C_s·π_IdP·tag) → 로컬 IdP 서명 → 증
   assert.equal(req.auid_s, await auidSOf({ auid: reg.auid, arid, r_rp })); assert.equal(req.arid_s, await aridSOf({ arid, r_rp }));
   assert.equal(cred.Cf_s, req.Cf_s.toString());
   assert.equal(revRoot, tree0.getRoot());
-  assert.equal(publicSignals.length, 34, 'V11: V9 30 + auid_s·arid_s·r_s·counter');
+  assert.equal(publicSignals.length, 29, '2026-11-19 스펙 trace-without-tag T3: 34 − pk_trace 2 − tag 3');
   assert.equal(BigInt(publicSignals[2]), session.pk_i);
   assert.equal(BigInt(publicSignals[3]), BigInt(cred.max_height));
   assert.equal(BigInt(publicSignals[4]), 31337n);
   assert.equal(BigInt(publicSignals[5]), 0n, 'allowAgent');
   assert.equal(BigInt(publicSignals[6]), tree0.getRoot());
   assert.equal(BigInt(publicSignals[7]), registry.root(), 'regRoot');
-  assert.equal(BigInt(publicSignals[10]), pk_trace.x); assert.equal(BigInt(publicSignals[11]), pk_trace.y);
-  assert.equal(BigInt(publicSignals[12]), tag.c1.x); assert.equal(BigInt(publicSignals[14]), tag.c2);
-  assert.equal(BigInt(publicSignals[30]), req.auid_s); assert.equal(BigInt(publicSignals[31]), req.arid_s); assert.equal(BigInt(publicSignals[32]), r_s);
-  assert.equal(tag.h, await tagPlaintext(uid, arid), '태그 평문은 Poseidon(uid, arid)');
-  assert.equal(await combineDecrypt(tag.c2, await partialDecrypt(svcShare.x, tag.c1), await partialDecrypt(aaShare.x, tag.c1)), await tagPlaintext(uid, arid));
+  // 2026-11-19: 트레이스 태그와 pk_trace 는 공개 입력에 없다 — [9](pk_CIA.y) 바로 뒤가 disc_mask(0)다. 개봉의 열쇠는 auid_s(공개 입력 25)다.
+  assert.equal(BigInt(publicSignals[10]), 0n, 'disc_mask');
+  assert.equal(BigInt(publicSignals[25]), req.auid_s); assert.equal(BigInt(publicSignals[26]), req.arid_s); assert.equal(BigInt(publicSignals[27]), r_s);
+  assert.equal(publicSignals.some((v) => BigInt(v) === pk_trace.x || BigInt(v) === pk_trace.y), false, 'pk_trace 가 공개 입력에 없다');
   const vkey = JSON.parse(fs.readFileSync(VKEY_PATH, 'utf8'));
   assert.ok(await snarkjs.groth16.verify(vkey, publicSignals, proof));
 });
 
-await t('V9 buildCredentialProof: set 을 주면 publicSignals[28] = sel, [29] = root; 안 주면 0·0 — 34개', async () => {
+// 2026-11-19(스펙 trace-without-tag T1·T2): 반대가 됐다 — 성명에 태그가 없고, pk_trace 는 받아도 쓰지 않는다(없어도 같은 모양의 증명이 나온다).
+await t('buildCredentialProof 는 pk_trace 없이도 증명을 만든다 — 결과에 tag 가 없다', async () => {
+  await proveWith(null);   // 발급·등록부·게시까지 준비한다 — 전역 cred·tree0·registry 가 이 로그인의 것이 된다
+  const out = await buildCredentialProof({ uid, arid, s_u: reg.s_u, auid: reg.auid, blind_u, r_rp, r_s, pk_i: session.pk_i, attrs: ATTRS, credential: cred, pk_CIA, tree: tree0, registry, slot: SLOT });
+  assert.equal(out.publicSignals.length, 29); assert.equal('tag' in out, false);
+  assert.equal(await snarkjs.groth16.verify(JSON.parse(fs.readFileSync(VKEY_PATH, 'utf8')), out.publicSignals, out.proof), true);
+});
+
+await t('V9 buildCredentialProof: set 을 주면 publicSignals[23] = sel, [24] = root; 안 주면 0·0 — 29개', async () => {
   const attrs = [1990n, 410n, 2n, 0n, 0n, 0n];
   const st = await normalizeSet({ slot: 1, members: [410, 392] }, attrs);
   const built = await proveWith({ mask: 0n, lo: [0n, 0n, 0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n, 0n, 0n], ...st });
-  assert.equal(built.publicSignals.length, 34);
-  assert.equal(built.publicSignals[28], '2'); assert.equal(built.publicSignals[29], st.root.toString());
+  assert.equal(built.publicSignals.length, 29);
+  assert.equal(built.publicSignals[23], '2'); assert.equal(built.publicSignals[24], st.root.toString());
   const plain = await proveWith(null);
-  assert.equal(plain.publicSignals[28], '0'); assert.equal(plain.publicSignals[29], '0');
+  assert.equal(plain.publicSignals[23], '0'); assert.equal(plain.publicSignals[24], '0');
 });
 
 await t('ProofCache 는 같은 root·세션이면 재사용, root 가 바뀌면 miss', async () => {
@@ -153,12 +160,6 @@ await t('내 등록부 슬롯이 은퇴(0 으로 게시)되면 동기화된 등�
   );
 });
 
-await t('buildCredentialProof 는 pk_trace 없이는 throw — 태그 없는 성명은 이제 없다', async () => {
-  await assert.rejects(
-    () => buildCredentialProof({ uid, arid, s_u: reg.s_u, auid: reg.auid, blind_u, r_rp, r_s, pk_i: session.pk_i, attrs: ATTRS, credential: cred, pk_CIA, tree: tree0, registry, slot: SLOT }),
-    /pk_trace/,
-  );
-});
 
 await t('V11 buildIssueRequest: 본문 11필드(n 포함), allowAgent 기본 0, Cf_u·Cf_s·auid 를 돌려준다; 범위·누락은 throw', async () => {
   const session = createSessionKey();

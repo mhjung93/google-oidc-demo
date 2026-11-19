@@ -29,6 +29,13 @@ export async function startOidcIssuerStub({ clientId = 'mode3-test-client', prov
     if (req.method === 'GET' && req.url.startsWith('/oauth2/authorize?')) {
       const q = new URL(req.url, base).searchParams;
       const back = new URL(q.get('redirect_uri'));
+      // Google 흉내(2026-11-19 리디렉션식 Google 로그인): response_type=id_token 이면 로그인 화면 없이 바로 토큰을 조각(#)에 실어 돌려보낸다(암묵 흐름) — sub 는 setNextSub.
+      if (q.get('response_type') === 'id_token') {
+        const frag = new URLSearchParams({ state: q.get('state') ?? '' });
+        if (q.get('client_id') !== clientId || !q.get('nonce')) frag.set('error', 'invalid_request'); else frag.set('id_token', await mint({ sub: nextSub, nonce: q.get('nonce') }));
+        back.hash = frag.toString();
+        res.writeHead(302, { Location: back.toString() }); return res.end();
+      }
       if (q.get('client_id') !== clientId || q.get('response_type') !== 'code' || q.get('code_challenge_method') !== 'S256') { back.searchParams.set('error', 'invalid_request'); }
       else { const code = randomBytes(16).toString('hex'); codes.set(code, { sub: nextSub, nonce: q.get('nonce'), challenge: q.get('code_challenge'), redirectUri: q.get('redirect_uri') }); back.searchParams.set('code', code); }
       back.searchParams.set('state', q.get('state') ?? '');

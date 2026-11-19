@@ -28,7 +28,7 @@ try {
       assert.equal(h(await fetch(`${cia.base}/cia/public_keys`, { headers: { Origin: o } }), 'access-control-allow-origin'), null, o);
     }
   });
-  // 2026-11-13(사용자 결정): 속성 도구(스냅 오리진)가 uid 를 묻지 않고 zkID 로그인 세션에서 받아온다 — uid 만 돌려주는 경로 하나를 쿠키와 함께 스냅 오리진에만 연다.
+  // 2026-11-13(사용자 결정): 속성 도구(스냅 오리진)가 uid 를 묻지 않고 zkIdP 로그인 세션에서 받아온다 — uid 만 돌려주는 경로 하나를 쿠키와 함께 스냅 오리진에만 연다.
   await t('GET /cia/user/uid: 로그인 세션 + 스냅 오리진이면 { uid } 만(ACAO·Allow-Credentials); 세션 없으면 401; 다른 오리진에는 ACAO 가 없어 브라우저가 읽지 못한다', async () => {
     const post = (p, body, cookie) => fetch(`${cia.base}${p}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) }, body: JSON.stringify(body) });
     const su = await post('/cia/signup', { id: 'uid-cors-1', pwd: 'uid-cors-pw1' }); assert.equal(su.status, 201);

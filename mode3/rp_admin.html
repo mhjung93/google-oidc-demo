@@ -45,7 +45,7 @@
     <section class="card compliance-panel" id="auidsCard">
       <div class="compliance-block">
         <h3 data-i18n="rp_auids_title">auid_s ↔ PPID 대응</h3>
-        <p class="desc" data-i18n="rp_auids_desc">zkID 로그인마다 증명에 실려 온 세션 가명 auid_s 와 PPID 입니다. auid_s 는 로그인마다 달라 서로 이어 볼 수 없고, IdP 의 auid 는 RP 에 오지 않습니다.</p>
+        <p class="desc" data-i18n="rp_auids_desc">zkIdP 로그인마다 증명에 실려 온 세션 가명 auid_s 와 PPID 입니다. auid_s 는 로그인마다 달라 서로 이어 볼 수 없고, IdP 의 auid 는 RP 에 오지 않습니다.</p>
         <div id="auids"></div>
       </div>
     </section>
@@ -170,7 +170,7 @@
       }
       host.appendChild(table);
     }
-    /** auid_s ↔ PPID 표(2026-11-11) — zkID 로그인 줄만, 값은 자르지 않는다(대조·복사용). 옛 기록(auid_s 없음)은 '-'. */
+    /** auid_s ↔ PPID 표(2026-11-11) — zkIdP 로그인 줄만, 값은 자르지 않는다(대조·복사용). 옛 기록(auid_s 없음)은 '-'. */
     function renderAuids() {
       const host = $('auids');
       host.textContent = '';

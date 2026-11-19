@@ -77,7 +77,7 @@ $('attrForm').addEventListener('submit', async (ev) => {
     const commit = await A.attrCommit({ s_u, attrs });
     save({ version: REC_VERSION, schema: { id: schema.id, version: schema.version }, s_u, profile, attrs, commit, createdAt: new Date().toISOString() });
     render();
-    verdict($('formVerdict'), true, 'attr_make_ok', { summary: tt('attr_make_ok_summary') || '커밋먼트를 만들었습니다. 아래에서 복사해 zkID 프로필에 붙여 넣으세요.' });
+    verdict($('formVerdict'), true, 'attr_make_ok', { summary: tt('attr_make_ok_summary') || '커밋먼트를 만들었습니다. 아래에서 복사해 zkIdP 프로필에 붙여 넣으세요.' });
   } catch (e) {
     verdict($('formVerdict'), false, 'attr_make_failed', { reason: e.reason ?? e.detail ?? 'bad_attr', detail: e.message, ...(e.summary ? { summary: e.summary } : {}) });
   } finally { $('makeBtn').disabled = false; }

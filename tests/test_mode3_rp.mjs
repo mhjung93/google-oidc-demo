@@ -81,14 +81,14 @@ await t('양성: 7단계 전부 통과, PPID 와 pk_i 를 돌려준다', async (
   assert.equal(r.pk_i, L.session.pk_i);
 });
 
-await t('V9: publicSignals 가 14개면 malformed, 34개면 통과하고 disclosure 를 돌려준다, [15] ≥ 64 는 bad_disclosure', async () => {
+await t('V9: publicSignals 가 14개면 malformed, 29개면 통과하고 disclosure 를 돌려준다, disc_mask([10]) ≥ 64 는 bad_disclosure', async () => {
   const good = await makeLogin();
-  assert.equal(good.publicSignals.length, 34);
+  assert.equal(good.publicSignals.length, 29);
   const v = await rp.verifyLogin(good);
   assert.equal(v.ok, true, JSON.stringify(v, (k, vv) => (typeof vv === 'bigint' ? vv.toString() : vv)));
   assert.equal(v.disclosure.mask, 0n);
   assert.equal((await rp.verifyLogin({ ...good, publicSignals: good.publicSignals.slice(0, 14) })).reason, 'malformed');
-  const ps = [...good.publicSignals]; ps[15] = '64';
+  const ps = [...good.publicSignals]; ps[10] = '64';
   assert.equal((await rp.verifyLogin({ ...good, publicSignals: ps })).reason, 'bad_disclosure');
 });
 
@@ -97,8 +97,9 @@ await t('음성(2026-10-22): counter 가 LOGIN_COUNTER 가 아닌 π(거래용 c
   const r = await rp.verifyLogin(L);
   assert.equal(r.ok, false); assert.equal(r.reason, 'bad_counter');
 });
-await t('공개 입력이 34개가 아니면 malformed', async () => {
-  const L = await makeLogin(); L.publicSignals = L.publicSignals.slice(0, 33);
+await t('공개 입력이 29개가 아니면 malformed(옛 34개도)', async () => {
+  const L = await makeLogin(); const full = L.publicSignals; L.publicSignals = full.slice(0, 28);
+  assert.equal((await rp.verifyLogin({ ...L, publicSignals: [...full, '0', '0', '0', '0', '0'] })).reason, 'malformed', '34개');
   assert.equal((await rp.verifyLogin(L)).reason, 'malformed');
 });
 
@@ -110,10 +111,10 @@ await t('V9: set_sel/set_root 가 disclosure 에 실린다; sel 7·(sel 0, root 
   const v = await rp.verifyLogin(good);
   assert.equal(v.ok, true, v.reason);
   assert.equal(v.disclosure.sel, 2n); assert.equal(v.disclosure.root, await setRoot(members));
-  const ps = [...good.publicSignals]; ps[28] = '7';
+  const ps = [...good.publicSignals]; ps[23] = '7';
   assert.equal((await rp.verifyLogin({ ...good, publicSignals: ps })).reason, 'bad_disclosure');
   const plain = await makeLogin();
-  const ps2 = [...plain.publicSignals]; ps2[29] = '7';
+  const ps2 = [...plain.publicSignals]; ps2[24] = '7';
   assert.equal((await rp.verifyLogin({ ...plain, publicSignals: ps2 })).reason, 'bad_disclosure');
   assert.deepEqual(maskDisclosure({ mask: 0n, lo: [0n, 0n, 0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n, 0n, 0n], sel: 0n, root: 9n }).root, 0n);
   assert.deepEqual(maskDisclosure({ mask: 0n, lo: [0n, 0n, 0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n, 0n, 0n] }), { mask: 0n, lo: [0n, 0n, 0n, 0n, 0n, 0n], hi: [0n, 0n, 0n, 0n, 0n, 0n], sel: 0n, root: 0n });
@@ -133,8 +134,8 @@ await t('I-2: policySetRoot 를 준 검증기는 정책 집합이 아닌 set_roo
   // 자기 국가만 든 집합([410])으로 "소속" 을 주장하는 **유효한** π — 회로도 서명도 정상이다.
   const mineSet = await normalizeSet({ slot: 1, members: [410] }, attrs);
   const bad = await makeLogin({ disclosure: { ...zeros, ...mineSet } });
-  assert.equal(BigInt(bad.publicSignals[28]), 2n, '전제: set_sel = 2(슬롯 1)');
-  assert.notEqual(BigInt(bad.publicSignals[29]), policyRoot, '전제: 정책 집합이 아닌 트리의 root 다');
+  assert.equal(BigInt(bad.publicSignals[23]), 2n, '전제: set_sel = 2(슬롯 1)');
+  assert.notEqual(BigInt(bad.publicSignals[24]), policyRoot, '전제: 정책 집합이 아닌 트리의 root 다');
   const r = await rpPolicy.verifyLogin(bad);
   assert.equal(r.ok, false); assert.equal(r.reason, 'bad_disclosure');
   // policySetRoot 를 안 주면 예전처럼 검사하지 않는다(일반 검증기 계약 유지). V9: 등록부 root 는 N=1 규칙(RP 의
@@ -197,10 +198,10 @@ await t('V11: verifyLogin 은 auid_s·arid_s 를 돌려주고 arid_s = Poseidon(
   const L = await makeLogin();
   const r = await rp.verifyLogin(L);
   assert.equal(r.ok, true, r.reason);
-  assert.equal(r.arid_s, await aridSOf({ arid, r_rp: L.r_rp })); assert.equal(r.auid_s, BigInt(L.publicSignals[30]));
+  assert.equal(r.arid_s, await aridSOf({ arid, r_rp: L.r_rp })); assert.equal(r.auid_s, BigInt(L.publicSignals[25]));
   assert.deepEqual(await rp.verifyLogin({ ...L, r_rp: L.r_rp + 1n }), { ok: false, reason: 'bad_arid_s' });
   assert.deepEqual(await rp.verifyLogin({ proof: L.proof, publicSignals: L.publicSignals, sig: L.sig, r_s: L.r_s }), { ok: false, reason: 'malformed' });
-  const ps = [...L.publicSignals]; ps[32] = (BigInt(ps[32]) + 1n).toString();
+  const ps = [...L.publicSignals]; ps[27] = (BigInt(ps[27]) + 1n).toString();
   assert.deepEqual(await rp.verifyLogin({ ...L, publicSignals: ps }), { ok: false, reason: 'bad_r_s' }, '공개 입력의 r_s 를 손대면(증명은 어차피 깨진다) 정책 검사가 먼저 잡는다');
 });
 await t('V11 D7: 같은 r_rp 를 두 RP 가 쓰면 auid_s 가 RP 마다 다르다(RP 간 연결 불가), arid_s 도 다르다', async () => {
@@ -219,27 +220,17 @@ await t('음성 arid: 다른 RP 용 credential 은 wrong_arid', async () => {
   assert.deepEqual(await rp.verifyLogin(L), { ok: false, reason: 'wrong_arid' });
 });
 
-await t('음성 d″: 다른 조합 키로 만든 태그는 wrong_trace_key (RP 가 자기 키와 대조한다)', async () => {
+// 2026-11-19(스펙 trace-without-tag T1·T2): 성명에 트레이스 태그와 pk_trace 가 없다 — wrong_trace_key·bad_tag 검사와 "태그를 돌려준다" 가 사라졌다.
+await t('태그 없는 성명: 조합 키가 달라도 로그인은 통과한다(pk_trace 는 더 이상 증명에 없다) — 결과에 tag 가 없고 auid_s 가 개봉의 열쇠다', async () => {
   const L = await makeLogin({ useTrace: other_trace });
-  assert.deepEqual(await rp.verifyLogin(L), { ok: false, reason: 'wrong_trace_key' });
-});
-
-await t('음성 태그: c1 이 항등원(0,1)이면 bad_tag (r=0 이 평문을 드러내는 것을 막는다)', async () => {
-  const L = await makeLogin();
-  const bad = [...L.publicSignals];
-  bad[12] = '0'; bad[13] = '1';
-  assert.deepEqual(await rp.verifyLogin({ ...L, publicSignals: bad }), { ok: false, reason: 'bad_tag' });
-});
-
-await t('양성: verifyLogin 이 태그를 돌려준다 (RP 가 로그에 남길 재료)', async () => {
-  const L = await makeLogin();
   const r = await rp.verifyLogin(L);
-  assert.equal(r.ok, true);
-  assert.equal(r.tag.c1x, BigInt(L.publicSignals[12])); assert.equal(r.tag.c2, BigInt(L.publicSignals[14]));
+  assert.equal(r.ok, true, JSON.stringify(r, (k, v) => (typeof v === 'bigint' ? v.toString() : v)));
+  assert.equal('tag' in r, false); assert.equal(r.auid_s, BigInt(L.publicSignals[25]));
+  assert.equal(L.publicSignals.length, 29);
 });
 
-await t('createRpVerifier 는 pkTrace 없이는 throw', () => {
-  assert.throws(() => createRpVerifier({ provider, logAddress, vkey, pkCIA: CIA.pub, arid, chainId: 31337n }), /pkTrace/);
+await t('createRpVerifier 는 pkTrace 없이도 만들어진다(받아도 쓰지 않는다)', () => {
+  assert.doesNotThrow(() => createRpVerifier({ provider, logAddress, vkey, pkCIA: CIA.pub, arid, chainId: 31337n }));
 });
 
 await t('음성 c\'\': max_height 가 head + L(400) 을 넘으면 bad_expiry — 지갑이 정한 만료의 상한 (2026-09-18 §3.2 갱신)', async () => {
@@ -277,7 +268,7 @@ await t('E-6 만료 경계: head == max_height 는 통과, 한 블록 더 가면
 
 await t('앞자리 0 이 붙은 10진 공개 입력도 통과하지만, 돌려주는 publicSignals 는 정규형이다 (개봉 재료 — 2026-09-18 점검 1)', async () => {
   const L = await makeLogin();
-  const ps = [...L.publicSignals]; ps[1] = '0' + ps[1]; ps[12] = '00' + ps[12];
+  const ps = [...L.publicSignals]; ps[1] = '0' + ps[1]; ps[25] = '00' + ps[25];
   const r = await rp.verifyLogin({ proof: L.proof, publicSignals: ps, sig: L.sig, r_s: L.r_s, r_rp: L.r_rp });
   assert.equal(r.ok, true, JSON.stringify(r, (k, v) => (typeof v === 'bigint' ? v.toString() : v)));
   assert.deepEqual(r.publicSignals, L.publicSignals, '기록·개봉에는 정규 문자열을 써야 CIA 의 문자열 비교·서명 재구성과 맞는다');
@@ -402,10 +393,10 @@ await t('C-2 E2E: 마스크 밖 슬롯이 0 이 아닌 **유효한** π 여도 v
   // normalizeDisclosure 를 거치지 않고 buildCredentialProof 에 직접 넘기면 그런 π 가 실제로 만들어진다 — 즉 "실제 증명으로는
   // 재현 불가" 가 아니다(2026-09-23 최종 리뷰 M5). lib/mode3_rp.js 의 maskDisclosure 래핑을 벗기면 이 케이스가 빨개진다.
   const L = await makeLogin({ disclosure: { mask: 1n, lo: [0n, 410n, 0n, 0n, 0n, 0n], hi: [2007n, 410n, 0n, 0n, 0n, 0n] } });
-  // 전제: 공개 입력에는 마스크 밖 슬롯(1)의 값이 그대로 실려 있다. V9: [15]=mask, [16..21]=lo, [22..27]=hi
-  assert.equal(BigInt(L.publicSignals[15]), 1n, 'mask 는 슬롯 0 만');
-  assert.equal(BigInt(L.publicSignals[17]), 410n, 'lo[1] 이 0 이 아닌 π 여야 이 케이스가 의미가 있다');
-  assert.equal(BigInt(L.publicSignals[23]), 410n, 'hi[1] 도 마찬가지');
+  // 전제: 공개 입력에는 마스크 밖 슬롯(1)의 값이 그대로 실려 있다. 2026-11-19: [10]=mask, [11..16]=lo, [17..22]=hi
+  assert.equal(BigInt(L.publicSignals[10]), 1n, 'mask 는 슬롯 0 만');
+  assert.equal(BigInt(L.publicSignals[12]), 410n, 'lo[1] 이 0 이 아닌 π 여야 이 케이스가 의미가 있다');
+  assert.equal(BigInt(L.publicSignals[18]), 410n, 'hi[1] 도 마찬가지');
   const r = await rp.verifyLogin(L);
   assert.equal(r.ok, true, JSON.stringify(r, (k, v) => (typeof v === 'bigint' ? v.toString() : v)));
   assert.equal(r.disclosure.mask, 1n);
@@ -434,21 +425,21 @@ await t('리뷰 수정 1: MODE3_ALLOWED_COUNTRIES="KR,410" 처럼 이름·코드
 });
 await t('C-1: 정규 10진 문자열이 아닌 공개 입력은 malformed — 증명과 정책이 다른 값을 보지 못한다', async () => {
   const good = await makeLogin();
-  assert.equal(good.publicSignals[15], '0', '전제: 로그인 π 의 disc_mask 는 0');
-  assert.equal(good.publicSignals[22], '0', '전제: 로그인 π 의 disc_hi[0] 은 0');
+  assert.equal(good.publicSignals[10], '0', '전제: 로그인 π 의 disc_mask 는 0');
+  assert.equal(good.publicSignals[17], '0', '전제: 로그인 π 의 disc_hi[0] 은 0');
 
   // 공격: 증명은 그대로 두고 공개 입력에 공백만 넣는다.
   const forged = [...good.publicSignals];
-  forged[15] = ' 1';      // RP 가 보면 mask = 1, 증명이 보증하는 값은 0
-  forged[22] = ' 2000';   // RP 가 보면 disc_hi[0] = 2000, 증명이 보증하는 값은 0
-  assert.equal(BigInt(forged[15]), 1n); assert.equal(BigInt(forged[22]), 2000n);   // RP 쪽 파싱을 못 박는다
+  forged[10] = ' 1';      // RP 가 보면 mask = 1, 증명이 보증하는 값은 0
+  forged[17] = ' 2000';   // RP 가 보면 disc_hi[0] = 2000, 증명이 보증하는 값은 0
+  assert.equal(BigInt(forged[10]), 1n); assert.equal(BigInt(forged[17]), 2000n);   // RP 쪽 파싱을 못 박는다
   const r = await rp.verifyLogin({ ...good, publicSignals: forged });
   assert.equal(r.ok, false, '공백 섞인 공개 입력이 통과하면 술어 위조가 된다');
   assert.equal(r.reason, 'malformed');
 
   // 같은 이유로 막아야 하는 다른 표기들(전부 BigInt 는 받아 주지만 snarkjs 와 어긋나거나 비정규형이다)
   for (const bad of [' 410', '410 ', '0x10', '', ' ', 0, 1n, null]) {
-    const ps2 = [...good.publicSignals]; ps2[15] = bad;
+    const ps2 = [...good.publicSignals]; ps2[10] = bad;
     const v = await rp.verifyLogin({ ...good, publicSignals: ps2 });
     assert.equal(v.reason, 'malformed', `${JSON.stringify(String(bad))} 는 malformed 여야 한다`);
   }

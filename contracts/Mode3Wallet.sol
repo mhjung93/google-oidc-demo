@@ -5,7 +5,7 @@ import "./PiCredVerifier.sol";
 import "./IMode3Roots.sol";
 
 /// @title Mode 3 PPID 계정 — 설계 2026-09-18 §5.3 (V9: 등록부 — 2026-10-01-mode3-v9-registry-design.md §6)
-/// @notice PPIDWallet(Mode 2)과 같은 구조다. 다른 점: 검증자가 pi_cred(공개 입력 34개 — V11 2026-10-12 + 2026-10-22 §6.5 counter, [30..32] auid_s·arid_s·r_s 는 오프체인 검증기만 본다), 폐기 근거가 Mode3Log(폐기 root·등록부 root + 게시 블록),
+/// @notice PPIDWallet(Mode 2)과 같은 구조다. 다른 점: 검증자가 pi_cred(공개 입력 29개 — 2026-11-19 스펙 trace-without-tag: pk_trace·tag 다섯 칸을 뺐다. [25..27] auid_s·arid_s·r_s 는 오프체인 검증기만 본다), 폐기 근거가 Mode3Log(폐기 root·등록부 root + 게시 블록),
 ///   성명의 arid·pk_CIA·pk_trace 를 immutable 로 고정한다(서비스 검증기 lib/mode3_rp.js 의 d 단계와 같다), 트레이스 태그와
 ///   allowAgent 를 이벤트로 남긴다. 검사 순서는 싼 것부터다(§5.3).
 /// @dev 폐기 근거 = IMode3Roots(캐노니컬 로그 또는 거울) — V10 폐기 전용 체인 설계 §2.
@@ -35,7 +35,6 @@ contract Mode3Wallet {
     error WrongWallet();
     error UntrustedKeys();
     error BadAllowAgent();
-    error BadTag();
     error StaleRevocationRoot(bytes32 root);
     error StaleRegistryRoot(bytes32 root);
     error RootTooOld(uint256 lastPublished, uint256 current);
@@ -73,9 +72,8 @@ contract Mode3Wallet {
 
     /// @dev 내부 호출의 성공 여부는 영수증에 남지 않으므로 이벤트로 낸다(PPIDWallet 과 같은 이유).
     event Executed(uint256 indexed nonceUsed, address indexed to, uint256 value, bool success);
-    /// @dev 서비스가 개봉 재료를 체인에서 바로 읽을 수 있게 태그·플래그를 남긴다. calldata 에도 있지만 이벤트가 조회하기 쉽다.
-    event Mode3Auth(uint256 indexed nonceUsed, uint256 pk_i, uint256 maxHeight, uint256 allowAgent,
-                    uint256 tagC1X, uint256 tagC1Y, uint256 tagC2);
+    /// @dev 이 실행을 인가한 세션(임시 공개키·만료·에이전트 허용)을 남긴다. 2026-11-19(스펙 trace-without-tag T4): 트레이스 태그는 없다 — 개봉은 거래 calldata 의 공개 입력 auid_s(pub[25])로 한다.
+    event Mode3Auth(uint256 indexed nonceUsed, uint256 pk_i, uint256 maxHeight, uint256 allowAgent);
     /// @notice 공개한 속성 구간(2026-09-22 선택 공개 §5.1) + V7 집합 소속(2026-09-23 §4.2, V9 속성 6슬롯). 대상 컨트랙트가 읽은 값과 같은 것을 이벤트로 남긴다.
     event Disclosure(uint256 indexed nonceUsed, uint256 mask, uint256[6] lo, uint256[6] hi, uint256 setSel, uint256 setRoot);
 
@@ -93,25 +91,25 @@ contract Mode3Wallet {
         rootWindow = _rootWindow;
     }
 
-    /// @param pub 공개 입력 34개(circuits/pi_cred.circom 의 순서, 설계 2026-10-01-mode3-v9-registry-design.md §5.1 Global Constraints):
+    /// @param pub 공개 입력 29개(circuits/pi_cred.circom 의 순서 — 2026-11-19 스펙 trace-without-tag T3):
     ///   [0] PPID [1] arid [2] pk_i [3] max_height [4] chainid [5] allowAgent [6] revRoot [7] regRoot
-    ///   [8] pk_CIA_x [9] pk_CIA_y [10] pk_trace_x [11] pk_trace_y [12] tag_c1_x [13] tag_c1_y [14] tag_c2
-    ///   [15] disc_mask [16..21] disc_lo [22..27] disc_hi [28] set_sel [29] set_root
-    ///   [30] auid_s [31] arid_s [32] r_s (온체인에서는 보지 않는다 — RP 의 세션 바인딩 검사용, 설계 2026-10-12 §5.3)
-    ///   [33] counter (= payload.nonce 여야 한다 — 아래에서 검사, 2026-10-22 설계 §6.5)
+    ///   [8] pk_CIA_x [9] pk_CIA_y
+    ///   [10] disc_mask [11..16] disc_lo [17..22] disc_hi [23] set_sel [24] set_root
+    ///   [25] auid_s [26] arid_s [27] r_s (온체인에서는 보지 않는다 — RP 의 세션 바인딩 검사용. auid_s 는 개봉의 열쇠다)
+    ///   [28] counter (= payload.nonce 여야 한다 — 아래에서 검사, 2026-10-22 설계 §6.5)
     function execute(
         Payload calldata payload,
         bytes calldata sig,
         uint[2] calldata a,
         uint[2][2] calldata b,
         uint[2] calldata c,
-        uint[34] calldata pub
+        uint[29] calldata pub
     ) external returns (bool ok) {
         if (payload.nonce != nonce) revert NonceMismatch(nonce, payload.nonce);
 
         // 2026-10-22 설계 §6.5: π 의 구간 비멤버십 [H'·2^32, H'·2^32 + counter] 이 이 nonce 의 것이어야 한다 —
         // 증명자가 counter 를 실제보다 낮춰 골라(더 짧은 구간) 최근 폐기를 피해가지 못하게 체인이 고정한다.
-        if (pub[33] != payload.nonce) revert CounterMismatch(payload.nonce, pub[33]);
+        if (pub[28] != payload.nonce) revert CounterMismatch(payload.nonce, pub[28]);
         // 세션키별 온체인 상한(즉시 차단) — nonce < c 만 통과. setSessionBound 가 저장한 값은 c + 1.
         // (지역 변수명은 execute() 의 proof 인자 b 와 겹쳐 bnd 로 둔다 — 로직은 브리프와 동일.)
         // 거울 공개 값(log.sessionBoundOf)과 자기 호출 값 중 낮은 쪽(2026-10-25 §3).
@@ -120,17 +118,17 @@ contract Mode3Wallet {
 
         // 서명은 이 체인과 이 지갑에 묶인다(PPIDWallet 과 같은 도메인 분리). 같은 팩토리를 두 체인에 배포해도
         // PPID 가 chainid 를 포함해 주소가 다르지만, 서명까지 묶어 두는 편이 싸고 안전하다.
-        // 다이제스트가 공개 값 20워드를 덮는다(꼬리 15워드 + 아래 A-2 의 다섯) — 같은 세션키·같은 mask 의 π 가
+        // 다이제스트가 공개 값 17워드를 덮는다(꼬리 15워드 + 아래 A-2 의 둘 — 2026-11-19 에 태그 셋이 빠졌다) — 같은 세션키·같은 mask 의 π 가
         // 둘(예: 어떤 대상엔 정확한 값 공개, 다른 대상엔 구간 공개) 있어도 릴레이어가 lo/hi/setSel/setRoot 를
         // 바꿔 끼우지 못한다(§5.1).
-        // 2026-09-25 리뷰 A-2: 여기에 max_height·allowAgent·태그도 넣는다. 그전에는 릴레이어가 σ 는 그대로 두고
+        // 2026-09-25 리뷰 A-2: 여기에 max_height·allowAgent 도 넣는다. 그전에는 릴레이어가 σ 는 그대로 두고
         // 같은 사용자·같은 세션키의 **다른** π 로 바꿔 끼울 수 있었고, 그러면 Mode3Auth 가 이번 실행을 인가하지 않은
-        // 만료·에이전트 허용·개봉 태그를 남겨 §6.2 의 해시 기반 개봉 장부가 어긋났다.
+        // 만료·에이전트 허용을 남겼다. (2026-11-19: 트레이스 태그는 회로에서 빠져 다이제스트에도 없다.)
         bytes32 payloadHash = keccak256(
             abi.encode(
                 block.chainid, address(this), payload.to, payload.value, payload.data, payload.nonce,
-                pub[15], [pub[16], pub[17], pub[18], pub[19], pub[20], pub[21]], [pub[22], pub[23], pub[24], pub[25], pub[26], pub[27]], pub[28], pub[29],
-                pub[3], pub[5], pub[12], pub[13], pub[14]
+                pub[10], [pub[11], pub[12], pub[13], pub[14], pub[15], pub[16]], [pub[17], pub[18], pub[19], pub[20], pub[21], pub[22]], pub[23], pub[24],
+                pub[3], pub[5]
             )
         );
         address recovered = _recover(payloadHash, sig);
@@ -155,34 +153,34 @@ contract Mode3Wallet {
         // 않는다(receive 는 msg.data 가 비어야 실행된다). 이 예외는 위조 방어를 약화시키지 않는다: 위조 꼬리는 payload.data
         // 안에 있어야 하므로 data 가 비어 있지 않고 → 꼬리가 붙어 위조분이 묻히며, data 가 비어 있으면 셀렉터가 없어 어떤
         // 함수도 꼬리를 읽을 수 없다.
-        bytes memory data = (payload.data.length == 0 && pub[15] == 0 && pub[28] == 0)
+        bytes memory data = (payload.data.length == 0 && pub[10] == 0 && pub[23] == 0)
             ? payload.data
-            : abi.encodePacked(payload.data, pub[15], pub[16], pub[17], pub[18], pub[19], pub[20], pub[21], pub[22], pub[23], pub[24], pub[25], pub[26], pub[27], pub[28], pub[29]);
+            : abi.encodePacked(payload.data, pub[10], pub[11], pub[12], pub[13], pub[14], pub[15], pub[16], pub[17], pub[18], pub[19], pub[20], pub[21], pub[22], pub[23], pub[24]);
         (ok, ) = payload.to.call{value: payload.value}(data);
         // 이벤트는 내부 호출 뒤에 낸다 — 호출 앞으로 옮기지 말 것(JS 는 발신 주소로도 거르지만 순서도 지킨다).
         emit Executed(payload.nonce, payload.to, payload.value, ok);
-        emit Mode3Auth(payload.nonce, pub[2], pub[3], pub[5], pub[12], pub[13], pub[14]);
-        if (pub[15] != 0 || pub[28] != 0) {
-            emit Disclosure(payload.nonce, pub[15], [pub[16], pub[17], pub[18], pub[19], pub[20], pub[21]], [pub[22], pub[23], pub[24], pub[25], pub[26], pub[27]], pub[28], pub[29]);
+        emit Mode3Auth(payload.nonce, pub[2], pub[3], pub[5]);
+        if (pub[10] != 0 || pub[23] != 0) {
+            emit Disclosure(payload.nonce, pub[10], [pub[11], pub[12], pub[13], pub[14], pub[15], pub[16]], [pub[17], pub[18], pub[19], pub[20], pub[21], pub[22]], pub[23], pub[24]);
         }
     }
 
     /// @dev 성명의 공개 입력을 이 지갑의 고정값·체인 상태와 대조한다. 순서는 설계 §5.3 의 3~8(V9: regRoot 추가, 2026-10-01-mode3-v9-registry-design.md §6).
     ///   V11: 색인 30~32 는 검사하지 않는다(서비스가 r_s·arid_s 를 본다).
-    function _checkStatement(uint[34] calldata pub) internal view {
+    function _checkStatement(uint[29] calldata pub) internal view {
         if (pub[0] != ppid || pub[1] != arid || pub[4] != block.chainid) revert WrongWallet();
-        if (pub[8] != pkCIAX || pub[9] != pkCIAY || pub[10] != pkTraceX || pub[11] != pkTraceY) revert UntrustedKeys();
+        // 2026-11-19(스펙 trace-without-tag T2·T5): pk_trace 는 더 이상 공개 입력이 아니다 — pkTraceX·pkTraceY 는 생성자 인자로 남아 있을 뿐 여기서 대조하지 않는다.
+        if (pub[8] != pkCIAX || pub[9] != pkCIAY) revert UntrustedKeys();
         if (pub[5] > 1) revert BadAllowAgent();
-        if (pub[12] == 0 && pub[13] == 1) revert BadTag();   // r = 0 — c1 이 항등원이면 태그가 평문을 그대로 드러낸다(오프체인 검증기 lib/mode3_rp.js 의 bad_tag 와 같은 규칙)
-        if (pub[15] >= 64) revert BadDisclosure();   // ⑤′ mask 는 6비트(V9 속성 6슬롯). 회로도 막지만 이벤트·꼬리에 남는 값이라 한 번 더
+        if (pub[10] >= 64) revert BadDisclosure();   // ⑤′ mask 는 6비트(V9 속성 6슬롯). 회로도 막지만 이벤트·꼬리에 남는 값이라 한 번 더
         // V9: set_sel ∈ {0..6}, sel = 0 이면 root = 0 — 회로도 막지만 꼬리·이벤트·다이제스트에 남는 값이라 한 번 더
-        if (pub[28] > 6 || (pub[28] == 0 && pub[29] != 0)) revert BadDisclosure();
+        if (pub[23] > 6 || (pub[23] == 0 && pub[24] != 0)) revert BadDisclosure();
         // 2026-09-25 리뷰 I-4: 마스크 비트가 0 인 슬롯의 lo/hi 에 회로는 64비트 범위 말고 아무 제약도 걸지 않는다
         // (pi_cred.circom 의 maskBits.out[k] * (1 - discOk[k]) === 0) — 증명자가 고른 값이다. 그대로 두면 꼬리·Disclosure
         // 이벤트를 읽는 쪽이 그것을 "CIA 가 보증한 공개" 로 오인한다. 지우지 않고 거절한다: 정직한 지갑은 늘 0 을 보내므로
         // (lib/mode3_wallet.js normalizeDisclosure) 깨질 것이 없고, 대신 "마스크 밖 워드는 항상 0" 을 믿을 수 있다.
         for (uint256 k = 0; k < 6; k++) {
-            if (((pub[15] >> k) & 1) == 0 && (pub[16 + k] != 0 || pub[22 + k] != 0)) revert BadDisclosure();
+            if (((pub[10] >> k) & 1) == 0 && (pub[11 + k] != 0 || pub[17 + k] != 0)) revert BadDisclosure();
         }
         // 2026-10-25 root 유효 창 §3: 최신 root 또는 대체된 지 rootWindow 블록 이내의 root. 폐기된 세션은 창 안에서도 거울의
         // sessionBoundOf(위 execute 의 effectiveSessionBound)가 막고, 창이 닫힌 뒤에는 회로의 구간 비멤버십이 막는다.

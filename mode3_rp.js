@@ -17,16 +17,16 @@ import { VKEY_PATH } from './lib/mode3_wallet.js';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { verifyRpCert } from './lib/mode3_rp_cert.js';
 import { randomScalar } from './lib/mode3_credential.js';
-import { createShare, partialDecrypt, combinePublicKey, verifyShare } from './lib/mode3_trace.js';
+import { createShare, combinePublicKey, verifyShare } from './lib/mode3_trace.js';
 import { signOpenRequest, signOpenResult } from './lib/mode3_opening.js';
 import { deployVerifier, deployFactory, deployAttrGate, decodeExecuteCalldata, parseExecuteReceipt, walletInterface, FACTORY_ABI, MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT, ROOT_WINDOW_DEFAULT, ALLOWED_COUNTRIES_DEFAULT, MIN_AGE_DEFAULT, PUB_INDEX } from './lib/mode3_onchain.js';
 import { setRoot } from './lib/mode3_set_tree.js';
 import { buildRpHealth, applyHealthHeaders, bounded, originList } from './lib/mode3_health.js';
 import { DEFAULT_ATTR_SCHEMA, loadSchema, slotIndexOf, encodeMembers, schemaInfo } from './lib/mode3_attr_schema.js';
-import { createRemoteJWKSet, jwtVerify } from 'jose';   // zkID ID 토큰(ES256) 검증(2026-11-09 Phase 1)
+import { createRemoteJWKSet, jwtVerify } from 'jose';   // zkIdP ID 토큰(ES256) 검증(2026-11-09 Phase 1)
 import session from 'express-session';
 import { openAccountStore, AccountError } from './lib/mode3_rp_accounts.js';
-import { socialConfigFromEnv, mountRpSocial, setRpSession } from './lib/mode3_rp_social.js';
+import { socialConfigFromEnv, mountRpSocial, setRpSession, jwtPublicView } from './lib/mode3_rp_social.js';
 import { listenMaybeTls } from './lib/mode3_tls.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -122,7 +122,7 @@ const LOGIN_LOG = process.env.MODE3_RP_LOGIN_LOG || path.join(__dirname, 'mode3_
 const ACCOUNTS_FILE = process.env.MODE3_RP_ACCOUNTS_FILE || path.join(__dirname, 'mode3_rp_accounts.json');
 const accountStore = openAccountStore({ file: ACCOUNTS_FILE });
 const SOCIAL = socialConfigFromEnv(process.env, { publicOrigin: PUBLIC_ORIGIN });
-// zkID ID 토큰 검증: 키는 MODE3_CIA_URL 의 JWKS 에서(서버 간), issuer 는 같은 곳의 discovery 문서에서 읽는다 — IdP 의 CIA_PUBLIC_URL 과 이 RP 의
+// zkIdP ID 토큰 검증: 키는 MODE3_CIA_URL 의 JWKS 에서(서버 간), issuer 는 같은 곳의 discovery 문서에서 읽는다 — IdP 의 CIA_PUBLIC_URL 과 이 RP 의
 // MODE3_CIA_URL 이 다른 형태(127.0.0.1 vs VM 주소)여도 된다. sub·aud 는 호출자가 π_RP 의 공개 신호(auid_s·arid_s)로 넘긴다 — 토큰이 이 증명의 것임을 묶는다.
 const idpJwks = createRemoteJWKSet(new URL(`${CIA_URL}/.well-known/jwks.json`), { cooldownDuration: 5_000, cacheMaxAge: 600_000 });
 let idpIssuerPromise = null;
@@ -428,7 +428,7 @@ const app = express();
 // 본문 상한은 IdP(cia.js) 와 같은 256kb(2026-10-26 리뷰 E1). 정상 로그인 본문은 수 KB, 릴레이 calldata 도 수십 KB 안이다.
 // 더 크면 기록해 둔 트랜스크립트가 개봉 요청에서 IdP 상한에 걸리는 비대칭이 생긴다(기록은 정규 proof 로만 하지만 이중 방어).
 app.use(express.json({ limit: '256kb' }));
-// 쿠키 세션(2026-11-10): 소셜 로그인·zkID 로그인 모두 { rpAccount, via } 를 둔다. 이름을 RP 마다 다르게 — localhost 에서는 포트가 달라도
+// 쿠키 세션(2026-11-10): 소셜 로그인·zkIdP 로그인 모두 { rpAccount, via } 를 둔다. 이름을 RP 마다 다르게 — localhost 에서는 포트가 달라도
 // 쿠키를 함께 쓰므로 같은 이름이면 zkONE·zkTWO·IdP(cia.sid) 세션이 서로 덮어쓴다. 비밀이 기동마다 바뀌면 재기동 뒤 옛 쿠키는 무효(계정·장부는 파일에 남는다).
 const SESSION_COOKIE = `${RP_NAME.toLowerCase().replace(/[^a-z0-9_-]/g, '') || 'rp'}.sid`;
 app.use(session({ name: SESSION_COOKIE, secret: process.env.MODE3_RP_SESSION_SECRET || randomBytes(32).toString('hex'), resave: false, saveUninitialized: false, cookie: { httpOnly: true, sameSite: 'lax' } }));
@@ -451,7 +451,7 @@ const currentPredicates = () => ({ allowedCountries: ALLOWED_COUNTRIES_EFFECTIVE
 const REQUIRE_DISCLOSURE = process.env.MODE3_REQUIRE_DISCLOSURE === '1';
 // RP 소셜 로그인·계정 연결(2026-11-10) — lib/mode3_rp_social.js. 로그인 기록에 수단(via)을 남긴다.
 /**
- * zkID 로 만든 쿠키 세션이 아직 유효한지(리뷰 I1) — 그 r_s 세션이 살아 있고, /api/mode3/request 와 같은 게이트(만료 블록·root·regRoot 일치)를 지나야 한다.
+ * zkIdP 로 만든 쿠키 세션이 아직 유효한지(리뷰 I1) — 그 r_s 세션이 살아 있고, /api/mode3/request 와 같은 게이트(만료 블록·root·regRoot 일치)를 지나야 한다.
  * IdP 폐기로 root 가 바뀌면 r_s 세션은 재검증 전까지 요청을 받지 않는데(revalidate_required), 쿠키 경로가 그 사이 거래소 보관 출금까지 하면 폐기를 우회한다.
  * 재검증(/api/mode3/revalidate)이 세션의 root 를 새로 묶으면 다시 열린다. 체인을 못 읽으면 닫는다. 소셜로 만든 세션은 zk 와 무관하다(스펙 §6).
  */
@@ -465,7 +465,45 @@ async function zkidCookieAlive(req) {
   if (view.head > BigInt(s.max_height)) { forgetSession(rs); return false; }
   return view.root.toString() === s.root && view.regRoot.toString() === s.regRoot;
 }
-mountRpSocial(app, { store: accountStore, cfg: SOCIAL, ledgerOp, sessionAlive: zkidCookieAlive, onLogin: ({ account, via }) => {
+// zkIdP 일반 OIDC — 비교용(스펙 2026-11-19 oidc-comparison C7). MODE3_RP_ZKOIDC=1 일 때만. 클라이언트 ID 는 이 RP 의 arid(zkIdP 가 승인한 뒤에 생긴다), 브라우저는
+// MODE3_CIA_BROWSER_URL 의 인가 화면으로 가고 코드 교환은 서버끼리(MODE3_CIA_URL) 한다. 토큰은 zk-Delegation 토큰과 같은 발급자·같은 키(ES256)다 — aud 를 자기 arid 와,
+// nonce 를 이 로그인의 것과 대조하고 zkid_plain 클레임이 있는 것만 받는다(zk 토큰은 sub = auid_s·aud = arid_s 이고 그 클레임이 없다).
+const ZKOIDC = {
+  enabled: process.env.MODE3_RP_ZKOIDC === '1',
+  clientId: () => (reg?.status === 'approved' && reg.arid ? String(reg.arid) : null),
+  authorizeUrl: `${CIA_BROWSER_URL}/oidc/authorize`, redirectUri: `${PUBLIC_ORIGIN}/api/rp/zkoidc/callback`,
+  async exchange({ code, verifier }) {
+    const fail = (d) => Object.assign(new Error(`zkoidc_token_failed: ${d}`), { reason: 'zkoidc_token_failed' });
+    let r;
+    try { r = await fetch(`${CIA_URL}/oidc/token`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'authorization_code', code, client_id: ZKOIDC.clientId() ?? '', redirect_uri: ZKOIDC.redirectUri, code_verifier: verifier }), signal: AbortSignal.timeout(8000) }); }
+    catch (e) { throw fail(e?.name ?? 'network'); }
+    const j = await r.json().catch(() => null);
+    if (!r.ok || typeof j?.id_token !== 'string') throw fail(`HTTP ${r.status}${j?.error ? ` ${j.error}` : ''}`);
+    return j.id_token;
+  },
+  async verify(token, { nonce }) {
+    const bad = (reason, d) => Object.assign(new Error(`${reason}: ${d}`), { reason });
+    let payload;
+    try { ({ payload } = await jwtVerify(token, idpJwks, { issuer: await idpIssuer(), audience: ZKOIDC.clientId() ?? ' ', algorithms: ['ES256'], requiredClaims: ['exp', 'iat', 'sub'] })); }
+    catch (e) { throw bad('oidc_invalid', e?.code ?? e?.name ?? 'unknown'); }
+    if (payload.zkid_plain !== true || typeof payload.sub !== 'string' || !/^[0-9]+$/.test(payload.sub)) throw bad('oidc_invalid', 'not a plain token');
+    if (payload.nonce !== nonce) throw bad('bad_nonce', 'nonce');
+    return { sub: payload.sub, jwt: jwtPublicView(token) };
+  },
+};
+/** 이 로그인에서 zkIdP 가 이 서비스에 알려 준 것(스펙 oidc-comparison C8, 2026-11-19 시나리오: "JWT 에 uid·rid 가 드러난다 / auid_s·arid_s 로 가려진다").
+ *  일반 OIDC: uid(= sub)·rid(= aud = 이 서비스의 arid). zk-Delegation: 그 세션의 auid_s(= sub)·arid_s(= aud)와 PPID. 둘 다 받은 토큰의 머리·본문(jwt)을 함께 준다 —
+ *  zk 쪽은 지갑이 토큰을 넘겼을 때만(없으면 null, 값은 증명의 공개 신호에서). 그 밖(Google·네이버)은 null. */
+function seenOf(req, account) {
+  if (req.session?.via === 'zkoidc') { const sub = accountStore.get(account)?.zkoidc?.sub; return sub ? { protocol: 'oidc', issuer: 'zkidp', uid: sub, rid: ZKOIDC.clientId(), jwt: req.session.zkoidcJwt ?? null } : null; }
+  // Google(실제 OIDC, 2026-11-19 시나리오 3·4): 서비스는 Google 의 sub(uid)를 그대로 받고, aud 는 이 서비스의 클라이언트 ID(rid — Google 이 아는 서비스 식별자)다.
+  if (req.session?.via === 'google') { const sub = accountStore.get(account)?.google?.sub; return sub ? { protocol: 'oidc', issuer: 'google', uid: sub, rid: SOCIAL.google.clientId, jwt: req.session.googleJwt ?? null } : null; }
+  if (req.session?.via === 'zkid') { const s = sessions.get(req.session.rs); return s ? { protocol: 'zk', issuer: 'zkidp', auid_s: s.auid_s, arid_s: s.arid_s, PPID: s.PPID, jwt: s.idToken ?? null,
+    // received(2026-11-19 시나리오 7 — "서비스가 무엇을 받아 검증하는지" 그림): 이 로그인에서 받은 증명의 공개값 요약. 전부 공개값이다.
+    received: { arid: String(reg.arid), pk_i: s.pk_i, max_height: s.max_height, root: s.root, regRoot: s.regRoot, r_s: rsShort(req.session.rs), hasIdToken: Boolean(s.idToken) } } : null; }
+  return null;
+}
+mountRpSocial(app, { store: accountStore, cfg: SOCIAL, ledgerOp, sessionAlive: zkidCookieAlive, zkoidc: ZKOIDC, seenOf, onLogin: ({ account, via }) => {
   const at = new Date().toISOString();
   logins.push({ via, rpAccount: account, PPID: '', at, root: '', r_s: '', allowAgent: '0', disclosure: null });
   fs.appendFileSync(LOGIN_LOG, JSON.stringify({ at, via, rpAccount: account }) + '\n', { mode: 0o600 });
@@ -474,7 +512,7 @@ if (SOCIAL.google.enabled || SOCIAL.naver.enabled) console.log(`[rp] 소셜 로�
 app.get('/api/mode3/rp_info', (req, res) => {
   res.json({ name: RP_NAME, requireDisclosure: REQUIRE_DISCLOSURE,   // 2026-10-15: 페이지 브랜드(zkONE/zkTWO) 표기용
        status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, mirrorAddress: MIRROR_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, ciaUrl: CIA_BROWSER_URL, pkCiaSource: pkCIA.source, chainId: chainId.toString(), active: Boolean(verifier), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null, predicates: currentPredicates(),
-       social: { google: { enabled: SOCIAL.google.enabled, clientId: SOCIAL.google.clientId }, naver: { enabled: SOCIAL.naver.enabled } },   // 2026-11-10 RP 소셜 버튼
+       social: { google: { enabled: SOCIAL.google.enabled, clientId: SOCIAL.google.clientId, authorizeUrl: SOCIAL.google.authorizeUrl, redirectUri: SOCIAL.google.redirectUri }, naver: { enabled: SOCIAL.naver.enabled }, zkoidc: { enabled: ZKOIDC.enabled } },   // zkoidc: zkIdP 일반 OIDC(비교용, 2026-11-19)   // 2026-11-10 RP 소셜 버튼
        oidc: pkCIA.oidc });   // 2026-10-16: IdP 의 public_keys.oidc 중계 — 페이지는 enabled·provider, 2026-11-09 부터 providers.{google,naver}.enabled(버튼 활성)를 본다
 });
 
@@ -541,13 +579,13 @@ app.post('/api/mode3/login', async (req, res) => {
     const v = await verifyBody(req, res, BigInt(rsStr), BigInt(r_rp)); if (v === null) return;
     if (!v.ok) return res.json({ ok: false, reason: v.reason });
     if (requireP) { const why = requiredPredicateReason(v.disclosure, requireP); if (why) return res.json({ ok: false, reason: why }); }
-    // zkID ID 토큰(2026-11-09 Phase 1, 선택): 있으면 서명·iss·exp 와 sub=auid_s·aud=arid_s(이 증명의 공개 신호)를 확인한다. 틀린 토큰은 로그인 자체를 거절한다(bad_id_token).
+    // zkIdP ID 토큰(2026-11-09 Phase 1, 선택): 있으면 서명·iss·exp 와 sub=auid_s·aud=arid_s(이 증명의 공개 신호)를 확인한다. 틀린 토큰은 로그인 자체를 거절한다(bad_id_token).
     // 없으면(옛 지갑·web 모드) 예전처럼 로그인만 한다. 2026-11-11(사용자 결정): 사용자 속성 커밋먼트(name)는 받지도 고정하지도 않는다 — RP 마다 같은 값이라 RP 간 연결이 된다.
     if (idTok !== null) {
       const vt = await verifyIdToken(idTok, { sub: v.auid_s.toString(), aud: v.arid_s.toString() });
       if (!vt.ok) return res.json({ ok: false, reason: 'bad_id_token', detail: vt.detail });
     }
-    // RP 계정(2026-11-10): link:true 면 지금 쿠키 세션 계정의 zkID 칸에 이 PPID 를 붙이고(이미 다른 계정의 PPID 면 409 — r_s 세션도 만들지 않는다),
+    // RP 계정(2026-11-10): link:true 면 지금 쿠키 세션 계정의 zkIdP 칸에 이 PPID 를 붙이고(이미 다른 계정의 PPID 면 409 — r_s 세션도 만들지 않는다),
     // 아니면 PPID 의 계정으로 들어간다(없으면 새로). 어느 쪽이든 쿠키 세션은 그 계정(via zkid).
     const PPIDs = v.PPID.toString();
     let rpAccount;
@@ -558,12 +596,12 @@ app.post('/api/mode3/login', async (req, res) => {
         accountStore.link(rpAccount, 'zkid', { PPID: PPIDs });
       } else rpAccount = accountStore.loginOrCreate('zkid', { PPID: PPIDs }).id;
     } catch (e) { if (e instanceof AccountError) return res.status(e.status).json({ ok: false, reason: e.reason }); throw e; }
-    // zkID 로 만든 쿠키 세션은 이 r_s 세션에 묶는다(sessionAlive) — r_s 가 폐기·로그아웃·대체되면 쿠키 세션도 끝난다(안 그러면 폐기를 우회한다).
+    // zkIdP 로 만든 쿠키 세션은 이 r_s 세션에 묶는다(sessionAlive) — r_s 가 폐기·로그아웃·대체되면 쿠키 세션도 끝난다(안 그러면 폐기를 우회한다).
     // 연결(link)은 지금 세션(소셜)을 그대로 둔다.
     if (req.body.link !== true) await setRpSession(req, rpAccount, 'zkid', { rs: rsStr });
     const at = new Date().toISOString();
     const disclosure = discOf(v.disclosure);
-    sessions.set(rsStr, { rpAccount, PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), regRoot: v.regRoot.toString(), disclosure, auid_s: v.auid_s.toString(), arid_s: v.arid_s.toString(), r_rp, at });
+    sessions.set(rsStr, { rpAccount, PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), regRoot: v.regRoot.toString(), disclosure, auid_s: v.auid_s.toString(), arid_s: v.arid_s.toString(), r_rp, at, idToken: idTok !== null ? jwtPublicView(idTok) : null });   // idToken: 검증한 zkIdP 토큰의 머리·본문(화면 표시용, 2026-11-19)
     // 2026-10-16: 같은 계정(PPID)의 이전 세션은 새 로그인이 대체한다 — "RP 당 활성 세션 하나". IdP 폐기 트리는 건드리지 않는다(강한 무효화는 V8 세션 폐기).
     for (const [k, s] of sessions) if (k !== rsStr && s.PPID === v.PPID.toString()) forgetSession(k);
     if (disclosure.mask !== '0' || disclosure.set) disclosedLoginCount++;
@@ -634,7 +672,7 @@ function freshLedgerBody(acctId, body, tsMs) {
   return true;
 }
 /**
- * 장부 요청 하나(2026-11-10) — channel 'signed' 는 zkID r_s 세션의 세션키 서명 요청(/api/mode3/request), 'cookie' 는 쿠키 세션(/api/rp/ledger).
+ * 장부 요청 하나(2026-11-10) — channel 'signed' 는 zkIdP r_s 세션의 세션키 서명 요청(/api/mode3/request), 'cookie' 는 쿠키 세션(/api/rp/ledger).
  * 구매: signed 면 RP 릴레이어가 PPID 계정으로 실제 ETH 를 보내고(지금과 같다), cookie 면 거래소 보관 장부에 쌓는다(체인 거래 없음).
  * 출금(cookie 만): 거래소 보관에서 먼저 깎고 릴레이어가 보낸다 — 전송이 실패하면 되돌린다. 결과 { status?, body }.
  */
@@ -838,12 +876,11 @@ app.post('/api/mode3/open', requireRpAdmin, async (req, res) => {
       T = lastTranscriptOf(PPID);
       if (!T) return res.status(404).json({ ok: false, reason: 'no_transcript' });
     } else return res.status(400).json({ ok: false, reason: 'malformed' });
-    const c1 = { x: BigInt(T.publicSignals[PUB_INDEX.TAG_C1_X]), y: BigInt(T.publicSignals[PUB_INDEX.TAG_C1_Y]) };
-    const D = await partialDecrypt(BigInt(reg.x_svc), c1);
-    const D_svc = { x: D.x.toString(), y: D.y.toString() };
+    // 2026-11-19(스펙 trace-without-tag T7·T9): 태그를 열지 않는다 — 그 PPID 의 가장 최신 로그인(또는 그 거래)의 증명 한 벌을 낸다. 공개 입력의 auid_s 를 zkIdP 가 발급 기록에서 찾는다.
+    const auid_s = T.publicSignals[PUB_INDEX.AUID_S];
     const ts = Math.floor(Date.now() / 1000).toString();
-    const sig = await signOpenRequest(serviceWallet, { arid: reg.arid, PPID: T.PPID, c1: { x: c1.x.toString(), y: c1.y.toString() }, D_svc, ts });
-    const r = await fetch(`${CIA_URL}/cia/open/request`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ arid: reg.arid, publicSignals: T.publicSignals, proof: T.proof, D_svc, ts, sig, account: await accountOfCached(T.PPID) }) });   // account: 관리자 표시용(2026-11-09)
+    const sig = await signOpenRequest(serviceWallet, { arid: reg.arid, PPID: T.PPID, auid_s, ts });
+    const r = await fetch(`${CIA_URL}/cia/open/request`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ arid: reg.arid, publicSignals: T.publicSignals, proof: T.proof, ts, sig, account: await accountOfCached(T.PPID) }) });   // account: 관리자 표시용(2026-11-09)
     res.status(r.status).json(await r.json().catch(() => ({})));
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });

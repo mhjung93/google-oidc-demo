@@ -34,7 +34,7 @@ import { ethers } from 'ethers';
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
 import * as snarkjs from 'snarkjs';
 import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
-import { credMessageV11, compressPoint, randomScalar, issueCtx, registerCtx, slotCtx, revokeSessionCtx } from './lib/mode3_credential.js';
+import { credMessageV11, compressPoint, randomScalar, issueCtx, registerCtx, slotCtx, revokeSessionCtx, loginCtx } from './lib/mode3_credential.js';
 import { DEFAULT_ATTR_SCHEMA, loadSchema, schemaInfo } from './lib/mode3_attr_schema.js';
 import { sessionLeaf, createRevocationTree, SESSION_BOUND_MAX, verifyRevokeBind } from './lib/mode3_revocation.js';
 import { isValidPoint, pointFromStrings } from './lib/mode3_issuance.js';
@@ -43,7 +43,7 @@ import { loadIdpVkey, idpPublicSignals, verifyIdp, IDP_VKEY_PATH } from './lib/m
 import { MODE3_LOG_ABI, MODE3_MIRROR_ABI, rootToBytes32, signPublicationV3, entryHashes, signReceipt } from './lib/mode3_log.js';
 import { createRegistryTree, registryLeaf } from './lib/mode3_registry.js';
 import { signRpCert } from './lib/mode3_rp_cert.js';
-import { isTracePoint, createShare, combinePublicKey, partialDecrypt, combineDecrypt, resolveTagPlaintext, proveShare } from './lib/mode3_trace.js';
+import { isTracePoint, createShare, combinePublicKey, proveShare } from './lib/mode3_trace.js';   // 2026-11-19: 태그 복호(partialDecrypt·combineDecrypt·resolveTagPlaintext)는 쓰지 않는다 — 조합 키는 등록에만 남아 있다
 import { openRequestMessage, openResultMessage, recoverSigner, isFreshTs } from './lib/mode3_opening.js';
 import { CIA_STATE_VERSION, defaultCiaState, migrateCiaState, rpKeyTag, findRpSlotByKey } from './lib/mode3_cia_state.js';
 import { buildAaHealth, applyHealthHeaders, bounded, originList } from './lib/mode3_health.js';
@@ -82,6 +82,8 @@ const MAX_UNAPPROVED_RPS = Number(process.env.CIA_MAX_UNAPPROVED_RPS || 200);
 const WALLET_AGENT_ORIGIN = process.env.MODE3_WALLET_AGENT_ORIGIN || 'http://127.0.0.1:5100';
 // 지갑 모드(snap·passkey·web·passkey-web, 2026-11-18): 페이지 문구에만 쓴다 — passkey-web 이면 화면이 "스냅" 대신 "zk 클라이언트" 라 부른다(/mode3/health 의 walletKind).
 const WALLET_KIND = process.env.MODE3_WALLET_KIND || '';
+// 일반 OIDC(스펙 2026-11-19 oidc-comparison C1): 비교용 — zkIdP 가 sub = uid·aud = rid 인 토큰을 내는 보통의 OIDC 공급자 노릇도 한다. 기본 꺼짐.
+const PLAIN_OIDC = process.env.CIA_PLAIN_OIDC === '1';
 // OIDC 래퍼(스펙 2026-10-16): Google ID 토큰을 체인 밖에서 검증해 계정을 만든다. 클라이언트 ID 가 없으면 꺼진다(데모 계정만).
 const envStr = (k, d) => (process.env[k] === undefined || process.env[k] === '' ? d : process.env[k]);
 const OIDC_PROVIDER = envStr('MODE3_OIDC_PROVIDER', GOOGLE_DEFAULTS.provider), OIDC_ISSUER = envStr('MODE3_OIDC_ISSUER', GOOGLE_DEFAULTS.issuer), OIDC_JWKS_URL = envStr('MODE3_OIDC_JWKS_URL', GOOGLE_DEFAULTS.jwksUrl), OIDC_CLIENT_ID = envStr('MODE3_OIDC_CLIENT_ID', envStr('GOOGLE_CLIENT_ID', null));
@@ -167,6 +169,8 @@ const DEMO_ACCOUNTS = {
 // /cia/auth/code 로 받은 1회용 코드(auth_code)가 추가로 필요하다. DEMO_SEED 는 기동 때 DEMO_ACCOUNTS(testuser·alice)를 상태에 심는다 —
 // 옛 흐름·기존 테스트 호환용이고, 가입(POST /cia/signup)만 쓰는 데모에서는 꺼 둔다(CIA_DEMO_ACCOUNTS 미설정).
 const ISSUE_AUTH = process.env.CIA_ISSUE_AUTH === 'code' ? 'code' : 'key';
+// 증명 로그인의 챌린지 수명(스펙 2026-11-19 passkey-proof-login L7) — zkIdP 페이지가 지갑 창을 기다리는 시간(120초)보다 길게.
+const LOGIN_CHALLENGE_TTL_MS = (() => { const n = Number(process.env.CIA_LOGIN_CHALLENGE_TTL_MS); return Number.isFinite(n) && n > 0 ? n : 180_000; })();
 const DEMO_SEED = process.env.CIA_DEMO_ACCOUNTS === '1';
 // 수정 라운드 1: 0 이하(파싱 실패 포함)는 "코드가 즉시 만료"라는 조용한 오설정이 되므로 경고 뒤 기본값(5분)으로 떨어진다.
 const CODE_TTL_MS = (() => {
@@ -568,6 +572,8 @@ function consumeCode(code, { uid, purpose, auid = null }) {
 // ---- 앱 ----
 const app = express();
 app.use(express.json({ limit: '256kb' }));
+// JSON 본문만 받는 경로용(2026-11-19: 증명 로그인·일반 OIDC 결정) — 다른 사이트의 폼 POST 는 여기서 끝난다(이 서버는 그 경로들에 CORS 를 열지 않는다).
+const jsonBodyOnly = (req, res, next) => (req.is('application/json') ? next() : res.status(415).json({ error: 'json only', reason: 'json_only' }));
 // 리뷰(2026-11-03 E-M7): 이 페이지들을 남의 프레임에 넣지 못하게(클릭재킹) — 팝업·새 창으로만 쓰이고 프레임 임베드는 없다.
 app.use((req, res, next) => { res.setHeader('X-Frame-Options', 'DENY'); res.setHeader('Content-Security-Policy', "frame-ancestors 'none'"); next(); });
 // 사용자 세션(Task 10, 스펙 §3.2): 메모리 저장소, 쿠키 cia.sid. 재기동하면 로그인이 풀린다(데모 수용) —
@@ -596,21 +602,88 @@ app.get('/account', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'ci
 // OIDC discovery·JWKS(2026-11-09 Phase 1) — RP 가 서버에서 읽어 ID 토큰(ES256)을 검증한다. 공개 자료뿐이라 인증·CORS 가 없다.
 app.get('/.well-known/openid-configuration', (req, res) => {
   res.json({ issuer: PUBLIC_URL, jwks_uri: `${PUBLIC_URL}/.well-known/jwks.json`, id_token_signing_alg_values_supported: ['ES256'],
-    subject_types_supported: ['pairwise'], response_types_supported: ['id_token'], claims_supported: ['sub', 'aud', 'iss', 'iat', 'exp'], scopes_supported: ['openid'] });   // 2026-11-11: name(C_attr) 클레임 없음
+    subject_types_supported: PLAIN_OIDC ? ['pairwise', 'public'] : ['pairwise'], response_types_supported: PLAIN_OIDC ? ['id_token', 'code'] : ['id_token'],
+    claims_supported: ['sub', 'aud', 'iss', 'iat', 'exp'], scopes_supported: ['openid'],   // 2026-11-11: name(C_attr) 클레임 없음
+    // 일반 OIDC(2026-11-19 스펙 oidc-comparison C4)가 켜졌을 때만 — 인가 코드 + PKCE
+    ...(PLAIN_OIDC ? { authorization_endpoint: `${PUBLIC_URL}/oidc/authorize`, token_endpoint: `${PUBLIC_URL}/oidc/token`, code_challenge_methods_supported: ['S256'] } : {}) });
 });
 app.get('/.well-known/jwks.json', (req, res) => res.json({ keys: [idTokenJwk] }));
 /** ID 토큰 서명(ES256). 2026-11-11(사용자 결정): 프로필의 속성 커밋먼트(C_attr)는 싣지 않는다 — RP 마다 같은 값이라 두 RP 가 맞대면
  *  같은 사람임을 알게 된다(PPID 를 RP 마다 다르게 만든 의미가 깨진다). 프로필은 IdP 에만 저장된다. */
-async function signIdToken({ sub, aud }) {
-  const jwt = new SignJWT({}).setProtectedHeader({ alg: 'ES256', kid: idTokenJwk.kid, typ: 'JWT' }).setIssuer(PUBLIC_URL).setSubject(sub).setAudience(aud).setIssuedAt().setExpirationTime(`${ID_TOKEN_TTL_SEC}s`);
+async function signIdToken({ sub, aud, claims = {} }) {   // claims: 일반 OIDC 토큰의 nonce·zkid_plain(2026-11-19) — zk-Delegation 토큰은 비워 둔다
+  const jwt = new SignJWT({ ...claims }).setProtectedHeader({ alg: 'ES256', kid: idTokenJwk.kid, typ: 'JWT' }).setIssuer(PUBLIC_URL).setSubject(sub).setAudience(aud).setIssuedAt().setExpirationTime(`${ID_TOKEN_TTL_SEC}s`);
   return jwt.sign(idTokenKey);
 }
+
+// ---- 일반 OIDC — 비교용(스펙 2026-11-19-mode3-oidc-comparison) ----
+// zk-Delegation 과 견주려고 zkIdP 가 보통의 OIDC 공급자 노릇도 한다: 인가 코드 + PKCE(S256), 공개 클라이언트. 클라이언트는 **승인된 서비스**이고 client_id 는 그 서비스의
+// arid(이 흐름에서의 rid), redirect_uri 는 등록된 origin 의 고정 경로와 글자 그대로 같아야 한다(C2). 토큰은 sub = uid·aud = rid — 서비스는 누구인지를, zkIdP 는 어느 서비스인지를
+// 안다. 이것이 기준선이다: 화면에 "비교용" 이라 적고, CIA_PLAIN_OIDC=1 일 때만 켠다. 동의는 기억하지 않는다(매번 무엇이 넘어가는지 보인다, C3).
+const OIDC_CODE_TTL_MS = 60_000, OIDC_CODE_MAX = 2000, OIDC_CALLBACK_PATH = '/api/rp/zkoidc/callback';
+const oidcCodes = new Map();   // code(32B hex) → { client_id, redirect_uri, code_challenge, nonce, uid, expiresAt }
+const plainOidcOff = (res) => res.status(404).json({ error: 'plain oidc disabled', reason: 'plain_oidc_disabled' });
+const oidcStr = (v, max) => typeof v === 'string' && v.length > 0 && v.length <= max;
+/** 인가 요청 검사(C2·§5). 성공 { client: { rid, name, origin }, redirect_uri, state, nonce, code_challenge }, 실패 { reason } — 실패는 화면에 보일 뿐 어디로도 돌려보내지 않는다. */
+function oidcRequest(q) {
+  const { response_type, client_id, redirect_uri, scope, state: st, nonce, code_challenge, code_challenge_method } = q ?? {};
+  const rp = isDec(client_id) && Object.hasOwn(state.rps, client_id) ? state.rps[client_id] : null;
+  if (!rp || rp.status !== 'approved') return { reason: 'oidc_client_unknown' };
+  if (redirect_uri !== `${rp.origin}${OIDC_CALLBACK_PATH}`) return { reason: 'oidc_redirect_mismatch' };
+  if (response_type !== 'code' || typeof scope !== 'string' || !scope.split(' ').includes('openid') || !oidcStr(st, 512) || !oidcStr(nonce, 256)
+    || code_challenge_method !== 'S256' || typeof code_challenge !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(code_challenge)) return { reason: 'oidc_request_invalid' };
+  return { client: { rid: client_id, name: rp.name, origin: rp.origin }, redirect_uri, state: st, nonce, code_challenge };
+}
+app.get('/oidc/authorize', (req, res) => (PLAIN_OIDC ? res.sendFile(path.join(__dirname, 'mode3', 'cia_oidc.html')) : plainOidcOff(res)));
+// 동의 화면이 읽는다(같은 오리진): 요청이 맞는지, 어느 서비스인지, 지금 누구로 로그인돼 있는지. 화면이 보일 값뿐이다.
+app.get('/oidc/authorize/info', (req, res) => {
+  if (!PLAIN_OIDC) return plainOidcOff(res);
+  const r = oidcRequest(req.query);
+  if (r.reason) return res.status(400).json({ ok: false, reason: r.reason });
+  const uid = req.session?.uid && state.accounts[req.session.uid] ? req.session.uid : null;
+  res.json({ ok: true, client: r.client, user: uid ? { uid, id: state.accounts[uid].loginId ?? null } : null, issueAuth: ISSUE_AUTH });
+});
+// "계속"·"취소" — 같은 오리진의 JSON POST + 로그인 세션으로만(다른 사이트가 대신 누르지 못한다). 응답은 서비스로 돌아갈 주소다(화면이 그리로 간다).
+app.post('/oidc/authorize/decision', jsonBodyOnly, (req, res) => {
+  if (!PLAIN_OIDC) return plainOidcOff(res);
+  const uid = req.session?.uid && state.accounts[req.session.uid] ? req.session.uid : null;
+  if (!uid) return res.status(401).json({ error: 'login required', reason: 'login_required' });
+  const r = oidcRequest(req.body);
+  if (r.reason) return res.status(400).json({ ok: false, reason: r.reason });
+  const back = new URL(r.redirect_uri);
+  back.searchParams.set('state', r.state);
+  if (req.body.approve !== true) { back.searchParams.set('error', 'access_denied'); return res.json({ ok: true, redirect: back.toString() }); }
+  const now = Date.now();
+  for (const [k, v] of oidcCodes) if (v.expiresAt < now) oidcCodes.delete(k);
+  while (oidcCodes.size >= OIDC_CODE_MAX) oidcCodes.delete(oidcCodes.keys().next().value);
+  const code = randomBytes(32).toString('hex');
+  oidcCodes.set(code, { client_id: r.client.rid, redirect_uri: r.redirect_uri, code_challenge: r.code_challenge, nonce: r.nonce, uid, expiresAt: now + OIDC_CODE_TTL_MS });
+  // C5: zkIdP 가 본 서비스 — 가장 최신 값 하나(이력 아님). 일반 OIDC 에서는 어느 서비스인지 그대로 안다.
+  state.accounts[uid].lastOidc = { rid: r.client.rid, name: r.client.name, at: new Date(now).toISOString() };
+  persist();
+  back.searchParams.set('code', code);
+  res.json({ ok: true, redirect: back.toString() });
+});
+// 서비스 서버가 부른다(OAuth 의 모양 그대로 — 폼 본문, 오류는 { error }). 코드는 1회용: 찾는 즉시 지우고(틀린 시도도 태운다) 묶인 값·PKCE 를 대조한다.
+app.post('/oidc/token', express.urlencoded({ extended: false, limit: '8kb' }), async (req, res) => {
+  if (!PLAIN_OIDC) return plainOidcOff(res);
+  const { grant_type, code, client_id, redirect_uri, code_verifier } = req.body ?? {};
+  if (grant_type !== 'authorization_code') return res.status(400).json({ error: 'unsupported_grant_type' });
+  const rec = typeof code === 'string' ? oidcCodes.get(code) ?? null : null;
+  if (rec) oidcCodes.delete(code);
+  const pkceOk = rec && typeof code_verifier === 'string' && /^[A-Za-z0-9._~-]{43,128}$/.test(code_verifier) && createHash('sha256').update(code_verifier).digest('base64url') === rec.code_challenge;
+  if (!rec || rec.expiresAt < Date.now() || client_id !== rec.client_id || redirect_uri !== rec.redirect_uri || !pkceOk) return res.status(400).json({ error: 'invalid_grant' });
+  try {
+    const id_token = await signIdToken({ sub: rec.uid, aud: rec.client_id, claims: { nonce: rec.nonce, zkid_plain: true } });   // zkid_plain: zk-Delegation 토큰(sub = auid_s)과 섞이지 않게(§5)
+    res.set('Cache-Control', 'no-store').json({ id_token, token_type: 'Bearer', expires_in: ID_TOKEN_TTL_SEC });
+  } catch (err) { res.status(500).json({ error: 'server_error' }); }
+});
 
 app.get('/cia/public_keys', userCors, (req, res) => {
   // V10: canonicalChainId = 게시 로그가 있는 체인(selfChainId 와 같은 provider). mirrors = CIA_MIRRORS(릴레이 대상 거울, 2026-10-02 Task 6).
   res.json({ pk_CIA: S(ciaPub), ethAddress: ethWallet.address, heartbeatBlocks: Number(HEARTBEAT_BLOCKS), chainIds: [...CHAIN_RPCS.keys()], logAddress: LOG_ADDRESS,
     canonicalChainId: selfChainId, mirrors: MIRRORS.map(({ chainStr, address }) => ({ chainId: chainStr, address })),
-    oidc: { enabled: OIDC.enabled, provider: OIDC.provider, clientId: OIDC.clientId, issuer: OIDC.issuer } });   // 2026-11-10: 11-09 의 providers(zkID 쪽 연결)는 없앴다
+    oidc: { enabled: OIDC.enabled, provider: OIDC.provider, clientId: OIDC.clientId, issuer: OIDC.issuer },
+    issueAuth: ISSUE_AUTH });   // 2026-11-19(스펙 passkey-proof-login L2): 발급 정책 — 지갑이 인증 창을 거칠지 이 값으로 정한다   // 2026-11-10: 11-09 의 providers(zkIdP 쪽 연결)는 없앴다
 });
 
 // 속성 스키마 공개(스펙 2 §5.2, 인증 없음). 지갑·RP 가 기동 때 받아 술어 타입·정책 이름을 해석하고, 화면이 이름값을 그린다.
@@ -945,7 +1018,49 @@ app.post('/cia/user/login', (req, res) => {
   loginKeepingOtherRole(req, res, { role: 'uid', value: uid, other: 'operator' }, () => res.json({ uid, id: state.accounts[uid].loginId ?? null }));
 });
 app.post('/cia/user/logout', (req, res) => logoutRole(req, res, 'uid', 'operator'));
-// 2026-11-13(사용자 결정): 속성 도구(스냅 오리진의 /attr.html)가 uid 를 묻지 않고 zkID 로그인 세션에서 받아온다. 쿠키를 싣는 교차 오리진 읽기는 이 경로 하나뿐이고
+// ---- 증명 로그인(스펙 2026-11-19 passkey-proof-login L7·L9·L10) ----
+// 비밀번호 대신 "이 계정 auid 의 s_u 를 안다" 는 π_IdP 로 들어온다(passkey-web: 패스키 → s_u). 발급 정책이 key 일 때만 받는다 — code 정책(스냅 데모)에서는
+// 비밀번호가 계정 관리의 관문으로 남는다. 같은 오리진(/user 페이지) 전용이라 CORS 를 열지 않는다. 증명은 지갑 창이 만들어 /user 페이지에 돌려준다.
+// 챌린지는 그 브라우저에 묶는다 — 한 번 낸 증명은 그 브라우저의 그 챌린지에만 맞는다(tag 가 ctx = loginCtx(nonce) 에 묶인다).
+// 리뷰(2026-11-19) M1·M2·M3: 묶는 자리는 로그인 세션(cia.sid)이 아니라 **전용 쿠키(cia.lc) + 서버의 표**다. 로그인 전 요청이 세션을 만들면 (1) 인증 없는 요청이
+// 만료 없는 세션을 끝없이 쌓고 (2) 남의 사이트의 폼 POST 가 새 세션 쿠키로 로그인을 풀 수 있고 (3) 세션 저장이 응답 때라 "시도하면 지운다" 가 동시 요청에 깨진다.
+// 표는 크기 상한을 두고(넘치면 오래된 것부터 버린다) 검증 **전에** 동기적으로 지운다. JSON 이 아닌 POST 는 받지 않는다(다른 사이트의 폼은 여기서 끝난다).
+const proofLoginOff = (res) => res.status(403).json({ error: 'proof login disabled', reason: 'proof_login_disabled' });
+const LC_COOKIE = 'cia.lc', LC_PATH = '/cia/user', LC_MAX = 2000;
+const loginChallenges = new Map();   // 쿠키 값(32B hex) → { nonce, expiresAt }
+const readCookie = (req, name) => {
+  for (const part of String(req.headers.cookie ?? '').split(';')) { const i = part.indexOf('='); if (i > 0 && part.slice(0, i).trim() === name) return part.slice(i + 1).trim(); }
+  return null;
+};
+app.post('/cia/user/login_challenge', jsonBodyOnly, (req, res) => {
+  if (ISSUE_AUTH !== 'key') return proofLoginOff(res);
+  const now = Date.now();
+  for (const [k, v] of loginChallenges) if (v.expiresAt < now) loginChallenges.delete(k);
+  while (loginChallenges.size >= LC_MAX) loginChallenges.delete(loginChallenges.keys().next().value);
+  const id = randomBytes(32).toString('hex');
+  const ch = { nonce: randomScalar().toString(), expiresAt: now + LOGIN_CHALLENGE_TTL_MS };
+  loginChallenges.set(id, ch);
+  res.cookie(LC_COOKIE, id, { httpOnly: true, sameSite: 'lax', path: LC_PATH, maxAge: LOGIN_CHALLENGE_TTL_MS });
+  res.json(ch);
+});
+app.post('/cia/user/login_proof', jsonBodyOnly, async (req, res) => {
+  try {
+    if (ISSUE_AUTH !== 'key') return proofLoginOff(res);
+    const { uid, nonce } = req.body ?? {};
+    const lc = readCookie(req, LC_COOKIE);
+    const ch = lc ? loginChallenges.get(lc) ?? null : null;
+    if (lc) { loginChallenges.delete(lc); res.clearCookie(LC_COOKIE, { path: LC_PATH }); }   // 1회용 — 아래의 await 전에 지운다. 무엇으로 끝나든 이 챌린지는 다시 못 쓴다
+    if (!ch || typeof ch.nonce !== 'string' || !(ch.expiresAt >= Date.now()) || nonce !== ch.nonce) return res.status(401).json({ error: 'login challenge expired', reason: 'login_challenge_expired' });
+    // 모르는 계정·등록 전 계정(auid 없음)·형식이 틀린 요청·틀린 증명을 가르지 않는다(L10 — 비밀번호 로그인과 같은 원칙). 계정 상태 규칙도 비밀번호 로그인과 같다.
+    const denied = () => res.status(401).json({ error: 'invalid credentials', reason: 'invalid_credentials' });
+    const a = isDec(uid) && Object.hasOwn(state.accounts, uid) ? state.accounts[uid] : null;
+    if (!a?.auid) return denied();
+    const au = await checkIdpAuth({ uid, auid: a.auid, ctx: await loginCtx({ nonce: BigInt(ch.nonce) }), body: req.body });
+    if (au.error) return au.error.status === 503 ? res.status(503).json(au.error.body) : denied();
+    loginKeepingOtherRole(req, res, { role: 'uid', value: uid, other: 'operator' }, () => res.json({ uid, id: a.loginId ?? null }));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+// 2026-11-13(사용자 결정): 속성 도구(스냅 오리진의 /attr.html)가 uid 를 묻지 않고 zkIdP 로그인 세션에서 받아온다. 쿠키를 싣는 교차 오리진 읽기는 이 경로 하나뿐이고
 // (credentials:true — userCors 와 따로 둔다), 스냅 오리진에만 열며 uid 만 돌려준다 — 프로필·auid·슬롯은 /cia/user/me(같은 오리진 전용)에 그대로 둔다.
 // 스냅 오리진은 등록 때 어차피 uid 를 받는다(등록 코드와 함께). 세션 쿠키는 SameSite=Lax 라 같은 사이트(localhost)의 스냅 화면에서만 실린다.
 const uidCors = cors({ origin: (origin, cb) => cb(null, origin === WALLET_AGENT_ORIGIN), methods: ['GET'], credentials: true });
@@ -1035,6 +1150,8 @@ app.post('/cia/user/unlink_wallet', requireUser, async (req, res) => {
     if (retired) setSlot(uid, 0n);
     acct.auid = null; acct.slotRetired = true;
     acct.lastAuidS = null;   // 최신 auid_s(2026-11-12)는 방금 푼 auid 에서 나온 값이다 — 함께 지운다
+    acct.lastAridS = null;   // 최신 arid_s(2026-11-19)도 같은 발급의 값이다
+    acct.lastIssue = null;
     persist();
     const pub = retired ? await publishSafely() : { published: false };
     res.json({ unlinked: true, retired, published: Boolean(pub.published), pending: state.pending.length });
@@ -1050,7 +1167,7 @@ app.post('/cia/auth/code', (req, res) => {
   const uid = typeof id === 'string' ? resolveLogin(id) : (isDec(uidIn) ? uidIn : null);
   const a = uid ? state.accounts[uid] : null;
   if (!pwOk(a, pwd)) return res.status(401).json({ error: 'invalid credentials', reason: 'invalid_credentials' });
-  // 등록 코드(2026-11-09, 사용자 결정): 지갑 등록은 zkID 페이지가 아니라 서비스의 "zkID 로 로그인" 중에 처음 한 번 일어난다 — 팝업이 이 인증 창을 등록 모드로 열고
+  // 등록 코드(2026-11-09, 사용자 결정): 지갑 등록은 zkIdP 페이지가 아니라 서비스의 "zkIdP 로 로그인" 중에 처음 한 번 일어난다 — 팝업이 이 인증 창을 등록 모드로 열고
   // 아이디·비밀번호와 auid(2026-11-11 — 속성 도구가 계산해 보여 준 값)를 넣으면 등록 코드와 uid 를 받아 /cia/register 로 간다. 이미 등록된 계정이면 409.
   if (purpose === 'register') {
     // 2026-11-11(사용자 결정): 첫 등록에도 auid 를 받는다 — 속성 도구가 salt 로 계산해 보여 준 값(2026-11-13 부터 uid 없음). 코드에 묶어 /cia/register 의 auid 와 대조한다.
@@ -1196,7 +1313,7 @@ app.post('/cia/issue', userCors, async (req, res) => {
         // 2026-11-09(연결 로그인 L5): 아이디(demo) 계정은 Google 토큰을 여기로 들고 오지 않는다 — 연결은 /user 에서만 하고, RP 의 Google 로그인은
         // 인증 창(method=google)이 낸 1회용 코드로 발급한다(2026-11-06 의 "발급 중 첫 번에 자동 연결" 은 없앴다). 래퍼 계정·없는 계정은 지금처럼 uid_mismatch.
         const a0 = state.accounts[uid];
-        if (a0 && (a0.provider ?? 'demo') === 'demo') return res.status(400).json({ error: 'use_auth_window', reason: 'use_auth_window', detail: '아이디 계정은 zkID 인증 창으로 로그인한다' });
+        if (a0 && (a0.provider ?? 'demo') === 'demo') return res.status(400).json({ error: 'use_auth_window', reason: 'use_auth_window', detail: '아이디 계정은 zkIdP 인증 창으로 로그인한다' });
         return res.status(403).json({ error: 'uid_mismatch', reason: 'uid_mismatch', detail: '토큰의 계정이 요청의 uid 와 다르다' });
       }
       oidcClaims = o;
@@ -1285,6 +1402,15 @@ app.post('/cia/issue', userCors, async (req, res) => {
     acct.sessions.push({ Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString(), issuedAt, revokedAt: null });
     // 2026-11-12(사용자 결정 — D1 수정): 가장 최신 auid_s 하나만 덮어쓴다 — 앞 값은 사라진다(기록 아님). 어느 세션(Cf_s)의 것인지는 적지 않는다.
     acct.lastAuidS = { value: auidS.toString(), at: issuedAt };
+    // 2026-11-19(스펙 oidc-comparison C5, 사용자 결정 — D1 의 두 번째 예외): 가장 최신 arid_s 하나도 같은 모양으로 덮어쓴다 — 관리자 화면이 "zk-Delegation 에서 zkIdP 가 본 서비스" 로
+    // 보인다. 가려진 값이라 어느 서비스인지는 여기서도 모른다. 기록(이력)은 없다.
+    acct.lastAridS = { value: aridS.toString(), at: issuedAt };
+    // 2026-11-19(데모 시나리오 6 — "IdP 가 무엇을 받아 검증하는지" 그림): 가장 최근 발급 요청에서 받은 공개값 한 벌. 이력이 아니다(덮어쓴다) — 전부 이 요청으로 zkIdP 가 원래 받는 값이고
+    // 비밀은 없다(tag·증명·난수 n 은 남기지 않는다 — 요청을 묶는 값이라 화면에 둘 이유가 없다).
+    // 2026-11-19(스펙 trace-without-tag T6, 사용자 결정 "IdP 는 기록을 갖고 있는 형태"): 발급마다 auid_s 를 계정에 남긴다 — 개봉은 서비스가 낸 auid_s 를 이 기록에서 찾는다.
+    // 지금까지의 "auid_s 는 남기지 않는다"(D1)를 뒤집는다. 계정마다 최근 AUID_S_LOG_MAX 개. 연결 해제·폐기에도 지우지 않는다(추적의 근거다).
+    acct.auidSLog = [...(acct.auidSLog ?? []), { value: auidS.toString(), at: issuedAt }].slice(-AUID_S_LOG_MAX);
+    acct.lastIssue = { at: issuedAt, auid_s: auidS.toString(), arid_s: aridS.toString(), Cf_u: cfu, Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString() };
     persist();
     // OIDC 모양의 ID 토큰(2026-11-09 Phase 1): sub=auid_s(세션 가명), aud=arid_s(세션 RP 가명) — 둘 다 π_RP 의 공개 신호라 RP 가 증명과 맞춰 본다.
     // name = 프로필의 커밋먼트(없으면 클레임 자체가 없다). IdP 는 여기서도 RP 가 누구인지 모른다(arid_s 는 블라인딩된 값).
@@ -1821,7 +1947,7 @@ app.post('/cia/account/delete', requireAdmin, async (req, res) => {
 
 // 관리자 계정 목록(관리 페이지의 계정 목록용). activeCred 는 위의 기존 헬퍼(사용자당 활성 자격증명 하나).
 app.get('/cia/accounts', requireAdmin, (req, res) => res.json({
-  accounts: Object.entries(state.accounts).map(([uid, a]) => ({ uid, id: a.loginId ?? null, auid: a.auid ?? null, disabled: a.disabled, activeCf_u: activeCfU(a), slot: a.slot, tampered: Boolean(a.tampered), registryLeaf: state.registry.leaves[a.slot] ?? '0', provider: a.provider ?? 'demo', lastAuidS: a.lastAuidS ?? null })),   // lastAuidS: 최신 auid_s 하나(2026-11-12)
+  accounts: Object.entries(state.accounts).map(([uid, a]) => ({ uid, id: a.loginId ?? null, auid: a.auid ?? null, disabled: a.disabled, activeCf_u: activeCfU(a), slot: a.slot, tampered: Boolean(a.tampered), registryLeaf: state.registry.leaves[a.slot] ?? '0', provider: a.provider ?? 'demo', lastAuidS: a.lastAuidS ?? null, lastAridS: a.lastAridS ?? null, lastOidc: a.lastOidc ?? null, lastIssue: a.lastIssue ?? null })),   // lastAuidS: 최신 auid_s 하나(2026-11-12), lastAridS·lastOidc: zkIdP 가 본 서비스(2026-11-19)
 }));
 
 // ---- V9 등록부 관리(설계 2026-10-01 §9) ----
@@ -1923,58 +2049,52 @@ function loadVkey() {
   return (vkeyP ??= (async () => JSON.parse(fs.readFileSync(VKEY_PATH, 'utf8')))().catch((e) => { vkeyP = null; throw e; }));
 }
 const findOpening = (id) => state.openings.find((o) => o.id === id);
+const AUID_S_LOG_MAX = 500;   // 계정마다 남기는 auid_s 기록 수(스펙 trace-without-tag T6)
+/** 발급 기록에서 그 auid_s 를 낸 계정의 uid — 없으면 null(기록 상한 밖이거나 이 IdP 가 낸 값이 아니다). 최신 하나(lastAuidS)도 함께 본다(기록이 생기기 전의 발급). */
+function uidOfAuidS(auidS) {
+  for (const [uid, a] of Object.entries(state.accounts)) if (a.lastAuidS?.value === auidS || (a.auidSLog ?? []).some((r) => r.value === auidS)) return uid;
+  return null;
+}
 /** 같은 트랜스크립트의 재요청을 알아보는 열쇠 — (arid, c1, c2, PPID) 의 해시. 복호 재료를 지운 뒤에도 남길 수 있다(§6 감사 기록). */
-const openingTagKey = (arid, c1x, c1y, c2, PPID) => createHash('sha256').update([arid, c1x, c1y, c2, PPID].join('|')).digest('hex');
-/** 결정이 끝난 항목에서 복호 재료를 지운다(2026-09-25 리뷰 B-4): D_svc·c1·c2 는 결정 뒤 쓸 일이 없는데 x_AA 와 같은
- *  파일에 남아 있으면 거절한 요청까지 나중에 열 수 있는 재료가 된다. 감사 기록(arid·PPID·uid·resolved·시각·allowAgent·
- *  max_height·chainid)과 대조용 tagKey 는 남긴다. */
-function forgetOpeningShards(o) { delete o.D_svc; delete o.c1; delete o.c2; }
+// ---- 개봉(2026-11-19 스펙 trace-without-tag T7·T8) ----
+// 트레이스 태그는 없다. 서비스가 그 PPID 의 가장 최신 로그인(또는 그 거래)의 증명 한 벌을 내면 — 공개 입력 안에 PPID·arid·auid_s 가 함께 있다 — zkIdP 는 증명·서명을 확인해
+// 대기 목록에 두고, 관리자가 승인하면 발급 때 남긴 기록(auidSLog)에서 그 auid_s 의 uid 를 찾는다. 복호·조각(D_svc·x_AA)·전수 대입이 없다.
+/** 같은 요청인지 가르는 키 — (arid, PPID, auid_s). auid_s 는 로그인마다 다르므로 같은 로그인의 두 번째 요청만 겹친다. */
+const openingKey = (arid, PPID, auidS) => createHash('sha256').update([arid, PPID, auidS].join('|')).digest('hex');
 app.post('/cia/open/request', async (req, res) => {
   try {
-    const { arid, publicSignals, proof, D_svc, ts, sig, account } = req.body ?? {};
+    const { arid, publicSignals, proof, ts, sig, account } = req.body ?? {};
     // 2026-11-09: account(선택, 0x) — RP 가 PPID 로 계산한 스마트 계정 주소. 관리자 화면 표시용일 뿐 검증·개봉에는 쓰지 않는다(서명에도 안 들어간다).
     if (account !== undefined && !isAddr(account)) return res.status(400).json({ error: 'account 는 0x 주소' });
-    // V11: 공개 입력 34(COUNTER 포함, 2026-10-22) — 태그는 [12..14] 그대로
-    if (!isDec(arid) || !Array.isArray(publicSignals) || publicSignals.length !== PUB_INDEX.COUNT || !publicSignals.every(isDec) || !proof || !isPt(D_svc) || !isDec(ts) || typeof sig !== 'string') {
-      return res.status(400).json({ error: `arid, publicSignals[${PUB_INDEX.COUNT}], proof, D_svc{x,y}, ts, sig required` });
+    if (!isDec(arid) || !Array.isArray(publicSignals) || publicSignals.length !== PUB_INDEX.COUNT || !publicSignals.every(isDec) || !proof || !isDec(ts) || typeof sig !== 'string') {
+      return res.status(400).json({ error: `arid, publicSignals[${PUB_INDEX.COUNT}], proof, ts, sig required` });
     }
-    if (!(await isTracePoint(pointFromStrings(D_svc)))) return res.status(400).json({ error: 'D_svc is not a valid subgroup point' });
     const e = state.rps[arid];
     if (!e) return res.status(404).json({ error: 'unknown_service' });
-    if (e.status !== 'approved' || !e.pk_service || !e.pk_trace) return res.status(403).json({ error: 'not_approved' });
+    if (e.status !== 'approved' || !e.pk_service) return res.status(403).json({ error: 'not_approved' });
     if (!isFreshTs(ts)) return res.status(401).json({ error: 'stale' });
     // 정규 10진으로 맞춘다(앞자리 0 허용 입력 대비 — 서명 메시지·문자열 비교·저장 전부 정규형 위에서, 2026-09-18 점검 1).
     const ps = publicSignals.map((v) => BigInt(v).toString());
-    const [PPID, aridIn, , max_height, chainIn, allowAgent, , , ciaX, ciaY, traceX, traceY, c1x, c1y, c2] = ps;
-    if (recoverSigner(openRequestMessage({ arid, PPID, c1: { x: c1x, y: c1y }, D_svc, ts }), sig) !== e.pk_service) return res.status(401).json({ error: 'bad_signature' });
-    if (aridIn !== arid) return res.status(403).json({ error: 'wrong_arid' });
+    const PPID = ps[PUB_INDEX.PPID], aridIn = ps[PUB_INDEX.ARID], max_height = ps[PUB_INDEX.MAX_HEIGHT], chainIn = ps[PUB_INDEX.CHAINID], allowAgent = ps[PUB_INDEX.ALLOW_AGENT];
+    const auidS = ps[PUB_INDEX.AUID_S];
+    if (recoverSigner(openRequestMessage({ arid, PPID, auid_s: auidS, ts }), sig) !== e.pk_service) return res.status(401).json({ error: 'bad_signature' });
+    if (aridIn !== arid) return res.status(403).json({ error: 'wrong_arid' });   // 남의 서비스에 온 증명으로는 열지 못한다
     const pk = S(ciaPub);
-    if (ciaX !== pk.x || ciaY !== pk.y) return res.status(403).json({ error: 'untrusted_cia' });
-    if (traceX !== e.pk_trace.x || traceY !== e.pk_trace.y) return res.status(403).json({ error: 'wrong_trace_key' });
+    if (ps[PUB_INDEX.PK_CIA_X] !== pk.x || ps[PUB_INDEX.PK_CIA_Y] !== pk.y) return res.status(403).json({ error: 'untrusted_cia' });
     if (!CHAIN_RPCS.has(BigInt(chainIn).toString())) return res.status(403).json({ error: 'wrong_chain' });
     if (BigInt(allowAgent) > 1n) return res.status(403).json({ error: 'bad_allow_agent' });
-    if (c1x === '0' && c1y === '1') return res.status(403).json({ error: 'bad_tag' });   // r = 0 — RP·컨트랙트와 같은 규칙(심층 방어)
     let vkey;
-    try { vkey = await loadVkey(); } catch (err) { console.error(`[cia] pi_cred vkey 를 읽지 못했다: ${err.message}`); return res.status(503).json({ error: 'vkey unavailable', reason: 'vkey_unavailable' }); }   // 경로·errno 는 로그에만(리뷰 S4 와 같은 원칙)
+    try { vkey = await loadVkey(); } catch (err) { console.error(`[cia] pi_cred vkey 를 읽지 못했다: ${err.message}`); return res.status(503).json({ error: 'vkey unavailable', reason: 'vkey_unavailable' }); }   // 경로·errno 는 로그에만
     let ok = false;
     try { ok = await snarkjs.groth16.verify(vkey, ps, proof); }
     catch (err) { console.warn('[cia] 개봉 요청의 증명 검증 예외 — vkey/회로 불일치일 수 있다: ' + err.message); ok = false; }
     if (!ok) return res.status(403).json({ error: 'bad_proof' });
-    // pending 이거나, approved 지만 uid 를 찾은(resolved:true) 경우는 같은 (arid, c1) 의 결정이 이미 있거나
-    // 진행 중이라 그 id 를 돌려준다. denied 와 approved+resolved:false(틀린 D_svc — RP 자신의 요청만 망친다,
-    // §6.2)는 새 요청을 허용한다 — 거절된 세션을 다시 심사에 올리거나 RP 가 D_svc 를 고쳐 다시 낼 길이
-    // 있어야 한다. arid 대조가 없으면 유출된 남의 로그로 연다.
-    // dup 키는 (arid, c1, c2, PPID) — c1 = r·B8 은 사용자와 무관해 두 사용자가 같은 r 을 쓰면 겹친다(2026-09-23 점검 A-I1).
-    // c2·PPID 까지 같아야 "같은 트랜스크립트"다. 아니면 뒤 요청이 앞 사용자의 승인 항목을 받아 uid 가 오귀속된다.
-    // 결정된 항목에서는 c1·c2 를 지우므로(2026-09-25 리뷰 B-4) 대조는 요청 때 박아 둔 tagKey(그 넷의 해시)로 한다.
-    // tagKey 는 복호에 쓸 수 없다. tagKey 가 없는 옛 항목은 예전처럼 원본 값으로 본다.
-    const tagKey = openingTagKey(arid, c1x, c1y, c2, PPID);
-    const dup = state.openings.find((o) => (o.tagKey ? o.tagKey === tagKey
-      : (o.arid === arid && o.c1?.x === c1x && o.c1?.y === c1y && o.c2 === c2 && o.PPID === PPID))
-      && (o.status === 'pending' || (o.status === 'approved' && o.resolved !== false)));
+    // pending 이거나 uid 를 찾은(approved + resolved) 같은 요청은 그 id 를 돌려준다. denied 와 "기록에 없음"(resolved:false)은 새 요청을 허용한다.
+    const key = openingKey(arid, PPID, auidS);
+    const dup = state.openings.find((o) => o.key === key && (o.status === 'pending' || (o.status === 'approved' && o.resolved !== false)));
     if (dup) return res.status(200).json({ id: dup.id, status: dup.status });
     const id = randomBytes(32).toString('hex');
-    state.openings.push({ id, arid, PPID, account: account ?? null, tagKey, c1: { x: c1x, y: c1y }, c2, D_svc: { x: D_svc.x, y: D_svc.y }, allowAgent, max_height, chainid: chainIn, status: 'pending', requestedAt: new Date().toISOString(), decidedAt: null, uid: null, resolved: null });
+    state.openings.push({ id, arid, PPID, account: account ?? null, key, auid_s: auidS, allowAgent, max_height, chainid: chainIn, status: 'pending', requestedAt: new Date().toISOString(), decidedAt: null, uid: null, resolved: null });
     persist();
     res.status(202).json({ id, status: 'pending' });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -1985,15 +2105,10 @@ app.post('/cia/openings/:id/approve', requireAdmin, async (req, res) => {
     const o = findOpening(req.params.id);
     if (!o) return res.status(404).json({ error: 'unknown opening' });
     if (o.status !== 'pending') return res.status(409).json({ error: `already ${o.status}` });
-    const e = state.rps[o.arid];
-    const D_aa = await partialDecrypt(BigInt(e.x_AA), pointFromStrings(o.c1));
-    const h = await combineDecrypt(BigInt(o.c2), pointFromStrings(o.D_svc), D_aa);
-    // 평문은 Poseidon(uid, arid)(2026-09-18 §3.4) — 등록부의 uid 마다 계산해 되찾는다. 못 찾으면 D_svc 가 틀렸거나(RP 자신의
-    // 요청만 망친다) 계정이 등록부에 없는 것이다. 어느 쪽이든 approved 로 기록하되 resolved=false 로 남긴다(§6.2).
-    const uid = await resolveTagPlaintext(h, BigInt(o.arid), Object.keys(state.accounts));
+    // T8: 발급 기록에서 그 auid_s 의 uid 를 찾는다. 못 찾으면 approved 로 기록하되 resolved=false(기록에 없음). 태그 시절의 옛 항목(auid_s 없음)은 열 수 없다.
+    const uid = typeof o.auid_s === 'string' ? uidOfAuidS(o.auid_s) : null;
     o.decidedAt = new Date().toISOString();
     o.status = 'approved'; o.uid = uid; o.resolved = uid !== null;
-    forgetOpeningShards(o);
     persist();
     res.json({ id: o.id, status: o.status, resolved: o.resolved });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -2002,7 +2117,7 @@ app.post('/cia/openings/:id/deny', requireAdmin, (req, res) => {
   const o = findOpening(req.params.id);
   if (!o) return res.status(404).json({ error: 'unknown opening' });
   if (o.status !== 'pending') return res.status(409).json({ error: `already ${o.status}` });
-  o.status = 'denied'; o.decidedAt = new Date().toISOString(); forgetOpeningShards(o); persist();
+  o.status = 'denied'; o.decidedAt = new Date().toISOString(); persist();
   res.json({ id: o.id, status: o.status });
 });
 app.get('/cia/open/:id', (req, res) => {

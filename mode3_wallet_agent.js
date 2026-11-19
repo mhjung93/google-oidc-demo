@@ -843,7 +843,7 @@ app.post('/wallet/login', ...loginMiddleware, async (req, res) => {
     // Google 계정: 이 지갑이 든 계정의 토큰만 IdP 로 보낸다(/wallet/self_revoke 와 같은 규칙, 최종 리뷰 I1). IdP 의 403 uid_mismatch 를
     // account_disabled 로 오진하지 않도록 체인 작업 전에 여기서 끝낸다. 서명 검증은 IdP 몫이다.
     if (id_token !== null) {
-      // 2026-11-09(연결 로그인 L5): Google 토큰은 Google 래퍼 지갑(Google 로 가입)만 싣는다 — 아이디 지갑의 Google·네이버 로그인은 zkID 인증 창의 1회용 코드다.
+      // 2026-11-09(연결 로그인 L5): Google 토큰은 Google 래퍼 지갑(Google 로 가입)만 싣는다 — 아이디 지갑의 Google·네이버 로그인은 zkIdP 인증 창의 1회용 코드다.
       if ((state.registration?.provider ?? 'demo') === 'demo') return res.status(400).json({ reason: 'use_auth_window' });
       let oc;
       try { oc = await oidcConfig(); } catch (e) { return res.status(502).json({ reason: 'cia_unavailable', detail: e.message }); }

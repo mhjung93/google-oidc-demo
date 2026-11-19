@@ -135,7 +135,7 @@ try {
     assert.equal(await walletPage.isHidden('#setupCard'), true); assert.equal(await walletPage.isVisible('#walletTabs'), true);
   });
 
-  // zkID 가입(아이디·비밀번호) — 지갑과 무관하다(tests/test_mode3_browser.mjs 의 가입 케이스와 같은 화면)
+  // zkIdP 가입(아이디·비밀번호) — 지갑과 무관하다(tests/test_mode3_browser.mjs 의 가입 케이스와 같은 화면)
   {
     const u = await ctxA.newPage(); await u.goto(`${cia.base}/user`);
     await u.click('#showSignupBtn'); await u.fill('#signupId', 'pk-user'); await u.fill('#signupPwd', DEMO_PWD); await u.fill('#signupPwd2', DEMO_PWD); await u.click('#signupBtn');
@@ -352,7 +352,7 @@ try {
     await stack.restartWallet({ MODE3_PASSKEY_HOLD_SECONDS: '0' });
   });
 
-  // 2026-11-17(사용자 요청): 세션이 끝나면(만료·로그아웃·폐기) 서비스 상단 바에 "현재 세션이 만료됐습니다" — "세션 복구" 를 누르면 새 zkID 로그인으로 새 세션을 맺는다
+  // 2026-11-17(사용자 요청): 세션이 끝나면(만료·로그아웃·폐기) 서비스 상단 바에 "현재 세션이 만료됐습니다" — "세션 복구" 를 누르면 새 zkIdP 로그인으로 새 세션을 맺는다
   await t('서비스 상단 바: 세션이 끝나면 "현재 세션이 만료됐습니다" → "세션 복구" 로 새 세션', async () => {
     const old = await curSession(); assert.match(String(old), /^[0-9]+$/);
     assert.equal(await rpPage.isHidden('#sessionBar'), true, '살아 있는 세션에는 바가 없다');

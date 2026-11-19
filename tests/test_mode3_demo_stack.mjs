@@ -43,7 +43,7 @@ async function loginViaRp(allowAgent = '0', targetRp = rp) {
   const { r_s, r_rp, factoryAddress, attrGateAddress } = (await targetRp.post('/api/mode3/challenge')).body;
   const w = await stack.withRelay(() => wallet.post('/wallet/login', { arid: info.arid, origin: info.origin, cert_s: info.cert_s, pk_trace: info.pk_trace, r_s, r_rp, allowAgent, factoryAddress, attrGateAddress }, { Origin: targetRp.origin }));
   if (w.status !== 200) return { walletStatus: w.status, wallet: w.body, r_s, r_rp };
-  // id_token(2026-11-09 Phase 1): 페이지가 지갑 응답의 zkID ID 토큰을 그대로 RP 에 넘긴다 — RP 가 검증해 name(C_attr)을 계정에 고정한다.
+  // id_token(2026-11-09 Phase 1): 페이지가 지갑 응답의 zkIdP ID 토큰을 그대로 RP 에 넘긴다 — RP 가 검증해 name(C_attr)을 계정에 고정한다.
   const r = await targetRp.post('/api/mode3/login', { proof: w.body.proof, publicSignals: w.body.publicSignals, sig: w.body.sig, r_s, id_token: w.body.id_token ?? null });
   return { walletStatus: 200, wallet: w.body, rpStatus: r.status, rp: r.body, r_s, r_rp, factoryAddress, attrGateAddress };
 }
@@ -456,11 +456,11 @@ try {
       const logins = (await rp.get('/api/mode3/logins', rp.adminHeaders)).body.logins;
       assert.equal(logins[logins.length - 1].disclosure.mask, '3');
 
-      // mask ≥ 64(V9 6슬롯, PUB_INDEX.DISC_MASK=15) 는 Groth16 검증 전에 걸리므로 증명 자체는 손대지 않고
-      // publicSignals[15] 만 바꿔도 충분하다(lib/mode3_onchain.js 의 PUB_INDEX, lib/mode3_rp.js 의 공개 입력 분해와 같은 색인).
+      // mask ≥ 64(V9 6슬롯, PUB_INDEX.DISC_MASK=10 — 2026-11-19 에 15 에서 당겨졌다) 는 Groth16 검증 전에 걸리므로 증명 자체는 손대지 않고
+      // publicSignals[10] 만 바꿔도 충분하다(lib/mode3_onchain.js 의 PUB_INDEX, lib/mode3_rp.js 의 공개 입력 분해와 같은 색인).
       const ch2 = (await rp.post('/api/mode3/challenge')).body;
       const bad = await alice.loginWith(ch2, disclosure);
-      const badPs = [...bad.publicSignals]; badPs[15] = '64';
+      const badPs = [...bad.publicSignals]; badPs[10] = '64';
       const r2 = await rp.post('/api/mode3/login', { proof: bad.proof, publicSignals: badPs, sig: bad.sig, r_s: ch2.r_s });
       assert.equal(r2.status, 200, j(r2.body));
       assert.equal(r2.body.ok, false);
@@ -802,7 +802,7 @@ try {
   });
 
   await t('페이지 서빙: 지갑 /, RP /, IdP /admin 이 text/html', async () => {
-    for (const [c, p, marker] of [[wallet, '/', '지갑'], [rp, '/', 'zkONE — 로그인'], [cia, '/admin', 'zkID — 관리자'], [cia, '/account', 'zkID — Google 계정']]) {
+    for (const [c, p, marker] of [[wallet, '/', '지갑'], [rp, '/', 'zkONE — 로그인'], [cia, '/admin', 'zkIdP — 관리자'], [cia, '/account', 'zkIdP — Google 계정']]) {
       const r = await fetch(`${c.base}${p}`);
       assert.equal(r.status, 200, `${p}`);
       assert.match(r.headers.get('content-type') ?? '', /text\/html/);

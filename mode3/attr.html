@@ -6,12 +6,12 @@
   <meta name="referrer" content="no-referrer" />
   <!-- 속성 커밋먼트 도구(2026-11-09 Phase 1). 스냅 에이전트(:5100)가 /attr.html 로 서빙하는 정적 페이지.
        2026-11-17(사용자 결정): uid 는 **받지 않는다** — 커밋먼트 식에 uid 가 없어(아래) 기록에 남길 이유가 없다. 11-16 의 uid 입력 칸을 뺐다(기록 version 5).
-       이 페이지는 zkID 에도 스냅 에이전트에도 아무것도 묻지 않는다(정적 자원만 받는다).
+       이 페이지는 zkIdP 에도 스냅 에이전트에도 아무것도 묻지 않는다(정적 자원만 받는다).
        2026-11-16(사용자 결정): salt 는 **입력받는다** — 그전(11-13)에는 도구가 스냅에서 확인 창 없이 읽어 왔다(getSalt). 사용자가 zk 스냅 화면 "내 계정" 탭에서
        복사해 붙여 넣는다. 이 페이지는 MetaMask·스냅을 부르지 않는다. 스냅의 salt 와 다른 값이면 등록·로그인 때 스냅 승인 창의 대조가 거절한다. 커밋먼트 식에는 uid 도 blind 도 없다(C_attr = Poseidon(DOMAIN, s_u, attrs) —
        스펙 2026-11-13 random-salt R15). 속성·salt 는 어디로도 보내지 않는다.
        salt·속성은 이 브라우저의 localStorage(mode3_attr_tool_v1, 기록 version 5 — 옛 version 4 의 uid 는 무시한다)에만 남는다. 백업 기능은 없다(R5 — 백업에는 salt 만 두고 zk 스냅 화면이
-       만든다. 같은 salt·같은 속성이면 같은 커밋먼트라 다시 만들면 된다). 사용자는 커밋먼트(10진)만 복사해 zkID 프로필의 "이름" 칸에
+       만든다. 같은 salt·같은 속성이면 같은 커밋먼트라 다시 만들면 된다). 사용자는 커밋먼트(10진)만 복사해 zkIdP 프로필의 "이름" 칸에
        붙여 넣는다. 제목의 "속성 커밋먼트 도구" 는 tests 의 페이지 서빙 검사 marker 다. -->
   <title>속성 커밋먼트 도구</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23345'/%3E%3Ctext x='16' y='22' font-size='15' font-family='sans-serif' font-weight='700' text-anchor='middle' fill='%23fff'%3EC%3C/text%3E%3C/svg%3E">
@@ -52,7 +52,7 @@
 <main class="cards">
   <section class="card span2">
     <div class="tool-head"><h2 data-i18n="attr_title">속성 커밋먼트 도구</h2><span class="badge muted" data-i18n="attr_badge_offline">속성·salt 는 서버로 보내지 않음</span></div>
-    <p class="desc" data-i18n="attr_desc">내 속성(출생연도·국가 등)으로 커밋먼트를 만듭니다. 속성은 이 브라우저에만 저장되고, 커밋먼트만 zkID 프로필의 "이름" 칸에 붙여 넣습니다. 만들 때 zkID 로그인과 스냅(MetaMask)이 필요합니다.</p>
+    <p class="desc" data-i18n="attr_desc">내 속성(출생연도·국가 등)으로 커밋먼트를 만듭니다. 속성은 이 브라우저에만 저장되고, 커밋먼트만 zkIdP 프로필의 "이름" 칸에 붙여 넣습니다. 만들 때 zkIdP 로그인과 스냅(MetaMask)이 필요합니다.</p>
   </section>
 
   <section class="card">
@@ -72,7 +72,7 @@
 
   <section class="card">
     <h3 data-i18n="attr_result_title">2. 내 커밋먼트</h3>
-    <p class="desc" data-i18n="attr_result_desc">이 값을 복사해 zkID 사용자 페이지 → 프로필 → "이름" 칸에 붙여 넣고 저장하세요. zkID 는 이 값을 서비스에 전달하지 않습니다 — 저장된 값이 바뀌면 속성 변경으로 보고 기존 세션을 폐기합니다.</p>
+    <p class="desc" data-i18n="attr_result_desc">이 값을 복사해 zkIdP 사용자 페이지 → 프로필 → "이름" 칸에 붙여 넣고 저장하세요. zkIdP 는 이 값을 서비스에 전달하지 않습니다 — 저장된 값이 바뀌면 속성 변경으로 보고 기존 세션을 폐기합니다.</p>
     <div id="commitBox" class="commit-box" hidden></div>
     <p id="noCommit" class="muted" data-i18n="attr_none">아직 만든 커밋먼트가 없습니다.</p>
     <p class="row-actions" id="commitActions" hidden>
@@ -87,8 +87,8 @@
     <div id="inputsView" hidden>
       <h4 data-i18n="attr_account_title">계정</h4>
       <dl class="kv inputs-kv">
-        <!-- 2026-11-11(사용자 결정): salt 로 계산한 auid(2026-11-13 부터 uid 없음) — 첫 RP 로그인 때 zkID 인증 창의 auid 칸에 붙여 넣는다. -->
-        <dt data-i18n="attr_auid_label">auid</dt><dd><code id="auidShown" style="overflow-wrap:anywhere;word-break:break-all">-</code> <button type="button" id="copyAuidBtn" class="copy-btn" title="복사">⧉</button><br /><small class="muted" data-i18n="attr_auid_hint">서비스에 로그인할 때마다 zkID 인증 창의 auid 칸에 붙여 넣으세요.</small></dd>
+        <!-- 2026-11-11(사용자 결정): salt 로 계산한 auid(2026-11-13 부터 uid 없음) — 첫 RP 로그인 때 zkIdP 인증 창의 auid 칸에 붙여 넣는다. -->
+        <dt data-i18n="attr_auid_label">auid</dt><dd><code id="auidShown" style="overflow-wrap:anywhere;word-break:break-all">-</code> <button type="button" id="copyAuidBtn" class="copy-btn" title="복사">⧉</button><br /><small class="muted" data-i18n="attr_auid_hint">서비스에 로그인할 때마다 zkIdP 인증 창의 auid 칸에 붙여 넣으세요.</small></dd>
       </dl>
       <!-- 2026-11-13(화면 리뷰): 재료(식·도메인 상수·salt·인코딩 값)는 접어 둔다. salt 는 스냅의 모든 서비스 주소를 정하는 비밀이라 기본 가림 — "보기" 로만 연다(zk 스냅 화면 "내 계정" 과 같다). -->
       <details class="fold" id="inputsFold">

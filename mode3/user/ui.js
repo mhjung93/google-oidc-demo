@@ -296,8 +296,9 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
   // 공개 입력의 묶음 [첫 색인, 개수, 이름] — 회로의 공개 신호 순서 그대로다(circuits/pi_cred.circom·pi_idp.circom, lib/mode3_onchain.js PUB_INDEX).
   // 설명은 사전의 user_pub_s_<이름>·user_pub_idp_<이름>. 화면에서 회로 pi_cred 의 증명은 π_session(π_s) 로 적는다(사용자 결정).
   const PUB_ROWS = {
-    pi_cred: [[0, 1, 'PPID'], [1, 1, 'arid'], [2, 1, 'pk_i'], [3, 1, 'max_height'], [4, 1, 'chainid'], [5, 1, 'allowAgent'], [6, 1, 'revRoot'], [7, 1, 'regRoot'], [8, 2, 'pk_CIA'], [10, 2, 'pk_trace'], [12, 3, 'tag'],
-      [15, 1, 'disc_mask'], [16, 6, 'disc_lo'], [22, 6, 'disc_hi'], [28, 1, 'set_sel'], [29, 1, 'set_root'], [30, 1, 'auid_s'], [31, 1, 'arid_s'], [32, 1, 'r_s'], [33, 1, 'counter']],
+    // 2026-11-19(스펙 trace-without-tag T3): 29개 — pk_trace·tag 묶음이 없다(색인의 정본은 lib/mode3_onchain.js PUB_INDEX)
+    pi_cred: [[0, 1, 'PPID'], [1, 1, 'arid'], [2, 1, 'pk_i'], [3, 1, 'max_height'], [4, 1, 'chainid'], [5, 1, 'allowAgent'], [6, 1, 'revRoot'], [7, 1, 'regRoot'], [8, 2, 'pk_CIA'],
+      [10, 1, 'disc_mask'], [11, 6, 'disc_lo'], [17, 6, 'disc_hi'], [23, 1, 'set_sel'], [24, 1, 'set_root'], [25, 1, 'auid_s'], [26, 1, 'arid_s'], [27, 1, 'r_s'], [28, 1, 'counter']],
     pi_idp: [[0, 1, 'uid'], [1, 1, 'auid'], [2, 1, 'auid_s'], [3, 2, 'C_u'], [5, 2, 'C_s'], [7, 1, 'max_height'], [8, 1, 'ctx'], [9, 1, 'tag']],
   };
   /** 버튼을 누르지 않아도 보이는 줄(사용자 결정): π_session 은 번호 1~7(arid … regRoot)만. π_IdP 는 목록에서 이미 버튼 뒤에 있으므로 전부. */
@@ -308,7 +309,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
   let proofOpen = null;   // 보기 창의 상태 { rec, all(전체 보기), edit(값 바꿔 보기), values(검증에 넣을 공개 입력 — 고친 값 포함) }
   const proofKindLabel = (kind) => tt(`user_proof_kind_${kind}`) || kind;
   const proofPurposeLabel = (x) => tt(`user_proof_purpose_${x.purpose}`) || x.purpose || '-';
-  const proofTarget = (x) => (x.kind === 'pi_idp' ? [tt('user_proof_target_idp') || 'zkID', x.arid ? rpLabel(x) : null].filter(Boolean).join(' · ') : rpLabel(x));
+  const proofTarget = (x) => (x.kind === 'pi_idp' ? [tt('user_proof_target_idp') || 'zkIdP', x.arid ? rpLabel(x) : null].filter(Boolean).join(' · ') : rpLabel(x));
   function renderProofs() {
     const host = $('proofsList'); if (!host) return;
     const list = lastProofs.filter((x) => proofsShowIdp || x.kind === 'pi_cred');

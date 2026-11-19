@@ -124,9 +124,6 @@ await t('음성: pk_i를 바꾸면 거부된다 (C_s 바인딩이 깨진다 — 
 await t('V5 음성: blind_u 를 바꾸면 거부된다 (C_u 가 달라져 서명·리프가 안 맞는다)', async () => {
   await assert.rejects(() => witness({ ...valid, blind_u: (BigInt(valid.blind_u) + 1n).toString() }), /Assert Failed/);
 });
-await t('V5 음성: r = 0 은 회로가 거부한다 (2026-09-21 결정 — IsZero 제약)', async () => {
-  await assert.rejects(() => witness({ ...valid, r: '0' }), /Assert Failed/);
-});
 await t('V11 음성: r_rp 를 바꾸면 거부 (auid_s·arid_s·C_s 가 모두 어긋난다 — ⑤ 같은 r_rp)', async () => {
   await assert.rejects(() => witness({ ...valid, r_rp: (BigInt(valid.r_rp) + 1n).toString() }), /Assert Failed/);
 });
@@ -158,30 +155,10 @@ await t('V11 음성: pk_i ≥ 2^160 은 CommitSessionV11 의 Num2Bits(160) 이 �
   await assert.rejects(() => witness({ ...valid, pk_i: (1n << 160n).toString() }), /Assert Failed/);
 });
 
-await t('⑤ 양성: 회로가 받아들인 태그는 두 조각으로 uid 로 열린다 (JS encryptTag 와 회로 계산이 일치)', async () => {
-  await witness(valid);   // 공개 입력 tag_* 가 회로 계산과 같아야 통과한다
-  const D_svc = await partialDecrypt(shares.svc.x, tag.c1);
-  const D_aa = await partialDecrypt(shares.aa.x, tag.c1);
-  const h = await combineDecrypt(tag.c2, D_svc, D_aa);
-  assert.equal(h, tag.h, '복호 결과는 Poseidon(uid, arid)');
-  assert.equal(await resolveTagPlaintext(h, validArid, ['1', valid.uid]), valid.uid);
-});
-
-await t('⑤ 음성: c2 를 바꾸면 거부된다 (평문이 커밋 안의 uid·공개 입력 arid 의 Poseidon 과 다르다)', async () => {
-  await assert.rejects(() => witness({ ...valid, tag_c2: (BigInt(valid.tag_c2) + 1n).toString() }), /Assert Failed/);
-});
-
-await t('⑤ 음성: pk_trace 를 바꾸면 거부된다 (다른 키로 만든 태그는 이 키의 태그가 아니다)', async () => {
-  // c1 은 r 만의 함수라 그대로이고 K 가 달라져 c2 가 안 맞는다.
-  await assert.rejects(() => witness({ ...valid, pk_trace_x: shares.svc.X.x.toString(), pk_trace_y: shares.svc.X.y.toString() }), /Assert Failed/);
-});
-
-await t('⑤ 음성: c1 을 바꾸면 거부된다 (c1 = r·B8 를 회로가 계산한다)', async () => {
-  await assert.rejects(() => witness({ ...valid, tag_c1_x: shares.svc.X.x.toString(), tag_c1_y: shares.svc.X.y.toString() }), /Assert Failed/);
-});
-
-await t('⑤ 음성: r 을 바꾸면 거부된다 (c1·c2 둘 다 어긋난다)', async () => {
-  await assert.rejects(() => witness({ ...valid, r: (BigInt(valid.r) + 1n).toString() }), /Assert Failed/);
+// 2026-11-19(스펙 trace-without-tag T1·T2): ⑧(트레이스 태그)이 회로에서 빠졌다 — 태그·pk_trace·난수 r 은 입력에 없다. 태그 케이스 다섯(양성·c2·pk_trace·c1·r)을 이 하나로 바꾼다.
+await t('태그 없는 회로: 입력에 r·pk_trace·tag 가 없어도 증인이 만들어진다', async () => {
+  for (const k of ['r', 'pk_trace_x', 'pk_trace_y', 'tag_c1_x', 'tag_c1_y', 'tag_c2']) assert.equal(k in valid, false, `${k} 는 입력에 없다`);
+  await witness(valid);
 });
 
 await t('V6 양성: mask = 0 이면 lo·hi 가 0 이어도 통과 (로그인 문장)', async () => {

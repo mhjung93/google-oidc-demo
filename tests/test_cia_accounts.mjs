@@ -8,6 +8,8 @@ import { getProvider } from './helpers/mode3_chain.mjs';
 import { createRegistration } from '../lib/mode3_wallet.js';
 import { createShare } from '../lib/mode3_trace.js';
 import { issueV11, userOf, regBody, TESTUSER_ATTRS, ALICE_ATTRS } from './helpers/mode3_flow.mjs';
+import { buildAuthProof } from '../lib/mode3_wallet.js';
+import { loginCtx, slotCtx } from '../lib/mode3_credential.js';
 import { jwtVerify, createLocalJWKSet } from 'jose';
 import { attrCommit } from '../lib/mode3_attr_commit.js';
 import { DEFAULT_ATTR_SCHEMA, encodeProfile } from '../lib/mode3_attr_schema.js';
@@ -19,13 +21,19 @@ async function t(name, fn) { try { await fn(); console.log(`ok   ${name}`); } ca
 // 쿠키 세션: fetch 가 쿠키를 자동으로 보내지 않으므로 Set-Cookie 를 Cookie 헤더로 되돌리는 jar 를 둔다. 로그인은 세션을
 // regenerate 하므로(세션 고정 방지) 매 응답의 Set-Cookie 를 따라간다 — 첫 응답의 것만 고정하지 않는다.
 function makeJar(base) {
-  const jar = {};
-  return async (p, init = {}) => {
-    const r = await fetch(`${base}${p}`, { ...init, headers: { 'Content-Type': 'application/json', ...(jar.cookie ? { Cookie: jar.cookie } : {}), ...(init.headers ?? {}) } });
-    const sc = r.headers.get('set-cookie');
-    if (sc) jar.cookie = sc.split(';')[0];
+  // 2026-11-19: 쿠키 여럿을 따라간다(이름 → 값) — 증명 로그인의 챌린지는 세션(cia.sid)과 다른 전용 쿠키(cia.lc)에 묶인다. 지워진 쿠키(빈 값·과거 만료)는 뺀다.
+  const jar = new Map();
+  const call = async (p, init = {}) => {
+    const cookie = [...jar].map(([k, v]) => `${k}=${v}`).join('; ');
+    const r = await fetch(`${base}${p}`, { ...init, headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}), ...(init.headers ?? {}) } });
+    for (const sc of r.headers.getSetCookie()) {
+      const first = sc.split(';')[0], i = first.indexOf('='), k = first.slice(0, i), v = first.slice(i + 1);
+      if (v === '' || /expires=Thu, 01 Jan 1970/i.test(sc)) jar.delete(k); else jar.set(k, v);
+    }
     return { status: r.status, body: await r.json().catch(() => null) };
   };
+  call.cookies = jar;
+  return call;
 }
 
 const provider = getProvider();
@@ -765,6 +773,117 @@ try {
       const me2 = (await withJar('/cia/user/me')).body;
       assert.ok(me2.activeCf_u, '다음 발급이 새 C_u'); assert.notEqual(me2.registryLeaf, '0', '슬롯을 다시 채운다');
     } finally { await cia8.stop(); }
+  });
+
+  // ---- 증명 로그인(스펙 2026-11-19 passkey-proof-login L2·L7·L9·L10) — zkIdP 페이지에 "이 계정 auid 의 s_u 를 안다" 는 π_IdP 로 들어간다. key 정책에서만. ----
+  const challenge = async (jar) => (await jar('/cia/user/login_challenge', { method: 'POST', body: '{}' }));
+  const loginProofBody = async (user, nonce, { ctx } = {}) => ({ uid: user.uid.toString(), nonce, ...(await buildAuthProof({ uid: user.uid, s_u: user.s_u, ctx: ctx ?? await loginCtx({ nonce: BigInt(nonce) }) })) });
+  const proofLogin = (jar, body) => jar('/cia/user/login_proof', { method: 'POST', body: JSON.stringify(body) });
+
+  await t('public_keys 가 발급 정책을 알린다 — 기본 key, CIA_ISSUE_AUTH=code 면 code', async () => {
+    assert.equal((await cia.get('/cia/public_keys')).body.issueAuth, 'key');
+    const c = await startIsolatedCia({ env: { CIA_ISSUE_AUTH: 'code' } });
+    try { assert.equal((await c.get('/cia/public_keys')).body.issueAuth, 'code'); } finally { await c.stop(); }
+  });
+
+  await t('증명 로그인: 챌린지 → π_IdP(loginCtx) → 세션. 챌린지는 1회용이고 그 세션의 것만 받는다', async () => {
+    const c = await startIsolatedCia();
+    try {
+      const u = userOf(await c.registerUser('12345', 'password123'), '12345', TESTUSER_ATTRS);
+      const jar = makeJar(c.base);
+      const noCh = await proofLogin(jar, await loginProofBody(u, '7'));
+      assert.equal(noCh.status, 401, j(noCh.body)); assert.equal(noCh.body.reason, 'login_challenge_expired', '챌린지 없이');
+      const ch = await challenge(jar);
+      assert.equal(ch.status, 200, j(ch.body)); assert.match(ch.body.nonce, /^[0-9]+$/); assert.equal(typeof ch.body.expiresAt, 'number');
+      const body = await loginProofBody(u, ch.body.nonce);
+      const other = makeJar(c.base); await challenge(other);
+      const stolen = await proofLogin(other, body);
+      assert.equal(stolen.status, 401, j(stolen.body)); assert.equal(stolen.body.reason, 'login_challenge_expired', '다른 세션에 낸 증명');
+      assert.equal((await jar('/cia/user/me')).status, 401, '로그인 전');
+      const ok = await proofLogin(jar, body);
+      assert.equal(ok.status, 200, j(ok.body)); assert.equal(ok.body.uid, '12345');
+      const me = await jar('/cia/user/me');
+      assert.equal(me.status, 200, j(me.body)); assert.equal(me.body.uid, '12345');
+      const again = await proofLogin(makeJar(c.base), body);
+      assert.equal(again.status, 401, j(again.body)); assert.equal(again.body.reason, 'login_challenge_expired', '같은 증명을 새 세션에');
+      const reuse = await proofLogin(jar, body);
+      assert.equal(reuse.status, 401, j(reuse.body)); assert.equal(reuse.body.reason, 'login_challenge_expired', '성공한 챌린지를 다시');
+    } finally { await c.stop(); }
+  });
+
+  await t('증명 로그인 거절: 다른 용도의 증명·남의 uid·등록 전 계정·모르는 계정은 401 invalid_credentials 로 같고, 실패한 시도도 챌린지를 태운다', async () => {
+    const c = await startIsolatedCia();
+    try {
+      const u = userOf(await c.registerUser('12345', 'password123'), '12345', TESTUSER_ATTRS);
+      const alice = userOf(await c.registerUser('67890', 'alicepw'), '67890', ALICE_ATTRS);
+      const bad = async (make, what) => {
+        const jar = makeJar(c.base); const ch = await challenge(jar);
+        const r = await proofLogin(jar, await make(ch.body.nonce));
+        assert.equal(r.status, 401, `${what}: ${j(r.body)}`); assert.equal(r.body.reason, 'invalid_credentials', what);
+        assert.equal((await jar('/cia/user/me')).status, 401, `${what}: 세션이 서지 않는다`);
+        return { jar, nonce: ch.body.nonce };
+      };
+      const first = await bad(async (n) => loginProofBody(u, n, { ctx: await slotCtx({ nonce: BigInt(n) }) }), '슬롯 조회용 증명');
+      const retry = await proofLogin(first.jar, await loginProofBody(u, first.nonce));
+      assert.equal(retry.status, 401, j(retry.body)); assert.equal(retry.body.reason, 'login_challenge_expired', '실패한 시도 뒤 같은 챌린지');
+      await bad(async (n) => ({ ...(await loginProofBody(alice, n)), uid: '12345' }), 'alice 의 증명에 testuser 의 uid');
+      await bad(async (n) => loginProofBody({ uid: 12345n, s_u: alice.s_u }, n), 'alice 의 s_u 로 testuser 계정');
+      const su = await makeJar(c.base)('/cia/signup', { method: 'POST', body: JSON.stringify({ id: 'no-wallet', pwd: 'password-nw' }) });
+      await bad(async (n) => loginProofBody({ uid: BigInt(su.body.uid), s_u: u.s_u }, n), '등록 전 계정(auid 없음)');
+      await bad(async (n) => loginProofBody({ uid: 999999n, s_u: u.s_u }, n), '모르는 계정');
+      await bad(async (n) => ({ uid: '12345', nonce: n }), '증명 필드 없음');
+    } finally { await c.stop(); }
+  });
+
+  await t('증명 로그인: 챌린지는 수명이 지나면 못 쓴다(CIA_LOGIN_CHALLENGE_TTL_MS)', async () => {
+    const c = await startIsolatedCia({ env: { CIA_LOGIN_CHALLENGE_TTL_MS: '1' } });
+    try {
+      const u = userOf(await c.registerUser('12345', 'password123'), '12345', TESTUSER_ATTRS);
+      const jar = makeJar(c.base); const ch = await challenge(jar);
+      const r = await proofLogin(jar, await loginProofBody(u, ch.body.nonce));   // 증명에 0.3초쯤 — 1ms 는 이미 지났다
+      assert.equal(r.status, 401, j(r.body)); assert.equal(r.body.reason, 'login_challenge_expired');
+    } finally { await c.stop(); }
+  });
+
+  // 리뷰(2026-11-19) M1·M2·M3: 챌린지는 로그인 세션(cia.sid)을 만들지 않고 전용 쿠키(cia.lc)에 묶인다 — 인증 없는 요청이 세션을 쌓지 못하고, 남의 사이트의 폼 POST 가
+  // 로그인 세션 쿠키를 덮어쓰지 못한다. 같은 챌린지로 동시에 두 번 내도 한 번만 통한다(검증 전에 지운다).
+  await t('증명 로그인: 챌린지는 cia.sid 를 만들지 않고(cia.lc 만), JSON 이 아닌 POST 는 415 로 쿠키 없이 끝난다', async () => {
+    const c = await startIsolatedCia();
+    try {
+      const r = await fetch(`${c.base}/cia/user/login_challenge`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      assert.equal(r.status, 200);
+      const names = r.headers.getSetCookie().map((x) => x.split('=')[0]);
+      assert.deepEqual(names, ['cia.lc'], j(names));
+      assert.match(r.headers.getSetCookie()[0], /HttpOnly/i); assert.match(r.headers.getSetCookie()[0], /SameSite=Lax/i);
+      const form = await fetch(`${c.base}/cia/user/login_challenge`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'a=1' });
+      assert.equal(form.status, 415); assert.deepEqual(form.headers.getSetCookie(), []);
+      const empty = await fetch(`${c.base}/cia/user/login_challenge`, { method: 'POST' });
+      assert.equal(empty.status, 415); assert.deepEqual(empty.headers.getSetCookie(), []);
+    } finally { await c.stop(); }
+  });
+  await t('증명 로그인: 같은 챌린지·같은 증명을 동시에 두 번 내면 한 번만 통한다', async () => {
+    const c = await startIsolatedCia();
+    try {
+      const u = userOf(await c.registerUser('12345', 'password123'), '12345', TESTUSER_ATTRS);
+      const jar = makeJar(c.base); const ch = await challenge(jar);
+      const body = JSON.stringify(await loginProofBody(u, ch.body.nonce));
+      const cookie = [...jar.cookies].map(([k, v]) => `${k}=${v}`).join('; ');
+      const send = () => fetch(`${c.base}/cia/user/login_proof`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body }).then((r) => r.status);
+      const got = (await Promise.all([send(), send()])).sort();
+      assert.deepEqual(got, [200, 401], j(got));
+    } finally { await c.stop(); }
+  });
+  await t('CIA_ISSUE_AUTH=code: 증명 로그인을 받지 않는다(403 proof_login_disabled) — 비밀번호 로그인은 그대로', async () => {
+    const c = await startIsolatedCia({ env: { CIA_ISSUE_AUTH: 'code' } });
+    try {
+      const u = userOf(await c.registerUser('12345', 'password123'), '12345', TESTUSER_ATTRS);
+      const jar = makeJar(c.base);
+      const ch = await challenge(jar);
+      assert.equal(ch.status, 403, j(ch.body)); assert.equal(ch.body.reason, 'proof_login_disabled');
+      const r = await proofLogin(jar, await loginProofBody(u, '7'));
+      assert.equal(r.status, 403, j(r.body)); assert.equal(r.body.reason, 'proof_login_disabled');
+      assert.equal((await jar('/cia/user/login', { method: 'POST', body: JSON.stringify({ uid: '12345', pwd: 'password123' }) })).status, 200);
+    } finally { await c.stop(); }
   });
 } finally { await cia.stop(); }
 

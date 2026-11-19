@@ -129,6 +129,15 @@ try {
     for (const p of ['/', '/attr.html']) assert.equal(inlineScripts(await (await fetch(`${pw.url}${p}`)).text()), 0, p);
     const js = await fetch(`${pw.url}/attr/attr_page.js`); assert.equal(js.status, 200); assert.match(js.headers.get('content-type'), /javascript/);
   });
+  // 2026-11-19: Google 로그인 중계 — Google 이 돌아올 주소로 받는 것은 공개 도메인·localhost 뿐이라 이 서버의 /google-relay 가 토큰 조각을 서비스 페이지로 넘긴다.
+  await t('Google 중계 화면: /google-relay(HTML, 인라인 스크립트 없음)·/google-relay.js 를 내고 CSP 가 붙는다 — 넘길 곳은 /user/config 의 rpOrigins', async () => {
+    const h = await fetch(`${pw.url}/google-relay`); assert.equal(h.status, 200); assert.match(h.headers.get('content-type'), /text\/html/);
+    const html = await h.text(); assert.equal(inlineScripts(html), 0); assert.ok(html.includes('src="/google-relay.js"'));
+    assert.ok(h.headers.get('content-security-policy'), 'CSP 헤더');
+    const js = await fetch(`${pw.url}/google-relay.js`); assert.equal(js.status, 200); assert.match(js.headers.get('content-type'), /javascript/);
+    const src = await js.text(); assert.ok(src.includes('rpOrigins') && src.includes('allowed.includes(target)'), '아는 서비스 오리진으로만 넘긴다');
+    assert.ok(Array.isArray((await (await fetch(`${pw.url}/user/config`)).json()).rpOrigins));
+  });
 } finally { await stopChild(pw.child); }
 
 await t('기동 거부', async () => {

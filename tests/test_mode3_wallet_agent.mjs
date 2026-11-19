@@ -109,9 +109,9 @@ try {
     assert.equal(r.body.r_s, ch.r_s);
     assert.ok(!('uid' in r.body), 'uid 는 RP 로 나가면 안 된다');
     assert.equal(typeof r.body.timings.proveMs, 'number');
-    assert.equal(r.body.publicSignals.length, 34, 'V11: 30 + auid_s·arid_s·r_s·counter');
-    assert.equal(r.body.publicSignals[32], ch.r_s);
-    assert.equal(r.body.publicSignals[33], LOGIN_COUNTER.toString(), '로그인은 counter=LOGIN_COUNTER');
+    assert.equal(r.body.publicSignals.length, 29, '2026-11-19: pk_trace·tag 다섯 칸이 빠졌다');
+    assert.equal(r.body.publicSignals[27], ch.r_s);
+    assert.equal(r.body.publicSignals[28], LOGIN_COUNTER.toString(), '로그인은 counter=LOGIN_COUNTER');
     assert.equal(r.body.publicSignals[4], '31337');
     assert.equal(r.body.allowAgent, '0'); assert.equal(r.body.publicSignals[5], '0');
     const v = await verify(r.body, ch);
@@ -119,7 +119,7 @@ try {
     first = r.body; PPID1 = v.PPID; S1 = ch;
     assert.ok(r.body.timings.userCredMs > 0, '첫 로그인은 사용자 자격증명을 새로 받는다');
     assert.equal((await wallet.post('/wallet/login', { arid, origin, cert_s, pk_trace: { x: pk_trace.x.toString(), y: pk_trace.y.toString() }, r_s: newCh().r_s }, { Origin: stack.rpOriginForWallet })).status, 400, 'r_rp 없으면 400');
-    // 2026-11-09 연결 로그인(L5): 아이디 계정 지갑은 Google 토큰을 싣지 않는다 — 연결한 Google·네이버 로그인도 zkID 인증 창의 1회용 코드다.
+    // 2026-11-09 연결 로그인(L5): 아이디 계정 지갑은 Google 토큰을 싣지 않는다 — 연결한 Google·네이버 로그인도 zkIdP 인증 창의 1회용 코드다.
     const withTok = await wallet.post('/wallet/login', { arid, origin, cert_s, pk_trace: { x: pk_trace.x.toString(), y: pk_trace.y.toString() }, ...newCh(), id_token: 'a.b.c' }, { Origin: stack.rpOriginForWallet });
     assert.equal(withTok.status, 400, j(withTok.body)); assert.equal(withTok.body.reason, 'use_auth_window');
     const s = await wallet.get('/wallet/status');

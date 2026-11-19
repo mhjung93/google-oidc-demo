@@ -86,7 +86,7 @@ try {
     assert.ok(reg && iss && lg, `용도: ${j(ps.map((x) => [x.kind, x.purpose]))}`);
     assert.equal(reg.kind, 'pi_idp'); assert.equal(reg.publicSignals.length, 10);
     assert.equal(iss.kind, 'pi_idp'); assert.equal(iss.publicSignals.length, 10); assert.equal(iss.arid, info.arid); assert.equal(iss.serviceName, 'zkONE');
-    assert.equal(lg.kind, 'pi_cred'); assert.equal(lg.publicSignals.length, 34); assert.equal(lg.publicSignals[1], info.arid); assert.equal(lg.origin, info.origin); assert.equal(lg.serviceName, 'zkONE'); assert.equal(lg.r_s, rs1);
+    assert.equal(lg.kind, 'pi_cred'); assert.equal(lg.publicSignals.length, 29);   // 2026-11-19: pk_trace·tag 다섯 칸이 빠졌다 assert.equal(lg.publicSignals[1], info.arid); assert.equal(lg.origin, info.origin); assert.equal(lg.serviceName, 'zkONE'); assert.equal(lg.r_s, rs1);
     for (const x of ps) { assert.match(x.id, /^[0-9a-z-]+$/); assert.ok(Number.isFinite(x.at) && x.ms >= 0); assert.ok(x.proof?.pi_a && x.proof?.pi_b && x.proof?.pi_c, 'Groth16 증명 본체'); }
     assert.ok(ps.indexOf(lg) < ps.indexOf(iss) && ps.indexOf(iss) < ps.indexOf(reg), '최신이 앞');
     assert.deepEqual(new Set(ps.map((x) => x.id)).size, ps.length, 'id 는 서로 다르다');
@@ -187,7 +187,7 @@ try {
     const tx = (await core.status()).body.txs[0];
     const hit = ps.filter((x) => x.purpose === 'tx' && x.txHash === tx.txHash);
     assert.equal(hit.length, 1, `txHash 가 붙은 거래 증명: ${j(ps.map((x) => [x.purpose, x.txHash ?? null]))}`);
-    assert.equal(hit[0].kind, 'pi_cred'); assert.equal(hit[0].publicSignals[33], String(tx.nonce)); assert.equal(hit[0].r_s, rs1);
+    assert.equal(hit[0].kind, 'pi_cred'); assert.equal(hit[0].publicSignals[28], String(tx.nonce)); assert.equal(hit[0].r_s, rs1);   // counter 는 마지막 공개 입력(29개 중 28)
     assert.equal(ps.filter((x) => x.purpose === 'tx').length, 1, '같은 nonce 의 두 번째 prepareTx 는 캐시의 증명을 다시 쓴다 — 새 줄이 생기지 않는다');
   });
   await t('Selective disclosure proof: 나이·국가 집합 조건을 실어 AttrGate.claim → claimed(account) true, disclosedTxs 1', async () => {
