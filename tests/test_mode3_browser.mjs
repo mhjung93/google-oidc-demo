@@ -66,7 +66,7 @@ try {
   const eoa = await provider.getSigner(1);       // MetaMask 의 사용자 계정 역할(가스를 낸다)
   const account = await eoa.getAddress();
   // Task 14(B5): 등록 케이스(아래 "등록(2026-10-22): …")가 채운다 — IdP 가입이 배정한 uid, 지갑이 낸 auid.
-  // 이후의 모든 로그인(completeIdpAuth 의 기본값)과 Task 12 "IdP 인증 창" 케이스가 재사용한다.
+  // 이후의 모든 로그인(completeIdpAuth 의 기본값)과 Task 12 "zkIdP 인증 창" 케이스가 재사용한다.
   let uid = null, AUID = null;
   // 2026-11-13(스펙 random-salt, 스냅 0.5.0): salt 는 스냅이 무작위로 만든다 — 아래 "설정" 케이스(새로 만들기)가 끝난 뒤 스냅 상태에서 읽어 채운다.
   let USER_SALT = null;
@@ -126,7 +126,7 @@ try {
    * 기다린다(cia_login.html 이 성공 시 300ms 뒤 닫는다) — 호출자는 이어서 원래 팝업·RP 의 성공 신호를 기다리면 된다.
    */
   async function completeIdpAuth(popup, { authUid = uid, pwd = DEMO_PWD } = {}) {
-    // 2026-11-05: 별도 창·"IdP 인증 창 열기" 버튼 대신 팝업 창 자체가 IdP 로그인 페이지(/login?return=1)로 간다(mode3/wallet.html goIdpAuth).
+    // 2026-11-05: 별도 창·"zkIdP 인증 창 열기" 버튼 대신 팝업 창 자체가 IdP 로그인 페이지(/login?return=1)로 간다(mode3/wallet.html goIdpAuth).
     // 2026-11-09(사용자 결정): auid 는 더 이상 쿼리로 넘기지 않는다 — uid·비밀번호·auid 를 모두 직접 넣어야 지갑 /?authorize=1 로 돌아와 로그인을 이어 간다.
     await atIdpLogin(popup);
     assert.equal(await popup.isVisible('#authAuidRow'), true, 'auid 칸은 늘 보인다');
@@ -1549,7 +1549,7 @@ try {
     assert.equal(await popup.evaluate(() => document.querySelector('#authProgressRow').classList.contains('busy')), false, '끝난 뒤에는 일하는 중 표시가 없다');
     assert.equal((await popup.textContent('#authElapsed')).trim(), '', '끝난 뒤에는 경과 시간이 없다');
     assert.equal((await popup.textContent('#authTitle')).trim(), '요청을 끝내지 못했습니다.');
-    await waitText(rpPage, '#verdict', '이 스냅은 이 IdP 에 이미 다른 계정으로 등록돼 있습니다', 180_000);
+    await waitText(rpPage, '#verdict', '이 스냅은 이 zkIdP 에 이미 다른 계정으로 등록돼 있습니다', 180_000);
     assert.ok((await text(rpPage, '#verdict')).includes('이미 등록한 zkIdP 계정으로 로그인하세요'), '어느 계정으로 로그인할지 가리킨다("이 계정"·"그 계정" 을 섞지 않는다)');
     await awaitPopupClosed(popup);
     const st = (await wallet.get('/wallet/status')).body;

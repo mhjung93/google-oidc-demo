@@ -1640,6 +1640,11 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
   (계정마다 최근 500개)에서 uid 를 찾아 돌려준다. 복호·조각이 없다. **zkIdP 가 기록을 가지므로 체인의 `auid_s` 만으로도 zkIdP 는 거래의 주인을 안다**(지금까지는 서비스 쪽 조각이 있어야 했다 — 사용자 결정).
   회로를 다시 빌드했으므로 **지금까지의 증명 키·배포된 검증자·지갑은 무효다 — 데모는 리셋(재배포)해야 한다.** 옛 키는 `build/mode3_backup_20261119_tag/` 에 있다. 서비스 등록의 조합 키(`pk_trace`)와 지갑 생성자의
   `pkTraceX`·`pkTraceY` 는 값만 남아 있고 검사에 쓰이지 않는다.
+- **화면 셀프 리뷰 수정(2026-11-19)**: ① 서비스 화면의 "알려 준 것" 칸(`#seenBox`)을 오른쪽 좁은 "내 자산" 칸에서 시세표 아래의 넓은 카드로 옮겼다(그림이 가로 세 칸으로 펴진다). ② zkIdP 관리자의 "uid ↔ auid 대응" 표가
+  카드 밖으로 넘치던 것을 고쳤다 — 값·설명·시각을 줄마다 쌓고, 일반 OIDC 열의 rid 는 줄여 보인다(전체는 title). ③ zkIdP 관리자의 개봉 요청 표에 "서비스가 낸 auid_s" 열. ④ 로그인 전체 플로우의 화살표가 보내는 쪽·받는 쪽 세로선에 맞닿는다.
+  이어서 다듬은 것: 일반 OIDC 동의 화면의 rid 를 줄여 보인다(전체는 title) · 일반 OIDC 로 돌아온 뒤 그림의 받는 쪽 이름이 서비스 이름이다('RP' 가 아니다) · Google·일반 OIDC 로그인에는 "내 계정 주소" 줄과 상단 배지의 주소를 숨긴다 ·
+  zkIdP 관리자 표의 "그림" 버튼은 로그인(발급)한 계정에만 · 옛 문구("RP 전용 추적 조각"·"추적용 봉인") 정리 · 서비스 로그인 카드 문구가 수단("zkIdP 로 로그인")을 밝힌다 · **화면 문구의 "IdP" → "zkIdP"**(문구 사전과 Mode 3 화면 파일
+  359곳 — `π_IdP`·식별자·서버 로그는 그대로, 연결된 서비스 줄의 역할 이름표 `wallet_session_idp` 만 "IdP" 로 남긴다). 비교용 일반 OIDC 버튼은 실제 Google 확인 전까지 켜 둔다(`PLAIN_OIDC=0` 으로 끈다).
 - **로그인 전체 플로우 카드(2026-11-19, 스펙 `docs/superpowers/specs/2026-11-19-mode3-login-flow-and-phone-passkey-design.md`)**: 사용자 페이지의 "로그인 전체 플로우" 카드가 "zkIdP 로 로그인" 한 번의 단계를
   세 주체(서비스 · zk 클라이언트 · zkIdP)의 줄 위에 순서도로 그린다(`mode3/common/flow_figure.js` `renderSequence`). 코어가 **성공한 로그인**의 단계별 시간을 kv `loginFlow` 에 가장 최근 것 하나만 남기고
   (`core.loginFlow()` — 단계 `check_service`·`passkey`·`sync`·`random`·`session_key`·`commit`·`pseudonym`·`prove_idp`·`issue`·`publish_wait`(기다렸을 때만)·`prove_session`·`sign`, 시간은 `performance.now()`),

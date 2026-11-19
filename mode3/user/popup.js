@@ -2,10 +2,10 @@
 // 메시지 종류(req.type)로 가른다: mode3-config·mode3-precheck·mode3-authorize·mode3-revalidate·mode3-request.
 // 요청은 주소창이 아니라 postMessage 로 받고, 결과는 말을 건 오리진에만 돌려준다. 결과에는 비밀이 없다 — 코어의 성공 본문은
 // 증명·공개 입력·세션 서명·pk_i 뿐이고(에이전트 /wallet/login 과 같은 모양), userCredIssued·attrsChanged 같은 이름은 혹시 몰라 뺀다.
-// passkey-web(2026-11-17 계획 Task 6): 로그인은 승인 뒤 이 창이 IdP 인증 창(CIA_ISSUE_AUTH=code)을 다녀오고(idp_return.js — zk 스냅 화면의 goIdpAuth 와 같다),
+// passkey-web(2026-11-17 계획 Task 6): 로그인은 승인 뒤 이 창이 zkIdP 인증 창(CIA_ISSUE_AUTH=code)을 다녀오고(idp_return.js — zk 스냅 화면의 goIdpAuth 와 같다),
 // 돌아와서 첫 등록(등록 코드)·발급(발급 코드)을 한다. 요청 하나 전체를 core.withSalt 로 감싸 패스키는 한 번만 묻는다(R-8).
-// 증명 로그인(2026-11-19 스펙 passkey-proof-login): IdP 의 발급 정책이 key 면(public_keys.issueAuth) 등록된 지갑은 인증 창 없이 패스키 증명만으로 발급받고(L1·L2),
-// 로그인마다 패스키를 한 번 묻는다(L4 — 보관분으로 건너뛰지 않는다). mode3-idp-login 은 zkIdP 페이지의 로그인 증명 요청이다 — IdP 오리진이 연 창에만 답한다(L8).
+// 증명 로그인(2026-11-19 스펙 passkey-proof-login): zkIdP 의 발급 정책이 key 면(public_keys.issueAuth) 등록된 지갑은 인증 창 없이 패스키 증명만으로 발급받고(L1·L2),
+// 로그인마다 패스키를 한 번 묻는다(L4 — 보관분으로 건너뛰지 않는다). mode3-idp-login 은 zkIdP 페이지의 로그인 증명 요청이다 — zkIdP 오리진이 연 창에만 답한다(L8).
 import { $, textKit, createUnlocker, postPresence, errText } from './ui.js';
 import { RECOVER_RESULT_KEY, idpAuthUrl, savePending, takeIdpReturn, readAttrRecord } from './idp_return.js';
 
@@ -33,7 +33,7 @@ export function failPopup({ reason, detail }) {
   window.opener.postMessage({ type: 'mode3-authorize-ready' }, '*');
 }
 
-/** oidc: IdP 의 public_keys.oidc(user.js 가 읽어 넘긴다) — 미등록 안내를 Google 용으로 고를지에만 쓴다.
+/** oidc: zkIdP 의 public_keys.oidc(user.js 가 읽어 넘긴다) — 미등록 안내를 Google 용으로 고를지에만 쓴다.
  *  passkey: passkey-web 의 { derive, create }(user.js) — 코어가 이미 받아 salt 를 만든다. 팝업은 직접 부르지 않는다. */
 export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, passkey = null }) {
   const PK = config.secrets === 'passkey-web';
@@ -41,7 +41,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
   const { withUnlock } = createUnlocker({ core, Demo });
   let lastReq = null;        // 받은 요청(언어 전환 때 제목·요약을 다시 그린다)
   let lastIdentity = null;   // 신원 줄의 provider(언어 전환 때 요약과 함께 다시 그린다)
-  let idpLoginOk = false;    // mode3-idp-login 이 IdP 오리진 대조를 통과했는가 — 그 뒤에만 제목·요약을 그린다(리뷰 M5)
+  let idpLoginOk = false;    // mode3-idp-login 이 zkIdP 오리진 대조를 통과했는가 — 그 뒤에만 제목·요약을 그린다(리뷰 M5)
   const step = (s) => { $('authStep').textContent = s; };
   const log = (s) => { $('authLog').textContent += `${s}\n`; };
 
@@ -101,7 +101,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
   function renderAuthTitle() {
     if (!window.opener) { tte($('authTitle'), 'wallet_auth_no_opener'); return; }
     if (!lastReq || lastReq.type === 'mode3-config' || lastReq.type === 'mode3-precheck') { tte($('authTitle'), 'wallet_auth_waiting'); return; }
-    // zkIdP 로그인(2026-11-19): 제목은 IdP 오리진 대조를 통과한 뒤에만 그린다(리뷰 M5 — 남의 사이트가 이 창을 zkIdP 로그인 화면처럼 보이게 하지 못한다)
+    // zkIdP 로그인(2026-11-19): 제목은 zkIdP 오리진 대조를 통과한 뒤에만 그린다(리뷰 M5 — 남의 사이트가 이 창을 zkIdP 로그인 화면처럼 보이게 하지 못한다)
     if (lastReq.type === 'mode3-idp-login') { if (idpLoginOk) $('authTitle').textContent = tt('user_auth_idp_login_title') || 'zkIdP 로그인'; else tte($('authTitle'), 'wallet_auth_waiting'); return; }
     const service = cleanServiceName(lastReq.serviceName) || lastReq.origin;
     const key = lastReq.type === 'mode3-request' ? null : lastReq.type === 'mode3-tx' ? 'user_auth_tx_title' : lastReq.type === 'mode3-revalidate' ? 'user_auth_revalidate_title' : 'wallet_auth_approving';
@@ -125,7 +125,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
     });
   }
   const fail = (r, fallback) => ({ ok: false, reason: r.body?.reason ?? fallback, detail: r.body?.detail ?? r.body?.error ?? null, status: r.status, ...(r.body?.demo ? { demo: r.body.demo } : {}) });
-  // 등록 실패(코어 registerWith): IdP 가 거절하면 reason 은 register_failed 이고 IdP 의 사유는 cia 에 있다 — 그쪽을 먼저 본다(zk 스냅 화면 codeRegister 와 같다).
+  // 등록 실패(코어 registerWith): zkIdP 가 거절하면 reason 은 register_failed 이고 zkIdP 의 사유는 cia 에 있다 — 그쪽을 먼저 본다(zk 스냅 화면 codeRegister 와 같다).
   const regFail = (r) => ({ ok: false, reason: r.body?.cia?.reason ?? r.body?.reason ?? 'register_failed', detail: r.body?.detail ?? r.body?.cia?.detail ?? r.body?.error ?? null, status: r.status });
   /** 승인 창의 안내 한 줄 + 링크(같은 오리진의 사용자 페이지·속성 도구). */
   function showHint(key, fallback, href) {
@@ -136,10 +136,10 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
   }
   const attrRecord = () => readAttrRecord({ fetch: window.fetch.bind(window), localStorage: window.localStorage });
   /** 계정 복구의 귀로(R-11, zk 스냅 화면 finishRecover 와 같다): 사용자 페이지 탭이 인증 창(등록 모드)을 다녀왔다 — 패스키(보관분)로 salt → 등록 코드로
-   *  등록(같은 계정·같은 auid 면 IdP 가 기존 슬롯을 돌려준다 — restored) → 결과를 남기고 사용자 화면으로. 결과·주소에 salt 는 없다. */
+   *  등록(같은 계정·같은 auid 면 zkIdP 가 기존 슬롯을 돌려준다 — restored) → 결과를 남기고 사용자 화면으로. 결과·주소에 salt 는 없다. */
   async function finishRecover(back) {
     let out;
-    // 복구는 등록 코드로만 한다 — 발급 코드로 돌아왔으면 코어·IdP 를 부르지 않고 멈춘다(대기분의 목적 대조가 먼저 거르지만, 목적을 남기지 않은 대기분 대비).
+    // 복구는 등록 코드로만 한다 — 발급 코드로 돌아왔으면 코어·zkIdP 를 부르지 않고 멈춘다(대기분의 목적 대조가 먼저 거르지만, 목적을 남기지 않은 대기분 대비).
     if (back.purpose !== 'register') {
       out = { ok: false, restored: false, reason: 'recover_purpose_mismatch', detail: `돌아온 목적: ${back.purpose}` };
       try { sessionStorage.setItem(RECOVER_RESULT_KEY, JSON.stringify(out)); } catch { /* 결과를 못 남기면 화면이 상태로만 보인다 */ }
@@ -155,7 +155,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
     try { sessionStorage.setItem(RECOVER_RESULT_KEY, JSON.stringify(out)); } catch { /* 결과를 못 남기면 화면이 상태로만 보인다 */ }
     location.replace('/');
   }
-  /** IdP 의 발급 정책(스펙 2026-11-19 passkey-proof-login L2) — 'key' 면 패스키 증명만으로 발급한다. 못 읽으면 'code' 로 본다(인증 창을 거치는 쪽이 안전하다). 창 하나에 한 번만 읽는다. */
+  /** zkIdP 의 발급 정책(스펙 2026-11-19 passkey-proof-login L2) — 'key' 면 패스키 증명만으로 발급한다. 못 읽으면 'code' 로 본다(인증 창을 거치는 쪽이 안전하다). 창 하나에 한 번만 읽는다. */
   let issueAuthP = null;
   const issueAuthPolicy = () => (issueAuthP ??= (async () => {
     try { const k = await Promise.race([core.idp.publicKeys(), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000))]); return k?.status === 200 && k.body?.issueAuth === 'key' ? 'key' : 'code'; }
@@ -170,7 +170,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
     return fail(s, 'login_failed');
   }
   /** passkey-web 의 로그인(mode3-authorize, 재승인 제외 — 스펙 W5, 계획 R-10). 처음 온 요청: (Google 이면 승인 전에 passkey_mode) → 승인 → 패스키 연결이 없으면
-   *  passkey_setup_required → 미등록인데 속성 도구 기록이 없으면 attr_record_missing — 여기까지는 IdP 로 가지 않는다 → 대기 저장분을 두고 이 창이 IdP 인증 창
+   *  passkey_setup_required → 미등록인데 속성 도구 기록이 없으면 attr_record_missing — 여기까지는 zkIdP 로 가지 않는다 → 대기 저장분을 두고 이 창이 zkIdP 인증 창
    *  (미등록이면 등록 모드)으로 간다. 돌아온 길(back): 등록 코드면 속성 도구 기록의 salt·속성으로 등록하고 함께 받은 발급 코드로, 발급 코드면 기록의 속성을
    *  맞춘 뒤 그 코드로 로그인한다(loginWith). salt 는 코어가 패스키(10분 보관분)에서 받는다 — 이 함수는 만지지 않는다. */
   async function authorizePasskey(req, evOrigin, back, { reply, loginWith }) {
@@ -182,7 +182,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
       // Google 경로는 이 모드에 없다 — 승인 버튼을 띄우기 전에 거절한다(승인 뒤에 막으면 헛클릭 한 번, 2026-11-17 미뤄 둔 Minor).
       if (req.provider === 'google') { step('설치 없는 패스키 모드에서는 Google 로 로그인하지 않는다.'); return reply({ ok: false, reason: 'passkey_mode' }); }
       const st = await core.status();
-      const registered = st.status === 200 ? Boolean(st.body?.registered) : true;   // 상태를 못 읽으면 등록된 것으로 보고 발급 창으로(IdP·코어가 다시 거른다)
+      const registered = st.status === 200 ? Boolean(st.body?.registered) : true;   // 상태를 못 읽으면 등록된 것으로 보고 발급 창으로(zkIdP·코어가 다시 거른다)
       if (st.status === 200 && registered) renderAuthIdentity(st.body.provider ?? 'demo');
       if (config.popupConsent !== false) step('요청을 확인하고 승인하세요.');
       if (!(await waitDecision())) { step('동의 거절'); return reply({ ok: false, reason: 'user_denied' }); }
@@ -193,7 +193,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
         return reply({ ok: false, reason: 'passkey_setup_required' }, { closeMs: 15_000 });
       }
       if (!registered && !(await attrRecord())) { step('속성 도구 기록 없음 — zkIdP 로 가지 않는다.'); return attrMissing(); }
-      // 증명 로그인(스펙 2026-11-19 L1·L2): 등록된 지갑이고 IdP 정책이 key 면 인증 창(아이디·비밀번호)으로 가지 않는다 — 패스키 → π_IdP 가 본인 확인이다.
+      // 증명 로그인(스펙 2026-11-19 L1·L2): 등록된 지갑이고 zkIdP 정책이 key 면 인증 창(아이디·비밀번호)으로 가지 않는다 — 패스키 → π_IdP 가 본인 확인이다.
       if (st.status === 200 && registered && (await issueAuthPolicy()) === 'key') {
         const bad = await syncAttrs(await attrRecord());
         if (bad) return reply(bad);
@@ -213,7 +213,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
       step('zkIdP 에 등록하는 중… (등록 증명에 수 초 걸린다)');
       const r = await core.registerWithCode({ uid: back.uid, code: back.code, auid: back.auid, profile: rec.profile, recordSalt: rec.s_u });
       if (r.status !== 201) { step('등록 실패'); log(errText(r.status, r.body)); return reply(regFail(r)); }
-      authCode = r.body.issue_code;   // CIA_ISSUE_AUTH=key 인 IdP 는 발급 코드를 주지 않는다(null) — 그러면 코드 없이 발급된다
+      authCode = r.body.issue_code;   // CIA_ISSUE_AUTH=key 인 zkIdP 는 발급 코드를 주지 않는다(null) — 그러면 코드 없이 발급된다
       step('zkIdP 에 등록됨 — 이어서 로그인합니다.');
     } else {
       const bad = await syncAttrs(rec);
@@ -222,7 +222,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
     return loginWith({ authCode });
   }
 
-  // passkey-web: IdP 인증 창에서 돌아온 길(?authorize=1&idp_…). 계정 복구는 팝업이 아니라 사용자 페이지 탭이 다녀온 길이라 opener 가 없다 — opener 검사보다 먼저 본다(R-11).
+  // passkey-web: zkIdP 인증 창에서 돌아온 길(?authorize=1&idp_…). 계정 복구는 팝업이 아니라 사용자 페이지 탭이 다녀온 길이라 opener 가 없다 — opener 검사보다 먼저 본다(R-11).
   // 대기 저장분은 이 오리진·이 창의 sessionStorage 라 그 창이 남긴 것만 있다(takeIdpReturn 이 nonce·나이를 본다).
   const back = PK ? takeIdpReturn({ search: location.search, storage: window.sessionStorage, now: Date.now() }) : null;
   if (back) history.replaceState(null, '', `${location.pathname}?authorize=1`);   // 1회용 코드가 주소창·히스토리에 남지 않게
@@ -236,8 +236,8 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
   }
   if (!window.opener) { renderAuthTitle(); step('이 창은 RP 페이지가 열어야 한다(window.opener 가 없다).'); return; }
 
-  /** 요청 한 건의 처리. evOrigin = 그 요청을 보낸 창의 오리진(postMessage 의 ev.origin — IdP 에서 돌아온 길이면 가기 전에 대조를 통과한 그 값).
-   *  back = IdP 에서 돌아온 길(takeIdpReturn) — 있으면 승인은 이미 받았다(R-10). */
+  /** 요청 한 건의 처리. evOrigin = 그 요청을 보낸 창의 오리진(postMessage 의 ev.origin — zkIdP 에서 돌아온 길이면 가기 전에 대조를 통과한 그 값).
+   *  back = zkIdP 에서 돌아온 길(takeIdpReturn) — 있으면 승인은 이미 받았다(R-10). */
   async function handle(req, evOrigin, back = null) {
     // 결과는 요청을 보낸 창에만 돌려준다. 오리진이 어긋나면 진행하지 않고 실제로 말을 건 오리진에 실패만 알린다.
     const target = evOrigin === req.origin ? req.origin : evOrigin;
@@ -263,8 +263,8 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
         return reply({ ok: false, reason: 'origin_mismatch' });
       }
       if (req.type === 'mode3-idp-login') {
-        // zkIdP 페이지의 증명 로그인(스펙 2026-11-19 L8): **IdP 오리진이 연 창에만** 답한다. 다른 사이트가 자기 nonce 로 이 증명을 받아 가면 그 사이트가 이 사용자로 zkIdP 에
-        // 들어간다 — 이 대조가 피싱 방어의 전부다. 위의 evOrigin === req.origin 은 이미 통과했으므로 여기서는 설정의 IdP 오리진과 견준다. RP 인증서 검사는 없다(IdP 는 RP 가 아니다).
+        // zkIdP 페이지의 증명 로그인(스펙 2026-11-19 L8): **zkIdP 오리진이 연 창에만** 답한다. 다른 사이트가 자기 nonce 로 이 증명을 받아 가면 그 사이트가 이 사용자로 zkIdP 에
+        // 들어간다 — 이 대조가 피싱 방어의 전부다. 위의 evOrigin === req.origin 은 이미 통과했으므로 여기서는 설정의 zkIdP 오리진과 견준다. RP 인증서 검사는 없다(zkIdP 는 RP 가 아니다).
         let idpOrigin = null;
         try { idpOrigin = new URL(config.ciaUrl).origin; } catch { /* 설정이 망가졌으면 아무에게도 답하지 않는다 */ }
         if (!idpOrigin || evOrigin !== idpOrigin) { step('zkIdP 가 아닌 페이지의 로그인 요청 — 진행하지 않는다.'); log(`메시지 오리진=${evOrigin}`); return reply({ ok: false, reason: 'origin_mismatch' }); }
@@ -365,7 +365,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
         step('재승인 완료 — 창을 닫는다.');
         return reply({ ok: true, reauth: true });
       }
-      /** 로그인·증명(공통 끝부분). idToken·issueN 은 Google 래퍼 경로, authCode 는 passkey-web 의 IdP 발급 코드(인증 창에서 받았거나 등록이 함께 준 것). */
+      /** 로그인·증명(공통 끝부분). idToken·issueN 은 Google 래퍼 경로, authCode 는 passkey-web 의 zkIdP 발급 코드(인증 창에서 받았거나 등록이 함께 준 것). */
       const loginWith = async ({ idToken = null, issueN = null, authCode = null } = {}) => {
         step('로그인·증명 생성 중… (수 초 걸린다)');
         const body = {
@@ -385,12 +385,12 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
         return reply({ ok: true, ...toRp });
       };
       if (PK) return await authorizePasskey(req, evOrigin, back, { reply, loginWith });
-      // Google 로 로그인(RP 로그인 흐름, 2026-10-16): IdP 의 OIDC 설정을 읽는다 — 꺼져 있으면 Google 경로는 없다.
+      // Google 로 로그인(RP 로그인 흐름, 2026-10-16): zkIdP 의 OIDC 설정을 읽는다 — 꺼져 있으면 Google 경로는 없다.
       const google = req.provider === 'google';
       let oidcCfg = null;
       if (google) {
         try { const k = await Promise.race([core.idp.publicKeys(), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000))]); if (k?.status === 200 && k.body?.oidc?.enabled) oidcCfg = k.body.oidc; } catch { /* 아래에서 꺼진 것으로 */ }
-        if (!oidcCfg) { step('IdP 에 Google(OIDC) 설정이 없다.'); return reply({ ok: false, reason: 'oidc_disabled' }); }
+        if (!oidcCfg) { step('zkIdP 에 Google(OIDC) 설정이 없다.'); return reply({ ok: false, reason: 'oidc_disabled' }); }
       }
       const st = await core.status();
       if (st.status === 200 && !st.body?.registered && !google) {
@@ -430,15 +430,15 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
     }
   }
   // passkey-web: 요청 하나 전체를 withSalt 로 감싼다 — 그 안에서 salt 는 처음 한 번만 얻는다(패스키 최대 한 번, R-8). 그 밖의 모드는 지금 그대로.
-  // 로그인은 패스키를 새로 묻는다(스펙 2026-11-19 L4) — 비밀번호 창이 빠진 자리의 사람 손이다. 서비스 로그인(새 세션 발급)은 IdP 정책이 key 일 때(code 정책은 지금처럼 보관분),
-  // zkIdP 로그인은 **언제나**(리뷰 M4 — 정책을 못 읽어 code 로 보게 돼도 보관분으로 증명을 내지 않는다. code 정책의 IdP 는 그 증명을 어차피 받지 않는다).
+  // 로그인은 패스키를 새로 묻는다(스펙 2026-11-19 L4) — 비밀번호 창이 빠진 자리의 사람 손이다. 서비스 로그인(새 세션 발급)은 zkIdP 정책이 key 일 때(code 정책은 지금처럼 보관분),
+  // zkIdP 로그인은 **언제나**(리뷰 M4 — 정책을 못 읽어 code 로 보게 돼도 보관분으로 증명을 내지 않는다. code 정책의 zkIdP 는 그 증명을 어차피 받지 않는다).
   const isServiceLogin = (req) => req?.type === 'mode3-authorize' && req.reauth !== true;
   const run = async (req, evOrigin, back = null) => {
     if (!PK) return handle(req, evOrigin, back);
     const fresh = req?.type === 'mode3-idp-login' || (isServiceLogin(req) && (await issueAuthPolicy()) === 'key');
     return core.withSalt(() => handle(req, evOrigin, back), { fresh });
   };
-  // IdP 에서 돌아온 길(passkey-web) — ready 를 다시 보내지 않고 저장해 둔 요청을 이어 처리한다. 결과는 가기 전의 발신 오리진(back.origin)으로.
+  // zkIdP 에서 돌아온 길(passkey-web) — ready 를 다시 보내지 않고 저장해 둔 요청을 이어 처리한다. 결과는 가기 전의 발신 오리진(back.origin)으로.
   if (back) { run(back.req, back.origin, back); return; }
   let handled = false;
   const onMessage = (ev) => {

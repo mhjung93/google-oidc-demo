@@ -73,7 +73,7 @@ function askSecret({ modalId, inputId, goId, cancelId }) {
   });
 }
 
-/** oidc: IdP 의 public_keys.oidc({ enabled, provider, clientId, issuer }) — user.js 가 읽어 넘긴다. 못 읽으면 기본값(꺼짐)이라 Google 버튼만 숨는다.
+/** oidc: zkIdP 의 public_keys.oidc({ enabled, provider, clientId, issuer }) — user.js 가 읽어 넘긴다. 못 읽으면 기본값(꺼짐)이라 Google 버튼만 숨는다.
  *  passkey: passkey-web 의 { derive, create }(user.js — RP ID 는 설정의 사용자 오리진 호스트). 설정 카드의 두 버튼만 직접 부른다. */
 export function mountUi({ core, prover, config, Demo, meta, demoReset = false, passkey = null }) {
   const { tte, tt, setVerdict, pendingVerdict } = textKit(Demo);
@@ -143,7 +143,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       for (const [name, code] of Object.entries(slot1.values)) { const o = document.createElement('option'); o.value = String(code); o.textContent = name; sel.appendChild(o); }
     }
   }
-  /** IdP 의 속성 스키마(코어가 받아 둔다). unused 행과 예비 슬롯(W5)은 숨긴다. */
+  /** zkIdP 의 속성 스키마(코어가 받아 둔다). unused 행과 예비 슬롯(W5)은 숨긴다. */
   async function loadAttrSchema() {
     try { const r = await core.attrSchema(); attrSchema = r.status === 200 ? r.body.schema : null; } catch { attrSchema = null; }
     if (!attrSchema) return;
@@ -233,7 +233,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     $('credInfo').textContent = tt(credKey) || '-';
     $('aaInfo').textContent = s?.ciaUrl || tt('wallet_aa_none') || '-';
     // 등록 폼은 미등록일 때만 펼친다(설계 §4.1).
-    $('fileRegFields').hidden = PK || Boolean(s?.registered);   // passkey-web 은 첫 서비스 로그인이 등록이다(IdP 인증 창)
+    $('fileRegFields').hidden = PK || Boolean(s?.registered);   // passkey-web 은 첫 서비스 로그인이 등록이다(zkIdP 인증 창)
     // 등록부 확인 줄(V9 §8.2).
     const rg = s?.registry ?? null;
     const rb = $('registryBadge');
@@ -664,8 +664,8 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     return true;
   }
 
-  // 등록: 폼의 uid·pwd(IdP 계정). s_u 는 코어가 만들어 금고에만 넣는다 — 금고 비밀번호는 없다(자동 금고, 2026-10-16).
-  // IdP 비밀번호는 IdP 로 한 번 지날 뿐이다.
+  // 등록: 폼의 uid·pwd(zkIdP 계정). s_u 는 코어가 만들어 금고에만 넣는다 — 금고 비밀번호는 없다(자동 금고, 2026-10-16).
+  // zkIdP 비밀번호는 zkIdP 로 한 번 지날 뿐이다.
   $('registerBtn').addEventListener('click', async () => {
     pendingVerdict($('registerResult'), 'working');
     try {
@@ -881,7 +881,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
 
   // ---- 보관 상태 카드 ----
   const storageVerdict = () => $('storageVerdict');
-  // 자기 폐기(스펙 §4.5): IdP 계정 비밀번호를 창에서 받아 코어가 IdP 로 바로 보낸다(cia.js CORS). 비밀번호는 보관하지 않는다.
+  // 자기 폐기(스펙 §4.5): zkIdP 계정 비밀번호를 창에서 받아 코어가 zkIdP 로 바로 보낸다(cia.js CORS). 비밀번호는 보관하지 않는다.
   $('selfRevokeBtn').addEventListener('click', async () => {
     if (!Demo.confirmDanger('confirm_revoke')) return;
     const uid = lastStatus?.uid ?? null;

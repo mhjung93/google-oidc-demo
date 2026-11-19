@@ -29,7 +29,7 @@
     /** tour:false 면 체험 모드를 아예 켜지 않는다(승인 팝업 — 설계 2026-09-25 §3.1). */
     init({ page, tour = true }) {
       D.page = page;
-      // 지갑 모드(2026-11-18): 지난번에 본 값으로 먼저 그리고, 이 서버의 상태 응답으로 고친다 — 지갑 서버는 자기 secrets, IdP·서비스는 기동 때 받은
+      // 지갑 모드(2026-11-18): 지난번에 본 값으로 먼저 그리고, 이 서버의 상태 응답으로 고친다 — 지갑 서버는 자기 secrets, zkIdP·서비스는 기동 때 받은
       // MODE3_WALLET_KIND(walletKind). 로드 시점이 아니라 여기서 한다(이 파일은 로드할 때 document·네트워크를 만지지 않는다 — tests/test_mode3_stack_judge.js).
       D.setWalletKind(store.get('mode3.walletKind') ?? '');
       // 속성 도구(page 'attr')는 정적 자원 말고는 아무것도 부르지 않는다(tests/test_mode3_browser.mjs) — 지난 값과 리셋 표시 파일(reset.json 의 walletKind, attr_page.js)로만 안다.

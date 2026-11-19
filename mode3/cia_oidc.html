@@ -62,7 +62,8 @@
     if (r.status !== 200) return verdict($('oidcVerdict'), false, 'idp_oidc_failed', { reason: r.body?.reason ?? `HTTP ${r.status}` });
     if (!r.body.user) { $('oidcLogin').hidden = false; $('oidcPasskeyRow').hidden = r.body.issueAuth !== 'key'; return; }
     $('oidcClient').textContent = `${r.body.client.name} · ${r.body.client.origin}`;
-    $('oidcRid').textContent = r.body.client.rid;
+    // rid 는 77자리까지 간다 — 다른 화면처럼 줄여 보이고 전체는 title 에(2026-11-19 화면 셀프 리뷰: 네 줄로 꺾였다)
+    { const rid = String(r.body.client.rid); $('oidcRid').textContent = rid.length > 24 ? `${rid.slice(0, 10)}…${rid.slice(-8)}` : rid; $('oidcRid').title = rid; }
     $('oidcUid').textContent = r.body.user.id ? `${r.body.user.uid} (${r.body.user.id})` : r.body.user.uid;
     $('oidcConsent').hidden = false;
   }

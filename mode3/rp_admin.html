@@ -41,11 +41,11 @@
       </div>
     </section>
 
-    <!-- 2026-11-11(사용자 요청): RP 가 아는 대응 — 로그인마다 증명의 세션 가명 auid_s 와 PPID. auid 는 IdP 만 안다(RP 에는 오지 않는다). auid_s 는 로그인마다 다르다. -->
+    <!-- 2026-11-11(사용자 요청): RP 가 아는 대응 — 로그인마다 증명의 세션 가명 auid_s 와 PPID. auid 는 zkIdP 만 안다(RP 에는 오지 않는다). auid_s 는 로그인마다 다르다. -->
     <section class="card compliance-panel" id="auidsCard">
       <div class="compliance-block">
         <h3 data-i18n="rp_auids_title">auid_s ↔ PPID 대응</h3>
-        <p class="desc" data-i18n="rp_auids_desc">zkIdP 로그인마다 증명에 실려 온 세션 가명 auid_s 와 PPID 입니다. auid_s 는 로그인마다 달라 서로 이어 볼 수 없고, IdP 의 auid 는 RP 에 오지 않습니다.</p>
+        <p class="desc" data-i18n="rp_auids_desc">zkIdP 로그인마다 증명에 실려 온 세션 가명 auid_s 와 PPID 입니다. auid_s 는 로그인마다 달라 서로 이어 볼 수 없고, zkIdP 의 auid 는 RP 에 오지 않습니다.</p>
         <div id="auids"></div>
       </div>
     </section>
@@ -63,7 +63,7 @@
     <!-- 승인 개봉 — 전문가 보기와 무관하게 늘 보인다(체험 모드 8단계 대상). 내부의 원문 로그·트랜잭션 안내만 전문가 보기 전용. -->
     <section class="card compliance-panel" id="openCompliance">
       <h2 data-i18n="rp_open_card_title">컴플라이언스 — 승인 개봉</h2>
-      <p class="desc" data-i18n="rp_open_desc">RP 와 IdP 가 함께, 운영자 승인 아래에서만 사용자를 알아냅니다.</p>
+      <p class="desc" data-i18n="rp_open_desc">RP 와 zkIdP 가 함께, 운영자 승인 아래에서만 사용자를 알아냅니다.</p>
       <p>
         <label><span data-i18n="rp_admin_ppid_label">고객의 이 RP 주소</span> <input id="openPpid" size="44" placeholder="0x…" autocapitalize="off" spellcheck="false" /></label>   <!-- 운영자 화면이라 "내 주소" 가 아니다(2026-11-05) -->
         <button id="openBtn" data-i18n="rp_open_req">개봉 요청</button>
@@ -73,7 +73,7 @@
         <label><span data-i18n="rp_open_tx_label">트랜잭션 해시</span> <input id="openTx" size="66" placeholder="0x…" /></label>
         <button id="openTxBtn" data-i18n="rp_open_tx">해시로 요청</button>
       </p>
-      <p class="muted"><span data-term="tag">추적용 봉인</span> — <span data-i18n="rp_open_tag_note">로그인마다 함께 실린 추적용 봉인을 RP 와 IdP 가 함께 열어야 uid 가 나옵니다 — 어느 한쪽만으로는 열리지 않습니다.</span></p>
+      <p class="muted"><span data-i18n="rp_open_tag_note">로그인마다 다른 가명 auid_s 를 zkIdP 가 발급 때 기록해 둡니다. 서비스는 자기에게 온 로그인의 증명만 낼 수 있고, zkIdP 관리자가 승인해야 uid 가 나옵니다.</span></p>
       <p class="muted expert" data-i18n="rp_open_tx_note">트랜잭션은 사용자 페이지에서 보냅니다(설계 2026-09-16 §6).</p>
       <div id="openVerdict"></div>
       <pre id="openLog" class="expert">-</pre>
@@ -109,7 +109,7 @@
     const pendingVerdict = (el, key) => setVerdict(el, null, key, { pending: true });
     const progress = { opened: false };
     let info = null;   // rp_info(renderBrand 가 채운다) — 안내 바 링크·승인 상태에 쓴다
-    // 안내 바·체험 모드(2026-10-16): 이 페이지는 승인 개봉 단계의 당사자다. 다른 단계의 완료 신호는 상태 패널(지갑·IdP health)이 공통 레이어에 준다.
+    // 안내 바·체험 모드(2026-10-16): 이 페이지는 승인 개봉 단계의 당사자다. 다른 단계의 완료 신호는 상태 패널(지갑·zkIdP health)이 공통 레이어에 준다.
     function renderGuide() {
       const links = { rp: '/', wallet: info?.walletAgentOrigin ?? null, admin: info?.ciaUrl ? `${info.ciaUrl}/admin` : null, account: info?.ciaUrl ? `${info.ciaUrl}/account` : null, idp_user: info?.ciaUrl ? `${info.ciaUrl}/user` : null, idp_rp: info?.ciaUrl ? `${info.ciaUrl}/rp` : null };
       if (Demo.tour?.enabled) { Demo.tour.evaluate({ progress: { approved: info?.status === 'approved', opened: progress.opened }, links }); return; }
@@ -256,7 +256,7 @@
         const b = await r.json().catch(() => ({}));
         $('openLog').textContent = `요청 → ${r.status} ${JSON.stringify(b)}`;
         openingId = b.id ?? null;   // 결과 확인 버튼은 늘 활성(2026-10-16) — id 가 없으면 눌렀을 때 사유를 보인다
-        if (r.ok && openingId) setVerdict($('openVerdict'), true, 'rp_open_requested_title', () => ({ summary: tt('rp_open_requested') || '개봉 요청을 보냈습니다. IdP 관리자가 승인하면 "결과 확인"에서 볼 수 있습니다.', detail: b }));
+        if (r.ok && openingId) setVerdict($('openVerdict'), true, 'rp_open_requested_title', () => ({ summary: tt('rp_open_requested') || '개봉 요청을 보냈습니다. zkIdP 관리자가 승인하면 "결과 확인"에서 볼 수 있습니다.', detail: b }));
         else setVerdict($('openVerdict'), false, 'rp_open_failed', { reason: b.reason ?? b.error ?? `HTTP ${r.status}`, detail: b });
       } catch (e) {
         $('openLog').textContent = `요청 오류: ${e.message}`;
@@ -297,7 +297,7 @@
         info = await (await fetch('/api/mode3/rp_info')).json();
         const name = typeof info.name === 'string' && /^zk/i.test(info.name) ? info.name : 'zkONE';
         $('brandName').textContent = name; document.title = `${name} — ${tt('rp_admin_title') || '관리자'}`;
-        // 상태 패널(설계 2026-09-25 §2) — 고객 페이지와 같은 상대(지갑·IdP)를 본다. 체험 모드의 단계 판정도 이 health 를 쓴다.
+        // 상태 패널(설계 2026-09-25 §2) — 고객 페이지와 같은 상대(지갑·zkIdP)를 본다. 체험 모드의 단계 판정도 이 health 를 쓴다.
         Demo.stack?.({ self: 'rp', urls: { wallet: info.walletAgentOrigin, aa: info.ciaUrl } });
       } catch { /* 이름을 못 읽어도 기본값으로 둔다 */ }
       renderGuide();

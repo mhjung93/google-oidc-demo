@@ -53,6 +53,8 @@
       const row = el('summary', 'seq-row');
       const box = el('div', `seq-box ${a === b ? 'seq-self' : st.both ? 'seq-both' : a < b ? 'seq-right' : 'seq-left'}`);
       box.style.gridColumn = `${Math.min(a, b) + 1} / ${Math.max(a, b) + 2}`;
+      // 화살표는 보내는 쪽 세로선에서 받는 쪽 세로선까지 — 걸친 줄 수 n 에서 양끝을 반 줄씩 들인다(줄 사이 간격 14px 은 demo.css 의 .seq-row gap 과 같다)
+      if (a !== b) { const n = Math.abs(a - b) + 1; box.style.marginInline = `calc((100% - ${(n - 1) * 14}px) / ${2 * n})`; }
       const who = a === b ? f.lanes[a].name : `${f.lanes[a].name} ${st.both ? '⇄' : '→'} ${f.lanes[b].name}`;
       const line = el('div', 'seq-line');
       line.append(el('span', 'seq-n', String(i + 1)), el('span', 'seq-title', st.title));

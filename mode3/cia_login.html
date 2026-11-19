@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="same-origin" />
-  <!-- 제목의 "IdP 인증" 은 페이지 서빙 검사 marker 다(mode3/cia_admin.html 의 관례). 데모 바 없음 — 지갑 팝업 창이 이 페이지로 왔다가 돌아간다
+  <!-- 제목의 "zkIdP 인증" 은 페이지 서빙 검사 marker 다(mode3/cia_admin.html 의 관례). 데모 바 없음 — 지갑 팝업 창이 이 페이지로 왔다가 돌아간다
        (2026-11-05, ?return=1·auid=…) — 옛 방식(지갑 팝업이 따로 연 창, postMessage 로 코드 전달)도 그대로 받는다. -->
   <title>zkIdP 로그인</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b1d3a'/%3E%3Ctext x='16' y='22' font-size='15' font-family='sans-serif' font-weight='700' text-anchor='middle' fill='%23fff'%3Ezk%3C/text%3E%3C/svg%3E">
@@ -52,7 +52,7 @@
     },
   };
   // 지갑 모드(2026-11-18): passkey-web 이면 "스냅" 대신 "zk 클라이언트" 로 그린다(strings.js noSnap — 이 창은 demo.js 를 싣지 않아 여기서 직접 켠다).
-  // 지난번에 본 값으로 먼저 그리고, 아래에서 이 IdP 의 상태 응답(walletKind)으로 고친다.
+  // 지난번에 본 값으로 먼저 그리고, 아래에서 이 zkIdP 의 상태 응답(walletKind)으로 고친다.
   const applyI18n = () => document.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = Demo.t(el.dataset.i18n); });
   const setWalletKind = (kind) => {
     const k = typeof kind === 'string' ? kind : '';
@@ -85,7 +85,7 @@
     // 2026-11-05(7차): nonce·wallet 이 아예 없으면(주소창에 직접 침) 보안 경고가 아니라 "지갑이 여는 창" 안내만 — 경고는 wallet 이 있는데 다를 때.
     if (!nonce || !walletQuery) { setVerdict($('authVerdict'), false, 'idp_auth_no_wallet', { pending: true, summary: Demo.t('idp_auth_no_wallet_hint') }); disableForm(); return; }
     const walletOrigin = health?.walletOrigin;   // 상태를 못 읽었으면 undefined — 아래 대조가 같은 안내로 막는다
-    // 쿼리의 wallet 이 이 IdP 가 아는 지갑 오리진과 글자 그대로 같아야 한다 — 다르면 가짜 창일 수 있다(§4).
+    // 쿼리의 wallet 이 이 zkIdP 가 아는 지갑 오리진과 글자 그대로 같아야 한다 — 다르면 가짜 창일 수 있다(§4).
     if (!walletOrigin || walletQuery !== walletOrigin) { setVerdict($('authVerdict'), false, 'idp_auth_bad_wallet', { reason: 'idp_auth_bad_wallet' }); disableForm(); return; }
 
     // M4: 로그인을 시도했지만 실패했고(예: auid_mismatch) 사용자가 재시도 없이 이 창을 닫으면, 지갑은 "응답 없음"으로만

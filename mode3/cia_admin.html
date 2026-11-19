@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="same-origin" />
-  <!-- 제목의 "IdP 관리자" 는 tests/test_mode3_demo_stack.mjs 의 페이지 서빙 검사 marker 다. -->
+  <!-- 제목의 "zkIdP 관리자" 는 tests/test_mode3_demo_stack.mjs 의 페이지 서빙 검사 marker 다. -->
   <title>zkIdP — 관리자</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b1d3a'/%3E%3Ctext x='16' y='22' font-size='15' font-family='sans-serif' font-weight='700' text-anchor='middle' fill='%23fff'%3Ezk%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="/common/demo.css" />
@@ -41,7 +41,7 @@
         <button id="reloadBtn" class="btn-ghost" data-i18n="admin_reload">모두 새로고침</button>
         <button id="gateLogoutBtn" class="btn-ghost" data-i18n="admin_gate_logout">관리자 로그아웃</button>
       </p>
-      <p class="muted" id="adminOpenNote" data-i18n="admin_open_note" hidden>데모 설정(CIA_ADMIN_OPEN=1)으로 관리자 인증이 꺼져 있어 시크릿 없이 쓸 수 있습니다. 이 IdP 에 닿는 누구나 관리자 기능을 쓸 수 있으니 데모에서만 켜세요.</p>
+      <p class="muted" id="adminOpenNote" data-i18n="admin_open_note" hidden>데모 설정(CIA_ADMIN_OPEN=1)으로 관리자 인증이 꺼져 있어 시크릿 없이 쓸 수 있습니다. 이 zkIdP 에 닿는 누구나 관리자 기능을 쓸 수 있으니 데모에서만 켜세요.</p>
       <p id="pendingBadges"></p>
       <div id="adminVerdict"></div>
       <pre id="out" class="expert">-</pre>
@@ -64,14 +64,14 @@
 
     <section class="card span2" id="secRps">
       <h3 data-i18n="admin_rps_title">RP</h3>
-      <p class="desc" data-i18n="admin_rps_desc">승인하면 이 RP 전용 추적 조각을 만들어 인증서를 냅니다. 거절은 되돌릴 수 없습니다.</p>
+      <p class="desc" data-i18n="admin_rps_desc">승인하면 이 RP 의 인증서를 냅니다. 거절은 되돌릴 수 없습니다.</p>
       <p><button id="rpsBtn" data-i18n="admin_list_btn">목록 불러오기</button></p>
       <div id="rps"><p class="muted" data-i18n="admin_need_secret">관리자 시크릿을 넣으면 목록과 대기 건수를 불러옵니다.</p></div>
     </section>
 
     <section class="card span2" id="secOpenings">
       <h3 data-i18n="admin_openings_title">개봉 요청</h3>
-      <p class="desc" data-i18n="admin_openings_desc">RP 가 올린 개봉 요청입니다. 승인하면 IdP 조각으로 봉인을 풀어 uid 를 기록합니다 — 대기 중인 항목에는 uid 가 없습니다.</p>
+      <p class="desc" data-i18n="admin_openings_desc">RP 가 올린 개봉 요청입니다. 승인하면 zkIdP 조각으로 봉인을 풀어 uid 를 기록합니다 — 대기 중인 항목에는 uid 가 없습니다.</p>
       <p><button id="openingsBtn" data-i18n="admin_list_btn">목록 불러오기</button></p>
       <p class="muted expert" data-i18n="admin_openings_note">복호 결과는 Poseidon(uid, arid) 라 등록부를 훑어 uid 를 되찾습니다(2026-09-18 §6.2).</p>
       <div id="openings"><p class="muted" data-i18n="admin_need_secret">관리자 시크릿을 넣으면 목록과 대기 건수를 불러옵니다.</p></div>
@@ -106,7 +106,7 @@
 
     <section class="card span2" id="secAuidMap">
       <h3 data-i18n="admin_auidmap_title">uid ↔ auid(스냅 가명) 대응</h3>
-      <p class="desc" data-i18n="admin_auidmap_desc">계정마다 IdP 가 저장한 auid 입니다.</p>
+      <p class="desc" data-i18n="admin_auidmap_desc">계정마다 zkIdP 가 저장한 auid 입니다.</p>
       <div id="auidMap"><p class="muted" data-i18n="admin_need_secret">관리자 시크릿을 넣으면 목록과 대기 건수를 불러옵니다.</p></div>
       <!-- 2026-11-19(데모 시나리오 6): 위 표의 "그림" 을 누르면 그 계정의 가장 최근 로그인(발급)에서 zkIdP 가 받은 것·검증한 것·알 수 없는 것을 그린다 -->
       <div id="issueFigure" hidden><h4 id="issueFigureTitle"></h4><div id="issueFigureBody"></div></div>
@@ -155,7 +155,7 @@
     // 시크릿은 요청 헤더로만 나가고 #out·결과 카드·안내 문구 어디에도 실리지 않는다.
     const SECRET_KEY = 'mode3.adminSecret';   // 비밀번호 화면(Demo.gate)이 맞은 값을 sessionStorage 에 둔다(2026-11-05)
     // 데모 설정(CIA_ADMIN_OPEN=1, 2026-10-21): 시크릿 없이 관리자 목록이 열리면 true — 기동 때 한 번 알아낸다. 그때는 헤더에 자리표시 값을 싣는다
-    // (IdP 는 이 모드에서 헤더가 있는 폐기 요청만 관리자로 본다 — 헤더 없는 사용자 본인 서명 요청과 가르기 위해서다).
+    // (zkIdP 는 이 모드에서 헤더가 있는 폐기 요청만 관리자로 본다 — 헤더 없는 사용자 본인 서명 요청과 가르기 위해서다).
     let adminOpen = false;
     const hasSecret = () => adminOpen || $('secret').value.length > 0;
     const secretHeader = () => $('secret').value || (adminOpen ? 'open' : '');
@@ -511,7 +511,8 @@
       const host = $('openings');
       if (!openings) { placeholder(host, 'admin_need_secret'); return; }
       if (!openings.length) { placeholder(host, 'admin_no_openings'); return; }
-      const t = table([['admin_col_status'], ['admin_col_requested'], ['admin_col_account'], ['admin_col_founduid'], ['admin_col_arid', true], ['admin_col_action']]);   // 2026-11-09: PPID 숫자 대신 RP 가 보낸 스마트 계정 주소
+      // 2026-11-19(화면 셀프 리뷰, 스펙 trace-without-tag T10): 서비스가 낸 auid_s 를 보인다 — zkIdP 는 이 값을 발급 기록에서 찾아 uid 를 낸다.
+      const t = table([['admin_col_status'], ['admin_col_requested'], ['admin_col_account'], ['admin_col_open_auid_s'], ['admin_col_founduid'], ['admin_col_arid', true], ['admin_col_action']]);   // 2026-11-09: PPID 숫자 대신 RP 가 보낸 스마트 계정 주소
       const body = t.tBodies[0];
       for (const o of openings) {
         const row = body.insertRow();
@@ -520,6 +521,7 @@
         const at = cell(row, fmtAt(o.requestedAt));
         at.title = o.requestedAt ?? '';
         const accCell = cell(row, short(o.account ?? o.PPID)); accCell.title = o.account ? `${o.account}\nPPID ${o.PPID}` : String(o.PPID);
+        { const c = cell(row, ''); c.dataset.open = 'auid_s'; if (o.auid_s) { const v = document.createElement('code'); v.textContent = short(o.auid_s); v.title = String(o.auid_s); c.append(v); } else c.textContent = '-'; }
         if (o.uid) cell(row, o.uid);
         else if (o.resolved === false) { const p = document.createElement('span'); p.className = 'muted'; tte(p, 'admin_open_unresolved'); cell(row, p); }
         else cell(row, '');
@@ -737,23 +739,26 @@
         // 2026-11-13: 폐기된 계정은 스냅을 쥐지 않아 새 계정과 같은 auid 가 두 줄에 보일 수 있다 — 어느 쪽이 폐기인지 여기서 가린다.
         cell(row, badge(a.disabled ? 'admin_state_disabled' : 'admin_state_active', a.disabled ? 'bad' : 'ok'));
         if (a.auid) cell(row, midVal(a.auid)); else { const c = cell(row, ''); c.className = 'muted'; tte(c, 'admin_auid_none'); }
-        // 2026-11-12(사용자 결정): IdP 가 계정마다 덮어써 두는 가장 최신 auid_s 하나와 그 발급 시각 — 기록은 없다.
+        // 2026-11-12(사용자 결정): zkIdP 가 계정마다 덮어써 두는 가장 최신 auid_s 하나와 그 발급 시각 — 기록은 없다.
         if (a.lastAuidS?.value) {
-          const c = cell(row, midVal(a.lastAuidS.value), 'nowrap');
+          // 2026-11-19(화면 셀프 리뷰): 값과 시각을 한 줄에 두면 표가 카드 밖으로 넘친다 — 시각은 아랫줄(.cell-lines)
+          const c = cell(row, midVal(a.lastAuidS.value), 'cell-lines');
           const at = document.createElement('small'); at.className = 'muted'; at.textContent = new Date(a.lastAuidS.at).toLocaleString();
-          c.append(' ', at);
+          c.append(at);
         } else { const c = cell(row, ''); c.className = 'muted'; tte(c, 'admin_auid_none'); }
         // 2026-11-19(스펙 oidc-comparison C6): zkIdP 가 본 서비스 — 일반 OIDC 는 어느 서비스인지(이름·rid) 그대로, zk-Delegation 은 가려진 arid_s 뿐이다. 각각 가장 최신 값 하나.
         const seenCell = (kind, text, title, at, noteKey) => {
-          const c = cell(row, '', 'nowrap'); c.dataset.seen = kind;
+          const c = cell(row, '', 'cell-lines'); c.dataset.seen = kind;   // 값 · 설명 · 시각을 줄마다(한 줄이면 표가 카드 밖으로 넘쳤다 — 2026-11-19 화면 셀프 리뷰)
           if (!text) { c.className = 'muted'; c.textContent = '-'; return; }
           const v = document.createElement('code'); v.textContent = text; v.title = title; c.append(v);
-          if (noteKey) { const n = document.createElement('small'); n.className = 'muted'; n.textContent = ` ${Demo.t(noteKey)}`; c.append(n); }
-          const when = document.createElement('small'); when.className = 'muted'; when.textContent = ` ${new Date(at).toLocaleString()}`; c.append(when);
+          if (noteKey) { const n = document.createElement('small'); n.className = 'muted'; n.textContent = Demo.t(noteKey); c.append(n); }
+          const when = document.createElement('small'); when.className = 'muted'; when.textContent = new Date(at).toLocaleString(); c.append(when);
         };
-        seenCell('oidc', a.lastOidc ? `${a.lastOidc.name} · rid ${a.lastOidc.rid}` : null, a.lastOidc?.rid ?? '', a.lastOidc?.at, null);
+        // rid 는 77자리까지 간다 — 줄여 보이고 전체는 title 에(2026-11-19 화면 셀프 리뷰: 그대로 두면 표가 카드보다 넓어진다)
+        const ridShort = a.lastOidc ? (String(a.lastOidc.rid).length > 20 ? `${String(a.lastOidc.rid).slice(0, 10)}…${String(a.lastOidc.rid).slice(-8)}` : String(a.lastOidc.rid)) : null;
+        seenCell('oidc', a.lastOidc ? `${a.lastOidc.name} · rid ${ridShort}` : null, a.lastOidc?.rid ?? '', a.lastOidc?.at, null);
         seenCell('zk', a.lastAridS?.value ? `arid_s ${String(a.lastAridS.value).slice(0, 10)}…${String(a.lastAridS.value).slice(-8)}` : null, a.lastAridS?.value ?? '', a.lastAridS?.at, 'admin_seen_zk_note');
-        { const c = row.cells[row.cells.length - 1], b = document.createElement('button'); b.type = 'button'; b.className = 'btn-ghost'; b.dataset.figureUid = a.uid; b.textContent = Demo.t('flow_idp_btn'); b.addEventListener('click', () => renderIssueFigure(a)); c.append(' ', b); }
+        if (a.lastIssue) { const c = row.cells[row.cells.length - 1], b = document.createElement('button'); b.type = 'button'; b.className = 'btn-ghost'; b.dataset.figureUid = a.uid; b.textContent = Demo.t('flow_idp_btn'); b.addEventListener('click', () => renderIssueFigure(a)); c.append(b); }   // 로그인(발급)한 적 없는 계정에는 그릴 것이 없다
         cell(row, a.slot === null || a.slot === undefined ? '-' : String(a.slot));
       }
       host.replaceChildren(t);

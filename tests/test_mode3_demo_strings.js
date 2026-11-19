@@ -154,7 +154,7 @@ t('ui 에 사용자 페이지(web 모드) 키가 있다', () => {
   assert.ok(S.ui.wallet_no_sessions.ko.includes('로그인한 서비스가 없습니다'));
 });
 
-// 2026-11-05 — 팝업 큰 제목은 요청 종류(로그인·등록·온체인 출금)를 따른다; IdP 인증은 팝업 창 자체가 IdP 로 갔다가 돌아오므로 "IdP 인증 창 열기" 버튼 키는 없어졌다.
+// 2026-11-05 — 팝업 큰 제목은 요청 종류(로그인·등록·온체인 출금)를 따른다; IdP 인증은 팝업 창 자체가 IdP 로 갔다가 돌아오므로 "zkIdP 인증 창 열기" 버튼 키는 없어졌다.
 t('ui 에 팝업 제목 키 셋이 있고 IdP 인증 창 열기 버튼 키는 없다', () => {
   for (const k of ['wallet_auth_heading_login', 'wallet_auth_heading_register', 'wallet_auth_heading_tx', 'wallet_auth_registering', 'wallet_auth_to_idp', 'wallet_auth_resume_failed', 'idp_auth_return']) assert.ok(S.ui[k], k);
   assert.equal(S.ui.idp_auth_open_btn, undefined, 'idp_auth_open_btn 은 없어졌다');

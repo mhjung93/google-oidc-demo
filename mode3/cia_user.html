@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="same-origin" />
-  <!-- 제목의 "IdP 사용자" 는 페이지 서빙 검사 marker 다(mode3/cia_admin.html 의 관례). -->
+  <!-- 제목의 "zkIdP 사용자" 는 페이지 서빙 검사 marker 다(mode3/cia_admin.html 의 관례). -->
   <title>zkIdP — 내 계정</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b1d3a'/%3E%3Ctext x='16' y='22' font-size='15' font-family='sans-serif' font-weight='700' text-anchor='middle' fill='%23fff'%3Ezk%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="/common/demo.css" />
@@ -34,14 +34,14 @@
     <!-- 증명 로그인(2026-11-19 스펙 passkey-proof-login L5): passkey-web 이고 발급 정책이 key 일 때만 보인다 — 지갑 창이 패스키로 "이 계정 auid 의 s_u 를 안다" 는 증명을 만들어 돌려준다. -->
     <p class="auth-links" id="passkeyLoginRow" hidden><button type="button" id="passkeyLoginBtn" data-i18n="idp_passkey_login_btn">패스키로 로그인</button><br><small class="muted" data-i18n="idp_passkey_login_note">이 브라우저의 zk 클라이언트가 이 계정에 연결돼 있을 때 쓸 수 있습니다.</small></p>
     <p class="auth-links"><span data-i18n="idp_no_account">계정이 없으세요?</span> <button type="button" class="btn-ghost" id="showSignupBtn" data-i18n="idp_signup_title">계정 만들기</button></p>
-    <!-- Google(OIDC 래퍼, 2026-10-26 Snap OIDC 래퍼 §2.1): IdP 비밀번호 계정 없이 지갑 팝업에서 Google 로 등록 — IdP 가 래퍼를 켰을 때만 보인다. -->
+    <!-- Google(OIDC 래퍼, 2026-10-26 Snap OIDC 래퍼 §2.1): zkIdP 비밀번호 계정 없이 지갑 팝업에서 Google 로 등록 — zkIdP 가 래퍼를 켰을 때만 보인다. -->
     <p class="auth-links" id="googleRow" hidden><button type="button" class="btn-ghost" id="registerGoogleBtn" data-i18n="idp_register_google_btn">Google 계정으로 등록</button></p>   <!-- 2026-11-11(사용자 결정): "Google 로 등록한 계정 관리"(/account) 링크는 뺐다 — /account 는 주소로만 연다 -->
     <div id="userVerdict"></div>
   </section>
   <!-- ===== 로그인 전 ② 계정 만들기 ===== -->
   <section class="card auth-card" id="signupView" hidden>
     <h3 data-i18n="idp_signup_title">계정 만들기</h3>
-    <p class="desc" data-i18n="idp_signup_desc">아이디와 비밀번호만 정합니다. uid 는 IdP 가 배정하고, 속성은 IdP 에 보내지 않습니다.</p>
+    <p class="desc" data-i18n="idp_signup_desc">아이디와 비밀번호만 정합니다. uid 는 zkIdP 가 배정하고, 속성은 zkIdP 에 보내지 않습니다.</p>
     <form id="signupForm" class="auth-form" autocomplete="on">
       <label><span data-i18n="idp_id_label">아이디</span><input id="signupId" autocomplete="username" autocapitalize="off" spellcheck="false" minlength="3" maxlength="32" /><small class="muted" data-i18n="idp_id_hint">영문·숫자로 시작, 3~32자(영문·숫자·. _ -)</small></label>
       <label><span data-i18n="idp_pwd_label">비밀번호</span><input id="signupPwd" type="password" autocomplete="new-password" minlength="8" /><small class="muted" data-i18n="idp_pwd_hint">8자 이상</small></label>
@@ -73,13 +73,13 @@
       <dt data-term="auid">auid</dt><dd><code id="meAuid">-</code> <button type="button" id="copyAuidBtn" class="copy-btn" hidden title="복사" aria-label="복사" data-i18n-title="rp_copy_btn_title">⧉</button></dd>
       <dt></dt><dd><p class="desc kv-desc" data-i18n="idp_auid_desc">zkIdP 가 이 계정을 스냅과 잇는 데 쓰는 가명입니다. 서비스에 로그인할 때마다 zkIdP 인증 창의 auid 칸에 이 값을 넣습니다.</p></dd>
       <dt data-i18n="idp_slot_label">등록부 슬롯</dt><dd id="meSlot">-</dd>
-      <dt></dt><dd><p class="desc kv-desc" data-i18n="idp_slot_desc">IdP 등록부에서 이 계정의 자리 번호입니다. 활성 자격증명이 이 자리에 실리고, 폐기되면 비워집니다. 스냅은 이 자리를 보고 내 자격증명이 바뀌지 않았는지 확인합니다.</p></dd>
+      <dt></dt><dd><p class="desc kv-desc" data-i18n="idp_slot_desc">zkIdP 등록부에서 이 계정의 자리 번호입니다. 활성 자격증명이 이 자리에 실리고, 폐기되면 비워집니다. 스냅은 이 자리를 보고 내 자격증명이 바뀌지 않았는지 확인합니다.</p></dd>
     </dl>
     </details>
     <p><a id="walletLink2" class="btn btn-ghost" target="_blank" rel="noopener" data-i18n="idp_wallet_link">zk 스냅 화면 열기</a></p>   <!-- 2026-11-14: .btn 이 빠져 기본 파란 밑줄 링크로 보였다 -->
   </section>
   <!-- 2026-11-09 Phase 1: 프로필(OIDC profile 의 name 한 칸). 사용자가 속성 도구(지갑 오리진 /attr.html — MetaMask 와 무관한 독립 페이지)에서 만든
-       속성 커밋먼트를 붙여 넣는다. IdP 는 뜻을 모르는 문자열로만 저장하고, 서비스 로그인 때 ID 토큰의 name 클레임으로 실려 간다. 지갑 등록과 별개라 로그인만 하면 보인다. -->
+       속성 커밋먼트를 붙여 넣는다. zkIdP 는 뜻을 모르는 문자열로만 저장하고, 서비스 로그인 때 ID 토큰의 name 클레임으로 실려 간다. 지갑 등록과 별개라 로그인만 하면 보인다. -->
   <section class="card me-view" id="profileCard" hidden>
     <h3 data-i18n="idp_profile_title">프로필</h3>
     <p class="desc" data-i18n="idp_profile_desc">속성 도구에서 만든 속성 커밋먼트를 "이름" 칸에 붙여 넣고 저장하세요. zkIdP 는 이 값의 뜻을 모르며, 서비스에 로그인할 때 ID 토큰의 name 으로 전달됩니다.</p>
@@ -126,8 +126,8 @@
   let walletOrigin = null, me = null;
   let oidcEnabled = false;   // public_keys.oidc.enabled — Google 줄(renderGoogleRow)
   // Google 줄(OIDC 래퍼, 2026-11-06 8차): "Google 계정으로 등록" 은 Google 로그인이 지갑 팝업(walletOrigin) 안에서 일어나므로
-  // 지갑 오리진이 localhost 일 때 보인다 — IdP 를 VM 주소(192.168.x.x)로 열어도 된다(2026-11-11: "/account" 링크는 뺐다). Google 은 평문 http 오리진을 localhost 에만 허용하고
-  // 127.0.0.1 은 다른 오리진으로 본다(gsi.js 의 검사와 같다). 7차의 "IdP 주소가 localhost 일 때만 둘 다" 는 등록 버튼을 잘못 숨겼다.
+  // 지갑 오리진이 localhost 일 때 보인다 — zkIdP 를 VM 주소(192.168.x.x)로 열어도 된다(2026-11-11: "/account" 링크는 뺐다). Google 은 평문 http 오리진을 localhost 에만 허용하고
+  // 127.0.0.1 은 다른 오리진으로 본다(gsi.js 의 검사와 같다). 7차의 "zkIdP 주소가 localhost 일 때만 둘 다" 는 등록 버튼을 잘못 숨겼다.
   function renderGoogleRow() {
     let walletLocal = false;
     try { walletLocal = !!walletOrigin && new URL(walletOrigin).hostname === 'localhost'; } catch { /* 잘못된 오리진이면 숨긴다 */ }
@@ -316,13 +316,13 @@
       setTimeout(() => finish(() => verdict(out, false, failTitle, { reason: 'popup_closed', summary: tt('register_popup_closed') })), REGISTER_POPUP_RESULT_GRACE_MS);
     }, REGISTER_POPUP_CLOSED_POLL_MS);
   }
-  // Google 로 등록(2026-10-26 Snap OIDC 래퍼 §2.1): IdP 로그인·등록 코드 없이 지갑 팝업에서 Google 로그인 — uid 는 IdP 가 토큰으로 정한다.
+  // Google 로 등록(2026-10-26 Snap OIDC 래퍼 §2.1): zkIdP 로그인·등록 코드 없이 지갑 팝업에서 Google 로그인 — uid 는 zkIdP 가 토큰으로 정한다.
   // 로그인 화면의 보조 입구라 결과도 그 화면(#userVerdict)에 그린다.
   $('registerGoogleBtn').addEventListener('click', () => openRegisterPopup($('registerGoogleBtn'), $('userVerdict'), () => ({ type: 'mode3-register', provider: 'google', ciaUrl: location.origin }),
     (r) => tt('idp_register_google_ok', { uid: r.uid, slot: r.slot }) || `Google 계정 등록됨 — uid ${r.uid}, 슬롯 #${r.slot}`));
 
   // 증명 로그인(2026-11-19 스펙 passkey-proof-login §2.3): ① 이 세션에 1회용 챌린지를 받고 ② 지갑 창(mode3-idp-login)이 패스키로 증명을 만들어 돌려주면 ③ /cia/user/login_proof 로 낸다.
-  // 지갑 창은 이 오리진(IdP)이 연 창에만 답한다. 챌린지(같은 오리진의 짧은 요청)를 받은 뒤 창을 연다 — 클릭의 활성 시간 안이라 팝업 차단에 걸리지 않는다.
+  // 지갑 창은 이 오리진(zkIdP)이 연 창에만 답한다. 챌린지(같은 오리진의 짧은 요청)를 받은 뒤 창을 연다 — 클릭의 활성 시간 안이라 팝업 차단에 걸리지 않는다.
   $('passkeyLoginBtn').addEventListener('click', async () => {
     const out = $('userVerdict'), btn = $('passkeyLoginBtn');
     const failed = (r) => verdict(out, false, 'idp_login_failed', { reason: r.body?.reason ?? `HTTP ${r.status}` });
@@ -346,7 +346,7 @@
   (async () => {
     Demo.init({ page: 'idp_user' });
     initStack();
-    // Google 줄은 이 IdP 가 OIDC 래퍼를 켰을 때만(public_keys.oidc.enabled) — 어느 요소를 보일지는 renderGoogleRow(위) 가 정한다.
+    // Google 줄은 이 zkIdP 가 OIDC 래퍼를 켰을 때만(public_keys.oidc.enabled) — 어느 요소를 보일지는 renderGoogleRow(위) 가 정한다.
     try { const keys = await (await fetch('/cia/public_keys')).json(); oidcEnabled = Boolean(keys.oidc?.enabled); renderPasskeyRow(keys.issueAuth); } catch { /* 숨긴 채 */ }
     renderGoogleRow();
     await refreshMe();

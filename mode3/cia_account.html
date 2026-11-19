@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="referrer" content="same-origin" />
-  <!-- 제목의 "IdP 내 계정" 은 tests/test_mode3_demo_stack.mjs 의 페이지 서빙 검사 marker 다. -->
+  <!-- 제목의 "zkIdP 내 계정" 은 tests/test_mode3_demo_stack.mjs 의 페이지 서빙 검사 marker 다. -->
   <title>zkIdP — Google 계정</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b1d3a'/%3E%3Ctext x='16' y='22' font-size='15' font-family='sans-serif' font-weight='700' text-anchor='middle' fill='%23fff'%3Ezk%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="/common/demo.css" />
@@ -16,7 +16,7 @@
 </head>
 <body data-page="account">
   <header id="demoBar"></header>
-  <!-- 2026-11-05: 다른 IdP 페이지와 같은 상단 바(idp.css) — 어느 사이트인지 보이게. -->
+  <!-- 2026-11-05: 다른 zkIdP 페이지와 같은 상단 바(idp.css) — 어느 사이트인지 보이게. -->
   <nav class="idp-nav"><div class="nav-inner">
     <span class="brand" data-i18n="idp_brand">zkIdP</span>
     <div class="nav-menu"><a href="/user" data-i18n="idp_nav_user">내 계정</a><a href="/account" aria-current="page" data-i18n="account_nav">Google 계정</a><a href="/rp" data-i18n="idp_nav_rp">RP 운영자</a><a href="/admin" data-i18n="idp_nav_admin">관리자</a></div>
@@ -30,7 +30,7 @@
         <label><span data-i18n="account_pwd_label">계정 비밀번호</span> <input id="pwd" type="password" size="24" autocomplete="off" /></label>
         <button id="revokeBtn" class="danger" data-i18n="account_revoke_btn">내 계정 폐기</button>
       </p>
-      <!-- Google(OIDC 래퍼, 스펙 2026-10-16 §3.3) — IdP 가 Google 을 켰을 때만 보인다. 데모 계정은 위의 uid·비밀번호 그대로. -->
+      <!-- Google(OIDC 래퍼, 스펙 2026-10-16 §3.3) — zkIdP 가 Google 을 켰을 때만 보인다. 데모 계정은 위의 uid·비밀번호 그대로. -->
       <p id="googleRevokeRow" hidden><span data-i18n="account_google_revoke_label">Google 로 등록한 계정은 Google 로 폐기:</span> <span id="googleRevokeSlot" class="gsi-slot"></span></p>
       <p id="googleRevokeNote" class="muted" hidden></p>
       <p class="muted" data-i18n="account_note">폐기하면 재발급이 즉시 막히고, 이미 발급된 자격증명은 관리자가 폐기 목록을 게시한 뒤부터 거절됩니다. 복구는 관리자만 할 수 있습니다.</p>
@@ -129,9 +129,9 @@
 
     // ---- Google(OIDC 래퍼, 스펙 2026-10-16 §3.3) — Google 로 등록한 계정은 비밀번호가 없어 Google 재로그인 토큰으로 폐기한다 ----
     // 폐기 nonce = "revoke:" + 32바이트 임의 hex(lib/mode3_oidc_nonce.js 의 newRevokeNonce 와 같은 형식 — 인라인 페이지라 import 할 수 없어 한 줄 중복).
-    // 토큰은 콜백에서 IdP 로 바로 넘기고 변수·화면·저장소에 남기지 않는다. 1회용이라 끝나면(취소·실패 포함) 새 nonce 로 다시 그린다.
+    // 토큰은 콜백에서 zkIdP 로 바로 넘기고 변수·화면·저장소에 남기지 않는다. 1회용이라 끝나면(취소·실패 포함) 새 nonce 로 다시 그린다.
     const hex64 = () => Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, '0')).join('');
-    let googleOidc = null;    // IdP 의 public_keys.oidc(켜져 있을 때만)
+    let googleOidc = null;    // zkIdP 의 public_keys.oidc(켜져 있을 때만)
     let googleNote = null;    // { kind:'origin', url } | { kind:'unavailable', detail } — 언어 전환 때 다시 그린다
     function renderGoogleNote() {
       const note = $('googleRevokeNote');
@@ -164,7 +164,7 @@
     async function mountGoogleRevoke() {
       let k;
       try { const r = await fetch('/cia/public_keys'); if (!r.ok) return; k = await r.json(); }
-      catch { return; }   // IdP 의 공개 키를 못 읽으면 Google 줄 없이 둔다(데모 폼은 그대로)
+      catch { return; }   // zkIdP 의 공개 키를 못 읽으면 Google 줄 없이 둔다(데모 폼은 그대로)
       if (!k?.oidc?.enabled) return;
       googleOidc = k.oidc;
       if (!window.Mode3Gsi) googleNote = { kind: 'unavailable', detail: '/common/gsi.js' };

@@ -26,7 +26,7 @@
 <body data-page="rp">
   <header id="demoBar"></header>
   <div id="pendingBanner" class="pending-banner" hidden>
-    <strong data-i18n="rp_pending_banner">서비스 준비 중 — IdP 승인 대기</strong>
+    <strong data-i18n="rp_pending_banner">서비스 준비 중 — zkIdP 승인 대기</strong>
   </div>
 
   <!-- 2026-11-17(사용자 요청): 세션이 끝나면(만료·로그아웃·폐기·닫힌 로그인) 맨 위에 알리고, "세션 복구" 로 새 zkIdP 로그인을 연다(실제로는 새 세션).
@@ -81,7 +81,7 @@
       <!-- 로그아웃 상태: 로그인 카드(조건 문구·체크박스·결과) — 실제 로그인 버튼은 상단 내비의 #loginBtn 이다. -->
       <div id="assetsLoggedOut" class="login-card">
         <h2 data-i18n="rp_login_title">로그인</h2>
-        <p class="desc" data-i18n="rp_login_desc">zkIdP 계정으로 로그인합니다. 이 거래소는 회원이 누구인지 모르고, zkIdP 는 회원이 어디에 로그인하는지 모릅니다.</p>
+        <p class="desc" data-i18n="rp_login_desc">"zkIdP 로 로그인" 하면 이 거래소는 회원이 누구인지 모르고, zkIdP 는 회원이 어디에 로그인하는지 모릅니다.</p>
         <!-- 2026-11-05: 처음 온 사람의 길 — zkIdP 가입·지갑 등록으로 가는 링크(주소는 rp_info.ciaUrl 로 채운다). -->
         <!-- 2026-11-11(사용자 결정): "zkIdP 계정이 없으면 … zkIdP 가입·스냅 등록" 안내 줄은 뺐다 -->
         <p class="login-policy" id="loginPolicy">만 19세 이상, 허용 국가(KR·JP·US·DE·FR)만 이용할 수 있습니다</p>
@@ -95,16 +95,12 @@
       <div id="assetsLoggedIn" hidden>
         <!-- 2026-11-14 의 닫힌 zkIdP 로그인 안내(#staleNotice)는 2026-11-17 맨 위 상단 바(#sessionBar)로 합쳤다. -->
         <h2 data-i18n="assets_title">내 자산</h2>
-        <dl class="kv account-kv">
+        <dl class="kv account-kv" id="accountKv">
           <dt data-i18n="rp_my_account_addr">내 계정 주소</dt><dd><code id="accountPPID">-</code> <button type="button" id="copyPpidBtn" class="copy-btn" title="복사" aria-label="복사" data-i18n-title="rp_copy_btn_title">⧉</button></dd>
           <!-- 2026-11-09 Phase 1: zkIdP ID 토큰의 name 클레임으로 받은 속성 커밋먼트(C_attr) — 이 RP 가 이 계정에 고정한 값. 없으면 "없음". -->
         </dl>
         <!-- 2026-11-15(시연자 화면 리뷰): zkIdP 로 로그인하며 무엇을 증명했는지 한 줄(renderAccountView) — "로그인 성공" 카드는 로그인 카드와 함께 숨어, 로그인 뒤에는 조건을 값 없이 증명했다는 사실이 화면에 남지 않았다. -->
         <p id="loginProof" class="login-proof" hidden></p>
-        <!-- 2026-11-19(스펙 oidc-comparison C8): 이 로그인에서 zkIdP 가 이 서비스에 알려 준 사용자 식별자 — 일반 OIDC 는 uid, zk-Delegation 은 auid_s(와 PPID). -->
-        <div id="seenBox" class="login-proof" hidden><strong id="seenTitle" data-i18n="rp_seen_title">zkIdP 가 이 서비스에 알려 준 사용자 식별자</strong><div id="seenBody"></div>
-          <!-- 2026-11-19(데모 시나리오 7): 이 서비스가 이 로그인에서 받은 것·검증한 것·알 수 없는 것(기존 OIDC 면 알게 되는 것)의 그림 -->
-          <details id="seenFigure" open><summary data-i18n="flow_rp_title">이 서비스가 받은 것과 검증한 것</summary><div id="seenFigureBody"></div></details></div>
         <!-- 2026-11-05(B안): 잔액은 0 에서 시작한다. KRW 는 RP 의 시연용 장부, ETH 는 세션 계정의 실제 체인 잔액(로그인·입금·구매·출금 뒤 RP 에 다시 묻는다). BTC 는 체인에 없어 뺐다. -->
         <ul class="balance-list">
           <li data-asset="KRW"><span class="bal-label">KRW</span><strong class="bal-amt">0</strong></li>
@@ -154,6 +150,12 @@
       </div>
     </aside>
 
+    <!-- 2026-11-19(스펙 oidc-comparison C8): 이 로그인에서 발급자(zkIdP·Google)가 이 서비스에 알려 준 사용자 식별자 — 일반 OIDC 는 uid, zk-Delegation 은 auid_s(와 PPID).
+         같은 날 화면 셀프 리뷰: 오른쪽 좁은 "내 자산" 칸 안에 있어 읽기 어려웠다 — 시세표 아래의 넓은 카드로 옮겼다(그림이 가로로 펴진다). -->
+    <section id="seenBox" class="card seen-panel" hidden><h2 id="seenTitle" data-i18n="rp_seen_title">zkIdP 가 이 서비스에 알려 준 사용자 식별자</h2><div id="seenBody" class="seen-body"></div>
+      <!-- 2026-11-19(데모 시나리오 7): 이 서비스가 이 로그인에서 받은 것·검증한 것·알 수 없는 것(기존 OIDC 면 알게 되는 것)의 그림 -->
+      <details id="seenFigure" open><summary data-i18n="flow_rp_title">이 서비스가 받은 것과 검증한 것</summary><div id="seenFigureBody"></div></details></section>
+
     <!-- 2026-11-10(스펙 rp-social-logins §4): 이 RP 계정의 로그인 수단 세 칸 — RP 마다 따로다(zkONE 의 연결은 zkTWO 와 무관). -->
     <section id="account" class="card account-panel" hidden>
       <h2 data-i18n="rp_account_title">내 계정</h2>
@@ -188,8 +190,8 @@
   </main>
 
   <!-- 로그인 모달(2026-10-15) — 상단 #loginBtn 은 이 창을 열기만 한다. 직접 로그인(아이디/비밀번호)은 장식이고,
-       2026-11-09: Google·네이버는 IdP 가 켰으면 같은 zk 로그인을 연다(zkIdP 계정에 연결한 계정으로 인증 창에서 본인 확인), 아니면 안내문만. 실제 zk-Delegation 로그인은 #idpLoginBtn 이 한다.
-       예외(2026-10-16 OIDC 래퍼): IdP 가 Google 을 켰고 브라우저 모드면 Google 버튼도 같은 zk 로그인을 연다(data-oidc="1"). -->
+       2026-11-09: Google·네이버는 zkIdP 가 켰으면 같은 zk 로그인을 연다(zkIdP 계정에 연결한 계정으로 인증 창에서 본인 확인), 아니면 안내문만. 실제 zk-Delegation 로그인은 #idpLoginBtn 이 한다.
+       예외(2026-10-16 OIDC 래퍼): zkIdP 가 Google 을 켰고 브라우저 모드면 Google 버튼도 같은 zk 로그인을 연다(data-oidc="1"). -->
   <div id="loginModal" class="modal-backdrop" hidden>
     <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="loginModalTitle">
       <div class="modal-head">
@@ -415,6 +417,9 @@
       $('accountPPID').textContent = shown;
       $('accountPPID').title = lastAccount ?? lastPPID ?? ''; $('accountAddr').title = lastAccount ?? lastPPID ?? '';
       $('copyPpidBtn').hidden = !(lastAccount || lastPPID);   // 복사할 값이 있을 때만 보인다
+      // 2026-11-19(화면 셀프 리뷰): Google·일반 OIDC 로그인에는 PPID 계정 주소가 없다 — "-" 만 남던 줄과 상단 배지의 주소·복사 버튼을 숨긴다.
+      const hasAddr = Boolean(lastAccount || lastPPID);
+      $('accountKv').hidden = !hasAddr; $('accountAddr').hidden = !hasAddr; $('copyPpidNavBtn').hidden = !hasAddr;
       // 닫힌 로그인(sessionStale)이면 "내 계정"(연결 수단) 카드는 보이지 않는다 — 쿠키 세션이 없어 "연결 안 됨"·버튼 없음으로만 그려진다. 대신 내 자산 위에 안내를 보인다.
       // 2026-11-16(사용자 결정): "내 계정" 상자(로그인 수단 연결·해제)와 상단 메뉴는 화면에서 뺐다 — 늘 숨긴다. 연결 기능의 코드·API 는 그대로 있다.
       $('navAccount').hidden = true; $('account').hidden = true;
@@ -564,7 +569,7 @@
       } catch { /* RP 서버를 못 읽으면 그대로 둔다 */ } finally { aliveChecking = false; }
     }
     setInterval(checkSessionAlive, 2000);
-    // 닫힌 zkIdP 로그인(2026-11-14 화면 리뷰 3차): IdP 가 폐기를 게시해 root 가 바뀌면 서버는 r_s 세션의 요청을 재검증 전까지 받지 않고(revalidate_required) 그 쿠키 세션도
+    // 닫힌 zkIdP 로그인(2026-11-14 화면 리뷰 3차): zkIdP 가 폐기를 게시해 root 가 바뀌면 서버는 r_s 세션의 요청을 재검증 전까지 받지 않고(revalidate_required) 그 쿠키 세션도
     // 닫는다(zkidCookieAlive). 그런데 r_s 세션은 목록(/api/mode3/sessions)에 남아 위 대조를 지나므로, 상단은 로그인 상태인데 "내 계정" 은 "연결 안 됨"·버튼 없음으로 남았다.
     // 재검증 화면은 없으므로(11-11) 다시 로그인하게 안내한다 — /api/rp/me 가 401 이면 "닫힌 로그인" 으로 표시하고(sessionStale) 내 자산 위에 안내와 "로그아웃하고 다시 로그인" 을 보인다.
     // 화면을 로그아웃 상태로 바꾸지는 않는다: 시연 Race (2)는 세션을 폐기한 직후의 출금 결과를 이 화면에 보여 주는데, 자동 로그아웃은 그 결과 카드를 지웠다(같은 날 MetaMask 점검 중 확인).
@@ -646,6 +651,7 @@
     }
     async function loadInfo() {
       info = await (await fetch('/api/mode3/rp_info')).json();
+      if (rpMe?.seen) renderSeen();   // 그림의 서비스 이름은 info.name 이다 — 일반 OIDC 로 돌아온 길은 /api/rp/me 가 먼저 와 'RP' 로 그려졌다(2026-11-19 화면 셀프 리뷰)
       $('zkoidcLoginBtn').hidden = !info?.social?.zkoidc?.enabled;
       document.documentElement.dataset.googleRelay = info?.social?.google?.enabled && info.social.google.redirectUri ? '1' : '0';
       renderBrand();
@@ -800,7 +806,7 @@
       note.hidden = false;
     }
     function onLoginModalKeydown(ev) { if (ev.key === 'Escape') closeLoginModal(); }
-    /** Google 버튼이 실제 로그인을 여는가(스펙 2026-10-16 §3.2·§8) — IdP 가 Google 을 켰고(rp_info.oidc) 사용자가 브라우저 모드일 때만.
+    /** Google 버튼이 실제 로그인을 여는가(스펙 2026-10-16 §3.2·§8) — zkIdP 가 Google 을 켰고(rp_info.oidc) 사용자가 브라우저 모드일 때만.
      *  Snap·에이전트 모드에는 Google 등록이 없다. */
     function openLoginModal() {
       $('loginModal').hidden = false;
@@ -817,7 +823,7 @@
     }
     $('loginModalClose').addEventListener('click', closeLoginModal);
     $('loginModal').addEventListener('click', (ev) => { if (ev.target === $('loginModal')) closeLoginModal(); });
-    $('directLoginBtn').addEventListener('click', () => showModalNote('rp_direct_login_note', '데모에서는 IdP 로그인만 동작합니다'));
+    $('directLoginBtn').addEventListener('click', () => showModalNote('rp_direct_login_note', '데모에서는 zkIdP 로그인만 동작합니다'));
     // Google(2026-11-11 사용자 결정 — OIDC 래퍼): 같은 zk 로그인을 provider:'google' 로 연다. 스냅 팝업이 Google 토큰을 받아 zkIdP 와 같은 발급·증명을
     // 탄다(미등록 스냅이면 Google 로 등록부터). 네이버(2026-11-10 스펙 rp-social-logins)는 그대로 RP 가 직접 받는다. RP 직접 Google 은 내 계정의 "연결"에만 남는다.
     /** 소셜 로그인은 로그인 전체를 바꾼다(2026-11-11 사용자 지적) — 남아 있던 zkIdP 세션(r_s)을 RP 에서도 끝내고 화면·저장소에서 지운다.
@@ -978,7 +984,7 @@
         log(`2. 스냅 π+σ ${ms(t0)} (동기화 ${tm.syncMs} ms, 발급 ${tm.issueMs} ms, 증명 ${tm.proveMs} ms, 캐시 히트=${wb.cacheHit}, 새 발급=${wb.issued})\n   root=${wb.root}`);
 
         t0 = Date.now();
-        // id_token(2026-11-09 Phase 1): 지갑이 IdP 발급 응답에서 그대로 넘긴 zkIdP ID 토큰 — RP 가 검증하고 name(속성 커밋먼트)을 계정에 고정한다. 없으면 null.
+        // id_token(2026-11-09 Phase 1): 지갑이 zkIdP 발급 응답에서 그대로 넘긴 zkIdP ID 토큰 — RP 가 검증하고 name(속성 커밋먼트)을 계정에 고정한다. 없으면 null.
         const r = await post('/api/mode3/login', { proof: wb.proof, publicSignals: wb.publicSignals, sig: wb.sig, r_s, require: pred?.require ?? null, id_token: wb.id_token ?? null, ...(opts.link ? { link: true } : {}) });   // link(2026-11-10): 이 PPID 를 지금 쿠키 세션 계정에 붙인다
         const rb = await r.json();
         log(`3. RP 검증 ${ms(t0)}: ${JSON.stringify(rb)}\n   allowAgent=${rb.allowAgent}`);
@@ -1173,7 +1179,7 @@
     });
 
     // 로그아웃(2026-10-16): RP 서버의 세션을 지우고(POST /api/mode3/logout) 화면 상태를 비운다. 지갑은 다음 상태 새로고침(2초)에 이 RP 에 물어 그 세션을 목록에서 뺀다.
-    // (U5 때는 화면만 지웠다 — 세션이 RP·지갑에 남아 혼란스러웠다.) IdP 폐기 트리는 건드리지 않는다.
+    // (U5 때는 화면만 지웠다 — 세션이 RP·지갑에 남아 혼란스러웠다.) zkIdP 폐기 트리는 건드리지 않는다.
     $('cardLoginBtn').addEventListener('click', () => $('loginBtn').click());   // 로그인 카드 안의 버튼 = 상단 버튼(2026-11-05)
     $('logoutBtn').addEventListener('click', async () => {
       const r_s = currentSession; rpMe = null; setSession(null); sessionEndedReason = null; renderSessionBar();

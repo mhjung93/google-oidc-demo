@@ -221,6 +221,10 @@ try {
     assert.equal(fig.n, 1); assert.equal(fig.ppid, zkSeen.PPID); assert.equal(fig.arid, String(rpInfo.arid));
     assert.ok(fig.checks.length >= 6 && fig.checks.some((x) => x.includes('폐기')) && fig.checks.some((x) => x.includes('ID 토큰')), j(fig.checks));
     assert.ok(fig.unknown.some((x) => x.includes('uid')), j(fig.unknown)); assert.equal(/\bflow_[a-z0-9_]+\b/.test(fig.all), false, '사전에 없는 키가 그대로 보인다');
+    // 2026-11-19(화면 셀프 리뷰): "알려 준 것" 은 오른쪽 좁은 칸이 아니라 시세표 아래의 넓은 카드다 — 그림이 가로 세 칸으로 펴진다
+    const box = await rpPage.evaluate(() => ({ w: document.getElementById('seenBox').getBoundingClientRect().width, inAssets: Boolean(document.getElementById('seenBox').closest('#assets')), cols: getComputedStyle(document.querySelector('#seenFigureBody .flow-fig')).gridTemplateColumns.split(' ').length,
+      below: document.getElementById('seenBox').getBoundingClientRect().top >= document.getElementById('market').getBoundingClientRect().bottom, overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth }));
+    assert.ok(box.w >= 600 && !box.inAssets && box.below, j(box)); assert.equal(box.cols, 3, j(box)); assert.ok(box.overflow <= 1, j(box));
     await shot(rpPage, '#seenBox', 'rp_seen_zk');
   });
 
@@ -250,7 +254,7 @@ try {
     await rpPage.waitForURL((x) => x.origin === cia.base && x.pathname === '/oidc/authorize', { timeout: 30_000 });
     await rpPage.waitForSelector('#oidcConsent:not([hidden])', { timeout: 15_000 });   // zkIdP 에 이미 로그인돼 있다(앞 케이스의 비밀번호 로그인)
     assert.ok((await text(rpPage, '#oidcClient')).includes(rpInfo.name), await text(rpPage, '#oidcClient'));
-    assert.equal((await text(rpPage, '#oidcRid')).trim(), String(rpInfo.arid)); assert.ok((await text(rpPage, '#oidcUid')).includes(acct0.uid));
+    assert.equal(await rpPage.$eval('#oidcRid', (e) => e.title), String(rpInfo.arid)); assert.ok((await text(rpPage, '#oidcRid')).length <= 24, 'rid 는 줄여 보인다(전체는 title)'); assert.ok((await text(rpPage, '#oidcUid')).includes(acct0.uid));
     await shot(rpPage, '#oidcCard', 'idp_oidc_consent');
     await rpPage.click('#oidcContinueBtn');
     await rpPage.waitForURL((x) => x.origin === rp.base && x.pathname === '/', { timeout: 30_000 });
@@ -265,6 +269,9 @@ try {
     // 기존 OIDC 의 그림: 받은 것은 ID 토큰(sub = uid·aud = rid), "알게 되는 것" 에 uid 가 있다
     const fig = await rpPage.evaluate(() => ({ sub: document.querySelector('#seenFigureBody [data-flow="sub"]')?.title, aud: document.querySelector('#seenFigureBody [data-flow="aud"]')?.title, learn: [...document.querySelectorAll('#seenFigureBody .flow-learn li')].map((x) => x.textContent), unknown: document.querySelectorAll('#seenFigureBody .flow-unknown li').length }));
     assert.equal(fig.sub, acct0.uid); assert.equal(fig.aud, String(rpInfo.arid)); assert.ok(fig.learn.some((x) => x.includes('uid')), j(fig.learn)); assert.equal(fig.unknown, 0);
+    // 2026-11-19(화면 셀프 리뷰): 그림의 받는 쪽 이름은 서비스 이름이고('RP' 가 아니다), OIDC 로그인에는 PPID 계정 주소 줄·상단 배지의 주소가 없다
+    await rpPage.waitForFunction((n) => document.querySelector('#seenFigureBody .flow-to strong')?.textContent === n, rpInfo.name, { timeout: 10_000 });
+    assert.deepEqual(await rpPage.evaluate(() => [document.getElementById('accountKv').hidden, document.getElementById('accountAddr').hidden, document.getElementById('copyPpidNavBtn').hidden]), [true, true, true]);
     await shot(rpPage, '#seenBox', 'rp_seen_plain_oidc');
   });
 
@@ -275,18 +282,27 @@ try {
       await p.waitForSelector('#adminGate:not([hidden])');
       await p.fill('#adminGate .gate-pwd', cia.adminSecret); await p.click('#adminGate .gate-form button[type=submit]');
       await p.waitForSelector('#auidMap td[data-seen="oidc"]', { timeout: 20_000 });
-      const row = await p.evaluate(() => { const tr = [...document.querySelectorAll('#auidMap tbody tr')].find((r) => r.textContent.includes('pk-proof')); return { oidc: tr.querySelector('td[data-seen="oidc"]').textContent, zk: tr.querySelector('td[data-seen="zk"]').textContent, zkFull: tr.querySelector('td[data-seen="zk"] code').title }; });
-      assert.ok(row.oidc.includes(rpInfo.name) && row.oidc.includes(`rid ${rpInfo.arid}`), row.oidc);
+      const row = await p.evaluate(() => { const tr = [...document.querySelectorAll('#auidMap tbody tr')].find((r) => r.textContent.includes('pk-proof')); return { oidc: tr.querySelector('td[data-seen="oidc"]').textContent, oidcFull: tr.querySelector('td[data-seen="oidc"] code').title, zk: tr.querySelector('td[data-seen="zk"]').textContent, zkFull: tr.querySelector('td[data-seen="zk"] code').title }; });
+      assert.ok(row.oidc.includes(rpInfo.name) && row.oidc.includes('rid '), row.oidc); assert.equal(row.oidcFull, String(rpInfo.arid), 'rid 는 줄여 보이고 전체는 title 에 있다');
       assert.ok(row.zk.includes('arid_s') && row.zk.includes('어느 서비스인지 모름'), row.zk); assert.equal(row.zkFull, zkSeen.arid_s);
       assert.equal(row.zk.includes(rpInfo.name), false, 'zk 쪽에는 서비스 이름이 없다');
       // 데모 시나리오 6(2026-11-19): 그 줄의 "그림" — zkIdP 가 가장 최근 발급에서 받은 것·검증한 것·알 수 없는 것
       const uid = (await idpAccount()).uid;
+      assert.equal(await p.$$eval('#auidMap button[data-figure-uid]', (l) => l.length), 1, '"그림" 버튼은 로그인(발급)한 계정에만 있다');
       await p.click(`#auidMap button[data-figure-uid="${uid}"]`); await p.waitForSelector('#issueFigure:not([hidden]) .flow-fig');
       const fig = await p.evaluate(() => ({ auid_s: document.querySelector('#issueFigureBody [data-flow="auid_s"]')?.title, arid_s: document.querySelector('#issueFigureBody [data-flow="arid_s"]')?.title, uid: document.querySelector('#issueFigureBody [data-flow="uid"]')?.title,
         checks: [...document.querySelectorAll('#issueFigureBody .flow-check li')].map((x) => x.textContent), unknown: [...document.querySelectorAll('#issueFigureBody .flow-unknown li')].map((x) => x.textContent), all: document.getElementById('issueFigure').textContent }));
       assert.equal(fig.uid, uid); assert.equal(fig.auid_s, zkSeen.auid_s); assert.equal(fig.arid_s, zkSeen.arid_s);
       assert.ok(fig.checks.some((x) => x.includes('π_IdP')) && fig.unknown.some((x) => x.includes('어느 서비스')), j([fig.checks, fig.unknown]));
       await shot(p, '#issueFigure', 'idp_issue_figure'); await shot(p, '#auidMap', 'idp_auid_table');
+      // 2026-11-19(화면 셀프 리뷰): "본 서비스" 두 열이 생긴 뒤에도 표가 카드·화면 밖으로 넘치지 않는다
+      const fit = await p.evaluate(() => { const t = document.querySelector('#auidMap table').getBoundingClientRect(), c = document.getElementById('auidMap').closest('.card').getBoundingClientRect(); return { page: document.documentElement.scrollWidth - document.documentElement.clientWidth, table: t.right - c.right }; });
+      assert.ok(fit.page <= 1 && fit.table <= 1, `표가 넘친다: ${j(fit)}`);
+      // 개봉 요청 표(스펙 trace-without-tag T10): 서비스가 낸 auid_s 가 보인다 — 앞 케이스에서 승인한 요청
+      await p.click('#openingsBtn');
+      await p.waitForSelector('#openings td[data-open="auid_s"] code', { timeout: 15_000 });
+      assert.equal(await p.$eval('#openings td[data-open="auid_s"] code', (x) => x.title), zkSeen.auid_s);
+      assert.ok((await p.$eval('#openings table', (x) => x.textContent)).includes('서비스가 낸 auid_s'));
       assert.equal(fig.all.includes(rpInfo.name), false, 'zkIdP 의 그림에 서비스 이름이 없다'); assert.equal(/\bflow_[a-z0-9_]+\b/.test(fig.all), false, '사전에 없는 키가 그대로 보인다');
     } finally { await p.close(); }
   });

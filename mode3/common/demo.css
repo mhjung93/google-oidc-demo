@@ -87,7 +87,7 @@ body.admin-locked main > :not(#adminGate), body.admin-locked .section-menu { dis
 .seq-row { cursor:pointer; list-style:none } .seq-row::-webkit-details-marker { display:none }
 .seq-box { position:relative; min-width:0; padding:5px 9px 6px; border-radius:8px; background:var(--card, #fff); display:flex; flex-direction:column; gap:1px }
 .seq-box.seq-self { border:1px solid var(--line, #cbd5e1) }
-.seq-box.seq-right, .seq-box.seq-left, .seq-box.seq-both { border-bottom:2px solid var(--accent, #2563eb); border-radius:8px 8px 0 0; margin:0 12%; background:color-mix(in srgb, var(--accent, #2563eb) 7%, var(--card, #fff)) }
+.seq-box.seq-right, .seq-box.seq-left, .seq-box.seq-both { border-bottom:2px solid var(--accent, #2563eb); border-radius:8px 8px 0 0; background:color-mix(in srgb, var(--accent, #2563eb) 7%, var(--card, #fff)) }
 .seq-box.seq-right::after, .seq-box.seq-both::after { content:'▶'; position:absolute; right:-3px; bottom:-8px; font-size:11px; line-height:1; color:var(--accent, #2563eb) }
 .seq-box.seq-left::before, .seq-box.seq-both::before { content:'◀'; position:absolute; left:-3px; bottom:-8px; font-size:11px; line-height:1; color:var(--accent, #2563eb) }
 .seq-line { display:flex; align-items:baseline; gap:6px; min-width:0 } .seq-title { font-weight:600; flex:1; min-width:0; overflow-wrap:anywhere }

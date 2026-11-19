@@ -160,6 +160,15 @@ try {
     assert.deepEqual(await userPage.$$eval('#flowFigure .seq-lane strong', (l) => l.map((x) => x.textContent)), ['서비스', 'zk 클라이언트', 'zkIdP']);
     assert.equal(await userPage.$eval('#flowFigure .seq-step[data-step="issue"]', (x) => x.dataset.kind), 'arrow');
     assert.equal(await userPage.$eval('#flowFigure .seq-step[data-step="commit"]', (x) => x.dataset.kind), 'self');
+    // 화살표는 보내는 쪽 세로선(줄의 가운데)에서 받는 쪽 세로선까지다(2026-11-19 화면 셀프 리뷰)
+    const geo = await userPage.evaluate(() => {
+      const mid = (k) => { const r = document.querySelector(`#flowFigure .seq-lane[data-lane="${k}"]`).getBoundingClientRect(); return r.left + r.width / 2; };
+      const ends = (k) => { const r = document.querySelector(`#flowFigure .seq-step[data-step="${k}"] .seq-box`).getBoundingClientRect(); return [r.left, r.right]; };
+      return { rp: mid('rp'), user: mid('user'), idp: mid('idp'), request: ends('request'), issue: ends('issue'), respond: ends('respond') };
+    });
+    const near = (a, b) => Math.abs(a - b) <= 3;
+    assert.ok(near(geo.request[0], geo.rp) && near(geo.request[1], geo.user) && near(geo.respond[0], geo.rp) && near(geo.respond[1], geo.user), j(geo));
+    assert.ok(near(geo.issue[0], geo.user) && near(geo.issue[1], geo.idp), j(geo));
     await userPage.click('#flowFigure .seq-step[data-step="pseudonym"] summary');
     await waitText(userPage, '#flowFigure .seq-step[data-step="pseudonym"] .seq-body', 'zkIdP 는 arid_s 만 보므로');
     assert.equal(await userPage.$$eval('#flowFigure .seq-step[data-step="pseudonym"] .flow-items dt', (l) => l.length), 0, '값이 없다');

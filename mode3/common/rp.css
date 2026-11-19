@@ -50,12 +50,16 @@ body { background: var(--bg); }
   .compliance-panel { grid-column: 1 / -1; }
   /* 2026-11-14(화면 리뷰 3차): 오른쪽 열(내 자산)이 두 줄에 걸쳐 서고 남는 높이는 둘째 줄이 가져간다 — "내 계정" 카드가 시세표 바로 아래에 붙는다
      (그전에는 첫 줄이 긴 오른쪽 열 높이만큼 늘어나 두 카드 사이가 크게 비었다). */
-  .exchange-main { grid-template-rows: auto 1fr; }
-  .card.market-panel { grid-column: 1; grid-row: 1; }
-  .card.assets-panel { grid-column: 2; grid-row: 1 / span 2; }
-  .card.account-panel { grid-column: 1; grid-row: 2; }
+  /* 2026-11-19(화면 셀프 리뷰): 왼쪽 열에 "알려 준 것" 카드(.seen-panel)가 더해졌다 — 왼쪽 열의 카드는 문서 순서대로 줄을 잡고(숨은 카드는 줄을 차지하지 않는다),
+     오른쪽 열은 세 줄에 걸친다. 남는 높이는 마지막 줄이 가져간다. */
+  .exchange-main { grid-template-rows: auto auto 1fr; }
+  .card.market-panel, .card.seen-panel, .card.account-panel { grid-column: 1; }
+  .card.assets-panel { grid-column: 2; grid-row: 1 / span 3; }
 }
-.card.market-panel, .card.assets-panel, .card.compliance-panel { min-width: 0; }
+.card.market-panel, .card.assets-panel, .card.compliance-panel, .card.seen-panel { min-width: 0; }
+/* "알려 준 것" 카드(2026-11-19): sub·aud 줄은 크게, 설명·토큰 본문·그림은 그 아래 */
+.seen-panel .seen-body { font-size: 14px; line-height: 1.7; } .seen-panel .seen-body code { font-size: 14px; font-weight: 600; }
+.seen-panel details { margin-top: 10px; font-size: 13px; } .seen-panel pre { max-height: 260px; overflow: auto; }
 .card h2 { margin: 0 0 14px; font-size: 18px; color: var(--navy-ink); font-weight: 800; }
 .compliance-panel > h2 { margin-bottom: 6px; }
 .compliance-block { padding-top: 16px; margin-top: 16px; border-top: 1px solid var(--line); }

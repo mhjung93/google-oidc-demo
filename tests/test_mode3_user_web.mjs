@@ -223,7 +223,7 @@ try {
     await userPage.waitForFunction(() => (document.querySelector('#regBadge')?.textContent ?? '').includes('미등록'), undefined, { timeout: 10_000 });
     assert.deepEqual(await idbDump(userPage), {});
     await userPage.click('#registerBtn');
-    await waitText(userPage, '#registerResult', 'IdP 등록에 실패했습니다', 60_000);   // register_failed 제목
+    await waitText(userPage, '#registerResult', 'zkIdP 등록에 실패했습니다', 60_000);   // register_failed 제목
   });
   await t('B8 데모 세대(2026-10-21): 사용자 페이지 서버를 새 MODE3_DEMO_GENERATION 으로 다시 띄우면 처음 본 번호는 기억만 하고, 다음 번호에서 옛 등록·세션을 스스로 지우고 알린다', async () => {
     await stack.restartWallet({ MODE3_DEMO_GENERATION: 'gen-1' });
