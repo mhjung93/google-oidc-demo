@@ -529,7 +529,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     await vault.writeSecrets({ s_u: PK ? null : reg.s_u.toString(), seed: PK ? null : (reg.seed ?? null), blind_u: null, sessionKeys: {} });
     const savedProvider = r.body.provider ?? providerName;
     await kv.set('registration', { uid, auid: reg.auid.toString(), slot: r.body.slot, provider: savedProvider, profile: normalized, attrs, userCred: null });
-    await putSessions({});
+    await putSessions({}); await kv.del('loginFlow');   // 앞 등록의 "가장 최근 로그인" 기록(다른 uid·PPID)을 남기지 않는다
     const body = { uid, slot: r.body.slot, auid: reg.auid.toString(), attrs, profile: normalized, ...(extraBody ? extraBody(r.body) : {}) };
     // provider 는 OIDC 경로의 응답에만 싣는다 — 데모 register 의 응답 키는 그대로 둔다(데모 쪽은 status().provider 로 본다).
     return R(201, 'id_token' in auth ? { ...body, provider: savedProvider } : body);
@@ -948,7 +948,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       lastSync = syncSnapshot(synced);
       await pruneSessions(synced.head);
       if (!(await getSessions())[rsKey]) return R(409, { reason: 'session_expired', timings });   // π 캐시는 바로 위 pruneSessions 가 레코드와 함께 지웠다
-      // 2026-10-22: 거래 π 는 counter = nonce 를 공개 입력으로 싣는다(컨트랙트가 pub[33]==payload.nonce 를 검사한다) — proveSession
+      // 2026-10-22: 거래 π 는 counter = nonce 를 공개 입력으로 싣는다(컨트랙트가 pub[28]==payload.nonce 를 검사한다) — proveSession
       // 보다 먼저 지갑 주소·nonce 를 읽어야 한다(에이전트 buildExecute 와 같은 순서).
       const walletAddr = await chain.factory(s.factoryAddress).computeAddress(BigInt(s.PPID));
       // 아직 배포 전이면 nonce 는 0(uint256 기본값) — 릴레이가 배포 트랜잭션을 먼저 보낸 뒤 execute 가 이 nonce 로 들어간다
@@ -1145,7 +1145,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       const auid = await auidOf({ s_u });
       await vault.writeSecrets({ s_u: s_u.toString(), seed: seedHex, blind_u: null, sessionKeys: {} });
       await kv.set('registration', { uid, auid: auid.toString(), slot: r0.body.slot, provider: 'demo', profile: normalized, attrs, userCred: null });
-      await putSessions({}); lastSync = null; lastRegistry = null;
+      await putSessions({}); await kv.del('loginFlow'); lastSync = null; lastRegistry = null;
       return R(200, { uid, slot: r0.body.slot, auid: auid.toString(), format: seedHex ? 'seed' : 'raw' });
     },
     async wipe({ keepPasskey = true } = {}) {
@@ -1275,15 +1275,17 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     if (saltDepth === 0) scopeDerive = null;   // 범위 밖의 로그인: 앞선 동작의 패스키 시간을 이 로그인의 것으로 세지 않는다
     let r;
     try { r = await loginRun(body, opts); } finally { if (flowRec === flow) flowRec = null; }
-    if (r?.status === 200) {
+    // 시연용 변조(fake_sig·fake_proof)를 건 로그인은 코어에서는 200 이지만 서비스가 거절한다 — "성공한 로그인" 으로 남기지 않는다(F1, 리뷰 M-6).
+    if (r?.status === 200 && !r.body?.demo) {
       try {
-        const s = (await getSessions())[String(body.r_s)] ?? null;
+        let rsKey = String(body.r_s); try { rsKey = BigInt(body.r_s).toString(); } catch { /* 형식 검사는 login 이 했다 */ }   // 세션은 정규형(앞자리 0 없는 10진)으로 저장된다(리뷰 M-7)
+        const s = (await getSessions())[rsKey] ?? null;
         const reg = await getReg();
         await kv.set('loginFlow', {
           at: now(), arid: String(body.arid), origin: body.origin ?? null, serviceName: s?.serviceName ?? null,
           totalMs: Math.round((tick() - flow.t0) * 1000) / 1000, steps: flow.steps,
           values: {
-            r_s: String(body.r_s), r_rp: String(body.r_rp), uid: reg ? String(reg.uid) : null, pk_i: s?.pk_i ?? null, auid_s: s?.auid_s ?? null, arid_s: s?.arid_s ?? null,
+            r_s: rsKey, r_rp: String(body.r_rp), uid: reg ? String(reg.uid) : null, pk_i: s?.pk_i ?? null, auid_s: s?.auid_s ?? null, arid_s: s?.arid_s ?? null,
             Cf_u: s?.credential?.Cf_u ?? null, Cf_s: s?.credential?.Cf_s ?? null, max_height: s?.credential?.max_height != null ? String(s.credential.max_height) : null,
             PPID: s?.PPID ?? null, revRoot: r.body.root ?? null, regRoot: r.body.regRoot ?? null, hasIdToken: typeof r.body.id_token === 'string',
           },

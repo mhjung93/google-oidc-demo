@@ -120,6 +120,13 @@ t('2026-11-12(사용자 결정 — D1 수정): 계정의 lastAuidS(최신 auid_s
   assert.equal(open({}).lastAuidS, null, '옛 파일에는 없다 — null 로 채운다');
   for (const bad of ['777', { value: 'x', at: 't' }, { value: '777' }, ['777']]) assert.throws(() => open({ lastAuidS: bad }), /lastAuidS/, JSON.stringify(bad));
 });
+t('2026-11-19(스펙 trace-without-tag T6): 계정의 auidSLog(발급 기록 = [{ value(10진), at }]) 는 그대로 남고, 없으면 만들지 않으며, 모양이 틀리면 throw(기동 거부)', () => {
+  const open = (over) => migrateCiaState({ ...defaultCiaState(), accounts: { '1': { auid: '99', slot: 0, disabled: false, ...over } } }).state.accounts['1'];
+  const log = [{ value: '777', at: '2026-11-19T00:00:00.000Z' }, { value: '778', at: '2026-11-19T00:00:01.000Z' }];
+  assert.deepEqual(open({ auidSLog: log }).auidSLog, log);
+  assert.equal(open({}).auidSLog, undefined, '옛 파일에는 없다 — 그대로 둔다');
+  for (const bad of [{}, '777', [{ value: 'x', at: 't' }], [{ value: '777' }], ['777'], [null]]) assert.throws(() => open({ auidSLog: bad }), /auidSLog/, JSON.stringify(bad));
+});
 // 2026-11-13(스펙 2026-11-12 no-pk-u §5): 등록 키가 없어졌다. 같은 날 뒤(random-salt R14) 12 → 13 이행은 없앴다 — 12·13 은 기동을 거부한다.
 t('v14 에 남은 pk_u(손으로 고친 파일)는 거부하지 않고 지운다; 12·13 은 이행하지 않고 거부한다', () => {
   const s = { ...defaultCiaState(), accounts: { '1': { pk_u: { x: '9', y: '10' }, auid: '77', slot: 0 } } };

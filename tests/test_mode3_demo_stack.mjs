@@ -86,7 +86,7 @@ async function makeAliceAgent() {
     try { disclosure = { ...normalizeDisclosure(disclose, user.attrs), ...(await normalizeSet(set, user.attrs)) }; }
     catch (e) { if (e.reason) return { status: 400, body: { reason: e.reason, detail: e.message } }; throw e; }
     await stack.relayIfBehind();   // V10: 계정 컨트랙트는 거울을 읽는다 — 캐노니컬 최신으로 증명하므로 거울을 먼저 맞춘다
-    // 2026-10-22: 거래 π 는 counter=nonce 를 공개 입력으로 싣는다(컨트랙트가 pub[33]==payload.nonce 를 검사한다) — 증명보다
+    // 2026-10-22: 거래 π 는 counter=nonce 를 공개 입력으로 싣는다(컨트랙트가 pub[28]==payload.nonce 를 검사한다) — 증명보다
     // 먼저 계정 주소·nonce 를 읽는다(mode3_wallet_agent.js buildExecute 와 같은 순서, Task 7).
     const PPID = await ppid({ s_u: user.s_u, arid, chainid: chainId });
     const walletAddr = await factoryAt(factoryAddress, provider).computeAddress(PPID);
@@ -207,7 +207,7 @@ try {
 
   await t('2b. 해시 기반 개봉: RP 가 txHash 로 요청 → 승인 → uid·allowAgent(0)', async () => {
     const r = await rp.post('/api/mode3/open', { txHash: TX1 }, rp.adminHeaders);
-    assert.ok([200, 202].includes(r.status), j(r.body));   // 같은 세션(같은 c1)의 개봉이 9 보다 먼저 여기서 생긴다 → 202. 이미 있으면 200
+    assert.ok([200, 202].includes(r.status), j(r.body));   // 같은 세션(같은 auid_s)의 개봉이 9 보다 먼저 여기서 생긴다 → 202. 이미 있으면 200
     const id = r.body.id;
     assert.equal((await cia.adminPost(`/cia/openings/${id}/approve`)).body.status, 'approved');
     const res = await rp.get(`/api/mode3/open/${id}`, rp.adminHeaders);

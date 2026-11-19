@@ -101,3 +101,14 @@ Android(Google Play 서비스) 또는 iPhone. **미검증**: 실제 휴대폰에
 | Race (2) 결과가 `계정 안 송금이 실패했습니다` | 세션 검사는 통과했는데 내 계정 ETH 가 금액보다 적다 — "ETH 구매" 뒤 다시 로그인해 한 번 더 |
 | 출금 팝업이 5분 넘게 멈춰 있다 | 서비스가 창을 닫고 `timeout` 으로 끝낸다 — 다시 누른다 |
 | 로그인이 `expired` 로 끊긴다 | `TTL_BLOCKS` 가 작다 — 다시 로그인. 다음에는 `TTL_BLOCKS=30` 으로 띄운다 |
+
+### 실제 Google · 일반 OIDC 를 보이기 전에 볼 것(2026-11-19 리뷰)
+
+- **서비스 VM 의 인터넷**: Google 토큰 검증은 서비스 서버(VM .11·.12)가 `https://www.googleapis.com/oauth2/v3/certs` 를 직접 받는다. 각 VM 에서 `curl -sI https://www.googleapis.com/oauth2/v3/certs` 가 200 인지 본다(안 되면 `oidc_unavailable`).
+- **VM 시계**: 토큰의 시각 허용 오차는 60초다. VM 시계가 그보다 어긋나면 로그인이 실패한다.
+- **Google 콘솔**: "승인된 리디렉션 URI" 에 `https://127.0.0.1:5100/google-relay` 를 글자 그대로. 동의 화면이 "테스트" 상태면 시연 계정을 테스트 사용자로 넣는다.
+  서비스마다 다른 클라이언트 ID(`RP1_GOOGLE_CLIENT_ID`·`RP2_GOOGLE_CLIENT_ID`)를 주지 않으면 두 서비스의 aud 가 같게 찍힌다(시작 스크립트가 경고한다).
+- **같은 탭으로 돌아오기**: Google 을 다녀오는 동안 탭을 바꾸지 않는다. 10분 안에 돌아와야 한다.
+- **일반 OIDC(예비)로 보일 때**: zkIdP 관리자 표의 "일반 OIDC 에서 본 서비스" 는 마지막 서비스 하나만 보인다 — zkONE 로그인 뒤 표를 한 번 보이고, zkTWO 로그인 뒤 다시 보인다(rid 가 바뀐 것이 "zkIdP 는 어느 서비스인지 안다" 다).
+  서비스가 승인되기 전에는 "일반 OIDC · 비교용" 버튼이 보이지 않는다.
+

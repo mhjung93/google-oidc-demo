@@ -385,7 +385,8 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       { key: 'idp', name: tt('user_flow_lane_idp') || 'zkIdP', sub: tt('user_flow_lane_idp_sub') }], steps });
     const sum = $('flowSummary');
     sum.dataset.flowAt = f ? String(f.at) : '';
-    sum.textContent = f ? (tt(ms.passkey?.before ? 'user_flow_last_before' : 'user_flow_last', { service: svc, time: new Date(f.at).toLocaleTimeString(locale()), total: fmtMs(f.totalMs), prove: fmtMs((ms.prove_idp?.ms ?? 0) + (ms.prove_session?.ms ?? 0)), passkey: fmtMs(ms.passkey?.ms ?? 0) }) || '')
+    sum.textContent = f ? (tt(ms.passkey?.before ? 'user_flow_last_before' : 'user_flow_last', { service: svc, time: new Date(f.at).toLocaleTimeString(locale()), total: fmtMs(f.totalMs), prove: fmtMs((ms.prove_idp?.ms ?? 0) + (ms.prove_session?.ms ?? 0)), passkey: fmtMs(ms.passkey?.ms ?? 0),
+      other: fmtMs(Math.max(0, f.totalMs - (f.steps ?? []).reduce((a, x) => a + (x.before ? 0 : x.ms), 0))) }) || '')
       : (tt('user_flow_none') || '');
   }
   /** 기록을 다시 읽는다 — 목록을 그린 뒤에 붙은 것(승인 창의 recordTx 가 단 거래 해시)도 보이게. */
@@ -544,7 +545,9 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       const held = left > 0 ? tt('user_pk_held', { min: Math.ceil(left / 60_000) }) : tt('user_pk_not_held');
       // 어디에 있는 패스키인가(스펙 2026-11-19 P3) — 연결할 때 인증기가 알려 준 공개 정보. 정보가 없으면(옛 연결) 줄에 넣지 않는다.
       const pi = pkState.info ?? null;
-      const where = pi?.attachment === 'cross-platform' || (!pi?.attachment && pi?.hint === 'hybrid') ? tt('user_pk_where_cross') : pi?.attachment === 'platform' ? tt('user_pk_where_platform') : null;
+      // 다른 기기(cross-platform)가 모두 휴대폰은 아니다(USB·NFC 보안 키) — QR 연동(hybrid)으로 썼을 때만 휴대폰이라 적는다(리뷰 M-10).
+      const hybrid = pi?.hint === 'hybrid' || Boolean(pi?.transports?.includes('hybrid'));
+      const where = pi?.attachment === 'platform' ? tt('user_pk_where_platform') : hybrid ? tt('user_pk_where_cross') : pi?.attachment === 'cross-platform' ? tt('user_pk_where_key') : null;
       const sync = !pi || pi.backupEligible === null ? null : pi.backedUp ? tt('user_pk_synced') : pi.backupEligible ? tt('user_pk_syncable') : tt('user_pk_device_bound');
       $('pkInfo').dataset.pkWhere = pi?.attachment ?? '';
       $('pkInfo').textContent = [tt('user_pk_credential', { id: `${cid.slice(0, 12)}…` }) || `${cid.slice(0, 12)}…`, where, sync, held].filter(Boolean).join(' · ');
@@ -958,7 +961,8 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       // 패스키를 둘 곳(스펙 2026-11-19 P1·P2): 휴대폰이면 힌트를 싣고, 인증기가 알려 준 공개 정보와 함께 연결에 둔다(다음 확인도 같은 길로 간다).
       const phone = document.querySelector('input[name="pkPlace"]:checked')?.value === 'phone';
       const { credentialId, s_u, info = null } = await get(phone ? { hints: ['hybrid'] } : {});
-      const r = await core.passkeyConnect({ credentialId, s_u, info: { ...(info ?? {}), hint: phone ? 'hybrid' : null } });
+      // 힌트는 고른 곳이 아니라 인증기의 답으로 정한다(리뷰 M-9): "휴대폰" 을 골랐어도 Chrome 창에서 이 기기의 패스키를 썼으면(platform) 다음 확인을 QR 로 보내지 않는다.
+      const r = await core.passkeyConnect({ credentialId, s_u, info: { ...(info ?? {}), hint: phone && info?.attachment !== 'platform' ? 'hybrid' : null } });
       if (r.status === 200) setVerdict($('pkSetupVerdict'), true, 'user_pk_connected');
       else setVerdict($('pkSetupVerdict'), false, 'wallet_setup_passkey_failed', { reason: r.body?.reason ?? `HTTP ${r.status}` });
     } catch (e) {

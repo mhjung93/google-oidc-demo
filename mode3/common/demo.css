@@ -93,11 +93,11 @@ body.admin-locked main > :not(#adminGate), body.admin-locked .section-menu { dis
 .seq-line { display:flex; align-items:baseline; gap:6px; min-width:0 } .seq-title { font-weight:600; flex:1; min-width:0; overflow-wrap:anywhere }
 .seq-n { flex:none; min-width:18px; height:18px; border-radius:9px; background:var(--accent, #2563eb); color:#fff; font-size:11px; text-align:center; line-height:18px }
 .seq-time { flex:none; font-variant-numeric:tabular-nums; font-weight:600; color:var(--accent, #2563eb) }
-.seq-who { display:none } .seq-note { font-size:12px }
+.seq-who { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap } .seq-note { font-size:12px }   /* 넓은 화면: 방향은 화살표가 보이고, 글자는 화면 읽기 프로그램만 읽는다 */
 .seq-bar { display:block; height:3px; border-radius:2px; background:var(--accent, #2563eb); opacity:.55; margin-top:3px }
 .seq-step details[open] .seq-box { box-shadow:0 0 0 2px color-mix(in srgb, var(--accent, #2563eb) 35%, transparent) }
 .seq-body { margin:6px 0 8px; padding:8px 12px; border-left:3px solid var(--accent, #2563eb); background:var(--surface, #f8fafc); border-radius:0 8px 8px 0 }
 .seq-meaning { margin:0 0 4px; line-height:1.55 }
-@container (max-width:640px) { .seq-lanes, .seq-rails { display:none } .seq-row { grid-template-columns:1fr } .seq-box { grid-column:1 / -1 !important; margin:0 !important } .seq-who { display:block } }
+@container (max-width:640px) { .seq-lanes, .seq-rails { display:none } .seq-row { grid-template-columns:1fr } .seq-box { grid-column:1 / -1 !important; margin:0 !important } .seq-who { display:block; position:static; width:auto; height:auto; overflow:visible; clip-path:none; white-space:normal } }
 @container (max-width:640px) { .flow-fig { grid-template-columns:1fr } .flow-node.flow-from { flex-direction:row; gap:8px; align-items:baseline; justify-content:flex-start } }
 @media (max-width:760px) { .flow-fig { grid-template-columns:1fr } }

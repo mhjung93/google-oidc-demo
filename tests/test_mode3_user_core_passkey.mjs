@@ -177,6 +177,7 @@ try {
     assert.equal(f.values.r_s, ch.r_s);
     assert.equal(f.steps.find((x) => x.key === 'passkey').held, false);
     assert.equal(f.steps.find((x) => x.key === 'passkey').before, undefined, '로그인 안에서 물은 패스키는 전체 시간 안이다');
+    assert.ok(f.steps.reduce((a, x) => a + x.ms, 0) <= f.totalMs + 1, `단계 합이 전체를 넘지 않는다: ${j(f.steps.map((x) => x.ms))} / ${f.totalMs}`);
     assert.ok(!f.steps.some((x) => x.key === 'publish_wait'), j(f.steps.map((x) => x.key)));
   });
   // 리뷰 2026-11-19 I-1: 승인 창은 등록(registerWithCode)과 로그인을 한 범위에서 잇는다 — 패스키는 등록 때 물었고 그 시간은 로그인의 totalMs 밖이다.
@@ -186,6 +187,14 @@ try {
     assert.equal(r.status, 200, j(r.body)); assert.equal(v.body.ok, true, j(v.body)); assert.equal(calls - c0, 1, '범위 안에서 패스키는 한 번');
     const pk = (await coreA.loginFlow()).body.flow.steps.find((x) => x.key === 'passkey');
     assert.equal(pk.held, false); assert.equal(pk.before, true, j(pk));
+  });
+  // 리뷰 2026-11-19 M-6: 시연용 변조(가짜 서명)를 건 로그인은 코어에서는 200 이지만 서비스가 거절한다 — "가장 최근 (성공한) 로그인" 기록을 바꾸지 않는다.
+  await t('loginFlow: 시연용 변조(fake_sig)를 건 로그인은 기록하지 않는다 — 앞의 성공한 로그인 기록이 그대로다', async () => {
+    const before = (await coreA.loginFlow()).body.flow;
+    assert.equal((await coreA.demoOverride({ scope: 'fake_sig' })).status, 200);
+    const { r, v } = await coreA.withSalt(async () => loginRp(coreA, await authCode('issue')), { fresh: true });
+    assert.equal(r.status, 200, j(r.body)); assert.equal(r.body.demo, 'override:fake_sig'); assert.notEqual(v.body.ok, true, '서비스는 가짜 서명을 거절한다');
+    assert.deepEqual((await coreA.loginFlow()).body.flow, before);
   });
   await t('withSalt fresh: 패스키가 실패하면(다른 패스키·취소) 보관분으로 넘어가지 않는다', async () => {
     const keep = deriveFn;

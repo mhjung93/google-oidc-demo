@@ -220,9 +220,9 @@ function loadOrCreateKeys() {
 //            (등록 키 pk_u 는 2026-11-13 에 없앴다 — 스펙 2026-11-12 no-pk-u. 등록됨의 표지는 auid 다)
 //            creds 중 revoked:false 는 하나뿐(사용자당 활성 자격증명 하나, 2026-09-21 §3.1).
 // rps:       arid → { name, origin, pk_service, X_svc, x_AA, pk_trace, status, requestedAt, decidedAt }   (2026-09-16 §3)
-// openings:  [ { id, arid, PPID, tagKey, c1:{x,y}, c2, D_svc:{x,y}, allowAgent, max_height, chainid, status, requestedAt, decidedAt,
+// openings:  [ { id, arid, PPID, auid_s, key, account, allowAgent, max_height, chainid, status, requestedAt, decidedAt,
 //                uid|null, resolved } ]   영구 감사 기록(§6). uid·resolved 는 approved 에만 의미 있다.
-//            결정(승인·거절)이 끝나면 복호 재료 c1·c2·D_svc 는 지운다(2026-09-25 리뷰 B-4) — 재요청 대조는 tagKey 가 맡는다
+//            2026-11-19(스펙 trace-without-tag): 태그·복호 재료(c1·c2·D_svc)는 없다 — 재요청 대조는 key = H(arid, PPID, auid_s) 가 맡는다. 태그 시절의 옛 항목에는 auid_s 가 없다
 // registry:  { depth, next, leaves: {"<index>": "<leaf>"(10진)}, pendingSlots: [{index, leaf}] }   사용자 자격증명 등록부(V9, 2026-10-01 §3)
 // V10(2026-10-02): accounts[uid].receipt(마지막 폐기 접수증 또는 null)·slotRetired(대기열로 영구 은퇴된 슬롯이면 true),
 //            lastPublication = { revRoot, regRoot, epoch, hLeaves, hIdx, hSlots, sig, txHash, boundKeys, boundValues(10진 문자열 배열, 2026-10-25) } (마지막 성공 게시 — 거울 릴레이용)
@@ -1290,7 +1290,8 @@ app.post('/cia/slot', userCors, async (req, res) => {
 // 활성 자격증명과 다르면(첫 로그인·사용자의 속성 변경) 등록부 슬롯을 갱신·게시한 뒤 토큰을 낸다. 속성 값은 받지 않는다(D15).
 // 검사 순서: 형식 → max_height 범위 → 계정·disabled → chainid 허용 → C_u·C_s 부분군 → π_IdP(ctx·tag) → 체인 생존(fail-closed) → disabled 재확인 →
 // (C_u 교체: 은퇴 → creds 추가 → setSlot → persist → 즉시 게시) → 토큰 서명 → 세션 기록. arid_s 는 서명·토큰에만 쓰고 저장하지 않는다(D1).
-// auid_s 는 세션 기록에 남기지 않되, 2026-11-12(사용자 결정 — D1 수정)부터 계정마다 **가장 최신 값 하나**만 덮어써 둔다(acct.lastAuidS — 관리자 화면 표시용, 기록은 없다).
+// auid_s 는 세션 기록에 남기지 않되, 2026-11-12(사용자 결정 — D1 수정)부터 계정마다 가장 최신 값 하나를 덮어써 두고(acct.lastAuidS — 관리자 화면 표시용),
+// 2026-11-19(스펙 trace-without-tag T6)부터 발급마다 계정의 기록(acct.auidSLog)에도 덧붙인다 — 개봉의 근거다.
 // /cia/issue — 데모 계정은 π_IdP 만, 래퍼(Google) 계정은 π_IdP + id_token(+첫 로그인이면 registration{auid}). 2026-10-16, 2026-11-13.
 app.post('/cia/issue', userCors, async (req, res) => {
   try {
@@ -1933,7 +1934,8 @@ app.post('/cia/account/set_disabled', requireAdmin, (req, res) => {
 // 2026-11-06(사용자 요청): 계정 삭제 — 등록된 계정이면 먼저 계정 폐기(revokeAccount: 자격증명 은퇴·슬롯 0·게시·접수증)를 태워 이미 발급된
 // 자격증명이 체인에서도 막히게 한 뒤, 레코드·아이디 색인(같은 아이디로 재가입 가능)·그 uid 의 1회용 코드를 지운다. 슬롯 번호는 재사용하지
 // 않는다(등록부 규칙 — 등록부 관리 화면에서 그 슬롯은 uid 없는 빈 칸이 된다). 세션은 계정이 없어져 재검증이 실패한다(의도). 개봉 기록(openings)은
-// 감사용으로 남긴다. 지갑(Snap) 안의 등록 비밀은 서버가 지울 수 없다 — 사용자가 지갑 설정 탭 "Snap 초기화" 를 눌러야 새로 등록할 수 있다.
+// 감사용으로 남긴다. 발급 기록(auidSLog)은 계정과 함께 지워진다 — 삭제 뒤에 그 계정의 지난 로그인·거래를 개봉하면 resolved:false 다(스펙 trace-without-tag T6: 삭제는 관리자의 행위다).
+// 지갑(Snap) 안의 등록 비밀은 서버가 지울 수 없다 — 사용자가 지갑 설정 탭 "Snap 초기화" 를 눌러야 새로 등록할 수 있다.
 // 시드 계정(CIA_DEMO_ACCOUNTS=1)은 다음 기동 때 다시 생긴다.
 app.post('/cia/account/delete', requireAdmin, async (req, res) => {
   try {
@@ -2057,12 +2059,11 @@ function loadVkey() {
 const findOpening = (id) => state.openings.find((o) => o.id === id);
 // 계정마다 남기는 auid_s 기록 수(스펙 trace-without-tag T6). 차면 그 계정의 발급을 거절한다(auid_log_full) — 기록을 밀어내 개봉을 피하지 못하게. 상태 파일의 크기도 이 값으로 묶인다.
 const AUID_S_LOG_MAX = Math.max(1, Number(process.env.CIA_AUID_S_LOG_MAX) || 5000);
-/** 발급 기록에서 그 auid_s 를 낸 계정의 uid — 없으면 null(기록 상한 밖이거나 이 IdP 가 낸 값이 아니다). 최신 하나(lastAuidS)도 함께 본다(기록이 생기기 전의 발급). */
+/** 발급 기록에서 그 auid_s 를 낸 계정의 uid — 없으면 null(이 IdP 가 낸 값이 아니거나, 그 계정이 삭제됐다). 최신 하나(lastAuidS)도 함께 본다(기록이 생기기 전의 발급). */
 function uidOfAuidS(auidS) {
   for (const [uid, a] of Object.entries(state.accounts)) if (a.lastAuidS?.value === auidS || (a.auidSLog ?? []).some((r) => r.value === auidS)) return uid;
   return null;
 }
-/** 같은 트랜스크립트의 재요청을 알아보는 열쇠 — (arid, c1, c2, PPID) 의 해시. 복호 재료를 지운 뒤에도 남길 수 있다(§6 감사 기록). */
 // ---- 개봉(2026-11-19 스펙 trace-without-tag T7·T8) ----
 // 트레이스 태그는 없다. 서비스가 그 PPID 의 가장 최신 로그인(또는 그 거래)의 증명 한 벌을 내면 — 공개 입력 안에 PPID·arid·auid_s 가 함께 있다 — zkIdP 는 증명·서명을 확인해
 // 대기 목록에 두고, 관리자가 승인하면 발급 때 남긴 기록(auidSLog)에서 그 auid_s 의 uid 를 찾는다. 복호·조각(D_svc·x_AA)·전수 대입이 없다.

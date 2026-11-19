@@ -300,7 +300,7 @@ try {
   });
 
   // 2026-11-18(사용자 요청 "각 zkp 를 확인할 수 있게"): 사용자 페이지의 "영지식 증명" 카드 — 승인 창(다른 창)에서 만든 증명이 같은 저장소라 여기 보인다.
-  await t('영지식 증명 카드: 기본은 π_session 만·번호 1~7 만 — 전체 보기 34개, 검증 ✓, 값을 바꾸면 ✗, 출금 증명에는 거래 링크, 버튼을 누르면 π_IdP 도', async () => {
+  await t('영지식 증명 카드: 기본은 π_session 만·번호 1~7 만 — 전체 보기 29개, 검증 ✓, 값을 바꾸면 ✗, 출금 증명에는 거래 링크, 버튼을 누르면 π_IdP 도', async () => {
     await userPage.bringToFront();
     await userPage.waitForSelector('#proofsList tr[data-proof-purpose="tx"]', { timeout: 30_000 });
     const rows = await userPage.$$eval('#proofsList tbody tr', (rs) => rs.map((r) => [r.dataset.proofKind, r.dataset.proofPurpose, r.cells[1].textContent]));

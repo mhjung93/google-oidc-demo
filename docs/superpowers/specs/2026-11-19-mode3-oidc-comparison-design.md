@@ -132,8 +132,11 @@
 - **I-2 데모를 다시 띄울 때 서비스 계정 파일도 옮긴다**: zkIdP 의 uid 는 새로 시작하면 100001 부터 다시 매겨지는데 서비스의 `mode3_rp_accounts.json` 은 남아, 새 사용자의 일반 OIDC 로그인(sub = uid)이
   지난 실행의 다른 사람 계정(잔고·보관 ETH)에 붙었다. `demo_split_start.sh` 가 등록·로그 파일과 함께 `.bak-시각` 으로 옮긴다.
 - M-1 폐기된 계정은 일반 OIDC 의 동의·토큰 교환을 못 한다. M-11 `/oidc/authorize/info` 는 `no-store`. 테스트 제목이 말하던 "다른 nonce 의 토큰" 은 본문에 없어 제목을 고쳤다.
-- **고치지 않은 것**: Google 에서 돌아온 길에 옛 zk 세션을 서버에서 끝내지 않는다(M-2), Google 대기 10분 > nonce 수명 5분(M-3 — 5분 넘게 걸리면 `bad_nonce`), zk 쪽 토큰 검증이 `zkid_plain` 이 없는지 보지 않는다(M-4 — 악용 불가),
-  discovery 의 `authorization_endpoint` 가 IP 주소다(M-5 — 서비스는 자기 설정의 주소를 쓴다), 승인 전에도 zkoidc 버튼이 보인다(M-6), `lastOidc` 가 코드를 내줄 때 적힌다(M-7), 관리자 표가 일반 OIDC 의 마지막 서비스 하나만 보인다(M-8).
+- **Minor 뒤처리(2026-11-19, 사용자 "마이너 건들 추천대로")**: M-2 Google 에서 돌아온 길도 저장해 둔 zk 세션(`r_s`)을 서비스 서버에서 끝낸다. M-3 서비스의 nonce·state 수명을 10분으로(화면의 Google 대기 시간과 같게).
+  M-4 zk 로그인의 토큰 검증이 `zkid_plain` 토큰을 거절한다(§5 의 약속대로). M-6 서비스가 승인되기 전에는 일반 OIDC 버튼이 보이지 않는다(`rp_info.social.zkoidc.enabled` 에 승인 여부를 넣었다).
+- **고치지 않은 것**: discovery 의 `authorization_endpoint` 가 IP 주소다(M-5 — zkIdP 에 브라우저용 주소 설정이 따로 없다. 이 서비스는 자기 설정의 주소를 쓴다), `lastOidc` 는 코드를 내줄 때 적힌다(M-7 — 의도다:
+  "zkIdP 가 그 서비스를 봤다" 는 동의 시점에 이미 참이다. 서비스가 교환에 실패해도 표에 남는다), 관리자 표가 일반 OIDC 의 마지막 서비스 하나만 보인다(M-8 — C5 의 결정. 시연에서는 zkONE 로그인 뒤 표를 한 번 보이고
+  zkTWO 로 넘어간다 — `docs/MODE3_DEMO_SCRIPT.md`).
 - **실제 Google 에서 처음 돌릴 때 볼 것**(M-10, 추측): 서비스 VM 의 인터넷(googleapis 의 JWKS), VM 시계(허용 60초), 콘솔의 리디렉션 URI 글자 그대로 일치·테스트 사용자 등록, 같은 탭에서 다녀오기. 대역 발급자는
   리디렉션 URI 일치도, 바깥 JWKS 가져오기도 보지 않는다.
 

@@ -1467,7 +1467,7 @@ async function buildExecute(req) {
   let src;
   try { src = secretSourceFor(req, rsKey); }
   catch (e) { if (e.reason === NO_WITNESS) return fail(409, { reason: NO_WITNESS, timings }); throw e; }
-  // 2026-10-22: 거래 π 는 counter = nonce 를 공개 입력으로 싣는다(컨트랙트가 pub[33]==payload.nonce 를 검사한다) — proveSession
+  // 2026-10-22: 거래 π 는 counter = nonce 를 공개 입력으로 싣는다(컨트랙트가 pub[28]==payload.nonce 를 검사한다) — proveSession
   // 보다 먼저 nonce 를 읽어야 한다(브리프 Step 3-3).
   const walletAddr = await factoryAt(s.factoryAddress, provider).computeAddress(BigInt(s.PPID));
   // 아직 배포 전이면 nonce 는 0(uint256 기본값) — 배포 트랜잭션을 먼저 보낸 뒤 execute 가 이 nonce 로 들어간다

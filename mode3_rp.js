@@ -139,6 +139,7 @@ async function verifyIdToken(token, { sub, aud }) {
     const issuer = await idpIssuer();
     const { payload } = await jwtVerify(token, idpJwks, { issuer, audience: aud, algorithms: ['ES256'] });
     if (payload.sub !== sub) return { ok: false, detail: 'sub ≠ auid_s' };
+    if (payload.zkid_plain === true) return { ok: false, detail: 'plain oidc token' };   // 일반 OIDC(비교용) 토큰은 zk 로그인에 쓸 수 없다(스펙 oidc-comparison §5)
     const name = typeof payload.name === 'string' ? payload.name : undefined;
     return { ok: true, name };
   } catch (e) { return { ok: false, detail: e.message }; }
@@ -512,7 +513,7 @@ if (SOCIAL.google.enabled || SOCIAL.naver.enabled) console.log(`[rp] 소셜 로�
 app.get('/api/mode3/rp_info', (req, res) => {
   res.json({ name: RP_NAME, requireDisclosure: REQUIRE_DISCLOSURE,   // 2026-10-15: 페이지 브랜드(zkONE/zkTWO) 표기용
        status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, mirrorAddress: MIRROR_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, ciaUrl: CIA_BROWSER_URL, pkCiaSource: pkCIA.source, chainId: chainId.toString(), active: Boolean(verifier), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null, predicates: currentPredicates(),
-       social: { google: { enabled: SOCIAL.google.enabled, clientId: SOCIAL.google.clientId, authorizeUrl: SOCIAL.google.authorizeUrl, redirectUri: SOCIAL.google.redirectUri }, naver: { enabled: SOCIAL.naver.enabled }, zkoidc: { enabled: ZKOIDC.enabled } },   // zkoidc: zkIdP 일반 OIDC(비교용, 2026-11-19)   // 2026-11-10 RP 소셜 버튼
+       social: { google: { enabled: SOCIAL.google.enabled, clientId: SOCIAL.google.clientId, authorizeUrl: SOCIAL.google.authorizeUrl, redirectUri: SOCIAL.google.redirectUri }, naver: { enabled: SOCIAL.naver.enabled }, zkoidc: { enabled: ZKOIDC.enabled && ZKOIDC.clientId() !== null } },   // zkoidc: zkIdP 일반 OIDC(비교용, 2026-11-19)   // 2026-11-10 RP 소셜 버튼
        oidc: pkCIA.oidc });   // 2026-10-16: IdP 의 public_keys.oidc 중계 — 페이지는 enabled·provider, 2026-11-09 부터 providers.{google,naver}.enabled(버튼 활성)를 본다
 });
 
@@ -756,7 +757,7 @@ app.post('/api/mode3/request', async (req, res) => {
 
 // ---- 릴레이(설계 2026-10-15 §5.1, 계획 R6): 브라우저 사용자 페이지의 execute 를 RP 의 릴레이어 계정이 대신 보낸다 ----
 // 릴레이어는 서명만 한다 — 사용자 비밀을 보지 않는다. 검열(거부·지연) 가능성은 런북의 한계에 적는다.
-// 검사 순서: 활성 → 본문 형식(value 0 고정) → execute 셀렉터·pub 34(2026-10-22 §6.5 counter 추가)·pub[1]=arid → to = computeAddress(pub[0])
+// 검사 순서: 활성 → 본문 형식(value 0 고정) → execute 셀렉터·pub 29(2026-11-19 trace-without-tag)·pub[1]=arid → to = computeAddress(pub[0])
 //   → Groth16 오프체인 확인(2026-10-26 리뷰 E2) → 속도 제한 → (코드 없으면 deploy) → estimateGas ≤ cap → 전송.
 // 증명 확인이 배포보다 앞이어야 한다 — arid 는 공개이고 to 는 PPID 로 맞출 수 있어, 없으면 PPID 만 바꿔 가며 릴레이어 가스로
 // 빈 계정을 끝없이 배포시킬 수 있다(속도 제한은 대상별이라 매번 새 키). 속도 제한보다도 앞에 둬 틀린 증명이 남의 몫을 깎지 않게 한다.
@@ -817,7 +818,7 @@ app.get('/api/mode3/relay/:txHash', relayCors, async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });
 
-// ---- §6 개봉(데모용, 인증 없음) ----
+// ---- §6 개봉(서비스 관리자 인증 — requireRpAdmin) ----
 /** 로그인 로그 파일의 줄들(오래된 것부터). 마지막 줄이 쓰다 만 채로 잘려 있을 수 있다 — 파싱 안 되는 줄만 건너뛰고 나머지는 그대로 쓴다. */
 function readLoginLog() {
   if (!fs.existsSync(LOGIN_LOG)) return [];

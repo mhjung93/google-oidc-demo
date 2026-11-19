@@ -893,7 +893,9 @@
       if (!id_token) return fail('google_denied');
       const rb = await (await post('/api/rp/google', { id_token, purpose: 'login' })).json().catch(() => ({ ok: false, reason: 'internal' }));
       if (!rb.ok) return fail(rb.reason);
-      await endZkidSession();
+      // 저장해 둔 zkIdP 세션은 서비스 서버에서도 끝낸다(네이버·zkoidc 갈래와 같다 — 이 길에서는 restoreSession 을 부르지 않아 currentSession 이 비어 있다)
+      let saved = null; try { saved = JSON.parse(localStorage.getItem(SESSION_KEY) ?? 'null'); } catch { saved = null; }
+      await endZkidSession(saved?.r_s ? String(saved.r_s) : null);
       setVerdict($('verdict'), true, 'social_login_ok', () => ({ summary: tt(rb.created ? 'rp_social_new_account' : 'rp_social_same_account', { via: 'Google' }) }));
       await refreshMe();
       return true;

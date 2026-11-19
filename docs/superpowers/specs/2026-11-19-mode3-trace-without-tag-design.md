@@ -27,7 +27,7 @@
 - 회로: `circuits/pi_cred.circom`(입력 `r`·`pk_trace_*`·`tag_*`, ⑧ 블록, `main` 의 공개 목록). `bash scripts/build_mode3_circuit.sh pi_cred` 로 zkey·vkey·wasm·`contracts/PiCredVerifier.sol` 을 한 세트로 다시 만든다
   (스크립트의 "34개" 검사를 29로). **지금까지의 증명 키·배포된 검증자·지갑은 모두 무효다 — 데모는 리셋(재배포)해야 한다.**
 - 컨트랙트: `contracts/Mode3Wallet.sol`(T4), `contracts/AttrGate.sol`(공개 입력 수를 쓰면). `npx hardhat compile`.
-- 라이브러리: `lib/mode3_onchain.js`(`PUB_INDEX`·다이제스트·calldata·영수증 해석), `lib/mode3_wallet.js`(증명 입력에서 tag·`pk_trace`), `lib/mode3_rp.js`(검증에서 tag·`pk_trace` 대조), `lib/mode3_trace.js`(개봉 서명 메시지).
+- 라이브러리: `lib/mode3_onchain.js`(`PUB_INDEX`·다이제스트·calldata·영수증 해석), `lib/mode3_wallet.js`(증명 입력에서 tag·`pk_trace`), `lib/mode3_rp.js`(검증에서 tag·`pk_trace` 대조), `lib/mode3_opening.js`(개봉 서명 메시지).
 - 서버: `cia.js`(T6~T8), `mode3_rp.js`(T7·T9), `mode3_wallet_agent.js`(에이전트 모드의 증명 입력 — 같은 lib 를 쓴다).
 - 화면: `mode3/user/ui.js`(공개 입력 묶음), `mode3/rp_admin.html`·`mode3/cia_admin.html`(개봉), `mode3/common/strings.js`.
 - 테스트·문서.
@@ -70,7 +70,11 @@
 - **I-2 대가를 적었다**(§3 둘째 항목, `cia.js` 의 주석).
 - M-6 서비스 관리자 화면이 `resolved: false` 를 "실패 — approved" 로 보이던 것을 "zkIdP 의 발급 기록에 없다" 로. M-7 재빌드 전(공개 입력 34개)의 로그인 로그 줄은 개봉에 쓰지 않는다.
   M-8 승인 경로의 `resolved: false`·상한 거절 테스트를 더했다(`tests/test_cia_opening.mjs`).
-- **고치지 않은 것**: 계정 삭제가 기록도 지운다(M-1 — T6 에 적었다), 같은 `auid_s` 가 두 계정에 기록되면 첫 계정만 돌려준다(M-2 — 연결 해제 뒤 같은 비밀을 다른 계정에 등록하고 서비스가 `r_rp` 를 되풀이한 경우),
-  세션키 다이제스트가 `auid_s` 를 덮지 않는다(M-3 — 세션마다 `pk_i` 가 새로 생겨 지금은 성립하지 않는다), 거절·미해결 뒤의 재요청과 대기 목록에 상한이 없다(M-4), `auidSLog` 가 상태 이행 검사에 없다(M-5),
-  남은 옛 표기(M-9 — ABI 의 `BadTag`, `pub[30..33]` 주석 등), 개봉 요청 서명이 증명 자체를 덮지 않는다(M-10).
+- **Minor 뒤처리(2026-11-19, 사용자 "마이너 건들 추천대로")**: M-5 상태 파일을 열 때 `auidSLog` 의 모양을 검사한다(손상된 값이면 기동 거부 — 그대로 뜨면 발급·승인이 500 으로 깨진다), 머리 주석 갱신.
+  M-9 남은 옛 표기를 고쳤다(`WALLET_ABI` 의 `BadTag`, `pub[30..33]`·"34개" 주석, `cia.js` 의 openings 모양 주석과 엉뚱한 JSDoc, zkIdP 관리자 화면의 대체 문구, 테스트 제목, 이 문서 §2 의 파일 이름).
+  M-1 은 정책으로 둔다 — 계정 **삭제**(관리자)는 발급 기록도 지운다(T6·`cia.js` 주석에 적었다).
+- **고치지 않은 것**: 같은 `auid_s` 가 두 계정에 기록되면 첫 계정만 돌려준다(M-2 — 연결 해제 뒤 같은 비밀을 다른 계정에 등록하고 서비스가 `r_rp` 를 되풀이한 경우. 정직한 서비스는 `r_rp` 를 새로 뽑는다),
+  세션키 다이제스트가 `auid_s` 를 덮지 않는다(M-3 — 컨트랙트를 바꿔야 한다. 세션마다 `pk_i` 가 새로 생겨 지금은 성립하지 않는다 — 다음에 컨트랙트를 바꿀 때 다이제스트에 넣는다),
+  거절·미해결 뒤의 재요청과 대기 목록에 상한이 없다(M-4 — 승인된 서비스만 할 수 있다), 개봉 요청 서명이 증명 자체를 덮지 않는다(M-10 — 결과가 달라지지 않는다),
+  컨트랙트 소스의 옛 주석(`Mode3Wallet.sol`·`Mode3WalletFactory.sol` — 주석을 고쳐도 바이트코드의 메타데이터가 바뀌어 배포된 것과 참조 코드가 어긋난다. 다음 컨트랙트 변경 때 함께).
 
