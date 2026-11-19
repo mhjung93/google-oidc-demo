@@ -57,7 +57,7 @@ async function benchTransfer() {
 }
 
 // ── (B) Mode3Wallet.execute, AcceptAll 검증자 ──────────────────────────
-function buildPub({ PUB_INDEX }, { ppid, pkI, maxHeight, chainId }) {
+function buildPub({ PUB_INDEX }, { ppid, pkI, maxHeight, chainId, counter }) {
   const pub = new Array(Number(PUB_INDEX.COUNT)).fill(0n);
   pub[PUB_INDEX.PPID] = ppid;
   pub[PUB_INDEX.ARID] = ARID;
@@ -69,12 +69,9 @@ function buildPub({ PUB_INDEX }, { ppid, pkI, maxHeight, chainId }) {
   pub[PUB_INDEX.REG_ROOT] = REG_ROOT;
   pub[PUB_INDEX.PK_CIA_X] = PK_CIA_X;
   pub[PUB_INDEX.PK_CIA_Y] = PK_CIA_Y;
-  pub[PUB_INDEX.PK_TRACE_X] = PK_TRACE_X;
-  pub[PUB_INDEX.PK_TRACE_Y] = PK_TRACE_Y;
-  pub[PUB_INDEX.TAG_C1_X] = 1n;   // (0,1) 조합만 피하면 됨(BadTag) — 그 외 값은 온체인이 대조하지 않는다.
-  pub[PUB_INDEX.TAG_C1_Y] = 2n;
-  pub[PUB_INDEX.TAG_C2] = 3n;
-  // DISC_MASK..SET_ROOT(15..29) = 0(공개 없음·집합 없음), AUID_S..R_S(30..32) = 0(온체인 미검사) — fill(0n) 그대로.
+  // 2026-11-19(스펙 trace-without-tag): pk_trace·tag 는 공개 입력에 없다(29개). 생성자 인자의 pk_trace 는 남아 있지만 대조하지 않는다.
+  pub[PUB_INDEX.COUNTER] = counter;   // execute 는 counter == payload.nonce 를 본다(CounterMismatch).
+  // DISC_MASK..SET_ROOT(10..24) = 0(공개 없음·집합 없음), AUID_S..R_S(25..27) = 0(온체인 미검사) — fill(0n) 그대로.
   return pub;
 }
 
@@ -83,7 +80,7 @@ async function executeOnce(mode3, wallet, { ppid, to, value = 0n, nonce }) {
   const session = hre.ethers.Wallet.createRandom();   // 세션(π 의 pk_i)마다 새 임시 키 — 실제 로그인마다 새 세션키를 쓰는 것과 같다.
   const net = await hre.ethers.provider.getNetwork();
   const blockNow = BigInt(await hre.ethers.provider.getBlockNumber());
-  const pub = buildPub({ PUB_INDEX }, { ppid, pkI: BigInt(session.address), maxHeight: blockNow + 300n, chainId: net.chainId });
+  const pub = buildPub({ PUB_INDEX }, { ppid, pkI: BigInt(session.address), maxHeight: blockNow + 300n, chainId: net.chainId, counter: BigInt(nonce) });
   const stmt = statementDigestFields(pub);
   const payload = { to, value, data: "0x", nonce };
   const sig = signPayload(session, { chainId: net.chainId, wallet: wallet.target, ...payload, ...stmt });

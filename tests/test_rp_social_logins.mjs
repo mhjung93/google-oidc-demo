@@ -82,6 +82,16 @@ try {
     const { nonce: n3 } = (await u.req('POST', '/api/rp/oidc/nonce', { purpose: 'login' })).body;
     assert.equal((await u.req('POST', '/api/rp/google', { id_token: await g.mint({ sub: 'g-x', nonce: n3 }), purpose: 'link' })).status, 401, '로그인 nonce 로 연결 불가(접두어)');
     assert.equal((await jar(rp.base).req('POST', '/api/rp/oidc/nonce', { purpose: 'link' })).body.reason, 'no_rp_session');
+    // 리뷰 2026-11-19(OIDC I-1): nonce 는 받아 간 브라우저(쿠키 세션)에 묶인다 — 다른 브라우저가 그 nonce 의 토큰을 내면 거절, 새로 받으면 앞의 nonce 는 못 쓴다
+    const a = jar(rp.base), b = jar(rp.base);
+    const { nonce: na } = (await a.req('POST', '/api/rp/oidc/nonce', { purpose: 'login' })).body;
+    const other = await b.req('POST', '/api/rp/google', { id_token: await g.mint({ sub: 'g-y', nonce: na }), purpose: 'login' });
+    assert.equal(other.status, 401, j(other.body)); assert.equal(other.body.reason, 'bad_nonce');
+    assert.equal((await b.req('GET', '/api/rp/me')).status, 401);
+    const { nonce: n4 } = (await a.req('POST', '/api/rp/oidc/nonce', { purpose: 'login' })).body;
+    const { nonce: n5 } = (await a.req('POST', '/api/rp/oidc/nonce', { purpose: 'login' })).body;
+    assert.equal((await a.req('POST', '/api/rp/google', { id_token: await g.mint({ sub: 'g-y', nonce: n4 }), purpose: 'login' })).body.reason, 'bad_nonce', '앞서 받은 nonce');
+    assert.equal(n5.length > 0, true);
   });
   await t('Google 계정(B)에 zkIdP 연결(link:true) → B 에 PPID; 이어서 새 브라우저의 zkIdP 로그인은 B 로 들어간다', async () => {
     const u = jar(rp.base); await googleLogin(u, 'g-alice');

@@ -101,7 +101,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
   // 시간은 performance.now()(밀리초 아래까지 — 가명·난수는 0.1ms 안팎이다), 없으면 주입된 now. login 밖에서는 flowRec 이 null 이라 아무것도 남지 않는다.
   const tick = typeof globalThis.performance?.now === 'function' ? () => globalThis.performance.now() : now;
   let flowRec = null;       // 진행 중인 login() 의 { t0, steps: [{ key, ms, ... }] }
-  let scopeDerive = null;   // 이 withSalt 범위(또는 범위 밖의 이 login)에서 패스키로 salt 를 얻었으면 { ms } — 사람이 누르는 시간이 든다
+  let scopeDerive = null;   // 이 withSalt 범위(또는 범위 밖의 이 login)에서 패스키로 salt 를 얻었으면 { ms, t0: 묻기 시작한 시각 } — 사람이 누르는 시간이 든다
   const flowStep = (key, ms, extra = null) => {
     if (!flowRec) return;
     const v = Math.max(0, Math.round(Number(ms) * 1000) / 1000);
@@ -141,7 +141,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       // 연결할 때 둔 transports·힌트를 그대로 싣는다(휴대폰 패스키면 브라우저가 곧장 휴대폰으로 간다 — 스펙 2026-11-19 P2)
       const td = tick();
       const d = await passkey.derive({ credentialId: pk.credentialId, ...(pk.info?.transports?.length ? { transports: pk.info.transports } : {}), ...(pk.info?.hint ? { hints: [pk.info.hint] } : {}) });
-      scopeDerive = { ms: tick() - td };
+      scopeDerive = { ms: tick() - td, t0: td };
       if (d?.credentialId !== pk.credentialId) throw tag('passkey_mismatch');
       if (!isSalt(d.s_u)) throw tag('passkey_bad_salt');
       const reg = await getReg();
@@ -754,7 +754,8 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       const tsrc = tick();
       const src = await source();
       // 패스키 단계: 이 범위에서 패스키로 얻었으면 그 시간(사람이 누르는 시간 포함), 보관분·금고에서 읽었으면 held
-      flowStep('passkey', scopeDerive ? scopeDerive.ms : tick() - tsrc, { held: !scopeDerive });
+      // before(리뷰 2026-11-19 I-1): 같은 승인 창에서 로그인 함수에 들어오기 전(등록하면서)에 패스키를 물었다 — 그 시간은 totalMs(로그인 시작부터) 밖이라 화면이 합계에서 뺀다.
+      flowStep('passkey', scopeDerive ? scopeDerive.ms : tick() - tsrc, { held: !scopeDerive, ...(scopeDerive && flowRec && scopeDerive.t0 < flowRec.t0 ? { before: true } : {}) });
       if (src === null) return R(409, { reason: 'not_registered' });
       if (src === 'locked') return LOCKED();
       // V9: 옛 등록(슬롯 없음)은 IdP 의 /cia/slot 으로 되찾는다.

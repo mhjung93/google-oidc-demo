@@ -66,7 +66,7 @@
       <p id="pkPlaceRow"><span data-i18n="user_pk_place_label">패스키를 둘 곳</span>:
         <label><input type="radio" name="pkPlace" value="local" checked /> <span data-i18n="user_pk_place_local">이 기기 (Chrome · 비밀번호 관리자)</span></label>
         <label><input type="radio" name="pkPlace" value="phone" /> <span data-i18n="user_pk_place_phone">휴대폰 (QR 코드로 연결)</span></label></p>
-      <p id="pkPlaceHint" class="muted" data-i18n="user_pk_place_hint" hidden>휴대폰을 고르면 Chrome 이 QR 코드를 띄웁니다 — 휴대폰 카메라로 찍고 휴대폰에서 확인하세요. PC 와 휴대폰 모두 블루투스와 인터넷이 켜져 있어야 합니다. 로그인할 때마다 휴대폰으로 확인합니다.</p>
+      <p id="pkPlaceHint" class="muted" data-i18n="user_pk_place_hint" hidden>휴대폰을 고르면 Chrome 이 QR 코드를 띄웁니다 — 휴대폰 카메라로 찍고 휴대폰에서 확인하세요. PC 와 휴대폰 모두 블루투스와 인터넷이 켜져 있어야 합니다. 패스키를 확인할 때마다 휴대폰을 씁니다.</p>
       <p><button id="pkNewBtn" type="button" data-i18n="user_pk_new_btn">패스키 만들기</button> <button id="pkExistingBtn" type="button" class="btn-ghost" data-i18n="user_pk_existing_btn">이미 있는 패스키 쓰기</button></p>
     </section>
     <section class="card span2" id="pkRecoverCard" hidden>
@@ -120,6 +120,14 @@
       <pre id="sessionLog" class="expert"></pre>
     </section>
 
+    <!-- 로그인 전체 플로우(2026-11-19 스펙 login-flow-and-phone-passkey F6): "zkIdP 로 로그인" 한 번의 단계 — 의미와, 가장 최근 로그인의 실제 값·걸린 시간(코어 loginFlow()). 공개값뿐이다. -->
+    <section class="card span2" id="flowCard">
+      <h3 data-i18n="user_flow_title">로그인 전체 플로우</h3>
+      <p class="desc" data-i18n="user_flow_desc">"zkIdP 로 로그인" 한 번에 일어나는 일을 순서대로 보입니다. 단계를 누르면 무엇을 왜 하는지와, 가장 최근 로그인의 실제 값·걸린 시간이 보입니다. 비밀(salt)은 나오지 않습니다 — 값마다 누가 아는지는 다릅니다(uid 는 zkIdP 만, r_rp 는 서비스만 압니다).</p>
+      <p id="flowSummary" class="muted"></p>
+      <div id="flowFigure"></div>
+    </section>
+
     <!-- 보낸 트랜잭션(2026-10-16): 이 브라우저가 보낸 온체인 트랜잭션 기록(코어의 txs — 사용자 페이지·RP 페이지 어느 쪽에서 보냈든). -->
     <section class="card span2" id="txsCard">
       <h3 data-i18n="wallet_txs_title">보낸 트랜잭션</h3>
@@ -136,13 +144,6 @@
       <div id="proofsList"></div>
     </section>
 
-    <!-- 로그인 전체 플로우(2026-11-19 스펙 login-flow-and-phone-passkey F6): "zkIdP 로 로그인" 한 번의 단계 — 의미와, 가장 최근 로그인의 실제 값·걸린 시간(코어 loginFlow()). 공개값뿐이다. -->
-    <section class="card span2" id="flowCard">
-      <h3 data-i18n="user_flow_title">로그인 전체 플로우</h3>
-      <p class="desc" data-i18n="user_flow_desc">"zkIdP 로 로그인" 한 번에 일어나는 일을 순서대로 보입니다. 단계를 누르면 무엇을 왜 하는지와, 가장 최근 로그인의 실제 값·걸린 시간이 보입니다. 값은 모두 공개값입니다(salt 는 없습니다).</p>
-      <p id="flowSummary" class="muted"></p>
-      <div id="flowFigure"></div>
-    </section>
 
     <section class="card span2" id="txCard">
       <h3 data-i18n="wallet_tx_title">트랜잭션 보내기</h3>

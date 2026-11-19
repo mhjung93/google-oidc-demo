@@ -122,3 +122,18 @@
 ### 시나리오의 나머지
 
 - 시나리오 9·10(trace tag 없는 개봉: 서비스가 그 PPID 의 최신 `auid_s` 를 내면 zkIdP 가 uid 를 돌려준다 — 회로·컨트랙트에서 tag 제거)은 이 스펙 밖이다.
+
+### 리뷰(2026-11-19, Opus — Critical 0·Important 2·Minor 11) 뒤 바꾼 것
+
+- 중계 화면의 허용 목록·조각 처리·CSP, 인가 코드·PKCE, 동의 화면의 CSRF 방어, 꺼졌을 때의 404 는 결함이 없었다.
+- **I-1 Google nonce 를 브라우저에 묶는다**: `/api/rp/oidc/nonce` 가 준 nonce 를 그 브라우저의 쿠키 세션에도 두고 `/api/rp/google` 이 대조한다(네이버·zkoidc 의 state 와 같은 방어). 두 서비스가 Google 클라이언트 ID 를
+  함께 쓰면(스크립트 기본값) 한 서비스가 다른 서비스에서 nonce 를 받아 자기 사용자의 Google 토큰에 심고, 그 토큰으로 다른 서비스에 그 사용자로 로그인할 수 있었다. 시작 스크립트는 두 서비스의 ID 가 같으면 경고한다
+  (토큰의 aud 가 같게 찍혀 "Google 은 어느 서비스인지 안다" 를 화면으로 보일 수 없다 — `RP1_GOOGLE_CLIENT_ID`·`RP2_GOOGLE_CLIENT_ID`).
+- **I-2 데모를 다시 띄울 때 서비스 계정 파일도 옮긴다**: zkIdP 의 uid 는 새로 시작하면 100001 부터 다시 매겨지는데 서비스의 `mode3_rp_accounts.json` 은 남아, 새 사용자의 일반 OIDC 로그인(sub = uid)이
+  지난 실행의 다른 사람 계정(잔고·보관 ETH)에 붙었다. `demo_split_start.sh` 가 등록·로그 파일과 함께 `.bak-시각` 으로 옮긴다.
+- M-1 폐기된 계정은 일반 OIDC 의 동의·토큰 교환을 못 한다. M-11 `/oidc/authorize/info` 는 `no-store`. 테스트 제목이 말하던 "다른 nonce 의 토큰" 은 본문에 없어 제목을 고쳤다.
+- **고치지 않은 것**: Google 에서 돌아온 길에 옛 zk 세션을 서버에서 끝내지 않는다(M-2), Google 대기 10분 > nonce 수명 5분(M-3 — 5분 넘게 걸리면 `bad_nonce`), zk 쪽 토큰 검증이 `zkid_plain` 이 없는지 보지 않는다(M-4 — 악용 불가),
+  discovery 의 `authorization_endpoint` 가 IP 주소다(M-5 — 서비스는 자기 설정의 주소를 쓴다), 승인 전에도 zkoidc 버튼이 보인다(M-6), `lastOidc` 가 코드를 내줄 때 적힌다(M-7), 관리자 표가 일반 OIDC 의 마지막 서비스 하나만 보인다(M-8).
+- **실제 Google 에서 처음 돌릴 때 볼 것**(M-10, 추측): 서비스 VM 의 인터넷(googleapis 의 JWKS), VM 시계(허용 60초), 콘솔의 리디렉션 URI 글자 그대로 일치·테스트 사용자 등록, 같은 탭에서 다녀오기. 대역 발급자는
+  리디렉션 URI 일치도, 바깥 JWKS 가져오기도 보지 않는다.
+

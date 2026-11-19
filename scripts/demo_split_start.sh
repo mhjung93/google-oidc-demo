@@ -177,7 +177,9 @@ on "$IDP" "cd ~/zkd-demo && for f in cia_state.json; do [ -e \$f ] && mv \$f \$f
 for h in "$RP1" "$RP2"; do
   # mode3_rp_*_registration.json/_logins.jsonl 은 scripts/new_rp.sh --host 가 이 VM 에 만든 추가 RP 들의 등록·로그인 로그다
   # (없으면 글롭이 그대로 남지만 [ -e ] 가 걸러 조용히 건너뛴다, 2026-10-23)
-  on "$h" "cd ~/zkd-demo && for f in mode3_rp_registration.json mode3_rp_logins.jsonl mode3_rp_*_registration.json mode3_rp_*_logins.jsonl; do [ -e \$f ] && mv \$f \$f.bak-$TS && echo \"backup $h \$f\"; done; true"
+  # 계정 파일(mode3_rp_accounts.json — 로그인 수단별 색인·KRW·보관 ETH)도 옮긴다(리뷰 2026-11-19 I-2): zkIdP 의 uid 는 새로 시작하면 100001 부터 다시 매겨지므로,
+  # 남겨 두면 새 사용자의 일반 OIDC 로그인(sub = uid)이 지난 실행의 다른 사람 계정에 붙는다. PPID·주소도 새 체인과 맞지 않는다.
+  on "$h" "cd ~/zkd-demo && for f in mode3_rp_registration.json mode3_rp_logins.jsonl mode3_rp_accounts.json mode3_rp_*_registration.json mode3_rp_*_logins.jsonl mode3_rp_*_accounts.json; do [ -e \$f ] && mv \$f \$f.bak-$TS && echo \"backup $h \$f\"; done; true"
 done
 
 # 2b. Snap 모드: 이 VM 의 에이전트 상태 파일도 새 체인과 맞지 않는다 — .bak-시각 으로 옮긴다(MetaMask 안의 Snap 상태는 못 지운다 — 지갑 페이지 'Snap 초기화').
@@ -273,6 +275,12 @@ rp_google_lines() { local id="${1:-${RP_GOOGLE_LINE#MODE3_RP_GOOGLE_CLIENT_ID=}}
 NAVER_ID="$(env_or_dotenv MODE3_NAVER_CLIENT_ID)"; NAVER_SECRET="$(env_or_dotenv MODE3_NAVER_CLIENT_SECRET)"
 rp_naver_lines() { [ -n "$NAVER_ID" ] && [ -n "$NAVER_SECRET" ] && printf '%s\n' "MODE3_RP_NAVER_CLIENT_ID=$NAVER_ID" "MODE3_RP_NAVER_CLIENT_SECRET=$NAVER_SECRET" "MODE3_RP_NAVER_REDIRECT_URI=$1/api/rp/naver/callback"; return 0; }
 echo "  RP 소셜: Google $([ -n "$RP_GOOGLE_LINE${RP1_GOOGLE_CLIENT_ID:-}${RP2_GOOGLE_CLIENT_ID:-}" ] && echo on || echo off)${GOOGLE_RELAY:+(리디렉션식 — Google 콘솔의 승인된 리디렉션 URI: $GOOGLE_RELAY)} · 네이버 $([ -n "$NAVER_ID" ] && [ -n "$NAVER_SECRET" ] && echo on || echo off)   브라우저용 주소: IdP $IDP_UI · zkONE $RP1_UI · zkTWO $RP2_UI"
+# 리뷰 2026-11-19(OIDC I-1·M-9): 두 서비스가 같은 Google 클라이언트 ID 를 쓰면 토큰의 aud(= rid)가 같게 찍혀 "Google 은 어느 서비스인지 안다" 를 화면으로 보일 수 없다. 값은 출력하지 않는다.
+if [ -n "$GOOGLE_RELAY" ]; then
+  _g1="${RP1_GOOGLE_CLIENT_ID:-${RP_GOOGLE_LINE#MODE3_RP_GOOGLE_CLIENT_ID=}}"; _g2="${RP2_GOOGLE_CLIENT_ID:-${RP_GOOGLE_LINE#MODE3_RP_GOOGLE_CLIENT_ID=}}"
+  if [ -n "$_g1" ] && [ "$_g1" = "$_g2" ]; then echo "  경고: zkONE·zkTWO 가 같은 Google 클라이언트 ID 를 쓴다 — 두 서비스의 ID 토큰 aud(= rid)가 같게 보인다. 서비스마다 다른 ID 를 주려면 RP1_GOOGLE_CLIENT_ID·RP2_GOOGLE_CLIENT_ID"; fi
+  unset _g1 _g2
+fi
 printf '%s\n' "$COMMON" "CIA_PORT=$IDP_PORT" "CIA_RPC_URL=http://$HOST:$REV_PORT" "CIA_CHAIN_RPCS=$APP_CHAIN=http://$HOST:$APP_PORT" "CIA_ADMIN_SECRET=$ADMIN" "CIA_ADMIN_OPEN=${ADMIN_OPEN:-0}" "CIA_PUBLIC_URL=$SCHEME://$IDP:$IDP_PORT" "CIA_ISSUE_AUTH=${ISSUE_AUTH:-$([ "$AGENT_MODE" = 1 ] && echo code || echo key)}" "CIA_REVOKE_PUBLISH_AFTER_BLOCKS=${REVOKE_PUBLISH_AFTER:-3}" ${OIDC_LINE:+"$OIDC_LINE"} ${TLS_IDP:+"$TLS_IDP"} | put_env "$IDP"
 { printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP1_PORT" "MODE3_RP_NAME=zkONE" "MODE3_RP_PUBLIC_ORIGIN=$RP1_UI" "MODE3_CIA_URL=$SCHEME://$IDP:$IDP_PORT" \
   "CIA_RPC_URL=http://$HOST:$APP_PORT" "MODE3_RELAYER_INDEX=0" ${TLS_RP1:+"$TLS_RP1"}; rp_google_lines "${RP1_GOOGLE_CLIENT_ID:-}"; rp_naver_lines "$RP1_UI"; } | put_env "$RP1"
@@ -369,5 +377,6 @@ if [ "$WALLET_MODE" = passkey-web ]; then
   echo "passkey-web: 주소 넷 — 지갑 $WALLET_ORIGIN/  속성 도구 $WALLET_ORIGIN/attr.html  zkIdP $IDP_UI/user  zkONE $RP1_UI/  zkTWO $RP2_UI/"
   echo "         처음이면 bash scripts/zkd_tls_setup.sh(sudo) 뒤 Chrome 을 완전히 다시 시작한다. IP 주소로 열면 패스키가 안 된다 — 반드시 위 이름으로."
   echo "         흐름: 지갑 페이지에서 패스키 만들기 → 속성 도구(커밋먼트) → 서비스(zkONE·zkTWO)에서 zkIdP 로 로그인."
-  echo "         RP 소셜 로그인(Google·네이버)은 이 모드에서 쓰지 않는다(localhost 오리진 전용) — 위 OIDC 설정 줄이 켜져 있어도 마찬가지."
+  echo "         서비스의 'Google 로 로그인' 은 리디렉션식이다 — Google 콘솔의 '승인된 리디렉션 URI' 에 $GOOGLE_RELAY 가 있어야 한다(위 'RP 소셜' 줄이 off 면 버튼이 없다)."
+  echo "         '일반 OIDC · 비교용' 버튼은 $([ "$PLAIN_OIDC" = 1 ] && echo "켜져 있다 — PLAIN_OIDC=0 으로 끈다" || echo "꺼져 있다(PLAIN_OIDC=$PLAIN_OIDC)"). 네이버 로그인은 이 모드에서 쓰지 않는다(localhost 오리진 전용)."
 fi

@@ -176,7 +176,16 @@ try {
     const f = (await coreB.loginFlow()).body.flow;   // 다른 탭(같은 kv)에서도 읽힌다
     assert.equal(f.values.r_s, ch.r_s);
     assert.equal(f.steps.find((x) => x.key === 'passkey').held, false);
+    assert.equal(f.steps.find((x) => x.key === 'passkey').before, undefined, '로그인 안에서 물은 패스키는 전체 시간 안이다');
     assert.ok(!f.steps.some((x) => x.key === 'publish_wait'), j(f.steps.map((x) => x.key)));
+  });
+  // 리뷰 2026-11-19 I-1: 승인 창은 등록(registerWithCode)과 로그인을 한 범위에서 잇는다 — 패스키는 등록 때 물었고 그 시간은 로그인의 totalMs 밖이다.
+  await t('loginFlow: 같은 범위에서 로그인 전에 패스키를 물었으면 passkey 단계에 before:true 가 붙는다(전체 시간 밖)', async () => {
+    const c0 = calls, code = await authCode('issue');
+    const { r, v } = await coreA.withSalt(async () => { assert.equal((await coreA.showSalt()).status, 200); return loginRp(coreA, code); }, { fresh: true });
+    assert.equal(r.status, 200, j(r.body)); assert.equal(v.body.ok, true, j(v.body)); assert.equal(calls - c0, 1, '범위 안에서 패스키는 한 번');
+    const pk = (await coreA.loginFlow()).body.flow.steps.find((x) => x.key === 'passkey');
+    assert.equal(pk.held, false); assert.equal(pk.before, true, j(pk));
   });
   await t('withSalt fresh: 패스키가 실패하면(다른 패스키·취소) 보관분으로 넘어가지 않는다', async () => {
     const keep = deriveFn;

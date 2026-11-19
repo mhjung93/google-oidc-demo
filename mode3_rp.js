@@ -828,7 +828,8 @@ function readLoginLog() {
   return lines;
 }
 function lastTranscriptOf(PPID) {
-  return readLoginLog().reverse().find((l) => l.r_s && l.PPID === PPID) ?? null;   // 소셜 줄(2026-11-10)에는 트랜스크립트가 없다
+  // 소셜 줄(2026-11-10)에는 트랜스크립트가 없다. 공개 입력 수가 지금 회로와 다른 줄(재빌드 전의 로그)은 건너뛴다 — 그대로 내면 zkIdP 가 400 으로 거절한다.
+  return readLoginLog().reverse().find((l) => l.r_s && l.PPID === PPID && Array.isArray(l.publicSignals) && l.publicSignals.length === Number(PUB_INDEX.COUNT)) ?? null;
 }
 // 2026-11-06(사용자 결정): 관리자 화면은 PPID 숫자 대신 세션 계정의 0x 주소(팩토리 computeAddress(PPID))를 보인다. 주소 → PPID 는 되돌릴 수 없으므로
 // 이 RP 가 본 PPID(로그인 로그·메모리 목록)마다 주소를 계산해 대조한다. 팩토리가 바뀌면(재배포) 캐시 키가 달라져 다시 계산한다.

@@ -178,6 +178,43 @@ try {
       assert.equal(r.status, 503, j(r.body));
     } finally { await cia2.stop(); }
   });
+
+  // 리뷰 2026-11-19(trace I-1·M-8): 기록을 밀어내면 사용자가 발급을 되풀이해 지난 로그인의 개봉을 스스로 막는다 — 차면 발급을 거절한다.
+  // 승인 경로의 resolved:false 는 계정을 지워(관리자) 기록이 없어진 경우로 본다.
+  await t('발급 기록은 밀려나지 않는다: 상한(CIA_AUID_S_LOG_MAX=2)에 닿으면 발급은 409 auid_log_full 이고 첫 로그인은 여전히 열린다 — 기록에 없는 auid_s 는 승인해도 resolved:false(uid 없음)', async () => {
+    const cia3 = await startIsolatedCia({ env: { CIA_AUID_S_LOG_MAX: '2' } });
+    try {
+      const S = await cia3.registerRp('http://127.0.0.1:3198', 's-log-cap');
+      const r0 = await cia3.post('/cia/register', { uid: '12345', pwd: 'password123', ...(await regBody(reg, '12345')) });
+      assert.equal(r0.status, 201, j(r0.body));
+      const u3 = userOf(reg, '12345', TESTUSER_ATTRS);
+      const keys3 = (await cia3.get('/cia/public_keys')).body, pk3 = { x: BigInt(keys3.pk_CIA.x), y: BigInt(keys3.pk_CIA.y) };
+      const transcript = async () => {
+        const iss = await issueV11(cia3, u3, { arid: S.arid, provider, ...(u3.blind_u ? { blind_u: u3.blind_u } : {}) });
+        if (iss.r.status !== 200) return { r: iss.r };
+        u3.blind_u = iss.blind_u;
+        const { proof, publicSignals } = await proveV11(iss, { arid: S.arid, pk_CIA: pk3, provider, logAddress: cia3.logAddress });
+        return { r: iss.r, proof, publicSignals, PPID: publicSignals[PUB_INDEX.PPID], auid_s: publicSignals[PUB_INDEX.AUID_S] };
+      };
+      const request = async (T) => { const ts = nowTs(); return cia3.post('/cia/open/request', { arid: S.arid, publicSignals: T.publicSignals, proof: T.proof, ts, sig: await signOpenRequest(S.serviceWallet, { arid: S.arid, PPID: T.PPID, auid_s: T.auid_s, ts }) }); };
+      const result = async (id) => { const ts = nowTs(); return cia3.get(`/cia/open/${id}?ts=${ts}&sig=${encodeURIComponent(await signOpenResult(S.serviceWallet, id, ts))}`); };
+      const Ta = await transcript(), Tb = await transcript();
+      assert.equal(Ta.r.status, 200, j(Ta.r.body)); assert.equal(Tb.r.status, 200, j(Tb.r.body));
+      const full = await transcript();
+      assert.equal(full.r.status, 409, j(full.r.body)); assert.equal(full.r.body.reason, 'auid_log_full');
+      const acct = (await cia3.adminGet('/cia/accounts')).body.accounts.find((a) => a.uid === '12345');
+      assert.equal(acct.lastAuidS.value, Tb.auid_s, '거절된 발급은 아무것도 바꾸지 않는다');
+      const qa = await request(Ta); assert.equal(qa.status, 202, j(qa.body));
+      assert.equal((await cia3.adminPost(`/cia/openings/${qa.body.id}/approve`)).body.resolved, true, '첫 로그인의 기록이 남아 있다');
+      assert.equal((await result(qa.body.id)).body.uid, '12345');
+      const qb = await request(Tb); assert.equal(qb.status, 202, j(qb.body));
+      const del = await cia3.adminPost('/cia/account/delete', { uid: '12345' }); assert.equal(del.body.deleted, true, j(del.body));
+      const ap = await cia3.adminPost(`/cia/openings/${qb.body.id}/approve`);
+      assert.equal(ap.body.status, 'approved'); assert.equal(ap.body.resolved, false, j(ap.body));
+      const rb = await result(qb.body.id);
+      assert.equal(rb.status, 200, j(rb.body)); assert.equal(rb.body.resolved, false); assert.equal(rb.body.uid, null);
+    } finally { await cia3.stop(); }
+  });
 } finally {
   await cia.stop();
   provider.destroy();

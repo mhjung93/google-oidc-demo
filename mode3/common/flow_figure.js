@@ -35,7 +35,7 @@
   }
   // 순서도(2026-11-19 스펙 login-flow-and-phone-passkey F6) — 주체의 줄(lanes) 위에 단계를 위에서 아래로 놓는다. 주고받는 단계는 두 줄에 걸친 화살표, 혼자 하는 계산은 한 줄 안의 상자.
   // 단계를 누르면(details) 의미와 값이 펴진다.
-  //   FlowFigure.renderSequence(host, { lanes: [{ key, name, sub }], steps: [{ key, from, to, both, title, time, share(0~1), note, dim, meaning, items }] })
+  //   FlowFigure.renderSequence(host, { lanes: [{ key, name, sub }], steps: [{ key, from, to, both, title, time, share(0~1), note, dim, meaning, items, groups: [{ title, items }] }] })
   function renderSequence(host, f) {
     const open = new Set([...host.querySelectorAll('details[open]')].map((d) => d.parentElement?.dataset.step));   // 다시 그려도 펴 둔 단계는 그대로
     host.replaceChildren(); host.classList.add('flow-host');
@@ -66,6 +66,7 @@
       const body = el('div', 'seq-body');
       body.append(el('p', 'seq-meaning', st.meaning ?? ''));
       if (st.items?.length) body.append(items(st.items));
+      for (const g of st.groups ?? []) { if (!g.items?.length) continue; body.append(el('div', 'flow-sub', g.title), items(g.items)); }   // 왕복 단계: 보낸 것 · 돌려받은 것을 나눠 적는다
       det.append(row, body); li.append(det); ol.append(li);
     });
     const flow = el('div', 'seq-flow'), rails = el('div', 'seq-rails');   // 줄마다 세로 점선(주체의 생명선)

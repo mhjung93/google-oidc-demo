@@ -361,15 +361,22 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       session_key: [it('pk_i', v.pk_i)],
       commit: [it('C_u', v.Cf_u), it('C_s', v.Cf_s), it('max_height', v.max_height)],
       pseudonym: [it('auid_s', v.auid_s), it('arid_s', v.arid_s)],
-      issue: [it('uid', v.uid), it('auid_s', v.auid_s), it('arid_s', v.arid_s), f ? { name: tt('user_flow_item_token') || 'ID token', value: tt(v.hasIdToken ? 'user_flow_token_yes' : 'user_flow_token_no') || String(v.hasIdToken) } : null],
       prove_session: [it('PPID', v.PPID), it('auid_s', v.auid_s), it('arid_s', v.arid_s), it('pk_i', v.pk_i)],
       respond: [it('PPID', v.PPID), it('auid_s', v.auid_s), it('arid_s', v.arid_s)],
     };
+    // 왕복 단계(발급)는 보낸 것과 돌려받은 것을 나눠 적는다. 서명·증명은 값 대신 무엇인지만 적는다(값은 '영지식 증명' 카드에 있다).
+    const GROUPS = {
+      issue: [
+        { title: tt('user_flow_sent_idp') || 'zkIdP 에 보낸 것 →', items: [it('uid', v.uid), it('auid_s', v.auid_s), it('arid_s', v.arid_s), it('C_u', v.Cf_u), it('C_s', v.Cf_s), it('max_height', v.max_height), { name: 'π_IdP', value: tt('user_flow_item_proof') || '증명' }] },
+        { title: tt('user_flow_back_idp') || '← zkIdP 가 돌려준 것', items: [{ name: tt('user_flow_item_sig') || '자격증명', value: tt('user_flow_sig_value') || '서명' }, { name: tt('user_flow_item_token') || 'ID token', value: tt(v.hasIdToken ? 'user_flow_token_yes' : 'user_flow_token_no') || String(v.hasIdToken) }] },
+      ],
+    };
     const steps = FLOW_STEPS.filter(([k]) => PK || k !== 'passkey').map(([k, from, to, both]) => {
       const rec = ms[k] ?? null, timed = k !== 'request' && k !== 'respond';
-      const note = !f ? null : !timed ? (k === 'respond' ? tt('user_flow_no_time') : null) : !rec ? tt('user_flow_skipped') : (k === 'passkey' && rec.held) ? tt('user_flow_held') : null;
+      const note = !f ? null : !timed ? (k === 'respond' ? tt('user_flow_no_time') : null) : !rec ? tt('user_flow_skipped') : (k === 'passkey' && rec.before) ? tt('user_flow_before') : (k === 'passkey' && rec.held) ? tt('user_flow_held') : null;
       return { key: k, from, to, both: Boolean(both), title: tt(`user_flow_s_${k}_t`) || k, meaning: tt(`user_flow_s_${k}_m`), time: rec ? fmtMs(rec.ms) : null,
-        share: rec && f.totalMs > 0 ? rec.ms / f.totalMs : 0, note: note || null, dim: Boolean(f && timed && !rec), items: f ? (ITEMS[k] ?? []).filter(Boolean) : [] };
+        share: rec && !rec.before && f.totalMs > 0 ? rec.ms / f.totalMs : 0, note: note || null, dim: Boolean(f && timed && !rec), items: f ? (ITEMS[k] ?? []).filter(Boolean) : [],
+        groups: f ? (GROUPS[k] ?? []).map((g) => ({ title: g.title, items: g.items.filter(Boolean) })) : [] };
     });
     const svc = f ? (f.serviceName || (() => { try { return new URL(f.origin).host; } catch { return f.origin ?? '-'; } })()) : null;
     window.FlowFigure.renderSequence(host, { lanes: [
@@ -378,7 +385,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       { key: 'idp', name: tt('user_flow_lane_idp') || 'zkIdP', sub: tt('user_flow_lane_idp_sub') }], steps });
     const sum = $('flowSummary');
     sum.dataset.flowAt = f ? String(f.at) : '';
-    sum.textContent = f ? (tt('user_flow_last', { service: svc, time: new Date(f.at).toLocaleTimeString(locale()), total: fmtMs(f.totalMs), prove: fmtMs((ms.prove_idp?.ms ?? 0) + (ms.prove_session?.ms ?? 0)), passkey: fmtMs(ms.passkey?.ms ?? 0) }) || '')
+    sum.textContent = f ? (tt(ms.passkey?.before ? 'user_flow_last_before' : 'user_flow_last', { service: svc, time: new Date(f.at).toLocaleTimeString(locale()), total: fmtMs(f.totalMs), prove: fmtMs((ms.prove_idp?.ms ?? 0) + (ms.prove_session?.ms ?? 0)), passkey: fmtMs(ms.passkey?.ms ?? 0) }) || '')
       : (tt('user_flow_none') || '');
   }
   /** 기록을 다시 읽는다 — 목록을 그린 뒤에 붙은 것(승인 창의 recordTx 가 단 거래 해시)도 보이게. */

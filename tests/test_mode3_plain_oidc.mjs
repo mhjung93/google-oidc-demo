@@ -144,7 +144,7 @@ try {
     assert.equal((await user2('/api/rp/me')).body.account, me.body.account);
   });
 
-  await t('서비스 콜백 거절: 남의 브라우저의 state·취소·이미 쓴 코드·다른 nonce 의 토큰', async () => {
+  await t('서비스 콜백 거절: 남의 브라우저의 state·취소·이미 쓴 코드 — 폐기된 계정은 받아 둔 코드도 새 동의도 못 쓴다', async () => {
     const a = makeJar(rp.base), b = makeJar(rp.base);
     const qa = Object.fromEntries((await startAt(a)).searchParams);
     const da = await decide(idp, qa);
@@ -157,6 +157,14 @@ try {
     assert.equal(new URL((await d(url)).location, rp.base).searchParams.get('social'), 'ok');
     const d2 = makeJar(rp.base); await startAt(d2);
     assert.ok(new URL((await d2(url)).location, rp.base).searchParams.get('social_error'), '쓴 콜백 주소를 다시');
+    // 리뷰 2026-11-19(OIDC M-1): 코드를 받은 뒤 계정이 폐기되면 토큰 교환이 거절되고(서비스에 로그인되지 않는다), 폐기된 계정의 새 동의도 거절된다
+    const e = makeJar(rp.base); const qe = Object.fromEntries((await startAt(e)).searchParams);
+    const de = await decide(idp, qe); assert.equal(de.status, 200, j(de.body));
+    assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid: UID, disabled: true })).body.disabled, true);
+    assert.ok(new URL((await e(de.body.redirect)).location, rp.base).searchParams.get('social_error'), '폐기 뒤에 낸 코드');
+    assert.equal((await e('/api/rp/me')).status, 401);
+    const f = makeJar(rp.base); const qf = Object.fromEntries((await startAt(f)).searchParams);
+    const df = await decide(idp, qf); assert.ok([401, 403].includes(df.status), j(df));
   });
 } finally { await stack.stop(); }
 console.log(failed ? `\n${failed} failed` : '\nall passed');

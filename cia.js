@@ -640,13 +640,14 @@ app.get('/oidc/authorize/info', (req, res) => {
   const r = oidcRequest(req.query);
   if (r.reason) return res.status(400).json({ ok: false, reason: r.reason });
   const uid = req.session?.uid && state.accounts[req.session.uid] ? req.session.uid : null;
-  res.json({ ok: true, client: r.client, user: uid ? { uid, id: state.accounts[uid].loginId ?? null } : null, issueAuth: ISSUE_AUTH });
+  res.set('Cache-Control', 'no-store').json({ ok: true, client: r.client, user: uid ? { uid, id: state.accounts[uid].loginId ?? null } : null, issueAuth: ISSUE_AUTH });
 });
 // "계속"·"취소" — 같은 오리진의 JSON POST + 로그인 세션으로만(다른 사이트가 대신 누르지 못한다). 응답은 서비스로 돌아갈 주소다(화면이 그리로 간다).
 app.post('/oidc/authorize/decision', jsonBodyOnly, (req, res) => {
   if (!PLAIN_OIDC) return plainOidcOff(res);
   const uid = req.session?.uid && state.accounts[req.session.uid] ? req.session.uid : null;
   if (!uid) return res.status(401).json({ error: 'login required', reason: 'login_required' });
+  if (state.accounts[uid].disabled) return res.status(403).json({ error: 'account disabled', reason: 'account_disabled' });   // 폐기된 계정은 일반 OIDC 로도 로그인하지 못한다
   const r = oidcRequest(req.body);
   if (r.reason) return res.status(400).json({ ok: false, reason: r.reason });
   const back = new URL(r.redirect_uri);
@@ -672,6 +673,7 @@ app.post('/oidc/token', express.urlencoded({ extended: false, limit: '8kb' }), a
   if (rec) oidcCodes.delete(code);
   const pkceOk = rec && typeof code_verifier === 'string' && /^[A-Za-z0-9._~-]{43,128}$/.test(code_verifier) && createHash('sha256').update(code_verifier).digest('base64url') === rec.code_challenge;
   if (!rec || rec.expiresAt < Date.now() || client_id !== rec.client_id || redirect_uri !== rec.redirect_uri || !pkceOk) return res.status(400).json({ error: 'invalid_grant' });
+  if (!state.accounts[rec.uid] || state.accounts[rec.uid].disabled) return res.status(400).json({ error: 'invalid_grant' });   // 코드를 받은 뒤 폐기·삭제된 계정
   try {
     const id_token = await signIdToken({ sub: rec.uid, aud: rec.client_id, claims: { nonce: rec.nonce, zkid_plain: true } });   // zkid_plain: zk-Delegation 토큰(sub = auid_s)과 섞이지 않게(§5)
     res.set('Cache-Control', 'no-store').json({ id_token, token_type: 'Bearer', expires_in: ID_TOKEN_TTL_SEC });
@@ -1370,6 +1372,8 @@ app.post('/cia/issue', userCors, async (req, res) => {
     // 이 await 를 끝으로 아래 물리기→push→setSlot→persist 구간은 동기다(2026-10-01 리뷰 Important 2 와 같은 이유).
     const newLeaf = await registryLeaf(BigInt(acct.auid), Cf_u);
     if (acct.disabled) return res.status(403).json({ error: 'account disabled', reason: 'account_disabled' });   // await 사이의 폐기
+    // 발급 기록이 찼다 — 기록 없이 서명하면 그 로그인(과 그 뒤의 거래)을 개봉할 수 없다. 1회용 코드·자격증명 교체보다 먼저 막는다(아무것도 바꾸지 않는다).
+    if ((acct.auidSLog?.length ?? 0) >= AUID_S_LOG_MAX) return res.status(409).json({ error: 'issuance record is full for this account', reason: 'auid_log_full' });
     acct.creds ??= [];
     const cur = activeCred(uid);
     let published = false;
@@ -1403,13 +1407,15 @@ app.post('/cia/issue', userCors, async (req, res) => {
     // 2026-11-12(사용자 결정 — D1 수정): 가장 최신 auid_s 하나만 덮어쓴다 — 앞 값은 사라진다(기록 아님). 어느 세션(Cf_s)의 것인지는 적지 않는다.
     acct.lastAuidS = { value: auidS.toString(), at: issuedAt };
     // 2026-11-19(스펙 oidc-comparison C5, 사용자 결정 — D1 의 두 번째 예외): 가장 최신 arid_s 하나도 같은 모양으로 덮어쓴다 — 관리자 화면이 "zk-Delegation 에서 zkIdP 가 본 서비스" 로
-    // 보인다. 가려진 값이라 어느 서비스인지는 여기서도 모른다. 기록(이력)은 없다.
+    // 보인다. 가려진 값이라 발급 때는 어느 서비스인지 모른다. 기록(이력)은 없다. 다만 그 로그인이 온체인 거래로 이어지면 거래의 공개 입력에 arid 와 auid_s 가 함께 있어,
+    // 아래 auidSLog 로 "이 uid 가 그 서비스(arid)의 그 계정(PPID)을 쓴다" 까지 zkIdP 가 혼자 이을 수 있다(스펙 trace-without-tag §3 — T6 의 대가).
     acct.lastAridS = { value: aridS.toString(), at: issuedAt };
     // 2026-11-19(데모 시나리오 6 — "IdP 가 무엇을 받아 검증하는지" 그림): 가장 최근 발급 요청에서 받은 공개값 한 벌. 이력이 아니다(덮어쓴다) — 전부 이 요청으로 zkIdP 가 원래 받는 값이고
     // 비밀은 없다(tag·증명·난수 n 은 남기지 않는다 — 요청을 묶는 값이라 화면에 둘 이유가 없다).
     // 2026-11-19(스펙 trace-without-tag T6, 사용자 결정 "IdP 는 기록을 갖고 있는 형태"): 발급마다 auid_s 를 계정에 남긴다 — 개봉은 서비스가 낸 auid_s 를 이 기록에서 찾는다.
-    // 지금까지의 "auid_s 는 남기지 않는다"(D1)를 뒤집는다. 계정마다 최근 AUID_S_LOG_MAX 개. 연결 해제·폐기에도 지우지 않는다(추적의 근거다).
-    acct.auidSLog = [...(acct.auidSLog ?? []), { value: auidS.toString(), at: issuedAt }].slice(-AUID_S_LOG_MAX);
+    // 지금까지의 "auid_s 는 남기지 않는다"(D1)를 뒤집는다. 연결 해제·폐기에도 지우지 않는다(추적의 근거다). 오래된 것을 밀어내지 않는다 — 계정마다 AUID_S_LOG_MAX 개가 차면
+    // 위에서 발급을 거절한다(리뷰 2026-11-19 I-1: 밀어내면 사용자가 발급을 되풀이해 지난 거래의 기록을 스스로 지울 수 있다).
+    acct.auidSLog = [...(acct.auidSLog ?? []), { value: auidS.toString(), at: issuedAt }];
     acct.lastIssue = { at: issuedAt, auid_s: auidS.toString(), arid_s: aridS.toString(), Cf_u: cfu, Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString() };
     persist();
     // OIDC 모양의 ID 토큰(2026-11-09 Phase 1): sub=auid_s(세션 가명), aud=arid_s(세션 RP 가명) — 둘 다 π_RP 의 공개 신호라 RP 가 증명과 맞춰 본다.
@@ -2049,7 +2055,8 @@ function loadVkey() {
   return (vkeyP ??= (async () => JSON.parse(fs.readFileSync(VKEY_PATH, 'utf8')))().catch((e) => { vkeyP = null; throw e; }));
 }
 const findOpening = (id) => state.openings.find((o) => o.id === id);
-const AUID_S_LOG_MAX = 500;   // 계정마다 남기는 auid_s 기록 수(스펙 trace-without-tag T6)
+// 계정마다 남기는 auid_s 기록 수(스펙 trace-without-tag T6). 차면 그 계정의 발급을 거절한다(auid_log_full) — 기록을 밀어내 개봉을 피하지 못하게. 상태 파일의 크기도 이 값으로 묶인다.
+const AUID_S_LOG_MAX = Math.max(1, Number(process.env.CIA_AUID_S_LOG_MAX) || 5000);
 /** 발급 기록에서 그 auid_s 를 낸 계정의 uid — 없으면 null(기록 상한 밖이거나 이 IdP 가 낸 값이 아니다). 최신 하나(lastAuidS)도 함께 본다(기록이 생기기 전의 발급). */
 function uidOfAuidS(auidS) {
   for (const [uid, a] of Object.entries(state.accounts)) if (a.lastAuidS?.value === auidS || (a.auidSLog ?? []).some((r) => r.value === auidS)) return uid;

@@ -195,6 +195,14 @@ try {
     assert.ok(writes.some((w) => w.kind === 'session' && w.k === 'mode3.authorize.pending'), '팝업이 IdP 대기 저장분을 남겼다');
     assert.equal((await rpPage.evaluate(() => window.__walletMsgs.join('\n'))).includes(SALT_A), false, 'postMessage 에 salt 가 있다');
     assert.equal(consoleLines.some((l) => l.includes(SALT_A)), false, '콘솔 로그에 salt 가 있다');
+    // 리뷰 2026-11-19 I-1: 첫 로그인의 패스키는 등록하면서(로그인 함수 전에) 물었다 — 플로우 카드가 그 시간을 "전체" 의 일부처럼 말하지 않는다
+    const pk = (await idbDump(userPage)).loginFlow.steps.find((x) => x.key === 'passkey');
+    assert.equal(pk.before, true, j(pk)); assert.equal(pk.held, false);
+    await userPage.bringToFront();
+    await waitText(userPage, '#flowSummary', '패스키는 로그인 전에 확인', 20_000);
+    await waitText(userPage, '#flowFigure .seq-step[data-step="passkey"]', '전체 시간에는 넣지 않습니다');
+    assert.equal(await userPage.$$eval('#flowFigure .seq-step[data-step="passkey"] .seq-bar', (l) => l.length), 0, '전체 대비 막대를 그리지 않는다');
+    await rpPage.bringToFront();
   });
 
   await t('두 번째 로그인: 인증 창(발급) → 패스키 0번(보관분) → 성공', async () => {
@@ -236,6 +244,14 @@ try {
     assert.equal(await userPage.$eval('#flowFigure .seq-step[data-step="pseudonym"] code[data-flow="arid_s"]', (x) => x.title), String(s.arid_s));
     await userPage.click('#flowFigure .seq-step[data-step="respond"] summary');
     assert.equal(await userPage.$eval('#flowFigure .seq-step[data-step="respond"] code[data-flow="PPID"]', (x) => x.title), String(s.PPID));
+    // 발급(왕복) 단계는 보낸 것과 돌려받은 것을 나눠 적는다 — 보낸 쪽에 uid·가명·봉투, 받은 쪽에 자격증명
+    await userPage.click('#flowFigure .seq-step[data-step="issue"] summary');
+    assert.deepEqual(await userPage.$$eval('#flowFigure .seq-step[data-step="issue"] .seq-body .flow-sub', (l) => l.map((x) => x.textContent)), ['zkIdP 에 보낸 것 →', '← zkIdP 가 돌려준 것']);
+    assert.deepEqual(await userPage.$$eval('#flowFigure .seq-step[data-step="issue"] .seq-body .flow-items', (l) => l.map((dl) => [...dl.querySelectorAll('dt')].map((x) => x.textContent))),
+      [['uid', 'auid_s', 'arid_s', 'C_u', 'C_s', 'max_height', 'π_IdP'], ['자격증명', 'zkIdP ID 토큰']]);
+    assert.equal(await userPage.$eval('#flowFigure .seq-step[data-step="issue"] code[data-flow="auid_s"]', (x) => x.title), String(s.auid_s));
+    // 카드는 "보낸 트랜잭션" 위에 있다(시연에서 로그인 직후 바로 보이게)
+    assert.equal(await userPage.evaluate(() => Boolean(document.querySelector('#flowCard').compareDocumentPosition(document.querySelector('#txsCard')) & Node.DOCUMENT_POSITION_FOLLOWING)), true);
     assert.equal((await userPage.$eval('#flowCard', (x) => x.textContent)).includes(SALT_A), false, '카드에 salt 가 있다');
     await waitText(userPage, '#flowSummary', '영지식 증명');
   });

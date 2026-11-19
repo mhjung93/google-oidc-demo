@@ -1645,6 +1645,7 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
   이어서 다듬은 것: 일반 OIDC 동의 화면의 rid 를 줄여 보인다(전체는 title) · 일반 OIDC 로 돌아온 뒤 그림의 받는 쪽 이름이 서비스 이름이다('RP' 가 아니다) · Google·일반 OIDC 로그인에는 "내 계정 주소" 줄과 상단 배지의 주소를 숨긴다 ·
   zkIdP 관리자 표의 "그림" 버튼은 로그인(발급)한 계정에만 · 옛 문구("RP 전용 추적 조각"·"추적용 봉인") 정리 · 서비스 로그인 카드 문구가 수단("zkIdP 로 로그인")을 밝힌다 · **화면 문구의 "IdP" → "zkIdP"**(문구 사전과 Mode 3 화면 파일
   359곳 — `π_IdP`·식별자·서버 로그는 그대로, 연결된 서비스 줄의 역할 이름표 `wallet_session_idp` 만 "IdP" 로 남긴다). 비교용 일반 OIDC 버튼은 실제 Google 확인 전까지 켜 둔다(`PLAIN_OIDC=0` 으로 끈다).
+- **독립 리뷰(Opus 셋 — OIDC 비교·trace tag 없는 개봉·플로우 카드와 휴대폰 패스키, 2026-11-19) 뒤 수정**: Critical 0, Important 6 전부 수정 — Google nonce 를 브라우저 세션에 묶음, 데모를 다시 띄울 때 서비스 계정 파일도 `.bak` 으로, zkIdP 의 발급 기록(auid_s)을 밀어내지 않고 상한(5,000 — `CIA_AUID_S_LOG_MAX`)에서 발급 거절(`auid_log_full`), "zkIdP 는 서비스를 모른다" 의 대가(온체인 거래는 arid·PPID 까지 이어진다)를 스펙에 기록, 첫 로그인의 패스키 시간을 플로우 카드의 전체에서 뺌, 플로우 단계 설명 넷을 프로토콜에 맞게. 플로우 카드는 세션 카드 바로 아래로 올리고 발급 단계를 보낸 것·돌려받은 것으로 나눴다. 자세한 것과 고치지 않은 Minor 는 세 스펙(`2026-11-19-mode3-*-design.md`)의 "리뷰 뒤 바꾼 것".
 - **로그인 전체 플로우 카드(2026-11-19, 스펙 `docs/superpowers/specs/2026-11-19-mode3-login-flow-and-phone-passkey-design.md`)**: 사용자 페이지의 "로그인 전체 플로우" 카드가 "zkIdP 로 로그인" 한 번의 단계를
   세 주체(서비스 · zk 클라이언트 · zkIdP)의 줄 위에 순서도로 그린다(`mode3/common/flow_figure.js` `renderSequence`). 코어가 **성공한 로그인**의 단계별 시간을 kv `loginFlow` 에 가장 최근 것 하나만 남기고
   (`core.loginFlow()` — 단계 `check_service`·`passkey`·`sync`·`random`·`session_key`·`commit`·`pseudonym`·`prove_idp`·`issue`·`publish_wait`(기다렸을 때만)·`prove_session`·`sign`, 시간은 `performance.now()`),

@@ -250,10 +250,14 @@ try {
     assert.ok(sessions.some((s) => s.Cf_s === a.cred.Cf_s) && sessions.some((s) => s.Cf_s === b.cred.Cf_s), '세션 기록 둘');
     assert.ok(sessions.every((s) => s.auid_s === undefined && s.arid_s === undefined), 'D1: 세션 기록에는 auid_s·arid_s 를 남기지 않는다');
     const file = fs.readFileSync(path.join(cia.dir, 'cia_state.json'), 'utf8');
-    assert.equal(file.includes(a.req.auid_s.toString()), false, '앞 발급의 auid_s 는 남지 않는다(기록이 아니라 최신값 하나)');
-    assert.equal(file.split(b.req.auid_s.toString()).length - 1, 1, '최신 auid_s 는 상태 파일에 한 번만 있다');
-    for (const v of [a.req.arid_s, b.req.arid_s]) assert.equal(file.includes(v.toString()), false, 'arid_s 는 저장하지 않는다');
-    for (const k of ['"attrs"', '"profile"', '"auid_s"', '"arid_s"', '"cm_u"']) assert.equal(file.includes(k), false, `${k} 가 상태 파일에 있다`);
+    // 2026-11-19: 발급마다 auid_s 를 기록한다(스펙 trace-without-tag T6 — 개봉의 근거). 앞 발급의 값은 그 기록(auidSLog)에만 있고, 최신 값은 최신값(lastAuidS)·기록·가장 최근 발급 요청(lastIssue)에 있다.
+    // arid_s 는 이력이 없다 — 최신 하나만(lastAridS·lastIssue, 스펙 oidc-comparison C5).
+    const times = (v) => file.split(v.toString()).length - 1;
+    assert.equal(times(a.req.auid_s), 1, '앞 발급의 auid_s 는 발급 기록에 한 번 남는다');
+    assert.equal(times(b.req.auid_s), 3, '최신 auid_s: 최신값·발급 기록·가장 최근 발급 요청');
+    assert.equal(times(a.req.arid_s), 0, '앞 발급의 arid_s 는 남지 않는다(이력 없음)');
+    assert.equal(times(b.req.arid_s), 2, '최신 arid_s: 최신값·가장 최근 발급 요청');
+    for (const k of ['"attrs"', '"profile"', '"cm_u"']) assert.equal(file.includes(k), false, `${k} 가 상태 파일에 있다`);
   });
 
   await t('issue V11: 다른 C_u(새 blind_u·같은 속성 또는 다른 속성)로 발급하면 옛 C_u 는 revoked·슬롯은 새 리프, 옛 C_u 재사용은 409 cred_revoked', async () => {

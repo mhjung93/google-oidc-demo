@@ -281,6 +281,8 @@
           }));
           progress.opened = true;
           renderGuide();
+        } else if (r.ok && b.status === 'approved' && b.resolved === false) {   // 승인됐지만 zkIdP 의 발급 기록에 그 auid_s 가 없다(스펙 trace-without-tag T8) — "실패 — approved" 로 보이지 않게
+          setVerdict($('openVerdict'), false, 'rp_open_failed', () => ({ summary: tt('rp_open_unresolved') || 'zkIdP 의 발급 기록에 없는 auid_s 입니다', detail: b }));
         } else setVerdict($('openVerdict'), false, 'rp_open_failed', { reason: b.reason ?? b.error ?? b.status ?? `HTTP ${r.status}`, detail: b });
       } catch (e) {
         $('openLog').textContent += `\n결과 오류: ${e.message}`;
