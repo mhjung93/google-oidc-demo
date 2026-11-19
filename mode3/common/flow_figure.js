@@ -33,5 +33,44 @@
     fig.append(node(f.from, 'flow-from'), mid, to);
     host.append(fig);
   }
-  window.FlowFigure = { render };
+  // 순서도(2026-11-19 스펙 login-flow-and-phone-passkey F6) — 주체의 줄(lanes) 위에 단계를 위에서 아래로 놓는다. 주고받는 단계는 두 줄에 걸친 화살표, 혼자 하는 계산은 한 줄 안의 상자.
+  // 단계를 누르면(details) 의미와 값이 펴진다.
+  //   FlowFigure.renderSequence(host, { lanes: [{ key, name, sub }], steps: [{ key, from, to, both, title, time, share(0~1), note, dim, meaning, items }] })
+  function renderSequence(host, f) {
+    const open = new Set([...host.querySelectorAll('details[open]')].map((d) => d.parentElement?.dataset.step));   // 다시 그려도 펴 둔 단계는 그대로
+    host.replaceChildren(); host.classList.add('flow-host');
+    const cols = f.lanes.length;
+    const idx = (k) => Math.max(0, f.lanes.findIndex((l) => l.key === k));
+    const wrap = el('div', 'seq'); wrap.style.setProperty('--seq-cols', String(cols));
+    const head = el('div', 'seq-lanes');
+    for (const l of f.lanes) { const d = el('div', 'seq-lane'); d.dataset.lane = l.key; d.append(el('strong', null, l.name)); if (l.sub) d.append(el('small', 'muted', l.sub)); head.append(d); }
+    wrap.append(head);
+    const ol = el('ol', 'seq-steps');
+    f.steps.forEach((st, i) => {
+      const a = idx(st.from), b = idx(st.to ?? st.from);
+      const li = el('li', `seq-step${st.dim ? ' seq-dim' : ''}`); li.dataset.step = st.key; li.dataset.kind = a === b ? 'self' : 'arrow';
+      const det = el('details'); if (open.has(st.key)) det.open = true;
+      const row = el('summary', 'seq-row');
+      const box = el('div', `seq-box ${a === b ? 'seq-self' : st.both ? 'seq-both' : a < b ? 'seq-right' : 'seq-left'}`);
+      box.style.gridColumn = `${Math.min(a, b) + 1} / ${Math.max(a, b) + 2}`;
+      const who = a === b ? f.lanes[a].name : `${f.lanes[a].name} ${st.both ? '⇄' : '→'} ${f.lanes[b].name}`;
+      const line = el('div', 'seq-line');
+      line.append(el('span', 'seq-n', String(i + 1)), el('span', 'seq-title', st.title));
+      if (st.time) { const t = el('span', 'seq-time', st.time); t.dataset.seqTime = st.key; line.append(t); }
+      box.append(el('small', 'seq-who muted', who), line);
+      if (st.note) box.append(el('small', 'seq-note muted', st.note));
+      if (typeof st.share === 'number' && st.share > 0) { const bar = el('span', 'seq-bar'); bar.style.width = `${Math.max(1, Math.min(100, st.share * 100)).toFixed(1)}%`; box.append(bar); }
+      row.append(box);
+      const body = el('div', 'seq-body');
+      body.append(el('p', 'seq-meaning', st.meaning ?? ''));
+      if (st.items?.length) body.append(items(st.items));
+      det.append(row, body); li.append(det); ol.append(li);
+    });
+    const flow = el('div', 'seq-flow'), rails = el('div', 'seq-rails');   // 줄마다 세로 점선(주체의 생명선)
+    for (let i = 0; i < cols; i++) rails.append(el('span'));
+    flow.append(rails, ol);
+    wrap.append(flow);
+    host.append(wrap);
+  }
+  window.FlowFigure = { render, renderSequence };
 })();

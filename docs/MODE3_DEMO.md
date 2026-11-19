@@ -1640,6 +1640,14 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
   (계정마다 최근 500개)에서 uid 를 찾아 돌려준다. 복호·조각이 없다. **zkIdP 가 기록을 가지므로 체인의 `auid_s` 만으로도 zkIdP 는 거래의 주인을 안다**(지금까지는 서비스 쪽 조각이 있어야 했다 — 사용자 결정).
   회로를 다시 빌드했으므로 **지금까지의 증명 키·배포된 검증자·지갑은 무효다 — 데모는 리셋(재배포)해야 한다.** 옛 키는 `build/mode3_backup_20261119_tag/` 에 있다. 서비스 등록의 조합 키(`pk_trace`)와 지갑 생성자의
   `pkTraceX`·`pkTraceY` 는 값만 남아 있고 검사에 쓰이지 않는다.
+- **로그인 전체 플로우 카드(2026-11-19, 스펙 `docs/superpowers/specs/2026-11-19-mode3-login-flow-and-phone-passkey-design.md`)**: 사용자 페이지의 "로그인 전체 플로우" 카드가 "zkIdP 로 로그인" 한 번의 단계를
+  세 주체(서비스 · zk 클라이언트 · zkIdP)의 줄 위에 순서도로 그린다(`mode3/common/flow_figure.js` `renderSequence`). 코어가 **성공한 로그인**의 단계별 시간을 kv `loginFlow` 에 가장 최근 것 하나만 남기고
+  (`core.loginFlow()` — 단계 `check_service`·`passkey`·`sync`·`random`·`session_key`·`commit`·`pseudonym`·`prove_idp`·`issue`·`publish_wait`(기다렸을 때만)·`prove_session`·`sign`, 시간은 `performance.now()`),
+  화면이 단계마다 의미(무엇을·왜)와 실제 값·걸린 시간을 편다. 기록은 공개값뿐이다(salt·blind·세션 개인키·난수 n 없음). 서비스의 로그인 요청과 증명 전달·검증은 코어 밖이라 시간을 재지 않는다.
+  `lib/mode3_wallet.js` `buildIssueRequest` 에 선택 인자 `onStep(key, ms)` 가 생겼다(커밋먼트·가명·π_IdP 를 나눠 재려고 — 안 주면 지금과 같다).
+- **휴대폰 패스키(QR)(2026-11-19, 같은 스펙 — passkey-web)**: 패스키 설정 카드의 "패스키를 둘 곳" 에서 휴대폰을 고르면 WebAuthn 요청에 `hints: ['hybrid']` 가 실려 Chrome 이 바로 QR 을 띄운다. 연결할 때 인증기가 알려 준
+  공개 정보(`authenticatorAttachment`·`transports`·동기화 표시 BE/BS)와 고른 곳을 kv `passkey.info` 에 두고, 이후의 확인은 그 `transports`·힌트를 싣는다. 패스키 줄에 "이 기기의 패스키 / 다른 기기(휴대폰)의 패스키" 와
+  동기화 여부가 보인다. **한계**: 시연 머신에 블루투스 어댑터가 없어 USB 동글이 필요하고, 실제 휴대폰에서 PRF 가 나오는지는 미확인이다(자동 테스트는 WebAuthn 스텁으로 옵션·저장·표시만 본다).
 - **영지식 증명 카드(2026-11-18, web·passkey-web 사용자 페이지)**: 첫 화면의 "보낸 트랜잭션" 아래 "영지식 증명" 카드가 이 브라우저가 만든 증명을 보여 준다. 코어가 증명을 만들 때마다 증명과 공개 입력을
   IndexedDB(kv `proofs`)에 최근 30개 남기고(`core.proofs()`, 용도·대상 꼬리표와 함께 — 승인 창에서 만든 것도 같은 저장소라 첫 화면에서 보인다), "모두 지우기"·데모 리셋이 함께 지운다. 캐시에서 다시 쓴 증명(같은 조건의 재검증 등)은
   새 줄이 생기지 않는다. 화면에서 회로 `pi_cred` 의 증명은 **π_session(π_s)** 로 적는다. 기본은 π_session 만 보이고 "zkIdP 에 낸 π_IdP 도 보기" 로 등록·세션 발급·슬롯 조회·세션 폐기의 π_IdP 를 더 본다.

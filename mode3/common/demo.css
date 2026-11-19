@@ -74,5 +74,30 @@ body.admin-locked main > :not(#adminGate), body.admin-locked .section-menu { dis
 .flow-sub { font-weight:600; margin-top:6px } .flow-check, .flow-unknown, .flow-learn { margin:2px 0 0; padding:0; list-style:none } .flow-check li { color:#15803d } .flow-unknown li { color:#64748b } .flow-learn li { color:#b91c1c }
 /* 좁은 칸(서비스 화면의 옆 칸 등)에서는 세 칸을 위아래로 쌓는다 — 화면 폭이 아니라 그림이 놓인 칸의 폭으로 가른다 */
 .flow-host { container-type:inline-size }
+/* 순서도(flow_figure.js renderSequence — 2026-11-19 로그인 전체 플로우): 주체의 줄 위에 단계를 위에서 아래로. 좁으면 줄을 접고 "누가 → 누구" 글자로 보인다. */
+.seq { font-size:13px; margin:10px 0 }
+.seq-lanes, .seq-row { display:grid; grid-template-columns:repeat(var(--seq-cols, 3), minmax(0, 1fr)); gap:0 14px }
+.seq-lane { text-align:center; border:1.5px solid var(--line, #cbd5e1); border-radius:10px; padding:6px 8px; background:var(--surface, #f8fafc); display:flex; flex-direction:column; gap:2px; min-width:0 }
+.seq-lane[data-lane="user"] { border-color:var(--accent, #2563eb) }
+.seq-flow { position:relative }
+.seq-rails { position:absolute; inset:0; display:grid; grid-template-columns:repeat(var(--seq-cols, 3), minmax(0, 1fr)); gap:0 14px; pointer-events:none }
+.seq-rails span { justify-self:center; width:0; border-left:1.5px dashed var(--line, #cbd5e1) }
+.seq-steps { position:relative; list-style:none; margin:0; padding:6px 0 2px }
+.seq-step { margin:0; padding:3px 0 } .seq-step.seq-dim { opacity:.55 }
+.seq-row { cursor:pointer; list-style:none } .seq-row::-webkit-details-marker { display:none }
+.seq-box { position:relative; min-width:0; padding:5px 9px 6px; border-radius:8px; background:var(--card, #fff); display:flex; flex-direction:column; gap:1px }
+.seq-box.seq-self { border:1px solid var(--line, #cbd5e1) }
+.seq-box.seq-right, .seq-box.seq-left, .seq-box.seq-both { border-bottom:2px solid var(--accent, #2563eb); border-radius:8px 8px 0 0; margin:0 12%; background:color-mix(in srgb, var(--accent, #2563eb) 7%, var(--card, #fff)) }
+.seq-box.seq-right::after, .seq-box.seq-both::after { content:'▶'; position:absolute; right:-3px; bottom:-8px; font-size:11px; line-height:1; color:var(--accent, #2563eb) }
+.seq-box.seq-left::before, .seq-box.seq-both::before { content:'◀'; position:absolute; left:-3px; bottom:-8px; font-size:11px; line-height:1; color:var(--accent, #2563eb) }
+.seq-line { display:flex; align-items:baseline; gap:6px; min-width:0 } .seq-title { font-weight:600; flex:1; min-width:0; overflow-wrap:anywhere }
+.seq-n { flex:none; min-width:18px; height:18px; border-radius:9px; background:var(--accent, #2563eb); color:#fff; font-size:11px; text-align:center; line-height:18px }
+.seq-time { flex:none; font-variant-numeric:tabular-nums; font-weight:600; color:var(--accent, #2563eb) }
+.seq-who { display:none } .seq-note { font-size:12px }
+.seq-bar { display:block; height:3px; border-radius:2px; background:var(--accent, #2563eb); opacity:.55; margin-top:3px }
+.seq-step details[open] .seq-box { box-shadow:0 0 0 2px color-mix(in srgb, var(--accent, #2563eb) 35%, transparent) }
+.seq-body { margin:6px 0 8px; padding:8px 12px; border-left:3px solid var(--accent, #2563eb); background:var(--surface, #f8fafc); border-radius:0 8px 8px 0 }
+.seq-meaning { margin:0 0 4px; line-height:1.55 }
+@container (max-width:640px) { .seq-lanes, .seq-rails { display:none } .seq-row { grid-template-columns:1fr } .seq-box { grid-column:1 / -1 !important; margin:0 !important } .seq-who { display:block } }
 @container (max-width:640px) { .flow-fig { grid-template-columns:1fr } .flow-node.flow-from { flex-direction:row; gap:8px; align-items:baseline; justify-content:flex-start } }
 @media (max-width:760px) { .flow-fig { grid-template-columns:1fr } }

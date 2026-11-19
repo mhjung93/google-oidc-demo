@@ -70,7 +70,7 @@ async function main() {
       if (!window.Mode3Passkey) throw Object.assign(new Error('/common/passkey_store.js 를 읽지 못했다'), { reason: 'passkey_unsupported' });
       return window.Mode3Passkey;
     };
-    passkey = { derive: (o) => P().derivePrf({ ...o, rpId }), create: () => P().createPasskey({ rpId, rpName: 'zk 지갑' }) };
+    passkey = { derive: (o) => P().derivePrf({ ...o, rpId }), create: (o) => P().createPasskey({ ...o, rpId, rpName: 'zk 지갑' }) };
   }
   // 워커 진행률은 화면이 듣는 이벤트로 넘긴다(화면이 아직 없을 때 온 것은 버려진다 — 다음 청크가 다시 온다).
   const prover = createProver({ onProgress: (p) => window.dispatchEvent(new CustomEvent('mode3-zk-progress', { detail: p })) });

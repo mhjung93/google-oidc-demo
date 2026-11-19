@@ -40,5 +40,57 @@ await t('32바이트가 아니면 passkey_prf_unsupported', async () => {
   await assert.rejects(P.saltFromPrf(null), (e) => e.reason === 'passkey_prf_unsupported');
 });
 
+
+// ---- 휴대폰 패스키(스펙 2026-11-19 login-flow-and-phone-passkey P1·P2): 힌트·transports 가 WebAuthn 옵션에 실리고, 인증기의 공개 정보를 돌려준다 ----
+{
+  const RP = 'wallet.zkd.test';
+  globalThis.location = { hostname: RP };
+  globalThis.window.PublicKeyCredential = function () {};
+  globalThis.window.isSecureContext = true;
+  const calls = [];
+  const prfOut = new Uint8Array(32).fill(5).buffer;
+  const authData = (flags) => { const b = new Uint8Array(37); b[32] = flags; return b.buffer; };
+  const fake = {
+    create: async ({ publicKey }) => { calls.push(['create', publicKey]); return { rawId: new Uint8Array([1, 2, 3]).buffer, authenticatorAttachment: 'cross-platform',
+      response: { getTransports: () => ['hybrid', 'internal'], getAuthenticatorData: () => authData(0x01 | 0x04 | 0x08 | 0x10) }, getClientExtensionResults: () => ({ prf: { enabled: true } }) }; },
+    get: async ({ publicKey }) => { calls.push(['get', publicKey]); return { rawId: new Uint8Array([1, 2, 3]).buffer, authenticatorAttachment: 'cross-platform',
+      response: { authenticatorData: authData(0x01 | 0x04 | 0x08) }, getClientExtensionResults: () => ({ prf: { results: { first: prfOut } } }) }; },
+  };
+  Object.defineProperty(globalThis, 'navigator', { value: { credentials: fake }, configurable: true });
+
+  await t('derivePrf: hints·transports 를 주면 옵션에 실린다', async () => {
+    calls.length = 0;
+    const d = await P.derivePrf({ credentialId: 'AQID', rpId: RP, hints: ['hybrid'], transports: ['hybrid', 'internal'] });
+    const [, pk] = calls[0];
+    assert.deepEqual(pk.hints, ['hybrid']);
+    assert.deepEqual(pk.allowCredentials[0].transports, ['hybrid', 'internal']);
+    assert.equal(d.credentialId, 'AQID');
+    assert.deepEqual(d.info, { attachment: 'cross-platform', transports: null, backupEligible: true, backedUp: false });
+  });
+  await t('derivePrf: 안 주면 옵션에 hints·transports 키가 없다(지금까지와 같다)', async () => {
+    calls.length = 0;
+    await P.derivePrf({ credentialId: 'AQID', rpId: RP });
+    const [, pk] = calls[0];
+    assert.equal('hints' in pk, false);
+    assert.equal('transports' in pk.allowCredentials[0], false);
+  });
+  await t('createPasskey: hints 가 만들기와 뒤따르는 확인 계산 둘 다에 실리고, 공개 정보(붙는 방식·transports·동기화 표시)를 돌려준다', async () => {
+    calls.length = 0;
+    const c = await P.createPasskey({ rpId: RP, rpName: 'zk 지갑', hints: ['hybrid'] });
+    assert.deepEqual(calls.map((x) => x[0]), ['create', 'get']);
+    assert.deepEqual(calls[0][1].hints, ['hybrid']);
+    assert.deepEqual(calls[1][1].hints, ['hybrid']);
+    assert.deepEqual(calls[1][1].allowCredentials[0].transports, ['hybrid', 'internal']);
+    assert.deepEqual(c.info, { attachment: 'cross-platform', transports: ['hybrid', 'internal'], backupEligible: true, backedUp: true });
+    assert.equal(typeof c.s_u, 'string');
+  });
+  await t('모르는 힌트·transports 는 거른다', async () => {
+    calls.length = 0;
+    await P.derivePrf({ credentialId: 'AQID', rpId: RP, hints: ['hybrid', 'evil', 7], transports: ['usb', '<x>', 'hybrid'] });
+    assert.deepEqual(calls[0][1].hints, ['hybrid']);
+    assert.deepEqual(calls[0][1].allowCredentials[0].transports, ['usb', 'hybrid']);
+  });
+}
+
 if (fails) { console.log(`\n${fails} failed`); process.exit(1); }
 console.log('\nall passed');

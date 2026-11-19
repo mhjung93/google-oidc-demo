@@ -48,25 +48,44 @@
     return Object.assign(new Error(e?.message || String(e)), { reason: 'passkey_unsupported' });
   }
 
-  /** 저장된(또는 고른) 패스키로 PRF 를 계산해 s_u 를 만든다. credentialId 가 없으면 고르기 창(이미 있는 패스키 쓰기). */
-  async function derivePrf({ credentialId, rpId = DEFAULT_RP_ID } = {}) {
+  // ---- 휴대폰 패스키(스펙 2026-11-19 login-flow-and-phone-passkey P1·P2) ----
+  // hints: 브라우저에 "어느 인증기를 먼저 권할지" 알린다 — ['hybrid'] 면 Chrome 이 바로 QR(휴대폰)을 띄운다. transports: 그 패스키가 닿는 길(만들 때 인증기가 알려 준 값).
+  // 둘 다 공개 정보고, 모르는 값은 거른다. 비면 옵션에 키를 넣지 않는다(지금까지의 요청과 같다).
+  const HINTS = ['hybrid', 'client-device', 'security-key'];
+  const TRANSPORTS = ['hybrid', 'internal', 'usb', 'nfc', 'ble', 'smart-card'];
+  const pick = (list, known) => (Array.isArray(list) ? list.filter((x) => known.includes(x)) : []);
+  const hintOpt = (hints) => { const h = pick(hints, HINTS); return h.length ? { hints: h } : {}; };
+  /** 인증기의 공개 정보 — 붙는 방식(platform = 이 기기 · cross-platform = 다른 기기), transports(만들 때만), 동기화 표시(authenticatorData 의 BE·BS 비트). 못 읽은 값은 null. */
+  function infoOf(cred) {
+    let flags = null;
+    try { const ad = toBytes(cred.response?.getAuthenticatorData?.() ?? cred.response?.authenticatorData ?? null); if (ad && ad.byteLength > 32) flags = ad[32]; } catch { /* 표시용이라 못 읽어도 된다 */ }
+    let transports = null;
+    try { const tr = cred.response?.getTransports?.(); if (Array.isArray(tr)) transports = pick(tr, TRANSPORTS); } catch { /* 위와 같다 */ }
+    const att = cred.authenticatorAttachment;
+    return { attachment: att === 'platform' || att === 'cross-platform' ? att : null, transports, backupEligible: flags === null ? null : Boolean(flags & 0x08), backedUp: flags === null ? null : Boolean(flags & 0x10) };
+  }
+
+  /** 저장된(또는 고른) 패스키로 PRF 를 계산해 s_u 를 만든다. credentialId 가 없으면 고르기 창(이미 있는 패스키 쓰기). hints·transports 는 위 주석. */
+  async function derivePrf({ credentialId, rpId = DEFAULT_RP_ID, hints = null, transports = null } = {}) {
     precheck(rpId);
+    const tr = pick(transports, TRANSPORTS);
     let a;
     try {
       a = await navigator.credentials.get({ publicKey: {
         challenge: rand(32), rpId, userVerification: 'required',
-        ...(credentialId ? { allowCredentials: [{ type: 'public-key', id: fromB64url(credentialId) }] } : {}),
+        ...(credentialId ? { allowCredentials: [{ type: 'public-key', id: fromB64url(credentialId), ...(tr.length ? { transports: tr } : {}) }] } : {}),
+        ...hintOpt(hints),
         extensions: { prf: { eval: { first: PRF_INPUT } } },
       } });
     } catch (e) { throw mapError(e); }
     if (!a) fail('passkey_cancelled');
     const first = a.getClientExtensionResults?.()?.prf?.results?.first;
     if (!first) fail('passkey_prf_unsupported', '인증기가 PRF 값을 주지 않았다');
-    return { credentialId: b64url(a.rawId), s_u: await saltFromPrf(first) };
+    return { credentialId: b64url(a.rawId), s_u: await saltFromPrf(first), info: infoOf(a) };
   }
 
   /** 새 패스키를 만들고(PRF 켬) 바로 한 번 계산해 같은 값이 나오는지 본다 — 백업 확인의 자리(스펙 §4.2). */
-  async function createPasskey({ rpId = DEFAULT_RP_ID, rpName = 'zk 스냅' } = {}) {
+  async function createPasskey({ rpId = DEFAULT_RP_ID, rpName = 'zk 스냅', hints = null } = {}) {
     precheck(rpId);
     let cred;
     try {
@@ -76,6 +95,7 @@
         challenge: rand(32),
         pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
         authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
+        ...hintOpt(hints),
         extensions: { prf: { eval: { first: PRF_INPUT } } },
       } });
     } catch (e) { throw mapError(e); }
@@ -84,9 +104,10 @@
     if (ext.prf?.enabled !== true) fail('passkey_prf_unsupported', '인증기가 PRF 를 켜지 않았다');
     const credentialId = b64url(cred.rawId);
     const atCreate = ext.prf?.results?.first ? await saltFromPrf(ext.prf.results.first) : null;
-    const d = await derivePrf({ credentialId, rpId });
+    const info = infoOf(cred);
+    const d = await derivePrf({ credentialId, rpId, hints, transports: info.transports });
     if (atCreate !== null && atCreate !== d.s_u) fail('passkey_unstable', '만들 때와 다시 계산할 때 PRF 값이 다르다');
-    return { credentialId, s_u: d.s_u };
+    return { credentialId, s_u: d.s_u, info };
   }
 
   /**

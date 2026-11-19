@@ -338,6 +338,49 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     }
     host.appendChild(table);
   }
+  // ---- 로그인 전체 플로우 카드(스펙 2026-11-19 login-flow-and-phone-passkey F6) — 코어 loginFlow() 의 가장 최근 로그인을 순서도로. 로그인 전에는 의미만 그린다. ----
+  let lastFlow = null, lastFlowKey = null;
+  async function loadFlow() { try { const r = await core.loginFlow(); lastFlow = r.status === 200 ? r.body.flow : null; } catch { lastFlow = null; } }
+  const fmtMs = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : ms >= 10 ? `${Math.round(ms)}ms` : `${Number(ms).toFixed(2)}ms`);
+  // [단계, 보내는 쪽, 받는 쪽, 왕복] — 받는 쪽이 같으면 혼자 하는 계산. request·respond 는 코어 밖(서비스와 승인 창 사이)이라 시간이 없다.
+  const FLOW_STEPS = [['request', 'rp', 'user'], ['check_service', 'user', 'user'], ['passkey', 'user', 'user'], ['sync', 'user', 'user'], ['random', 'user', 'user'], ['session_key', 'user', 'user'],
+    ['commit', 'user', 'user'], ['pseudonym', 'user', 'user'], ['prove_idp', 'user', 'user'], ['issue', 'user', 'idp', true], ['publish_wait', 'user', 'user'], ['prove_session', 'user', 'user'], ['sign', 'user', 'user'], ['respond', 'user', 'rp']];
+  function renderFlow() {
+    const host = $('flowFigure'); if (!host || !window.FlowFigure?.renderSequence) return;
+    const f = lastFlow;
+    const key = JSON.stringify([f?.at ?? null, f?.values?.r_s ?? null, Demo.lang]);
+    if (key === lastFlowKey) return;
+    lastFlowKey = key;
+    const v = f?.values ?? {}, ms = Object.fromEntries((f?.steps ?? []).map((x) => [x.key, x]));
+    const it = (name, value) => (value === null || value === undefined ? null : { name, value, key: name });
+    const ITEMS = {
+      request: [it('arid', f?.arid), it('r_s', v.r_s), it('r_rp', v.r_rp)],
+      check_service: [it(tt('user_flow_item_origin') || 'origin', f?.origin)],
+      passkey: [{ name: 's_u', value: tt('user_flow_secret') || '(secret)' }],
+      sync: [it('revRoot', v.revRoot), it('regRoot', v.regRoot)],
+      session_key: [it('pk_i', v.pk_i)],
+      commit: [it('C_u', v.Cf_u), it('C_s', v.Cf_s), it('max_height', v.max_height)],
+      pseudonym: [it('auid_s', v.auid_s), it('arid_s', v.arid_s)],
+      issue: [it('uid', v.uid), it('auid_s', v.auid_s), it('arid_s', v.arid_s), f ? { name: tt('user_flow_item_token') || 'ID token', value: tt(v.hasIdToken ? 'user_flow_token_yes' : 'user_flow_token_no') || String(v.hasIdToken) } : null],
+      prove_session: [it('PPID', v.PPID), it('auid_s', v.auid_s), it('arid_s', v.arid_s), it('pk_i', v.pk_i)],
+      respond: [it('PPID', v.PPID), it('auid_s', v.auid_s), it('arid_s', v.arid_s)],
+    };
+    const steps = FLOW_STEPS.filter(([k]) => PK || k !== 'passkey').map(([k, from, to, both]) => {
+      const rec = ms[k] ?? null, timed = k !== 'request' && k !== 'respond';
+      const note = !f ? null : !timed ? (k === 'respond' ? tt('user_flow_no_time') : null) : !rec ? tt('user_flow_skipped') : (k === 'passkey' && rec.held) ? tt('user_flow_held') : null;
+      return { key: k, from, to, both: Boolean(both), title: tt(`user_flow_s_${k}_t`) || k, meaning: tt(`user_flow_s_${k}_m`), time: rec ? fmtMs(rec.ms) : null,
+        share: rec && f.totalMs > 0 ? rec.ms / f.totalMs : 0, note: note || null, dim: Boolean(f && timed && !rec), items: f ? (ITEMS[k] ?? []).filter(Boolean) : [] };
+    });
+    const svc = f ? (f.serviceName || (() => { try { return new URL(f.origin).host; } catch { return f.origin ?? '-'; } })()) : null;
+    window.FlowFigure.renderSequence(host, { lanes: [
+      { key: 'rp', name: svc ?? (tt('user_flow_lane_rp') || '서비스'), sub: tt('user_flow_lane_rp_sub') },
+      { key: 'user', name: tt('user_flow_lane_user') || 'zk 클라이언트', sub: tt('user_flow_lane_user_sub') },
+      { key: 'idp', name: tt('user_flow_lane_idp') || 'zkIdP', sub: tt('user_flow_lane_idp_sub') }], steps });
+    const sum = $('flowSummary');
+    sum.dataset.flowAt = f ? String(f.at) : '';
+    sum.textContent = f ? (tt('user_flow_last', { service: svc, time: new Date(f.at).toLocaleTimeString(locale()), total: fmtMs(f.totalMs), prove: fmtMs((ms.prove_idp?.ms ?? 0) + (ms.prove_session?.ms ?? 0)), passkey: fmtMs(ms.passkey?.ms ?? 0) }) || '')
+      : (tt('user_flow_none') || '');
+  }
   /** 기록을 다시 읽는다 — 목록을 그린 뒤에 붙은 것(승인 창의 recordTx 가 단 거래 해시)도 보이게. */
   async function loadProofs() { try { const r = await core.proofs(); lastProofs = r.status === 200 ? r.body.proofs : []; } catch { lastProofs = []; } }
   async function openProof(id) {
@@ -492,7 +535,12 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     if (cid) {
       const left = Number.isFinite(pkState.heldUntil) ? pkState.heldUntil - Date.now() : 0;
       const held = left > 0 ? tt('user_pk_held', { min: Math.ceil(left / 60_000) }) : tt('user_pk_not_held');
-      $('pkInfo').textContent = [tt('user_pk_credential', { id: `${cid.slice(0, 12)}…` }) || `${cid.slice(0, 12)}…`, held].filter(Boolean).join(' · ');
+      // 어디에 있는 패스키인가(스펙 2026-11-19 P3) — 연결할 때 인증기가 알려 준 공개 정보. 정보가 없으면(옛 연결) 줄에 넣지 않는다.
+      const pi = pkState.info ?? null;
+      const where = pi?.attachment === 'cross-platform' || (!pi?.attachment && pi?.hint === 'hybrid') ? tt('user_pk_where_cross') : pi?.attachment === 'platform' ? tt('user_pk_where_platform') : null;
+      const sync = !pi || pi.backupEligible === null ? null : pi.backedUp ? tt('user_pk_synced') : pi.backupEligible ? tt('user_pk_syncable') : tt('user_pk_device_bound');
+      $('pkInfo').dataset.pkWhere = pi?.attachment ?? '';
+      $('pkInfo').textContent = [tt('user_pk_credential', { id: `${cid.slice(0, 12)}…` }) || `${cid.slice(0, 12)}…`, where, sync, held].filter(Boolean).join(' · ');
       const registered = Boolean(lastStatus?.registered);
       $('pkDisconnectBtn').disabled = registered;
       $('pkDisconnectHint').hidden = !registered;
@@ -560,6 +608,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     }
     if (PK) { try { const r = await core.passkeyState(); pkState = r.status === 200 ? r.body : null; } catch { pkState = null; } }
     await loadProofs(); syncOpenProof();
+    await loadFlow(); renderFlow();
     renderIdentity();
     renderSessions();
     renderTxs();
@@ -572,7 +621,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
   // 언어·전문가 전환은 사전이 채우는 요소와 결과 카드만 바꾼다(Demo) — 스크립트가 만든 텍스트는 여기서 다시 그린다.
   for (const k of ['setLang', 'setExpert']) {
     const orig = Demo[k];
-    Demo[k] = (v) => { orig(v); renderModeTexts(); renderProofInfo(); renderZk(); renderIdentity(); renderSessions(); renderTxs(); renderProofs(); renderProofModal(); renderPasskey(); renderVault(); };
+    Demo[k] = (v) => { orig(v); renderModeTexts(); renderProofInfo(); renderZk(); renderIdentity(); renderSessions(); renderTxs(); renderProofs(); renderFlow(); renderProofModal(); renderPasskey(); renderVault(); };
   }
 
   // V8 세션 폐기(설계 2026-09-24 §4): 인증 증명은 코어가 금고의 s_u 로 만든다(잠겨 있으면 잠금 해제 창).
@@ -899,8 +948,10 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     btns.forEach((b) => { b.dataset.busy = '1'; });
     pendingVerdict($('pkSetupVerdict'), 'working');
     try {
-      const { credentialId, s_u } = await get();
-      const r = await core.passkeyConnect({ credentialId, s_u });
+      // 패스키를 둘 곳(스펙 2026-11-19 P1·P2): 휴대폰이면 힌트를 싣고, 인증기가 알려 준 공개 정보와 함께 연결에 둔다(다음 확인도 같은 길로 간다).
+      const phone = document.querySelector('input[name="pkPlace"]:checked')?.value === 'phone';
+      const { credentialId, s_u, info = null } = await get(phone ? { hints: ['hybrid'] } : {});
+      const r = await core.passkeyConnect({ credentialId, s_u, info: { ...(info ?? {}), hint: phone ? 'hybrid' : null } });
       if (r.status === 200) setVerdict($('pkSetupVerdict'), true, 'user_pk_connected');
       else setVerdict($('pkSetupVerdict'), false, 'wallet_setup_passkey_failed', { reason: r.body?.reason ?? `HTTP ${r.status}` });
     } catch (e) {
@@ -909,8 +960,9 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     } finally { btns.forEach((b) => { delete b.dataset.busy; }); refresh(); }
   }
   if (PK) {
-    $('pkNewBtn').addEventListener('click', () => linkPasskey(() => passkey.create()));
-    $('pkExistingBtn').addEventListener('click', () => linkPasskey(() => passkey.derive({})));
+    $('pkNewBtn').addEventListener('click', () => linkPasskey((o) => passkey.create(o)));
+    $('pkExistingBtn').addEventListener('click', () => linkPasskey((o) => passkey.derive(o)));
+    for (const r of document.querySelectorAll('input[name="pkPlace"]')) r.addEventListener('change', () => { $('pkPlaceHint').hidden = document.querySelector('input[name="pkPlace"]:checked')?.value !== 'phone'; });
     // salt 보기(스펙 §2 4단계): 보관분 또는 패스키. 창에만 보이고 닫으면 지운다 — 저장·전송하지 않는다.
     $('pkShowSaltBtn').addEventListener('click', async () => {
       clearVerdict(storageVerdict());

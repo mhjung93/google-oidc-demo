@@ -46,7 +46,7 @@ try {
     return { r, ch, v };
   };
   const dumpKv = async () => { const all = {}; for (const k of await kv.keys()) all[k] = await kv.get(k); return j(all); };
-  let reg201, rs1, slot0, ppid0;
+  let reg201, rs1, slot0, ppid0, login1;
 
   await t('생성자: passkey-web 인데 passkey.derive 가 없으면 던진다', async () => {
     assert.throws(() => createUserCore({ kv: createMemKv(), config, provider, canonProvider: provider, fullProve }));
@@ -90,15 +90,40 @@ try {
     assert.equal((await coreA.passkeyDisconnect()).body.reason, 'registered');
     const again = await coreA.registerWithCode({ uid: '12345', code: 'x' }); assert.equal(again.status, 409); assert.equal(again.body.reason, 'already_registered');
   });
+  // ---- 로그인 전체 플로우(스펙 2026-11-19 login-flow-and-phone-passkey F1~F5) ----
+  await t('loginFlow: 로그인 전에는 기록이 없다(flow null)', async () => {
+    const f = await coreA.loginFlow(); assert.equal(f.status, 200, j(f.body)); assert.equal(f.body.flow, null);
+  });
   await t('로그인: issue_code 로 200 → RP ok; 코드 없이 401 auth_code_required; 쓴 코드 재사용 401 bad_code', async () => {
     const { r, ch, v } = await loginRp(coreA, reg201.body.issue_code); assert.equal(r.status, 200, j(r.body)); assert.equal(v.body.ok, true, j(v.body));
     rs1 = ch.r_s; ppid0 = r.body.publicSignals[0];
+    login1 = r.body;
     const n = await loginRp(coreA, null); assert.equal(n.r.status, 401, j(n.r.body)); assert.equal(n.r.body.reason, 'auth_code_required');
     const u = await loginRp(coreA, reg201.body.issue_code); assert.equal(u.r.status, 401, j(u.r.body)); assert.equal(u.r.body.reason, 'bad_code');
     // 2026-11-17(미뤄 둔 Minor C): 문자열이 아니거나 빈 authCode 는 IdP 에 가기 전에 400
     for (const bad of [5, '', {}, ['c']]) { const b = await loginRp(coreA, bad); assert.equal(b.r.status, 400, `${j(bad)} ${j(b.r.body)}`); assert.match(b.r.body.error, /authCode/); }
     assert.ok(!(await dumpKv()).includes(SALT));
     assert.equal(calls, 0, '보관분으로 — 패스키 0회');
+  });
+  await t('loginFlow: 성공한 로그인의 단계·시간·공개값 — 뒤의 실패한 로그인이 덮지 않고, 비밀은 없다', async () => {
+    const f = (await coreA.loginFlow()).body.flow; assert.ok(f, '기록이 있다');
+    assert.equal(f.values.r_s, rs1, '뒤의 실패한 로그인들이 덮지 않았다');
+    assert.equal(f.arid, info.arid); assert.equal(f.origin, info.origin); assert.equal(typeof f.at, 'number');
+    assert.deepEqual(f.steps.map((x) => x.key), ['check_service', 'passkey', 'sync', 'random', 'session_key', 'commit', 'pseudonym', 'prove_idp', 'issue', 'publish_wait', 'prove_session', 'sign']);
+    for (const x of f.steps) assert.ok(typeof x.ms === 'number' && Number.isFinite(x.ms) && x.ms >= 0, j(x));
+    const step = (k) => f.steps.find((x) => x.key === k);
+    assert.ok(step('prove_idp').ms > 50 && step('prove_session').ms > 50, j(f.steps));
+    assert.ok(step('pseudonym').ms < step('prove_idp').ms, '가명은 증명보다 훨씬 짧다');
+    assert.equal(step('passkey').held, true, '보관분을 썼다 — 패스키를 묻지 않았다');
+    assert.equal(step('prove_session').cacheHit, false);
+    assert.ok(f.totalMs >= step('prove_idp').ms + step('prove_session').ms, j(f));
+    const v = f.values, ps = login1.publicSignals;
+    assert.equal(v.PPID, ppid0); assert.equal(v.pk_i, ps[2]); assert.equal(v.max_height, ps[3]); assert.equal(v.auid_s, ps[25]); assert.equal(v.arid_s, ps[26]);
+    assert.equal(v.uid, '12345'); assert.equal(typeof v.hasIdToken, 'boolean');
+    for (const k of ['Cf_u', 'Cf_s', 'r_rp']) assert.match(String(v[k]), /^\d+$/, k);
+    const dump = j(f);
+    assert.ok(!dump.includes(SALT), 'salt 가 없다');
+    for (const bad of ['blind', 'privateKey', 's_u', '"n"', 'auth_code']) assert.ok(!dump.includes(bad), `${bad} 가 기록에 없다`);
   });
   await t('다른 탭은 보관분으로 재검증 — derive 0회', async () => {
     const r = await coreB.revalidate({ r_s: rs1, origin: info.origin }); assert.equal(r.status, 200, j(r.body));
@@ -143,6 +168,15 @@ try {
     assert.ok((await coreA.passkeyState()).body.heldUntil > held0, '새로 얻은 값으로 보관을 갱신한다');
     assert.equal((await coreA.showSalt()).status, 200); assert.equal(calls - c0, 1, '범위 밖은 보관분');
     assert.equal((await coreA.withSalt(() => coreA.showSalt())).status, 200); assert.equal(calls - c0, 1, 'fresh 없는 범위는 보관분');
+  });
+  await t('loginFlow: fresh 범위의 로그인은 passkey 단계가 held:false(패스키 1회) — 새 C_u 가 아니면 publish_wait 단계가 없고, 기록은 이 로그인으로 바뀐다', async () => {
+    const c0 = calls, code = await authCode('issue');
+    const { r, ch, v } = await coreA.withSalt(() => loginRp(coreA, code), { fresh: true });
+    assert.equal(r.status, 200, j(r.body)); assert.equal(v.body.ok, true, j(v.body)); assert.equal(calls - c0, 1);
+    const f = (await coreB.loginFlow()).body.flow;   // 다른 탭(같은 kv)에서도 읽힌다
+    assert.equal(f.values.r_s, ch.r_s);
+    assert.equal(f.steps.find((x) => x.key === 'passkey').held, false);
+    assert.ok(!f.steps.some((x) => x.key === 'publish_wait'), j(f.steps.map((x) => x.key)));
   });
   await t('withSalt fresh: 패스키가 실패하면(다른 패스키·취소) 보관분으로 넘어가지 않는다', async () => {
     const keep = deriveFn;
@@ -210,6 +244,29 @@ try {
     assert.equal(await k.get('passkey'), undefined); assert.equal(await k.get('passkeyHold'), undefined);
     assert.equal((await c.passkeyState()).body.credentialId, null);
     const s2 = await c.showSalt(); assert.equal(s2.status, 409); assert.equal(s2.body.reason, 'passkey_setup_required');
+  });
+  // ---- 휴대폰 패스키(스펙 2026-11-19 login-flow-and-phone-passkey P2) ----
+  await t('passkeyConnect: 인증기의 공개 정보(info)를 함께 두고 passkeyState 가 돌려준다 — 모르는 값은 버리고, 이후의 derive 는 transports·hints 를 받는다', async () => {
+    const { k, c } = freshCore();
+    const r = await c.passkeyConnect({ credentialId: CID, s_u: SALT, info: { attachment: 'cross-platform', transports: ['hybrid', 'internal', '<x>'], backupEligible: true, backedUp: true, hint: 'hybrid', extra: 'x' } });
+    assert.equal(r.status, 200, j(r.body));
+    const want = { attachment: 'cross-platform', transports: ['hybrid', 'internal'], backupEligible: true, backedUp: true, hint: 'hybrid' };
+    assert.deepEqual((await c.passkeyState()).body.info, want);
+    assert.deepEqual((await k.get('passkey')).info, want);
+    const prev = deriveFn; let got = null;
+    deriveFn = async (a) => { got = a; return prev(a); };
+    try { skew += 11 * 60_000; assert.equal((await c.showSalt()).status, 200); } finally { deriveFn = prev; }
+    assert.deepEqual(got, { credentialId: CID, transports: ['hybrid', 'internal'], hints: ['hybrid'] });
+  });
+  await t('passkeyConnect: info 가 없으면 지금까지와 같다(info null, derive 는 credentialId 만) — 형식이 틀린 info 는 400 bad_passkey_info', async () => {
+    const { c } = freshCore();
+    assert.equal((await c.passkeyConnect({ credentialId: CID, s_u: SALT, info: 'phone' })).body.reason, 'bad_passkey_info');
+    assert.equal((await c.passkeyConnect({ credentialId: CID, s_u: SALT })).status, 200);
+    assert.equal((await c.passkeyState()).body.info, null);
+    const prev = deriveFn; let got = null;
+    deriveFn = async (a) => { got = a; return prev(a); };
+    try { skew += 11 * 60_000; assert.equal((await c.showSalt()).status, 200); } finally { deriveFn = prev; }
+    assert.deepEqual(got, { credentialId: CID });
   });
   await t('passkeyDisconnect(미등록): 200 — credential·보관분을 지운다, 이어서 showSalt 는 passkey_setup_required', async () => {
     const { k, c } = freshCore();

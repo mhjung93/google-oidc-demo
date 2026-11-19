@@ -40,11 +40,11 @@ const browser = await launchBrowser();
 const stack = await startIsolatedMode3Stack({ userMode: 'web', walletHost: 'localhost', walletEnv: { MODE3_WALLET_SECRETS: 'passkey-web', MODE3_EXPLORER_URL: 'http://127.0.0.1:4000' }, ciaEnv: { CIA_ISSUE_AUTH: 'code', MODE3_WALLET_KIND: 'passkey-web' }, rpEnv: { MODE3_WALLET_KIND: 'passkey-web' }, autoRelay: true });   // MODE3_WALLET_KIND: 분리 데모 스크립트가 IdP·서비스에 넘기는 값(화면 문구용)
 const { cia, wallet, rp } = stack;
 const WALLET_ORIGIN = new URL(wallet.base).origin;
-const SECRET_A = 'a1'.repeat(32), SECRET_C = 'c3'.repeat(32), SECRET_D = 'd4'.repeat(32);
+const SECRET_A = 'a1'.repeat(32), SECRET_C = 'c3'.repeat(32), SECRET_D = 'd4'.repeat(32), SECRET_P = 'e5'.repeat(32);
 const SALT_A = stubSalt(SECRET_A), SALT_C = stubSalt(SECRET_C), SALT_D = stubSalt(SECRET_D);
 const AUID_A = (await auidOf({ s_u: BigInt(SALT_A) })).toString();
 const DEMO_PWD = 'demo-pass-9';
-const hits = { create: 0, get: 0, rpIds: [] };
+const hits = { create: 0, get: 0, rpIds: [], opts: [] };
 const writes = [];        // 지갑 오리진의 localStorage·sessionStorage 쓰기 전부(키·값)
 const consoleLines = [];  // 모든 페이지의 콘솔 출력
 const cspHits = [];       // 지갑 오리진 문서의 CSP 위반(securitypolicyviolation) 전부 — 정상 흐름에서는 0건이어야 한다(마지막 케이스)
@@ -61,7 +61,7 @@ async function waitText(page, sel, needle, timeout = 30_000) {
 /** 스텁 컨텍스트 — 모든 페이지(팝업·IdP 포함)에 같은 패스키. 호출 수·RP ID 는 하네스(hits)가, 저장소 쓰기는 writes 가 센다. */
 async function stubContext(opts) {
   const ctx = await browser.newContext();
-  await ctx.exposeFunction('__webauthnHit', (k, rpId) => { hits[k] = (hits[k] ?? 0) + 1; hits.rpIds.push(rpId); });
+  await ctx.exposeFunction('__webauthnHit', (k, rpId, o) => { hits[k] = (hits[k] ?? 0) + 1; hits.rpIds.push(rpId); hits.opts.push(o ?? null); });
   await ctx.exposeFunction('__storageHit', (origin, kind, k, v) => { if (origin === WALLET_ORIGIN) writes.push({ kind, k, v }); });
   await recordCsp(ctx);
   await ctx.addInitScript({ content: buildWebAuthnStub(opts) });
@@ -150,6 +150,21 @@ try {
     assert.equal((await idbDump(userPage)).registration, undefined);
   });
 
+  // ---- 로그인 전체 플로우 카드(스펙 2026-11-19 login-flow-and-phone-passkey F6) ----
+  const FLOW_KEYS = ['request', 'check_service', 'passkey', 'sync', 'random', 'session_key', 'commit', 'pseudonym', 'prove_idp', 'issue', 'publish_wait', 'prove_session', 'sign', 'respond'];
+  await t('로그인 전체 플로우 카드: 로그인 전에는 단계의 의미만 — 시간·값이 없고, 단계를 누르면 설명이 펴진다', async () => {
+    await userPage.waitForSelector('#flowFigure .seq-step[data-step="prove_session"]', { timeout: 15_000 });
+    assert.deepEqual(await userPage.$$eval('#flowFigure .seq-step', (l) => l.map((x) => x.dataset.step)), FLOW_KEYS);
+    assert.equal(await userPage.$$eval('#flowFigure .seq-time', (l) => l.length), 0, '시간이 없다');
+    await waitText(userPage, '#flowSummary', '로그인한 적이 없습니다');
+    assert.deepEqual(await userPage.$$eval('#flowFigure .seq-lane strong', (l) => l.map((x) => x.textContent)), ['서비스', 'zk 클라이언트', 'zkIdP']);
+    assert.equal(await userPage.$eval('#flowFigure .seq-step[data-step="issue"]', (x) => x.dataset.kind), 'arrow');
+    assert.equal(await userPage.$eval('#flowFigure .seq-step[data-step="commit"]', (x) => x.dataset.kind), 'self');
+    await userPage.click('#flowFigure .seq-step[data-step="pseudonym"] summary');
+    await waitText(userPage, '#flowFigure .seq-step[data-step="pseudonym"] .seq-body', 'zkIdP 는 arid_s 만 보므로');
+    assert.equal(await userPage.$$eval('#flowFigure .seq-step[data-step="pseudonym"] .flow-items dt', (l) => l.length), 0, '값이 없다');
+  });
+
   await t('첫 로그인 = 등록: 승인 단계 없이 인증 창(등록) → 등록·로그인 성공, 패스키 한 번, rpId localhost', async () => {
     await putAttrRecord(userPage, SALT_A);
     const before = hits.get, rpIdsFrom = hits.rpIds.length;
@@ -183,6 +198,37 @@ try {
     await rpPage.waitForFunction((p) => typeof currentSession !== 'undefined' && currentSession && currentSession !== p, prev, { timeout: 180_000 });
     await waitText(rpPage, '#verdict', '로그인 성공', 60_000);
     assert.equal(hits.get - before, 0, '10분 보관분으로 패스키를 묻지 않는다');
+  });
+
+  await t('로그인 전체 플로우 카드: 로그인 뒤에는 가장 최근 로그인의 시간·실제 값 — 저장된 세션의 가명과 같고, 펴 둔 단계는 그대로, salt 는 없다', async () => {
+    await userPage.bringToFront();
+    await waitText(userPage, '#flowSummary', '가장 최근 로그인', 20_000);
+    const d = await idbDump(userPage);
+    const f = d.loginFlow; assert.ok(f, 'kv loginFlow');
+    assert.equal(f.values.r_s, String(await curSession()), '기록은 방금(두 번째) 로그인의 것이다');
+    // 카드는 2초마다 다시 읽는다 — 첫 로그인의 그림이 아니라 이 기록을 그릴 때까지 기다린다
+    await userPage.waitForFunction((at) => document.querySelector('#flowSummary')?.dataset.flowAt === String(at), f.at, { timeout: 20_000 });
+    assert.equal(j(f).includes(SALT_A), false, '기록에 salt 가 있다');
+    const s = d.sessions[f.values.r_s]; assert.ok(s, '기록의 r_s 가 저장된 세션이다');
+    for (const k of ['prove_idp', 'prove_session', 'issue', 'pseudonym', 'session_key', 'commit', 'sync', 'check_service', 'sign']) {
+      assert.match(await userPage.$eval(`#flowFigure [data-seq-time="${k}"]`, (x) => x.textContent), /^[\d.]+(ms|s)$/, k);
+    }
+    assert.equal(await userPage.$$eval('#flowFigure [data-seq-time="request"], #flowFigure [data-seq-time="respond"]', (l) => l.length), 0, '서비스 쪽 단계는 재지 않는다');
+    // 게시 대기는 기다렸을 때만 기록된다(새 C_u 가 아니어도 거울 중계가 늦으면 잠깐 기다린다) — 기록이 없으면 흐리게 "없었습니다", 있으면 시간
+    const waited = f.steps.some((x) => x.key === 'publish_wait');
+    assert.equal(await userPage.$eval('#flowFigure .seq-step[data-step="publish_wait"]', (x) => x.classList.contains('seq-dim')), !waited);
+    if (waited) assert.equal(await userPage.$$eval('#flowFigure [data-seq-time="publish_wait"]', (l) => l.length), 1);
+    else await waitText(userPage, '#flowFigure .seq-step[data-step="publish_wait"]', '이번 로그인에는 없었습니다');
+    // 두 번째 로그인의 패스키는 보관분
+    await waitText(userPage, '#flowFigure .seq-step[data-step="passkey"]', '보관분 사용');
+    // 앞 케이스에서 펴 둔 단계가 다시 그려도 펴져 있고, 이제 실제 값이 있다
+    assert.equal(await userPage.$eval('#flowFigure .seq-step[data-step="pseudonym"] details', (x) => x.open), true);
+    assert.equal(await userPage.$eval('#flowFigure .seq-step[data-step="pseudonym"] code[data-flow="auid_s"]', (x) => x.title), String(s.auid_s));
+    assert.equal(await userPage.$eval('#flowFigure .seq-step[data-step="pseudonym"] code[data-flow="arid_s"]', (x) => x.title), String(s.arid_s));
+    await userPage.click('#flowFigure .seq-step[data-step="respond"] summary');
+    assert.equal(await userPage.$eval('#flowFigure .seq-step[data-step="respond"] code[data-flow="PPID"]', (x) => x.title), String(s.PPID));
+    assert.equal((await userPage.$eval('#flowCard', (x) => x.textContent)).includes(SALT_A), false, '카드에 salt 가 있다');
+    await waitText(userPage, '#flowSummary', '영지식 증명');
   });
 
   await t('재검증·잔액 확인·출금: 보관분으로 패스키 없이 성공', async () => {
@@ -415,6 +461,33 @@ try {
       await p.waitForSelector('#pkInfo', { state: 'visible', timeout: 15_000 });
       await waitText(p, '#pkInfo', stubCredId(SECRET_D).slice(0, 12));
       await waitText(p, '#pkInfo', '분 남음');
+      // 2026-11-19: 기본("이 기기")은 힌트를 싣지 않고, 패스키 줄에 이 기기의 패스키라고 보인다
+      assert.deepEqual(hits.opts.slice(-2).map((o) => [o.kind, o.hints]), [['create', null], ['get', null]]);
+      await waitText(p, '#pkInfo', '이 기기의 패스키');
+    } finally { await ctx.close(); }
+  });
+  await t('휴대폰 패스키: "휴대폰" 을 고르면 만들기·확인 계산에 hints:[hybrid] 가 실리고, 패스키 줄에 다른 기기·동기화가 보이며, 다음 확인도 힌트·transports 를 싣는다', async () => {
+    const ctx = await stubContext({ secretHex: SECRET_P });
+    try {
+      const p = await openUserPage(ctx);
+      await p.waitForSelector('#pkSetupCard:not([hidden])', { timeout: 15_000 });
+      assert.equal(await p.$eval('#pkPlaceHint', (e) => e.hidden), true, '기본은 이 기기 — 안내가 숨어 있다');
+      await p.check('input[name="pkPlace"][value="phone"]');
+      assert.equal(await p.$eval('#pkPlaceHint', (e) => e.hidden), false);
+      const from = hits.opts.length;
+      await connectPasskey(p, '#pkNewBtn');
+      const o = hits.opts.slice(from);
+      assert.deepEqual(o.map((x) => x.kind), ['create', 'get']);
+      assert.deepEqual(o[0].hints, ['hybrid']); assert.deepEqual(o[1].hints, ['hybrid']); assert.deepEqual(o[1].transports, ['hybrid', 'internal']);
+      await waitText(p, '#pkInfo', '다른 기기(휴대폰)의 패스키');
+      await waitText(p, '#pkInfo', '동기화됨');
+      assert.deepEqual((await idbDump(p)).passkey.info, { attachment: 'cross-platform', transports: ['hybrid', 'internal'], backupEligible: true, backedUp: true, hint: 'hybrid' });
+      // 보관분이 없으면 다음 확인(salt 보기)도 같은 길로 — 저장한 transports·힌트
+      await delHold(p);
+      const from2 = hits.opts.length;
+      await p.click('#pkShowSaltBtn');
+      for (let i = 0; i < 100 && hits.opts.length === from2; i++) await new Promise((r) => setTimeout(r, 100));
+      assert.deepEqual(hits.opts.slice(from2), [{ kind: 'get', hints: ['hybrid'], transports: ['hybrid', 'internal'] }]);
     } finally { await ctx.close(); }
   });
 

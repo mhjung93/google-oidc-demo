@@ -96,6 +96,31 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
   // withSalt 범위(계획 R-8): 범위 안에서 처음 얻은 salt 를 메모리로 재사용한다 — 보관 0초이거나 범위 도중 보관이 끝나도 패스키는 한 번만. 가장 바깥 범위가 끝나면 버린다.
   // saltFresh(스펙 2026-11-19 passkey-proof-login L4): withSalt(fn, { fresh: true }) 범위의 첫 salt 는 보관분을 건너뛰고 패스키에서 새로 얻는다 — 로그인마다 패스키 한 번.
   let saltDepth = 0, saltMemo = null, saltFresh = false;
+  // ---- 로그인 전체 플로우 기록(스펙 2026-11-19 login-flow-and-phone-passkey F1~F4) ----
+  // login() 한 번이 도는 동안의 단계별 시간을 모은다 — 성공하면 kv `loginFlow` 에 가장 최근 것 하나만 둔다(loginFlow() 가 읽는다). 공개값뿐이다.
+  // 시간은 performance.now()(밀리초 아래까지 — 가명·난수는 0.1ms 안팎이다), 없으면 주입된 now. login 밖에서는 flowRec 이 null 이라 아무것도 남지 않는다.
+  const tick = typeof globalThis.performance?.now === 'function' ? () => globalThis.performance.now() : now;
+  let flowRec = null;       // 진행 중인 login() 의 { t0, steps: [{ key, ms, ... }] }
+  let scopeDerive = null;   // 이 withSalt 범위(또는 범위 밖의 이 login)에서 패스키로 salt 를 얻었으면 { ms } — 사람이 누르는 시간이 든다
+  const flowStep = (key, ms, extra = null) => {
+    if (!flowRec) return;
+    const v = Math.max(0, Math.round(Number(ms) * 1000) / 1000);
+    const e = flowRec.steps.find((x) => x.key === key);
+    if (e) { e.ms = Math.round((e.ms + v) * 1000) / 1000; Object.assign(e, extra ?? {}); }   // 같은 단계를 두 번 돌면(발급 재시도) 더한다
+    else flowRec.steps.push({ key, ms: v, ...(extra ?? {}) });
+  };
+  // 패스키 연결에 함께 두는 인증기의 공개 정보(같은 스펙 P2) — 아는 값만 남긴다. 형식이 틀리면 undefined.
+  const PK_TRANSPORTS = ['hybrid', 'internal', 'usb', 'nfc', 'ble', 'smart-card'];
+  const cleanPasskeyInfo = (info) => {
+    if (info === null || info === undefined) return null;
+    if (typeof info !== 'object' || Array.isArray(info)) return undefined;
+    const flag = (v) => (typeof v === 'boolean' ? v : null);
+    return {
+      attachment: info.attachment === 'platform' || info.attachment === 'cross-platform' ? info.attachment : null,
+      transports: Array.isArray(info.transports) ? info.transports.filter((x) => PK_TRANSPORTS.includes(x)).slice(0, PK_TRANSPORTS.length) : null,
+      backupEligible: flag(info.backupEligible), backedUp: flag(info.backedUp), hint: info.hint === 'hybrid' ? 'hybrid' : null,
+    };
+  };
   const isSalt = (v) => isDec(v) && BigInt(v) > 0n && BigInt(v) < SCALAR_MAX;
   /** passkey-web 의 금고는 자동 금고다 — 없으면 만들고, 있는데 키가 없으면(비밀번호 금고가 잠김) locked. */
   async function ensureVault() {
@@ -113,7 +138,10 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     await ensureVault();
     let s = saltFresh ? null : await vault.heldSalt();
     if (!s) {
-      const d = await passkey.derive({ credentialId: pk.credentialId });
+      // 연결할 때 둔 transports·힌트를 그대로 싣는다(휴대폰 패스키면 브라우저가 곧장 휴대폰으로 간다 — 스펙 2026-11-19 P2)
+      const td = tick();
+      const d = await passkey.derive({ credentialId: pk.credentialId, ...(pk.info?.transports?.length ? { transports: pk.info.transports } : {}), ...(pk.info?.hint ? { hints: [pk.info.hint] } : {}) });
+      scopeDerive = { ms: tick() - td };
       if (d?.credentialId !== pk.credentialId) throw tag('passkey_mismatch');
       if (!isSalt(d.s_u)) throw tag('passkey_bad_salt');
       const reg = await getReg();
@@ -298,19 +326,23 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
    *  세션 개인키는 금고(secrets.sessionKeys[r_s])에만, 공개 레코드에는 origin·account(PPID 계정 주소)·sessionAddress 를 함께 둔다. */
   async function issueSession({ arid, r_s, r_rp, pk_trace, allowAgent, factoryAddress, attrGateAddress, head, src, blind_u, n, origin, serviceName = null, policy = null, oidc = null, auth_code = null }) {
     const reg = src.registration();
+    const tk = tick();
     const session = createSessionKey();
+    flowStep('session_key', tick() - tk);
     const chainid = await chain.chainId();
     const ov = await takeOverride('issue');   // 시연(설계 §8.3): 이번 발급의 s_u·uid 를 한 번만 덮어쓴다 — 가짜 auid 로 증명돼 IdP 가 bad_idp_proof 를 낸다
     const req = await noted({ purpose: 'issue', arid: String(arid), origin: origin ?? null, serviceName, r_s: BigInt(r_s).toString() }, () => buildIssueRequest({
       uid: BigInt(ov?.uid ?? reg.uid), s_u: BigInt(ov?.s_u ?? reg.s_u), blind_u, attrs: (reg.attrs ?? []).map(BigInt), arid: BigInt(arid), r_rp, r_s,
-      session, chainid, allowAgent: BigInt(allowAgent), max_height: chooseMaxHeight(head, { ttlBlocks: TTL, grid: GRID }), n, fullProve: provers.idp,
+      session, chainid, allowAgent: BigInt(allowAgent), max_height: chooseMaxHeight(head, { ttlBlocks: TTL, grid: GRID }), n, fullProve: provers.idp, onStep: flowStep,
     }));
     if (ov?.uid) req.body.uid = reg.uid;   // 요청 본문의 uid 는 진짜 — C_u·π_IdP 안의 uid 만 바뀐다(스펙 §8.3)
     // OIDC 래퍼(RP 로그인 흐름, 2026-10-16): Google 토큰을 발급 요청에 싣는다. IdP 에 계정이 아직 없으면(첫 로그인) 등록 재료도 함께 — IdP 가 그 자리에서 등록·발급.
     if (oidc?.id_token) { req.body.id_token = oidc.id_token; if (oidc.registration) req.body.registration = oidc.registration; }
     // 인증 코드(CIA_ISSUE_AUTH=code, passkey-web W5): 인증 창이 낸 1회용 발급 코드를 그대로 싣는다(저장·기록하지 않는다).
     if (auth_code) req.body.auth_code = auth_code;
+    const ti = tick();
     const r = await idp.post('/cia/issue', req.body);
+    flowStep('issue', tick() - ti);
     if (r.status !== 200) return { r, demo: ov ? 'override:issue' : undefined };
     if (oidc?.registration) await updateReg((x) => { x.pendingIdp = false; });   // IdP 가 등록을 받았다
     // V10(§4.5): 계정 폐기로 슬롯이 은퇴된 뒤 되살아난 계정의 재발급은 새 슬롯을 받는다 — 응답의 슬롯을 따른다.
@@ -373,10 +405,11 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     const pc = s.proofCache;
     let cached = pc && pc.key === key ? { proof: pc.proof, publicSignals: pc.publicSignals, revRoot: BigInt(pc.revRoot), regRoot: BigInt(pc.regRoot) } : null;
     const cacheHit = Boolean(cached);
+    let proveFlowMs = 0;
     if (!cached) {
       // V10: 캐노니컬에서는 내 슬롯이 맞지만 거울이 아직 못 따라왔다 — 거울 뷰로는 증명이 안 된다. 세션은 그대로 두고 503 으로(릴레이 뒤 다시).
       if (!(await mirrorLeafMatches(synced, reg, uc))) throw tag('registry_unpublished');
-      const t = now();
+      const t = now(), tp = tick();
       const ov = await takeOverride('prove');   // 시연(설계 §8.3): 다음 증명의 s_u·uid 를 한 번만 바꿔치기
       const prove = async (tree, registry) => {
         try {
@@ -410,12 +443,16 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
         if (cached.revRoot !== synced.root || cached.regRoot !== synced.regRoot) throw tag('sync_unstable');
       }
       timings.proveMs = now() - t;
+      proveFlowMs = tick() - tp;
       const entry = { key: proofCacheKey(synced.chainId, cached.revRoot, cached.regRoot, discKey), proof: cached.proof, publicSignals: cached.publicSignals, revRoot: cached.revRoot.toString(), regRoot: cached.regRoot.toString() };
       await updateSessions((all) => { if (all[rsKey]) all[rsKey].proofCache = entry; });
     }
     const root = (cached.revRoot ?? synced.root).toString();
     const regRoot = (cached.regRoot ?? synced.regRoot).toString();
+    flowStep('prove_session', proveFlowMs, { cacheHit });
+    const tsg = tick();
     const sig = await signChallenge(sessionWallet, rsKey);
+    flowStep('sign', tick() - tsg);
     // 시연(가짜 증명, 사용자 요청 2026-10-14): pi_a·pi_c 를 바꿔친다 — 둘 다 유효한 G1 점이라 형식은 그대로지만 페어링이 깨져 RP(bad_proof)·
     // 체인(InvalidProof) 모두 거절한다. 캐시가 쥔 원본은 손대지 않는다 — 복사본(얕은 복제) 쪽만 맞바꾼다. 원본을 고치면 이 세션의 다음
     // (정상) 요청까지 가짜 증명을 받는다.
@@ -655,7 +692,9 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       // 발급 ctx 의 지갑 난수 n(2026-11-13): Google 토큰을 싣는 로그인은 loginPrepare 가 뽑아 토큰 nonce 에 쓴 값을 다시 받아야 한다(다르면 IdP 가 oidc_nonce_mismatch).
       // 그 밖은 여기서 뽑는다. cred_revoked 재시도도 같은 n 을 쓴다.
       if (nIn !== null && !(isDec(nIn) && BigInt(nIn) < SCALAR_MAX)) return R(400, { error: 'n 은 10진, 2^250 미만' });
+      const trn = tick();
       const issueN = nIn !== null ? BigInt(nIn) : randomScalar();
+      const randomMs = tick() - trn;
       // OIDC 래퍼 — RP 로그인 흐름(2026-10-16): Google 버튼으로 들어온 로그인은 ID 토큰을 함께 낸다. 이 브라우저에 등록이 없으면 loginPrepare 의 보류 재료로
       // 로컬 등록을 먼저 만들고(IdP 쪽 등록은 발급 요청에 실어 IdP 가 그 자리에서 한다), 있으면 토큰만 싣는다. 데모 계정으로 등록된 브라우저면 토큰은 쓰지 않는다.
       let oidcReq = null;
@@ -706,11 +745,16 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       // RP 인증(설계 §3·§4): cert_s 가 pk_CIA 서명이고, 요청을 보낸 오리진이 cert 의 오리진과 같아야 한다.
       // pk_trace 는 인증서가 덮는다 — RP 가 자기만 아는 키를 주면 RP 혼자 태그를 연다(2026-09-16 §2).
       if (verifiedOrigin !== origin) return R(403, { reason: 'bad_rp_cert' });
+      const tcs = tick();
       const bad = await checkService({ arid, origin, cert_s, pk_trace, factoryAddress });
       if (bad) return bad;
+      flowStep('check_service', tick() - tcs);
 
       // 비밀이 처음 필요한 자리 — 에이전트의 secretSourceFor 위치. 잠겨 있으면 여기서 423(인증서·팩토리 검사는 비밀 없이 끝났다).
+      const tsrc = tick();
       const src = await source();
+      // 패스키 단계: 이 범위에서 패스키로 얻었으면 그 시간(사람이 누르는 시간 포함), 보관분·금고에서 읽었으면 held
+      flowStep('passkey', scopeDerive ? scopeDerive.ms : tick() - tsrc, { held: !scopeDerive });
       if (src === null) return R(409, { reason: 'not_registered' });
       if (src === 'locked') return LOCKED();
       // V9: 옛 등록(슬롯 없음)은 IdP 의 /cia/slot 으로 되찾는다.
@@ -724,10 +768,13 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       }
       const timings = { syncMs: 0, userCredMs: 0, issueMs: 0, proveMs: 0 };
       let t = now();
+      const tsy = tick();
       let synced;
       try { synced = await chain.syncAll(); }
       catch (e) { return R(503, { reason: 'chain_unavailable', detail: e.message }); }
       timings.syncMs = now() - t;
+      flowStep('sync', tick() - tsy);
+      flowStep('random', randomMs, nIn !== null ? { given: true } : null);
       lastSync = syncSnapshot(synced);
 
       await pruneSessions(synced.head);
@@ -764,6 +811,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       // 아직 옛(또는 빈) 슬롯을 보고 죽는다(2026-10-01 §8.3). V10: π 는 거울 뷰로 만들고 RP 도 거울을 읽으므로 **거울의 regRoot 가 내 리프를
       // 담을 때까지** 기다린다. fresh 가 아니어도 거울 뷰에 내 리프가 없으면(관리자 바꿔치기를 되돌린 직후 등) 같은 이유로 기다린다.
       if (pick.fresh || !(await mirrorLeafMatches(synced, src.registration(), src.userCred()))) {
+        const tpw = tick();
         const deadline = now() + 30_000;
         // 2026-10-21: 2초 고정 → 0.25초부터 두 배씩(최대 2초). IdP 게시·거울 중계는 보통 0.1초 안에 끝나는데, 첫 확인이 그보다
         // 먼저 돌면 2초를 통째로 쉬어 첫 로그인이 그만큼 늘었다(타임라인 실측). 오래 걸리는 체인에서는 예전처럼 2초 간격이 된다.
@@ -780,6 +828,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
           await sleep(wait);
           wait = Math.min(wait * 2, 2000);
         }
+        flowStep('publish_wait', tick() - tpw);
       }
       let out;
       try { out = await proveSession(rs.toString(), synced, timings, disclosure, src); }
@@ -1106,19 +1155,24 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       if (keep) await kv.set('passkey', keep);
       return R(200, { ok: true });
     },
+    /** 가장 최근에 성공한 로그인의 단계별 기록(스펙 2026-11-19 login-flow F1) — 없으면 flow null. 화면의 "로그인 전체 플로우" 카드가 읽는다. */
+    async loginFlow() { return R(200, { flow: (await kv.get('loginFlow')) ?? null }); },
     // ---- passkey-web(스펙 2026-11-17-mode3-passkey-web; 에이전트 /wallet/passkey/* 의 등가) ----
     /** 연결된 패스키(공개값)와 보관 만료 시각(ms). salt 는 싣지 않는다. */
     async passkeyState() {
       if (!PK) return R(409, { reason: 'not_passkey_mode' });
       const pk = (await kv.get('passkey')) ?? null;
-      return R(200, { credentialId: pk?.credentialId ?? null, createdAt: pk?.createdAt ?? null, heldUntil: await vault.heldUntil() });
+      return R(200, { credentialId: pk?.credentialId ?? null, createdAt: pk?.createdAt ?? null, heldUntil: await vault.heldUntil(), info: pk?.info ?? null });
     },
     /** 패스키 연결(만들기 또는 이미 있는 것 쓰기): 화면이 PRF 로 만든 s_u 를 함께 낸다. 등록이 있으면 그 auid 와 대조하고(아니면 저장하지 않는다 —
      *  에이전트 리뷰 I-2), 같은 credential 의 보관분이 있으면 그 salt 와도 대조한 뒤(다르면 409 passkey_mismatch — 덮지 않는다), 자동 금고를 만들고
      *  credential 을 저장하고 salt 를 보관한다(R-9 — 등록 전에도). */
-    async passkeyConnect({ credentialId, s_u = null } = {}) {
+    async passkeyConnect({ credentialId, s_u = null, info: infoIn = null } = {}) {
       if (!PK) return R(409, { reason: 'not_passkey_mode' });
       if (typeof credentialId !== 'string' || !/^[A-Za-z0-9_-]{1,1024}$/.test(credentialId)) return R(400, { reason: 'bad_credential_id' });
+      // info(선택 — 스펙 2026-11-19 P2): 인증기가 알려 준 공개 정보(붙는 방식·transports·동기화 표시)와 고른 곳(hint). 표시와 다음 확인의 옵션에만 쓴다.
+      const info = cleanPasskeyInfo(infoIn);
+      if (info === undefined) return R(400, { reason: 'bad_passkey_info' });
       if (!isSalt(s_u)) return R(400, { reason: 'passkey_bad_salt' });
       const pk = (await kv.get('passkey')) ?? null;
       if (pk && pk.credentialId !== credentialId) return R(409, { reason: 'passkey_already_set' });
@@ -1128,7 +1182,8 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       // 같은 패스키(PRF 는 결정적)인데 보관분과 다른 salt 면 덮지 않는다 — 등록 전에는 위의 auid 대조가 없어 여기가 유일한 대조다. 보관분이 없으면(만료·끔) 대조할 것이 없다.
       const held = pk ? await vault.held() : null;
       if (held && held.s_u !== BigInt(s_u).toString()) return R(409, { reason: 'passkey_mismatch' });
-      if (!pk) await kv.set('passkey', { credentialId, createdAt: now() });
+      const keepInfo = info ?? pk?.info ?? null;   // 다시 연결하면 새 정보로 바꾼다 — 안 주면 있던 것을 둔다
+      if (!pk || info) await kv.set('passkey', { credentialId, createdAt: pk?.createdAt ?? now(), ...(keepInfo ? { info: keepInfo } : {}) });
       return R(200, { ok: true, held: await vault.holdSalt(BigInt(s_u).toString()) });
     },
     /** 패스키 연결 끊기 — 등록이 남아 있으면 409 registered(그 계정을 쓸 수 없게 된다). 보관분과 withSalt 메모도 지운다. */
@@ -1211,11 +1266,37 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       return R(500, { reason: 'internal', detail: e?.message ?? String(e) });
     }
   };
+  // 로그인 전체 플로우(스펙 2026-11-19 login-flow F1·F2): login 을 감싸 단계 기록을 모으고, 성공했을 때만 남긴다. 값은 저장된 세션 레코드의 공개값이다.
+  const loginRun = ops.login;
+  ops.login = async (body, opts) => {
+    const flow = { t0: tick(), steps: [] };
+    flowRec = flow;
+    if (saltDepth === 0) scopeDerive = null;   // 범위 밖의 로그인: 앞선 동작의 패스키 시간을 이 로그인의 것으로 세지 않는다
+    let r;
+    try { r = await loginRun(body, opts); } finally { if (flowRec === flow) flowRec = null; }
+    if (r?.status === 200) {
+      try {
+        const s = (await getSessions())[String(body.r_s)] ?? null;
+        const reg = await getReg();
+        await kv.set('loginFlow', {
+          at: now(), arid: String(body.arid), origin: body.origin ?? null, serviceName: s?.serviceName ?? null,
+          totalMs: Math.round((tick() - flow.t0) * 1000) / 1000, steps: flow.steps,
+          values: {
+            r_s: String(body.r_s), r_rp: String(body.r_rp), uid: reg ? String(reg.uid) : null, pk_i: s?.pk_i ?? null, auid_s: s?.auid_s ?? null, arid_s: s?.arid_s ?? null,
+            Cf_u: s?.credential?.Cf_u ?? null, Cf_s: s?.credential?.Cf_s ?? null, max_height: s?.credential?.max_height != null ? String(s.credential.max_height) : null,
+            PPID: s?.PPID ?? null, revRoot: r.body.root ?? null, regRoot: r.body.regRoot ?? null, hasIdToken: typeof r.body.id_token === 'string',
+          },
+        });
+      } catch (e) { log(`[user-core] 로그인 플로우 기록 실패: ${e?.message ?? e}`); }   // 기록 실패는 로그인을 막지 않는다
+    }
+    return r;
+  };
   const core = { vault, chain, idp };
   for (const [name, fn] of Object.entries(ops)) core[name] = guard(name, fn);
   /** 한 동작 = 패스키 최대 한 번(R-8): fn 안의 동작은 처음 얻은 salt 를 메모리로 다시 쓴다. 중첩 가능 — 가장 바깥 범위가 끝나면(던져도) 메모를 버린다.
    *  fresh(스펙 2026-11-19 passkey-proof-login L4): 로그인(새 세션 발급·zkIdP 로그인)의 범위 — 첫 salt 를 패스키에서 새로 얻고 그 값으로 보관을 갱신한다. */
   core.withSalt = async (fn, { fresh = false } = {}) => {
+    if (saltDepth === 0) scopeDerive = null;
     saltDepth++;
     if (fresh) { saltFresh = true; saltMemo = null; }   // L4: 보관분·앞선 메모로 건너뛰지 않는다. 패스키가 실패하면 그대로 실패한다(보관분으로 넘어가지 않는다)
     try { return await fn(); }
