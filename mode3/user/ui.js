@@ -341,10 +341,19 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
   // ---- 로그인 전체 플로우 카드(스펙 2026-11-19 login-flow-and-phone-passkey F6) — 코어 loginFlow() 의 가장 최근 로그인을 순서도로. 로그인 전에는 의미만 그린다. ----
   let lastFlow = null, lastFlowKey = null;
   async function loadFlow() { try { const r = await core.loginFlow(); lastFlow = r.status === 200 ? r.body.flow : null; } catch { lastFlow = null; } }
-  const fmtMs = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : ms >= 10 ? `${Math.round(ms)}ms` : `${Number(ms).toFixed(2)}ms`);
+  const fmtMs = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : ms >= 10 ? `${Math.round(ms)}ms` : ms < 0.005 ? '<0.01ms' : `${Number(ms).toFixed(2)}ms`);   // 0.00ms 는 재지 못한 것처럼 보인다
   // [단계, 보내는 쪽, 받는 쪽, 왕복] — 받는 쪽이 같으면 혼자 하는 계산. request·respond 는 코어 밖(서비스와 승인 창 사이)이라 시간이 없다.
   const FLOW_STEPS = [['request', 'rp', 'user'], ['check_service', 'user', 'user'], ['passkey', 'user', 'user'], ['sync', 'user', 'user'], ['random', 'user', 'user'], ['session_key', 'user', 'user'],
     ['commit', 'user', 'user'], ['pseudonym', 'user', 'user'], ['prove_idp', 'user', 'user'], ['issue', 'user', 'idp', true], ['publish_wait', 'user', 'user'], ['prove_session', 'user', 'user'], ['sign', 'user', 'user'], ['respond', 'user', 'rp']];
+  /** 플로우 카드의 π_IdP 줄 → 그 로그인의 증명(공개 입력에 그 auid_s 가 있는 π_IdP 기록)을 "영지식 증명" 카드의 창으로 연다. 기록이 밀려났으면 그 카드에 π_IdP 목록을 펴고 그리로 간다. */
+  async function openFlowProof(auidS) {
+    await loadProofs();
+    const rec = lastProofs.find((x) => x.kind === 'pi_idp' && x.publicSignals.includes(String(auidS)));
+    if (rec) { await openProof(rec.id); return; }
+    proofsShowIdp = true; renderProofs(); $('proofsCard').scrollIntoView();
+  }
+  // 카드는 기본으로 접혀 있다 — 펴 둔 상태만 이 브라우저에 기억한다(저장소가 막혀 있으면 그냥 접힌 채로).
+  { const d = $('flowDetails'); if (d) { try { d.open = localStorage.getItem('mode3_flow_open') === '1'; } catch { /* 그대로 */ } d.addEventListener('toggle', () => { try { localStorage.setItem('mode3_flow_open', d.open ? '1' : '0'); } catch { /* 기억하지 못할 뿐 */ } }); } }
   function renderFlow() {
     const host = $('flowFigure'); if (!host || !window.FlowFigure?.renderSequence) return;
     const f = lastFlow;
@@ -367,7 +376,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     // 왕복 단계(발급)는 보낸 것과 돌려받은 것을 나눠 적는다. 서명·증명은 값 대신 무엇인지만 적는다(값은 '영지식 증명' 카드에 있다).
     const GROUPS = {
       issue: [
-        { title: tt('user_flow_sent_idp') || 'zkIdP 에 보낸 것 →', items: [it('uid', v.uid), it('auid_s', v.auid_s), it('arid_s', v.arid_s), it('C_u', v.Cf_u), it('C_s', v.Cf_s), it('max_height', v.max_height), { name: 'π_IdP', value: tt('user_flow_item_proof') || '증명' }] },
+        { title: tt('user_flow_sent_idp') || 'zkIdP 에 보낸 것 →', items: [it('uid', v.uid), it('auid_s', v.auid_s), it('arid_s', v.arid_s), it('C_u', v.Cf_u), it('C_s', v.Cf_s), it('max_height', v.max_height), { name: 'π_IdP', action: { key: 'pi_idp', label: tt('user_flow_proof_open') || '증명 보기', run: () => openFlowProof(v.auid_s) } }] },
         { title: tt('user_flow_back_idp') || '← zkIdP 가 돌려준 것', items: [{ name: tt('user_flow_item_sig') || '자격증명', value: tt('user_flow_sig_value') || '서명' }, { name: tt('user_flow_item_token') || 'ID token', value: tt(v.hasIdToken ? 'user_flow_token_yes' : 'user_flow_token_no') || String(v.hasIdToken) }] },
       ],
     };

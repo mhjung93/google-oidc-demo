@@ -153,7 +153,13 @@ try {
   // ---- 로그인 전체 플로우 카드(스펙 2026-11-19 login-flow-and-phone-passkey F6) ----
   const FLOW_KEYS = ['request', 'check_service', 'passkey', 'sync', 'random', 'session_key', 'commit', 'pseudonym', 'prove_idp', 'issue', 'publish_wait', 'prove_session', 'sign', 'respond'];
   await t('로그인 전체 플로우 카드: 로그인 전에는 단계의 의미만 — 시간·값이 없고, 단계를 누르면 설명이 펴진다', async () => {
+    // 기본은 접혀 있다(요약만) — 단계가 열넷이라 펴 두면 아래 카드가 밀린다. 펴면 그 상태를 기억한다.
+    await userPage.waitForSelector('#flowFigure .seq-step[data-step="prove_session"]', { state: 'attached', timeout: 15_000 });
+    assert.equal(await userPage.$eval('#flowDetails', (x) => x.open), false, '기본은 접힘');
+    assert.ok(await userPage.$eval('#flowCard', (x) => x.getBoundingClientRect().height) < 260, '접힌 카드는 낮다');
+    await userPage.click('#flowDetails > summary');
     await userPage.waitForSelector('#flowFigure .seq-step[data-step="prove_session"]', { timeout: 15_000 });
+    await userPage.waitForFunction(() => localStorage.getItem('mode3_flow_open') === '1', null, { timeout: 5000 });   // toggle 이벤트는 다음 틱에 온다
     assert.deepEqual(await userPage.$$eval('#flowFigure .seq-step', (l) => l.map((x) => x.dataset.step)), FLOW_KEYS);
     assert.equal(await userPage.$$eval('#flowFigure .seq-time', (l) => l.length), 0, '시간이 없다');
     await waitText(userPage, '#flowSummary', '로그인한 적이 없습니다');
@@ -228,7 +234,7 @@ try {
     assert.equal(j(f).includes(SALT_A), false, '기록에 salt 가 있다');
     const s = d.sessions[f.values.r_s]; assert.ok(s, '기록의 r_s 가 저장된 세션이다');
     for (const k of ['prove_idp', 'prove_session', 'issue', 'pseudonym', 'session_key', 'commit', 'sync', 'check_service', 'sign']) {
-      assert.match(await userPage.$eval(`#flowFigure [data-seq-time="${k}"]`, (x) => x.textContent), /^[\d.]+(ms|s)$/, k);
+      assert.match(await userPage.$eval(`#flowFigure [data-seq-time="${k}"]`, (x) => x.textContent), /^<?[\d.]+(ms|s)$/, k);
     }
     assert.equal(await userPage.$$eval('#flowFigure [data-seq-time="request"], #flowFigure [data-seq-time="respond"]', (l) => l.length), 0, '서비스 쪽 단계는 재지 않는다');
     // 게시 대기는 기다렸을 때만 기록된다(새 C_u 가 아니어도 거울 중계가 늦으면 잠깐 기다린다) — 기록이 없으면 흐리게 "없었습니다", 있으면 시간
@@ -250,6 +256,12 @@ try {
     assert.deepEqual(await userPage.$$eval('#flowFigure .seq-step[data-step="issue"] .seq-body .flow-items', (l) => l.map((dl) => [...dl.querySelectorAll('dt')].map((x) => x.textContent))),
       [['uid', 'auid_s', 'arid_s', 'C_u', 'C_s', 'max_height', 'π_IdP'], ['자격증명', 'zkIdP ID 토큰']]);
     assert.equal(await userPage.$eval('#flowFigure .seq-step[data-step="issue"] code[data-flow="auid_s"]', (x) => x.title), String(s.auid_s));
+    // π_IdP 줄의 "증명 보기" 는 그 로그인의 π_IdP 를 증명 창으로 연다(공개 입력에 이 로그인의 auid_s)
+    await userPage.click('#flowFigure .seq-step[data-step="issue"] button[data-flow-action="pi_idp"]');
+    await userPage.waitForSelector('#proofModal:not([hidden])', { timeout: 10_000 });
+    assert.ok((await userPage.$eval('#proofModal', (x) => x.textContent)).includes('π_IdP'), '연 것은 π_IdP 다');
+    assert.ok((await idbDump(userPage)).proofs.some((x) => x.kind === 'pi_idp' && x.publicSignals.includes(String(s.auid_s))), '그 로그인의 π_IdP 기록이 있다');
+    await userPage.click('#proofCloseBtn'); await userPage.waitForSelector('#proofModal', { state: 'hidden' });
     // 카드는 "보낸 트랜잭션" 위에 있다(시연에서 로그인 직후 바로 보이게)
     assert.equal(await userPage.evaluate(() => Boolean(document.querySelector('#flowCard').compareDocumentPosition(document.querySelector('#txsCard')) & Node.DOCUMENT_POSITION_FOLLOWING)), true);
     assert.equal((await userPage.$eval('#flowCard', (x) => x.textContent)).includes(SALT_A), false, '카드에 salt 가 있다');

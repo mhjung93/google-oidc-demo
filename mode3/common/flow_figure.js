@@ -2,7 +2,7 @@
 // 그림은 상자 둘(보낸 쪽 → 받은 쪽)과 그 사이의 화살표 둘(보낸 것 · 돌려준 것)이다. 받은 쪽 상자 안에 "검증한 것"(✓)과 "알 수 없는 것"(✗)을 적는다.
 // 값은 방금 한 로그인의 실제 값이다 — 전부 공개값(가명·커밋먼트·높이)이고, 긴 값은 줄여 보이되 전체는 title 에 둔다. 모든 글자는 textContent 로만 넣는다.
 //   FlowFigure.render(host, { from: { name, sub }, to: { name, sub }, sent: { title, items }, back: { title, items } | null, lists: [{ kind: 'check'|'unknown'|'learn', title, rows: [문장] }] })
-//   items: [{ name, value, note }]
+//   items: [{ name, value, note, action: { label, run, key } }]
 (() => {
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined && text !== null) e.textContent = text; return e; };
   const short = (v) => { const s = String(v ?? '-'); return s.length > 26 ? `${s.slice(0, 10)}…${s.slice(-8)}` : s; };
@@ -10,8 +10,9 @@
     const dl = el('dl', 'flow-items');
     for (const it of list ?? []) {
       const dt = el('dt', null, it.name), dd = el('dd');
-      const code = el('code', null, short(it.value)); code.title = String(it.value ?? ''); if (it.key) code.dataset.flow = it.key;
-      dd.append(code); if (it.note) dd.append(el('small', 'muted', ` — ${it.note}`));
+      if (it.value !== undefined) { const code = el('code', null, short(it.value)); code.title = String(it.value ?? ''); if (it.key) code.dataset.flow = it.key; dd.append(code); }
+      if (it.note) dd.append(el('small', 'muted', ` — ${it.note}`));
+      if (it.action) { const b = el('button', 'btn-ghost', it.action.label); b.type = 'button'; if (it.action.key) b.dataset.flowAction = it.action.key; b.addEventListener('click', it.action.run); dd.append(b); }   // action: { label, run, key } — 값 대신(또는 옆에) 누르는 것
       dl.append(dt, dd);
     }
     return dl;
