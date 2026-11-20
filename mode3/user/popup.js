@@ -7,7 +7,7 @@
 // 증명 로그인(2026-11-19 스펙 passkey-proof-login): zkIdP 의 발급 정책이 key 면(public_keys.issueAuth) 등록된 지갑은 인증 창 없이 패스키 증명만으로 발급받고(L1·L2),
 // 로그인마다 패스키를 한 번 묻는다(L4). mode3-idp-login 은 zkIdP 페이지의 로그인 증명 요청이다 — zkIdP 오리진이 연 창에만 답한다(L8).
 import { $, textKit, createUnlocker, postPresence, errText } from './ui.js';
-import { RECOVER_RESULT_KEY, idpAuthUrl, savePending, takeIdpReturn, readAttrRecord, googleSignupUrl, saveSignupPending, takeGoogleReturn } from './idp_return.js';
+import { RECOVER_RESULT_KEY, idpAuthUrl, savePending, takeIdpReturn, readAttrRecord, googleSignupUrl, saveSignupPending, takeGoogleReturn, googleAuthUrl, saveWrapperPending, takeWrapperReturn } from './idp_return.js';
 
 const TYPES = ['mode3-config', 'mode3-precheck', 'mode3-authorize', 'mode3-revalidate', 'mode3-request', 'mode3-tx', 'mode3-idp-login'];
 /** 동의 창에 보이는 서비스 이름 위생(2026-09-25 리뷰 D-2, wallet.html 과 같다) — 인증서가 덮는 것은 origin 뿐이고 이름은 임의 문자열이다. */
@@ -37,6 +37,7 @@ export function failPopup({ reason, detail }) {
  *  passkey: passkey-web 의 { derive, create }(user.js) — 코어가 이미 받아 salt 를 만든다. 팝업은 직접 부르지 않는다. */
 export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, passkey = null }) {
   const PK = config.secrets === 'passkey-web';
+  const WRAP = PK && config.wrapper === true;   // 래퍼 방식(스펙 2026-11-20 zkwrapper): 서비스 로그인이 zkIdP 인증 창 대신 Google 을 다녀온다
   const { tte, tt } = textKit(Demo);
   const { withUnlock } = createUnlocker({ core, Demo });
   let lastReq = null;        // 받은 요청(언어 전환 때 제목·요약을 다시 그린다)
@@ -310,7 +311,84 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
   }
   // Google 에서 돌아온 길(/?authorize=1#google_back=1&state=…&id_token=…) — 중계 화면이 이 창으로 넘겼다. 토큰이 주소창·히스토리에 남지 않게 조각부터 지운다.
   // 준비 신호(ready)를 다시 보내지 않는다 — 보내면 zkIdP 페이지가 같은 요청을 한 번 더 보낸다.
-  const gback = PK ? takeGoogleReturn({ hash: location.hash, storage: window.sessionStorage, now: Date.now() }) : null;
+  // ---- 래퍼 로그인(스펙 2026-11-20 zkwrapper §2.2): 서비스 확인 → 요청 키 → Google(계정 선택) → 돌아옴 → 패스키 한 번 → 발급·π_RP → 서비스에 결과 ----
+  /** 발급 서버의 래퍼 설정(public_keys: wrapper·oidc.clientId·authorizeUrl·redirectUri), 없으면 null. */
+  async function wrapperConfig() {
+    try {
+      const k = await Promise.race([core.idp.publicKeys(), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000))]);
+      const o = k?.status === 200 && k.body?.wrapper === true ? k.body.oidc : null;
+      return o?.enabled && typeof o.clientId === 'string' && typeof o.authorizeUrl === 'string' && typeof o.redirectUri === 'string' ? o : null;
+    } catch { return null; }
+  }
+  const loginBodyOf = (req) => ({
+    arid: req.arid, origin: req.origin, cert_s: req.cert_s, pk_trace: req.pk_trace, r_s: req.r_s, r_rp: req.r_rp,
+    allowAgent: req.allowAgent === '1' || req.allowAgent === true ? '1' : '0',
+    factoryAddress: req.factoryAddress ?? null, attrGateAddress: req.attrGateAddress ?? null, disclose: req.disclose ?? null, set: req.set ?? null,
+  });
+  /** 1단계(서비스가 연 창): 서비스 인증서를 먼저 확인하고(틀린 서비스 때문에 Google 을 다녀오지 않게) 요청 키를 만든 뒤 Google 로 간다. 패스키는 아직 묻지 않는다. */
+  async function authorizeWrapper(req, evOrigin, { reply }) {
+    const cfg = await wrapperConfig();
+    if (!cfg) { step('zkWrapper 설정을 읽지 못했다.'); return reply({ ok: false, reason: 'wrapper_disabled' }); }
+    say('user_wrap_checking', '서비스를 확인하는 중입니다…');
+    const pre = await core.precheck({ arid: req.arid, origin: req.origin, cert_s: req.cert_s, pk_trace: req.pk_trace, factoryAddress: req.factoryAddress ?? null });
+    if (pre.status !== 200) { step('서비스 확인 실패'); log(errText(pre.status, pre.body)); return reply(fail(pre, 'precheck_failed')); }
+    if (config.popupConsent !== false) step('요청을 확인하고 승인하세요.');
+    if (!(await waitDecision())) { step('동의 거절'); return reply({ ok: false, reason: 'user_denied' }); }
+    const b = await core.wrapperBegin();
+    if (b.status !== 200) { step('로그인 준비 실패'); log(errText(b.status, b.body)); return reply(fail(b, 'login_failed')); }
+    const { url, state } = googleAuthUrl({ authorizeUrl: cfg.authorizeUrl, clientId: cfg.clientId, redirectUri: cfg.redirectUri, nonce: b.body.googleNonce, walletOrigin: location.origin });
+    // 남기는 것은 서비스 요청(공개값)·발신 오리진·state·시각뿐이다. Google 에서 돌아온 이 창만 읽는다(이 오리진·이 창의 sessionStorage).
+    saveWrapperPending(window.sessionStorage, { state, at: Date.now(), req, origin: evOrigin });
+    say('user_wrap_to_google', 'Google 로 이동합니다 — 계정을 고르면 돌아와 패스키로 로그인합니다.');
+    location.assign(url);
+  }
+  /** 2단계(Google 에서 돌아온 길): (패스키가 없으면 버튼 한 번으로 만들고) 패스키 → 발급 → π_RP → 서비스에 결과. 결과는 가기 전에 대조를 통과한 서비스 오리진(pend.origin)에만 돌려준다. */
+  async function finishWrapper({ pend, idToken, error }) {
+    if (!pend) { renderAuthTitle(); step('Google 확인 결과를 이어받지 못했다.'); return showHint('user_wrap_resume_failed', 'Google 확인 결과를 이어받지 못했습니다 — 서비스 페이지에서 다시 로그인하세요.', null); }
+    const req = pend.req, t0 = pend.at;
+    lastReq = req; renderAuthTitle(); renderAuthSummary(req);
+    const reply = (result, { closeMs } = {}) => {
+      if (!window.opener) { if (!result.ok) showHint('user_wrap_resume_failed', 'Google 확인 결과를 이어받지 못했습니다 — 서비스 페이지에서 다시 로그인하세요.', null); return; }
+      try { window.opener.postMessage({ type: `${req.type}-result`, r_s: req.r_s ?? null, result }, pend.origin); } catch (e) { log(`결과 전송 실패: ${e.message}`); }
+      setTimeout(() => window.close(), closeMs ?? (result.ok ? 200 : 3000));
+    };
+    try {
+      if (!idToken) { step('Google 확인이 끝나지 않았다.'); log(String(error ?? '')); return reply({ ok: false, reason: 'google_denied', detail: error ?? null }); }
+      const googleMs = Date.now() - t0;
+      let salt = null;
+      const ps = await core.passkeyState();
+      if (ps.status !== 200 || !ps.body?.credentialId) {
+        if (typeof passkey?.create !== 'function') { step('패스키 연결 없음'); return reply({ ok: false, reason: 'passkey_setup_required' }); }
+        await waitClick('authWrapPasskeyBtn', tt('user_wrap_make_passkey') || '패스키 만들고 로그인', 'user_wrap_intro_new', 'Google 확인이 끝났습니다. 이 브라우저에는 아직 패스키가 없습니다 — 패스키를 만들면 그 값으로 바로 로그인합니다.');
+        say('user_signup_making_passkey', '패스키를 만드는 중입니다 — 브라우저의 패스키 창을 확인하세요.');
+        let made;
+        try { made = await passkey.create({}); } catch (e) { step('패스키 만들기 실패'); log(e?.message ?? String(e)); return reply({ ok: false, reason: e?.reason ?? 'passkey_cancelled', detail: e?.message ?? null }); }
+        const c = await core.passkeyConnect({ credentialId: made.credentialId, s_u: made.s_u, info: made.info ?? null });
+        if (c.status !== 200) { step('패스키 연결 실패'); log(errText(c.status, c.body)); return reply(fail(c, 'passkey_setup_failed')); }
+        salt = made.s_u;   // 방금 만든 패스키의 값 — 이 로그인에 바로 쓴다(창의 메모리에만 있다)
+      }
+      const rec = await attrRecord();
+      for (;;) {
+        say('user_wrap_logging_in', '패스키를 확인하고 로그인하는 중입니다 — 세션 토큰을 받고 증명을 만듭니다(수 초 걸립니다).');
+        const lg = await withUnlock(() => core.wrapperLogin(loginBodyOf(req), { idToken, verifiedOrigin: pend.origin, serviceName: cleanServiceName(req.serviceName) || null, policy: req.policy ?? null, googleMs, salt, profile: rec?.profile ?? null, recordAuid: rec?.auid ?? null }));
+        if (lg.cancelled) { step('잠금 해제 취소'); return reply({ ok: false, reason: 'user_denied' }); }
+        if (lg.status === 200) {
+          const { userCredIssued, attrsChanged, ...toRp } = lg.body;
+          await postPresence(core);
+          step('로그인 성공 — 창을 닫는다.');
+          return reply({ ok: true, ...toRp });
+        }
+        // 패스키를 취소했으면 Google 을 다시 다녀오지 않고 이 자리에서 한 번 더 물을 수 있다(토큰·요청 키는 아직 쓰지 않았다).
+        if (lg.body?.reason === 'passkey_cancelled') { await waitClick('authWrapRetryBtn', tt('user_wrap_retry_passkey') || '패스키 다시 확인', 'user_wrap_passkey_cancelled', '패스키 확인이 취소됐습니다 — 다시 확인하면 이어서 로그인합니다.'); continue; }
+        step('로그인 실패'); log(errText(lg.status, lg.body));
+        return reply(fail(lg, 'login_failed'));
+      }
+    } catch (e) { step('오류'); log(e?.message ?? String(e)); reply({ ok: false, reason: e?.reason ?? 'internal', detail: e?.message ?? null }); }
+  }
+  // 래퍼 로그인의 귀환 — 가입 귀환과 같은 조각(#google_back=1…)이라 방식에 따라 한쪽만 본다. 준비 신호(ready)를 다시 보내지 않는다.
+  const wback = WRAP ? takeWrapperReturn({ hash: location.hash, storage: window.sessionStorage, now: Date.now() }) : null;
+  if (wback) { history.replaceState(null, '', `${location.pathname}?authorize=1`); finishWrapper(wback); return; }
+  const gback = PK && !WRAP ? takeGoogleReturn({ hash: location.hash, storage: window.sessionStorage, now: Date.now() }) : null;
   if (gback) { history.replaceState(null, '', `${location.pathname}?authorize=1`); finishSignup(gback); return; }
 
   // passkey-web: zkIdP 인증 창에서 돌아온 길(?authorize=1&idp_…). 계정 복구는 팝업이 아니라 사용자 페이지 탭이 다녀온 길이라 opener 가 없다 — opener 검사보다 먼저 본다(R-11).
@@ -480,6 +558,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
         step('로그인 성공 — 창을 닫는다.');
         return reply({ ok: true, ...toRp });
       };
+      if (WRAP) return await authorizeWrapper(req, evOrigin, { reply });   // 래퍼 방식: Google 을 다녀와 finishWrapper 가 잇는다
       if (PK) return await authorizePasskey(req, evOrigin, back, { reply, loginWith });
       // Google 로 로그인(RP 로그인 흐름, 2026-10-16): zkIdP 의 OIDC 설정을 읽는다 — 꺼져 있으면 Google 경로는 없다.
       const google = req.provider === 'google';

@@ -71,14 +71,29 @@ export function googleSignupUrl({ authorizeUrl, clientId, redirectUri, nonce, wa
 export function saveSignupPending(storage, pend) { storage.setItem(SIGNUP_PENDING_KEY, JSON.stringify(pend)); }
 /** Google 에서 돌아온 길인지 본다(주소의 조각). 아니면 null. 돌아온 길이면 저장분을 늘 지우고, state·나이가 맞으면 { pend, idToken, error }, 어긋나면 { pend: null, idToken: null, error: null }
  *  — 어긋난 길의 토큰은 쓰지 않는다(남이 만든 링크로 남의 Google 계정을 이 패스키에 붙이지 못하게). 주소창 정리는 호출자가 한다. */
-export function takeGoogleReturn({ hash, storage, now }) {
+export function takeGoogleReturn({ hash, storage, now }) { return takeBack(SIGNUP_PENDING_KEY, { hash, storage, now }); }
+/** 두 Google 왕복(가입·래퍼 로그인)이 같이 쓰는 귀환 처리 — key 의 저장분을 꺼내 지우고 state·나이를 대조한다. ok(pend) 는 저장분의 모양 검사(없으면 통과). */
+function takeBack(key, { hash, storage, now }, ok = () => true) {
   const f = new URLSearchParams(String(hash ?? '').replace(/^#/, ''));
   if (f.get('google_back') !== '1') return null;
   let pend = null;
-  try { pend = JSON.parse(storage.getItem(SIGNUP_PENDING_KEY) ?? 'null'); } catch { pend = null; }
-  storage.removeItem(SIGNUP_PENDING_KEY);
+  try { pend = JSON.parse(storage.getItem(key) ?? 'null'); } catch { pend = null; }
+  storage.removeItem(key);
   const none = { pend: null, idToken: null, error: null };
-  if (!pend || typeof pend !== 'object' || typeof pend.state !== 'string' || pend.state !== f.get('state') || typeof pend.at !== 'number' || now - pend.at > PENDING_MAX_AGE_MS) return none;
+  if (!pend || typeof pend !== 'object' || typeof pend.state !== 'string' || pend.state !== f.get('state') || typeof pend.at !== 'number' || now - pend.at > PENDING_MAX_AGE_MS || !ok(pend)) return none;
   const idToken = f.get('id_token');
   return { pend, idToken: idToken || null, error: idToken ? null : (f.get('error') || 'no_token') };
+}
+
+// ---- 래퍼 로그인의 Google 왕복(스펙 2026-11-20 zkwrapper §2.2, 계획 Task 4) ----
+// 서비스의 "zk 로그인" 이 연 승인 창이 Google 로 가서 그 로그인의 ID 토큰(nonce = 요청 키의 해시)을 받아 돌아온다. 가기 전에 남기는 것은 서비스 요청(공개값)·발신 오리진·state·시각뿐이다.
+// 요청 키의 개인키는 IndexedDB 에 CryptoKey 로(꺼낼 수 없다), salt 는 어디에도 두지 않는다 — 패스키는 돌아온 뒤에 한 번 묻는다.
+export const WRAPPER_PENDING_KEY = 'mode3.wrapper.pending';
+/** Google 인가 주소 — googleSignupUrl 과 같다. prompt 는 늘 select_account 다: prompt=none(조용한 발급)은 쓰지 않는다 — 같은 클라이언트 ID 를 쓰는 남의 페이지가 사용자 모르게 토큰을 받는 길을 넓히지 않는다(스펙 §10 C2). */
+export function googleAuthUrl({ authorizeUrl, clientId, redirectUri, nonce, walletOrigin, rand = null }) { return googleSignupUrl({ authorizeUrl, clientId, redirectUri, nonce, walletOrigin, rand }); }
+/** Google 로 가기 전에 이어받을 로그인을 남긴다(이 오리진·이 창의 sessionStorage). 정해진 칸만 남긴다. */
+export function saveWrapperPending(storage, { state, at, req, origin }) { storage.setItem(WRAPPER_PENDING_KEY, JSON.stringify({ state, at, req, origin })); }
+/** Google 에서 돌아온 길인지 본다 — takeGoogleReturn 과 같은 규칙(state·10분·1회용). 맞으면 { pend: { state, at, req, origin }, idToken, error }. */
+export function takeWrapperReturn({ hash, storage, now }) {
+  return takeBack(WRAPPER_PENDING_KEY, { hash, storage, now }, (pend) => Boolean(pend.req) && typeof pend.req === 'object' && typeof pend.origin === 'string');
 }

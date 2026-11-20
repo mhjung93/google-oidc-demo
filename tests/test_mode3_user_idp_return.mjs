@@ -1,7 +1,7 @@
 // passkey-web 승인 팝업의 IdP 인증 창 왕복(mode3/user/idp_return.js, 계획 Task 6) — DOM 전역은 인자로 받으므로 Node 에서 돈다.
 //   node tests/test_mode3_user_idp_return.mjs   (unit)
 import assert from 'node:assert/strict';
-import { PENDING_KEY, PENDING_MAX_AGE_MS, RECOVER_RESULT_KEY, idpAuthUrl, savePending, takeIdpReturn, readAttrRecord, SIGNUP_PENDING_KEY, googleSignupUrl, saveSignupPending, takeGoogleReturn } from '../mode3/user/idp_return.js';
+import { PENDING_KEY, PENDING_MAX_AGE_MS, RECOVER_RESULT_KEY, idpAuthUrl, savePending, takeIdpReturn, readAttrRecord, SIGNUP_PENDING_KEY, googleSignupUrl, saveSignupPending, takeGoogleReturn, WRAPPER_PENDING_KEY, googleAuthUrl, saveWrapperPending, takeWrapperReturn } from '../mode3/user/idp_return.js';
 
 let fails = 0;
 async function t(name, fn) { try { await fn(); console.log('ok   -', name); } catch (e) { fails++; console.log('FAIL -', name, '\n      ', e.stack ?? e.message); } }
@@ -190,6 +190,41 @@ await t('takeGoogleReturn: state 불일치·10분 초과·저장분 없음은 pe
   st = fakeStorage(); saveSignupPending(st, { ...SIGNUP, state: 's1', at: 1000 });
   const denied = takeGoogleReturn({ hash: '#google_back=1&state=s1&error=access_denied', storage: st, now: 2000 });
   assert.equal(denied.idToken, null); assert.equal(denied.error, 'access_denied'); assert.equal(denied.pend.uid, '100003');
+});
+
+// ---- 래퍼 로그인의 Google 왕복(스펙 2026-11-20 zkwrapper §2.2, 계획 Task 4) ----
+await t('googleAuthUrl: prompt 는 늘 select_account — prompt=none 으로 조용히 토큰을 받는 주소를 만들지 않는다', async () => {
+  for (const extra of [{}, { prompt: 'none' }, { prompt: 'consent' }]) {
+    const { url, state } = googleAuthUrl({ authorizeUrl: 'https://accounts.example/auth', clientId: 'wrap-1', redirectUri: 'https://127.0.0.1:5100/google-relay', nonce: 'wrap:' + 'ab'.repeat(32), walletOrigin: 'https://wallet.zkd.test:5100', rand: 'r1', ...extra });
+    const q = new URL(url).searchParams;
+    assert.equal(q.get('prompt'), 'select_account'); assert.equal(q.get('response_type'), 'id_token'); assert.equal(q.get('nonce'), 'wrap:' + 'ab'.repeat(32)); assert.equal(q.get('state'), state);
+  }
+});
+await t('saveWrapperPending·takeWrapperReturn: state 가 맞으면 요청·오리진·토큰을 돌려주고 저장분을 지운다(1회용) — 저장분에는 공개값뿐', async () => {
+  const st = fakeStorage();
+  saveWrapperPending(st, { state: 's1', at: 1000, req: REQ, origin: 'http://rp.example', secret: 'x' });
+  assert.deepEqual(JSON.parse(st.m.get(WRAPPER_PENDING_KEY)), { state: 's1', at: 1000, req: REQ, origin: 'http://rp.example' }, '정해진 칸만 남긴다');
+  assert.equal(takeWrapperReturn({ hash: '#other=1', storage: st, now: 2000 }), null); assert.ok(st.m.has(WRAPPER_PENDING_KEY), '돌아온 길이 아니면 저장분을 건드리지 않는다');
+  const back = takeWrapperReturn({ hash: '#google_back=1&state=s1&id_token=T.O.K', storage: st, now: 2000 });
+  assert.deepEqual(back.pend.req, REQ); assert.equal(back.pend.origin, 'http://rp.example'); assert.equal(back.pend.at, 1000); assert.equal(back.idToken, 'T.O.K'); assert.equal(back.error, null);
+  assert.equal(st.m.has(WRAPPER_PENDING_KEY), false);
+  assert.deepEqual(takeWrapperReturn({ hash: '#google_back=1&state=s1&id_token=T.O.K', storage: st, now: 2000 }), { pend: null, idToken: null, error: null }, '두 번째는 이어받지 못한다');
+});
+await t('takeWrapperReturn: state 불일치·10분 초과·저장분 없음·요청 없는 저장분은 pend:null(토큰도 내주지 않는다), Google 의 오류는 error 로', async () => {
+  const none = { pend: null, idToken: null, error: null };
+  let st = fakeStorage(); saveWrapperPending(st, { state: 's1', at: 1000, req: REQ, origin: 'http://rp.example' });
+  assert.deepEqual(takeWrapperReturn({ hash: '#google_back=1&state=OTHER&id_token=T.O.K', storage: st, now: 2000 }), none); assert.equal(st.m.has(WRAPPER_PENDING_KEY), false, '어긋나도 저장분은 지운다');
+  st = fakeStorage(); saveWrapperPending(st, { state: 's1', at: 1000, req: REQ, origin: 'http://rp.example' });
+  assert.deepEqual(takeWrapperReturn({ hash: '#google_back=1&state=s1&id_token=T.O.K', storage: st, now: 1000 + PENDING_MAX_AGE_MS + 1 }), none);
+  assert.deepEqual(takeWrapperReturn({ hash: '#google_back=1&state=s1&id_token=T.O.K', storage: fakeStorage(), now: 2000 }), none);
+  st = fakeStorage({ [WRAPPER_PENDING_KEY]: JSON.stringify({ state: 's1', at: 1000, origin: 'http://rp.example' }) });
+  assert.deepEqual(takeWrapperReturn({ hash: '#google_back=1&state=s1&id_token=T.O.K', storage: st, now: 2000 }), none);
+  // 가입용 저장분(다른 열쇠)은 래퍼 귀환이 이어받지 않는다
+  st = fakeStorage(); saveSignupPending(st, { state: 's1', at: 1000, idpOrigin: 'http://idp.example', uid: '1' });
+  assert.deepEqual(takeWrapperReturn({ hash: '#google_back=1&state=s1&id_token=T.O.K', storage: st, now: 2000 }), none);
+  st = fakeStorage(); saveWrapperPending(st, { state: 's1', at: 1000, req: REQ, origin: 'http://rp.example' });
+  const denied = takeWrapperReturn({ hash: '#google_back=1&state=s1&error=access_denied', storage: st, now: 2000 });
+  assert.equal(denied.idToken, null); assert.equal(denied.error, 'access_denied'); assert.deepEqual(denied.pend.req, REQ);
 });
 
 console.log(fails ? `\n${fails} failed` : '\nall passed');

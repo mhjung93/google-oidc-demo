@@ -170,6 +170,8 @@ BROWSER=(
   tests/test_mode3_user_passkey_web_proof.mjs
   # passkey-web 패스키 가입(2026-11-20) — zkIdP "패스키로 로그인" 이 미등록 브라우저에서 Google(대역)로 확인한 이메일로 계정을 만든다, 복구·거절
   tests/test_mode3_user_passkey_web_signup.mjs
+  # zkWrapper(2026-11-20) — 서비스 로그인이 Google 을 다녀온다(승인 창), 패스키 한 번, π_IdP 없음
+  tests/test_mode3_user_wrapper_browser.mjs
 )
 
 # Snap 패키지(snap-mode3)의 지역 테스트. 전역 snap 객체를 스텁해 RPC 9종을 검사한다 —
