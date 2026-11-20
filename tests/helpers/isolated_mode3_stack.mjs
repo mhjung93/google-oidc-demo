@@ -87,14 +87,14 @@ export async function startIsolatedMode3Stack(opts = {}) {
   //   extraRps: [{ name, env }] — 두 번째 이후 서비스. 첫 RP 와 같은 방식으로 띄워 승인·활성화를 기다리고 rps[] 로 돌려준다.
   //     릴레이어 계정 인덱스는 RP 마다 다르게 준다(첫 RP 0, 다음 1, …) — 팩토리 배포 nonce 가 겹치지 않게(MODE3_DEMO.md 두 번째 서비스 절).
   const { twoChains = false, revRpcUrl = 'http://127.0.0.1:8546', appRpcUrl = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545', extraRps = [] } = opts;
-  const { oidc = null, walletHost = '127.0.0.1', ciaHost = '127.0.0.1', rpHost = '127.0.0.1' } = opts;   // rpHost(2026-11-10): 첫 RP 의 공개 오리진 호스트 — 'localhost' 면 RP 페이지의 GIS·네이버 콜백 쿠키가 맞는다
+  const { oidc = null, wrapper = false, walletHost = '127.0.0.1', ciaHost = '127.0.0.1', rpHost = '127.0.0.1' } = opts;   // rpHost(2026-11-10): 첫 RP 의 공개 오리진 호스트 — 'localhost' 면 RP 페이지의 GIS·네이버 콜백 쿠키가 맞는다
   // 지갑 포트·오리진은 CIA 보다 **먼저** 잡는다 — CIA 의 /mode3/health CORS 허용 목록(설계 2026-09-25 §1.2)에
   // MODE3_WALLET_AGENT_ORIGIN 으로 넘겨야 한다. 호출자의 ciaEnv 가 우선한다.
   const walletPort = await freePort();
   const walletOrigin = `http://${walletHost}:${walletPort}`;
   // ciaEnv 값 안의 "{walletOrigin}" 은 여기서 정해진 지갑 오리진으로 바꾼다(2026-11-20 — 패스키 가입의 MODE3_OIDC_REDIRECT_URI 는 지갑 정적 서버의 /google-relay 인데, 포트를 호출자가 미리 알 수 없다).
   const ciaEnvResolved = Object.fromEntries(Object.entries(ciaEnv).map(([k, v]) => [k, typeof v === 'string' ? v.replaceAll('{walletOrigin}', walletOrigin) : v]));
-  const cia = await startIsolatedCia({ env: { MODE3_WALLET_AGENT_ORIGIN: walletOrigin, ...ciaEnvResolved }, oidc, ...(twoChains ? { revRpcUrl, appRpcUrl } : {}) });
+  const cia = await startIsolatedCia({ env: { MODE3_WALLET_AGENT_ORIGIN: walletOrigin, ...ciaEnvResolved }, oidc, wrapper, ...(twoChains ? { revRpcUrl, appRpcUrl } : {}) });
   const ciaUiBase = `http://${ciaHost}:${cia.port}`;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-stack-'));
   const rpPort = await freePort();

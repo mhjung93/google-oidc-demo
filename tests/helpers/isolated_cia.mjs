@@ -25,7 +25,8 @@ export function freePort() {
 
 export async function startIsolatedCia(opts = {}) {
   // wrapper(2026-11-20 스펙 zkwrapper): 발급 서버를 래퍼 방식(CIA_WRAPPER=1 — Google 토큰으로 발급, π_IdP 없음)으로 띄운다. 발급자 스텁이 함께 뜬다.
-  const { env: extraEnv = {}, readyTimeoutMs = 30_000, wrapper = false, scheme = 'http' } = opts;
+  // entry(2026-11-20): 띄울 진입점 — 기본 cia.js, zkWrapper 서버는 'mode3_zkwrapper.js'. env 값 안의 "{port}" 는 여기서 정해진 포트로 바꾼다(공개 주소에 포트가 든다).
+  const { env: extraEnv = {}, readyTimeoutMs = 30_000, wrapper = false, scheme = 'http', entry = 'cia.js' } = opts;
   const oidc = opts.oidc ?? (wrapper ? true : null);
   // OIDC 래퍼(스펙 2026-10-16 Task 3): oidc 를 주면 발급자 스텁을 먼저 띄우고 그 설정을 env 로 넣는다. 옵션이 없으면
   // 빈 문자열로 고정한다 — 개발용 .env 의 GOOGLE_CLIENT_ID 가 새어 들어와 테스트 IdP 가 Google 을 켜지 않게 막는다.
@@ -91,12 +92,12 @@ export async function startIsolatedCia(opts = {}) {
     CIA_ISSUE_AUTH: '',
     // passkey-web TLS(2026-11-17 미뤄 둔 Minor C): 셸·.env 의 인증서 경로가 새면 IdP 가 https 로 떠 http 준비 확인이 실패한다 — 끈다. https 시험은 extraEnv·scheme 으로 켠다.
     MODE3_TLS_CERT: '', MODE3_TLS_KEY: '', NODE_EXTRA_CA_CERTS: '',
-    ...(wrapper ? { CIA_WRAPPER: '1', MODE3_OIDC_REDIRECT_URI: 'https://127.0.0.1:5100/google-relay' } : { CIA_WRAPPER: '' }),
-    ...extraEnv,
+    ...(wrapper ? { CIA_WRAPPER: '1', MODE3_OIDC_REDIRECT_URI: 'https://127.0.0.1:5100/google-relay', MODE3_OIDC_AUTHORIZE_URL: oidcStub.authorizeUrl } : { CIA_WRAPPER: '', CIA_USER_APP: '' }),
+    ...Object.fromEntries(Object.entries(extraEnv).map(([k, v]) => [k, typeof v === 'string' ? v.replaceAll('{port}', String(port)) : v])),
   };
   const logFile = path.join(dir, 'cia.log');
   const out = fs.openSync(logFile, 'a');
-  const child = spawn('node', ['cia.js'], { cwd: REPO_ROOT, env, stdio: ['ignore', out, out] });
+  const child = spawn('node', [entry], { cwd: REPO_ROOT, env, stdio: ['ignore', out, out] });
   let spawnError = null;
   child.on('error', (e) => { spawnError = e; });
 

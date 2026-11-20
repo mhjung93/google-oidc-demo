@@ -13,7 +13,7 @@ import { createVault } from './vault.js';
 import { createChain } from './chain.js';
 import { createIdp } from './idp.js';
 import { encodeProfile, normalizeProfile, assertPredicateTypes, decodeAttrs, schemaInfo } from '../../../lib/mode3_attr_schema.js';
-import { createRegistration, registrationSecretsFromSeed, createSessionKey, buildIssueRequest, buildAuthProof, buildCredentialProof, signChallenge, signSessionRequest, normalizeDisclosure, normalizeSet, disclosureKey, hasPredicate, chooseMaxHeight, ProofCache } from '../../../lib/mode3_wallet.js';
+import { createRegistration, registrationSecretsFromSeed, createSessionKey, buildIssueRequest, buildWrapperIssueBody, buildAuthProof, buildCredentialProof, signChallenge, signSessionRequest, normalizeDisclosure, normalizeSet, disclosureKey, hasPredicate, chooseMaxHeight, ProofCache } from '../../../lib/mode3_wallet.js';
 import { sessionLeafRange } from '../../../lib/mode3_revocation.js';
 import { registryLeaf } from '../../../lib/mode3_registry.js';
 import { signPayload, statementDigestFields, proofToCalldata, parseExecuteReceipt, decodeExecuteCalldata, walletAt, walletInterface, FACTORY_ABI, FACTORY_MAX_ROOT_AGE_BAND, FACTORY_MAX_LIFETIME_BAND, PUB_INDEX, LOGIN_COUNTER } from '../../../lib/mode3_onchain.js';
@@ -22,6 +22,7 @@ import { verifyRpCert } from '../../../lib/mode3_rp_cert.js';
 import { MODE3_ROOTS_ABI } from '../../../lib/mode3_log.js';
 import { bounded } from '../../../lib/mode3_health.js';
 import { uidOf, regNonce, issueNonce } from '../../../lib/mode3_oidc_nonce.js';
+import { generateRequestKey, wrapperNonce, signIssue } from '../../../lib/mode3_wrapper_auth.js';
 
 export const USER_STATE_VERSION = 1;
 export const DEFAULT_PROFILE = Object.freeze({ birthYear: '1990', country: 'KR' });   // 데모 testuser 기본값(에이전트와 같다). 사용자가 등록 폼에서 바꿀 수 있다.
@@ -210,6 +211,26 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     await putSessions({});
     return null;
   }
+  /** 래퍼 방식의 로컬 등록(스펙 2026-11-20 zkwrapper §2.1): 계정(uid)은 Google 토큰의 sub 가 정하고 auid 는 이 패스키의 salt 가 정한다. 발급 서버에는 따로 등록하지 않는다 —
+   *  첫 발급이 곧 등록이다(pendingIdp). salt 는 저장하지 않는다(passkey-web W4). 성공 null, 실패 { status, body }. */
+  async function wrapperLocalRegister({ uid, provider, s_u, profileIn = null, recordAuid = null }) {
+    if (profileIn !== null && (typeof profileIn !== 'object' || Array.isArray(profileIn))) return R(400, { reason: 'bad_attr', detail: 'profile_required' });
+    const auid = await auidOf({ s_u: BigInt(s_u) });
+    // 속성 도구 기록의 속성은 그 기록이 이 패스키(auid)의 것일 때만 쓴다 — 아니면 등록하지 않는다(syncProfileFromRecord 와 같은 규칙).
+    if (profileIn !== null && !(isDec(String(recordAuid ?? '')) && BigInt(recordAuid).toString() === auid.toString())) return R(409, { reason: 'attr_record_salt_mismatch' });
+    let schema;
+    try { schema = (await schemaFor()).schema; } catch (e) { if (e.reason === 'schema_invalid') return R(503, { reason: 'schema_invalid', detail: e.message }); throw e; }
+    const profile = profileIn ?? Object.fromEntries(Object.entries(DEFAULT_PROFILE).filter(([k]) => schema.slots.some((x) => x.type !== 'unused' && x.name === k)));
+    let attrs;
+    try { attrs = await encodeProfile(schema, profile, { allowEmptyRequired: false }); }
+    catch (e) { if (e.reason === 'bad_attr') return R(400, { reason: 'bad_attr', slot: e.slot, field: e.field, detail: e.detail, message: e.message }); throw e; }
+    const normalized = normalizeProfile(schema, profile);
+    await ensureVault();
+    await vault.writeSecrets({ s_u: null, seed: null, blind_u: null, sessionKeys: {} });
+    await kv.set('registration', { uid, auid: auid.toString(), slot: null, provider, profile: normalized, attrs, userCred: null, pendingIdp: true, wrapper: true });
+    await putSessions({}); await kv.del('loginFlow');   // 앞 등록(예전 방식)의 세션·"가장 최근 로그인" 기록을 남기지 않는다
+    return null;
+  }
   /** 발급 요청에 실을 등록 재료(Google 첫 로그인) — auid 뿐이다. IdP 는 이 발급 증명을 그 auid 로 검증한 뒤 등록한다(스펙 2026-11-12 no-pk-u §3.2). */
   function regMaterials(src) { return { auid: String(src.registration().auid) }; }
   /** RP 가 모르는 세션 정리(2026-10-16): 세션의 RP 오리진마다 POST /api/mode3/sessions/check 로 살아 있는지 묻고, 명시적으로 false 인 것만 지운다
@@ -323,18 +344,22 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
   /** 에이전트 issueSession 의 등가. 세션 발급(V11 §5.2): C_u(blind_u)·C_s·π_IdP 를 한 요청으로. 200 이면 세션을 저장하고, 새 C_u 였으면
    *  사용자 자격증명도 바꿔 앉힌다(옛 세션은 함께 버린다). π_IdP 는 주입된 fullProve.idp 로 만든다(브라우저는 워커 프록시, 계획 R7).
    *  세션 개인키는 금고(secrets.sessionKeys[r_s])에만, 공개 레코드에는 origin·account(PPID 계정 주소)·sessionAddress 를 함께 둔다. */
-  async function issueSession({ arid, r_s, r_rp, pk_trace, allowAgent, factoryAddress, attrGateAddress, head, src, blind_u, n, origin, serviceName = null, policy = null, oidc = null, auth_code = null }) {
+  async function issueSession({ arid, r_s, r_rp, pk_trace, allowAgent, factoryAddress, attrGateAddress, head, src, blind_u, n, origin, serviceName = null, policy = null, oidc = null, auth_code = null, wrapper = null }) {
     const reg = src.registration();
     const tk = tick();
     const session = createSessionKey();
     flowStep('session_key', tick() - tk);
     const chainid = await chain.chainId();
     const ov = await takeOverride('issue');   // 시연(설계 §8.3): 이번 발급의 s_u·uid 를 한 번만 덮어쓴다 — 가짜 auid 로 증명돼 IdP 가 bad_idp_proof 를 낸다
-    const req = await noted({ purpose: 'issue', arid: String(arid), origin: origin ?? null, serviceName, r_s: BigInt(r_s).toString() }, () => buildIssueRequest({
+    const material = {
       uid: BigInt(ov?.uid ?? reg.uid), s_u: BigInt(ov?.s_u ?? reg.s_u), blind_u, attrs: (reg.attrs ?? []).map(BigInt), arid: BigInt(arid), r_rp, r_s,
-      session, chainid, allowAgent: BigInt(allowAgent), max_height: chooseMaxHeight(head, { ttlBlocks: TTL, grid: GRID }), n, fullProve: provers.idp, onStep: flowStep,
-    }));
-    if (ov?.uid) req.body.uid = reg.uid;   // 요청 본문의 uid 는 진짜 — C_u·π_IdP 안의 uid 만 바뀐다(스펙 §8.3)
+      session, chainid, allowAgent: BigInt(allowAgent), max_height: chooseMaxHeight(head, { ttlBlocks: TTL, grid: GRID }), onStep: flowStep,
+    };
+    // 래퍼 방식(스펙 2026-11-20 zkwrapper §2.2): π_IdP 가 없다 — 본문은 가명·커밋먼트뿐이고, Google 토큰과 요청 키의 서명이 본인 확인이다.
+    const req = wrapper ? await buildWrapperIssueBody(material)
+      : await noted({ purpose: 'issue', arid: String(arid), origin: origin ?? null, serviceName, r_s: BigInt(r_s).toString() }, () => buildIssueRequest({ ...material, n, fullProve: provers.idp }));
+    if (ov?.uid && !wrapper) req.body.uid = reg.uid;   // 요청 본문의 uid 는 진짜 — C_u·π_IdP 안의 uid 만 바뀐다(스펙 §8.3)
+    if (wrapper) Object.assign(req.body, { id_token: wrapper.idToken, pk_e: wrapper.pkE, sig: await signIssue(wrapper.privateKey, req.body, wrapper.aud) });
     // OIDC 래퍼(RP 로그인 흐름, 2026-10-16): Google 토큰을 발급 요청에 싣는다. IdP 에 계정이 아직 없으면(첫 로그인) 등록 재료도 함께 — IdP 가 그 자리에서 등록·발급.
     if (oidc?.id_token) { req.body.id_token = oidc.id_token; if (oidc.registration) req.body.registration = oidc.registration; }
     // 인증 코드(CIA_ISSUE_AUTH=code, passkey-web W5): 인증 창이 낸 1회용 발급 코드를 그대로 싣는다(저장·기록하지 않는다).
@@ -343,7 +368,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     const r = await idp.post('/cia/issue', req.body);
     flowStep('issue', tick() - ti);
     if (r.status !== 200) return { r, demo: ov ? 'override:issue' : undefined };
-    if (oidc?.registration) await updateReg((x) => { x.pendingIdp = false; });   // IdP 가 등록을 받았다
+    if (oidc?.registration || wrapper) await updateReg((x) => { x.pendingIdp = false; });   // IdP 가 등록을 받았다(래퍼 방식은 첫 발급이 곧 등록이다)
     // V10(§4.5): 계정 폐기로 슬롯이 은퇴된 뒤 되살아난 계정의 재발급은 새 슬롯을 받는다 — 응답의 슬롯을 따른다.
     if (Number.isInteger(r.body?.slot) && r.body.slot >= 0 && r.body.slot !== reg.slot) await src.setSlot(r.body.slot);
     const uc = src.userCred();
@@ -684,7 +709,9 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     /** 에이전트 POST /wallet/login 의 등가. 오리진은 snap 모드 규칙 — 팝업이 postMessage 의 event.origin 으로 확인한 verifiedOrigin 을
      *  인증서 오리진(body.origin)과 대조한다(피싱 페이지는 인증서의 오리진에서 메시지를 보낼 수 없다). 비밀은 금고에서(witness 없음).
      *  사유·상태 코드·검사 순서는 에이전트와 같다. 성공 본문에는 비밀·uid 가 없다. */
-    async login(body, { verifiedOrigin = null, serviceName = null, policy = null, idToken = null, n: nIn = null, authCode = null } = {}) {
+    async login(body, { verifiedOrigin = null, serviceName = null, policy = null, idToken = null, n: nIn = null, authCode = null, wrapper = null } = {}) {
+      // wrapper(래퍼 방식, 내부용 — wrapperLogin 이 부른다): { idToken, privateKey, pkE, aud, googleMs }. Google 을 다녀온 시간은 이 로그인이 시작되기 전의 것이다(before).
+      if (wrapper && Number.isFinite(wrapper.googleMs)) flowStep('google', wrapper.googleMs, { before: true });
       if (PK && idToken !== null) return PASSKEY_MODE();   // R-6: Google 래퍼 로그인
       // 인증 코드(W5, CIA_ISSUE_AUTH=code): 인증 창이 낸 1회용 발급 코드 — /cia/issue 의 auth_code 로 그대로 싣는다(cred_revoked 재시도도 같은 코드).
       if (authCode !== null && (typeof authCode !== 'string' || !authCode)) return R(400, { error: 'authCode 는 문자열' });
@@ -729,7 +756,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       }
       const pubReg = await getReg();
       if (!pubReg) return R(409, { reason: 'not_registered' });
-      if (pubReg.pendingIdp && !oidcReq) return R(401, { reason: 'oidc_required', detail: 'IdP 등록이 아직 없는 Google 계정 — Google 로 로그인해야 한다' });
+      if (pubReg.pendingIdp && !oidcReq && !wrapper) return R(401, { reason: 'oidc_required', detail: 'IdP 등록이 아직 없는 Google 계정 — Google 로 로그인해야 한다' });
       if (chainMissing()) return R(503, { reason: 'chain_unavailable', detail: chainMissing() });
       const rs = BigInt(r_s), rrp = BigInt(r_rp);
       if (rs >= SCALAR_MAX || rrp >= SCALAR_MAX) return R(400, { error: 'r_s·r_rp 는 2^250 미만' });
@@ -765,7 +792,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       if (src === 'locked') return LOCKED();
       // V9: 옛 등록(슬롯 없음)은 IdP 의 /cia/slot 으로 되찾는다.
       const reg = src.registration();
-      if ((reg.slot === null || reg.slot === undefined) && !pubReg.pendingIdp) {   // IdP 에 계정이 아직 없으면(Google 첫 로그인) 슬롯은 발급 응답이 준다
+      if ((reg.slot === null || reg.slot === undefined) && !pubReg.pendingIdp && !wrapper) {   // IdP 에 계정이 아직 없으면(Google 첫 로그인) 슬롯은 발급 응답이 준다
         const nonce = randomScalar();
         const r0 = await idp.post('/cia/slot', { uid: reg.uid, nonce: nonce.toString(), ...(await authProof(reg.uid, reg.s_u, await slotCtx({ nonce }), { purpose: 'slot' })) });
         // 슬롯은 음이 아닌 정수여야 한다(리뷰 Minor 1) — IdP 가 망가진 값을 주면 registryCheck 가 영구히 null 을 돌려주게 된다.
@@ -780,7 +807,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       catch (e) { return R(503, { reason: 'chain_unavailable', detail: e.message }); }
       timings.syncMs = now() - t;
       flowStep('sync', tick() - tsy);
-      flowStep('random', randomMs, nIn !== null ? { given: true } : null);
+      if (!wrapper) flowStep('random', randomMs, nIn !== null ? { given: true } : null);   // 래퍼 방식은 n 을 쓰지 않는다
       lastSync = syncSnapshot(synced);
 
       await pruneSessions(synced.head);
@@ -790,7 +817,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       const issueArgs = { arid, r_s: rs, r_rp: rrp, pk_trace: { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress: factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress: attrGateAddress ? ethers.getAddress(attrGateAddress) : null, head: synced.head, src, origin, n: issueN };
       t = now();
       const oidcArg = oidcReq ? { ...oidcReq, registration: pubReg.pendingIdp ? await regMaterials(src) : null } : null;
-      const issued = await issueSession({ ...issueArgs, blind_u: pick.blind_u, serviceName, policy, oidc: oidcArg, auth_code: authCode });
+      const issued = await issueSession({ ...issueArgs, blind_u: pick.blind_u, serviceName, policy, oidc: oidcArg, auth_code: authCode, wrapper });
       timings.issueMs = now() - t;
       timings.userCredMs = pick.fresh ? timings.issueMs : 0;   // 새 C_u 를 받은 로그인만 0 이 아니다(테스트·화면이 본다)
       let r = issued.r, demo = issued.demo;
@@ -800,12 +827,14 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       if (r.status === 409 && r.body?.reason === 'cred_revoked') {
         await replaceUserCred(src, null);
         t = now();
-        const retried = await issueSession({ ...issueArgs, blind_u: randomScalar(), serviceName, policy, oidc: oidcArg, auth_code: authCode });
+        const retried = await issueSession({ ...issueArgs, blind_u: randomScalar(), serviceName, policy, oidc: oidcArg, auth_code: authCode, wrapper });
         const retryMs = now() - t;
         timings.issueMs += retryMs;
         timings.userCredMs = retryMs;
         r = retried.r; demo = retried.demo;
       }
+      // 래퍼 방식의 거절(wrapper_*·auid_pinned·auid_taken·auid_s_taken·cf_u_taken·cred_change_too_soon·account_disabled …)은 사유·상태 그대로 — 창이 사유별로 안내한다.
+      if (wrapper && r.status !== 200 && typeof r.body?.reason === 'string') return R(r.status, { reason: r.body.reason, cia: r.body, timings });
       if (typeof r.body?.reason === 'string' && (r.body.reason.startsWith('oidc_') || r.body.reason === 'uid_mismatch')) return R(r.status, { reason: r.body.reason, cia: r.body, timings });   // 래퍼 사유는 그대로(2026-10-16)
       // R-13: 인증 코드 정책의 401(코드 없음·틀린/쓴 코드)은 issue_failed 로 뭉개지 않고 사유·상태 그대로 — 화면이 인증 창으로 다시 보낸다.
       // passkey-web 에서만이다 — web 모드는 이전처럼 아래 502 issue_failed(2026-11-17 미뤄 둔 Minor C: "web 은 바꾸지 않는다").
@@ -854,6 +883,62 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       // 서비스가 증명의 공개 신호와 맞춰 보고, 화면이 "서비스가 받은 토큰" 으로 보인다. 없으면 null(서비스는 토큰 없이도 로그인을 받는다).
       const zkToken = (await getSessions())[rs.toString()]?.credential?.id_token;
       return R(200, { ...out, issued: true, allowAgent, timings, disclosure: hasPredicate(disclosure) ? discStrings(disclosure) : null, id_token: typeof zkToken === 'string' ? zkToken : null });
+    },
+    /** 래퍼 로그인 1단계(스펙 2026-11-20 zkwrapper §2.2) — Google 로 가기 전: 1회용 요청 키를 만들어(개인키는 꺼낼 수 없다 — CryptoKey 그대로 kv 에) Google 인가 요청의 nonce 를 낸다.
+     *  패스키를 묻지 않는다(salt 가 필요 없다). 부를 때마다 새 키로 덮는다 — 앞선 키로 받은 토큰은 쓸 수 없게 된다. */
+    async wrapperBegin() {
+      if (!PK || config.wrapper !== true) return R(409, { reason: 'not_wrapper_mode' });
+      const k = await generateRequestKey();
+      await kv.set('wrapperKey', { privateKey: k.privateKey, pkE: k.pkE, at: now() });
+      return R(200, { pkE: k.pkE, googleNonce: await wrapperNonce(k.pkE) });
+    },
+    /** 래퍼 로그인 2단계 — Google 에서 돌아온 뒤: 패스키(한 번) → salt → 발급 요청(가명·커밋먼트 + Google 토큰 + 요청 키의 서명, π_IdP 없음) → 세션 토큰 → π_RP.
+     *  응답은 login 과 같다. 이 브라우저에 등록이 없으면(또는 예전 방식의 등록이면) 토큰의 계정으로 로컬 등록을 만든다 — 발급이 거절되면 되돌린다.
+     *  요청 키는 끝나면 지운다(패스키를 취소·실패한 경우만 남긴다 — 토큰을 아직 쓰지 않았으니 창이 다시 물을 수 있다).
+     *  salt: 창이 방금 만든 패스키의 값(있으면 그 로그인에 바로 쓴다 — 첫 등록에서만, 패스키를 다시 묻지 않는다). profile·recordAuid: 속성 도구 기록 — 그 기록이 이 패스키의 것일 때만 쓴다. */
+    async wrapperLogin(body, { idToken = null, verifiedOrigin = null, serviceName = null, policy = null, googleMs = null, profile = null, recordAuid = null, salt = null } = {}) {
+      if (!PK || config.wrapper !== true) return R(409, { reason: 'not_wrapper_mode' });
+      if (typeof idToken !== 'string' || !idToken) return R(400, { error: 'idToken(문자열) 필요' });
+      if (salt !== null && !isSalt(salt)) return R(400, { reason: 'passkey_bad_salt' });
+      let claims;
+      try { claims = jwtPayload(idToken); } catch { return R(400, { reason: 'oidc_invalid', detail: 'id_token 형식이 아니다' }); }
+      if (typeof claims?.sub !== 'string' || !claims.sub) return R(400, { reason: 'oidc_invalid', detail: 'sub 가 없다' });
+      const wk = (await kv.get('wrapperKey')) ?? null;
+      // 토큰은 지금의 요청 키에 묶인 것이어야 한다 — 아니면 서버가 어차피 거절한다(wrapper_nonce_mismatch). 패스키를 묻기 전에 걸러 처음부터 다시 하게 한다.
+      if (!wk?.privateKey || !wk.pkE || claims.nonce !== await wrapperNonce(wk.pkE)) return R(409, { reason: 'wrapper_key_missing' });
+      let keys;
+      try { keys = await idp.publicKeys(); } catch (e) { return R(502, { reason: 'cia_unavailable', detail: e.message }); }
+      const pub = keys.status === 200 ? keys.body : null;
+      if (pub?.wrapper !== true || typeof pub.wrapperAud !== 'string' || typeof pub.oidc?.provider !== 'string') return R(503, { reason: 'wrapper_disabled' });
+      const uid = uidOf(pub.oidc.provider, claims.sub);
+      const prev = await getReg();
+      // 이 브라우저(이 패스키)는 한 Google 계정에 묶인다 — 다른 계정으로 오면 서버가 auid_taken 으로 거절할 일이라, 가기 전에 까닭을 말한다.
+      if (prev?.wrapper === true && String(prev.uid) !== uid) return R(409, { reason: 'wrapper_account_mismatch' });
+      let keepKey = false;
+      try {
+        return await core.withSalt(async () => {
+          let created = false;
+          if (prev?.wrapper !== true) {
+            if (salt !== null) {   // 방금 만든 패스키: 연결된 패스키가 있을 때만 그 값을 이 범위의 메모로 둔다(저장하지 않는다)
+              if (!((await kv.get('passkey')) ?? null)?.credentialId) return R(409, { reason: 'passkey_setup_required' });
+              saltMemo = BigInt(salt).toString();
+            }
+            const made = await wrapperLocalRegister({ uid, provider: pub.oidc.provider, s_u: await saltNow(), profileIn: profile, recordAuid });
+            if (made) return made;
+            created = true;
+          } else if (profile !== null) {
+            const sy = await ops.syncProfileFromRecord({ recordAuid, profile });   // 속성 변경(W5): 기록의 속성으로 맞춘다 — 이번 로그인이 새 속성의 C_u 를 받는다
+            if (sy.status !== 200) return sy;
+          }
+          const r = await ops.login(body, { verifiedOrigin, serviceName, policy, wrapper: { idToken, privateKey: wk.privateKey, pkE: wk.pkE, aud: pub.wrapperAud, googleMs } });
+          // 발급이 거절된 첫 로그인: 방금 만든 로컬 등록을 되돌린다(서버에 없는 계정을 가리키는 등록을 남기지 않는다). 발급이 된 뒤의 실패는 남긴다.
+          if (r.status !== 200 && created && (await getReg())?.pendingIdp) { await kv.del('registration'); await putSessions({}); }
+          return r;
+        });
+      } catch (e) {
+        if (typeof e?.reason === 'string' && e.reason.startsWith('passkey_')) keepKey = true;
+        throw e;
+      } finally { if (!keepKey) await kv.del('wrapperKey'); }
     },
     /** 에이전트 POST /wallet/revalidate 의 등가(origin 은 Origin 헤더 자리 — 팝업이 event.origin 을 넘긴다). */
     async revalidate({ r_s, skipSync = false, arid = null, origin = null } = {}) {
