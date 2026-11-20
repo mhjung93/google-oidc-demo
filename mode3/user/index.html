@@ -122,6 +122,8 @@
     <section class="card span2" id="flowCard">
       <h3 data-i18n="user_flow_title">로그인 전체 플로우</h3>
       <p class="desc" data-i18n="user_flow_desc">"zkIdP 로 로그인" 한 번에 일어나는 일을 순서대로 보입니다. 단계를 누르면 무엇을 왜 하는지와, 가장 최근 로그인의 실제 값·걸린 시간이 보입니다. 비밀(salt)은 나오지 않습니다 — 값마다 누가 아는지는 다릅니다(uid 는 zkIdP 만, r_rp 는 서비스만 압니다).</p>
+      <!-- 2026-11-20: 한 장 그림(일반 OIDC 와 나란히 — /common/flow.html). 이 카드는 그 그림의 세부(단계별 값·시간·증명 보기)다. -->
+      <p><a id="flowOnePage" href="/common/flow.html" target="_blank" rel="noopener" data-i18n="user_flow_onepage">한 장 그림으로 보기 — 일반 OIDC 와 나란히</a></p>
       <p id="flowSummary" class="muted"></p>
       <!-- 기본은 접어 둔다(2026-11-19 셀프 리뷰): 단계가 열넷이라 펴 두면 아래 카드(보낸 트랜잭션·트랜잭션 보내기)가 화면 두세 장 밀린다. 펴 둔 상태는 이 브라우저에 기억한다. -->
       <details id="flowDetails"><summary data-i18n="user_flow_toggle">단계 보기</summary>

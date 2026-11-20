@@ -828,6 +828,7 @@ window.DemoStrings = {
     // passkey-web 사용자 페이지(2026-11-17 계획 Task 7) — 패스키 설정 카드·salt 보기·연결 끊기·계정 복구 카드.
     // ---- 로그인 전체 플로우 카드 · 휴대폰 패스키(스펙 2026-11-19 login-flow-and-phone-passkey) ----
     user_flow_title: { ko: '로그인 전체 플로우', en: 'Login flow, end to end' },
+    user_flow_onepage: { ko: '한 장 그림으로 보기 — 일반 OIDC 와 나란히', en: 'See it as one picture — next to plain OIDC' },   // 2026-11-20: /common/flow.html
     user_flow_desc: { ko: '"zkIdP 로 로그인" 한 번에 일어나는 일을 순서대로 보입니다. 단계를 누르면 무엇을 왜 하는지와, 가장 최근 로그인의 실제 값·걸린 시간이 보입니다. 비밀(salt)은 나오지 않습니다 — 값마다 누가 아는지는 다릅니다(uid 는 zkIdP 만, r_rp 는 서비스만 압니다).', en: 'What happens during one "Sign in with zkIdP", in order. Click a step to see what it does and why, with the real values and timing of the most recent login. The secret (salt) never appears — who knows each value differs (only zkIdP knows the uid, only the service knows r_rp).' },
     user_flow_none: { ko: '아직 이 브라우저에서 로그인한 적이 없습니다 — 단계의 의미만 보입니다. 서비스에서 "zkIdP 로 로그인" 을 하면 실제 값과 시간이 채워집니다.', en: 'No login from this browser yet — only the meaning of each step is shown. Sign in with zkIdP at a service to fill in real values and timing.' },
     user_flow_last: { ko: '가장 최근 로그인: {service} · {time} · 전체 {total} (영지식 증명 {prove} · 패스키 {passkey} · 재지 않은 나머지 {other})', en: 'Most recent login: {service} · {time} · total {total} (ZK proofs {prove} · passkey {passkey} · untimed rest {other})' },

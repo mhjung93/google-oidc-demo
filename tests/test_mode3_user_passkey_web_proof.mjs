@@ -236,6 +236,38 @@ try {
   });
 
   // ---- trace tag 없는 개봉(스펙 2026-11-19-mode3-trace-without-tag, 데모 시나리오 9·10) ----
+  // 2026-11-20("전체 플로우를 그림으로" 피드백): 한 장 그림 — 일반 OIDC 와 zk-Delegation 을 나란히. 아랫줄에는 이 브라우저의 가장 최근 로그인의 공개값이 채워진다
+  await t('전체 플로우 한 장(/common/flow.html): 방금 한 로그인의 값이 채워지고, 단계를 하나씩 켜며, 화살표를 누르면 세부와 걸린 시간이 펴진다 — 빈 브라우저에서 열어도 지갑 저장소를 만들지 않는다', async () => {
+    const f = await ctx.newPage();
+    try {
+      await f.goto(`${wallet.base}/common/flow.html`);
+      await f.waitForFunction(() => document.getElementById('recent').textContent.includes('가장 최근 로그인'), null, { timeout: 15_000 });
+      const shown = (sel) => f.$eval(sel, (e) => e.firstChild?.nodeValue ?? '');   // 보이는 글(전체 값은 그 안의 <title> — 마우스를 올리면 나온다)
+      assert.equal(await shown('#zkPpid'), `${zkSeen.PPID.slice(0, 17)}…`, '서비스가 받은 PPID 와 같은 값(앞 17자)');
+      assert.equal(await shown('#zkAuidS'), `auid_s ${zkSeen.auid_s.slice(0, 17)}…`); assert.equal(await shown('#zkAridS'), `arid_s ${zkSeen.arid_s.slice(0, 17)}…`);
+      assert.equal(await f.$eval('#zkPpid title', (e) => e.textContent), zkSeen.PPID, '전체 값은 title 에');
+      const body = await f.evaluate(() => document.body.innerText);
+      assert.ok(body.includes('π_RP') && !body.includes('π_session'), '증명의 화면 이름은 π_RP'); assert.ok(body.includes('같은 값'), 'salt 는 같은 값으로 다시 만든다고 적는다');
+      const off = () => f.$$eval('#seqZk .st.off', (g) => g.length);
+      assert.equal(await off(), 0, '처음에는 전체가 보인다');
+      await f.click('.ctl[data-ctl="zk"] [data-act="first"]'); assert.equal(await off(), 6);
+      await f.click('.ctl[data-ctl="zk"] [data-act="next"]'); await f.click('.ctl[data-ctl="zk"] [data-act="next"]');
+      assert.equal(await off(), 4); assert.ok((await text(f, '.ctl[data-ctl="zk"] .pos')).includes('2 / 6')); assert.ok((await text(f, '#detailZk h4')).includes('패스키'), '켠 단계의 설명이 펴진다');
+      await f.click('.ctl[data-ctl="zk"] [data-act="all"]'); assert.equal(await off(), 0); assert.equal(await f.$eval('#detailZk', (e) => e.hidden), true);
+      await f.click('#seqZk .st[data-step="5"]');
+      const d5 = await text(f, '#detailZk'); assert.ok(d5.includes('π_RP 만들기') && /[0-9.]+(ms|s)/.test(d5), `⑤ 의 세부와 시간: ${d5.slice(0, 200)}`);
+      await f.click('#seqOidc .st[data-step="3"]'); assert.ok((await text(f, '#detailOidc')).includes('sub'), '윗줄의 설명');
+      assert.equal((await text(f, '#oidcSvcName')), (await text(f, '#zkSvcName')), '두 줄의 서비스 이름이 같다');
+    } finally { await f.close(); }
+    const fresh = await browser.newContext();
+    try {
+      const p = await fresh.newPage(); await p.goto(`${wallet.base}/common/flow.html`); await p.waitForFunction(() => document.querySelector('.ctl .pos')?.textContent.length > 0);
+      await new Promise((r) => setTimeout(r, 500));
+      assert.deepEqual(await p.evaluate(async () => (await indexedDB.databases()).map((d) => d.name)), [], '빈 브라우저에서 저장소를 만들면 지갑이 자기 판을 못 만든다');
+      assert.ok((await text(p, '#recent')).includes('한 적이 없습니다'));
+      const w = await fresh.newPage(); await w.goto(`${wallet.base}/`); await w.waitForSelector('#pkSetupCard:not([hidden])', { timeout: 15_000 });   // 지갑 페이지가 정상으로 뜬다
+    } finally { await fresh.close(); }
+  });
   await t('개봉: 서비스가 그 PPID 의 가장 최신 로그인(auid_s)을 zkIdP 에 내고, zkIdP 관리자가 승인하면 발급 기록에서 uid 가 나온다 — 증명의 공개 입력은 29개(태그 없음)', async () => {
     const acct = await idpAccount();
     const req = await rp.post('/api/mode3/open', { PPID: zkSeen.PPID }, rp.adminHeaders);
