@@ -10,7 +10,7 @@ import { randomScalar } from '../lib/mode3_credential.js';
 import { createRpVerifier } from '../lib/mode3_rp.js';
 import { PUB_INDEX } from '../lib/mode3_onchain.js';
 import { signOpenRequest } from '../lib/mode3_opening.js';
-import { generateRequestKey, wrapperNonce, signIssue, signDigest, revokeDigest } from '../lib/mode3_wrapper_auth.js';
+import { generateRequestKey, wrapperNonce, signIssue, signDigest, revokeDigest, issueDigest } from '../lib/mode3_wrapper_auth.js';
 import { proveV11, TESTUSER_ATTRS } from './helpers/mode3_flow.mjs';
 
 const j = (o) => JSON.stringify(o, (k, v) => (typeof v === 'bigint' ? v.toString() : v));
@@ -181,6 +181,35 @@ try {
     r = await revoke({ sigFor: { scope: 'account' } }); assert.equal(r.status, 400, j(r.body));
     r = await revoke(); assert.equal(r.status, 200, j(r.body));
   });
+  await t('동시 요청: 두 계정이 같은 auid_s 로 동시에 발급받으면(둘 다 새 C_u) 하나만 200, 다른 하나는 409 auid_s_taken — 두 기록에 함께 남지 않는다(최종 검토 C-1)', async () => {
+    const p1 = await person('g-race-1'), p2 = await person('g-race-2');
+    const r_rp = randomScalar(), session = createSessionKey(), mh = BigInt(await provider.getBlockNumber()) + 300n;
+    const make = async (who, auid_s = null) => {
+      const k = await generateRequestKey();
+      const built = await buildWrapperIssueBody({ uid: who.uid, s_u: who.s_u, blind_u: who.blind_u, attrs: who.attrs, arid: BigInt(S1.arid), r_rp, r_s: randomScalar(), session, chainid: 31337n, allowAgent: 0n, max_height: mh });
+      const body = { ...built.body, ...(auid_s ? { auid_s } : {}) };
+      return { body: { id_token: await stub.mint({ sub: who.sub, nonce: await wrapperNonce(k.pkE), extra: {} }), pk_e: k.pkE, sig: await signIssue(k.privateKey, body, AUD), ...body }, auid_s: body.auid_s };
+    };
+    const a = await make(p1); const b = await make(p2, a.auid_s);
+    const [ra, rb] = await Promise.all([cia.post('/cia/issue', a.body), cia.post('/cia/issue', b.body)]);
+    const codes = [ra.status, rb.status].sort();
+    assert.deepEqual(codes, [200, 409], `${ra.status} ${j(ra.body).slice(0, 120)} / ${rb.status} ${j(rb.body).slice(0, 120)}`);
+    assert.equal((ra.status === 409 ? ra : rb).body.reason, 'auid_s_taken');
+    const owners = (await accounts()).filter((x) => x.lastAuidS?.value === a.auid_s); assert.equal(owners.length, 1, '기록이 한 계정에만 있어야 한다');
+  });
+  await t('계정 자기 폐기(래퍼 방식): 그 계정의 토큰 + "계정 폐기" 서명이면 폐기된다 — 발급·세션 폐기용 서명, 같은 토큰 두 번은 거절(최종 검토 I-1)', async () => {
+    const hana = await person('g-hana'); const iss = await wrapIssue(hana, S1); assert.equal(iss.r.status, 200, j(iss.r.body));
+    const call = async ({ digestOf = () => revokeDigest({ scope: 'account' }, AUD), key = null, token = null } = {}) => {
+      const k = key ?? await generateRequestKey();
+      const id_token = token ?? await stub.mint({ sub: hana.sub, nonce: await wrapperNonce(k.pkE), extra: {} });
+      return { r: await cia.post('/cia/account/self_revoke', { id_token, pk_e: k.pkE, sig: await signDigest(k.privateKey, digestOf()) }), k, id_token };
+    };
+    let x = await call({ digestOf: () => revokeDigest({ scope: 'session', Cf_s: iss.cred.Cf_s }, AUD) }); assert.equal(x.r.status, 400, j(x.r.body)); assert.equal(x.r.body.reason, 'wrapper_bad_signature');
+    x = await call({ digestOf: () => issueDigest(iss.req.body, AUD) }); assert.equal(x.r.status, 400, j(x.r.body)); assert.equal(x.r.body.reason, 'wrapper_bad_signature');
+    assert.equal((await acctOf(hana.uid)).disabled, false, '거절된 요청이 계정을 바꾸면 안 된다');
+    const ok = await call(); assert.equal(ok.r.status, 200, j(ok.r.body)); assert.equal((await acctOf(hana.uid)).disabled, true);
+    const again = await call({ key: ok.k, token: ok.id_token }); assert.equal(again.r.status, 409, j(again.r.body)); assert.equal(again.r.body.reason, 'wrapper_token_used');
+  });
   await t('래퍼 방식에서 막힌 경로: 가입·비밀번호 로그인·등록·슬롯·증명 로그인·일반 OIDC 는 403 wrapper_mode', async () => {
     for (const [m, p, body] of [['post', '/cia/signup', { id: 'abc', pwd: 'password123' }], ['post', '/cia/user/login', { id: 'abc', pwd: 'x' }], ['post', '/cia/register', { uid: '1', pwd: 'x', auid: '1' }], ['post', '/cia/slot', { uid: '1', nonce: '1' }], ['post', '/cia/signup/reserve', {}], ['post', '/cia/user/login_challenge', {}], ['get', '/oidc/authorize?client_id=x', undefined]]) {
       const r = await cia[m](p, body); assert.equal(r.status, 403, `${p}: ${j(r.body)}`); assert.equal(r.body.reason, 'wrapper_mode', p);
@@ -200,6 +229,12 @@ await t('기동 검사: 서비스와 같은 Google 클라이언트 ID 면 뜨지
   catch (e) { assert.match(e.message, /래퍼는 전용 클라이언트 ID 가 필요하다/); return; }
   await started.stop();   // 떠 버렸으면 남기지 않는다
   assert.fail('서비스와 같은 클라이언트 ID 인데 떴다');
+});
+await t('기동 검사: 래퍼 방식은 MODE3_OIDC_CLIENT_ID 를 직접 줘야 한다 — Mode 1 공유 ID(GOOGLE_CLIENT_ID)로 떨어지지 않는다(최종 검토 I-2 a)', async () => {
+  let started = null;
+  try { started = await startIsolatedCia({ wrapper: true, readyTimeoutMs: 8000, env: { MODE3_OIDC_CLIENT_ID: '', GOOGLE_CLIENT_ID: 'mode3-test-client' } }); }
+  catch (e) { assert.match(e.message, /MODE3_OIDC_CLIENT_ID/); return; }
+  await started.stop(); assert.fail('공유 ID 로 떴다');
 });
 console.log(fails ? `\n${fails} 실패` : '\n모두 통과');
 process.exit(fails ? 1 : 0);

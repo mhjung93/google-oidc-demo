@@ -94,6 +94,10 @@ else {
     const r = run({ ZKWRAPPER_GOOGLE_CLIENT_ID: 'same-client-123', RP2_GOOGLE_CLIENT_ID: 'same-client-123' });
     assert.equal(r.status, 1, r.stdout + r.stderr); assert.match(r.stdout, /BLOCKED[^\n]*ZKWRAPPER_GOOGLE_CLIENT_ID/); assert.doesNotMatch(r.stdout + r.stderr, /same-client-123/); assert.doesNotMatch(r.stdout, /SPLIT_START/);
   });
+  t('실행 — 셸의 MODE3_OIDC_CLIENT_ID(서비스에 공유로 가는 ID)와 같아도 BLOCKED(최종 검토 I-2 b)', () => {
+    const r = run({ ZKWRAPPER_GOOGLE_CLIENT_ID: 'shared-777', MODE3_OIDC_CLIENT_ID: 'shared-777' });
+    assert.equal(r.status, 1, r.stdout + r.stderr); assert.match(r.stdout, /BLOCKED[^\n]*ZKWRAPPER_GOOGLE_CLIENT_ID/); assert.doesNotMatch(r.stdout + r.stderr, /shared-777/);
+  });
   t('실행 — 전용 ID 가 있으면 래퍼 검사를 지나 다음 사전 검사(데모 CA)에서 멈춘다', () => {
     const r = run({ ZKWRAPPER_GOOGLE_CLIENT_ID: 'wrap-client-1', RP1_GOOGLE_CLIENT_ID: 'svc-1', RP2_GOOGLE_CLIENT_ID: 'svc-2' });
     assert.equal(r.status, 1, r.stdout + r.stderr); assert.match(r.stdout, /BLOCKED: 먼저 bash scripts\/zkd_tls_setup\.sh/); assert.doesNotMatch(r.stdout + r.stderr, /wrap-client-1|svc-1|svc-2/);

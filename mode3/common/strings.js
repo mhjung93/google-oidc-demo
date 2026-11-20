@@ -397,6 +397,8 @@ window.DemoStrings = {
     user_signup_resume_failed: { ko: 'Google 확인 결과를 이어받지 못했습니다 — zkIdP 페이지에서 "패스키로 로그인" 을 다시 누르세요.', en: 'Could not resume after Google — press "Sign in with a passkey" again on the zkIdP page.' },
     user_signup_google_denied: { ko: 'Google 확인이 끝나지 않았습니다 — zkIdP 페이지에서 다시 시도하세요.', en: 'The Google step did not finish — try again from the zkIdP page.' },
     // ---- zkWrapper 의 서비스 로그인(2026-11-20 스펙 zkwrapper §2.2) — 승인 창이 Google 을 다녀온다 ----
+    user_wrap_revoke_note: { ko: '이 세션을 끝내려면 서비스에서 로그아웃하세요. 세션 폐기는 zkWrapper 관리자에게 요청합니다.', en: 'To end this session, log out at the service. Ask the zkWrapper administrator to revoke it.' },
+    user_wrap_self_revoke_note: { ko: '계정 폐기는 zkWrapper 관리자에게 요청합니다.', en: 'Ask the zkWrapper administrator to revoke the account.' },
     home_title: { ko: 'zk-Delegation 쓰는 법', en: 'How to use zk-Delegation' },
     home_desc: { ko: 'Google 계정으로 로그인하지만, 서비스는 누구인지 모르고 zkWrapper 는 어느 서비스인지 모릅니다.', en: 'You sign in with a Google account, yet the service does not learn who you are and zkWrapper does not learn which service.' },
     home_user_title: { ko: '사용자', en: 'Users' },

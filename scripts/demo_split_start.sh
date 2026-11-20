@@ -128,7 +128,8 @@ if [ "${1:-}" = "stop" ]; then stop_remote; stop_local; exit 0; fi
 # 토큰을 받아 낼 수 있다. 값은 출력하지 않는다. 서비스 ID 는 RP1·RP2_GOOGLE_CLIENT_ID, 없으면 .env 의 GOOGLE_CLIENT_ID(공유 ID — 서비스에 그것이 간다).
 if [ "$ZW" = 1 ]; then
   [ -n "${ZKWRAPPER_GOOGLE_CLIENT_ID:-}" ] || { echo "BLOCKED: zkwrapper 는 래퍼 전용 Google 클라이언트 ID 가 필요하다 — ZKWRAPPER_GOOGLE_CLIENT_ID=… (서비스의 ID 와 다른 것)"; exit 1; }
-  _shared="$( [ -f .env ] && sed -n 's/^GOOGLE_CLIENT_ID=//p' .env | head -n1 | tr -d '\r"'"'" )"
+  # 서비스가 실제로 받는 공유 ID 와 같은 식이다(아래 oidc_client_id·RP_GOOGLE_LINE): 셸의 MODE3_OIDC_CLIENT_ID 가 먼저, 없으면 .env 의 GOOGLE_CLIENT_ID. OIDC=0 이면 공유 ID 를 주지 않는다(최종 검토 I-2 b).
+  _shared=""; [ "${OIDC:-1}" != 0 ] && _shared="${MODE3_OIDC_CLIENT_ID:-$( [ -f .env ] && sed -n 's/^GOOGLE_CLIENT_ID=//p' .env | head -n1 | tr -d '\r"'"'" )}"
   ZW_DENY="$(printf '%s\n' "${RP1_GOOGLE_CLIENT_ID:-$_shared}" "${RP2_GOOGLE_CLIENT_ID:-$_shared}" | awk 'NF' | sort -u | paste -sd, -)"; unset _shared
   printf '%s\n' "${ZW_DENY//,/$'\n'}" | grep -qxF -- "$ZKWRAPPER_GOOGLE_CLIENT_ID" && { echo "BLOCKED: ZKWRAPPER_GOOGLE_CLIENT_ID 가 서비스(zkONE·zkTWO)의 Google 클라이언트 ID 와 같다 — 래퍼 전용 ID 를 따로 만든다"; exit 1; }
 fi

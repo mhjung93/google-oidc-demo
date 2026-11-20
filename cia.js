@@ -184,7 +184,10 @@ const CRED_CHANGE_MIN_MS = (() => { const n = Number(process.env.CIA_CRED_CHANGE
 if (WRAPPER) {
   // 래퍼의 Google 클라이언트 ID 는 전용이어야 한다(스펙 §10 C2): 서비스가 같은 ID 로 Google 로그인을 하면, 그 서비스가 자기 요청 키의 nonce 로 사용자의 토큰을 받아 낼 수 있다.
   const deny = String(process.env.MODE3_RP_GOOGLE_CLIENT_ID_DENY ?? '').split(',').map((x) => x.trim()).filter(Boolean);
-  const why = !OIDC.enabled ? 'MODE3_OIDC_CLIENT_ID 가 없다 — 래퍼 방식은 Google(OIDC) 설정이 있어야 한다'
+  // 최종 검토 I-2(a): MODE3_OIDC_CLIENT_ID 를 직접 줘야 한다 — 없을 때 떨어지는 GOOGLE_CLIENT_ID(Mode 1 공유 ID)로는 뜨지 않는다.
+  const explicitId = envStr('MODE3_OIDC_CLIENT_ID', null), sharedId = envStr('GOOGLE_CLIENT_ID', null);
+  const why = !OIDC.enabled || explicitId === null ? 'MODE3_OIDC_CLIENT_ID 가 없다 — 래퍼 방식은 래퍼 전용 Google 클라이언트 ID 를 직접 줘야 한다(GOOGLE_CLIENT_ID 로 떨어지지 않는다)'
+    : sharedId !== null && sharedId === explicitId ? 'MODE3_OIDC_CLIENT_ID 가 GOOGLE_CLIENT_ID(Mode 1 공유 ID)와 같다 — 래퍼는 전용 클라이언트 ID 가 필요하다'
     : WRAPPER_OIDC.redirectUri === null ? 'MODE3_OIDC_REDIRECT_URI 가 없다 — Google 에서 돌아올 주소'
     : deny.includes(OIDC.clientId) ? '서비스와 같은 Google 클라이언트 ID 를 쓴다 — 래퍼는 전용 클라이언트 ID 가 필요하다(MODE3_RP_GOOGLE_CLIENT_ID_DENY 에 든 값)' : null;
   if (why) { console.error(`[cia] 래퍼 방식으로 뜰 수 없다: ${why}`); process.exit(1); }
@@ -651,6 +654,22 @@ for (const p of ['/cia/register', '/cia/issue', '/cia/slot', '/cia/revoke', '/ci
 app.use('/common', express.static(path.join(__dirname, 'mode3', 'common')));
 
 // 관리자 패널(스펙 §5). 페이지 하나만 허용 목록으로 내보낸다 — express.static 은 쓰지 않는다.
+// zkWrapper 서버의 관리자·운영자 화면(최종 검토 I-3): 지갑과 같은 오리진이라(IndexedDB 금고·패스키 RP ID 를 함께 쓴다) 사용자 앱처럼 엄격한 CSP 를 단다.
+// 두 화면의 인라인 스크립트는 하나씩이고 인라인 처리기(onclick= 등)가 없다 — 그 스크립트의 해시만 허용한다(파일을 그때그때 읽어 계산한다: 작업 트리가 바뀌어도 맞는다).
+if (USER_APP) {
+  const PAGE_FILES = { '/admin': 'cia_admin.html', '/rp': 'cia_rp.html' };
+  app.use((req, res, next) => {
+    const f = PAGE_FILES[req.path]; if (!f || req.method !== 'GET') return next();
+    let hashes = [];
+    try {
+      const html = fs.readFileSync(path.join(__dirname, 'mode3', f), 'utf8');
+      hashes = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map((m) => `'sha256-${createHash('sha256').update(m[1], 'utf8').digest('base64')}'`);
+    } catch { hashes = []; }
+    const approved = Object.values(state?.rps ?? {}).filter((r) => r.status === 'approved').map((r) => r.origin);
+    res.set('Content-Security-Policy', userAppCsp([...new Set([APP_RPC_BROWSER, REV_RPC_BROWSER].map((x) => new URL(x).origin)), ...approved], hashes));
+    next();
+  });
+}
 app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_admin.html')));
 
 // IdP 사용자·RP·인증 창 페이지(Task 12, 2026-10-22 B3 — 설계 §3.4). 사용자가 찾아가는 입구는 지갑이 아니라 IdP 자신이다.
@@ -1406,7 +1425,7 @@ app.post('/cia/slot', userCors, async (req, res) => {
 // /cia/issue — 데모 계정은 π_IdP 만, 래퍼(Google) 계정은 π_IdP + id_token(+첫 로그인이면 registration{auid}). 2026-10-16, 2026-11-13.
 /** 발급의 뒷부분 — 인증(π_IdP, 또는 래퍼 방식의 Google 토큰)을 지난 요청을 받아 등록부 갱신·게시, 서명, 세션·발급 기록을 한다. 기존 발급과 래퍼 발급이 함께 쓴다(2026-11-20).
  *  consume(): 상태를 바꾸기 바로 앞에서 동기로 부르는 1회용 재료의 소비(인증 코드 또는 토큰 nonce) — false 면 consumeFail 로 거절한다. wrapper: 래퍼 방식의 추가 대조. extra: 응답에 더할 값. */
-async function finishIssue(res, { uid, acct, cupt, cspt, auidS, aridS, mh, chainStr, agent, consume = null, consumeFail = null, wrapper = false, extra = null }) {
+async function finishIssue(res, { uid, acct, cupt, cspt, auidS, aridS, mh, chainStr, agent, consume = null, consumeFail = null, wrapper = false, extra = null, hold = null }) {
   // Cf_u·Cf_s 는 IdP 가 점에서 스스로 유도한다(설계 §6.2) — 사용자가 보낸 Cf 를 서명하면 증명된 점과 무관한 값에 서명이 붙는다.
   const Cf_u = await compressPoint(cupt), Cf_s = await compressPoint(cspt);
   const head = await headOf(chainStr);   // fail-closed: 체인이 죽어 있으면 발급하지 않는다(게시도 불가하므로 폐기가 닿지 않는 세션이 된다)
@@ -1418,7 +1437,12 @@ async function finishIssue(res, { uid, acct, cupt, cspt, auidS, aridS, mh, chain
   if ((acct.auidSLog?.length ?? 0) >= AUID_S_LOG_MAX) return res.status(409).json({ error: 'issuance record is full for this account', reason: 'auid_log_full' });
   // 래퍼 방식(스펙 zkwrapper §3·§10 C1): 세션 가명은 전체에서 한 번만 — 다른 계정의 발급 기록에 있는 auid_s 로는 발급하지 않는다. π_IdP 가 없어 발급자는 auid_s 가
   // 그 계정의 것인지 볼 수 없다 — 주운 남의 auid_s 를 자기 기록에 심어 개봉이 엉뚱한 계정을 가리키게 하는 것을 막는다(정직한 요청자가 늘 먼저 낸다).
-  if (wrapper && auidSOwners(auidS.toString()).some((u) => u !== uid)) return res.status(409).json({ error: 'auid_s already issued to another account', reason: 'auid_s_taken' });
+  // 최종 검토 C-1: 검사와 기록 사이에 await(게시·서명)가 있다 — 진행 중인 발급의 auid_s 를 같은 동기 구간에서 예약해 동시 요청이 함께 지나가지 못하게 한다(예약은 issueWrapper 가 끝에 푼다).
+  if (wrapper) {
+    const x = auidS.toString(), holder = inflightAuidS.get(x);
+    if (auidSOwners(x).some((u) => u !== uid) || (holder !== undefined && holder !== uid)) return res.status(409).json({ error: 'auid_s already issued to another account', reason: 'auid_s_taken' });
+    if (holder === undefined && hold) { inflightAuidS.set(x, uid); hold.key = x; }
+  }
   acct.creds ??= [];
   const cur = activeCred(uid);
   let published = false;
@@ -1482,6 +1506,7 @@ function auidSOwners(auidS) {
 
 // ---- 래퍼 방식의 인증(스펙 2026-11-20 zkwrapper §2.2·§10) ----
 // Google ID 토큰(nonce = "wrap:" + H(pk_e)) + 요청 본문에 대한 pk_e 의 서명. 토큰은 한 번만 쓴다 — 발급은 상태를 바꾸기 바로 앞에서(finishIssue 의 consume), 폐기는 인증 직후에 소비한다.
+const inflightAuidS = new Map();   // 진행 중인 래퍼 발급의 auid_s → uid(최종 검토 C-1 — finishIssue 가 검사와 함께 넣고 issueWrapper 가 끝에 지운다)
 const wrapperNonces = new Map();   // 쓴 nonce → 잊어도 되는 시각(ms). Google 토큰 수명(약 1시간)보다 길게 둔다
 const WRAPPER_NONCE_KEEP_MS = 2 * 3600_000;
 const wrapperNonceUsed = (n) => { const e = wrapperNonces.get(n); return e !== undefined && e >= Date.now(); };
@@ -1539,8 +1564,11 @@ async function issueWrapper(req, res) {
   }
   // 아이디 = Google 이 확인한 이메일(있을 때만 — 관리자 화면에 보이는 값). 저장은 finishIssue 의 persist 가 함께 한다.
   if (!acct.loginId && au.o.emailVerified && typeof au.o.email === 'string' && SIGNUP_EMAIL_RE.test(au.o.email)) acct.loginId = au.o.email;
-  return finishIssue(res, { uid, acct, cupt, cspt, auidS: BigInt(auid_s), aridS: BigInt(arid_s), mh, chainStr, agent: BigInt(allowAgent),
-    consume: () => consumeWrapperNonce(au.nonce), consumeFail: TOKEN_USED, wrapper: true, extra: { uid, email: acct.loginId ?? null } });
+  const hold = { key: null };
+  try {
+    return await finishIssue(res, { uid, acct, cupt, cspt, auidS: BigInt(auid_s), aridS: BigInt(arid_s), mh, chainStr, agent: BigInt(allowAgent),
+      consume: () => consumeWrapperNonce(au.nonce), consumeFail: TOKEN_USED, wrapper: true, extra: { uid, email: acct.loginId ?? null }, hold });
+  } finally { if (hold.key) inflightAuidS.delete(hold.key); }   // 성공했으면 이미 발급 기록(auidSLog)에 있다
 }
 app.post('/cia/issue', userCors, async (req, res) => {
   try {

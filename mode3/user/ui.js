@@ -80,6 +80,7 @@ function askSecret({ modalId, inputId, goId, cancelId }) {
 /** oidc: zkIdP 의 public_keys.oidc({ enabled, provider, clientId, issuer }) — user.js 가 읽어 넘긴다. 못 읽으면 기본값(꺼짐)이라 Google 버튼만 숨는다.
  *  passkey: passkey-web 의 { derive, create }(user.js — RP ID 는 설정의 사용자 오리진 호스트). 설정 카드의 두 버튼만 직접 부른다. */
 export function mountUi({ core, prover, config, Demo, meta, demoReset = false, passkey = null }) {
+  const { tte, tt, setVerdict, pendingVerdict } = textKit(Demo);
   // zkWrapper 홈(2026-11-20 스펙 zkwrapper §6): 래퍼 방식에서만 안내 카드를 보인다. 운영자·관리자 화면은 발급 서버(ciaUrl)에 있다.
   if (config.wrapper === true) {
     const home = document.getElementById('homeGuide');
@@ -87,9 +88,11 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       for (const [id, p] of [['homeOpLink', '/rp'], ['homeAdminLink', '/admin']]) { const a = document.getElementById(id); if (a) { a.href = `${config.ciaUrl}${p}`; a.textContent = `${config.ciaUrl}${p}`; } }
       home.hidden = false;
     }
-    const pk = document.getElementById('proofsKindBtn'); if (pk) pk.hidden = true;   // π_IdP 가 없다 — "zkIdP 에 낸 π_IdP 도 보기" 를 두지 않는다
+    const pk = document.getElementById('proofsKindBtn'); if (pk) pk.hidden = true;
+    // 계정 자기 폐기는 비밀번호를 묻는다 — 래퍼 방식에는 비밀번호가 없다(최종 검토 I-1). 버튼 대신 안내를 둔다.
+    const sr = document.getElementById('selfRevokeBtn');
+    if (sr) { sr.hidden = true; const note = document.createElement('p'); note.className = 'muted wrap-revoke-note'; note.textContent = tt('user_wrap_self_revoke_note') || '계정 폐기는 zkWrapper 관리자에게 요청합니다.'; sr.after(note); }   // π_IdP 가 없다 — "zkIdP 에 낸 π_IdP 도 보기" 를 두지 않는다
   }
-  const { tte, tt, setVerdict, pendingVerdict } = textKit(Demo);
   const { withUnlock, ask: askUnlock } = createUnlocker({ core, Demo });
   // /wallet/config 대신 /user/config(같은 오리진). minAge·allowedCountries 는 없다 — claim 버튼이 기본값으로 대신한다(에이전트와 같다).
   const cfg = { ...config, secrets: config.secrets ?? 'web' };
@@ -534,7 +537,9 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       btn.className = 'danger';
       btn.textContent = tt('wallet_end_session') || '이 세션 끝내기(폐기)';
       btn.addEventListener('click', () => revokeSession(r_s, c, btn));
-      box.append(dl, btn);
+      // 래퍼 방식(최종 검토 I-1): 세션 폐기는 Google 토큰으로 해야 하는데 이 화면에는 아직 그 길이 없다 — 동작하지 않는 버튼 대신 안내를 둔다
+      if (config.wrapper === true) { const note = document.createElement('p'); note.className = 'muted wrap-revoke-note'; note.textContent = tt('user_wrap_revoke_note') || '이 세션을 끝내려면 서비스에서 로그아웃하세요. 세션 폐기는 zkWrapper 관리자에게 요청합니다.'; box.append(dl, note); }
+      else box.append(dl, btn);
       acts.appendChild(box);
     }
   }

@@ -204,6 +204,14 @@ try {
     }
     assert.deepEqual(hits, []);
   });
+  await t('래퍼 방식의 홈에는 동작하지 않는 폐기 버튼(세션 끝내기·계정 자기 폐기 — π_IdP·비밀번호를 쓴다)이 없고, 대신 안내가 있다(최종 검토 I-1)', async () => {
+    const page = await A.ctx.newPage(); await page.goto(`${wallet.base}/`); await page.waitForSelector('#homeGuide:not([hidden])', { timeout: 15_000 });
+    await page.waitForFunction(() => document.querySelectorAll('#sessionsCard button.danger, #sessionsCard .wrap-revoke-note').length > 0, null, { timeout: 15_000 }).catch(() => {});
+    const st = await page.evaluate(() => ({ endBtns: [...document.querySelectorAll('button')].filter((b) => b.offsetParent !== null && /세션 끝내기/.test(b.textContent)).length,
+      selfRevoke: document.getElementById('selfRevokeBtn')?.offsetParent !== null, notes: [...document.querySelectorAll('.wrap-revoke-note')].filter((e) => e.offsetParent !== null).length }));
+    assert.equal(st.endBtns, 0, j(st)); assert.equal(st.selfRevoke, false, j(st)); assert.ok(st.notes >= 1, j(st));
+    await page.close();
+  });
   await t('서비스의 로그인 버튼은 "zk 로그인" 이다', async () => {
     const page = await openRp(A.ctx, rp); await page.click('#loginBtn');
     assert.equal((await text(page, '#idpLoginBtn')).trim(), 'zk 로그인'); await page.close();

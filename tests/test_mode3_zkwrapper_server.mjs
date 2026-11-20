@@ -39,11 +39,25 @@ try {
     for (const p of ['/user', '/user/info', '/login', '/account']) { const r = await cia.get(p); assert.equal(r.status, 403, p); assert.equal(r.body.reason, 'wrapper_mode', p); }
     assert.equal((await raw('/admin')).status, 200); assert.equal((await raw('/rp')).status, 200);
   });
-  await t('CSP 는 사용자 앱 경로에만 붙는다 — 연결 대상은 자기 오리진·체인 노드·승인된 서비스뿐, 관리자 화면에는 없다', async () => {
+  await t('사용자 앱의 CSP — 연결 대상은 자기 오리진·체인 노드·승인된 서비스뿐, 번들(워커)에도 붙는다', async () => {
     const csp = (await raw('/')).headers.get('content-security-policy') ?? '';
     assert.ok(csp.includes("script-src 'self' 'wasm-unsafe-eval'"), csp); assert.ok(csp.includes(CHAIN), csp);
     assert.ok(((await raw('/dist/user.js')).headers.get('content-security-policy') ?? '').includes("script-src 'self'"), '번들(워커)에도 CSP');
-    assert.ok(!((await raw('/admin')).headers.get('content-security-policy') ?? '').includes('script-src'), '관리자 화면에는 사용자 앱의 스크립트 정책을 달지 않는다(그 화면은 지금 그대로다)');
+  });
+  await t('관리자·운영자 화면도 엄격한 CSP — 그 화면의 인라인 스크립트 해시만 허용하고 unsafe-inline 은 없다(지갑과 같은 오리진이다, 최종 검토 I-3)', async () => {
+    const { createHash } = await import('node:crypto');
+    for (const [p, file] of [['/admin', 'mode3/cia_admin.html'], ['/rp', 'mode3/cia_rp.html']]) {
+      const r = await raw(p); assert.equal(r.status, 200, p);
+      const csp = r.headers.get('content-security-policy') ?? '';
+      const script = (csp.split(';').map((x) => x.trim()).find((x) => x.startsWith('script-src')) ?? '');
+      assert.ok(script.startsWith("script-src 'self'"), `${p}: ${csp}`); assert.ok(!script.includes('unsafe-inline'), `${p}: ${script}`);
+      assert.ok(csp.includes("frame-ancestors 'none'") && csp.includes("object-src 'none'"), `${p}: ${csp}`);
+      const html = (await import('node:fs')).readFileSync(file, 'utf8');
+      for (const m of html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)) {
+        const h = `'sha256-${createHash('sha256').update(m[1], 'utf8').digest('base64')}'`;
+        assert.ok(script.includes(h), `${p}: 인라인 스크립트의 해시가 없다`);
+      }
+    }
   });
   await t('승인된 서비스가 설정과 CSP 에 들어온다 — 서비스 등록은 지금까지와 같다(대기 → 승인)', async () => {
     const before = (await cia.get('/user/config')).body.rpOrigins; assert.ok(!before.includes('http://127.0.0.1:3555'));
