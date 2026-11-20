@@ -50,6 +50,7 @@ import { buildAaHealth, applyHealthHeaders, bounded, originList } from './lib/mo
 import { createOidcVerifier, GOOGLE_DEFAULTS } from './lib/mode3_oidc.js';
 import { uidOf, regNonce, issueNonce, isRevokeNonce, REG_PREFIX, REVOKE_PREFIX, ISSUE_PREFIX } from './lib/mode3_oidc_nonce.js';
 import { WRAPPER_PREFIX, wrapperNonce, verifyDigest, issueDigest, revokeDigest } from './lib/mode3_wrapper_auth.js';
+import { mountUserApp, userAppCsp, userDistReady } from './lib/mode3_user_app_routes.js';
 import { listenMaybeTls } from './lib/mode3_tls.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -188,6 +189,22 @@ if (WRAPPER) {
     : deny.includes(OIDC.clientId) ? '서비스와 같은 Google 클라이언트 ID 를 쓴다 — 래퍼는 전용 클라이언트 ID 가 필요하다(MODE3_RP_GOOGLE_CLIENT_ID_DENY 에 든 값)' : null;
   if (why) { console.error(`[cia] 래퍼 방식으로 뜰 수 없다: ${why}`); process.exit(1); }
   console.log('[cia] 래퍼 방식(CIA_WRAPPER): Google ID 토큰으로 발급한다 — 계정·비밀번호·π_IdP 경로는 닫는다');
+}
+// zkWrapper 서버(mode3_zkwrapper.js 가 켠다 — 스펙 2026-11-20 zkwrapper §1·§4): 이 서버가 사용자 앱(브라우저 지갑)도 함께 낸다 — 사람이 여는 주소 하나에 홈·승인 창·발급 API 가 있다.
+// 체인 읽기는 이 서버를 거치지 않는다(스펙 §5): 브라우저가 아래 두 주소의 노드를 직접 부른다. 기본은 이 서버가 쓰는 주소(한 머신 데모) — 브라우저에서 닿는 주소가 다르면 따로 준다.
+const USER_APP = process.env.CIA_USER_APP === '1';
+const APP_RPC_BROWSER = USER_APP ? envStr('MODE3_CHAIN_RPC_BROWSER', (MIRROR_SPECS[0] && CHAIN_RPCS.get(MIRROR_SPECS[0].chainStr)) || RPC_URL) : null;
+const REV_RPC_BROWSER = USER_APP ? envStr('MODE3_REV_RPC_BROWSER', RPC_URL) : null;
+if (USER_APP) {
+  let why = null, u = null;
+  try { u = new URL(PUBLIC_URL); } catch { why = `CIA_PUBLIC_URL 이 URL 이 아니다 — ${PUBLIC_URL}`; }
+  const isIp = u && (/^\d+\.\d+\.\d+\.\d+$/.test(u.hostname) || u.hostname.includes(':'));
+  if (!why && !WRAPPER) why = 'CIA_USER_APP 은 래퍼 방식(CIA_WRAPPER=1)에서만 쓴다 — mode3_zkwrapper.js 로 띄운다';
+  // 패스키(WebAuthn)의 RP ID 제약 — passkey-web 정적 서버와 같은 규칙이다.
+  if (!why && (isIp || (u.protocol !== 'https:' && u.hostname !== 'localhost'))) why = `공개 주소는 IP 가 아닌 호스트여야 하고 https 이거나 localhost 여야 한다(패스키) — ${PUBLIC_URL}`;
+  if (!why) for (const [k, v] of [['MODE3_CHAIN_RPC_BROWSER', APP_RPC_BROWSER], ['MODE3_REV_RPC_BROWSER', REV_RPC_BROWSER]]) { try { if (!/^https?:$/.test(new URL(v).protocol)) throw new Error('x'); } catch { why = `${k} 는 http(s) 주소여야 한다 — ${v}`; } }
+  if (!why && !userDistReady()) why = 'mode3/user/dist/user.js 가 없다 — npm run user:build 먼저';
+  if (why) { console.error(`[cia] zkWrapper 서버로 뜰 수 없다: ${why}`); process.exit(1); }
 }
 // 패스키 가입(스펙 2026-11-20 passkey-google-signup G9): zkIdP 페이지의 "패스키로 로그인" 이 미등록 브라우저에서 계정을 스스로 만드는 길. 발급 정책이 key 이고
 // Google(OIDC) 클라이언트 ID 와 돌아올 주소(MODE3_OIDC_REDIRECT_URI — 지갑 정적 서버의 /google-relay)가 모두 있을 때만 연다. 지갑 창이 이 주소들로 Google 에 다녀온다.
@@ -594,8 +611,26 @@ function consumeCode(code, { uid, purpose, auid = null }) {
 // ---- 앱 ----
 const app = express();
 app.use(express.json({ limit: '256kb' }));
+// zkWrapper 서버: 사용자 앱의 경로(홈 / · /dist · /common · /attr · /zk · /google-relay · /user/config)를 붙인다. CSP 는 그 경로에만 — 관리자·운영자 화면은 지금 그대로다.
+// 서비스 목록(rpOrigins)과 CSP 의 연결 대상은 승인된 서비스에서 그때그때 만든다 — 서비스를 새로 승인하면 지갑이 다시 뜨지 않아도 안다.
+if (USER_APP) {
+  const approvedOrigins = () => Object.values(state?.rps ?? {}).filter((r) => r.status === 'approved').map((r) => r.origin);
+  const rpcOrigins = [...new Set([APP_RPC_BROWSER, REV_RPC_BROWSER].map((x) => new URL(x).origin))];
+  const big = (k, d) => { const v = process.env[k]; return v === undefined || v === '' ? String(d) : String(BigInt(v)); };
+  const explorer = (process.env.MODE3_EXPLORER_URL || '').replace(/\/+$/, '');
+  mountUserApp(app, {
+    csp: () => userAppCsp([...rpcOrigins, ...approvedOrigins()]),
+    config: () => ({
+      secrets: 'passkey-web', wrapper: true, popupConsent: process.env.MODE3_POPUP_CONSENT === '1', explorerUrl: /^https?:\/\/[^\s/]+/.test(explorer) ? explorer : null,
+      walletOrigin: PUBLIC_URL, ciaUrl: PUBLIC_URL, rpcUrl: APP_RPC_BROWSER, revRpcUrl: REV_RPC_BROWSER, chainRpcUrl: APP_RPC_BROWSER,
+      chainId: MIRROR_SPECS[0]?.chainStr ?? selfChainId, logAddress: LOG_ADDRESS, mirrorAddress: MIRROR_SPECS[0]?.address ?? null,
+      ttlBlocks: big('MODE3_TTL_BLOCKS', 300), heightGrid: big('MODE3_HEIGHT_GRID', 100), rpOrigins: approvedOrigins(), pkCia: S(ciaPub),
+      relayPath: process.env.MODE3_RELAY_PATH || '/api/mode3/relay', demoGeneration: process.env.MODE3_DEMO_GENERATION || null, wrapperClientId: OIDC.clientId,
+    }),
+  });
+}
 // 래퍼 방식에서 닫는 경로(스펙 zkwrapper §4): 아이디·비밀번호 계정, 로그인 화면·인증 창, 등록·슬롯(π_IdP), 증명 로그인, 패스키 가입, 일반 OIDC. 서비스 등록·관리자·개봉·발급·폐기는 그대로다.
-const WRAPPER_BLOCKED = [/^\/cia\/signup(\/|$)/, /^\/cia\/user\//, /^\/cia\/register$/, /^\/cia\/slot$/, /^\/oidc\//, /^\/login(\/|$)/, /^\/user(\/|$)/, /^\/account(\/|$)/];
+const WRAPPER_BLOCKED = [/^\/cia\/signup(\/|$)/, /^\/cia\/user\//, /^\/cia\/register$/, /^\/cia\/slot$/, /^\/oidc\//, /^\/login(\/|$)/, /^\/user(\/info)?\/?$/, /^\/account(\/|$)/];   // /user/config(사용자 앱의 공개 설정)는 막지 않는다
 // Express 는 대소문자와 끝 슬래시를 가리지 않고 경로를 맞춘다(/CIA/Register·/cia/register/ 도 같은 처리기로 간다) — 같은 식으로 고른 주소에 대고 본다(2026-11-20 보안 검토).
 if (WRAPPER) app.use((req, res, next) => {
   const p = req.path.toLowerCase().replace(/\/+$/, '') || '/';
@@ -619,7 +654,7 @@ app.use('/common', express.static(path.join(__dirname, 'mode3', 'common')));
 app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_admin.html')));
 
 // IdP 사용자·RP·인증 창 페이지(Task 12, 2026-10-22 B3 — 설계 §3.4). 사용자가 찾아가는 입구는 지갑이 아니라 IdP 자신이다.
-app.get('/', (req, res) => res.redirect('/user'));   // 2026-11-05(7차): 주소만 치면 404 였다 — 사용자 페이지로
+app.get('/', (req, res) => res.redirect(WRAPPER ? '/rp' : '/user'));   // 래퍼 방식에는 /user 가 없다 — 사용자 앱이 붙어 있으면(zkWrapper 서버) 위에서 홈이 먼저 받는다   // 2026-11-05(7차): 주소만 치면 404 였다 — 사용자 페이지로
 app.get('/user', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_user.html')));
 app.get('/user/info', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_user_info.html')));   // 2026-11-10: "내 계정" 하위 메뉴 "내 정보"(읽기 전용)
 app.get('/rp', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_rp.html')));
@@ -735,9 +770,9 @@ app.get('/mode3/health', async (req, res) => {
     last = lastPub === null || lastPub === undefined ? null : lastPub.toString();
   } catch { /* 체인 없음·응답 없음 */ }
   const mirrors = await readMirrorsHealth();   // 거울마다 따로 1.2초 예산(병렬) — 실패는 null 항목
-  res.json(buildAaHealth({ now: new Date().toISOString(), chain, root: tree.getRoot().toString(), epoch: state.epoch, lastPublishedBlock: last, heartbeatBlocks: Number(HEARTBEAT_BLOCKS),
+  res.json({ ...buildAaHealth({ now: new Date().toISOString(), chain, root: tree.getRoot().toString(), epoch: state.epoch, lastPublishedBlock: last, heartbeatBlocks: Number(HEARTBEAT_BLOCKS),
     pendingLeaves: state.pending.length, pendingRps: Object.values(state.rps).filter((r) => r.status === 'pending').length, pendingOpenings: state.openings.filter((o) => o.status === 'pending').length,
-    accounts: Object.keys(state.accounts).length, walletOrigin: WALLET_AGENT_ORIGIN, walletKind: WALLET_KIND, rpOrigins, mirrors, attrSchema: schemaInfo(ATTR_SCHEMA, ATTR_SCHEMA_HASH) }));
+    accounts: Object.keys(state.accounts).length, walletOrigin: WALLET_AGENT_ORIGIN, walletKind: WALLET_KIND, rpOrigins, mirrors, attrSchema: schemaInfo(ATTR_SCHEMA, ATTR_SCHEMA_HASH) }), ...(WRAPPER ? { wrapper: true } : {}) });   // 래퍼 표시(2026-11-20)는 buildAaHealth 가 모르는 칸이라 밖에서 덧붙인다
 });
 
 // §3(2026-09-16) RP 등록 — pending 으로 받고 운영자가 승인하면 IdP 조각을 만들어 조합 키 pk_trace 와 cert_s(V2)를

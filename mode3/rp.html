@@ -670,11 +670,14 @@
       await loadWalletConfig();
       renderGuide();
       // 상태 패널(설계 2026-09-25 §2) — 상대 주소를 rp_info 에서 알고 난 뒤 건다. 같은 인자로 다시 불러도 폴링은 하나다.
-      Demo.stack?.({ self: 'rp', urls: { wallet: info.walletAgentOrigin, aa: info.ciaUrl } });
+      Demo.stack?.({ self: 'rp', urls: info.walletKind === 'zkwrapper' ? {} : { wallet: info.walletAgentOrigin, aa: info.ciaUrl } });   // zkWrapper 서버의 상태는 이 페이지가 묻지 않는다(위 loadWalletConfig 와 같은 까닭)
       if (pending) setTimeout(loadInfo, 5000);
     }
     // 지갑의 비밀 모드는 rp_info 에 없다 — 지갑 에이전트에 직접 묻는다(GET /wallet/config, RP 오리진에 CORS 허용).
     async function loadWalletConfig() {
+      // zkWrapper(스펙 2026-11-20 zkwrapper §5): 지갑 서버가 발급 서버와 같다 — 이 페이지가 그 서버를 부르면 Origin 헤더로 "지금 이 서비스에 누가 와 있다" 가 샌다.
+      // 설정은 서비스 서버가 아는 값(walletKind)으로 정하고, 그 서버로는 승인 창을 여는 것 말고 아무 요청도 보내지 않는다.
+      if (info?.walletKind === 'zkwrapper') { walletCfg = { secrets: 'passkey-web', walletOrigin: info.walletAgentOrigin }; walletCfgLoaded = true; walletCfgError = null; renderWalletMode(); return; }
       try {
         const r = await fetch(`${info.walletAgentOrigin}/wallet/config`);
         if (!r.ok) throw new Error(`HTTP ${r.status}`);

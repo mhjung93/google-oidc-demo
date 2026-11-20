@@ -69,3 +69,5 @@ code.plain { font-family: inherit; font-size: inherit; background: none; padding
 /* 카드 밖에 선 결과 칸 — 비어 있을 때는 칸(격자 간격)을 차지하지 않는다. */
 main.cards > #revokeVerdict { grid-column: 1 / -1; } main.cards > #revokeVerdict:empty { display: none; }
 main.cards > #revokeVerdict.verdict { margin-top: 0; }   /* 카드 사이 간격은 격자가 준다 — 결과 칸의 위 여백이 더해져 이 칸만 멀었다(2026-11-14) */
+/* zkWrapper(2026-11-20): 사용자 계정 화면(/user)이 없다 — 상단 바의 "내 계정" 을 숨긴다(<html data-wrapper>, demo.js) */
+html[data-wrapper="1"] .idp-nav a[href="/user"] { display: none; }

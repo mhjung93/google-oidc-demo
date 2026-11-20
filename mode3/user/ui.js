@@ -25,7 +25,11 @@ export const safeDetail = (b) => { const { sk_u, s_u, blind_u, pwd, witness, use
 export const errText = (status, b) => `${status}: ${b.reason ?? b.error ?? ''}${b.detail ? ` (${b.detail})` : ''}${b.cia ? ` ${JSON.stringify(b.cia)}` : ''}`;
 
 /** 존재 신호(계획 R4) — 정적 서버(같은 오리진)에 core.health() 의 6개 값만 알린다. 실패는 조용히 넘긴다(상태 패널이 늦을 뿐). */
+// 래퍼 방식(스펙 2026-11-20 zkwrapper §5): 지갑 서버가 발급 서버와 같다 — "이 브라우저가 서비스 몇 곳에 로그인해 있는가" 같은 신호를 보내지 않는다(user.js 가 끈다).
+let presenceOn = true;
+export const setPresence = (on) => { presenceOn = Boolean(on); };
 export async function postPresence(core) {
+  if (!presenceOn) return;
   try { await fetch('/wallet/presence', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(await core.health()) }); }
   catch { /* 정적 서버가 없다 */ }
 }
@@ -76,6 +80,15 @@ function askSecret({ modalId, inputId, goId, cancelId }) {
 /** oidc: zkIdP 의 public_keys.oidc({ enabled, provider, clientId, issuer }) — user.js 가 읽어 넘긴다. 못 읽으면 기본값(꺼짐)이라 Google 버튼만 숨는다.
  *  passkey: passkey-web 의 { derive, create }(user.js — RP ID 는 설정의 사용자 오리진 호스트). 설정 카드의 두 버튼만 직접 부른다. */
 export function mountUi({ core, prover, config, Demo, meta, demoReset = false, passkey = null }) {
+  // zkWrapper 홈(2026-11-20 스펙 zkwrapper §6): 래퍼 방식에서만 안내 카드를 보인다. 운영자·관리자 화면은 발급 서버(ciaUrl)에 있다.
+  if (config.wrapper === true) {
+    const home = document.getElementById('homeGuide');
+    if (home) {
+      for (const [id, p] of [['homeOpLink', '/rp'], ['homeAdminLink', '/admin']]) { const a = document.getElementById(id); if (a) { a.href = `${config.ciaUrl}${p}`; a.textContent = `${config.ciaUrl}${p}`; } }
+      home.hidden = false;
+    }
+    const pk = document.getElementById('proofsKindBtn'); if (pk) pk.hidden = true;   // π_IdP 가 없다 — "zkIdP 에 낸 π_IdP 도 보기" 를 두지 않는다
+  }
   const { tte, tt, setVerdict, pendingVerdict } = textKit(Demo);
   const { withUnlock, ask: askUnlock } = createUnlocker({ core, Demo });
   // /wallet/config 대신 /user/config(같은 오리진). minAge·allowedCountries 는 없다 — claim 버튼이 기본값으로 대신한다(에이전트와 같다).

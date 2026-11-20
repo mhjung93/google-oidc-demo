@@ -29,10 +29,13 @@ function stubSalt(secretHex) {
 }
 execFileSync('node', ['scripts/build_user_app.mjs'], { stdio: 'inherit' });
 const browser = await launchBrowser();
-const stack = await startIsolatedMode3Stack({ userMode: 'web', walletHost: 'localhost', wrapper: true, autoRelay: true,
-  walletEnv: { MODE3_WALLET_SECRETS: 'passkey-web', MODE3_WRAPPER: '1' }, rpEnv: { MODE3_WALLET_KIND: 'passkey-web' },
+// 지갑 자리와 발급 서버가 한 서버(mode3_zkwrapper.js)다 — 기본. MODE3_TEST_SPLIT=1 이면 Task 4 의 배치(지갑 정적 서버 + 따로 뜬 발급 서버)로 같은 사례를 돈다.
+const SPLIT = process.env.MODE3_TEST_SPLIT === '1';
+const KIND = 'zkwrapper';   // 서비스가 아는 지갑 종류 — 데모 스크립트처럼 래퍼 방식이면 배치와 관계없이 zkwrapper(서비스 페이지가 지갑 서버를 부르지 않는다)
+const stack = await startIsolatedMode3Stack({ userMode: SPLIT ? 'web' : 'zkwrapper', walletHost: 'localhost', wrapper: true, autoRelay: true,
+  walletEnv: { MODE3_WALLET_SECRETS: 'passkey-web', MODE3_WRAPPER: '1' }, rpEnv: { MODE3_WALLET_KIND: KIND },
   ciaEnv: { MODE3_WALLET_KIND: 'passkey-web', MODE3_OIDC_REDIRECT_URI: '{walletOrigin}/google-relay' },
-  extraRps: [{ name: 'zkTWO', env: { MODE3_WALLET_KIND: 'passkey-web', MODE3_ALLOWED_COUNTRIES: 'KR,JP', MODE3_REQUIRE_DISCLOSURE: '1' } }] });
+  extraRps: [{ name: 'zkTWO', env: { MODE3_WALLET_KIND: KIND, MODE3_ALLOWED_COUNTRIES: 'KR,JP', MODE3_REQUIRE_DISCLOSURE: '1' } }] });
 const { cia, wallet, rp } = stack;
 const rp2 = stack.rps[1], google = stack.oidc;
 const SECRET_A = 'a7'.repeat(32), SALT_A = stubSalt(SECRET_A);
@@ -57,8 +60,11 @@ async function newBrowserWith(secretHex) {
   await ctx.exposeFunction('__webauthnHit', (k) => { hits[k] = (hits[k] ?? 0) + 1; });
   await ctx.addInitScript({ content: buildWebAuthnStub({ secretHex }) });
   ctx.on('dialog', (d) => d.accept());
+  // 이 브라우저에서 나간 모든 요청 — 어느 페이지가(pageOrigin) 어디로(url) 무엇을(body·referer·origin) 보냈는지. Task 5 의 "서버가 무엇을 보는가" 사례가 본다.
+  const reqs = [];
+  ctx.on('request', (r) => { try { let from = null; try { from = new URL(r.frame().url()).origin; } catch { from = null; } reqs.push({ url: r.url(), method: r.method(), body: r.postData() ?? '', referer: r.headers().referer ?? '', origin: r.headers().origin ?? '', from, nav: r.isNavigationRequest() }); } catch { /* 닫힌 창 */ } });
   ctx.on('page', (p) => { if (DEBUG) { p.on('console', (m) => console.log(`    [${new URL(p.url()).port}] ${m.type()}: ${m.text()}`)); p.on('pageerror', (e) => console.log(`    [page error] ${e.message}`)); } });
-  return { ctx, hits };
+  return { ctx, hits, reqs };
 }
 /** 서비스 페이지를 연다 — 이 브라우저가 그 서비스에 이미 로그인돼 있으면(쿠키 세션) 로그아웃해 로그인 버튼이 보이게 한다. */
 async function openRp(ctx, svc) {
@@ -74,12 +80,19 @@ async function startLogin(ctx, svc) {
   const [popup] = await Promise.all([ctx.waitForEvent('page'), rpPage.click('#idpLoginBtn')]);
   return { rpPage, popup, visited: trackNav(popup) };
 }
+const seenSessions = new Map();   // r_s → 세션 레코드(로그인마다 모은다 — 뒤의 "서버가 무엇을 보는가" 사례가 쓴다)
+const noteSessions = (dump) => { for (const [k, v] of Object.entries(dump.sessions ?? {})) seenSessions.set(k, v); return dump; };
+// 래퍼 방식의 화면에 남으면 안 되는 낱말(계획 Task 6) — 별도 IdP·인증 창·π_IdP·비밀번호가 없다.
+const BANNED = ['zkIdP', '인증 창', 'π_IdP', '비밀번호'], BANNED_STAFF = ['zkIdP', '인증 창', 'π_IdP'];
+const visibleText = (page) => page.evaluate(() => document.body.innerText);
+// 운영자·관리자 화면의 "비밀번호" 는 그 사람들 자신의 로그인(운영자 계정·관리자 시크릿)이라 남는다 — 그 두 화면은 나머지 셋만 본다(장부의 Task 6 Ruling).
+const bannedIn = (txt, words = BANNED) => words.filter((w) => txt.includes(w)).map((w) => { const i = txt.indexOf(w); return `${w}: …${txt.slice(Math.max(0, i - 30), i + 30).replace(/\s+/g, ' ')}…`; });
 const ppidOf = (dump, svcArid) => Object.values(dump.sessions ?? {}).filter((s) => String(s.arid) === String(svcArid)).map((s) => s.PPID);
 try {
   const info1 = (await rp.get('/api/mode3/rp_info')).body, info2 = (await rp2.get('/api/mode3/rp_info')).body;
   const A = await newBrowserWith(SECRET_A);
   const UID_A = uidOf(google.provider, 'google-user-A');
-  let ppid1 = null;
+  let ppid1 = null, popupBanned = null;
   await t('설정: 지갑 서버가 래퍼 방식을 알린다(/user/config.wrapper), 발급 서버의 돌아올 주소는 지갑의 /google-relay', async () => {
     assert.equal((await wallet.get('/user/config')).body.wrapper, true);
     const k = (await cia.get('/cia/public_keys')).body; assert.equal(k.wrapper, true); assert.equal(k.oidc.redirectUri, `${wallet.base}/google-relay`); assert.equal(k.oidc.authorizeUrl, google.authorizeUrl);
@@ -94,6 +107,7 @@ try {
     const authUrl = new URL(visited.find((u) => u.startsWith(google.authorizeUrl)));
     assert.equal(authUrl.searchParams.get('prompt'), 'select_account'); assert.ok(authUrl.searchParams.get('nonce').startsWith('wrap:'), authUrl.searchParams.get('nonce'));
     const intro = await text(popup, '#authStatus'); assert.ok(intro.includes('패스키'), intro);
+    popupBanned = bannedIn(await visibleText(popup));   // 문구 검사(Task 6)는 아래 사례에서 본다 — 여기서는 창이 떠 있는 동안 글자만 모은다
     assert.equal((await accounts()).length, 0, '패스키를 만들기 전에는 계정이 생기지 않는다');
     assert.ok(!(await popup.evaluate(() => location.href)).includes('id_token'), '토큰이 주소창에 남았다');
     await popup.click('#authWrapPasskeyBtn');
@@ -107,7 +121,7 @@ try {
   const userPage = await A.ctx.newPage();
   await t('저장소에 salt·ID 토큰·대기분이 남지 않는다(localStorage·sessionStorage·IndexedDB 의 값 전부)', async () => {
     await userPage.goto(`${wallet.base}/`); await userPage.waitForSelector('#mainView:not([hidden])');
-    const d = await idbDump(userPage);
+    const d = noteSessions(await idbDump(userPage));
     assert.equal(String(d.registration.uid), UID_A); assert.equal(d.registration.wrapper, true); assert.equal(d.wrapperKey, undefined, '요청 키가 남았다');
     const stores = await userPage.evaluate(() => ({ ss: Object.entries(sessionStorage).map(([k, v]) => `${k}=${v}`), ls: Object.entries(localStorage).map(([k, v]) => `${k}=${v}`) }));
     const all = j(d) + j(stores);
@@ -127,7 +141,7 @@ try {
     await waitText(rpPage, '#verdict', '로그인 성공', 120_000);
     assert.equal(visited.filter((u) => u.startsWith(google.authorizeUrl)).length >= 1, true); assert.ok(!visited.some((u) => u.startsWith(`${cia.base}/login`)));
     assert.equal(A.hits.get - g0, 1, j(A.hits)); assert.equal(A.hits.create, 1);
-    const ps = ppidOf(await idbDump(userPage), info1.arid); assert.ok(ps.length >= 1 && ps.every((p) => p === ppid1), j(ps));
+    const ps = ppidOf(noteSessions(await idbDump(userPage)), info1.arid); assert.ok(ps.length >= 1 && ps.every((p) => p === ppid1), j(ps));
     assert.equal((await accounts()).length, 1);
     await rpPage.close();
   });
@@ -136,7 +150,7 @@ try {
     const { rpPage } = await startLogin(A.ctx, rp2);
     await waitText(rpPage, '#verdict', '로그인 성공', 120_000);
     const s2 = (await rp2.get('/api/mode3/sessions')).body.sessions; assert.ok(s2.length >= 1 && s2[0].disclosure?.set, `zkTWO 세션에 공개 집합이 없다: ${j(s2)}`);
-    const p2 = ppidOf(await idbDump(userPage), info2.arid)[0]; assert.ok(p2); assert.notEqual(p2, ppid1);
+    const p2 = ppidOf(noteSessions(await idbDump(userPage)), info2.arid)[0]; assert.ok(p2); assert.notEqual(p2, ppid1);
     await rpPage.close();
   });
   await t('Google 에서 돌아온 조각을 다른 창에 붙여도(이 창이 시작한 로그인이 아니다) 발급되지 않는다', async () => {
@@ -163,6 +177,88 @@ try {
     } finally { await A.ctx.unroute(`${google.authorizeUrl}**`); }
     await rpPage.close();
   });
+  // ---- Task 6: 홈페이지·화면 문구 ----
+  await t('홈: 사용자용 세 단계·운영자용 세 단계·전체 플로우 링크가 있고, 링크가 맞다', async () => {
+    const page = await A.ctx.newPage(); await page.goto(`${wallet.base}/`); await page.waitForSelector('#homeGuide:not([hidden])', { timeout: 15_000 });
+    const c = (await wallet.get('/user/config')).body;
+    assert.equal(await page.$$eval('#homeUserSteps li', (l) => l.length), 3); assert.equal(await page.$$eval('#homeOpSteps li', (l) => l.length), 3);
+    const hrefs = await page.$$eval('#homeGuide a', (as) => as.map((a) => a.href));
+    for (const want of [`${new URL(wallet.base).origin}/common/flow.html`, `${c.ciaUrl}/rp`, `${c.ciaUrl}/admin`]) assert.ok(hrefs.includes(want), `${want} 링크가 없다: ${j(hrefs)}`);
+    for (const h of hrefs) { const r = await fetch(h); assert.equal(r.status, 200, `${h} → ${r.status}`); }
+    assert.ok((await text(page, '#homeGuide')).includes('Google'), '사용자 단계에 Google 이 없다');
+    await page.close();
+  });
+  await t('래퍼 방식의 화면 어디에도 "zkIdP"·"인증 창"·"π_IdP"·"비밀번호" 가 없다(홈·승인 창·서비스·운영자·관리자·전체 플로우)', async () => {
+    const c = (await wallet.get('/user/config')).body; const hits = [];
+    assert.ok(Array.isArray(popupBanned), '승인 창의 글자를 모으지 못했다'); for (const h of popupBanned) hits.push(`승인 창 ${h}`);
+    for (const [name, url] of [['홈', `${wallet.base}/`], ['서비스', `${rp.base}/`], ['zkTWO', `${rp2.base}/`], ['운영자', `${c.ciaUrl}/rp`], ['관리자', `${c.ciaUrl}/admin`], ['전체 플로우', `${wallet.base}/common/flow.html`]]) {
+      const page = await A.ctx.newPage(); await page.goto(url); await page.waitForLoadState('networkidle').catch(() => {}); await page.waitForTimeout(800);
+      // 화면의 래퍼 표기는 서버 상태(/mode3/health 의 wrapper)를 읽은 뒤 켜진다 — 그 표시가 붙을 때까지 기다린다(서비스 페이지는 자기 서버의 상태를 읽으므로 붙지 않는다)
+      if (name !== '서비스' && name !== 'zkTWO') await page.waitForFunction(() => document.documentElement.dataset.wrapper === '1', null, { timeout: 15_000 }).catch(() => {});
+      for (const h of bannedIn(await visibleText(page), name === '운영자' || name === '관리자' ? BANNED_STAFF : BANNED)) hits.push(`${name} ${h}`);
+      if (name === '운영자' || name === '관리자') {
+        const nav = await page.evaluate(() => ({ url: location.href, wr: document.documentElement.dataset.wrapper ?? null, user: [...document.querySelectorAll('.idp-nav a[href="/user"]')].map((a) => getComputedStyle(a).display) }));
+        if (nav.user.some((d) => d !== 'none')) hits.push(`${name} 상단 바에 /user 링크가 보인다 ${JSON.stringify(nav)}`);
+      }
+      await page.close();
+    }
+    assert.deepEqual(hits, []);
+  });
+  await t('서비스의 로그인 버튼은 "zk 로그인" 이다', async () => {
+    const page = await openRp(A.ctx, rp); await page.click('#loginBtn');
+    assert.equal((await text(page, '#idpLoginBtn')).trim(), 'zk 로그인'); await page.close();
+  });
+  await t('전체 플로우 한 장: 아랫줄에 Google 이 있고 π_IdP 가 없다 — 실제 값이 채워진다', async () => {
+    const page = await A.ctx.newPage(); await page.goto(`${wallet.base}/common/flow.html`);
+    await page.waitForFunction(() => (document.getElementById('zkAuidS')?.textContent ?? '').length > 'auid_s'.length, null, { timeout: 15_000 });
+    const seq = await page.$eval('#seqZk', (e) => e.textContent);
+    assert.ok(seq.includes('Google'), seq.slice(0, 200)); assert.ok(!seq.includes('π_IdP'), 'π_IdP 가 남았다'); assert.ok(seq.includes('zkWrapper'), 'zkWrapper 가 없다');
+    await page.click('#seqZk .st[data-step="3"]'); const det = await text(page, '#detailZk'); assert.ok(det.includes('Google') && !det.includes('π_IdP'), det);
+    await page.close();
+  });
+
+  // ---- Task 5: zkWrapper 서버가 보는 것(스펙 §5) — 한 서버 배치에서만 ----
+  if (!SPLIT) {
+    const WO = new URL(wallet.base).origin;
+    const toWrapper = () => A.reqs.filter((r) => { try { return new URL(r.url).origin === WO; } catch { return false; } });
+    await t('체인 읽기는 설정의 chainRpcUrl 로 간다 — zkWrapper 서버에는 /rpc 요청이 없다', async () => {
+      const c = (await wallet.get('/user/config')).body; assert.equal(c.wrapper, true); assert.ok(/^http:\/\/127\.0\.0\.1:8545/.test(c.chainRpcUrl), c.chainRpcUrl);
+      assert.ok(A.reqs.some((r) => r.from === WO && r.method === 'POST' && r.url.startsWith(c.chainRpcUrl) && r.body.includes('eth_')), '지갑 페이지가 체인 노드를 직접 부르지 않았다');
+      assert.equal(toWrapper().filter((r) => new URL(r.url).pathname.startsWith('/rpc')).length, 0);
+    });
+    await t('로그인 여러 번 동안 zkWrapper 서버로 간 모든 요청의 주소·본문·머리말에 서비스의 arid·오리진·팩토리 주소·PPID·계정 주소가 없다', async () => {
+      noteSessions(await idbDump(userPage)); const sess = [...seenSessions.values()];
+      assert.ok(sess.length >= 3 && new Set(sess.map((x) => String(x.arid))).size === 2, `두 서비스의 세션이 모여 있어야 한다: ${sess.length}`);
+      const secrets = new Set();
+      for (const svc of [info1, info2]) for (const v of [svc.arid, svc.origin, svc.factoryAddress, svc.attrGateAddress]) if (v) secrets.add(String(v));
+      for (const x of sess) for (const v of [x.PPID, x.account, x.sessionAddress]) if (v) secrets.add(String(v));
+      const seen = toWrapper(); assert.ok(seen.some((r) => new URL(r.url).pathname === '/cia/issue'), '발급 요청이 기록되지 않았다');
+      for (const r of seen) for (const v of secrets) {
+        const hay = `${r.url}\n${r.body}\n${r.referer}\n${r.origin}`.toLowerCase();
+        assert.ok(!hay.includes(v.toLowerCase()), `zkWrapper 로 간 요청에 서비스 쪽 값이 있다(${v.slice(0, 24)}…): ${r.method} ${r.url.slice(0, 90)}`);
+      }
+      assert.equal(seen.filter((r) => new URL(r.url).pathname === '/wallet/presence').length, 0, '존재 신호를 보내면 안 된다');
+    });
+    await t('서비스 페이지에서 zkWrapper 서버로 가는 것은 승인 창을 여는 것뿐이다(fetch 0건)', async () => {
+      const rpOrigins = [new URL(rp.base).origin, new URL(rp2.base).origin];
+      const bad = toWrapper().filter((r) => rpOrigins.includes(r.from) && !r.nav);
+      assert.equal(bad.length, 0, j(bad.map((r) => `${r.from} → ${r.method} ${r.url}`)));
+    });
+    await t('Google 중계: 래퍼 전용 클라이언트 ID 로 받은 토큰은 서비스 페이지로 넘기지 않는다 — 다른 ID 의 토큰은 넘긴다', async () => {
+      const state = `${Buffer.from(new URL(rp.base).origin).toString('base64url')}.abc`;
+      const mine = await google.mint({ sub: 'google-user-A', nonce: 'wrap:' + 'cd'.repeat(32) });
+      const page = await A.ctx.newPage();
+      await page.goto(`${wallet.base}/google-relay#state=${state}&id_token=${mine}`);
+      await waitText(page, '#msg', '넘길 수 없습니다', 15_000);
+      assert.equal(new URL(page.url()).origin, WO, '서비스로 넘어갔다');
+      const other = await google.mint({ sub: 'google-user-A', nonce: 'n-1', aud: 'some-service-client' });
+      await page.close();
+      const page2 = await A.ctx.newPage();   // 같은 주소에 조각(#)만 바꿔 다시 열면 브라우저가 페이지를 다시 실행하지 않는다 — 새 창에서
+      await page2.goto(`${wallet.base}/google-relay#state=${state}&id_token=${other}`);
+      await page2.waitForURL((u) => u.origin === new URL(rp.base).origin, { timeout: 15_000 });
+      await page2.close();
+    });
+  }
   await A.ctx.close();
 } finally {
   await browser.close().catch(() => {});

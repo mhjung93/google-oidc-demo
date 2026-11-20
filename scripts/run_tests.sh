@@ -118,6 +118,7 @@ CHAIN=(
   tests/test_cia_passkey_signup.mjs
   tests/test_cia_wrapper.mjs
   tests/test_mode3_user_core_wrapper.mjs
+  tests/test_mode3_zkwrapper_server.mjs
   tests/test_rp_social_logins.mjs
   tests/test_cia_issue_race.mjs
   tests/test_cia_registry.mjs

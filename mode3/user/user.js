@@ -5,7 +5,7 @@ import { ethers } from 'ethers';
 import { createUserCore } from './core/user_core.js';
 import { openIdbKv } from './core/kv_idb.js';
 import { createProver } from './prover_client.js';
-import { $, mountUi, publicMeta, textKit } from './ui.js';
+import { $, mountUi, publicMeta, textKit, setPresence } from './ui.js';
 import { runPopup, failPopup } from './popup.js';
 
 const IS_AUTHORIZE = new URLSearchParams(location.search).get('authorize') === '1';
@@ -50,7 +50,8 @@ async function main() {
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     config = await r.json();
   } catch (e) { return fatal('internal', `/user/config: ${e.message}`); }
-  Demo.setWalletKind?.(config.secrets);   // 2026-11-18: passkey-web 이면 화면에서 "스냅" 을 뺀다 — 아래에서 문구를 그리기 전에 맞춘다
+  if (config.wrapper === true) setPresence(false);   // zkWrapper 서버에는 존재 신호(세션·서비스 수)를 보내지 않는다
+  Demo.setWalletKind?.(config.wrapper === true ? 'zkwrapper' : config.secrets);   // 2026-11-18: passkey-web 이면 화면에서 "스냅" 을 뺀다 — 아래에서 문구를 그리기 전에 맞춘다
   // 2026-10-21: 브라우저에 저장소 영속을 요청한다 — iOS 의 7일 삭제·Chrome 의 용량 정리 대상에서 빠진다(새 기기 이전은 복구 코드로). 거절·미지원은 무시.
   if (!IS_AUTHORIZE) { try { navigator.storage?.persist?.()?.catch?.(() => {}); } catch { /* 미지원 */ } }
   let kv;
@@ -91,7 +92,8 @@ async function main() {
   }
   if (IS_AUTHORIZE) return runPopup({ core, config, Demo, meta, passkey });
   // 상태 패널(설계 2026-09-25 §2) — 에이전트 페이지의 syncStack 자리. 신원 기관·첫 RP 주소는 설정이 안다.
-  Demo.stack?.({ self: 'wallet', urls: { aa: config.ciaUrl, rp: config.rpOrigins?.[0] } });
+  // 래퍼 방식에서는 상태 패널을 걸지 않는다 — 지갑 서버가 발급 서버와 한 몸이라 따로 볼 상대가 없고, 서비스의 상태를 이 페이지가 물을 까닭도 없다.
+  if (config.wrapper !== true) Demo.stack?.({ self: 'wallet', urls: { aa: config.ciaUrl, rp: config.rpOrigins?.[0] } });
   return mountUi({ core, prover, config, Demo, meta, demoReset, passkey });
 }
 main().catch((e) => { console.error(e); fatal('internal', e?.message ?? String(e)); });

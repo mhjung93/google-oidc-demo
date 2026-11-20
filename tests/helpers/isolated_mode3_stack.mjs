@@ -91,10 +91,14 @@ export async function startIsolatedMode3Stack(opts = {}) {
   // 지갑 포트·오리진은 CIA 보다 **먼저** 잡는다 — CIA 의 /mode3/health CORS 허용 목록(설계 2026-09-25 §1.2)에
   // MODE3_WALLET_AGENT_ORIGIN 으로 넘겨야 한다. 호출자의 ciaEnv 가 우선한다.
   const walletPort = await freePort();
-  const walletOrigin = `http://${walletHost}:${walletPort}`;
+  // zkwrapper(2026-11-20): 지갑 자리가 발급 서버와 한 서버(mode3_zkwrapper.js)다 — 오리진은 그 서버가 뜬 뒤에 정해진다(http://localhost:<포트>).
+  const ZW = userMode === 'zkwrapper';
+  let walletOrigin = ZW ? 'http://localhost:{port}' : `http://${walletHost}:${walletPort}`;
   // ciaEnv 값 안의 "{walletOrigin}" 은 여기서 정해진 지갑 오리진으로 바꾼다(2026-11-20 — 패스키 가입의 MODE3_OIDC_REDIRECT_URI 는 지갑 정적 서버의 /google-relay 인데, 포트를 호출자가 미리 알 수 없다).
   const ciaEnvResolved = Object.fromEntries(Object.entries(ciaEnv).map(([k, v]) => [k, typeof v === 'string' ? v.replaceAll('{walletOrigin}', walletOrigin) : v]));
-  const cia = await startIsolatedCia({ env: { MODE3_WALLET_AGENT_ORIGIN: walletOrigin, ...ciaEnvResolved }, oidc, wrapper, ...(twoChains ? { revRpcUrl, appRpcUrl } : {}) });
+  const cia = await startIsolatedCia({ env: { MODE3_WALLET_AGENT_ORIGIN: walletOrigin, ...(ZW ? { CIA_PUBLIC_URL: walletOrigin, MODE3_OIDC_REDIRECT_URI: `${walletOrigin}/google-relay`, MODE3_CHAIN_RPC_BROWSER: appRpcUrl } : {}), ...ciaEnvResolved },
+    oidc, wrapper: wrapper || ZW, ...(ZW ? { entry: 'mode3_zkwrapper.js' } : {}), ...(twoChains ? { revRpcUrl, appRpcUrl } : {}) });
+  if (ZW) walletOrigin = `http://localhost:${cia.port}`;
   const ciaUiBase = `http://${ciaHost}:${cia.port}`;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-stack-'));
   const rpPort = await freePort();
@@ -115,9 +119,9 @@ export async function startIsolatedMode3Stack(opts = {}) {
     const walletScript = userMode === 'web' ? 'mode3_user_static.js' : 'mode3_wallet_agent.js';
     const walletReady = userMode === 'web' ? `${walletOrigin}/wallet/config` : `${walletOrigin}/wallet/status`;
     let walletSpawn = { env: { MODE3_WALLET_PORT: String(walletPort), MODE3_WALLET_STATE_FILE: walletStateFile, MODE3_CIA_URL: ciaUiBase, MODE3_RP_ORIGIN: [rpOrigin, ...extraRpOrigins, ...extraRpSpecs.map((e) => e.origin)].join(','), CIA_LOG_ADDRESS: cia.logAddress, MODE3_MIRROR_ADDRESS: cia.mirrorAddress, MODE3_WALLET_PUBLIC_ORIGIN: walletOrigin, ...walletChainEnv, ...walletEnv }, readyUrl: walletReady, logFile: walletLog };
-    let walletChild = await spawnServer(walletScript, walletSpawn);
-    children.push(walletChild);
-    const wallet = client(walletOrigin, walletLog);
+    let walletChild = ZW ? null : await spawnServer(walletScript, walletSpawn);
+    if (walletChild) children.push(walletChild);
+    const wallet = client(walletOrigin, walletLog);   // zkwrapper 면 발급 서버와 같은 서버다(주소만 localhost)
 
     /** RP 하나의 spawn 설정. name·relayerIndex 는 extraRps 용(첫 RP 는 지금처럼 이름 기본값·인덱스 0 — PINNED_ENV). */
     const rpSpawnFor = ({ port, origin, tag, env: e = {} }) => ({

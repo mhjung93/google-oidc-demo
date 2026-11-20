@@ -3,12 +3,12 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
 import { listenMaybeTls } from './lib/mode3_tls.js';
 import { checkRpcBody } from './lib/mode3_rpc_proxy.js';
+import { mountUserApp, userDistReady } from './lib/mode3_user_app_routes.js';
 import { buildWalletHealth, applyHealthHeaders, bounded, originList, allowOrigin } from './lib/mode3_health.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -46,12 +46,7 @@ const PK_CIA = process.env.MODE3_PK_CIA_X && process.env.MODE3_PK_CIA_Y ? { x: p
 const RELAY_PATH = process.env.MODE3_RELAY_PATH || '/api/mode3/relay';
 // 데모 세대(2026-10-21): 리셋 스크립트가 올리는 값. 사용자 페이지는 기억한 값과 다르면 이 브라우저의 옛 등록·세션을 스스로 지운다 — **데모 전용**(없으면 아무 일도 없다).
 const DEMO_GENERATION = process.env.MODE3_DEMO_GENERATION || null;
-const DIST = path.join(__dirname, 'mode3', 'user', 'dist');
-if (!fs.existsSync(path.join(DIST, 'user.js'))) { console.error('mode3/user/dist/user.js 가 없다 — npm run user:build 먼저'); process.exit(1); }
-const ZK = {
-  'pi_cred.wasm': 'build/mode3/pi_cred_js/pi_cred.wasm', 'pi_cred_final.zkey': 'build/mode3/pi_cred_final.zkey', 'pi_cred_vkey.json': 'build/mode3/pi_cred_vkey.json',
-  'pi_idp.wasm': 'build/mode3/pi_idp_js/pi_idp.wasm', 'pi_idp_final.zkey': 'build/mode3/pi_idp_final.zkey', 'pi_idp_vkey.json': 'build/mode3/pi_idp_vkey.json',
-};
+if (!userDistReady()) { console.error('mode3/user/dist/user.js 가 없다 — npm run user:build 먼저'); process.exit(1); }
 const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { cacheTimeout: -1 });
 // chainId 는 기동 때 await 로 한 번 받는다(컨트롤러 결정) — 떠다니는 promise 로 두면 /user/config·/wallet/config 가
 // 기동 직후 들어온 요청에서 null 과 실제 값 사이를 오가며 경합한다.
@@ -99,23 +94,9 @@ app.post('/rpc/rev', express.json({ limit: '1mb' }), rpcProxy(REV_RPC));
 app.all(['/rpc/app', '/rpc/rev'], (req, res) => res.status(405).set('Allow', 'POST').json({ reason: 'method_not_allowed' }));
 app.use(express.json({ limit: '16kb' }));
 const configCors = cors({ origin: (origin, cb) => cb(null, allowOrigin(origin, RP_ORIGINS)), methods: ['GET'] });
-app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'user', 'index.html')));
-app.use('/dist', express.static(DIST));
-app.use('/common', express.static(path.join(__dirname, 'mode3', 'common')));
-// 속성 커밋먼트 도구 — 에이전트(mode3_wallet_agent.js)와 같은 경로. 이 서버의 어떤 API 도 부르지 않는 독립 정적 페이지.
-app.get('/attr.html', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'attr.html')));
-// Google 로그인 중계(2026-11-19): Google 이 받는 "돌아올 주소" 는 공개 도메인이나 localhost 뿐이라, 서비스(*.zkd.test) 대신 이 서버의 https://127.0.0.1:<포트>/google-relay 를
-// 등록한다 — 이 화면이 조각(#)에 실려 온 ID 토큰을 그 로그인을 시작한 서비스 페이지(RP_ORIGINS 안)로 넘긴다. 비밀은 없고, 이 서버는 토큰을 보지 않는다(조각은 서버에 오지 않는다).
-app.get('/google-relay', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'user', 'google_relay.html')));
-app.get('/google-relay.js', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'user', 'google_relay.js')));
-app.use('/attr', express.static(path.join(__dirname, 'mode3', 'attr'), { index: false }));
-app.get('/zk/:name', (req, res) => {
-  const rel = ZK[req.params.name];
-  if (!rel) return res.status(404).json({ reason: 'not_found' });
-  res.set('Cache-Control', 'public, max-age=31536000, immutable');
-  res.sendFile(path.join(__dirname, rel), (err) => { if (err && !res.headersSent) res.status(err.statusCode === 404 ? 404 : 500).json({ reason: err.statusCode === 404 ? 'zk_assets_unavailable' : 'internal' }); });
-});
-app.get('/user/config', (req, res) => res.json({ ...(WRAPPER ? { wrapper: true } : {}), secrets: SECRETS, popupConsent: POPUP_CONSENT, explorerUrl: EXPLORER_URL || null, walletOrigin: WALLET_ORIGIN, ciaUrl: CIA_URL, rpcUrl: SECRETS === 'passkey-web' ? '/rpc/app' : RPC_URL, revRpcUrl: SECRETS === 'passkey-web' ? '/rpc/rev' : REV_RPC, chainId, logAddress: LOG_ADDRESS, mirrorAddress: MIRROR_ADDRESS, ttlBlocks: TTL_BLOCKS, heightGrid: HEIGHT_GRID, rpOrigins: RP_ORIGINS, pkCia: PK_CIA, relayPath: RELAY_PATH, demoGeneration: DEMO_GENERATION }));
+// 사용자 앱의 경로(홈·번들·공통·속성 도구·Google 중계·회로 파일·공개 설정)는 zkWrapper 서버(cia.js)와 함께 쓰는 모듈이 붙인다(2026-11-20) — 내는 파일과 응답은 지금까지와 같다.
+// CSP 는 위에서 이 서버의 모든 응답에 달았으므로 여기서는 따로 주지 않는다.
+mountUserApp(app, { config: () => ({ ...(WRAPPER ? { wrapper: true } : {}), secrets: SECRETS, popupConsent: POPUP_CONSENT, explorerUrl: EXPLORER_URL || null, walletOrigin: WALLET_ORIGIN, ciaUrl: CIA_URL, rpcUrl: SECRETS === 'passkey-web' ? '/rpc/app' : RPC_URL, revRpcUrl: SECRETS === 'passkey-web' ? '/rpc/rev' : REV_RPC, chainId, logAddress: LOG_ADDRESS, mirrorAddress: MIRROR_ADDRESS, ttlBlocks: TTL_BLOCKS, heightGrid: HEIGHT_GRID, rpOrigins: RP_ORIGINS, pkCia: PK_CIA, relayPath: RELAY_PATH, demoGeneration: DEMO_GENERATION }) });
 app.get('/wallet/config', configCors, (req, res) => res.json({ secrets: SECRETS, snapId: null, walletOrigin: WALLET_ORIGIN, rpcUrl: RPC_URL, chainId }));
 const HEALTH_ALLOW = originList(RP_ORIGINS, CIA_URL);
 app.get('/mode3/health', async (req, res) => {
@@ -123,7 +104,7 @@ app.get('/mode3/health', async (req, res) => {
   if (Date.now() - ciaSeenAt > CIA_FRESH_MS) pingCia();
   let chain = null;
   try { const head = await bounded(provider.getBlockNumber(), 1200); chain = { id: chainId ?? '', head: head.toString() }; } catch { /* 체인 없음 */ }
-  res.json(buildWalletHealth({ now: new Date().toISOString(), chain, secrets: SECRETS, ...presence, ciaReachable: Date.now() - ciaSeenAt <= CIA_FRESH_MS, rpOrigin: RP_ORIGINS[0], rpOrigins: RP_ORIGINS, ciaUrl: CIA_URL }));
+  res.json({ ...(WRAPPER ? { wrapper: true } : {}), ...buildWalletHealth({ now: new Date().toISOString(), chain, secrets: SECRETS, ...presence, ciaReachable: Date.now() - ciaSeenAt <= CIA_FRESH_MS, rpOrigin: RP_ORIGINS[0], rpOrigins: RP_ORIGINS, ciaUrl: CIA_URL }) });
 });
 app.post('/wallet/presence', (req, res) => {
   if (!validPresence(req.body)) return res.status(400).json({ reason: 'malformed' });

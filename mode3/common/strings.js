@@ -7,17 +7,27 @@ window.DemoStrings = {
   // noSnap 은 페이지가 지갑 모드를 알았을 때 켠다(demo.js setWalletKind, cia_login.html). 켜지면 text()·reasonText() 가 항목의 ko_pk·en_pk 를,
   // 없으면 낱말만 바꾼 문구(noSnapText)를 낸다. "스냅" 은 받침이 있고 "클라이언트" 는 없어 조사(이·을·은·과·으로)도 함께 바꾼다.
   noSnap: false,
+  // zkWrapper 표기(2026-11-20 스펙 zkwrapper §6): 별도 IdP 가 없다 — 발급자를 "zkWrapper" 라 부른다. demo.js setWalletKind('zkwrapper') 가 켠다. 항목의 ko_wr·en_wr 가 있으면 그것을,
+  // 없으면 낱말만 바꾼 문구(wrapperText)를 낸다(noSnap 다음에 적용).
+  wrapper: false,
+  wrapperText(s) { return typeof s === 'string' ? s.replace(/zk-?IdP/g, 'zkWrapper') : s; },
   noSnapText(s, lang) {
     if (typeof s !== 'string') return s;
     if (lang === 'en') return s.replace(/\b(?:zk |MetaMask )?snaps?(?: agent)?\b/gi, 'zk client');
     const josa = { 이: '가', 을: '를', 은: '는', 과: '와', 으로: '로' };
     return s.replace(/(?:zk |MetaMask )?스냅(?: 에이전트)?(?:(이|을|은|과)(?![가-힣])|(으로))?/g, (m, a, b) => `zk 클라이언트${josa[a ?? b] ?? ''}`);
   },
-  text(e, lang) { const l = typeof e[lang] === 'string' ? lang : 'ko'; return this.noSnap ? (e[`${l}_pk`] ?? this.noSnapText(e[l], l)) : e[l]; },
+  text(e, lang) {
+    const l = typeof e[lang] === 'string' ? lang : 'ko';
+    if (this.wrapper && typeof e[`${l}_wr`] === 'string') return e[`${l}_wr`];
+    const s = this.noSnap ? (e[`${l}_pk`] ?? this.noSnapText(e[l], l)) : e[l];
+    return this.wrapper ? this.wrapperText(s) : s;
+  },
   reasonText(r, lang) {
     const l = r[lang] ? lang : 'ko';
-    if (!this.noSnap) return r[l];
-    return r[`${l}_pk`] ?? Object.fromEntries(Object.entries(r[l]).map(([k, v]) => [k, this.noSnapText(v, l)]));
+    if (this.wrapper && r[`${l}_wr`]) return r[`${l}_wr`];
+    const base = !this.noSnap ? r[l] : (r[`${l}_pk`] ?? Object.fromEntries(Object.entries(r[l]).map(([k, v]) => [k, this.noSnapText(v, l)])));
+    return this.wrapper ? Object.fromEntries(Object.entries(base).map(([k, v]) => [k, this.wrapperText(v)])) : base;
   },
   ui: {
     // 안내 바·토글
@@ -70,7 +80,7 @@ window.DemoStrings = {
     wallet_profile_title: { ko: '내 속성', en: 'My attributes' },
     wallet_details_summary: { ko: '상세', en: 'Details' },
     wallet_identity_title: { ko: '내 신원', en: 'My identity' },
-    wallet_identity_desc: { ko: 'zkIdP 에 한 번 등록합니다. 속성은 내가 넣고 zkIdP 는 값을 모릅니다.', en: 'Register once with the zkIdP. I enter the attributes myself; the zkIdP never learns the values.' },
+    wallet_identity_desc: { ko_wr: '처음 "zk 로그인" 할 때 Google 계정으로 등록됩니다. 속성은 내가 넣고 zkWrapper 는 값을 모릅니다.', en_wr: 'You are registered with your Google account at your first "zk sign-in". You enter the attributes and zkWrapper never learns their values.', ko: 'zkIdP 에 한 번 등록합니다. 속성은 내가 넣고 zkIdP 는 값을 모릅니다.', en: 'Register once with the zkIdP. I enter the attributes myself; the zkIdP never learns the values.' },
     // salt(s_u) 표시(Task 14, B5) — 비밀이라 기본 가림이고 "보기" 를 눌러야 나온다(지갑 에이전트 로그·콘솔에도 안 남긴다).
     wallet_salt_label: { ko: 'salt', en: 'salt' },   // 2026-11-04: 화면에서는 s_u 대신 salt 로만 부른다
     wallet_salt_warn: { ko: '비밀 — 시연용 표시', en: 'secret — shown for the demo' },
@@ -387,6 +397,17 @@ window.DemoStrings = {
     user_signup_resume_failed: { ko: 'Google 확인 결과를 이어받지 못했습니다 — zkIdP 페이지에서 "패스키로 로그인" 을 다시 누르세요.', en: 'Could not resume after Google — press "Sign in with a passkey" again on the zkIdP page.' },
     user_signup_google_denied: { ko: 'Google 확인이 끝나지 않았습니다 — zkIdP 페이지에서 다시 시도하세요.', en: 'The Google step did not finish — try again from the zkIdP page.' },
     // ---- zkWrapper 의 서비스 로그인(2026-11-20 스펙 zkwrapper §2.2) — 승인 창이 Google 을 다녀온다 ----
+    home_title: { ko: 'zk-Delegation 쓰는 법', en: 'How to use zk-Delegation' },
+    home_desc: { ko: 'Google 계정으로 로그인하지만, 서비스는 누구인지 모르고 zkWrapper 는 어느 서비스인지 모릅니다.', en: 'You sign in with a Google account, yet the service does not learn who you are and zkWrapper does not learn which service.' },
+    home_user_title: { ko: '사용자', en: 'Users' },
+    home_user_1: { ko: '서비스 페이지에서 "zk 로그인" 을 누릅니다.', en: 'Press "zk sign-in" on a service page.' },
+    home_user_2: { ko: 'Google 계정을 고릅니다 — 본인 확인은 Google 이 합니다.', en: 'Pick your Google account — Google confirms who you are.' },
+    home_user_3: { ko: '패스키를 확인합니다(처음이면 만듭니다). 서비스에는 이 서비스 전용 주소(PPID)와 증명만 갑니다.', en: 'Confirm your passkey (create one the first time). The service gets only its own address for you (PPID) and a proof.' },
+    home_op_title: { ko: '서비스 운영자', en: 'Service operators' },
+    home_op_1: { ko: '운영자 화면에서 서비스 등록을 신청합니다:', en: 'Apply to register the service on the operator page:' },
+    home_op_2: { ko: 'zkWrapper 관리자가 승인합니다:', en: 'The zkWrapper administrator approves it:' },
+    home_op_3: { ko: '서비스 페이지에 "zk 로그인" 버튼을 둡니다 — 로그인은 증명으로 확인합니다.', en: 'Put a "zk sign-in" button on the service page — sign-ins are checked by proof.' },
+    home_flow_link: { ko: '전체 플로우 한 장 — 일반 OIDC 와 나란히', en: 'The whole flow on one page — next to plain OIDC' },
     user_wrap_checking: { ko: '서비스를 확인하는 중입니다…', en: 'Checking the service…' },
     user_wrap_to_google: { ko: 'Google 로 이동합니다 — 계정을 고르면 돌아와 패스키로 로그인합니다.', en: 'Going to Google — pick an account, then you come back and sign in with your passkey.' },
     user_wrap_resume_failed: { ko: 'Google 확인 결과를 이어받지 못했습니다 — 서비스 페이지에서 다시 로그인하세요.', en: 'Could not resume after Google — sign in again from the service page.' },
@@ -429,7 +450,7 @@ window.DemoStrings = {
     rp_or_social: { ko: '다른 방법 — 이 데모에서는 동작하지 않습니다', en: 'Other methods — not available in this demo' },
     rp_google_btn: { ko: 'Google 계정으로 로그인', en: 'Log in with Google' },   // 2026-11-06: 주 버튼 아래 두 번째 선택지(snap 모드 포함)
     rp_naver_btn: { ko: '네이버로 로그인', en: 'Log in with Naver' },
-    rp_idp_btn: { ko: 'zkIdP 로 로그인', en: 'Log in with zkIdP' },
+    rp_idp_btn: { ko_wr: 'zk 로그인', en_wr: 'zk sign-in', ko: 'zkIdP 로 로그인', en: 'Log in with zkIdP' },
     // OIDC 와 zk-Delegation 비교(2026-11-19 스펙 oidc-comparison): 일반 OIDC 버튼과 "알려 준 식별자" 칸
     rp_zkoidc_btn: { ko: 'zkIdP 로 로그인 (일반 OIDC · 비교용)', en: 'Log in with zkIdP (plain OIDC · for comparison)' },
     rp_seen_title: { ko: 'zkIdP 가 이 서비스에 알려 준 것 (ID 토큰의 iss·sub·aud)', en: 'What zkIdP told this service (iss, sub and aud of the ID token)' },

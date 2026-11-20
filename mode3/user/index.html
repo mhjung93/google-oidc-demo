@@ -16,6 +16,12 @@
   <script src="/common/flow_figure.js"></script>   <!-- window.FlowFigure — "로그인 전체 플로우" 카드의 순서도(2026-11-19) -->
   <script src="/common/passkey_store.js"></script>   <!-- window.Mode3Passkey — passkey-web(2026-11-17)의 salt 공급원(PRF). 다른 모드에서는 부르지 않는다 -->
   <style>
+    /* zkWrapper 홈(2026-11-20): 사용자·운영자 두 칸 — 좁은 화면에서는 한 칸 */
+    #homeGuide .home-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    #homeGuide h4 { margin: 4px 0; }
+    #homeGuide ol { margin: 4px 0 0 18px; padding: 0; }
+    #homeGuide a { word-break: break-all; }
+    @media (max-width: 640px) { #homeGuide .home-cols { grid-template-columns: 1fr; } }
     /* 금고 잠금 해제·비밀번호 창(이 페이지 전용 — demo.css 는 바꾸지 않는다). 승인 팝업에서도 같은 창을 쓴다. */
     .modal-backdrop { position:fixed; inset:0; z-index:20; background:rgba(29,36,51,.45); display:flex; align-items:center; justify-content:center; padding:16px }
     .modal-box { background:var(--card); border-radius:var(--radius); width:100%; max-width:380px; padding:18px 20px; box-shadow:0 16px 48px rgba(29,36,51,.3) }
@@ -56,6 +62,26 @@
   </main>
 
   <main class="cards" id="mainView">
+    <!-- zkWrapper 홈(2026-11-20 스펙 zkwrapper §6): zk-Delegation 을 쓰려면 무엇을 하는지 — 사용자 세 단계·운영자 세 단계·전체 플로우. 래퍼 방식에서만 보인다(ui.js). -->
+    <section class="card span2" id="homeGuide" hidden>
+      <h3 data-i18n="home_title">zk-Delegation 쓰는 법</h3>
+      <p class="desc" data-i18n="home_desc">Google 계정으로 로그인하지만, 서비스는 누구인지 모르고 zkWrapper 는 어느 서비스인지 모릅니다.</p>
+      <div class="home-cols">
+        <div><h4 data-i18n="home_user_title">사용자</h4>
+          <ol id="homeUserSteps">
+            <li data-i18n="home_user_1">서비스 페이지에서 "zk 로그인" 을 누릅니다.</li>
+            <li data-i18n="home_user_2">Google 계정을 고릅니다 — 본인 확인은 Google 이 합니다.</li>
+            <li data-i18n="home_user_3">패스키를 확인합니다(처음이면 만듭니다). 서비스에는 이 서비스 전용 주소(PPID)와 증명만 갑니다.</li>
+          </ol></div>
+        <div><h4 data-i18n="home_op_title">서비스 운영자</h4>
+          <ol id="homeOpSteps">
+            <li><span data-i18n="home_op_1">운영자 화면에서 서비스 등록을 신청합니다:</span> <a id="homeOpLink" href="#" target="_blank" rel="noopener">-</a></li>
+            <li><span data-i18n="home_op_2">zkWrapper 관리자가 승인합니다:</span> <a id="homeAdminLink" href="#" target="_blank" rel="noopener">-</a></li>
+            <li data-i18n="home_op_3">서비스 페이지에 "zk 로그인" 버튼을 둡니다 — 로그인은 증명으로 확인합니다.</li>
+          </ol></div>
+      </div>
+      <p><a id="homeFlowLink" href="/common/flow.html" target="_blank" rel="noopener" data-i18n="home_flow_link">전체 플로우 한 장 — 일반 OIDC 와 나란히</a></p>
+    </section>
     <!-- passkey-web(2026-11-17 계획 Task 7): 패스키 설정 카드(연결이 없을 때만)·계정 복구 카드(연결 있음 ∧ 미등록). 다른 모드에서는 늘 숨는다.
          결과 카드(#pkSetupVerdict·#pkRecoverVerdict)는 카드가 숨은 뒤에도 보이게 신원 카드에 둔다. -->
     <section class="card span2" id="pkSetupCard" hidden>
