@@ -63,6 +63,8 @@ UNIT=(
   tests/test_secret_box.mjs
   # 회로 파일 캐시의 버전(2026-11-20) — 회로를 다시 만들면 브라우저의 옛 zkey·wasm 을 쓰지 않는다
   tests/test_mode3_zk_assets.mjs
+  # zkWrapper 의 요청 결속(2026-11-20) — Google 토큰 nonce = H(요청 키), 발급·폐기 본문에 요청 키의 서명
+  tests/test_mode3_wrapper_auth.mjs
   tests/test_mode3_user_idp_return.mjs
   tests/test_attr_backup.mjs
   tests/test_browser_node_shims.js
