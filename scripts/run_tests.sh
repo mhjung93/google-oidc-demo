@@ -116,6 +116,7 @@ CHAIN=(
   tests/test_cia_oidc_register.mjs
   # 패스키 가입(2026-11-20) — uid 예약 → Google 토큰(대역)·π_IdP 로 가입+등록, 같은 Google 계정은 하나·같은 패스키면 복구
   tests/test_cia_passkey_signup.mjs
+  tests/test_cia_wrapper.mjs
   tests/test_rp_social_logins.mjs
   tests/test_cia_issue_race.mjs
   tests/test_cia_registry.mjs

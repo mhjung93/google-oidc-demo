@@ -49,6 +49,7 @@ import { CIA_STATE_VERSION, defaultCiaState, migrateCiaState, rpKeyTag, findRpSl
 import { buildAaHealth, applyHealthHeaders, bounded, originList } from './lib/mode3_health.js';
 import { createOidcVerifier, GOOGLE_DEFAULTS } from './lib/mode3_oidc.js';
 import { uidOf, regNonce, issueNonce, isRevokeNonce, REG_PREFIX, REVOKE_PREFIX, ISSUE_PREFIX } from './lib/mode3_oidc_nonce.js';
+import { WRAPPER_PREFIX, wrapperNonce, verifyDigest, issueDigest, revokeDigest } from './lib/mode3_wrapper_auth.js';
 import { listenMaybeTls } from './lib/mode3_tls.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -173,9 +174,24 @@ const ISSUE_AUTH = process.env.CIA_ISSUE_AUTH === 'code' ? 'code' : 'key';
 // 미등록 브라우저의 "패스키로 로그인" 은 지갑 창이 Google 을 다녀와 계정을 만든 뒤 이 챌린지로 로그인한다(페이지는 그 창을 300초 기다린다).
 const LOGIN_CHALLENGE_TTL_MS = (() => { const n = Number(process.env.CIA_LOGIN_CHALLENGE_TTL_MS); return Number.isFinite(n) && n > 0 ? n : 360_000; })();
 const DEMO_SEED = process.env.CIA_DEMO_ACCOUNTS === '1';
+// zkWrapper(스펙 2026-11-20 zkwrapper): 별도 IdP 없이 Google ID 토큰으로 발급한다 — 계정·비밀번호·인증 창·π_IdP 가 없고, 토큰은 1회용 요청 키에 묶인다(lib/mode3_wrapper_auth.js).
+// 깃발이 꺼져 있으면(기본) 이 파일의 모든 경로가 지금까지와 같다 — 스냅·에이전트·web·passkey-web 의 기존 방식이 그대로 쓴다.
+const WRAPPER = process.env.CIA_WRAPPER === '1';
+const WRAPPER_OIDC = WRAPPER ? { authorizeUrl: envStr('MODE3_OIDC_AUTHORIZE_URL', 'https://accounts.google.com/o/oauth2/v2/auth'), redirectUri: envStr('MODE3_OIDC_REDIRECT_URI', null) } : null;
+// C_u 를 바꾸는 발급(속성 변경)의 최소 간격 — 토큰 하나로 등록부를 계속 갈아 끼워 다른 사용자의 로그인을 흔들지 못하게(스펙 §10 I1). 같은 C_u 의 재발급에는 걸리지 않는다.
+const CRED_CHANGE_MIN_MS = (() => { const n = Number(process.env.CIA_CRED_CHANGE_MIN_MS); return Number.isFinite(n) && n >= 0 ? n : 600_000; })();
+if (WRAPPER) {
+  // 래퍼의 Google 클라이언트 ID 는 전용이어야 한다(스펙 §10 C2): 서비스가 같은 ID 로 Google 로그인을 하면, 그 서비스가 자기 요청 키의 nonce 로 사용자의 토큰을 받아 낼 수 있다.
+  const deny = String(process.env.MODE3_RP_GOOGLE_CLIENT_ID_DENY ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  const why = !OIDC.enabled ? 'MODE3_OIDC_CLIENT_ID 가 없다 — 래퍼 방식은 Google(OIDC) 설정이 있어야 한다'
+    : WRAPPER_OIDC.redirectUri === null ? 'MODE3_OIDC_REDIRECT_URI 가 없다 — Google 에서 돌아올 주소'
+    : deny.includes(OIDC.clientId) ? '서비스와 같은 Google 클라이언트 ID 를 쓴다 — 래퍼는 전용 클라이언트 ID 가 필요하다(MODE3_RP_GOOGLE_CLIENT_ID_DENY 에 든 값)' : null;
+  if (why) { console.error(`[cia] 래퍼 방식으로 뜰 수 없다: ${why}`); process.exit(1); }
+  console.log('[cia] 래퍼 방식(CIA_WRAPPER): Google ID 토큰으로 발급한다 — 계정·비밀번호·π_IdP 경로는 닫는다');
+}
 // 패스키 가입(스펙 2026-11-20 passkey-google-signup G9): zkIdP 페이지의 "패스키로 로그인" 이 미등록 브라우저에서 계정을 스스로 만드는 길. 발급 정책이 key 이고
 // Google(OIDC) 클라이언트 ID 와 돌아올 주소(MODE3_OIDC_REDIRECT_URI — 지갑 정적 서버의 /google-relay)가 모두 있을 때만 연다. 지갑 창이 이 주소들로 Google 에 다녀온다.
-const OIDC_SIGNUP = ISSUE_AUTH === 'key' && OIDC.enabled && envStr('MODE3_OIDC_REDIRECT_URI', null) !== null
+const OIDC_SIGNUP = !WRAPPER && ISSUE_AUTH === 'key' && OIDC.enabled && envStr('MODE3_OIDC_REDIRECT_URI', null) !== null
   ? { authorizeUrl: envStr('MODE3_OIDC_AUTHORIZE_URL', 'https://accounts.google.com/o/oauth2/v2/auth'), redirectUri: envStr('MODE3_OIDC_REDIRECT_URI', null) } : null;
 if (OIDC_SIGNUP) console.log(`[cia] 패스키 가입 켜짐: Google 로 확인한 이메일이 아이디가 된다(돌아올 주소 ${OIDC_SIGNUP.redirectUri})`);
 // 수정 라운드 1: 0 이하(파싱 실패 포함)는 "코드가 즉시 만료"라는 조용한 오설정이 되므로 경고 뒤 기본값(5분)으로 떨어진다.
@@ -578,6 +594,9 @@ function consumeCode(code, { uid, purpose, auid = null }) {
 // ---- 앱 ----
 const app = express();
 app.use(express.json({ limit: '256kb' }));
+// 래퍼 방식에서 닫는 경로(스펙 zkwrapper §4): 아이디·비밀번호 계정, 로그인 화면·인증 창, 등록·슬롯(π_IdP), 증명 로그인, 패스키 가입, 일반 OIDC. 서비스 등록·관리자·개봉·발급·폐기는 그대로다.
+const WRAPPER_BLOCKED = [/^\/cia\/signup(\/|$)/, /^\/cia\/user\//, /^\/cia\/register$/, /^\/cia\/slot$/, /^\/oidc\//, /^\/login(\/|$)/, /^\/user(\/|$)/, /^\/account(\/|$)/];
+if (WRAPPER) app.use((req, res, next) => (WRAPPER_BLOCKED.some((re) => re.test(req.path)) ? res.status(403).json({ error: 'not available in wrapper mode', reason: 'wrapper_mode' }) : next()));
 // JSON 본문만 받는 경로용(2026-11-19: 증명 로그인·일반 OIDC 결정) — 다른 사이트의 폼 POST 는 여기서 끝난다(이 서버는 그 경로들에 CORS 를 열지 않는다).
 const jsonBodyOnly = (req, res, next) => (req.is('application/json') ? next() : res.status(415).json({ error: 'json only', reason: 'json_only' }));
 // 리뷰(2026-11-03 E-M7): 이 페이지들을 남의 프레임에 넣지 못하게(클릭재킹) — 팝업·새 창으로만 쓰이고 프레임 임베드는 없다.
@@ -690,7 +709,8 @@ app.get('/cia/public_keys', userCors, (req, res) => {
   // V10: canonicalChainId = 게시 로그가 있는 체인(selfChainId 와 같은 provider). mirrors = CIA_MIRRORS(릴레이 대상 거울, 2026-10-02 Task 6).
   res.json({ pk_CIA: S(ciaPub), ethAddress: ethWallet.address, heartbeatBlocks: Number(HEARTBEAT_BLOCKS), chainIds: [...CHAIN_RPCS.keys()], logAddress: LOG_ADDRESS,
     canonicalChainId: selfChainId, mirrors: MIRRORS.map(({ chainStr, address }) => ({ chainId: chainStr, address })),
-    oidc: { enabled: OIDC.enabled, provider: OIDC.provider, clientId: OIDC.clientId, issuer: OIDC.issuer, ...(OIDC_SIGNUP ? { signup: OIDC_SIGNUP } : {}) },   // signup(2026-11-20): 패스키 가입이 켜져 있을 때만 — 꺼져 있으면 키가 없다
+    oidc: { enabled: OIDC.enabled, provider: OIDC.provider, clientId: OIDC.clientId, issuer: OIDC.issuer, ...(OIDC_SIGNUP ? { signup: OIDC_SIGNUP } : {}), ...(WRAPPER ? WRAPPER_OIDC : {}) },
+    ...(WRAPPER ? { wrapper: true, wrapperAud: PUBLIC_URL } : {}),   // 래퍼 방식(2026-11-20): 지갑이 이 표시를 보고 Google 토큰으로 발급받는다. wrapperAud = 요청 서명에 넣는 서버 주소   // signup(2026-11-20): 패스키 가입이 켜져 있을 때만 — 꺼져 있으면 키가 없다
     issueAuth: ISSUE_AUTH });   // 2026-11-19(스펙 passkey-proof-login L2): 발급 정책 — 지갑이 인증 창을 거칠지 이 값으로 정한다   // 2026-11-10: 11-09 의 providers(zkIdP 쪽 연결)는 없앴다
 });
 
@@ -1345,8 +1365,147 @@ app.post('/cia/slot', userCors, async (req, res) => {
 // auid_s 는 세션 기록에 남기지 않되, 2026-11-12(사용자 결정 — D1 수정)부터 계정마다 가장 최신 값 하나를 덮어써 두고(acct.lastAuidS — 관리자 화면 표시용),
 // 2026-11-19(스펙 trace-without-tag T6)부터 발급마다 계정의 기록(acct.auidSLog)에도 덧붙인다 — 개봉의 근거다.
 // /cia/issue — 데모 계정은 π_IdP 만, 래퍼(Google) 계정은 π_IdP + id_token(+첫 로그인이면 registration{auid}). 2026-10-16, 2026-11-13.
+/** 발급의 뒷부분 — 인증(π_IdP, 또는 래퍼 방식의 Google 토큰)을 지난 요청을 받아 등록부 갱신·게시, 서명, 세션·발급 기록을 한다. 기존 발급과 래퍼 발급이 함께 쓴다(2026-11-20).
+ *  consume(): 상태를 바꾸기 바로 앞에서 동기로 부르는 1회용 재료의 소비(인증 코드 또는 토큰 nonce) — false 면 consumeFail 로 거절한다. wrapper: 래퍼 방식의 추가 대조. extra: 응답에 더할 값. */
+async function finishIssue(res, { uid, acct, cupt, cspt, auidS, aridS, mh, chainStr, agent, consume = null, consumeFail = null, wrapper = false, extra = null }) {
+  // Cf_u·Cf_s 는 IdP 가 점에서 스스로 유도한다(설계 §6.2) — 사용자가 보낸 Cf 를 서명하면 증명된 점과 무관한 값에 서명이 붙는다.
+  const Cf_u = await compressPoint(cupt), Cf_s = await compressPoint(cspt);
+  const head = await headOf(chainStr);   // fail-closed: 체인이 죽어 있으면 발급하지 않는다(게시도 불가하므로 폐기가 닿지 않는 세션이 된다)
+  const cfu = Cf_u.toString();
+  // 이 await 를 끝으로 아래 물리기→push→setSlot→persist 구간은 동기다(2026-10-01 리뷰 Important 2 와 같은 이유).
+  const newLeaf = await registryLeaf(BigInt(acct.auid), Cf_u);
+  if (acct.disabled) return res.status(403).json({ error: 'account disabled', reason: 'account_disabled' });   // await 사이의 폐기
+  // 발급 기록이 찼다 — 기록 없이 서명하면 그 로그인(과 그 뒤의 거래)을 개봉할 수 없다. 1회용 코드·자격증명 교체보다 먼저 막는다(아무것도 바꾸지 않는다).
+  if ((acct.auidSLog?.length ?? 0) >= AUID_S_LOG_MAX) return res.status(409).json({ error: 'issuance record is full for this account', reason: 'auid_log_full' });
+  // 래퍼 방식(스펙 zkwrapper §3·§10 C1): 세션 가명은 전체에서 한 번만 — 다른 계정의 발급 기록에 있는 auid_s 로는 발급하지 않는다. π_IdP 가 없어 발급자는 auid_s 가
+  // 그 계정의 것인지 볼 수 없다 — 주운 남의 auid_s 를 자기 기록에 심어 개봉이 엉뚱한 계정을 가리키게 하는 것을 막는다(정직한 요청자가 늘 먼저 낸다).
+  if (wrapper && auidSOwners(auidS.toString()).some((u) => u !== uid)) return res.status(409).json({ error: 'auid_s already issued to another account', reason: 'auid_s_taken' });
+  acct.creds ??= [];
+  const cur = activeCred(uid);
+  let published = false;
+  if (!cur || cur.Cf_u !== cfu) {
+    // 물린 적 있는 C_u 는 다시 받지 않는다 — 은퇴·폐기의 되감기를 막는다.
+    if (acct.creds.some((c) => c.Cf_u === cfu)) return res.status(409).json({ error: 'this user credential was revoked; make a new one', reason: 'cred_revoked' });
+    // 래퍼 방식(스펙 §10 I2·I1): 다른 계정이 낸 적 있는 C_u 는 받지 않는다(같은 리프를 두 슬롯에 넣어 계정 폐기를 피하지 못하게), C_u 교체는 계정당 최소 간격을 둔다.
+    if (wrapper && Object.entries(state.accounts).some(([u, a]) => u !== uid && (a.creds ?? []).some((c) => c.Cf_u === cfu))) return res.status(409).json({ error: 'this user credential belongs to another account', reason: 'cf_u_taken' });
+    if (wrapper && cur && Date.now() - Date.parse(acct.creds.at(-1)?.issuedAt ?? 0) < CRED_CHANGE_MIN_MS) return res.status(429).json({ error: 'user credential changed too recently', reason: 'cred_change_too_soon' });
+    // 코드 소비(F-7): π_IdP 뿐 아니라 headOf(503)·위 cred_revoked 사전 검사까지 모두 지난 뒤, 상태 변경(발급 기록) 바로
+    // 앞에서 동기로 소비한다 — 동시 요청도 하나만 통과한다. 이보다 앞에서 태우면 체인 오류·폐기 충돌로 끝내 실패해도 코드가 사라진다.
+    if (consume && !consume()) return res.status(consumeFail.status).json(consumeFail.body);
+    retireActiveCred(uid);
+    // V10(§4.5): 대기열로 영구 은퇴된 슬롯에는 0 아닌 리프를 쓸 수 없다(컨트랙트 SlotIsRetired) — 새 슬롯을 받는다. PPID 는 (s_u, arid, chainid) 에만 걸려 있어 슬롯이 바뀌어도 그대로다.
+    if (acct.slotRetired) { acct.slot = state.registry.next++; acct.slotRetired = false; }
+    acct.creds.push({ Cf_u: cfu, C_u_pt: { x: cupt.x.toString(), y: cupt.y.toString() }, issuedAt: new Date().toISOString(), revoked: false });
+    setSlot(uid, newLeaf);
+    persist();
+    published = Boolean((await publishSafely()).published);
+    if (acct.disabled) return res.status(403).json({ error: 'account disabled', reason: 'account_disabled' });   // 게시 await 사이의 폐기
+    // 리뷰 S2(2026-10-13): 게시 await 사이에 이 C_u 가 물렸으면(같은 uid 의 다른 새 C_u 발급, 관리자 scope=credential) 토큰을 내지 않는다 —
+    // 은퇴된 Cf_u 위의 토큰은 등록부에 없어 쓸 수 없고, 지갑이 그 C_u 를 보관하면 다음 로그인이 registry_mismatch 에서 못 빠져나온다.
+    // 지갑은 cred_revoked 에 새 C_u 로 한 번만 다시 시도한다(mode3_wallet_agent.js /wallet/login).
+    if (activeCred(uid)?.Cf_u !== cfu) return res.status(409).json({ error: 'this user credential was retired while publishing; make a new one', reason: 'cred_revoked' });
+  } else if (consume && !consume()) {
+    // 같은 C_u 로 재서명만 하는 경로(F-7) — 발급 기록이 없으므로 여기서는 signPoseidon 바로 앞이 "상태 변경 직전" 이다.
+    return res.status(consumeFail.status).json(consumeFail.body);
+  }
+  const s = eddsa.signPoseidon(ciaPrv, F.e(await credMessageV11(auidS, aridS, Cf_u, Cf_s, BigInt(chainStr), agent)));
+  // V8(2026-09-24 §2.1): 세션 단위 폐기를 하려면 IdP 가 Cf_s 를 알아야 한다. 정리는 하트비트뿐 아니라 여기서도(최종 리뷰 F2). 세션 기록에는 auid_s·arid_s 를 적지 않는다(D1).
+  acct.sessions = (acct.sessions ?? []).filter((r) => r.chainid !== chainStr || BigInt(r.max_height) >= head);
+  const issuedAt = new Date().toISOString();
+  acct.sessions.push({ Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString(), issuedAt, revokedAt: null });
+  // 2026-11-12(사용자 결정 — D1 수정): 가장 최신 auid_s 하나만 덮어쓴다 — 앞 값은 사라진다(기록 아님). 어느 세션(Cf_s)의 것인지는 적지 않는다.
+  acct.lastAuidS = { value: auidS.toString(), at: issuedAt };
+  // 2026-11-19(스펙 oidc-comparison C5, 사용자 결정 — D1 의 두 번째 예외): 가장 최신 arid_s 하나도 같은 모양으로 덮어쓴다 — 관리자 화면이 "zk-Delegation 에서 zkIdP 가 본 서비스" 로
+  // 보인다. 가려진 값이라 발급 때는 어느 서비스인지 모른다. 기록(이력)은 없다. 다만 그 로그인이 온체인 거래로 이어지면 거래의 공개 입력에 arid 와 auid_s 가 함께 있어,
+  // 아래 auidSLog 로 "이 uid 가 그 서비스(arid)의 그 계정(PPID)을 쓴다" 까지 zkIdP 가 혼자 이을 수 있다(스펙 trace-without-tag §3 — T6 의 대가).
+  acct.lastAridS = { value: aridS.toString(), at: issuedAt };
+  // 2026-11-19(데모 시나리오 6 — "IdP 가 무엇을 받아 검증하는지" 그림): 가장 최근 발급 요청에서 받은 공개값 한 벌. 이력이 아니다(덮어쓴다) — 전부 이 요청으로 zkIdP 가 원래 받는 값이고
+  // 비밀은 없다(tag·증명·난수 n 은 남기지 않는다 — 요청을 묶는 값이라 화면에 둘 이유가 없다).
+  // 2026-11-19(스펙 trace-without-tag T6, 사용자 결정 "IdP 는 기록을 갖고 있는 형태"): 발급마다 auid_s 를 계정에 남긴다 — 개봉은 서비스가 낸 auid_s 를 이 기록에서 찾는다.
+  // 지금까지의 "auid_s 는 남기지 않는다"(D1)를 뒤집는다. 연결 해제·폐기에도 지우지 않는다(추적의 근거다). 오래된 것을 밀어내지 않는다 — 계정마다 AUID_S_LOG_MAX 개가 차면
+  // 위에서 발급을 거절한다(리뷰 2026-11-19 I-1: 밀어내면 사용자가 발급을 되풀이해 지난 거래의 기록을 스스로 지울 수 있다).
+  acct.auidSLog = [...(acct.auidSLog ?? []), { value: auidS.toString(), at: issuedAt }];
+  acct.lastIssue = { at: issuedAt, auid_s: auidS.toString(), arid_s: aridS.toString(), Cf_u: cfu, Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString() };
+  persist();
+  // OIDC 모양의 ID 토큰(2026-11-09 Phase 1): sub=auid_s(세션 가명), aud=arid_s(세션 RP 가명) — 둘 다 π_RP 의 공개 신호라 RP 가 증명과 맞춰 본다.
+  // name = 프로필의 커밋먼트(없으면 클레임 자체가 없다). IdP 는 여기서도 RP 가 누구인지 모른다(arid_s 는 블라인딩된 값).
+  const zkidToken = await signIdToken({ sub: auidS.toString(), aud: aridS.toString() });   // 요청 본문의 id_token(Google)과 이름이 겹치지 않게
+  res.json({
+    Cf_u: cfu, Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString(),
+    sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() },
+    pk_CIA: S(ciaPub), slot: acct.slot, regRoot: registry.root().toString(), epoch: state.epoch, published, id_token: zkidToken, ...(extra ?? {}),
+  });
+}
+/** 그 auid_s 가 발급 기록(또는 최신 값)에 있는 계정들. 개봉과 래퍼 방식의 중복 검사가 쓴다. */
+function auidSOwners(auidS) {
+  return Object.entries(state.accounts).filter(([, a]) => a.lastAuidS?.value === auidS || (a.auidSLog ?? []).some((r) => r.value === auidS)).map(([uid]) => uid);
+}
+
+// ---- 래퍼 방식의 인증(스펙 2026-11-20 zkwrapper §2.2·§10) ----
+// Google ID 토큰(nonce = "wrap:" + H(pk_e)) + 요청 본문에 대한 pk_e 의 서명. 토큰은 한 번만 쓴다 — 발급은 상태를 바꾸기 바로 앞에서(finishIssue 의 consume), 폐기는 인증 직후에 소비한다.
+const wrapperNonces = new Map();   // 쓴 nonce → 잊어도 되는 시각(ms). Google 토큰 수명(약 1시간)보다 길게 둔다
+const WRAPPER_NONCE_KEEP_MS = 2 * 3600_000;
+const wrapperNonceUsed = (n) => { const e = wrapperNonces.get(n); return e !== undefined && e >= Date.now(); };
+function consumeWrapperNonce(n) {
+  const now = Date.now();
+  if (wrapperNonces.size > 5000) for (const [k, e] of wrapperNonces) if (e < now) wrapperNonces.delete(k);
+  if (wrapperNonceUsed(n)) return false;
+  wrapperNonces.set(n, now + WRAPPER_NONCE_KEEP_MS);
+  return true;
+}
+const TOKEN_USED = { status: 409, body: { error: 'token already used', reason: 'wrapper_token_used' } };
+/** 토큰·요청 키·서명을 확인한다. digestOf(body) 는 서명하는 글(틀린 본문이면 던진다). 성공 { uid, o(토큰 클레임), nonce }, 실패 { error: { status, body } }. consume:true 면 여기서 nonce 를 소비한다. */
+async function wrapperAuth(body, digestOf, { consume = false } = {}) {
+  const fail = (status, b) => ({ error: { status, body: b } });
+  const { id_token, pk_e, sig } = body ?? {};
+  if (typeof id_token !== 'string' || !pk_e || typeof pk_e !== 'object') return fail(400, { error: 'id_token, pk_e, sig required', reason: 'wrapper_bad_request' });
+  const o = await oidcUid(id_token, WRAPPER_PREFIX); if (o.error) return o;
+  let want = null; try { want = await wrapperNonce(pk_e); } catch { want = null; }
+  if (want === null || o.nonce !== want) return fail(400, { error: 'token is not bound to this request key', reason: 'wrapper_nonce_mismatch' });
+  let digest = null; try { digest = digestOf(body); } catch { digest = null; }
+  if (digest === null || typeof sig !== 'string' || !(await verifyDigest(pk_e, digest, sig))) return fail(400, { error: 'bad request signature', reason: 'wrapper_bad_signature' });
+  if (consume ? !consumeWrapperNonce(o.nonce) : wrapperNonceUsed(o.nonce)) return fail(TOKEN_USED.status, TOKEN_USED.body);
+  return { uid: o.uid, o, nonce: o.nonce };
+}
+/** 래퍼 방식의 발급(POST /cia/issue): { id_token, pk_e, sig, auid, auid_s, arid_s, C_u_pt, C_s_pt, chainid, allowAgent, max_height }. 계정은 토큰의 sub 에서 정한다(uid = H(provider|sub)).
+ *  π_IdP 가 없다 — 가명·커밋먼트가 제대로 만들어졌는지는 서비스에 내는 π_RP 가 증명한다(pi_cred ②⑤⑦·등록부 리프 H(auid, Cf_u)). 발급자가 지키는 것은 발급의 부수효과다:
+ *  계정당 auid 고정(첫 발급), 한 auid 는 한 계정(R11 — registerAccount), auid_s 전역 유일·남의 C_u 거절·교체 간격(finishIssue), 토큰 1회 소비. */
+async function issueWrapper(req, res) {
+  const { auid, auid_s, arid_s, C_u_pt, C_s_pt, chainid, allowAgent, max_height } = req.body ?? {};
+  if (!isDec(auid) || !isDec(auid_s) || !isDec(arid_s) || !isPt(C_u_pt) || !isPt(C_s_pt) || !isDec(chainid) || (allowAgent !== '0' && allowAgent !== '1') || !isDec(max_height)) {
+    return res.status(400).json({ error: 'id_token, pk_e, sig, auid, auid_s, arid_s, C_u_pt{x,y}, C_s_pt{x,y}, chainid, allowAgent("0"|"1"), max_height required' });
+  }
+  const mh = BigInt(max_height);
+  if (mh >= (1n << 64n)) return res.status(400).json({ error: 'max_height must be < 2^64' });
+  if (BigInt(auid) >= F.p || BigInt(auid_s) >= F.p || BigInt(arid_s) >= F.p) return res.status(400).json({ error: 'auid, auid_s and arid_s must be field elements (< p)' });
+  const au = await wrapperAuth(req.body, (b) => issueDigest(b, PUBLIC_URL));
+  if (au.error) return res.status(au.error.status).json(au.error.body);
+  const uid = au.uid, auidStr = BigInt(auid).toString();
+  let acct = state.accounts[uid] ?? null;
+  if (acct?.disabled) return res.status(403).json({ error: 'account disabled', reason: 'account_disabled' });
+  // 계정당 auid 는 첫 발급 때 고정한다 — 다른 auid(다른 salt)로는 발급하지 않는다. "Google 계정 하나 = salt 하나 = 서비스마다 PPID 하나".
+  if (acct?.auid && acct.auid !== auidStr) return res.status(409).json({ error: 'this account is bound to another passkey', reason: 'auid_pinned' });
+  const chainStr = BigInt(chainid).toString();
+  if (CHAIN_RPCS.size === 0) return res.status(503).json({ error: 'chain id unknown: CIA_CHAIN_RPCS not configured and RPC unreachable at startup' });
+  if (!CHAIN_RPCS.has(chainStr)) return res.status(400).json({ error: `bad chainid ${chainStr}: allowed ${[...CHAIN_RPCS.keys()].join(',')}` });
+  // 점의 부분군 검사 — 지금까지는 checkIdpAuth 가 했다. 증명이 없어도 서명할 점은 유효해야 한다.
+  const cupt = pointFromStrings(C_u_pt), cspt = pointFromStrings(C_s_pt);
+  if (!(await isValidPoint(cupt))) return res.status(400).json({ error: 'C_u_pt is not a valid subgroup point' });
+  if (!(await isValidPoint(cspt))) return res.status(400).json({ error: 'C_s_pt is not a valid subgroup point' });
+  if (wrapperNonceUsed(au.nonce)) return res.status(TOKEN_USED.status).json(TOKEN_USED.body);   // 위 await 사이에 같은 토큰의 다른 요청이 먼저 끝났다
+  if (!acct?.auid) {
+    const made = await registerAccount({ uid, provider: OIDC.provider, auid: auidStr, verified: true });
+    if (made.error) return res.status(made.error.status).json(made.error.body);
+    acct = state.accounts[uid];
+  }
+  // 아이디 = Google 이 확인한 이메일(있을 때만 — 관리자 화면에 보이는 값). 저장은 finishIssue 의 persist 가 함께 한다.
+  if (!acct.loginId && au.o.emailVerified && typeof au.o.email === 'string' && SIGNUP_EMAIL_RE.test(au.o.email)) acct.loginId = au.o.email;
+  return finishIssue(res, { uid, acct, cupt, cspt, auidS: BigInt(auid_s), aridS: BigInt(arid_s), mh, chainStr, agent: BigInt(allowAgent),
+    consume: () => consumeWrapperNonce(au.nonce), consumeFail: TOKEN_USED, wrapper: true, extra: { uid, email: acct.loginId ?? null } });
+}
 app.post('/cia/issue', userCors, async (req, res) => {
   try {
+    if (WRAPPER) return await issueWrapper(req, res);   // 래퍼 방식(2026-11-20) — 아래의 기존 발급과 섞이지 않는다
     const { uid, auid_s, arid_s, C_u_pt, C_s_pt, chainid, allowAgent, max_height, proof_idp, tag, n, id_token, registration, auth_code } = req.body ?? {};
     if (!isDec(uid) || !isDec(auid_s) || !isDec(arid_s) || !isPt(C_u_pt) || !isPt(C_s_pt) || !isDec(chainid) || (allowAgent !== '0' && allowAgent !== '1') || !isDec(max_height) || !isDec(n) || !isDec(tag) || !proof_idp || typeof proof_idp !== 'object') {
       return res.status(400).json({ error: 'uid, auid_s, arid_s, C_u_pt{x,y}, C_s_pt{x,y}, chainid, allowAgent("0"|"1"), max_height, n, tag, proof_idp required' });
@@ -1418,67 +1577,9 @@ app.post('/cia/issue', userCors, async (req, res) => {
       if (made.error) return res.status(made.error.status).json(made.error.body);
       acct = state.accounts[uid];
     }
-    // Cf_u·Cf_s 는 IdP 가 점에서 스스로 유도한다(설계 §6.2) — 사용자가 보낸 Cf 를 서명하면 증명된 점과 무관한 값에 서명이 붙는다.
-    const Cf_u = await compressPoint(cupt), Cf_s = await compressPoint(cspt);
-    const head = await headOf(chainStr);   // fail-closed: 체인이 죽어 있으면 발급하지 않는다(게시도 불가하므로 폐기가 닿지 않는 세션이 된다)
-    const cfu = Cf_u.toString();
-    // 이 await 를 끝으로 아래 물리기→push→setSlot→persist 구간은 동기다(2026-10-01 리뷰 Important 2 와 같은 이유).
-    const newLeaf = await registryLeaf(BigInt(acct.auid), Cf_u);
-    if (acct.disabled) return res.status(403).json({ error: 'account disabled', reason: 'account_disabled' });   // await 사이의 폐기
-    // 발급 기록이 찼다 — 기록 없이 서명하면 그 로그인(과 그 뒤의 거래)을 개봉할 수 없다. 1회용 코드·자격증명 교체보다 먼저 막는다(아무것도 바꾸지 않는다).
-    if ((acct.auidSLog?.length ?? 0) >= AUID_S_LOG_MAX) return res.status(409).json({ error: 'issuance record is full for this account', reason: 'auid_log_full' });
-    acct.creds ??= [];
-    const cur = activeCred(uid);
-    let published = false;
-    if (!cur || cur.Cf_u !== cfu) {
-      // 물린 적 있는 C_u 는 다시 받지 않는다 — 은퇴·폐기의 되감기를 막는다.
-      if (acct.creds.some((c) => c.Cf_u === cfu)) return res.status(409).json({ error: 'this user credential was revoked; make a new one', reason: 'cred_revoked' });
-      // 코드 소비(F-7): π_IdP 뿐 아니라 headOf(503)·위 cred_revoked 사전 검사까지 모두 지난 뒤, 상태 변경(발급 기록) 바로
-      // 앞에서 동기로 소비한다 — 동시 요청도 하나만 통과한다. 이보다 앞에서 태우면 체인 오류·폐기 충돌로 끝내 실패해도 코드가 사라진다.
-      if (needsAuthCode && !consumeCode(auth_code, { uid, purpose: 'issue', auid: acct.auid })) return res.status(401).json({ error: 'bad_code', reason: 'bad_code' });
-      retireActiveCred(uid);
-      // V10(§4.5): 대기열로 영구 은퇴된 슬롯에는 0 아닌 리프를 쓸 수 없다(컨트랙트 SlotIsRetired) — 새 슬롯을 받는다. PPID 는 (s_u, arid, chainid) 에만 걸려 있어 슬롯이 바뀌어도 그대로다.
-      if (acct.slotRetired) { acct.slot = state.registry.next++; acct.slotRetired = false; }
-      acct.creds.push({ Cf_u: cfu, C_u_pt: { x: cupt.x.toString(), y: cupt.y.toString() }, issuedAt: new Date().toISOString(), revoked: false });
-      setSlot(uid, newLeaf);
-      persist();
-      published = Boolean((await publishSafely()).published);
-      if (acct.disabled) return res.status(403).json({ error: 'account disabled', reason: 'account_disabled' });   // 게시 await 사이의 폐기
-      // 리뷰 S2(2026-10-13): 게시 await 사이에 이 C_u 가 물렸으면(같은 uid 의 다른 새 C_u 발급, 관리자 scope=credential) 토큰을 내지 않는다 —
-      // 은퇴된 Cf_u 위의 토큰은 등록부에 없어 쓸 수 없고, 지갑이 그 C_u 를 보관하면 다음 로그인이 registry_mismatch 에서 못 빠져나온다.
-      // 지갑은 cred_revoked 에 새 C_u 로 한 번만 다시 시도한다(mode3_wallet_agent.js /wallet/login).
-      if (activeCred(uid)?.Cf_u !== cfu) return res.status(409).json({ error: 'this user credential was retired while publishing; make a new one', reason: 'cred_revoked' });
-    } else if (needsAuthCode && !consumeCode(auth_code, { uid, purpose: 'issue', auid: acct.auid })) {
-      // 같은 C_u 로 재서명만 하는 경로(F-7) — 발급 기록이 없으므로 여기서는 signPoseidon 바로 앞이 "상태 변경 직전" 이다.
-      return res.status(401).json({ error: 'bad_code', reason: 'bad_code' });
-    }
-    const s = eddsa.signPoseidon(ciaPrv, F.e(await credMessageV11(auidS, aridS, Cf_u, Cf_s, BigInt(chainStr), agent)));
-    // V8(2026-09-24 §2.1): 세션 단위 폐기를 하려면 IdP 가 Cf_s 를 알아야 한다. 정리는 하트비트뿐 아니라 여기서도(최종 리뷰 F2). 세션 기록에는 auid_s·arid_s 를 적지 않는다(D1).
-    acct.sessions = (acct.sessions ?? []).filter((r) => r.chainid !== chainStr || BigInt(r.max_height) >= head);
-    const issuedAt = new Date().toISOString();
-    acct.sessions.push({ Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString(), issuedAt, revokedAt: null });
-    // 2026-11-12(사용자 결정 — D1 수정): 가장 최신 auid_s 하나만 덮어쓴다 — 앞 값은 사라진다(기록 아님). 어느 세션(Cf_s)의 것인지는 적지 않는다.
-    acct.lastAuidS = { value: auidS.toString(), at: issuedAt };
-    // 2026-11-19(스펙 oidc-comparison C5, 사용자 결정 — D1 의 두 번째 예외): 가장 최신 arid_s 하나도 같은 모양으로 덮어쓴다 — 관리자 화면이 "zk-Delegation 에서 zkIdP 가 본 서비스" 로
-    // 보인다. 가려진 값이라 발급 때는 어느 서비스인지 모른다. 기록(이력)은 없다. 다만 그 로그인이 온체인 거래로 이어지면 거래의 공개 입력에 arid 와 auid_s 가 함께 있어,
-    // 아래 auidSLog 로 "이 uid 가 그 서비스(arid)의 그 계정(PPID)을 쓴다" 까지 zkIdP 가 혼자 이을 수 있다(스펙 trace-without-tag §3 — T6 의 대가).
-    acct.lastAridS = { value: aridS.toString(), at: issuedAt };
-    // 2026-11-19(데모 시나리오 6 — "IdP 가 무엇을 받아 검증하는지" 그림): 가장 최근 발급 요청에서 받은 공개값 한 벌. 이력이 아니다(덮어쓴다) — 전부 이 요청으로 zkIdP 가 원래 받는 값이고
-    // 비밀은 없다(tag·증명·난수 n 은 남기지 않는다 — 요청을 묶는 값이라 화면에 둘 이유가 없다).
-    // 2026-11-19(스펙 trace-without-tag T6, 사용자 결정 "IdP 는 기록을 갖고 있는 형태"): 발급마다 auid_s 를 계정에 남긴다 — 개봉은 서비스가 낸 auid_s 를 이 기록에서 찾는다.
-    // 지금까지의 "auid_s 는 남기지 않는다"(D1)를 뒤집는다. 연결 해제·폐기에도 지우지 않는다(추적의 근거다). 오래된 것을 밀어내지 않는다 — 계정마다 AUID_S_LOG_MAX 개가 차면
-    // 위에서 발급을 거절한다(리뷰 2026-11-19 I-1: 밀어내면 사용자가 발급을 되풀이해 지난 거래의 기록을 스스로 지울 수 있다).
-    acct.auidSLog = [...(acct.auidSLog ?? []), { value: auidS.toString(), at: issuedAt }];
-    acct.lastIssue = { at: issuedAt, auid_s: auidS.toString(), arid_s: aridS.toString(), Cf_u: cfu, Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString() };
-    persist();
-    // OIDC 모양의 ID 토큰(2026-11-09 Phase 1): sub=auid_s(세션 가명), aud=arid_s(세션 RP 가명) — 둘 다 π_RP 의 공개 신호라 RP 가 증명과 맞춰 본다.
-    // name = 프로필의 커밋먼트(없으면 클레임 자체가 없다). IdP 는 여기서도 RP 가 누구인지 모른다(arid_s 는 블라인딩된 값).
-    const zkidToken = await signIdToken({ sub: auidS.toString(), aud: aridS.toString() });   // 요청 본문의 id_token(Google)과 이름이 겹치지 않게
-    res.json({
-      Cf_u: cfu, Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString(),
-      sigma: { R8x: F.toObject(s.R8[0]).toString(), R8y: F.toObject(s.R8[1]).toString(), S: s.S.toString() },
-      pk_CIA: S(ciaPub), slot: acct.slot, regRoot: registry.root().toString(), epoch: state.epoch, published, id_token: zkidToken,
-    });
+    // 인증을 지난 뒤의 처리(등록부 갱신·서명·발급 기록)는 래퍼 방식과 함께 쓴다 — finishIssue(2026-11-20).
+    return await finishIssue(res, { uid, acct, cupt, cspt, auidS, aridS, mh, chainStr, agent,
+      consume: needsAuthCode ? () => consumeCode(auth_code, { uid, purpose: 'issue', auid: acct.auid }) : null, consumeFail: { status: 401, body: { error: 'bad_code', reason: 'bad_code' } } });
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
@@ -1508,13 +1609,23 @@ async function revokeAccount(uid) {
 // 걸지 않고 안에서 분기한다. 관리자 헤더가 틀리게 오면 isAdmin=false 라 scope=session 은 서명 경로로 흐르고 account/credential 은 401 이다.
 app.post('/cia/revoke', userCors, async (req, res) => {
   try {
-    const { uid, scope, Cf_s, nonce, bound: boundIn } = req.body ?? {};
+    const { scope, Cf_s, nonce, bound: boundIn } = req.body ?? {};
+    let { uid } = req.body ?? {};
     const hdr = req.get('X-CIA-Admin-Secret');
     // CIA_ADMIN_OPEN 이면 헤더가 있는 요청(관리자 페이지)만 관리자로 본다 — 헤더 없는 사용자 본인 요청은 그대로 π_IdP 인증 경로로 간다.
     const isAdmin = ADMIN_OPEN ? typeof hdr === 'string' : Boolean(ADMIN_SECRET) && typeof hdr === 'string' && secretMatches(hdr, ADMIN_SECRET);
     if (scope !== 'session') {   // requireAdmin 과 같은 응답을 그대로 유지한다(시크릿 미설정 503, 틀린 시크릿 401)
       if (!ADMIN_OPEN && !ADMIN_SECRET) return res.status(503).json({ error: 'admin endpoints disabled: CIA_ADMIN_SECRET is not configured' });
       if (!isAdmin) return res.status(401).json({ error: 'unauthorized' });
+    }
+    // 래퍼 방식의 사용자 세션 폐기(스펙 zkwrapper §2.3·§10 I3): 본인 확인은 Google 토큰 + 그 Cf_s 에 대한 요청 키의 서명이다(π_IdP 없음). 계정은 토큰에서 정한다. 세션 전부 차단(bound 0)만 받는다.
+    let wrapAuth = null;
+    if (WRAPPER && scope === 'session' && !isAdmin) {
+      wrapAuth = await wrapperAuth(req.body, (b) => revokeDigest({ scope: 'session', Cf_s: b.Cf_s }, PUBLIC_URL), { consume: true });
+      if (wrapAuth.error) return res.status(wrapAuth.error.status).json(wrapAuth.error.body);
+      if (uid !== undefined && uid !== wrapAuth.uid) return res.status(403).json({ error: 'uid_mismatch', reason: 'uid_mismatch' });
+      if ((boundIn ?? '0') !== '0') return res.status(400).json({ error: 'wrapper mode revokes the whole session (bound 0)' });
+      uid = wrapAuth.uid;
     }
     if (!isDec(uid) || !state.accounts[uid]) return res.status(404).json({ error: 'unknown account' });
     // 수정 라운드 1: scope=account 는 가입만 하고 등록 전인 계정(auid:null)도 404 — 아니면 등록된 적 없는 자리에 disabled·
@@ -1536,12 +1647,12 @@ app.post('/cia/revoke', userCors, async (req, res) => {
     if (!isDec(Cf_s)) return res.status(400).json({ error: 'Cf_s required' });
     // 허용 거래 수 bound ∈ [0, 2^32)(설계 2026-10-22 §3): nonce < bound 인 거래만 유효, 0 = 세션 전부 차단. 관리자 경로는
     // 생략하면 0(전부 차단)이고, 사용자 경로는 인증(ctx)이 bound 를 덮으므로 생략할 수 없다(아래에서 isDec 이 걸러낸다).
-    const bound = isAdmin ? (boundIn ?? '0') : boundIn;
+    const bound = isAdmin || wrapAuth ? (boundIn ?? '0') : boundIn;
     if (!isDec(bound) || BigInt(bound) >= SESSION_BOUND_MAX) return res.status(400).json({ error: 'bound 는 [0, 2^32)' });
     const acct = state.accounts[uid];
     const rec = (acct.sessions ?? []).find((s) => s.Cf_s === BigInt(Cf_s).toString());
     // 인증은 기록 조회보다 먼저 본다 — 인증 없이 "그 Cf_s 가 이 계정에 있는지" 를 알아내지 못하게.
-    if (!isAdmin) {
+    if (!isAdmin && !wrapAuth) {
       if (!isDec(nonce) || !req.body?.proof_idp) return res.status(401).json({ error: 'nonce and proof_idp required without admin secret' });
       let ctx = null;
       // ctx = Poseidon(D_CTX_REVOKE, Cf_s, bound, nonce)(스펙 2026-11-12 no-pk-u §3.1) — bound 가 인증에 든다. 범위 밖 값·등록 전 계정은 증명이 있을 수 없다.
@@ -2078,7 +2189,12 @@ app.post('/cia/account/self_revoke', userCors, async (req, res) => {
   try {
     const { uid: uidIn, id, pwd, id_token } = req.body ?? {};
     let uid;
-    if (id_token !== undefined) {
+    if (WRAPPER) {
+      // 래퍼 방식(스펙 zkwrapper §10 I3): 계정 폐기도 요청 키에 묶인 토큰 + "계정 폐기" 에 대한 서명 — 발급·세션 폐기용 토큰과 서명은 여기에 쓰지 못한다.
+      const a = await wrapperAuth(req.body, () => revokeDigest({ scope: 'account' }, PUBLIC_URL), { consume: true });
+      if (a.error) return res.status(a.error.status).json(a.error.body);
+      uid = a.uid;
+    } else if (id_token !== undefined) {
       if (typeof id_token !== 'string') return res.status(400).json({ error: 'id_token 은 문자열' });
       const o = await oidcUid(id_token, REVOKE_PREFIX); if (o.error) return res.status(o.error.status).json(o.error.body);
       if (!isRevokeNonce(o.nonce)) return res.status(400).json({ error: 'oidc_nonce_mismatch', reason: 'oidc_nonce_mismatch', detail: 'nonce 가 폐기용이 아니다' });
@@ -2113,8 +2229,9 @@ const findOpening = (id) => state.openings.find((o) => o.id === id);
 const AUID_S_LOG_MAX = Math.max(1, Number(process.env.CIA_AUID_S_LOG_MAX) || 5000);
 /** 발급 기록에서 그 auid_s 를 낸 계정의 uid — 없으면 null(이 IdP 가 낸 값이 아니거나, 그 계정이 삭제됐다). 최신 하나(lastAuidS)도 함께 본다(기록이 생기기 전의 발급). */
 function uidOfAuidS(auidS) {
-  for (const [uid, a] of Object.entries(state.accounts)) if (a.lastAuidS?.value === auidS || (a.auidSLog ?? []).some((r) => r.value === auidS)) return uid;
-  return null;
+  // 2026-11-20(스펙 zkwrapper §10 C1): 같은 auid_s 가 두 계정의 기록에 있으면 답하지 않는다 — 처음 맞는 계정을 돌려주면 기록을 심어 개봉을 엉뚱한 계정으로 돌릴 수 있다.
+  const owners = auidSOwners(auidS);
+  return owners.length === 1 ? owners[0] : null;
 }
 // ---- 개봉(2026-11-19 스펙 trace-without-tag T7·T8) ----
 // 트레이스 태그는 없다. 서비스가 그 PPID 의 가장 최신 로그인(또는 그 거래)의 증명 한 벌을 내면 — 공개 입력 안에 PPID·arid·auid_s 가 함께 있다 — zkIdP 는 증명·서명을 확인해
@@ -2169,6 +2286,7 @@ app.post('/cia/openings/:id/approve', requireAdmin, async (req, res) => {
     const uid = typeof o.auid_s === 'string' ? uidOfAuidS(o.auid_s) : null;
     o.decidedAt = new Date().toISOString();
     o.status = 'approved'; o.uid = uid; o.resolved = uid !== null;
+    if (uid === null && typeof o.auid_s === 'string' && auidSOwners(o.auid_s).length > 1) o.ambiguous = true;   // 기록이 둘 이상의 계정에 있다 — 답하지 않은 까닭
     persist();
     res.json({ id: o.id, status: o.status, resolved: o.resolved });
   } catch (err) { res.status(500).json({ error: err.message }); }
