@@ -186,6 +186,12 @@ try {
       const r = await cia[m](p, body); assert.equal(r.status, 403, `${p}: ${j(r.body)}`); assert.equal(r.body.reason, 'wrapper_mode', p);
     }
   });
+  await t('막힌 경로는 대소문자·끝 슬래시를 바꿔도 막힌다(Express 는 그런 주소도 같은 경로로 받는다)', async () => {
+    for (const [m, p, body] of [['post', '/CIA/Register', { uid: '1', pwd: 'x', auid: '1' }], ['post', '/cia/register/', { uid: '1', pwd: 'x', auid: '1' }], ['post', '/cia/Slot', { uid: '1', nonce: '1' }], ['post', '/cia/signup/', { id: 'abc', pwd: 'password123' }],
+      ['post', '/Cia/User/Login', { id: 'abc', pwd: 'x' }], ['get', '/User', undefined], ['get', '/LOGIN/', undefined], ['get', '/OIDC/authorize?client_id=x', undefined]]) {
+      const r = await cia[m](p, body); assert.equal(r.status, 403, `${p}: ${r.status} ${j(r.body).slice(0, 120)}`); assert.equal(r.body.reason, 'wrapper_mode', p);
+    }
+  });
 } finally { await cia.stop(); }
 // 기동 검사: 래퍼의 Google 클라이언트 ID 가 서비스의 것과 같으면 뜨지 않는다(스펙 §10 C2)
 await t('기동 검사: 서비스와 같은 Google 클라이언트 ID 면 뜨지 않는다', async () => {

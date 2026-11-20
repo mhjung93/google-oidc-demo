@@ -596,7 +596,11 @@ const app = express();
 app.use(express.json({ limit: '256kb' }));
 // 래퍼 방식에서 닫는 경로(스펙 zkwrapper §4): 아이디·비밀번호 계정, 로그인 화면·인증 창, 등록·슬롯(π_IdP), 증명 로그인, 패스키 가입, 일반 OIDC. 서비스 등록·관리자·개봉·발급·폐기는 그대로다.
 const WRAPPER_BLOCKED = [/^\/cia\/signup(\/|$)/, /^\/cia\/user\//, /^\/cia\/register$/, /^\/cia\/slot$/, /^\/oidc\//, /^\/login(\/|$)/, /^\/user(\/|$)/, /^\/account(\/|$)/];
-if (WRAPPER) app.use((req, res, next) => (WRAPPER_BLOCKED.some((re) => re.test(req.path)) ? res.status(403).json({ error: 'not available in wrapper mode', reason: 'wrapper_mode' }) : next()));
+// Express 는 대소문자와 끝 슬래시를 가리지 않고 경로를 맞춘다(/CIA/Register·/cia/register/ 도 같은 처리기로 간다) — 같은 식으로 고른 주소에 대고 본다(2026-11-20 보안 검토).
+if (WRAPPER) app.use((req, res, next) => {
+  const p = req.path.toLowerCase().replace(/\/+$/, '') || '/';
+  return WRAPPER_BLOCKED.some((re) => re.test(p)) ? res.status(403).json({ error: 'not available in wrapper mode', reason: 'wrapper_mode' }) : next();
+});
 // JSON 본문만 받는 경로용(2026-11-19: 증명 로그인·일반 OIDC 결정) — 다른 사이트의 폼 POST 는 여기서 끝난다(이 서버는 그 경로들에 CORS 를 열지 않는다).
 const jsonBodyOnly = (req, res, next) => (req.is('application/json') ? next() : res.status(415).json({ error: 'json only', reason: 'json_only' }));
 // 리뷰(2026-11-03 E-M7): 이 페이지들을 남의 프레임에 넣지 못하게(클릭재킹) — 팝업·새 창으로만 쓰이고 프레임 임베드는 없다.
