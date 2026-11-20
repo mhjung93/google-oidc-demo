@@ -60,13 +60,11 @@
          결과 카드(#pkSetupVerdict·#pkRecoverVerdict)는 카드가 숨은 뒤에도 보이게 신원 카드에 둔다. -->
     <section class="card span2" id="pkSetupCard" hidden>
       <h3 data-i18n="user_pk_setup_title">패스키 설정</h3>
-      <p class="desc" data-i18n="user_pk_setup_desc">salt 는 패스키에서 만들고, 이 브라우저(IndexedDB)에 10분간 암호화해 둡니다.</p>
+      <p class="desc" data-i18n="user_pk_setup_desc">salt 는 저장하지 않고, 필요할 때마다 패스키에서 같은 값으로 다시 만듭니다.</p>
+      <!-- 2026-11-20(화면 셀프 피드백 8): 처음 쓰는 사람의 가장 쉬운 길 — zkIdP 페이지의 "패스키로 로그인"(패스키 가입이 켜져 있을 때만 보인다, ui.js). -->
+      <p id="pkFirstRow" class="muted" hidden><span data-i18n="user_pk_first_hint">처음이면 zkIdP 페이지에서 "패스키로 로그인" 을 누르세요 — 패스키와 계정을 한 번에 만듭니다:</span> <a id="pkFirstLink" href="#" target="_blank" rel="noopener">-</a></p>
       <p id="pkOriginRow" hidden><a id="pkOriginLink" href="#">-</a></p>
-      <!-- 패스키를 둘 곳(2026-11-19 스펙 login-flow-and-phone-passkey P1): 휴대폰이면 WebAuthn 요청에 hints:['hybrid'] 를 실어 Chrome 이 바로 QR 을 띄운다. -->
-      <p id="pkPlaceRow" role="radiogroup" aria-labelledby="pkPlaceLabel"><span id="pkPlaceLabel" data-i18n="user_pk_place_label">패스키를 둘 곳</span>:
-        <label><input type="radio" name="pkPlace" value="local" checked /> <span data-i18n="user_pk_place_local">이 기기 (Chrome · 비밀번호 관리자)</span></label>
-        <label><input type="radio" name="pkPlace" value="phone" /> <span data-i18n="user_pk_place_phone">휴대폰 (QR 코드로 연결)</span></label></p>
-      <p id="pkPlaceHint" class="muted" data-i18n="user_pk_place_hint" hidden>휴대폰을 고르면 Chrome 이 QR 코드를 띄웁니다 — 휴대폰 카메라로 찍고 휴대폰에서 확인하세요. PC 와 휴대폰 모두 블루투스와 인터넷이 켜져 있어야 합니다. 패스키를 확인할 때마다 휴대폰을 씁니다.</p>
+      <!-- 2026-11-20(사용자 결정): "패스키를 둘 곳"(이 기기 / 휴대폰 QR) 선택과 안내를 뺐다 — 시연 머신에 블루투스가 없어 휴대폰 연결을 보일 수 없다. 코어의 힌트·transports 처리는 그대로다. -->
       <p><button id="pkNewBtn" type="button" data-i18n="user_pk_new_btn">패스키 만들기</button> <button id="pkExistingBtn" type="button" class="btn-ghost" data-i18n="user_pk_existing_btn">이미 있는 패스키 쓰기</button></p>
     </section>
     <section class="card span2" id="pkRecoverCard" hidden>
@@ -139,10 +137,10 @@
     </section>
 
     <!-- 영지식 증명(2026-11-18 사용자 요청): 이 브라우저가 만든 증명(코어 proofs()) — 공개 입력 보기·브라우저에서 다시 검증·값 바꿔 보기.
-         기본은 서비스·체인에 낸 π_session(회로 pi_cred)만, 버튼을 누르면 zkIdP 에 낸 π_IdP 도 보인다. 공개값뿐이다(salt 는 없다). -->
+         기본은 서비스·체인에 낸 π_RP(회로 pi_cred)만, 버튼을 누르면 zkIdP 에 낸 π_IdP 도 보인다. 공개값뿐이다(salt 는 없다). -->
     <section class="card span2" id="proofsCard">
       <h3 data-i18n="user_proofs_title">영지식 증명</h3>
-      <p class="desc" data-i18n="user_proofs_desc">이 브라우저가 만든 증명입니다. 공개 입력을 보고, 브라우저에서 다시 검증하고, 값을 바꾸면 검증이 깨지는 것을 볼 수 있습니다. 기본은 서비스·체인에 낸 π_session 만 보입니다.</p>
+      <p class="desc" data-i18n="user_proofs_desc">이 브라우저가 만든 증명입니다. 공개 입력을 보고, 브라우저에서 다시 검증하고, 값을 바꾸면 검증이 깨지는 것을 볼 수 있습니다. 기본은 서비스·체인에 낸 π_RP 만 보입니다.</p>
       <p><button id="proofsKindBtn" type="button" class="btn-ghost" data-i18n="user_proofs_show_idp">zkIdP 에 낸 π_IdP 도 보기</button></p>
       <div id="proofsList"></div>
     </section>
@@ -233,7 +231,7 @@
         <button id="selfRevokeBtn" type="button" class="danger" data-i18n="wallet_self_revoke_btn">계정 자기 폐기</button>
         <button id="wipeBtn" type="button" class="danger" data-i18n="user_wipe_btn">모두 지우기</button>
       </p>
-      <!-- passkey-web: 연결된 패스키(credential ID 앞부분·salt 보관 남은 시간), salt 보기, 연결 끊기(등록이 없을 때만). -->
+      <!-- passkey-web: 연결된 패스키(credential ID 앞부분·어디에 있는 패스키인가), salt 보기, 연결 끊기(등록이 없을 때만). -->
       <div id="pkPanel" hidden>
         <p><span id="pkInfo" class="muted"></span></p>
         <p><button id="pkShowSaltBtn" type="button" class="btn-ghost" data-i18n="user_pk_show_salt_btn">salt 보기</button> <button id="pkDisconnectBtn" type="button" class="btn-ghost" data-i18n="user_pk_disconnect_btn">패스키 연결 끊기</button></p>

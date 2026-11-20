@@ -9,13 +9,25 @@ const clearVerdict = (el) => { el.__verdictArgs = null; el.innerHTML = ''; el.cl
 const A = window.Mode3Attr;
 const schema = A?.DEFAULT_ATTR_SCHEMA;
 
-// 기록 version 5(2026-11-17 사용자 결정): uid 를 뺐다 — { version, schema, s_u, profile, attrs, commit, createdAt }. 식은 version 4 와 같다(blind·계정 번호 없음, R15)
-// 그래서 version 4 기록도 그대로 읽는다(uid 는 무시). version 1~3(옛 식)은 읽지 않고 "다시 만드세요" 를 보인다.
-const REC_VERSION = 5;
+// 기록 version 6(2026-11-20 사용자 결정): **salt 를 기록에 두지 않는다** — { version, schema, auid, profile, attrs, commit, createdAt }. salt 는 커밋먼트를 계산하는 동안만
+// 입력 칸·메모리에 있고, 계산이 끝나면 칸도 비운다. 대신 auid = Poseidon(T_AUID2, salt)(공개값 — zkIdP 가 아는 가명)를 둔다: 지갑이 "이 기록이 내 salt 로 만든 것인가" 를
+// 대조하는 데 쓴다(전에는 기록의 salt 평문으로 대조했다). 식은 version 4·5 와 같다 — 옛 4·5 기록은 열 때 auid 로 바꿔 다시 쓴다(migrateOld — salt·uid 를 지운다).
+// version 1~3(옛 식)은 읽지 않고 "다시 만드세요" 를 보인다.
+const REC_VERSION = 6;
 const raw = () => { try { return JSON.parse(localStorage.getItem(STORE_KEY) ?? 'null'); } catch { return null; } };
 const isDec = (v) => typeof v === 'string' && /^[0-9]+$/.test(v);
-function load() { const v = raw(); return v && (v.version === REC_VERSION || v.version === 4) && isDec(v.s_u) && A?.isAttrCommit(v.commit) ? v : null; }
+function load() { const v = raw(); return v && v.version === REC_VERSION && isDec(v.auid) && A?.isAttrCommit(v.commit) ? v : null; }
 function save(rec) { localStorage.setItem(STORE_KEY, JSON.stringify(rec)); }
+/** 옛 기록(version 4·5 — salt 평문이 들어 있다)을 version 6 으로 바꿔 쓴다. 못 바꾸면(값이 망가졌다) 기록을 지운다 — 어느 쪽이든 salt 는 남지 않는다. */
+async function migrateOld() {
+  const v = raw();
+  if (!v || ![4, 5].includes(v.version) || !('s_u' in v)) return;
+  try {
+    if (!A || !isDec(v.s_u) || !A.isAttrCommit(v.commit)) throw new Error('bad record');
+    const { s_u, uid, ...rest } = v;
+    save({ ...rest, version: REC_VERSION, auid: (await A.auidOf({ s_u: BigInt(s_u) })).toString() });
+  } catch { try { localStorage.removeItem(STORE_KEY); } catch { /* 저장소 없음 */ } }
+}
 
 // 2026-11-13(R5): 자동 암호화 백업(D20)은 없앴다 — 예전에 이 브라우저에 둔 백업 설정(파일 핸들·키)을 지운다.
 try { indexedDB.deleteDatabase('zkd-attr-backup'); } catch { /* 저장소 없음 */ }
@@ -26,23 +38,14 @@ function fillCountries() {
   const empty = document.createElement('option'); empty.value = ''; empty.textContent = tt('attr_country_pick') || '선택'; sel.appendChild(empty);
   for (const code of Object.keys(slot.values)) { const o = document.createElement('option'); o.value = code; o.textContent = code; sel.appendChild(o); }
 }
-const SALT_MASK = '●'.repeat(12);
-let saltRevealed = false;
-function showSalt(rec) {
-  $('saltShown').textContent = saltRevealed ? rec.s_u : SALT_MASK;
-  const k = saltRevealed ? 'attr_salt_hide' : 'attr_salt_reveal';
-  $('saltRevealBtn').dataset.i18n = k; $('saltRevealBtn').textContent = tt(k) || (saltRevealed ? '가리기' : '보기');
-}
 function render() {
   const rec = load(), old = !rec && [1, 2, 3].includes(raw()?.version);
   $('commitBox').hidden = !rec; $('noCommit').hidden = !!rec; $('commitActions').hidden = !rec; $('inputsView').hidden = !rec; $('oldRecord').hidden = !old;
   if (!rec) return;
   $('commitBox').textContent = rec.commit;
   $('domainShown').textContent = String(A.DOMAIN_MODE3_ATTRC);
-  // salt 는 기본 가림(2026-11-13 화면 리뷰) — 가림 문자는 길이가 늘 같다. render() 가 다시 돌면(새로 만들기·지우기·새로 고침) 다시 가린다.
-  saltRevealed = false; showSalt(rec);
-  $('auidShown').textContent = '…';
-  A.auidOf({ s_u: BigInt(rec.s_u) }).then((v) => { $('auidShown').textContent = v.toString(); }, () => { $('auidShown').textContent = '-'; });
+  // salt 는 기록에 없다(version 6) — 재료 칸에는 "저장하지 않는다" 는 말만 있고, auid 는 만들 때 계산해 둔 값을 보인다.
+  $('auidShown').textContent = rec.auid;
   // 속성 칸: 슬롯 이름 · 입력값 → 해시에 들어가는 인코딩 값(attrᵢ). 미사용 슬롯(늘 0)은 보이지 않는다(2026-11-11).
   const dl = $('attrsShown'); dl.innerHTML = '';
   rec.attrs.forEach((v, i) => {
@@ -58,7 +61,6 @@ function render() {
   $('schemaShown').textContent = `${rec.schema?.id ?? '-'} v${rec.schema?.version ?? '-'}`;
   $('createdAt').textContent = new Date(rec.createdAt).toLocaleString();
   for (const k of ['birthYear', 'country', 'extra1', 'extra2']) if (rec.profile[k] !== undefined) $(k).value = rec.profile[k];
-  $('salt').value = rec.s_u;   // 기록의 salt 를 칸에 채워 둔다 — 속성만 바꿔 다시 만들 때 또 붙여 넣지 않게(가려진 칸)
 }
 
 $('attrForm').addEventListener('submit', async (ev) => {
@@ -75,7 +77,10 @@ $('attrForm').addEventListener('submit', async (ev) => {
     if (!s_u) throw Object.assign(new Error('salt 칸이 비어 있습니다'), { reason: 'attr_salt_required' });
     if (!isDec(s_u) || BigInt(s_u) < 1n || BigInt(s_u) >= (1n << 250n)) throw Object.assign(new Error('salt 는 1 이상 2^250 미만의 숫자여야 합니다'), { reason: 'attr_bad_salt' });
     const commit = await A.attrCommit({ s_u, attrs });
-    save({ version: REC_VERSION, schema: { id: schema.id, version: schema.version }, s_u, profile, attrs, commit, createdAt: new Date().toISOString() });
+    const auid = (await A.auidOf({ s_u: BigInt(s_u) })).toString();
+    // salt 는 저장하지 않는다(2026-11-20) — 기록에는 공개값(auid·커밋먼트)과 속성만. 계산이 끝났으니 입력 칸도 비운다(속성만 바꿔 다시 만들려면 salt 를 다시 붙여 넣는다).
+    save({ version: REC_VERSION, schema: { id: schema.id, version: schema.version }, auid, profile, attrs, commit, createdAt: new Date().toISOString() });
+    $('salt').value = '';
     render();
     verdict($('formVerdict'), true, 'attr_make_ok', { summary: tt('attr_make_ok_summary') || '커밋먼트를 만들었습니다. 아래에서 복사해 zkIdP 프로필에 붙여 넣으세요.' });
   } catch (e) {
@@ -90,10 +95,9 @@ async function copyText(text, btn) {
   setTimeout(() => { btn.textContent = prev; }, 1200);
 }
 $('copyBtn').addEventListener('click', () => { const rec = load(); if (rec) copyText(rec.commit, $('copyBtn')); });
-$('saltRevealBtn').addEventListener('click', () => { const rec = load(); if (!rec) return; saltRevealed = !saltRevealed; showSalt(rec); });
 $('copyAuidBtn').addEventListener('click', () => { const v = $('auidShown').textContent; if (/^[0-9]+$/.test(v)) copyText(v, $('copyAuidBtn')); });
 $('clearBtn').addEventListener('click', () => {
-  if (!window.confirm(tt('attr_clear_confirm') || '저장된 salt·속성·커밋먼트를 이 브라우저에서 지웁니다. 같은 스냅에서 같은 속성을 넣으면 같은 커밋먼트를 다시 만들 수 있습니다. 계속할까요?')) return;
+  if (!window.confirm(tt('attr_clear_confirm') || '저장된 속성·커밋먼트를 이 브라우저에서 지웁니다. 같은 salt 와 같은 속성을 넣으면 같은 커밋먼트를 다시 만들 수 있습니다. 계속할까요?')) return;
   localStorage.removeItem(STORE_KEY); render(); clearVerdict($('formVerdict')); clearVerdict($('resultVerdict'));
 });
 
@@ -117,5 +121,5 @@ async function checkDemoReset() {
   return true;
 }
 if (schema) fillCountries();
-checkDemoReset().catch(() => false).then(() => render());
+checkDemoReset().catch(() => false).then(() => migrateOld()).catch(() => {}).then(() => render());
 document.addEventListener('visibilitychange', () => { if (!document.hidden) checkDemoReset().then((cleared) => { if (cleared) { render(); clearVerdict($('formVerdict')); clearVerdict($('resultVerdict')); } }).catch(() => {}); });

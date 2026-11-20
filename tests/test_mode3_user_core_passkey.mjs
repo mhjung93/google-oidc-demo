@@ -1,6 +1,6 @@
 // tests/test_mode3_user_core_passkey.mjs — 웹 코어의 passkey-web 경로(스펙 2026-11-17-mode3-passkey-web, 계획 Task 5)를 Node 에서(메모리 kv·진짜 snarkjs)
-// 격리 IdP(CIA_ISSUE_AUTH=code)·RP 에 대고 돌린다. 패스키는 대역(derive 호출 수를 센다). 패스키 연결 → salt 보기(보관분) → 등록 코드로 등록 →
-// 발급 코드로 로그인 → 다른 탭·보관 만료·withSalt → 다른 패스키 → 속성 기록 동기화 → wipe → 계정 복구(restored). :8545·build/mode3 필요. (chain)
+// 격리 IdP(CIA_ISSUE_AUTH=code)·RP 에 대고 돌린다. 패스키는 대역(derive 호출 수를 센다). 패스키 연결 → salt 보기 → 등록 코드로 등록 →
+// 발급 코드로 로그인 → 다른 탭·withSalt(salt 는 저장하지 않는다 — 2026-11-20: 10분 보관 제거) → 다른 패스키 → 속성 기록 동기화 → wipe → 계정 복구(restored). :8545·build/mode3 필요. (chain)
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
@@ -23,7 +23,7 @@ const j = (o) => JSON.stringify(o, (k, v) => (typeof v === 'bigint' ? v.toString
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 try {
   const config = (await wallet.get('/user/config')).body;
-  assert.equal(config.secrets, 'passkey-web'); assert.equal(config.passkeyHoldSeconds, 600);
+  assert.equal(config.secrets, 'passkey-web'); assert.equal('passkeyHoldSeconds' in config, false);
   const kv = createMemKv();
   const fullProve = { idp: (input, w, z) => snarkjs.groth16.fullProve(input, w, z), cred: (input, w, z) => snarkjs.groth16.fullProve(input, w, z) };
   const SALT = randomScalar().toString(), CID = 'Y2lkLWE';
@@ -60,23 +60,27 @@ try {
     await assert.rejects(coreA.prepareRegistration(), (e) => e.reason === 'passkey_mode');
     assert.equal(calls, 0);
   });
-  await t('passkeyConnect: 자동 금고·credential 저장·보관; 다른 credential 409 passkey_already_set', async () => {
+  await t('passkeyConnect: 자동 금고·credential 저장 — salt 는 저장하지 않는다; 다른 credential 409 passkey_already_set', async () => {
     assert.equal((await coreA.passkeyConnect({ credentialId: 'not base64url!', s_u: SALT })).body.reason, 'bad_credential_id');
-    const r = await coreA.passkeyConnect({ credentialId: CID, s_u: SALT }); assert.equal(r.status, 200, j(r.body)); assert.deepEqual(r.body, { ok: true, held: true });
+    const r = await coreA.passkeyConnect({ credentialId: CID, s_u: SALT }); assert.equal(r.status, 200, j(r.body)); assert.deepEqual(r.body, { ok: true });
     await coreA.vault.refresh(); assert.equal(coreA.vault.isAuto(), true);
     assert.equal((await kv.get('passkey')).credentialId, CID);
-    const st = await coreA.passkeyState(); assert.equal(st.status, 200); assert.equal(st.body.credentialId, CID); assert.equal(typeof st.body.createdAt, 'number'); assert.ok(st.body.heldUntil > now(), j(st.body));
+    const st = await coreA.passkeyState(); assert.equal(st.status, 200); assert.equal(st.body.credentialId, CID); assert.equal(typeof st.body.createdAt, 'number'); assert.equal('heldUntil' in st.body, false, j(st.body));
+    assert.equal(await kv.get('passkeyHold'), undefined, '보관분을 두지 않는다'); assert.ok(!(await dumpKv()).includes(SALT), '평문 salt 가 kv 어디에도 없다');
     const o = await coreA.passkeyConnect({ credentialId: 'b3RoZXI', s_u: SALT }); assert.equal(o.status, 409); assert.equal(o.body.reason, 'passkey_already_set');
     assert.equal(calls, 0);
   });
-  await t('showSalt·passkeyAuid 는 보관분 — derive 0회', async () => {
-    const s = await coreA.showSalt(); assert.equal(s.status, 200, j(s.body)); assert.equal(s.body.s_u, SALT);
+  await t('showSalt·passkeyAuid 는 부를 때마다 패스키 — derive 각 1회, 다른 탭도 같다', async () => {
+    const s = await coreA.showSalt(); assert.equal(s.status, 200, j(s.body)); assert.equal(s.body.s_u, SALT); assert.equal(calls, 1);
     const a = await coreB.passkeyAuid(); assert.equal(a.status, 200, j(a.body)); assert.equal(a.body.auid, AUID); assert.ok(!('s_u' in a.body));
-    assert.equal(calls, 0);
+    assert.equal(calls, 2);
+    assert.equal(await kv.get('passkeyHold'), undefined); assert.ok(!(await dumpKv()).includes(SALT), '얻은 salt 를 kv 에 남기지 않는다');
   });
   await t('기록 salt·auid 불일치는 IdP 를 부르지 않는다', async () => {
     const code = await authCode('register');
     const a = await coreA.registerWithCode({ uid: '12345', code, recordSalt: '7' }); assert.equal(a.status, 409, j(a.body)); assert.equal(a.body.reason, 'attr_record_salt_mismatch');
+    // 2026-11-20: 속성 도구 기록에는 salt 가 없고 그 salt 의 auid 만 있다(recordAuid) — 다른 salt 의 기록이면 같은 사유로 막고 코드를 태우지 않는다
+    const a2 = await coreA.registerWithCode({ uid: '12345', code, recordAuid: '7' }); assert.equal(a2.status, 409, j(a2.body)); assert.equal(a2.body.reason, 'attr_record_salt_mismatch');
     const b = await coreA.registerWithCode({ uid: '12345', code, auid: '1' + AUID }); assert.equal(b.status, 409, j(b.body)); assert.equal(b.body.reason, 'register_auid_mismatch');
     assert.equal(await kv.get('registration'), undefined);
     reg201 = await coreA.registerWithCode({ uid: '12345', code, auid: AUID, recordSalt: SALT, profile: { birthYear: '1990', country: 'KR' } });   // 같은 코드 — 타지 않았다
@@ -95,7 +99,9 @@ try {
     const f = await coreA.loginFlow(); assert.equal(f.status, 200, j(f.body)); assert.equal(f.body.flow, null);
   });
   await t('로그인: issue_code 로 200 → RP ok; 코드 없이 401 auth_code_required; 쓴 코드 재사용 401 bad_code', async () => {
+    const c0 = calls;
     const { r, ch, v } = await loginRp(coreA, reg201.body.issue_code); assert.equal(r.status, 200, j(r.body)); assert.equal(v.body.ok, true, j(v.body));
+    assert.equal(calls - c0, 1, '범위 밖의 로그인도 패스키 한 번');
     rs1 = ch.r_s; ppid0 = r.body.publicSignals[0];
     login1 = r.body;
     const n = await loginRp(coreA, null); assert.equal(n.r.status, 401, j(n.r.body)); assert.equal(n.r.body.reason, 'auth_code_required');
@@ -103,7 +109,7 @@ try {
     // 2026-11-17(미뤄 둔 Minor C): 문자열이 아니거나 빈 authCode 는 IdP 에 가기 전에 400
     for (const bad of [5, '', {}, ['c']]) { const b = await loginRp(coreA, bad); assert.equal(b.r.status, 400, `${j(bad)} ${j(b.r.body)}`); assert.match(b.r.body.error, /authCode/); }
     assert.ok(!(await dumpKv()).includes(SALT));
-    assert.equal(calls, 0, '보관분으로 — 패스키 0회');
+    assert.equal(await kv.get('passkeyHold'), undefined);
   });
   await t('loginFlow: 성공한 로그인의 단계·시간·공개값 — 뒤의 실패한 로그인이 덮지 않고, 비밀은 없다', async () => {
     const f = (await coreA.loginFlow()).body.flow; assert.ok(f, '기록이 있다');
@@ -114,7 +120,7 @@ try {
     const step = (k) => f.steps.find((x) => x.key === k);
     assert.ok(step('prove_idp').ms > 50 && step('prove_session').ms > 50, j(f.steps));
     assert.ok(step('pseudonym').ms < step('prove_idp').ms, '가명은 증명보다 훨씬 짧다');
-    assert.equal(step('passkey').held, true, '보관분을 썼다 — 패스키를 묻지 않았다');
+    assert.equal(step('passkey').held, false, '패스키에서 얻었다 — 저장해 둔 salt 는 없다'); assert.equal(step('passkey').before, undefined);
     assert.equal(step('prove_session').cacheHit, false);
     assert.ok(f.totalMs >= step('prove_idp').ms + step('prove_session').ms, j(f));
     const v = f.values, ps = login1.publicSignals;
@@ -125,49 +131,50 @@ try {
     assert.ok(!dump.includes(SALT), 'salt 가 없다');
     for (const bad of ['blind', 'privateKey', 's_u', '"n"', 'auth_code']) assert.ok(!dump.includes(bad), `${bad} 가 기록에 없다`);
   });
-  await t('다른 탭은 보관분으로 재검증 — derive 0회', async () => {
+  await t('다른 탭(같은 kv)의 재검증도 패스키 1회 — 탭끼리 나눠 쓰는 보관분이 없다', async () => {
+    const c0 = calls;
     const r = await coreB.revalidate({ r_s: rs1, origin: info.origin }); assert.equal(r.status, 200, j(r.body));
     assert.equal((await rp.post('/api/mode3/revalidate', { proof: r.body.proof, publicSignals: r.body.publicSignals, sig: r.body.sig, r_s: rs1 })).body.ok, true);
-    assert.equal(calls, 0);
+    assert.equal(calls - c0, 1);
   });
-  await t('보관 만료 뒤 재검증은 derive 1회, 다시 보관', async () => {
+  await t('재검증은 할 때마다 패스키 1회 — 바로 이어 해도, 시간이 지나도 같다. kv 에 salt·보관분이 생기지 않는다', async () => {
+    const c0 = calls;
+    assert.equal((await coreB.revalidate({ r_s: rs1, origin: info.origin })).status, 200); assert.equal(calls - c0, 1);
+    assert.equal((await coreA.revalidate({ r_s: rs1, origin: info.origin })).status, 200); assert.equal(calls - c0, 2);
     skew += 11 * 60_000;
-    assert.equal((await coreA.passkeyState()).body.heldUntil, null);
-    const r = await coreB.revalidate({ r_s: rs1, origin: info.origin }); assert.equal(r.status, 200, j(r.body)); assert.equal(calls, 1);
-    assert.ok((await coreA.passkeyState()).body.heldUntil > now());
-    assert.equal((await coreA.revalidate({ r_s: rs1, origin: info.origin })).status, 200); assert.equal(calls, 1);
+    assert.equal((await coreA.revalidate({ r_s: rs1, origin: info.origin })).status, 200); assert.equal(calls - c0, 3);
+    assert.equal(await kv.get('passkeyHold'), undefined); assert.ok(!(await dumpKv()).includes(SALT));
   });
-  await t('withSalt: 보관 0초 코어에서 범위 안 두 동작 derive 1회, 범위 밖 2회', async () => {
-    const z = mk({ ...config, passkeyHoldSeconds: 0 });
-    await z.vault.clearHold(); const c0 = calls;
+  await t('withSalt: 범위 안 두 동작 derive 1회, 범위 밖 2회', async () => {
+    const z = mk(); const c0 = calls;
     const inside = await z.withSalt(async () => [await z.showSalt(), await z.revalidate({ r_s: rs1, origin: info.origin })]);
     assert.equal(inside[0].status, 200); assert.equal(inside[1].status, 200, j(inside[1].body)); assert.equal(calls - c0, 1);
-    assert.equal((await z.passkeyState()).body.heldUntil, null, '보관 0초는 보관하지 않는다');
+    assert.equal(await kv.get('passkeyHold'), undefined, '범위가 끝난 뒤 남는 것이 없다');
     assert.equal((await z.showSalt()).status, 200); assert.equal((await z.passkeyAuid()).status, 200); assert.equal(calls - c0, 3);
     // 범위가 던져도 메모는 버린다
     await assert.rejects(z.withSalt(async () => { await z.showSalt(); throw new Error('boom'); }), /boom/); assert.equal(calls - c0, 4);
     await z.showSalt(); assert.equal(calls - c0, 5);
   });
-  await t('withSalt 범위 안에서 보관이 끝나도 derive 1회', async () => {
-    await coreA.vault.clearHold(); const c0 = calls;
+  await t('withSalt 범위 안에서는 시간이 지나도 derive 1회', async () => {
+    const c0 = calls;
     const out = await coreA.withSalt(async () => {
       const a = await coreA.showSalt();
-      skew += 11 * 60_000;   // 범위 도중 보관 만료
+      skew += 11 * 60_000;
       const b = await coreA.revalidate({ r_s: rs1, origin: info.origin });
       return [a, b];
     });
     assert.equal(out[0].status, 200); assert.equal(out[1].status, 200, j(out[1].body)); assert.equal(calls - c0, 1);
   });
   // ---- 스펙 2026-11-19 passkey-proof-login L4·L8: 로그인은 패스키를 한 번 묻는다(fresh), zkIdP 로그인 증명 ----
-  await t('withSalt fresh: 보관분이 있어도 범위의 첫 salt 는 패스키에서(derive 1회) — 범위 안 다음 동작은 메모, 보관은 갱신, 범위 밖·fresh 없는 범위는 보관분', async () => {
-    assert.equal((await coreA.showSalt()).status, 200);
-    const held0 = (await coreA.passkeyState()).body.heldUntil; assert.ok(held0 > now(), '보관분이 있다');
-    const c0 = calls; skew += 60_000;
+  await t('withSalt fresh: 범위의 첫 salt 는 패스키에서(derive 1회), 범위 안 다음 동작은 메모 — 범위 밖·fresh 없는 범위도 저장분이 없어 각각 1회, 안쪽 fresh 범위는 바깥 메모를 비운다', async () => {
+    const c0 = calls;
     const out = await coreA.withSalt(async () => [await coreA.showSalt(), await coreA.revalidate({ r_s: rs1, origin: info.origin })], { fresh: true });
     assert.equal(out[0].status, 200); assert.equal(out[1].status, 200, j(out[1].body)); assert.equal(calls - c0, 1);
-    assert.ok((await coreA.passkeyState()).body.heldUntil > held0, '새로 얻은 값으로 보관을 갱신한다');
-    assert.equal((await coreA.showSalt()).status, 200); assert.equal(calls - c0, 1, '범위 밖은 보관분');
-    assert.equal((await coreA.withSalt(() => coreA.showSalt())).status, 200); assert.equal(calls - c0, 1, 'fresh 없는 범위는 보관분');
+    assert.equal((await coreA.showSalt()).status, 200); assert.equal(calls - c0, 2, '범위 밖은 다시 패스키');
+    assert.equal((await coreA.withSalt(() => coreA.showSalt())).status, 200); assert.equal(calls - c0, 3, 'fresh 없는 범위의 첫 salt 도 패스키');
+    const nested = await coreA.withSalt(async () => [await coreA.showSalt(), await coreA.withSalt(() => coreA.showSalt(), { fresh: true }), await coreA.showSalt()]);
+    for (const x of nested) assert.equal(x.status, 200, j(x.body));
+    assert.equal(calls - c0, 5, '바깥 1회 + 안쪽 fresh 1회 — 그 뒤는 메모');
   });
   await t('loginFlow: fresh 범위의 로그인은 passkey 단계가 held:false(패스키 1회) — 새 C_u 가 아니면 publish_wait 단계가 없고, 기록은 이 로그인으로 바뀐다', async () => {
     const c0 = calls, code = await authCode('issue');
@@ -196,15 +203,17 @@ try {
     assert.equal(r.status, 200, j(r.body)); assert.equal(r.body.demo, 'override:fake_sig'); assert.notEqual(v.body.ok, true, '서비스는 가짜 서명을 거절한다');
     assert.deepEqual((await coreA.loginFlow()).body.flow, before);
   });
-  await t('withSalt fresh: 패스키가 실패하면(다른 패스키·취소) 보관분으로 넘어가지 않는다', async () => {
+  await t('패스키가 실패하면(다른 패스키·취소) 그대로 실패한다 — fresh 범위·보통 범위·범위 밖 모두, 돌아오면 다시 된다', async () => {
     const keep = deriveFn;
     try {
       deriveFn = async () => ({ credentialId: 'b3RoZXI', s_u: SALT });
       const m = await coreA.withSalt(() => coreA.showSalt(), { fresh: true }); assert.equal(m.status, 409, j(m.body)); assert.equal(m.body.reason, 'passkey_mismatch');
       deriveFn = async () => { throw Object.assign(new Error('cancelled'), { reason: 'passkey_cancelled' }); };
       const c = await coreA.withSalt(() => coreA.showSalt(), { fresh: true }); assert.equal(c.status, 409, j(c.body)); assert.equal(c.body.reason, 'passkey_cancelled');
+      const n = await coreA.withSalt(() => coreA.showSalt()); assert.equal(n.status, 409, j(n.body)); assert.equal(n.body.reason, 'passkey_cancelled');
+      const o = await coreA.revalidate({ r_s: rs1, origin: info.origin }); assert.equal(o.status, 409, j(o.body)); assert.equal(o.body.reason, 'passkey_cancelled');
     } finally { deriveFn = keep; }
-    assert.equal((await coreA.showSalt()).status, 200, '보관분은 그대로다');
+    assert.equal((await coreA.showSalt()).status, 200, '패스키가 돌아오면 다시 된다');
   });
   await t('idpLoginProof: 로그인 증명은 loginCtx(nonce) 에만 맞는다 — uid·nonce·π_IdP 필드뿐(비밀 없음), 증명 기록의 purpose 는 idp_login', async () => {
     const nonce = randomScalar().toString();
@@ -220,19 +229,22 @@ try {
     assert.equal(last.kind, 'pi_idp'); assert.equal(last.purpose, 'idp_login');
     for (const bad of [undefined, '', 'abc', '-1', (1n << 255n).toString()]) { const b = await coreA.idpLoginProof({ nonce: bad }); assert.equal(b.status, 400, `${bad}: ${j(b.body)}`); assert.equal(b.body.reason, 'malformed'); }
   });
-  await t('다른 패스키: credential 다르면 409 passkey_mismatch, 같은 credential 다른 salt 도 passkey_mismatch, 보관하지 않는다', async () => {
-    await coreA.vault.clearHold();
+  await t('다른 패스키: credential 다르면 409 passkey_mismatch, 같은 credential 다른 salt 도 passkey_mismatch(등록의 auid 와 대조) — 다시 연결(passkeyConnect)도 같다', async () => {
     deriveFn = async () => ({ credentialId: 'b3RoZXI', s_u: SALT });
     const a = await coreA.showSalt(); assert.equal(a.status, 409, j(a.body)); assert.equal(a.body.reason, 'passkey_mismatch');
     deriveFn = async () => ({ credentialId: CID, s_u: randomScalar().toString() });
     const b = await coreA.revalidate({ r_s: rs1, origin: info.origin }); assert.equal(b.status, 409, j(b.body)); assert.equal(b.body.reason, 'passkey_mismatch');
-    assert.equal((await coreA.passkeyState()).body.heldUntil, null); assert.equal(await kv.get('passkeyHold'), undefined);
+    const c = await coreA.passkeyConnect({ credentialId: CID, s_u: randomScalar().toString() }); assert.equal(c.status, 409, j(c.body)); assert.equal(c.body.reason, 'passkey_mismatch');
+    assert.equal(await kv.get('passkeyHold'), undefined);
     deriveFn = async () => ({ credentialId: CID, s_u: SALT });
   });
   await t('syncProfileFromRecord: 다른 salt 409, 같은 salt·다른 속성 changed:true → 다음 로그인 userCredMs > 0', async () => {
     const bad = await coreA.syncProfileFromRecord({ recordSalt: randomScalar().toString(), profile: { birthYear: '1991', country: 'KR' } }); assert.equal(bad.status, 409); assert.equal(bad.body.reason, 'attr_record_salt_mismatch');
     assert.equal((await kv.get('registration')).profile.birthYear, '1990');
     const same = await coreA.syncProfileFromRecord({ recordSalt: SALT, profile: { birthYear: '1990', country: 'KR' } }); assert.equal(same.status, 200); assert.equal(same.body.changed, false);
+    // 2026-11-20: salt 없는 기록(recordAuid)으로도 같은 대조 — 맞으면 200, 다른 auid·둘 다 없음은 409
+    const viaAuid = await coreA.syncProfileFromRecord({ recordAuid: AUID, profile: { birthYear: '1990', country: 'KR' } }); assert.equal(viaAuid.status, 200, j(viaAuid.body)); assert.equal(viaAuid.body.changed, false);
+    for (const args of [{ recordAuid: '7' }, {}, { recordAuid: 'abc' }]) { const x = await coreA.syncProfileFromRecord({ ...args, profile: { birthYear: '1991', country: 'KR' } }); assert.equal(x.status, 409, j(args)); assert.equal(x.body.reason, 'attr_record_salt_mismatch'); }
     const ok = await coreA.syncProfileFromRecord({ recordSalt: SALT, profile: { birthYear: '1991', country: 'KR' } }); assert.equal(ok.status, 200, j(ok.body)); assert.equal(ok.body.changed, true);
     const { r, v } = await loginRp(coreA, await authCode('issue')); assert.equal(r.status, 200, j(r.body)); assert.ok(r.body.timings.userCredMs > 0, '새 C_u'); assert.equal(v.body.ok, true);
   });
@@ -246,18 +258,18 @@ try {
     const c0 = calls;
     const r = await coreA.registerWithCode({ uid: '12345', code: await authCode('register'), auid: AUID }); assert.equal(r.status, 201, j(r.body));
     assert.equal(r.body.restored, true); assert.equal(r.body.slot, slot0); assert.equal(typeof r.body.issue_code, 'string');
-    assert.equal(calls - c0, 1, '보관분이 없어 패스키 1회');
+    assert.equal(calls - c0, 1, '등록에 패스키 1회');
     assert.equal((await coreA.vault.readSecrets()).s_u, null); assert.ok(!(await dumpKv()).includes(SALT));
     const { r: l, v } = await loginRp(coreA, r.body.issue_code); assert.equal(l.status, 200, j(l.body)); assert.equal(v.body.ok, true, j(v.body));
     assert.equal(l.body.publicSignals[0], ppid0, '같은 PPID');
   });
-  // ---- 2026-11-17(미뤄 둔 Minor C) — 각 케이스는 새 kv·새 코어로 자기 상태를 만든다(앞 케이스의 등록·보관분과 무관) ----
+  // ---- 2026-11-17(미뤄 둔 Minor C) — 각 케이스는 새 kv·새 코어로 자기 상태를 만든다(앞 케이스의 등록과 무관) ----
   const freshCore = (cfg = config) => { const k = createMemKv(); return { k, c: createUserCore({ kv: k, config: cfg, provider, canonProvider: provider, fullProve, now, passkey }) }; };
   // 2026-11-18(사용자 요청): 데모 리셋은 패스키 연결도 끊는다 — 사용자 페이지가 wipe({ keepPasskey: false }) 로 부른다. 화면의 "모두 지우기"(기본)는 그대로 연결을 남긴다.
-  await t('wipe({ keepPasskey: false }) 는 등록·보관분과 함께 패스키 연결도 지운다', async () => {
+  await t('wipe({ keepPasskey: false }) 는 등록과 함께 패스키 연결도 지운다', async () => {
     const { k, c } = freshCore();
     assert.equal((await c.passkeyConnect({ credentialId: CID, s_u: SALT })).status, 200);
-    assert.ok(await k.get('passkey')); assert.ok(await k.get('passkeyHold'));
+    assert.ok(await k.get('passkey')); assert.equal(await k.get('passkeyHold'), undefined);
     assert.equal((await c.wipe({ keepPasskey: false })).status, 200);
     assert.equal(await k.get('passkey'), undefined); assert.equal(await k.get('passkeyHold'), undefined);
     assert.equal((await c.passkeyState()).body.credentialId, null);
@@ -273,7 +285,7 @@ try {
     assert.deepEqual((await k.get('passkey')).info, want);
     const prev = deriveFn; let got = null;
     deriveFn = async (a) => { got = a; return prev(a); };
-    try { skew += 11 * 60_000; assert.equal((await c.showSalt()).status, 200); } finally { deriveFn = prev; }
+    try { assert.equal((await c.showSalt()).status, 200); } finally { deriveFn = prev; }
     assert.deepEqual(got, { credentialId: CID, transports: ['hybrid', 'internal'], hints: ['hybrid'] });
   });
   await t('passkeyConnect: info 가 없으면 지금까지와 같다(info null, derive 는 credentialId 만) — 형식이 틀린 info 는 400 bad_passkey_info', async () => {
@@ -283,16 +295,26 @@ try {
     assert.equal((await c.passkeyState()).body.info, null);
     const prev = deriveFn; let got = null;
     deriveFn = async (a) => { got = a; return prev(a); };
-    try { skew += 11 * 60_000; assert.equal((await c.showSalt()).status, 200); } finally { deriveFn = prev; }
+    try { assert.equal((await c.showSalt()).status, 200); } finally { deriveFn = prev; }
     assert.deepEqual(got, { credentialId: CID });
   });
-  await t('passkeyDisconnect(미등록): 200 — credential·보관분을 지운다, 이어서 showSalt 는 passkey_setup_required', async () => {
+  // 2026-11-20(사용자 요청): salt 의 10분 보관을 없앴다 — 예전 버전이 kv 에 남긴 보관분(passkeyHold)은 읽지 않고 지운다.
+  const oldHold = () => ({ until: now() + 10 * 60_000, box: { iv: 'AAAA', ct: 'AAAA' } });
+  await t('예전 버전의 보관분(kv passkeyHold): status() 가 지운다; 첫 salt 요청도 지우고 그 값을 쓰지 않는다(패스키 1회)', async () => {
+    const a = freshCore(); await a.k.set('passkeyHold', oldHold());
+    assert.equal((await a.c.status()).status, 200); assert.equal(await a.k.get('passkeyHold'), undefined);
+    const b = freshCore(); assert.equal((await b.c.passkeyConnect({ credentialId: CID, s_u: SALT })).status, 200);
+    await b.k.set('passkeyHold', oldHold());
+    const c0 = calls; const s = await b.c.showSalt(); assert.equal(s.status, 200, j(s.body)); assert.equal(s.body.s_u, SALT);
+    assert.equal(calls - c0, 1, '보관분을 쓰지 않고 패스키를 묻는다'); assert.equal(await b.k.get('passkeyHold'), undefined);
+  });
+  await t('passkeyDisconnect(미등록): 200 — credential(과 예전 버전의 보관분)을 지운다, 이어서 showSalt 는 passkey_setup_required', async () => {
     const { k, c } = freshCore();
     assert.equal((await c.passkeyConnect({ credentialId: CID, s_u: SALT })).status, 200);
-    assert.ok(await k.get('passkeyHold'));
+    await k.set('passkeyHold', oldHold());
     const d = await c.passkeyDisconnect(); assert.equal(d.status, 200, j(d.body)); assert.deepEqual(d.body, { ok: true });
     assert.equal(await k.get('passkey'), undefined); assert.equal(await k.get('passkeyHold'), undefined);
-    const st = await c.passkeyState(); assert.equal(st.body.credentialId, null); assert.equal(st.body.heldUntil, null);
+    const st = await c.passkeyState(); assert.equal(st.body.credentialId, null); assert.equal('heldUntil' in st.body, false);
     const s2 = await c.showSalt(); assert.equal(s2.status, 409); assert.equal(s2.body.reason, 'passkey_setup_required');
   });
   await t('passkeyDisconnect 는 withSalt 메모도 버린다 — 범위 안에서 끊은 뒤의 salt 요청은 passkey_setup_required', async () => {
@@ -302,18 +324,17 @@ try {
     assert.equal(out[0].status, 200); assert.equal(out[0].body.s_u, SALT);
     assert.equal(out[1].status, 200, j(out[1].body));
     assert.equal(out[2].status, 409, `끊은 뒤에도 메모의 salt 가 나왔다: ${j(out[2].body)}`); assert.equal(out[2].body.reason, 'passkey_setup_required');
-    assert.equal(calls - c0, 0);
+    assert.equal(calls - c0, 1, '끊기 전의 salt 보기 한 번뿐');
   });
-  await t('passkeyConnect: 같은 credential 인데 보관분과 다른 s_u 는 409 passkey_mismatch — 보관분을 덮지 않는다; 같은 s_u 면 200', async () => {
-    const { k, c } = freshCore();
+  // 등록 전에는 대조할 것이 없다(예전에는 10분 보관분과 대조했다) — 등록이 있으면 auid 대조가 막는다(위 '다른 패스키' 케이스).
+  await t('passkeyConnect(미등록): 같은 credential 을 다시 연결해도 200 — 낸 s_u 는 어디에도 남지 않는다', async () => {
+    const { k, c } = freshCore(); const dump = async () => { const all = {}; for (const key of await k.keys()) all[key] = await k.get(key); return j(all); };
     assert.equal((await c.passkeyConnect({ credentialId: CID, s_u: SALT })).status, 200);
-    const until0 = (await c.passkeyState()).body.heldUntil;
     const other = randomScalar().toString();
-    const r = await c.passkeyConnect({ credentialId: CID, s_u: other }); assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'passkey_mismatch');
-    assert.equal(await c.vault.heldSalt(), SALT, '보관분은 그대로');
-    assert.equal((await c.passkeyState()).body.heldUntil, until0);
+    assert.equal((await c.passkeyConnect({ credentialId: CID, s_u: other })).status, 200);
     assert.equal((await c.passkeyConnect({ credentialId: CID, s_u: SALT })).status, 200, '같은 패스키·같은 salt 는 다시 연결해도 된다');
-    assert.equal((await k.get('passkey')).credentialId, CID);
+    assert.equal((await k.get('passkey')).credentialId, CID); assert.equal(await k.get('passkeyHold'), undefined);
+    const d = await dump(); assert.ok(!d.includes(SALT) && !d.includes(other), '평문 salt 가 kv 어디에도 없다');
   });
   await t('syncProfileFromRecord(미등록): 409 not_registered — 속성을 저장하지 않는다', async () => {
     const { k, c } = freshCore();

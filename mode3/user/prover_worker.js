@@ -1,14 +1,14 @@
 // mode3/user/prover_worker.js — 증명 워커(스펙 §6). 메인 스레드는 입력만 보내고 zkey 는 여기서만 산다. kind 마다 첫 증명 뒤 vkey 로 한 번 자기 검증한다(산출물 짝 확인 — 에이전트의 artifacts 검사 대체).
 import * as snarkjs from 'snarkjs';
-import { loadAsset, loadJson } from '../../lib/browser/zk_assets.js';
+import { loadSet, loadJson } from '../../lib/browser/zk_assets.js';
 const ASSETS = { pi_idp: { wasm: '/zk/pi_idp.wasm', zkey: '/zk/pi_idp_final.zkey', vkey: '/zk/pi_idp_vkey.json' }, pi_cred: { wasm: '/zk/pi_cred.wasm', zkey: '/zk/pi_cred_final.zkey', vkey: '/zk/pi_cred_vkey.json' } };
 const loaded = {}, verified = {}, vkeys = {};
 function assets(kind) {
   return (loaded[kind] ??= (async () => {
     const a = ASSETS[kind]; if (!a) throw Object.assign(new Error(`모르는 kind ${kind}`), { reason: 'zk_assets_unavailable' });
     const onProgress = (p) => self.postMessage({ kind: 'progress', name: kind, ...p });
-    const [wasm, zkey, vkey] = await Promise.all([loadAsset(a.wasm, { onProgress }), loadAsset(a.zkey, { onProgress }), loadJson(a.vkey)]);
-    return { wasm, zkey, vkey };
+    // 세트의 버전(= 서버에서 새로 받은 vkey 의 해시)이 캐시 키에 들어간다 — 회로를 다시 만들면 옛 zkey·wasm 을 쓰지 않는다(2026-11-20, lib/browser/zk_assets.js)
+    return loadSet(a, { onProgress });
   })().catch((e) => { delete loaded[kind]; throw e; }));
 }
 self.onmessage = async ({ data }) => {

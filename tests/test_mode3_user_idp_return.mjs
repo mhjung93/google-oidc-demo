@@ -1,7 +1,7 @@
 // passkey-web 승인 팝업의 IdP 인증 창 왕복(mode3/user/idp_return.js, 계획 Task 6) — DOM 전역은 인자로 받으므로 Node 에서 돈다.
 //   node tests/test_mode3_user_idp_return.mjs   (unit)
 import assert from 'node:assert/strict';
-import { PENDING_KEY, PENDING_MAX_AGE_MS, RECOVER_RESULT_KEY, idpAuthUrl, savePending, takeIdpReturn, readAttrRecord } from '../mode3/user/idp_return.js';
+import { PENDING_KEY, PENDING_MAX_AGE_MS, RECOVER_RESULT_KEY, idpAuthUrl, savePending, takeIdpReturn, readAttrRecord, SIGNUP_PENDING_KEY, googleSignupUrl, saveSignupPending, takeGoogleReturn } from '../mode3/user/idp_return.js';
 
 let fails = 0;
 async function t(name, fn) { try { await fn(); console.log('ok   -', name); } catch (e) { fails++; console.log('FAIL -', name, '\n      ', e.stack ?? e.message); } }
@@ -123,26 +123,73 @@ await t('readAttrRecord: epoch 가 바뀌면 기록을 지우고 null, 새 epoch
 
 await t('readAttrRecord: 같은 epoch·reset.json 없음·fetch 실패면 기록을 그대로 읽는다', async () => {
   const rec = { version: 5, s_u: S_OK, profile: { birthYear: '1990', country: 'KR' } };
-  assert.deepEqual(await readAttrRecord({ fetch: resetFetch('e1'), localStorage: recordStorage(rec, { mode3_attr_tool_reset: 'e1' }) }), { s_u: S_OK, profile: rec.profile });
-  assert.deepEqual(await readAttrRecord({ fetch: resetFetch(null), localStorage: recordStorage(rec) }), { s_u: S_OK, profile: rec.profile });
-  assert.deepEqual(await readAttrRecord({ fetch: noFetch, localStorage: recordStorage(rec) }), { s_u: S_OK, profile: rec.profile });
+  assert.deepEqual(await readAttrRecord({ fetch: resetFetch('e1'), localStorage: recordStorage(rec, { mode3_attr_tool_reset: 'e1' }) }), { auid: null, s_u: S_OK, profile: rec.profile });
+  assert.deepEqual(await readAttrRecord({ fetch: resetFetch(null), localStorage: recordStorage(rec) }), { auid: null, s_u: S_OK, profile: rec.profile });
+  assert.deepEqual(await readAttrRecord({ fetch: noFetch, localStorage: recordStorage(rec) }), { auid: null, s_u: S_OK, profile: rec.profile });
 });
 
 await t('readAttrRecord: version 3 → null, version 4 는 받는다', async () => {
   assert.equal(await readAttrRecord({ fetch: noFetch, localStorage: recordStorage({ version: 3, s_u: S_OK }) }), null);
-  assert.deepEqual(await readAttrRecord({ fetch: noFetch, localStorage: recordStorage({ version: 4, s_u: S_OK, uid: '9' }) }), { s_u: S_OK, profile: null });
+  assert.deepEqual(await readAttrRecord({ fetch: noFetch, localStorage: recordStorage({ version: 4, s_u: S_OK, uid: '9' }) }), { auid: null, s_u: S_OK, profile: null });
 });
 
 await t("readAttrRecord: s_u '0'·2^250·비숫자 → null", async () => {
   for (const s_u of ['0', (1n << 250n).toString(), '12a', 12345])
     assert.equal(await readAttrRecord({ fetch: noFetch, localStorage: recordStorage({ version: 5, s_u }) }), null, String(s_u));
-  assert.deepEqual(await readAttrRecord({ fetch: noFetch, localStorage: recordStorage({ version: 5, s_u: ((1n << 250n) - 1n).toString() }) }), { s_u: ((1n << 250n) - 1n).toString(), profile: null });
+  assert.deepEqual(await readAttrRecord({ fetch: noFetch, localStorage: recordStorage({ version: 5, s_u: ((1n << 250n) - 1n).toString() }) }), { auid: null, s_u: ((1n << 250n) - 1n).toString(), profile: null });
 });
 
 await t('readAttrRecord: 기록 없음·깨진 JSON → null, profile 이 배열이면 profile:null', async () => {
   assert.equal(await readAttrRecord({ fetch: noFetch, localStorage: fakeStorage() }), null);
   assert.equal(await readAttrRecord({ fetch: noFetch, localStorage: fakeStorage({ mode3_attr_tool_v1: '{x' }) }), null);
-  assert.deepEqual(await readAttrRecord({ fetch: noFetch, localStorage: recordStorage({ version: 5, s_u: S_OK, profile: ['a'] }) }), { s_u: S_OK, profile: null });
+  assert.deepEqual(await readAttrRecord({ fetch: noFetch, localStorage: recordStorage({ version: 5, s_u: S_OK, profile: ['a'] }) }), { auid: null, s_u: S_OK, profile: null });
+});
+
+// 2026-11-20(사용자 결정): 속성 도구는 기록에 salt 를 두지 않는다(version 6) — 그 salt 의 auid(공개값)만 있다
+await t('readAttrRecord: version 6 은 { auid, s_u:null, profile } — auid 가 숫자가 아니거나 salt 가 섞여 있으면 null', async () => {
+  const rec = { version: 6, auid: '0042', profile: { birthYear: '1990', country: 'KR' } };
+  assert.deepEqual(await readAttrRecord({ fetch: noFetch, localStorage: recordStorage(rec) }), { auid: '42', s_u: null, profile: rec.profile }, '정규 10진으로');
+  assert.equal(await readAttrRecord({ fetch: noFetch, localStorage: recordStorage({ version: 6, auid: 'x1', profile: {} }) }), null);
+  assert.equal(await readAttrRecord({ fetch: noFetch, localStorage: recordStorage({ version: 6, profile: {} }) }), null);
+  assert.equal(await readAttrRecord({ fetch: noFetch, localStorage: recordStorage({ version: 6, auid: '42', s_u: S_OK, profile: {} }) }), null, 'version 6 기록에 salt 가 있으면 도구가 쓴 것이 아니다');
+});
+
+// ---- 패스키 가입의 Google 왕복(스펙 2026-11-20 passkey-google-signup §2) ----
+const SIGNUP = { idpOrigin: 'https://idp.example', loginNonce: '77', uid: '100003', reg: { auid: '5', n: '6', tag: '7' }, login: { uid: '100003', nonce: '77' } };
+await t('googleSignupUrl: 암묵 흐름(id_token)·openid email·계정 고르기, state 는 "지갑 오리진(base64url).난수"', async () => {
+  const { url, state } = googleSignupUrl({ authorizeUrl: 'https://accounts.example/auth', clientId: 'cid-1', redirectUri: 'https://127.0.0.1:5100/google-relay', nonce: 'reg:abc', walletOrigin: 'https://wallet.example:5100', rand: 'aabbcc' });
+  const u = new URL(url);
+  assert.equal(u.origin + u.pathname, 'https://accounts.example/auth');
+  assert.deepEqual(Object.fromEntries(u.searchParams), { client_id: 'cid-1', response_type: 'id_token', scope: 'openid email', redirect_uri: 'https://127.0.0.1:5100/google-relay', nonce: 'reg:abc', state, prompt: 'select_account' });
+  const [o, r] = state.split('.');
+  assert.equal(Buffer.from(o, 'base64url').toString(), 'https://wallet.example:5100'); assert.equal(r, 'aabbcc');
+  assert.doesNotMatch(o, /[+/=]/, 'base64url 이어야 중계 화면이 푼다');
+});
+await t('takeGoogleReturn: Google 에서 돌아온 길이 아니면 null — 저장분을 건드리지 않는다', async () => {
+  const st = fakeStorage(); saveSignupPending(st, { ...SIGNUP, state: 's1', at: 1000 });
+  assert.equal(takeGoogleReturn({ hash: '', storage: st, now: 2000 }), null);
+  assert.equal(takeGoogleReturn({ hash: '#other=1', storage: st, now: 2000 }), null);
+  assert.ok(st.getItem(SIGNUP_PENDING_KEY));
+});
+await t('takeGoogleReturn: state 가 맞으면 저장분과 토큰을 돌려주고 저장분을 지운다(1회용)', async () => {
+  const st = fakeStorage(); saveSignupPending(st, { ...SIGNUP, state: 's1', at: 1000 });
+  const back = takeGoogleReturn({ hash: '#google_back=1&state=s1&id_token=T.O.K', storage: st, now: 2000 });
+  assert.deepEqual(back, { pend: { ...SIGNUP, state: 's1', at: 1000 }, idToken: 'T.O.K', error: null });
+  assert.equal(st.getItem(SIGNUP_PENDING_KEY), null);
+  assert.deepEqual(takeGoogleReturn({ hash: '#google_back=1&state=s1&id_token=T.O.K', storage: st, now: 2000 }), { pend: null, idToken: null, error: null }, '두 번째는 이어받지 못한다');
+});
+await t('takeGoogleReturn: state 불일치·10분 초과·저장분 없음은 pend:null(토큰도 내주지 않는다), Google 의 오류는 error 로', async () => {
+  let st = fakeStorage(); saveSignupPending(st, { ...SIGNUP, state: 's1', at: 1000 });
+  assert.deepEqual(takeGoogleReturn({ hash: '#google_back=1&state=other&id_token=T', storage: st, now: 2000 }), { pend: null, idToken: null, error: null });
+  assert.equal(st.getItem(SIGNUP_PENDING_KEY), null, '어긋나도 지운다');
+  st = fakeStorage(); saveSignupPending(st, { ...SIGNUP, state: 's1', at: 1000 });
+  assert.deepEqual(takeGoogleReturn({ hash: '#google_back=1&state=s1&id_token=T', storage: st, now: 1000 + PENDING_MAX_AGE_MS + 1 }), { pend: null, idToken: null, error: null });
+  assert.deepEqual(takeGoogleReturn({ hash: '#google_back=1&state=s1&id_token=T', storage: fakeStorage(), now: 2000 }), { pend: null, idToken: null, error: null });
+  st = fakeStorage({ [SIGNUP_PENDING_KEY]: '{깨진' });
+  assert.deepEqual(takeGoogleReturn({ hash: '#google_back=1&state=s1&id_token=T', storage: st, now: 2000 }), { pend: null, idToken: null, error: null });
+  st = fakeStorage(); saveSignupPending(st, { ...SIGNUP, state: 's1', at: 1000 });
+  const denied = takeGoogleReturn({ hash: '#google_back=1&state=s1&error=access_denied', storage: st, now: 2000 });
+  assert.equal(denied.idToken, null); assert.equal(denied.error, 'access_denied'); assert.equal(denied.pend.uid, '100003');
 });
 
 console.log(fails ? `\n${fails} failed` : '\nall passed');

@@ -192,6 +192,8 @@
     // 세션이 다른 길로 끝났을 때(다른 탭 로그아웃·만료) 숨긴 카드의 결과가 다음 사람에게 보이지 않게 비운다.
     if (!me) { clearVerdict($('profileVerdict')); clearManageVerdicts(); }
     if (me) showView('me'); else if ($('signupView').hidden) showView('login');
+    // 패스키 가입 계정(2026-11-20 화면 셀프 피드백 7): 비밀번호가 없어 "연결 해제 · 계정 폐기"(비밀번호 확인)를 쓸 수 없고, 속성 도구를 거치지 않아 프로필(속성 커밋먼트)에 넣을 값이 없다 — 두 카드를 숨긴다.
+    if (me?.signup) { $('profileCard').hidden = true; $('revokeCard').hidden = true; }
     renderGuide();
   }
 
@@ -274,7 +276,7 @@
   const REGISTER_POPUP_RESULT_GRACE_MS = 400;
   /** 지갑 등록 팝업을 열고 결과를 out(결과 칸 요소)에 그린다. buildMsg() 는 mode3-authorize-ready 를 받았을 때 보낼 메시지. btn 은 대기 중 비활성. */
   /** opts(2026-11-19 증명 로그인): resultType = 기다릴 결과 메시지, failTitle = 실패 제목 키, onOk(r) = 성공 처리를 호출자가 맡는다(없으면 등록 성공 표기). */
-  function openRegisterPopup(btn, out, buildMsg, okSummary, { resultType = 'mode3-register-result', failTitle = 'idp_register_failed', onOk = null } = {}) {
+  function openRegisterPopup(btn, out, buildMsg, okSummary, { resultType = 'mode3-register-result', failTitle = 'idp_register_failed', onOk = null, timeoutMs = REGISTER_POPUP_TIMEOUT_MS } = {}) {
     btn.disabled = true;
     const restore = () => { btn.disabled = false; };
     const walletOrigin0 = walletOrigin;   // 호출 시점에 고정 — 대기 중 Demo.stack 이 다시 바뀌어도 이 요청은 같은 오리진으로 끝낸다
@@ -309,7 +311,7 @@
     const timer = setTimeout(() => {
       try { popup.close(); } catch { /* 이미 닫혔을 수 있다 */ }
       finish(() => verdict(out, false, failTitle, { reason: 'timeout', summary: tt('register_timeout') }));
-    }, REGISTER_POPUP_TIMEOUT_MS);
+    }, timeoutMs);
     const closedPoll = setInterval(() => {
       if (!popup.closed) return;
       clearInterval(closedPoll);
@@ -332,6 +334,7 @@
     if (ch.status !== 200) return failed(ch);
     openRegisterPopup(btn, out, () => ({ type: 'mode3-idp-login', origin: location.origin, nonce: ch.body.nonce }), null, {
       resultType: 'mode3-idp-login-result', failTitle: 'idp_login_failed',
+      timeoutMs: 300_000,   // 2026-11-20(스펙 passkey-google-signup): 미등록 브라우저면 이 창이 Google 을 다녀와 계정을 만든다 — 120초로는 모자랄 수 있다(zkIdP 의 로그인 챌린지 수명 360초보다 짧게)
       onOk: async (r) => {
         const { ok, ...proof } = r;
         const lg = await post('/cia/user/login_proof', proof).catch(() => ({ status: 0, body: null }));
@@ -341,13 +344,18 @@
       },
     });
   });
-  function renderPasskeyRow(issueAuth) { $('passkeyLoginRow').hidden = issueAuth !== 'key'; }   // 모드(passkey-web)는 아래 CSS 가 가른다
+  // 안내문은 이 zkIdP 가 패스키 가입(Google 이메일)을 열어 두었는지에 따라 한쪽만 보인다(2026-11-20 화면 셀프 피드백 9)
+  function renderPasskeyRow(issueAuth, signup = false) {   // 모드(passkey-web)는 아래 CSS 가 가른다
+    $('passkeyLoginRow').hidden = issueAuth !== 'key';
+    const note = $('passkeyLoginRow').querySelector('small'), key = signup ? 'idp_passkey_login_note_signup' : 'idp_passkey_login_note';
+    if (note) { note.dataset.i18n = key; const t = tt(key); if (t) note.textContent = t; }
+  }
 
   (async () => {
     Demo.init({ page: 'idp_user' });
     initStack();
     // Google 줄은 이 zkIdP 가 OIDC 래퍼를 켰을 때만(public_keys.oidc.enabled) — 어느 요소를 보일지는 renderGoogleRow(위) 가 정한다.
-    try { const keys = await (await fetch('/cia/public_keys')).json(); oidcEnabled = Boolean(keys.oidc?.enabled); renderPasskeyRow(keys.issueAuth); } catch { /* 숨긴 채 */ }
+    try { const keys = await (await fetch('/cia/public_keys')).json(); oidcEnabled = Boolean(keys.oidc?.enabled); renderPasskeyRow(keys.issueAuth, Boolean(keys.oidc?.signup)); } catch { /* 숨긴 채 */ }
     renderGoogleRow();
     await refreshMe();
   })();

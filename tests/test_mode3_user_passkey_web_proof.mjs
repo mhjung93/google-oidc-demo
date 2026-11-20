@@ -1,6 +1,6 @@
 // passkey-web 의 증명 로그인(스펙 2026-11-19-mode3-passkey-proof-login) — IdP 의 발급 정책이 key 일 때:
 //   · 등록된 지갑의 서비스 로그인은 zkIdP 인증 창(아이디·비밀번호)을 거치지 않고 패스키 증명만으로 끝난다(L1·L2)
-//   · 로그인마다 패스키를 한 번 묻는다 — 10분 보관분으로 건너뛰지 않는다(L4). 재검증은 보관분
+//   · 로그인마다 패스키를 한 번 묻는다(L4). 재검증도 창마다 한 번 — salt 를 저장하지 않는다(2026-11-20: 10분 보관 제거)
 //   · zkIdP 페이지의 "패스키로 로그인"(L5·L7·L9) — 지갑 창은 IdP 오리진이 연 창에만 증명을 돌려준다(L8)
 // code 정책의 passkey-web(지금까지의 동작)은 tests/test_mode3_user_passkey_web.mjs 가 본다.
 // 정적 서버(MODE3_WALLET_SECRETS=passkey-web) + 격리 IdP(CIA_ISSUE_AUTH 기본 = key)·RP + 결정적 WebAuthn 스텁. hardhat :8545, build/mode3, Chrome 필요(browser 그룹).
@@ -61,10 +61,11 @@ async function waitText(page, sel, needle, timeout = 30_000) {
 const visible = (page, sel) => page.$eval(sel, (el) => getComputedStyle(el).display !== 'none' && !el.hidden);
 const putPasskey = (page, credentialId) => page.evaluate(async (cid) => { const open = indexedDB.open('mode3-user', 1); open.onupgradeneeded = () => { if (!open.result.objectStoreNames.contains('kv')) open.result.createObjectStore('kv'); }; const db = await new Promise((r, x) => { open.onsuccess = () => r(open.result); open.onerror = () => x(open.error); }); await new Promise((r, x) => { const q = db.transaction('kv', 'readwrite').objectStore('kv').put({ credentialId: cid, createdAt: Date.now() }, 'passkey'); q.onsuccess = () => r(); q.onerror = () => x(q.error); }); db.close(); }, credentialId);
 const idbGet = (page, key) => page.evaluate(async (k) => { const open = indexedDB.open('mode3-user', 1); const db = await new Promise((r, x) => { open.onsuccess = () => r(open.result); open.onerror = () => x(open.error); }); const v = await new Promise((r, x) => { const q = db.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => r(q.result); q.onerror = () => x(q.error); }); db.close(); return v; }, key);
-const putAttrRecord = (page, s_u) => page.evaluate(async (r) => {
+// 2026-11-20: 속성 도구의 기록은 version 6 — salt 없이 그 salt 의 auid(공개값)만 있다. 이 파일은 새 모양으로 넣는다(옛 version 5 는 tests/test_mode3_user_passkey_web.mjs 가 본다).
+const putAttrRecord = (page, auid) => page.evaluate(async (r) => {
   try { const x = await fetch('/attr/dist/reset.json', { cache: 'no-store' }); if (x.ok) localStorage.setItem('mode3_attr_tool_reset', String((await x.json()).epoch ?? '')); } catch { /* 없으면 그대로 */ }
   localStorage.setItem('mode3_attr_tool_v1', JSON.stringify(r));
-}, { version: 5, s_u, profile: { birthYear: '1990', country: 'KR' } });
+}, { version: 6, auid, profile: { birthYear: '1990', country: 'KR' } });
 const rpLoginClick = async (page) => { if (await page.$eval('#loginBtn', (b) => b.hidden)) { await page.click('#logoutBtn'); await page.waitForSelector('#loginBtn:not([hidden])'); } await page.click('#loginBtn'); await page.click('#idpLoginBtn'); };
 /** 팝업이 거친 주소를 모은다 — 인증 창(IdP 오리진)으로 갔는지 본다. */
 const trackNav = (popup) => { const visited = [popup.url()]; popup.on('framenavigated', (f) => { if (f === popup.mainFrame()) visited.push(f.url()); }); return visited; };
@@ -96,7 +97,7 @@ try {
   await waitText(idpPage, '#userVerdict', '가입했습니다');
   const userPage = await ctx.newPage(); await userPage.goto(`${wallet.base}/`); await userPage.waitForSelector('#mainView:not([hidden])');
   await putPasskey(userPage, stubCredId(SECRET));
-  await putAttrRecord(userPage, SALT);
+  await putAttrRecord(userPage, AUID);
   const rpPage = await ctx.newPage(); await rpPage.goto(rp.base);
   const curSession = () => rpPage.evaluate(() => (typeof currentSession === 'undefined' ? null : currentSession));
 
@@ -127,8 +128,8 @@ try {
     assert.equal(String((await idbGet(userPage, 'registration'))?.auid), AUID);
   });
 
-  await t('두 번째 로그인(L1·L2·L4): zkIdP 인증 창으로 가지 않는다 — 보관분이 있어도 패스키 한 번, 로그인 성공', async () => {
-    assert.ok((await idbGet(userPage, 'passkeyHold'))?.until > Date.now(), '10분 보관분이 있다');
+  await t('두 번째 로그인(L1·L2·L4): zkIdP 인증 창으로 가지 않는다 — 패스키 한 번, 로그인 성공. salt 보관분은 없다', async () => {
+    assert.equal(await idbGet(userPage, 'passkeyHold'), undefined, 'IndexedDB 에 salt 보관분이 있다');
     const prev = await curSession(), before = hits.get;
     const [popup] = await Promise.all([ctx.waitForEvent('page'), rpLoginClick(rpPage)]);
     const visited = trackNav(popup);
@@ -136,14 +137,15 @@ try {
     await waitText(rpPage, '#verdict', '로그인 성공', 60_000);
     assert.equal(wentToIdp(visited), false, `팝업이 zkIdP 로 갔다: ${j(visited)}`);
     assert.equal(hits.get - before, 1, `패스키 ${hits.get - before}번 — 로그인마다 한 번이어야 한다`);
+    assert.equal(await idbGet(userPage, 'passkeyHold'), undefined, '로그인 뒤 IndexedDB 에 salt 보관분이 있다');
   });
 
-  await t('재검증은 보관분으로 — 패스키를 묻지 않는다(L4 는 로그인에만)', async () => {
+  await t('재검증도 패스키를 한 번 묻는다 — 저장해 둔 salt 가 없다', async () => {
     const before = hits.get;
     const [popup, rv] = await Promise.all([ctx.waitForEvent('page'), rpPage.evaluate(() => popupCall('mode3-revalidate', { arid: info.arid, origin: info.origin, r_s: currentSession }))]);
     assert.equal(rv.ok, true, j(rv));
     if (!popup.isClosed()) await popup.waitForEvent('close', { timeout: 15_000 }).catch(() => {});
-    assert.equal(hits.get - before, 0);
+    assert.equal(hits.get - before, 1, `패스키 ${hits.get - before}번`);
   });
 
   await t('피싱(L8): zkIdP 가 아닌 페이지가 지갑 창에 로그인 증명을 청하면 origin_mismatch — 요청의 origin 을 zkIdP 로 속여도 같다, 패스키도 묻지 않는다', async () => {
@@ -175,11 +177,10 @@ try {
     assert.equal(proofs.at(-1)?.purpose, 'idp_login', j(proofs.map((p) => p.purpose)));
   });
 
-  // 리뷰 M4: zkIdP 로그인의 "패스키 한 번" 은 정책 읽기에 기대지 않는다 — 지갑 창이 public_keys 를 못 읽어도(정책을 code 로 보게 돼도) 보관분으로 건너뛰지 않는다.
+  // 리뷰 M4: zkIdP 로그인의 "패스키 한 번" 은 정책 읽기에 기대지 않는다 — 지갑 창이 public_keys 를 못 읽어도(정책을 code 로 보게 돼도) 패스키를 건너뛰지 않는다.
   await t('zkIdP 페이지: 지갑 창이 IdP 정책을 못 읽어도 패스키 로그인은 패스키를 한 번 묻는다', async () => {
     await idpPage.click('#logoutBtn');
     await idpPage.waitForFunction(() => !document.getElementById('loginView').hidden, null, { timeout: 15_000 });
-    assert.ok((await idbGet(userPage, 'passkeyHold'))?.until > Date.now(), '10분 보관분이 있다');
     const block = (route) => (new URL(route.request().url()).pathname === '/cia/public_keys' && route.request().headers().origin === WALLET_ORIGIN ? route.abort() : route.continue());
     await ctx.route(`${cia.base}/cia/public_keys`, block);
     try {
@@ -215,6 +216,12 @@ try {
     const jwt = JSON.parse(await rpPage.$eval('#seenJwt', (el) => el.textContent));
     assert.equal(jwt.sub, zkSeen.auid_s); assert.equal(jwt.aud, zkSeen.arid_s); assert.equal(jwt.zkid_plain, undefined);
     assert.equal(acct.lastAridS.value, zkSeen.arid_s, 'zkIdP 가 남긴 arid_s 가 서비스가 받은 aud 와 같다'); assert.equal(acct.lastAuidS.value, zkSeen.auid_s);
+    // 2026-11-20(사용자 요청): iss 줄(토큰 본문의 값 그대로)과, aud 는 앞 17자만(전체는 title) — 제목에 iss·sub·aud
+    assert.equal(await text(rpPage, '#seenBody [data-seen="iss"]'), jwt.iss); assert.ok(jwt.iss.startsWith('http'), jwt.iss);
+    assert.equal(await text(rpPage, '#seenBody [data-seen="arid_s"]'), `${zkSeen.arid_s.slice(0, 17)}…`);
+    assert.equal(await text(rpPage, '#seenFigureBody [data-flow="arid_s"]'), `${zkSeen.arid_s.slice(0, 17)}…`, '그림의 aud 도 앞 17자');
+    assert.ok((await text(rpPage, '#seenFigureBody')).includes('π_RP') && !(await text(rpPage, '#seenFigureBody')).includes('π_session'), '증명의 화면 이름은 π_RP');
+    assert.ok((await text(rpPage, '#seenTitle')).includes('iss·sub·aud'), await text(rpPage, '#seenTitle'));
     // 데모 시나리오 7(2026-11-19): 서비스가 받은 것·검증한 것·알 수 없는 것의 그림 — 값은 이 로그인의 실제 값이다
     const fig = await rpPage.evaluate(() => ({ n: document.querySelectorAll('#seenFigureBody .flow-fig').length, ppid: document.querySelector('#seenFigureBody [data-flow="PPID"]')?.title, arid: document.querySelector('#seenFigureBody [data-flow="arid"]')?.title,
       checks: [...document.querySelectorAll('#seenFigureBody .flow-check li')].map((x) => x.textContent), unknown: [...document.querySelectorAll('#seenFigureBody .flow-unknown li')].map((x) => x.textContent), all: document.getElementById('seenFigureBody').textContent }));
@@ -327,6 +334,7 @@ try {
     await rpPage.click('#logoutBtn'); await rpPage.waitForSelector('#loginBtn:not([hidden])');
     await rpPage.click('#loginBtn');
     await rpPage.waitForFunction(() => { const b = document.getElementById('googleLoginBtn'); return getComputedStyle(b).display !== 'none'; }, null, { timeout: 15_000 });
+    assert.ok((await text(rpPage, '#googleLoginBtn')).includes('일반 OIDC'), `리디렉션식 Google 이 켜져 있으면 그 버튼이 "일반 OIDC" 다(2026-11-20): ${await text(rpPage, '#googleLoginBtn')}`);
     const visited = trackNav(rpPage);
     await rpPage.click('#googleLoginBtn');
     await rpPage.waitForSelector('#seenBox[data-issuer="google"]:not([hidden])', { timeout: 30_000 });
@@ -334,6 +342,8 @@ try {
     assert.equal(await seenTitle(rpPage, 'uid'), 'google-user-1'); assert.equal(await seenTitle(rpPage, 'rid'), google.clientId);
     const jwt = JSON.parse(await rpPage.$eval('#seenJwt', (el) => el.textContent));
     assert.equal(jwt.sub, 'google-user-1'); assert.equal(jwt.aud, google.clientId); assert.equal(jwt.iss, google.issuer);
+    assert.equal(await text(rpPage, '#seenBody [data-seen="iss"]'), google.issuer, 'iss 는 줄이지 않고 보인다(2026-11-20)');
+    assert.equal(await text(rpPage, '#seenBody [data-seen="rid"]'), google.clientId.length > 17 ? `${google.clientId.slice(0, 17)}…` : google.clientId, 'aud 는 앞 17자');
     assert.ok((await text(rpPage, '#seenTitle')).includes('Google'), await text(rpPage, '#seenTitle'));
     assert.equal(new URL(rpPage.url()).hash, '', '주소창에 토큰 조각이 남았다');
     const me = await rpPage.evaluate(() => fetch('/api/rp/me').then((r) => r.json()));

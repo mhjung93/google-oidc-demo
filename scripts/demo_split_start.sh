@@ -25,7 +25,7 @@
 #        RP1_GOOGLE_CLIENT_ID=… RP2_GOOGLE_CLIENT_ID=… bash scripts/demo_split_start.sh  # passkey-web 의 Google 로그인(실제 OIDC, 2026-11-19): 서비스마다 다른 Google 클라이언트 ID(없으면 공유 ID).
 #                                                          # Google 콘솔에서 그 클라이언트의 "승인된 리디렉션 URI" 에 https://127.0.0.1:5100/google-relay 를 넣어 둬야 한다
 #        PLAIN_OIDC=0 bash scripts/demo_split_start.sh    # 일반 OIDC(비교용 — zkIdP 가 uid·rid 를 그대로 내는 보통의 OIDC 로그인, 서비스 로그인 창의 "일반 OIDC · 비교용" 버튼) 끔.
-#                                                          # 기본은 passkey-web 에서만 켬(2026-11-19). 다른 모드에서 켜려면 PLAIN_OIDC=1
+#                                                          # 기본은 passkey-web 이고 Google 클라이언트 ID 가 없을 때만 켬(2026-11-20 — Google 이 있으면 일반 OIDC 장면은 Google 로 보인다). 켜려면 PLAIN_OIDC=1
 #        OIDC=0 bash scripts/demo_split_start.sh          # Google(OIDC 래퍼) 끔. 기본은 켬(2026-10-26): IdP 에 MODE3_OIDC_CLIENT_ID 를 넘긴다 — 값은 환경변수 MODE3_OIDC_CLIENT_ID,
 #                                                          # 없으면 이 VM .env 의 GOOGLE_CLIENT_ID(Mode 1 공유 ID, 출력하지 않는다). Google 콘솔 승인 오리진에 http://localhost:5100 이 있어야 한다.
 #        (2026-11-09 연결 로그인) 브라우저는 IdP 를 http://localhost:4100 으로 연다 — 이 VM 의 SSH 터널(127.0.0.1:4100 → IdP VM:4100)이다. Google 은 http 원본으로
@@ -56,7 +56,11 @@ case "$WALLET_MODE" in web) USER_PORT=5200 ;; snap|passkey) USER_PORT=5100 ;; pa
 AGENT_MODE=$([ "$WALLET_MODE" = web ] || [ "$WALLET_MODE" = passkey-web ] && echo 0 || echo 1)
 # 일반 OIDC — 비교용(2026-11-19 스펙 oidc-comparison C1·C7): zkIdP 가 sub = uid·aud = rid 인 보통의 OIDC 공급자 노릇도 하고(CIA_PLAIN_OIDC), 서비스가 그 로그인을 받는다(MODE3_RP_ZKOIDC).
 # passkey-web 에서만 기본으로 켠다 — PLAIN_OIDC=0 으로 끄고, 다른 모드는 PLAIN_OIDC=1 로 켠다.
-PLAIN_OIDC="${PLAIN_OIDC:-$([ "$WALLET_MODE" = passkey-web ] && echo 1 || echo 0)}"
+# 2026-11-20(사용자 결정): "일반 OIDC" 장면은 실제 Google 로 보인다 — 서비스의 Google 로그인이 켜지는 구성(Google 클라이언트 ID 가 있다)이면 zkIdP 의 비교용 일반 OIDC 는
+# 기본으로 끈다(로그인 창에 "zkIdP 로 로그인" 과 "Google 로 로그인 (일반 OIDC)" 둘만 남는다). 예비로 다시 켜려면 PLAIN_OIDC=1. 아래 판정은 값이 있는지만 본다(출력하지 않는다).
+GOOGLE_ID_SET=0
+if [ -n "${RP1_GOOGLE_CLIENT_ID:-}${RP2_GOOGLE_CLIENT_ID:-}" ] || { [ "${OIDC:-1}" != 0 ] && { [ -n "${MODE3_OIDC_CLIENT_ID:-}" ] || grep -qs '^GOOGLE_CLIENT_ID=.' .env; }; }; then GOOGLE_ID_SET=1; fi
+PLAIN_OIDC="${PLAIN_OIDC:-$([ "$WALLET_MODE" = passkey-web ] && [ "$GOOGLE_ID_SET" != 1 ] && echo 1 || echo 0)}"
 SCHEME=http; ZKD_CA_DIR="${ZKD_CA_DIR:-.local/zkd-ca}"; CACERT=()
 PEER_HOST=$([ "$WALLET_MODE" = passkey ] && echo 127.0.0.1 || echo localhost)
 if [ "$WALLET_MODE" = "snap" ]; then [ -d snap-mode3/node_modules ] && [ -f snap-mode3/dist/bundle.js ] || { echo "BLOCKED: snap-mode3/node_modules 또는 dist/bundle.js 가 없다 — cd snap-mode3 && npm install && npm run build"; exit 1; }; fi
@@ -276,12 +280,16 @@ NAVER_ID="$(env_or_dotenv MODE3_NAVER_CLIENT_ID)"; NAVER_SECRET="$(env_or_dotenv
 rp_naver_lines() { [ -n "$NAVER_ID" ] && [ -n "$NAVER_SECRET" ] && printf '%s\n' "MODE3_RP_NAVER_CLIENT_ID=$NAVER_ID" "MODE3_RP_NAVER_CLIENT_SECRET=$NAVER_SECRET" "MODE3_RP_NAVER_REDIRECT_URI=$1/api/rp/naver/callback"; return 0; }
 echo "  RP 소셜: Google $([ -n "$RP_GOOGLE_LINE${RP1_GOOGLE_CLIENT_ID:-}${RP2_GOOGLE_CLIENT_ID:-}" ] && echo on || echo off)${GOOGLE_RELAY:+(리디렉션식 — Google 콘솔의 승인된 리디렉션 URI: $GOOGLE_RELAY)} · 네이버 $([ -n "$NAVER_ID" ] && [ -n "$NAVER_SECRET" ] && echo on || echo off)   브라우저용 주소: IdP $IDP_UI · zkONE $RP1_UI · zkTWO $RP2_UI"
 # 리뷰 2026-11-19(OIDC I-1·M-9): 두 서비스가 같은 Google 클라이언트 ID 를 쓰면 토큰의 aud(= rid)가 같게 찍혀 "Google 은 어느 서비스인지 안다" 를 화면으로 보일 수 없다. 값은 출력하지 않는다.
+# 2026-11-20(스펙 passkey-google-signup G8·G9): zkIdP 의 "패스키로 로그인" 이 미등록 브라우저에서 Google 로 확인한 이메일로 계정을 만든다 — 지갑 창이 같은 중계 주소로 Google 에 다녀온다.
+# zkIdP 의 Google 클라이언트(OIDC_LINE)에도 Google 콘솔의 "승인된 리디렉션 URI" 로 이 주소가 있어야 한다. passkey-web 이고 Google 이 켜져 있을 때만 넘긴다.
+IDP_SIGNUP_LINE=""; [ -n "$GOOGLE_RELAY" ] && [ -n "$OIDC_LINE" ] && IDP_SIGNUP_LINE="MODE3_OIDC_REDIRECT_URI=$GOOGLE_RELAY"
+echo "  zkIdP 패스키 가입(Google 이메일): $([ -n "$IDP_SIGNUP_LINE" ] && echo on || echo off)"
 if [ -n "$GOOGLE_RELAY" ]; then
   _g1="${RP1_GOOGLE_CLIENT_ID:-${RP_GOOGLE_LINE#MODE3_RP_GOOGLE_CLIENT_ID=}}"; _g2="${RP2_GOOGLE_CLIENT_ID:-${RP_GOOGLE_LINE#MODE3_RP_GOOGLE_CLIENT_ID=}}"
   if [ -n "$_g1" ] && [ "$_g1" = "$_g2" ]; then echo "  경고: zkONE·zkTWO 가 같은 Google 클라이언트 ID 를 쓴다 — 두 서비스의 ID 토큰 aud(= rid)가 같게 보인다. 서비스마다 다른 ID 를 주려면 RP1_GOOGLE_CLIENT_ID·RP2_GOOGLE_CLIENT_ID"; fi
   unset _g1 _g2
 fi
-printf '%s\n' "$COMMON" "CIA_PORT=$IDP_PORT" "CIA_RPC_URL=http://$HOST:$REV_PORT" "CIA_CHAIN_RPCS=$APP_CHAIN=http://$HOST:$APP_PORT" "CIA_ADMIN_SECRET=$ADMIN" "CIA_ADMIN_OPEN=${ADMIN_OPEN:-0}" "CIA_PUBLIC_URL=$SCHEME://$IDP:$IDP_PORT" "CIA_ISSUE_AUTH=${ISSUE_AUTH:-$([ "$AGENT_MODE" = 1 ] && echo code || echo key)}" "CIA_REVOKE_PUBLISH_AFTER_BLOCKS=${REVOKE_PUBLISH_AFTER:-3}" ${OIDC_LINE:+"$OIDC_LINE"} ${TLS_IDP:+"$TLS_IDP"} | put_env "$IDP"
+printf '%s\n' "$COMMON" "CIA_PORT=$IDP_PORT" "CIA_RPC_URL=http://$HOST:$REV_PORT" "CIA_CHAIN_RPCS=$APP_CHAIN=http://$HOST:$APP_PORT" "CIA_ADMIN_SECRET=$ADMIN" "CIA_ADMIN_OPEN=${ADMIN_OPEN:-0}" "CIA_PUBLIC_URL=$SCHEME://$IDP:$IDP_PORT" "CIA_ISSUE_AUTH=${ISSUE_AUTH:-$([ "$AGENT_MODE" = 1 ] && echo code || echo key)}" "CIA_REVOKE_PUBLISH_AFTER_BLOCKS=${REVOKE_PUBLISH_AFTER:-3}" ${OIDC_LINE:+"$OIDC_LINE"} ${IDP_SIGNUP_LINE:+"$IDP_SIGNUP_LINE"} ${TLS_IDP:+"$TLS_IDP"} | put_env "$IDP"
 { printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP1_PORT" "MODE3_RP_NAME=zkONE" "MODE3_RP_PUBLIC_ORIGIN=$RP1_UI" "MODE3_CIA_URL=$SCHEME://$IDP:$IDP_PORT" \
   "CIA_RPC_URL=http://$HOST:$APP_PORT" "MODE3_RELAYER_INDEX=0" ${TLS_RP1:+"$TLS_RP1"}; rp_google_lines "${RP1_GOOGLE_CLIENT_ID:-}"; rp_naver_lines "$RP1_UI"; } | put_env "$RP1"
 { printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP2_PORT" "MODE3_RP_NAME=zkTWO" "MODE3_RP_PUBLIC_ORIGIN=$RP2_UI" "MODE3_CIA_URL=$SCHEME://$IDP:$IDP_PORT" \

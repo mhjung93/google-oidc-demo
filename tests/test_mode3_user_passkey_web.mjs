@@ -1,4 +1,4 @@
-// passkey-web(스펙 2026-11-17-mode3-passkey-web) — 웹 모드 사용자 페이지의 승인 팝업이 IdP 인증 창을 다녀오고 salt 를 패스키(10분 보관분)에서 받는다.
+// passkey-web(스펙 2026-11-17-mode3-passkey-web) — 웹 모드 사용자 페이지의 승인 팝업이 IdP 인증 창을 다녀오고 salt 를 패스키에서 받는다(저장하지 않는다 — 2026-11-20: 10분 보관 제거).
 // 정적 서버(MODE3_WALLET_SECRETS=passkey-web) + 격리 IdP(CIA_ISSUE_AUTH=code)·RP(릴레이) + 결정적 WebAuthn 스텁(tests/helpers/webauthn_stub.js).
 // hardhat :8545, build/mode3 산출물, Chrome 이 필요하다(browser 그룹). 번들(사용자 앱·속성 도구)은 여기서 만든다.
 //   node tests/test_mode3_user_passkey_web.mjs   (MODE3_BROWSER_DEBUG=1 이면 콘솔 출력)
@@ -87,8 +87,8 @@ const putAttrRecord = (page, s_u) => page.evaluate(async (r) => {
   try { const x = await fetch('/attr/dist/reset.json', { cache: 'no-store' }); if (x.ok) localStorage.setItem('mode3_attr_tool_reset', String((await x.json()).epoch ?? '')); } catch { /* 없으면 그대로 */ }
   localStorage.setItem('mode3_attr_tool_v1', JSON.stringify(r));
 }, { version: 5, s_u, profile: { birthYear: '1990', country: 'KR' } });
-/** 10분 보관분(kv passkeyHold)을 지운다 — 보관 0초 케이스가 앞 케이스의 보관분을 쓰지 않게. */
-const delHold = (page) => page.evaluate(async () => { const open = indexedDB.open('mode3-user', 1); const db = await new Promise((r, x) => { open.onsuccess = () => r(open.result); open.onerror = () => x(open.error); }); await new Promise((r, x) => { const q = db.transaction('kv', 'readwrite').objectStore('kv').delete('passkeyHold'); q.onsuccess = () => r(); q.onerror = () => x(q.error); }); db.close(); });
+/** 예전 버전이 남긴 10분 보관분(kv passkeyHold) 모양의 레코드를 심는다 — 새 코어가 읽지 않고 지우는지 본다(2026-11-20: 보관 제거). */
+const putOldHold = (page) => page.evaluate(async () => { const open = indexedDB.open('mode3-user', 1); const db = await new Promise((r, x) => { open.onsuccess = () => r(open.result); open.onerror = () => x(open.error); }); await new Promise((r, x) => { const q = db.transaction('kv', 'readwrite').objectStore('kv').put({ until: Date.now() + 600_000, box: { iv: 'AAAA', ct: 'AAAA' } }, 'passkeyHold'); q.onsuccess = () => r(); q.onerror = () => x(q.error); }); db.close(); });
 const openUserPage = async (ctx) => { const p = await ctx.newPage(); await p.goto(`${wallet.base}/`); await p.waitForSelector('#mainView:not([hidden])'); return p; };
 const idpLogin = async (page) => { if (await page.$eval('#loginBtn', (b) => b.hidden)) { await page.click('#logoutBtn'); await page.waitForSelector('#loginBtn:not([hidden])'); } await page.click('#loginBtn'); await page.click('#idpLoginBtn'); };
 // 2026-11-18(사용자 요청): passkey-web 의 승인 창은 승인·거절 단계가 없다(/user/config popupConsent false) — 아래 각본은 아무도 승인 버튼을 누르지 않고 끝까지 간다.
@@ -211,7 +211,7 @@ try {
     await rpPage.bringToFront();
   });
 
-  await t('두 번째 로그인: 인증 창(발급) → 패스키 0번(보관분) → 성공', async () => {
+  await t('두 번째 로그인: 인증 창(발급) → 패스키 한 번(저장해 둔 salt 가 없다) → 성공', async () => {
     const prev = await curSession();
     const before = hits.get;
     const [popup] = await Promise.all([ctxA.waitForEvent('page'), idpLogin(rpPage)]);
@@ -220,7 +220,8 @@ try {
     await fillIdp(popup);
     await rpPage.waitForFunction((p) => typeof currentSession !== 'undefined' && currentSession && currentSession !== p, prev, { timeout: 180_000 });
     await waitText(rpPage, '#verdict', '로그인 성공', 60_000);
-    assert.equal(hits.get - before, 0, '10분 보관분으로 패스키를 묻지 않는다');
+    assert.equal(hits.get - before, 1, `패스키 계산 ${hits.get - before}번 — 로그인마다 한 번이어야 한다`);
+    assert.equal((await idbDump(userPage)).passkeyHold, undefined, 'IndexedDB 에 salt 보관분이 있다');
   });
 
   await t('로그인 전체 플로우 카드: 로그인 뒤에는 가장 최근 로그인의 시간·실제 값 — 저장된 세션의 가명과 같고, 펴 둔 단계는 그대로, salt 는 없다', async () => {
@@ -242,8 +243,10 @@ try {
     assert.equal(await userPage.$eval('#flowFigure .seq-step[data-step="publish_wait"]', (x) => x.classList.contains('seq-dim')), !waited);
     if (waited) assert.equal(await userPage.$$eval('#flowFigure [data-seq-time="publish_wait"]', (l) => l.length), 1);
     else await waitText(userPage, '#flowFigure .seq-step[data-step="publish_wait"]', '이번 로그인에는 없었습니다');
-    // 두 번째 로그인의 패스키는 보관분
-    await waitText(userPage, '#flowFigure .seq-step[data-step="passkey"]', '보관분 사용');
+    // 두 번째 로그인의 패스키는 로그인 안에서 물었다 — 시간이 보이고 "보관분 사용"·"로그인 전에 확인" 같은 덧말이 없다
+    assert.match(await userPage.$eval('#flowFigure [data-seq-time="passkey"]', (x) => x.textContent), /^<?[\d.]+(ms|s)$/, 'passkey');
+    assert.equal(/보관분|전체 시간에는 넣지 않습니다/.test(await text(userPage, '#flowFigure .seq-step[data-step="passkey"]')), false, await text(userPage, '#flowFigure .seq-step[data-step="passkey"]'));
+    const pk2 = f.steps.find((x) => x.key === 'passkey'); assert.equal(pk2.held, false, j(pk2)); assert.equal(pk2.before, undefined, j(pk2));
     // 앞 케이스에서 펴 둔 단계가 다시 그려도 펴져 있고, 이제 실제 값이 있다
     assert.equal(await userPage.$eval('#flowFigure .seq-step[data-step="pseudonym"] details', (x) => x.open), true);
     assert.equal(await userPage.$eval('#flowFigure .seq-step[data-step="pseudonym"] code[data-flow="auid_s"]', (x) => x.title), String(s.auid_s));
@@ -268,18 +271,22 @@ try {
     await waitText(userPage, '#flowSummary', '영지식 증명');
   });
 
-  await t('재검증·잔액 확인·출금: 보관분으로 패스키 없이 성공', async () => {
-    const before = hits.get;
+  await t('재검증·잔액 확인·출금: 재검증·출금은 창마다 패스키 한 번, 잔액 확인(세션키 서명)은 묻지 않는다', async () => {
+    let before = hits.get;
     const [rvPopup, rv] = await Promise.all([ctxA.waitForEvent('page'), rpPage.evaluate(() => popupCall('mode3-revalidate', { arid: info.arid, origin: info.origin, r_s: currentSession }))]);
     assert.equal(rv.ok, true, j(rv));
     if (!rvPopup.isClosed()) await rvPopup.waitForEvent('close', { timeout: 15_000 }).catch(() => {});
+    assert.equal(hits.get - before, 1, `재검증: 패스키 ${hits.get - before}번`);
+    before = hits.get;
     const [balPopup] = await Promise.all([ctxA.waitForEvent('page'), rpPage.click('#balanceBtn')]);
     await waitText(rpPage, '#ledgerVerdict', '세션 요청 성공', 60_000);
+    assert.equal(hits.get - before, 0, '잔액 확인은 salt 가 필요 없다 — 패스키를 묻지 않는다');
     await rpPage.fill('#txTo', '0x000000000000000000000000000000000000dEaD'); await rpPage.fill('#txValue', '0');
     const [txPopup] = await Promise.all([ctxA.waitForEvent('page'), rpPage.click('#txBtn')]);
     await waitText(rpPage, '#txVerdict', '전송 성공', 180_000);
     assert.ok((await text(rpPage, '#txLog')).includes('txHash='), await text(rpPage, '#txLog'));
-    assert.equal(hits.get - before, 0, '보관분으로 패스키 없이');
+    assert.equal(hits.get - before, 1, `출금: 패스키 ${hits.get - before}번`);
+    assert.equal((await idbDump(userPage)).passkeyHold, undefined, 'IndexedDB 에 salt 보관분이 있다');
   });
 
   // 2026-11-18(사용자 요청, 화면을 보고): passkey-web 에 없는 것은 화면에서 숨긴다 — Race (2) 시연(에이전트 전용)·allowAgent 줄(에이전트 대리 전송).
@@ -312,12 +319,12 @@ try {
   });
 
   // 2026-11-18(사용자 요청 "각 zkp 를 확인할 수 있게"): 사용자 페이지의 "영지식 증명" 카드 — 승인 창(다른 창)에서 만든 증명이 같은 저장소라 여기 보인다.
-  await t('영지식 증명 카드: 기본은 π_session 만·번호 1~7 만 — 전체 보기 29개, 검증 ✓, 값을 바꾸면 ✗, 출금 증명에는 거래 링크, 버튼을 누르면 π_IdP 도', async () => {
+  await t('영지식 증명 카드: 기본은 π_RP 만·번호 1~7 만 — 전체 보기 29개, 검증 ✓, 값을 바꾸면 ✗, 출금 증명에는 거래 링크, 버튼을 누르면 π_IdP 도', async () => {
     await userPage.bringToFront();
     await userPage.waitForSelector('#proofsList tr[data-proof-purpose="tx"]', { timeout: 30_000 });
     const rows = await userPage.$$eval('#proofsList tbody tr', (rs) => rs.map((r) => [r.dataset.proofKind, r.dataset.proofPurpose, r.cells[1].textContent]));
-    assert.ok(rows.length >= 2 && rows.every(([k]) => k === 'pi_cred'), `기본은 π_session 만: ${j(rows)}`);
-    assert.ok(rows.some(([, p]) => p === 'login'), j(rows)); assert.equal(rows[0][2], 'π_session (π_s)');
+    assert.ok(rows.length >= 2 && rows.every(([k]) => k === 'pi_cred'), `기본은 π_RP 만: ${j(rows)}`);
+    assert.ok(rows.some(([, p]) => p === 'login'), j(rows)); assert.equal(rows[0][2], 'π_RP', '화면 이름은 π_RP(2026-11-20 — 전에는 π_RP)');
     // 보기(로그인 증명): 기본은 번호 1~7(arid … regRoot)
     await userPage.locator('#proofsList tr[data-proof-purpose="login"] .proof-view').first().click();
     await userPage.waitForSelector('#proofModal:not([hidden])');
@@ -371,7 +378,7 @@ try {
     await userPage.click('#proofVerifyBtn'); await waitText(userPage, '#proofVerdict', '유효한 증명입니다', 60_000);
     await userPage.click('#proofCloseBtn');
     await userPage.click('#proofsKindBtn');
-    assert.ok((await userPage.$$eval('#proofsList tbody tr', (rs) => rs.map((r) => r.dataset.proofKind))).every((k) => k === 'pi_cred'), '다시 π_session 만');
+    assert.ok((await userPage.$$eval('#proofsList tbody tr', (rs) => rs.map((r) => r.dataset.proofKind))).every((k) => k === 'pi_cred'), '다시 π_RP 만');
     // 기록에는 salt 가 없다
     assert.equal(j((await idbDump(userPage)).proofs ?? []).includes(SALT_A), false, '증명 기록에 salt 가 있다');
   });
@@ -394,27 +401,27 @@ try {
     } finally { if (!popup.isClosed()) await popup.close(); }   // 실패해도 팝업을 닫는다 — 남으면 RP 가 다음 로그인 클릭을 무시한다
   });
 
-  // 2026-11-17(미뤄 둔 Minor, Task 6 — 계획 R-8): 보관 0초면 보관분이 없다 — 그래도 팝업 하나(요청 하나)에 패스키는 한 번(withSalt 메모).
-  await t('보관 0초(R-8): 로그인·출금 팝업마다 패스키 정확히 한 번, 보관분을 남기지 않는다', async () => {
-    await stack.restartWallet({ MODE3_PASSKEY_HOLD_SECONDS: '0' });
-    try {
-      assert.equal((await wallet.get('/user/config')).body.passkeyHoldSeconds, 0);
-      await delHold(userPage);
-      const prev = await curSession();
-      let before = hits.get;
-      const [popup] = await Promise.all([ctxA.waitForEvent('page'), idpLogin(rpPage)]);
-      await atIdpLogin(popup);
-      await fillIdp(popup);
-      await rpPage.waitForFunction((p) => typeof currentSession !== 'undefined' && currentSession && currentSession !== p, prev, { timeout: 180_000 });
-      await waitText(rpPage, '#verdict', '로그인 성공', 60_000);
-      assert.equal(hits.get - before, 1, `로그인: 패스키 ${hits.get - before}번`);
-      assert.equal((await idbDump(userPage)).passkeyHold, undefined, '보관 0초인데 보관분이 있다');
-      before = hits.get;
-      const [txPopup] = await Promise.all([ctxA.waitForEvent('page'), rpPage.click('#txBtn')]);
-      await waitText(rpPage, '#txVerdict', '전송 성공', 180_000);
-      assert.equal(hits.get - before, 1, `출금: 패스키 ${hits.get - before}번`);
-      assert.equal((await idbDump(userPage)).passkeyHold, undefined);
-    } finally { await stack.restartWallet({ MODE3_PASSKEY_HOLD_SECONDS: '' }); }   // 기본(600초)으로 되돌린다 — 뒤 케이스는 보관분을 쓴다
+  // 계획 R-8 + 2026-11-20(사용자 요청 — salt 를 IndexedDB 에 두지 않는다): 팝업 하나(요청 하나)에 패스키는 한 번(withSalt 메모)이고, 끝난 뒤 남는 것이 없다.
+  // 예전 버전이 남긴 보관분(kv passkeyHold)이 있어도 새 창의 코어가 읽지 않고 지운다. 설정의 보관 시간(passkeyHoldSeconds)도 없다.
+  await t('팝업마다 패스키 정확히 한 번(R-8): 로그인·출금 — 예전 보관분은 쓰지 않고 지우며, 새로 남기지 않는다', async () => {
+    assert.equal('passkeyHoldSeconds' in (await wallet.get('/user/config')).body, false);
+    await putOldHold(userPage);
+    assert.ok((await idbDump(userPage)).passkeyHold, '심은 옛 보관분이 있다');
+    const prev = await curSession();
+    let before = hits.get;
+    const [popup] = await Promise.all([ctxA.waitForEvent('page'), idpLogin(rpPage)]);
+    await atIdpLogin(popup);
+    await fillIdp(popup);
+    await rpPage.waitForFunction((p) => typeof currentSession !== 'undefined' && currentSession && currentSession !== p, prev, { timeout: 180_000 });
+    await waitText(rpPage, '#verdict', '로그인 성공', 60_000);
+    assert.equal(hits.get - before, 1, `로그인: 패스키 ${hits.get - before}번`);
+    assert.equal((await idbDump(userPage)).passkeyHold, undefined, '옛 보관분이 남아 있다');
+    before = hits.get;
+    const [txPopup] = await Promise.all([ctxA.waitForEvent('page'), rpPage.click('#txBtn')]);
+    await waitText(rpPage, '#txVerdict', '전송 성공', 180_000);
+    assert.equal(hits.get - before, 1, `출금: 패스키 ${hits.get - before}번`);
+    const d = await idbDump(userPage);
+    assert.equal(d.passkeyHold, undefined); assert.equal(j(d).includes(SALT_A), false, 'IndexedDB 에 평문 salt 가 있다');
   });
 
   // 2026-11-17(미뤄 둔 Minor, Task 6): 팝업이 상태(core.status)를 못 읽으면 등록된 것으로 보고 발급 인증 창으로 간다(IdP·코어가 다시 거른다).
@@ -486,7 +493,7 @@ try {
   };
   const storagesOf = (page) => page.evaluate(() => { const ls = {}; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); ls[k] = localStorage.getItem(k); } return JSON.stringify(ls) + JSON.stringify(sessionStorage); });
 
-  await t('설정 카드: 패스키 만들기 → 연결, 카드 숨김, 보관 중 표시', async () => {
+  await t('설정 카드: 패스키 만들기 → 연결, 카드 숨김, 패스키 줄 — salt 보관 표시·보관분이 없다', async () => {
     const ctx = await stubContext({ secretHex: SECRET_D });
     try {
       const p = await openUserPage(ctx);
@@ -497,34 +504,39 @@ try {
       await p.waitForSelector('#pkSetupCard', { state: 'hidden', timeout: 15_000 });
       await p.waitForSelector('#pkInfo', { state: 'visible', timeout: 15_000 });
       await waitText(p, '#pkInfo', stubCredId(SECRET_D).slice(0, 12));
-      await waitText(p, '#pkInfo', '분 남음');
+      assert.equal(/보관|분 남음/.test(await text(p, '#pkInfo')), false, await text(p, '#pkInfo'));
+      const d = await idbDump(p); assert.equal(d.passkeyHold, undefined, 'IndexedDB 에 salt 보관분이 있다'); assert.equal(j(d).includes(SALT_D), false, 'IndexedDB 에 평문 salt 가 있다');
+      assert.equal(/10분|IndexedDB\)에 10/.test(await p.evaluate(() => document.body.innerText)), false, '화면에 salt 10분 보관 문구가 있다');
       // 2026-11-19: 기본("이 기기")은 힌트를 싣지 않고, 패스키 줄에 이 기기의 패스키라고 보인다
       assert.deepEqual(hits.opts.slice(-2).map((o) => [o.kind, o.hints]), [['create', null], ['get', null]]);
       await waitText(p, '#pkInfo', '이 기기의 패스키');
     } finally { await ctx.close(); }
   });
-  await t('휴대폰 패스키: "휴대폰" 을 고르면 만들기·확인 계산에 hints:[hybrid] 가 실리고, 패스키 줄에 다른 기기·동기화가 보이며, 다음 확인도 힌트·transports 를 싣는다', async () => {
+  // 2026-11-20(사용자 결정): "패스키를 둘 곳"(이 기기 / 휴대폰 QR) 선택지를 화면에서 뺐다 — 시연 머신에 블루투스가 없다. 만들 때도 확인할 때도 힌트를 싣지 않고,
+  // 화면에 "휴대폰"·"QR"·"블루투스" 라는 말이 없다. (코어·passkey_store 의 힌트 처리는 남아 있다 — tests/test_mode3_passkey_salt.mjs·test_mode3_user_core_passkey.mjs 가 본다.)
+  await t('패스키 설정: "패스키를 둘 곳"(휴대폰 QR) 선택지가 없다 — 힌트 없이 만들고 화면에 휴대폰 표기가 없다', async () => {
     const ctx = await stubContext({ secretHex: SECRET_P });
     try {
       const p = await openUserPage(ctx);
       await p.waitForSelector('#pkSetupCard:not([hidden])', { timeout: 15_000 });
-      assert.equal(await p.$eval('#pkPlaceHint', (e) => e.hidden), true, '기본은 이 기기 — 안내가 숨어 있다');
-      await p.check('input[name="pkPlace"][value="phone"]');
-      assert.equal(await p.$eval('#pkPlaceHint', (e) => e.hidden), false);
+      for (const sel of ['#pkPlaceRow', '#pkPlaceHint', 'input[name="pkPlace"]']) assert.equal(await p.$(sel), null, `${sel} 는 없다`);
+      const noPhone = async (where) => { const m = (await p.evaluate(() => document.body.innerText)).match(/.{0,20}(휴대폰|QR|블루투스).{0,20}/); assert.equal(m, null, `${where}: ${m?.[0]}`); };
+      await noPhone('설정 화면');
       const from = hits.opts.length;
       await connectPasskey(p, '#pkNewBtn');
       const o = hits.opts.slice(from);
       assert.deepEqual(o.map((x) => x.kind), ['create', 'get']);
-      assert.deepEqual(o[0].hints, ['hybrid']); assert.deepEqual(o[1].hints, ['hybrid']); assert.deepEqual(o[1].transports, ['hybrid', 'internal']);
-      await waitText(p, '#pkInfo', '다른 기기(휴대폰)의 패스키');
-      await waitText(p, '#pkInfo', '동기화됨');
-      assert.deepEqual((await idbDump(p)).passkey.info, { attachment: 'cross-platform', transports: ['hybrid', 'internal'], backupEligible: true, backedUp: true, hint: 'hybrid' });
-      // 보관분이 없으면 다음 확인(salt 보기)도 같은 길로 — 저장한 transports·힌트
-      await delHold(p);
+      assert.equal(o[0].hints, null, '만들 때 힌트를 싣지 않는다'); assert.equal(o[1].hints, null, '확인 계산에도 싣지 않는다');
+      await waitText(p, '#pkInfo', '이 기기의 패스키');
+      const info = (await idbDump(p)).passkey.info;
+      assert.equal(info.attachment, 'platform', j(info)); assert.equal(info.hint, null, j(info));
+      await noPhone('연결한 뒤의 화면');
+      // 다음 확인(salt 보기)도 힌트 없이
       const from2 = hits.opts.length;
       await p.click('#pkShowSaltBtn');
       for (let i = 0; i < 100 && hits.opts.length === from2; i++) await new Promise((r) => setTimeout(r, 100));
-      assert.deepEqual(hits.opts.slice(from2), [{ kind: 'get', hints: ['hybrid'], transports: ['hybrid', 'internal'] }]);
+      const again = hits.opts.slice(from2);
+      assert.equal(again.length, 1); assert.equal(again[0].kind, 'get'); assert.equal(again[0].hints, null);
     } finally { await ctx.close(); }
   });
 
@@ -571,7 +583,7 @@ try {
     } finally { await ctx.close(); }
   });
 
-  await t('salt 보기: 보관분이면 패스키 0번, 닫으면 지워진다, 저장소에 평문 없음', async () => {
+  await t('salt 보기: 누를 때마다 패스키 한 번, 닫으면 지워진다, 저장소에 평문 없음', async () => {
     const ctx = await stubContext({ secretHex: SECRET_D });
     try {
       const p = await openUserPage(ctx);
@@ -580,10 +592,16 @@ try {
       await p.click('#pkShowSaltBtn');
       await p.waitForSelector('#pkSaltModal:not([hidden])', { timeout: 15_000 });
       assert.equal(await text(p, '#pkSaltText'), SALT_D);
-      assert.equal(hits.get + hits.create - before, 0, '보관분으로 패스키를 묻지 않는다');
+      assert.equal(hits.get + hits.create - before, 1, '패스키를 한 번 묻는다');
       await p.click('#pkSaltClose');
       assert.equal(await p.isHidden('#pkSaltModal'), true);
       assert.equal(await text(p, '#pkSaltText'), '', '닫으면 화면에서 지운다');
+      await p.click('#pkShowSaltBtn');
+      await p.waitForSelector('#pkSaltModal:not([hidden])', { timeout: 15_000 });
+      assert.equal(await text(p, '#pkSaltText'), SALT_D);
+      assert.equal(hits.get + hits.create - before, 2, '다시 누르면 다시 묻는다 — 앞에서 얻은 salt 를 들고 있지 않다');
+      await p.click('#pkSaltClose');
+      assert.equal((await idbDump(p)).passkeyHold, undefined, 'IndexedDB 에 salt 보관분이 있다');
       assert.equal(j(await idbDump(p)).includes(SALT_D), false, 'IndexedDB 에 평문 salt 가 있다');
       assert.equal((await storagesOf(p)).includes(SALT_D), false, '브라우저 저장소에 salt 가 있다');
       assert.deepEqual(writes.filter((w) => w.v.includes(SALT_D)), [], '저장소 쓰기에 salt 가 있다');
@@ -716,6 +734,19 @@ try {
       await p.click('#makeBtn');
       await p.waitForSelector('#commitBox:not([hidden])', { timeout: 30_000 });
       assert.match(await text(p, '#commitBox'), /^[0-9]+$/);
+      // 2026-11-20(사용자 결정): salt 는 계산 직후 사라진다 — 기록(localStorage)·세션 저장소·입력 칸·화면 어디에도 없다. 기록에는 그 salt 의 auid(공개값)만 남는다.
+      const rec = JSON.parse(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')));
+      assert.equal(rec.version, 6); assert.equal('s_u' in rec, false); assert.equal(rec.auid, (await auidOf({ s_u: BigInt(SALT_D) })).toString());
+      assert.equal(await p.evaluate((salt) => [...Object.values(localStorage), ...Object.values(sessionStorage)].some((v) => String(v).includes(salt)), SALT_D), false, '저장소에 salt 평문이 있다');
+      assert.equal(await p.inputValue('#salt'), '', 'salt 칸을 비운다');
+      await p.click('#inputsFold > summary');
+      assert.equal((await p.evaluate(() => document.body.innerText)).includes(SALT_D), false, '화면에 salt 가 있다');
+      assert.equal(await text(p, '#auidShown'), rec.auid);
+      // 옛 기록(version 5 — salt 평문)은 도구를 열 때 auid 로 바뀌고 salt 가 지워진다
+      await p.evaluate((r) => localStorage.setItem('mode3_attr_tool_v1', JSON.stringify(r)), { ...rec, version: 5, s_u: SALT_D, auid: undefined });
+      await p.reload(); await p.waitForSelector('#commitBox:not([hidden])', { timeout: 30_000 });
+      const moved = JSON.parse(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')));
+      assert.equal(moved.version, 6); assert.equal('s_u' in moved, false); assert.equal(moved.auid, rec.auid); assert.equal(moved.commit, rec.commit);
     } finally { await ctx.close(); }
   });
 

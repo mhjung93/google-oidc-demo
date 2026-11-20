@@ -39,7 +39,8 @@ const pw = await start('pw', { MODE3_WALLET_SECRETS: 'passkey-web' });
 try {
   await t('config', async () => {
     const c = await (await fetch(`${pw.url}/user/config`)).json();
-    assert.equal(c.secrets, 'passkey-web'); assert.equal(c.rpcUrl, '/rpc/app'); assert.equal(c.revRpcUrl, '/rpc/rev'); assert.equal(c.passkeyHoldSeconds, 600);
+    assert.equal(c.secrets, 'passkey-web'); assert.equal(c.rpcUrl, '/rpc/app'); assert.equal(c.revRpcUrl, '/rpc/rev');
+    assert.equal('passkeyHoldSeconds' in c, false, 'salt 보관 시간 설정은 없다(2026-11-20: 10분 보관 제거)');
     assert.equal((await (await fetch(`${pw.url}/wallet/config`)).json()).secrets, 'passkey-web');
     assert.equal((await (await fetch(`${pw.url}/mode3/health`)).json()).secrets, 'passkey-web');
   });
@@ -113,7 +114,7 @@ try {
     const h = await fetch(`${pw.url}/attr.html`); assert.equal(h.status, 200); assert.match(h.headers.get('content-type'), /text\/html/);
     assert.equal((await fetch(`${pw.url}/attr/dist/attr.js`)).status, 200);
   });
-  // 2026-11-17: passkey-web 의 salt 는 지갑 오리진의 JS 메모리·IndexedDB 보관분에 있다 — 그 오리진에서 남의 스크립트가 돌지 못하게 CSP 를 건다.
+  // 2026-11-17: passkey-web 의 salt 는 지갑 오리진의 JS 메모리에 있다(2026-11-20 부터 IndexedDB 에는 두지 않는다) — 그 오리진에서 남의 스크립트가 돌지 못하게 CSP 를 건다.
   await t('CSP: 페이지·워커·속성 도구 응답에 같은 정책 — 인라인·남의 스크립트 없음, 연결은 자기·IdP·서비스만', async () => {
     const want = {
       'default-src': ["'self'"], 'script-src': ["'self'", "'wasm-unsafe-eval'"], 'worker-src': ["'self'", 'blob:'],
@@ -145,7 +146,6 @@ await t('기동 거부', async () => {
     { set: { MODE3_WALLET_SECRETS: 'passkey-web', MODE3_WALLET_PUBLIC_ORIGIN: 'https://127.0.0.1:5199' }, err: /passkey-web: 오리진은 IP 가 아닌 호스트/ },
     { set: { MODE3_WALLET_SECRETS: 'passkey-web', MODE3_WALLET_PUBLIC_ORIGIN: 'http://wallet.zkd.test:5199' }, err: /passkey-web: 오리진은 IP 가 아닌 호스트/ },
     { set: { MODE3_WALLET_SECRETS: 'bogus' }, err: /MODE3_WALLET_SECRETS 는 web 또는 passkey-web.*bogus/ },
-    { set: { MODE3_PASSKEY_HOLD_SECONDS: '-1' }, err: /MODE3_PASSKEY_HOLD_SECONDS 는 0 이상 숫자.*-1/ },
   ];
   for (const c of cases) {
     const r = await refuses(c);

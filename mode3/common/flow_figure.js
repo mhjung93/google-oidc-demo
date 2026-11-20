@@ -6,11 +6,13 @@
 (() => {
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined && text !== null) e.textContent = text; return e; };
   const short = (v) => { const s = String(v ?? '-'); return s.length > 26 ? `${s.slice(0, 10)}…${s.slice(-8)}` : s; };
+  // head(2026-11-20): 앞 17자만 — aud 처럼 앞쪽이 달라지는 값(Google 클라이언트 ID 는 끝이 모두 같다). 항목에 head:true 를 주면 쓴다. 전체 값은 늘 title 에 있다.
+  const headOnly = (v) => { const s = String(v ?? '-'); return s.length > 17 ? `${s.slice(0, 17)}…` : s; };
   function items(list) {
     const dl = el('dl', 'flow-items');
     for (const it of list ?? []) {
       const dt = el('dt', null, it.name), dd = el('dd');
-      if (it.value !== undefined) { const code = el('code', null, short(it.value)); code.title = String(it.value ?? ''); if (it.key) code.dataset.flow = it.key; dd.append(code); }
+      if (it.value !== undefined) { const code = el('code', null, it.head ? headOnly(it.value) : short(it.value)); code.title = String(it.value ?? ''); if (it.key) code.dataset.flow = it.key; dd.append(code); }
       if (it.note) dd.append(el('small', 'muted', ` — ${it.note}`));
       if (it.action) { const b = el('button', 'btn-ghost', it.action.label); b.type = 'button'; if (it.action.key) b.dataset.flowAction = it.action.key; b.addEventListener('click', it.action.run); dd.append(b); }   // action: { label, run, key } — 값 대신(또는 옆에) 누르는 것
       dl.append(dt, dd);

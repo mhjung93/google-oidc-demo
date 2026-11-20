@@ -35,8 +35,9 @@ export function takeIdpReturn({ search, storage, now }) {
   return { req: pend.req, origin: pend.origin, code, purpose, uid: purpose === 'register' ? uid : null, auid: purpose === 'register' && DEC.test(auid ?? '') ? auid : null };
 }
 
-/** 같은 오리진 속성 도구(attr.html)의 기록 { s_u, profile } 또는 null. 데모 리셋 표시(/attr/dist/reset.json)의 epoch 가 바뀌었으면 기록을 지우고 null(attr.html 과 같은 규칙).
- *  version 5(uid 없음)와 옛 4 를 받고, s_u 는 0 < s_u < 2^250 인 10진 문자열이어야 한다. */
+/** 같은 오리진 속성 도구(attr.html)의 기록 { auid, s_u, profile } 또는 null. 데모 리셋 표시(/attr/dist/reset.json)의 epoch 가 바뀌었으면 기록을 지우고 null(attr.html 과 같은 규칙).
+ *  version 6(2026-11-20 — salt 없음): auid(10진 — 그 salt 의 공개 가명)만 있고 s_u 는 null 이다. 옛 version 4·5(속성 도구를 다시 열기 전의 기록): s_u 가 있고 auid 는 null —
+ *  s_u 는 0 < s_u < 2^250 인 10진 문자열이어야 한다. 호출자는 둘 중 있는 쪽으로 "이 기록이 내 salt 의 것인가" 를 대조한다. */
 export async function readAttrRecord({ fetch, localStorage }) {
   try {
     const r = await fetch('/attr/dist/reset.json', { cache: 'no-store' });
@@ -48,6 +49,36 @@ export async function readAttrRecord({ fetch, localStorage }) {
   let v = null;
   try { v = JSON.parse(localStorage.getItem('mode3_attr_tool_v1') ?? 'null'); } catch { v = null; }
   const profile = v?.profile && typeof v.profile === 'object' && !Array.isArray(v.profile) ? v.profile : null;
+  if (v && v.version === 6 && typeof v.auid === 'string' && DEC.test(v.auid) && !('s_u' in v)) return { auid: BigInt(v.auid).toString(), s_u: null, profile };
   const ok = v && (v.version === 5 || v.version === 4) && typeof v.s_u === 'string' && DEC.test(v.s_u) && BigInt(v.s_u) > 0n && BigInt(v.s_u) < (1n << 250n);
-  return ok ? { s_u: v.s_u, profile } : null;
+  return ok ? { auid: null, s_u: v.s_u, profile } : null;
+}
+
+// ---- 패스키 가입의 Google 왕복(스펙 2026-11-20 passkey-google-signup §2) ----
+// zkIdP 페이지의 "패스키로 로그인" 이 미등록 브라우저에서 계정을 만들 때, 승인 창이 Google 로 가서 이메일을 확인받고 돌아온다. 가기 전에 남기는 것은
+// 공개값뿐이다(uid·등록 증명·로그인 증명·state·시각) — salt 는 없다. 돌아오는 길은 지갑 정적 서버의 /google-relay 가 `/?authorize=1#google_back=1&state=…&id_token=…` 로 넘긴다.
+export const SIGNUP_PENDING_KEY = 'mode3.signup.pending';
+const b64url = (str) => btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+/** Google 인가 주소와 state. state = "지갑 오리진(base64url).난수" — 중계 화면이 앞부분으로 돌아갈 곳을 고르고, 승인 창이 전체를 저장분과 대조한다. rand 는 테스트용(없으면 16바이트 난수). */
+export function googleSignupUrl({ authorizeUrl, clientId, redirectUri, nonce, walletOrigin, rand = null }) {
+  const r = rand ?? Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
+  const state = `${b64url(walletOrigin)}.${r}`;
+  const u = new URL(authorizeUrl);
+  for (const [k, v] of Object.entries({ client_id: clientId, response_type: 'id_token', scope: 'openid email', redirect_uri: redirectUri, nonce, state, prompt: 'select_account' })) u.searchParams.set(k, v);
+  return { url: u.toString(), state };
+}
+/** Google 로 가기 전에 이어받을 가입을 남긴다(이 오리진·이 창의 sessionStorage). pend 는 { state, at, idpOrigin, loginNonce, uid, reg, login } — 공개값뿐. */
+export function saveSignupPending(storage, pend) { storage.setItem(SIGNUP_PENDING_KEY, JSON.stringify(pend)); }
+/** Google 에서 돌아온 길인지 본다(주소의 조각). 아니면 null. 돌아온 길이면 저장분을 늘 지우고, state·나이가 맞으면 { pend, idToken, error }, 어긋나면 { pend: null, idToken: null, error: null }
+ *  — 어긋난 길의 토큰은 쓰지 않는다(남이 만든 링크로 남의 Google 계정을 이 패스키에 붙이지 못하게). 주소창 정리는 호출자가 한다. */
+export function takeGoogleReturn({ hash, storage, now }) {
+  const f = new URLSearchParams(String(hash ?? '').replace(/^#/, ''));
+  if (f.get('google_back') !== '1') return null;
+  let pend = null;
+  try { pend = JSON.parse(storage.getItem(SIGNUP_PENDING_KEY) ?? 'null'); } catch { pend = null; }
+  storage.removeItem(SIGNUP_PENDING_KEY);
+  const none = { pend: null, idToken: null, error: null };
+  if (!pend || typeof pend !== 'object' || typeof pend.state !== 'string' || pend.state !== f.get('state') || typeof pend.at !== 'number' || now - pend.at > PENDING_MAX_AGE_MS) return none;
+  const idToken = f.get('id_token');
+  return { pend, idToken: idToken || null, error: idToken ? null : (f.get('error') || 'no_token') };
 }

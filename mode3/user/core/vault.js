@@ -4,10 +4,9 @@
 // 비밀번호 금고(옛 등록)는 그대로 동작한다.
 import { createMeta, openMeta, deriveKey, randomSaltHex, makeCheck, encryptJson, decryptJson, KDF_ITERATIONS } from '../../../lib/browser/secret_box.js';
 export const UNLOCK_TTL_MS = 30 * 60_000;
-export const PASSKEY_HOLD_MS = 10 * 60_000;   // passkey-web: 패스키 salt 를 금고에 잠깐 들고 있는 시간(읽어도 늘리지 않는다)
 const EMPTY_SECRETS = () => ({ s_u: null, blind_u: null, sessionKeys: {} });
 const locked = () => Object.assign(new Error('locked'), { reason: 'locked' });
-export function createVault(kv, { now = Date.now, ttlMs = UNLOCK_TTL_MS, holdMs = PASSKEY_HOLD_MS } = {}) {
+export function createVault(kv, { now = Date.now, ttlMs = UNLOCK_TTL_MS } = {}) {
   // meta 는 kv 에서 읽어 메모리에 둔다(공개값). unlock 은 **매번 kv 에서** 읽는다 — 팝업·다른 탭이 지우거나 바꾼 것을 바로 보기 위해(R3).
   // hasVault()·isUnlocked() 는 동기다(화면 배지·테스트가 await 없이 읽는다) — 마지막으로 kv 에서 본 값의 메모리 사본으로 답한다.
   // 권위 있는 판정은 key()(async)이고, key()·refresh() 가 사본을 맞춘다. 다른 탭의 변화를 화면에 보이려면 refresh() 를 먼저 부른다
@@ -66,28 +65,6 @@ export function createVault(kv, { now = Date.now, ttlMs = UNLOCK_TTL_MS, holdMs 
       await kv.set('secrets', await encryptJson(key, plain)); await kv.set('meta', nm); meta = nm;
       await v._remember(key); return true;
     },
-    // passkey-web 10분 보관: kv 'passkeyHold' = { until(공개), box: 암호문{ s_u, until } }. salt 는 암호문 안에만 있고, 같은 kv 를 쓰는 다른 탭도 읽는다.
-    // s_u 는 정규 10진(앞자리 0·부호·공백 없음)만 받는다 — 같은 값의 다른 표기가 보관분 대조(user_core.passkeyConnect)를 비껴가지 않게. 틀리면 passkey_bad_salt.
-    async holdSalt(s_u) {
-      if (!(holdMs > 0)) return false;
-      if (typeof s_u !== 'string' || !/^[1-9][0-9]*$/.test(s_u) || !(BigInt(s_u) < 2n ** 250n)) throw Object.assign(new Error('s_u 형식 오류'), { reason: 'passkey_bad_salt' });
-      const key = await v.key(); if (!key) throw locked();
-      const until = now() + holdMs;
-      await kv.set('passkeyHold', { until, box: await encryptJson(key, { s_u, until }) });
-      return true;
-    },
-    /** 보관분 { s_u, until } 또는 null — 한 번의 복호로 둘을 함께 읽는다(따로 읽으면 그 사이 만료·덮어쓰기로 서로 다른 보관분을 볼 수 있다). */
-    async held() {
-      const h = (await kv.get('passkeyHold')) ?? null; if (!h) return null;
-      const key = await v.key(); if (!key) return null;
-      let inner = null;
-      if (h.until > now()) { try { inner = await decryptJson(key, h.box); } catch { inner = null; } }
-      if (!inner || inner.until !== h.until) { await kv.del('passkeyHold'); return null; }   // 만료·복호 실패·바깥 until 조작
-      return { s_u: inner.s_u, until: h.until };
-    },
-    async heldSalt() { return (await v.held())?.s_u ?? null; },
-    async heldUntil() { return (await v.held())?.until ?? null; },
-    async clearHold() { await kv.del('passkeyHold'); },
     /** wipe 뒤 메모리도 비운다 — user_core.wipe() 가 부른다. */
     reset() { meta = null; unlockedUntil = 0; },
   };

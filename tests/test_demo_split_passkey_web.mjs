@@ -125,8 +125,17 @@ t('일반 OIDC(비교용) — passkey-web 에서만 기본 켬, IdP(CIA_PLAIN_OI
   assert.ok(ln, 'PLAIN_OIDC 기본값 줄을 찾지 못했다');
   const expr = ln.match(/^PLAIN_OIDC="\$\{PLAIN_OIDC:-(\$\([^)]*\))\}"/);
   assert.ok(expr, 'PLAIN_OIDC="${PLAIN_OIDC:-$(…)}" 모양이 아니다');
-  const on = (walletMode) => spawnSync('bash', ['-c', `WALLET_MODE=${walletMode}; echo ${expr[1]}`], { encoding: 'utf8' }).stdout.trim();
+  // 2026-11-20: Google 클라이언트 ID 가 있으면(GOOGLE_ID_SET=1 — 서비스의 Google 로그인이 켜진다) 일반 OIDC 장면은 Google 로 보이므로 기본으로 끈다
+  const on = (walletMode, google = 0) => spawnSync('bash', ['-c', `WALLET_MODE=${walletMode}; GOOGLE_ID_SET=${google}; echo ${expr[1]}`], { encoding: 'utf8' }).stdout.trim();
   assert.equal(on('passkey-web'), '1'); assert.equal(on('snap'), '0'); assert.equal(on('web'), '0'); assert.equal(on('passkey'), '0');
+  assert.equal(on('passkey-web', 1), '0', 'Google 이 있으면 기본으로 끈다'); assert.equal(on('snap', 1), '0');
+  const gi = lines.findIndex((l) => l.startsWith('GOOGLE_ID_SET=0')), pi = lines.findIndex((l) => l.startsWith('PLAIN_OIDC="${PLAIN_OIDC:-'));
+  assert.ok(gi >= 0 && gi < pi, 'GOOGLE_ID_SET 은 PLAIN_OIDC 기본값보다 먼저 정한다');
+  const gl = lines[gi + 1];
+  const google = (env, dotenv) => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'zkd-gid-')); try { if (dotenv !== null) fs.writeFileSync(path.join(d, '.env'), dotenv); return spawnSync('bash', ['-c', `GOOGLE_ID_SET=0; ${gl}; echo $GOOGLE_ID_SET`], { encoding: 'utf8', cwd: d, env: { PATH: process.env.PATH, ...env } }).stdout.trim(); } finally { fs.rmSync(d, { recursive: true, force: true }); } };
+  assert.equal(google({}, null), '0'); assert.equal(google({}, 'OTHER=1\nGOOGLE_CLIENT_ID=\n'), '0', '빈 값은 없는 것');
+  assert.equal(google({}, 'GOOGLE_CLIENT_ID=abc\n'), '1'); assert.equal(google({ MODE3_OIDC_CLIENT_ID: 'x' }, null), '1'); assert.equal(google({ RP1_GOOGLE_CLIENT_ID: 'x' }, null), '1');
+  assert.equal(google({ OIDC: '0' }, 'GOOGLE_CLIENT_ID=abc\n'), '0', 'OIDC=0 이면 .env 의 ID 를 쓰지 않는다'); assert.equal(google({ OIDC: '0', RP2_GOOGLE_CLIENT_ID: 'x' }, null), '1');
   assert.ok(lines.includes('CIA_PLAIN_OIDC=$PLAIN_OIDC') && lines.includes('MODE3_RP_ZKOIDC=$PLAIN_OIDC'), '공통 환경변수에 두 값이 없다');
 });
 t('Blockscout — 초기화는 프로젝트 이름을 주고(B1), 감시자는 pid 파일로 띄우고 내린다(B10)', () => {

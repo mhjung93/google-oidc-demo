@@ -98,7 +98,7 @@ if (OIDC.enabled) {
 /** id_token 을 검증해 { uid, sub, nonce } 를 돌려준다. 실패는 { status, body } 로(라우트가 그대로 낸다). */
 async function oidcUid(idToken, noncePrefix) {
   if (!OIDC.enabled) return { error: { status: 503, body: { error: 'oidc_disabled', reason: 'oidc_disabled' } } };
-  try { const v = await OIDC.verifier.verify(idToken, { noncePrefix }); return { uid: uidOf(OIDC.provider, v.sub), sub: v.sub, nonce: v.nonce }; }
+  try { const v = await OIDC.verifier.verify(idToken, { noncePrefix }); return { uid: uidOf(OIDC.provider, v.sub), sub: v.sub, nonce: v.nonce, email: v.email ?? null, emailVerified: v.emailVerified === true }; }
   catch (e) { const status = OIDC_STATUS[e.reason]; if (!status) throw e; return { error: { status, body: { error: e.reason, reason: e.reason, detail: e.detail } } }; }
 }
 // 사용자 페이지가 브라우저에서 직접 부르는 라우트에만 연다(계획 2026-10-15 Task 6). 관리자 헤더는 허용 목록에 없다 —
@@ -169,9 +169,15 @@ const DEMO_ACCOUNTS = {
 // /cia/auth/code 로 받은 1회용 코드(auth_code)가 추가로 필요하다. DEMO_SEED 는 기동 때 DEMO_ACCOUNTS(testuser·alice)를 상태에 심는다 —
 // 옛 흐름·기존 테스트 호환용이고, 가입(POST /cia/signup)만 쓰는 데모에서는 꺼 둔다(CIA_DEMO_ACCOUNTS 미설정).
 const ISSUE_AUTH = process.env.CIA_ISSUE_AUTH === 'code' ? 'code' : 'key';
-// 증명 로그인의 챌린지 수명(스펙 2026-11-19 passkey-proof-login L7) — zkIdP 페이지가 지갑 창을 기다리는 시간(120초)보다 길게.
-const LOGIN_CHALLENGE_TTL_MS = (() => { const n = Number(process.env.CIA_LOGIN_CHALLENGE_TTL_MS); return Number.isFinite(n) && n > 0 ? n : 180_000; })();
+// 증명 로그인의 챌린지 수명(스펙 2026-11-19 passkey-proof-login L7) — zkIdP 페이지가 지갑 창을 기다리는 시간보다 길게. 2026-11-20: 180초 → 360초 —
+// 미등록 브라우저의 "패스키로 로그인" 은 지갑 창이 Google 을 다녀와 계정을 만든 뒤 이 챌린지로 로그인한다(페이지는 그 창을 300초 기다린다).
+const LOGIN_CHALLENGE_TTL_MS = (() => { const n = Number(process.env.CIA_LOGIN_CHALLENGE_TTL_MS); return Number.isFinite(n) && n > 0 ? n : 360_000; })();
 const DEMO_SEED = process.env.CIA_DEMO_ACCOUNTS === '1';
+// 패스키 가입(스펙 2026-11-20 passkey-google-signup G9): zkIdP 페이지의 "패스키로 로그인" 이 미등록 브라우저에서 계정을 스스로 만드는 길. 발급 정책이 key 이고
+// Google(OIDC) 클라이언트 ID 와 돌아올 주소(MODE3_OIDC_REDIRECT_URI — 지갑 정적 서버의 /google-relay)가 모두 있을 때만 연다. 지갑 창이 이 주소들로 Google 에 다녀온다.
+const OIDC_SIGNUP = ISSUE_AUTH === 'key' && OIDC.enabled && envStr('MODE3_OIDC_REDIRECT_URI', null) !== null
+  ? { authorizeUrl: envStr('MODE3_OIDC_AUTHORIZE_URL', 'https://accounts.google.com/o/oauth2/v2/auth'), redirectUri: envStr('MODE3_OIDC_REDIRECT_URI', null) } : null;
+if (OIDC_SIGNUP) console.log(`[cia] 패스키 가입 켜짐: Google 로 확인한 이메일이 아이디가 된다(돌아올 주소 ${OIDC_SIGNUP.redirectUri})`);
 // 수정 라운드 1: 0 이하(파싱 실패 포함)는 "코드가 즉시 만료"라는 조용한 오설정이 되므로 경고 뒤 기본값(5분)으로 떨어진다.
 const CODE_TTL_MS = (() => {
   const raw = process.env.CIA_CODE_TTL_MS;
@@ -581,7 +587,7 @@ app.use((req, res, next) => { res.setHeader('X-Frame-Options', 'DENY'); res.setH
 app.use(session({ name: 'cia.sid', secret: process.env.CIA_SESSION_SECRET || randomBytes(32).toString('hex'), resave: false, saveUninitialized: false, cookie: { httpOnly: true, sameSite: 'lax' } }));
 
 // 사용자 오리진이 브라우저에서 직접 부르는 5 개 POST 라우트의 프리플라이트(계획 2026-10-15 Task 6).
-for (const p of ['/cia/register', '/cia/issue', '/cia/slot', '/cia/revoke', '/cia/account/self_revoke']) app.options(p, userCors);
+for (const p of ['/cia/register', '/cia/issue', '/cia/slot', '/cia/revoke', '/cia/account/self_revoke', '/cia/signup/reserve']) app.options(p, userCors);
 
 // 데모 공통 레이어(설계 2026-09-24-mode3-demo-ux §1.2) — mode3/common 만 정적으로 낸다.
 app.use('/common', express.static(path.join(__dirname, 'mode3', 'common')));
@@ -684,7 +690,7 @@ app.get('/cia/public_keys', userCors, (req, res) => {
   // V10: canonicalChainId = 게시 로그가 있는 체인(selfChainId 와 같은 provider). mirrors = CIA_MIRRORS(릴레이 대상 거울, 2026-10-02 Task 6).
   res.json({ pk_CIA: S(ciaPub), ethAddress: ethWallet.address, heartbeatBlocks: Number(HEARTBEAT_BLOCKS), chainIds: [...CHAIN_RPCS.keys()], logAddress: LOG_ADDRESS,
     canonicalChainId: selfChainId, mirrors: MIRRORS.map(({ chainStr, address }) => ({ chainId: chainStr, address })),
-    oidc: { enabled: OIDC.enabled, provider: OIDC.provider, clientId: OIDC.clientId, issuer: OIDC.issuer },
+    oidc: { enabled: OIDC.enabled, provider: OIDC.provider, clientId: OIDC.clientId, issuer: OIDC.issuer, ...(OIDC_SIGNUP ? { signup: OIDC_SIGNUP } : {}) },   // signup(2026-11-20): 패스키 가입이 켜져 있을 때만 — 꺼져 있으면 키가 없다
     issueAuth: ISSUE_AUTH });   // 2026-11-19(스펙 passkey-proof-login L2): 발급 정책 — 지갑이 인증 창을 거칠지 이 값으로 정한다   // 2026-11-10: 11-09 의 providers(zkIdP 쪽 연결)는 없앴다
 });
 
@@ -1069,7 +1075,7 @@ const uidCors = cors({ origin: (origin, cb) => cb(null, origin === WALLET_AGENT_
 app.get('/cia/user/uid', uidCors, requireUser, (req, res) => res.json({ uid: req.session.uid }));
 app.get('/cia/user/me', requireUser, (req, res) => {
   const uid = req.session.uid, a = state.accounts[uid];
-  res.json({ uid, id: a.loginId ?? null, registered: Boolean(a.auid), auid: a.auid, slot: a.slot, provider: a.provider, disabled: a.disabled, activeCf_u: activeCfU(a), registryLeaf: a.slot === null ? null : registry.leafAt(a.slot).toString(), profile: a.profile ?? null });
+  res.json({ uid, id: a.loginId ?? null, registered: Boolean(a.auid), auid: a.auid, slot: a.slot, provider: a.provider, signup: a.signup ? { provider: a.signup.provider } : null, disabled: a.disabled, activeCf_u: activeCfU(a), registryLeaf: a.slot === null ? null : registry.leafAt(a.slot).toString(), profile: a.profile ?? null });
 });
 // 프로필(2026-11-09 Phase 1): OIDC profile 스코프의 `name` 한 칸. 사용자가 속성 도구(지갑 오리진 /attr.html)에서 만든 커밋먼트를 붙여 넣는다 —
 // IdP 는 형식만 보고(한 줄·256자 이하) 뜻은 모른다(불투명). 지갑 등록 여부와 무관하게 로그인만 하면 저장할 수 있다(사용자 결정: MetaMask 와 별개 흐름).
@@ -1185,7 +1191,53 @@ app.post('/cia/auth/code', (req, res) => {
 
 // V11 §3.1 등록. 지갑이 auid = Poseidon(T_AUID2, s_u) 를 내고 "그 s_u 를 안다" 는 π_IdP 로 인증한다(스펙 2026-11-12 no-pk-u — 등록 키와 등록 서명은 없다).
 // IdP 는 슬롯 번호를 배정한다. 속성은 받지 않는다(D15). 신원은 데모 계정 {uid, pwd|code} 또는 Google ID 토큰 {id_token}(nonce 는 이 요청의 tag 에 묶임) 중 하나.
+// ---- 패스키 가입(스펙 2026-11-20 passkey-google-signup §3) ----
+// π_IdP 의 공개 입력에 uid 가 들어가므로, 지갑 창은 Google 로 가기 전에 uid 를 예약받아 등록 증명을 만든다. 예약은 메모리에만 둔다(재시작하면 사라진다 —
+// 그 가입은 처음부터 다시 한다). 인증이 없다 — /cia/signup(아이디·비밀번호 가입)과 같다. 버려진 예약만큼 uid 번호가 건너뛴다.
+const SIGNUP_RESERVE_TTL_MS = 10 * 60_000, SIGNUP_RESERVE_MAX = 500;
+const signupReservations = new Map();   // uid(10진) → expiresAt
+const signupOff = (res) => res.status(403).json({ error: 'passkey signup disabled', reason: 'signup_disabled' });
+const signupReserved = (uid) => { const e = signupReservations.get(uid); return e !== undefined && e >= Date.now() && !state.accounts[uid]; };
+const SIGNUP_EMAIL_RE = /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,190}$/;   // 모양만 본다(확인은 Google 이 했다 — email_verified). 화면에 아이디로 찍히는 값이라 글자 종류를 좁게 둔다
+app.post('/cia/signup/reserve', userCors, jsonBodyOnly, (req, res) => {
+  if (!OIDC_SIGNUP) return signupOff(res);
+  const now = Date.now();
+  for (const [u, e] of signupReservations) if (e < now) signupReservations.delete(u);
+  while (signupReservations.size >= SIGNUP_RESERVE_MAX) signupReservations.delete(signupReservations.keys().next().value);
+  let uid;
+  do { uid = String(state.nextUid++); } while (state.accounts[uid]);
+  signupReservations.set(uid, now + SIGNUP_RESERVE_TTL_MS);
+  persist();   // nextUid — 재시작 뒤에도 같은 번호를 다시 내주지 않는다
+  res.json({ uid });
+});
+/** /cia/register 의 세 번째 길(signup: true): Google 토큰으로 확인한 이메일을 아이디로 계정을 만들고 그 자리에서 등록한다. 같은 Google 계정(sub)의 계정은 하나다 —
+ *  이미 있으면 그 uid 를 알려 주고(409 signup_exists), 그 uid 로 같은 패스키(auid)가 오면 기존 등록을 돌려준다(복구). 토큰 nonce 는 검증된 tag 에 대조한다(G4). */
+async function signupRegister(req, res) {
+  const { signup, uid, id_token, auid } = req.body ?? {};
+  if (signup !== true || !isDec(uid) || BigInt(uid).toString() !== uid || typeof id_token !== 'string' || !isDec(auid)) return res.status(400).json({ error: `signup: true, uid, id_token, auid, n, ${AUTH_FIELDS} required` });
+  if (!OIDC_SIGNUP) return signupOff(res);
+  const o = await oidcUid(id_token, REG_PREFIX); if (o.error) return res.status(o.error.status).json(o.error.body);
+  if (!o.emailVerified || typeof o.email !== 'string' || !SIGNUP_EMAIL_RE.test(o.email)) return res.status(403).json({ error: 'email not verified', reason: 'signup_email_unverified' });
+  const sub = createHash('sha256').update(`${OIDC.provider}|${o.sub}`).digest('hex');   // sub 원문은 두지 않는다
+  const owner = Object.entries(state.accounts).find(([, a]) => a?.signup?.provider === OIDC.provider && a.signup.sub === sub)?.[0] ?? null;
+  if (owner !== null && owner !== uid) return res.status(409).json({ error: 'google account already signed up', reason: 'signup_exists', uid: owner });
+  if (owner !== null && state.accounts[owner].auid && state.accounts[owner].auid !== BigInt(auid).toString()) return res.status(409).json({ error: 'another passkey', reason: 'signup_other_passkey' });
+  if (owner === null && !signupReserved(uid)) return res.status(409).json({ error: 'uid not reserved', reason: 'signup_reservation_invalid' });
+  const checkTag = (tag) => (o.nonce === regNonce(tag) ? null : { status: 400, body: { error: 'oidc_nonce_mismatch', reason: 'oidc_nonce_mismatch', detail: 'nonce 가 이 등록 요청의 tag 와 다르다' } });
+  // 새 계정은 증명·nonce 를 본 뒤, 등록 바로 앞에서 만든다(예약 소진과 함께 — 동기). registerAccount 가 그 레코드에 auid·슬롯을 채우고 한 번에 저장한다.
+  const beforeCommit = owner !== null ? undefined : () => {
+    if (!signupReserved(uid)) return false;
+    signupReservations.delete(uid);
+    state.accounts[uid] = Object.assign(newAccountRecord({ loginId: o.email }), { signup: { provider: OIDC.provider, sub, email: o.email } });
+    return true;
+  };
+  const made = await registerAccount({ uid, provider: 'demo', auid, auth: req.body, checkTag, beforeCommit });
+  if (made.error) return res.status(made.error.status).json(made.error.body);
+  res.status(201).json({ slot: made.slot, schemaHash: ATTR_SCHEMA_HASH, uid, provider: 'demo', email: state.accounts[uid].loginId ?? null, ...(made.restored ? { restored: true } : {}) });
+}
 app.post('/cia/register', userCors, async (req, res) => {
+  // 패스키 가입(2026-11-20) — 아래 두 길과 섞이지 않는다
+  if (req.body?.signup !== undefined) return signupRegister(req, res).catch((e) => { if (!res.headersSent) res.status(500).json({ error: e.message }); });
   const { uid: uidIn, pwd, code, id_token, auid } = req.body ?? {};
   if (!isDec(auid)) return res.status(400).json({ error: `auid, n, ${AUTH_FIELDS} required` });
   // 수정 라운드 1: 모호성 검사를 uid 뿐 아니라 pwd·code 도 보게 복원한다 — {pwd 또는 code} 가 uid 없이 id_token 과 함께 오는 것도

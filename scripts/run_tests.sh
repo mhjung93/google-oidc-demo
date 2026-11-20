@@ -61,7 +61,8 @@ UNIT=(
   tests/test_mode3_attr_schema.mjs
   tests/test_browser_sha256.js
   tests/test_secret_box.mjs
-  tests/test_mode3_vault_hold.mjs
+  # 회로 파일 캐시의 버전(2026-11-20) — 회로를 다시 만들면 브라우저의 옛 zkey·wasm 을 쓰지 않는다
+  tests/test_mode3_zk_assets.mjs
   tests/test_mode3_user_idp_return.mjs
   tests/test_attr_backup.mjs
   tests/test_browser_node_shims.js
@@ -111,6 +112,8 @@ CHAIN=(
   tests/test_cia_cors.mjs
   tests/test_cia_admin_open.mjs
   tests/test_cia_oidc_register.mjs
+  # 패스키 가입(2026-11-20) — uid 예약 → Google 토큰(대역)·π_IdP 로 가입+등록, 같은 Google 계정은 하나·같은 패스키면 복구
+  tests/test_cia_passkey_signup.mjs
   tests/test_rp_social_logins.mjs
   tests/test_cia_issue_race.mjs
   tests/test_cia_registry.mjs
@@ -137,7 +140,7 @@ CHAIN=(
   tests/test_mode3_user_static.mjs
   # 브라우저 사용자 코어(mode3/user/core)를 Node 에서 — 메모리 kv·진짜 snarkjs, 격리 IdP·RP(릴레이 포함)
   tests/test_mode3_user_core.mjs
-  # passkey-web 코어(2026-11-17) — 패스키 대역 salt 공급원·10분 보관·코드 등록(CIA_ISSUE_AUTH=code)·계정 복구
+  # passkey-web 코어(2026-11-17) — 패스키 대역 salt 공급원(저장 없음 — withSalt 범위의 메모만)·코드 등록(CIA_ISSUE_AUTH=code)·계정 복구
   tests/test_mode3_user_core_passkey.mjs
   tests/test_mode3_user_static_passkey_web.mjs
   tests/test_mode3_user_core_oidc.mjs
@@ -161,6 +164,8 @@ BROWSER=(
   tests/test_mode3_user_passkey_web.mjs
   # passkey-web 증명 로그인(2026-11-19) — key 정책: 인증 창 없이 패스키 증명으로 로그인, zkIdP 페이지 "패스키로 로그인", 지갑 창의 오리진 제한
   tests/test_mode3_user_passkey_web_proof.mjs
+  # passkey-web 패스키 가입(2026-11-20) — zkIdP "패스키로 로그인" 이 미등록 브라우저에서 Google(대역)로 확인한 이메일로 계정을 만든다, 복구·거절
+  tests/test_mode3_user_passkey_web_signup.mjs
 )
 
 # Snap 패키지(snap-mode3)의 지역 테스트. 전역 snap 객체를 스텁해 RPC 9종을 검사한다 —

@@ -78,11 +78,13 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
   };
   const provers = { idp: recording('pi_idp', fullProve.idp), cred: recording('pi_cred', fullProve.cred) };
   // passkey-web(스펙 2026-11-17-mode3-passkey-web W3·W4): salt 는 패스키 PRF 로 그때그때 만든다 — 주입된 passkey.derive({ credentialId }) → { credentialId, s_u }
-  // (브라우저는 Mode3Passkey.derivePrf, 테스트는 대역). 금고에는 10분 보관분(passkeyHold)만 두고 secrets.s_u·seed 는 늘 null 이다.
+  // (브라우저는 Mode3Passkey.derivePrf, 테스트는 대역). salt 는 어디에도 저장하지 않는다 — 금고의 secrets.s_u·seed 는 늘 null 이고, 한 동작(withSalt 범위) 안에서만 메모리로 다시 쓴다.
   const PK = config.secrets === 'passkey-web';
   if (PK && typeof passkey?.derive !== 'function') throw new Error('createUserCore: passkey-web 은 passkey.derive 가 필요하다');
-  const holdMs = (config.passkeyHoldSeconds ?? 600) * 1000;
-  const vault = createVault(kv, { now, holdMs });
+  const vault = createVault(kv, { now });
+  // 2026-11-20(사용자 요청): salt 의 10분 보관(금고 kv `passkeyHold`)을 없앴다 — 예전 버전이 남긴 보관분은 처음 한 번(status·saltNow) 지운다.
+  let oldHoldPurged = false;
+  const purgeOldHold = async () => { if (!PK || oldHoldPurged) return; await kv.del('passkeyHold'); oldHoldPurged = true; };
   const chain = createChain({ provider, canonProvider, logAddress: config.logAddress, mirrorAddress: config.mirrorAddress });
   const idp = createIdp({ ciaUrl: config.ciaUrl, fetch, pinnedPk: config.pkCia ?? null, now });
   const TTL = BigInt(config.ttlBlocks ?? 300), GRID = BigInt(config.heightGrid ?? 100);
@@ -93,9 +95,9 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
   let pendingReg = null;
   /** 세 체인 경로(login·revalidate·tx)의 설정 검사 — 에이전트 chainConfigMissing 의 등가. */
   const chainMissing = () => chain.missing();
-  // withSalt 범위(계획 R-8): 범위 안에서 처음 얻은 salt 를 메모리로 재사용한다 — 보관 0초이거나 범위 도중 보관이 끝나도 패스키는 한 번만. 가장 바깥 범위가 끝나면 버린다.
-  // saltFresh(스펙 2026-11-19 passkey-proof-login L4): withSalt(fn, { fresh: true }) 범위의 첫 salt 는 보관분을 건너뛰고 패스키에서 새로 얻는다 — 로그인마다 패스키 한 번.
-  let saltDepth = 0, saltMemo = null, saltFresh = false;
+  // withSalt 범위(계획 R-8): 범위 안에서 처음 얻은 salt 를 메모리로 재사용한다 — 한 범위에서 패스키는 한 번만. 가장 바깥 범위가 끝나면 버린다.
+  // 범위 밖의 동작은 salt 가 필요할 때마다 패스키를 묻는다(2026-11-20: 저장된 보관분이 없다).
+  let saltDepth = 0, saltMemo = null;
   // ---- 로그인 전체 플로우 기록(스펙 2026-11-19 login-flow-and-phone-passkey F1~F4) ----
   // login() 한 번이 도는 동안의 단계별 시간을 모은다 — 성공하면 kv `loginFlow` 에 가장 최근 것 하나만 둔다(loginFlow() 가 읽는다). 공개값뿐이다.
   // 시간은 performance.now()(밀리초 아래까지 — 가명·난수는 0.1ms 안팎이다), 없으면 주입된 now. login 밖에서는 flowRec 이 null 이라 아무것도 남지 않는다.
@@ -128,28 +130,25 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     if (!vault.hasVault()) await vault.setup(null);
     else if (!(await vault.key())) throw tag('locked');
   }
-  /** 지금 쓸 salt(10진 문자열). passkey-web: withSalt 메모 → 금고 보관분 → 패스키(R-8·R-9). 패스키로 얻은 salt 는 credential ID 가 연결된 것과 같고
-   *  등록이 있으면 auid 가 맞을 때만 쓰고 보관한다 — 아니면 passkey_mismatch. 연결된 패스키가 없으면 passkey_setup_required. 그 밖의 모드는 금고의 secrets.s_u. */
+  /** 지금 쓸 salt(10진 문자열). passkey-web: withSalt 메모 → 패스키(R-8). 패스키로 얻은 salt 는 credential ID 가 연결된 것과 같고
+   *  등록이 있으면 auid 가 맞을 때만 쓴다 — 아니면 passkey_mismatch. 연결된 패스키가 없으면 passkey_setup_required. salt 는 저장하지 않는다(범위 안의 메모뿐).
+   *  그 밖의 모드는 금고의 secrets.s_u. */
   async function saltNow() {
     if (!PK) return (await vault.readSecrets()).s_u;
+    await purgeOldHold();
     if (saltMemo) return saltMemo;
     const pk = (await kv.get('passkey')) ?? null;
     if (!pk?.credentialId) throw tag('passkey_setup_required');
     await ensureVault();
-    let s = saltFresh ? null : await vault.heldSalt();
-    if (!s) {
-      // 연결할 때 둔 transports·힌트를 그대로 싣는다(휴대폰 패스키면 브라우저가 곧장 휴대폰으로 간다 — 스펙 2026-11-19 P2)
-      const td = tick();
-      const d = await passkey.derive({ credentialId: pk.credentialId, ...(pk.info?.transports?.length ? { transports: pk.info.transports } : {}), ...(pk.info?.hint ? { hints: [pk.info.hint] } : {}) });
-      scopeDerive = { ms: tick() - td, t0: td };
-      if (d?.credentialId !== pk.credentialId) throw tag('passkey_mismatch');
-      if (!isSalt(d.s_u)) throw tag('passkey_bad_salt');
-      const reg = await getReg();
-      if (reg && (await auidOf({ s_u: BigInt(d.s_u) })).toString() !== String(reg.auid)) throw tag('passkey_mismatch');
-      s = BigInt(d.s_u).toString();
-      await vault.holdSalt(s);
-      saltFresh = false;   // 이 범위의 새 확인은 끝났다 — 뒤의 동작은 메모·보관분
-    }
+    // 연결할 때 둔 transports·힌트를 그대로 싣는다(휴대폰 패스키면 브라우저가 곧장 휴대폰으로 간다 — 스펙 2026-11-19 P2)
+    const td = tick();
+    const d = await passkey.derive({ credentialId: pk.credentialId, ...(pk.info?.transports?.length ? { transports: pk.info.transports } : {}), ...(pk.info?.hint ? { hints: [pk.info.hint] } : {}) });
+    scopeDerive = { ms: tick() - td, t0: td };
+    if (d?.credentialId !== pk.credentialId) throw tag('passkey_mismatch');
+    if (!isSalt(d.s_u)) throw tag('passkey_bad_salt');
+    const reg = await getReg();
+    if (reg && (await auidOf({ s_u: BigInt(d.s_u) })).toString() !== String(reg.auid)) throw tag('passkey_mismatch');
+    const s = BigInt(d.s_u).toString();
     if (saltDepth > 0) saltMemo = s;
     return s;
   }
@@ -171,7 +170,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     const reg = await getReg(); if (!reg) return null;
     if (!(await vault.key())) return 'locked';
     const sec = await vault.readSecrets();
-    const s_u = PK ? await saltNow() : sec.s_u;   // R-7: passkey-web 은 보관분·패스키로 미리 받는다(아래 동기 registration() 이 읽는다)
+    const s_u = PK ? await saltNow() : sec.s_u;   // R-7: passkey-web 은 패스키(범위 안이면 메모)로 미리 받는다(아래 동기 registration() 이 읽는다)
     return {
       registration: () => ({ uid: reg.uid, s_u, attrs: reg.attrs, auid: reg.auid, slot: reg.slot, profile: reg.profile ?? null }),
       // blind_u 가 금고에 없으면(손상) 자격증명이 없는 것으로 본다 — chooseUserCred 가 새 C_u 를 받는다.
@@ -512,11 +511,13 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     // 금고는 IdP 에 등록하기 **전에** 만든다 — 등록이 끝났는데 비밀을 둘 곳이 없는 상태(재로그인 불가)를 만들지 않는다.
     if (needSetup) await vault.setup(hasVaultPw ? vaultPassword : null);
     // 인증(스펙 2026-11-12 no-pk-u §3.2): 등록용 ctx(n)에 묶인 π_IdP. Google 은 토큰 nonce 에 쓴 n(보류 재료), 그 밖은 여기서 뽑는다.
+    // 패스키 가입(스펙 2026-11-20 passkey-google-signup G6)은 Google 로 가기 전에 만들어 둔 요청 본문(reg.body — auid·n·증명, 공개값뿐)을 그대로 낸다 — 이때는 s_u 가 없다.
     const n = reg.n ?? randomScalar();
-    const r = await idp.post('/cia/register', { ...auth, auid: reg.auid.toString(), n: n.toString(), ...(await authProof(uid, reg.s_u, await registerCtx({ n }), { purpose: 'register' })) });
+    const proofBody = reg.body ?? { auid: reg.auid.toString(), n: n.toString(), ...(await authProof(uid, reg.s_u, await registerCtx({ n }), { purpose: 'register' })) };
+    const r = await idp.post('/cia/register', { ...auth, ...proofBody });
     if (r.status !== 201) {
       // OIDC 사유(oidc_disabled·oidc_invalid·oidc_nonce_mismatch·oidc_unavailable)는 그 사유·상태 그대로 — 화면이 원인을 나눠 보여준다.
-      if (typeof r.body?.reason === 'string' && r.body.reason.startsWith('oidc_')) return R(r.status, { reason: r.body.reason, cia: r.body });
+      if (typeof r.body?.reason === 'string' && (r.body.reason.startsWith('oidc_') || r.body.reason.startsWith('signup_'))) return R(r.status, { reason: r.body.reason, cia: r.body });   // signup_*(2026-11-20): 가입 길의 사유도 그대로 — 창이 signup_exists 의 uid 로 복구한다
       const status = r.status === 401 || r.status === 409 ? r.status : 502;
       return R(status, { reason: 'register_failed', cia: r.body });
     }
@@ -525,7 +526,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     if (r.body.uid !== undefined && r.body.uid !== uid) return R(502, { reason: 'register_failed', detail: 'uid 불일치', cia: r.body });
     await noteSchemaHint(r.body.schemaHash ?? null);
     // 비밀을 먼저 금고에 쓰고 공개 부분을 쓴다 — registration 이 있으면 비밀도 있다.
-    // passkey-web: salt 는 영구 저장하지 않는다(W4) — secrets.s_u·seed 는 null, salt 는 보관분·패스키로만.
+    // passkey-web: salt 는 저장하지 않는다(W4) — secrets.s_u·seed 는 null, salt 는 패스키로만.
     await vault.writeSecrets({ s_u: PK ? null : reg.s_u.toString(), seed: PK ? null : (reg.seed ?? null), blind_u: null, sessionKeys: {} });
     const savedProvider = r.body.provider ?? providerName;
     await kv.set('registration', { uid, auid: reg.auid.toString(), slot: r.body.slot, provider: savedProvider, profile: normalized, attrs, userCred: null });
@@ -535,10 +536,14 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     return R(201, 'id_token' in auth ? { ...body, provider: savedProvider } : body);
   }
 
+  /** 패스키 가입 응답에서 화면이 쓰는 것 — 아이디가 된 이메일과 복구 여부. */
+  const signupExtra = (cia) => ({ email: typeof cia.email === 'string' ? cia.email : null, ...(cia.restored === true ? { restored: true } : {}) });
+
   // ---- 동작(에이전트 라우트의 등가) ----
   const ops = {
     /** 에이전트 GET /wallet/status 의 등가(sync:true = ?sync=1). 비밀 없음 — 세션의 sessionAddress 는 레코드에 저장해 둔 값이다. rcl 은 null(R2). */
     async status({ sync = false } = {}) {
+      await purgeOldHold();
       await vault.refresh();
       await pruneUnknownSessions();   // RP 가 잊은 세션(로그아웃·대체)은 목록에서도 바로 사라진다(2026-10-16)
       let head = null;
@@ -753,7 +758,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       // 비밀이 처음 필요한 자리 — 에이전트의 secretSourceFor 위치. 잠겨 있으면 여기서 423(인증서·팩토리 검사는 비밀 없이 끝났다).
       const tsrc = tick();
       const src = await source();
-      // 패스키 단계: 이 범위에서 패스키로 얻었으면 그 시간(사람이 누르는 시간 포함), 보관분·금고에서 읽었으면 held
+      // 패스키 단계: 이 범위에서 패스키로 얻었으면 그 시간(사람이 누르는 시간 포함), 금고에서 읽었으면(web 모드) held — passkey-web 은 늘 패스키에서 얻는다(held 아님)
       // before(리뷰 2026-11-19 I-1): 같은 승인 창에서 로그인 함수에 들어오기 전(등록하면서)에 패스키를 물었다 — 그 시간은 totalMs(로그인 시작부터) 밖이라 화면이 합계에서 뺀다.
       flowStep('passkey', scopeDerive ? scopeDerive.ms : tick() - tsrc, { held: !scopeDerive, ...(scopeDerive && flowRec && scopeDerive.t0 < flowRec.t0 ? { before: true } : {}) });
       if (src === null) return R(409, { reason: 'not_registered' });
@@ -1149,7 +1154,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       return R(200, { uid, slot: r0.body.slot, auid: auid.toString(), format: seedHex ? 'seed' : 'raw' });
     },
     async wipe({ keepPasskey = true } = {}) {
-      // R-12: passkey-web 은 패스키 연결(credential ID — 공개값)을 남긴다 — 보관분·금고·등록·세션은 지운다. 연결 끊기는 passkeyDisconnect.
+      // R-12: passkey-web 은 패스키 연결(credential ID — 공개값)을 남긴다 — 금고·등록·세션은(예전 버전의 salt 보관분도) 지운다. 연결 끊기는 passkeyDisconnect.
       // 2026-11-18(사용자 요청): 데모 리셋은 연결도 끊는다 — 사용자 페이지가 데모 세대가 바뀌었을 때 keepPasskey:false 로 부른다(화면의 "모두 지우기" 는 기본값 그대로).
       const keep = PK && keepPasskey ? ((await kv.get('passkey')) ?? null) : null;
       await kv.clear(); vault.reset(); lastSync = null; lastRegistry = null; pendingReg = null; saltMemo = null;
@@ -1159,15 +1164,15 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     /** 가장 최근에 성공한 로그인의 단계별 기록(스펙 2026-11-19 login-flow F1) — 없으면 flow null. 화면의 "로그인 전체 플로우" 카드가 읽는다. */
     async loginFlow() { return R(200, { flow: (await kv.get('loginFlow')) ?? null }); },
     // ---- passkey-web(스펙 2026-11-17-mode3-passkey-web; 에이전트 /wallet/passkey/* 의 등가) ----
-    /** 연결된 패스키(공개값)와 보관 만료 시각(ms). salt 는 싣지 않는다. */
+    /** 연결된 패스키(공개값). salt 는 싣지 않는다. */
     async passkeyState() {
       if (!PK) return R(409, { reason: 'not_passkey_mode' });
       const pk = (await kv.get('passkey')) ?? null;
-      return R(200, { credentialId: pk?.credentialId ?? null, createdAt: pk?.createdAt ?? null, heldUntil: await vault.heldUntil(), info: pk?.info ?? null });
+      return R(200, { credentialId: pk?.credentialId ?? null, createdAt: pk?.createdAt ?? null, info: pk?.info ?? null });
     },
     /** 패스키 연결(만들기 또는 이미 있는 것 쓰기): 화면이 PRF 로 만든 s_u 를 함께 낸다. 등록이 있으면 그 auid 와 대조하고(아니면 저장하지 않는다 —
-     *  에이전트 리뷰 I-2), 같은 credential 의 보관분이 있으면 그 salt 와도 대조한 뒤(다르면 409 passkey_mismatch — 덮지 않는다), 자동 금고를 만들고
-     *  credential 을 저장하고 salt 를 보관한다(R-9 — 등록 전에도). */
+     *  에이전트 리뷰 I-2), 자동 금고를 만들고 credential(공개값)을 저장한다. s_u 는 형식·대조에만 쓰고 저장하지 않는다(2026-11-20: 10분 보관 제거) —
+     *  등록 전에는 대조할 것이 없다(그때의 salt 는 등록할 때 패스키에서 다시 얻는다). */
     async passkeyConnect({ credentialId, s_u = null, info: infoIn = null } = {}) {
       if (!PK) return R(409, { reason: 'not_passkey_mode' });
       if (typeof credentialId !== 'string' || !/^[A-Za-z0-9_-]{1,1024}$/.test(credentialId)) return R(400, { reason: 'bad_credential_id' });
@@ -1180,21 +1185,18 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       const reg = await getReg();
       if (reg && (await auidOf({ s_u: BigInt(s_u) })).toString() !== String(reg.auid)) return R(409, { reason: 'passkey_mismatch' });
       await ensureVault();
-      // 같은 패스키(PRF 는 결정적)인데 보관분과 다른 salt 면 덮지 않는다 — 등록 전에는 위의 auid 대조가 없어 여기가 유일한 대조다. 보관분이 없으면(만료·끔) 대조할 것이 없다.
-      const held = pk ? await vault.held() : null;
-      if (held && held.s_u !== BigInt(s_u).toString()) return R(409, { reason: 'passkey_mismatch' });
       const keepInfo = info ?? pk?.info ?? null;   // 다시 연결하면 새 정보로 바꾼다 — 안 주면 있던 것을 둔다
       if (!pk || info) await kv.set('passkey', { credentialId, createdAt: pk?.createdAt ?? now(), ...(keepInfo ? { info: keepInfo } : {}) });
-      return R(200, { ok: true, held: await vault.holdSalt(BigInt(s_u).toString()) });
+      return R(200, { ok: true });
     },
-    /** 패스키 연결 끊기 — 등록이 남아 있으면 409 registered(그 계정을 쓸 수 없게 된다). 보관분과 withSalt 메모도 지운다. */
+    /** 패스키 연결 끊기 — 등록이 남아 있으면 409 registered(그 계정을 쓸 수 없게 된다). withSalt 메모(와 예전 버전의 보관분)도 지운다. */
     async passkeyDisconnect() {
       if (!PK) return R(409, { reason: 'not_passkey_mode' });
       if (await getReg()) return R(409, { reason: 'registered' });
-      await kv.del('passkey'); await vault.clearHold(); saltMemo = null;   // 진행 중인 withSalt 범위의 메모도 — 끊은 뒤에는 그 salt 를 쓰지 않는다
+      await kv.del('passkey'); await kv.del('passkeyHold'); saltMemo = null;   // 진행 중인 withSalt 범위의 메모도 — 끊은 뒤에는 그 salt 를 쓰지 않는다
       return R(200, { ok: true });
     },
-    /** "salt 보기"(§2 4단계 — 속성 도구에 넣을 값): 보관분 또는 패스키. 화면에만 보인다. */
+    /** "salt 보기"(§2 4단계 — 속성 도구에 넣을 값): 패스키에서 얻는다. 화면에만 보인다. */
     async showSalt() {
       if (!PK) return R(409, { reason: 'not_passkey_mode' });
       return R(200, { s_u: await saltNow() });
@@ -1212,15 +1214,52 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       const reg = src.registration();
       return R(200, { uid: String(reg.uid), nonce, ...(await authProof(reg.uid, reg.s_u, ctx, { purpose: 'idp_login' })) });
     },
+    // ---- 패스키 가입(스펙 2026-11-20 passkey-google-signup §2) — zkIdP 페이지의 "패스키로 로그인" 이 미등록 브라우저에서 Google 로 확인한 이메일로 계정을 만든다 ----
+    /** 1단계(Google 로 가기 전): 패스키 → s_u, zkIdP 에서 uid 를 예약받아 등록 증명과 (loginNonce 가 있으면) zkIdP 로그인 증명을 미리 만든다. π_IdP 의 공개 입력에
+     *  uid 가 들어가서 uid 를 먼저 받아야 한다. 돌려주는 것은 공개값뿐이다(uid·auid·n·tag·증명) — 창이 Google 을 다녀오는 동안 sessionStorage 에 둔다. salt 는 싣지 않는다.
+     *  googleNonce = regNonce(tag): Google 토큰을 이 패스키의 이 등록 요청에 묶는다(G4). salt: 방금 만든 패스키의 값(창이 넘긴다 — 패스키를 다시 묻지 않게), 없으면 패스키에서. */
+    async signupPrepare({ loginNonce = null, salt = null } = {}) {
+      if (!PK) return R(409, { reason: 'not_passkey_mode' });
+      const existing = await getReg();
+      if (existing) return R(409, { reason: 'already_registered', uid: existing.uid });
+      let lctx = null;
+      if (loginNonce !== null) { try { if (!isDec(loginNonce)) throw new Error('nonce'); lctx = await loginCtx({ nonce: BigInt(loginNonce) }); } catch { return R(400, { reason: 'malformed' }); } }
+      if (!((await kv.get('passkey')) ?? null)?.credentialId) return R(409, { reason: 'passkey_setup_required' });
+      if (salt !== null && !isSalt(salt)) return R(400, { reason: 'passkey_bad_salt' });
+      const s = salt !== null ? BigInt(salt).toString() : await saltNow();
+      const auid = (await auidOf({ s_u: BigInt(s) })).toString();
+      let rv;
+      try { rv = await idp.post('/cia/signup/reserve', {}); } catch (e) { return R(502, { reason: 'idp_unreachable', detail: e.message }); }
+      if (rv.status !== 200 || !isDec(rv.body?.uid) || BigInt(rv.body.uid) >= SCALAR_MAX) return R(rv.status === 403 ? 403 : 502, { reason: typeof rv.body?.reason === 'string' ? rv.body.reason : 'signup_failed', cia: rv.body });
+      const uid = BigInt(rv.body.uid).toString(), n = randomScalar();
+      const reg = { auid, n: n.toString(), ...(await authProof(uid, s, await registerCtx({ n }), { purpose: 'register' })) };
+      const login = lctx ? { uid, nonce: loginNonce, ...(await authProof(uid, s, lctx, { purpose: 'idp_login' })) } : null;
+      return R(200, { uid, googleNonce: regNonce(BigInt(reg.tag)), reg, login });
+    },
+    /** 2단계(Google 에서 돌아온 뒤): 1단계의 요청 본문과 Google 토큰으로 가입+등록한다 — 패스키를 묻지 않는다(증명은 이미 있다). 속성은 기본값(G5).
+     *  이미 그 Google 계정의 zkIdP 계정이 있으면 409 signup_exists(본문 cia.uid) — 창이 signupRestore 로 잇는다. */
+    async signupFinish({ idToken, uid, reg } = {}) {
+      if (!PK) return R(409, { reason: 'not_passkey_mode' });
+      if (typeof idToken !== 'string' || !idToken || !isDec(uid) || !reg || typeof reg !== 'object' || !isDec(reg.auid) || !isDec(reg.n)) return R(400, { reason: 'malformed' });
+      return registerWith({ uid: BigInt(uid).toString(), auth: { signup: true, uid: BigInt(uid).toString(), id_token: idToken }, makeReg: async () => ({ s_u: null, auid: BigInt(reg.auid), seed: null, body: reg }), profileIn: null, vaultPassword: null, providerName: 'demo', extraBody: signupExtra });
+    },
+    /** 복구(G3·G7): 그 Google 계정의 zkIdP 계정(uid)이 이미 있고 같은 패스키다 — 그 uid 로 등록 증명을 다시 만들어(패스키 한 번) 기존 등록을 돌려받는다.
+     *  n 은 1단계의 값 그대로여야 한다 — tag 가 같아야 같은 Google 토큰이 이 요청에 맞는다. */
+    async signupRestore({ idToken, uid, n } = {}) {
+      if (!PK) return R(409, { reason: 'not_passkey_mode' });
+      if (typeof idToken !== 'string' || !idToken || !isDec(uid) || BigInt(uid) >= SCALAR_MAX || !isDec(n)) return R(400, { reason: 'malformed' });
+      const s = await saltNow();
+      return registerWith({ uid: BigInt(uid).toString(), auth: { signup: true, uid: BigInt(uid).toString(), id_token: idToken }, makeReg: async () => ({ s_u: BigInt(s), auid: await auidOf({ s_u: BigInt(s) }), seed: null, n: BigInt(n) }), profileIn: null, vaultPassword: null, providerName: 'demo', extraBody: signupExtra });
+    },
     /** 이 패스키 salt 의 auid — 인증 창(등록·복구)에 넣는 값. salt 는 응답에 없다. */
     async passkeyAuid() {
       if (!PK) return R(409, { reason: 'not_passkey_mode' });
       return R(200, { auid: (await auidOf({ s_u: BigInt(await saltNow()) })).toString() });
     },
-    /** 인증 창 등록 코드로 등록(W5·W6, 에이전트 /wallet/register {uid, code, s_u} 의 등가): salt 는 패스키(보관분)에서. IdP 를 부르기 **전에**
-     *  속성 도구 기록의 salt(recordSalt)와 인증 창에 넣은 auid 를 대조한다 — 다르면 등록 코드를 태우지 않고 409. 같은 계정·같은 auid 의 재등록(계정 복구)이면
+    /** 인증 창 등록 코드로 등록(W5·W6, 에이전트 /wallet/register {uid, code, s_u} 의 등가): salt 는 패스키에서. IdP 를 부르기 **전에**
+     *  속성 도구 기록(recordAuid — 2026-11-20 부터 기록에는 salt 가 없고 그 salt 의 auid 만 있다. 옛 기록은 recordSalt)과 인증 창에 넣은 auid 를 대조한다 — 다르면 등록 코드를 태우지 않고 409. 같은 계정·같은 auid 의 재등록(계정 복구)이면
      *  IdP 가 기존 슬롯을 돌려주며 restored:true 를 싣는다. 201 본문의 issue_code 는 이어지는 발급(login 의 authCode)용 — 저장하지 않는다. */
-    async registerWithCode({ uid, code, auid = null, profile = null, recordSalt = null } = {}) {
+    async registerWithCode({ uid, code, auid = null, profile = null, recordSalt = null, recordAuid = null } = {}) {
       if (!PK) return R(409, { reason: 'not_passkey_mode' });
       if (!isDec(uid) || typeof code !== 'string' || !code) return R(400, { error: 'uid(10진 문자열), code 필요' });
       if (BigInt(uid) >= SCALAR_MAX) return R(400, { error: 'uid 는 2^250 미만' });
@@ -1229,17 +1268,19 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       const s = await saltNow();
       const myAuid = (await auidOf({ s_u: BigInt(s) })).toString();
       if (recordSalt !== null && !(isDec(String(recordSalt)) && BigInt(recordSalt).toString() === s)) return R(409, { reason: 'attr_record_salt_mismatch' });
+      if (recordAuid !== null && !(isDec(String(recordAuid)) && BigInt(recordAuid).toString() === myAuid)) return R(409, { reason: 'attr_record_salt_mismatch' });   // 다른 salt 로 만든 기록(사유 이름은 그대로)
       if (auid !== null && !(isDec(String(auid)) && BigInt(auid).toString() === myAuid)) return R(409, { reason: 'register_auid_mismatch' });
       return registerWith({
         uid, auth: { uid, code }, makeReg: async () => ({ s_u: BigInt(s), auid: BigInt(myAuid), seed: null }), profileIn: profile, vaultPassword: null, providerName: 'demo',
         extraBody: (cia) => ({ issue_code: typeof cia.issue_code === 'string' ? cia.issue_code : null, ...(cia.restored === true ? { restored: true } : {}) }),
       });
     },
-    /** 속성 도구 기록으로 속성 맞추기(W5): 기록의 salt 로 만든 auid 가 등록과 같을 때만 saveProfile — 다르면 409(속성을 바꾸지 않는다). */
-    async syncProfileFromRecord({ recordSalt, profile } = {}) {
+    /** 속성 도구 기록으로 속성 맞추기(W5): 기록의 auid(2026-11-20 — 기록에는 salt 가 없다. 옛 기록은 그 salt 로 계산)가 등록과 같을 때만 saveProfile — 다르면 409(속성을 바꾸지 않는다). */
+    async syncProfileFromRecord({ recordSalt = null, recordAuid = null, profile } = {}) {
       const reg = await getReg();
       if (!reg) return R(409, { reason: 'not_registered' });
-      if (!isSalt(String(recordSalt ?? '')) || (await auidOf({ s_u: BigInt(recordSalt) })).toString() !== String(reg.auid)) return R(409, { reason: 'attr_record_salt_mismatch' });
+      const recAuid = recordAuid !== null ? (isDec(String(recordAuid)) ? BigInt(recordAuid).toString() : null) : isSalt(String(recordSalt ?? '')) ? (await auidOf({ s_u: BigInt(recordSalt) })).toString() : null;
+      if (recAuid === null || recAuid !== String(reg.auid)) return R(409, { reason: 'attr_record_salt_mismatch' });
       return ops.saveProfile(profile);
     },
   };
@@ -1297,13 +1338,14 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
   const core = { vault, chain, idp };
   for (const [name, fn] of Object.entries(ops)) core[name] = guard(name, fn);
   /** 한 동작 = 패스키 최대 한 번(R-8): fn 안의 동작은 처음 얻은 salt 를 메모리로 다시 쓴다. 중첩 가능 — 가장 바깥 범위가 끝나면(던져도) 메모를 버린다.
-   *  fresh(스펙 2026-11-19 passkey-proof-login L4): 로그인(새 세션 발급·zkIdP 로그인)의 범위 — 첫 salt 를 패스키에서 새로 얻고 그 값으로 보관을 갱신한다. */
+   *  fresh(스펙 2026-11-19 passkey-proof-login L4): 호출부 호환으로 받는다 — 2026-11-20 부터 저장된 보관분이 없어 모든 범위의 첫 salt 가 패스키에서 오므로,
+   *  남은 뜻은 "앞선(바깥 범위의) 메모를 비운다" 뿐이다. */
   core.withSalt = async (fn, { fresh = false } = {}) => {
     if (saltDepth === 0) scopeDerive = null;
     saltDepth++;
-    if (fresh) { saltFresh = true; saltMemo = null; }   // L4: 보관분·앞선 메모로 건너뛰지 않는다. 패스키가 실패하면 그대로 실패한다(보관분으로 넘어가지 않는다)
+    if (fresh) saltMemo = null;   // L4: 앞선 메모로 건너뛰지 않는다. 패스키가 실패하면 그대로 실패한다
     try { return await fn(); }
-    finally { if (--saltDepth === 0) { saltMemo = null; saltFresh = false; } }
+    finally { if (--saltDepth === 0) saltMemo = null; }
   };
   /** Google(OIDC) 등록 1단계(스펙 2026-10-16 §3.1; 2026-11-13 스펙 no-pk-u §3.3): 등록 재료(s_u)와 난수 n 을 먼저 만들고 토큰을 그 등록 요청의 tag 에 묶을
    *  nonce = regNonce(Poseidon(T_TAG, s_u, registerCtx(n))) 를 낸다 — uid 는 토큰의 sub 로 정해지므로 auid 는 completeRegistration 에서 만든다. 재료는 이 페이지의

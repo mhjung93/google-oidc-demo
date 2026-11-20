@@ -1575,7 +1575,7 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
 ## 설치 없는 패스키 경로 (`passkey-web`, 2026-11-17)
 
 스펙 `docs/superpowers/specs/2026-11-17-mode3-passkey-web-design.md`. MetaMask·스냅·에이전트 없이 **브라우저와 패스키만**으로 도는 네 번째 지갑 모드다. 사용자 페이지는 웹 모드 앱(`mode3/user/`)이고,
-호스트 PC 의 비밀 없는 정적 서버(`mode3_user_static.js`, `MODE3_WALLET_SECRETS=passkey-web`)가 `https://wallet.zkd.test:5100` 으로 낸다. salt 는 패스키(PRF)에서 유도하고 금고의 영구 비밀로는 두지 않는다 — 다만 아래 "salt 10분 보관"(암호문)과
+호스트 PC 의 비밀 없는 정적 서버(`mode3_user_static.js`, `MODE3_WALLET_SECRETS=passkey-web`)가 `https://wallet.zkd.test:5100` 으로 낸다. salt 는 패스키(PRF)에서 유도하고 금고에 두지 않는다(2026-11-20 부터 10분 보관도 없다 — 아래 "salt 를 저장하지 않는다") — 다만 아래
 "예외 — 속성 커밋먼트 도구 기록"(평문)이 있으니 "어디에도 저장하지 않는다" 는 아니다(유도식은 위 "패스키 경로"와 같다 — 바뀌지 않는다). 회로·컨트랙트·IdP 는 바뀌지 않는다.
 
 - **준비(처음 한 번, 사용자가 직접)**: `bash scripts/zkd_tls_setup.sh` — sudo 가 필요하다(`libnss3-tools` 설치·`/etc/hosts` 에 네 이름 추가·데모 CA 를 Chrome 신뢰 저장소에 등록). 끝나면 **Chrome 을 완전히 다시 시작**한다.
@@ -1592,8 +1592,8 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
   IP 주소로 열면 패스키가 동작하지 않는다 — 반드시 이름으로. 서버 간 호출(RP→IdP)과 상태 확인은 IP 로 부르고 인증서의 IP SAN 으로 검증한다(`CIA_PUBLIC_URL`·RP 의 `MODE3_CIA_URL` = `https://<IdP IP>:4100`).
   정적 서버는 호스트 PC 에서만 열린다(`wallet.zkd.test` → `127.0.0.1`) — 다른 PC 의 브라우저에서는 이 데모 지갑을 열 수 없다.
 - **흐름(스펙 §2 1~8)**: ① 준비 → ② 리셋 → ③ 지갑 페이지에서 "패스키 만들기"(PRF 를 켜고 한 번 더 계산해 같은 값인지 확인) 또는 "이미 있는 패스키 쓰기" → ④ 속성 도구에서 커밋먼트(salt 는 "salt 보기"에서 복사)
-  → ⑤ 서비스에서 "zkIdP 로 로그인" → 팝업 → (미등록이면) zkIdP 인증 창에서 아이디·비밀번호·auid 로 등록 → 돌아와 패스키(또는 보관분)로 salt → 등록·발급·로그인(팝업 하나에 패스키 최대 한 번)
-  → ⑥ 이후 **로그인은 zkIdP 인증 창 없이 패스키 한 번**(2026-11-19 — 보관분으로 건너뛰지 않는다), 재검증·세션 요청·출금은 보관분 salt → ⑦ 저장소를 잃으면 "이미 있는 패스키 쓰기" 와 복구 카드 → ⑧ 데모 리셋은 데모 세대 규칙대로 옛 등록·세션을 지우고 **패스키 연결(credential ID)도 끊는다**(2026-11-18 사용자 요청 — 그전에는 연결을 남겼다). 리셋 뒤 지갑 페이지는 패스키 설정 카드부터 다시 보이고,
+  → ⑤ 서비스에서 "zkIdP 로 로그인" → 팝업 → (미등록이면) zkIdP 인증 창에서 아이디·비밀번호·auid 로 등록 → 돌아와 패스키로 salt → 등록·발급·로그인(팝업 하나에 패스키 최대 한 번)
+  → ⑥ 이후 **로그인은 zkIdP 인증 창 없이 패스키 한 번**(2026-11-19), 재검증·출금도 창마다 패스키 한 번(2026-11-20 — salt 를 보관하지 않는다. 세션 요청은 세션키 서명뿐이라 묻지 않는다) → ⑦ 저장소를 잃으면 "이미 있는 패스키 쓰기" 와 복구 카드 → ⑧ 데모 리셋은 데모 세대 규칙대로 옛 등록·세션을 지우고 **패스키 연결(credential ID)도 끊는다**(2026-11-18 사용자 요청 — 그전에는 연결을 남겼다). 리셋 뒤 지갑 페이지는 패스키 설정 카드부터 다시 보이고,
   패스키 자체는 인증기(Google 비밀번호 관리자 등)에 남아 있어 "이미 있는 패스키 쓰기" 로 같은 salt 를 다시 잇는다("패스키 만들기" 는 새 패스키 = 새 salt). 화면의 "모두 지우기" 는 지금처럼 연결을 남긴다(`core.wipe()` 기본값 — 리셋만 `keepPasskey: false`).
 - **표기 — "zk 클라이언트"(2026-11-18)**: 이 모드에는 MetaMask 스냅이 없으므로 화면 어디에도 "스냅" 을 쓰지 않고 지갑 자리를 **zk 클라이언트**라 부른다. 문구 사전(`mode3/common/strings.js`)의 `noSnap` 이 켜지면
   항목의 `ko_pk`·`en_pk`(따로 쓴 문구)를, 없으면 낱말만 바꾼 문구(`noSnapText` — "zk 스냅"·"스냅 에이전트"·"스냅" → "zk 클라이언트", 조사도 함께)를 낸다. 켜는 것은 `Demo.setWalletKind`(`mode3/common/demo.js`)다 —
@@ -1609,7 +1609,7 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
 - **패스키로 zkIdP 에 로그인(2026-11-19, 스펙 `docs/superpowers/specs/2026-11-19-mode3-passkey-proof-login-design.md`)**: 이 모드에서 zkIdP 의 본인 확인은 아이디·비밀번호가 아니라
   "이 계정 auid 의 s_u 를 안다" 는 증명(π_IdP)이다 — 패스키는 지금 것 하나 그대로이고 IdP 는 패스키를 보지 않는다. 스크립트가 이 모드의 IdP 를 `CIA_ISSUE_AUTH=key` 로 띄우고,
   IdP 는 그 정책을 `/cia/public_keys` 의 `issueAuth` 로 알린다. (1) **서비스 로그인**: 등록된 지갑은 인증 창으로 가지 않고 승인 창에서 패스키 한 번 → 발급·로그인으로 끝난다.
-  로그인(새 세션 발급)은 10분 보관분이 있어도 패스키를 묻는다(`core.withSalt(fn, { fresh: true })`) — 승인 단계와 비밀번호 창이 없는 이 모드에서 로그인에 닿는 사람 손이 이 한 번이다.
+  로그인(새 세션 발급)은 패스키를 묻는다(`core.withSalt(fn, { fresh: true })` — 2026-11-20 부터는 저장된 보관분이 없어 `fresh` 가 아닌 창도 salt 가 필요하면 묻는다) — 승인 단계와 비밀번호 창이 없는 이 모드에서 로그인에 닿는 사람 손이 이 한 번이다.
   (2) **zkIdP 페이지**(`/user` 로그인 카드)에 "패스키로 로그인" 버튼: zkIdP 가 그 브라우저 세션에 1회용 챌린지를 내고(`POST /cia/user/login_challenge`, 180초) 지갑 창(`mode3-idp-login`)이
   `ctx = Poseidon("MODE3CTXLOGIN", nonce)` 로 증명을 만들어 돌려주면 `POST /cia/user/login_proof` 가 세션을 세운다. **지갑 창은 IdP 오리진이 연 창에만 답한다**(다른 사이트가 자기 챌린지로
   증명을 받아 가지 못하게 — `origin_mismatch`). (3) **그대로인 것**: 가입·첫 등록·계정 복구는 아이디·비밀번호(인증 창)이고 비밀번호 로그인 폼도 남는다 — 패스키를 잃었을 때 연결 해제·계정 삭제의 수단이다.
@@ -1632,7 +1632,7 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
 - **"받은 것·검증한 것" 그림(2026-11-19, 데모 시나리오 6·7 — `mode3/common/flow_figure.js`)**: 로그인 때 각자가 무엇을 받아 무엇을 검증했고 무엇을 알 수 없는지를 각자의 화면에 그린다. 값은 그 로그인의 실제 값이다(공개값뿐).
   (1) **zkIdP 관리자 화면**(`/admin` "uid ↔ auid 대응" 표의 "그림" 버튼): 그 계정의 가장 최근 발급에서 받은 것(uid·auid_s·arid_s·C_u·C_s·만료 높이·π_IdP), 검증한 것(계정·π_IdP 의 네 가지·높이),
   알 수 없는 것(어느 서비스인지·s_u·속성 값·임시 공개키), 돌려준 것(토큰 서명·ID 토큰). zkIdP 는 계정마다 그 값 한 벌(`lastIssue`)을 덮어써 둔다(이력 없음, tag·증명은 남기지 않는다).
-  (2) **서비스 화면**("알려 준 것" 칸 아래): zk-Delegation 로그인이면 받은 것(π_session·PPID·arid·auid_s·arid_s·pk_i·만료 높이·두 root·챌린지·세션키 서명), 검증한 것, 알 수 없는 것(uid·auid·속성 값·s_u).
+  (2) **서비스 화면**("알려 준 것" 칸 아래): zk-Delegation 로그인이면 받은 것(π_RP·PPID·arid·auid_s·arid_s·pk_i·만료 높이·두 root·챌린지·세션키 서명), 검증한 것, 알 수 없는 것(uid·auid·속성 값·s_u).
   Google·일반 OIDC 로그인이면 받은 ID 토큰(iss·sub·aud·nonce), 검증한 것, 그리고 **알게 되는 것**(uid 가 모든 서비스에서 같다·발급자가 어느 서비스인지 안다). 좁은 칸에서는 세 칸이 위아래로 쌓인다.
 - **trace tag 없는 개봉(2026-11-19, 스펙 `docs/superpowers/specs/2026-11-19-mode3-trace-without-tag-design.md` — 모든 모드 공통)**: π_cred 와 거래에서 트레이스 태그(와 `pk_trace`)를 뺐다 — 공개 입력 34 → 29개
   (`[10]` disc_mask … `[25]` auid_s `[26]` arid_s `[27]` r_s `[28]` counter, 정본은 `lib/mode3_onchain.js` `PUB_INDEX`). `Mode3Wallet.execute` 의 배열·서명 다이제스트·`Mode3Auth` 이벤트에도 태그가 없다.
@@ -1657,22 +1657,23 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
   동기화 여부가 보인다. **한계**: 시연 머신에 블루투스 어댑터가 없어 USB 동글이 필요하고, 실제 휴대폰에서 PRF 가 나오는지는 미확인이다(자동 테스트는 WebAuthn 스텁으로 옵션·저장·표시만 본다).
 - **영지식 증명 카드(2026-11-18, web·passkey-web 사용자 페이지)**: 첫 화면의 "보낸 트랜잭션" 아래 "영지식 증명" 카드가 이 브라우저가 만든 증명을 보여 준다. 코어가 증명을 만들 때마다 증명과 공개 입력을
   IndexedDB(kv `proofs`)에 최근 30개 남기고(`core.proofs()`, 용도·대상 꼬리표와 함께 — 승인 창에서 만든 것도 같은 저장소라 첫 화면에서 보인다), "모두 지우기"·데모 리셋이 함께 지운다. 캐시에서 다시 쓴 증명(같은 조건의 재검증 등)은
-  새 줄이 생기지 않는다. 화면에서 회로 `pi_cred` 의 증명은 **π_session(π_s)** 로 적는다. 기본은 π_session 만 보이고 "zkIdP 에 낸 π_IdP 도 보기" 로 등록·세션 발급·슬롯 조회·세션 폐기의 π_IdP 를 더 본다.
-  "보기" 창은 공개 입력을 묶음(좌표 쌍·배열은 한 줄)으로 보이는데, π_session 은 **번호 1~7(arid·pk_i·max_height·chainid·allowAgent·revRoot·regRoot)만 기본**이고 "전체 보기" 가 34개를 다 편다(π_IdP 10개는 전부 보인다).
+  새 줄이 생기지 않는다. 화면에서 회로 `pi_cred` 의 증명은 **π_RP** 로 적는다(2026-11-20 사용자 결정 — 전에는 π_session(π_s). 서비스에 내는 증명이라 π_IdP 와 짝이 된다. 회로·코드 이름은 그대로 `pi_cred`). 기본은 π_RP 만 보이고 "zkIdP 에 낸 π_IdP 도 보기" 로 등록·세션 발급·슬롯 조회·세션 폐기의 π_IdP 를 더 본다.
+  "보기" 창은 공개 입력을 묶음(좌표 쌍·배열은 한 줄)으로 보이는데, π_RP 은 **번호 1~7(arid·pk_i·max_height·chainid·allowAgent·revRoot·regRoot)만 기본**이고 "전체 보기" 가 34개를 다 편다(π_IdP 10개는 전부 보인다).
   "검증" 은 증명 워커가 `/zk/*_vkey.json` 으로 Groth16 검증을 다시 돌려 ✓/✗ 를 내고, "값 바꿔 보기" 로 보이는 칸을 고친 뒤 검증하면 ✗ 가 난다(검증은 숨긴 칸까지 포함한 전체 공개 입력으로 돈다). 출금 증명에는 그 증명이 실린
   거래 해시가 붙고(`recordTx` 가 호출 데이터의 공개 입력과 글자 그대로 같은 기록을 찾아 단다), `/user/config` 의 `explorerUrl`(`MODE3_EXPLORER_URL` — 분리 데모 스크립트가 로컬 Blockscout 주소를 넘긴다, `BLOCKSCOUT_URL` 로 바꾼다)이 있으면
   `<주소>/tx/<해시>` 링크를 건다. 기록은 공개값뿐이다(salt·blind·세션키 없음) — 다만 π_IdP 의 공개 입력에는 uid·auid 가 있고 서비스별 PPID 가 한 목록에 모인다(같은 저장소의 등록·세션 정보에 이미 있는 값이다).
-- **salt 10분 보관**: 패스키로 만든 salt 를 사용자 페이지 금고가 10분 들고 있다(`MODE3_PASSKEY_HOLD_SECONDS`, 0 이면 끔, 연장 없음, 탭 공유). 10분이 지나면 패스키를 한 번 묻고 다시 10분.
-  메모리가 아니라 **:5100 오리진의 IndexedDB**(금고 kv `passkeyHold`)에 추출 불가 AES-GCM 키로 **암호화해** 둔다 — 키도 같은 IndexedDB 에 있으므로 보호 경계는 브라우저의 오리진 격리다(자동 금고와 같다).
-  그래서 탭·브라우저를 닫아도 10분 안이면 남고, 만료된 암호문은 다음에 읽을 때(또는 "모두 지우기"·패스키 연결 끊기 때) 지운다 — 그 전까지는 암호문이 남아 있을 수 있다.
-- **예외 — 속성 커밋먼트 도구 기록(에이전트 패스키 모드와 같은 한계)**: 첫 등록은 속성 도구의 기록(`localStorage` 의 `mode3_attr_tool_v1`, 같은 :5100 오리진)을 읽는데,
-  그 기록에는 사용자가 붙여 넣은 salt 가 **평문으로** 남는다 — 다음 데모 리셋 뒤 새 리셋 표시(`/attr/dist/reset.json` 의 `epoch`)를 그 오리진의 페이지가 처음 읽어 지울 때까지. 속성 도구는 이 모드에서도 바뀌지 않는다(범위 밖).
-- **지갑 오리진 CSP(2026-11-17)**: 위 두 곳(보관분·속성 도구 기록)과 금고 메모리의 salt 는 :5100 오리진에서 도는 스크립트라면 누구나 읽을 수 있다. 그래서 이 모드의 정적 서버는 모든 응답에
+- **salt 를 저장하지 않는다(2026-11-20 사용자 요청 — 그전의 "salt 10분 보관" 제거)**: 패스키로 만든 salt 는 IndexedDB·localStorage·sessionStorage 어디에도 쓰지 않는다. 한 동작(승인 창 하나 = `core.withSalt` 범위) 안에서만 메모리로 다시 쓰고, 범위가 끝나면 버린다.
+  그래서 로그인·출금·재검증·"salt 보기"·세션 폐기·계정 복구의 auid 보기는 그때마다 패스키를 한 번 묻는다(세션키 서명뿐인 세션 요청은 묻지 않는다). 이 모드의 정적 서버는 `MODE3_PASSKEY_HOLD_SECONDS` 를 더 읽지 않고 `/user/config` 에 `passkeyHoldSeconds` 도 없다(에이전트 패스키 모드의 메모리 보관은 그대로다).
+  예전 버전이 :5100 오리진의 IndexedDB 에 남긴 암호문(금고 kv `passkeyHold`)은 새 번들이 읽지 않고 지운다 — 페이지·승인 창이 뜬 뒤 처음 상태를 읽거나 salt 를 얻을 때, 그리고 "모두 지우기"·패스키 연결 끊기 때.
+- **속성 커밋먼트 도구도 salt 를 저장하지 않는다(2026-11-20 사용자 요청 — 그전에는 기록에 평문으로 남았다)**: 도구는 붙여 넣은 salt 로 커밋먼트와 auid 를 계산한 뒤 입력 칸을 비우고,
+  기록(`localStorage` 의 `mode3_attr_tool_v1`, version 6)에는 속성·커밋먼트와 **그 salt 의 auid(공개값)** 만 둔다. 첫 등록·속성 맞추기는 "이 기록이 내 salt 로 만든 것인가" 를 그 auid 로 대조한다(사유 이름은 그대로 `attr_record_salt_mismatch`).
+  옛 기록(version 4·5 — salt 평문)은 도구를 열 때 version 6 으로 바꿔 쓰고(salt 삭제), 지갑·스냅 화면은 도구를 다시 열기 전의 옛 기록도 읽는다. 스냅·에이전트 모드도 같은 도구라 함께 바뀐다.
+- **지갑 오리진 CSP(2026-11-17)**: 페이지 메모리의 salt 는(2026-11-20 부터 IndexedDB 보관분도 속성 도구 기록의 평문도 없다) :5100 오리진에서 도는 스크립트라면 누구나 읽을 수 있다. 그래서 이 모드의 정적 서버는 모든 응답에
   `Content-Security-Policy` 를 단다 — `script-src 'self' 'wasm-unsafe-eval'`(인라인 스크립트·`onclick` 같은 인라인 처리기·남의 오리진 스크립트·`eval` 금지, wasm 만 허용), `worker-src 'self' blob:`(증명 워커와
   그 안의 ffjavascript 스레드), `connect-src 'self'` + IdP(`MODE3_CIA_URL`)·서비스(`MODE3_RP_ORIGIN`) 오리진, `img-src 'self' data:`, `style-src 'self' 'unsafe-inline'`(인라인 style 속성이 있다),
   `object-src`·`base-uri`·`frame-ancestors`·`form-action` 은 `'none'`. 속성 도구의 인라인 스크립트는 `mode3/attr/attr_page.js` 로 옮겼다(동작은 같고, 에이전트도 같은 파일을 낸다). web·다른 모드에는 헤더가 없다.
   **막는 것**: 페이지에 끼워 넣어진 스크립트(HTML 주입·XSS)와 남의 오리진 스크립트의 실행. `connect-src` 는 `fetch`·XHR 로 보낼 곳을 위 오리진들로 줄인다. **막지 못하는 것**: 브라우저 확장(CSP 밖에서 페이지를 읽는다),
-  이 PC 의 악성 코드·같은 OS 사용자, 이 서버가 내는 스크립트 자체의 결함, 그리고 같은 오리진에 평문으로 남는 속성 도구 기록(위 예외 — CSP 는 저장을 바꾸지 않는다). 허용된 IdP·서비스 오리진으로 보내는 길과
+  이 PC 의 악성 코드·같은 OS 사용자, 이 서버가 내는 스크립트 자체의 결함. 허용된 IdP·서비스 오리진으로 보내는 길과
   페이지 이동·창 열기(주소에 실어 보내기)도 막지 않는다. 브라우저 테스트(`tests/test_mode3_user_passkey_web.mjs`)는 끼워 넣은 인라인·남의 오리진 스크립트가 돌지 않는 것과 정상 흐름 전체에서 위반이 0건인 것을 본다.
   주의: `MODE3_RP_ORIGIN` 에서 서비스를 뺀 뒤에도 그 서비스의 옛 세션이 금고에 남아 있으면, 그 세션의 `sessions/check`·`logout` 요청은 CSP 에 막혀 조용히 실패한다(화면은 깨지지 않고 세션만 남는다).
 - **체인 RPC 프록시와 허용 목록(R-5)**: 브라우저는 체인 노드를 직접 부르지 않고 정적 서버의 `/rpc/app`·`/rpc/rev` 로 부른다. 허용 메서드는 읽기 12개 —
@@ -1720,7 +1721,7 @@ RP 는 RPC 실패 시 10분 안의 체인 뷰 캐시로 검증을 계속하는�
 - 패스키 모드(2026-11-17): `tests/test_mode3_passkey_salt.mjs`(`unit` — 유도식), `tests/test_mode3_wallet_passkey.mjs`(`chain` — 에이전트 passkey 모드·`session_restore_required`·세션 증인 복구),
   `tests/test_mode3_passkey_browser.mjs`(`browser` — 결정적 WebAuthn 스텁 `tests/helpers/webauthn_stub.js` 로 설정·첫 로그인·다른 패스키·세션 복구·salt 보기·리셋, CDP 가상 인증기로 실제 Chrome WebAuthn 경로).
 - passkey-web(2026-11-17) 새 테스트 11개 — `unit`: `tests/test_mode3_tls.mjs`(서버 TLS 기동 `MODE3_TLS_CERT`·`KEY`)·`tests/test_mode3_rpc_proxy.mjs`(RPC 허용 목록)·`tests/test_mode3_passkey_rpid.mjs`(패스키 RP ID 인자)·
-  `tests/test_mode3_vault_hold.mjs`(10분 salt 보관)·`tests/test_mode3_user_idp_return.mjs`(인증 창 왕복)·`tests/test_zkd_tls_certs.mjs`(데모 CA·서버 인증서)·`tests/test_demo_split_passkey_web.mjs`(분리 데모 스크립트 정적 검사 —
+  `tests/test_mode3_vault_hold.mjs`(10분 salt 보관 — 2026-11-20 보관 제거와 함께 지웠다)·`tests/test_mode3_user_idp_return.mjs`(인증 창 왕복)·`tests/test_zkd_tls_certs.mjs`(데모 CA·서버 인증서)·`tests/test_demo_split_passkey_web.mjs`(분리 데모 스크립트 정적 검사 —
   "사전 검사가 먼저" 줄 순서 단언이 통과했을 때만 스크립트를 두 경우, 잘못된 모드·CA 없음으로 실행한다; 내림·ssh 에는 닿지 않는다) / `chain`: `tests/test_mode3_tls_stack.mjs`(IdP·RP 만 https 로 띄워 RP→IdP 서버 간 호출까지 — 정적 서버는 https 로 띄우지 않는다. 정적 서버의 https 기동은 자동 테스트가 없고, `test_mode3_tls.mjs` 는 공통 도우미 `lib/mode3_tls.js` 만 본다)·
   `tests/test_mode3_user_static_passkey_web.mjs`(정적 서버 설정·`/rpc/*`·속성 도구·CSP 헤더)·`tests/test_mode3_user_core_passkey.mjs`(웹 코어 패스키 salt·코드 등록·계정 복구) / `browser`: `tests/test_mode3_user_passkey_web.mjs`(사용자 페이지 패스키 설정·salt 보기·연결 끊기·계정 복구).
 - `bash scripts/run_tests.sh browser` — 팝업 로그인·`needs_consent` 재승인·MetaMask 트랜잭션을 실제 페이지로 돌린다

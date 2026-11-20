@@ -375,6 +375,19 @@ window.DemoStrings = {
     user_auth_tx_title: { ko: '{service} 출금 — 받는 주소와 금액을 확인하세요', en: '{service} withdrawal — check the recipient and amount' },
     // 증명 로그인(2026-11-19 스펙 passkey-proof-login): zkIdP 페이지가 연 승인 창의 제목·요약 줄
     user_auth_idp_login_title: { ko: 'zkIdP 로그인 — 패스키로 본인 확인', en: 'zkIdP sign-in — verify with your passkey' },
+    // 패스키 가입(2026-11-20 스펙 passkey-google-signup) — zkIdP 페이지가 연 승인 창의 안내 줄
+    user_auth_signup_title: { ko: 'zkIdP 계정 만들기 — 패스키와 Google 이메일', en: 'Create a zkIdP account — passkey and Google email' },
+    user_signup_make_passkey: { ko: '패스키 만들고 계정 만들기', en: 'Create a passkey and an account' },
+    user_signup_intro_new: { ko: '이 브라우저는 아직 zkIdP 계정에 연결돼 있지 않습니다. 패스키를 만들고, Google 로 이메일을 한 번 확인해 계정을 만듭니다.', en: 'This browser is not linked to a zkIdP account yet. A passkey is created, and your email is confirmed with Google once to create the account.' },
+    user_signup_making_passkey: { ko: '패스키를 만드는 중입니다 — 브라우저의 패스키 창을 확인하세요.', en: 'Creating the passkey — check the browser’s passkey prompt.' },
+    user_signup_preparing: { ko: '계정을 만들 준비 중입니다 — 패스키를 확인하고 증명을 만듭니다(수 초 걸립니다).', en: 'Preparing the account — confirming the passkey and generating proofs (a few seconds).' },
+    user_signup_creating: { ko: 'Google 확인이 끝났습니다 — zkIdP 에 계정을 만드는 중입니다.', en: 'Google confirmed — creating the account at zkIdP.' },
+    user_signup_to_google: { ko: 'Google 로 이동합니다 — 계정을 고르면 그 이메일로 zkIdP 계정을 만듭니다.', en: 'Going to Google — pick an account and a zkIdP account is created for its email.' },
+    user_signup_restore: { ko: '이 Google 계정의 zkIdP 계정이 이미 있습니다 — 같은 패스키인지 확인합니다(패스키를 한 번 더 묻습니다).', en: 'A zkIdP account already exists for this Google account — checking that the passkey is the same (the passkey is asked once more).' },
+    user_signup_resume_failed: { ko: 'Google 확인 결과를 이어받지 못했습니다 — zkIdP 페이지에서 "패스키로 로그인" 을 다시 누르세요.', en: 'Could not resume after Google — press "Sign in with a passkey" again on the zkIdP page.' },
+    user_signup_google_denied: { ko: 'Google 확인이 끝나지 않았습니다 — zkIdP 페이지에서 다시 시도하세요.', en: 'The Google step did not finish — try again from the zkIdP page.' },
+    user_signup_done: { ko: '계정을 만들었습니다 — 로그인합니다.', en: 'The account was created — signing in.' },
+    user_signup_done_retry: { ko: '계정을 만들었습니다 — zkIdP 페이지에서 "패스키로 로그인" 을 다시 누르세요.', en: 'The account was created — press "Sign in with a passkey" again on the zkIdP page.' },
     user_auth_idp_origin: { ko: 'zkIdP 주소', en: 'zkIdP address' },
     wallet_auth_tx_to: { ko: '받는 주소', en: 'Recipient' },
     wallet_auth_tx_value: { ko: '금액', en: 'Amount' },
@@ -410,7 +423,10 @@ window.DemoStrings = {
     rp_idp_btn: { ko: 'zkIdP 로 로그인', en: 'Log in with zkIdP' },
     // OIDC 와 zk-Delegation 비교(2026-11-19 스펙 oidc-comparison): 일반 OIDC 버튼과 "알려 준 식별자" 칸
     rp_zkoidc_btn: { ko: 'zkIdP 로 로그인 (일반 OIDC · 비교용)', en: 'Log in with zkIdP (plain OIDC · for comparison)' },
-    rp_seen_title: { ko: 'zkIdP 가 이 서비스에 알려 준 것 (ID 토큰의 sub·aud)', en: 'What zkIdP told this service (sub and aud of the ID token)' },
+    rp_seen_title: { ko: 'zkIdP 가 이 서비스에 알려 준 것 (ID 토큰의 iss·sub·aud)', en: 'What zkIdP told this service (iss, sub and aud of the ID token)' },
+    rp_seen_iss_note: { ko: '토큰을 낸 곳(zkIdP)', en: 'who issued the token (zkIdP)' },   // 2026-11-20: iss 줄(사용자 요청)
+    rp_seen_iss_note_google: { ko: '토큰을 낸 곳(Google)', en: 'who issued the token (Google)' },
+    rp_google_btn_oidc: { ko: 'Google 로 로그인 (일반 OIDC)', en: 'Log in with Google (plain OIDC)' },   // 2026-11-20: 리디렉션식 Google 이 켜져 있으면 그것이 이 데모의 "일반 OIDC" 다
     rp_seen_oidc: { ko: '일반 OIDC 로 로그인했습니다 — 서비스는 uid 를 그대로 받습니다.', en: 'Signed in with plain OIDC — the service receives the uid as is.' },
     rp_seen_zk: { ko: 'zk-Delegation 으로 로그인했습니다 — 서비스는 uid 를 받지 않습니다.', en: 'Signed in with zk-Delegation — the service never receives the uid.' },
     rp_seen_uid_note: { ko: '모든 서비스에서 같은 값', en: 'the same value at every service' },
@@ -467,7 +483,7 @@ window.DemoStrings = {
     flow_rp_rs: { ko: '이 서비스가 낸 1회용 챌린지', en: 'the one-time challenge this service issued' },
     flow_rp_sig: { ko: '세션키 서명', en: 'session-key signature' },
     flow_rp_sig_note: { ko: '챌린지에 대한 서명', en: 'signature over the challenge' },
-    flow_rp_c1: { ko: 'π_session 이 검증 키로 검증된다', en: 'π_session verifies under the verification key' },
+    flow_rp_c1: { ko: 'π_RP 이 검증 키로 검증된다', en: 'π_RP verifies under the verification key' },
     flow_rp_c2: { ko: 'arid 가 내 식별자이고, 챌린지가 내가 방금 낸 1회용 값이다', en: 'arid is mine and the challenge is the one-time value I just issued' },
     flow_rp_c3: { ko: '증명 안의 zkIdP 공개키가 내가 아는 zkIdP 의 것이다', en: 'the zkIdP public key inside the proof is the zkIdP I trust' },
     flow_rp_c4: { ko: '폐기·등록 root 가 체인의 최신 값이다 — 폐기된 사용자가 아니다', en: 'the revocation and registry roots are the chain’s latest — the user is not revoked' },
@@ -489,7 +505,7 @@ window.DemoStrings = {
     flow_oidc_l1: { ko: 'uid — 모든 서비스에서 같은 값이라, 서비스끼리 맞대면 같은 사람임을 안다', en: 'the uid — the same at every service, so services that compare notes learn it is the same person' },
     flow_oidc_l2: { ko: '발급자는 어느 서비스에 로그인했는지(rid)를 안다', en: 'the issuer learns which service was signed in to (rid)' },
     // 실제 Google OIDC(2026-11-19 시나리오 3·4): 서비스가 Google 에서 받은 토큰
-    rp_seen_title_google: { ko: 'Google 이 이 서비스에 알려 준 것 (ID 토큰의 sub·aud)', en: 'What Google told this service (sub and aud of the ID token)' },
+    rp_seen_title_google: { ko: 'Google 이 이 서비스에 알려 준 것 (ID 토큰의 iss·sub·aud)', en: 'What Google told this service (iss, sub and aud of the ID token)' },
     rp_seen_google: { ko: 'Google(기존 OIDC)로 로그인했습니다 — 서비스는 Google 의 사용자 식별자를 그대로 받습니다.', en: 'Signed in with Google (ordinary OIDC) — the service receives Google’s user identifier as is.' },
     rp_seen_rid_note_google: { ko: 'Google 이 아는 이 서비스의 식별자(클라이언트 ID)', en: 'this service’s identifier known to Google (client ID)' },
     rp_social_not_in_demo: { ko: '이 데모에서는 아직 준비되지 않았습니다', en: 'Not available in this demo yet.' },
@@ -684,14 +700,14 @@ window.DemoStrings = {
     wallet_demo_fake_sig: { ko: '가짜 서명', en: 'fake signature' },
     // 브라우저 전용 사용자 페이지(web 모드, 스펙 2026-10-15 §4.2·§7) — mode3/user/index.html·ui.js·popup.js 와 RP 페이지의 web 분기가 쓴다.
     user_storage_title: { ko: '보관 상태', en: 'Storage' },
-    // 영지식 증명 카드(2026-11-18 사용자 요청): 이 브라우저가 만든 증명 목록·공개 입력·검증·값 바꿔 보기. 화면에서 π_cred 는 π_session(π_s) 로 적는다.
+    // 영지식 증명 카드(2026-11-18 사용자 요청): 이 브라우저가 만든 증명 목록·공개 입력·검증·값 바꿔 보기. 화면에서 π_cred 는 π_RP(π_s) 로 적는다.
     // user_pub_s_*·user_pub_idp_* 는 공개 입력의 뜻(회로 circuits/pi_cred.circom·pi_idp.circom 의 공개 신호 순서 — mode3/user/ui.js 의 표와 짝).
     user_proofs_title: { ko: '영지식 증명', en: 'Zero-knowledge proofs' },
-    user_proofs_desc: { ko: '이 브라우저가 만든 증명입니다. 공개 입력을 보고, 브라우저에서 다시 검증하고, 값을 바꾸면 검증이 깨지는 것을 볼 수 있습니다. 기본은 서비스·체인에 낸 π_session 만 보입니다.', en: 'Proofs made by this browser. Inspect the public inputs, verify again in the browser, and see verification break when a value is changed. By default only π_session (sent to services and the chain) is listed.' },
+    user_proofs_desc: { ko: '이 브라우저가 만든 증명입니다. 공개 입력을 보고, 브라우저에서 다시 검증하고, 값을 바꾸면 검증이 깨지는 것을 볼 수 있습니다. 기본은 서비스·체인에 낸 π_RP 만 보입니다.', en: 'Proofs made by this browser. Inspect the public inputs, verify again in the browser, and see verification break when a value is changed. By default only π_RP (sent to services and the chain) is listed.' },
     user_proofs_none: { ko: '아직 만든 증명이 없습니다 — 서비스에 로그인하면 여기에 보입니다.', en: 'No proofs yet — log in at a service and they appear here.' },
     user_proofs_show_idp: { ko: 'zkIdP 에 낸 π_IdP 도 보기', en: 'Also show π_IdP (sent to zkIdP)' },
-    user_proofs_hide_idp: { ko: 'π_session 만 보기', en: 'Show π_session only' },
-    user_proof_kind_pi_cred: { ko: 'π_session (π_s)', en: 'π_session (π_s)' },
+    user_proofs_hide_idp: { ko: 'π_RP 만 보기', en: 'Show π_RP only' },
+    user_proof_kind_pi_cred: { ko: 'π_RP', en: 'π_RP' },
     user_proof_kind_pi_idp: { ko: 'π_IdP', en: 'π_IdP' },
     user_proof_col_kind: { ko: '증명', en: 'Proof' },
     user_proof_col_purpose: { ko: '용도', en: 'Purpose' },
@@ -752,7 +768,7 @@ window.DemoStrings = {
     user_pub_idp_ctx: { ko: '요청 용도와 내용의 해시', en: 'Hash of the request purpose and content' },
     user_pub_idp_tag: { ko: '요청 인증 태그 — Poseidon(s_u, ctx)', en: 'Request authentication tag — Poseidon(s_u, ctx)' },
     user_storage_desc: { ko: '등록 비밀과 세션키는 이 브라우저(IndexedDB)에 암호화해 둡니다. 서버로는 보내지 않습니다. 복구 코드로 백업하면 저장소가 지워져도 같은 주소로 돌아옵니다.', en: 'Registration secrets and session keys are encrypted in this browser (IndexedDB), never sent to a server. Back up the recovery code to return to the same addresses after storage is cleared.',
-      ko_pk: '등록 정보와 세션키는 이 브라우저(IndexedDB)에 암호화해 둡니다. 서버로는 보내지 않습니다. salt 는 패스키에서 만들어 10분만 보관합니다 — 저장소가 지워져도 같은 패스키로 같은 주소로 돌아옵니다.', en_pk: 'The registration and session keys are stored encrypted in this browser (IndexedDB) and never sent to a server. The salt comes from the passkey and is held for 10 minutes only — if storage is cleared, the same passkey brings back the same addresses.' },
+      ko_pk: '등록 정보와 세션키는 이 브라우저(IndexedDB)에 암호화해 둡니다. 서버로는 보내지 않습니다. salt 는 저장하지 않고, 필요할 때마다 패스키에서 같은 값으로 다시 만듭니다 — 저장소가 지워져도 같은 패스키로 같은 주소로 돌아옵니다.', en_pk: 'The registration and session keys are stored encrypted in this browser (IndexedDB) and never sent to a server. The salt is not stored; the passkey re-derives the same value each time it is needed — if storage is cleared, the same passkey brings back the same addresses.' },
     user_vault_none: { ko: '금고 없음 — 등록할 때 비밀번호를 정합니다', en: 'No vault yet — you set its password when you register' },
     user_vault_locked: { ko: '잠김', en: 'Locked' },
     user_vault_unlocked: { ko: '해제됨 · {until} 까지', en: 'Unlocked · until {until}' },
@@ -806,7 +822,7 @@ window.DemoStrings = {
     rp_wallet_mode_web: { ko: '브라우저', en: 'browser' },
     // passkey-web(2026-11-17) — 서비스 페이지는 web 과 같은 팝업 프로토콜로 본다. 승인 팝업이 zkIdP 로 가기 전에 보는 안내.
     rp_wallet_passkey_web: { ko: '사용자 비밀=브라우저(패스키)', en: 'User secrets=browser (passkey)' },
-    rp_wallet_passkey_web_note: { ko: '사용자 페이지가 브라우저 안에서 증명을 만듭니다 — salt 는 패스키에서 만들어 그 브라우저에만 두고(10분 암호화 보관·속성 도구 기록), 이 서비스로 오지 않습니다.', en: 'The user page builds proofs inside the browser — the salt is derived from a passkey and stays in that browser only (a 10-minute encrypted hold and the attribute tool record); it never reaches this service.' },
+    rp_wallet_passkey_web_note: { ko: '사용자 페이지가 브라우저 안에서 증명을 만듭니다 — salt 는 저장하지 않고 필요할 때마다 패스키에서 같은 값으로 다시 만들며, 이 서비스로 오지 않습니다.', en: 'The user page builds proofs inside the browser — the salt is not stored — the passkey re-derives the same value each time it is needed; it never reaches this service.' },
     user_pk_setup_hint: { ko: '이 브라우저에 연결된 패스키가 없습니다. 사용자 페이지에서 먼저 패스키를 설정하세요:', en: 'No passkey is linked in this browser. Set up a passkey on the user page first:' },
     user_pk_attr_missing_hint: { ko: '이 브라우저의 속성 커밋먼트 도구에 기록이 없어 등록할 수 없습니다. 먼저 커밋먼트를 만드세요:', en: 'The attribute commitment tool in this browser has no record, so registration cannot proceed. Make a commitment first:' },
     // passkey-web 사용자 페이지(2026-11-17 계획 Task 7) — 패스키 설정 카드·salt 보기·연결 끊기·계정 복구 카드.
@@ -831,7 +847,6 @@ window.DemoStrings = {
     user_flow_item_proof: { ko: '증명', en: 'proof' },
     user_flow_item_sig: { ko: '자격증명', en: 'credential' },
     user_flow_sig_value: { ko: 'C_u·C_s 에 한 zkIdP 서명', en: 'signature on C_u and C_s' },
-    user_flow_held: { ko: '보관분 사용 — 패스키를 묻지 않았습니다', en: 'held salt used — passkey not asked' },
     user_flow_skipped: { ko: '이번 로그인에는 없었습니다', en: 'not needed in this login' },
     user_flow_no_time: { ko: '서비스 쪽에서 일어나 여기서는 재지 않습니다', en: 'happens at the service — not timed here' },
     user_flow_token_yes: { ko: '받음', en: 'received' },
@@ -843,7 +858,7 @@ window.DemoStrings = {
     user_flow_s_check_service_t: { ko: '서비스 확인', en: 'Check the service' },
     user_flow_s_check_service_m: { ko: '인증서가 zkIdP 의 서명인지, 요청을 보낸 주소가 인증서의 주소와 같은지, 서비스의 컨트랙트가 인증서와 맞는지 확인합니다. 가짜 서비스에 증명을 내주지 않기 위해서입니다.', en: 'Checks that the certificate is signed by zkIdP, that the requesting origin matches the certificate, and that the service contract matches it — so no proof is handed to a fake service.' },
     user_flow_s_passkey_t: { ko: '패스키로 salt 만들기', en: 'Derive the salt from the passkey' },
-    user_flow_s_passkey_m: { ko: '패스키가 내주는 값으로 salt(s_u)를 그때그때 만듭니다. s_u 는 어디에도 보내지 않는 비밀이고 모든 가명의 뿌리입니다(이 브라우저에 길어야 10분간 암호화해 둘 뿐입니다). 걸린 시간에는 사람이 패스키를 확인하는(지문·PIN·휴대폰) 시간이 들어 있습니다.', en: 'The salt (s_u) is derived on the spot from the passkey output. It is a secret that is never sent anywhere and the root of every pseudonym (at most it is kept encrypted in this browser for 10 minutes). The time includes the person confirming the passkey (fingerprint, PIN, phone).' },
+    user_flow_s_passkey_m: { ko: '패스키가 내주는 값으로 salt(s_u)를 다시 만듭니다 — 같은 패스키면 늘 같은 값이고, 저장하지 않습니다. s_u 는 어디에도 보내지 않는 비밀이고 모든 가명의 뿌리입니다. 걸린 시간에는 사람이 패스키를 확인하는(지문·PIN) 시간이 들어 있습니다.', en: 'The salt (s_u) is re-derived from the passkey output — the same passkey always gives the same value, and it is not stored. It is a secret that is never sent anywhere and the root of every pseudonym. The time includes the person confirming the passkey (fingerprint, PIN).' },
     user_flow_s_sync_t: { ko: '체인 읽기', en: 'Read the chain' },
     user_flow_s_sync_m: { ko: '체인에 게시된 등록부와 폐기 목록을 읽습니다. 뒤의 증명에서 "내 자격증명이 등록돼 있고 폐기되지 않았다" 를 이 목록에 대해 보입니다.', en: 'Reads the registry and revocation list published on chain. The later proof shows "my credential is registered and not revoked" against these.' },
     user_flow_s_random_t: { ko: '난수 뽑기 (n)', en: 'Draw a random value (n)' },
@@ -860,30 +875,25 @@ window.DemoStrings = {
     user_flow_s_issue_m: { ko: 'uid·가명·봉투·증명을 zkIdP 에 보냅니다. zkIdP 는 증명을 검증하고 봉투에 서명해 돌려줍니다(자격증명). 이때 zkIdP 가 알게 되는 것은 "이 uid 가 어딘가에 로그인한다" 뿐이고, 어느 서비스인지는 arid_s 에 가려져 있습니다.', en: 'Sends the uid, pseudonyms, envelopes and proof to zkIdP. zkIdP verifies the proof and returns its signature on the envelopes (the credential). At this point zkIdP learns only "this uid is signing in somewhere"; which service is hidden behind arid_s.' },
     user_flow_s_publish_wait_t: { ko: '등록부 게시 기다리기', en: 'Wait for the registry update' },
     user_flow_s_publish_wait_m: { ko: '자격증명(C_u)이 체인의 등록부에 실린 것이 보일 때까지 기다립니다. 처음 로그인하거나 C_u 를 새로 받았을 때, 그리고 등록부의 반영이 늦을 때 있습니다.', en: 'Waits until the credential (C_u) is visible in the on-chain registry. Happens on the first login, after a new C_u, and when the registry view lags.' },
-    user_flow_s_prove_session_t: { ko: '영지식 증명 π_session 만들기', en: 'Generate the ZK proof π_session' },
+    user_flow_s_prove_session_t: { ko: '영지식 증명 π_RP 만들기', en: 'Generate the ZK proof π_RP' },
     user_flow_s_prove_session_m: { ko: '"zkIdP 가 서명한 자격증명을 갖고 있고, 등록부에 있으며 폐기되지 않았고, PPID·가명·임시 키가 거기서 나왔다" 는 증명입니다. uid·salt·zkIdP 의 서명은 드러나지 않습니다.', en: 'Proves "I hold a credential signed by zkIdP, it is in the registry and not revoked, and the PPID, pseudonyms and temporary key come from it". The uid, salt and zkIdP signature stay hidden.' },
     user_flow_s_sign_t: { ko: '임시 키로 서명', en: 'Sign with the temporary key' },
     user_flow_s_sign_m: { ko: '서비스가 준 r_s 에 임시 키로 서명합니다. 증명만 가로챈 사람은 이 서명을 만들 수 없어 다시 쓰지 못합니다.', en: 'Signs the service\'s r_s with the temporary key. Someone who only intercepted the proof cannot produce this signature, so cannot reuse it.' },
     user_flow_s_respond_t: { ko: '증명 전달 → 검증', en: 'Deliver the proof → verification' },
     user_flow_s_respond_m: { ko: '증명·공개 입력·서명을 서비스에 냅니다. 서비스는 증명을 검증하고, 공개 입력이 체인의 최신 목록·자기 arid 와 맞는지 확인한 뒤 PPID 로 계정을 찾습니다. 서비스가 알게 되는 것은 서비스마다 다른 PPID 와 로그인마다 다른 가명뿐입니다.', en: 'Hands the proof, public inputs and signature to the service. The service verifies the proof, checks the public inputs against the latest on-chain lists and its own arid, then finds the account by PPID. It learns only a per-service PPID and per-login pseudonyms.' },
-    user_pk_place_label: { ko: '패스키를 둘 곳', en: 'Where to keep the passkey' },
-    user_pk_place_local: { ko: '이 기기 (Chrome · 비밀번호 관리자)', en: 'This device (Chrome · password manager)' },
-    user_pk_place_phone: { ko: '휴대폰 (QR 코드로 연결)', en: 'Phone (connect by QR code)' },
-    user_pk_place_hint: { ko: '휴대폰을 고르면 Chrome 이 QR 코드를 띄웁니다 — 휴대폰 카메라로 찍고 휴대폰에서 확인하세요. PC 와 휴대폰 모두 블루투스와 인터넷이 켜져 있어야 합니다. 패스키를 확인할 때마다 휴대폰을 씁니다.', en: 'Choosing the phone makes Chrome show a QR code — scan it with the phone camera and confirm on the phone. Both the PC and the phone need Bluetooth and internet on. Every passkey confirmation uses the phone.' },
     user_pk_where_platform: { ko: '이 기기의 패스키', en: 'passkey on this device' },
     user_pk_where_key: { ko: '다른 기기(보안 키 등)의 패스키', en: 'passkey on another device (security key, …)' },
-    user_pk_where_cross: { ko: '다른 기기(휴대폰)의 패스키', en: 'passkey on another device (phone)' },
+    user_pk_where_cross: { ko: '다른 기기의 패스키', en: 'passkey on another device' },   // 2026-11-20: "휴대폰" 표기를 뺐다(사용자 결정)
     user_pk_synced: { ko: '동기화됨', en: 'synced' },
     user_pk_syncable: { ko: '동기화 가능', en: 'syncable' },
     user_pk_device_bound: { ko: '이 인증기에만 있음', en: 'device-bound' },
     user_pk_setup_title: { ko: '패스키 설정', en: 'Passkey setup' },
-    user_pk_setup_desc: { ko: 'salt 는 패스키에서 만들고, 이 브라우저(IndexedDB)에 10분간 암호화해 둡니다. 속성 커밋먼트 도구에 붙여 넣은 salt 는 그 도구의 기록에 평문으로 남습니다(다음 데모 리셋까지). 패스키가 Google 비밀번호 관리자 등으로 동기화되면 그것이 백업입니다 — 패스키를 지우면 같은 주소를 되찾을 수 없습니다.', en: 'The salt is derived from the passkey and kept in this browser (IndexedDB), encrypted, for 10 minutes. A salt pasted into the attribute commitment tool stays in that tool’s record in plaintext (until the next demo reset). If the passkey syncs (Google Password Manager, …) that is the backup — deleting the passkey loses the same addresses.' },
+    user_pk_setup_desc: { ko: 'salt 는 저장하지 않고, 필요할 때마다 패스키에서 같은 값으로 다시 만듭니다. 패스키가 Google 비밀번호 관리자 등으로 동기화되면 그것이 백업입니다 — 패스키를 지우면 같은 주소를 되찾을 수 없습니다.', en: 'The salt is not stored; the passkey re-derives the same value each time it is needed. If the passkey syncs (Google Password Manager, …) that is the backup — deleting the passkey loses the same addresses.' },
+    user_pk_first_hint: { ko: '처음이면 zkIdP 페이지에서 "패스키로 로그인" 을 누르세요 — 패스키와 계정을 한 번에 만듭니다:', en: 'First time here? Press "Sign in with a passkey" on the zkIdP page — it creates the passkey and the account in one go:' },   // 2026-11-20(화면 셀프 피드백 8): zkIdP 가 패스키 가입을 열어 두었을 때만 보인다
     user_pk_new_btn: { ko: '패스키 만들기', en: 'Create passkey' },
     user_pk_existing_btn: { ko: '이미 있는 패스키 쓰기', en: 'Use an existing passkey' },
     user_pk_connected: { ko: '패스키를 연결했습니다', en: 'Passkey linked' },
     user_pk_credential: { ko: '연결된 패스키 {id}', en: 'Linked passkey {id}' },
-    user_pk_held: { ko: 'salt 보관 중 — {min}분 남음', en: 'salt held — {min} min left' },
-    user_pk_not_held: { ko: 'salt 보관 없음 — 다음에 salt 가 필요하면 패스키를 묻습니다', en: 'No salt held — the passkey is asked the next time the salt is needed' },
     user_pk_show_salt_btn: { ko: 'salt 보기', en: 'Show salt' },
     user_pk_salt_note: { ko: '속성 커밋먼트 도구에 붙여 넣을 값입니다. zkIdP·서비스에 보내지 마세요. 창을 닫으면 화면에서 지웁니다.', en: 'Paste this into the attribute commitment tool. Do not send it to the zkIdP or a service. It is cleared from the screen when you close this box.' },
     user_pk_disconnect_btn: { ko: '패스키 연결 끊기', en: 'Disconnect passkey' },
@@ -904,7 +914,7 @@ window.DemoStrings = {
     user_register_hint_google: { ko: 'Google 계정이 아직 zk-Delegation 에 등록되지 않았습니다. 사용자 페이지에서 Google 로 먼저 등록하세요:', en: 'Your Google account is not registered with zk-Delegation yet. Register with Google on the user page first:' },
     user_register_hint: { ko: '이 브라우저에 등록이 없습니다. 사용자 페이지에서 먼저 등록하세요:', en: 'This browser has no registration. Register on the user page first:' },
     user_auth_identity: { ko: '신원', en: 'Identity' },
-    user_auth_identity_demo: { ko: '데모 계정', en: 'Demo account' },
+    user_auth_identity_demo: { ko: '데모 계정', en: 'Demo account', ko_pk: 'zkIdP 계정 (패스키)', en_pk: 'zkIdP account (passkey)' },   // 2026-11-20: passkey-web 에서는 "데모 계정" 이 뜻을 알 수 없었다(Google 로 가입한 계정에도 나왔다)
     user_auth_identity_provider: { ko: '{provider} 계정으로 등록된 신원', en: 'Identity registered with a {provider} account' },
     user_identity_provider: { ko: '{provider} 계정으로 등록', en: 'registered with a {provider} account' },
     // 관리자 페이지(cia_admin.html) — 시크릿은 어떤 문구·결과·로그에도 들어가지 않는다.
@@ -1102,6 +1112,7 @@ window.DemoStrings = {
     // 증명 로그인(2026-11-19): passkey-web 이고 발급 정책이 key 일 때만 보이는 버튼 — 지갑 창이 패스키로 증명을 만들어 돌려준다
     idp_passkey_login_btn: { ko: '패스키로 로그인', en: 'Sign in with a passkey' },
     idp_passkey_login_note: { ko: '이 브라우저의 zk 클라이언트가 이 계정에 연결돼 있을 때 쓸 수 있습니다. 처음이거나 패스키를 잃었으면 아이디·비밀번호로 로그인하세요.', en: 'Works when the zk client in this browser is linked to the account. First time here, or lost the passkey? Use your id and password.' },
+    idp_passkey_login_note_signup: { ko: '처음이면 Google 로 이메일을 한 번 확인해 계정을 만들고, 그 뒤로는 패스키 한 번으로 들어갑니다.', en: 'First time: your email is confirmed with Google once to create the account. After that, one passkey prompt signs you in.' },   // 2026-11-20(스펙 passkey-google-signup): 패스키 가입이 켜진 zkIdP
     // 일반 OIDC 동의 화면(2026-11-19 스펙 oidc-comparison C3)
     idp_oidc_title: { ko: '서비스에 로그인 — 일반 OIDC (비교용)', en: 'Sign in to a service — plain OIDC (for comparison)' },
     idp_oidc_desc: { ko: '보통의 OIDC 로그인입니다. zkIdP 는 어느 서비스에 로그인하는지 알고, 서비스는 내 uid 를 그대로 받습니다. zk-Delegation("zkIdP 로 로그인")과 견주기 위한 길입니다.', en: 'This is an ordinary OIDC sign-in. zkIdP learns which service you sign in to, and the service receives your uid as is. It exists to compare with zk-Delegation ("Log in with zkIdP").' },
@@ -1172,6 +1183,7 @@ window.DemoStrings = {
     idp_myinfo_method: { ko: '가입 방식', en: 'Signed up with' },
     idp_myinfo_method_demo: { ko: '아이디·비밀번호', en: 'ID and password' },
     idp_myinfo_method_google: { ko: 'Google', en: 'Google' },
+    idp_myinfo_method_signup_google: { ko: 'Google 로 확인한 이메일 + 패스키 (비밀번호 없음)', en: 'Google-verified email + passkey (no password)' },   // 2026-11-20: 패스키 가입 계정
     idp_myinfo_wallet: { ko: '스냅 등록', en: 'Snap registration' },
     idp_myinfo_wallet_yes: { ko: '등록됨 — 이 계정은 스냅과 연결돼 있습니다.', en: 'Registered — this account is linked to a Snap.' },
     idp_myinfo_wallet_revoked: { ko: '폐기된 계정 — 스냅을 쥐지 않습니다.', en: 'Revoked account — it no longer holds a Snap.' },
@@ -1282,8 +1294,8 @@ window.DemoStrings = {
     // 속성 커밋먼트 도구(mode3/attr.html, 2026-11-09 Phase 1)
     attr_title: { ko: '속성 커밋먼트 도구', en: 'Attribute commitment tool' },
     attr_badge_offline: { ko: '속성·salt 는 서버로 보내지 않음', en: 'Attributes and salt never leave this browser' },
-    attr_desc: { ko: '내 속성(출생연도·국가 등)으로 커밋먼트를 만듭니다. 속성과 salt 는 이 브라우저에만 저장되고, 커밋먼트만 zkIdP 프로필의 "이름" 칸에 붙여 넣습니다. uid 는 zkIdP "내 정보" 에서, salt 는 zk 스냅 화면에서 복사해 넣습니다. 이 도구는 zkIdP 에도 스냅에도 아무것도 묻지 않습니다.', en: 'Build a commitment from your attributes (birth year, country, …). The attributes and the salt stay in this browser; only the commitment goes into the "name" field of your zkIdP profile. You paste the uid from zkIdP "My info" and the salt from the zk Snap page. This tool asks neither zkIdP nor the Snap for anything.',
-      ko_pk: '내 속성(출생연도·국가 등)으로 커밋먼트를 만듭니다. 속성과 salt 는 이 브라우저에만 저장되고, 커밋먼트만 zkIdP 프로필의 "이름" 칸에 붙여 넣습니다. salt 는 zk 클라이언트 화면 "보관 상태" 의 "salt 보기" 에서 복사해 넣습니다. 이 도구는 속성과 salt 를 어디에도 보내지 않습니다.', en_pk: 'Build a commitment from your attributes (birth year, country, …). The attributes and the salt stay in this browser; only the commitment goes into the "name" field of your zkIdP profile. Copy the salt from "Show salt" under "Storage" on the zk client page. This tool sends the attributes and the salt nowhere.' },
+    attr_desc: { ko: '내 속성(출생연도·국가 등)으로 커밋먼트를 만듭니다. 속성은 이 브라우저에만 저장되고 salt 는 저장하지 않습니다(커밋먼트를 계산한 뒤 바로 지웁니다). 커밋먼트만 zkIdP 프로필의 "이름" 칸에 붙여 넣습니다. salt 는 zk 스냅 화면에서 복사해 넣습니다. 이 도구는 zkIdP 에도 스냅에도 아무것도 묻지 않습니다.', en: 'Build a commitment from your attributes (birth year, country, …). The attributes stay in this browser and the salt is not stored (it is discarded right after the commitment is computed). Only the commitment goes into the "name" field of your zkIdP profile. You paste the salt from the zk Snap page. This tool asks neither zkIdP nor the Snap for anything.',
+      ko_pk: '내 속성(출생연도·국가 등)으로 커밋먼트를 만듭니다. 속성은 이 브라우저에만 저장되고 salt 는 저장하지 않습니다(커밋먼트를 계산한 뒤 바로 지웁니다). 커밋먼트만 zkIdP 프로필의 "이름" 칸에 붙여 넣습니다. salt 는 zk 클라이언트 화면 "보관 상태" 의 "salt 보기" 에서 복사해 넣습니다. 이 도구는 속성과 salt 를 어디에도 보내지 않습니다.', en_pk: 'Build a commitment from your attributes (birth year, country, …). The attributes stay in this browser and the salt is not stored (it is discarded right after the commitment is computed). Only the commitment goes into the "name" field of your zkIdP profile. Copy the salt from "Show salt" under "Storage" on the zk client page. This tool sends the attributes and the salt nowhere.' },
     attr_form_title: { ko: '1. 속성·salt 입력', en: '1. Enter attributes and salt' },
     attr_salt_input: { ko: 'salt', en: 'salt' },   // 2026-11-16(사용자 결정): salt 를 입력받는다
     attr_birth_year: { ko: '출생연도', en: 'Birth year' },
@@ -1299,18 +1311,17 @@ window.DemoStrings = {
     attr_none: { ko: '아직 만든 커밋먼트가 없습니다.', en: 'No commitment yet.' },
     attr_copy_btn: { ko: '커밋먼트 복사', en: 'Copy commitment' },
     attr_clear_btn: { ko: '지우기', en: 'Clear' },
-    attr_clear_confirm: { ko: '저장된 salt·속성·커밋먼트를 이 브라우저에서 지웁니다. 같은 스냅에서 같은 속성을 넣으면 같은 커밋먼트를 다시 만들 수 있습니다. 계속할까요?', en: 'This removes the stored salt, attributes and commitment from this browser. Entering the same attributes with the same snap rebuilds the same commitment. Continue?',
+    attr_clear_confirm: { ko: '저장된 속성·커밋먼트를 이 브라우저에서 지웁니다. 같은 salt 와 같은 속성을 넣으면 같은 커밋먼트를 다시 만들 수 있습니다. 계속할까요?', en: 'This removes the stored attributes and commitment from this browser. Entering the same attributes with the same salt rebuilds the same commitment. Continue?',
       ko_pk: '저장된 salt·속성·커밋먼트를 이 브라우저에서 지웁니다. 같은 salt 와 같은 속성을 넣으면 같은 커밋먼트를 다시 만들 수 있습니다. 계속할까요?', en_pk: 'This erases the saved salt, attributes and commitment from this browser. The same salt and attributes give the same commitment again. Continue?' },
     attr_created_at: { ko: '만든 시각', en: 'Created' },
     // 2026-11-10(B+b1): C_attr 에 uid·salt 를 묶는다 — 입력 칸·안내·재료 표시
     attr_salt: { ko: 'salt (s_u)', en: 'salt (s_u)' },
     attr_auid_label: { ko: 'auid', en: 'auid' },   // 2026-11-11
-    attr_auid_hint: { ko: '서비스에 로그인할 때마다 zkIdP 인증 창의 auid 칸에 붙여 넣으세요.', en: 'Paste this into the auid field of the zkIdP sign-in window each time you log in to a service.' },
+    attr_auid_hint: { ko: '서비스에 로그인할 때마다 zkIdP 인증 창의 auid 칸에 붙여 넣으세요.', en: 'Paste this into the auid field of the zkIdP sign-in window each time you log in to a service.',
+      ko_pk: '서비스에 처음 로그인할 때(등록) zkIdP 인증 창의 auid 칸에 붙여 넣으세요. 그 뒤로는 패스키만 묻습니다.', en_pk: 'Paste this into the auid field of the zkIdP sign-in window the first time you log in to a service (registration). After that only the passkey is asked.' },   // 2026-11-20: passkey-web 은 첫 로그인 한 번만 묻는다
     attr_reset_cleared: { ko: '데모를 새로 시작해 이 브라우저의 이전 기록을 비웠습니다.', en: 'The demo was restarted, so the previous record in this browser was cleared.' },
     attr_inputs_title: { ko: '커밋먼트 재료', en: 'Commitment inputs' },
-    attr_secret_warn: { ko: 'salt 는 비밀 — 가려 둠', en: 'salt is secret — hidden' },
-    attr_salt_reveal: { ko: '보기', en: 'Show' },
-    attr_salt_hide: { ko: '가리기', en: 'Hide' },
+    attr_salt_not_kept: { ko: '저장하지 않습니다 — 커밋먼트를 계산한 뒤 바로 지웠습니다.', en: 'Not stored — discarded right after the commitment was computed.' },   // 2026-11-20(사용자 결정): 기록에 salt 를 두지 않는다(전에는 가려 두고 "보기" 로 열었다)
     attr_schema_label: { ko: '스키마', en: 'Schema' },
     attr_old_record: { ko: '이 브라우저에 옛 형식의 커밋먼트가 있습니다 — 식이 바뀌었으니 다시 만드세요.', en: 'This browser holds an old-format commitment — the formula changed, so make it again.' },
     // 2026-11-13(사용자 결정): 속성 도구는 uid·계정 번호·salt 를 묻지 않는다 — uid 는 zkIdP 로그인 세션에서, salt·번호는 스냅에서 받아온다.
@@ -1488,7 +1499,7 @@ window.DemoStrings = {
       ko_pk: { title: '패스키를 쓸 수 있는 주소로 열어야 합니다', cause: '패스키는 정해진 주소에서만 동작합니다 — zk 클라이언트 화면은 https://wallet.zkd.test:5100 입니다. IP 주소 페이지에서는 쓸 수 없습니다.', action: 'https://wallet.zkd.test:5100 으로 다시 여세요(IP 주소·다른 이름으로 열지 않습니다).' }, en_pk: { title: 'Open it at the passkey address', cause: 'Passkeys only work at fixed addresses — the zk client page is https://wallet.zkd.test:5100. They do not work on IP-address pages.', action: 'Reopen it at https://wallet.zkd.test:5100 (not by IP address or another name).' } },
     passkey_unsupported: { where: 'wallet', ko: { title: '이 브라우저는 패스키를 쓸 수 없습니다', cause: 'WebAuthn(PublicKeyCredential)이 없거나 보안 컨텍스트가 아닙니다.', action: '최신 Chrome 에서 다시 여세요 — zk 스냅 화면은 http://localhost:5100, 설치 없는 지갑은 https://wallet.zkd.test:5100 입니다.' }, en: { title: 'This browser cannot use passkeys', cause: 'WebAuthn (PublicKeyCredential) is missing or the page is not a secure context.', action: 'Reopen it in a recent Chrome — the zk Snap page at http://localhost:5100, or the no-install wallet at https://wallet.zkd.test:5100.' },
       ko_pk: { title: '이 브라우저는 패스키를 쓸 수 없습니다', cause: 'WebAuthn(PublicKeyCredential)이 없거나 보안 컨텍스트가 아닙니다.', action: '최신 Chrome 에서 https://wallet.zkd.test:5100 으로 다시 여세요.' }, en_pk: { title: 'This browser cannot use passkeys', cause: 'WebAuthn (PublicKeyCredential) is missing or the page is not a secure context.', action: 'Reopen it in a recent Chrome at https://wallet.zkd.test:5100.' } },
-    passkey_prf_unsupported: { where: 'wallet', ko: { title: '이 패스키는 PRF 를 지원하지 않습니다', cause: '고른 인증기가 PRF 확장 값을 돌려주지 않아 salt 를 만들 수 없습니다.', action: 'PRF 를 지원하는 인증기(Google 비밀번호 관리자 패스키, hmac-secret 을 지원하는 보안 키 등)로 다시 만드세요. 휴대폰의 패스키라면 휴대폰의 패스키 관리자가 PRF 를 지원해야 합니다. 방금 만들어진 패스키는 여기서 쓸 수 없으니 인증기(비밀번호 관리자·휴대폰)에서 지워도 됩니다.' }, en: { title: 'This passkey does not support PRF', cause: 'The chosen authenticator returns no PRF extension output, so no salt can be derived.', action: 'Create it again on an authenticator with PRF (Google Password Manager passkey, a security key with hmac-secret, …). For a passkey on a phone, the phone’s passkey manager must support PRF. The passkey just created cannot be used here and may be deleted from the authenticator.' } },
+    passkey_prf_unsupported: { where: 'wallet', ko: { title: '이 패스키는 PRF 를 지원하지 않습니다', cause: '고른 인증기가 PRF 확장 값을 돌려주지 않아 salt 를 만들 수 없습니다.', action: 'PRF 를 지원하는 인증기(Google 비밀번호 관리자 패스키, hmac-secret 을 지원하는 보안 키 등)로 다시 만드세요. 방금 만들어진 패스키는 여기서 쓸 수 없으니 인증기(비밀번호 관리자)에서 지워도 됩니다.' }, en: { title: 'This passkey does not support PRF', cause: 'The chosen authenticator returns no PRF extension output, so no salt can be derived.', action: 'Create it again on an authenticator with PRF (Google Password Manager passkey, a security key with hmac-secret, …). The passkey just created cannot be used here and may be deleted from the authenticator.' } },
     passkey_unstable: { where: 'wallet', ko: { title: '패스키가 같은 값을 다시 주지 않습니다', cause: '만들 때와 다시 계산할 때 PRF 값이 달랐습니다 — 이 패스키로는 salt 를 다시 만들 수 없습니다.', action: '다른 인증기로 패스키를 다시 만드세요. 이 패스키는 저장하지 않았습니다.' }, en: { title: 'The passkey does not return the same value', cause: 'The PRF output at creation and at re-evaluation differed — this passkey cannot re-create the salt.', action: 'Create a passkey on another authenticator. This one was not saved.' } },
     passkey_cancelled: { where: 'wallet', ko: { title: '패스키 확인을 취소했습니다', cause: '패스키 창을 닫았거나 시간이 지났습니다.', action: '다시 눌러 패스키를 확인하세요.' }, en: { title: 'Passkey check cancelled', cause: 'The passkey window was closed or timed out.', action: 'Press again and confirm the passkey.' } },
     passkey_mismatch: { where: 'wallet', ko: { title: '다른 패스키입니다', cause: '고른 패스키가 이 스냅 에이전트에 연결된 패스키와 다릅니다 — 다른 salt 로는 이 계정을 쓸 수 없습니다.', action: '처음 연결한 패스키를 고르세요. 다른 패스키를 쓰려면 데모 리셋 뒤 "내 계정" 에서 패스키 연결을 끊으세요.' }, en: { title: 'A different passkey', cause: 'The chosen passkey is not the one linked to this Snap agent — a different salt cannot use this account.', action: 'Choose the passkey you linked first. To use another, reset the demo and disconnect the passkey under "My account".' },
@@ -1504,7 +1515,7 @@ window.DemoStrings = {
     bad_credential_id: { where: 'wallet', ko: { title: '패스키 ID 형식이 맞지 않습니다', cause: '에이전트에 보낸 credential ID 가 base64url 문자열이 아닙니다.', action: '패스키를 다시 만들거나 고르세요.' }, en: { title: 'Malformed passkey ID', cause: 'The credential ID sent to the agent is not a base64url string.', action: 'Create or choose the passkey again.' } },
     registered: { where: 'wallet', ko: { title: '등록이 있어 패스키 연결을 끊을 수 없습니다', cause: '이 패스키의 salt 로 만든 등록이 아직 남아 있습니다 — 연결을 끊으면 그 계정을 쓸 수 없게 됩니다.', action: '데모 리셋으로 등록을 지운 뒤 연결을 끊으세요.' }, en: { title: 'Cannot disconnect while registered', cause: 'A registration made with this passkey’s salt still exists — disconnecting would strand that account.', action: 'Reset the demo to clear the registration, then disconnect.' } },
     passkey_not_held: { where: 'wallet', ko: { title: '보관 중인 salt 가 없습니다', cause: '패스키로 만든 salt 를 스냅 에이전트가 보관한 지 10분이 지났거나, 에이전트가 다시 시작됐습니다.', action: '패스키를 한 번 더 확인하세요(화면이 알아서 묻습니다).' }, en: { title: 'No held salt', cause: 'More than 10 minutes passed since the Snap agent held the passkey-derived salt, or the agent restarted.', action: 'Confirm the passkey again (the page asks by itself).' },
-      ko_pk: { title: '보관 중인 salt 가 없습니다', cause: '패스키로 만든 salt 를 보관한 지 10분이 지났습니다.', action: '패스키를 한 번 더 확인하세요(화면이 알아서 묻습니다).' }, en_pk: { title: 'No held salt', cause: 'More than 10 minutes passed since the passkey-derived salt was stored.', action: 'Confirm the passkey again (the page asks by itself).' } },
+      ko_pk: { title: 'salt 를 다시 받아야 합니다', cause: 'salt 는 저장해 두지 않고, 필요할 때마다 패스키에서 같은 값으로 다시 만듭니다.', action: '패스키를 한 번 더 확인하세요(화면이 알아서 묻습니다).' }, en_pk: { title: 'The salt is needed again', cause: 'The salt is not stored; the passkey re-derives the same value each time it is needed.', action: 'Confirm the passkey again (the page asks by itself).' } },
     session_restore_required: { where: 'wallet', ko: { title: '세션 복구가 필요합니다', cause: '스냅 에이전트가 재시작해 이 세션의 메모리 증인이 사라졌습니다 — 패스키 모드는 salt 를 저장하지 않으므로 패스키로 다시 채워야 합니다.', action: 'zk 스냅 화면(http://localhost:5100)의 "세션 복구" 를 누르세요. 다시 로그인할 필요는 없습니다.' }, en: { title: 'Session restore needed', cause: 'The Snap agent restarted and this session’s in-memory witness is gone — passkey mode stores no salt, so the passkey must refill it.', action: 'Press "Restore sessions" on the zk Snap page (http://localhost:5100). No need to log in again.' } },
     needs_consent: { where: 'wallet', ko: { title: '다시 승인해야 합니다', cause: '스냅 에이전트가 재시작해 이 세션의 메모리 증인이 사라졌습니다 — 서명할 비밀이 없습니다.', action: '서비스에서 로그아웃한 뒤 다시 로그인하세요(재검증 화면은 없어졌습니다).' }, en: { title: 'Re-approval is needed', cause: 'The Snap agent restarted and this session’s in-memory witness is gone — there is no secret left to sign with.', action: 'Log out of the service and log in again (the revalidation screen no longer exists).' } },
     bad_factory: { where: 'wallet', ko: { title: '팩토리 컨트랙트를 믿을 수 없습니다', cause: 'RP 가 준 팩토리 주소의 온체인 값이 인증서·zkIdP 키·로그 주소와 다르거나, 팩토리·검증자 코드가 스냅의 참조 빌드와 다릅니다.', action: 'RP 가 올바른 팩토리를 쓰는지 확인하고, 컨트랙트를 바꿨다면 스냅 쪽에서 먼저 컴파일(npx hardhat compile)하세요.' }, en: { title: 'The factory contract cannot be trusted', cause: 'The on-chain values at the factory address the RP gave differ from the certificate, zkIdP key or log address, or its factory/verifier code differs from the Snap’s reference build.', action: 'Check that the RP points at the right factory; if you changed the contracts, compile first on the Snap side (npx hardhat compile).' } },
@@ -1715,6 +1726,13 @@ window.DemoStrings = {
     oidc_client_unknown: { where: 'aa', ko: { title: '등록되지 않은 서비스의 로그인 요청입니다', cause: '요청의 client_id 가 zkIdP 가 승인한 서비스의 것이 아닙니다.', action: '서비스 페이지에서 다시 시작하세요. 이 화면을 링크로 받았다면 닫으세요.' }, en: { title: 'This sign-in request is from an unregistered service', cause: 'The client_id is not one of the services zkIdP approved.', action: 'Start again from the service page. If you got here from a link, close this window.' } },
     oidc_redirect_mismatch: { where: 'aa', ko: { title: '돌아갈 주소가 그 서비스의 것이 아닙니다', cause: '요청의 redirect_uri 가 그 서비스가 등록한 주소와 다릅니다 — 로그인 결과를 다른 곳으로 빼돌리려는 요청일 수 있습니다.', action: '진행하지 말고 창을 닫으세요.' }, en: { title: 'The return address does not belong to that service', cause: 'The redirect_uri differs from the address the service registered — this may be an attempt to send the result elsewhere.', action: 'Do not continue; close this window.' } },
     oidc_request_invalid: { where: 'aa', ko: { title: '로그인 요청의 형식이 틀렸습니다', cause: '인가 코드 방식(response_type=code)·PKCE(S256)·openid 범위·state·nonce 가 모두 있어야 합니다.', action: '서비스 페이지에서 다시 시작하세요.' }, en: { title: 'The sign-in request is malformed', cause: 'It needs response_type=code, PKCE (S256), the openid scope, a state and a nonce.', action: 'Start again from the service page.' } },
+    // 패스키 가입(2026-11-20 스펙 passkey-google-signup §3) — zkIdP 페이지의 "패스키로 로그인" 이 Google 로 확인한 이메일로 계정을 만든다
+    signup_disabled: { where: 'aa', ko: { title: '이 zkIdP 는 패스키 가입을 켜지 않았습니다', cause: 'Google 로 이메일을 확인해 계정을 만드는 길이 꺼져 있습니다(발급 정책이 key 가 아니거나 Google 설정이 없습니다).', action: 'zkIdP 페이지에서 "계정 만들기" 로 아이디·비밀번호 계정을 만드세요.' }, en: { title: 'Passkey sign-up is off on this zkIdP', cause: 'Creating an account from a Google-verified email is disabled (the issuance policy is not key, or Google is not configured).', action: 'Create an id-and-password account with "Create account" on the zkIdP page.' } },
+    signup_email_unverified: { where: 'aa', ko: { title: 'Google 이 확인한 이메일이 없습니다', cause: 'Google ID 토큰에 이메일이 없거나, 확인되지 않은 이메일입니다.', action: '이메일이 확인된 Google 계정으로 다시 시도하세요.' }, en: { title: 'No Google-verified email', cause: 'The Google ID token carries no email, or the email is not verified.', action: 'Try again with a Google account whose email is verified.' } },
+    signup_exists: { where: 'aa', ko: { title: '이 Google 계정으로 만든 계정이 이미 있습니다', cause: 'Google 계정 하나로는 zkIdP 계정을 하나만 만듭니다.', action: '같은 패스키면 그 계정으로 이어서 들어갑니다(패스키를 한 번 더 확인합니다).' }, en: { title: 'An account already exists for this Google account', cause: 'One Google account makes one zkIdP account.', action: 'With the same passkey you are signed in to that account (the passkey is asked once more).' } },
+    signup_other_passkey: { where: 'aa', ko: { title: '이 Google 계정은 다른 패스키에 연결돼 있습니다', cause: '이 Google 계정으로 만든 zkIdP 계정이 있고, 그 계정은 지금 쓴 패스키와 다른 패스키로 등록돼 있습니다.', action: '처음 가입할 때 쓴 패스키로 다시 시도하세요. 그 패스키가 없으면 zkIdP 관리자에게 계정 삭제를 요청한 뒤 다시 가입합니다.' }, en: { title: 'This Google account is linked to another passkey', cause: 'A zkIdP account exists for this Google account and it is registered with a different passkey.', action: 'Try again with the passkey used at sign-up. Without it, ask the zkIdP admin to delete the account and sign up again.' } },
+    signup_reservation_invalid: { where: 'aa', ko: { title: '가입 요청이 만료됐습니다', cause: 'zkIdP 가 이 가입에 내준 계정 번호(uid)의 유효 시간(10분)이 지났거나 zkIdP 가 다시 시작됐습니다.', action: 'zkIdP 페이지에서 "패스키로 로그인" 을 다시 누르세요.' }, en: { title: 'The sign-up request expired', cause: 'The account number (uid) zkIdP reserved for this sign-up is older than 10 minutes, or zkIdP restarted.', action: 'Press "Sign in with a passkey" again on the zkIdP page.' } },
+    signup_state_invalid: { where: 'wallet', ko: { title: 'Google 확인 결과를 이어받지 못했습니다', cause: '이 창에서 시작한 가입이 아니거나, 10분이 지났거나, 이미 처리됐습니다.', action: 'zkIdP 페이지에서 "패스키로 로그인" 을 다시 누르세요.' }, en: { title: 'Could not resume after Google', cause: 'The sign-up was not started in this window, is older than 10 minutes, or was already handled.', action: 'Press "Sign in with a passkey" again on the zkIdP page.' } },
     plain_oidc_disabled: { where: 'aa', ko: { title: '이 zkIdP 는 일반 OIDC 로그인을 켜지 않았습니다', cause: '비교용 일반 OIDC(CIA_PLAIN_OIDC)가 꺼져 있습니다.', action: '서비스의 "zkIdP 로 로그인"(zk-Delegation)을 쓰세요.' }, en: { title: 'Plain OIDC sign-in is off on this zkIdP', cause: 'The comparison-only plain OIDC (CIA_PLAIN_OIDC) is disabled.', action: 'Use "Log in with zkIdP" (zk-Delegation) on the service.' } },
     bad_purpose: { where: 'aa', ko: { title: '인증 코드 용도가 틀립니다', cause: 'purpose 는 issue 또는 register 여야 합니다.', action: '스냅 팝업에서 다시 로그인하세요.' }, en: { title: 'Bad auth-code purpose', cause: 'purpose must be issue or register.', action: 'Log in again from the Snap popup.' } },
     bad_profile: { where: 'aa', ko: { title: '프로필 값 형식이 틀립니다', cause: '이름 칸은 한 줄 256자 이하의 문자열이어야 합니다.', action: '속성 도구에서 복사한 커밋먼트(10진 숫자)를 그대로 붙여 넣으세요.' }, en: { title: 'Bad profile value', cause: 'The name field must be a single line of at most 256 characters.', action: 'Paste the commitment (decimal number) copied from the attribute tool as is.' } },

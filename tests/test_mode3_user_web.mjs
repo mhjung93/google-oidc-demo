@@ -212,7 +212,7 @@ try {
   });
   await t('B6 증명 키 캐시: 새 탭에서 페이지를 열면 /zk/*.zkey 를 다시 받지 않는다(Cache API 히트)', async () => {
     const p2 = await context.newPage(); const zkFetches = [];
-    p2.on('request', (r) => { if (r.url().includes('/zk/') && r.url().endsWith('.zkey')) zkFetches.push(r.url()); });
+    p2.on('request', (r) => { if (new URL(r.url()).pathname.startsWith('/zk/') && new URL(r.url()).pathname.endsWith('.zkey')) zkFetches.push(r.url()); });   // 주소에 ?v=버전 이 붙는다(2026-11-20)
     await p2.goto(`${wallet.base}/`); await p2.waitForSelector('#mainView:not([hidden])'); await waitText(p2, '#zkProgress', '준비', 60_000);
     assert.equal(zkFetches.length, 0, `네트워크로 다시 받았다: ${j(zkFetches)}`);
     await p2.close();

@@ -21,6 +21,7 @@ export async function startOidcIssuerStub({ clientId = 'mode3-test-client', prov
     return jwt.sign(privateKey);
   }
   let nextSub = 'stub-sub';
+  let nextClaims = {};   // 암묵 흐름 토큰에 더 실을 클레임(2026-11-20 — 패스키 가입이 email·email_verified 를 본다). setNextClaims 로 바꾼다
   const codes = new Map();   // code → { sub, nonce, challenge, redirectUri }
   const b64u = (buf) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   const server = http.createServer(async (req, res) => {
@@ -32,7 +33,7 @@ export async function startOidcIssuerStub({ clientId = 'mode3-test-client', prov
       // Google 흉내(2026-11-19 리디렉션식 Google 로그인): response_type=id_token 이면 로그인 화면 없이 바로 토큰을 조각(#)에 실어 돌려보낸다(암묵 흐름) — sub 는 setNextSub.
       if (q.get('response_type') === 'id_token') {
         const frag = new URLSearchParams({ state: q.get('state') ?? '' });
-        if (q.get('client_id') !== clientId || !q.get('nonce')) frag.set('error', 'invalid_request'); else frag.set('id_token', await mint({ sub: nextSub, nonce: q.get('nonce') }));
+        if (q.get('client_id') !== clientId || !q.get('nonce')) frag.set('error', 'invalid_request'); else frag.set('id_token', await mint({ sub: nextSub, nonce: q.get('nonce'), extra: nextClaims }));
         back.hash = frag.toString();
         res.writeHead(302, { Location: back.toString() }); return res.end();
       }
@@ -62,5 +63,5 @@ export async function startOidcIssuerStub({ clientId = 'mode3-test-client', prov
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${server.address().port}`;
   return { base, issuer: base, jwksUrl: `${base}/.well-known/jwks.json`, authorizeUrl: `${base}/oauth2/authorize`, tokenUrl: `${base}/oauth2/token`, clientId, clientSecret, provider, mint,
-    setNextSub: (s) => { nextSub = s; }, stop: () => new Promise((r) => server.close(() => r())) };
+    setNextSub: (s) => { nextSub = s; }, setNextClaims: (c) => { nextClaims = { ...(c ?? {}) }; }, stop: () => new Promise((r) => server.close(() => r())) };
 }

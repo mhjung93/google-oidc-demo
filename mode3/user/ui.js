@@ -84,7 +84,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
   const PK = cfg.secrets === 'passkey-web';
   // 패스키는 설정의 사용자 오리진 호스트(RP ID)에서만 쓸 수 있다 — 다른 호스트(127.0.0.1 등)로 열면 WebAuthn 을 부르지 않고 안내만 한다.
   const pkOriginOk = PK && (() => { try { return location.hostname === new URL(cfg.walletOrigin).hostname; } catch { return false; } })();
-  let pkState = null;        // core.passkeyState() 본문 { credentialId, createdAt, heldUntil } — 공개값만(salt 없음)
+  let pkState = null;        // core.passkeyState() 본문 { credentialId, createdAt, info } — 공개값만(salt 없음)
   let lastAttrs = null;      // core.status() 가 준 값 — "정확히 공개" 버튼이 쓴다
   let lastSessions = {};     // core.status() 의 sessions — 선택된 세션의 attrGateAddress 로 claim 버튼이 폼을 채운다(스펙 §6.1)
   let lastStatus = null;     // 마지막 core.status() 본문(언어·전문가 전환 때 다시 그린다)
@@ -294,14 +294,14 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
   }
   // ---- 영지식 증명 카드(2026-11-18 사용자 요청): 이 브라우저가 만든 증명(코어 proofs())의 목록·공개 입력·검증·값 바꿔 보기 ----
   // 공개 입력의 묶음 [첫 색인, 개수, 이름] — 회로의 공개 신호 순서 그대로다(circuits/pi_cred.circom·pi_idp.circom, lib/mode3_onchain.js PUB_INDEX).
-  // 설명은 사전의 user_pub_s_<이름>·user_pub_idp_<이름>. 화면에서 회로 pi_cred 의 증명은 π_session(π_s) 로 적는다(사용자 결정).
+  // 설명은 사전의 user_pub_s_<이름>·user_pub_idp_<이름>. 화면에서 회로 pi_cred 의 증명은 π_RP 로 적는다(사용자 결정).
   const PUB_ROWS = {
     // 2026-11-19(스펙 trace-without-tag T3): 29개 — pk_trace·tag 묶음이 없다(색인의 정본은 lib/mode3_onchain.js PUB_INDEX)
     pi_cred: [[0, 1, 'PPID'], [1, 1, 'arid'], [2, 1, 'pk_i'], [3, 1, 'max_height'], [4, 1, 'chainid'], [5, 1, 'allowAgent'], [6, 1, 'revRoot'], [7, 1, 'regRoot'], [8, 2, 'pk_CIA'],
       [10, 1, 'disc_mask'], [11, 6, 'disc_lo'], [17, 6, 'disc_hi'], [23, 1, 'set_sel'], [24, 1, 'set_root'], [25, 1, 'auid_s'], [26, 1, 'arid_s'], [27, 1, 'r_s'], [28, 1, 'counter']],
     pi_idp: [[0, 1, 'uid'], [1, 1, 'auid'], [2, 1, 'auid_s'], [3, 2, 'C_u'], [5, 2, 'C_s'], [7, 1, 'max_height'], [8, 1, 'ctx'], [9, 1, 'tag']],
   };
-  /** 버튼을 누르지 않아도 보이는 줄(사용자 결정): π_session 은 번호 1~7(arid … regRoot)만. π_IdP 는 목록에서 이미 버튼 뒤에 있으므로 전부. */
+  /** 버튼을 누르지 않아도 보이는 줄(사용자 결정): π_RP 은 번호 1~7(arid … regRoot)만. π_IdP 는 목록에서 이미 버튼 뒤에 있으므로 전부. */
   const pubDefault = (kind, first) => kind !== 'pi_cred' || (first >= 1 && first <= 7);
   const pubDescKey = (kind, name) => `user_pub_${kind === 'pi_cred' ? 's' : 'idp'}_${name}`;
   const locale = () => (Demo.lang === 'en' ? 'en-US' : 'ko-KR');
@@ -382,7 +382,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     };
     const steps = FLOW_STEPS.filter(([k]) => PK || k !== 'passkey').map(([k, from, to, both]) => {
       const rec = ms[k] ?? null, timed = k !== 'request' && k !== 'respond';
-      const note = !f ? null : !timed ? (k === 'respond' ? tt('user_flow_no_time') : null) : !rec ? tt('user_flow_skipped') : (k === 'passkey' && rec.before) ? tt('user_flow_before') : (k === 'passkey' && rec.held) ? tt('user_flow_held') : null;
+      const note = !f ? null : !timed ? (k === 'respond' ? tt('user_flow_no_time') : null) : !rec ? tt('user_flow_skipped') : (k === 'passkey' && rec.before) ? tt('user_flow_before') : null;
       return { key: k, from, to, both: Boolean(both), title: tt(`user_flow_s_${k}_t`) || k, meaning: tt(`user_flow_s_${k}_m`), time: rec ? fmtMs(rec.ms) : null,
         share: rec && !rec.before && f.totalMs > 0 ? rec.ms / f.totalMs : 0, note: note || null, dim: Boolean(f && timed && !rec), items: f ? (ITEMS[k] ?? []).filter(Boolean) : [],
         groups: f ? (GROUPS[k] ?? []).map((g) => ({ title: g.title, items: g.items.filter(Boolean) })) : [] };
@@ -543,23 +543,21 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
   const clearVerdict = (el) => { el.__verdictArgs = null; el.className = ''; el.textContent = ''; };
 
   // ---- passkey-web: 설정 카드·패스키 줄·계정 복구 카드 ----
-  /** 연결이 없으면 설정 카드, 있으면 보관 상태의 패스키 줄(credential ID 앞부분·보관 남은 분). 연결 끊기는 등록이 없을 때만. */
+  /** 연결이 없으면 설정 카드, 있으면 보관 상태의 패스키 줄(credential ID 앞부분·어디에 있는 패스키인가). 연결 끊기는 등록이 없을 때만. */
   function renderPasskey() {
     if (!PK) return;
     const cid = pkState?.credentialId ?? null;
     $('pkSetupCard').hidden = Boolean(cid);
     $('pkPanel').hidden = !cid;
     if (cid) {
-      const left = Number.isFinite(pkState.heldUntil) ? pkState.heldUntil - Date.now() : 0;
-      const held = left > 0 ? tt('user_pk_held', { min: Math.ceil(left / 60_000) }) : tt('user_pk_not_held');
       // 어디에 있는 패스키인가(스펙 2026-11-19 P3) — 연결할 때 인증기가 알려 준 공개 정보. 정보가 없으면(옛 연결) 줄에 넣지 않는다.
       const pi = pkState.info ?? null;
-      // 다른 기기(cross-platform)가 모두 휴대폰은 아니다(USB·NFC 보안 키) — QR 연동(hybrid)으로 썼을 때만 휴대폰이라 적는다(리뷰 M-10).
+      // 다른 기기(cross-platform): QR 연동(hybrid)으로 쓴 것과 USB·NFC 보안 키를 나눠 적는다(리뷰 M-10). 2026-11-20: 화면에서 "휴대폰" 이라는 말은 뺐다.
       const hybrid = pi?.hint === 'hybrid' || Boolean(pi?.transports?.includes('hybrid'));
       const where = pi?.attachment === 'platform' ? tt('user_pk_where_platform') : hybrid ? tt('user_pk_where_cross') : pi?.attachment === 'cross-platform' ? tt('user_pk_where_key') : null;
       const sync = !pi || pi.backupEligible === null ? null : pi.backedUp ? tt('user_pk_synced') : pi.backupEligible ? tt('user_pk_syncable') : tt('user_pk_device_bound');
       $('pkInfo').dataset.pkWhere = pi?.attachment ?? '';
-      $('pkInfo').textContent = [tt('user_pk_credential', { id: `${cid.slice(0, 12)}…` }) || `${cid.slice(0, 12)}…`, where, sync, held].filter(Boolean).join(' · ');
+      $('pkInfo').textContent = [tt('user_pk_credential', { id: `${cid.slice(0, 12)}…` }) || `${cid.slice(0, 12)}…`, where, sync].filter(Boolean).join(' · ');
       const registered = Boolean(lastStatus?.registered);
       $('pkDisconnectBtn').disabled = registered;
       $('pkDisconnectHint').hidden = !registered;
@@ -959,7 +957,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
   });
 
   // ---- passkey-web 동작: 패스키 연결(만들기·이미 있는 것)·salt 보기·연결 끊기·계정 복구 ----
-  /** get() → { credentialId, s_u }(passkey_store — PRF 로 만든 salt). 코어가 금고를 만들고 credential 을 두고 salt 를 10분 보관한다. s_u 는 코어에만 넘긴다. */
+  /** get() → { credentialId, s_u }(passkey_store — PRF 로 만든 salt). 코어가 금고를 만들고 credential 을 둔다(salt 는 저장하지 않는다 — 등록이 있으면 대조에만 쓴다). s_u 는 코어에만 넘긴다. */
   async function linkPasskey(get) {
     if (!pkOriginOk) return;
     const btns = [$('pkNewBtn'), $('pkExistingBtn')];
@@ -967,11 +965,9 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     btns.forEach((b) => { b.dataset.busy = '1'; });
     pendingVerdict($('pkSetupVerdict'), 'working');
     try {
-      // 패스키를 둘 곳(스펙 2026-11-19 P1·P2): 휴대폰이면 힌트를 싣고, 인증기가 알려 준 공개 정보와 함께 연결에 둔다(다음 확인도 같은 길로 간다).
-      const phone = document.querySelector('input[name="pkPlace"]:checked')?.value === 'phone';
-      const { credentialId, s_u, info = null } = await get(phone ? { hints: ['hybrid'] } : {});
-      // 힌트는 고른 곳이 아니라 인증기의 답으로 정한다(리뷰 M-9): "휴대폰" 을 골랐어도 Chrome 창에서 이 기기의 패스키를 썼으면(platform) 다음 확인을 QR 로 보내지 않는다.
-      const r = await core.passkeyConnect({ credentialId, s_u, info: { ...(info ?? {}), hint: phone && info?.attachment !== 'platform' ? 'hybrid' : null } });
+      // 2026-11-20(사용자 결정): "휴대폰 (QR)" 선택지를 화면에서 뺐다 — 힌트 없이 Chrome 의 기본 창으로 만든다(hint 는 늘 null). 인증기가 알려 준 공개 정보(붙는 방식·transports·동기화)는 그대로 연결에 둔다.
+      const { credentialId, s_u, info = null } = await get({});
+      const r = await core.passkeyConnect({ credentialId, s_u, info: { ...(info ?? {}), hint: null } });
       if (r.status === 200) setVerdict($('pkSetupVerdict'), true, 'user_pk_connected');
       else setVerdict($('pkSetupVerdict'), false, 'wallet_setup_passkey_failed', { reason: r.body?.reason ?? `HTTP ${r.status}` });
     } catch (e) {
@@ -982,8 +978,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
   if (PK) {
     $('pkNewBtn').addEventListener('click', () => linkPasskey((o) => passkey.create(o)));
     $('pkExistingBtn').addEventListener('click', () => linkPasskey((o) => passkey.derive(o)));
-    for (const r of document.querySelectorAll('input[name="pkPlace"]')) r.addEventListener('change', () => { $('pkPlaceHint').hidden = document.querySelector('input[name="pkPlace"]:checked')?.value !== 'phone'; });
-    // salt 보기(스펙 §2 4단계): 보관분 또는 패스키. 창에만 보이고 닫으면 지운다 — 저장·전송하지 않는다.
+    // salt 보기(스펙 §2 4단계): 누를 때마다 패스키에서 얻는다. 창에만 보이고 닫으면 지운다 — 저장·전송하지 않는다.
     $('pkShowSaltBtn').addEventListener('click', async () => {
       clearVerdict(storageVerdict());
       try {
@@ -991,7 +986,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
         if (r.status !== 200) { setVerdict(storageVerdict(), false, 'wallet_passkey_salt_failed', { reason: r.body?.reason ?? `HTTP ${r.status}` }); return; }
         $('pkSaltText').textContent = r.body.s_u; $('pkSaltModal').hidden = false;
       } catch (e) { setVerdict(storageVerdict(), false, 'wallet_passkey_salt_failed', { reason: e?.reason ?? 'internal', detail: e?.message }); }
-      finally { refresh(); }   // 패스키로 새로 받았으면 보관 남은 시간이 바뀐다
+      finally { refresh(); }
     });
     $('pkSaltClose').addEventListener('click', () => { $('pkSaltModal').hidden = true; $('pkSaltText').textContent = ''; });
     $('pkSaltCopy').addEventListener('click', () => copyText($('pkSaltText').textContent, $('pkSaltCopy')));
@@ -1045,6 +1040,8 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       setVerdict($('pkSetupVerdict'), false, 'user_pk_setup_title', { reason: 'passkey_wrong_origin' });
     }
     showRecoverResult();
+    // 처음 쓰는 사람 안내(2026-11-20): zkIdP 가 패스키 가입을 열어 두었으면 그 페이지로 가는 줄을 보인다 — 못 읽으면 숨긴 채.
+    core.idp.publicKeys().then((k) => { if (k?.status !== 200 || !k.body?.oidc?.signup) return; const a = $('pkFirstLink'); a.href = `${cfg.ciaUrl}/user`; a.textContent = a.href; $('pkFirstRow').hidden = false; }).catch(() => {});
   }
 
   async function init() {

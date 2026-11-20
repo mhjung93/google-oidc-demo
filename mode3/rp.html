@@ -441,11 +441,11 @@
         FlowFigure.render($('seenFigureBody'), {
           from: { name: T('flow_user'), sub: T('flow_user_sub') }, to: { name: me },
           sent: { title: T('flow_rp_sent'), items: [
-            { key: 'proof', name: 'π_session', value: T('flow_proof_value'), note: T('flow_rp_proof') },
+            { key: 'proof', name: 'π_RP', value: T('flow_proof_value'), note: T('flow_rp_proof') },   // 2026-11-20(사용자 결정): 화면에서 회로 pi_cred 의 증명은 π_RP 로 적는다(전에는 π_session)
             { key: 'PPID', name: 'PPID', value: seen.PPID, note: T('flow_rp_ppid') },
             { key: 'arid', name: 'arid', value: r.arid, note: T('flow_rp_arid') },
             { key: 'auid_s', name: 'auid_s', value: seen.auid_s, note: T('flow_rp_auid_s') },
-            { key: 'arid_s', name: 'arid_s', value: seen.arid_s, note: T('flow_rp_arid_s') },
+            { key: 'arid_s', name: 'arid_s', value: seen.arid_s, note: T('flow_rp_arid_s'), head: true },
             { key: 'pk_i', name: 'pk_i', value: r.pk_i, note: T('flow_rp_pki') },
             { key: 'max_height', name: 'max_height', value: r.max_height, note: T('flow_rp_height') },
             { key: 'root', name: 'revRoot', value: r.root, note: T('flow_rp_root') },
@@ -467,7 +467,7 @@
         sent: { title: T('flow_oidc_sent'), items: [
           { key: 'iss', name: 'iss', value: p.iss ?? '-', note: T('flow_oidc_iss') },
           { key: 'sub', name: 'sub', value: seen.uid, note: T('flow_oidc_sub') },
-          { key: 'aud', name: 'aud', value: seen.rid ?? '-', note: T('flow_oidc_aud') },
+          { key: 'aud', name: 'aud', value: seen.rid ?? '-', note: T('flow_oidc_aud'), head: true },
           { key: 'nonce', name: 'nonce', value: p.nonce ?? '-', note: T('flow_oidc_nonce') },
         ] },
         back: null,
@@ -484,19 +484,25 @@
       if (!seen) return;
       $('seenBox').dataset.protocol = seen.protocol;
       const short = (v) => (String(v).length > 24 ? `${String(v).slice(0, 10)}…${String(v).slice(-8)}` : String(v));
-      const line = (name, value, noteKey, noteFb) => {
+      // how: 'full' = 줄이지 않는다(iss), 'head' = 앞 17자만(aud — 예: 123456789012-abcd…), 그 밖 = 앞 10자…뒤 8자. 전체 값은 늘 title 에 있다.
+      const headOnly = (v) => (String(v).length > 17 ? `${String(v).slice(0, 17)}…` : String(v));
+      const line = (name, value, noteKey, noteFb, how = null) => {
         const p = document.createElement('div'); const code = document.createElement('code');
-        code.textContent = short(value); code.title = String(value); code.dataset.seen = name.split(' ').pop();   // data-seen: uid·rid·auid_s·arid_s·PPID
+        code.textContent = how === 'full' ? String(value) : how === 'head' ? headOnly(value) : short(value); code.title = String(value); code.dataset.seen = name.split(' ').pop();   // data-seen: iss·uid·rid·auid_s·arid_s·PPID
         p.append(`${name} `, code, ` — ${tt(noteKey) || noteFb}`); body.append(p);
       };
       const head = document.createElement('div'); head.className = 'muted';
       head.textContent = seen.protocol !== 'oidc' ? (tt('rp_seen_zk') || 'zk-Delegation 으로 로그인했습니다.') : seen.issuer === 'google' ? (tt('rp_seen_google') || 'Google(OIDC)로 로그인했습니다.') : (tt('rp_seen_oidc') || '일반 OIDC 로 로그인했습니다.');
-      $('seenTitle').textContent = seen.issuer === 'google' ? (tt('rp_seen_title_google') || 'Google 이 이 서비스에 알려 준 것 (ID 토큰의 sub·aud)') : (tt('rp_seen_title') || 'zkIdP 가 이 서비스에 알려 준 것');
+      $('seenTitle').textContent = seen.issuer === 'google' ? (tt('rp_seen_title_google') || 'Google 이 이 서비스에 알려 준 것 (ID 토큰의 iss·sub·aud)') : (tt('rp_seen_title') || 'zkIdP 가 이 서비스에 알려 준 것 (ID 토큰의 iss·sub·aud)');
       $('seenBox').dataset.issuer = seen.issuer ?? 'zkidp';
       body.append(head);
+      // iss(2026-11-20 사용자 요청): 토큰을 낸 곳 — 받은 ID 토큰 본문의 값 그대로(줄이지 않는다). 토큰 본문이 없으면(옛 세션) 줄을 넣지 않는다.
+      const iss = typeof seen.jwt?.payload?.iss === 'string' ? seen.jwt.payload.iss : null;
+      if (iss) line('iss', iss, seen.issuer === 'google' ? 'rp_seen_iss_note_google' : 'rp_seen_iss_note', seen.issuer === 'google' ? '토큰을 낸 곳(Google)' : '토큰을 낸 곳(zkIdP)', 'full');
       // 받은 ID 토큰의 sub·aud 자리에 무엇이 들어 있었는가 — 일반 OIDC 는 uid·rid 가 그대로, zk-Delegation 은 가려진 auid_s·arid_s 다.
-      if (seen.protocol === 'oidc') { line('sub = uid', seen.uid, 'rp_seen_uid_note', '모든 서비스에서 같은 값'); line('aud = rid', seen.rid ?? '-', seen.issuer === 'google' ? 'rp_seen_rid_note_google' : 'rp_seen_rid_note', seen.issuer === 'google' ? 'Google 이 아는 이 서비스의 식별자' : 'zkIdP 가 아는 이 서비스의 식별자'); }
-      else { line('sub = auid_s', seen.auid_s, 'rp_seen_auid_s_note', '로그인마다 다른 값'); line('aud = arid_s', seen.arid_s ?? '-', 'rp_seen_arid_s_note', '로그인마다 다른 값 — zkIdP 는 어느 서비스인지 모른다'); line('PPID', seen.PPID, 'rp_seen_ppid_note', '이 서비스에서만 같은 값'); }
+      // aud 는 앞 17자를 보인다(2026-11-20 사용자 요청 — 클라이언트 ID 의 앞 번호와 몇 글자면 충분): 앞 10자…뒤 8자로 줄이면 Google 클라이언트 ID 는 서비스가 달라도 같게 보였다(끝이 모두 같다).
+      if (seen.protocol === 'oidc') { line('sub = uid', seen.uid, 'rp_seen_uid_note', '모든 서비스에서 같은 값'); line('aud = rid', seen.rid ?? '-', seen.issuer === 'google' ? 'rp_seen_rid_note_google' : 'rp_seen_rid_note', seen.issuer === 'google' ? 'Google 이 아는 이 서비스의 식별자' : 'zkIdP 가 아는 이 서비스의 식별자', 'head'); }
+      else { line('sub = auid_s', seen.auid_s, 'rp_seen_auid_s_note', '로그인마다 다른 값'); line('aud = arid_s', seen.arid_s ?? '-', 'rp_seen_arid_s_note', '로그인마다 다른 값 — zkIdP 는 어느 서비스인지 모른다', 'head'); line('PPID', seen.PPID, 'rp_seen_ppid_note', '이 서비스에서만 같은 값'); }
       if (seen.jwt?.payload) {
         const det = document.createElement('details'); const sum = document.createElement('summary'); const pre = document.createElement('pre');
         sum.textContent = tt('rp_seen_jwt') || '받은 ID 토큰(JWT) 본문 보기'; pre.id = 'seenJwt'; pre.textContent = JSON.stringify(seen.jwt.payload, null, 2);
@@ -654,6 +660,9 @@
       if (rpMe?.seen) renderSeen();   // 그림의 서비스 이름은 info.name 이다 — 일반 OIDC 로 돌아온 길은 /api/rp/me 가 먼저 와 'RP' 로 그려졌다(2026-11-19 화면 셀프 리뷰)
       $('zkoidcLoginBtn').hidden = !info?.social?.zkoidc?.enabled;
       document.documentElement.dataset.googleRelay = info?.social?.google?.enabled && info.social.google.redirectUri ? '1' : '0';
+      // 2026-11-20(사용자 결정): 리디렉션식 Google 이 켜져 있으면 그것이 이 데모의 "일반 OIDC" 다 — 버튼에 그렇게 적는다(서비스가 Google 의 클라이언트로 ID 토큰을 직접 받는다).
+      { const gl = $('googleLoginBtn').querySelector('[data-i18n]'), key = document.documentElement.dataset.googleRelay === '1' ? 'rp_google_btn_oidc' : 'rp_google_btn';
+        if (gl && gl.dataset.i18n !== key) { gl.dataset.i18n = key; gl.textContent = tt(key) || (key === 'rp_google_btn_oidc' ? 'Google 로 로그인 (일반 OIDC)' : 'Google 계정으로 로그인'); } }
       renderBrand();
       const pending = info.status !== 'approved';
       renderStatus();

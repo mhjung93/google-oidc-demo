@@ -30,7 +30,7 @@ export const PINNED_ENV = {
   MODE3_REV_CHAIN_RPC: '',   // V10: 지갑의 캐노니컬 RPC — 비우면 CIA_RPC_URL(격리 스택은 체인 하나)
   // passkey-web(2026-11-17 미뤄 둔 Minor C): 셸·.env 의 TLS·모드 값이 새면 격리 서버가 https 로 떠 http 준비 확인에 실패하거나 다른 모드로 뜬다.
   // TLS 를 쓰는 테스트(test_mode3_tls_stack.mjs)는 MODE3_TLS_*·NODE_EXTRA_CA_CERTS 를 env 로 명시한다. 보관 시간은 '' 가 아니라 기본값 600 으로 고정한다 —
-  // 에이전트(mode3_wallet_agent.js)는 '' 를 0(보관 끔)으로 읽고 정적 서버는 600 으로 읽어, '' 로는 두 모드의 기본이 갈린다.
+  // 에이전트(mode3_wallet_agent.js)는 '' 를 0(보관 끔)으로 읽는다. 정적 서버(passkey-web)는 2026-11-20 부터 이 값을 읽지 않는다(salt 를 보관하지 않는다).
   MODE3_TLS_CERT: '', MODE3_TLS_KEY: '', NODE_EXTRA_CA_CERTS: '', MODE3_WALLET_SECRETS: '', MODE3_PASSKEY_HOLD_SECONDS: '600',
 };
 
@@ -92,7 +92,9 @@ export async function startIsolatedMode3Stack(opts = {}) {
   // MODE3_WALLET_AGENT_ORIGIN 으로 넘겨야 한다. 호출자의 ciaEnv 가 우선한다.
   const walletPort = await freePort();
   const walletOrigin = `http://${walletHost}:${walletPort}`;
-  const cia = await startIsolatedCia({ env: { MODE3_WALLET_AGENT_ORIGIN: walletOrigin, ...ciaEnv }, oidc, ...(twoChains ? { revRpcUrl, appRpcUrl } : {}) });
+  // ciaEnv 값 안의 "{walletOrigin}" 은 여기서 정해진 지갑 오리진으로 바꾼다(2026-11-20 — 패스키 가입의 MODE3_OIDC_REDIRECT_URI 는 지갑 정적 서버의 /google-relay 인데, 포트를 호출자가 미리 알 수 없다).
+  const ciaEnvResolved = Object.fromEntries(Object.entries(ciaEnv).map(([k, v]) => [k, typeof v === 'string' ? v.replaceAll('{walletOrigin}', walletOrigin) : v]));
+  const cia = await startIsolatedCia({ env: { MODE3_WALLET_AGENT_ORIGIN: walletOrigin, ...ciaEnvResolved }, oidc, ...(twoChains ? { revRpcUrl, appRpcUrl } : {}) });
   const ciaUiBase = `http://${ciaHost}:${cia.port}`;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mode3-stack-'));
   const rpPort = await freePort();

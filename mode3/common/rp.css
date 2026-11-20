@@ -58,7 +58,7 @@ body { background: var(--bg); }
 }
 .card.market-panel, .card.assets-panel, .card.compliance-panel, .card.seen-panel { min-width: 0; }
 /* "알려 준 것" 카드(2026-11-19): sub·aud 줄은 크게, 설명·토큰 본문·그림은 그 아래 */
-.seen-panel .seen-body { font-size: 14px; line-height: 1.7; } .seen-panel .seen-body code { font-size: 14px; font-weight: 600; }
+.seen-panel .seen-body { font-size: 14px; line-height: 1.7; } .seen-panel .seen-body code { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }   /* 줄이지 않는 값(iss)이 좁은 화면에서 카드 안에 줄을 바꾼다(2026-11-20) */
 .seen-panel details { margin-top: 10px; font-size: 13px; } .seen-panel pre { max-height: 260px; overflow: auto; }
 .card h2 { margin: 0 0 14px; font-size: 18px; color: var(--navy-ink); font-weight: 800; }
 .compliance-panel > h2 { margin-bottom: 6px; }
