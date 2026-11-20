@@ -87,6 +87,21 @@ zkIdP 관리자 화면의 "uid ↔ auid 대응" 표에 "일반 OIDC 에서 본 �
 같은 패스키면 다른 브라우저에서도 그 계정으로 들어간다(패스키를 한 번 더 묻는다). 기존의 "계정 만들기"(아이디·비밀번호)와 속성 도구 순서도 그대로 쓸 수 있다.
 이 모드는 실제 Chrome·VM 으로 처음부터 끝까지 리허설해 확인한 것이 아니다(미검증 위험은 `docs/MODE3_DEMO.md` 에 있다).
 
+## zkWrapper 모드(`zkwrapper`)로 할 때 (2026-11-20)
+
+별도 IdP 없이 **zkWrapper** 한 서버(이 PC 의 `https://wallet.zkd.test:5100`)가 지갑 화면과 발급(Google ID 토큰 → 세션 토큰)을 함께 맡는 모드다(스펙 `docs/superpowers/specs/2026-11-20-mode3-zkwrapper-design.md`).
+IdP VM(.10)에는 아무것도 띄우지 않는다. 기동은 `WALLET_MODE=zkwrapper ZKWRAPPER_GOOGLE_CLIENT_ID=… AUTO_APPROVE=1 bash scripts/demo_split_start.sh` 이다 — 래퍼 전용 Google 클라이언트 ID 가 없거나
+서비스(zkONE·zkTWO)의 ID 와 같으면 아무것도 내리기 전에 멈춘다. Google 콘솔에서 그 클라이언트 ID 의 "승인된 리디렉션 URI" 에 `https://127.0.0.1:5100/google-relay` 를 넣는다.
+passkey-web 과 같은 데모 CA·hosts 가 필요하다(`bash scripts/zkd_tls_setup.sh` — 이미 했으면 그대로).
+
+탭은 셋이다: `https://wallet.zkd.test:5100/`(홈 — "zk-Delegation 쓰는 법" 카드에 사용자 세 단계·운영자 세 단계·전체 플로우 링크, 그 아래 지갑 카드), `https://zkone.zkd.test:3100`, `https://zktwo.zkd.test:3101`.
+운영자 화면(`/rp`)·관리자 화면(`/admin`)도 zkWrapper 주소에 있다. 서비스의 로그인 버튼은 **"zk 로그인"** 이다: 누르면 창이 Google 계정 선택으로 갔다가 돌아와 패스키를 한 번 묻고(처음이면 "패스키 만들고 로그인"
+버튼 한 번), 로그인이 끝난다. 처음 로그인이 곧 등록이다 — 계정은 Google 계정이고(아이디는 Google 이 확인한 이메일), 속성은 속성 도구 기록이 있으면 그것, 없으면 기본값이다.
+zkIdP 인증 창·아이디·비밀번호·π_IdP 는 없다. 전체 플로우 한 장(`/common/flow.html`)의 아랫줄은 "Google 계정 → 패스키 → 가명 + Google 토큰 → 세션 토큰 → PPID + π_RP" 로 그려진다.
+말할 것: zkWrapper 는 누가(어느 Google 계정) 로그인했는지는 알지만 어느 서비스인지는 모른다(arid_s 는 로그인마다 다르다). 브라우저는 체인을 노드에서 직접 읽어 zkWrapper 를 거치지 않는다.
+한계: 같은 Google 계정은 처음 쓴 패스키 하나와만 쓴다(다른 패스키면 "이 Google 계정은 다른 패스키에 묶여 있습니다"). 다른 브라우저에서 처음 로그인하거나 속성을 바꾸면 10분 안에 한 번 더 바꿀 수 없다.
+이 모드는 실제 Chrome·VM·실제 Google 로 처음부터 끝까지 리허설해 확인한 것이 아니다(격리 테스트와 대역 Google 로만 확인했다).
+
 ## 다시 로그인
 
 - **zkIdP 가 새 판을 게시할 때마다** zkONE·zkTWO 의 열려 있던 로그인이 모두 닫힌다. 폐기(누구의 폐기든)뿐 아니라 **등록부가 바뀔 때도** 그렇다 — 누군가의 첫 로그인(첫 발급)·속성 변경·계정 폐기. 12 의 새 계정 첫 로그인도 다른 서비스의 로그인을 닫는다. 화면은 그대로 두고 내 자산 위에 "이 로그인은 닫혔습니다" 안내가 뜬다. 탭으로 돌아오거나 요청이 거절되는 즉시, 늦어도 10초 안에 뜬다.

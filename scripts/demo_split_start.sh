@@ -39,6 +39,9 @@
 #                                                          # Google 콘솔 승인된 원본: http://localhost:3100, http://localhost:3101. RP 공개 주소가 바뀌면 RP 가 스스로 새로 등록한다(IdP 승인 다시).
 #        WALLET_MODE=passkey-web bash scripts/demo_split_start.sh  # (2026-11-17) 설치 없는 패스키 모드: 호스트 PC 의 정적 서버(:5100, https)가 지갑. 이름 주소(wallet·idp·zkone·zktwo.zkd.test)와 데모 CA 인증서를
 #                                                          # VM 세 곳에 배포한다. 처음이면 먼저 bash scripts/zkd_tls_setup.sh(sudo) 뒤 Chrome 재시작. 터널은 강제로 끈다. stop 도 같은 WALLET_MODE 로 부른다.
+#        WALLET_MODE=zkwrapper ZKWRAPPER_GOOGLE_CLIENT_ID=… bash scripts/demo_split_start.sh  # (2026-11-20 스펙 zkwrapper) 별도 IdP 없이 zkWrapper: 이 PC 의 한 서버(:5100, https://wallet.zkd.test)가
+#                                                          # 지갑 화면과 발급(Google 토큰 → 세션 토큰)을 함께 맡는다. IdP VM 에는 아무것도 띄우지 않는다. passkey-web 과 같은 데모 CA·hosts 가 필요하고,
+#                                                          # 래퍼 전용 Google 클라이언트 ID(서비스의 ID 와 달라야 한다 — 같으면 멈춘다)의 승인된 리디렉션 URI 에 https://127.0.0.1:5100/google-relay 가 있어야 한다.
 # 주소는 SPLIT_HOST_IP·SPLIT_IDP_IP·SPLIT_RP1_IP·SPLIT_RP2_IP·SPLIT_SSH_USER 로 바꿀 수 있다. 로그는 DEMO_LOG_DIR(기본 /tmp/mode3-split).
 # 새 체인은 Ethernal 플러그인을 싣지 않는 최소 hardhat 설정으로 띄운다 — 프로젝트 설정은 노드 기동 때 .env 의 Ethernal 워크스페이스를 초기화한다.
 # 사용자 페이지는 이 VM 의 .env 를 읽지 않는다(DOTENV_CONFIG_PATH) — 라이브 IdP 의 고정 공개키 같은 값이 섞이지 않게.
@@ -49,6 +52,9 @@ cd "$(dirname "$0")/.."
 U="${SPLIT_SSH_USER:-zkd}"; HOST="${SPLIT_HOST_IP:-192.168.226.128}"
 IDP="${SPLIT_IDP_IP:-192.168.226.10}"; RP1="${SPLIT_RP1_IP:-192.168.226.11}"; RP2="${SPLIT_RP2_IP:-192.168.226.12}"
 WALLET_MODE="${WALLET_MODE:-web}"
+# zkwrapper(2026-11-20 스펙 zkwrapper): 화면·인증서·hosts 규칙은 passkey-web 과 같다 — 모드는 passkey-web 으로 두고 ZW=1 표시로 다른 점만 가른다(지갑 서버 = 발급 서버, IdP VM 없음).
+ZW=0; [ "$WALLET_MODE" = zkwrapper ] && { ZW=1; WALLET_MODE=passkey-web; }
+ZW_DIR=".local/zkwrapper"   # zkWrapper 의 상태·열쇠 — 저장소 루트의 cia_keys.json(한 머신 데모 IdP)과 섞이지 않게 따로 둔다(.local 은 git 무시)
 case "$WALLET_MODE" in web) USER_PORT=5200 ;; snap|passkey) USER_PORT=5100 ;; passkey-web) USER_PORT=5100 ;; *) echo "WALLET_MODE 는 web·snap·passkey·passkey-web 중 하나: $WALLET_MODE"; exit 1 ;; esac
 # passkey(2026-11-17, 스펙 2026-11-17-mode3-passkey-mode): 지갑은 snap 처럼 에이전트(:5100)지만 MetaMask·스냅 서버가 없다. 패스키는 localhost 의 어느 포트 페이지든
 # 부를 수 있으므로(§2) 브라우저용 IdP·RP 주소는 터널을 127.0.0.1 로 연다 — IP 오리진에서는 WebAuthn 이 동작하지 않는다. 대신 RP 소셜 로그인(localhost 전용)은 쓸 수 없다.
@@ -61,6 +67,7 @@ AGENT_MODE=$([ "$WALLET_MODE" = web ] || [ "$WALLET_MODE" = passkey-web ] && ech
 GOOGLE_ID_SET=0
 if [ -n "${RP1_GOOGLE_CLIENT_ID:-}${RP2_GOOGLE_CLIENT_ID:-}" ] || { [ "${OIDC:-1}" != 0 ] && { [ -n "${MODE3_OIDC_CLIENT_ID:-}" ] || grep -qs '^GOOGLE_CLIENT_ID=.' .env; }; }; then GOOGLE_ID_SET=1; fi
 PLAIN_OIDC="${PLAIN_OIDC:-$([ "$WALLET_MODE" = passkey-web ] && [ "$GOOGLE_ID_SET" != 1 ] && echo 1 || echo 0)}"
+[ "$ZW" = 1 ] && PLAIN_OIDC=0   # zkWrapper 에는 일반 OIDC(/oidc)가 없다 — 비교 장면은 서비스의 Google 로그인으로 보인다
 SCHEME=http; ZKD_CA_DIR="${ZKD_CA_DIR:-.local/zkd-ca}"; CACERT=()
 PEER_HOST=$([ "$WALLET_MODE" = passkey ] && echo 127.0.0.1 || echo localhost)
 if [ "$WALLET_MODE" = "snap" ]; then [ -d snap-mode3/node_modules ] && [ -f snap-mode3/dist/bundle.js ] || { echo "BLOCKED: snap-mode3/node_modules 또는 dist/bundle.js 가 없다 — cd snap-mode3 && npm install && npm run build"; exit 1; }; fi
@@ -86,6 +93,9 @@ if [ "$WALLET_MODE" = passkey-web ]; then
   WALLET_ORIGIN="https://wallet.zkd.test:$USER_PORT"; IDP_UI="https://idp.zkd.test:$IDP_PORT"
   RP1_UI="https://zkone.zkd.test:$RP1_PORT"; RP2_UI="https://zktwo.zkd.test:$RP2_PORT"
 fi
+[ "$ZW" = 1 ] && IDP_UI="$WALLET_ORIGIN"   # zkwrapper: 사람이 여는 발급자 화면(운영자·관리자)은 지갑과 같은 서버다
+# 서버끼리 부르는 발급자 주소 — 서비스 VM 의 MODE3_CIA_URL, 이 스크립트의 curl. zkwrapper 는 이 PC 의 zkWrapper(인증서 IP SAN 에 $HOST 가 있다).
+CIA_SRV="$SCHEME://$IDP:$IDP_PORT"; [ "$ZW" = 1 ] && CIA_SRV="$SCHEME://$HOST:$USER_PORT"
 on() { local h="$1"; shift; ssh -o BatchMode=yes -o ConnectTimeout=5 "$U@$h" "$@"; }
 
 # Blockscout 자동 검증 감시자는 포트를 듣지 않아 아래 포트 목록으로는 못 찾는다 — pid 파일의 pid 를, 명령줄이 감시자일 때만 내린다(B10).
@@ -98,7 +108,7 @@ stop_verify_watch() {
 # 이 VM 쪽은 포트 주인 중 명령줄이 우리 것과 맞는 것만 내린다(라이브 데모와 명령줄이 같은 사용자 페이지는 포트로 가른다).
 stop_local() {
   # passkey-web 의 정적 서버(:5100)는 그 모드일 때만 찾는다 — 다른 모드로 부르면 한 머신 데모의 :5100 정적 서버를 건드리지 않는다.
-  STOP_EXTRA=""; [ "$WALLET_MODE" = passkey-web ] && STOP_EXTRA="5100:mode3_user_static.js"
+  STOP_EXTRA=""; [ "$WALLET_MODE" = passkey-web ] && STOP_EXTRA="5100:mode3_user_static.js 5100:mode3_zkwrapper.js"   # zkwrapper 도 이 모드다(ZW) — 어느 쪽으로 띄웠든 5100 의 우리 서버를 내린다
   for spec in "$APP_PORT:chain.config.cjs" "$REV_PORT:chain.config.cjs" "5200:mode3_user_static.js" "5100:mode3_wallet_agent.js" "$SNAP_PORT:mm-snap serve" "$IDP_PORT:$TUNNEL_SPEC" "$RP1_PORT:$RP1_TUNNEL" "$RP2_PORT:$RP2_TUNNEL" $STOP_EXTRA; do
     port="${spec%%:*}"; want="${spec#*:}"
     for pid in $(ss -ltnp 2>/dev/null | grep ":$port " | grep -oE "pid=[0-9]+" | cut -d= -f2 | sort -u); do
@@ -114,6 +124,14 @@ stop_remote() {
   for h in "$RP1" "$RP2"; do on "$h" "pkill -f '[z]kd-demo/bin/node mode3_rp.js' && echo 'stop RP ($h)' || true"; done
 }
 if [ "${1:-}" = "stop" ]; then stop_remote; stop_local; exit 0; fi
+# 사전 검사(zkwrapper, 2026-11-20 스펙 §10 C2): 래퍼 전용 Google 클라이언트 ID 가 있어야 하고 서비스의 ID 와 달라야 한다 — 같으면 서비스가 자기 요청 키의 nonce 로 사용자의
+# 토큰을 받아 낼 수 있다. 값은 출력하지 않는다. 서비스 ID 는 RP1·RP2_GOOGLE_CLIENT_ID, 없으면 .env 의 GOOGLE_CLIENT_ID(공유 ID — 서비스에 그것이 간다).
+if [ "$ZW" = 1 ]; then
+  [ -n "${ZKWRAPPER_GOOGLE_CLIENT_ID:-}" ] || { echo "BLOCKED: zkwrapper 는 래퍼 전용 Google 클라이언트 ID 가 필요하다 — ZKWRAPPER_GOOGLE_CLIENT_ID=… (서비스의 ID 와 다른 것)"; exit 1; }
+  _shared="$( [ -f .env ] && sed -n 's/^GOOGLE_CLIENT_ID=//p' .env | head -n1 | tr -d '\r"'"'" )"
+  ZW_DENY="$(printf '%s\n' "${RP1_GOOGLE_CLIENT_ID:-$_shared}" "${RP2_GOOGLE_CLIENT_ID:-$_shared}" | awk 'NF' | sort -u | paste -sd, -)"; unset _shared
+  printf '%s\n' "${ZW_DENY//,/$'\n'}" | grep -qxF -- "$ZKWRAPPER_GOOGLE_CLIENT_ID" && { echo "BLOCKED: ZKWRAPPER_GOOGLE_CLIENT_ID 가 서비스(zkONE·zkTWO)의 Google 클라이언트 ID 와 같다 — 래퍼 전용 ID 를 따로 만든다"; exit 1; }
+fi
 # 사전 검사(passkey-web, 2026-11-17): 데모 CA·hosts 가 없으면 아무것도 내리기 전에 멈춘다 — 라이브 데모를 건드리지 않는다. 번들도 여기서 만든다(R-14, 옛 번들로 뜨는 것이 가장 흔한 실패).
 if [ "$WALLET_MODE" = passkey-web ]; then
   [ -f "$ZKD_CA_DIR/ca.crt" ] && [ -f "$ZKD_CA_DIR/ca.key" ] \
@@ -172,12 +190,15 @@ if [ "$WALLET_MODE" = passkey-web ]; then
     && zkd_issue_cert "$ZKD_CA_DIR" "$TLS_OUT" idp idp.zkd.test "$IDP" \
     && zkd_issue_cert "$ZKD_CA_DIR" "$TLS_OUT" zkone zkone.zkd.test "$RP1" \
     && zkd_issue_cert "$ZKD_CA_DIR" "$TLS_OUT" zktwo zktwo.zkd.test "$RP2"; } >/dev/null || { echo "인증서 발급 실패 — $ZKD_CA_DIR 의 데모 CA 확인"; exit 1; }
+  # zkwrapper: 지갑 서버가 발급자이기도 해서 서비스 VM 이 서버끼리 부른다 — 이 PC 의 IP 를 넣은 인증서를 따로 만든다(지갑 인증서는 그대로 이름·127.0.0.1 뿐)
+  if [ "$ZW" = 1 ]; then zkd_issue_cert "$ZKD_CA_DIR" "$TLS_OUT" zkwrapper wallet.zkd.test 127.0.0.1 "$HOST" >/dev/null || { echo "인증서 발급 실패(zkwrapper)"; exit 1; }; fi
   deploy_tls "$IDP" idp && TLS_IDP="$REPLY" && deploy_tls "$RP1" zkone && TLS_RP1="$REPLY" && deploy_tls "$RP2" zktwo && TLS_RP2="$REPLY" || { echo "인증서 배포 실패(ssh·scp)"; exit 1; }
   echo "인증서 배포 ok: idp·zkone·zktwo (VM ~/zkd-demo/tls), 지갑은 $TLS_OUT"
 fi
 
 # 2. 옛 상태 파일은 새 체인과 맞지 않으므로 .bak-시각 으로 옮긴다(지우지 않는다). IdP 키(cia_keys.json)는 그대로 둔다.
 on "$IDP" "cd ~/zkd-demo && for f in cia_state.json; do [ -e \$f ] && mv \$f \$f.bak-$TS && echo \"backup IdP \$f\"; done; true"
+if [ "$ZW" = 1 ]; then mkdir -p -m 700 "$ZW_DIR" && { [ -e "$ZW_DIR/cia_state.json" ] && mv "$ZW_DIR/cia_state.json" "$ZW_DIR/cia_state.json.bak-$TS" && echo "backup zkWrapper cia_state.json"; true; }; fi   # 열쇠(cia_keys.json)는 그대로
 for h in "$RP1" "$RP2"; do
   # mode3_rp_*_registration.json/_logins.jsonl 은 scripts/new_rp.sh --host 가 이 VM 에 만든 추가 RP 들의 등록·로그인 로그다
   # (없으면 글롭이 그대로 남지만 [ -e ] 가 걸러 조용히 건너뛴다, 2026-10-23)
@@ -231,10 +252,21 @@ if [ "${BLOCKSCOUT_VERIFY:-1}" != 0 ] && [ -f "$BS_DIR/compose.yml" ] && command
 fi
 
 # 4. IdP 주소: 임시 상태 파일로 IdP 를 한 번 띄워 /cia/public_keys 의 ethAddress 를 읽는다(배포 스크립트 안내대로). 키는 idp VM 안에만 생긴다.
+if [ "$ZW" = 1 ]; then
+  # zkwrapper: 열쇠는 이 PC 의 $ZW_DIR 에 생긴다 — 같은 열쇠 파일로 보통 방식의 cia.js 를 127.0.0.1 의 빈 포트에 잠깐 띄워 주소만 읽고 내린다(.env 는 읽지 않는다)
+  : > "$LOGS/empty.env"; KP_PORT=$(python3 -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1]);s.close()")
+  DOTENV_CONFIG_PATH="$LOGS/empty.env" CIA_WRAPPER= CIA_USER_APP= CIA_PORT=$KP_PORT MODE3_BIND_HOST=127.0.0.1 CIA_STATE_FILE="$LOGS/cia_keyprobe_state.json" CIA_KEYS_FILE="$ZW_DIR/cia_keys.json" \
+    CIA_RPC_URL="http://127.0.0.1:$REV_PORT" MODE3_TLS_CERT= MODE3_TLS_KEY= setsid nohup node cia.js > "$LOGS/cia_keyprobe.log" 2>&1 < /dev/null &
+  KP_PID=$!
+  ADDR=$(for i in $(seq 1 30); do r=$(curl -s -m 2 "http://127.0.0.1:$KP_PORT/cia/public_keys") && [ -n "$r" ] && { echo "$r"; break; }; sleep 1; done | python3 -c "import sys,json;print(json.load(sys.stdin)['ethAddress'])" 2>/dev/null)
+  kill "$KP_PID" 2>/dev/null; sleep 1; rm -f "$LOGS/cia_keyprobe_state.json"
+  [ -n "$ADDR" ] || { echo "zkWrapper 주소를 못 읽었다 — $LOGS/cia_keyprobe.log"; exit 1; }
+else
 on "$IDP" "cd ~/zkd-demo && { CIA_STATE_FILE=/tmp/cia_keyprobe_state.json CIA_RPC_URL=http://$HOST:$REV_PORT setsid nohup \$HOME/zkd-demo/bin/node cia.js > logs/cia_keyprobe.log 2>&1 < /dev/null & }"
 ADDR=$(on "$IDP" "for i in \$(seq 1 30); do r=\$(curl -s -m 2 http://127.0.0.1:$IDP_PORT/cia/public_keys) && [ -n \"\$r\" ] && { echo \"\$r\"; break; }; sleep 1; done" | python3 -c "import sys,json;print(json.load(sys.stdin)['ethAddress'])" 2>/dev/null)
 on "$IDP" "pkill -f '[z]kd-demo/bin/node cia.js'; sleep 1; rm -f /tmp/cia_keyprobe_state.json"
 [ -n "$ADDR" ] || { echo "IdP 주소를 못 읽었다 — idp 의 ~/zkd-demo/logs/cia_keyprobe.log"; exit 1; }
+fi
 echo "IdP ethAddress $ADDR"
 
 # 5. 배포: 폐기 체인에 캐노니컬 로그, 응용 체인에 그 로그를 가리키는 거울(revchain 네트워크의 주소만 바꿔 두 번)
@@ -250,11 +282,12 @@ MIRRORS=$(grep -oE "CIA_MIRRORS=[0-9]+=0x[0-9a-fA-F]+" "$LOGS/deploy_app.log" | 
 echo "CIA_LOG_ADDRESS=$LOGADDR (chain $REV_CHAIN)  MODE3_MIRROR_ADDRESS=$MIRROR  CIA_MIRRORS=$MIRRORS"
 
 # 6. 역할별 설정 파일(각 VM 에 자기 것만, 권한 600)과 기동
+WALLET_KIND_OUT="$WALLET_MODE"; [ "$ZW" = 1 ] && WALLET_KIND_OUT=zkwrapper   # 서비스 화면이 보는 지갑 종류 — zkwrapper 면 지갑 서버를 부르지 않는다(스펙 §5)
 COMMON="CIA_LOG_ADDRESS=$LOGADDR
 MODE3_MIRROR_ADDRESS=$MIRROR
 CIA_MIRRORS=$MIRRORS
 MODE3_WALLET_AGENT_ORIGIN=$WALLET_ORIGIN
-MODE3_WALLET_KIND=$WALLET_MODE
+MODE3_WALLET_KIND=$WALLET_KIND_OUT
 CIA_PLAIN_OIDC=$PLAIN_OIDC
 MODE3_RP_ZKOIDC=$PLAIN_OIDC
 MODE3_VERIFIER_ADDRESS=
@@ -289,10 +322,10 @@ if [ -n "$GOOGLE_RELAY" ]; then
   if [ -n "$_g1" ] && [ "$_g1" = "$_g2" ]; then echo "  경고: zkONE·zkTWO 가 같은 Google 클라이언트 ID 를 쓴다 — 두 서비스의 ID 토큰 aud(= rid)가 같게 보인다. 서비스마다 다른 ID 를 주려면 RP1_GOOGLE_CLIENT_ID·RP2_GOOGLE_CLIENT_ID"; fi
   unset _g1 _g2
 fi
-printf '%s\n' "$COMMON" "CIA_PORT=$IDP_PORT" "CIA_RPC_URL=http://$HOST:$REV_PORT" "CIA_CHAIN_RPCS=$APP_CHAIN=http://$HOST:$APP_PORT" "CIA_ADMIN_SECRET=$ADMIN" "CIA_ADMIN_OPEN=${ADMIN_OPEN:-0}" "CIA_PUBLIC_URL=$SCHEME://$IDP:$IDP_PORT" "CIA_ISSUE_AUTH=${ISSUE_AUTH:-$([ "$AGENT_MODE" = 1 ] && echo code || echo key)}" "CIA_REVOKE_PUBLISH_AFTER_BLOCKS=${REVOKE_PUBLISH_AFTER:-3}" ${OIDC_LINE:+"$OIDC_LINE"} ${IDP_SIGNUP_LINE:+"$IDP_SIGNUP_LINE"} ${TLS_IDP:+"$TLS_IDP"} | put_env "$IDP"
-{ printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP1_PORT" "MODE3_RP_NAME=zkONE" "MODE3_RP_PUBLIC_ORIGIN=$RP1_UI" "MODE3_CIA_URL=$SCHEME://$IDP:$IDP_PORT" \
+[ "$ZW" = 1 ] || printf '%s\n' "$COMMON" "CIA_PORT=$IDP_PORT" "CIA_RPC_URL=http://$HOST:$REV_PORT" "CIA_CHAIN_RPCS=$APP_CHAIN=http://$HOST:$APP_PORT" "CIA_ADMIN_SECRET=$ADMIN" "CIA_ADMIN_OPEN=${ADMIN_OPEN:-0}" "CIA_PUBLIC_URL=$SCHEME://$IDP:$IDP_PORT" "CIA_ISSUE_AUTH=${ISSUE_AUTH:-$([ "$AGENT_MODE" = 1 ] && echo code || echo key)}" "CIA_REVOKE_PUBLISH_AFTER_BLOCKS=${REVOKE_PUBLISH_AFTER:-3}" ${OIDC_LINE:+"$OIDC_LINE"} ${IDP_SIGNUP_LINE:+"$IDP_SIGNUP_LINE"} ${TLS_IDP:+"$TLS_IDP"} | put_env "$IDP"   # zkwrapper 에는 IdP VM 이 없다
+{ printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP1_PORT" "MODE3_RP_NAME=zkONE" "MODE3_RP_PUBLIC_ORIGIN=$RP1_UI" "MODE3_CIA_URL=$CIA_SRV" \
   "CIA_RPC_URL=http://$HOST:$APP_PORT" "MODE3_RELAYER_INDEX=0" ${TLS_RP1:+"$TLS_RP1"}; rp_google_lines "${RP1_GOOGLE_CLIENT_ID:-}"; rp_naver_lines "$RP1_UI"; } | put_env "$RP1"
-{ printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP2_PORT" "MODE3_RP_NAME=zkTWO" "MODE3_RP_PUBLIC_ORIGIN=$RP2_UI" "MODE3_CIA_URL=$SCHEME://$IDP:$IDP_PORT" \
+{ printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP2_PORT" "MODE3_RP_NAME=zkTWO" "MODE3_RP_PUBLIC_ORIGIN=$RP2_UI" "MODE3_CIA_URL=$CIA_SRV" \
   "CIA_RPC_URL=http://$HOST:$APP_PORT" "MODE3_RELAYER_INDEX=1" "MODE3_ALLOWED_COUNTRIES=410,392" "MODE3_MIN_AGE=19" "MODE3_REQUIRE_DISCLOSURE=1" ${TLS_RP2:+"$TLS_RP2"}; rp_google_lines "${RP2_GOOGLE_CLIENT_ID:-}"; rp_naver_lines "$RP2_UI"; } | put_env "$RP2"
 unset NAVER_ID NAVER_SECRET
 start_remote() { # $1 호스트 $2 스크립트 $3 포트
@@ -300,7 +333,7 @@ start_remote() { # $1 호스트 $2 스크립트 $3 포트
   for i in $(seq 1 40); do curl -s -m 2 "${CACERT[@]}" -o /dev/null "$SCHEME://$1:$3/mode3/health" && { echo "$2 up at $SCHEME://$1:$3"; return 0; }; sleep 1; done
   echo "$2 at $1:$3 failed — $1 의 ~/zkd-demo/logs/${2%.js}.log"; exit 1
 }
-start_remote "$IDP" cia.js $IDP_PORT
+[ "$ZW" = 1 ] || start_remote "$IDP" cia.js $IDP_PORT   # zkwrapper: 발급자는 아래 지갑 자리에서 뜬다
 if [ "$SPLIT_IDP_TUNNEL" != 0 ]; then
   ssh -o BatchMode=yes -o ConnectTimeout=5 -o ExitOnForwardFailure=yes -f -N $TUNNEL_SPEC "$U@$IDP" && curl -s -m 3 -o /dev/null "$IDP_UI/mode3/health" \
     && echo "IdP 터널 up: $IDP_UI → $IDP:$IDP_PORT" || { echo "IdP 터널 실패($TUNNEL_SPEC $U@$IDP)"; exit 1; }
@@ -320,6 +353,15 @@ elif [ "$WALLET_MODE" = "passkey" ]; then
     MODE3_DEMO_RACE="${DEMO_RACE:-1}" MODE3_CIA_URL="$IDP_UI" MODE3_RP_ORIGIN="$RP1_UI,$RP2_UI" MODE3_RELAYER_INDEX=2 MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}" MODE3_TTL_BLOCKS="${TTL_BLOCKS:-5}" \
     CIA_RPC_URL="http://127.0.0.1:$APP_PORT" MODE3_REV_CHAIN_RPC="http://127.0.0.1:$REV_PORT" CIA_LOG_ADDRESS="$LOGADDR" MODE3_MIRROR_ADDRESS="$MIRROR" \
     setsid nohup node mode3_wallet_agent.js > "$LOGS/wallet_agent.log" 2>&1 < /dev/null &
+elif [ "$WALLET_MODE" = passkey-web ] && [ "$ZW" = 1 ]; then
+  # zkwrapper(2026-11-20): 지갑 화면 + 발급(Google 토큰 → 세션 토큰) 한 서버. 브라우저는 체인 노드를 직접 부른다(이 서버를 거치지 않는다 — 스펙 §5). 서비스 VM 이 서버끼리 부르므로 0.0.0.0.
+  DOTENV_CONFIG_PATH="$LOGS/empty.env" CIA_LOG_ADDRESS="$LOGADDR" MODE3_MIRROR_ADDRESS="$MIRROR" CIA_MIRRORS="$MIRRORS" CIA_RPC_URL="http://127.0.0.1:$REV_PORT" CIA_CHAIN_RPCS="$APP_CHAIN=http://127.0.0.1:$APP_PORT" \
+    CIA_ADMIN_SECRET="$ADMIN" CIA_ADMIN_OPEN="${ADMIN_OPEN:-0}" CIA_STATE_FILE="$ZW_DIR/cia_state.json" CIA_KEYS_FILE="$ZW_DIR/cia_keys.json" CIA_PUBLIC_URL="$WALLET_ORIGIN" MODE3_WALLET_AGENT_ORIGIN="$WALLET_ORIGIN" \
+    MODE3_OIDC_CLIENT_ID="$ZKWRAPPER_GOOGLE_CLIENT_ID" MODE3_OIDC_REDIRECT_URI="$GOOGLE_RELAY" MODE3_RP_GOOGLE_CLIENT_ID_DENY="$ZW_DENY" \
+    MODE3_CHAIN_RPC_BROWSER="http://127.0.0.1:$APP_PORT" MODE3_REV_RPC_BROWSER="http://127.0.0.1:$REV_PORT" MODE3_DEMO_GENERATION="$(date +%s)" MODE3_EXPLORER_URL="$BS_EXPLORER" \
+    MODE3_TTL_BLOCKS="${TTL_BLOCKS:-5}" MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}" MODE3_ZKWRAPPER_PORT=$USER_PORT MODE3_BIND_HOST=0.0.0.0 \
+    MODE3_TLS_CERT="$TLS_OUT/zkwrapper.crt" MODE3_TLS_KEY="$TLS_OUT/zkwrapper.key" NODE_EXTRA_CA_CERTS="$ZKD_CA_DIR/ca.crt" \
+    setsid nohup node mode3_zkwrapper.js > "$LOGS/zkwrapper.log" 2>&1 < /dev/null &
 elif [ "$WALLET_MODE" = passkey-web ]; then
   # passkey-web(2026-11-17): web 분기와 같은 정적 서버를 https 로 — 인증서는 위에서 만든 지갑 것, IdP·RP 인증서를 검증할 데모 CA 를 NODE_EXTRA_CA_CERTS 로 준다.
   DOTENV_CONFIG_PATH="$LOGS/empty.env" MODE3_PK_CIA_X="" MODE3_PK_CIA_Y="" MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}" MODE3_DEMO_GENERATION="$(date +%s)" MODE3_WALLET_PORT=$USER_PORT MODE3_WALLET_PUBLIC_ORIGIN="$WALLET_ORIGIN" \
@@ -333,7 +375,7 @@ DOTENV_CONFIG_PATH="$LOGS/empty.env" MODE3_PK_CIA_X="" MODE3_PK_CIA_Y="" MODE3_H
   CIA_RPC_URL="http://127.0.0.1:$APP_PORT" MODE3_REV_CHAIN_RPC="http://127.0.0.1:$REV_PORT" CIA_LOG_ADDRESS="$LOGADDR" MODE3_MIRROR_ADDRESS="$MIRROR" \
   setsid nohup node mode3_user_static.js > "$LOGS/user_static.log" 2>&1 < /dev/null &
 fi
-timeout 30 bash -c "until ss -ltn | grep -q ':$USER_PORT '; do sleep 1; done" && echo "지갑($WALLET_MODE) up at $WALLET_ORIGIN" || { echo "지갑($WALLET_MODE) failed — $LOGS/$([ "$AGENT_MODE" = 1 ] && echo wallet_agent || echo user_static).log"; exit 1; }
+timeout 30 bash -c "until ss -ltn | grep -q ':$USER_PORT '; do sleep 1; done" && echo "지갑($WALLET_MODE) up at $WALLET_ORIGIN" || { echo "지갑($WALLET_MODE) failed — $LOGS/$([ "$AGENT_MODE" = 1 ] && echo wallet_agent || { [ "$ZW" = 1 ] && echo zkwrapper || echo user_static; }).log"; exit 1; }
 start_remote "$RP1" mode3_rp.js $RP1_PORT
 start_remote "$RP2" mode3_rp.js $RP2_PORT
 if [ "$SPLIT_RP_TUNNEL" != 0 ]; then
@@ -343,10 +385,10 @@ if [ "$SPLIT_RP_TUNNEL" != 0 ]; then
     && echo "RP 터널 up: $RP2_UI → $RP2:$RP2_PORT" || { echo "RP 터널 실패($RP2_TUNNEL $U@$RP2)"; exit 1; }
 fi
 
-IDP_PAGE="$SCHEME://$IDP:$IDP_PORT"; [ "$WALLET_MODE" = passkey-web ] && IDP_PAGE="$IDP_UI"   # 사람이 여는 주소 — passkey-web 은 이름(IP 로 열면 패스키가 안 된다)
+IDP_PAGE="$SCHEME://$IDP:$IDP_PORT"; [ "$WALLET_MODE" = passkey-web ] && IDP_PAGE="$IDP_UI"   # zkwrapper 면 IDP_UI = 지갑 오리진   # 사람이 여는 주소 — passkey-web 은 이름(IP 로 열면 패스키가 안 된다)
 # 7. RP 등록 대기(승인은 기본 수동)
 HDR="X-CIA-Admin-Secret: $ADMIN"
-rps_json() { curl -s -m 5 "${CACERT[@]}" -H "$HDR" "$SCHEME://$IDP:$IDP_PORT/cia/rps"; }
+rps_json() { curl -s -m 5 "${CACERT[@]}" -H "$HDR" "$CIA_SRV/cia/rps"; }
 active() { curl -s -m 5 "${CACERT[@]}" "$SCHEME://$1/mode3/health" | python3 -c "import sys,json;print(json.load(sys.stdin).get('active'))" 2>/dev/null; }
 N=0
 for i in $(seq 1 30); do N=$(rps_json | python3 -c "import sys,json
@@ -356,7 +398,7 @@ if [ "${AUTO_APPROVE:-0}" = "1" ]; then
   for i in $(seq 1 60); do
     for arid in $(rps_json | python3 -c "import sys,json
 try: [print(r['arid']) for r in json.load(sys.stdin).get('rps',[]) if r.get('status')=='pending']
-except Exception: pass"); do printf -- "approve %s… -> " "${arid:0:10}"; curl -s -m 15 "${CACERT[@]}" -X POST -H "$HDR" "$SCHEME://$IDP:$IDP_PORT/cia/rps/$arid/approve" | python3 -c "import sys,json
+except Exception: pass"); do printf -- "approve %s… -> " "${arid:0:10}"; curl -s -m 15 "${CACERT[@]}" -X POST -H "$HDR" "$CIA_SRV/cia/rps/$arid/approve" | python3 -c "import sys,json
 try: d=json.load(sys.stdin); print(d.get('status') or list(d)[:2])
 except Exception: print('(응답 없음)')"; done
     [ "$(active $RP1:$RP1_PORT)" = "True" ] && [ "$(active $RP2:$RP2_PORT)" = "True" ] && { echo "zkONE·zkTWO active"; break; }
@@ -367,8 +409,8 @@ else
 fi
 
 # 8. 요약
-for u in "$IDP:$IDP_PORT" "127.0.0.1:$USER_PORT" "$RP1:$RP1_PORT" "$RP2:$RP2_PORT"; do printf -- "--- %s " "$u"; curl -s -m 10 "${CACERT[@]}" "$SCHEME://$u/mode3/health" | python3 -c "import sys,json;d=json.load(sys.stdin);print({k:d.get(k) for k in ('role','ok','status','secrets','registered','accounts','pendingRps','active') if d.get(k) is not None})"; done
-printf -- "--- 체인 구성: "; curl -s -m 5 "${CACERT[@]}" "$SCHEME://$IDP:$IDP_PORT/cia/public_keys" | python3 -c "import sys,json;d=json.load(sys.stdin);print('캐노니컬 chainId', d.get('canonicalChainId'), '· 거울', [m.get('chainId') for m in d.get('mirrors',[])])"
+for u in $([ "$ZW" = 1 ] || echo "$IDP:$IDP_PORT") "127.0.0.1:$USER_PORT" "$RP1:$RP1_PORT" "$RP2:$RP2_PORT"; do printf -- "--- %s " "$u"; curl -s -m 10 "${CACERT[@]}" "$SCHEME://$u/mode3/health" | python3 -c "import sys,json;d=json.load(sys.stdin);print({k:d.get(k) for k in ('role','ok','status','secrets','registered','accounts','pendingRps','active') if d.get(k) is not None})"; done
+printf -- "--- 체인 구성: "; curl -s -m 5 "${CACERT[@]}" "$CIA_SRV/cia/public_keys" | python3 -c "import sys,json;d=json.load(sys.stdin);print('캐노니컬 chainId', d.get('canonicalChainId'), '· 거울', [m.get('chainId') for m in d.get('mirrors',[])])"
 echo "SPLIT_DONE $(date '+%H:%M:%S')"
 echo "페이지: IdP 사용자 $IDP_PAGE/user  IdP RP 운영자 $IDP_PAGE/rp  지갑 $WALLET_ORIGIN/  zkONE $RP1_UI/ (관리자 /admin)  zkTWO $RP2_UI/  IdP 관리자 $IDP_PAGE/admin"
 echo "새 RP: $IDP_PAGE/rp 에서 운영자 가입 → '새 RP 만들기' → 받은 키로 bash scripts/new_rp.sh <name> <port> <key> --host <RP VM IP>"
@@ -381,7 +423,11 @@ if [ "$WALLET_MODE" = "passkey" ]; then
   echo "패스키 모드: MetaMask 가 필요 없다. 지갑 페이지는 반드시 $WALLET_ORIGIN/ (localhost) 로 연다 — '패스키 만들기' 또는 이미 만든 패스키면 '이미 있는 패스키 쓰기'(같은 salt)."
   echo "         IdP·서비스 페이지는 위 127.0.0.1 주소로 연다(localhost 로 열면 그 페이지도 패스키를 부를 수 있다 — 스펙 §2). RP 소셜 로그인은 이 모드에서 쓰지 않는다."
 fi
-if [ "$WALLET_MODE" = passkey-web ]; then
+if [ "$ZW" = 1 ]; then
+  echo "zkwrapper: 주소 셋 — zkWrapper(홈·지갑·운영자 /rp·관리자 /admin) $WALLET_ORIGIN/  zkONE $RP1_UI/  zkTWO $RP2_UI/  (IdP VM 은 쓰지 않는다)"
+  echo "         흐름: 서비스에서 'zk 로그인' → Google 계정 선택 → 패스키(처음이면 만든다). Google 콘솔: 래퍼 전용 클라이언트 ID 의 승인된 리디렉션 URI 에 $GOOGLE_RELAY"
+  echo "         체인은 브라우저가 직접 읽는다(http://127.0.0.1:$APP_PORT·:$REV_PORT). 처음이면 bash scripts/zkd_tls_setup.sh(sudo) 뒤 Chrome 을 다시 시작한다."
+elif [ "$WALLET_MODE" = passkey-web ]; then
   echo "passkey-web: 주소 넷 — 지갑 $WALLET_ORIGIN/  속성 도구 $WALLET_ORIGIN/attr.html  zkIdP $IDP_UI/user  zkONE $RP1_UI/  zkTWO $RP2_UI/"
   echo "         처음이면 bash scripts/zkd_tls_setup.sh(sudo) 뒤 Chrome 을 완전히 다시 시작한다. IP 주소로 열면 패스키가 안 된다 — 반드시 위 이름으로."
   echo "         흐름: 지갑 페이지에서 패스키 만들기 → 속성 도구(커밋먼트) → 서비스(zkONE·zkTWO)에서 zkIdP 로 로그인."

@@ -1017,6 +1017,25 @@ salt 는 **패스키(WebAuthn PRF 확장)에서 그때그때 유도**해 어디�
 **미검증(2026-11-17)**: 실제 인증기에서 PRF 가 나오는지는 확인하지 않았다 — 자동 테스트는 CDP 가상 인증기와 결정적 WebAuthn 스텁으로 돈다. 시연 머신(Ubuntu 20.04)은 블루투스·USB 보안 키가 없어
 쓸 수 있는 인증기가 Google 비밀번호 관리자 패스키뿐인데, 그것이 PRF 를 주는지·`localhost` 패스키를 저장하는지 아직 모른다. 분리 데모의 패스키 모드(IdP·RP 를 `127.0.0.1` 터널로 여는 것)도 실제 VM 에서 돌려 보지 않았다.
 
+## zkWrapper 경로 (`WALLET_MODE=zkwrapper`, 2026-11-20)
+
+스펙 `docs/superpowers/specs/2026-11-20-mode3-zkwrapper-design.md`, 계획 `docs/superpowers/plans/2026-11-20-mode3-zkwrapper.md`. 별도 IdP 를 두지 않고, 사용자가 접속하는 한 서버(zkWrapper)가
+**Google ID 토큰을 받아 세션 토큰으로 바꿔 준다**. 회로·컨트랙트는 바뀌지 않는다(π_RP = `pi_cred` 그대로). π_IdP 는 쓰지 않는다.
+
+- **서버**: `node mode3_zkwrapper.js` — `cia.js` 를 깃발 `CIA_WRAPPER=1`(래퍼 방식 발급)·`CIA_USER_APP=1`(사용자 앱을 같은 포트에)로 띄운다. 주요 env: `MODE3_ZKWRAPPER_PORT`(기본 5100)·`CIA_PUBLIC_URL`(https 이름 또는 localhost — IP 면 뜨지 않는다)·
+  `MODE3_OIDC_CLIENT_ID`(래퍼 전용 Google 클라이언트 ID)·`MODE3_OIDC_REDIRECT_URI`(이 서버의 `/google-relay`)·`MODE3_RP_GOOGLE_CLIENT_ID_DENY`(서비스들의 ID, 쉼표 — 같으면 기동 거부)·`MODE3_CHAIN_RPC_BROWSER`·`MODE3_REV_RPC_BROWSER`(브라우저가 직접 부를 체인 노드).
+- **로그인**: 서비스의 "zk 로그인" → 승인 창이 서비스 인증서를 확인하고 1회용 요청 키(P-256, 꺼낼 수 없다)를 만든다 → Google(`prompt=select_account`, nonce = `wrap:` + SHA-256(요청 키)) → `/google-relay` → 창으로 돌아옴 →
+  패스키 → salt → 가명·커밋먼트(`auid`·`auid_s`·`arid_s`·`C_u`·`C_s`) + Google 토큰 + 요청 키의 서명으로 `POST /cia/issue` → 세션 토큰 → π_RP → 서비스. 요청 키·토큰·salt 는 저장하지 않는다(대기분은 공개값만, sessionStorage 1회용).
+- **발급자가 지키는 것**(π_IdP 가 없으므로 — 스펙 §3·§10): 계정 = Google 계정(`uid = H(google|sub)`), 계정당 auid 는 첫 발급에서 고정(`auid_pinned`), 한 auid 는 한 계정(`auid_taken`), 세션 가명 전역 유일(`auid_s_taken`),
+  남의 C_u 거절(`cf_u_taken`), C_u 교체는 10분에 한 번(`cred_change_too_soon`, `CIA_CRED_CHANGE_MIN_MS`), 토큰 1회(`wrapper_token_used`), 점의 부분군 검사. 세션·계정 폐기도 토큰 + 그 대상에 대한 서명이다.
+  개봉은 지금처럼 발급 기록의 auid_s 로 uid 를 찾되, 기록이 두 계정에 있으면 답하지 않는다. 계정·비밀번호·등록·슬롯·증명 로그인·일반 OIDC 경로는 `403 wrapper_mode`.
+- **새는 것을 줄인 자리(스펙 §5)**: 체인 읽기는 zkWrapper 를 거치지 않는다(`/rpc/*` 없음). 서비스 페이지는 zkWrapper 서버에 요청을 보내지 않는다(창을 여는 것뿐 — 지갑 종류 `zkwrapper` 이면 `/wallet/config`·`/mode3/health` 를 부르지 않는다).
+  지갑 페이지는 존재 신호(`/wallet/presence`)를 보내지 않는다. Google 중계는 래퍼 전용 ID 의 토큰을 서비스 페이지로 넘기지 않는다.
+- **분리 데모**: `WALLET_MODE=zkwrapper ZKWRAPPER_GOOGLE_CLIENT_ID=… bash scripts/demo_split_start.sh` — zkWrapper 는 이 PC 에서 뜨고(상태·열쇠는 `.local/zkwrapper/`, 0.0.0.0:5100, 인증서 SAN 에 이 PC 의 IP), 서비스 VM 은 서버끼리 `https://<이 PC IP>:5100` 을 부른다.
+  IdP VM 은 쓰지 않는다. zkWrapper 를 VM 에 올리는 것은 아직 하지 않았다(hosts·인증서 바꿈이 필요하다 — 스펙 §8-2).
+- **테스트**: `tests/test_mode3_wrapper_auth.mjs`(unit) · `tests/test_cia_wrapper.mjs`·`tests/test_mode3_user_core_wrapper.mjs`·`tests/test_mode3_zkwrapper_server.mjs`(chain) · `tests/test_mode3_user_wrapper_browser.mjs`(browser, `MODE3_TEST_SPLIT=1` 이면 지갑 정적 서버 + 따로 뜬 발급 서버 배치) · `tests/test_demo_split_zkwrapper.mjs`(unit).
+- **미검증**: 실제 Google·실제 Chrome·VM 으로 처음부터 끝까지 돌려 보지 않았다. 대역 Google(격리 발급자)·WebAuthn 대역으로만 확인했다.
+
 ## IdP 페이지·폐기 상한 (2026-10-22)
 
 설계 `docs/superpowers/specs/2026-10-22-mode3-idp-pages-design.md`(사용자·RP 운영자의 입구를 IdP 페이지로 옮김), `docs/superpowers/specs/2026-10-22-mode3-revocation-counter-bound-design.md`(세션 폐기에 허용 거래 수). **`snap`·`file` 모드 기준이다 — web 모드(바로 위 "브라우저 전용 사용자 페이지" 절)는 아직 손대지 않았다**(설계 §10 비목표. §4·§5.3 을 사용자 코어로 옮겨야 web 모드가 따라온다).

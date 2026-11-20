@@ -52,7 +52,8 @@ t('passkey-web 값 — 터널 끔·https 이름·AGENT_MODE=0', () => {
     'RP1_UI="https://zkone.zkd.test:$RP1_PORT"', 'RP2_UI="https://zktwo.zkd.test:$RP2_PORT"']) assert.ok(blk.includes(s), s);
 });
 
-const blockedIdx = () => lines.map((l, i) => [l, i]).filter(([l]) => /BLOCKED/.test(l) && !/번들 빌드|snap-mode3/.test(l)).map(([, i]) => i);
+// zkwrapper 의 래퍼 전용 클라이언트 ID 사전 검사(2026-11-20)는 tests/test_demo_split_zkwrapper.mjs 가 따로 본다 — 여기서는 passkey-web 공통의 다섯 개만 센다
+const blockedIdx = () => lines.map((l, i) => [l, i]).filter(([l]) => /BLOCKED/.test(l) && !/번들 빌드|snap-mode3|ZKWRAPPER_GOOGLE_CLIENT_ID/.test(l)).map(([, i]) => i);
 t('사전 검사 — CA 파일·VM 주소(IPv4)·CA 이름 제약 망·hosts 를 보고 BLOCKED 로 종료(hosts 검사가 마지막)', () => {
   const b = blockedIdx();
   assert.equal(b.length, 5, `BLOCKED 줄 ${b.length}개`);
@@ -102,7 +103,8 @@ t('개인키를 출력하지 않는다', () => {
 t('IdP·서비스 공통 환경변수에 지갑 모드(MODE3_WALLET_KIND)', () => {
   const common = src.match(/\nCOMMON="([^"]*)"/);
   assert.ok(common, 'COMMON 정의를 찾지 못했다');
-  assert.match(common[1], /^MODE3_WALLET_KIND=\$WALLET_MODE$/m);
+  // 2026-11-20: zkwrapper 는 모드를 passkey-web 으로 두고 ZW 표시로 가르므로, 넘기는 값은 그 표시를 보고 zkwrapper 로 고친다(그 밖은 지금처럼 $WALLET_MODE)
+  assert.match(common[1], /^MODE3_WALLET_KIND=\$WALLET_KIND_OUT$/m); assert.match(src, /^WALLET_KIND_OUT="\$WALLET_MODE"; \[ "\$ZW" = 1 \] && WALLET_KIND_OUT=zkwrapper/m);
   // 속성 도구는 상태 조회를 부르지 않는다 — 리셋 표시 파일에 함께 싣는다.
   assert.match(src, /printf '\{"epoch":"%s","walletKind":"%s"\}\\n' "\$TS" "\$WALLET_MODE" > mode3\/attr\/dist\/reset\.json/);
 });
@@ -153,7 +155,7 @@ t('Blockscout — 초기화는 프로젝트 이름을 주고(B1), 감시자는 p
   assert.match(stopWatch[0], /\/proc\/\$pid\/cmdline/); assert.match(stopWatch[0], /grep -qF -- "blockscout_verify_watch\.mjs"/); assert.match(stopWatch[0], /rm -f "\$BS_VERIFY_PID"/);
   // 2026-11-18(증명 기록의 거래 링크): Blockscout 가 있으면 정적 서버(web·passkey-web)에 탐색기 주소를 넘긴다.
   assert.match(src, /^BS_EXPLORER=\$\(\[ -f "\$BS_DIR\/compose\.yml" \] && echo "\$\{BLOCKSCOUT_URL:-http:\/\/127\.0\.0\.1:4000\}"\)$/m);
-  assert.equal((src.match(/MODE3_EXPLORER_URL="\$BS_EXPLORER"/g) ?? []).length, 2, '정적 서버 기동 두 곳(web·passkey-web)');
+  assert.equal((src.match(/MODE3_EXPLORER_URL="\$BS_EXPLORER"/g) ?? []).length, 3, '사용자 앱 기동 세 곳(web·passkey-web 정적 서버, zkwrapper 의 zkWrapper — 2026-11-20)');
   const stopLocal = src.match(/\nstop_local\(\) \{[\s\S]*?\n\}/);
   assert.match(stopLocal[0], /stop_verify_watch/, 'stop_local 이 감시자를 함께 내린다');
 });
@@ -165,7 +167,8 @@ t('번들·인증서·VM 배포 줄', () => {
   assert.match(src, /MODE3_TLS_CERT=\$1\/zkd-demo\/tls\/\$2\.crt/);
   assert.match(src, /NODE_EXTRA_CA_CERTS=\$1\/zkd-demo\/tls\/ca\.crt/);
   assert.match(src, /MODE3_WALLET_SECRETS=passkey-web/);
-  assert.match(src, /"MODE3_CIA_URL=\$SCHEME:\/\/\$IDP:\$IDP_PORT"/);
+  // 2026-11-20: 서비스의 발급자 주소는 CIA_SRV 로 — 기본은 지금처럼 IdP VM, zkwrapper 면 이 PC 의 zkWrapper(tests/test_demo_split_zkwrapper.mjs)
+  assert.match(src, /^CIA_SRV="\$SCHEME:\/\/\$IDP:\$IDP_PORT"; /m); assert.equal((src.match(/"MODE3_CIA_URL=\$CIA_SRV"/g) ?? []).length, 2);
   assert.match(src, /CIA_PUBLIC_URL=\$SCHEME:\/\/\$IDP:\$IDP_PORT/);
   assert.match(src, /--cacert/);
 });
@@ -179,7 +182,7 @@ t('정적 서버에 TTL·높이 격자를 넘긴다, scp 는 타임아웃·Batch
 });
 
 t('기존 모드 보존 — stop_local 의 5100 정적 서버 항목은 passkey-web 일 때만', () => {
-  assert.match(src, /passkey-web \] && STOP_EXTRA="5100:mode3_user_static\.js"/);
+  assert.match(src, /passkey-web \] && STOP_EXTRA="5100:mode3_user_static\.js( 5100:mode3_zkwrapper\.js)?"/);   // 2026-11-20: zkwrapper(ZW)의 zkWrapper 도 같은 자리
   assert.match(src, /for spec in "\$APP_PORT:chain\.config\.cjs"[^\n]*"5200:mode3_user_static\.js"/);
 });
 
