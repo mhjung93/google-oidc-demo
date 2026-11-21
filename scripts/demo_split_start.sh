@@ -303,8 +303,12 @@ put_env() { on "$1" "umask 077 && cat > ~/zkd-demo/role.env && chmod 600 ~/zkd-d
 oidc_client_id() { [ -n "${MODE3_OIDC_CLIENT_ID:-}" ] && { printf '%s' "$MODE3_OIDC_CLIENT_ID"; return; }; [ -f "$1" ] && sed -n 's/^GOOGLE_CLIENT_ID=//p' "$1" | head -n1 | tr -d '\r"'"'"; }
 OIDC_LINE=""
 if [ "${OIDC:-1}" != 0 ]; then OIDC_ID="$(oidc_client_id .env)"; [ -n "$OIDC_ID" ] && OIDC_LINE="MODE3_OIDC_CLIENT_ID=$OIDC_ID"; unset OIDC_ID; fi
-echo "  OIDC(Google): $([ -n "$OIDC_LINE" ] && echo on || echo off)"
-if [ -z "${MODE3_OIDC_CLIENT_ID:-}" ] && [ -n "$OIDC_LINE" ]; then echo "  경고: .env 의 GOOGLE_CLIENT_ID(Mode 1 공유 클라이언트 ID)를 IdP 에 넘긴다 — 같은 ID 의 다른 앱 토큰을 받을 수 있다(선행 스펙 §5)"; fi
+[ "$ZW" = 1 ] || echo "  OIDC(Google): $([ -n "$OIDC_LINE" ] && echo on || echo off)"
+# zkwrapper(2026-11-21 실제 기동 셀프 피드백): IdP 가 없다 — 공유 ID 는 전용 ID(RP1·RP2_GOOGLE_CLIENT_ID)가 없는 서비스로만 간다. 그 이름을 댄다.
+if [ "$ZW" = 1 ]; then
+  _shared_to=""; [ -z "${MODE3_OIDC_CLIENT_ID:-}" ] && [ -n "$OIDC_LINE" ] && { [ -n "${RP1_GOOGLE_CLIENT_ID:-}" ] || _shared_to="zkONE"; [ -n "${RP2_GOOGLE_CLIENT_ID:-}" ] || _shared_to="${_shared_to:+$_shared_to·}zkTWO"; }
+  [ -n "$_shared_to" ] && echo "  경고: .env 의 GOOGLE_CLIENT_ID(Mode 1 공유 클라이언트 ID)를 서비스($_shared_to)에 넘긴다 — 같은 ID 의 다른 앱 토큰을 받을 수 있다(서비스 전용 ID 는 RP1_GOOGLE_CLIENT_ID·RP2_GOOGLE_CLIENT_ID)"; unset _shared_to
+elif [ -z "${MODE3_OIDC_CLIENT_ID:-}" ] && [ -n "$OIDC_LINE" ]; then echo "  경고: .env 의 GOOGLE_CLIENT_ID(Mode 1 공유 클라이언트 ID)를 IdP 에 넘긴다 — 같은 ID 의 다른 앱 토큰을 받을 수 있다(선행 스펙 §5)"; fi
 # RP 소셜(2026-11-10) — 값은 출력하지 않는다(on/off 만). Google 은 IdP 래퍼와 같은 클라이언트 ID 를 RP 에도 준다. 네이버 ID·Secret 은 RP role.env 에만(IdP 에는 주지 않는다).
 env_or_dotenv() { [ -n "${!1:-}" ] && { printf '%s' "${!1}"; return; }; [ -f .env ] && sed -n "s/^$1=//p" .env | head -n1 | tr -d '\r"'"'"; }
 RP_GOOGLE_LINE=""; [ -n "$OIDC_LINE" ] && RP_GOOGLE_LINE="MODE3_RP_GOOGLE_CLIENT_ID=${OIDC_LINE#MODE3_OIDC_CLIENT_ID=}"
@@ -320,7 +324,7 @@ echo "  RP 소셜: Google $([ -n "$RP_GOOGLE_LINE${RP1_GOOGLE_CLIENT_ID:-}${RP2_
 # 2026-11-20(스펙 passkey-google-signup G8·G9): zkIdP 의 "패스키로 로그인" 이 미등록 브라우저에서 Google 로 확인한 이메일로 계정을 만든다 — 지갑 창이 같은 중계 주소로 Google 에 다녀온다.
 # zkIdP 의 Google 클라이언트(OIDC_LINE)에도 Google 콘솔의 "승인된 리디렉션 URI" 로 이 주소가 있어야 한다. passkey-web 이고 Google 이 켜져 있을 때만 넘긴다.
 IDP_SIGNUP_LINE=""; [ -n "$GOOGLE_RELAY" ] && [ -n "$OIDC_LINE" ] && IDP_SIGNUP_LINE="MODE3_OIDC_REDIRECT_URI=$GOOGLE_RELAY"
-echo "  zkIdP 패스키 가입(Google 이메일): $([ -n "$IDP_SIGNUP_LINE" ] && echo on || echo off)"
+[ "$ZW" = 1 ] || echo "  zkIdP 패스키 가입(Google 이메일): $([ -n "$IDP_SIGNUP_LINE" ] && echo on || echo off)"
 if [ -n "$GOOGLE_RELAY" ]; then
   _g1="${RP1_GOOGLE_CLIENT_ID:-${RP_GOOGLE_LINE#MODE3_RP_GOOGLE_CLIENT_ID=}}"; _g2="${RP2_GOOGLE_CLIENT_ID:-${RP_GOOGLE_LINE#MODE3_RP_GOOGLE_CLIENT_ID=}}"
   if [ -n "$_g1" ] && [ "$_g1" = "$_g2" ]; then echo "  경고: zkONE·zkTWO 가 같은 Google 클라이언트 ID 를 쓴다 — 두 서비스의 ID 토큰 aud(= rid)가 같게 보인다. 서비스마다 다른 ID 를 주려면 RP1_GOOGLE_CLIENT_ID·RP2_GOOGLE_CLIENT_ID"; fi

@@ -124,5 +124,27 @@ t('zkWrapper 기동에 폐기 게시 간격(CIA_REVOKE_PUBLISH_AFTER_BLOCKS)이 
   const i = idx(/node mode3_zkwrapper\.js/); const blk = lines.slice(Math.max(0, i - 8), i + 1).join('\n');
   assert.ok(blk.includes('CIA_REVOKE_PUBLISH_AFTER_BLOCKS="${REVOKE_PUBLISH_AFTER:-3}"'), blk);
 });
+// 2026-11-21(실제 기동 셀프 피드백): zkwrapper 로 띄웠더니 "공유 ID 를 IdP 에 넘긴다"·"zkIdP 패스키 가입: on" 이 찍혔다 — IdP 가 없는 모드다.
+// 공유 ID 는 전용 ID 가 없는 서비스로만 간다. 그 구간(oidc_client_id ~ 패스키 가입 줄)을 잘라 가짜 .env 가 있는 임시 폴더에서 돌린다.
+t('zkwrapper 모드의 Google 안내 — IdP 를 말하지 않고, 공유 ID 경고는 그것을 받는 서비스 이름을 댄다', () => {
+  const a = idx(/^oidc_client_id\(\) \{/), b = idx(/zkIdP 패스키 가입\(Google 이메일\)/);
+  assert.ok(a >= 0 && b > a, '구간을 못 찾았다');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zw-oidc-'));
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GOOGLE_CLIENT_ID=test-shared-id\n');
+    const body = lines.slice(a, b + 1).join('\n');
+    const run = (env) => spawnSync('bash', ['-c', body], { cwd: dir, encoding: 'utf8', env: { PATH: process.env.PATH, USER_PORT: '5100', WALLET_MODE: 'passkey-web', ...env } }).stdout;
+    const zw = run({ ZW: '1' });
+    assert.equal(/IdP 에 넘긴다|zkIdP 패스키 가입|OIDC\(Google\)/.test(zw), false, zw);
+    assert.match(zw, /서비스\(zkONE·zkTWO\)에 넘긴다/, zw);
+    assert.match(run({ ZW: '1', RP2_GOOGLE_CLIENT_ID: 'rp2-id' }), /서비스\(zkONE\)에 넘긴다/);
+    assert.equal(/공유 클라이언트 ID/.test(run({ ZW: '1', RP1_GOOGLE_CLIENT_ID: 'rp1-id', RP2_GOOGLE_CLIENT_ID: 'rp2-id' })), false, '두 서비스 모두 전용 ID 면 공유 ID 를 받는 곳이 없다');
+    assert.equal(/test-shared-id/.test(zw), false, '값은 출력하지 않는다');
+    assert.equal(/\.env 의 GOOGLE_CLIENT_ID/.test(run({ ZW: '1', MODE3_OIDC_CLIENT_ID: 'shell-id' })), false, '셸이 ID 를 주면 .env 를 쓰지 않는다');
+    const plain = run({ ZW: '0' });
+    assert.match(plain, /OIDC\(Google\): on/); assert.match(plain, /IdP 에 넘긴다/); assert.match(plain, /zkIdP 패스키 가입\(Google 이메일\): on/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 console.log(fails ? `\n${fails} FAILED` : '\nall ok');
 process.exit(fails ? 1 : 0);

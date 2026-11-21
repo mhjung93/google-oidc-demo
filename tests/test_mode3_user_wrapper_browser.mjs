@@ -270,6 +270,33 @@ try {
       await page2.close();
     });
   }
+  // 2026-11-21(셀프 피드백 — 테스트 구멍): 폐기된 계정도 패스키를 쥔다(R11). 래퍼 화면의 안내는 "관리자가 삭제해야 한다" 까지만 말한다 — 삭제 뒤 실제로 같은 패스키로 돌아오는지 본다.
+  await t('관리자 폐기 → "zk 로그인" 은 폐기된 계정으로 거절된다 — 관리자 삭제 뒤 같은 브라우저(같은 패스키)·같은 Google 계정으로 다시 하면 성공하고 PPID 가 같다', async () => {
+    assert.equal((await cia.adminPost('/cia/revoke', { uid: UID_A, scope: 'account' })).status, 200);
+    google.setNextSub('google-user-A'); google.setNextClaims({ email: 'jihoo@example.com', email_verified: true });
+    const first = await startLogin(A.ctx, rp);
+    const deadline = Date.now() + 120_000; let seen = '';
+    while (Date.now() < deadline) {
+      const v = await text(first.rpPage, '#verdict').catch(() => '');
+      const p = first.popup.isClosed() ? '' : await visibleText(first.popup).catch(() => '');
+      seen = `${v} | ${p}`;
+      if (/폐기된 계정/.test(seen)) break;
+      assert.ok(!v.includes('로그인 성공'), '폐기된 계정이 로그인됐다');
+      if (!p) { const b = await first.popup.$('#authWrapPasskeyBtn').catch(() => null); if (b) await b.click().catch(() => {}); }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    assert.match(seen, /폐기된 계정/, seen.slice(0, 300));
+    assert.match(seen, /관리자가 이 계정을 삭제/, '래퍼 문구(ko_wr)가 보여야 한다: ' + seen.slice(0, 300));
+    await first.popup.close().catch(() => {}); await first.rpPage.close();
+    assert.equal((await cia.adminPost('/cia/account/delete', { uid: UID_A })).status, 200);
+    assert.equal((await accounts()).length, 0);
+    google.setNextSub('google-user-A'); google.setNextClaims({ email: 'jihoo@example.com', email_verified: true });
+    const again = await startLogin(A.ctx, rp);
+    await waitText(again.rpPage, '#verdict', '로그인 성공', 120_000);
+    const acc = await accounts(); assert.equal(acc.length, 1, '지운 뒤 다시 하면 새 계정이 하나 생긴다'); assert.equal(String(acc[0].uid), UID_A);
+    const ps = ppidOf(noteSessions(await idbDump(userPage)), info1.arid); assert.ok(ps.length >= 1 && ps.every((p) => p === ppid1), j(ps));
+    await again.rpPage.close();
+  });
   await A.ctx.close();
 } finally {
   await browser.close().catch(() => {});

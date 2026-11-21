@@ -33,20 +33,32 @@ const proxy = http.createServer(async (req, res) => {
 await new Promise((r) => proxy.listen(0, '127.0.0.1', r));
 const proxyUrl = `http://127.0.0.1:${proxy.address().port}`;
 const gateNext = () => { hold = { method: 'eth_sendRawTransaction', seen: deferred(), released: deferred() }; return hold; };
+// JWKS 게이트(2026-11-21 셀프 피드백 — M-2 를 결정적으로): jose 의 createRemoteJWKSet 은 받아 오는 중인 JWKS 를 기다리는 요청끼리 나눈다.
+// 막 뜬 IdP 의 첫 JWKS 를 붙잡으면 같은 계정의 두 요청이 auid_pinned 검사 앞(wrapperAuth)에서 함께 서고, 풀면 둘 다 그 검사를 지나 등록에서 만난다.
+let jwksUpstream = null, jwksHold = null;
+const jwksProxy = http.createServer(async (req, res) => {
+  const g = jwksHold; if (g) { g.seen.resolve(); await g.released.promise; }
+  const up = await fetch(jwksUpstream);
+  res.writeHead(up.status, { 'content-type': 'application/json' }); res.end(await up.text());
+});
+await new Promise((r) => jwksProxy.listen(0, '127.0.0.1', r));
 
-const cia = await startIsolatedCia({ wrapper: true, env: { CIA_RPC_URL: proxyUrl, CIA_CHAIN_RPCS: '31337=' + proxyUrl, CIA_AUID_S_LOG_MAX: '2' } });
+const cia = await startIsolatedCia({ wrapper: true, env: { CIA_RPC_URL: proxyUrl, CIA_CHAIN_RPCS: '31337=' + proxyUrl, CIA_AUID_S_LOG_MAX: '2', MODE3_OIDC_JWKS_URL: `http://127.0.0.1:${jwksProxy.address().port}/.well-known/jwks.json` } });
 const stub = cia.oidc, AUD = cia.base;
+jwksUpstream = stub.jwksUrl;
 async function person(sub) {
   const uid = uidOf(stub.provider, sub);
   const reg = await createRegistration(BigInt(uid));
   return { sub, uid: BigInt(uid), s_u: reg.s_u, attrs: [...TESTUSER_ATTRS], blind_u: randomScalar() };
 }
 /** 요청 키·토큰·본문·서명을 만든다. 같은 key·id_token 으로 본문만 바꿔 다시 만들 수 있다(재시도). */
-async function makeIssue(who, { key = null, id_token = null, blind_u = who.blind_u } = {}) {
+async function makeIssue(who, { key = null, id_token = null, blind_u = who.blind_u, r_rp = randomScalar(), mutate = null } = {}) {
   const k = key ?? await generateRequestKey();
   const tok = id_token ?? await stub.mint({ sub: who.sub, nonce: await wrapperNonce(k.pkE), extra: {} });
   const max_height = BigInt(await provider.getBlockNumber()) + 300n;
-  const built = await buildWrapperIssueBody({ uid: who.uid, s_u: who.s_u, blind_u, attrs: who.attrs, arid: 33333333333333333333n, r_rp: randomScalar(), r_s: randomScalar(), session: createSessionKey(), chainid: 31337n, allowAgent: 0n, max_height });
+  const built = await buildWrapperIssueBody({ uid: who.uid, s_u: who.s_u, blind_u, attrs: who.attrs, arid: 33333333333333333333n, r_rp, r_s: randomScalar(), session: createSessionKey(), chainid: 31337n, allowAgent: 0n, max_height });
+  // mutate: 서명 전에 본문을 바꾼다(악의적인 클라이언트 — 남의 auid_s·C_u 를 낸다). 서명은 바뀐 본문 위에 한다.
+  if (mutate) built.body = mutate({ ...built.body });
   return { key: k, id_token: tok, body: { id_token: tok, pk_e: k.pkE, sig: await signIssue(k.privateKey, built.body, AUD), ...built.body }, built };
 }
 const credCount = async () => (await cia.get('/cia/state')).body.credCount;
@@ -102,6 +114,46 @@ try {
     }
   });
 
+  await t('M-2(결정적): 막 뜬 IdP 의 첫 JWKS 를 붙잡아 같은 Google 계정·다른 패스키의 첫 발급 둘을 auid_pinned 검사 너머로 함께 보내면 늦은 쪽은 등록에서 막혀 409 auid_pinned', async () => {
+    await cia.restart();   // JWKS 캐시를 비운다(새 프로세스)
+    const sub = 'g-race-pin-det', a = await person(sub), b = await person(sub);
+    const [ia, ib] = await Promise.all([makeIssue(a), makeIssue(b)]);
+    jwksHold = { seen: deferred(), released: deferred() };
+    const pa = cia.post('/cia/issue', ia.body);
+    await jwksHold.seen.promise;
+    const pb = cia.post('/cia/issue', ib.body);
+    await new Promise((r) => setTimeout(r, 700));   // b 가 같은 JWKS 를 기다리는 자리까지 오게
+    const g = jwksHold; jwksHold = null; g.released.resolve();
+    const [ra, rb] = await Promise.all([pa, pb]);
+    assert.deepEqual([ra.status, rb.status].sort(), [200, 409], `${j(ra.body).slice(0, 160)} / ${j(rb.body).slice(0, 160)}`);
+    const late = ra.status === 409 ? ra : rb;
+    assert.equal(late.body.reason, 'auid_pinned', j(late.body));
+  });
+
+  await t('재검토 Minor(R-1, 결정적): 같은 계정의 두 발급이 같은 auid_s 를 쥐고 하나가 먼저 실패해도(cf_u_taken) 예약은 남는다 — 다른 계정은 그 auid_s 로 409 auid_s_taken', async () => {
+    // U 의 첫 발급(auid_s X)을 게시에서 붙잡고, 그 사이 U 가 같은 X 로 남의 C_u 를 내 예약 뒤에 실패한다(기록 없음). 먼저 끝난 요청이 예약을 지우면 V 가 X 를 가져간다.
+    const v0 = await person('g-r1-v0'), u = await person('g-r1-u'), v = await person('g-r1-v');
+    const v0i = await makeIssue(v0); assert.equal((await cia.post('/cia/issue', v0i.body)).status, 200);
+    const R = randomScalar();
+    const u1 = await makeIssue(u, { r_rp: R });
+    const X = u1.body.auid_s;
+    const gate = gateNext();
+    const p1 = cia.post('/cia/issue', u1.body);
+    await gate.seen.promise; hold = null;
+    const u2 = await makeIssue(u, { r_rp: R, blind_u: randomScalar(), mutate: (b) => ({ ...b, C_u_pt: v0i.body.C_u_pt }) });
+    assert.equal(u2.body.auid_s, X, '같은 r_rp → 같은 auid_s');
+    const r2 = await cia.post('/cia/issue', u2.body);
+    assert.equal(r2.status, 409, j(r2.body)); assert.equal(r2.body.reason, 'cf_u_taken', j(r2.body));
+    const vi = await makeIssue(v, { mutate: (b) => ({ ...b, auid_s: X }) });
+    const pv = cia.post('/cia/issue', vi.body);
+    const early = await Promise.race([pv, new Promise((r) => setTimeout(() => r(null), 3000))]);
+    gate.released.resolve();
+    const [r1, rv] = await Promise.all([p1, pv]);
+    assert.equal(r1.status, 200, j(r1.body));
+    assert.ok(early !== null, 'V 는 U 의 게시를 기다리지 않고 곧바로 거절돼야 한다');
+    assert.equal(rv.status, 409, j(rv.body) + ' — 먼저 끝난 요청이 같은 계정의 다른 요청의 예약을 지웠다'); assert.equal(rv.body.reason, 'auid_s_taken');
+  });
+
   await t('M-1: 쓴 토큰은 재기동 뒤에도 쓴 것이다 — 같은 요청(본문·서명)을 재기동 뒤 다시 보내면 409 wrapper_token_used', async () => {
     const cy = await person('g-race-cy');
     const req = await makeIssue(cy);
@@ -112,7 +164,7 @@ try {
   });
 } finally {
   await cia.stop();
-  proxy.close();
+  proxy.close(); jwksProxy.close();
   provider.destroy();
 }
 console.log(fails ? `\n${fails} 실패` : '\n모두 통과');
