@@ -120,7 +120,7 @@ stop_local() {
 # VM 쪽 패턴의 [z] 는 pkill 이 자기를 부른 원격 셸을 잡지 않게 하는 것이다.
 # 원격 기동은 `{ 명령 & }` 로 감싼다 — `a && b &` 로 쓰면 목록 전체가 백그라운드 서브셸이 되어 ssh 출력을 쥔 채 남고, ssh 가 끝나지 않는다.
 stop_remote() {
-  on "$IDP" "pkill -f '[z]kd-demo/bin/node cia.js' && echo 'stop IdP ($IDP)' || true"
+  [ "$ZW" = 1 ] || on "$IDP" "pkill -f '[z]kd-demo/bin/node cia.js' && echo 'stop IdP ($IDP)' || true"   # zkwrapper: IdP VM 을 쓰지 않는다(최종 검토 M-4)
   for h in "$RP1" "$RP2"; do on "$h" "pkill -f '[z]kd-demo/bin/node mode3_rp.js' && echo 'stop RP ($h)' || true"; done
 }
 if [ "${1:-}" = "stop" ]; then stop_remote; stop_local; exit 0; fi
@@ -140,13 +140,15 @@ if [ "$WALLET_MODE" = passkey-web ]; then
   # CA 의 이름 제약 망(zkd_ca_create 와 같은 openssl 출력)이 세 VM 주소를 덮는지 본다 — 벗어나면 Chrome 이 그 VM 인증서를 거부한다(R-4). 127.0.0.0/8 은 제외.
   CA_NET=$(openssl x509 -noout -text -in "$ZKD_CA_DIR/ca.crt" 2>/dev/null | grep -oE 'IP:[0-9.]+/255\.255\.255\.0' | grep -v '^IP:127\.' | head -n1 | sed 's/^IP://; s#/.*##')
   . scripts/zkd_tls_lib.sh
-  for vm_ip in "$IDP" "$RP1" "$RP2"; do
+  [ "$ZW" = 1 ] || VMS_ALL=("$IDP" "$RP1" "$RP2"); [ "$ZW" = 1 ] && VMS_ALL=("$RP1" "$RP2")   # zkwrapper: IdP VM 을 쓰지 않는다(M-4)
+  for vm_ip in "${VMS_ALL[@]}"; do
     zkd_ip_valid "$vm_ip" || { echo "BLOCKED: SPLIT_*_IP 값이 IPv4 주소가 아니다: $vm_ip"; exit 1; }
     zkd_ip_in_net24 "$vm_ip" "$CA_NET" \
       || { echo "BLOCKED: VM 주소 $vm_ip 가 데모 CA 의 이름 제약 망(${CA_NET:-없음}/24) 밖이다 — ZKD_DEMO_NET 을 맞춰 CA 를 새로 만들고(bash scripts/zkd_tls_setup.sh) Chrome 에 다시 등록한다"; exit 1; }
   done
   # 이름이 hosts 에서 지금 주소로 풀려야 한다 — 옛 주소면 브라우저가 엉뚱한 VM 으로 간다
-  for pair in "127.0.0.1=wallet.zkd.test" "$IDP=idp.zkd.test" "$RP1=zkone.zkd.test" "$RP2=zktwo.zkd.test"; do
+  [ "$ZW" = 1 ] || PAIRS=("127.0.0.1=wallet.zkd.test" "$IDP=idp.zkd.test" "$RP1=zkone.zkd.test" "$RP2=zktwo.zkd.test"); [ "$ZW" = 1 ] && PAIRS=("127.0.0.1=wallet.zkd.test" "$RP1=zkone.zkd.test" "$RP2=zktwo.zkd.test")
+  for pair in "${PAIRS[@]}"; do
     have_ip=$(getent hosts "${pair#*=}" | awk 'NR==1 { print $1 }')
     [ -n "$have_ip" ] \
       || { echo "BLOCKED: ${pair#*=} 가 /etc/hosts 에 없다 — 먼저 bash scripts/zkd_tls_setup.sh"; exit 1; }
@@ -168,7 +170,8 @@ if [ "$SPLIT_RP_TUNNEL" != 0 ]; then for p in $RP1_PORT $RP2_PORT; do ss -ltn | 
 if [ "${SYNC:-0}" = "1" ]; then
   FILES="package.json package-lock.json cia.js mode3_rp.js lib mode3 artifacts build/mode3/pi_cred_vkey.json build/mode3/pi_idp_vkey.json build/mode3/pi_cred_final.zkey build/mode3/pi_idp_final.zkey build/mode3/pi_cred_js/pi_cred.wasm build/mode3/pi_idp_js/pi_idp.wasm node_modules"
   NODE_BIN="$(command -v node)"
-  for h in "$IDP" "$RP1" "$RP2"; do
+  [ "$ZW" = 1 ] || SYNC_VMS=("$IDP" "$RP1" "$RP2"); [ "$ZW" = 1 ] && SYNC_VMS=("$RP1" "$RP2")
+  for h in "${SYNC_VMS[@]}"; do
     on "$h" 'mkdir -p ~/zkd-demo/bin ~/zkd-demo/logs' && rsync -aR -e "ssh -o BatchMode=yes" $FILES "$U@$h:zkd-demo/" \
       && rsync -a -e "ssh -o BatchMode=yes" "$NODE_BIN" "$U@$h:zkd-demo/bin/node" && echo "sync $h ok" || { echo "sync $h failed"; exit 1; }
   done
@@ -188,17 +191,17 @@ deploy_tls() { # $1 호스트 $2 short — 파일을 보내고 role.env 에 넣�
 if [ "$WALLET_MODE" = passkey-web ]; then
   . scripts/zkd_tls_lib.sh
   { zkd_issue_cert "$ZKD_CA_DIR" "$TLS_OUT" wallet wallet.zkd.test 127.0.0.1 \
-    && zkd_issue_cert "$ZKD_CA_DIR" "$TLS_OUT" idp idp.zkd.test "$IDP" \
+    && { [ "$ZW" = 1 ] || zkd_issue_cert "$ZKD_CA_DIR" "$TLS_OUT" idp idp.zkd.test "$IDP"; } \
     && zkd_issue_cert "$ZKD_CA_DIR" "$TLS_OUT" zkone zkone.zkd.test "$RP1" \
     && zkd_issue_cert "$ZKD_CA_DIR" "$TLS_OUT" zktwo zktwo.zkd.test "$RP2"; } >/dev/null || { echo "인증서 발급 실패 — $ZKD_CA_DIR 의 데모 CA 확인"; exit 1; }
   # zkwrapper: 지갑 서버가 발급자이기도 해서 서비스 VM 이 서버끼리 부른다 — 이 PC 의 IP 를 넣은 인증서를 따로 만든다(지갑 인증서는 그대로 이름·127.0.0.1 뿐)
   if [ "$ZW" = 1 ]; then zkd_issue_cert "$ZKD_CA_DIR" "$TLS_OUT" zkwrapper wallet.zkd.test 127.0.0.1 "$HOST" >/dev/null || { echo "인증서 발급 실패(zkwrapper)"; exit 1; }; fi
-  deploy_tls "$IDP" idp && TLS_IDP="$REPLY" && deploy_tls "$RP1" zkone && TLS_RP1="$REPLY" && deploy_tls "$RP2" zktwo && TLS_RP2="$REPLY" || { echo "인증서 배포 실패(ssh·scp)"; exit 1; }
-  echo "인증서 배포 ok: idp·zkone·zktwo (VM ~/zkd-demo/tls), 지갑은 $TLS_OUT"
+  { [ "$ZW" = 1 ] || { deploy_tls "$IDP" idp && TLS_IDP="$REPLY"; }; } && deploy_tls "$RP1" zkone && TLS_RP1="$REPLY" && deploy_tls "$RP2" zktwo && TLS_RP2="$REPLY" || { echo "인증서 배포 실패(ssh·scp)"; exit 1; }
+  echo "인증서 배포 ok: $([ "$ZW" = 1 ] || echo 'idp·')zkone·zktwo (VM ~/zkd-demo/tls), 지갑은 $TLS_OUT"
 fi
 
 # 2. 옛 상태 파일은 새 체인과 맞지 않으므로 .bak-시각 으로 옮긴다(지우지 않는다). IdP 키(cia_keys.json)는 그대로 둔다.
-on "$IDP" "cd ~/zkd-demo && for f in cia_state.json; do [ -e \$f ] && mv \$f \$f.bak-$TS && echo \"backup IdP \$f\"; done; true"
+[ "$ZW" = 1 ] || on "$IDP" "cd ~/zkd-demo && for f in cia_state.json; do [ -e \$f ] && mv \$f \$f.bak-$TS && echo \"backup IdP \$f\"; done; true"
 if [ "$ZW" = 1 ]; then mkdir -p -m 700 "$ZW_DIR" && { [ -e "$ZW_DIR/cia_state.json" ] && mv "$ZW_DIR/cia_state.json" "$ZW_DIR/cia_state.json.bak-$TS" && echo "backup zkWrapper cia_state.json"; true; }; fi   # 열쇠(cia_keys.json)는 그대로
 for h in "$RP1" "$RP2"; do
   # mode3_rp_*_registration.json/_logins.jsonl 은 scripts/new_rp.sh --host 가 이 VM 에 만든 추가 RP 들의 등록·로그인 로그다
@@ -360,7 +363,7 @@ elif [ "$WALLET_MODE" = passkey-web ] && [ "$ZW" = 1 ]; then
     CIA_ADMIN_SECRET="$ADMIN" CIA_ADMIN_OPEN="${ADMIN_OPEN:-0}" CIA_STATE_FILE="$ZW_DIR/cia_state.json" CIA_KEYS_FILE="$ZW_DIR/cia_keys.json" CIA_PUBLIC_URL="$WALLET_ORIGIN" MODE3_WALLET_AGENT_ORIGIN="$WALLET_ORIGIN" \
     MODE3_OIDC_CLIENT_ID="$ZKWRAPPER_GOOGLE_CLIENT_ID" MODE3_OIDC_REDIRECT_URI="$GOOGLE_RELAY" MODE3_RP_GOOGLE_CLIENT_ID_DENY="$ZW_DENY" \
     MODE3_CHAIN_RPC_BROWSER="http://127.0.0.1:$APP_PORT" MODE3_REV_RPC_BROWSER="http://127.0.0.1:$REV_PORT" MODE3_DEMO_GENERATION="$(date +%s)" MODE3_EXPLORER_URL="$BS_EXPLORER" \
-    MODE3_TTL_BLOCKS="${TTL_BLOCKS:-5}" MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}" MODE3_ZKWRAPPER_PORT=$USER_PORT MODE3_BIND_HOST=0.0.0.0 \
+    MODE3_TTL_BLOCKS="${TTL_BLOCKS:-5}" MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}" MODE3_ZKWRAPPER_PORT=$USER_PORT MODE3_BIND_HOST=0.0.0.0 CIA_REVOKE_PUBLISH_AFTER_BLOCKS="${REVOKE_PUBLISH_AFTER:-3}" \
     MODE3_TLS_CERT="$TLS_OUT/zkwrapper.crt" MODE3_TLS_KEY="$TLS_OUT/zkwrapper.key" NODE_EXTRA_CA_CERTS="$ZKD_CA_DIR/ca.crt" \
     setsid nohup node mode3_zkwrapper.js > "$LOGS/zkwrapper.log" 2>&1 < /dev/null &
 elif [ "$WALLET_MODE" = passkey-web ]; then
@@ -406,14 +409,14 @@ except Exception: print('(응답 없음)')"; done
     sleep 2
   done
 else
-  echo "RP 등록 $N 건 — 인증서 대기(pending). $SCHEME://$IDP:$IDP_PORT/rp 에서 운영자 계정을 만들고 '새 RP 만들기' 에 같은 이름·주소(zkONE $RP1_UI, zkTWO $RP2_UI)를 넣은 뒤 '인증서 발급 요청' → $SCHEME://$IDP:$IDP_PORT/admin 에서 승인하세요 (2026-11-06; 바로 /admin 승인·AUTO_APPROVE=1 도 된다)."
+  echo "RP 등록 $N 건 — 인증서 대기(pending). $IDP_PAGE/rp 에서 운영자 계정을 만들고 '새 RP 만들기' 에 같은 이름·주소(zkONE $RP1_UI, zkTWO $RP2_UI)를 넣은 뒤 '인증서 발급 요청' → $SCHEME://$IDP:$IDP_PORT/admin 에서 승인하세요 (2026-11-06; 바로 /admin 승인·AUTO_APPROVE=1 도 된다)."
 fi
 
 # 8. 요약
 for u in $([ "$ZW" = 1 ] || echo "$IDP:$IDP_PORT") "127.0.0.1:$USER_PORT" "$RP1:$RP1_PORT" "$RP2:$RP2_PORT"; do printf -- "--- %s " "$u"; curl -s -m 10 "${CACERT[@]}" "$SCHEME://$u/mode3/health" | python3 -c "import sys,json;d=json.load(sys.stdin);print({k:d.get(k) for k in ('role','ok','status','secrets','registered','accounts','pendingRps','active') if d.get(k) is not None})"; done
 printf -- "--- 체인 구성: "; curl -s -m 5 "${CACERT[@]}" "$CIA_SRV/cia/public_keys" | python3 -c "import sys,json;d=json.load(sys.stdin);print('캐노니컬 chainId', d.get('canonicalChainId'), '· 거울', [m.get('chainId') for m in d.get('mirrors',[])])"
 echo "SPLIT_DONE $(date '+%H:%M:%S')"
-echo "페이지: IdP 사용자 $IDP_PAGE/user  IdP RP 운영자 $IDP_PAGE/rp  지갑 $WALLET_ORIGIN/  zkONE $RP1_UI/ (관리자 /admin)  zkTWO $RP2_UI/  IdP 관리자 $IDP_PAGE/admin"
+[ "$ZW" = 1 ] || echo "페이지: IdP 사용자 $IDP_PAGE/user  IdP RP 운영자 $IDP_PAGE/rp  지갑 $WALLET_ORIGIN/  zkONE $RP1_UI/ (관리자 /admin)  zkTWO $RP2_UI/  IdP 관리자 $IDP_PAGE/admin"
 echo "새 RP: $IDP_PAGE/rp 에서 운영자 가입 → '새 RP 만들기' → 받은 키로 bash scripts/new_rp.sh <name> <port> <key> --host <RP VM IP>"
 if [ "$WALLET_MODE" = "snap" ]; then
   echo "Snap 모드: 브라우저에 MetaMask Flask 가 있어야 한다. 지갑 페이지 $WALLET_ORIGIN/ 에서 MetaMask 연결 → Snap(local:http://localhost:$SNAP_PORT) 설치/재연결."

@@ -22,6 +22,8 @@ function zwBranch(i) {
     const l = lines[k].trim();
     if (/^fi\b/.test(l)) depth++;
     else if (/^if\b.*; then$/.test(l)) { if (depth === 0) return /^if \[ "\$ZW" = 1 \]; then$/.test(l) ? 'then' : /^if \[ "\$ZW" != 1 \]; then$/.test(l) ? 'else' : null; depth--; }
+    // if [ "$ZW" = 1 ] … elif …: elif 갈래는 ZW 가 아닌 쪽이다(2026-11-21)
+    else if (depth === 0 && /^elif\b.*; then$/.test(l)) { for (let m = k - 1, d = 0; m >= 0; m--) { const x = lines[m].trim(); if (/^fi\b/.test(x)) d++; else if (/^if\b.*; then$/.test(x)) { if (d === 0) return /^if \[ "\$ZW" = 1 \]; then$/.test(x) ? 'else' : null; d--; } } return null; }
     else if (depth === 0 && l === 'else') { for (let m = k - 1, d = 0; m >= 0; m--) { const x = lines[m].trim(); if (/^fi\b/.test(x)) d++; else if (/^if\b.*; then$/.test(x)) { if (d === 0) return /^if \[ "\$ZW" = 1 \]; then$/.test(x) ? 'else' : null; d--; } } return null; }
   }
   return null;
@@ -104,5 +106,23 @@ else {
   });
   fs.rmSync(tmp, { recursive: true, force: true });
 }
+// 최종 검토 M-4(2026-11-21): zkwrapper 모드는 IdP VM 을 쓰지 않는다 — 그 VM 에 닿는 줄(ssh·인증서·상태 백업·동기화·주소 확인)은 모두 ZW 가 아닐 때만 돈다.
+t('zkwrapper 모드는 IdP VM 에 닿지 않는다 — "$IDP" 를 부르는 줄은 모두 ZW 가 아닌 갈래(또는 같은 줄의 [ "$ZW" = 1 ] || )에 있다', () => {
+  const touch = lines.map((l, i) => [l, i]).filter(([l]) => !/^\s*#/.test(l) && /(on|deploy_tls) "\$IDP"|"\$IDP" "\$RP1"|"\$IDP=idp\.zkd\.test"|idp idp\.zkd\.test|"\$U@\$IDP"/.test(l));
+  assert.ok(touch.length >= 6, `찾은 줄이 너무 적다: ${touch.length}`);
+  // IdP 터널(if [ "$SPLIT_IDP_TUNNEL" != 0 ])은 passkey-web 이 0 으로 끈다 — zkwrapper 는 passkey-web 으로 바뀐 뒤라 그 갈래에 들어가지 않는다
+  const inTunnel = (i) => { for (let k = i - 1; k >= 0; k--) { const x = lines[k].trim(); if (/^fi\b/.test(x)) return false; if (/^if\b.*; then$/.test(x)) return x === 'if [ "$SPLIT_IDP_TUNNEL" != 0 ]; then'; } return false; };
+  const off = idx(/SCHEME=https; SPLIT_IDP_TUNNEL=0;/), zw = idx(/^ZW=0; \[ "\$WALLET_MODE" = zkwrapper \]/); assert.ok(off > zw && zw >= 0, 'zkwrapper 를 passkey-web 으로 바꾼 뒤에 터널을 끈다');
+  for (const [l, i] of touch) if (!inTunnel(i)) assert.equal(zwBranch(i), 'else', `${i + 1}: ${l.trim().slice(0, 100)}`);
+});
+t('zkwrapper 모드의 안내문은 /user(래퍼에서는 403)를 가리키지 않는다', () => {
+  const bad = lines.map((l, i) => [l, i]).filter(([l]) => /^\s*echo .*\/user\b/.test(l) && !/\/user\/config/.test(l));
+  for (const [l, i] of bad) assert.equal(zwBranch(i), 'else', `${i + 1}: ${l.trim().slice(0, 100)}`);
+  const pend = idx(/echo "RP 등록 \$N 건 — 인증서 대기/); assert.ok(pend >= 0); assert.ok(lines[pend].includes('$IDP_PAGE/rp'), '운영자 화면은 사람이 여는 주소(IDP_PAGE — zkwrapper 면 zkWrapper 서버)로');
+});
+t('zkWrapper 기동에 폐기 게시 간격(CIA_REVOKE_PUBLISH_AFTER_BLOCKS)이 넘어간다 — 보통 방식과 같은 기본값 3', () => {
+  const i = idx(/node mode3_zkwrapper\.js/); const blk = lines.slice(Math.max(0, i - 8), i + 1).join('\n');
+  assert.ok(blk.includes('CIA_REVOKE_PUBLISH_AFTER_BLOCKS="${REVOKE_PUBLISH_AFTER:-3}"'), blk);
+});
 console.log(fails ? `\n${fails} FAILED` : '\nall ok');
 process.exit(fails ? 1 : 0);

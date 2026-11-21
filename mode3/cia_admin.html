@@ -736,7 +736,7 @@
         const row = body.insertRow();
         cell(row, a.uid);
         cell(row, a.id ?? '-', 'nowrap');
-        // 2026-11-13: 폐기된 계정은 스냅을 쥐지 않아 새 계정과 같은 auid 가 두 줄에 보일 수 있다 — 어느 쪽이 폐기인지 여기서 가린다.
+        // 2026-11-13: 같은 auid 가 두 줄에 보일 수 있다(2026-11-21 부터는 폐기된 계정도 스냅을 쥐어 새로 생기지 않지만, 그 전 상태 파일에는 있을 수 있다) — 어느 쪽이 폐기인지 여기서 가린다.
         cell(row, badge(a.disabled ? 'admin_state_disabled' : 'admin_state_active', a.disabled ? 'bad' : 'ok'));
         if (a.auid) cell(row, midVal(a.auid)); else { const c = cell(row, ''); c.className = 'muted'; tte(c, 'admin_auid_none'); }
         // 2026-11-12(사용자 결정): zkIdP 가 계정마다 덮어써 두는 가장 최신 auid_s 하나와 그 발급 시각 — 기록은 없다.

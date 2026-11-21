@@ -43,6 +43,7 @@ UNIT=(
   tests/test_zkd_tls_certs.mjs
   tests/test_demo_split_passkey_web.mjs
   tests/test_demo_split_zkwrapper.mjs
+  tests/test_mode3_zkwrapper_env.mjs
   tests/test_mode3_rp_challenge_ttl.mjs
   # 로컬 Blockscout 자동 검증의 순수 함수(2026-11-18) — hardhat 산출물(artifacts/)만 읽는다(없으면 BLOCKED: npx hardhat compile)
   tests/test_blockscout_verify.mjs
@@ -120,6 +121,7 @@ CHAIN=(
   tests/test_cia_wrapper.mjs
   tests/test_mode3_user_core_wrapper.mjs
   tests/test_mode3_zkwrapper_server.mjs
+  tests/test_cia_wrapper_race.mjs
   tests/test_rp_social_logins.mjs
   tests/test_cia_issue_race.mjs
   tests/test_cia_registry.mjs

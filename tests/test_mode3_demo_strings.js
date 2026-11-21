@@ -196,16 +196,24 @@ t('registration_incomplete 의 조치는 없는 버튼이 아니라 "다시 로�
   assert.match(r.ko.action, /다시 로그인/); assert.match(r.ko.action, /스냅 초기화|스냅을 초기화/);
   assert.match(r.en.action, /log in again/i); assert.match(r.en.action, /reset the snap/i);
 });
-// 2026-11-13 리뷰 M-6 + 사용자 결정(폐기된 계정은 스냅을 쥐지 않는다): 식에서 uid 가 빠졌다(auid = H(salt), PPID = H(salt, arid, chainid)) — 문구도 그렇게 말한다.
-t('리뷰 M-6: 식에 uid 가 남은 문구가 없고 죽은 키가 없다; auid_taken·관리자 설명은 ko·en 모두 "활성 계정 하나 — 폐기된 계정은 스냅을 쥐지 않는다" 를 말한다', () => {
+// 2026-11-13 리뷰 M-6: 식에서 uid 가 빠졌다(auid = H(salt), PPID = H(salt, arid, chainid)) — 문구도 그렇게 말한다.
+// 2026-11-21(사용자 결정 — 11-13 의 "폐기된 계정은 스냅을 쥐지 않는다" 를 되돌림): 폐기된 계정도 스냅을 쥔다. 풀리는 길은 연결 해제·관리자 삭제뿐이다.
+t('리뷰 M-6: 식에 uid 가 남은 문구가 없고 죽은 키가 없다; auid_taken·관리자 설명은 ko·en 모두 "한 스냅은 계정 하나 — 폐기된 계정도 쥔다(관리자가 지우면 풀린다)" 를 말한다', () => {
   const all = JSON.stringify(S);
   assert.equal(/Poseidon\(uid, ?salt/.test(all), false, 'PPID·auid 식에 uid 가 없다');
   assert.equal(/uid·salt 로 계산|uid and salt/.test(all), false, 'auid 는 salt 만으로 계산한다');
   assert.equal(S.ui.wallet_me_f_nextIndex, undefined, '계정 번호(다음 가입 번호) 키는 없어졌다');
   const d = S.ui.admin_auidmap_desc;
-  assert.match(d.ko, /폐기/); assert.match(d.en, /auid_taken/); assert.match(d.en, /revoked/i); assert.match(d.en, /Poseidon\(T_AUID2, s_u\)/);
-  assert.match(S.reasons.auid_taken.ko.cause, /활성/); assert.match(S.reasons.auid_taken.ko.action, /폐기/);
-  assert.match(S.reasons.auid_taken.en.cause, /active/i); assert.match(S.reasons.auid_taken.en.action, /revoke/i);
+  assert.match(d.ko, /폐기된 계정도/); assert.match(d.en, /auid_taken/); assert.match(d.en, /revoked account still holds/i); assert.match(d.en, /Poseidon\(T_AUID2, s_u\)/);
+  const at = S.reasons.auid_taken;
+  assert.equal(/활성/.test(at.ko.cause), false, '활성 계정만이 아니다 — 폐기된 계정도 쥔다'); assert.match(at.ko.cause, /폐기된 계정도/); assert.match(at.ko.action, /관리자/); assert.match(at.ko.action, /삭제/);
+  assert.equal(/active/i.test(at.en.cause), false); assert.match(at.en.cause, /revoked/i); assert.match(at.en.action, /delete/i); assert.equal(/revoke that account/i.test(at.en.action), false, '폐기로는 스냅이 풀리지 않는다');
+  // 폐기 화면·사유의 "새 계정을 만들어 같은 스냅으로 등록할 수 있다" 는 이제 틀린 말이다
+  const old = /스냅을 쥐지 않|does not hold (the|its) Snap|no longer holds a Snap/;
+  for (const [k, v] of [['idp_self_revoke_desc', S.ui.idp_self_revoke_desc], ['idp_myinfo_wallet_revoked', S.ui.idp_myinfo_wallet_revoked], ['account_disabled', S.reasons.account_disabled], ['admin_auidmap_desc', d]]) {
+    assert.equal(old.test(JSON.stringify(v)), false, `${k}: ${JSON.stringify(v).slice(0, 160)}`);
+  }
+  assert.match(S.ui.idp_self_revoke_desc.ko, /관리자/); assert.match(S.reasons.account_disabled.ko.action, /삭제/);
 });
 
 // 2026-11-14(화면 리뷰 3차): 묵은 문구·용어 — 서비스는 속성 커밋먼트를 받지 않고(11-11), auid 는 로그인마다 직접 넣으며(11-09), 연결 해제·폐기는 비밀번호만 받는다.

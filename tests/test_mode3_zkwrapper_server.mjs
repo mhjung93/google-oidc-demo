@@ -46,7 +46,8 @@ try {
   });
   await t('관리자·운영자 화면도 엄격한 CSP — 그 화면의 인라인 스크립트 해시만 허용하고 unsafe-inline 은 없다(지갑과 같은 오리진이다, 최종 검토 I-3)', async () => {
     const { createHash } = await import('node:crypto');
-    for (const [p, file] of [['/admin', 'mode3/cia_admin.html'], ['/rp', 'mode3/cia_rp.html']]) {
+    // 재검토(2026-11-21): Express 는 대소문자·끝 슬래시를 가리지 않고 같은 화면을 내보낸다 — 그런 주소에도 같은 정책이 붙어야 한다(우회 링크).
+    for (const [p, file] of [['/admin', 'mode3/cia_admin.html'], ['/rp', 'mode3/cia_rp.html'], ['/Admin', 'mode3/cia_admin.html'], ['/admin/', 'mode3/cia_admin.html'], ['/RP', 'mode3/cia_rp.html'], ['/rp/', 'mode3/cia_rp.html']]) {
       const r = await raw(p); assert.equal(r.status, 200, p);
       const csp = r.headers.get('content-security-policy') ?? '';
       const script = (csp.split(';').map((x) => x.trim()).find((x) => x.startsWith('script-src')) ?? '');
@@ -57,6 +58,9 @@ try {
         const h = `'sha256-${createHash('sha256').update(m[1], 'utf8').digest('base64')}'`;
         assert.ok(script.includes(h), `${p}: 인라인 스크립트의 해시가 없다`);
       }
+      // 최소 권한(재검토 Minor): 이 화면들은 wasm·워커·체인 노드를 쓰지 않는다
+      assert.ok(!script.includes('wasm-unsafe-eval'), `${p}: ${script}`); assert.ok(!csp.includes('blob:'), `${p}: ${csp}`);
+      assert.ok(!csp.includes(CHAIN), `${p}: 체인 노드로의 연결은 필요 없다 — ${csp}`);
     }
   });
   await t('승인된 서비스가 설정과 CSP 에 들어온다 — 서비스 등록은 지금까지와 같다(대기 → 승인)', async () => {

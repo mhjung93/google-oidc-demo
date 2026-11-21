@@ -96,22 +96,35 @@ export async function startIsolatedCia(opts = {}) {
     ...Object.fromEntries(Object.entries(extraEnv).map(([k, v]) => [k, typeof v === 'string' ? v.replaceAll('{port}', String(port)) : v])),
   };
   const logFile = path.join(dir, 'cia.log');
-  const out = fs.openSync(logFile, 'a');
-  const child = spawn('node', [entry], { cwd: REPO_ROOT, env, stdio: ['ignore', out, out] });
-  let spawnError = null;
-  child.on('error', (e) => { spawnError = e; });
-
   const base = `${scheme}://127.0.0.1:${port}`;
-  const deadline = Date.now() + readyTimeoutMs;
-  let ready = false;
-  while (Date.now() < deadline) {
-    if (spawnError || child.exitCode !== null) break;
-    try {
-      const r = await fetch(`${base}/cia/public_keys`);
-      if (r.ok) { ready = true; break; }
-    } catch { /* not yet */ }
-    await new Promise((r) => setTimeout(r, 200));
+  let child = null, spawnError = null;
+  // 띄우고 응답할 때까지 기다린다. restart()(2026-11-21)도 같은 env·포트·상태 디렉터리로 이것을 다시 부른다.
+  async function launch() {
+    const out = fs.openSync(logFile, 'a');
+    child = spawn('node', [entry], { cwd: REPO_ROOT, env, stdio: ['ignore', out, out] });
+    spawnError = null;
+    child.on('error', (e) => { spawnError = e; });
+    const deadline = Date.now() + readyTimeoutMs;
+    while (Date.now() < deadline) {
+      if (spawnError || child.exitCode !== null) return false;
+      try {
+        const r = await fetch(`${base}/cia/public_keys`);
+        if (r.ok) return true;
+      } catch { /* not yet */ }
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    return false;
   }
+  async function kill() {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGTERM');
+      await new Promise((resolve) => {
+        const t = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* */ } resolve(); }, 3000);
+        child.once('exit', () => { clearTimeout(t); resolve(); });
+      });
+    }
+  }
+  const ready = await launch();
   if (!ready) {
     const log = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '';
     try { child.kill('SIGKILL'); } catch { /* */ }
@@ -158,14 +171,13 @@ export async function startIsolatedCia(opts = {}) {
       if (r.status !== 200) throw new Error('register_rp 실패: ' + JSON.stringify(r.body));
       return { arid: r.body.arid, origin: r.body.origin, cert_s: r.body.cert_s, pk_trace: { x: BigInt(r.body.pk_trace.x), y: BigInt(r.body.pk_trace.y) }, serviceWallet, share };
     },
+    /** 같은 env·포트·상태 파일로 다시 띄운다(재기동을 넘어 남는 상태의 시험). 뜨지 않으면 던진다. */
+    async restart() {
+      await kill();
+      if (!(await launch())) throw new Error(`격리 CIA 재기동 실패(${port}).\n${fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').slice(-2000) : ''}`);
+    },
     async stop() {
-      if (child.exitCode === null && child.signalCode === null) {
-        child.kill('SIGTERM');
-        await new Promise((resolve) => {
-          const t = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* */ } resolve(); }, 3000);
-          child.once('exit', () => { clearTimeout(t); resolve(); });
-        });
-      }
+      await kill();
       provider.destroy();   // fundAddress/deployMode3Log/ciaEthWallet 가 같이 쓰던 provider
       if (revProvider !== provider) revProvider.destroy();
       if (oidcStub) await oidcStub.stop();

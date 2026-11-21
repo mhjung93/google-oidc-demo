@@ -50,7 +50,7 @@ import { buildAaHealth, applyHealthHeaders, bounded, originList } from './lib/mo
 import { createOidcVerifier, GOOGLE_DEFAULTS } from './lib/mode3_oidc.js';
 import { uidOf, regNonce, issueNonce, isRevokeNonce, REG_PREFIX, REVOKE_PREFIX, ISSUE_PREFIX } from './lib/mode3_oidc_nonce.js';
 import { WRAPPER_PREFIX, wrapperNonce, verifyDigest, issueDigest, revokeDigest } from './lib/mode3_wrapper_auth.js';
-import { mountUserApp, userAppCsp, userDistReady } from './lib/mode3_user_app_routes.js';
+import { mountUserApp, userAppCsp, adminPageCsp, userDistReady } from './lib/mode3_user_app_routes.js';
 import { listenMaybeTls } from './lib/mode3_tls.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -659,14 +659,16 @@ app.use('/common', express.static(path.join(__dirname, 'mode3', 'common')));
 if (USER_APP) {
   const PAGE_FILES = { '/admin': 'cia_admin.html', '/rp': 'cia_rp.html' };
   app.use((req, res, next) => {
-    const f = PAGE_FILES[req.path]; if (!f || req.method !== 'GET') return next();
+    // 재검토(2026-11-21): Express 는 대소문자·끝 슬래시를 가리지 않고 같은 화면을 내보낸다 — 정규화해 찾는다(아니면 /Admin 링크로 정책을 피한다).
+    const f = PAGE_FILES[req.path.toLowerCase().replace(/\/+$/, '')]; if (!f || req.method !== 'GET') return next();
     let hashes = [];
     try {
       const html = fs.readFileSync(path.join(__dirname, 'mode3', f), 'utf8');
       hashes = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map((m) => `'sha256-${createHash('sha256').update(m[1], 'utf8').digest('base64')}'`);
     } catch { hashes = []; }
     const approved = Object.values(state?.rps ?? {}).filter((r) => r.status === 'approved').map((r) => r.origin);
-    res.set('Content-Security-Policy', userAppCsp([...new Set([APP_RPC_BROWSER, REV_RPC_BROWSER].map((x) => new URL(x).origin)), ...approved], hashes));
+    // 최소 권한(재검토): wasm·워커·체인 노드는 쓰지 않는다. 다른 곳으로의 연결은 상태 패널이 부르는 서비스들의 /mode3/health 뿐이다.
+    res.set('Content-Security-Policy', adminPageCsp(approved, hashes));
     next();
   });
 }
@@ -1362,8 +1364,10 @@ app.post('/cia/register', userCors, async (req, res) => {
  *  checkTag(tag): 증명을 본 뒤 부른다 — Google 등록이 토큰 nonce 를 tag 에 대조한다. null 이 아닌 { status, body } 를 돌려주면 그대로 실패.
  *  beforeCommit: 인증을 통과한 뒤, 상태 변경 바로 앞에서 동기로 부른다 — code 경로가 1회용 코드를 "성공 시에만" 태운다. false 면 401 bad_code.
  *  성공 { slot, restored? }, 실패 { error: { status, body } }. */
-/** R11: uid 가 아닌 **활성**(폐기되지 않은) 계정이 이 auid(스냅의 가명)를 쥐고 있는가. 한 스냅의 활성 계정은 같은 IdP 에서 하나다. */
-const auidHeldByOther = (uid, auidStr) => Object.entries(state.accounts).some(([u, a]) => u !== String(uid) && a?.auid === auidStr && !a.disabled);
+/** R11: uid 가 아닌 계정이 이 auid(스냅·패스키의 가명)를 쥐고 있는가. 한 스냅의 계정은 같은 IdP 에서 하나다.
+ *  2026-11-21(사용자 결정 — 11-13 결정을 되돌림): 폐기된 계정도 auid 를 쥔다. 놓아 주면 장치를 훔친 사람이 새 계정(래퍼 방식이면 Google 계정 하나)으로 같은 패스키·같은 PPID 에
+ *  돌아온다 — 피해자의 폐기가 그를 끊지 못한다. auid 가 풀리는 길은 관리자 삭제(/cia/account/delete)와 연결 해제(auid 를 비운다)뿐이다. */
+const auidHeldByOther = (uid, auidStr) => Object.entries(state.accounts).some(([u, a]) => u !== String(uid) && a?.auid === auidStr);
 async function registerAccount({ uid, provider, auid, auth = null, verified = false, checkTag, beforeCommit }) {
   const fail = (status, body) => ({ error: { status, body } });
   if (!isDec(auid)) return fail(400, { error: 'auid required' });
@@ -1387,8 +1391,8 @@ async function registerAccount({ uid, provider, auid, auth = null, verified = fa
     return { slot: prev.slot, restored: true };
   }
   // R11(2026-11-13 스펙 random-salt): auid = Poseidon(T_AUID2, salt) 는 스냅의 가명이라 계정이 달라도 같은 스냅이면 같다 — 같은 IdP 에서 한 스냅의 계정은 하나다.
-  // 다른 **활성** 계정이 이 auid 를 지금 들고 있으면 거절한다. 폐기된 계정은 스냅을 쥐지 않는다(2026-11-13 사용자 결정 — 자기 폐기·관리자 폐기 뒤 같은 스냅으로
-  // 새 계정을 만들 수 있다. 폐기된 계정 자신은 위에서 account_disabled). 연결 해제로 auid 가 비워진 계정도 막지 않는다. 증명을 본 **뒤에** 검사한다 — 틀린 요청에
+  // 다른 계정이 이 auid 를 들고 있으면 거절한다 — 폐기된 계정도 쥔다(2026-11-21 사용자 결정, auidHeldByOther). 폐기된 계정 자신은 위에서 account_disabled.
+  // 연결 해제로 auid 가 비워진 계정은 막지 않는다. 증명을 본 **뒤에** 검사한다 — 틀린 요청에
   // auid 가 등록돼 있는지를 알려 주지 않는다. 1회용 코드를 태우기 전이다. 아래 검사는 동기라 await 사이 경합에도 같은 답이다.
   const auidStr = BigInt(auid).toString();
   if (auidHeldByOther(uid, auidStr)) return fail(409, { error: 'auid taken', reason: 'auid_taken' });
@@ -1425,7 +1429,28 @@ app.post('/cia/slot', userCors, async (req, res) => {
 // /cia/issue — 데모 계정은 π_IdP 만, 래퍼(Google) 계정은 π_IdP + id_token(+첫 로그인이면 registration{auid}). 2026-10-16, 2026-11-13.
 /** 발급의 뒷부분 — 인증(π_IdP, 또는 래퍼 방식의 Google 토큰)을 지난 요청을 받아 등록부 갱신·게시, 서명, 세션·발급 기록을 한다. 기존 발급과 래퍼 발급이 함께 쓴다(2026-11-20).
  *  consume(): 상태를 바꾸기 바로 앞에서 동기로 부르는 1회용 재료의 소비(인증 코드 또는 토큰 nonce) — false 면 consumeFail 로 거절한다. wrapper: 래퍼 방식의 추가 대조. extra: 응답에 더할 값. */
-async function finishIssue(res, { uid, acct, cupt, cspt, auidS, aridS, mh, chainStr, agent, consume = null, consumeFail = null, wrapper = false, extra = null, hold = null }) {
+// 진행 중인 발급(최종 검토 C-1, 재검토 2026-11-21): auid_s → { uid, n }(그 auid_s 로 지금 발급받는 요청 수), uid → 진행 중인 발급 수(발급 기록 상한에 센다).
+// 같은 계정의 요청은 같은 auid_s 를 함께 쥘 수 있다 — 수를 세어 마지막 요청이 끝날 때 푼다(먼저 끝난 요청이 다른 요청의 예약을 지우지 않게).
+const inflightAuidS = new Map(), inflightIssues = new Map();
+function reserveIssue(hold, auidS, uid) {
+  const e = inflightAuidS.get(auidS) ?? { uid, n: 0 }; e.n++; inflightAuidS.set(auidS, e);
+  inflightIssues.set(uid, (inflightIssues.get(uid) ?? 0) + 1);
+  hold.auidS = auidS; hold.uid = uid;
+}
+function releaseIssue(hold) {
+  if (hold.auidS === null) return;
+  const e = inflightAuidS.get(hold.auidS);
+  if (e && --e.n <= 0) inflightAuidS.delete(hold.auidS);
+  const n = (inflightIssues.get(hold.uid) ?? 1) - 1;
+  if (n <= 0) inflightIssues.delete(hold.uid); else inflightIssues.set(hold.uid, n);
+  hold.auidS = null;
+}
+async function finishIssue(res, opts) {
+  // 진행 중인 발급의 예약(아래 reserve)은 어느 길로 끝나든 여기서 푼다 — 성공했으면 이미 발급 기록(auidSLog)에 있다.
+  const hold = { auidS: null, uid: null };
+  try { return await finishIssueInner(res, opts, hold); } finally { releaseIssue(hold); }
+}
+async function finishIssueInner(res, { uid, acct, cupt, cspt, auidS, aridS, mh, chainStr, agent, consume = null, consumeFail = null, unconsume = null, wrapper = false, extra = null }, hold) {
   // Cf_u·Cf_s 는 IdP 가 점에서 스스로 유도한다(설계 §6.2) — 사용자가 보낸 Cf 를 서명하면 증명된 점과 무관한 값에 서명이 붙는다.
   const Cf_u = await compressPoint(cupt), Cf_s = await compressPoint(cspt);
   const head = await headOf(chainStr);   // fail-closed: 체인이 죽어 있으면 발급하지 않는다(게시도 불가하므로 폐기가 닿지 않는 세션이 된다)
@@ -1434,15 +1459,15 @@ async function finishIssue(res, { uid, acct, cupt, cspt, auidS, aridS, mh, chain
   const newLeaf = await registryLeaf(BigInt(acct.auid), Cf_u);
   if (acct.disabled) return res.status(403).json({ error: 'account disabled', reason: 'account_disabled' });   // await 사이의 폐기
   // 발급 기록이 찼다 — 기록 없이 서명하면 그 로그인(과 그 뒤의 거래)을 개봉할 수 없다. 1회용 코드·자격증명 교체보다 먼저 막는다(아무것도 바꾸지 않는다).
-  if ((acct.auidSLog?.length ?? 0) >= AUID_S_LOG_MAX) return res.status(409).json({ error: 'issuance record is full for this account', reason: 'auid_log_full' });
-  // 래퍼 방식(스펙 zkwrapper §3·§10 C1): 세션 가명은 전체에서 한 번만 — 다른 계정의 발급 기록에 있는 auid_s 로는 발급하지 않는다. π_IdP 가 없어 발급자는 auid_s 가
-  // 그 계정의 것인지 볼 수 없다 — 주운 남의 auid_s 를 자기 기록에 심어 개봉이 엉뚱한 계정을 가리키게 하는 것을 막는다(정직한 요청자가 늘 먼저 낸다).
-  // 최종 검토 C-1: 검사와 기록 사이에 await(게시·서명)가 있다 — 진행 중인 발급의 auid_s 를 같은 동기 구간에서 예약해 동시 요청이 함께 지나가지 못하게 한다(예약은 issueWrapper 가 끝에 푼다).
-  if (wrapper) {
-    const x = auidS.toString(), holder = inflightAuidS.get(x);
-    if (auidSOwners(x).some((u) => u !== uid) || (holder !== undefined && holder !== uid)) return res.status(409).json({ error: 'auid_s already issued to another account', reason: 'auid_s_taken' });
-    if (holder === undefined && hold) { inflightAuidS.set(x, uid); hold.key = x; }
-  }
+  // 진행 중인 그 계정의 발급도 센다(재검토 2026-11-21) — 기록은 아래 await(게시·서명) 뒤에 쓰므로, 세지 않으면 동시 요청이 함께 지나가 상한을 넘는다.
+  if ((acct.auidSLog?.length ?? 0) + (inflightIssues.get(uid) ?? 0) >= AUID_S_LOG_MAX) return res.status(409).json({ error: 'issuance record is full for this account', reason: 'auid_log_full' });
+  // 세션 가명은 전체에서 한 번만(스펙 zkwrapper §3·§10 C1) — 다른 계정의 발급 기록에 있는(또는 다른 계정이 지금 발급받는 중인) auid_s 로는 발급하지 않는다.
+  // 래퍼 방식은 π_IdP 가 없어 주운 남의 auid_s 를 자기 기록에 심을 수 있다. 2026-11-21(사용자 결정, 재검토 M-7 (가))부터 모든 모드에 적용한다 — 기존 모드도 연결을 푼
+  // 계정의 스냅을 다른 계정이 등록하면 같은 auid 가 두 계정에 있어, r_rp 를 일부러 같게 내면 같은 auid_s 가 두 기록에 남아 개봉이 답을 못 한다(uidOfAuidS).
+  // 최종 검토 C-1: 검사와 예약을 같은 동기 구간에서 한다(이 아래 첫 await 전). 예약은 finishIssue 가 끝에 푼다.
+  const x = auidS.toString(), holder = inflightAuidS.get(x);
+  if (auidSOwners(x).some((u) => u !== uid) || (holder !== undefined && holder.uid !== uid)) return res.status(409).json({ error: 'auid_s already issued to another account', reason: 'auid_s_taken' });
+  reserveIssue(hold, x, uid);
   acct.creds ??= [];
   const cur = activeCred(uid);
   let published = false;
@@ -1466,7 +1491,8 @@ async function finishIssue(res, { uid, acct, cupt, cspt, auidS, aridS, mh, chain
     // 리뷰 S2(2026-10-13): 게시 await 사이에 이 C_u 가 물렸으면(같은 uid 의 다른 새 C_u 발급, 관리자 scope=credential) 토큰을 내지 않는다 —
     // 은퇴된 Cf_u 위의 토큰은 등록부에 없어 쓸 수 없고, 지갑이 그 C_u 를 보관하면 다음 로그인이 registry_mismatch 에서 못 빠져나온다.
     // 지갑은 cred_revoked 에 새 C_u 로 한 번만 다시 시도한다(mode3_wallet_agent.js /wallet/login).
-    if (activeCred(uid)?.Cf_u !== cfu) return res.status(409).json({ error: 'this user credential was retired while publishing; make a new one', reason: 'cred_revoked' });
+    // 래퍼 방식(최종 검토 M-3): 이 요청은 토큰을 내지 못했으니 Google 토큰(nonce)을 돌려준다 — 코어가 같은 토큰·요청 키로 새 C_u 를 내 한 번 다시 한다.
+    if (activeCred(uid)?.Cf_u !== cfu) { if (unconsume) unconsume(); return res.status(409).json({ error: 'this user credential was retired while publishing; make a new one', reason: 'cred_revoked' }); }
   } else if (consume && !consume()) {
     // 같은 C_u 로 재서명만 하는 경로(F-7) — 발급 기록이 없으므로 여기서는 signPoseidon 바로 앞이 "상태 변경 직전" 이다.
     return res.status(consumeFail.status).json(consumeFail.body);
@@ -1506,17 +1532,19 @@ function auidSOwners(auidS) {
 
 // ---- 래퍼 방식의 인증(스펙 2026-11-20 zkwrapper §2.2·§10) ----
 // Google ID 토큰(nonce = "wrap:" + H(pk_e)) + 요청 본문에 대한 pk_e 의 서명. 토큰은 한 번만 쓴다 — 발급은 상태를 바꾸기 바로 앞에서(finishIssue 의 consume), 폐기는 인증 직후에 소비한다.
-const inflightAuidS = new Map();   // 진행 중인 래퍼 발급의 auid_s → uid(최종 검토 C-1 — finishIssue 가 검사와 함께 넣고 issueWrapper 가 끝에 지운다)
-const wrapperNonces = new Map();   // 쓴 nonce → 잊어도 되는 시각(ms). Google 토큰 수명(약 1시간)보다 길게 둔다
+// 쓴 nonce → 잊어도 되는 시각(ms). Google 토큰 수명(약 1시간)보다 길게 둔다. 상태 파일에 둔다(최종 검토 M-1 — 메모리에만 두면 재기동 뒤 같은 요청을 다시 받는다).
 const WRAPPER_NONCE_KEEP_MS = 2 * 3600_000;
-const wrapperNonceUsed = (n) => { const e = wrapperNonces.get(n); return e !== undefined && e >= Date.now(); };
+const wrapperNonceUsed = (n) => { const e = state.wrapperNonces[n]; return e !== undefined && e >= Date.now(); };
 function consumeWrapperNonce(n) {
-  const now = Date.now();
-  if (wrapperNonces.size > 5000) for (const [k, e] of wrapperNonces) if (e < now) wrapperNonces.delete(k);
   if (wrapperNonceUsed(n)) return false;
-  wrapperNonces.set(n, now + WRAPPER_NONCE_KEEP_MS);
+  const now = Date.now();
+  for (const [k, e] of Object.entries(state.wrapperNonces)) if (e < now) delete state.wrapperNonces[k];
+  state.wrapperNonces[n] = now + WRAPPER_NONCE_KEEP_MS;
+  persist();   // 소비는 상태 변경 바로 앞의 동기 구간이다 — 그 뒤가 실패해도 쓴 토큰은 쓴 것으로 남는다
   return true;
 }
+/** 토큰을 돌려준다 — 그 토큰으로 아무것도 내지 못한 요청(게시 중 은퇴로 409 cred_revoked)만 부른다(M-3). */
+function releaseWrapperNonce(n) { delete state.wrapperNonces[n]; persist(); }
 const TOKEN_USED = { status: 409, body: { error: 'token already used', reason: 'wrapper_token_used' } };
 /** 토큰·요청 키·서명을 확인한다. digestOf(body) 는 서명하는 글(틀린 본문이면 던진다). 성공 { uid, o(토큰 클레임), nonce }, 실패 { error: { status, body } }. consume:true 면 여기서 nonce 를 소비한다. */
 async function wrapperAuth(body, digestOf, { consume = false } = {}) {
@@ -1559,16 +1587,15 @@ async function issueWrapper(req, res) {
   if (wrapperNonceUsed(au.nonce)) return res.status(TOKEN_USED.status).json(TOKEN_USED.body);   // 위 await 사이에 같은 토큰의 다른 요청이 먼저 끝났다
   if (!acct?.auid) {
     const made = await registerAccount({ uid, provider: OIDC.provider, auid: auidStr, verified: true });
+    // 최종 검토 M-2: 같은 계정의 첫 발급이 다른 auid 로 동시에 오면 늦은 쪽은 위 검사를 지난 뒤 여기서 "already registered" 가 된다 — 위와 같은 사유로 답한다.
+    if (made.error?.body?.error === 'already registered' && state.accounts[uid]?.auid !== auidStr) return res.status(409).json({ error: 'this account is bound to another passkey', reason: 'auid_pinned' });
     if (made.error) return res.status(made.error.status).json(made.error.body);
     acct = state.accounts[uid];
   }
   // 아이디 = Google 이 확인한 이메일(있을 때만 — 관리자 화면에 보이는 값). 저장은 finishIssue 의 persist 가 함께 한다.
   if (!acct.loginId && au.o.emailVerified && typeof au.o.email === 'string' && SIGNUP_EMAIL_RE.test(au.o.email)) acct.loginId = au.o.email;
-  const hold = { key: null };
-  try {
-    return await finishIssue(res, { uid, acct, cupt, cspt, auidS: BigInt(auid_s), aridS: BigInt(arid_s), mh, chainStr, agent: BigInt(allowAgent),
-      consume: () => consumeWrapperNonce(au.nonce), consumeFail: TOKEN_USED, wrapper: true, extra: { uid, email: acct.loginId ?? null }, hold });
-  } finally { if (hold.key) inflightAuidS.delete(hold.key); }   // 성공했으면 이미 발급 기록(auidSLog)에 있다
+  return await finishIssue(res, { uid, acct, cupt, cspt, auidS: BigInt(auid_s), aridS: BigInt(arid_s), mh, chainStr, agent: BigInt(allowAgent),
+    consume: () => consumeWrapperNonce(au.nonce), unconsume: () => releaseWrapperNonce(au.nonce), consumeFail: TOKEN_USED, wrapper: true, extra: { uid, email: acct.loginId ?? null } });
 }
 app.post('/cia/issue', userCors, async (req, res) => {
   try {
@@ -2153,7 +2180,7 @@ async function pruneExpiredSessions() {
 app.post('/cia/account/set_disabled', requireAdmin, (req, res) => {
   const { uid, disabled } = req.body ?? {};
   if (!isDec(uid) || !state.accounts[uid]) return res.status(404).json({ error: 'unknown account' });
-  // 되살리기: 폐기된 동안 같은 스냅(auid)으로 다른 계정이 등록됐으면 되살리지 않는다 — 한 스냅의 활성 계정이 둘이 된다(R11).
+  // 되살리기: 같은 스냅(auid)을 다른 계정이 쥐고 있으면 되살리지 않는다(R11). 2026-11-21 부터는 폐기된 계정도 auid 를 쥐어 새로 생길 수 없지만, 그 전의 상태 파일에는 있을 수 있다.
   const acct = state.accounts[uid];
   if (!disabled && acct.disabled && acct.auid && auidHeldByOther(uid, acct.auid)) return res.status(409).json({ error: 'auid taken', reason: 'auid_taken' });
   state.accounts[uid].disabled = Boolean(disabled);

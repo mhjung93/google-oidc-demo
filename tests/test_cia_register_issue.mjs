@@ -199,9 +199,9 @@ try {
     assert.equal(ok.status, 201, JSON.stringify(ok.body));
   });
 
-  // 2026-11-13(사용자 결정 — P7 수정): 폐기된 계정은 스냅을 쥐지 않는다. 자기 폐기·관리자 폐기 뒤 같은 스냅으로 새 계정을 등록할 수 있다(연결 해제와 같은 결과).
-  // 리뷰 M-3: auid_taken 으로 거절된 등록은 1회용 코드를 태우지 않는다 — 같은 코드가 뒤에 그대로 쓰인다.
-  await t('폐기된 계정은 스냅(auid)을 쥐지 않는다 — 거절(auid_taken)은 코드를 태우지 않고, 쥔 계정이 폐기되면 같은 코드로 등록된다; 폐기된 계정 자신은 account_disabled 그대로; 되살리기는 그 스냅을 다른 활성 계정이 쓰는 동안 409 auid_taken', async () => {
+  // 2026-11-21(사용자 결정 — 11-13 의 P7 수정을 되돌림): 폐기된 계정도 스냅(auid)을 쥔다 — 놓아 주면 장치를 훔친 사람이 새 계정으로 같은 PPID 에 돌아온다.
+  // 그 스냅이 풀리는 길은 관리자 삭제(와 연결 해제)뿐이다. 리뷰 M-3: auid_taken 으로 거절된 등록은 1회용 코드를 태우지 않는다 — 같은 코드가 뒤에 그대로 쓰인다.
+  await t('폐기된 계정도 스냅(auid)을 쥔다 — 자기 폐기·관리자 폐기 뒤에도 다른 계정은 409 auid_taken(코드는 타지 않는다); 관리자가 그 계정을 지우면 같은 코드로 등록된다; 폐기된 계정 자신은 account_disabled', async () => {
     const seed = Buffer.alloc(32, 23);
     const sa = await cia.post('/cia/signup', { id: 'freed-a', pwd: 'freed-pw-a' }); assert.equal(sa.status, 201, JSON.stringify(sa.body));
     const sb = await cia.post('/cia/signup', { id: 'freed-b', pwd: 'freed-pw-b' }); assert.equal(sb.status, 201, JSON.stringify(sb.body));
@@ -213,20 +213,28 @@ try {
     const taken = await withCode();
     assert.equal(taken.status, 409, JSON.stringify(taken.body)); assert.equal(taken.body.reason, 'auid_taken');
     assert.equal((await cia.post('/cia/account/self_revoke', { uid: sa.body.uid, pwd: 'freed-pw-a' })).status, 200);
-    const freed = await withCode();
-    assert.equal(freed.status, 201, JSON.stringify(freed.body) + ' — 폐기된 계정의 스냅은 다른 계정이 쓸 수 있고, 거절됐던 코드는 타지 않았다');
-    assert.equal((await withCode()).status, 401, '성공한 등록은 코드를 태운다');
+    const afterSelf = await withCode();
+    assert.equal(afterSelf.status, 409, JSON.stringify(afterSelf.body) + ' — 자기 폐기한 계정의 스냅을 다른 계정이 쓰면 안 된다');
+    assert.equal(afterSelf.body.reason, 'auid_taken');
     const again = await cia.post('/cia/register', { uid: sa.body.uid, pwd: 'freed-pw-a', ...(await regBody(regA, sa.body.uid)) });
     assert.equal(again.status, 409, JSON.stringify(again.body)); assert.equal(again.body.reason, 'account_disabled', '폐기된 계정은 되살리지 않는다');
-    const accountOf = async (uid) => (await cia.adminGet('/cia/accounts')).body.accounts.find((x) => x.uid === uid);
-    const revive = await cia.adminPost('/cia/account/set_disabled', { uid: sa.body.uid, disabled: false });
-    assert.equal(revive.status, 409, JSON.stringify(revive.body)); assert.equal(revive.body.reason, 'auid_taken', '한 스냅의 활성 계정은 하나 — 되살리면 둘이 된다');
-    assert.equal((await accountOf(sa.body.uid)).disabled, true);
-    // 그 스냅을 쓰던 계정이 폐기되면 되살릴 수 있다
-    assert.equal((await cia.adminPost('/cia/revoke', { uid: sb.body.uid, scope: 'account' })).status, 200);
-    assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid: sa.body.uid, disabled: false })).status, 200);
-    assert.equal((await accountOf(sa.body.uid)).disabled, false);
-    assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid: sb.body.uid, disabled: false })).status, 409, '이제는 반대쪽이 막힌다');
+    // 관리자 삭제가 스냅을 풀어 준다 — 거절됐던 코드는 타지 않았다
+    assert.equal((await cia.adminPost('/cia/account/delete', { uid: sa.body.uid })).status, 200);
+    const freed = await withCode();
+    assert.equal(freed.status, 201, JSON.stringify(freed.body) + ' — 지운 계정의 스냅은 다른 계정이 쓸 수 있다');
+    assert.equal((await withCode()).status, 401, '성공한 등록은 코드를 태운다');
+  });
+
+  await t('관리자 폐기한 계정도 스냅을 쥔다 — 다른 계정의 등록은 409 auid_taken; 되살리면 다시 그 계정의 것이다', async () => {
+    const seed = Buffer.alloc(32, 29);
+    const sa = await cia.post('/cia/signup', { id: 'held-a', pwd: 'held-pw-a' }); assert.equal(sa.status, 201, JSON.stringify(sa.body));
+    const sb = await cia.post('/cia/signup', { id: 'held-b', pwd: 'held-pw-b' }); assert.equal(sb.status, 201, JSON.stringify(sb.body));
+    const regA = await createRegistration(BigInt(sa.body.uid), seed), regB = await createRegistration(BigInt(sb.body.uid), seed);
+    assert.equal((await cia.post('/cia/register', { uid: sa.body.uid, pwd: 'held-pw-a', ...(await regBody(regA, sa.body.uid)) })).status, 201);
+    assert.equal((await cia.adminPost('/cia/revoke', { uid: sa.body.uid, scope: 'account' })).status, 200);
+    const r = await cia.post('/cia/register', { uid: sb.body.uid, pwd: 'held-pw-b', ...(await regBody(regB, sb.body.uid)) });
+    assert.equal(r.status, 409, JSON.stringify(r.body)); assert.equal(r.body.reason, 'auid_taken');
+    assert.equal((await cia.adminPost('/cia/account/set_disabled', { uid: sa.body.uid, disabled: false })).status, 200, '그 스냅을 쥔 다른 계정이 없으니 되살릴 수 있다');
   });
 
   await t('issue V11: 첫 발급 — 새 C_u 가 슬롯에 게시(published:true)되고 토큰·세션 기록; 같은 C_u 재발급은 published:false, 활성 자격증명은 하나', async () => {

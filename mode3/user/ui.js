@@ -88,10 +88,11 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       for (const [id, p] of [['homeOpLink', '/rp'], ['homeAdminLink', '/admin']]) { const a = document.getElementById(id); if (a) { a.href = `${config.ciaUrl}${p}`; a.textContent = `${config.ciaUrl}${p}`; } }
       home.hidden = false;
     }
+    // π_IdP 가 없다 — "zkIdP 에 낸 π_IdP 도 보기" 를 두지 않는다
     const pk = document.getElementById('proofsKindBtn'); if (pk) pk.hidden = true;
     // 계정 자기 폐기는 비밀번호를 묻는다 — 래퍼 방식에는 비밀번호가 없다(최종 검토 I-1). 버튼 대신 안내를 둔다.
     const sr = document.getElementById('selfRevokeBtn');
-    if (sr) { sr.hidden = true; const note = document.createElement('p'); note.className = 'muted wrap-revoke-note'; note.textContent = tt('user_wrap_self_revoke_note') || '계정 폐기는 zkWrapper 관리자에게 요청합니다.'; sr.after(note); }   // π_IdP 가 없다 — "zkIdP 에 낸 π_IdP 도 보기" 를 두지 않는다
+    if (sr) { sr.hidden = true; const note = document.createElement('p'); note.className = 'muted wrap-revoke-note'; note.textContent = tt('user_wrap_self_revoke_note') || '계정 폐기는 zkWrapper 관리자에게 요청합니다.'; sr.after(note); }
   }
   const { withUnlock, ask: askUnlock } = createUnlocker({ core, Demo });
   // /wallet/config 대신 /user/config(같은 오리진). minAge·allowedCountries 는 없다 — claim 버튼이 기본값으로 대신한다(에이전트와 같다).

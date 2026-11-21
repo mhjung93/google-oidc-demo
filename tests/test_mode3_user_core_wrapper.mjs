@@ -25,11 +25,11 @@ try {
   assert.equal(config.secrets, 'passkey-web');
   const fullProve = { idp: () => { throw new Error('래퍼 방식은 π_IdP 를 만들지 않는다'); }, cred: (input, w, z) => snarkjs.groth16.fullProve(input, w, z) };
   /** 브라우저 하나 = kv 하나 + 패스키 하나(salt). sent 에 발급 서버로 간 요청 본문을 모은다. */
-  const browser = (salt = randomScalar().toString(), cid = 'Y2lkLWE') => {
+  const browser = (salt = randomScalar().toString(), cid = 'Y2lkLWE', now = Date.now) => {
     const kv = createMemKv(), b = { kv, salt, cid, calls: 0, sent: [] };
     const passkey = { derive: async () => { b.calls++; return { credentialId: cid, s_u: salt }; } };
     const fetchSpy = async (url, init) => { if (String(url).includes('/cia/') && init?.body) b.sent.push({ url: String(url), body: JSON.parse(init.body) }); return globalThis.fetch(url, init); };
-    b.core = createUserCore({ kv, config, provider, canonProvider: provider, fullProve, passkey, fetch: fetchSpy });
+    b.core = createUserCore({ kv, config, provider, canonProvider: provider, fullProve, passkey, fetch: fetchSpy, now });
     b.dump = async () => { const all = {}; for (const k of await kv.keys()) all[k] = await kv.get(k); return j(all); };
     return b;
   };
@@ -105,6 +105,16 @@ try {
     await A.core.wrapperBegin();
     const r = await A.core.wrapperLogin(loginBody(await challenge()), { idToken: stale, verifiedOrigin: info.origin });
     assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'wrapper_key_missing');
+  });
+  await t('요청 키에는 수명이 있다(최종 검토 M-8): wrapperBegin 뒤 10분이 지나면 409 wrapper_key_missing — 패스키를 묻지 않고 키를 지운다', async () => {
+    let clock = Date.now();
+    const C = browser(undefined, undefined, () => clock);
+    const bg = await C.core.wrapperBegin(); assert.equal(bg.status, 200, j(bg.body));
+    const idToken = await mint('g-late', bg.body.googleNonce);
+    clock += 10 * 60_000 + 1;
+    const r = await C.core.wrapperLogin(loginBody(await challenge()), { idToken, verifiedOrigin: info.origin });
+    assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'wrapper_key_missing'); assert.equal(C.calls, 0);
+    assert.equal(await C.kv.get('wrapperKey'), undefined, '오래된 요청 키는 남기지 않는다');
   });
   await t('다른 패스키(다른 salt)로 같은 Google 계정: 409 auid_pinned, 로컬 등록이 생기지 않는다', async () => {
     const B = browser(undefined, 'Y2lkLWI'); await B.core.passkeyConnect({ credentialId: B.cid, s_u: B.salt });

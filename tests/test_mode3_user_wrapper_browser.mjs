@@ -33,7 +33,7 @@ const browser = await launchBrowser();
 const SPLIT = process.env.MODE3_TEST_SPLIT === '1';
 const KIND = 'zkwrapper';   // 서비스가 아는 지갑 종류 — 데모 스크립트처럼 래퍼 방식이면 배치와 관계없이 zkwrapper(서비스 페이지가 지갑 서버를 부르지 않는다)
 const stack = await startIsolatedMode3Stack({ userMode: SPLIT ? 'web' : 'zkwrapper', walletHost: 'localhost', wrapper: true, autoRelay: true,
-  walletEnv: { MODE3_WALLET_SECRETS: 'passkey-web', MODE3_WRAPPER: '1' }, rpEnv: { MODE3_WALLET_KIND: KIND },
+  walletEnv: { MODE3_WALLET_SECRETS: 'passkey-web', MODE3_WRAPPER: '1', MODE3_WRAPPER_CLIENT_ID: 'mode3-test-client' }, rpEnv: { MODE3_WALLET_KIND: KIND },
   ciaEnv: { MODE3_WALLET_KIND: 'passkey-web', MODE3_OIDC_REDIRECT_URI: '{walletOrigin}/google-relay' },
   extraRps: [{ name: 'zkTWO', env: { MODE3_WALLET_KIND: KIND, MODE3_ALLOWED_COUNTRIES: 'KR,JP', MODE3_REQUIRE_DISCLOSURE: '1' } }] });
 const { cia, wallet, rp } = stack;
@@ -208,7 +208,10 @@ try {
     const page = await A.ctx.newPage(); await page.goto(`${wallet.base}/`); await page.waitForSelector('#homeGuide:not([hidden])', { timeout: 15_000 });
     await page.waitForFunction(() => document.querySelectorAll('#sessionsCard button.danger, #sessionsCard .wrap-revoke-note').length > 0, null, { timeout: 15_000 }).catch(() => {});
     const st = await page.evaluate(() => ({ endBtns: [...document.querySelectorAll('button')].filter((b) => b.offsetParent !== null && /세션 끝내기/.test(b.textContent)).length,
-      selfRevoke: document.getElementById('selfRevokeBtn')?.offsetParent !== null, notes: [...document.querySelectorAll('.wrap-revoke-note')].filter((e) => e.offsetParent !== null).length }));
+      selfRevoke: document.getElementById('selfRevokeBtn')?.offsetParent !== null, notes: [...document.querySelectorAll('.wrap-revoke-note')].filter((e) => e.offsetParent !== null).length,
+      sessionNotes: [...document.querySelectorAll('#sessionsCard .wrap-revoke-note')].filter((e) => e.offsetParent !== null).length }));
+    // 재검토 Minor: 세션이 하나도 없으면 "끝내기 버튼 0" 은 아무것도 보지 않는다 — 세션마다 붙는 안내가 있는지(= 세션이 그려졌는지) 먼저 본다
+    assert.ok(st.sessionNotes >= 1, '세션이 그려지지 않았다: ' + j(st));
     assert.equal(st.endBtns, 0, j(st)); assert.equal(st.selfRevoke, false, j(st)); assert.ok(st.notes >= 1, j(st));
     await page.close();
   });

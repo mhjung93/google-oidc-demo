@@ -60,6 +60,8 @@ const jwtPayload = (t) => {
 
 /** 증명 기록에 남기는 개수(최근 것부터) — 증명 하나가 몇 KB 라 IndexedDB 에 부담이 없다. */
 const PROOF_LOG_MAX = 30;
+// 래퍼 로그인의 1회용 요청 키 수명 — Google 왕복과 패스키 확인에 넉넉하고, 버려 둔 창의 키가 오래 남지 않을 만큼(2026-11-21, 최종 검토 M-8).
+const WRAPPER_KEY_MAX_MS = 10 * 60_000;
 export function createUserCore({ kv, config, provider, canonProvider = provider, fetch = globalThis.fetch, fullProve, now = Date.now, log = () => {}, passkey = null }) {
   if (!fullProve?.idp || !fullProve?.cred) throw new Error('createUserCore: fullProve.idp·fullProve.cred 가 필요하다');
   // 증명 기록(2026-11-18 사용자 요청 "각 zkp 를 확인할 수 있게"): 만든 증명과 공개 입력을 kv `proofs` 에 최근 PROOF_LOG_MAX 개 남긴다 — 화면의 "영지식 증명"
@@ -906,6 +908,8 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       const wk = (await kv.get('wrapperKey')) ?? null;
       // 토큰은 지금의 요청 키에 묶인 것이어야 한다 — 아니면 서버가 어차피 거절한다(wrapper_nonce_mismatch). 패스키를 묻기 전에 걸러 처음부터 다시 하게 한다.
       if (!wk?.privateKey || !wk.pkE || claims.nonce !== await wrapperNonce(wk.pkE)) return R(409, { reason: 'wrapper_key_missing' });
+      // 요청 키의 수명(최종 검토 M-8): wrapperBegin 뒤 WRAPPER_KEY_MAX_MS 가 지난 키는 쓰지 않고 지운다 — 창을 버려 두면 키가 다음 로그인까지 남지 않게. Google 부터 다시 한다.
+      if (!(Number.isFinite(wk.at) && now() - wk.at <= WRAPPER_KEY_MAX_MS)) { await kv.del('wrapperKey'); return R(409, { reason: 'wrapper_key_missing' }); }
       let keys;
       try { keys = await idp.publicKeys(); } catch (e) { return R(502, { reason: 'cia_unavailable', detail: e.message }); }
       const pub = keys.status === 200 ? keys.body : null;

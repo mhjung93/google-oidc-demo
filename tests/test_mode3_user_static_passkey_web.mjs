@@ -52,6 +52,11 @@ try {
     const on = await start('pw-consent', { MODE3_WALLET_SECRETS: 'passkey-web', MODE3_POPUP_CONSENT: '1', MODE3_EXPLORER_URL: 'http://127.0.0.1:4000/' });
     try { const c = await (await fetch(`${on.url}/user/config`)).json(); assert.equal(c.popupConsent, true); assert.equal(c.explorerUrl, 'http://127.0.0.1:4000'); } finally { await stopChild(on.child); }
   });
+  await t('래퍼 방식(MODE3_WRAPPER=1)이면 설정에 래퍼 전용 클라이언트 ID(MODE3_WRAPPER_CLIENT_ID)를 싣는다 — 중계 화면이 발급 서버를 남의 오리진으로 부르지 않게(최종 검토 M-6)', async () => {
+    assert.equal('wrapperClientId' in (await (await fetch(`${pw.url}/user/config`)).json()), false, '래퍼 방식이 아니면 없다');
+    const w = await start('pw-wrap', { MODE3_WALLET_SECRETS: 'passkey-web', MODE3_WRAPPER: '1', MODE3_WRAPPER_CLIENT_ID: 'wrap-test-client' });
+    try { const c = await (await fetch(`${w.url}/user/config`)).json(); assert.equal(c.wrapper, true); assert.equal(c.wrapperClientId, 'wrap-test-client'); } finally { await stopChild(w.child); }
+  });
   await t('프록시 eth_chainId = 직접 호출', async () => {
     const a = await (await rpc(`${pw.url}/rpc/app`, rq('eth_chainId'))).json();
     const b = await (await rpc(`${pw.url}/rpc/rev`, rq('eth_chainId'))).json();

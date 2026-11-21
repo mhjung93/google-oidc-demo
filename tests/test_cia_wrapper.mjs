@@ -134,6 +134,17 @@ try {
     const r = (await wrapIssue(twin, S1)).r; assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'auid_taken');
     assert.equal(await acctOf(twin.uid), null);
   });
+  await t('폐기된 계정의 패스키도 그 계정의 것이다(2026-11-21 사용자 결정): 계정이 폐기된 뒤 다른 Google 계정이 같은 auid 를 내면 409 auid_taken — 관리자가 지우면 풀린다', async () => {
+    const owner = await person('g-stolen-owner');
+    assert.equal((await wrapIssue(owner, S1)).r.status, 200);
+    assert.equal((await cia.adminPost('/cia/revoke', { uid: owner.uid.toString(), scope: 'account' })).status, 200);
+    const thief = await person('g-stolen-thief', owner.seed);
+    const r = (await wrapIssue(thief, S1)).r;
+    assert.equal(r.status, 409, j(r.body) + ' — 장치를 훔친 사람이 새 Google 계정으로 같은 PPID 에 돌아오면 안 된다'); assert.equal(r.body.reason, 'auid_taken');
+    assert.equal(await acctOf(thief.uid), null);
+    assert.equal((await cia.adminPost('/cia/account/delete', { uid: owner.uid.toString() })).status, 200);
+    assert.equal((await wrapIssue(thief, S1)).r.status, 200, '관리자가 지운 계정의 패스키는 다른 계정이 쓸 수 있다');
+  });
   await t('다른 계정이 이미 낸 C_u 로는 발급받지 못한다(409 cf_u_taken) — 등록부는 그대로', async () => {
     const mallory = await person('g-mallory2');
     const regRoot0 = (await cia.get('/cia/state')).body.regRoot;
@@ -233,8 +244,14 @@ await t('기동 검사: 서비스와 같은 Google 클라이언트 ID 면 뜨지
 await t('기동 검사: 래퍼 방식은 MODE3_OIDC_CLIENT_ID 를 직접 줘야 한다 — Mode 1 공유 ID(GOOGLE_CLIENT_ID)로 떨어지지 않는다(최종 검토 I-2 a)', async () => {
   let started = null;
   try { started = await startIsolatedCia({ wrapper: true, readyTimeoutMs: 8000, env: { MODE3_OIDC_CLIENT_ID: '', GOOGLE_CLIENT_ID: 'mode3-test-client' } }); }
-  catch (e) { assert.match(e.message, /MODE3_OIDC_CLIENT_ID/); return; }
+  catch (e) { assert.match(e.message, /MODE3_OIDC_CLIENT_ID 가 없다/); return; }
   await started.stop(); assert.fail('공유 ID 로 떴다');
+});
+await t('기동 검사: MODE3_OIDC_CLIENT_ID 가 GOOGLE_CLIENT_ID(Mode 1 공유 ID)와 같으면 뜨지 않는다(재검토 Minor)', async () => {
+  let started = null;
+  try { started = await startIsolatedCia({ wrapper: true, readyTimeoutMs: 8000, env: { GOOGLE_CLIENT_ID: 'mode3-test-client' } }); }
+  catch (e) { assert.match(e.message, /GOOGLE_CLIENT_ID\(Mode 1 공유 ID\)와 같다/); return; }
+  await started.stop(); assert.fail('공유 ID 와 같은 ID 로 떴다');
 });
 console.log(fails ? `\n${fails} 실패` : '\n모두 통과');
 process.exit(fails ? 1 : 0);

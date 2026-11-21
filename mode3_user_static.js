@@ -36,6 +36,8 @@ if (EXPLORER_URL && !/^https?:\/\/[^\s/]+/.test(EXPLORER_URL)) { console.error(`
 // 래퍼 방식(2026-11-20 스펙 zkwrapper): 발급 서버(MODE3_CIA_URL)가 CIA_WRAPPER 로 떠 있다 — 서비스 로그인이 zkIdP 인증 창 대신 Google 을 다녀온다. 설정에 표시만 싣는다(passkey-web 에서만).
 const WRAPPER = process.env.MODE3_WRAPPER === '1';
 if (WRAPPER && SECRETS !== 'passkey-web') { console.error('MODE3_WRAPPER=1 은 MODE3_WALLET_SECRETS=passkey-web 에서만 쓴다'); process.exit(1); }
+// 래퍼 전용 Google 클라이언트 ID(최종 검토 M-6): Google 중계 화면이 "래퍼의 토큰은 서비스로 넘기지 않는다" 를 가르는 값. 설정에 실어 중계가 발급 서버(남의 오리진 — CORS 로 막힌다)를 부르지 않게 한다.
+const WRAPPER_CLIENT_ID = WRAPPER ? (process.env.MODE3_WRAPPER_CLIENT_ID || null) : null;
 const RPC_URL = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
 const REV_RPC = process.env.MODE3_REV_CHAIN_RPC || RPC_URL;
 const LOG_ADDRESS = process.env.CIA_LOG_ADDRESS || null;
@@ -96,7 +98,7 @@ app.use(express.json({ limit: '16kb' }));
 const configCors = cors({ origin: (origin, cb) => cb(null, allowOrigin(origin, RP_ORIGINS)), methods: ['GET'] });
 // 사용자 앱의 경로(홈·번들·공통·속성 도구·Google 중계·회로 파일·공개 설정)는 zkWrapper 서버(cia.js)와 함께 쓰는 모듈이 붙인다(2026-11-20) — 내는 파일과 응답은 지금까지와 같다.
 // CSP 는 위에서 이 서버의 모든 응답에 달았으므로 여기서는 따로 주지 않는다.
-mountUserApp(app, { config: () => ({ ...(WRAPPER ? { wrapper: true } : {}), secrets: SECRETS, popupConsent: POPUP_CONSENT, explorerUrl: EXPLORER_URL || null, walletOrigin: WALLET_ORIGIN, ciaUrl: CIA_URL, rpcUrl: SECRETS === 'passkey-web' ? '/rpc/app' : RPC_URL, revRpcUrl: SECRETS === 'passkey-web' ? '/rpc/rev' : REV_RPC, chainId, logAddress: LOG_ADDRESS, mirrorAddress: MIRROR_ADDRESS, ttlBlocks: TTL_BLOCKS, heightGrid: HEIGHT_GRID, rpOrigins: RP_ORIGINS, pkCia: PK_CIA, relayPath: RELAY_PATH, demoGeneration: DEMO_GENERATION }) });
+mountUserApp(app, { config: () => ({ ...(WRAPPER ? { wrapper: true, ...(WRAPPER_CLIENT_ID ? { wrapperClientId: WRAPPER_CLIENT_ID } : {}) } : {}), secrets: SECRETS, popupConsent: POPUP_CONSENT, explorerUrl: EXPLORER_URL || null, walletOrigin: WALLET_ORIGIN, ciaUrl: CIA_URL, rpcUrl: SECRETS === 'passkey-web' ? '/rpc/app' : RPC_URL, revRpcUrl: SECRETS === 'passkey-web' ? '/rpc/rev' : REV_RPC, chainId, logAddress: LOG_ADDRESS, mirrorAddress: MIRROR_ADDRESS, ttlBlocks: TTL_BLOCKS, heightGrid: HEIGHT_GRID, rpOrigins: RP_ORIGINS, pkCia: PK_CIA, relayPath: RELAY_PATH, demoGeneration: DEMO_GENERATION }) });
 app.get('/wallet/config', configCors, (req, res) => res.json({ secrets: SECRETS, snapId: null, walletOrigin: WALLET_ORIGIN, rpcUrl: RPC_URL, chainId }));
 const HEALTH_ALLOW = originList(RP_ORIGINS, CIA_URL);
 app.get('/mode3/health', async (req, res) => {

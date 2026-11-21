@@ -6,8 +6,11 @@
 // 노드를 직접 부른다(이 서버가 "누가 어느 서비스의 계정을 읽는가" 를 보지 않게 — 스펙 §5).
 //   MODE3_ZKWRAPPER_PORT(기본 5100) · CIA_PUBLIC_URL(사람이 여는 주소 — https 이름 또는 localhost) · MODE3_OIDC_CLIENT_ID(래퍼 전용 Google 클라이언트 ID) ·
 //   MODE3_OIDC_REDIRECT_URI(Google 에서 돌아올 주소 — 이 서버의 /google-relay) · MODE3_RP_GOOGLE_CLIENT_ID_DENY(서비스들의 Google 클라이언트 ID — 같으면 기동 거부)
-process.env.CIA_WRAPPER = '1';
-process.env.CIA_USER_APP = '1';
-if (!process.env.CIA_PORT) process.env.CIA_PORT = process.env.MODE3_ZKWRAPPER_PORT || '5100';
-if (!process.env.MODE3_WALLET_KIND) process.env.MODE3_WALLET_KIND = 'zkwrapper';   // 화면 문구 — 지갑은 브라우저의 zk 클라이언트이고, 별도 IdP 가 없다(/mode3/health 의 walletKind)
+//   CIA_STATE_FILE·CIA_KEYS_FILE(기본 .local/zkwrapper/ — 저장소 루트의 한 머신 데모 zkIdP 파일과 겹치지 않게, 최종 검토 M-5)
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { zkwrapperEnv } from './lib/mode3_zkwrapper_env.js';
+Object.assign(process.env, zkwrapperEnv(process.env, path.dirname(fileURLToPath(import.meta.url))));
+for (const f of [process.env.CIA_STATE_FILE, process.env.CIA_KEYS_FILE]) fs.mkdirSync(path.dirname(f), { recursive: true, mode: 0o700 });
 await import('./cia.js');

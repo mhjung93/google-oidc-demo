@@ -600,6 +600,28 @@ try {
     assert.equal(await lastOf(), null, '연결을 풀면 최신 auid_s 도 지운다');
   });
 
+  // 2026-11-21(사용자 결정 — 재검토의 M-7 (가)): 세션 가명(auid_s)은 모든 모드에서 전체에 한 번만. 기존 모드의 π_IdP 는 auid_s 를 auid 에 묶지만, 연결을 푼 계정의
+  // 스냅을 다른 계정이 등록하면 같은 auid 가 두 계정에 있게 된다 — 그 사용자가 r_rp 를 일부러 같게 내면 같은 auid_s 가 두 계정의 발급 기록에 남아 개봉이 답을 못 한다.
+  await t('auid_s 전역 유일(모든 모드): 연결을 푼 계정의 스냅을 다른 계정이 등록해 같은 (arid, r_rp) 로 발급하면 409 auid_s_taken — 두 계정의 기록에 함께 남지 않는다', async () => {
+    const seed = Buffer.alloc(32, 31), r_rp = 777n;
+    const jarA = makeJar(cia.base), jarB = makeJar(cia.base);
+    const sa = await jarA('/cia/signup', { method: 'POST', body: JSON.stringify({ id: 'dup-s-a', pwd: 'password-da' }) });
+    await jarA('/cia/user/login', { method: 'POST', body: JSON.stringify({ id: 'dup-s-a', pwd: 'password-da' }) });
+    const sb = await jarB('/cia/signup', { method: 'POST', body: JSON.stringify({ id: 'dup-s-b', pwd: 'password-db' }) });
+    await jarB('/cia/user/login', { method: 'POST', body: JSON.stringify({ id: 'dup-s-b', pwd: 'password-db' }) });
+    const regA = await createRegistration(BigInt(sa.body.uid), seed), regB = await createRegistration(BigInt(sb.body.uid), seed);
+    const ra = await cia.post('/cia/register', { uid: sa.body.uid, pwd: 'password-da', ...(await regBody(regA, sa.body.uid)) }); assert.equal(ra.status, 201, j(ra.body));
+    const ia = await issueV11(cia, userOf({ ...regA, slot: ra.body.slot }, sa.body.uid, TESTUSER_ATTRS), { arid, provider, r_rp });
+    assert.equal(ia.r.status, 200, j(ia.r.body));
+    assert.equal((await jarA('/cia/user/unlink_wallet', { method: 'POST', body: JSON.stringify({ pwd: 'password-da' }) })).status, 200);
+    const rb = await cia.post('/cia/register', { uid: sb.body.uid, pwd: 'password-db', ...(await regBody(regB, sb.body.uid)) }); assert.equal(rb.status, 201, j(rb.body));
+    const ib = await issueV11(cia, userOf({ ...regB, slot: rb.body.slot }, sb.body.uid, TESTUSER_ATTRS), { arid, provider, r_rp });
+    assert.equal(ib.req.auid_s, ia.req.auid_s, '같은 스냅·같은 arid·같은 r_rp → 같은 auid_s');
+    assert.equal(ib.r.status, 409, j(ib.r.body) + ' — 다른 계정의 기록에 있는 auid_s 로 발급하면 개봉이 답을 못 한다'); assert.equal(ib.r.body.reason, 'auid_s_taken');
+    const fresh = await issueV11(cia, userOf({ ...regB, slot: rb.body.slot }, sb.body.uid, TESTUSER_ATTRS), { arid, provider });
+    assert.equal(fresh.r.status, 200, j(fresh.r.body) + ' — 무작위 r_rp(정직한 지갑)면 된다');
+  });
+
   await t('계정 삭제(2026-11-06, 관리자): 가입만 한 계정은 레코드·아이디 색인이 지워져 같은 아이디로 재가입; 등록된 계정은 먼저 폐기(슬롯 0)되고 지워진다; 모르는 uid 404; 시크릿 없이 401', async () => {
     const withJar = makeJar(cia.base);
     const su = await withJar('/cia/signup', { method: 'POST', body: JSON.stringify({ id: 'del-1', pwd: 'password-d1' }) });
