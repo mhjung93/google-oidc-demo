@@ -1601,7 +1601,7 @@ try {
     assert.notEqual((await p.textContent('#revokeCard h3')).trim(), (await p.textContent('.sub-nav a[aria-current="page"]')).trim(), '카드 제목이 하위 메뉴 이름과 겹치지 않는다');
     const fields = await p.$$eval('#revokeCard label.field', (ls) => ls.map((l) => { const sp = l.querySelector('span').getBoundingClientRect(), i = l.querySelector('input').getBoundingClientRect(); return { id: l.querySelector('input').id, block: l.closest('.sub-block')?.id ?? null, below: i.top >= sp.bottom - 1 }; }));
     assert.deepEqual(fields, [{ id: 'unlinkPwd', block: 'unlinkBlock', below: true }, { id: 'revokePwd', block: 'revokeBlock', below: true }], '비밀번호 칸은 묶음마다 하나, 라벨 아래');
-    assert.ok((await p.textContent('#unlinkBlock')).includes('계정은 남기고'), '연결 해제가 무엇인지 적혀 있다'); assert.ok((await p.textContent('#revokeBlock')).includes('같은 스냅으로 새 계정'), '폐기 뒤 스냅이 어떻게 되는지 적혀 있다');
+    assert.ok((await p.textContent('#unlinkBlock')).includes('계정은 남기고'), '연결 해제가 무엇인지 적혀 있다'); { const rb = await p.textContent('#revokeBlock'); assert.ok(rb.includes('폐기된 계정도 스냅을 쥐') && rb.includes('관리자'), '폐기 뒤 스냅이 어떻게 되는지 적혀 있다(2026-11-21 R11: 폐기된 계정도 스냅을 쥔다 — 관리자가 지워야 풀린다): ' + rb.slice(0, 200)); }
     const acctA = async () => (await cia.adminGet('/cia/accounts')).body.accounts.find((x) => x.id === 'demo-user');
     // 폐기 칸에 넣은 비밀번호로는 연결 해제가 되지 않는다(칸을 같이 쓰지 않는다). 2026-11-14: 실패는 누른 묶음 안에 뜬다 — 카드 아래(폐기 묶음 밑)가 아니다
     await p.fill('#revokePwd', DEMO_PWD); p.once('dialog', (d) => d.accept()); await p.click('#unlinkBtn');
