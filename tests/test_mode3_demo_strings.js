@@ -359,4 +359,24 @@ t('passkey-web 표기: 따로 쓴 문구(ko_pk·en_pk)는 짝으로 있고 스�
   }
 });
 
+// 2026-11-21(passkey-web 셀프 피드백): R11 을 고치며 ko 만 바꿔 passkey-web(ko_pk)·래퍼 화면에는 옛 안내("새 계정을 만들면 같은 패스키로 다시 등록")가 남았다.
+// 화면이 실제로 내는 문장(reasonText)을 모드별로 본다.
+t('R11 passkey-web·zkWrapper: account_disabled·auid_taken 이 "폐기된 계정도 패스키를 쥔다 — 관리자 삭제" 를 말하고, 그 모드에 없는 절차를 안내하지 않는다', () => {
+  const render = (k, noSnap, wrapper, l) => { const p = [S.noSnap, S.wrapper]; S.noSnap = noSnap; S.wrapper = wrapper; try { return S.reasonText(S.reasons[k], l); } finally { [S.noSnap, S.wrapper] = p; } };
+  for (const wr of [false, true]) {
+    const tag = wr ? 'zkWrapper' : 'passkey-web';
+    const dk = render('account_disabled', true, wr, 'ko'), de = render('account_disabled', true, wr, 'en');
+    assert.match(dk.action, /폐기된 계정도/, `${tag} ko`); assert.match(dk.action, /관리자가 이 계정을 삭제/, `${tag} ko`);
+    assert.match(de.action, /still holds/i, `${tag} en`); assert.match(de.action, /delete this account/i, `${tag} en`);
+    const tk = render('auid_taken', true, wr, 'ko'), te = render('auid_taken', true, wr, 'en');
+    for (const s of [dk, tk]) assert.equal(/클라이언트\([^)]*\)[은을이과]|salt 의 zk 클라이언트/.test(JSON.stringify(s)), false, `${tag}: 조사·대상이 틀린 자동 치환 문장`);
+    assert.match(tk.title, /패스키/, `${tag}: passkey-web 의 salt 는 패스키에서 나온다`); assert.match(te.title, /passkey/i, tag);
+    assert.match(tk.cause, /폐기된 계정도/, tag); assert.match(tk.action, /삭제/, tag); assert.match(te.action, /delete/i, tag);
+    if (wr) {
+      for (const s of [dk, de, tk, te]) assert.equal(/프로필|profile|속성 도구|attribute tool|새 zkWrapper 계정|new zkWrapper account|연결을 해제|unlink/i.test(JSON.stringify(s)), false, 'zkWrapper 에는 계정 만들기·프로필·연결 해제가 없다(로그인이 곧 가입)');
+      assert.match(tk.action, /Google 계정/); assert.match(te.action, /Google account/);
+    }
+  }
+});
+
 if (fails) { console.log(`\n${fails} FAIL`); process.exit(1); } else console.log('\nall ok');
