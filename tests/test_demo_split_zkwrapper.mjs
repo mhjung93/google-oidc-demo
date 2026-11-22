@@ -142,7 +142,30 @@ t('zkwrapper 모드의 Google 안내 — IdP 를 말하지 않고, 공유 ID 경
     assert.equal(/test-shared-id/.test(zw), false, '값은 출력하지 않는다');
     assert.equal(/\.env 의 GOOGLE_CLIENT_ID/.test(run({ ZW: '1', MODE3_OIDC_CLIENT_ID: 'shell-id' })), false, '셸이 ID 를 주면 .env 를 쓰지 않는다');
     const plain = run({ ZW: '0' });
-    assert.match(plain, /OIDC\(Google\): on/); assert.match(plain, /IdP 에 넘긴다/); assert.match(plain, /zkIdP 패스키 가입\(Google 이메일\): on/);
+    assert.match(plain, /OIDC\(Google\): on/); assert.match(plain, /IdP 에 넘긴다/); assert.match(plain, /zkIdP 패스키 가입\(Google 이메일\): off/, '공유 ID 하나뿐이면 서비스와 같은 ID 라 패스키 가입은 꺼진다(C2, 2026-11-22)');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+// C2(2026-11-22): 보통 passkey-web 에서도 zkIdP 가 서비스와 같은 Google ID 로 패스키 가입을 열면 악의적 서비스가 피해자 Google 계정의 zkIdP 계정을 선점한다.
+// 스크립트는 서비스가 받는 ID 목록을 zkIdP 에 넘기고(MODE3_RP_GOOGLE_CLIENT_ID_DENY — cia.js 가 그 ID 면 가입을 닫는다), 안내 줄도 그 판단과 같게 찍는다.
+t('보통 passkey-web: 서비스 ID 목록을 zkIdP 에 넘기고, 같은 ID 면 패스키 가입 off 와 이유를 찍는다 — 값은 출력하지 않는다', () => {
+  const a = idx(/^oidc_client_id\(\) \{/), b = idx(/zkIdP 패스키 가입\(Google 이메일\)/);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zw-oidc-'));
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GOOGLE_CLIENT_ID=test-shared-id\n');
+    const body = lines.slice(a, b + 1).join('\n');
+    const run = (env) => { const r = spawnSync('bash', ['-c', `${body}\necho "@@DENY=$IDP_DENY_LINE"`], { cwd: dir, encoding: 'utf8', env: { PATH: process.env.PATH, USER_PORT: '5100', WALLET_MODE: 'passkey-web', ZW: '0', ...env } }).stdout; const [out, deny] = r.split('@@DENY='); return { out, deny: deny.trim() }; };
+    let r = run({});
+    assert.match(r.out, /zkIdP 패스키 가입\(Google 이메일\): off \(서비스와 같은 Google 클라이언트 ID/, r.out);
+    assert.equal(r.deny, 'MODE3_RP_GOOGLE_CLIENT_ID_DENY=test-shared-id');
+    assert.equal(/test-shared-id/.test(r.out), false, '값은 출력하지 않는다');
+    r = run({ RP1_GOOGLE_CLIENT_ID: 'rp1-id', RP2_GOOGLE_CLIENT_ID: 'rp2-id' });
+    assert.match(r.out, /zkIdP 패스키 가입\(Google 이메일\): on/, '두 서비스가 전용 ID 면 zkIdP 의 공유 ID 는 서비스와 겹치지 않는다');
+    assert.equal(r.deny, 'MODE3_RP_GOOGLE_CLIENT_ID_DENY=rp1-id,rp2-id');
+    r = run({ RP2_GOOGLE_CLIENT_ID: 'rp2-id' });
+    assert.match(r.out, /: off \(서비스와 같은/, 'zkONE 이 zkIdP 와 같은 공유 ID 를 받는다');
+    assert.equal(r.deny, 'MODE3_RP_GOOGLE_CLIENT_ID_DENY=rp2-id,test-shared-id');
+    r = run({ ZW: '1' });
+    assert.equal(r.deny, '', 'zkwrapper 에는 IdP 가 없다 — 이 줄을 만들지 않는다');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

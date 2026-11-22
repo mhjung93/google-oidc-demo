@@ -324,13 +324,24 @@ echo "  RP 소셜: Google $([ -n "$RP_GOOGLE_LINE${RP1_GOOGLE_CLIENT_ID:-}${RP2_
 # 2026-11-20(스펙 passkey-google-signup G8·G9): zkIdP 의 "패스키로 로그인" 이 미등록 브라우저에서 Google 로 확인한 이메일로 계정을 만든다 — 지갑 창이 같은 중계 주소로 Google 에 다녀온다.
 # zkIdP 의 Google 클라이언트(OIDC_LINE)에도 Google 콘솔의 "승인된 리디렉션 URI" 로 이 주소가 있어야 한다. passkey-web 이고 Google 이 켜져 있을 때만 넘긴다.
 IDP_SIGNUP_LINE=""; [ -n "$GOOGLE_RELAY" ] && [ -n "$OIDC_LINE" ] && IDP_SIGNUP_LINE="MODE3_OIDC_REDIRECT_URI=$GOOGLE_RELAY"
-[ "$ZW" = 1 ] || echo "  zkIdP 패스키 가입(Google 이메일): $([ -n "$IDP_SIGNUP_LINE" ] && echo on || echo off)"
+# C2(2026-11-22, zkwrapper 스펙 §10 과 같은 약점): zkIdP 가 서비스와 같은 Google ID 로 패스키 가입을 열면, 악의적 서비스가 자기가 고른 nonce 로 피해자의 토큰을 받아
+# 피해자 Google 계정의 zkIdP 계정을 먼저 만들 수 있다. 서비스가 받는 ID 목록을 zkIdP 에 넘긴다(cia.js 가 그 ID 면 가입을 닫는다). 값은 출력하지 않는다.
+IDP_DENY_LINE=""; _sig_off=""
+if [ "$ZW" != 1 ] && [ -n "$IDP_SIGNUP_LINE" ]; then
+  _rp_shared="${RP_GOOGLE_LINE#MODE3_RP_GOOGLE_CLIENT_ID=}"
+  _deny="$(printf '%s\n' "${RP1_GOOGLE_CLIENT_ID:-$_rp_shared}" "${RP2_GOOGLE_CLIENT_ID:-$_rp_shared}" | awk 'NF' | sort -u | paste -sd, -)"
+  [ -n "$_deny" ] && IDP_DENY_LINE="MODE3_RP_GOOGLE_CLIENT_ID_DENY=$_deny"
+  printf '%s\n' "${_deny//,/$'\n'}" | grep -qxF -- "${OIDC_LINE#MODE3_OIDC_CLIENT_ID=}" && _sig_off=" (서비스와 같은 Google 클라이언트 ID 라 닫는다 — 패스키 가입에는 zkIdP 전용 ID 가 필요하다: MODE3_OIDC_CLIENT_ID 와 RP1_GOOGLE_CLIENT_ID·RP2_GOOGLE_CLIENT_ID 를 서로 다르게. 아이디·비밀번호 가입은 그대로)"
+  unset _rp_shared _deny
+fi
+[ "$ZW" = 1 ] || echo "  zkIdP 패스키 가입(Google 이메일): $([ -n "$IDP_SIGNUP_LINE" ] && [ -z "$_sig_off" ] && echo on || echo "off$_sig_off")"
+unset _sig_off
 if [ -n "$GOOGLE_RELAY" ]; then
   _g1="${RP1_GOOGLE_CLIENT_ID:-${RP_GOOGLE_LINE#MODE3_RP_GOOGLE_CLIENT_ID=}}"; _g2="${RP2_GOOGLE_CLIENT_ID:-${RP_GOOGLE_LINE#MODE3_RP_GOOGLE_CLIENT_ID=}}"
   if [ -n "$_g1" ] && [ "$_g1" = "$_g2" ]; then echo "  경고: zkONE·zkTWO 가 같은 Google 클라이언트 ID 를 쓴다 — 두 서비스의 ID 토큰 aud(= rid)가 같게 보인다. 서비스마다 다른 ID 를 주려면 RP1_GOOGLE_CLIENT_ID·RP2_GOOGLE_CLIENT_ID"; fi
   unset _g1 _g2
 fi
-[ "$ZW" = 1 ] || printf '%s\n' "$COMMON" "CIA_PORT=$IDP_PORT" "CIA_RPC_URL=http://$HOST:$REV_PORT" "CIA_CHAIN_RPCS=$APP_CHAIN=http://$HOST:$APP_PORT" "CIA_ADMIN_SECRET=$ADMIN" "CIA_ADMIN_OPEN=${ADMIN_OPEN:-0}" "CIA_PUBLIC_URL=$SCHEME://$IDP:$IDP_PORT" "CIA_ISSUE_AUTH=${ISSUE_AUTH:-$([ "$AGENT_MODE" = 1 ] && echo code || echo key)}" "CIA_REVOKE_PUBLISH_AFTER_BLOCKS=${REVOKE_PUBLISH_AFTER:-3}" ${OIDC_LINE:+"$OIDC_LINE"} ${IDP_SIGNUP_LINE:+"$IDP_SIGNUP_LINE"} ${TLS_IDP:+"$TLS_IDP"} | put_env "$IDP"   # zkwrapper 에는 IdP VM 이 없다
+[ "$ZW" = 1 ] || printf '%s\n' "$COMMON" "CIA_PORT=$IDP_PORT" "CIA_RPC_URL=http://$HOST:$REV_PORT" "CIA_CHAIN_RPCS=$APP_CHAIN=http://$HOST:$APP_PORT" "CIA_ADMIN_SECRET=$ADMIN" "CIA_ADMIN_OPEN=${ADMIN_OPEN:-0}" "CIA_PUBLIC_URL=$SCHEME://$IDP:$IDP_PORT" "CIA_ISSUE_AUTH=${ISSUE_AUTH:-$([ "$AGENT_MODE" = 1 ] && echo code || echo key)}" "CIA_REVOKE_PUBLISH_AFTER_BLOCKS=${REVOKE_PUBLISH_AFTER:-3}" ${OIDC_LINE:+"$OIDC_LINE"} ${IDP_SIGNUP_LINE:+"$IDP_SIGNUP_LINE"} ${IDP_DENY_LINE:+"$IDP_DENY_LINE"} ${TLS_IDP:+"$TLS_IDP"} | put_env "$IDP"   # zkwrapper 에는 IdP VM 이 없다
 { printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP1_PORT" "MODE3_RP_NAME=zkONE" "MODE3_RP_PUBLIC_ORIGIN=$RP1_UI" "MODE3_CIA_URL=$CIA_SRV" \
   "CIA_RPC_URL=http://$HOST:$APP_PORT" "MODE3_RELAYER_INDEX=0" ${TLS_RP1:+"$TLS_RP1"}; rp_google_lines "${RP1_GOOGLE_CLIENT_ID:-}"; rp_naver_lines "$RP1_UI"; } | put_env "$RP1"
 { printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP2_PORT" "MODE3_RP_NAME=zkTWO" "MODE3_RP_PUBLIC_ORIGIN=$RP2_UI" "MODE3_CIA_URL=$CIA_SRV" \

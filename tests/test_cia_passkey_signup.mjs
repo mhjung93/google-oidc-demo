@@ -8,7 +8,7 @@ import { randomScalar, registerCtx, tagOf } from '../lib/mode3_credential.js';
 import { regBody } from './helpers/mode3_flow.mjs';
 
 const RELAY = 'https://127.0.0.1:5100/google-relay';
-const cia = await startIsolatedCia({ oidc: true, env: { MODE3_OIDC_REDIRECT_URI: RELAY } });
+const cia = await startIsolatedCia({ oidc: true, env: { MODE3_OIDC_REDIRECT_URI: RELAY, MODE3_RP_GOOGLE_CLIENT_ID_DENY: 'rp-only-client-a, rp-only-client-b' } });   // 서비스 ID 목록에 zkIdP 의 ID 가 없으면 가입은 열린다
 const stub = cia.oidc;
 let fails = 0; async function t(n, f) { try { await f(); console.log('ok   -', n); } catch (e) { fails++; console.log('FAIL -', n, '\n      ', e.stack ?? e.message); } }
 const j = (o) => JSON.stringify(o);
@@ -96,8 +96,12 @@ try {
     r = await cia.post('/cia/register', { ...x.body, uid: 'abc' }); assert.equal(r.status, 400, j(r.body));
   });
 } finally { await cia.stop(); }
-// 꺼진 구성: 돌아올 주소가 없거나 발급 정책이 code 면 이 길은 없다
-for (const [name, opts] of [['돌아올 주소 없음', { oidc: true }], ['발급 정책 code', { oidc: true, env: { MODE3_OIDC_REDIRECT_URI: RELAY, CIA_ISSUE_AUTH: 'code' } }]]) {
+// 꺼진 구성: 돌아올 주소가 없거나 발급 정책이 code 면 이 길은 없다.
+// C2(2026-11-22): zkIdP 의 Google 클라이언트 ID 가 서비스의 ID(MODE3_RP_GOOGLE_CLIENT_ID_DENY)나 Mode 1 공유 ID(GOOGLE_CLIENT_ID)와 같아도 닫는다 —
+// 같은 aud 면 악의적 서비스가 자기가 고른 nonce(=공격자 패스키의 tag)로 피해자의 토큰을 받아 피해자 Google 계정의 zkIdP 계정을 선점한다. 스텁의 ID 는 mode3-test-client.
+for (const [name, opts] of [['돌아올 주소 없음', { oidc: true }], ['발급 정책 code', { oidc: true, env: { MODE3_OIDC_REDIRECT_URI: RELAY, CIA_ISSUE_AUTH: 'code' } }],
+  ['서비스와 같은 클라이언트 ID', { oidc: true, env: { MODE3_OIDC_REDIRECT_URI: RELAY, MODE3_RP_GOOGLE_CLIENT_ID_DENY: 'rp-only-client-a, mode3-test-client' } }],
+  ['Mode 1 공유 ID 와 같은 클라이언트 ID', { oidc: true, env: { MODE3_OIDC_REDIRECT_URI: RELAY, GOOGLE_CLIENT_ID: 'mode3-test-client' } }]]) {
   const off = await startIsolatedCia(opts);
   try {
     await t(`꺼진 구성(${name}): public_keys 에 signup 이 없고 예약·가입은 403 signup_disabled`, async () => {

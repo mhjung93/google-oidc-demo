@@ -181,9 +181,11 @@ const WRAPPER = process.env.CIA_WRAPPER === '1';
 const WRAPPER_OIDC = WRAPPER ? { authorizeUrl: envStr('MODE3_OIDC_AUTHORIZE_URL', 'https://accounts.google.com/o/oauth2/v2/auth'), redirectUri: envStr('MODE3_OIDC_REDIRECT_URI', null) } : null;
 // C_u 를 바꾸는 발급(속성 변경)의 최소 간격 — 토큰 하나로 등록부를 계속 갈아 끼워 다른 사용자의 로그인을 흔들지 못하게(스펙 §10 I1). 같은 C_u 의 재발급에는 걸리지 않는다.
 const CRED_CHANGE_MIN_MS = (() => { const n = Number(process.env.CIA_CRED_CHANGE_MIN_MS); return Number.isFinite(n) && n >= 0 ? n : 600_000; })();
+// 서비스들이 쓰는 Google 클라이언트 ID 목록(쉼표) — 래퍼와 패스키 가입은 이 ID 들과 같은 ID 로는 열지 않는다(스펙 zkwrapper §10 C2).
+const RP_GOOGLE_DENY = String(process.env.MODE3_RP_GOOGLE_CLIENT_ID_DENY ?? '').split(',').map((x) => x.trim()).filter(Boolean);
 if (WRAPPER) {
   // 래퍼의 Google 클라이언트 ID 는 전용이어야 한다(스펙 §10 C2): 서비스가 같은 ID 로 Google 로그인을 하면, 그 서비스가 자기 요청 키의 nonce 로 사용자의 토큰을 받아 낼 수 있다.
-  const deny = String(process.env.MODE3_RP_GOOGLE_CLIENT_ID_DENY ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  const deny = RP_GOOGLE_DENY;
   // 최종 검토 I-2(a): MODE3_OIDC_CLIENT_ID 를 직접 줘야 한다 — 없을 때 떨어지는 GOOGLE_CLIENT_ID(Mode 1 공유 ID)로는 뜨지 않는다.
   const explicitId = envStr('MODE3_OIDC_CLIENT_ID', null), sharedId = envStr('GOOGLE_CLIENT_ID', null);
   const why = !OIDC.enabled || explicitId === null ? 'MODE3_OIDC_CLIENT_ID 가 없다 — 래퍼 방식은 래퍼 전용 Google 클라이언트 ID 를 직접 줘야 한다(GOOGLE_CLIENT_ID 로 떨어지지 않는다)'
@@ -211,8 +213,14 @@ if (USER_APP) {
 }
 // 패스키 가입(스펙 2026-11-20 passkey-google-signup G9): zkIdP 페이지의 "패스키로 로그인" 이 미등록 브라우저에서 계정을 스스로 만드는 길. 발급 정책이 key 이고
 // Google(OIDC) 클라이언트 ID 와 돌아올 주소(MODE3_OIDC_REDIRECT_URI — 지갑 정적 서버의 /google-relay)가 모두 있을 때만 연다. 지갑 창이 이 주소들로 Google 에 다녀온다.
-const OIDC_SIGNUP = !WRAPPER && ISSUE_AUTH === 'key' && OIDC.enabled && envStr('MODE3_OIDC_REDIRECT_URI', null) !== null
+// C2(2026-11-22, 래퍼와 같은 약점): 그 ID 가 서비스의 ID 나 Mode 1 공유 ID(GOOGLE_CLIENT_ID)와 같으면 닫는다 — 같은 aud 면 악의적 서비스가 자기가 고른 nonce
+// (공격자 패스키의 tag)로 피해자의 토큰을 받아, 피해자 Google 계정의 zkIdP 계정을 공격자 패스키로 먼저 만들 수 있다. 아이디·비밀번호 가입은 그대로다.
+const SIGNUP_SHARED_ID = !OIDC.enabled ? null
+  : RP_GOOGLE_DENY.includes(OIDC.clientId) ? '서비스와 같은 Google 클라이언트 ID(MODE3_RP_GOOGLE_CLIENT_ID_DENY 에 든 값)'
+  : envStr('GOOGLE_CLIENT_ID', null) === OIDC.clientId ? 'Mode 1 공유 클라이언트 ID(GOOGLE_CLIENT_ID)와 같은 ID' : null;
+const OIDC_SIGNUP = !WRAPPER && ISSUE_AUTH === 'key' && OIDC.enabled && envStr('MODE3_OIDC_REDIRECT_URI', null) !== null && SIGNUP_SHARED_ID === null
   ? { authorizeUrl: envStr('MODE3_OIDC_AUTHORIZE_URL', 'https://accounts.google.com/o/oauth2/v2/auth'), redirectUri: envStr('MODE3_OIDC_REDIRECT_URI', null) } : null;
+if (!WRAPPER && ISSUE_AUTH === 'key' && envStr('MODE3_OIDC_REDIRECT_URI', null) !== null && SIGNUP_SHARED_ID !== null) console.warn(`[cia] 패스키 가입 꺼짐: ${SIGNUP_SHARED_ID}를 쓴다 — 패스키 가입에는 zkIdP 전용 클라이언트 ID 가 필요하다(아이디·비밀번호 가입은 그대로)`);
 if (OIDC_SIGNUP) console.log(`[cia] 패스키 가입 켜짐: Google 로 확인한 이메일이 아이디가 된다(돌아올 주소 ${OIDC_SIGNUP.redirectUri})`);
 // 수정 라운드 1: 0 이하(파싱 실패 포함)는 "코드가 즉시 만료"라는 조용한 오설정이 되므로 경고 뒤 기본값(5분)으로 떨어진다.
 const CODE_TTL_MS = (() => {
