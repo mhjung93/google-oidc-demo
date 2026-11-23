@@ -523,7 +523,9 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       const dl = document.createElement('dl');
       dl.className = 'kv';
       kvRow(dl, tt('wallet_session_service') || 'RP', rpLabel(c));   // 2026-10-16: zkONE(8674…) 꼴
-      kvRow(dl, termEl('PPID'), shortCode(c.PPID, 12));
+      // 2026-11-23(사용자 요청): PPID 숫자와 스마트 계정 주소를 따로 보인다 — 용어 사전의 'PPID' 이름표는 "PPID 스마트 계정 주소" 라 숫자에 붙이면 서비스 화면의 0x 주소와 달라 보였다.
+      kvRow(dl, tt('wallet_session_ppid') || 'PPID', shortCode(c.PPID, 12));
+      if (c.account) { const ac = shortCode(c.account); ac.textContent = `${c.account.slice(0, 6)}…${c.account.slice(-4)}`; kvRow(dl, termEl('PPID'), ac); }
       kvRow(dl, tt('wallet_session_expiry') || '만료', tt('wallet_session_expires', { h: c.max_height }) || String(c.max_height));
       const agent = document.createElement('span');
       agent.className = `badge ${c.allowAgent === '1' ? 'ok' : 'muted'}`;

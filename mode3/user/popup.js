@@ -496,15 +496,16 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
         row('wallet_auth_tx_to', req.to); row('wallet_auth_tx_value', `${value} wei`);
         if (config.popupConsent !== false) step('보낼 트랜잭션을 확인하고 승인하세요.');
         if (!(await waitDecision())) { step('거절'); return reply({ ok: false, reason: 'user_denied' }); }
-        step('증명·세션키 서명 중… (수 초 걸린다)');
-        const p = await withUnlock(() => core.prepareTx({ r_s: req.r_s, to: req.to, value, data: req.data ?? '0x' }));
+        const replay = req.replay === true;   // 시연(2026-11-23): 옛 증명으로 보내기 — 코어가 새 증명 대신 이 세션의 옛 증명을 지금의 root·nonce 에 붙인다
+        step(replay ? '옛 증명·세션키 서명 중…' : '증명·세션키 서명 중… (수 초 걸린다)');
+        const p = await withUnlock(() => core.prepareTx({ r_s: req.r_s, to: req.to, value, data: req.data ?? '0x', ...(replay ? { replay: true } : {}) }));
         if (p.cancelled) { step('잠금 해제 취소'); return reply({ ok: false, reason: 'user_denied' }); }
         if (p.status !== 200) { step('준비 실패'); log(errText(p.status, p.body)); return reply(fail(p, 'tx_prepare_failed')); }
         const relayUrl = `${evOrigin}${config.relayPath ?? '/api/mode3/relay'}`;
         step('RP 릴레이로 보내는 중…');
         let relay;
         try {
-          const r = await fetch(relayUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: p.body.walletAddr, data: p.body.calldata }) });
+          const r = await fetch(relayUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: p.body.walletAddr, data: p.body.calldata, ...(p.body.demo === 'replay_old_proof' ? { demo: 'replay_old_proof' } : {}) }) });
           relay = await r.json().catch(() => ({ ok: false, reason: 'internal', detail: `HTTP ${r.status}` }));
         } catch (e) { step('릴레이 호출 실패'); return reply({ ok: false, reason: 'relay_unavailable', detail: e.message }); }
         if (!relay.ok) { step('릴레이 거절'); log(`${relay.reason ?? ''} ${relay.detail ?? ''}`); return reply({ ok: false, reason: relay.reason ?? 'internal', detail: relay.detail ?? null }); }
@@ -512,10 +513,15 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
         let rec = { status: 202, body: { pending: true, txHash: relay.txHash } };
         for (let i = 0; i < 30 && rec.status === 202; i++) { rec = await core.recordTx({ r_s: req.r_s, txHash: relay.txHash }); if (rec.status === 202) await new Promise((res) => setTimeout(res, 700)); }
         if (rec.status !== 200) { step('영수증 기록 실패'); log(errText(rec.status, rec.body)); return reply({ ok: false, reason: rec.body?.reason ?? (rec.status === 202 ? 'tx_pending' : 'tx_record_failed'), detail: rec.body, txHash: relay.txHash }); }
+        const { disclosure, onchainDisclosure, ...pub } = rec.body;
+        // 블록에 실렸지만 되돌려진 거래(status 0, 2026-11-23)는 실패다 — 그전에는 Executed 가 없어 ok 가 null 이라 성공으로 넘어갔다(가스 추정이 막아 보통은 오지 않았다).
+        if (rec.body.status === 0) {
+          step('거래가 블록에서 되돌려졌다 — 창을 닫는다.');
+          return reply({ ok: false, reason: 'tx_reverted', detail: relay.expectRevert ?? null, txHash: relay.txHash, wallet: pub.wallet ?? null, blockNumber: rec.body.blockNumber ?? null, ...(p.body.race ? { race: p.body.race } : {}) });
+        }
         await postPresence(core);
         step('전송 완료 — 창을 닫는다.');
         // RP 에는 영수증 사실만(지갑·nonce·gas·ok·txHash). 선택 공개는 이 요청에 없다(사용자 페이지 쪽).
-        const { disclosure, onchainDisclosure, ...pub } = rec.body;
         return reply({ ok: rec.body.ok !== false, ...pub, txHash: relay.txHash, deployTxHash: relay.deployTxHash ?? null });
       }
 

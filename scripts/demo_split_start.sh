@@ -9,6 +9,7 @@
 #        HEIGHT_GRID=100 bash scripts/demo_split_start.sh  # 만료(max_height) 올림 단위(기본 5 — 데모용. 코드 기본은 100, 2026-10-21)
 #        TTL_BLOCKS=300 bash scripts/demo_split_start.sh  # (snap·passkey-web 모드) 세션 수명 블록 수(기본 5 — 2026-11-11 사용자 요청: 자연 만료를 시연한다. 코드 기본은 300)
 #        REVOKE_PUBLISH_AFTER=0 bash scripts/demo_split_start.sh  # (2026-11-12 시연 Race (2)) IdP 가 스냅의 세션 폐기를 받은 뒤 이 블록 수가 지나면 스스로 게시·중계(기본 3, 0 = 끔 — 관리자 "게시"·하트비트만)
+#        RELAY_DEMO_REVERT=0 bash scripts/demo_split_start.sh  # (2026-11-23) 서비스 출금의 "옛 증명으로 보내기(시연)" 를 끈다(기본 켜짐 — 릴레이가 되돌려질 거래도 보낸다)
 #        DEMO_RACE=0 bash scripts/demo_split_start.sh  # (snap 모드) 스냅 에이전트의 블록 진행 시연(/wallet/demo/mine, 기본 켜짐 — RP 출금의 "보내기 전에 멈춤")
 #        WALLET_MODE=snap bash scripts/demo_split_start.sh  # Snap 모드(2026-10-22): 이 VM 의 지갑 자리에 에이전트(:5100, MODE3_WALLET_SECRETS=snap)+Snap 서버(:8082). 포트 5100 은 Snap 이 허용하는
 #                                                          # 지갑 오리진(snap-mode3/src/index.js)이라 바꿀 수 없다 — 한 머신 데모(:5100)와 동시에 못 띄운다. scripts/demo_split_snap_reset.sh 가 이 값을 넣어 부른다(web 모드 리셋은 scripts/demo_split_reset.sh).
@@ -307,7 +308,8 @@ MODE3_RP_ZKOIDC=$PLAIN_OIDC
 MODE3_VERIFIER_ADDRESS=
 MODE3_RP_FACTORY_ADDRESS=
 MODE3_BIND_HOST=0.0.0.0
-MODE3_CIA_BROWSER_URL=$IDP_UI"
+MODE3_CIA_BROWSER_URL=$IDP_UI
+MODE3_RELAY_DEMO_REVERT=${RELAY_DEMO_REVERT:-1}"
 put_env() { on "$1" "umask 077 && cat > ~/zkd-demo/role.env && chmod 600 ~/zkd-demo/role.env"; }
 # OIDC 래퍼 클라이언트 ID(2026-10-26 Snap OIDC 래퍼 §3) — 값은 어디에도 출력하지 않는다(진행 줄은 on/off 만).
 oidc_client_id() { [ -n "${MODE3_OIDC_CLIENT_ID:-}" ] && { printf '%s' "$MODE3_OIDC_CLIENT_ID"; return; }; [ -f "$1" ] && sed -n 's/^GOOGLE_CLIENT_ID=//p' "$1" | head -n1 | tr -d '\r"'"'"; }

@@ -1003,7 +1003,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     /** 에이전트 buildExecute + POST /wallet/tx/prepare 의 등가: 검증 → 동기화 → π(캐시) → 지갑 주소·nonce → 세션키 서명 → execute calldata.
      *  보내는 것은 RP 의 릴레이(계획 R6)다 — 에이전트의 /wallet/tx(provider.getSigner 경로)는 없다. */
     async prepareTx(body) {
-      const { r_s, to, value = '0', data = '0x', disclose, set = null } = body ?? {};
+      const { r_s, to, value = '0', data = '0x', disclose, set = null, replay = false } = body ?? {};
       if (!isDec(r_s) || !isAddr(to) || !isDec(value) || typeof data !== 'string' || !/^0x([0-9a-fA-F]{2})*$/.test(data)) {
         return R(400, { error: 'r_s, to(주소), value(wei 10진, 선택), data(hex, 선택) 필요' });
       }
@@ -1049,7 +1049,22 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       const deployNeeded = (await provider.getCode(walletAddr)) === '0x';
       const nonce = deployNeeded ? 0n : await walletAt(walletAddr, provider).nonce();
       let proved;
-      try { proved = await proveSession(rsKey, synced, timings, disclosure, src, nonce); }   // root·disclosure·counter(=nonce) 가 같으면 캐시 π, 아니면 재증명
+      if (replay === true) {
+        // 시연(2026-11-23 사용자 요청): 옛 증명으로 보내기 — 이 세션이 가장 최근에 만든 π_RP 의 증명값(a·b·c)은 그대로 두고, 공개 입력의 root 둘과 counter 만
+        // 지금 값(거울의 root·이 계정의 nonce)으로 바꾼다. nonce·서명·root 검사는 통과하고 계정 컨트랙트의 verifyProof 만 실패한다(InvalidProof).
+        // 선택 공개는 옛 증명의 것을 그대로 싣는다 — 서명 다이제스트가 공개 입력의 그 칸을 덮으므로 아래 서명도 같은 값으로 한다.
+        const old = ((await kv.get('proofs')) ?? []).filter((x) => x.kind === 'pi_cred' && x.r_s === rsKey).pop();
+        if (!old) return R(409, { reason: 'no_old_proof', timings });
+        const pub = old.publicSignals.map(String);
+        const rootAtBuild = pub[PUB_INDEX.REV_ROOT];
+        pub[PUB_INDEX.REV_ROOT] = synced.root.toString(); pub[PUB_INDEX.REG_ROOT] = synced.regRoot.toString(); pub[PUB_INDEX.COUNTER] = nonce.toString();
+        // 바꾼 뒤에도 옛것과 똑같으면(보내지 못한 거래 증명 — 같은 root·같은 nonce) 그 증명은 아직 유효하다. 시연이 진짜 출금이 되지 않게 거절한다(2026-11-23 리뷰).
+        if (pub.join(',') === old.publicSignals.map(String).join(',')) return R(409, { reason: 'replay_still_valid', timings });
+        const pb = pub.map(BigInt);
+        disclosure = { mask: pb[PUB_INDEX.DISC_MASK], lo: pb.slice(PUB_INDEX.DISC_LO, PUB_INDEX.DISC_HI), hi: pb.slice(PUB_INDEX.DISC_HI, PUB_INDEX.SET_SEL), sel: pb[PUB_INDEX.SET_SEL], root: pb[PUB_INDEX.SET_ROOT] };
+        proved = { proof: old.proof, publicSignals: pub, root: synced.root.toString(), regRoot: synced.regRoot.toString(), cacheHit: false, demo: 'replay_old_proof',
+          race: { rootAtBuild, rootNow: synced.root.toString() } };
+      } else try { proved = await proveSession(rsKey, synced, timings, disclosure, src, nonce); }   // root·disclosure·counter(=nonce) 가 같으면 캐시 π, 아니면 재증명
       catch (e) {
         const mapped = await sessionProofFailure(e, rsKey, timings);
         if (mapped) return mapped;
@@ -1061,7 +1076,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       // 시연(가짜 서명, 사용자 요청 2026-10-14): 세션키 대신 임의 키로 서명한다 — 컨트랙트의 _recover 가 복원한 주소가 pub[2](pk_i)와 달라
       // BadSignature 로 거절한다. proveSession 의 signChallenge 가 아니라 여기서 따로 take 하는 이유는 그쪽 sig(세션 챌린지 서명)는 이 경로에서
       // 쓰지 않기 때문이다 — 거기서 소비되면 실제로 보내는 이 서명은 멀쩡한 채로 나간다.
-      const fakeSig = await takeOverride('fake_sig');
+      const fakeSig = replay === true ? null : await takeOverride('fake_sig');   // 옛 증명 시연은 가짜 서명 시연을 꺼내지 않는다(둘이 겹치면 사유가 섞인다)
       const priv = fakeSig ? null : await sessionKeyOf(rsKey);
       if (!fakeSig && !priv) return R(404, { reason: 'no_session', timings });
       const signer = fakeSig ? ethers.Wallet.createRandom() : new ethers.Wallet(priv);
@@ -1075,7 +1090,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
         deployCalldata: deployNeeded ? factoryInterface.encodeFunctionData('deploy', [BigInt(s.PPID)]) : null,
         calldata: walletInterface.encodeFunctionData('execute', [payload, sig, a, b, c, pub]),
         nonce: nonce.toString(), disclosure: hasPredicate(disclosure) ? discStrings(disclosure) : null,
-        cacheHit: proved.cacheHit, root: proved.root, regRoot: proved.regRoot, timings, ...(demo ? { demo } : {}),
+        cacheHit: proved.cacheHit, root: proved.root, regRoot: proved.regRoot, timings, ...(demo ? { demo } : {}), ...(proved.race ? { race: proved.race } : {}),
       });
     },
     /** 에이전트 POST /wallet/tx/record 의 등가 — 릴레이가 보낸 execute 의 영수증을 provider 로 읽어 파싱한다. 아직 없으면 202 { pending:true }
@@ -1377,7 +1392,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
   function receiptResult(receipt, walletAddr, disclosure) {
     const parsed = parseExecuteReceipt(receipt, walletAddr);
     return {
-      txHash: receipt.hash, wallet: walletAddr, status: receipt.status, ok: parsed.executed?.success ?? null, gasUsed: receipt.gasUsed.toString(),
+      txHash: receipt.hash, wallet: walletAddr, status: receipt.status, blockNumber: receipt.blockNumber ?? null, ok: parsed.executed?.success ?? null, gasUsed: receipt.gasUsed.toString(),
       nonce: parsed.executed ? parsed.executed.nonceUsed.toString() : null,
       executed: parsed.executed ? { nonceUsed: parsed.executed.nonceUsed.toString(), to: parsed.executed.to, value: parsed.executed.value.toString(), success: parsed.executed.success } : null,
       disclosure: hasPredicate(disclosure) ? discStrings(disclosure) : null,

@@ -187,5 +187,12 @@ t('VM 시계가 어긋나면 기동 때 경고한다 — 어긋나지 않으면 
   assert.match(out, /VM vm-idp 의 시계를 읽지 못했다/, out);
 });
 
+// 2026-11-23(사용자 요청): 서비스의 "옛 증명으로 보내기(시연)" — 분리 데모는 기본으로 켜고(RELAY_DEMO_REVERT=0 이면 끔), 두 서비스가 같은 COMMON 으로 받는다.
+t('서비스 공통 환경변수에 옛 증명 시연 스위치(MODE3_RELAY_DEMO_REVERT, 기본 1)', () => {
+  const common = src.match(/\nCOMMON="([^"]*)"/); assert.ok(common, 'COMMON 정의를 찾지 못했다');
+  assert.match(common[1], /^MODE3_RELAY_DEMO_REVERT=\$\{RELAY_DEMO_REVERT:-1\}$/m);
+  assert.match(src, /^#.*RELAY_DEMO_REVERT=0 bash scripts\/demo_split_start\.sh/m, '사용법 주석이 없다');
+});
+
 console.log(fails ? `\n${fails} FAILED` : '\nall ok');
 process.exit(fails ? 1 : 0);

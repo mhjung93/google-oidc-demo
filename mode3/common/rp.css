@@ -116,6 +116,8 @@ html[data-expert] .opt-row.expert { display: flex; }
 .stale-notice p { margin: 0 0 8px; } .stale-notice .btn-ghost { padding: 5px 12px; font-size: 13px; }
 .race-demo { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; margin: 14px 0 0; font-size: 13px; color: var(--muted); }
 .race-demo .btn-ghost { padding: 3px 10px; font-size: 12.5px; }
+/* 2026-11-23: 옛 증명으로 보내기(시연) 줄 — .race-demo 와 달리 passkey-web 에서도 보인다(출금은 같은 팝업 경로). hidden 이면 숨긴다(display 가 hidden 을 덮지 않게). */
+.replay-demo { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; margin: 10px 0 0; font-size: 13px; color: var(--muted); } .replay-demo[hidden] { display: none; }
 
 /* ---- 좁은 화면 ---- */
 @media (max-width: 640px) {

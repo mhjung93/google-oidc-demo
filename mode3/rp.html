@@ -126,12 +126,13 @@
         <div class="withdraw-box" id="onchain">
           <h3 data-i18n="rp_tx_title">온체인 출금</h3>
           <p class="desc" data-i18n="rp_tx_desc">이 세션의 내 주소(계정)에서 체인으로 보냅니다. 사용자 승인 창에서 확인한 뒤 RP 릴레이가 보냅니다.</p>
-          <!-- 2026-11-10(R5): 출금 출처 — 내 계정(PPID 스마트 계정)은 zkIdP 세션(지갑 증명)만, 거래소 보관은 늘. -->
-          <label class="withdraw-amount wide"><span data-i18n="rp_tx_source_label">출금 출처</span>
-            <select id="txSource"><option value="account" data-i18n="rp_tx_source_account">내 계정(PPID — zkIdP 로그인 필요)</option><option value="custody" data-i18n="rp_tx_source_custody">거래소 보관</option></select></label>
+          <!-- 2026-11-23(사용자 요청): "출금 출처" 선택칸은 뺐다 — 출처는 세션 종류로 정한다(zk 로그인 = 내 계정(PPID), 소셜 로그인 = 거래소 보관). -->
           <label class="withdraw-amount wide"><span data-i18n="rp_tx_to_label">받는 주소</span> <input id="txTo" value="0x000000000000000000000000000000000000dEaD" size="44" /></label>
           <label class="withdraw-amount"><span data-i18n="rp_tx_value_label">금액(ETH)</span> <input id="txValue" value="0.01" size="12" inputmode="decimal" /></label>
           <button id="txBtn" data-i18n="rp_tx_btn">온체인 출금 실행</button>
+          <!-- 2026-11-23(사용자 요청, 시연): 옛 영지식 증명으로 보내기 — 서비스가 MODE3_RELAY_DEMO_REVERT=1 로 떴을 때(rp_info.relayDemoRevert)·zk 로그인일 때만 보인다. -->
+          <p class="replay-demo" id="txReplayRow" hidden><button type="button" id="txReplayBtn" class="danger" data-i18n="rp_tx_replay_btn" hidden>옛 증명으로 보내기(시연)</button>
+            <span class="desc" data-i18n="rp_tx_replay_desc">이 세션의 이전 영지식 증명을 지금의 root·nonce 에 그대로 붙여 보냅니다. 거래는 블록에 실리지만 증명 검증에서 실패해야 합니다.</span></p>
           <div id="txVerdict"></div>
           <p id="txHashRow" hidden><span data-i18n="rp_col_txhash">트랜잭션 해시</span> <code id="txHashCode"></code> <button type="button" id="copyTxHashBtn" class="copy-btn" title="트랜잭션 해시 복사" aria-label="트랜잭션 해시 복사" data-i18n-title="copy_txhash_title">⧉</button></p>
           <!-- 2026-11-16(사용자 요청): 시연 Race (2) 결과 아래에 RCL root 의 생성 당시 값과 현재 값 — 통과한 쪽은 같고, 막힌 쪽은 다르다(renderRaceRoots). -->
@@ -277,7 +278,6 @@
     // 닫힌 로그인(sessionStale)도 같은 바로 보인다. 새 로그인(setSession(새 r_s))과 로그아웃 버튼이 지운다.
     let sessionEndedReason = null;
     let sessionStale = false;               // 2026-11-14: zkIdP 로그인이 서버에서 닫혔다(폐기 목록이 새로 게시됐다) — 화면은 두고 안내만 보인다(checkZkidStale)
-    let txSourcePicked = null;              // 출금 출처를 사용자가 직접 고른 값(없으면 세션 종류로 기본값)
     const progress = { used: false, disclosed: false, opened: false, login2: false };   // 이 페이지가 아는 완료 신호(세션 중 메모리)
     // U6(2026-10-14): 지갑 health 의 rpOrigins(/mode3/health, Demo.stack 가 이미 폴링 중)에서 내 오리진이 첫 번째가
     // 아니면 "두 번째 RP"다 — login2 단계(두 번째 RP 로그인) 말풍선·"다른 창에서" 카드 판정에 쓴다.
@@ -428,9 +428,8 @@
       $('loginProof').hidden = !showProof; if (showProof) $('loginProof').textContent = loginProofText();
       const via = rpMe?.via ?? (currentSession ? 'zkid' : null);
       $('viaBadge').textContent = via ? (tt(`rp_via_${via}`) || via) : ''; $('viaBadge').hidden = !via;
-      // 출금 출처(R5): PPID 계정에서 내보내는 것은 zkIdP 세션(지갑 증명)만 — 소셜 세션이면 거래소 보관으로 고정한다.
-      $('txSource').querySelector('option[value="account"]').disabled = !currentSession;
-      $('txSource').value = !currentSession ? 'custody' : (txSourcePicked ?? 'account');   // 사용자가 고른 값이 없으면 zkIdP 세션은 내 계정이 기본
+      // 옛 증명으로 보내기(2026-11-23 시연): zkWrapper 방식이고 서비스가 켜 두었고(rp_info.relayDemoRevert) zk 로그인 세션이 있을 때만 — 스냅 창은 replay 를 모른다(새 증명으로 진짜 출금이 된다).
+      { const on = info?.relayDemoRevert === true && info?.walletKind === 'zkwrapper' && Boolean(currentSession); $('txReplayRow').hidden = !on; $('txReplayBtn').hidden = !on; }
       renderMethods(); renderSeen();
     }
     /** 데모 시나리오 7(2026-11-19): 이 서비스가 이 로그인에서 받은 것·검증한 것. zk-Delegation 은 "알 수 없는 것", 기존 OIDC(Google·zkIdP 일반 OIDC)는 "알게 되는 것" 을 함께 적는다. */
@@ -914,7 +913,6 @@
     }
     // zkIdP 일반 OIDC(비교용, 2026-11-19): 서비스가 zkIdP 의 인가 화면으로 보낸다 — 지갑 창을 쓰지 않는다.
     $('zkoidcLoginBtn').addEventListener('click', () => { location.assign('/api/rp/zkoidc/start?purpose=login'); });
-    $('txSource').addEventListener('change', () => { txSourcePicked = $('txSource').value; });
     $('mLink_google').addEventListener('click', () => renderGoogle($('linkGsiSlot'), 'link', $('accountVerdict')));
     $('mLink_naver').addEventListener('click', () => location.assign('/api/rp/naver/start?purpose=link'));
     $('mLink_zkid').addEventListener('click', () => startIdpLogin({ link: true }));
@@ -1005,6 +1003,8 @@
         if (rb.ok) {
           const same = lastPPID !== null && lastPPID === rb.PPID;
           lastPPID = rb.PPID; lastDisclosure = rb.disclosure ?? null;
+          // 2026-11-23(사용자 요청): 로그인 응답의 0x 스마트 계정 주소를 바로 쓴다 — web 방식은 잔액을 자동으로 읽지 않아(refreshLedger) 그전에는 PPID 10진수가 남았다.
+          lastAccount = rb.wallet ?? (same ? lastAccount : null);
           const disclosed = rb.disclosure && (rb.disclosure.mask !== '0' || rb.disclosure.set);
           setVerdict($('verdict'), true, 'login_ok', () => ({
             summary: (tt(same ? 'rp_login_same_ppid' : 'rp_login_new_ppid') || (same ? '새 세션. 이 RP 에서의 내 주소는 이전과 같습니다.' : '새 세션. 이 RP 에서만 쓰는 주소를 받았습니다.'))
@@ -1135,9 +1135,9 @@
     // 2026-11-18(사용자 요청): passkey-web 에는 Race (2) 시연이 없다(블록을 진행시키는 에이전트 전용) — 체크박스 줄을 CSS 로 숨기고(아래 <style>), 체크가 남아 있어도 "멈춤" 을 보내지 않는다.
     const raceHoldOn = () => !raceHidden && $('raceHold').checked && document.documentElement.dataset.walletKind !== 'passkey-web';
     $('txBtn').addEventListener('click', async () => {
-      if ($('txBtn').dataset.tourBusy === '1') return;   // 처리 중 재클릭만 무시(버튼은 늘 활성)
+      if ($('txBtn').dataset.tourBusy === '1' || $('txReplayBtn').dataset.tourBusy === '1') return;   // 처리 중 재클릭만 무시(버튼은 늘 활성) — 옛 증명 시연이 도는 중에도
       // 거래소 보관 출금(2026-11-10, R5): RP 릴레이어가 자기 돈으로 보내고 장부를 깎는다 — 쿠키 세션으로(zkIdP 로그인도 쿠키 세션을 만든다).
-      if ($('txSource').value === 'custody') {
+      if (!currentSession) {   // 2026-11-23: 출처는 세션 종류로 — zk 로그인 세션이 없으면(소셜 로그인) 거래소 보관
         const to = $('txTo').value.trim(), value = ethToWei($('txValue').value.trim() || '0');
         if (value === null) { setVerdict($('txVerdict'), false, 'tx_failed', { reason: 'bad_amount' }); return; }
         if (!rpMe) { setVerdict($('txVerdict'), false, 'tx_failed', { reason: 'no_session' }); return; }
@@ -1152,10 +1152,14 @@
         } finally { delete $('txBtn').dataset.tourBusy; }
         return;
       }
+      return sendZkTx($('txBtn'));
+    });
+    // 온체인 출금 — zk 로그인 세션의 내 계정(PPID)에서. replay(2026-11-23 시연)면 새 증명 대신 이 세션의 옛 증명을 지금의 root·nonce 에 붙여 보낸다.
+    async function sendZkTx(btn, { replay = false } = {}) {
       if (!currentSession) { setVerdict($('txVerdict'), false, 'tx_failed', { reason: 'no_session' }); return; }
       // 2026-11-04: snap 모드의 지갑 팝업도 mode3-tx 를 받는다(mode3/wallet.html handleTxRequest). 팝업 경로가 없는 file 모드만 막는다.
       if (!WEB() && walletCfg.secrets !== 'snap' && walletCfg.secrets !== 'passkey') { setVerdict($('txVerdict'), false, 'tx_failed', () => ({ summary: tt('rp_tx_web_only') || '온체인 출금은 스냅 승인 창(스냅·web 모드)에서 합니다' })); return; }
-      $('txBtn').dataset.tourBusy = '1'; $('txLog').textContent = ''; $('txHashRow').hidden = true; renderRaceRoots(null);
+      btn.dataset.tourBusy = '1'; $('txLog').textContent = ''; $('txHashRow').hidden = true; renderRaceRoots(null);
       clearVerdict($('txVerdict'));
       const log = (s) => { $('txLog').textContent += s + '\n'; };
       try {
@@ -1164,9 +1168,10 @@
         const t0 = Date.now();
         log('1. 사용자 승인 창 — 받는 주소·금액을 확인하고 승인하세요.');
         let result;
-        const hold = raceHoldOn();
+        const hold = !replay && raceHoldOn();
+        if (replay) log('   시연: 이 세션의 옛 영지식 증명을 지금의 root·nonce 에 붙여 보냅니다.');
         if (hold) log('   시연 Race (2): 스냅 창이 증명·서명 뒤 멈춥니다 — 2블록 뒤·5블록 뒤 보내기 중에서 고르세요.');
-        try { result = await popupCall('mode3-tx', authorizeRequest({ r_s: currentSession, to, value, data: '0x', ...(hold ? { hold: true } : {}) })); }
+        try { result = await popupCall('mode3-tx', authorizeRequest({ r_s: currentSession, to, value, data: '0x', ...(hold ? { hold: true } : {}), ...(replay ? { replay: true } : {}) })); }
         catch (e) {
           log(`팝업 ${ms(t0)}: ${e.reason ?? ''} ${e.message}`);
           setVerdict($('txVerdict'), false, e.reason === 'popup_blocked' ? 'popup_blocked' : 'tx_failed', () => ({ summary: tt(POPUP_HINT[e.reason] ?? '') || e.message, reason: e.reason, detail: e.message }));
@@ -1177,6 +1182,13 @@
           // 시연 Race (2)에서 세션 검사는 통과했는데 계정 안 송금만 실패한 경우(잔액 부족 등) — 통과한 사실을 함께 말한다(2026-11-15)
           const raceXfer = result.reason === 'transfer_failed' && result.raceRevoked === true;
           noteSessionReason(result.reason);
+          // 블록에 실렸다가 되돌려진 거래(2026-11-23 — 옛 증명 시연)는 해시를 함께 보인다. 옛 증명이면 증명 검증에서 실패한 것을 말한다.
+          if (result.txHash) { lastTxHash = result.txHash; $('txHashCode').textContent = `${String(result.txHash).slice(0, 18)}…`; $('txHashCode').title = result.txHash; $('txHashRow').hidden = false; }
+          if (replay && result.reason === 'tx_reverted') {
+            setVerdict($('txVerdict'), false, 'tx_failed', () => ({ summary: tt('rp_tx_replay_reverted', { block: result.blockNumber ?? '?', err: result.detail ?? '-' }) || `거래는 블록 ${result.blockNumber ?? '?'}에 실렸지만 계정 컨트랙트의 영지식 증명 검증에서 되돌려졌습니다(${result.detail ?? '-'}).`, reason: result.reason, detail: result }));
+            renderRaceRoots(result.race ?? null);
+            refreshLedger(); return;
+          }
           setVerdict($('txVerdict'), false, 'tx_failed', () => ({ ...(raceXfer ? { summary: tt('rp_tx_race_transfer_failed') || '폐기된 세션의 거래가 거울 반영 전이라 통과했습니다(Race (2)) — 다만 계정 안 송금이 실패했습니다.' } : {}), reason: result.reason ?? 'internal', detail: result }));
           renderRaceRoots(result.race ?? null);
           checkZkidStale(); refreshLedger(); return;
@@ -1189,8 +1201,9 @@
         renderRaceRoots(result.race ?? null);
         progress.used = true; renderGuide();
         refreshLedger();   // 보낸 만큼 ETH 가 줄어든 것을 바로 보인다(2026-11-05)
-      } finally { delete $('txBtn').dataset.tourBusy; }
-    });
+      } finally { delete btn.dataset.tourBusy; }
+    }
+    $('txReplayBtn').addEventListener('click', () => { if (info?.walletKind === 'zkwrapper' && $('txReplayBtn').dataset.tourBusy !== '1' && $('txBtn').dataset.tourBusy !== '1') sendZkTx($('txReplayBtn'), { replay: true }); });
 
     // 로그아웃(2026-10-16): RP 서버의 세션을 지우고(POST /api/mode3/logout) 화면 상태를 비운다. 지갑은 다음 상태 새로고침(2초)에 이 RP 에 물어 그 세션을 목록에서 뺀다.
     // (U5 때는 화면만 지웠다 — 세션이 RP·지갑에 남아 혼란스러웠다.) zkIdP 폐기 트리는 건드리지 않는다.

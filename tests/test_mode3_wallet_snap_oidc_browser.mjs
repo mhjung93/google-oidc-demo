@@ -226,7 +226,7 @@ try {
     assert.match(await text(page, '#mState_google'), /연결됨/);
     assert.equal(await page.$eval('#mUnlink_google', (b) => !b.hidden), true);
     assert.equal(await page.$eval('li[data-asset="ETH_CUSTODY"]', (el) => !el.hidden), true);
-    assert.equal(await page.$eval('#txSource option[value="account"]', (o) => o.disabled), true, 'zkIdP 세션이 아니면 내 계정 출금 불가');
+    assert.equal(await page.$$eval('#txSource', (l) => l.length), 0, '출금 출처 선택칸은 없다 — 소셜 세션의 출금은 거래소 보관으로 정해진다(2026-11-23)');
     await page.click('#logoutBtn'); await page.waitForSelector('#assetsLoggedOut:not([hidden])');
     assert.equal(await page.evaluate(() => fetch('/api/rp/me').then((r) => r.status)), 401);
     await page.close();

@@ -161,6 +161,7 @@ window.DemoStrings = {
     rp_require_pred: { ko: '조건 요구(국가·나이)', en: 'Require predicate (country·age)' },
     rp_logins_desc: { ko: '이 RP 에 남은 기록입니다. RP 는 누구인지 모르고 이 주소만 압니다.', en: 'What this RP recorded. It never learns who you are — only this address.' },
     rp_login_same_ppid: { ko: '새 세션. 내 계정 주소는 이전과 같습니다.', en: 'New session. Your account address is unchanged.' },
+    wallet_session_ppid: { ko: 'PPID', en: 'PPID' },   // 2026-11-23: zk 클라이언트 세션 카드의 PPID 숫자 줄(주소 줄은 용어 'PPID')
     rp_my_account_addr: { ko: 'PPID 스마트 계정 주소', en: 'PPID smart account address' },   // 2026-11-09
     rp_login_new_ppid: { ko: '새 세션. 이 RP 에서만 쓰는 주소를 받았습니다.', en: 'New session. You received an address used only at this RP.' },
     rp_balance_ok: { ko: '잔액 — KRW {krw} · ETH {eth}', en: 'Balance — KRW {krw} · ETH {eth}' },
@@ -1394,9 +1395,9 @@ window.DemoStrings = {
     rp_via_zkoidc: { ko: 'zkIdP(일반 OIDC)', en: 'zkIdP (plain OIDC)' },
     rp_eth_account: { ko: 'ETH (내 계정)', en: 'ETH (my account)' },
     rp_eth_custody: { ko: 'ETH (거래소 보관)', en: 'ETH (held by exchange)' },
-    rp_tx_source_label: { ko: '출금 출처', en: 'Withdraw from' },
-    rp_tx_source_account: { ko: '내 계정(PPID — zkIdP 로그인 필요)', en: 'My account (PPID — needs zkIdP login)' },
-    rp_tx_source_custody: { ko: '거래소 보관', en: 'Held by exchange' },
+    rp_tx_replay_btn: { ko: '옛 증명으로 보내기(시연)', en: 'Send with an old proof (demo)' },   // 2026-11-23
+    rp_tx_replay_desc: { ko: '이 세션의 이전 영지식 증명을 지금의 root·nonce 에 그대로 붙여 보냅니다. 거래는 블록에 실리지만 증명 검증에서 실패해야 합니다.', en: 'Sends this session\'s earlier zero-knowledge proof attached to the current root and nonce. The transaction is mined but should fail proof verification.' },
+    rp_tx_replay_reverted: { ko: '거래는 블록 {block}에 실렸지만 계정 컨트랙트의 영지식 증명 검증에서 되돌려졌습니다({err}). 옛 증명은 지금의 root·nonce 로 다시 쓸 수 없습니다.', en: 'The transaction was mined in block {block} but the account contract rejected it at proof verification ({err}). An old proof cannot be reused with the current root and nonce.' },
     rp_custody_withdraw_ok: { ko: '거래소 보관에서 {eth} ETH 를 보냈습니다.', en: 'Sent {eth} ETH from the exchange-held balance.' },
     rp_social_new_account: { ko: '{via} 로 새 계정을 만들어 로그인했습니다.', en: 'Created a new account with {via} and signed in.' },
     rp_social_same_account: { ko: '{via} 로 로그인했습니다.', en: 'Signed in with {via}.' },
@@ -1574,6 +1575,11 @@ window.DemoStrings = {
     bad_request: { where: 'wallet', ko: { title: '요청 형식이 잘못됐습니다', cause: 'RP 가 보낸 출금 요청의 받는 주소·금액·데이터 형식이 맞지 않습니다.', action: 'RP 페이지에서 값을 확인하고 다시 시도하세요.' }, en: { title: 'Malformed request', cause: 'The withdrawal request from the RP has a malformed recipient, amount, or data.', action: 'Check the values on the RP page and retry.' } },
     tx_prepare_failed: { where: 'wallet', ko: { title: '트랜잭션 준비에 실패했습니다', cause: '스냅 에이전트가 증명·세션키 서명을 만들지 못했습니다.', action: '세션이 살아 있는지 확인하고 다시 시도하세요. 재시작 뒤라면 RP 에서 다시 로그인(재승인)하세요.' }, en: { title: 'Could not prepare the transaction', cause: 'The Snap agent could not build the proof and session-key signature.', action: 'Check that the session is alive and retry; after a restart, log in again (re-approve) at the RP.' } },
     tx_record_failed: { where: 'wallet', ko: { title: '영수증 기록에 실패했습니다', cause: '트랜잭션은 보냈지만 스냅 에이전트가 영수증을 기록하지 못했습니다.', action: 'zk 스냅 페이지의 로그인 세션 카드에서 거래 기록을 확인하세요.' }, en: { title: 'Could not record the receipt', cause: 'The transaction was sent but the Snap agent could not record its receipt.', action: 'Check the transaction record in the zk Snap page session card.' } },
+    no_old_proof: { where: 'wallet', ko: { title: '다시 쓸 옛 증명이 없습니다', cause: '이 세션에서 만든 영지식 증명 기록이 없습니다(시연 "옛 증명으로 보내기").', action: '이 서비스에 다시 로그인한 뒤 누르세요.' }, en: { title: 'No old proof to reuse', cause: 'There is no zero-knowledge proof recorded for this session (demo "send with an old proof").', action: 'Log in to this service again, then press it.' } },
+    tx_reverted: { where: 'rp', ko: { title: '거래가 블록에서 되돌려졌습니다', cause: '거래는 블록에 실렸지만 계정 컨트랙트가 되돌렸습니다 — "자세히"의 detail 이 컨트랙트 오류 이름입니다.', action: '옛 증명 시연이면 정상입니다. 그 밖이면 다시 로그인한 뒤 다시 시도하세요.' }, en: { title: 'The transaction was reverted', cause: 'The transaction was mined but the account contract reverted it — the detail under "more" is the contract error name.', action: 'Expected in the old-proof demo. Otherwise log in again and retry.' } },
+    relay_demo_no_session: { where: 'rp', ko: { title: '이 서비스에 로그인한 세션의 거래가 아닙니다', cause: '옛 증명 시연 경로는 지금 이 서비스에 로그인해 있는 세션의 거래만 보냅니다.', action: '이 서비스에 다시 로그인한 뒤 누르세요.' }, en: { title: 'Not a transaction of a session logged in here', cause: 'The old-proof demo only relays transactions of a session currently logged in to this service.', action: 'Log in to this service again, then press it.' } },
+    replay_still_valid: { where: 'wallet', ko: { title: '가장 최근 증명이 아직 유효합니다', cause: '가장 최근 증명이 보내지 못한 거래의 것이라 지금의 root·nonce 와 같습니다 — 보내면 진짜 출금이 됩니다.', action: '이 서비스에 다시 로그인해 새 증명을 만든 뒤 누르세요.' }, en: { title: 'The latest proof is still valid', cause: 'The latest proof belongs to an unsent transaction and still matches the current root and nonce — sending it would be a real withdrawal.', action: 'Log in to this service again to make a new proof, then press it.' } },
+    relay_demo_off: { where: 'rp', ko: { title: '이 서비스는 옛 증명 시연을 켜지 않았습니다', cause: '릴레이가 되돌려질 거래를 보내는 시연 경로는 MODE3_RELAY_DEMO_REVERT=1 일 때만 열립니다.', action: '시연을 하려면 서비스를 그 값으로 다시 띄우세요.' }, en: { title: 'This service has the old-proof demo off', cause: 'The relay sends a transaction that will revert only with MODE3_RELAY_DEMO_REVERT=1.', action: 'Restart the service with that setting to run the demo.' } },
     relay_bad_proof: { where: 'rp', ko: { title: '릴레이가 증명을 거절했습니다', cause: 'RP 릴레이가 calldata 안의 증명을 검증하지 못했습니다.', action: '다시 로그인한 뒤 다시 시도하세요.' }, en: { title: 'The relay rejected the proof', cause: 'The RP relay could not verify the proof inside the calldata.', action: 'Log in again and retry.' } },
     oidc_required: { where: 'aa', ko: { title: 'Google 본인 확인이 필요합니다', cause: 'Google 로 등록된 계정은 로그인마다 Google ID 토큰을 함께 내야 합니다.', action: 'RP 의 "Google 로 로그인" 버튼으로 다시 로그인하세요.' }, en: { title: 'Google verification required', cause: 'Accounts registered through Google must present a Google ID token on every login.', action: 'Log in again with the RP\'s "Sign in with Google" button.' } },
     // 지갑(mode3_wallet_agent.js, state.registration 없음)과 zkIdP(cia.js /cia/auth/code, auid 없는 계정) 양쪽에서 나는 코드다.

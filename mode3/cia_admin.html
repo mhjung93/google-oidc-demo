@@ -251,6 +251,8 @@
       code.title = s;
       return code;
     }
+    /** uid 칸(2026-11-23): zkWrapper 의 uid(H(provider|sub), 70자리 남짓)는 줄여 보이고(전체는 title), 짧은 uid(데모 계정 100001 등)는 예전처럼 글자 그대로 둔다. */
+    const uidShown = (v) => (String(v ?? '').length > 12 ? short(v, 12) : String(v ?? ''));
     function badge(key, kind) { const b = document.createElement('span'); b.className = `badge ${kind}`; tte(b, key); return b; }
     function button(key, cls, onClick) {
       const b = document.createElement('button');
@@ -329,7 +331,7 @@
       const body = t.tBodies[0];
       for (const a of accounts) {
         const row = body.insertRow();
-        cell(row, a.uid);
+        cell(row, uidShown(a.uid));
         cell(row, a.id ?? '-');   // 2026-11-03: 아이디 가입(loginId). 아이디 없이 만든 옛 계정은 '-'
         cell(row, badge(a.disabled ? 'admin_acct_disabled' : 'admin_acct_active', a.disabled ? 'bad' : 'ok'));
         // 2026-11-11(사용자 요청): 스냅을 아직 등록하지 않은 계정(슬롯 없음)은 "#null 비어 있음" 대신 "스냅 미등록", 슬롯이 있으면 번호·상태와 리프(앞자리, 전체는 툴팁)를 보인다.
@@ -523,8 +525,8 @@
         const at = cell(row, fmtAt(o.requestedAt));
         at.title = o.requestedAt ?? '';
         const accCell = cell(row, short(o.account ?? o.PPID)); accCell.title = o.account ? `${o.account}\nPPID ${o.PPID}` : String(o.PPID);
-        { const c = cell(row, ''); c.dataset.open = 'auid_s'; if (o.auid_s) { const v = document.createElement('code'); v.textContent = short(o.auid_s); v.title = String(o.auid_s); c.append(v); } else c.textContent = '-'; }
-        if (o.uid) cell(row, o.uid);
+        { const c = cell(row, ''); c.dataset.open = 'auid_s'; if (o.auid_s) c.append(short(o.auid_s)); else c.textContent = '-'; }
+        if (o.uid) cell(row, uidShown(o.uid));
         else if (o.resolved === false) { const p = document.createElement('span'); p.className = 'muted'; tte(p, 'admin_open_unresolved'); cell(row, p); }
         else cell(row, '');
         cell(row, short(o.arid), 'expert');
@@ -621,7 +623,7 @@
       const body = t.tBodies[0];
       for (const s of rows) {
         const row = body.insertRow();
-        cell(row, s.uid);
+        cell(row, uidShown(s.uid));
         cell(row, String(s.index));
         cell(row, s.Cf_u ? short(s.Cf_u) : '');
         const at = cell(row, fmtAt(s.issuedAt));
@@ -689,7 +691,7 @@
       for (const s of rows) {
         const row = body.insertRow();
         cell(row, String(s.index));
-        cell(row, s.uid);
+        cell(row, uidShown(s.uid));
         cell(row, s.id ?? '-', 'nowrap');
         cell(row, s.Cf_u ? fullVal(s.Cf_u) : '-');
         cell(row, fullVal(s.leaf));
@@ -737,7 +739,7 @@
       const body = t.tBodies[0];
       for (const a of accounts) {
         const row = body.insertRow();
-        cell(row, a.uid);
+        cell(row, uidShown(a.uid));
         cell(row, a.id ?? '-', 'nowrap');
         // 2026-11-13: 같은 auid 가 두 줄에 보일 수 있다(2026-11-21 부터는 폐기된 계정도 스냅을 쥐어 새로 생기지 않지만, 그 전 상태 파일에는 있을 수 있다) — 어느 쪽이 폐기인지 여기서 가린다.
         cell(row, badge(a.disabled ? 'admin_state_disabled' : 'admin_state_active', a.disabled ? 'bad' : 'ok'));
@@ -777,7 +779,7 @@
       const body = t.tBodies[0];
       for (const s of revokedSessions) {
         const row = body.insertRow();
-        cell(row, s.uid);
+        cell(row, uidShown(s.uid));
         cell(row, short(s.Cf_s));
         cell(row, String(s.chainid));
         cell(row, String(s.max_height));

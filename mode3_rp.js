@@ -512,7 +512,7 @@ mountRpSocial(app, { store: accountStore, cfg: SOCIAL, ledgerOp, sessionAlive: z
 if (SOCIAL.google.enabled || SOCIAL.naver.enabled) console.log(`[rp] 소셜 로그인: Google ${SOCIAL.google.enabled ? '켜짐' : '꺼짐'} · 네이버 ${SOCIAL.naver.enabled ? `켜짐(콜백 ${SOCIAL.naver.redirectUri})` : '꺼짐'}`);
 app.get('/api/mode3/rp_info', (req, res) => {
   res.json({ name: RP_NAME, requireDisclosure: REQUIRE_DISCLOSURE,   // 2026-10-15: 페이지 브랜드(zkONE/zkTWO) 표기용
-       status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, mirrorAddress: MIRROR_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, walletKind: WALLET_KIND, ciaUrl: CIA_BROWSER_URL, pkCiaSource: pkCIA.source, chainId: chainId.toString(), active: Boolean(verifier), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null, predicates: currentPredicates(),
+       status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, mirrorAddress: MIRROR_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, walletKind: WALLET_KIND, ciaUrl: CIA_BROWSER_URL, relayDemoRevert: RELAY_DEMO_REVERT, pkCiaSource: pkCIA.source, chainId: chainId.toString(), active: Boolean(verifier), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null, predicates: currentPredicates(),
        social: { google: { enabled: SOCIAL.google.enabled, clientId: SOCIAL.google.clientId, authorizeUrl: SOCIAL.google.authorizeUrl, redirectUri: SOCIAL.google.redirectUri }, naver: { enabled: SOCIAL.naver.enabled }, zkoidc: { enabled: ZKOIDC.enabled && ZKOIDC.clientId() !== null } },   // zkoidc: zkIdP 일반 OIDC(비교용, 2026-11-19)   // 2026-11-10 RP 소셜 버튼
        oidc: pkCIA.oidc });   // 2026-10-16: IdP 의 public_keys.oidc 중계 — 페이지는 enabled·provider, 2026-11-09 부터 providers.{google,naver}.enabled(버튼 활성)를 본다
 });
@@ -609,7 +609,9 @@ app.post('/api/mode3/login', async (req, res) => {
     logins.push({ via: 'zkid', rpAccount, PPID: v.PPID.toString(), at, root: v.root.toString(), r_s: rsShort(rsStr), allowAgent: v.allowAgent.toString(), disclosure, auid_s: v.auid_s.toString() });   // auid_s: 관리자 "auid_s ↔ PPID" 표(2026-11-11)
     // §5 로그인 로그 — 전체 r_s 와 트랜스크립트(태그 포함). 개봉 요청의 재료다. 조회 API 로는 내지 않는다.
     fs.appendFileSync(LOGIN_LOG, JSON.stringify({ at, via: 'zkid', rpAccount, PPID: v.PPID.toString(), r_s: rsStr, pk_i: v.pk_i.toString(), max_height: v.max_height.toString(), allowAgent: v.allowAgent.toString(), root: v.root.toString(), disclosure, auid_s: v.auid_s.toString(), arid_s: v.arid_s.toString(), publicSignals: v.publicSignals, proof: v.proof }) + '\n', { mode: 0o600 });
-    res.json({ ok: true, account: rpAccount, via: 'zkid', PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), r_s: rsStr, root: v.root.toString(), allowAgent: v.allowAgent.toString(), disclosure });
+    // wallet(2026-11-23): 이 PPID 의 스마트 계정 주소(CREATE2 라 배포 전에도 정해진다) — 화면이 로그인 직후부터 0x 주소를 보인다. 못 구하면 null(잔액 조회 때 다시).
+    const wallet = await accountOfCached(v.PPID.toString()).catch(() => null);
+    res.json({ ok: true, account: rpAccount, wallet, via: 'zkid', PPID: v.PPID.toString(), pk_i: v.pk_i.toString(), r_s: rsStr, root: v.root.toString(), allowAgent: v.allowAgent.toString(), disclosure });
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });
 
@@ -763,15 +765,36 @@ app.post('/api/mode3/request', async (req, res) => {
 // 빈 계정을 끝없이 배포시킬 수 있다(속도 제한은 대상별이라 매번 새 키). 속도 제한보다도 앞에 둬 틀린 증명이 남의 몫을 깎지 않게 한다.
 const RELAY_GAS_CAP = BigInt(process.env.MODE3_RELAY_GAS_CAP || 1_200_000);
 const RELAY_RATE = Number(process.env.MODE3_RELAY_RATE || 10);     // 계정당 분당
+// 시연(2026-11-23 사용자 요청): 옛 증명으로 보내기 — 본문에 demo: 'replay_old_proof' 가 있으면 오프체인 증명 확인·가스 추정 실패를 건너뛰고 고정 가스로 보내,
+// 계정 컨트랙트가 블록 안에서 되돌리게(InvalidProof) 한다. 이 경로는 누구나 릴레이어 가스를 태울 수 있게 하므로 MODE3_RELAY_DEMO_REVERT=1 일 때만 연다(기본 꺼짐).
+const RELAY_DEMO_REVERT = process.env.MODE3_RELAY_DEMO_REVERT === '1';
 const relayCors = cors({ origin: (origin, cb) => cb(null, origin === WALLET_ORIGIN), methods: ['POST', 'GET'], allowedHeaders: ['Content-Type'] });
 app.options('/api/mode3/relay', relayCors);
 const relayHits = new Map();   // to(소문자) → [ms, …] 지난 60초
 const isAddr = (v) => typeof v === 'string' && /^0x[0-9a-fA-F]{40}$/.test(v);
 const revertName = (e) => { try { const n = e?.data ? walletInterface.parseError(e.data)?.name : null; if (n) return n; } catch { /* 모르는 에러 */ } return e?.revert?.name ?? e?.shortMessage ?? e?.message ?? 'revert'; };
+/** 되돌려질 거래를 보낸다(시연). hardhat 은 자동 채굴에서 되돌려진 거래도 블록에 넣지만 eth_sendTransaction 에 오류로 답한다 — 그 오류에 실린
+ *  거래 해시를 꺼내 보통 응답과 같은 모양({ hash, wait })으로 돌려준다. 해시를 못 찾으면 원래 오류를 던진다. */
+async function sendRevertingTx(signer, txReq) {
+  try { return await signer.sendTransaction(txReq); }
+  catch (e) {
+    let hash = e?.error?.data?.txHash ?? e?.info?.error?.data?.txHash ?? null;
+    if (!hash) {
+      let dump = '';
+      try { dump = JSON.stringify(e, (k, v) => (typeof v === 'bigint' ? v.toString() : v)); } catch { throw e; }
+      hash = dump.match(/"(?:txHash|transactionHash)":"(0x[0-9a-fA-F]{64})"/)?.[1] ?? null;
+    }
+    if (typeof hash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(hash)) throw e;
+    return { hash, wait: () => provider.waitForTransaction(hash) };
+  }
+}
 app.post('/api/mode3/relay', relayCors, async (req, res) => {
   try {
     if (!verifier || !reg.factoryAddress) return res.status(503).json({ ok: false, reason: 'relay_inactive', detail: verifier ? 'no_factory' : inactiveReason() });
-    const { to, data, value } = req.body ?? {};
+    const { to, data, value, demo } = req.body ?? {};
+    const demoRevert = demo === 'replay_old_proof';
+    if (demo !== undefined && !demoRevert) return res.status(400).json({ ok: false, reason: 'relay_bad_calldata', detail: 'demo' });
+    if (demoRevert && !RELAY_DEMO_REVERT) return res.status(403).json({ ok: false, reason: 'relay_demo_off' });
     if (value !== undefined && String(value) !== '0') return res.status(400).json({ ok: false, reason: 'relay_bad_calldata', detail: 'value' });
     if (!isAddr(to) || typeof data !== 'string' || !/^0x([0-9a-fA-F]{2})*$/.test(data)) return res.status(400).json({ ok: false, reason: 'relay_bad_calldata', detail: 'format' });
     const dec = decodeExecuteCalldata(data);
@@ -779,9 +802,12 @@ app.post('/api/mode3/relay', relayCors, async (req, res) => {
     if (dec.pub[PUB_INDEX.ARID] !== String(reg.arid)) return res.status(400).json({ ok: false, reason: 'relay_bad_calldata', detail: 'arid' });
     const factory = new ethers.Contract(reg.factoryAddress, FACTORY_ABI, provider);
     const ppid = BigInt(dec.pub[PUB_INDEX.PPID]);
+    // 시연 경로는 이 서비스에 지금 로그인해 있는 세션(같은 r_s·PPID)의 거래만 받는다 — 오프체인 증명 확인을 건너뛰므로, 없으면 PPID 만 바꿔 가며
+    // 릴레이어 가스로 빈 계정 배포·되돌려질 거래를 끝없이 보내게 할 수 있다(위 검사 순서 주석의 공격, 2026-11-23 리뷰).
+    if (demoRevert && sessions.get(BigInt(dec.pub[PUB_INDEX.R_S]).toString())?.PPID !== ppid.toString()) return res.status(403).json({ ok: false, reason: 'relay_demo_no_session' });
     const expected = await factory.computeAddress(ppid);
     if (expected.toLowerCase() !== to.toLowerCase()) return res.status(400).json({ ok: false, reason: 'relay_bad_target' });
-    if (!(await verifyCalldataProof({ vkey, a: dec.a, b: dec.b, c: dec.c, pub: dec.pub }))) return res.status(400).json({ ok: false, reason: 'relay_bad_proof' });
+    if (!demoRevert && !(await verifyCalldataProof({ vkey, a: dec.a, b: dec.b, c: dec.c, pub: dec.pub }))) return res.status(400).json({ ok: false, reason: 'relay_bad_proof' });
     const key = to.toLowerCase(), now = Date.now();
     const hits = (relayHits.get(key) ?? []).filter((t) => now - t < 60_000);
     if (hits.length >= RELAY_RATE) { relayHits.set(key, hits); return res.status(429).json({ ok: false, reason: 'relay_rate_limited' }); }
@@ -789,12 +815,15 @@ app.post('/api/mode3/relay', relayCors, async (req, res) => {
     const relayer = await provider.getSigner(RELAYER_INDEX);
     let deployTxHash = null;
     if ((await provider.getCode(to)) === '0x') { const dtx = await factory.connect(relayer).deploy(ppid); await dtx.wait(); deployTxHash = dtx.hash; }
-    let gas;
+    let gas, expectRevert = null;
     try { gas = await provider.estimateGas({ from: await relayer.getAddress(), to, data }); }
-    catch (e) { return res.status(400).json({ ok: false, reason: 'relay_gas', detail: revertName(e) }); }
+    catch (e) {
+      if (!demoRevert) return res.status(400).json({ ok: false, reason: 'relay_gas', detail: revertName(e) });
+      expectRevert = revertName(e); gas = RELAY_GAS_CAP;   // 시연: 되돌려질 것을 알고도 보낸다 — 되돌림 이름은 화면이 보인다
+    }
     if (gas > RELAY_GAS_CAP) return res.status(400).json({ ok: false, reason: 'relay_gas', detail: `gas ${gas} > cap ${RELAY_GAS_CAP}` });
     const gasLimit = (gas * 12n) / 10n > RELAY_GAS_CAP ? RELAY_GAS_CAP : (gas * 12n) / 10n;
-    const tx = await relayer.sendTransaction({ to, data, gasLimit });
+    const tx = demoRevert ? await sendRevertingTx(relayer, { to, data, gasLimit }) : await relayer.sendTransaction({ to, data, gasLimit });
     const gate = reg.attrGateAddress ? String(reg.attrGateAddress).toLowerCase() : null;
     const rec = { at: new Date().toISOString(), txHash: tx.hash, account: to, PPID: ppid.toString(), kind: gate && String(dec.payload.to).toLowerCase() === gate ? 'claim' : 'transfer',
       target: dec.payload.to, value: dec.payload.value.toString(), deployTxHash, status: 'pending', blockNumber: null };
@@ -802,7 +831,7 @@ app.post('/api/mode3/relay', relayCors, async (req, res) => {
     // 영수증이 오면 상태를 채운다. 계정 안 호출이 실패했으면(Executed.success=false) 트랜잭션이 들어갔어도 실패로 본다.
     tx.wait().then((rc) => { rec.blockNumber = rc?.blockNumber ?? null; rec.status = rc?.status === 1 && parseExecuteReceipt(rc, to).executed?.success !== false ? 'success' : 'failed'; },
       () => { rec.status = 'failed'; });
-    res.json({ ok: true, txHash: tx.hash, deployed: Boolean(deployTxHash), deployTxHash });
+    res.json({ ok: true, txHash: tx.hash, deployed: Boolean(deployTxHash), deployTxHash, ...(demoRevert ? { demo, expectRevert } : {}) });
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });
 app.get('/api/mode3/relay/:txHash', relayCors, async (req, res) => {
