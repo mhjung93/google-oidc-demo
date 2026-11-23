@@ -496,11 +496,13 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
         row('wallet_auth_tx_to', req.to); row('wallet_auth_tx_value', `${value} wei`);
         if (config.popupConsent !== false) step('보낼 트랜잭션을 확인하고 승인하세요.');
         if (!(await waitDecision())) { step('거절'); return reply({ ok: false, reason: 'user_denied' }); }
-        const replay = req.replay === true;   // 시연(2026-11-23): 옛 증명으로 보내기 — 코어가 새 증명 대신 이 세션의 옛 증명을 지금의 root·nonce 에 붙인다
-        step(replay ? '옛 증명·세션키 서명 중…' : '증명·세션키 서명 중… (수 초 걸린다)');
-        const p = await withUnlock(() => core.prepareTx({ r_s: req.r_s, to: req.to, value, data: req.data ?? '0x', ...(replay ? { replay: true } : {}) }));
+        // 시연(2026-11-23): ① buildOnly — 지금의 root·nonce 로 증명만 만들어 두고 보내지 않는다. ② replay — 코어가 ① 의 증명에 지금 root 만 붙인다.
+        const replay = req.replay === true, buildOnly = !replay && req.buildOnly === true;
+        step(replay ? '옛 증명·세션키 서명 중…' : buildOnly ? '증명 만드는 중… (보내지 않는다)' : '증명·세션키 서명 중… (수 초 걸린다)');
+        const p = await withUnlock(() => core.prepareTx({ r_s: req.r_s, to: req.to, value, data: req.data ?? '0x', ...(replay ? { replay: true } : {}), ...(buildOnly ? { buildOnly: true } : {}) }));
         if (p.cancelled) { step('잠금 해제 취소'); return reply({ ok: false, reason: 'user_denied' }); }
         if (p.status !== 200) { step('준비 실패'); log(errText(p.status, p.body)); return reply(fail(p, 'tx_prepare_failed')); }
+        if (buildOnly) { step('증명을 만들어 두었다 — 보내지 않고 창을 닫는다.'); return reply({ ok: true, held: true, nonce: p.body.nonce, root: p.body.root, wallet: p.body.walletAddr }); }
         const relayUrl = `${evOrigin}${config.relayPath ?? '/api/mode3/relay'}`;
         step('RP 릴레이로 보내는 중…');
         let relay;

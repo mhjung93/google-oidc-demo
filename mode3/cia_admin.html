@@ -851,6 +851,14 @@
       loadAccounts(); loadRps(); loadOpenings(); loadState(); refreshBadges();
     }
     $('reloadBtn').addEventListener('click', reloadAll);
+    // 2026-11-23(사용자 요청): zkWrapper 에서는 사용자 화면에 세션 폐기 버튼이 없어(관리자에게 요청) 이 카드가 유일한 폐기 자리다 — 그 모드에서만 계정 카드와
+    // 메뉴 항목을 다시 보인다. 다른 모드는 11-11 결정대로 숨긴 채 둔다. /mode3/health 는 시크릿 없이 읽힌다.
+    fetch('/mode3/health').then((r) => r.json()).then((h) => {
+      if (h?.wrapper !== true) return;
+      const sec = $('secAccounts'); sec.hidden = false; sec.style.display = '';
+      const menu = document.querySelector('.section-menu .menu-inner');
+      if (menu && !menu.querySelector('a[href="#secAccounts"]')) { const a = document.createElement('a'); a.href = '#secAccounts'; a.dataset.i18n = 'admin_accounts_title'; a.textContent = Demo.t('admin_accounts_title') || '계정'; menu.prepend(a); }
+    }).catch(() => {});
 
     Demo.init({ page: 'admin' });
     Demo.tour?.onToggle(renderGuide);   // 스위치를 켜고 끌 때 이 페이지의 규칙으로 안내를 다시 그린다

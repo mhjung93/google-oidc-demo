@@ -1003,7 +1003,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     /** 에이전트 buildExecute + POST /wallet/tx/prepare 의 등가: 검증 → 동기화 → π(캐시) → 지갑 주소·nonce → 세션키 서명 → execute calldata.
      *  보내는 것은 RP 의 릴레이(계획 R6)다 — 에이전트의 /wallet/tx(provider.getSigner 경로)는 없다. */
     async prepareTx(body) {
-      const { r_s, to, value = '0', data = '0x', disclose, set = null, replay = false } = body ?? {};
+      const { r_s, to, value = '0', data = '0x', disclose, set = null, replay = false, buildOnly = false } = body ?? {};
       if (!isDec(r_s) || !isAddr(to) || !isDec(value) || typeof data !== 'string' || !/^0x([0-9a-fA-F]{2})*$/.test(data)) {
         return R(400, { error: 'r_s, to(주소), value(wei 10진, 선택), data(hex, 선택) 필요' });
       }
@@ -1050,15 +1050,16 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       const nonce = deployNeeded ? 0n : await walletAt(walletAddr, provider).nonce();
       let proved;
       if (replay === true) {
-        // 시연(2026-11-23 사용자 요청): 옛 증명으로 보내기 — 이 세션이 가장 최근에 만든 π_RP 의 증명값(a·b·c)은 그대로 두고, 공개 입력의 root 둘과 counter 만
-        // 지금 값(거울의 root·이 계정의 nonce)으로 바꾼다. nonce·서명·root 검사는 통과하고 계정 컨트랙트의 verifyProof 만 실패한다(InvalidProof).
+        // 시연(2026-11-23 사용자 요청): 옛 증명으로 보내기 — root 가 바뀐 경우만 보인다. 이 세션이 지금 nonce 로 만들어 둔 π_RP(buildOnly, 화면의 ①)의
+        // 증명값(a·b·c)은 그대로 두고 공개 입력의 root 둘만 지금 값(거울의 root)으로 바꾼다. nonce·서명·root 검사는 통과하고 verifyProof 만 실패한다(InvalidProof).
+        // nonce 가 다른 증명(그사이 출금이 있었다)은 고르지 않는다 — nonce 때문에 실패하는 장면은 다음 버전에서 따로 보인다.
         // 선택 공개는 옛 증명의 것을 그대로 싣는다 — 서명 다이제스트가 공개 입력의 그 칸을 덮으므로 아래 서명도 같은 값으로 한다.
-        const old = ((await kv.get('proofs')) ?? []).filter((x) => x.kind === 'pi_cred' && x.r_s === rsKey).pop();
+        const old = ((await kv.get('proofs')) ?? []).filter((x) => x.kind === 'pi_cred' && x.r_s === rsKey && String(x.publicSignals[PUB_INDEX.COUNTER]) === nonce.toString()).pop();
         if (!old) return R(409, { reason: 'no_old_proof', timings });
         const pub = old.publicSignals.map(String);
         const rootAtBuild = pub[PUB_INDEX.REV_ROOT];
-        pub[PUB_INDEX.REV_ROOT] = synced.root.toString(); pub[PUB_INDEX.REG_ROOT] = synced.regRoot.toString(); pub[PUB_INDEX.COUNTER] = nonce.toString();
-        // 바꾼 뒤에도 옛것과 똑같으면(보내지 못한 거래 증명 — 같은 root·같은 nonce) 그 증명은 아직 유효하다. 시연이 진짜 출금이 되지 않게 거절한다(2026-11-23 리뷰).
+        pub[PUB_INDEX.REV_ROOT] = synced.root.toString(); pub[PUB_INDEX.REG_ROOT] = synced.regRoot.toString();
+        // 바꾼 뒤에도 옛것과 똑같으면(root 가 아직 그대로) 그 증명은 아직 유효하다. 시연이 진짜 출금이 되지 않게 거절한다(2026-11-23 리뷰).
         if (pub.join(',') === old.publicSignals.map(String).join(',')) return R(409, { reason: 'replay_still_valid', timings });
         const pb = pub.map(BigInt);
         disclosure = { mask: pb[PUB_INDEX.DISC_MASK], lo: pb.slice(PUB_INDEX.DISC_LO, PUB_INDEX.DISC_HI), hi: pb.slice(PUB_INDEX.DISC_HI, PUB_INDEX.SET_SEL), sel: pb[PUB_INDEX.SET_SEL], root: pb[PUB_INDEX.SET_ROOT] };
@@ -1071,6 +1072,8 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
         if (e.reason === 'no_session') return R(404, { reason: 'no_session', timings });
         throw e;
       }
+      // 시연 ①(2026-11-23): 증명만 만들어 둔다 — 위 proveSession 이 증명 기록(proofs)에 남겼다(캐시면 같은 공개 입력의 기록이 이미 있다). 서명·호출 데이터는 만들지 않는다.
+      if (buildOnly === true && replay !== true) return R(200, { held: true, walletAddr, nonce: nonce.toString(), root: proved.root, regRoot: proved.regRoot, cacheHit: proved.cacheHit, timings });
       // 받는 주소(2026-10-16): 대소문자 체크섬(EIP-55)이 안 맞는 입력도 받는다 — 같은 바이트이므로 소문자로 내려 정규형으로 만든다(틀린 글자는 isAddr 가 먼저 걸러낸다).
       const payload = { to: normalizeAddr(to), value: BigInt(value), data, nonce };
       // 시연(가짜 서명, 사용자 요청 2026-10-14): 세션키 대신 임의 키로 서명한다 — 컨트랙트의 _recover 가 복원한 주소가 pub[2](pk_i)와 달라

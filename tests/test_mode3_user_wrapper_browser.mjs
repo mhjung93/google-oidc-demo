@@ -189,25 +189,83 @@ try {
     assert.equal(await page.$$eval('#txSource', (l) => l.length), 0); assert.ok(!(await visibleText(page)).includes('출금 출처'));
     await page.close();
   });
-  // 2026-11-23(사용자 요청, 시연): 옛 영지식 증명(a·b·c)을 지금의 공개 입력(root·nonce)에 붙여 보낸다 — 거래는 블록에 실리고 계정 컨트랙트의 증명 검증(InvalidProof)에서 되돌려진다.
-  await t('옛 증명으로 보내기(시연): 거래는 블록에 실리고 InvalidProof 로 실패한다 — 화면에 거래 해시와 root(생성 당시·현재)가 보인다', async () => {
+  // 2026-11-23(사용자 요청, 시연 2차): root 가 바뀐 경우만 보인다 — ① 지금의 root·nonce 로 증명을 만들어 두고(보내지 않는다) ② root 가 바뀐 뒤 그 증명에
+  // 지금 root 만 붙여 보낸다. nonce 는 ① 때 그대로라 nonce 검사는 통과하고 계정 컨트랙트의 증명 검증(InvalidProof)에서만 되돌려진다.
+  // ① 뒤에 nonce 가 바뀌었으면(그사이 출금) 보내기 전에 거절한다 — nonce 검사 장면은 다음 버전에서 따로 보인다.
+  let replayPage = null;
+  // 승인 창은 앞 요청의 창을 다시 쓸 수 있다(새 창 이벤트가 없을 수 있다) — 누르기만 하고 결과는 #txVerdict 로 본다.
+  const clickTx = async (page, sel) => { await page.click(sel); };
+  await t('옛 증명 시연: ① 없이 ② 를 누르면 지금 nonce 로 만들어 둔 증명이 없어 보내지 않는다(블록 그대로)', async () => {
     google.setNextSub('google-user-A'); google.setNextClaims({ email: 'jihoo@example.com', email_verified: true });
     const { rpPage } = await startLogin(A.ctx, rp);
+    replayPage = rpPage;
     await waitText(rpPage, '#verdict', '로그인 성공', 120_000);
-    await rpPage.waitForSelector('#txReplayBtn:not([hidden])', { timeout: 10_000 });
+    await rpPage.waitForSelector('#txHoldBtn:not([hidden])', { timeout: 10_000 }); await rpPage.waitForSelector('#txReplayBtn:not([hidden])');
+    const h0 = await chainRead.getBlockNumber();
+    await clickTx(rpPage, '#txReplayBtn');
+    await waitText(rpPage, '#txVerdict', '만들어 둔 증명이 없습니다', 120_000);
+    assert.equal(await chainRead.getBlockNumber(), h0, '거절했는데 블록이 늘었다'); assert.equal(await rpPage.$eval('#txHashRow', (e) => e.hidden), true);
+  });
+  await t('옛 증명 시연 ①: 증명만 만들어 두고 거래는 보내지 않는다 — root 가 그대로면 ② 는 거절(블록 그대로)', async () => {
+    const h0 = await chainRead.getBlockNumber(), g0 = A.hits.get;
+    await clickTx(replayPage, '#txHoldBtn');
+    await waitText(replayPage, '#txVerdict', '증명을 만들어 두었습니다', 120_000);
+    assert.equal(await chainRead.getBlockNumber(), h0, '① 이 거래를 보냈다'); assert.equal(A.hits.get - g0, 1, `패스키는 한 번: ${j(A.hits)}`);
+    await clickTx(replayPage, '#txReplayBtn');
+    await waitText(replayPage, '#txVerdict', 'root 가 아직 바뀌지 않았습니다', 120_000);
+    assert.equal(await chainRead.getBlockNumber(), h0, '거절했는데 블록이 늘었다');
+  });
+  // 2026-11-23(사용자 요청): zkWrapper 의 관리자 화면에는 폐기할 곳이 없었다(계정 카드는 11-11 에 숨겼다) — zkWrapper 일 때만 계정 카드를 다시 보인다.
+  await t('관리자 화면(zkWrapper): 계정 카드·메뉴가 보이고, 세션 표의 "폐기" → 게시로 root 가 바뀐다', async () => {
+    const root0 = (await cia.get('/mode3/health')).body.root;
+    const c = (await wallet.get('/user/config')).body;
+    const p = await A.ctx.newPage(); await p.goto(`${c.ciaUrl}/admin`);
+    await p.fill('#adminGate .gate-pwd', cia.adminSecret); await p.click('#adminGate .gate-form button[type=submit]');
+    await p.waitForFunction(() => document.getElementById('secAccounts')?.offsetParent !== null, null, { timeout: 15_000 });
+    assert.equal(await p.$$eval('.section-menu a[href="#secAccounts"]', (l) => l.length), 1, '메뉴에 계정 항목이 없다');
+    await p.waitForFunction((head) => [...document.querySelectorAll('#accounts tr')].some((tr) => tr.textContent.includes(head)), UID_A.slice(0, 12), { timeout: 15_000 });
+    await p.evaluate((head) => [...document.querySelectorAll('#accounts tr')].find((tr) => tr.textContent.includes(head)).querySelector('button').click(), UID_A.slice(0, 12));
+    await p.waitForFunction(() => [...document.querySelectorAll('#accounts button')].some((b) => b.textContent.trim() === '폐기'), null, { timeout: 15_000 })
+      .catch(async () => { throw new Error(`세션 폐기 버튼이 없다: ${(await text(p, '#accounts')).replace(/\s+/g, ' ').slice(0, 400)}`); });
+    // 가장 먼저 발급된(첫 로그인) 세션을 폐기한다 — 지금 시연 중인 zkONE 세션은 남긴다. bound 는 기본값 0 그대로.
+    await p.evaluate(() => { window.prompt = (_m, d) => d; [...document.querySelectorAll('#accounts button')].find((b) => b.textContent.trim() === '폐기').click(); });
+    await waitText(p, '#adminVerdict', '폐기', 15_000);
+    await p.click('#publishBtn');
+    await p.waitForFunction(() => (document.getElementById('publishVerdict')?.textContent ?? '').length > 0, null, { timeout: 30_000 });
+    const root1 = (await cia.get('/mode3/health')).body.root;
+    assert.notEqual(root1, root0, '게시했는데 root 가 그대로다');
+    await p.close();
+  });
+  await t('옛 증명 시연 ②(root 가 바뀐 뒤): 거래는 블록에 실리고 InvalidProof — nonce 는 ① 때 그대로, root 두 줄은 서로 다르다', async () => {
     const g0 = A.hits.get;
-    const [popup] = await Promise.all([A.ctx.waitForEvent('page'), rpPage.click('#txReplayBtn')]);
-    await waitText(rpPage, '#txVerdict', '증명 검증', 120_000);
-    await popup.waitForEvent('close', { timeout: 10_000 }).catch(() => {});
-    const v = await text(rpPage, '#txVerdict'); assert.ok(v.includes('InvalidProof'), v.slice(0, 200));
-    const hash = await rpPage.$eval('#txHashCode', (e) => e.title); assert.match(hash, /^0x[0-9a-f]{64}$/);
+    await clickTx(replayPage, '#txReplayBtn');
+    await waitText(replayPage, '#txVerdict', '증명 검증', 120_000);
+    const v = await text(replayPage, '#txVerdict'); assert.ok(v.includes('InvalidProof'), v.slice(0, 200));
+    const hash = await replayPage.$eval('#txHashCode', (e) => e.title); assert.match(hash, /^0x[0-9a-f]{64}$/);
     replayHash = hash;
     const rc = await chainRead.getTransactionReceipt(hash); assert.ok(rc, '거래가 블록에 없다'); assert.equal(rc.status, 0, '되돌려져야 한다');
-    assert.equal(rc.to.toLowerCase(), (await accountAddr(info1.factoryAddress, ppid1)).toLowerCase(), '내 계정으로 간 거래가 아니다');
-    assert.equal(await rpPage.$eval('#raceRoots', (e) => e.hidden), false, 'root 두 줄이 없다');
-    assert.ok((await text(rpPage, '#raceRootBuilt')).length > 10 && (await text(rpPage, '#raceRootNow')).length > 10);
+    const addr = await accountAddr(info1.factoryAddress, ppid1);
+    assert.equal(rc.to.toLowerCase(), addr.toLowerCase(), '내 계정으로 간 거래가 아니다');
+    const args = walletInterface.decodeFunctionData('execute', (await chainRead.getTransaction(hash)).data);
+    const nonceNow = await new ethers.Contract(addr, ['function nonce() view returns (uint256)'], chainRead).nonce();
+    assert.equal(BigInt(args[5][28]), nonceNow, '증명의 counter 가 지금 nonce 와 다르다(nonce 때문에 실패하면 안 된다)');
+    assert.equal(BigInt(args[0].nonce), nonceNow);
+    assert.equal(await replayPage.$eval('#raceRoots', (e) => e.hidden), false, 'root 두 줄이 없다');
+    const built = await text(replayPage, '#raceRootBuilt'), now = await text(replayPage, '#raceRootNow');
+    assert.ok(built.length > 10 && now.length > 10); assert.notEqual(built, now, 'root 가 바뀌지 않은 것으로 보인다');
     assert.equal(A.hits.get - g0, 1, `패스키는 한 번: ${j(A.hits)}`);
-    await rpPage.close();
+  });
+  await t('옛 증명 시연: ① 뒤 일반 출금으로 nonce 가 바뀌면 ② 는 보내지 않는다(블록 그대로)', async () => {
+    await clickTx(replayPage, '#txHoldBtn');
+    await waitText(replayPage, '#txVerdict', '증명을 만들어 두었습니다', 120_000);
+    await replayPage.fill('#txValue', '0');
+    await clickTx(replayPage, '#txBtn');
+    await waitText(replayPage, '#txVerdict', '보냈습니다', 120_000);
+    const h0 = await chainRead.getBlockNumber();
+    await clickTx(replayPage, '#txReplayBtn');
+    await waitText(replayPage, '#txVerdict', '만들어 둔 증명이 없습니다', 120_000);
+    assert.equal(await chainRead.getBlockNumber(), h0, '거절했는데 블록이 늘었다');
+    await replayPage.close();
   });
   await t('옛 증명 시연 경로는 이 서비스에 로그인해 있는 세션의 거래만 보낸다 — r_s 를 바꾼 호출 데이터는 블록 없이 403(2026-11-23 리뷰)', async () => {
     assert.ok(replayHash, '앞 사례의 거래가 없다');
