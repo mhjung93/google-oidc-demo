@@ -61,12 +61,13 @@ async function newBrowserWith(secretHex) {
   const ctx = await browser.newContext();
   await ctx.exposeFunction('__webauthnHit', (k) => { hits[k] = (hits[k] ?? 0) + 1; });
   await ctx.addInitScript({ content: buildWebAuthnStub({ secretHex }) });
-  ctx.on('dialog', (d) => d.accept());
+  const dialogs = [];   // 확인 창 문구(2026-11-23: 세션 끝내기 확인 창이 서비스 이름을 말하는지 본다)
+  ctx.on('dialog', (d) => { dialogs.push(d.message()); d.accept(); });
   // 이 브라우저에서 나간 모든 요청 — 어느 페이지가(pageOrigin) 어디로(url) 무엇을(body·referer·origin) 보냈는지. Task 5 의 "서버가 무엇을 보는가" 사례가 본다.
   const reqs = [];
   ctx.on('request', (r) => { try { let from = null; try { from = new URL(r.frame().url()).origin; } catch { from = null; } reqs.push({ url: r.url(), method: r.method(), body: r.postData() ?? '', referer: r.headers().referer ?? '', origin: r.headers().origin ?? '', from, nav: r.isNavigationRequest() }); } catch { /* 닫힌 창 */ } });
   ctx.on('page', (p) => { if (DEBUG) { p.on('console', (m) => console.log(`    [${new URL(p.url()).port}] ${m.type()}: ${m.text()}`)); p.on('pageerror', (e) => console.log(`    [page error] ${e.message}`)); } });
-  return { ctx, hits, reqs };
+  return { ctx, hits, reqs, dialogs };
 }
 /** 서비스 페이지를 연다 — 이 브라우저가 그 서비스에 이미 로그인돼 있으면(쿠키 세션) 로그아웃해 로그인 버튼이 보이게 한다. */
 async function openRp(ctx, svc) {
@@ -210,9 +211,12 @@ try {
     const h0 = await chainRead.getBlockNumber(), g0 = A.hits.get;
     await clickTx(replayPage, '#txHoldBtn');
     await waitText(replayPage, '#txVerdict', '증명을 만들어 두었습니다', 120_000);
+    // 2026-11-23(화면 점검): root 바꾸는 길은 홈의 "세션 끝내기" → 게시다 — 옛 안내("관리자 화면에서 폐기·게시")를 쓰지 않는다
+    assert.ok((await text(replayPage, '#txVerdict')).includes('홈에서'), await text(replayPage, '#txVerdict'));
     assert.equal(await chainRead.getBlockNumber(), h0, '① 이 거래를 보냈다'); assert.equal(A.hits.get - g0, 1, `패스키는 한 번: ${j(A.hits)}`);
     await clickTx(replayPage, '#txReplayBtn');
     await waitText(replayPage, '#txVerdict', 'root 가 아직 바뀌지 않았습니다', 120_000);
+    assert.ok((await text(replayPage, '#txVerdict')).includes('홈에서'), await text(replayPage, '#txVerdict'));
     assert.equal(await chainRead.getBlockNumber(), h0, '거절했는데 블록이 늘었다');
   });
   // 2026-11-23(사용자 요청): zkWrapper 의 관리자 화면에는 폐기할 곳이 없었다(계정 카드는 11-11 에 숨겼다) — zkWrapper 일 때만 계정 카드를 다시 보인다.
@@ -387,7 +391,10 @@ try {
     google.setNextSub('google-user-A'); google.setNextClaims({ email: 'jihoo@example.com', email_verified: true });
     const { Cf_s } = await endSessionOnHome(page, info2.arid);
     await page.waitForURL((u) => u.origin === new URL(wallet.base).origin && u.pathname === '/' && !u.search.includes('authorize'), { timeout: 60_000 });
-    await waitText(page, '#sessionVerdict', '폐기를 요청했습니다', 30_000);
+    // 2026-11-23(화면 점검): 확인 창은 어느 서비스를 끝내는지 말하고, 결과는 서비스 이름으로 말한다 — H(C_s)·관리자 화면은 사용자 문구에 없다
+    assert.ok(A.dialogs.at(-1)?.includes('zkTWO'), `확인 창: ${A.dialogs.at(-1)}`);
+    await waitText(page, '#sessionVerdict', 'zkTWO 세션을 끝냈습니다', 30_000);
+    { const v = await text(page, '#sessionVerdict'); assert.ok(!v.includes('H(C_s)') && !v.includes('관리자'), v); }
     assert.equal(A.hits.get - g0, 0, `패스키를 물었다: ${j(A.hits)}`);
     const after = await adminSessions();
     assert.ok(after.find((x) => x.Cf_s === Cf_s)?.revokedAt, '그 세션이 폐기되지 않았다');
@@ -399,6 +406,12 @@ try {
     await rpPage.click('#txReplayBtn');
     await waitText(rpPage, '#txVerdict', '증명 검증', 120_000);
     assert.ok((await text(rpPage, '#txVerdict')).includes('InvalidProof'));
+    // 2026-11-23(화면 점검): 끝낸 서비스(zkTWO)를 다시 열면 말없이 로그아웃 화면이 아니라 "세션이 끝났다" 를 말한다
+    const p2 = await A.ctx.newPage(); await p2.goto(`${rp2.base}/`);
+    await waitText(p2, '#verdict', '세션이 끝났습니다', 15_000);
+    assert.ok(await p2.$eval('#loginBtn', (b) => !b.hidden), 'zkTWO 가 아직 로그인 상태다');
+    assert.ok(await p2.$eval('#sessionBar', (b) => !b.hidden), '상단 바가 없다');
+    await p2.close();
     await page.close(); await rpPage.close();
   });
   await t('서비스의 로그인 버튼은 "zk 로그인" 이다', async () => {

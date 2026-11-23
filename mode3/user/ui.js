@@ -540,7 +540,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       btn.className = 'danger';
       btn.textContent = tt('wallet_end_session') || '이 세션 끝내기(폐기)';
       // 래퍼 방식(2026-11-23 사용자 요청): 세션 끝내기는 Google 확인(1회용 요청 키에 묶인 토큰 + 그 키의 서명)으로 한다 — π_IdP·패스키를 쓰지 않는다.
-      btn.addEventListener('click', () => (config.wrapper === true ? wrapperEndSession(r_s, btn) : revokeSession(r_s, c, btn)));
+      btn.addEventListener('click', () => (config.wrapper === true ? wrapperEndSession(r_s, c, btn) : revokeSession(r_s, c, btn)));
       box.append(dl, btn);
       acts.appendChild(box);
     }
@@ -684,9 +684,15 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     } finally { delete btn.dataset.busy; refresh(); }
   }
   /** 래퍼 방식의 세션 끝내기 1단계(2026-11-23): 요청 키를 만들고 이 탭이 Google 로 간다. 돌아오면 popup.js finishWrapperEnd 가 폐기를 요청하고 홈으로 돌려보낸다. */
-  async function wrapperEndSession(r_s, btn) {
+  /** 사람이 알아보는 서비스 이름 — 세션 끝내기 확인 창·결과 문구에 쓴다(2026-11-23 화면 점검). */
+  function serviceNameOf(c) {
+    if (c?.serviceName) return String(c.serviceName);
+    try { return new URL(c.origin).host; } catch { return ''; }
+  }
+  async function wrapperEndSession(r_s, c, btn) {
     if (btn.dataset.busy === '1') return;
-    if (!Demo.confirmDanger('confirm_revoke')) return;
+    const svc = serviceNameOf(c);
+    if (!window.confirm(tt('confirm_end_session', { svc: svc || '이' }) || '되돌릴 수 없습니다. 이 세션을 끝낼까요?')) return;
     btn.dataset.busy = '1';
     pendingVerdict($('sessionVerdict'), 'working');
     try {
@@ -698,7 +704,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       const b = await core.wrapperBegin();
       if (b.status !== 200) { setVerdict($('sessionVerdict'), false, 'wallet_session_revoke_failed', { reason: b.body?.reason ?? `HTTP ${b.status}`, detail: safeDetail(b.body) }); return; }
       const { url, state } = googleAuthUrl({ authorizeUrl: o.authorizeUrl, clientId: o.clientId, redirectUri: o.redirectUri, nonce: b.body.googleNonce, walletOrigin: location.origin });
-      saveWrapperPending(window.sessionStorage, { state, at: Date.now(), req: { type: 'mode3-end-session', r_s }, origin: location.origin });
+      saveWrapperPending(window.sessionStorage, { state, at: Date.now(), req: { type: 'mode3-end-session', r_s, svc }, origin: location.origin });
       location.assign(url);
     } catch (e) {
       setVerdict($('sessionVerdict'), false, 'wallet_session_revoke_failed', { reason: 'internal', detail: e.message });
@@ -712,7 +718,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     if (r.ok) {
       progress.revoked = true;
       $('sessionLog').textContent = `세션 폐기 요청 완료 (H(C_s)=${String(r.Cf_s ?? '').slice(0, 12)}…): inserted=${r.inserted}, pending=${r.pending} — 다음 게시부터 효력`;
-      setVerdict($('sessionVerdict'), true, 'revoked_ok', () => ({ summary: tt('wallet_session_revoked', { cfs: `${String(r.Cf_s ?? '').slice(0, 12)}…` }) || '이 세션만 폐기를 요청했습니다 — 다음 게시부터 효력이 있습니다.', detail: r }));
+      setVerdict($('sessionVerdict'), true, 'revoked_ok', () => ({ summary: tt('wallet_session_revoked', { svc: r.svc || '이', cfs: `${String(r.Cf_s ?? '').slice(0, 12)}…` }) || '이 세션을 끝냈습니다 — 다음 폐기 목록 갱신(게시) 때부터 효력이 있습니다.', detail: r }));
     } else setVerdict($('sessionVerdict'), false, 'wallet_session_revoke_failed', { reason: r.reason ?? 'internal', ...(r.detail ? { detail: r.detail } : {}) });
   }
   $('refreshBtn').addEventListener('click', () => refresh(true));
