@@ -169,5 +169,23 @@ t('보통 passkey-web: 서비스 ID 목록을 zkIdP 에 넘기고, 같은 ID 면
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+// 2026-11-22(11-18 리뷰 3번): 기동 때 VM 시계를 재서 30초(CLOCK_SKEW_WARN_SECONDS)를 넘게 어긋나면 경고한다 — ssh(on)는 가짜로 바꿔 돌린다.
+t('VM 시계가 어긋나면 기동 때 경고한다 — 어긋나지 않으면 조용하고, zkwrapper 에는 IdP VM 이 없다', () => {
+  const a = idx(/^CLOCK_VMS=\(/), b = idx(/^done; unset _vm_t _here_t _skew CLOCK_VMS/);
+  assert.ok(a >= 0 && b > a, '구간을 못 찾았다');
+  const body = lines.slice(a, b + 1).join('\n');
+  const run = (offsets, env = {}) => spawnSync('bash', ['-c', `on() { case "$1" in ${Object.entries(offsets).map(([h, o]) => `${h}) echo $(( $(date +%s) + (${o}) ));;`).join(' ')} *) return 1;; esac; }\n${body}`],
+    { encoding: 'utf8', env: { PATH: process.env.PATH, IDP: 'vm-idp', RP1: 'vm-rp1', RP2: 'vm-rp2', ZW: '0', ...env } }).stdout;
+  let out = run({ 'vm-idp': 0, 'vm-rp1': 1, 'vm-rp2': -2 });
+  assert.equal(out.trim(), '', out);
+  out = run({ 'vm-idp': 0, 'vm-rp1': 400, 'vm-rp2': -90 });
+  assert.match(out, /VM vm-rp1 의 시계가 이 PC 와 40[0-9]초 어긋난다/, out); assert.match(out, /VM vm-rp2 의 시계가 이 PC 와 9[0-9]초 어긋난다/, out);
+  assert.equal(/vm-idp/.test(out), false, out);
+  out = run({ 'vm-rp1': 0, 'vm-rp2': 0 }, { ZW: '1' });
+  assert.equal(out.trim(), '', 'zkwrapper 는 IdP VM 을 재지 않는다: ' + out);
+  out = run({ 'vm-rp1': 0, 'vm-rp2': 0 });
+  assert.match(out, /VM vm-idp 의 시계를 읽지 못했다/, out);
+});
+
 console.log(fails ? `\n${fails} FAILED` : '\nall ok');
 process.exit(fails ? 1 : 0);

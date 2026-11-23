@@ -1516,6 +1516,20 @@ try {
       try { p.once('dialog', (d) => d.accept()); await p.click('#publishBtn'); await p.waitForTimeout(4000); assert.ok(health.length >= 2, `게시 뒤 거울 상태를 다시 읽는다(${health.length}회)`); }
       finally { p.off('request', onReq); }
     }
+    // 2026-11-22(11-18 리뷰 4번): 분리 데모의 폐기 체인은 게시 말고는 블록이 생기지 않아 하트비트가 돌지 않고, 거울 중계는 뒤처졌을 때만 나간다 —
+    // 응용 체인 거래가 쌓여 root_too_old 가 되면 "게시" 는 올릴 것이 없어 아무것도 하지 않는다. 관리자 화면에서 강제 중계(/cia/admin/relay)를 누를 수 있어야 한다.
+    {
+      const mirrorEpoch0 = (await cia.mirrorContract.epoch());
+      const relayCalls = []; const onReq = (r) => { if (new URL(r.url()).pathname === '/cia/admin/relay' && r.method() === 'POST') relayCalls.push(r.url()); };
+      p.on('request', onReq);
+      try {
+        assert.equal(await p.isVisible('#relayBtn'), true, '거울 체인이 있으면 "거울 다시 맞추기" 버튼이 보인다');
+        p.once('dialog', (d) => d.accept()); await p.click('#relayBtn');
+        await waitText(p, '#publishVerdict', '거울을 다시 맞췄습니다', 30_000);
+        assert.equal(relayCalls.length, 1, '강제 중계를 한 번 부른다');
+        assert.ok((await cia.mirrorContract.epoch()) > mirrorEpoch0, '거울 epoch 가 올라 응용 체인의 root 나이가 다시 0 에서 시작한다');
+      } finally { p.off('request', onReq); }
+    }
     await p.close();
   });
 

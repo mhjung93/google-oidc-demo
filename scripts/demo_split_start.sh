@@ -200,6 +200,16 @@ if [ "$WALLET_MODE" = passkey-web ]; then
   echo "인증서 배포 ok: $([ "$ZW" = 1 ] || echo 'idp·')zkone·zktwo (VM ~/zkd-demo/tls), 지갑은 $TLS_OUT"
 fi
 
+# VM 시계(2026-11-22, 11-18 리뷰 3번): 입금·구매 본문 시각은 브라우저(이 PC) 시계, 판정은 서비스 VM 시계 ±5분이고, zkIdP·zkWrapper 토큰도 서비스 VM 시계로
+# 검증한다. VM 을 일시 중지했다 재개하면(격리 망, NTP 없음) 시계가 어긋나 정상 요청이 request_replayed·bad_id_token 으로 막힌다 — 기동할 때 재서 경고만 한다.
+CLOCK_VMS=("$RP1" "$RP2"); [ "$ZW" = 1 ] || CLOCK_VMS=("$IDP" "${CLOCK_VMS[@]}")
+for h in "${CLOCK_VMS[@]}"; do
+  _vm_t="$(on "$h" 'date +%s' 2>/dev/null)"; _here_t="$(date +%s)"
+  case "$_vm_t" in ''|*[!0-9]*) echo "  경고: VM $h 의 시계를 읽지 못했다(ssh)"; continue ;; esac
+  _skew=$(( _vm_t - _here_t )); [ "$_skew" -lt 0 ] && _skew=$(( -_skew ))
+  [ "$_skew" -gt "${CLOCK_SKEW_WARN_SECONDS:-30}" ] && echo "  경고: VM $h 의 시계가 이 PC 와 ${_skew}초 어긋난다 — 입금·구매(±5분)·로그인 토큰(허용 60초)이 거절될 수 있다. VM 에서 sudo date -s \"@\$(date +%s)\" 처럼 맞춘다(이 PC 의 시각을 넣는다)"
+done; unset _vm_t _here_t _skew CLOCK_VMS
+
 # 2. 옛 상태 파일은 새 체인과 맞지 않으므로 .bak-시각 으로 옮긴다(지우지 않는다). IdP 키(cia_keys.json)는 그대로 둔다.
 [ "$ZW" = 1 ] || on "$IDP" "cd ~/zkd-demo && for f in cia_state.json; do [ -e \$f ] && mv \$f \$f.bak-$TS && echo \"backup IdP \$f\"; done; true"
 if [ "$ZW" = 1 ]; then mkdir -p -m 700 "$ZW_DIR" && { [ -e "$ZW_DIR/cia_state.json" ] && mv "$ZW_DIR/cia_state.json" "$ZW_DIR/cia_state.json.bak-$TS" && echo "backup zkWrapper cia_state.json"; true; }; fi   # 열쇠(cia_keys.json)는 그대로

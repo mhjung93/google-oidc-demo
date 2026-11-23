@@ -715,7 +715,8 @@
     async function goIdpAuth(req, evOrigin, { purpose = 'issue' } = {}) {
       const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
       // 2026-11-09(사용자 결정): auid 를 쿼리로 넘기지 않는다 — 인증 창에서 uid·비밀번호·auid 를 모두 직접 넣는다(auid 는 지갑 계정 탭 "상세" 에서 복사).
-      sessionStorage.setItem(PENDING_KEY, JSON.stringify({ req, origin: evOrigin, nonce, at: Date.now() }));
+      // 2026-11-22(11-18 리뷰 5번): 목적도 남겨 돌아온 목적과 대조한다 — mode3/user/idp_return.js 와 같은 규칙(tests/test_mode3_wallet_idp_return_parity.mjs 가 둘을 맞춰 본다).
+      sessionStorage.setItem(PENDING_KEY, JSON.stringify({ req, origin: evOrigin, nonce, at: Date.now(), purpose }));
       const u = new URL(`${cfg.ciaUrl}/login`);
       u.searchParams.set('nonce', nonce); u.searchParams.set('wallet', location.origin); u.searchParams.set('return', '1');
       if (purpose === 'register') u.searchParams.set('purpose', 'register');
@@ -732,6 +733,7 @@
       sessionStorage.removeItem(PENDING_KEY);
       history.replaceState(null, '', `${location.pathname}?authorize=1`);   // 1회용 코드가 주소창·히스토리에 남지 않게
       if (!pend || !code || !nonce || pend.nonce !== nonce || typeof pend.at !== 'number' || Date.now() - pend.at > PENDING_MAX_AGE_MS) return { req: null, origin: null, code: null };
+      if (typeof pend.purpose === 'string' && pend.purpose !== purpose) return { req: null, origin: null, code: null };   // 갈 때의 목적과 돌아온 목적이 다르다(목적을 남기지 않은 옛 대기분은 그대로)
       if (purpose === 'register' && !/^[0-9]+$/.test(uid ?? '')) return { req: null, origin: null, code: null };
       return { req: pend.req, origin: pend.origin, code, purpose, uid: purpose === 'register' ? uid : null, auid: purpose === 'register' && /^[0-9]+$/.test(auid ?? '') ? auid : null };
     }

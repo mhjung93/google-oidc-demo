@@ -58,6 +58,7 @@ window.DemoStrings = {
       ko_pk: '계정과 zk 클라이언트 등록을 지웁니다. 되돌릴 수 없습니다. 등록된 자격증명은 먼저 폐기(게시)됩니다. 브라우저에 남은 등록은 zk 클라이언트 화면 "보관 상태" 의 "모두 지우기" 로 지웁니다. 계속할까요?', en_pk: 'This deletes the account and its zk client registration and cannot be undone. A registered credential is revoked (and published) first. The registration left in the browser is cleared with "Erase everything" under "Storage" on the zk client page. Continue?' },
     confirm_tamper: { ko: '시연용입니다 — 이 계정의 등록부 슬롯에 가짜 자격증명을 게시합니다. 계속할까요?', en: 'Demo only — publish a fake credential into this account’s registry slot. Continue?' },
     confirm_publish: { ko: '폐기 목록과 등록부를 체인에 게시합니다. 계속할까요?', en: 'Publish the revocation list and the registry on-chain. Continue?' },
+    confirm_relay: { ko: '응용 체인의 거울에 폐기 목록을 지금 다시 옮깁니다(새 변경이 없으면 같은 목록을 새 판으로 한 번 더 게시합니다). 계속할까요?', en: 'Relay the revocation list to the application-chain mirrors now (if nothing changed, the same list is re-published as a new epoch first). Continue?' },
     confirm_rp_revoke_cert: { ko: '이 RP 의 인증서를 회수합니다. RP 는 몇 초 안에 비활성이 되고, 운영자가 다시 "인증서 발급 요청" 을 하면 승인해 주어야 합니다. 계속할까요?', en: 'Revoke this RP’s certificate. The RP goes inactive within seconds; once its operator requests a certificate again you need to approve it. Continue?' },
     confirm_rp_deny: { ko: 'RP 를 거절합니다. 거절은 되돌릴 수 없고, 운영자가 키로 다시 등록해야 합니다. 계속할까요?', en: 'Deny this RP. This cannot be undone; the operator must re-register with the key. Continue?' },
     confirm_open_approve: { ko: '개봉을 승인하면 이 세션의 uid 가 영구히 기록됩니다(조건부 프라이버시 해제). 계속할까요?', en: 'Approving records this session’s uid permanently (conditional privacy is lifted). Continue?' },
@@ -981,6 +982,7 @@ window.DemoStrings = {
     admin_deny_btn: { ko: '거절', en: 'Deny' },
     admin_state_btn: { ko: '상태 보기', en: 'Show state' },
     admin_publish_btn: { ko: '게시(체인에 올리기)', en: 'Publish on-chain' },
+    admin_relay_btn: { ko: '거울 다시 맞추기', en: 'Re-sync mirrors' },
     admin_accounts_desc: { ko: '등록된 계정과 로그인 세션을 폐기합니다.', en: 'Revoke a registered account or one of its login sessions.' },
     admin_sessions_note: { ko: '"세션" 은 그 계정의 발급 세션 목록입니다. 활성 세션만 폐기할 수 있고, 폐기 리프도 되돌릴 수 없습니다.', en: 'Sessions lists the issuances of that account. Only an active session can be revoked, and the revocation leaf cannot be undone either.' },
     admin_no_accounts: { ko: '(계정 없음)', en: '(no accounts)' },
@@ -1093,6 +1095,9 @@ window.DemoStrings = {
     admin_publish_summary: { ko: '판 {epoch} · 리프 {n} 개를 체인에 올렸습니다.', en: 'Epoch {epoch} · leaves written on-chain: {n}' },
     admin_publish_none: { ko: '올릴 변경이 없어 게시하지 않았습니다.', en: 'Nothing changed, so nothing was published.' },
     admin_publish_failed: { ko: '게시 실패', en: 'Publication failed' },
+    admin_relay_title: { ko: '거울 갱신 완료', en: 'Mirrors re-synced' },
+    admin_relay_summary: { ko: '거울을 다시 맞췄습니다 — {list}', en: 'Mirrors re-synced — {list}' },
+    admin_relay_failed: { ko: '거울 갱신 실패', en: 'Mirror re-sync failed' },
     admin_rp_approve_title: { ko: 'RP 승인', en: 'RP approved' },
     admin_rp_revoke_cert_btn: { ko: '인증서 회수', en: 'Revoke certificate' },   // 2026-11-06
     admin_rp_reopen_btn: { ko: '다시 대기로', en: 'Reopen (pending)' },
@@ -1482,7 +1487,7 @@ window.DemoStrings = {
     // (lib/mode3_rp.js verifyLogin, mode3_rp.js 세션 라우트, mode3_wallet_agent.js, lib/mode3_onchain.js, cia.js, mode3/wallet.html).
     stale_root: { where: 'rp', ko: { title: '폐기 목록이 오래됐습니다', cause: '스냅이 최신 폐기 목록으로 증명하지 않았습니다.', action: '다시 로그인하세요 — 스냅 에이전트가 최신 폐기 목록을 받아 증명을 새로 만듭니다.' }, en: { title: 'Revocation list is stale', cause: 'The Snap did not prove against the latest revocation list.', action: 'Log in again — the Snap agent fetches the latest revocation list and builds a new proof.' } },   // 2026-11-15: "동기화 생략" 은 없어진 전문가 옵션이다
     stale_registry_root: { where: 'rp', ko: { title: '등록부 버전이 오래됐습니다', cause: '스냅이 최신 등록부 root 가 아니라 오래된 root 로 증명을 만들었습니다 — 그 사이 등록부가 바뀌었습니다.', action: '스냅에서 다시 로그인하세요.' }, en: { title: 'The registry version is stale', cause: 'The Snap produced the proof against an old registry root — the registry changed in the meantime.', action: 'Log in again from the Snap.' } },
-    root_too_old: { where: 'rp', ko: { title: '폐기 목록이 너무 오래 게시되지 않았습니다', cause: '마지막 게시 이후 지난 블록 수가 허용 한도(maxRootAge)를 넘었습니다 — zkIdP 의 게시가 멈춘 것입니다.', action: 'zkIdP 를 살리고 관리자 페이지에서 폐기 목록을 게시한 뒤 다시 시도하세요.' }, en: { title: 'Revocation list has not been published recently enough', cause: 'More blocks have passed since the last publication than the limit (maxRootAge) allows — the zkIdP stopped publishing.', action: 'Bring the zkIdP back up, publish the revocation list from the admin page, then try again.' } },
+    root_too_old: { where: 'rp', ko: { title: '폐기 목록이 너무 오래 게시되지 않았습니다', cause: '마지막 게시 이후 지난 블록 수가 허용 한도(maxRootAge)를 넘었습니다 — zkIdP 의 게시가 멈춘 것입니다.', action: 'zkIdP 를 살리고 관리자 페이지의 "거울 다시 맞추기" 를 누른 뒤 다시 시도하세요(올릴 폐기가 남아 있으면 "게시" 가 함께 올립니다).' }, en: { title: 'Revocation list has not been published recently enough', cause: 'More blocks have passed since the last publication than the limit (maxRootAge) allows — the zkIdP stopped publishing.', action: 'Bring the zkIdP back up, press "Re-sync mirrors" on the admin page, then try again ("Publish" also uploads any pending revocations).' } },
     revalidate_required: { where: 'rp', ko: { title: '세션을 다시 검증해야 합니다', cause: '이 세션을 만든 뒤 폐기 목록이나 등록부가 새로 게시돼 버전이 달라졌습니다.', action: '로그아웃한 뒤 다시 로그인하고 요청을 다시 보내세요.' }, en: { title: 'The session must be revalidated', cause: 'A new revocation list or registry was published after this session was created, so the versions differ.', action: 'Log out, log in again, then send the request again.' } },   // 2026-11-14: "세션 재검증" 버튼은 11-11 에 없어졌다 — 다시 로그인이 그 자리다
     predicate_unmet: { where: 'rp', ko: { title: '요구한 조건을 만족하지 못했습니다', cause: '로그인 자체는 유효하지만 RP 가 요구한 조건(허용 국가 집합 소속 또는 최소 나이)이 공개된 값으로 충족되지 않았습니다.', action: '그 조건을 공개하도록 스냅에서 다시 로그인하거나, 로그인 화면에서 요구 조건을 끄세요.' }, en: { title: 'The required condition was not met', cause: 'The login itself is valid, but the disclosed values do not satisfy the condition the RP required (membership in the allowed country set, or a minimum age).', action: 'Log in again disclosing that condition, or turn the requirement off on the login form.' } },
     // 2026-10-11 데모 UI 에서 사용자가 실제로 마주치는 코드 13개 — 그동안 결과 카드에 원문 코드만 보였다(런북 "실패 각본").

@@ -83,6 +83,8 @@
       <p>
         <button id="stateBtn" data-i18n="admin_state_btn">상태 보기</button>
         <button id="publishBtn" class="danger" data-i18n="admin_publish_btn">게시(체인에 올리기)</button>
+        <!-- 2026-11-22(11-18 리뷰 4번): 강제 중계 — 거울 체인이 있을 때만 보인다(renderState). 폐기 체인에 블록이 생기지 않으면 하트비트가 돌지 않아 root_too_old 가 된다. -->
+        <button id="relayBtn" data-i18n="admin_relay_btn" hidden>거울 다시 맞추기</button>
       </p>
       <!-- 2026-11-15(시연자 화면 리뷰): 게시 결과를 버튼 아래에도 — 맨 위 "최근 결과" 는 이 자리에서 화면 밖이라 누른 뒤 달라진 것이 숫자 하나뿐이었다. -->
       <div id="publishVerdict"></div>
@@ -569,6 +571,7 @@
       // V10(2026-10-02): 거울 한 줄씩 — 서비스는 거울만 읽으므로 "캐노니컬 대비 −n" 이 폐기 반영 지연이다.
       const mi = $('mirrorInfo');
       mi.textContent = '';
+      $('relayBtn').hidden = !(ciaMirrors ?? []).length;
       for (const m of ciaMirrors ?? []) {
         const line = document.createElement('div');
         tte(line, m.epoch === null ? 'admin_mirror_unreadable' : 'admin_mirror_line', { chain: m.chainId, epoch: m.epoch, behind: m.behind, block: m.lastPublishedBlock });
@@ -817,6 +820,19 @@
       });
       // 실패도 버튼 아래에 — 사유는 맨 위 카드에 있다
       if (!res || res.status < 200 || res.status >= 300) setVerdict($('publishVerdict'), false, 'admin_publish_failed', res ? { reason: reasonFor(res) } : {});
+    });
+
+    // 2026-11-22(11-18 리뷰 4번): 거울 강제 중계(/cia/admin/relay). 캐노니컬 epoch 를 이미 따라잡은 거울이면 하트비트를 하나 더 올린 뒤 옮긴다 —
+    // 응용 체인의 root 나이가 다시 0 에서 시작한다. 결과는 게시와 같은 자리(버튼 아래)에.
+    $('relayBtn').addEventListener('click', async () => {
+      if (!Demo.confirmDanger('confirm_relay')) return;
+      $('publishVerdict').innerHTML = '';
+      const res = await run('admin_relay_failed', () => call('POST', '/cia/admin/relay', {}), ({ body }) => {
+        const list = (body?.mirrors ?? []).map((m) => `${m.chainId} → ${m.epoch}`).join(', ');
+        for (const el of [$('adminVerdict'), $('publishVerdict')]) setVerdict(el, true, 'admin_relay_title', () => ({ summary: Demo.t('admin_relay_summary', { list }), detail: safeDetail(body) }));
+        loadState();
+      });
+      if (!res || res.status < 200 || res.status >= 300) setVerdict($('publishVerdict'), false, 'admin_relay_failed', res ? { reason: reasonFor(res) } : {});
     });
 
     // 2026-11-15(화면의 폐기 목록 점검): 탭으로 돌아오면 상태를 다시 읽는다 — 다른 탭(스냅·사용자 페이지)에서 폐기한 뒤 이 탭으로 와도
