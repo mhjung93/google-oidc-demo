@@ -7,7 +7,7 @@
 // 증명 로그인(2026-11-19 스펙 passkey-proof-login): zkIdP 의 발급 정책이 key 면(public_keys.issueAuth) 등록된 지갑은 인증 창 없이 패스키 증명만으로 발급받고(L1·L2),
 // 로그인마다 패스키를 한 번 묻는다(L4). mode3-idp-login 은 zkIdP 페이지의 로그인 증명 요청이다 — zkIdP 오리진이 연 창에만 답한다(L8).
 import { $, textKit, createUnlocker, postPresence, errText } from './ui.js';
-import { RECOVER_RESULT_KEY, idpAuthUrl, savePending, takeIdpReturn, readAttrRecord, googleSignupUrl, saveSignupPending, takeGoogleReturn, googleAuthUrl, saveWrapperPending, takeWrapperReturn } from './idp_return.js';
+import { RECOVER_RESULT_KEY, WRAP_END_RESULT_KEY, idpAuthUrl, savePending, takeIdpReturn, readAttrRecord, googleSignupUrl, saveSignupPending, takeGoogleReturn, googleAuthUrl, saveWrapperPending, takeWrapperReturn } from './idp_return.js';
 
 const TYPES = ['mode3-config', 'mode3-precheck', 'mode3-authorize', 'mode3-revalidate', 'mode3-request', 'mode3-tx', 'mode3-idp-login'];
 /** 동의 창에 보이는 서비스 이름 위생(2026-09-25 리뷰 D-2, wallet.html 과 같다) — 인증서가 덮는 것은 origin 뿐이고 이름은 임의 문자열이다. */
@@ -342,6 +342,22 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
     say('user_wrap_to_google', 'Google 로 이동합니다 — 계정을 고르면 돌아와 패스키로 로그인합니다.');
     location.assign(url);
   }
+  /** 홈의 세션 끝내기 귀로(2026-11-23 사용자 요청): 홈 탭이 Google 을 다녀왔다 — 그 토큰(1회용 요청 키에 묶였다)으로 그 세션의 폐기를 요청하고
+   *  결과를 남긴 뒤 홈으로 돌아간다. 패스키는 묻지 않는다. 결과·주소에 토큰은 남지 않는다. */
+  async function finishWrapperEnd({ pend, idToken, error }) {
+    let out;
+    step('세션 폐기 요청 중…');
+    try {
+      if (!idToken) out = { ok: false, reason: 'google_denied', detail: error ?? null };
+      else {
+        const r = await core.wrapperRevokeSession({ r_s: pend.req.r_s, idToken });
+        out = r.status === 200 ? { ok: true, Cf_s: r.body.Cf_s, inserted: r.body.inserted ?? null, pending: r.body.pending ?? null }
+          : { ok: false, reason: r.body?.reason ?? (r.status === 404 ? 'unknown_account' : 'internal'), detail: r.body?.error ?? r.body?.detail ?? `HTTP ${r.status}` };
+      }
+    } catch (e) { out = { ok: false, reason: e?.reason ?? 'internal', detail: e?.message ?? null }; }
+    try { sessionStorage.setItem(WRAP_END_RESULT_KEY, JSON.stringify(out)); } catch { /* 결과를 못 남기면 화면이 상태로만 보인다 */ }
+    location.replace('/');
+  }
   /** 2단계(Google 에서 돌아온 길): (패스키가 없으면 버튼 한 번으로 만들고) 패스키 → 발급 → π_RP → 서비스에 결과. 결과는 가기 전에 대조를 통과한 서비스 오리진(pend.origin)에만 돌려준다. */
   async function finishWrapper({ pend, idToken, error }) {
     if (!pend) { renderAuthTitle(); step('Google 확인 결과를 이어받지 못했다.'); return showHint('user_wrap_resume_failed', 'Google 확인 결과를 이어받지 못했습니다 — 서비스 페이지에서 다시 로그인하세요.', null); }
@@ -387,7 +403,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
   }
   // 래퍼 로그인의 귀환 — 가입 귀환과 같은 조각(#google_back=1…)이라 방식에 따라 한쪽만 본다. 준비 신호(ready)를 다시 보내지 않는다.
   const wback = WRAP ? takeWrapperReturn({ hash: location.hash, storage: window.sessionStorage, now: Date.now() }) : null;
-  if (wback) { history.replaceState(null, '', `${location.pathname}?authorize=1`); finishWrapper(wback); return; }
+  if (wback) { history.replaceState(null, '', `${location.pathname}?authorize=1`); if (wback.pend?.req?.type === 'mode3-end-session') finishWrapperEnd(wback); else finishWrapper(wback); return; }
   const gback = PK && !WRAP ? takeGoogleReturn({ hash: location.hash, storage: window.sessionStorage, now: Date.now() }) : null;
   if (gback) { history.replaceState(null, '', `${location.pathname}?authorize=1`); finishSignup(gback); return; }
 

@@ -3,7 +3,7 @@
 // MetaMask·Snap 코드는 없다. 비밀(s_u·blind_u·세션 개인키·금고 비밀번호·secrets 암호문)은 DOM·localStorage·로그·postMessage 에
 // 넣지 않는다 — 코어 응답은 에이전트와 같은 모양이라 비밀이 실리지 않고, safeDetail 이 한 번 더 거른다. 비밀번호 입력칸은 읽자마자 비운다.
 import { ZK_CACHE_NAME } from '../../lib/browser/zk_assets.js';
-import { RECOVER_RESULT_KEY, idpAuthUrl, savePending } from './idp_return.js';
+import { RECOVER_RESULT_KEY, WRAP_END_RESULT_KEY, idpAuthUrl, savePending, googleAuthUrl, saveWrapperPending } from './idp_return.js';
 export const $ = (id) => document.getElementById(id);
 
 /** 사전 도우미(wallet.html 의 tte·tt·setVerdict·pendingVerdict 와 같다). */
@@ -539,10 +539,9 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       btn.type = 'button';
       btn.className = 'danger';
       btn.textContent = tt('wallet_end_session') || '이 세션 끝내기(폐기)';
-      btn.addEventListener('click', () => revokeSession(r_s, c, btn));
-      // 래퍼 방식(최종 검토 I-1): 세션 폐기는 Google 토큰으로 해야 하는데 이 화면에는 아직 그 길이 없다 — 동작하지 않는 버튼 대신 안내를 둔다
-      if (config.wrapper === true) { const note = document.createElement('p'); note.className = 'muted wrap-revoke-note'; note.textContent = tt('user_wrap_revoke_note') || '이 세션을 끝내려면 서비스에서 로그아웃하세요. 세션 폐기는 zkWrapper 관리자에게 요청합니다.'; box.append(dl, note); }
-      else box.append(dl, btn);
+      // 래퍼 방식(2026-11-23 사용자 요청): 세션 끝내기는 Google 확인(1회용 요청 키에 묶인 토큰 + 그 키의 서명)으로 한다 — π_IdP·패스키를 쓰지 않는다.
+      btn.addEventListener('click', () => (config.wrapper === true ? wrapperEndSession(r_s, btn) : revokeSession(r_s, c, btn)));
+      box.append(dl, btn);
       acts.appendChild(box);
     }
   }
@@ -683,6 +682,38 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       out(`세션 폐기 실패: ${e.message}`);
       setVerdict($('sessionVerdict'), false, 'wallet_session_revoke_failed', { reason: 'internal', detail: e.message });
     } finally { delete btn.dataset.busy; refresh(); }
+  }
+  /** 래퍼 방식의 세션 끝내기 1단계(2026-11-23): 요청 키를 만들고 이 탭이 Google 로 간다. 돌아오면 popup.js finishWrapperEnd 가 폐기를 요청하고 홈으로 돌려보낸다. */
+  async function wrapperEndSession(r_s, btn) {
+    if (btn.dataset.busy === '1') return;
+    if (!Demo.confirmDanger('confirm_revoke')) return;
+    btn.dataset.busy = '1';
+    pendingVerdict($('sessionVerdict'), 'working');
+    try {
+      let o = null;
+      try { const k = await core.idp.publicKeys(); o = k?.status === 200 && k.body?.wrapper === true ? k.body.oidc : null; } catch { o = null; }
+      if (!o?.enabled || typeof o.clientId !== 'string' || typeof o.authorizeUrl !== 'string' || typeof o.redirectUri !== 'string') {
+        setVerdict($('sessionVerdict'), false, 'wallet_session_revoke_failed', { reason: 'wrapper_disabled' }); return;
+      }
+      const b = await core.wrapperBegin();
+      if (b.status !== 200) { setVerdict($('sessionVerdict'), false, 'wallet_session_revoke_failed', { reason: b.body?.reason ?? `HTTP ${b.status}`, detail: safeDetail(b.body) }); return; }
+      const { url, state } = googleAuthUrl({ authorizeUrl: o.authorizeUrl, clientId: o.clientId, redirectUri: o.redirectUri, nonce: b.body.googleNonce, walletOrigin: location.origin });
+      saveWrapperPending(window.sessionStorage, { state, at: Date.now(), req: { type: 'mode3-end-session', r_s }, origin: location.origin });
+      location.assign(url);
+    } catch (e) {
+      setVerdict($('sessionVerdict'), false, 'wallet_session_revoke_failed', { reason: 'internal', detail: e.message });
+    } finally { delete btn.dataset.busy; }
+  }
+  /** 세션 끝내기 귀로(popup.js finishWrapperEnd)가 남긴 결과를 한 번 보이고 지운다. */
+  function showWrapEndResult() {
+    let r = null;
+    try { r = JSON.parse(sessionStorage.getItem(WRAP_END_RESULT_KEY) ?? 'null'); sessionStorage.removeItem(WRAP_END_RESULT_KEY); } catch { r = null; }
+    if (!r) return;
+    if (r.ok) {
+      progress.revoked = true;
+      $('sessionLog').textContent = `세션 폐기 요청 완료 (H(C_s)=${String(r.Cf_s ?? '').slice(0, 12)}…): inserted=${r.inserted}, pending=${r.pending} — 다음 게시부터 효력`;
+      setVerdict($('sessionVerdict'), true, 'revoked_ok', () => ({ summary: tt('wallet_session_revoked', { cfs: `${String(r.Cf_s ?? '').slice(0, 12)}…` }) || '이 세션만 폐기를 요청했습니다 — 다음 게시부터 효력이 있습니다.', detail: r }));
+    } else setVerdict($('sessionVerdict'), false, 'wallet_session_revoke_failed', { reason: r.reason ?? 'internal', ...(r.detail ? { detail: r.detail } : {}) });
   }
   $('refreshBtn').addEventListener('click', () => refresh(true));
 
@@ -1061,6 +1092,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       setVerdict($('pkSetupVerdict'), false, 'user_pk_setup_title', { reason: 'passkey_wrong_origin' });
     }
     showRecoverResult();
+    showWrapEndResult();
     // 처음 쓰는 사람 안내(2026-11-20): zkIdP 가 패스키 가입을 열어 두었으면 그 페이지로 가는 줄을 보인다 — 못 읽으면 숨긴 채.
     core.idp.publicKeys().then((k) => { if (k?.status !== 200 || !k.body?.oidc?.signup) return; const a = $('pkFirstLink'); a.href = `${cfg.ciaUrl}/user`; a.textContent = a.href; $('pkFirstRow').hidden = false; }).catch(() => {});
   }

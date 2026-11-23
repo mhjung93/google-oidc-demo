@@ -22,7 +22,7 @@ import { verifyRpCert } from '../../../lib/mode3_rp_cert.js';
 import { MODE3_ROOTS_ABI } from '../../../lib/mode3_log.js';
 import { bounded } from '../../../lib/mode3_health.js';
 import { uidOf, regNonce, issueNonce } from '../../../lib/mode3_oidc_nonce.js';
-import { generateRequestKey, wrapperNonce, signIssue } from '../../../lib/mode3_wrapper_auth.js';
+import { generateRequestKey, wrapperNonce, signIssue, signDigest, revokeDigest } from '../../../lib/mode3_wrapper_auth.js';
 
 export const USER_STATE_VERSION = 1;
 export const DEFAULT_PROFILE = Object.freeze({ birthYear: '1990', country: 'KR' });   // 데모 testuser 기본값(에이전트와 같다). 사용자가 등록 폼에서 바꿀 수 있다.
@@ -194,6 +194,14 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
   async function dropSessions() { await putSessions({}); await updateSecrets((s) => { s.sessionKeys = {}; }); }
   /** 세션 하나를 버린다 — 에이전트의 `delete state.sessions[rsKey]; cache.deleteSession(rsKey); persist()` 등가(π 캐시는 레코드 안에 있다). */
   async function deleteSession(rsKey) { await updateSessions((s) => { delete s[rsKey]; }); await updateSecrets((s) => { delete s.sessionKeys[rsKey]; }); }
+  /** 폐기한 세션을 서비스에도 알린다(최선 노력, 2026-10-21) — 서비스가 세션을 잊어 그 페이지가 곧 로그아웃 상태가 된다. 실패해도 폐기는 끝났다(게시 뒤 서비스는 어차피 거절한다). */
+  async function notifyRpLogout(s, rsKey) {
+    if (typeof s.origin !== 'string' || !/^https?:\/\//.test(s.origin)) return false;
+    const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = ctl ? setTimeout(() => ctl.abort(), 1500) : null;
+    try { return (await fetch(`${s.origin}/api/mode3/logout`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ r_s: rsKey }), signal: ctl?.signal })).ok; }
+    catch { return false; } finally { if (timer) clearTimeout(timer); }
+  }
   /** Google 첫 로그인의 로컬 등록(2026-10-16): 보류 재료(pend)로 uid·auid 를 정하고 금고(없으면 자동)에 비밀을, kv 에 registration(slot 없음, pendingIdp)을 쓴다.
    *  IdP 쪽 등록은 하지 않는다 — 발급 요청의 registration 으로 IdP 가 그 자리에서 한다. 성공 null, 실패 { status, body }. */
   async function localRegister({ uid, provider, pend }) {
@@ -1163,15 +1171,38 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       if (r.status !== 200) return R(r.status, r.body ?? {});
       // AA 가 받아들인 순간부터 이 지갑은 그 세션을 더 쓰지 않는다 — 게시 전이라도(게시 뒤에는 어차피 π 가 안 만들어진다).
       await deleteSession(rsKey);
-      // 2026-10-21: RP 에도 알린다(최선 노력) — RP 가 세션을 잊어 RP 페이지가 곧 로그아웃 상태가 된다. 실패해도 폐기는 끝났다(게시 뒤 RP 는 어차피 거절한다).
-      let rpNotified = false;
-      if (typeof s.origin === 'string' && /^https?:\/\//.test(s.origin)) {
-        const ctl = typeof AbortController === 'function' ? new AbortController() : null;
-        const timer = ctl ? setTimeout(() => ctl.abort(), 1500) : null;
-        try { rpNotified = (await fetch(`${s.origin}/api/mode3/logout`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ r_s: rsKey }), signal: ctl?.signal })).ok; }
-        catch { /* RP 를 못 읽으면 그대로 */ } finally { if (timer) clearTimeout(timer); }
-      }
+      const rpNotified = await notifyRpLogout(s, rsKey);   // 2026-10-21: RP 에도 알린다(최선 노력)
       return R(200, { revoked: true, inserted: r.body.inserted, pending: r.body.pending, rpNotified });
+    },
+    /** 래퍼 방식의 세션 끝내기(2026-11-23 사용자 요청, 스펙 zkwrapper §2.3·§10 I3) — 홈 탭이 Google 을 다녀온 뒤: wrapperBegin 의 1회용 요청 키에 묶인
+     *  Google 토큰과 그 키의 서명으로 /cia/revoke(scope=session, bound 0 — 래퍼는 세션 전체만)를 부른다. 패스키·salt 를 쓰지 않는다(π_IdP 가 없다).
+     *  받아들여지면 이 지갑의 세션을 지우고 서비스에 알린다(revokeSession 과 같다). 요청 키는 결과와 관계없이 지운다(토큰은 1회용이다). */
+    async wrapperRevokeSession({ r_s, idToken } = {}) {
+      if (!PK || config.wrapper !== true) return R(409, { reason: 'not_wrapper_mode' });
+      if (!isDec(r_s) || typeof idToken !== 'string' || !idToken) return R(400, { error: 'r_s, idToken(문자열) 필요' });
+      const rsKey = BigInt(r_s).toString();
+      try {
+        const s = (await getSessions())[rsKey];
+        if (!s?.credential?.Cf_s) return R(404, { reason: 'no_session' });
+        let claims;
+        try { claims = jwtPayload(idToken); } catch { return R(400, { reason: 'oidc_invalid', detail: 'id_token 형식이 아니다' }); }
+        const wk = (await kv.get('wrapperKey')) ?? null;
+        if (!wk?.privateKey || !wk.pkE || claims?.nonce !== await wrapperNonce(wk.pkE)) return R(409, { reason: 'wrapper_key_missing' });
+        if (!(Number.isFinite(wk.at) && now() - wk.at <= WRAPPER_KEY_MAX_MS)) return R(409, { reason: 'wrapper_key_missing' });
+        let keys;
+        try { keys = await idp.publicKeys(); } catch (e) { return R(502, { reason: 'cia_unavailable', detail: e.message }); }
+        const aud = keys.status === 200 && keys.body?.wrapper === true ? keys.body.wrapperAud : null;
+        if (typeof aud !== 'string') return R(503, { reason: 'wrapper_disabled' });
+        const Cf_s = BigInt(s.credential.Cf_s).toString();
+        const sig = await signDigest(wk.privateKey, revokeDigest({ scope: 'session', Cf_s }, aud));
+        let r;
+        try { r = await idp.post('/cia/revoke', { scope: 'session', Cf_s, bound: '0', id_token: idToken, pk_e: wk.pkE, sig }); }
+        catch (e) { return R(502, { reason: 'cia_unavailable', detail: e.message }); }
+        if (r.status !== 200) return R(r.status, r.body ?? {});
+        await deleteSession(rsKey);
+        const rpNotified = await notifyRpLogout(s, rsKey);
+        return R(200, { revoked: true, inserted: r.body.inserted, pending: r.body.pending, rpNotified, Cf_s });
+      } finally { await kv.del('wrapperKey'); }
     },
     /** 에이전트 POST /wallet/self_revoke 의 등가 — IdP /cia/account/self_revoke 를 직접 부른다(cia.js CORS, Task 6). 비밀번호는 넘길 뿐
      *  어디에도 남기지 않는다. 이 지갑이 들고 있는 계정만 — 임의 uid·pwd 를 IdP 에 던져 보는 통로가 되지 않게. */

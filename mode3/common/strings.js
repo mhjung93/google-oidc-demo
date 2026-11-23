@@ -399,7 +399,6 @@ window.DemoStrings = {
     user_signup_resume_failed: { ko: 'Google 확인 결과를 이어받지 못했습니다 — zkIdP 페이지에서 "패스키로 로그인" 을 다시 누르세요.', en: 'Could not resume after Google — press "Sign in with a passkey" again on the zkIdP page.' },
     user_signup_google_denied: { ko: 'Google 확인이 끝나지 않았습니다 — zkIdP 페이지에서 다시 시도하세요.', en: 'The Google step did not finish — try again from the zkIdP page.' },
     // ---- zkWrapper 의 서비스 로그인(2026-11-20 스펙 zkwrapper §2.2) — 승인 창이 Google 을 다녀온다 ----
-    user_wrap_revoke_note: { ko: '이 세션을 끝내려면 서비스에서 로그아웃하세요. 세션 폐기는 zkWrapper 관리자에게 요청합니다.', en: 'To end this session, log out at the service. Ask the zkWrapper administrator to revoke it.' },
     user_wrap_self_revoke_note: { ko: '계정 폐기는 zkWrapper 관리자에게 요청합니다.', en: 'Ask the zkWrapper administrator to revoke the account.' },
     home_title: { ko: 'zk-Delegation 쓰는 법', en: 'How to use zk-Delegation' },
     home_desc: { ko: 'Google 계정으로 로그인하지만, 서비스는 누구인지 모르고 zkWrapper 는 어느 서비스인지 모릅니다.', en: 'You sign in with a Google account, yet the service does not learn who you are and zkWrapper does not learn which service.' },
@@ -594,7 +593,7 @@ window.DemoStrings = {
     wallet_session_nonce: { ko: '보낸 거래 수(nonce)', en: 'Transactions sent (nonce)' },
     wallet_bound_label: { ko: '허용 거래 수', en: 'Allowed tx count' },
     wallet_bound_hint: { ko: '끝낸 뒤에도 받아 줄 거래 수 — 0 이면 전부 막습니다', en: 'Transactions still accepted after ending — 0 blocks them all' },   // 2026-11-13(화면 리뷰)
-    wallet_session_revoked: { ko: '이 세션(H(C_s) {cfs})만 폐기를 요청했습니다 — 다음 게시부터 이 세션의 로그인·트랜잭션이 거부됩니다. 계정과 다른 세션은 그대로입니다. zkIdP 관리자 "세션 — 폐기 목록" 에 같은 H(C_s) 로 나옵니다.', en: 'Revocation requested for this session only (H(C_s) {cfs}) — from the next publication its logins and transactions are refused. The account and other sessions are unchanged. It appears with the same H(C_s) in zkIdP admin "Sessions — revoked list".' },   // 2026-11-16(사용자 요청): H(C_s) 로 맞춰 본다
+    wallet_session_revoked: { ko_wr: '이 세션(H(C_s) {cfs})만 폐기를 요청했습니다 — 다음 게시부터 이 세션의 로그인·트랜잭션이 거부됩니다. 계정과 다른 세션은 그대로입니다. zkWrapper 관리자 화면의 "세션 — 폐기 목록" 에 같은 H(C_s) 로 나옵니다.', en_wr: 'Revocation requested for this session only (H(C_s) {cfs}) — from the next publication its logins and transactions are refused. The account and other sessions are unchanged. It appears with the same H(C_s) in the zkWrapper admin "Sessions — revoked list".', ko: '이 세션(H(C_s) {cfs})만 폐기를 요청했습니다 — 다음 게시부터 이 세션의 로그인·트랜잭션이 거부됩니다. 계정과 다른 세션은 그대로입니다. zkIdP 관리자 "세션 — 폐기 목록" 에 같은 H(C_s) 로 나옵니다.', en: 'Revocation requested for this session only (H(C_s) {cfs}) — from the next publication its logins and transactions are refused. The account and other sessions are unchanged. It appears with the same H(C_s) in zkIdP admin "Sessions — revoked list".' },   // 2026-11-16(사용자 요청): H(C_s) 로 맞춰 본다
     wallet_session_revoke_failed: { ko: '세션 폐기 실패', en: 'Session revocation failed' },
     wallet_cancelled: { ko: '창에서 취소했습니다.', en: 'Cancelled in the dialog.' },
     wallet_mirror_line: { ko: '거울 epoch {mirror} / 캐노니컬 epoch {canonical}', en: 'Mirror epoch {mirror} / canonical epoch {canonical}' },   // V10: 증명은 거울 epoch 기준

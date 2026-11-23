@@ -339,16 +339,67 @@ try {
     }
     assert.deepEqual(hits, []);
   });
-  await t('래퍼 방식의 홈에는 동작하지 않는 폐기 버튼(세션 끝내기·계정 자기 폐기 — π_IdP·비밀번호를 쓴다)이 없고, 대신 안내가 있다(최종 검토 I-1)', async () => {
+  // 2026-11-23(사용자 요청, C): 세션 끝내기는 Google 확인(1회용 요청 키에 묶인 토큰 + 그 키의 서명)으로 동작한다 — 세션마다 버튼이 있다.
+  // 계정 자기 폐기(π_IdP·비밀번호를 쓴다)는 여전히 없고 안내만 있다(최종 검토 I-1).
+  await t('래퍼 방식의 홈: 세션마다 "이 세션 끝내기(폐기)" 버튼이 있고, 계정 자기 폐기 버튼은 없고 안내가 있다', async () => {
     const page = await A.ctx.newPage(); await page.goto(`${wallet.base}/`); await page.waitForSelector('#homeGuide:not([hidden])', { timeout: 15_000 });
-    await page.waitForFunction(() => document.querySelectorAll('#sessionsCard button.danger, #sessionsCard .wrap-revoke-note').length > 0, null, { timeout: 15_000 }).catch(() => {});
-    const st = await page.evaluate(() => ({ endBtns: [...document.querySelectorAll('button')].filter((b) => b.offsetParent !== null && /세션 끝내기/.test(b.textContent)).length,
+    await page.waitForFunction(() => document.querySelectorAll('#sessionActions button.danger').length > 0, null, { timeout: 15_000 }).catch(() => {});
+    const st = await page.evaluate(() => ({ cards: document.querySelectorAll('#sessionActions dl').length,
+      endBtns: [...document.querySelectorAll('#sessionActions button')].filter((b) => b.offsetParent !== null && /세션 끝내기/.test(b.textContent)).length,
       selfRevoke: document.getElementById('selfRevokeBtn')?.offsetParent !== null, notes: [...document.querySelectorAll('.wrap-revoke-note')].filter((e) => e.offsetParent !== null).length,
-      sessionNotes: [...document.querySelectorAll('#sessionsCard .wrap-revoke-note')].filter((e) => e.offsetParent !== null).length }));
-    // 재검토 Minor: 세션이 하나도 없으면 "끝내기 버튼 0" 은 아무것도 보지 않는다 — 세션마다 붙는 안내가 있는지(= 세션이 그려졌는지) 먼저 본다
-    assert.ok(st.sessionNotes >= 1, '세션이 그려지지 않았다: ' + j(st));
-    assert.equal(st.endBtns, 0, j(st)); assert.equal(st.selfRevoke, false, j(st)); assert.ok(st.notes >= 1, j(st));
+      sessionNotes: [...document.querySelectorAll('#sessionActions .wrap-revoke-note')].filter((e) => e.offsetParent !== null).length }));
+    assert.ok(st.cards >= 1, '세션이 그려지지 않았다: ' + j(st));
+    assert.equal(st.endBtns, st.cards, j(st)); assert.equal(st.sessionNotes, 0, j(st));
+    assert.equal(st.selfRevoke, false, j(st)); assert.ok(st.notes >= 1, j(st));
     await page.close();
+  });
+  // 홈의 "이 세션 끝내기(폐기)" — 이 탭이 Google 을 다녀와(패스키는 묻지 않는다) 그 세션 하나만 폐기를 요청한다. 옛 증명 시연의 root 바꾸기도 이 길로 한다:
+  // zkONE ① → 홈에서 zkTWO 세션 끝내기 → 게시 → zkONE ② = InvalidProof.
+  const adminSessions = async () => (await cia.adminGet(`/cia/admin/sessions?uid=${UID_A}`)).body.sessions;
+  const endSessionOnHome = async (page, arid) => {
+    await page.goto(`${wallet.base}/`); await page.waitForSelector('#mainView:not([hidden])');
+    const d = await idbDump(page);
+    const [r_s, s] = Object.entries(d.sessions ?? {}).find(([, v]) => String(v.arid) === String(arid)) ?? [];
+    assert.ok(r_s, `홈에 그 서비스의 세션이 없다: ${j(Object.values(d.sessions ?? {}).map((v) => v.arid))}`);
+    await page.waitForFunction((pp) => [...document.querySelectorAll('#sessionActions dd code')].some((e) => e.title === pp), s.PPID, { timeout: 15_000 });
+    await page.evaluate((pp) => { const box = [...document.querySelectorAll('#sessionActions > div')].find((b) => [...b.querySelectorAll('dd code')].some((e) => e.title === pp)); [...box.querySelectorAll('button')].find((b) => /세션 끝내기/.test(b.textContent)).click(); }, s.PPID);
+    return { r_s, Cf_s: String(s.credential.Cf_s) };
+  };
+  await t('홈의 세션 끝내기: 다른 Google 계정으로 돌아오면 폐기되지 않는다(세션은 그대로)', async () => {
+    const page = await A.ctx.newPage();
+    google.setNextSub('google-user-B'); google.setNextClaims({ email: 'other@example.com', email_verified: true });
+    const { Cf_s } = await endSessionOnHome(page, info2.arid);
+    await page.waitForURL((u) => u.origin === new URL(wallet.base).origin && u.pathname === '/' && !u.search.includes('authorize'), { timeout: 60_000 });
+    await waitText(page, '#sessionVerdict', '실패', 30_000);
+    const rec = (await adminSessions()).find((x) => x.Cf_s === Cf_s); assert.ok(rec, '서버에 그 세션이 없다'); assert.equal(rec.revokedAt, null, '다른 계정으로 폐기됐다');
+    assert.ok(Object.values((await idbDump(page)).sessions ?? {}).some((v) => String(v.arid) === String(info2.arid)), '실패했는데 지갑에서 세션이 지워졌다');
+    await page.close();
+  });
+  await t('홈의 세션 끝내기 → 게시 → 옛 증명 시연 ② 는 InvalidProof: 그 세션 하나만 폐기되고, 패스키는 묻지 않는다', async () => {
+    // 앞 사례들(openRp)이 zkONE 에서 로그아웃했다 — 다시 로그인한다
+    google.setNextSub('google-user-A'); google.setNextClaims({ email: 'jihoo@example.com', email_verified: true });
+    const { rpPage } = await startLogin(A.ctx, rp);
+    await waitText(rpPage, '#verdict', '로그인 성공', 120_000);
+    await rpPage.waitForSelector('#txHoldBtn:not([hidden])', { timeout: 15_000 });
+    await rpPage.click('#txHoldBtn'); await waitText(rpPage, '#txVerdict', '증명을 만들어 두었습니다', 120_000);
+    const before = await adminSessions(), root0 = (await cia.get('/mode3/health')).body.root;
+    const page = await A.ctx.newPage(), g0 = A.hits.get;
+    google.setNextSub('google-user-A'); google.setNextClaims({ email: 'jihoo@example.com', email_verified: true });
+    const { Cf_s } = await endSessionOnHome(page, info2.arid);
+    await page.waitForURL((u) => u.origin === new URL(wallet.base).origin && u.pathname === '/' && !u.search.includes('authorize'), { timeout: 60_000 });
+    await waitText(page, '#sessionVerdict', '폐기를 요청했습니다', 30_000);
+    assert.equal(A.hits.get - g0, 0, `패스키를 물었다: ${j(A.hits)}`);
+    const after = await adminSessions();
+    assert.ok(after.find((x) => x.Cf_s === Cf_s)?.revokedAt, '그 세션이 폐기되지 않았다');
+    const newlyRevoked = after.filter((x) => x.revokedAt && !before.find((y) => y.Cf_s === x.Cf_s)?.revokedAt).map((x) => x.Cf_s);
+    assert.deepEqual(newlyRevoked, [Cf_s], '다른 세션까지 폐기됐다');
+    assert.ok(!Object.values((await idbDump(page)).sessions ?? {}).some((v) => String(v.arid) === String(info2.arid)), '지갑에 폐기한 세션이 남았다');
+    assert.equal((await cia.adminPost('/cia/publish', {})).status, 200);
+    assert.notEqual((await cia.get('/mode3/health')).body.root, root0, '게시했는데 root 가 그대로다');
+    await rpPage.click('#txReplayBtn');
+    await waitText(rpPage, '#txVerdict', '증명 검증', 120_000);
+    assert.ok((await text(rpPage, '#txVerdict')).includes('InvalidProof'));
+    await page.close(); await rpPage.close();
   });
   await t('서비스의 로그인 버튼은 "zk 로그인" 이다', async () => {
     const page = await openRp(A.ctx, rp); await page.click('#loginBtn');
