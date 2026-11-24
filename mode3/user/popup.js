@@ -461,20 +461,25 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
       }
     } catch (e) { finish({ ok: false, reason: e?.reason ?? 'internal', detail: e?.message ?? null }); }
   }
-  /** 백업 지우기 귀로: 그 토큰으로 봉투 하나를 지우고 결과를 남긴 뒤 /user 로. 패스키는 묻지 않는다. 이미 그 백업으로 복구한 기기는 자기 사본으로 계속 된다 [m6]. */
+  /** 백업 지우기 귀로: 그 토큰과 지금 패스키로 봉투 하나를 지우고 결과를 남긴 뒤 /user 로. 최종 검토 I-1(2026-11-24): 지우기도 계정의 auid 를 실어야 해서(Google 계정만으로는
+   *  지우지 못하게) 지금 패스키를 한 번 묻는다 — 버튼을 누를 때(클릭 한 번에 WebAuthn 한 번). 창을 취소하면 그 자리에서 다시. 이미 그 백업으로 복구한 기기는 자기 사본으로 계속 된다 [m6]. */
   async function finishWrapperBackupRemove({ pend, idToken, error }) {
     const kind = pend.req.kind === 'passkey' || pend.req.kind === 'code' ? pend.req.kind : null;
-    let out;
-    step('백업 지우는 중…');
+    fixedTitle = ['user_backup_remove_title', '백업 지우기'];
+    renderAuthTitle();
+    const finish = (out) => { saveBackupResult({ op: 'remove', kind, ...out }); location.replace('/user'); };
+    if (!idToken) return finish({ ok: false, reason: 'google_denied', detail: error ?? null });
     try {
-      if (!idToken) out = { ok: false, reason: 'google_denied', detail: error ?? null };
-      else {
+      let note = null;
+      for (;;) {
+        await clickOnce(mkBtn('authBackupRemoveBtn', tt('user_backup_remove_confirm_btn') || '지금 패스키로 확인하고 지우기'), tt('user_backup_remove_intro') || 'Google 확인이 끝났습니다. 지금 패스키로 한 번 확인하면 이 백업을 지웁니다.', note);
+        say('user_backup_removing', '백업을 지우는 중입니다 — 브라우저의 패스키 창을 확인하세요.');
         const r = await core.wrapperEnvelopeRemove({ idToken, id: pend.req.id });
-        out = r.status === 200 ? { ok: true, n: backupCountOf(r.body?.envelopes) } : failOut(r);
+        if (r.status === 200) return finish({ ok: true, n: backupCountOf(r.body?.envelopes) });
+        if (!keptKey(r)) return finish(failOut(r));
+        note = whyOf(r);
       }
-    } catch (e) { out = { ok: false, reason: e?.reason ?? 'internal', detail: e?.message ?? null }; }
-    saveBackupResult({ op: 'remove', kind, ...out });
-    location.replace('/user');
+    } catch (e) { finish({ ok: false, reason: e?.reason ?? 'internal', detail: e?.message ?? null }); }
   }
   // 복구 화면에서 다시 해 볼 수 있는 실패 — 코어가 요청 키를 남긴다(그 밖은 서비스에서 처음부터: 발급이 받아들여진 뒤의 실패·토큰을 썼다·계정 폐기·10분이 지났다).
   const RECOVER_AGAIN = new Set(['recovery_code_typo', 'recovery_code_format', 'envelope_open_failed', 'envelope_credential_mismatch', 'recover_auid_mismatch', 'envelope_unknown']);

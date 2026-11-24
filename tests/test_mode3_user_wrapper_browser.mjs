@@ -614,6 +614,8 @@ try {
     await page.waitForFunction(() => document.querySelectorAll('#backupList li').length === 1, null, { timeout: 15_000 });
     assert.ok((await text(page, '#backupList')).includes('백업 패스키'), await text(page, '#backupList'));
     assert.equal(A.hits.create - h0.create, 2, `거절된 만들기 1 + 만든 것 1: ${j(A.hits)}`);
+    // ② 는 ① 의 salt 메모를 쓴다 — get 은 ① 1 + 백업 패스키를 만든 뒤의 재계산 1(거절된 만들기는 재계산하지 않는다)
+    assert.equal(A.hits.get - h0.get, 2, `① 1 + 만들기의 재계산 1: ${j(A.hits)}`);
     assert.ok(!(await storesOf(page)).includes(SALT_A), 'salt 가 저장소에 있다');
     await page.close();
   });
@@ -693,17 +695,21 @@ try {
       await p.close(); await rpPage.close();
     } finally { await R2.ctx.close(); }
   });
-  await t('백업 지우기: "지우기" → Google → 목록 1 — 패스키는 묻지 않고, 확인 창이 "이미 복구한 기기는 끊기지 않습니다" 를 말한다', async () => {
+  // 2026-11-24 최종 검토 I-1: 지우기도 계정의 auid 를 싣는다 — 돌아온 화면의 버튼을 누를 때 지금 패스키를 한 번 묻는다(클릭 한 번에 한 번).
+  await t('백업 지우기: "지우기" → Google → 돌아온 화면의 "지금 패스키로 확인하고 지우기"(패스키 한 번) → 목록 1 — 확인 창이 "이미 복구한 기기는 끊기지 않습니다" 를 말한다', async () => {
     const page = await openUser(await A.ctx.newPage());
     await page.waitForFunction(() => document.querySelectorAll('#backupList li').length === 2, null, { timeout: 15_000 });
     asA(); const g0 = A.hits.get;
     await page.click('#backupList li[data-kind="code"] button');
+    await page.waitForSelector('#authBackupRemoveBtn', { timeout: 60_000 });
+    assert.ok(A.dialogs.at(-1)?.includes('끊기지 않습니다') && A.dialogs.at(-1)?.includes('패스키'), `확인 창: ${A.dialogs.at(-1)}`);
+    assert.equal(A.hits.get - g0, 0, `Google 에서 돌아오자마자 패스키를 물었다: ${j(A.hits)}`);
+    await page.click('#authBackupRemoveBtn');
     await toUserPage(page);
-    assert.ok(A.dialogs.at(-1)?.includes('끊기지 않습니다'), `확인 창: ${A.dialogs.at(-1)}`);
     await waitText(page, '#backupVerdict', '백업을 지웠습니다', 30_000);
     await page.waitForFunction(() => document.querySelectorAll('#backupList li').length === 1, null, { timeout: 15_000 });
     assert.ok(!(await text(page, '#backupList')).includes('복구 코드'));
-    assert.equal(A.hits.get - g0, 0, `패스키를 물었다: ${j(A.hits)}`);
+    assert.equal(A.hits.get - g0, 1, `지우기는 패스키 한 번: ${j(A.hits)}`);
     await page.close();
   });
   // 2026-11-21(셀프 피드백 — 테스트 구멍): 폐기된 계정도 패스키를 쥔다(R11). 래퍼 화면의 안내는 "관리자가 삭제해야 한다" 까지만 말한다 — 삭제 뒤 실제로 같은 패스키로 돌아오는지 본다.
