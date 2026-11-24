@@ -51,7 +51,9 @@
   // ---- zkWrapper(2026-11-20 스펙 zkwrapper §6): 별도 IdP 가 없다 — ③ 에는 π_IdP 대신 Google 토큰이, 발급자 자리에는 zkWrapper 가 있다 ----
   // 같은 오리진의 /user/config 가 wrapper 를 말할 때만 바꾼다(zkWrapper 서버·래퍼 방식의 지갑 서버). 설정이 없으면(다른 서버) 그대로다.
   let WRAP = false;
-  const W = (s) => (WRAP && typeof s === 'string' ? s.replace(/zk-?IdP/g, 'zkWrapper') : s);
+  // 2026-11-24(스펙 home-and-account-recovery T1): 래퍼에서는 계산하는 주체를 "브라우저", 로그인을 "zkWrapper 로 로그인" 이라 부른다(strings.js wrapperText 와 같은 규칙)
+  const W = (s) => (WRAP && typeof s === 'string' ? s.replace(/zk-?IdP/g, 'zkWrapper').replace(/zk 클라이언트\(사용자의 브라우저\)/g, '사용자의 브라우저').replace(/zk 클라이언트(?: 홈| 화면)/g, 'zkWrapper 홈')
+    .replace(/zk 클라이언트/g, '브라우저').replace(/zk 로그인/g, 'zkWrapper 로 로그인') : s);
   const WRAP_STEPS = {
     2: { title: '② Google 계정 → 패스키 → salt', body: '서비스가 연 창이 Google 로 가서 계정을 고르고 돌아옵니다(본인 확인은 Google 이 합니다). 그다음 패스키가 내주는 값으로 salt 를 다시 만듭니다. 같은 패스키면 늘 같은 값이고 어디에도 저장하지 않습니다.', fine: ['google', 'passkey'] },
     3: { title: '③ 가명 + Google 토큰', body: 'zkWrapper 에는 이번 로그인에만 쓰는 가명 둘(auid_s = 사용자, arid_s = 서비스)과 Google ID 토큰을 보냅니다. 토큰은 이 요청 하나에 묶여 있어(1회용 요청 키의 서명) 다른 요청에 쓸 수 없습니다. 가명이 제대로 만들어졌는지는 ⑤ 의 증명 π_RP 가 서비스에 증명합니다. arid_s 는 로그인마다 달라 zkWrapper 는 어느 서비스인지 알 수 없습니다.', fine: ['sync', 'session_key', 'commit', 'pseudonym', 'issue'] },   // 2026-11-24: 코어가 재는 커밋먼트·가명 시간도 보인다
@@ -70,7 +72,8 @@
     const lbl2 = document.querySelector('#seqZk .st[data-step="2"] .lbl'); if (lbl2?.firstChild) lbl2.firstChild.textContent = '② Google 계정 · 패스키 → salt ';
     // 화면의 나머지 글자(제목·열 이름·"알게 되는 것"·발주)에서 zkIdP 를 zkWrapper 로
     const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-    for (let n = walk.nextNode(); n; n = walk.nextNode()) if (/zk-?IdP/.test(n.nodeValue)) n.nodeValue = W(n.nodeValue);
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) if (/zk-?IdP|zk 클라이언트|zk 로그인/.test(n.nodeValue)) n.nodeValue = W(n.nodeValue);
+    const hn = $('hdrNote'); if (hn) hn.textContent = 'zkWrapper';   // 머리말의 앱 이름
     document.title = W(document.title);
   }
 
@@ -86,7 +89,7 @@
     // 래퍼 방식의 uid 는 해시라 길다(2026-11-24) — 다른 값처럼 앞부분만, 전체는 title
     const zu = $('zkUid'); zu.textContent = v?.uid ? ` = ${WRAP ? head(v.uid) : v.uid}` : ''; if (WRAP) zu.title = v?.uid ?? '';
     const r = $('recent');
-    if (!flow) { r.textContent = WRAP ? '아직 이 브라우저에서 "zk 로그인" 을 한 적이 없습니다 — 그림에는 값의 이름만 보입니다. 서비스에서 로그인하면 실제 값이 채워집니다.' : '아직 이 브라우저에서 "zkIdP 로 로그인" 을 한 적이 없습니다 — 그림에는 값의 이름만 보입니다. 서비스에서 로그인하면 실제 값이 채워집니다.'; return; }
+    if (!flow) { r.textContent = WRAP ? '아직 이 브라우저에서 "zkWrapper 로 로그인" 을 한 적이 없습니다 — 그림에는 값의 이름만 보입니다. 서비스에서 로그인하면 실제 값이 채워집니다.' : '아직 이 브라우저에서 "zkIdP 로 로그인" 을 한 적이 없습니다 — 그림에는 값의 이름만 보입니다. 서비스에서 로그인하면 실제 값이 채워집니다.'; return; }
     const at = new Date(flow.at);
     r.replaceChildren('가장 최근 로그인: ', Object.assign(document.createElement('b'), { textContent: flow.serviceName ?? flow.origin ?? '-' }), ` · ${at.toLocaleTimeString()} · 전체 ${fmtMs(flow.totalMs)} — 아래 값은 그 로그인의 실제 값입니다.`);
   }

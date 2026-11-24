@@ -250,11 +250,11 @@ try {
     await clickTx(replayPage, '#txHoldBtn');
     await waitText(replayPage, '#txVerdict', '증명을 만들어 두었습니다', 120_000);
     // 2026-11-23(화면 점검): root 바꾸는 길은 홈의 "세션 끝내기" → 게시다 — 옛 안내("관리자 화면에서 폐기·게시")를 쓰지 않는다
-    assert.ok((await text(replayPage, '#txVerdict')).includes('홈에서'), await text(replayPage, '#txVerdict'));
+    assert.ok((await text(replayPage, '#txVerdict')).includes('내 세션 관리'), await text(replayPage, '#txVerdict'));
     assert.equal(await chainRead.getBlockNumber(), h0, '① 이 거래를 보냈다'); assert.equal(A.hits.get - g0, 1, `패스키는 한 번: ${j(A.hits)}`);
     await clickTx(replayPage, '#txReplayBtn');
     await waitText(replayPage, '#txVerdict', 'root 가 아직 바뀌지 않았습니다', 120_000);
-    assert.ok((await text(replayPage, '#txVerdict')).includes('홈에서'), await text(replayPage, '#txVerdict'));
+    assert.ok((await text(replayPage, '#txVerdict')).includes('내 세션 관리'), await text(replayPage, '#txVerdict'));
     assert.equal(await chainRead.getBlockNumber(), h0, '거절했는데 블록이 늘었다');
   });
   // 2026-11-23(사용자 요청): zkWrapper 의 관리자 화면에는 폐기할 곳이 없었다(계정 카드는 11-11 에 숨겼다) — zkWrapper 일 때만 계정 카드를 다시 보인다.
@@ -502,9 +502,10 @@ try {
     await p2.close();
     await page.close(); await rpPage.close();
   });
-  await t('서비스의 로그인 버튼은 "zk 로그인" 이다', async () => {
+  // 2026-11-24(스펙 home-and-account-recovery T1, §6 Q1): 누구에게 로그인하는지 밝히는 이름 — "Google 로 로그인" 처럼
+  await t('서비스의 로그인 버튼은 "zkWrapper 로 로그인" 이다', async () => {
     const page = await openRp(A.ctx, rp); await page.click('#loginBtn');
-    assert.equal((await text(page, '#idpLoginBtn')).trim(), 'zk 로그인'); await page.close();
+    assert.equal((await text(page, '#idpLoginBtn')).trim(), 'zkWrapper 로 로그인'); await page.close();
   });
   await t('전체 플로우 한 장: 아랫줄에 Google 이 있고 π_IdP 가 없다 — 실제 값이 채워진다', async () => {
     const page = await A.ctx.newPage(); await page.goto(`${wallet.base}/common/flow.html`);
@@ -521,6 +522,8 @@ try {
     assert.ok(dets[1].includes('사용자 대기') && dets[1].includes('salt 계산'), dets[1]);
     const lbl4 = await page.$eval('#seqZk .st[data-step="4"] .lbl', (e) => e.textContent.trim());
     assert.ok(lbl4.startsWith('④ 세션 토큰') && dets[3].startsWith('④ 세션 토큰'), `${lbl4} / ${dets[3].slice(0, 40)}`);
+    // T1: 펼친 설명·그림·머리말 어디에도 옛 이름("zk 클라이언트"·"zk 로그인")이 없다 — 계산하는 주체는 "브라우저"
+    { const all = `${dets.join(' ')} ${await visibleText(page)}`; assert.ok(!/zk 클라이언트|zk 로그인/.test(all), all.match(/.{0,30}(zk 클라이언트|zk 로그인).{0,30}/)?.[0]); }
     const uid = await page.$eval('#zkUid', (e) => ({ t: e.textContent, title: e.title }));
     assert.ok(uid.t.length < 30 && uid.title.length > 40, j(uid));
     await page.close();

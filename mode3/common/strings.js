@@ -10,7 +10,19 @@ window.DemoStrings = {
   // zkWrapper 표기(2026-11-20 스펙 zkwrapper §6): 별도 IdP 가 없다 — 발급자를 "zkWrapper" 라 부른다. demo.js setWalletKind('zkwrapper') 가 켠다. 항목의 ko_wr·en_wr 가 있으면 그것을,
   // 없으면 낱말만 바꾼 문구(wrapperText)를 낸다(noSnap 다음에 적용).
   wrapper: false,
-  wrapperText(s) { return typeof s === 'string' ? s.replace(/zk-?IdP/g, 'zkWrapper') : s; },
+  // 2026-11-24(스펙 home-and-account-recovery T1): 사용자 화면(page — demo.js init 이 넣는다)에서는 용어를 하나로 — 로그인 = "zkWrapper 로 로그인", 5100 화면 = "zkWrapper 홈",
+  // 계산하는 주체 = "브라우저"(zkWrapper 서버가 아니다), RP = "서비스". 관리자·운영자 화면은 RP 를 그대로 둔다(T2). "클라이언트·브라우저", "RP(알피)·서비스" 는
+  // 모두 모음으로 끝나 조사가 그대로 맞는다. π_RP·RP_ORIGIN 처럼 기호에 붙은 RP 는 낱말이 아니라 두지 않는다.
+  page: null,
+  userPages: ['wallet', 'rp', 'attr'],
+  wrapperText(s, lang = 'ko') {
+    if (typeof s !== 'string') return s;
+    let t = s.replace(/zk-?IdP/g, 'zkWrapper');
+    if (lang === 'en') t = t.replace(/zk client (?:home|screen|page)/gi, 'zkWrapper home').replace(/\bzk client\b/gi, 'browser').replace(/\bzk (?:sign-in|login)\b/gi, 'zkWrapper sign-in');
+    else t = t.replace(/zk 클라이언트(?: 홈| 화면| 페이지)/g, 'zkWrapper 홈').replace(/zk 클라이언트/g, '브라우저').replace(/zk 로그인/g, 'zkWrapper 로 로그인');
+    if (this.userPages.includes(this.page)) t = t.replace(/(^|[^A-Za-z0-9_])RPs?(?![A-Za-z0-9_])/g, (m, a) => `${a}${lang === 'en' ? 'service' : '서비스'}`);
+    return t;
+  },
   noSnapText(s, lang) {
     if (typeof s !== 'string') return s;
     if (lang === 'en') return s.replace(/\b(?:zk |MetaMask )?snaps?(?: agent)?\b/gi, 'zk client');
@@ -19,15 +31,15 @@ window.DemoStrings = {
   },
   text(e, lang) {
     const l = typeof e[lang] === 'string' ? lang : 'ko';
-    if (this.wrapper && typeof e[`${l}_wr`] === 'string') return e[`${l}_wr`];
+    if (this.wrapper && typeof e[`${l}_wr`] === 'string') return this.wrapperText(e[`${l}_wr`], l);
     const s = this.noSnap ? (e[`${l}_pk`] ?? this.noSnapText(e[l], l)) : e[l];
-    return this.wrapper ? this.wrapperText(s) : s;
+    return this.wrapper ? this.wrapperText(s, l) : s;
   },
   reasonText(r, lang) {
     const l = r[lang] ? lang : 'ko';
-    if (this.wrapper && r[`${l}_wr`]) return r[`${l}_wr`];
+    if (this.wrapper && r[`${l}_wr`]) return Object.fromEntries(Object.entries(r[`${l}_wr`]).map(([k, v]) => [k, this.wrapperText(v, l)]));
     const base = !this.noSnap ? r[l] : (r[`${l}_pk`] ?? Object.fromEntries(Object.entries(r[l]).map(([k, v]) => [k, this.noSnapText(v, l)])));
-    return this.wrapper ? Object.fromEntries(Object.entries(base).map(([k, v]) => [k, this.wrapperText(v)])) : base;
+    return this.wrapper ? Object.fromEntries(Object.entries(base).map(([k, v]) => [k, this.wrapperText(v, l)])) : base;
   },
   ui: {
     // 안내 바·토글
@@ -453,7 +465,7 @@ window.DemoStrings = {
     rp_session_stale: { ko: '이 로그인은 닫혔습니다 — zkIdP 가 폐기 목록이나 등록부를 새로 게시하면(누군가의 폐기·첫 발급·속성 변경) 그 전의 로그인은 다시 확인해야 합니다. 로그아웃한 뒤 다시 로그인하세요.', en: 'This login was closed — when zkIdP publishes a new revocation list or registry (someone’s revocation, first issuance or attribute change), earlier logins must be checked again. Log out, then log in again.' },   // 2026-11-15: 등록부만 바뀌어도 닫힌다 — "폐기 목록" 만 말하지 않는다
     rp_stale_relogin_btn: { ko: '로그아웃하고 다시 로그인', en: 'Log out and log in again' },   // 2026-11-14(화면 리뷰 3차): 상단은 로그인 상태인데 "내 계정" 이 비어 있던 것
     rp_session_ended_title: { ko: '로그아웃됨', en: 'Logged out' },
-    rp_session_ended: { ko: '이 세션이 끝났습니다 — 사용자 페이지에서 폐기하거나 로그아웃했습니다. 계속 쓰려면 다시 로그인하세요.', en: 'This session has ended — it was revoked or logged out from the user page. Log in again to continue.', ko_wr: '이 세션이 끝났습니다 — zk 클라이언트 홈에서 끝냈거나 만료됐습니다. 계속 쓰려면 다시 로그인하세요.', en_wr: 'This session has ended — it was ended from the zk client home or expired. Log in again to continue.' },
+    rp_session_ended: { ko: '이 세션이 끝났습니다 — 사용자 페이지에서 폐기하거나 로그아웃했습니다. 계속 쓰려면 다시 로그인하세요.', en: 'This session has ended — it was revoked or logged out from the user page. Log in again to continue.', ko_wr: '이 세션이 끝났습니다 — zkWrapper 의 내 세션 관리에서 끝냈거나 만료됐습니다. 계속 쓰려면 다시 로그인하세요.', en_wr: 'This session has ended — it was ended from "my sessions" on zkWrapper or expired. Log in again to continue.' },
     rp_pending_banner: { ko: '서비스 준비 중 — zkIdP 승인 대기', en: 'Service not ready yet — awaiting zkIdP approval' },
     market_title: { ko: 'KRW 마켓', en: 'KRW market' },
     market_demo_note: { ko: '실시간 시세가 아닌 데모용 가상 데이터입니다.', en: 'Demo data only — not a real-time price feed.' },
@@ -494,7 +506,7 @@ window.DemoStrings = {
     rp_seen_jwt: { ko: '받은 ID 토큰(JWT) 본문 보기', en: 'Show the ID token (JWT) payload received' },
     // "누가 무엇을 받아 무엇을 검증하는가" 그림(2026-11-19 데모 시나리오 6·7, common/flow_figure.js) — zkIdP 관리자 화면·서비스 화면
     flow_user: { ko: '사용자', en: 'User' },
-    flow_user_sub: { ko: 'zk 클라이언트(브라우저)', en: 'zk client (browser)' },
+    flow_user_sub: { ko: 'zk 클라이언트(브라우저)', en: 'zk client (browser)', ko_wr: '사용자의 브라우저', en_wr: 'the user\'s browser' },   // 2026-11-24 T1: 래퍼에서는 계산하는 주체 = 브라우저
     flow_user_sub_oidc: { ko: '브라우저', en: 'browser' },
     flow_checks: { ko: '검증한 것', en: 'What it verified' },
     flow_unknown: { ko: '알 수 없는 것', en: 'What it cannot learn' },
@@ -568,7 +580,7 @@ window.DemoStrings = {
     rp_social_not_in_demo: { ko: '이 데모에서는 아직 준비되지 않았습니다', en: 'Not available in this demo yet.' },
     rp_modal_close: { ko: '닫기', en: 'Close' },
     // Google 버튼(스펙 2026-10-16 §3.2) — zkIdP 가 Google 을 켜고 사용자가 브라우저 모드일 때만 실제로 동작한다(버튼 설명).
-    rp_google_login_note: { ko: 'Google 계정으로 등록한 사용자는 이 버튼으로 같은 zk 로그인을 합니다. zkIdP 는 Google 토큰을 등록·자기 폐기 때만 봅니다.', en: 'Users who registered with a Google account use this button for the same zk login. The zkIdP sees a Google token only at registration and self-revocation.' },
+    rp_google_login_note: { ko: 'Google 계정으로 등록한 사용자는 이 버튼으로 같은 zk 로그인을 합니다. zkIdP 는 Google 토큰을 등록·자기 폐기 때만 봅니다.', en: 'Users who registered with a Google account use this button for the same zk login. The zkIdP sees a Google token only at registration and self-revocation.', ko_wr: 'Google 계정으로 등록한 사용자도 이 버튼("zkWrapper 로 로그인")을 씁니다. zkWrapper 는 Google 토큰을 로그인·폐기 때만 봅니다.', en_wr: 'Users who registered with a Google account use this button too ("Sign in with zkWrapper"). zkWrapper sees a Google token only at sign-in and revocation.' },
     rp_balance_title: { ko: '입금·구매(시연)', en: 'Deposit & buy (demo)' },
     rp_balance_desc: { ko: '실제 거래소처럼 KRW 를 입금(시연)하고 시세로 ETH 를 사면, 산 ETH 가 내 계정에 실제로 들어옵니다(테스트 체인).', en: 'Like a real exchange: deposit KRW (demo) and buy ETH at the quoted price — the ETH really lands in your account (test chain).' },
     compliance_title: { ko: '컴플라이언스', en: 'Compliance' },
@@ -805,7 +817,7 @@ window.DemoStrings = {
     user_proof_tx_row: { ko: '이 증명이 실린 거래:', en: 'Transaction carrying this proof:' },
     user_proof_tx_link: { ko: 'Blockscout 에서 열기', en: 'Open in Blockscout' },
     user_pub_s_PPID: { ko: '이 서비스에서만 쓰는 내 가명(계정 주소의 재료)', en: 'My pseudonym for this service only (the account address is derived from it)' },
-    user_pub_s_arid: { ko: '서비스(RP) 식별자', en: 'Service (RP) identifier' },
+    user_pub_s_arid: { ko: '서비스(RP) 식별자', en: 'Service (RP) identifier', ko_wr: '서비스 식별자', en_wr: 'Service identifier' },
     user_pub_s_pk_i: { ko: '이 세션의 세션키 주소', en: 'Session key address of this session' },
     user_pub_s_max_height: { ko: '세션이 만료되는 블록 높이', en: 'Block height at which the session expires' },
     user_pub_s_chainid: { ko: '이 증명이 쓰일 체인', en: 'Chain this proof is for' },
@@ -1428,7 +1440,7 @@ window.DemoStrings = {
     rp_tx_replay_btn: { ko: '② 옛 증명으로 보내기(시연)', en: '② Send with the old proof (demo)' },   // 2026-11-23
     rp_tx_hold_btn: { ko: '① 증명 만들어 두기(시연)', en: '① Build a proof now (demo)' },   // 2026-11-23 시연 2차 — root 가 바뀐 경우만 보인다
     rp_tx_hold_title: { ko: '증명 만들어 둠', en: 'Proof built' },
-    rp_tx_hold_ok: { ko: '증명을 만들어 두었습니다(nonce {nonce}). 보내지 않았습니다 — zk 클라이언트 홈에서 다른 서비스의 세션을 끝내고 관리자 화면에서 게시해 root 를 바꾼 뒤 ② 를 누르세요.', en: 'Proof built (nonce {nonce}) and not sent — end another service\'s session on the zk client home and publish on the admin page to change the root, then press ②.' },
+    rp_tx_hold_ok: { ko: '증명을 만들어 두었습니다(nonce {nonce}). 보내지 않았습니다 — zkWrapper 의 내 세션 관리(/user)에서 다른 서비스의 세션을 끝내고 관리자 화면에서 게시해 root 를 바꾼 뒤 ② 를 누르세요.', en: 'Proof built (nonce {nonce}) and not sent — end another service\'s session in "my sessions" on zkWrapper (/user) and publish on the admin page to change the root, then press ②.' },
     rp_tx_replay_desc: { ko: '① 지금의 root·nonce 로 증명만 만들어 두고, root 가 바뀐 뒤 ② 로 그 증명에 지금 root 만 붙여 보냅니다. 거래는 블록에 실리지만 증명 검증에서 실패해야 합니다.', en: '① builds a proof for the current root and nonce without sending; after the root changes, ② sends that proof with only the root replaced. The transaction is mined but should fail proof verification.' },
     rp_tx_replay_reverted: { ko: '거래는 블록 {block}에 실렸지만 계정 컨트랙트의 영지식 증명 검증에서 되돌려졌습니다({err}). root 가 바뀐 뒤에는 옛 증명을 다시 쓸 수 없습니다.', en: 'The transaction was mined in block {block} but the account contract rejected it at proof verification ({err}). An old proof cannot be reused after the root changes.' },
     rp_custody_withdraw_ok: { ko: '거래소 보관에서 {eth} ETH 를 보냈습니다.', en: 'Sent {eth} ETH from the exchange-held balance.' },
@@ -1611,7 +1623,7 @@ window.DemoStrings = {
     no_old_proof: { where: 'wallet', ko: { title: '지금 nonce 로 만들어 둔 증명이 없습니다', cause: '시연 ② 는 ① 로 지금의 nonce 에 만들어 둔 증명만 씁니다 — ① 을 하지 않았거나, 그 뒤 출금이 있어 nonce 가 바뀌었습니다(nonce 검사 장면은 다음 버전).', action: '① 증명 만들어 두기를 다시 누른 뒤 root 를 바꾸고 ② 를 누르세요.' }, en: { title: 'No proof built for the current nonce', cause: 'Demo ② only uses a proof built by ① for the current nonce — ① was not pressed, or a withdrawal since then changed the nonce (the nonce scene comes in the next version).', action: 'Press ① again, change the root, then press ②.' } },
     tx_reverted: { where: 'rp', ko: { title: '거래가 블록에서 되돌려졌습니다', cause: '거래는 블록에 실렸지만 계정 컨트랙트가 되돌렸습니다 — "자세히"의 detail 이 컨트랙트 오류 이름입니다.', action: '옛 증명 시연이면 정상입니다. 그 밖이면 다시 로그인한 뒤 다시 시도하세요.' }, en: { title: 'The transaction was reverted', cause: 'The transaction was mined but the account contract reverted it — the detail under "more" is the contract error name.', action: 'Expected in the old-proof demo. Otherwise log in again and retry.' } },
     relay_demo_no_session: { where: 'rp', ko: { title: '이 서비스에 로그인한 세션의 거래가 아닙니다', cause: '옛 증명 시연 경로는 지금 이 서비스에 로그인해 있는 세션의 거래만 보냅니다.', action: '이 서비스에 다시 로그인한 뒤 누르세요.' }, en: { title: 'Not a transaction of a session logged in here', cause: 'The old-proof demo only relays transactions of a session currently logged in to this service.', action: 'Log in to this service again, then press it.' } },
-    replay_still_valid: { where: 'wallet', ko: { title: 'root 가 아직 바뀌지 않았습니다', cause: '① 에서 만든 증명이 지금의 root·nonce 와 같아 아직 유효합니다 — 보내면 진짜 출금이 됩니다.', action: 'zk 클라이언트 홈에서 다른 서비스의 세션을 끝내고 관리자 화면에서 게시해 root 를 바꾼 뒤 ② 를 누르세요.' }, en: { title: 'The root has not changed yet', cause: 'The proof built by ① still matches the current root and nonce, so it is valid — sending it would be a real withdrawal.', action: 'End another service\'s session on the zk client home and publish on the admin page to change the root, then press ②.' } },
+    replay_still_valid: { where: 'wallet', ko: { title: 'root 가 아직 바뀌지 않았습니다', cause: '① 에서 만든 증명이 지금의 root·nonce 와 같아 아직 유효합니다 — 보내면 진짜 출금이 됩니다.', action: 'zkWrapper 의 내 세션 관리(/user)에서 다른 서비스의 세션을 끝내고 관리자 화면에서 게시해 root 를 바꾼 뒤 ② 를 누르세요.' }, en: { title: 'The root has not changed yet', cause: 'The proof built by ① still matches the current root and nonce, so it is valid — sending it would be a real withdrawal.', action: 'End another service\'s session in "my sessions" on zkWrapper (/user) and publish on the admin page to change the root, then press ②.' } },
     relay_demo_off: { where: 'rp', ko: { title: '이 서비스는 옛 증명 시연을 켜지 않았습니다', cause: '릴레이가 되돌려질 거래를 보내는 시연 경로는 MODE3_RELAY_DEMO_REVERT=1 일 때만 열립니다.', action: '시연을 하려면 서비스를 그 값으로 다시 띄우세요.' }, en: { title: 'This service has the old-proof demo off', cause: 'The relay sends a transaction that will revert only with MODE3_RELAY_DEMO_REVERT=1.', action: 'Restart the service with that setting to run the demo.' } },
     relay_bad_proof: { where: 'rp', ko: { title: '릴레이가 증명을 거절했습니다', cause: 'RP 릴레이가 calldata 안의 증명을 검증하지 못했습니다.', action: '다시 로그인한 뒤 다시 시도하세요.' }, en: { title: 'The relay rejected the proof', cause: 'The RP relay could not verify the proof inside the calldata.', action: 'Log in again and retry.' } },
     oidc_required: { where: 'aa', ko: { title: 'Google 본인 확인이 필요합니다', cause: 'Google 로 등록된 계정은 로그인마다 Google ID 토큰을 함께 내야 합니다.', action: 'RP 의 "Google 로 로그인" 버튼으로 다시 로그인하세요.' }, en: { title: 'Google verification required', cause: 'Accounts registered through Google must present a Google ID token on every login.', action: 'Log in again with the RP\'s "Sign in with Google" button.' } },
@@ -1656,7 +1668,9 @@ window.DemoStrings = {
     too_many_pending_rps: { where: 'aa', ko: { title: '승인 대기 중인 서비스가 너무 많습니다', cause: '승인되지 않은 서비스 등록이 zkIdP 의 상한에 닿았습니다.', action: 'zkIdP 관리자가 대기 중인 서비스를 승인하거나 지운 뒤 다시 등록하세요.' }, en: { title: 'Too many services are waiting for approval', cause: 'The number of unapproved service registrations reached the zkIdP limit.', action: 'Have the zkIdP admin approve or delete pending services, then register again.' } },
     state_changed: { where: 'aa', ko: { title: '승인하는 사이 서비스 등록이 바뀌었습니다', cause: '승인을 처리하는 동안 그 서비스의 상태나 키가 달라졌습니다.', action: '서비스 목록을 새로 고친 뒤 다시 승인하세요.' }, en: { title: 'The service registration changed during approval', cause: 'The service’s status or key changed while the approval was being processed.', action: 'Reload the service list and approve again.' } },
     session: { where: 'aa', ko: { title: 'zkIdP 로그인 세션을 저장하지 못했습니다', cause: 'zkIdP 서버가 로그인 세션을 만들거나 저장하다 실패했습니다.', action: '잠시 뒤 다시 로그인하세요. 계속되면 zkIdP 서버 로그를 확인하세요.' }, en: { title: 'zkIdP could not save the login session', cause: 'The zkIdP server failed to create or save the login session.', action: 'Log in again in a moment. If it keeps failing, check the zkIdP server log.' } },
-    bad_session_signature: { where: 'aa', ko: { title: '세션키 서명이 맞지 않습니다', cause: '세션 폐기 요청에 붙은 세션키 서명이 그 세션·허용 거래 수와 맞지 않습니다.', action: 'zk 스냅 화면에서 그 세션을 다시 끝내세요. 계속되면 서비스에서 다시 로그인한 뒤 시도하세요.' }, en: { title: 'The session key signature does not match', cause: 'The session key signature on the revocation request does not match that session and bound.', action: 'End the session again on the zk Snap page. If it keeps failing, log in at the service again first.' } },
+    bad_session_signature: { where: 'aa', ko: { title: '세션키 서명이 맞지 않습니다', cause: '세션 폐기 요청에 붙은 세션키 서명이 그 세션·허용 거래 수와 맞지 않습니다.', action: 'zk 스냅 화면에서 그 세션을 다시 끝내세요. 계속되면 서비스에서 다시 로그인한 뒤 시도하세요.' }, en: { title: 'The session key signature does not match', cause: 'The session key signature on the revocation request does not match that session and bound.', action: 'End the session again on the zk Snap page. If it keeps failing, log in at the service again first.' },
+      ko_wr: { title: '세션키 서명이 맞지 않습니다', cause: '세션 폐기 요청에 붙은 세션키 서명이 그 세션·허용 거래 수와 맞지 않습니다.', action: 'zkWrapper 의 내 세션 관리(/user)에서 그 세션을 다시 끝내세요. 계속되면 서비스에서 다시 로그인한 뒤 시도하세요.' },
+      en_wr: { title: 'The session key signature does not match', cause: 'The session key signature on the revocation request does not match that session and bound.', action: 'End the session again in "my sessions" on zkWrapper (/user). If it keeps failing, log in at the service again first.' } },
     bad_challenge: { where: 'rp', ko: { title: '로그인 챌린지가 맞지 않습니다', cause: '서비스가 낸 챌린지가 아니거나 이미 썼거나 시간이 지났습니다.', action: '서비스에서 로그인을 처음부터 다시 누르세요.' }, en: { title: 'The login challenge does not match', cause: 'The challenge was not issued by this service, was already used, or has expired.', action: 'Start the login again from the service.' } },
     session_mismatch: { where: 'rp', ko: { title: '세션이 증명과 맞지 않습니다', cause: '다시 낸 증명의 PPID·세션키가 그 세션의 것과 다릅니다.', action: '서비스에서 로그아웃한 뒤 다시 로그인하세요.' }, en: { title: 'The session does not match the proof', cause: 'The PPID or session key in the new proof differs from that session’s.', action: 'Log out of the service and log in again.' } },
     no_transcript: { where: 'rp', ko: { title: '그 계정의 로그인 기록이 없습니다', cause: '개봉을 요청할 로그인 기록(증명 원문)이 이 서비스에 없습니다 — 서비스가 재시작됐거나 그 계정이 로그인한 적이 없습니다.', action: '계정 주소나 PPID 를 확인하세요. 서비스가 재시작됐다면 그 사용자가 다시 로그인한 뒤에 요청할 수 있습니다.' }, en: { title: 'There is no login record for that account', cause: 'This service holds no login transcript to request an opening for — it restarted, or that account never logged in.', action: 'Check the account address or PPID. If the service restarted, the request works after that user logs in again.' } },

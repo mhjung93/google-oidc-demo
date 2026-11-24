@@ -9,7 +9,7 @@
     // split/join 으로 갈아 끼운다 — replace 의 치환 문자열은 $&·$' 같은 패턴을 해석해, 값에 $ 가 든 오류 메시지가
     // 문구를 망가뜨린다(문구 값에 든 {키} 는 그대로 두고 값만 넣어야 한다).
     t(key, vars = {}) { const e = S.ui[key]; let s = e ? S.text(e, D.lang) : key; for (const [k, v] of Object.entries(vars)) s = s.split(`{${k}}`).join(String(v)); return s; },
-    term(name) { const e = S.terms[name]; if (!e) return name; return S.wrapper ? S.wrapperText(e[D.lang]) : e[D.lang]; },
+    term(name) { const e = S.terms[name]; if (!e) return name; return S.wrapper ? S.wrapperText(e[D.lang], D.lang) : e[D.lang]; },
     verdictText(key) { const e = S.verdicts[key]; return e ? S.text(e, D.lang) : key; },
     reason(code) { const r = S.reasons[code]; return r ? S.reasonText(r, D.lang) : null; },
     /** 지갑 모드(2026-11-18 사용자 요청): passkey-web 이면 화면에서 "스냅" 을 빼고 지갑 자리를 "zk 클라이언트" 라 부른다(strings.js noSnap).
@@ -32,6 +32,7 @@
     applyI18n() { document.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = D.t(el.dataset.i18n); }); document.querySelectorAll('[data-term]').forEach((el) => { el.textContent = D.term(el.dataset.term); }); },
     /** tour:false 면 체험 모드를 아예 켜지 않는다(승인 팝업 — 설계 2026-09-25 §3.1). */
     init({ page, tour = true }) {
+      S.page = page ?? null;   // 2026-11-24: zkWrapper 용어(strings.js wrapperText)의 "사용자 화면" 판단에 쓴다
       D.page = page;
       // 지갑 모드(2026-11-18): 지난번에 본 값으로 먼저 그리고, 이 서버의 상태 응답으로 고친다 — 지갑 서버는 자기 secrets, zkIdP·서비스는 기동 때 받은
       // MODE3_WALLET_KIND(walletKind). 로드 시점이 아니라 여기서 한다(이 파일은 로드할 때 document·네트워크를 만지지 않는다 — tests/test_mode3_stack_judge.js).

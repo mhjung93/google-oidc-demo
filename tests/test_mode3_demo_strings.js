@@ -379,4 +379,22 @@ t('R11 passkey-web·zkWrapper: account_disabled·auid_taken 이 "폐기된 계�
   }
 });
 
+// 2026-11-24(스펙 home-and-account-recovery T1·T4): zkWrapper 의 사용자 화면(5100 홈·내 세션 관리·승인 창 = wallet, 서비스 페이지 = rp, 속성 도구 = attr)에서
+// 렌더링한 ko 문구에 옛 이름이 다시 섞이지 않는다 — 로그인 = "zkWrapper 로 로그인", 5100 화면 = "zkWrapper 홈", 계산하는 주체 = "브라우저", RP = "서비스".
+// 관리자·운영자 화면은 RP 를 그대로 둔다(T2). π_RP 처럼 기호에 붙은 RP 는 낱말이 아니다.
+t('zkWrapper 사용자 화면 문구(T4): wallet·rp·attr 에서 zkIdP·스냅·zk 클라이언트·zk 로그인·낱말 RP 가 나오지 않는다 — 관리자 화면은 RP 그대로', () => {
+  const save = { w: S.wrapper, n: S.noSnap, p: S.page };
+  try {
+    S.wrapper = true; S.noSnap = true;
+    const BAD = [/zk-?IdP/, /스냅/, /zk 클라이언트/, /zk 로그인/, /(^|[^A-Za-z0-9_])RP(?![A-Za-z0-9_])/];
+    for (const page of ['wallet', 'rp', 'attr']) {
+      S.page = page; const hits = [];
+      for (const [k, e] of Object.entries(S.ui)) { const x = S.text(e, 'ko'); for (const w of BAD) if (w.test(x)) hits.push(`${k} ${w.source}`); }
+      for (const [k, r] of Object.entries(S.reasons)) { const x = Object.values(S.reasonText(r, 'ko')).join(' '); for (const w of BAD) if (w.test(x)) hits.push(`reason:${k} ${w.source}`); }
+      assert.deepEqual(hits, [], `${page}: ${hits.length}건 — ${hits.slice(0, 10).join(' / ')}`);
+    }
+    S.page = 'admin'; assert.match(S.text(S.ui.admin_rps_title, 'ko'), /RP/, '관리자 화면은 RP 그대로(T2)');
+  } finally { S.wrapper = save.w; S.noSnap = save.n; S.page = save.p; }
+});
+
 if (fails) { console.log(`\n${fails} FAIL`); process.exit(1); } else console.log('\nall ok');
