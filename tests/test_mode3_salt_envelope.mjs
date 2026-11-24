@@ -118,5 +118,24 @@ await t('auidCheckOf 고정 값', async () => {
   assert.equal(await auidCheckOf('uid-1', 'auid-1'), '84d4d4e09e2242153a197fe9269650848ca18dd0790b879527199e83f2770a7e');
 });
 
+// 알려진 답(KAT, 2026-11-24 최종 검토 — 봉투 형식 고정): 아래 암호문은 이 형식(HKDF info "zkd-env-key-v1"·"zkd-env-code-v1", AAD "zkd-env-v1|uid|id|kind|credentialId")으로
+// 2026-11-24 지금 코드(lib 는 b91b75b 뒤 바뀌지 않았다)로 한 번 만들어 적어 둔 값이다. 왕복 시험은 형식이 바뀌어도 통과한다 — info·AAD 바이트가 바뀌면 이미 서버에 있는 봉투가 열리지 않으므로 여기서 실패해야 한다.
+// 같은 PRF·암호문은 tests/test_mode3_passkey_salt.mjs 가 mode3/common/passkey_store.js 의 envKey 로도 연다.
+const KAT = {
+  prf: new Uint8Array(32).map((_, i) => i * 3 + 2), s_u: '987654321098765432109876543210987654321', uid: '1234567890123456789',
+  device: { id: '00112233445566778899aabbccddeeff', kind: 'device', credentialId: 'CQgH', ct: 'yt4b5flNt-IIH6n95hA017RsKK3utD68f6BznasF3ec5IZQXOsnrY0YadKjr35x0bcnxmK5Ksm0-C9pmAHY_NWWQYA' },
+  code: { code: 'VB5J-CYX9-0Z02-7JGE-7PPW-SCAW-V0T', id: 'ffeeddccbbaa99887766554433221100', kind: 'code', credentialId: null, ct: '-hUxGLeTICPFR6OrYXfjfME3qMR_yQ68dF-mT4ir6hgYGdEgnSa-FOlMMVWu3yPSjeITESXc9e1ujFcPLIQsE_upbA' },
+};
+await t('KAT: 고정 PRF 의 기기 봉투가 고정 s_u 로 열린다(HKDF info·AAD 바이트 고정)', async () => {
+  const { id, kind, credentialId, ct } = KAT.device;
+  assert.equal(await openSalt({ key: await envKeyFromPrf(KAT.prf), ct, uid: KAT.uid, id, kind, credentialId }), KAT.s_u);
+  await rejectsWith(async () => openSalt({ key: await envKeyFromPrf(KAT.prf), ct, uid: KAT.uid, id, kind: 'passkey', credentialId }), 'envelope_open_failed');
+});
+await t('KAT: 고정 복구 코드의 봉투가 고정 s_u 로 열린다', async () => {
+  const { code, id, kind, credentialId, ct } = KAT.code;
+  assert.equal(await openSalt({ key: await envKeyFromCode(code), ct, uid: KAT.uid, id, kind, credentialId }), KAT.s_u);
+  await rejectsWith(async () => openSalt({ key: await envKeyFromCode(code), ct, uid: '1234567890123456780', id, kind, credentialId }), 'envelope_open_failed');
+});
+
 if (failed) { console.log(`\n${failed} 실패`); process.exit(1); }
 console.log('\n전부 통과');

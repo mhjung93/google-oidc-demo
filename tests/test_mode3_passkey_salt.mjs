@@ -114,6 +114,13 @@ await t('32바이트가 아니면 passkey_prf_unsupported', async () => {
     const ct = await sealSalt({ key: d.envKey, ...sealArgs });
     assert.equal(await openSalt({ key: await envKeyFromPrf(new Uint8Array(prfOut)), ct, ...sealArgs }), '12345');
   });
+  // 알려진 답(KAT, 2026-11-24 최종 검토): tests/test_mode3_salt_envelope.mjs 의 KAT 와 같은 PRF(위 prfOut)·암호문 — passkey_store 의 envKey 도 같은 형식이어야 한다.
+  // 이 파일의 envKey 식은 lib 를 복제한 것이라(전역 스크립트), info 바이트가 한쪽만 바뀌면 여기서 실패한다.
+  await t('KAT: derivePrf 의 envKey 로 고정 기기 봉투가 고정 s_u 로 열린다', async () => {
+    const d = await P.derivePrf({ credentialId: 'CQgH', rpId: RP });
+    const KAT_CT = 'yt4b5flNt-IIH6n95hA017RsKK3utD68f6BznasF3ec5IZQXOsnrY0YadKjr35x0bcnxmK5Ksm0-C9pmAHY_NWWQYA';
+    assert.equal(await openSalt({ key: d.envKey, ct: KAT_CT, uid: '1234567890123456789', id: '00112233445566778899aabbccddeeff', kind: 'device', credentialId: d.credentialId }), '987654321098765432109876543210987654321');
+  });
   await t('salt 유도는 그대로(s_u 기대값)', async () => {
     const d = await P.derivePrf({ credentialId: 'CQgH', rpId: RP });
     assert.equal(d.s_u, expected(prfOut));
