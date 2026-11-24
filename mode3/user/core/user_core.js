@@ -1050,7 +1050,8 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
      *  되찾고(서버가 준 대조값과 맞을 때만 — 아니면 발급을 보내지 않는다 [I1]), 이 기기 패스키로 잠근 기기 봉투를 실어 다시 발급받는다 [I8]. 응답은 login 과 같다.
      *  envelopeId: 고른 봉투. 복구 메모의 패스키(첫 시도에 고른 패스키)가 어떤 봉투의 credential 이면 그 봉투를 다시 묻지 않고 열고, 새 봉투도 만들지 않는다 —
      *  그 봉투가 이 기기의 로컬 사본이 된다 [I4]. code: 복구 코드 봉투의 코드(저장하지 않는다).
-     *  실패하면 방금 만든 로컬 등록을 되돌리고 요청 키는 남긴다 — 10분 안에 같은 화면에서 다시 할 수 있다 [m2]. 토큰을 이미 썼거나 계정이 폐기됐으면 키·메모를 지운다. */
+     *  로컬 사본(kv passkey 의 via:'envelope')은 대조가 맞은 뒤 발급을 보내기 전에 쓴다(최종 검토 I-2 — 발급 뒤 login 이 던지거나 창이 닫혀도 이 기기가 막히지 않게).
+     *  발급이 받아들여지지 않고 실패하면 방금 만든 로컬 등록을 되돌리고 요청 키는 남긴다 — 10분 안에 같은 화면에서 다시 할 수 있다 [m2]. 토큰을 이미 썼거나 계정이 폐기됐으면 키·메모를 지운다. */
     async wrapperLoginRecover(body, { idToken = null, verifiedOrigin = null, serviceName = null, policy = null, envelopeId = null, code = null } = {}) {
       if (!WRAP) return R(409, { reason: 'not_wrapper_mode' });
       if (typeof idToken !== 'string' || !idToken) return R(400, { error: 'idToken(문자열) 필요' });
@@ -1104,32 +1105,32 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
         envelope = { id, kind: 'device', credentialId: memo.credentialId, ct };
         local = { id, kind: 'device', ct, uid };
       }
-      let accepted = false;
-      const r = await core.withSalt(async () => {
-        const made = await wrapperLocalRegister({ uid, provider: pub.oidc.provider, s_u });
-        if (made) return made;
-        saltMemo = s_u;
-        if (derived) scopeDerive = derived;   // 로그인 기록의 passkey 단계 = 백업 패스키를 물은 시간
-        const out = await ops.login(body, { verifiedOrigin, serviceName, policy, wrapper: { idToken, privateKey: wk.privateKey, pkE: wk.pkE, aud: pub.wrapperAud, ...(envelope ? { envelope } : {}) } });
-        // 발급이 받아들여졌는가 — issueSession 이 200 을 받으면 방금 쓴 등록의 pendingIdp 를 내린다. 그 뒤 단계(게시 대기·증명)가 실패해도 서버는 이미 기기 봉투를 두고 계정을 받았다.
-        accepted = (await getReg())?.pendingIdp === false;
-        if (out.status !== 200 && !accepted) { await kv.del('registration'); await putSessions({}); }
-        return out;
-      });
-      if (accepted) {
-        // 로컬 사본은 발급이 받아들여지면 남긴다 — 최종 결과가 실패여도(registry_unpublished·chain_unavailable 등). 안 그러면 등록은 남고 사본은 없어 다음 로그인이 늘 passkey_mismatch 가 된다.
-        await kv.set('passkey', { ...pk, via: 'envelope', envelope: local });
-        // 목록 메타(암호문 없음): 제안의 봉투 + 방금 더한 기기 봉투(같은 credential 의 옛 기기 봉투는 서버가 바꿔 넣는다). 만든 시각은 제안에 없다.
-        const meta = offer.envelopes.filter((e) => !(envelope && e.kind === 'device' && e.credentialId === envelope.credentialId)).map(({ id, kind, credentialId }) => ({ id, kind, credentialId, createdAt: null }));
-        if (envelope) meta.push({ id: envelope.id, kind: 'device', credentialId: envelope.credentialId, createdAt: null });
-        await kv.set('envelopes', meta);
-        // 토큰은 쓰였다 — 같은 토큰으로 다시 복구할 일이 없다(실패했으면 다음 로그인은 보통의 wrapperLogin 이다)
-        await kv.del('wrapperKey'); dropRecover();
+      // 4. 로컬 사본은 발급을 보내기 **전에** 쓴다(최종 검토 I-2) — 사본의 salt 는 위에서 대조까지 맞춘 값이라 발급의 결과와 관계없이 맞다.
+      // 발급이 받아들여진 뒤 login 이 던지거나(증명 중 창이 닫힘 — 서비스 창은 300초에 닫는다) 받아들여지지 않아도, 이 기기의 다음 wrapperLogin 은 이 사본으로 된다
+      // (등록이 없으면 saltNow 가 사본의 uid 로 연다). 목록 메타(암호문 없음)도 함께: 제안의 봉투 + 이 기기 봉투(같은 credential 의 옛 기기 봉투는 서버가 바꿔 넣는다).
+      await kv.set('passkey', { ...pk, via: 'envelope', envelope: local });
+      const meta = offer.envelopes.filter((e) => !(envelope && e.kind === 'device' && e.credentialId === envelope.credentialId)).map(({ id, kind, credentialId }) => ({ id, kind, credentialId, createdAt: null }));
+      if (envelope) meta.push({ id: envelope.id, kind: 'device', credentialId: envelope.credentialId, createdAt: null });
+      await kv.set('envelopes', meta);
+      let registered = false, r = null;
+      try {
+        r = await core.withSalt(async () => {
+          const made = await wrapperLocalRegister({ uid, provider: pub.oidc.provider, s_u });
+          if (made) return made;
+          registered = true;
+          saltMemo = s_u;
+          if (derived) scopeDerive = derived;   // 로그인 기록의 passkey 단계 = 백업 패스키를 물은 시간
+          return ops.login(body, { verifiedOrigin, serviceName, policy, wrapper: { idToken, privateKey: wk.privateKey, pkE: wk.pkE, aud: pub.wrapperAud, ...(envelope ? { envelope } : {}) } });
+        });
         return r;
+      } finally {
+        // 발급이 받아들여졌는가 — issueSession 이 200 을 받으면 방금 쓴 등록의 pendingIdp 를 내린다. 그 뒤 단계(게시 대기·증명)가 실패하거나 던져도 서버는 계정을 받았다:
+        // 등록을 남기고, 토큰은 쓰였으니 요청 키·메모를 지운다. 받아들여지지 않았으면(던진 경우 포함) 방금 쓴 등록을 되돌리고 요청 키는 남긴다 [m2] —
+        // 같은 토큰으로는 다시 해도 안 되는 실패(wrapper_token_used·account_disabled)만 지운다.
+        const accepted = registered && (await getReg())?.pendingIdp === false;
+        if (registered && !accepted) { await kv.del('registration'); await putSessions({}); }
+        if (accepted || r?.body?.reason === 'wrapper_token_used' || r?.body?.reason === 'account_disabled') { await kv.del('wrapperKey'); dropRecover(); }
       }
-      // 같은 토큰으로는 다시 해도 안 되는 실패 — 키·메모를 지워 창이 처음(Google)부터 하게 한다. 그 밖은 남긴다 [m2].
-      if (r.body?.reason === 'wrapper_token_used' || r.body?.reason === 'account_disabled') { await kv.del('wrapperKey'); dropRecover(); }
-      return r;
     },
     /** 에이전트 POST /wallet/revalidate 의 등가(origin 은 Origin 헤더 자리 — 팝업이 event.origin 을 넘긴다). */
     async revalidate({ r_s, skipSync = false, arid = null, origin = null } = {}) {
@@ -1435,14 +1436,16 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
           key = c.envKey; credentialId = c.credentialId;
         } else key = await envKeyFromCode(code);
         const s_u = await saltNow();
-        return { op: 'add', envelope: { id, kind, credentialId, ct: await sealSalt({ key, s_u, uid, id, kind, credentialId }) } };
+        // auid(최종 검토 I-1): salt 를 안다는 증거로 계정의 auid 를 싣는다 — 서버가 계정의 auid 와 맞춰 본다(응답에는 없다)
+        return { op: 'add', auid: (await auidOf({ s_u: BigInt(s_u) })).toString(), envelope: { id, kind, credentialId, ct: await sealSalt({ key, s_u, uid, id, kind, credentialId }) } };
       });
     },
-    /** salt 봉투 — 지우기(백업이든 복구한 기기의 봉투든, id 로). 패스키를 묻지 않는다. 이미 복구한 기기는 자기 로컬 사본으로 계속 된다 [m6]. 응답 { envelopes }. */
+    /** salt 봉투 — 지우기(백업이든 복구한 기기의 봉투든, id 로). 패스키를 한 번 묻는다(최종 검토 I-1 — Google 계정만으로는 지우지 못하게 계정의 auid 를 싣는다;
+     *  withSalt 범위 안이면 그 메모). 취소하면 보내지 않고 요청 키를 남긴다. 이미 복구한 기기는 자기 로컬 사본으로 계속 된다 [m6]. 응답 { envelopes }. */
     async wrapperEnvelopeRemove({ idToken = null, id = null } = {}) {
       if (!WRAP) return R(409, { reason: 'not_wrapper_mode' });
       if (typeof id !== 'string' || !/^[0-9a-f]{32}$/.test(id)) return R(400, { reason: 'envelope_bad' });
-      return envelopeCall(idToken, async () => ({ op: 'remove', id }));
+      return envelopeCall(idToken, async () => ({ op: 'remove', auid: (await auidOf({ s_u: BigInt(await saltNow()) })).toString(), id }));
     },
     /** salt 봉투 — 이 브라우저가 아는 목록(Task 5 의 /user 백업 카드가 읽는다): 더하기·지우기·복구 응답으로 바뀐 kv envelopes 그대로(id·kind·credentialId·createdAt — 암호문 없음).
      *  다른 기기에서 바꾼 것은 이 브라우저가 다음에 더하거나 지울 때 응답으로 맞춰진다(목록만 묻는 서버 경로는 없다). */

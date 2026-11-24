@@ -234,11 +234,13 @@ try {
     const again = await call({ key: ok.k, token: ok.id_token }); assert.equal(again.r.status, 409, j(again.r.body)); assert.equal(again.r.body.reason, 'wrapper_token_used');
   });
   // ---- salt 봉투(계획 2026-11-24 zkwrapper salt-envelope Task 2) ----
-  /** POST /cia/wrapper/envelope — 요청 키·그 키에 묶인 토큰·envelopeDigest 서명. key·token 을 주면 같은 요청 키·토큰을 다시 쓴다. */
-  const envCall = async (who, req, { key = null, token = null, signFor = null } = {}) => {
+  /** POST /cia/wrapper/envelope — 요청 키·그 키에 묶인 토큰·envelopeDigest 서명. key·token 을 주면 같은 요청 키·토큰을 다시 쓴다.
+   *  auid(최종 검토 I-1): 기본은 그 사람의 auid(salt 를 안다). 다른 값을 주면 그 값을 서명해 보낸다, null 이면 싣지 않는다(서명 없이 — 모양 검사가 먼저다). */
+  const envCall = async (who, req0, { key = null, token = null, signFor = null, auid = who.auid.toString() } = {}) => {
+    const req = auid === null ? req0 : { ...req0, auid };
     const k = key ?? await generateRequestKey();
     const id_token = token ?? await stub.mint({ sub: who.sub, nonce: await wrapperNonce(k.pkE), extra: {} });
-    const sig = await signDigest(k.privateKey, envelopeDigest(signFor ?? req, AUD));
+    const sig = auid === null ? 'A'.repeat(86) : await signDigest(k.privateKey, envelopeDigest(signFor ? { auid, ...signFor } : req, AUD));
     return { r: await cia.post('/cia/wrapper/envelope', { id_token, pk_e: k.pkE, sig, ...req }), k, id_token };
   };
   /** 계정의 봉투(암호문 포함) — 같은 Google 계정의 다른 패스키로 발급을 청해 409 auid_pinned 본문에서 읽는다(상태를 바꾸지 않는다). */
@@ -252,6 +254,36 @@ try {
     const again = await envCall(ivy, { op: 'add', envelope: mkEnv('code') }, { key: a.k, token: a.id_token });
     assert.equal(again.r.status, 409, j(again.r.body)); assert.equal(again.r.body.reason, 'wrapper_token_used');
     const notReg = await envCall(await person('g-env-nobody'), { op: 'add', envelope: mkEnv('passkey') }); assert.equal(notReg.r.status, 404, j(notReg.r.body));
+  });
+  // 2026-11-24 최종 검토 I-1: Google 계정만 가진 사람은 409 auid_pinned 로 봉투 id 를 알아도 백업을 지우거나 한도를 채우지 못한다 — 추가·삭제는 계정의 auid(salt 를 아는 사람만 안다)를 서명해 싣는다.
+  await t('봉투 추가·삭제의 auid 증명(I-1): auid 가 없으면 400 envelope_bad, 다른 auid 면 409 envelope_auid_mismatch — 둘 다 토큰을 쓰지 않아 같은 토큰으로 맞는 auid 면 된다; 응답에 auid 가 없다', async () => {
+    const ola = await person('g-env-ola'); assert.equal((await wrapIssue(ola, S1)).r.status, 200);
+    const thief = await person(ola.sub);   // 같은 Google 계정, 다른 패스키(다른 salt) — 봉투 id 는 409 에서 안다
+    const P1 = mkEnv('passkey');
+    const missing = await envCall(ola, { op: 'add', envelope: P1 }, { auid: null });
+    assert.equal(missing.r.status, 400, j(missing.r.body)); assert.equal(missing.r.body.reason, 'envelope_bad');
+    const wrong = await envCall(ola, { op: 'add', envelope: P1 }, { key: missing.k, token: missing.id_token, auid: thief.auid.toString() });
+    assert.equal(wrong.r.status, 409, j(wrong.r.body)); assert.equal(wrong.r.body.reason, 'envelope_auid_mismatch');
+    assert.equal(JSON.stringify(wrong.r.body).includes(ola.auid.toString()), false, '응답에 계정 auid 가 있다');
+    const ok = await envCall(ola, { op: 'add', envelope: P1 }, { key: missing.k, token: missing.id_token });
+    assert.equal(ok.r.status, 200, j(ok.r.body) + ' — 거절된 두 요청은 토큰을 쓰지 않는다'); assert.equal(ok.r.body.envelopes.length, 1);
+    assert.equal(JSON.stringify(ok.r.body).includes(ola.auid.toString()), false, '응답에 auid 가 있다');
+    // 서명은 auid 를 덮는다 — 맞는 auid 로 서명하고 본문의 auid 만 바꾸면 서명이 맞지 않는다
+    const k2 = await generateRequestKey(); const t2 = await stub.mint({ sub: ola.sub, nonce: await wrapperNonce(k2.pkE), extra: {} });
+    const sig2 = await signDigest(k2.privateKey, envelopeDigest({ op: 'remove', auid: ola.auid.toString(), id: P1.id }, AUD));
+    const swapped = await cia.post('/cia/wrapper/envelope', { id_token: t2, pk_e: k2.pkE, sig: sig2, op: 'remove', auid: thief.auid.toString(), id: P1.id });
+    assert.equal(swapped.status, 400, j(swapped.body)); assert.equal(swapped.body.reason, 'wrapper_bad_signature');
+    // 삭제도 같다: 409 로 본 봉투 id 를 다른 salt 의 auid 로 지우려 하면 거절, 토큰은 남아 맞는 auid 로 지운다
+    assert.equal((await envelopesOf(ola)).length, 1);
+    const rmMissing = await envCall(thief, { op: 'remove', id: P1.id }, { auid: null }); assert.equal(rmMissing.r.status, 400, j(rmMissing.r.body)); assert.equal(rmMissing.r.body.reason, 'envelope_bad');
+    const rmWrong = await envCall(thief, { op: 'remove', id: P1.id }, { key: rmMissing.k, token: rmMissing.id_token });
+    assert.equal(rmWrong.r.status, 409, j(rmWrong.r.body)); assert.equal(rmWrong.r.body.reason, 'envelope_auid_mismatch');
+    assert.equal((await envelopesOf(ola)).length, 1, '봉투가 그대로다');
+    const rmOk = await envCall(ola, { op: 'remove', id: P1.id }, { key: rmMissing.k, token: rmMissing.id_token });
+    assert.equal(rmOk.r.status, 200, j(rmOk.r.body)); assert.equal(rmOk.r.body.envelopes.length, 0);
+    // 한도 채우기도 막힌다: 다른 auid 로는 백업 하나도 더하지 못한다
+    assert.equal((await envCall(thief, { op: 'add', envelope: mkEnv('code') })).r.body.reason, 'envelope_auid_mismatch');
+    assert.deepEqual(await envelopesOf(ola), []);
   });
   await t('auid_pinned(복구): 본문에 auid 가 없고 auidCheck = auidCheckOf(uid, 계정 auid)·봉투 암호문이 있다 — 같은 토큰·요청 키로 맞는 auid + 기기 봉투면 200, 봉투 +1; 봉투만 바꾸면 wrapper_bad_signature', async () => {
     const kim = await person('g-env-kim'); assert.equal((await wrapIssue(kim, S1)).r.status, 200);

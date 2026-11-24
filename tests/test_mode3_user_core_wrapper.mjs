@@ -32,9 +32,12 @@ try {
   /** 브라우저 하나 = kv 하나 + 패스키 하나(salt). sent 에 발급 서버로 간 요청 본문을, recv 에 그 응답을 모은다. rewrite(url, body) 가 새 본문을 주면 응답을 바꿔치기한다.
    *  패스키 대역: derive({ credentialId }) 는 그 credential 이 이 브라우저(손에 든 인증기)에 있을 때만(없으면 passkey_cancelled — 맞지 않는 allowCredentials),
    *  create({ excludeCredentialIds }) 는 createQueue 의 다음 credential 을 만든다(제외 목록에 있으면 passkey_already_registered). cancelNext 면 다음 derive 를 취소한다.
-   *  chainDownAfterIssue: 처음으로 발급이 200 으로 돌아온 뒤 이 브라우저의 체인 RPC 가 모두 실패한다(한 번만 걸린다, chainDown 을 false 로 돌리면 다시 된다) — 발급 뒤 단계의 실패를 흉내 낸다. */
-  const browser = (salt = randomScalar().toString(), cid = 'Y2lkLWE', now = Date.now, { prf = rnd32(), extra = [], createQueue = [], chainDownAfterIssue = false } = {}) => {
-    const kv = createMemKv(), b = { kv, salt, cid, calls: 0, sent: [], recv: [], deriveIds: [], creates: [], cancelNext: false, rewrite: null, chainDown: false, armChain: chainDownAfterIssue };
+   *  chainDownAfterIssue: 처음으로 발급이 200 으로 돌아온 뒤 이 브라우저의 체인 RPC 가 모두 실패한다(한 번만 걸린다, chainDown 을 false 로 돌리면 다시 된다) — 발급 뒤 단계의 실패를 흉내 낸다.
+   *  throwAfterIssue(최종 검토 I-2): 처음으로 발급이 200 으로 돌아온 뒤 다음 증명이 던진다(한 번만) — login 이 값을 돌려주지 못하고 끝나는 경우(증명 중 창이 닫힘 등)를 흉내 낸다.
+   *  blockIssue: 다음 /cia/issue 요청을 서버로 보내지 않고 fetch 가 실패한다(한 번만) — 발급이 받아들여지지 않은 실패. swapNext: 다음 derive 가 요청과 다른 그 credential 을 돌려준다(한 번만). */
+  const browser = (salt = randomScalar().toString(), cid = 'Y2lkLWE', now = Date.now, { prf = rnd32(), extra = [], createQueue = [], chainDownAfterIssue = false, throwAfterIssue = false } = {}) => {
+    const kv = createMemKv(), b = { kv, salt, cid, calls: 0, sent: [], recv: [], deriveIds: [], creates: [], cancelNext: false, rewrite: null, chainDown: false, armChain: chainDownAfterIssue,
+      armThrow: throwAfterIssue, throwProve: false, blockIssue: false, swapNext: null };
     // 메서드는 원래 객체에 묶어 돌려준다(ethers 의 private 필드) — chainDown 이면 모든 호출이 거절된다
     const prov = chainDownAfterIssue ? new Proxy(provider, { get(tgt, p) { const v = Reflect.get(tgt, p, tgt); if (typeof v !== 'function') return v; return b.chainDown ? () => Promise.reject(new Error('RPC 꺼짐(테스트)')) : v.bind(tgt); } }) : provider;
     const creds = new Map([[cid, { cid, s_u: salt, prf }], ...extra.map((c) => [c.cid, c])]);
@@ -42,7 +45,8 @@ try {
       derive: async ({ credentialId } = {}) => {
         b.calls++; b.deriveIds.push(credentialId ?? null);
         if (b.cancelNext) { b.cancelNext = false; throw cancelled(); }
-        const c = creds.get(credentialId ?? cid);
+        const swap = b.swapNext; b.swapNext = null;
+        const c = creds.get(swap ?? credentialId ?? cid);
         if (!c) throw cancelled();
         return { credentialId: c.cid, s_u: c.s_u, envKey: await envKeyFromPrf(c.prf) };
       },
@@ -58,15 +62,18 @@ try {
     const fetchSpy = async (url, init) => {
       const u = String(url), mine = u.includes('/cia/') && Boolean(init?.body);
       if (mine) b.sent.push({ url: u, body: JSON.parse(init.body) });
+      if (mine && b.blockIssue && u.endsWith('/cia/issue')) { b.blockIssue = false; throw new TypeError('fetch failed(테스트 — 발급 서버에 닿지 못했다)'); }
       const res = await globalThis.fetch(url, init);
       if (!mine) return res;
       const body = await res.clone().json().catch(() => null);
       b.recv.push({ url: u, status: res.status, body });
       if (b.armChain && u.endsWith('/cia/issue') && res.status === 200) { b.chainDown = true; b.armChain = false; }   // 한 번만
+      if (b.armThrow && u.endsWith('/cia/issue') && res.status === 200) { b.throwProve = true; b.armThrow = false; }
       const nb = b.rewrite && body ? b.rewrite(u, body) : null;
       return nb ? new Response(JSON.stringify(nb), { status: res.status, headers: { 'Content-Type': 'application/json' } }) : res;
     };
-    b.core = createUserCore({ kv, config, provider: prov, canonProvider: prov, fullProve, passkey, fetch: fetchSpy, now });
+    const prove = { idp: fullProve.idp, cred: (...a) => { if (b.throwProve) { b.throwProve = false; throw new Error('증명 중 창이 닫혔다(테스트)'); } return fullProve.cred(...a); } };
+    b.core = createUserCore({ kv, config, provider: prov, canonProvider: prov, fullProve: prove, passkey, fetch: fetchSpy, now });
     b.dump = async () => { const all = {}; for (const k of await kv.keys()) all[k] = await kv.get(k); return j(all); };
     b.issues = () => b.sent.filter((x) => x.url.endsWith('/cia/issue'));
     return b;
@@ -231,6 +238,7 @@ try {
     assert.equal(add1.status, 200, j(add1.body)); assert.equal(add1.body.envelopes.length, 1);
     assert.equal(add1.body.envelopes[0].kind, 'passkey'); assert.equal(add1.body.envelopes[0].credentialId, credB.cid); assert.equal('ct' in add1.body.envelopes[0], false);
     assert.ok(BA.creates[0].excludeCredentialIds.includes(BA.cid), j(BA.creates)); assert.equal(BA.calls - calls0, 1, 'salt 는 패스키 한 번');
+    assert.equal(BA.sent.filter((x) => x.url.endsWith('/cia/wrapper/envelope')).at(-1).body.auid, (await auidOf({ s_u: BigInt(BA.salt) })).toString(), '추가 요청에 계정 auid(최종 검토 I-1)');
     const add2 = await BA.core.wrapperEnvelopeAdd({ idToken: await tokenFor(BA, 'g-bak'), kind: 'code', code: CODE });
     assert.equal(add2.status, 200, j(add2.body)); assert.equal(add2.body.envelopes.length, 2); assert.equal(add2.body.envelopes[1].credentialId, null);
     assert.equal((await BA.kv.get('envelopes')).length, 2); assert.equal(await BA.kv.get('wrapperKey'), undefined);
@@ -276,13 +284,26 @@ try {
     assert.equal(n.r.status, 200, j(n.r.body)); assert.equal(n.v.status, 200, j(n.v.body));
     assert.equal(C.calls - calls0, 1); assert.deepEqual(C.deriveIds, [C.cid]); assert.equal(n.PPID, PPID_BAK);
   });
-  await t('A 가 C 의 기기 봉투를 지운다(Review Focus 4) → 목록에 백업 2개만, C 는 로컬 사본으로 계속 같은 PPID', async () => {
+  await t('A 가 C 의 기기 봉투를 지운다(Review Focus 4) → 목록에 백업 2개만, C 는 로컬 사본으로 계속 같은 PPID — 지우기도 패스키를 한 번 묻고 auid 를 싣는다(최종 검토 I-1)', async () => {
     const devId = (await C.kv.get('passkey')).envelope.id;
+    const calls0 = BA.calls; BA.sent.length = 0;
     const rm = await BA.core.wrapperEnvelopeRemove({ idToken: await tokenFor(BA, 'g-bak'), id: devId });
-    assert.equal(rm.status, 200, j(rm.body)); assert.equal(rm.body.envelopes.length, 2); assert.equal(rm.body.envelopes.some((e) => e.kind === 'device' || e.id === devId), false);
+    assert.equal(rm.status, 200, j(rm.body)); assert.equal(BA.calls - calls0, 1, '지우기는 패스키 한 번');
+    const auidBA = (await auidOf({ s_u: BigInt(BA.salt) })).toString();
+    const sentRm = BA.sent.filter((x) => x.url.endsWith('/cia/wrapper/envelope')); assert.equal(sentRm.length, 1); assert.equal(sentRm[0].body.auid, auidBA, '삭제 요청에 계정 auid');
+    assert.ok(!j(rm.body).includes(auidBA), '응답에 auid 가 있다'); assert.equal(rm.body.envelopes.length, 2); assert.equal(rm.body.envelopes.some((e) => e.kind === 'device' || e.id === devId), false);
     assert.deepEqual(await BA.kv.get('envelopes'), rm.body.envelopes); assert.equal(await BA.kv.get('wrapperKey'), undefined);
     const n = await wlogin(C, 'g-bak');
     assert.equal(n.r.status, 200, j(n.r.body)); assert.equal(n.PPID, PPID_BAK);
+  });
+  await t('지우기에서 패스키 창을 취소하면 passkey_cancelled — 서버로 보내지 않고 요청 키가 남아 다시 하면 된다(최종 검토 I-1)', async () => {
+    const id = (await BA.kv.get('envelopes'))[0].id;
+    const idToken = await tokenFor(BA, 'g-bak');
+    BA.cancelNext = true; BA.sent.length = 0;
+    const r = await BA.core.wrapperEnvelopeRemove({ idToken, id });
+    assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'passkey_cancelled'); assert.ok(await BA.kv.get('wrapperKey'), '요청 키가 남아야 한다');
+    assert.equal(BA.sent.some((x) => x.url.endsWith('/cia/wrapper/envelope')), false, '취소했는데 서버로 갔다');
+    await BA.kv.del('wrapperKey');   // 다음 사례는 새 요청 키로 — 이 키로는 지우지 않는다(백업 2개를 뒤 사례가 쓴다)
   });
   await t('앞선 409 없이 wrapperLoginRecover → 409 recover_offer_missing — 패스키를 묻지 않는다', async () => {
     const calls0 = BA.calls;
@@ -377,6 +398,54 @@ try {
     const calls0 = H.calls;
     const n = await wlogin(H, 'g-rec-h');
     assert.equal(n.r.status, 200, j(n.r.body)); assert.equal(n.v.status, 200, j(n.v.body)); assert.equal(H.calls - calls0, 1); assert.equal(n.PPID, own.PPID);
+  });
+  // 2026-11-24 최종 검토 I-2: 로컬 사본은 대조가 맞은 바로 뒤, 발급을 보내기 전에 쓴다 — login 이 던지거나(증명 중 창이 닫힘·서비스 창의 300초) 받아들여지지 않아도 사본은 검증된 salt 다.
+  await t('발급이 받아들여진 뒤 login 이 던져도(증명 중 창이 닫힘 — 최종 검토 I-2) 로컬 사본이 있다 — 요청 키는 지우고, 다음 wrapperLogin 은 패스키 한 번으로 같은 PPID', async () => {
+    const CODE_I = newRecoveryCode();
+    const own = await owner('g-rec-i', { cid: 'Y2lkLUlB', backups: [{ kind: 'code', code: CODE_I }] });
+    const I = browser(undefined, 'Y2lkLUk', Date.now, { throwAfterIssue: true });
+    await I.core.passkeyConnect({ credentialId: I.cid, s_u: I.salt });
+    const i1 = await wlogin(I, 'g-rec-i'); assert.equal(i1.r.status, 409, j(i1.r.body));
+    // login 이 던진 오류는 op 경계(guard)가 500 internal 로 바꾼다 — 그 앞의 단계(사본·되돌림)는 던진 오류가 건너뛴다
+    let threw = null, out = null;
+    try { out = (await recoverLogin(I, { idToken: i1.idToken, envelopeId: i1.r.body.recover.envelopes[0].id, code: CODE_I })).r; } catch (e) { threw = e; }
+    assert.ok(/창이 닫혔다/.test(threw?.message ?? out?.body?.detail ?? ''), `증명에서 던진 오류가 아니다: ${threw?.message ?? j(out)}`);
+    assert.equal(I.recv.filter((x) => x.url.endsWith('/cia/issue') && x.status === 200).length, 1, '발급은 200 이었다');
+    const pk = await I.kv.get('passkey'); assert.equal(pk?.via, 'envelope', '로컬 사본이 없다'); assert.equal(pk.envelope.id, I.issues().at(-1).body.envelope.id);
+    assert.equal(await I.kv.get('wrapperKey'), undefined, '쓴 토큰의 요청 키가 남았다');
+    const calls0 = I.calls;
+    const n = await wlogin(I, 'g-rec-i');
+    assert.equal(n.r.status, 200, j(n.r.body)); assert.equal(n.v.status, 200, j(n.v.body)); assert.equal(I.calls - calls0, 1); assert.equal(n.PPID, own.PPID);
+  });
+  await t('발급 서버에 닿지 못한 복구(받아들여지지 않음, 최종 검토 I-2): 로컬 등록은 되돌리고 요청 키는 남는다 — 로컬 사본은 남아 다음 wrapperLogin 이 그 사본으로 같은 PPID', async () => {
+    const CODE_J = newRecoveryCode();
+    const own = await owner('g-rec-j', { cid: 'Y2lkLUpB', backups: [{ kind: 'code', code: CODE_J }] });
+    const J = browser(undefined, 'Y2lkLUo');
+    await J.core.passkeyConnect({ credentialId: J.cid, s_u: J.salt });
+    const j1 = await wlogin(J, 'g-rec-j'); assert.equal(j1.r.status, 409, j(j1.r.body));
+    J.blockIssue = true;
+    const rc = await recoverLogin(J, { idToken: j1.idToken, envelopeId: j1.r.body.recover.envelopes[0].id, code: CODE_J });
+    assert.notEqual(rc.r.status, 200, j(rc.r.body)); assert.equal(J.blockIssue, false, '발급 요청을 보내려 했다');
+    assert.equal(await J.kv.get('registration'), undefined, '받아들여지지 않은 로컬 등록이 남았다'); assert.ok(await J.kv.get('wrapperKey'), '요청 키가 남아야 한다 [m2]');
+    assert.equal((await J.kv.get('passkey'))?.via, 'envelope', '로컬 사본이 없다');
+    assert.ok(!(await J.dump()).includes(CODE_J), '코드가 남았다');
+    const calls0 = J.calls;
+    const n = await wlogin(J, 'g-rec-j');
+    assert.equal(n.r.status, 200, j(n.r.body)); assert.equal(n.v.status, 200, j(n.v.body)); assert.equal(J.calls - calls0, 1); assert.equal(n.PPID, own.PPID);
+  });
+  await t('백업 패스키 대신 다른 패스키를 고르면 envelope_credential_mismatch — 발급을 보내지 않고 요청 키가 남아, 맞는 패스키로 다시 하면 200', async () => {
+    const credBK = mkCred('Y2lkLUJL');
+    const own = await owner('g-rec-k', { cid: 'Y2lkLUtB', backups: [{ kind: 'passkey', cred: credBK }] });
+    const K = browser(undefined, 'Y2lkLUs', Date.now, { extra: [credBK] });
+    await K.core.passkeyConnect({ credentialId: K.cid, s_u: K.salt });
+    const k1 = await wlogin(K, 'g-rec-k'); assert.equal(k1.r.status, 409, j(k1.r.body));
+    const envelopeId = k1.r.body.recover.envelopes[0].id;
+    K.swapNext = K.cid;
+    const r1 = await recoverLogin(K, { idToken: k1.idToken, envelopeId });
+    assert.equal(r1.r.status, 409, j(r1.r.body)); assert.equal(r1.r.body.reason, 'envelope_credential_mismatch');
+    assert.equal(K.issues().length, 1, '발급을 보냈다'); assert.ok(await K.kv.get('wrapperKey'), '요청 키가 남아야 한다');
+    const ok = await recoverLogin(K, { idToken: k1.idToken, envelopeId });
+    assert.equal(ok.r.status, 200, j(ok.r.body)); assert.equal(ok.v.status, 200, j(ok.v.body)); assert.equal(ok.PPID, own.PPID);
   });
   await t('래퍼 설정이 아닌 코어에서는 wrapperBegin·wrapperLogin 이 409 not_wrapper_mode', async () => {
     const kv = createMemKv();

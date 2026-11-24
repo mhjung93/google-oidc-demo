@@ -83,18 +83,23 @@ await t('signIssue/verifyIssue: 봉투를 실은 서명은 봉투를 바꾸거�
   assert.equal(await verifyIssue(k.pkE, { ...clone(b), envelope: { ...ENV_DEV, credentialId: 'other' } }, sig, AUD), false, 'credentialId 를 바꿨다');
   assert.equal(await verifyIssue(k.pkE, clone(BODY), sig, AUD), false, '봉투를 뺐다');
 });
-await t("envelopeDigest: add 는 zkwrapper|envelope|aud|add|id|kind|credentialId(코드면 -)|ct, remove 는 …|remove|id — 칸에 | 가 있으면 던진다", async () => {
+// 2026-11-24 최종 검토 I-1: 봉투 추가·삭제는 계정의 auid 를 함께 서명한다 — salt 를 아는 사람(패스키·백업)만 백업을 바꾼다. Google 계정만 가진 사람은 auid 를 모른다.
+await t("envelopeDigest: add 는 zkwrapper|envelope|aud|add|auid|id|kind|credentialId(코드면 -)|ct, remove 는 …|remove|auid|id — auid 가 없거나 칸에 | 가 있으면 던진다", async () => {
   const dec = (u8) => new TextDecoder().decode(u8);
+  const auid = '123456789';
   const pk = { id: 'b'.repeat(32), kind: 'passkey', credentialId: 'cid_1', ct: 'Y3Q' }, code = { id: 'c'.repeat(32), kind: 'code', credentialId: null, ct: 'Y3Q' };
-  assert.equal(dec(envelopeDigest({ op: 'add', envelope: pk }, AUD)), `zkwrapper|envelope|${AUD}|add|${pk.id}|passkey|cid_1|Y3Q`);
-  assert.equal(dec(envelopeDigest({ op: 'add', envelope: code }, AUD)), `zkwrapper|envelope|${AUD}|add|${code.id}|code|-|Y3Q`);
-  assert.equal(dec(envelopeDigest({ op: 'remove', id: pk.id }, AUD)), `zkwrapper|envelope|${AUD}|remove|${pk.id}`);
-  for (const bad of [{ op: 'add', envelope: { ...pk, ct: 'a|b' } }, { op: 'add', envelope: { ...pk, credentialId: 'x|y' } }, { op: 'add', envelope: { ...pk, id: 'a|b' } }, { op: 'remove', id: 'a|b' }, { op: 'add' }, { op: 'remove' }, { op: 'list' }, {}, null]) {
+  assert.equal(dec(envelopeDigest({ op: 'add', auid, envelope: pk }, AUD)), `zkwrapper|envelope|${AUD}|add|${auid}|${pk.id}|passkey|cid_1|Y3Q`);
+  assert.equal(dec(envelopeDigest({ op: 'add', auid, envelope: code }, AUD)), `zkwrapper|envelope|${AUD}|add|${auid}|${code.id}|code|-|Y3Q`);
+  assert.equal(dec(envelopeDigest({ op: 'remove', auid, id: pk.id }, AUD)), `zkwrapper|envelope|${AUD}|remove|${auid}|${pk.id}`);
+  for (const bad of [{ op: 'add', auid, envelope: { ...pk, ct: 'a|b' } }, { op: 'add', auid, envelope: { ...pk, credentialId: 'x|y' } }, { op: 'add', auid, envelope: { ...pk, id: 'a|b' } }, { op: 'remove', auid, id: 'a|b' },
+    { op: 'add', auid }, { op: 'remove', auid }, { op: 'list', auid }, {}, null,
+    { op: 'add', envelope: pk }, { op: 'remove', id: pk.id }, { op: 'remove', auid: '', id: pk.id }, { op: 'remove', auid: '1|2', id: pk.id }, { op: 'add', auid: 5, envelope: pk }]) {
     assert.throws(() => envelopeDigest(bad, AUD), (e) => e.reason === 'malformed', JSON.stringify(bad));
   }
-  assert.throws(() => envelopeDigest({ op: 'remove', id: pk.id }, 'a|b'), (e) => e.reason === 'malformed', '서버 주소');
-  const k = await generateRequestKey(); const sig = await signDigest(k.privateKey, envelopeDigest({ op: 'add', envelope: pk }, AUD));
-  assert.equal(await verifyDigest(k.pkE, envelopeDigest({ op: 'remove', id: pk.id }, AUD), sig), false, '추가 서명은 삭제에 못 쓴다');
+  assert.throws(() => envelopeDigest({ op: 'remove', auid, id: pk.id }, 'a|b'), (e) => e.reason === 'malformed', '서버 주소');
+  const k = await generateRequestKey(); const sig = await signDigest(k.privateKey, envelopeDigest({ op: 'add', auid, envelope: pk }, AUD));
+  assert.equal(await verifyDigest(k.pkE, envelopeDigest({ op: 'remove', auid, id: pk.id }, AUD), sig), false, '추가 서명은 삭제에 못 쓴다');
+  assert.equal(await verifyDigest(k.pkE, envelopeDigest({ op: 'add', auid: '987654321', envelope: pk }, AUD), sig), false, '다른 auid 에는 못 쓴다');
   assert.equal(await verifyDigest(k.pkE, issueDigest(BODY, AUD), sig), false, '봉투 서명은 발급에 못 쓴다');
 });
 console.log(fails ? `\n${fails} failed` : '\nall passed');

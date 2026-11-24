@@ -1528,8 +1528,10 @@ async function finishIssueInner(res, { uid, acct, cupt, cspt, auidS, aridS, mh, 
   // 위에서 발급을 거절한다(리뷰 2026-11-19 I-1: 밀어내면 사용자가 발급을 되풀이해 지난 거래의 기록을 스스로 지울 수 있다).
   acct.auidSLog = [...(acct.auidSLog ?? []), { value: auidS.toString(), at: issuedAt }];
   acct.lastIssue = { at: issuedAt, auid_s: auidS.toString(), arid_s: aridS.toString(), Cf_u: cfu, Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString() };
-  // salt 봉투(계획 2026-11-24 salt-envelope [I2]): 복구 발급에 실린 기기 봉투는 서명 직전의 이 동기 구간에서만 더한다 — 앞에서 실패하거나(cred_revoked 등) 다시 온 요청이
-  // 봉투만 남기지 않게. 같은 봉투가 다시 와도(새 토큰으로 재시도) 하나로 남는다.
+  // salt 봉투(계획 2026-11-24 salt-envelope [I2]): 복구 발급에 실린 기기 봉투는 서명(signPoseidon)이 끝난 뒤, 세션·발급 기록을 쓰는 이 마지막 동기 구간에서 함께 더한다
+  // (바로 아래 persist 가 같이 저장한다) — 앞에서 실패했거나(cred_revoked 등) 토큰을 돌려준 요청은 봉투를 남기지 않는다. 같은 봉투가 다시 와도(새 토큰으로 재시도) 하나로 남는다.
+  // 마지막 폐기 검사(acct.disabled)는 이보다 앞이고 그 뒤에도 await(credMessageV11)가 있다 — 그 사이에 계정이 폐기되면 이 발급의 세션 기록과 함께 봉투도 더해진다
+  // (폐기된 계정의 봉투는 남긴다는 규칙(스펙 §6 Q6)과 같은 결과다 — 폐기 계정에 새로 더하지 않는다는 검사는 /cia/wrapper/envelope 에만 있다).
   if (envelope) addDeviceEnvelope(acct, envelope, issuedAt);
   persist();
   // OIDC 모양의 ID 토큰(2026-11-09 Phase 1): sub=auid_s(세션 가명), aud=arid_s(세션 RP 가명) — 둘 다 π_RP 의 공개 신호라 RP 가 증명과 맞춰 본다.
@@ -1638,19 +1640,22 @@ async function issueWrapper(req, res) {
   return await finishIssue(res, { uid, acct, cupt, cspt, auidS: BigInt(auid_s), aridS: BigInt(arid_s), mh, chainStr, agent: BigInt(allowAgent),
     consume: () => consumeWrapperNonce(au.nonce), unconsume: () => releaseWrapperNonce(au.nonce), consumeFail: TOKEN_USED, wrapper: true, extra: { uid, email: acct.loginId ?? null }, envelope: envelope ?? null });
 }
-/** 백업 봉투 추가·삭제(POST /cia/wrapper/envelope, 래퍼 방식만): { id_token, pk_e, sig, op:'add'|'remove', envelope?, id? }. 본인 확인은 발급과 같다(요청 키에 묶인 Google 토큰 + envelopeDigest 서명).
- *  토큰은 검사(모양·계정·폐기·한도·중복·없는 id)를 다 지난 뒤 상태를 바꾸기 바로 앞에서 동기로 소비한다[m1] — 한도에 걸린 요청의 토큰은 그대로 남아 같은 토큰으로 삭제할 수 있다.
- *  응답은 계정의 봉투 목록(암호문 빼고). 목록만 읽는 op 는 두지 않는다 — 화면의 목록은 이 응답과 브라우저의 기록으로 만든다. */
+/** 백업 봉투 추가·삭제(POST /cia/wrapper/envelope, 래퍼 방식만): { id_token, pk_e, sig, op:'add'|'remove', auid, envelope?, id? }. 본인 확인은 발급과 같다(요청 키에 묶인 Google 토큰 + envelopeDigest 서명).
+ *  auid(최종 검토 2026-11-24 I-1): salt 를 안다는 증거 — 계정에 고정된 auid 와 같아야 한다. Google 계정만으로는 백업을 지우거나 한도를 채우지 못한다(409 auid_pinned 는 auid 를 주지 않는다).
+ *  토큰은 검사(모양·계정·폐기·auid·한도·중복·없는 id)를 다 지난 뒤 상태를 바꾸기 바로 앞에서 동기로 소비한다[m1] — 거절된 요청의 토큰은 그대로 남아 같은 토큰으로 다시 할 수 있다.
+ *  응답은 계정의 봉투 목록(암호문 빼고). auid 는 싣지 않는다. 목록만 읽는 op 는 두지 않는다 — 화면의 목록은 이 응답과 브라우저의 기록으로 만든다. */
 async function envelopeWrapper(req, res) {
-  const { op, envelope, id } = req.body ?? {};
+  const { op, envelope, id, auid } = req.body ?? {};
   const shapeOk = op === 'add' ? isEnvelope(envelope) && isBackupEnv(envelope) : op === 'remove' && typeof id === 'string' && /^[0-9a-f]{32}$/.test(id);
-  if (!shapeOk) return res.status(400).json({ error: "op 'add' needs a passkey|code envelope, 'remove' needs id", reason: 'envelope_bad' });
-  const au = await wrapperAuth(req.body, (b) => envelopeDigest({ op: b.op, envelope: b.envelope, id: b.id }, PUBLIC_URL), { consume: false });
+  if (!shapeOk || !isDec(auid)) return res.status(400).json({ error: "op 'add' needs a passkey|code envelope, 'remove' needs id; both need auid", reason: 'envelope_bad' });
+  const au = await wrapperAuth(req.body, (b) => envelopeDigest({ op: b.op, auid: b.auid, envelope: b.envelope, id: b.id }, PUBLIC_URL), { consume: false });
   if (au.error) return res.status(au.error.status).json(au.error.body);
   // 이 아래는 동기다 — 검사와 소비·변경 사이에 다른 요청이 끼지 못한다.
   const acct = state.accounts[au.uid];
   if (!acct?.auid) return res.status(404).json({ error: 'unknown account', reason: 'unknown_account' });
   if (acct.disabled) return res.status(403).json({ error: 'account disabled', reason: 'account_disabled' });
+  // salt 를 아는가 — 봉투 id·한도를 보기 전에 본다(Google 계정만 가진 사람이 목록을 바꾸지 못하게). 응답에 계정의 auid 를 싣지 않는다.
+  if (BigInt(auid).toString() !== acct.auid) return res.status(409).json({ error: 'auid does not match this account', reason: 'envelope_auid_mismatch' });
   const list = acct.envelopes ?? [];
   if (op === 'add') {
     if (list.some((e) => e.id === envelope.id || (envelope.credentialId !== null && e.credentialId === envelope.credentialId))) return res.status(409).json({ error: 'envelope already exists', reason: 'envelope_exists' });
