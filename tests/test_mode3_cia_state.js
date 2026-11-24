@@ -145,4 +145,14 @@ t('등록 전(auid:null): slot 은 null 이어야 한다 — 단 연결 해제�
   assert.throws(() => migrateCiaState({ ...defaultCiaState(), accounts: { '1': { auid: null, slot: 3 } } }), /slot 이 null 이 아니다/);
   assert.throws(() => migrateCiaState({ ...defaultCiaState(), accounts: { '1': { auid: null, slot: -1, slotRetired: true } } }), /slot 이 null 이 아니다/);
 });
+// 2026-11-24(계획 zkwrapper salt-envelope Task 2 [m7]): 계정의 salt 봉투(envelopes)는 버전 14 의 확장이다. 모양이 틀린 항목은 기동을 거부하지 않고 버리며 notes 에 남긴다.
+t('salt 봉투: 맞는 봉투는 그대로, 없으면 만들지 않고, 배열이 아니거나 isEnvelope 를 못 지나는 항목은 버리고 notes 에 남긴다', () => {
+  const open = (over) => migrateCiaState({ ...defaultCiaState(), accounts: { '1': { auid: '99', slot: 0, disabled: false, ...over } } });
+  const good = [{ id: 'a'.repeat(32), kind: 'passkey', credentialId: 'cid_1', ct: 'Y3Q', createdAt: '2026-11-24T00:00:00.000Z' }, { id: 'b'.repeat(32), kind: 'code', credentialId: null, ct: 'Y3Q', createdAt: '2026-11-24T00:00:01.000Z' }];
+  { const { state, notes } = open({ envelopes: good }); assert.deepEqual(state.accounts['1'].envelopes, good); assert.deepEqual(notes, []); }
+  { const { state, notes } = open({}); assert.equal(state.accounts['1'].envelopes, undefined, '옛 파일에는 없다 — 그대로 둔다'); assert.deepEqual(notes, []); }
+  { const { state, notes } = open({ envelopes: { x: 1 } }); assert.equal(state.accounts['1'].envelopes, undefined, '배열이 아니면 버린다'); assert.equal(notes.length, 1); assert.match(notes[0], /봉투/); }
+  const bad = [{ ...good[0], id: 'short' }, { ...good[0], kind: 'other' }, { ...good[1], credentialId: 'x' }, { ...good[0], credentialId: null }, { ...good[0], ct: 'a|b' }, null, '봉투'];
+  { const { state, notes } = open({ envelopes: [good[0], ...bad, good[1]] }); assert.deepEqual(state.accounts['1'].envelopes, good, '맞는 것만 남는다'); assert.equal(notes.length, 1); assert.match(notes[0], /7/); }
+});
 process.exit(failed === 0 ? 0 : 1);

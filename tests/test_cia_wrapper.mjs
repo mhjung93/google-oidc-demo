@@ -10,7 +10,9 @@ import { randomScalar } from '../lib/mode3_credential.js';
 import { createRpVerifier } from '../lib/mode3_rp.js';
 import { PUB_INDEX } from '../lib/mode3_onchain.js';
 import { signOpenRequest } from '../lib/mode3_opening.js';
-import { generateRequestKey, wrapperNonce, signIssue, signDigest, revokeDigest, issueDigest } from '../lib/mode3_wrapper_auth.js';
+import { generateRequestKey, wrapperNonce, signIssue, signDigest, revokeDigest, issueDigest, envelopeDigest } from '../lib/mode3_wrapper_auth.js';
+import { auidCheckOf, BACKUP_LIMIT, DEVICE_LIMIT } from '../lib/mode3_salt_envelope.js';
+import { randomBytes } from 'node:crypto';
 import { proveV11, TESTUSER_ATTRS } from './helpers/mode3_flow.mjs';
 
 const j = (o) => JSON.stringify(o, (k, v) => (typeof v === 'bigint' ? v.toString() : v));
@@ -21,6 +23,9 @@ const cia = await startIsolatedCia({ wrapper: true });
 const stub = cia.oidc, AUD = cia.base;
 const accounts = async () => { const a = (await cia.adminGet('/cia/accounts')).body; return a.accounts ?? a; };
 const acctOf = async (uid) => (await accounts()).find((a) => String(a.uid) === String(uid)) ?? null;
+// salt 봉투(2026-11-24 Task 2): 서버는 암호문을 열지 않는다 — 모양만 맞는 무작위 값으로 시험한다.
+const b64 = (n) => randomBytes(n).toString('base64url');
+const mkEnv = (kind, over = {}) => ({ id: randomBytes(16).toString('hex'), kind, credentialId: kind === 'code' ? null : b64(16), ct: b64(60), ...over });
 /** 한 사람 = Google 계정(sub) + 패스키(seed → s_u). uid 는 래퍼가 sub 에서 정한다. */
 async function person(sub, seed = null) {
   const uid = uidOf(stub.provider, sub);
@@ -28,14 +33,16 @@ async function person(sub, seed = null) {
   return { sub, uid: BigInt(uid), s_u: reg.s_u, auid: reg.auid, seed: reg.seed, attrs: [...TESTUSER_ATTRS], blind_u: randomScalar(), slot: null };
 }
 /** 브라우저가 하는 일: 요청 키 → 그 키의 nonce 로 Google 토큰 → 본문 → 서명 → /cia/issue. opts 로 한 부분씩 어긋나게 만든다. */
-async function wrapIssue(who, svc, { key = null, tokenKey = null, token = null, mutate = null, sign = true, blind_u = who.blind_u, email = `${who.sub}@example.com`, r_s = randomScalar(), r_rp = randomScalar() } = {}) {
+// envelope(2026-11-24 salt 봉투 Task 2): 발급 본문에 실을 기기 봉투 — 서명하는 글(issueDigest)에 들어간다.
+async function wrapIssue(who, svc, { key = null, tokenKey = null, token = null, mutate = null, sign = true, blind_u = who.blind_u, email = `${who.sub}@example.com`, r_s = randomScalar(), r_rp = randomScalar(), envelope = null } = {}) {
   const k = key ?? await generateRequestKey();
   const id_token = token ?? await stub.mint({ sub: who.sub, nonce: await wrapperNonce((tokenKey ?? k).pkE), extra: { email, email_verified: true } });
   const session = createSessionKey();
   const max_height = BigInt(await provider.getBlockNumber()) + 300n;
   const built = await buildWrapperIssueBody({ uid: who.uid, s_u: who.s_u, blind_u, attrs: who.attrs, arid: BigInt(svc.arid), r_rp, r_s, session, chainid: 31337n, allowAgent: 0n, max_height });
-  const sig = sign ? await signIssue(k.privateKey, built.body, AUD) : undefined;
-  const body = { id_token, pk_e: k.pkE, ...(sig ? { sig } : {}), ...built.body };
+  const signed = envelope ? { ...built.body, envelope } : built.body;
+  const sig = sign ? await signIssue(k.privateKey, signed, AUD) : undefined;
+  const body = { id_token, pk_e: k.pkE, ...(sig ? { sig } : {}), ...signed };
   if (mutate) mutate(body);
   const r = await cia.post('/cia/issue', body);
   return { r, cred: r.body, req: built, session, r_s, r_rp, blind_u, user: who, key: k, id_token };
@@ -226,6 +233,93 @@ try {
     const ok = await call(); assert.equal(ok.r.status, 200, j(ok.r.body)); assert.equal((await acctOf(hana.uid)).disabled, true);
     const again = await call({ key: ok.k, token: ok.id_token }); assert.equal(again.r.status, 409, j(again.r.body)); assert.equal(again.r.body.reason, 'wrapper_token_used');
   });
+  // ---- salt 봉투(계획 2026-11-24 zkwrapper salt-envelope Task 2) ----
+  /** POST /cia/wrapper/envelope — 요청 키·그 키에 묶인 토큰·envelopeDigest 서명. key·token 을 주면 같은 요청 키·토큰을 다시 쓴다. */
+  const envCall = async (who, req, { key = null, token = null, signFor = null } = {}) => {
+    const k = key ?? await generateRequestKey();
+    const id_token = token ?? await stub.mint({ sub: who.sub, nonce: await wrapperNonce(k.pkE), extra: {} });
+    const sig = await signDigest(k.privateKey, envelopeDigest(signFor ?? req, AUD));
+    return { r: await cia.post('/cia/wrapper/envelope', { id_token, pk_e: k.pkE, sig, ...req }), k, id_token };
+  };
+  /** 계정의 봉투(암호문 포함) — 같은 Google 계정의 다른 패스키로 발급을 청해 409 auid_pinned 본문에서 읽는다(상태를 바꾸지 않는다). */
+  const envelopesOf = async (who) => { const r = (await wrapIssue(await person(who.sub), S1)).r; assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'auid_pinned'); return r.body.envelopes; };
+  await t('봉투 추가: 등록된 계정의 add(passkey) 는 200 이고 목록에 암호문이 없다 — 같은 토큰 두 번째는 409 wrapper_token_used', async () => {
+    const ivy = await person('g-env-ivy'); assert.equal((await wrapIssue(ivy, S1)).r.status, 200);
+    const P1 = mkEnv('passkey');
+    const a = await envCall(ivy, { op: 'add', envelope: P1 });
+    assert.equal(a.r.status, 200, j(a.r.body)); assert.equal(a.r.body.envelopes.length, 1);
+    const [e] = a.r.body.envelopes; assert.deepEqual(Object.keys(e).sort(), ['createdAt', 'credentialId', 'id', 'kind']); assert.equal(e.id, P1.id); assert.equal(e.credentialId, P1.credentialId); assert.equal('ct' in e, false);
+    const again = await envCall(ivy, { op: 'add', envelope: mkEnv('code') }, { key: a.k, token: a.id_token });
+    assert.equal(again.r.status, 409, j(again.r.body)); assert.equal(again.r.body.reason, 'wrapper_token_used');
+    const notReg = await envCall(await person('g-env-nobody'), { op: 'add', envelope: mkEnv('passkey') }); assert.equal(notReg.r.status, 404, j(notReg.r.body));
+  });
+  await t('auid_pinned(복구): 본문에 auid 가 없고 auidCheck = auidCheckOf(uid, 계정 auid)·봉투 암호문이 있다 — 같은 토큰·요청 키로 맞는 auid + 기기 봉투면 200, 봉투 +1; 봉투만 바꾸면 wrapper_bad_signature', async () => {
+    const kim = await person('g-env-kim'); assert.equal((await wrapIssue(kim, S1)).r.status, 200);
+    const P1 = mkEnv('passkey'); assert.equal((await envCall(kim, { op: 'add', envelope: P1 })).r.status, 200);
+    const k = await generateRequestKey(); const T = await stub.mint({ sub: kim.sub, nonce: await wrapperNonce(k.pkE), extra: {} });
+    const pinned = (await wrapIssue(await person(kim.sub), S1, { key: k, token: T })).r;   // 새 기기 — 다른 패스키(다른 salt)
+    assert.equal(pinned.status, 409, j(pinned.body)); assert.equal(pinned.body.reason, 'auid_pinned');
+    assert.equal('auid' in pinned.body, false, 'auid 는 싣지 않는다 [I1]'); assert.equal(JSON.stringify(pinned.body).includes(kim.auid.toString()), false, '본문 어디에도 auid 가 없다');
+    assert.equal(pinned.body.auidCheck, await auidCheckOf(kim.uid.toString(), kim.auid.toString()));
+    assert.deepEqual(pinned.body.envelopes, [{ id: P1.id, kind: 'passkey', credentialId: P1.credentialId, ct: P1.ct }]);
+    const D = mkEnv('device');
+    const tampered = (await wrapIssue(kim, S1, { key: k, token: T, envelope: D, mutate: (b) => { b.envelope = { ...D, ct: b64(60) }; } })).r;
+    assert.equal(tampered.status, 400, j(tampered.body)); assert.equal(tampered.body.reason, 'wrapper_bad_signature');
+    for (const bad of [mkEnv('passkey'), { ...D, ct: 'a|b' }, { ...D, credentialId: null }, 'x']) {
+      const r = (await wrapIssue(kim, S1, { key: k, token: T, envelope: bad, sign: false })).r;   // 모양은 서명보다 먼저 본다 assert.equal(r.status, 400, j(r.body)); assert.equal(r.body.reason, 'envelope_bad', JSON.stringify(bad));
+    }
+    const ok = (await wrapIssue(kim, S1, { key: k, token: T, envelope: D })).r;   // 봉투를 열어 salt 를 되찾은 뒤 — 같은 토큰(아직 쓰지 않았다)
+    assert.equal(ok.status, 200, j(ok.body));
+    let envs = await envelopesOf(kim); assert.equal(envs.length, 2); assert.deepEqual(envs.find((e) => e.id === D.id), { id: D.id, kind: 'device', credentialId: D.credentialId, ct: D.ct });
+    // 멱등 [I2]: 같은 토큰으로 다시 오면 토큰에서 막히고, 새 토큰으로 같은 봉투가 다시 오면(cred_revoked 재시도 등) 봉투는 그대로 하나다.
+    const sameTok = (await wrapIssue(kim, S1, { key: k, token: T, envelope: D })).r; assert.equal(sameTok.status, 409, j(sameTok.body)); assert.equal(sameTok.body.reason, 'wrapper_token_used');
+    assert.equal((await wrapIssue(kim, S1, { envelope: D })).r.status, 200);
+    envs = await envelopesOf(kim); assert.equal(envs.length, 2, '같은 봉투는 한 번만'); assert.equal(envs.filter((e) => e.id === D.id).length, 1);
+    // 같은 credentialId 의 다른 봉투(그 기기의 패스키로 다시 복구)는 바꿔 넣는다.
+    const D2 = mkEnv('device', { credentialId: D.credentialId });
+    assert.equal((await wrapIssue(kim, S1, { envelope: D2 })).r.status, 200);
+    envs = await envelopesOf(kim); assert.equal(envs.length, 2); assert.equal(envs.some((e) => e.id === D.id), false); assert.equal(envs.find((e) => e.id === D2.id)?.ct, D2.ct);
+  });
+  await t(`봉투 한도·중복: 백업 ${BACKUP_LIMIT}개 뒤 6번째는 409 envelope_limit(토큰은 그대로 — 같은 토큰으로 remove 가 된다), 같은 credentialId·같은 id 는 envelope_exists, device add 는 envelope_bad, 없는 id 삭제는 envelope_unknown`, async () => {
+    const lee = await person('g-env-lee'); assert.equal((await wrapIssue(lee, S1)).r.status, 200);
+    const backups = [mkEnv('passkey'), mkEnv('code'), mkEnv('passkey'), mkEnv('passkey'), mkEnv('code')];
+    for (const e of backups) { const x = await envCall(lee, { op: 'add', envelope: e }); assert.equal(x.r.status, 200, j(x.r.body)); }
+    const sixth = await envCall(lee, { op: 'add', envelope: mkEnv('passkey') });
+    assert.equal(sixth.r.status, 409, j(sixth.r.body)); assert.equal(sixth.r.body.reason, 'envelope_limit');
+    const rm = await envCall(lee, { op: 'remove', id: backups[0].id }, { key: sixth.k, token: sixth.id_token });
+    assert.equal(rm.r.status, 200, j(rm.r.body) + ' — 한도에 걸린 요청은 토큰을 쓰지 않는다 [m1]'); assert.equal(rm.r.body.envelopes.length, BACKUP_LIMIT - 1); assert.equal(rm.r.body.envelopes.some((e) => e.id === backups[0].id), false);
+    for (const [req, reason, status] of [
+      [{ op: 'add', envelope: mkEnv('passkey', { credentialId: backups[2].credentialId }) }, 'envelope_exists', 409],
+      [{ op: 'add', envelope: mkEnv('code', { id: backups[1].id }) }, 'envelope_exists', 409],
+      [{ op: 'add', envelope: mkEnv('device') }, 'envelope_bad', 400],
+      [{ op: 'remove', id: 'f'.repeat(32) }, 'envelope_unknown', 404],
+    ]) { const x = await envCall(lee, req); assert.equal(x.r.status, status, j(x.r.body)); assert.equal(x.r.body.reason, reason, JSON.stringify(req)); }
+    for (const req of [{ op: 'add', envelope: { ...mkEnv('passkey'), ct: '' } }, { op: 'remove', id: 'xyz' }, { op: 'list' }]) {
+      const k = await generateRequestKey(); const id_token = await stub.mint({ sub: lee.sub, nonce: await wrapperNonce(k.pkE), extra: {} });
+      const x = await cia.post('/cia/wrapper/envelope', { id_token, pk_e: k.pkE, sig: 'A'.repeat(86), ...req }); assert.equal(x.status, 400, j(x.body)); assert.equal(x.body.reason, 'envelope_bad', JSON.stringify(req));
+    }
+    const P = mkEnv('passkey');
+    const forged = await envCall(lee, { op: 'add', envelope: P }, { signFor: { op: 'add', envelope: { ...P, ct: b64(60) } } });
+    assert.equal(forged.r.status, 400, j(forged.r.body)); assert.equal(forged.r.body.reason, 'wrapper_bad_signature');
+    assert.equal((await envCall(lee, { op: 'add', envelope: P })).r.status, 200, '다시 다섯');
+    // 한도 [I3]: 백업이 찬 계정에서도 기기 봉투를 실은 복구 발급은 된다. 기기 봉투가 DEVICE_LIMIT 를 넘으면 가장 오래된 것이 밀린다.
+    const devices = [];
+    for (let i = 0; i <= DEVICE_LIMIT; i++) { const D = mkEnv('device'); devices.push(D); const r = (await wrapIssue(lee, S1, { envelope: D })).r; assert.equal(r.status, 200, `${i}: ${j(r.body)}`); }
+    const envs = await envelopesOf(lee);
+    assert.equal(envs.filter((e) => e.kind === 'device').length, DEVICE_LIMIT); assert.equal(envs.filter((e) => e.kind !== 'device').length, BACKUP_LIMIT, '백업은 그대로');
+    assert.equal(envs.some((e) => e.id === devices[0].id), false, '가장 오래된 기기 봉투가 밀렸다'); assert.equal(envs.some((e) => e.id === devices.at(-1).id), true);
+  });
+  await t('폐기된 계정에는 봉투를 더하지 못한다(403 account_disabled) — 관리자 삭제 뒤 새로 등록한 계정에는 봉투가 없다', async () => {
+    const max = await person('g-env-max'); assert.equal((await wrapIssue(max, S1)).r.status, 200);
+    assert.equal((await cia.adminPost('/cia/revoke', { uid: max.uid.toString(), scope: 'account' })).status, 200);
+    const x = await envCall(max, { op: 'add', envelope: mkEnv('passkey') }); assert.equal(x.r.status, 403, j(x.r.body)); assert.equal(x.r.body.reason, 'account_disabled');
+    const nina = await person('g-env-nina'); assert.equal((await wrapIssue(nina, S1)).r.status, 200);
+    assert.equal((await envCall(nina, { op: 'add', envelope: mkEnv('passkey') })).r.status, 200);
+    assert.equal((await envelopesOf(nina)).length, 1);
+    assert.equal((await cia.adminPost('/cia/account/delete', { uid: nina.uid.toString() })).status, 200);
+    assert.equal((await wrapIssue(nina, S1)).r.status, 200, '지운 뒤 같은 Google 계정의 새 등록');
+    assert.deepEqual(await envelopesOf(nina), [], '봉투는 계정과 함께 사라졌다');
+  });
   await t('래퍼 방식에서 막힌 경로: 가입·비밀번호 로그인·등록·슬롯·증명 로그인·일반 OIDC 는 403 wrapper_mode', async () => {
     for (const [m, p, body] of [['post', '/cia/signup', { id: 'abc', pwd: 'password123' }], ['post', '/cia/user/login', { id: 'abc', pwd: 'x' }], ['post', '/cia/register', { uid: '1', pwd: 'x', auid: '1' }], ['post', '/cia/slot', { uid: '1', nonce: '1' }], ['post', '/cia/signup/reserve', {}], ['post', '/cia/user/login_challenge', {}], ['get', '/oidc/authorize?client_id=x', undefined]]) {
       const r = await cia[m](p, body); assert.equal(r.status, 403, `${p}: ${j(r.body)}`); assert.equal(r.body.reason, 'wrapper_mode', p);
@@ -238,6 +332,10 @@ try {
     }
   });
 } finally { await cia.stop(); }
+await t('래퍼가 아닌 서버에는 /cia/wrapper/envelope 가 없다(404)', async () => {
+  const plain = await startIsolatedCia();
+  try { const r = await plain.post('/cia/wrapper/envelope', { op: 'add' }); assert.equal(r.status, 404, `${r.status}`); } finally { await plain.stop(); }
+});
 // 기동 검사: 래퍼의 Google 클라이언트 ID 가 서비스의 것과 같으면 뜨지 않는다(스펙 §10 C2)
 await t('기동 검사: 서비스와 같은 Google 클라이언트 ID 면 뜨지 않는다', async () => {
   let started = null;

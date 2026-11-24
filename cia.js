@@ -49,7 +49,8 @@ import { CIA_STATE_VERSION, defaultCiaState, migrateCiaState, rpKeyTag, findRpSl
 import { buildAaHealth, applyHealthHeaders, bounded, originList } from './lib/mode3_health.js';
 import { createOidcVerifier, GOOGLE_DEFAULTS } from './lib/mode3_oidc.js';
 import { uidOf, regNonce, issueNonce, isRevokeNonce, REG_PREFIX, REVOKE_PREFIX, ISSUE_PREFIX } from './lib/mode3_oidc_nonce.js';
-import { WRAPPER_PREFIX, wrapperNonce, verifyDigest, issueDigest, revokeDigest } from './lib/mode3_wrapper_auth.js';
+import { WRAPPER_PREFIX, wrapperNonce, verifyDigest, issueDigest, revokeDigest, envelopeDigest } from './lib/mode3_wrapper_auth.js';
+import { isEnvelope, auidCheckOf, BACKUP_LIMIT, DEVICE_LIMIT } from './lib/mode3_salt_envelope.js';
 import { mountUserApp, userAppCsp, adminPageCsp, userDistReady } from './lib/mode3_user_app_routes.js';
 import { listenMaybeTls } from './lib/mode3_tls.js';
 
@@ -1460,7 +1461,7 @@ async function finishIssue(res, opts) {
   const hold = { auidS: null, uid: null };
   try { return await finishIssueInner(res, opts, hold); } finally { releaseIssue(hold); }
 }
-async function finishIssueInner(res, { uid, acct, cupt, cspt, auidS, aridS, mh, chainStr, agent, consume = null, consumeFail = null, unconsume = null, wrapper = false, extra = null }, hold) {
+async function finishIssueInner(res, { uid, acct, cupt, cspt, auidS, aridS, mh, chainStr, agent, consume = null, consumeFail = null, unconsume = null, wrapper = false, extra = null, envelope = null }, hold) {
   // Cf_u·Cf_s 는 IdP 가 점에서 스스로 유도한다(설계 §6.2) — 사용자가 보낸 Cf 를 서명하면 증명된 점과 무관한 값에 서명이 붙는다.
   const Cf_u = await compressPoint(cupt), Cf_s = await compressPoint(cspt);
   const head = await headOf(chainStr);   // fail-closed: 체인이 죽어 있으면 발급하지 않는다(게시도 불가하므로 폐기가 닿지 않는 세션이 된다)
@@ -1527,6 +1528,9 @@ async function finishIssueInner(res, { uid, acct, cupt, cspt, auidS, aridS, mh, 
   // 위에서 발급을 거절한다(리뷰 2026-11-19 I-1: 밀어내면 사용자가 발급을 되풀이해 지난 거래의 기록을 스스로 지울 수 있다).
   acct.auidSLog = [...(acct.auidSLog ?? []), { value: auidS.toString(), at: issuedAt }];
   acct.lastIssue = { at: issuedAt, auid_s: auidS.toString(), arid_s: aridS.toString(), Cf_u: cfu, Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString() };
+  // salt 봉투(계획 2026-11-24 salt-envelope [I2]): 복구 발급에 실린 기기 봉투는 서명 직전의 이 동기 구간에서만 더한다 — 앞에서 실패하거나(cred_revoked 등) 다시 온 요청이
+  // 봉투만 남기지 않게. 같은 봉투가 다시 와도(새 토큰으로 재시도) 하나로 남는다.
+  if (envelope) addDeviceEnvelope(acct, envelope, issuedAt);
   persist();
   // OIDC 모양의 ID 토큰(2026-11-09 Phase 1): sub=auid_s(세션 가명), aud=arid_s(세션 RP 가명) — 둘 다 π_RP 의 공개 신호라 RP 가 증명과 맞춰 본다.
   // name = 프로필의 커밋먼트(없으면 클레임 자체가 없다). IdP 는 여기서도 RP 가 누구인지 모른다(arid_s 는 블라인딩된 값).
@@ -1537,6 +1541,29 @@ async function finishIssueInner(res, { uid, acct, cupt, cspt, auidS, aridS, mh, 
     pk_CIA: S(ciaPub), slot: acct.slot, regRoot: registry.root().toString(), epoch: state.epoch, published, id_token: zkidToken, ...(extra ?? {}),
   });
 }
+// ---- salt 봉투(계획 2026-11-24 zkwrapper salt-envelope, 래퍼 방식만) ----
+// 서버는 암호문(ct)·kind·credentialId·id·createdAt 만 가진다 — 열쇠(PRF·복구 코드)와 salt 는 오지 않는다. 백업(passkey·code)은 계정당 BACKUP_LIMIT,
+// 복구한 기기의 봉투(device)는 따로 DEVICE_LIMIT 이고 발급으로만 더한다[I3]. 폐기된 계정에는 더하지 않고, 관리자 삭제 때 계정과 함께 사라진다.
+const isBackupEnv = (e) => e.kind !== 'device';
+const storedEnvelope = (e, createdAt) => ({ id: e.id, kind: e.kind, credentialId: e.credentialId, ct: e.ct, createdAt });   // 요청에 딸려 온 다른 칸은 저장하지 않는다
+/** 기기 봉투를 계정에 더한다(동기). 같은 id·credentialId·ct 면 그대로(멱등), 같은 credentialId(또는 같은 id)의 다른 기기 봉투는 바꿔 넣고, 기기 봉투가 한도를 넘으면 가장 오래된 것(배열 앞쪽)을 민다.
+ *  백업 봉투는 발급이 건드리지 않는다 — 같은 credentialId·같은 id 의 백업이 이미 있으면 그 패스키로 이미 열리므로 더하지 않는다. */
+function addDeviceEnvelope(acct, env, at) {
+  const list = acct.envelopes ?? [];
+  if (list.some((e) => isBackupEnv(e) && (e.id === env.id || e.credentialId === env.credentialId))) return;
+  if (list.some((e) => e.id === env.id && e.credentialId === env.credentialId && e.ct === env.ct)) return;
+  const kept = list.filter((e) => isBackupEnv(e) || (e.id !== env.id && e.credentialId !== env.credentialId));
+  kept.push(storedEnvelope(env, at));
+  let over = kept.filter((e) => !isBackupEnv(e)).length - DEVICE_LIMIT;
+  acct.envelopes = kept.filter((e) => isBackupEnv(e) || over-- <= 0);
+}
+/** 409 auid_pinned — 계정의 auid 는 싣지 않고 대조값(auidCheck)과 봉투(암호문 포함)만 준다[I1]. 브라우저가 봉투로 salt 를 되찾고 같은 대조값이 나오는지 본다. */
+async function auidPinned(res, uid) {
+  const a = state.accounts[uid];
+  const envelopes = (a.envelopes ?? []).map(({ id, kind, credentialId, ct }) => ({ id, kind, credentialId, ct }));   // 대조값과 같은 순간의 목록
+  return res.status(409).json({ error: 'this account is bound to another passkey', reason: 'auid_pinned', auidCheck: await auidCheckOf(uid, a.auid), envelopes });
+}
+
 /** 그 auid_s 가 발급 기록(또는 최신 값)에 있는 계정들. 개봉과 래퍼 방식의 중복 검사가 쓴다. */
 function auidSOwners(auidS) {
   return Object.entries(state.accounts).filter(([, a]) => a.lastAuidS?.value === auidS || (a.auidSLog ?? []).some((r) => r.value === auidS)).map(([uid]) => uid);
@@ -1575,7 +1602,9 @@ async function wrapperAuth(body, digestOf, { consume = false } = {}) {
  *  π_IdP 가 없다 — 가명·커밋먼트가 제대로 만들어졌는지는 서비스에 내는 π_RP 가 증명한다(pi_cred ②⑤⑦·등록부 리프 H(auid, Cf_u)). 발급자가 지키는 것은 발급의 부수효과다:
  *  계정당 auid 고정(첫 발급), 한 auid 는 한 계정(R11 — registerAccount), auid_s 전역 유일·남의 C_u 거절·교체 간격(finishIssue), 토큰 1회 소비. */
 async function issueWrapper(req, res) {
-  const { auid, auid_s, arid_s, C_u_pt, C_s_pt, chainid, allowAgent, max_height } = req.body ?? {};
+  const { auid, auid_s, arid_s, C_u_pt, C_s_pt, chainid, allowAgent, max_height, envelope } = req.body ?? {};
+  // 복구 발급의 기기 봉투(선택) — 모양은 토큰을 보기 전에 본다(형식이 틀린 요청이 토큰을 쓰지 않게). 백업 봉투는 /cia/wrapper/envelope 로만 더한다.
+  if (envelope !== undefined && !(isEnvelope(envelope) && envelope.kind === 'device')) return res.status(400).json({ error: 'envelope must be a device envelope', reason: 'envelope_bad' });
   if (!isDec(auid) || !isDec(auid_s) || !isDec(arid_s) || !isPt(C_u_pt) || !isPt(C_s_pt) || !isDec(chainid) || (allowAgent !== '0' && allowAgent !== '1') || !isDec(max_height)) {
     return res.status(400).json({ error: 'id_token, pk_e, sig, auid, auid_s, arid_s, C_u_pt{x,y}, C_s_pt{x,y}, chainid, allowAgent("0"|"1"), max_height required' });
   }
@@ -1588,7 +1617,7 @@ async function issueWrapper(req, res) {
   let acct = state.accounts[uid] ?? null;
   if (acct?.disabled) return res.status(403).json({ error: 'account disabled', reason: 'account_disabled' });
   // 계정당 auid 는 첫 발급 때 고정한다 — 다른 auid(다른 salt)로는 발급하지 않는다. "Google 계정 하나 = salt 하나 = 서비스마다 PPID 하나".
-  if (acct?.auid && acct.auid !== auidStr) return res.status(409).json({ error: 'this account is bound to another passkey', reason: 'auid_pinned' });
+  if (acct?.auid && acct.auid !== auidStr) return await auidPinned(res, uid);
   const chainStr = BigInt(chainid).toString();
   if (CHAIN_RPCS.size === 0) return res.status(503).json({ error: 'chain id unknown: CIA_CHAIN_RPCS not configured and RPC unreachable at startup' });
   if (!CHAIN_RPCS.has(chainStr)) return res.status(400).json({ error: `bad chainid ${chainStr}: allowed ${[...CHAIN_RPCS.keys()].join(',')}` });
@@ -1600,15 +1629,41 @@ async function issueWrapper(req, res) {
   if (!acct?.auid) {
     const made = await registerAccount({ uid, provider: OIDC.provider, auid: auidStr, verified: true });
     // 최종 검토 M-2: 같은 계정의 첫 발급이 다른 auid 로 동시에 오면 늦은 쪽은 위 검사를 지난 뒤 여기서 "already registered" 가 된다 — 위와 같은 사유로 답한다.
-    if (made.error?.body?.error === 'already registered' && state.accounts[uid]?.auid !== auidStr) return res.status(409).json({ error: 'this account is bound to another passkey', reason: 'auid_pinned' });
+    if (made.error?.body?.error === 'already registered' && state.accounts[uid]?.auid !== auidStr) return await auidPinned(res, uid);
     if (made.error) return res.status(made.error.status).json(made.error.body);
     acct = state.accounts[uid];
   }
   // 아이디 = Google 이 확인한 이메일(있을 때만 — 관리자 화면에 보이는 값). 저장은 finishIssue 의 persist 가 함께 한다.
   if (!acct.loginId && au.o.emailVerified && typeof au.o.email === 'string' && SIGNUP_EMAIL_RE.test(au.o.email)) acct.loginId = au.o.email;
   return await finishIssue(res, { uid, acct, cupt, cspt, auidS: BigInt(auid_s), aridS: BigInt(arid_s), mh, chainStr, agent: BigInt(allowAgent),
-    consume: () => consumeWrapperNonce(au.nonce), unconsume: () => releaseWrapperNonce(au.nonce), consumeFail: TOKEN_USED, wrapper: true, extra: { uid, email: acct.loginId ?? null } });
+    consume: () => consumeWrapperNonce(au.nonce), unconsume: () => releaseWrapperNonce(au.nonce), consumeFail: TOKEN_USED, wrapper: true, extra: { uid, email: acct.loginId ?? null }, envelope: envelope ?? null });
 }
+/** 백업 봉투 추가·삭제(POST /cia/wrapper/envelope, 래퍼 방식만): { id_token, pk_e, sig, op:'add'|'remove', envelope?, id? }. 본인 확인은 발급과 같다(요청 키에 묶인 Google 토큰 + envelopeDigest 서명).
+ *  토큰은 검사(모양·계정·폐기·한도·중복·없는 id)를 다 지난 뒤 상태를 바꾸기 바로 앞에서 동기로 소비한다[m1] — 한도에 걸린 요청의 토큰은 그대로 남아 같은 토큰으로 삭제할 수 있다.
+ *  응답은 계정의 봉투 목록(암호문 빼고). 목록만 읽는 op 는 두지 않는다 — 화면의 목록은 이 응답과 브라우저의 기록으로 만든다. */
+async function envelopeWrapper(req, res) {
+  const { op, envelope, id } = req.body ?? {};
+  const shapeOk = op === 'add' ? isEnvelope(envelope) && isBackupEnv(envelope) : op === 'remove' && typeof id === 'string' && /^[0-9a-f]{32}$/.test(id);
+  if (!shapeOk) return res.status(400).json({ error: "op 'add' needs a passkey|code envelope, 'remove' needs id", reason: 'envelope_bad' });
+  const au = await wrapperAuth(req.body, (b) => envelopeDigest({ op: b.op, envelope: b.envelope, id: b.id }, PUBLIC_URL), { consume: false });
+  if (au.error) return res.status(au.error.status).json(au.error.body);
+  // 이 아래는 동기다 — 검사와 소비·변경 사이에 다른 요청이 끼지 못한다.
+  const acct = state.accounts[au.uid];
+  if (!acct?.auid) return res.status(404).json({ error: 'unknown account', reason: 'unknown_account' });
+  if (acct.disabled) return res.status(403).json({ error: 'account disabled', reason: 'account_disabled' });
+  const list = acct.envelopes ?? [];
+  if (op === 'add') {
+    if (list.some((e) => e.id === envelope.id || (envelope.credentialId !== null && e.credentialId === envelope.credentialId))) return res.status(409).json({ error: 'envelope already exists', reason: 'envelope_exists' });
+    if (list.filter(isBackupEnv).length >= BACKUP_LIMIT) return res.status(409).json({ error: `at most ${BACKUP_LIMIT} backups`, reason: 'envelope_limit' });
+  } else if (!list.some((e) => e.id === id)) return res.status(404).json({ error: 'unknown envelope', reason: 'envelope_unknown' });
+  if (!consumeWrapperNonce(au.nonce)) return res.status(TOKEN_USED.status).json(TOKEN_USED.body);
+  acct.envelopes = op === 'add' ? [...list, storedEnvelope(envelope, new Date().toISOString())] : list.filter((e) => e.id !== id);
+  persist();
+  res.json({ envelopes: acct.envelopes.map(({ id: i, kind, credentialId, createdAt }) => ({ id: i, kind, credentialId, createdAt })) });
+}
+if (WRAPPER) app.post('/cia/wrapper/envelope', async (req, res) => {
+  try { return await envelopeWrapper(req, res); } catch (err) { res.status(500).json({ error: err.message }); }
+});
 app.post('/cia/issue', userCors, async (req, res) => {
   try {
     if (WRAPPER) return await issueWrapper(req, res);   // 래퍼 방식(2026-11-20) — 아래의 기존 발급과 섞이지 않는다

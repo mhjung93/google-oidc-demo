@@ -1,7 +1,7 @@
 // tests/test_mode3_wrapper_auth.mjs — zkWrapper 의 요청 결속(lib/mode3_wrapper_auth.js, 스펙 2026-11-20 zkwrapper §2.2·§3). 외부 의존 없음(unit).
 // Google ID 토큰은 1회용 요청 키 pk_e 에 묶이고(nonce = "wrap:" + H(pk_e)), 발급·폐기 요청의 본문에는 pk_e 의 서명이 붙는다 — 토큰만 가진 쪽은 아무것도 못 한다.
 import assert from 'node:assert/strict';
-import { WRAPPER_PREFIX, generateRequestKey, wrapperNonce, isWrapperNonce, issueDigest, revokeDigest, signDigest, verifyDigest, signIssue, verifyIssue } from '../lib/mode3_wrapper_auth.js';
+import { WRAPPER_PREFIX, generateRequestKey, wrapperNonce, isWrapperNonce, issueDigest, revokeDigest, envelopeDigest, signDigest, verifyDigest, signIssue, verifyIssue } from '../lib/mode3_wrapper_auth.js';
 
 let fails = 0;
 async function t(name, fn) { try { await fn(); console.log('ok   -', name); } catch (e) { fails++; console.log('FAIL -', name, '\n      ', e.stack ?? e.message); } }
@@ -62,6 +62,40 @@ await t('revokeDigest: 목적이 본문에 들어가 발급 서명과 겹치지 
   assert.equal(await verifyDigest(k.pkE, ds, sig), true); assert.equal(await verifyDigest(k.pkE, da, sig), false, '세션 폐기 서명은 계정 폐기에 못 쓴다');
   assert.equal(await verifyDigest(k.pkE, issueDigest(BODY, AUD), sig), false, '폐기 서명은 발급에 못 쓴다');
   const isig = await signIssue(k.privateKey, BODY, AUD); assert.equal(await verifyDigest(k.pkE, ds, isig), false, '발급 서명은 폐기에 못 쓴다');
+});
+// salt 봉투(계획 2026-11-24 zkwrapper salt-envelope Task 2, [I6]): 봉투가 없으면 서명하는 글이 바이트까지 지금과 같아야 한다 — 이미 쓰는 브라우저 코어·서버가 그대로 맞는다.
+// 아래 16진은 봉투를 더하기 전의 코드(b91b75b)로 BODY·AUD 에 대해 계산해 적어 둔 값이다.
+const DIGEST_BEFORE_ENVELOPE = '7a6b777261707065727c69737375657c68747470733a2f2f77616c6c65742e6578616d706c653a353130307c31317c32327c33337c34347c35357c36367c37377c33313333377c307c343030';
+const toHex = (u8) => Buffer.from(u8).toString('hex');
+const ENV_DEV = { id: 'a'.repeat(32), kind: 'device', credentialId: 'cred-AbC_1', ct: 'Q1QtYmFzZTY0dXJs' };
+await t('issueDigest: 봉투가 없으면 지금 바이트와 같다(고정 16진), 봉투가 있으면 끝에 |envelope|id|kind|credentialId|ct 가 붙는다', async () => {
+  assert.equal(toHex(issueDigest(BODY, AUD)), DIGEST_BEFORE_ENVELOPE);
+  const withEnv = new TextDecoder().decode(issueDigest({ ...clone(BODY), envelope: ENV_DEV }, AUD));
+  assert.equal(withEnv, `${new TextDecoder().decode(issueDigest(BODY, AUD))}|envelope|${ENV_DEV.id}|device|${ENV_DEV.credentialId}|${ENV_DEV.ct}`);
+  assert.notEqual(toHex(issueDigest({ ...clone(BODY), envelope: { ...ENV_DEV, ct: ENV_DEV.ct + 'A' } }, AUD)), toHex(issueDigest({ ...clone(BODY), envelope: ENV_DEV }, AUD)), 'ct 가 다르면 다른 글');
+  for (const bad of [null, 'x', { ...ENV_DEV, ct: 'a|b' }, { ...ENV_DEV, id: '' }, { ...ENV_DEV, kind: 5 }]) assert.throws(() => issueDigest({ ...clone(BODY), envelope: bad }, AUD), (e) => e.reason === 'malformed', JSON.stringify(bad));
+});
+await t('signIssue/verifyIssue: 봉투를 실은 서명은 봉투를 바꾸거나 빼면 false', async () => {
+  const k = await generateRequestKey(); const b = { ...clone(BODY), envelope: ENV_DEV };
+  const sig = await signIssue(k.privateKey, b, AUD);
+  assert.equal(await verifyIssue(k.pkE, clone(b), sig, AUD), true);
+  assert.equal(await verifyIssue(k.pkE, { ...clone(b), envelope: { ...ENV_DEV, ct: 'Q1QtYmFzZTY0dXJm' } }, sig, AUD), false, 'ct 를 바꿨다');
+  assert.equal(await verifyIssue(k.pkE, { ...clone(b), envelope: { ...ENV_DEV, credentialId: 'other' } }, sig, AUD), false, 'credentialId 를 바꿨다');
+  assert.equal(await verifyIssue(k.pkE, clone(BODY), sig, AUD), false, '봉투를 뺐다');
+});
+await t("envelopeDigest: add 는 zkwrapper|envelope|aud|add|id|kind|credentialId(코드면 -)|ct, remove 는 …|remove|id — 칸에 | 가 있으면 던진다", async () => {
+  const dec = (u8) => new TextDecoder().decode(u8);
+  const pk = { id: 'b'.repeat(32), kind: 'passkey', credentialId: 'cid_1', ct: 'Y3Q' }, code = { id: 'c'.repeat(32), kind: 'code', credentialId: null, ct: 'Y3Q' };
+  assert.equal(dec(envelopeDigest({ op: 'add', envelope: pk }, AUD)), `zkwrapper|envelope|${AUD}|add|${pk.id}|passkey|cid_1|Y3Q`);
+  assert.equal(dec(envelopeDigest({ op: 'add', envelope: code }, AUD)), `zkwrapper|envelope|${AUD}|add|${code.id}|code|-|Y3Q`);
+  assert.equal(dec(envelopeDigest({ op: 'remove', id: pk.id }, AUD)), `zkwrapper|envelope|${AUD}|remove|${pk.id}`);
+  for (const bad of [{ op: 'add', envelope: { ...pk, ct: 'a|b' } }, { op: 'add', envelope: { ...pk, credentialId: 'x|y' } }, { op: 'add', envelope: { ...pk, id: 'a|b' } }, { op: 'remove', id: 'a|b' }, { op: 'add' }, { op: 'remove' }, { op: 'list' }, {}, null]) {
+    assert.throws(() => envelopeDigest(bad, AUD), (e) => e.reason === 'malformed', JSON.stringify(bad));
+  }
+  assert.throws(() => envelopeDigest({ op: 'remove', id: pk.id }, 'a|b'), (e) => e.reason === 'malformed', '서버 주소');
+  const k = await generateRequestKey(); const sig = await signDigest(k.privateKey, envelopeDigest({ op: 'add', envelope: pk }, AUD));
+  assert.equal(await verifyDigest(k.pkE, envelopeDigest({ op: 'remove', id: pk.id }, AUD), sig), false, '추가 서명은 삭제에 못 쓴다');
+  assert.equal(await verifyDigest(k.pkE, issueDigest(BODY, AUD), sig), false, '봉투 서명은 발급에 못 쓴다');
 });
 console.log(fails ? `\n${fails} failed` : '\nall passed');
 process.exit(fails ? 1 : 0);
