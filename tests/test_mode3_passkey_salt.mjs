@@ -138,5 +138,45 @@ await t('32바이트가 아니면 passkey_prf_unsupported', async () => {
   });
 }
 
+// ---- 가짜 인증기(webauthn_stub.js): secret 하나면 예전 스텁과 같고, extraSecrets 가 있을 때만 allowCredentials 불일치를 거절한다 ----
+{
+  const { buildWebAuthnStub } = await import('./helpers/webauthn_stub.js');
+  const SA = 'aa'.repeat(32), SB = 'bb'.repeat(32);
+  const load = (opts) => {
+    const nav = { credentials: {} };
+    const win = {};
+    new Function('navigator', 'window', 'crypto', 'TextEncoder', 'DOMException', buildWebAuthnStub(opts))(nav, win, globalThis.crypto, TextEncoder, DOMException);
+    return { c: nav.credentials, win };
+  };
+  const hex = (b) => Buffer.from(b).toString('hex');
+  const pk = (allow) => ({ extensions: { prf: { eval: { first: new Uint8Array(10) } } }, ...(allow ? { allowCredentials: allow.map((id) => ({ type: 'public-key', id })) } : {}) });
+  const idOfA = hex(createHash('sha256').update(Buffer.from(SA, 'hex')).digest().subarray(0, 16));
+
+  await t('secret 하나: allowCredentials 가 다른 credential 을 가리켜도 자기 credential·PRF 를 준다(예전과 같다)', async () => {
+    const { c } = load({ secretHex: SB });
+    const g = await c.get({ publicKey: pk([Buffer.from(idOfA, 'hex')]) });
+    const g0 = await c.get({ publicKey: pk(null) });
+    assert.equal(hex(g.rawId), hex(g0.rawId));
+    assert.notEqual(hex(g.rawId), idOfA);
+    assert.equal(hex(g.getClientExtensionResults().prf.results.first), hex(g0.getClientExtensionResults().prf.results.first));
+  });
+  await t('secret 하나: excludeCredentials 에 자기 id 가 있어도 create 는 예전처럼 성공', async () => {
+    const { c } = load({ secretHex: SA });
+    const cr = await c.create({ publicKey: { ...pk(null), excludeCredentials: [{ type: 'public-key', id: Buffer.from(idOfA, 'hex') }] } });
+    assert.equal(hex(cr.rawId), idOfA);
+  });
+  await t('extraSecrets: 맞는 allowCredentials 는 그 credential, 맞는 것이 없으면 NotAllowedError, 범위 밖 create 인덱스는 분명한 오류', async () => {
+    const { c, win } = load({ secretHex: SA, extraSecrets: [SB] });
+    win.__webauthnCreateIndex = 1;
+    const b = await c.create({ publicKey: pk(null) });
+    const g = await c.get({ publicKey: pk([new Uint8Array(b.rawId)]) });
+    assert.equal(hex(g.rawId), hex(b.rawId));
+    await assert.rejects(c.get({ publicKey: pk([new Uint8Array(16)]) }), (e) => e.name === 'NotAllowedError');
+    await assert.rejects(c.create({ publicKey: { ...pk(null), excludeCredentials: [{ type: 'public-key', id: new Uint8Array(b.rawId) }] } }), (e) => e.name === 'InvalidStateError');
+    win.__webauthnCreateIndex = 5;
+    await assert.rejects(c.create({ publicKey: pk(null) }), (e) => /__webauthnCreateIndex 5/.test(e.message));
+  });
+}
+
 if (fails) { console.log(`\n${fails} failed`); process.exit(1); }
 console.log('\nall passed');

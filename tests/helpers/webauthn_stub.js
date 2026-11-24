@@ -8,6 +8,7 @@
 //   요청에 hints:['hybrid'] 가 있으면 휴대폰(다른 기기) 인증기처럼 답한다 — authenticatorAttachment 'cross-platform', transports ['hybrid','internal'], 동기화 표시(BE·BS) 켬.
 //   extraSecrets: 더 많은 credential(여러 패스키) — credential 마다 secret 이 하나, credId = SHA-256(secret)[0..16]. 0번이 secretHex.
 //     create 는 window.__webauthnCreateIndex(없으면 0)번 secret 으로 만들고, 그 credId 가 excludeCredentials 에 있으면 InvalidStateError.
+//     (secret 이 하나뿐이면 excludeCredentials·allowCredentials 를 예전처럼 무시한다.)
 //     get 은 allowCredentials 가 있으면 맞는 secret 으로, 맞는 것이 없으면 NotAllowedError. allowCredentials 가 없으면 0번.
 //   createStub 옵션: prf=false 면 PRF 를 주지 않는 인증기, cancel=true 면 사용자가 창을 닫은 것처럼 NotAllowedError.
 export function buildWebAuthnStub({ secretHex, prf = true, cancel = false, extraSecrets = [] }) {
@@ -22,10 +23,10 @@ export function buildWebAuthnStub({ secretHex, prf = true, cancel = false, extra
   const authData = () => { const b = new Uint8Array(37); b[32] = 0x01 | 0x04 | 0x08 | 0x10; return b.buffer; };   // UP·UV·BE·BS
   async function credIdOf(secret) { return new Uint8Array(await crypto.subtle.digest('SHA-256', secret)).slice(0, 16).buffer; }
   const sameBytes = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
-  // get: allowCredentials 가 있으면 id 가 맞는 secret, 맞는 것이 없으면 null(NotAllowedError). 없으면 0번. create: window.__webauthnCreateIndex(없으면 0)번.
+  // get: allowCredentials 가 있으면 id 가 맞는 secret, 맞는 것이 없으면 null(NotAllowedError) — secret 이 하나뿐이면 예전처럼 allowCredentials 를 무시하고 그 credential 을 준다. 없으면 0번. create: window.__webauthnCreateIndex(없으면 0)번.
   async function pickForGet(pk) {
     const allow = pk?.allowCredentials;
-    if (!Array.isArray(allow) || !allow.length) return SECRETS[0];
+    if (SECRETS.length === 1 || !Array.isArray(allow) || !allow.length) return SECRETS[0];
     for (const s of SECRETS) { const id = new Uint8Array(await credIdOf(s)); if (allow.some((c) => sameBytes(bytes(c.id), id))) return s; }
     return null;
   }
@@ -39,9 +40,11 @@ export function buildWebAuthnStub({ secretHex, prf = true, cancel = false, extra
   const cancelled = () => Promise.reject(new DOMException('사용자가 취소했다(스텁)', 'NotAllowedError'));
   navigator.credentials.create = async ({ publicKey }) => {
     hit('create', publicKey?.rp?.id ?? publicKey?.rpId ?? null, publicKey); if (CANCEL) return cancelled();
-    const SECRET = SECRETS[window.__webauthnCreateIndex ?? 0];
+    const idx = window.__webauthnCreateIndex ?? 0;
+    const SECRET = SECRETS[idx];
+    if (!SECRET) throw new Error('__webauthnCreateIndex ' + idx + ' 에 해당하는 secret 이 없다(스텁 secret ' + SECRETS.length + '개)');
     const rawId = await credIdOf(SECRET);
-    const dup = (publicKey?.excludeCredentials ?? []).some((c) => sameBytes(bytes(c.id), new Uint8Array(rawId)));
+    const dup = SECRETS.length > 1 && (publicKey?.excludeCredentials ?? []).some((c) => sameBytes(bytes(c.id), new Uint8Array(rawId)));
     if (dup) return Promise.reject(new DOMException('이미 이 인증기에 있는 credential(스텁)', 'InvalidStateError'));
     const first = publicKey?.extensions?.prf?.eval?.first;
     const out = PRF && first ? { enabled: true, results: { first: await prfOf(first, SECRET) } } : { enabled: PRF };
