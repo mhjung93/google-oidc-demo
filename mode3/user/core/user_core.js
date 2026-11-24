@@ -1104,21 +1104,26 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
         envelope = { id, kind: 'device', credentialId: memo.credentialId, ct };
         local = { id, kind: 'device', ct, uid };
       }
+      let accepted = false;
       const r = await core.withSalt(async () => {
         const made = await wrapperLocalRegister({ uid, provider: pub.oidc.provider, s_u });
         if (made) return made;
         saltMemo = s_u;
         if (derived) scopeDerive = derived;   // 로그인 기록의 passkey 단계 = 백업 패스키를 물은 시간
         const out = await ops.login(body, { verifiedOrigin, serviceName, policy, wrapper: { idToken, privateKey: wk.privateKey, pkE: wk.pkE, aud: pub.wrapperAud, ...(envelope ? { envelope } : {}) } });
-        if (out.status !== 200 && (await getReg())?.pendingIdp) { await kv.del('registration'); await putSessions({}); }
+        // 발급이 받아들여졌는가 — issueSession 이 200 을 받으면 방금 쓴 등록의 pendingIdp 를 내린다. 그 뒤 단계(게시 대기·증명)가 실패해도 서버는 이미 기기 봉투를 두고 계정을 받았다.
+        accepted = (await getReg())?.pendingIdp === false;
+        if (out.status !== 200 && !accepted) { await kv.del('registration'); await putSessions({}); }
         return out;
       });
-      if (r.status === 200) {
+      if (accepted) {
+        // 로컬 사본은 발급이 받아들여지면 남긴다 — 최종 결과가 실패여도(registry_unpublished·chain_unavailable 등). 안 그러면 등록은 남고 사본은 없어 다음 로그인이 늘 passkey_mismatch 가 된다.
         await kv.set('passkey', { ...pk, via: 'envelope', envelope: local });
         // 목록 메타(암호문 없음): 제안의 봉투 + 방금 더한 기기 봉투(같은 credential 의 옛 기기 봉투는 서버가 바꿔 넣는다). 만든 시각은 제안에 없다.
         const meta = offer.envelopes.filter((e) => !(envelope && e.kind === 'device' && e.credentialId === envelope.credentialId)).map(({ id, kind, credentialId }) => ({ id, kind, credentialId, createdAt: null }));
         if (envelope) meta.push({ id: envelope.id, kind: 'device', credentialId: envelope.credentialId, createdAt: null });
         await kv.set('envelopes', meta);
+        // 토큰은 쓰였다 — 같은 토큰으로 다시 복구할 일이 없다(실패했으면 다음 로그인은 보통의 wrapperLogin 이다)
         await kv.del('wrapperKey'); dropRecover();
         return r;
       }
