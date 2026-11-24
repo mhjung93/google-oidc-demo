@@ -92,5 +92,51 @@ await t('32바이트가 아니면 passkey_prf_unsupported', async () => {
   });
 }
 
+// ---- 패스키 봉투 열쇠(envKey)·excludeCredentials (2026-11-24 salt 봉투 Task 3) ----
+{
+  const { envKeyFromPrf, sealSalt, openSalt } = await import('../lib/mode3_salt_envelope.js');
+  const RP = 'wallet.zkd.test';
+  globalThis.location = { hostname: RP };
+  const prfOut = new Uint8Array(32).map((_, i) => i * 3 + 2);
+  const calls = [];
+  let createError = null;
+  const fake = {
+    create: async ({ publicKey }) => { calls.push(['create', publicKey]); if (createError) throw createError; return { rawId: new Uint8Array([9, 8, 7]).buffer, authenticatorAttachment: 'platform', response: {}, getClientExtensionResults: () => ({ prf: { enabled: true } }) }; },
+    get: async ({ publicKey }) => { calls.push(['get', publicKey]); return { rawId: new Uint8Array([9, 8, 7]).buffer, authenticatorAttachment: 'platform', response: {}, getClientExtensionResults: () => ({ prf: { results: { first: prfOut.buffer.slice(0) } } }) }; },
+  };
+  Object.defineProperty(globalThis, 'navigator', { value: { credentials: fake }, configurable: true });
+  const sealArgs = { s_u: '12345', uid: 'u1', id: 'e1', kind: 'passkey', credentialId: 'CQgH' };
+
+  await t('derivePrf 의 envKey 는 추출 불가 AES-GCM 키고, Task 1 envKeyFromPrf 로 같은 PRF 에서 만든 열쇠로 봉투가 열린다', async () => {
+    const d = await P.derivePrf({ credentialId: 'CQgH', rpId: RP });
+    assert.equal(d.envKey.extractable, false);
+    assert.equal(d.envKey.algorithm.name, 'AES-GCM');
+    const ct = await sealSalt({ key: d.envKey, ...sealArgs });
+    assert.equal(await openSalt({ key: await envKeyFromPrf(new Uint8Array(prfOut)), ct, ...sealArgs }), '12345');
+  });
+  await t('salt 유도는 그대로(s_u 기대값)', async () => {
+    const d = await P.derivePrf({ credentialId: 'CQgH', rpId: RP });
+    assert.equal(d.s_u, expected(prfOut));
+  });
+  await t('createPasskey 도 envKey 를 돌려주고 새 credential 의 PRF 에서 나온다', async () => {
+    const c = await P.createPasskey({ rpId: RP });
+    const ct = await sealSalt({ key: await envKeyFromPrf(new Uint8Array(prfOut)), ...sealArgs });
+    assert.equal(await openSalt({ key: c.envKey, ct, ...sealArgs }), '12345');
+  });
+  await t('excludeCredentialIds 는 excludeCredentials 로 가고, 안 주면 키가 없다', async () => {
+    calls.length = 0;
+    await P.createPasskey({ rpId: RP, excludeCredentialIds: ['AQID', 'CQgH'] });
+    assert.deepEqual(calls[0][1].excludeCredentials.map((x) => [x.type, [...x.id]]), [['public-key', [1, 2, 3]], ['public-key', [9, 8, 7]]]);
+    calls.length = 0;
+    await P.createPasskey({ rpId: RP });
+    assert.equal('excludeCredentials' in calls[0][1], false);
+  });
+  await t('인증기가 InvalidStateError 로 거절하면 passkey_already_registered', async () => {
+    createError = Object.assign(new Error('dup'), { name: 'InvalidStateError' });
+    try { await assert.rejects(P.createPasskey({ rpId: RP, excludeCredentialIds: ['CQgH'] }), (e) => e.reason === 'passkey_already_registered'); }
+    finally { createError = null; }
+  });
+}
+
 if (fails) { console.log(`\n${fails} failed`); process.exit(1); }
 console.log('\nall passed');

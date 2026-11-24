@@ -41,9 +41,17 @@
     if (location.hostname !== rpId) fail('passkey_wrong_origin', `패스키는 ${rpId} 에서만 쓴다 (지금 ${location.hostname})`);
     if (typeof window.PublicKeyCredential !== 'function' || !window.isSecureContext || !navigator.credentials) fail('passkey_unsupported', 'WebAuthn 을 쓸 수 없는 브라우저·페이지');
   }
+  /** PRF 출력(32바이트) → 봉투 열쇠(추출 불가 AES-GCM). 식은 lib/mode3_salt_envelope.js envKeyFromPrf 와 같다 — 전역 스크립트라 import 못 해서 복제한다. */
+  async function envKeyFromPrf(prfFirst) {
+    const prf = toBytes(prfFirst);
+    if (!prf || prf.byteLength !== 32) fail('passkey_prf_unsupported', 'PRF 출력이 32바이트가 아니다');
+    const base = await crypto.subtle.importKey('raw', prf, 'HKDF', false, ['deriveKey']);
+    return crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(0), info: enc.encode('zkd-env-key-v1') }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  }
   // 브라우저 오류 → 사유. 이미 사유가 붙은 오류는 그대로.
   function mapError(e) {
     if (e?.reason) return e;
+    if (e?.name === 'InvalidStateError') return Object.assign(new Error(e.message || e.name), { reason: 'passkey_already_registered' });
     if (e?.name === 'NotAllowedError' || e?.name === 'AbortError') return Object.assign(new Error(e.message || e.name), { reason: 'passkey_cancelled' });
     return Object.assign(new Error(e?.message || String(e)), { reason: 'passkey_unsupported' });
   }
@@ -86,11 +94,12 @@
     if (!first) fail('passkey_prf_unsupported', '인증기가 PRF 값을 주지 않았다');
     const tc = now();
     const s_u = await saltFromPrf(first);
-    return { credentialId: b64url(a.rawId), s_u, info: infoOf(a), timing: { waitMs: tc - tw, calcMs: now() - tc } };
+    const envKey = await envKeyFromPrf(first);
+    return { credentialId: b64url(a.rawId), s_u, envKey, info: infoOf(a), timing: { waitMs: tc - tw, calcMs: now() - tc } };
   }
 
   /** 새 패스키를 만들고(PRF 켬) 바로 한 번 계산해 같은 값이 나오는지 본다 — 백업 확인의 자리(스펙 §4.2). */
-  async function createPasskey({ rpId = DEFAULT_RP_ID, rpName = 'zk 스냅', hints = null } = {}) {
+  async function createPasskey({ rpId = DEFAULT_RP_ID, rpName = 'zk 스냅', hints = null, excludeCredentialIds = [] } = {}) {
     precheck(rpId);
     let cred;
     try {
@@ -100,6 +109,7 @@
         challenge: rand(32),
         pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
         authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
+        ...(excludeCredentialIds.length ? { excludeCredentials: excludeCredentialIds.map((id) => ({ type: 'public-key', id: fromB64url(id) })) } : {}),
         ...hintOpt(hints),
         extensions: { prf: { eval: { first: PRF_INPUT } } },
       } });
@@ -112,7 +122,7 @@
     const info = infoOf(cred);
     const d = await derivePrf({ credentialId, rpId, hints, transports: info.transports });
     if (atCreate !== null && atCreate !== d.s_u) fail('passkey_unstable', '만들 때와 다시 계산할 때 PRF 값이 다르다');
-    return { credentialId, s_u: d.s_u, info };
+    return { credentialId, s_u: d.s_u, envKey: d.envKey, info };
   }
 
   /**

@@ -6,19 +6,30 @@
 //   kind = 'create' | 'get', rpId = 그 호출의 RP ID(create 는 publicKey.rp.id, get 은 publicKey.rpId — 없으면 null). 하네스는 둘째 인자를 무시해도 된다.
 //   셋째 인자(2026-11-19 휴대폰 패스키): 그 호출의 옵션 { kind, hints, transports }(없으면 null). 하네스는 무시해도 된다.
 //   요청에 hints:['hybrid'] 가 있으면 휴대폰(다른 기기) 인증기처럼 답한다 — authenticatorAttachment 'cross-platform', transports ['hybrid','internal'], 동기화 표시(BE·BS) 켬.
+//   extraSecrets: 더 많은 credential(여러 패스키) — credential 마다 secret 이 하나, credId = SHA-256(secret)[0..16]. 0번이 secretHex.
+//     create 는 window.__webauthnCreateIndex(없으면 0)번 secret 으로 만들고, 그 credId 가 excludeCredentials 에 있으면 InvalidStateError.
+//     get 은 allowCredentials 가 있으면 맞는 secret 으로, 맞는 것이 없으면 NotAllowedError. allowCredentials 가 없으면 0번.
 //   createStub 옵션: prf=false 면 PRF 를 주지 않는 인증기, cancel=true 면 사용자가 창을 닫은 것처럼 NotAllowedError.
-export function buildWebAuthnStub({ secretHex, prf = true, cancel = false }) {
-  if (!/^[0-9a-f]{64}$/.test(secretHex)) throw new Error('secretHex 는 32바이트 16진');
+export function buildWebAuthnStub({ secretHex, prf = true, cancel = false, extraSecrets = [] }) {
+  for (const h of [secretHex, ...extraSecrets]) if (!/^[0-9a-f]{64}$/.test(h)) throw new Error('secretHex 는 32바이트 16진');
   return `(() => {
-  const SECRET = Uint8Array.from(${JSON.stringify(secretHex)}.match(/../g), (h) => parseInt(h, 16));
+  const SECRETS = ${JSON.stringify([secretHex, ...extraSecrets])}.map((hex) => Uint8Array.from(hex.match(/../g), (h) => parseInt(h, 16)));
   const PRF = ${prf ? 'true' : 'false'}, CANCEL = ${cancel ? 'true' : 'false'};
   const enc = new TextEncoder();
   const bytes = (v) => v instanceof Uint8Array ? v : v instanceof ArrayBuffer ? new Uint8Array(v) : new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
   const hit = (k, rpId, pk) => { try { if (typeof window.__webauthnHit === 'function') window.__webauthnHit(k, rpId, { kind: k, hints: pk?.hints ?? null, transports: pk?.allowCredentials?.[0]?.transports ?? null }); } catch {} };
   const phone = (pk) => Array.isArray(pk?.hints) && pk.hints.includes('hybrid');
   const authData = () => { const b = new Uint8Array(37); b[32] = 0x01 | 0x04 | 0x08 | 0x10; return b.buffer; };   // UP·UV·BE·BS
-  async function credId() { return new Uint8Array(await crypto.subtle.digest('SHA-256', SECRET)).slice(0, 16).buffer; }
-  async function prfOf(input) {
+  async function credIdOf(secret) { return new Uint8Array(await crypto.subtle.digest('SHA-256', secret)).slice(0, 16).buffer; }
+  const sameBytes = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+  // get: allowCredentials 가 있으면 id 가 맞는 secret, 맞는 것이 없으면 null(NotAllowedError). 없으면 0번. create: window.__webauthnCreateIndex(없으면 0)번.
+  async function pickForGet(pk) {
+    const allow = pk?.allowCredentials;
+    if (!Array.isArray(allow) || !allow.length) return SECRETS[0];
+    for (const s of SECRETS) { const id = new Uint8Array(await credIdOf(s)); if (allow.some((c) => sameBytes(bytes(c.id), id))) return s; }
+    return null;
+  }
+  async function prfOf(input, SECRET) {
     const pre = enc.encode('WebAuthn PRF\\0');
     const buf = new Uint8Array(pre.length + bytes(input).length); buf.set(pre, 0); buf.set(bytes(input), pre.length);
     const salt = await crypto.subtle.digest('SHA-256', buf);
@@ -28,18 +39,23 @@ export function buildWebAuthnStub({ secretHex, prf = true, cancel = false }) {
   const cancelled = () => Promise.reject(new DOMException('사용자가 취소했다(스텁)', 'NotAllowedError'));
   navigator.credentials.create = async ({ publicKey }) => {
     hit('create', publicKey?.rp?.id ?? publicKey?.rpId ?? null, publicKey); if (CANCEL) return cancelled();
+    const SECRET = SECRETS[window.__webauthnCreateIndex ?? 0];
+    const rawId = await credIdOf(SECRET);
+    const dup = (publicKey?.excludeCredentials ?? []).some((c) => sameBytes(bytes(c.id), new Uint8Array(rawId)));
+    if (dup) return Promise.reject(new DOMException('이미 이 인증기에 있는 credential(스텁)', 'InvalidStateError'));
     const first = publicKey?.extensions?.prf?.eval?.first;
-    const out = PRF && first ? { enabled: true, results: { first: await prfOf(first) } } : { enabled: PRF };
-    const rawId = await credId();
+    const out = PRF && first ? { enabled: true, results: { first: await prfOf(first, SECRET) } } : { enabled: PRF };
     if (phone(publicKey)) return { rawId, id: '', type: 'public-key', response: { getTransports: () => ['hybrid', 'internal'], getAuthenticatorData: authData }, authenticatorAttachment: 'cross-platform', getClientExtensionResults: () => ({ prf: out }) };
     return { rawId, id: '', type: 'public-key', response: {}, authenticatorAttachment: 'platform', getClientExtensionResults: () => ({ prf: out }) };
   };
   navigator.credentials.get = async ({ publicKey }) => {
     hit('get', publicKey?.rp?.id ?? publicKey?.rpId ?? null, publicKey); if (CANCEL) return cancelled();
+    const SECRET = await pickForGet(publicKey);
+    if (!SECRET) return Promise.reject(new DOMException('맞는 credential 이 없다(스텁)', 'NotAllowedError'));
     const first = publicKey?.extensions?.prf?.eval?.first;
-    const ext = PRF && first ? { prf: { results: { first: await prfOf(first) } } } : {};
-    if (phone(publicKey)) return { rawId: await credId(), id: '', type: 'public-key', response: { authenticatorData: authData() }, authenticatorAttachment: 'cross-platform', getClientExtensionResults: () => ext };
-    return { rawId: await credId(), id: '', type: 'public-key', response: {}, authenticatorAttachment: 'platform', getClientExtensionResults: () => ext };
+    const ext = PRF && first ? { prf: { results: { first: await prfOf(first, SECRET) } } } : {};
+    if (phone(publicKey)) return { rawId: await credIdOf(SECRET), id: '', type: 'public-key', response: { authenticatorData: authData() }, authenticatorAttachment: 'cross-platform', getClientExtensionResults: () => ext };
+    return { rawId: await credIdOf(SECRET), id: '', type: 'public-key', response: {}, authenticatorAttachment: 'platform', getClientExtensionResults: () => ext };
   };
 })();`;
 }
