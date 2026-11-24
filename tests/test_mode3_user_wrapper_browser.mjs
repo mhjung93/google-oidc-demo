@@ -170,6 +170,17 @@ try {
     const c2 = cards.find((o) => o.PPID === ppid2);
     assert.ok(c2, `PPID 줄이 PPID 값을 보이지 않는다: ${j(cards.map((o) => Object.keys(o)))}`);
     assert.equal(String(c2['PPID 스마트 계정 주소'] ?? '').toLowerCase(), acct2.toLowerCase(), j(c2));
+    // 2026-11-24(화면 점검 3번): 세션마다 테두리 상자, 맨 위에 서비스 이름, 만료는 "블록 N까지 · M블록 남음", 버튼은 "이 세션 끝내기"
+    const box = await userPage.evaluate((pp) => {
+      const b = [...document.querySelectorAll('#sessionActions > div')].find((x) => [...x.querySelectorAll('dd code')].some((e) => e.title === pp));
+      const dts = [...b.querySelectorAll('dt')]; const exp = dts.find((d) => d.textContent.trim() === '만료');
+      return { cls: b.className, head: b.querySelector('.session-head')?.textContent.trim() ?? '', rows: dts.map((d) => d.textContent.trim()), exp: exp?.nextElementSibling.textContent.trim() ?? '', btn: b.querySelector('button.danger')?.textContent.trim() ?? '' };
+    }, ppid2);
+    assert.match(box.cls, /\bsession-box\b/, j(box));
+    assert.ok(box.head.startsWith('zkTWO'), j(box));
+    assert.ok(!box.rows.includes('서비스'), j(box));
+    assert.match(box.exp, /^블록 \d+까지 · \d+블록 남음$/, j(box));
+    assert.equal(box.btn, '이 세션 끝내기', j(box));
   });
   await t('관리자 화면: zkWrapper 의 긴 uid 는 앞자리만 보이고(전체는 title) 표가 화면 밖으로 넘치지 않는다(2026-11-23)', async () => {
     assert.ok(UID_A.length > 40, `대역 Google 계정의 uid 가 짧다: ${UID_A.length}`);
@@ -345,7 +356,7 @@ try {
   });
   // 2026-11-23(사용자 요청, C): 세션 끝내기는 Google 확인(1회용 요청 키에 묶인 토큰 + 그 키의 서명)으로 동작한다 — 세션마다 버튼이 있다.
   // 계정 자기 폐기(π_IdP·비밀번호를 쓴다)는 여전히 없고 안내만 있다(최종 검토 I-1).
-  await t('래퍼 방식의 홈: 세션마다 "이 세션 끝내기(폐기)" 버튼이 있고, 계정 자기 폐기 버튼은 없고 안내가 있다', async () => {
+  await t('래퍼 방식의 홈: 세션마다 "이 세션 끝내기" 버튼이 있고, 계정 자기 폐기 버튼은 없고 안내가 있다', async () => {
     const page = await A.ctx.newPage(); await page.goto(`${wallet.base}/`); await page.waitForSelector('#homeGuide:not([hidden])', { timeout: 15_000 });
     await page.waitForFunction(() => document.querySelectorAll('#sessionActions button.danger').length > 0, null, { timeout: 15_000 }).catch(() => {});
     const st = await page.evaluate(() => ({ cards: document.querySelectorAll('#sessionActions dl').length,
@@ -355,6 +366,26 @@ try {
     assert.ok(st.cards >= 1, '세션이 그려지지 않았다: ' + j(st));
     assert.equal(st.endBtns, st.cards, j(st)); assert.equal(st.sessionNotes, 0, j(st));
     assert.equal(st.selfRevoke, false, j(st)); assert.ok(st.notes >= 1, j(st));
+    await page.close();
+  });
+  // 2026-11-24(화면 점검 5번): 홈이 길다 — 영지식 증명 표·시연 버튼·공개할 속성 조건은 처음에 접어 두고, 편 상태만 이 브라우저에 기억한다.
+  await t('래퍼 방식의 홈: 영지식 증명 표·시연 버튼·공개할 속성 조건은 처음에 접혀 있고, 편 상태는 새로고침해도 남는다', async () => {
+    const KEYS = ['mode3_proofs_open', 'mode3_demo_open', 'mode3_disclose_open'];
+    const page = await A.ctx.newPage(); await page.goto(`${wallet.base}/`); await page.waitForSelector('#homeGuide:not([hidden])', { timeout: 15_000 });
+    await page.evaluate((ks) => { for (const k of ks) localStorage.removeItem(k); }, KEYS);
+    await page.reload(); await page.waitForSelector('#homeGuide:not([hidden])', { timeout: 15_000 });
+    await page.waitForFunction(() => /\d+개/.test(document.querySelector('#proofsFold > summary')?.textContent ?? ''), null, { timeout: 15_000 });
+    const st = await page.evaluate(() => { const vis = (id) => document.getElementById(id)?.checkVisibility() === true;   // 닫힌 <details> 안도 offsetParent 는 있다(Chrome) — checkVisibility 로 본다
+      return { proofs: document.getElementById('proofsFold').open, demo: document.getElementById('demoFold').open, disc: document.getElementById('discloseBox').open,
+        list: vis('proofsList'), fake: vis('demoFakeProofBtn'), lo: vis('discLo0') }; });
+    assert.deepEqual(st, { proofs: false, demo: false, disc: false, list: false, fake: false, lo: false }, j(st));
+    await page.click('#proofsFold > summary'); await page.click('#demoFold > summary');
+    // toggle 이벤트는 비동기라 클릭 직후 새로고침하면 저장 전일 수 있다 — 기억된 뒤에 새로고침한다
+    await page.waitForFunction(() => localStorage.getItem('mode3_proofs_open') === '1' && localStorage.getItem('mode3_demo_open') === '1', null, { timeout: 5_000 });
+    await page.reload(); await page.waitForSelector('#homeGuide:not([hidden])', { timeout: 15_000 });
+    await page.waitForFunction(() => document.getElementById('demoFakeProofBtn')?.checkVisibility() === true && document.querySelector('#proofsList .proof-view')?.checkVisibility() === true, null, { timeout: 15_000 })
+      .catch(async (e) => { const d = await page.evaluate(() => ({ proofs: document.getElementById('proofsFold')?.open, demo: document.getElementById('demoFold')?.open, ls: [localStorage.getItem('mode3_proofs_open'), localStorage.getItem('mode3_demo_open')], sum: document.querySelector('#proofsFold > summary')?.textContent, list: document.getElementById('proofsList')?.textContent.slice(0, 80) })); throw new Error(`${e.message} ${j(d)}`); });
+    await page.evaluate((ks) => { for (const k of ks) localStorage.removeItem(k); }, KEYS);
     await page.close();
   });
   // 홈의 "이 세션 끝내기(폐기)" — 이 탭이 Google 을 다녀와(패스키는 묻지 않는다) 그 세션 하나만 폐기를 요청한다. 옛 증명 시연의 root 바꾸기도 이 길로 한다:

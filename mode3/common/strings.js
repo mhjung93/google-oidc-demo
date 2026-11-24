@@ -560,7 +560,7 @@ window.DemoStrings = {
     wallet_gsi_hint: { ko: 'Google 버튼을 눌러 로그인하세요.', en: 'Press the Google button to sign in.' },
     wallet_gsi_origin: { ko: 'Google 로그인은 localhost 오리진에서만 됩니다(예: http://localhost:5100).', en: 'Google sign-in works only on a localhost origin (for example http://localhost:5100).' },
     wallet_snap_reset_btn: { ko: '스냅 초기화', en: 'Reset the Snap' },
-    wallet_end_session: { ko: '이 세션 끝내기(폐기)', en: 'End this session (revoke)' },
+    wallet_end_session: { ko: '이 세션 끝내기(폐기)', en: 'End this session (revoke)', ko_wr: '이 세션 끝내기', en_wr: 'End this session' },   // 2026-11-24: 래퍼 결과 문구에서 '폐기' 를 뺀 것과 맞춘다
     wallet_reg_yes: { ko: '등록됨', en: 'Registered' },
     wallet_reg_no: { ko: '미등록', en: 'Not registered' },
     wallet_cred_yes: { ko: '있음', en: 'held' },
@@ -587,6 +587,10 @@ window.DemoStrings = {
     wallet_session_service: { ko: '서비스', en: 'Service' },
     wallet_session_expiry: { ko: '만료', en: 'Expiry' },
     wallet_session_expires: { ko: '블록 {h}', en: 'block {h}' },
+    // 2026-11-24(화면 점검 3번, 래퍼 세션 카드): 만료를 지금 블록과 남은 블록으로. 블록이 max_height 를 넘으면 만료(PPIDWallet: block.number > max_height).
+    wallet_session_expires_left: { ko: '블록 {h}까지 · {n}블록 남음', en: 'until block {h} · {n} blocks left' },
+    wallet_session_expires_until: { ko: '블록 {h}까지', en: 'until block {h}' },
+    wallet_session_expired: { ko: '만료됨(블록 {h})', en: 'Expired (block {h})' },
     wallet_session_addr: { ko: '세션 주소', en: 'Session address' },
     wallet_session_issued: { ko: '발급 시각', en: 'Issued at' },
     wallet_session_factory: { ko: '팩토리', en: 'Factory' },
@@ -738,6 +742,8 @@ window.DemoStrings = {
     // user_pub_s_*·user_pub_idp_* 는 공개 입력의 뜻(회로 circuits/pi_cred.circom·pi_idp.circom 의 공개 신호 순서 — mode3/user/ui.js 의 표와 짝).
     user_proofs_title: { ko: '영지식 증명', en: 'Zero-knowledge proofs' },
     user_proofs_desc: { ko: '이 브라우저가 만든 증명입니다. 공개 입력을 보고, 브라우저에서 다시 검증하고, 값을 바꾸면 검증이 깨지는 것을 볼 수 있습니다. 기본은 서비스·체인에 낸 π_RP 만 보입니다.', en: 'Proofs made by this browser. Inspect the public inputs, verify again in the browser, and see verification break when a value is changed. By default only π_RP (sent to services and the chain) is listed.' },
+    user_proofs_fold: { ko: '증명 {n}개 보기', en: 'Show {n} proofs' },   // 2026-11-24(화면 점검 5번): 래퍼 홈에서 접어 둔 증명 표의 여닫이
+    wallet_demo_fold: { ko: '시연 버튼 보기', en: 'Show demo buttons' },
     user_proofs_none: { ko: '아직 만든 증명이 없습니다 — 서비스에 로그인하면 여기에 보입니다.', en: 'No proofs yet — log in at a service and they appear here.' },
     user_proofs_show_idp: { ko: 'zkIdP 에 낸 π_IdP 도 보기', en: 'Also show π_IdP (sent to zkIdP)' },
     user_proofs_hide_idp: { ko: 'π_RP 만 보기', en: 'Show π_RP only' },

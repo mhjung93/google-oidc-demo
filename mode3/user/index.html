@@ -22,6 +22,10 @@
     #homeGuide ol { margin: 4px 0 0 18px; padding: 0; }
     #homeGuide a { word-break: break-all; }
     @media (max-width: 640px) { #homeGuide .home-cols { grid-template-columns: 1fr; } }
+    /* 연결된 서비스(2026-11-24, 래퍼 방식): 세션마다 테두리 상자, 맨 위에 서비스 이름 */
+    .session-box { border:1px solid var(--line); border-radius:10px; padding:10px 14px; margin-top:10px }
+    .session-box .session-head { font-weight:600; margin-bottom:6px; overflow-wrap:anywhere }
+    .session-box .kv { font-size:13.5px }
     /* 금고 잠금 해제·비밀번호 창(이 페이지 전용 — demo.css 는 바꾸지 않는다). 승인 팝업에서도 같은 창을 쓴다. */
     .modal-backdrop { position:fixed; inset:0; z-index:20; background:rgba(29,36,51,.45); display:flex; align-items:center; justify-content:center; padding:16px }
     .modal-box { background:var(--card); border-radius:var(--radius); width:100%; max-width:380px; padding:18px 20px; box-shadow:0 16px 48px rgba(29,36,51,.3) }

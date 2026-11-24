@@ -93,7 +93,28 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     // 계정 자기 폐기는 비밀번호를 묻는다 — 래퍼 방식에는 비밀번호가 없다(최종 검토 I-1). 버튼 대신 안내를 둔다.
     const sr = document.getElementById('selfRevokeBtn');
     if (sr) { sr.hidden = true; const note = document.createElement('p'); note.className = 'muted wrap-revoke-note'; note.textContent = tt('user_wrap_self_revoke_note') || '계정 폐기는 zkWrapper 관리자에게 요청합니다.'; sr.after(note); }
+    // 2026-11-24(화면 점검 5번): 홈이 길다 — 영지식 증명 표·시연 버튼·공개할 속성 조건은 처음에 접어 두고, 편 상태만 이 브라우저에 기억한다(로그인 전체 플로우 카드와 같은 방식).
+    // 카드 제목·설명은 그대로 보이고, 설명 아래 내용만 <details> 로 옮긴다(id·이벤트는 그대로 따라간다).
+    const remember = (d, key) => {
+      try { d.open = localStorage.getItem(key) === '1'; } catch { d.open = false; }
+      d.addEventListener('toggle', () => { try { localStorage.setItem(key, d.open ? '1' : '0'); } catch { /* 기억하지 못할 뿐 */ } });
+    };
+    for (const [cardId, foldId, key, labelKey, fb] of [['proofsCard', 'proofsFold', 'mode3_proofs_open', 'user_proofs_fold', '증명 보기'], ['demoCard', 'demoFold', 'mode3_demo_open', 'wallet_demo_fold', '시연 버튼 보기']]) {
+      const desc = document.getElementById(cardId)?.querySelector('.desc');
+      if (!desc) continue;
+      const d = document.createElement('details'); d.id = foldId;
+      const sum = document.createElement('summary');
+      if (foldId === 'demoFold') sum.dataset.i18n = labelKey;
+      sum.textContent = tt(labelKey, { n: '0' }) || fb;
+      d.appendChild(sum);
+      while (desc.nextSibling) d.appendChild(desc.nextSibling);
+      desc.after(d);
+      remember(d, key);
+    }
+    const disc = document.getElementById('discloseBox');
+    if (disc) remember(disc, 'mode3_disclose_open');
   }
+  const WRAP = config.wrapper === true;
   const { withUnlock, ask: askUnlock } = createUnlocker({ core, Demo });
   // /wallet/config 대신 /user/config(같은 오리진). minAge·allowedCountries 는 없다 — claim 버튼이 기본값으로 대신한다(에이전트와 같다).
   const cfg = { ...config, secrets: config.secrets ?? 'web' };
@@ -330,6 +351,8 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
   function renderProofs() {
     const host = $('proofsList'); if (!host) return;
     const list = lastProofs.filter((x) => proofsShowIdp || x.kind === 'pi_cred');
+    const fs = document.querySelector('#proofsFold > summary');
+    if (fs) fs.textContent = tt('user_proofs_fold', { n: String(list.length) }) || fs.textContent;
     // 2초 새로고침마다 표를 다시 그리지 않는다(거래 목록과 같다) — 줄·거래 해시·언어·보기 범위가 바뀔 때만.
     const key = JSON.stringify([list.map((x) => [x.id, x.txHash ?? null]), proofsShowIdp, Demo.lang]);
     if (key === lastProofsKey) return;
@@ -367,7 +390,9 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     await loadProofs();
     const rec = lastProofs.find((x) => x.kind === 'pi_idp' && x.publicSignals.includes(String(auidS)));
     if (rec) { await openProof(rec.id); return; }
-    proofsShowIdp = true; renderProofs(); $('proofsCard').scrollIntoView();
+    proofsShowIdp = true; renderProofs();
+    const pf = $('proofsFold'); if (pf) pf.open = true;
+    $('proofsCard').scrollIntoView();
   }
   // 카드는 기본으로 접혀 있다 — 펴 둔 상태만 이 브라우저에 기억한다(저장소가 막혀 있으면 그냥 접힌 채로).
   { const d = $('flowDetails'); if (d) { try { d.open = localStorage.getItem('mode3_flow_open') === '1'; } catch { /* 그대로 */ } d.addEventListener('toggle', () => { try { localStorage.setItem('mode3_flow_open', d.open ? '1' : '0'); } catch { /* 기억하지 못할 뿐 */ } }); } }
@@ -522,11 +547,16 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       const box = document.createElement('div');
       const dl = document.createElement('dl');
       dl.className = 'kv';
-      kvRow(dl, tt('wallet_session_service') || 'RP', rpLabel(c));   // 2026-10-16: zkONE(8674…) 꼴
+      // 2026-11-24(화면 점검 3번): 래퍼 방식은 세션마다 테두리 상자에 서비스 이름을 제목으로 둔다 — "서비스" 줄은 제목과 겹쳐 뺀다.
+      if (WRAP) {
+        box.className = 'session-box';
+        const head = document.createElement('div'); head.className = 'session-head'; head.textContent = rpLabel(c);
+        box.appendChild(head);
+      } else kvRow(dl, tt('wallet_session_service') || 'RP', rpLabel(c));   // 2026-10-16: zkONE(8674…) 꼴
       // 2026-11-23(사용자 요청): PPID 숫자와 스마트 계정 주소를 따로 보인다 — 용어 사전의 'PPID' 이름표는 "PPID 스마트 계정 주소" 라 숫자에 붙이면 서비스 화면의 0x 주소와 달라 보였다.
       kvRow(dl, tt('wallet_session_ppid') || 'PPID', shortCode(c.PPID, 12));
       if (c.account) { const ac = shortCode(c.account); ac.textContent = `${c.account.slice(0, 6)}…${c.account.slice(-4)}`; kvRow(dl, termEl('PPID'), ac); }
-      kvRow(dl, tt('wallet_session_expiry') || '만료', tt('wallet_session_expires', { h: c.max_height }) || String(c.max_height));
+      kvRow(dl, tt('wallet_session_expiry') || '만료', WRAP ? expiryText(c.max_height, s?.head) : (tt('wallet_session_expires', { h: c.max_height }) || String(c.max_height)));
       const agent = document.createElement('span');
       agent.className = `badge ${c.allowAgent === '1' ? 'ok' : 'muted'}`;
       agent.textContent = tt(c.allowAgent === '1' ? 'rp_agent_yes' : 'rp_agent_no') || c.allowAgent;
@@ -544,6 +574,15 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       box.append(dl, btn);
       acts.appendChild(box);
     }
+  }
+  /** 래퍼 세션 카드의 만료 줄 — 블록이 max_height 를 넘으면 만료다(PPIDWallet: block.number > max_height). 지금 블록을 모르면 "블록 N까지" 만. */
+  function expiryText(maxHeight, head) {
+    const h = String(maxHeight);
+    let mh, cur;
+    try { mh = BigInt(maxHeight); cur = head == null ? null : BigInt(head); } catch { return tt('wallet_session_expires_until', { h }) || h; }
+    if (cur == null) return tt('wallet_session_expires_until', { h }) || h;
+    if (cur > mh) return tt('wallet_session_expired', { h }) || h;
+    return tt('wallet_session_expires_left', { h, n: String(mh - cur) }) || h;
   }
   /** 마지막 트랜잭션의 증명 시간(전문가 줄). */
   function renderProofInfo() {
