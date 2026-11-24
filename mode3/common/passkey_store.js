@@ -70,6 +70,9 @@
     precheck(rpId);
     const tr = pick(transports, TRANSPORTS);
     let a;
+    // 2026-11-24: 시간을 둘로 잰다 — 인증기 창(사람이 지문·PIN 으로 확인하는 동안의 대기)과 그 뒤 salt 계산(PRF 출력 → SHA-256)
+    const now = () => (typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now());
+    const tw = now();
     try {
       a = await navigator.credentials.get({ publicKey: {
         challenge: rand(32), rpId, userVerification: 'required',
@@ -81,7 +84,9 @@
     if (!a) fail('passkey_cancelled');
     const first = a.getClientExtensionResults?.()?.prf?.results?.first;
     if (!first) fail('passkey_prf_unsupported', '인증기가 PRF 값을 주지 않았다');
-    return { credentialId: b64url(a.rawId), s_u: await saltFromPrf(first), info: infoOf(a) };
+    const tc = now();
+    const s_u = await saltFromPrf(first);
+    return { credentialId: b64url(a.rawId), s_u, info: infoOf(a), timing: { waitMs: tc - tw, calcMs: now() - tc } };
   }
 
   /** 새 패스키를 만들고(PRF 켬) 바로 한 번 계산해 같은 값이 나오는지 본다 — 백업 확인의 자리(스펙 §4.2). */

@@ -881,6 +881,7 @@ window.DemoStrings = {
     user_flow_secret: { ko: '(비밀 — 어디에도 보내지 않습니다)', en: '(secret — never sent anywhere)' },
     user_flow_toggle: { ko: '단계 보기', en: 'Show the steps' },
     user_flow_proof_open: { ko: '증명 보기', en: 'View the proof' },
+    user_flow_passkey_split: { ko: '사용자 대기 {wait} · salt 계산 {calc}', en: 'user wait {wait} · salt calc {calc}' },   // 2026-11-24: 래퍼 홈 플로우 카드의 패스키 시간(인증기 창 대기 / PRF → salt 계산)
     user_flow_before: { ko: '로그인 전에(등록하면서) 확인했습니다 — 전체 시간에는 넣지 않습니다', en: 'confirmed before this login (while registering) — not counted in the total' },
     user_flow_last_before: { ko: '가장 최근 로그인: {service} · {time} · 전체 {total} (영지식 증명 {prove} · 재지 않은 나머지 {other}) · 패스키는 로그인 전에 확인({passkey})', en: 'Most recent login: {service} · {time} · total {total} (ZK proofs {prove} · untimed rest {other}) · passkey confirmed before the login ({passkey})' },
     user_flow_sent_idp: { ko: 'zkIdP 에 보낸 것 →', en: 'Sent to zkIdP →' },

@@ -422,9 +422,12 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
         { title: tt('user_flow_back_idp') || '← zkIdP 가 돌려준 것', items: [{ name: tt('user_flow_item_sig') || '자격증명', value: tt('user_flow_sig_value') || '서명' }, { name: tt('user_flow_item_token') || 'ID token', value: tt(v.hasIdToken ? 'user_flow_token_yes' : 'user_flow_token_no') || String(v.hasIdToken) }] },
       ],
     };
+    // 래퍼 방식(2026-11-24 사용자 요청): 패스키 시간을 사용자 대기(인증기 창)와 salt 계산으로 나눠 적는다 — 둘 다 잰 기록일 때만
+    const pkRec = ms.passkey ?? null;
+    const pkSplit = WRAP && pkRec && Number.isFinite(pkRec.waitMs) && Number.isFinite(pkRec.calcMs) ? (tt('user_flow_passkey_split', { wait: fmtMs(pkRec.waitMs), calc: fmtMs(pkRec.calcMs) }) || null) : null;
     const steps = FLOW_STEPS.filter(([k]) => PK || k !== 'passkey').map(([k, from, to, both]) => {
       const rec = ms[k] ?? null, timed = k !== 'request' && k !== 'respond';
-      const note = !f ? null : !timed ? (k === 'respond' ? tt('user_flow_no_time') : null) : !rec ? tt('user_flow_skipped') : (k === 'passkey' && rec.before) ? tt('user_flow_before') : null;
+      const note = !f ? null : !timed ? (k === 'respond' ? tt('user_flow_no_time') : null) : !rec ? tt('user_flow_skipped') : (k === 'passkey' && rec.before) ? tt('user_flow_before') : (k === 'passkey' && pkSplit) ? pkSplit : null;
       return { key: k, from, to, both: Boolean(both), title: tt(`user_flow_s_${k}_t`) || k, meaning: tt(`user_flow_s_${k}_m`), time: rec ? fmtMs(rec.ms) : null,
         share: rec && !rec.before && f.totalMs > 0 ? rec.ms / f.totalMs : 0, note: note || null, dim: Boolean(f && timed && !rec), items: f ? (ITEMS[k] ?? []).filter(Boolean) : [],
         groups: f ? (GROUPS[k] ?? []).map((g) => ({ title: g.title, items: g.items.filter(Boolean) })) : [] };
@@ -436,7 +439,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       { key: 'idp', name: tt('user_flow_lane_idp') || 'zkIdP', sub: tt('user_flow_lane_idp_sub') }], steps });
     const sum = $('flowSummary');
     sum.dataset.flowAt = f ? String(f.at) : '';
-    sum.textContent = f ? (tt(ms.passkey?.before ? 'user_flow_last_before' : 'user_flow_last', { service: svc, time: new Date(f.at).toLocaleTimeString(locale()), total: fmtMs(f.totalMs), prove: fmtMs((ms.prove_idp?.ms ?? 0) + (ms.prove_session?.ms ?? 0)), passkey: fmtMs(ms.passkey?.ms ?? 0),
+    sum.textContent = f ? (tt(ms.passkey?.before ? 'user_flow_last_before' : 'user_flow_last', { service: svc, time: new Date(f.at).toLocaleTimeString(locale()), total: fmtMs(f.totalMs), prove: fmtMs((ms.prove_idp?.ms ?? 0) + (ms.prove_session?.ms ?? 0)), passkey: pkSplit ?? fmtMs(ms.passkey?.ms ?? 0),
       other: fmtMs(Math.max(0, f.totalMs - (f.steps ?? []).reduce((a, x) => a + (x.before ? 0 : x.ms), 0))) }) || '')
       : (tt('user_flow_none') || '');
   }

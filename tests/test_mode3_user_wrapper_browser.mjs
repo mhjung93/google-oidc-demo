@@ -455,7 +455,24 @@ try {
     const seq = await page.$eval('#seqZk', (e) => e.textContent);
     assert.ok(seq.includes('Google'), seq.slice(0, 200)); assert.ok(!seq.includes('π_IdP'), 'π_IdP 가 남았다'); assert.ok(seq.includes('zkWrapper'), 'zkWrapper 가 없다');
     await page.click('#seqZk .st[data-step="3"]'); const det = await text(page, '#detailZk'); assert.ok(det.includes('Google') && !det.includes('π_IdP'), det);
+    // 2026-11-24(flow.html 점검): 펴서 보는 설명(①~⑥)에도 zkIdP 가 없다 · ③ 에 커밋먼트·가명 시간 · ④ 이름은 그림과 설명이 같다 · uid 는 줄여서(전체는 title)
+    // · ② 패스키는 사용자 대기(인증기 창)와 salt 계산을 나눠 보인다
+    const dets = [];
+    for (let k = 1; k <= 6; k++) { await page.click(`#seqZk .st[data-step="${k}"]`); dets.push(await text(page, '#detailZk')); }
+    assert.deepEqual(dets.filter((d) => /zk-?IdP/.test(d)), [], 'zkIdP 가 남은 설명');
+    assert.ok(dets[2].includes('커밋먼트 C_u · C_s 만들기') && dets[2].includes('가명 auid_s · arid_s 만들기'), dets[2]);
+    assert.ok(dets[1].includes('사용자 대기') && dets[1].includes('salt 계산'), dets[1]);
+    const lbl4 = await page.$eval('#seqZk .st[data-step="4"] .lbl', (e) => e.textContent.trim());
+    assert.ok(lbl4.startsWith('④ 세션 토큰') && dets[3].startsWith('④ 세션 토큰'), `${lbl4} / ${dets[3].slice(0, 40)}`);
+    const uid = await page.$eval('#zkUid', (e) => ({ t: e.textContent, title: e.title }));
+    assert.ok(uid.t.length < 30 && uid.title.length > 40, j(uid));
     await page.close();
+    // 홈의 "로그인 전체 플로우" 카드도 패스키를 사용자 대기·salt 계산으로 나눠 적는다
+    const home = await A.ctx.newPage(); await home.goto(`${wallet.base}/`); await home.waitForSelector('#mainView:not([hidden])');
+    await home.waitForFunction(() => (document.getElementById('flowSummary')?.textContent ?? '').includes('가장 최근'), null, { timeout: 15_000 });
+    const fl = await home.evaluate(() => ({ sum: document.getElementById('flowSummary').textContent, fig: document.getElementById('flowFigure').textContent }));
+    assert.ok(fl.sum.includes('사용자 대기') && fl.fig.includes('사용자 대기') && fl.fig.includes('salt 계산'), j({ sum: fl.sum, fig: fl.fig.slice(0, 300) }));
+    await home.close();
   });
 
   // ---- Task 5: zkWrapper 서버가 보는 것(스펙 §5) — 한 서버 배치에서만 ----

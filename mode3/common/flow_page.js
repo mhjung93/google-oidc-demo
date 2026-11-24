@@ -54,7 +54,7 @@
   const W = (s) => (WRAP && typeof s === 'string' ? s.replace(/zk-?IdP/g, 'zkWrapper') : s);
   const WRAP_STEPS = {
     2: { title: '② Google 계정 → 패스키 → salt', body: '서비스가 연 창이 Google 로 가서 계정을 고르고 돌아옵니다(본인 확인은 Google 이 합니다). 그다음 패스키가 내주는 값으로 salt 를 다시 만듭니다. 같은 패스키면 늘 같은 값이고 어디에도 저장하지 않습니다.', fine: ['google', 'passkey'] },
-    3: { title: '③ 가명 + Google 토큰', body: 'zkWrapper 에는 이번 로그인에만 쓰는 가명 둘(auid_s = 사용자, arid_s = 서비스)과 Google ID 토큰을 보냅니다. 토큰은 이 요청 하나에 묶여 있어(1회용 요청 키의 서명) 다른 요청에 쓸 수 없습니다. 가명이 제대로 만들어졌는지는 ⑤ 의 증명 π_RP 가 서비스에 증명합니다. arid_s 는 로그인마다 달라 zkWrapper 는 어느 서비스인지 알 수 없습니다.', fine: ['sync', 'session_key', 'issue'] },
+    3: { title: '③ 가명 + Google 토큰', body: 'zkWrapper 에는 이번 로그인에만 쓰는 가명 둘(auid_s = 사용자, arid_s = 서비스)과 Google ID 토큰을 보냅니다. 토큰은 이 요청 하나에 묶여 있어(1회용 요청 키의 서명) 다른 요청에 쓸 수 없습니다. 가명이 제대로 만들어졌는지는 ⑤ 의 증명 π_RP 가 서비스에 증명합니다. arid_s 는 로그인마다 달라 zkWrapper 는 어느 서비스인지 알 수 없습니다.', fine: ['sync', 'session_key', 'commit', 'pseudonym', 'issue'] },   // 2026-11-24: 코어가 재는 커밋먼트·가명 시간도 보인다
     4: { title: '④ 세션 토큰(서명한 자격증명)', body: 'zkWrapper 가 Google 토큰과 요청 서명을 확인하고 가명에 서명해 돌려줍니다. 서명한 것에는 서비스 이름이 없습니다. 처음 로그인이면 등록부를 체인에 게시합니다.', fine: ['publish_wait'] },
   };
   async function detectWrapper() {
@@ -62,6 +62,10 @@
     if (!WRAP) return;
     for (const [n, st] of Object.entries(WRAP_STEPS)) STEPS.zk[Number(n) - 1] = st;
     FINE.issue = '가명 · 커밋먼트 + Google 토큰으로 발급 요청 → zkWrapper 의 서명'; FINE.google = 'Google 에서 계정 고르기 (다녀온 시간)';
+    FINE.commit = '커밋먼트 C_u · C_s 만들기'; FINE.pseudonym = '가명 auid_s · arid_s 만들기';
+    FINE.passkey_wait = '패스키 확인 — 사용자 대기 (인증기 창 · 지문 · PIN)'; FINE.passkey_calc = 'salt 계산 (PRF 출력 → SHA-256)';
+    // ④ 화살표 이름을 펼친 설명의 제목과 맞춘다(2026-11-24)
+    const lbl4 = document.querySelector('#seqZk .st[data-step="4"] .lbl'); if (lbl4?.firstChild) lbl4.firstChild.textContent = '④ 세션 토큰(서명한 자격증명) ';
     const pi = $('zkProofIdp'); if (pi) pi.textContent = 'Google 토큰';
     const lbl2 = document.querySelector('#seqZk .st[data-step="2"] .lbl'); if (lbl2?.firstChild) lbl2.firstChild.textContent = '② Google 계정 · 패스키 → salt ';
     // 화면의 나머지 글자(제목·열 이름·"알게 되는 것"·발주)에서 zkIdP 를 zkWrapper 로
@@ -79,7 +83,8 @@
     set('zkAridS', v?.arid_s ? `arid_s ${head(v.arid_s)}` : 'arid_s', v?.arid_s ?? null);
     set('zkPpid', v?.PPID ? head(v.PPID) : '', v?.PPID ?? null);
     for (const id of ['zkSvcName', 'oidcSvcName']) $(id).textContent = flow?.serviceName ? `서비스 ${flow.serviceName}` : '서비스';   // 윗줄도 같은 서비스 이름으로(같은 서비스에 두 방식으로 로그인하는 그림이다)
-    $('zkUid').textContent = v?.uid ? ` = ${v.uid}` : '';
+    // 래퍼 방식의 uid 는 해시라 길다(2026-11-24) — 다른 값처럼 앞부분만, 전체는 title
+    const zu = $('zkUid'); zu.textContent = v?.uid ? ` = ${WRAP ? head(v.uid) : v.uid}` : ''; if (WRAP) zu.title = v?.uid ?? '';
     const r = $('recent');
     if (!flow) { r.textContent = WRAP ? '아직 이 브라우저에서 "zk 로그인" 을 한 적이 없습니다 — 그림에는 값의 이름만 보입니다. 서비스에서 로그인하면 실제 값이 채워집니다.' : '아직 이 브라우저에서 "zkIdP 로 로그인" 을 한 적이 없습니다 — 그림에는 값의 이름만 보입니다. 서비스에서 로그인하면 실제 값이 채워집니다.'; return; }
     const at = new Date(flow.at);
@@ -99,14 +104,17 @@
     const d = $(detailOf[kind]);
     if (st.open === null) { d.hidden = true; d.replaceChildren(); return; }
     const s = STEPS[kind][st.open - 1];
-    const h = document.createElement('h4'); h.textContent = s.title;
-    const p = document.createElement('p'); p.textContent = s.body;
+    // 펼친 설명도 래퍼 방식이면 zkIdP 를 zkWrapper 로(2026-11-24 — 전에는 처음 그린 글자만 바꿨다)
+    const h = document.createElement('h4'); h.textContent = W(s.title);
+    const p = document.createElement('p'); p.textContent = W(s.body);
     d.replaceChildren(h, p);
     if (kind === 'zk' && s.fine) {
-      const rows = s.fine.map((key) => [key, (flow?.steps ?? []).find((x) => x.key === key) ?? null]).filter(([key, rec]) => rec || !flow || key !== 'publish_wait');
+      let rows = s.fine.map((key) => [key, (flow?.steps ?? []).find((x) => x.key === key) ?? null]).filter(([key, rec]) => rec || !flow || key !== 'publish_wait');
+      // 래퍼 방식(2026-11-24 사용자 요청): 패스키 시간을 사용자 대기(인증기 창)와 salt 계산으로 나눠 적는다 — 둘 다 잰 기록일 때만
+      if (WRAP) rows = rows.flatMap(([key, rec]) => (key === 'passkey' && rec && Number.isFinite(rec.waitMs) && Number.isFinite(rec.calcMs) ? [['passkey_wait', { ms: rec.waitMs }], ['passkey_calc', { ms: rec.calcMs }]] : [[key, rec]]));
       if (rows.length) {
         const tb = document.createElement('table');
-        for (const [key, rec] of rows) { const tr = document.createElement('tr'); const a = document.createElement('td'); a.textContent = FINE[key] ?? key; const b = document.createElement('td'); b.className = 'ms'; b.textContent = rec ? fmtMs(Number(rec.ms)) : flow ? '이번에는 없음' : '-'; tr.append(a, b); tb.append(tr); }
+        for (const [key, rec] of rows) { const tr = document.createElement('tr'); const a = document.createElement('td'); a.textContent = W(FINE[key] ?? key); const b = document.createElement('td'); b.className = 'ms'; b.textContent = rec ? fmtMs(Number(rec.ms)) : flow ? '이번에는 없음' : '-'; tr.append(a, b); tb.append(tr); }
         d.append(tb);
         if (!flow) { const n = document.createElement('p'); n.style.color = '#5b6880'; n.textContent = '걸린 시간은 이 브라우저에서 로그인한 뒤에 채워집니다.'; d.append(n); }
       }

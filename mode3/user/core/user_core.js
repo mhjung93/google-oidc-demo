@@ -146,7 +146,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     // 연결할 때 둔 transports·힌트를 그대로 싣는다(휴대폰 패스키면 브라우저가 곧장 휴대폰으로 간다 — 스펙 2026-11-19 P2)
     const td = tick();
     const d = await passkey.derive({ credentialId: pk.credentialId, ...(pk.info?.transports?.length ? { transports: pk.info.transports } : {}), ...(pk.info?.hint ? { hints: [pk.info.hint] } : {}) });
-    scopeDerive = { ms: tick() - td, t0: td };
+    scopeDerive = { ms: tick() - td, t0: td, timing: d?.timing ?? null };
     if (d?.credentialId !== pk.credentialId) throw tag('passkey_mismatch');
     if (!isSalt(d.s_u)) throw tag('passkey_bad_salt');
     const reg = await getReg();
@@ -797,7 +797,10 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       const src = await source();
       // 패스키 단계: 이 범위에서 패스키로 얻었으면 그 시간(사람이 누르는 시간 포함), 금고에서 읽었으면(web 모드) held — passkey-web 은 늘 패스키에서 얻는다(held 아님)
       // before(리뷰 2026-11-19 I-1): 같은 승인 창에서 로그인 함수에 들어오기 전(등록하면서)에 패스키를 물었다 — 그 시간은 totalMs(로그인 시작부터) 밖이라 화면이 합계에서 뺀다.
-      flowStep('passkey', scopeDerive ? scopeDerive.ms : tick() - tsrc, { held: !scopeDerive, ...(scopeDerive && flowRec && scopeDerive.t0 < flowRec.t0 ? { before: true } : {}) });
+      // 2026-11-24: 패스키가 시간을 둘로 재 줬으면(인증기 창의 사용자 대기 · salt 계산) 함께 남긴다 — 화면이 나눠 보인다
+      const pkT = scopeDerive?.timing;
+      const pkSplit = pkT && Number.isFinite(pkT.waitMs) && Number.isFinite(pkT.calcMs) ? { waitMs: Math.round(pkT.waitMs * 1000) / 1000, calcMs: Math.round(pkT.calcMs * 1000) / 1000 } : {};
+      flowStep('passkey', scopeDerive ? scopeDerive.ms : tick() - tsrc, { held: !scopeDerive, ...pkSplit, ...(scopeDerive && flowRec && scopeDerive.t0 < flowRec.t0 ? { before: true } : {}) });
       if (src === null) return R(409, { reason: 'not_registered' });
       if (src === 'locked') return LOCKED();
       // V9: 옛 등록(슬롯 없음)은 IdP 의 /cia/slot 으로 되찾는다.
