@@ -266,7 +266,9 @@ try {
     const tampered = (await wrapIssue(kim, S1, { key: k, token: T, envelope: D, mutate: (b) => { b.envelope = { ...D, ct: b64(60) }; } })).r;
     assert.equal(tampered.status, 400, j(tampered.body)); assert.equal(tampered.body.reason, 'wrapper_bad_signature');
     for (const bad of [mkEnv('passkey'), { ...D, ct: 'a|b' }, { ...D, credentialId: null }, 'x']) {
-      const r = (await wrapIssue(kim, S1, { key: k, token: T, envelope: bad, sign: false })).r;   // 모양은 서명보다 먼저 본다 assert.equal(r.status, 400, j(r.body)); assert.equal(r.body.reason, 'envelope_bad', JSON.stringify(bad));
+      // 서명 없이 보낸다 — 모양 검사가 서명보다 먼저라 wrapper_bad_signature 가 아니라 envelope_bad 여야 한다
+      const r = (await wrapIssue(kim, S1, { key: k, token: T, envelope: bad, sign: false })).r;
+      assert.equal(r.status, 400, j(r.body)); assert.equal(r.body.reason, 'envelope_bad', JSON.stringify(bad));
     }
     const ok = (await wrapIssue(kim, S1, { key: k, token: T, envelope: D })).r;   // 봉투를 열어 salt 를 되찾은 뒤 — 같은 토큰(아직 쓰지 않았다)
     assert.equal(ok.status, 200, j(ok.body));
