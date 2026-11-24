@@ -36,7 +36,9 @@ const SPLIT = process.env.MODE3_TEST_SPLIT === '1';
 const KIND = 'zkwrapper';   // 서비스가 아는 지갑 종류 — 데모 스크립트처럼 래퍼 방식이면 배치와 관계없이 zkwrapper(서비스 페이지가 지갑 서버를 부르지 않는다)
 const stack = await startIsolatedMode3Stack({ userMode: SPLIT ? 'web' : 'zkwrapper', walletHost: 'localhost', wrapper: true, autoRelay: true,
   walletEnv: { MODE3_WALLET_SECRETS: 'passkey-web', MODE3_WRAPPER: '1', MODE3_WRAPPER_CLIENT_ID: 'mode3-test-client' }, rpEnv: { MODE3_WALLET_KIND: KIND, MODE3_RELAY_DEMO_REVERT: '1' },
-  ciaEnv: { MODE3_WALLET_KIND: 'passkey-web', MODE3_OIDC_REDIRECT_URI: '{walletOrigin}/google-relay' },
+  // CIA_CRED_CHANGE_MIN_MS=0(salt 봉투 Task 5): 복구한 새 브라우저의 첫 발급은 사용자 자격증명(C_u) 교체다 — 기본 10분 간격이면 앞 사례(zkTWO 속성 교체) 바로 뒤의 복구가 cred_change_too_soon 으로 막힌다.
+  // 그 간격 자체는 tests/test_cia_wrapper*.mjs 가 본다. 이 파일의 다른 사례는 두 번째 교체를 하지 않는다.
+  ciaEnv: { MODE3_WALLET_KIND: 'passkey-web', MODE3_OIDC_REDIRECT_URI: '{walletOrigin}/google-relay', CIA_CRED_CHANGE_MIN_MS: '0' },
   extraRps: [{ name: 'zkTWO', env: { MODE3_WALLET_KIND: KIND, MODE3_ALLOWED_COUNTRIES: 'KR,JP', MODE3_REQUIRE_DISCLOSURE: '1' } }] });
 const { cia, wallet, rp } = stack;
 const rp2 = stack.rps[1], google = stack.oidc;
@@ -56,11 +58,11 @@ const trackNav = (popup) => {
   return visited;
 };
 const went = (visited, base) => visited.some((u) => u.startsWith(base));
-async function newBrowserWith(secretHex) {
+async function newBrowserWith(secretHex, extraSecrets = []) {
   const hits = { create: 0, get: 0 };
   const ctx = await browser.newContext();
   await ctx.exposeFunction('__webauthnHit', (k) => { hits[k] = (hits[k] ?? 0) + 1; });
-  await ctx.addInitScript({ content: buildWebAuthnStub({ secretHex }) });
+  await ctx.addInitScript({ content: buildWebAuthnStub({ secretHex, extraSecrets }) });
   const dialogs = [];   // 확인 창 문구(2026-11-23: 세션 끝내기 확인 창이 서비스 이름을 말하는지 본다)
   ctx.on('dialog', (d) => { dialogs.push(d.message()); d.accept(); });
   // 이 브라우저에서 나간 모든 요청 — 어느 페이지가(pageOrigin) 어디로(url) 무엇을(body·referer·origin) 보냈는지. Task 5 의 "서버가 무엇을 보는가" 사례가 본다.
@@ -577,6 +579,133 @@ try {
       await page2.close();
     });
   }
+  // ---- salt 봉투(계획 2026-11-24 salt-envelope Task 5): /user 의 백업 카드 → 패스키₁ 이 없는 새 브라우저가 백업으로 같은 계정(같은 PPID)을 되찾는다 ----
+  // 새 브라우저들도 Google 계정 A 로 로그인한다 — 계정이 새로 생기지 않는다(뒤 사례는 계정이 A 하나뿐이라고 본다). 기기 봉투는 마지막 사례의 관리자 삭제가 계정과 함께 지운다.
+  const SECRET_BK = 'b8'.repeat(32);   // 백업 패스키(다른 인증기) — A 의 브라우저에서 만들고, 복구하는 브라우저에도 꽂혀 있다(보안 키처럼)
+  const WO_ = new URL(wallet.base).origin;
+  const toUserPage = (page) => page.waitForURL((u) => u.origin === WO_ && u.pathname === '/user' && !u.search.includes('authorize'), { timeout: 60_000 });
+  const backupCount = (page) => page.$$eval('#backupList li', (l) => l.length);
+  const storesOf = async (page) => j(await idbDump(page)) + j(await page.evaluate(() => [Object.entries(sessionStorage), Object.entries(localStorage)]));
+  const asA = () => { google.setNextSub('google-user-A'); google.setNextClaims({ email: 'jihoo@example.com', email_verified: true }); };
+  let recoveryCode = null;
+  await t('/user 백업 카드: 백업 패스키 더하기 → Google → ① 지금 패스키 ② 백업 패스키 만들기(같은 인증기면 거절하고 그 자리에서 다시) → 목록 1', async () => {
+    await A.ctx.addInitScript({ content: buildWebAuthnStub({ secretHex: SECRET_A, extraSecrets: [SECRET_BK] }) });   // 이제부터 A 의 페이지에는 인증기가 둘(0번 = 패스키₁)
+    const page = await openUser(await A.ctx.newPage());
+    await page.waitForSelector('#backupCard', { state: 'visible', timeout: 15_000 });
+    assert.equal(await backupCount(page), 0);
+    { const d = await text(page, '#backupCard'); for (const w of ['다른 기기', '보안 키', '동기화', '안전한 곳', '끊기지 않습니다']) assert.ok(d.includes(w), `안내에 "${w}" 가 없다: ${d.slice(0, 300)}`); }
+    asA(); const h0 = { ...A.hits };
+    await page.click('#backupPasskeyBtn');
+    await page.waitForSelector('#authBackupConfirmBtn', { timeout: 60_000 });
+    assert.ok(A.dialogs.at(-1)?.includes('보안 키'), `확인 창: ${A.dialogs.at(-1)}`);
+    assert.ok(!page.url().includes('id_token'), '토큰이 주소창에 남았다');
+    assert.equal(A.hits.get - h0.get, 0, 'Google 에서 돌아오자마자 패스키를 물었다(클릭 한 번에 한 번)');
+    await page.click('#authBackupConfirmBtn');
+    await page.waitForSelector('#authBackupCreateBtn', { timeout: 30_000 });
+    assert.equal(A.hits.get - h0.get, 1, j(A.hits)); assert.equal(A.hits.create - h0.create, 0, '① 에서 패스키를 만들었다');
+    // 같은 인증기(패스키₁)에 만들려 하면 excludeCredentials 로 거절된다 — 요청 키가 남아 같은 화면에서 다시 만든다
+    await page.evaluate(() => { window.__webauthnCreateIndex = 0; });
+    await page.click('#authBackupCreateBtn');
+    await waitText(page, '#authStatus', '이미 패스키가 있습니다', 30_000);
+    await page.evaluate(() => { window.__webauthnCreateIndex = 1; });
+    await page.click('#authBackupCreateBtn');
+    await toUserPage(page);
+    await waitText(page, '#backupVerdict', '백업을 더했습니다', 30_000);
+    await page.waitForFunction(() => document.querySelectorAll('#backupList li').length === 1, null, { timeout: 15_000 });
+    assert.ok((await text(page, '#backupList')).includes('백업 패스키'), await text(page, '#backupList'));
+    assert.equal(A.hits.create - h0.create, 2, `거절된 만들기 1 + 만든 것 1: ${j(A.hits)}`);
+    assert.ok(!(await storesOf(page)).includes(SALT_A), 'salt 가 저장소에 있다');
+    await page.close();
+  });
+  await t('복구 코드 만들기: Google 을 다녀온 귀로 화면에서 코드를 보이고 다시 입력받는다(다르면 저장하지 않는다) → 목록 2 — 저장소·화면에 코드·salt 가 남지 않는다', async () => {
+    const page = await openUser(await A.ctx.newPage());
+    await page.waitForFunction(() => document.querySelectorAll('#backupList li').length === 1, null, { timeout: 15_000 });
+    asA();
+    await page.click('#backupCodeBtn');
+    await page.waitForSelector('#authBackupCode', { timeout: 60_000 });
+    const code = (await text(page, '#authBackupCode')).trim();
+    assert.match(code, /^([0-9A-HJKMNP-TV-Z]{4}-){6}[0-9A-HJKMNP-TV-Z]{3}$/, code);
+    { const st = await storesOf(page); assert.ok(!st.includes(code) && !st.includes(code.replace(/-/g, '')), '코드가 저장소에 있다'); }
+    const g0 = A.hits.get;
+    await page.click('#authBackupCodeWrittenBtn');
+    await page.waitForSelector('#authBackupCodeInput', { timeout: 10_000 });
+    assert.ok(!(await visibleText(page)).includes(code), '다시 입력받는 동안 코드가 화면에 보인다');
+    // 다르게 넣으면 저장하지 않는다(패스키도 묻지 않는다)
+    const other = (code[0] === '0' ? '1' : '0') + code.slice(1);
+    await page.fill('#authBackupCodeInput', other); await page.click('#authBackupCodeSaveBtn');
+    await waitText(page, '#authStatus', '다릅니다', 10_000);
+    assert.equal(A.hits.get, g0, '다른 코드인데 패스키를 물었다');
+    await page.fill('#authBackupCodeInput', code.toLowerCase().replace(/-/g, ' ')); await page.click('#authBackupCodeSaveBtn');
+    await toUserPage(page);
+    await waitText(page, '#backupVerdict', '백업을 더했습니다', 30_000);
+    await page.waitForFunction(() => document.querySelectorAll('#backupList li').length === 2, null, { timeout: 15_000 });
+    assert.ok((await text(page, '#backupList')).includes('복구 코드'));
+    assert.equal(A.hits.get - g0, 1, `저장할 때 패스키 한 번: ${j(A.hits)}`);
+    const st = await storesOf(page);
+    assert.ok(!st.includes(code) && !st.includes(code.replace(/-/g, '')) && !st.includes(code.replace(/-/g, '').toLowerCase()), '코드가 저장소에 있다');
+    assert.ok(!st.includes(SALT_A), 'salt 가 저장소에 있다');
+    assert.ok(!(await page.evaluate(() => document.documentElement.outerHTML)).includes(code.replace(/-/g, '').slice(0, 12)), '코드가 화면(DOM)에 남았다');
+    recoveryCode = code;
+    await page.close();
+  });
+  await t('패스키₁ 이 없는 새 브라우저(다른 패스키 + 백업 패스키): "zkWrapper 로 로그인" → 패스키 만들기 → 복구 화면 → "백업 패스키로 복구" → 로그인 성공, PPID 가 A 와 같다 — create 1 + get 2', async () => {
+    const R1 = await newBrowserWith('d4'.repeat(32), [SECRET_BK]);
+    try {
+      asA();
+      const { rpPage, popup } = await startLogin(R1.ctx, rp);
+      await popup.waitForSelector('#authWrapPasskeyBtn', { timeout: 30_000 }); await popup.click('#authWrapPasskeyBtn');
+      await popup.waitForSelector('#authRecoverList button', { timeout: 120_000 });
+      const btns = await popup.$$eval('#authRecoverList button', (bs) => bs.map((b) => `${b.dataset.kind}:${b.textContent.trim()}`));
+      assert.ok(btns.some((b) => b.startsWith('passkey:') && b.includes('백업 패스키')) && btns.some((b) => b.startsWith('code:') && b.includes('복구 코드')), j(btns));
+      assert.ok(!(await text(rpPage, '#verdict')).includes('로그인 성공'));
+      assert.equal(R1.hits.get, 1, `복구 화면 전에는 만들기의 확인 한 번뿐: ${j(R1.hits)}`);
+      await popup.click('#authRecoverList button[data-kind="passkey"]');
+      await waitText(rpPage, '#verdict', '로그인 성공', 120_000);
+      assert.equal(R1.hits.create, 1, j(R1.hits)); assert.equal(R1.hits.get, 2, j(R1.hits));
+      const p = await R1.ctx.newPage(); await p.goto(`${wallet.base}/`); await p.waitForSelector('#mainView:not([hidden])');
+      const d = await idbDump(p);
+      assert.deepEqual(ppidOf(d, info1.arid), [ppid1], 'PPID 가 A 와 다르다'); assert.equal(d.passkey.via, 'envelope');
+      assert.ok(!j(d).includes(SALT_A), 'salt 가 저장소에 있다');
+      await p.close(); await rpPage.close();
+    } finally { await R1.ctx.close(); }
+  });
+  await t('새 브라우저에서 복구 코드로: 한 글자 틀리면 "한 글자가 틀렸습니다"(그 자리에서 다시), 고치면 로그인 성공·같은 PPID — create 1 + get 1', async () => {
+    assert.ok(recoveryCode, '앞 사례의 코드가 없다');
+    const R2 = await newBrowserWith('e5'.repeat(32));
+    try {
+      asA();
+      const { rpPage, popup } = await startLogin(R2.ctx, rp);
+      await popup.waitForSelector('#authWrapPasskeyBtn', { timeout: 30_000 }); await popup.click('#authWrapPasskeyBtn');
+      await popup.waitForSelector('#authRecoverList button[data-kind="code"]', { timeout: 120_000 });
+      await popup.click('#authRecoverList button[data-kind="code"]');
+      await popup.waitForSelector('#authRecoverCode', { state: 'visible', timeout: 10_000 });
+      const typo = (recoveryCode[0] === '0' ? '1' : '0') + recoveryCode.slice(1);
+      await popup.fill('#authRecoverCode', typo); await popup.click('#authRecoverCodeBtn');
+      await waitText(popup, '#authStatus', '한 글자가 틀렸습니다', 30_000);
+      assert.ok(!(await text(rpPage, '#verdict')).includes('로그인 성공'));
+      await popup.fill('#authRecoverCode', recoveryCode); await popup.click('#authRecoverCodeBtn');
+      await waitText(rpPage, '#verdict', '로그인 성공', 120_000);
+      assert.equal(R2.hits.create, 1, j(R2.hits)); assert.equal(R2.hits.get, 1, j(R2.hits));
+      const p = await R2.ctx.newPage(); await p.goto(`${wallet.base}/`); await p.waitForSelector('#mainView:not([hidden])');
+      const d = await idbDump(p);
+      assert.deepEqual(ppidOf(d, info1.arid), [ppid1], 'PPID 가 A 와 다르다');
+      const st = j(d); assert.ok(!st.includes(SALT_A) && !st.includes(recoveryCode.replace(/-/g, '')), '저장소에 salt·코드가 있다');
+      await p.close(); await rpPage.close();
+    } finally { await R2.ctx.close(); }
+  });
+  await t('백업 지우기: "지우기" → Google → 목록 1 — 패스키는 묻지 않고, 확인 창이 "이미 복구한 기기는 끊기지 않습니다" 를 말한다', async () => {
+    const page = await openUser(await A.ctx.newPage());
+    await page.waitForFunction(() => document.querySelectorAll('#backupList li').length === 2, null, { timeout: 15_000 });
+    asA(); const g0 = A.hits.get;
+    await page.click('#backupList li[data-kind="code"] button');
+    await toUserPage(page);
+    assert.ok(A.dialogs.at(-1)?.includes('끊기지 않습니다'), `확인 창: ${A.dialogs.at(-1)}`);
+    await waitText(page, '#backupVerdict', '백업을 지웠습니다', 30_000);
+    await page.waitForFunction(() => document.querySelectorAll('#backupList li').length === 1, null, { timeout: 15_000 });
+    assert.ok(!(await text(page, '#backupList')).includes('복구 코드'));
+    assert.equal(A.hits.get - g0, 0, `패스키를 물었다: ${j(A.hits)}`);
+    await page.close();
+  });
   // 2026-11-21(셀프 피드백 — 테스트 구멍): 폐기된 계정도 패스키를 쥔다(R11). 래퍼 화면의 안내는 "관리자가 삭제해야 한다" 까지만 말한다 — 삭제 뒤 실제로 같은 패스키로 돌아오는지 본다.
   // 2026-11-24(스펙 home-and-account-recovery 2부): 계정 자기 폐기 — /user 의 "내 계정 폐기" → Google(같은 계정만) → 폐기. 패스키는 묻지 않는다(A2).
   await t('/user 의 "내 계정 폐기": 다른 Google 계정으로 돌아오면 서버로 보내지 않고, 같은 계정이면 폐기된다 — 패스키는 묻지 않고, 그 뒤 로그인은 폐기된 계정으로 거절된다', async () => {

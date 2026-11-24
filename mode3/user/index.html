@@ -31,6 +31,8 @@
     .session-box { border:1px solid var(--line); border-radius:10px; padding:10px 14px; margin-top:10px }
     .session-box .session-head { font-weight:600; margin-bottom:6px; overflow-wrap:anywhere }
     .session-box .kv { font-size:13.5px }
+    /* 백업 카드(salt 봉투, 2026-11-24 — 래퍼 방식의 /user): 종류 · 만든 시각 · 지우기 */
+    #backupList { list-style:none; margin:8px 0; padding:0 } #backupList li { padding:6px 0; border-top:1px solid var(--line) } #backupList li:first-child { border-top:0 }
     /* 금고 잠금 해제·비밀번호 창(이 페이지 전용 — demo.css 는 바꾸지 않는다). 승인 팝업에서도 같은 창을 쓴다. */
     .modal-backdrop { position:fixed; inset:0; z-index:20; background:rgba(29,36,51,.45); display:flex; align-items:center; justify-content:center; padding:16px }
     .modal-box { background:var(--card); border-radius:var(--radius); width:100%; max-width:380px; padding:18px 20px; box-shadow:0 16px 48px rgba(29,36,51,.3) }
@@ -291,6 +293,18 @@
       </div>
       <p id="zkProgress" class="muted"></p>
       <div id="storageVerdict"></div>
+    </section>
+
+    <!-- 백업(salt 봉투, 2026-11-24 계획 Task 5): 래퍼 방식이고 등록돼 있을 때만 ui.js 가 보인다. 패스키를 잃어도 같은 계정 주소로 돌아오게 하는 백업 패스키·복구 코드.
+         같은 salt 를 백업의 열쇠로 잠근 암호문만 zkWrapper 서버에 둔다 — salt·복구 코드는 서버로 가지 않는다. 더하기·지우기는 Google 확인을 한 번 거친다. -->
+    <section class="card" id="backupCard" hidden>
+      <h3 data-i18n="user_backup_title">백업</h3>
+      <p class="desc" data-i18n="user_backup_desc">패스키를 잃어도 같은 계정 주소로 돌아오도록 백업을 둡니다. 백업 패스키는 지금 패스키와 다른 기기·보안 키에 만드세요(동기화되는 패스키를 권장합니다). 백업은 안전한 곳에 두세요 — 백업과 Google 계정이 함께 있으면 이 계정을 되찾을 수 있습니다. 백업을 지워도 이미 그 백업으로 복구한 기기는 끊기지 않습니다.</p>
+      <ul id="backupList"></ul>
+      <p id="backupEmpty" class="muted" data-i18n="user_backup_empty" hidden>아직 백업이 없습니다.</p>
+      <p><button id="backupPasskeyBtn" type="button" data-i18n="user_backup_passkey_btn">백업 패스키 더하기</button> <button id="backupCodeBtn" type="button" class="btn-ghost" data-i18n="user_backup_code_btn">복구 코드 만들기</button></p>
+      <p id="backupLimitNote" class="muted" data-i18n="user_backup_limit_note" hidden>백업은 계정당 5개까지입니다 — 더하려면 하나를 지우세요.</p>
+      <div id="backupVerdict"></div>
     </section>
   </main>
 

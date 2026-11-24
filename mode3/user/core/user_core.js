@@ -1444,6 +1444,13 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       if (typeof id !== 'string' || !/^[0-9a-f]{32}$/.test(id)) return R(400, { reason: 'envelope_bad' });
       return envelopeCall(idToken, async () => ({ op: 'remove', id }));
     },
+    /** salt 봉투 — 이 브라우저가 아는 목록(Task 5 의 /user 백업 카드가 읽는다): 더하기·지우기·복구 응답으로 바뀐 kv envelopes 그대로(id·kind·credentialId·createdAt — 암호문 없음).
+     *  다른 기기에서 바꾼 것은 이 브라우저가 다음에 더하거나 지울 때 응답으로 맞춰진다(목록만 묻는 서버 경로는 없다). */
+    async wrapperEnvelopes() {
+      if (!WRAP) return R(409, { reason: 'not_wrapper_mode' });
+      const list = (await kv.get('envelopes')) ?? [];
+      return R(200, { envelopes: list.map(({ id, kind, credentialId, createdAt }) => ({ id, kind, credentialId: credentialId ?? null, createdAt: createdAt ?? null })) });
+    },
     /** 에이전트 POST /wallet/self_revoke 의 등가 — IdP /cia/account/self_revoke 를 직접 부른다(cia.js CORS, Task 6). 비밀번호는 넘길 뿐
      *  어디에도 남기지 않는다. 이 지갑이 들고 있는 계정만 — 임의 uid·pwd 를 IdP 에 던져 보는 통로가 되지 않게. */
     async selfRevoke({ uid, pwd } = {}) {

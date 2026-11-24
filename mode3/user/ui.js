@@ -3,7 +3,7 @@
 // MetaMask·Snap 코드는 없다. 비밀(s_u·blind_u·세션 개인키·금고 비밀번호·secrets 암호문)은 DOM·localStorage·로그·postMessage 에
 // 넣지 않는다 — 코어 응답은 에이전트와 같은 모양이라 비밀이 실리지 않고, safeDetail 이 한 번 더 거른다. 비밀번호 입력칸은 읽자마자 비운다.
 import { ZK_CACHE_NAME } from '../../lib/browser/zk_assets.js';
-import { RECOVER_RESULT_KEY, WRAP_END_RESULT_KEY, WRAP_ACCOUNT_RESULT_KEY, idpAuthUrl, savePending, googleAuthUrl, saveWrapperPending } from './idp_return.js';
+import { RECOVER_RESULT_KEY, WRAP_END_RESULT_KEY, WRAP_ACCOUNT_RESULT_KEY, WRAP_BACKUP_RESULT_KEY, idpAuthUrl, savePending, googleAuthUrl, saveWrapperPending } from './idp_return.js';
 export const $ = (id) => document.getElementById(id);
 
 /** 사전 도우미(wallet.html 의 tte·tt·setVerdict·pendingVerdict 와 같다). */
@@ -712,6 +712,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       statusError = e.message;
     }
     if (PK) { try { const r = await core.passkeyState(); pkState = r.status === 200 ? r.body : null; } catch { pkState = null; } }
+    if (WRAP) { try { const r = await core.wrapperEnvelopes(); lastEnvelopes = r.status === 200 ? r.body.envelopes : null; } catch { lastEnvelopes = null; } }
     await loadProofs(); syncOpenProof();
     await loadFlow(); renderFlow();
     renderIdentity();
@@ -719,6 +720,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     renderTxs();
     renderProofs();
     renderPasskey();
+    renderBackups();
     renderGuide();
     await renderVault();
     await postPresence(core);
@@ -726,7 +728,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
   // 언어·전문가 전환은 사전이 채우는 요소와 결과 카드만 바꾼다(Demo) — 스크립트가 만든 텍스트는 여기서 다시 그린다.
   for (const k of ['setLang', 'setExpert']) {
     const orig = Demo[k];
-    Demo[k] = (v) => { orig(v); renderModeTexts(); renderProofInfo(); renderZk(); renderIdentity(); renderSessions(); renderTxs(); renderProofs(); renderFlow(); renderProofModal(); renderPasskey(); renderVault(); };
+    Demo[k] = (v) => { orig(v); renderModeTexts(); renderProofInfo(); renderZk(); renderIdentity(); renderSessions(); renderTxs(); renderProofs(); renderFlow(); renderProofModal(); renderPasskey(); renderBackups(true); renderVault(); };
   }
 
   // V8 세션 폐기(설계 2026-09-24 §4): 인증 증명은 코어가 금고의 s_u 로 만든다(잠겨 있으면 잠금 해제 창).
@@ -818,6 +820,67 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     if (!r) return;
     if (r.ok) setVerdict(storageVerdict(), true, 'wallet_wrap_account_revoked', () => ({ summary: tt('wallet_wrap_account_revoked_summary', { n: String(r.sessions ?? 0) }) || '모든 서비스의 로그인이 끝났습니다.' }));
     else setVerdict(storageVerdict(), false, 'wallet_wrap_account_revoke_failed', { reason: r.reason ?? 'internal', ...(r.detail ? { detail: r.detail } : {}) });
+  }
+  // ---- 백업(salt 봉투, 계획 2026-11-24 salt-envelope Task 5 — 래퍼 방식의 /user): 백업 패스키·복구 코드 목록과 더하기·지우기 ----
+  // 더하기·지우기는 모두 Google 확인(1회용 요청 키) 왕복이다 — popup.js finishWrapperBackupAdd·finishWrapperBackupRemove 가 잇고 결과를 남긴 뒤 /user 로 돌아온다.
+  // 목록은 이 브라우저가 아는 것(코어 kv envelopes — 더하기·지우기·복구의 응답)이고 암호문은 없다. 복구한 기기의 봉투(device)는 백업이 아니라 보이지 않는다.
+  const BACKUP_LIMIT = 5;   // 서버의 계정당 백업 수(lib/mode3_salt_envelope.js) — 화면은 찬 것을 미리 알릴 뿐이고 서버가 다시 본다
+  let lastEnvelopes = null, backupDrawn = null;
+  const backupKindLabel = (k) => (k === 'code' ? (tt('user_backup_kind_code') || '복구 코드') : (tt('user_backup_kind_passkey') || '백업 패스키'));
+  /** 백업 카드 — 래퍼 방식이고 등록돼 있을 때만. 목록이 바뀌지 않았으면 다시 그리지 않는다(2초 주기 새로고침이 누르는 중인 버튼을 바꾸지 않게). */
+  function renderBackups(force = false) {
+    const card = $('backupCard'); if (!card) return;
+    const show = WRAP && Boolean(lastStatus?.registered);
+    card.hidden = !show;
+    if (!show) return;
+    const backups = (lastEnvelopes ?? []).filter((e) => e && (e.kind === 'passkey' || e.kind === 'code') && /^[0-9a-f]{32}$/.test(String(e.id)));
+    const sig = JSON.stringify(backups);
+    if (!force && sig === backupDrawn) return;
+    backupDrawn = sig;
+    const ul = $('backupList'); ul.replaceChildren();
+    for (const e of backups) {
+      const li = document.createElement('li'); li.dataset.kind = e.kind; li.dataset.id = e.id;
+      const t = e.createdAt ? new Date(e.createdAt) : null;
+      const when = t && !Number.isNaN(t.getTime()) ? t.toLocaleString(locale()) : (tt('user_backup_when_unknown') || '만든 시각 모름');
+      li.append(document.createTextNode(`${backupKindLabel(e.kind)} · ${when} `));
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'btn-ghost'; b.textContent = tt('user_backup_remove_btn') || '지우기';
+      b.addEventListener('click', () => wrapperBackupFlow(b, { type: 'mode3-envelope-remove', id: e.id, kind: e.kind }, tt('confirm_backup_remove', { kind: backupKindLabel(e.kind) }) || '이 백업을 지울까요?'));
+      li.append(b); ul.append(li);
+    }
+    $('backupEmpty').hidden = backups.length > 0;
+    const full = backups.length >= BACKUP_LIMIT;
+    $('backupPasskeyBtn').disabled = full; $('backupCodeBtn').disabled = full; $('backupLimitNote').hidden = !full;
+  }
+  /** 백업 더하기·지우기의 출발: 확인 창 → 요청 키 → Google(계정 고르기). req 는 공개값뿐이다({ type, kind } 또는 { type, id, kind }) — 복구 코드는 돌아온 화면에서 만든다. */
+  async function wrapperBackupFlow(btn, req, question) {
+    if (btn.dataset.busy === '1') return;
+    if (!window.confirm(question)) return;
+    btn.dataset.busy = '1';
+    const el = $('backupVerdict');
+    pendingVerdict(el, 'working');
+    try {
+      let o = null;
+      try { const k = await core.idp.publicKeys(); o = k?.status === 200 && k.body?.wrapper === true ? k.body.oidc : null; } catch { o = null; }
+      if (!o?.enabled || typeof o.clientId !== 'string' || typeof o.authorizeUrl !== 'string' || typeof o.redirectUri !== 'string') {
+        setVerdict(el, false, 'user_backup_failed', { reason: 'wrapper_disabled' }); return;
+      }
+      const b = await core.wrapperBegin();
+      if (b.status !== 200) { setVerdict(el, false, 'user_backup_failed', { reason: b.body?.reason ?? `HTTP ${b.status}`, detail: safeDetail(b.body) }); return; }
+      const { url, state } = googleAuthUrl({ authorizeUrl: o.authorizeUrl, clientId: o.clientId, redirectUri: o.redirectUri, nonce: b.body.googleNonce, walletOrigin: location.origin });
+      saveWrapperPending(window.sessionStorage, { state, at: Date.now(), req, origin: location.origin });
+      location.assign(url);
+    } catch (e) {
+      setVerdict(el, false, 'user_backup_failed', { reason: 'internal', detail: e.message });
+    } finally { delete btn.dataset.busy; }
+  }
+  /** 백업 귀로가 남긴 결과(공개값·사유뿐)를 한 번 보이고 지운다. */
+  function showWrapBackupResult() {
+    let r = null;
+    try { r = JSON.parse(sessionStorage.getItem(WRAP_BACKUP_RESULT_KEY) ?? 'null'); sessionStorage.removeItem(WRAP_BACKUP_RESULT_KEY); } catch { r = null; }
+    if (!r) return;
+    const el = $('backupVerdict'), rm = r.op === 'remove';
+    if (r.ok) setVerdict(el, true, rm ? 'user_backup_removed' : 'user_backup_added', () => ({ summary: tt(rm ? 'user_backup_removed_summary' : 'user_backup_added_summary', { n: String(r.n ?? 0) }) }));
+    else setVerdict(el, false, 'user_backup_failed', { reason: r.reason ?? 'internal', ...(r.detail ? { detail: r.detail } : {}) });
   }
   $('refreshBtn').addEventListener('click', () => refresh(true));
 
@@ -1217,6 +1280,11 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     if (new URLSearchParams(location.search).get('demo') !== '1') $('demoCard').hidden = true;
     const rb = $('wrapRevokeAccountBtn'); if (rb) rb.addEventListener('click', () => wrapperRevokeAccountFlow(rb));
     showWrapAccountResult();
+    // 백업 카드(salt 봉투, 2026-11-24 Task 5): 두 버튼 모두 확인 창 → Google → 귀로 화면에서 패스키(클릭마다 한 번)
+    for (const [id, kind, key, fb] of [['backupPasskeyBtn', 'passkey', 'confirm_backup_passkey', '백업 패스키를 더할까요?'], ['backupCodeBtn', 'code', 'confirm_backup_code', '복구 코드를 만들까요?']]) {
+      const b = $(id); b.addEventListener('click', () => wrapperBackupFlow(b, { type: 'mode3-envelope-add', kind }, tt(key) || fb));
+    }
+    showWrapBackupResult();
     $('userLockCard').hidden = false; $('userBar').hidden = false;
     let memUntil = 0;   // sessionStorage 가 막혀 있으면 이 화면을 연 동안만 기억한다
     const until = () => { let v = 0; try { v = Number(sessionStorage.getItem(UNLOCK_KEY) ?? 0) || 0; } catch { v = memUntil; } return v; };

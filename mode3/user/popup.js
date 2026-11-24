@@ -7,7 +7,8 @@
 // 증명 로그인(2026-11-19 스펙 passkey-proof-login): zkIdP 의 발급 정책이 key 면(public_keys.issueAuth) 등록된 지갑은 인증 창 없이 패스키 증명만으로 발급받고(L1·L2),
 // 로그인마다 패스키를 한 번 묻는다(L4). mode3-idp-login 은 zkIdP 페이지의 로그인 증명 요청이다 — zkIdP 오리진이 연 창에만 답한다(L8).
 import { $, textKit, createUnlocker, postPresence, errText } from './ui.js';
-import { RECOVER_RESULT_KEY, WRAP_END_RESULT_KEY, WRAP_ACCOUNT_RESULT_KEY, idpAuthUrl, savePending, takeIdpReturn, readAttrRecord, googleSignupUrl, saveSignupPending, takeGoogleReturn, googleAuthUrl, saveWrapperPending, takeWrapperReturn } from './idp_return.js';
+import { RECOVER_RESULT_KEY, WRAP_END_RESULT_KEY, WRAP_ACCOUNT_RESULT_KEY, WRAP_BACKUP_RESULT_KEY, idpAuthUrl, savePending, takeIdpReturn, readAttrRecord, googleSignupUrl, saveSignupPending, takeGoogleReturn, googleAuthUrl, saveWrapperPending, takeWrapperReturn } from './idp_return.js';
+import { newRecoveryCode } from '../../lib/mode3_salt_envelope.js';
 
 const TYPES = ['mode3-config', 'mode3-precheck', 'mode3-authorize', 'mode3-revalidate', 'mode3-request', 'mode3-tx', 'mode3-idp-login'];
 /** 동의 창에 보이는 서비스 이름 위생(2026-09-25 리뷰 D-2, wallet.html 과 같다) — 인증서가 덮는 것은 origin 뿐이고 이름은 임의 문자열이다. */
@@ -44,6 +45,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
   let lastIdentity = null;   // 신원 줄의 provider(언어 전환 때 요약과 함께 다시 그린다)
   let idpLoginOk = false;    // mode3-idp-login 이 zkIdP 오리진 대조를 통과했는가 — 그 뒤에만 제목·요약을 그린다(리뷰 M5)
   let signupMode = false;    // 패스키 가입 중인가(2026-11-20) — 제목이 "zkIdP 계정 만들기" 가 된다
+  let fixedTitle = null;     // 백업 더하기 귀로(salt 봉투, 2026-11-24)의 제목 [키, 기본 문구] — 서비스 요청이 아니라 언어 전환 때도 이 제목을 그린다
   const step = (s) => { $('authStep').textContent = s; };
   const log = (s) => { $('authLog').textContent += `${s}\n`; };
 
@@ -101,6 +103,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
   }
   /** 팝업 제목 — 아직 요청이 없으면 대기 문구, 있으면 어느 서비스의 무슨 요청인지. */
   function renderAuthTitle() {
+    if (fixedTitle) { $('authTitle').textContent = tt(fixedTitle[0]) || fixedTitle[1]; return; }
     if (!window.opener) { tte($('authTitle'), 'wallet_auth_no_opener'); return; }
     if (!lastReq || lastReq.type === 'mode3-config' || lastReq.type === 'mode3-precheck') { tte($('authTitle'), 'wallet_auth_waiting'); return; }
     // zkIdP 로그인(2026-11-19): 제목은 zkIdP 오리진 대조를 통과한 뒤에만 그린다(리뷰 M5 — 남의 사이트가 이 창을 zkIdP 로그인 화면처럼 보이게 하지 못한다)
@@ -381,6 +384,149 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
     try { sessionStorage.setItem(WRAP_ACCOUNT_RESULT_KEY, JSON.stringify(out)); } catch { /* 결과를 못 남기면 화면이 상태로만 보인다 */ }
     location.replace('/user');
   }
+  // ---- salt 봉투(계획 2026-11-24 salt-envelope Task 5): /user 의 백업 더하기·지우기 귀로, 승인 창의 패스키 분실 복구 화면 ----
+  // 패스키는 클릭 한 번에 한 번만 묻는다 — 사용자 동작이 있어야 WebAuthn 을 여는 브라우저 대비 [m11]. salt·PRF·복구 코드는 화면 메모리에만 있고 끝나면 지운다.
+  /** 진행 줄(#authStatus)을 nodes 로 다시 그린다 — 문자열은 글자, null 은 건너뛴다. */
+  const drawStatus = (...nodes) => { const e = statusEl(); e.replaceChildren(...nodes.filter((n) => n !== null && n !== undefined).map((n) => (typeof n === 'string' ? document.createTextNode(n) : n))); e.hidden = false; return e; };
+  /** 앞 시도가 왜 안 됐는지 한 줄(굵게) — 없으면 null. */
+  const noteEl = (note) => { if (!note) return null; const p = document.createElement('span'); const b = document.createElement('strong'); b.textContent = note; p.append(document.createElement('br'), b); return p; };
+  const mkBtn = (id, label, ghost = false) => { const b = document.createElement('button'); b.type = 'button'; if (id) b.id = id; b.textContent = label; if (ghost) b.className = 'btn-ghost'; return b; };
+  /** 설명·앞 시도의 실패·버튼 하나를 그리고 눌릴 때까지 기다린다. */
+  const clickOnce = (btn, intro, note = null) => new Promise((resolve) => { drawStatus(intro, noteEl(note), document.createElement('br'), btn); btn.addEventListener('click', () => resolve(), { once: true }); });
+  /** 사유 한 줄(제목 — 조치). */
+  const whyOf = (r) => { const x = Demo.reason(r.body?.reason); return x?.title ? [x.title, x.action].filter(Boolean).join(' — ') : (r.body?.reason ?? `HTTP ${r.status}`); };
+  /** 보내기 전에 멈춘 실패(패스키 창 취소·같은 인증기·코드 오타) — 코어가 요청 키를 남겼으니 같은 화면에서 다시 한다. */
+  const keptKey = (r) => typeof r.body?.reason === 'string' && (r.body.reason.startsWith('passkey_') || r.body.reason.startsWith('recovery_code_'));
+  const backupCountOf = (list) => (Array.isArray(list) ? list.filter((e) => e?.kind === 'passkey' || e?.kind === 'code').length : 0);
+  const saveBackupResult = (out) => { try { sessionStorage.setItem(WRAP_BACKUP_RESULT_KEY, JSON.stringify(out)); } catch { /* 결과를 못 남기면 /user 가 목록으로만 보인다 */ } };
+  const failOut = (r) => ({ ok: false, reason: r.body?.reason ?? (r.status === 404 ? 'unknown_account' : 'internal'), detail: r.body?.detail ?? r.body?.error ?? null });
+  /** 백업 더하기 귀로(/user 의 "백업 패스키 더하기"·"복구 코드 만들기"): /user 탭이 Google 을 다녀왔다(1회용 요청 키에 묶인 토큰).
+   *  백업 패스키: ① 지금 패스키로 확인(salt — withSalt 범위의 메모) → ② 백업 패스키 만들기(코어가 지금 패스키·아는 백업을 빼고 만든다 [I7]).
+   *  복구 코드: 여기서 만들어 한 번 보이고(Google 로 가기 전에 만들지 않는다 — sessionStorage 에 남지 않게), 적었다고 하면 지우고 다시 입력받는다. 저장을 누를 때 지금 패스키로 확인한다.
+   *  보내기 전의 실패는 이 자리에서 다시, 보낸 뒤에는 결과(공개값)를 남기고 /user 로 간다. */
+  async function finishWrapperBackupAdd({ pend, idToken, error }) {
+    const kind = pend.req.kind === 'code' ? 'code' : 'passkey';
+    fixedTitle = kind === 'code' ? ['user_backup_code_title', '복구 코드 만들기'] : ['user_backup_passkey_title', '백업 패스키 더하기'];
+    renderAuthTitle();
+    const finish = (out) => { saveBackupResult({ op: 'add', kind, ...out }); location.replace('/user'); };
+    const done = (r) => finish(r.status === 200 ? { ok: true, n: backupCountOf(r.body?.envelopes) } : failOut(r));
+    if (!idToken) return finish({ ok: false, reason: 'google_denied', detail: error ?? null });
+    try {
+      if (kind === 'passkey') {
+        let note = null;
+        for (;;) {
+          await clickOnce(mkBtn('authBackupConfirmBtn', tt('user_backup_confirm_btn') || '① 지금 패스키로 확인'), tt('user_backup_passkey_intro') || 'Google 확인이 끝났습니다. 두 번 누릅니다 — ① 지금 패스키로 본인 확인, ② 백업 패스키 만들기.', note);
+          say('user_backup_confirming', '지금 패스키를 확인하는 중입니다 — 브라우저의 패스키 창을 확인하세요.');
+          const r = await core.withSalt(async () => {
+            const a = await core.passkeyAuid();
+            if (a.status !== 200) return a;
+            let n2 = null;
+            for (;;) {
+              await clickOnce(mkBtn('authBackupCreateBtn', tt('user_backup_create_btn') || '② 백업 패스키 만들기'), tt('user_backup_create_intro') || '확인했습니다. 이제 백업 패스키를 만드세요 — 다른 기기나 보안 키를 고릅니다.', n2);
+              say('user_backup_creating', '백업 패스키를 만드는 중입니다 — 브라우저의 패스키 창에서 다른 기기나 보안 키를 고르세요.');
+              const x = await core.wrapperEnvelopeAdd({ idToken, kind: 'passkey' });
+              if (x.status === 200 || !keptKey(x)) return x;
+              n2 = whyOf(x);
+            }
+          });
+          if (r.status === 200 || !keptKey(r)) return done(r);
+          note = whyOf(r);
+        }
+      }
+      const code = newRecoveryCode();
+      const canon = (v) => String(v ?? '').toUpperCase().replace(/[-\s]/g, '').replace(/[IL]/g, '1').replace(/O/g, '0');
+      const input = document.createElement('input'); input.id = 'authBackupCodeInput'; input.autocomplete = 'off'; input.spellcheck = false; input.size = 36;
+      let show = true, note = null;
+      for (;;) {
+        if (show) {
+          const c = document.createElement('code'); c.id = 'authBackupCode'; c.style.cssText = 'font-size:1.15em;user-select:all;word-break:break-all'; c.textContent = code;
+          const ok = mkBtn('authBackupCodeWrittenBtn', tt('user_backup_code_written_btn') || '적었습니다');
+          await new Promise((resolve) => { drawStatus(tt('user_backup_code_intro') || '아래 복구 코드를 안전한 곳에 적으세요.', document.createElement('br'), c, document.createElement('br'), ok); ok.addEventListener('click', () => resolve(), { once: true }); });
+          c.textContent = '';
+          show = false;
+        }
+        const save = mkBtn('authBackupCodeSaveBtn', tt('user_backup_code_save_btn') || '확인하고 저장'), again = mkBtn('authBackupCodeAgainBtn', tt('user_backup_code_again_btn') || '코드 다시 보기', true);
+        const act = await new Promise((resolve) => {
+          drawStatus(tt('user_backup_code_retype') || '적은 코드를 그대로 다시 입력하세요.', noteEl(note), document.createElement('br'), input, ' ', save, ' ', again);
+          save.addEventListener('click', () => resolve('save'), { once: true });
+          again.addEventListener('click', () => resolve('again'), { once: true });
+          input.focus();
+        });
+        if (act === 'again') { show = true; note = null; continue; }
+        if (canon(input.value) !== canon(code)) { note = tt('user_backup_code_mismatch') || '입력한 코드가 보여 드린 코드와 다릅니다 — 다시 확인하세요.'; continue; }
+        say('user_backup_saving', '백업을 저장하는 중입니다 — 지금 패스키로 한 번 확인합니다.');
+        const r = await core.wrapperEnvelopeAdd({ idToken, kind: 'code', code });
+        if (r.status === 200 || !keptKey(r)) { input.value = ''; return done(r); }
+        note = whyOf(r);
+      }
+    } catch (e) { finish({ ok: false, reason: e?.reason ?? 'internal', detail: e?.message ?? null }); }
+  }
+  /** 백업 지우기 귀로: 그 토큰으로 봉투 하나를 지우고 결과를 남긴 뒤 /user 로. 패스키는 묻지 않는다. 이미 그 백업으로 복구한 기기는 자기 사본으로 계속 된다 [m6]. */
+  async function finishWrapperBackupRemove({ pend, idToken, error }) {
+    const kind = pend.req.kind === 'passkey' || pend.req.kind === 'code' ? pend.req.kind : null;
+    let out;
+    step('백업 지우는 중…');
+    try {
+      if (!idToken) out = { ok: false, reason: 'google_denied', detail: error ?? null };
+      else {
+        const r = await core.wrapperEnvelopeRemove({ idToken, id: pend.req.id });
+        out = r.status === 200 ? { ok: true, n: backupCountOf(r.body?.envelopes) } : failOut(r);
+      }
+    } catch (e) { out = { ok: false, reason: e?.reason ?? 'internal', detail: e?.message ?? null }; }
+    saveBackupResult({ op: 'remove', kind, ...out });
+    location.replace('/user');
+  }
+  // 복구 화면에서 다시 해 볼 수 있는 실패 — 코어가 요청 키를 남긴다(그 밖은 서비스에서 처음부터: 발급이 받아들여진 뒤의 실패·토큰을 썼다·계정 폐기·10분이 지났다).
+  const RECOVER_AGAIN = new Set(['recovery_code_typo', 'recovery_code_format', 'envelope_open_failed', 'envelope_credential_mismatch', 'recover_auid_mismatch', 'envelope_unknown']);
+  /** 패스키 분실 복구 화면: 발급이 409 auid_pinned(이 Google 계정은 다른 salt 에 묶였다)이고 이 계정에 백업이 있다. 봉투마다 버튼 —
+   *  백업 패스키(그 credential 로 좁힌 확인 한 번)·복구 코드(입력칸 #authRecoverCode — 코드 봉투가 여럿이면 차례로 열어 본다). 실패하면 이 자리에서 다시
+   *  (요청 키는 Google 확인 뒤 10분 동안 남는다 [m2]). 코드는 입력칸에서만 읽고 끝나면 지운다. 돌려주는 값은 wrapperLoginRecover 의 마지막 응답. */
+  async function recoverWrapper({ req, pend, idToken, envelopes }) {
+    const opts = { idToken, verifiedOrigin: pend.origin, serviceName: cleanServiceName(req.serviceName) || null, policy: req.policy ?? null };
+    const keys = envelopes.filter((e) => e.kind === 'passkey' || e.kind === 'device');
+    const codes = envelopes.filter((e) => e.kind === 'code');
+    const input = document.createElement('input'); input.id = 'authRecoverCode'; input.autocomplete = 'off'; input.spellcheck = false; input.size = 36;
+    const go = mkBtn('authRecoverCodeBtn', tt('user_recover_code_go') || '복구');
+    const row = document.createElement('p'); row.id = 'authRecoverCodeRow'; row.hidden = true;
+    const lab = document.createElement('label'); lab.append(document.createTextNode(`${tt('user_recover_code_label') || '복구 코드'} `), input);
+    row.append(lab, ' ', go);
+    let note = null;
+    for (;;) {
+      const list = document.createElement('p'); list.id = 'authRecoverList'; list.className = 'auth-actions';
+      const choice = await new Promise((resolve) => {
+        const many = { passkey: keys.filter((e) => e.kind === 'passkey').length > 1, device: keys.filter((e) => e.kind === 'device').length > 1 }, nth = { passkey: 0, device: 0 };
+        for (const e of keys) {
+          const n = String(++nth[e.kind]);
+          const label = e.kind === 'passkey' ? (tt(many.passkey ? 'user_recover_passkey_n_btn' : 'user_recover_passkey_btn', { n }) || '백업 패스키로 복구') : (tt(many.device ? 'user_recover_device_n_btn' : 'user_recover_device_btn', { n }) || '복구한 다른 기기의 패스키로 복구');
+          const b = mkBtn(null, label, e.kind === 'device'); b.dataset.kind = e.kind; b.dataset.id = e.id;
+          b.addEventListener('click', () => resolve({ ids: [e.id], code: null }), { once: true });
+          list.append(b, ' ');
+        }
+        if (codes.length) {
+          const b = mkBtn(null, tt('user_recover_code_btn') || '복구 코드로 복구', keys.length > 0); b.dataset.kind = 'code';
+          b.addEventListener('click', () => { row.hidden = false; input.focus(); });
+          list.append(b);
+          go.onclick = () => { if (input.value.trim()) resolve({ ids: codes.map((e) => e.id), code: input.value }); };
+        }
+        drawStatus(tt('user_recover_intro') || '이 Google 계정에는 백업이 있습니다 — 백업으로 같은 계정을 되찾습니다.', noteEl(note), list, row);
+      });
+      say('user_recover_working', '백업을 열고 로그인하는 중입니다 — 세션 토큰을 받고 증명을 만듭니다(수 초 걸립니다).');
+      let r = null;
+      for (const id of choice.ids) {
+        r = await core.wrapperLoginRecover(loginBodyOf(req), { ...opts, envelopeId: id, code: choice.code });
+        // 코드 봉투가 여럿이면 이 봉투의 코드가 아닐 때(열리지 않는다) 다음 봉투로 — 형식·오타는 어느 봉투에도 같다
+        if (choice.code === null || r.body?.reason !== 'envelope_open_failed') break;
+      }
+      const reason = r.body?.reason ?? null;
+      if (r.status !== 200 && typeof reason === 'string' && (reason.startsWith('passkey_') || RECOVER_AGAIN.has(reason))) {
+        note = choice.code !== null && reason === 'envelope_open_failed' ? (tt('user_recover_code_wrong') || '코드가 맞지 않습니다 — 적어 둔 코드를 다시 확인하세요.') : whyOf(r);
+        if (choice.code !== null) row.hidden = false;
+        continue;
+      }
+      input.value = '';
+      return r;
+    }
+  }
   /** 2단계(Google 에서 돌아온 길): (패스키가 없으면 버튼 한 번으로 만들고) 패스키 → 발급 → π_RP → 서비스에 결과. 결과는 가기 전에 대조를 통과한 서비스 오리진(pend.origin)에만 돌려준다. */
   async function finishWrapper({ pend, idToken, error }) {
     if (!pend) { renderAuthTitle(); step('Google 확인 결과를 이어받지 못했다.'); return showHint('user_wrap_resume_failed', 'Google 확인 결과를 이어받지 못했습니다 — 서비스 페이지에서 다시 로그인하세요.', null); }
@@ -394,7 +540,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
     try {
       if (!idToken) { step('Google 확인이 끝나지 않았다.'); log(String(error ?? '')); return reply({ ok: false, reason: 'google_denied', detail: error ?? null }); }
       const googleMs = Date.now() - t0;
-      let salt = null;
+      let salt = null, envKey = null;
       const ps = await core.passkeyState();
       if (ps.status !== 200 || !ps.body?.credentialId) {
         if (typeof passkey?.create !== 'function') { step('패스키 연결 없음'); return reply({ ok: false, reason: 'passkey_setup_required' }); }
@@ -405,11 +551,12 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
         const c = await core.passkeyConnect({ credentialId: made.credentialId, s_u: made.s_u, info: made.info ?? null });
         if (c.status !== 200) { step('패스키 연결 실패'); log(errText(c.status, c.body)); return reply(fail(c, 'passkey_setup_failed')); }
         salt = made.s_u;   // 방금 만든 패스키의 값 — 이 로그인에 바로 쓴다(창의 메모리에만 있다)
+        envKey = made.envKey ?? null;   // 그 패스키의 봉투 열쇠(추출 불가 CryptoKey) — auid_pinned 뒤 복구가 이 기기 봉투를 만든다(다시 묻지 않는다 [I5])
       }
       const rec = await attrRecord();
       for (;;) {
         say('user_wrap_logging_in', '패스키를 확인하고 로그인하는 중입니다 — 세션 토큰을 받고 증명을 만듭니다(수 초 걸립니다).');
-        const lg = await withUnlock(() => core.wrapperLogin(loginBodyOf(req), { idToken, verifiedOrigin: pend.origin, serviceName: cleanServiceName(req.serviceName) || null, policy: req.policy ?? null, googleMs, salt, profile: rec?.profile ?? null, recordAuid: rec?.auid ?? null }));
+        const lg = await withUnlock(() => core.wrapperLogin(loginBodyOf(req), { idToken, verifiedOrigin: pend.origin, serviceName: cleanServiceName(req.serviceName) || null, policy: req.policy ?? null, googleMs, salt, envKey, profile: rec?.profile ?? null, recordAuid: rec?.auid ?? null }));
         if (lg.cancelled) { step('잠금 해제 취소'); return reply({ ok: false, reason: 'user_denied' }); }
         if (lg.status === 200) {
           const { userCredIssued, attrsChanged, ...toRp } = lg.body;
@@ -419,6 +566,20 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
         }
         // 패스키를 취소했으면 Google 을 다시 다녀오지 않고 이 자리에서 한 번 더 물을 수 있다(토큰·요청 키는 아직 쓰지 않았다).
         if (lg.body?.reason === 'passkey_cancelled') { await waitClick('authWrapRetryBtn', tt('user_wrap_retry_passkey') || '패스키 다시 확인', 'user_wrap_passkey_cancelled', '패스키 확인이 취소됐습니다 — 다시 확인하면 이어서 로그인합니다.'); continue; }
+        // salt 봉투(2026-11-24 Task 5): 이 Google 계정은 다른 패스키(salt)에 묶였고 서버에 백업이 있다 — 복구 화면. 백업이 없으면 아래의 지금 안내 그대로.
+        const envs = lg.status === 409 && lg.body?.reason === 'auid_pinned' && Array.isArray(lg.body.recover?.envelopes) ? lg.body.recover.envelopes : [];
+        if (envs.length) {
+          const rr = await recoverWrapper({ req, pend, idToken, envelopes: envs });
+          if (rr.status === 200) {
+            const { userCredIssued, attrsChanged, ...toRp } = rr.body;
+            await postPresence(core);
+            step('복구·로그인 성공 — 창을 닫는다.');
+            return reply({ ok: true, ...toRp });
+          }
+          step('복구 실패'); log(errText(rr.status, rr.body));
+          showHint('user_recover_restart', '복구를 끝내지 못했습니다 — 서비스 페이지에서 다시 "zkWrapper 로 로그인" 을 누르세요.', null);
+          return reply(fail(rr, 'login_failed'), { closeMs: 15_000 });
+        }
         step('로그인 실패'); log(errText(lg.status, lg.body));
         return reply(fail(lg, 'login_failed'));
       }
@@ -426,7 +587,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
   }
   // 래퍼 로그인의 귀환 — 가입 귀환과 같은 조각(#google_back=1…)이라 방식에 따라 한쪽만 본다. 준비 신호(ready)를 다시 보내지 않는다.
   const wback = WRAP ? takeWrapperReturn({ hash: location.hash, storage: window.sessionStorage, now: Date.now() }) : null;
-  if (wback) { history.replaceState(null, '', `${location.pathname}?authorize=1`); const ty = wback.pend?.req?.type; if (ty === 'mode3-end-session') finishWrapperEnd(wback); else if (ty === 'mode3-revoke-account') finishWrapperAccount(wback); else finishWrapper(wback); return; }
+  if (wback) { history.replaceState(null, '', `${location.pathname}?authorize=1`); const ty = wback.pend?.req?.type; if (ty === 'mode3-end-session') finishWrapperEnd(wback); else if (ty === 'mode3-revoke-account') finishWrapperAccount(wback); else if (ty === 'mode3-envelope-add') finishWrapperBackupAdd(wback); else if (ty === 'mode3-envelope-remove') finishWrapperBackupRemove(wback); else finishWrapper(wback); return; }
   const gback = PK && !WRAP ? takeGoogleReturn({ hash: location.hash, storage: window.sessionStorage, now: Date.now() }) : null;
   if (gback) { history.replaceState(null, '', `${location.pathname}?authorize=1`); finishSignup(gback); return; }
 
