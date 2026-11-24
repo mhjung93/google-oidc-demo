@@ -1,5 +1,5 @@
 // tests/test_mode3_user_core_wrapper.mjs — 웹 코어의 래퍼 로그인(스펙 2026-11-20 zkwrapper §2.2, 계획 Task 3)을 Node 에서(메모리 kv·진짜 snarkjs) 격리 발급 서버(CIA_WRAPPER)·
-// Google 대역·RP 에 대고 돌린다. 패스키는 대역(derive 호출 수를 센다). wrapperBegin(요청 키) → Google 토큰 → wrapperLogin(패스키 한 번 → 발급 → π_RP) → 서비스 검증. :8545·build/mode3 필요. (chain)
+// Google 대역·RP 에 대고 돌린다. 패스키는 대역(derive 호출 수를 센다 — credential 여럿·envKey·excludeCredentialIds 를 흉내 낸다, salt 봉투 계획 Task 4). wrapperBegin(요청 키) → Google 토큰 → wrapperLogin(패스키 한 번 → 발급 → π_RP) → 서비스 검증. :8545·build/mode3 필요. (chain)
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
@@ -9,6 +9,7 @@ import { createUserCore } from '../mode3/user/core/user_core.js';
 import { randomScalar, auidOf } from '../lib/mode3_credential.js';
 import { uidOf } from '../lib/mode3_oidc_nonce.js';
 import { wrapperNonce } from '../lib/mode3_wrapper_auth.js';
+import { envKeyFromPrf, newRecoveryCode } from '../lib/mode3_salt_envelope.js';
 import { PUB_INDEX } from '../lib/mode3_onchain.js';
 import * as snarkjs from 'snarkjs';
 
@@ -24,13 +25,46 @@ try {
   const config = { ...(await wallet.get('/user/config')).body, wrapper: true };
   assert.equal(config.secrets, 'passkey-web');
   const fullProve = { idp: () => { throw new Error('래퍼 방식은 π_IdP 를 만들지 않는다'); }, cred: (input, w, z) => snarkjs.groth16.fullProve(input, w, z) };
-  /** 브라우저 하나 = kv 하나 + 패스키 하나(salt). sent 에 발급 서버로 간 요청 본문을 모은다. */
-  const browser = (salt = randomScalar().toString(), cid = 'Y2lkLWE', now = Date.now) => {
-    const kv = createMemKv(), b = { kv, salt, cid, calls: 0, sent: [] };
-    const passkey = { derive: async () => { b.calls++; return { credentialId: cid, s_u: salt }; } };
-    const fetchSpy = async (url, init) => { if (String(url).includes('/cia/') && init?.body) b.sent.push({ url: String(url), body: JSON.parse(init.body) }); return globalThis.fetch(url, init); };
+  const rnd32 = () => globalThis.crypto.getRandomValues(new Uint8Array(32));
+  const cancelled = () => Object.assign(new Error('NotAllowedError'), { reason: 'passkey_cancelled' });
+  /** 인증기의 credential 하나 — PRF 바이트(envKey 를 만든다)와 그 PRF 로 나오는 salt(직접 쓰는 salt). */
+  const mkCred = (cid, s_u = randomScalar().toString()) => ({ cid, s_u, prf: rnd32() });
+  /** 브라우저 하나 = kv 하나 + 패스키 하나(salt). sent 에 발급 서버로 간 요청 본문을, recv 에 그 응답을 모은다. rewrite(url, body) 가 새 본문을 주면 응답을 바꿔치기한다.
+   *  패스키 대역: derive({ credentialId }) 는 그 credential 이 이 브라우저(손에 든 인증기)에 있을 때만(없으면 passkey_cancelled — 맞지 않는 allowCredentials),
+   *  create({ excludeCredentialIds }) 는 createQueue 의 다음 credential 을 만든다(제외 목록에 있으면 passkey_already_registered). cancelNext 면 다음 derive 를 취소한다. */
+  const browser = (salt = randomScalar().toString(), cid = 'Y2lkLWE', now = Date.now, { prf = rnd32(), extra = [], createQueue = [] } = {}) => {
+    const kv = createMemKv(), b = { kv, salt, cid, calls: 0, sent: [], recv: [], deriveIds: [], creates: [], cancelNext: false, rewrite: null };
+    const creds = new Map([[cid, { cid, s_u: salt, prf }], ...extra.map((c) => [c.cid, c])]);
+    const passkey = {
+      derive: async ({ credentialId } = {}) => {
+        b.calls++; b.deriveIds.push(credentialId ?? null);
+        if (b.cancelNext) { b.cancelNext = false; throw cancelled(); }
+        const c = creds.get(credentialId ?? cid);
+        if (!c) throw cancelled();
+        return { credentialId: c.cid, s_u: c.s_u, envKey: await envKeyFromPrf(c.prf) };
+      },
+      create: async ({ excludeCredentialIds = [] } = {}) => {
+        b.creates.push({ excludeCredentialIds: [...excludeCredentialIds] });
+        const c = createQueue.shift();
+        if (!c) throw cancelled();
+        if (excludeCredentialIds.includes(c.cid)) throw Object.assign(new Error('InvalidStateError'), { reason: 'passkey_already_registered' });
+        creds.set(c.cid, c);
+        return { credentialId: c.cid, s_u: c.s_u, envKey: await envKeyFromPrf(c.prf), info: null };
+      },
+    };
+    const fetchSpy = async (url, init) => {
+      const u = String(url), mine = u.includes('/cia/') && Boolean(init?.body);
+      if (mine) b.sent.push({ url: u, body: JSON.parse(init.body) });
+      const res = await globalThis.fetch(url, init);
+      if (!mine) return res;
+      const body = await res.clone().json().catch(() => null);
+      b.recv.push({ url: u, status: res.status, body });
+      const nb = b.rewrite && body ? b.rewrite(u, body) : null;
+      return nb ? new Response(JSON.stringify(nb), { status: res.status, headers: { 'Content-Type': 'application/json' } }) : res;
+    };
     b.core = createUserCore({ kv, config, provider, canonProvider: provider, fullProve, passkey, fetch: fetchSpy, now });
     b.dump = async () => { const all = {}; for (const k of await kv.keys()) all[k] = await kv.get(k); return j(all); };
+    b.issues = () => b.sent.filter((x) => x.url.endsWith('/cia/issue'));
     return b;
   };
   let info = (await rp.get('/api/mode3/rp_info')).body;
@@ -157,11 +191,182 @@ try {
     assert.equal((await E.kv.get('registration')).profile.birthYear, '2001'); assert.ok(!(await E.dump()).includes(E.salt));
     assert.equal((await go({ salt: 'not-a-number' })).r.body.reason, 'passkey_bad_salt');
   });
+  // ---- salt 봉투(계획 2026-11-24 zkwrapper salt-envelope Task 4): 백업 더하기·지우기, auid_pinned 뒤 복구 ----
+  /** wrapperBegin → 그 요청 키에 묶인 Google 토큰(대역). */
+  const tokenFor = async (b, sub) => { const bg = await b.core.wrapperBegin(); assert.equal(bg.status, 200, j(bg.body)); return mint(sub, bg.body.googleNonce); };
+  /** 409 auid_pinned 를 받은 같은 토큰으로 복구 → 서비스 검증. */
+  const recoverLogin = async (b, { idToken, envelopeId, code = null }) => {
+    const ch = await challenge();
+    const r = await b.core.wrapperLoginRecover(loginBody(ch), { idToken, verifiedOrigin: info.origin, envelopeId, code });
+    if (r.status !== 200) return { r };
+    const v = await rp.post('/api/mode3/login', { proof: r.body.proof, publicSignals: r.body.publicSignals, sig: r.body.sig, r_s: ch.r_s });
+    return { r, v, PPID: r.body.publicSignals[PUB_INDEX.PPID] };
+  };
+  /** 새 계정을 만들고(첫 로그인) 백업을 더한 브라우저. */
+  const owner = async (sub, { cid, backups = [] }) => {
+    const queue = backups.filter((x) => x.kind === 'passkey').map((x) => x.cred);
+    const b = browser(undefined, cid, Date.now, { createQueue: queue });
+    assert.equal((await b.core.passkeyConnect({ credentialId: b.cid, s_u: b.salt })).status, 200);
+    const f = await wlogin(b, sub); assert.equal(f.r.status, 200, j(f.r.body)); assert.equal(f.v.status, 200, j(f.v.body));
+    for (const x of backups) {
+      const r = await b.core.wrapperEnvelopeAdd({ idToken: await tokenFor(b, sub), kind: x.kind, ...(x.code ? { code: x.code } : {}) });
+      assert.equal(r.status, 200, j(r.body));
+    }
+    return { b, PPID: f.PPID };
+  };
+  const pinnedBody = (b) => [...b.recv].reverse().find((x) => x.url.endsWith('/cia/issue') && x.body?.reason === 'auid_pinned')?.body;
+  const credB = mkCred('Y2lkLWJhY2t1cA');
+  const CODE = newRecoveryCode();
+  let BA = null, PPID_BAK = null, C = null, c1 = null;
+  await t('봉투 더하기: 백업 패스키(create 의 exclude 에 연결된 cA) → 목록 1, 복구 코드 → 목록 2 — 패스키는 더할 때마다 salt 한 번, 저장소에 salt·코드가 없다', async () => {
+    BA = browser(undefined, 'Y2lkLUE', Date.now, { createQueue: [credB] });
+    await BA.core.passkeyConnect({ credentialId: BA.cid, s_u: BA.salt });
+    const f = await wlogin(BA, 'g-bak'); assert.equal(f.r.status, 200, j(f.r.body)); PPID_BAK = f.PPID;
+    const calls0 = BA.calls;
+    const add1 = await BA.core.wrapperEnvelopeAdd({ idToken: await tokenFor(BA, 'g-bak'), kind: 'passkey' });
+    assert.equal(add1.status, 200, j(add1.body)); assert.equal(add1.body.envelopes.length, 1);
+    assert.equal(add1.body.envelopes[0].kind, 'passkey'); assert.equal(add1.body.envelopes[0].credentialId, credB.cid); assert.equal('ct' in add1.body.envelopes[0], false);
+    assert.ok(BA.creates[0].excludeCredentialIds.includes(BA.cid), j(BA.creates)); assert.equal(BA.calls - calls0, 1, 'salt 는 패스키 한 번');
+    const add2 = await BA.core.wrapperEnvelopeAdd({ idToken: await tokenFor(BA, 'g-bak'), kind: 'code', code: CODE });
+    assert.equal(add2.status, 200, j(add2.body)); assert.equal(add2.body.envelopes.length, 2); assert.equal(add2.body.envelopes[1].credentialId, null);
+    assert.equal((await BA.kv.get('envelopes')).length, 2); assert.equal(await BA.kv.get('wrapperKey'), undefined);
+    const d = await BA.dump();
+    for (const secret of [BA.salt, CODE, CODE.replace(/-/g, '')]) assert.ok(!d.includes(secret), '저장소에 salt·코드가 남았다');
+  });
+  await t('봉투 더하기: 이미 있는 백업 패스키를 또 만들면(같은 인증기) passkey_already_registered — 요청 키는 남는다', async () => {
+    // A 와 같은 상태의 브라우저에서 인증기가 이미 등록된 credB 를 다시 내놓는다(같은 GPM) — exclude 에 봉투의 credentialId 가 있어 인증기가 거절한다
+    const B2 = browser(BA.salt, BA.cid, Date.now, { createQueue: [credB] });
+    await B2.kv.set('passkey', await BA.kv.get('passkey')); await B2.kv.set('envelopes', await BA.kv.get('envelopes'));
+    await B2.kv.set('registration', await BA.kv.get('registration'));
+    const r = await B2.core.wrapperEnvelopeAdd({ idToken: await tokenFor(B2, 'g-bak'), kind: 'passkey' });
+    assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'passkey_already_registered');
+    assert.ok(B2.creates[0].excludeCredentialIds.includes(credB.cid), j(B2.creates)); assert.ok(await B2.kv.get('wrapperKey'), '요청 키가 남아야 한다');
+    assert.equal(B2.sent.some((x) => x.url.endsWith('/cia/wrapper/envelope')), false);
+  });
+  await t('새 기기 C 로 같은 계정: 409 auid_pinned + recover.envelopes 2개(id·kind·credentialId 만) — 응답에 암호문·대조값이 없고, 요청 키는 남고, 로컬 등록은 되돌린다', async () => {
+    C = browser(undefined, 'Y2lkLUM', Date.now, { extra: [credB] });
+    await C.core.passkeyConnect({ credentialId: C.cid, s_u: C.salt });
+    c1 = await wlogin(C, 'g-bak');
+    assert.equal(c1.r.status, 409, j(c1.r.body)); assert.equal(c1.r.body.reason, 'auid_pinned');
+    const envs = c1.r.body.recover.envelopes; assert.equal(envs.length, 2);
+    for (const e of envs) assert.deepEqual(Object.keys(e).sort(), ['credentialId', 'id', 'kind']);
+    const raw = pinnedBody(C); assert.ok(raw?.auidCheck && raw.envelopes.length === 2, '서버 409 본문');
+    const out = j(c1.r.body);
+    assert.ok(!out.includes(raw.auidCheck) && !out.includes('auidCheck'), '대조값이 응답에'); for (const e of raw.envelopes) assert.ok(!out.includes(e.ct), '암호문이 응답에');
+    assert.ok(!out.includes('"ct"') && !('cia' in c1.r.body));
+    assert.ok(await C.kv.get('wrapperKey'), '요청 키가 남아야 한다'); assert.equal(await C.kv.get('registration'), undefined);
+  });
+  await t('C 복구(백업 패스키): derive 1회(cB) → 200, PPID = A 의 PPID, 발급에 기기 봉투, kv passkey.via = envelope — 저장소에 salt 가 없다', async () => {
+    const envP = c1.r.body.recover.envelopes.find((e) => e.kind === 'passkey');
+    const calls0 = C.calls; C.deriveIds.length = 0;
+    const rc = await recoverLogin(C, { idToken: c1.idToken, envelopeId: envP.id });
+    assert.equal(rc.r.status, 200, j(rc.r.body)); assert.equal(rc.v.status, 200, j(rc.v.body));
+    assert.equal(C.calls - calls0, 1); assert.deepEqual(C.deriveIds, [credB.cid]); assert.equal(rc.PPID, PPID_BAK);
+    const last = C.issues().at(-1).body; assert.equal(last.envelope.kind, 'device'); assert.equal(last.envelope.credentialId, C.cid);
+    const pk = await C.kv.get('passkey'); assert.equal(pk.via, 'envelope'); assert.equal(pk.credentialId, C.cid); assert.equal(pk.envelope.id, last.envelope.id); assert.equal(pk.envelope.ct, last.envelope.ct);
+    assert.equal(await C.kv.get('wrapperKey'), undefined); assert.ok(!(await C.dump()).includes(BA.salt), 'salt 가 남았다');
+  });
+  await t('C 의 다음 로그인: derive 1회(cC — 로컬 봉투), 같은 PPID', async () => {
+    const calls0 = C.calls; C.deriveIds.length = 0;
+    const n = await wlogin(C, 'g-bak');
+    assert.equal(n.r.status, 200, j(n.r.body)); assert.equal(n.v.status, 200, j(n.v.body));
+    assert.equal(C.calls - calls0, 1); assert.deepEqual(C.deriveIds, [C.cid]); assert.equal(n.PPID, PPID_BAK);
+  });
+  await t('A 가 C 의 기기 봉투를 지운다(Review Focus 4) → 목록에 백업 2개만, C 는 로컬 사본으로 계속 같은 PPID', async () => {
+    const devId = (await C.kv.get('passkey')).envelope.id;
+    const rm = await BA.core.wrapperEnvelopeRemove({ idToken: await tokenFor(BA, 'g-bak'), id: devId });
+    assert.equal(rm.status, 200, j(rm.body)); assert.equal(rm.body.envelopes.length, 2); assert.equal(rm.body.envelopes.some((e) => e.kind === 'device' || e.id === devId), false);
+    assert.deepEqual(await BA.kv.get('envelopes'), rm.body.envelopes); assert.equal(await BA.kv.get('wrapperKey'), undefined);
+    const n = await wlogin(C, 'g-bak');
+    assert.equal(n.r.status, 200, j(n.r.body)); assert.equal(n.PPID, PPID_BAK);
+  });
+  await t('앞선 409 없이 wrapperLoginRecover → 409 recover_offer_missing — 패스키를 묻지 않는다', async () => {
+    const calls0 = BA.calls;
+    const r = await BA.core.wrapperLoginRecover(loginBody(await challenge()), { idToken: await tokenFor(BA, 'g-bak'), verifiedOrigin: info.origin, envelopeId: '0'.repeat(32) });
+    assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'recover_offer_missing'); assert.equal(BA.calls, calls0);
+  });
+  await t('새로 만든 패스키 [I5]: salt·envKey 를 넘긴 wrapperLogin → 409 → 복구 코드 → 200(derive 0회), 다음 로그인은 그 패스키 한 번으로 같은 PPID', async () => {
+    const CODE_E = newRecoveryCode();
+    const own = await owner('g-rec-e', { cid: 'Y2lkLUVB', backups: [{ kind: 'code', code: CODE_E }] });
+    const credE = mkCred('Y2lkLUVF');
+    const E = browser(credE.s_u, credE.cid, Date.now, { prf: credE.prf });
+    await E.core.passkeyConnect({ credentialId: E.cid, s_u: E.salt });
+    const idToken = await tokenFor(E, 'g-rec-e');
+    const r1 = await E.core.wrapperLogin(loginBody(await challenge()), { idToken, verifiedOrigin: info.origin, salt: E.salt, envKey: await envKeyFromPrf(credE.prf) });
+    assert.equal(r1.status, 409, j(r1.body)); assert.equal(r1.body.reason, 'auid_pinned'); assert.equal(r1.body.recover.envelopes.length, 1);
+    const rc = await recoverLogin(E, { idToken, envelopeId: r1.body.recover.envelopes[0].id, code: CODE_E.toLowerCase() });
+    assert.equal(rc.r.status, 200, j(rc.r.body)); assert.equal(rc.v.status, 200, j(rc.v.body)); assert.equal(E.calls, 0, '패스키를 묻지 않는다'); assert.equal(rc.PPID, own.PPID);
+    const n = await wlogin(E, 'g-rec-e');
+    assert.equal(n.r.status, 200, j(n.r.body)); assert.equal(E.calls, 1); assert.equal(n.PPID, own.PPID);
+    assert.ok(!(await E.dump()).includes(CODE_E), '코드가 남았다');
+  });
+  await t('첫 시도의 패스키가 바로 백업 패스키 [I4]: 다시 묻지 않고(derive 추가 0회) 200 — 기기 봉투를 보내지 않아 서버 봉투 수 그대로, 다음 로그인도 같은 PPID', async () => {
+    const credBF = mkCred('Y2lkLUJG');
+    const own = await owner('g-rec-f', { cid: 'Y2lkLUZB', backups: [{ kind: 'passkey', cred: credBF }] });
+    const F = browser(credBF.s_u, credBF.cid, Date.now, { prf: credBF.prf });
+    await F.core.passkeyConnect({ credentialId: F.cid, s_u: F.salt });
+    const f1 = await wlogin(F, 'g-rec-f'); assert.equal(f1.r.status, 409, j(f1.r.body)); assert.equal(F.calls, 1);
+    const rc = await recoverLogin(F, { idToken: f1.idToken, envelopeId: f1.r.body.recover.envelopes[0].id });
+    assert.equal(rc.r.status, 200, j(rc.r.body)); assert.equal(rc.v.status, 200, j(rc.v.body)); assert.equal(F.calls, 1, '다시 묻지 않는다'); assert.equal(rc.PPID, own.PPID);
+    assert.equal('envelope' in F.issues().at(-1).body, false, '기기 봉투를 보내지 않는다');
+    const pk = await F.kv.get('passkey'); assert.equal(pk.via, 'envelope'); assert.equal(pk.envelope.id, f1.r.body.recover.envelopes[0].id);
+    const probe = browser(undefined, 'Y2lkLVBy'); await probe.core.passkeyConnect({ credentialId: probe.cid, s_u: probe.salt });
+    const p = await wlogin(probe, 'g-rec-f'); assert.equal(p.r.status, 409, j(p.r.body)); assert.equal(p.r.body.recover.envelopes.length, 1, '서버 봉투 수 그대로');
+    const n = await wlogin(F, 'g-rec-f'); assert.equal(n.r.status, 200, j(n.r.body)); assert.equal(F.calls, 2); assert.equal(n.PPID, own.PPID);
+  });
+  let D = null, d1 = null;
+  const CODE_D = newRecoveryCode();
+  await t('복구 코드가 틀리면: 한 글자 → recovery_code_typo, 검사 문자까지 맞는 다른 코드 → envelope_open_failed — 발급 요청을 보내지 않고 요청 키는 남는다. 맞는 코드 → 200', async () => {
+    const own = await owner('g-rec-d', { cid: 'Y2lkLURB', backups: [{ kind: 'code', code: CODE_D }] });
+    D = browser(undefined, 'Y2lkLUQ'); await D.core.passkeyConnect({ credentialId: D.cid, s_u: D.salt });
+    d1 = await wlogin(D, 'g-rec-d'); assert.equal(d1.r.status, 409, j(d1.r.body));
+    const envelopeId = d1.r.body.recover.envelopes[0].id;
+    const typo = (CODE_D[0] === 'A' ? 'B' : 'A') + CODE_D.slice(1);
+    const r1 = await recoverLogin(D, { idToken: d1.idToken, envelopeId, code: typo }); assert.equal(r1.r.body.reason, 'recovery_code_typo', j(r1.r.body));
+    const r2 = await recoverLogin(D, { idToken: d1.idToken, envelopeId, code: newRecoveryCode() }); assert.equal(r2.r.body.reason, 'envelope_open_failed', j(r2.r.body));
+    assert.equal(D.issues().length, 1, '발급 요청은 첫 시도 한 번뿐'); assert.ok(await D.kv.get('wrapperKey'));
+    const ok = await recoverLogin(D, { idToken: d1.idToken, envelopeId, code: CODE_D });
+    assert.equal(ok.r.status, 200, j(ok.r.body)); assert.equal(ok.v.status, 200, j(ok.v.body)); assert.equal(ok.PPID, own.PPID); assert.equal(D.issues().length, 2);
+  });
+  await t('봉투 바꿔치기(Review Focus 3): 409 본문의 봉투를 다른 계정 것으로 → 그 계정의 코드로도 envelope_open_failed, 발급 없음', async () => {
+    const S = browser(undefined, 'Y2lkLVM'); await S.core.passkeyConnect({ credentialId: S.cid, s_u: S.salt });
+    const foreign = pinnedBody(C).envelopes;
+    S.rewrite = (u, body) => (u.endsWith('/cia/issue') && body.reason === 'auid_pinned' ? { ...body, envelopes: foreign } : null);
+    const s1 = await wlogin(S, 'g-rec-d'); assert.equal(s1.r.status, 409, j(s1.r.body)); assert.equal(s1.r.body.recover.envelopes.length, 2);
+    const codeEnv = s1.r.body.recover.envelopes.find((e) => e.kind === 'code');
+    const r = await recoverLogin(S, { idToken: s1.idToken, envelopeId: codeEnv.id, code: CODE });
+    assert.equal(r.r.status, 409, j(r.r.body)); assert.equal(r.r.body.reason, 'envelope_open_failed'); assert.equal(S.issues().length, 1);
+  });
+  await t('대조값이 맞지 않으면 [I1]: 맞는 코드로 봉투를 열어도 409 recover_auid_mismatch — 발급을 보내지 않는다', async () => {
+    // credential ID 는 기기마다 다르다(같으면 I4 로 그 기기 봉투를 고른다) — 앞 사례의 브라우저들과 겹치지 않게 준다
+    const S = browser(undefined, 'Y2lkLVMy'); await S.core.passkeyConnect({ credentialId: S.cid, s_u: S.salt });
+    S.rewrite = (u, body) => (u.endsWith('/cia/issue') && body.reason === 'auid_pinned' ? { ...body, auidCheck: '0'.repeat(64) } : null);
+    const s1 = await wlogin(S, 'g-rec-d'); assert.equal(s1.r.status, 409, j(s1.r.body));
+    const codeEnv = s1.r.body.recover.envelopes.find((e) => e.kind === 'code');
+    const r = await recoverLogin(S, { idToken: s1.idToken, envelopeId: codeEnv.id, code: CODE_D });
+    assert.equal(r.r.status, 409, j(r.r.body)); assert.equal(r.r.body.reason, 'recover_auid_mismatch'); assert.equal(S.issues().length, 1);
+  });
+  await t('복구 중 백업 패스키 창을 취소(Review Focus 2) → passkey_cancelled, 요청 키가 남아 다시 하면 200', async () => {
+    const credBG = mkCred('Y2lkLUJH');
+    const own = await owner('g-rec-g', { cid: 'Y2lkLUdB', backups: [{ kind: 'passkey', cred: credBG }] });
+    const G = browser(undefined, 'Y2lkLUc', Date.now, { extra: [credBG] });
+    await G.core.passkeyConnect({ credentialId: G.cid, s_u: G.salt });
+    const g1 = await wlogin(G, 'g-rec-g'); assert.equal(g1.r.status, 409, j(g1.r.body));
+    const envelopeId = g1.r.body.recover.envelopes[0].id;
+    G.cancelNext = true;
+    const r1 = await recoverLogin(G, { idToken: g1.idToken, envelopeId });
+    assert.equal(r1.r.status, 409, j(r1.r.body)); assert.equal(r1.r.body.reason, 'passkey_cancelled'); assert.ok(await G.kv.get('wrapperKey')); assert.equal(G.issues().length, 1);
+    const ok = await recoverLogin(G, { idToken: g1.idToken, envelopeId });
+    assert.equal(ok.r.status, 200, j(ok.r.body)); assert.equal(ok.PPID, own.PPID);
+  });
   await t('래퍼 설정이 아닌 코어에서는 wrapperBegin·wrapperLogin 이 409 not_wrapper_mode', async () => {
     const kv = createMemKv();
     const core = createUserCore({ kv, config: { ...config, wrapper: false }, provider, canonProvider: provider, fullProve, passkey: { derive: async () => ({}) } });
     assert.equal((await core.wrapperBegin()).body.reason, 'not_wrapper_mode');
     assert.equal((await core.wrapperLogin({}, { idToken: 'a.b.c' })).body.reason, 'not_wrapper_mode');
+    assert.equal((await core.wrapperLoginRecover({}, { idToken: 'a.b.c' })).body.reason, 'not_wrapper_mode');
+    assert.equal((await core.wrapperEnvelopeAdd({ idToken: 'a.b.c', kind: 'code' })).body.reason, 'not_wrapper_mode');
+    assert.equal((await core.wrapperEnvelopeRemove({ idToken: 'a.b.c', id: '0'.repeat(32) })).body.reason, 'not_wrapper_mode');
   });
 } finally { await stack.stop(); }
 console.log(fails ? `\n${fails} 실패` : '\n모두 통과');

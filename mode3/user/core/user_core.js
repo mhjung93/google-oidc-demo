@@ -22,7 +22,8 @@ import { verifyRpCert } from '../../../lib/mode3_rp_cert.js';
 import { MODE3_ROOTS_ABI } from '../../../lib/mode3_log.js';
 import { bounded } from '../../../lib/mode3_health.js';
 import { uidOf, regNonce, issueNonce } from '../../../lib/mode3_oidc_nonce.js';
-import { generateRequestKey, wrapperNonce, signIssue, signDigest, revokeDigest } from '../../../lib/mode3_wrapper_auth.js';
+import { generateRequestKey, wrapperNonce, signIssue, signDigest, revokeDigest, envelopeDigest } from '../../../lib/mode3_wrapper_auth.js';
+import { envKeyFromCode, newEnvelopeId, sealSalt, openSalt, isEnvelope, auidCheckOf } from '../../../lib/mode3_salt_envelope.js';
 
 export const USER_STATE_VERSION = 1;
 export const DEFAULT_PROFILE = Object.freeze({ birthYear: '1990', country: 'KR' });   // 데모 testuser 기본값(에이전트와 같다). 사용자가 등록 폼에서 바꿀 수 있다.
@@ -101,6 +102,14 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
   // withSalt 범위(계획 R-8): 범위 안에서 처음 얻은 salt 를 메모리로 재사용한다 — 한 범위에서 패스키는 한 번만. 가장 바깥 범위가 끝나면 버린다.
   // 범위 밖의 동작은 salt 가 필요할 때마다 패스키를 묻는다(2026-11-20: 저장된 보관분이 없다).
   let saltDepth = 0, saltMemo = null;
+  // salt 봉투(계획 2026-11-24 salt-envelope Task 4, 래퍼 방식만). 둘 다 메모리에만 두고 withSalt 범위를 넘어 남는다 — auid_pinned 뒤의 복구는 다른 동작이다 [I5].
+  // recoverMemo = { credentialId, envKey, at }: 이번 요청 키 동안 이 기기 패스키의 봉투 열쇠(추출 불가 CryptoKey) — 복구가 기기 봉투를 만들 때 패스키를 다시 묻지 않게.
+  // recoverOffer = { auidCheck, envelopes, uid, at }: 409 auid_pinned 본문의 대조값·봉투(암호문 포함) — 응답·로그에는 싣지 않는다 [m9].
+  // 수명은 요청 키와 같다(WRAPPER_KEY_MAX_MS). wrapperBegin·복구 성공·요청 키를 지울 때 함께 지운다.
+  const WRAP = PK && config.wrapper === true;
+  let recoverMemo = null, recoverOffer = null;
+  const liveMemo = (m) => (m && Number.isFinite(m.at) && now() - m.at <= WRAPPER_KEY_MAX_MS ? m : null);
+  const dropRecover = () => { recoverMemo = null; recoverOffer = null; };
   // ---- 로그인 전체 플로우 기록(스펙 2026-11-19 login-flow-and-phone-passkey F1~F4) ----
   // login() 한 번이 도는 동안의 단계별 시간을 모은다 — 성공하면 kv `loginFlow` 에 가장 최근 것 하나만 둔다(loginFlow() 가 읽는다). 공개값뿐이다.
   // 시간은 performance.now()(밀리초 아래까지 — 가명·난수는 0.1ms 안팎이다), 없으면 주입된 now. login 밖에서는 flowRec 이 null 이라 아무것도 남지 않는다.
@@ -156,10 +165,20 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     const d = await passkey.derive({ credentialId: pk.credentialId, ...(pk.info?.transports?.length ? { transports: pk.info.transports } : {}), ...(pk.info?.hint ? { hints: [pk.info.hint] } : {}) });
     scopeDerive = { ms: tick() - td, t0: td, timing: d?.timing ?? null };
     if (d?.credentialId !== pk.credentialId) throw tag('passkey_mismatch');
-    if (!isSalt(d.s_u)) throw tag('passkey_bad_salt');
+    // 래퍼 방식: 이 패스키의 봉투 열쇠를 복구 메모로 둔다 — 발급이 auid_pinned 로 거절되면 복구가 이 열쇠로 기기 봉투를 만든다 [I5]
+    if (WRAP && d.envKey) recoverMemo = { credentialId: d.credentialId, envKey: d.envKey, at: now() };
     const reg = await getReg();
-    if (reg && (await auidOf({ s_u: BigInt(d.s_u) })).toString() !== String(reg.auid)) throw tag('passkey_mismatch');
-    const s = BigInt(d.s_u).toString();
+    let raw = d.s_u;
+    if (pk.via === 'envelope') {
+      // 복구한 기기(salt 봉투): salt 는 이 패스키의 PRF 가 아니라 로컬 봉투 안에 있다 — 그 패스키의 envKey 로 연다. 봉투의 uid 는 등록의 계정과 같아야 한다.
+      const e = pk.envelope;
+      if (!e || !d.envKey) throw tag('envelope_open_failed');
+      if (reg && String(reg.uid) !== String(e.uid)) throw tag('passkey_mismatch');
+      raw = await openSalt({ key: d.envKey, ct: e.ct, uid: String(e.uid), id: e.id, kind: e.kind ?? 'device', credentialId: pk.credentialId });
+      if (!isSalt(raw)) throw tag('envelope_open_failed');
+    } else if (!isSalt(raw)) throw tag('passkey_bad_salt');
+    if (reg && (await auidOf({ s_u: BigInt(raw) })).toString() !== String(reg.auid)) throw tag('passkey_mismatch');
+    const s = BigInt(raw).toString();
     if (saltDepth > 0) saltMemo = s;
     return s;
   }
@@ -250,6 +269,44 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     await kv.set('registration', { uid, auid: auid.toString(), slot: null, provider, profile: normalized, attrs, userCred: null, pendingIdp: true, wrapper: true });
     await putSessions({}); await kv.del('loginFlow');   // 앞 등록(예전 방식)의 세션·"가장 최근 로그인" 기록을 남기지 않는다
     return null;
+  }
+  /** salt 봉투 추가·삭제의 공통 왕복(계획 2026-11-24 salt-envelope Task 4) — 세션 끝내기와 같은 결속: wrapperBegin 의 1회용 요청 키에 묶인 Google 토큰 + envelopeDigest 서명.
+   *  build({ uid }) 가 요청({ op, envelope } 또는 { op, id })을 만든다(패스키·코드가 필요하면 그 안에서). 토큰의 계정이 이 브라우저의 등록 계정과 다르면 보내지 않는다.
+   *  패스키 창 취소·코드 오타처럼 보내기 전에 멈추면 요청 키를 남긴다(같은 화면에서 다시). 보낸 뒤에는 결과와 관계없이 지운다(토큰은 1회용이다).
+   *  200 이면 kv envelopes(목록 메타 — 암호문 없음)를 응답으로 바꾼다. */
+  async function envelopeCall(idToken, build) {
+    if (typeof idToken !== 'string' || !idToken) return R(400, { error: 'idToken(문자열) 필요' });
+    let keepKey = false;
+    try {
+      const reg = await getReg();
+      if (!reg || reg.wrapper !== true || reg.pendingIdp) return R(409, { reason: 'not_registered' });
+      let claims;
+      try { claims = jwtPayload(idToken); } catch { return R(400, { reason: 'oidc_invalid', detail: 'id_token 형식이 아니다' }); }
+      if (typeof claims?.sub !== 'string' || !claims.sub) return R(400, { reason: 'oidc_invalid', detail: 'sub 가 없다' });
+      const wk = (await kv.get('wrapperKey')) ?? null;
+      if (!wk?.privateKey || !wk.pkE || claims.nonce !== await wrapperNonce(wk.pkE)) return R(409, { reason: 'wrapper_key_missing' });
+      if (!(Number.isFinite(wk.at) && now() - wk.at <= WRAPPER_KEY_MAX_MS)) return R(409, { reason: 'wrapper_key_missing' });
+      let keys;
+      try { keys = await idp.publicKeys(); } catch (e) { return R(502, { reason: 'cia_unavailable', detail: e.message }); }
+      const pub = keys.status === 200 ? keys.body : null;
+      if (pub?.wrapper !== true || typeof pub.wrapperAud !== 'string' || typeof pub.oidc?.provider !== 'string') return R(503, { reason: 'wrapper_disabled' });
+      if (uidOf(pub.oidc.provider, claims.sub) !== String(reg.uid)) return R(409, { reason: 'wrapper_account_mismatch' });
+      let req;
+      try { req = await build({ uid: String(reg.uid) }); }
+      catch (e) {
+        if (typeof e?.reason === 'string' && e.reason.startsWith('recovery_code_')) { keepKey = true; return R(400, { reason: e.reason }); }
+        if (typeof e?.reason === 'string' && e.reason.startsWith('passkey_')) { keepKey = true; return R(409, { reason: e.reason }); }
+        throw e;
+      }
+      const sig = await signDigest(wk.privateKey, envelopeDigest(req, pub.wrapperAud));
+      let r;
+      try { r = await idp.post('/cia/wrapper/envelope', { id_token: idToken, pk_e: wk.pkE, sig, ...req }); }
+      catch (e) { return R(502, { reason: 'cia_unavailable', detail: e.message }); }
+      if (r.status !== 200) return R(r.status, r.body ?? {});
+      const list = (Array.isArray(r.body?.envelopes) ? r.body.envelopes : []).map(({ id, kind, credentialId, createdAt }) => ({ id, kind, credentialId: credentialId ?? null, createdAt: createdAt ?? null }));
+      await kv.set('envelopes', list);
+      return R(200, { envelopes: list });
+    } finally { if (!keepKey) { await kv.del('wrapperKey'); dropRecover(); } }
   }
   /** 발급 요청에 실을 등록 재료(Google 첫 로그인) — auid 뿐이다. IdP 는 이 발급 증명을 그 auid 로 검증한 뒤 등록한다(스펙 2026-11-12 no-pk-u §3.2). */
   function regMaterials(src) { return { auid: String(src.registration().auid) }; }
@@ -379,7 +436,11 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     const req = wrapper ? await buildWrapperIssueBody(material)
       : await noted({ purpose: 'issue', arid: String(arid), origin: origin ?? null, serviceName, r_s: BigInt(r_s).toString() }, () => buildIssueRequest({ ...material, n, fullProve: provers.idp }));
     if (ov?.uid && !wrapper) req.body.uid = reg.uid;   // 요청 본문의 uid 는 진짜 — C_u·π_IdP 안의 uid 만 바뀐다(스펙 §8.3)
-    if (wrapper) Object.assign(req.body, { id_token: wrapper.idToken, pk_e: wrapper.pkE, sig: await signIssue(wrapper.privateKey, req.body, wrapper.aud) });
+    if (wrapper) {
+      // 복구 발급의 기기 봉투(salt 봉투 [I6]): 서명 앞에 싣는다 — issueDigest 가 봉투까지 덮는다. 없으면 본문·서명은 예전과 같다.
+      if (wrapper.envelope) req.body.envelope = wrapper.envelope;
+      Object.assign(req.body, { id_token: wrapper.idToken, pk_e: wrapper.pkE, sig: await signIssue(wrapper.privateKey, req.body, wrapper.aud) });
+    }
     // OIDC 래퍼(RP 로그인 흐름, 2026-10-16): Google 토큰을 발급 요청에 싣는다. IdP 에 계정이 아직 없으면(첫 로그인) 등록 재료도 함께 — IdP 가 그 자리에서 등록·발급.
     if (oidc?.id_token) { req.body.id_token = oidc.id_token; if (oidc.registration) req.body.registration = oidc.registration; }
     // 인증 코드(CIA_ISSUE_AUTH=code, passkey-web W5): 인증 창이 낸 1회용 발급 코드를 그대로 싣는다(저장·기록하지 않는다).
@@ -730,7 +791,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
      *  인증서 오리진(body.origin)과 대조한다(피싱 페이지는 인증서의 오리진에서 메시지를 보낼 수 없다). 비밀은 금고에서(witness 없음).
      *  사유·상태 코드·검사 순서는 에이전트와 같다. 성공 본문에는 비밀·uid 가 없다. */
     async login(body, { verifiedOrigin = null, serviceName = null, policy = null, idToken = null, n: nIn = null, authCode = null, wrapper = null } = {}) {
-      // wrapper(래퍼 방식, 내부용 — wrapperLogin 이 부른다): { idToken, privateKey, pkE, aud, googleMs }. Google 을 다녀온 시간은 이 로그인이 시작되기 전의 것이다(before).
+      // wrapper(래퍼 방식, 내부용 — wrapperLogin·wrapperLoginRecover 가 부른다): { idToken, privateKey, pkE, aud, googleMs, envelope?(복구의 기기 봉투), onPinned?(409 auid_pinned 본문을 받는다) }. Google 을 다녀온 시간은 이 로그인이 시작되기 전의 것이다(before).
       if (wrapper && Number.isFinite(wrapper.googleMs)) flowStep('google', wrapper.googleMs, { before: true });
       if (PK && idToken !== null) return PASSKEY_MODE();   // R-6: Google 래퍼 로그인
       // 인증 코드(W5, CIA_ISSUE_AUTH=code): 인증 창이 낸 1회용 발급 코드 — /cia/issue 의 auth_code 로 그대로 싣는다(cred_revoked 재시도도 같은 코드).
@@ -858,7 +919,11 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
         r = retried.r; demo = retried.demo;
       }
       // 래퍼 방식의 거절(wrapper_*·auid_pinned·auid_taken·auid_s_taken·cf_u_taken·cred_change_too_soon·account_disabled …)은 사유·상태 그대로 — 창이 사유별로 안내한다.
-      if (wrapper && r.status !== 200 && typeof r.body?.reason === 'string') return R(r.status, { reason: r.body.reason, cia: r.body, timings });
+      if (wrapper && r.status !== 200 && typeof r.body?.reason === 'string') {
+        // salt 봉투 [m9]: auid_pinned 의 대조값·봉투(암호문)는 응답(cia 칸)에 싣지 않는다 — 부른 쪽(wrapperLogin)이 onPinned 로 받아 메모리에만 둔다.
+        if (r.body.reason === 'auid_pinned') { wrapper.onPinned?.(r.body); return R(r.status, { reason: 'auid_pinned', timings }); }
+        return R(r.status, { reason: r.body.reason, cia: r.body, timings });
+      }
       if (typeof r.body?.reason === 'string' && (r.body.reason.startsWith('oidc_') || r.body.reason === 'uid_mismatch')) return R(r.status, { reason: r.body.reason, cia: r.body, timings });   // 래퍼 사유는 그대로(2026-10-16)
       // R-13: 인증 코드 정책의 401(코드 없음·틀린/쓴 코드)은 issue_failed 로 뭉개지 않고 사유·상태 그대로 — 화면이 인증 창으로 다시 보낸다.
       // passkey-web 에서만이다 — web 모드는 이전처럼 아래 502 issue_failed(2026-11-17 미뤄 둔 Minor C: "web 은 바꾸지 않는다").
@@ -913,14 +978,18 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     async wrapperBegin() {
       if (!PK || config.wrapper !== true) return R(409, { reason: 'not_wrapper_mode' });
       const k = await generateRequestKey();
+      dropRecover();   // 앞선 요청 키의 복구 메모·제안은 새 키와 함께 쓰지 않는다
       await kv.set('wrapperKey', { privateKey: k.privateKey, pkE: k.pkE, at: now() });
       return R(200, { pkE: k.pkE, googleNonce: await wrapperNonce(k.pkE) });
     },
     /** 래퍼 로그인 2단계 — Google 에서 돌아온 뒤: 패스키(한 번) → salt → 발급 요청(가명·커밋먼트 + Google 토큰 + 요청 키의 서명, π_IdP 없음) → 세션 토큰 → π_RP.
      *  응답은 login 과 같다. 이 브라우저에 등록이 없으면(또는 예전 방식의 등록이면) 토큰의 계정으로 로컬 등록을 만든다 — 발급이 거절되면 되돌린다.
      *  요청 키는 끝나면 지운다(패스키를 취소·실패한 경우만 남긴다 — 토큰을 아직 쓰지 않았으니 창이 다시 물을 수 있다).
-     *  salt: 창이 방금 만든 패스키의 값(있으면 그 로그인에 바로 쓴다 — 첫 등록에서만, 패스키를 다시 묻지 않는다). profile·recordAuid: 속성 도구 기록 — 그 기록이 이 패스키의 것일 때만 쓴다. */
-    async wrapperLogin(body, { idToken = null, verifiedOrigin = null, serviceName = null, policy = null, googleMs = null, profile = null, recordAuid = null, salt = null } = {}) {
+     *  salt: 창이 방금 만든 패스키의 값(있으면 그 로그인에 바로 쓴다 — 첫 등록에서만, 패스키를 다시 묻지 않는다). profile·recordAuid: 속성 도구 기록 — 그 기록이 이 패스키의 것일 때만 쓴다.
+     *  envKey(salt 봉투 [I5]): 방금 만든 패스키의 봉투 열쇠(createPasskey 가 준 추출 불가 CryptoKey) — 복구 메모에만 둔다.
+     *  409 auid_pinned(이 Google 계정은 다른 salt 에 묶였다)이고 서버에 봉투가 있으면 recover.envelopes(id·kind·credentialId)를 싣고 요청 키를 남긴다 — 창이 wrapperLoginRecover 로 이어 간다.
+     *  암호문·대조값은 코어 메모리(recoverOffer)에만 둔다 [m9]. */
+    async wrapperLogin(body, { idToken = null, verifiedOrigin = null, serviceName = null, policy = null, googleMs = null, profile = null, recordAuid = null, salt = null, envKey = null } = {}) {
       if (!PK || config.wrapper !== true) return R(409, { reason: 'not_wrapper_mode' });
       if (typeof idToken !== 'string' || !idToken) return R(400, { error: 'idToken(문자열) 필요' });
       if (salt !== null && !isSalt(salt)) return R(400, { reason: 'passkey_bad_salt' });
@@ -931,7 +1000,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       // 토큰은 지금의 요청 키에 묶인 것이어야 한다 — 아니면 서버가 어차피 거절한다(wrapper_nonce_mismatch). 패스키를 묻기 전에 걸러 처음부터 다시 하게 한다.
       if (!wk?.privateKey || !wk.pkE || claims.nonce !== await wrapperNonce(wk.pkE)) return R(409, { reason: 'wrapper_key_missing' });
       // 요청 키의 수명(최종 검토 M-8): wrapperBegin 뒤 WRAPPER_KEY_MAX_MS 가 지난 키는 쓰지 않고 지운다 — 창을 버려 두면 키가 다음 로그인까지 남지 않게. Google 부터 다시 한다.
-      if (!(Number.isFinite(wk.at) && now() - wk.at <= WRAPPER_KEY_MAX_MS)) { await kv.del('wrapperKey'); return R(409, { reason: 'wrapper_key_missing' }); }
+      if (!(Number.isFinite(wk.at) && now() - wk.at <= WRAPPER_KEY_MAX_MS)) { await kv.del('wrapperKey'); dropRecover(); return R(409, { reason: 'wrapper_key_missing' }); }
       let keys;
       try { keys = await idp.publicKeys(); } catch (e) { return R(502, { reason: 'cia_unavailable', detail: e.message }); }
       const pub = keys.status === 200 ? keys.body : null;
@@ -940,14 +1009,19 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       const prev = await getReg();
       // 이 브라우저(이 패스키)는 한 Google 계정에 묶인다 — 다른 계정으로 오면 서버가 auid_taken 으로 거절할 일이라, 가기 전에 까닭을 말한다.
       if (prev?.wrapper === true && String(prev.uid) !== uid) return R(409, { reason: 'wrapper_account_mismatch' });
-      let keepKey = false;
+      // 복구한 기기의 로컬 봉투도 한 계정의 salt 다(등록이 지워진 뒤에도) — 다른 계정으로는 쓰지 않는다
+      const pkNow = (await kv.get('passkey')) ?? null;
+      if (pkNow?.via === 'envelope' && String(pkNow.envelope?.uid) !== uid) return R(409, { reason: 'wrapper_account_mismatch' });
+      let keepKey = false, pinned = null;
       try {
         return await core.withSalt(async () => {
           let created = false;
           if (prev?.wrapper !== true) {
             if (salt !== null) {   // 방금 만든 패스키: 연결된 패스키가 있을 때만 그 값을 이 범위의 메모로 둔다(저장하지 않는다)
-              if (!((await kv.get('passkey')) ?? null)?.credentialId) return R(409, { reason: 'passkey_setup_required' });
+              const pkMade = (await kv.get('passkey')) ?? null;
+              if (!pkMade?.credentialId) return R(409, { reason: 'passkey_setup_required' });
               saltMemo = BigInt(salt).toString();
+              if (WRAP && envKey) recoverMemo = { credentialId: pkMade.credentialId, envKey, at: now() };
             }
             const made = await wrapperLocalRegister({ uid, provider: pub.oidc.provider, s_u: await saltNow(), profileIn: profile, recordAuid });
             if (made) return made;
@@ -956,15 +1030,101 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
             const sy = await ops.syncProfileFromRecord({ recordAuid, profile });   // 속성 변경(W5): 기록의 속성으로 맞춘다 — 이번 로그인이 새 속성의 C_u 를 받는다
             if (sy.status !== 200) return sy;
           }
-          const r = await ops.login(body, { verifiedOrigin, serviceName, policy, wrapper: { idToken, privateKey: wk.privateKey, pkE: wk.pkE, aud: pub.wrapperAud, googleMs } });
+          const r = await ops.login(body, { verifiedOrigin, serviceName, policy, wrapper: { idToken, privateKey: wk.privateKey, pkE: wk.pkE, aud: pub.wrapperAud, googleMs, onPinned: (b) => { pinned = b; } } });
           // 발급이 거절된 첫 로그인: 방금 만든 로컬 등록을 되돌린다(서버에 없는 계정을 가리키는 등록을 남기지 않는다). 발급이 된 뒤의 실패는 남긴다.
           if (r.status !== 200 && created && (await getReg())?.pendingIdp) { await kv.del('registration'); await putSessions({}); }
+          if (r.status === 409 && r.body?.reason === 'auid_pinned') {
+            // 복구 제안(salt 봉투): 봉투가 있으면 대조값·암호문은 메모리에, 응답에는 고를 수 있게 id·kind·credentialId 만. 봉투가 없으면 복구할 길이 없어 요청 키도 지운다.
+            const envs = Array.isArray(pinned?.envelopes) ? pinned.envelopes.filter(isEnvelope) : [];
+            if (envs.length && typeof pinned.auidCheck === 'string') { recoverOffer = { auidCheck: pinned.auidCheck, envelopes: envs, uid, at: now() }; keepKey = true; }
+            return R(409, { reason: 'auid_pinned', recover: { envelopes: envs.map(({ id, kind, credentialId }) => ({ id, kind, credentialId })) } });
+          }
           return r;
         });
       } catch (e) {
         if (typeof e?.reason === 'string' && e.reason.startsWith('passkey_')) keepKey = true;
         throw e;
-      } finally { if (!keepKey) await kv.del('wrapperKey'); }
+      } finally { if (!keepKey) { await kv.del('wrapperKey'); dropRecover(); } }
+    },
+    /** salt 봉투 복구(계획 2026-11-24 salt-envelope Task 4) — wrapperLogin 이 409 auid_pinned 를 받은 뒤 **같은 요청 키·같은 Google 토큰** 으로: 백업 봉투를 열어 계정의 salt 를
+     *  되찾고(서버가 준 대조값과 맞을 때만 — 아니면 발급을 보내지 않는다 [I1]), 이 기기 패스키로 잠근 기기 봉투를 실어 다시 발급받는다 [I8]. 응답은 login 과 같다.
+     *  envelopeId: 고른 봉투. 복구 메모의 패스키(첫 시도에 고른 패스키)가 어떤 봉투의 credential 이면 그 봉투를 다시 묻지 않고 열고, 새 봉투도 만들지 않는다 —
+     *  그 봉투가 이 기기의 로컬 사본이 된다 [I4]. code: 복구 코드 봉투의 코드(저장하지 않는다).
+     *  실패하면 방금 만든 로컬 등록을 되돌리고 요청 키는 남긴다 — 10분 안에 같은 화면에서 다시 할 수 있다 [m2]. 토큰을 이미 썼거나 계정이 폐기됐으면 키·메모를 지운다. */
+    async wrapperLoginRecover(body, { idToken = null, verifiedOrigin = null, serviceName = null, policy = null, envelopeId = null, code = null } = {}) {
+      if (!WRAP) return R(409, { reason: 'not_wrapper_mode' });
+      if (typeof idToken !== 'string' || !idToken) return R(400, { error: 'idToken(문자열) 필요' });
+      let claims;
+      try { claims = jwtPayload(idToken); } catch { return R(400, { reason: 'oidc_invalid', detail: 'id_token 형식이 아니다' }); }
+      if (typeof claims?.sub !== 'string' || !claims.sub) return R(400, { reason: 'oidc_invalid', detail: 'sub 가 없다' });
+      const wk = (await kv.get('wrapperKey')) ?? null;
+      if (!wk?.privateKey || !wk.pkE || claims.nonce !== await wrapperNonce(wk.pkE)) return R(409, { reason: 'wrapper_key_missing' });
+      if (!(Number.isFinite(wk.at) && now() - wk.at <= WRAPPER_KEY_MAX_MS)) { await kv.del('wrapperKey'); dropRecover(); return R(409, { reason: 'wrapper_key_missing' }); }
+      let keys;
+      try { keys = await idp.publicKeys(); } catch (e) { return R(502, { reason: 'cia_unavailable', detail: e.message }); }
+      const pub = keys.status === 200 ? keys.body : null;
+      if (pub?.wrapper !== true || typeof pub.wrapperAud !== 'string' || typeof pub.oidc?.provider !== 'string') return R(503, { reason: 'wrapper_disabled' });
+      const uid = uidOf(pub.oidc.provider, claims.sub);
+      // 제안·메모는 이 토큰의 계정·이 기기의 연결된 패스키 것이어야 한다 — 아니면(창을 새로 열었다 등) 처음부터 다시 한다. 패스키를 묻기 전에 거른다.
+      const offer = liveMemo(recoverOffer), memo = liveMemo(recoverMemo);
+      const pk = (await kv.get('passkey')) ?? null;
+      if (!offer || offer.uid !== uid || !memo || !pk?.credentialId || memo.credentialId !== pk.credentialId) return R(409, { reason: 'recover_offer_missing' });
+      const prev = await getReg();
+      if (prev?.wrapper === true && String(prev.uid) !== uid) return R(409, { reason: 'wrapper_account_mismatch' });
+      // 1. 봉투와 열쇠 [I4]: 첫 시도의 패스키가 곧 백업이면 그 열쇠로. 아니면 고른 봉투 — 패스키 봉투는 그 credential 의 패스키에서, 코드 봉투는 코드에서.
+      const own = offer.envelopes.find((e) => e.credentialId !== null && e.credentialId === memo.credentialId) ?? null;
+      const env = own ?? offer.envelopes.find((e) => e.id === envelopeId) ?? null;
+      if (!env) return R(404, { reason: 'envelope_unknown' });
+      let key, derived = null;
+      if (own) key = memo.envKey;
+      else if (env.kind === 'code') {
+        try { key = await envKeyFromCode(code); }
+        catch (e) { if (typeof e?.reason === 'string' && e.reason.startsWith('recovery_code_')) return R(400, { reason: e.reason }); throw e; }
+      } else {
+        const td = tick();
+        const d = await passkey.derive({ credentialId: env.credentialId });
+        derived = { ms: tick() - td, t0: td, timing: d?.timing ?? null };
+        if (d?.credentialId !== env.credentialId) return R(409, { reason: 'envelope_credential_mismatch' });
+        if (!d.envKey) return R(409, { reason: 'envelope_open_failed' });
+        key = d.envKey;
+      }
+      // 2. 열고 대조한다 — 다른 계정·다른 봉투의 암호문(AAD 가 다르다)이나 틀린 열쇠면 envelope_open_failed, 계정의 auid 가 아니면 recover_auid_mismatch. 둘 다 발급 전이다.
+      let s_u;
+      try { s_u = await openSalt({ key, ct: env.ct, uid, id: env.id, kind: env.kind, credentialId: env.credentialId }); }
+      catch (e) { if (e?.reason === 'envelope_open_failed') return R(409, { reason: e.reason }); throw e; }
+      if (!isSalt(s_u)) return R(409, { reason: 'envelope_open_failed' });
+      s_u = BigInt(s_u).toString();
+      if ((await auidCheckOf(uid, (await auidOf({ s_u: BigInt(s_u) })).toString())) !== offer.auidCheck) return R(409, { reason: 'recover_auid_mismatch' });
+      // 3. 이 기기의 사본 [I8]: I4 면 그 백업 봉투 그대로, 아니면 이 기기 패스키의 열쇠로 새 기기 봉투(발급 본문에 실려 서버에도 남는다).
+      let envelope = null, local;
+      if (own) local = { id: env.id, kind: env.kind, ct: env.ct, uid };
+      else {
+        const id = newEnvelopeId();
+        const ct = await sealSalt({ key: memo.envKey, s_u, uid, id, kind: 'device', credentialId: memo.credentialId });
+        envelope = { id, kind: 'device', credentialId: memo.credentialId, ct };
+        local = { id, kind: 'device', ct, uid };
+      }
+      const r = await core.withSalt(async () => {
+        const made = await wrapperLocalRegister({ uid, provider: pub.oidc.provider, s_u });
+        if (made) return made;
+        saltMemo = s_u;
+        if (derived) scopeDerive = derived;   // 로그인 기록의 passkey 단계 = 백업 패스키를 물은 시간
+        const out = await ops.login(body, { verifiedOrigin, serviceName, policy, wrapper: { idToken, privateKey: wk.privateKey, pkE: wk.pkE, aud: pub.wrapperAud, ...(envelope ? { envelope } : {}) } });
+        if (out.status !== 200 && (await getReg())?.pendingIdp) { await kv.del('registration'); await putSessions({}); }
+        return out;
+      });
+      if (r.status === 200) {
+        await kv.set('passkey', { ...pk, via: 'envelope', envelope: local });
+        // 목록 메타(암호문 없음): 제안의 봉투 + 방금 더한 기기 봉투(같은 credential 의 옛 기기 봉투는 서버가 바꿔 넣는다). 만든 시각은 제안에 없다.
+        const meta = offer.envelopes.filter((e) => !(envelope && e.kind === 'device' && e.credentialId === envelope.credentialId)).map(({ id, kind, credentialId }) => ({ id, kind, credentialId, createdAt: null }));
+        if (envelope) meta.push({ id: envelope.id, kind: 'device', credentialId: envelope.credentialId, createdAt: null });
+        await kv.set('envelopes', meta);
+        await kv.del('wrapperKey'); dropRecover();
+        return r;
+      }
+      // 같은 토큰으로는 다시 해도 안 되는 실패 — 키·메모를 지워 창이 처음(Google)부터 하게 한다. 그 밖은 남긴다 [m2].
+      if (r.body?.reason === 'wrapper_token_used' || r.body?.reason === 'account_disabled') { await kv.del('wrapperKey'); dropRecover(); }
+      return r;
     },
     /** 에이전트 POST /wallet/revalidate 의 등가(origin 은 Origin 헤더 자리 — 팝업이 event.origin 을 넘긴다). */
     async revalidate({ r_s, skipSync = false, arid = null, origin = null } = {}) {
@@ -1251,6 +1411,34 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
         return R(200, { revoked: true, sessions: sessions.length, rpNotified });
       } finally { await kv.del('wrapperKey'); }
     },
+    /** salt 봉투 — 백업 더하기(계획 2026-11-24 salt-envelope Task 4): kind 'passkey'(백업 패스키) 또는 'code'(복구 코드). 지금의 salt(패스키 한 번)를 그 백업의 열쇠로 잠가
+     *  서버에 둔다. 백업 패스키는 여기서 만든다 — 같은 인증기에 백업이 생기지 않게 연결된 패스키와 이미 아는 봉투들의 credential 을 뺀다 [I7]. 사용자 동작이 필요한 브라우저를 위해
+     *  만들기를 먼저 부른다(창이 버튼 클릭으로 이 동작을 시작한다). code: 화면이 만들어 보이고 다시 입력받은 코드 — 저장하지 않는다. 응답 { envelopes }(암호문 없음). */
+    async wrapperEnvelopeAdd({ idToken = null, kind = null, code = null } = {}) {
+      if (!WRAP) return R(409, { reason: 'not_wrapper_mode' });
+      if (kind !== 'passkey' && kind !== 'code') return R(400, { reason: 'envelope_bad' });
+      return envelopeCall(idToken, async ({ uid }) => {
+        const id = newEnvelopeId();
+        let key, credentialId = null;
+        if (kind === 'passkey') {
+          if (typeof passkey?.create !== 'function') throw tag('passkey_unsupported');
+          const pk = (await kv.get('passkey')) ?? null;
+          const known = ((await kv.get('envelopes')) ?? []).map((e) => e?.credentialId).filter((c) => typeof c === 'string');
+          const c = await passkey.create({ excludeCredentialIds: [...new Set([pk?.credentialId, ...known].filter(Boolean))] });
+          if (!c?.credentialId || !c.envKey) throw tag('passkey_unsupported');
+          if (c.credentialId === pk?.credentialId) throw tag('passkey_already_registered');
+          key = c.envKey; credentialId = c.credentialId;
+        } else key = await envKeyFromCode(code);
+        const s_u = await saltNow();
+        return { op: 'add', envelope: { id, kind, credentialId, ct: await sealSalt({ key, s_u, uid, id, kind, credentialId }) } };
+      });
+    },
+    /** salt 봉투 — 지우기(백업이든 복구한 기기의 봉투든, id 로). 패스키를 묻지 않는다. 이미 복구한 기기는 자기 로컬 사본으로 계속 된다 [m6]. 응답 { envelopes }. */
+    async wrapperEnvelopeRemove({ idToken = null, id = null } = {}) {
+      if (!WRAP) return R(409, { reason: 'not_wrapper_mode' });
+      if (typeof id !== 'string' || !/^[0-9a-f]{32}$/.test(id)) return R(400, { reason: 'envelope_bad' });
+      return envelopeCall(idToken, async () => ({ op: 'remove', id }));
+    },
     /** 에이전트 POST /wallet/self_revoke 의 등가 — IdP /cia/account/self_revoke 를 직접 부른다(cia.js CORS, Task 6). 비밀번호는 넘길 뿐
      *  어디에도 남기지 않는다. 이 지갑이 들고 있는 계정만 — 임의 uid·pwd 를 IdP 에 던져 보는 통로가 되지 않게. */
     async selfRevoke({ uid, pwd } = {}) {
@@ -1342,7 +1530,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       // R-12: passkey-web 은 패스키 연결(credential ID — 공개값)을 남긴다 — 금고·등록·세션은(예전 버전의 salt 보관분도) 지운다. 연결 끊기는 passkeyDisconnect.
       // 2026-11-18(사용자 요청): 데모 리셋은 연결도 끊는다 — 사용자 페이지가 데모 세대가 바뀌었을 때 keepPasskey:false 로 부른다(화면의 "모두 지우기" 는 기본값 그대로).
       const keep = PK && keepPasskey ? ((await kv.get('passkey')) ?? null) : null;
-      await kv.clear(); vault.reset(); lastSync = null; lastRegistry = null; pendingReg = null; saltMemo = null;
+      await kv.clear(); vault.reset(); lastSync = null; lastRegistry = null; pendingReg = null; saltMemo = null; dropRecover();
       if (keep) await kv.set('passkey', keep);
       return R(200, { ok: true });
     },
@@ -1371,14 +1559,16 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       if (reg && (await auidOf({ s_u: BigInt(s_u) })).toString() !== String(reg.auid)) return R(409, { reason: 'passkey_mismatch' });
       await ensureVault();
       const keepInfo = info ?? pk?.info ?? null;   // 다시 연결하면 새 정보로 바꾼다 — 안 주면 있던 것을 둔다
-      if (!pk || info) await kv.set('passkey', { credentialId, createdAt: pk?.createdAt ?? now(), ...(keepInfo ? { info: keepInfo } : {}) });
+      // 복구한 기기의 로컬 봉투(salt 봉투, 래퍼 방식)는 같은 패스키를 다시 연결해도 남긴다 — 없으면 예전과 같은 모양이다
+      const keepEnv = pk?.via === 'envelope' ? { via: pk.via, envelope: pk.envelope } : {};
+      if (!pk || info) await kv.set('passkey', { credentialId, createdAt: pk?.createdAt ?? now(), ...(keepInfo ? { info: keepInfo } : {}), ...keepEnv });
       return R(200, { ok: true });
     },
     /** 패스키 연결 끊기 — 등록이 남아 있으면 409 registered(그 계정을 쓸 수 없게 된다). withSalt 메모(와 예전 버전의 보관분)도 지운다. */
     async passkeyDisconnect() {
       if (!PK) return R(409, { reason: 'not_passkey_mode' });
       if (await getReg()) return R(409, { reason: 'registered' });
-      await kv.del('passkey'); await kv.del('passkeyHold'); saltMemo = null;   // 진행 중인 withSalt 범위의 메모도 — 끊은 뒤에는 그 salt 를 쓰지 않는다
+      await kv.del('passkey'); await kv.del('passkeyHold'); saltMemo = null; dropRecover();   // 진행 중인 withSalt 범위의 메모도 — 끊은 뒤에는 그 salt 를 쓰지 않는다
       return R(200, { ok: true });
     },
     /** "salt 보기"(§2 4단계 — 속성 도구에 넣을 값): 패스키에서 얻는다. 화면에만 보인다. */
@@ -1496,6 +1686,9 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       if (e?.reason === 'locked') return LOCKED();
       // passkey-web: salt 공급원(saltNow)과 주입된 패스키(derive)가 태그한 사유 — passkey_setup_required·passkey_mismatch·passkey_cancelled 등. web 모드는 이전처럼 아래 500.
       if (PK && typeof e?.reason === 'string' && e.reason.startsWith('passkey_')) return R(409, { reason: e.reason });
+      // 래퍼 방식의 salt 봉투(복구한 기기의 로컬 봉투가 열리지 않는 등) — 사유 그대로. 그 밖의 모드에는 이 사유가 없다.
+      if (WRAP && typeof e?.reason === 'string' && /^(envelope_|recover_)/.test(e.reason)) return R(409, { reason: e.reason });
+      if (WRAP && typeof e?.reason === 'string' && e.reason.startsWith('recovery_code_')) return R(400, { reason: e.reason });
       // 워커·자산 로더가 태그한 사유는 보존한다(페이지가 "증명 키를 받을 수 없습니다" 로 안내).
       if (e?.reason === 'zk_assets_unavailable') return R(503, { reason: 'zk_assets_unavailable', detail: e.message });
       log(`[user-core] ${name} 처리되지 않은 오류: ${e?.stack ?? e}`);
