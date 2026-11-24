@@ -3,7 +3,7 @@
 // MetaMask·Snap 코드는 없다. 비밀(s_u·blind_u·세션 개인키·금고 비밀번호·secrets 암호문)은 DOM·localStorage·로그·postMessage 에
 // 넣지 않는다 — 코어 응답은 에이전트와 같은 모양이라 비밀이 실리지 않고, safeDetail 이 한 번 더 거른다. 비밀번호 입력칸은 읽자마자 비운다.
 import { ZK_CACHE_NAME } from '../../lib/browser/zk_assets.js';
-import { RECOVER_RESULT_KEY, WRAP_END_RESULT_KEY, idpAuthUrl, savePending, googleAuthUrl, saveWrapperPending } from './idp_return.js';
+import { RECOVER_RESULT_KEY, WRAP_END_RESULT_KEY, WRAP_ACCOUNT_RESULT_KEY, idpAuthUrl, savePending, googleAuthUrl, saveWrapperPending } from './idp_return.js';
 export const $ = (id) => document.getElementById(id);
 
 /** 사전 도우미(wallet.html 의 tte·tt·setVerdict·pendingVerdict 와 같다). */
@@ -92,7 +92,21 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     const pk = document.getElementById('proofsKindBtn'); if (pk) pk.hidden = true;
     // 계정 자기 폐기는 비밀번호를 묻는다 — 래퍼 방식에는 비밀번호가 없다(최종 검토 I-1). 버튼 대신 안내를 둔다.
     const sr = document.getElementById('selfRevokeBtn');
-    if (sr) { sr.hidden = true; const note = document.createElement('p'); note.className = 'muted wrap-revoke-note'; note.textContent = tt('user_wrap_self_revoke_note') || '계정 폐기는 zkWrapper 관리자에게 요청합니다.'; sr.after(note); }
+    // 2026-11-24(스펙 home-and-account-recovery 2부): 그 자리에 Google 확인으로 하는 "내 계정 폐기"(패스키 없음 — 세션 끝내기와 같은 왕복). 등록돼 있을 때만 보인다(renderIdentity).
+    if (sr) {
+      sr.hidden = true;
+      const b = document.createElement('button'); b.type = 'button'; b.id = 'wrapRevokeAccountBtn'; b.className = 'danger'; b.hidden = true;
+      b.dataset.i18n = 'wallet_wrap_revoke_account_btn'; b.textContent = tt('wallet_wrap_revoke_account_btn') || '내 계정 폐기';
+      sr.after(b);
+    }
+    // H2(같은 스펙 1.2a): 사용자 1단계 뒤에 가 볼 서비스 — 설정의 rpServices(승인된 서비스의 이름·주소)
+    const svcHost = document.getElementById('homeSvcLinks');
+    const svcs = Array.isArray(config.rpServices) ? config.rpServices.filter((x) => x && typeof x.origin === 'string' && /^https?:\/\//.test(x.origin)) : [];
+    if (svcHost && svcs.length) {
+      const label = document.createElement('span'); label.dataset.i18n = 'home_svc_label'; label.textContent = tt('home_svc_label') || '가 볼 서비스:';
+      svcHost.append(' ', label);
+      svcs.forEach((x, i) => { const a = document.createElement('a'); a.href = `${x.origin}/`; a.target = '_blank'; a.rel = 'noopener'; a.textContent = typeof x.name === 'string' && x.name ? x.name : new URL(x.origin).host; svcHost.append(i ? ' · ' : ' ', a); });
+    }
     // 2026-11-24(화면 점검 5번): 홈이 길다 — 영지식 증명 표·시연 버튼·공개할 속성 조건은 처음에 접어 두고, 편 상태만 이 브라우저에 기억한다(로그인 전체 플로우 카드와 같은 방식).
     // 카드 제목·설명은 그대로 보이고, 설명 아래 내용만 <details> 로 옮긴다(id·이벤트는 그대로 따라간다).
     const remember = (d, key) => {
@@ -259,6 +273,12 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     if (!profileDirty) {
       if (attrSchema) attrSchema.slots.forEach((slot, k) => { if (slot.type !== 'unused') $('attr' + k).value = s?.profile?.[slot.name] ?? ''; });
       else for (let k = 0; k < 6; k++) $('attr' + k).value = s?.attrsView?.[k]?.display ?? (lastAttrs ? lastAttrs[k] : '');
+    }
+    // 래퍼 방식(2026-11-24, 스펙 home-and-account-recovery H4): "미사용" 칸은 숨기고, 속성이 하나도 없으면 한 줄로 알린다. "내 계정 폐기" 는 등록돼 있을 때만.
+    if (WRAP) {
+      if (attrSchema) attrSchema.slots.forEach((slot, k) => { if (slot.type !== 'unused') return; const dd = $('attr' + k)?.closest('dd'); if (dd) { dd.hidden = true; if (dd.previousElementSibling?.tagName === 'DT') dd.previousElementSibling.hidden = true; } });
+      $('attrEmptyNote').hidden = !(s?.registered && Array.isArray(lastAttrs) && lastAttrs.every((a) => String(a) === '0'));
+      const rb = $('wrapRevokeAccountBtn'); if (rb) rb.hidden = !s?.registered;
     }
     // 래퍼 방식(2026-11-24): 속성 기본값이 없다 — 빈 칸은 "넣지 않음" 으로 보인다
     if (WRAP && attrSchema) attrSchema.slots.forEach((slot, k) => {
@@ -769,6 +789,36 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       setVerdict($('sessionVerdict'), true, 'revoked_ok', () => ({ summary: tt('wallet_session_revoked', { svc: r.svc || '이', cfs: `${String(r.Cf_s ?? '').slice(0, 12)}…` }) || '이 세션을 끝냈습니다 — 다음 폐기 목록 갱신(게시) 때부터 효력이 있습니다.', detail: r }));
     } else setVerdict($('sessionVerdict'), false, 'wallet_session_revoke_failed', { reason: r.reason ?? 'internal', ...(r.detail ? { detail: r.detail } : {}) });
   }
+  /** /user 의 "내 계정 폐기"(2026-11-24 스펙 home-and-account-recovery 2부): 확인 창 → 요청 키 → Google(계정 고르기) → popup.js finishWrapperAccount 가 폐기를 요청하고 /user 로.
+   *  패스키는 묻지 않는다(A2). 토큰의 계정이 이 브라우저의 계정과 다르면 코어가 서버로 보내지 않는다. */
+  async function wrapperRevokeAccountFlow(btn) {
+    if (btn.dataset.busy === '1') return;
+    if (!window.confirm(tt('confirm_wrap_revoke_account') || '되돌릴 수 없습니다. 내 계정을 폐기할까요?')) return;
+    btn.dataset.busy = '1';
+    pendingVerdict(storageVerdict(), 'working');
+    try {
+      let o = null;
+      try { const k = await core.idp.publicKeys(); o = k?.status === 200 && k.body?.wrapper === true ? k.body.oidc : null; } catch { o = null; }
+      if (!o?.enabled || typeof o.clientId !== 'string' || typeof o.authorizeUrl !== 'string' || typeof o.redirectUri !== 'string') {
+        setVerdict(storageVerdict(), false, 'wallet_wrap_account_revoke_failed', { reason: 'wrapper_disabled' }); return;
+      }
+      const b = await core.wrapperBegin();
+      if (b.status !== 200) { setVerdict(storageVerdict(), false, 'wallet_wrap_account_revoke_failed', { reason: b.body?.reason ?? `HTTP ${b.status}`, detail: safeDetail(b.body) }); return; }
+      const { url, state } = googleAuthUrl({ authorizeUrl: o.authorizeUrl, clientId: o.clientId, redirectUri: o.redirectUri, nonce: b.body.googleNonce, walletOrigin: location.origin });
+      saveWrapperPending(window.sessionStorage, { state, at: Date.now(), req: { type: 'mode3-revoke-account' }, origin: location.origin });
+      location.assign(url);
+    } catch (e) {
+      setVerdict(storageVerdict(), false, 'wallet_wrap_account_revoke_failed', { reason: 'internal', detail: e.message });
+    } finally { delete btn.dataset.busy; }
+  }
+  /** 계정 폐기 귀로(popup.js finishWrapperAccount)가 남긴 결과를 한 번 보이고 지운다. */
+  function showWrapAccountResult() {
+    let r = null;
+    try { r = JSON.parse(sessionStorage.getItem(WRAP_ACCOUNT_RESULT_KEY) ?? 'null'); sessionStorage.removeItem(WRAP_ACCOUNT_RESULT_KEY); } catch { r = null; }
+    if (!r) return;
+    if (r.ok) setVerdict(storageVerdict(), true, 'wallet_wrap_account_revoked', () => ({ summary: tt('wallet_wrap_account_revoked_summary', { n: String(r.sessions ?? 0) }) || '모든 서비스의 로그인이 끝났습니다.' }));
+    else setVerdict(storageVerdict(), false, 'wallet_wrap_account_revoke_failed', { reason: r.reason ?? 'internal', ...(r.detail ? { detail: r.detail } : {}) });
+  }
   $('refreshBtn').addEventListener('click', () => refresh(true));
 
   // 폼을 하나도 안 건드렸으면(전부 빈 값) profile 을 보내지 않는다 — 코어의 DEFAULT_PROFILE(데모 기본값)이 적용된다.
@@ -1161,7 +1211,12 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
   const UNLOCK_KEY = 'mode3_user_unlock_until', UNLOCK_MS = 10 * 60 * 1000;
   function setupWrapView() {
     if (!WRAP) return;
-    if (location.pathname.replace(/\/+$/, '') !== '/user') { document.body.dataset.wrapView = 'home'; return; }
+    if (location.pathname.replace(/\/+$/, '') !== '/user') { document.body.dataset.wrapView = 'home'; document.title = tt('wrap_title_home') || 'zkWrapper 홈'; return; }
+    document.title = tt('wrap_title_user') || 'zkWrapper — 내 세션 관리';   // H5
+    // H3: "시연: 비밀 바꾸기" 는 시연자의 장면이다 — /user?demo=1 일 때만(전문가 보기 토글은 2026-11-05 에 없어졌다)
+    if (new URLSearchParams(location.search).get('demo') !== '1') $('demoCard').hidden = true;
+    const rb = $('wrapRevokeAccountBtn'); if (rb) rb.addEventListener('click', () => wrapperRevokeAccountFlow(rb));
+    showWrapAccountResult();
     $('userLockCard').hidden = false; $('userBar').hidden = false;
     let memUntil = 0;   // sessionStorage 가 막혀 있으면 이 화면을 연 동안만 기억한다
     const until = () => { let v = 0; try { v = Number(sessionStorage.getItem(UNLOCK_KEY) ?? 0) || 0; } catch { v = memUntil; } return v; };

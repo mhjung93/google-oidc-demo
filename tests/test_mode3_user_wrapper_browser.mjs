@@ -97,8 +97,8 @@ try {
   const info1 = (await rp.get('/api/mode3/rp_info')).body, info2 = (await rp2.get('/api/mode3/rp_info')).body;
   const A = await newBrowserWith(SECRET_A);
   /** 2026-11-24(사용자 요청): 세션 관리는 /user — 처음에는 잠겨 있고 패스키로 연다(이 탭에서 10분 동안 아무 동작이 없으면 다시 잠긴다). 이미 열려 있으면 패스키를 묻지 않는다. */
-  const openUser = async (page) => {
-    await page.goto(`${wallet.base}/user`); await page.waitForSelector('#mainView:not([hidden])');
+  const openUser = async (page, q = '') => {
+    await page.goto(`${wallet.base}/user${q}`); await page.waitForSelector('#mainView:not([hidden])');
     await page.waitForFunction(() => ['userLockCard', 'sessionsCard'].some((id) => document.getElementById(id)?.checkVisibility() === true), null, { timeout: 15_000 });
     if (await page.evaluate(() => document.getElementById('userLockCard')?.checkVisibility() === true)) await page.click('#userUnlockBtn');
     await page.waitForSelector('#sessionsCard', { state: 'visible', timeout: 15_000 });
@@ -365,6 +365,11 @@ try {
     assert.ok((await text(page, '#homeGuide')).includes('Google'), '사용자 단계에 Google 이 없다');
     // 2026-11-24(사용자 요청): 홈에는 "zk-Delegation 쓰는 법" 만 — 세션 관리는 /user(링크가 있다)
     assert.ok(hrefs.includes(`${new URL(wallet.base).origin}/user`), `/user 링크가 없다: ${j(hrefs)}`);
+    // 스펙 home-and-account-recovery 1.2a — H2: 사용자 1단계 뒤에 서비스 링크(설정의 rpServices — 승인된 서비스의 이름·주소), H5: 탭 제목
+    const svc = await page.$$eval('#homeSvcLinks a', (as) => as.map((a) => ({ name: a.textContent.trim(), href: a.href })));
+    assert.deepEqual(svc.map((x) => x.name).sort(), [info1.name, info2.name].sort(), j(svc));
+    assert.deepEqual(svc.map((x) => new URL(x.href).origin).sort(), [new URL(rp.base).origin, new URL(rp2.base).origin].sort(), j(svc));
+    assert.equal(await page.title(), 'zkWrapper 홈');
     await page.waitForTimeout(1500);
     const shown = await page.evaluate(() => [...document.querySelectorAll('#mainView > section')].filter((e) => e.checkVisibility()).map((e) => e.id));
     assert.deepEqual(shown, ['homeGuide'], j(shown));
@@ -377,8 +382,12 @@ try {
     assert.deepEqual(await shown(), ['userLockCard'], '잠긴 화면에 다른 카드가 보인다');
     const g0 = A.hits.get; await page.click('#userUnlockBtn');
     await page.waitForSelector('#sessionsCard', { state: 'visible', timeout: 15_000 }); assert.equal(A.hits.get - g0, 1, j(A.hits));
-    { const s = await shown(); assert.ok(!s.includes('userLockCard') && !s.includes('homeGuide') && s.includes('identityCard') && s.includes('userBar'), j(s)); }
+    { const s = await shown(); assert.ok(!s.includes('userLockCard') && !s.includes('homeGuide') && s.includes('identityCard') && s.includes('userBar'), j(s));
+      assert.ok(!s.includes('demoCard'), `시연 카드는 ?demo=1 일 때만: ${j(s)}`); }   // H3
+    assert.equal(await page.title(), 'zkWrapper — 내 세션 관리');   // H5
+    assert.equal(await page.evaluate(() => document.getElementById('attr4')?.checkVisibility() === true || document.getElementById('attr5')?.checkVisibility() === true), false, '"미사용" 칸이 보인다');   // H4
     await page.reload(); await page.waitForSelector('#sessionsCard', { state: 'visible', timeout: 15_000 }); assert.equal(A.hits.get - g0, 1, '새로고침에 패스키를 다시 물었다');
+    await page.goto(`${wallet.base}/user?demo=1`); await page.waitForSelector('#demoCard', { state: 'visible', timeout: 15_000 });   // H3: ?demo=1 이면 시연 카드
     await page.click('#userLockBtn'); await page.waitForSelector('#userLockCard', { state: 'visible', timeout: 5_000 }); assert.deepEqual(await shown(), ['userLockCard']);
     await page.click('#userUnlockBtn'); await page.waitForSelector('#sessionsCard', { state: 'visible', timeout: 15_000 });
     await page.evaluate(() => sessionStorage.setItem('mode3_user_unlock_until', String(Date.now() - 1)));   // 10분이 지난 것처럼
@@ -403,12 +412,13 @@ try {
   });
   // 2026-11-23(사용자 요청, C): 세션 끝내기는 Google 확인(1회용 요청 키에 묶인 토큰 + 그 키의 서명)으로 동작한다 — 세션마다 버튼이 있다.
   // 계정 자기 폐기(π_IdP·비밀번호를 쓴다)는 여전히 없고 안내만 있다(최종 검토 I-1).
-  await t('래퍼 방식의 /user: 세션마다 "이 세션 끝내기" 버튼이 있고, 계정 자기 폐기 버튼은 없고 안내가 있다', async () => {
+  // 2026-11-24(스펙 home-and-account-recovery 2부): 비밀번호를 묻는 옛 "계정 자기 폐기" 버튼은 없고, 그 자리에 Google 확인으로 하는 "내 계정 폐기" 가 있다
+  await t('래퍼 방식의 /user: 세션마다 "이 세션 끝내기" 버튼이 있고, 비밀번호를 묻는 옛 계정 폐기 버튼 대신 "내 계정 폐기" 가 있다', async () => {
     const page = await openUser(await A.ctx.newPage());
     await page.waitForFunction(() => document.querySelectorAll('#sessionActions button.danger').length > 0, null, { timeout: 15_000 }).catch(() => {});
     const st = await page.evaluate(() => ({ cards: document.querySelectorAll('#sessionActions dl').length,
       endBtns: [...document.querySelectorAll('#sessionActions button')].filter((b) => b.offsetParent !== null && /세션 끝내기/.test(b.textContent)).length,
-      selfRevoke: document.getElementById('selfRevokeBtn')?.offsetParent !== null, notes: [...document.querySelectorAll('.wrap-revoke-note')].filter((e) => e.offsetParent !== null).length,
+      selfRevoke: document.getElementById('selfRevokeBtn')?.offsetParent !== null, notes: document.getElementById('wrapRevokeAccountBtn')?.checkVisibility() === true ? 1 : 0,
       sessionNotes: [...document.querySelectorAll('#sessionActions .wrap-revoke-note')].filter((e) => e.offsetParent !== null).length }));
     assert.ok(st.cards >= 1, '세션이 그려지지 않았다: ' + j(st));
     assert.equal(st.endBtns, st.cards, j(st)); assert.equal(st.sessionNotes, 0, j(st));
@@ -418,7 +428,7 @@ try {
   // 2026-11-24(화면 점검 5번): 홈이 길다 — 영지식 증명 표·시연 버튼·공개할 속성 조건은 처음에 접어 두고, 편 상태만 이 브라우저에 기억한다.
   await t('래퍼 방식의 홈: 영지식 증명 표·시연 버튼·공개할 속성 조건은 처음에 접혀 있고, 편 상태는 새로고침해도 남는다', async () => {
     const KEYS = ['mode3_proofs_open', 'mode3_demo_open', 'mode3_disclose_open'];
-    const page = await openUser(await A.ctx.newPage());
+    const page = await openUser(await A.ctx.newPage(), '?demo=1');
     await page.evaluate((ks) => { for (const k of ks) localStorage.removeItem(k); }, KEYS);
     await page.reload(); await page.waitForSelector('#sessionsCard', { state: 'visible', timeout: 15_000 });
     await page.waitForFunction(() => /\d+개/.test(document.querySelector('#proofsFold > summary')?.textContent ?? ''), null, { timeout: 15_000 });
@@ -565,6 +575,49 @@ try {
     });
   }
   // 2026-11-21(셀프 피드백 — 테스트 구멍): 폐기된 계정도 패스키를 쥔다(R11). 래퍼 화면의 안내는 "관리자가 삭제해야 한다" 까지만 말한다 — 삭제 뒤 실제로 같은 패스키로 돌아오는지 본다.
+  // 2026-11-24(스펙 home-and-account-recovery 2부): 계정 자기 폐기 — /user 의 "내 계정 폐기" → Google(같은 계정만) → 폐기. 패스키는 묻지 않는다(A2).
+  await t('/user 의 "내 계정 폐기": 다른 Google 계정으로 돌아오면 서버로 보내지 않고, 같은 계정이면 폐기된다 — 패스키는 묻지 않고, 그 뒤 로그인은 폐기된 계정으로 거절된다', async () => {
+    const C = await newBrowserWith('c3'.repeat(32));
+    try {
+      google.setNextSub('google-user-C'); google.setNextClaims({ email: 'cee@example.com', email_verified: true });
+      { const { rpPage, popup } = await startLogin(C.ctx, rp); await popup.waitForSelector('#authWrapPasskeyBtn', { timeout: 30_000 }); await popup.click('#authWrapPasskeyBtn'); await waitText(rpPage, '#verdict', '로그인 성공', 120_000); await rpPage.close(); }
+      const page = await openUser(await C.ctx.newPage()); const g0 = C.hits.get;
+      await page.waitForSelector('#attrEmptyNote', { state: 'visible', timeout: 15_000 });   // H4: 속성이 하나도 없으면 한 줄 안내
+      const toUser = () => page.waitForURL((u) => u.origin === new URL(wallet.base).origin && u.pathname === '/user' && !u.search.includes('authorize'), { timeout: 60_000 });
+      // 다른 Google 계정으로 돌아오면: 서버로 보내지 않는다(그 계정을 폐기하지 않는다)
+      google.setNextSub('google-user-A'); google.setNextClaims({ email: 'jihoo@example.com', email_verified: true });
+      C.reqs.length = 0;
+      await page.click('#wrapRevokeAccountBtn'); await toUser();
+      await waitText(page, '#storageVerdict', '폐기하지 못했습니다', 30_000);
+      assert.ok(!C.reqs.some((r) => r.url.includes('/cia/account/self_revoke')), '다른 계정의 토큰을 서버로 보냈다');
+      assert.ok(C.dialogs.at(-1)?.includes('되돌릴 수 없습니다'), `확인 창: ${C.dialogs.at(-1)}`);
+      // 같은 계정이면 폐기된다
+      google.setNextSub('google-user-C'); google.setNextClaims({ email: 'cee@example.com', email_verified: true });
+      await page.click('#wrapRevokeAccountBtn'); await toUser();
+      await waitText(page, '#storageVerdict', '계정을 폐기했습니다', 30_000);
+      assert.equal(C.hits.get - g0, 0, `패스키를 물었다: ${j(C.hits)}`);
+      assert.deepEqual(Object.keys((await idbDump(page)).sessions ?? {}), [], '이 브라우저의 세션이 남았다');
+      await page.close();
+      // 그 뒤 로그인은 폐기된 계정으로 거절된다
+      google.setNextSub('google-user-C'); google.setNextClaims({ email: 'cee@example.com', email_verified: true });
+      const { rpPage, popup } = await startLogin(C.ctx, rp);
+      const deadline = Date.now() + 120_000; let seen = '';
+      while (Date.now() < deadline) {
+        const v = await text(rpPage, '#verdict').catch(() => '');
+        seen = `${v} | ${popup.isClosed() ? '' : await visibleText(popup).catch(() => '')}`;
+        if (/폐기된 계정/.test(seen)) break;
+        assert.ok(!v.includes('로그인 성공'), '폐기된 계정이 로그인됐다');
+        if (!popup.isClosed()) { const b = await popup.$('#authWrapPasskeyBtn:not([hidden])').catch(() => null); if (b) await b.click().catch(() => {}); }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      assert.match(seen, /폐기된 계정/, seen.slice(0, 300));
+      await popup.close().catch(() => {}); await rpPage.close();
+    } finally {
+      await C.ctx.close();
+      // 뒤 사례(관리자 폐기·삭제)는 Google 계정이 A 하나뿐이라고 본다 — 이 사례의 계정 C 는 관리자 삭제로 정리한다
+      await cia.adminPost('/cia/account/delete', { uid: uidOf(google.provider, 'google-user-C') }).catch(() => {});
+    }
+  });
   await t('관리자 폐기 → "zk 로그인" 은 폐기된 계정으로 거절된다 — 관리자 삭제 뒤 같은 브라우저(같은 패스키)·같은 Google 계정으로 다시 하면 성공하고 PPID 가 같다', async () => {
     assert.equal((await cia.adminPost('/cia/revoke', { uid: UID_A, scope: 'account' })).status, 200);
     google.setNextSub('google-user-A'); google.setNextClaims({ email: 'jihoo@example.com', email_verified: true });

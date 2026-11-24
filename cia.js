@@ -636,6 +636,8 @@ if (USER_APP) {
       walletOrigin: PUBLIC_URL, ciaUrl: PUBLIC_URL, rpcUrl: APP_RPC_BROWSER, revRpcUrl: REV_RPC_BROWSER, chainRpcUrl: APP_RPC_BROWSER,
       chainId: MIRROR_SPECS[0]?.chainStr ?? selfChainId, logAddress: LOG_ADDRESS, mirrorAddress: MIRROR_SPECS[0]?.address ?? null,
       ttlBlocks: big('MODE3_TTL_BLOCKS', 300), heightGrid: big('MODE3_HEIGHT_GRID', 100), rpOrigins: approvedOrigins(), pkCia: S(ciaPub),
+      // 2026-11-24(스펙 home-and-account-recovery H2): 홈 안내의 "가 볼 서비스" — 승인된 서비스의 이름·주소(공개값)
+      rpServices: Object.values(state?.rps ?? {}).filter((r) => r.status === 'approved').map((r) => ({ name: typeof r.name === 'string' ? r.name : null, origin: r.origin })),
       relayPath: process.env.MODE3_RELAY_PATH || '/api/mode3/relay', demoGeneration: process.env.MODE3_DEMO_GENERATION || null, wrapperClientId: OIDC.clientId,
     }),
   });

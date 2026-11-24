@@ -1219,6 +1219,38 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
         return R(200, { revoked: true, inserted: r.body.inserted, pending: r.body.pending, rpNotified, Cf_s });
       } finally { await kv.del('wrapperKey'); }
     },
+    /** 래퍼 방식의 계정 자기 폐기(2026-11-24 스펙 home-and-account-recovery 2부): 세션 끝내기와 같은 왕복 — 1회용 요청 키에 묶인 Google 토큰 + "계정 폐기" 에 대한
+     *  서명으로 /cia/account/self_revoke 를 부른다. 패스키는 쓰지 않는다(A2 — 기기를 잃었을 때 쓰는 기능이다). 토큰의 계정이 이 브라우저의 등록 계정과 다르면
+     *  서버로 보내지 않는다(계정 고르기 창에서 다른 계정을 고르면 그 계정이 폐기되므로). 받아들여지면 이 브라우저의 세션을 모두 지우고 서비스에 로그아웃을 알린다(최선 노력, A4).
+     *  등록은 남긴다(R11 — 폐기된 계정도 auid 를 쥔다). 요청 키는 결과와 관계없이 지운다(A5). */
+    async wrapperRevokeAccount({ idToken } = {}) {
+      if (!PK || config.wrapper !== true) return R(409, { reason: 'not_wrapper_mode' });
+      if (typeof idToken !== 'string' || !idToken) return R(400, { error: 'idToken(문자열) 필요' });
+      try {
+        const reg = await getReg();
+        if (!reg || reg.wrapper !== true) return R(409, { reason: 'not_registered' });
+        let claims;
+        try { claims = jwtPayload(idToken); } catch { return R(400, { reason: 'oidc_invalid', detail: 'id_token 형식이 아니다' }); }
+        if (typeof claims?.sub !== 'string' || !claims.sub) return R(400, { reason: 'oidc_invalid', detail: 'sub 가 없다' });
+        const wk = (await kv.get('wrapperKey')) ?? null;
+        if (!wk?.privateKey || !wk.pkE || claims.nonce !== await wrapperNonce(wk.pkE)) return R(409, { reason: 'wrapper_key_missing' });
+        if (!(Number.isFinite(wk.at) && now() - wk.at <= WRAPPER_KEY_MAX_MS)) return R(409, { reason: 'wrapper_key_missing' });
+        let keys;
+        try { keys = await idp.publicKeys(); } catch (e) { return R(502, { reason: 'cia_unavailable', detail: e.message }); }
+        const pub = keys.status === 200 ? keys.body : null;
+        if (pub?.wrapper !== true || typeof pub.wrapperAud !== 'string' || typeof pub.oidc?.provider !== 'string') return R(503, { reason: 'wrapper_disabled' });
+        if (uidOf(pub.oidc.provider, claims.sub) !== String(reg.uid)) return R(409, { reason: 'wrapper_account_mismatch' });
+        const sig = await signDigest(wk.privateKey, revokeDigest({ scope: 'account' }, pub.wrapperAud));
+        let r;
+        try { r = await idp.post('/cia/account/self_revoke', { id_token: idToken, pk_e: wk.pkE, sig }); }
+        catch (e) { return R(502, { reason: 'cia_unavailable', detail: e.message }); }
+        if (r.status !== 200) return R(r.status, r.body ?? {});
+        const sessions = Object.entries(await getSessions());
+        let rpNotified = 0;
+        for (const [k, s] of sessions) { await deleteSession(k); if (await notifyRpLogout(s, k)) rpNotified++; }
+        return R(200, { revoked: true, sessions: sessions.length, rpNotified });
+      } finally { await kv.del('wrapperKey'); }
+    },
     /** 에이전트 POST /wallet/self_revoke 의 등가 — IdP /cia/account/self_revoke 를 직접 부른다(cia.js CORS, Task 6). 비밀번호는 넘길 뿐
      *  어디에도 남기지 않는다. 이 지갑이 들고 있는 계정만 — 임의 uid·pwd 를 IdP 에 던져 보는 통로가 되지 않게. */
     async selfRevoke({ uid, pwd } = {}) {

@@ -78,7 +78,7 @@
       <div class="home-cols">
         <div><h4 data-i18n="home_user_title">사용자</h4>
           <ol id="homeUserSteps">
-            <li data-i18n="home_user_1">서비스 페이지에서 "zk 로그인" 을 누릅니다.</li>
+            <li><span data-i18n="home_user_1">서비스 페이지에서 "zk 로그인" 을 누릅니다.</span><span id="homeSvcLinks"></span></li>
             <li data-i18n="home_user_2">Google 계정을 고릅니다 — 본인 확인은 Google 이 합니다.</li>
             <li data-i18n="home_user_3">패스키를 확인합니다(처음이면 만듭니다). 서비스에는 이 서비스 전용 주소(PPID)와 증명만 갑니다.</li>
           </ol></div>
@@ -145,6 +145,7 @@
         <dt data-term="attr4">미사용</dt><dd><input id="attr4" size="6" /></dd>
         <dt data-term="attr5">미사용</dt><dd><input id="attr5" size="6" /></dd>
       </dl>
+      <p id="attrEmptyNote" class="muted" data-i18n="user_attr_empty_note" hidden>속성이 비어 있습니다 — 나이·국가 조건이 있는 서비스는 속성 커밋먼트 도구에서 넣은 뒤 로그인합니다.</p>
       <p>
         <button id="registerBtn" data-i18n="wallet_register_btn">등록</button>
         <button id="profileSaveBtn" class="btn-ghost" data-i18n="wallet_profile_save_btn">속성 저장</button>

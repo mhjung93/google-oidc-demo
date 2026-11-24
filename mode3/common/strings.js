@@ -414,6 +414,16 @@ window.DemoStrings = {
     home_flow_link: { ko: '전체 플로우 한 장 — 일반 OIDC 와 나란히', en: 'The whole flow on one page — next to plain OIDC' },
     // 2026-11-24(사용자 요청, 래퍼 방식): 홈은 쓰는 법만 — 세션 관리는 /user(패스키로 열고, 이 탭에서 10분 동안 아무 동작이 없으면 잠긴다)
     home_user_page: { ko: '내 세션 관리(패스키로 엽니다):', en: 'Manage my sessions (opens with your passkey):' },
+    // 2026-11-24(스펙 home-and-account-recovery): 서비스 링크(H2)·탭 제목(H5)·빈 속성 한 줄(H4)·내 계정 폐기(2부)
+    home_svc_label: { ko: '— 가 볼 서비스:', en: '— services:' },
+    wrap_title_home: { ko: 'zkWrapper 홈', en: 'zkWrapper home' },
+    wrap_title_user: { ko: 'zkWrapper — 내 세션 관리', en: 'zkWrapper — my sessions' },
+    user_attr_empty_note: { ko: '속성이 비어 있습니다 — 나이·국가 조건이 있는 서비스는 속성 커밋먼트 도구에서 넣은 뒤 로그인합니다.', en: 'No attributes yet — for services with age or country conditions, add them in the attribute commitment tool before logging in.' },
+    wallet_wrap_revoke_account_btn: { ko: '내 계정 폐기', en: 'Revoke my account' },
+    confirm_wrap_revoke_account: { ko: '내 계정을 폐기할까요? 되돌릴 수 없습니다.\n① 모든 서비스의 로그인이 끝나고, 이 계정으로는 다시 로그인할 수 없습니다.\n② 폐기된 계정도 이 패스키를 쥡니다 — 이 패스키를 다른 Google 계정에 쓰려면 zkWrapper 관리자가 계정을 지워야 합니다.\n③ 서비스의 계정 주소에 남은 자산은 이 계정으로 다시 움직일 수 없습니다.\nGoogle 계정을 한 번 더 확인합니다(패스키는 묻지 않습니다).', en: 'Revoke your account? This cannot be undone.\n1) Every service login ends and this account cannot log in again.\n2) A revoked account still holds this passkey — to use it with another Google account, the zkWrapper admin must delete the account.\n3) Assets left at your service account addresses can no longer be moved with this account.\nYou will confirm your Google account once more (no passkey).' },
+    wallet_wrap_account_revoked: { ko: '계정을 폐기했습니다', en: 'Account revoked' },
+    wallet_wrap_account_revoke_failed: { ko: '계정을 폐기하지 못했습니다', en: 'Could not revoke the account' },
+    wallet_wrap_account_revoked_summary: { ko: '모든 서비스의 로그인이 끝났습니다 — 이 브라우저의 세션 {n}개를 지웠습니다. 이 계정으로는 다시 로그인할 수 없습니다(되살리려면 zkWrapper 관리자에게).', en: 'Every service login has ended — removed {n} sessions from this browser. This account cannot log in again (ask the zkWrapper admin to restore it).' },
     user_lock_title: { ko: '내 세션 관리', en: 'Manage my sessions' },
     user_lock_desc: { ko: '이 브라우저의 신원·로그인 세션·증명을 봅니다. 이 기기의 패스키로 엽니다 — 이 탭에서 10분 동안 아무 동작이 없으면 다시 잠깁니다.', en: 'See this browser\'s identity, login sessions and proofs. Open it with this device\'s passkey — it locks again after 10 minutes without activity in this tab.' },
     user_open_btn: { ko: '패스키로 열기', en: 'Open with passkey' },

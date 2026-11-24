@@ -6,6 +6,7 @@ export const PENDING_MAX_AGE_MS = 600_000;
 export const RECOVER_RESULT_KEY = 'mode3_recover_result';
 // 홈의 세션 끝내기(zkWrapper, 2026-11-23) 귀로의 결과 — popup.js 가 남기고 ui.js 가 한 번 보이고 지운다. 토큰은 없다(공개값·사유뿐).
 export const WRAP_END_RESULT_KEY = 'mode3_wrap_end_result';
+export const WRAP_ACCOUNT_RESULT_KEY = 'mode3_wrap_account_result';   // 2026-11-24: /user 의 "내 계정 폐기" 귀로가 남기는 결과(토큰 없음)
 
 /** zkIdP 인증 창 주소. 성공하면 zkIdP 가 `${walletOrigin}/?authorize=1&idp_nonce=…&idp_code=…` 로 돌려보낸다. purpose 'register' 는 첫 등록·계정 복구. */
 export function idpAuthUrl({ ciaUrl, walletOrigin, nonce, purpose = 'issue' }) {
