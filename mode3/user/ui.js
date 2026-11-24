@@ -260,6 +260,12 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       if (attrSchema) attrSchema.slots.forEach((slot, k) => { if (slot.type !== 'unused') $('attr' + k).value = s?.profile?.[slot.name] ?? ''; });
       else for (let k = 0; k < 6; k++) $('attr' + k).value = s?.attrsView?.[k]?.display ?? (lastAttrs ? lastAttrs[k] : '');
     }
+    // 래퍼 방식(2026-11-24): 속성 기본값이 없다 — 빈 칸은 "넣지 않음" 으로 보인다
+    if (WRAP && attrSchema) attrSchema.slots.forEach((slot, k) => {
+      const el = $('attr' + k); if (!el || slot.type === 'unused') return;
+      const label = tt('user_attr_unset') || '넣지 않음';
+      if (el.tagName === 'INPUT') el.placeholder = label; else { const o = el.querySelector('option[value=""]'); if (o) o.textContent = label; }
+    });
     const badge = $('regBadge');
     badge.className = `badge ${s?.registered ? 'ok' : 'muted'}`;
     tte(badge, s?.registered ? 'wallet_reg_yes' : 'wallet_reg_no');
@@ -822,6 +828,10 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
   // U3: 보내기 전에 체크된 조건을 lastAttrs 와 다시 대조한다 — 안 맞으면 체크 해제 + 행 옆에 안내(코어의 disclosure_unsatisfiable 이 페이지 경로에서는 안 나오게).
   function sanitizeDisclose() {
     $('discNote0').textContent = ''; $('discNote1').textContent = '';
+    // 래퍼 방식(2026-11-24): 넣지 않은 출생연도(0)는 어떤 범위도 만족시키지 않는다 — 코어가 attrs_unset 으로 멈추기 전에 화면에서 뺀다
+    if (WRAP && $('dk0').checked && lastAttrs && String(lastAttrs[0] ?? '0') === '0') {
+      $('dk0').checked = false; $('discNote0').textContent = tt('wallet_disc_unset') || '속성을 넣지 않아 제외했습니다.';
+    }
     if ($('dk0').checked && lastAttrs) {
       try {
         const lo = BigInt($('discLo0').value.trim() || '0'), hi = BigInt($('discHi0').value.trim() || '0'), mine = BigInt(lastAttrs[0] ?? 0);
@@ -1145,7 +1155,43 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     core.idp.publicKeys().then((k) => { if (k?.status !== 200 || !k.body?.oidc?.signup) return; const a = $('pkFirstLink'); a.href = `${cfg.ciaUrl}/user`; a.textContent = a.href; $('pkFirstRow').hidden = false; }).catch(() => {});
   }
 
+  /** 래퍼 방식의 화면 나누기(2026-11-24 사용자 요청): 홈(/)은 "zk-Delegation 쓰는 법" 만, 세션 관리는 /user. /user 는 처음에 잠겨 있고 패스키로 연다 —
+   *  등록의 auid 와 맞는 패스키여야 열린다(core.passkeyAuid 가 대조한다). 이 탭(sessionStorage)에서 10분 동안 아무 동작이 없으면 다시 잠긴다.
+   *  화면을 가리는 잠금이다 — 저장소 암호화는 그대로이고, 같은 브라우저를 쓰는 다른 사람이 화면을 보지 않게 하는 것이 목적이다. */
+  const UNLOCK_KEY = 'mode3_user_unlock_until', UNLOCK_MS = 10 * 60 * 1000;
+  function setupWrapView() {
+    if (!WRAP) return;
+    if (location.pathname.replace(/\/+$/, '') !== '/user') { document.body.dataset.wrapView = 'home'; return; }
+    $('userLockCard').hidden = false; $('userBar').hidden = false;
+    let memUntil = 0;   // sessionStorage 가 막혀 있으면 이 화면을 연 동안만 기억한다
+    const until = () => { let v = 0; try { v = Number(sessionStorage.getItem(UNLOCK_KEY) ?? 0) || 0; } catch { v = memUntil; } return v; };
+    const setUntil = (v) => { memUntil = v; try { if (v) sessionStorage.setItem(UNLOCK_KEY, String(v)); else sessionStorage.removeItem(UNLOCK_KEY); } catch { /* 메모리로만 */ } };
+    const isOpen = () => until() > Date.now();
+    const apply = () => {
+      const open = isOpen();
+      document.body.dataset.wrapView = open ? 'open' : 'locked';
+      // 등록이 없으면 열어 볼 것이 없다 — 버튼 대신 안내(상태를 못 읽었으면 버튼을 둔다)
+      const noReg = Boolean(lastStatus) && !lastStatus.registered;
+      $('userUnlockBtn').hidden = noReg; $('userNoReg').hidden = !noReg;
+    };
+    let lastExt = 0;
+    for (const ev of ['pointerdown', 'keydown']) document.addEventListener(ev, () => { if (!isOpen()) return; const n = Date.now(); if (n - lastExt > 5000) { lastExt = n; setUntil(n + UNLOCK_MS); } }, { capture: true });
+    setInterval(apply, 1000);
+    $('userUnlockBtn').addEventListener('click', async () => {
+      const btn = $('userUnlockBtn'); clearVerdict($('userLockVerdict')); btn.disabled = true;
+      try {
+        const r = await core.passkeyAuid();
+        if (r.status !== 200) { setVerdict($('userLockVerdict'), false, 'user_open_failed', { reason: r.body?.reason ?? `HTTP ${r.status}` }); return; }
+        setUntil(Date.now() + UNLOCK_MS); apply();
+      } catch (e) { setVerdict($('userLockVerdict'), false, 'user_open_failed', { reason: e?.reason ?? 'internal', detail: e?.message }); }
+      finally { btn.disabled = false; }
+    });
+    $('userLockBtn').addEventListener('click', () => { setUntil(0); apply(); });
+    apply();
+  }
+
   async function init() {
+    setupWrapView();
     // 체험 모드의 잠금(설계 §3.3). #registerBtn 은 지금까지 늘 활성이었다 — 그 규칙을 otherwise 로 그대로 옮긴다.
     Demo.tour?.lock({ id: 'registerBtn', cond: 'rp_approved', otherwise: () => true });
     Demo.tour?.onToggle(renderGuide);

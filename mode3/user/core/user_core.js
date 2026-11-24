@@ -114,6 +114,14 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     if (e) { e.ms = Math.round((e.ms + v) * 1000) / 1000; Object.assign(e, extra ?? {}); }   // 같은 단계를 두 번 돌면(발급 재시도) 더한다
     else flowRec.steps.push({ key, ms: v, ...(extra ?? {}) });
   };
+  /** 래퍼 방식(2026-11-24 사용자 결정): 요청이 술어를 거는 칸(disclose 의 null 아닌 칸·set.slot) 가운데 속성이 "값 없음"(0)인 칸 번호.
+   *  빈 칸은 어떤 술어도 만족시키지 않는다 — 출생연도 0 은 나이 술어의 hi 검사를 통과하므로(최종 리뷰 I1) 증명 전에 멈춘다. */
+  const unsetSlotsOf = (attrs, disclose, set) => {
+    const want = new Set();
+    if (Array.isArray(disclose)) disclose.forEach((d, k) => { if (d !== null && d !== undefined) want.add(k); });
+    if (set && typeof set === 'object' && Number.isInteger(set.slot)) want.add(set.slot);
+    return [...want].filter((k) => String(attrs?.[k] ?? '0') === '0').sort((a, b) => a - b);
+  };
   // 패스키 연결에 함께 두는 인증기의 공개 정보(같은 스펙 P2) — 아는 값만 남긴다. 형식이 틀리면 undefined.
   const PK_TRANSPORTS = ['hybrid', 'internal', 'usb', 'nfc', 'ble', 'smart-card'];
   const cleanPasskeyInfo = (info) => {
@@ -230,9 +238,11 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     if (profileIn !== null && !(isDec(String(recordAuid ?? '')) && BigInt(recordAuid).toString() === auid.toString())) return R(409, { reason: 'attr_record_salt_mismatch' });
     let schema;
     try { schema = (await schemaFor()).schema; } catch (e) { if (e.reason === 'schema_invalid') return R(503, { reason: 'schema_invalid', detail: e.message }); throw e; }
-    const profile = profileIn ?? Object.fromEntries(Object.entries(DEFAULT_PROFILE).filter(([k]) => schema.slots.some((x) => x.type !== 'unused' && x.name === k)));
+    // 2026-11-24(사용자 결정): 래퍼 방식에는 속성 기본값(1990·KR)이 없다 — 속성 도구 기록이 없으면 모든 칸을 "값 없음"(0)으로 등록한다.
+    // 빈 칸은 어떤 술어도 만족시키지 않는다(unsetSlotsOf — 그 칸에 조건을 거는 서비스는 attrs_unset 으로 멈춘다). int·enum 은 이름이 있어야 한다(빈 값).
+    const profile = profileIn ?? Object.fromEntries(schema.slots.filter((x) => x.type === 'int' || x.type === 'enum').map((x) => [x.name, '']));
     let attrs;
-    try { attrs = await encodeProfile(schema, profile, { allowEmptyRequired: false }); }
+    try { attrs = await encodeProfile(schema, profile, { allowEmptyRequired: profileIn === null }); }
     catch (e) { if (e.reason === 'bad_attr') return R(400, { reason: 'bad_attr', slot: e.slot, field: e.field, detail: e.detail, message: e.message }); throw e; }
     const normalized = normalizeProfile(schema, profile);
     await ensureVault();
@@ -775,6 +785,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       // V7: 로그인 성명에도 술어를 실을 수 있다(스펙 §6). 형식·불만족은 체인 작업 전에 걸러낸다(attrs 는 공개 부분).
       let disclosure = null;
       if (disclose || set) {
+        if (pubReg.wrapper === true) { const u = unsetSlotsOf(pubReg.attrs, disclose, set); if (u.length) return R(409, { reason: 'attrs_unset', slots: u }); }
         try { assertPredicateTypes((await schemaFor()).schema, disclose, set); }
         catch (e) {
           if (e.reason === 'schema_invalid') return R(503, { reason: 'schema_invalid', detail: e.message });
@@ -1037,6 +1048,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
             throw e;
           }
         }
+        if (pubReg.wrapper === true) { const u = unsetSlotsOf(pubReg.attrs, disclose, set); if (u.length) return R(409, { reason: 'attrs_unset', slots: u }); }   // 2026-11-24
         const attrs = (pubReg.attrs ?? []).map(BigInt);
         disclosure = { ...normalizeDisclosure(disclose, attrs), ...(await normalizeSet(set, attrs)) };   // V7: 범위 + 집합
       } catch (e) { if (e.reason) return R(400, { reason: e.reason, detail: e.message }); throw e; }
@@ -1393,6 +1405,15 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       return registerWith({ uid: BigInt(uid).toString(), auth: { signup: true, uid: BigInt(uid).toString(), id_token: idToken }, makeReg: async () => ({ s_u: BigInt(s), auid: await auidOf({ s_u: BigInt(s) }), seed: null, n: BigInt(n) }), profileIn: null, vaultPassword: null, providerName: 'demo', extraBody: signupExtra });
     },
     /** 이 패스키 salt 의 auid — 인증 창(등록·복구)에 넣는 값. salt 는 응답에 없다. */
+    /** 래퍼 로그인 1단계의 속성 확인(2026-11-24 사용자 결정): 요청이 술어를 거는 칸이 비어 있으면 Google 로 가기 전에 attrs_unset.
+     *  속성 도구 기록(profile)이 있으면 이번 로그인이 그 값으로 맞추므로 통과한다(값이 조건에 맞는지는 로그인이 다시 본다). 등록 전이면 첫 등록이 빈 속성이다. */
+    async wrapperAttrsReady({ disclose = null, set = null, profile = null } = {}) {
+      if (profile !== null) return R(200, { ready: true });
+      const reg = await getReg();
+      if (reg && reg.wrapper !== true) return R(200, { ready: true });
+      const u = unsetSlotsOf(reg?.attrs ?? null, disclose, set);
+      return u.length ? R(409, { reason: 'attrs_unset', slots: u }) : R(200, { ready: true });
+    },
     async passkeyAuid() {
       if (!PK) return R(409, { reason: 'not_passkey_mode' });
       return R(200, { auid: (await auidOf({ s_u: BigInt(await saltNow()) })).toString() });

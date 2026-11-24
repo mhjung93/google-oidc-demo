@@ -641,7 +641,7 @@ if (USER_APP) {
   });
 }
 // 래퍼 방식에서 닫는 경로(스펙 zkwrapper §4): 아이디·비밀번호 계정, 로그인 화면·인증 창, 등록·슬롯(π_IdP), 증명 로그인, 패스키 가입, 일반 OIDC. 서비스 등록·관리자·개봉·발급·폐기는 그대로다.
-const WRAPPER_BLOCKED = [/^\/cia\/signup(\/|$)/, /^\/cia\/user\//, /^\/cia\/register$/, /^\/cia\/slot$/, /^\/oidc\//, /^\/login(\/|$)/, /^\/user(\/info)?\/?$/, /^\/account(\/|$)/];   // /user/config(사용자 앱의 공개 설정)는 막지 않는다
+const WRAPPER_BLOCKED = [/^\/cia\/signup(\/|$)/, /^\/cia\/user\//, /^\/cia\/register$/, /^\/cia\/slot$/, /^\/oidc\//, /^\/login(\/|$)/, /^\/user(\/info)?\/?$/, /^\/account(\/|$)/];   // /user/config(사용자 앱의 공개 설정)는 막지 않는다. 사용자 앱이 붙으면(USER_APP) /user 는 위 mountUserApp 이 먼저 받는다 — "내 세션 관리"(2026-11-24)
 // Express 는 대소문자와 끝 슬래시를 가리지 않고 경로를 맞춘다(/CIA/Register·/cia/register/ 도 같은 처리기로 간다) — 같은 식으로 고른 주소에 대고 본다(2026-11-20 보안 검토).
 if (WRAPPER) app.use((req, res, next) => {
   const p = req.path.toLowerCase().replace(/\/+$/, '') || '/';
@@ -1484,7 +1484,9 @@ async function finishIssueInner(res, { uid, acct, cupt, cspt, auidS, aridS, mh, 
     if (acct.creds.some((c) => c.Cf_u === cfu)) return res.status(409).json({ error: 'this user credential was revoked; make a new one', reason: 'cred_revoked' });
     // 래퍼 방식(스펙 §10 I2·I1): 다른 계정이 낸 적 있는 C_u 는 받지 않는다(같은 리프를 두 슬롯에 넣어 계정 폐기를 피하지 못하게), C_u 교체는 계정당 최소 간격을 둔다.
     if (wrapper && Object.entries(state.accounts).some(([u, a]) => u !== uid && (a.creds ?? []).some((c) => c.Cf_u === cfu))) return res.status(409).json({ error: 'this user credential belongs to another account', reason: 'cf_u_taken' });
-    if (wrapper && cur && Date.now() - Date.parse(acct.creds.at(-1)?.issuedAt ?? 0) < CRED_CHANGE_MIN_MS) return res.status(429).json({ error: 'user credential changed too recently', reason: 'cred_change_too_soon' });
+    // 2026-11-24(사용자 결정): 첫 등록이 빈 속성이라(속성 기본값 없음) 첫 로그인 직후 속성을 넣는 것이 보통의 흐름이다 — 계정이 처음 받은 C_u 의 첫 교체(creds 가 하나뿐)는
+    // 기다리지 않는다. 그다음 교체부터는 계정당 최소 간격을 그대로 둔다(토큰 하나로 등록부를 계속 갈아 끼우지 못하게 — 늘어나는 것은 계정당 한 번뿐).
+    if (wrapper && cur && acct.creds.length > 1 && Date.now() - Date.parse(acct.creds.at(-1)?.issuedAt ?? 0) < CRED_CHANGE_MIN_MS) return res.status(429).json({ error: 'user credential changed too recently', reason: 'cred_change_too_soon' });
     // 코드 소비(F-7): π_IdP 뿐 아니라 headOf(503)·위 cred_revoked 사전 검사까지 모두 지난 뒤, 상태 변경(발급 기록) 바로
     // 앞에서 동기로 소비한다 — 동시 요청도 하나만 통과한다. 이보다 앞에서 태우면 체인 오류·폐기 충돌로 끝내 실패해도 코드가 사라진다.
     if (consume && !consume()) return res.status(consumeFail.status).json(consumeFail.body);

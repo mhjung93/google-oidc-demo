@@ -35,8 +35,11 @@ try {
       assert.equal(r.status, 404, `${m} ${p} → ${r.status}`);
     }
   });
-  await t('계정·로그인 화면은 닫혀 있고(/user·/login·/account 403 wrapper_mode), 운영자·관리자 화면은 열려 있다', async () => {
-    for (const p of ['/user', '/user/info', '/login', '/account']) { const r = await cia.get(p); assert.equal(r.status, 403, p); assert.equal(r.body.reason, 'wrapper_mode', p); }
+  // 2026-11-24(사용자 요청): /user 는 예전 zkIdP 계정 화면이 아니라 사용자 앱의 "내 세션 관리"(패스키로 연다)다 — 홈(/)은 쓰는 법만
+  await t('계정·로그인 화면은 닫혀 있고(/user/info·/login·/account 403 wrapper_mode), /user 는 사용자 앱(내 세션 관리), 운영자·관리자 화면은 열려 있다', async () => {
+    for (const p of ['/user/info', '/login', '/account']) { const r = await cia.get(p); assert.equal(r.status, 403, p); assert.equal(r.body.reason, 'wrapper_mode', p); }
+    const u = await raw('/user'); assert.equal(u.status, 200); const html = await u.text();
+    assert.ok(html.includes('id="userLockCard"'), '/user 가 사용자 앱이 아니다'); assert.ok((u.headers.get('content-security-policy') ?? '').includes("script-src 'self'"), '/user 에 CSP 가 없다');
     assert.equal((await raw('/admin')).status, 200); assert.equal((await raw('/rp')).status, 200);
   });
   await t('사용자 앱의 CSP — 연결 대상은 자기 오리진·체인 노드·승인된 서비스뿐, 번들(워커)에도 붙는다', async () => {

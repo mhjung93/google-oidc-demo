@@ -96,6 +96,14 @@ const ppidOf = (dump, svcArid) => Object.values(dump.sessions ?? {}).filter((s) 
 try {
   const info1 = (await rp.get('/api/mode3/rp_info')).body, info2 = (await rp2.get('/api/mode3/rp_info')).body;
   const A = await newBrowserWith(SECRET_A);
+  /** 2026-11-24(사용자 요청): 세션 관리는 /user — 처음에는 잠겨 있고 패스키로 연다(이 탭에서 10분 동안 아무 동작이 없으면 다시 잠긴다). 이미 열려 있으면 패스키를 묻지 않는다. */
+  const openUser = async (page) => {
+    await page.goto(`${wallet.base}/user`); await page.waitForSelector('#mainView:not([hidden])');
+    await page.waitForFunction(() => ['userLockCard', 'sessionsCard'].some((id) => document.getElementById(id)?.checkVisibility() === true), null, { timeout: 15_000 });
+    if (await page.evaluate(() => document.getElementById('userLockCard')?.checkVisibility() === true)) await page.click('#userUnlockBtn');
+    await page.waitForSelector('#sessionsCard', { state: 'visible', timeout: 15_000 });
+    return page;
+  };
   const UID_A = uidOf(google.provider, 'google-user-A');
   let ppid1 = null, popupBanned = null, ppid2 = null, acct2 = null, replayHash = null;
   await t('설정: 지갑 서버가 래퍼 방식을 알린다(/user/config.wrapper), 발급 서버의 돌아올 주소는 지갑의 /google-relay', async () => {
@@ -128,6 +136,8 @@ try {
     await userPage.goto(`${wallet.base}/`); await userPage.waitForSelector('#mainView:not([hidden])');
     const d = noteSessions(await idbDump(userPage));
     assert.equal(String(d.registration.uid), UID_A); assert.equal(d.registration.wrapper, true); assert.equal(d.wrapperKey, undefined, '요청 키가 남았다');
+    // 2026-11-24(사용자 결정): 속성 기본값(1990·KR)이 없다 — 속성 도구를 쓰지 않은 첫 등록은 모든 칸이 "값 없음"(0)
+    assert.ok((d.registration.attrs ?? []).length === 6 && d.registration.attrs.every((a) => String(a) === '0'), j(d.registration.attrs)); assert.deepEqual(d.registration.profile ?? {}, {});
     const stores = await userPage.evaluate(() => ({ ss: Object.entries(sessionStorage).map(([k, v]) => `${k}=${v}`), ls: Object.entries(localStorage).map(([k, v]) => `${k}=${v}`) }));
     const all = j(d) + j(stores);
     assert.ok(!all.includes(SALT_A), 'salt 가 저장소에 있다'); assert.ok(!/eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{20,}/.test(j(stores)), 'Google 토큰 모양이 웹 저장소에 있다');
@@ -150,7 +160,24 @@ try {
     assert.equal((await accounts()).length, 1);
     await rpPage.close();
   });
-  await t('zkTWO 로그인: PPID 가 zkONE 과 다르고 조건 증명이 통과한다', async () => {
+  // 2026-11-24(사용자 결정): 속성이 비어 있으면 속성을 요구하는 서비스(zkTWO — 국가 KR·JP)만 막는다 — Google 로 가기 전에 멈추고 속성 도구로 안내한다
+  await t('zkTWO(속성 조건 있음): 속성 커밋먼트가 없으면 Google 로 가기 전에 멈추고 속성 도구로 안내한다(패스키도 묻지 않는다)', async () => {
+    const g0 = A.hits.get;
+    const { rpPage, popup, visited } = await startLogin(A.ctx, rp2);
+    await popup.waitForSelector('#authHint a', { timeout: 30_000 });
+    assert.equal(await popup.$eval('#authHint a', (a) => a.href), `${new URL(wallet.base).origin}/attr.html`);
+    await waitText(rpPage, '#verdict', '속성 커밋먼트', 30_000);
+    assert.ok(!went(visited, google.authorizeUrl), `Google 로 갔다: ${j(visited.map((u) => u.slice(0, 70)))}`);
+    assert.equal(A.hits.get, g0, `패스키를 물었다: ${j(A.hits)}`);
+    await popup.close().catch(() => {}); await rpPage.close();
+  });
+  await t('zkTWO 로그인(속성 도구 기록을 넣은 뒤): PPID 가 zkONE 과 다르고 조건 증명이 통과한다', async () => {
+    // 속성 도구의 기록(version 6 — salt 없이 이 패스키의 auid 와 속성) — 데모 리셋 표시는 본 것으로 맞춰 둔다(readAttrRecord 가 지우지 않게)
+    const reg = (await idbDump(userPage)).registration;
+    await userPage.evaluate(async (r) => {
+      try { const x = await fetch('/attr/dist/reset.json', { cache: 'no-store' }); if (x.ok) localStorage.setItem('mode3_attr_tool_reset', String((await x.json()).epoch ?? '')); } catch { /* 없으면 그대로 */ }
+      localStorage.setItem('mode3_attr_tool_v1', JSON.stringify(r));
+    }, { version: 6, auid: String(reg.auid), profile: { birthYear: '1990', country: 'KR' } });
     google.setNextSub('google-user-A'); google.setNextClaims({ email: 'jihoo@example.com', email_verified: true });
     const { rpPage } = await startLogin(A.ctx, rp2);
     await waitText(rpPage, '#verdict', '로그인 성공', 120_000);
@@ -164,7 +191,7 @@ try {
     await rpPage.close();
   });
   await t('zk 클라이언트 세션 카드: "PPID" 줄은 PPID 숫자, "PPID 스마트 계정 주소" 줄은 서비스 화면과 같은 0x 주소(2026-11-23)', async () => {
-    await userPage.goto(`${wallet.base}/`); await userPage.waitForSelector('#mainView:not([hidden])');
+    await openUser(userPage);
     await userPage.waitForFunction((pp) => [...document.querySelectorAll('#sessionActions dd code')].some((e) => e.title === pp), ppid2, { timeout: 15_000 });
     const cards = await userPage.$$eval('#sessionActions dl', (dls) => dls.map((dl) => Object.fromEntries([...dl.querySelectorAll('dt')].map((dt) => [dt.textContent.trim(), dt.nextElementSibling.querySelector('code')?.title ?? dt.nextElementSibling.textContent.trim()]))));
     const c2 = cards.find((o) => o.PPID === ppid2);
@@ -336,12 +363,32 @@ try {
     for (const want of [`${new URL(wallet.base).origin}/common/flow.html`, `${c.ciaUrl}/rp`, `${c.ciaUrl}/admin`]) assert.ok(hrefs.includes(want), `${want} 링크가 없다: ${j(hrefs)}`);
     for (const h of hrefs) { const r = await fetch(h); assert.equal(r.status, 200, `${h} → ${r.status}`); }
     assert.ok((await text(page, '#homeGuide')).includes('Google'), '사용자 단계에 Google 이 없다');
+    // 2026-11-24(사용자 요청): 홈에는 "zk-Delegation 쓰는 법" 만 — 세션 관리는 /user(링크가 있다)
+    assert.ok(hrefs.includes(`${new URL(wallet.base).origin}/user`), `/user 링크가 없다: ${j(hrefs)}`);
+    await page.waitForTimeout(1500);
+    const shown = await page.evaluate(() => [...document.querySelectorAll('#mainView > section')].filter((e) => e.checkVisibility()).map((e) => e.id));
+    assert.deepEqual(shown, ['homeGuide'], j(shown));
+    await page.close();
+  });
+  await t('/user: 처음에는 잠겨 있고 패스키로 연다 — 새로고침은 열린 채, 잠그기·10분 동안 아무 동작이 없으면 다시 잠긴다', async () => {
+    const page = await A.ctx.newPage(); await page.goto(`${wallet.base}/user`);
+    await page.waitForSelector('#userLockCard', { state: 'visible', timeout: 15_000 });
+    const shown = () => page.evaluate(() => [...document.querySelectorAll('#mainView > section')].filter((e) => e.checkVisibility()).map((e) => e.id));
+    assert.deepEqual(await shown(), ['userLockCard'], '잠긴 화면에 다른 카드가 보인다');
+    const g0 = A.hits.get; await page.click('#userUnlockBtn');
+    await page.waitForSelector('#sessionsCard', { state: 'visible', timeout: 15_000 }); assert.equal(A.hits.get - g0, 1, j(A.hits));
+    { const s = await shown(); assert.ok(!s.includes('userLockCard') && !s.includes('homeGuide') && s.includes('identityCard') && s.includes('userBar'), j(s)); }
+    await page.reload(); await page.waitForSelector('#sessionsCard', { state: 'visible', timeout: 15_000 }); assert.equal(A.hits.get - g0, 1, '새로고침에 패스키를 다시 물었다');
+    await page.click('#userLockBtn'); await page.waitForSelector('#userLockCard', { state: 'visible', timeout: 5_000 }); assert.deepEqual(await shown(), ['userLockCard']);
+    await page.click('#userUnlockBtn'); await page.waitForSelector('#sessionsCard', { state: 'visible', timeout: 15_000 });
+    await page.evaluate(() => sessionStorage.setItem('mode3_user_unlock_until', String(Date.now() - 1)));   // 10분이 지난 것처럼
+    await page.waitForSelector('#userLockCard', { state: 'visible', timeout: 5_000 }); assert.deepEqual(await shown(), ['userLockCard']);
     await page.close();
   });
   await t('래퍼 방식의 화면 어디에도 "zkIdP"·"인증 창"·"π_IdP"·"비밀번호" 가 없다(홈·승인 창·서비스·운영자·관리자·전체 플로우)', async () => {
     const c = (await wallet.get('/user/config')).body; const hits = [];
     assert.ok(Array.isArray(popupBanned), '승인 창의 글자를 모으지 못했다'); for (const h of popupBanned) hits.push(`승인 창 ${h}`);
-    for (const [name, url] of [['홈', `${wallet.base}/`], ['서비스', `${rp.base}/`], ['zkTWO', `${rp2.base}/`], ['운영자', `${c.ciaUrl}/rp`], ['관리자', `${c.ciaUrl}/admin`], ['전체 플로우', `${wallet.base}/common/flow.html`]]) {
+    for (const [name, url] of [['홈', `${wallet.base}/`], ['내 세션 관리', `${wallet.base}/user`], ['서비스', `${rp.base}/`], ['zkTWO', `${rp2.base}/`], ['운영자', `${c.ciaUrl}/rp`], ['관리자', `${c.ciaUrl}/admin`], ['전체 플로우', `${wallet.base}/common/flow.html`]]) {
       const page = await A.ctx.newPage(); await page.goto(url); await page.waitForLoadState('networkidle').catch(() => {}); await page.waitForTimeout(800);
       // 화면의 래퍼 표기는 서버 상태(/mode3/health 의 wrapper)를 읽은 뒤 켜진다 — 그 표시가 붙을 때까지 기다린다(서비스 페이지는 자기 서버의 상태를 읽으므로 붙지 않는다)
       if (name !== '서비스' && name !== 'zkTWO') await page.waitForFunction(() => document.documentElement.dataset.wrapper === '1', null, { timeout: 15_000 }).catch(() => {});
@@ -356,8 +403,8 @@ try {
   });
   // 2026-11-23(사용자 요청, C): 세션 끝내기는 Google 확인(1회용 요청 키에 묶인 토큰 + 그 키의 서명)으로 동작한다 — 세션마다 버튼이 있다.
   // 계정 자기 폐기(π_IdP·비밀번호를 쓴다)는 여전히 없고 안내만 있다(최종 검토 I-1).
-  await t('래퍼 방식의 홈: 세션마다 "이 세션 끝내기" 버튼이 있고, 계정 자기 폐기 버튼은 없고 안내가 있다', async () => {
-    const page = await A.ctx.newPage(); await page.goto(`${wallet.base}/`); await page.waitForSelector('#homeGuide:not([hidden])', { timeout: 15_000 });
+  await t('래퍼 방식의 /user: 세션마다 "이 세션 끝내기" 버튼이 있고, 계정 자기 폐기 버튼은 없고 안내가 있다', async () => {
+    const page = await openUser(await A.ctx.newPage());
     await page.waitForFunction(() => document.querySelectorAll('#sessionActions button.danger').length > 0, null, { timeout: 15_000 }).catch(() => {});
     const st = await page.evaluate(() => ({ cards: document.querySelectorAll('#sessionActions dl').length,
       endBtns: [...document.querySelectorAll('#sessionActions button')].filter((b) => b.offsetParent !== null && /세션 끝내기/.test(b.textContent)).length,
@@ -371,9 +418,9 @@ try {
   // 2026-11-24(화면 점검 5번): 홈이 길다 — 영지식 증명 표·시연 버튼·공개할 속성 조건은 처음에 접어 두고, 편 상태만 이 브라우저에 기억한다.
   await t('래퍼 방식의 홈: 영지식 증명 표·시연 버튼·공개할 속성 조건은 처음에 접혀 있고, 편 상태는 새로고침해도 남는다', async () => {
     const KEYS = ['mode3_proofs_open', 'mode3_demo_open', 'mode3_disclose_open'];
-    const page = await A.ctx.newPage(); await page.goto(`${wallet.base}/`); await page.waitForSelector('#homeGuide:not([hidden])', { timeout: 15_000 });
+    const page = await openUser(await A.ctx.newPage());
     await page.evaluate((ks) => { for (const k of ks) localStorage.removeItem(k); }, KEYS);
-    await page.reload(); await page.waitForSelector('#homeGuide:not([hidden])', { timeout: 15_000 });
+    await page.reload(); await page.waitForSelector('#sessionsCard', { state: 'visible', timeout: 15_000 });
     await page.waitForFunction(() => /\d+개/.test(document.querySelector('#proofsFold > summary')?.textContent ?? ''), null, { timeout: 15_000 });
     const st = await page.evaluate(() => { const vis = (id) => document.getElementById(id)?.checkVisibility() === true;   // 닫힌 <details> 안도 offsetParent 는 있다(Chrome) — checkVisibility 로 본다
       return { proofs: document.getElementById('proofsFold').open, demo: document.getElementById('demoFold').open, disc: document.getElementById('discloseBox').open,
@@ -382,7 +429,7 @@ try {
     await page.click('#proofsFold > summary'); await page.click('#demoFold > summary');
     // toggle 이벤트는 비동기라 클릭 직후 새로고침하면 저장 전일 수 있다 — 기억된 뒤에 새로고침한다
     await page.waitForFunction(() => localStorage.getItem('mode3_proofs_open') === '1' && localStorage.getItem('mode3_demo_open') === '1', null, { timeout: 5_000 });
-    await page.reload(); await page.waitForSelector('#homeGuide:not([hidden])', { timeout: 15_000 });
+    await page.reload(); await page.waitForSelector('#sessionsCard', { state: 'visible', timeout: 15_000 });
     await page.waitForFunction(() => document.getElementById('demoFakeProofBtn')?.checkVisibility() === true && document.querySelector('#proofsList .proof-view')?.checkVisibility() === true, null, { timeout: 15_000 })
       .catch(async (e) => { const d = await page.evaluate(() => ({ proofs: document.getElementById('proofsFold')?.open, demo: document.getElementById('demoFold')?.open, ls: [localStorage.getItem('mode3_proofs_open'), localStorage.getItem('mode3_demo_open')], sum: document.querySelector('#proofsFold > summary')?.textContent, list: document.getElementById('proofsList')?.textContent.slice(0, 80) })); throw new Error(`${e.message} ${j(d)}`); });
     await page.evaluate((ks) => { for (const k of ks) localStorage.removeItem(k); }, KEYS);
@@ -392,7 +439,7 @@ try {
   // zkONE ① → 홈에서 zkTWO 세션 끝내기 → 게시 → zkONE ② = InvalidProof.
   const adminSessions = async () => (await cia.adminGet(`/cia/admin/sessions?uid=${UID_A}`)).body.sessions;
   const endSessionOnHome = async (page, arid) => {
-    await page.goto(`${wallet.base}/`); await page.waitForSelector('#mainView:not([hidden])');
+    await openUser(page);
     const d = await idbDump(page);
     const [r_s, s] = Object.entries(d.sessions ?? {}).find(([, v]) => String(v.arid) === String(arid)) ?? [];
     assert.ok(r_s, `홈에 그 서비스의 세션이 없다: ${j(Object.values(d.sessions ?? {}).map((v) => v.arid))}`);
@@ -404,7 +451,7 @@ try {
     const page = await A.ctx.newPage();
     google.setNextSub('google-user-B'); google.setNextClaims({ email: 'other@example.com', email_verified: true });
     const { Cf_s } = await endSessionOnHome(page, info2.arid);
-    await page.waitForURL((u) => u.origin === new URL(wallet.base).origin && u.pathname === '/' && !u.search.includes('authorize'), { timeout: 60_000 });
+    await page.waitForURL((u) => u.origin === new URL(wallet.base).origin && u.pathname === '/user' && !u.search.includes('authorize'), { timeout: 60_000 });
     await waitText(page, '#sessionVerdict', '실패', 30_000);
     const rec = (await adminSessions()).find((x) => x.Cf_s === Cf_s); assert.ok(rec, '서버에 그 세션이 없다'); assert.equal(rec.revokedAt, null, '다른 계정으로 폐기됐다');
     assert.ok(Object.values((await idbDump(page)).sessions ?? {}).some((v) => String(v.arid) === String(info2.arid)), '실패했는데 지갑에서 세션이 지워졌다');
@@ -418,10 +465,10 @@ try {
     await rpPage.waitForSelector('#txHoldBtn:not([hidden])', { timeout: 15_000 });
     await rpPage.click('#txHoldBtn'); await waitText(rpPage, '#txVerdict', '증명을 만들어 두었습니다', 120_000);
     const before = await adminSessions(), root0 = (await cia.get('/mode3/health')).body.root;
-    const page = await A.ctx.newPage(), g0 = A.hits.get;
+    const page = await openUser(await A.ctx.newPage()), g0 = A.hits.get;   // /user 를 여는 패스키 한 번은 세지 않는다
     google.setNextSub('google-user-A'); google.setNextClaims({ email: 'jihoo@example.com', email_verified: true });
     const { Cf_s } = await endSessionOnHome(page, info2.arid);
-    await page.waitForURL((u) => u.origin === new URL(wallet.base).origin && u.pathname === '/' && !u.search.includes('authorize'), { timeout: 60_000 });
+    await page.waitForURL((u) => u.origin === new URL(wallet.base).origin && u.pathname === '/user' && !u.search.includes('authorize'), { timeout: 60_000 });
     // 2026-11-23(화면 점검): 확인 창은 어느 서비스를 끝내는지 말하고, 결과는 서비스 이름으로 말한다 — H(C_s)·관리자 화면은 사용자 문구에 없다
     assert.ok(A.dialogs.at(-1)?.includes('zkTWO'), `확인 창: ${A.dialogs.at(-1)}`);
     await waitText(page, '#sessionVerdict', 'zkTWO 세션을 끝냈습니다', 30_000);
@@ -468,7 +515,7 @@ try {
     assert.ok(uid.t.length < 30 && uid.title.length > 40, j(uid));
     await page.close();
     // 홈의 "로그인 전체 플로우" 카드도 패스키를 사용자 대기·salt 계산으로 나눠 적는다
-    const home = await A.ctx.newPage(); await home.goto(`${wallet.base}/`); await home.waitForSelector('#mainView:not([hidden])');
+    const home = await openUser(await A.ctx.newPage());
     await home.waitForFunction(() => (document.getElementById('flowSummary')?.textContent ?? '').includes('가장 최근'), null, { timeout: 15_000 });
     const fl = await home.evaluate(() => ({ sum: document.getElementById('flowSummary').textContent, fig: document.getElementById('flowFigure').textContent }));
     assert.ok(fl.sum.includes('사용자 대기') && fl.fig.includes('사용자 대기') && fl.fig.includes('salt 계산'), j({ sum: fl.sum, fig: fl.fig.slice(0, 300) }));

@@ -22,6 +22,11 @@
     #homeGuide ol { margin: 4px 0 0 18px; padding: 0; }
     #homeGuide a { word-break: break-all; }
     @media (max-width: 640px) { #homeGuide .home-cols { grid-template-columns: 1fr; } }
+    /* 래퍼 방식의 화면 나누기(2026-11-24): 홈(/)은 쓰는 법만, /user 는 잠김(잠금 카드만) / 열림(잠금 카드·쓰는 법 빼고 전부). body[data-wrap-view] 는 ui.js 가 붙인다. */
+    body[data-wrap-view="home"] #mainView > section:not(#homeGuide) { display:none !important }
+    body[data-wrap-view="locked"] #mainView > section:not(#userLockCard) { display:none !important }
+    body[data-wrap-view="open"] #homeGuide, body[data-wrap-view="open"] #userLockCard { display:none !important }
+    #userBar { padding:10px 16px } #userBar .user-bar { margin:0; display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap }
     /* 연결된 서비스(2026-11-24, 래퍼 방식): 세션마다 테두리 상자, 맨 위에 서비스 이름 */
     .session-box { border:1px solid var(--line); border-radius:10px; padding:10px 14px; margin-top:10px }
     .session-box .session-head { font-weight:600; margin-bottom:6px; overflow-wrap:anywhere }
@@ -85,6 +90,20 @@
           </ol></div>
       </div>
       <p><a id="homeFlowLink" href="/common/flow.html" target="_blank" rel="noopener" data-i18n="home_flow_link">전체 플로우 한 장 — 일반 OIDC 와 나란히</a></p>
+      <!-- 2026-11-24(사용자 요청): 홈에는 쓰는 법만 — 신원·세션·증명은 /user 에서 패스키로 열어 본다 -->
+      <p><span data-i18n="home_user_page">내 세션 관리(패스키로 엽니다):</span> <a id="homeUserLink" href="/user">/user</a></p>
+    </section>
+    <!-- /user 잠금(2026-11-24, 래퍼 방식): 처음에는 이 카드만 보인다 — 패스키로 열면 아래 카드들이 보이고, 이 탭에서 10분 동안 아무 동작이 없으면 다시 잠긴다.
+         화면을 가리는 잠금이다(저장소 암호화는 그대로) — 같은 브라우저를 쓰는 다른 사람이 화면을 보지 않게. -->
+    <section class="card span2" id="userLockCard" hidden>
+      <h3 data-i18n="user_lock_title">내 세션 관리</h3>
+      <p class="desc" data-i18n="user_lock_desc">이 브라우저의 신원·로그인 세션·증명을 봅니다. 이 기기의 패스키로 엽니다 — 이 탭에서 10분 동안 아무 동작이 없으면 다시 잠깁니다.</p>
+      <p><button id="userUnlockBtn" type="button" data-i18n="user_open_btn">패스키로 열기</button></p>
+      <p id="userNoReg" class="muted" data-i18n="user_lock_noreg" hidden>아직 이 브라우저로 로그인한 서비스가 없습니다 — 서비스에서 "zk 로그인" 을 하면 여기서 관리합니다.</p>
+      <div id="userLockVerdict"></div>
+    </section>
+    <section class="card span2" id="userBar" hidden>
+      <p class="user-bar"><span class="muted" data-i18n="user_bar_note">열림 — 이 탭에서 10분 동안 아무 동작이 없으면 잠깁니다.</span> <button id="userLockBtn" type="button" class="btn-ghost" data-i18n="user_page_lock_btn">잠그기</button></p>
     </section>
     <!-- passkey-web(2026-11-17 계획 Task 7): 패스키 설정 카드(연결이 없을 때만)·계정 복구 카드(연결 있음 ∧ 미등록). 다른 모드에서는 늘 숨는다.
          결과 카드(#pkSetupVerdict·#pkRecoverVerdict)는 카드가 숨은 뒤에도 보이게 신원 카드에 둔다. -->
