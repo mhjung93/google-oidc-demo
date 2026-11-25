@@ -260,6 +260,11 @@ if [ "${BLOCKSCOUT_RESET:-1}" != 0 ] && [ -f "$BS_DIR/compose.yml" ] && command 
     echo "WARN Blockscout 초기화 실패 — $LOGS/blockscout_reset.log (데모는 계속 진행)"
   fi
 fi
+# 3b-2. 폐기(RCL) 체인(:$REV_PORT)의 Blockscout(http://127.0.0.1:4001, 2026-11-25) — 응용 체인 것과 볼륨·네트워크가 따로인 두 번째 스택이다. 체인을 새로 만들었으니 색인도 비운다.
+#       BLOCKSCOUT_RCL=0 이면 건드리지 않는다. 실패해도 데모는 계속한다. 컨트랙트 자동 검증(3c)은 응용 체인 것만 한다.
+if [ "${BLOCKSCOUT_RESET:-1}" != 0 ] && [ "${BLOCKSCOUT_RCL:-1}" != 0 ] && [ -f "$BS_DIR/compose.yml" ]; then
+  if bash scripts/blockscout_rcl.sh reset > "$LOGS/blockscout_rcl_reset.log" 2>&1; then echo "Blockscout(RCL) 초기화: 폐기 체인 색인을 비우고 다시 띄웠다(http://127.0.0.1:4001)"; else echo "WARN Blockscout(RCL) 초기화 실패 — $LOGS/blockscout_rcl_reset.log (데모는 계속 진행)"; fi
+fi
 # 3c. 컨트랙트 자동 검증(2026-11-18): 감시자 하나가 응용 체인을 0번 블록부터 따라가며 올라오는 컨트랙트(거울·검증기·팩토리·AttrGate·계정마다의 지갑)를
 #     Blockscout 에 소스 검증으로 올린다. 서비스(VM)·에이전트가 실행 중에 배포하는 것까지 체인에서 잡는다. BLOCKSCOUT_VERIFY=0 이면 띄우지 않는다.
 #     Blockscout 가 없으면(compose·docker 없음, 또는 초기화를 건너뛰었는데 :4000 응답 없음) 띄우지 않는다. 데모 기동은 이 감시자를 기다리지 않는다.

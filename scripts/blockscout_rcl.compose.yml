@@ -1,0 +1,27 @@
+# 폐기(RCL) 체인용 Blockscout 의 덮어쓰기(2026-11-25). 응용 체인 스택(.local/blockscout/compose.yml, :4000)의 설정을 그대로 쓰고 체인·주소·포트만 바꾼다.
+# scripts/blockscout_rcl.sh 가 다른 compose 프로젝트 이름으로 띄운다 — 컨테이너·네트워크·볼륨이 따로다. 비밀값은 여기에 없다(바탕 파일에만 있다).
+# 바탕의 proxy(:4000)는 띄우지 않는다: compose 2.6 은 포트를 덮어쓰지 못하고 더하기만 해서 :4000 이 겹친다 — 대신 proxy-rcl(:4001)을 둔다.
+services:
+  backend:
+    environment:
+      CHAIN_ID: "31340"
+      SUBNETWORK: "Mode 3 RCL"
+      ETHEREUM_JSONRPC_HTTP_URL: "http://host.docker.internal:8548/"
+      ETHEREUM_JSONRPC_WS_URL: "ws://host.docker.internal:8548/"
+  trace-adapter:
+    environment:
+      TRACE_UPSTREAM: "http://host.docker.internal:8548"
+  frontend:
+    environment:
+      NEXT_PUBLIC_API_PORT: "4001"
+      NEXT_PUBLIC_APP_PORT: "4001"
+      NEXT_PUBLIC_NETWORK_ID: "31340"
+      NEXT_PUBLIC_NETWORK_NAME: "zkID Mode 3 RCL"
+      NEXT_PUBLIC_NETWORK_SHORT_NAME: "zkID RCL"
+      NEXT_PUBLIC_NETWORK_RPC_URL: "http://localhost:8548"
+  proxy-rcl:
+    image: nginx:stable-alpine
+    depends_on: [backend, frontend]
+    volumes: ["./nginx.conf:/etc/nginx/conf.d/default.conf:ro"]
+    ports: ["127.0.0.1:4001:80"]
+    restart: unless-stopped

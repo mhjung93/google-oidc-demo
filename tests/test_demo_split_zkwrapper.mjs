@@ -205,6 +205,26 @@ t('zkwrapper 의 이름은 zkwrapper.zkd.test — 주소·hosts 확인·인증�
   assert.ok(src.includes('"$TLS_OUT" zkwrapper zkwrapper.zkd.test 127.0.0.1 "$HOST"'), '인증서 이름');
   assert.ok(/zkd_hosts_render \/etc\/hosts .*"127\.0\.0\.1=zkwrapper\.zkd\.test"/.test(fs.readFileSync(new URL('../scripts/zkd_tls_setup.sh', import.meta.url), 'utf8')), 'setup 의 hosts 목록');
 });
+t('폐기 체인 Blockscout(:4001) — 체인을 새로 만든 뒤 초기화하고(BLOCKSCOUT_RCL=0 이면 안 함) 실패해도 계속한다; 덮어쓰기는 폐기 체인만 가리킨다(2026-11-25)', () => {
+  const i = idx(/bash scripts\/blockscout_rcl\.sh reset/), c = idx(/^start_chain \$REV_PORT/); assert.ok(c >= 0 && i > c, `순서: ${c} ${i}`);
+  assert.ok(/BLOCKSCOUT_RCL:-1\}" != 0/.test(lines[i - 1]) && /BLOCKSCOUT_RESET:-1\}" != 0/.test(lines[i - 1]), lines[i - 1]); assert.ok(/WARN Blockscout\(RCL\)/.test(lines[i]) && !/exit/.test(lines[i]), lines[i]);
+  const o = fs.readFileSync(new URL('../scripts/blockscout_rcl.compose.yml', import.meta.url), 'utf8').split('\n').filter((l) => !l.trim().startsWith('#')).join('\n');
+  assert.ok(!/8547|31339|:4000/.test(o), '응용 체인을 가리킨다'); assert.ok(o.includes('127.0.0.1:4001:80') && (o.match(/8548/g) ?? []).length >= 4 && o.includes('31340')); assert.ok(!/SECRET|PASSWORD|DATABASE_URL|external:|container_name/.test(o));
+});
+t('폐기 체인 Blockscout — 다른 스택과 볼륨·네트워크 이름을 나눠 쓰면 지우지도 띄우지도 않는다(가짜 docker)', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'zkd-bs-')); fs.mkdirSync(path.join(d, 'scripts')); fs.mkdirSync(path.join(d, 'bin')); fs.mkdirSync(path.join(d, '.local/blockscout'), { recursive: true }); fs.writeFileSync(path.join(d, '.local/blockscout/compose.yml'), '');
+  for (const f of ['blockscout_rcl.sh', 'blockscout_rcl.compose.yml']) fs.copyFileSync(new URL(`../scripts/${f}`, import.meta.url), path.join(d, 'scripts', f));
+  fs.writeFileSync(path.join(d, 'bin/docker'), '#!/bin/bash\necho "$@" >> "$CALLS"\nfor a in "$@"; do [ "$a" = config ] && { cat "$CFG"; exit "${CFG_EXIT:-0}"; }; done\nexit 0\n', { mode: 0o755 });
+  const run = (cmd, cfg, env = {}) => { const calls = path.join(d, 'calls'); fs.rmSync(calls, { force: true }); fs.writeFileSync(path.join(d, 'cfg'), cfg); const r = spawnSync('bash', [path.join(d, 'scripts/blockscout_rcl.sh'), cmd], { encoding: 'utf8', env: { PATH: `${path.join(d, 'bin')}:${process.env.PATH}`, CALLS: calls, CFG: path.join(d, 'cfg'), ...env } }); return { code: r.status, out: r.stdout + r.stderr, calls: fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8') : '' }; };
+  const good = 'services:\n  db: {}\nnetworks:\n  default:\n    name: zkid-blockscout-rcl_default\nvolumes:\n  db-data:\n    name: zkid-blockscout-rcl_db-data\n';
+  try {
+    const ok = run('reset', good); assert.equal(ok.code, 0, ok.out); assert.match(ok.calls, /-p zkid-blockscout-rcl .* down -v/); const up = ok.calls.split('\n').find((l) => / up -d /.test(l)); assert.ok(up.includes('proxy-rcl') && !/ proxy( |$)/.test(up), `바탕 proxy(:4000)를 띄운다: ${up}`);
+    for (const [name, cfg, env] of [['응용 체인 볼륨', good.replace('zkid-blockscout-rcl_db-data', 'zkid-blockscout_db-data')], ['external', `${good}    external: true\n`], ['고정 컨테이너 이름', `${good}    container_name: x\n`], ['이름 없음', 'services: {}\n'], ['설정 풀기 실패', good, { CFG_EXIT: '1' }]])
+      for (const cmd of ['reset', 'down', 'up']) { const r = run(cmd, cfg, env); assert.notEqual(r.code, 0, `${name} ${cmd}`); assert.ok(!/ down | up -d/.test(r.calls), `${name} ${cmd}: ${r.calls}`); }
+    const same = run('reset', good, { BLOCKSCOUT_RCL_PROJECT: 'zkid-blockscout' }); assert.notEqual(same.code, 0); assert.equal(same.calls, '', '프로젝트 이름이 같은데 docker 를 불렀다');
+    fs.rmSync(path.join(d, '.local'), { recursive: true }); const none = run('reset', good); assert.equal(none.code, 0); assert.equal(none.calls, '');
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+});
 t('속성 도구의 리셋 표시(reset.json)는 래퍼면 walletKind zkwrapper — 도구가 이 값으로 화면 모드를 다시 정한다(2026-11-25)', () => {
   const i = idx(/^if \[ "\$AGENT_MODE" = 1 \] \|\| \[ "\$WALLET_MODE" = passkey-web \]; then mkdir -p mode3\/attr\/dist/); assert.ok(i >= 0, 'reset.json 쓰는 줄 없음');
   const kind = lines[i].match(/"\$TS" ("\$\(.*?\)")/)?.[1]; assert.ok(kind, lines[i].slice(0, 200));
