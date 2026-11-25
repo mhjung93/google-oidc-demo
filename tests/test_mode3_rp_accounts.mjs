@@ -89,22 +89,29 @@ await t('옛 파일에 남은 속성 커밋먼트(version 2 의 attr 필드)는 
   assert.equal('attrCommit' in store.get('acct_x'), false);
   assert.equal(fs.readFileSync(file, 'utf8').includes('attrCommit'), false, '파일에서도 지워졌다');
 });
-await t('장부: addKrw·addCustody 는 bigint, 음수가 되면 400 이고 바뀌지 않는다', () => {
+await t('장부: addKrw 는 bigint, 음수가 되면 400 이고 바뀌지 않는다 — 보관 ETH 장부는 없다(2026-11-25, 체인 잔고)', () => {
   const { store } = fresh();
   const A = store.loginOrCreate('google', { sub: 'g4' }).id;
   assert.equal(store.addKrw(A, 1_000_000n), 1_000_000n);
   rejectsWith(() => store.addKrw(A, -2_000_000n), 400, 'insufficient_krw');
   assert.equal(store.krw(A), 1_000_000n);
-  assert.equal(store.addCustody(A, 10n ** 17n), 10n ** 17n);
-  rejectsWith(() => store.addCustody(A, -(10n ** 18n)), 400, 'insufficient_custody');
-  assert.equal(store.custody(A), 10n ** 17n);
+  assert.equal(store.addCustody, undefined); assert.equal(store.custody, undefined);
+});
+await t('보관 시드의 지문: 한 번 적으면 남고 다른 값으로 바꾸지 못한다 — 옛 custodyEth 칸은 열 때 지운다', () => {
+  const { file, store } = fresh();
+  assert.equal(store.custodyKey(), null); store.setCustodyKey('0xabc'); store.setCustodyKey('0xabc');
+  rejectsWith(() => store.setCustodyKey('0xdef'), 409, 'custody_key_set');
+  assert.equal(openAccountStore({ file }).custodyKey(), '0xabc');
+  const old = path.join(dir, 'oldcustody.json');
+  fs.writeFileSync(old, JSON.stringify({ version: 2, accounts: { acct_o: { id: 'acct_o', createdAt: 't', zkid: null, google: { sub: 'g9', linkedAt: 't' }, naver: null } }, byPPID: {}, byGoogle: { g9: 'acct_o' }, byNaver: {}, krw: { acct_o: '5' }, custodyEth: { acct_o: '9' } }));
+  const o = openAccountStore({ file: old }); assert.equal(o.krw('acct_o'), 5n); assert.equal(o.custodyKey(), null); assert.equal(fs.readFileSync(old, 'utf8').includes('custodyEth'), false, '파일에서도 지워졌다');
 });
 await t('파일: 다시 열어도 계정·색인·장부가 남는다(version 2, 권한 600)', () => {
   const { file, store } = fresh();
   const A = store.loginOrCreate('naver', { sub: 'n5' }).id;
-  store.addKrw(A, 7n); store.addCustody(A, 9n);
+  store.addKrw(A, 7n);
   const again = openAccountStore({ file });
-  assert.equal(again.findBy('naver', { sub: 'n5' }), A); assert.equal(again.krw(A), 7n); assert.equal(again.custody(A), 9n);
+  assert.equal(again.findBy('naver', { sub: 'n5' }), A); assert.equal(again.krw(A), 7n);
   assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).version, 2);
   assert.equal(fs.statSync(file).mode & 0o777, 0o600);
 });

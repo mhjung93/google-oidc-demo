@@ -227,7 +227,7 @@
       for (const x of [...lastTxs].reverse()) {   // 최근 것이 위
         const row = body.insertRow();
         const at = row.insertCell(); at.textContent = fmtAt(x.at); at.title = x.at;
-        const ac = row.insertCell(); const acc = document.createElement('code'); acc.textContent = shortAddr(x.account); acc.title = x.account ? `${x.account}\nPPID ${x.PPID}` : String(x.PPID ?? ''); ac.appendChild(acc);
+        const ac = row.insertCell(); const acc = document.createElement('code'); acc.textContent = shortAddr(x.account); acc.title = x.account ? `${x.account}${x.PPID ? `\nPPID ${x.PPID}` : ''}` : String(x.PPID ?? ''); ac.appendChild(acc);
         // 2026-11-05: 금액은 wei 가 아니라 ETH 로; 'buy' 는 거래소(릴레이어)가 세션 계정에 넣어 준 구매 입금.
         const ethOf = (wei) => { try { const w = BigInt(wei); const s = `${w / 10n ** 18n}.${String(w % 10n ** 18n).padStart(18, '0')}`; return s.replace(/\.?0+$/, '') || '0'; } catch { return String(wei); } };
         row.insertCell().textContent = x.kind === 'claim' ? (tt('rp_tx_content_claim') || '조건 확인(AttrGate)') : x.kind === 'buy' ? (tt('rp_tx_content_buy', { to: shortAddr(x.target), value: ethOf(x.value) }) || `구매 — ${shortAddr(x.target)} 에 ${ethOf(x.value)} ETH 입금`) : (tt('rp_tx_content_transfer', { to: shortAddr(x.target), value: ethOf(x.value) }) || `${shortAddr(x.target)} 로 ${ethOf(x.value)} ETH`);

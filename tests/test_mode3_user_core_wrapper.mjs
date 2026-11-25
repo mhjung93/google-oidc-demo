@@ -154,6 +154,18 @@ try {
     assert.equal(second.r.status, 200, j(second.r.body)); assert.equal(second.v.status, 200, j(second.v.body));
     assert.equal(A.calls - calls0, 1); assert.equal(second.PPID, first.PPID);
   });
+  // 2026-11-25(스펙 rp-custody-address): 구매는 KRW 를 먼저 빼고 보낸다 — zk 세션(서명 채널)은 전처럼 PPID 계정으로 들어가고 보관 주소는 쓰지 않는다. 동시에 눌러도 KRW 를 넘지 않는다
+  await t('zk 세션의 구매(서명 채널): ETH 는 PPID 계정으로, KRW 는 한 번만 — 동시 구매 둘 중 하나만, 보관 주소는 보이지 않는다', async () => {
+    const lg = await wlogin(A, 'g-anna'); assert.equal(lg.v.status, 200, j(lg.v.body)); const rs = String(lg.ch.r_s);
+    const L = async (body) => { const q = await A.core.request({ r_s: rs, body, origin: info.origin }); assert.equal(q.status, 200, j(q.body)); return (await rp.post('/api/mode3/request', { r_s: rs, body, sig: q.body.sig })).body; };
+    const b0 = (await L('balance')).balance; assert.equal(b0.custodyAddress, null, 'zk 만 쓰는 계정에 보관 주소가 보인다'); assert.equal(b0.ledger.ETH_CUSTODY, '0');
+    assert.equal((await L(`deposit:${Date.now()}`)).ok, true);
+    const t0 = Date.now(), two = await Promise.all([L(`buy:0.15:${t0}`), L(`buy:0.15:${t0 + 1}`)]);
+    assert.deepEqual(two.map((x) => x.ok).sort(), [false, true], j(two)); assert.equal(two.find((x) => !x.ok).reason, 'insufficient_krw');
+    const ok = two.find((x) => x.ok); assert.equal(ok.balance.ledger.KRW, '368,500'); assert.equal(ok.balance.ethWei, (BigInt(b0.ethWei) + 15n * 10n ** 16n).toString());
+    const tx = await provider.getTransaction(ok.txHash); assert.equal(tx.to, ok.balance.account); assert.equal(ok.balance.custodyAddress, null);
+    assert.equal((await L(`withdraw:${tx.to}:1:${Date.now()}`)).reason, 'malformed', '서명 채널로는 보관 출금을 못 한다');
+  });
   await t('wrapperBegin 없이 wrapperLogin: 409 wrapper_key_missing — 패스키를 묻지 않는다', async () => {
     const calls0 = A.calls; const ch = await challenge();
     const r = await A.core.wrapperLogin(loginBody(ch), { idToken: await mint('g-anna', 'wrap:' + '0'.repeat(64)), verifiedOrigin: info.origin });

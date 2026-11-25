@@ -837,7 +837,7 @@ try {
     // 서비스는 래퍼와 다른 Google 클라이언트 ID 를 쓴다(데모 스크립트와 같다) — 같으면 중계 화면이 래퍼용 토큰이라 서비스로 넘기지 않는다(스펙 zkwrapper §10 C2).
     const rpGoogle = await startOidcIssuerStub({ clientId: 'rp-google-client', provider: 'google' });
     try {
-    await stack.restartRp({ MODE3_RP_GOOGLE_CLIENT_ID: rpGoogle.clientId, MODE3_RP_GOOGLE_ISSUER: rpGoogle.issuer, MODE3_RP_GOOGLE_JWKS_URL: rpGoogle.jwksUrl, MODE3_RP_GOOGLE_AUTHORIZE_URL: rpGoogle.authorizeUrl, MODE3_RP_GOOGLE_REDIRECT_URI: `${wallet.base}/google-relay` });
+    await stack.restartRp({ MODE3_RP_GOOGLE_CLIENT_ID: rpGoogle.clientId, MODE3_RP_GOOGLE_ISSUER: rpGoogle.issuer, MODE3_RP_GOOGLE_JWKS_URL: rpGoogle.jwksUrl, MODE3_RP_GOOGLE_AUTHORIZE_URL: rpGoogle.authorizeUrl, MODE3_RP_GOOGLE_REDIRECT_URI: `${wallet.base}/google-relay`, MODE3_EXPLORER_URL: 'http://127.0.0.1:4000/' });
     rpGoogle.setNextSub('google-rp-only-user');
     const page = await openRp(A.ctx, rp);
     await page.click('#loginBtn');
@@ -869,7 +869,13 @@ try {
     }
     const hint = await text(page, '#custodyHint');
     assert.equal(await vis('#custodyHint'), true);
-    assert.ok(hint.includes('zkWrapper 로 로그인하면') && hint.includes('직접 쥐는 계정'), `래퍼 용어로 안내: ${hint}`);
+    assert.ok(hint.includes('키는 서비스가 보관') && hint.includes('zkWrapper 로 로그인하면') && hint.includes('세션키와 증명'), `누가 키를 쥐는지 안내: ${hint}`);
+    // 보관 주소(스펙 2026-11-25 rp-custody-address): 주소·복사·탐색기 링크·보낼 수 있는 최대, 보내기 설명
+    await page.waitForSelector('#custodyAddrRow:not([hidden])', { timeout: 15_000 });
+    const cAddr = (await page.evaluate((b) => fetch('/api/rp/ledger', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body: b }) }).then((x) => x.json()), 'balance')).balance.custodyAddress;
+    assert.match(cAddr, /^0x[0-9a-fA-F]{40}$/); assert.equal(await text(page, '#custodyAddr'), cAddr); assert.equal(await vis('#copyCustodyBtn'), true);
+    assert.equal(await page.$eval('#custodyExplorerLink', (a) => (a.checkVisibility() ? a.getAttribute('href') : null)), `http://127.0.0.1:4000/address/${cAddr}`);
+    assert.ok((await text(page, '#custodyMax')).includes('최대 0 ETH'), await text(page, '#custodyMax')); assert.ok((await text(page, '#txDesc')).includes('서비스가 대신 서명'), await text(page, '#txDesc'));
     assert.ok(!(await visibleText(page)).includes('거래소 보관'), '옛 "거래소 보관" 문구가 남았다');
     // 보관 잔액(0)보다 많이 출금하면 래퍼 문구의 잔고 부족(insufficient_custody ko_wr)
     await page.fill('#txTo', '0x' + '11'.repeat(20)); await page.fill('#txValue', '1');
@@ -883,6 +889,11 @@ try {
     await page.fill('#buyAmount', '0.01'); await page.click('#buyBtn');
     await page.waitForFunction(() => document.querySelector('.balance-list li[data-asset="ETH_CUSTODY"] .bal-amt').textContent !== '0', null, { timeout: 20_000 });
     assert.notEqual(await amt('KRW'), '0');
+    // 구매는 체인의 내 주소로 들어오고, 보내면 from 이 그 주소다. 가스 부족이면 사유
+    assert.equal(await chainRead.getBalance(cAddr), 10n ** 16n, '산 ETH 가 내 주소에 없다'); await page.waitForFunction(() => /최대 0\.0099/.test(document.getElementById('custodyMax').textContent), null, { timeout: 10_000 });
+    await page.fill('#txValue', '0.01'); await page.click('#txBtn'); await waitText(page, '#txVerdict', '가스로 쓸 ETH 가 모자랍니다', 20_000);
+    await page.fill('#txValue', '0.005'); await page.click('#txBtn'); await waitText(page, '#txVerdict', '서비스가 보관한 키로 대신 서명', 20_000);
+    { const h = await page.$eval('#txHashCode', (e) => e.title); const tx = await chainRead.getTransaction(h); assert.equal(tx.from, cAddr, 'from 이 내 주소가 아니다'); assert.equal(tx.to.toLowerCase(), '0x' + '11'.repeat(20)); }
     await page.click('#logoutBtn'); await page.waitForSelector('#loginBtn:not([hidden])');
     google.setNextSub('google-user-A'); google.setNextClaims({ email: 'jihoo@example.com', email_verified: true });
     await page.click('#loginBtn');
@@ -891,7 +902,8 @@ try {
     await zkPopup.close().catch(() => {});
     assert.deepEqual([await amt('KRW'), await amt('ETH')], ['0', '0'], 'Google 계정의 KRW·ETH 가 zk 로그인 뒤에 남았다');
     assert.equal(await vis('.balance-list li[data-asset="ETH_CUSTODY"]'), false, 'zk 로그인에는 보관 잔액이 없어 그 줄을 숨긴다');
-    assert.equal(await vis('#custodyIdRow'), false);
+    assert.equal(await vis('#custodyIdRow'), false); assert.equal(await vis('#custodyAddrRow'), false); assert.equal(await vis('#custodyMax'), false);
+    assert.ok(!(await page.content()).includes(cAddr), '앞 로그인의 보관 주소가 남았다'); assert.ok(!(await text(page, '#txDesc')).includes('서비스가 대신 서명'));
     {
       const zme = await page.evaluate(() => fetch('/api/rp/me').then((r) => r.json())); assert.equal(zme.via, 'zkid', j(zme.via));
       const f = await openFigure();

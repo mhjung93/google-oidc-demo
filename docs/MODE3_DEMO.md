@@ -1146,10 +1146,11 @@ salt 는 **패스키(WebAuthn PRF 확장)에서 그때그때 유도**해 어디�
   zkONE 에서 연결한 것은 zkTWO 에 아무 영향이 없다.
 - **로그인 창**: "zkIdP 로 로그인" 은 지금처럼 스냅 팝업. "Google 계정으로 로그인" 은 그 자리에 Google 버튼(GIS), "네이버로 로그인" 은 네이버를 다녀온다 — 둘 다 스냅을 거치지 않는다.
   (RP 에 Google 설정이 없고 IdP 가 Google 래퍼를 켰으면 Google 버튼은 예전 래퍼 로그인 — web 모드가 쓴다.)
-- **자산**: KRW · ETH(내 계정 = PPID 스마트 계정, zkIdP 로 연결돼 있을 때) · ETH(거래소 보관). Google·네이버 세션에서 산 ETH 는 거래소 보관 장부에 쌓이고, 출금은 RP 릴레이어가
-  자기 돈으로 보낸다. 온체인 출금의 **출금 출처**: "내 계정" 은 zkIdP 세션(스냅 증명)일 때만, "거래소 보관" 은 늘. 계정·장부는 `mode3_rp_accounts.json`(version 2)에 남는다.
+- **자산**: KRW · ETH(내 계정 = PPID 스마트 계정, zkIdP 로 연결돼 있을 때) · ETH(서비스 보관). Google·네이버 세션에서 산 ETH 는 **서비스가 키를 보관하는 체인 주소**로 들어온다(2026-11-25, 그전에는 장부 숫자였고 출금은 RP 릴레이어가
+  자기 돈으로 보냈다). 보내면 `from` 이 그 주소이고 가스도 그 잔고에서 나간다. 계정·KRW·시드 지문은 `mode3_rp_accounts.json`(version 2)에, 시드는 `mode3_rp_custody_seed.json`(0600, 커밋 금지)에 남는다 — 두 파일은 **함께** 옮긴다(지문이 맞지 않으면 서비스가 뜨지 않는다).
+  한계(스펙 `2026-11-25-mode3-rp-custody-address-design.md` §3): **시드 파일 하나가 그 서비스 보관 계정 전부의 키다** — 서버가 털리면 전부 잃고, 서비스는 사용자 동의 없이 돈을 옮길 수 있다(일반 OIDC 쪽의 의도된 대비). 주소와 거래 내역은 체인에 공개된다. 한 계정에 zk 와 Google 이 함께 연결돼도 두 주소는 따로다.
 - **zk 를 거치지 않는 지점(데모 대비)**: zkIdP 자격증명을 폐기해도 Google·네이버 로그인은 된다(PPID 계정 출금만 막힌다) · zkTWO 의 국가·나이 요구는 소셜 로그인에 적용되지 않는다 ·
-  두 RP 가 같은 Google 클라이언트·네이버 앱을 쓰면 sub 이 같아 두 RP 가 같은 사람임을 안다(zkIdP 는 RP 마다 다른 PPID) · 거래소 보관은 수탁이다 · localhost 에서 쿠키는 포트로 격리되지 않는다(이름만 다르다 — `zkone.sid`·`zktwo.sid`·`cia.sid`).
+  두 RP 가 같은 Google 클라이언트·네이버 앱을 쓰면 sub 이 같아 두 RP 가 같은 사람임을 안다(zkIdP 는 RP 마다 다른 PPID) · 서비스 보관 주소는 수탁이다(키를 서비스가 쥔다) · localhost 에서 쿠키는 포트로 격리되지 않는다(이름만 다르다 — `zkone.sid`·`zktwo.sid`·`cia.sid`).
   zkIdP 로 로그인해 생긴 쿠키 세션은 그 zkIdP 세션(r_s)과 함께 끝난다(폐기·로그아웃).
 - **주소(분리 데모, snap 모드)**: 브라우저는 zkONE `http://localhost:3100`, zkTWO `http://localhost:3101`, IdP `http://localhost:4100` 으로 연다 — `demo_split_start.sh` 가 이 VM 에 SSH 터널 셋을 연다
   (`SPLIT_RP_TUNNEL`·`SPLIT_IDP_TUNNEL`, 0 이면 VM 주소). RP 공개 주소가 바뀌면 RP 가 스스로 새로 등록한다 — IdP 관리자 페이지에서 다시 승인한다.

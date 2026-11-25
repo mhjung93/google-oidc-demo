@@ -1,5 +1,7 @@
 // tests/test_rp_social_logins.mjs — RP 계정에 zkIdP·Google·네이버 로그인 연결(스펙 2026-11-10). 격리 스택(IdP·지갑·RP 둘) + 가짜 Google·네이버. (chain — :8545)
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
 import { startOidcIssuerStub } from './helpers/oidc_issuer_stub.mjs';
 import { ethers } from 'ethers';
@@ -140,22 +142,32 @@ try {
     const again = await googleLogin(jar(rp.base), 'g-alice');
     assert.equal(again.body.created, true); assert.notEqual(again.body.account, B);
   });
-  await t('거래소 보관: 쿠키 세션으로 입금·구매(거래소 보관 ETH 증가, 체인 거래 없음) → 출금은 릴레이어가 실제 ETH 를 보낸다; 초과·0·주소 오류는 400 이고 장부 그대로', async () => {
+  // 2026-11-25(스펙 rp-custody-address): 보관 ETH 는 장부 숫자가 아니라 서비스가 키를 보관하는 주소의 체인 잔고다. 보내면 from 이 그 주소이고 가스도 거기서 나간다.
+  let frank = null;
+  await t('보관 계정: 구매는 그 계정 주소로 실제 송금, 보내기는 그 주소가 from — 초과·가스 부족·0·주소 오류는 400 이고 잔고 그대로', async () => {
     const u = jar(rp.base); await googleLogin(u, 'g-frank');
     const ts = () => Date.now();
+    const b0 = (await u.req('POST', '/api/rp/ledger', { body: 'balance' })).body.balance;
+    assert.match(b0.custodyAddress, /^0x[0-9a-fA-F]{40}$/); assert.equal(b0.ledger.ETH_CUSTODY, '0'); assert.equal(b0.custodyMaxEth, '0'); frank = b0.custodyAddress;
     assert.equal((await u.req('POST', '/api/rp/ledger', { body: `deposit:${ts()}` })).body.ok, true);
     const b = await u.req('POST', '/api/rp/ledger', { body: `buy:0.1:${ts()}` });
-    assert.equal(b.body.ok, true, j(b.body)); assert.equal(b.body.balance.ledger.ETH_CUSTODY, '0.1'); assert.equal(b.body.balance.ledger.ETH, '-', 'PPID 계정 없음');
+    assert.equal(b.body.ok, true, j(b.body)); assert.match(b.body.txHash, /^0x/); assert.equal(b.body.balance.ledger.ETH_CUSTODY, '0.1'); assert.equal(b.body.balance.ledger.ETH, '-', 'PPID 계정 없음');
+    assert.equal(await provider.getBalance(frank), 10n ** 17n, '체인 잔고'); { const tx = await provider.getTransaction(b.body.txHash); assert.equal(tx.to, frank); assert.notEqual(tx.from, frank); }
     const to = '0x000000000000000000000000000000000000bEEF';
     const before = await provider.getBalance(to);
-    for (const [body, reason] of [[`withdraw:${to}:${10n ** 18n}:${ts()}`, 'insufficient_custody'], [`withdraw:${to}:0:${ts()}`, 'bad_amount'], [`withdraw:0x12:5:${ts()}`, 'bad_address']]) {
+    for (const [body, reason] of [[`withdraw:${to}:${10n ** 18n}:${ts()}`, 'insufficient_custody'], [`withdraw:${to}:${10n ** 17n}:${ts()}`, 'insufficient_gas'], [`withdraw:${to}:0:${ts()}`, 'bad_amount'], [`withdraw:0x12:5:${ts()}`, 'bad_address']]) {
       const r = await u.req('POST', '/api/rp/ledger', { body });
       assert.equal(r.status, 400, j(r.body)); assert.equal(r.body.reason, reason);
+      if (reason === 'insufficient_gas') { assert.ok(Number(r.body.detail.maxEth) > 0.09 && Number(r.body.detail.maxEth) < 0.1, j(r.body.detail)); assert.equal(r.body.balance.ledger.ETH_CUSTODY, '0.1'); }
     }
+    assert.equal(await provider.getBalance(frank), 10n ** 17n, '거절인데 잔고가 줄었다');
     const w = await u.req('POST', '/api/rp/ledger', { body: `withdraw:${to}:${5n * 10n ** 16n}:${ts()}` });
-    assert.equal(w.body.ok, true, j(w.body)); assert.match(w.body.txHash, /^0x/);
-    assert.equal((await provider.getBalance(to)) - before, 5n * 10n ** 16n);
-    assert.equal(w.body.balance.ledger.ETH_CUSTODY, '0.05');
+    assert.equal(w.body.ok, true, j(w.body)); const tx = await provider.getTransaction(w.body.txHash), rc = await provider.getTransactionReceipt(w.body.txHash);
+    assert.equal(tx.from, frank, 'from 이 내 주소가 아니다'); assert.equal((await provider.getBalance(to)) - before, 5n * 10n ** 16n);
+    assert.equal(await provider.getBalance(frank), 10n ** 17n - 5n * 10n ** 16n - rc.gasUsed * rc.gasPrice, '금액 + 가스만큼 줄어야 한다');
+    // "보낼 수 있는 최대" 만큼은 실제로 보내진다
+    const max = (await u.req('POST', '/api/rp/ledger', { body: 'balance' })).body.balance.custodyMaxEth; assert.ok(Number(max) > 0.04 && Number(max) < 0.05, max);
+    const m = await u.req('POST', '/api/rp/ledger', { body: `withdraw:${to}:${ethers.parseEther(max)}:${ts()}` }); assert.equal(m.body.ok, true, j(m.body));
     const rep = `deposit:${ts()}`; await u.req('POST', '/api/rp/ledger', { body: rep });
     assert.equal((await u.req('POST', '/api/rp/ledger', { body: rep })).body.reason, 'request_replayed');
     assert.equal((await jar(rp.base).req('POST', '/api/rp/ledger', { body: 'balance' })).body.reason, 'no_rp_session');
@@ -163,14 +175,36 @@ try {
   await t('RP 마다 따로: zkTWO 의 쿠키 이름은 zktwo.sid, zkONE 의 Google 계정은 zkTWO 에 없다(zkTWO 첫 로그인 = 새 계정)', async () => {
     const u = jar(rp2.base); const r = await googleLogin(u, 'g-frank');
     assert.equal(r.body.created, true); assert.ok(u.cookies.has('zktwo.sid'));
+    const a2 = (await u.req('POST', '/api/rp/ledger', { body: 'balance' })).body.balance.custodyAddress; assert.match(a2, /^0x/); assert.notEqual(a2, frank, '서비스마다 시드가 달라 주소가 다르다');
   });
-  await t('RP 재기동: 쿠키 세션은 끝나도 계정·연결·KRW·거래소 보관 잔고는 남는다', async () => {
+  await t('보관 계정: 동시에 누른 구매는 KRW 를 넘지 않고, 동시에 누른 보내기는 모두 나간다(nonce 가 겹치지 않는다) — 같은 본문은 한 번만', async () => {
+    const u = jar(rp.base); await googleLogin(u, 'g-gina'); const ts = () => Date.now(), L = (body) => u.req('POST', '/api/rp/ledger', { body });
+    await L(`deposit:${ts()}`); const addr = (await L('balance')).body.balance.custodyAddress;
+    const t0 = ts(); const rs = await Promise.all([L(`buy:0.15:${t0}`), L(`buy:0.15:${t0 + 1}`)]);   // 100만원으로 0.15 ETH(63.15만원)는 한 번만 산다
+    assert.deepEqual(rs.map((r) => r.body.ok).sort(), [false, true], j(rs.map((r) => r.body))); assert.equal(rs.find((r) => !r.body.ok).body.reason, 'insufficient_krw'); assert.equal(await provider.getBalance(addr), 15n * 10n ** 16n);
+    const to = ethers.getAddress('0x000000000000000000000000000000000000cafe'), b0 = await provider.getBalance(to), t1 = ts();
+    const ws = await Promise.all([0, 1, 2].map((i) => L(`withdraw:${to}:${10n ** 16n}:${t1 + i}`))); assert.ok(ws.every((r) => r.body.ok), j(ws.map((r) => r.body)));
+    assert.equal((await provider.getBalance(to)) - b0, 3n * 10n ** 16n);
+    const same = `withdraw:${to}:${10n ** 16n}:${ts()}`; const ds = await Promise.all([L(same), L(same)]); assert.deepEqual(ds.map((r) => r.body.ok).sort(), [false, true]); assert.equal(ds.find((r) => !r.body.ok).body.reason, 'request_replayed');
+  });
+  await t('시드는 어느 응답·로그에도 없고, 시드 파일은 서비스마다 따로 0600 이며 계정 파일에는 지문만 있다', async () => {
+    const files = fs.readdirSync(stack.dir).filter((f) => /custody_seed\.json$/.test(f)); assert.ok(files.length >= 2, j(files));
+    const seeds = files.map((f) => { const p = path.join(stack.dir, f); assert.equal(fs.statSync(p).mode & 0o777, 0o600); return JSON.parse(fs.readFileSync(p, 'utf8')).seed; });
+    assert.equal(new Set(seeds).size, seeds.length, '시드를 나눠 쓴다');
+    const u = jar(rp.base); await googleLogin(u, 'g-frank');
+    const bodies = [await u.req('GET', '/api/rp/me'), await u.req('POST', '/api/rp/ledger', { body: 'balance' }), await u.req('GET', '/api/mode3/rp_info'), await u.req('GET', '/mode3/health')].map((r) => j(r.body));
+    for (const f of fs.readdirSync(stack.dir).filter((f) => /accounts\.json$/.test(f))) { const x = fs.readFileSync(path.join(stack.dir, f), 'utf8'); assert.match(JSON.parse(x).custodyKey ?? '', /^0x[0-9a-fA-F]{40}$/); bodies.push(x); }
+    for (const c of stack.rps) bodies.push(c.log());
+    for (const s of seeds) for (const b of bodies) assert.ok(!b.includes(s), '시드가 새었다');
+  });
+  await t('RP 재기동: 쿠키 세션은 끝나도 계정·연결·KRW·보관 주소와 그 잔고는 남는다', async () => {
     const u = jar(rp.base); await googleLogin(u, 'g-frank');
     const bal = (await u.req('POST', '/api/rp/ledger', { body: 'balance' })).body.balance.ledger;
     await stack.restartRp();
     assert.equal((await u.req('GET', '/api/rp/me')).status, 401, '세션 비밀이 바뀌어 옛 쿠키는 무효');
     const v = jar(rp.base); await googleLogin(v, 'g-frank');
     assert.deepEqual((await v.req('POST', '/api/rp/ledger', { body: 'balance' })).body.balance.ledger, bal);
+    assert.equal((await v.req('POST', '/api/rp/ledger', { body: 'balance' })).body.balance.custodyAddress, frank, '재기동 뒤 주소가 바뀌었다');
   });
   await t('zkIdP 로 만든 쿠키 세션은 그 r_s 세션이 끝나면(로그아웃·폐기) 함께 끝난다 — 소셜로 만든 세션은 그대로', async () => {
     const u = jar(rp.base); const z = await zkLogin(u);

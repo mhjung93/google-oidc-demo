@@ -219,9 +219,10 @@ if [ "$ZW" = 1 ]; then mkdir -p -m 700 "$ZW_DIR" && { [ -e "$ZW_DIR/cia_state.js
 for h in "$RP1" "$RP2"; do
   # mode3_rp_*_registration.json/_logins.jsonl 은 scripts/new_rp.sh --host 가 이 VM 에 만든 추가 RP 들의 등록·로그인 로그다
   # (없으면 글롭이 그대로 남지만 [ -e ] 가 걸러 조용히 건너뛴다, 2026-10-23)
-  # 계정 파일(mode3_rp_accounts.json — 로그인 수단별 색인·KRW·보관 ETH)도 옮긴다(리뷰 2026-11-19 I-2): zkIdP 의 uid 는 새로 시작하면 100001 부터 다시 매겨지므로,
+  # 보관 계정의 시드(mode3_rp_custody_seed.json, 2026-11-25)는 계정 파일과 **함께** 옮긴다 — 한쪽만 남으면 지문이 맞지 않아 서비스가 뜨지 않는다.
+  # 계정 파일(mode3_rp_accounts.json — 로그인 수단별 색인·KRW·시드 지문)도 옮긴다(리뷰 2026-11-19 I-2): zkIdP 의 uid 는 새로 시작하면 100001 부터 다시 매겨지므로,
   # 남겨 두면 새 사용자의 일반 OIDC 로그인(sub = uid)이 지난 실행의 다른 사람 계정에 붙는다. PPID·주소도 새 체인과 맞지 않는다.
-  on "$h" "cd ~/zkd-demo && for f in mode3_rp_registration.json mode3_rp_logins.jsonl mode3_rp_accounts.json mode3_rp_*_registration.json mode3_rp_*_logins.jsonl mode3_rp_*_accounts.json; do [ -e \$f ] && mv \$f \$f.bak-$TS && echo \"backup $h \$f\"; done; true"
+  on "$h" "cd ~/zkd-demo && for f in mode3_rp_registration.json mode3_rp_logins.jsonl mode3_rp_accounts.json mode3_rp_*_registration.json mode3_rp_*_logins.jsonl mode3_rp_*_accounts.json mode3_rp_custody_seed.json mode3_rp_*_custody_seed.json; do [ -e \$f ] && mv \$f \$f.bak-$TS && echo \"backup $h \$f\"; done; true"
 done
 
 # 2b. Snap 모드: 이 VM 의 에이전트 상태 파일도 새 체인과 맞지 않는다 — .bak-시각 으로 옮긴다(MetaMask 안의 Snap 상태는 못 지운다 — 지갑 페이지 'Snap 초기화').
@@ -358,9 +359,9 @@ if [ -n "$GOOGLE_RELAY" ]; then
 fi
 [ "$ZW" = 1 ] || printf '%s\n' "$COMMON" "CIA_PORT=$IDP_PORT" "CIA_RPC_URL=http://$HOST:$REV_PORT" "CIA_CHAIN_RPCS=$APP_CHAIN=http://$HOST:$APP_PORT" "CIA_ADMIN_SECRET=$ADMIN" "CIA_ADMIN_OPEN=${ADMIN_OPEN:-0}" "CIA_PUBLIC_URL=$SCHEME://$IDP:$IDP_PORT" "CIA_ISSUE_AUTH=${ISSUE_AUTH:-$([ "$AGENT_MODE" = 1 ] && echo code || echo key)}" "CIA_REVOKE_PUBLISH_AFTER_BLOCKS=${REVOKE_PUBLISH_AFTER:-3}" ${OIDC_LINE:+"$OIDC_LINE"} ${IDP_SIGNUP_LINE:+"$IDP_SIGNUP_LINE"} ${IDP_DENY_LINE:+"$IDP_DENY_LINE"} ${TLS_IDP:+"$TLS_IDP"} | put_env "$IDP"   # zkwrapper 에는 IdP VM 이 없다
 { printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP1_PORT" "MODE3_RP_NAME=zkONE" "MODE3_RP_PUBLIC_ORIGIN=$RP1_UI" "MODE3_CIA_URL=$CIA_SRV" \
-  "CIA_RPC_URL=http://$HOST:$APP_PORT" "MODE3_RELAYER_INDEX=0" ${TLS_RP1:+"$TLS_RP1"}; rp_google_lines "${RP1_GOOGLE_CLIENT_ID:-}"; rp_naver_lines "$RP1_UI"; } | put_env "$RP1"
+  "CIA_RPC_URL=http://$HOST:$APP_PORT" "MODE3_RELAYER_INDEX=0" "MODE3_EXPLORER_URL=$BS_EXPLORER" ${TLS_RP1:+"$TLS_RP1"}; rp_google_lines "${RP1_GOOGLE_CLIENT_ID:-}"; rp_naver_lines "$RP1_UI"; } | put_env "$RP1"
 { printf '%s\n' "$COMMON" "MODE3_RP_PORT=$RP2_PORT" "MODE3_RP_NAME=zkTWO" "MODE3_RP_PUBLIC_ORIGIN=$RP2_UI" "MODE3_CIA_URL=$CIA_SRV" \
-  "CIA_RPC_URL=http://$HOST:$APP_PORT" "MODE3_RELAYER_INDEX=1" "MODE3_ALLOWED_COUNTRIES=410,392" "MODE3_MIN_AGE=19" "MODE3_REQUIRE_DISCLOSURE=1" ${TLS_RP2:+"$TLS_RP2"}; rp_google_lines "${RP2_GOOGLE_CLIENT_ID:-}"; rp_naver_lines "$RP2_UI"; } | put_env "$RP2"
+  "CIA_RPC_URL=http://$HOST:$APP_PORT" "MODE3_RELAYER_INDEX=1" "MODE3_EXPLORER_URL=$BS_EXPLORER" "MODE3_ALLOWED_COUNTRIES=410,392" "MODE3_MIN_AGE=19" "MODE3_REQUIRE_DISCLOSURE=1" ${TLS_RP2:+"$TLS_RP2"}; rp_google_lines "${RP2_GOOGLE_CLIENT_ID:-}"; rp_naver_lines "$RP2_UI"; } | put_env "$RP2"
 unset NAVER_ID NAVER_SECRET
 start_remote() { # $1 호스트 $2 스크립트 $3 포트
   on "$1" "cd ~/zkd-demo && set -a && . ./role.env && set +a && { setsid nohup \$HOME/zkd-demo/bin/node $2 > logs/${2%.js}.log 2>&1 < /dev/null & }"
