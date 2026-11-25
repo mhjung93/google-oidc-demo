@@ -445,7 +445,7 @@ window.DemoStrings = {
     user_open_btn: { ko: '패스키로 열기', en: 'Open with passkey' },
     user_page_lock_btn: { ko: '잠그기', en: 'Lock' },
     user_bar_note: { ko: '열림 — 이 탭에서 10분 동안 아무 동작이 없으면 잠깁니다.', en: 'Open — locks after 10 minutes without activity in this tab.' },
-    user_lock_noreg: { ko: '아직 이 브라우저로 로그인한 서비스가 없습니다 — 서비스에서 "zk 로그인" 을 하면 여기서 관리합니다.', en: 'No service has been logged in from this browser yet — after a "zk login" at a service you can manage it here.' },
+    user_lock_nopk: { ko: '이 브라우저에는 아직 패스키가 없습니다 — 패스키를 만들면 이 화면을 열 수 있습니다. 다른 기기·비밀번호 관리자에 이미 있으면 "이미 있는 패스키 쓰기" 를 누르세요.', en: 'This browser has no passkey yet — create one to open this page. If you already have one on another device or in a password manager, press "Use an existing passkey".' },   // 2026-11-25
     user_open_failed: { ko: '열지 못했습니다', en: 'Could not open' },
     // 2026-11-24(사용자 결정): 속성 기본값이 없다 — 비어 있으면 속성을 요구하는 서비스만 막는다
     user_wrap_attrs_unset_hint: { ko: '이 서비스는 속성 조건(나이·국가 등)을 확인합니다. 아직 속성 커밋먼트가 없어 로그인하지 않았습니다 — 속성 커밋먼트 도구에서 넣은 뒤 다시 로그인하세요:', en: 'This service checks attribute conditions (age, country, …). You have no attribute commitment yet, so the login stopped — add your attributes in the attribute commitment tool and log in again:' },

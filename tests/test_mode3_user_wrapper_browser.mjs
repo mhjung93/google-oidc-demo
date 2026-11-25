@@ -930,6 +930,47 @@ try {
     await page.close();
     } finally { await rpGoogle.stop(); }
   });
+  // 2026-11-25(사용자 요청): /user 잠금 화면 — 이 브라우저에 패스키가 없으면 서비스에 로그인하라고 하지 않고 여기서 만든다(Google 을 거치지 않고 연결만). 등록이 없어도 패스키로 열린다.
+  await t('/user 잠금: 패스키 없음 → 안내·버튼 둘, 취소하면 사유가 잠금 카드에 → "패스키 만들기" → "패스키로 열기" 로 열린다(등록 없음) → 그 패스키로 서비스 첫 로그인', async () => {
+    const before = (await accounts()).length;
+    const B = await newBrowserWith('d4'.repeat(32));
+    try {
+      const page = await B.ctx.newPage(); await page.goto(`${wallet.base}/user`);
+      const vis = (sel) => page.$eval(sel, (el) => el.checkVisibility());
+      await page.waitForSelector('#userNoPk', { state: 'visible', timeout: 15_000 });
+      const shown = await page.evaluate(() => [...document.querySelectorAll('#mainView > section')].filter((e) => e.checkVisibility()).map((e) => e.id)); assert.deepEqual(shown, ['userLockCard']);
+      assert.equal(await vis('#userUnlockBtn'), false, '패스키가 없는데 "패스키로 열기" 가 보인다');
+      const card = await page.$eval('#userLockCard', (e) => e.innerText);
+      assert.ok(card.includes('패스키를 만들면 이 화면을 열 수 있습니다'), card); assert.ok(!/로그인한 서비스가 없습니다|서비스에서/.test(card), `서비스에 로그인하라는 문장이 남았다: ${card}`);
+      // 취소: 사유가 잠금 카드에 보이고 다시 누를 수 있다(연결은 되지 않는다)
+      await page.evaluate(() => { const c = navigator.credentials, orig = c.create; Object.defineProperty(c, 'create', { configurable: true, value: () => { Object.defineProperty(c, 'create', { configurable: true, value: orig }); return Promise.reject(new DOMException('cancelled', 'NotAllowedError')); } }); });
+      await page.click('#lockPkNewBtn'); await page.waitForFunction(() => document.getElementById('userLockVerdict').classList.contains('bad'), null, { timeout: 10_000 });
+      assert.equal(await vis('#userLockVerdict'), true); assert.equal((await idbDump(page)).passkey, undefined); assert.equal(await vis('#lockPkNewBtn'), true);
+      // 만들기 → 연결 → "패스키로 열기"
+      await page.reload(); await page.waitForSelector('#userNoPk', { state: 'visible', timeout: 15_000 });
+      await page.click('#lockPkNewBtn'); await page.waitForSelector('#userUnlockBtn', { state: 'visible', timeout: 15_000 });
+      await waitText(page, '#userLockVerdict', '패스키를 연결했습니다'); assert.equal(await vis('#userLockVerdict'), true); assert.equal(await vis('#userNoPk'), false); assert.equal(B.hits.create, 1, j(B.hits));
+      assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('#mainView > section')].filter((e) => e.checkVisibility()).map((e) => e.id)), ['userLockCard'], '연결만으로 열리지 않는다');
+      const g0 = B.hits.get; await page.click('#userUnlockBtn'); await page.waitForSelector('#sessionsCard', { state: 'visible', timeout: 15_000 }); assert.equal(B.hits.get - g0, 1, j(B.hits));
+      assert.equal((await idbDump(page)).registration, undefined, '등록 없이 열렸다'); assert.equal((await accounts()).length, before, '서버 계정이 생겼다');
+      assert.ok(!B.reqs.some((r) => r.url.startsWith(google.issuer)), 'Google 로 갔다');
+      await page.click('#userLockBtn'); await page.waitForSelector('#userUnlockBtn', { state: 'visible', timeout: 5_000 }); assert.equal(await vis('#userNoPk'), false);
+      await page.close();
+      // 그 패스키로 서비스 첫 로그인 — 패스키를 새로 만들지 않는다
+      google.setNextSub('google-user-lock'); google.setNextClaims({ email: 'lock@example.com', email_verified: true });
+      const { rpPage } = await startLogin(B.ctx, rp); await waitText(rpPage, '#verdict', '로그인 성공', 120_000); assert.equal(B.hits.create, 1, '로그인 때 패스키를 또 만들었다');
+      assert.equal((await accounts()).length, before + 1); await rpPage.close();
+    } finally { await B.ctx.close(); await cia.adminPost('/cia/account/delete', { uid: uidOf(google.provider, 'google-user-lock') }).catch(() => {}); }
+  });
+  await t('/user 잠금: "이미 있는 패스키 쓰기" → 만들지 않고 연결된다', async () => {
+    const C = await newBrowserWith(SECRET_A);
+    try {
+      const page = await C.ctx.newPage(); await page.goto(`${wallet.base}/user`); await page.waitForSelector('#userNoPk', { state: 'visible', timeout: 15_000 });
+      await page.click('#lockPkExistingBtn'); await page.waitForSelector('#userUnlockBtn', { state: 'visible', timeout: 15_000 });
+      assert.equal(C.hits.create, 0, j(C.hits)); assert.ok(C.hits.get >= 1, j(C.hits));
+      await page.click('#userUnlockBtn'); await page.waitForSelector('#sessionsCard', { state: 'visible', timeout: 15_000 });
+    } finally { await C.ctx.close(); }
+  });
   await A.ctx.close();
 } finally {
   await browser.close().catch(() => {});

@@ -1181,26 +1181,29 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
 
   // ---- passkey-web 동작: 패스키 연결(만들기·이미 있는 것)·salt 보기·연결 끊기·계정 복구 ----
   /** get() → { credentialId, s_u }(passkey_store — PRF 로 만든 salt). 코어가 금고를 만들고 credential 을 둔다(salt 는 저장하지 않는다 — 등록이 있으면 대조에만 쓴다). s_u 는 코어에만 넘긴다. */
-  async function linkPasskey(get) {
+  let applyWrapView = () => {};   // 래퍼의 /user 잠금 화면을 다시 그린다(setupWrapView 가 채운다)
+  async function linkPasskey(get, out = $('pkSetupVerdict')) {   // out: 결과 카드 — 잠금 화면에서는 #userLockVerdict(패스키 설정 카드·신원 카드가 안 보인다)
     if (!pkOriginOk) return;
-    const btns = [$('pkNewBtn'), $('pkExistingBtn')];
+    const btns = [$('pkNewBtn'), $('pkExistingBtn'), $('lockPkNewBtn'), $('lockPkExistingBtn')];
     if (btns.some((b) => b.dataset.busy === '1')) return;   // 패스키 창이 떠 있는 동안의 재클릭만 무시
     btns.forEach((b) => { b.dataset.busy = '1'; });
-    pendingVerdict($('pkSetupVerdict'), 'working');
+    pendingVerdict(out, 'working');
     try {
       // 2026-11-20(사용자 결정): "휴대폰 (QR)" 선택지를 화면에서 뺐다 — 힌트 없이 Chrome 의 기본 창으로 만든다(hint 는 늘 null). 인증기가 알려 준 공개 정보(붙는 방식·transports·동기화)는 그대로 연결에 둔다.
       const { credentialId, s_u, info = null } = await get({});
       const r = await core.passkeyConnect({ credentialId, s_u, info: { ...(info ?? {}), hint: null } });
-      if (r.status === 200) setVerdict($('pkSetupVerdict'), true, 'user_pk_connected');
-      else setVerdict($('pkSetupVerdict'), false, 'wallet_setup_passkey_failed', { reason: r.body?.reason ?? `HTTP ${r.status}` });
+      if (r.status === 200) setVerdict(out, true, 'user_pk_connected');
+      else setVerdict(out, false, 'wallet_setup_passkey_failed', { reason: r.body?.reason ?? `HTTP ${r.status}` });
     } catch (e) {
       // 브라우저(WebAuthn) 오류는 passkey_store 가 이미 사유를 붙인다 — 사유 없는 오류는 예상하지 못한 것이다(passkey_unsupported 로 뭉뚱그리지 않는다).
-      setVerdict($('pkSetupVerdict'), false, 'wallet_setup_passkey_failed', { reason: e?.reason ?? 'internal', detail: e?.message });
-    } finally { btns.forEach((b) => { delete b.dataset.busy; }); refresh(); }
+      setVerdict(out, false, 'wallet_setup_passkey_failed', { reason: e?.reason ?? 'internal', detail: e?.message });
+    } finally { btns.forEach((b) => { delete b.dataset.busy; }); refresh().finally(() => applyWrapView()); }
   }
   if (PK) {
     $('pkNewBtn').addEventListener('click', () => linkPasskey((o) => passkey.create(o)));
     $('pkExistingBtn').addEventListener('click', () => linkPasskey((o) => passkey.derive(o)));
+    $('lockPkNewBtn').addEventListener('click', () => linkPasskey((o) => passkey.create(o), $('userLockVerdict')));
+    $('lockPkExistingBtn').addEventListener('click', () => linkPasskey((o) => passkey.derive(o), $('userLockVerdict')));
     // salt 보기(스펙 §2 4단계): 누를 때마다 패스키에서 얻는다. 창에만 보이고 닫으면 지운다 — 저장·전송하지 않는다.
     $('pkShowSaltBtn').addEventListener('click', async () => {
       clearVerdict(storageVerdict());
@@ -1293,10 +1296,16 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     const apply = () => {
       const open = isOpen();
       document.body.dataset.wrapView = open ? 'open' : 'locked';
-      // 등록이 없으면 열어 볼 것이 없다 — 버튼 대신 안내(상태를 못 읽었으면 버튼을 둔다)
-      const noReg = Boolean(lastStatus) && !lastStatus.registered;
-      $('userUnlockBtn').hidden = noReg; $('userNoReg').hidden = !noReg;
+      // 2026-11-25(사용자 요청): 패스키가 없으면 여기서 만든다. 등록이 없어도 패스키가 있으면 연다(빈 신원·세션이 보인다). 상태를 못 읽었으면(pkState null) 버튼을 둔다.
+      const noPk = Boolean(pkState) && !pkState.credentialId;
+      $('userUnlockBtn').hidden = noPk; $('userNoPk').hidden = !noPk;
     };
+    applyWrapView = apply;
+    if (!pkOriginOk) {
+      $('lockPkNewBtn').disabled = true; $('lockPkExistingBtn').disabled = true;
+      const a = $('lockPkOriginLink'); a.href = `${cfg.walletOrigin}/user`; a.textContent = a.href; $('lockPkOriginRow').hidden = false;
+      setVerdict($('userLockVerdict'), false, 'user_pk_setup_title', { reason: 'passkey_wrong_origin' });
+    }
     let lastExt = 0;
     for (const ev of ['pointerdown', 'keydown']) document.addEventListener(ev, () => { if (!isOpen()) return; const n = Date.now(); if (n - lastExt > 5000) { lastExt = n; setUntil(n + UNLOCK_MS); } }, { capture: true });
     setInterval(apply, 1000);
