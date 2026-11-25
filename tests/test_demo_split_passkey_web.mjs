@@ -106,7 +106,7 @@ t('IdP·서비스 공통 환경변수에 지갑 모드(MODE3_WALLET_KIND)', () =
   // 2026-11-20: zkwrapper 는 모드를 passkey-web 으로 두고 ZW 표시로 가르므로, 넘기는 값은 그 표시를 보고 zkwrapper 로 고친다(그 밖은 지금처럼 $WALLET_MODE)
   assert.match(common[1], /^MODE3_WALLET_KIND=\$WALLET_KIND_OUT$/m); assert.match(src, /^WALLET_KIND_OUT="\$WALLET_MODE"; \[ "\$ZW" = 1 \] && WALLET_KIND_OUT=zkwrapper/m);
   // 속성 도구는 상태 조회를 부르지 않는다 — 리셋 표시 파일에 함께 싣는다.
-  assert.match(src, /printf '\{"epoch":"%s","walletKind":"%s"\}\\n' "\$TS" "\$WALLET_MODE" > mode3\/attr\/dist\/reset\.json/);
+  assert.match(src, /printf '\{"epoch":"%s","walletKind":"%s"\}\\n' "\$TS" "\$\(\[ "\$ZW" = 1 \] && echo zkwrapper \|\| echo "\$WALLET_MODE"\)" > mode3\/attr\/dist\/reset\.json/);   // 2026-11-25: 래퍼면 zkwrapper, 그 밖은 WALLET_MODE 그대로
 });
 // 2026-11-18(스펙 2026-11-18-blockscout-auto-verify): Blockscout 초기화는 화면에 보이는 스택(compose 프로젝트 zkid-blockscout)에 걸고, 자동 검증 감시자를 띄우고 내린다.
 // 2026-11-19(스펙 passkey-proof-login L1): passkey-web 의 발급 정책 기본값은 key — 등록된 지갑은 인증 창 없이 패스키 증명으로 로그인한다. 에이전트 모드(snap·passkey)는 code 그대로.

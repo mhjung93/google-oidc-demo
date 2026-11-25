@@ -34,6 +34,8 @@
   <div id="sessionBar" class="session-bar" hidden role="status">
     <strong data-i18n="rp_session_bar_title">현재 세션이 만료됐습니다</strong> <span id="sessionBarDetail"></span>
     <button type="button" id="sessionBarBtn" data-i18n="rp_session_bar_btn">세션 복구</button>
+    <!-- 2026-11-25: "세션 복구" 로 시작한 로그인의 결과 — 로그인 카드(#verdict)는 로그인된(닫힌) 상태에서 숨어 있어 실패가 보이지 않았다. -->
+    <div id="sessionBarVerdict" aria-live="polite"></div>
   </div>
 
   <nav class="exchange-nav">
@@ -96,7 +98,9 @@
         <!-- 2026-11-14 의 닫힌 zkIdP 로그인 안내(#staleNotice)는 2026-11-17 맨 위 상단 바(#sessionBar)로 합쳤다. -->
         <h2 data-i18n="assets_title">내 자산</h2>
         <dl class="kv account-kv" id="accountKv">
-          <dt data-i18n="rp_my_account_addr">내 계정 주소</dt><dd><code id="accountPPID">-</code> <button type="button" id="copyPpidBtn" class="copy-btn" title="복사" aria-label="복사" data-i18n-title="rp_copy_btn_title">⧉</button></dd>
+          <dt id="ppidAddrLabel" data-i18n="rp_my_account_addr">내 계정 주소</dt><dd id="ppidAddrRow"><code id="accountPPID">-</code> <button type="button" id="copyPpidBtn" class="copy-btn" title="복사" aria-label="복사" data-i18n-title="rp_copy_btn_title">⧉</button></dd>
+          <!-- 2026-11-25(사용자 결정): Google·일반 OIDC 로그인에는 PPID 주소가 없다 — 대신 이 서비스의 계정 번호와 "서비스가 보관" 을 보인다(키를 새로 맡지 않는다). -->
+          <dt id="custodyIdLabel" data-i18n="rp_custody_account_id" hidden>내 계정 번호</dt><dd id="custodyIdRow" hidden><code id="custodyAccountId">-</code> <span class="muted" data-i18n="rp_custody_account_note">서비스가 보관하는 계정</span></dd>
           <!-- 2026-11-09 Phase 1: zkIdP ID 토큰의 name 클레임으로 받은 속성 커밋먼트(C_attr) — 이 RP 가 이 계정에 고정한 값. 없으면 "없음". -->
         </dl>
         <!-- 2026-11-15(시연자 화면 리뷰): zkIdP 로 로그인하며 무엇을 증명했는지 한 줄(renderAccountView) — "로그인 성공" 카드는 로그인 카드와 함께 숨어, 로그인 뒤에는 조건을 값 없이 증명했다는 사실이 화면에 남지 않았다. -->
@@ -108,6 +112,7 @@
           <!-- 2026-11-10(R5): 소셜 세션에서 산 ETH 는 RP 장부에 쌓인다(거래소 보관) — 출금은 RP 릴레이어가 보낸다. -->
           <li data-asset="ETH_CUSTODY"><span class="bal-label" data-i18n="rp_eth_custody">ETH (거래소 보관)</span><strong class="bal-amt">0</strong></li>
         </ul>
+        <p id="custodyHint" class="muted" data-i18n="rp_custody_hint" hidden></p>
 
 
         <!-- 2026-10-21: "출금 신청" 을 "현재 잔액 확인" 으로. 2026-11-05(B안): 실제 거래소처럼 입금(시연) → 구매 → (아래) 온체인 출금 순서가 되게
@@ -236,6 +241,9 @@
     const $ = (id) => document.getElementById(id);
     // 2026-11-05(7차 피드백 7): 이용 조건 문장의 국가 이름(사용자 말). 사전에 없는 코드는 코드 그대로.
     const COUNTRY_LABELS = { KR: { ko: '한국', en: 'Korea' }, JP: { ko: '일본', en: 'Japan' }, US: { ko: '미국', en: 'USA' }, DE: { ko: '독일', en: 'Germany' }, FR: { ko: '프랑스', en: 'France' }, GB: { ko: '영국', en: 'UK' }, CN: { ko: '중국', en: 'China' } };
+    // 2026-11-25: 잔액 칸의 처음 값(HTML 의 0)은 페이지 시작 때 한 번 적어 둔다. resetSessionViews 가 처음 불릴 때 적으면, 쿠키 세션(Google)은 setSession 을 부르지 않아
+    // 그다음 zk 로그인 순간의 화면 숫자(Google 계정의 KRW·보관 ETH)가 처음 값이 되고, zkWrapper 세션은 자동 조회를 하지 않아 그 숫자가 그대로 남았다.
+    for (const v of document.querySelectorAll('.balance-list .bal-amt')) v.dataset.init = v.textContent;
     const countryLabel = (c) => COUNTRY_LABELS[c]?.[Demo.lang] ?? c;
     // /common 이 뜨지 않아도(404) 페이지는 HTML 의 한국어 기본 텍스트로 계속 돌아간다(설계 §5).
     // demo.js 만 빠졌다면 사전(strings.js)은 그대로 읽는다 — 둘 다 없을 때만 키가 그대로 남는다.
@@ -421,7 +429,15 @@
       $('copyPpidBtn').hidden = !(lastAccount || lastPPID);   // 복사할 값이 있을 때만 보인다
       // 2026-11-19(화면 셀프 리뷰): Google·일반 OIDC 로그인에는 PPID 계정 주소가 없다 — "-" 만 남던 줄과 상단 배지의 주소·복사 버튼을 숨긴다.
       const hasAddr = Boolean(lastAccount || lastPPID);
-      $('accountKv').hidden = !hasAddr; $('accountAddr').hidden = !hasAddr; $('copyPpidNavBtn').hidden = !hasAddr;
+      $('accountAddr').hidden = !hasAddr; $('copyPpidNavBtn').hidden = !hasAddr;
+      // 2026-11-25(zkWrapper 만): 주소가 없는 쿠키 세션(Google·네이버)은 서비스가 보관하는 계정 — 계정 번호·보관 잔액 한 줄·안내를 보인다. 다른 방식은 전과 같다.
+      const custodyView = info?.walletKind === 'zkwrapper' && loggedIn && !hasAddr && typeof rpMe?.account === 'string';
+      $('accountKv').hidden = !hasAddr && !custodyView;
+      $('ppidAddrLabel').hidden = !hasAddr; $('ppidAddrRow').hidden = !hasAddr;
+      $('custodyIdLabel').hidden = !custodyView; $('custodyIdRow').hidden = !custodyView;
+      $('custodyAccountId').textContent = custodyView ? rpMe.account : '-';
+      $('custodyHint').hidden = !custodyView;
+      renderBalanceRows(custodyView);
       // 닫힌 로그인(sessionStale)이면 "내 계정"(연결 수단) 카드는 보이지 않는다 — 쿠키 세션이 없어 "연결 안 됨"·버튼 없음으로만 그려진다. 대신 내 자산 위에 안내를 보인다.
       // 2026-11-16(사용자 결정): "내 계정" 상자(로그인 수단 연결·해제)와 상단 메뉴는 화면에서 뺐다 — 늘 숨긴다. 연결 기능의 코드·API 는 그대로 있다.
       $('navAccount').hidden = true; $('account').hidden = true;
@@ -611,7 +627,7 @@
     function renderSessionBar() {
       const stale = Boolean(currentSession) && sessionStale;
       const show = Boolean(sessionEndedReason) || stale;
-      $('sessionBar').hidden = !show; if (!show) return;
+      $('sessionBar').hidden = !show; if (!show) { clearVerdict($('sessionBarVerdict')); return; }
       const d = $('sessionBarDetail');
       if (stale && !sessionEndedReason) d.textContent = tt('rp_session_stale') || '이 로그인은 닫혔습니다.';
       else if (sessionEndedReason === 'ended') d.textContent = tt('rp_session_bar_ended') || '세션이 이 서비스에서 끝났습니다(만료·로그아웃·폐기).';
@@ -621,7 +637,17 @@
     const SESSION_ENDED_REASONS = new Set(['session_expired', 'revoked', 'revoked_session', 'expired']);
     function noteSessionReason(reason) { if (SESSION_ENDED_REASONS.has(reason)) { sessionEndedReason = reason; renderSessionBar(); } }
     // "세션 복구" — 실제로는 새 zkIdP 로그인(새 세션). 바는 새 세션이 잡히면 setSession 이 지운다.
-    $('sessionBarBtn').addEventListener('click', () => { startIdpLogin(); });
+    // 2026-11-25: 실패 사유는 startIdpLogin 이 로그인 카드의 #verdict 에 그리는데 닫힌 로그인에서는 그 카드가 숨어 있다 — 이 버튼이 시작한 로그인이
+    // 새로 실패하면 같은 판정(같은 인자 — 언어 전환에도 다시 그려진다)을 배너 안에도 그린다. 성공하면 setSession 이 배너를 내리고 renderSessionBar 가 이 칸을 비운다.
+    $('sessionBarBtn').addEventListener('click', async () => {
+      const bv = $('sessionBarVerdict'), before = $('verdict').__verdictArgs;
+      pendingVerdict(bv, 'working');
+      try { await startIdpLogin(); } catch (e) { console.debug('[rp] session restore', e); }
+      const after = $('verdict').__verdictArgs;
+      const res = after && after !== before ? (typeof after === 'function' ? after() : after) : null;
+      if ($('sessionBar').hidden) return;
+      if (res && res.ok === false && !res.pending) Demo.verdict(bv, after); else clearVerdict(bv);
+    });
     /** 세션 범위의 결과 표시(재검증·잔액·출금 결과)를 초기 화면으로. 로그아웃이면 로그인 카드의 결과·로그도 비운다(2026-10-21 — 재로그인 때 옛 메시지가 남지 않게). */
     /** 시연 Race (2) 결과의 RCL root 두 값(스냅 창이 준 race.rootAtBuild·rootNow). 없으면 숨긴다. */
     let lastRace = null;
@@ -637,7 +663,7 @@
       for (const id of ['txVerdict', 'ledgerVerdict']) clear($(id));
       $('txLog').textContent = '';
       $('txHashRow').hidden = true; lastTxHash = null; renderRaceRoots(null);
-      for (const li of document.querySelectorAll('.balance-list li[data-asset]')) { const v = li.querySelector('.bal-amt'); if (v.dataset.init === undefined) v.dataset.init = v.textContent; v.textContent = v.dataset.init; }
+      for (const li of document.querySelectorAll('.balance-list li[data-asset]')) { li.dataset.has = ''; const v = li.querySelector('.bal-amt'); v.textContent = v.dataset.init ?? '0'; }
       if (includeLogin) { clear($('verdict')); $('log').textContent = ''; }
     }
     function setSession(r_s, allowAgent = null) {
@@ -1053,10 +1079,17 @@
     function applyLedger(bal) {
       if (bal?.account && bal.account !== lastAccount) { lastAccount = bal.account; renderAccountView(); saveSession(currentSession, currentSessionAllowAgent); }
       const els = ledgerEls(), led = bal?.ledger ?? {};
+    /** 잔액 줄(2026-11-25, zkWrapper 만): 보관 계정이면 "ETH (내 계정)"(체인 잔액, 주소가 없어 늘 0) 을 숨기고, zk 로그인이면 보관 잔액이 있을 때만 그 줄을 보인다. */
+    function renderBalanceRows(custodyView) {
+      const own = document.querySelector('.balance-list li[data-asset="ETH"]'), held = document.querySelector('.balance-list li[data-asset="ETH_CUSTODY"]');
+      const wr = info?.walletKind === 'zkwrapper';
+      own.hidden = wr && custodyView; held.hidden = wr && !custodyView && held.dataset.has !== '1';
+    }
       for (const [k, el] of Object.entries(els)) if (led[k] != null) el.textContent = led[k];
       if (bal?.priceKrw) $('buyPrice').textContent = tt('rp_buy_price', { price: Number(bal.priceKrw).toLocaleString('ko-KR') }) || `시세 ${Number(bal.priceKrw).toLocaleString('ko-KR')}원/ETH`;
     }
     async function sessionRequest(body, { busyBtn, okTitle, okSummary, quiet = false, verdictEl = null } = {}) {
+      if (bal?.custodyWei != null) { const held = document.querySelector('.balance-list li[data-asset="ETH_CUSTODY"]'); let w = 0n; try { w = BigInt(bal.custodyWei); } catch { w = 0n; } held.dataset.has = w > 0n ? '1' : ''; renderBalanceRows(!$('custodyIdRow').hidden); }
       const vEl = verdictEl ?? $('ledgerVerdict');   // 입금·구매·잔액은 그 절 안의 #ledgerVerdict 에(2026-11-05 — 누른 버튼 옆에 결과가 보이게)
       if (busyBtn && busyBtn.dataset.tourBusy === '1') return null;   // 처리 중 재클릭만 무시(2026-10-16)
       if (!currentSession) { setVerdict(vEl, false, 'request_failed', { reason: 'no_session' }); return null; }

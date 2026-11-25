@@ -27,6 +27,8 @@
     .wallet-nav .nav-inner { max-width:1100px; padding:0 var(--gap) }   /* 상단 바의 왼쪽 끝을 아래 카드와 맞춘다 */
     /* 2026-11-18(사용자 요청): passkey-web 에는 스냅이 없다 — "스냅" 메뉴를 뺀다(첫 화면으로는 왼쪽 이름이 간다). 모드는 demo.js setWalletKind 가 <html> 에 적는다. */
     html[data-wallet-kind="passkey-web"] .nav-link[data-i18n="wallet_nav_snap"] { display:none }
+    /* zkWrapper(2026-11-25): 커밋먼트는 로그인 창이 이 브라우저의 기록에서 직접 읽는다 — 붙여 넣을 곳이 없어 복사 버튼을 숨긴다(값은 그대로 보인다). */
+    html[data-wrapper="1"] #copyBtn { display:none }
     main.cards > .card { align-self:start }   /* 옆 카드 높이에 맞춰 늘어나 아래가 비지 않게 */
     .salt-line { display:flex; align-items:flex-start; gap:8px } .salt-line code { min-width:0 } .salt-line button { padding:2px 10px; font-size:13px; flex:none }
     .commit-box { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; overflow-wrap:anywhere; background:#f2f4f8; padding:10px 12px; border-radius:8px }

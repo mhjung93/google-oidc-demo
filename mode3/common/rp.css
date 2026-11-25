@@ -26,6 +26,7 @@ body { background: var(--bg); }
   position: sticky; top: 0; z-index: 50;
 }
 .session-bar button { margin-left: 10px; font-weight: 700; }
+.session-bar #sessionBarVerdict.verdict { max-width: 640px; margin: 8px auto 0; text-align: left; }   /* 2026-11-25: "세션 복구" 실패 사유 */
 
 /* ---- 상단 거래소 내비 ---- */
 .exchange-nav { background: var(--navy); color: #fff; }
