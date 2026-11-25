@@ -76,7 +76,7 @@ APP_PORT=8547 APP_CHAIN=31339 REV_PORT=8548 REV_CHAIN=31340 IDP_PORT=4100 RP1_PO
 LOGS="${DEMO_LOG_DIR:-/tmp/mode3-split}"; mkdir -p "$LOGS"
 # 로컬 Blockscout(2026-11-18 스펙 blockscout-auto-verify): 화면에 보이는 스택의 compose 프로젝트 이름과, 자동 검증 감시자의 pid 파일.
 BS_PROJECT="${BLOCKSCOUT_PROJECT:-zkid-blockscout}"
-BS_VERIFY_PID="$LOGS/blockscout_verify.pid"
+BS_VERIFY_PID="$LOGS/blockscout_verify.pid"; BS_VERIFY_RCL_PID="$LOGS/blockscout_verify_rcl.pid"
 TS=$(date '+%Y%m%d-%H%M')
 ADMIN="${CIA_ADMIN_SECRET:-idp}"   # IdP 관리자 페이지 비밀번호(2026-11-05, 사용자 요청: 쉽게 idp)
 WALLET_ORIGIN="http://localhost:$USER_PORT"
@@ -108,6 +108,7 @@ stop_verify_watch() {
   case "$pid" in ''|*[!0-9]*) ;; *) tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -qF -- "blockscout_verify_watch.mjs" && kill "$pid" && echo "stop blockscout_verify_watch (pid $pid)" ;; esac
   rm -f "$BS_VERIFY_PID"
 }
+stop_verify_watch_rcl() { BS_VERIFY_PID="$BS_VERIFY_RCL_PID" stop_verify_watch; }   # 폐기 체인의 감시자(2026-11-25) — pid 파일만 다르다
 # 이 VM 쪽은 포트 주인 중 명령줄이 우리 것과 맞는 것만 내린다(라이브 데모와 명령줄이 같은 사용자 페이지는 포트로 가른다).
 stop_local() {
   # passkey-web 의 정적 서버(:5100)는 그 모드일 때만 찾는다 — 다른 모드로 부르면 한 머신 데모의 :5100 정적 서버를 건드리지 않는다.
@@ -118,7 +119,7 @@ stop_local() {
       tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -qF -- "$want" && kill "$pid" && echo "stop :$port (pid $pid)"
     done
   done
-  stop_verify_watch
+  stop_verify_watch; stop_verify_watch_rcl
 }
 # VM 쪽 패턴의 [z] 는 pkill 이 자기를 부른 원격 셸을 잡지 않게 하는 것이다.
 # 원격 기동은 `{ 명령 & }` 로 감싼다 — `a && b &` 로 쓰면 목록 전체가 백그라운드 서브셸이 되어 ssh 출력을 쥔 채 남고, ssh 가 끝나지 않는다.
@@ -250,7 +251,7 @@ start_chain $APP_PORT $APP_CHAIN app
 #     compose 파일이 없거나 docker 가 없으면 건너뛴다. BLOCKSCOUT_RESET=0 이면 끈다. 체인에서 다시 만들어지는 색인뿐이라 데모 상태 파일과 무관하다.
 #     2026-11-18: compose 프로젝트 이름을 준다($BS_PROJECT, 기본 zkid-blockscout) — 이름 없이 부르면 디렉터리 이름(blockscout)의 다른 스택에 걸려
 #     화면에 보이는 스택은 그대로 남고, 중복 스택의 proxy 가 :4000 충돌로 실패했다.
-BS_DIR=".local/blockscout"; BS_RESET_OK=0
+BS_DIR=".local/blockscout"; BS_RESET_OK=0; BS_RCL_OK=0
 # 탐색기 주소(2026-11-18): 사용자 페이지(web·passkey-web)의 증명 기록이 거래 링크를 여기에 건다. Blockscout 가 없으면 비어 있다(BLOCKSCOUT_URL 로 바꾼다).
 BS_EXPLORER=$([ -f "$BS_DIR/compose.yml" ] && echo "${BLOCKSCOUT_URL:-http://127.0.0.1:4000}")
 if [ "${BLOCKSCOUT_RESET:-1}" != 0 ] && [ -f "$BS_DIR/compose.yml" ] && command -v docker >/dev/null 2>&1; then
@@ -261,9 +262,9 @@ if [ "${BLOCKSCOUT_RESET:-1}" != 0 ] && [ -f "$BS_DIR/compose.yml" ] && command 
   fi
 fi
 # 3b-2. 폐기(RCL) 체인(:$REV_PORT)의 Blockscout(http://127.0.0.1:4001, 2026-11-25) — 응용 체인 것과 볼륨·네트워크가 따로인 두 번째 스택이다. 체인을 새로 만들었으니 색인도 비운다.
-#       BLOCKSCOUT_RCL=0 이면 건드리지 않는다. 실패해도 데모는 계속한다. 컨트랙트 자동 검증(3c)은 응용 체인 것만 한다.
+#       BLOCKSCOUT_RCL=0 이면 건드리지 않는다. 실패해도 데모는 계속한다.
 if [ "${BLOCKSCOUT_RESET:-1}" != 0 ] && [ "${BLOCKSCOUT_RCL:-1}" != 0 ] && [ -f "$BS_DIR/compose.yml" ]; then
-  if bash scripts/blockscout_rcl.sh reset > "$LOGS/blockscout_rcl_reset.log" 2>&1; then echo "Blockscout(RCL) 초기화: 폐기 체인 색인을 비우고 다시 띄웠다(http://127.0.0.1:4001)"; else echo "WARN Blockscout(RCL) 초기화 실패 — $LOGS/blockscout_rcl_reset.log (데모는 계속 진행)"; fi
+  if bash scripts/blockscout_rcl.sh reset > "$LOGS/blockscout_rcl_reset.log" 2>&1; then BS_RCL_OK=1; echo "Blockscout(RCL) 초기화: 폐기 체인 색인을 비우고 다시 띄웠다(http://127.0.0.1:4001)"; else echo "WARN Blockscout(RCL) 초기화 실패 — $LOGS/blockscout_rcl_reset.log (데모는 계속 진행)"; fi
 fi
 # 3c. 컨트랙트 자동 검증(2026-11-18): 감시자 하나가 응용 체인을 0번 블록부터 따라가며 올라오는 컨트랙트(거울·검증기·팩토리·AttrGate·계정마다의 지갑)를
 #     Blockscout 에 소스 검증으로 올린다. 서비스(VM)·에이전트가 실행 중에 배포하는 것까지 체인에서 잡는다. BLOCKSCOUT_VERIFY=0 이면 띄우지 않는다.
@@ -273,6 +274,13 @@ if [ "${BLOCKSCOUT_VERIFY:-1}" != 0 ] && [ -f "$BS_DIR/compose.yml" ] && command
   BS_RPC="http://127.0.0.1:$APP_PORT" setsid nohup node scripts/blockscout_verify_watch.mjs > "$LOGS/blockscout_verify.log" 2>&1 < /dev/null &
   echo $! > "$BS_VERIFY_PID"
   echo "Blockscout 자동 검증 감시자 up (pid $(cat "$BS_VERIFY_PID")) — $LOGS/blockscout_verify.log"
+fi
+# 3c-2. 폐기 체인의 감시자(2026-11-25) — 캐노니컬 로그(Mode3Log)를 :4001 에 소스 검증으로 올린다. 켜고 끄는 조건은 3b-2·3c 와 같다.
+if [ "${BLOCKSCOUT_VERIFY:-1}" != 0 ] && [ "${BLOCKSCOUT_RCL:-1}" != 0 ] && [ -f "$BS_DIR/compose.yml" ] && command -v docker >/dev/null 2>&1 \
+   && { [ "$BS_RCL_OK" = 1 ] || curl -s -m 3 -o /dev/null http://127.0.0.1:4001/api/v2/stats; }; then
+  BS_URL="http://127.0.0.1:4001" BS_RPC="http://127.0.0.1:$REV_PORT" setsid nohup node scripts/blockscout_verify_watch.mjs > "$LOGS/blockscout_verify_rcl.log" 2>&1 < /dev/null &
+  echo $! > "$BS_VERIFY_RCL_PID"
+  echo "Blockscout(RCL) 자동 검증 감시자 up (pid $(cat "$BS_VERIFY_RCL_PID")) — $LOGS/blockscout_verify_rcl.log"
 fi
 
 # 4. IdP 주소: 임시 상태 파일로 IdP 를 한 번 띄워 /cia/public_keys 의 ethAddress 를 읽는다(배포 스크립트 안내대로). 키는 idp VM 안에만 생긴다.

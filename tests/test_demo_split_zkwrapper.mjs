@@ -211,6 +211,20 @@ t('폐기 체인 Blockscout(:4001) — 체인을 새로 만든 뒤 초기화하�
   const o = fs.readFileSync(new URL('../scripts/blockscout_rcl.compose.yml', import.meta.url), 'utf8').split('\n').filter((l) => !l.trim().startsWith('#')).join('\n');
   assert.ok(!/8547|31339|:4000/.test(o), '응용 체인을 가리킨다'); assert.ok(o.includes('127.0.0.1:4001:80') && (o.match(/8548/g) ?? []).length >= 4 && o.includes('31340')); assert.ok(!/SECRET|PASSWORD|DATABASE_URL|external:|container_name/.test(o));
 });
+t('폐기 체인의 검증 감시자 — :4001·폐기 체인을 보고, 응용 체인 감시자와 pid 파일이 따로이며 함께 내린다(2026-11-25)', () => {
+  const i = lines.findIndex((l) => /BS_URL="http:\/\/127\.0\.0\.1:4001" BS_RPC="http:\/\/127\.0\.0\.1:\$REV_PORT" setsid nohup node scripts\/blockscout_verify_watch\.mjs/.test(l)); assert.ok(i > 0); assert.match(lines[i + 1], /echo \$! > "\$BS_VERIFY_RCL_PID"/);
+  assert.match(src, /stop_verify_watch; stop_verify_watch_rcl/);
+  // pid 파일의 프로세스가 감시자일 때만, 그 파일의 것만 내린다
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'zkd-pid-')); const fn = `${src.match(/\nstop_verify_watch\(\) \{[\s\S]*?\n\}/)[0]}\n${lines.find((l) => l.startsWith('stop_verify_watch_rcl()'))}`;
+  try {
+    const out = spawnSync('bash', ['-c', `BS_VERIFY_PID=${d}/a.pid; BS_VERIFY_RCL_PID=${d}/b.pid
+bash -c 'exec -a "node scripts/blockscout_verify_watch.mjs" sleep 30' & A=$!; bash -c 'exec -a "node scripts/blockscout_verify_watch.mjs" sleep 30' & B=$!; sleep 30 & X=$!; echo $A > ${d}/a.pid; echo $B > ${d}/b.pid; sleep 0.5
+${fn}
+stop_verify_watch_rcl >/dev/null; sleep 0.3; kill -0 $A 2>/dev/null && echo A-alive; kill -0 $B 2>/dev/null && echo B-alive; [ -f ${d}/a.pid ] && echo a-file; [ -f ${d}/b.pid ] && echo b-file; echo "var=$BS_VERIFY_PID"
+echo $X > ${d}/b.pid; stop_verify_watch_rcl >/dev/null; sleep 0.2; kill -0 $X 2>/dev/null && echo X-alive; kill $A $X 2>/dev/null; true`], { encoding: 'utf8' }).stdout.trim().split('\n');
+    assert.deepEqual(out, ['A-alive', 'a-file', `var=${d}/a.pid`, 'X-alive']);
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+});
 t('폐기 체인 Blockscout — 다른 스택과 볼륨·네트워크 이름을 나눠 쓰면 지우지도 띄우지도 않는다(가짜 docker)', () => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'zkd-bs-')); fs.mkdirSync(path.join(d, 'scripts')); fs.mkdirSync(path.join(d, 'bin')); fs.mkdirSync(path.join(d, '.local/blockscout'), { recursive: true }); fs.writeFileSync(path.join(d, '.local/blockscout/compose.yml'), '');
   for (const f of ['blockscout_rcl.sh', 'blockscout_rcl.compose.yml']) fs.copyFileSync(new URL(`../scripts/${f}`, import.meta.url), path.join(d, 'scripts', f));

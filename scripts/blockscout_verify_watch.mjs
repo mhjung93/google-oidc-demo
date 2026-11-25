@@ -1,6 +1,7 @@
 // 로컬 Blockscout 컨트랙트 자동 검증 감시자 — 스펙 docs/superpowers/specs/2026-11-18-blockscout-auto-verify-design.md.
 // 응용 체인을 0번 블록부터 따라가며, 올라온 컨트랙트(Mode3Mirror·PiCredVerifier·Mode3WalletFactory·AttrGate·계정마다의 Mode3Wallet)를
 // Blockscout 에 소스 검증으로 올린다. 배포 지점이 VM(서비스)·이 PC(에이전트) 여럿이라 체인을 보는 한 프로세스가 맡는다(B3).
+// 폐기(RCL) 체인은 같은 감시자를 하나 더 띄운다(2026-11-25, BS_URL=http://127.0.0.1:4001 BS_RPC=http://127.0.0.1:8548 — Mode3Log).
 // scripts/demo_split_start.sh 가 띄우고 내린다. 데모 기동을 막지 않는다 — 실패는 WARN 한 줄과 재시도뿐이다.
 //   node scripts/blockscout_verify_watch.mjs        BS_URL(기본 http://127.0.0.1:4000) BS_RPC(http://127.0.0.1:8547) BS_POLL_MS(3000)
 //   BS_VERIFY_WAIT_MS(60000 — 제출 뒤 검증 완료를 기다리는 시간) BS_INDEX_WAIT_MS(600000 — Blockscout 가 그 주소를 색인하기를 기다리는 시간)

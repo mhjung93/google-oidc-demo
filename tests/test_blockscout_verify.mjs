@@ -16,14 +16,14 @@ const by = Object.fromEntries(arts.map((a) => [a.name, a]));
 /** immutable 자리에 0 이 아닌 값을 채운 런타임 코드 — 체인에 올라간 모습을 흉내 낸다. */
 const filled = (a, byte = 0xab) => { const b = Buffer.from(a.deployedBytecode.slice(2), 'hex'); for (const { start, length } of a.immutableRefs) b.fill(byte, start, start + length); return '0x' + b.toString('hex'); };
 
-t('대상 다섯 개를 모두 읽는다', () => {
+t('대상 여섯 개를 모두 읽는다(2026-11-25: 폐기 체인의 Mode3Log)', () => {
   assert.deepEqual(arts.map((a) => a.name), TARGETS);
-  assert.deepEqual(TARGETS, ['Mode3Mirror', 'PiCredVerifier', 'Mode3WalletFactory', 'AttrGate', 'Mode3Wallet']);
+  assert.deepEqual(TARGETS, ['Mode3Mirror', 'PiCredVerifier', 'Mode3WalletFactory', 'AttrGate', 'Mode3Wallet', 'Mode3Log']);
   for (const a of arts) { assert.match(a.solcLongVersion, /^0\.8\.24\+commit\./, a.name); assert.ok(a.standardInput.sources[a.sourceName], `${a.name}: 표준 입력에 자기 소스`); }
 });
 
 // §2: build-info 는 <이름>.dbg.json 이 가리키는 파일 하나다 — PiCredVerifier 는 build-info 여럿에 들어 있고 대부분 배포되는 것과 다른 코드를 낸다.
-t('고른 build-info 의 런타임 코드가 artifact 와 같다(다섯 대상 모두)', () => {
+t('고른 build-info 의 런타임 코드가 artifact 와 같다(여섯 대상 모두)', () => {
   for (const a of arts) {
     const bi = JSON.parse(fs.readFileSync(a.buildInfoPath, 'utf8'));
     assert.equal('0x' + bi.output.contracts[a.sourceName][a.name].evm.deployedBytecode.object, a.deployedBytecode, a.name);
@@ -52,6 +52,9 @@ t('ctorArgsFromCreation: 생성 tx 입력에서 생성자 인자를 되돌린다
   const args = ethers.AbiCoder.defaultAbiCoder().encode(['address', 'uint256', 'uint256'], ['0x' + '11'.repeat(20), 7n, 19n]);
   assert.equal(ctorArgsFromCreation(by.AttrGate.bytecode + args.slice(2), by.AttrGate), args.slice(2));
   assert.equal(ctorArgsFromCreation(by.PiCredVerifier.bytecode, by.PiCredVerifier), '', '인자 없는 생성자');
+  // 폐기 체인의 로그: constructor(address cia, bytes32 emptyRevRoot, bytes32 emptyRegRoot)
+  const la = ethers.AbiCoder.defaultAbiCoder().encode(by.Mode3Log.abi.find((x) => x.type === 'constructor').inputs.map((i) => i.type), ['0x' + '11'.repeat(20), '0x' + '22'.repeat(32), '0x' + '33'.repeat(32)]);
+  assert.equal(ctorArgsFromCreation(by.Mode3Log.bytecode + la.slice(2), by.Mode3Log), la.slice(2)); assert.equal(ctorArgsFromCreation(by.Mode3Log.bytecode + la.slice(2), by.Mode3Mirror), null, '거울과 섞이지 않는다');
   assert.equal(ctorArgsFromCreation('0x6080' + args.slice(2), by.AttrGate), null, '이 artifact 의 생성 코드가 아니다');
 });
 
