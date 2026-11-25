@@ -129,7 +129,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
       a.hidden = false; d.hidden = false;
     });
   }
-  const fail = (r, fallback) => ({ ok: false, reason: r.body?.reason ?? fallback, detail: r.body?.detail ?? r.body?.error ?? null, status: r.status, ...(r.body?.demo ? { demo: r.body.demo } : {}) });
+  const fail = (r, fallback) => ({ ok: false, reason: r.body?.reason ?? fallback, detail: r.body?.detail ?? r.body?.error ?? null, status: r.status, ...(r.body?.demo ? { demo: r.body.demo } : {}), ...(r.body?.race ? { race: r.body.race } : {}) });
   // 등록 실패(코어 registerWith): zkIdP 가 거절하면 reason 은 register_failed 이고 zkIdP 의 사유는 cia 에 있다 — 그쪽을 먼저 본다(zk 스냅 화면 codeRegister 와 같다).
   const regFail = (r) => ({ ok: false, reason: r.body?.cia?.reason ?? r.body?.reason ?? 'register_failed', detail: r.body?.detail ?? r.body?.cia?.detail ?? r.body?.error ?? null, status: r.status });
   /** 승인 창의 안내 한 줄 + 링크(같은 오리진의 사용자 페이지·속성 도구). */

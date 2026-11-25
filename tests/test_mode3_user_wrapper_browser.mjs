@@ -259,6 +259,9 @@ try {
     assert.equal(await chainRead.getBlockNumber(), h0, '① 이 거래를 보냈다'); assert.equal(A.hits.get - g0, 1, `패스키는 한 번: ${j(A.hits)}`);
     await clickTx(replayPage, '#txReplayBtn');
     await waitText(replayPage, '#txVerdict', 'root 가 아직 바뀌지 않았습니다', 120_000);
+    // 2026-11-25(사용자 요청): 실패를 nonce 가 아니라 root 로 설명하고 이전·현재 root 를 보인다 — 아직 같으면 같은 값 두 줄
+    await replayPage.waitForSelector('#raceRoots:not([hidden])', { timeout: 10_000 }); assert.equal(await text(replayPage, '#raceRootBuilt'), await text(replayPage, '#raceRootNow')); assert.equal(await text(replayPage, '#raceRegBuilt'), await text(replayPage, '#raceRegNow'));
+    assert.ok((await text(replayPage, '#raceRootNote')).includes('그대로'), await text(replayPage, '#raceRootNote')); assert.ok(!/nonce/i.test((await replayPage.$eval('#txVerdict', (e) => e.innerText))), 'nonce 를 말한다');
     assert.ok((await text(replayPage, '#txVerdict')).includes('내 세션 관리'), await text(replayPage, '#txVerdict'));
     assert.equal(await chainRead.getBlockNumber(), h0, '거절했는데 블록이 늘었다');
   });
@@ -300,6 +303,12 @@ try {
     assert.equal(await replayPage.$eval('#raceRoots', (e) => e.hidden), false, 'root 두 줄이 없다');
     const built = await text(replayPage, '#raceRootBuilt'), now = await text(replayPage, '#raceRootNow');
     assert.ok(built.length > 10 && now.length > 10); assert.notEqual(built, now, 'root 가 바뀌지 않은 것으로 보인다');
+    { const seen = await replayPage.$eval('#txVerdict', (e) => e.innerText); assert.ok(seen.includes('root 가 바뀌어 실패했습니다') && seen.includes('이전 root'), seen); assert.ok(!/nonce/i.test(seen), `nonce 를 말한다: ${seen}`); }
+    assert.ok((await text(replayPage, '#raceRootBuiltLabel')).startsWith('이전') && (await text(replayPage, '#raceRootNowLabel')).startsWith('현재'));
+    for (const id of ['raceRegBuilt', 'raceRegNow']) { assert.equal(await replayPage.$eval(`#${id}`, (e) => e.checkVisibility()), true, id); assert.ok((await text(replayPage, `#${id}`)).length > 10); }
+    // 보이는 값이 실제 값이다: 현재 = 그 거래에 적힌 root(공개 입력), 이전 = 체인이 아는 지난 root
+    assert.equal(now, String(args[5][6])); assert.equal(await text(replayPage, '#raceRegNow'), String(args[5][7]));
+    { const regSame = (await text(replayPage, '#raceRegBuilt')) === (await text(replayPage, '#raceRegNow')); assert.ok((await text(replayPage, '#raceRootNote')).includes(regSame ? '폐기 목록 root 가 바뀌었습니다' : '모두 바뀌었습니다'), await text(replayPage, '#raceRootNote')); }
     assert.equal(A.hits.get - g0, 1, `패스키는 한 번: ${j(A.hits)}`);
   });
   await t('옛 증명 시연: ① 뒤 일반 출금으로 nonce 가 바뀌면 ② 는 보내지 않는다(블록 그대로)', async () => {

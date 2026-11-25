@@ -1256,14 +1256,14 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
         const old = ((await kv.get('proofs')) ?? []).filter((x) => x.kind === 'pi_cred' && x.r_s === rsKey && String(x.publicSignals[PUB_INDEX.COUNTER]) === nonce.toString()).pop();
         if (!old) return R(409, { reason: 'no_old_proof', timings });
         const pub = old.publicSignals.map(String);
-        const rootAtBuild = pub[PUB_INDEX.REV_ROOT];
+        const rootAtBuild = pub[PUB_INDEX.REV_ROOT], regRootAtBuild = pub[PUB_INDEX.REG_ROOT];   // 이전 root 둘(폐기 목록·등록부) — 화면이 현재 값과 나란히 보인다
+        const race = { replay: true, rootAtBuild, rootNow: synced.root.toString(), regRootAtBuild, regRootNow: synced.regRoot.toString() };
         pub[PUB_INDEX.REV_ROOT] = synced.root.toString(); pub[PUB_INDEX.REG_ROOT] = synced.regRoot.toString();
         // 바꾼 뒤에도 옛것과 똑같으면(root 가 아직 그대로) 그 증명은 아직 유효하다. 시연이 진짜 출금이 되지 않게 거절한다(2026-11-23 리뷰).
-        if (pub.join(',') === old.publicSignals.map(String).join(',')) return R(409, { reason: 'replay_still_valid', timings });
+        if (pub.join(',') === old.publicSignals.map(String).join(',')) return R(409, { reason: 'replay_still_valid', race, timings });
         const pb = pub.map(BigInt);
         disclosure = { mask: pb[PUB_INDEX.DISC_MASK], lo: pb.slice(PUB_INDEX.DISC_LO, PUB_INDEX.DISC_HI), hi: pb.slice(PUB_INDEX.DISC_HI, PUB_INDEX.SET_SEL), sel: pb[PUB_INDEX.SET_SEL], root: pb[PUB_INDEX.SET_ROOT] };
-        proved = { proof: old.proof, publicSignals: pub, root: synced.root.toString(), regRoot: synced.regRoot.toString(), cacheHit: false, demo: 'replay_old_proof',
-          race: { rootAtBuild, rootNow: synced.root.toString() } };
+        proved = { proof: old.proof, publicSignals: pub, root: synced.root.toString(), regRoot: synced.regRoot.toString(), cacheHit: false, demo: 'replay_old_proof', race };
       } else try { proved = await proveSession(rsKey, synced, timings, disclosure, src, nonce); }   // root·disclosure·counter(=nonce) 가 같으면 캐시 π, 아니면 재증명
       catch (e) {
         const mapped = await sessionProofFailure(e, rsKey, timings);
