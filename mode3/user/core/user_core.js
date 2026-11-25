@@ -918,7 +918,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
         timings.userCredMs = retryMs;
         r = retried.r; demo = retried.demo;
       }
-      // 래퍼 방식의 거절(wrapper_*·auid_pinned·auid_taken·auid_s_taken·cf_u_taken·cred_change_too_soon·account_disabled …)은 사유·상태 그대로 — 창이 사유별로 안내한다.
+      // 래퍼 방식의 거절(wrapper_*·auid_pinned·auid_taken·auid_s_taken·cf_u_taken·account_disabled …)은 사유·상태 그대로 — 창이 사유별로 안내한다.
       if (wrapper && r.status !== 200 && typeof r.body?.reason === 'string') {
         // salt 봉투 [m9]: auid_pinned 의 대조값·봉투(암호문)는 응답(cia 칸)에 싣지 않는다 — 부른 쪽(wrapperLogin)이 onPinned 로 받아 메모리에만 둔다.
         if (r.body.reason === 'auid_pinned') { wrapper.onPinned?.(r.body); return R(r.status, { reason: 'auid_pinned', timings }); }

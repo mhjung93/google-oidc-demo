@@ -1027,7 +1027,7 @@ salt 는 **패스키(WebAuthn PRF 확장)에서 그때그때 유도**해 어디�
 - **로그인**: 서비스의 "zk 로그인" → 승인 창이 서비스 인증서를 확인하고 1회용 요청 키(P-256, 꺼낼 수 없다)를 만든다 → Google(`prompt=select_account`, nonce = `wrap:` + SHA-256(요청 키)) → `/google-relay` → 창으로 돌아옴 →
   패스키 → salt → 가명·커밋먼트(`auid`·`auid_s`·`arid_s`·`C_u`·`C_s`) + Google 토큰 + 요청 키의 서명으로 `POST /cia/issue` → 세션 토큰 → π_RP → 서비스. 요청 키·토큰·salt 는 저장하지 않는다(대기분은 공개값만, sessionStorage 1회용).
 - **발급자가 지키는 것**(π_IdP 가 없으므로 — 스펙 §3·§10): 계정 = Google 계정(`uid = H(google|sub)`), 계정당 auid 는 첫 발급에서 고정(`auid_pinned`), 한 auid 는 한 계정(`auid_taken`), 세션 가명 전역 유일(`auid_s_taken`),
-  남의 C_u 거절(`cf_u_taken`), C_u 교체는 10분에 한 번(`cred_change_too_soon`, `CIA_CRED_CHANGE_MIN_MS`), 토큰 1회(`wrapper_token_used`), 점의 부분군 검사. 세션·계정 폐기도 토큰 + 그 대상에 대한 서명이다.
+  남의 C_u 거절(`cf_u_taken`), C_u 교체의 최소 간격(10분, `cred_change_too_soon`)은 없앴다(2026-11-25 사용자 결정 — 포기한 것: 토큰 하나로 등록부 리프를 계속 갈아 끼우는 것을 막지 못한다. 속성을 바꿀 때마다 폐기·등록 리프가 하나씩 늘고 횟수 제한이 없다. 데모라 받아들인다), 토큰 1회(`wrapper_token_used`), 점의 부분군 검사. 세션·계정 폐기도 토큰 + 그 대상에 대한 서명이다.
   개봉은 지금처럼 발급 기록의 auid_s 로 uid 를 찾되, 기록이 두 계정에 있으면 답하지 않는다. 계정·비밀번호·등록·슬롯·증명 로그인·일반 OIDC 경로는 `403 wrapper_mode`.
 - **새는 것을 줄인 자리(스펙 §5)**: 체인 읽기는 zkWrapper 를 거치지 않는다(`/rpc/*` 없음). 서비스 페이지는 zkWrapper 서버에 요청을 보내지 않는다(창을 여는 것뿐 — 지갑 종류 `zkwrapper` 이면 `/wallet/config`·`/mode3/health` 를 부르지 않는다).
   지갑 페이지는 존재 신호(`/wallet/presence`)를 보내지 않는다. Google 중계는 래퍼 전용 ID 의 토큰을 서비스 페이지로 넘기지 않는다.

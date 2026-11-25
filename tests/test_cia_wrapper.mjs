@@ -162,17 +162,19 @@ try {
     assert.equal(r.status, 409, j(r.body)); assert.equal(r.body.reason, 'cf_u_taken');
     assert.equal((await cia.get('/cia/state')).body.regRoot, regRoot0);
   });
-  // 2026-11-24(사용자 결정): 첫 등록이 빈 속성이라 첫 로그인 직후 속성을 넣는 것이 보통의 흐름이다 — 계정이 처음 받은 C_u 의 첫 교체는 기다리지 않는다.
-  // 그다음 교체부터 10분에 한 번(§10 I1 — 토큰 하나로 등록부를 계속 갈아 끼우지 못하게)은 그대로다.
-  await t('C_u 를 바꾸는 발급(속성 변경): 처음 받은 C_u 의 첫 교체는 바로 되고, 10분 안에 또 바꾸면 429 cred_change_too_soon, 같은 C_u 의 재발급은 된다', async () => {
+  // 2026-11-25(사용자 결정): C_u 교체의 최소 간격(§10 I1, 10분)을 없앴다 — 두 번째 교체도 바로 된다. 물린 C_u 로 되돌아가는 것(cred_revoked)은 그대로 막는다.
+  await t('C_u 를 바꾸는 발급(속성 변경): 첫 교체도 두 번째 교체도 바로 되고, 같은 C_u 의 재발급은 되며, 물린 C_u 로는 돌아가지 못한다', async () => {
     const dave = await person('g-dave');
     assert.equal((await wrapIssue(dave, S1)).r.status, 200);
     const blind2 = randomScalar();
     const first = await wrapIssue(dave, S1, { blind_u: blind2 });   // 새 blind → 새 C_u(첫 교체)
     assert.equal(first.r.status, 200, j(first.r.body));
-    const changed = await wrapIssue(dave, S1, { blind_u: randomScalar() });   // 두 번째 교체
-    assert.equal(changed.r.status, 429, j(changed.r.body)); assert.equal(changed.r.body.reason, 'cred_change_too_soon');
-    assert.equal((await wrapIssue(dave, S1, { blind_u: blind2 })).r.status, 200, '지금의 C_u 는 된다');
+    const blind3 = randomScalar();
+    const changed = await wrapIssue(dave, S1, { blind_u: blind3 });   // 두 번째 교체 — 바로 된다
+    assert.equal(changed.r.status, 200, j(changed.r.body));
+    assert.equal((await wrapIssue(dave, S1, { blind_u: blind3 })).r.status, 200, '지금의 C_u 는 된다');
+    const back = await wrapIssue(dave, S1, { blind_u: blind2 });   // 물린(은퇴한) C_u 로 되돌리기
+    assert.equal(back.r.status, 409, j(back.r.body)); assert.equal(back.r.body.reason, 'cred_revoked');
   });
   await t('틀린 auid(그 salt 의 것이 아님)로 등록하면 토큰은 나오지만 π_RP 를 만들 수 없다', async () => {
     const erin = await person('g-erin');

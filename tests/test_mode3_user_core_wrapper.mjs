@@ -167,15 +167,15 @@ try {
     assert.equal(out.r.status, 409, j(out.r.body)); assert.equal(out.r.body.reason, 'auid_pinned');
     assert.equal(await B.kv.get('registration'), undefined); assert.equal(await B.kv.get('wrapperKey'), undefined);
   });
-  // 2026-11-24(사용자 결정): 처음 받은 C_u 의 첫 교체는 기다리지 않는다 — 그다음 교체부터 10분에 한 번
-  await t('같은 패스키·같은 Google 계정을 새 브라우저에서(새 C_u): 첫 교체는 되고, 10분 안의 두 번째 교체는 429 cred_change_too_soon 이 그대로 온다 — 그때는 로컬 등록을 남기지 않는다', async () => {
+  // 2026-11-25(사용자 결정): C_u 교체의 최소 간격을 없앴다 — 새 브라우저 둘이 잇달아 와도(교체 두 번) 둘 다 로그인된다
+  await t('같은 패스키·같은 Google 계정을 새 브라우저에서(새 C_u): 첫 교체도 두 번째 교체도 바로 되고 로컬 등록이 남는다', async () => {
     const C = browser(A.salt, A.cid); await C.core.passkeyConnect({ credentialId: C.cid, s_u: C.salt });
     const first = await wlogin(C, 'g-anna');
     assert.equal(first.r.status, 200, j(first.r.body));
     const D = browser(A.salt, A.cid); await D.core.passkeyConnect({ credentialId: D.cid, s_u: D.salt });
     const out = await wlogin(D, 'g-anna');
-    assert.equal(out.r.status, 429, j(out.r.body)); assert.equal(out.r.body.reason, 'cred_change_too_soon');
-    assert.equal(await D.kv.get('registration'), undefined);
+    assert.equal(out.r.status, 200, j(out.r.body));
+    assert.notEqual(await D.kv.get('registration'), undefined);
   });
   await t('이 브라우저가 다른 Google 계정에 묶여 있으면 409 wrapper_account_mismatch — 발급 서버로 가지 않는다', async () => {
     A.sent.length = 0;

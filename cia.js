@@ -180,8 +180,6 @@ const DEMO_SEED = process.env.CIA_DEMO_ACCOUNTS === '1';
 // 깃발이 꺼져 있으면(기본) 이 파일의 모든 경로가 지금까지와 같다 — 스냅·에이전트·web·passkey-web 의 기존 방식이 그대로 쓴다.
 const WRAPPER = process.env.CIA_WRAPPER === '1';
 const WRAPPER_OIDC = WRAPPER ? { authorizeUrl: envStr('MODE3_OIDC_AUTHORIZE_URL', 'https://accounts.google.com/o/oauth2/v2/auth'), redirectUri: envStr('MODE3_OIDC_REDIRECT_URI', null) } : null;
-// C_u 를 바꾸는 발급(속성 변경)의 최소 간격 — 토큰 하나로 등록부를 계속 갈아 끼워 다른 사용자의 로그인을 흔들지 못하게(스펙 §10 I1). 같은 C_u 의 재발급에는 걸리지 않는다.
-const CRED_CHANGE_MIN_MS = (() => { const n = Number(process.env.CIA_CRED_CHANGE_MIN_MS); return Number.isFinite(n) && n >= 0 ? n : 600_000; })();
 // 서비스들이 쓰는 Google 클라이언트 ID 목록(쉼표) — 래퍼와 패스키 가입은 이 ID 들과 같은 ID 로는 열지 않는다(스펙 zkwrapper §10 C2).
 const RP_GOOGLE_DENY = String(process.env.MODE3_RP_GOOGLE_CLIENT_ID_DENY ?? '').split(',').map((x) => x.trim()).filter(Boolean);
 if (WRAPPER) {
@@ -1485,11 +1483,9 @@ async function finishIssueInner(res, { uid, acct, cupt, cspt, auidS, aridS, mh, 
   if (!cur || cur.Cf_u !== cfu) {
     // 물린 적 있는 C_u 는 다시 받지 않는다 — 은퇴·폐기의 되감기를 막는다.
     if (acct.creds.some((c) => c.Cf_u === cfu)) return res.status(409).json({ error: 'this user credential was revoked; make a new one', reason: 'cred_revoked' });
-    // 래퍼 방식(스펙 §10 I2·I1): 다른 계정이 낸 적 있는 C_u 는 받지 않는다(같은 리프를 두 슬롯에 넣어 계정 폐기를 피하지 못하게), C_u 교체는 계정당 최소 간격을 둔다.
+    // 래퍼 방식(스펙 §10 I2): 다른 계정이 낸 적 있는 C_u 는 받지 않는다(같은 리프를 두 슬롯에 넣어 계정 폐기를 피하지 못하게).
+    // C_u 교체의 최소 간격(§10 I1, 10분)은 2026-11-25(사용자 결정) 없앴다 — 속성을 바꿀 때마다 폐기·등록 리프가 하나씩 늘고 횟수 제한이 없다(데모라 받아들인다).
     if (wrapper && Object.entries(state.accounts).some(([u, a]) => u !== uid && (a.creds ?? []).some((c) => c.Cf_u === cfu))) return res.status(409).json({ error: 'this user credential belongs to another account', reason: 'cf_u_taken' });
-    // 2026-11-24(사용자 결정): 첫 등록이 빈 속성이라(속성 기본값 없음) 첫 로그인 직후 속성을 넣는 것이 보통의 흐름이다 — 계정이 처음 받은 C_u 의 첫 교체(creds 가 하나뿐)는
-    // 기다리지 않는다. 그다음 교체부터는 계정당 최소 간격을 그대로 둔다(토큰 하나로 등록부를 계속 갈아 끼우지 못하게 — 늘어나는 것은 계정당 한 번뿐).
-    if (wrapper && cur && acct.creds.length > 1 && Date.now() - Date.parse(acct.creds.at(-1)?.issuedAt ?? 0) < CRED_CHANGE_MIN_MS) return res.status(429).json({ error: 'user credential changed too recently', reason: 'cred_change_too_soon' });
     // 코드 소비(F-7): π_IdP 뿐 아니라 headOf(503)·위 cred_revoked 사전 검사까지 모두 지난 뒤, 상태 변경(발급 기록) 바로
     // 앞에서 동기로 소비한다 — 동시 요청도 하나만 통과한다. 이보다 앞에서 태우면 체인 오류·폐기 충돌로 끝내 실패해도 코드가 사라진다.
     if (consume && !consume()) return res.status(consumeFail.status).json(consumeFail.body);
@@ -1602,7 +1598,7 @@ async function wrapperAuth(body, digestOf, { consume = false } = {}) {
 }
 /** 래퍼 방식의 발급(POST /cia/issue): { id_token, pk_e, sig, auid, auid_s, arid_s, C_u_pt, C_s_pt, chainid, allowAgent, max_height }. 계정은 토큰의 sub 에서 정한다(uid = H(provider|sub)).
  *  π_IdP 가 없다 — 가명·커밋먼트가 제대로 만들어졌는지는 서비스에 내는 π_RP 가 증명한다(pi_cred ②⑤⑦·등록부 리프 H(auid, Cf_u)). 발급자가 지키는 것은 발급의 부수효과다:
- *  계정당 auid 고정(첫 발급), 한 auid 는 한 계정(R11 — registerAccount), auid_s 전역 유일·남의 C_u 거절·교체 간격(finishIssue), 토큰 1회 소비. */
+ *  계정당 auid 고정(첫 발급), 한 auid 는 한 계정(R11 — registerAccount), auid_s 전역 유일·남의 C_u 거절(finishIssue), 토큰 1회 소비. */
 async function issueWrapper(req, res) {
   const { auid, auid_s, arid_s, C_u_pt, C_s_pt, chainid, allowAgent, max_height, envelope } = req.body ?? {};
   // 복구 발급의 기기 봉투(선택) — 모양은 토큰을 보기 전에 본다(형식이 틀린 요청이 토큰을 쓰지 않게). 백업 봉투는 /cia/wrapper/envelope 로만 더한다.

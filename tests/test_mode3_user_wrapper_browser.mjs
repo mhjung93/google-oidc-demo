@@ -36,9 +36,7 @@ const SPLIT = process.env.MODE3_TEST_SPLIT === '1';
 const KIND = 'zkwrapper';   // 서비스가 아는 지갑 종류 — 데모 스크립트처럼 래퍼 방식이면 배치와 관계없이 zkwrapper(서비스 페이지가 지갑 서버를 부르지 않는다)
 const stack = await startIsolatedMode3Stack({ userMode: SPLIT ? 'web' : 'zkwrapper', walletHost: 'localhost', wrapper: true, autoRelay: true,
   walletEnv: { MODE3_WALLET_SECRETS: 'passkey-web', MODE3_WRAPPER: '1', MODE3_WRAPPER_CLIENT_ID: 'mode3-test-client' }, rpEnv: { MODE3_WALLET_KIND: KIND, MODE3_RELAY_DEMO_REVERT: '1' },
-  // CIA_CRED_CHANGE_MIN_MS=0(salt 봉투 Task 5): 복구한 새 브라우저의 첫 발급은 사용자 자격증명(C_u) 교체다 — 기본 10분 간격이면 앞 사례(zkTWO 속성 교체) 바로 뒤의 복구가 cred_change_too_soon 으로 막힌다.
-  // 그 간격 자체는 tests/test_cia_wrapper*.mjs 가 본다. 이 파일의 다른 사례는 두 번째 교체를 하지 않는다.
-  ciaEnv: { MODE3_WALLET_KIND: 'passkey-web', MODE3_OIDC_REDIRECT_URI: '{walletOrigin}/google-relay', CIA_CRED_CHANGE_MIN_MS: '0' },
+  ciaEnv: { MODE3_WALLET_KIND: 'passkey-web', MODE3_OIDC_REDIRECT_URI: '{walletOrigin}/google-relay' },
   extraRps: [{ name: 'zkTWO', env: { MODE3_WALLET_KIND: KIND, MODE3_ALLOWED_COUNTRIES: 'KR,JP', MODE3_REQUIRE_DISCLOSURE: '1' } }] });
 const { cia, wallet, rp } = stack;
 const rp2 = stack.rps[1], google = stack.oidc;
