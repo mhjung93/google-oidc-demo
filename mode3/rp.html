@@ -239,11 +239,11 @@
 
   <script>
     const $ = (id) => document.getElementById(id);
-    // 2026-11-05(7차 피드백 7): 이용 조건 문장의 국가 이름(사용자 말). 사전에 없는 코드는 코드 그대로.
-    const COUNTRY_LABELS = { KR: { ko: '한국', en: 'Korea' }, JP: { ko: '일본', en: 'Japan' }, US: { ko: '미국', en: 'USA' }, DE: { ko: '독일', en: 'Germany' }, FR: { ko: '프랑스', en: 'France' }, GB: { ko: '영국', en: 'UK' }, CN: { ko: '중국', en: 'China' } };
     // 2026-11-25: 잔액 칸의 처음 값(HTML 의 0)은 페이지 시작 때 한 번 적어 둔다. resetSessionViews 가 처음 불릴 때 적으면, 쿠키 세션(Google)은 setSession 을 부르지 않아
     // 그다음 zk 로그인 순간의 화면 숫자(Google 계정의 KRW·보관 ETH)가 처음 값이 되고, zkWrapper 세션은 자동 조회를 하지 않아 그 숫자가 그대로 남았다.
     for (const v of document.querySelectorAll('.balance-list .bal-amt')) v.dataset.init = v.textContent;
+    // 2026-11-05(7차 피드백 7): 이용 조건 문장의 국가 이름(사용자 말). 사전에 없는 코드는 코드 그대로.
+    const COUNTRY_LABELS = { KR: { ko: '한국', en: 'Korea' }, JP: { ko: '일본', en: 'Japan' }, US: { ko: '미국', en: 'USA' }, DE: { ko: '독일', en: 'Germany' }, FR: { ko: '프랑스', en: 'France' }, GB: { ko: '영국', en: 'UK' }, CN: { ko: '중국', en: 'China' } };
     const countryLabel = (c) => COUNTRY_LABELS[c]?.[Demo.lang] ?? c;
     // /common 이 뜨지 않아도(404) 페이지는 HTML 의 한국어 기본 텍스트로 계속 돌아간다(설계 §5).
     // demo.js 만 빠졌다면 사전(strings.js)은 그대로 읽는다 — 둘 다 없을 때만 키가 그대로 남는다.
@@ -1076,20 +1076,20 @@
     // RP 는 서명·root 를 검증하고 본문별로 답한다 — 'balance'(장부+체인 잔액), 'deposit:<ms>'(KRW 입금 시연), 'buy:<eth>:<ms>'(시세로 KRW 차감 + 릴레이어가 ETH 전송).
     // 성공이면 응답 본문, 실패면 null 을 돌려주고 판정 카드는 여기서 그린다(okTitle·okSummary 는 호출자가 준다).
     const ledgerEls = () => Object.fromEntries([...document.querySelectorAll('.balance-list li[data-asset]')].map((li) => [li.dataset.asset, li.querySelector('.bal-amt')]));
-    function applyLedger(bal) {
-      if (bal?.account && bal.account !== lastAccount) { lastAccount = bal.account; renderAccountView(); saveSession(currentSession, currentSessionAllowAgent); }
-      const els = ledgerEls(), led = bal?.ledger ?? {};
     /** 잔액 줄(2026-11-25, zkWrapper 만): 보관 계정이면 "ETH (내 계정)"(체인 잔액, 주소가 없어 늘 0) 을 숨기고, zk 로그인이면 보관 잔액이 있을 때만 그 줄을 보인다. */
     function renderBalanceRows(custodyView) {
       const own = document.querySelector('.balance-list li[data-asset="ETH"]'), held = document.querySelector('.balance-list li[data-asset="ETH_CUSTODY"]');
       const wr = info?.walletKind === 'zkwrapper';
       own.hidden = wr && custodyView; held.hidden = wr && !custodyView && held.dataset.has !== '1';
     }
+    function applyLedger(bal) {
+      if (bal?.account && bal.account !== lastAccount) { lastAccount = bal.account; renderAccountView(); saveSession(currentSession, currentSessionAllowAgent); }
+      const els = ledgerEls(), led = bal?.ledger ?? {};
       for (const [k, el] of Object.entries(els)) if (led[k] != null) el.textContent = led[k];
+      if (bal?.custodyWei != null) { const held = document.querySelector('.balance-list li[data-asset="ETH_CUSTODY"]'); let w = 0n; try { w = BigInt(bal.custodyWei); } catch { w = 0n; } held.dataset.has = w > 0n ? '1' : ''; renderBalanceRows(!$('custodyIdRow').hidden); }
       if (bal?.priceKrw) $('buyPrice').textContent = tt('rp_buy_price', { price: Number(bal.priceKrw).toLocaleString('ko-KR') }) || `시세 ${Number(bal.priceKrw).toLocaleString('ko-KR')}원/ETH`;
     }
     async function sessionRequest(body, { busyBtn, okTitle, okSummary, quiet = false, verdictEl = null } = {}) {
-      if (bal?.custodyWei != null) { const held = document.querySelector('.balance-list li[data-asset="ETH_CUSTODY"]'); let w = 0n; try { w = BigInt(bal.custodyWei); } catch { w = 0n; } held.dataset.has = w > 0n ? '1' : ''; renderBalanceRows(!$('custodyIdRow').hidden); }
       const vEl = verdictEl ?? $('ledgerVerdict');   // 입금·구매·잔액은 그 절 안의 #ledgerVerdict 에(2026-11-05 — 누른 버튼 옆에 결과가 보이게)
       if (busyBtn && busyBtn.dataset.tourBusy === '1') return null;   // 처리 중 재클릭만 무시(2026-10-16)
       if (!currentSession) { setVerdict(vEl, false, 'request_failed', { reason: 'no_session' }); return null; }
