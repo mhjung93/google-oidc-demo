@@ -161,6 +161,8 @@
     <!-- 2026-11-19(스펙 oidc-comparison C8): 이 로그인에서 발급자(zkIdP·Google)가 이 서비스에 알려 준 사용자 식별자 — 일반 OIDC 는 uid, zk-Delegation 은 auid_s(와 PPID).
          같은 날 화면 셀프 리뷰: 오른쪽 좁은 "내 자산" 칸 안에 있어 읽기 어려웠다 — 시세표 아래의 넓은 카드로 옮겼다(그림이 가로로 펴진다). -->
     <section id="seenBox" class="card seen-panel" hidden><h2 id="seenTitle" data-i18n="rp_seen_title">zkIdP 가 이 서비스에 알려 준 사용자 식별자</h2><div id="seenBody" class="seen-body"></div>
+      <!-- 2026-11-25(스펙 service-flow-figure): 서비스가 받은 값으로 채운 전체 플로우 그림 — zkWrapper 만(renderSeen 이 켠다) -->
+      <p id="flowFigureRow" hidden><a id="flowFigureLink" href="/common/flow.html" target="_blank" rel="noopener" data-i18n="rp_flow_link">로그인 플로우 그림</a></p>
       <!-- 2026-11-19(데모 시나리오 7): 이 서비스가 이 로그인에서 받은 것·검증한 것·알 수 없는 것(기존 OIDC 면 알게 되는 것)의 그림 -->
       <details id="seenFigure" open><summary data-i18n="flow_rp_title">이 서비스가 받은 것과 검증한 것</summary><div id="seenFigureBody"></div></details></section>
 
@@ -498,6 +500,7 @@
     function renderSeen() {
       const seen = rpMe?.seen ?? null, body = $('seenBody');
       $('seenBox').hidden = !seen; body.replaceChildren();
+      $('flowFigureRow').hidden = info?.walletKind !== 'zkwrapper';
       if (!seen) return;
       $('seenBox').dataset.protocol = seen.protocol;
       const short = (v) => (String(v).length > 24 ? `${String(v).slice(0, 10)}…${String(v).slice(-8)}` : String(v));

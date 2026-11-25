@@ -58,6 +58,16 @@ const jwtPayload = (t) => {
   const pad = b + '='.repeat((4 - (b.length % 4)) % 4);
   return JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(pad), (c) => c.charCodeAt(0))));
 };
+/** 전체 플로우 그림(2026-11-25 사용자 요청)에 보일 토큰 내용: 머리의 alg·kid 와 본문의 정해진 클레임만. 서명과 원문은 남기지 않는다 — 남은 기록으로는 토큰을 다시 낼 수 없다.
+ *  클레임을 정해 두는 이유: 공급자가 이름·사진 같은 것을 더 실어도 기록에 들어가지 않게. 읽지 못하면 null. */
+const TOKEN_CLAIMS = ['iss', 'azp', 'aud', 'sub', 'email', 'email_verified', 'nonce', 'iat', 'exp'];
+const tokenView = (t) => {
+  if (typeof t !== 'string') return null;
+  try {
+    const p = jwtPayload(t), h = jwtPayload(`.${t.split('.')[0]}.`);
+    return { header: { alg: h.alg ?? null, kid: h.kid ?? null }, payload: Object.fromEntries(TOKEN_CLAIMS.filter((k) => p[k] !== undefined).map((k) => [k, p[k]])) };
+  } catch { return null; }
+};
 
 /** 증명 기록에 남기는 개수(최근 것부터) — 증명 하나가 몇 KB 라 IndexedDB 에 부담이 없다. */
 const PROOF_LOG_MAX = 30;
@@ -1731,6 +1741,9 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
             r_s: rsKey, r_rp: String(body.r_rp), uid: reg ? String(reg.uid) : null, pk_i: s?.pk_i ?? null, auid_s: s?.auid_s ?? null, arid_s: s?.arid_s ?? null,
             Cf_u: s?.credential?.Cf_u ?? null, Cf_s: s?.credential?.Cf_s ?? null, max_height: s?.credential?.max_height != null ? String(s.credential.max_height) : null,
             PPID: s?.PPID ?? null, revRoot: r.body.root ?? null, regRoot: r.body.regRoot ?? null, hasIdToken: typeof r.body.id_token === 'string',
+            // 래퍼 방식만: 보낸 Google 토큰과 돌려받은 세션 토큰의 내용(서명 없이), 서명된 자격증명의 나머지 칸 — /common/flow.html 의 ③·④ 를 누르면 보인다
+            ...(WRAP && opts?.wrapper ? { chainid: s?.credential?.chainid != null ? String(s.credential.chainid) : null, allowAgent: s?.credential?.allowAgent != null ? String(s.credential.allowAgent) : null,
+              tokens: { google: tokenView(opts.wrapper.idToken), session: tokenView(r.body.id_token) } } : {}),
           },
         });
       } catch (e) { log(`[user-core] 로그인 플로우 기록 실패: ${e?.message ?? e}`); }   // 기록 실패는 로그인을 막지 않는다

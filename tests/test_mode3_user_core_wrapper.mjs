@@ -134,6 +134,20 @@ try {
     for (const k of ['google', 'passkey', 'issue', 'prove_session']) assert.ok(keys.includes(k), `${k} 없음: ${j(keys)}`);
     assert.equal(f.steps.find((s) => s.key === 'google').ms, 1234); assert.equal(f.values.uid, UID_A);
   });
+  // 2026-11-25(사용자 요청): 그림의 ③·④ 를 누르면 보일 토큰 내용 — 본문의 정해진 클레임만 남기고 서명·원문은 남기지 않는다
+  await t('loginFlow 기록의 토큰: Google 토큰·세션 토큰의 머리(alg·kid)와 정해진 클레임만 — 서명이 없고, 세션 토큰에는 uid·이메일·서비스가 없다', async () => {
+    const f = (await A.core.loginFlow()).body.flow, { google, session } = f.values.tokens;
+    const body = JSON.parse(Buffer.from(first.idToken.split('.')[1], 'base64url').toString('utf8'));
+    assert.equal(google.header.alg, 'RS256'); assert.equal(google.payload.sub, body.sub); assert.equal(google.payload.nonce, body.nonce); assert.equal(google.payload.aud, body.aud); assert.equal(google.payload.email, body.email);
+    const allowed = ['iss', 'azp', 'aud', 'sub', 'email', 'email_verified', 'nonce', 'iat', 'exp'];
+    for (const x of [google, session]) { assert.deepEqual(Object.keys(x).sort(), ['header', 'payload']); assert.deepEqual(Object.keys(x.header).sort(), ['alg', 'kid']); assert.deepEqual(Object.keys(x.payload).filter((k) => !allowed.includes(k)), []); }
+    assert.equal(session.header.alg, 'ES256'); assert.deepEqual(Object.keys(session.payload).sort(), ['aud', 'exp', 'iat', 'iss', 'sub']);
+    assert.equal(session.payload.sub, f.values.auid_s); assert.equal(session.payload.aud, f.values.arid_s);
+    for (const v of [UID_A, String(body.sub), body.email, String(info.arid), info.origin]) assert.ok(!j(session).includes(v), `세션 토큰에 ${v}`);
+    assert.equal(f.values.chainid, '31337'); assert.ok(['0', '1'].includes(f.values.allowAgent), j(f.values.allowAgent));
+    assert.ok(!j(f).includes(first.idToken.split('.')[2]), 'Google 토큰의 서명이 기록에 있다'); assert.ok(!/eyJ[A-Za-z0-9_-]{10,}/.test(j(f)), '기록에 토큰 원문 모양이 있다');
+    assert.ok(!/R8x|R8y|"S"/.test(j(f)), '자격증명 서명이 기록에 있다');
+  });
   await t('wrapperLogin(두 번째): derive 1회, 같은 PPID', async () => {
     const calls0 = A.calls;
     const second = await wlogin(A, 'g-anna');

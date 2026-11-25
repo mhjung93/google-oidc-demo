@@ -10,6 +10,7 @@ import { createHash, createHmac } from 'node:crypto';
 import { chromium } from '@playwright/test';
 import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
 import { buildWebAuthnStub } from './helpers/webauthn_stub.js';
+import { startOidcIssuerStub } from './helpers/oidc_issuer_stub.mjs';
 import { uidOf } from '../lib/mode3_oidc_nonce.js';
 import { ethers } from 'ethers';
 import { walletInterface } from '../lib/mode3_onchain.js';
@@ -42,6 +43,7 @@ const { cia, wallet, rp } = stack;
 const rp2 = stack.rps[1], google = stack.oidc;
 const SECRET_A = 'a7'.repeat(32), SALT_A = stubSalt(SECRET_A);
 const text = (page, sel) => page.$eval(sel, (el) => el.textContent ?? '');
+const shot = async (page, name) => { if (process.env.MODE3_SHOT_DIR) await page.screenshot({ path: `${process.env.MODE3_SHOT_DIR}/${name}.png`, fullPage: true }); };   // 눈으로 볼 때만
 async function waitText(page, sel, needle, timeout = 30_000) {
   try { await page.waitForFunction(([s, n]) => (document.querySelector(s)?.textContent ?? '').includes(n), [sel, needle], { timeout }); }
   catch { throw new Error(`${sel} 에 "${needle}" 가 나오지 않았다 (${timeout}ms). 지금: ${j(await text(page, sel).catch(() => '?'))}`); }
@@ -512,7 +514,8 @@ try {
     assert.equal((await text(page, '#idpLoginBtn')).trim(), 'zkWrapper 로 로그인'); await page.close();
   });
   await t('전체 플로우 한 장: 아랫줄에 Google 이 있고 π_IdP 가 없다 — 실제 값이 채워진다', async () => {
-    const page = await A.ctx.newPage(); await page.goto(`${wallet.base}/common/flow.html`);
+    const page = await A.ctx.newPage(); const asked = []; page.on('request', (r) => asked.push(new URL(r.url()).pathname));
+    await page.goto(`${wallet.base}/common/flow.html`);
     await page.waitForFunction(() => (document.getElementById('zkAuidS')?.textContent ?? '').length > 'auid_s'.length, null, { timeout: 15_000 });
     const seq = await page.$eval('#seqZk', (e) => e.textContent);
     assert.ok(seq.includes('Google'), seq.slice(0, 200)); assert.ok(!seq.includes('π_IdP'), 'π_IdP 가 남았다'); assert.ok(seq.includes('zkWrapper'), 'zkWrapper 가 없다');
@@ -528,8 +531,30 @@ try {
     assert.ok(lbl4.startsWith('④ 세션 토큰') && dets[3].startsWith('④ 세션 토큰'), `${lbl4} / ${dets[3].slice(0, 40)}`);
     // T1: 펼친 설명·그림·머리말 어디에도 옛 이름("zk 클라이언트"·"zk 로그인")이 없다 — 계산하는 주체는 "브라우저"
     { const all = `${dets.join(' ')} ${await visibleText(page)}`; assert.ok(!/zk 클라이언트|zk 로그인/.test(all), all.match(/.{0,30}(zk 클라이언트|zk 로그인).{0,30}/)?.[0]); }
+    // 2026-11-25(사용자 지적): 세션 토큰에는 arid_s 가 있다 — "서비스 이름 없음" 이 아니라 가명으로만. 서명하는 여섯 값과 r_rp 를 아는 쪽
+    // ③·④ 의 글자가 두 세로선(x 170~578) 사이에, ③ 은 초록 상자(186~564) 안에 들어간다
+    const box = (k) => page.$eval(`#seqZk .st[data-step="${k}"] .lbl`, (e) => { const b = e.getBBox(); return [b.x, b.x + b.width]; });
+    for (const [k, l, r] of [[3, 186, 564], [4, 170, 578]]) { const [a, b] = await box(k); assert.ok(a >= l && b <= r, `${k} 단계 글자 ${a.toFixed(1)}~${b.toFixed(1)} 가 ${l}~${r} 밖`); }
+    assert.ok(lbl4.includes('(서비스는 가명 arid_s 로만)'), lbl4); assert.ok(!seq.includes('서비스 이름 없음') && !dets[3].includes('서비스 이름'), dets[3]);
+    for (const w of ['auid_s · arid_s · Cf_u · Cf_s 와 chainid · allowAgent', 'Poseidon(arid, r_rp)', '서비스와 사용자의 브라우저만']) assert.ok(dets[3].includes(w), `없음: ${w} — ${dets[3]}`);
     const uid = await page.$eval('#zkUid', (e) => ({ t: e.textContent, title: e.title }));
     assert.ok(uid.t.length < 30 && uid.title.length > 40, j(uid));
+    // 2026-11-25(사용자 요청): ③ Google 토큰 · ④ 세션 토큰을 누르면 그 로그인의 실제 본문이 보인다 — 서명은 없다. 다른 단계에는 토큰 표가 없다
+    const flow = (await idbDump(page)).loginFlow, claims = () => page.$$eval('#detailZk table.tok code', (l) => Object.fromEntries(l.map((c) => [c.dataset.claim, c.textContent])));
+    const open = async (k) => { if (await page.$eval('#detailZk', (d) => d.hidden) || !(await text(page, '#detailZk')).startsWith('①②③④⑤⑥'[k - 1])) await page.click(`#seqZk .st[data-step="${k}"]`); };
+    await open(3); { const c = await claims(); assert.equal(c.sub, 'google-user-A'); assert.equal(c.email, 'jihoo@example.com'); assert.equal(c.aud, google.clientId); assert.equal(c.nonce, flow.values.tokens.google.payload.nonce); assert.equal(c.alg, 'RS256'); }
+    await shot(page, 'flow_wallet_google_token');
+    await open(4); { const c = await claims(); assert.equal(c.alg, 'ES256'); assert.equal(c.sub, flow.values.auid_s); assert.equal(c.aud, flow.values.arid_s); assert.equal(c.C_u, flow.values.Cf_u);
+      const t4 = await text(page, '#detailZk'); for (const v of ['google-user-A', 'jihoo@example.com', UID_A]) assert.ok(!t4.includes(v), `세션 토큰 설명에 ${v}`); }
+    await shot(page, 'flow_wallet_session_token');
+    for (const k of [1, 2, 5, 6]) { await open(k); assert.equal(await page.$$eval('#detailZk table.tok', (l) => l.length), 0, `${k} 단계에 토큰 표`); }
+    // 사실 맞추기: zkWrapper 는 sub·이메일을 받는다, "모른다" 는 로그인 때, 카드 링크는 /user
+    const know = `${await text(page, '#kIdpWho')} ${await text(page, '#kIdpSvc')} ${await text(page, '#footOpen')}`;
+    for (const s of ['sub 와 이메일', 'sub 의 해시', '로그인 때는', '온체인 거래']) assert.ok(know.includes(s), `없음: ${s} — ${know}`);
+    assert.equal(await page.$eval('#flowCardLink', (a) => a.getAttribute('href')), '/user#flowCard');
+    // 지갑 오리진은 서비스 API 를 부르지 않고, 서비스용 칸은 비어 있다
+    assert.deepEqual(asked.filter((p) => p.startsWith('/api/')), []);
+    assert.deepEqual(await page.evaluate(() => [document.getElementById('recentOidc').hidden, ...['oidcClientId', 'oidcSub', 'oidcAud'].map((id) => document.getElementById(id).textContent)]), [true, '', '', '']);
     await page.close();
     // 홈의 "로그인 전체 플로우" 카드도 패스키를 사용자 대기·salt 계산으로 나눠 적는다
     const home = await openUser(await A.ctx.newPage());
@@ -783,6 +808,127 @@ try {
     const acc = await accounts(); assert.equal(acc.length, 1, '지운 뒤 다시 하면 새 계정이 하나 생긴다'); assert.equal(String(acc[0].uid), UID_A);
     const ps = ppidOf(noteSessions(await idbDump(userPage)), info1.arid); assert.ok(ps.length >= 1 && ps.every((p) => p === ppid1), j(ps));
     await again.rpPage.close();
+  });
+  // 2026-11-25(사용자 요청): 속성 도구의 래퍼 문구 — 붙여 넣을 곳(zkIdP 프로필·인증 창)이 없다. 기록은 로그인 창이 같은 오리진에서 읽는다. 새 맥락에서 홈을 거쳐 도구를 연다
+  // (홈이 /mode3/health 로 래퍼 방식을 알아 localStorage 에 남기고, 도구는 그 값으로 그린다). 이 사례는 A 의 기록을 건드리지 않는다.
+  await t('속성 도구(zkWrapper): "만들기" 뒤 문구가 "이 브라우저에 저장·zkWrapper 로 로그인하면 됨" 이고 붙여 넣기·zkIdP·인증 창 안내와 복사 버튼이 없다', async () => {
+    const ctx = await browser.newContext();
+    try {
+      const p = await ctx.newPage();
+      // 도구는 /attr/dist/reset.json 의 walletKind 로 모드를 다시 정한다 — 데모 스크립트가 래퍼에서 쓰는 값을 준다(작업 트리에 남은 옛 파일에 기대지 않는다).
+      await p.route('**/attr/dist/reset.json', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ epoch: 'test-wrapper', walletKind: 'zkwrapper' }) }));
+      await p.goto(`${wallet.base}/`);
+      await p.waitForFunction(() => document.documentElement.dataset.wrapper === '1', null, { timeout: 15_000 });
+      await p.goto(`${wallet.base}/attr.html`);
+      await p.waitForFunction(() => document.documentElement.dataset.wrapper === '1' && document.querySelectorAll('#country option').length > 1, null, { timeout: 15_000 });
+      await p.fill('#birthYear', '1990'); await p.selectOption('#country', 'KR'); await p.fill('#salt', SALT_A);
+      await p.click('#makeBtn');
+      await waitText(p, '#formVerdict', '이제 서비스에서 zkWrapper 로 로그인하면 됩니다', 30_000);
+      const body = await visibleText(p);
+      for (const s of ['zkWrapper 로 로그인할 때부터 반영', '다른 서비스의 열린 세션은 닫히고', '참고용 공개값입니다', '자동으로 씁니다']) assert.ok(body.includes(s), `없음: ${s}`);
+      for (const w of ['zkIdP', '인증 창', '프로필', '붙여 넣으세요']) assert.ok(!body.includes(w), `남음: ${w} — ${body.slice(Math.max(0, body.indexOf(w) - 40), body.indexOf(w) + 40)}`);
+      assert.equal(await p.$eval('#copyBtn', (el) => el.checkVisibility()), false, '래퍼에서는 커밋먼트 복사 버튼이 할 일이 없다');
+    } finally { await ctx.close(); }
+  });
+  // 2026-11-25(사용자 결정): 서비스의 "Google 로 로그인"(일반 OIDC)은 서비스가 보관하는 계정이다 — 키를 새로 맡지 않고 화면만 정리한다.
+  // 주소 줄 대신 계정 번호와 "서비스가 보관" 을, 잔액은 보관 ETH 한 줄만, 그 아래 zkWrapper 로 로그인하면 내가 쥐는 계정을 받는다는 안내를 보인다.
+  // 서비스를 Google 설정으로 다시 띄우므로 이 파일의 마지막 사례로 둔다.
+  await t('서비스에서 Google 로 로그인: 계정 번호·"서비스가 보관"·보관 잔액 한 줄·zkWrapper 안내가 보이고 PPID 주소 줄은 없다', async () => {
+    // 서비스는 래퍼와 다른 Google 클라이언트 ID 를 쓴다(데모 스크립트와 같다) — 같으면 중계 화면이 래퍼용 토큰이라 서비스로 넘기지 않는다(스펙 zkwrapper §10 C2).
+    const rpGoogle = await startOidcIssuerStub({ clientId: 'rp-google-client', provider: 'google' });
+    try {
+    await stack.restartRp({ MODE3_RP_GOOGLE_CLIENT_ID: rpGoogle.clientId, MODE3_RP_GOOGLE_ISSUER: rpGoogle.issuer, MODE3_RP_GOOGLE_JWKS_URL: rpGoogle.jwksUrl, MODE3_RP_GOOGLE_AUTHORIZE_URL: rpGoogle.authorizeUrl, MODE3_RP_GOOGLE_REDIRECT_URI: `${wallet.base}/google-relay` });
+    rpGoogle.setNextSub('google-rp-only-user');
+    const page = await openRp(A.ctx, rp);
+    await page.click('#loginBtn');
+    await page.waitForFunction(() => { const b = document.getElementById('googleLoginBtn'); return b && getComputedStyle(b).display !== 'none'; }, null, { timeout: 15_000 });
+    await page.click('#googleLoginBtn');
+    await page.waitForSelector('#seenBox[data-issuer="google"]:not([hidden])', { timeout: 30_000 });
+    await page.waitForSelector('#custodyIdRow:not([hidden])', { timeout: 15_000 });
+    const me = await page.evaluate(() => fetch('/api/rp/me').then((r) => r.json()));
+    assert.equal(me.via, 'google');
+    const vis = (sel) => page.$eval(sel, (el) => el.checkVisibility());
+    assert.equal(await text(page, '#custodyAccountId'), me.account, '계정 번호는 서비스 계정 ID 다');
+    assert.ok((await text(page, '#custodyIdRow')).includes('서비스가 보관하는 계정'), await text(page, '#custodyIdRow'));
+    assert.equal(await vis('#ppidAddrRow'), false, 'PPID 주소 줄은 보이지 않는다');
+    assert.equal(await vis('.balance-list li[data-asset="ETH"]'), false, '체인 잔액 줄(주소 없음)은 숨긴다');
+    assert.equal(await vis('.balance-list li[data-asset="ETH_CUSTODY"]'), true);
+    assert.ok((await text(page, '.balance-list li[data-asset="ETH_CUSTODY"] .bal-label')).includes('내 계정 — 서비스 보관'));
+    // 그림(스펙 2026-11-25 service-flow-figure): 서비스에서 열면 지금 로그인한 방식의 줄만 서비스가 받은 값으로 채운다
+    const figVal = (p, id) => p.$eval(`#${id}`, (e) => e.querySelector('title')?.textContent ?? '');
+    const openFigure = async () => { const [f] = await Promise.all([A.ctx.waitForEvent('page'), page.click('#flowFigureLink')]); await f.waitForFunction(() => document.getElementById('recentOidc') && !document.getElementById('recentOidc').hidden && document.getElementById('recent').textContent.includes('이 서비스에 zkWrapper 로'), null, { timeout: 15_000 }); return f; };
+    let gFigSub = null;
+    {
+      const f = await openFigure();
+      await f.waitForFunction(() => (document.getElementById('oidcSub').textContent ?? '') !== '', null, { timeout: 15_000 });
+      assert.equal(await figVal(f, 'oidcSub'), me.seen.uid); assert.equal(await figVal(f, 'oidcAud'), me.seen.rid); assert.equal(await figVal(f, 'oidcClientId'), me.seen.rid); gFigSub = me.seen.uid;
+      assert.equal(gFigSub, 'google-rp-only-user');
+      for (const id of ['zkAuidS', 'zkAridS', 'zkPpid']) assert.equal(await figVal(f, id), '', `Google 로그인인데 ${id} 가 채워졌다`);
+      const all = await visibleText(f); assert.ok(!/zk-?IdP|zk 클라이언트|zk 로그인/.test(all), all.match(/.{0,30}(zk-?IdP|zk 클라이언트|zk 로그인).{0,30}/)?.[0]); assert.ok(!/zkTWO/.test(all), '"zkTWO 도 같은 값" 이 남았다');
+      await shot(f, 'flow_service_google'); assert.ok(!(await visibleText(f)).includes('걸린 시간이 펴집니다'), '서비스에는 시간이 없다'); await f.close();
+    }
+    const hint = await text(page, '#custodyHint');
+    assert.equal(await vis('#custodyHint'), true);
+    assert.ok(hint.includes('zkWrapper 로 로그인하면') && hint.includes('직접 쥐는 계정'), `래퍼 용어로 안내: ${hint}`);
+    assert.ok(!(await visibleText(page)).includes('거래소 보관'), '옛 "거래소 보관" 문구가 남았다');
+    // 보관 잔액(0)보다 많이 출금하면 래퍼 문구의 잔고 부족(insufficient_custody ko_wr)
+    await page.fill('#txTo', '0x' + '11'.repeat(20)); await page.fill('#txValue', '1');
+    await page.click('#txBtn');
+    await waitText(page, '#txVerdict', '내 계정 잔고가 부족합니다', 20_000);
+    // 표시 버그(2026-11-25): Google 계정에 KRW·보관 ETH 가 생긴 탭에서 이어서 zkWrapper 로 로그인하면 그 숫자가 남았다 — 잔액 칸의 처음 값을 페이지 시작 때 적어 두어 0 으로 돌아간다.
+    // 서버의 zk 계정은 Google 계정과 따로라 KRW·보관 0, PPID 계정의 체인 잔액도 0 이다(zkWrapper 세션은 자동 조회를 하지 않으므로 화면이 처음 값 그대로여야 맞다).
+    const amt = (a) => text(page, `.balance-list li[data-asset="${a}"] .bal-amt`);
+    await page.click('#depositBtn');
+    await page.waitForFunction(() => document.querySelector('.balance-list li[data-asset="KRW"] .bal-amt').textContent !== '0', null, { timeout: 20_000 });
+    await page.fill('#buyAmount', '0.01'); await page.click('#buyBtn');
+    await page.waitForFunction(() => document.querySelector('.balance-list li[data-asset="ETH_CUSTODY"] .bal-amt').textContent !== '0', null, { timeout: 20_000 });
+    assert.notEqual(await amt('KRW'), '0');
+    await page.click('#logoutBtn'); await page.waitForSelector('#loginBtn:not([hidden])');
+    google.setNextSub('google-user-A'); google.setNextClaims({ email: 'jihoo@example.com', email_verified: true });
+    await page.click('#loginBtn');
+    const [zkPopup] = await Promise.all([A.ctx.waitForEvent('page'), page.click('#idpLoginBtn')]);
+    await waitText(page, '#verdict', '로그인 성공', 120_000);
+    await zkPopup.close().catch(() => {});
+    assert.deepEqual([await amt('KRW'), await amt('ETH')], ['0', '0'], 'Google 계정의 KRW·ETH 가 zk 로그인 뒤에 남았다');
+    assert.equal(await vis('.balance-list li[data-asset="ETH_CUSTODY"]'), false, 'zk 로그인에는 보관 잔액이 없어 그 줄을 숨긴다');
+    assert.equal(await vis('#custodyIdRow'), false);
+    {
+      const zme = await page.evaluate(() => fetch('/api/rp/me').then((r) => r.json())); assert.equal(zme.via, 'zkid', j(zme.via));
+      const f = await openFigure();
+      await f.waitForFunction(() => (document.getElementById('zkPpid').textContent ?? '') !== '', null, { timeout: 15_000 });
+      assert.equal(await figVal(f, 'zkAuidS'), String(zme.seen.auid_s)); assert.equal(await figVal(f, 'zkAridS'), String(zme.seen.arid_s)); assert.equal(await figVal(f, 'zkPpid'), String(zme.seen.PPID));
+      for (const id of ['oidcClientId', 'oidcSub', 'oidcAud']) assert.equal(await text(f, `#${id}`), '', `zk 로그인인데 ${id} 가 채워졌다`);
+      assert.ok(!(await f.content()).includes(gFigSub), '앞 로그인의 Google sub 가 그림에 남았다');
+      assert.ok((await text(f, '#kIdpWho')).includes('이 서비스는 모름')); assert.ok((await text(f, '#zkSaltNote')).includes('모름'));
+      // 같은 서비스의 앞 로그인들과: auid_s 는 다르고 PPID 는 같다
+      const prev = [...seenSessions.values()].filter((x) => String(x.arid) === String(info1.arid));
+      assert.ok(prev.length >= 1 && prev.every((x) => String(x.auid_s) !== String(zme.seen.auid_s)), 'auid_s 가 앞 로그인과 같다'); assert.ok(prev.every((x) => String(x.PPID) === String(zme.seen.PPID)), 'PPID 가 앞 로그인과 다르다');
+      // 시간·토큰 표가 없고, 어디에도 저장하지 않는다
+      for (let k = 1; k <= 6; k++) { await f.click(`#seqZk .st[data-step="${k}"]`); assert.equal(await f.$$eval('#detailZk table', (l) => l.length), 0, `${k} 단계에 표`); }
+      const st = await f.evaluate(async () => ({ dbs: (await indexedDB.databases()).map((d) => d.name), ls: JSON.stringify(Object.entries(localStorage)), ss: JSON.stringify(Object.entries(sessionStorage)) }));
+      assert.ok(!st.dbs.includes('mode3-user'), j(st.dbs)); assert.ok(!st.ss.includes(gFigSub) && !st.ls.includes(gFigSub), '저장소에 Google sub');
+      await shot(f, 'flow_service_zk');
+      // 로그아웃(서버 쿠키가 사라짐) 뒤 탭으로 돌아오면 값이 지워진다
+      await f.route('**/api/rp/me', (r) => r.fulfill({ status: 401, contentType: 'application/json', body: '{"ok":false}' }));
+      await f.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+      await f.waitForFunction(() => document.getElementById('zkPpid').textContent === '', null, { timeout: 10_000 });
+      assert.ok(!(await f.content()).includes(String(zme.seen.PPID)), '401 뒤에도 PPID 가 남았다');
+      await f.close();
+    }
+    // "세션 복구" 실패(2026-11-25): 로그인된 상태에서는 로그인 카드(#verdict)가 숨어 있다 — 실패 사유가 배너 안(#sessionBarVerdict)에 보여야 한다.
+    // 세션이 끝난 배너를 띄우고(페이지 전역 noteSessionReason), 복구 로그인의 챌린지를 503 으로 실패시킨다.
+    await page.evaluate(() => noteSessionReason('revoked'));
+    await page.waitForSelector('#sessionBar:not([hidden])', { timeout: 5_000 });
+    await page.route('**/api/mode3/challenge', (r) => r.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false, reason: 'registration_pending' }) }));
+    await page.click('#sessionBarBtn');
+    await waitText(page, '#sessionBarVerdict', '로그인 실패', 20_000);
+    assert.equal(await vis('#sessionBarVerdict'), true, '배너 안의 실패 사유가 보이지 않는다');
+    assert.equal(await vis('#verdict'), false, '이 사례의 전제: 로그인 카드의 결과 칸은 숨어 있다');
+    assert.equal(await vis('#sessionBar'), true, '실패면 배너는 남는다');
+    await page.unroute('**/api/mode3/challenge');
+    await page.click('#logoutBtn'); await page.waitForSelector('#loginBtn:not([hidden])');
+    await page.close();
+    } finally { await rpGoogle.stop(); }
   });
   await A.ctx.close();
 } finally {

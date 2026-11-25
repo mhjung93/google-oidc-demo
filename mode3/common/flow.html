@@ -7,7 +7,8 @@
 <!-- 전체 플로우 한 장(2026-11-20, "전체 플로우를 그림으로, 알아보기 쉽게" 피드백): 로그인 한 번을 일반 OIDC(Google)와 zk-Delegation 으로 나란히 그린다.
      지갑 오리진의 정적 페이지다(/common/flow.html) — 스크립트는 /common/flow_page.js 하나(인라인 스크립트 없음 — 지갑 오리진 CSP). 이 브라우저의 가장 최근
      "zkIdP 로 로그인" 기록(지갑이 IndexedDB kv 의 loginFlow 에 남기는 공개값·단계별 시간)을 읽어 아랫줄 그림에 채운다. 비밀(salt)은 그 기록에 없다.
-     윗줄(일반 OIDC)의 실제 값은 서비스만 안다 — 여기서는 모양만 보이고, 값은 서비스 화면의 "알려 준 것" 칸에 있다. 세부 단계·증명 보기는 지갑 페이지의 "로그인 전체 플로우" 카드. -->
+     윗줄(일반 OIDC)의 실제 값은 서비스만 안다 — 지갑 오리진에서는 모양만 보인다. 서비스 오리진에서 열면(zkWrapper, 2026-11-25) 지금 로그인한 방식의 줄을 서비스가 받은 값으로 채운다.
+     래퍼 방식의 로그인 기록에는 Google 토큰·세션 토큰의 본문(서명 없이)도 있다 — ③·④ 를 누르면 보인다. 세부 단계·증명 보기는 지갑 페이지의 "로그인 전체 플로우" 카드. -->
 <style>
   :root { --navy:#0b1f3f; --ink:#16233b; --muted:#5b6880; --line:#d7deea; --bg:#f4f6fa; --card:#fff; --leak:#c62828; --leak-bg:#fdecec; --hide:#1b5e20; --hide-bg:#e8f5e9; --idp:#3949ab; --rp:#00796b; --user:#5d4037; --chain:#6a1b9a; }
   * { box-sizing: border-box; }
@@ -48,6 +49,7 @@
   .detail h4 { margin:0 0 4px; font-size:14.5px; } .detail p { margin:2px 0; } .detail table { border-collapse:collapse; margin-top:6px; font-size:13.5px; }
   .detail td { padding:2px 14px 2px 0; vertical-align:top; } .detail td.ms { text-align:right; font-variant-numeric: tabular-nums; color:var(--muted); white-space:nowrap; }
   .recent { font-size:14px; margin:0 0 8px; } .recent b { color:var(--ink); }
+  .detail h5 { margin:10px 0 2px; font-size:13.5px; } .detail table.tok td { overflow-wrap:anywhere; } .detail table.tok td:first-child { white-space:nowrap; color:var(--muted); } .detail table.tok code { font-size:12.5px; }
   code { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size:13px; }
 </style>
 </head>
@@ -60,6 +62,7 @@
   <section class="panel">
     <h2>일반 OIDC (Google 로 로그인) <span class="tag leak">uid·rid 가 그대로 지나간다</span></h2>
     <p>Google 은 누가 어느 서비스에 로그인하는지 알고, 서비스는 어디서나 같은 사용자 식별자를 받습니다.</p>
+    <p class="recent" id="recentOidc" hidden></p>
     <div class="ctl" data-ctl="oidc"><button type="button" data-act="first">처음부터</button><button type="button" data-act="prev">◀ 이전</button><button type="button" data-act="next">다음 ▶</button><button type="button" data-act="all">전체 보기</button><span class="pos"></span><span class="muted" style="font-size:13px;color:var(--muted)">화살표를 누르면 설명이 펴집니다</span></div>
     <svg class="seq" id="seqOidc" viewBox="0 0 1160 236" role="img" aria-label="일반 OIDC 순서도">
       <defs>
@@ -76,6 +79,7 @@
         <rect x="582" y="66" width="408" height="34" fill="#fff" opacity="0"/>
         <line class="hl" x1="990" y1="92" x2="582" y2="92" stroke="#16233b" stroke-width="1.6" marker-end="url(#a1)"/>
         <text class="lbl" x="786" y="84" font-size="14" text-anchor="middle">① 로그인 요청 — <tspan fill="#c62828" font-weight="700">client_id = rid</tspan></text>
+        <text x="786" y="108" font-size="12.5" text-anchor="middle" fill="#c62828"><tspan id="oidcClientId"></tspan></text>
       </g>
       <g class="st" data-step="2" tabindex="0" role="button" aria-label="2 본인 확인">
         <rect x="170" y="116" width="408" height="34" fill="#fff" opacity="0"/>
@@ -86,6 +90,7 @@
         <line class="hl" x1="580" y1="196" x2="988" y2="196" stroke="#c62828" stroke-width="2.2" marker-end="url(#a1)"/>
         <rect x="606" y="160" width="356" height="28" rx="6" fill="#fdecec"/>
         <text class="lbl" x="784" y="179" font-size="14" text-anchor="middle">③ ID 토큰 <tspan fill="#c62828" font-weight="700">iss = Google · sub = uid · aud = rid</tspan></text>
+        <text x="785" y="214" font-size="12.5" text-anchor="middle" fill="#c62828"><tspan id="oidcSub"></tspan><tspan id="oidcAud"></tspan></text>
       </g>
     </svg>
     <div class="detail" id="detailOidc" hidden></div>
@@ -101,7 +106,7 @@
     <h2>zk-Delegation (zkIdP 로 로그인) <span class="tag hide">가명과 증명만 지나간다</span></h2>
     <p>zkIdP 는 어느 서비스인지 모르고, 서비스는 누구인지 모릅니다. 서비스는 값 대신 <b>증명</b>을 검증합니다.</p>
     <p class="recent" id="recent">아직 이 브라우저에서 "zkIdP 로 로그인" 을 한 적이 없습니다 — 그림에는 값의 이름만 보입니다. 서비스에서 로그인하면 실제 값이 채워집니다.</p>
-    <div class="ctl" data-ctl="zk"><button type="button" data-act="first">처음부터</button><button type="button" data-act="prev">◀ 이전</button><button type="button" data-act="next">다음 ▶</button><button type="button" data-act="all">전체 보기</button><span class="pos"></span><span style="font-size:13px;color:var(--muted)">화살표를 누르면 그 단계의 세부와 걸린 시간이 펴집니다</span></div>
+    <div class="ctl" data-ctl="zk"><button type="button" data-act="first">처음부터</button><button type="button" data-act="prev">◀ 이전</button><button type="button" data-act="next">다음 ▶</button><button type="button" data-act="all">전체 보기</button><span class="pos"></span><span id="zkHint" style="font-size:13px;color:var(--muted)">화살표를 누르면 그 단계의 세부와 걸린 시간이 펴집니다</span></div>
     <svg class="seq" id="seqZk" viewBox="0 0 1160 388" role="img" aria-label="zk-Delegation 순서도">
       <defs>
         <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#16233b"/></marker>
@@ -122,7 +127,7 @@
       <g class="st" data-step="2" tabindex="0" role="button" aria-label="2 패스키로 salt">
         <rect x="170" y="106" width="420" height="36" fill="#fff" opacity="0"/>
         <path class="hl" d="M170 112 h54 v26 h-52" fill="none" stroke="#16233b" stroke-width="1.6" marker-end="url(#a2)"/>
-        <text class="lbl" x="236" y="130" font-size="14">② 패스키 → salt <tspan fill="#5b6880">(늘 같은 값 · 저장하지 않음)</tspan></text>
+        <text class="lbl" x="236" y="130" font-size="14">② 패스키 → salt <tspan id="zkSaltNote" fill="#5b6880">(늘 같은 값 · 저장하지 않음)</tspan></text>
       </g>
       <g class="st" data-step="3" tabindex="0" role="button" aria-label="3 가명과 증명">
         <rect x="170" y="146" width="408" height="40" fill="#fff" opacity="0"/>
@@ -133,7 +138,7 @@
       <g class="st" data-step="4" tabindex="0" role="button" aria-label="4 서명한 자격증명">
         <rect x="172" y="196" width="406" height="30" fill="#fff" opacity="0"/>
         <line class="hl" x1="580" y1="220" x2="172" y2="220" stroke="#16233b" stroke-width="1.6" marker-end="url(#a2)"/>
-        <text class="lbl" x="375" y="212" font-size="14" text-anchor="middle">④ 서명한 자격증명 <tspan fill="#5b6880">(서비스 이름 없음)</tspan></text>
+        <text class="lbl" x="375" y="212" font-size="14" text-anchor="middle">④ 서명한 자격증명 <tspan fill="#5b6880">(서비스는 가명 arid_s 로만)</tspan></text>
       </g>
       <!-- 게시 선은 ④ 와 함께 켜지지만(stx) 누르는 대상이 아니다 — ⑤ 의 화살표를 가로질러, ④ 묶음 안에 두면 두 단계의 누르는 자리가 겹친다 -->
       <g class="stx" data-step="4" pointer-events="none"><line x1="580" y1="236" x2="580" y2="338" stroke="#6a1b9a" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#a2)"/>
@@ -156,13 +161,13 @@
     <div class="detail" id="detailZk" hidden></div>
     <div class="know">
       <div><h3 style="color:var(--user)">사용자</h3><ul><li class="has">패스키 — salt 는 저장하지 않고, 필요할 때마다 패스키에서 <b>같은 값</b>으로 다시 만든다</li><li class="has">속성 (나이·국가) — 밖으로 나가지 않는다</li></ul></div>
-      <div><h3 style="color:var(--idp)">zkIdP 가 알게 되는 것</h3><ul><li class="yes">누가 로그인했는지 (uid<span id="zkUid"></span>)</li><li class="no"><b>어느 서비스</b>인지 모른다 — arid_s 는 로그인마다 다르다</li></ul></div>
+      <div><h3 style="color:var(--idp)">zkIdP 가 알게 되는 것</h3><ul><li class="yes" id="kIdpWho">누가 로그인했는지 (uid<span id="zkUid"></span>)</li><li class="no" id="kIdpSvc"><b>어느 서비스</b>인지 모른다 — arid_s 는 로그인마다 다르다</li></ul></div>
       <div><h3 style="color:var(--rp)">서비스가 알게 되는 것</h3><ul><li class="no"><b>uid 를 모른다</b> — 이 서비스 전용 주소 PPID 만</li><li class="no">zkTWO 의 PPID 는 다른 값 — 맞춰 봐도 <b>같은 사람인지 모른다</b></li><li class="has">조건(만 19세 이상 등)은 값 없이 충족 여부만</li></ul></div>
     </div>
   </section>
 
-  <p class="foot"><b>문제가 생겼을 때만 (개봉):</b> 서비스가 그 PPID 의 가장 최근 로그인(auid_s)을 zkIdP 에 내면, zkIdP 관리자가 승인한 경우에 한해 발급 기록에서 uid 를 찾아 줍니다. 평소에는 두 기록이 따로 있어 이어지지 않습니다.</p>
-  <p class="mock">아랫줄의 값은 이 브라우저의 가장 최근 "zkIdP 로 로그인" 에서 온 공개값입니다(앞 17자 — 전체는 마우스를 올리면 보입니다). 윗줄(일반 OIDC)의 실제 값은 서비스 화면의 "알려 준 것" 칸에 있습니다. 단계마다의 값 전부와 증명 보기는 <a href="/#flowCard">zk 클라이언트 화면의 "로그인 전체 플로우" 카드</a>에 있습니다.</p>
+  <p class="foot" id="footOpen"><b>문제가 생겼을 때만 (개봉):</b> 서비스가 그 PPID 의 가장 최근 로그인(auid_s)을 zkIdP 에 내면, zkIdP 관리자가 승인한 경우에 한해 발급 기록에서 uid 를 찾아 줍니다. 평소에는 두 기록이 따로 있어 이어지지 않습니다.</p>
+  <p class="mock" id="mockNote">아랫줄의 값은 이 브라우저의 가장 최근 "zkIdP 로 로그인" 에서 온 공개값입니다(앞부분만 — 전체는 마우스를 올리면 보입니다). 윗줄(일반 OIDC)의 실제 값은 서비스 화면의 "알려 준 것" 칸에 있습니다. 단계마다의 값 전부와 증명 보기는 <a id="flowCardLink" href="/#flowCard">zk 클라이언트 화면의 "로그인 전체 플로우" 카드</a>에 있습니다.</p>
 </main>
 <script src="/common/flow_page.js"></script>
 </body>

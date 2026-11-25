@@ -244,7 +244,7 @@ try {
       await f.waitForFunction(() => document.getElementById('recent').textContent.includes('가장 최근 로그인'), null, { timeout: 15_000 });
       const shown = (sel) => f.$eval(sel, (e) => e.firstChild?.nodeValue ?? '');   // 보이는 글(전체 값은 그 안의 <title> — 마우스를 올리면 나온다)
       assert.equal(await shown('#zkPpid'), `${zkSeen.PPID.slice(0, 17)}…`, '서비스가 받은 PPID 와 같은 값(앞 17자)');
-      assert.equal(await shown('#zkAuidS'), `auid_s ${zkSeen.auid_s.slice(0, 17)}…`); assert.equal(await shown('#zkAridS'), `arid_s ${zkSeen.arid_s.slice(0, 17)}…`);
+      assert.equal(await shown('#zkAuidS'), `auid_s ${zkSeen.auid_s.slice(0, 6)}…`); assert.equal(await shown('#zkAridS'), `arid_s ${zkSeen.arid_s.slice(0, 6)}…`);
       assert.equal(await f.$eval('#zkPpid title', (e) => e.textContent), zkSeen.PPID, '전체 값은 title 에');
       const body = await f.evaluate(() => document.body.innerText);
       assert.ok(body.includes('π_RP') && !body.includes('π_session'), '증명의 화면 이름은 π_RP'); assert.ok(body.includes('같은 값'), 'salt 는 같은 값으로 다시 만든다고 적는다');
