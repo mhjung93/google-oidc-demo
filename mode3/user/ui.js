@@ -310,11 +310,18 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
 
   // ---- 로그인 세션 카드 + 트랜잭션 세션 선택 ----
   /** 세션의 서비스 표기 — "zkONE(8674…)"(2026-10-16): 로그인 때 RP 가 보낸 이름(팝업이 오리진 대조 뒤 저장) + arid 앞 4자리. 이름이 없으면 오리진 host, 그것도 없으면 arid. */
-  function rpLabel(c) {
+  function rpLabel(c) {   // 늘 글자를 돌려준다 — 부르는 쪽이 textContent·join 에 쓴다(2026-11-25: 전에는 마지막 줄이 요소라 "[object HTMLElement]" 로 보였다)
     const a4 = `${String(c.arid ?? '').slice(0, 4)}…`;
-    if (c.serviceName) return `${c.serviceName}(${a4})`;
+    const name = c.serviceName || (c.origin ? null : knownServiceName(c.arid));
+    if (name) return `${name}(${a4})`;
     try { if (c.origin) return `${new URL(c.origin).host}(${a4})`; } catch { /* 오리진이 이상하면 arid 로 */ }
-    return shortCode(c.arid, 8);
+    const a = String(c.arid ?? ''); return !a ? '-' : a.length > 8 ? `${a.slice(0, 8)}…` : a;
+  }
+  /** 이름·오리진이 없는 기록(옛 거래 등)의 서비스 이름 — 같은 arid 의 세션, 없으면 증명·거래 기록에 남은 이름. */
+  function knownServiceName(arid) {
+    const a = String(arid ?? ''); if (!a) return null;
+    for (const pool of [Object.values(lastStatus?.sessions ?? {}), lastProofs ?? [], lastStatus?.txs ?? []]) { const hit = pool.find((x) => x?.serviceName && String(x.arid ?? '') === a); if (hit) return String(hit.serviceName); }
+    return null;
   }
   /** 보낸 트랜잭션 목록(2026-10-16) — 코어 status().txs(최신순). 해시는 앞부분만 보이고 title 에 전체. */
   // 거래 해시 복사(2026-10-21). 이 페이지는 localhost(보안 컨텍스트)라 보통 클립보드 API 가 되지만, 막히면 선택 복사로 대신한다.
@@ -329,7 +336,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     const host = $('txsList'); if (!host) return;
     const txs = lastStatus?.txs ?? [];
     // 2초 새로고침마다 같은 표를 다시 그리면 복사 버튼의 "복사됨" 표시가 바로 지워진다 — 바뀐 게 있을 때만 그린다.
-    const key = JSON.stringify([txs, Demo.lang, Demo.expert]);
+    const key = JSON.stringify([txs, txs.map(rpLabel), Demo.lang, Demo.expert]);   // 이름은 세션·증명 기록에서 뒤늦게 찾기도 한다
     if (key === lastTxsKey) return;
     lastTxsKey = key;
     host.textContent = '';
@@ -343,7 +350,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     for (const x of txs) {
       const row = body.insertRow();
       const t = new Date(x.at); row.insertCell().textContent = Number.isNaN(t.getTime()) ? String(x.at ?? '') : t.toLocaleString(Demo.lang === 'en' ? 'en-US' : 'ko-KR');
-      row.insertCell().textContent = rpLabel({ arid: x.arid, serviceName: x.serviceName, origin: x.origin });
+      const svc = row.insertCell(); svc.textContent = rpLabel(x); svc.title = String(x.arid ?? '');
       const acct = row.insertCell(); acct.textContent = x.wallet ? `${x.wallet.slice(0, 6)}…${x.wallet.slice(-4)}` : '-'; acct.title = x.wallet ?? '';
       const to = row.insertCell(); to.textContent = x.to ? `${x.to.slice(0, 6)}…${x.to.slice(-4)}` : '-'; to.title = x.to ?? '';
       row.insertCell().textContent = x.value ?? '-';
@@ -380,7 +387,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     const fs = document.querySelector('#proofsFold > summary');
     if (fs) fs.textContent = tt('user_proofs_fold', { n: String(list.length) }) || fs.textContent;
     // 2초 새로고침마다 표를 다시 그리지 않는다(거래 목록과 같다) — 줄·거래 해시·언어·보기 범위가 바뀔 때만.
-    const key = JSON.stringify([list.map((x) => [x.id, x.txHash ?? null]), proofsShowIdp, Demo.lang]);
+    const key = JSON.stringify([list.map((x) => [x.id, x.txHash ?? null, proofTarget(x)]), proofsShowIdp, Demo.lang]);
     if (key === lastProofsKey) return;
     lastProofsKey = key;
     const kb = $('proofsKindBtn'); kb.dataset.i18n = proofsShowIdp ? 'user_proofs_hide_idp' : 'user_proofs_show_idp'; kb.textContent = tt(kb.dataset.i18n) || kb.textContent;
@@ -397,7 +404,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       row.insertCell().textContent = new Date(x.at).toLocaleTimeString(locale());
       row.insertCell().textContent = proofKindLabel(x.kind);
       row.insertCell().textContent = proofPurposeLabel(x);
-      row.insertCell().textContent = proofTarget(x);
+      const tg = row.insertCell(); tg.textContent = proofTarget(x); tg.title = String(x.arid ?? '');
       row.insertCell().textContent = `${(Number(x.ms) / 1000).toFixed(1)}s`;
       const b = document.createElement('button'); b.type = 'button'; b.className = 'btn-ghost proof-view'; b.textContent = tt('user_proof_view_btn') || '보기';
       b.addEventListener('click', () => openProof(x.id)); row.insertCell().appendChild(b);
@@ -579,7 +586,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       // 2026-11-24(화면 점검 3번): 래퍼 방식은 세션마다 테두리 상자에 서비스 이름을 제목으로 둔다 — "서비스" 줄은 제목과 겹쳐 뺀다.
       if (WRAP) {
         box.className = 'session-box';
-        const head = document.createElement('div'); head.className = 'session-head'; head.textContent = rpLabel(c);
+        const head = document.createElement('div'); head.className = 'session-head'; head.textContent = rpLabel(c); head.title = String(c.arid ?? '');
         box.appendChild(head);
       } else kvRow(dl, tt('wallet_session_service') || 'RP', rpLabel(c));   // 2026-10-16: zkONE(8674…) 꼴
       // 2026-11-23(사용자 요청): PPID 숫자와 스마트 계정 주소를 따로 보인다 — 용어 사전의 'PPID' 이름표는 "PPID 스마트 계정 주소" 라 숫자에 붙이면 서비스 화면의 0x 주소와 달라 보였다.
@@ -656,7 +663,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
   let recoverDrawn = false;
   /** 계정 복구 카드(스펙 W6): 연결 있음 ∧ 상태를 읽었고 미등록. 속성 칸은 처음 한 번만 그린다(입력 중인 값을 지우지 않게). */
   function renderRecover() {
-    const show = PK && Boolean(pkState?.credentialId) && Boolean(lastStatus) && !lastStatus.registered;
+    const show = PK && !WRAP && Boolean(pkState?.credentialId) && Boolean(lastStatus) && !lastStatus.registered;   // 래퍼에는 zkIdP 인증 창이 없다 — 복구는 서비스 로그인의 승인 창이 한다
     $('pkRecoverCard').hidden = !show;
     if (!show || recoverDrawn || !attrSchema) return;
     recoverDrawn = true;
@@ -827,12 +834,11 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
   const BACKUP_LIMIT = 5;   // 서버의 계정당 백업 수(lib/mode3_salt_envelope.js) — 화면은 찬 것을 미리 알릴 뿐이고 서버가 다시 본다
   let lastEnvelopes = null, backupDrawn = null;
   const backupKindLabel = (k) => (k === 'code' ? (tt('user_backup_kind_code') || '복구 코드') : (tt('user_backup_kind_passkey') || '백업 패스키'));
-  /** 백업 카드 — 래퍼 방식이고 등록돼 있을 때만. 목록이 바뀌지 않았으면 다시 그리지 않는다(2초 주기 새로고침이 누르는 중인 버튼을 바꾸지 않게). */
+  /** 백업 카드 — 2026-11-25(사용자 결정): 화면에 보이지 않는다(새 백업을 만들지 못한다). 이미 만든 백업으로의 복구(승인 창)와 이 카드의 코드는 남긴다. 목록이 바뀌지 않았으면 다시 그리지 않는다(2초 주기 새로고침이 누르는 중인 버튼을 바꾸지 않게). */
   function renderBackups(force = false) {
     const card = $('backupCard'); if (!card) return;
-    const show = WRAP && Boolean(lastStatus?.registered);
-    card.hidden = !show;
-    if (!show) return;
+    card.hidden = true;
+    if (!(WRAP && Boolean(lastStatus?.registered))) return;
     const backups = (lastEnvelopes ?? []).filter((e) => e && (e.kind === 'passkey' || e.kind === 'code') && /^[0-9a-f]{32}$/.test(String(e.id)));
     const sig = JSON.stringify(backups);
     if (!force && sig === backupDrawn) return;
@@ -1182,7 +1188,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
   // ---- passkey-web 동작: 패스키 연결(만들기·이미 있는 것)·salt 보기·연결 끊기·계정 복구 ----
   /** get() → { credentialId, s_u }(passkey_store — PRF 로 만든 salt). 코어가 금고를 만들고 credential 을 둔다(salt 는 저장하지 않는다 — 등록이 있으면 대조에만 쓴다). s_u 는 코어에만 넘긴다. */
   let applyWrapView = () => {};   // 래퍼의 /user 잠금 화면을 다시 그린다(setupWrapView 가 채운다)
-  async function linkPasskey(get, out = $('pkSetupVerdict')) {   // out: 결과 카드 — 잠금 화면에서는 #userLockVerdict(패스키 설정 카드·신원 카드가 안 보인다)
+  async function linkPasskey(get, out = WRAP ? storageVerdict() : $('pkSetupVerdict')) {   // out: 결과 카드 — 잠금 화면에서는 #userLockVerdict(패스키 설정 카드·신원 카드가 안 보인다)
     if (!pkOriginOk) return;
     const btns = [$('pkNewBtn'), $('pkExistingBtn'), $('lockPkNewBtn'), $('lockPkExistingBtn')];
     if (btns.some((b) => b.dataset.busy === '1')) return;   // 패스키 창이 떠 있는 동안의 재클릭만 무시
@@ -1289,6 +1295,9 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     }
     showWrapBackupResult();
     $('userLockCard').hidden = false; $('userBar').hidden = false;
+    // 2026-11-25(사용자 요청): 내 신원 카드는 보이지 않는다(코드는 다른 방식이 쓴다). 속성 도구로 가는 한 줄은 이 카드에만 있어 "보관 상태" 로 옮긴다 — 도구에 넣을 salt 도 거기서 본다.
+    $('identityCard').hidden = true; $('storageVerdict').before($('pkAttrNote'));
+    for (const id of ['sessionsCard', 'storagePanel']) $(id).classList.add('span2');   // 짝이던 카드(내 신원·백업)가 빠져 반 폭이면 오른쪽이 빈다
     let memUntil = 0;   // sessionStorage 가 막혀 있으면 이 화면을 연 동안만 기억한다
     const until = () => { let v = 0; try { v = Number(sessionStorage.getItem(UNLOCK_KEY) ?? 0) || 0; } catch { v = memUntil; } return v; };
     const setUntil = (v) => { memUntil = v; try { if (v) sessionStorage.setItem(UNLOCK_KEY, String(v)); else sessionStorage.removeItem(UNLOCK_KEY); } catch { /* 메모리로만 */ } };

@@ -317,6 +317,8 @@ try {
     await replayPage.fill('#txValue', '0');
     await clickTx(replayPage, '#txBtn');
     await waitText(replayPage, '#txVerdict', '보냈습니다', 120_000);
+    // 2026-11-25: 거래 기록에 서비스 이름·오리진을 함께 적는다 — 세션이 끝나도 /user 의 목록에 이름이 남는다
+    { const x = (await idbDump(userPage)).txs.at(-1); const ss = Object.values((await idbDump(userPage)).sessions).find((y) => String(y.arid) === String(x.arid)); assert.ok(x.serviceName, j(x)); assert.equal(x.serviceName, ss?.serviceName); assert.equal(x.origin, info1.origin); }
     const h0 = await chainRead.getBlockNumber();
     await clickTx(replayPage, '#txReplayBtn');
     await waitText(replayPage, '#txVerdict', '만들어 둔 증명이 없습니다', 120_000);
@@ -396,7 +398,11 @@ try {
     assert.deepEqual(await shown(), ['userLockCard'], '잠긴 화면에 다른 카드가 보인다');
     const g0 = A.hits.get; await page.click('#userUnlockBtn');
     await page.waitForSelector('#sessionsCard', { state: 'visible', timeout: 15_000 }); assert.equal(A.hits.get - g0, 1, j(A.hits));
-    { const s = await shown(); assert.ok(!s.includes('userLockCard') && !s.includes('homeGuide') && s.includes('identityCard') && s.includes('userBar'), j(s));
+    { const s = await shown(); assert.ok(!s.includes('userLockCard') && !s.includes('homeGuide') && !s.includes('identityCard') && s.includes('userBar'), j(s));
+      // 2026-11-25(사용자 요청): 내 신원 카드는 없다 — 속성 도구 링크는 보관 상태 카드에 남는다
+      assert.equal(await page.$eval('#storagePanel #pkAttrLink', (a) => (a.checkVisibility() ? a.href : null)), `${new URL(wallet.base).origin}/attr.html`); assert.ok(!(await visibleText(page)).includes('내 신원'));
+      { const w = (id) => page.$eval(`#${id}`, (e) => e.getBoundingClientRect().width); const full = await w('flowCard'); for (const id of ['sessionsCard', 'storagePanel']) assert.ok(Math.abs((await w(id)) - full) < 2, `${id} 가 전체 폭이 아니다`); }
+      await shot(page, 'user_open');
       assert.ok(!s.includes('demoCard'), `시연 카드는 ?demo=1 일 때만: ${j(s)}`); }   // H3
     assert.equal(await page.title(), 'zkWrapper — 내 세션 관리');   // H5
     assert.equal(await page.evaluate(() => document.getElementById('attr4')?.checkVisibility() === true || document.getElementById('attr5')?.checkVisibility() === true), false, '"미사용" 칸이 보인다');   // H4
@@ -627,11 +633,13 @@ try {
   await t('/user 백업 카드: 백업 패스키 더하기 → Google → ① 지금 패스키 ② 백업 패스키 만들기(같은 인증기면 거절하고 그 자리에서 다시) → 목록 1', async () => {
     await A.ctx.addInitScript({ content: buildWebAuthnStub({ secretHex: SECRET_A, extraSecrets: [SECRET_BK] }) });   // 이제부터 A 의 페이지에는 인증기가 둘(0번 = 패스키₁)
     const page = await openUser(await A.ctx.newPage());
-    await page.waitForSelector('#backupCard', { state: 'visible', timeout: 15_000 });
+    // 2026-11-25(사용자 결정): 백업 카드는 화면에 없다 — 복구 경로는 남아 있어 아래 사례가 숨은 버튼을 코드로 눌러 백업을 만든다
+    await page.waitForSelector('#storagePanel', { state: 'visible', timeout: 15_000 }); await new Promise((r) => setTimeout(r, 2500));
+    assert.equal(await page.$eval('#backupCard', (e) => e.checkVisibility()), false, '백업 카드가 보인다'); assert.ok(!/백업 패스키 더하기|복구 코드 만들기/.test(await visibleText(page)));
     assert.equal(await backupCount(page), 0);
     { const d = await text(page, '#backupCard'); for (const w of ['다른 기기', '보안 키', '동기화', '안전한 곳', '끊기지 않습니다']) assert.ok(d.includes(w), `안내에 "${w}" 가 없다: ${d.slice(0, 300)}`); }
     asA(); const h0 = { ...A.hits };
-    await page.click('#backupPasskeyBtn');
+    await page.$eval('#backupPasskeyBtn', (b) => b.click());
     await page.waitForSelector('#authBackupConfirmBtn', { timeout: 60_000 });
     assert.ok(A.dialogs.at(-1)?.includes('보안 키'), `확인 창: ${A.dialogs.at(-1)}`);
     assert.ok(!page.url().includes('id_token'), '토큰이 주소창에 남았다');
@@ -659,7 +667,7 @@ try {
     const page = await openUser(await A.ctx.newPage());
     await page.waitForFunction(() => document.querySelectorAll('#backupList li').length === 1, null, { timeout: 15_000 });
     asA();
-    await page.click('#backupCodeBtn');
+    await page.$eval('#backupCodeBtn', (b) => b.click());
     await page.waitForSelector('#authBackupCode', { timeout: 60_000 });
     const code = (await text(page, '#authBackupCode')).trim();
     assert.match(code, /^([0-9A-HJKMNP-TV-Z]{4}-){6}[0-9A-HJKMNP-TV-Z]{3}$/, code);
@@ -736,7 +744,7 @@ try {
     const page = await openUser(await A.ctx.newPage());
     await page.waitForFunction(() => document.querySelectorAll('#backupList li').length === 2, null, { timeout: 15_000 });
     asA(); const g0 = A.hits.get;
-    await page.click('#backupList li[data-kind="code"] button');
+    await page.$eval('#backupList li[data-kind="code"] button', (b) => b.click());
     await page.waitForSelector('#authBackupRemoveBtn', { timeout: 60_000 });
     assert.ok(A.dialogs.at(-1)?.includes('끊기지 않습니다') && A.dialogs.at(-1)?.includes('패스키'), `확인 창: ${A.dialogs.at(-1)}`);
     assert.equal(A.hits.get - g0, 0, `Google 에서 돌아오자마자 패스키를 물었다: ${j(A.hits)}`);
@@ -756,7 +764,6 @@ try {
       google.setNextSub('google-user-C'); google.setNextClaims({ email: 'cee@example.com', email_verified: true });
       { const { rpPage, popup } = await startLogin(C.ctx, rp); await popup.waitForSelector('#authWrapPasskeyBtn', { timeout: 30_000 }); await popup.click('#authWrapPasskeyBtn'); await waitText(rpPage, '#verdict', '로그인 성공', 120_000); await rpPage.close(); }
       const page = await openUser(await C.ctx.newPage()); const g0 = C.hits.get;
-      await page.waitForSelector('#attrEmptyNote', { state: 'visible', timeout: 15_000 });   // H4: 속성이 하나도 없으면 한 줄 안내
       const toUser = () => page.waitForURL((u) => u.origin === new URL(wallet.base).origin && u.pathname === '/user' && !u.search.includes('authorize'), { timeout: 60_000 });
       // 다른 Google 계정으로 돌아오면: 서버로 보내지 않는다(그 계정을 폐기하지 않는다)
       google.setNextSub('google-user-A'); google.setNextClaims({ email: 'jihoo@example.com', email_verified: true });
@@ -973,7 +980,8 @@ try {
       await waitText(page, '#userLockVerdict', '패스키를 연결했습니다'); assert.equal(await vis('#userLockVerdict'), true); assert.equal(await vis('#userNoPk'), false); assert.equal(B.hits.create, 1, j(B.hits));
       assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('#mainView > section')].filter((e) => e.checkVisibility()).map((e) => e.id)), ['userLockCard'], '연결만으로 열리지 않는다');
       const g0 = B.hits.get; await page.click('#userUnlockBtn'); await page.waitForSelector('#sessionsCard', { state: 'visible', timeout: 15_000 }); assert.equal(B.hits.get - g0, 1, j(B.hits));
-      assert.equal((await idbDump(page)).registration, undefined, '등록 없이 열렸다'); assert.equal((await accounts()).length, before, '서버 계정이 생겼다');
+      assert.equal((await idbDump(page)).registration, undefined, '등록 없이 열렸다');
+      await new Promise((res) => setTimeout(res, 2500)); assert.equal(await vis('#pkRecoverCard'), false, '래퍼에 없는 "계정 복구(zkIdP 인증 창)" 카드가 보인다'); assert.deepEqual(bannedIn(await visibleText(page)).filter((x) => !x.startsWith('비밀번호')), []); assert.equal((await accounts()).length, before, '서버 계정이 생겼다');
       assert.ok(!B.reqs.some((r) => r.url.startsWith(google.issuer)), 'Google 로 갔다');
       await page.click('#userLockBtn'); await page.waitForSelector('#userUnlockBtn', { state: 'visible', timeout: 5_000 }); assert.equal(await vis('#userNoPk'), false);
       await page.close();
@@ -982,6 +990,28 @@ try {
       const { rpPage } = await startLogin(B.ctx, rp); await waitText(rpPage, '#verdict', '로그인 성공', 120_000); assert.equal(B.hits.create, 1, '로그인 때 패스키를 또 만들었다');
       assert.equal((await accounts()).length, before + 1); await rpPage.close();
     } finally { await B.ctx.close(); await cia.adminPost('/cia/account/delete', { uid: uidOf(google.provider, 'google-user-lock') }).catch(() => {}); }
+  });
+  // 2026-11-25(사용자 지적): /user 에서 서비스가 "[object HTMLElement]" 로 보였다 — 세션이 사라진 옛 거래에는 이름·오리진이 없다. 같은 arid 의 이름을 찾고, 없으면 arid 앞부분을 글자로
+  await t('/user: 이름·오리진이 없는 기록도 서비스가 글자로 보인다 — 같은 arid 의 이름을 찾고 없으면 arid 앞 8자, "[object" 가 없다', async () => {
+    const C = await newBrowserWith('e5'.repeat(32));
+    try {
+      const page = await C.ctx.newPage(); await page.goto(`${wallet.base}/user`); await page.waitForSelector('#userNoPk', { state: 'visible', timeout: 15_000 });
+      await page.click('#lockPkNewBtn'); await page.waitForSelector('#userUnlockBtn', { state: 'visible', timeout: 15_000 });
+      const X = '8674111122223333', Y = '5555666677778888', H = (n) => '0x' + String(n).repeat(64);
+      await page.evaluate(async ({ X, Y, h1, h2 }) => {
+        const db = await new Promise((ok, no) => { const q = indexedDB.open('mode3-user'); q.onsuccess = () => ok(q.result); q.onerror = () => no(q.error); });
+        const tx = db.transaction('kv', 'readwrite'), kv = tx.objectStore('kv'), at = new Date().toISOString(), pub = Array(29).fill('0');
+        kv.put([{ txHash: h1, r_s: '1', arid: X, at, ok: true }, { txHash: h2, r_s: '2', arid: Y, at, ok: true }], 'txs');
+        kv.put([{ id: 'a-1', at: Date.now(), kind: 'pi_cred', ms: 1, purpose: 'login', arid: X, serviceName: 'zkONE', r_s: '1', proof: {}, publicSignals: pub }, { id: 'a-2', at: Date.now(), kind: 'pi_cred', ms: 1, purpose: 'tx', arid: X, r_s: '1', proof: {}, publicSignals: pub }, { id: 'a-3', at: Date.now(), kind: 'pi_cred', ms: 1, purpose: 'tx', arid: Y, r_s: '2', proof: {}, publicSignals: pub }], 'proofs');
+        await new Promise((ok, no) => { tx.oncomplete = ok; tx.onerror = () => no(tx.error); }); db.close();
+      }, { X, Y, h1: H(1), h2: H(2) });
+      await page.reload(); await page.waitForSelector('#userUnlockBtn', { state: 'visible', timeout: 15_000 }); await page.click('#userUnlockBtn'); await page.waitForSelector('#sessionsCard', { state: 'visible', timeout: 15_000 });
+      const col = (sel, i) => page.$$eval(`${sel} tbody tr`, (l, k) => l.map((tr) => [tr.cells[k].textContent, tr.cells[k].title]), i);
+      await page.waitForFunction(() => document.querySelectorAll('#txsList tbody tr').length === 2 && [...document.querySelectorAll('#txsList tbody tr')].some((tr) => tr.cells[1].textContent.startsWith('zkONE')), null, { timeout: 15_000 });
+      assert.deepEqual((await col('#txsList', 1)).sort(), [['55556666…', Y], ['zkONE(8674…)', X]]);
+      assert.deepEqual((await col('#proofsList', 3)).sort(), [['55556666…', Y], ['zkONE(8674…)', X], ['zkONE(8674…)', X]]);
+      assert.ok(!(await page.evaluate(() => document.body.textContent)).includes('[object'), '"[object" 가 보인다');
+    } finally { await C.ctx.close(); }
   });
   await t('/user 잠금: "이미 있는 패스키 쓰기" → 만들지 않고 연결된다', async () => {
     const C = await newBrowserWith(SECRET_A);

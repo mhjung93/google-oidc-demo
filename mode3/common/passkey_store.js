@@ -99,13 +99,14 @@
   }
 
   /** 새 패스키를 만들고(PRF 켬) 바로 한 번 계산해 같은 값이 나오는지 본다 — 백업 확인의 자리(스펙 §4.2). */
-  async function createPasskey({ rpId = DEFAULT_RP_ID, rpName = 'zk 스냅', hints = null, excludeCredentialIds = [] } = {}) {
+  // userName(2026-11-25): 패스키 창·비밀번호 관리자에 보이는 계정 이름 — zkWrapper 는 'zkWrapper' 를 넘긴다. 기본값은 예전 그대로.
+  async function createPasskey({ rpId = DEFAULT_RP_ID, rpName = 'zk 스냅', userName = 'zk-snap', hints = null, excludeCredentialIds = [] } = {}) {
     precheck(rpId);
     let cred;
     try {
       cred = await navigator.credentials.create({ publicKey: {
         rp: { id: rpId, name: rpName },
-        user: { id: rand(16), name: 'zk-snap', displayName: rpName },
+        user: { id: rand(16), name: userName, displayName: rpName },
         challenge: rand(32),
         pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
         authenticatorSelection: { residentKey: 'required', userVerification: 'required' },

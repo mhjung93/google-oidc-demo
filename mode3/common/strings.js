@@ -441,7 +441,7 @@ window.DemoStrings = {
     wallet_wrap_account_revoke_failed: { ko: '계정을 폐기하지 못했습니다', en: 'Could not revoke the account' },
     wallet_wrap_account_revoked_summary: { ko: '모든 서비스의 로그인이 끝났습니다 — 이 브라우저의 세션 {n}개를 지웠습니다. 이 계정으로는 다시 로그인할 수 없습니다(되살리려면 zkWrapper 관리자에게).', en: 'Every service login has ended — removed {n} sessions from this browser. This account cannot log in again (ask the zkWrapper admin to restore it).' },
     user_lock_title: { ko: '내 세션 관리', en: 'Manage my sessions' },
-    user_lock_desc: { ko: '이 브라우저의 신원·로그인 세션·증명을 봅니다. 이 기기의 패스키로 엽니다 — 이 탭에서 10분 동안 아무 동작이 없으면 다시 잠깁니다.', en: 'See this browser\'s identity, login sessions and proofs. Open it with this device\'s passkey — it locks again after 10 minutes without activity in this tab.' },
+    user_lock_desc: { ko: '이 브라우저의 로그인 세션·증명·트랜잭션을 봅니다. 이 기기의 패스키로 엽니다 — 이 탭에서 10분 동안 아무 동작이 없으면 다시 잠깁니다.', en: 'See this browser\'s login sessions, proofs and transactions. Open it with this device\'s passkey — it locks again after 10 minutes without activity in this tab.' },
     user_open_btn: { ko: '패스키로 열기', en: 'Open with passkey' },
     user_page_lock_btn: { ko: '잠그기', en: 'Lock' },
     user_bar_note: { ko: '열림 — 이 탭에서 10분 동안 아무 동작이 없으면 잠깁니다.', en: 'Open — locks after 10 minutes without activity in this tab.' },
@@ -960,7 +960,7 @@ window.DemoStrings = {
     // ---- 로그인 전체 플로우 카드 · 휴대폰 패스키(스펙 2026-11-19 login-flow-and-phone-passkey) ----
     user_flow_title: { ko: '로그인 전체 플로우', en: 'Login flow, end to end' },
     user_flow_onepage: { ko: '한 장 그림으로 보기 — 일반 OIDC 와 나란히', en: 'See it as one picture — next to plain OIDC' },   // 2026-11-20: /common/flow.html
-    user_flow_desc: { ko: '"zkIdP 로 로그인" 한 번에 일어나는 일을 순서대로 보입니다. 단계를 누르면 무엇을 왜 하는지와, 가장 최근 로그인의 실제 값·걸린 시간이 보입니다. 비밀(salt)은 나오지 않습니다 — 값마다 누가 아는지는 다릅니다(uid 는 zkIdP 만, r_rp 는 서비스만 압니다).', en: 'What happens during one "Sign in with zkIdP", in order. Click a step to see what it does and why, with the real values and timing of the most recent login. The secret (salt) never appears — who knows each value differs (only zkIdP knows the uid, only the service knows r_rp).' },
+    user_flow_desc: { ko: '"zkIdP 로 로그인" 한 번에 일어나는 일을 순서대로 보입니다. 단계를 누르면 무엇을 왜 하는지와, 가장 최근 로그인의 실제 값·걸린 시간이 보입니다. 비밀(salt)은 나오지 않습니다 — 값마다 누가 아는지는 다릅니다(uid 는 서비스가 모르고, r_rp 는 zkIdP 가 모릅니다).', en: 'What happens during one "Sign in with zkIdP", in order. Click a step to see what it does and why, with the real values and timing of the most recent login. The secret (salt) never appears — who knows each value differs (the service does not learn uid; zkIdP does not learn r_rp).' },
     user_flow_none: { ko: '아직 이 브라우저에서 로그인한 적이 없습니다 — 단계의 의미만 보입니다. 서비스에서 "zkIdP 로 로그인" 을 하면 실제 값과 시간이 채워집니다.', en: 'No login from this browser yet — only the meaning of each step is shown. Sign in with zkIdP at a service to fill in real values and timing.' },
     user_flow_last: { ko: '가장 최근 로그인: {service} · {time} · 전체 {total} (영지식 증명 {prove} · 패스키 {passkey} · 재지 않은 나머지 {other})', en: 'Most recent login: {service} · {time} · total {total} (ZK proofs {prove} · passkey {passkey} · untimed rest {other})' },
     user_flow_lane_rp: { ko: '서비스', en: 'Service' },

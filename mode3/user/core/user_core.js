@@ -687,8 +687,8 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       const userCred = uc ? { Cf_u: uc.Cf_u, issuedAt: uc.issuedAt, revoked: lastRegistry ? !lastRegistry.match : null } : null;
       const sch = await idp.schema();
       const ov = await kv.get('demo');
-      // 보낸 트랜잭션(2026-10-16): 최신순, 세션이 남아 있으면 서비스 이름·오리진을 붙인다(폐기된 세션의 것은 arid 만 남는다).
-      const txs = (await getTxs()).slice().reverse().map((x) => ({ ...x, arid: sessions[x.r_s]?.arid ?? x.arid ?? null, serviceName: sessions[x.r_s]?.serviceName ?? null, origin: sessions[x.r_s]?.origin ?? null }));
+      // 보낸 트랜잭션(2026-10-16): 최신순, 세션이 남아 있으면 그 이름·오리진을, 없으면 기록할 때 적어 둔 것을 쓴다(2026-11-25 — 전에는 세션이 끝나면 arid 만 남았다).
+      const txs = (await getTxs()).slice().reverse().map((x) => ({ ...x, arid: sessions[x.r_s]?.arid ?? x.arid ?? null, serviceName: sessions[x.r_s]?.serviceName ?? x.serviceName ?? null, origin: sessions[x.r_s]?.origin ?? x.origin ?? null }));
       return R(200, {
         txs, registered: Boolean(reg), uid: reg?.uid ?? null, provider: reg?.provider ?? null, auid: reg?.auid ?? null, slot: reg?.slot ?? null, attrs: reg?.attrs ?? null, userCred, sessions,
         profile: reg?.profile ?? null, attrSchema: sch ? schemaInfo(sch.schema, sch.hash) : null,
@@ -1318,7 +1318,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       if (!txs.some((x) => x.txHash === txHash)) {
         const disclosed = Boolean(disclosure) && (disclosure.mask !== 0n || (disclosure.sel ?? 0n) !== 0n);
         // to·value 는 execute 호출 데이터에서 되돌린다(2026-10-16, 목록 표기용) — 디코드가 안 되면 null.
-        txs.push({ txHash, r_s: rsKey, arid: s.arid, at: new Date(now()).toISOString(), ok: result.ok, disclosed, wallet: walletAddr, nonce: result.nonce, to: dec?.payload?.to ?? null, value: dec?.payload?.value != null ? String(dec.payload.value) : null });
+        txs.push({ txHash, r_s: rsKey, arid: s.arid, origin: s.origin ?? null, serviceName: s.serviceName ?? null, at: new Date(now()).toISOString(), ok: result.ok, disclosed, wallet: walletAddr, nonce: result.nonce, to: dec?.payload?.to ?? null, value: dec?.payload?.value != null ? String(dec.payload.value) : null });
         await kv.set('txs', txs);
       }
       // 증명 기록: 이 거래에 실린 증명(공개 입력이 호출 데이터의 것과 글자 그대로 같다)에 거래 해시를 붙인다 — 화면이 탐색기 링크를 건다.
