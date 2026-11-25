@@ -3,7 +3,7 @@
 // MetaMask·Snap 코드는 없다. 비밀(s_u·blind_u·세션 개인키·금고 비밀번호·secrets 암호문)은 DOM·localStorage·로그·postMessage 에
 // 넣지 않는다 — 코어 응답은 에이전트와 같은 모양이라 비밀이 실리지 않고, safeDetail 이 한 번 더 거른다. 비밀번호 입력칸은 읽자마자 비운다.
 import { ZK_CACHE_NAME } from '../../lib/browser/zk_assets.js';
-import { RECOVER_RESULT_KEY, WRAP_END_RESULT_KEY, WRAP_ACCOUNT_RESULT_KEY, WRAP_BACKUP_RESULT_KEY, idpAuthUrl, savePending, googleAuthUrl, saveWrapperPending } from './idp_return.js';
+import { RECOVER_RESULT_KEY, WRAP_END_RESULT_KEY, WRAP_ACCOUNT_RESULT_KEY, WRAP_BACKUP_RESULT_KEY, idpAuthUrl, savePending, googleAuthUrl, saveWrapperPending, readAttrRecord, attrRecordOf, ATTR_RECORD_KEY } from './idp_return.js';
 export const $ = (id) => document.getElementById(id);
 
 /** 사전 도우미(wallet.html 의 tte·tt·setVerdict·pendingVerdict 와 같다). */
@@ -206,7 +206,51 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     });
     populateCountrySelect();
     renderAttrsForm();
+    if (WRAP) { drawAttrCard(); await loadAttrRec(); }
   }
+  // ---- 내 속성(스펙 2026-11-25 user-attr-card, 래퍼 방식의 /user) — 속성 도구와 같은 기록(localStorage)을 쓴다. salt 는 코어 밖으로 나오지 않는다 ----
+  let attrRec = null, attrCardDirty = false;   // attrRec: 이 브라우저의 기록 { auid, profile } 또는 null. dirty: 고치는 중인 칸을 새로고침이 덮지 않게
+  const ATTR_LABEL = { birthYear: 'attr_birth_year', country: 'attr_country' };
+  const attrCardSlots = () => (attrSchema?.slots ?? []).filter((s) => s.type !== 'unused' && !isSpareSlot(s));
+  async function loadAttrRec() { try { attrRec = await readAttrRecord({ fetch: window.fetch.bind(window), localStorage: window.localStorage }); } catch { attrRec = null; } renderAttrCard(); }
+  /** 칸을 스키마대로 만든다(renderAttrsForm 과 같은 규칙 — int 입력, enum 선택, 미사용·예비 칸은 없다). 신원 카드의 칸은 2초마다 등록된 값으로 덮이므로 따로 둔다. */
+  function drawAttrCard() {
+    const dl = $('attrCardFields'); dl.replaceChildren();
+    for (const slot of attrCardSlots()) {
+      const dt = document.createElement('dt'), dd = document.createElement('dd'); dt.dataset.slot = slot.name;
+      let el;
+      if (slot.type === 'enum') { el = document.createElement('select'); el.append(new Option('—', '')); for (const name of Object.keys(slot.values)) el.append(new Option(name, name)); }
+      else { el = document.createElement('input'); el.size = slot.type === 'int' ? 6 : 10; if (slot.type === 'int') el.inputMode = 'numeric'; }
+      el.id = `wa_${slot.name}`; el.addEventListener(slot.type === 'enum' ? 'change' : 'input', () => { attrCardDirty = true; });
+      dd.append(el); dl.append(dt, dd);
+    }
+  }
+  const sameProfile = (a, b) => attrCardSlots().every((s) => String(a?.[s.name] ?? '') === String(b?.[s.name] ?? ''));
+  /** 보이는 값: 저장한 기록이 있으면 그것(다음 로그인에 반영될 값), 없으면 등록된 값. */
+  function renderAttrCard() {
+    if (!WRAP || !attrSchema) return;
+    for (const dt of $('attrCardFields').querySelectorAll('dt')) dt.textContent = tt(ATTR_LABEL[dt.dataset.slot] ?? '') || dt.dataset.slot;
+    const s = lastStatus, reg = s?.registered ? s.profile ?? {} : null, shown = attrRec?.profile ?? reg ?? {};
+    if (!attrCardDirty) for (const slot of attrCardSlots()) { const el = $(`wa_${slot.name}`); if (el && document.activeElement !== el) el.value = shown[slot.name] ?? ''; }
+    const filled = (p) => attrCardSlots().some((x) => String(p?.[x.name] ?? '') !== '');
+    const key = attrRec && s?.registered && s.auid && String(s.auid) !== String(attrRec.auid) ? 'user_attr_state_mismatch'
+      : attrRec ? (reg && sameProfile(attrRec.profile, reg) ? 'user_attr_state_applied' : 'user_attr_state_pending') : filled(reg) ? 'user_attr_state_applied' : 'user_attr_state_none';
+    $('attrState').textContent = tt(key) || '';
+  }
+  $('attrSaveBtn').addEventListener('click', async () => {
+    const btn = $('attrSaveBtn'), outEl = $('attrCardVerdict'); if (!WRAP || btn.disabled) return;
+    btn.disabled = true; pendingVerdict(outEl, 'working');
+    try {
+      const profile = Object.fromEntries(attrCardSlots().map((s) => [s.name, $(`wa_${s.name}`).value.trim()]));
+      const r = await core.wrapperAttrRecord({ profile });
+      if (r.status !== 200) { setVerdict(outEl, false, 'user_attr_save_failed', { reason: r.body?.reason ?? `HTTP ${r.status}`, detail: safeDetail(r.body) }); return; }
+      await loadAttrRec();   // 데모 리셋 표시를 먼저 맞춘다 — 처음 보는 리셋이면 readAttrRecord 가 기록을 비우므로, 쓴 뒤에 맞추면 방금 쓴 기록이 지워진다
+      localStorage.setItem(ATTR_RECORD_KEY, JSON.stringify(attrRecordOf(r.body, new Date().toISOString())));
+      attrCardDirty = false; await loadAttrRec();
+      setVerdict(outEl, true, 'user_attr_saved', () => ({ summary: tt(!r.body.registered ? 'user_attr_saved_first' : r.body.same ? 'user_attr_saved_same' : 'user_attr_saved_changed') }));
+    } catch (e) { setVerdict(outEl, false, 'user_attr_save_failed', { reason: e?.name === 'QuotaExceededError' || e?.name === 'SecurityError' ? 'storage_unavailable' : 'internal', detail: e?.message }); }
+    finally { btn.disabled = false; }
+  });
   /** 집합 원소를 이름으로 적었으면 코드로(enum 슬롯). 그 밖은 그대로 — 코어가 형식을 검사한다. */
   function encodeMember(slot, token) {
     const s = attrSchema?.slots?.[slot];
@@ -727,7 +771,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     renderTxs();
     renderProofs();
     renderPasskey();
-    renderBackups();
+    renderBackups(); renderAttrCard();
     renderGuide();
     await renderVault();
     await postPresence(core);
@@ -735,7 +779,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
   // 언어·전문가 전환은 사전이 채우는 요소와 결과 카드만 바꾼다(Demo) — 스크립트가 만든 텍스트는 여기서 다시 그린다.
   for (const k of ['setLang', 'setExpert']) {
     const orig = Demo[k];
-    Demo[k] = (v) => { orig(v); renderModeTexts(); renderProofInfo(); renderZk(); renderIdentity(); renderSessions(); renderTxs(); renderProofs(); renderFlow(); renderProofModal(); renderPasskey(); renderBackups(true); renderVault(); };
+    Demo[k] = (v) => { orig(v); renderModeTexts(); renderProofInfo(); renderZk(); renderIdentity(); renderAttrCard(); renderSessions(); renderTxs(); renderProofs(); renderFlow(); renderProofModal(); renderPasskey(); renderBackups(true); renderVault(); };
   }
 
   // V8 세션 폐기(설계 2026-09-24 §4): 인증 증명은 코어가 금고의 s_u 로 만든다(잠겨 있으면 잠금 해제 창).
@@ -1179,6 +1223,8 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
         // 스펙 §10 — "모두 지우기" 는 Snap 초기화의 등가물이라 증명 키 캐시까지 비운다(산출물 재생성 뒤 옛 zkey 가 남지 않게).
         if (typeof caches !== 'undefined') { try { await caches.delete(ZK_CACHE_NAME); } catch { /* 캐시 삭제 실패는 무시 — 다음 로드가 다시 받는다 */ } }
         Object.assign(progress, { txOk: false, disclosed: false, revoked: false });
+        // 래퍼(2026-11-25): 속성 기록도 지운다 — 남기면 이름과 다르고, 다른 패스키로 바꿨을 때 attr_record_salt_mismatch 로 로그인이 막힌다
+        if (WRAP) { try { localStorage.removeItem(ATTR_RECORD_KEY); } catch { /* 저장소 없음 */ } attrCardDirty = false; await loadAttrRec(); clearVerdict($('attrCardVerdict')); }
         setVerdict(storageVerdict(), true, 'user_wipe_btn', () => ({ summary: tt('user_wipe_done') || '이 브라우저의 등록·비밀·세션을 지웠습니다.' }));
       } else setVerdict(storageVerdict(), false, 'error_title', { reason: r.body.reason ?? `HTTP ${r.status}`, detail: safeDetail(r.body) });
     } catch (e) { setVerdict(storageVerdict(), false, 'error_title', { reason: 'storage_unavailable', detail: e.message }); }
@@ -1283,6 +1329,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
   const UNLOCK_KEY = 'mode3_user_unlock_until', UNLOCK_MS = 10 * 60 * 1000;
   function setupWrapView() {
     if (!WRAP) return;
+    $('pkShowSaltBtn').remove(); $('pkSaltModal').remove();   // 2026-11-25: 래퍼에서는 salt 를 보이지 않는다(코어 showSalt 도 거절한다)
     if (location.pathname.replace(/\/+$/, '') !== '/user') { document.body.dataset.wrapView = 'home'; document.title = tt('wrap_title_home') || 'zkWrapper 홈'; return; }
     document.title = tt('wrap_title_user') || 'zkWrapper — 내 세션 관리';   // H5
     // H3: "시연: 비밀 바꾸기" 는 시연자의 장면이다 — /user?demo=1 일 때만(전문가 보기 토글은 2026-11-05 에 없어졌다)
@@ -1295,8 +1342,9 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     }
     showWrapBackupResult();
     $('userLockCard').hidden = false; $('userBar').hidden = false;
-    // 2026-11-25(사용자 요청): 내 신원 카드는 보이지 않는다(코드는 다른 방식이 쓴다). 속성 도구로 가는 한 줄은 이 카드에만 있어 "보관 상태" 로 옮긴다 — 도구에 넣을 salt 도 거기서 본다.
-    $('identityCard').hidden = true; $('storageVerdict').before($('pkAttrNote'));
+    // 2026-11-25(사용자 요청): 내 신원 카드는 보이지 않는다(코드는 다른 방식이 쓴다). 속성은 "내 속성" 카드에서 넣는다.
+    $('identityCard').hidden = true; $('attrCard').hidden = false;
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) loadAttrRec(); });   // 다른 탭에서 저장했거나 데모가 리셋됐으면
     for (const id of ['sessionsCard', 'storagePanel']) $(id).classList.add('span2');   // 짝이던 카드(내 신원·백업)가 빠져 반 폭이면 오른쪽이 빈다
     let memUntil = 0;   // sessionStorage 가 막혀 있으면 이 화면을 연 동안만 기억한다
     const until = () => { let v = 0; try { v = Number(sessionStorage.getItem(UNLOCK_KEY) ?? 0) || 0; } catch { v = memUntil; } return v; };

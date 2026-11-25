@@ -65,6 +65,7 @@ function render() {
 
 $('attrForm').addEventListener('submit', async (ev) => {
   ev.preventDefault();
+  if (document.documentElement.dataset.attrMoved === '1') { if ($('salt')) $('salt').value = ''; return; }   // zkWrapper: 속성은 /user 에서(2026-11-25) — 숨긴 폼을 제출해도 계산하지 않는다
   clearVerdict($('formVerdict'));
   if (!A) return verdict($('formVerdict'), false, 'attr_make_failed', { reason: 'bundle_missing', detail: '/attr/dist/attr.js 가 없습니다 — npm run attr:build' });
   $('makeBtn').disabled = true;

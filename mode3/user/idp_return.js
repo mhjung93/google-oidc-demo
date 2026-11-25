@@ -43,6 +43,9 @@ export function takeIdpReturn({ search, storage, now }) {
 /** 같은 오리진 속성 도구(attr.html)의 기록 { auid, s_u, profile } 또는 null. 데모 리셋 표시(/attr/dist/reset.json)의 epoch 가 바뀌었으면 기록을 지우고 null(attr.html 과 같은 규칙).
  *  version 6(2026-11-20 — salt 없음): auid(10진 — 그 salt 의 공개 가명)만 있고 s_u 는 null 이다. 옛 version 4·5(속성 도구를 다시 열기 전의 기록): s_u 가 있고 auid 는 null —
  *  s_u 는 0 < s_u < 2^250 인 10진 문자열이어야 한다. 호출자는 둘 중 있는 쪽으로 "이 기록이 내 salt 의 것인가" 를 대조한다. */
+export const ATTR_RECORD_KEY = 'mode3_attr_tool_v1';
+/** 속성 기록 version 6 — 속성 도구(attr_page.js)와 같은 칸이다. salt 는 없다. body 는 코어 wrapperAttrRecord 의 응답. */
+export const attrRecordOf = (body, at) => ({ version: 6, schema: body.schema, auid: body.auid, profile: body.profile, attrs: body.attrs, commit: body.commit, createdAt: at });
 export async function readAttrRecord({ fetch, localStorage }) {
   try {
     const r = await fetch('/attr/dist/reset.json', { cache: 'no-store' });

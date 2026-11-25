@@ -18,6 +18,7 @@ import { sessionLeafRange } from '../../../lib/mode3_revocation.js';
 import { registryLeaf } from '../../../lib/mode3_registry.js';
 import { signPayload, statementDigestFields, proofToCalldata, parseExecuteReceipt, decodeExecuteCalldata, walletAt, walletInterface, FACTORY_ABI, FACTORY_MAX_ROOT_AGE_BAND, FACTORY_MAX_LIFETIME_BAND, PUB_INDEX, LOGIN_COUNTER } from '../../../lib/mode3_onchain.js';
 import { SCALAR_MAX, ppid, randomScalar, auidOf, aridSOf, registerCtx, slotCtx, revokeSessionCtx, issueCtx, loginCtx, tagOf } from '../../../lib/mode3_credential.js';
+import { attrCommit } from '../../../lib/mode3_attr_commit.js';
 import { verifyRpCert } from '../../../lib/mode3_rp_cert.js';
 import { MODE3_ROOTS_ABI } from '../../../lib/mode3_log.js';
 import { bounded } from '../../../lib/mode3_health.js';
@@ -1599,7 +1600,25 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     /** "salt 보기"(§2 4단계 — 속성 도구에 넣을 값): 패스키에서 얻는다. 화면에만 보인다. */
     async showSalt() {
       if (!PK) return R(409, { reason: 'not_passkey_mode' });
+      if (WRAP) return R(409, { reason: 'salt_hidden' });   // 2026-11-25(스펙 user-attr-card): 래퍼에서는 salt 가 코어 밖으로 나오지 않는다 — 속성도 여기서 계산한다(wrapperAttrRecord)
       return R(200, { s_u: await saltNow() });
+    },
+    /** /user 의 "내 속성" 저장(스펙 2026-11-25 user-attr-card, 래퍼만): 속성 기록의 재료를 만든다 — 속성 도구와 같은 식(auidOf·attrCommit)이고 salt 는 돌려주지 않는다.
+     *  형식은 패스키를 묻기 전에 본다. 등록·세션은 건드리지 않는다(반영은 다음 로그인의 syncProfileFromRecord·wrapperLocalRegister) — 즉시 세션을 지우는 saveProfile 과 다르다. */
+    async wrapperAttrRecord({ profile } = {}) {
+      if (!WRAP) return R(409, { reason: 'wrapper_disabled' });
+      if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return R(400, { reason: 'bad_attr', detail: 'profile_required' });
+      let schema;
+      try { schema = (await schemaFor()).schema; } catch (e) { if (e.reason === 'schema_invalid') return R(503, { reason: 'schema_invalid', detail: e.message }); throw e; }
+      const blank = Object.fromEntries(schema.slots.filter((s) => s.type === 'int' || s.type === 'enum').map((s) => [s.name, '']));
+      let attrs, normalized;
+      try { normalized = normalizeProfile(schema, profile); attrs = await encodeProfile(schema, { ...blank, ...normalized }, { allowEmptyRequired: false }); }
+      catch (e) { if (e.reason === 'bad_attr') return R(400, { reason: 'bad_attr', slot: e.slot, field: e.field, detail: e.detail, message: e.message }); throw e; }
+      return core.withSalt(async () => {
+        const s = await saltNow(), reg = await getReg();
+        return R(200, { schema: { id: schema.id, version: schema.version }, auid: (await auidOf({ s_u: BigInt(s) })).toString(), profile: normalized, attrs, commit: await attrCommit({ s_u: s, attrs }),
+          registered: Boolean(reg), same: Boolean(reg) && JSON.stringify(attrs.map(String)) === JSON.stringify((reg.attrs ?? []).map(String)) });
+      });
     },
     /** zkIdP 페이지의 증명 로그인(스펙 2026-11-19 passkey-proof-login L8): IdP 가 그 브라우저 세션에 내준 nonce 로 "이 계정 auid 의 s_u 를 안다" 는 π_IdP 를 만든다
      *  (ctx = loginCtx(nonce)). 본문은 uid·nonce·증명 필드뿐이다(비밀 없음) — 승인 창이 IdP 오리진이 연 창에만 돌려준다. 미등록·형식 오류는 salt 를 얻기 전에 끝난다. */

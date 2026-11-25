@@ -7,6 +7,7 @@ import { getProvider } from './helpers/mode3_chain.mjs';
 import { createMemKv } from '../mode3/user/core/kv_mem.js';
 import { createUserCore } from '../mode3/user/core/user_core.js';
 import { randomScalar, auidOf } from '../lib/mode3_credential.js';
+import { attrCommit } from '../lib/mode3_attr_commit.js';
 import { uidOf } from '../lib/mode3_oidc_nonce.js';
 import { wrapperNonce } from '../lib/mode3_wrapper_auth.js';
 import { envKeyFromPrf, newRecoveryCode } from '../lib/mode3_salt_envelope.js';
@@ -153,6 +154,18 @@ try {
     const second = await wlogin(A, 'g-anna');
     assert.equal(second.r.status, 200, j(second.r.body)); assert.equal(second.v.status, 200, j(second.v.body));
     assert.equal(A.calls - calls0, 1); assert.equal(second.PPID, first.PPID);
+  });
+  // 2026-11-25(스펙 user-attr-card): /user 의 "내 속성" 저장 재료 — 도구와 같은 식, 패스키 한 번, salt 는 응답에 없다. showSalt 는 래퍼에서 거절
+  await t('wrapperAttrRecord: 형식은 패스키 전에, 저장은 패스키 한 번 — auid·commit 이 도구와 같고 salt 는 없다, 등록·세션을 바꾸지 않는다; showSalt 는 409', async () => {
+    const c0 = A.calls, before = await A.dump();
+    for (const p of [null, [], { birthYear: '12', country: 'KR' }, { birthYear: '', country: 'KR' }, { birthYear: '1990' }]) { const x = await A.core.wrapperAttrRecord({ profile: p }); assert.equal(x.status, 400, j([p, x.body])); assert.equal(x.body.reason, 'bad_attr'); }
+    assert.equal(A.calls, c0, '형식 오류에 패스키를 물었다');
+    const c1 = A.calls; const ok = await A.core.wrapperAttrRecord({ profile: { birthYear: ' 1990 ', country: 'KR' } }); assert.equal(ok.status, 200, j(ok.body)); assert.equal(A.calls - c1, 1, '패스키는 한 번');
+    assert.equal(ok.body.auid, (await auidOf({ s_u: BigInt(A.salt) })).toString()); assert.equal(ok.body.commit, await attrCommit({ s_u: A.salt, attrs: ok.body.attrs })); assert.deepEqual(ok.body.profile, { birthYear: '1990', country: 'KR' }); assert.equal(ok.body.registered, true); assert.equal(ok.body.same, false);
+    assert.ok(!j(ok.body).includes(A.salt), 'salt 가 응답에 있다'); assert.equal(await A.dump(), before, '저장소가 바뀌었다');
+    const sh = await A.core.showSalt(); assert.equal(sh.status, 409); assert.equal(sh.body.reason, 'salt_hidden'); assert.ok(!j(sh.body).includes(A.salt));
+    const fresh = browser(A.salt, A.cid); const no = await fresh.core.wrapperAttrRecord({ profile: { birthYear: '1990', country: 'KR' } }); assert.equal(no.status, 409); assert.equal(no.body.reason, 'passkey_setup_required');
+    await fresh.core.passkeyConnect({ credentialId: fresh.cid, s_u: fresh.salt }); const un = await fresh.core.wrapperAttrRecord({ profile: { birthYear: '1990', country: 'KR' } }); assert.equal(un.status, 200, j(un.body)); assert.equal(un.body.registered, false); assert.equal(un.body.auid, ok.body.auid);
   });
   // 2026-11-25(스펙 rp-custody-address): 구매는 KRW 를 먼저 빼고 보낸다 — zk 세션(서명 채널)은 전처럼 PPID 계정으로 들어가고 보관 주소는 쓰지 않는다. 동시에 눌러도 KRW 를 넘지 않는다
   await t('zk 세션의 구매(서명 채널): ETH 는 PPID 계정으로, KRW 는 한 번만 — 동시 구매 둘 중 하나만, 보관 주소는 보이지 않는다', async () => {
@@ -309,6 +322,9 @@ try {
     const n = await wlogin(C, 'g-bak');
     assert.equal(n.r.status, 200, j(n.r.body)); assert.equal(n.v.status, 200, j(n.v.body));
     assert.equal(C.calls - calls0, 1); assert.deepEqual(C.deriveIds, [C.cid]); assert.equal(n.PPID, PPID_BAK);
+    // 복구한 기기(로컬 봉투)의 "내 속성" 저장도 계정의 salt 로 계산한다 — 이 기기 패스키의 PRF 값이 아니다(2026-11-25). 패스키는 한 번
+    const c2 = C.calls, rec = await C.core.wrapperAttrRecord({ profile: { birthYear: '1990', country: 'KR' } }); assert.equal(rec.status, 200, j(rec.body)); assert.equal(C.calls - c2, 1);
+    assert.equal(rec.body.auid, (await auidOf({ s_u: BigInt(BA.salt) })).toString()); assert.equal(rec.body.commit, await attrCommit({ s_u: BA.salt, attrs: rec.body.attrs })); assert.ok(!j(rec.body).includes(BA.salt));
   });
   await t('A 가 C 의 기기 봉투를 지운다(Review Focus 4) → 목록에 백업 2개만, C 는 로컬 사본으로 계속 같은 PPID — 지우기도 패스키를 한 번 묻고 auid 를 싣는다(최종 검토 I-1)', async () => {
     const devId = (await C.kv.get('passkey')).envelope.id;

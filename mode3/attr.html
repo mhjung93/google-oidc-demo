@@ -29,6 +29,8 @@
     html[data-wallet-kind="passkey-web"] .nav-link[data-i18n="wallet_nav_snap"] { display:none }
     /* zkWrapper(2026-11-25): 커밋먼트는 로그인 창이 이 브라우저의 기록에서 직접 읽는다 — 붙여 넣을 곳이 없어 복사 버튼을 숨긴다(값은 그대로 보인다). */
     html[data-wrapper="1"] #copyBtn { display:none }
+    /* zkWrapper 서버가 낸 화면(2026-11-25 스펙 user-attr-card): 속성은 /user 에서 넣는다 — 입력 폼은 처음부터 없고 이미 있는 기록만 보인다 */
+    #attrMoved { display:none } html[data-attr-moved="1"] #attrMoved { display:block } html[data-attr-moved="1"] #attrFormCard, html[data-attr-moved="1"] #clearBtn, html[data-attr-moved="1"] #copyBtn { display:none }
     main.cards > .card { align-self:start }   /* 옆 카드 높이에 맞춰 늘어나 아래가 비지 않게 */
     .salt-line { display:flex; align-items:flex-start; gap:8px } .salt-line code { min-width:0 } .salt-line button { padding:2px 10px; font-size:13px; flex:none }
     .commit-box { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; overflow-wrap:anywhere; background:#f2f4f8; padding:10px 12px; border-radius:8px }
@@ -57,7 +59,8 @@
     <p class="desc" data-i18n="attr_desc">내 속성(출생연도·국가 등)으로 커밋먼트를 만듭니다. 속성은 이 브라우저에만 저장되고, 커밋먼트만 zkIdP 프로필의 "이름" 칸에 붙여 넣습니다. 만들 때 zkIdP 로그인과 스냅(MetaMask)이 필요합니다.</p>
   </section>
 
-  <section class="card">
+  <section class="card" id="attrMoved"><p><span data-i18n="attr_moved">zkWrapper 에서는 내 세션 관리(/user)의 "내 속성" 에서 속성을 넣습니다:</span> <a href="/user" id="attrMovedLink" data-i18n="attr_moved_link">내 세션 관리</a></p></section>
+  <section class="card" id="attrFormCard">
     <h3 data-i18n="attr_form_title">1. 속성 입력</h3>
     <form id="attrForm" class="attr-form" autocomplete="off">
       <!-- 2026-11-13(사용자 결정): 계정 번호 칸과 "스냅에서 가져오기" 는 없앴다. 2026-11-16: salt 칸은 다시 생겼다(맨 아래). 2026-11-17(사용자 결정): uid 칸은 없앴다 — 커밋먼트는 계정과 무관하다. -->

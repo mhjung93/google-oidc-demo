@@ -335,11 +335,11 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
     say('user_wrap_checking', '서비스를 확인하는 중입니다…');
     const pre = await core.precheck({ arid: req.arid, origin: req.origin, cert_s: req.cert_s, pk_trace: req.pk_trace, factoryAddress: req.factoryAddress ?? null });
     if (pre.status !== 200) { step('서비스 확인 실패'); log(errText(pre.status, pre.body)); return reply(fail(pre, 'precheck_failed')); }
-    // 2026-11-24(사용자 결정): 속성 기본값이 없다 — 서비스가 조건을 거는 칸이 비어 있으면 Google 로 가기 전에 멈추고 속성 도구로 안내한다(패스키도 묻지 않는다)
+    // 2026-11-24(사용자 결정): 속성 기본값이 없다 — 서비스가 조건을 거는 칸이 비어 있으면 Google 로 가기 전에 멈추고 /user 의 "내 속성" 으로 안내한다(2026-11-25 — 전에는 속성 도구. 패스키도 묻지 않는다)
     const ar = await core.wrapperAttrsReady({ disclose: req.disclose ?? null, set: req.set ?? null, profile: (await attrRecord())?.profile ?? null });
     if (ar.status !== 200) {
       step('속성 커밋먼트 없음 — Google 로 가지 않는다.');
-      showHint('user_wrap_attrs_unset_hint', '이 서비스는 속성 조건을 확인합니다. 아직 속성 커밋먼트가 없어 로그인하지 않았습니다 — 속성 커밋먼트 도구에서 넣은 뒤 다시 로그인하세요:', `${location.origin}/attr.html`);
+      showHint('user_wrap_attrs_unset_hint', '이 서비스는 속성 조건을 확인합니다. 아직 속성이 없어 로그인하지 않았습니다 — 내 세션 관리의 "내 속성" 에서 넣은 뒤 다시 로그인하세요:', `${location.origin}/user`);
       return reply(fail(ar, 'attrs_unset'), { closeMs: 15_000 });
     }
     if (config.popupConsent !== false) step('요청을 확인하고 승인하세요.');

@@ -12,6 +12,7 @@ import { startIsolatedMode3Stack } from './helpers/isolated_mode3_stack.mjs';
 import { buildWebAuthnStub } from './helpers/webauthn_stub.js';
 import { startOidcIssuerStub } from './helpers/oidc_issuer_stub.mjs';
 import { uidOf } from '../lib/mode3_oidc_nonce.js';
+import { attrCommit } from '../lib/mode3_attr_commit.js';
 import { ethers } from 'ethers';
 import { walletInterface } from '../lib/mode3_onchain.js';
 
@@ -163,29 +164,48 @@ try {
     await rpPage.close();
   });
   // 2026-11-24(사용자 결정): 속성이 비어 있으면 속성을 요구하는 서비스(zkTWO — 국가 KR·JP)만 막는다 — Google 로 가기 전에 멈추고 속성 도구로 안내한다
-  await t('zkTWO(속성 조건 있음): 속성 커밋먼트가 없으면 Google 로 가기 전에 멈추고 속성 도구로 안내한다(패스키도 묻지 않는다)', async () => {
+  await t('zkTWO(속성 조건 있음): 속성이 없으면 Google 로 가기 전에 멈추고 /user 의 "내 속성" 으로 안내한다(패스키도 묻지 않는다)', async () => {
     const g0 = A.hits.get;
     const { rpPage, popup, visited } = await startLogin(A.ctx, rp2);
     await popup.waitForSelector('#authHint a', { timeout: 30_000 });
-    assert.equal(await popup.$eval('#authHint a', (a) => a.href), `${new URL(wallet.base).origin}/attr.html`);
-    await waitText(rpPage, '#verdict', '속성 커밋먼트', 30_000);
+    assert.equal(await popup.$eval('#authHint a', (a) => a.href), `${new URL(wallet.base).origin}/user`); assert.ok((await text(popup, '#authHint')).includes('내 속성'));
+    await waitText(rpPage, '#verdict', '속성이 없습니다', 30_000);
     assert.ok(!went(visited, google.authorizeUrl), `Google 로 갔다: ${j(visited.map((u) => u.slice(0, 70)))}`);
     assert.equal(A.hits.get, g0, `패스키를 물었다: ${j(A.hits)}`);
     await popup.close().catch(() => {}); await rpPage.close();
   });
-  await t('zkTWO 로그인(속성 도구 기록을 넣은 뒤): PPID 가 zkONE 과 다르고 조건 증명이 통과한다', async () => {
-    // 속성 도구의 기록(version 6 — salt 없이 이 패스키의 auid 와 속성) — 데모 리셋 표시는 본 것으로 맞춰 둔다(readAttrRecord 가 지우지 않게)
-    const reg = (await idbDump(userPage)).registration;
-    await userPage.evaluate(async (r) => {
-      try { const x = await fetch('/attr/dist/reset.json', { cache: 'no-store' }); if (x.ok) localStorage.setItem('mode3_attr_tool_reset', String((await x.json()).epoch ?? '')); } catch { /* 없으면 그대로 */ }
-      localStorage.setItem('mode3_attr_tool_v1', JSON.stringify(r));
-    }, { version: 6, auid: String(reg.auid), profile: { birthYear: '1990', country: 'KR' } });
+  // 2026-11-25(스펙 user-attr-card): 속성은 /user 의 "내 속성" 에서 넣는다 — salt 가 화면·저장소·클립보드를 거치지 않는다. 도구와 같은 기록(version 6)이 남는다
+  await t('/user "내 속성" 저장 → zkTWO 로그인: 패스키 한 번, 기록은 version 6(salt 없음), 조건 증명이 통과하고 PPID 가 zkONE 과 다르다', async () => {
+    const reg = (await idbDump(userPage)).registration, page = await openUser(await A.ctx.newPage());
+    await page.waitForSelector('#attrCard', { state: 'visible', timeout: 15_000 }); await page.waitForSelector('#wa_country');
+    assert.equal(await page.$$eval('#attrCardFields input, #attrCardFields select', (l) => l.map((e) => e.id).join()), 'wa_birthYear,wa_country', '미사용·예비 칸은 없다'); assert.ok((await text(page, '#attrState')).includes('아직 넣지 않았습니다'));
+    assert.ok((await text(page, '#attrCard')).includes('보증하지 않습니다'));
+    const g0 = A.hits.get, rec = () => page.evaluate(() => JSON.parse(localStorage.getItem('mode3_attr_tool_v1') ?? 'null'));
+    // 형식 오류·빈 칸: 패스키를 묻지 않고 기록도 없다
+    await page.fill('#wa_birthYear', '12'); await page.selectOption('#wa_country', 'KR'); await page.click('#attrSaveBtn'); await page.waitForFunction(() => document.getElementById('attrCardVerdict').classList.contains('bad'), null, { timeout: 10_000 });
+    await page.fill('#wa_birthYear', ''); await page.click('#attrSaveBtn'); await page.waitForFunction(() => document.getElementById('attrCardVerdict').classList.contains('bad'), null, { timeout: 10_000 });
+    assert.equal(A.hits.get, g0, '형식 오류에 패스키를 물었다'); assert.equal(await rec(), null);
+    // 고치는 중인 칸을 2초 새로고침이 덮지 않는다. 패스키를 취소하면 기록이 없다
+    await page.fill('#wa_birthYear', '1990'); await new Promise((res) => setTimeout(res, 3000)); assert.equal(await page.inputValue('#wa_birthYear'), '1990');
+    await page.evaluate(() => { const c = navigator.credentials, orig = c.get; Object.defineProperty(c, 'get', { configurable: true, value: () => { Object.defineProperty(c, 'get', { configurable: true, value: orig }); return Promise.reject(new DOMException('cancelled', 'NotAllowedError')); } }); });
+    await page.click('#attrSaveBtn'); await waitText(page, '#attrCardVerdict', '저장하지 못했습니다', 10_000); assert.equal(await rec(), null); assert.equal(A.hits.get, g0);
+    await page.click('#attrSaveBtn'); await waitText(page, '#attrCardVerdict', '지금 열린 서비스 세션은 끝납니다', 20_000); assert.equal(A.hits.get - g0, 1, `패스키는 한 번: ${j(A.hits)}`);
+    const v = await rec(); assert.deepEqual(Object.keys(v).sort(), ['attrs', 'auid', 'commit', 'createdAt', 'profile', 'schema', 'version']); assert.equal(v.version, 6); assert.equal(v.auid, String(reg.auid)); assert.deepEqual(v.profile, { birthYear: '1990', country: 'KR' });
+    assert.equal(v.commit, await attrCommit({ s_u: SALT_A, attrs: v.attrs }), '속성 도구와 같은 커밋먼트');
+    assert.ok((await text(page, '#attrState')).includes('다음 로그인부터')); await page.reload(); await page.waitForSelector('#sessionsCard', { state: 'visible', timeout: 15_000 }); await page.waitForFunction(() => document.getElementById('wa_birthYear')?.value === '1990' && document.getElementById('wa_country')?.value === 'KR', null, { timeout: 10_000 });
+    // salt 는 화면·저장소 어디에도 없고, 보는 길도 없다
+    assert.equal(await page.$$eval('#pkShowSaltBtn, #pkSaltModal', (l) => l.length), 0, '"salt 보기" 가 남았다');
+    const all = `${await page.content()}${j(await idbDump(page))}${j(await page.evaluate(() => [Object.entries(localStorage), Object.entries(sessionStorage)]))}`; assert.ok(!all.includes(SALT_A), 'salt 가 남았다');
+    await shot(page, 'user_attr'); await page.close();
     google.setNextSub('google-user-A'); google.setNextClaims({ email: 'jihoo@example.com', email_verified: true });
     const { rpPage } = await startLogin(A.ctx, rp2);
     await waitText(rpPage, '#verdict', '로그인 성공', 120_000);
     // 2026-11-24(구조 점검 3번): 속성은 사용자가 스스로 넣은 값이다 — 서비스 화면이 그것을 확인된 사실처럼 말하지 않는다
     await waitText(rpPage, '#loginProof', '보증하지 않습니다', 15_000);
     assert.ok((await text(rpPage, '#loginPolicy')).includes('스스로 넣은'), await text(rpPage, '#loginPolicy'));
+    // 안내한 대로다: 속성이 바뀐 로그인은 이 브라우저의 앞 세션(zkONE)을 끝낸다. 반영되면 카드가 그렇게 말한다
+    { const d = await idbDump(userPage); assert.ok(Object.values(d.sessions).every((x) => String(x.arid) === String(info2.arid)), '앞 서비스 세션이 남았다'); assert.equal(d.registration.profile.birthYear, '1990'); }
+    { const up = await openUser(await A.ctx.newPage()); await waitText(up, '#attrState', '반영됨', 15_000); await up.click('#attrSaveBtn'); await waitText(up, '#attrCardVerdict', '바뀌는 것이 없습니다', 20_000); await up.close(); }
     const s2 = (await rp2.get('/api/mode3/sessions')).body.sessions; assert.ok(s2.length >= 1 && s2[0].disclosure?.set, `zkTWO 세션에 공개 집합이 없다: ${j(s2)}`);
     const p2 = ppidOf(noteSessions(await idbDump(userPage)), info2.arid)[0]; assert.ok(p2); assert.notEqual(p2, ppid1);
     // 2026-11-23(사용자 요청): 로그인 직후부터 "내 계정 주소" 는 0x 스마트 계정 주소다 — 잔액 조회 전에도. 그전에는 web 방식에서 잔액을 자동으로 읽지 않아 PPID 10진수로 남았다.
@@ -399,8 +419,8 @@ try {
     const g0 = A.hits.get; await page.click('#userUnlockBtn');
     await page.waitForSelector('#sessionsCard', { state: 'visible', timeout: 15_000 }); assert.equal(A.hits.get - g0, 1, j(A.hits));
     { const s = await shown(); assert.ok(!s.includes('userLockCard') && !s.includes('homeGuide') && !s.includes('identityCard') && s.includes('userBar'), j(s));
-      // 2026-11-25(사용자 요청): 내 신원 카드는 없다 — 속성 도구 링크는 보관 상태 카드에 남는다
-      assert.equal(await page.$eval('#storagePanel #pkAttrLink', (a) => (a.checkVisibility() ? a.href : null)), `${new URL(wallet.base).origin}/attr.html`); assert.ok(!(await visibleText(page)).includes('내 신원'));
+      // 2026-11-25(사용자 요청): 내 신원 카드는 없다 — 속성은 "내 속성" 카드에서
+      assert.ok(s.includes('attrCard'), j(s)); assert.equal(await page.$$eval('#storagePanel #pkAttrLink', (l) => l.length), 0); assert.ok(!(await visibleText(page)).includes('내 신원'));
       { const w = (id) => page.$eval(`#${id}`, (e) => e.getBoundingClientRect().width); const full = await w('flowCard'); for (const id of ['sessionsCard', 'storagePanel']) assert.ok(Math.abs((await w(id)) - full) < 2, `${id} 가 전체 폭이 아니다`); }
       await shot(page, 'user_open');
       assert.ok(!s.includes('demoCard'), `시연 카드는 ?demo=1 일 때만: ${j(s)}`); }   // H3
@@ -825,26 +845,21 @@ try {
     const ps = ppidOf(noteSessions(await idbDump(userPage)), info1.arid); assert.ok(ps.length >= 1 && ps.every((p) => p === ppid1), j(ps));
     await again.rpPage.close();
   });
-  // 2026-11-25(사용자 요청): 속성 도구의 래퍼 문구 — 붙여 넣을 곳(zkIdP 프로필·인증 창)이 없다. 기록은 로그인 창이 같은 오리진에서 읽는다. 새 맥락에서 홈을 거쳐 도구를 연다
-  // (홈이 /mode3/health 로 래퍼 방식을 알아 localStorage 에 남기고, 도구는 그 값으로 그린다). 이 사례는 A 의 기록을 건드리지 않는다.
-  await t('속성 도구(zkWrapper): "만들기" 뒤 문구가 "이 브라우저에 저장·zkWrapper 로 로그인하면 됨" 이고 붙여 넣기·zkIdP·인증 창 안내와 복사 버튼이 없다', async () => {
+  // 2026-11-25(스펙 user-attr-card): /attr.html 은 처음부터 입력 칸(salt 포함)이 없고 /user 로 안내한다 — 처음 여는 브라우저(모드를 모르는 때)에도. 숨긴 폼을 제출해도 계산하지 않는다
+  await t('속성 도구(zkWrapper): 입력 칸이 처음부터 안 보이고 /user 로 안내한다 — 제출해도 기록이 생기지 않고 salt 칸을 비운다, 이미 있는 기록은 볼 수만 있다', async () => {
+    const html = await (await fetch(`${wallet.base}/attr.html`)).text(); assert.ok(html.includes('data-attr-moved="1"'), '서버가 표시를 붙이지 않았다');
     const ctx = await browser.newContext();
     try {
-      const p = await ctx.newPage();
-      // 도구는 /attr/dist/reset.json 의 walletKind 로 모드를 다시 정한다 — 데모 스크립트가 래퍼에서 쓰는 값을 준다(작업 트리에 남은 옛 파일에 기대지 않는다).
-      await p.route('**/attr/dist/reset.json', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ epoch: 'test-wrapper', walletKind: 'zkwrapper' }) }));
-      await p.goto(`${wallet.base}/`);
-      await p.waitForFunction(() => document.documentElement.dataset.wrapper === '1', null, { timeout: 15_000 });
-      await p.goto(`${wallet.base}/attr.html`);
-      await p.waitForFunction(() => document.documentElement.dataset.wrapper === '1' && document.querySelectorAll('#country option').length > 1, null, { timeout: 15_000 });
-      await p.fill('#birthYear', '1990'); await p.selectOption('#country', 'KR'); await p.fill('#salt', SALT_A);
-      await p.click('#makeBtn');
-      await waitText(p, '#formVerdict', '이제 서비스에서 zkWrapper 로 로그인하면 됩니다', 30_000);
-      const body = await visibleText(p);
-      for (const s of ['zkWrapper 로 로그인할 때부터 반영', '다른 서비스의 열린 세션은 닫히고', '참고용 공개값입니다', '자동으로 씁니다']) assert.ok(body.includes(s), `없음: ${s}`);
-      for (const w of ['zkIdP', '인증 창', '프로필', '붙여 넣으세요']) assert.ok(!body.includes(w), `남음: ${w} — ${body.slice(Math.max(0, body.indexOf(w) - 40), body.indexOf(w) + 40)}`);
-      assert.equal(await p.$eval('#copyBtn', (el) => el.checkVisibility()), false, '래퍼에서는 커밋먼트 복사 버튼이 할 일이 없다');
+      const p = await ctx.newPage(); await p.goto(`${wallet.base}/attr.html`, { waitUntil: 'commit' });
+      await p.waitForSelector('#attrMovedLink', { state: 'visible', timeout: 15_000 }); assert.equal(await p.$eval('#attrMovedLink', (a) => a.getAttribute('href')), '/user');
+      assert.equal(await p.$eval('#attrFormCard', (e) => e.checkVisibility()), false); await p.waitForLoadState('load');
+      await p.evaluate((salt) => { document.getElementById('birthYear').value = '1990'; document.getElementById('country').value = 'KR'; document.getElementById('salt').value = salt; document.getElementById('attrForm').requestSubmit?.call(document.getElementById('attrForm')); document.getElementById('attrForm').dispatchEvent(new Event('submit', { cancelable: true })); }, SALT_A);
+      await new Promise((res) => setTimeout(res, 1500)); assert.equal(await p.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')), null); assert.equal(await p.$eval('#salt', (e) => e.value), '');
+      assert.ok(!/zkIdP|인증 창|salt 보기/.test(await visibleText(p)), (await visibleText(p)).slice(0, 300));
     } finally { await ctx.close(); }
+    const q = await A.ctx.newPage(); await q.goto(`${wallet.base}/attr.html`); await q.waitForSelector('#commitBox:not([hidden])', { timeout: 15_000 });
+    for (const id of ['attrFormCard', 'clearBtn', 'copyBtn']) assert.equal(await q.$eval(`#${id}`, (e) => e.checkVisibility()), false, id);
+    await q.close();
   });
   // 2026-11-25(사용자 결정): 서비스의 "Google 로 로그인"(일반 OIDC)은 서비스가 보관하는 계정이다 — 키를 새로 맡지 않고 화면만 정리한다.
   // 주소 줄 대신 계정 번호와 "서비스가 보관" 을, 잔액은 보관 ETH 한 줄만, 그 아래 zkWrapper 로 로그인하면 내가 쥐는 계정을 받는다는 안내를 보인다.
@@ -960,7 +975,7 @@ try {
   });
   // 2026-11-25(사용자 요청): /user 잠금 화면 — 이 브라우저에 패스키가 없으면 서비스에 로그인하라고 하지 않고 여기서 만든다(Google 을 거치지 않고 연결만). 등록이 없어도 패스키로 열린다.
   await t('/user 잠금: 패스키 없음 → 안내·버튼 둘, 취소하면 사유가 잠금 카드에 → "패스키 만들기" → "패스키로 열기" 로 열린다(등록 없음) → 그 패스키로 서비스 첫 로그인', async () => {
-    const before = (await accounts()).length;
+    const before = (await accounts()).length; let rpPage2 = null;
     const B = await newBrowserWith('d4'.repeat(32));
     try {
       const page = await B.ctx.newPage(); await page.goto(`${wallet.base}/user`);
@@ -983,12 +998,18 @@ try {
       assert.equal((await idbDump(page)).registration, undefined, '등록 없이 열렸다');
       await new Promise((res) => setTimeout(res, 2500)); assert.equal(await vis('#pkRecoverCard'), false, '래퍼에 없는 "계정 복구(zkIdP 인증 창)" 카드가 보인다'); assert.deepEqual(bannedIn(await visibleText(page)).filter((x) => !x.startsWith('비밀번호')), []); assert.equal((await accounts()).length, before, '서버 계정이 생겼다');
       assert.ok(!B.reqs.some((r) => r.url.startsWith(google.issuer)), 'Google 로 갔다');
+      // 등록 전에도 속성을 저장할 수 있다 — 첫 로그인이 그 속성으로 등록한다
+      const g1 = B.hits.get; await page.fill('#wa_birthYear', '1985'); await page.selectOption('#wa_country', 'JP'); await page.click('#attrSaveBtn'); await waitText(page, '#attrCardVerdict', '다음 로그인부터 반영됩니다', 20_000); assert.equal(B.hits.get - g1, 1, j(B.hits));
+      assert.ok(!(await text(page, '#attrCardVerdict')).includes('세션은 끝납니다'), '등록 전인데 세션이 끝난다고 말한다');
       await page.click('#userLockBtn'); await page.waitForSelector('#userUnlockBtn', { state: 'visible', timeout: 5_000 }); assert.equal(await vis('#userNoPk'), false);
       await page.close();
       // 그 패스키로 서비스 첫 로그인 — 패스키를 새로 만들지 않는다
       google.setNextSub('google-user-lock'); google.setNextClaims({ email: 'lock@example.com', email_verified: true });
       const { rpPage } = await startLogin(B.ctx, rp); await waitText(rpPage, '#verdict', '로그인 성공', 120_000); assert.equal(B.hits.create, 1, '로그인 때 패스키를 또 만들었다');
-      assert.equal((await accounts()).length, before + 1); await rpPage.close();
+      assert.equal((await accounts()).length, before + 1); assert.deepEqual((await idbDump(rpPage2 = await openUser(await B.ctx.newPage()))).registration.profile, { birthYear: '1985', country: 'JP' }, '첫 로그인이 저장한 속성으로 등록되지 않았다');
+      // "모두 지우기" 는 속성 기록도 지운다(남으면 다른 패스키에서 로그인이 막힌다)
+      await rpPage2.click('#wipeBtn'); await waitText(rpPage2, '#storageVerdict', '속성 기록', 15_000); assert.equal(await rpPage2.evaluate(() => localStorage.getItem('mode3_attr_tool_v1')), null); await rpPage2.close();
+      await rpPage.close();
     } finally { await B.ctx.close(); await cia.adminPost('/cia/account/delete', { uid: uidOf(google.provider, 'google-user-lock') }).catch(() => {}); }
   });
   // 2026-11-25(사용자 지적): /user 에서 서비스가 "[object HTMLElement]" 로 보였다 — 세션이 사라진 옛 거래에는 이름·오리진이 없다. 같은 arid 의 이름을 찾고, 없으면 arid 앞부분을 글자로
