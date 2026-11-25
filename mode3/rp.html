@@ -578,7 +578,14 @@
     // 서버가 재시작돼 세션이 사라졐으면 복원 뒤 /api/mode3/sessions 대조에서 걸러 다시 로그아웃 상태가 된다. 비밀은 없다(r_s·PPID·allowAgent 만).
     const SESSION_KEY = 'mode3.rp.session';
     function saveSession(r_s, allowAgent) {
-      try { if (r_s) localStorage.setItem(SESSION_KEY, JSON.stringify({ r_s, allowAgent, PPID: lastPPID, account: lastAccount, kind: info?.walletKind ?? null, ...(lastDisclosure !== undefined ? { disclosure: lastDisclosure } : {}) })); else localStorage.removeItem(SESSION_KEY); } catch { /* 저장소가 막혀 있으면 탭 안에서만 유지 */ }
+      try { if (r_s) localStorage.setItem(SESSION_KEY, JSON.stringify({ r_s, allowAgent, PPID: lastPPID, account: lastAccount, kind: info?.walletKind ?? null, arid: info?.arid != null ? String(info.arid) : null, ...(lastDisclosure !== undefined ? { disclosure: lastDisclosure } : {}) })); else localStorage.removeItem(SESSION_KEY); } catch { /* 저장소가 막혀 있으면 탭 안에서만 유지 */ }
+    }
+    /** 세션이 없어진 까닭이 데모 초기화인가(2026-11-25): 초기화하면 서비스가 다시 등록돼 arid 가 바뀐다(아직 등록 전이면 없다). 초기화면 "세션이 끝났다" 고 말하지 않는다 —
+     *  복구할 세션이 아니고, 승인 전이면 "세션 복구" 를 눌러도 실패한다. 서비스 정보를 다시 읽어 보고, 읽지 못했거나 전의 arid 를 모르면(옛 기록) 아니라고 본다. */
+    async function wasDemoReset(prevArid) {
+      if (prevArid == null) return false;
+      try { await loadInfo(); } catch { return false; }
+      return String(info?.arid ?? '') !== String(prevArid);
     }
     async function restoreSession() {
       let saved = null;
@@ -589,7 +596,7 @@
         if (!(sessions ?? []).some((x) => x.r_s === `${String(saved.r_s).slice(0, 8)}…`)) {   // 서버에 없는 세션(재시작·폐기)
           try { localStorage.removeItem(SESSION_KEY); } catch { /* */ }
           // 2026-11-23(화면 점검): zkWrapper 면 말없이 로그아웃 화면으로 두지 않고 세션이 끝났다고 말한다(홈에서 끝냈거나 만료) — 다른 방식은 그대로
-          if (saved.kind === 'zkwrapper') {
+          if (saved.kind === 'zkwrapper' && !(await wasDemoReset(saved.arid ?? null))) {
             sessionEndedReason = 'ended'; renderSessionBar();
             setVerdict($('verdict'), false, 'rp_session_ended_title', () => ({ summary: tt('rp_session_ended') || '이 세션이 끝났습니다 — 다시 로그인하세요.' }));
           }
@@ -610,7 +617,10 @@
         const { sessions } = await r.json();
         if (!currentSession) return;
         if (!(sessions ?? []).some((x) => x.r_s === `${String(currentSession).slice(0, 8)}…`)) {
+          const gone = currentSession, reset = await wasDemoReset(info?.arid ?? null);   // 열어 둔 탭에서 데모가 초기화됐으면 배너 없이 로그아웃 상태로
+          if (currentSession !== gone) return;   // 정보를 읽는 사이 새로 로그인했다
           setSession(null);
+          if (reset) { sessionEndedReason = null; renderSessionBar(); refreshMe(); return; }
           sessionEndedReason = 'ended'; renderSessionBar();   // 2026-11-17: 맨 위 상단 바 — "세션 복구" 로 새 로그인
           refreshMe();   // 2026-11-10: zkIdP 로 만든 쿠키 세션은 r_s 와 함께 끝난다(서버) — 소셜 세션이면 그대로 남는다
           setVerdict($('verdict'), false, 'rp_session_ended_title', () => ({ summary: tt('rp_session_ended') || '이 세션이 끝났습니다 — 사용자 페이지에서 폐기하거나 로그아웃했습니다. 다시 로그인하세요.' }));

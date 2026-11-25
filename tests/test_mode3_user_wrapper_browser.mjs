@@ -62,6 +62,8 @@ const went = (visited, base) => visited.some((u) => u.startsWith(base));
 async function newBrowserWith(secretHex, extraSecrets = []) {
   const hits = { create: 0, get: 0 };
   const ctx = await browser.newContext();
+  // 데모 리셋 표시는 고정값을 준다 — 작업 트리의 reset.json 은 라이브 데모와 같은 파일이라, 테스트 도중 데모를 다시 띄우면 속성 기록이 비워져 실패했다(2026-11-25)
+  await ctx.route('**/attr/dist/reset.json', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: '{"epoch":"test-epoch","walletKind":"zkwrapper"}' }));
   await ctx.exposeFunction('__webauthnHit', (k) => { hits[k] = (hits[k] ?? 0) + 1; });
   await ctx.addInitScript({ content: buildWebAuthnStub({ secretHex, extraSecrets }) });
   const dialogs = [];   // 확인 창 문구(2026-11-23: 세션 끝내기 확인 창이 서비스 이름을 말하는지 본다)
@@ -1033,6 +1035,32 @@ try {
       assert.deepEqual((await col('#proofsList', 3)).sort(), [['55556666…', Y], ['zkONE(8674…)', X], ['zkONE(8674…)', X]]);
       assert.ok(!(await page.evaluate(() => document.body.textContent)).includes('[object'), '"[object" 가 보인다');
     } finally { await C.ctx.close(); }
+  });
+  // 2026-11-25(사용자 지적): 데모를 초기화한 뒤 zkONE 을 열면 "세션 복구" 배너가 떴다 — 초기화(서비스가 다시 등록돼 arid 가 바뀜)와 진짜 만료를 구분한다
+  await t('초기화 전 세션이 남은 브라우저: 서비스 번호(arid)가 바뀌었으면 배너 없이 옛 기록만 지우고, 같으면(진짜 만료) "세션 복구" 를 띄운다 — 열어 둔 탭도 같다', async () => {
+    const SK = 'mode3.rp.session', open = async (saved, { arid = undefined } = {}) => {
+      const ctx = await browser.newContext(), p = await ctx.newPage();
+      if (arid !== undefined) await p.route('**/api/mode3/rp_info', async (x) => { const y = await x.fetch(); await x.fulfill({ response: y, json: { ...(await y.json()), arid } }); });
+      await ctx.addInitScript(([k, v]) => { if (!sessionStorage.getItem('seeded')) { sessionStorage.setItem('seeded', '1'); localStorage.setItem(k, v); localStorage.setItem('mode3.walletKind', 'zkwrapper'); } }, [SK, JSON.stringify({ r_s: '1234567890123', allowAgent: '0', PPID: '1', account: null, kind: 'zkwrapper', ...saved })]);
+      await p.goto(`${rp.base}/`); await p.waitForFunction((k) => localStorage.getItem(k) === null, SK, { timeout: 15_000 }); await p.waitForTimeout(1500);
+      const st = await p.evaluate(() => ({ bar: document.getElementById('sessionBar').checkVisibility(), verdict: document.getElementById('verdict').textContent.trim(), login: document.getElementById('loginBtn').checkVisibility() })); await ctx.close(); return st;
+    };
+    const old = await open({ arid: '999' }); assert.equal(old.bar, false, '초기화인데 배너가 뜬다'); assert.equal(old.verdict, ''); assert.equal(old.login, true);
+    const same = await open({ arid: String(info1.arid) }); assert.equal(same.bar, true, '진짜 만료인데 배너가 없다'); assert.ok(same.verdict.length > 0);
+    assert.equal((await open({})).bar, true, 'arid 가 없는 옛 기록은 전과 같다');
+    assert.equal((await open({ arid: String(info1.arid) }, { arid: null })).bar, false, '아직 등록되지 않은 서비스(승인 전 초기화 직후)');
+    // 로그인하면 arid 를 함께 적고, 그 탭을 열어 둔 채 초기화되면(세션 목록이 비고 arid 가 바뀜) 배너 없이 로그아웃 상태로 돌아간다
+    const B = await newBrowserWith('f6'.repeat(32));
+    try {
+      google.setNextSub('google-user-reset'); google.setNextClaims({ email: 'reset@example.com', email_verified: true });
+      const { rpPage, popup } = await startLogin(B.ctx, rp); await popup.waitForSelector('#authWrapPasskeyBtn', { timeout: 30_000 }); await popup.click('#authWrapPasskeyBtn'); await waitText(rpPage, '#verdict', '로그인 성공', 120_000);
+      assert.equal(await rpPage.evaluate((k) => JSON.parse(localStorage.getItem(k)).arid, SK), String(info1.arid));
+      await rpPage.route('**/api/mode3/rp_info', async (x) => { const y = await x.fetch(); await x.fulfill({ response: y, json: { ...(await y.json()), arid: '424242' } }); });
+      await rpPage.route('**/api/rp/me', (x) => x.fulfill({ status: 401, contentType: 'application/json', body: '{"ok":false,"reason":"no_rp_session"}' }));   // 초기화하면 쿠키 세션도 없다
+      await rpPage.route('**/api/mode3/sessions', (x) => x.fulfill({ status: 200, contentType: 'application/json', body: '{"sessions":[]}' }));
+      await rpPage.waitForFunction(() => document.getElementById('loginBtn').checkVisibility(), null, { timeout: 15_000 }); await rpPage.waitForTimeout(3000);
+      assert.equal(await rpPage.$eval('#sessionBar', (e) => e.checkVisibility()), false, '열어 둔 탭: 초기화인데 배너가 뜬다'); assert.equal(await rpPage.evaluate((k) => localStorage.getItem(k), SK), null); await rpPage.close();
+    } finally { await B.ctx.close(); await cia.adminPost('/cia/account/delete', { uid: uidOf(google.provider, 'google-user-reset') }).catch(() => {}); }
   });
   await t('/user 잠금: "이미 있는 패스키 쓰기" → 만들지 않고 연결된다', async () => {
     const C = await newBrowserWith(SECRET_A);
