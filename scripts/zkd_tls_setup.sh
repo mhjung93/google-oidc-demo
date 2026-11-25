@@ -30,7 +30,7 @@ else
 fi
 
 new_hosts=$(mktemp); trap 'rm -f "$new_hosts"' EXIT
-if ! zkd_hosts_render /etc/hosts "127.0.0.1=wallet.zkd.test" "$IDP=idp.zkd.test" "$RP1=zkone.zkd.test" "$RP2=zktwo.zkd.test" > "$new_hosts"; then
+if ! zkd_hosts_render /etc/hosts "127.0.0.1=wallet.zkd.test" "127.0.0.1=zkwrapper.zkd.test" "$IDP=idp.zkd.test" "$RP1=zkone.zkd.test" "$RP2=zktwo.zkd.test" > "$new_hosts"; then
   echo "BLOCKED: /etc/hosts 를 건드리지 않고 중단한다" >&2; exit 3
 fi
 # 렌더가 조용히 줄을 잃었으면(블록만 남은 출력 등) 설치하지 않는다 — 원래 블록 밖 줄이 그대로 있어야 한다

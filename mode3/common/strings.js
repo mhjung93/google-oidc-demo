@@ -17,7 +17,7 @@ window.DemoStrings = {
   userPages: ['wallet', 'rp', 'attr'],
   wrapperText(s, lang = 'ko') {
     if (typeof s !== 'string') return s;
-    let t = s.replace(/zk-?IdP/g, 'zkWrapper');
+    let t = s.replace(/zk-?IdP/g, 'zkWrapper').replace(/wallet\.zkd\.test/g, 'zkwrapper.zkd.test');   // 주소 이름(2026-11-25): passkey-web 은 wallet.zkd.test 그대로
     if (lang === 'en') t = t.replace(/zk client (?:home|screen|page)/gi, 'zkWrapper home').replace(/\bzk client\b/gi, 'browser').replace(/\bzk (?:sign-in|login)\b/gi, 'zkWrapper sign-in');
     else t = t.replace(/zk 클라이언트(?: 홈| 화면| 페이지)/g, 'zkWrapper 홈').replace(/zk 클라이언트/g, '브라우저').replace(/zk 로그인/g, 'zkWrapper 로 로그인');
     if (this.userPages.includes(this.page)) {

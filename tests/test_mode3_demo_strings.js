@@ -395,6 +395,12 @@ t('zkWrapper 사용자 화면 문구(T4): wallet·rp·attr 에서 zkIdP·스냅�
       assert.deepEqual(hits, [], `${page}: ${hits.length}건 — ${hits.slice(0, 10).join(' / ')}`);
     }
     S.page = 'admin'; assert.match(S.text(S.ui.admin_rps_title, 'ko'), /RP/, '관리자 화면은 RP 그대로(T2)');
+    // 2026-11-25: 래퍼의 주소 이름은 zkwrapper.zkd.test — ko·en 어디에도 wallet.zkd.test 가 남지 않는다. passkey-web 은 그대로다
+    S.page = 'wallet'; const left = [];
+    for (const l of ['ko', 'en']) { for (const [k, e] of Object.entries(S.ui)) if (/wallet\.zkd\.test/.test(S.text(e, l))) left.push(k); for (const [k, r] of Object.entries(S.reasons)) if (/wallet\.zkd\.test/.test(Object.values(S.reasonText(r, l)).join(' '))) left.push(`reason:${k}`); }
+    assert.deepEqual(left, []);
+    assert.ok(Object.values(S.reasonText(S.reasons.passkey_wrong_origin, 'ko')).join(' ').includes('https://zkwrapper.zkd.test:5100'));
+    S.wrapper = false; assert.ok(Object.values(S.reasonText(S.reasons.passkey_wrong_origin, 'ko')).join(' ').includes('https://wallet.zkd.test:5100'));
   } finally { S.wrapper = save.w; S.noSnap = save.n; S.page = save.p; }
 });
 

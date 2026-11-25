@@ -40,7 +40,7 @@
 #                                                          # Google 콘솔 승인된 원본: http://localhost:3100, http://localhost:3101. RP 공개 주소가 바뀌면 RP 가 스스로 새로 등록한다(IdP 승인 다시).
 #        WALLET_MODE=passkey-web bash scripts/demo_split_start.sh  # (2026-11-17) 설치 없는 패스키 모드: 호스트 PC 의 정적 서버(:5100, https)가 지갑. 이름 주소(wallet·idp·zkone·zktwo.zkd.test)와 데모 CA 인증서를
 #                                                          # VM 세 곳에 배포한다. 처음이면 먼저 bash scripts/zkd_tls_setup.sh(sudo) 뒤 Chrome 재시작. 터널은 강제로 끈다. stop 도 같은 WALLET_MODE 로 부른다.
-#        WALLET_MODE=zkwrapper ZKWRAPPER_GOOGLE_CLIENT_ID=… bash scripts/demo_split_start.sh  # (2026-11-20 스펙 zkwrapper) 별도 IdP 없이 zkWrapper: 이 PC 의 한 서버(:5100, https://wallet.zkd.test)가
+#        WALLET_MODE=zkwrapper ZKWRAPPER_GOOGLE_CLIENT_ID=… bash scripts/demo_split_start.sh  # (2026-11-20 스펙 zkwrapper) 별도 IdP 없이 zkWrapper: 이 PC 의 한 서버(:5100, https://zkwrapper.zkd.test — 2026-11-25 전에는 wallet.zkd.test)가
 #                                                          # 지갑 화면과 발급(Google 토큰 → 세션 토큰)을 함께 맡는다. IdP VM 에는 아무것도 띄우지 않는다. passkey-web 과 같은 데모 CA·hosts 가 필요하고,
 #                                                          # 래퍼 전용 Google 클라이언트 ID(서비스의 ID 와 달라야 한다 — 같으면 멈춘다)의 승인된 리디렉션 URI 에 https://127.0.0.1:5100/google-relay 가 있어야 한다.
 # 주소는 SPLIT_HOST_IP·SPLIT_IDP_IP·SPLIT_RP1_IP·SPLIT_RP2_IP·SPLIT_SSH_USER 로 바꿀 수 있다. 로그는 DEMO_LOG_DIR(기본 /tmp/mode3-split).
@@ -94,6 +94,8 @@ if [ "$WALLET_MODE" = passkey-web ]; then
   WALLET_ORIGIN="https://wallet.zkd.test:$USER_PORT"; IDP_UI="https://idp.zkd.test:$IDP_PORT"
   RP1_UI="https://zkone.zkd.test:$RP1_PORT"; RP2_UI="https://zktwo.zkd.test:$RP2_PORT"
 fi
+# zkwrapper 는 지갑이 아니라 래퍼 서버라 이름이 다르다(2026-11-25 사용자 요청). passkey-web 은 wallet.zkd.test 그대로다. 패스키는 이름에 묶이므로 두 모드의 패스키도 다르다.
+[ "$ZW" = 1 ] && WALLET_ORIGIN="https://zkwrapper.zkd.test:$USER_PORT"
 [ "$ZW" = 1 ] && IDP_UI="$WALLET_ORIGIN"   # zkwrapper: 사람이 여는 발급자 화면(운영자·관리자)은 지갑과 같은 서버다
 # 서버끼리 부르는 발급자 주소 — 서비스 VM 의 MODE3_CIA_URL, 이 스크립트의 curl. zkwrapper 는 이 PC 의 zkWrapper(인증서 IP SAN 에 $HOST 가 있다).
 CIA_SRV="$SCHEME://$IDP:$IDP_PORT"; [ "$ZW" = 1 ] && CIA_SRV="$SCHEME://$HOST:$USER_PORT"
@@ -148,7 +150,7 @@ if [ "$WALLET_MODE" = passkey-web ]; then
       || { echo "BLOCKED: VM 주소 $vm_ip 가 데모 CA 의 이름 제약 망(${CA_NET:-없음}/24) 밖이다 — ZKD_DEMO_NET 을 맞춰 CA 를 새로 만들고(bash scripts/zkd_tls_setup.sh) Chrome 에 다시 등록한다"; exit 1; }
   done
   # 이름이 hosts 에서 지금 주소로 풀려야 한다 — 옛 주소면 브라우저가 엉뚱한 VM 으로 간다
-  [ "$ZW" = 1 ] || PAIRS=("127.0.0.1=wallet.zkd.test" "$IDP=idp.zkd.test" "$RP1=zkone.zkd.test" "$RP2=zktwo.zkd.test"); [ "$ZW" = 1 ] && PAIRS=("127.0.0.1=wallet.zkd.test" "$RP1=zkone.zkd.test" "$RP2=zktwo.zkd.test")
+  [ "$ZW" = 1 ] || PAIRS=("127.0.0.1=wallet.zkd.test" "$IDP=idp.zkd.test" "$RP1=zkone.zkd.test" "$RP2=zktwo.zkd.test"); [ "$ZW" = 1 ] && PAIRS=("127.0.0.1=zkwrapper.zkd.test" "$RP1=zkone.zkd.test" "$RP2=zktwo.zkd.test")
   for pair in "${PAIRS[@]}"; do
     have_ip=$(getent hosts "${pair#*=}" | awk 'NR==1 { print $1 }')
     [ -n "$have_ip" ] \
@@ -196,7 +198,7 @@ if [ "$WALLET_MODE" = passkey-web ]; then
     && zkd_issue_cert "$ZKD_CA_DIR" "$TLS_OUT" zkone zkone.zkd.test "$RP1" \
     && zkd_issue_cert "$ZKD_CA_DIR" "$TLS_OUT" zktwo zktwo.zkd.test "$RP2"; } >/dev/null || { echo "인증서 발급 실패 — $ZKD_CA_DIR 의 데모 CA 확인"; exit 1; }
   # zkwrapper: 지갑 서버가 발급자이기도 해서 서비스 VM 이 서버끼리 부른다 — 이 PC 의 IP 를 넣은 인증서를 따로 만든다(지갑 인증서는 그대로 이름·127.0.0.1 뿐)
-  if [ "$ZW" = 1 ]; then zkd_issue_cert "$ZKD_CA_DIR" "$TLS_OUT" zkwrapper wallet.zkd.test 127.0.0.1 "$HOST" >/dev/null || { echo "인증서 발급 실패(zkwrapper)"; exit 1; }; fi
+  if [ "$ZW" = 1 ]; then zkd_issue_cert "$ZKD_CA_DIR" "$TLS_OUT" zkwrapper zkwrapper.zkd.test 127.0.0.1 "$HOST" >/dev/null || { echo "인증서 발급 실패(zkwrapper)"; exit 1; }; fi
   { [ "$ZW" = 1 ] || { deploy_tls "$IDP" idp && TLS_IDP="$REPLY"; }; } && deploy_tls "$RP1" zkone && TLS_RP1="$REPLY" && deploy_tls "$RP2" zktwo && TLS_RP2="$REPLY" || { echo "인증서 배포 실패(ssh·scp)"; exit 1; }
   echo "인증서 배포 ok: $([ "$ZW" = 1 ] || echo 'idp·')zkone·zktwo (VM ~/zkd-demo/tls), 지갑은 $TLS_OUT"
 fi

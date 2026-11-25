@@ -65,9 +65,9 @@ t('서비스는 발급자를 zkWrapper 로 안다 — 서버끼리는 이 PC 의
   assert.equal(sh(`WALLET_MODE=passkey-web ZW=1; ${lines[k].replace(/\s#\s.*$/, '')}; echo "$WALLET_KIND_OUT"`), 'zkwrapper'); assert.equal(sh(`WALLET_MODE=passkey-web ZW=0; ${lines[k].replace(/\s#\s.*$/, '')}; echo "$WALLET_KIND_OUT"`), 'passkey-web');
   for (const re of [/rps_json\(\) \{ curl[^\n]*"\$CIA_SRV\/cia\/rps"/, /-X POST -H "\$HDR" "\$CIA_SRV\/cia\/rps\/\$arid\/approve"/]) assert.match(src, re);
 });
-t('zkWrapper 인증서는 따로 — 지갑 이름·127.0.0.1·이 PC 의 IP(서비스 VM 이 부른다). 지갑 인증서 줄은 그대로', () => {
-  const l = lines.find((x) => /zkd_issue_cert[^\n]* zkwrapper wallet\.zkd\.test/.test(x)); assert.ok(l, '발급 줄 없음');
-  assert.match(l, /zkwrapper wallet\.zkd\.test 127\.0\.0\.1 "\$HOST"/);
+t('zkWrapper 인증서는 따로 — zkwrapper 이름·127.0.0.1·이 PC 의 IP(서비스 VM 이 부른다). 지갑 인증서 줄은 그대로', () => {
+  const l = lines.find((x) => /zkd_issue_cert[^\n]* zkwrapper zkwrapper\.zkd\.test/.test(x)); assert.ok(l, '발급 줄 없음');
+  assert.match(l, /zkwrapper zkwrapper\.zkd\.test 127\.0\.0\.1 "\$HOST"/);
   assert.match(src, /zkd_issue_cert "\$ZKD_CA_DIR" "\$TLS_OUT" wallet wallet\.zkd\.test 127\.0\.0\.1 \\\n/);
 });
 t('정지 — 5100 의 zkWrapper 도 passkey-web(·zkwrapper) 일 때 내린다', () => {
@@ -192,6 +192,24 @@ t('서비스 공통 환경변수에 옛 증명 시연 스위치(MODE3_RELAY_DEMO
   const common = src.match(/\nCOMMON="([^"]*)"/); assert.ok(common, 'COMMON 정의를 찾지 못했다');
   assert.match(common[1], /^MODE3_RELAY_DEMO_REVERT=\$\{RELAY_DEMO_REVERT:-1\}$/m);
   assert.match(src, /^#.*RELAY_DEMO_REVERT=0 bash scripts\/demo_split_start\.sh/m, '사용법 주석이 없다');
+});
+
+t('zkwrapper 의 이름은 zkwrapper.zkd.test — 주소·hosts 확인·인증서. passkey-web 은 wallet.zkd.test 그대로(2026-11-25)', () => {
+  const w = idx(/^\[ "\$ZW" = 1 \] && WALLET_ORIGIN=/), u = idx(/^\[ "\$ZW" = 1 \] && IDP_UI="\$WALLET_ORIGIN"/), b = idx(/^  WALLET_ORIGIN="https:\/\/wallet\.zkd\.test:/);
+  assert.ok(b >= 0 && b < w && w < u, `순서: ${b} ${w} ${u}`);
+  const origin = (zw) => sh(`USER_PORT=5100 ZW=${zw} WALLET_ORIGIN=https://wallet.zkd.test:5100; ${lines[w]}; echo "$WALLET_ORIGIN"`);
+  assert.equal(origin(1), 'https://zkwrapper.zkd.test:5100'); assert.equal(origin(0), 'https://wallet.zkd.test:5100');
+  const p = lines.find((l) => /PAIRS=\(/.test(l));
+  const pairs = (zw) => sh(`ZW=${zw} IDP=10.0.0.10 RP1=10.0.0.11 RP2=10.0.0.12; ${p}; echo "\${PAIRS[*]}"`);
+  assert.equal(pairs(1), '127.0.0.1=zkwrapper.zkd.test 10.0.0.11=zkone.zkd.test 10.0.0.12=zktwo.zkd.test'); assert.ok(pairs(0).startsWith('127.0.0.1=wallet.zkd.test 10.0.0.10=idp.zkd.test'));
+  assert.ok(src.includes('"$TLS_OUT" zkwrapper zkwrapper.zkd.test 127.0.0.1 "$HOST"'), '인증서 이름');
+  assert.ok(/zkd_hosts_render \/etc\/hosts .*"127\.0\.0\.1=zkwrapper\.zkd\.test"/.test(fs.readFileSync(new URL('../scripts/zkd_tls_setup.sh', import.meta.url), 'utf8')), 'setup 의 hosts 목록');
+});
+t('속성 도구의 리셋 표시(reset.json)는 래퍼면 walletKind zkwrapper — 도구가 이 값으로 화면 모드를 다시 정한다(2026-11-25)', () => {
+  const i = idx(/^if \[ "\$AGENT_MODE" = 1 \] \|\| \[ "\$WALLET_MODE" = passkey-web \]; then mkdir -p mode3\/attr\/dist/); assert.ok(i >= 0, 'reset.json 쓰는 줄 없음');
+  const kind = lines[i].match(/"\$TS" ("\$\(.*?\)")/)?.[1]; assert.ok(kind, lines[i].slice(0, 200));
+  assert.equal(sh(`WALLET_MODE=passkey-web ZW=1; echo ${kind}`), 'zkwrapper');
+  assert.equal(sh(`WALLET_MODE=passkey-web ZW=0; echo ${kind}`), 'passkey-web');
 });
 
 console.log(fails ? `\n${fails} FAILED` : '\nall ok');

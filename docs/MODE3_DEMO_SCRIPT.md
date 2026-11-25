@@ -89,13 +89,13 @@ zkIdP 관리자 화면의 "uid ↔ auid 대응" 표에 "일반 OIDC 에서 본 �
 
 ## zkWrapper 모드(`zkwrapper`)로 할 때 (2026-11-20)
 
-별도 IdP 없이 **zkWrapper** 한 서버(이 PC 의 `https://wallet.zkd.test:5100`)가 지갑 화면과 발급(Google ID 토큰 → 세션 토큰)을 함께 맡는 모드다(스펙 `docs/superpowers/specs/2026-11-20-mode3-zkwrapper-design.md`).
+별도 IdP 없이 **zkWrapper** 한 서버(이 PC 의 `https://zkwrapper.zkd.test:5100`)가 지갑 화면과 발급(Google ID 토큰 → 세션 토큰)을 함께 맡는 모드다(스펙 `docs/superpowers/specs/2026-11-20-mode3-zkwrapper-design.md`).
 IdP VM(.10)에는 아무것도 띄우지 않는다. 기동은 `WALLET_MODE=zkwrapper ZKWRAPPER_GOOGLE_CLIENT_ID=… AUTO_APPROVE=1 bash scripts/demo_split_start.sh` 이다 — 래퍼 전용 Google 클라이언트 ID 가 없거나
 서비스(zkONE·zkTWO)의 ID 와 같으면 아무것도 내리기 전에 멈춘다. Google 콘솔에서 그 클라이언트 ID 의 "승인된 리디렉션 URI" 에 `https://127.0.0.1:5100/google-relay` 를 넣는다.
 passkey-web 과 같은 데모 CA·hosts 가 필요하다(`bash scripts/zkd_tls_setup.sh` — 이미 했으면 그대로).
 
-탭은 셋이다: `https://wallet.zkd.test:5100/`(홈 — "zk-Delegation 쓰는 법" 카드 하나: 사용자 세 단계·운영자 세 단계·전체 플로우 링크·"내 세션 관리" 링크), `https://zkone.zkd.test:3100`, `https://zktwo.zkd.test:3101`.
-신원·세션·증명·트랜잭션 카드는 **`https://wallet.zkd.test:5100/user`**(내 세션 관리)에 있다(2026-11-24): 처음에는 잠겨 있고 **"패스키로 열기"** 로 연다(그 브라우저의 패스키여야 열린다).
+탭은 셋이다: `https://zkwrapper.zkd.test:5100/`(홈 — "zk-Delegation 쓰는 법" 카드 하나: 사용자 세 단계·운영자 세 단계·전체 플로우 링크·"내 세션 관리" 링크), `https://zkone.zkd.test:3100`, `https://zktwo.zkd.test:3101`.
+신원·세션·증명·트랜잭션 카드는 **`https://zkwrapper.zkd.test:5100/user`**(내 세션 관리)에 있다(2026-11-24): 처음에는 잠겨 있고 **"패스키로 열기"** 로 연다(그 브라우저의 패스키여야 열린다).
 이 탭에서 10분 동안 아무 동작이 없으면 다시 잠기고, "잠그기" 로 바로 잠글 수도 있다. 화면을 가리는 잠금이다 — 저장소 암호화는 그대로다.
 "시연: 비밀 바꾸기" 카드는 **`/user?demo=1`** 로 열었을 때만 보인다(2026-11-24 — 시연자의 장면이라 사용자 화면에서 뺐다). 홈 안내 카드의 사용자 1단계 뒤에 승인된 서비스 링크(zkONE·zkTWO)가 있다.
 `/user` 의 "보관 상태" 카드에 **"내 계정 폐기"** 가 있다: 확인 창 → Google 계정 선택(같은 계정이어야 한다 — 다른 계정을 고르면 보내지 않는다, 패스키는 묻지 않는다) → 모든 서비스의 로그인이 끝나고
@@ -103,7 +103,7 @@ passkey-web 과 같은 데모 CA·hosts 가 필요하다(`bash scripts/zkd_tls_s
 운영자 화면(`/rp`)·관리자 화면(`/admin`)도 zkWrapper 주소에 있다. 서비스의 로그인 버튼은 **"zkWrapper 로 로그인"** 이다: 누르면 창이 Google 계정 선택으로 갔다가 돌아와 패스키를 한 번 묻고(처음이면 "패스키 만들고 로그인"
 버튼 한 번), 로그인이 끝난다. 처음 로그인이 곧 등록이다 — 계정은 Google 계정이고(아이디는 Google 이 확인한 이메일), 속성은 속성 도구 기록이 있으면 그것, 없으면 **비어 있다**(2026-11-24 — 기본값 1990·KR 을 없앴다).
 속성이 비어 있으면 조건이 없는 서비스(zkONE)는 그대로 되고, 조건을 거는 서비스(zkTWO — 국가 한국·일본)는 Google 로 가기 전에 "속성 커밋먼트가 없습니다" 로 멈추고 창에 속성 도구 링크가 뜬다(패스키도 묻지 않는다).
-그래서 zkTWO 전에 한 번: `/user` 를 열어 "보관 상태" 카드의 "salt 보기" 로 salt 를 복사 → `https://wallet.zkd.test:5100/attr.html` 에서 출생연도·국가를 넣고 salt 칸에 붙여 "커밋먼트 만들기" →
+그래서 zkTWO 전에 한 번: `/user` 를 열어 "보관 상태" 카드의 "salt 보기" 로 salt 를 복사 → `https://zkwrapper.zkd.test:5100/attr.html` 에서 출생연도·국가를 넣고 salt 칸에 붙여 "커밋먼트 만들기" →
 말할 것(2026-11-24): zkTWO 가 받는 것은 "사용자가 **스스로 넣은** 출생연도·국가가 조건을 만족한다" 는 증명이다 — 값은 숨기지만 값이 참인지는 누구도 보증하지 않는다(속성을 확인해 주는 발급자가 없다). 서비스 화면도 그렇게 말한다("…속성은 사용자가 스스로 넣은 값이고 누구도 보증하지 않습니다").
 zkTWO 에서 다시 "zkWrapper 로 로그인"(이번 로그인이 새 속성으로 사용자 자격증명을 받는다). 말할 것: 빈 속성은 어떤 조건도 증명하지 않는다 — 속성은 사용자가 스스로 넣은 값만 쓴다.
 zkIdP 인증 창·아이디·비밀번호·π_IdP 는 없다. 전체 플로우 한 장(`/common/flow.html`)의 아랫줄은 "Google 계정 → 패스키 → 가명 + Google 토큰 → 세션 토큰 → PPID + π_RP" 로 그려진다.
