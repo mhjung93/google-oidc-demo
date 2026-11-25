@@ -788,7 +788,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     if (r.ok) {
       progress.revoked = true;
       $('sessionLog').textContent = `세션 폐기 요청 완료 (H(C_s)=${String(r.Cf_s ?? '').slice(0, 12)}…): inserted=${r.inserted}, pending=${r.pending} — 다음 게시부터 효력`;
-      setVerdict($('sessionVerdict'), true, 'revoked_ok', () => ({ summary: tt('wallet_session_revoked', { svc: r.svc || '이', cfs: `${String(r.Cf_s ?? '').slice(0, 12)}…` }) || '이 세션을 끝냈습니다 — 다음 폐기 목록 갱신(게시) 때부터 효력이 있습니다.', detail: r }));
+      setVerdict($('sessionVerdict'), true, 'revoked_ok', () => ({ summary: tt(r.published ? 'wallet_session_revoked_now' : 'wallet_session_revoked', { svc: r.svc || '이', cfs: `${String(r.Cf_s ?? '').slice(0, 12)}…` }) || '이 세션을 끝냈습니다 — 다음 폐기 목록 갱신(게시) 때부터 효력이 있습니다.', detail: r }));
     } else setVerdict($('sessionVerdict'), false, 'wallet_session_revoke_failed', { reason: r.reason ?? 'internal', ...(r.detail ? { detail: r.detail } : {}) });
   }
   /** /user 의 "내 계정 폐기"(2026-11-24 스펙 home-and-account-recovery 2부): 확인 창 → 요청 키 → Google(계정 고르기) → popup.js finishWrapperAccount 가 폐기를 요청하고 /user 로.

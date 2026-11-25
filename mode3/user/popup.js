@@ -361,7 +361,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
       if (!idToken) out = { ok: false, reason: 'google_denied', detail: error ?? null };
       else {
         const r = await core.wrapperRevokeSession({ r_s: pend.req.r_s, idToken });
-        out = r.status === 200 ? { ok: true, svc: typeof pend.req.svc === 'string' ? pend.req.svc : '', Cf_s: r.body.Cf_s, inserted: r.body.inserted ?? null, pending: r.body.pending ?? null }
+        out = r.status === 200 ? { ok: true, svc: typeof pend.req.svc === 'string' ? pend.req.svc : '', Cf_s: r.body.Cf_s, inserted: r.body.inserted ?? null, pending: r.body.pending ?? null, published: r.body.published === true }
           : { ok: false, reason: r.body?.reason ?? (r.status === 404 ? 'unknown_account' : 'internal'), detail: r.body?.error ?? r.body?.detail ?? `HTTP ${r.status}` };
       }
     } catch (e) { out = { ok: false, reason: e?.reason ?? 'internal', detail: e?.message ?? null }; }

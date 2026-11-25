@@ -20,7 +20,11 @@ window.DemoStrings = {
     let t = s.replace(/zk-?IdP/g, 'zkWrapper');
     if (lang === 'en') t = t.replace(/zk client (?:home|screen|page)/gi, 'zkWrapper home').replace(/\bzk client\b/gi, 'browser').replace(/\bzk (?:sign-in|login)\b/gi, 'zkWrapper sign-in');
     else t = t.replace(/zk 클라이언트(?: 홈| 화면| 페이지)/g, 'zkWrapper 홈').replace(/zk 클라이언트/g, '브라우저').replace(/zk 로그인/g, 'zkWrapper 로 로그인');
-    if (this.userPages.includes(this.page)) t = t.replace(/(^|[^A-Za-z0-9_])RPs?(?![A-Za-z0-9_])/g, (m, a) => `${a}${lang === 'en' ? 'service' : '서비스'}`);
+    if (this.userPages.includes(this.page)) {
+      // 이 저장소는 "RP 에서" 처럼 조사를 띄어 쓴다 — 바꿀 때 공백도 떼어 "서비스에서" 로(2026-11-24). RP(알피)·서비스 모두 모음으로 끝나 조사는 그대로다.
+      if (lang !== 'en') t = t.replace(/(^|[^A-Za-z0-9_])RPs? (에서|에게|의|가|를|는|와|로|에|도|만)(?![가-힣])/g, (m, a, j) => `${a}서비스${j}`);
+      t = t.replace(/(^|[^A-Za-z0-9_])RPs?(?![A-Za-z0-9_])/g, (m, a) => `${a}${lang === 'en' ? 'service' : '서비스'}`);
+    }
     return t;
   },
   noSnapText(s, lang) {
@@ -94,7 +98,7 @@ window.DemoStrings = {
     wallet_profile_title: { ko: '내 속성', en: 'My attributes' },
     wallet_details_summary: { ko: '상세', en: 'Details' },
     wallet_identity_title: { ko: '내 신원', en: 'My identity' },
-    wallet_identity_desc: { ko_wr: '처음 "zk 로그인" 할 때 Google 계정으로 등록됩니다. 속성은 내가 넣고 zkWrapper 는 값을 모릅니다.', en_wr: 'You are registered with your Google account at your first "zk sign-in". You enter the attributes and zkWrapper never learns their values.', ko: 'zkIdP 에 한 번 등록합니다. 속성은 내가 넣고 zkIdP 는 값을 모릅니다.', en: 'Register once with the zkIdP. I enter the attributes myself; the zkIdP never learns the values.' },
+    wallet_identity_desc: { ko_wr: '처음 "zk 로그인" 할 때 Google 계정으로 등록됩니다. 속성은 내가 넣는 값이고 zkWrapper 는 값을 모릅니다 — zkWrapper 도 서비스도 속성이 참인지 확인하지 않습니다.', en_wr: 'You are registered with your Google account at your first "zk sign-in". You enter the attributes yourself and zkWrapper never learns their values — neither zkWrapper nor the services check whether they are true.', ko: 'zkIdP 에 한 번 등록합니다. 속성은 내가 넣고 zkIdP 는 값을 모릅니다.', en: 'Register once with the zkIdP. I enter the attributes myself; the zkIdP never learns the values.' },
     // salt(s_u) 표시(Task 14, B5) — 비밀이라 기본 가림이고 "보기" 를 눌러야 나온다(지갑 에이전트 로그·콘솔에도 안 남긴다).
     wallet_salt_label: { ko: 'salt', en: 'salt' },   // 2026-11-04: 화면에서는 s_u 대신 salt 로만 부른다
     wallet_salt_warn: { ko: '비밀 — 시연용 표시', en: 'secret — shown for the demo' },
@@ -197,8 +201,8 @@ window.DemoStrings = {
     rp_popup_closed: { ko: '승인 창이 결과 없이 닫혔습니다.', en: 'The approval window closed without a result.' },
     // 2026-11-15(시연자 화면 리뷰): 로그인 뒤 내 자산에 남는 한 줄 — "로그인 성공" 카드는 로그인 카드와 함께 숨는다
     rp_login_proof_none: { ko: 'zkIdP 로 로그인했습니다 — 조건을 공개하지 않았고, 이 서비스는 이 계정 주소만 압니다.', en: 'Logged in with zkIdP — no condition was disclosed; this service knows only this account address.' },
-    rp_login_proof_cond: { ko: 'zkIdP 로 로그인했습니다 — 증명한 조건: {what}. 값은 받지 않았습니다.', en: 'Logged in with zkIdP — proven conditions: {what}. No values were received.' },
-    rp_login_proof_policy: { ko: 'zkIdP 로 로그인했습니다 — 증명한 조건: 만 {minAge}세 이상 · {countries} 거주({what}). 출생연도·국가 값은 받지 않았습니다.', en: 'Logged in with zkIdP — proven conditions: age {minAge}+ · living in {countries} ({what}). The birth year and country values were not received.' },
+    rp_login_proof_cond: { ko: 'zkIdP 로 로그인했습니다 — 증명한 조건: {what}. 값은 받지 않았습니다.', en: 'Logged in with zkIdP — proven conditions: {what}. No values were received.', ko_wr: 'zkWrapper 로 로그인했습니다 — 사용자가 넣은 속성이 조건({what})을 만족한다는 증명을 받았습니다. 값은 받지 않았고, 속성은 사용자가 스스로 넣은 값이고 누구도 보증하지 않습니다.', en_wr: 'Signed in with zkWrapper — received a proof that the user\'s attributes meet the conditions ({what}). No values were received, and attributes are self-declared by the user and nobody vouches for them.' },   // 2026-11-24(구조 점검 3번)
+    rp_login_proof_policy: { ko: 'zkIdP 로 로그인했습니다 — 증명한 조건: 만 {minAge}세 이상 · {countries} 거주({what}). 출생연도·국가 값은 받지 않았습니다.', en: 'Logged in with zkIdP — proven conditions: age {minAge}+ · living in {countries} ({what}). The birth year and country values were not received.', ko_wr: 'zkWrapper 로 로그인했습니다 — 사용자가 넣은 속성이 조건(만 {minAge}세 이상 · {countries} 거주, {what})을 만족한다는 증명을 받았습니다. 출생연도·국가 값은 받지 않았고, 속성은 사용자가 스스로 넣은 값이고 누구도 보증하지 않습니다.', en_wr: 'Signed in with zkWrapper — received a proof that the user\'s attributes meet the conditions (age {minAge}+ · living in {countries}, {what}). The birth year and country values were not received, and attributes are self-declared by the user and nobody vouches for them.' },   // 2026-11-24(구조 점검 3번)
     rp_disclosed: { ko: '공개한 조건: {what}', en: 'Disclosed conditions: {what}' },
     rp_disc_none: { ko: '공개 없음', en: 'None' },
     rp_disc_range: { ko: '{attr} {lo}–{hi}', en: '{attr} {lo}–{hi}' },
@@ -527,7 +531,7 @@ window.DemoStrings = {
     // {minAge}·{countries} 는 rp_info 의 predicates(minAge, allowedCountryNames)로 채운다 — 정보를 아직 못 읽었으면
     // 페이지는 이 문구의 ko 리터럴과 같은 기본 문구를 그대로 둔다(mode3/rp.html 의 #loginPolicy 기본 텍스트).
     rp_login_policy: { ko: '만 {minAge}세 이상, {countries} 거주자만 이용할 수 있습니다', en: 'Ages {minAge}+ living in {countries} only' },
-    rp_login_policy_enforced: { ko: '만 {minAge}세 이상, {countries} 거주자만 이용할 수 있습니다. 나이와 국가는 값 대신 조건만 증명으로 확인합니다.', en: 'Ages {minAge}+ living in {countries} only. Age and country are checked as conditions by proof, never as values.' },
+    rp_login_policy_enforced: { ko: '만 {minAge}세 이상, {countries} 거주자만 이용할 수 있습니다. 나이와 국가는 값 대신 조건만 증명으로 확인합니다.', en: 'Ages {minAge}+ living in {countries} only. Age and country are checked as conditions by proof, never as values.', ko_wr: '만 {minAge}세 이상, {countries} 거주자만 이용할 수 있습니다. 나이와 국가는 값 대신, 사용자가 스스로 넣은 속성이 조건을 만족한다는 증명으로 확인합니다 — 속성의 참은 누구도 보증하지 않습니다.', en_wr: 'Ages {minAge}+ living in {countries} only. Age and country are checked by a proof that the user\'s self-declared attributes meet the conditions, never as values — nobody vouches for the attributes themselves.' },   // 2026-11-24(구조 점검 3번)
     rp_login_open: { ko: '이용 조건 없음 — 누구나 이용할 수 있습니다', en: 'No conditions — open to everyone' },
     // 로그인 모달(2026-10-15) — 직접 로그인(장식)·Google·Naver(데모 미지원)·zkIdP(zk-Delegation, 실제 로그인) 선택 창.
     rp_login_modal_title: { ko: '로그인', en: 'Log in' },
@@ -684,6 +688,8 @@ window.DemoStrings = {
     wallet_bound_label: { ko: '허용 거래 수', en: 'Allowed tx count' },
     wallet_bound_hint: { ko: '끝낸 뒤에도 받아 줄 거래 수 — 0 이면 전부 막습니다', en: 'Transactions still accepted after ending — 0 blocks them all' },   // 2026-11-13(화면 리뷰)
     wallet_session_revoked: { ko_wr: '{svc} 세션을 끝냈습니다 — 이 기기에서 지웠고, 이 세션으로 하는 로그인·출금은 다음 폐기 목록 갱신(게시) 때부터 어디서도 통하지 않습니다. 계정과 다른 서비스의 로그인은 그대로입니다.', en_wr: 'The {svc} session has ended — it is removed from this device, and from the next revocation-list update (publication) its logins and withdrawals are refused everywhere. Your account and other services stay logged in.', ko: '이 세션(H(C_s) {cfs})만 폐기를 요청했습니다 — 다음 게시부터 이 세션의 로그인·트랜잭션이 거부됩니다. 계정과 다른 세션은 그대로입니다. zkIdP 관리자 "세션 — 폐기 목록" 에 같은 H(C_s) 로 나옵니다.', en: 'Revocation requested for this session only (H(C_s) {cfs}) — from the next publication its logins and transactions are refused. The account and other sessions are unchanged. It appears with the same H(C_s) in zkIdP admin "Sessions — revoked list".' },   // 2026-11-16(사용자 요청): H(C_s) 로 맞춰 본다
+    // 2026-11-24(구조 점검 4번): 래퍼 서버는 세션 폐기를 바로 게시한다 — 효력이 곧바로 생긴다
+    wallet_session_revoked_now: { ko: '{svc} 세션을 끝냈습니다 — 이 기기에서 지웠고, 폐기 목록을 바로 게시해 이 세션으로 하는 로그인·출금은 이제 어디서도 통하지 않습니다. 계정과 다른 서비스의 로그인은 그대로입니다(열려 있던 다른 서비스 화면은 한 번 다시 검증을 묻습니다).', en: 'Ended the {svc} session — removed from this device, and the revocation list was published right away, so this session can no longer log in or withdraw anywhere. Your account and other services stay logged in (other open service pages will ask to re-verify once).' },
     wallet_session_revoke_failed: { ko: '세션 폐기 실패', en: 'Session revocation failed' },
     wallet_cancelled: { ko: '창에서 취소했습니다.', en: 'Cancelled in the dialog.' },
     wallet_mirror_line: { ko: '거울 epoch {mirror} / 캐노니컬 epoch {canonical}', en: 'Mirror epoch {mirror} / canonical epoch {canonical}' },   // V10: 증명은 거울 epoch 기준
@@ -707,7 +713,7 @@ window.DemoStrings = {
     wallet_disc_no_value: { ko: '값 없음', en: 'No value' },
     wallet_disc_excluded: { ko: '내 값 {v} 은 범위 밖이라 제외했습니다.', en: 'My value {v} is outside the range, so it was excluded.' },
     wallet_tx_claim_btn: { ko: '조건 증명(선택 공개) 보내기', en: 'Send condition proof (selective disclosure)' },
-    wallet_tx_claim_hint: { ko: '받는 주소와 데이터를 이 서비스의 조건 확인 컨트랙트(AttrGate)로 채우고, 나이·국가 조건을 만족한다는 것만 증명합니다 — 값 자체는 보내지 않습니다.', en: 'Fills the recipient and data with the condition-check contract (AttrGate) of this service and proves only that your age and country meet its conditions. The values themselves are never sent.' },
+    wallet_tx_claim_hint: { ko: '받는 주소와 데이터를 이 서비스의 조건 확인 컨트랙트(AttrGate)로 채우고, 나이·국가 조건을 만족한다는 것만 증명합니다 — 값 자체는 보내지 않습니다.', en: 'Fills the recipient and data with the condition-check contract (AttrGate) of this service and proves only that your age and country meet its conditions. The values themselves are never sent.', ko_wr: '받는 주소와 데이터를 이 서비스의 조건 확인 컨트랙트(AttrGate)로 채우고, 내가 넣은 나이·국가 속성이 조건을 만족한다는 것만 증명합니다 — 값 자체는 보내지 않습니다. 속성은 내가 스스로 넣은 값이라 누구도 보증하지 않습니다.', en_wr: 'Fills the recipient and data with the condition-check contract (AttrGate) of this service and proves only that the age and country you entered meet its conditions. The values are never sent, and since you entered them yourself nobody vouches for them.' },   // 2026-11-24(구조 점검 3번)
     wallet_set_label: { ko: '집합 소속 조건', en: 'Set membership' },
     wallet_set_none: { ko: '쓰지 않음', en: 'Not used' },
     wallet_set_members: { ko: '허용 원소', en: 'Allowed members' },
@@ -1490,7 +1496,7 @@ window.DemoStrings = {
     rp_tx_replay_btn: { ko: '② 옛 증명으로 보내기(시연)', en: '② Send with the old proof (demo)' },   // 2026-11-23
     rp_tx_hold_btn: { ko: '① 증명 만들어 두기(시연)', en: '① Build a proof now (demo)' },   // 2026-11-23 시연 2차 — root 가 바뀐 경우만 보인다
     rp_tx_hold_title: { ko: '증명 만들어 둠', en: 'Proof built' },
-    rp_tx_hold_ok: { ko: '증명을 만들어 두었습니다(nonce {nonce}). 보내지 않았습니다 — zkWrapper 의 내 세션 관리(/user)에서 다른 서비스의 세션을 끝내고 관리자 화면에서 게시해 root 를 바꾼 뒤 ② 를 누르세요.', en: 'Proof built (nonce {nonce}) and not sent — end another service\'s session in "my sessions" on zkWrapper (/user) and publish on the admin page to change the root, then press ②.' },
+    rp_tx_hold_ok: { ko: '증명을 만들어 두었습니다(nonce {nonce}). 보내지 않았습니다 — zkWrapper 의 내 세션 관리(/user)에서 다른 서비스의 세션을 끝내면(폐기 목록이 바로 게시돼 root 가 바뀝니다) ② 를 누르세요.', en: 'Proof built (nonce {nonce}) and not sent — end another service\'s session in "my sessions" on zkWrapper (/user) (the revocation list is published right away, which changes the root), then press ②.' },
     rp_tx_replay_desc: { ko: '① 지금의 root·nonce 로 증명만 만들어 두고, root 가 바뀐 뒤 ② 로 그 증명에 지금 root 만 붙여 보냅니다. 거래는 블록에 실리지만 증명 검증에서 실패해야 합니다.', en: '① builds a proof for the current root and nonce without sending; after the root changes, ② sends that proof with only the root replaced. The transaction is mined but should fail proof verification.' },
     rp_tx_replay_reverted: { ko: '거래는 블록 {block}에 실렸지만 계정 컨트랙트의 영지식 증명 검증에서 되돌려졌습니다({err}). root 가 바뀐 뒤에는 옛 증명을 다시 쓸 수 없습니다.', en: 'The transaction was mined in block {block} but the account contract rejected it at proof verification ({err}). An old proof cannot be reused after the root changes.' },
     rp_custody_withdraw_ok: { ko: '거래소 보관에서 {eth} ETH 를 보냈습니다.', en: 'Sent {eth} ETH from the exchange-held balance.' },
@@ -1673,7 +1679,7 @@ window.DemoStrings = {
     no_old_proof: { where: 'wallet', ko: { title: '지금 nonce 로 만들어 둔 증명이 없습니다', cause: '시연 ② 는 ① 로 지금의 nonce 에 만들어 둔 증명만 씁니다 — ① 을 하지 않았거나, 그 뒤 출금이 있어 nonce 가 바뀌었습니다(nonce 검사 장면은 다음 버전).', action: '① 증명 만들어 두기를 다시 누른 뒤 root 를 바꾸고 ② 를 누르세요.' }, en: { title: 'No proof built for the current nonce', cause: 'Demo ② only uses a proof built by ① for the current nonce — ① was not pressed, or a withdrawal since then changed the nonce (the nonce scene comes in the next version).', action: 'Press ① again, change the root, then press ②.' } },
     tx_reverted: { where: 'rp', ko: { title: '거래가 블록에서 되돌려졌습니다', cause: '거래는 블록에 실렸지만 계정 컨트랙트가 되돌렸습니다 — "자세히"의 detail 이 컨트랙트 오류 이름입니다.', action: '옛 증명 시연이면 정상입니다. 그 밖이면 다시 로그인한 뒤 다시 시도하세요.' }, en: { title: 'The transaction was reverted', cause: 'The transaction was mined but the account contract reverted it — the detail under "more" is the contract error name.', action: 'Expected in the old-proof demo. Otherwise log in again and retry.' } },
     relay_demo_no_session: { where: 'rp', ko: { title: '이 서비스에 로그인한 세션의 거래가 아닙니다', cause: '옛 증명 시연 경로는 지금 이 서비스에 로그인해 있는 세션의 거래만 보냅니다.', action: '이 서비스에 다시 로그인한 뒤 누르세요.' }, en: { title: 'Not a transaction of a session logged in here', cause: 'The old-proof demo only relays transactions of a session currently logged in to this service.', action: 'Log in to this service again, then press it.' } },
-    replay_still_valid: { where: 'wallet', ko: { title: 'root 가 아직 바뀌지 않았습니다', cause: '① 에서 만든 증명이 지금의 root·nonce 와 같아 아직 유효합니다 — 보내면 진짜 출금이 됩니다.', action: 'zkWrapper 의 내 세션 관리(/user)에서 다른 서비스의 세션을 끝내고 관리자 화면에서 게시해 root 를 바꾼 뒤 ② 를 누르세요.' }, en: { title: 'The root has not changed yet', cause: 'The proof built by ① still matches the current root and nonce, so it is valid — sending it would be a real withdrawal.', action: 'End another service\'s session in "my sessions" on zkWrapper (/user) and publish on the admin page to change the root, then press ②.' } },
+    replay_still_valid: { where: 'wallet', ko: { title: 'root 가 아직 바뀌지 않았습니다', cause: '① 에서 만든 증명이 지금의 root·nonce 와 같아 아직 유효합니다 — 보내면 진짜 출금이 됩니다.', action: 'zkWrapper 의 내 세션 관리(/user)에서 다른 서비스의 세션을 끝내면(폐기 목록이 바로 게시돼 root 가 바뀝니다) ② 를 누르세요.' }, en: { title: 'The root has not changed yet', cause: 'The proof built by ① still matches the current root and nonce, so it is valid — sending it would be a real withdrawal.', action: 'End another service\'s session in "my sessions" on zkWrapper (/user) (the revocation list is published right away, which changes the root), then press ②.' } },
     relay_demo_off: { where: 'rp', ko: { title: '이 서비스는 옛 증명 시연을 켜지 않았습니다', cause: '릴레이가 되돌려질 거래를 보내는 시연 경로는 MODE3_RELAY_DEMO_REVERT=1 일 때만 열립니다.', action: '시연을 하려면 서비스를 그 값으로 다시 띄우세요.' }, en: { title: 'This service has the old-proof demo off', cause: 'The relay sends a transaction that will revert only with MODE3_RELAY_DEMO_REVERT=1.', action: 'Restart the service with that setting to run the demo.' } },
     relay_bad_proof: { where: 'rp', ko: { title: '릴레이가 증명을 거절했습니다', cause: 'RP 릴레이가 calldata 안의 증명을 검증하지 못했습니다.', action: '다시 로그인한 뒤 다시 시도하세요.' }, en: { title: 'The relay rejected the proof', cause: 'The RP relay could not verify the proof inside the calldata.', action: 'Log in again and retry.' } },
     oidc_required: { where: 'aa', ko: { title: 'Google 본인 확인이 필요합니다', cause: 'Google 로 등록된 계정은 로그인마다 Google ID 토큰을 함께 내야 합니다.', action: 'RP 의 "Google 로 로그인" 버튼으로 다시 로그인하세요.' }, en: { title: 'Google verification required', cause: 'Accounts registered through Google must present a Google ID token on every login.', action: 'Log in again with the RP\'s "Sign in with Google" button.' } },

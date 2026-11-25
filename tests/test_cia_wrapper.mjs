@@ -202,7 +202,11 @@ try {
     let r = await revoke({ sub: 'g-mallory' }); assert.ok(r.status === 403 || r.status === 404, j(r.body));
     r = await revoke({ sigFor: { scope: 'session', Cf_s: (BigInt(Cf_s) + 1n).toString() } }); assert.equal(r.status, 400, j(r.body)); assert.equal(r.body.reason, 'wrapper_bad_signature');
     r = await revoke({ sigFor: { scope: 'account' } }); assert.equal(r.status, 400, j(r.body));
+    const root0 = (await cia.get('/mode3/health')).body.root;
     r = await revoke(); assert.equal(r.status, 200, j(r.body));
+    // 2026-11-24(구조 점검 4번): 래퍼 방식은 세션 폐기를 바로 게시한다 — 관리자 게시·하트비트를 기다리지 않는다
+    assert.equal(r.body.published, true, j(r.body)); assert.equal(r.body.pending, 0, j(r.body));
+    assert.notEqual((await cia.get('/mode3/health')).body.root, root0, '폐기했는데 root 가 바로 바뀌지 않았다');
   });
   await t('동시 요청: 두 계정이 같은 auid_s 로 동시에 발급받으면(둘 다 새 C_u) 하나만 200, 다른 하나는 409 auid_s_taken — 두 기록에 함께 남지 않는다(최종 검토 C-1)', async () => {
     const p1 = await person('g-race-1'), p2 = await person('g-race-2');

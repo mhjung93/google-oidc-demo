@@ -183,6 +183,9 @@ try {
     google.setNextSub('google-user-A'); google.setNextClaims({ email: 'jihoo@example.com', email_verified: true });
     const { rpPage } = await startLogin(A.ctx, rp2);
     await waitText(rpPage, '#verdict', '로그인 성공', 120_000);
+    // 2026-11-24(구조 점검 3번): 속성은 사용자가 스스로 넣은 값이다 — 서비스 화면이 그것을 확인된 사실처럼 말하지 않는다
+    await waitText(rpPage, '#loginProof', '보증하지 않습니다', 15_000);
+    assert.ok((await text(rpPage, '#loginPolicy')).includes('스스로 넣은'), await text(rpPage, '#loginPolicy'));
     const s2 = (await rp2.get('/api/mode3/sessions')).body.sessions; assert.ok(s2.length >= 1 && s2[0].disclosure?.set, `zkTWO 세션에 공개 집합이 없다: ${j(s2)}`);
     const p2 = ppidOf(noteSessions(await idbDump(userPage)), info2.arid)[0]; assert.ok(p2); assert.notEqual(p2, ppid1);
     // 2026-11-23(사용자 요청): 로그인 직후부터 "내 계정 주소" 는 0x 스마트 계정 주소다 — 잔액 조회 전에도. 그전에는 web 방식에서 잔액을 자동으로 읽지 않아 PPID 10진수로 남았다.
@@ -491,8 +494,9 @@ try {
     const newlyRevoked = after.filter((x) => x.revokedAt && !before.find((y) => y.Cf_s === x.Cf_s)?.revokedAt).map((x) => x.Cf_s);
     assert.deepEqual(newlyRevoked, [Cf_s], '다른 세션까지 폐기됐다');
     assert.ok(!Object.values((await idbDump(page)).sessions ?? {}).some((v) => String(v.arid) === String(info2.arid)), '지갑에 폐기한 세션이 남았다');
-    assert.equal((await cia.adminPost('/cia/publish', {})).status, 200);
-    assert.notEqual((await cia.get('/mode3/health')).body.root, root0, '게시했는데 root 가 그대로다');
+    // 2026-11-24(구조 점검 4번): 세션 끝내기는 바로 게시된다 — 관리자 게시 없이 root 가 바뀌었고, 결과 문구도 "바로" 라고 말한다
+    assert.notEqual((await cia.get('/mode3/health')).body.root, root0, '세션을 끝냈는데 root 가 바로 바뀌지 않았다');
+    assert.ok((await text(page, '#sessionVerdict')).includes('바로'), await text(page, '#sessionVerdict'));
     await rpPage.click('#txReplayBtn');
     await waitText(rpPage, '#txVerdict', '증명 검증', 120_000);
     assert.ok((await text(rpPage, '#txVerdict')).includes('InvalidProof'));

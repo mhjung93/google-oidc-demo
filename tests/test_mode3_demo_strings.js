@@ -386,7 +386,8 @@ t('zkWrapper 사용자 화면 문구(T4): wallet·rp·attr 에서 zkIdP·스냅�
   const save = { w: S.wrapper, n: S.noSnap, p: S.page };
   try {
     S.wrapper = true; S.noSnap = true;
-    const BAD = [/zk-?IdP/, /스냅/, /zk 클라이언트/, /zk 로그인/, /(^|[^A-Za-z0-9_])RP(?![A-Za-z0-9_])/];
+    // 2026-11-24: "RP 에서" 처럼 띄어 쓴 조사가 "서비스 에서" 로 남지 않는다(바꿀 때 공백도 뗀다)
+    const BAD = [/zk-?IdP/, /스냅/, /zk 클라이언트/, /zk 로그인/, /(^|[^A-Za-z0-9_])RP(?![A-Za-z0-9_])/, /서비스 (에서|에게|의|가|를|는|와|로|에|도|만)(?![가-힣])/];
     for (const page of ['wallet', 'rp', 'attr']) {
       S.page = page; const hits = [];
       for (const [k, e] of Object.entries(S.ui)) { const x = S.text(e, 'ko'); for (const w of BAD) if (w.test(x)) hits.push(`${k} ${w.source}`); }

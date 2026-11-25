@@ -1864,7 +1864,10 @@ app.post('/cia/revoke', userCors, async (req, res) => {
     if (cur.pk_i) queueBound(cur.pk_i, cur.bound);   // 관리자 폐기도 레코드에 pk_i 가 있으면(앞선 사용자 폐기) 같이 게시한다
     persist();
     if (boundKey) schedulePublishAfterRevoke(rec.chainid, revokeHead, { leaf, pk_i: boundKey });
-    res.json({ inserted, leaf, bound: cur.bound, root: tree.getRoot().toString(), pending: state.pending.length, mirrorBound: Boolean(cur.pk_i) });
+    // 2026-11-24(구조 점검 4번, 사용자 결정): 래퍼 방식은 세션 폐기를 바로 게시한다 — 사용자의 "세션 끝내기"·관리자의 세션 폐기가 관리자 게시·하트비트를 기다리지 않고
+    // 곧바로 효력을 갖는다(계정 폐기는 이미 그렇다). 게시마다 서비스의 열린 로그인이 다시 검증을 묻는 것은 관리자 게시와 같다. 실패하면 하트비트가 다시 시도한다.
+    const pub = WRAPPER && inserted ? await publishSafely() : null;
+    res.json({ inserted, leaf, bound: cur.bound, root: tree.getRoot().toString(), pending: state.pending.length, mirrorBound: Boolean(cur.pk_i), ...(pub ? { published: Boolean(pub.published) } : {}) });
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 

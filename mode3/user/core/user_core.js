@@ -1382,7 +1382,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
         if (r.status !== 200) return R(r.status, r.body ?? {});
         await deleteSession(rsKey);
         const rpNotified = await notifyRpLogout(s, rsKey);
-        return R(200, { revoked: true, inserted: r.body.inserted, pending: r.body.pending, rpNotified, Cf_s });
+        return R(200, { revoked: true, inserted: r.body.inserted, pending: r.body.pending, published: r.body.published === true, rpNotified, Cf_s });   // published: 2026-11-24 — 래퍼 서버가 바로 게시했는가
       } finally { await kv.del('wrapperKey'); }
     },
     /** 래퍼 방식의 계정 자기 폐기(2026-11-24 스펙 home-and-account-recovery 2부): 세션 끝내기와 같은 왕복 — 1회용 요청 키에 묶인 Google 토큰 + "계정 폐기" 에 대한
