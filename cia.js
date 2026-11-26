@@ -51,6 +51,7 @@ import { createOidcVerifier, GOOGLE_DEFAULTS } from './lib/mode3_oidc.js';
 import { uidOf, regNonce, issueNonce, isRevokeNonce, REG_PREFIX, REVOKE_PREFIX, ISSUE_PREFIX } from './lib/mode3_oidc_nonce.js';
 import { WRAPPER_PREFIX, wrapperNonce, verifyDigest, issueDigest, revokeDigest, envelopeDigest, linkDigest } from './lib/mode3_wrapper_auth.js';
 import { isLinkKey, linkProofOk } from './lib/mode3_link_key.js';
+import { isVaultCt, vaultDigest } from './lib/mode3_profile_vault.js';
 import { isEnvelope, auidCheckOf, BACKUP_LIMIT, DEVICE_LIMIT } from './lib/mode3_salt_envelope.js';
 import { mountUserApp, userAppCsp, adminPageCsp, userDistReady } from './lib/mode3_user_app_routes.js';
 import { listenMaybeTls } from './lib/mode3_tls.js';
@@ -1469,7 +1470,7 @@ async function finishIssue(res, opts) {
   const hold = { auidS: null, uid: null };
   try { return await finishIssueInner(res, opts, hold); } finally { releaseIssue(hold); }
 }
-async function finishIssueInner(res, { uid, acct, cupt, cspt, auidS, aridS, mh, chainStr, agent, consume = null, consumeFail = null, unconsume = null, wrapper = false, by = null, extra = null, envelope = null }, hold) {
+async function finishIssueInner(res, { uid, acct, cupt, cspt, auidS, aridS, mh, chainStr, agent, consume = null, consumeFail = null, unconsume = null, wrapper = false, by = null, vault = null, extra = null, envelope = null }, hold) {
   // Cf_u·Cf_s 는 IdP 가 점에서 스스로 유도한다(설계 §6.2) — 사용자가 보낸 Cf 를 서명하면 증명된 점과 무관한 값에 서명이 붙는다.
   const Cf_u = await compressPoint(cupt), Cf_s = await compressPoint(cspt);
   const head = await headOf(chainStr);   // fail-closed: 체인이 죽어 있으면 발급하지 않는다(게시도 불가하므로 폐기가 닿지 않는 세션이 된다)
@@ -1539,6 +1540,8 @@ async function finishIssueInner(res, { uid, acct, cupt, cspt, auidS, aridS, mh, 
   // by(2026-11-26 스펙 identity-multi-login M6): 이 로그인에 쓴 계정이 주인과 다를 때만 — 개봉은 그 로그인의 uid 하나를 돌려준다.
   acct.auidSLog = [...(acct.auidSLog ?? []), { value: auidS.toString(), at: issuedAt, ...(by !== null && by !== uid ? { by } : {}) }];
   acct.lastIssue = { at: issuedAt, auid_s: auidS.toString(), arid_s: aridS.toString(), Cf_u: cfu, Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString() };
+  // 보관 사본(스펙 2026-11-26 profile-vault): 이 발급이 받아들여졌으니 그 요청에 실린 암호문이 이 계정의 최신 사본이다(속성·blind_u — 서버는 열지 못한다). 아래 persist 가 함께 저장한다.
+  if (wrapper && vault !== null) acct.vault = { ct: vault, at: issuedAt };
   // salt 봉투(계획 2026-11-24 salt-envelope [I2]): 복구 발급에 실린 기기 봉투는 서명(signPoseidon)이 끝난 뒤, 세션·발급 기록을 쓰는 이 마지막 동기 구간에서 함께 더한다
   // (바로 아래 persist 가 같이 저장한다) — 앞에서 실패했거나(cred_revoked 등) 토큰을 돌려준 요청은 봉투를 남기지 않는다. 같은 봉투가 다시 와도(새 토큰으로 재시도) 하나로 남는다.
   // 마지막 폐기 검사(acct.disabled)는 이보다 앞이고 그 뒤에도 await(credMessageV11)가 있다 — 그 사이에 계정이 폐기되면 이 발급의 세션 기록과 함께 봉투도 더해진다
@@ -1627,7 +1630,8 @@ async function wrapperAuth(body, digestOf, { consume = false } = {}) {
  *  π_IdP 가 없다 — 가명·커밋먼트가 제대로 만들어졌는지는 서비스에 내는 π_RP 가 증명한다(pi_cred ②⑤⑦·등록부 리프 H(auid, Cf_u)). 발급자가 지키는 것은 발급의 부수효과다:
  *  계정당 auid 고정(첫 발급), 한 auid 는 한 계정(R11 — registerAccount), auid_s 전역 유일·남의 C_u 거절(finishIssue), 토큰 1회 소비. */
 async function issueWrapper(req, res) {
-  const { auid, auid_s, arid_s, C_u_pt, C_s_pt, chainid, allowAgent, max_height, envelope, link_key } = req.body ?? {};
+  const { auid, auid_s, arid_s, C_u_pt, C_s_pt, chainid, allowAgent, max_height, envelope, link_key, vault } = req.body ?? {};
+  if (vault !== undefined && !isVaultCt(vault)) return res.status(400).json({ error: 'vault must be a base64url ciphertext', reason: 'vault_bad' });
   if (link_key !== undefined && !isLinkKey(link_key)) return res.status(400).json({ error: 'link_key must be an address', reason: 'link_bad' });
   // 복구 발급의 기기 봉투(선택) — 모양은 토큰을 보기 전에 본다(형식이 틀린 요청이 토큰을 쓰지 않게). 백업 봉투는 /cia/wrapper/envelope 로만 더한다.
   if (envelope !== undefined && !(isEnvelope(envelope) && envelope.kind === 'device')) return res.status(400).json({ error: 'envelope must be a device envelope', reason: 'envelope_bad' });
@@ -1663,7 +1667,7 @@ async function issueWrapper(req, res) {
   // 아이디 = Google 이 확인한 이메일(있을 때만 — 관리자 화면에 보이는 값). 저장은 finishIssue 의 persist 가 함께 한다.
   if (!acct.loginId && au.loginUid === uid && au.o.emailVerified && typeof au.o.email === 'string' && SIGNUP_EMAIL_RE.test(au.o.email)) acct.loginId = au.o.email;
   return await finishIssue(res, { uid, acct, cupt, cspt, auidS: BigInt(auid_s), aridS: BigInt(arid_s), mh, chainStr, agent: BigInt(allowAgent),
-    consume: () => consumeWrapperNonce(au.nonce), unconsume: () => releaseWrapperNonce(au.nonce), consumeFail: TOKEN_USED, wrapper: true, by: au.loginUid, extra: { uid, email: acct.loginId ?? null, logins: loginsView(uid).map(({ uid: u, email, primary }) => ({ uid: u, email, ...(primary ? { primary: true } : {}) })) }, envelope: envelope ?? null });
+    consume: () => consumeWrapperNonce(au.nonce), unconsume: () => releaseWrapperNonce(au.nonce), consumeFail: TOKEN_USED, wrapper: true, by: au.loginUid, vault: vault ?? null, extra: { uid, email: acct.loginId ?? null, logins: loginsView(uid).map(({ uid: u, email, primary }) => ({ uid: u, email, ...(primary ? { primary: true } : {}) })) }, envelope: envelope ?? null });
 }
 /** 백업 봉투 추가·삭제(POST /cia/wrapper/envelope, 래퍼 방식만): { id_token, pk_e, sig, op:'add'|'remove', auid, envelope?, id? }. 본인 확인은 발급과 같다(요청 키에 묶인 Google 토큰 + envelopeDigest 서명).
  *  auid(최종 검토 2026-11-24 I-1): salt 를 안다는 증거 — 계정에 고정된 auid 와 같아야 한다. Google 계정만으로는 백업을 지우거나 한도를 채우지 못한다(409 auid_pinned 는 auid 를 주지 않는다).
@@ -1752,6 +1756,24 @@ async function linkWrapper(req, res) {
   persist();
   return res.json({ logins: loginsView(au.uid) });
 }
+/** 보관 사본 내려주기(POST /cia/wrapper/vault, 래퍼 방식만 — 스펙 2026-11-26 profile-vault): { id_token, pk_e, sig, auid }.
+ *  새 브라우저가 첫 발급 **전에** 부른다 — 같은 요청 키·같은 토큰으로 이어서 발급하므로 토큰을 소비하지 않는다(이미 쓴 토큰이면 거절). 상태를 바꾸지 않는다.
+ *  auid 가 계정의 것과 같을 때만 준다(다른 패스키면 어차피 열지 못하고, 발급이 auid_pinned 로 답한다). 암호문은 salt 에서 유도한 키로만 열린다 — 서버는 열지 못한다.
+ *  응답 { ct | null, slot, at }. 계정이 없으면 404(첫 로그인). */
+async function vaultWrapper(req, res) {
+  const { auid } = req.body ?? {};
+  if (!isDec(auid)) return res.status(400).json({ error: 'auid required', reason: 'vault_bad' });
+  const au = await wrapperAuth(req.body, (b) => vaultDigest({ auid: b.auid }, PUBLIC_URL), { consume: false });
+  if (au.error) return res.status(au.error.status).json(au.error.body);
+  const acct = state.accounts[au.uid];
+  if (!acct?.auid) return res.status(404).json({ error: 'unknown account', reason: 'unknown_account' });
+  if (acct.disabled) return res.status(403).json({ error: 'account disabled', reason: 'account_disabled' });
+  if (BigInt(auid).toString() !== acct.auid) return res.status(409).json({ error: 'auid does not match this account', reason: 'vault_auid_mismatch' });
+  res.set('Cache-Control', 'no-store').json({ ct: acct.vault?.ct ?? null, slot: acct.slot ?? null, at: acct.vault?.at ?? null });
+}
+if (WRAPPER) app.post('/cia/wrapper/vault', async (req, res) => {
+  try { return await vaultWrapper(req, res); } catch (err) { res.status(500).json({ error: err.message }); }
+});
 if (WRAPPER) app.post('/cia/wrapper/link', async (req, res) => {
   try { return await linkWrapper(req, res); } catch (err) { res.status(500).json({ error: err.message }); }
 });

@@ -13,6 +13,7 @@ import { signOpenRequest } from '../lib/mode3_opening.js';
 import { generateRequestKey, wrapperNonce, signIssue, signDigest, revokeDigest, issueDigest, envelopeDigest, linkDigest } from '../lib/mode3_wrapper_auth.js';
 import { auidCheckOf, BACKUP_LIMIT, DEVICE_LIMIT } from '../lib/mode3_salt_envelope.js';
 import { signLinkProof, linkKeyOf } from '../lib/mode3_link_key.js';
+import { sealVault, openVault, vaultDigest } from '../lib/mode3_profile_vault.js';
 import { randomBytes } from 'node:crypto';
 import { proveV11, TESTUSER_ATTRS } from './helpers/mode3_flow.mjs';
 
@@ -35,13 +36,13 @@ async function person(sub, seed = null) {
 }
 /** 브라우저가 하는 일: 요청 키 → 그 키의 nonce 로 Google 토큰 → 본문 → 서명 → /cia/issue. opts 로 한 부분씩 어긋나게 만든다. */
 // envelope(2026-11-24 salt 봉투 Task 2): 발급 본문에 실을 기기 봉투 — 서명하는 글(issueDigest)에 들어간다.
-async function wrapIssue(who, svc, { key = null, tokenKey = null, token = null, mutate = null, sign = true, blind_u = who.blind_u, email = `${who.sub}@example.com`, r_s = randomScalar(), r_rp = randomScalar(), envelope = null } = {}) {
+async function wrapIssue(who, svc, { key = null, tokenKey = null, token = null, mutate = null, sign = true, blind_u = who.blind_u, email = `${who.sub}@example.com`, r_s = randomScalar(), r_rp = randomScalar(), envelope = null, vault = null } = {}) {
   const k = key ?? await generateRequestKey();
   const id_token = token ?? await stub.mint({ sub: who.sub, nonce: await wrapperNonce((tokenKey ?? k).pkE), extra: { email, email_verified: true } });
   const session = createSessionKey();
   const max_height = BigInt(await provider.getBlockNumber()) + 300n;
   const built = await buildWrapperIssueBody({ uid: who.uid, s_u: who.s_u, blind_u, attrs: who.attrs, arid: BigInt(svc.arid), r_rp, r_s, session, chainid: 31337n, allowAgent: 0n, max_height });
-  const signed = envelope ? { ...built.body, envelope } : built.body;
+  const signed = { ...built.body, ...(vault ? { vault } : {}), ...(envelope ? { envelope } : {}) };   // vault(2026-11-26 보관 사본): 서명하는 글에 들어간다
   const sig = sign ? await signIssue(k.privateKey, signed, AUD) : undefined;
   const body = { id_token, pk_e: k.pkE, ...(sig ? { sig } : {}), ...signed };
   if (mutate) mutate(body);
@@ -485,6 +486,39 @@ try {
     for (let i = 1; i <= 4; i++) assert.equal((await link(quinn, `g-quinn-${i}`)).r.status, 200, `연결 ${i}`);
     const x = await link(quinn, 'g-quinn-5'); assert.equal(x.r.status, 409, j(x.r.body)); assert.equal(x.r.body.reason, 'link_limit');
     assert.equal((await acctOf(quinn.uid)).logins.length, 4);
+  });
+  // ---- 보관 사본(스펙 2026-11-26 profile-vault) ----
+  await t('보관 사본: 발급에 실은 암호문을 계정에 두고, 같은 패스키(auid)의 요청에 돌려준다 — 토큰을 쓰지 않아 같은 토큰으로 이어서 발급된다; 서버는 열지 못한다', async () => {
+    const sam = await person('g-sam');
+    const data = { v: 1, uid: sam.uid.toString(), profile: { birthYear: '1990', country: 'KR' }, attrs: sam.attrs.map(String), blind_u: sam.blind_u.toString() };
+    const ct = await sealVault({ s_u: sam.s_u, auid: sam.auid.toString(), data });
+    const vget = async (sub, auid, { key = null, token = null, digest = null } = {}) => {
+      const k = key ?? await generateRequestKey();
+      const id_token = token ?? await stub.mint({ sub, nonce: await wrapperNonce(k.pkE), extra: {} });
+      return { r: await cia.post('/cia/wrapper/vault', { id_token, pk_e: k.pkE, sig: await signDigest(k.privateKey, digest ?? vaultDigest({ auid }, AUD)), auid }), k, id_token };
+    };
+    // 계정이 없으면 404, 모양이 틀린 사본은 400, 서명한 뒤 사본을 바꾸면 거절
+    assert.equal((await vget('g-sam', sam.auid.toString())).r.status, 404);
+    { const x = await wrapIssue(sam, S1, { mutate: (b) => { b.vault = 'short'; } }); assert.equal(x.r.status, 400, j(x.r.body)); assert.equal(x.r.body.reason, 'vault_bad'); }
+    { const x = await wrapIssue(sam, S1, { vault: ct, mutate: (b) => { b.vault = `${ct.slice(0, -2)}AA`; } }); assert.equal(x.r.body.reason, 'wrapper_bad_signature', j(x.r.body)); }
+    assert.equal(await acctOf(sam.uid), null, '거절된 발급이 계정을 만들었다');
+    const iss = await wrapIssue(sam, S1, { vault: ct }); assert.equal(iss.r.status, 200, j(iss.r.body));
+    assert.ok(!j(await acctOf(sam.uid)).includes(ct), '관리자 계정 표에 사본이 보인다'); assert.ok(!j(iss.r.body).includes(ct), '발급 응답에 사본이 있다');
+    // 받기: 같은 요청 키·토큰으로 이어서 발급된다(토큰을 쓰지 않았다)
+    const g = await vget('g-sam', sam.auid.toString()); assert.equal(g.r.status, 200, j(g.r.body)); assert.equal(g.r.body.ct, ct); assert.equal(g.r.body.slot, iss.cred.slot);
+    assert.deepEqual(await openVault({ s_u: sam.s_u, auid: sam.auid.toString(), ct: g.r.body.ct }), data);
+    assert.equal((await wrapIssue(sam, S1, { key: g.k, token: g.id_token, vault: ct })).r.status, 200, '받은 뒤 같은 토큰으로 발급');
+    assert.equal((await vget('g-sam', sam.auid.toString(), { key: g.k, token: g.id_token })).r.body.reason, 'wrapper_token_used', '쓴 토큰으로는 받지 못한다');
+    // 다른 패스키(다른 auid)·다른 목적의 서명·다른 계정은 받지 못한다
+    { const x = await vget('g-sam', (sam.auid + 1n).toString()); assert.equal(x.r.status, 409, j(x.r.body)); assert.equal(x.r.body.reason, 'vault_auid_mismatch'); assert.ok(!j(x.r.body).includes(ct)); }
+    { const x = await vget('g-sam', sam.auid.toString(), { digest: revokeDigest({ scope: 'account' }, AUD) }); assert.equal(x.r.body.reason, 'wrapper_bad_signature', j(x.r.body)); }
+    { const x = await vget('g-rita', sam.auid.toString()); assert.equal(x.r.status, 409, j(x.r.body)); assert.equal(x.r.body.reason, 'vault_auid_mismatch'); }
+    assert.equal(await openVault({ s_u: sam.s_u + 1n, auid: sam.auid.toString(), ct }), null, '다른 salt 로 열렸다');
+    // 사본 없이 발급하면 앞의 사본이 남고, 새 사본을 실으면 바뀐다. 연결한 계정으로도 같은 사본을 받는다
+    assert.equal((await wrapIssue(sam, S1)).r.status, 200); assert.equal((await vget('g-sam', sam.auid.toString())).r.body.ct, ct);
+    const ct2 = await sealVault({ s_u: sam.s_u, auid: sam.auid.toString(), data: { ...data, profile: { birthYear: '1990', country: 'JP' } } });
+    assert.equal((await wrapIssue(sam, S1, { vault: ct2 })).r.status, 200); assert.equal((await vget('g-sam', sam.auid.toString())).r.body.ct, ct2);
+    assert.equal((await link(sam, 'g-sam-2')).r.status, 200); assert.equal((await vget('g-sam-2', sam.auid.toString())).r.body.ct, ct2);
   });
   await t('래퍼 방식에서 막힌 경로: 가입·비밀번호 로그인·등록·슬롯·증명 로그인·일반 OIDC 는 403 wrapper_mode', async () => {
     for (const [m, p, body] of [['post', '/cia/signup', { id: 'abc', pwd: 'password123' }], ['post', '/cia/user/login', { id: 'abc', pwd: 'x' }], ['post', '/cia/register', { uid: '1', pwd: 'x', auid: '1' }], ['post', '/cia/slot', { uid: '1', nonce: '1' }], ['post', '/cia/signup/reserve', {}], ['post', '/cia/user/login_challenge', {}], ['get', '/oidc/authorize?client_id=x', undefined]]) {

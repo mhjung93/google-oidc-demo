@@ -7,7 +7,7 @@
 // 증명 로그인(2026-11-19 스펙 passkey-proof-login): zkIdP 의 발급 정책이 key 면(public_keys.issueAuth) 등록된 지갑은 인증 창 없이 패스키 증명만으로 발급받고(L1·L2),
 // 로그인마다 패스키를 한 번 묻는다(L4). mode3-idp-login 은 zkIdP 페이지의 로그인 증명 요청이다 — zkIdP 오리진이 연 창에만 답한다(L8).
 import { $, textKit, createUnlocker, postPresence, errText } from './ui.js';
-import { RECOVER_RESULT_KEY, WRAP_END_RESULT_KEY, WRAP_ACCOUNT_RESULT_KEY, WRAP_BACKUP_RESULT_KEY, WRAP_LINK_RESULT_KEY, idpAuthUrl, savePending, takeIdpReturn, readAttrRecord, googleSignupUrl, saveSignupPending, takeGoogleReturn, googleAuthUrl, saveWrapperPending, takeWrapperReturn } from './idp_return.js';
+import { RECOVER_RESULT_KEY, WRAP_END_RESULT_KEY, WRAP_ACCOUNT_RESULT_KEY, WRAP_BACKUP_RESULT_KEY, WRAP_LINK_RESULT_KEY, idpAuthUrl, savePending, takeIdpReturn, readAttrRecord, attrRecordOf, ATTR_RECORD_KEY, googleSignupUrl, saveSignupPending, takeGoogleReturn, googleAuthUrl, saveWrapperPending, takeWrapperReturn } from './idp_return.js';
 import { newRecoveryCode } from '../../lib/mode3_salt_envelope.js';
 
 const TYPES = ['mode3-config', 'mode3-precheck', 'mode3-authorize', 'mode3-revalidate', 'mode3-request', 'mode3-tx', 'mode3-idp-login'];
@@ -620,7 +620,10 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
         const lg = await withUnlock(() => core.wrapperLogin(loginBodyOf(req), { idToken, verifiedOrigin: pend.origin, serviceName: cleanServiceName(req.serviceName) || null, policy: req.policy ?? null, googleMs, salt, envKey, profile: rec?.profile ?? null, recordAuid: rec?.auid ?? null }));
         if (lg.cancelled) { step('잠금 해제 취소'); return reply({ ok: false, reason: 'user_denied' }); }
         if (lg.status === 200) {
-          const { userCredIssued, attrsChanged, ...toRp } = lg.body;
+          const { userCredIssued, attrsChanged, restoredAttr, ...toRp } = lg.body;
+          // 보관 사본으로 속성을 맞췄으면(스펙 2026-11-26 profile-vault) 이 브라우저의 속성 기록(/user "내 속성" 카드가 읽는다)도 그 값으로 — 속성이 비어 있는 사본이면 기록을 지운다.
+          // 서비스로 가는 응답(toRp)에는 싣지 않는다.
+          if (restoredAttr) { try { if (restoredAttr.record) localStorage.setItem(ATTR_RECORD_KEY, JSON.stringify(attrRecordOf(restoredAttr.record, new Date().toISOString()))); else localStorage.removeItem(ATTR_RECORD_KEY); } catch { /* 기록을 못 써도 로그인은 끝났다 */ } }
           await postPresence(core);
           step('로그인 성공 — 창을 닫는다.');
           return reply({ ok: true, ...toRp });

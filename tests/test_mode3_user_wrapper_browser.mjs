@@ -732,6 +732,42 @@ try {
   });
   // 2026-11-21(셀프 피드백 — 테스트 구멍): 폐기된 계정도 패스키를 쥔다(R11). 래퍼 화면의 안내는 "관리자가 삭제해야 한다" 까지만 말한다 — 삭제 뒤 실제로 같은 패스키로 돌아오는지 본다.
   // 2026-11-24(스펙 home-and-account-recovery 2부): 계정 자기 폐기 — /user 의 "내 계정 폐기" → Google(같은 계정만) → 폐기. 패스키는 묻지 않는다(A2).
+  // 2026-11-26(스펙 profile-vault, 피드백 "패스키로 복원한다면 사용자 속성까지 전부"): 같은 패스키의 새 브라우저는 서버의 보관 사본(암호문)으로 속성·자격증명 재료를 되찾는다
+  await t('보관 사본: 같은 패스키의 새 브라우저가 첫 로그인에 속성까지 되찾아 zkTWO 에 바로 들어간다 — PPID·C_u 가 같고 다른 기기의 세션이 남는다; 한 기기에서 속성을 바꾸면 다른 기기가 다음 로그인에 맞춘다', async () => {
+    const SEC = 'e5'.repeat(32), E = await newBrowserWith(SEC), E2 = await newBrowserWith(SEC);
+    const uidE = uidOf(google.provider, 'google-user-E');
+    try {
+      const asE = () => { google.setNextSub('google-user-E'); google.setNextClaims({ email: 'eve@example.com', email_verified: true }); };
+      const ppidAt = (rpPage) => rpPage.evaluate(() => fetch('/api/rp/me').then((r) => r.json())).then((me) => String(me.seen.PPID));
+      const acct = async () => (await accounts()).find((x) => String(x.uid) === uidE);
+      const sessions = async () => (await cia.adminGet(`/cia/admin/sessions?uid=${uidE}`)).body.sessions;
+      const login = async (B, svc, { first = false } = {}) => { asE(); const { rpPage, popup } = await startLogin(B.ctx, svc); if (first) { await popup.waitForSelector('#authWrapPasskeyBtn', { timeout: 30_000 }); await popup.click('#authWrapPasskeyBtn'); } await waitText(rpPage, '#verdict', '로그인 성공', 120_000); const p = await ppidAt(rpPage); await rpPage.close(); return p; };
+      const saveAttrs = async (B, year, country) => { const p = await openUser(await B.ctx.newPage()); await p.waitForSelector('#wa_country'); await p.fill('#wa_birthYear', year); await p.selectOption('#wa_country', country); await p.click('#attrSaveBtn'); await p.waitForFunction((c) => JSON.parse(localStorage.getItem('mode3_attr_tool_v1') ?? 'null')?.profile?.country === c, country, { timeout: 20_000 }); await p.close(); };
+      const attrsOn = async (B) => { const p = await openUser(await B.ctx.newPage()); await p.waitForSelector('#wa_country'); await p.waitForFunction(() => document.getElementById('wa_birthYear')?.value !== '', null, { timeout: 15_000 }).catch(() => {}); const v = { year: await p.inputValue('#wa_birthYear'), country: await p.inputValue('#wa_country'), reg: (await idbDump(p)).registration.profile, all: `${j(await idbDump(p))}${j(await p.evaluate(() => [Object.entries(localStorage), Object.entries(sessionStorage)]))}` }; await p.close(); return v; };
+      // 기기 1: 첫 로그인(zkONE) → 속성 저장 → zkTWO(속성이 반영된 새 C_u) → zkONE 다시(살아 있는 세션 하나)
+      const ppid1 = await login(E, rp, { first: true });
+      await saveAttrs(E, '1991', 'KR');
+      const ppid2 = await login(E, rp2);
+      assert.equal(await login(E, rp), ppid1);
+      const cf0 = (await acct()).activeCf_u, live0 = (await sessions()).filter((x) => !x.revokedAt).map((x) => x.Cf_s); assert.ok(live0.length >= 2, j(live0));
+      // 기기 2(같은 패스키, 빈 저장소): 조건을 거는 zkTWO 에 바로 — Google 로 가기 전에 멈추지 않고, 로그인 뒤 속성·PPID·C_u 가 기기 1 과 같다
+      E2.reqs.length = 0;
+      assert.equal(await login(E2, rp2, { first: true }), ppid2, '기기 2 의 PPID 가 다르다');
+      assert.equal(E2.reqs.filter((r) => r.url.includes('/cia/wrapper/vault')).length, 1, '사본을 한 번 받는다');
+      assert.equal((await acct()).activeCf_u, cf0, 'C_u 가 바뀌었다 — 다른 기기의 세션이 폐기된다');
+      { const now = await sessions(); for (const c of live0) assert.ok(!now.find((x) => x.Cf_s === c)?.revokedAt, '기기 1 의 세션이 폐기됐다'); }
+      { const v = await attrsOn(E2); assert.deepEqual([v.year, v.country], ['1991', 'KR'], '내 속성 카드에 되찾은 값이 없다'); assert.deepEqual(v.reg, { birthYear: '1991', country: 'KR' }); }
+      // 서비스로 간 응답에 속성이 없다(창이 떼고 보낸다)
+      assert.ok(!E2.reqs.some((r) => r.url.startsWith(rp2.base) && /birthYear|restoredAttr/.test(r.body)), '서비스로 속성이 갔다');
+      // 기기 1 에서 속성을 바꾼다(JP) → zkTWO 로그인으로 C_u 교체. 기기 2 는 다음 로그인(zkONE)에서 사본으로 맞춘다 — 다시 교체하지 않는다
+      await saveAttrs(E, '1991', 'JP');
+      await login(E, rp2);
+      const cf1 = (await acct()).activeCf_u; assert.notEqual(cf1, cf0, '속성을 바꿨는데 C_u 가 그대로다');
+      assert.equal(await login(E2, rp), ppid1);
+      assert.equal((await acct()).activeCf_u, cf1, '기기 2 가 C_u 를 다시 바꿨다');
+      { const v = await attrsOn(E2); assert.deepEqual([v.year, v.country], ['1991', 'JP'], '기기 2 의 속성이 맞춰지지 않았다'); }
+    } finally { await E.ctx.close(); await E2.ctx.close(); await cia.adminPost('/cia/account/delete', { uid: uidE }).catch(() => {}); }
+  });
   // 2026-11-26(스펙 identity-multi-login): 한 신원(패스키의 salt)에 Google 계정 여럿 — /user "로그인 계정" 카드
   await t('/user "로그인 계정": 더하기(Google 두 번 — 지금 계정 → 패스키 한 번 → 더할 계정) → 더한 계정으로 로그인해도 같은 PPID, 떼면 목록에서 빠진다', async () => {
     const D = await newBrowserWith('d4'.repeat(32));

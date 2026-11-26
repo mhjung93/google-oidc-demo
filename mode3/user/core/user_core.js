@@ -17,7 +17,7 @@ import { createRegistration, registrationSecretsFromSeed, createSessionKey, buil
 import { sessionLeafRange } from '../../../lib/mode3_revocation.js';
 import { registryLeaf } from '../../../lib/mode3_registry.js';
 import { signPayload, statementDigestFields, proofToCalldata, parseExecuteReceipt, decodeExecuteCalldata, walletAt, walletInterface, FACTORY_ABI, FACTORY_MAX_ROOT_AGE_BAND, FACTORY_MAX_LIFETIME_BAND, PUB_INDEX, LOGIN_COUNTER } from '../../../lib/mode3_onchain.js';
-import { SCALAR_MAX, ppid, randomScalar, auidOf, aridSOf, registerCtx, slotCtx, revokeSessionCtx, issueCtx, loginCtx, tagOf } from '../../../lib/mode3_credential.js';
+import { SCALAR_MAX, ppid, randomScalar, auidOf, aridSOf, registerCtx, slotCtx, revokeSessionCtx, issueCtx, loginCtx, tagOf, userCommit } from '../../../lib/mode3_credential.js';
 import { attrCommit } from '../../../lib/mode3_attr_commit.js';
 import { verifyRpCert } from '../../../lib/mode3_rp_cert.js';
 import { MODE3_ROOTS_ABI } from '../../../lib/mode3_log.js';
@@ -25,6 +25,7 @@ import { bounded } from '../../../lib/mode3_health.js';
 import { uidOf, regNonce, issueNonce } from '../../../lib/mode3_oidc_nonce.js';
 import { WRAPPER_PREFIX, generateRequestKey, wrapperNonce, signIssue, signDigest, revokeDigest, envelopeDigest, linkDigest } from '../../../lib/mode3_wrapper_auth.js';
 import { signLinkProof } from '../../../lib/mode3_link_key.js';
+import { sealVault, openVault, vaultDigest } from '../../../lib/mode3_profile_vault.js';
 import { envKeyFromCode, newEnvelopeId, sealSalt, openSalt, isEnvelope, auidCheckOf } from '../../../lib/mode3_salt_envelope.js';
 
 export const USER_STATE_VERSION = 1;
@@ -287,6 +288,38 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     await putSessions({}); await kv.del('loginFlow');   // 앞 등록(예전 방식)의 세션·"가장 최근 로그인" 기록을 남기지 않는다
     return null;
   }
+  /** 보관 사본으로 이 브라우저의 속성·사용자 자격증명 재료를 맞춘다(스펙 2026-11-26 profile-vault). 같은 요청 키·같은 Google 토큰으로 서버에서 암호문을 받아(토큰은 쓰지 않는다)
+   *  salt 로 연다. 열리고 프로필과 속성이 맞으면 등록의 uid(C_u 안의 값)·프로필·속성·슬롯·C_u·blind_u 를 그 값으로 바꾼다.
+   *  leaf: 이미 등록된 브라우저가 부를 때 — 등록부의 내 슬롯 리프. 사본의 C_u 가 그 리프일 때만 맞춘다(그리고 옛 C_u 의 세션을 지운다). 새 브라우저는 leaf 없이 부르고,
+   *  사본이 등록부보다 낡았으면 로그인이 새 C_u 를 받는다(속성은 사본의 것). 돌려주는 값: { record(속성 기록의 본문 — 속성이 하나라도 있을 때) } 또는 null(사본 없음·못 엶·어긋남). 던지지 않는다. */
+  async function restoreFromVault({ idToken, wk, aud, s_u, leaf = null }) {
+    try {
+      const auid = (await auidOf({ s_u: BigInt(s_u) })).toString();
+      const r = await idp.post('/cia/wrapper/vault', { id_token: idToken, pk_e: wk.pkE, sig: await signDigest(wk.privateKey, vaultDigest({ auid }, aud)), auid });
+      if (r.status !== 200 || typeof r.body?.ct !== 'string') return null;
+      const d = await openVault({ s_u, auid, ct: r.body.ct });
+      if (!d) return null;
+      const { schema } = await schemaFor();
+      const blank = Object.fromEntries(schema.slots.filter((x) => x.type === 'int' || x.type === 'enum').map((x) => [x.name, '']));
+      const normalized = normalizeProfile(schema, d.profile ?? {});
+      const attrs = await encodeProfile(schema, { ...blank, ...normalized }, { allowEmptyRequired: true });
+      if (JSON.stringify(attrs.map(String)) !== JSON.stringify(d.attrs)) return null;   // 사본의 프로필과 속성 값이 어긋난다 — 쓰지 않는다
+      const cu = await userCommit({ uid: BigInt(d.uid), s_u: BigInt(s_u), blind_u: BigInt(d.blind_u), attrs: attrs.map(BigInt) });
+      if (leaf !== null && (await registryLeaf(BigInt(auid), cu.Cf)).toString() !== String(leaf)) return null;
+      const slot = Number.isInteger(r.body.slot) && r.body.slot >= 0 ? r.body.slot : null;
+      const issuedAt = typeof r.body.at === 'string' ? r.body.at : new Date(now()).toISOString();
+      const reg = await updateReg((x) => {
+        x.uid = d.uid; x.profile = normalized; x.attrs = attrs;
+        if (slot !== null && (x.slot === null || x.slot === undefined)) x.slot = slot;
+        x.userCred = { C_u_pt: { x: cu.Cx.toString(), y: cu.Cy.toString() }, Cf_u: cu.Cf.toString(), issuedAt };
+      });
+      if (!reg) return null;
+      await updateSecrets((x) => { x.blind_u = d.blind_u; });
+      if (leaf !== null) await dropSessions();   // 옛 C_u 위의 세션은 그 교체 때 서버가 이미 폐기했다
+      const some = attrs.some((v) => String(v) !== '0');
+      return { record: some ? { schema: { id: schema.id, version: schema.version }, auid, profile: normalized, attrs, commit: await attrCommit({ s_u, attrs }) } : null };
+    } catch { return null; }
+  }
   /** salt 봉투 추가·삭제의 공통 왕복(계획 2026-11-24 salt-envelope Task 4) — 세션 끝내기와 같은 결속: wrapperBegin 의 1회용 요청 키에 묶인 Google 토큰 + envelopeDigest 서명.
    *  build({ uid }) 가 요청({ op, envelope } 또는 { op, id })을 만든다(패스키·코드가 필요하면 그 안에서). 토큰의 계정이 이 브라우저의 등록 계정과 다르면 보내지 않는다.
    *  패스키 창 취소·코드 오타처럼 보내기 전에 멈추면 요청 키를 남긴다(같은 화면에서 다시). 보낸 뒤에는 결과와 관계없이 지운다(토큰은 1회용이다).
@@ -474,6 +507,9 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     if (wrapper) {
       // 복구 발급의 기기 봉투(salt 봉투 [I6]): 서명 앞에 싣는다 — issueDigest 가 봉투까지 덮는다. 없으면 본문·서명은 예전과 같다.
       if (wrapper.envelope) req.body.envelope = wrapper.envelope;
+      // 보관 사본(스펙 2026-11-26 profile-vault): 이 발급이 쓰는 속성·blind_u·C_u 안의 uid 를 salt 에서 유도한 키로 잠가 싣는다 — 서버는 열지 못하고, 같은 패스키의 다른 브라우저가
+      // 받아 연다. 시연(비밀 바꾸기)의 발급에는 싣지 않는다(가짜 값을 사본으로 남기지 않는다).
+      if (!ov) req.body.vault = await sealVault({ s_u: BigInt(reg.s_u), auid: req.body.auid, data: { v: 1, uid: String(reg.uid), profile: reg.profile ?? null, attrs: (reg.attrs ?? []).map(String), blind_u: blind_u.toString() } });
       Object.assign(req.body, { id_token: wrapper.idToken, pk_e: wrapper.pkE, sig: await signIssue(wrapper.privateKey, req.body, wrapper.aud) });
     }
     // OIDC 래퍼(RP 로그인 흐름, 2026-10-16): Google 토큰을 발급 요청에 싣는다. IdP 에 계정이 아직 없으면(첫 로그인) 등록 재료도 함께 — IdP 가 그 자리에서 등록·발급.
@@ -932,7 +968,9 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
 
       await pruneSessions(synced.head);
       // V11: 사용자 자격증명은 발급 요청에 함께 실려 간다 — 들고 있는 C_u 를 재사용할지(등록부에 살아 있음) 새로 만들지(없음·은퇴)를 먼저 정한다.
-      const pick = await chooseUserCred(synced, src);
+      let pick = await chooseUserCred(synced, src);
+      // 새 브라우저가 보관 사본으로 맞춘 C_u 가 등록부의 것이 아니다(사본이 낡았다) — 속성만 쓰고 새 C_u 를 받는다(스펙 2026-11-26 profile-vault)
+      if (wrapper?.restored === 'fresh' && pick.status === 403 && pick.reason === 'registry_mismatch') { await replaceUserCred(src, null); pick = await chooseUserCred(synced, src); }
       if (pick.status === 403) return R(403, { reason: pick.reason, ...(pick.registry ? { registry: pick.registry } : {}), timings });
       const issueArgs = { arid, r_s: rs, r_rp: rrp, pk_trace: { x: BigInt(pk_trace.x), y: BigInt(pk_trace.y) }, allowAgent, factoryAddress: factoryAddress ? ethers.getAddress(factoryAddress) : null, attrGateAddress: attrGateAddress ? ethers.getAddress(attrGateAddress) : null, head: synced.head, src, origin, n: issueN };
       t = now();
@@ -1065,7 +1103,18 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
             const sy = await ops.syncProfileFromRecord({ recordAuid, profile });   // 속성 변경(W5): 기록의 속성으로 맞춘다 — 이번 로그인이 새 속성의 C_u 를 받는다
             if (sy.status !== 200) return sy;
           }
-          const r = await ops.login(body, { verifiedOrigin, serviceName, policy, wrapper: { idToken, privateKey: wk.privateKey, pkE: wk.pkE, aud: pub.wrapperAud, googleMs, onPinned: (b) => { pinned = b; } } });
+          // 보관 사본(스펙 2026-11-26 profile-vault): 새 브라우저(방금 로컬 등록, 속성 기록도 없음)는 서버의 사본으로 속성·C_u 를 맞춘 뒤 로그인한다 — 같은 패스키의 다른 기기와 같은 C_u 라
+          // 그 기기의 세션이 폐기되지 않고, 조건을 거는 서비스에도 바로 들어간다. 사본이 없거나 열리지 않으면 지금처럼 빈 속성으로 간다.
+          let restored = created && profile === null ? await restoreFromVault({ idToken, wk, aud: pub.wrapperAud, s_u: await saltNow() }) : null;
+          const wrapArg = () => ({ idToken, privateKey: wk.privateKey, pkE: wk.pkE, aud: pub.wrapperAud, googleMs, onPinned: (b) => { pinned = b; }, ...(restored && created ? { restored: 'fresh' } : {}) });
+          let r = await ops.login(body, { verifiedOrigin, serviceName, policy, wrapper: wrapArg() });
+          // 이미 등록된 브라우저인데 내 C_u 가 등록부의 것이 아니다 = 같은 패스키의 다른 기기가 속성을 바꿔 새 C_u 를 받았다. 사본의 C_u 가 그 리프와 같으면(사본은 salt 의 키로만 만든다 —
+          // 서버가 꾸며 낼 수 없다) 그것으로 맞추고 한 번 더 한다. 같지 않으면 지금처럼 registry_mismatch 로 멈춘다(바꿔치기일 수 있다).
+          if (!created && r.status === 403 && r.body?.reason === 'registry_mismatch' && typeof r.body.registry?.leaf === 'string') {
+            restored = await restoreFromVault({ idToken, wk, aud: pub.wrapperAud, s_u: await saltNow(), leaf: r.body.registry.leaf });
+            if (restored) r = await ops.login(body, { verifiedOrigin, serviceName, policy, wrapper: wrapArg() });
+          }
+          if (r.status === 200 && restored) r.body.restoredAttr = { record: restored.record ?? null };   // 창이 속성 기록(내 속성 카드)을 맞춘다 — 서비스로는 넘기지 않는다
           // 발급이 거절된 첫 로그인: 방금 만든 로컬 등록을 되돌린다(서버에 없는 계정을 가리키는 등록을 남기지 않는다). 발급이 된 뒤의 실패는 남긴다.
           if (r.status !== 200 && created && (await getReg())?.pendingIdp) { await kv.del('registration'); await putSessions({}); }
           if (r.status === 409 && r.body?.reason === 'auid_pinned') {
@@ -1750,6 +1799,9 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       if (profile !== null) return R(200, { ready: true });
       const reg = await getReg();
       if (reg && reg.wrapper !== true) return R(200, { ready: true });
+      // 2026-11-26(스펙 profile-vault): 이 브라우저에 등록이 없으면 여기서 막지 않는다 — 같은 패스키의 다른 기기에서 넣은 속성이 서버의 보관 사본에 있을 수 있고,
+      // 그것은 Google 확인·패스키 뒤에야 받는다. 받고도 비어 있으면 로그인이 attrs_unset 으로 멈춘다.
+      if (!reg) return R(200, { ready: true });
       const u = unsetSlotsOf(reg?.attrs ?? null, disclose, set);
       return u.length ? R(409, { reason: 'attrs_unset', slots: u }) : R(200, { ready: true });
     },
