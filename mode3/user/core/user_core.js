@@ -1202,7 +1202,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     /** 에이전트 buildExecute + POST /wallet/tx/prepare 의 등가: 검증 → 동기화 → π(캐시) → 지갑 주소·nonce → 세션키 서명 → execute calldata.
      *  보내는 것은 RP 의 릴레이(계획 R6)다 — 에이전트의 /wallet/tx(provider.getSigner 경로)는 없다. */
     async prepareTx(body) {
-      const { r_s, to, value = '0', data = '0x', disclose, set = null, replay = false, buildOnly = false } = body ?? {};
+      const { r_s, to, value = '0', data = '0x', disclose, set = null } = body ?? {};
       if (!isDec(r_s) || !isAddr(to) || !isDec(value) || typeof data !== 'string' || !/^0x([0-9a-fA-F]{2})*$/.test(data)) {
         return R(400, { error: 'r_s, to(주소), value(wei 10진, 선택), data(hex, 선택) 필요' });
       }
@@ -1249,37 +1249,19 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       const deployNeeded = (await provider.getCode(walletAddr)) === '0x';
       const nonce = deployNeeded ? 0n : await walletAt(walletAddr, provider).nonce();
       let proved;
-      if (replay === true) {
-        // 시연(2026-11-23 사용자 요청): 옛 증명으로 보내기 — root 가 바뀐 경우만 보인다. 이 세션이 지금 nonce 로 만들어 둔 π_RP(buildOnly, 화면의 ①)의
-        // 증명값(a·b·c)은 그대로 두고 공개 입력의 root 둘만 지금 값(거울의 root)으로 바꾼다. nonce·서명·root 검사는 통과하고 verifyProof 만 실패한다(InvalidProof).
-        // nonce 가 다른 증명(그사이 출금이 있었다)은 고르지 않는다 — nonce 때문에 실패하는 장면은 다음 버전에서 따로 보인다.
-        // 선택 공개는 옛 증명의 것을 그대로 싣는다 — 서명 다이제스트가 공개 입력의 그 칸을 덮으므로 아래 서명도 같은 값으로 한다.
-        const old = ((await kv.get('proofs')) ?? []).filter((x) => x.kind === 'pi_cred' && x.r_s === rsKey && String(x.publicSignals[PUB_INDEX.COUNTER]) === nonce.toString()).pop();
-        if (!old) return R(409, { reason: 'no_old_proof', timings });
-        const pub = old.publicSignals.map(String);
-        const rootAtBuild = pub[PUB_INDEX.REV_ROOT], regRootAtBuild = pub[PUB_INDEX.REG_ROOT];   // 이전 root 둘(폐기 목록·등록부) — 화면이 현재 값과 나란히 보인다
-        const race = { replay: true, rootAtBuild, rootNow: synced.root.toString(), regRootAtBuild, regRootNow: synced.regRoot.toString() };
-        pub[PUB_INDEX.REV_ROOT] = synced.root.toString(); pub[PUB_INDEX.REG_ROOT] = synced.regRoot.toString();
-        // 바꾼 뒤에도 옛것과 똑같으면(root 가 아직 그대로) 그 증명은 아직 유효하다. 시연이 진짜 출금이 되지 않게 거절한다(2026-11-23 리뷰).
-        if (pub.join(',') === old.publicSignals.map(String).join(',')) return R(409, { reason: 'replay_still_valid', race, timings });
-        const pb = pub.map(BigInt);
-        disclosure = { mask: pb[PUB_INDEX.DISC_MASK], lo: pb.slice(PUB_INDEX.DISC_LO, PUB_INDEX.DISC_HI), hi: pb.slice(PUB_INDEX.DISC_HI, PUB_INDEX.SET_SEL), sel: pb[PUB_INDEX.SET_SEL], root: pb[PUB_INDEX.SET_ROOT] };
-        proved = { proof: old.proof, publicSignals: pub, root: synced.root.toString(), regRoot: synced.regRoot.toString(), cacheHit: false, demo: 'replay_old_proof', race };
-      } else try { proved = await proveSession(rsKey, synced, timings, disclosure, src, nonce); }   // root·disclosure·counter(=nonce) 가 같으면 캐시 π, 아니면 재증명
+      try { proved = await proveSession(rsKey, synced, timings, disclosure, src, nonce); }   // root·disclosure·counter(=nonce) 가 같으면 캐시 π, 아니면 재증명
       catch (e) {
         const mapped = await sessionProofFailure(e, rsKey, timings);
         if (mapped) return mapped;
         if (e.reason === 'no_session') return R(404, { reason: 'no_session', timings });
         throw e;
       }
-      // 시연 ①(2026-11-23): 증명만 만들어 둔다 — 위 proveSession 이 증명 기록(proofs)에 남겼다(캐시면 같은 공개 입력의 기록이 이미 있다). 서명·호출 데이터는 만들지 않는다.
-      if (buildOnly === true && replay !== true) return R(200, { held: true, walletAddr, nonce: nonce.toString(), root: proved.root, regRoot: proved.regRoot, cacheHit: proved.cacheHit, timings });
       // 받는 주소(2026-10-16): 대소문자 체크섬(EIP-55)이 안 맞는 입력도 받는다 — 같은 바이트이므로 소문자로 내려 정규형으로 만든다(틀린 글자는 isAddr 가 먼저 걸러낸다).
       const payload = { to: normalizeAddr(to), value: BigInt(value), data, nonce };
       // 시연(가짜 서명, 사용자 요청 2026-10-14): 세션키 대신 임의 키로 서명한다 — 컨트랙트의 _recover 가 복원한 주소가 pub[2](pk_i)와 달라
       // BadSignature 로 거절한다. proveSession 의 signChallenge 가 아니라 여기서 따로 take 하는 이유는 그쪽 sig(세션 챌린지 서명)는 이 경로에서
       // 쓰지 않기 때문이다 — 거기서 소비되면 실제로 보내는 이 서명은 멀쩡한 채로 나간다.
-      const fakeSig = replay === true ? null : await takeOverride('fake_sig');   // 옛 증명 시연은 가짜 서명 시연을 꺼내지 않는다(둘이 겹치면 사유가 섞인다)
+      const fakeSig = await takeOverride('fake_sig');
       const priv = fakeSig ? null : await sessionKeyOf(rsKey);
       if (!fakeSig && !priv) return R(404, { reason: 'no_session', timings });
       const signer = fakeSig ? ethers.Wallet.createRandom() : new ethers.Wallet(priv);

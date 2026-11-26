@@ -66,6 +66,16 @@ try {
       assert.ok(!csp.includes(CHAIN), `${p}: 체인 노드로의 연결은 필요 없다 — ${csp}`);
     }
   });
+  await t('운영자·관리자 화면은 서로를 모른다 — 상단 메뉴가 없고 상대 화면·내 계정 링크도 없다; 인라인 스크립트는 파일 그대로(2026-11-26)', async () => {
+    const fs = await import('node:fs'); const scripts = (h) => [...h.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+    for (const [p, file] of [['/admin', 'mode3/cia_admin.html'], ['/rp', 'mode3/cia_rp.html'], ['/Admin/', 'mode3/cia_admin.html'], ['/RP/', 'mode3/cia_rp.html']]) {
+      const r = await raw(p), html = await r.text(), src = fs.readFileSync(file, 'utf8'); assert.equal(r.status, 200, p); assert.match(r.headers.get('content-type') ?? '', /text\/html/);
+      assert.ok(!/nav-menu|idp_nav_(rp|admin|user)/.test(html), `${p}: 메뉴가 남았다`); assert.deepEqual([...html.matchAll(/href="(\/(?:rp|admin|user)[^"]*)"/g)].map((m) => m[1]), [], p);
+      assert.ok(html.includes('data-i18n="idp_brand"') && html.includes('</nav>'), `${p}: 이름 줄까지 빠졌다`); assert.deepEqual(scripts(html), scripts(src), p);
+      assert.ok(/<div class="nav-menu">/.test(src), `${file}: 다른 방식의 메뉴는 그대로여야 한다`);
+    }
+    assert.ok((await (await raw('/admin')).text()).includes('class="section-menu"'), '관리자 화면 안의 절 메뉴는 남는다');
+  });
   await t('승인된 서비스가 설정과 CSP 에 들어온다 — 서비스 등록은 지금까지와 같다(대기 → 승인)', async () => {
     const before = (await cia.get('/user/config')).body.rpOrigins; assert.ok(!before.includes('http://127.0.0.1:3555'));
     const s = await cia.registerRp('http://127.0.0.1:3555', 'zkONE'); assert.ok(s.arid);

@@ -339,7 +339,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
     const ar = await core.wrapperAttrsReady({ disclose: req.disclose ?? null, set: req.set ?? null, profile: (await attrRecord())?.profile ?? null });
     if (ar.status !== 200) {
       step('속성 커밋먼트 없음 — Google 로 가지 않는다.');
-      showHint('user_wrap_attrs_unset_hint', '이 서비스는 속성 조건을 확인합니다. 아직 속성이 없어 로그인하지 않았습니다 — 내 세션 관리의 "내 속성" 에서 넣은 뒤 다시 로그인하세요:', `${location.origin}/user`);
+      showHint('user_wrap_attrs_unset_hint', '이 서비스는 속성 조건을 확인합니다. 아직 속성이 없어 로그인하지 않았습니다 — 사용자 페이지의 "내 속성" 에서 넣은 뒤 다시 로그인하세요:', `${location.origin}/user`);
       return reply(fail(ar, 'attrs_unset'), { closeMs: 15_000 });
     }
     if (config.popupConsent !== false) step('요청을 확인하고 승인하세요.');
@@ -701,18 +701,15 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
         row('wallet_auth_tx_to', req.to); row('wallet_auth_tx_value', `${value} wei`);
         if (config.popupConsent !== false) step('보낼 트랜잭션을 확인하고 승인하세요.');
         if (!(await waitDecision())) { step('거절'); return reply({ ok: false, reason: 'user_denied' }); }
-        // 시연(2026-11-23): ① buildOnly — 지금의 root·nonce 로 증명만 만들어 두고 보내지 않는다. ② replay — 코어가 ① 의 증명에 지금 root 만 붙인다.
-        const replay = req.replay === true, buildOnly = !replay && req.buildOnly === true;
-        step(replay ? '옛 증명·세션키 서명 중…' : buildOnly ? '증명 만드는 중… (보내지 않는다)' : '증명·세션키 서명 중… (수 초 걸린다)');
-        const p = await withUnlock(() => core.prepareTx({ r_s: req.r_s, to: req.to, value, data: req.data ?? '0x', ...(replay ? { replay: true } : {}), ...(buildOnly ? { buildOnly: true } : {}) }));
+        step('증명·세션키 서명 중… (수 초 걸린다)');
+        const p = await withUnlock(() => core.prepareTx({ r_s: req.r_s, to: req.to, value, data: req.data ?? '0x' }));
         if (p.cancelled) { step('잠금 해제 취소'); return reply({ ok: false, reason: 'user_denied' }); }
         if (p.status !== 200) { step('준비 실패'); log(errText(p.status, p.body)); return reply(fail(p, 'tx_prepare_failed')); }
-        if (buildOnly) { step('증명을 만들어 두었다 — 보내지 않고 창을 닫는다.'); return reply({ ok: true, held: true, nonce: p.body.nonce, root: p.body.root, wallet: p.body.walletAddr }); }
         const relayUrl = `${evOrigin}${config.relayPath ?? '/api/mode3/relay'}`;
         step('RP 릴레이로 보내는 중…');
         let relay;
         try {
-          const r = await fetch(relayUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: p.body.walletAddr, data: p.body.calldata, ...(p.body.demo === 'replay_old_proof' ? { demo: 'replay_old_proof' } : {}) }) });
+          const r = await fetch(relayUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: p.body.walletAddr, data: p.body.calldata }) });
           relay = await r.json().catch(() => ({ ok: false, reason: 'internal', detail: `HTTP ${r.status}` }));
         } catch (e) { step('릴레이 호출 실패'); return reply({ ok: false, reason: 'relay_unavailable', detail: e.message }); }
         if (!relay.ok) { step('릴레이 거절'); log(`${relay.reason ?? ''} ${relay.detail ?? ''}`); return reply({ ok: false, reason: relay.reason ?? 'internal', detail: relay.detail ?? null }); }

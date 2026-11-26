@@ -681,13 +681,20 @@ if (USER_APP) {
     next();
   });
 }
-app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_admin.html')));
+// 운영자(/rp)·관리자(/admin) 화면(2026-11-26 사용자 결정): 래퍼 방식에서는 두 화면이 서로를 모른다 — 상단 메뉴("RP 운영자 | 관리자")를 숨기지 않고 빼고 낸다. 다른 방식은 파일 그대로.
+const staffPage = (file) => (req, res) => {
+  if (!WRAPPER) return res.sendFile(path.join(__dirname, 'mode3', file));
+  const html = fs.readFileSync(path.join(__dirname, 'mode3', file), 'utf8'), out = html.replace(/\n[ \t]*<div class="nav-menu">[\s\S]*?<\/div>/, '');
+  if (out === html) return res.status(500).type('text/plain').send(`${file}: 상단 메뉴를 찾지 못했다`);   // 화면 파일이 바뀌어 메뉴를 못 빼면 내지 않는다
+  res.set('Cache-Control', 'no-cache').type('html').send(out);
+};
+app.get('/admin', staffPage('cia_admin.html'));
 
 // IdP 사용자·RP·인증 창 페이지(Task 12, 2026-10-22 B3 — 설계 §3.4). 사용자가 찾아가는 입구는 지갑이 아니라 IdP 자신이다.
 app.get('/', (req, res) => res.redirect(WRAPPER ? '/rp' : '/user'));   // 래퍼 방식에는 /user 가 없다 — 사용자 앱이 붙어 있으면(zkWrapper 서버) 위에서 홈이 먼저 받는다   // 2026-11-05(7차): 주소만 치면 404 였다 — 사용자 페이지로
 app.get('/user', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_user.html')));
 app.get('/user/info', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_user_info.html')));   // 2026-11-10: "내 계정" 하위 메뉴 "내 정보"(읽기 전용)
-app.get('/rp', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_rp.html')));
+app.get('/rp', staffPage('cia_rp.html'));
 app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'mode3', 'cia_login.html')));
 // "내 계정" 페이지 — Google/OIDC 계정 관리·Google 재로그인 폐기 UI. /user(일반 가입·발급)와는 다른 입구라
 // 되돌리지 않는다(F-0, 컨트롤러 판정 2026-10-23 — Task 12 의 302 리다이렉트는 회귀였다).

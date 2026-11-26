@@ -71,6 +71,10 @@
       if (info?.walletKind === 'zkwrapper') { SVC = info; WRAP = true; }
     }
     if (!WRAP) return;
+    // 2026-11-26(피드백 "OIDC 없애라 — 비교하려면 zkLogin 같은 web3 방식과"): zkWrapper 화면에서는 일반 OIDC 줄을 숨기지 않고 지운다. 그림은 zk-Delegation 한 줄이다.
+    $('seqOidc')?.closest('section')?.remove();
+    document.querySelector('.lead')?.replaceChildren('로그인 한 번을 단계별로 봅니다. ', Object.assign(document.createElement('b'), { textContent: '초록 값' }), '은 로그인마다(또는 서비스마다) 달라지는 가명입니다.');
+    { const m = $('mockNote')?.firstChild; if (m?.nodeType === 3) m.nodeValue = '그림의 값은 이 브라우저의 가장 최근 "zkWrapper 로 로그인" 에서 온 공개값입니다(앞부분만 — 전체는 마우스를 올리면 보입니다). 단계마다의 값 전부와 증명 보기는 '; }
     for (const [n, st] of Object.entries(WRAP_STEPS)) STEPS.zk[Number(n) - 1] = st;
     FINE.issue = '가명 · 커밋먼트 + Google 토큰으로 발급 요청 → zkWrapper 의 서명'; FINE.google = 'Google 에서 계정 고르기 (다녀온 시간)';
     FINE.commit = '커밋먼트 C_u · C_s 만들기'; FINE.pseudonym = '가명 auid_s · arid_s 만들기';
@@ -87,17 +91,17 @@
     // 사실 맞추기(2026-11-25): 래퍼는 Google 의 sub·이메일을 받고 uid 는 sub 의 해시다(윗줄의 uid 와 값이 다르다). "어느 서비스인지 모른다" 는 로그인 때의 이야기다 —
     // 온체인 거래의 공개 입력에는 arid·PPID·auid_s 가 함께 있다(스펙 2026-11-19 trace-without-tag §3).
     const B = (t) => Object.assign(document.createElement('b'), { textContent: t });
-    $('kIdpWho')?.replaceChildren('누가 로그인했는지 — Google 의 ', B('sub 와 이메일'), '을 받는다 (uid', $('zkUid'), ' — sub 의 해시라 윗줄의 uid 와 다른 값)');
+    $('kIdpWho')?.replaceChildren('누가 로그인했는지 — Google 의 ', B('sub 와 이메일'), '을 받는다 (uid', $('zkUid'), ' — sub 의 해시)');
     $('kIdpSvc')?.replaceChildren('로그인 때는 ', B('어느 서비스'), '인지 모른다 — arid_s 는 로그인마다 다르다 (온체인 거래를 하면 공개 입력으로 이어질 수 있다)');
     $('footOpen')?.append(' 다만 온체인 거래를 하면 공개 입력에 서비스 · PPID · auid_s 가 함께 남아 zkWrapper 가 두 기록을 이을 수 있습니다.');
     $('zkHint').textContent = SVC ? '화살표를 누르면 설명이 펴집니다' : '화살표를 누르면 그 단계의 세부와 걸린 시간이 펴집니다 — ③ Google 토큰 · ④ 세션 토큰은 실제 값도 보입니다';
-    if (!SVC) { const a = $('flowCardLink'); if (a) { a.href = '/user#flowCard'; a.textContent = '내 세션 관리(/user)의 "로그인 전체 플로우" 카드'; } return; }   // 그 카드는 홈이 아니라 /user 에 있다(2026-11-24)
+    if (!SVC) { const a = $('flowCardLink'); if (a) { a.href = '/user#flowCard'; a.textContent = '사용자 페이지(/user)의 "로그인 전체 플로우" 카드'; } return; }   // 그 카드는 홈이 아니라 /user 에 있다(2026-11-24)
     // 서비스 오리진의 글자
     $('zkSaltNote').textContent = '(이 서비스는 모름)';
     STEPS.zk[2] = { ...STEPS.zk[2], body: `${STEPS.zk[2].body} 서비스는 이 구간을 보지 못합니다 — 여기 적힌 auid_s · arid_s 는 서비스가 ⑤ 로 받은 같은 값입니다.` };
     const w2 = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     for (let n = w2.nextNode(); n; n = w2.nextNode()) if (/zkTWO (도|의)/.test(n.nodeValue)) n.nodeValue = n.nodeValue.replace(/zkTWO (도|의)/g, '다른 서비스$1');   // zkTWO 에서 열면 자기 이름이라 틀린다
-    $('mockNote').textContent = '지금 로그인한 방식의 줄만 이 서비스가 실제로 받은 값으로 채웁니다(앞부분만 — 전체는 마우스를 올리면 보입니다). 다른 줄은 값의 이름만 보입니다. 이 그림은 값을 저장하지 않습니다. 단계별 걸린 시간은 사용자의 브라우저만 압니다.';
+    $('mockNote').textContent = 'zk 로그인 상태면 이 서비스가 실제로 받은 값으로 채웁니다(앞부분만 — 전체는 마우스를 올리면 보입니다). 아니면 값의 이름만 보입니다. 이 그림은 값을 저장하지 않습니다. 단계별 걸린 시간은 사용자의 브라우저만 압니다.';
   }
 
   let flow = null, seen = null;   // seen: 서비스 오리진에서만 — /api/rp/me 의 seen
@@ -113,14 +117,14 @@
       set('oidcClientId', gSeen?.rid ? `client_id ${head(gSeen.rid)}` : '', gSeen?.rid ?? null);
       set('oidcSub', gSeen?.uid ? `sub ${head(gSeen.uid)}` : '', gSeen?.uid ?? null);
       set('oidcAud', gSeen?.rid ? ` · aud ${head(gSeen.rid)}` : '', gSeen?.rid ?? null);
-      for (const id of ['zkSvcName', 'oidcSvcName']) $(id).textContent = `서비스 ${SVC.name ?? ''}`;
+      for (const id of ['zkSvcName', 'oidcSvcName']) if ($(id)) $(id).textContent = `서비스 ${SVC.name ?? ''}`;
       $('zkUid').textContent = ' = 이 서비스는 모름';
-      const ro = $('recentOidc'); ro.hidden = false;
-      ro.textContent = gSeen ? '지금 이 서비스에 Google 로 로그인한 상태입니다 — 아래 client_id · sub · aud 는 이 서비스가 받은 ID 토큰의 실제 값입니다.' : '지금은 이 서비스에 Google 로 로그인한 상태가 아닙니다 — 이 줄은 값의 이름만 보입니다.';
+      const ro = $('recentOidc'); if (ro) ro.hidden = false;
+      if (ro) ro.textContent = gSeen ? '지금 이 서비스에 Google 로 로그인한 상태입니다 — 아래 client_id · sub · aud 는 이 서비스가 받은 ID 토큰의 실제 값입니다.' : '지금은 이 서비스에 Google 로 로그인한 상태가 아닙니다 — 이 줄은 값의 이름만 보입니다.';
       $('recent').textContent = zkSeen ? '지금 이 서비스에 zkWrapper 로 로그인한 상태입니다 — 아래 값은 이 서비스가 실제로 받은 값입니다. auid_s · arid_s 는 로그인마다 다르고, PPID 는 이 서비스에서 늘 같습니다.' : '지금은 이 서비스에 zkWrapper 로 로그인한 상태가 아닙니다 — 이 줄은 값의 이름만 보입니다.';
       return;
     }
-    for (const id of ['zkSvcName', 'oidcSvcName']) $(id).textContent = flow?.serviceName ? `서비스 ${flow.serviceName}` : '서비스';   // 윗줄도 같은 서비스 이름으로(같은 서비스에 두 방식으로 로그인하는 그림이다)
+    for (const id of ['zkSvcName', 'oidcSvcName']) if ($(id)) $(id).textContent = flow?.serviceName ? `서비스 ${flow.serviceName}` : '서비스';   // 윗줄도 같은 서비스 이름으로(같은 서비스에 두 방식으로 로그인하는 그림이다)
     // 래퍼 방식의 uid 는 해시라 길다(2026-11-24) — 다른 값처럼 앞부분만, 전체는 title
     const zu = $('zkUid'); zu.textContent = v?.uid ? ` = ${WRAP ? head(v.uid) : v.uid}` : ''; if (WRAP) zu.title = v?.uid ?? '';
     const r = $('recent');
@@ -165,6 +169,7 @@
   const state = { oidc: { n: null, open: null }, zk: { n: null, open: null } };   // n = 지금까지 켠 단계 수(null = 전체), open = 세부를 편 단계(1부터)
   const svgOf = { oidc: 'seqOidc', zk: 'seqZk' }, detailOf = { oidc: 'detailOidc', zk: 'detailZk' };
   function render(kind) {
+    if (!$(svgOf[kind])) return;   // 래퍼 방식은 일반 OIDC 줄을 지웠다(2026-11-26)
     const st = state[kind], total = STEPS[kind].length, shown = st.n ?? total;
     for (const g of $(svgOf[kind]).querySelectorAll('.st, .stx')) { const k = Number(g.dataset.step); g.classList.toggle('off', k > shown); g.classList.toggle('cur', st.n !== null && k === shown && g.classList.contains('st')); }   // stx = 단계와 함께 켜지는 딸린 그림(누르는 대상 아님)
     const ctl = document.querySelector(`.ctl[data-ctl="${kind}"]`);

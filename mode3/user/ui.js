@@ -85,7 +85,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
   if (config.wrapper === true) {
     const home = document.getElementById('homeGuide');
     if (home) {
-      for (const [id, p] of [['homeOpLink', '/rp'], ['homeAdminLink', '/admin']]) { const a = document.getElementById(id); if (a) { a.href = `${config.ciaUrl}${p}`; a.textContent = `${config.ciaUrl}${p}`; } }
+      const adm = document.getElementById('homeAdminLink'); if (adm) adm.href = `${config.ciaUrl}/admin`;   // 2026-11-26: 따로 둔 버튼 — 글자는 문구(home_admin_btn)
       home.hidden = false;
     }
     // π_IdP 가 없다 — "zkIdP 에 낸 π_IdP 도 보기" 를 두지 않는다
@@ -1331,7 +1331,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     if (!WRAP) return;
     $('pkShowSaltBtn').remove(); $('pkSaltModal').remove();   // 2026-11-25: 래퍼에서는 salt 를 보이지 않는다(코어 showSalt 도 거절한다)
     if (location.pathname.replace(/\/+$/, '') !== '/user') { document.body.dataset.wrapView = 'home'; document.title = tt('wrap_title_home') || 'zkWrapper 홈'; return; }
-    document.title = tt('wrap_title_user') || 'zkWrapper — 내 세션 관리';   // H5
+    document.title = tt('wrap_title_user') || 'zkWrapper — 사용자';   // H5
     // H3: "시연: 비밀 바꾸기" 는 시연자의 장면이다 — /user?demo=1 일 때만(전문가 보기 토글은 2026-11-05 에 없어졌다)
     if (new URLSearchParams(location.search).get('demo') !== '1') $('demoCard').hidden = true;
     const rb = $('wrapRevokeAccountBtn'); if (rb) rb.addEventListener('click', () => wrapperRevokeAccountFlow(rb));

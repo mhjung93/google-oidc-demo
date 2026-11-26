@@ -187,11 +187,10 @@ t('VM 시계가 어긋나면 기동 때 경고한다 — 어긋나지 않으면 
   assert.match(out, /VM vm-idp 의 시계를 읽지 못했다/, out);
 });
 
-// 2026-11-23(사용자 요청): 서비스의 "옛 증명으로 보내기(시연)" — 분리 데모는 기본으로 켜고(RELAY_DEMO_REVERT=0 이면 끔), 두 서비스가 같은 COMMON 으로 받는다.
-t('서비스 공통 환경변수에 옛 증명 시연 스위치(MODE3_RELAY_DEMO_REVERT, 기본 1)', () => {
+// 2026-11-26(피드백 "버튼 딸깍 말고 콘솔에서"): 옛 증명 시연(MODE3_RELAY_DEMO_REVERT)은 없앴다 — 같은 장면은 체인 콘솔(scripts/mode3_console.mjs)로 보인다.
+t('서비스 공통 환경변수에 옛 증명 시연 스위치가 없다(2026-11-26 제거)', () => {
   const common = src.match(/\nCOMMON="([^"]*)"/); assert.ok(common, 'COMMON 정의를 찾지 못했다');
-  assert.match(common[1], /^MODE3_RELAY_DEMO_REVERT=\$\{RELAY_DEMO_REVERT:-1\}$/m);
-  assert.match(src, /^#.*RELAY_DEMO_REVERT=0 bash scripts\/demo_split_start\.sh/m, '사용법 주석이 없다');
+  assert.ok(!/RELAY_DEMO_REVERT/.test(src), 'RELAY_DEMO_REVERT 가 남았다'); assert.match(common[1], /^MODE3_CIA_BROWSER_URL=\$IDP_UI$/m);
 });
 
 t('zkwrapper 의 이름은 zkwrapper.zkd.test — 주소·hosts 확인·인증서. passkey-web 은 wallet.zkd.test 그대로(2026-11-25)', () => {
