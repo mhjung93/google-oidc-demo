@@ -9,6 +9,7 @@
 #        HEIGHT_GRID=100 bash scripts/demo_split_start.sh  # 만료(max_height) 올림 단위(기본 5 — 데모용. 코드 기본은 100, 2026-10-21)
 #        TTL_BLOCKS=300 bash scripts/demo_split_start.sh  # (snap·passkey-web 모드) 세션 수명 블록 수(기본 5 — 2026-11-11 사용자 요청: 자연 만료를 시연한다. 코드 기본은 300)
 #        REVOKE_PUBLISH_AFTER=0 bash scripts/demo_split_start.sh  # (2026-11-12 시연 Race (2)) IdP 가 스냅의 세션 폐기를 받은 뒤 이 블록 수가 지나면 스스로 게시·중계(기본 3, 0 = 끔 — 관리자 "게시"·하트비트만)
+#        TRACE=0 bash scripts/demo_split_start.sh  # (2026-11-26, zkwrapper) 추적 기록 등록부·감사자 프로세스를 띄우지 않는다(기본 켜짐 — 서비스마다 첫 로그인에 기록을 남긴다)
 #        DEMO_RACE=0 bash scripts/demo_split_start.sh  # (snap 모드) 스냅 에이전트의 블록 진행 시연(/wallet/demo/mine, 기본 켜짐 — RP 출금의 "보내기 전에 멈춤")
 #        WALLET_MODE=snap bash scripts/demo_split_start.sh  # Snap 모드(2026-10-22): 이 VM 의 지갑 자리에 에이전트(:5100, MODE3_WALLET_SECRETS=snap)+Snap 서버(:8082). 포트 5100 은 Snap 이 허용하는
 #                                                          # 지갑 오리진(snap-mode3/src/index.js)이라 바꿀 수 없다 — 한 머신 데모(:5100)와 동시에 못 띄운다. scripts/demo_split_snap_reset.sh 가 이 값을 넣어 부른다(web 모드 리셋은 scripts/demo_split_reset.sh).
@@ -117,6 +118,10 @@ stop_local() {
     for pid in $(ss -ltnp 2>/dev/null | grep ":$port " | grep -oE "pid=[0-9]+" | cut -d= -f2 | sort -u); do
       tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -qF -- "$want" && kill "$pid" && echo "stop :$port (pid $pid)"
     done
+  done
+  # 감사자 프로세스(2026-11-26 추적 기록, :5300) — 명령줄이 우리 것일 때만 내린다
+  for pid in $(ss -ltnp 2>/dev/null | grep ":${AUDITOR_PORT:-5300} " | grep -oE "pid=[0-9]+" | cut -d= -f2 | sort -u); do
+    tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -qF -- "mode3_auditors.js" && kill "$pid" && echo "stop :${AUDITOR_PORT:-5300} (pid $pid)"
   done
   stop_verify_watch; stop_verify_watch_rcl
 }
@@ -312,6 +317,24 @@ MIRRORS=$(grep -oE "CIA_MIRRORS=[0-9]+=0x[0-9a-fA-F]+" "$LOGS/deploy_app.log" | 
 [ -n "$MIRROR" ] && [ -n "$MIRRORS" ] || { echo "응용 체인 거울 배포 실패 — $LOGS/deploy_app.log"; exit 1; }
 echo "CIA_LOG_ADDRESS=$LOGADDR (chain $REV_CHAIN)  MODE3_MIRROR_ADDRESS=$MIRROR  CIA_MIRRORS=$MIRRORS"
 
+# 5b. 추적 기록 등록부(2026-11-26 스펙 ppid-account-trace) — zkwrapper 방식에서만. 응용 체인에 TraceVerifier·TraceRegistry 를 올리고 감사자 프로세스를 띄운다
+#     (데모 — 한 프로세스가 감사자 셋을 흉내 낸다). TRACE=0 이면 끈다. 회로 산출물(build/mode3/pi_trace_*)이나 컴파일 산출물이 없으면 건너뛴다 — 끈 것과 같고 로그인은 지금처럼 된다.
+#     감사자 키(조각)는 .local/auditors 에 남는다(값은 출력하지 않는다). 체인을 새로 만들었으니 등록부는 매번 새로 올린다(키는 그대로).
+TRACE_REG=""; AUDITOR_TOKEN=""
+if [ "$ZW" = 1 ] && [ "${TRACE:-1}" != 0 ]; then
+  if [ -f build/mode3/pi_trace_final.zkey ] && [ -f artifacts/contracts/TraceRegistry.sol/TraceRegistry.json ]; then
+    RPC="http://127.0.0.1:$APP_PORT" MODE3_AUDITOR_DIR="${AUDITOR_DIR:-.local/auditors}" node scripts/mode3_trace_setup.mjs > "$LOGS/trace_setup.log" 2>&1 || true
+    TRACE_REG=$(grep -oE "MODE3_TRACE_REGISTRY=0x[0-9a-fA-F]+" "$LOGS/trace_setup.log" | head -1 | cut -d= -f2)
+    if [ -n "$TRACE_REG" ]; then
+      # 감사자와 조합자(zkWrapper)가 나눠 갖는 토큰 — 띄울 때마다 새로 뽑아 두 프로세스의 환경으로만 넘긴다(출력·파일 없음)
+      AUDITOR_TOKEN=$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))")
+      MODE3_AUDITOR_DIR="${AUDITOR_DIR:-.local/auditors}" MODE3_AUDITOR_RPC="http://127.0.0.1:$APP_PORT" MODE3_TRACE_REGISTRY="$TRACE_REG" MODE3_AUDITOR_PORT="${AUDITOR_PORT:-5300}" MODE3_AUDITOR_TOKEN="$AUDITOR_TOKEN" \
+        setsid nohup node mode3_auditors.js > "$LOGS/auditors.log" 2>&1 < /dev/null &
+      echo "추적 기록 등록부 $TRACE_REG · 감사자 프로세스 up(:${AUDITOR_PORT:-5300}) — $LOGS/auditors.log"
+    else echo "WARN 추적 기록 등록부 배포 실패 — $LOGS/trace_setup.log (추적 기록 없이 계속한다)"; fi
+  else echo "추적 기록: 산출물이 없어 건너뛴다(bash scripts/build_mode3_circuit.sh pi_trace && npx hardhat compile)"; fi
+fi
+
 # 6. 역할별 설정 파일(각 VM 에 자기 것만, 권한 600)과 기동
 WALLET_KIND_OUT="$WALLET_MODE"; [ "$ZW" = 1 ] && WALLET_KIND_OUT=zkwrapper   # 서비스 화면이 보는 지갑 종류 — zkwrapper 면 지갑 서버를 부르지 않는다(스펙 §5)
 COMMON="CIA_LOG_ADDRESS=$LOGADDR
@@ -324,7 +347,8 @@ MODE3_RP_ZKOIDC=$PLAIN_OIDC
 MODE3_VERIFIER_ADDRESS=
 MODE3_RP_FACTORY_ADDRESS=
 MODE3_BIND_HOST=0.0.0.0
-MODE3_CIA_BROWSER_URL=$IDP_UI"
+MODE3_CIA_BROWSER_URL=$IDP_UI
+MODE3_TRACE_REGISTRY=$TRACE_REG"
 put_env() { on "$1" "umask 077 && cat > ~/zkd-demo/role.env && chmod 600 ~/zkd-demo/role.env"; }
 # OIDC 래퍼 클라이언트 ID(2026-10-26 Snap OIDC 래퍼 §3) — 값은 어디에도 출력하지 않는다(진행 줄은 on/off 만).
 oidc_client_id() { [ -n "${MODE3_OIDC_CLIENT_ID:-}" ] && { printf '%s' "$MODE3_OIDC_CLIENT_ID"; return; }; [ -f "$1" ] && sed -n 's/^GOOGLE_CLIENT_ID=//p' "$1" | head -n1 | tr -d '\r"'"'"; }
@@ -407,6 +431,7 @@ elif [ "$WALLET_MODE" = passkey-web ] && [ "$ZW" = 1 ]; then
     MODE3_CHAIN_RPC_BROWSER="http://127.0.0.1:$APP_PORT" MODE3_REV_RPC_BROWSER="http://127.0.0.1:$REV_PORT" MODE3_DEMO_GENERATION="$(date +%s)" MODE3_EXPLORER_URL="$BS_EXPLORER" \
     MODE3_TTL_BLOCKS="${TTL_BLOCKS:-5}" MODE3_HEIGHT_GRID="${HEIGHT_GRID:-5}" MODE3_ZKWRAPPER_PORT=$USER_PORT MODE3_BIND_HOST=0.0.0.0 CIA_REVOKE_PUBLISH_AFTER_BLOCKS="${REVOKE_PUBLISH_AFTER:-3}" \
     MODE3_TLS_CERT="$TLS_OUT/zkwrapper.crt" MODE3_TLS_KEY="$TLS_OUT/zkwrapper.key" NODE_EXTRA_CA_CERTS="$ZKD_CA_DIR/ca.crt" \
+    MODE3_TRACE_REGISTRY="$TRACE_REG" MODE3_AUDITOR_URL="http://127.0.0.1:${AUDITOR_PORT:-5300}" MODE3_AUDITOR_TOKEN="${AUDITOR_TOKEN:-}" \
     setsid nohup node mode3_zkwrapper.js > "$LOGS/zkwrapper.log" 2>&1 < /dev/null &
 elif [ "$WALLET_MODE" = passkey-web ]; then
   # passkey-web(2026-11-17): web 분기와 같은 정적 서버를 https 로 — 인증서는 위에서 만든 지갑 것, IdP·RP 인증서를 검증할 데모 CA 를 NODE_EXTRA_CA_CERTS 로 준다.

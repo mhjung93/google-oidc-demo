@@ -192,6 +192,19 @@ t('서비스 공통 환경변수에 옛 증명 시연 스위치가 없다(2026-1
   const common = src.match(/\nCOMMON="([^"]*)"/); assert.ok(common, 'COMMON 정의를 찾지 못했다');
   assert.ok(!/RELAY_DEMO_REVERT/.test(src), 'RELAY_DEMO_REVERT 가 남았다'); assert.match(common[1], /^MODE3_CIA_BROWSER_URL=\$IDP_UI$/m);
 });
+// 2026-11-26(스펙 ppid-account-trace): 추적 기록 등록부·감사자 프로세스 — zkwrapper 에서만, 거울 배포 뒤·서비스 설정 앞에서 올리고, 주소가 서비스(COMMON)와 zkWrapper 서버에 간다
+t('추적 기록: 등록부를 올린 뒤 감사자를 띄우고(TRACE=0 이면 안 함·산출물이 없으면 건너뜀) 주소를 서비스·zkWrapper 에 넘긴다; 내릴 때 감사자도 내린다', () => {
+  const setup = idx(/node scripts\/mode3_trace_setup\.mjs/), aud = idx(/setsid nohup node mode3_auditors\.js/), common0 = idx(/^COMMON="/), mirror = idx(/응용 체인 거울 배포 실패/);
+  assert.ok(mirror >= 0 && setup > mirror && aud > setup && common0 > aud, `순서: ${mirror} ${setup} ${aud} ${common0}`);
+  const block = lines.slice(setup - 3, aud + 1).join('\n');
+  assert.match(block, /\[ "\$ZW" = 1 \] && \[ "\$\{TRACE:-1\}" != 0 \]/); assert.match(block, /pi_trace_final\.zkey/); assert.match(block, /\|\| true/, '배포 실패가 데모를 멈추면 안 된다');
+  const common = src.match(/\nCOMMON="([^"]*)"/); assert.match(common[1], /^MODE3_TRACE_REGISTRY=\$TRACE_REG$/m);
+  const zw = lines[idx(/setsid nohup node mode3_zkwrapper\.js/) - 1]; assert.match(zw, /MODE3_TRACE_REGISTRY="\$TRACE_REG" MODE3_AUDITOR_URL=/);
+  // 감사자 토큰: 띄울 때 뽑아 감사자와 zkWrapper 두 프로세스의 환경으로만 간다 — 출력·파일·서비스 설정(COMMON)에는 없다
+  assert.match(block, /AUDITOR_TOKEN=\$\(node -e "process\.stdout\.write\(require\('crypto'\)\.randomBytes\(32\)/); assert.match(block, /MODE3_AUDITOR_TOKEN="\$AUDITOR_TOKEN"/); assert.match(zw, /MODE3_AUDITOR_TOKEN="\$\{AUDITOR_TOKEN:-\}"/);
+  assert.ok(!/AUDITOR_TOKEN/.test(common[1]), '토큰이 서비스 설정에 들어갔다'); assert.ok(!/echo[^\n]*AUDITOR_TOKEN/.test(src), '토큰을 출력한다');
+  assert.match(src, /grep -qF -- "mode3_auditors\.js" && kill/); assert.ok(!/cat .*auditor[0-9]\.json/.test(src), '조각 파일을 출력한다');
+});
 
 t('zkwrapper 의 이름은 zkwrapper.zkd.test — 주소·hosts 확인·인증서. passkey-web 은 wallet.zkd.test 그대로(2026-11-25)', () => {
   const w = idx(/^\[ "\$ZW" = 1 \] && WALLET_ORIGIN=/), u = idx(/^\[ "\$ZW" = 1 \] && IDP_UI="\$WALLET_ORIGIN"/), b = idx(/^  WALLET_ORIGIN="https:\/\/wallet\.zkd\.test:/);

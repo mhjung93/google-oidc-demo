@@ -40,6 +40,8 @@ UNIT=(
   tests/test_mode3_credential_v11.js
   tests/test_mode3_rp_cert.js
   tests/test_mode3_trace.js
+  # PPID 계정 추적 기록의 암호화·2-of-3 임계 복호(2026-11-26 스펙 ppid-account-trace) — 체인·회로 없이 돈다
+  tests/test_mode3_trace_record.mjs
   tests/test_zkd_tls_certs.mjs
   tests/test_demo_split_passkey_web.mjs
   tests/test_demo_split_zkwrapper.mjs
@@ -94,6 +96,8 @@ CIRCUIT=(
   tests/test_insert_transition_circuit.mjs
   tests/test_mode3_commit_scheme.mjs
   tests/test_pi_idp_witness.mjs
+  # pi_trace(2026-11-26): witness_test/ 에 컴파일해 양성·음성을 본다. 배포용 키(build/mode3/pi_trace_*)가 있으면 증명도 만든다
+  tests/test_pi_trace_witness.mjs
   tests/test_pi_cred_witness.mjs
   # 배포용 build/mode3 산출물이 지금의 회로 소스에서 나온 것인지(2026-09-25 리뷰 E-3).
   # 바로 위 test_pi_cred_witness.mjs 가 witness_test/ 에 해 둔 컴파일을 재사용하므로 그 뒤에 둔다.
@@ -130,6 +134,8 @@ CHAIN=(
   tests/test_cia_registry.mjs
   tests/test_cia_mirror_relay.mjs
   tests/test_cia_opening.mjs
+  # 추적 기록의 끝에서 끝(2026-11-26): 등록부 배포 → 기록(실제 π_trace) → 개봉 요청 → 감사자 프로세스 → 조합. build/mode3/pi_trace_* 도 필요하다
+  tests/test_mode3_trace_flow.mjs
   tests/test_mode3_session_revoke.mjs
   tests/test_mode3_wallet.mjs
   tests/test_mode3_rcl_sync.mjs
@@ -179,6 +185,8 @@ BROWSER=(
   tests/test_mode3_user_passkey_web_signup.mjs
   # zkWrapper(2026-11-20) — 서비스 로그인이 Google 을 다녀온다(승인 창), 패스키 한 번, π_IdP 없음
   tests/test_mode3_user_wrapper_browser.mjs
+  # 추적 기록의 화면 흐름(2026-11-26): 첫 로그인의 기록·개봉 요청·/user 알림·관리자 열기. build/mode3/pi_trace_* 도 필요하다
+  tests/test_mode3_trace_browser.mjs
 )
 
 # Snap 패키지(snap-mode3)의 지역 테스트. 전역 snap 객체를 스텁해 RPC 9종을 검사한다 —

@@ -52,6 +52,8 @@ import { uidOf, regNonce, issueNonce, isRevokeNonce, REG_PREFIX, REVOKE_PREFIX, 
 import { WRAPPER_PREFIX, wrapperNonce, verifyDigest, issueDigest, revokeDigest, envelopeDigest, linkDigest } from './lib/mode3_wrapper_auth.js';
 import { isLinkKey, linkProofOk } from './lib/mode3_link_key.js';
 import { isVaultCt, vaultDigest } from './lib/mode3_profile_vault.js';
+import { openFromParts, partFromJson, ptFromJson } from './lib/mode3_trace_record.js';
+import { traceRegistryAt, registryPk, listOpenRequests, traceCtx } from './lib/mode3_trace_chain.js';
 import { isEnvelope, auidCheckOf, BACKUP_LIMIT, DEVICE_LIMIT } from './lib/mode3_salt_envelope.js';
 import { mountUserApp, userAppCsp, adminPageCsp, userDistReady } from './lib/mode3_user_app_routes.js';
 import { listenMaybeTls } from './lib/mode3_tls.js';
@@ -199,6 +201,21 @@ if (WRAPPER) {
 // zkWrapper 서버(mode3_zkwrapper.js 가 켠다 — 스펙 2026-11-20 zkwrapper §1·§4): 이 서버가 사용자 앱(브라우저 지갑)도 함께 낸다 — 사람이 여는 주소 하나에 홈·승인 창·발급 API 가 있다.
 // 체인 읽기는 이 서버를 거치지 않는다(스펙 §5): 브라우저가 아래 두 주소의 노드를 직접 부른다. 기본은 이 서버가 쓰는 주소(한 머신 데모) — 브라우저에서 닿는 주소가 다르면 따로 준다.
 const USER_APP = process.env.CIA_USER_APP === '1';
+// 추적 기록 등록부(스펙 2026-11-26 ppid-account-trace): 응용 체인(첫 거울의 체인)에 있다. 주소가 없으면 꺼진 것이다 — 아무 경로도 바뀌지 않는다. 감사자 프로세스는 이 PC 의 것만(127.0.0.1) 부른다.
+const TRACE_REGISTRY = (() => { const v = envStr('MODE3_TRACE_REGISTRY', null); return v && /^0x[0-9a-fA-F]{40}$/.test(v) && MIRROR_SPECS[0] ? ethers.getAddress(v) : null; })();
+const TRACE_CHAIN = MIRROR_SPECS[0]?.chainStr ?? null;
+const AUDITOR_URL = envStr('MODE3_AUDITOR_URL', 'http://127.0.0.1:5300').replace(/\/+$/, '');
+const AUDITOR_TOKEN = envStr('MODE3_AUDITOR_TOKEN', '');   // 감사자와 나눠 갖는 토큰(없으면 감사자가 답하지 않는다 — 2026-11-26 검토 I-3). 값은 로그·응답에 내지 않는다
+const auditorGet = (p) => fetch(`${AUDITOR_URL}${p}`, { headers: { 'X-Auditor-Token': AUDITOR_TOKEN }, signal: AbortSignal.timeout(4000) });
+// 감사자 키(pk_aud)는 이 서버가 **자기 노드**에서 한 번 읽어 설정으로 내려준다(검토 I-2) — 브라우저가 자기 RPC 가 준 키로 auid 를 잠그면, 그 노드가 제 키를 내밀어 auid 를 읽을 수 있다.
+let TRACE_PK = null, tracePkBusy = null;
+function loadTracePk() {
+  if (!TRACE_REGISTRY || TRACE_PK || tracePkBusy) return;
+  try { tracePkBusy = registryPk(traceRegistryAt(TRACE_REGISTRY, providerFor(TRACE_CHAIN))).then((pk) => { TRACE_PK = { x: pk.x.toString(), y: pk.y.toString() }; }).catch(() => {}).finally(() => { tracePkBusy = null; }); }
+  catch { tracePkBusy = null; }
+}
+// 기동 뒤 읽힐 때까지 1초마다 다시 읽는다(노드가 늦게 뜨는 경우) — 읽히면 멈춘다
+if (TRACE_REGISTRY) { const t = setInterval(() => { loadTracePk(); if (TRACE_PK) clearInterval(t); }, 1000); t.unref?.(); }
 const APP_RPC_BROWSER = USER_APP ? envStr('MODE3_CHAIN_RPC_BROWSER', (MIRROR_SPECS[0] && CHAIN_RPCS.get(MIRROR_SPECS[0].chainStr)) || RPC_URL) : null;
 const REV_RPC_BROWSER = USER_APP ? envStr('MODE3_REV_RPC_BROWSER', RPC_URL) : null;
 if (USER_APP) {
@@ -639,6 +656,9 @@ if (USER_APP) {
       ttlBlocks: big('MODE3_TTL_BLOCKS', 300), heightGrid: big('MODE3_HEIGHT_GRID', 100), rpOrigins: approvedOrigins(), pkCia: S(ciaPub),
       // 2026-11-24(스펙 home-and-account-recovery H2): 홈 안내의 "가 볼 서비스" — 승인된 서비스의 이름·주소(공개값)
       rpServices: Object.values(state?.rps ?? {}).filter((r) => r.status === 'approved').map((r) => ({ name: typeof r.name === 'string' ? r.name : null, origin: r.origin })),
+      // 추적 기록 등록부(2026-11-26 스펙 ppid-account-trace): 브라우저는 **이 값**의 주소만 믿는다(서비스가 알려 준 주소로 암호화하지 않는다 — 가짜 등록부면 남의 키로 auid 를 잠근다)
+      // pk: 감사자 키 — 이 서버가 자기 노드에서 읽은 값(아직 못 읽었으면 null 이고 브라우저는 기록을 만들지 않는다. 다음 요청 때 다시 읽는다)
+      trace: TRACE_REGISTRY ? (loadTracePk(), { registry: TRACE_REGISTRY, pk: TRACE_PK }) : null,
       relayPath: process.env.MODE3_RELAY_PATH || '/api/mode3/relay', demoGeneration: process.env.MODE3_DEMO_GENERATION || null, wrapperClientId: OIDC.clientId,
     }),
   });
@@ -1771,6 +1791,54 @@ async function vaultWrapper(req, res) {
   if (BigInt(auid).toString() !== acct.auid) return res.status(409).json({ error: 'auid does not match this account', reason: 'vault_auid_mismatch' });
   res.set('Cache-Control', 'no-store').json({ ct: acct.vault?.ct ?? null, slot: acct.slot ?? null, at: acct.vault?.at ?? null });
 }
+// ---- 추적 기록의 개봉(스펙 2026-11-26 ppid-account-trace §5) — 래퍼 방식, MODE3_TRACE_REGISTRY 가 있을 때만 ----
+// 개봉 요청은 체인의 거래다(서비스가 TraceRegistry.requestOpen). 감사자들이 그 요청을 본 뒤 낸 부분 복호를 여기서(조합자) 확인해 합쳐 auid 를 얻고, 계정 표에서 그 신원을 찾는다.
+// 이 서버는 감사자의 조각을 갖지 않는다 — 조각 둘이 오기 전에는 암호문을 열 수 없다.
+app.get('/cia/admin/trace/requests', requireAdmin, async (req, res) => {
+  try {
+    if (!TRACE_REGISTRY) return res.json({ enabled: false, requests: [] });
+    const registry = traceRegistryAt(TRACE_REGISTRY, providerFor(TRACE_CHAIN));
+    let ready = {};
+    try { const r = await auditorGet('/requests'); if (r.ok) ready = Object.fromEntries((await r.json()).requests.map((q) => [q.id, q.ready ?? []])); } catch { ready = {}; }
+    const svc = (arid) => state.rps[arid]?.name ?? null;
+    const out = [];
+    for (const q of await listOpenRequests(registry)) {
+      let arid = null; try { arid = (await registry.recordOf(q.ppid)).arid.toString(); } catch { arid = null; }
+      out.push({ ...q, arid, service: arid ? svc(arid) : null, ready: ready[q.id] ?? [], opened: state.traceOpenings?.[q.id] ?? null });
+    }
+    res.json({ enabled: true, registry: TRACE_REGISTRY, chainId: TRACE_CHAIN, requests: out });
+  } catch (err) { res.status(502).json({ error: err.message, reason: 'trace_unavailable' }); }
+});
+app.post('/cia/admin/trace/:id/open', requireAdmin, async (req, res) => {
+  try {
+    if (!TRACE_REGISTRY) return res.status(404).json({ error: 'trace registry not configured', reason: 'trace_disabled' });
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id < 0) return res.status(400).json({ error: 'bad id', reason: 'trace_bad_request' });
+    const registry = traceRegistryAt(TRACE_REGISTRY, providerFor(TRACE_CHAIN));
+    let q, rec;
+    try { q = await registry.requestOf(id); rec = await registry.recordOf(q.ppid); } catch { return res.status(404).json({ error: 'unknown request', reason: 'trace_unknown_request' }); }
+    let pkj, sh;
+    try {
+      const a = await auditorGet('/pk'), b = await auditorGet(`/shares/${id}`);
+      if (!a.ok) throw new Error(`auditors /pk HTTP ${a.status}`);
+      pkj = await a.json(); sh = b.ok ? await b.json() : { parts: [] };
+    } catch (e) { return res.status(502).json({ error: e.message, reason: 'trace_auditors_unavailable' }); }
+    let opened;
+    try {
+      // 체인에 "냈다" 고 표시한 감사자의 조각만 쓴다(shareBits) — 체인의 응답 기록과 실제 조합이 어긋나지 않게. DLEQ 는 이 요청(체인·등록부·번호)에 묶여 있다(검토 M-3).
+      const noted = (p) => Number.isInteger(p?.index) && p.index >= 1 && p.index <= 3 && ((Number(q.shareBits) >> (p.index - 1)) & 1) === 1;
+      opened = await openFromParts({ pk: await registryPk(registry), shareXs: Object.fromEntries((pkj.shares ?? []).map((s) => [s.index, ptFromJson(s.X)])), c1: { x: rec.c1x, y: rec.c1y }, c2: rec.c2,
+        parts: (sh.parts ?? []).filter(noted).map(partFromJson), ctx: traceCtx({ chainId: TRACE_CHAIN, registry: TRACE_REGISTRY, id }) });
+    } catch (e) { if (e?.reason) return res.status(409).json({ error: e.reason, reason: e.reason }); throw e; }
+    const auid = opened.auid.toString();
+    const hit = Object.entries(state.accounts).find(([, a]) => a.auid === auid);
+    const out = { id, ppid: q.ppid.toString(), arid: rec.arid.toString(), requester: q.requester, used: opened.used, resolved: Boolean(hit), uid: hit ? hit[0] : null,
+      logins: hit ? loginsView(hit[0]).map(({ uid, email, primary }) => ({ uid, email, ...(primary ? { primary: true } : {}) })) : [], disabled: hit ? Boolean(hit[1].disabled) : null, openedAt: new Date().toISOString() };
+    (state.traceOpenings ??= {})[id] = out;
+    persist();
+    res.json(out);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
 if (WRAPPER) app.post('/cia/wrapper/vault', async (req, res) => {
   try { return await vaultWrapper(req, res); } catch (err) { res.status(500).json({ error: err.message }); }
 });

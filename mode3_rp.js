@@ -18,6 +18,7 @@ import { readJson, writeJsonAtomic } from './lib/mode3_state.js';
 import { verifyRpCert } from './lib/mode3_rp_cert.js';
 import { randomScalar } from './lib/mode3_credential.js';
 import { createShare, combinePublicKey, verifyShare } from './lib/mode3_trace.js';
+import { traceRegistryAt } from './lib/mode3_trace_chain.js';
 import { signOpenRequest, signOpenResult } from './lib/mode3_opening.js';
 import { deployVerifier, deployFactory, deployAttrGate, decodeExecuteCalldata, parseExecuteReceipt, walletInterface, FACTORY_ABI, MAX_ROOT_AGE_DEFAULT, MAX_LIFETIME_DEFAULT, ROOT_WINDOW_DEFAULT, ALLOWED_COUNTRIES_DEFAULT, MIN_AGE_DEFAULT, PUB_INDEX } from './lib/mode3_onchain.js';
 import { setRoot } from './lib/mode3_set_tree.js';
@@ -43,6 +44,9 @@ const normOrigin = (u) => { try { return new URL(u).origin; } catch { return u; 
 const WALLET_ORIGIN = normOrigin(process.env.MODE3_WALLET_AGENT_ORIGIN || 'http://127.0.0.1:5100');
 // 지갑 모드(2026-11-18): 페이지 문구에만 쓴다 — passkey-web 이면 화면이 "스냅" 대신 "zk 클라이언트" 라 부른다(/mode3/health 의 walletKind, cia.js 와 같다).
 const WALLET_KIND = process.env.MODE3_WALLET_KIND || '';
+// 추적 기록 등록부(스펙 2026-11-26 ppid-account-trace): 주소가 있으면 로그인에 "그 PPID 의 기록이 있다" 를 요구하고, 사용자의 증명을 대신 올려 주며(중계), 개봉을 체인의 거래로 요청한다.
+// 없으면 꺼진 것이다 — 아무 경로도 바뀌지 않는다.
+const TRACE_REGISTRY = /^0x[0-9a-fA-F]{40}$/.test(process.env.MODE3_TRACE_REGISTRY || '') ? process.env.MODE3_TRACE_REGISTRY : null;
 const LOG_ADDRESS = process.env.CIA_LOG_ADDRESS || null;   // 캐노니컬 표시용(/api/mode3/rp_info) — 검증기는 이 주소를 읽지 않는다(V10)
 const MIRROR_ADDRESS = process.env.MODE3_MIRROR_ADDRESS || null;
 const RPC_URL = process.env.CIA_RPC_URL || 'http://127.0.0.1:8545';
@@ -520,7 +524,7 @@ mountRpSocial(app, { store: accountStore, cfg: SOCIAL, ledgerOp, sessionAlive: z
 if (SOCIAL.google.enabled || SOCIAL.naver.enabled) console.log(`[rp] 소셜 로그인: Google ${SOCIAL.google.enabled ? '켜짐' : '꺼짐'} · 네이버 ${SOCIAL.naver.enabled ? `켜짐(콜백 ${SOCIAL.naver.redirectUri})` : '꺼짐'}`);
 app.get('/api/mode3/rp_info', (req, res) => {
   res.json({ name: RP_NAME, requireDisclosure: REQUIRE_DISCLOSURE,   // 2026-10-15: 페이지 브랜드(zkONE/zkTWO) 표기용
-       status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, mirrorAddress: MIRROR_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, walletKind: WALLET_KIND, explorerUrl: EXPLORER_URL, ciaUrl: CIA_BROWSER_URL, pkCiaSource: pkCIA.source, chainId: chainId.toString(), active: Boolean(verifier), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null, predicates: currentPredicates(),
+       status: reg.status, arid: reg.arid, origin: reg.origin, cert_s: reg.cert_s, pk_trace: reg.pk_trace, logAddress: LOG_ADDRESS, mirrorAddress: MIRROR_ADDRESS, walletAgentOrigin: WALLET_ORIGIN, walletKind: WALLET_KIND, explorerUrl: EXPLORER_URL, trace: TRACE_REGISTRY ? { registry: TRACE_REGISTRY } : null, ciaUrl: CIA_BROWSER_URL, pkCiaSource: pkCIA.source, chainId: chainId.toString(), active: Boolean(verifier), factoryAddress: reg.factoryAddress ?? null, verifierAddress: reg.verifierAddress ?? null, attrGateAddress: reg.attrGateAddress ?? null, predicates: currentPredicates(),
        social: { google: { enabled: SOCIAL.google.enabled, clientId: SOCIAL.google.clientId, authorizeUrl: SOCIAL.google.authorizeUrl, redirectUri: SOCIAL.google.redirectUri }, naver: { enabled: SOCIAL.naver.enabled }, zkoidc: { enabled: ZKOIDC.enabled && ZKOIDC.clientId() !== null } },   // zkoidc: zkIdP 일반 OIDC(비교용, 2026-11-19)   // 2026-11-10 RP 소셜 버튼
        oidc: pkCIA.oidc });   // 2026-10-16: IdP 의 public_keys.oidc 중계 — 페이지는 enabled·provider, 2026-11-09 부터 providers.{google,naver}.enabled(버튼 활성)를 본다
 });
@@ -588,6 +592,13 @@ app.post('/api/mode3/login', async (req, res) => {
     const v = await verifyBody(req, res, BigInt(rsStr), BigInt(r_rp)); if (v === null) return;
     if (!v.ok) return res.json({ ok: false, reason: v.reason });
     if (requireP) { const why = requiredPredicateReason(v.disclosure, requireP); if (why) return res.json({ ok: false, reason: why }); }
+    // 추적 기록(2026-11-26): 이 PPID 의 기록이 등록부에 있어야 로그인된다 — 없으면 이 요청에 실려 온 기록(trace)을 릴레이어가 올린다(registerTrace). 체인을 못 읽으면 닫는다.
+    if (TRACE_REGISTRY) {
+      const registry = traceRegistryAt(TRACE_REGISTRY, provider);
+      let has = null; try { has = await registry.has(v.PPID); } catch { has = null; }
+      if (has === null) return res.status(503).json({ ok: false, reason: 'chain_unavailable' });
+      if (!has) { const tr = await registerTrace(registry, v.PPID.toString(), req.body.trace); if (tr) return res.status(tr.status).json({ ok: false, ...tr.body }); }
+    }
     // zkIdP ID 토큰(2026-11-09 Phase 1, 선택): 있으면 서명·iss·exp 와 sub=auid_s·aud=arid_s(이 증명의 공개 신호)를 확인한다. 틀린 토큰은 로그인 자체를 거절한다(bad_id_token).
     // 없으면(옛 지갑·web 모드) 예전처럼 로그인만 한다. 2026-11-11(사용자 결정): 사용자 속성 커밋먼트(name)는 받지도 고정하지도 않는다 — RP 마다 같은 값이라 RP 간 연결이 된다.
     if (idTok !== null) {
@@ -834,6 +845,44 @@ app.post('/api/mode3/ledger', async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
 });
 
+// ---- 추적 기록(스펙 2026-11-26 ppid-account-trace §4.3·§5) ----
+// 등록: 사용자의 브라우저가 만든 π_trace 와 암호문을 이 서비스의 릴레이어가 등록부에 올린다(가스는 서비스가 낸다). 증명은 PPID·이 서비스의 arid·암호문에 묶여 있어
+// 다른 값으로 바꿔 올릴 수 없다 — 컨트랙트가 검증한다. 지갑 오리진에서만 부른다. 이미 있으면 그대로 ok.
+// 개봉 요청: 서비스 관리자가 **자기 서비스의** PPID 의 개봉을 체인의 거래로 요청한다 — 그 이벤트가 사용자에게 가는 알림이다. 사유는 필수이고(해시가 체인에, 원문은 이 서버의 로그에) 감사자가 심사할 근거다.
+const dec = (v) => typeof v === 'string' && /^[0-9]{1,80}$/.test(v);
+/** 추적 기록을 등록부에 올린다 — **로그인 안에서만** 부른다: π_RP 로 증명된(등록된 사용자의) PPID 의 기록만 릴레이어가 가스를 낸다.
+ *  따로 열린 엔드포인트였을 때는 무작위 s_u 로 만든 증명마다 거래가 나갔다(π_trace 는 등록 여부를 보지 않는다 — 2026-11-26 검토 I-1).
+ *  t = { ppid, c1x, c1y, c2, a, b, c }(브라우저가 만든 것). 성공(또는 그 사이 누가 올렸으면) null, 실패 { status, body }. */
+async function registerTrace(registry, ppid, t) {
+  if (!t || typeof t !== 'object') return { status: 409, body: { reason: 'trace_required' } };
+  const { c1x, c1y, c2, a, b, c } = t;
+  const pair = (x) => Array.isArray(x) && x.length === 2 && x.every((y) => typeof y === 'string' && /^(0x[0-9a-fA-F]{1,64}|[0-9]{1,80})$/.test(y));
+  if (t.ppid !== ppid || ![c1x, c1y, c2].every(dec) || !pair(a) || !pair(c) || !Array.isArray(b) || b.length !== 2 || !b.every(pair)) return { status: 400, body: { reason: 'trace_bad_request' } };
+  const relayer = await provider.getSigner(RELAYER_INDEX), args = [ppid, String(reg.arid), c1x, c1y, c2, a, b, c];
+  try { await registry.connect(relayer).register.staticCall(...args); }
+  catch (e) { if (e?.revert?.name === 'AlreadyRegistered') return null; return { status: 400, body: { reason: 'trace_bad_proof', detail: e?.revert?.name ?? e?.shortMessage ?? null } }; }
+  const r = await sendAndWait(() => registry.connect(relayer).register(...args));
+  if (r.state === 'success') return null;
+  if (await registry.has(ppid).catch(() => false)) return null;
+  return { status: 502, body: { reason: 'trace_register_failed', ...(r.tx ? { txHash: r.tx.hash } : {}) } };
+}
+app.post('/api/mode3/trace/open', requireRpAdmin, async (req, res) => {
+  try {
+    if (!TRACE_REGISTRY) return res.status(404).json({ ok: false, reason: 'trace_disabled' });
+    const { PPID, reason } = req.body ?? {};
+    if (!dec(PPID) || typeof reason !== 'string' || !reason.trim() || reason.length > 200) return res.status(400).json({ ok: false, reason: 'trace_bad_request' });
+    const registry = traceRegistryAt(TRACE_REGISTRY, provider);
+    if (!(await registry.has(PPID))) return res.status(404).json({ ok: false, reason: 'trace_not_registered' });
+    if ((await registry.recordOf(PPID)).arid.toString() !== String(reg?.arid)) return res.status(403).json({ ok: false, reason: 'trace_not_mine' });
+    const relayer = await provider.getSigner(RELAYER_INDEX);
+    const r = await sendAndWait(() => registry.connect(relayer).requestOpen(PPID, ethers.id(reason)));
+    if (r.state !== 'success') return res.status(502).json({ ok: false, reason: 'trace_open_failed', ...(r.tx ? { txHash: r.tx.hash } : {}) });
+    const ev = r.rc.logs.map((l) => { try { return registry.interface.parseLog(l); } catch { return null; } }).find((x) => x?.name === 'OpenRequested');
+    console.log(`[trace] 개봉 요청 #${ev ? Number(ev.args.id) : '?'} · PPID ${PPID} · 사유: ${JSON.stringify(reason)}`);
+    res.json({ ok: true, txHash: r.tx.hash, id: ev ? Number(ev.args.id) : null, requester: await relayer.getAddress() });
+  } catch (e) { res.status(500).json({ ok: false, reason: 'internal', detail: e.message }); }
+});
+
 // ---- 릴레이(설계 2026-10-15 §5.1, 계획 R6): 브라우저 사용자 페이지의 execute 를 RP 의 릴레이어 계정이 대신 보낸다 ----
 // 릴레이어는 서명만 한다 — 사용자 비밀을 보지 않는다. 검열(거부·지연) 가능성은 런북의 한계에 적는다.
 // 검사 순서: 활성 → 본문 형식(value 0 고정) → execute 셀렉터·pub 29(2026-11-19 trace-without-tag)·pub[1]=arid → to = computeAddress(pub[0])
@@ -863,6 +912,8 @@ app.post('/api/mode3/relay', relayCors, async (req, res) => {
     const expected = await factory.computeAddress(ppid);
     if (expected.toLowerCase() !== to.toLowerCase()) return res.status(400).json({ ok: false, reason: 'relay_bad_target' });
     if (!(await verifyCalldataProof({ vkey, a: dec.a, b: dec.b, c: dec.c, pub: dec.pub }))) return res.status(400).json({ ok: false, reason: 'relay_bad_proof' });
+    // 추적 기록(2026-11-26 검토 M-1): 로그인을 건너뛰고 릴레이만 불러 기록 없는 계정으로 거래하지 못하게 — 로그인과 같은 검사
+    if (TRACE_REGISTRY && !(await traceRegistryAt(TRACE_REGISTRY, provider).has(ppid))) return res.status(409).json({ ok: false, reason: 'trace_required' });
     const key = to.toLowerCase(), now = Date.now();
     const hits = (relayHits.get(key) ?? []).filter((t) => now - t < 60_000);
     if (hits.length >= RELAY_RATE) { relayHits.set(key, hits); return res.status(429).json({ ok: false, reason: 'relay_rate_limited' }); }

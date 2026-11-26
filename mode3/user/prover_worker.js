@@ -1,7 +1,8 @@
 // mode3/user/prover_worker.js — 증명 워커(스펙 §6). 메인 스레드는 입력만 보내고 zkey 는 여기서만 산다. kind 마다 첫 증명 뒤 vkey 로 한 번 자기 검증한다(산출물 짝 확인 — 에이전트의 artifacts 검사 대체).
 import * as snarkjs from 'snarkjs';
 import { loadSet, loadJson } from '../../lib/browser/zk_assets.js';
-const ASSETS = { pi_idp: { wasm: '/zk/pi_idp.wasm', zkey: '/zk/pi_idp_final.zkey', vkey: '/zk/pi_idp_vkey.json' }, pi_cred: { wasm: '/zk/pi_cred.wasm', zkey: '/zk/pi_cred_final.zkey', vkey: '/zk/pi_cred_vkey.json' } };
+const ASSETS = { pi_idp: { wasm: '/zk/pi_idp.wasm', zkey: '/zk/pi_idp_final.zkey', vkey: '/zk/pi_idp_vkey.json' }, pi_cred: { wasm: '/zk/pi_cred.wasm', zkey: '/zk/pi_cred_final.zkey', vkey: '/zk/pi_cred_vkey.json' },
+  pi_trace: { wasm: '/zk/pi_trace.wasm', zkey: '/zk/pi_trace_final.zkey', vkey: '/zk/pi_trace_vkey.json' } };   // 추적 기록(2026-11-26) — 서비스마다 첫 로그인에 한 번
 const loaded = {}, verified = {}, vkeys = {};
 function assets(kind) {
   return (loaded[kind] ??= (async () => {

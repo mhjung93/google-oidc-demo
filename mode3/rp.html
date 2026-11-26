@@ -1055,7 +1055,7 @@
 
         t0 = Date.now();
         // id_token(2026-11-09 Phase 1): 지갑이 zkIdP 발급 응답에서 그대로 넘긴 zkIdP ID 토큰 — RP 가 검증하고 name(속성 커밋먼트)을 계정에 고정한다. 없으면 null.
-        const r = await post('/api/mode3/login', { proof: wb.proof, publicSignals: wb.publicSignals, sig: wb.sig, r_s, require: pred?.require ?? null, id_token: wb.id_token ?? null, ...(opts.link ? { link: true } : {}) });   // link(2026-11-10): 이 PPID 를 지금 쿠키 세션 계정에 붙인다
+        const r = await post('/api/mode3/login', { proof: wb.proof, publicSignals: wb.publicSignals, sig: wb.sig, r_s, require: pred?.require ?? null, id_token: wb.id_token ?? null, ...(wb.trace ? { trace: wb.trace } : {}), ...(opts.link ? { link: true } : {}) });   // link(2026-11-10): 이 PPID 를 지금 쿠키 세션 계정에 붙인다
         const rb = await r.json();
         log(`3. RP 검증 ${ms(t0)}: ${JSON.stringify(rb)}\n   allowAgent=${rb.allowAgent}`);
         if (rb.ok) {

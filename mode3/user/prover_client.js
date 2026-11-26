@@ -15,5 +15,5 @@ export function createProver({ workerUrl = '/dist/prover_worker.js', onProgress 
   const prove = (kind) => async (input) => { const { proof, publicSignals } = await call({ kind, input }); return { proof, publicSignals }; };
   /** 기록된 증명을 검증키로 다시 본다 — { ok, ms }. which: 'pi_idp' | 'pi_cred'. */
   const verify = async (which, proof, publicSignals) => { const { ok, ms } = await call({ kind: 'verify', which, proof, publicSignals }); return { ok, ms }; };
-  return { fullProve: { idp: prove('pi_idp'), cred: prove('pi_cred') }, warm: (which) => call({ kind: 'warm', which }), verify };
+  return { fullProve: { idp: prove('pi_idp'), cred: prove('pi_cred'), trace: prove('pi_trace') }, warm: (which) => call({ kind: 'warm', which }), verify };
 }

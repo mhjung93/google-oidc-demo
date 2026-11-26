@@ -765,6 +765,12 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     if (PK) { try { const r = await core.passkeyState(); pkState = r.status === 200 ? r.body : null; } catch { pkState = null; } }
     if (WRAP) { try { const r = await core.wrapperEnvelopes(); lastEnvelopes = r.status === 200 ? r.body.envelopes : null; } catch { lastEnvelopes = null; } }
     if (WRAP) { try { const r = await core.wrapperLogins(); lastLogins = r.status === 200 && r.body.registered ? r.body.logins : null; } catch { lastLogins = null; } }
+    // 개봉 알림: 체인을 읽는 일이라 10초에 한 번만(2초 주기 새로고침마다 읽지 않는다)
+    if (WRAP && config.trace?.registry && Date.now() - traceAt > 10_000) {
+      traceAt = Date.now();
+      // 기다리지 않는다 — 체인을 읽는 동안 화면의 다른 갱신이 멈추지 않게(검토 M-2). 다 읽으면 카드만 다시 그린다.
+      core.traceAlerts().then((r) => { lastTrace = r.status === 200 ? r.body : { enabled: true, error: r.body?.reason ?? 'chain_unavailable', alerts: [] }; }, () => { lastTrace = { enabled: true, error: 'chain_unavailable', alerts: [] }; }).then(() => renderTrace());
+    }
     await loadProofs(); syncOpenProof();
     await loadFlow(); renderFlow();
     renderIdentity();
@@ -772,7 +778,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     renderTxs();
     renderProofs();
     renderPasskey();
-    renderBackups(); renderLogins(); renderAttrCard();
+    renderBackups(); renderLogins(); renderTrace(); renderAttrCard();
     renderGuide();
     await renderVault();
     await postPresence(core);
@@ -951,6 +957,25 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     }
     const full = lastLogins.length >= LOGIN_MAX;
     $('loginsAddBtn').disabled = full; $('loginsLimitNote').hidden = !full;
+  }
+  // ---- 개봉 알림(2026-11-26 스펙 ppid-account-trace §5): 이 브라우저의 PPID 에 온 개봉 요청 — 코어가 체인에서 읽어 거른 것 ----
+  let lastTrace = null, traceAt = 0, traceDrawn = null;
+  function renderTrace() {
+    const card = $('traceCard'); if (!card) return;
+    const on = WRAP && Boolean(config.trace?.registry) && Boolean(lastStatus?.registered) && lastTrace?.enabled === true;
+    card.hidden = !on; if (!on) return;
+    const sig = JSON.stringify(lastTrace);
+    if (sig === traceDrawn) return;
+    traceDrawn = sig;
+    const ul = $('traceList'); ul.replaceChildren();
+    for (const q of lastTrace.alerts ?? []) {
+      const li = document.createElement('li'); li.dataset.id = String(q.id); li.title = `PPID ${q.ppid}`;
+      const b = document.createElement('b'); b.textContent = q.service ?? q.origin ?? `PPID ${String(q.ppid).slice(0, 12)}…`;
+      li.append(b, document.createTextNode(` — ${tt('user_trace_item', { id: String(q.id), block: String(q.requestedAt), who: `${String(q.requester).slice(0, 10)}…`, n: String((q.shares ?? []).length) }) || `요청 #${q.id} · 블록 ${q.requestedAt} · 요청자 ${String(q.requester).slice(0, 10)}… · 감사자 응답 ${(q.shares ?? []).length}/3`}`));
+      ul.append(li);
+    }
+    $('traceEmpty').hidden = (lastTrace.alerts ?? []).length > 0 || Boolean(lastTrace.error);
+    $('traceState').textContent = lastTrace.error ? (tt('user_trace_unavailable') || '체인을 읽지 못했습니다 — 잠시 뒤 다시 읽습니다.') : (tt('user_trace_watching', { n: String(lastTrace.watching ?? 0) }) || `지켜보는 계정 ${lastTrace.watching ?? 0}개 — 체인에서 직접 읽습니다.`);
   }
   /** 더하기·떼기의 출발: 확인 창 → 요청 키 → Google(계정 고르기). req 는 공개값뿐이다({ type } 또는 { type, uid }). */
   async function wrapperLinkFlow(btn, req, question) {

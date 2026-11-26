@@ -67,6 +67,8 @@
       <p>
         <label><span data-i18n="rp_admin_ppid_label">고객의 이 RP 주소</span> <input id="openPpid" size="44" placeholder="0x…" autocapitalize="off" spellcheck="false" /></label>   <!-- 운영자 화면이라 "내 주소" 가 아니다(2026-11-05) -->
         <button id="openBtn" data-i18n="rp_open_req">개봉 요청</button>
+        <!-- 2026-11-26(스펙 ppid-account-trace §5): 추적 기록 등록부가 켜져 있을 때만 — 개봉을 체인의 거래로 요청한다(그 거래가 사용자에게 가는 알림이다) -->
+        <button id="traceOpenBtn" class="btn-ghost" data-i18n="rp_trace_open_btn" hidden>추적 기록 개봉 요청(체인)</button>
         <button id="openPollBtn" class="btn-ghost" data-i18n="rp_open_poll">결과 확인</button>
       </p>
       <p>
@@ -265,6 +267,21 @@
     }
     // 2026-11-06: 칸에는 0x 계정 주소(관리자 화면이 보이는 값)를 넣는다 — PPID 숫자를 넣어도 된다.
     $('openBtn').addEventListener('click', () => { const v = $('openPpid').value.trim(); requestOpening(/^0x[0-9a-fA-F]{40}$/.test(v) ? { account: v } : { PPID: v }); });
+    // 추적 기록 개봉 요청(체인): 입력이 계정 주소면 로그인 기록에서 그 PPID 를 찾는다(등록부의 열쇠는 PPID 다)
+    $('traceOpenBtn').addEventListener('click', async () => {
+      const v = $('openPpid').value.trim();
+      const PPID = /^0x[0-9a-fA-F]{40}$/.test(v) ? (lastLogins ?? []).find((l) => String(l.account ?? '').toLowerCase() === v.toLowerCase())?.PPID ?? null : v;
+      if (!PPID || !/^[0-9]+$/.test(String(PPID))) { setVerdict($('openVerdict'), false, 'rp_open_failed', { reason: 'trace_not_registered' }); return; }
+      // 사유는 필수다 — 해시가 체인에 남고(원문은 이 서비스의 로그에) 감사자가 심사할 근거가 된다
+      const reason = (window.prompt(tt('rp_trace_open_reason') || '개봉을 요청하는 사유를 적으세요(해시가 체인에 남습니다).', '') ?? '').trim();
+      if (!reason) return;
+      pendingVerdict($('openVerdict'), 'working');
+      try {
+        const r = await post('/api/mode3/trace/open', { PPID: String(PPID), reason: reason.slice(0, 200) }), b = await r.json().catch(() => ({}));
+        if (r.ok && b.ok) setVerdict($('openVerdict'), true, 'rp_trace_open_ok_title', () => ({ summary: tt('rp_trace_open_ok', { id: String(b.id ?? '?') }) || `요청 #${b.id ?? '?'}`, detail: b }));
+        else setVerdict($('openVerdict'), false, 'rp_open_failed', { reason: b.reason ?? `HTTP ${r.status}`, detail: b });
+      } catch (e) { setVerdict($('openVerdict'), false, 'rp_open_failed', { summary: e.message, detail: e.message }); }
+    });
     $('openTxBtn').addEventListener('click', () => requestOpening({ txHash: $('openTx').value.trim() }));
     $('openPollBtn').addEventListener('click', async () => {
       // 버튼은 늘 활성(2026-10-16) — 아직 개봉을 요청하지 않았으면 그 사실을 말한다.
@@ -297,6 +314,7 @@
     async function renderBrand() {
       try {
         info = await (await fetch('/api/mode3/rp_info')).json();
+        $('traceOpenBtn').hidden = !info?.trace?.registry;   // 추적 기록 등록부가 켜져 있을 때만(2026-11-26)
         const name = typeof info.name === 'string' && /^zk/i.test(info.name) ? info.name : 'zkONE';
         $('brandName').textContent = name; document.title = `${name} — ${tt('rp_admin_title') || '관리자'}`;
         // 상태 패널(설계 2026-09-25 §2) — 고객 페이지와 같은 상대(지갑·zkIdP)를 본다. 체험 모드의 단계 판정도 이 health 를 쓴다.

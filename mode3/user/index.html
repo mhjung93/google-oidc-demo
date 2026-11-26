@@ -333,6 +333,15 @@
       <p id="loginsLimitNote" class="muted" data-i18n="user_logins_limit_note" hidden>Google 계정은 5개까지 연결합니다 — 더하려면 하나를 떼세요.</p>
       <div id="loginsVerdict"></div>
     </section>
+
+    <!-- 개봉 알림(2026-11-26 스펙 ppid-account-trace §5): 추적 기록 등록부가 켜져 있을 때만 ui.js 가 보인다. 이 브라우저의 PPID 에 온 개봉 요청(체인의 거래)을 체인에서 직접 읽어 보인다. -->
+    <section class="card span2" id="traceCard" hidden>
+      <h3 data-i18n="user_trace_title">개봉 알림</h3>
+      <p class="desc" data-i18n="user_trace_desc">서비스마다 첫 로그인 때, 문제가 생겼을 때만 열 수 있는 추적 기록(감사자 키로 잠근 값)을 체인에 한 번 남깁니다. 누군가 그 기록의 개봉을 요청하면 체인에 거래가 남고, 여기에 보입니다. 감사자 셋 중 둘이 응답해야 열립니다.</p>
+      <ul id="traceList"></ul>
+      <p id="traceEmpty" class="muted" data-i18n="user_trace_empty" hidden>내 계정에 온 개봉 요청이 없습니다.</p>
+      <p id="traceState" class="muted"></p>
+    </section>
   </main>
 
   <!-- 계정 자기 폐기 — 에이전트 페이지의 Snap 대화상자 자리. zkIdP 계정 비밀번호는 zkIdP 로 한 번 보낼 뿐 어디에도 남기지 않는다. -->

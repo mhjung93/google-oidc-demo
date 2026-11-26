@@ -75,6 +75,12 @@
       <p><button id="openingsBtn" data-i18n="admin_list_btn">목록 불러오기</button></p>
       <p class="muted expert" data-i18n="admin_openings_note">요청에는 그 로그인의 증명 한 벌이 들어 있습니다(공개 입력에 PPID·arid·auid_s). 암호문(태그)을 푸는 단계는 없습니다(2026-11-19).</p>
       <div id="openings"><p class="muted" data-i18n="admin_need_secret">관리자 시크릿을 넣으면 목록과 대기 건수를 불러옵니다.</p></div>
+      <!-- 2026-11-26(스펙 ppid-account-trace §5): 체인의 개봉 요청 — 감사자 둘의 부분 복호를 합쳐 그 계정을 찾는다. 등록부가 꺼져 있으면 보이지 않는다(loadTrace). -->
+      <div id="traceBox" hidden>
+        <h4 data-i18n="admin_trace_title">추적 기록 개봉(체인의 요청)</h4>
+        <p class="desc" data-i18n="admin_trace_desc">서비스가 체인에 낸 개봉 요청입니다. 감사자 셋 중 둘이 부분 복호를 내면 "열기" 로 합쳐 그 계정을 찾습니다 — 이 서버는 감사자의 조각을 갖지 않습니다.</p>
+        <ul id="traceReqs"></ul>
+      </div>
     </section>
 
     <section class="card span2" id="secRcl">
@@ -545,12 +551,36 @@
       }
       host.replaceChildren(t);
     }
+    // 추적 기록의 개봉 요청(체인) — 목록과 "열기"(감사자 둘의 부분 복호를 서버가 확인·조합한다)
+    async function loadTrace() {
+      const box = $('traceBox'); if (!hasSecret()) { box.hidden = true; return; }
+      let r; try { r = await adminJson('GET', '/cia/admin/trace/requests'); } catch { box.hidden = true; return; }
+      if (r.status !== 200 || r.body?.enabled !== true) { box.hidden = true; return; }
+      box.hidden = false;
+      const ul = $('traceReqs'); ul.replaceChildren();
+      if (!r.body.requests.length) { const li = document.createElement('li'); li.className = 'muted'; li.textContent = Demo.t('admin_trace_none') || '체인에 개봉 요청이 없습니다.'; ul.append(li); return; }
+      for (const q of r.body.requests) {
+        const li = document.createElement('li'); li.dataset.id = String(q.id); li.title = `PPID ${q.ppid}`;
+        li.append(document.createTextNode(`${Demo.t('admin_trace_row', { id: String(q.id), service: q.service ?? `arid ${String(q.arid ?? '').slice(0, 10)}…`, n: String(Math.max(q.shares.length, q.ready.length)) }) || `요청 #${q.id}`} `));
+        if (q.opened) {
+          const s = document.createElement('span'); s.className = 'badge ok';
+          s.textContent = q.opened.resolved ? (Demo.t('admin_trace_opened', { who: q.opened.logins.map((l) => l.email ?? `uid ${String(l.uid).slice(0, 10)}…`).join(' · ') }) || '열림') : (Demo.t('admin_trace_unresolved') || '열림 — 계정 표에 없는 신원');
+          s.title = q.opened.uid ? `uid ${q.opened.uid}` : ''; li.append(s);
+        } else {
+          const b = document.createElement('button'); b.type = 'button'; b.className = 'btn-ghost'; b.textContent = Demo.t('admin_trace_open_btn') || '열기';
+          b.addEventListener('click', () => run('admin_open_failed', () => call('POST', `/cia/admin/trace/${q.id}/open`), async () => { await loadTrace(); }));
+          li.append(b);
+        }
+        ul.append(li);
+      }
+    }
     async function loadOpenings() {
       if (!hasSecret()) { placeholder($('openings'), 'admin_need_secret'); return; }
       try {
         const r = await adminJson('GET', '/cia/openings');
         if (r.status !== 200) { openings = null; placeholder($('openings'), 'admin_load_failed'); setVerdict($('adminVerdict'), false, 'admin_load_failed', { reason: reasonFor(r), detail: safeDetail(r.body) }); return; }
         openings = r.body.openings;
+        loadTrace();
       } catch (e) { openings = null; placeholder($('openings'), 'admin_load_failed'); setVerdict($('adminVerdict'), false, 'admin_load_failed', { reason: 'cia_unavailable', detail: e.message }); return; }
       renderOpenings();
     }

@@ -2,6 +2,7 @@
 # Mode 3 회로 둘(pi_cred·pi_idp) 컴파일 + Groth16 셋업. 산출물은 전부 build/mode3/ 아래.
 #
 #   bash scripts/build_mode3_circuit.sh [pi_cred|pi_idp] [pot21_final.ptau]
+#   bash scripts/build_mode3_circuit.sh pi_trace            # (2026-11-26) 추적 기록 회로만 — 작아서 pot14_final.ptau 로 된다. pi_cred·pi_idp 의 산출물은 건드리지 않는다
 #
 # 첫 인자가 회로 이름이면 그 회로만 빌드한다(2026-11-13, 스펙 2026-11-12 no-pk-u P7 — pi_idp 만 바꿀 때 pi_cred 의 zkey 를
 # 건드리면 배포된 온체인 검증자와 어긋난다). 없으면 지금처럼 둘 다.
@@ -17,9 +18,11 @@ cd "$(dirname "$0")/.."
 
 NAMES=(pi_cred pi_idp)
 case "${1:-}" in
-  pi_cred|pi_idp) NAMES=("$1"); shift ;;
+  pi_cred|pi_idp|pi_trace) NAMES=("$1"); shift ;;
 esac
-PTAU="${1:-pot21_final.ptau}"
+# pi_trace(스펙 2026-11-26 ppid-account-trace §4.2)는 이름을 줘야만 빌드한다(인자 없는 빌드에는 들어가지 않는다). 2^14 안이라 작은 ptau 를 기본으로 쓴다.
+DEFAULT_PTAU=pot21_final.ptau; [ "${NAMES[*]}" = "pi_trace" ] && DEFAULT_PTAU=pot14_final.ptau
+PTAU="${1:-$DEFAULT_PTAU}"
 if [ ! -f "$PTAU" ]; then
   echo "$PTAU 가 없습니다. pi_cred 는 2^14 를 넘어 pot21_final.ptau(2^21) 가 필요합니다." >&2
   exit 1
@@ -52,12 +55,22 @@ for NAME in "${NAMES[@]}"; do
     # 2026-11-19(스펙 trace-without-tag T3): 공개 입력 29개(pk_trace·tag 를 뺐다 — 전에는 34)
     grep -q 'uint\[29\] calldata _pubSignals' contracts/PiCredVerifier.sol || { echo "PiCredVerifier 의 공개 입력이 29개가 아니다 — circuits/pi_cred.circom 을 확인" >&2; exit 1; }
   fi
+  # pi_trace 도 온체인 검증기를 같은 반복 안에서 뽑는다(contracts/TraceRegistry.sol 이 부른다). 공개 입력 8개.
+  if [ "$NAME" = "pi_trace" ]; then
+    echo "=== solidity verifier (pi_trace) ==="
+    npx snarkjs zkey export solidityverifier "$OUT/pi_trace_final.zkey" contracts/TraceVerifier.sol
+    sed -i -E 's/contract (Groth16Verifier|Verifier) /contract TraceVerifier /' contracts/TraceVerifier.sol
+    grep -q 'contract TraceVerifier' contracts/TraceVerifier.sol || { echo "TraceVerifier 이름 치환 실패" >&2; exit 1; }
+    grep -q 'uint\[8\] calldata _pubSignals' contracts/TraceVerifier.sol || { echo "TraceVerifier 의 공개 입력이 8개가 아니다 — circuits/pi_trace.circom 을 확인" >&2; exit 1; }
+  fi
 done
 
 for NAME in "${NAMES[@]}"; do
   echo "완료: $OUT/${NAME}_final.zkey, $OUT/${NAME}_vkey.json, $OUT/${NAME}_js/${NAME}.wasm"
 done
 case " ${NAMES[*]} " in
+  *" pi_trace "*) echo "      contracts/TraceVerifier.sol"
+                  echo "다음: npx hardhat compile (artifacts/ 의 TraceVerifier·TraceRegistry 갱신)" ;;
   *" pi_cred "*) echo "      contracts/PiCredVerifier.sol"
                  echo "다음: npx hardhat compile (artifacts/ 의 PiCredVerifier 갱신) — 그 뒤 팩토리·AttrGate 재배포(docs/MODE3_DEMO.md '처음 한 번')" ;;
 esac

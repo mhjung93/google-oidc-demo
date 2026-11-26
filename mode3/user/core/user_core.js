@@ -26,6 +26,8 @@ import { uidOf, regNonce, issueNonce } from '../../../lib/mode3_oidc_nonce.js';
 import { WRAPPER_PREFIX, generateRequestKey, wrapperNonce, signIssue, signDigest, revokeDigest, envelopeDigest, linkDigest } from '../../../lib/mode3_wrapper_auth.js';
 import { signLinkProof } from '../../../lib/mode3_link_key.js';
 import { sealVault, openVault, vaultDigest } from '../../../lib/mode3_profile_vault.js';
+import { traceWitness, samePublicSignals } from '../../../lib/mode3_trace_record.js';
+import { traceRegistryAt, listOpenRequests } from '../../../lib/mode3_trace_chain.js';
 import { envKeyFromCode, newEnvelopeId, sealSalt, openSalt, isEnvelope, auidCheckOf } from '../../../lib/mode3_salt_envelope.js';
 
 export const USER_STATE_VERSION = 1;
@@ -319,6 +321,35 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       const some = attrs.some((v) => String(v) !== '0');
       return { record: some ? { schema: { id: schema.id, version: schema.version }, auid, profile: normalized, attrs, commit: await attrCommit({ s_u, attrs }) } : null };
     } catch { return null; }
+  }
+  /** 추적 기록(스펙 2026-11-26 ppid-account-trace §4.3): 이 서비스의 PPID 에 기록이 아직 없으면, auid 를 감사자 키로 잠근 값과 π_trace 를 만들어 **로그인 응답에 싣는다** —
+   *  서비스가 로그인(π_RP)을 확인한 뒤 릴레이어로 올린다(따로 보내지 않는다 — 증명된 로그인에만 릴레이가 붙는다, 검토 I-1).
+   *  등록부 주소와 감사자 키는 **이 지갑의 설정**(config.trace — zkWrapper 서버가 자기 노드에서 읽은 값)만 믿는다. 서비스나 브라우저의 RPC 가 준 키로 잠그면 그쪽이 auid 를 읽는다(검토 I-2).
+   *  체인에는 "이 PPID 의 기록이 있나" 를 **처음에만** 묻는다 — 있다고 확인하면 kv tracePpids 에 적고 다음부터는 묻지 않는다(노드가 이 IP 와 PPID 를 잇는 것은 서비스마다 많아야 두 번, 검토 M-7·M-8).
+   *  → { trace: null }(꺼짐·이미 있음) | { trace: { ppid, c1x, c1y, c2, a, b, c } } | { err: { status, body } }. */
+  async function buildTrace({ arid, origin, serviceName = null, s_u }) {
+    const addr = config.trace?.registry;
+    if (!addr) return { trace: null };
+    const t0 = tick();
+    try {
+      const chainid = await chain.chainId();
+      const PPID = await ppid({ s_u: BigInt(s_u), arid: BigInt(arid), chainid });
+      const noted = (await kv.get('tracePpids')) ?? {};
+      if (noted[PPID.toString()]) return { trace: null };
+      if (await traceRegistryAt(addr, provider).has(PPID)) {
+        await kv.set('tracePpids', { ...noted, [PPID.toString()]: { arid: String(arid), origin: origin ?? null, serviceName, at: new Date(now()).toISOString() } });
+        return { trace: null };
+      }
+      const pin = config.trace.pk;
+      if (!pin || !/^[0-9]+$/.test(String(pin.x)) || !/^[0-9]+$/.test(String(pin.y))) return { err: R(503, { reason: 'trace_unavailable', detail: 'pk_aud' }) };
+      if (typeof fullProve?.trace !== 'function') return { err: R(503, { reason: 'zk_assets_unavailable', detail: 'pi_trace' }) };
+      const w = await traceWitness({ s_u: BigInt(s_u), arid: BigInt(arid), chainid, pk_aud: { x: BigInt(pin.x), y: BigInt(pin.y) } });
+      const { proof, publicSignals } = await fullProve.trace(w.input);
+      if (!samePublicSignals(publicSignals, w.publicSignals)) return { err: R(500, { reason: 'trace_unavailable', detail: 'public signals' }) };
+      const { a, b, c } = await proofToCalldata(proof, publicSignals);
+      flowStep('trace', tick() - t0);
+      return { trace: { ppid: PPID.toString(), c1x: w.c1.x.toString(), c1y: w.c1.y.toString(), c2: w.c2.toString(), a, b, c } };
+    } catch (e) { return { err: R(503, { reason: e?.reason ?? 'chain_unavailable', detail: e?.message ?? null }) }; }
   }
   /** salt 봉투 추가·삭제의 공통 왕복(계획 2026-11-24 salt-envelope Task 4) — 세션 끝내기와 같은 결속: wrapperBegin 의 1회용 요청 키에 묶인 Google 토큰 + envelopeDigest 서명.
    *  build({ uid }) 가 요청({ op, envelope } 또는 { op, id })을 만든다(패스키·코드가 필요하면 그 안에서). 토큰의 계정이 이 브라우저의 등록 계정과 다르면 보내지 않는다.
@@ -1027,6 +1058,9 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
         }
         flowStep('publish_wait', tick() - tpw);
       }
+      // 추적 기록(2026-11-26): 서비스가 로그인에서 "이 PPID 의 기록이 있다" 를 요구한다 — 없으면 지금 만들어 로그인 응답에 싣는다(서비스마다 한 번, 증명 한 번 — 거래는 서비스가 낸다)
+      const tr = await buildTrace({ arid, origin, serviceName, s_u: src.registration().s_u });
+      if (tr.err) return R(tr.err.status, { ...tr.err.body, timings });
       let out;
       try { out = await proveSession(rs.toString(), synced, timings, disclosure, src); }
       catch (e) {
@@ -1044,7 +1078,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       // id_token(2026-11-19 스펙 oidc-comparison): IdP 가 발급 때 준 zkIdP ID 토큰(sub = auid_s·aud = arid_s — 공개값뿐이다)을 서비스에 그대로 넘긴다. 에이전트 /wallet/login 과 같다 —
       // 서비스가 증명의 공개 신호와 맞춰 보고, 화면이 "서비스가 받은 토큰" 으로 보인다. 없으면 null(서비스는 토큰 없이도 로그인을 받는다).
       const zkToken = (await getSessions())[rs.toString()]?.credential?.id_token;
-      return R(200, { ...out, issued: true, allowAgent, timings, disclosure: hasPredicate(disclosure) ? discStrings(disclosure) : null, id_token: typeof zkToken === 'string' ? zkToken : null });
+      return R(200, { ...out, issued: true, allowAgent, timings, disclosure: hasPredicate(disclosure) ? discStrings(disclosure) : null, id_token: typeof zkToken === 'string' ? zkToken : null, ...(tr.trace ? { trace: tr.trace } : {}) });
     },
     /** 래퍼 로그인 1단계(스펙 2026-11-20 zkwrapper §2.2) — Google 로 가기 전: 1회용 요청 키를 만들어(개인키는 꺼낼 수 없다 — CryptoKey 그대로 kv 에) Google 인가 요청의 nonce 를 낸다.
      *  패스키를 묻지 않는다(salt 가 필요 없다). 부를 때마다 새 키로 덮는다 — 앞선 키로 받은 토큰은 쓸 수 없게 된다. */
@@ -1573,6 +1607,18 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
         await updateReg((x) => { x.logins = logins; });
         return R(200, { logins });
       } finally { if (!keepKey) { await kv.del('wrapperKey'); dropRecover(); } }
+    },
+    /** 개봉 알림(스펙 2026-11-26 ppid-account-trace §5): 등록부의 개봉 요청 가운데 **이 브라우저의 PPID** 에 온 것. 체인을 직접 읽는다 — 요청 전체를 받아 여기서 거른다
+     *  (어느 PPID 를 지켜보는지 노드에 알리지 않는다). 내 PPID 는 체인에서 기록을 확인하고 적어 둔 것(kv tracePpids)과 지금 세션의 것이다 — 이 브라우저로 로그인한 적 없는 서비스의 PPID 는 보지 못한다. 꺼져 있으면 { enabled: false }. */
+    async traceAlerts() {
+      const addr = config.trace?.registry;
+      if (!addr) return R(200, { enabled: false, alerts: [] });
+      const mine = { ...((await kv.get('tracePpids')) ?? {}) };
+      for (const x of Object.values(await getSessions())) if (x?.PPID && !mine[String(x.PPID)]) mine[String(x.PPID)] = { arid: String(x.arid ?? ''), origin: x.origin ?? null, serviceName: x.serviceName ?? null, at: null };
+      try {
+        const all = await listOpenRequests(traceRegistryAt(addr, provider));
+        return R(200, { enabled: true, registry: addr, watching: Object.keys(mine).length, alerts: all.filter((q) => mine[q.ppid]).map((q) => ({ ...q, service: mine[q.ppid].serviceName ?? null, origin: mine[q.ppid].origin ?? null })) });
+      } catch (e) { return R(503, { reason: 'chain_unavailable', detail: e.message }); }
     },
     /** 이 브라우저가 아는 로그인 계정 목록 — 발급·연결 응답으로 받은 것. 아직 받은 적이 없으면 이 브라우저가 등록한 계정 하나(이메일 모름). */
     async wrapperLogins() {
