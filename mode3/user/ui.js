@@ -3,7 +3,7 @@
 // MetaMask·Snap 코드는 없다. 비밀(s_u·blind_u·세션 개인키·금고 비밀번호·secrets 암호문)은 DOM·localStorage·로그·postMessage 에
 // 넣지 않는다 — 코어 응답은 에이전트와 같은 모양이라 비밀이 실리지 않고, safeDetail 이 한 번 더 거른다. 비밀번호 입력칸은 읽자마자 비운다.
 import { ZK_CACHE_NAME } from '../../lib/browser/zk_assets.js';
-import { RECOVER_RESULT_KEY, WRAP_END_RESULT_KEY, WRAP_ACCOUNT_RESULT_KEY, WRAP_BACKUP_RESULT_KEY, idpAuthUrl, savePending, googleAuthUrl, saveWrapperPending, readAttrRecord, attrRecordOf, ATTR_RECORD_KEY } from './idp_return.js';
+import { RECOVER_RESULT_KEY, WRAP_END_RESULT_KEY, WRAP_ACCOUNT_RESULT_KEY, WRAP_BACKUP_RESULT_KEY, WRAP_LINK_RESULT_KEY, idpAuthUrl, savePending, googleAuthUrl, saveWrapperPending, readAttrRecord, attrRecordOf, ATTR_RECORD_KEY } from './idp_return.js';
 export const $ = (id) => document.getElementById(id);
 
 /** 사전 도우미(wallet.html 의 tte·tt·setVerdict·pendingVerdict 와 같다). */
@@ -764,6 +764,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     }
     if (PK) { try { const r = await core.passkeyState(); pkState = r.status === 200 ? r.body : null; } catch { pkState = null; } }
     if (WRAP) { try { const r = await core.wrapperEnvelopes(); lastEnvelopes = r.status === 200 ? r.body.envelopes : null; } catch { lastEnvelopes = null; } }
+    if (WRAP) { try { const r = await core.wrapperLogins(); lastLogins = r.status === 200 && r.body.registered ? r.body.logins : null; } catch { lastLogins = null; } }
     await loadProofs(); syncOpenProof();
     await loadFlow(); renderFlow();
     renderIdentity();
@@ -771,7 +772,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     renderTxs();
     renderProofs();
     renderPasskey();
-    renderBackups(); renderAttrCard();
+    renderBackups(); renderLogins(); renderAttrCard();
     renderGuide();
     await renderVault();
     await postPresence(core);
@@ -922,6 +923,63 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     } catch (e) {
       setVerdict(el, false, 'user_backup_failed', { reason: 'internal', detail: e.message });
     } finally { delete btn.dataset.busy; }
+  }
+  // ---- 로그인 계정(2026-11-26 스펙 identity-multi-login M9 — 래퍼 방식의 /user): 이 신원에 붙은 Google 계정 목록과 더하기·떼기 ----
+  // 더하기는 Google 을 두 번 다녀온다(지금 계정 → 패스키 → 더할 계정) — popup.js finishWrapperLinkBegin·Finish 가 잇는다. 떼기는 한 번(finishWrapperLinkRemove).
+  // 목록은 이 브라우저가 서버 응답으로 아는 것이다(발급·연결) — 다른 기기에서 바꾼 것은 다음 로그인 때 맞춰진다.
+  const LOGIN_MAX = 5;   // 첫 계정 포함(서버의 LOGIN_LIMIT + 1) — 화면은 찬 것을 미리 알릴 뿐이고 서버가 다시 본다
+  let lastLogins = null, loginsDrawn = null;
+  const loginLabel = (l) => l.email ?? `${tt('user_logins_no_email') || 'Google 계정'} (uid ${String(l.uid).slice(0, 10)}…)`;
+  function renderLogins(force = false) {
+    const card = $('loginsCard'); if (!card) return;
+    const on = WRAP && Boolean(lastStatus?.registered) && Array.isArray(lastLogins);
+    card.hidden = !on; if (!on) return;
+    const sig = JSON.stringify(lastLogins);
+    if (!force && sig === loginsDrawn) return;
+    loginsDrawn = sig;
+    const ul = $('loginsList'); ul.replaceChildren();
+    for (const l of lastLogins) {
+      const li = document.createElement('li'); li.dataset.uid = l.uid; li.title = `uid ${l.uid}`;
+      li.append(document.createTextNode(`${loginLabel(l)} `));
+      if (l.primary) { const s = document.createElement('span'); s.className = 'badge muted'; s.textContent = tt('user_logins_primary') || '첫 계정'; li.append(s); }
+      else {
+        const b = document.createElement('button'); b.type = 'button'; b.className = 'btn-ghost'; b.textContent = tt('user_logins_remove_btn') || '떼기';
+        b.addEventListener('click', () => wrapperLinkFlow(b, { type: 'mode3-link-remove', uid: l.uid }, tt('confirm_logins_remove', { who: loginLabel(l) }) || '이 Google 계정을 뗄까요?'));
+        li.append(b);
+      }
+      ul.append(li);
+    }
+    const full = lastLogins.length >= LOGIN_MAX;
+    $('loginsAddBtn').disabled = full; $('loginsLimitNote').hidden = !full;
+  }
+  /** 더하기·떼기의 출발: 확인 창 → 요청 키 → Google(계정 고르기). req 는 공개값뿐이다({ type } 또는 { type, uid }). */
+  async function wrapperLinkFlow(btn, req, question) {
+    if (btn.dataset.busy === '1') return;
+    if (!window.confirm(question)) return;
+    btn.dataset.busy = '1';
+    const el = $('loginsVerdict');
+    pendingVerdict(el, 'working');
+    try {
+      let o = null;
+      try { const k = await core.idp.publicKeys(); o = k?.status === 200 && k.body?.wrapper === true ? k.body.oidc : null; } catch { o = null; }
+      if (!o?.enabled || typeof o.clientId !== 'string' || typeof o.authorizeUrl !== 'string' || typeof o.redirectUri !== 'string') { setVerdict(el, false, 'user_logins_failed', { reason: 'wrapper_disabled' }); return; }
+      const b = await core.wrapperBegin();
+      if (b.status !== 200) { setVerdict(el, false, 'user_logins_failed', { reason: b.body?.reason ?? `HTTP ${b.status}`, detail: safeDetail(b.body) }); return; }
+      const { url, state } = googleAuthUrl({ authorizeUrl: o.authorizeUrl, clientId: o.clientId, redirectUri: o.redirectUri, nonce: b.body.googleNonce, walletOrigin: location.origin });
+      saveWrapperPending(window.sessionStorage, { state, at: Date.now(), req, origin: location.origin });
+      location.assign(url);
+    } catch (e) {
+      setVerdict(el, false, 'user_logins_failed', { reason: 'internal', detail: e.message });
+    } finally { delete btn.dataset.busy; }
+  }
+  /** 더하기·떼기 귀로가 남긴 결과(공개값·사유뿐)를 한 번 보이고 지운다. */
+  function showWrapLinkResult() {
+    let r = null;
+    try { r = JSON.parse(sessionStorage.getItem(WRAP_LINK_RESULT_KEY) ?? 'null'); sessionStorage.removeItem(WRAP_LINK_RESULT_KEY); } catch { r = null; }
+    if (!r) return;
+    const el = $('loginsVerdict');
+    if (r.ok) setVerdict(el, true, r.op === 'remove' ? 'user_logins_removed' : 'user_logins_added', () => ({ summary: r.op === 'remove' ? (tt('user_logins_removed_summary') || '그 Google 계정을 뗐습니다.') : (tt('user_logins_added_summary', { who: r.email ?? (tt('user_logins_no_email') || 'Google 계정') }) || 'Google 계정을 더했습니다.') }));
+    else setVerdict(el, false, 'user_logins_failed', { reason: r.reason ?? 'internal', ...(r.detail ? { detail: r.detail } : {}) });
   }
   /** 백업 귀로가 남긴 결과(공개값·사유뿐)를 한 번 보이고 지운다. */
   function showWrapBackupResult() {
@@ -1341,6 +1399,8 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       const b = $(id); b.addEventListener('click', () => wrapperBackupFlow(b, { type: 'mode3-envelope-add', kind }, tt(key) || fb));
     }
     showWrapBackupResult();
+    { const b = $('loginsAddBtn'); if (b) b.addEventListener('click', () => wrapperLinkFlow(b, { type: 'mode3-link-begin' }, tt('confirm_logins_add') || 'Google 계정을 더할까요? 먼저 지금 계정을 확인하고, 이어서 더할 계정을 고릅니다.')); }
+    showWrapLinkResult();
     $('userLockCard').hidden = false; $('userBar').hidden = false;
     // 2026-11-25(사용자 요청): 내 신원 카드는 보이지 않는다(코드는 다른 방식이 쓴다). 속성은 "내 속성" 카드에서 넣는다.
     $('identityCard').hidden = true; $('attrCard').hidden = false;

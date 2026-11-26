@@ -10,8 +10,9 @@ import { randomScalar } from '../lib/mode3_credential.js';
 import { createRpVerifier } from '../lib/mode3_rp.js';
 import { PUB_INDEX } from '../lib/mode3_onchain.js';
 import { signOpenRequest } from '../lib/mode3_opening.js';
-import { generateRequestKey, wrapperNonce, signIssue, signDigest, revokeDigest, issueDigest, envelopeDigest } from '../lib/mode3_wrapper_auth.js';
+import { generateRequestKey, wrapperNonce, signIssue, signDigest, revokeDigest, issueDigest, envelopeDigest, linkDigest } from '../lib/mode3_wrapper_auth.js';
 import { auidCheckOf, BACKUP_LIMIT, DEVICE_LIMIT } from '../lib/mode3_salt_envelope.js';
+import { signLinkProof, linkKeyOf } from '../lib/mode3_link_key.js';
 import { randomBytes } from 'node:crypto';
 import { proveV11, TESTUSER_ATTRS } from './helpers/mode3_flow.mjs';
 
@@ -360,6 +361,131 @@ try {
     assert.equal((await wrapIssue(nina, S1)).r.status, 200, '지운 뒤 같은 Google 계정의 새 등록');
     assert.deepEqual(await envelopesOf(nina), [], '봉투는 계정과 함께 사라졌다');
   });
+  // ---- 한 신원에 Google 계정 여럿(스펙 2026-11-26 identity-multi-login) ----
+  /** POST /cia/wrapper/link — 요청 키·그 키에 묶인 토큰(sub)·linkDigest 서명. key·token 을 주면 다시 쓰고, digest 를 주면 그 글에 서명한다(목적 바꿔 쓰기). */
+  const linkCall = async (sub, req, { key = null, token = null, digest = null } = {}) => {
+    const k = key ?? await generateRequestKey();
+    const id_token = token ?? await stub.mint({ sub, nonce: await wrapperNonce(k.pkE), extra: { email: `${sub}@example.com`, email_verified: true } });
+    return { r: await cia.post('/cia/wrapper/link', { id_token, pk_e: k.pkE, sig: await signDigest(k.privateKey, digest ?? linkDigest(req, AUD)), ...req }), k, id_token };
+  };
+  const nextOf = async (k) => (await wrapperNonce(k.pkE)).slice('wrap:'.length);
+  /** begin(owner 의 계정 bySub·auid) → finish(sub2). begin 이 실패하면 그 응답을 돌려준다. */
+  // salt: 연결 열쇠(salt 에서 유도)로 next 에 서명한다 — 기본은 그 신원의 salt. null 이면 서명을 싣지 않는다.
+  const beginReq = async (owner, next, { auid = owner.auid.toString(), salt = owner.s_u } = {}) => ({ op: 'begin', auid, next, ...(salt === null ? {} : { link_sig: await signLinkProof(salt, { op: 'begin', next }, AUD) }) });
+  const link = async (owner, sub2, { bySub = owner.sub, auid = owner.auid.toString(), salt = owner.s_u } = {}) => {
+    const k2 = await generateRequestKey();
+    const b = await linkCall(bySub, await beginReq(owner, await nextOf(k2), { auid, salt }));
+    return b.r.status === 200 ? linkCall(sub2, { op: 'finish' }, { key: k2 }) : b;
+  };
+  const openUid = async (iss) => {
+    const out = await login(iss);
+    const ts = String(Math.floor(Date.now() / 1000)), auid_s = out.publicSignals[PUB_INDEX.AUID_S], PPID = out.publicSignals[PUB_INDEX.PPID];
+    const rq = await cia.post('/cia/open/request', { arid: S1.arid, publicSignals: out.publicSignals, proof: out.proof, ts, sig: await signOpenRequest(S1.serviceWallet, { arid: S1.arid, PPID, auid_s, ts }) });
+    assert.ok(rq.status === 200 || rq.status === 202, j(rq.body));
+    assert.equal((await cia.adminPost(`/cia/openings/${rq.body.id}/approve`)).body.resolved, true);
+    const o = (await cia.adminGet('/cia/openings')).body.openings.find((x) => x.id === rq.body.id);
+    return { uid: String(o.uid), identity: String(o.identity), PPID };
+  };
+  const oscar = await person('g-oscar'), oscar2 = { ...oscar, sub: 'g-oscar-2' }, uid2 = uidOf(stub.provider, 'g-oscar-2');
+  let oscarFirst;
+  await t('계정 연결: begin(지금 계정 토큰 + auid + 다음 요청 키) → finish(더할 계정 토큰) — 목록에 둘, 더한 계정의 레코드는 생기지 않는다', async () => {
+    oscarFirst = await wrapIssue(oscar, S1); assert.equal(oscarFirst.r.status, 200, j(oscarFirst.r.body));
+    const x = await link(oscar, 'g-oscar-2'); assert.equal(x.r.status, 200, j(x.r.body));
+    assert.deepEqual(x.r.body.logins.map((l) => [l.uid, l.email, l.primary === true]), [[oscar.uid.toString(), 'g-oscar@example.com', true], [uid2, 'g-oscar-2@example.com', false]]);
+    assert.equal(await acctOf(uid2), null, '더한 계정의 레코드가 생겼다');
+    assert.deepEqual((await acctOf(oscar.uid)).logins.map((l) => l.uid), [uid2]);
+    assert.ok(!j(x.r.body).includes(oscar.auid.toString()), '응답에 auid 가 있다');
+    assert.equal(oscarFirst.req.body.link_key, linkKeyOf(oscar.s_u), '발급 본문에 연결 열쇠의 주소');
+    assert.equal('linkKey' in (await acctOf(oscar.uid)), false, '관리자 계정 표에 연결 열쇠를 싣지 않는다');
+  });
+  await t('연결한 계정으로 발급: 같은 계정·같은 슬롯·같은 C_u 로 200 이고 같은 PPID 로 로그인된다 — 응답의 logins 는 둘', async () => {
+    const before = await acctOf(oscar.uid);
+    const iss = await wrapIssue(oscar2, S1); assert.equal(iss.r.status, 200, j(iss.r.body));
+    assert.equal(iss.cred.uid, oscar.uid.toString()); assert.equal(iss.cred.slot, oscarFirst.cred.slot); assert.equal(iss.cred.Cf_u, oscarFirst.cred.Cf_u);
+    assert.deepEqual(iss.cred.logins.map((l) => l.uid), [oscar.uid.toString(), uid2]);
+    const after = await acctOf(oscar.uid); assert.equal(after.activeCf_u, before.activeCf_u, 'C_u 가 바뀌었다'); assert.equal(after.id, 'g-oscar@example.com', '아이디(첫 계정의 이메일)가 바뀌었다');
+    assert.equal(await acctOf(uid2), null);
+    const a = await openUid(oscarFirst), b = await openUid(iss);
+    assert.equal(a.PPID, b.PPID, '두 Google 계정의 PPID 가 다르다');
+    // 개봉(M6): 그 로그인에 쓴 계정 하나 — 첫 계정의 로그인은 첫 uid, 더한 계정의 로그인은 그 uid
+    assert.equal(a.uid, oscar.uid.toString()); assert.equal(b.uid, uid2);
+    // 보안 검토 I-2: 관리자 기록에는 그 PPID 를 쓰는 신원(계정 표의 uid)이 따로 남는다 — 폐기는 그 값으로 한다
+    assert.equal(b.identity, oscar.uid.toString()); assert.equal(a.identity, oscar.uid.toString());
+  });
+  await t('연결 거절: auid 가 틀리면 409 link_auid_mismatch, begin 없는 finish 는 409 link_not_started, 서명 목적을 바꿔 쓰면 400, 모양이 틀리면 400 link_bad', async () => {
+    const pat = await person('g-pat'); assert.equal((await wrapIssue(pat, S1)).r.status, 200);
+    // Google 계정만 가진 사람(다른 salt): 자기 계정에 붙이려 해도 auid 를 모르면 안 된다 — 남의 auid 로 자기 계정에 begin 해도 자기 계정의 auid 와 달라 거절
+    let x = await link(oscar, 'g-new-1', { auid: pat.auid.toString() }); assert.equal(x.r.status, 409, j(x.r.body)); assert.equal(x.r.body.reason, 'link_auid_mismatch');
+    x = await link(oscar, 'g-new-1', { bySub: 'g-pat' }); assert.equal(x.r.status, 409, j(x.r.body)); assert.equal(x.r.body.reason, 'link_auid_mismatch');
+    x = await linkCall('g-new-1', { op: 'finish' }); assert.equal(x.r.status, 409, j(x.r.body)); assert.equal(x.r.body.reason, 'link_not_started');
+    const k2 = await generateRequestKey(), next = await nextOf(k2);
+    x = await linkCall('g-oscar', await beginReq(oscar, next), { digest: linkDigest({ op: 'finish' }, AUD) }); assert.equal(x.r.body.reason, 'wrapper_bad_signature', j(x.r.body));
+    x = await linkCall('g-oscar', await beginReq(oscar, next), { digest: linkDigest({ op: 'begin', auid: oscar.auid.toString(), next: 'ab'.repeat(32) }, AUD) }); assert.equal(x.r.body.reason, 'wrapper_bad_signature', j(x.r.body));
+    // 보안 검토 I-1: auid 를 알아도(브라우저 저장소·서버에 있는 값) 패스키(salt)가 없으면 안 된다 — 연결 열쇠의 서명이 없거나, 다른 salt 의 것이거나, 다른 next 에 한 것이면 409 link_salt_proof
+    x = await linkCall('g-oscar', await beginReq(oscar, next, { salt: null })); assert.equal(x.r.status, 409, j(x.r.body)); assert.equal(x.r.body.reason, 'link_salt_proof');
+    x = await linkCall('g-oscar', await beginReq(oscar, next, { salt: pat.s_u })); assert.equal(x.r.body.reason, 'link_salt_proof', j(x.r.body));
+    x = await linkCall('g-oscar', { op: 'begin', auid: oscar.auid.toString(), next, link_sig: await signLinkProof(oscar.s_u, { op: 'begin', next: 'cd'.repeat(32) }, AUD) }); assert.equal(x.r.body.reason, 'link_salt_proof', j(x.r.body));
+    x = await linkCall('g-oscar', { op: 'begin', auid: oscar.auid.toString(), next, link_sig: await signLinkProof(oscar.s_u, { op: 'begin', next }, 'https://other.example') }); assert.equal(x.r.body.reason, 'link_salt_proof', j(x.r.body));
+    x = await linkCall('g-new-1', { op: 'finish' }, { key: k2 }); assert.equal(x.r.body.reason, 'link_not_started', 'begin 이 거절됐는데 finish 가 됐다');
+    for (const req of [{ op: 'begin', auid: oscar.auid.toString(), next: 'xyz' }, { op: 'begin', next }, { op: 'remove', auid: oscar.auid.toString() }, { op: 'merge' }]) {
+      const r = await cia.post('/cia/wrapper/link', { id_token: 'x', pk_e: k2.pkE, sig: 'A'.repeat(86), ...req }); assert.equal(r.status, 400, j(req)); assert.equal(r.body.reason, 'link_bad', j(r.body));
+    }
+    // begin 의 토큰·요청 키로 finish 를 하지 못한다(다음 요청 키의 토큰이어야 한다), 같은 begin 토큰은 두 번 못 쓴다
+    const b = await linkCall('g-oscar', await beginReq(oscar, next));
+    assert.equal(b.r.status, 200, j(b.r.body));
+    // 같은 next 의 대기분은 덮어쓰지 못한다(M-4) — 다른 신원이 같은 next 로 begin 해도 409 link_pending, 같은 토큰을 다시 써도 거절
+    x = await linkCall('g-pat', await beginReq(pat, next)); assert.equal(x.r.status, 409, j(x.r.body)); assert.equal(x.r.body.reason, 'link_pending');
+    x = await linkCall('g-oscar', await beginReq(oscar, await nextOf(await generateRequestKey())), { key: b.k, token: b.id_token }); assert.equal(x.r.body.reason, 'wrapper_token_used', j(x.r.body));
+    x = await linkCall('g-new-1', { op: 'finish' }, { key: b.k }); assert.equal(x.r.body.reason, 'wrapper_token_used', j(x.r.body));   // begin 의 요청 키는 이미 썼다
+    assert.deepEqual((await acctOf(oscar.uid)).logins.map((l) => l.uid), [uid2], '거절된 요청이 목록을 바꿨다');
+  });
+  await t('연결 거절: 자기 계정이 있는 Google 계정·다른 신원에 붙은 계정은 409 link_has_account, 이미 이 신원의 계정은 409 link_exists — 합치지 않는다', async () => {
+    const pat = await person('g-pat');   // 앞 사례에서 계정을 만들었다(같은 sub → 같은 uid). salt 는 다르지만 이 사례는 pat 의 salt 를 쓰지 않는다
+    let x = await link(oscar, 'g-pat'); assert.equal(x.r.status, 409, j(x.r.body)); assert.equal(x.r.body.reason, 'link_has_account');
+    x = await link(oscar, 'g-oscar-2'); assert.equal(x.r.body.reason, 'link_exists', j(x.r.body));
+    x = await link(oscar, 'g-oscar', { bySub: 'g-oscar-2' }); assert.equal(x.r.body.reason, 'link_exists', j(x.r.body));
+    const rita = await person('g-rita'); assert.equal((await wrapIssue(rita, S1)).r.status, 200);
+    x = await link(rita, 'g-oscar-2'); assert.equal(x.r.body.reason, 'link_has_account', j(x.r.body));
+    assert.deepEqual((await acctOf(rita.uid)).logins, []); assert.ok((await acctOf(pat.uid)) !== null);
+  });
+  await t('떼기: 첫 계정은 409 link_primary, 모르는 uid 는 404, auid 가 틀리면 409 — 뗀 계정은 그 패스키로 다시 발급받지 못한다(409 auid_taken)', async () => {
+    const rm = async (sub, uid, auid = oscar.auid.toString(), salt = oscar.s_u) => linkCall(sub, { op: 'remove', auid, uid, ...(salt === null ? {} : { link_sig: await signLinkProof(salt, { op: 'remove', uid }, AUD) }) });
+    let x = await rm('g-oscar-2', oscar.uid.toString()); assert.equal(x.r.status, 409, j(x.r.body)); assert.equal(x.r.body.reason, 'link_primary');
+    x = await rm('g-oscar', '12345'); assert.equal(x.r.status, 404, j(x.r.body)); assert.equal(x.r.body.reason, 'link_unknown');
+    x = await rm('g-oscar', uid2, (oscar.auid + 1n).toString()); assert.equal(x.r.body.reason, 'link_auid_mismatch', j(x.r.body));
+    x = await linkCall('g-oscar', { op: 'remove', auid: oscar.auid.toString(), uid: uid2 }, { digest: linkDigest({ op: 'remove', auid: oscar.auid.toString(), uid: '12345' }, AUD) }); assert.equal(x.r.body.reason, 'wrapper_bad_signature', j(x.r.body));
+    x = await rm('g-oscar', uid2, oscar.auid.toString(), null); assert.equal(x.r.body.reason, 'link_salt_proof', j(x.r.body));
+    x = await linkCall('g-oscar', { op: 'remove', auid: oscar.auid.toString(), uid: uid2, link_sig: await signLinkProof(oscar.s_u, { op: 'remove', uid: '12345' }, AUD) }); assert.equal(x.r.body.reason, 'link_salt_proof', '다른 uid 에 한 서명');
+    // I-3: 뗄 계정(g-oscar-2)이 해 둔 begin 은 떼는 순간 없어진다 — 그 뒤의 finish 는 409 link_not_started
+    const kPend = await generateRequestKey(); { const b = await linkCall('g-oscar-2', await beginReq(oscar, await nextOf(kPend))); assert.equal(b.r.status, 200, j(b.r.body)); }
+    assert.deepEqual((await acctOf(oscar.uid)).logins.map((l) => l.uid), [uid2]);
+    x = await rm('g-oscar-2', uid2); assert.equal(x.r.status, 200, j(x.r.body)); assert.deepEqual(x.r.body.logins.map((l) => l.uid), [oscar.uid.toString()]);
+    { const f = await linkCall('g-late', { op: 'finish' }, { key: kPend }); assert.equal(f.r.status, 409, j(f.r.body)); assert.equal(f.r.body.reason, 'link_not_started'); assert.deepEqual((await acctOf(oscar.uid)).logins, []); }
+    const iss = await wrapIssue(oscar2, S1); assert.equal(iss.r.status, 409, j(iss.r.body)); assert.equal(iss.r.body.reason, 'auid_taken');
+    assert.equal(await acctOf(uid2), null);
+    // 뗀 뒤에도 지난 로그인의 기록은 남는다 — 첫 계정은 계속 된다
+    assert.equal((await wrapIssue(oscar, S1)).r.status, 200);
+  });
+  await t('계정 폐기는 신원 전체다(M7): 연결한 계정의 토큰으로 "내 계정 폐기" → 첫 계정도 연결한 계정도 발급 거절(403 account_disabled)', async () => {
+    const x = await link(oscar, 'g-oscar-3'); assert.equal(x.r.status, 200, j(x.r.body));
+    const k = await generateRequestKey();
+    const id_token = await stub.mint({ sub: 'g-oscar-3', nonce: await wrapperNonce(k.pkE), extra: {} });
+    // 보안 검토 M-3: 브라우저가 폐기하려는 신원(owner)을 실으면 토큰의 신원과 같아야 한다 — 다르면 409 이고 토큰은 남는다(같은 토큰으로 맞는 owner 를 다시 낼 수 있다)
+    const rita = uidOf(stub.provider, 'g-rita');
+    const sigR = await signDigest(k.privateKey, revokeDigest({ scope: 'account' }, AUD));
+    const wrong = await cia.post('/cia/account/self_revoke', { id_token, pk_e: k.pkE, sig: sigR, owner: rita }); assert.equal(wrong.status, 409, j(wrong.body)); assert.equal(wrong.body.reason, 'wrapper_account_mismatch');
+    assert.equal((await acctOf(oscar.uid)).disabled, false); assert.equal((await acctOf(rita)).disabled, false);
+    const r = await cia.post('/cia/account/self_revoke', { id_token, pk_e: k.pkE, sig: sigR, owner: oscar.uid.toString() });
+    assert.equal(r.status, 200, j(r.body)); assert.equal((await acctOf(oscar.uid)).disabled, true);
+    for (const who of [oscar, { ...oscar, sub: 'g-oscar-3' }]) { const iss = await wrapIssue(who, S1); assert.equal(iss.r.status, 403, j(iss.r.body)); assert.equal(iss.r.body.reason, 'account_disabled'); }
+    const y = await link(oscar, 'g-oscar-4'); assert.equal(y.r.status, 403, j(y.r.body)); assert.equal(y.r.body.reason, 'account_disabled');
+  });
+  await t('한도: 첫 계정 말고 4개까지 — 다섯 번째 begin 은 409 link_limit', async () => {
+    const quinn = await person('g-quinn'); assert.equal((await wrapIssue(quinn, S1)).r.status, 200);
+    for (let i = 1; i <= 4; i++) assert.equal((await link(quinn, `g-quinn-${i}`)).r.status, 200, `연결 ${i}`);
+    const x = await link(quinn, 'g-quinn-5'); assert.equal(x.r.status, 409, j(x.r.body)); assert.equal(x.r.body.reason, 'link_limit');
+    assert.equal((await acctOf(quinn.uid)).logins.length, 4);
+  });
   await t('래퍼 방식에서 막힌 경로: 가입·비밀번호 로그인·등록·슬롯·증명 로그인·일반 OIDC 는 403 wrapper_mode', async () => {
     for (const [m, p, body] of [['post', '/cia/signup', { id: 'abc', pwd: 'password123' }], ['post', '/cia/user/login', { id: 'abc', pwd: 'x' }], ['post', '/cia/register', { uid: '1', pwd: 'x', auid: '1' }], ['post', '/cia/slot', { uid: '1', nonce: '1' }], ['post', '/cia/signup/reserve', {}], ['post', '/cia/user/login_challenge', {}], ['get', '/oidc/authorize?client_id=x', undefined]]) {
       const r = await cia[m](p, body); assert.equal(r.status, 403, `${p}: ${j(r.body)}`); assert.equal(r.body.reason, 'wrapper_mode', p);
@@ -374,7 +500,7 @@ try {
 } finally { await cia.stop(); }
 await t('래퍼가 아닌 서버에는 /cia/wrapper/envelope 가 없다(404)', async () => {
   const plain = await startIsolatedCia();
-  try { const r = await plain.post('/cia/wrapper/envelope', { op: 'add' }); assert.equal(r.status, 404, `${r.status}`); } finally { await plain.stop(); }
+  try { const r = await plain.post('/cia/wrapper/envelope', { op: 'add' }); assert.equal(r.status, 404, `${r.status}`); assert.equal((await plain.post('/cia/wrapper/link', { op: 'begin' })).status, 404, '연결 경로'); } finally { await plain.stop(); }
 });
 // 기동 검사: 래퍼의 Google 클라이언트 ID 가 서비스의 것과 같으면 뜨지 않는다(스펙 §10 C2)
 await t('기동 검사: 서비스와 같은 Google 클라이언트 ID 면 뜨지 않는다', async () => {

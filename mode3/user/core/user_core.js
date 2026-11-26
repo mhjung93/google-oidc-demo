@@ -23,7 +23,8 @@ import { verifyRpCert } from '../../../lib/mode3_rp_cert.js';
 import { MODE3_ROOTS_ABI } from '../../../lib/mode3_log.js';
 import { bounded } from '../../../lib/mode3_health.js';
 import { uidOf, regNonce, issueNonce } from '../../../lib/mode3_oidc_nonce.js';
-import { generateRequestKey, wrapperNonce, signIssue, signDigest, revokeDigest, envelopeDigest } from '../../../lib/mode3_wrapper_auth.js';
+import { WRAPPER_PREFIX, generateRequestKey, wrapperNonce, signIssue, signDigest, revokeDigest, envelopeDigest, linkDigest } from '../../../lib/mode3_wrapper_auth.js';
+import { signLinkProof } from '../../../lib/mode3_link_key.js';
 import { envKeyFromCode, newEnvelopeId, sealSalt, openSalt, isEnvelope, auidCheckOf } from '../../../lib/mode3_salt_envelope.js';
 
 export const USER_STATE_VERSION = 1;
@@ -202,6 +203,11 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
   const getTxs = async () => (await kv.get('txs')) ?? [];
   // 바꿀 때마다 kv 에서 새로 읽어 고친 뒤 쓴다 — 한 동작 안의 다른 쓰기(세션키 저장 등)를 옛 사본으로 덮지 않게.
   async function updateReg(fn) { const r = await getReg(); if (!r) return null; fn(r); await kv.set('registration', r); return r; }
+  // 한 신원에 Google 계정 여럿(스펙 2026-11-26 identity-multi-login M8): 이 등록의 계정인가 — 이 브라우저가 처음 등록한 uid 이거나, 발급·연결 응답으로 알게 된 logins 의 uid.
+  // C_u 안의 uid 는 늘 reg.uid 다(어느 계정으로 로그인해도 C_u 가 바뀌지 않는다). logins 는 서버가 준 { uid, email, primary? } — 공개값뿐이다.
+  const mineUid = (reg, uid) => String(reg?.uid) === uid || (Array.isArray(reg?.logins) && reg.logins.some((l) => String(l?.uid) === uid));
+  const cleanLogins = (list) => (Array.isArray(list) ? list.filter((l) => l && typeof l.uid === 'string' && /^[0-9]{1,80}$/.test(l.uid)).slice(0, 8)
+    .map((l) => ({ uid: l.uid, email: typeof l.email === 'string' ? l.email.slice(0, 200) : null, ...(l.primary === true ? { primary: true } : {}) })) : null);
   async function updateSessions(fn) { const s = await getSessions(); fn(s); await putSessions(s); }
   async function updateSecrets(fn) { const s = await vault.readSecrets(); s.sessionKeys ??= {}; fn(s); await vault.writeSecrets(s); }
   const sessionKeyOf = async (rsKey) => (await vault.readSecrets()).sessionKeys?.[rsKey] ?? null;
@@ -285,6 +291,24 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
    *  build({ uid }) 가 요청({ op, envelope } 또는 { op, id })을 만든다(패스키·코드가 필요하면 그 안에서). 토큰의 계정이 이 브라우저의 등록 계정과 다르면 보내지 않는다.
    *  패스키 창 취소·코드 오타처럼 보내기 전에 멈추면 요청 키를 남긴다(같은 화면에서 다시). 보낸 뒤에는 결과와 관계없이 지운다(토큰은 1회용이다).
    *  200 이면 kv envelopes(목록 메타 — 암호문 없음)를 응답으로 바꾼다. */
+  /** 연결 요청의 공통 앞부분(wrapperLinkBegin·Finish·Remove): 등록·토큰 모양·요청 키(토큰이 이 키에 묶였는가·수명)·서버 공개 설정. 성공 { reg, wk, pub, uid(토큰의 계정) }, 실패 { err }. */
+  async function linkPre(idToken) {
+    if (!WRAP) return { err: R(409, { reason: 'not_wrapper_mode' }) };
+    if (typeof idToken !== 'string' || !idToken) return { err: R(400, { error: 'idToken(문자열) 필요' }) };
+    const reg = await getReg();
+    if (!reg || reg.wrapper !== true || reg.pendingIdp) return { err: R(409, { reason: 'not_registered' }) };
+    let claims;
+    try { claims = jwtPayload(idToken); } catch { return { err: R(400, { reason: 'oidc_invalid', detail: 'id_token 형식이 아니다' }) }; }
+    if (typeof claims?.sub !== 'string' || !claims.sub) return { err: R(400, { reason: 'oidc_invalid', detail: 'sub 가 없다' }) };
+    const wk = (await kv.get('wrapperKey')) ?? null;
+    if (!wk?.privateKey || !wk.pkE || claims.nonce !== await wrapperNonce(wk.pkE)) return { err: R(409, { reason: 'wrapper_key_missing' }) };
+    if (!(Number.isFinite(wk.at) && now() - wk.at <= WRAPPER_KEY_MAX_MS)) return { err: R(409, { reason: 'wrapper_key_missing' }) };
+    let keys;
+    try { keys = await idp.publicKeys(); } catch (e) { return { err: R(502, { reason: 'cia_unavailable', detail: e.message }) }; }
+    const pub = keys.status === 200 ? keys.body : null;
+    if (pub?.wrapper !== true || typeof pub.wrapperAud !== 'string' || typeof pub.oidc?.provider !== 'string') return { err: R(503, { reason: 'wrapper_disabled' }) };
+    return { reg, wk, pub, uid: uidOf(pub.oidc.provider, claims.sub) };
+  }
   async function envelopeCall(idToken, build) {
     if (typeof idToken !== 'string' || !idToken) return R(400, { error: 'idToken(문자열) 필요' });
     let keepKey = false;
@@ -460,7 +484,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     const r = await idp.post('/cia/issue', req.body);
     flowStep('issue', tick() - ti);
     if (r.status !== 200) return { r, demo: ov ? 'override:issue' : undefined };
-    if (oidc?.registration || wrapper) await updateReg((x) => { x.pendingIdp = false; });   // IdP 가 등록을 받았다(래퍼 방식은 첫 발급이 곧 등록이다)
+    if (oidc?.registration || wrapper) await updateReg((x) => { x.pendingIdp = false; const l = wrapper ? cleanLogins(r.body?.logins) : null; if (l) x.logins = l; });   // IdP 가 등록을 받았다(래퍼 방식은 첫 발급이 곧 등록이다). logins: 이 신원의 Google 계정 목록(2026-11-26)
     // V10(§4.5): 계정 폐기로 슬롯이 은퇴된 뒤 되살아난 계정의 재발급은 새 슬롯을 받는다 — 응답의 슬롯을 따른다.
     if (Number.isInteger(r.body?.slot) && r.body.slot >= 0 && r.body.slot !== reg.slot) await src.setSlot(r.body.slot);
     const uc = src.userCred();
@@ -1019,7 +1043,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       const uid = uidOf(pub.oidc.provider, claims.sub);
       const prev = await getReg();
       // 이 브라우저(이 패스키)는 한 Google 계정에 묶인다 — 다른 계정으로 오면 서버가 auid_taken 으로 거절할 일이라, 가기 전에 까닭을 말한다.
-      if (prev?.wrapper === true && String(prev.uid) !== uid) return R(409, { reason: 'wrapper_account_mismatch' });
+      if (prev?.wrapper === true && !mineUid(prev, uid)) return R(409, { reason: 'wrapper_account_mismatch' });   // 2026-11-26: 연결한 계정(logins)도 이 신원의 것이다
       // 복구한 기기의 로컬 봉투도 한 계정의 salt 다(등록이 지워진 뒤에도) — 다른 계정으로는 쓰지 않는다
       const pkNow = (await kv.get('passkey')) ?? null;
       if (pkNow?.via === 'envelope' && String(pkNow.envelope?.uid) !== uid) return R(409, { reason: 'wrapper_account_mismatch' });
@@ -1398,10 +1422,11 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
         try { keys = await idp.publicKeys(); } catch (e) { return R(502, { reason: 'cia_unavailable', detail: e.message }); }
         const pub = keys.status === 200 ? keys.body : null;
         if (pub?.wrapper !== true || typeof pub.wrapperAud !== 'string' || typeof pub.oidc?.provider !== 'string') return R(503, { reason: 'wrapper_disabled' });
-        if (uidOf(pub.oidc.provider, claims.sub) !== String(reg.uid)) return R(409, { reason: 'wrapper_account_mismatch' });
+        if (!mineUid(reg, uidOf(pub.oidc.provider, claims.sub))) return R(409, { reason: 'wrapper_account_mismatch' });   // 연결한 계정의 토큰이어도 신원 전체가 폐기된다(M7)
         const sig = await signDigest(wk.privateKey, revokeDigest({ scope: 'account' }, pub.wrapperAud));
         let r;
-        try { r = await idp.post('/cia/account/self_revoke', { id_token: idToken, pk_e: wk.pkE, sig }); }
+        // owner: 이 브라우저가 폐기하려는 신원 — 서버가 토큰의 신원과 대조한다(이 브라우저의 로그인 계정 목록이 낡았을 때 다른 신원을 폐기하지 않게)
+        try { r = await idp.post('/cia/account/self_revoke', { id_token: idToken, pk_e: wk.pkE, sig, owner: String(reg.uid) }); }
         catch (e) { return R(502, { reason: 'cia_unavailable', detail: e.message }); }
         if (r.status !== 200) return R(r.status, r.body ?? {});
         const sessions = Object.entries(await getSessions());
@@ -1439,6 +1464,72 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       if (!WRAP) return R(409, { reason: 'not_wrapper_mode' });
       if (typeof id !== 'string' || !/^[0-9a-f]{32}$/.test(id)) return R(400, { reason: 'envelope_bad' });
       return envelopeCall(idToken, async () => ({ op: 'remove', auid: (await auidOf({ s_u: BigInt(await saltNow()) })).toString(), id }));
+    },
+    // ---- 한 신원에 Google 계정 여럿(스펙 2026-11-26 identity-multi-login M3·M5): /user "로그인 계정" 카드의 더하기·떼기 ----
+    /** 더하기 1/2 — 지금 계정을 Google 로 확인하고 돌아온 뒤: 패스키(한 번)로 auid 를 만들고, **다음 요청 키**를 만들어 그 해시와 함께 서명해 서버에 알린다.
+     *  받아들여지면 요청 키를 다음 것으로 바꾸고 그 nonce(googleNonce)를 돌려준다 — 화면이 그 nonce 로 Google 에 다시 가서 더할 계정을 고른다.
+     *  토큰은 저장하지 않는다. 패스키를 취소·실패하면 요청 키를 남긴다(같은 토큰으로 다시 할 수 있다). */
+    async wrapperLinkBegin({ idToken = null } = {}) {
+      let keepKey = false;
+      try {
+        const p = await linkPre(idToken); if (p.err) return p.err;
+        if (!mineUid(p.reg, p.uid)) return R(409, { reason: 'wrapper_account_mismatch' });
+        const k2 = await generateRequestKey(), nonce2 = await wrapperNonce(k2.pkE), next = nonce2.slice(WRAPPER_PREFIX.length);
+        // 패스키(한 번) → salt: auid 와, salt 에서 유도한 연결 열쇠로 이 요청(next)에 한 서명(link_sig — 서버가 등록 때 고정한 주소로 확인한다). salt 는 이 범위 밖으로 나가지 않는다.
+        let auid, link_sig;
+        try { const s_u = await saltNow(); auid = (await auidOf({ s_u: BigInt(s_u) })).toString(); link_sig = await signLinkProof(s_u, { op: 'begin', next }, p.pub.wrapperAud); }
+        catch (e) { if (typeof e?.reason === 'string' && e.reason.startsWith('passkey_')) { keepKey = true; return R(409, { reason: e.reason }); } throw e; }
+        const sig = await signDigest(p.wk.privateKey, linkDigest({ op: 'begin', auid, next }, p.pub.wrapperAud));
+        let r;
+        try { r = await idp.post('/cia/wrapper/link', { op: 'begin', auid, next, link_sig, id_token: idToken, pk_e: p.wk.pkE, sig }); }
+        catch (e) { return R(502, { reason: 'cia_unavailable', detail: e.message }); }
+        if (r.status !== 200) return R(r.status, r.body ?? {});
+        await kv.set('wrapperKey', { privateKey: k2.privateKey, pkE: k2.pkE, at: now() }); keepKey = true;
+        return R(200, { googleNonce: nonce2 });
+      } finally { if (!keepKey) { await kv.del('wrapperKey'); dropRecover(); } }
+    },
+    /** 더하기 2/2 — 더할 계정을 Google 에서 고르고 돌아온 뒤: 그 토큰(다음 요청 키에 묶였다)과 서명을 낸다. 패스키는 묻지 않는다. 응답 { logins }. */
+    async wrapperLinkFinish({ idToken = null } = {}) {
+      try {
+        const p = await linkPre(idToken); if (p.err) return p.err;
+        if (mineUid(p.reg, p.uid)) return R(409, { reason: 'link_exists' });   // 같은 계정을 다시 골랐다 — 서버에 보내지 않는다
+        const sig = await signDigest(p.wk.privateKey, linkDigest({ op: 'finish' }, p.pub.wrapperAud));
+        let r;
+        try { r = await idp.post('/cia/wrapper/link', { op: 'finish', id_token: idToken, pk_e: p.wk.pkE, sig }); }
+        catch (e) { return R(502, { reason: 'cia_unavailable', detail: e.message }); }
+        if (r.status !== 200) return R(r.status, r.body ?? {});
+        const logins = cleanLogins(r.body?.logins) ?? [];
+        // 받은 목록에 이 브라우저의 계정이 없으면 다른 신원의 목록이다 — 저장하지 않는다(보안 검토 M-4: 낯선 계정을 "내 계정" 으로 받아들이지 않게)
+        if (!logins.some((l) => l.uid === String(p.reg.uid))) return R(409, { reason: 'link_owner_mismatch' });
+        await updateReg((x) => { x.logins = logins; });
+        return R(200, { logins });
+      } finally { await kv.del('wrapperKey'); dropRecover(); }
+    },
+    /** 떼기 — 이 신원의 아무 계정으로 Google 확인 뒤: 패스키(한 번)로 auid 를 만들어 뗄 uid 와 함께 서명해 낸다. 첫 계정은 서버가 거절한다. 응답 { logins }. */
+    async wrapperLinkRemove({ idToken = null, uid = null } = {}) {
+      if (typeof uid !== 'string' || !/^[0-9]{1,80}$/.test(uid)) return R(400, { reason: 'link_bad' });
+      let keepKey = false;
+      try {
+        const p = await linkPre(idToken); if (p.err) return p.err;
+        if (!mineUid(p.reg, p.uid)) return R(409, { reason: 'wrapper_account_mismatch' });
+        let auid, link_sig;
+        try { const s_u = await saltNow(); auid = (await auidOf({ s_u: BigInt(s_u) })).toString(); link_sig = await signLinkProof(s_u, { op: 'remove', uid }, p.pub.wrapperAud); }
+        catch (e) { if (typeof e?.reason === 'string' && e.reason.startsWith('passkey_')) { keepKey = true; return R(409, { reason: e.reason }); } throw e; }
+        const sig = await signDigest(p.wk.privateKey, linkDigest({ op: 'remove', auid, uid }, p.pub.wrapperAud));
+        let r;
+        try { r = await idp.post('/cia/wrapper/link', { op: 'remove', auid, uid, link_sig, id_token: idToken, pk_e: p.wk.pkE, sig }); }
+        catch (e) { return R(502, { reason: 'cia_unavailable', detail: e.message }); }
+        if (r.status !== 200) return R(r.status, r.body ?? {});
+        const logins = cleanLogins(r.body?.logins) ?? [];
+        await updateReg((x) => { x.logins = logins; });
+        return R(200, { logins });
+      } finally { if (!keepKey) { await kv.del('wrapperKey'); dropRecover(); } }
+    },
+    /** 이 브라우저가 아는 로그인 계정 목록 — 발급·연결 응답으로 받은 것. 아직 받은 적이 없으면 이 브라우저가 등록한 계정 하나(이메일 모름). */
+    async wrapperLogins() {
+      const reg = await getReg();
+      if (!reg || reg.wrapper !== true || reg.pendingIdp) return R(200, { registered: false, logins: [] });
+      return R(200, { registered: true, logins: cleanLogins(reg.logins) ?? [{ uid: String(reg.uid), email: null, primary: true }] });
     },
     /** salt 봉투 — 이 브라우저가 아는 목록(Task 5 의 /user 백업 카드가 읽는다): 더하기·지우기·복구 응답으로 바뀐 kv envelopes 그대로(id·kind·credentialId·createdAt — 암호문 없음).
      *  다른 기기에서 바꾼 것은 이 브라우저가 다음에 더하거나 지울 때 응답으로 맞춰진다(목록만 묻는 서버 경로는 없다). */

@@ -9,6 +9,7 @@ export const WRAP_END_RESULT_KEY = 'mode3_wrap_end_result';
 export const WRAP_ACCOUNT_RESULT_KEY = 'mode3_wrap_account_result';   // 2026-11-24: /user 의 "내 계정 폐기" 귀로가 남기는 결과(토큰 없음)
 // 2026-11-24(salt 봉투 Task 5): /user 의 백업 더하기·지우기 귀로가 남기는 결과 — 공개값(종류·개수)과 사유뿐이다. 복구 코드·salt·토큰은 없다.
 export const WRAP_BACKUP_RESULT_KEY = 'mode3_wrap_backup_result';
+export const WRAP_LINK_RESULT_KEY = 'mode3_wrap_link_result';   // 2026-11-26: /user "로그인 계정" 의 더하기·떼기 귀로가 남기는 결과(토큰 없음)
 
 /** zkIdP 인증 창 주소. 성공하면 zkIdP 가 `${walletOrigin}/?authorize=1&idp_nonce=…&idp_code=…` 로 돌려보낸다. purpose 'register' 는 첫 등록·계정 복구. */
 export function idpAuthUrl({ ciaUrl, walletOrigin, nonce, purpose = 'issue' }) {

@@ -312,7 +312,8 @@ try {
     const h0 = await chainRead.getBlockNumber();
     const sent = await H.send(x);
     assert.equal(sent.status, 'reverted'); assert.match(sent.reason, /^NonceMismatch\(/, sent.reason); assert.equal(sent.link, `http://explorer.test/tx/${sent.hash}`);
-    assert.equal(sent.block, h0 + 1, '블록에 실리지 않았다'); assert.equal((await chainRead.getTransactionReceipt(sent.hash)).status, 0);
+    // 바로 다음 블록이 아닐 수 있다 — 앞 사례의 게시를 서버가 거울에 중계하는 거래가 사이에 낄 수 있다
+    assert.ok(sent.block > h0, `블록에 실리지 않았다: ${sent.block} ≤ ${h0}`); assert.equal((await chainRead.getTransactionReceipt(sent.hash)).status, 0);
     assert.equal((await chainRead.getTransaction(sent.hash)).from, await signer.getAddress());
   });
   await t('Google 에서 돌아온 조각을 다른 창에 붙여도(이 창이 시작한 로그인이 아니다) 발급되지 않는다', async () => {
@@ -731,6 +732,62 @@ try {
   });
   // 2026-11-21(셀프 피드백 — 테스트 구멍): 폐기된 계정도 패스키를 쥔다(R11). 래퍼 화면의 안내는 "관리자가 삭제해야 한다" 까지만 말한다 — 삭제 뒤 실제로 같은 패스키로 돌아오는지 본다.
   // 2026-11-24(스펙 home-and-account-recovery 2부): 계정 자기 폐기 — /user 의 "내 계정 폐기" → Google(같은 계정만) → 폐기. 패스키는 묻지 않는다(A2).
+  // 2026-11-26(스펙 identity-multi-login): 한 신원(패스키의 salt)에 Google 계정 여럿 — /user "로그인 계정" 카드
+  await t('/user "로그인 계정": 더하기(Google 두 번 — 지금 계정 → 패스키 한 번 → 더할 계정) → 더한 계정으로 로그인해도 같은 PPID, 떼면 목록에서 빠진다', async () => {
+    const D = await newBrowserWith('d4'.repeat(32));
+    try {
+      const asD = () => { google.setNextSub('google-user-D'); google.setNextClaims({ email: 'dee@example.com', email_verified: true }); };
+      const asD2 = () => { google.setNextSub('google-user-D2'); google.setNextClaims({ email: 'dee2@example.com', email_verified: true }); };
+      const uidD = uidOf(google.provider, 'google-user-D'), uidD2 = uidOf(google.provider, 'google-user-D2');
+      const ppidAt = (rpPage) => rpPage.evaluate(() => fetch('/api/rp/me').then((r) => r.json())).then((me) => String(me.seen.PPID));
+      asD();
+      let ppidD;
+      { const { rpPage, popup } = await startLogin(D.ctx, rp); await popup.waitForSelector('#authWrapPasskeyBtn', { timeout: 30_000 }); await popup.click('#authWrapPasskeyBtn'); await waitText(rpPage, '#verdict', '로그인 성공', 120_000); ppidD = await ppidAt(rpPage); await rpPage.close(); }
+      const page = await openUser(await D.ctx.newPage());
+      const toUser = () => page.waitForURL((u) => u.origin === new URL(wallet.base).origin && u.pathname === '/user' && !u.search.includes('authorize'), { timeout: 60_000 });
+      const list = () => page.$$eval('#loginsList li', (l) => l.map((li) => ({ uid: li.dataset.uid, text: li.textContent.trim(), removable: Boolean(li.querySelector('button')) })));
+      await page.waitForFunction(() => !document.getElementById('loginsCard').hidden && document.querySelectorAll('#loginsList li').length === 1, null, { timeout: 15_000 });
+      { const l = await list(); assert.equal(l[0].uid, uidD); assert.ok(l[0].text.includes('dee@example.com') && l[0].text.includes('첫 계정') && !l[0].removable, j(l)); }
+      // 더하기: 지금 계정(D) → 돌아온 화면의 버튼(패스키 한 번) → 더할 계정(D2) → /user
+      const g0 = D.hits.get; asD(); D.reqs.length = 0;
+      await page.click('#loginsAddBtn');
+      await page.waitForSelector('#authLinkBeginBtn', { timeout: 60_000 });
+      assert.ok(D.dialogs.at(-1)?.includes('더할 계정'), `확인 창: ${D.dialogs.at(-1)}`);
+      assert.equal(D.hits.get - g0, 0, `Google 에서 돌아오자마자 패스키를 물었다: ${j(D.hits)}`);
+      asD2();
+      await page.click('#authLinkBeginBtn');
+      await toUser();
+      await waitText(page, '#loginsVerdict', 'Google 계정을 더했습니다', 30_000);
+      await page.waitForFunction(() => document.querySelectorAll('#loginsList li').length === 2, null, { timeout: 15_000 });
+      { const l = await list(); assert.deepEqual(l.map((x) => [x.uid, x.removable]), [[uidD, false], [uidD2, true]], j(l)); assert.ok(l[1].text.includes('dee2@example.com'), j(l)); }
+      assert.equal(D.hits.get - g0, 1, `더하기는 패스키 한 번: ${j(D.hits)}`);
+      assert.deepEqual(D.reqs.filter((r) => r.url.includes('/cia/wrapper/link')).length, 2, 'begin·finish 두 번');
+      // 저장소에 토큰이 남지 않는다(Google 을 두 번 다녀오는 사이에도 요청 키만 둔다)
+      { const st = await page.evaluate(() => JSON.stringify([Object.entries(localStorage), Object.entries(sessionStorage)])); assert.ok(!/eyJ[A-Za-z0-9_-]{10,}\./.test(st), '저장소에 토큰'); }
+      { const a = (await accounts()).find((x) => String(x.uid) === uidD); assert.deepEqual(a.logins.map((x) => x.uid), [uidD2]); assert.ok(!(await accounts()).some((x) => String(x.uid) === uidD2), '더한 계정의 레코드가 생겼다'); }
+      // 더한 계정으로 로그인: 같은 PPID, 패스키 한 번(C_u 는 그대로라 열려 있던 세션을 폐기하지 않는다)
+      asD2(); const g1 = D.hits.get;
+      { const { rpPage } = await startLogin(D.ctx, rp); await waitText(rpPage, '#verdict', '로그인 성공', 120_000); assert.equal(await ppidAt(rpPage), ppidD, '다른 Google 계정인데 PPID 가 다르다'); await rpPage.close(); }
+      assert.equal(D.hits.get - g1, 1, j(D.hits));
+      // 같은 계정을 다시 더하려 하면(둘째 Google 에서 이미 있는 계정을 고름) 서버로 보내지 않고 말한다
+      asD(); await page.bringToFront();
+      await page.click('#loginsAddBtn'); await page.waitForSelector('#authLinkBeginBtn', { timeout: 60_000 }); asD2(); await page.click('#authLinkBeginBtn'); await toUser();
+      await waitText(page, '#loginsVerdict', '이미 연결된 계정입니다', 30_000);
+      // 떼기: 더한 계정으로 확인해도 된다(이 신원의 아무 계정) → 돌아온 화면의 버튼(패스키 한 번)
+      await page.waitForFunction(() => document.querySelectorAll('#loginsList li button').length === 1, null, { timeout: 15_000 });   // /user 로 돌아와 목록을 다시 그린 뒤
+      asD2(); const g2 = D.hits.get;
+      await page.$eval('#loginsList li:nth-child(2) button', (b) => b.click());
+      await page.waitForSelector('#authLinkRemoveBtn', { timeout: 60_000 });
+      assert.ok(D.dialogs.at(-1)?.includes('dee2@example.com'), `확인 창: ${D.dialogs.at(-1)}`);
+      await page.click('#authLinkRemoveBtn');
+      await toUser();
+      await waitText(page, '#loginsVerdict', 'Google 계정을 뗐습니다', 30_000);
+      await page.waitForFunction(() => document.querySelectorAll('#loginsList li').length === 1, null, { timeout: 15_000 });
+      assert.equal(D.hits.get - g2, 1, `떼기는 패스키 한 번: ${j(D.hits)}`);
+      assert.deepEqual((await accounts()).find((x) => String(x.uid) === uidD).logins, []);
+      await page.close();
+    } finally { await D.ctx.close(); await cia.adminPost('/cia/account/delete', { uid: uidOf(google.provider, 'google-user-D') }).catch(() => {}); }
+  });
   await t('/user 의 "내 계정 폐기": 다른 Google 계정으로 돌아오면 서버로 보내지 않고, 같은 계정이면 폐기된다 — 패스키는 묻지 않고, 그 뒤 로그인은 폐기된 계정으로 거절된다', async () => {
     const C = await newBrowserWith('c3'.repeat(32));
     try {

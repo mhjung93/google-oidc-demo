@@ -322,6 +322,17 @@
       <p id="backupLimitNote" class="muted" data-i18n="user_backup_limit_note" hidden>백업은 계정당 5개까지입니다 — 더하려면 하나를 지우세요.</p>
       <div id="backupVerdict"></div>
     </section>
+
+    <!-- 로그인 계정(2026-11-26 스펙 identity-multi-login M9): 래퍼 방식이고 등록돼 있을 때만 ui.js 가 보인다. 한 신원(이 패스키의 salt)에 Google 계정을 여럿 붙인다 —
+         어느 계정으로 로그인해도 서비스의 계정 주소(PPID)가 같다. 더하기는 Google 을 두 번(지금 계정 → 더할 계정) 다녀오고 패스키를 한 번 묻는다. -->
+    <section class="card span2" id="loginsCard" hidden>
+      <h3 data-i18n="user_logins_title">로그인 계정</h3>
+      <p class="desc" data-i18n="user_logins_desc">이 패스키에 연결된 Google 계정입니다. 어느 계정으로 로그인해도 서비스의 계정 주소(PPID)는 같습니다. zkWrapper 는 이 계정들이 같은 사람의 것임을 압니다.</p>
+      <ul id="loginsList"></ul>
+      <p><button id="loginsAddBtn" type="button" data-i18n="user_logins_add_btn">Google 계정 더하기</button></p>
+      <p id="loginsLimitNote" class="muted" data-i18n="user_logins_limit_note" hidden>Google 계정은 5개까지 연결합니다 — 더하려면 하나를 떼세요.</p>
+      <div id="loginsVerdict"></div>
+    </section>
   </main>
 
   <!-- 계정 자기 폐기 — 에이전트 페이지의 Snap 대화상자 자리. zkIdP 계정 비밀번호는 zkIdP 로 한 번 보낼 뿐 어디에도 남기지 않는다. -->

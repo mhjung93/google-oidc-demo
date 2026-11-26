@@ -332,7 +332,9 @@
       for (const a of accounts) {
         const row = body.insertRow();
         cell(row, uidShown(a.uid));
-        cell(row, a.id ?? '-');   // 2026-11-03: 아이디 가입(loginId). 아이디 없이 만든 옛 계정은 '-'
+        const idCell = cell(row, a.id ?? '-');   // 2026-11-03: 아이디 가입(loginId). 아이디 없이 만든 옛 계정은 '-'
+        // 2026-11-26(스펙 identity-multi-login M9): 이 신원에 연결한 다른 Google 계정 — 이메일(없으면 uid 앞자리), uid 전체는 툴팁
+        for (const l of a.logins ?? []) { const sp = document.createElement('div'); sp.className = 'muted linked-login'; sp.textContent = `+ ${l.email ?? `uid ${String(l.uid).slice(0, 12)}…`}`; sp.title = `uid ${l.uid}`; idCell.appendChild(sp); }
         cell(row, badge(a.disabled ? 'admin_acct_disabled' : 'admin_acct_active', a.disabled ? 'bad' : 'ok'));
         // 2026-11-11(사용자 요청): 스냅을 아직 등록하지 않은 계정(슬롯 없음)은 "#null 비어 있음" 대신 "스냅 미등록", 슬롯이 있으면 번호·상태와 리프(앞자리, 전체는 툴팁)를 보인다.
         let regCell;
@@ -526,7 +528,11 @@
         at.title = o.requestedAt ?? '';
         const accCell = cell(row, short(o.account ?? o.PPID)); accCell.title = o.account ? `${o.account}\nPPID ${o.PPID}` : String(o.PPID);
         { const c = cell(row, ''); c.dataset.open = 'auid_s'; if (o.auid_s) c.append(short(o.auid_s)); else c.textContent = '-'; }
-        if (o.uid) cell(row, uidShown(o.uid));
+        if (o.uid) {
+          const c = cell(row, uidShown(o.uid));
+          // 2026-11-26(스펙 identity-multi-login, 보안 검토 I-2): 그 로그인의 계정이 신원의 첫 계정과 다르면 계정 표의 uid(폐기할 대상)를 함께 보인다
+          if (o.identity && String(o.identity) !== String(o.uid)) { const d = document.createElement('div'); d.className = 'muted opening-identity'; d.textContent = `${Demo.t('admin_open_account') || '계정'} ${String(o.identity).slice(0, 12)}…`; d.title = `uid ${o.identity}`; c.appendChild(d); }
+        }
         else if (o.resolved === false) { const p = document.createElement('span'); p.className = 'muted'; tte(p, 'admin_open_unresolved'); cell(row, p); }
         else cell(row, '');
         cell(row, short(o.arid), 'expert');

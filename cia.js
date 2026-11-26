@@ -49,7 +49,8 @@ import { CIA_STATE_VERSION, defaultCiaState, migrateCiaState, rpKeyTag, findRpSl
 import { buildAaHealth, applyHealthHeaders, bounded, originList } from './lib/mode3_health.js';
 import { createOidcVerifier, GOOGLE_DEFAULTS } from './lib/mode3_oidc.js';
 import { uidOf, regNonce, issueNonce, isRevokeNonce, REG_PREFIX, REVOKE_PREFIX, ISSUE_PREFIX } from './lib/mode3_oidc_nonce.js';
-import { WRAPPER_PREFIX, wrapperNonce, verifyDigest, issueDigest, revokeDigest, envelopeDigest } from './lib/mode3_wrapper_auth.js';
+import { WRAPPER_PREFIX, wrapperNonce, verifyDigest, issueDigest, revokeDigest, envelopeDigest, linkDigest } from './lib/mode3_wrapper_auth.js';
+import { isLinkKey, linkProofOk } from './lib/mode3_link_key.js';
 import { isEnvelope, auidCheckOf, BACKUP_LIMIT, DEVICE_LIMIT } from './lib/mode3_salt_envelope.js';
 import { mountUserApp, userAppCsp, adminPageCsp, userDistReady } from './lib/mode3_user_app_routes.js';
 import { listenMaybeTls } from './lib/mode3_tls.js';
@@ -1384,7 +1385,7 @@ app.post('/cia/register', userCors, async (req, res) => {
  *  2026-11-21(사용자 결정 — 11-13 결정을 되돌림): 폐기된 계정도 auid 를 쥔다. 놓아 주면 장치를 훔친 사람이 새 계정(래퍼 방식이면 Google 계정 하나)으로 같은 패스키·같은 PPID 에
  *  돌아온다 — 피해자의 폐기가 그를 끊지 못한다. auid 가 풀리는 길은 관리자 삭제(/cia/account/delete)와 연결 해제(auid 를 비운다)뿐이다. */
 const auidHeldByOther = (uid, auidStr) => Object.entries(state.accounts).some(([u, a]) => u !== String(uid) && a?.auid === auidStr);
-async function registerAccount({ uid, provider, auid, auth = null, verified = false, checkTag, beforeCommit }) {
+async function registerAccount({ uid, provider, auid, auth = null, verified = false, checkTag, beforeCommit, fields = null }) {
   const fail = (status, body) => ({ error: { status, body } });
   if (!isDec(auid)) return fail(400, { error: 'auid required' });
   // "이미 등록됨" 은 auid 가 채워져 있을 때다(P3). 가입만 하고 등록 전인 계정·연결 해제한 계정(auid:null)은 막지 않는다.
@@ -1413,11 +1414,13 @@ async function registerAccount({ uid, provider, auid, auth = null, verified = fa
   const auidStr = BigInt(auid).toString();
   if (auidHeldByOther(uid, auidStr)) return fail(409, { error: 'auid taken', reason: 'auid_taken' });
   if (state.accounts[uid]?.auid) return fail(409, { error: 'already registered' });   // await 사이 경합
+  // 다른 신원의 로그인 계정으로 붙은 uid 는 자기 계정을 만들지 못한다(보안 검토 2026-11-26 M-1 — 발급의 await 사이에 연결이 끝난 경우). 이 검사와 아래 기록은 같은 동기 구간이다.
+  if (linkOwner(uid) !== null) return fail(409, { error: 'this login belongs to another account', reason: 'link_has_account' });
   if (beforeCommit && !beforeCommit()) return fail(401, { error: 'bad_code', reason: 'bad_code' });
   const slot = state.registry.next++;
   // 가입 때 만든 레코드(pwSalt·pwHash·pwAlgo·createdAt)가 있으면 그 자리를 채운다 — 새 객체로 덮어 비밀번호를 잃지 않는다(Task 10).
   const acct = state.accounts[uid] ??= newAccountRecord();
-  Object.assign(acct, { auid: auidStr, slot, provider });
+  Object.assign(acct, { auid: auidStr, slot, provider, ...(fields ?? {}) });
   persist();
   return { slot };
 }
@@ -1466,7 +1469,7 @@ async function finishIssue(res, opts) {
   const hold = { auidS: null, uid: null };
   try { return await finishIssueInner(res, opts, hold); } finally { releaseIssue(hold); }
 }
-async function finishIssueInner(res, { uid, acct, cupt, cspt, auidS, aridS, mh, chainStr, agent, consume = null, consumeFail = null, unconsume = null, wrapper = false, extra = null, envelope = null }, hold) {
+async function finishIssueInner(res, { uid, acct, cupt, cspt, auidS, aridS, mh, chainStr, agent, consume = null, consumeFail = null, unconsume = null, wrapper = false, by = null, extra = null, envelope = null }, hold) {
   // Cf_u·Cf_s 는 IdP 가 점에서 스스로 유도한다(설계 §6.2) — 사용자가 보낸 Cf 를 서명하면 증명된 점과 무관한 값에 서명이 붙는다.
   const Cf_u = await compressPoint(cupt), Cf_s = await compressPoint(cspt);
   const head = await headOf(chainStr);   // fail-closed: 체인이 죽어 있으면 발급하지 않는다(게시도 불가하므로 폐기가 닿지 않는 세션이 된다)
@@ -1474,6 +1477,9 @@ async function finishIssueInner(res, { uid, acct, cupt, cspt, auidS, aridS, mh, 
   // 이 await 를 끝으로 아래 물리기→push→setSlot→persist 구간은 동기다(2026-10-01 리뷰 Important 2 와 같은 이유).
   const newLeaf = await registryLeaf(BigInt(acct.auid), Cf_u);
   if (acct.disabled) return res.status(403).json({ error: 'account disabled', reason: 'account_disabled' });   // await 사이의 폐기
+  // 이 로그인의 계정이 await 사이에 이 신원에서 떼어졌으면 내지 않는다(보안 검토 2026-11-26 M-2). by 는 래퍼 방식의 로그인 uid.
+  const removedLogin = () => by !== null && ownerOf(by) !== uid;
+  if (removedLogin()) return res.status(403).json({ error: 'this login was removed from the account', reason: 'login_removed' });
   // 발급 기록이 찼다 — 기록 없이 서명하면 그 로그인(과 그 뒤의 거래)을 개봉할 수 없다. 1회용 코드·자격증명 교체보다 먼저 막는다(아무것도 바꾸지 않는다).
   // 진행 중인 그 계정의 발급도 센다(재검토 2026-11-21) — 기록은 아래 await(게시·서명) 뒤에 쓰므로, 세지 않으면 동시 요청이 함께 지나가 상한을 넘는다.
   if ((acct.auidSLog?.length ?? 0) + (inflightIssues.get(uid) ?? 0) >= AUID_S_LOG_MAX) return res.status(409).json({ error: 'issuance record is full for this account', reason: 'auid_log_full' });
@@ -1504,6 +1510,7 @@ async function finishIssueInner(res, { uid, acct, cupt, cspt, auidS, aridS, mh, 
     persist();
     published = Boolean((await publishSafely()).published);
     if (acct.disabled) return res.status(403).json({ error: 'account disabled', reason: 'account_disabled' });   // 게시 await 사이의 폐기
+    if (removedLogin()) return res.status(403).json({ error: 'this login was removed from the account', reason: 'login_removed' });
     // 리뷰 S2(2026-10-13): 게시 await 사이에 이 C_u 가 물렸으면(같은 uid 의 다른 새 C_u 발급, 관리자 scope=credential) 토큰을 내지 않는다 —
     // 은퇴된 Cf_u 위의 토큰은 등록부에 없어 쓸 수 없고, 지갑이 그 C_u 를 보관하면 다음 로그인이 registry_mismatch 에서 못 빠져나온다.
     // 지갑은 cred_revoked 에 새 C_u 로 한 번만 다시 시도한다(mode3_wallet_agent.js /wallet/login).
@@ -1529,7 +1536,8 @@ async function finishIssueInner(res, { uid, acct, cupt, cspt, auidS, aridS, mh, 
   // 2026-11-19(스펙 trace-without-tag T6, 사용자 결정 "IdP 는 기록을 갖고 있는 형태"): 발급마다 auid_s 를 계정에 남긴다 — 개봉은 서비스가 낸 auid_s 를 이 기록에서 찾는다.
   // 지금까지의 "auid_s 는 남기지 않는다"(D1)를 뒤집는다. 연결 해제·폐기에도 지우지 않는다(추적의 근거다). 오래된 것을 밀어내지 않는다 — 계정마다 AUID_S_LOG_MAX 개가 차면
   // 위에서 발급을 거절한다(리뷰 2026-11-19 I-1: 밀어내면 사용자가 발급을 되풀이해 지난 거래의 기록을 스스로 지울 수 있다).
-  acct.auidSLog = [...(acct.auidSLog ?? []), { value: auidS.toString(), at: issuedAt }];
+  // by(2026-11-26 스펙 identity-multi-login M6): 이 로그인에 쓴 계정이 주인과 다를 때만 — 개봉은 그 로그인의 uid 하나를 돌려준다.
+  acct.auidSLog = [...(acct.auidSLog ?? []), { value: auidS.toString(), at: issuedAt, ...(by !== null && by !== uid ? { by } : {}) }];
   acct.lastIssue = { at: issuedAt, auid_s: auidS.toString(), arid_s: aridS.toString(), Cf_u: cfu, Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString() };
   // salt 봉투(계획 2026-11-24 salt-envelope [I2]): 복구 발급에 실린 기기 봉투는 서명(signPoseidon)이 끝난 뒤, 세션·발급 기록을 쓰는 이 마지막 동기 구간에서 함께 더한다
   // (바로 아래 persist 가 같이 저장한다) — 앞에서 실패했거나(cred_revoked 등) 토큰을 돌려준 요청은 봉투를 남기지 않는다. 같은 봉투가 다시 와도(새 토큰으로 재시도) 하나로 남는다.
@@ -1590,6 +1598,17 @@ function consumeWrapperNonce(n) {
 /** 토큰을 돌려준다 — 그 토큰으로 아무것도 내지 못한 요청(게시 중 은퇴로 409 cred_revoked)만 부른다(M-3). */
 function releaseWrapperNonce(n) { delete state.wrapperNonces[n]; persist(); }
 const TOKEN_USED = { status: 409, body: { error: 'token already used', reason: 'wrapper_token_used' } };
+// ---- 한 신원에 Google 계정 여럿(2026-11-26 스펙 identity-multi-login) ----
+// 신원 = 계정 레코드(accounts[첫 uid]). 연결한 계정은 그 레코드의 logins: [{ uid, email, at }] 에 있다 — 자기 계정 레코드가 없고, 한 신원에만 붙는다(linkWrapper 가 지킨다).
+const LOGIN_LIMIT = 4;                 // 첫 계정 말고 더 붙일 수 있는 수
+const LINK_PENDING_MS = 10 * 60_000;   // begin 뒤 finish 까지
+const pendingLinks = new Map();        // 더할 계정의 토큰이 묶일 nonce("wrap:" + next) → { owner, by(begin 을 한 계정), auid(그때의 계정 auid), exp }. 메모리에만 둔다 — 재기동하면 begin 부터 다시 한다(M3)
+/** 그 uid 가 로그인 수단으로 붙어 있는 계정의 uid — 없으면 null. */
+function linkOwner(uid) { for (const [k, a] of Object.entries(state.accounts)) if ((a.logins ?? []).some((l) => l.uid === uid)) return k; return null; }
+/** 그 uid 의 신원(주인 계정의 uid) — 자기 계정이 있으면 자신, 붙어 있으면 주인, 둘 다 아니면 자신(아직 계정이 없는 uid). */
+const ownerOf = (uid) => (Object.hasOwn(state.accounts, uid) ? uid : linkOwner(uid) ?? uid);
+/** 이 신원의 로그인 계정 목록(첫 계정이 맨 앞). 값은 uid 와 Google 이 확인한 이메일뿐이다. */
+const loginsView = (uid) => { const a = state.accounts[uid]; return a ? [{ uid, email: a.loginId ?? null, primary: true }, ...(a.logins ?? []).map((l) => ({ uid: l.uid, email: l.email ?? null, at: l.at ?? null }))] : []; };
 /** 토큰·요청 키·서명을 확인한다. digestOf(body) 는 서명하는 글(틀린 본문이면 던진다). 성공 { uid, o(토큰 클레임), nonce }, 실패 { error: { status, body } }. consume:true 면 여기서 nonce 를 소비한다. */
 async function wrapperAuth(body, digestOf, { consume = false } = {}) {
   const fail = (status, b) => ({ error: { status, body: b } });
@@ -1601,13 +1620,15 @@ async function wrapperAuth(body, digestOf, { consume = false } = {}) {
   let digest = null; try { digest = digestOf(body); } catch { digest = null; }
   if (digest === null || typeof sig !== 'string' || !(await verifyDigest(pk_e, digest, sig))) return fail(400, { error: 'bad request signature', reason: 'wrapper_bad_signature' });
   if (consume ? !consumeWrapperNonce(o.nonce) : wrapperNonceUsed(o.nonce)) return fail(TOKEN_USED.status, TOKEN_USED.body);
-  return { uid: o.uid, o, nonce: o.nonce };
+  // 2026-11-26(스펙 identity-multi-login M2): uid 는 그 토큰의 계정이 속한 신원(주인 계정), loginUid 는 토큰의 계정 자신이다 — 연결하지 않았으면 둘이 같다.
+  return { uid: ownerOf(o.uid), loginUid: o.uid, o, nonce: o.nonce };
 }
 /** 래퍼 방식의 발급(POST /cia/issue): { id_token, pk_e, sig, auid, auid_s, arid_s, C_u_pt, C_s_pt, chainid, allowAgent, max_height }. 계정은 토큰의 sub 에서 정한다(uid = H(provider|sub)).
  *  π_IdP 가 없다 — 가명·커밋먼트가 제대로 만들어졌는지는 서비스에 내는 π_RP 가 증명한다(pi_cred ②⑤⑦·등록부 리프 H(auid, Cf_u)). 발급자가 지키는 것은 발급의 부수효과다:
  *  계정당 auid 고정(첫 발급), 한 auid 는 한 계정(R11 — registerAccount), auid_s 전역 유일·남의 C_u 거절(finishIssue), 토큰 1회 소비. */
 async function issueWrapper(req, res) {
-  const { auid, auid_s, arid_s, C_u_pt, C_s_pt, chainid, allowAgent, max_height, envelope } = req.body ?? {};
+  const { auid, auid_s, arid_s, C_u_pt, C_s_pt, chainid, allowAgent, max_height, envelope, link_key } = req.body ?? {};
+  if (link_key !== undefined && !isLinkKey(link_key)) return res.status(400).json({ error: 'link_key must be an address', reason: 'link_bad' });
   // 복구 발급의 기기 봉투(선택) — 모양은 토큰을 보기 전에 본다(형식이 틀린 요청이 토큰을 쓰지 않게). 백업 봉투는 /cia/wrapper/envelope 로만 더한다.
   if (envelope !== undefined && !(isEnvelope(envelope) && envelope.kind === 'device')) return res.status(400).json({ error: 'envelope must be a device envelope', reason: 'envelope_bad' });
   if (!isDec(auid) || !isDec(auid_s) || !isDec(arid_s) || !isPt(C_u_pt) || !isPt(C_s_pt) || !isDec(chainid) || (allowAgent !== '0' && allowAgent !== '1') || !isDec(max_height)) {
@@ -1632,16 +1653,17 @@ async function issueWrapper(req, res) {
   if (!(await isValidPoint(cspt))) return res.status(400).json({ error: 'C_s_pt is not a valid subgroup point' });
   if (wrapperNonceUsed(au.nonce)) return res.status(TOKEN_USED.status).json(TOKEN_USED.body);   // 위 await 사이에 같은 토큰의 다른 요청이 먼저 끝났다
   if (!acct?.auid) {
-    const made = await registerAccount({ uid, provider: OIDC.provider, auid: auidStr, verified: true });
+    // 연결 열쇠(lib/mode3_link_key.js): 등록 때만 고정한다 — 그 뒤의 발급에 실린 값으로는 바꾸지 않는다(Google 계정과 auid 만으로 열쇠를 갈아 끼우지 못하게).
+    const made = await registerAccount({ uid, provider: OIDC.provider, auid: auidStr, verified: true, fields: { linkKey: link_key ?? null } });
     // 최종 검토 M-2: 같은 계정의 첫 발급이 다른 auid 로 동시에 오면 늦은 쪽은 위 검사를 지난 뒤 여기서 "already registered" 가 된다 — 위와 같은 사유로 답한다.
     if (made.error?.body?.error === 'already registered' && state.accounts[uid]?.auid !== auidStr) return await auidPinned(res, uid);
     if (made.error) return res.status(made.error.status).json(made.error.body);
     acct = state.accounts[uid];
   }
   // 아이디 = Google 이 확인한 이메일(있을 때만 — 관리자 화면에 보이는 값). 저장은 finishIssue 의 persist 가 함께 한다.
-  if (!acct.loginId && au.o.emailVerified && typeof au.o.email === 'string' && SIGNUP_EMAIL_RE.test(au.o.email)) acct.loginId = au.o.email;
+  if (!acct.loginId && au.loginUid === uid && au.o.emailVerified && typeof au.o.email === 'string' && SIGNUP_EMAIL_RE.test(au.o.email)) acct.loginId = au.o.email;
   return await finishIssue(res, { uid, acct, cupt, cspt, auidS: BigInt(auid_s), aridS: BigInt(arid_s), mh, chainStr, agent: BigInt(allowAgent),
-    consume: () => consumeWrapperNonce(au.nonce), unconsume: () => releaseWrapperNonce(au.nonce), consumeFail: TOKEN_USED, wrapper: true, extra: { uid, email: acct.loginId ?? null }, envelope: envelope ?? null });
+    consume: () => consumeWrapperNonce(au.nonce), unconsume: () => releaseWrapperNonce(au.nonce), consumeFail: TOKEN_USED, wrapper: true, by: au.loginUid, extra: { uid, email: acct.loginId ?? null, logins: loginsView(uid).map(({ uid: u, email, primary }) => ({ uid: u, email, ...(primary ? { primary: true } : {}) })) }, envelope: envelope ?? null });
 }
 /** 백업 봉투 추가·삭제(POST /cia/wrapper/envelope, 래퍼 방식만): { id_token, pk_e, sig, op:'add'|'remove', auid, envelope?, id? }. 본인 확인은 발급과 같다(요청 키에 묶인 Google 토큰 + envelopeDigest 서명).
  *  auid(최종 검토 2026-11-24 I-1): salt 를 안다는 증거 — 계정에 고정된 auid 와 같아야 한다. Google 계정만으로는 백업을 지우거나 한도를 채우지 못한다(409 auid_pinned 는 auid 를 주지 않는다).
@@ -1669,6 +1691,70 @@ async function envelopeWrapper(req, res) {
   persist();
   res.json({ envelopes: acct.envelopes.map(({ id: i, kind, credentialId, createdAt }) => ({ id: i, kind, credentialId, createdAt })) });
 }
+/** 로그인 계정 연결·떼기(POST /cia/wrapper/link, 래퍼 방식만 — 스펙 2026-11-26 identity-multi-login M3~M5).
+ *  begin  { op, auid, next, id_token, pk_e, sig }: 지금 계정(이 신원의 아무 계정)의 토큰 + auid(salt 를 안다는 증거) + 다음 요청 키의 해시(next)에 대한 서명. next → 주인 을 10분 기억한다.
+ *  finish { op, id_token, pk_e, sig }: next 의 요청 키에 묶인 **더할 계정의 토큰**. 그 계정이 자기 계정을 갖고 있거나 다른 신원에 붙어 있으면 거절한다(합치지 않는다).
+ *  remove { op, auid, uid, id_token, pk_e, sig }: 이 신원의 아무 계정 토큰 + auid + 뗄 uid. 첫 계정은 떼지 못한다.
+ *  토큰은 검사를 다 지난 뒤 상태를 바꾸기 바로 앞의 동기 구간에서 소비한다(봉투 경로와 같다). 응답의 logins 는 uid 와 이메일뿐이다. */
+async function linkWrapper(req, res) {
+  const { op, auid, next, uid: target, link_sig } = req.body ?? {};
+  const bad = (status, reason, error) => res.status(status).json({ error, reason });
+  if (op === 'finish') {
+    const au = await wrapperAuth(req.body, () => linkDigest({ op: 'finish' }, PUBLIC_URL), { consume: false });
+    if (au.error) return res.status(au.error.status).json(au.error.body);
+    // 이 아래는 동기다
+    const p = pendingLinks.get(au.nonce);
+    if (!p || p.exp < Date.now()) return bad(409, 'link_not_started', 'no pending link for this request key');
+    const acct = state.accounts[p.owner], uid2 = au.loginUid;
+    if (!acct?.auid) return bad(404, 'unknown_account', 'unknown account');
+    if (acct.disabled) return bad(403, 'account_disabled', 'account disabled');
+    // begin 뒤에 신원이 달라졌으면 끝내지 않는다(보안 검토 I-3): begin 을 한 계정이 떼어졌거나, 계정이 지워진 뒤 다른 패스키로 다시 만들어졌다.
+    if (ownerOf(p.by) !== p.owner || acct.auid !== p.auid) { pendingLinks.delete(au.nonce); return bad(409, 'link_not_started', 'the pending link is no longer valid'); }
+    if (uid2 === p.owner || (acct.logins ?? []).some((l) => l.uid === uid2)) return bad(409, 'link_exists', 'already a login of this account');
+    if (Object.hasOwn(state.accounts, uid2) || linkOwner(uid2) !== null) return bad(409, 'link_has_account', 'that Google account already has its own account');
+    if ((acct.logins ?? []).length >= LOGIN_LIMIT) return bad(409, 'link_limit', `at most ${LOGIN_LIMIT} extra logins`);
+    if (!consumeWrapperNonce(au.nonce)) return res.status(TOKEN_USED.status).json(TOKEN_USED.body);
+    pendingLinks.delete(au.nonce);
+    const email = au.o.emailVerified && typeof au.o.email === 'string' && SIGNUP_EMAIL_RE.test(au.o.email) ? au.o.email : null;
+    acct.logins = [...(acct.logins ?? []), { uid: uid2, email, at: new Date().toISOString() }];
+    persist();
+    return res.json({ logins: loginsView(p.owner) });
+  }
+  if (op !== 'begin' && op !== 'remove') return bad(400, 'link_bad', "op must be 'begin', 'finish' or 'remove'");
+  if (!isDec(auid) || (op === 'begin' ? typeof next !== 'string' || !/^[0-9a-f]{64}$/.test(next) : !isDec(target))) return bad(400, 'link_bad', "begin needs auid and next(hex64); remove needs auid and uid");
+  const au = await wrapperAuth(req.body, (b) => linkDigest(op === 'begin' ? { op, auid: b.auid, next: b.next } : { op, auid: b.auid, uid: b.uid }, PUBLIC_URL), { consume: false });
+  if (au.error) return res.status(au.error.status).json(au.error.body);
+  // 이 아래는 동기다
+  const acct = state.accounts[au.uid];
+  if (!acct?.auid) return bad(404, 'unknown_account', 'unknown account');
+  if (acct.disabled) return bad(403, 'account_disabled', 'account disabled');
+  // salt 를 아는가 — Google 계정만 가진 사람이 로그인 수단을 붙이거나 떼지 못하게(봉투 경로의 I-1 과 같다). 응답에 계정의 auid 를 싣지 않는다.
+  if (BigInt(auid).toString() !== acct.auid) return bad(409, 'link_auid_mismatch', 'auid does not match this account');
+  // salt 를 **지금** 갖고 있는가(보안 검토 I-1): auid 는 바뀌지 않는 값이라 한 번 읽히면 패스키 없이 되풀이해 낼 수 있다. 등록 때 고정한 연결 열쇠(salt 에서 유도)로
+  // 이 요청의 내용(begin: next, remove: 뗄 uid)에 한 서명을 본다 — lib/mode3_link_key.js. 열쇠가 없는 계정(이 기능 전에 등록)은 연결을 쓰지 못한다.
+  if (!isLinkKey(acct.linkKey)) return bad(409, 'link_key_missing', 'this account has no link key');
+  if (!linkProofOk(acct.linkKey, op === 'begin' ? { op, next } : { op, uid: target }, PUBLIC_URL, link_sig)) return bad(409, 'link_salt_proof', 'passkey proof does not match this account');
+  if (op === 'begin') {
+    if ((acct.logins ?? []).length >= LOGIN_LIMIT) return bad(409, 'link_limit', `at most ${LOGIN_LIMIT} extra logins`);
+    const now = Date.now();
+    for (const [k, v] of pendingLinks) if (v.exp < now) pendingLinks.delete(k);
+    // 같은 next 의 대기분을 덮어쓰지 않는다(보안 검토 M-4 — 남의 next 를 알아낸 사람이 그 연결을 자기 신원으로 돌리지 못하게)
+    if (pendingLinks.has(WRAPPER_PREFIX + next)) return bad(409, 'link_pending', 'a link is already pending for that request key');
+    if (!consumeWrapperNonce(au.nonce)) return res.status(TOKEN_USED.status).json(TOKEN_USED.body);
+    pendingLinks.set(WRAPPER_PREFIX + next, { owner: au.uid, by: au.loginUid, auid: acct.auid, exp: now + LINK_PENDING_MS });
+    return res.json({ ok: true, expiresInMs: LINK_PENDING_MS });
+  }
+  if (target === au.uid) return bad(409, 'link_primary', 'the first login cannot be removed');
+  if (!(acct.logins ?? []).some((l) => l.uid === target)) return bad(404, 'link_unknown', 'not a login of this account');
+  if (!consumeWrapperNonce(au.nonce)) return res.status(TOKEN_USED.status).json(TOKEN_USED.body);
+  acct.logins = acct.logins.filter((l) => l.uid !== target);
+  for (const [k, v] of pendingLinks) if (v.by === target) pendingLinks.delete(k);   // 뗀 계정이 해 둔 begin 은 함께 없앤다(I-3)
+  persist();
+  return res.json({ logins: loginsView(au.uid) });
+}
+if (WRAPPER) app.post('/cia/wrapper/link', async (req, res) => {
+  try { return await linkWrapper(req, res); } catch (err) { res.status(500).json({ error: err.message }); }
+});
 if (WRAPPER) app.post('/cia/wrapper/envelope', async (req, res) => {
   try { return await envelopeWrapper(req, res); } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -2290,7 +2376,7 @@ app.post('/cia/account/delete', requireAdmin, async (req, res) => {
 
 // 관리자 계정 목록(관리 페이지의 계정 목록용). activeCred 는 위의 기존 헬퍼(사용자당 활성 자격증명 하나).
 app.get('/cia/accounts', requireAdmin, (req, res) => res.json({
-  accounts: Object.entries(state.accounts).map(([uid, a]) => ({ uid, id: a.loginId ?? null, auid: a.auid ?? null, disabled: a.disabled, activeCf_u: activeCfU(a), slot: a.slot, tampered: Boolean(a.tampered), registryLeaf: state.registry.leaves[a.slot] ?? '0', provider: a.provider ?? 'demo', lastAuidS: a.lastAuidS ?? null, lastAridS: a.lastAridS ?? null, lastOidc: a.lastOidc ?? null, lastIssue: a.lastIssue ?? null })),   // lastAuidS: 최신 auid_s 하나(2026-11-12), lastAridS·lastOidc: zkIdP 가 본 서비스(2026-11-19)
+  accounts: Object.entries(state.accounts).map(([uid, a]) => ({ uid, id: a.loginId ?? null, auid: a.auid ?? null, disabled: a.disabled, activeCf_u: activeCfU(a), slot: a.slot, tampered: Boolean(a.tampered), registryLeaf: state.registry.leaves[a.slot] ?? '0', provider: a.provider ?? 'demo', logins: (a.logins ?? []).map((l) => ({ uid: l.uid, email: l.email ?? null, at: l.at ?? null })), lastAuidS: a.lastAuidS ?? null, lastAridS: a.lastAridS ?? null, lastOidc: a.lastOidc ?? null, lastIssue: a.lastIssue ?? null })),   // lastAuidS: 최신 auid_s 하나(2026-11-12), lastAridS·lastOidc: zkIdP 가 본 서비스(2026-11-19)
 }));
 
 // ---- V9 등록부 관리(설계 2026-10-01 §9) ----
@@ -2363,8 +2449,13 @@ app.post('/cia/account/self_revoke', userCors, async (req, res) => {
     let uid;
     if (WRAPPER) {
       // 래퍼 방식(스펙 zkwrapper §10 I3): 계정 폐기도 요청 키에 묶인 토큰 + "계정 폐기" 에 대한 서명 — 발급·세션 폐기용 토큰과 서명은 여기에 쓰지 못한다.
-      const a = await wrapperAuth(req.body, () => revokeDigest({ scope: 'account' }, PUBLIC_URL), { consume: true });
+      // owner(보안 검토 2026-11-26 M-3): 브라우저가 폐기하려는 신원(자기 등록의 uid) — 싣고 왔으면 토큰의 신원과 같아야 한다. 브라우저의 로그인 계정 목록이 낡아
+      // 이미 떼어져 다른 신원이 된 Google 계정을 고른 경우, 그 다른 신원을 폐기하지 않는다. 토큰을 쓰기 전에 본다.
+      const a = await wrapperAuth(req.body, () => revokeDigest({ scope: 'account' }, PUBLIC_URL), { consume: false });
       if (a.error) return res.status(a.error.status).json(a.error.body);
+      const want = req.body?.owner;
+      if (want !== undefined && (!isDec(want) || ownerOf(BigInt(want).toString()) !== a.uid)) return res.status(409).json({ error: 'identity mismatch', reason: 'wrapper_account_mismatch' });
+      if (!consumeWrapperNonce(a.nonce)) return res.status(TOKEN_USED.status).json(TOKEN_USED.body);
       uid = a.uid;
     } else if (id_token !== undefined) {
       if (typeof id_token !== 'string') return res.status(400).json({ error: 'id_token 은 문자열' });
@@ -2455,9 +2546,13 @@ app.post('/cia/openings/:id/approve', requireAdmin, async (req, res) => {
     if (!o) return res.status(404).json({ error: 'unknown opening' });
     if (o.status !== 'pending') return res.status(409).json({ error: `already ${o.status}` });
     // T8: 발급 기록에서 그 auid_s 의 uid 를 찾는다. 못 찾으면 approved 로 기록하되 resolved=false(기록에 없음). 태그 시절의 옛 항목(auid_s 없음)은 열 수 없다.
-    const uid = typeof o.auid_s === 'string' ? uidOfAuidS(o.auid_s) : null;
+    const owner = typeof o.auid_s === 'string' ? uidOfAuidS(o.auid_s) : null;
+    // M6: 그 로그인에 쓴 계정(연결한 계정이면 by), 아니면 주인 — 같은 신원의 다른 계정은 싣지 않는다.
+    const uid = owner === null ? null : (state.accounts[owner].auidSLog ?? []).find((r) => r.value === o.auid_s)?.by ?? owner;
     o.decidedAt = new Date().toISOString();
-    o.status = 'approved'; o.uid = uid; o.resolved = uid !== null;
+    // identity(보안 검토 I-2): 그 PPID 를 쓰는 신원의 계정 uid — 관리자가 폐기할 대상이다. uid(그 로그인의 계정)와 다를 수 있고, 서비스에 돌려주는 응답에는 싣지 않는다.
+    // (o.account 는 이미 PPID 계정의 주소다 — 다른 값이다.)
+    o.status = 'approved'; o.uid = uid; o.identity = owner; o.resolved = uid !== null;
     if (uid === null && typeof o.auid_s === 'string' && auidSOwners(o.auid_s).length > 1) o.ambiguous = true;   // 기록이 둘 이상의 계정에 있다 — 답하지 않은 까닭
     persist();
     res.json({ id: o.id, status: o.status, resolved: o.resolved });
