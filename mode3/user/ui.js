@@ -461,7 +461,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
   const fmtMs = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : ms >= 10 ? `${Math.round(ms)}ms` : ms < 0.005 ? '<0.01ms' : `${Number(ms).toFixed(2)}ms`);   // 0.00ms 는 재지 못한 것처럼 보인다
   // [단계, 보내는 쪽, 받는 쪽, 왕복] — 받는 쪽이 같으면 혼자 하는 계산. request·respond 는 코어 밖(서비스와 승인 창 사이)이라 시간이 없다.
   const FLOW_STEPS = [['request', 'rp', 'user'], ['check_service', 'user', 'user'], ['passkey', 'user', 'user'], ['sync', 'user', 'user'], ['random', 'user', 'user'], ['session_key', 'user', 'user'],
-    ['commit', 'user', 'user'], ['pseudonym', 'user', 'user'], ['prove_idp', 'user', 'user'], ['issue', 'user', 'idp', true], ['publish_wait', 'user', 'user'], ['prove_session', 'user', 'user'], ['sign', 'user', 'user'], ['respond', 'user', 'rp']];
+    ['commit', 'user', 'user'], ['pseudonym', 'user', 'user'], ['prove_idp', 'user', 'user'], ['issue', 'user', 'idp', true], ['publish_wait', 'user', 'user'], ['trace', 'user', 'user'], ['prove_session', 'user', 'user'], ['sign', 'user', 'user'], ['respond', 'user', 'rp']];
   /** 플로우 카드의 π_IdP 줄 → 그 로그인의 증명(공개 입력에 그 auid_s 가 있는 π_IdP 기록)을 "영지식 증명" 카드의 창으로 연다. 기록이 밀려났으면 그 카드에 π_IdP 목록을 펴고 그리로 간다. */
   async function openFlowProof(auidS) {
     await loadProofs();
@@ -502,7 +502,8 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     // 래퍼 방식(2026-11-24 사용자 요청): 패스키 시간을 사용자 대기(인증기 창)와 salt 계산으로 나눠 적는다 — 둘 다 잰 기록일 때만
     const pkRec = ms.passkey ?? null;
     const pkSplit = WRAP && pkRec && Number.isFinite(pkRec.waitMs) && Number.isFinite(pkRec.calcMs) ? (tt('user_flow_passkey_split', { wait: fmtMs(pkRec.waitMs), calc: fmtMs(pkRec.calcMs) }) || null) : null;
-    const steps = FLOW_STEPS.filter(([k]) => PK || k !== 'passkey').map(([k, from, to, both]) => {
+    // trace(추적 기록 만들기, 2026-11-26)는 등록부가 켜진 래퍼 방식에서만 — 이미 기록이 있는 로그인에서는 "건너뜀" 으로 보인다
+    const steps = FLOW_STEPS.filter(([k]) => (PK || k !== 'passkey') && (k !== 'trace' || (WRAP && Boolean(config.trace?.registry)))).map(([k, from, to, both]) => {
       const rec = ms[k] ?? null, timed = k !== 'request' && k !== 'respond';
       const note = !f ? null : !timed ? (k === 'respond' ? tt('user_flow_no_time') : null) : !rec ? tt('user_flow_skipped') : (k === 'passkey' && rec.before) ? tt('user_flow_before') : (k === 'passkey' && pkSplit) ? pkSplit : null;
       return { key: k, from, to, both: Boolean(both), title: tt(`user_flow_s_${k}_t`) || k, meaning: tt(`user_flow_s_${k}_m`), time: rec ? fmtMs(rec.ms) : null,

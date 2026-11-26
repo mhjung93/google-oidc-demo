@@ -18,7 +18,7 @@ const filled = (a, byte = 0xab) => { const b = Buffer.from(a.deployedBytecode.sl
 
 t('대상 여섯 개를 모두 읽는다(2026-11-25: 폐기 체인의 Mode3Log)', () => {
   assert.deepEqual(arts.map((a) => a.name), TARGETS);
-  assert.deepEqual(TARGETS, ['Mode3Mirror', 'PiCredVerifier', 'Mode3WalletFactory', 'AttrGate', 'Mode3Wallet', 'Mode3Log']);
+  assert.deepEqual(TARGETS, ['Mode3Mirror', 'PiCredVerifier', 'Mode3WalletFactory', 'AttrGate', 'Mode3Wallet', 'Mode3Log', 'TraceRegistry', 'TraceVerifier']);
   for (const a of arts) { assert.match(a.solcLongVersion, /^0\.8\.24\+commit\./, a.name); assert.ok(a.standardInput.sources[a.sourceName], `${a.name}: 표준 입력에 자기 소스`); }
 });
 

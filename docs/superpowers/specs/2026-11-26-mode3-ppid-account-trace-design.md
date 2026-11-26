@@ -123,12 +123,13 @@ noteShare(id, auditorIndex, shareHash)   감사자가 부분 복호를 냈다는
 
 **만든 것**
 - 회로 `circuits/pi_trace.circom` — 비선형 제약 **3,780**, 공개 입력 8, 비공개 2. `bash scripts/build_mode3_circuit.sh pi_trace`(pot14, 약 9초)로 zkey·vkey·wasm·`contracts/TraceVerifier.sol`.
-  `pi_cred`·`pi_idp` 의 키와 `PiCredVerifier.sol` 은 바뀌지 않았다(빌드 전후 해시 대조). 증명 시간은 Node·snarkjs 에서 약 0.6초(한 번 잰 값 — 브라우저에서는 재지 않았다).
+  `pi_cred`·`pi_idp` 의 키와 `PiCredVerifier.sol` 은 바뀌지 않았다(빌드 전후 해시 대조). 증명 시간(witness+prove, Node·snarkjs, Ryzen 9 5950X, 다섯 번 연속)은 608·276·245·192·174 ms — 첫 회가 느리다. 브라우저에서는 재지 않았다.
 - 컨트랙트 `contracts/TraceRegistry.sol`(기록·개봉 요청·감사자 표시), 라이브러리 `lib/mode3_trace_record.js`(암호화·2-of-3 부분 복호·DLEQ·조합)·`lib/mode3_trace_chain.js`(ABI).
 - 배포 `scripts/mode3_trace_setup.mjs`(감사자 키가 없으면 딜러 한 번 → 조각 파일 셋 0600, 등록부 배포), 감사자 프로세스 `mode3_auditors.js`(체인의 요청을 본 뒤에만 부분 복호·`noteShare`).
 - 서비스(`mode3_rp.js`): 로그인의 `has(PPID)` 검사 — 없으면 **로그인 요청에 실려 온 기록**(`trace`)을 π_RP 확인 뒤 릴레이어가 올린다(`registerTrace`; 기록도 없고 실려 오지도 않으면 `trace_required`). 릴레이(`/api/mode3/relay`)도 같은 검사를 한다. `POST /api/mode3/trace/open`(관리자 — 자기 서비스 계정만, 사유 필수 — 체인의 개봉 요청).
 - zkWrapper(`cia.js`): 설정의 `trace.registry`·`trace.pk`(감사자 키 — 이 서버가 자기 노드에서 읽어 고정), 관리자 `GET /cia/admin/trace/requests`·`POST /cia/admin/trace/:id/open`(체인에 표시를 남긴 감사자 둘의 부분 복호를 확인·조합 → 계정).
 - 브라우저: 로그인 중 `buildTrace`(기록이 없으면 설정의 감사자 키로 π_trace 를 만들어 로그인 응답에 싣는다), `/user` 의 "개봉 알림" 카드(체인의 요청을 읽어 자기 PPID 로 거른다, 10초마다), 서비스 관리자·zkWrapper 관리자 화면의 버튼·목록.
+- 체인 콘솔(`scripts/mode3_console.mjs`): `traceRecord`·`traceRequest`·`traceRequests` — 버튼 없이 기록을 읽고 개봉 요청 거래를 낸다. 탐색기 자동 검증 대상에 `TraceRegistry`·`TraceVerifier`. "로그인 전체 플로우" 에 추적 기록 단계.
 - 분리 데모(`scripts/demo_split_start.sh`): zkwrapper 방식이면 등록부를 올리고 감사자를 띄운다(`TRACE=0` 으로 끈다, 산출물이 없으면 건너뛴다).
 
 **설계와 다른 것**
@@ -149,6 +150,10 @@ noteShare(id, auditorIndex, shareHash)   감사자가 부분 복호를 냈다는
 - M-1 릴레이도 기록을 요구한다. M-2 요청 목록은 최근 200건만 읽고 화면 갱신을 막지 않는다. M-3 부분 복호의 증명을 요청(체인·등록부·번호)에 묶고, 조합자는 체인에 표시를 남긴 감사자의 조각만 쓰며 맞는 쌍을 모두 시도한다. M-4 개봉 요청은 사유 필수·자기 서비스의 계정만. M-5 키 파일이 일부만 있으면 배포가 멈추고(`MODE3_AUDITOR_REDEAL=yes` 일 때만 새로), 감사자는 조각이 공개 기록과 짝인지 확인한다. M-7·M-8 은 위 6·7.
 - 고치지 않은 것: 요청을 아무나 낼 수 있어 요청마다 감사자가 표시 거래를 둘 낸다(요청 스팸의 비용). `shareHash` 는 체인에 남기만 하고 조합자가 대조하지 않는다(부분 복호의 증명은 매번 새 난수라 감사자가 다시 뜨면 값이 달라진다).
 
-**재지 않은 것**: `register` 거래의 가스, 브라우저에서의 π_trace 시간, 첫 로그인이 늘어난 시간.
+**가스**(2026-11-26, 임시 hardhat 체인, 일회용 측정 스크립트 — 저장소에 없다): `register` 383,903~383,915(n=5 — Groth16 검증 + 저장 5칸), `requestOpen` 121,853~138,953(n=5 — 첫 요청이 가장 크다), `noteShare` 39,458~39,470(n=10). 계정마다 한 번 드는 것은 `register` 뿐이고, 나머지는 개봉할 때만 든다(요청 1 + 표시 2).
 
-**테스트**(모두 통과): 라이브러리 단위 7(`tests/test_mode3_trace_record.mjs`), 회로 증인·증명 15(`tests/test_pi_trace_witness.mjs`), 컨트랙트 7(`test/TraceRegistry.test.mjs` — 실제 증명), 라이브러리 단위는 검토 반영 뒤 9, 체인 끝에서 끝 7(`tests/test_mode3_trace_flow.mjs` — 토큰·기동 검사 포함), 브라우저 8(`tests/test_mode3_trace_browser.mjs` — 첫 로그인의 기록·개봉 요청·알림·관리자 열기·기록을 떼거나 바꾸면 로그인 거절·남의 서비스 계정 요청 거절). 릴레이의 기록 검사(M-1)와 확정 대기 옵션은 테스트가 없다. 컨트랙트 전체 143, 래퍼 브라우저 42 도 그대로 통과.
+**브라우저에서의 시간**: 로그인의 "추적 기록 만들기" 단계(기록 유무 조회 + witness + 증명) 532 ms — 격리 테스트의 Chrome 에서 한 번 잰 값이다(같은 머신, 반복 측정 아님). 그 서비스에 처음 로그인할 때만 든다.
+
+**재지 않은 것**: 서비스 쪽 `register` 거래를 기다리는 시간까지 넣은 첫 로그인 전체 시간.
+
+**테스트**(모두 통과): 라이브러리 단위 7(`tests/test_mode3_trace_record.mjs`), 회로 증인·증명 15(`tests/test_pi_trace_witness.mjs`), 컨트랙트 7(`test/TraceRegistry.test.mjs` — 실제 증명), 라이브러리 단위는 검토 반영 뒤 9, 체인 끝에서 끝 8(`tests/test_mode3_trace_flow.mjs` — 토큰·기동 검사·콘솔 도우미 포함), 브라우저 8(`tests/test_mode3_trace_browser.mjs` — 첫 로그인의 기록·개봉 요청·알림·관리자 열기·기록을 떼거나 바꾸면 로그인 거절·남의 서비스 계정 요청 거절). 릴레이의 기록 검사(M-1)와 확정 대기 옵션은 테스트가 없다. 컨트랙트 전체 143, 래퍼 브라우저 42 도 그대로 통과.

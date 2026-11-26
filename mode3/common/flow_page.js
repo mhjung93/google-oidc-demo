@@ -32,7 +32,7 @@
   const FINE = {
     check_service: '서비스 확인 (인증서 · 팩토리)', passkey: '패스키로 salt 다시 만들기', sync: '체인 읽기 (등록부 · 폐기 목록)', random: '난수 뽑기',
     session_key: '임시 키 쌍 만들기 (pk_i)', issue: '가명 · 커밋먼트 · π_IdP 를 만들어 발급 요청 → zkIdP 의 서명', publish_wait: '등록부 게시 기다리기 (처음 등록한 로그인만)',
-    prove_session: '영지식 증명 π_RP 만들기', sign: '세션키로 서명',
+    prove_session: '영지식 증명 π_RP 만들기', sign: '세션키로 서명', trace: '추적 기록 만들기 (π_trace — 이 서비스에 처음일 때만)',
   };
   const STEPS = {
     oidc: [
@@ -45,7 +45,7 @@
       { title: '② 패스키 → salt', body: '패스키가 내주는 값으로 salt 를 다시 만듭니다. 같은 패스키면 늘 같은 값이고 어디에도 저장하지 않습니다. salt 는 모든 가명의 뿌리이며 밖으로 나가지 않습니다.', fine: ['passkey'] },
       { title: '③ 가명 + 증명 π_IdP', body: 'zkIdP 에는 이번 로그인에만 쓰는 가명 둘(auid_s = 사용자, arid_s = 서비스)과, "이 계정의 salt 를 안다" 는 영지식 증명 π_IdP 를 보냅니다. arid_s 는 로그인마다 달라 zkIdP 는 어느 서비스인지 알 수 없습니다.', fine: ['sync', 'random', 'session_key', 'issue'] },
       { title: '④ 서명한 자격증명', body: 'zkIdP 가 증명을 확인하고 가명에 서명해 돌려줍니다. 서명하는 값은 auid_s · arid_s · Cf_u · Cf_s 와 chainid · allowAgent 입니다. 서비스는 가명 arid_s(= Poseidon(arid, r_rp))로만 들어가 zkIdP 는 로그인 때 어느 서비스인지 모릅니다 — r_rp 는 서비스가 만든 1회용 난수로, 서비스와 사용자의 브라우저만 압니다. 처음 등록한 로그인이면 등록부를 체인에 게시합니다.', fine: ['publish_wait'] },
-      { title: '⑤ PPID + 증명 π_RP', body: '서비스에는 이 서비스에서만 쓰는 주소 PPID 와, "이 PPID 가 zkIdP 가 서명한 자격증명에서 나왔고 폐기되지 않았다" 는 영지식 증명 π_RP 를 보냅니다. zkIdP 를 거치지 않으므로 zkIdP 는 이 전달을 보지 못합니다.', fine: ['prove_session', 'sign'] },
+      { title: '⑤ PPID + 증명 π_RP', body: '서비스에는 이 서비스에서만 쓰는 주소 PPID 와, "이 PPID 가 zkIdP 가 서명한 자격증명에서 나왔고 폐기되지 않았다" 는 영지식 증명 π_RP 를 보냅니다. zkIdP 를 거치지 않으므로 zkIdP 는 이 전달을 보지 못합니다.', fine: ['trace', 'prove_session', 'sign'] },
       { title: '⑥ 검증', body: '서비스가 증명을 검증하고, 증명의 공개 입력이 체인의 최신 등록부 · 폐기 목록과 자기 식별자에 맞는지 확인합니다. uid 나 속성 값은 받지 않습니다.' },
     ],
   };
@@ -187,7 +187,7 @@
     delete d.dataset.token;
     if (kind === 'zk' && WRAP && !SVC) renderTokens(d, st.open);
     if (kind === 'zk' && s.fine && !SVC) {
-      let rows = s.fine.map((key) => [key, (flow?.steps ?? []).find((x) => x.key === key) ?? null]).filter(([key, rec]) => rec || !flow || key !== 'publish_wait');
+      let rows = s.fine.map((key) => [key, (flow?.steps ?? []).find((x) => x.key === key) ?? null]).filter(([key, rec]) => rec || (!flow ? key !== 'trace' : !['publish_wait', 'trace'].includes(key)));
       // 래퍼 방식(2026-11-24 사용자 요청): 패스키 시간을 사용자 대기(인증기 창)와 salt 계산으로 나눠 적는다 — 둘 다 잰 기록일 때만
       if (WRAP) rows = rows.flatMap(([key, rec]) => (key === 'passkey' && rec && Number.isFinite(rec.waitMs) && Number.isFinite(rec.calcMs) ? [['passkey_wait', { ms: rec.waitMs }], ['passkey_calc', { ms: rec.calcMs }]] : [[key, rec]]));
       if (rows.length) {

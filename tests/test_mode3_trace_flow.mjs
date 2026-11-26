@@ -10,6 +10,7 @@ import { ethers } from 'ethers';
 import * as snarkjs from 'snarkjs';
 import { traceWitness, openFromParts, partFromJson, ptFromJson } from '../lib/mode3_trace_record.js';
 import http from 'node:http';
+import { createConsoleHelpers } from '../lib/mode3_console.mjs';
 import { traceRegistryAt, registryPk, listOpenRequests, traceCtx } from '../lib/mode3_trace_chain.js';
 import { proofToCalldata } from '../lib/mode3_onchain.js';
 import { randomScalar } from '../lib/mode3_credential.js';
@@ -94,6 +95,21 @@ try {
     const pkj = (await getJson('http://127.0.0.1:5391/pk')).body, r = await registry.recordOf(bob.w.PPID);
     const opened = await openFromParts({ pk: await registryPk(registry), shareXs: Object.fromEntries(pkj.shares.map((s) => [s.index, ptFromJson(s.X)])), c1: { x: r.c1x, y: r.c1y }, c2: r.c2, parts: sh.parts.map(partFromJson), ctx: traceCtx({ chainId: chainid, registry: REG, id: 1 }) });
     assert.equal(opened.auid, bob.w.auid); assert.notEqual(opened.auid, alice.w.auid);
+  });
+  await t('체인 콘솔의 도우미: 기록을 체인에 있는 그대로 읽고(잠긴 값뿐 — auid 가 없다), 콘솔의 계정으로 개봉 요청 거래를 내면 요청 목록에 요청자와 함께 남는다; 기록 없는 PPID·빈 사유는 내지 않는다', async () => {
+    const con = await provider.getSigner(19), h = createConsoleHelpers({ provider, signer: con, explorer: 'http://explorer.test', traceRegistry: REG });
+    const rec = await h.traceRecord(alice.w.PPID);
+    assert.deepEqual({ ppid: rec.ppid, arid: rec.arid, c1x: rec.c1x, c2: rec.c2 }, { ppid: alice.w.PPID.toString(), arid: ARID.toString(), c1x: alice.w.c1.x.toString(), c2: alice.w.c2.toString() });
+    assert.ok(!JSON.stringify(rec).includes(alice.w.auid.toString()), '기록에 auid 가 보인다');
+    assert.deepEqual(await h.traceRecord({ pub: [alice.w.PPID.toString()] }), rec, '거래(x)로 줘도 같다');
+    assert.equal(await h.traceRecord(123456789n), null);
+    const n0 = (await h.traceRequests()).length;
+    const sent = await h.traceRequest(alice.w.PPID, '콘솔 시연');
+    assert.equal(sent.status, 'success'); assert.equal(sent.id, n0); assert.equal(sent.requester, await con.getAddress()); assert.equal(sent.link, `http://explorer.test/tx/${sent.hash}`);
+    const list = await h.traceRequests(); assert.equal(list.length, n0 + 1); assert.equal(list[n0].ppid, alice.w.PPID.toString()); assert.equal(list[n0].requester, await con.getAddress());
+    await assert.rejects(() => h.traceRequest(123456789n, '사유'), /추적 기록이 없다/); await assert.rejects(() => h.traceRequest(alice.w.PPID, '  '), /사유/);
+    assert.equal((await h.traceRequests()).length, n0 + 1);
+    assert.equal(createConsoleHelpers({ provider, signer: con }).traceRecord, undefined, '등록부 주소가 없으면 trace 도우미가 없다');
   });
   await t('기동 검사: 등록부의 키가 디렉터리의 키와 다르면 뜨지 않는다 — 토큰이 없거나 짧아도, 조각 파일이 공개 기록과 짝이 아니어도 뜨지 않는다; 키 파일이 일부만 있으면 배포가 멈춘다', async () => {
     const other = fs.mkdtempSync(path.join(os.tmpdir(), 'zkd-aud2-'));

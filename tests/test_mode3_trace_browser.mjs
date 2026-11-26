@@ -37,12 +37,14 @@ try {
   const registry = traceRegistryAt(REG, new ethers.JsonRpcProvider(RPC));
   const text = (page, sel) => page.$eval(sel, (el) => el.textContent ?? '');
   const waitText = async (page, sel, needle, timeout = 30_000) => page.waitForFunction(([s, n]) => (document.querySelector(s)?.textContent ?? '').includes(n), [sel, needle], { timeout }).catch(async () => { throw new Error(`${sel} 에 "${needle}" 없음: ${(await text(page, sel).catch(() => '?')).slice(0, 300)}`); });
+  let promptText = '';   // 사유 입력 창(window.prompt)에 넣을 글자
+  const shot = async (page, name) => { if (process.env.MODE3_SHOT_DIR) await page.screenshot({ path: `${process.env.MODE3_SHOT_DIR}/${name}.png`, fullPage: true }); };   // 눈으로 볼 때만
   async function newBrowser(secretHex) {
     const ctx = await browser.newContext(), reqs = [];
     await ctx.route('**/attr/dist/reset.json', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: '{"epoch":"test-epoch","walletKind":"zkwrapper"}' }));
     await ctx.exposeFunction('__webauthnHit', () => {});
     await ctx.addInitScript({ content: buildWebAuthnStub({ secretHex }) });
-    ctx.on('dialog', (d) => d.accept());
+    ctx.on('dialog', (d) => (d.type() === 'prompt' ? d.accept(promptText) : d.accept()));
     ctx.on('request', (r) => reqs.push({ url: r.url(), method: r.method(), body: r.method() === 'POST' && r.url().endsWith('/api/mode3/login') ? r.postData() : null }));
     return { ctx, reqs };
   }
@@ -83,6 +85,11 @@ try {
     assert.equal(await registry.has(ppidA), true, '체인에 기록이 없다');
     assert.equal(logins().length, 1); assert.equal(logins()[0].trace?.ppid, ppidA, '첫 로그인에 기록이 실리지 않았다');
     assert.equal((await rp.post('/api/mode3/trace/register', {})).status, 404, '따로 열린 등록 길이 남아 있다');
+    // "로그인 전체 플로우" 에 추적 기록 단계가 시간과 함께 보인다(처음 로그인) — 브라우저에서 잰 π_trace 시간을 참고로 찍는다
+    { const up = await openUser(A); await up.evaluate(() => { const d = document.getElementById('flowDetails'); if (d) d.open = true; });
+      const el = await up.waitForSelector('#flowFigure [data-seq-time="trace"]', { state: 'attached', timeout: 20_000 });
+      console.log(`     (참고) 브라우저의 추적 기록 단계(π_trace) ${await el.textContent()}`);
+      assert.ok((await text(up, '#flowFigure')).includes('추적 기록 만들기'), '플로우에 추적 기록 단계가 없다'); await shot(up, 'trace-1-flow'); await up.close(); }
     assert.ok(!A.reqs.some((x) => x.url.includes('/trace/register')));
     const r2 = await login(A, 'google-user-T', 'tee@example.com');
     assert.ok(r2.verdict.includes('로그인 성공'), r2.verdict); assert.equal(r2.PPID, ppidA);
@@ -102,15 +109,23 @@ try {
     assert.equal((await rp.post('/api/mode3/trace/open', { PPID: '12345', reason: '테스트' }, rp.adminHeaders)).body.reason, 'trace_not_registered');
     for (const reason of [undefined, '', '   ', 'x'.repeat(201)]) assert.equal((await rp.post('/api/mode3/trace/open', { PPID: ppidA, reason }, rp.adminHeaders)).body.reason, 'trace_bad_request', `사유 ${JSON.stringify(reason)?.slice(0, 12)}`);
     assert.equal(Number(await registry.requestCount()), 0, '사유 없는 요청이 체인에 나갔다');
-    const r = await rp.post('/api/mode3/trace/open', { PPID: ppidA, reason: '테스트' }, rp.adminHeaders);
-    assert.equal(r.status, 200, j(r.body)); assert.equal(r.body.id, 0);
-    assert.equal((await registry.requestOf(0)).ppid.toString(), ppidA);
+    // 실제 요청은 관리자 화면의 버튼으로 — 계정 주소(0x)를 넣으면 로그인 기록에서 그 PPID 를 찾아 보낸다. 사유를 비우면 보내지 않는다.
+    const acct = (await rp.get('/api/mode3/logins', rp.adminHeaders)).body.logins.find((l) => l.PPID === ppidA)?.account; assert.match(acct ?? '', /^0x[0-9a-fA-F]{40}$/);
+    const p = await A.ctx.newPage(); await p.goto(`${rp.base}/admin`);
+    await p.fill('#adminGate .gate-pwd', rp.adminHeaders['X-RP-Admin-Secret']); await p.click('#adminGate .gate-form button[type=submit]');
+    await p.waitForSelector('#traceOpenBtn:not([hidden])', { timeout: 20_000 }); await p.fill('#openPpid', acct);
+    promptText = '   '; await p.click('#traceOpenBtn'); await p.waitForTimeout(800);
+    assert.equal(Number(await registry.requestCount()), 0, '사유 없이 요청이 나갔다');
+    promptText = '테스트 사유'; await p.click('#traceOpenBtn');
+    await waitText(p, '#openVerdict', '요청 #0'); await shot(p, 'trace-2-rp-admin'); await p.close();
+    const q0 = await registry.requestOf(0); assert.equal(q0.ppid.toString(), ppidA); assert.equal(q0.reasonHash, ethers.id('테스트 사유'));
   });
   await t('사용자 화면에 알림이 뜬다 — 서비스 이름·요청 번호, 감사자 둘이 응답하면 2/3', async () => {
     await userPage.waitForFunction(() => document.querySelectorAll('#traceList li').length === 1, null, { timeout: 30_000 });
     const li = await text(userPage, '#traceList li'); assert.ok(li.includes('zkONE') && li.includes('#0'), li);
     await userPage.waitForFunction(() => (document.querySelector('#traceList li')?.textContent ?? '').includes('2/3'), null, { timeout: 40_000 });
     assert.equal(await userPage.$eval('#traceEmpty', (e) => e.hidden), true);
+    await userPage.$eval('#traceCard', (e) => e.scrollIntoView()); await shot(userPage, 'trace-3-user-alert');
   });
   await t('zkWrapper 관리자가 연다: 감사자 둘의 부분 복호를 합쳐 그 Google 계정이 나온다 — 화면의 목록에도 열림으로 보인다', async () => {
     const list = await cia.adminGet('/cia/admin/trace/requests'); assert.equal(list.status, 200, j(list.body));
@@ -125,7 +140,7 @@ try {
     await p.fill('#adminGate .gate-pwd', cia.adminSecret); await p.click('#adminGate .gate-form button[type=submit]');
     await p.click('#openingsBtn');
     await p.waitForFunction(() => (document.querySelector('#traceReqs li')?.textContent ?? '').includes('tee@example.com'), null, { timeout: 20_000 });
-    assert.ok((await text(p, '#traceReqs li')).includes(svcName), await text(p, '#traceReqs li')); await p.close();
+    assert.ok((await text(p, '#traceReqs li')).includes(svcName), await text(p, '#traceReqs li')); await p.$eval('#traceBox', (e) => e.scrollIntoView()); await shot(p, 'trace-4-admin-open'); await p.close();
   });
   await t('기록 없이는 로그인되지 않는다 — 로그인 요청에서 기록을 떼면 trace_required, 기록을 바꾸면 컨트랙트가 거절(trace_bad_proof), 그대로 보내면 로그인된다', async () => {
     const B = await newBrowser('b2'.repeat(32));
