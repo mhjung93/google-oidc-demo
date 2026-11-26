@@ -73,7 +73,8 @@
     if (!WRAP) return;
     // 2026-11-26(피드백 "OIDC 없애라 — 비교하려면 zkLogin 같은 web3 방식과"): zkWrapper 화면에서는 일반 OIDC 줄을 숨기지 않고 지운다. 그림은 zk-Delegation 한 줄이다.
     $('seqOidc')?.closest('section')?.remove();
-    document.querySelector('.lead')?.replaceChildren('로그인 한 번을 단계별로 봅니다. ', Object.assign(document.createElement('b'), { textContent: '초록 값' }), '은 로그인마다(또는 서비스마다) 달라지는 가명입니다.');
+    { const z = $('cmpZkLogin'); if (z) z.hidden = false; }   // 비교 대상은 zkLogin(Sui) — 고정 그림(2026-11-26)
+    document.querySelector('.lead')?.replaceChildren('위는 비교 대상인 zkLogin, 아래는 zk-Delegation 의 로그인 한 번입니다. ', Object.assign(document.createElement('b'), { textContent: '빨간 값', style: 'color:var(--leak)' }), '은 그대로 드러나는 신원·앱, ', Object.assign(document.createElement('b'), { textContent: '초록 값', style: 'color:var(--hide)' }), '은 로그인마다(또는 서비스마다) 달라지는 가명입니다.');
     { const m = $('mockNote')?.firstChild; if (m?.nodeType === 3) m.nodeValue = '그림의 값은 이 브라우저의 가장 최근 "zkWrapper 로 로그인" 에서 온 공개값입니다(앞부분만 — 전체는 마우스를 올리면 보입니다). 단계마다의 값 전부와 증명 보기는 '; }
     for (const [n, st] of Object.entries(WRAP_STEPS)) STEPS.zk[Number(n) - 1] = st;
     FINE.issue = '가명 · 커밋먼트 + Google 토큰으로 발급 요청 → zkWrapper 의 서명'; FINE.google = 'Google 에서 계정 고르기 (다녀온 시간)';

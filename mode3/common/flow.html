@@ -50,6 +50,10 @@
   .detail td { padding:2px 14px 2px 0; vertical-align:top; } .detail td.ms { text-align:right; font-variant-numeric: tabular-nums; color:var(--muted); white-space:nowrap; }
   .recent { font-size:14px; margin:0 0 8px; } .recent b { color:var(--ink); }
   .detail h5 { margin:10px 0 2px; font-size:13.5px; } .detail table.tok td { overflow-wrap:anywhere; } .detail table.tok td:first-child { white-space:nowrap; color:var(--muted); } .detail table.tok code { font-size:12.5px; }
+  /* zkLogin 과 나란히(2026-11-26) — zkWrapper 화면에서만 보인다 */
+  .cmp { width:100%; border-collapse:collapse; font-size:14px; margin-top:12px; } .cmp th, .cmp td { border:1px solid var(--line); padding:6px 10px; vertical-align:top; text-align:left; }
+  .cmp th { background:#f4f6fa; font-size:13.5px; } .cmp td:first-child { white-space:nowrap; color:var(--muted); width:1%; } .cmp .leak { color:var(--leak); font-weight:700; } .cmp .hide { color:var(--hide); font-weight:700; }
+  .src { color:var(--muted); font-size:12.5px; margin:10px 0 0; }
   code { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size:13px; }
 </style>
 </head>
@@ -99,6 +103,48 @@
       <div><h3 style="color:var(--idp)">Google 이 알게 되는 것</h3><ul><li class="yes"><b>누가</b> 로그인했는지 (uid)</li><li class="yes"><b>어느 서비스</b>인지 (rid) — 로그인할 때마다</li></ul></div>
       <div><h3 style="color:var(--rp)">서비스가 알게 되는 것</h3><ul><li class="yes"><b>uid</b> — zkTWO 도 같은 값을 받는다</li><li class="yes">두 서비스가 기록을 맞추면 <b>같은 사람</b>임을 안다</li></ul></div>
     </div>
+  </section>
+
+  <!-- ───────── zkLogin 과 나란히(2026-11-26, 피드백 "비교할 거면 zkLogin 같은 web3 방식과") — zkWrapper 화면에서만 flow_page.js 가 보인다. 값이 없는 고정 그림이다.
+       사실의 출처는 Sui 공개 문서(아래 .src) — 그 문서에 없는 것은 적지 않았다. ───────── -->
+  <section class="panel" id="cmpZkLogin" hidden>
+    <h2>zkLogin (Sui) — 비교 대상 <span class="tag leak">앱(aud)이 Google 과 체인에 드러난다</span></h2>
+    <p>같은 목표("Google 로그인으로 체인 계정을 쓴다")의 다른 방식입니다. Google 의 토큰(JWT)을 증명 안에서 검증하고, 증명은 보통 증명 서비스가 만듭니다.</p>
+    <svg viewBox="0 0 1160 322" role="img" aria-label="zkLogin 순서도">
+      <defs><marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#16233b"/></marker></defs>
+      <g font-size="15" font-weight="700" text-anchor="middle">
+        <rect x="30" y="8" width="240" height="44" rx="8" fill="#efebe9" stroke="#5d4037"/><text x="150" y="36" fill="#5d4037">사용자 (지갑·앱)</text>
+        <rect x="320" y="8" width="220" height="44" rx="8" fill="#e8eaf6" stroke="#3949ab"/><text x="430" y="36" fill="#3949ab">Google</text>
+        <rect x="610" y="8" width="240" height="44" rx="8" fill="#fff3e0" stroke="#ef6c00"/><text x="730" y="36" fill="#ef6c00">salt 서비스 · 증명 서비스</text>
+        <rect x="910" y="8" width="220" height="44" rx="8" fill="#f3e5f5" stroke="#6a1b9a"/><text x="1020" y="36" fill="#6a1b9a">체인 (Sui)</text>
+      </g>
+      <g stroke="#b8c2d3" stroke-dasharray="4 5"><line x1="150" y1="52" x2="150" y2="312"/><line x1="430" y1="52" x2="430" y2="312"/><line x1="730" y1="52" x2="730" y2="312"/><line x1="1020" y1="52" x2="1020" y2="312"/></g>
+      <rect x="36" y="62" width="330" height="26" rx="6" fill="#efebe9"/><text x="44" y="80" font-size="13">① 임시 키 쌍 · nonce = H(임시 공개키, 만료 epoch, 난수)</text>
+      <line x1="150" y1="116" x2="428" y2="116" stroke="#16233b" stroke-width="1.6" marker-end="url(#a3)"/><text x="290" y="108" font-size="13.5" text-anchor="middle">② 로그인 — <tspan fill="#c62828" font-weight="700">client_id = 앱</tspan> · nonce</text>
+      <line x1="430" y1="152" x2="152" y2="152" stroke="#c62828" stroke-width="2.2" marker-end="url(#a3)"/><text x="290" y="144" font-size="13.5" text-anchor="middle">③ JWT <tspan fill="#c62828" font-weight="700">iss · sub · aud</tspan> · nonce</text>
+      <line x1="150" y1="192" x2="728" y2="192" stroke="#c62828" stroke-width="2.2" marker-end="url(#a3)"/><text x="440" y="184" font-size="13.5" text-anchor="middle">④ <tspan fill="#c62828" font-weight="700">JWT</tspan> 를 보내 salt 를 받고, <tspan fill="#c62828" font-weight="700">JWT · salt</tspan> · 임시 공개키를 보내 증명을 청한다</text>
+      <line x1="730" y1="228" x2="152" y2="228" stroke="#16233b" stroke-width="1.6" marker-end="url(#a3)"/><text x="440" y="220" font-size="13.5" text-anchor="middle">⑤ salt · 영지식 증명(Groth16)</text>
+      <line x1="150" y1="270" x2="1018" y2="270" stroke="#16233b" stroke-width="1.6" marker-end="url(#a3)"/><text x="585" y="262" font-size="13.5" text-anchor="middle">⑥ 거래 = 임시 키의 서명 + 증명 · 공개: <tspan fill="#c62828" font-weight="700">iss · aud</tspan> · kid (<tspan fill="#1b5e20" font-weight="700">sub 는 비공개</tspan>)</text>
+      <text x="585" y="298" font-size="12.5" text-anchor="middle" fill="#5b6880">주소 = H(iss, H(sub, aud, H(salt))) — 앱(aud)마다 하나 · 증명은 만료 epoch 까지 쓴다</text>
+    </svg>
+    <div class="know">
+      <div><h3 style="color:var(--idp)">Google 이 알게 되는 것</h3><ul><li class="yes"><b>누가</b>(sub) <b>어느 앱</b>(client_id)에 로그인하는지</li><li class="no">체인의 <b>주소는 모른다</b> — salt 가 가린다</li></ul></div>
+      <div><h3 style="color:#ef6c00">salt·증명 서비스가 알게 되는 것</h3><ul><li class="yes"><b>JWT 와 salt</b> — 신원과 주소를 이을 수 있다</li><li class="has">기록을 남기지 않게 만든다고 문서는 적는다</li></ul></div>
+      <div><h3 style="color:var(--chain)">체인에서 누구나 보는 것</h3><ul><li class="yes"><b>iss · aud</b> — 어느 앱의 계정인지</li><li class="no"><b>sub 는 보이지 않는다</b></li><li class="has">한 앱 안에서는 주소 하나로 이어진다</li></ul></div>
+    </div>
+    <table class="cmp">
+      <tr><th></th><th>zkLogin</th><th>zk-Delegation (아래 그림)</th></tr>
+      <tr><td>계정 주소</td><td>앱(aud)마다 하나 — <span class="leak">aud 가 체인에 공개</span></td><td>서비스마다 하나(PPID) — 서비스 번호(arid)가 체인에 공개</td></tr>
+      <tr><td>Google 이 아는 것</td><td><span class="leak">누가 어느 앱에</span> 로그인하는지</td><td>누가 zkWrapper 에 로그인하는지 — <span class="hide">어느 서비스인지는 모른다</span></td></tr>
+      <tr><td>증명을 만드는 곳</td><td>증명 서비스 — <span class="leak">JWT 와 salt 를 받는다</span></td><td><span class="hide">사용자 브라우저</span> — salt 가 밖으로 나가지 않는다</td></tr>
+      <tr><td>증명이 확인하는 것</td><td>Google 의 서명(JWT)·nonce·주소</td><td>zkWrapper 가 서명한 자격증명·등록부·폐기 목록·PPID(Google 토큰은 zkWrapper 가 확인)</td></tr>
+      <tr><td>중간에 믿는 쪽</td><td>salt 서비스·증명 서비스</td><td>zkWrapper(발급·폐기 목록 게시) — <span class="leak">Google 계정을 안다</span></td></tr>
+      <tr><td>세션 끝내기</td><td>만료 epoch 까지(그 전에 끊는 방법은 문서에 없다)</td><td><span class="hide">만료 전에 세션·계정을 폐기</span>(폐기 목록)</td></tr>
+      <tr><td>문제가 생겼을 때 신원 확인</td><td>없다("주소·증명·체인 데이터에서 이메일을 되찾을 수 없다")</td><td>있다(서비스의 요청과 승인 절차)</td></tr>
+      <tr><td>속성 조건(나이·국가)</td><td>문서에 없다</td><td>있다 — 값은 숨기고 조건만 증명</td></tr>
+      <tr><td>검증하는 곳</td><td>체인의 검증자</td><td>스마트 계정(EVM — 가스)</td></tr>
+    </table>
+    <p class="src">zkLogin 칸의 출처: Sui 공개 문서 "zkLogin"·"zkLogin integration"(docs.sui.io, 2026-11-26 확인). Google 이 client_id 를 본다는 것은 그 문서의 문장이 아니라 일반 로그인 요청의 모양입니다. 증명 시간·회로 크기는 측정 조건이 달라 싣지 않았습니다.</p>
   </section>
 
   <!-- ───────── zk-Delegation ───────── -->

@@ -543,6 +543,8 @@ try {
     // 지갑 오리진은 서비스 API 를 부르지 않고, 서비스용 칸은 비어 있다
     assert.deepEqual(asked.filter((p) => p.startsWith('/api/')), []);
     // 2026-11-26(피드백 "OIDC 없애라"): zkWrapper 그림에는 일반 OIDC 줄이 없다(숨긴 것도 아니다)
+    // 비교 대상은 zkLogin(Sui) 고정 그림이다 — 앱(aud)이 체인에 드러난다는 점과 출처를 적는다
+    { const z = await page.$eval('#cmpZkLogin', (e) => ({ vis: e.checkVisibility(), t: e.innerText })); assert.equal(z.vis, true); for (const w of ['zkLogin', 'aud', '증명 서비스', 'docs.sui.io']) assert.ok(z.t.includes(w), `없음: ${w}`); }
     assert.equal(await page.$$eval('#seqOidc, #recentOidc, #detailOidc, .ctl[data-ctl="oidc"]', (l) => l.length), 0); assert.ok(!(await visibleText(page)).includes('OIDC'), 'OIDC 글자가 남았다');
     await page.close();
     // 홈의 "로그인 전체 플로우" 카드도 패스키를 사용자 대기·salt 계산으로 나눠 적는다
@@ -741,7 +743,7 @@ try {
       const ppidAt = (rpPage) => rpPage.evaluate(() => fetch('/api/rp/me').then((r) => r.json())).then((me) => String(me.seen.PPID));
       const acct = async () => (await accounts()).find((x) => String(x.uid) === uidE);
       const sessions = async () => (await cia.adminGet(`/cia/admin/sessions?uid=${uidE}`)).body.sessions;
-      const login = async (B, svc, { first = false } = {}) => { asE(); const { rpPage, popup } = await startLogin(B.ctx, svc); if (first) { await popup.waitForSelector('#authWrapPasskeyBtn', { timeout: 30_000 }); await popup.click('#authWrapPasskeyBtn'); } await waitText(rpPage, '#verdict', '로그인 성공', 120_000); const p = await ppidAt(rpPage); await rpPage.close(); return p; };
+      const login = async (B, svc, { first = false } = {}) => { asE(); const { rpPage, popup } = await startLogin(B.ctx, svc); if (first) { const b = first === 'existing' ? '#authWrapExistingBtn' : '#authWrapPasskeyBtn'; await popup.waitForSelector(b, { timeout: 30_000 }); await popup.click(b); } await waitText(rpPage, '#verdict', '로그인 성공', 120_000); const p = await ppidAt(rpPage); await rpPage.close(); return p; };
       const saveAttrs = async (B, year, country) => { const p = await openUser(await B.ctx.newPage()); await p.waitForSelector('#wa_country'); await p.fill('#wa_birthYear', year); await p.selectOption('#wa_country', country); await p.click('#attrSaveBtn'); await p.waitForFunction((c) => JSON.parse(localStorage.getItem('mode3_attr_tool_v1') ?? 'null')?.profile?.country === c, country, { timeout: 20_000 }); await p.close(); };
       const attrsOn = async (B) => { const p = await openUser(await B.ctx.newPage()); await p.waitForSelector('#wa_country'); await p.waitForFunction(() => document.getElementById('wa_birthYear')?.value !== '', null, { timeout: 15_000 }).catch(() => {}); const v = { year: await p.inputValue('#wa_birthYear'), country: await p.inputValue('#wa_country'), reg: (await idbDump(p)).registration.profile, all: `${j(await idbDump(p))}${j(await p.evaluate(() => [Object.entries(localStorage), Object.entries(sessionStorage)]))}` }; await p.close(); return v; };
       // 기기 1: 첫 로그인(zkONE) → 속성 저장 → zkTWO(속성이 반영된 새 C_u) → zkONE 다시(살아 있는 세션 하나)
@@ -752,7 +754,8 @@ try {
       const cf0 = (await acct()).activeCf_u, live0 = (await sessions()).filter((x) => !x.revokedAt).map((x) => x.Cf_s); assert.ok(live0.length >= 2, j(live0));
       // 기기 2(같은 패스키, 빈 저장소): 조건을 거는 zkTWO 에 바로 — Google 로 가기 전에 멈추지 않고, 로그인 뒤 속성·PPID·C_u 가 기기 1 과 같다
       E2.reqs.length = 0;
-      assert.equal(await login(E2, rp2, { first: true }), ppid2, '기기 2 의 PPID 가 다르다');
+      // 기기 2 는 새로 만들지 않고 "이미 있는 패스키로 로그인" 을 고른다(2026-11-26 — 다른 기기·휴대폰의 패스키를 쓰는 길). 만들지 않았다
+      assert.equal(await login(E2, rp2, { first: 'existing' }), ppid2, '기기 2 의 PPID 가 다르다'); assert.equal(E2.hits.create, 0, `기기 2 가 패스키를 새로 만들었다: ${j(E2.hits)}`);
       assert.equal(E2.reqs.filter((r) => r.url.includes('/cia/wrapper/vault')).length, 1, '사본을 한 번 받는다');
       assert.equal((await acct()).activeCf_u, cf0, 'C_u 가 바뀌었다 — 다른 기기의 세션이 폐기된다');
       { const now = await sessions(); for (const c of live0) assert.ok(!now.find((x) => x.Cf_s === c)?.revokedAt, '기기 1 의 세션이 폐기됐다'); }

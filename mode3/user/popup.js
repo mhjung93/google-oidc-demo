@@ -605,10 +605,20 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
       const ps = await core.passkeyState();
       if (ps.status !== 200 || !ps.body?.credentialId) {
         if (typeof passkey?.create !== 'function') { step('패스키 연결 없음'); return reply({ ok: false, reason: 'passkey_setup_required' }); }
-        await waitClick('authWrapPasskeyBtn', tt('user_wrap_make_passkey') || '패스키 만들고 로그인', 'user_wrap_intro_new', 'Google 확인이 끝났습니다. 이 브라우저에는 아직 패스키가 없습니다 — 패스키를 만들면 그 값으로 바로 로그인합니다.');
-        say('user_signup_making_passkey', '패스키를 만드는 중입니다 — 브라우저의 패스키 창을 확인하세요.');
+        // 2026-11-26(피드백 "휴대폰 인증도 될 수 있게"): 이 브라우저에 패스키가 없을 때의 길이 둘이다 — 처음이면 만들고, 이미 계정이 있으면(다른 기기·휴대폰·동기화된 패스키) 그 패스키를 고른다.
+        // 새로 만들면 다른 패스키라 다른 계정이 된다(이미 쓰던 Google 계정이면 발급이 auid_pinned 로 거절된다). 고르기 창은 브라우저의 것이다(다른 기기는 QR 로 잇는다).
+        const choice = await new Promise((resolve) => {
+          const e = statusEl();
+          const mk = (id, label, v, ghost = false) => { const b = document.createElement('button'); b.type = 'button'; b.id = id; b.textContent = label; if (ghost) b.className = 'btn-ghost'; b.addEventListener('click', () => resolve(v), { once: true }); return b; };
+          e.replaceChildren(document.createTextNode(tt('user_wrap_intro_new') || 'Google 확인이 끝났습니다. 이 브라우저에는 아직 패스키가 없습니다 — 처음이면 패스키를 만들고, 이미 쓰던 계정이면 그 패스키를 고르세요.'), document.createElement('br'),
+            mk('authWrapPasskeyBtn', tt('user_wrap_make_passkey') || '패스키 만들고 로그인', 'new'), ' ', mk('authWrapExistingBtn', tt('user_wrap_existing_passkey') || '이미 있는 패스키로 로그인', 'existing', true));
+          e.hidden = false;
+        });
+        const useExisting = choice === 'existing' && typeof passkey.derive === 'function';
+        if (useExisting) say('user_wrap_using_passkey', '패스키를 확인하는 중입니다 — 브라우저의 패스키 창에서 이 계정의 패스키를 고르세요.');
+        else say('user_signup_making_passkey', '패스키를 만드는 중입니다 — 브라우저의 패스키 창을 확인하세요.');
         let made;
-        try { made = await passkey.create({}); } catch (e) { step('패스키 만들기 실패'); log(e?.message ?? String(e)); return reply({ ok: false, reason: e?.reason ?? 'passkey_cancelled', detail: e?.message ?? null }); }
+        try { made = useExisting ? await passkey.derive({}) : await passkey.create({}); } catch (e) { step(useExisting ? '패스키 확인 실패' : '패스키 만들기 실패'); log(e?.message ?? String(e)); return reply({ ok: false, reason: e?.reason ?? 'passkey_cancelled', detail: e?.message ?? null }); }
         const c = await core.passkeyConnect({ credentialId: made.credentialId, s_u: made.s_u, info: made.info ?? null });
         if (c.status !== 200) { step('패스키 연결 실패'); log(errText(c.status, c.body)); return reply(fail(c, 'passkey_setup_failed')); }
         salt = made.s_u;   // 방금 만든 패스키의 값 — 이 로그인에 바로 쓴다(창의 메모리에만 있다)
