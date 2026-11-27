@@ -771,6 +771,105 @@ try {
       { const v = await attrsOn(E2); assert.deepEqual([v.year, v.country], ['1991', 'JP'], '기기 2 의 속성이 맞춰지지 않았다'); }
     } finally { await E.ctx.close(); await E2.ctx.close(); await cia.adminPost('/cia/account/delete', { uid: uidE }).catch(() => {}); }
   });
+  // 2026-11-27(스펙 profile-vault V9): "모두 지우기" 뒤(또는 같은 패스키의 새 브라우저)에서 /user 로 바로 속성을 되찾는다 — Google 확인 + 패스키 한 번, 등록은 만들지 않는다.
+  // 불변식: 되찾은 뒤의 로그인은 등록부의 내 C_u 그대로다(교체가 없고 다른 기기의 세션이 산다).
+  await t('/user 속성 되찾기: 모두 지우기 → 다시 로그인(서비스 로그인 경로)·모두 지우기 → /user "Google 로 확인하고 속성 되찾기"(패스키 한 번) 둘 다 값이 돌아오고 C_u 가 그대로다 — 같은 패스키의 다른 기기도 같다; 다른 Google 계정·사본 없음은 사유를 보이고 비워 둔다', async () => {
+    const SEC = 'f6'.repeat(32), F = await newBrowserWith(SEC), F2 = await newBrowserWith(SEC);
+    const uidF = uidOf(google.provider, 'google-user-F');
+    try {
+      const asF = () => { google.setNextSub('google-user-F'); google.setNextClaims({ email: 'fay@example.com', email_verified: true }); };
+      const ppidAt = (rpPage) => rpPage.evaluate(() => fetch('/api/rp/me').then((r) => r.json())).then((me) => String(me.seen.PPID));
+      const acct = async () => (await accounts()).find((x) => String(x.uid) === uidF);
+      const sessions = async () => (await cia.adminGet(`/cia/admin/sessions?uid=${uidF}`)).body.sessions;
+      const login = async (B, svc, { first = false } = {}) => { asF(); const { rpPage, popup } = await startLogin(B.ctx, svc); if (first) { await popup.waitForSelector('#authWrapPasskeyBtn', { timeout: 30_000 }); await popup.click('#authWrapPasskeyBtn'); } await waitText(rpPage, '#verdict', '로그인 성공', 120_000); const pp = await ppidAt(rpPage); await rpPage.close(); return pp; };
+      const record = (page) => page.evaluate(() => JSON.parse(localStorage.getItem('mode3_attr_tool_v1') ?? 'null'));
+      const shown = async (page) => [await page.inputValue('#wa_birthYear'), await page.inputValue('#wa_country')];
+      const toUser = (page) => page.waitForURL((u) => u.origin === new URL(wallet.base).origin && u.pathname === '/user' && !u.search.includes('authorize'), { timeout: 60_000 });
+      const wipe = async (B) => { const pg = await openUser(await B.ctx.newPage()); await pg.click('#wipeBtn'); await waitText(pg, '#storageVerdict', '속성 기록', 15_000); assert.equal(await record(pg), null); assert.equal((await idbDump(pg)).registration ?? null, null, '등록이 남았다'); await pg.close(); };
+      const liveNow = async () => (await sessions()).filter((x) => !x.revokedAt).map((x) => x.Cf_s);
+      const stillLive = async (list, why) => { const now = await sessions(); for (const c of list) assert.ok(!now.find((x) => x.Cf_s === c)?.revokedAt, why); };
+      /** /user 에서 되찾기를 눌러 귀로 화면의 버튼까지 간다(패스키는 아직 묻지 않는다). */
+      const startRestore = async (B, setGoogle) => {
+        const pg = await openUser(await B.ctx.newPage()); await pg.waitForSelector('#attrRestoreRow:not([hidden])', { timeout: 15_000 });
+        assert.deepEqual(await shown(pg), ['', ''], '되찾기 전에 값이 보인다');
+        const g0 = B.hits.get; setGoogle(); B.reqs.length = 0;
+        await pg.click('#attrRestoreBtn'); await pg.waitForSelector('#authVaultRestoreBtn', { timeout: 60_000 });
+        assert.equal(B.hits.get - g0, 0, `Google 에서 돌아오자마자 패스키를 물었다: ${j(B.hits)}`);
+        return { pg, g0 };
+      };
+      // 준비 — 기기 1: 첫 로그인(zkONE) → 속성 저장 → zkTWO(그 속성의 C_u, 사본이 올라간다) → zkONE
+      const ppid1 = await login(F, rp, { first: true });
+      { const pg = await openUser(await F.ctx.newPage()); await pg.waitForSelector('#wa_country'); assert.equal(await pg.$eval('#attrRestoreRow', (e) => e.hidden), true, '등록이 있는데 되찾기 버튼이 보인다'); await pg.fill('#wa_birthYear', '1992'); await pg.selectOption('#wa_country', 'KR'); await pg.click('#attrSaveBtn'); await pg.waitForFunction(() => JSON.parse(localStorage.getItem('mode3_attr_tool_v1') ?? 'null')?.profile?.country === 'KR', null, { timeout: 20_000 }); await pg.close(); }
+      const ppid2 = await login(F, rp2);
+      assert.equal(await login(F, rp), ppid1);
+      const cf0 = (await acct()).activeCf_u, live0 = await liveNow(); assert.ok(live0.length >= 2, j(live0));
+
+      // (기존 경로) 모두 지우기 → 서비스에서 다시 로그인: 로그인 창이 사본을 받아 값·C_u 를 맞춘다
+      await wipe(F);
+      assert.equal(await login(F, rp2), ppid2, '모두 지운 뒤 다시 로그인한 PPID 가 다르다');
+      assert.equal((await acct()).activeCf_u, cf0, '모두 지우고 다시 로그인했더니 C_u 가 바뀌었다');
+      { const pg = await openUser(await F.ctx.newPage()); await pg.waitForFunction(() => document.getElementById('wa_birthYear')?.value !== '', null, { timeout: 15_000 }); assert.deepEqual(await shown(pg), ['1992', 'KR']); assert.equal((await record(pg))?.profile?.country, 'KR'); await pg.close(); }
+      await stillLive(live0, '다시 로그인했더니 앞 세션이 폐기됐다');
+
+      // 1. 같은 브라우저: 모두 지우기 → /user 에서 되찾기 → 값이 보이고 등록은 없다 → zkTWO 로그인: 같은 PPID·같은 C_u
+      await wipe(F);
+      {
+        const { pg, g0 } = await startRestore(F, asF);
+        await pg.click('#authVaultRestoreBtn'); await toUser(pg);
+        await waitText(pg, '#attrCardVerdict', '속성을 되찾았습니다', 30_000);
+        await pg.waitForFunction(() => document.getElementById('wa_birthYear')?.value === '1992', null, { timeout: 15_000 });
+        assert.deepEqual(await shown(pg), ['1992', 'KR']); assert.equal(F.hits.get - g0, 1, `패스키는 한 번: ${j(F.hits)}`);
+        const rec = await record(pg); assert.equal(rec.version, 6); assert.ok(!('s_u' in rec) && !('blind_u' in rec), '기록에 비밀이 있다'); assert.deepEqual(rec.profile, { birthYear: '1992', country: 'KR' });
+        const dump = await idbDump(pg); assert.equal(dump.registration ?? null, null, '되찾기가 등록을 만들었다'); assert.equal(dump.wrapperKey ?? null, null, '요청 키가 남았다');
+        assert.equal(F.reqs.filter((r) => r.url.includes('/cia/wrapper/vault')).length, 1); assert.equal(F.reqs.filter((r) => r.url.includes('/cia/issue')).length, 0, '되찾기가 발급을 요청했다');
+        const stores = await pg.evaluate(() => JSON.stringify([Object.entries(localStorage), Object.entries(sessionStorage)])); assert.ok(!/eyJ[A-Za-z0-9_-]{10,}\.eyJ/.test(stores) && !/eyJ[A-Za-z0-9_-]{10,}\.eyJ/.test(j(dump)), '저장소에 ID 토큰이 남았다');
+        await pg.waitForSelector('#attrRestoreRow:not([hidden])', { timeout: 15_000 });   // 등록이 없는 동안은 버튼이 남는다(상태를 읽은 뒤에 보인다)
+        assert.equal(await pg.evaluate(() => document.getElementById('attrCard').checkVisibility()), true, '돌아온 /user 가 잠겨 있어 결과가 보이지 않는다');
+        await shot(pg, 'vault-restore-user'); await pg.close();
+      }
+      F.reqs.length = 0;
+      assert.equal(await login(F, rp2), ppid2, '되찾은 뒤 로그인한 PPID 가 다르다');
+      assert.equal((await acct()).activeCf_u, cf0, '되찾은 뒤 로그인이 C_u 를 바꿨다(교체)');
+      assert.equal(F.reqs.filter((r) => r.url.includes('/cia/wrapper/vault')).length, 1, '로그인이 사본을 받아 blind_u·C_u 를 맞춘다');
+      await stillLive(live0, '되찾은 뒤 로그인이 앞 세션을 폐기했다');
+      { const pg = await openUser(await F.ctx.newPage()); assert.deepEqual((await idbDump(pg)).registration.profile, { birthYear: '1992', country: 'KR' }); assert.equal(await pg.$eval('#attrRestoreRow', (e) => e.hidden), true); await pg.close(); }
+
+      // 2. 기기 둘(같은 패스키, 빈 저장소): 기기 2 가 /user 에서 패스키를 연결하고 되찾은 뒤 로그인 — 기기 1 의 세션이 폐기되지 않는다
+      const live1 = await liveNow();
+      {
+        const pg0 = await F2.ctx.newPage(); await pg0.goto(`${wallet.base}/user`); await pg0.waitForSelector('#userNoPk', { state: 'visible', timeout: 15_000 });
+        await pg0.click('#lockPkExistingBtn'); await pg0.waitForSelector('#userUnlockBtn', { state: 'visible', timeout: 15_000 }); await pg0.close();
+        const { pg } = await startRestore(F2, asF);
+        await pg.click('#authVaultRestoreBtn'); await toUser(pg);
+        await waitText(pg, '#attrCardVerdict', '속성을 되찾았습니다', 30_000);
+        await pg.waitForFunction(() => document.getElementById('wa_birthYear')?.value === '1992', null, { timeout: 15_000 }); await pg.close();
+      }
+      assert.equal(await login(F2, rp2), ppid2, '기기 2 의 PPID 가 다르다'); assert.equal(F2.hits.create, 0, j(F2.hits));
+      assert.equal((await acct()).activeCf_u, cf0, '기기 2 의 로그인이 C_u 를 바꿨다');
+      await stillLive(live1, '기기 2 의 로그인이 기기 1 의 세션을 폐기했다');
+
+      // 3. 거절 — 사유가 화면에 보이고 속성 기록은 비어 있다
+      const refused = async (setGoogle, needle, prep = null) => {
+        await wipe(F);
+        if (prep) await prep();
+        const { pg } = await startRestore(F, setGoogle);
+        await pg.click('#authVaultRestoreBtn'); await toUser(pg);
+        await waitText(pg, '#attrCardVerdict', needle, 30_000); assert.ok((await text(pg, '#attrCardVerdict')).includes('속성을 되찾지 못했습니다'), await text(pg, '#attrCardVerdict'));
+        assert.equal(await record(pg), null, '거절됐는데 기록이 생겼다'); assert.deepEqual(await shown(pg), ['', '']); assert.equal((await idbDump(pg)).wrapperKey ?? null, null, '요청 키가 남았다');
+        await pg.close();
+      };
+      // 가입한 적 없는 Google 계정
+      await refused(() => { google.setNextSub('google-user-nobody'); google.setNextClaims({ email: 'nobody@example.com', email_verified: true }); }, '이 Google 계정으로 가입한 적이 없습니다');
+      // 다른 패스키에 묶인 Google 계정(A)
+      await refused(() => { google.setNextSub('google-user-A'); google.setNextClaims({ email: 'ann@example.com', email_verified: true }); }, '이 계정의 패스키가 아닙니다');
+      // 맡겨 둔 사본이 없다(서버가 ct null 을 준다 — 응답을 바꿔 그 경우를 만든다)
+      await refused(asF, '맡겨 둔 사본이 없습니다', () => F.ctx.route('**/cia/wrapper/vault', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ct":null,"slot":0,"at":null}' })));
+      await F.ctx.unroute('**/cia/wrapper/vault');
+      // 사본은 그대로다 — 다시 되찾으면 값이 돌아온다
+      { const { pg } = await startRestore(F, asF); await pg.click('#authVaultRestoreBtn'); await toUser(pg); await waitText(pg, '#attrCardVerdict', '속성을 되찾았습니다', 30_000); assert.equal((await record(pg))?.profile?.birthYear, '1992'); await pg.close(); }
+      assert.equal((await acct()).activeCf_u, cf0, '거절·되찾기가 C_u 를 바꿨다');
+    } finally { await F.ctx.close(); await F2.ctx.close(); await cia.adminPost('/cia/account/delete', { uid: uidF }).catch(() => {}); }
+  });
   // 2026-11-26(스펙 identity-multi-login): 한 신원(패스키의 salt)에 Google 계정 여럿 — /user "로그인 계정" 카드
   await t('/user "로그인 계정": 더하기(Google 두 번 — 지금 계정 → 패스키 한 번 → 더할 계정) → 더한 계정으로 로그인해도 같은 PPID, 떼면 목록에서 빠진다', async () => {
     const D = await newBrowserWith('d4'.repeat(32));

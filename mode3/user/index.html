@@ -184,6 +184,8 @@
       <p class="desc" data-i18n="user_attr_card_desc">나이·국가 조건이 있는 서비스에 쓰는 값입니다. 값은 이 브라우저에만 저장하고, 서비스에는 조건을 만족하는지만 증명합니다. 내가 스스로 넣은 값이라 누구도 참이라고 보증하지 않습니다.</p>
       <dl class="kv" id="attrCardFields"></dl>
       <p><button id="attrSaveBtn" type="button" data-i18n="user_attr_save_btn">저장</button> <span id="attrState" class="muted"></span></p>
+      <!-- 2026-11-27(스펙 profile-vault V9): 이 브라우저에 등록이 없을 때만("모두 지우기" 뒤·같은 패스키의 새 브라우저) — Google 확인 + 패스키로 서버의 보관 사본에서 속성을 되찾는다 -->
+      <p id="attrRestoreRow" hidden><button id="attrRestoreBtn" type="button" class="btn-ghost" data-i18n="user_attr_restore_btn">Google 로 확인하고 속성 되찾기</button> <span class="muted" data-i18n="user_attr_restore_note">같은 패스키로 전에 넣은 속성을 되찾습니다. 여기서 새로 입력해 저장하면 맡겨 둔 사본을 쓰지 않고 자격증명이 바뀝니다.</span></p>
       <div id="attrCardVerdict"></div>
     </section>
 

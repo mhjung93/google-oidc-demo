@@ -7,7 +7,7 @@
 // 증명 로그인(2026-11-19 스펙 passkey-proof-login): zkIdP 의 발급 정책이 key 면(public_keys.issueAuth) 등록된 지갑은 인증 창 없이 패스키 증명만으로 발급받고(L1·L2),
 // 로그인마다 패스키를 한 번 묻는다(L4). mode3-idp-login 은 zkIdP 페이지의 로그인 증명 요청이다 — zkIdP 오리진이 연 창에만 답한다(L8).
 import { $, textKit, createUnlocker, postPresence, errText } from './ui.js';
-import { RECOVER_RESULT_KEY, WRAP_END_RESULT_KEY, WRAP_ACCOUNT_RESULT_KEY, WRAP_BACKUP_RESULT_KEY, WRAP_LINK_RESULT_KEY, idpAuthUrl, savePending, takeIdpReturn, readAttrRecord, attrRecordOf, ATTR_RECORD_KEY, googleSignupUrl, saveSignupPending, takeGoogleReturn, googleAuthUrl, saveWrapperPending, takeWrapperReturn } from './idp_return.js';
+import { RECOVER_RESULT_KEY, WRAP_END_RESULT_KEY, WRAP_ACCOUNT_RESULT_KEY, WRAP_BACKUP_RESULT_KEY, WRAP_LINK_RESULT_KEY, WRAP_VAULT_RESULT_KEY, idpAuthUrl, savePending, takeIdpReturn, readAttrRecord, attrRecordOf, ATTR_RECORD_KEY, googleSignupUrl, saveSignupPending, takeGoogleReturn, googleAuthUrl, saveWrapperPending, takeWrapperReturn } from './idp_return.js';
 import { newRecoveryCode } from '../../lib/mode3_salt_envelope.js';
 
 const TYPES = ['mode3-config', 'mode3-precheck', 'mode3-authorize', 'mode3-revalidate', 'mode3-request', 'mode3-tx', 'mode3-idp-login'];
@@ -537,6 +537,31 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
       }
     } catch (e) { finishLink({ op: 'remove', ok: false, reason: e?.reason ?? 'internal', detail: e?.message ?? null }); }
   }
+  // ---- /user "내 속성" 되찾기의 귀로(스펙 2026-11-26 profile-vault V9, 2026-11-27): Google 확인이 끝났다 — 패스키 한 번(버튼) 뒤 보관 사본을 열어 속성 기록을 쓰고 /user 로 돌아간다 ----
+  // 등록·세션은 만들지 않는다(다음 로그인이 그 기록으로 만든다). 결과에는 성공 여부·사유만 남긴다 — 토큰도 속성 값도 없다.
+  const finishVault = (out) => { try { sessionStorage.setItem(WRAP_VAULT_RESULT_KEY, JSON.stringify(out)); } catch { /* 결과를 못 남기면 /user 가 카드의 값으로만 보인다 */ } location.replace('/user'); };
+  async function finishWrapperVaultRestore({ idToken, error }) {
+    fixedTitle = ['user_attr_restore_title', '속성 되찾기'];
+    renderAuthTitle();
+    if (!idToken) return finishVault({ ok: false, reason: 'google_denied', detail: error ?? null });
+    try {
+      let note = null;
+      for (;;) {
+        await clickOnce(mkBtn('authVaultRestoreBtn', tt('user_attr_restore_confirm_btn') || '패스키로 확인하고 되찾기'), tt('user_attr_restore_intro') || 'Google 확인이 끝났습니다. 패스키로 한 번 확인하면 맡겨 둔 속성을 되찾습니다.', note);
+        say('user_attr_restoring', '되찾는 중입니다 — 브라우저의 패스키 창을 확인하세요.');
+        const r = await core.wrapperVaultRestore({ idToken });
+        if (r.status === 200) {
+          if (r.body.record) {
+            await readAttrRecord({ fetch: window.fetch.bind(window), localStorage: window.localStorage });   // 데모 리셋 표시를 먼저 맞춘다(쓴 뒤에 맞추면 방금 쓴 기록이 지워진다)
+            localStorage.setItem(ATTR_RECORD_KEY, JSON.stringify(attrRecordOf(r.body.record, new Date().toISOString())));
+          }
+          return finishVault({ ok: true, empty: !r.body.record });
+        }
+        if (!keptKey(r)) return finishVault(failOut(r));
+        note = whyOf(r);
+      }
+    } catch (e) { finishVault({ ok: false, reason: e?.name === 'QuotaExceededError' || e?.name === 'SecurityError' ? 'storage_unavailable' : (e?.reason ?? 'internal'), detail: e?.message ?? null }); }
+  }
   // 복구 화면에서 다시 해 볼 수 있는 실패 — 코어가 요청 키를 남긴다(그 밖은 서비스에서 처음부터: 발급이 받아들여진 뒤의 실패·토큰을 썼다·계정 폐기·10분이 지났다).
   const RECOVER_AGAIN = new Set(['recovery_code_typo', 'recovery_code_format', 'envelope_open_failed', 'envelope_credential_mismatch', 'recover_auid_mismatch', 'envelope_unknown']);
   /** 패스키 분실 복구 화면: 발급이 409 auid_pinned(이 Google 계정은 다른 salt 에 묶였다)이고 이 계정에 백업이 있다. 봉투마다 버튼 —
@@ -661,7 +686,7 @@ export function runPopup({ core, config, Demo, meta, oidc = { enabled: false }, 
   }
   // 래퍼 로그인의 귀환 — 가입 귀환과 같은 조각(#google_back=1…)이라 방식에 따라 한쪽만 본다. 준비 신호(ready)를 다시 보내지 않는다.
   const wback = WRAP ? takeWrapperReturn({ hash: location.hash, storage: window.sessionStorage, now: Date.now() }) : null;
-  if (wback) { history.replaceState(null, '', `${location.pathname}?authorize=1`); const ty = wback.pend?.req?.type; if (ty === 'mode3-end-session') finishWrapperEnd(wback); else if (ty === 'mode3-revoke-account') finishWrapperAccount(wback); else if (ty === 'mode3-envelope-add') finishWrapperBackupAdd(wback); else if (ty === 'mode3-envelope-remove') finishWrapperBackupRemove(wback); else if (ty === 'mode3-link-begin') finishWrapperLinkBegin(wback); else if (ty === 'mode3-link-finish') finishWrapperLinkFinish(wback); else if (ty === 'mode3-link-remove') finishWrapperLinkRemove(wback); else finishWrapper(wback); return; }
+  if (wback) { history.replaceState(null, '', `${location.pathname}?authorize=1`); const ty = wback.pend?.req?.type; if (ty === 'mode3-end-session') finishWrapperEnd(wback); else if (ty === 'mode3-revoke-account') finishWrapperAccount(wback); else if (ty === 'mode3-envelope-add') finishWrapperBackupAdd(wback); else if (ty === 'mode3-envelope-remove') finishWrapperBackupRemove(wback); else if (ty === 'mode3-link-begin') finishWrapperLinkBegin(wback); else if (ty === 'mode3-link-finish') finishWrapperLinkFinish(wback); else if (ty === 'mode3-link-remove') finishWrapperLinkRemove(wback); else if (ty === 'mode3-vault-restore') finishWrapperVaultRestore(wback); else finishWrapper(wback); return; }
   const gback = PK && !WRAP ? takeGoogleReturn({ hash: location.hash, storage: window.sessionStorage, now: Date.now() }) : null;
   if (gback) { history.replaceState(null, '', `${location.pathname}?authorize=1`); finishSignup(gback); return; }
 

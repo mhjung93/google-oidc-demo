@@ -3,7 +3,7 @@
 // MetaMask·Snap 코드는 없다. 비밀(s_u·blind_u·세션 개인키·금고 비밀번호·secrets 암호문)은 DOM·localStorage·로그·postMessage 에
 // 넣지 않는다 — 코어 응답은 에이전트와 같은 모양이라 비밀이 실리지 않고, safeDetail 이 한 번 더 거른다. 비밀번호 입력칸은 읽자마자 비운다.
 import { ZK_CACHE_NAME } from '../../lib/browser/zk_assets.js';
-import { RECOVER_RESULT_KEY, WRAP_END_RESULT_KEY, WRAP_ACCOUNT_RESULT_KEY, WRAP_BACKUP_RESULT_KEY, WRAP_LINK_RESULT_KEY, idpAuthUrl, savePending, googleAuthUrl, saveWrapperPending, readAttrRecord, attrRecordOf, ATTR_RECORD_KEY } from './idp_return.js';
+import { RECOVER_RESULT_KEY, WRAP_END_RESULT_KEY, WRAP_ACCOUNT_RESULT_KEY, WRAP_BACKUP_RESULT_KEY, WRAP_LINK_RESULT_KEY, WRAP_VAULT_RESULT_KEY, idpAuthUrl, savePending, googleAuthUrl, saveWrapperPending, readAttrRecord, attrRecordOf, ATTR_RECORD_KEY } from './idp_return.js';
 export const $ = (id) => document.getElementById(id);
 
 /** 사전 도우미(wallet.html 의 tte·tt·setVerdict·pendingVerdict 와 같다). */
@@ -237,6 +237,8 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     const key = attrRec && s?.registered && s.auid && String(s.auid) !== String(attrRec.auid) ? 'user_attr_state_mismatch'
       : attrRec ? (reg && sameProfile(attrRec.profile, reg) ? 'user_attr_state_applied' : 'user_attr_state_pending') : filled(reg) ? 'user_attr_state_applied' : 'user_attr_state_none';
     $('attrState').textContent = tt(key) || '';
+    // 되찾기(V9): 상태를 읽었고 이 브라우저에 등록이 없을 때만 보인다 — 등록이 있으면 다음 로그인이 스스로 맞춘다
+    $('attrRestoreRow').hidden = !(s && !s.registered);
   }
   $('attrSaveBtn').addEventListener('click', async () => {
     const btn = $('attrSaveBtn'), outEl = $('attrCardVerdict'); if (!WRAP || btn.disabled) return;
@@ -999,6 +1001,35 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
       setVerdict(el, false, 'user_logins_failed', { reason: 'internal', detail: e.message });
     } finally { delete btn.dataset.busy; }
   }
+  /** "내 속성" 되찾기의 출발(스펙 profile-vault V9): 요청 키 → Google(계정 고르기). 돌아오면 popup.js finishWrapperVaultRestore 가 패스키 한 번으로 사본을 열어 속성 기록을 쓰고 /user 로 돌려보낸다. */
+  async function wrapperVaultFlow(btn) {
+    if (btn.dataset.busy === '1') return;
+    btn.dataset.busy = '1';
+    const el = $('attrCardVerdict');
+    pendingVerdict(el, 'working');
+    try {
+      let o = null;
+      try { const k = await core.idp.publicKeys(); o = k?.status === 200 && k.body?.wrapper === true ? k.body.oidc : null; } catch { o = null; }
+      if (!o?.enabled || typeof o.clientId !== 'string' || typeof o.authorizeUrl !== 'string' || typeof o.redirectUri !== 'string') { setVerdict(el, false, 'user_attr_restore_failed', { reason: 'wrapper_disabled' }); return; }
+      const b = await core.wrapperBegin();
+      if (b.status !== 200) { setVerdict(el, false, 'user_attr_restore_failed', { reason: b.body?.reason ?? `HTTP ${b.status}`, detail: safeDetail(b.body) }); return; }
+      const { url, state } = googleAuthUrl({ authorizeUrl: o.authorizeUrl, clientId: o.clientId, redirectUri: o.redirectUri, nonce: b.body.googleNonce, walletOrigin: location.origin });
+      saveWrapperPending(window.sessionStorage, { state, at: Date.now(), req: { type: 'mode3-vault-restore' }, origin: location.origin });
+      location.assign(url);
+    } catch (e) {
+      setVerdict(el, false, 'user_attr_restore_failed', { reason: 'internal', detail: e.message });
+    } finally { delete btn.dataset.busy; }
+  }
+  /** 되찾기 귀로가 남긴 결과(성공 여부·사유뿐 — 속성 값은 속성 기록에 있다)를 한 번 보이고 지운다. */
+  function showWrapVaultResult() {
+    let r = null;
+    try { r = JSON.parse(sessionStorage.getItem(WRAP_VAULT_RESULT_KEY) ?? 'null'); sessionStorage.removeItem(WRAP_VAULT_RESULT_KEY); } catch { r = null; }
+    if (!r) return;
+    const el = $('attrCardVerdict');
+    attrCardDirty = false; loadAttrRec();
+    if (r.ok) setVerdict(el, true, 'user_attr_restored', () => ({ summary: tt(r.empty ? 'user_attr_restored_empty' : 'user_attr_restored_summary') || (r.empty ? '맡겨 둔 사본에 속성이 없습니다.' : '전에 넣은 속성을 되찾았습니다.') }));
+    else setVerdict(el, false, 'user_attr_restore_failed', { reason: r.reason ?? 'internal', ...(r.detail ? { detail: r.detail } : {}) });
+  }
   /** 더하기·떼기 귀로가 남긴 결과(공개값·사유뿐)를 한 번 보이고 지운다. */
   function showWrapLinkResult() {
     let r = null;
@@ -1428,6 +1459,8 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
     showWrapBackupResult();
     { const b = $('loginsAddBtn'); if (b) b.addEventListener('click', () => wrapperLinkFlow(b, { type: 'mode3-link-begin' }, tt('confirm_logins_add') || 'Google 계정을 더할까요? 먼저 지금 계정을 확인하고, 이어서 더할 계정을 고릅니다.')); }
     showWrapLinkResult();
+    { const b = $('attrRestoreBtn'); if (b) b.addEventListener('click', () => wrapperVaultFlow(b)); }
+    showWrapVaultResult();
     $('userLockCard').hidden = false; $('userBar').hidden = false;
     // 2026-11-25(사용자 요청): 내 신원 카드는 보이지 않는다(코드는 다른 방식이 쓴다). 속성은 "내 속성" 카드에서 넣는다.
     $('identityCard').hidden = true; $('attrCard').hidden = false;

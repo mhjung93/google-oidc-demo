@@ -290,26 +290,45 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
     await putSessions({}); await kv.del('loginFlow');   // 앞 등록(예전 방식)의 세션·"가장 최근 로그인" 기록을 남기지 않는다
     return null;
   }
-  /** 보관 사본으로 이 브라우저의 속성·사용자 자격증명 재료를 맞춘다(스펙 2026-11-26 profile-vault). 같은 요청 키·같은 Google 토큰으로 서버에서 암호문을 받아(토큰은 쓰지 않는다)
-   *  salt 로 연다. 열리고 프로필과 속성이 맞으면 등록의 uid(C_u 안의 값)·프로필·속성·슬롯·C_u·blind_u 를 그 값으로 바꾼다.
+  /** 보관 사본을 받아 연다(스펙 2026-11-26 profile-vault) — 같은 요청 키·같은 Google 토큰으로 서버에서 암호문을 받아(토큰은 쓰지 않는다) salt 로 열고, 사본의 프로필과 속성 값이 맞는지 본다.
+   *  상태를 바꾸지 않는다. 성공 { ok: true, d(연 본문), schema, normalized, attrs, auid, slot, at }, 실패 { ok: false, status, reason }:
+   *  서버의 사유(vault_auid_mismatch·account_disabled·토큰 사유) | vault_no_account(그 Google 계정의 계정이 없다) | vault_empty(맡겨 둔 사본이 없다) | vault_open_failed(이 패스키로 열리지 않는다) | vault_profile_mismatch. */
+  async function fetchVault({ idToken, wk, aud, s_u }) {
+    const auid = (await auidOf({ s_u: BigInt(s_u) })).toString();
+    let r;
+    try { r = await idp.post('/cia/wrapper/vault', { id_token: idToken, pk_e: wk.pkE, sig: await signDigest(wk.privateKey, vaultDigest({ auid }, aud)), auid }); }
+    catch (e) { return { ok: false, status: 502, reason: 'cia_unavailable', detail: e.message }; }
+    // 계정 없음(404)은 이 화면의 말로 바꾼다 — 다른 Google 계정을 골랐거나 데모를 다시 띄운 뒤다
+    if (r.status !== 200) return { ok: false, status: r.status, reason: r.status === 404 || r.body?.reason === 'unknown_account' ? 'vault_no_account' : (r.body?.reason ?? 'internal') };
+    if (typeof r.body?.ct !== 'string') return { ok: false, status: 404, reason: 'vault_empty' };
+    const d = await openVault({ s_u, auid, ct: r.body.ct });
+    if (!d) return { ok: false, status: 409, reason: 'vault_open_failed' };
+    const { schema } = await schemaFor();
+    const blank = Object.fromEntries(schema.slots.filter((x) => x.type === 'int' || x.type === 'enum').map((x) => [x.name, '']));
+    const normalized = normalizeProfile(schema, d.profile ?? {});
+    const attrs = await encodeProfile(schema, { ...blank, ...normalized }, { allowEmptyRequired: true });
+    if (JSON.stringify(attrs.map(String)) !== JSON.stringify(d.attrs)) return { ok: false, status: 409, reason: 'vault_profile_mismatch' };   // 사본의 프로필과 속성 값이 어긋난다 — 쓰지 않는다
+    return { ok: true, d, schema, normalized, attrs, auid, slot: Number.isInteger(r.body.slot) && r.body.slot >= 0 ? r.body.slot : null, at: typeof r.body.at === 'string' ? r.body.at : null };
+  }
+  /** 속성 기록의 본문(내 속성 카드·속성 도구가 읽는 모양) — 속성이 하나도 없으면 null. */
+  async function attrRecordBody({ schema, auid, normalized, attrs, s_u }) {
+    return attrs.some((v) => String(v) !== '0') ? { schema: { id: schema.id, version: schema.version }, auid, profile: normalized, attrs, commit: await attrCommit({ s_u, attrs }) } : null;
+  }
+  /** 보관 사본으로 이 브라우저의 속성·사용자 자격증명 재료를 맞춘다(스펙 2026-11-26 profile-vault). 사본이 열리고 맞으면 등록의 uid(C_u 안의 값)·프로필·속성·슬롯·C_u·blind_u 를 그 값으로 바꾼다.
    *  leaf: 이미 등록된 브라우저가 부를 때 — 등록부의 내 슬롯 리프. 사본의 C_u 가 그 리프일 때만 맞춘다(그리고 옛 C_u 의 세션을 지운다). 새 브라우저는 leaf 없이 부르고,
-   *  사본이 등록부보다 낡았으면 로그인이 새 C_u 를 받는다(속성은 사본의 것). 돌려주는 값: { record(속성 기록의 본문 — 속성이 하나라도 있을 때) } 또는 null(사본 없음·못 엶·어긋남). 던지지 않는다. */
-  async function restoreFromVault({ idToken, wk, aud, s_u, leaf = null }) {
+   *  사본이 등록부보다 낡았으면 로그인이 새 C_u 를 받는다(속성은 사본의 것).
+   *  sameAttrsOnly(2026-11-27 V9): 방금 만든 로컬 등록이 속성 기록의 값으로 만들어졌을 때 — 사본의 속성이 **그 값과 같을 때만** 맞춘다(같으면 사본의 blind_u·C_u 를 써서 교체가 없다.
+   *  다르면 기록의 값이 이긴다 — 지금처럼 새 C_u).
+   *  돌려주는 값: { record(속성 기록의 본문 — 속성이 하나라도 있을 때) } 또는 null(사본 없음·못 엶·어긋남). 던지지 않는다. */
+  async function restoreFromVault({ idToken, wk, aud, s_u, leaf = null, sameAttrsOnly = false }) {
     try {
-      const auid = (await auidOf({ s_u: BigInt(s_u) })).toString();
-      const r = await idp.post('/cia/wrapper/vault', { id_token: idToken, pk_e: wk.pkE, sig: await signDigest(wk.privateKey, vaultDigest({ auid }, aud)), auid });
-      if (r.status !== 200 || typeof r.body?.ct !== 'string') return null;
-      const d = await openVault({ s_u, auid, ct: r.body.ct });
-      if (!d) return null;
-      const { schema } = await schemaFor();
-      const blank = Object.fromEntries(schema.slots.filter((x) => x.type === 'int' || x.type === 'enum').map((x) => [x.name, '']));
-      const normalized = normalizeProfile(schema, d.profile ?? {});
-      const attrs = await encodeProfile(schema, { ...blank, ...normalized }, { allowEmptyRequired: true });
-      if (JSON.stringify(attrs.map(String)) !== JSON.stringify(d.attrs)) return null;   // 사본의 프로필과 속성 값이 어긋난다 — 쓰지 않는다
+      const v = await fetchVault({ idToken, wk, aud, s_u });
+      if (!v.ok) return null;
+      const { d, schema, normalized, attrs, auid, slot } = v;
+      if (sameAttrsOnly && JSON.stringify(((await getReg())?.attrs ?? []).map(String)) !== JSON.stringify(attrs.map(String))) return null;
       const cu = await userCommit({ uid: BigInt(d.uid), s_u: BigInt(s_u), blind_u: BigInt(d.blind_u), attrs: attrs.map(BigInt) });
       if (leaf !== null && (await registryLeaf(BigInt(auid), cu.Cf)).toString() !== String(leaf)) return null;
-      const slot = Number.isInteger(r.body.slot) && r.body.slot >= 0 ? r.body.slot : null;
-      const issuedAt = typeof r.body.at === 'string' ? r.body.at : new Date(now()).toISOString();
+      const issuedAt = v.at ?? new Date(now()).toISOString();
       const reg = await updateReg((x) => {
         x.uid = d.uid; x.profile = normalized; x.attrs = attrs;
         if (slot !== null && (x.slot === null || x.slot === undefined)) x.slot = slot;
@@ -318,8 +337,7 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
       if (!reg) return null;
       await updateSecrets((x) => { x.blind_u = d.blind_u; });
       if (leaf !== null) await dropSessions();   // 옛 C_u 위의 세션은 그 교체 때 서버가 이미 폐기했다
-      const some = attrs.some((v) => String(v) !== '0');
-      return { record: some ? { schema: { id: schema.id, version: schema.version }, auid, profile: normalized, attrs, commit: await attrCommit({ s_u, attrs }) } : null };
+      return { record: await attrRecordBody({ schema, auid, normalized, attrs, s_u }) };
     } catch { return null; }
   }
   /** 추적 기록(스펙 2026-11-26 ppid-account-trace §4.3): 이 서비스의 PPID 에 기록이 아직 없으면, auid 를 감사자 키로 잠근 값과 π_trace 를 만들어 **로그인 응답에 싣는다** —
@@ -1137,9 +1155,10 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
             const sy = await ops.syncProfileFromRecord({ recordAuid, profile });   // 속성 변경(W5): 기록의 속성으로 맞춘다 — 이번 로그인이 새 속성의 C_u 를 받는다
             if (sy.status !== 200) return sy;
           }
-          // 보관 사본(스펙 2026-11-26 profile-vault): 새 브라우저(방금 로컬 등록, 속성 기록도 없음)는 서버의 사본으로 속성·C_u 를 맞춘 뒤 로그인한다 — 같은 패스키의 다른 기기와 같은 C_u 라
+          // 보관 사본(스펙 2026-11-26 profile-vault): 새 브라우저(방금 로컬 등록)는 서버의 사본으로 속성·C_u 를 맞춘 뒤 로그인한다 — 같은 패스키의 다른 기기와 같은 C_u 라
           // 그 기기의 세션이 폐기되지 않고, 조건을 거는 서비스에도 바로 들어간다. 사본이 없거나 열리지 않으면 지금처럼 빈 속성으로 간다.
-          let restored = created && profile === null ? await restoreFromVault({ idToken, wk, aud: pub.wrapperAud, s_u: await saltNow() }) : null;
+          // 2026-11-27(V9): 속성 기록이 있어도 사본을 받는다 — 기록의 속성이 사본과 같으면(/user 에서 되찾은 기록이 그렇다) 사본의 blind_u·C_u 를 써서 교체가 없고, 다르면 기록의 속성으로 새 C_u(지금처럼).
+          let restored = created ? await restoreFromVault({ idToken, wk, aud: pub.wrapperAud, s_u: await saltNow(), sameAttrsOnly: profile !== null }) : null;
           const wrapArg = () => ({ idToken, privateKey: wk.privateKey, pkE: wk.pkE, aud: pub.wrapperAud, googleMs, onPinned: (b) => { pinned = b; }, ...(restored && created ? { restored: 'fresh' } : {}) });
           let r = await ops.login(body, { verifiedOrigin, serviceName, policy, wrapper: wrapArg() });
           // 이미 등록된 브라우저인데 내 C_u 가 등록부의 것이 아니다 = 같은 패스키의 다른 기기가 속성을 바꿔 새 C_u 를 받았다. 사본의 C_u 가 그 리프와 같으면(사본은 salt 의 키로만 만든다 —
@@ -1606,6 +1625,35 @@ export function createUserCore({ kv, config, provider, canonProvider = provider,
         const logins = cleanLogins(r.body?.logins) ?? [];
         await updateReg((x) => { x.logins = logins; });
         return R(200, { logins });
+      } finally { if (!keepKey) { await kv.del('wrapperKey'); dropRecover(); } }
+    },
+    /** /user 에서 속성 되찾기(스펙 2026-11-26 profile-vault V9, 2026-11-27) — 이 브라우저에 등록이 없을 때("모두 지우기" 뒤·같은 패스키의 새 브라우저): Google 확인 뒤 패스키(한 번)로
+     *  서버의 보관 사본을 받아 열고, 속성 기록의 본문을 돌려준다(화면이 "내 속성" 기록으로 쓴다). **등록·비밀은 만들지 않는다** — 다음 로그인이 그 기록으로 로컬 등록을 만들고,
+     *  사본의 속성과 같으므로 사본의 blind_u·C_u 를 쓴다(wrapperLogin 의 sameAttrsOnly — 교체가 없다). 토큰은 소비되지 않는다(발급에 쓰지 않고 버린다).
+     *  응답 200 { record | null(사본에 속성이 없다), at }. 실패는 사유: vault_restore_registered(이미 등록이 있다) | wrapper_key_missing | fetchVault 의 사유들. 패스키 취소는 요청 키를 남긴다. */
+    async wrapperVaultRestore({ idToken = null } = {}) {
+      if (!WRAP) return R(409, { reason: 'not_wrapper_mode' });
+      if (typeof idToken !== 'string' || !idToken) return R(400, { error: 'idToken(문자열) 필요' });
+      let keepKey = false;
+      try {
+        if (await getReg()) return R(409, { reason: 'vault_restore_registered' });
+        let claims;
+        try { claims = jwtPayload(idToken); } catch { return R(400, { reason: 'oidc_invalid', detail: 'id_token 형식이 아니다' }); }
+        const wk = (await kv.get('wrapperKey')) ?? null;
+        if (!wk?.privateKey || !wk.pkE || claims?.nonce !== await wrapperNonce(wk.pkE)) return R(409, { reason: 'wrapper_key_missing' });
+        if (!(Number.isFinite(wk.at) && now() - wk.at <= WRAPPER_KEY_MAX_MS)) return R(409, { reason: 'wrapper_key_missing' });
+        let keys;
+        try { keys = await idp.publicKeys(); } catch (e) { return R(502, { reason: 'cia_unavailable', detail: e.message }); }
+        const pub = keys.status === 200 ? keys.body : null;
+        if (pub?.wrapper !== true || typeof pub.wrapperAud !== 'string') return R(503, { reason: 'wrapper_disabled' });
+        return await core.withSalt(async () => {
+          let s;
+          try { s = await saltNow(); }
+          catch (e) { if (typeof e?.reason === 'string' && e.reason.startsWith('passkey_')) { keepKey = true; return R(409, { reason: e.reason }); } throw e; }
+          const v = await fetchVault({ idToken, wk, aud: pub.wrapperAud, s_u: s });
+          if (!v.ok) return R(v.status, { reason: v.reason, ...(v.detail ? { detail: v.detail } : {}) });
+          return R(200, { record: await attrRecordBody({ schema: v.schema, auid: v.auid, normalized: v.normalized, attrs: v.attrs, s_u: s }), at: v.at });
+        });
       } finally { if (!keepKey) { await kv.del('wrapperKey'); dropRecover(); } }
     },
     /** 개봉 알림(스펙 2026-11-26 ppid-account-trace §5): 등록부의 개봉 요청 가운데 **이 브라우저의 PPID** 에 온 것. 체인을 직접 읽는다 — 요청 전체를 받아 여기서 거른다
