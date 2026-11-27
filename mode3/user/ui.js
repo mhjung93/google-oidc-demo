@@ -85,6 +85,7 @@ export function mountUi({ core, prover, config, Demo, meta, demoReset = false, p
   if (config.wrapper === true) {
     const home = document.getElementById('homeGuide');
     if (home) {
+      const op = document.getElementById('homeOpLink'); if (op) { op.href = `${config.ciaUrl}/rp`; op.textContent = `${config.ciaUrl}/rp`; }   // 2026-11-27: 운영자 화면 링크(등록 신청)
       const adm = document.getElementById('homeAdminLink'); if (adm) adm.href = `${config.ciaUrl}/admin`;   // 2026-11-26: 따로 둔 버튼 — 글자는 문구(home_admin_btn)
       home.hidden = false;
     }

@@ -344,7 +344,7 @@ try {
   await t('홈: 사용자용 세 단계·운영자용 세 단계·전체 플로우 링크가 있고, 링크가 맞다', async () => {
     const page = await A.ctx.newPage(); await page.goto(`${wallet.base}/`); await page.waitForSelector('#homeGuide:not([hidden])', { timeout: 15_000 });
     const c = (await wallet.get('/user/config')).body;
-    assert.equal(await page.$$eval('#homeUserSteps li', (l) => l.length), 3); assert.equal(await page.$$eval('#homeOpSteps li', (l) => l.length), 1, '운영자 칸은 한 단계(2026-11-26)');
+    assert.equal(await page.$$eval('#homeUserSteps li', (l) => l.length), 3); assert.equal(await page.$$eval('#homeOpSteps li', (l) => l.length), 2, '운영자 칸은 두 단계 — 등록 신청·zk 로그인 버튼(2026-11-27, 관리자 승인 단계는 없다)');
     const hrefs = await page.$$eval('#homeGuide a', (as) => as.map((a) => a.href));
     for (const want of [`${new URL(wallet.base).origin}/common/flow.html`, `${c.ciaUrl}/admin`]) assert.ok(hrefs.includes(want), `${want} 링크가 없다: ${j(hrefs)}`);
     for (const h of hrefs) { const r = await fetch(h); assert.equal(r.status, 200, `${h} → ${r.status}`); }
@@ -354,7 +354,7 @@ try {
     assert.deepEqual(adm, { href: `${c.ciaUrl}/admin`, text: '관리자 화면', inOp: false, ghost: true });
     const box = await page.evaluate(() => { const r = (s) => document.querySelector(s).getBoundingClientRect(); const c = r('#homeGuide'), a = r('#homeAdminLink'), h = r('#homeGuide h3'); return { right: c.right - a.right, top: a.top - c.top, sameRow: a.top < h.bottom && a.bottom > h.top, leftOfIt: h.right <= a.left }; });
     assert.ok(box.right >= 0 && box.right < 40 && box.top < 40 && box.sameRow && box.leftOfIt, `카드 오른쪽 위가 아니다: ${j(box)}`);
-    assert.deepEqual(await page.$$eval('#homeOpSteps a', (as) => as.map((a) => a.href)), [], '운영자 안내에는 링크가 없다(등록 신청·승인 단계를 뺐다)');
+    assert.deepEqual(await page.$$eval('#homeOpSteps a', (as) => as.map((a) => ({ href: a.href, text: a.textContent }))), [{ href: `${c.ciaUrl}/rp`, text: `${c.ciaUrl}/rp` }], '운영자 안내의 링크는 운영자 화면(/rp) 하나다 — 관리자 화면 링크는 없다');
     // 2026-11-24(사용자 요청): 홈에는 "zk-Delegation 쓰는 법" 만 — 세션 관리는 /user(링크가 있다)
     assert.ok(hrefs.includes(`${new URL(wallet.base).origin}/user`), `/user 링크가 없다: ${j(hrefs)}`);
     // 스펙 home-and-account-recovery 1.2a — H2: 사용자 1단계 뒤에 서비스 링크(설정의 rpServices — 승인된 서비스의 이름·주소), H5: 탭 제목
