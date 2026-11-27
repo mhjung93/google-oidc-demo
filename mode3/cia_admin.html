@@ -581,6 +581,12 @@
         if (r.status !== 200) { openings = null; placeholder($('openings'), 'admin_load_failed'); setVerdict($('adminVerdict'), false, 'admin_load_failed', { reason: reasonFor(r), detail: safeDetail(r.body) }); return; }
         openings = r.body.openings;
         loadTrace();
+        // 추적 기록 전용(2026-11-26): 발급 기록 방식의 개봉이 꺼져 있다 — 옛 목록 대신 그 사실을 말하고, 아래 "추적 기록 개봉" 만 쓴다
+        if (r.body.disabled === true) {
+          const d = document.querySelector('#secOpenings .desc'); d.dataset.i18n = 'admin_openings_off'; d.textContent = Demo.t('admin_openings_off') || d.textContent;
+          const n = document.querySelector('#secOpenings [data-i18n="admin_openings_note"]'); if (n) n.hidden = true;
+          $('openings').replaceChildren(); return;
+        }
       } catch (e) { openings = null; placeholder($('openings'), 'admin_load_failed'); setVerdict($('adminVerdict'), false, 'admin_load_failed', { reason: 'cia_unavailable', detail: e.message }); return; }
       renderOpenings();
     }

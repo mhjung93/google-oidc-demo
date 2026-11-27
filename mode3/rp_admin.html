@@ -167,7 +167,7 @@
         if (!l.PPID) { act.textContent = '-'; continue; }   // 소셜 로그인 줄 — 개봉할 트랜스크립트가 없다
         const btn = document.createElement('button');
         btn.type = 'button'; btn.className = 'btn-ghost'; tte(btn, 'rp_open_req');
-        btn.addEventListener('click', () => { $('openPpid').value = l.account ?? l.PPID; $('openBtn').click(); });
+        btn.addEventListener('click', () => { $('openPpid').value = l.account ?? l.PPID; (info?.trace?.registry ? $('traceOpenBtn') : $('openBtn')).click(); });
         act.appendChild(btn);
       }
       host.appendChild(table);
@@ -314,7 +314,15 @@
     async function renderBrand() {
       try {
         info = await (await fetch('/api/mode3/rp_info')).json();
-        $('traceOpenBtn').hidden = !info?.trace?.registry;   // 추적 기록 등록부가 켜져 있을 때만(2026-11-26)
+        // 추적 기록 등록부가 켜져 있으면(2026-11-26) 개봉은 체인의 요청으로만 한다 — 발급 기록 방식의 버튼·해시 칸·안내를 감추고 설명을 바꾼다
+        const traceOnly = Boolean(info?.trace?.registry);
+        $('traceOpenBtn').hidden = !traceOnly;
+        for (const id of ['openBtn', 'openPollBtn']) $(id).hidden = traceOnly;
+        $('openTx').closest('p').hidden = traceOnly;
+        if (traceOnly) {
+          const d = document.querySelector('#openCompliance .desc'); d.dataset.i18n = 'rp_open_desc_trace'; d.textContent = tt('rp_open_desc_trace') || d.textContent;
+          const n = document.querySelector('#openCompliance [data-i18n="rp_open_tag_note"]'); if (n) n.closest('p').hidden = true;
+        }
         const name = typeof info.name === 'string' && /^zk/i.test(info.name) ? info.name : 'zkONE';
         $('brandName').textContent = name; document.title = `${name} — ${tt('rp_admin_title') || '관리자'}`;
         // 상태 패널(설계 2026-09-25 §2) — 고객 페이지와 같은 상대(지갑·zkIdP)를 본다. 체험 모드의 단계 판정도 이 health 를 쓴다.

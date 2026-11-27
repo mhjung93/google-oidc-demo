@@ -114,9 +114,13 @@ try {
     const p = await A.ctx.newPage(); await p.goto(`${rp.base}/admin`);
     await p.fill('#adminGate .gate-pwd', rp.adminHeaders['X-RP-Admin-Secret']); await p.click('#adminGate .gate-form button[type=submit]');
     await p.waitForSelector('#traceOpenBtn:not([hidden])', { timeout: 20_000 }); await p.fill('#openPpid', acct);
+    // 발급 기록 방식의 버튼·해시 칸은 보이지 않는다(추적 기록 전용)
+    assert.deepEqual(await p.evaluate(() => ['openBtn', 'openPollBtn', 'openTxBtn'].map((id) => document.getElementById(id).checkVisibility())), [false, false, false]);
+    assert.ok((await text(p, '#openCompliance .desc')).includes('체인의 요청 거래'), await text(p, '#openCompliance .desc'));
     promptText = '   '; await p.click('#traceOpenBtn'); await p.waitForTimeout(800);
     assert.equal(Number(await registry.requestCount()), 0, '사유 없이 요청이 나갔다');
-    promptText = '테스트 사유'; await p.click('#traceOpenBtn');
+    // 로그인 기록 줄의 "개봉 요청" 버튼도 체인의 요청으로 간다
+    promptText = '테스트 사유'; await p.fill('#openPpid', ''); await p.click('#logins tbody tr:first-child button');
     await waitText(p, '#openVerdict', '요청 #0'); await shot(p, 'trace-2-rp-admin'); await p.close();
     const q0 = await registry.requestOf(0); assert.equal(q0.ppid.toString(), ppidA); assert.equal(q0.reasonHash, ethers.id('테스트 사유'));
   });
@@ -157,6 +161,21 @@ try {
       const r3 = await login(B, 'google-user-U', 'you@example.com');
       assert.ok(r3.verdict.includes('로그인 성공'), r3.verdict); assert.equal(await registry.has(r3.PPID), true);
     } finally { await B.ctx.close(); }
+  });
+  await t('추적 기록 전용: 발급 기록으로 찾는 개봉은 닫혀 있고(서비스·zkWrapper 모두 opening_disabled), zkWrapper 는 로그인의 가명(auid_s·arid_s)을 계정에 남기지 않는다 — 화면도 그렇게 말한다', async () => {
+    assert.equal((await rp.post('/api/mode3/open', { PPID: ppidA }, rp.adminHeaders)).body.reason, 'opening_disabled');
+    assert.equal((await rp.get('/api/mode3/open/x', rp.adminHeaders)).body.reason, 'opening_disabled');
+    assert.equal((await cia.post('/cia/open/request', {})).body.reason, 'opening_disabled');
+    assert.equal((await cia.adminPost('/cia/openings/x/approve')).body.reason, 'opening_disabled');
+    const ops = await cia.adminGet('/cia/openings'); assert.deepEqual(ops.body, { openings: [], disabled: true });
+    const accts = (await cia.adminGet('/cia/accounts')).body.accounts.filter((a) => (a.logins ?? []).length > 0 || a.auid);
+    assert.ok(accts.length >= 2, `로그인한 계정 수 ${accts.length}`);
+    for (const a of accts) assert.deepEqual([a.lastAuidS, a.lastAridS, a.lastIssue], [null, null, null], `계정 ${String(a.uid).slice(0, 8)} 에 가명이 남았다`);
+    const p = await A.ctx.newPage(); await p.goto(`${wallet.base}/admin`);
+    await p.fill('#adminGate .gate-pwd', cia.adminSecret); await p.click('#adminGate .gate-form button[type=submit]');
+    await p.click('#openingsBtn');
+    await waitText(p, '#secOpenings .desc', '꺼져 있습니다'); await p.waitForSelector('#traceBox:not([hidden])');
+    assert.equal(await p.$eval('#openings', (e) => e.children.length), 0); await p.close();
   });
   await t('남의 서비스의 계정은 요청하지 못한다(trace_not_mine) — 서비스는 자기 arid 의 기록만 개봉을 요청한다', async () => {
     const other = stack.rps[1];

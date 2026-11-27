@@ -992,6 +992,8 @@ async function transcriptFromTx(txHash) {
 }
 app.post('/api/mode3/open', requireRpAdmin, async (req, res) => {
   try {
+    // 추적 기록 등록부가 켜져 있으면(래퍼 방식의 기본, 2026-11-26) 개봉은 체인의 요청(/api/mode3/trace/open)으로만 한다 — 발급 기록으로 찾는 이 길은 닫혀 있다
+    if (TRACE_REGISTRY) return res.status(409).json({ ok: false, reason: 'opening_disabled' });
     if (!verifier) return res.status(503).json({ ok: false, reason: inactiveReason() });
     const { PPID, txHash, account } = req.body ?? {};
     let T;
@@ -1020,6 +1022,7 @@ app.post('/api/mode3/open', requireRpAdmin, async (req, res) => {
 });
 app.get('/api/mode3/open/:id', requireRpAdmin, async (req, res) => {
   try {
+    if (TRACE_REGISTRY) return res.status(409).json({ ok: false, reason: 'opening_disabled' });
     // 다른 라우트와 같이 fail-closed(2026-09-25 리뷰 C-5) — 검증기가 없는 RP 가 IdP 로 서명한 조회를 중계하지 않는다.
     if (!verifier) return res.status(503).json({ ok: false, reason: inactiveReason() });
     const ts = Math.floor(Date.now() / 1000).toString();

@@ -204,6 +204,11 @@ const USER_APP = process.env.CIA_USER_APP === '1';
 // 추적 기록 등록부(스펙 2026-11-26 ppid-account-trace): 응용 체인(첫 거울의 체인)에 있다. 주소가 없으면 꺼진 것이다 — 아무 경로도 바뀌지 않는다. 감사자 프로세스는 이 PC 의 것만(127.0.0.1) 부른다.
 const TRACE_REGISTRY = (() => { const v = envStr('MODE3_TRACE_REGISTRY', null); return v && /^0x[0-9a-fA-F]{40}$/.test(v) && MIRROR_SPECS[0] ? ethers.getAddress(v) : null; })();
 const TRACE_CHAIN = MIRROR_SPECS[0]?.chainStr ?? null;
+// 추적 기록 전용(2026-11-26 사용자 결정): 래퍼 방식이고 등록부가 켜져 있으면 개봉은 추적 기록(체인의 요청 + 감사자 2-of-3)으로만 한다 —
+// 발급 기록 방식의 개봉(/cia/open/*·/cia/openings)을 끄고, 발급 때 본 가명(auid_s·arid_s)을 계정에 남기지 않는다(기록 auidSLog 도, 화면 표시용 최신 값 lastAuidS·lastAridS·lastIssue 도).
+// 남기면 이 서버가 체인의 거래(공개 입력의 auid_s)와 맞춰 혼자 열 수 있다. 등록부 없이 띄우면(TRACE=0) 2026-11-19 의 방식 그대로다.
+// 한계: 이 서버는 발급 요청에서 uid 와 auid_s 를 함께 **본다** — 남기지 않는 것은 규칙이지 암호가 아니다(π_RP 의 공개 입력에서 auid_s 를 빼야 닫힌다 — 스펙 ppid-account-trace §7).
+const TRACE_ONLY = WRAPPER && Boolean(TRACE_REGISTRY);
 const AUDITOR_URL = envStr('MODE3_AUDITOR_URL', 'http://127.0.0.1:5300').replace(/\/+$/, '');
 const AUDITOR_TOKEN = envStr('MODE3_AUDITOR_TOKEN', '');   // 감사자와 나눠 갖는 토큰(없으면 감사자가 답하지 않는다 — 2026-11-26 검토 I-3). 값은 로그·응답에 내지 않는다
 const auditorGet = (p) => fetch(`${AUDITOR_URL}${p}`, { headers: { 'X-Auditor-Token': AUDITOR_TOKEN }, signal: AbortSignal.timeout(4000) });
@@ -1503,7 +1508,7 @@ async function finishIssueInner(res, { uid, acct, cupt, cspt, auidS, aridS, mh, 
   if (removedLogin()) return res.status(403).json({ error: 'this login was removed from the account', reason: 'login_removed' });
   // 발급 기록이 찼다 — 기록 없이 서명하면 그 로그인(과 그 뒤의 거래)을 개봉할 수 없다. 1회용 코드·자격증명 교체보다 먼저 막는다(아무것도 바꾸지 않는다).
   // 진행 중인 그 계정의 발급도 센다(재검토 2026-11-21) — 기록은 아래 await(게시·서명) 뒤에 쓰므로, 세지 않으면 동시 요청이 함께 지나가 상한을 넘는다.
-  if ((acct.auidSLog?.length ?? 0) + (inflightIssues.get(uid) ?? 0) >= AUID_S_LOG_MAX) return res.status(409).json({ error: 'issuance record is full for this account', reason: 'auid_log_full' });
+  if (!TRACE_ONLY && (acct.auidSLog?.length ?? 0) + (inflightIssues.get(uid) ?? 0) >= AUID_S_LOG_MAX) return res.status(409).json({ error: 'issuance record is full for this account', reason: 'auid_log_full' });
   // 세션 가명은 전체에서 한 번만(스펙 zkwrapper §3·§10 C1) — 다른 계정의 발급 기록에 있는(또는 다른 계정이 지금 발급받는 중인) auid_s 로는 발급하지 않는다.
   // 래퍼 방식은 π_IdP 가 없어 주운 남의 auid_s 를 자기 기록에 심을 수 있다. 2026-11-21(사용자 결정, 재검토 M-7 (가))부터 모든 모드에 적용한다 — 기존 모드도 연결을 푼
   // 계정의 스냅을 다른 계정이 등록하면 같은 auid 가 두 계정에 있어, r_rp 를 일부러 같게 내면 같은 auid_s 가 두 기록에 남아 개봉이 답을 못 한다(uidOfAuidS).
@@ -1547,19 +1552,20 @@ async function finishIssueInner(res, { uid, acct, cupt, cspt, auidS, aridS, mh, 
   const issuedAt = new Date().toISOString();
   acct.sessions.push({ Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString(), issuedAt, revokedAt: null });
   // 2026-11-12(사용자 결정 — D1 수정): 가장 최신 auid_s 하나만 덮어쓴다 — 앞 값은 사라진다(기록 아님). 어느 세션(Cf_s)의 것인지는 적지 않는다.
-  acct.lastAuidS = { value: auidS.toString(), at: issuedAt };
+  // TRACE_ONLY(2026-11-26): 아래 넷(lastAuidS·lastAridS·auidSLog·lastIssue)을 남기지 않는다 — 개봉은 추적 기록으로만 하고, 이 서버가 가명으로 거래를 잇지 못하게
+  if (!TRACE_ONLY) acct.lastAuidS = { value: auidS.toString(), at: issuedAt };
   // 2026-11-19(스펙 oidc-comparison C5, 사용자 결정 — D1 의 두 번째 예외): 가장 최신 arid_s 하나도 같은 모양으로 덮어쓴다 — 관리자 화면이 "zk-Delegation 에서 zkIdP 가 본 서비스" 로
   // 보인다. 가려진 값이라 발급 때는 어느 서비스인지 모른다. 기록(이력)은 없다. 다만 그 로그인이 온체인 거래로 이어지면 거래의 공개 입력에 arid 와 auid_s 가 함께 있어,
   // 아래 auidSLog 로 "이 uid 가 그 서비스(arid)의 그 계정(PPID)을 쓴다" 까지 zkIdP 가 혼자 이을 수 있다(스펙 trace-without-tag §3 — T6 의 대가).
-  acct.lastAridS = { value: aridS.toString(), at: issuedAt };
+  if (!TRACE_ONLY) acct.lastAridS = { value: aridS.toString(), at: issuedAt };
   // 2026-11-19(데모 시나리오 6 — "IdP 가 무엇을 받아 검증하는지" 그림): 가장 최근 발급 요청에서 받은 공개값 한 벌. 이력이 아니다(덮어쓴다) — 전부 이 요청으로 zkIdP 가 원래 받는 값이고
   // 비밀은 없다(tag·증명·난수 n 은 남기지 않는다 — 요청을 묶는 값이라 화면에 둘 이유가 없다).
   // 2026-11-19(스펙 trace-without-tag T6, 사용자 결정 "IdP 는 기록을 갖고 있는 형태"): 발급마다 auid_s 를 계정에 남긴다 — 개봉은 서비스가 낸 auid_s 를 이 기록에서 찾는다.
   // 지금까지의 "auid_s 는 남기지 않는다"(D1)를 뒤집는다. 연결 해제·폐기에도 지우지 않는다(추적의 근거다). 오래된 것을 밀어내지 않는다 — 계정마다 AUID_S_LOG_MAX 개가 차면
   // 위에서 발급을 거절한다(리뷰 2026-11-19 I-1: 밀어내면 사용자가 발급을 되풀이해 지난 거래의 기록을 스스로 지울 수 있다).
   // by(2026-11-26 스펙 identity-multi-login M6): 이 로그인에 쓴 계정이 주인과 다를 때만 — 개봉은 그 로그인의 uid 하나를 돌려준다.
-  acct.auidSLog = [...(acct.auidSLog ?? []), { value: auidS.toString(), at: issuedAt, ...(by !== null && by !== uid ? { by } : {}) }];
-  acct.lastIssue = { at: issuedAt, auid_s: auidS.toString(), arid_s: aridS.toString(), Cf_u: cfu, Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString() };
+  if (!TRACE_ONLY) acct.auidSLog = [...(acct.auidSLog ?? []), { value: auidS.toString(), at: issuedAt, ...(by !== null && by !== uid ? { by } : {}) }];
+  if (!TRACE_ONLY) acct.lastIssue = { at: issuedAt, auid_s: auidS.toString(), arid_s: aridS.toString(), Cf_u: cfu, Cf_s: Cf_s.toString(), max_height: mh.toString(), chainid: chainStr, allowAgent: agent.toString() };
   // 보관 사본(스펙 2026-11-26 profile-vault): 이 발급이 받아들여졌으니 그 요청에 실린 암호문이 이 계정의 최신 사본이다(속성·blind_u — 서버는 열지 못한다). 아래 persist 가 함께 저장한다.
   if (wrapper && vault !== null) acct.vault = { ct: vault, at: issuedAt };
   // salt 봉투(계획 2026-11-24 salt-envelope [I2]): 복구 발급에 실린 기기 봉투는 서명(signPoseidon)이 끝난 뒤, 세션·발급 기록을 쓰는 이 마지막 동기 구간에서 함께 더한다
@@ -2591,8 +2597,11 @@ function uidOfAuidS(auidS) {
 // 대기 목록에 두고, 관리자가 승인하면 발급 때 남긴 기록(auidSLog)에서 그 auid_s 의 uid 를 찾는다. 복호·조각(D_svc·x_AA)·전수 대입이 없다.
 /** 같은 요청인지 가르는 키 — (arid, PPID, auid_s). auid_s 는 로그인마다 다르므로 같은 로그인의 두 번째 요청만 겹친다. */
 const openingKey = (arid, PPID, auidS) => createHash('sha256').update([arid, PPID, auidS].join('|')).digest('hex');
+// 추적 기록 전용이면 이 길(발급 기록으로 찾기)은 닫혀 있다 — 요청·승인·조회 모두 opening_disabled.
+const openingOff = (res) => res.status(409).json({ error: 'issuance-record opening is disabled (trace registry is on)', reason: 'opening_disabled' });
 app.post('/cia/open/request', async (req, res) => {
   try {
+    if (TRACE_ONLY) return openingOff(res);
     const { arid, publicSignals, proof, ts, sig, account } = req.body ?? {};
     // 2026-11-09: account(선택, 0x) — RP 가 PPID 로 계산한 스마트 계정 주소. 관리자 화면 표시용일 뿐 검증·개봉에는 쓰지 않는다(서명에도 안 들어간다).
     if (account !== undefined && !isAddr(account)) return res.status(400).json({ error: 'account 는 0x 주소' });
@@ -2629,9 +2638,10 @@ app.post('/cia/open/request', async (req, res) => {
     res.status(202).json({ id, status: 'pending' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
-app.get('/cia/openings', requireAdmin, (req, res) => res.json({ openings: state.openings }));
+app.get('/cia/openings', requireAdmin, (req, res) => res.json(TRACE_ONLY ? { openings: [], disabled: true } : { openings: state.openings }));
 app.post('/cia/openings/:id/approve', requireAdmin, async (req, res) => {
   try {
+    if (TRACE_ONLY) return openingOff(res);
     const o = findOpening(req.params.id);
     if (!o) return res.status(404).json({ error: 'unknown opening' });
     if (o.status !== 'pending') return res.status(409).json({ error: `already ${o.status}` });
@@ -2656,6 +2666,7 @@ app.post('/cia/openings/:id/deny', requireAdmin, (req, res) => {
   res.json({ id: o.id, status: o.status });
 });
 app.get('/cia/open/:id', (req, res) => {
+  if (TRACE_ONLY) return openingOff(res);
   const { ts, sig } = req.query ?? {};
   const o = findOpening(req.params.id);
   if (!o) return res.status(404).json({ error: 'unknown opening' });
